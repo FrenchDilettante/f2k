@@ -90,6 +90,12 @@ f2k/
 │   ├── linker.x86         # Custom linker script
 │   └── test-boot.sh       # Boot smoke test
 │
+├── tests/            # Windows 2000 test corpus (see tests/README.md)
+│   ├── README.md         # Test conventions and inventory
+│   ├── exit0.c           # Baseline: no CRT, entry calls ExitProcess(0)
+│   ├── ret0.c            # Baseline: CRT startup, main returns 0
+│   └── bin/              # PE fixtures compiled on a real Windows 2000 machine
+│
 └── kernel/           # F2K Kernel
     ├── Cargo.toml        # Kernel package
     └── src/
@@ -99,6 +105,8 @@ f2k/
         │   └── mod.rs    # Multiboot header and _start stub
         ├── gdt.rs        # GDT: flat 32-bit kernel segments
         ├── idt.rs        # IDT: CPU exception handlers with register dump on COM1
+        ├── mem/          # Memory management
+        │   └── frame.rs  # Physical frame allocator: state-keyed FIFO lists, per-color chains
         ├── serial.rs     # Serial port output
         └── c_lib.rs      # C library stubs
 ```
