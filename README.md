@@ -107,7 +107,3 @@ f2k/
 | `make run-limine` | Build Limine disk and run |
 | `make clean` | Clean build artifacts |
 | `make clobber` | Remove all build artifacts |
-
-## License
-
-MIT or Apache-2.0, at your option.
