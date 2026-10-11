@@ -1,0 +1,42 @@
+#!/bin/sh
+# Wrapper script to handle linking for x86-elf (32-bit)
+# Uses i686-elf-ld or x86_64-elf-ld with 32-bit mode
+# Kernel runs at 0x100000 (1MB) - standard for Limine boot protocol
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Try i686-elf-ld first (explicitly 32-bit)
+if command -v i686-elf-ld >/dev/null 2>&1; then
+    exec i686-elf-ld -m elf_i386 -e _start -T "$SCRIPT_DIR/linker.x86" "$@"
+fi
+
+# Try x86_64-elf-ld with 32-bit mode
+if command -v x86_64-elf-ld >/dev/null 2>&1; then
+    exec x86_64-elf-ld -m elf_i386 -e _start -T "$SCRIPT_DIR/linker.x86" "$@"
+fi
+
+# Give helpful error message
+cat >&2 <<'EOF'
+=============================================================================
+F2K Build Error: Cross-compilation linker not found
+=============================================================================
+
+To build F2K, you need a cross-compilation linker for x86 (32-bit) ELF binaries.
+
+On macOS, install it with Homebrew:
+
+    brew install FiloSottile/tap/x86_64-elf-binutils
+
+On macOS ARM (M1/M2), use Rosetta:
+
+    arch -x86_64 brew install FiloSottile/tap/x86_64-elf-binutils
+
+On Linux (Debian/Ubuntu):
+
+    sudo apt install binutils
+
+After installing, try building again.
+
+=============================================================================
+EOF
+exit 1

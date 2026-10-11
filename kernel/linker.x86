@@ -1,0 +1,47 @@
+/* Custom linker script for F2K kernel with limine support */
+/* This places the limine requests at the very beginning of the binary */
+
+OUTPUT_FORMAT("elf32-i386")
+OUTPUT_ARCH(i386)
+
+ENTRY(_start)
+
+/* Memory layout */
+BASE_ADDRESS = 0x7E00;
+
+/* Limine requests must be in the first 8KB and 8-byte aligned */
+.limine_requests (NOLOAD) : {
+    . = ALIGN(8);
+    *(.limine_requests)
+    . = ALIGN(8);
+}
+
+/* Text section - code */
+.text : {
+    *(.text._start)
+    *(.text)
+    *(.rodata)
+    *(.rodata.*)
+    *(.glue_7)
+    *(.glue_7t)
+}
+
+/* Data section */
+.data : {
+    *(.data)
+    *(.data.*)
+}
+
+/* BSS section */
+.bss : {
+    *(.bss)
+    *(.bss.*)
+    *(COMMON)
+}
+
+/* Discard sections we don't need */
+/DISCARD/ : {
+    *(.comment)
+    *(.eh_frame)
+    *(.debug_*)
+}

@@ -1,0 +1,48 @@
+/* Custom linker script for F2K kernel with Limine support */
+
+OUTPUT_FORMAT("elf32-i386")
+OUTPUT_ARCH(i386)
+
+ENTRY(_start)
+
+/* Limine typically loads kernels at 0x100000 (1MB) for 32-bit protected mode */
+/* This avoids low memory (first 640KB) which contains BIOS data and interrupt vectors */
+/* 
+ * We place the .limine_requests section first at the load address,
+ * then the rest of the kernel immediately after it.
+ */
+SECTIONS
+{
+    /* Load address: 0x100000 (1MB) - standard for Limine */
+    . = 0x100000;
+    
+    /* Limine requests - placed at the very start of the loaded image */
+    .limine_requests : {
+        *(.limine_requests)
+    }
+    
+    /* Text section - kernel code starts right after limine requests */
+    .text : {
+        *(.text._start)
+        *(.text)
+    }
+    
+    /* Read-only data */
+    .rodata : {
+        *(.rodata)
+        *(.rodata.*)
+    }
+    
+    /* Data section - initialized data */
+    .data : {
+        *(.data)
+        *(.data.*)
+    }
+    
+    /* BSS section - uninitialized data */
+    .bss : {
+        *(.bss)
+        *(.bss.*)
+        *(COMMON)
+    }
+}

@@ -1,0 +1,26 @@
+[package]
+name = "f2k-kernel"
+version = "0.1.0"
+edition = "2021"
+authors = ["F2K Team"]
+description = "F2K Kernel - Windows 2000-compatible operating system"
+license = "MIT OR Apache-2.0"
+
+# We're building a bare metal kernel binary
+[package.metadata.bootloader]
+target = "x86-f2k"
+
+[dependencies]
+# Core no_std crates for future use
+# spin = "0.9.8"        # Spinlocks and mutable statics
+# bitflags = "2.0"      # Bit flags
+# itoa = "1.0"          # Integer to ASCII conversion (no_std compatible)
+
+[profile.dev]
+panic = "abort"          # Abort on panic (we have no unwinding)
+opt-level = 0            # No optimization for debugging
+
+[profile.release]
+panic = "abort"          # Abort on panic
+opt-level = 2            # Optimize for size/speed
+lto = true               # Link-time optimization

@@ -1,0 +1,18 @@
+# F2K Cargo Configuration
+# Cross-compilation settings for x86 (32-bit) target
+# Requires nightly Rust (via rust-toolchain file)
+
+[build]
+target = "x86-f2k"
+# Enable custom targets and disable PIC for kernel
+rustflags = [
+    "-Z", "unstable-options",
+    "-C", "relocation-model=static",
+    "-C", "code-model=kernel",
+    "-C", "link-arg=-nostdlib",
+    "-C", "link-arg=-static",
+]
+
+[target.x86-f2k]
+# Use our wrapper script for linking
+linker = "scripts/x86-elf-ld"

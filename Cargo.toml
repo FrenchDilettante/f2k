@@ -1,0 +1,11 @@
+# F2K Workspace
+# Windows 2000-compatible OS in Rust
+
+[workspace]
+members = [
+    "kernel",
+]
+resolver = "2"
+
+[workspace.dependencies]
+# Shared dependencies can be listed here

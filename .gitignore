@@ -1,0 +1,38 @@
+# F2K .gitignore
+
+# Build artifacts
+target/
+
+# Cargo generated files
+Cargo.lock
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# macOS
+.DS_Store
+
+# Linux
+*~
+
+# Binary files
+*.bin
+*.elf
+*.img
+*.vdi
+*.iso
+
+# Logs
+*.log
+
+# Temporary files
+tmp/
+temp/
+
+# limine build artifacts
+boot/limine/*.o
+boot/limine/limine
+boot/limine/limine.sys
