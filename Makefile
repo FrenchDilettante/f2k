@@ -4,7 +4,9 @@
 # Architecture
 ARCH ?= x86
 TARGET ?= x86-f2k
-LIMINE_TARGET ?= x86-f2k-limine
+# Pass the target spec by path so a fresh clone builds without copying it into the toolchain
+TARGET_SPEC ?= $(CURDIR)/$(TARGET).json
+KERNEL_ELF ?= $(BUILD_DIR)/$(TARGET)/debug/f2k-kernel
 
 # Directories
 BOOT_DIR ?= boot
@@ -23,17 +25,16 @@ QEMU_FLAGS ?= -m 256M -nographic -no-reboot -no-shutdown -net none
 
 # Disk image settings
 DISK_IMG ?= $(BUILD_DIR)/$(TARGET)/debug/f2k-disk.img
-LIMINE_DISK_IMG ?= $(BUILD_DIR)/$(LIMINE_TARGET)/debug/f2k-limine-disk.img
-ISO_IMG ?= $(BUILD_DIR)/$(LIMINE_TARGET)/debug/f2k.iso
-DISK_SIZE ?= 20480  # 10MB disk image (20480 * 512 = 10485760 bytes) - VirtualBox recognizes this as HDD
+ISO_IMG ?= $(BUILD_DIR)/$(TARGET)/debug/f2k.iso
+# 64MB disk image (131072 * 512 bytes): large enough for a spec-compliant FAT32 partition
+DISK_SIZE ?= 131072
 
 # Limine bootloader settings
 LIMINE_DIR ?= $(BOOT_DIR)/limine
 LIMINE_BIN ?= $(LIMINE_DIR)/limine
 LIMINE_CD_BIN ?= $(LIMINE_DIR)/limine-bios-cd.bin
 LIMINE_SYS ?= $(LIMINE_DIR)/limine-bios.sys
-LIMINE_HEADER_O ?= $(LIMINE_DIR)/limine_header.o
-LIMINE_HEADER_ASM ?= $(KERNEL_DIR)/src/boot/limine_header.asm
+LIMINE_CONF ?= $(BOOT_DIR)/limine.conf
 
 .PHONY: help
 help:
@@ -45,8 +46,11 @@ help:
 	@echo "Targets:"
 	@echo "  all           - Build everything and create bootable disk"
 	@echo "  kernel       - Build the kernel only"
+	@echo "  qemu         - Build the kernel and boot it directly in QEMU (Multiboot)"
+	@echo "  test         - Run the boot smoke test"
+	@echo "  test-disk    - Run the boot smoke test on the disk image"
 	@echo "  kernel-bin   - Convert kernel to raw binary"
-	@echo "  disk         - Create bootable disk image with kernel"
+	@echo "  disk         - Create Limine-bootable hard disk image (needs mtools)"
 	@echo "  limine       - Download/setup limine bootloader (if needed)"
 	@echo "  iso          - Create bootable ISO with limine"
 	@echo "  qemu_iso     - Create ISO and run in QEMU"
@@ -65,35 +69,13 @@ all: disk
 .PHONY: kernel
 kernel:
 	@echo "Building F2K kernel..."
-	cd $(KERNEL_DIR) && cargo +nightly build --target $(TARGET) -Zbuild-std=core,alloc,compiler_builtins -Zunstable-options
-	@echo "Kernel built: $(BUILD_DIR)/$(TARGET)/debug/f2k-kernel"
+	cd $(KERNEL_DIR) && cargo +nightly build --target $(TARGET_SPEC) -Zbuild-std=core,alloc,compiler_builtins -Zunstable-options -Zjson-target-spec
+	@echo "Kernel built: $(KERNEL_ELF)"
 
-.PHONY: kernel-limine
-kernel-limine: compile-limine-header
-	@echo "Building F2K kernel with Limine support..."
-	cd $(KERNEL_DIR) && cargo +nightly build --target $(LIMINE_TARGET) -Zbuild-std=core,alloc,compiler_builtins -Zunstable-options
-	@echo "Kernel built with Limine: $(BUILD_DIR)/$(LIMINE_TARGET)/debug/f2k-kernel"
-	# Verify limine header is present
-	@echo "Checking for limine header in kernel..."
-	@if ! x86_64-elf-readelf -S $(BUILD_DIR)/$(LIMINE_TARGET)/debug/f2k-kernel | grep -q '.limine_requests'; then \
-		echo "WARNING: .limine_requests section not found in kernel binary"; \
-		echo "This is expected if the limine_header.asm is not being compiled into the kernel"; \
-	fi
-
-.PHONY: compile-limine-header
-compile-limine-header:
-	@echo "Compiling Limine header..."
-	@mkdir -p $(LIMINE_DIR)
-	@if [ ! -f $(LIMINE_HEADER_O) ] || [ $(LIMINE_HEADER_ASM) -nt $(LIMINE_HEADER_O) ]; then \
-		if ! command -v $(NASM) >/dev/null 2>&1; then \
-			echo "ERROR: NASM not found. Install with: brew install nasm"; \
-			false; \
-		fi; \
-		$(NASM) -f elf32 $(LIMINE_HEADER_ASM) -o $(LIMINE_HEADER_O) && \
-		echo "Limine header compiled: $(LIMINE_HEADER_O)"; \
-	else \
-		echo "Limine header up to date: $(LIMINE_HEADER_O)"; \
-	fi
+.PHONY: qemu
+qemu: kernel
+	@echo "Booting F2K in QEMU (Multiboot via -kernel). Exit with Ctrl-A X."
+	$(QEMU) $(QEMU_FLAGS) -kernel $(KERNEL_ELF)
 
 .PHONY: kernel-bin
 kernel-bin:
@@ -104,52 +86,28 @@ kernel-bin:
 	@echo "Raw kernel: $(BUILD_DIR)/$(TARGET)/debug/f2k-kernel.raw"
 
 .PHONY: disk
-disk: kernel kernel-bin
-	@echo "Creating bootable disk image..."
-	# Create empty disk image
-	$(DD) if=/dev/zero of=$(DISK_IMG) bs=512 count=$(DISK_SIZE)
-	# Write boot sector
-	$(DD) if=$(BOOT_DIR)/boot_final.bin of=$(DISK_IMG) conv=notrunc
-	# Write kernel at sector 1 (loaded at 0x100000 by bootloader)
-	$(DD) if=$(BUILD_DIR)/$(TARGET)/debug/f2k-kernel.raw of=$(DISK_IMG) bs=512 seek=1 conv=notrunc
-	@echo "Disk image created: $(DISK_IMG)"
-	@echo "NOTE: Kernel entry point (_start) is at 0x100000"
-
-.PHONY: limine-disk
-limine-disk: kernel-limine
+disk: kernel limine
 	@echo "Creating Limine-bootable disk image..."
-	@scripts/create_limine_disk.sh
-
-.PHONY: run-limine
-run-limine: limine-disk
-	@echo "Starting F2K with Limine in QEMU..."
-	$(QEMU) $(QEMU_FLAGS) -hda $(LIMINE_DISK_IMG) -boot a
+	rm -f $(DISK_IMG)
+	$(DD) if=/dev/zero of=$(DISK_IMG) bs=512 count=$(DISK_SIZE)
+	# MBR with one active FAT32 partition at 1 MiB; Limine's stage 2 goes in the gap before it
+	python3 $(SCRIPTS_DIR)/create_partition_table.py $(DISK_IMG) $(DISK_SIZE)
+	mformat -F -i $(DISK_IMG)@@1M -v F2K ::
+	mmd -i $(DISK_IMG)@@1M ::/boot ::/boot/limine
+	mcopy -i $(DISK_IMG)@@1M $(KERNEL_ELF) ::/f2k-kernel
+	mcopy -i $(DISK_IMG)@@1M $(LIMINE_SYS) $(LIMINE_CONF) ::/boot/limine/
+	$(LIMINE_BIN) bios-install $(DISK_IMG)
+	@echo "Disk image created: $(DISK_IMG)"
 
 .PHONY: run
 run: disk
-	@echo "Starting F2K..."
-	@echo "Note: QEMU 11.x on macOS has issues booting raw disk images."
-	@echo "Disk image created: $(DISK_IMG)"
-	@echo ""
-	@echo "To run in VirtualBox (recommended for macOS):"
-	@echo "  VBoxManage createvm --name F2K --ostype Linux24 --register"
-	@echo "  VBoxManage storagectl F2K --name 'SATA' --add sata --bootable on"
-	@echo "  VBoxManage storageattach F2K --storagectl SATA --port 0 --device 0 --type hdd --medium $(DISK_IMG)"
-	@echo "  VBoxManage modifyvm F2K --memory 256"
-	@echo "  VBoxManage startvm F2K"
-	@echo ""
-	@echo "To run in QEMU (may require older version < 8.0):"
-	@echo "  $(QEMU) -m 256M -nographic -hda $(DISK_IMG) -boot a -net none"
-	@echo ""
-	@echo "For QEMU 11.x, try with explicit format:"
-	@echo "  $(QEMU) -m 256M -nographic -drive file=$(DISK_IMG),format=raw,if=ide,file.locking=off -boot a -net none"
-	@echo ""
-	$(QEMU) $(QEMU_FLAGS) -hda $(DISK_IMG)
+	@echo "Booting $(DISK_IMG) in QEMU. Exit with Ctrl-A X."
+	$(QEMU) $(QEMU_FLAGS) -drive file=$(DISK_IMG),format=raw,if=ide
 
 .PHONY: release
 release:
 	@echo "Building F2K kernel (release mode)..."
-	cd $(KERNEL_DIR) && cargo +nightly build --target $(TARGET) --release -Zbuild-std=core,alloc,compiler_builtins -Zunstable-options
+	cd $(KERNEL_DIR) && cargo +nightly build --target $(TARGET_SPEC) --release -Zbuild-std=core,alloc,compiler_builtins -Zunstable-options -Zjson-target-spec
 	@echo "Kernel built: $(BUILD_DIR)/$(TARGET)/release/f2k-kernel"
 
 .PHONY: clean
@@ -162,7 +120,18 @@ clobber: clean
 	@echo "Removing target directory..."
 	-rm -rf $(BUILD_DIR)
 
-.PHONY: test
+.PHONY: test test-boot
+test: test-boot
+
+# Boot smoke test: boots the kernel in QEMU and checks the banner on COM1
+test-boot: kernel
+	@scripts/test-boot.sh $(KERNEL_ELF)
+
+.PHONY: test-disk
+test-disk: disk
+	@scripts/test-boot.sh $(DISK_IMG)
+
+.PHONY: run-tests
 run-tests:
 	@echo "Running host unit tests..."
 	cd $(KERNEL_DIR) && cargo test
@@ -170,23 +139,24 @@ run-tests:
 .PHONY: check
 check:
 	@echo "Checking code..."
-	cd $(KERNEL_DIR) && cargo check
-	cd $(KERNEL_DIR) && cargo clippy
+	cd $(KERNEL_DIR) && cargo check --target $(TARGET_SPEC) -Zbuild-std=core,alloc,compiler_builtins -Zunstable-options -Zjson-target-spec
+	cd $(KERNEL_DIR) && cargo clippy --target $(TARGET_SPEC) -Zbuild-std=core,alloc,compiler_builtins -Zunstable-options -Zjson-target-spec
 
 # =============================================================================
 # Limine Bootloader Targets
 # =============================================================================
 
-ISO_DIR ?= $(BUILD_DIR)/$(LIMINE_TARGET)/debug/iso
+ISO_DIR ?= $(BUILD_DIR)/$(TARGET)/debug/iso
 
 .PHONY: limine
-limine: compile-limine-header
+limine:
 	@echo "Setting up limine bootloader..."
 	@mkdir -p $(LIMINE_DIR)
 	@if [ ! -f $(LIMINE_BIN) ]; then \
 		echo "Downloading limine binary release..." && \
 		curl -sL -o /tmp/limine.tar.xz https://github.com/Limine-Bootloader/Limine/releases/download/v12.9.3/limine-binary.tar.xz && \
 		tar xJf /tmp/limine.tar.xz -C /tmp && \
+		$(MAKE) -C /tmp/limine-binary limine && \
 		cp /tmp/limine-binary/limine $(LIMINE_DIR)/ && \
 		cp /tmp/limine-binary/limine-bios.sys $(LIMINE_DIR)/ && \
 		cp /tmp/limine-binary/limine-bios-cd.bin $(LIMINE_DIR)/ && \
@@ -196,28 +166,16 @@ limine: compile-limine-header
 	@echo "Limine bootloader ready in $(LIMINE_DIR)/"
 
 .PHONY: iso
-iso: kernel-limine limine
+iso: kernel limine
 	@echo "Creating limine bootable ISO..."
 	# Create ISO directory structure
 	rm -rf $(ISO_DIR)
 	mkdir -p $(ISO_DIR)/boot/limine
-	# Copy limine files to multiple locations (Limine looks in several places)
 	cp $(LIMINE_CD_BIN) $(ISO_DIR)/
-	cp $(LIMINE_SYS) $(ISO_DIR)/
 	cp $(LIMINE_SYS) $(ISO_DIR)/boot/limine/
-	# Create flat kernel binary with Limine header at the start
-	@echo "Creating flat kernel binary..."
-	@scripts/create_flat_kernel.sh
-	# Copy kernel ELF to ISO (Limine can parse ELF headers to find entry point)
-	cp $(BUILD_DIR)/$(LIMINE_TARGET)/debug/f2k-kernel $(ISO_DIR)/f2k-kernel
-	chmod +x $(ISO_DIR)/f2k-kernel
-	# Create limine.cfg with correct syntax (Limine uses 'key: value' format, not 'KEY=value')
-	# Note: Some versions of Limine look for limine.cfg instead of limine.conf
-	@echo "Creating limine.cfg..."
-	@printf '/F2K - Fenêtre 2000\n    protocol: limine\n    path: /f2k-kernel\n    drive: 0x80\n    stack_size: 16384\n' > $(ISO_DIR)/limine.cfg
-	cp $(ISO_DIR)/limine.cfg $(ISO_DIR)/limine.conf
-	cp $(ISO_DIR)/limine.cfg $(ISO_DIR)/boot/limine/limine.cfg
-	cp $(ISO_DIR)/limine.cfg $(ISO_DIR)/boot/limine/limine.conf
+	# The kernel is a 32-bit Multiboot 1 ELF (Limine's own protocol is 64-bit only)
+	cp $(KERNEL_ELF) $(ISO_DIR)/f2k-kernel
+	cp $(LIMINE_CONF) $(ISO_DIR)/boot/limine/
 	# Create ISO with xorriso
 	@echo "Creating ISO image..."
 	@if ! command -v xorriso >/dev/null 2>&1; then \

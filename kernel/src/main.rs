@@ -4,11 +4,11 @@
 //! It runs in 32-bit protected mode on x86.
 
 #![no_std]      // No standard library (we are the OS)
-#![no_main]     // We don't have a main() - we have _start()
+#![no_main]     // No main(): the Multiboot stub in boot/mod.rs calls kmain()
 
 use core::arch::asm;
 
-// Boot module (contains limine header for limine builds)
+// Boot module (Multiboot header and _start stub)
 mod boot;
 
 // C library functions for bare-metal
@@ -16,7 +16,6 @@ mod c_lib;
 
 // Import our serial port module
 mod serial;
-use serial::init as serial_init;
 
 /// Panic handler - prints message and halts
 #[panic_handler]
@@ -27,34 +26,38 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 
 /// Halt the CPU
 fn halt() -> ! {
-    unsafe {
-        loop {
-            // x86 hlt instruction
-            asm!("hlt");
+    loop {
+        unsafe {
+            asm!("cli", "hlt", options(nomem, nostack));
         }
     }
 }
 
 /// Kernel entry point
-/// 
-/// This is called by the bootloader (or QEMU -kernel flag).
+///
+/// Called by `_start` (boot/mod.rs) with the values the Multiboot loader left
+/// in EAX and EBX.
 #[no_mangle]
-pub extern "C" fn _start() -> ! {
+pub extern "C" fn kmain(magic: u32, multiboot_info: u32) -> ! {
     // Signal that we've started by writing to port 0x80 (POST code port)
     unsafe {
-        use core::arch::asm;
-        asm!("mov al, 0xFE");
-        asm!("out 0x80, al");
+        asm!("out 0x80, al", in("al") 0xFEu8, options(nomem, nostack, preserves_flags));
     }
-    
+
     // Initialize serial port first (for debugging)
-    serial_init();
-    
+    serial::init();
+
+    if magic != boot::MULTIBOOT_BOOTLOADER_MAGIC {
+        serial_println!("F2K: not started by a Multiboot loader (EAX = {:#010x})", magic);
+        halt();
+    }
+
     // Print boot message
     serial_println!("F2K Booted Successfully");
     serial_println!("Fenêtre 2000 - Windows 2000 compatible OS in Rust");
     serial_println!("Phase 1: Foundation complete");
-    
+    serial_println!("Multiboot info at {:#010x}", multiboot_info);
+
     // For now, just halt
     // TODO: Continue with kernel initialization
     halt();

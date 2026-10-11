@@ -1,19 +1,17 @@
 #!/bin/sh
 # Wrapper script to handle linking for x86-elf (32-bit)
-# Uses i686-elf-ld or x86_64-elf-ld with 32-bit mode
-# Kernel runs at 0x100000 (1MB) - standard for Limine boot protocol
+# Uses the first linker that supports elf_i386: i686-elf-ld, x86_64-elf-ld,
+# then the host's GNU ld (works on x86_64 Linux)
+# Kernel runs at 0x100000 (1MB) - standard for Multiboot kernels
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# $0, not BASH_SOURCE: this runs under /bin/sh, which is dash on Debian/Ubuntu
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# Try i686-elf-ld first (explicitly 32-bit)
-if command -v i686-elf-ld >/dev/null 2>&1; then
-    exec i686-elf-ld -m elf_i386 -e _start -T "$SCRIPT_DIR/linker.x86" "$@"
-fi
-
-# Try x86_64-elf-ld with 32-bit mode
-if command -v x86_64-elf-ld >/dev/null 2>&1; then
-    exec x86_64-elf-ld -m elf_i386 -e _start -T "$SCRIPT_DIR/linker.x86" "$@"
-fi
+for LD in i686-elf-ld x86_64-elf-ld ld; do
+    if command -v "$LD" >/dev/null 2>&1 && "$LD" -V 2>/dev/null | grep -q elf_i386; then
+        exec "$LD" -m elf_i386 -e _start -T "$SCRIPT_DIR/linker.x86" "$@"
+    fi
+done
 
 # Give helpful error message
 cat >&2 <<'EOF'

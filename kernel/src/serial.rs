@@ -2,6 +2,7 @@
 //!
 //! Uses COM1 at 0x3F8 (standard serial port)
 
+use core::arch::asm;
 use core::fmt::{self, Write};
 
 /// Standard COM1 port address
@@ -29,18 +30,19 @@ pub fn init() {
     }
 }
 
-/// Write a byte to serial port
-fn write_byte(port: u16, byte: u8) {
-    unsafe {
-        core::ptr::write_volatile(port as *mut u8, byte);
-    }
+/// Write a byte to an I/O port.
+///
+/// The UART lives in x86 I/O port space, which is only reachable with the
+/// `in`/`out` instructions. A volatile pointer write to 0x3F8 would hit RAM.
+unsafe fn write_byte(port: u16, byte: u8) {
+    asm!("out dx, al", in("dx") port, in("al") byte, options(nomem, nostack, preserves_flags));
 }
 
-/// Read a byte from serial port
-fn read_byte(port: u16) -> u8 {
-    unsafe {
-        core::ptr::read_volatile(port as *const u8)
-    }
+/// Read a byte from an I/O port.
+unsafe fn read_byte(port: u16) -> u8 {
+    let byte: u8;
+    asm!("in al, dx", out("al") byte, in("dx") port, options(nomem, nostack, preserves_flags));
+    byte
 }
 
 /// Wait for serial port to be ready to transmit
@@ -56,7 +58,9 @@ fn wait_transmit() {
 /// Write a byte to serial port (waits if needed)
 pub fn write_byte_blocking(byte: u8) {
     wait_transmit();
-    write_byte(COM1, byte);
+    unsafe {
+        write_byte(COM1, byte);
+    }
 }
 
 /// Serial port writer for formatting

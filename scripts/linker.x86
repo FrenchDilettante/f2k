@@ -1,48 +1,37 @@
-/* Custom linker script for F2K kernel with Limine support */
+/* Linker script for the F2K kernel (Multiboot 1, 32-bit x86) */
 
 OUTPUT_FORMAT("elf32-i386")
 OUTPUT_ARCH(i386)
 
 ENTRY(_start)
 
-/* Limine typically loads kernels at 0x100000 (1MB) for 32-bit protected mode */
-/* This avoids low memory (first 640KB) which contains BIOS data and interrupt vectors */
-/* 
- * We place the .limine_requests section first at the load address,
- * then the rest of the kernel immediately after it.
- */
 SECTIONS
 {
-    /* Load address: 0x100000 (1MB) - standard for Limine */
+    /* Load at 1 MiB, above the real-mode/BIOS area (first 640 KiB + ROMs) */
     . = 0x100000;
-    
-    /* Limine requests - placed at the very start of the loaded image */
-    .limine_requests : {
-        *(.limine_requests)
-    }
-    
-    /* Text section - kernel code starts right after limine requests */
+
     .text : {
+        /* Multiboot header: must be 4-byte aligned and within the first
+         * 8 KiB of the file. KEEP stops --gc-sections from discarding it,
+         * since no code references it. */
+        KEEP(*(.multiboot))
         *(.text._start)
-        *(.text)
+        *(.text .text.*)
     }
-    
+
     /* Read-only data */
     .rodata : {
-        *(.rodata)
-        *(.rodata.*)
+        *(.rodata .rodata.*)
     }
-    
+
     /* Data section - initialized data */
     .data : {
-        *(.data)
-        *(.data.*)
+        *(.data .data.*)
     }
-    
-    /* BSS section - uninitialized data */
+
+    /* BSS section - uninitialized data (includes the boot stack) */
     .bss : {
-        *(.bss)
-        *(.bss.*)
+        *(.bss .bss.*)
         *(COMMON)
     }
 }

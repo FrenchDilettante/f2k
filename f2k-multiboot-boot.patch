@@ -1,0 +1,1121 @@
+diff --git a/Makefile b/Makefile
+index 8167680..af19381 100644
+--- a/Makefile
++++ b/Makefile
+@@ -4,7 +4,9 @@
+ # Architecture
+ ARCH ?= x86
+ TARGET ?= x86-f2k
+-LIMINE_TARGET ?= x86-f2k-limine
++# Pass the target spec by path so a fresh clone builds without copying it into the toolchain
++TARGET_SPEC ?= $(CURDIR)/$(TARGET).json
++KERNEL_ELF ?= $(BUILD_DIR)/$(TARGET)/debug/f2k-kernel
+ 
+ # Directories
+ BOOT_DIR ?= boot
+@@ -23,17 +25,16 @@ QEMU_FLAGS ?= -m 256M -nographic -no-reboot -no-shutdown -net none
+ 
+ # Disk image settings
+ DISK_IMG ?= $(BUILD_DIR)/$(TARGET)/debug/f2k-disk.img
+-LIMINE_DISK_IMG ?= $(BUILD_DIR)/$(LIMINE_TARGET)/debug/f2k-limine-disk.img
+-ISO_IMG ?= $(BUILD_DIR)/$(LIMINE_TARGET)/debug/f2k.iso
+-DISK_SIZE ?= 20480  # 10MB disk image (20480 * 512 = 10485760 bytes) - VirtualBox recognizes this as HDD
++ISO_IMG ?= $(BUILD_DIR)/$(TARGET)/debug/f2k.iso
++# 64MB disk image (131072 * 512 bytes): large enough for a spec-compliant FAT32 partition
++DISK_SIZE ?= 131072
+ 
+ # Limine bootloader settings
+ LIMINE_DIR ?= $(BOOT_DIR)/limine
+ LIMINE_BIN ?= $(LIMINE_DIR)/limine
+ LIMINE_CD_BIN ?= $(LIMINE_DIR)/limine-bios-cd.bin
+ LIMINE_SYS ?= $(LIMINE_DIR)/limine-bios.sys
+-LIMINE_HEADER_O ?= $(LIMINE_DIR)/limine_header.o
+-LIMINE_HEADER_ASM ?= $(KERNEL_DIR)/src/boot/limine_header.asm
++LIMINE_CONF ?= $(BOOT_DIR)/limine.conf
+ 
+ .PHONY: help
+ help:
+@@ -45,8 +46,11 @@ help:
+ 	@echo "Targets:"
+ 	@echo "  all           - Build everything and create bootable disk"
+ 	@echo "  kernel       - Build the kernel only"
++	@echo "  qemu         - Build the kernel and boot it directly in QEMU (Multiboot)"
++	@echo "  test         - Run the boot smoke test"
++	@echo "  test-disk    - Run the boot smoke test on the disk image"
+ 	@echo "  kernel-bin   - Convert kernel to raw binary"
+-	@echo "  disk         - Create bootable disk image with kernel"
++	@echo "  disk         - Create Limine-bootable hard disk image (needs mtools)"
+ 	@echo "  limine       - Download/setup limine bootloader (if needed)"
+ 	@echo "  iso          - Create bootable ISO with limine"
+ 	@echo "  qemu_iso     - Create ISO and run in QEMU"
+@@ -65,35 +69,13 @@ all: disk
+ .PHONY: kernel
+ kernel:
+ 	@echo "Building F2K kernel..."
+-	cd $(KERNEL_DIR) && cargo +nightly build --target $(TARGET) -Zbuild-std=core,alloc,compiler_builtins -Zunstable-options
+-	@echo "Kernel built: $(BUILD_DIR)/$(TARGET)/debug/f2k-kernel"
+-
+-.PHONY: kernel-limine
+-kernel-limine: compile-limine-header
+-	@echo "Building F2K kernel with Limine support..."
+-	cd $(KERNEL_DIR) && cargo +nightly build --target $(LIMINE_TARGET) -Zbuild-std=core,alloc,compiler_builtins -Zunstable-options
+-	@echo "Kernel built with Limine: $(BUILD_DIR)/$(LIMINE_TARGET)/debug/f2k-kernel"
+-	# Verify limine header is present
+-	@echo "Checking for limine header in kernel..."
+-	@if ! x86_64-elf-readelf -S $(BUILD_DIR)/$(LIMINE_TARGET)/debug/f2k-kernel | grep -q '.limine_requests'; then \
+-		echo "WARNING: .limine_requests section not found in kernel binary"; \
+-		echo "This is expected if the limine_header.asm is not being compiled into the kernel"; \
+-	fi
++	cd $(KERNEL_DIR) && cargo +nightly build --target $(TARGET_SPEC) -Zbuild-std=core,alloc,compiler_builtins -Zunstable-options
++	@echo "Kernel built: $(KERNEL_ELF)"
+ 
+-.PHONY: compile-limine-header
+-compile-limine-header:
+-	@echo "Compiling Limine header..."
+-	@mkdir -p $(LIMINE_DIR)
+-	@if [ ! -f $(LIMINE_HEADER_O) ] || [ $(LIMINE_HEADER_ASM) -nt $(LIMINE_HEADER_O) ]; then \
+-		if ! command -v $(NASM) >/dev/null 2>&1; then \
+-			echo "ERROR: NASM not found. Install with: brew install nasm"; \
+-			false; \
+-		fi; \
+-		$(NASM) -f elf32 $(LIMINE_HEADER_ASM) -o $(LIMINE_HEADER_O) && \
+-		echo "Limine header compiled: $(LIMINE_HEADER_O)"; \
+-	else \
+-		echo "Limine header up to date: $(LIMINE_HEADER_O)"; \
+-	fi
++.PHONY: qemu
++qemu: kernel
++	@echo "Booting F2K in QEMU (Multiboot via -kernel). Exit with Ctrl-A X."
++	$(QEMU) $(QEMU_FLAGS) -kernel $(KERNEL_ELF)
+ 
+ .PHONY: kernel-bin
+ kernel-bin:
+@@ -104,52 +86,28 @@ kernel-bin:
+ 	@echo "Raw kernel: $(BUILD_DIR)/$(TARGET)/debug/f2k-kernel.raw"
+ 
+ .PHONY: disk
+-disk: kernel kernel-bin
+-	@echo "Creating bootable disk image..."
+-	# Create empty disk image
++disk: kernel limine
++	@echo "Creating Limine-bootable disk image..."
++	rm -f $(DISK_IMG)
+ 	$(DD) if=/dev/zero of=$(DISK_IMG) bs=512 count=$(DISK_SIZE)
+-	# Write boot sector
+-	$(DD) if=$(BOOT_DIR)/boot_final.bin of=$(DISK_IMG) conv=notrunc
+-	# Write kernel at sector 1 (loaded at 0x100000 by bootloader)
+-	$(DD) if=$(BUILD_DIR)/$(TARGET)/debug/f2k-kernel.raw of=$(DISK_IMG) bs=512 seek=1 conv=notrunc
++	# MBR with one active FAT32 partition at 1 MiB; Limine's stage 2 goes in the gap before it
++	python3 $(SCRIPTS_DIR)/create_partition_table.py $(DISK_IMG) $(DISK_SIZE)
++	mformat -F -i $(DISK_IMG)@@1M -v F2K ::
++	mmd -i $(DISK_IMG)@@1M ::/boot ::/boot/limine
++	mcopy -i $(DISK_IMG)@@1M $(KERNEL_ELF) ::/f2k-kernel
++	mcopy -i $(DISK_IMG)@@1M $(LIMINE_SYS) $(LIMINE_CONF) ::/boot/limine/
++	$(LIMINE_BIN) bios-install $(DISK_IMG)
+ 	@echo "Disk image created: $(DISK_IMG)"
+-	@echo "NOTE: Kernel entry point (_start) is at 0x100000"
+-
+-.PHONY: limine-disk
+-limine-disk: kernel-limine
+-	@echo "Creating Limine-bootable disk image..."
+-	@scripts/create_limine_disk.sh
+-
+-.PHONY: run-limine
+-run-limine: limine-disk
+-	@echo "Starting F2K with Limine in QEMU..."
+-	$(QEMU) $(QEMU_FLAGS) -hda $(LIMINE_DISK_IMG) -boot a
+ 
+ .PHONY: run
+ run: disk
+-	@echo "Starting F2K..."
+-	@echo "Note: QEMU 11.x on macOS has issues booting raw disk images."
+-	@echo "Disk image created: $(DISK_IMG)"
+-	@echo ""
+-	@echo "To run in VirtualBox (recommended for macOS):"
+-	@echo "  VBoxManage createvm --name F2K --ostype Linux24 --register"
+-	@echo "  VBoxManage storagectl F2K --name 'SATA' --add sata --bootable on"
+-	@echo "  VBoxManage storageattach F2K --storagectl SATA --port 0 --device 0 --type hdd --medium $(DISK_IMG)"
+-	@echo "  VBoxManage modifyvm F2K --memory 256"
+-	@echo "  VBoxManage startvm F2K"
+-	@echo ""
+-	@echo "To run in QEMU (may require older version < 8.0):"
+-	@echo "  $(QEMU) -m 256M -nographic -hda $(DISK_IMG) -boot a -net none"
+-	@echo ""
+-	@echo "For QEMU 11.x, try with explicit format:"
+-	@echo "  $(QEMU) -m 256M -nographic -drive file=$(DISK_IMG),format=raw,if=ide,file.locking=off -boot a -net none"
+-	@echo ""
+-	$(QEMU) $(QEMU_FLAGS) -hda $(DISK_IMG)
++	@echo "Booting $(DISK_IMG) in QEMU. Exit with Ctrl-A X."
++	$(QEMU) $(QEMU_FLAGS) -drive file=$(DISK_IMG),format=raw,if=ide
+ 
+ .PHONY: release
+ release:
+ 	@echo "Building F2K kernel (release mode)..."
+-	cd $(KERNEL_DIR) && cargo +nightly build --target $(TARGET) --release -Zbuild-std=core,alloc,compiler_builtins -Zunstable-options
++	cd $(KERNEL_DIR) && cargo +nightly build --target $(TARGET_SPEC) --release -Zbuild-std=core,alloc,compiler_builtins -Zunstable-options
+ 	@echo "Kernel built: $(BUILD_DIR)/$(TARGET)/release/f2k-kernel"
+ 
+ .PHONY: clean
+@@ -162,7 +120,18 @@ clobber: clean
+ 	@echo "Removing target directory..."
+ 	-rm -rf $(BUILD_DIR)
+ 
+-.PHONY: test
++.PHONY: test test-boot
++test: test-boot
++
++# Boot smoke test: boots the kernel in QEMU and checks the banner on COM1
++test-boot: kernel
++	@scripts/test-boot.sh $(KERNEL_ELF)
++
++.PHONY: test-disk
++test-disk: disk
++	@scripts/test-boot.sh $(DISK_IMG)
++
++.PHONY: run-tests
+ run-tests:
+ 	@echo "Running host unit tests..."
+ 	cd $(KERNEL_DIR) && cargo test
+@@ -177,16 +146,17 @@ check:
+ # Limine Bootloader Targets
+ # =============================================================================
+ 
+-ISO_DIR ?= $(BUILD_DIR)/$(LIMINE_TARGET)/debug/iso
++ISO_DIR ?= $(BUILD_DIR)/$(TARGET)/debug/iso
+ 
+ .PHONY: limine
+-limine: compile-limine-header
++limine:
+ 	@echo "Setting up limine bootloader..."
+ 	@mkdir -p $(LIMINE_DIR)
+ 	@if [ ! -f $(LIMINE_BIN) ]; then \
+ 		echo "Downloading limine binary release..." && \
+ 		curl -sL -o /tmp/limine.tar.xz https://github.com/Limine-Bootloader/Limine/releases/download/v12.9.3/limine-binary.tar.xz && \
+ 		tar xJf /tmp/limine.tar.xz -C /tmp && \
++		$(MAKE) -C /tmp/limine-binary limine && \
+ 		cp /tmp/limine-binary/limine $(LIMINE_DIR)/ && \
+ 		cp /tmp/limine-binary/limine-bios.sys $(LIMINE_DIR)/ && \
+ 		cp /tmp/limine-binary/limine-bios-cd.bin $(LIMINE_DIR)/ && \
+@@ -196,28 +166,16 @@ limine: compile-limine-header
+ 	@echo "Limine bootloader ready in $(LIMINE_DIR)/"
+ 
+ .PHONY: iso
+-iso: kernel-limine limine
++iso: kernel limine
+ 	@echo "Creating limine bootable ISO..."
+ 	# Create ISO directory structure
+ 	rm -rf $(ISO_DIR)
+ 	mkdir -p $(ISO_DIR)/boot/limine
+-	# Copy limine files to multiple locations (Limine looks in several places)
+ 	cp $(LIMINE_CD_BIN) $(ISO_DIR)/
+-	cp $(LIMINE_SYS) $(ISO_DIR)/
+ 	cp $(LIMINE_SYS) $(ISO_DIR)/boot/limine/
+-	# Create flat kernel binary with Limine header at the start
+-	@echo "Creating flat kernel binary..."
+-	@scripts/create_flat_kernel.sh
+-	# Copy kernel ELF to ISO (Limine can parse ELF headers to find entry point)
+-	cp $(BUILD_DIR)/$(LIMINE_TARGET)/debug/f2k-kernel $(ISO_DIR)/f2k-kernel
+-	chmod +x $(ISO_DIR)/f2k-kernel
+-	# Create limine.cfg with correct syntax (Limine uses 'key: value' format, not 'KEY=value')
+-	# Note: Some versions of Limine look for limine.cfg instead of limine.conf
+-	@echo "Creating limine.cfg..."
+-	@printf '/F2K - Fenêtre 2000\n    protocol: limine\n    path: /f2k-kernel\n    drive: 0x80\n    stack_size: 16384\n' > $(ISO_DIR)/limine.cfg
+-	cp $(ISO_DIR)/limine.cfg $(ISO_DIR)/limine.conf
+-	cp $(ISO_DIR)/limine.cfg $(ISO_DIR)/boot/limine/limine.cfg
+-	cp $(ISO_DIR)/limine.cfg $(ISO_DIR)/boot/limine/limine.conf
++	# The kernel is a 32-bit Multiboot 1 ELF (Limine's own protocol is 64-bit only)
++	cp $(KERNEL_ELF) $(ISO_DIR)/f2k-kernel
++	cp $(LIMINE_CONF) $(ISO_DIR)/boot/limine/
+ 	# Create ISO with xorriso
+ 	@echo "Creating ISO image..."
+ 	@if ! command -v xorriso >/dev/null 2>&1; then \
+diff --git a/README.md b/README.md
+index dd92baf..8b51d3d 100644
+--- a/README.md
++++ b/README.md
+@@ -8,12 +8,12 @@ This project uses Nightly Rust via the `rust-toolchain` file. Your default toolc
+ 
+ ### macOS (ARM64 or x86_64):
+ ```bash
+-brew install rust FiloSottile/tap/x86_64-elf-binutils nasm xorriso
++brew install rust FiloSottile/tap/x86_64-elf-binutils nasm xorriso mtools
+ ```
+ 
+ ### Linux (x86_64):
+ ```bash
+-sudo apt install rustc cargo binutils nasm xorriso qemu-system-x86
++sudo apt install rustc cargo binutils nasm xorriso mtools qemu-system-x86
+ ```
+ 
+ ## Building
+@@ -22,10 +22,7 @@ sudo apt install rustc cargo binutils nasm xorriso qemu-system-x86
+ # Build kernel only
+ make kernel
+ 
+-# Build kernel with Limine support
+-make kernel-limine
+-
+-# Build bootable ISO with Limine
++# Build bootable ISO with Limine (boots the kernel via Multiboot 1)
+ make iso
+ 
+ # Clean build artifacts
+@@ -41,22 +38,32 @@ make qemu_iso    # Boot ISO in QEMU
+ ```
+ 
+ ### QEMU (Direct kernel)
++The kernel is a Multiboot 1 ELF, so QEMU can load it without a bootloader:
+ ```bash
+-make kernel
+-qemu-system-i386 -kernel target/x86-f2k/debug/f2k-kernel -m 256M -nographic -net none
++make qemu        # Exit with Ctrl-A X
++```
++
++### Disk image (Limine on an MBR/FAT32 hard disk)
++```bash
++make run         # Builds target/x86-f2k/debug/f2k-disk.img and boots it in QEMU
+ ```
+ 
+-### Disk image
++To run the same image in VirtualBox:
+ ```bash
+-make disk
+-qemu-system-i386 -m 256M -nographic -hda target/x86-f2k/debug/f2k-disk.img -boot a -net none
++VBoxManage createvm --name F2K --ostype Linux24 --register
++VBoxManage storagectl F2K --name 'SATA' --add sata --bootable on
++VBoxManage storageattach F2K --storagectl SATA --port 0 --device 0 --type hdd --medium target/x86-f2k/debug/f2k-disk.img
++VBoxManage modifyvm F2K --memory 256
++VBoxManage startvm F2K
+ ```
+ 
+ ## Testing
+ 
+-### Unit tests (host)
++### Boot smoke test
++Boots the kernel in QEMU and checks for the boot banner on COM1:
+ ```bash
+-cd kernel && cargo test
++make test        # Kernel loaded directly by QEMU
++make test-disk   # Disk image booted through Limine
+ ```
+ 
+ ### Check code
+@@ -72,23 +79,23 @@ f2k/
+ ├── Cargo.toml        # Workspace manifest
+ ├── Makefile          # Build system
+ ├── x86-f2k.json      # Rust target: 32-bit x86 bare metal
+-├── x86-f2k-limine.json  # Rust target with Limine support
+ │
+ ├── boot/             # Bootloader files
+-│   ├── boot_final.asm    # Boot sector source
++│   ├── boot_final.asm    # Custom boot sector source (unused)
++│   ├── limine.conf       # Limine config (ISO and disk image)
+ │   └── limine/           # Limine bootloader (git submodule)
+ │
+ ├── scripts/          # Build scripts
+ │   ├── x86-elf-ld         # Linker wrapper
+-│   ├── x86-elf-ld-limine  # Linker wrapper for Limine
+-│   └── linker.x86        # Custom linker script
++│   ├── linker.x86         # Custom linker script
++│   └── test-boot.sh       # Boot smoke test
+ │
+ └── kernel/           # F2K Kernel
+     ├── Cargo.toml        # Kernel package
+     └── src/
+-        ├── main.rs       # Kernel entry point (_start)
++        ├── main.rs       # Kernel entry point (kmain)
+         ├── boot/         # Boot-related code
+-        │   └── mod.rs    # Limine header
++        │   └── mod.rs    # Multiboot header and _start stub
+         ├── serial.rs     # Serial port output
+         └── c_lib.rs      # C library stubs
+ ```
+@@ -98,12 +105,13 @@ f2k/
+ | Target | Description |
+ |--------|-------------|
+ | `make kernel` | Build the kernel (ELF) |
+-| `make kernel-limine` | Build kernel with Limine header |
++| `make qemu` | Build the kernel and boot it directly in QEMU |
++| `make test` | Run the boot smoke test |
++| `make test-disk` | Run the boot smoke test on the disk image |
+ | `make limine` | Download Limine bootloader |
+ | `make iso` | Create bootable ISO with Limine |
+ | `make qemu_iso` | Build ISO and run in QEMU |
+-| `make disk` | Create bootable disk image |
++| `make disk` | Create Limine-bootable disk image |
+ | `make run` | Build disk and run in QEMU |
+-| `make run-limine` | Build Limine disk and run |
+ | `make clean` | Clean build artifacts |
+ | `make clobber` | Remove all build artifacts |
+diff --git a/boot/limine.conf b/boot/limine.conf
+new file mode 100644
+index 0000000..83c88de
+--- /dev/null
++++ b/boot/limine.conf
+@@ -0,0 +1,5 @@
++timeout: 0
++
++/F2K - Fenêtre 2000
++    protocol: multiboot1
++    path: boot():/f2k-kernel
+diff --git a/kernel/src/boot/limine_header.asm b/kernel/src/boot/limine_header.asm
+deleted file mode 100644
+index ad44d2a..0000000
+--- a/kernel/src/boot/limine_header.asm
++++ /dev/null
+@@ -1,30 +0,0 @@
+-; Limine boot protocol header for F2K kernel
+-; This must be in the first 8KB of the binary and 8-byte aligned
+-
+-section .limine_requests progbits alloc noexec nowrite
+-align 8
+-
+-; Start marker
+- dq 0xf6b8f4b39de7d1ae
+- dq 0xfab91a6940fcb9cf
+- dq 0x785c6ed015d3e316
+- dq 0x181e920a7852b9d9
+-
+-; Base revision request
+- dq 0xf9562b2d5c95a6c8  ; ID part 1
+- dq 0x6a7b384944536bdc  ; ID part 2
+- dq 0                  ; revision
+- dq 0                  ; response pointer
+-
+-; Stack size request - ask for 16KB stack
+- dq 0xc7b1dd30df4c8b88  ; Stack size request ID
+- dq 0x0a82e883a194f07b
+- dq 0x224ef0460a8e8926
+- dq 0xe1cb0fc25f46ea3d
+- dq 0                  ; revision
+- dq 0                  ; response pointer
+- dq 16384              ; stack size = 16KB
+-
+-; End marker
+- dq 0xadc0e0531bb10d03
+- dq 0x9572709f31764c62
+diff --git a/kernel/src/boot/mod.rs b/kernel/src/boot/mod.rs
+index 6a80188..bbf6e7f 100644
+--- a/kernel/src/boot/mod.rs
++++ b/kernel/src/boot/mod.rs
+@@ -1,9 +1,39 @@
+-// Boot-related code and data
++//! Boot entry: Multiboot 1 header and the `_start` stub.
++//!
++//! Any Multiboot 1 loader can start this kernel: QEMU's `-kernel`, Limine
++//! (`protocol: multiboot1`) and GRUB. The loader jumps to `_start` in 32-bit
++//! protected mode with paging off, EAX = Multiboot magic and EBX = physical
++//! address of the Multiboot information structure. It does not provide a
++//! stack, so `_start` sets one up before calling into Rust.
++
++/// Value a Multiboot 1 loader leaves in EAX when it enters the kernel.
++pub const MULTIBOOT_BOOTLOADER_MAGIC: u32 = 0x2BAD_B002;
+ 
+-// Include the limine header for limine boot protocol support
+-// We use a static variable to ensure this section is included in the binary
+-// The section must be writable so Limine can write response pointers
+ #[cfg(target_arch = "x86")]
+-#[used]
+-#[link_section = ".limine_requests"]
+-static mut LIMINE_HEADER: [u8; 136] = *include_bytes!("limine_header.bin");
++core::arch::global_asm!(
++    // Multiboot header. Must be 4-byte aligned and within the first 8 KiB of
++    // the file; the linker script places .multiboot first in .text.
++    ".section .multiboot, \"a\"",
++    ".align 4",
++    ".long 0x1BADB002",                 // header magic
++    ".long 0x00000003",                 // flags: page-align modules, provide memory info
++    ".long -(0x1BADB002 + 0x00000003)", // checksum: magic + flags + checksum == 0
++    // 16 KiB boot stack.
++    ".section .bss.boot_stack, \"aw\", @nobits",
++    ".align 16",
++    "boot_stack_bottom:",
++    ".skip 16384",
++    "boot_stack_top:",
++    // Entry point.
++    ".section .text._start, \"ax\"",
++    ".global _start",
++    "_start:",
++    "    mov esp, offset boot_stack_top",
++    "    cld",
++    "    push ebx", // kmain arg 2: Multiboot info pointer
++    "    push eax", // kmain arg 1: Multiboot magic
++    "    call kmain",
++    "2:  cli",
++    "    hlt",
++    "    jmp 2b",
++);
+diff --git a/kernel/src/main.rs b/kernel/src/main.rs
+index c299314..3f32eb1 100644
+--- a/kernel/src/main.rs
++++ b/kernel/src/main.rs
+@@ -4,11 +4,11 @@
+ //! It runs in 32-bit protected mode on x86.
+ 
+ #![no_std]      // No standard library (we are the OS)
+-#![no_main]     // We don't have a main() - we have _start()
++#![no_main]     // No main(): the Multiboot stub in boot/mod.rs calls kmain()
+ 
+ use core::arch::asm;
+ 
+-// Boot module (contains limine header for limine builds)
++// Boot module (Multiboot header and _start stub)
+ mod boot;
+ 
+ // C library functions for bare-metal
+@@ -16,7 +16,6 @@ mod c_lib;
+ 
+ // Import our serial port module
+ mod serial;
+-use serial::init as serial_init;
+ 
+ /// Panic handler - prints message and halts
+ #[panic_handler]
+@@ -27,34 +26,38 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
+ 
+ /// Halt the CPU
+ fn halt() -> ! {
+-    unsafe {
+-        loop {
+-            // x86 hlt instruction
+-            asm!("hlt");
++    loop {
++        unsafe {
++            asm!("cli", "hlt", options(nomem, nostack));
+         }
+     }
+ }
+ 
+ /// Kernel entry point
+-/// 
+-/// This is called by the bootloader (or QEMU -kernel flag).
++///
++/// Called by `_start` (boot/mod.rs) with the values the Multiboot loader left
++/// in EAX and EBX.
+ #[no_mangle]
+-pub extern "C" fn _start() -> ! {
++pub extern "C" fn kmain(magic: u32, multiboot_info: u32) -> ! {
+     // Signal that we've started by writing to port 0x80 (POST code port)
+     unsafe {
+-        use core::arch::asm;
+-        asm!("mov al, 0xFE");
+-        asm!("out 0x80, al");
++        asm!("out 0x80, al", in("al") 0xFEu8, options(nomem, nostack, preserves_flags));
+     }
+-    
++
+     // Initialize serial port first (for debugging)
+-    serial_init();
+-    
++    serial::init();
++
++    if magic != boot::MULTIBOOT_BOOTLOADER_MAGIC {
++        serial_println!("F2K: not started by a Multiboot loader (EAX = {:#010x})", magic);
++        halt();
++    }
++
+     // Print boot message
+     serial_println!("F2K Booted Successfully");
+     serial_println!("Fenêtre 2000 - Windows 2000 compatible OS in Rust");
+     serial_println!("Phase 1: Foundation complete");
+-    
++    serial_println!("Multiboot info at {:#010x}", multiboot_info);
++
+     // For now, just halt
+     // TODO: Continue with kernel initialization
+     halt();
+diff --git a/kernel/src/serial.rs b/kernel/src/serial.rs
+index b7d6f97..52432ab 100644
+--- a/kernel/src/serial.rs
++++ b/kernel/src/serial.rs
+@@ -2,6 +2,7 @@
+ //!
+ //! Uses COM1 at 0x3F8 (standard serial port)
+ 
++use core::arch::asm;
+ use core::fmt::{self, Write};
+ 
+ /// Standard COM1 port address
+@@ -29,18 +30,19 @@ pub fn init() {
+     }
+ }
+ 
+-/// Write a byte to serial port
+-fn write_byte(port: u16, byte: u8) {
+-    unsafe {
+-        core::ptr::write_volatile(port as *mut u8, byte);
+-    }
++/// Write a byte to an I/O port.
++///
++/// The UART lives in x86 I/O port space, which is only reachable with the
++/// `in`/`out` instructions. A volatile pointer write to 0x3F8 would hit RAM.
++unsafe fn write_byte(port: u16, byte: u8) {
++    asm!("out dx, al", in("dx") port, in("al") byte, options(nomem, nostack, preserves_flags));
+ }
+ 
+-/// Read a byte from serial port
+-fn read_byte(port: u16) -> u8 {
+-    unsafe {
+-        core::ptr::read_volatile(port as *const u8)
+-    }
++/// Read a byte from an I/O port.
++unsafe fn read_byte(port: u16) -> u8 {
++    let byte: u8;
++    asm!("in al, dx", out("al") byte, in("dx") port, options(nomem, nostack, preserves_flags));
++    byte
+ }
+ 
+ /// Wait for serial port to be ready to transmit
+@@ -56,7 +58,9 @@ fn wait_transmit() {
+ /// Write a byte to serial port (waits if needed)
+ pub fn write_byte_blocking(byte: u8) {
+     wait_transmit();
+-    write_byte(COM1, byte);
++    unsafe {
++        write_byte(COM1, byte);
++    }
+ }
+ 
+ /// Serial port writer for formatting
+diff --git a/scripts/compile_limine_header.sh b/scripts/compile_limine_header.sh
+deleted file mode 100755
+index 6bd45c5..0000000
+--- a/scripts/compile_limine_header.sh
++++ /dev/null
+@@ -1,25 +0,0 @@
+-#!/bin/sh
+-# Compile the limine header assembly file
+-
+-PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+-OUTPUT_FILE="$PROJECT_DIR/boot/limine/limine_header.o"
+-ASM_FILE="$PROJECT_DIR/kernel/src/boot/limine_header.asm"
+-
+-# Create output directory
+-mkdir -p "$PROJECT_DIR/boot/limine"
+-
+-# Compile with NASM
+-echo "Compiling limine header..."
+-if ! command -v nasm >/dev/null 2>&1; then
+-    echo "ERROR: NASM not found. Install with: brew install nasm"
+-    exit 1
+-fi
+-
+-nasm -f elf32 "$ASM_FILE" -o "$OUTPUT_FILE"
+-
+-if [ $? -eq 0 ]; then
+-    echo "Limine header compiled: $OUTPUT_FILE"
+-else
+-    echo "ERROR: Failed to compile limine header"
+-    exit 1
+-fi
+diff --git a/scripts/create_flat_kernel.sh b/scripts/create_flat_kernel.sh
+deleted file mode 100755
+index 93dcb7e..0000000
+--- a/scripts/create_flat_kernel.sh
++++ /dev/null
+@@ -1,37 +0,0 @@
+-#!/bin/sh
+-# Create a flat binary kernel with Limine header at the beginning
+-# This creates a raw binary that Limine can boot from ISO
+-
+-set -e
+-
+-PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+-KERNEL_ELF="$PROJECT_DIR/target/x86-f2k-limine/debug/f2k-kernel"
+-KERNEL_FLAT="$PROJECT_DIR/target/x86-f2k-limine/debug/f2k-kernel-flat.bin"
+-LIMINE_HEADER_BIN="$PROJECT_DIR/kernel/src/boot/limine_header.bin"
+-
+-if [ ! -f "$KERNEL_ELF" ]; then
+-    echo "ERROR: Kernel ELF not found: $KERNEL_ELF"
+-    echo "Please run 'make kernel-limine' first"
+-    exit 1
+-fi
+-
+-if [ ! -f "$LIMINE_HEADER_BIN" ]; then
+-    echo "ERROR: Limine header binary not found: $LIMINE_HEADER_BIN"
+-    exit 1
+-fi
+-
+-echo "Creating flat kernel binary with Limine header..."
+-
+-# Extract the text and data sections from the ELF (skip .limine_requests which is already in the header)
+-# We need to extract all the actual code and data, but skip the ELF headers
+-x86_64-elf-objcopy -O binary --only-section=.text --only-section=.rodata \
+-    --only-section=.data "$KERNEL_ELF" /tmp/kernel_code.bin
+-
+-# Concatenate: Limine header + kernel code
+-cat "$LIMINE_HEADER_BIN" /tmp/kernel_code.bin > "$KERNEL_FLAT"
+-
+-echo "Flat kernel created: $KERNEL_FLAT"
+-echo "Size: $(stat -f %z "$KERNEL_FLAT") bytes"
+-
+-# Cleanup
+-rm -f /tmp/kernel_code.bin
+diff --git a/scripts/create_limine_disk.sh b/scripts/create_limine_disk.sh
+deleted file mode 100755
+index c1ad397..0000000
+--- a/scripts/create_limine_disk.sh
++++ /dev/null
+@@ -1,91 +0,0 @@
+-#!/bin/bash
+-# Create a bootable disk image with limine bootloader
+-
+-set -e
+-
+-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+-PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+-
+-DISK_IMG="${PROJECT_DIR}/target/x86-f2k/debug/f2k-limine-disk.img"
+-DISK_SIZE=20480  # 10MB
+-LIMINE_DIR="${PROJECT_DIR}/boot/limine"
+-KERNEL_RAW="${PROJECT_DIR}/target/x86-f2k/debug/f2k-kernel.raw"
+-KERNEL_ELF="${PROJECT_DIR}/target/x86-f2k/debug/f2k-kernel"
+-
+-# Check if we have the required files
+-echo "Checking for required files..."
+-for file in "${LIMINE_DIR}/limine" "${LIMINE_DIR}/limine-bios.sys" "${KERNEL_RAW}"; do
+-    if [ ! -f "$file" ]; then
+-        echo "ERROR: Missing file: $file"
+-        exit 1
+-    fi
+-done
+-
+-echo "Creating disk image..."
+-# Create empty disk image
+-rm -f "$DISK_IMG"
+-dd if=/dev/zero of="$DISK_IMG" bs=512 count=$DISK_SIZE
+-
+-# Step 1: Save space for limine MBR (512 bytes)
+-# Step 2: Create FAT32 filesystem starting at byte 512
+-# But mkfs.fat wants to write to the entire device
+-
+-# Instead, let's:
+-# 1. Install limine first (writes MBR and stage 2)
+-# 2. Create FAT32 filesystem (overwrites MBR, so we need to save and restore)
+-
+-# Install limine first
+-echo "Installing limine BIOS bootloader..."
+-dd if=/dev/zero of="$DISK_IMG" bs=512 count=$DISK_SIZE
+-"${LIMINE_DIR}/limine" bios-install --force "$DISK_IMG"
+-
+-# Save the first 8 sectors (4KB) which contains limine's MBR and stage 2
+-# Stage 2 is at offset 0x1000 = sector 8, so we need to save up to sector 7
+-dd if="$DISK_IMG" of=/tmp/limine_boot.bin bs=512 count=8
+-
+-# Create FAT32 filesystem (this will overwrite the first sectors)
+-echo "Creating FAT32 filesystem..."
+-mkfs.fat -F 32 -n F2K "$DISK_IMG"
+-
+-# Restore the first 8 sectors (limine MBR + stage 2)
+-echo "Restoring limine bootloader..."
+-dd if=/tmp/limine_boot.bin of="$DISK_IMG" conv=notrunc bs=512 count=8
+-
+-# Create limine.conf
+-cat > /tmp/limine.conf << 'EOF'
+-:F2K - Fenêtre 2000
+-    PROTOCOL=boot
+-    PATH=/boot/limine/f2k-kernel
+-    CMDLINE=
+-    DRIVE=0x80
+-EOF
+-
+-# Copy files using mtools
+-echo "Copying files to FAT32 partition..."
+-
+-# Set up mtools config
+-MTOOLS_RC=$(mktemp)
+-cat > "$MTOOLS_RC" << EOF
+-drive a: file="$DISK_IMG"
+-EOF
+-
+-export HOME=$(mktemp -d)
+-mkdir -p "$HOME"
+-cp "$MTOOLS_RC" "$HOME/.mtoolsrc"
+-
+-# Create directories and copy files
+-mmd a:boot
+-mmd a:boot/limine
+-mcopy "${LIMINE_DIR}/limine-bios.sys" a:boot/limine/limine-bios.sys
+-mcopy "${KERNEL_RAW}" a:boot/limine/f2k-kernel
+-mcopy /tmp/limine.conf a:boot/limine/limine.conf
+-
+-# Clean up
+-rm -f /tmp/limine_mbr.bin /tmp/limine.conf "$MTOOLS_RC"
+-rm -rf "$HOME"
+-
+-echo ""
+-echo "Disk image created: $DISK_IMG"
+-echo ""
+-echo "To run in QEMU:"
+-echo "  qemu-system-i386 -m 256M -nographic -hda $DISK_IMG -boot a -net none"
+diff --git a/scripts/create_partition_table.py b/scripts/create_partition_table.py
+index 10e81f9..f3d19d3 100755
+--- a/scripts/create_partition_table.py
++++ b/scripts/create_partition_table.py
+@@ -1,68 +1,70 @@
+ #!/usr/bin/env python3
+ """
+ Create a simple MBR partition table for a disk image.
+-Creates one partition spanning the entire disk (except MBR).
++Creates one active FAT32 (LBA) partition from start_sector to the end of the disk.
++
++The default start of 2048 (1 MiB) leaves a gap after the MBR, which is where
++`limine bios-install` puts Limine's stage 2.
+ """
+ import sys
+ import struct
+ 
+-if len(sys.argv) != 3:
+-    print(f"Usage: {sys.argv[0]} <disk_image> <total_sectors>")
++if len(sys.argv) not in (3, 4):
++    print(f"Usage: {sys.argv[0]} <disk_image> <total_sectors> [start_sector=2048]")
+     sys.exit(1)
+ 
+ image_path = sys.argv[1]
+ total_sectors = int(sys.argv[2])
++partition_start_sector = int(sys.argv[3]) if len(sys.argv) == 4 else 2048
++partition_num_sectors = total_sectors - partition_start_sector
++
++if partition_num_sectors <= 0:
++    print(f"ERROR: disk of {total_sectors} sectors is too small for a partition at {partition_start_sector}")
++    sys.exit(1)
++
++
++def lba_to_chs(lba):
++    """Encode an LBA as MBR CHS bytes (255 heads, 63 sectors/track geometry).
++
++    Addresses beyond CHS range use the conventional 1023/254/63 marker.
++    """
++    heads, sectors = 255, 63
++    cylinder = lba // (heads * sectors)
++    if cylinder > 1023:
++        return bytes([0xFE, 0xFF, 0xFF])
++    head = (lba // sectors) % heads
++    sector = (lba % sectors) + 1
++    return bytes([head, ((cylinder >> 2) & 0xC0) | sector, cylinder & 0xFF])
++
+ 
+ # Read the MBR (first 512 bytes)
+ with open(image_path, 'rb+') as f:
+     mbr = f.read(512)
+-    
+-    # Create a partition entry for partition 1
+-    # Bootable (0x80), starts at sector 1 (after MBR), spans total_sectors - 1
+-    # Partition type: 0x0C (FAT32 LBA) or 0x0B (FAT32 CHS) or 0x06 (FAT16)
+-    # We'll use 0x0C (FAT32 LBA)
+-    
+-    partition_start_sector = 1
+-    partition_num_sectors = total_sectors - 1
+-    
++
+     # Partition entry format (16 bytes):
+     # Byte 0: Boot flag (0x80 = bootable, 0x00 = not)
+-    # Bytes 1-3: CHS start (we'll use 0x00 0x01 0x00 for sector 1)
+-    # Byte 4: Partition type (0x0C for FAT32 LBA)
+-    # Bytes 5-7: CHS end (we'll use 0xFE 0xFF 0xFF for last sector)
++    # Bytes 1-3: CHS start
++    # Byte 4: Partition type (0x0C = FAT32 LBA)
++    # Bytes 5-7: CHS end
+     # Bytes 8-11: LBA start (4 bytes, little-endian)
+     # Bytes 12-15: Number of sectors (4 bytes, little-endian)
+-    
+     boot_flag = 0x80  # Bootable
+     partition_type = 0x0C  # FAT32 LBA
+-    
+-    # CHS start for sector 1: cylinder 0, head 0, sector 1 = 0x00 0x01 0x00
+-    chs_start = struct.pack('<BBB', 0x00, 0x01, 0x00)
+-    
+-    # CHS end: we'll use the maximum (0xFE, 0xFF, 0xFF)
+-    chs_end = struct.pack('<BBB', 0xFE, 0xFF, 0xFF)
+-    
+-    # LBA start sector
+-    lba_start = struct.pack('<I', partition_start_sector)
+-    
+-    # Number of sectors
+-    num_sectors = struct.pack('<I', partition_num_sectors)
+-    
+-    # Build partition entry
++
+     partition_entry = struct.pack('<B3sB3sII',
+-                                   boot_flag,
+-                                   chs_start,
+-                                   partition_type,
+-                                   chs_end,
+-                                   partition_start_sector,
+-                                   partition_num_sectors)
+-    
+-    # Replace partition table in MBR (offset 0x1BE)
++                                  boot_flag,
++                                  lba_to_chs(partition_start_sector),
++                                  partition_type,
++                                  lba_to_chs(total_sectors - 1),
++                                  partition_start_sector,
++                                  partition_num_sectors)
++
++    # Replace partition table in MBR (offset 0x1BE), keep the boot code area
+     new_mbr = mbr[:0x1BE] + partition_entry + bytes(48) + bytes([0x55, 0xAA])
+-    
++
+     # Write back the new MBR
+     f.seek(0)
+     f.write(new_mbr)
+-    
++
+     print(f"Created partition table in {image_path}")
+     print(f"Partition 1: type=0x{partition_type:02X}, start={partition_start_sector}, sectors={partition_num_sectors}")
+diff --git a/scripts/linker.x86 b/scripts/linker.x86
+index f9ca5ce..ea44ef7 100644
+--- a/scripts/linker.x86
++++ b/scripts/linker.x86
+@@ -1,48 +1,37 @@
+-/* Custom linker script for F2K kernel with Limine support */
++/* Linker script for the F2K kernel (Multiboot 1, 32-bit x86) */
+ 
+ OUTPUT_FORMAT("elf32-i386")
+ OUTPUT_ARCH(i386)
+ 
+ ENTRY(_start)
+ 
+-/* Limine typically loads kernels at 0x100000 (1MB) for 32-bit protected mode */
+-/* This avoids low memory (first 640KB) which contains BIOS data and interrupt vectors */
+-/* 
+- * We place the .limine_requests section first at the load address,
+- * then the rest of the kernel immediately after it.
+- */
+ SECTIONS
+ {
+-    /* Load address: 0x100000 (1MB) - standard for Limine */
++    /* Load at 1 MiB, above the real-mode/BIOS area (first 640 KiB + ROMs) */
+     . = 0x100000;
+-    
+-    /* Limine requests - placed at the very start of the loaded image */
+-    .limine_requests : {
+-        *(.limine_requests)
+-    }
+-    
+-    /* Text section - kernel code starts right after limine requests */
++
+     .text : {
++        /* Multiboot header: must be 4-byte aligned and within the first
++         * 8 KiB of the file. KEEP stops --gc-sections from discarding it,
++         * since no code references it. */
++        KEEP(*(.multiboot))
+         *(.text._start)
+-        *(.text)
++        *(.text .text.*)
+     }
+-    
++
+     /* Read-only data */
+     .rodata : {
+-        *(.rodata)
+-        *(.rodata.*)
++        *(.rodata .rodata.*)
+     }
+-    
++
+     /* Data section - initialized data */
+     .data : {
+-        *(.data)
+-        *(.data.*)
++        *(.data .data.*)
+     }
+-    
+-    /* BSS section - uninitialized data */
++
++    /* BSS section - uninitialized data (includes the boot stack) */
+     .bss : {
+-        *(.bss)
+-        *(.bss.*)
++        *(.bss .bss.*)
+         *(COMMON)
+     }
+ }
+diff --git a/scripts/test-boot.sh b/scripts/test-boot.sh
+new file mode 100755
+index 0000000..2256247
+--- /dev/null
++++ b/scripts/test-boot.sh
+@@ -0,0 +1,77 @@
++#!/bin/sh
++# Boot smoke test.
++#
++# Boots the kernel in QEMU and passes once the boot banner appears on COM1.
++# A kernel ELF is loaded with QEMU's built-in Multiboot 1 loader (-kernel);
++# a .img disk or .iso image boots through Limine. Because the banner is only
++# printed after kmain() has validated the Multiboot magic, a pass proves:
++#   - the loader accepted the kernel's Multiboot header,
++#   - _start set up a stack and reached Rust,
++#   - serial output works.
++#
++# Usage: scripts/test-boot.sh [kernel-elf | disk.img | cdrom.iso]
++# Env:   QEMU (default qemu-system-i386), BOOT_TIMEOUT seconds (default 10)
++
++set -u
++
++IMAGE="${1:-target/x86-f2k/debug/f2k-kernel}"
++QEMU="${QEMU:-qemu-system-i386}"
++BOOT_TIMEOUT="${BOOT_TIMEOUT:-10}"
++EXPECT="F2K Booted Successfully"
++
++if [ ! -f "$IMAGE" ]; then
++    echo "FAIL: image not found: $IMAGE (run 'make kernel' or 'make disk' first)"
++    exit 1
++fi
++if ! command -v "$QEMU" >/dev/null 2>&1; then
++    echo "FAIL: $QEMU not found"
++    exit 1
++fi
++
++SERIAL_LOG="$(mktemp)"
++QEMU_LOG="$(mktemp)"
++QEMU_PID=""
++cleanup() {
++    [ -n "$QEMU_PID" ] && kill "$QEMU_PID" 2>/dev/null
++    rm -f "$SERIAL_LOG" "$QEMU_LOG"
++}
++trap cleanup EXIT INT TERM
++
++case "$IMAGE" in
++    *.img) set -- -drive "file=$IMAGE,format=raw,if=ide" ;;
++    *.iso) set -- -cdrom "$IMAGE" -boot d ;;
++    *)     set -- -kernel "$IMAGE" ;;
++esac
++
++# -no-reboot turns a triple fault into a QEMU exit, so crashes fail fast
++"$QEMU" "$@" -m 64M -display none -monitor none -net none \
++    -no-reboot -serial "file:$SERIAL_LOG" >"$QEMU_LOG" 2>&1 &
++QEMU_PID=$!
++
++ticks=0
++while [ "$ticks" -lt $((BOOT_TIMEOUT * 10)) ]; do
++    if grep -qF "$EXPECT" "$SERIAL_LOG"; then
++        echo "PASS: boot banner received on COM1"
++        exit 0
++    fi
++    kill -0 "$QEMU_PID" 2>/dev/null || break
++    sleep 0.1
++    ticks=$((ticks + 1))
++done
++
++# One last look, in case QEMU wrote the banner just before exiting
++if grep -qF "$EXPECT" "$SERIAL_LOG"; then
++    echo "PASS: boot banner received on COM1"
++    exit 0
++fi
++
++if kill -0 "$QEMU_PID" 2>/dev/null; then
++    echo "FAIL: no boot banner within ${BOOT_TIMEOUT}s"
++else
++    echo "FAIL: QEMU exited before the boot banner appeared"
++fi
++echo "--- serial output (COM1) ---"
++cat "$SERIAL_LOG"
++echo "--- QEMU output ---"
++cat "$QEMU_LOG"
++exit 1
+diff --git a/scripts/x86-elf-ld b/scripts/x86-elf-ld
+index 739bd47..d67db45 100755
+--- a/scripts/x86-elf-ld
++++ b/scripts/x86-elf-ld
+@@ -1,19 +1,17 @@
+ #!/bin/sh
+ # Wrapper script to handle linking for x86-elf (32-bit)
+-# Uses i686-elf-ld or x86_64-elf-ld with 32-bit mode
+-# Kernel runs at 0x100000 (1MB) - standard for Limine boot protocol
+-
+-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+-
+-# Try i686-elf-ld first (explicitly 32-bit)
+-if command -v i686-elf-ld >/dev/null 2>&1; then
+-    exec i686-elf-ld -m elf_i386 -e _start -T "$SCRIPT_DIR/linker.x86" "$@"
+-fi
+-
+-# Try x86_64-elf-ld with 32-bit mode
+-if command -v x86_64-elf-ld >/dev/null 2>&1; then
+-    exec x86_64-elf-ld -m elf_i386 -e _start -T "$SCRIPT_DIR/linker.x86" "$@"
+-fi
++# Uses the first linker that supports elf_i386: i686-elf-ld, x86_64-elf-ld,
++# then the host's GNU ld (works on x86_64 Linux)
++# Kernel runs at 0x100000 (1MB) - standard for Multiboot kernels
++
++# $0, not BASH_SOURCE: this runs under /bin/sh, which is dash on Debian/Ubuntu
++SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
++
++for LD in i686-elf-ld x86_64-elf-ld ld; do
++    if command -v "$LD" >/dev/null 2>&1 && "$LD" -V 2>/dev/null | grep -q elf_i386; then
++        exec "$LD" -m elf_i386 -e _start -T "$SCRIPT_DIR/linker.x86" "$@"
++    fi
++done
+ 
+ # Give helpful error message
+ cat >&2 <<'EOF'
+diff --git a/scripts/x86-elf-ld-limine b/scripts/x86-elf-ld-limine
+deleted file mode 100755
+index b6690d0..0000000
+--- a/scripts/x86-elf-ld-limine
++++ /dev/null
+@@ -1,43 +0,0 @@
+-#!/bin/sh
+-# Wrapper script to handle linking for x86-elf (32-bit) with limine support
+-# Uses i686-elf-ld or x86_64-elf-ld with 32-bit mode
+-# Kernel runs at 0x100000 (1MB) - standard for Limine boot protocol
+-# Limine header is placed at the beginning of the loaded image
+-
+-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+-
+-# Try i686-elf-ld first (explicitly 32-bit)
+-if command -v i686-elf-ld >/dev/null 2>&1; then
+-    exec i686-elf-ld -m elf_i386 -e _start -T "$SCRIPT_DIR/linker.x86" "$@"
+-fi
+-
+-# Try x86_64-elf-ld with 32-bit mode
+-if command -v x86_64-elf-ld >/dev/null 2>&1; then
+-    exec x86_64-elf-ld -m elf_i386 -e _start -T "$SCRIPT_DIR/linker.x86" "$@"
+-fi
+-
+-# Give helpful error message
+-cat >&2 <<'EOF'
+-=============================================================================
+-F2K Build Error: Cross-compilation linker not found
+-=============================================================================
+-
+-To build F2K, you need a cross-compilation linker for x86 (32-bit) ELF binaries.
+-
+-On macOS, install it with Homebrew:
+-
+-    brew install FiloSottile/tap/x86_64-elf-binutils
+-
+-On macOS ARM (M1/M2), use Rosetta:
+-
+-    arch -x86_64 brew install FiloSottile/tap/x86_64-elf-binutils
+-
+-On Linux (Debian/Ubuntu):
+-
+-    sudo apt install binutils
+-
+-After installing, try building again.
+-
+-=============================================================================
+-EOF
+-exit 1
+diff --git a/x86-f2k-limine.json b/x86-f2k-limine.json
+deleted file mode 100644
+index de20f82..0000000
+--- a/x86-f2k-limine.json
++++ /dev/null
+@@ -1,14 +0,0 @@
+-{
+-  "llvm-target": "i686-unknown-none",
+-  "data-layout": "e-m:e-p:32:32-p270:32:32-p271:32:32-p272:64:64-i128:128-f64:32:64-f80:32-n8:16:32-S128",
+-  "arch": "x86",
+-  "target-endian": "little",
+-  "target-pointer-width": 32,
+-  "target-c-int-width": 32,
+-  "os": "none",
+-  "linker-flavor": "ld",
+-  "linker": "scripts/x86-elf-ld-limine",
+-  "panic-strategy": "abort",
+-  "cpu": "i686",
+-  "features": "-mmx,-sse"
+-}
