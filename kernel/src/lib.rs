@@ -20,6 +20,9 @@ mod boot;
 mod gdt;
 mod idt;
 
+// Memory management: physical frame allocator
+mod mem;
+
 // C library functions for bare-metal
 mod c_lib;
 
