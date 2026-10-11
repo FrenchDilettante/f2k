@@ -106,7 +106,10 @@ f2k/
         ├── gdt.rs        # GDT: flat 32-bit kernel segments
         ├── idt.rs        # IDT: CPU exception handlers with register dump on COM1
         ├── mem/          # Memory management
-        │   └── frame.rs  # Physical frame allocator: state-keyed FIFO lists, per-color chains
+        │   ├── mod.rs        # Module root
+        │   ├── frame.rs      # Physical frame allocator: state-keyed FIFO lists, per-color chains
+        │   ├── multiboot.rs  # Multiboot 1 memory map parsing (host-testable)
+        │   └── bootmem.rs    # Boot-time allocator initialization from the memory map
         ├── serial.rs     # Serial port output
         └── c_lib.rs      # C library stubs
 ```

@@ -9,6 +9,7 @@ SECTIONS
 {
     /* Load at 1 MiB, above the real-mode/BIOS area (first 640 KiB + ROMs) */
     . = 0x100000;
+    _kernel_start = .;
 
     .text : {
         /* Multiboot header: must be 4-byte aligned and within the first
@@ -34,4 +35,9 @@ SECTIONS
         *(.bss .bss.*)
         *(COMMON)
     }
+
+    /* End of the kernel image, 4 KiB aligned so the frame allocator can
+     * treat [kernel_start, kernel_end) as whole occupied frames. */
+    . = ALIGN(4096);
+    _kernel_end = .;
 }

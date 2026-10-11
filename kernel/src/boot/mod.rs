@@ -18,11 +18,13 @@ core::arch::global_asm!(
     ".long 0x1BADB002",                 // header magic
     ".long 0x00000003",                 // flags: page-align modules, provide memory info
     ".long -(0x1BADB002 + 0x00000003)", // checksum: magic + flags + checksum == 0
-    // 16 KiB boot stack.
+    // 64 KiB boot stack. Generously sized: early boot code keeps whole
+    // subsystem structures (frame database, formatting state) as stack
+    // locals, and overflowing the stack corrupts adjacent statics.
     ".section .bss.boot_stack, \"aw\", @nobits",
     ".align 16",
     "boot_stack_bottom:",
-    ".skip 16384",
+    ".skip 65536",
     "boot_stack_top:",
     // Entry point.
     ".section .text._start, \"ax\"",

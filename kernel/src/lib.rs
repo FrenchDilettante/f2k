@@ -127,6 +127,21 @@ pub extern "C" fn kmain(magic: u32, multiboot_info: u32) -> ! {
     serial_println!("Phase 1: Foundation complete");
     serial_println!("Multiboot info at {:#010x}", multiboot_info);
 
+    // Parse the boot memory map and hand every usable frame (minus the
+    // kernel image) to the physical frame allocator.
+    mem::bootmem::boot_init(multiboot_info);
+    mem::bootmem::with_frame_db(|db| {
+        serial_println!(
+            "F2K: physical memory: {} free frames ({} MiB)",
+            db.available(),
+            db.available() / 256
+        );
+        serial_println!(
+            "F2K: frame database audit: {}",
+            if db.audit().is_ok() { "ok" } else { "FAILED" }
+        );
+    });
+
     // For now, just halt
     // TODO: Continue with kernel initialization
     halt();

@@ -42,6 +42,11 @@ pub const MAX_COLOR_COUNT: usize = 1024;
 /// Default color count used by the kernel and tests.
 pub const DEFAULT_COLOR_COUNT: usize = 4;
 
+/// Frame table capacity: 256 MiB of 4 KiB frames, matching the
+/// development machine memory (the Makefile's QEMU flags). The boot
+/// frame table is sized by this; usable memory beyond it is ignored.
+pub const MAX_FRAMES: usize = 65_536;
+
 /// Lifecycle state of a frame. Frames are on one of the six list states
 /// or off-list ([`FrameState::Active`] or [`FrameState::Transition`]).
 ///
@@ -50,8 +55,14 @@ pub const DEFAULT_COLOR_COUNT: usize = 4;
 /// - "colored" states keep a per-color chain (zeroed/free),
 /// - "transition" states count towards the transition tallies
 ///   (standby/modified/modified-no-write).
+///
+/// `Active` is discriminant 0 on purpose: a fresh [`FrameEntry`] is
+/// then all-zero, so zeroed memory is a valid fresh entry and large
+/// frame tables live in BSS instead of bloating the image's data.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FrameState {
+    /// In use; not on any list. Discriminant 0 (see above).
+    Active,
     /// Ready for use, contents already zeroed.
     Zeroed,
     /// Ready for use, contents undefined.
@@ -64,8 +75,6 @@ pub enum FrameState {
     ModifiedNoWrite,
     /// Failed hardware; never allocated.
     Bad,
-    /// In use; not on any list.
-    Active,
     /// Between working set and standby; not on any list.
     Transition,
 }
@@ -162,7 +171,7 @@ pub struct FrameEntry {
 
 impl FrameEntry {
     /// A fresh frame: off-list, no flags, no references.
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         FrameEntry {
             next: None,
             prev: None,
@@ -195,6 +204,26 @@ struct FrameList {
 struct ColorBucket {
     head: Option<FrameId>,
     tail: Option<FrameId>,
+}
+
+/// The per-color chain heads for the two colored states. Kept outside
+/// [`FrameDb`] so the database itself stays small: boot code holds it
+/// by value without a multi-kilobyte stack frame.
+#[derive(Debug)]
+pub struct ColorTables {
+    inner: [[ColorBucket; MAX_COLOR_COUNT]; 2],
+}
+
+impl ColorTables {
+    /// Empty tables (const, so large instances live in BSS).
+    pub const fn new() -> Self {
+        ColorTables {
+            inner: [[ColorBucket {
+                head: None,
+                tail: None,
+            }; MAX_COLOR_COUNT]; 2],
+        }
+    }
 }
 
 /// Result of [`FrameDb::unlink`].
@@ -283,6 +312,7 @@ pub enum AuditError {
 /// slice. Index 0 is reserved; valid frames are 1..table_len.
 pub struct FrameDb<H: FrameHooks = NoHooks> {
     frames: &'static mut [FrameEntry],
+    buckets: &'static mut ColorTables,
     hooks: H,
 
     zeroed: FrameList,
@@ -292,9 +322,6 @@ pub struct FrameDb<H: FrameHooks = NoHooks> {
     modified_no_write: FrameList,
     bad: FrameList,
 
-    /// Per-color chains for the two colored states; the first index is
-    /// selected by [`FrameDb::color_table`].
-    buckets: [[ColorBucket; MAX_COLOR_COUNT]; 2],
     colors: usize,
     color_mask: u32,
 
@@ -318,17 +345,23 @@ pub struct FrameDb<H: FrameHooks = NoHooks> {
 }
 
 impl<H: FrameHooks> FrameDb<H> {
-    /// Build a database over `frames` (index 0 reserved) with `colors`
-    /// color chains and the given hooks. Water marks default to 2 (low)
-    /// and 19 (high); the free-page minimum and zeroing threshold
-    /// default to "never".
-    pub fn new(frames: &'static mut [FrameEntry], colors: usize, hooks: H) -> Self {
+    /// Build a database over `frames` (index 0 reserved) and the color
+    /// chain heads in `buckets`, with `colors` colors and the given
+    /// hooks. Water marks default to 2 (low) and 19 (high); the
+    /// free-page minimum and zeroing threshold default to "never".
+    pub fn new(
+        frames: &'static mut [FrameEntry],
+        buckets: &'static mut ColorTables,
+        colors: usize,
+        hooks: H,
+    ) -> Self {
         assert!(
             colors.is_power_of_two() && colors >= MIN_COLOR_COUNT && colors <= MAX_COLOR_COUNT,
             "color count must be a power of two in [2, 1024]"
         );
         FrameDb {
             frames,
+            buckets,
             hooks,
             zeroed: FrameList::default(),
             free: FrameList::default(),
@@ -336,7 +369,6 @@ impl<H: FrameHooks> FrameDb<H> {
             modified: FrameList::default(),
             modified_no_write: FrameList::default(),
             bad: FrameList::default(),
-            buckets: [[ColorBucket::default(); MAX_COLOR_COUNT]; 2],
             colors,
             color_mask: (colors - 1) as u32,
             available: 0,
@@ -381,7 +413,7 @@ impl<H: FrameHooks> FrameDb<H> {
 
     /// Read-only access to a frame's entry.
     pub fn entry(&self, frame: FrameId) -> &FrameEntry {
-        assert!(frame != 0 && (frame as usize) < self.frames.len(), "invalid frame id");
+        assert!(frame != 0 && (frame as usize) < self.frames.len(), "invalid frame id {}", frame);
         &self.frames[frame as usize]
     }
 
@@ -389,7 +421,7 @@ impl<H: FrameHooks> FrameDb<H> {
     // Internal accessors
 
     fn entry_mut(&mut self, frame: FrameId) -> &mut FrameEntry {
-        assert!(frame != 0 && (frame as usize) < self.frames.len(), "invalid frame id");
+        assert!(frame != 0 && (frame as usize) < self.frames.len(), "invalid frame id {}", frame);
         &mut self.frames[frame as usize]
     }
 
@@ -485,7 +517,7 @@ impl<H: FrameHooks> FrameDb<H> {
     fn append_to_color_chain(&mut self, frame: FrameId, state: FrameState) {
         let color = self.color_of(frame);
         let old_tail = {
-            let bucket = &mut self.buckets[Self::color_table(state)][color];
+            let bucket = &mut self.buckets.inner[Self::color_table(state)][color];
             let old = bucket.tail;
             bucket.tail = Some(frame);
             if old.is_none() {
@@ -643,7 +675,7 @@ impl<H: FrameHooks> FrameDb<H> {
         if state.has_color_chain() {
             let color = self.color_of(frame);
             let next_color = self.entry(frame).next_color;
-            let bucket = &mut self.buckets[Self::color_table(state)][color];
+            let bucket = &mut self.buckets.inner[Self::color_table(state)][color];
             assert_eq!(
                 bucket.head,
                 Some(frame),
@@ -745,9 +777,9 @@ impl<H: FrameHooks> FrameDb<H> {
         // the chain to find the parent (bounded by the table length).
         let color = self.color_of(frame);
         let next_color = self.entry(frame).next_color;
-        let bucket_head = self.buckets[Self::color_table(state)][color].head;
+        let bucket_head = self.buckets.inner[Self::color_table(state)][color].head;
         if bucket_head == Some(frame) {
-            let bucket = &mut self.buckets[Self::color_table(state)][color];
+            let bucket = &mut self.buckets.inner[Self::color_table(state)][color];
             bucket.head = next_color;
             if next_color.is_none() {
                 bucket.tail = None;
@@ -763,7 +795,7 @@ impl<H: FrameHooks> FrameDb<H> {
                 if child == Some(frame) {
                     self.entry_mut(parent).next_color = next_color;
                     if next_color.is_none() {
-                        self.buckets[Self::color_table(state)][color].tail = Some(parent);
+                        self.buckets.inner[Self::color_table(state)][color].tail = Some(parent);
                     }
                     break;
                 }
@@ -798,7 +830,7 @@ impl<H: FrameHooks> FrameDb<H> {
         let color = self.color_of(frame);
         let next_color = self.entry(frame).next_color;
         {
-            let bucket = &mut self.buckets[Self::color_table(state)][color];
+            let bucket = &mut self.buckets.inner[Self::color_table(state)][color];
             assert_eq!(
                 bucket.head,
                 Some(frame),
@@ -833,7 +865,7 @@ impl<H: FrameHooks> FrameDb<H> {
         let color = color as usize;
 
         // Zeroed, matching color.
-        if let Some(frame) = self.buckets[Self::color_table(FrameState::Zeroed)][color].head {
+        if let Some(frame) = self.buckets.inner[Self::color_table(FrameState::Zeroed)][color].head {
             self.pop_colored(frame);
             return frame;
         }
@@ -843,7 +875,7 @@ impl<H: FrameHooks> FrameDb<H> {
             return frame;
         }
         // Free, matching color, then any: zero on demand.
-        if let Some(frame) = self.buckets[Self::color_table(FrameState::Free)][color].head {
+        if let Some(frame) = self.buckets.inner[Self::color_table(FrameState::Free)][color].head {
             self.pop_colored(frame);
             self.zero_and_stamp(frame);
             return frame;
@@ -876,12 +908,12 @@ impl<H: FrameHooks> FrameDb<H> {
         let color = color as usize;
 
         // Free, matching color.
-        if let Some(frame) = self.buckets[Self::color_table(FrameState::Free)][color].head {
+        if let Some(frame) = self.buckets.inner[Self::color_table(FrameState::Free)][color].head {
             self.pop_colored(frame);
             return frame;
         }
         // Zeroed, matching color.
-        if let Some(frame) = self.buckets[Self::color_table(FrameState::Zeroed)][color].head {
+        if let Some(frame) = self.buckets.inner[Self::color_table(FrameState::Zeroed)][color].head {
             self.pop_colored(frame);
             return frame;
         }
@@ -1004,12 +1036,12 @@ impl<H: FrameHooks> FrameDb<H> {
             let head = self.list(state).head;
             if let Some(h) = head {
                 let head_color = self.color_of(h);
-                if self.buckets[Self::color_table(state)][head_color].head != Some(h) {
+                if self.buckets.inner[Self::color_table(state)][head_color].head != Some(h) {
                     return Err(AuditError::BucketHeadMismatch { state });
                 }
             }
             for color in 0..self.colors {
-                let bucket = &self.buckets[Self::color_table(state)][color];
+                let bucket = &self.buckets.inner[Self::color_table(state)][color];
                 let chain_budget = 2 * self.frames.len() as u32 + 2;
 
                 // Walk the color-filtered list and the color chain in
@@ -1106,7 +1138,8 @@ mod tests {
     fn new_db() -> FrameDb<RecordingHooks> {
         let table: &'static mut [FrameEntry] =
             Box::leak(vec![FrameEntry::new(); TABLE].into_boxed_slice());
-        FrameDb::new(table, DEFAULT_COLOR_COUNT, RecordingHooks::default())
+        let buckets: &'static mut ColorTables = Box::leak(Box::new(ColorTables::new()));
+        FrameDb::new(table, buckets, DEFAULT_COLOR_COUNT, RecordingHooks::default())
     }
 
     fn release_all(db: &mut FrameDb<RecordingHooks>, state: FrameState, frames: &[FrameId]) {
@@ -1173,8 +1206,8 @@ mod tests {
         assert_eq!(db.available(), 0);
         assert_eq!(db.entry(10).state, Bad);
         assert_eq!(db.list_total(Bad), 1);
-        assert_eq!(db.buckets[0][10 & 3].head, None);
-        assert_eq!(db.buckets[1][10 & 3].head, None);
+        assert_eq!(db.buckets.inner[0][10 & 3].head, None);
+        assert_eq!(db.buckets.inner[1][10 & 3].head, None);
         assert_eq!(db.audit(), Ok(()));
     }
 
@@ -1227,10 +1260,10 @@ mod tests {
         assert_eq!(db.entry(9).prev, None);
         assert_eq!(db.available(), 2);
         // Frame 3 is color 3 (sole); 9 and 5 are color 1.
-        assert_eq!(db.buckets[1][3].head, None);
-        assert_eq!(db.buckets[1][3].tail, None);
-        assert_eq!(db.buckets[1][1].head, Some(9));
-        assert_eq!(db.buckets[1][1].tail, Some(5));
+        assert_eq!(db.buckets.inner[1][3].head, None);
+        assert_eq!(db.buckets.inner[1][3].tail, None);
+        assert_eq!(db.buckets.inner[1][1].head, Some(9));
+        assert_eq!(db.buckets.inner[1][1].tail, Some(5));
         assert_eq!(db.audit(), Ok(()));
     }
 
@@ -1324,25 +1357,25 @@ mod tests {
         // Flags survive take: the caller owns the rest of the transition.
         assert!(db.entry(9).flags.contains(FrameFlags::MODIFIED));
         assert_eq!(db.entry(5).next_color, Some(13));
-        assert_eq!(db.buckets[1][1].tail, Some(17));
+        assert_eq!(db.buckets.inner[1][1].tail, Some(17));
         assert_eq!(db.list_total(Free), 5);
         assert_eq!(db.available(), 5);
         assert_eq!(db.audit(), Ok(()));
 
         // Tail of a color chain keeps the bucket tail correct.
         db.take(17);
-        assert_eq!(db.buckets[1][1].tail, Some(13));
+        assert_eq!(db.buckets.inner[1][1].tail, Some(13));
         assert_eq!(db.entry(13).next_color, None);
         // Head of a color chain.
         db.take(5);
-        assert_eq!(db.buckets[1][1].head, Some(13));
+        assert_eq!(db.buckets.inner[1][1].head, Some(13));
         // A chain with more than one frame left.
         db.take(4);
-        assert_eq!(db.buckets[1][0].head, Some(8));
+        assert_eq!(db.buckets.inner[1][0].head, Some(8));
         // Sole frame of a color chain empties the bucket.
         db.take(8);
-        assert_eq!(db.buckets[1][0].head, None);
-        assert_eq!(db.buckets[1][0].tail, None);
+        assert_eq!(db.buckets.inner[1][0].head, None);
+        assert_eq!(db.buckets.inner[1][0].tail, None);
         assert_eq!(db.audit(), Ok(()));
     }
 
