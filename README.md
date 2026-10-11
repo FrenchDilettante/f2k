@@ -109,7 +109,9 @@ f2k/
         │   ├── mod.rs        # Module root
         │   ├── frame.rs      # Physical frame allocator: state-keyed FIFO lists, per-color chains
         │   ├── multiboot.rs  # Multiboot 1 memory map parsing (host-testable)
-        │   └── bootmem.rs    # Boot-time allocator initialization from the memory map
+        │   ├── paging.rs     # Boot page tables: kernel window at 0x80000000+, temporary low identity
+        │   ├── heap.rs       # Kernel heap: fixed-pool free-list allocator (host-testable)
+        │   └── bootmem.rs    # Boot-time initialization: frame database and heap from the memory map
         ├── serial.rs     # Serial port output
         └── c_lib.rs      # C library stubs
 ```

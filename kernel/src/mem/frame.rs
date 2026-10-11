@@ -356,7 +356,7 @@ impl<H: FrameHooks> FrameDb<H> {
         hooks: H,
     ) -> Self {
         assert!(
-            colors.is_power_of_two() && colors >= MIN_COLOR_COUNT && colors <= MAX_COLOR_COUNT,
+            colors.is_power_of_two() && (MIN_COLOR_COUNT..=MAX_COLOR_COUNT).contains(&colors),
             "color count must be a power of two in [2, 1024]"
         );
         FrameDb {

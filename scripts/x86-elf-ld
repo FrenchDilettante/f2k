@@ -2,7 +2,7 @@
 # Wrapper script to handle linking for x86-elf (32-bit)
 # Uses the first linker that supports elf_i386: i686-elf-ld, x86_64-elf-ld,
 # then the host's GNU ld (works on x86_64 Linux)
-# Kernel runs at 0x100000 (1MB) - standard for Multiboot kernels
+# Trampoline at 0x100000 (1MB); kernel linked at 0x80000000+ (see linker.x86)
 
 # $0, not BASH_SOURCE: this runs under /bin/sh, which is dash on Debian/Ubuntu
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

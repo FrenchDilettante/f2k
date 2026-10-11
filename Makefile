@@ -131,11 +131,11 @@ test: test-boot
 
 # Boot smoke test: boots the kernel in QEMU and checks the banner on COM1
 test-boot: kernel
-	@scripts/test-boot.sh $(KERNEL_ELF) "F2K Booted Successfully" "F2K: frame database audit: ok"
+	@scripts/test-boot.sh $(KERNEL_ELF) "F2K Booted Successfully" "F2K: frame database audit: ok" "F2K: kernel heap: alloc/free ok"
 
 .PHONY: test-disk
 test-disk: disk
-	@scripts/test-boot.sh $(DISK_IMG) "F2K Booted Successfully" "F2K: frame database audit: ok"
+	@scripts/test-boot.sh $(DISK_IMG) "F2K Booted Successfully" "F2K: frame database audit: ok" "F2K: kernel heap: alloc/free ok"
 
 # On-target fault injection: builds the kernel with a test feature that
 # forces a CPU exception right after init, then checks the COM1 dump.

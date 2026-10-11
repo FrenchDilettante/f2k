@@ -2,7 +2,9 @@
 //! as the boot path grows.
 
 pub mod frame;
+pub mod heap;
 pub mod multiboot;
+pub mod paging;
 
 /// Boot-time frame database, built from the Multiboot memory map.
 /// Host builds run the modules' unit tests instead; there is no boot

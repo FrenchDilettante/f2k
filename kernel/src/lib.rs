@@ -142,6 +142,29 @@ pub extern "C" fn kmain(magic: u32, multiboot_info: u32) -> ! {
         );
     });
 
+    // The boot memory map is consumed: remove the low identity window
+    // and keep only the kernel window. From here on, nothing below
+    // KERNEL_BASE is mapped.
+    mem::paging::teardown_low_identity();
+    serial_println!("F2K: paging on: kernel at {:#010x}, low identity removed", 0x8010_1000u32);
+
+    // Kernel heap smoke: allocate, touch, free, audit.
+    mem::bootmem::heap_init();
+    mem::bootmem::with_heap(|heap| {
+        const MARK: u32 = 0x4832_4B46; // "F2KH"
+        let block = heap
+            .alloc(core::alloc::Layout::from_size_align(256, 8).unwrap())
+            .expect("heap smoke allocation");
+        // SAFETY: the block is a live, exclusive allocation of 256
+        // aligned bytes.
+        unsafe { block.cast::<u32>().write(MARK) };
+        let read_back = unsafe { block.cast::<u32>().read() };
+        heap.dealloc(block);
+        assert_eq!(read_back, MARK);
+        assert_eq!(heap.audit(), Ok(()));
+    });
+    serial_println!("F2K: kernel heap: alloc/free ok");
+
     // For now, just halt
     // TODO: Continue with kernel initialization
     halt();

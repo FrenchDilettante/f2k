@@ -7,33 +7,41 @@ ENTRY(_start)
 
 SECTIONS
 {
-    /* Load at 1 MiB, above the real-mode/BIOS area (first 640 KiB + ROMs) */
+    /* Entry trampoline: exactly one page at the physical load address,
+     * 1 MiB. Entered with paging off, so its virtual and physical
+     * addresses are equal. It builds the boot page tables, enables
+     * paging and continues in the kernel window. Padded to a page so
+     * the kernel's physical layout is exact (see below). */
     . = 0x100000;
-    _kernel_start = .;
-
-    .text : {
-        /* Multiboot header: must be 4-byte aligned and within the first
-         * 8 KiB of the file. KEEP stops --gc-sections from discarding it,
-         * since no code references it. */
+    .boot : {
+        /* Multiboot header: must be 4-byte aligned and within the
+         * first 8 KiB of the file. KEEP stops --gc-sections from
+         * discarding it, since no code references it. */
         KEEP(*(.multiboot))
         *(.text._start)
+        . = ALIGN(4096);
+    }
+
+    /* The kernel proper, linked in the kernel window. The physical
+     * mapping is exact: physical = virtual - 0x80000000, for code,
+     * statics and BSS alike; the boot stub and the frame allocator
+     * rely on it, and ld must not insert physical padding of its own.
+     * One file-backed section (padded to a page) plus one BSS section
+     * keeps VMA-LMA alignment arithmetic trivial. */
+    . = 0x80101000;
+    _kernel_start = .;
+
+    .kernel : AT(0x101000) {
         *(.text .text.*)
-    }
-
-    /* Read-only data */
-    .rodata : {
         *(.rodata .rodata.*)
-    }
-
-    /* Data section - initialized data */
-    .data : {
         *(.data .data.*)
+        . = ALIGN(4096);
     }
 
-    /* BSS section - uninitialized data (includes the boot stack) */
-    .bss : {
+    .bss (NOLOAD) : AT(0x101000 + SIZEOF(.kernel)) {
         *(.bss .bss.*)
         *(COMMON)
+        . = ALIGN(4096);
     }
 
     /* End of the kernel image, 4 KiB aligned so the frame allocator can

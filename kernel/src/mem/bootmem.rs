@@ -13,7 +13,9 @@
 use super::frame::{
     self, ColorTables, FrameDb, FrameEntry, FrameState, NoHooks, MAX_FRAMES,
 };
+use super::heap::KernelHeap;
 use super::multiboot::{self, MultibootInfo, UsableRange};
+use super::paging::{KERNEL_BASE, KERNEL_PHYS_BASE};
 
 /// The per-frame bookkeeping table. Sized for the full development
 /// memory; frames past the highest usable frame stay unreleased.
@@ -25,18 +27,19 @@ static mut COLOR_TABLES: ColorTables = ColorTables::new();
 /// The boot frame database; built once by [`boot_init`].
 static mut BOOT_FRAME_DB: Option<FrameDb<NoHooks>> = None;
 
-// Kernel image bounds, exported by the linker script (4 KiB aligned).
+// Kernel image end, exported by the linker script (4 KiB aligned, a
+// kernel-window address).
 extern "C" {
-    static _kernel_start: u8;
     static _kernel_end: u8;
 }
 
-/// Frames in [first, end) are occupied by the kernel image.
+/// Frames in [first, end) are occupied by the kernel image: from the
+/// physical load address up to the aligned end of the image.
 fn kernel_frame_bounds() -> (u32, u32) {
-    // SAFETY: taking the addresses of linker-provided symbols; the
-    // values are constants fixed at link time.
-    let start = unsafe { &_kernel_start as *const u8 as u32 } / 4096;
-    let end = (unsafe { &_kernel_end as *const u8 as u32 } + 4095) / 4096;
+    let start = KERNEL_PHYS_BASE / 4096;
+    // SAFETY: taking the address of a linker-provided symbol; a
+    // constant fixed at link time.
+    let end = (unsafe { &_kernel_end as *const u8 as u32 } - KERNEL_BASE).div_ceil(4096);
     (start, end)
 }
 
@@ -114,6 +117,46 @@ pub fn boot_init(multiboot_info_addr: u32) {
     unsafe {
         BOOT_FRAME_DB = Some(db);
     }
+}
+
+/// Kernel heap pool: a fixed region inside the kernel image (its
+/// frames stay excluded from the frame allocator).
+pub const HEAP_POOL_SIZE: usize = 256 * 1024;
+static mut HEAP_POOL: [u8; HEAP_POOL_SIZE] = [0; HEAP_POOL_SIZE];
+
+/// The kernel heap; built once by [`heap_init`].
+static mut KERNEL_HEAP: Option<KernelHeap> = None;
+
+/// Build the kernel heap over its static pool.
+pub fn heap_init() {
+    // SAFETY: the pool is a static owned by this module; the heap
+    // holds its only reference. Single-threaded boot.
+    let pool: &'static mut [u8] = unsafe {
+        core::slice::from_raw_parts_mut(
+            core::ptr::addr_of_mut!(HEAP_POOL) as *mut u8,
+            HEAP_POOL_SIZE,
+        )
+    };
+    // SAFETY: single-threaded boot; heap_init runs once, before any
+    // call to with_heap.
+    unsafe {
+        KERNEL_HEAP = Some(KernelHeap::new(pool));
+    }
+}
+
+/// Run `f` against the kernel heap.
+///
+/// Contract: called from the single-threaded boot context only (one
+/// caller at a time). Panics if called before [`heap_init`].
+pub fn with_heap<R>(f: impl FnOnce(&mut KernelHeap) -> R) -> R {
+    // SAFETY: the boot context is the only caller, so the mutable
+    // reference handed to `f` is never aliased.
+    let heap = unsafe {
+        (*core::ptr::addr_of_mut!(KERNEL_HEAP))
+            .as_mut()
+            .expect("kernel heap not initialized")
+    };
+    f(heap)
 }
 
 /// Run `f` against the boot frame database.

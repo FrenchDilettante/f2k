@@ -26,15 +26,62 @@ core::arch::global_asm!(
     "boot_stack_bottom:",
     ".skip 65536",
     "boot_stack_top:",
-    // Entry point.
+    // Entry point. Runs at the physical load address with paging off
+    // (this section is linked VMA == PMA; the rest of the kernel runs
+    // in the kernel window at 0x80000000+). Responsibilities:
+    //   1. keep the loader state (EAX magic, EBX Multiboot info),
+    //   2. build the boot page directory (physical addressing),
+    //   3. enable paging and continue in the kernel window,
+    //   4. set up the boot stack and call kmain.
     ".section .text._start, \"ax\"",
     ".global _start",
     "_start:",
-    "    mov esp, offset boot_stack_top",
+    "    mov esi, eax", // Multiboot magic, kept across the switch
+    "    mov edi, ebx", // Multiboot info physical address
+    // The boot page directory and tables are kernel statics: their
+    // physical addresses are the linked addresses minus KERNEL_BASE
+    // (0x80000000). Zero the directory, then fill the four entries:
+    // 0, 1 = low identity window; 512, 513 = kernel window.
+    "    mov eax, offset BOOT_PD",
+    "    sub eax, 0x80000000",
+    "    mov edx, eax",
+    "    xor ecx, ecx",
+    "1:",
+    "    mov dword ptr [edx + ecx*4], 0",
+    "    inc ecx",
+    "    cmp ecx, 1024",
+    "    jne 1b",
+    "    mov edx, offset BOOT_PT_LO",
+    "    sub edx, 0x80000000",
+    "    or edx, 3", // present | writable
+    "    mov [eax], edx",
+    "    mov [eax + 2048], edx",
+    "    mov edx, offset BOOT_PT_HI",
+    "    sub edx, 0x80000000",
+    "    or edx, 3",
+    "    mov [eax + 4], edx",
+    "    mov [eax + 2052], edx",
+    // Paging on: CR3 = physical directory, CR0.PG = 1. Execution
+    // continues at the physical EIP through the low identity window.
+    "    mov cr3, eax",
+    "    mov eax, cr0",
+    "    or eax, 0x80000000",
+    "    mov cr0, eax",
+    // Switch to the kernel window: the same code, at its virtual
+    // alias (the low 8 MiB appear identically at 0x80000000+).
+    "    mov edx, offset start_high",
+    "    add edx, 0x80000000",
+    "    jmp edx",
+    "start_high:",
     "    cld",
-    "    push ebx", // kmain arg 2: Multiboot info pointer
-    "    push eax", // kmain arg 1: Multiboot magic
-    "    call kmain",
+    "    mov esp, offset boot_stack_top",
+    "    push edi", // kmain arg 2: Multiboot info physical address
+    "    push esi", // kmain arg 1: Multiboot magic
+    // Absolute call: a relative call would be encoded against this
+    // trampoline's low address and land on kmain's physical alias,
+    // leaving the kernel executing in the (temporary) low window.
+    "    mov edx, offset kmain",
+    "    call edx",
     "2:  cli",
     "    hlt",
     "    jmp 2b",
