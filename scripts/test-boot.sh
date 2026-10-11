@@ -9,15 +9,38 @@
 #   - _start set up a stack and reached Rust,
 #   - serial output works.
 #
-# Usage: scripts/test-boot.sh [kernel-elf | disk.img | cdrom.iso]
+# Usage: scripts/test-boot.sh [kernel-elf | disk.img | cdrom.iso] [expected ...]
 # Env:   QEMU (default qemu-system-i386), BOOT_TIMEOUT seconds (default 10)
+#
+# Every argument after the image is an expected COM1 string; the test passes
+# only once all of them have appeared. With no extra arguments it checks the
+# boot banner.
 
 set -u
 
 IMAGE="${1:-target/x86-f2k/debug/f2k-kernel}"
+if [ "$#" -gt 0 ]; then shift; fi
+if [ "$#" -eq 0 ]; then
+    set -- "F2K Booted Successfully"
+fi
 QEMU="${QEMU:-qemu-system-i386}"
 BOOT_TIMEOUT="${BOOT_TIMEOUT:-10}"
-EXPECT="F2K Booted Successfully"
+
+# The case block further down reuses "$@" for the QEMU arguments, so
+# capture the expected strings first (newline-separated; the strings we
+# pass contain no newlines).
+EXPECTS=""
+for expected in "$@"; do
+    EXPECTS="$EXPECTS$expected
+"
+done
+
+all_expected_found() {
+    printf '%s\n' "$EXPECTS" | while IFS= read -r expected; do
+        [ -n "$expected" ] || continue
+        grep -qF -- "$expected" "$SERIAL_LOG" || return 1
+    done
+}
 
 if [ ! -f "$IMAGE" ]; then
     echo "FAIL: image not found: $IMAGE (run 'make kernel' or 'make disk' first)"
@@ -50,8 +73,8 @@ QEMU_PID=$!
 
 ticks=0
 while [ "$ticks" -lt $((BOOT_TIMEOUT * 10)) ]; do
-    if grep -qF "$EXPECT" "$SERIAL_LOG"; then
-        echo "PASS: boot banner received on COM1"
+    if all_expected_found "$@"; then
+        echo "PASS: expected output received on COM1"
         exit 0
     fi
     kill -0 "$QEMU_PID" 2>/dev/null || break
@@ -59,16 +82,16 @@ while [ "$ticks" -lt $((BOOT_TIMEOUT * 10)) ]; do
     ticks=$((ticks + 1))
 done
 
-# One last look, in case QEMU wrote the banner just before exiting
-if grep -qF "$EXPECT" "$SERIAL_LOG"; then
-    echo "PASS: boot banner received on COM1"
+# One last look, in case QEMU wrote the output just before exiting
+if all_expected_found "$@"; then
+    echo "PASS: expected output received on COM1"
     exit 0
 fi
 
 if kill -0 "$QEMU_PID" 2>/dev/null; then
-    echo "FAIL: no boot banner within ${BOOT_TIMEOUT}s"
+    echo "FAIL: expected output not found within ${BOOT_TIMEOUT}s"
 else
-    echo "FAIL: QEMU exited before the boot banner appeared"
+    echo "FAIL: QEMU exited before the expected output appeared"
 fi
 echo "--- serial output (COM1) ---"
 cat "$SERIAL_LOG"

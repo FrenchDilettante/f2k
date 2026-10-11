@@ -2,13 +2,16 @@
 //!
 //! Uses COM1 at 0x3F8 (standard serial port)
 
+#[cfg(target_arch = "x86")]
 use core::arch::asm;
+#[cfg(target_arch = "x86")]
 use core::fmt::{self, Write};
 
 /// Standard COM1 port address
 const COM1: u16 = 0x3F8;
 
 /// Initialize serial port
+#[cfg(target_arch = "x86")]
 pub fn init() {
     unsafe {
         // Disable interrupts
@@ -34,11 +37,13 @@ pub fn init() {
 ///
 /// The UART lives in x86 I/O port space, which is only reachable with the
 /// `in`/`out` instructions. A volatile pointer write to 0x3F8 would hit RAM.
+#[cfg(target_arch = "x86")]
 unsafe fn write_byte(port: u16, byte: u8) {
     asm!("out dx, al", in("dx") port, in("al") byte, options(nomem, nostack, preserves_flags));
 }
 
 /// Read a byte from an I/O port.
+#[cfg(target_arch = "x86")]
 unsafe fn read_byte(port: u16) -> u8 {
     let byte: u8;
     asm!("in al, dx", out("al") byte, in("dx") port, options(nomem, nostack, preserves_flags));
@@ -46,6 +51,7 @@ unsafe fn read_byte(port: u16) -> u8 {
 }
 
 /// Wait for serial port to be ready to transmit
+#[cfg(target_arch = "x86")]
 fn wait_transmit() {
     unsafe {
         // Wait for Transmitter Holding Register to be empty
@@ -56,6 +62,7 @@ fn wait_transmit() {
 }
 
 /// Write a byte to serial port (waits if needed)
+#[cfg(target_arch = "x86")]
 pub fn write_byte_blocking(byte: u8) {
     wait_transmit();
     unsafe {
@@ -66,6 +73,7 @@ pub fn write_byte_blocking(byte: u8) {
 /// Serial port writer for formatting
 pub struct SerialPort;
 
+#[cfg(target_arch = "x86")]
 impl Write for SerialPort {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         for byte in s.bytes() {

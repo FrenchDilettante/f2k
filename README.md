@@ -93,9 +93,12 @@ f2k/
 └── kernel/           # F2K Kernel
     ├── Cargo.toml        # Kernel package
     └── src/
-        ├── main.rs       # Kernel entry point (kmain)
+        ├── main.rs       # Kernel binary: links the ELF; panic handler
+        ├── lib.rs        # Kernel library: kmain and all modules (unit-testable)
         ├── boot/         # Boot-related code
         │   └── mod.rs    # Multiboot header and _start stub
+        ├── gdt.rs        # GDT: flat 32-bit kernel segments
+        ├── idt.rs        # IDT: CPU exception handlers with register dump on COM1
         ├── serial.rs     # Serial port output
         └── c_lib.rs      # C library stubs
 ```
@@ -108,6 +111,8 @@ f2k/
 | `make qemu` | Build the kernel and boot it directly in QEMU |
 | `make test` | Run the boot smoke test |
 | `make test-disk` | Run the boot smoke test on the disk image |
+| `make run-tests` | Run host unit tests |
+| `make test-fault` | On-target exception dump tests (#UD and #GP) |
 | `make limine` | Download Limine bootloader |
 | `make iso` | Create bootable ISO with Limine |
 | `make qemu_iso` | Build ISO and run in QEMU |

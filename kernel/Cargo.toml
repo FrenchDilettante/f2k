@@ -10,6 +10,21 @@ license = "MIT OR Apache-2.0"
 [package.metadata.bootloader]
 target = "x86-f2k"
 
+# The kernel binary has no test harness (it is no_std/no_main); unit tests
+# run against the library target on the host instead (`make run-tests`).
+[[bin]]
+name = "f2k-kernel"
+path = "src/main.rs"
+test = false
+doctest = false
+
+[features]
+# Test-only fault injection (see kmain): raise a CPU exception right after
+# boot so the exception stubs and the COM1 dump can be verified on target
+# with `make test-fault-ud` / `make test-fault-gp`.
+fault-test-ud = []
+fault-test-gp = []
+
 [dependencies]
 # Core no_std crates for future use
 # spin = "0.9.8"        # Spinlocks and mutable statics

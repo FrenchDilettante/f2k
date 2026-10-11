@@ -1,64 +1,19 @@
-//! F2K Kernel - Windows 2000-compatible operating system
+//! F2K kernel binary.
 //!
-//! This is the entry point for the F2K kernel.
-//! It runs in 32-bit protected mode on x86.
+//! All kernel code lives in the `f2k-kernel` library crate: the Multiboot
+//! `_start` stub in its `boot` module calls `kmain` there. This binary
+//! exists only to link the kernel ELF. The `#[panic_handler]` must be
+//! defined exactly once, in the final binary (a library must not define
+//! one), so it lives here and forwards to the library's shared path.
 
 #![no_std]      // No standard library (we are the OS)
-#![no_main]     // No main(): the Multiboot stub in boot/mod.rs calls kmain()
+#![no_main]     // No main(): the Multiboot stub in the library calls kmain()
 
-use core::arch::asm;
+use core::panic::PanicInfo;
 
-// Boot module (Multiboot header and _start stub)
-mod boot;
-
-// C library functions for bare-metal
-mod c_lib;
-
-// Import our serial port module
-mod serial;
-
-/// Panic handler - prints message and halts
+/// Kernel panics print on COM1 and halt; the implementation is in the
+/// library so the kernel code shares the same path.
 #[panic_handler]
-fn panic(info: &core::panic::PanicInfo) -> ! {
-    serial_println!("KERNEL PANIC: {}", info);
-    halt();
-}
-
-/// Halt the CPU
-fn halt() -> ! {
-    loop {
-        unsafe {
-            asm!("cli", "hlt", options(nomem, nostack));
-        }
-    }
-}
-
-/// Kernel entry point
-///
-/// Called by `_start` (boot/mod.rs) with the values the Multiboot loader left
-/// in EAX and EBX.
-#[no_mangle]
-pub extern "C" fn kmain(magic: u32, multiboot_info: u32) -> ! {
-    // Signal that we've started by writing to port 0x80 (POST code port)
-    unsafe {
-        asm!("out 0x80, al", in("al") 0xFEu8, options(nomem, nostack, preserves_flags));
-    }
-
-    // Initialize serial port first (for debugging)
-    serial::init();
-
-    if magic != boot::MULTIBOOT_BOOTLOADER_MAGIC {
-        serial_println!("F2K: not started by a Multiboot loader (EAX = {:#010x})", magic);
-        halt();
-    }
-
-    // Print boot message
-    serial_println!("F2K Booted Successfully");
-    serial_println!("Fenêtre 2000 - Windows 2000 compatible OS in Rust");
-    serial_println!("Phase 1: Foundation complete");
-    serial_println!("Multiboot info at {:#010x}", multiboot_info);
-
-    // For now, just halt
-    // TODO: Continue with kernel initialization
-    halt();
+fn panic(info: &PanicInfo) -> ! {
+    f2k_kernel::panic(info)
 }

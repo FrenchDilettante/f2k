@@ -4,6 +4,10 @@
 # Architecture
 ARCH ?= x86
 TARGET ?= x86-f2k
+# Host triple for unit tests: .cargo/config.toml defaults cargo to the
+# kernel target, so host tests (run-tests) override it back to the host
+# (detected from the toolchain; override on the command line if needed).
+RUST_HOST_TARGET ?= $(shell rustc -vV | sed -n 's/^host: //p')
 # Build options (target spec, build-std, linker) live in .cargo/config.toml,
 # so cargo and rust-analyzer use the same settings as make.
 KERNEL_ELF ?= $(BUILD_DIR)/$(TARGET)/debug/f2k-kernel
@@ -49,6 +53,8 @@ help:
 	@echo "  qemu         - Build the kernel and boot it directly in QEMU (Multiboot)"
 	@echo "  test         - Run the boot smoke test"
 	@echo "  test-disk    - Run the boot smoke test on the disk image"
+	@echo "  run-tests    - Run host unit tests (cargo test --lib)"
+	@echo "  test-fault   - On-target exception dump tests (#UD and #GP)"
 	@echo "  kernel-bin   - Convert kernel to raw binary"
 	@echo "  disk         - Create Limine-bootable hard disk image (needs mtools)"
 	@echo "  limine       - Download/setup limine bootloader (if needed)"
@@ -131,10 +137,29 @@ test-boot: kernel
 test-disk: disk
 	@scripts/test-boot.sh $(DISK_IMG)
 
+# On-target fault injection: builds the kernel with a test feature that
+# forces a CPU exception right after init, then checks the COM1 dump.
+.PHONY: test-fault-ud test-fault-gp test-fault
+test-fault-ud:
+	@echo "Fault test: #UD after init (no error code)..."
+	cd $(KERNEL_DIR) && cargo build --features fault-test-ud
+	@scripts/test-boot.sh $(KERNEL_ELF) \
+		"F2K: GDT after load: 0x00cf9b000000ffff 0x00cf93000000ffff" \
+		"CPU EXCEPTION: vector 6" "error code 0x00000000"
+test-fault-gp:
+	@echo "Fault test: #GP after init (CPU-pushed error code)..."
+	cd $(KERNEL_DIR) && cargo build --features fault-test-gp
+	@scripts/test-boot.sh $(KERNEL_ELF) \
+		"CPU EXCEPTION: vector 13" "error code 0x00000018"
+test-fault: test-fault-ud test-fault-gp
+
 .PHONY: run-tests
 run-tests:
 	@echo "Running host unit tests..."
-	cd $(KERNEL_DIR) && cargo test
+	# CARGO_UNSTABLE_BUILD_STD=std: the workspace config builds core from
+	# source for the kernel; for host tests that collides with the host's
+	# prebuilt std, so build std (and its deps) from source instead.
+	cd $(KERNEL_DIR) && CARGO_UNSTABLE_BUILD_STD=std cargo test --lib --target $(RUST_HOST_TARGET)
 
 .PHONY: check
 check:

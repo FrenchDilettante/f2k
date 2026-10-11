@@ -4,20 +4,14 @@
 #
 # Everything needed to build the kernel lives here, so plain `cargo build` /
 # `cargo check` from anywhere in the workspace (and rust-analyzer) pick up
-# the same settings the Makefile uses.
+# the same settings the Makefile uses. Host-side unit tests (`make run-tests`)
+# override the target back to the host triple; keep anything kernel-only in
+# [target.x86-f2k] so it stays out of host builds.
 
 [build]
 # Target spec by path: no need to install it into the toolchain.
 # -Zjson-target-spec (nightly) permits .json paths here; see [unstable].
 target = "x86-f2k.json"
-# Disable PIC for the kernel: static relocation model, kernel code model
-rustflags = [
-    "-Z", "unstable-options",
-    "-C", "relocation-model=static",
-    "-C", "code-model=kernel",
-    "-C", "link-arg=-nostdlib",
-    "-C", "link-arg=-static",
-]
 
 # -Z flags that used to be spelled out on the cargo command line
 [unstable]
@@ -28,3 +22,12 @@ json-target-spec = true
 # Use our wrapper script for linking (same as the "linker" field in
 # x86-f2k.json; kept for when the spec is referenced by name)
 linker = "scripts/x86-elf-ld"
+# Disable PIC for the kernel: static relocation model, kernel code model.
+# Scoped to the kernel target so host unit tests link normally.
+rustflags = [
+    "-Z", "unstable-options",
+    "-C", "relocation-model=static",
+    "-C", "code-model=kernel",
+    "-C", "link-arg=-nostdlib",
+    "-C", "link-arg=-static",
+]
