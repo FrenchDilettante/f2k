@@ -1,10 +1,16 @@
 # F2K Cargo Configuration
 # Cross-compilation settings for x86 (32-bit) target
 # Requires nightly Rust (via rust-toolchain file)
+#
+# Everything needed to build the kernel lives here, so plain `cargo build` /
+# `cargo check` from anywhere in the workspace (and rust-analyzer) pick up
+# the same settings the Makefile uses.
 
 [build]
-target = "x86-f2k"
-# Enable custom targets and disable PIC for kernel
+# Target spec by path: no need to install it into the toolchain.
+# -Zjson-target-spec (nightly) permits .json paths here; see [unstable].
+target = "x86-f2k.json"
+# Disable PIC for the kernel: static relocation model, kernel code model
 rustflags = [
     "-Z", "unstable-options",
     "-C", "relocation-model=static",
@@ -13,6 +19,12 @@ rustflags = [
     "-C", "link-arg=-static",
 ]
 
+# -Z flags that used to be spelled out on the cargo command line
+[unstable]
+build-std = ["core", "alloc", "compiler_builtins"]
+json-target-spec = true
+
 [target.x86-f2k]
-# Use our wrapper script for linking
+# Use our wrapper script for linking (same as the "linker" field in
+# x86-f2k.json; kept for when the spec is referenced by name)
 linker = "scripts/x86-elf-ld"

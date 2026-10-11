@@ -4,8 +4,8 @@
 # Architecture
 ARCH ?= x86
 TARGET ?= x86-f2k
-# Pass the target spec by path so a fresh clone builds without copying it into the toolchain
-TARGET_SPEC ?= $(CURDIR)/$(TARGET).json
+# Build options (target spec, build-std, linker) live in .cargo/config.toml,
+# so cargo and rust-analyzer use the same settings as make.
 KERNEL_ELF ?= $(BUILD_DIR)/$(TARGET)/debug/f2k-kernel
 
 # Directories
@@ -69,7 +69,7 @@ all: disk
 .PHONY: kernel
 kernel:
 	@echo "Building F2K kernel..."
-	cd $(KERNEL_DIR) && cargo +nightly build --target $(TARGET_SPEC) -Zbuild-std=core,alloc,compiler_builtins -Zunstable-options -Zjson-target-spec
+	cd $(KERNEL_DIR) && cargo build
 	@echo "Kernel built: $(KERNEL_ELF)"
 
 .PHONY: qemu
@@ -107,7 +107,7 @@ run: disk
 .PHONY: release
 release:
 	@echo "Building F2K kernel (release mode)..."
-	cd $(KERNEL_DIR) && cargo +nightly build --target $(TARGET_SPEC) --release -Zbuild-std=core,alloc,compiler_builtins -Zunstable-options -Zjson-target-spec
+	cd $(KERNEL_DIR) && cargo build --release
 	@echo "Kernel built: $(BUILD_DIR)/$(TARGET)/release/f2k-kernel"
 
 .PHONY: clean
@@ -139,8 +139,8 @@ run-tests:
 .PHONY: check
 check:
 	@echo "Checking code..."
-	cd $(KERNEL_DIR) && cargo check --target $(TARGET_SPEC) -Zbuild-std=core,alloc,compiler_builtins -Zunstable-options -Zjson-target-spec
-	cd $(KERNEL_DIR) && cargo clippy --target $(TARGET_SPEC) -Zbuild-std=core,alloc,compiler_builtins -Zunstable-options -Zjson-target-spec
+	cd $(KERNEL_DIR) && cargo check
+	cd $(KERNEL_DIR) && cargo clippy
 
 # =============================================================================
 # Limine Bootloader Targets
