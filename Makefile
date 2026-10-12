@@ -131,11 +131,11 @@ test: test-boot
 
 # Boot smoke test: boots the kernel in QEMU and checks the banner on COM1
 test-boot: kernel
-	@scripts/test-boot.sh $(KERNEL_ELF) "F2K Booted Successfully" "F2K: frame database audit: ok" "F2K: kernel heap: alloc/free ok"
+	@scripts/test-boot.sh $(KERNEL_ELF) "F2K Booted Successfully" "F2K: frame database audit: ok" "F2K: kernel heap: alloc/free ok" "F2K: ring-3 round trip ok"
 
 .PHONY: test-disk
 test-disk: disk
-	@scripts/test-boot.sh $(DISK_IMG) "F2K Booted Successfully" "F2K: frame database audit: ok" "F2K: kernel heap: alloc/free ok"
+	@scripts/test-boot.sh $(DISK_IMG) "F2K Booted Successfully" "F2K: frame database audit: ok" "F2K: kernel heap: alloc/free ok" "F2K: ring-3 round trip ok"
 
 # On-target fault injection: builds the kernel with a test feature that
 # forces a CPU exception right after init, then checks the COM1 dump.
@@ -150,7 +150,7 @@ test-fault-gp:
 	@echo "Fault test: #GP after init (CPU-pushed error code)..."
 	cd $(KERNEL_DIR) && cargo build --features fault-test-gp
 	@scripts/test-boot.sh $(KERNEL_ELF) \
-		"CPU EXCEPTION: vector 13" "error code 0x00000018"
+		"CPU EXCEPTION: vector 13" "error code 0x00000038"
 test-fault: test-fault-ud test-fault-gp
 
 .PHONY: run-tests

@@ -14,6 +14,11 @@ use crate::gdt::KERNEL_CODE_SELECTOR;
 /// Number of CPU exception vectors (0-31).
 const EXCEPTION_VECTORS: usize = 32;
 
+/// IDT size: the 32 exception vectors plus room for gates; the M2
+/// round-trip gate (see `user.rs`) is registered at DPL 3, and vectors
+/// left absent (not-present gates) raise #GP if raised.
+const IDT_VECTORS: usize = 256;
+
 /// Registers saved by the common exception stub, in stack order.
 /// Constructed by assembly, never by Rust code. The segment registers are
 /// not part of the frame: LLVM assembles `push <segreg>` as a 16-bit push,
@@ -34,6 +39,11 @@ struct ExceptionFrame {
     eip: u32,
     cs: u32,
     eflags: u32,
+    /// Present only when the exception was raised in ring 3: the CPU
+    /// pushes the interrupted stack pair after EFLAGS on the TSS
+    /// stack. Reading them from a ring-0 frame is out of bounds.
+    user_esp: u32,
+    user_ss: u32,
 }
 
 /// One 32-bit IDT gate descriptor: interrupt gate, present, ring 0.
@@ -50,9 +60,14 @@ struct Gate {
 impl Gate {
     /// 0x8E = present, ring 0, 32-bit interrupt gate (clears IF on entry).
     ///
-    /// For user-mode `int3`/`into` support, vectors 3 and 4 will eventually
-    /// need DPL-3 gates (0xEE); we use DPL 0 until user mode exists.
+    /// Gates that user code must be able to raise use DPL 3 instead
+    /// ([`Gate::new_user`]); software exceptions (int3/into) will be
+    /// DPL-3 gates in their own vectors later.
     const INTERRUPT_ATTR: u8 = 0x8E;
+
+    /// 0xEE = present, ring 3, 32-bit interrupt gate: ring-3 code may
+    /// raise the vector with `int`; entry clears IF as usual.
+    const USER_INTERRUPT_ATTR: u8 = 0xEE;
 
     fn new(handler: usize) -> Self {
         Self {
@@ -63,24 +78,35 @@ impl Gate {
             offset_high: (handler >> 16) as u16,
         }
     }
+
+    /// A ring-3-raisable interrupt gate.
+    fn new_user(handler: usize) -> Self {
+        Self {
+            offset_low: handler as u16,
+            selector: KERNEL_CODE_SELECTOR,
+            reserved: 0,
+            type_attr: Self::USER_INTERRUPT_ATTR,
+            offset_high: (handler >> 16) as u16,
+        }
+    }
 }
 
-// Pin the attribute byte at the definition: present, ring 0, 32-bit
-// interrupt gate (clears IF on entry).
-const _: () = assert!(Gate::INTERRUPT_ATTR == 0x8E);
+// Pin the attribute bytes at the definition: present, 32-bit interrupt
+// gates (clears IF on entry), ring 0 or ring 3.
+const _: () = assert!(Gate::INTERRUPT_ATTR == 0x8E && Gate::USER_INTERRUPT_ATTR == 0xEE);
 
 /// The IDT is built at runtime (stub addresses are link-time constants but
 /// their casts are not const-evaluable), then loaded with `lidt`.
 ///
 /// Writes go through raw pointers: taking `&static mut` references is UB
 /// territory, and this runs once on the boot CPU before `sti`.
-static mut IDT: [Gate; EXCEPTION_VECTORS] = [Gate {
+static mut IDT: [Gate; IDT_VECTORS] = [Gate {
     offset_low: 0,
     selector: 0,
     reserved: 0,
     type_attr: 0,
     offset_high: 0,
-}; EXCEPTION_VECTORS];
+}; IDT_VECTORS];
 
 /// Address of a generated stub. Casts through a pointer: clippy flags a
 /// direct function-item-to-integer cast as provenance-lossy.
@@ -91,7 +117,7 @@ fn stub_addr(stub: unsafe extern "C" fn()) -> usize {
 /// IDTR limit for the exception table: the offset of the last valid byte
 /// (table size minus one), which is what `lidt` expects.
 const fn idt_limit() -> u16 {
-    (core::mem::size_of::<[Gate; EXCEPTION_VECTORS]>() - 1) as u16
+    (core::mem::size_of::<[Gate; IDT_VECTORS]>() - 1) as u16
 }
 
 /// Build the IDT and load it.
@@ -143,6 +169,13 @@ pub unsafe fn init() {
         for (i, stub) in stubs.iter().enumerate() {
             core::ptr::write_volatile(base.add(i), Gate::new(*stub));
         }
+
+        // The M2 round-trip gate (see `user.rs`): ring-3 reachable,
+        // entered on the TSS ring-0 stack.
+        core::ptr::write_volatile(
+            base.add(crate::user::RING3_GATE_VECTOR),
+            Gate::new_user(stub_addr(ring3_gate_stub)),
+        );
 
         // Build the IDTR on the stack: 6 bytes of limit + base, then lidt.
         let mut idtr = [0u8; 6];
@@ -197,6 +230,10 @@ unsafe extern "C" {
     fn exception_stub_29();
     fn exception_stub_30();
     fn exception_stub_31();
+    /// M2 round-trip gate stub (defined in `user.rs`): the ring-3
+    /// smoke raises its vector with `int`; the handler confirms the
+    /// round trip on COM1 and halts.
+    fn ring3_gate_stub();
 }
 
 /// Mnemonics for the 32 CPU exception vectors, for the diagnostic dump.
@@ -262,17 +299,12 @@ extern "C" fn exception_handler(frame: &ExceptionFrame) -> ! {
         frame.ecx,
         frame.edx
     );
-    // The stub's pushad saved the ESP pointing at the `vector` slot; the
-    // interrupted code's ESP sits 20 bytes higher, above vector, error
-    // code, EIP, CS and EFLAGS (ring-0 faults: the CPU pushes no extra
-    // ESP/SS pair; revisit once user mode exists).
-    let interrupted_esp = frame.esp + 5 * 4;
     crate::serial_println!(
         "  ESI {:#010x}  EDI {:#010x}  EBP {:#010x}  ESP {:#010x}",
         frame.esi,
         frame.edi,
         frame.ebp,
-        interrupted_esp
+        interrupted_esp(frame)
     );
     // Segment registers are read at dump time: pushing them in the stub
     // would only store 16 bits per register (see comment on ExceptionFrame).
@@ -297,6 +329,13 @@ extern "C" fn exception_handler(frame: &ExceptionFrame) -> ! {
         fs,
         gs
     );
+    if frame.cs & 3 != 0 {
+        crate::serial_println!(
+            "  raised from ring 3: user ESP {:#010x}  user SS {:#04x}",
+            frame.user_esp,
+            frame.user_ss
+        );
+    }
     if frame.vector == 14 {
         let cr2: u32;
         unsafe {
@@ -305,6 +344,15 @@ extern "C" fn exception_handler(frame: &ExceptionFrame) -> ! {
         crate::serial_println!("  CR2 (faulting address) {:#010x}", cr2);
     }
     crate::halt();
+}
+
+/// ESP of the interrupted context, reconstructed from the stub-saved
+/// ESP: the stub pushes the vector and error code below the CPU-pushed
+/// tail, so the interrupted ESP sits above vector, error code, EIP, CS
+/// and EFLAGS — plus the interrupted ESP/SS pair when the exception
+/// came from ring 3 (the CPU pushes it on the TSS stack).
+fn interrupted_esp(frame: &ExceptionFrame) -> u32 {
+    frame.esp + if frame.cs & 3 != 0 { 7 * 4 } else { 5 * 4 }
 }
 
 // --- Exception stubs ------------------------------------------------------
@@ -446,6 +494,8 @@ mod tests {
             eip: 0,
             cs: 0,
             eflags: 0,
+            user_esp: 0,
+            user_ss: 0,
         }
     }
 
@@ -472,7 +522,7 @@ mod tests {
     #[test]
     fn gate_layout_matches_x86_gate_descriptor() {
         assert_eq!(size_of::<Gate>(), 8);
-        assert_eq!(size_of::<[Gate; EXCEPTION_VECTORS]>(), 0x100);
+        assert_eq!(size_of::<[Gate; IDT_VECTORS]>(), 0x800);
 
         let gate = Gate::new(0x001E_BEEF);
         // Gate is packed: copy fields to locals instead of taking references.
@@ -493,6 +543,34 @@ mod tests {
         assert_eq!(addr_of!(gate.reserved) as usize - base, 4);
         assert_eq!(addr_of!(gate.type_attr) as usize - base, 5);
         assert_eq!(addr_of!(gate.offset_high) as usize - base, 6);
+    }
+
+    /// A user gate differs from a kernel gate in exactly the DPL bits of
+    /// the type/attr byte (0x8E -> 0xEE).
+    #[test]
+    fn user_gate_differs_only_in_dpl() {
+        let kernel_gate = Gate::new(0x0010_0000);
+        let user_gate = Gate::new_user(0x0010_0000);
+        // Gates are packed: copy fields to locals instead of taking references.
+        let (k_low, k_high, k_sel, k_res) = (
+            kernel_gate.offset_low,
+            kernel_gate.offset_high,
+            kernel_gate.selector,
+            kernel_gate.reserved,
+        );
+        let (u_low, u_high, u_sel, u_res) = (
+            user_gate.offset_low,
+            user_gate.offset_high,
+            user_gate.selector,
+            user_gate.reserved,
+        );
+        assert_eq!(user_gate.type_attr, 0xEE);
+        assert_eq!(user_gate.type_attr ^ kernel_gate.type_attr, 0x60);
+        // Everything else (offsets, selector, reserved) is identical.
+        assert_eq!(u_low, k_low);
+        assert_eq!(u_high, k_high);
+        assert_eq!(u_sel, k_sel);
+        assert_eq!(u_res, k_res);
     }
 
     /// Gate::new splits the handler address into the two halves the
@@ -519,23 +597,42 @@ mod tests {
         );
     }
 
-    /// The exception frame is 13 u32s; the trap tail keeps the order the
-    /// CPU pushes: error code, EIP, CS, EFLAGS.
+    /// The exception frame is 15 u32s; the trap tail keeps the order the
+    /// CPU pushes: error code, EIP, CS, EFLAGS, then (ring-3 origin
+    /// only) the interrupted ESP/SS pair.
     #[test]
     fn frame_layout_size_and_tail_offsets() {
-        assert_eq!(size_of::<ExceptionFrame>(), 13 * 4);
+        assert_eq!(size_of::<ExceptionFrame>(), 15 * 4);
         let frame = zero_frame();
         let base = addr_of!(frame) as usize;
         assert_eq!(addr_of!(frame.error_code) as usize - base, 9 * 4);
         assert_eq!(addr_of!(frame.eip) as usize - base, 10 * 4);
         assert_eq!(addr_of!(frame.cs) as usize - base, 11 * 4);
         assert_eq!(addr_of!(frame.eflags) as usize - base, 12 * 4);
+        assert_eq!(addr_of!(frame.user_esp) as usize - base, 13 * 4);
+        assert_eq!(addr_of!(frame.user_ss) as usize - base, 14 * 4);
+    }
+
+    /// The interrupted-ESP reconstruction: five frame words sit between
+    /// the stub-saved ESP and the interrupted context's stack (vector,
+    /// error code, EIP, CS, EFLAGS), plus the interrupted ESP/SS pair
+    /// when the exception came from ring 3.
+    #[test]
+    fn interrupted_esp_accounts_for_ring3_tail() {
+        let mut frame = zero_frame();
+        frame.esp = 0x1000;
+        frame.cs = 0x08; // ring 0
+        assert_eq!(interrupted_esp(&frame), 0x1000 + 5 * 4);
+        frame.cs = 0x1B; // ring 3 (RPL 3 in the low bits)
+        assert_eq!(interrupted_esp(&frame), 0x1000 + 7 * 4);
+        frame.cs = 0x07; // only the low two bits decide
+        assert_eq!(interrupted_esp(&frame), 0x1000 + 7 * 4);
     }
 
     /// The IDTR limit is the offset of the last valid byte: table size
     /// minus one. This checks the actual function `init` feeds to `lidt`.
     #[test]
     fn idt_limit_is_last_valid_byte_offset() {
-        assert_eq!(idt_limit(), 0xFF);
+        assert_eq!(idt_limit(), 0x7FF);
     }
 }

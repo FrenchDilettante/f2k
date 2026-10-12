@@ -16,12 +16,16 @@
 // Boot module (Multiboot header and _start stub)
 mod boot;
 
-// CPU tables: GDT (flat segments) and IDT (exception handlers)
+// CPU tables: GDT (flat kernel + user segments, TSS) and IDT
+// (exception handlers, the M2 round-trip gate)
 mod gdt;
 mod idt;
 
 // Memory management: physical frame allocator
 mod mem;
+
+// Ring 3: user-mode entry and the M2 round-trip smoke
+mod user;
 
 // C library functions for bare-metal
 mod c_lib;
@@ -102,13 +106,13 @@ pub extern "C" fn kmain(magic: u32, multiboot_info: u32) -> ! {
     }
     #[cfg(feature = "fault-test-gp")]
     {
-        // Selector 0x18 (slot 3) is one past the GDT limit: #GP with the
-        // CPU-pushed error code 0x18 — the EXC_STUB_ERR path. Segment
+        // Selector 0x38 (slot 7) is one past the GDT limit: #GP with the
+        // CPU-pushed error code 0x38 — the EXC_STUB_ERR path. Segment
         // registers can only be loaded from a general-purpose register.
         serial_println!("F2K: fault test: forcing #GP (error code path)");
         unsafe {
             asm!(
-                "mov ax, 0x18",
+                "mov ax, 0x38",
                 "mov ds, ax",
                 out("ax") _,
                 options(nomem, nostack)
@@ -147,6 +151,9 @@ pub extern "C" fn kmain(magic: u32, multiboot_info: u32) -> ! {
     // KERNEL_BASE is mapped.
     mem::paging::teardown_low_identity();
     serial_println!("F2K: paging on: kernel at {:#010x}, low identity removed", 0x8010_1000u32);
+    // Install the runtime table access (the self-map and the scratch
+    // page table): the machinery for building user address spaces.
+    mem::paging::init_table_access();
 
     // Kernel heap smoke: allocate, touch, free, audit.
     mem::bootmem::heap_init();
@@ -165,7 +172,8 @@ pub extern "C" fn kmain(magic: u32, multiboot_info: u32) -> ! {
     });
     serial_println!("F2K: kernel heap: alloc/free ok");
 
-    // For now, just halt
-    // TODO: Continue with kernel initialization
-    halt();
+    // M2 smoke: enter ring 3 and prove the round trip through the
+    // temporary gate. Run to completion: the gate handler reports the
+    // round trip on COM1 and halts the machine.
+    user::ring3_smoke()
 }

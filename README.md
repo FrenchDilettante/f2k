@@ -117,15 +117,16 @@ f2k/
         ├── lib.rs        # Kernel library: kmain and all modules (unit-testable)
         ├── boot/         # Boot-related code
         │   └── mod.rs    # Multiboot header and _start stub
-        ├── gdt.rs        # GDT: flat 32-bit kernel segments
-        ├── idt.rs        # IDT: CPU exception handlers with register dump on COM1
+        ├── gdt.rs        # GDT: flat kernel + user segments, TSS (ring-0 stack for gate entries)
+        ├── idt.rs        # IDT: CPU exception handlers with register dump on COM1; the ring-3 gate
         ├── mem/          # Memory management
         │   ├── mod.rs        # Module root
         │   ├── frame.rs      # Physical frame allocator: state-keyed FIFO lists, per-color chains
         │   ├── multiboot.rs  # Multiboot 1 memory map parsing (host-testable)
-        │   ├── paging.rs     # Boot page tables: kernel window at 0x80000000+, temporary low identity
+        │   ├── paging.rs     # Boot page tables; runtime table access (self-map, scratch) and user page mapping
         │   ├── heap.rs       # Kernel heap: fixed-pool free-list allocator (host-testable)
         │   └── bootmem.rs    # Boot-time initialization: frame database and heap from the memory map
+        ├── user.rs       # Ring 3: iret entry, trap frame shape, the M2 round-trip smoke
         ├── serial.rs     # Serial port output
         └── c_lib.rs      # C library stubs
 ```

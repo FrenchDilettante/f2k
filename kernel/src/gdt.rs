@@ -4,17 +4,32 @@
 //! early so the memory model is ours from the start: a flat 32-bit address
 //! space with one kernel code and one kernel data segment, both base 0,
 //! limit 4 GiB. This matches the flat protected-mode model Windows 2000
-//! runs in and keeps the door open for a TSS and user segments later.
+//! runs in. Ring 3 adds the matching pair of user segments (DPL 3) and the
+//! TSS descriptor: the task register is loaded during init so privilege
+//! changes through an interrupt gate find their ring-0 stack (esp0/ss0).
 
 /// Selector offsets into the GDT (in bytes; low 3 bits are RPL/TI and stay 0
 /// for kernel access). Pinned to the slot order below and fed to
 /// `gdt_load`'s assembly via `const` operands, so nothing can drift.
 pub const KERNEL_CODE_SELECTOR: u16 = 0x08;
 pub const KERNEL_DATA_SELECTOR: u16 = 0x10;
+/// Ring-3 flat code segment (slot 3). Ring-3 entry forms it with RPL 3.
+pub const USER_CODE_SELECTOR: u16 = 0x18;
+/// Ring-3 flat data segment (slot 4). Ring-3 entry forms it with RPL 3.
+pub const USER_DATA_SELECTOR: u16 = 0x20;
+/// The TSS descriptor (slot 5); loaded into the task register during init.
+pub const TSS_SELECTOR: u16 = 0x28;
 
-// Kernel selectors are GDT slot indices times 8: null, code and data are
-// slots 0, 1 and 2; the RPL/TI bits stay clear for kernel access.
-const _: () = assert!(KERNEL_CODE_SELECTOR == 0x08 && KERNEL_DATA_SELECTOR == 0x10);
+// Kernel selectors are GDT slot indices times 8: null, kernel code and
+// data are slots 0, 1 and 2; user code and data slots 3, 4; the TSS
+// slot 5. The RPL/TI bits stay clear for kernel access.
+const _: () = assert!(
+    KERNEL_CODE_SELECTOR == 0x08
+        && KERNEL_DATA_SELECTOR == 0x10
+        && USER_CODE_SELECTOR == 0x18
+        && USER_DATA_SELECTOR == 0x20
+        && TSS_SELECTOR == 0x28
+);
 
 /// Build one descriptor: base, limit, access byte and flags nibble packed
 /// into 64 bits, following the x86 segment descriptor layout:
@@ -35,42 +50,192 @@ const fn make_entry(base: u32, limit: u32, access: u8, flags: u8) -> u64 {
 
 /// Null descriptor, kernel code (0x9B: present, ring 0, code, readable,
 /// accessed), kernel data (0x93: present, ring 0, data, writable,
+/// accessed), user code (0xFB: present, ring 3, code, readable,
+/// accessed), user data (0xF3: present, ring 3, data, writable,
 /// accessed). G=1, D=1: 4 GiB page-granular 32-bit segments.
 ///
-/// The accessed bit (access byte bit 0) is pre-set: the CPU sets it in the
-/// GDT itself on every segment-register load, and pre-setting it keeps
-/// this table read-only — the CPU never needs to write here, which matters
-/// once paging maps the table's page read-only.
-static GDT: [u64; 3] = [
+/// The accessed bit (access byte bit 0) is pre-set on the segment
+/// descriptors: the CPU sets it in the GDT itself on every
+/// segment-register load, and pre-setting it keeps those entries
+/// stable — the only architectural write into this table is the busy
+/// bit the CPU sets in the TSS descriptor when `ltr` loads the task
+/// register (see `tss_descriptor`), so the table's page stays writable.
+/// Slot 5 holds the TSS descriptor, which carries a runtime address
+/// and is built by `init` before the table is loaded.
+static mut GDT: [u64; 6] = [
     make_entry(0, 0, 0x00, 0x0),
     make_entry(0, 0xFFFFF, 0x9B, 0xC),
     make_entry(0, 0xFFFFF, 0x93, 0xC),
+    make_entry(0, 0xFFFFF, 0xFB, 0xC),
+    make_entry(0, 0xFFFFF, 0xF3, 0xC),
+    0,
 ];
+
+/// TSS descriptor: present, ring 0, system type "available 32-bit
+/// TSS" (0x89), byte-granular; flags bit 6 marks the TSS as 32-bit.
+/// The descriptor must be non-busy when `ltr` loads it; the CPU then
+/// sets the busy bit (0x89 -> 0x8B) in the GDT itself — the one
+/// architectural write into this table, so the GDT page stays writable
+/// (the pre-set accessed bits keep the segment descriptors stable).
+const fn tss_descriptor(base: u32, limit: u32) -> u64 {
+    make_entry(base, limit, 0x89, 0x4)
+}
+
+/// The 32-bit task state segment. The CPU consults ss0:esp0 when an
+/// interrupt gate switches context from ring 3 to ring 0; every other
+/// field belongs to hardware task switching, which this kernel does not
+/// use, and stays zero.
+#[allow(dead_code)]
+#[repr(C)]
+pub struct TaskStateSegment {
+    prev_task: u16,
+    reserved0: u16,
+    /// Ring-0 stack pointer a ring-3 gate entry switches to.
+    pub esp0: u32,
+    /// Ring-0 stack segment (the kernel data selector).
+    pub ss0: u16,
+    reserved1: u16,
+    esp1: u32,
+    ss1: u16,
+    reserved2: u16,
+    esp2: u32,
+    ss2: u16,
+    reserved3: u16,
+    cr3: u32,
+    eip: u32,
+    eflags: u32,
+    eax: u32,
+    ecx: u32,
+    edx: u32,
+    ebx: u32,
+    esp: u32,
+    ebp: u32,
+    esi: u32,
+    edi: u32,
+    es: u16,
+    cs: u16,
+    ss: u16,
+    ds: u16,
+    fs: u16,
+    gs: u16,
+    ldt: u16,
+    reserved4: u16,
+    /// Free for the kernel's own use; this kernel leaves it zero.
+    os_use: [u8; 12],
+    /// Debug trap bit (only bit 0 is defined); zero.
+    trap: u16,
+    /// Offset one past the last byte of the I/O permission bitmap. With
+    /// no bitmap in the segment (set to the TSS size), every port
+    /// access from ring 3 faults.
+    pub iomap_base: u16,
+}
+
+impl TaskStateSegment {
+    pub const fn new() -> Self {
+        Self {
+            prev_task: 0,
+            reserved0: 0,
+            esp0: 0,
+            ss0: 0,
+            reserved1: 0,
+            esp1: 0,
+            ss1: 0,
+            reserved2: 0,
+            esp2: 0,
+            ss2: 0,
+            reserved3: 0,
+            cr3: 0,
+            eip: 0,
+            eflags: 0,
+            eax: 0,
+            ecx: 0,
+            edx: 0,
+            ebx: 0,
+            esp: 0,
+            ebp: 0,
+            esi: 0,
+            edi: 0,
+            es: 0,
+            cs: 0,
+            ss: 0,
+            ds: 0,
+            fs: 0,
+            gs: 0,
+            ldt: 0,
+            reserved4: 0,
+            os_use: [0; 12],
+            trap: 0,
+            iomap_base: 0,
+        }
+    }
+}
+
+/// The one TSS, pointed at by the descriptor in GDT slot 5 and loaded
+/// into the task register during init.
+static mut TSS: TaskStateSegment = TaskStateSegment::new();
+
+#[cfg(target_arch = "x86")]
+use core::arch::asm;
+
+/// Size of the dedicated ring-0 stack below.
+const RING0_STACK_SIZE: usize = 16 * 1024;
+
+/// The ring-0 stack gate entries from ring 3 switch to (TSS esp0).
+/// Keep it generous: exception dumps and (later) syscall handlers run
+/// here; the boot stack stays untouched by ring switches.
+static mut RING0_STACK: [u8; RING0_STACK_SIZE] = [0; RING0_STACK_SIZE];
 
 // The GDTR the `lgdt` instruction consumes (segment limit + linear base) is
 // built on the stack by the assembly helper from its two arguments.
 
-/// Load our GDT and reload every segment register (including CS via a far
-/// jump, which cannot be done from inline assembly).
+/// Load our GDT, initialize the TSS and load the task register.
+///
+/// The TSS descriptor is built here (it carries a runtime address),
+/// the TSS is pointed at the dedicated ring-0 stack for gate entries
+/// from ring 3, and `ltr` makes the CPU use it. Segment registers are
+/// reloaded for the new table (CS via a far jump in the assembly
+/// helper).
 ///
 /// # Safety
 ///
 /// Must run on the boot CPU in ring 0 with interrupts disabled.
 #[cfg(target_arch = "x86")]
 pub unsafe fn init() {
-    let base = core::ptr::addr_of!(GDT) as u32;
-    let limit = (core::mem::size_of::<[u64; 3]>() - 1) as u16;
+    let gdt = core::ptr::addr_of_mut!(GDT) as *mut u64;
+    let base = gdt as u32;
+    let limit = (core::mem::size_of::<[u64; 6]>() - 1) as u16;
+    let tss_addr = core::ptr::addr_of_mut!(TSS) as u32;
+    // SAFETY: boot CPU, ring 0, interrupts disabled; the GDT is not
+    // loaded yet and these statics have no other accessor.
+    unsafe {
+        core::ptr::write_volatile(
+            gdt.add(5),
+            tss_descriptor(tss_addr, (core::mem::size_of::<TaskStateSegment>() - 1) as u32),
+        );
+        let tss = &mut *core::ptr::addr_of_mut!(TSS);
+        tss.esp0 = (core::ptr::addr_of_mut!(RING0_STACK) as *mut u8 as u32)
+            + RING0_STACK_SIZE as u32;
+        tss.ss0 = KERNEL_DATA_SELECTOR;
+        // No I/O bitmap: every ring-3 port access faults (the smoke
+        // and the later syscall layer have no business with ports).
+        tss.iomap_base = core::mem::size_of::<TaskStateSegment>() as u16;
+    }
     // SAFETY: boot CPU, ring 0, interrupts disabled; the GDT is 'static.
     gdt_load(base, limit);
+    // SAFETY: the TSS descriptor is in the loaded table and marked
+    // busy; ltr has no other effect than loading the task register.
+    unsafe {
+        asm!("ltr {tss:x}", tss = in(reg) TSS_SELECTOR, options(nostack, preserves_flags));
+    }
 }
 
-/// Test hook for the fault-injection boot paths (`fault-test-ud` /
-/// `fault-test-gp`): read one descriptor after `init`, so the boot log can
-/// prove the CPU did not write to the read-only table.
+/// Read one descriptor after `init`: the fault-injection boot paths
+/// (`fault-test-ud` / `fault-test-gp`) use it to prove the CPU did not
+/// write to the read-only table.
 #[cfg(any(feature = "fault-test-ud", feature = "fault-test-gp"))]
 pub(crate) fn debug_descriptor(index: usize) -> u64 {
     // SAFETY: reads a static array with a constant index at the call site.
-    unsafe { core::ptr::read_volatile(core::ptr::addr_of!(GDT[index])) }
+    unsafe { core::ptr::read_volatile((core::ptr::addr_of!(GDT) as *const u64).add(index)) }
 }
 
 #[cfg(target_arch = "x86")]
@@ -130,16 +295,82 @@ mod tests {
             | ((limit & 0xFFFF) as u64)
     }
 
-    /// Flat kernel segments: null descriptor, then code (0x9B) and data
-    /// (0x93) with the accessed bit pre-set, so segment loads never write
-    /// to the read-only table. All base 0, 4 GiB, page-granular 32-bit
-    /// (flags 0xC).
+    /// Read one link-time GDT entry (tests never run init).
+    fn entry(index: usize) -> u64 {
+        // SAFETY: read-only access to the static before any boot code.
+        unsafe { core::ptr::read_volatile((core::ptr::addr_of!(GDT) as *const u64).add(index)) }
+    }
+
+    /// Flat segments: null descriptor, kernel code (0x9B) and data
+    /// (0x93), user code (0xFB) and data (0xF3), all with the accessed
+    /// bit pre-set so segment loads never write to the read-only table;
+    /// all base 0, 4 GiB, page-granular 32-bit (flags 0xC). Slot 5 is
+    /// zero at static time — init fills it with the TSS descriptor.
     #[test]
-    fn gdt_entries_are_flat_kernel_segments() {
-        assert_eq!(GDT.len(), 3);
-        assert_eq!(GDT[0], 0); // null descriptor
-        assert_eq!(GDT[1], 0x00CF_9B00_0000_FFFF); // kernel code, accessed
-        assert_eq!(GDT[2], 0x00CF_9300_0000_FFFF); // kernel data, accessed
+    fn gdt_entries_are_flat_segments() {
+        assert_eq!(core::mem::size_of::<[u64; 6]>(), 6 * 8);
+        assert_eq!(entry(0), 0); // null descriptor
+        assert_eq!(entry(1), 0x00CF_9B00_0000_FFFF); // kernel code, accessed
+        assert_eq!(entry(2), 0x00CF_9300_0000_FFFF); // kernel data, accessed
+        assert_eq!(entry(3), 0x00CF_FB00_0000_FFFF); // user code, accessed
+        assert_eq!(entry(4), 0x00CF_F300_0000_FFFF); // user data, accessed
+        assert_eq!(entry(5), 0); // TSS descriptor: built at runtime
+    }
+
+    /// Selector layout: kernel segments in slots 1-2, user segments in
+    /// 3-4, TSS in 5; the ring-3 entry forms CS/SS with RPL 3.
+    #[test]
+    fn selectors_pin_the_slot_layout() {
+        assert_eq!(KERNEL_CODE_SELECTOR, 0x08);
+        assert_eq!(KERNEL_DATA_SELECTOR, 0x10);
+        assert_eq!(USER_CODE_SELECTOR, 0x18);
+        assert_eq!(USER_DATA_SELECTOR, 0x20);
+        assert_eq!(TSS_SELECTOR, 0x28);
+        // Ring-3 entry forms: selectors with RPL 3 in the low bits.
+        assert_eq!(USER_CODE_SELECTOR | 3, 0x1B);
+        assert_eq!(USER_DATA_SELECTOR | 3, 0x23);
+        // The GDT limit covers exactly the six entries (last valid byte).
+        assert_eq!(core::mem::size_of::<[u64; 6]>() - 1, 47);
+    }
+
+    /// The TSS descriptor agrees with the independent packing oracle:
+    /// access byte 0x89 = present, ring 0, system, available 32-bit
+    /// TSS (non-busy, so `ltr` accepts it; the CPU sets the busy bit
+    /// in the GDT); byte-granular flags nibble with only the 32-bit
+    /// TSS bit set.
+    #[test]
+    fn tss_descriptor_matches_independent_oracle() {
+        assert_eq!(
+            tss_descriptor(0x0012_3456, 0x67),
+            oracle_entry(0x0012_3456, 0x67, 0x09, 0, false)
+        );
+        // Hand-decoded: byte 7 = base 31:24 (0x00), byte 6 = the flags
+        // nibble with the 32-bit-TSS bit (0x4) in its high half and
+        // limit 19:16 (0) in the low half, byte 5 = 0x89, byte 4 =
+        // base 23:16 (0x12), bytes 3:2 = base 15:0 (0x3456), bytes
+        // 1:0 = limit 15:0 (0x0067).
+        assert_eq!(tss_descriptor(0x0012_3456, 0x67), 0x0040_8912_3456_0067);
+    }
+
+    /// The TSS matches the x86 layout: 104 bytes, with the fields the
+    /// CPU consults (esp0, ss0, iomap_base) at their architectural
+    /// offsets.
+    #[test]
+    fn tss_layout_matches_x86() {
+        let tss = TaskStateSegment::new();
+        let base = core::ptr::addr_of!(tss) as usize;
+        assert_eq!(core::mem::size_of::<TaskStateSegment>(), 104);
+        assert_eq!(core::ptr::addr_of!(tss.esp0) as usize - base, 0x04);
+        assert_eq!(core::ptr::addr_of!(tss.ss0) as usize - base, 0x08);
+        assert_eq!(core::ptr::addr_of!(tss.esp1) as usize - base, 0x0C);
+        assert_eq!(core::ptr::addr_of!(tss.esp2) as usize - base, 0x14);
+        assert_eq!(core::ptr::addr_of!(tss.cr3) as usize - base, 0x1C);
+        assert_eq!(core::ptr::addr_of!(tss.eip) as usize - base, 0x20);
+        assert_eq!(core::ptr::addr_of!(tss.eflags) as usize - base, 0x24);
+        assert_eq!(core::ptr::addr_of!(tss.es) as usize - base, 0x48);
+        assert_eq!(core::ptr::addr_of!(tss.gs) as usize - base, 0x52);
+        assert_eq!(core::ptr::addr_of!(tss.ldt) as usize - base, 0x54);
+        assert_eq!(core::ptr::addr_of!(tss.iomap_base) as usize - base, 0x66);
     }
 
     /// make_entry must agree with the independent oracle for non-flat
