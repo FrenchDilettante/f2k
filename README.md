@@ -94,7 +94,9 @@ f2k/
 │   ├── README.md         # Test conventions and one-line summaries
 │   ├── build.bat         # Rebuilds every fixture on the Windows 2000 machine
 │   ├── exit0/
-│   │   └── exit0.c       # Baseline: no CRT, entry calls ExitProcess(0)
+│   │   ├── exit0.c       # Baseline: no CRT, entry calls ExitProcess(0)
+│   │   ├── exit0.exe      # Fixture compiled on a real Windows 2000 machine
+│   │   └── imports.txt    # Verified import surface of the fixture
 │   └── ret0/             # Baseline: CRT startup, main returns 0
 │       ├── ret0.c
 │       ├── ret0.exe       # Fixture compiled on a real Windows 2000 machine

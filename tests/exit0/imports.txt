@@ -1,0 +1,9 @@
+exit0.exe - verified facts from the binary
+
+PE32, subsystem CUI (console), ImageBase 0x400000, SectionAlignment
+0x1000, AddressOfEntryPoint RVA 0x1000, SizeOfImage 0x3000. No CRT
+(built /NODEFAULTLIB with a custom entry point).
+
+Single import, from KERNEL32.dll:
+
+ExitProcess

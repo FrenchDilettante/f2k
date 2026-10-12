@@ -18,12 +18,14 @@ echo === exit0
 cd exit0
 cl /nologo exit0.c /link /NODEFAULTLIB /ENTRY:ExitMain /SUBSYSTEM:CONSOLE kernel32.lib
 if errorlevel 1 (echo build.bat: exit0 failed & exit /b 1)
+del exit0.obj
 cd ..
 
 echo === ret0
 cd ret0
 cl /nologo ret0.c
 if errorlevel 1 (echo build.bat: ret0 failed & exit /b 1)
+del ret0.obj
 cd ..
 
 echo All tests built.
