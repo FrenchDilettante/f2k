@@ -30,6 +30,13 @@ not committed.
 - `ret0` - the default MSVC 6 `/ML` CRT startup around
   `int main() { return 0; }`; exercises the full CRT initialization
   surface (35 KERNEL32.dll imports; see `ret0/imports.txt`).
+- `hello` - the console rung: the same CRT startup, then `printf`
+  writes "Hello, world!" to stdout and exits 0; the first test with
+  observable output.
+- `hellogui` - the GUI rung: registers a window class, shows a
+  window, paints "Hello, world!" once with `TextOut`, then closes
+  itself and exits 0; the first test to import user32.dll and
+  gdi32.dll.
 
 ## Building
 

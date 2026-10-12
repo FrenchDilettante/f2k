@@ -28,5 +28,19 @@ if errorlevel 1 (echo build.bat: ret0 failed & exit /b 1)
 del ret0.obj
 cd ..
 
+echo === hello
+cd hello
+cl /nologo hello.c
+if errorlevel 1 (echo build.bat: hello failed & exit /b 1)
+del hello.obj
+cd ..
+
+echo === hellogui
+cd hellogui
+cl /nologo hellogui.c user32.lib gdi32.lib /link /SUBSYSTEM:WINDOWS /ENTRY:WinMainCRTStartup
+if errorlevel 1 (echo build.bat: hellogui failed & exit /b 1)
+del hellogui.obj
+cd ..
+
 echo All tests built.
 exit /b 0

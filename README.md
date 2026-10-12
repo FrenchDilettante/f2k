@@ -97,10 +97,14 @@ f2k/
 │   │   ├── exit0.c       # Baseline: no CRT, entry calls ExitProcess(0)
 │   │   ├── exit0.exe      # Fixture compiled on a real Windows 2000 machine
 │   │   └── imports.txt    # Verified import surface of the fixture
-│   └── ret0/             # Baseline: CRT startup, main returns 0
-│       ├── ret0.c
-│       ├── ret0.exe       # Fixture compiled on a real Windows 2000 machine
-│       └── imports.txt    # Verified import surface of the fixture
+│   ├── ret0/             # Baseline: CRT startup, main returns 0
+│   │   ├── ret0.c
+│   │   ├── ret0.exe       # Fixture compiled on a real Windows 2000 machine
+│   │   └── imports.txt    # Verified import surface of the fixture
+│   ├── hello/
+│   │   └── hello.c        # Console rung: CRT + printf "Hello, world!"
+│   └── hellogui/
+│       └── hellogui.c     # GUI rung: window + TextOut, self-terminating
 │
 └── kernel/           # F2K Kernel
     ├── Cargo.toml        # Kernel package
