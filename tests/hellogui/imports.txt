@@ -1,0 +1,59 @@
+hellogui.exe - verified facts from the binary
+
+PE32, subsystem GUI (window), ImageBase 0x400000, SectionAlignment
+0x1000, AddressOfEntryPoint RVA 0x117f, SizeOfImage 0x6000. Static
+/ML CRT; WinMainCRTStartup entry, linked with user32.lib gdi32.lib.
+
+== USER32.dll
+    TranslateMessage
+    DispatchMessageA
+    BeginPaint
+    GetMessageA
+    PostQuitMessage
+    EndPaint
+    PostMessageA
+    RegisterClassA
+    DefWindowProcA
+    LoadCursorA
+    UpdateWindow
+    CreateWindowExA
+    ShowWindow
+== GDI32.dll
+    TextOutA
+== KERNEL32.dll
+    WideCharToMultiByte
+    GetEnvironmentStrings
+    GetEnvironmentStringsW
+    GetStringTypeW
+    GetStringTypeA
+    LCMapStringA
+    MultiByteToWideChar
+    LCMapStringW
+    GetProcAddress
+    LoadLibraryA
+    VirtualAlloc
+    HeapAlloc
+    GetModuleHandleA
+    GetStartupInfoA
+    GetCommandLineA
+    GetVersion
+    ExitProcess
+    TerminateProcess
+    GetCurrentProcess
+    UnhandledExceptionFilter
+    GetModuleFileNameA
+    FreeEnvironmentStringsA
+    FreeEnvironmentStringsW
+    HeapCreate
+    VirtualFree
+    HeapReAlloc
+    SetHandleCount
+    GetStdHandle
+    GetFileType
+    HeapDestroy
+    GetACP
+    HeapFree
+    RtlUnwind
+    WriteFile
+    GetCPInfo
+    GetOEMCP

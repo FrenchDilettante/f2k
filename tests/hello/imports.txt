@@ -1,0 +1,46 @@
+hello.exe - verified facts from the binary
+
+PE32, subsystem CUI (console), ImageBase 0x400000, SectionAlignment
+0x1000, AddressOfEntryPoint RVA 0x1045, SizeOfImage 0x8000. Static
+/ML CRT. Imports, all from KERNEL32.dll:
+
+WriteFile
+GetVersion
+ExitProcess
+TerminateProcess
+GetCurrentProcess
+UnhandledExceptionFilter
+GetModuleFileNameA
+FreeEnvironmentStringsA
+FreeEnvironmentStringsW
+WideCharToMultiByte
+GetEnvironmentStrings
+GetEnvironmentStringsW
+SetHandleCount
+GetStdHandle
+GetFileType
+GetStartupInfoA
+HeapDestroy
+HeapCreate
+VirtualFree
+HeapFree
+RtlUnwind
+GetCommandLineA
+HeapAlloc
+GetCPInfo
+GetACP
+GetOEMCP
+VirtualAlloc
+HeapReAlloc
+GetProcAddress
+LoadLibraryA
+GetLastError
+FlushFileBuffers
+SetFilePointer
+MultiByteToWideChar
+LCMapStringA
+LCMapStringW
+GetStringTypeA
+GetStringTypeW
+SetStdHandle
+CloseHandle

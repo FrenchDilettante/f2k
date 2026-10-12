@@ -102,9 +102,13 @@ f2k/
 │   │   ├── ret0.exe       # Fixture compiled on a real Windows 2000 machine
 │   │   └── imports.txt    # Verified import surface of the fixture
 │   ├── hello/
-│   │   └── hello.c        # Console rung: CRT + printf "Hello, world!"
+│   │   ├── hello.c        # Console rung: CRT + printf "Hello, world!"
+│   │   ├── hello.exe      # Fixture compiled on a real Windows 2000 machine
+│   │   └── imports.txt    # Verified import surface of the fixture
 │   └── hellogui/
-│       └── hellogui.c     # GUI rung: window + TextOut, self-terminating
+│       ├── hellogui.c     # GUI rung: window + TextOut, self-terminating
+│       ├── hellogui.exe   # Fixture compiled on a real Windows 2000 machine
+│       └── imports.txt    # Verified import surface of the fixture
 │
 └── kernel/           # F2K Kernel
     ├── Cargo.toml        # Kernel package
