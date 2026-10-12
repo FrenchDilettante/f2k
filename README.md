@@ -91,12 +91,14 @@ f2k/
 │   └── test-boot.sh       # Boot smoke test
 │
 ├── tests/            # Windows 2000 test corpus (see tests/README.md)
-│   ├── README.md         # Test conventions and inventory
+│   ├── README.md         # Test conventions and one-line summaries
+│   ├── build.bat         # Rebuilds every fixture on the Windows 2000 machine
 │   ├── exit0/
 │   │   └── exit0.c       # Baseline: no CRT, entry calls ExitProcess(0)
 │   └── ret0/             # Baseline: CRT startup, main returns 0
 │       ├── ret0.c
-│       └── ret0.exe       # Fixture compiled on a real Windows 2000 machine
+│       ├── ret0.exe       # Fixture compiled on a real Windows 2000 machine
+│       └── imports.txt    # Verified import surface of the fixture
 │
 └── kernel/           # F2K Kernel
     ├── Cargo.toml        # Kernel package
