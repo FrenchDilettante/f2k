@@ -21,6 +21,7 @@ Cargo.lock
 # Binary files
 *.bin
 *.elf
+*.obj
 *.img
 *.vdi
 *.iso

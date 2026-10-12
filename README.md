@@ -92,9 +92,11 @@ f2k/
 │
 ├── tests/            # Windows 2000 test corpus (see tests/README.md)
 │   ├── README.md         # Test conventions and inventory
-│   ├── exit0.c           # Baseline: no CRT, entry calls ExitProcess(0)
-│   ├── ret0.c            # Baseline: CRT startup, main returns 0
-│   └── bin/              # PE fixtures compiled on a real Windows 2000 machine
+│   ├── exit0/
+│   │   └── exit0.c       # Baseline: no CRT, entry calls ExitProcess(0)
+│   └── ret0/             # Baseline: CRT startup, main returns 0
+│       ├── ret0.c
+│       └── ret0.exe       # Fixture compiled on a real Windows 2000 machine
 │
 └── kernel/           # F2K Kernel
     ├── Cargo.toml        # Kernel package
