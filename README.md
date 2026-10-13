@@ -140,6 +140,7 @@ f2k/
         │   ├── heap.rs       # Kernel heap: fixed-pool free-list allocator (host-testable)
         │   └── bootmem.rs    # Boot-time initialization: frame database and heap from the memory map
         ├── syscall.rs    # Syscall gate (int 0x2E, DPL 3): service dispatch, argument probe/copy
+        ├── pe.rs         # PE32 image parsing, mapping plan and IAT snap (host-testable, M4)
         ├── user.rs       # Ring 3: iret entry, trap frame shape, the user-process smoke, process end
         ├── serial.rs     # Serial port output
         └── c_lib.rs      # C library stubs

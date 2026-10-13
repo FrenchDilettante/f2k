@@ -27,6 +27,9 @@ mod mem;
 // System-call gate and service dispatch (int 0x2E, DPL 3)
 mod syscall;
 
+// PE32 image parsing and import resolution (the M4 loader)
+mod pe;
+
 // Ring 3: user-mode entry, the user-process smoke, process end
 mod user;
 
