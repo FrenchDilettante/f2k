@@ -356,17 +356,30 @@ extern "C" fn exception_handler(frame: &ExceptionFrame) -> ! {
     }
     // Classify the fault by origin. A fault raised by user code (or,
     // while the kernel copies syscall arguments, by a bad user
-    // pointer on the kernel's behalf) ends the user process: single
-    // tasking means the kernel then has nothing left to run, so it
-    // halts — but as the intended end of the process, reported as
-    // such, not as a kernel panic. A kernel fault from any other
-    // origin stays the raw diagnostic halt.
+    // pointer on the kernel's behalf) ends the user process. A
+    // single-process kernel then has nothing left to run, so it
+    // halts — as the intended end of the process, reported as such,
+    // not as a kernel panic; the multi-process suite instead tears
+    // the process down and runs the next one. A kernel fault from any
+    // other origin stays the raw diagnostic halt.
     if from_user {
+        #[cfg(feature = "run-process-suite")]
+        {
+            crate::runner::process_faulted(frame.vector);
+        }
+        #[cfg(not(feature = "run-process-suite"))]
         crate::serial_println!(
             "F2K: user process ended by fault (vector {}); halting",
             frame.vector
         );
     } else if crate::syscall::copying_user_args() {
+        #[cfg(feature = "run-process-suite")]
+        {
+            // The fault was raised on the process's behalf inside a
+            // user-memory copy: same containment, same report.
+            crate::runner::process_faulted(frame.vector);
+        }
+        #[cfg(not(feature = "run-process-suite"))]
         crate::serial_println!(
             "F2K: user process ended by fault (bad user argument pointer); halting"
         );

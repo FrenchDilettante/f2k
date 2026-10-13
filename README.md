@@ -136,7 +136,7 @@ f2k/
         │   ├── mod.rs        # Module root
         │   ├── frame.rs      # Physical frame allocator: state-keyed FIFO lists, per-color chains
         │   ├── multiboot.rs  # Multiboot 1 memory map parsing (host-testable)
-        │   ├── paging.rs     # Boot page tables; runtime table access (self-map, scratch) and user page mapping
+        │   ├── paging.rs     # Boot page tables; runtime table access (self-map, scratch); per-process directories and user/kernel page mapping
         │   ├── heap.rs       # Kernel heap: fixed-pool free-list allocator (host-testable)
         │   └── bootmem.rs    # Boot-time initialization: frame database and heap from the memory map
         ├── syscall.rs    # Syscall gate (int 0x2E, DPL 3): service dispatch, argument probe/copy, user-memory transfers
@@ -146,6 +146,8 @@ f2k/
         ├── cp1252.rs     # Codepage 1252 replay data: MB/WC tables, ctype flags, case mapping (host-testable)
         ├── userheap.rs   # User-mode heap: first-fit allocator with coalescing; the CRT's VirtualAlloc region
         ├── user.rs       # Ring 3: iret entry (TEB segment in FS), trap frame shape, fault-test stubs, process end
+        ├── process.rs    # The process object: per-process directory, ring-0 gate stack, user-heap state; the teardown walk
+        ├── runner.rs     # Sequential multi-process suite runner (run-process-suite feature): context switch, audits, summary
         ├── serial.rs     # Serial port output
         └── c_lib.rs      # C library stubs
 ```

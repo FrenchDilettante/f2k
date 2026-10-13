@@ -139,19 +139,28 @@ core::arch::global_asm!(
     user_eflags = const 0x0000_0002u32,
 );
 
-/// End of the user process: the exit service's landing point. There
-/// is no next process yet, so the kernel returns to the boot address
-/// space and halts; the exit code is the only observable, making this
-/// line the suite's check.
+/// End of the user process: the exit service's landing point. The
+/// exit code is the only observable, making this line the suite's
+/// check. Single-process runs report and halt on the boot address
+/// space; the multi-process suite hands the chain to the next
+/// process (its runner tears this one down).
 pub fn process_exited(code: u32) -> ! {
     #[cfg(target_arch = "x86")]
     {
-        crate::serial_println!("F2K: user process exited normally (exit code={})", code);
-        // Back to the boot directory before anything else runs on the
-        // process's tables (the multi-process runner and teardown are
-        // the next workstream slices).
-        crate::mem::paging::activate_address_space(crate::mem::paging::boot_directory_phys());
-        crate::halt()
+        #[cfg(feature = "run-process-suite")]
+        {
+            crate::runner::process_exited(code)
+        }
+        #[cfg(not(feature = "run-process-suite"))]
+        {
+            crate::serial_println!("F2K: user process exited normally (exit code={})", code);
+            // Back to the boot directory before anything else runs on
+            // the process's tables.
+            crate::mem::paging::activate_address_space(
+                crate::mem::paging::boot_directory_phys(),
+            );
+            crate::halt()
+        }
     }
     #[cfg(not(target_arch = "x86"))]
     {
@@ -163,24 +172,32 @@ pub fn process_exited(code: u32) -> ! {
 }
 
 /// Launch the first user process: exit0 through the PE loader by
-/// default, ret0 with the `run-ret0` feature, or a fault-test stub.
-/// Never returns.
+/// default, ret0 with the `run-ret0` feature, a fault-test stub, or
+/// the full multi-process suite with `run-process-suite`. Never
+/// returns.
 #[cfg(target_arch = "x86")]
 pub fn run_user_process() -> ! {
-    #[cfg(not(any(feature = "fault-test-user", feature = "fault-test-badargs")))]
+    #[cfg(feature = "run-process-suite")]
     {
-        #[cfg(not(feature = "run-ret0"))]
-        {
-            crate::loader::run_image(crate::loader::EXIT0, "exit0")
-        }
-        #[cfg(feature = "run-ret0")]
-        {
-            crate::loader::run_image(crate::loader::RET0, "ret0")
-        }
+        crate::runner::run_suite()
     }
-    #[cfg(any(feature = "fault-test-user", feature = "fault-test-badargs"))]
+    #[cfg(not(feature = "run-process-suite"))]
     {
-        run_fault_stub()
+        #[cfg(not(any(feature = "fault-test-user", feature = "fault-test-badargs")))]
+        {
+            #[cfg(not(feature = "run-ret0"))]
+            {
+                crate::loader::run_image(crate::loader::EXIT0, "exit0")
+            }
+            #[cfg(feature = "run-ret0")]
+            {
+                crate::loader::run_image(crate::loader::RET0, "ret0")
+            }
+        }
+        #[cfg(any(feature = "fault-test-user", feature = "fault-test-badargs"))]
+        {
+            run_fault_stub()
+        }
     }
 }
 

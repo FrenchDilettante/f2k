@@ -45,6 +45,10 @@ mod user;
 // The process object: per-process directory, gate stack, user heap
 mod process;
 
+// The sequential multi-process suite runner (run-process-suite)
+#[cfg(all(target_arch = "x86", feature = "run-process-suite"))]
+mod runner;
+
 // C library functions for bare-metal
 mod c_lib;
 

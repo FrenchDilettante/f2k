@@ -353,6 +353,11 @@ pub fn map_user_page(vaddr: u32, frame_phys: u32, writable: bool) {
 /// directory's own frame `own_phys`, scratch entry at the shared
 /// scratch table `scratch_phys`.
 ///
+/// One kernel-half entry is deliberately *not* inherited: the gate
+/// stack window ([`GATE_STACK_WINDOW`]) is per-process — each
+/// process maps its own stack there, so the base's entry (whatever
+/// it maps) must not leak into a new directory.
+///
 /// Pure over the entries: the caller supplies how base entries are
 /// read (a volatile self-map read on target, a plain array read in
 /// tests).
@@ -373,6 +378,7 @@ pub fn assemble_process_directory(
     // (every entry must drop out of the TLB when CR3 reloads).
     dir[SELF_MAP_SLOT] = own_phys | PAGE_PRESENT | PAGE_WRITE;
     dir[SCRATCH_SLOT] = scratch_phys | PAGE_PRESENT | PAGE_WRITE;
+    dir[(GATE_STACK_WINDOW >> 22) as usize] = 0;
 }
 
 /// The value CR3 takes for a directory at `dir_phys`: the address
@@ -526,6 +532,27 @@ pub fn map_gate_stack() -> [u32; GATE_STACK_PAGES] {
     frames
 }
 
+/// Read word `index` of `frame_phys` through the scratch window: the
+/// one-page alias of any frame, used by the teardown walk to read a
+/// dead process's directory and tables without mapping them.
+///
+/// # Panics
+///
+/// `index` past the frame's end.
+#[cfg(target_arch = "x86")]
+pub fn read_frame_word(frame_phys: u32, index: usize) -> u32 {
+    assert!(
+        index < PT_ENTRIES,
+        "word index past the end of the frame"
+    );
+    // SAFETY: the boot context is the only scratch-slot user; every
+    // call rewrites and flushes.
+    unsafe { install_scratch(frame_phys) };
+    // SAFETY: SCRATCH_VA aliases exactly this frame, page-length,
+    // and the index is in bounds.
+    unsafe { (SCRATCH_VA as *const u32).add(index).read_volatile() }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -633,19 +660,26 @@ mod tests {
     }
 
     /// The kernel half is inherited wholesale except the two runtime
-    /// slots; the user half starts zero no matter what the target
-    /// frame held before.
+    /// slots and the gate stack window (per-process: never inherited);
+    /// the user half starts zero no matter what the target frame held
+    /// before.
     #[test]
     fn process_directory_inherits_the_kernel_half_and_zeroes_the_user_half() {
         let mut base = [0u32; PT_ENTRIES];
         base[512] = 0x0010_1000 | PAGE_PRESENT | PAGE_WRITE;
         base[513] = 0x0050_1000 | PAGE_PRESENT | PAGE_WRITE;
         base[700] = 0x0090_0000 | PAGE_PRESENT | PAGE_WRITE | PAGE_USER;
+        base[(GATE_STACK_WINDOW >> 22) as usize] = 0x00C0_0000 | PAGE_PRESENT | PAGE_WRITE;
         base[1023] = 0x00B0_0000 | PAGE_PRESENT | PAGE_WRITE;
         let dir = assembled(&base, 0x9000, 0xB000);
 
         for i in 0..PT_ENTRIES {
             if i == SELF_MAP_SLOT || i == SCRATCH_SLOT {
+                continue;
+            }
+            if i == (GATE_STACK_WINDOW >> 22) as usize {
+                // Per-process: the base's entry must not leak in.
+                assert_eq!(dir[i], 0, "gate stack window inherited");
                 continue;
             }
             let expected = if i < KERNEL_HALF_START { 0 } else { base[i] };

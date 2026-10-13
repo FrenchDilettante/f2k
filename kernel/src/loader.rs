@@ -18,8 +18,22 @@ pub const EXIT0: &[u8] = include_bytes!("../../tests/exit0/exit0.exe");
 /// imports (run with the `run-ret0` feature).
 pub const RET0: &[u8] = include_bytes!("../../tests/ret0/ret0.exe");
 
-/// The staging buffer size: the largest image the loader accepts.
-const STAGING_SIZE: usize = 0x6000;
+/// The fresh-memory fixture: no CRT, one import; its `.bss` is all
+/// zero on a fresh process and the double run in the suite proves
+/// teardown re-zeroes frames (embedded for the `run-process-suite`
+/// feature).
+#[cfg(feature = "run-process-suite")]
+pub const BSSCHECK: &[u8] = include_bytes!("../../tests/bsscheck/bsscheck.exe");
+
+/// The fault-containment fixture: no imports at all, faults through
+/// the NULL page as its first act (embedded for the
+/// `run-process-suite` feature).
+#[cfg(feature = "run-process-suite")]
+pub const CRASH: &[u8] = include_bytes!("../../tests/crash/crash.exe");
+
+/// The staging buffer size: the largest image the loader accepts
+/// (the corpus's biggest fixture is 0x8000).
+const STAGING_SIZE: usize = 0x8000;
 
 /// Staging for the in-memory image (see the module doc).
 #[cfg(target_arch = "x86")]
@@ -145,6 +159,12 @@ mod tests {
     fn fixtures_fit_staging() {
         for file in [EXIT0, RET0] {
             let image = Image::parse(file).expect("fixture parses");
+            assert_eq!(image.size_of_image % PAGE_SIZE, 0);
+            assert!(image.size_of_image as usize <= STAGING_SIZE);
+        }
+        #[cfg(feature = "run-process-suite")]
+        for file in [BSSCHECK, CRASH] {
+            let image = Image::parse(file).expect("suite fixture parses");
             assert_eq!(image.size_of_image % PAGE_SIZE, 0);
             assert!(image.size_of_image as usize <= STAGING_SIZE);
         }

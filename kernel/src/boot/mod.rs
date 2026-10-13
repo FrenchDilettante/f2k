@@ -21,10 +21,14 @@ core::arch::global_asm!(
     // 64 KiB boot stack. Generously sized: early boot code keeps whole
     // subsystem structures (frame database, formatting state) as stack
     // locals, and overflowing the stack corrupts adjacent statics.
+    // The top is exported: the multi-process runner's context switch
+    // lands here between processes (the kernel image window is
+    // mapped in every address space).
     ".section .bss.boot_stack, \"aw\", @nobits",
     ".align 16",
     "boot_stack_bottom:",
     ".skip 65536",
+    ".global boot_stack_top",
     "boot_stack_top:",
     // Entry point. Runs at the physical load address with paging off
     // (this section is linked VMA == PMA; the rest of the kernel runs

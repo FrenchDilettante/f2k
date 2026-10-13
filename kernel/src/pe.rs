@@ -105,9 +105,6 @@ pub enum Reject {
     NoEntryPoint,
     /// The entry point is not inside an executable section.
     EntryNotExecutable,
-    /// No import directory: a run-to-completion image must import its
-    /// exit path.
-    NoImportDirectory,
     /// Sections are not contiguous and ordered.
     SectionDiscontiguous,
     /// A section's raw data reaches past its mapped extent.
@@ -446,11 +443,9 @@ impl Image {
             return Err(Reject::EntryNotExecutable);
         }
 
-        // A run-to-completion image must import its exit path.
-        if num_directories <= DIR_IMPORT || directories[DIR_IMPORT].rva == 0 {
-            return Err(Reject::NoImportDirectory);
-        }
-
+        // An image without an import directory is legal: it imports
+        // nothing and must end by fault (the fault-containment
+        // fixture) — the loader snaps zero imports.
         Ok(Image {
             entry_rva,
             image_base,
@@ -568,14 +563,15 @@ impl Image {
 
     /// The IAT region: the IAT directory when the linker emitted one,
     /// else the whole raw extent of the section holding the import
-    /// directory.
+    /// directory. Call only when an import directory exists (the
+    /// zero-import image never reaches here).
     fn iat_region(&self) -> (u32, u32) {
         if let Some((rva, size)) = self.directory(DIR_IAT) {
             return (rva, size);
         }
         let (import_rva, _) = self
             .directory(DIR_IMPORT)
-            .expect("parse guarantees an import directory");
+            .expect("the caller checked for an import directory");
         for i in 0..self.num_sections {
             let s = &self.sections[i];
             if import_rva >= s.virtual_address && import_rva < s.virtual_address + s.raw_size {
@@ -628,9 +624,11 @@ impl Image {
         dll: &str,
         mut resolve: impl FnMut(&str) -> Option<u32>,
     ) -> SnapResult {
-        let (import_rva, _) = self
-            .directory(DIR_IMPORT)
-            .expect("parse guarantees an import directory");
+        let Some((import_rva, _)) = self.directory(DIR_IMPORT) else {
+            // No import directory: nothing to snap (an importless
+            // image must end by fault).
+            return SnapResult::default();
+        };
         let (iat_base, iat_size) = self.iat_region();
         let mut result = SnapResult::default();
         let mut off = import_rva as usize;
@@ -1276,9 +1274,17 @@ mod tests {
     }
 
     #[test]
-    fn absent_import_directory_rejects() {
+    fn absent_import_directory_snaps_zero_imports() {
         let bad = patched(EXIT0, |b| w32(b, off_dir(b, DIR_IMPORT), 0));
-        assert_eq!(Image::parse(&bad), Err(Reject::NoImportDirectory));
+        let image = parse_ok(&bad);
+        let mut mapped = vec![0u8; image.size_of_image as usize];
+        image.map_into(&bad, &mut mapped);
+        // Nothing to snap: the image imports nothing and must end by
+        // fault.
+        assert_eq!(
+            image.snap_imports(&bad, &mut mapped, "KERNEL32.dll", |_| None),
+            SnapResult::default()
+        );
     }
 
     #[test]
