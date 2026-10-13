@@ -91,3 +91,63 @@ cases:
       - "F2K: image loaded"
       - "F2K: entering ring 3"
       - "F2K: user process exited normally (exit code=0)"
+
+  # Multi-process suite (foundational-processes workstream): one boot
+  # runs the sequence exit0, ret0, bsscheck, bsscheck, crash, exit0,
+  # tearing each process down to the post-boot baseline before the
+  # next starts. COM1 protocol, pinned here (the sequence runner
+  # implements it; the shapes parallel the single-process lines with
+  # the per-process index and name added):
+  #   normal exit: F2K: process <i> (<name>) exited normally (exit code=N)
+  #   fault:       F2K: process <i> (<name>) ended by fault (vector N)
+  #   teardown:    F2K: process <i> teardown audit: frame database ok, kernel heap ok
+  #   summary:     F2K: process suite complete: 6 run, 1 faulted, 0 leaks
+  # The teardown line prints after every process (all six), so every
+  # index is asserted independently; the crash fixture writes through
+  # the unmapped NULL page, which raises #PF (vector 14).
+  #
+  # Expected to FAIL until the process workstream lands: today the
+  # kernel runs the first process and halts.
+  - name: process-suite
+    description: sequential multi-process run (exit0, ret0, bsscheck x2, crash, exit0) with per-process teardown audits and a zero-leak summary (kernel path)
+    image: kernel
+    features: [run-process-suite]
+    expects:
+      - "F2K Booted Successfully"
+      - "F2K: frame database audit: ok"
+      - "F2K: kernel heap: alloc/free ok"
+      - "F2K: process 1 (exit0) exited normally (exit code=0)"
+      - "F2K: process 1 teardown audit: frame database ok, kernel heap ok"
+      - "F2K: process 2 (ret0) exited normally (exit code=0)"
+      - "F2K: process 2 teardown audit: frame database ok, kernel heap ok"
+      - "F2K: process 3 (bsscheck) exited normally (exit code=0)"
+      - "F2K: process 3 teardown audit: frame database ok, kernel heap ok"
+      - "F2K: process 4 (bsscheck) exited normally (exit code=0)"
+      - "F2K: process 4 teardown audit: frame database ok, kernel heap ok"
+      - "F2K: process 5 (crash) ended by fault (vector 14)"
+      - "F2K: process 5 teardown audit: frame database ok, kernel heap ok"
+      - "F2K: process 6 (exit0) exited normally (exit code=0)"
+      - "F2K: process 6 teardown audit: frame database ok, kernel heap ok"
+      - "F2K: process suite complete: 6 run, 1 faulted, 0 leaks"
+
+  - name: process-suite-disk
+    description: sequential multi-process run (exit0, ret0, bsscheck x2, crash, exit0) with per-process teardown audits and a zero-leak summary (Limine disk path)
+    image: disk
+    features: [run-process-suite]
+    expects:
+      - "F2K Booted Successfully"
+      - "F2K: frame database audit: ok"
+      - "F2K: kernel heap: alloc/free ok"
+      - "F2K: process 1 (exit0) exited normally (exit code=0)"
+      - "F2K: process 1 teardown audit: frame database ok, kernel heap ok"
+      - "F2K: process 2 (ret0) exited normally (exit code=0)"
+      - "F2K: process 2 teardown audit: frame database ok, kernel heap ok"
+      - "F2K: process 3 (bsscheck) exited normally (exit code=0)"
+      - "F2K: process 3 teardown audit: frame database ok, kernel heap ok"
+      - "F2K: process 4 (bsscheck) exited normally (exit code=0)"
+      - "F2K: process 4 teardown audit: frame database ok, kernel heap ok"
+      - "F2K: process 5 (crash) ended by fault (vector 14)"
+      - "F2K: process 5 teardown audit: frame database ok, kernel heap ok"
+      - "F2K: process 6 (exit0) exited normally (exit code=0)"
+      - "F2K: process 6 teardown audit: frame database ok, kernel heap ok"
+      - "F2K: process suite complete: 6 run, 1 faulted, 0 leaks"

@@ -35,6 +35,13 @@ fault-test-badargs = []
 # Loads the second corpus fixture (ret0.exe, the 35-import CRT startup
 # surface) instead of the first: the ret0 suite cases build with it.
 run-ret0 = []
+# The multi-process suite case: exit0, ret0, bsscheck, bsscheck,
+# crash, exit0 run in sequence in one boot, each process torn down
+# and audited before the next starts (see
+# docs/plans/foundational-processes.md). The sequence runner and the
+# per-process teardown are the process workstream's deliverables; the
+# qemu-tests.yaml cases pin the COM1 shapes and fail until they land.
+run-process-suite = []
 
 [dependencies]
 # Core no_std crates for future use

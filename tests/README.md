@@ -27,6 +27,14 @@ not committed.
 - `exit0` - no C runtime: the entry point calls `ExitProcess(0)`; a
   single import, so it exercises process creation, image mapping and
   the exit path and nothing else.
+- `bsscheck` - no C runtime: the entry point checks that its `.bss`
+  (uninitialized data) is all zero, scribbles a pattern over it, and
+  exits 0 only if the check passed. The suite runs it twice in one
+  boot: the second run catches teardown that reuses frames without
+  re-zeroing them.
+- `crash` - no C runtime, no imports: the entry point writes through
+  the unmapped NULL page as its first act and must fault. The suite
+  asserts the kernel contains the fault and keeps running.
 - `ret0` - the default MSVC 6 `/ML` CRT startup around
   `int main() { return 0; }`; exercises the full CRT initialization
   surface (35 KERNEL32.dll imports; see `ret0/imports.txt`).
@@ -50,7 +58,10 @@ code 0 means pass.
 Until F2K can read from its FAT32 disk partition, the on-target QEMU
 suite embeds fixtures directly in the kernel image
 (`include_bytes!`): the default kernel runs `exit0`, and the
-`run-ret0` feature selects `ret0`. Each boot prints the observed
-process exit code on COM1, which the suite cases assert. Once disk
-I/O exists, fixtures load from the disk image instead and the
-embedding goes away.
+`run-ret0` feature selects `ret0`. The `run-process-suite` feature
+(the multi-process case) embeds `bsscheck` and `crash` as well and
+runs the sequence `exit0`, `ret0`, `bsscheck`, `bsscheck`, `crash`,
+`exit0` in one boot. Each boot prints the observed process exit code
+on COM1, which the suite cases assert. Once disk I/O exists,
+fixtures load from the disk image instead and the embedding goes
+away.

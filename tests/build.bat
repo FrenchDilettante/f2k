@@ -42,5 +42,19 @@ if errorlevel 1 (echo build.bat: hellogui failed & exit /b 1)
 del hellogui.obj
 cd ..
 
+echo === bsscheck
+cd bsscheck
+cl /nologo bsscheck.c /link /NODEFAULTLIB /ENTRY:BssMain /SUBSYSTEM:CONSOLE kernel32.lib
+if errorlevel 1 (echo build.bat: bsscheck failed & exit /b 1)
+del bsscheck.obj
+cd ..
+
+echo === crash
+cd crash
+cl /nologo crash.c /link /NODEFAULTLIB /ENTRY:CrashMain /SUBSYSTEM:CONSOLE
+if errorlevel 1 (echo build.bat: crash failed & exit /b 1)
+del crash.obj
+cd ..
+
 echo All tests built.
 exit /b 0
