@@ -242,6 +242,29 @@ pub fn init_frame(frame_phys: u32, offset: usize, bytes: &[u8]) {
     }
 }
 
+/// Patch `bytes` into a frame at `offset`, through the scratch alias,
+/// without zeroing it: earlier writes to the frame survive (unlike
+/// [`init_frame`], which zeroes the whole page first). Used to build
+/// up a page in several pieces. `offset + bytes.len()` must stay
+/// inside the page.
+#[cfg(target_arch = "x86")]
+pub fn write_frame(frame_phys: u32, offset: usize, bytes: &[u8]) {
+    assert!(frame_phys & (PAGE_SIZE - 1) == 0, "frame not page-aligned");
+    assert!(
+        offset + bytes.len() <= PAGE_SIZE as usize,
+        "write past the end of the frame"
+    );
+    // SAFETY: the boot context is the only scratch-slot user.
+    unsafe { install_scratch(frame_phys) };
+    // SAFETY: SCRATCH_VA now aliases exactly this frame, page-length.
+    unsafe {
+        let dst = SCRATCH_VA as *mut u8;
+        for (i, &byte) in bytes.iter().enumerate() {
+            dst.add(offset + i).write_volatile(byte);
+        }
+    }
+}
+
 /// Allocate one frame from the boot frame database, return its physical
 /// address. This is the frame allocator's first runtime consumer.
 ///

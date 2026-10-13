@@ -141,7 +141,9 @@ f2k/
         │   └── bootmem.rs    # Boot-time initialization: frame database and heap from the memory map
         ├── syscall.rs    # Syscall gate (int 0x2E, DPL 3): service dispatch, argument probe/copy
         ├── pe.rs         # PE32 image parsing, mapping plan and IAT snap (host-testable, M4)
-        ├── user.rs       # Ring 3: iret entry, trap frame shape, the user-process smoke, process end
+        ├── loader.rs     # Kernel-side image loader: staging, section mapping, entry into ring 3 (M4)
+        ├── kernel32.rs   # Kernel-synthesized kernel32: export table, user-mode thunk stubs
+        ├── user.rs       # Ring 3: iret entry, trap frame shape, fault-test stubs, process end
         ├── serial.rs     # Serial port output
         └── c_lib.rs      # C library stubs
 ```

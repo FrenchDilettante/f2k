@@ -30,7 +30,13 @@ mod syscall;
 // PE32 image parsing and import resolution (the M4 loader)
 mod pe;
 
-// Ring 3: user-mode entry, the user-process smoke, process end
+// Kernel-side image loader: staging, section mapping, entry (M4)
+mod loader;
+
+// The kernel-synthesized kernel32: export table and user-mode thunks
+mod kernel32;
+
+// Ring 3: user-mode entry, the fault-test stubs, process end
 mod user;
 
 // C library functions for bare-metal
@@ -179,9 +185,11 @@ pub extern "C" fn kmain(magic: u32, multiboot_info: u32) -> ! {
     });
     serial_println!("F2K: kernel heap: alloc/free ok");
 
-    // M3 smoke: enter ring 3 and let the stub end the process through
-    // the syscall gate (the exit service reports marker and exit code
-    // on COM1). Run to completion: with the single user process gone,
-    // the kernel halts inside the exit path.
-    user::ring3_smoke()
+    // M4 smoke: load the first corpus fixture (exit0.exe) as the user
+    // process and enter ring 3 at its entry point. The image ends the
+    // process through its one import (ExitProcess -> the exit service,
+    // which reports the exit code on COM1). Run to completion: with
+    // the single user process gone, the kernel halts inside the exit
+    // path.
+    user::run_user_process()
 }

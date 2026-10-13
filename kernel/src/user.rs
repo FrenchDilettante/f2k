@@ -1,10 +1,14 @@
-//! Ring 3: entering user mode and the user-process smoke.
+//! Ring 3: entering user mode and the end of the user process.
 //!
-//! M2 proved the privilege switch end to end; M3 wires the return path
-//! through the syscall gate (see `syscall.rs`): the kernel maps two
-//! user pages (a code page carrying a hand-assembled stub, a stack
-//! page), enters ring 3 with an iret, and the stub writes a marker
-//! into user memory and ends the process with the exit service.
+//! M2 proved the privilege switch end to end ([`enter_ring3`]); M3
+//! wired the return path through the syscall gate (see `syscall.rs`);
+//! M4 made the default user process a real PE image (see `loader.rs`):
+//! the kernel maps the image and a stack, enters ring 3 with an iret,
+//! and the image ends the process through the exit service.
+//!
+//! The fault-test features substitute a hand-assembled stub for the
+//! image (see [`RING3_STUB`]), so the user-fault paths can be verified
+//! on target without a PE fixture in the loop.
 //!
 //! Single tasking, run to completion: the kernel "calls" the user
 //! process, the exit syscall is the return path, and faults raised by
@@ -13,22 +17,16 @@
 #[cfg(target_arch = "x86")]
 use crate::gdt::{USER_CODE_SELECTOR, USER_DATA_SELECTOR};
 
-/// The smoke's user code page (the future PE image base).
+/// The fault-test stub's code page (the PE image base, which the
+/// fault-test builds never map).
+#[cfg(any(feature = "fault-test-user", feature = "fault-test-badargs", test))]
 pub const USER_CODE_PAGE: u32 = 0x0040_0000;
-/// The smoke's user stack page, in its own 4 MiB window — window 0,
-/// which held the boot identity mapping until it was removed.
+/// The user stack page, in its own 4 MiB window — window 0, which
+/// held the boot identity mapping until it was removed. Shared by
+/// the PE image runs and the fault-test stubs.
 pub const USER_STACK_PAGE: u32 = 0x0030_0000;
 /// Initial user ESP: one past the stack page's top byte.
 pub const USER_STACK_TOP: u32 = USER_STACK_PAGE + 4096;
-/// Where the ring-3 stub writes its marker: inside the stack page,
-/// below the initial ESP.
-pub const MARKER_VA: u32 = USER_STACK_PAGE + 4096 - 16;
-
-/// Marker value the ring-3 stub writes ("R3OK").
-pub const RING3_MARKER: u32 = 0x4B4F_3352;
-
-/// Exit code the smoke's stub passes to the exit service.
-pub const EXIT_CODE: u32 = 42;
 
 /// A kernel address the fault-test stub reads from ring 3: the kernel
 /// window is supervisor-only, so the read must fault.
@@ -42,34 +40,19 @@ pub const KERNEL_WINDOW_PROBE: u32 = 0x8010_1000;
 #[cfg(any(feature = "fault-test-badargs", test))]
 pub const BAD_ARGS_PTR: u32 = 0x0050_0000;
 
-/// The ring-3 stub, in bytes:
-/// 1. load the marker,
-/// 2. store it into user memory,
-/// 3. request the exit service,
-/// 4. push the exit code on the user stack and point EDX at it,
-/// 5. raise the syscall gate,
-/// 6. spin (the exit service ends the process; this is the safety net).
+/// The ring-3 fault-test stub, in bytes: a body that must end the
+/// process through a fault (see the variants below) followed by a
+/// spin as the safety net.
 ///
 /// Assembled by hand so it can live in a kernel constant and be copied
 /// into the user page: kernel code itself is unreachable from ring 3,
-/// because the kernel window is supervisor-only.
+/// because the kernel window is supervisor-only. Never combine the
+/// features.
 ///
-/// Two fault-test variants swap the body (never combine the features):
 /// `fault-test-user` reads the supervisor-only kernel window, and
 /// `fault-test-badargs` passes an unmapped user address as the syscall
 /// argument pointer — both must end the process, not the kernel
 /// (`make test-fault-*`).
-#[cfg(not(any(feature = "fault-test-user", feature = "fault-test-badargs")))]
-pub const RING3_STUB: [u8; 23] = [
-    0xB8, 0x52, 0x33, 0x4F, 0x4B, // mov eax, RING3_MARKER
-    0xA3, 0xF0, 0x0F, 0x30, 0x00, // mov dword ptr [MARKER_VA], eax
-    0xB8, 0x01, 0x00, 0x00, 0x00, // mov eax, SYS_EXIT (service 1)
-    0x6A, EXIT_CODE as u8, // push EXIT_CODE
-    0x89, 0xE2, // mov edx, esp (EDX = argument pointer)
-    0xCD, 0x2E, // int 0x2E (syscall gate)
-    0xEB, 0xFE, // jmp $
-];
-
 #[cfg(feature = "fault-test-user")]
 pub const RING3_STUB: [u8; 7] = [
     0xA1, 0x00, 0x10, 0x10, 0x80, // mov eax, dword ptr [KERNEL_WINDOW_PROBE]
@@ -119,7 +102,7 @@ pub struct TrapFrame {
 // with `cli` set — and IOPL is 0, so port I/O stays privileged.
 #[cfg(target_arch = "x86")]
 unsafe extern "C" {
-    fn enter_ring3(eip: u32, esp: u32) -> !;
+    pub fn enter_ring3(eip: u32, esp: u32) -> !;
 }
 
 #[cfg(target_arch = "x86")]
@@ -165,24 +148,14 @@ core::arch::global_asm!(
 /// End of the user process: the exit service's landing point.
 ///
 /// Single tasking, run to completion: there is no next process, so the
-/// kernel's process-end policy is to report and halt. This is also the
-/// smoke's completion check: the stub writes its marker immediately
-/// before exiting, so the marker being in place proves user-mode writes
-/// reached memory. A real process object moves this to the future
-/// process module; the check belongs to the code that launched the
-/// process.
+/// kernel's process-end policy is to report and halt. The exit code is
+/// the process's only observable (the current fixtures have no console
+/// backend), so the report is the smoke's completion line. A real
+/// process object moves this to the future process module.
 pub fn process_exited(code: u32) -> ! {
     #[cfg(target_arch = "x86")]
     {
-        // SAFETY: MARKER_VA is a mapped, user-writable page; the stub
-        // had ring-3 write access to it.
-        let marker = unsafe { core::ptr::read_volatile(MARKER_VA as *const u32) };
-        assert_eq!(marker, RING3_MARKER, "the ring-3 stub did not write its marker");
-        crate::serial_println!(
-            "F2K: ring-3 round trip ok (marker {:#010x}, exit code {})",
-            marker,
-            code
-        );
+        crate::serial_println!("F2K: user process exited normally (exit code={})", code);
         crate::halt()
     }
     #[cfg(not(target_arch = "x86"))]
@@ -194,15 +167,32 @@ pub fn process_exited(code: u32) -> ! {
     }
 }
 
-/// Map the smoke's user pages and enter ring 3.
+/// Launch the first user process. The default path loads the first
+/// corpus fixture through the PE loader ([`crate::loader`]); the
+/// fault-test features substitute their stub for the image (never
+/// combine them). Never returns.
+#[cfg(target_arch = "x86")]
+pub fn run_user_process() -> ! {
+    #[cfg(not(any(feature = "fault-test-user", feature = "fault-test-badargs")))]
+    {
+        crate::loader::run_image(crate::loader::EXIT0)
+    }
+    #[cfg(any(feature = "fault-test-user", feature = "fault-test-badargs"))]
+    {
+        run_fault_stub()
+    }
+}
+
+/// Map the fault-test stub's user pages and enter ring 3.
 ///
 /// The code page is written through the scratch alias before it is
 /// mapped read-only; the stack page is zeroed and writable. Both are
-/// user-accessible; each allocation takes one frame, and the two pages
-/// sit in different 4 MiB windows, so two page tables are created on
-/// demand. Never returns.
+/// user-accessible; each allocation takes one frame, and the two
+/// pages sit in different 4 MiB windows, so two page tables are
+/// created on demand. Never returns.
 #[cfg(target_arch = "x86")]
-pub fn ring3_smoke() -> ! {
+#[cfg(any(feature = "fault-test-user", feature = "fault-test-badargs"))]
+pub fn run_fault_stub() -> ! {
     use crate::mem::paging;
 
     let code_frame = paging::allocate_frame_phys();
@@ -231,30 +221,6 @@ mod tests {
     use crate::syscall::SYSCALL_VECTOR;
     use core::mem::size_of;
     use core::ptr::addr_of;
-
-    /// The smoke stub's bytes are exactly the documented encoding:
-    /// B8+imm32 (mov eax), A3+moffs32 (store), B8+imm32, 6A+imm8
-    /// (push imm8), 89 /r (mov edx, esp), CD+ib (int), EB FE (jmp $).
-    #[cfg(not(any(feature = "fault-test-user", feature = "fault-test-badargs")))]
-    #[test]
-    fn stub_bytes_match_their_encoding() {
-        let mut expected = [0u8; 23];
-        expected[0] = 0xB8;
-        expected[1..5].copy_from_slice(&RING3_MARKER.to_le_bytes());
-        expected[5] = 0xA3;
-        expected[6..10].copy_from_slice(&MARKER_VA.to_le_bytes());
-        expected[10] = 0xB8;
-        expected[11..15].copy_from_slice(&crate::syscall::SYS_EXIT.to_le_bytes());
-        expected[15] = 0x6A;
-        expected[16] = EXIT_CODE as u8;
-        expected[17] = 0x89;
-        expected[18] = 0xE2;
-        expected[19] = 0xCD;
-        expected[20] = SYSCALL_VECTOR as u8;
-        expected[21] = 0xEB;
-        expected[22] = 0xFE;
-        assert_eq!(RING3_STUB, expected);
-    }
 
     /// The fault-test stub reads the supervisor-only kernel window and
     /// spins: A1+moffs32 (mov eax, [moffs]) then jmp $.
@@ -320,21 +286,16 @@ mod tests {
         assert_eq!(addr_of!(frame.user_ss) as usize - base, 14 * 4);
     }
 
-    /// The smoke's address layout: both pages below the kernel window,
-    /// page-aligned, in different 4 MiB windows; the marker inside the
-    /// stack page but below the initial ESP; the stub's push (4 bytes)
-    /// stays above the marker.
+    /// The user layout: both fault-test pages below the kernel
+    /// window, page-aligned, in different 4 MiB windows; the stack
+    /// top one past the stack page.
     #[test]
-    fn smoke_layout_is_consistent() {
+    fn user_layout_is_consistent() {
         for page in [USER_CODE_PAGE, USER_STACK_PAGE] {
             assert_eq!(page % 4096, 0);
             assert!(page < KERNEL_BASE);
         }
         assert_ne!(USER_CODE_PAGE >> 22, USER_STACK_PAGE >> 22);
-        assert!(MARKER_VA >= USER_STACK_PAGE && MARKER_VA + 4 <= USER_STACK_TOP);
         assert_eq!(USER_STACK_TOP, USER_STACK_PAGE + 4096);
-        // The stub pushes the exit code with the imm8 form (6A + imm8,
-        // sign-extended), so the code must fit a signed byte.
-        assert!(EXIT_CODE <= i8::MAX as u32);
     }
 }

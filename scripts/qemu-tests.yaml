@@ -12,13 +12,15 @@
 
 cases:
   - name: boot-smoke
-    description: full boot through the ring-3 exit syscall (kernel path)
+    description: full boot through the first PE image (exit0) to its exit syscall (kernel path)
     image: kernel
     expects:
       - "F2K Booted Successfully"
       - "F2K: frame database audit: ok"
       - "F2K: kernel heap: alloc/free ok"
-      - "F2K: ring-3 round trip ok"
+      - "F2K: image loaded"
+      - "F2K: entering ring 3"
+      - "F2K: user process exited normally (exit code=0)"
 
   - name: fault-ud
     description: "#UD right after init: exception dump without a CPU error code"
@@ -56,10 +58,12 @@ cases:
       - "F2K: user process ended by fault (bad user argument pointer); halting"
 
   - name: boot-smoke-disk
-    description: full boot through the ring-3 exit syscall (Limine disk path)
+    description: full boot through the first PE image (exit0) to its exit syscall (Limine disk path)
     image: disk
     expects:
       - "F2K Booted Successfully"
       - "F2K: frame database audit: ok"
       - "F2K: kernel heap: alloc/free ok"
-      - "F2K: ring-3 round trip ok"
+      - "F2K: image loaded"
+      - "F2K: entering ring 3"
+      - "F2K: user process exited normally (exit code=0)"

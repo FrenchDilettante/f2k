@@ -34,8 +34,9 @@ const SUBSYSTEM_CUI: u16 = 3;
 /// exists, so an image must be linked to load exactly here.
 pub const IMAGE_BASE: u32 = 0x0040_0000;
 
-/// The largest image this loader will map.
-const MAX_IMAGE_SIZE: u32 = 0x0100_0000;
+/// The largest image this loader will map (the fixed base plus this
+/// cap bounds where images can live).
+pub const MAX_IMAGE_SIZE: u32 = 0x0100_0000;
 
 /// The section-count cap.
 const MAX_SECTIONS: usize = 96;
