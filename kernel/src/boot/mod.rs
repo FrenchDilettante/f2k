@@ -61,11 +61,13 @@ core::arch::global_asm!(
     "    or edx, 3",
     "    mov [eax + 4], edx",
     "    mov [eax + 2052], edx",
-    // Paging on: CR3 = physical directory, CR0.PG = 1. Execution
+    // Paging on: CR3 = physical directory, CR0.PG = 1, CR0.WP = 1.
+    // WP makes read-only mappings bind ring-0 writes too, which the
+    // user/kernel split (and later copy-on-write) relies on. Execution
     // continues at the physical EIP through the low identity window.
     "    mov cr3, eax",
     "    mov eax, cr0",
-    "    or eax, 0x80000000",
+    "    or eax, 0x80010000",
     "    mov cr0, eax",
     // Switch to the kernel window: the same code, at its virtual
     // alias (the low 8 MiB appear identically at 0x80000000+).

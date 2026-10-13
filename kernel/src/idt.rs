@@ -15,8 +15,10 @@ use crate::gdt::KERNEL_CODE_SELECTOR;
 const EXCEPTION_VECTORS: usize = 32;
 
 /// IDT size: the 32 exception vectors plus room for gates; the M2
-/// round-trip gate (see `user.rs`) is registered at DPL 3, and vectors
-/// left absent (not-present gates) raise #GP if raised.
+/// round-trip gate (see `user.rs`) is registered at DPL 3. A vector
+/// left absent is a not-present gate: raising it faults with the
+/// vector-derived error code — #NP from ring 0, and #GP from ring 3
+/// (the zeroed descriptor's DPL 0 fails the privilege check first).
 const IDT_VECTORS: usize = 256;
 
 /// Registers saved by the common exception stub, in stack order.
@@ -39,9 +41,16 @@ struct ExceptionFrame {
     eip: u32,
     cs: u32,
     eflags: u32,
-    /// Present only when the exception was raised in ring 3: the CPU
-    /// pushes the interrupted stack pair after EFLAGS on the TSS
-    /// stack. Reading them from a ring-0 frame is out of bounds.
+}
+
+/// The ring-3 tail the CPU pushes on the TSS stack when the exception
+/// was raised in ring 3: the interrupted ESP/SS pair, above the
+/// common frame. Only valid when the interrupted CS carries RPL 3;
+/// a ring-0 exception pushes nothing there.
+#[allow(dead_code)]
+#[repr(C)]
+struct Ring3ExceptionFrame {
+    frame: ExceptionFrame,
     user_esp: u32,
     user_ss: u32,
 }
@@ -284,6 +293,15 @@ extern "C" fn exception_handler(frame: &ExceptionFrame) -> ! {
         .copied()
         .unwrap_or("Unknown");
 
+    // The ring-3 tail exists only for ring-3 exceptions; read it once,
+    // guarded, through the extended frame.
+    let from_user = frame.cs & 3 != 0;
+    let (user_esp, user_ss) = if from_user {
+        (ring3_tail(frame), ring3_user_ss(frame))
+    } else {
+        (0, 0)
+    };
+
     crate::serial_println!("CPU EXCEPTION: vector {} ({})", frame.vector, name);
     crate::serial_println!(
         "  error code {:#010x}  EIP {:#010x}  CS {:#04x}  EFLAGS {:#010x}",
@@ -304,7 +322,7 @@ extern "C" fn exception_handler(frame: &ExceptionFrame) -> ! {
         frame.esi,
         frame.edi,
         frame.ebp,
-        interrupted_esp(frame)
+        interrupted_esp(frame, user_esp)
     );
     // Segment registers are read at dump time: pushing them in the stub
     // would only store 16 bits per register (see comment on ExceptionFrame).
@@ -329,11 +347,11 @@ extern "C" fn exception_handler(frame: &ExceptionFrame) -> ! {
         fs,
         gs
     );
-    if frame.cs & 3 != 0 {
+    if from_user {
         crate::serial_println!(
             "  raised from ring 3: user ESP {:#010x}  user SS {:#04x}",
-            frame.user_esp,
-            frame.user_ss
+            user_esp,
+            user_ss
         );
     }
     if frame.vector == 14 {
@@ -346,13 +364,37 @@ extern "C" fn exception_handler(frame: &ExceptionFrame) -> ! {
     crate::halt();
 }
 
-/// ESP of the interrupted context, reconstructed from the stub-saved
-/// ESP: the stub pushes the vector and error code below the CPU-pushed
-/// tail, so the interrupted ESP sits above vector, error code, EIP, CS
-/// and EFLAGS — plus the interrupted ESP/SS pair when the exception
-/// came from ring 3 (the CPU pushes it on the TSS stack).
-fn interrupted_esp(frame: &ExceptionFrame) -> u32 {
-    frame.esp + if frame.cs & 3 != 0 { 7 * 4 } else { 5 * 4 }
+/// The interrupted user ESP of a ring-3 exception: the CPU pushed it
+/// as part of the ring-3 tail. Zero for ring-0 frames (no tail).
+///
+/// # Safety contract
+///
+/// Call only when `frame.cs` carries RPL 3; the tail does not exist for
+/// ring-0 exceptions.
+fn ring3_tail(frame: &ExceptionFrame) -> u32 {
+    // SAFETY: guaranteed by the caller's RPL check; the CPU pushed the
+    // tail above the common frame on the TSS stack.
+    unsafe { &*(core::ptr::addr_of!(*frame) as *const Ring3ExceptionFrame) }.user_esp
+}
+
+/// The interrupted user SS of a ring-3 exception; see [`ring3_tail`].
+fn ring3_user_ss(frame: &ExceptionFrame) -> u32 {
+    // SAFETY: same contract as ring3_tail.
+    unsafe { &*(core::ptr::addr_of!(*frame) as *const Ring3ExceptionFrame) }.user_ss
+}
+
+/// ESP of the interrupted context: for a ring-0 exception, the stub
+/// pushed vector and error code below the CPU-pushed tail, so the
+/// interrupted ESP sits above five frame words (vector, error code,
+/// EIP, CS, EFLAGS). For a ring-3 exception the interrupted context is
+/// the user stack: its ESP is the one the CPU pushed in the ring-3
+/// tail.
+fn interrupted_esp(frame: &ExceptionFrame, user_esp: u32) -> u32 {
+    if frame.cs & 3 != 0 {
+        user_esp
+    } else {
+        frame.esp + 5 * 4
+    }
 }
 
 // --- Exception stubs ------------------------------------------------------
@@ -494,8 +536,6 @@ mod tests {
             eip: 0,
             cs: 0,
             eflags: 0,
-            user_esp: 0,
-            user_ss: 0,
         }
     }
 
@@ -597,36 +637,42 @@ mod tests {
         );
     }
 
-    /// The exception frame is 15 u32s; the trap tail keeps the order the
-    /// CPU pushes: error code, EIP, CS, EFLAGS, then (ring-3 origin
-    /// only) the interrupted ESP/SS pair.
+    /// The exception frame is 13 u32s; the ring-3 tail adds the
+    /// interrupted ESP/SS pair the CPU pushes, following the same order
+    /// the iret frame uses.
     #[test]
     fn frame_layout_size_and_tail_offsets() {
-        assert_eq!(size_of::<ExceptionFrame>(), 15 * 4);
+        assert_eq!(size_of::<ExceptionFrame>(), 13 * 4);
+        assert_eq!(size_of::<Ring3ExceptionFrame>(), 15 * 4);
         let frame = zero_frame();
         let base = addr_of!(frame) as usize;
         assert_eq!(addr_of!(frame.error_code) as usize - base, 9 * 4);
         assert_eq!(addr_of!(frame.eip) as usize - base, 10 * 4);
         assert_eq!(addr_of!(frame.cs) as usize - base, 11 * 4);
         assert_eq!(addr_of!(frame.eflags) as usize - base, 12 * 4);
-        assert_eq!(addr_of!(frame.user_esp) as usize - base, 13 * 4);
-        assert_eq!(addr_of!(frame.user_ss) as usize - base, 14 * 4);
+        let ring3 = Ring3ExceptionFrame { frame, user_esp: 0, user_ss: 0 };
+        let rbase = addr_of!(ring3) as usize;
+        assert_eq!(addr_of!(ring3.frame) as usize - rbase, 0);
+        assert_eq!(addr_of!(ring3.user_esp) as usize - rbase, 13 * 4);
+        assert_eq!(addr_of!(ring3.user_ss) as usize - rbase, 14 * 4);
     }
 
     /// The interrupted-ESP reconstruction: five frame words sit between
-    /// the stub-saved ESP and the interrupted context's stack (vector,
-    /// error code, EIP, CS, EFLAGS), plus the interrupted ESP/SS pair
-    /// when the exception came from ring 3.
+    /// the stub-saved ESP and a ring-0 context's stack (vector, error
+    /// code, EIP, CS, EFLAGS). A ring-3 context interrupted on its own
+    /// (user) stack: the reconstruction must report exactly the user
+    /// ESP the CPU pushed, not arithmetic on the ring-0 TSS stack.
     #[test]
-    fn interrupted_esp_accounts_for_ring3_tail() {
+    fn interrupted_esp_is_user_esp_for_ring3() {
         let mut frame = zero_frame();
-        frame.esp = 0x1000;
-        frame.cs = 0x08; // ring 0
-        assert_eq!(interrupted_esp(&frame), 0x1000 + 5 * 4);
-        frame.cs = 0x1B; // ring 3 (RPL 3 in the low bits)
-        assert_eq!(interrupted_esp(&frame), 0x1000 + 7 * 4);
+        frame.esp = 0x8013_A000; // the TSS esp0, where the stub runs
+        frame.cs = 0x08; // ring 0: reconstructed from the stub's stack
+        assert_eq!(interrupted_esp(&frame, 0), 0x8013_A000 + 5 * 4);
+        frame.cs = 0x1B; // ring 3: the pushed user ESP wins
+        assert_eq!(interrupted_esp(&frame, 0x0030_1000), 0x0030_1000);
+        assert_ne!(interrupted_esp(&frame, 0x0030_1000), 0x8013_A000 + 5 * 4);
         frame.cs = 0x07; // only the low two bits decide
-        assert_eq!(interrupted_esp(&frame), 0x1000 + 7 * 4);
+        assert_eq!(interrupted_esp(&frame, 0x0030_1000), 0x0030_1000);
     }
 
     /// The IDTR limit is the offset of the last valid byte: table size

@@ -105,6 +105,18 @@ core::arch::global_asm!(
     "    push {user_eflags}",
     "    push {user_code}",
     "    push edx",
+    // iret loads only EIP, CS, EFLAGS, ESP and SS: every other
+    // register passes through to user code. Zero the general-purpose
+    // registers so kernel pointers (multiboot state, serial buffers)
+    // do not leak into user mode. Once real PE images run, the initial
+    // register state must match the reference OS instead.
+    "    xor eax, eax",
+    "    xor ebx, ebx",
+    "    xor ecx, ecx",
+    "    xor edx, edx",
+    "    xor esi, esi",
+    "    xor edi, edi",
+    "    xor ebp, ebp",
     "    iretd",
     user_data = const USER_DATA_SELECTOR | 3,
     user_code = const USER_CODE_SELECTOR | 3,

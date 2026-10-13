@@ -106,9 +106,10 @@ pub extern "C" fn kmain(magic: u32, multiboot_info: u32) -> ! {
     }
     #[cfg(feature = "fault-test-gp")]
     {
-        // Selector 0x38 (slot 7) is one past the GDT limit: #GP with the
-        // CPU-pushed error code 0x38 — the EXC_STUB_ERR path. Segment
-        // registers can only be loaded from a general-purpose register.
+        // Selector 0x38 (slot 7) lies beyond the six-entry GDT limit
+        // (0x2F): #GP with the CPU-pushed error code 0x38 — the
+        // EXC_STUB_ERR path. Segment registers can only be loaded from
+        // a general-purpose register.
         serial_println!("F2K: fault test: forcing #GP (error code path)");
         unsafe {
             asm!(

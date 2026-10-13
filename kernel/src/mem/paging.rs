@@ -160,24 +160,32 @@ pub fn init_table_access() {
         0,
         "scratch table already installed"
     );
-    let scratch_table_phys = allocate_frame_phys();
-    // SAFETY: both slots were asserted empty; the boot context is the
-    // only mutator.
+
+    // The scratch table is a kernel static (its frame is part of the
+    // image and never enters the frame database), so it can be zeroed
+    // directly through the kernel window before it is reachable
+    // through its own window. BSS is loader-zeroed in theory; zeroing
+    // explicitly keeps that from being load-bearing.
+    // SAFETY: the boot context is the only accessor.
     unsafe {
+        let scratch = &mut *core::ptr::addr_of_mut!(SCRATCH_TABLE);
+        for i in 0..PT_ENTRIES {
+            scratch.0[i] = 0;
+        }
+        let scratch_table_phys = (scratch.0.as_mut_ptr() as u32) - KERNEL_BASE;
+
+        // SAFETY: both slots were asserted empty; the boot context is
+        // the only mutator.
         *pd.add(SELF_MAP_SLOT) = pd_phys | PAGE_PRESENT | PAGE_WRITE;
         *pd.add(SCRATCH_SLOT) = scratch_table_phys | PAGE_PRESENT | PAGE_WRITE;
     }
-    // Zero the scratch table through the self-map (SELF_MAP_VA +
-    // SCRATCH_SLOT * 4096 is the scratch table itself).
-    // SAFETY: the self-map and the scratch PDE are live; nothing else
-    // accesses this window.
-    unsafe {
-        let scratch = (SELF_MAP_VA + ((SCRATCH_SLOT as u32) << 12)) as *mut u32;
-        for i in 0..PT_ENTRIES {
-            scratch.add(i).write_volatile(0);
-        }
-    }
 }
+
+/// The scratch page table: a kernel static whose entry 0 aliases
+/// whichever frame the kernel is initializing. Never allocated from
+/// the frame database; its frame belongs to the kernel image.
+#[cfg(target_arch = "x86")]
+static mut SCRATCH_TABLE: Aligned<[u32; PT_ENTRIES]> = Aligned([0; PT_ENTRIES]);
 
 /// Invalidate the TLB entry for `vaddr`.
 #[cfg(target_arch = "x86")]
@@ -237,14 +245,15 @@ pub fn init_frame(frame_phys: u32, offset: usize, bytes: &[u8]) {
 /// Allocate one frame from the boot frame database, return its physical
 /// address. This is the frame allocator's first runtime consumer.
 ///
-/// The database hands out "zeroed" frames by bookkeeping only (its
-/// zeroing hook is a no-op until a zeroing worker exists), so callers
-/// must initialize the frame's contents themselves —
-/// [`init_frame`] does that.
+/// The database never zeroes what it hands out here (its zeroing hook
+/// is a no-op until a zeroing worker exists, and the plain allocation
+/// path requests none), so the frame's contents are undefined until
+/// the caller initializes them — [`init_frame`] does that, and every
+/// frame handed to user space goes through it.
 #[cfg(target_arch = "x86")]
 pub fn allocate_frame_phys() -> u32 {
     let frame = crate::mem::bootmem::with_frame_db(|db| {
-        db.allocate_zeroed(crate::mem::frame::PRIMARY_COLOR)
+        db.allocate(crate::mem::frame::PRIMARY_COLOR)
     });
     frame * PAGE_SIZE
 }
@@ -279,15 +288,14 @@ pub fn map_user_page(vaddr: u32, frame_phys: u32, writable: bool) {
         let dir = unsafe { &mut *core::ptr::addr_of_mut!(BOOT_PD) }.0.as_mut_ptr();
         if *dir.add(window) & PAGE_PRESENT == 0 {
             let table_phys = allocate_frame_phys();
+            // Zero the frame while it is still unreachable from the
+            // window: until then its contents are whatever the frame
+            // held, and present garbage entries must never become
+            // speculatively walkable.
+            init_frame(table_phys, 0, &[]);
             // A user window must be traversable by ring 3; the per-page
             // user/supervisor and read/write bits decide the rest.
             *dir.add(window) = table_phys | PAGE_PRESENT | PAGE_WRITE | PAGE_USER;
-            // Zero the fresh table through the self-map (first access:
-            // the mapping did not exist until the write above).
-            let table = (SELF_MAP_VA + ((window as u32) << 12)) as *mut u32;
-            for i in 0..PT_ENTRIES {
-                table.add(i).write_volatile(0);
-            }
         }
         let table = (SELF_MAP_VA + ((window as u32) << 12)) as *mut u32;
         assert_eq!(

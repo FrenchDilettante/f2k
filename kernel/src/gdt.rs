@@ -71,14 +71,17 @@ static mut GDT: [u64; 6] = [
     0,
 ];
 
-/// TSS descriptor: present, ring 0, system type "available 32-bit
-/// TSS" (0x89), byte-granular; flags bit 6 marks the TSS as 32-bit.
-/// The descriptor must be non-busy when `ltr` loads it; the CPU then
-/// sets the busy bit (0x89 -> 0x8B) in the GDT itself — the one
-/// architectural write into this table, so the GDT page stays writable
-/// (the pre-set accessed bits keep the segment descriptors stable).
+/// TSS descriptor: present, ring 0, system type "available 32-bit TSS"
+/// (0x89), byte-granular. The 32-bit-vs-16-bit distinction lives in the
+/// type nibble (9 = available 32-bit; 1 = available 16-bit), so the
+/// flags nibble carries no meaning here and stays clear — only its
+/// limit 19:16 half is used. The descriptor must be non-busy when
+/// `ltr` loads it; the CPU then sets the busy bit (0x89 -> 0x8B) in
+/// the GDT itself — the one architectural write into this table, so
+/// the GDT page stays writable (the pre-set accessed bits keep the
+/// segment descriptors stable).
 const fn tss_descriptor(base: u32, limit: u32) -> u64 {
-    make_entry(base, limit, 0x89, 0x4)
+    make_entry(base, limit, 0x89, 0x0)
 }
 
 /// The 32-bit task state segment. The CPU consults ss0:esp0 when an
@@ -113,15 +116,19 @@ pub struct TaskStateSegment {
     esi: u32,
     edi: u32,
     es: u16,
+    reserved_es: u16,
     cs: u16,
+    reserved_cs: u16,
     ss: u16,
+    reserved_ss: u16,
     ds: u16,
+    reserved_ds: u16,
     fs: u16,
+    reserved_fs: u16,
     gs: u16,
+    reserved_gs: u16,
     ldt: u16,
-    reserved4: u16,
-    /// Free for the kernel's own use; this kernel leaves it zero.
-    os_use: [u8; 12],
+    reserved_ldt: u16,
     /// Debug trap bit (only bit 0 is defined); zero.
     trap: u16,
     /// Offset one past the last byte of the I/O permission bitmap. With
@@ -156,14 +163,19 @@ impl TaskStateSegment {
             esi: 0,
             edi: 0,
             es: 0,
+            reserved_es: 0,
             cs: 0,
+            reserved_cs: 0,
             ss: 0,
+            reserved_ss: 0,
             ds: 0,
+            reserved_ds: 0,
             fs: 0,
+            reserved_fs: 0,
             gs: 0,
+            reserved_gs: 0,
             ldt: 0,
-            reserved4: 0,
-            os_use: [0; 12],
+            reserved_ldt: 0,
             trap: 0,
             iomap_base: 0,
         }
@@ -222,8 +234,9 @@ pub unsafe fn init() {
     }
     // SAFETY: boot CPU, ring 0, interrupts disabled; the GDT is 'static.
     gdt_load(base, limit);
-    // SAFETY: the TSS descriptor is in the loaded table and marked
-    // busy; ltr has no other effect than loading the task register.
+    // SAFETY: the TSS descriptor is in the loaded table and available
+    // (non-busy); ltr loads the task register and marks the descriptor
+    // busy in the GDT, and has no other effect.
     unsafe {
         asm!("ltr {tss:x}", tss = in(reg) TSS_SELECTOR, options(nostack, preserves_flags));
     }
@@ -340,21 +353,39 @@ mod tests {
     /// TSS bit set.
     #[test]
     fn tss_descriptor_matches_independent_oracle() {
-        assert_eq!(
-            tss_descriptor(0x0012_3456, 0x67),
-            oracle_entry(0x0012_3456, 0x67, 0x09, 0, false)
-        );
-        // Hand-decoded: byte 7 = base 31:24 (0x00), byte 6 = the flags
-        // nibble with the 32-bit-TSS bit (0x4) in its high half and
-        // limit 19:16 (0) in the low half, byte 5 = 0x89, byte 4 =
-        // base 23:16 (0x12), bytes 3:2 = base 15:0 (0x3456), bytes
-        // 1:0 = limit 15:0 (0x0067).
-        assert_eq!(tss_descriptor(0x0012_3456, 0x67), 0x0040_8912_3456_0067);
+        // Independent oracle: builds the descriptor straight from the
+        // byte layout without the code's packer — byte 6 carries only
+        // limit 19:16, the flags nibble stays clear (32-bit-vs-16-bit
+        // is the type nibble).
+        fn tss_oracle(base: u32, limit: u32) -> u64 {
+            let limit_hi = ((limit >> 16) & 0xF) as u64;
+            (((base >> 24) as u64) << 56)
+                | (limit_hi << 48)
+                | (0x89u64 << 40)
+                | (((base >> 16) & 0xFF) as u64) << 32
+                | ((base & 0xFFFF) as u64) << 16
+                | ((limit & 0xFFFF) as u64)
+        }
+        for &(base, limit) in &[(0u32, 0x67u32), (0x0012_3456, 0x67), (0xFFFF_0000, 0x1_2345)] {
+            assert_eq!(tss_descriptor(base, limit), tss_oracle(base, limit));
+        }
+        // Hand-decoded: byte 7 = base 31:24 (0x00), byte 6 = limit
+        // 19:16 (0), byte 5 = 0x89, byte 4 = base 23:16 (0x12),
+        // bytes 3:2 = base 15:0 (0x3456), bytes 1:0 = limit 15:0
+        // (0x0067).
+        assert_eq!(tss_descriptor(0x0012_3456, 0x67), 0x0000_8912_3456_0067);
+        // A limit spanning more than 16 bits lands in byte 6 without
+        // touching the undefined flag bits: limit 19:16 (bits 51:48)
+        // is 1, the flags nibble (55:52) stays clear.
+        let wide = tss_descriptor(0, 0x1_2345);
+        assert_eq!((wide >> 48) & 0xF, 1);
+        assert_eq!((wide >> 52) & 0xF, 0);
     }
 
-    /// The TSS matches the x86 layout: 104 bytes, with the fields the
-    /// CPU consults (esp0, ss0, iomap_base) at their architectural
-    /// offsets.
+    /// The TSS matches the x86 layout: 104 bytes, selectors in 4-byte
+    /// slots (16-bit selector plus 16 reserved bits) from 0x48 on, so
+    /// a hardware task switch loads every field from its architectural
+    /// offset.
     #[test]
     fn tss_layout_matches_x86() {
         let tss = TaskStateSegment::new();
@@ -363,13 +394,22 @@ mod tests {
         assert_eq!(core::ptr::addr_of!(tss.esp0) as usize - base, 0x04);
         assert_eq!(core::ptr::addr_of!(tss.ss0) as usize - base, 0x08);
         assert_eq!(core::ptr::addr_of!(tss.esp1) as usize - base, 0x0C);
+        assert_eq!(core::ptr::addr_of!(tss.ss1) as usize - base, 0x10);
         assert_eq!(core::ptr::addr_of!(tss.esp2) as usize - base, 0x14);
+        assert_eq!(core::ptr::addr_of!(tss.ss2) as usize - base, 0x18);
         assert_eq!(core::ptr::addr_of!(tss.cr3) as usize - base, 0x1C);
         assert_eq!(core::ptr::addr_of!(tss.eip) as usize - base, 0x20);
         assert_eq!(core::ptr::addr_of!(tss.eflags) as usize - base, 0x24);
+        assert_eq!(core::ptr::addr_of!(tss.eax) as usize - base, 0x28);
+        assert_eq!(core::ptr::addr_of!(tss.edi) as usize - base, 0x44);
         assert_eq!(core::ptr::addr_of!(tss.es) as usize - base, 0x48);
-        assert_eq!(core::ptr::addr_of!(tss.gs) as usize - base, 0x52);
-        assert_eq!(core::ptr::addr_of!(tss.ldt) as usize - base, 0x54);
+        assert_eq!(core::ptr::addr_of!(tss.cs) as usize - base, 0x4C);
+        assert_eq!(core::ptr::addr_of!(tss.ss) as usize - base, 0x50);
+        assert_eq!(core::ptr::addr_of!(tss.ds) as usize - base, 0x54);
+        assert_eq!(core::ptr::addr_of!(tss.fs) as usize - base, 0x58);
+        assert_eq!(core::ptr::addr_of!(tss.gs) as usize - base, 0x5C);
+        assert_eq!(core::ptr::addr_of!(tss.ldt) as usize - base, 0x60);
+        assert_eq!(core::ptr::addr_of!(tss.trap) as usize - base, 0x64);
         assert_eq!(core::ptr::addr_of!(tss.iomap_base) as usize - base, 0x66);
     }
 
