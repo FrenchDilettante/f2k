@@ -127,6 +127,15 @@ pub const SCRATCH_SLOT: usize = 769;
 /// Virtual address of scratch entry 0: the one-page alias of the frame
 /// being initialized.
 pub const SCRATCH_VA: u32 = (SCRATCH_SLOT as u32) << 22;
+/// First directory entry of the kernel half (KERNEL_BASE's own
+/// window): entries below it belong to user space.
+pub const KERNEL_HALF_START: usize = (KERNEL_BASE >> 22) as usize;
+/// Virtual address of directory entry 0 through the self-map's own
+/// window: the directory doubles as window `SELF_MAP_SLOT`'s page
+/// table (its entry `SELF_MAP_SLOT` points at itself), so entry `i`
+/// sits at `DIRECTORY_ENTRY_VA + i*4`. Distinct from the table
+/// window below, which addresses any window's page *table*.
+pub const DIRECTORY_ENTRY_VA: u32 = SELF_MAP_VA + ((SELF_MAP_SLOT as u32) << 12);
 
 /// Install the self-map and the scratch table, once, right after
 /// [`teardown_low_identity`]. No TLB flushes needed: neither window
@@ -171,6 +180,12 @@ pub fn init_table_access() {
 /// frame database).
 #[cfg(target_arch = "x86")]
 static mut SCRATCH_TABLE: Aligned<[u32; PT_ENTRIES]> = Aligned([0; PT_ENTRIES]);
+
+/// Staging where a new process directory is assembled before it is
+/// written to its frame (the loader runs on the small boot stack; a
+/// 4 KiB directory must not live in a stack frame).
+#[cfg(target_arch = "x86")]
+static mut DIRECTORY_STAGING: Aligned<[u32; PT_ENTRIES]> = Aligned([0; PT_ENTRIES]);
 
 /// Invalidate the TLB entry for `vaddr`.
 #[cfg(target_arch = "x86")]
@@ -257,6 +272,10 @@ pub fn allocate_frame_phys() -> u32 {
 /// Map `vaddr` to `frame_phys`: present, user, writable if asked. The
 /// window's table is allocated on first use; double mappings panic.
 ///
+/// The mapping lands in the **current** directory — the one CR3
+/// points at — reached through its self-map window, so it targets the
+/// active process's address space, not any particular static.
+///
 /// # Panics
 ///
 /// Unaligned `vaddr`/`frame_phys`, kernel-window `vaddr`, already
@@ -272,14 +291,17 @@ pub fn map_user_page(vaddr: u32, frame_phys: u32, writable: bool) {
     let window = (vaddr >> 22) as usize;
     let index = ((vaddr >> 12) & 0x3FF) as usize;
 
-    // Directory entries are read and written through the static
-    // directory (always mapped in the kernel window): the self-map
-    // aliases a window's page table only once its directory entry
-    // exists, so an absent window cannot be probed through it.
+    // Both the window's directory entry (DIRECTORY_ENTRY_VA +
+    // window*4, through the directory's own self-map slot) and its
+    // page table (SELF_MAP_VA + window*4096, through the self-map
+    // window) are reached through the current directory: the entries
+    // live wherever CR3 points. The CPU may set accessed/dirty bits
+    // on any entry as a side effect of ordinary memory traffic, so
+    // all reads and writes are volatile.
     // SAFETY: the boot context is the only mutator of user windows.
     unsafe {
-        let dir = unsafe { &mut *core::ptr::addr_of_mut!(BOOT_PD) }.0.as_mut_ptr();
-        if *dir.add(window) & PAGE_PRESENT == 0 {
+        let pde = (DIRECTORY_ENTRY_VA + (window as u32) * 4) as *mut u32;
+        if pde.read_volatile() & PAGE_PRESENT == 0 {
             let table_phys = allocate_frame_phys();
             // Quirk: zero the table while it is still unreachable —
             // present garbage entries must never become speculatively
@@ -287,7 +309,7 @@ pub fn map_user_page(vaddr: u32, frame_phys: u32, writable: bool) {
             init_frame(table_phys, 0, &[]);
             // A user window must be traversable by ring 3; the per-page
             // user/supervisor and read/write bits decide the rest.
-            *dir.add(window) = table_phys | PAGE_PRESENT | PAGE_WRITE | PAGE_USER;
+            pde.write_volatile(table_phys | PAGE_PRESENT | PAGE_WRITE | PAGE_USER);
         }
         let table = (SELF_MAP_VA + ((window as u32) << 12)) as *mut u32;
         assert_eq!(
@@ -299,6 +321,132 @@ pub fn map_user_page(vaddr: u32, frame_phys: u32, writable: bool) {
             frame_phys | PAGE_PRESENT | PAGE_USER | if writable { PAGE_WRITE } else { 0 };
         table.add(index).write_volatile(entry);
         invlpg(vaddr);
+    }
+}
+
+// --- Per-process address spaces --------------------------------------------
+//
+// A process owns a page-directory frame. Creation inherits the kernel
+// half from the current directory (the kernel window must stay mapped
+// wherever CR3 points), zeroes the user half, points the self-map entry
+// at the new directory itself, and installs the shared scratch table.
+// The new directory is built through the scratch window — its own
+// self-map is unreachable until CR3 loads it. Activation is a single
+// CR3 load, which is also the full TLB flush (no F2K mapping is
+// global, so nothing survives the reload).
+
+/// Assemble a fresh process directory in `dir`: user half zeroed,
+/// kernel half inherited through `read_base_entry` (called for each
+/// entry in `[KERNEL_HALF_START, PT_ENTRIES)` of the base directory,
+/// which is only ever read), self-map entry pointing at the new
+/// directory's own frame `own_phys`, scratch entry at the shared
+/// scratch table `scratch_phys`.
+///
+/// Pure over the entries: the caller supplies how base entries are
+/// read (a volatile self-map read on target, a plain array read in
+/// tests).
+pub fn assemble_process_directory(
+    dir: &mut [u32; PT_ENTRIES],
+    own_phys: u32,
+    scratch_phys: u32,
+    mut read_base_entry: impl FnMut(usize) -> u32,
+) {
+    for entry in dir.iter_mut() {
+        *entry = 0;
+    }
+    for i in KERNEL_HALF_START..PT_ENTRIES {
+        dir[i] = read_base_entry(i);
+    }
+    // Present and writable, and nothing else: no user bit (the
+    // self-map and scratch windows are kernel-only) and no global bit
+    // (every entry must drop out of the TLB when CR3 reloads).
+    dir[SELF_MAP_SLOT] = own_phys | PAGE_PRESENT | PAGE_WRITE;
+    dir[SCRATCH_SLOT] = scratch_phys | PAGE_PRESENT | PAGE_WRITE;
+}
+
+/// The value CR3 takes for a directory at `dir_phys`: the address
+/// bits only, so a sloppy caller's low flag bits cannot leak into
+/// the load.
+pub const fn directory_cr3(dir_phys: u32) -> u32 {
+    dir_phys & PAGE_ADDR_MASK
+}
+
+/// The shared scratch table's physical address (its frame is part of
+/// the kernel image and never enters the frame database).
+#[cfg(target_arch = "x86")]
+pub fn scratch_table_phys() -> u32 {
+    (core::ptr::addr_of!(SCRATCH_TABLE) as u32) - KERNEL_BASE
+}
+
+/// The boot directory's physical address: the address space the
+/// kernel returns to between processes.
+#[cfg(target_arch = "x86")]
+pub fn boot_directory_phys() -> u32 {
+    (core::ptr::addr_of!(BOOT_PD) as u32) - KERNEL_BASE
+}
+
+/// Create a fresh process address space and return its directory's
+/// physical address. The directory inherits the current address
+/// space's kernel half; it is not active until the caller loads it
+/// with [`activate_address_space`].
+///
+/// # Panics
+///
+/// The frame database is empty (allocation happens before anything
+/// is written, so nothing is left half-built).
+#[cfg(target_arch = "x86")]
+pub fn create_address_space() -> u32 {
+    // Allocated first: exhaustion fails before any write.
+    let dir_phys = allocate_frame_phys();
+
+    // SAFETY: single-threaded boot context; the staging static's
+    // only user is this function.
+    let staging = unsafe { &mut *core::ptr::addr_of_mut!(DIRECTORY_STAGING) };
+    // The base directory's kernel half, read through the current
+    // directory's view of itself (DIRECTORY_ENTRY_VA): the directory
+    // page reached through its own self-map slot, one entry per
+    // word. Volatile: the CPU sets accessed/dirty bits on these
+    // entries as a side effect of ordinary memory traffic.
+    // SAFETY: the view page is exactly the current directory
+    // (installed at boot, inherited by every process directory), and
+    // the reads stay inside it.
+    unsafe {
+        assemble_process_directory(
+            &mut staging.0,
+            dir_phys,
+            scratch_table_phys(),
+            |i| ((DIRECTORY_ENTRY_VA + (i as u32) * 4) as *const u32).read_volatile(),
+        );
+    }
+
+    // One full-page write through the scratch window; the staging is
+    // complete (user half zero, kernel half copied, both special
+    // entries set), so no separate zeroing pass is needed.
+    // SAFETY: the staging static's contents were just fully written
+    // by the assembly above (4096 bytes); the scratch window is
+    // installed in the current directory, and this is its sole user.
+    unsafe {
+        let staging_bytes: &[u8] = core::slice::from_raw_parts(
+            core::ptr::addr_of!(DIRECTORY_STAGING).cast::<u8>(),
+            core::mem::size_of::<[u32; PT_ENTRIES]>(),
+        );
+        write_frame(dir_phys, 0, staging_bytes);
+    }
+    dir_phys
+}
+
+/// Make the directory at `dir_phys` the current address space: one
+/// CR3 load. The load itself invalidates every non-global TLB entry
+/// (no F2K mapping is global), so the switch is also the flush —
+/// no other TLB action belongs here.
+#[cfg(target_arch = "x86")]
+pub fn activate_address_space(dir_phys: u32) {
+    let cr3 = directory_cr3(dir_phys);
+    // SAFETY: `dir_phys` is a frame this kernel built (page-aligned
+    // CR3 value); the kernel half is present in it, so execution
+    // continues on a mapped kernel window.
+    unsafe {
+        asm!("mov cr3, {cr3}", cr3 = in(reg) cr3, options(nostack, preserves_flags));
     }
 }
 
@@ -378,8 +526,9 @@ mod tests {
     }
 
     /// Directory-entry arithmetic the runtime code relies on:
-    /// SELF_MAP_VA + window*4096 addresses that window's table, and
-    /// SELF_MAP_VA + index*4 addresses a directory entry.
+    /// SELF_MAP_VA + window*4096 addresses that window's page table,
+    /// and DIRECTORY_ENTRY_VA + index*4 addresses a directory entry
+    /// of the current directory.
     #[test]
     fn self_map_addresses_directory_and_tables() {
         for window in [0usize, 1, 2, 511, 512, 1021] {
@@ -389,10 +538,114 @@ mod tests {
             assert!(table_va >= SELF_MAP_VA);
             assert!(table_va < SELF_MAP_VA + (1 << 22));
         }
-        for index in [0usize, 512, 1023] {
-            let entry_va = SELF_MAP_VA + (index as u32) * 4;
-            assert!(entry_va >= SELF_MAP_VA);
-            assert!(entry_va < SELF_MAP_VA + 4096);
+        assert_eq!(DIRECTORY_ENTRY_VA, 0xC030_0000);
+        for index in [0usize, 512, 767, 1023] {
+            let entry_va = DIRECTORY_ENTRY_VA + (index as u32) * 4;
+            // The entry word stays on the directory's view page.
+            assert!(entry_va >= DIRECTORY_ENTRY_VA);
+            assert!(entry_va < DIRECTORY_ENTRY_VA + 4096);
         }
+    }
+
+    /// Assemble a directory from `base` into a buffer pre-filled with
+    /// garbage: creation must not depend on the target frame's prior
+    /// contents.
+    fn assembled(base: &[u32; PT_ENTRIES], own: u32, scratch: u32) -> [u32; PT_ENTRIES] {
+        let mut dir = [0xDEAD_BEEF; PT_ENTRIES];
+        assemble_process_directory(&mut dir, own, scratch, |i| base[i]);
+        dir
+    }
+
+    /// The kernel half is inherited wholesale except the two runtime
+    /// slots; the user half starts zero no matter what the target
+    /// frame held before.
+    #[test]
+    fn process_directory_inherits_the_kernel_half_and_zeroes_the_user_half() {
+        let mut base = [0u32; PT_ENTRIES];
+        base[512] = 0x0010_1000 | PAGE_PRESENT | PAGE_WRITE;
+        base[513] = 0x0050_1000 | PAGE_PRESENT | PAGE_WRITE;
+        base[700] = 0x0090_0000 | PAGE_PRESENT | PAGE_WRITE | PAGE_USER;
+        base[1023] = 0x00B0_0000 | PAGE_PRESENT | PAGE_WRITE;
+        let dir = assembled(&base, 0x9000, 0xB000);
+
+        for i in 0..PT_ENTRIES {
+            if i == SELF_MAP_SLOT || i == SCRATCH_SLOT {
+                continue;
+            }
+            let expected = if i < KERNEL_HALF_START { 0 } else { base[i] };
+            assert_eq!(dir[i], expected, "entry {i}");
+        }
+    }
+
+    /// The self-map entry points at the directory's own frame; the
+    /// scratch entry at the shared scratch table. Both carry exactly
+    /// present+writable: no user bit (kernel-only windows) and no
+    /// global bit (every entry must leave the TLB on a CR3 reload).
+    #[test]
+    fn runtime_slots_point_at_the_directory_and_the_shared_scratch_table() {
+        let dir = assembled(&[0; PT_ENTRIES], 0x0090_0000, 0x00B0_0000);
+        assert_eq!(
+            dir[SELF_MAP_SLOT],
+            0x0090_0000 | PAGE_PRESENT | PAGE_WRITE
+        );
+        assert_eq!(
+            dir[SCRATCH_SLOT],
+            0x00B0_0000 | PAGE_PRESENT | PAGE_WRITE
+        );
+    }
+
+    /// The directory doubles as window 768's own page table (its
+    /// self-map entry points at itself), so it is reachable at a
+    /// second fixed window: directory entry i resolves at
+    /// DIRECTORY_ENTRY_VA + i*4, which is how `create_address_space`
+    /// reads the base and `map_user_page` writes window entries —
+    /// going through the self-map entry itself, never through user
+    /// windows that may be unmapped.
+    #[test]
+    fn the_directory_is_reachable_through_its_own_window() {
+        assert_eq!(DIRECTORY_ENTRY_VA, SELF_MAP_VA + ((SELF_MAP_SLOT as u32) << 12));
+        assert_eq!(DIRECTORY_ENTRY_VA, 0xC030_0000);
+        assert_eq!(KERNEL_HALF_START, (KERNEL_BASE >> 22) as usize);
+        assert_eq!(KERNEL_HALF_START, 512);
+        // The view stays inside the self-map's 4 MiB, above the user
+        // window tables and below the scratch window's tables.
+        assert!(DIRECTORY_ENTRY_VA >= SELF_MAP_VA + (KERNEL_HALF_START as u32) * 4096);
+        assert!(DIRECTORY_ENTRY_VA < SCRATCH_VA);
+    }
+
+    /// Two directories from the same base share the kernel half (the
+    /// same user VAs resolve through different tables) but each
+    /// self-map points at its own directory. This is the layout root
+    /// of two processes linking at the same image base.
+    #[test]
+    fn sibling_directories_share_the_kernel_half_but_not_their_self_maps() {
+        let mut base = [0u32; PT_ENTRIES];
+        base[512] = 0x0010_1000 | PAGE_PRESENT | PAGE_WRITE;
+        base[513] = 0x0050_1000 | PAGE_PRESENT | PAGE_WRITE;
+        let first = assembled(&base, 0x0090_0000, 0x00B0_0000);
+        let second = assembled(&base, 0x0095_0000, 0x00B0_0000);
+
+        for i in KERNEL_HALF_START..PT_ENTRIES {
+            if i == SELF_MAP_SLOT {
+                assert_eq!(first[i] & PAGE_ADDR_MASK, 0x0090_0000);
+                assert_eq!(second[i] & PAGE_ADDR_MASK, 0x0095_0000);
+            } else {
+                assert_eq!(first[i], second[i], "entry {i}");
+            }
+        }
+        for i in 0..KERNEL_HALF_START {
+            assert_eq!(first[i], 0);
+            assert_eq!(second[i], 0);
+        }
+    }
+
+    /// The CR3 value is the directory's address bits only: low flag
+    /// bits from a sloppy caller must not reach the load.
+    #[test]
+    fn directory_cr3_masks_the_flag_bits() {
+        assert_eq!(directory_cr3(0x0090_0000), 0x0090_0000);
+        assert_eq!(directory_cr3(0x0090_0007), 0x0090_0000);
+        assert_eq!(directory_cr3(0xFFFF_F005), 0xFFFF_F000);
+        assert_eq!(directory_cr3(0), 0);
     }
 }

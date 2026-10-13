@@ -73,6 +73,13 @@ pub fn run_image(file: &[u8], name: &str) -> ! {
     staging.fill(0);
     image.map_into(file, staging);
 
+    // The process's own address space: a fresh directory sharing this
+    // kernel's kernel half, active from here on, so every mapping
+    // below (thunk page, image, stack, TEB, params) lands in it and
+    // not in the boot directory.
+    let address_space = paging::create_address_space();
+    paging::activate_address_space(address_space);
+
     // The thunks must be mapped before the snap: IAT slots receive
     // user-space addresses.
     crate::kernel32::init();

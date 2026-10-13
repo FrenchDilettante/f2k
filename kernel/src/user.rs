@@ -140,12 +140,17 @@ core::arch::global_asm!(
 );
 
 /// End of the user process: the exit service's landing point. There
-/// is no next process, so the kernel reports and halts; the exit code
-/// is the only observable, making this line the suite's check.
+/// is no next process yet, so the kernel returns to the boot address
+/// space and halts; the exit code is the only observable, making this
+/// line the suite's check.
 pub fn process_exited(code: u32) -> ! {
     #[cfg(target_arch = "x86")]
     {
         crate::serial_println!("F2K: user process exited normally (exit code={})", code);
+        // Back to the boot directory before anything else runs on the
+        // process's tables (the multi-process runner and teardown are
+        // the next workstream slices).
+        crate::mem::paging::activate_address_space(crate::mem::paging::boot_directory_phys());
         crate::halt()
     }
     #[cfg(not(target_arch = "x86"))]
