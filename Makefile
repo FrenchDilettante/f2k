@@ -51,10 +51,9 @@ help:
 	@echo "  all           - Build everything and create bootable disk"
 	@echo "  kernel       - Build the kernel only"
 	@echo "  qemu         - Build the kernel and boot it directly in QEMU (Multiboot)"
-	@echo "  test         - Run the boot smoke test"
-	@echo "  test-disk    - Run the boot smoke test on the disk image"
+	@echo "  test         - Run the on-target QEMU test suite (kernel path)"
+	@echo "  test-disk    - Run the on-target QEMU test suite (disk path)"
 	@echo "  run-tests    - Run host unit tests (cargo test --lib)"
-	@echo "  test-fault   - On-target exception dump tests (#UD and #GP)"
 	@echo "  kernel-bin   - Convert kernel to raw binary"
 	@echo "  disk         - Create Limine-bootable hard disk image (needs mtools)"
 	@echo "  limine       - Download/setup limine bootloader (if needed)"
@@ -126,32 +125,16 @@ clobber: clean
 	@echo "Removing target directory..."
 	-rm -rf $(BUILD_DIR)
 
-.PHONY: test test-boot
-test: test-boot
+# On-target QEMU suite: scripts/qemu-tests.yaml describes the cases
+# (kernel features to build with, image to boot, expected COM1
+# strings); scripts/run-qemu-tests.py builds and runs them. New cases
+# are data, not new Makefile targets.
+.PHONY: test test-disk
+test: kernel
+	@scripts/run-qemu-tests.py scripts/qemu-tests.yaml --image kernel
 
-# Boot smoke test: boots the kernel in QEMU and checks the banner on COM1
-test-boot: kernel
-	@scripts/test-boot.sh $(KERNEL_ELF) "F2K Booted Successfully" "F2K: frame database audit: ok" "F2K: kernel heap: alloc/free ok" "F2K: ring-3 round trip ok"
-
-.PHONY: test-disk
 test-disk: disk
-	@scripts/test-boot.sh $(DISK_IMG) "F2K Booted Successfully" "F2K: frame database audit: ok" "F2K: kernel heap: alloc/free ok" "F2K: ring-3 round trip ok"
-
-# On-target fault injection: builds the kernel with a test feature that
-# forces a CPU exception right after init, then checks the COM1 dump.
-.PHONY: test-fault-ud test-fault-gp test-fault
-test-fault-ud:
-	@echo "Fault test: #UD after init (no error code)..."
-	cd $(KERNEL_DIR) && cargo build --features fault-test-ud
-	@scripts/test-boot.sh $(KERNEL_ELF) \
-		"F2K: GDT after load: 0x00cf9b000000ffff 0x00cf93000000ffff" \
-		"CPU EXCEPTION: vector 6" "error code 0x00000000"
-test-fault-gp:
-	@echo "Fault test: #GP after init (CPU-pushed error code)..."
-	cd $(KERNEL_DIR) && cargo build --features fault-test-gp
-	@scripts/test-boot.sh $(KERNEL_ELF) \
-		"CPU EXCEPTION: vector 13" "error code 0x00000038"
-test-fault: test-fault-ud test-fault-gp
+	@scripts/run-qemu-tests.py scripts/qemu-tests.yaml --image disk
 
 .PHONY: run-tests
 run-tests:

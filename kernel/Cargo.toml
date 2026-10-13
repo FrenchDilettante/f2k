@@ -24,6 +24,14 @@ doctest = false
 # with `make test-fault-ud` / `make test-fault-gp`.
 fault-test-ud = []
 fault-test-gp = []
+# Swaps the ring-3 smoke stub for one that reads the supervisor-only
+# kernel window, so the user-process-fault path can be verified on
+# target with `make test-fault-user`.
+fault-test-user = []
+# Swaps the ring-3 smoke stub for one that passes an unmapped user
+# address as the syscall argument pointer, so faults inside the
+# kernel's argument copy end the process: `make test-fault-badargs`.
+fault-test-badargs = []
 
 [dependencies]
 # Core no_std crates for future use

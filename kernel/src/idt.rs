@@ -14,11 +14,11 @@ use crate::gdt::KERNEL_CODE_SELECTOR;
 /// Number of CPU exception vectors (0-31).
 const EXCEPTION_VECTORS: usize = 32;
 
-/// IDT size: the 32 exception vectors plus room for gates; the M2
-/// round-trip gate (see `user.rs`) is registered at DPL 3. A vector
-/// left absent is a not-present gate: raising it faults with the
-/// vector-derived error code — #NP from ring 0, and #GP from ring 3
-/// (the zeroed descriptor's DPL 0 fails the privilege check first).
+/// IDT size: the 32 exception vectors plus the syscall gate at vector
+/// 0x2E (see `syscall.rs`), registered at DPL 3. A vector left absent
+/// is a not-present gate: raising it faults with the vector-derived
+/// error code — #NP from ring 0, and #GP from ring 3 (the zeroed
+/// descriptor's DPL 0 fails the privilege check first).
 const IDT_VECTORS: usize = 256;
 
 /// Registers saved by the common exception stub, in stack order.
@@ -179,11 +179,11 @@ pub unsafe fn init() {
             core::ptr::write_volatile(base.add(i), Gate::new(*stub));
         }
 
-        // The M2 round-trip gate (see `user.rs`): ring-3 reachable,
-        // entered on the TSS ring-0 stack.
+        // The syscall gate (see `syscall.rs`): ring-3 reachable, entered
+        // on the TSS ring-0 stack, the return path for user code.
         core::ptr::write_volatile(
-            base.add(crate::user::RING3_GATE_VECTOR),
-            Gate::new_user(stub_addr(ring3_gate_stub)),
+            base.add(crate::syscall::SYSCALL_VECTOR),
+            Gate::new_user(stub_addr(crate::syscall::syscall_gate_stub)),
         );
 
         // Build the IDTR on the stack: 6 bytes of limit + base, then lidt.
@@ -239,10 +239,6 @@ unsafe extern "C" {
     fn exception_stub_29();
     fn exception_stub_30();
     fn exception_stub_31();
-    /// M2 round-trip gate stub (defined in `user.rs`): the ring-3
-    /// smoke raises its vector with `int`; the handler confirms the
-    /// round trip on COM1 and halts.
-    fn ring3_gate_stub();
 }
 
 /// Mnemonics for the 32 CPU exception vectors, for the diagnostic dump.
@@ -283,8 +279,10 @@ const NAMES: [&str; EXCEPTION_VECTORS] = [
 ];
 
 /// Called by the common stub with a pointer to the saved register state.
-/// Prints a diagnostic dump on COM1 and halts: for now the kernel has
-/// nothing to recover into after an exception.
+/// Prints a diagnostic dump on COM1 and halts. The origin decides the
+/// final line: a fault raised by user code (or by a bad user pointer
+/// during the kernel's syscall-argument copy) ends the user process,
+/// reported as such; anything else is a kernel fault.
 #[allow(dead_code)] // referenced only from the generated stubs (sym operand)
 #[cfg(target_arch = "x86")]
 extern "C" fn exception_handler(frame: &ExceptionFrame) -> ! {
@@ -360,6 +358,23 @@ extern "C" fn exception_handler(frame: &ExceptionFrame) -> ! {
             core::arch::asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack));
         }
         crate::serial_println!("  CR2 (faulting address) {:#010x}", cr2);
+    }
+    // Classify the fault by origin. A fault raised by user code (or,
+    // while the kernel copies syscall arguments, by a bad user
+    // pointer on the kernel's behalf) ends the user process: single
+    // tasking means the kernel then has nothing left to run, so it
+    // halts — but as the intended end of the process, reported as
+    // such, not as a kernel panic. A kernel fault from any other
+    // origin stays the raw diagnostic halt.
+    if from_user {
+        crate::serial_println!(
+            "F2K: user process ended by fault (vector {}); halting",
+            frame.vector
+        );
+    } else if crate::syscall::copying_user_args() {
+        crate::serial_println!(
+            "F2K: user process ended by fault (bad user argument pointer); halting"
+        );
     }
     crate::halt();
 }

@@ -1,0 +1,65 @@
+# QEMU on-target test suite.
+#
+# Each case builds the kernel (optionally with cargo features), boots it
+# in QEMU via scripts/test-boot.sh, and passes once every expected
+# string has appeared on COM1. `image: kernel` boots the freshly built
+# kernel ELF through QEMU's Multiboot loader; `image: disk` boots the
+# prebuilt disk image (built by `make disk` with the default kernel).
+#
+# Run the whole suite with `make test` (kernel cases) or `make test-disk`
+# (disk cases), or the runner directly:
+#   scripts/run-qemu-tests.py scripts/qemu-tests.yaml [--only NAME ...]
+
+cases:
+  - name: boot-smoke
+    description: full boot through the ring-3 exit syscall (kernel path)
+    image: kernel
+    expects:
+      - "F2K Booted Successfully"
+      - "F2K: frame database audit: ok"
+      - "F2K: kernel heap: alloc/free ok"
+      - "F2K: ring-3 round trip ok"
+
+  - name: fault-ud
+    description: "#UD right after init: exception dump without a CPU error code"
+    image: kernel
+    features: [fault-test-ud]
+    expects:
+      - "F2K: GDT after load: 0x00cf9b000000ffff 0x00cf93000000ffff"
+      - "CPU EXCEPTION: vector 6"
+      - "error code 0x00000000"
+
+  - name: fault-gp
+    description: "#GP right after init: exception dump with the CPU error code"
+    image: kernel
+    features: [fault-test-gp]
+    expects:
+      - "CPU EXCEPTION: vector 13"
+      - "error code 0x00000038"
+
+  - name: fault-user
+    description: a ring-3 fault ends the user process, not the kernel
+    image: kernel
+    features: [fault-test-user]
+    expects:
+      - "F2K: entering ring 3"
+      - "CPU EXCEPTION: vector 14"
+      - "F2K: user process ended by fault (vector 14); halting"
+
+  - name: fault-badargs
+    description: a bad user argument pointer ends the process inside the kernel copy
+    image: kernel
+    features: [fault-test-badargs]
+    expects:
+      - "F2K: entering ring 3"
+      - "CPU EXCEPTION: vector 14"
+      - "F2K: user process ended by fault (bad user argument pointer); halting"
+
+  - name: boot-smoke-disk
+    description: full boot through the ring-3 exit syscall (Limine disk path)
+    image: disk
+    expects:
+      - "F2K Booted Successfully"
+      - "F2K: frame database audit: ok"
+      - "F2K: kernel heap: alloc/free ok"
+      - "F2K: ring-3 round trip ok"

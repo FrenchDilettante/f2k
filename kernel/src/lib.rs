@@ -17,14 +17,17 @@
 mod boot;
 
 // CPU tables: GDT (flat kernel + user segments, TSS) and IDT
-// (exception handlers, the M2 round-trip gate)
+// (exception handlers, the syscall gate at 0x2E)
 mod gdt;
 mod idt;
 
 // Memory management: physical frame allocator
 mod mem;
 
-// Ring 3: user-mode entry and the M2 round-trip smoke
+// System-call gate and service dispatch (int 0x2E, DPL 3)
+mod syscall;
+
+// Ring 3: user-mode entry, the user-process smoke, process end
 mod user;
 
 // C library functions for bare-metal
@@ -173,8 +176,9 @@ pub extern "C" fn kmain(magic: u32, multiboot_info: u32) -> ! {
     });
     serial_println!("F2K: kernel heap: alloc/free ok");
 
-    // M2 smoke: enter ring 3 and prove the round trip through the
-    // temporary gate. Run to completion: the gate handler reports the
-    // round trip on COM1 and halts the machine.
+    // M3 smoke: enter ring 3 and let the stub end the process through
+    // the syscall gate (the exit service reports marker and exit code
+    // on COM1). Run to completion: with the single user process gone,
+    // the kernel halts inside the exit path.
     user::ring3_smoke()
 }

@@ -59,11 +59,21 @@ VBoxManage startvm F2K
 
 ## Testing
 
-### Boot smoke test
-Boots the kernel in QEMU and checks for the boot banner on COM1:
+### Host unit tests
 ```bash
-make test        # Kernel loaded directly by QEMU
-make test-disk   # Disk image booted through Limine
+make run-tests
+```
+
+### On-target QEMU suite
+The cases (kernel features to build with, image to boot, expected
+COM1 strings) are data in `scripts/qemu-tests.yaml`;
+`scripts/run-qemu-tests.py` builds and runs them. Adding a case does
+not add a Makefile target.
+```bash
+make test        # all kernel-path cases (QEMU -kernel)
+make test-disk   # all disk-path cases (Limine disk image)
+scripts/run-qemu-tests.py scripts/qemu-tests.yaml --list   # list cases
+scripts/run-qemu-tests.py scripts/qemu-tests.yaml --only fault-ud
 ```
 
 ### Check code
@@ -85,10 +95,13 @@ f2k/
 │   ├── limine.conf       # Limine config (ISO and disk image)
 │   └── limine/           # Limine bootloader (git submodule)
 │
-├── scripts/          # Build scripts
+├── scripts/          # Build and test scripts
 │   ├── x86-elf-ld         # Linker wrapper
 │   ├── linker.x86         # Custom linker script
-│   └── test-boot.sh       # Boot smoke test
+│   ├── create_partition_table.py  # MBR partition table for the disk image
+│   ├── test-boot.sh       # Boot one image in QEMU and assert COM1 strings
+│   ├── run-qemu-tests.py  # On-target suite runner: builds and boots per case
+│   └── qemu-tests.yaml    # On-target test cases (data, not Makefile targets)
 │
 ├── tests/            # Windows 2000 test corpus (see tests/README.md)
 │   ├── README.md         # Test conventions and one-line summaries
@@ -118,7 +131,7 @@ f2k/
         ├── boot/         # Boot-related code
         │   └── mod.rs    # Multiboot header and _start stub
         ├── gdt.rs        # GDT: flat kernel + user segments, TSS (ring-0 stack for gate entries)
-        ├── idt.rs        # IDT: CPU exception handlers with register dump on COM1; the ring-3 gate
+        ├── idt.rs        # IDT: CPU exception dump on COM1; registers the syscall gate; faults classified by origin
         ├── mem/          # Memory management
         │   ├── mod.rs        # Module root
         │   ├── frame.rs      # Physical frame allocator: state-keyed FIFO lists, per-color chains
@@ -126,7 +139,8 @@ f2k/
         │   ├── paging.rs     # Boot page tables; runtime table access (self-map, scratch) and user page mapping
         │   ├── heap.rs       # Kernel heap: fixed-pool free-list allocator (host-testable)
         │   └── bootmem.rs    # Boot-time initialization: frame database and heap from the memory map
-        ├── user.rs       # Ring 3: iret entry, trap frame shape, the M2 round-trip smoke
+        ├── syscall.rs    # Syscall gate (int 0x2E, DPL 3): service dispatch, argument probe/copy
+        ├── user.rs       # Ring 3: iret entry, trap frame shape, the user-process smoke, process end
         ├── serial.rs     # Serial port output
         └── c_lib.rs      # C library stubs
 ```
