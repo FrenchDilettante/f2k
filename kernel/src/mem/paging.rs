@@ -116,12 +116,14 @@ pub fn teardown_low_identity() {
 //   frame the kernel is initializing, so fresh frames can be zeroed
 //   and written before they are mapped anywhere else.
 
-/// Directory entry that maps the directory into its own window.
-pub const SELF_MAP_SLOT: usize = 1022;
+/// Directory entry that maps the directory into its own window
+/// (NT-style: self-map at 0xC0000000).
+pub const SELF_MAP_SLOT: usize = 768;
 /// Virtual address of the self-mapped directory (SELF_MAP_SLOT << 22).
 pub const SELF_MAP_VA: u32 = (SELF_MAP_SLOT as u32) << 22;
-/// Directory entry that holds the scratch page table.
-pub const SCRATCH_SLOT: usize = 1023;
+/// Directory entry that holds the scratch page table (NT-style:
+/// scratch/hyperspace at 0xC0400000).
+pub const SCRATCH_SLOT: usize = 769;
 /// Virtual address of scratch entry 0: the one-page alias of the frame
 /// being initialized.
 pub const SCRATCH_VA: u32 = (SCRATCH_SLOT as u32) << 22;
@@ -358,15 +360,16 @@ mod tests {
         assert_eq!(PAGE_PRESENT | PAGE_WRITE | PAGE_USER, 0x7);
     }
 
-    /// The self-map and scratch slots are the two highest directory
-    /// entries, in the kernel window, distinct from the boot entries
-    /// (512, 513) and from each other.
+    /// The self-map and scratch slots sit at the NT-style addresses
+    /// (0xC0000000 and 0xC0400000, the slots the reference mm code
+    /// assumes), in the kernel window, distinct from the boot
+    /// entries (512, 513) and from each other.
     #[test]
     fn runtime_access_slots_are_well_placed() {
-        assert_eq!(SELF_MAP_SLOT, 1022);
-        assert_eq!(SCRATCH_SLOT, 1023);
-        assert_eq!(SELF_MAP_VA, 0xFF80_0000);
-        assert_eq!(SCRATCH_VA, 0xFFC0_0000);
+        assert_eq!(SELF_MAP_SLOT, 768);
+        assert_eq!(SCRATCH_SLOT, 769);
+        assert_eq!(SELF_MAP_VA, 0xC000_0000);
+        assert_eq!(SCRATCH_VA, 0xC040_0000);
         assert!(SELF_MAP_VA >= KERNEL_BASE);
         assert!(SCRATCH_VA > SELF_MAP_VA);
         for slot in [SELF_MAP_SLOT, SCRATCH_SLOT] {
@@ -381,7 +384,7 @@ mod tests {
     fn self_map_addresses_directory_and_tables() {
         for window in [0usize, 1, 2, 511, 512, 1021] {
             let table_va = SELF_MAP_VA + ((window as u32) << 12);
-            assert_eq!(table_va, 0xFF80_0000 + (window as u32) * 4096);
+            assert_eq!(table_va, 0xC000_0000 + (window as u32) * 4096);
             // The table page stays inside the self-map's own 4 MiB.
             assert!(table_va >= SELF_MAP_VA);
             assert!(table_va < SELF_MAP_VA + (1 << 22));
