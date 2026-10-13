@@ -187,22 +187,14 @@ static mut TSS: TaskStateSegment = TaskStateSegment::new();
 #[cfg(target_arch = "x86")]
 use core::arch::asm;
 
-/// Size of the dedicated ring-0 stack below.
-const RING0_STACK_SIZE: usize = 16 * 1024;
-
-/// The ring-0 stack gate entries from ring 3 switch to (TSS esp0).
-/// Quirk: the aligned wrapper — a bare `[u8; N]` is only 1-byte
-/// aligned, and link order must not decide the stack's alignment.
-#[repr(align(16))]
-struct Ring0Stack([u8; RING0_STACK_SIZE]);
-
-static mut RING0_STACK: Ring0Stack = Ring0Stack([0; RING0_STACK_SIZE]);
-
-// The GDTR the `lgdt` instruction consumes (segment limit + linear base) is
-// built on the stack by the assembly helper from its two arguments.
-
 /// Load our GDT, initialize the TSS and load the task register
 /// (CS is reloaded via a far jump in the assembly helper).
+///
+/// The TSS's `esp0` starts zero: every run path that enters ring 3
+/// installs its own ring-0 stack first — a per-process frame stack
+/// for image runs ([`crate::process`]), a boot gate stack for the
+/// fault-test stubs. A gate entry before any install would be a
+/// kernel bug (a zero esp0 faults contained, not silently corrupts).
 ///
 /// # Safety
 ///
@@ -221,8 +213,7 @@ pub unsafe fn init() {
             tss_descriptor(tss_addr, (core::mem::size_of::<TaskStateSegment>() - 1) as u32),
         );
         let tss = &mut *core::ptr::addr_of_mut!(TSS);
-        tss.esp0 = (core::ptr::addr_of_mut!(RING0_STACK).cast::<u8>() as u32)
-            + RING0_STACK_SIZE as u32;
+        tss.esp0 = 0;
         tss.ss0 = KERNEL_DATA_SELECTOR;
         // No I/O bitmap: every ring-3 port access faults (the smoke
         // and the later syscall layer have no business with ports).
@@ -235,6 +226,19 @@ pub unsafe fn init() {
     // busy in the GDT, and has no other effect.
     unsafe {
         asm!("ltr {tss:x}", tss = in(reg) TSS_SELECTOR, options(nostack, preserves_flags));
+    }
+}
+
+/// Point the TSS's `esp0` at `top`: the ring-0 stack gate entries
+/// from ring 3 switch to. Called at process start (and by the
+/// fault-test boot path) once the stack's pages are mapped in the
+/// current address space.
+#[cfg(target_arch = "x86")]
+pub fn set_gate_stack_top(top: u32) {
+    // SAFETY: single CPU, interrupts disabled throughout; the TSS's
+    // only other writer is boot-time init.
+    unsafe {
+        (*core::ptr::addr_of_mut!(TSS)).esp0 = top;
     }
 }
 
@@ -406,14 +410,14 @@ mod tests {
         assert_eq!(core::ptr::addr_of!(tss.iomap_base) as usize - base, 0x66);
     }
 
-    /// The ring-0 stack's address is 16-byte aligned regardless of
-    /// link order.
+    /// The TSS starts with no ring-0 stack: every run path installs
+    /// its own (per-process for images, a boot gate stack for the
+    /// fault stubs) before entering ring 3.
     #[test]
-    fn ring0_stack_is_aligned() {
-        assert_eq!(core::mem::align_of::<Ring0Stack>(), 16);
-        // SAFETY: read-only address check before any boot code runs.
-        let addr = unsafe { core::ptr::addr_of!(RING0_STACK) } as usize;
-        assert_eq!(addr % 16, 0);
+    fn tss_starts_without_a_gate_stack() {
+        let tss = TaskStateSegment::new();
+        assert_eq!(tss.esp0, 0);
+        assert_eq!(tss.ss0, 0); // init sets it to the kernel data selector
     }
 
     /// make_entry against the oracle for non-flat inputs: byte-granular,

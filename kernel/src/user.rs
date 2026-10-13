@@ -201,6 +201,13 @@ pub fn run_fault_stub() -> ! {
     paging::init_frame(stack_low, 0, &[]);
     paging::map_user_page(USER_STACK_LOW_PAGE, stack_low, true);
 
+    // The stubs enter ring 3 on the boot address space, so their gate
+    // entries need a ring-0 stack mapped there: every run path
+    // installs its own (image runs get one per process inside the
+    // process object; the retired static stack used to serve this).
+    let _gate_stack_frames = paging::map_gate_stack();
+    crate::gdt::set_gate_stack_top(paging::GATE_STACK_TOP);
+
     crate::serial_println!(
         "F2K: entering ring 3 (code {:#010x}, stack {:#010x})",
         USER_CODE_PAGE,

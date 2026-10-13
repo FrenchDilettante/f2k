@@ -42,6 +42,9 @@ mod kernel32;
 // Ring 3: user-mode entry, the fault-test stubs, process end
 mod user;
 
+// The process object: per-process directory, gate stack, user heap
+mod process;
+
 // C library functions for bare-metal
 mod c_lib;
 

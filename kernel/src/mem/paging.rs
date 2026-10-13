@@ -136,6 +136,17 @@ pub const KERNEL_HALF_START: usize = (KERNEL_BASE >> 22) as usize;
 /// sits at `DIRECTORY_ENTRY_VA + i*4`. Distinct from the table
 /// window below, which addresses any window's page *table*.
 pub const DIRECTORY_ENTRY_VA: u32 = SELF_MAP_VA + ((SELF_MAP_SLOT as u32) << 12);
+/// The per-process ring-0 gate stack window: the first kernel window
+/// above the 8 MiB kernel image mapping (directory entry 514). The
+/// window's base page is the guard (deliberately never mapped), the
+/// 16 KiB stack sits above it, and the TSS `esp0` is
+/// [`GATE_STACK_TOP`].
+pub const GATE_STACK_WINDOW: u32 = KERNEL_BASE + 2 * 0x0040_0000;
+/// Gate stack pages, one frame each (16 KiB).
+pub const GATE_STACK_PAGES: usize = 4;
+/// The gate stack's top: one guard page plus the stack pages.
+pub const GATE_STACK_TOP: u32 =
+    GATE_STACK_WINDOW + ((GATE_STACK_PAGES + 1) as u32) * PAGE_SIZE;
 
 /// Install the self-map and the scratch table, once, right after
 /// [`teardown_low_identity`]. No TLB flushes needed: neither window
@@ -450,6 +461,71 @@ pub fn activate_address_space(dir_phys: u32) {
     }
 }
 
+/// Map `vaddr` to `frame_phys` for the kernel only: present,
+/// writable, supervisor (no user bit — ring 3 must not reach these
+/// pages). The window's table is allocated on first use, like
+/// [`map_user_page`]; the mapping lands in the current directory.
+///
+/// # Panics
+///
+/// Unaligned `vaddr`/`frame_phys`, `vaddr` outside the kernel half,
+/// or `vaddr` in a window the kernel owns for other purposes (the
+/// static kernel image window, the self-map, the scratch window).
+#[cfg(target_arch = "x86")]
+pub fn map_kernel_page(vaddr: u32, frame_phys: u32) {
+    assert!(vaddr % PAGE_SIZE == 0, "kernel address not page-aligned");
+    assert!(frame_phys % PAGE_SIZE == 0, "frame not page-aligned");
+    let window = (vaddr >> 22) as usize;
+    let index = ((vaddr >> 12) & 0x3FF) as usize;
+    assert!(
+        vaddr >= KERNEL_BASE,
+        "kernel mappings live in the kernel half"
+    );
+    assert!(
+        window != 512 && window != 513,
+        "kernel mapping collides with the static kernel image window"
+    );
+    assert!(
+        window != SELF_MAP_SLOT && window != SCRATCH_SLOT,
+        "kernel mapping collides with the runtime access windows"
+    );
+
+    // SAFETY: the boot context is the only mutator of these windows;
+    // entries are CPU-mutated (accessed/dirty), so access is volatile.
+    unsafe {
+        let pde = (DIRECTORY_ENTRY_VA + (window as u32) * 4) as *mut u32;
+        if pde.read_volatile() & PAGE_PRESENT == 0 {
+            let table_phys = allocate_frame_phys();
+            init_frame(table_phys, 0, &[]);
+            pde.write_volatile(table_phys | PAGE_PRESENT | PAGE_WRITE);
+        }
+        let table = (SELF_MAP_VA + ((window as u32) << 12)) as *mut u32;
+        assert_eq!(
+            table.add(index).read_volatile() & PAGE_PRESENT,
+            0,
+            "kernel page already mapped"
+        );
+        table.add(index).write_volatile(frame_phys | PAGE_PRESENT | PAGE_WRITE);
+        invlpg(vaddr);
+    }
+}
+
+/// Map a fresh gate stack into the current address space: one frame
+/// per page, supervisor-only, above the window's unmapped guard page.
+/// Returns the frames, so the caller can release them at teardown;
+/// the stack top is always [`GATE_STACK_TOP`].
+#[cfg(target_arch = "x86")]
+pub fn map_gate_stack() -> [u32; GATE_STACK_PAGES] {
+    let mut frames = [0u32; GATE_STACK_PAGES];
+    for (i, slot) in frames.iter_mut().enumerate() {
+        let frame = allocate_frame_phys();
+        init_frame(frame, 0, &[]);
+        map_kernel_page(GATE_STACK_WINDOW + ((i + 1) as u32) * PAGE_SIZE, frame);
+        *slot = frame;
+    }
+    frames
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -647,5 +723,25 @@ mod tests {
         assert_eq!(directory_cr3(0x0090_0007), 0x0090_0000);
         assert_eq!(directory_cr3(0xFFFF_F005), 0xFFFF_F000);
         assert_eq!(directory_cr3(0), 0);
+    }
+
+    /// The gate stack window: the first kernel window above the 8 MiB
+    /// kernel image mapping (directory entry 514, clear of the
+    /// static window and the runtime access slots), with an unmapped
+    /// guard page at the window base and the 16 KiB stack above it —
+    /// a gate-stack overflow faults into the guard instead of
+    /// corrupting the kernel window below.
+    #[test]
+    fn gate_stack_window_layout() {
+        assert_eq!(GATE_STACK_WINDOW, KERNEL_BASE + 8 * 0x0010_0000);
+        assert_eq!((GATE_STACK_WINDOW >> 22) as usize, 514);
+        for reserved in [512usize, 513, SELF_MAP_SLOT, SCRATCH_SLOT] {
+            assert_ne!((GATE_STACK_WINDOW >> 22) as usize, reserved);
+        }
+        assert_eq!(GATE_STACK_PAGES, 4);
+        assert_eq!(GATE_STACK_TOP, GATE_STACK_WINDOW + 5 * PAGE_SIZE);
+        assert_eq!(GATE_STACK_TOP, 0x8080_5000);
+        // Everything (guard + stack) stays inside window 514.
+        assert!(GATE_STACK_TOP < GATE_STACK_WINDOW + 0x0040_0000);
     }
 }

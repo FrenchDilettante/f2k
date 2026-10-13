@@ -233,92 +233,92 @@ pub fn realloc_block(
 //
 // Runs the pure core over the heap region's committed prefix. User
 // pages are RW and supervisor-accessible, so the kernel slices the
-// region directly. State: statics with volatile access (single CPU,
-// interrupts disabled).
+// region directly. The bookkeeping lives in [`HeapState`], one
+// instance per process (inside the process object) — no kernel
+// static holds heap state.
 
 #[cfg(target_arch = "x86")]
-mod target {
-    use super::*;
-    use crate::mem::paging::{self, PAGE_SIZE};
+use crate::mem::paging::{self, PAGE_SIZE};
 
-    /// The handle HeapCreate reports (nonzero, address-styled like
-    /// real handles).
-    pub const HEAP_HANDLE: u32 = HEAP_REGION_BASE;
+/// Per-process heap bookkeeping: the heap region's committed prefix
+/// and bump edge, and the CRT region's reservation and committed
+/// prefix. A fresh process starts from [`HeapState::new`]; nothing
+/// survives the process that owns it.
+pub struct HeapState {
+    /// The heap region's committed prefix, in bytes.
+    committed: usize,
+    /// The heap region's bump edge (blocks live below it).
+    top: usize,
+    /// The CRT region's reservation size (0 until VirtualAlloc
+    /// reserves at NULL).
+    crt_reserved: u32,
+    /// The CRT region's committed prefix, in bytes.
+    crt_committed: u32,
+}
 
-    /// Glue state: heap region (mapped prefix, bump edge), CRT region
-    /// (reserved size, mapped prefix).
-    static mut COMMITTED: usize = 0;
-    static mut TOP: usize = 0;
-    static mut CRT_RESERVED: u32 = 0;
-    static mut CRT_COMMITTED: u32 = 0;
+impl HeapState {
+    /// Fresh state: nothing committed, nothing reserved.
+    pub const fn new() -> Self {
+        Self { committed: 0, top: 0, crt_reserved: 0, crt_committed: 0 }
+    }
 
+    /// Reset the heap (HeapCreate). No mapping involved: the handle
+    /// is a constant and the bump edge is state.
+    pub fn create(&mut self) -> u32 {
+        self.top = 0;
+        HEAP_HANDLE
+    }
+}
+
+#[cfg(target_arch = "x86")]
+impl HeapState {
     /// Map zeroed user pages so the region image covers `bytes`; fails
     /// past the region cap, idempotent.
-    pub fn commit_heap(bytes: usize) -> bool {
-        // SAFETY: single CPU, interrupts off; sole mutator.
-        unsafe {
-            let committed = core::ptr::read_volatile(core::ptr::addr_of!(COMMITTED));
-            if bytes <= committed {
-                return true;
-            }
-            if bytes > HEAP_REGION_MAX {
-                return false;
-            }
-            let start = (committed as u32).div_ceil(PAGE_SIZE);
-            let end = (bytes as u32).div_ceil(PAGE_SIZE);
-            for page in start..end {
-                let frame = paging::allocate_frame_phys();
-                paging::init_frame(frame, 0, &[]);
-                paging::map_user_page(HEAP_REGION_BASE + page * PAGE_SIZE, frame, true);
-            }
-            core::ptr::write_volatile(core::ptr::addr_of_mut!(COMMITTED), end as usize * PAGE_SIZE as usize);
+    fn commit_heap(&mut self, bytes: usize) -> bool {
+        if bytes <= self.committed {
+            return true;
         }
+        if bytes > HEAP_REGION_MAX {
+            return false;
+        }
+        let start = (self.committed as u32).div_ceil(PAGE_SIZE);
+        let end = (bytes as u32).div_ceil(PAGE_SIZE);
+        for page in start..end {
+            let frame = paging::allocate_frame_phys();
+            paging::init_frame(frame, 0, &[]);
+            paging::map_user_page(HEAP_REGION_BASE + page * PAGE_SIZE, frame, true);
+        }
+        self.committed = end as usize * PAGE_SIZE as usize;
         true
     }
 
     /// The heap region image (its committed prefix).
-    fn heap_region() -> &'static mut [u8] {
-        // SAFETY: the committed prefix is mapped RW; sole accessor.
-        unsafe {
-            let committed = core::ptr::read_volatile(core::ptr::addr_of!(COMMITTED));
-            core::slice::from_raw_parts_mut(HEAP_REGION_BASE as *mut u8, committed)
-        }
-    }
-
-    /// Reset the heap (HeapCreate).
-    pub fn create() -> u32 {
-        // SAFETY: see the statics' comments.
-        unsafe {
-            core::ptr::write_volatile(core::ptr::addr_of_mut!(TOP), 0);
-        }
-        HEAP_HANDLE
+    fn heap_region(&mut self) -> &'static mut [u8] {
+        // SAFETY: the committed prefix is mapped RW in the current
+        // process's address space; this heap's only accessor.
+        unsafe { core::slice::from_raw_parts_mut(HEAP_REGION_BASE as *mut u8, self.committed) }
     }
 
     /// HeapAlloc: first-fit, committing more of the region when the
     /// bump path needs it; 0 on failure.
-    pub fn alloc(flags: u32, request: usize) -> u32 {
+    pub fn alloc(&mut self, flags: u32, request: usize) -> u32 {
         let zero = flags & 8 != 0; // HEAP_ZERO_MEMORY
-        // SAFETY: see the statics' comments.
-        unsafe {
-            loop {
-                let region = heap_region();
-                let mut top = core::ptr::read_volatile(core::ptr::addr_of!(TOP));
-                match super::alloc_block(region, &mut top, request, zero) {
-                    Some(user) => {
-                        core::ptr::write_volatile(core::ptr::addr_of_mut!(TOP), top);
-                        return HEAP_REGION_BASE + user as u32;
-                    }
-                    None => {
-                        // The bump path needs more region. Commit one
-                        // page beyond the need (so small streams do
-                        // not re-commit per allocation) and retry;
-                        // past the cap the request fails.
-                        let need = top + HEADER_SIZE + round_up(request);
-                        if need > HEAP_REGION_MAX
-                            || !commit_heap(need + PAGE_SIZE as usize)
-                        {
-                            return 0;
-                        }
+        loop {
+            let region = self.heap_region();
+            let mut top = self.top;
+            match alloc_block(region, &mut top, request, zero) {
+                Some(user) => {
+                    self.top = top;
+                    return HEAP_REGION_BASE + user as u32;
+                }
+                None => {
+                    // The bump path needs more region. Commit one
+                    // page beyond the need (so small streams do
+                    // not re-commit per allocation) and retry;
+                    // past the cap the request fails.
+                    let need = top + HEADER_SIZE + round_up(request);
+                    if need > HEAP_REGION_MAX || !self.commit_heap(need + PAGE_SIZE as usize) {
+                        return 0;
                     }
                 }
             }
@@ -326,45 +326,40 @@ mod target {
     }
 
     /// HeapFree: validate and coalesce; TRUE/FALSE.
-    pub fn free(ptr: u32) -> u32 {
-        unsafe {
-            if ptr < HEAP_REGION_BASE {
-                return 0;
-            }
-            let user = (ptr - HEAP_REGION_BASE) as usize;
-            let top = core::ptr::read_volatile(core::ptr::addr_of!(TOP));
-            if super::free_block(heap_region(), top, user) {
-                1
-            } else {
-                0
-            }
+    pub fn free(&mut self, ptr: u32) -> u32 {
+        if ptr < HEAP_REGION_BASE {
+            return 0;
+        }
+        let user = (ptr - HEAP_REGION_BASE) as usize;
+        if free_block(self.heap_region(), self.top, user) {
+            1
+        } else {
+            0
         }
     }
 
     /// HeapReAlloc over the region; 0 on failure.
-    pub fn realloc(ptr: u32, flags: u32, request: usize) -> u32 {
+    pub fn realloc(&mut self, ptr: u32, flags: u32, request: usize) -> u32 {
         let zero = flags & 8 != 0;
-        unsafe {
-            if ptr < HEAP_REGION_BASE {
-                return 0;
+        if ptr < HEAP_REGION_BASE {
+            return 0;
+        }
+        let user = (ptr - HEAP_REGION_BASE) as usize;
+        let region = self.heap_region();
+        let mut top = self.top;
+        match realloc_block(region, &mut top, user, request, zero) {
+            Some(new) => {
+                self.top = top;
+                HEAP_REGION_BASE + new as u32
             }
-            let user = (ptr - HEAP_REGION_BASE) as usize;
-            let region = heap_region();
-            let mut top = core::ptr::read_volatile(core::ptr::addr_of!(TOP));
-            match super::realloc_block(region, &mut top, user, request, zero) {
-                Some(new) => {
-                    core::ptr::write_volatile(core::ptr::addr_of_mut!(TOP), top);
-                    HEAP_REGION_BASE + new as u32
-                }
-                None => 0,
-            }
+            None => 0,
         }
     }
 
     /// HeapDestroy: accept the handle, reset.
-    pub fn destroy(handle: u32) -> u32 {
+    pub fn destroy(&mut self, handle: u32) -> u32 {
         if handle == HEAP_HANDLE {
-            create();
+            self.create();
             1
         } else {
             0
@@ -374,60 +369,81 @@ mod target {
     /// VirtualAlloc for the CRT region: NULL reservations return the
     /// fixed base; commits extend the mapped prefix (the CRT commits
     /// at the base, then grows contiguously). 0 for anything else.
-    pub fn virtual_alloc(addr: u32, size: u32, alloc_type: u32) -> u32 {
-        unsafe {
-            let reserved = core::ptr::read_volatile(core::ptr::addr_of!(CRT_RESERVED));
-            let committed = core::ptr::read_volatile(core::ptr::addr_of!(CRT_COMMITTED));
-
-            if alloc_type & MEM_RESERVE != 0 {
-                if addr != 0 {
-                    return 0; // only NULL reservations are served
-                }
-                if reserved != 0 {
-                    return 0; // a second live reservation is not served
-                }
-                let size = size.max(0x10000) & !0xFFFF; // 64 KiB granularity
-                core::ptr::write_volatile(core::ptr::addr_of_mut!(CRT_RESERVED), size);
-                if alloc_type & MEM_COMMIT != 0 {
-                    return commit_crt(CRT_REGION_BASE, size);
-                }
-                return CRT_REGION_BASE;
+    pub fn virtual_alloc(&mut self, addr: u32, size: u32, alloc_type: u32) -> u32 {
+        if alloc_type & MEM_RESERVE != 0 {
+            if addr != 0 {
+                return 0; // only NULL reservations are served
             }
-
+            if self.crt_reserved != 0 {
+                return 0; // a second live reservation is not served
+            }
+            let size = size.max(0x10000) & !0xFFFF; // 64 KiB granularity
+            self.crt_reserved = size;
             if alloc_type & MEM_COMMIT != 0 {
-                if reserved == 0 || addr < CRT_REGION_BASE {
-                    return 0;
-                }
-                if addr + size > CRT_REGION_BASE + reserved {
-                    return 0; // outside the reservation
-                }
-                if addr + size <= committed {
-                    return addr; // already mapped
-                }
-                if addr > CRT_REGION_BASE + committed {
-                    return 0; // only contiguous extension is served
-                }
-                return commit_crt(addr, size);
+                return self.commit_crt(CRT_REGION_BASE, size);
             }
-
-            0
+            return CRT_REGION_BASE;
         }
+
+        if alloc_type & MEM_COMMIT != 0 {
+            if self.crt_reserved == 0 || addr < CRT_REGION_BASE {
+                return 0;
+            }
+            if addr + size > CRT_REGION_BASE + self.crt_reserved {
+                return 0; // outside the reservation
+            }
+            if addr + size <= self.crt_committed {
+                return addr; // already mapped
+            }
+            if addr > CRT_REGION_BASE + self.crt_committed {
+                return 0; // only contiguous extension is served
+            }
+            return self.commit_crt(addr, size);
+        }
+
+        0
     }
 
     /// Map the CRT region's prefix up to `addr + size`.
-    fn commit_crt(addr: u32, size: u32) -> u32 {
-        unsafe {
-            let committed = core::ptr::read_volatile(core::ptr::addr_of!(CRT_COMMITTED));
-            let start = committed.div_ceil(PAGE_SIZE);
-            let end = (addr + size).div_ceil(PAGE_SIZE);
-            for page in start..end {
-                let frame = paging::allocate_frame_phys();
-                paging::init_frame(frame, 0, &[]);
-                paging::map_user_page(CRT_REGION_BASE + page * PAGE_SIZE, frame, true);
-            }
-            core::ptr::write_volatile(core::ptr::addr_of_mut!(CRT_COMMITTED), end * PAGE_SIZE);
-            addr
+    fn commit_crt(&mut self, addr: u32, size: u32) -> u32 {
+        let start = self.crt_committed.div_ceil(PAGE_SIZE);
+        let end = (addr + size).div_ceil(PAGE_SIZE);
+        for page in start..end {
+            let frame = paging::allocate_frame_phys();
+            paging::init_frame(frame, 0, &[]);
+            paging::map_user_page(CRT_REGION_BASE + page * PAGE_SIZE, frame, true);
         }
+        self.crt_committed = end * PAGE_SIZE;
+        addr
+    }
+}
+
+/// The handle HeapCreate reports (nonzero, address-styled like real
+/// handles).
+#[cfg(target_arch = "x86")]
+pub const HEAP_HANDLE: u32 = HEAP_REGION_BASE;
+
+/// The kernel32 heap services, served from the current process's
+/// heap state (the process object owns it; see `process`).
+#[cfg(target_arch = "x86")]
+mod target {
+    pub fn create() -> u32 {
+        crate::process::current_mut().heap_mut().create()
+    }
+    pub fn alloc(flags: u32, request: usize) -> u32 {
+        crate::process::current_mut().heap_mut().alloc(flags, request)
+    }
+    pub fn free(ptr: u32) -> u32 {
+        crate::process::current_mut().heap_mut().free(ptr)
+    }
+    pub fn realloc(ptr: u32, flags: u32, request: usize) -> u32 {
+        crate::process::current_mut().heap_mut().realloc(ptr, flags, request)
+    }
+    pub fn destroy(handle: u32) -> u32 {
+        crate::process::current_mut().heap_mut().destroy(handle)
+    }
+    pub fn virtual_alloc(addr: u32, size: u32, alloc_type: u32) -> u32 {
+        crate::process::current_mut().heap_mut().virtual_alloc(addr, size, alloc_type)
     }
 }
 

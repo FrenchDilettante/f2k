@@ -43,7 +43,7 @@ fn page_writable(image: &Image, page_rva: u32) -> bool {
 /// Load `file` as the user process and enter ring 3 at its entry
 /// point; `name` stages the parameters page. Never returns.
 #[cfg(target_arch = "x86")]
-pub fn run_image(file: &[u8], name: &str) -> ! {
+pub fn run_image(file: &[u8], name: &'static str) -> ! {
     use crate::mem::paging::{self, PAGE_SIZE};
     use crate::user::{TEB_PAGE, USER_STACK_LOW_PAGE, USER_STACK_PAGE, USER_STACK_TOP};
 
@@ -73,12 +73,13 @@ pub fn run_image(file: &[u8], name: &str) -> ! {
     staging.fill(0);
     image.map_into(file, staging);
 
-    // The process's own address space: a fresh directory sharing this
-    // kernel's kernel half, active from here on, so every mapping
-    // below (thunk page, image, stack, TEB, params) lands in it and
-    // not in the boot directory.
-    let address_space = paging::create_address_space();
-    paging::activate_address_space(address_space);
+    // The process's own state, all in one place: a fresh address space
+    // (kernel half inherited, active on CR3), a fresh ring-0 gate
+    // stack (mapped supervisor-only with its guard page, installed as
+    // the TSS esp0), and fresh heap bookkeeping. Every mapping below
+    // (thunk page, image, stack, TEB, params) lands in this process's
+    // directory and its services see this process's heap.
+    crate::process::Process::start(name);
 
     // The thunks must be mapped before the snap: IAT slots receive
     // user-space addresses.
