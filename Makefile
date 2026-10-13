@@ -11,6 +11,11 @@ RUST_HOST_TARGET ?= $(shell rustc -vV | sed -n 's/^host: //p')
 # Build options (target spec, build-std, linker) live in .cargo/config.toml,
 # so cargo and rust-analyzer use the same settings as make.
 KERNEL_ELF ?= $(BUILD_DIR)/$(TARGET)/debug/f2k-kernel
+# Cargo features for kernel builds (comma-separated, no spaces). The
+# on-target suite passes them per case; manual builds accept them too
+# (e.g. `make disk CARGO_FEATURES=run-ret0`).
+CARGO_FEATURES ?=
+FEATURE_FLAGS = $(if $(CARGO_FEATURES),--features $(CARGO_FEATURES),)
 
 # Directories
 BOOT_DIR ?= boot
@@ -74,7 +79,7 @@ all: disk
 .PHONY: kernel
 kernel:
 	@echo "Building F2K kernel..."
-	cd $(KERNEL_DIR) && cargo build
+	cd $(KERNEL_DIR) && cargo build $(FEATURE_FLAGS)
 	@echo "Kernel built: $(KERNEL_ELF)"
 
 .PHONY: qemu

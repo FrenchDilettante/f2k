@@ -83,18 +83,31 @@ def select_cases(cases, image, only):
 
 
 def run_case(case, kernel_dir, kernel_elf, disk_img, timeout):
-    """Build the case's kernel and boot it; return True on pass."""
+    """Build the case's kernel and boot it; return True on pass.
+
+    Kernel cases build the kernel with the case's features. A disk
+    case with features rebuilds the disk image with them (the disk
+    embeds one kernel, so a feature-selected fixture needs its own
+    image); a disk case without features boots the prebuilt image.
+    """
     features = case.get("features", [])
-    build = ["cargo", "build"]
-    if features:
-        build += ["--features", ",".join(features)]
+    if case["image"] == "disk" and features:
+        build = ["make", "disk", f"CARGO_FEATURES={','.join(features)}"]
+        build_cwd = REPO_ROOT
+        build_what = "disk build"
+    else:
+        build = ["cargo", "build"]
+        if features:
+            build += ["--features", ",".join(features)]
+        build_cwd = kernel_dir
+        build_what = "kernel build"
     if subprocess.run(
         build,
-        cwd=kernel_dir,
+        cwd=build_cwd,
         stderr=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
     ).returncode != 0:
-        print(f"{FAIL}: {case['name']} (kernel build failed)", flush=True)
+        print(f"{FAIL}: {case['name']} ({build_what} failed)", flush=True)
         return False
 
     image = kernel_elf if case["image"] == "kernel" else disk_img

@@ -130,7 +130,7 @@ f2k/
         ├── lib.rs        # Kernel library: kmain and all modules (unit-testable)
         ├── boot/         # Boot-related code
         │   └── mod.rs    # Multiboot header and _start stub
-        ├── gdt.rs        # GDT: flat kernel + user segments, TSS (ring-0 stack for gate entries)
+        ├── gdt.rs        # GDT: flat kernel + user segments, TEB segment, TSS (ring-0 stack for gate entries)
         ├── idt.rs        # IDT: CPU exception dump on COM1; registers the syscall gate; faults classified by origin
         ├── mem/          # Memory management
         │   ├── mod.rs        # Module root
@@ -139,11 +139,13 @@ f2k/
         │   ├── paging.rs     # Boot page tables; runtime table access (self-map, scratch) and user page mapping
         │   ├── heap.rs       # Kernel heap: fixed-pool free-list allocator (host-testable)
         │   └── bootmem.rs    # Boot-time initialization: frame database and heap from the memory map
-        ├── syscall.rs    # Syscall gate (int 0x2E, DPL 3): service dispatch, argument probe/copy
-        ├── pe.rs         # PE32 image parsing, mapping plan and IAT snap (host-testable, M4)
-        ├── loader.rs     # Kernel-side image loader: staging, section mapping, entry into ring 3 (M4)
-        ├── kernel32.rs   # Kernel-synthesized kernel32: export table, user-mode thunk stubs
-        ├── user.rs       # Ring 3: iret entry, trap frame shape, fault-test stubs, process end
+        ├── syscall.rs    # Syscall gate (int 0x2E, DPL 3): service dispatch, argument probe/copy, user-memory transfers
+        ├── pe.rs         # PE32 image parsing, mapping plan and IAT snap (host-testable)
+        ├── loader.rs     # Kernel-side image loader: staging, section mapping, entry into ring 3
+        ├── kernel32.rs   # Kernel-synthesized kernel32: 35-export service registry, thunk stubs, replayed startup values
+        ├── cp1252.rs     # Codepage 1252 replay data: MB/WC tables, ctype flags, case mapping (host-testable)
+        ├── userheap.rs   # User-mode heap: first-fit allocator with coalescing; the CRT's VirtualAlloc region
+        ├── user.rs       # Ring 3: iret entry (TEB segment in FS), trap frame shape, fault-test stubs, process end
         ├── serial.rs     # Serial port output
         └── c_lib.rs      # C library stubs
 ```

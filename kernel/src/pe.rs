@@ -1,4 +1,4 @@
-//! PE32 image parsing and import resolution (the M4 loader).
+//! PE32 image parsing and import resolution for the image loader.
 //!
 //! Pure logic over a byte slice, with no kernel state: [`Image::parse`]
 //! validates a PE32 executable's headers and section table,

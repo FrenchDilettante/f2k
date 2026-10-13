@@ -1,39 +1,34 @@
 //! Kernel-side image loader: run a PE32 file as the user process.
 //!
-//! [`run_image`] chains the host-testable pieces of `pe.rs` onto the
-//! runtime machinery: parse and validate, stage the in-memory image
-//! (headers, section bytes, zero tails), snap the IAT against the
-//! kernel-synthesized kernel32 ([`crate::kernel32`]), map the staged
-//! pages at the fixed image base with per-page write protection, map
-//! the user stack, and enter ring 3 at the image's entry point.
+//! [`run_image`] parses, stages the in-memory image, snaps the IAT
+//! against the kernel-synthesized kernel32, maps the pages with their
+//! final protections, and enters ring 3 at the entry point.
 //!
-//! The image is built in a staging buffer in the kernel window —
-//! a borrowed static, not a stack frame — because the loader runs on
-//! the boot stack and the image can be tens of KiB. The snap happens
-//! in staging, before mapping: once mapped, the image pages carry
-//! their final protection and ring-0 writes must not touch them.
+//! Quirk: the image is built in a staging buffer — a borrowed static,
+//! not a stack frame — because the loader runs on the small boot
+//! stack. The snap happens in staging, before mapping: mapped pages
+//! carry their final protection and ring-0 writes must not touch them.
 
 use crate::pe::{self, Image};
 
 /// The first corpus fixture: no CRT, one import (`ExitProcess`).
 pub const EXIT0: &[u8] = include_bytes!("../../tests/exit0/exit0.exe");
 
-/// The staging buffer size: the largest image the loader will build
-/// (the corpus's largest `SizeOfImage`). An image past it is a load
-/// contract violation and panics.
+/// The second corpus fixture: full CRT startup, 35 KERNEL32.dll
+/// imports (run with the `run-ret0` feature).
+pub const RET0: &[u8] = include_bytes!("../../tests/ret0/ret0.exe");
+
+/// The staging buffer size: the largest image the loader accepts.
 const STAGING_SIZE: usize = 0x6000;
 
-/// Staging for the in-memory image: the kernel-window static the image
-/// is assembled and snapped in, before each page is copied into its
-/// own frame as it is mapped.
+/// Staging for the in-memory image (see the module doc).
 #[cfg(target_arch = "x86")]
 static mut IMAGE_STAGING: crate::mem::paging::Aligned<[u8; STAGING_SIZE]> =
     crate::mem::paging::Aligned([0; STAGING_SIZE]);
 
-/// A page's write permission: a page is writable when any section
-/// mapped into it is writable (a page shared by sections combines
-/// their protections). Pages no section covers — the header page —
-/// are read-only.
+/// A page's write permission: writable when any section in it is
+/// writable (shared pages combine protections); uncovered pages (the
+/// header page) are read-only.
 fn page_writable(image: &Image, page_rva: u32) -> bool {
     let start = page_rva;
     let end = page_rva + crate::mem::paging::PAGE_SIZE;
@@ -46,12 +41,11 @@ fn page_writable(image: &Image, page_rva: u32) -> bool {
 }
 
 /// Load `file` as the user process and enter ring 3 at its entry
-/// point. Never returns: single tasking, run to completion — the
-/// exit service (or a fault) ends the process and halts the kernel.
+/// point; `name` stages the parameters page. Never returns.
 #[cfg(target_arch = "x86")]
-pub fn run_image(file: &[u8]) -> ! {
+pub fn run_image(file: &[u8], name: &str) -> ! {
     use crate::mem::paging::{self, PAGE_SIZE};
-    use crate::user::{USER_STACK_PAGE, USER_STACK_TOP};
+    use crate::user::{TEB_PAGE, USER_STACK_LOW_PAGE, USER_STACK_PAGE, USER_STACK_TOP};
 
     // Identity question: bytes this loader does not accept are
     // reported, not panicked on.
@@ -69,10 +63,8 @@ pub fn run_image(file: &[u8]) -> ! {
         STAGING_SIZE
     );
 
-    // Stage the in-memory image. BSS is loader-zeroed in theory;
-    // zeroing explicitly keeps that from being load-bearing (any
-    // gap the image does not describe must read as zero, not as
-    // stale staging bytes).
+    // Zero the staging explicitly: gaps the image does not describe
+    // must read as zero, not stale staging bytes.
     // SAFETY: single-threaded boot, the only staging user.
     let staging = unsafe {
         let buffer = &mut *core::ptr::addr_of_mut!(IMAGE_STAGING);
@@ -81,8 +73,8 @@ pub fn run_image(file: &[u8]) -> ! {
     staging.fill(0);
     image.map_into(file, staging);
 
-    // The thunk stubs must be reachable before the snap: IAT slots
-    // receive user-space addresses.
+    // The thunks must be mapped before the snap: IAT slots receive
+    // user-space addresses.
     crate::kernel32::init();
     let snap = image.snap_imports(file, staging, crate::kernel32::MODULE_NAME, crate::kernel32::resolve);
 
@@ -101,10 +93,20 @@ pub fn run_image(file: &[u8]) -> ! {
         );
     }
 
-    // The user stack: one zeroed, writable page in its own window.
-    let stack_frame = paging::allocate_frame_phys();
-    paging::init_frame(stack_frame, 0, &[]);
-    paging::map_user_page(USER_STACK_PAGE, stack_frame, true);
+    // The user stack: two zeroed, writable pages below the entry ESP.
+    for stack_page in [USER_STACK_PAGE, USER_STACK_LOW_PAGE] {
+        let stack_frame = paging::allocate_frame_phys();
+        paging::init_frame(stack_frame, 0, &[]);
+        paging::map_user_page(stack_page, stack_frame, true);
+    }
+
+    // The thread block page, reached through the TEB segment.
+    let teb_frame = paging::allocate_frame_phys();
+    paging::init_frame(teb_frame, 0, &[]);
+    paging::map_user_page(TEB_PAGE, teb_frame, true);
+
+    // The process parameters page (staged replays).
+    crate::kernel32::init_params(name);
 
     crate::serial_println!(
         "F2K: image loaded (entry {:#010x}, {} pages, {} imports snapped)",
@@ -117,10 +119,9 @@ pub fn run_image(file: &[u8]) -> ! {
         image.entry_va(),
         USER_STACK_TOP
     );
-    // SAFETY: the image and stack pages are mapped with their final
-    // protections, the thunk page is reachable from ring 3, the
-    // syscall gate is installed at DPL 3, and the TSS carries the
-    // ring-0 stack.
+    // SAFETY: image, stack, TEB and thunk pages are mapped with
+    // their final protections; the gate is DPL 3; the TSS carries
+    // the ring-0 stack.
     unsafe { crate::user::enter_ring3(image.entry_va(), USER_STACK_TOP) }
 }
 
@@ -141,9 +142,7 @@ mod tests {
         }
     }
 
-    /// exit0: three read-only pages (headers, .text, .rdata) — the
-    /// image maps entirely without the write bit; the entry lies in
-    /// the executable section, one page in.
+    /// exit0 maps entirely read-only; the entry is one page in.
     #[test]
     fn exit0_pages_are_all_read_only() {
         let image = Image::parse(EXIT0).expect("exit0 parses");
@@ -154,7 +153,7 @@ mod tests {
         }
     }
 
-    /// ret0: six pages, only the .data page writable.
+    /// ret0: only the .data page is writable.
     #[test]
     fn ret0_marks_its_data_pages_writable() {
         let image = Image::parse(RET0).expect("ret0 parses");
@@ -165,9 +164,8 @@ mod tests {
         assert_eq!(writable, vec![0x5000 / PAGE_SIZE]);
     }
 
-    /// The header page of an image is read-only (no section covers
-    /// it), and only .data's own page is writable — the page before
-    /// it stays read-only.
+    /// Uncovered pages (the header) are read-only; only .data's own
+    /// page is writable.
     #[test]
     fn page_protection_rules() {
         let ret0 = Image::parse(RET0).expect("ret0 parses");

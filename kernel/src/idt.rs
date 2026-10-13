@@ -1,13 +1,10 @@
 //! Interrupt Descriptor Table and CPU exception handling.
 //!
-//! Until the kernel has a real interrupt subsystem, every CPU exception
-//! lands in one of 32 generated stubs, which save the complete register
-//! state and hand it to a Rust handler that prints a diagnostic dump to
-//! COM1 before halting. This turns silent triple-fault resets into
-//! actionable serial output.
-//!
-//! Exceptions fire regardless of the interrupt flag, so nothing here needs
-//! the PIC remapped or `sti`. Hardware IRQs (vectors 32+) come later.
+//! Every CPU exception lands in one of 32 generated stubs, which save
+//! the register state and hand it to a Rust handler that prints a
+//! diagnostic dump to COM1 before halting (silent triple-fault resets
+//! become actionable output). Exceptions fire regardless of IF, so
+//! nothing here needs the PIC or `sti`; hardware IRQs come later.
 
 use crate::gdt::KERNEL_CODE_SELECTOR;
 
@@ -278,11 +275,9 @@ const NAMES: [&str; EXCEPTION_VECTORS] = [
     "Reserved (31)",
 ];
 
-/// Called by the common stub with a pointer to the saved register state.
-/// Prints a diagnostic dump on COM1 and halts. The origin decides the
-/// final line: a fault raised by user code (or by a bad user pointer
-/// during the kernel's syscall-argument copy) ends the user process,
-/// reported as such; anything else is a kernel fault.
+/// Prints a diagnostic dump on COM1 and halts. Origin decides the
+/// final line: user-raised faults (including bad user pointers in
+/// syscall copies) end the user process; the rest are kernel faults.
 #[allow(dead_code)] // referenced only from the generated stubs (sym operand)
 #[cfg(target_arch = "x86")]
 extern "C" fn exception_handler(frame: &ExceptionFrame) -> ! {
@@ -398,12 +393,11 @@ fn ring3_user_ss(frame: &ExceptionFrame) -> u32 {
     unsafe { &*(core::ptr::addr_of!(*frame) as *const Ring3ExceptionFrame) }.user_ss
 }
 
-/// ESP of the interrupted context: for a ring-0 exception, the stub
-/// pushed vector and error code below the CPU-pushed tail, so the
-/// interrupted ESP sits above five frame words (vector, error code,
-/// EIP, CS, EFLAGS). For a ring-3 exception the interrupted context is
-/// the user stack: its ESP is the one the CPU pushed in the ring-3
-/// tail.
+/// ESP of the interrupted context. Ring 0: five frame words (vector,
+/// error code, EIP, CS, EFLAGS) sit between the stub-saved ESP and the
+/// interrupted stack. Ring 3: the interrupted stack is the user stack
+/// — report the ESP the CPU pushed in the ring-3 tail, not arithmetic
+/// on the TSS stack.
 fn interrupted_esp(frame: &ExceptionFrame, user_esp: u32) -> u32 {
     if frame.cs & 3 != 0 {
         user_esp
@@ -672,11 +666,9 @@ mod tests {
         assert_eq!(addr_of!(ring3.user_ss) as usize - rbase, 14 * 4);
     }
 
-    /// The interrupted-ESP reconstruction: five frame words sit between
-    /// the stub-saved ESP and a ring-0 context's stack (vector, error
-    /// code, EIP, CS, EFLAGS). A ring-3 context interrupted on its own
-    /// (user) stack: the reconstruction must report exactly the user
-    /// ESP the CPU pushed, not arithmetic on the ring-0 TSS stack.
+    /// The interrupted-ESP reconstruction: ring 0 counts five frame
+    /// words; ring 3 must report the user ESP from the tail, not the
+    /// TSS stack.
     #[test]
     fn interrupted_esp_is_user_esp_for_ring3() {
         let mut frame = zero_frame();

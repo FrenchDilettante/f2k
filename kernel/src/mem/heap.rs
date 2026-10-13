@@ -45,7 +45,8 @@ pub struct KernelHeap {
 impl KernelHeap {
     /// Build a heap over `pool` (one big free block).
     ///
-    /// The pool must be 8-byte aligned (statics are) and its length a
+    /// The pool must be 8-byte aligned (the boot pool's type
+    /// guarantees it) and its length a
     /// positive multiple of 8.
     pub fn new(pool: &'static mut [u8]) -> Self {
         assert!(pool.len().is_multiple_of(8), "pool length must be a multiple of 8");

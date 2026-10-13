@@ -1,31 +1,25 @@
-//! Boot-time paging: the kernel's virtual memory window.
+//! Paging: the kernel window and the runtime user mappings.
 //!
-//! 32-bit x86 two-level paging (CR3 -> page directory -> page tables,
-//! 4 KiB pages). The kernel is linked at `KERNEL_BASE + 1 MiB` and
-//! runs there; the entry trampoline in `boot` builds a boot page
-//! directory while still executing at the physical load address:
+//! 32-bit x86 two-level paging, 4 KiB pages. The kernel is linked at
+//! `KERNEL_BASE + 1 MiB` and runs there; the boot trampoline builds
+//! the initial directory:
 //!
-//! - `[0x00000000, 0x00800000)`: physical identity — the boot
-//!   transition window: the entry stub, then the Multiboot
-//!   information, until [`teardown_low_identity`] removes it;
-//! - `[0x80000000, 0x80800000)`: the kernel window, mapping physical
-//!   `[0, 8 MiB)` — the kernel image, its statics, and (later)
-//!   everything the kernel maps on demand.
+//! - `[0, 8 MiB)`: physical identity, the boot transition window
+//!   (entry stub, Multiboot info) until [`teardown_low_identity`]
+//!   removes it;
+//! - `[KERNEL_BASE, KERNEL_BASE + 8 MiB)`: the kernel window over
+//!   physical `[0, 8 MiB)`.
 //!
-//! The two page tables are link-time constants (identity mappings);
-//! the directory is zero-initialized and filled by the entry stub,
-//! which addresses it physically before paging is on.
-//!
-//! User space is `[0, 0x80000000)`: with the low window removed,
-//! nothing below `KERNEL_BASE` is mapped at all. User pages and their
-//! page tables are created at runtime by the kernel
-//! ([`init_self_map`], [`init_frame`], [`map_user_page`]).
+//! The boot tables are link-time identity constants; the directory is
+//! filled by the entry stub, which addresses it physically before
+//! paging is on. Everything below `KERNEL_BASE` is unmapped after the
+//! teardown; user pages and their tables are created at runtime
+//! ([`init_frame`], [`map_user_page`]).
 
 #[cfg(target_arch = "x86")]
 use core::arch::asm;
 
-/// Virtual base of kernel space (top 2 GiB of the 32-bit address
-/// space; user space is the low 2 GiB).
+/// Virtual base of kernel space (user space is the low 2 GiB).
 pub const KERNEL_BASE: u32 = 0x8000_0000;
 
 /// Physical load address of the kernel image (also the start of the
@@ -34,10 +28,9 @@ pub const KERNEL_PHYS_BASE: u32 = 0x0010_0000;
 
 /// Page-table flag: page/directory entry is present.
 pub const PAGE_PRESENT: u32 = 1 << 0;
-/// Page-table flag: page/directory is writable (R/W is entry bit 1).
+/// Entry bit 1: writable.
 pub const PAGE_WRITE: u32 = 1 << 1;
-/// Page-table flag: page/directory is accessible from ring 3
-/// (user/supervisor is entry bit 2; supervisor-only when clear).
+/// Entry bit 2: user-accessible (supervisor-only when clear).
 pub const PAGE_USER: u32 = 1 << 2;
 /// Mask selecting the address bits of a page-table entry.
 pub const PAGE_ADDR_MASK: u32 = 0xFFFF_F000;
@@ -79,12 +72,9 @@ pub static BOOT_PT_HI: Aligned<[u32; PT_ENTRIES]> = Aligned(identity_page_table(
 #[no_mangle]
 pub static mut BOOT_PD: Aligned<[u32; PT_ENTRIES]> = Aligned([0; PT_ENTRIES]);
 
-/// Remove the low identity window.
-///
-/// Called once from the boot context, after the Multiboot information
-/// has been consumed (it lives in low memory): entries 0 and 1 are
-/// cleared and the CR3 reload flushes the TLB. From this point the
-/// whole user space range is unmapped.
+/// Remove the low identity window (called once the Multiboot info is
+/// consumed): clears entries 0-1 and flushes the TLB via a CR3
+/// reload. User space is unmapped from here on.
 #[cfg(target_arch = "x86")]
 pub fn teardown_low_identity() {
     // SAFETY: the boot context is the only mutator of the directory;
@@ -116,20 +106,15 @@ pub fn teardown_low_identity() {
 
 // --- Runtime table access (user mappings) ---------------------------------
 //
-// The boot tables are link-time statics, but user space is built at
-// runtime and its page tables come from the frame database. Two
-// directory entries give the kernel permanent access to its own tables
-// and to arbitrary frames, without a direct map of physical memory:
+// Two directory entries give the kernel access to its own tables and
+// to arbitrary frames, without a direct map of physical memory:
 //
-// - the self-map ([`SELF_MAP_SLOT`], VA [`SELF_MAP_VA`]): the directory
-//   maps itself, so directory entry i sits at SELF_MAP_VA + i*4 and the
-//   page table of 4 MiB window i is the page at SELF_MAP_VA + i*4096;
-// - the scratch page table ([`SCRATCH_SLOT`], VAs starting at
-//   [`SCRATCH_VA`]): a dedicated table whose entry 0 aliases whichever
-//   physical frame the kernel is initializing, so freshly allocated
-//   frames can be zeroed and written before they are mapped anywhere
-//   else. (The scratch table's own entries are written through the
-//   self-map.)
+// - the self-map ([`SELF_MAP_SLOT`]): the directory maps itself, so
+//   directory entry i sits at SELF_MAP_VA + i*4 and window i's page
+//   table at SELF_MAP_VA + i*4096;
+// - the scratch table ([`SCRATCH_SLOT`]): entry 0 aliases whichever
+//   frame the kernel is initializing, so fresh frames can be zeroed
+//   and written before they are mapped anywhere else.
 
 /// Directory entry that maps the directory into its own window.
 pub const SELF_MAP_SLOT: usize = 1022;
@@ -141,10 +126,9 @@ pub const SCRATCH_SLOT: usize = 1023;
 /// being initialized.
 pub const SCRATCH_VA: u32 = (SCRATCH_SLOT as u32) << 22;
 
-/// Install the runtime table access: the self-map and the scratch page
-/// table (one frame, zeroed). Called once from the boot context, right
-/// after [`teardown_low_identity`]. No TLB flushes are needed: neither
-/// window was mapped before, so no entry for them can be cached.
+/// Install the self-map and the scratch table, once, right after
+/// [`teardown_low_identity`]. No TLB flushes needed: neither window
+/// was mapped before.
 #[cfg(target_arch = "x86")]
 pub fn init_table_access() {
     // SAFETY: the boot context is the only mutator of the directory.
@@ -181,9 +165,8 @@ pub fn init_table_access() {
     }
 }
 
-/// The scratch page table: a kernel static whose entry 0 aliases
-/// whichever frame the kernel is initializing. Never allocated from
-/// the frame database; its frame belongs to the kernel image.
+/// The scratch table: a kernel static (its frame never enters the
+/// frame database).
 #[cfg(target_arch = "x86")]
 static mut SCRATCH_TABLE: Aligned<[u32; PT_ENTRIES]> = Aligned([0; PT_ENTRIES]);
 
@@ -197,12 +180,11 @@ unsafe fn invlpg(vaddr: u32) {
     }
 }
 
-/// Point scratch entry 0 at `frame_phys` and flush the stale entry.
+/// Point scratch entry 0 at `frame_phys` and flush it.
 ///
 /// # Safety
 ///
-/// The boot context must be the only scratch user; every call rewrites
-/// the entry and flushes, so the alias is never stale.
+/// Sole scratch user; every call rewrites and flushes.
 #[cfg(target_arch = "x86")]
 unsafe fn install_scratch(frame_phys: u32) {
     // The scratch table's entry 0, reached through the self-map.
@@ -214,12 +196,9 @@ unsafe fn install_scratch(frame_phys: u32) {
     }
 }
 
-/// Initialize a freshly allocated frame through the scratch alias:
-/// zero the whole page, then copy `bytes` at `offset`.
-///
-/// Used for page tables (empty slice), user code pages (image bytes)
-/// and user data pages (zero fill). `offset + bytes.len()` must stay
-/// inside the page.
+/// Zero a freshly allocated frame through the scratch alias, then
+/// copy `bytes` at `offset` (tables: empty slice; image pages: bytes;
+/// data pages: zero fill).
 #[cfg(target_arch = "x86")]
 pub fn init_frame(frame_phys: u32, offset: usize, bytes: &[u8]) {
     assert!(frame_phys & (PAGE_SIZE - 1) == 0, "frame not page-aligned");
@@ -242,11 +221,8 @@ pub fn init_frame(frame_phys: u32, offset: usize, bytes: &[u8]) {
     }
 }
 
-/// Patch `bytes` into a frame at `offset`, through the scratch alias,
-/// without zeroing it: earlier writes to the frame survive (unlike
-/// [`init_frame`], which zeroes the whole page first). Used to build
-/// up a page in several pieces. `offset + bytes.len()` must stay
-/// inside the page.
+/// Patch `bytes` into a frame at `offset` without zeroing (unlike
+/// [`init_frame`]); for building a page in pieces.
 #[cfg(target_arch = "x86")]
 pub fn write_frame(frame_phys: u32, offset: usize, bytes: &[u8]) {
     assert!(frame_phys & (PAGE_SIZE - 1) == 0, "frame not page-aligned");
@@ -265,14 +241,9 @@ pub fn write_frame(frame_phys: u32, offset: usize, bytes: &[u8]) {
     }
 }
 
-/// Allocate one frame from the boot frame database, return its physical
-/// address. This is the frame allocator's first runtime consumer.
-///
-/// The database never zeroes what it hands out here (its zeroing hook
-/// is a no-op until a zeroing worker exists, and the plain allocation
-/// path requests none), so the frame's contents are undefined until
-/// the caller initializes them — [`init_frame`] does that, and every
-/// frame handed to user space goes through it.
+/// Allocate one frame, physical address. Quirk: the database never
+/// zeroes frames, so the contents are undefined until the caller
+/// runs [`init_frame`] — every frame handed to user space does.
 #[cfg(target_arch = "x86")]
 pub fn allocate_frame_phys() -> u32 {
     let frame = crate::mem::bootmem::with_frame_db(|db| {
@@ -281,16 +252,13 @@ pub fn allocate_frame_phys() -> u32 {
     frame * PAGE_SIZE
 }
 
-/// Map the page at user virtual address `vaddr` to physical frame
-/// `frame_phys`: present, user-accessible, writable if `writable`.
-///
-/// The 4 MiB window's page table is allocated from the frame database
-/// on first use. Double mappings are contract violations and panic.
+/// Map `vaddr` to `frame_phys`: present, user, writable if asked. The
+/// window's table is allocated on first use; double mappings panic.
 ///
 /// # Panics
 ///
-/// Panics if `vaddr` is not page-aligned, lies in (or above) the kernel
-/// window, or is already mapped; if `frame_phys` is not page-aligned.
+/// Unaligned `vaddr`/`frame_phys`, kernel-window `vaddr`, already
+/// mapped.
 #[cfg(target_arch = "x86")]
 pub fn map_user_page(vaddr: u32, frame_phys: u32, writable: bool) {
     assert!(vaddr % PAGE_SIZE == 0, "user address not page-aligned");
@@ -311,10 +279,9 @@ pub fn map_user_page(vaddr: u32, frame_phys: u32, writable: bool) {
         let dir = unsafe { &mut *core::ptr::addr_of_mut!(BOOT_PD) }.0.as_mut_ptr();
         if *dir.add(window) & PAGE_PRESENT == 0 {
             let table_phys = allocate_frame_phys();
-            // Zero the frame while it is still unreachable from the
-            // window: until then its contents are whatever the frame
-            // held, and present garbage entries must never become
-            // speculatively walkable.
+            // Quirk: zero the table while it is still unreachable —
+            // present garbage entries must never become speculatively
+            // walkable.
             init_frame(table_phys, 0, &[]);
             // A user window must be traversable by ring 3; the per-page
             // user/supervisor and read/write bits decide the rest.

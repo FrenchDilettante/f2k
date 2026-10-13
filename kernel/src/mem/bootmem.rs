@@ -119,10 +119,16 @@ pub fn boot_init(multiboot_info_addr: u32) {
     }
 }
 
-/// Kernel heap pool: a fixed region inside the kernel image (its
-/// frames stay excluded from the frame allocator).
+/// Kernel heap pool: a fixed region inside the kernel image.
 pub const HEAP_POOL_SIZE: usize = 256 * 1024;
-static mut HEAP_POOL: [u8; HEAP_POOL_SIZE] = [0; HEAP_POOL_SIZE];
+
+/// Quirk: the aligned wrapper — a bare `[u8; N]` is only 1-byte
+/// aligned, but the heap's 8-aligned `NonNull` writes must not
+/// depend on link order.
+#[repr(align(8))]
+struct HeapPool([u8; HEAP_POOL_SIZE]);
+
+static mut HEAP_POOL: HeapPool = HeapPool([0; HEAP_POOL_SIZE]);
 
 /// The kernel heap; built once by [`heap_init`].
 static mut KERNEL_HEAP: Option<KernelHeap> = None;
@@ -133,7 +139,7 @@ pub fn heap_init() {
     // holds its only reference. Single-threaded boot.
     let pool: &'static mut [u8] = unsafe {
         core::slice::from_raw_parts_mut(
-            core::ptr::addr_of_mut!(HEAP_POOL) as *mut u8,
+            core::ptr::addr_of_mut!(HEAP_POOL).cast::<u8>(),
             HEAP_POOL_SIZE,
         )
     };
@@ -173,4 +179,17 @@ pub fn with_frame_db<R>(f: impl FnOnce(&mut FrameDb<NoHooks>) -> R) -> R {
             .expect("frame database not initialized")
     };
     f(db)
+}
+
+#[cfg(test)]
+mod tests {
+    /// The heap pool's address is 8-byte aligned regardless of link
+    /// order (the `NonNull` writes are alignment-checked).
+    #[test]
+    fn heap_pool_is_aligned() {
+        assert_eq!(core::mem::align_of::<HeapPool>(), 8);
+        // SAFETY: read-only address check before any boot code runs.
+        let addr = unsafe { core::ptr::addr_of!(super::HEAP_POOL) } as usize;
+        assert_eq!(addr % 8, 0);
+    }
 }

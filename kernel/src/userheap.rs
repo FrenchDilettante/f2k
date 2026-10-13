@@ -1,0 +1,669 @@
+//! The user-mode heap the kernel32 heap services serve.
+//!
+//! Two areas, two owners: the heap region (blocks served by
+//! HeapAlloc, managed here) and the CRT region (raw VirtualAlloc
+//! pages the CRT manages itself). Quirk: the real system placed the
+//! CRT's reservation exactly on this kernel's user stack, so both
+//! areas sit deliberately far from it.
+//!
+//! The allocator core is pure logic over a `&mut [u8]` region image
+//! (host-testable); the target glue maps pages on demand. Blocks
+//! carry an 8-byte header (size, state), 8-byte aligned; first-fit
+//! with splitting, free coalesces with both neighbors.
+
+/// Heap block header size: one dword of block size (the user bytes,
+/// not counting the header), one dword of state.
+pub const HEADER_SIZE: usize = 8;
+
+/// Block alignment: user pointers come back 8-byte aligned.
+const ALIGN: usize = 8;
+
+/// Header state: the block is free.
+const STATE_FREE: u32 = 0;
+/// Header state: the block is in use.
+const STATE_IN_USE: u32 = 1;
+
+/// The heap region's fixed user address and cap.
+#[cfg(target_arch = "x86")]
+pub const HEAP_REGION_BASE: u32 = 0x0200_0000;
+#[cfg(target_arch = "x86")]
+pub const HEAP_REGION_MAX: usize = 0x0010_0000;
+
+/// The CRT region's base — the address VirtualAlloc reports for a
+/// NULL reservation.
+#[cfg(target_arch = "x86")]
+pub const CRT_REGION_BASE: u32 = 0x0210_0000;
+
+/// VirtualAlloc allocation types (public constants; the CRT passes
+/// them).
+#[cfg(target_arch = "x86")]
+pub const MEM_COMMIT: u32 = 0x1000;
+#[cfg(target_arch = "x86")]
+pub const MEM_RESERVE: u32 = 0x2000;
+
+/// Round a request up to the block alignment.
+fn round_up(request: usize) -> usize {
+    request.max(1).next_multiple_of(ALIGN)
+}
+
+/// Read one block header: (user size, state).
+fn read_header(region: &[u8], offset: usize) -> (u32, u32) {
+    let size = u32::from_le_bytes([
+        region[offset],
+        region[offset + 1],
+        region[offset + 2],
+        region[offset + 3],
+    ]);
+    let state = u32::from_le_bytes([
+        region[offset + 4],
+        region[offset + 5],
+        region[offset + 6],
+        region[offset + 7],
+    ]);
+    (size, state)
+}
+
+/// Write one block header.
+fn write_header(region: &mut [u8], offset: usize, size: u32, state: u32) {
+    region[offset..offset + 4].copy_from_slice(&size.to_le_bytes());
+    region[offset + 4..offset + 8].copy_from_slice(&state.to_le_bytes());
+}
+
+/// First-fit allocation. Absorbs adjacent free blocks while walking,
+/// splits a fitting block when the tail is worth keeping, otherwise
+/// bumps at the top edge. Returns the user offset (past the header)
+/// or `None` if even the bump path does not fit — the caller can then
+/// extend the region and retry. A failed call never allocates; the
+/// walk's free-block absorption may persist (idempotent).
+pub fn alloc_block(region: &mut [u8], top: &mut usize, request: usize, zero: bool) -> Option<usize> {
+    let need = round_up(request);
+    if need > region.len() {
+        return None;
+    }
+
+    let mut offset = 0;
+    while offset < *top {
+        let (mut size, state) = read_header(region, offset);
+        if state == STATE_FREE {
+            // Absorb following free blocks into this candidate.
+            loop {
+                let next = offset + HEADER_SIZE + size as usize;
+                if next >= *top {
+                    break;
+                }
+                let (next_size, next_state) = read_header(region, next);
+                if next_state != STATE_FREE {
+                    break;
+                }
+                size += HEADER_SIZE as u32 + next_size;
+                write_header(region, offset, size, STATE_FREE);
+            }
+            if size as usize >= need {
+                let remainder = size as usize - need;
+                let block_size = if remainder >= HEADER_SIZE + ALIGN {
+                    // Split: shrink this block, plant a free block in
+                    // the tail.
+                    let tail = offset + HEADER_SIZE + need;
+                    write_header(region, tail, (remainder - HEADER_SIZE) as u32, STATE_FREE);
+                    need as u32
+                } else {
+                    size
+                };
+                write_header(region, offset, block_size, STATE_IN_USE);
+                if zero {
+                    region[offset + HEADER_SIZE..offset + HEADER_SIZE + need].fill(0);
+                }
+                return Some(offset + HEADER_SIZE);
+            }
+        }
+        offset += HEADER_SIZE + size as usize;
+    }
+
+    // Bump: a fresh in-use block at the top edge.
+    let total = HEADER_SIZE + need;
+    if *top + total > region.len() {
+        return None;
+    }
+    write_header(region, *top, need as u32, STATE_IN_USE);
+    if zero {
+        region[*top + HEADER_SIZE..*top + total].fill(0);
+    }
+    let user = *top + HEADER_SIZE;
+    *top += total;
+    Some(user)
+}
+
+/// A user offset must name a live block header; returns its offset.
+fn validate(region: &[u8], top: usize, user: usize) -> Option<usize> {
+    if user < HEADER_SIZE || user >= top || user % ALIGN != 0 || user > region.len() {
+        return None;
+    }
+    let block = user - HEADER_SIZE;
+    let (size, state) = read_header(region, block);
+    if state != STATE_IN_USE || size == 0 || size % ALIGN as u32 != 0 {
+        return None;
+    }
+    if block + HEADER_SIZE + size as usize > top {
+        return None;
+    }
+    Some(block)
+}
+
+/// Free the block owning `user`; false if it is not a live block.
+/// Coalesces with both neighbors.
+pub fn free_block(region: &mut [u8], top: usize, user: usize) -> bool {
+    let Some(block) = validate(region, top, user) else {
+        return false;
+    };
+    let (mut size, _) = read_header(region, block);
+    write_header(region, block, size, STATE_FREE);
+
+    // Coalesce forward: absorb the next block while it is free.
+    loop {
+        let next = block + HEADER_SIZE + size as usize;
+        if next >= top {
+            break;
+        }
+        let (next_size, next_state) = read_header(region, next);
+        if next_state != STATE_FREE {
+            break;
+        }
+        size += HEADER_SIZE as u32 + next_size;
+        write_header(region, block, size, STATE_FREE);
+    }
+
+    // Coalesce backward: the block that ends exactly where this one
+    // starts, when it is free, swallows this one.
+    let mut cursor = 0;
+    while cursor < block {
+        let (walk_size, _) = read_header(region, cursor);
+        let prev = cursor;
+        cursor += HEADER_SIZE + walk_size as usize;
+        if cursor == block {
+            let (prev_size, prev_state) = read_header(region, prev);
+            if prev_state == STATE_FREE {
+                write_header(
+                    region,
+                    prev,
+                    prev_size + HEADER_SIZE as u32 + size,
+                    STATE_FREE,
+                );
+            }
+            break;
+        }
+    }
+    true
+}
+
+/// The user size of the block owning `user`.
+fn block_size(region: &[u8], top: usize, user: usize) -> Option<usize> {
+    validate(region, top, user).map(|block| read_header(region, block).0 as usize)
+}
+
+/// Resize: grow by allocate-copy-free (zeroing the extension when
+/// asked), shrink by keeping the block. The original is untouched on
+/// failure.
+pub fn realloc_block(
+    region: &mut [u8],
+    top: &mut usize,
+    user: usize,
+    request: usize,
+    zero: bool,
+) -> Option<usize> {
+    let old = block_size(region, *top, user)?;
+    if request <= old {
+        // Shrinking keeps the block (no split: the tail is not worth
+        // the bookkeeping).
+        return Some(user);
+    }
+    let new = alloc_block(region, top, request, false)?;
+    // A plain loop, not slice::copy_within: it lowers to memmove,
+    // which the no_std build does not link. The blocks never overlap.
+    for i in 0..old {
+        region[new + i] = region[user + i];
+    }
+    if zero {
+        region[new + old..new + round_up(request)].fill(0);
+    }
+    free_block(region, *top, user);
+    Some(new)
+}
+
+// --- Target glue ------------------------------------------------------
+//
+// Runs the pure core over the heap region's committed prefix. User
+// pages are RW and supervisor-accessible, so the kernel slices the
+// region directly. State: statics with volatile access (single CPU,
+// interrupts disabled).
+
+#[cfg(target_arch = "x86")]
+mod target {
+    use super::*;
+    use crate::mem::paging::{self, PAGE_SIZE};
+
+    /// The handle HeapCreate reports (nonzero, address-styled like
+    /// real handles).
+    pub const HEAP_HANDLE: u32 = HEAP_REGION_BASE;
+
+    /// Glue state: heap region (mapped prefix, bump edge), CRT region
+    /// (reserved size, mapped prefix).
+    static mut COMMITTED: usize = 0;
+    static mut TOP: usize = 0;
+    static mut CRT_RESERVED: u32 = 0;
+    static mut CRT_COMMITTED: u32 = 0;
+
+    /// Map zeroed user pages so the region image covers `bytes`; fails
+    /// past the region cap, idempotent.
+    pub fn commit_heap(bytes: usize) -> bool {
+        // SAFETY: single CPU, interrupts off; sole mutator.
+        unsafe {
+            let committed = core::ptr::read_volatile(core::ptr::addr_of!(COMMITTED));
+            if bytes <= committed {
+                return true;
+            }
+            if bytes > HEAP_REGION_MAX {
+                return false;
+            }
+            let start = (committed as u32).div_ceil(PAGE_SIZE);
+            let end = (bytes as u32).div_ceil(PAGE_SIZE);
+            for page in start..end {
+                let frame = paging::allocate_frame_phys();
+                paging::init_frame(frame, 0, &[]);
+                paging::map_user_page(HEAP_REGION_BASE + page * PAGE_SIZE, frame, true);
+            }
+            core::ptr::write_volatile(core::ptr::addr_of_mut!(COMMITTED), end as usize * PAGE_SIZE as usize);
+        }
+        true
+    }
+
+    /// The heap region image (its committed prefix).
+    fn heap_region() -> &'static mut [u8] {
+        // SAFETY: the committed prefix is mapped RW; sole accessor.
+        unsafe {
+            let committed = core::ptr::read_volatile(core::ptr::addr_of!(COMMITTED));
+            core::slice::from_raw_parts_mut(HEAP_REGION_BASE as *mut u8, committed)
+        }
+    }
+
+    /// Reset the heap (HeapCreate).
+    pub fn create() -> u32 {
+        // SAFETY: see the statics' comments.
+        unsafe {
+            core::ptr::write_volatile(core::ptr::addr_of_mut!(TOP), 0);
+        }
+        HEAP_HANDLE
+    }
+
+    /// HeapAlloc: first-fit, committing more of the region when the
+    /// bump path needs it; 0 on failure.
+    pub fn alloc(flags: u32, request: usize) -> u32 {
+        let zero = flags & 8 != 0; // HEAP_ZERO_MEMORY
+        // SAFETY: see the statics' comments.
+        unsafe {
+            loop {
+                let region = heap_region();
+                let mut top = core::ptr::read_volatile(core::ptr::addr_of!(TOP));
+                match super::alloc_block(region, &mut top, request, zero) {
+                    Some(user) => {
+                        core::ptr::write_volatile(core::ptr::addr_of_mut!(TOP), top);
+                        return HEAP_REGION_BASE + user as u32;
+                    }
+                    None => {
+                        // The bump path needs more region. Commit one
+                        // page beyond the need (so small streams do
+                        // not re-commit per allocation) and retry;
+                        // past the cap the request fails.
+                        let need = top + HEADER_SIZE + round_up(request);
+                        if need > HEAP_REGION_MAX
+                            || !commit_heap(need + PAGE_SIZE as usize)
+                        {
+                            return 0;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// HeapFree: validate and coalesce; TRUE/FALSE.
+    pub fn free(ptr: u32) -> u32 {
+        unsafe {
+            if ptr < HEAP_REGION_BASE {
+                return 0;
+            }
+            let user = (ptr - HEAP_REGION_BASE) as usize;
+            let top = core::ptr::read_volatile(core::ptr::addr_of!(TOP));
+            if super::free_block(heap_region(), top, user) {
+                1
+            } else {
+                0
+            }
+        }
+    }
+
+    /// HeapReAlloc over the region; 0 on failure.
+    pub fn realloc(ptr: u32, flags: u32, request: usize) -> u32 {
+        let zero = flags & 8 != 0;
+        unsafe {
+            if ptr < HEAP_REGION_BASE {
+                return 0;
+            }
+            let user = (ptr - HEAP_REGION_BASE) as usize;
+            let region = heap_region();
+            let mut top = core::ptr::read_volatile(core::ptr::addr_of!(TOP));
+            match super::realloc_block(region, &mut top, user, request, zero) {
+                Some(new) => {
+                    core::ptr::write_volatile(core::ptr::addr_of_mut!(TOP), top);
+                    HEAP_REGION_BASE + new as u32
+                }
+                None => 0,
+            }
+        }
+    }
+
+    /// HeapDestroy: accept the handle, reset.
+    pub fn destroy(handle: u32) -> u32 {
+        if handle == HEAP_HANDLE {
+            create();
+            1
+        } else {
+            0
+        }
+    }
+
+    /// VirtualAlloc for the CRT region: NULL reservations return the
+    /// fixed base; commits extend the mapped prefix (the CRT commits
+    /// at the base, then grows contiguously). 0 for anything else.
+    pub fn virtual_alloc(addr: u32, size: u32, alloc_type: u32) -> u32 {
+        unsafe {
+            let reserved = core::ptr::read_volatile(core::ptr::addr_of!(CRT_RESERVED));
+            let committed = core::ptr::read_volatile(core::ptr::addr_of!(CRT_COMMITTED));
+
+            if alloc_type & MEM_RESERVE != 0 {
+                if addr != 0 {
+                    return 0; // only NULL reservations are served
+                }
+                if reserved != 0 {
+                    return 0; // a second live reservation is not served
+                }
+                let size = size.max(0x10000) & !0xFFFF; // 64 KiB granularity
+                core::ptr::write_volatile(core::ptr::addr_of_mut!(CRT_RESERVED), size);
+                if alloc_type & MEM_COMMIT != 0 {
+                    return commit_crt(CRT_REGION_BASE, size);
+                }
+                return CRT_REGION_BASE;
+            }
+
+            if alloc_type & MEM_COMMIT != 0 {
+                if reserved == 0 || addr < CRT_REGION_BASE {
+                    return 0;
+                }
+                if addr + size > CRT_REGION_BASE + reserved {
+                    return 0; // outside the reservation
+                }
+                if addr + size <= committed {
+                    return addr; // already mapped
+                }
+                if addr > CRT_REGION_BASE + committed {
+                    return 0; // only contiguous extension is served
+                }
+                return commit_crt(addr, size);
+            }
+
+            0
+        }
+    }
+
+    /// Map the CRT region's prefix up to `addr + size`.
+    fn commit_crt(addr: u32, size: u32) -> u32 {
+        unsafe {
+            let committed = core::ptr::read_volatile(core::ptr::addr_of!(CRT_COMMITTED));
+            let start = committed.div_ceil(PAGE_SIZE);
+            let end = (addr + size).div_ceil(PAGE_SIZE);
+            for page in start..end {
+                let frame = paging::allocate_frame_phys();
+                paging::init_frame(frame, 0, &[]);
+                paging::map_user_page(CRT_REGION_BASE + page * PAGE_SIZE, frame, true);
+            }
+            core::ptr::write_volatile(core::ptr::addr_of_mut!(CRT_COMMITTED), end * PAGE_SIZE);
+            addr
+        }
+    }
+}
+
+#[cfg(target_arch = "x86")]
+pub use target::*;
+
+// Host stubs: the kernel32 registry names these but host builds never
+// dispatch services.
+
+#[cfg(not(target_arch = "x86"))]
+mod host {
+    fn target_only() -> ! {
+        unimplemented!("user heap services run on the target")
+    }
+
+    pub const HEAP_HANDLE: u32 = 0;
+    pub const MEM_COMMIT: u32 = 0x1000;
+    pub const MEM_RESERVE: u32 = 0x2000;
+
+    pub fn create() -> u32 {
+        target_only()
+    }
+    pub fn alloc(_flags: u32, _request: usize) -> u32 {
+        target_only()
+    }
+    pub fn free(_ptr: u32) -> u32 {
+        target_only()
+    }
+    pub fn realloc(_ptr: u32, _flags: u32, _request: usize) -> u32 {
+        target_only()
+    }
+    pub fn destroy(_handle: u32) -> u32 {
+        target_only()
+    }
+    pub fn virtual_alloc(_addr: u32, _size: u32, _alloc_type: u32) -> u32 {
+        target_only()
+    }
+}
+
+#[cfg(not(target_arch = "x86"))]
+pub use host::*;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A garbage-filled region image, so zeroing behavior is visible.
+    struct Arena {
+        bytes: [u8; 0x8000],
+        top: usize,
+    }
+
+    impl Arena {
+        fn new() -> Self {
+            let mut bytes = [0u8; 0x8000];
+            bytes.fill(0xAA);
+            Self { bytes, top: 0 }
+        }
+
+        fn alloc(&mut self, request: usize, zero: bool) -> Option<usize> {
+            alloc_block(&mut self.bytes, &mut self.top, request, zero)
+        }
+
+        fn free(&mut self, user: usize) -> bool {
+            free_block(&mut self.bytes, self.top, user)
+        }
+
+        /// The bytes at a returned offset.
+        fn block(&self, user: usize, len: usize) -> &[u8] {
+            &self.bytes[user..user + len]
+        }
+
+        /// The same view, mutable.
+        fn block_mut(&mut self, user: usize, len: usize) -> &mut [u8] {
+            &mut self.bytes[user..user + len]
+        }
+    }
+
+    /// The CRT's startup shapes; the zeroed one reads back zero
+    /// despite the garbage-filled arena.
+    #[test]
+    fn crt_startup_shapes_succeed() {
+        let mut arena = Arena::new();
+        let bookkeeping = arena.alloc(0x140, false).expect("0x140");
+        let headers = arena.alloc(0x41C4, true).expect("0x41C4 zeroed");
+        let env_copy = arena.alloc(0x5D0, false).expect("0x5D0");
+        assert_ne!(bookkeeping, headers);
+        assert_ne!(headers, env_copy);
+        assert!(arena.block(headers, 32).iter().all(|&b| b == 0));
+        // The non-zeroed block's contents are undefined but writable.
+        arena.block_mut(bookkeeping, 8).fill(0x5A);
+        assert_eq!(&arena.block(bookkeeping, 8)[..], &[0x5A; 8]);
+        // Offsets are header-relative: the first user byte sits right
+        // after its header, aligned.
+        assert_eq!(bookkeeping, HEADER_SIZE);
+        assert_eq!(headers % 8, 0);
+    }
+
+    /// A freed block comes back for a same-size request; coalesced
+    /// neighbors are reused as one block.
+    #[test]
+    fn freed_blocks_are_reusable_and_coalesce() {
+        let mut arena = Arena::new();
+        let a = arena.alloc(0x100, false).unwrap();
+        let b = arena.alloc(0x100, false).unwrap();
+        let c = arena.alloc(0x100, false).unwrap();
+        assert_ne!(a, b);
+        assert_ne!(b, c);
+
+        // Free all three: c merges into b merges into a.
+        assert!(arena.free(a));
+        assert!(arena.free(b));
+        assert!(arena.free(c));
+        // Double free is rejected.
+        assert!(!arena.free(b));
+
+        // The coalesced span serves the sum (plus the two absorbed
+        // headers) in one block.
+        let merged = arena
+            .alloc(0x300 + 2 * HEADER_SIZE, false)
+            .expect("merged span");
+        assert_eq!(merged, a);
+    }
+
+    /// First-fit: a freed block is reused ahead of the bump edge,
+    /// split, and the tail serves; too-large falls to the bump.
+    #[test]
+    fn first_fit_splits_and_falls_through() {
+        let mut arena = Arena::new();
+        let a = arena.alloc(0x200, false).unwrap();
+        let _b = arena.alloc(0x40, false).unwrap();
+        assert!(arena.free(a));
+
+        // Smaller request: splits a, leaving an 0xF8 tail.
+        let small = arena.alloc(0x100, false).expect("first fit");
+        assert_eq!(small, a);
+        // The tail still serves its 0xF8.
+        let tail = arena.alloc(0xF8, false).expect("tail");
+        assert_eq!(tail, a + HEADER_SIZE + 0x100);
+
+        // Too large for the free tail: the bump edge takes it.
+        let before_top = arena.top;
+        let big = arena.alloc(0x1000, false).expect("bump");
+        assert_eq!(big, before_top + HEADER_SIZE);
+    }
+
+    /// Free rejects everything that is not a live block.
+    #[test]
+    fn free_rejects_non_blocks() {
+        let mut arena = Arena::new();
+        let a = arena.alloc(0x40, false).unwrap();
+        assert!(!arena.free(0));
+        assert!(!arena.free(4));
+        assert!(!arena.free(a + 1));
+        assert!(!arena.free(a + 0x10)); // interior, not a header
+        assert!(!arena.free(a + 0x1000)); // past the top
+        assert!(arena.free(a));
+    }
+
+    /// Realloc: grow copies and frees the old block (extension
+    /// zeroed), shrink keeps it, non-blocks fail.
+    #[test]
+    fn realloc_copies_and_frees() {
+        let mut arena = Arena::new();
+        let a = arena.alloc(0x100, false).unwrap();
+        arena.block_mut(a, 8).copy_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8]);
+
+        // Grow: contents preserved, extension zeroed.
+        let grown = realloc_block(&mut arena.bytes, &mut arena.top, a, 0x180, true).expect("grow");
+        assert_ne!(grown, a);
+        assert_eq!(&arena.block(grown, 8)[..], &[1, 2, 3, 4, 5, 6, 7, 8]);
+        assert!(arena.block(grown + 0x100, 0x80).iter().all(|&b| b == 0));
+
+        // The old block is free again and reusable.
+        let reused = arena.alloc(0x100, false).expect("old block reused");
+        assert_eq!(reused, a);
+
+        // Shrink keeps the block.
+        let shrunk = realloc_block(&mut arena.bytes, &mut arena.top, grown, 0x40, false).unwrap();
+        assert_eq!(shrunk, grown);
+
+        // Non-blocks fail.
+        assert_eq!(
+            realloc_block(&mut arena.bytes, &mut arena.top, 0x80, 0x40, false),
+            None
+        );
+    }
+
+    /// An alloc/free stream stays bounded: no leak of the top edge.
+    #[test]
+    fn alloc_free_stream_stays_bounded() {
+        let mut arena = Arena::new();
+        let mut top_high_water = 0;
+        for round in 0..16 {
+            let blocks: Vec<usize> = (0..8)
+                .map(|i| arena.alloc(0x10 * (i + 1) + round, false).expect("stream"))
+                .collect();
+            top_high_water = top_high_water.max(arena.top);
+            for &user in &blocks {
+                assert!(arena.free(user));
+            }
+        }
+        // The high water mark stays far below the arena; after a
+        // free-all the first allocation reuses the coalesced span.
+        assert!(top_high_water < 0x800);
+        let first = arena.alloc(0x10, false).expect("after free-all");
+        assert_eq!(first, HEADER_SIZE);
+    }
+
+    /// Requests round to 8-byte blocks; user offsets stay 8-aligned.
+    #[test]
+    fn requests_round_to_the_alignment() {
+        assert_eq!(round_up(0), 8);
+        assert_eq!(round_up(1), 8);
+        assert_eq!(round_up(9), 16);
+        assert_eq!(round_up(0x41C4), 0x41C8);
+        let mut arena = Arena::new();
+        for request in [1, 3, 8, 9, 0x40] {
+            let user = arena.alloc(request, false).expect("aligned");
+            assert_eq!(user % 8, 0);
+        }
+    }
+
+    /// The target placement: both regions above every mapped area,
+    /// 64 KiB-aligned, in user space.
+    #[cfg(target_arch = "x86")]
+    #[test]
+    fn regions_are_placed_clear_of_the_user_layout() {
+        use crate::mem::paging::KERNEL_BASE;
+        assert_eq!(HEAP_REGION_BASE % 0x10000, 0);
+        assert_eq!(CRT_REGION_BASE % 0x10000, 0);
+        assert!(HEAP_REGION_BASE >= crate::kernel32::THUNK_PAGE);
+        assert!(CRT_REGION_BASE >= HEAP_REGION_BASE + HEAP_REGION_MAX as u32);
+        assert!(CRT_REGION_BASE + 0x100000 < KERNEL_BASE);
+        // The stack (0x300000) and everything below the thunks stays
+        // clear of both regions.
+        assert!(HEAP_REGION_BASE > 0x0032_0000);
+    }
+}

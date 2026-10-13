@@ -47,8 +47,10 @@ code 0 means pass.
 
 ## How F2K consumes these
 
-Until F2K can read from its FAT32 disk partition, the QEMU boot smoke
-test embeds a fixture directly in the kernel image (`include_bytes!`)
-and prints the observed process exit code on COM1. Once disk I/O
-exists, fixtures load from the disk image instead and the embedding
-goes away.
+Until F2K can read from its FAT32 disk partition, the on-target QEMU
+suite embeds fixtures directly in the kernel image
+(`include_bytes!`): the default kernel runs `exit0`, and the
+`run-ret0` feature selects `ret0`. Each boot prints the observed
+process exit code on COM1, which the suite cases assert. Once disk
+I/O exists, fixtures load from the disk image instead and the
+embedding goes away.

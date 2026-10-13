@@ -1,32 +1,36 @@
 //! Ring 3: entering user mode and the end of the user process.
 //!
-//! M2 proved the privilege switch end to end ([`enter_ring3`]); M3
-//! wired the return path through the syscall gate (see `syscall.rs`);
-//! M4 made the default user process a real PE image (see `loader.rs`):
-//! the kernel maps the image and a stack, enters ring 3 with an iret,
-//! and the image ends the process through the exit service.
+//! The kernel maps the image, stack, TEB and parameters pages, enters
+//! ring 3 with an iret ([`enter_ring3`]), and the image ends the
+//! process through the exit service. The fault-test features
+//! substitute a hand-assembled stub ([`RING3_STUB`]) so the
+//! user-fault paths can be verified without a PE fixture.
 //!
-//! The fault-test features substitute a hand-assembled stub for the
-//! image (see [`RING3_STUB`]), so the user-fault paths can be verified
-//! on target without a PE fixture in the loop.
-//!
-//! Single tasking, run to completion: the kernel "calls" the user
-//! process, the exit syscall is the return path, and faults raised by
-//! user code end the process rather than the kernel (see `idt.rs`).
+//! Single tasking, run to completion: the exit syscall is the return
+//! path; faults raised by user code end the process, not the kernel.
 
 #[cfg(target_arch = "x86")]
-use crate::gdt::{USER_CODE_SELECTOR, USER_DATA_SELECTOR};
+use crate::gdt::{TEB_SELECTOR, USER_CODE_SELECTOR, USER_DATA_SELECTOR};
 
 /// The fault-test stub's code page (the PE image base, which the
 /// fault-test builds never map).
 #[cfg(any(feature = "fault-test-user", feature = "fault-test-badargs", test))]
 pub const USER_CODE_PAGE: u32 = 0x0040_0000;
-/// The user stack page, in its own 4 MiB window — window 0, which
-/// held the boot identity mapping until it was removed. Shared by
-/// the PE image runs and the fault-test stubs.
+/// The user stack's top page, in its own 4 MiB window (window 0,
+/// whose boot identity mapping was removed). The stack spans two
+/// pages growing down — the CRT's startup passes need the room.
 pub const USER_STACK_PAGE: u32 = 0x0030_0000;
-/// Initial user ESP: one past the stack page's top byte.
+/// The stack's second page, one below the top.
+pub const USER_STACK_LOW_PAGE: u32 = USER_STACK_PAGE - 4096;
+/// Initial user ESP: one past the stack's top page.
 pub const USER_STACK_TOP: u32 = USER_STACK_PAGE + 4096;
+/// The thread block page, reached through the FS-based TEB segment
+/// (the CRT installs its exception frames at fs:[0] first thing);
+/// mapped zeroed and writable by the loader.
+pub const TEB_PAGE: u32 = 0x0031_0000;
+/// The process parameters page: the staged command line,
+/// environment and module-name replays (see `kernel32`).
+pub const PARAMS_PAGE: u32 = 0x0032_0000;
 
 /// A kernel address the fault-test stub reads from ring 3: the kernel
 /// window is supervisor-only, so the read must fault.
@@ -40,19 +44,12 @@ pub const KERNEL_WINDOW_PROBE: u32 = 0x8010_1000;
 #[cfg(any(feature = "fault-test-badargs", test))]
 pub const BAD_ARGS_PTR: u32 = 0x0050_0000;
 
-/// The ring-3 fault-test stub, in bytes: a body that must end the
-/// process through a fault (see the variants below) followed by a
-/// spin as the safety net.
-///
-/// Assembled by hand so it can live in a kernel constant and be copied
-/// into the user page: kernel code itself is unreachable from ring 3,
-/// because the kernel window is supervisor-only. Never combine the
-/// features.
-///
-/// `fault-test-user` reads the supervisor-only kernel window, and
-/// `fault-test-badargs` passes an unmapped user address as the syscall
-/// argument pointer — both must end the process, not the kernel
-/// (`make test-fault-*`).
+/// The ring-3 fault-test stub, in bytes: a faulting body plus a spin
+/// as the safety net. Hand-assembled so it can be copied into the
+/// user page (kernel code is unreachable from ring 3). Never combine
+/// the features: `fault-test-user` reads the supervisor-only kernel
+/// window; `fault-test-badargs` passes an unmapped user address as
+/// the syscall argument pointer.
 #[cfg(feature = "fault-test-user")]
 pub const RING3_STUB: [u8; 7] = [
     0xA1, 0x00, 0x10, 0x10, 0x80, // mov eax, dword ptr [KERNEL_WINDOW_PROBE]
@@ -67,12 +64,9 @@ pub const RING3_STUB: [u8; 14] = [
     0xEB, 0xFE, // jmp $
 ];
 
-/// Trap frame the gate stubs build on the ring-0 stack.
-///
-/// The CPU pushes the tail (raised from ring 3: EIP, CS, EFLAGS, user
-/// ESP, user SS, onto the TSS stack); the stub pushes the rest in the
-/// same order as the exception stubs, so every frame in this kernel —
-/// exception or syscall — shares one shape.
+/// Trap frame the gate stubs build on the ring-0 stack, in the shape
+/// shared with the exception stubs (the CPU pushes the ring-3 tail;
+/// the stub pushes the rest in the same order).
 #[allow(dead_code)]
 #[repr(C)]
 pub struct TrapFrame {
@@ -94,12 +88,10 @@ pub struct TrapFrame {
     pub user_ss: u32,
 }
 
-// Entry into ring 3: load the user data segments, build the iret
-// frame and switch. Never returns.
-//
-// The pushed EFLAGS is a fixed value: bit 1 (reserved, always 1) only.
-// Interrupts stay disabled — the kernel runs its single user process
-// with `cli` set — and IOPL is 0, so port I/O stays privileged.
+// Entry into ring 3: load the segments, build the iret frame, switch.
+// Never returns. FS takes the TEB segment and GS null (the captured
+// entry state); the pushed EFLAGS is bit 1 only — IF stays clear and
+// IOPL is 0, so port I/O stays privileged.
 #[cfg(target_arch = "x86")]
 unsafe extern "C" {
     pub fn enter_ring3(eip: u32, esp: u32) -> !;
@@ -111,11 +103,14 @@ core::arch::global_asm!(
     ".global enter_ring3",
     "enter_ring3:",
     // Arguments: [esp+4] = user EIP, [esp+8] = user ESP. Load the
-    // user data segments for DS/ES/FS/GS; SS comes from the iret frame.
+    // user data segments for DS/ES, the TEB segment for FS, and null
+    // for GS; SS comes from the iret frame.
     "    mov ax, {user_data}",
     "    mov ds, ax",
     "    mov es, ax",
+    "    mov ax, {teb}",
     "    mov fs, ax",
+    "    xor eax, eax",
     "    mov gs, ax",
     "    mov edx, [esp + 4]",
     "    mov ecx, [esp + 8]",
@@ -127,11 +122,9 @@ core::arch::global_asm!(
     "    push {user_eflags}",
     "    push {user_code}",
     "    push edx",
-    // iret loads only EIP, CS, EFLAGS, ESP and SS: every other
-    // register passes through to user code. Zero the general-purpose
-    // registers so kernel pointers (multiboot state, serial buffers)
-    // do not leak into user mode. Once real PE images run, the initial
-    // register state must match the reference OS instead.
+    // iret loads only EIP, CS, EFLAGS, ESP and SS: zero the rest so
+    // kernel pointers do not leak into user mode. (Entry register
+    // fidelity for real images is a recorded open item.)
     "    xor eax, eax",
     "    xor ebx, ebx",
     "    xor ecx, ecx",
@@ -142,16 +135,13 @@ core::arch::global_asm!(
     "    iretd",
     user_data = const USER_DATA_SELECTOR | 3,
     user_code = const USER_CODE_SELECTOR | 3,
+    teb = const TEB_SELECTOR | 3,
     user_eflags = const 0x0000_0002u32,
 );
 
-/// End of the user process: the exit service's landing point.
-///
-/// Single tasking, run to completion: there is no next process, so the
-/// kernel's process-end policy is to report and halt. The exit code is
-/// the process's only observable (the current fixtures have no console
-/// backend), so the report is the smoke's completion line. A real
-/// process object moves this to the future process module.
+/// End of the user process: the exit service's landing point. There
+/// is no next process, so the kernel reports and halts; the exit code
+/// is the only observable, making this line the suite's check.
 pub fn process_exited(code: u32) -> ! {
     #[cfg(target_arch = "x86")]
     {
@@ -167,15 +157,21 @@ pub fn process_exited(code: u32) -> ! {
     }
 }
 
-/// Launch the first user process. The default path loads the first
-/// corpus fixture through the PE loader ([`crate::loader`]); the
-/// fault-test features substitute their stub for the image (never
-/// combine them). Never returns.
+/// Launch the first user process: exit0 through the PE loader by
+/// default, ret0 with the `run-ret0` feature, or a fault-test stub.
+/// Never returns.
 #[cfg(target_arch = "x86")]
 pub fn run_user_process() -> ! {
     #[cfg(not(any(feature = "fault-test-user", feature = "fault-test-badargs")))]
     {
-        crate::loader::run_image(crate::loader::EXIT0)
+        #[cfg(not(feature = "run-ret0"))]
+        {
+            crate::loader::run_image(crate::loader::EXIT0, "exit0")
+        }
+        #[cfg(feature = "run-ret0")]
+        {
+            crate::loader::run_image(crate::loader::RET0, "ret0")
+        }
     }
     #[cfg(any(feature = "fault-test-user", feature = "fault-test-badargs"))]
     {
@@ -183,13 +179,7 @@ pub fn run_user_process() -> ! {
     }
 }
 
-/// Map the fault-test stub's user pages and enter ring 3.
-///
-/// The code page is written through the scratch alias before it is
-/// mapped read-only; the stack page is zeroed and writable. Both are
-/// user-accessible; each allocation takes one frame, and the two
-/// pages sit in different 4 MiB windows, so two page tables are
-/// created on demand. Never returns.
+/// Map the fault-test stub's pages and enter ring 3. Never returns.
 #[cfg(target_arch = "x86")]
 #[cfg(any(feature = "fault-test-user", feature = "fault-test-badargs"))]
 pub fn run_fault_stub() -> ! {
@@ -202,6 +192,9 @@ pub fn run_fault_stub() -> ! {
     let stack_frame = paging::allocate_frame_phys();
     paging::init_frame(stack_frame, 0, &[]);
     paging::map_user_page(USER_STACK_PAGE, stack_frame, true);
+    let stack_low = paging::allocate_frame_phys();
+    paging::init_frame(stack_low, 0, &[]);
+    paging::map_user_page(USER_STACK_LOW_PAGE, stack_low, true);
 
     crate::serial_println!(
         "F2K: entering ring 3 (code {:#010x}, stack {:#010x})",
@@ -252,10 +245,9 @@ mod tests {
         assert_eq!(RING3_STUB, expected);
     }
 
-    /// The fault-test addresses: the kernel-window probe lies inside
-    /// the kernel window (supervisor-only), the bad-args pointer below
-    /// the user probe limit (so the range probe passes) but away from
-    /// the two mapped smoke pages.
+    /// The fault-test addresses: the kernel-window probe inside the
+    /// supervisor-only window; the bad-args pointer below the probe
+    /// limit but on no mapped page.
     #[test]
     fn fault_probe_layout_is_consistent() {
         assert!(KERNEL_WINDOW_PROBE >= KERNEL_BASE);
@@ -264,9 +256,8 @@ mod tests {
         assert_ne!(BAD_ARGS_PTR & !0xFFF, USER_STACK_PAGE);
     }
 
-    /// The trap frame is 15 u32s; the CPU-pushed tail keeps the iret
-    /// order (EIP, CS, EFLAGS, then the ring-3 ESP/SS pair), following
-    /// the exception-stub prefix.
+    /// 15 u32s; the CPU-pushed tail keeps the iret order after the
+    /// exception-stub prefix.
     #[test]
     fn trap_frame_layout() {
         assert_eq!(size_of::<TrapFrame>(), 15 * 4);
@@ -286,16 +277,26 @@ mod tests {
         assert_eq!(addr_of!(frame.user_ss) as usize - base, 14 * 4);
     }
 
-    /// The user layout: both fault-test pages below the kernel
-    /// window, page-aligned, in different 4 MiB windows; the stack
-    /// top one past the stack page.
+    /// The user pages: below the kernel window, page-aligned, the
+    /// stack top one past its top page, the image window clear of
+    /// window 0.
     #[test]
     fn user_layout_is_consistent() {
-        for page in [USER_CODE_PAGE, USER_STACK_PAGE] {
+        for page in [
+            USER_CODE_PAGE,
+            USER_STACK_PAGE,
+            USER_STACK_LOW_PAGE,
+            TEB_PAGE,
+            PARAMS_PAGE,
+        ] {
             assert_eq!(page % 4096, 0);
             assert!(page < KERNEL_BASE);
         }
         assert_ne!(USER_CODE_PAGE >> 22, USER_STACK_PAGE >> 22);
+        assert_eq!(USER_STACK_LOW_PAGE, USER_STACK_PAGE - 4096);
         assert_eq!(USER_STACK_TOP, USER_STACK_PAGE + 4096);
+        assert!(TEB_PAGE > USER_STACK_TOP);
+        assert!(PARAMS_PAGE > TEB_PAGE);
+        assert!(PARAMS_PAGE + 4096 < crate::pe::IMAGE_BASE);
     }
 }

@@ -67,3 +67,27 @@ cases:
       - "F2K: image loaded"
       - "F2K: entering ring 3"
       - "F2K: user process exited normally (exit code=0)"
+
+  - name: ret0-smoke
+    description: the CRT startup fixture runs to main and exits 0 through the 35-import surface (kernel path)
+    image: kernel
+    features: [run-ret0]
+    expects:
+      - "F2K Booted Successfully"
+      - "F2K: frame database audit: ok"
+      - "F2K: kernel heap: alloc/free ok"
+      - "F2K: image loaded"
+      - "F2K: entering ring 3"
+      - "F2K: user process exited normally (exit code=0)"
+
+  - name: ret0-smoke-disk
+    description: the CRT startup fixture runs to main and exits 0 through the 35-import surface (Limine disk path)
+    image: disk
+    features: [run-ret0]
+    expects:
+      - "F2K Booted Successfully"
+      - "F2K: frame database audit: ok"
+      - "F2K: kernel heap: alloc/free ok"
+      - "F2K: image loaded"
+      - "F2K: entering ring 3"
+      - "F2K: user process exited normally (exit code=0)"

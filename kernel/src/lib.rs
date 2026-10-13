@@ -1,16 +1,13 @@
 //! F2K kernel library.
 //!
-//! All kernel code lives in this crate so it can be built two ways:
-//! - as the `f2k-kernel` binary (src/main.rs): a 32-bit protected-mode
-//!   kernel entered by the Multiboot `_start` stub in `boot`;
-//! - as a host-side test harness (`make run-tests`), where the x86-only
-//!   assembly is cfg'd out and the pure-Rust parts (descriptor layouts,
-//!   exception tables) get unit tests.
+//! Built two ways: as the `f2k-kernel` binary (entered by the
+//! Multiboot `_start` stub), and as a host test harness where the
+//! x86-only assembly is cfg'd out and the pure-Rust parts get unit
+//! tests (`make run-tests`).
 
 #![cfg_attr(not(test), no_std)]
 
-// Host builds exist only to run unit tests: the x86-only machinery is
-// cfg'd out there, leaving items that only tests (or kernel code) touch.
+// Host builds exist only to run unit tests.
 #![cfg_attr(not(target_arch = "x86"), allow(dead_code))]
 
 // Boot module (Multiboot header and _start stub)
@@ -27,10 +24,16 @@ mod mem;
 // System-call gate and service dispatch (int 0x2E, DPL 3)
 mod syscall;
 
-// PE32 image parsing and import resolution (the M4 loader)
+// PE32 image parsing and import resolution for the image loader
 mod pe;
 
-// Kernel-side image loader: staging, section mapping, entry (M4)
+// Codepage 1252 replay data: the tables behind the locale services
+mod cp1252;
+
+// The user-mode heap the kernel32 heap services serve
+mod userheap;
+
+// Kernel-side image loader: staging, section mapping, entry into ring 3
 mod loader;
 
 // The kernel-synthesized kernel32: export table and user-mode thunks
@@ -84,22 +87,18 @@ pub extern "C" fn kmain(magic: u32, multiboot_info: u32) -> ! {
     // Initialize serial port first (for debugging)
     serial::init();
 
-    // Take over the CPU tables: flat kernel segments, then exception
-    // handlers so faults print diagnostics on COM1 instead of triple
-    // faulting the machine.
-    // SAFETY: boot CPU in ring 0 with interrupts disabled, before any code
-    // that might fault; single-threaded boot, the only GDT access.
+    // Take over the CPU tables so faults print diagnostics on COM1
+    // instead of triple-faulting.
+    // SAFETY: boot CPU, ring 0, interrupts disabled, before any code
+    // that might fault; sole GDT/IDT access.
     unsafe { gdt::init() };
-    // SAFETY: the GDT is already loaded (selector 0x08 valid); same boot
-    // context, the only access to the IDT.
+    // SAFETY: the GDT is loaded (selector 0x08 valid); same context.
     unsafe { idt::init() };
     serial_println!("F2K: GDT and IDT initialized");
 
-    // Test-only fault injection (make test-fault-ud / make test-fault-gp):
-    // raise an exception right after init to exercise the exception stubs
-    // and the COM1 dump on the real target. The diagnostics prove the CPU
-    // did not write to the read-only GDT, and record the pre-fault ESP that
-    // the dump's reconstructed ESP must match.
+    // Test-only fault injection: raise an exception right after init to
+    // exercise the stubs and the COM1 dump on target. The diagnostics
+    // prove the CPU did not write to the GDT and pin the pre-fault ESP.
     #[cfg(any(feature = "fault-test-ud", feature = "fault-test-gp"))]
     {
         serial_println!(
@@ -118,8 +117,8 @@ pub extern "C" fn kmain(magic: u32, multiboot_info: u32) -> ! {
     }
     #[cfg(feature = "fault-test-gp")]
     {
-        // Selector 0x38 (slot 7) lies beyond the six-entry GDT limit
-        // (0x2F): #GP with the CPU-pushed error code 0x38 — the
+        // Selector 0x38 lies one past the seven-entry GDT limit
+        // (0x37): #GP with the CPU-pushed error code 0x38 — the
         // EXC_STUB_ERR path. Segment registers can only be loaded from
         // a general-purpose register.
         serial_println!("F2K: fault test: forcing #GP (error code path)");
@@ -138,14 +137,13 @@ pub extern "C" fn kmain(magic: u32, multiboot_info: u32) -> ! {
         halt();
     }
 
-    // Print boot message
     serial_println!("F2K Booted Successfully");
     serial_println!("Fenêtre 2000 - Windows 2000 compatible OS in Rust");
     serial_println!("Phase 1: Foundation complete");
     serial_println!("Multiboot info at {:#010x}", multiboot_info);
 
-    // Parse the boot memory map and hand every usable frame (minus the
-    // kernel image) to the physical frame allocator.
+    // Hand every usable frame (minus the kernel image) to the frame
+    // allocator.
     mem::bootmem::boot_init(multiboot_info);
     mem::bootmem::with_frame_db(|db| {
         serial_println!(
@@ -159,16 +157,14 @@ pub extern "C" fn kmain(magic: u32, multiboot_info: u32) -> ! {
         );
     });
 
-    // The boot memory map is consumed: remove the low identity window
-    // and keep only the kernel window. From here on, nothing below
-    // KERNEL_BASE is mapped.
+    // The memory map is consumed: remove the low identity window.
+    // Nothing below KERNEL_BASE is mapped from here on.
     mem::paging::teardown_low_identity();
     serial_println!("F2K: paging on: kernel at {:#010x}, low identity removed", 0x8010_1000u32);
-    // Install the runtime table access (the self-map and the scratch
-    // page table): the machinery for building user address spaces.
+    // Install the runtime table access (self-map, scratch table).
     mem::paging::init_table_access();
 
-    // Kernel heap smoke: allocate, touch, free, audit.
+    // Kernel heap smoke.
     mem::bootmem::heap_init();
     mem::bootmem::with_heap(|heap| {
         const MARK: u32 = 0x4832_4B46; // "F2KH"
@@ -185,11 +181,9 @@ pub extern "C" fn kmain(magic: u32, multiboot_info: u32) -> ! {
     });
     serial_println!("F2K: kernel heap: alloc/free ok");
 
-    // M4 smoke: load the first corpus fixture (exit0.exe) as the user
-    // process and enter ring 3 at its entry point. The image ends the
-    // process through its one import (ExitProcess -> the exit service,
-    // which reports the exit code on COM1). Run to completion: with
-    // the single user process gone, the kernel halts inside the exit
-    // path.
+    // The user process: exit0 through the PE loader by default, ret0
+    // (the CRT startup fixture) with the `run-ret0` feature. The image
+    // ends through its exit import, which reports the exit code on
+    // COM1; the kernel then halts (run to completion).
     user::run_user_process()
 }

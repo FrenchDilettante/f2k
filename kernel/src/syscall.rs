@@ -1,64 +1,47 @@
 //! System-call gate (vector 0x2E) and service dispatch.
 //!
-//! The int 02Eh ABI is a binary contract with the user-mode code that
-//! will one day call it: **EAX** carries the service number, **EDX** a
-//! pointer to the arguments in user memory, and the service's result
-//! (an NTSTATUS) returns in EAX. The gate is a 32-bit interrupt gate at
-//! DPL 3, so entry clears IF; the frame's EFLAGS is restored on exit.
+//! The ABI: EAX carries the service number, EDX a pointer to the
+//! arguments in user memory, the result returns in EAX (NTSTATUS for
+//! native services, BOOL/pointer for the kernel32-style ones). The
+//! gate is a 32-bit interrupt gate at DPL 3 (so entry clears IF).
 //!
-//! Entry and exit follow the classic choreography: the CPU switches to
-//! the TSS ring-0 stack and pushes the ring-3 tail (EIP, CS, EFLAGS,
-//! user ESP, user SS); the stub saves the general registers and a
-//! vector/pad pair so every frame in this kernel shares one shape; the
-//! dispatcher checks the service number, probes and copies the
-//! arguments, and calls the service; the return path restores the saved
-//! registers (the status rides out in EAX) and `iretd`s back to ring 3.
+//! Entry choreography: the CPU switches to the TSS ring-0 stack and
+//! pushes the ring-3 tail; the stub completes a frame shared with the
+//! exception stubs; the dispatcher validates the number against the
+//! kernel32 registry, probes and copies the arguments, and calls the
+//! service; the return path restores registers and `iretd`s back.
 //!
-//! Single tasking, run to completion: a service that ends the process
-//! (exit) diverges inside its handler; everything else returns.
+//! Quirk: service-side user-memory transfers ([`read_user`],
+//! [`write_user`]) run under the attribution flag — a fault on a bad
+//! user pointer ends the user process, not the kernel.
 
 use crate::user::TrapFrame;
 
 /// The system-call vector: int 02Eh, above the CPU exception range.
 pub const SYSCALL_VECTOR: usize = 0x2E;
 
-/// The first byte of kernel space: the user argument probe limit.
-/// Addresses at or above it can never be user memory (see `paging`).
+/// The first byte of kernel space: the user probe limit.
 pub const USER_PROBE_LIMIT: u32 = crate::mem::paging::KERNEL_BASE;
 
-/// Service numbers start at 1; 0 is not a service.
+/// Service 1: process exit (the registry's ExitProcess entry).
 pub const SYS_EXIT: u32 = 1;
 
-/// Documented NTSTATUS values returned in EAX. These are public
-/// constants; matching them is required for compatibility.
+/// Documented NTSTATUS values (public ABI constants).
 pub const STATUS_ACCESS_VIOLATION: u32 = 0xC000_0005;
 pub const STATUS_INVALID_SYSTEM_SERVICE: u32 = 0xC000_001C;
 
-/// Largest argument block the dispatcher copies onto the kernel stack,
-/// in bytes. Sizing the copy up front keeps the gate path free of
-/// allocation.
-const MAX_ARG_BYTES: usize = 16;
+/// Largest argument block the dispatcher copies onto the kernel stack.
+/// Sized up front so the gate path stays allocation-free; the largest
+/// service is WideCharToMultiByte's 32 bytes.
+pub const MAX_ARG_BYTES: usize = 32;
 
-/// A service: receives the frame (to place its status) and the
-/// argument dwords copied from user memory.
-type ServiceFn = fn(&mut TrapFrame, &[u32]);
+/// A service: places its result in the frame's EAX slot.
+pub type ServiceFn = fn(&mut TrapFrame, &[u32]);
 
-/// One table entry: the service number, its argument size in bytes
-/// (whole dwords: the ABI copies arguments as dwords), and its
-/// handler. A number absent from the table is rejected with
-/// [`STATUS_INVALID_SYSTEM_SERVICE`].
-const SERVICES: [(u32, u32, ServiceFn); 1] = [(SYS_EXIT, 4, sys_exit)];
-
-/// Validate a service number, returning its table index.
-fn validate_service(number: u32) -> Option<usize> {
-    SERVICES.iter().position(|&(n, ..)| n == number)
-}
-
-/// Probe an argument range in user memory: zero length passes untouched;
-/// otherwise the range must lie entirely below [`USER_PROBE_LIMIT`]
-/// without wrapping. A violation is reported as
-/// [`STATUS_ACCESS_VIOLATION`] — the caller's arguments are never read.
-fn probe_user_range(pointer: u32, length: u32) -> Result<(), u32> {
+/// Probe a user range: zero length passes; otherwise it must lie
+/// below [`USER_PROBE_LIMIT`] without wrapping. Violations report
+/// [`STATUS_ACCESS_VIOLATION`]; the range is never read.
+pub(crate) fn probe_user_range(pointer: u32, length: u32) -> Result<(), u32> {
     if length == 0 {
         return Ok(());
     }
@@ -70,37 +53,74 @@ fn probe_user_range(pointer: u32, length: u32) -> Result<(), u32> {
     }
 }
 
-/// Set while the dispatcher copies argument bytes out of user memory.
-/// A page fault with this flag set happens *on behalf of* the user
-/// process (its argument pointer was bad), so the exception handler
-/// reports it as a user fault instead of a kernel panic. Kernel
-/// exception dispatch will replace this attribution flag one day.
+/// Set while the kernel copies user memory on the process's behalf
+/// (argument copies, service transfers). The exception handler
+/// attributes a fault under this flag to the user process.
 static mut COPYING_USER_ARGS: bool = false;
 
-/// Whether the kernel is currently inside the user-argument copy.
-/// Consulted by the exception handler to attribute faults.
+/// Whether the kernel is inside a user-memory copy.
 pub fn copying_user_args() -> bool {
     // SAFETY: single CPU with interrupts disabled throughout.
     unsafe { core::ptr::read_volatile(core::ptr::addr_of!(COPYING_USER_ARGS)) }
 }
 
+/// Run `body` under the attribution flag.
+fn with_user_attribution<T>(body: impl FnOnce() -> T) -> T {
+    // SAFETY: single-threaded kernel context; the flag's only other
+    // reader is the exception handler, which runs in this same context.
+    unsafe {
+        core::ptr::write_volatile(core::ptr::addr_of_mut!(COPYING_USER_ARGS), true);
+    }
+    let result = body();
+    unsafe {
+        core::ptr::write_volatile(core::ptr::addr_of_mut!(COPYING_USER_ARGS), false);
+    }
+    result
+}
+
+/// Read `bytes` from user memory (probe + attributed copy). An
+/// unmapped range faults, ending the user process.
+pub fn read_user(pointer: u32, bytes: &mut [u8]) -> Result<(), u32> {
+    probe_user_range(pointer, bytes.len() as u32)?;
+    // SAFETY: the range passed the probe and is user-accessible; a
+    // fault on an unmapped page is attributed to the user process.
+    with_user_attribution(|| unsafe {
+        let src = pointer as *const u8;
+        for (i, slot) in bytes.iter_mut().enumerate() {
+            *slot = src.add(i).read_volatile();
+        }
+    });
+    Ok(())
+}
+
+/// Write `bytes` to user memory (probe + attributed copy). An
+/// unmapped range faults, ending the user process.
+pub fn write_user(pointer: u32, bytes: &[u8]) -> Result<(), u32> {
+    probe_user_range(pointer, bytes.len() as u32)?;
+    // SAFETY: as above.
+    with_user_attribution(|| unsafe {
+        let dst = pointer as *mut u8;
+        for (i, &byte) in bytes.iter().enumerate() {
+            dst.add(i).write_volatile(byte);
+        }
+    });
+    Ok(())
+}
+
 /// Copy `length` bytes of arguments from user memory into `out`.
 ///
-/// # Safety contract
+/// # Safety
 ///
-/// `pointer` must name a range that passed [`probe_user_range`] for this
-/// `length`; the caller is user mode and the range must be mapped, or
-/// the fault below is attributed to the user process.
+/// The range must have passed [`probe_user_range`]; a fault on an
+/// unmapped page is attributed to the user process.
 fn copy_user_args(pointer: u32, length: u32, out: &mut [u32; MAX_ARG_BYTES / 4]) {
     // SAFETY: see contract above; the flag makes a fault on a bad
     // pointer end the process rather than halt the kernel mid-copy.
-    unsafe {
-        core::ptr::write_volatile(core::ptr::addr_of_mut!(COPYING_USER_ARGS), true);
+    with_user_attribution(|| unsafe {
         for (i, slot) in out.iter_mut().enumerate().take(length as usize / 4) {
             *slot = core::ptr::read_volatile((pointer + 4 * i as u32) as *const u32);
         }
-        core::ptr::write_volatile(core::ptr::addr_of_mut!(COPYING_USER_ARGS), false);
-    }
+    });
 }
 
 /// Dispatcher, called by the gate stub with the frame it built.
@@ -111,12 +131,12 @@ extern "C" fn syscall_dispatch(frame: &mut TrapFrame) {
     // tail and the machine is already off the rails.
     assert_eq!(frame.cs & 3, 3, "syscall gate raised from ring 0");
 
-    let Some(index) = validate_service(frame.eax) else {
+    // The service registry lives with the surface it implements.
+    let Some((arg_bytes, service)) = crate::kernel32::lookup_service(frame.eax) else {
         frame.eax = STATUS_INVALID_SYSTEM_SERVICE;
         return;
     };
 
-    let (_, arg_bytes, service) = SERVICES[index];
     if let Err(status) = probe_user_range(frame.edx, arg_bytes) {
         frame.eax = status;
         return;
@@ -127,14 +147,6 @@ extern "C" fn syscall_dispatch(frame: &mut TrapFrame) {
     service(frame, &args[..arg_bytes as usize / 4]);
 }
 
-/// Service 1: end the process, reporting the exit code to the kernel.
-///
-/// Single tasking: the kernel called the user process and this service
-/// is its return path — it never resumes user mode.
-fn sys_exit(_frame: &mut TrapFrame, args: &[u32]) {
-    crate::user::process_exited(args[0])
-}
-
 // Gate stub: entered from ring 3 through the DPL-3 interrupt gate.
 //
 // The CPU has switched to the TSS ring-0 stack and pushed EIP, CS,
@@ -142,7 +154,7 @@ fn sys_exit(_frame: &mut TrapFrame, args: &[u32]) {
 // shared shape (vector + error pad around `pushad`, matching the
 // exception stubs), calls the dispatcher, and — for every service
 // that returns — restores the saved registers and `iretd`s back to
-// ring 3. The status written into the frame's EAX slot by the
+// ring 3. The result written into the frame's EAX slot by the
 // dispatcher rides out through `popad`.
 //
 // The 32-bit form is spelled `iretd`: under the toolchain's
@@ -160,7 +172,7 @@ core::arch::global_asm!(
     "    push esp", // frame pointer (esp already points at the frame)
     "    call {dispatch}",
     "    add esp, 4", // drop the frame pointer
-    "    popad", // EAX now carries the service's status
+    "    popad", // EAX now carries the service's result
     "    add esp, 8", // drop vector + error pad
     "    iretd", // pops EIP, CS, EFLAGS, user ESP, user SS
     vector = const SYSCALL_VECTOR as u32,
@@ -177,32 +189,8 @@ unsafe extern "C" {
 mod tests {
     use super::*;
 
-    /// Service numbers are 1-based and bounded by the table; 0 and
-    /// anything past the table are invalid.
-    #[test]
-    fn service_numbers_are_bounded() {
-        assert_eq!(validate_service(0), None);
-        assert_eq!(validate_service(SYS_EXIT), Some(0));
-        assert_eq!(validate_service(SYS_EXIT + 1), None);
-        assert_eq!(validate_service(u32::MAX), None);
-    }
-
-    /// Every service number is unique, its argument size is a whole
-    /// number of dwords within the dispatcher's copy budget.
-    #[test]
-    fn services_are_table_consistent() {
-        assert_eq!(SERVICES.len(), 1);
-        for (i, &(number, size, _)) in SERVICES.iter().enumerate() {
-            assert!(number > 0);
-            assert!(size > 0 && size % 4 == 0);
-            assert!((size as usize) <= MAX_ARG_BYTES);
-            assert_eq!(validate_service(number), Some(i));
-        }
-    }
-
-    /// Probe rules: zero length always passes; the range must end at or
-    /// before the probe limit (an end exactly at the limit passes — the
-    /// bound is exclusive) and must not wrap around.
+    /// Probe rules: zero length passes; the range must end at or below
+    /// the probe limit (an end exactly at the limit passes) and not wrap.
     #[test]
     fn probe_range_rules() {
         // Zero length: no access happens, so nothing is checked.
@@ -241,25 +229,61 @@ mod tests {
         );
     }
 
-    /// The status values are the documented public constants; they are
-    /// part of the ABI user code consumes.
+    /// The user-access helpers enforce the same probe. Only rejected
+    /// and zero-length ranges are pinned here: a real copy touches
+    /// target-only memory.
+    #[test]
+    fn user_access_probes_before_touching() {
+        let mut out = [0u8; 4];
+        assert_eq!(read_user(USER_PROBE_LIMIT, &mut out), Err(STATUS_ACCESS_VIOLATION));
+        assert_eq!(
+            write_user(USER_PROBE_LIMIT, &[0; 4]),
+            Err(STATUS_ACCESS_VIOLATION)
+        );
+        assert_eq!(read_user(0x0040_0000, &mut []), Ok(()));
+        assert_eq!(write_user(0x0040_0000, &[]), Ok(()));
+        assert_eq!(
+            read_user(0xFFFF_FFFC, &mut out),
+            Err(STATUS_ACCESS_VIOLATION)
+        );
+    }
+
+    /// The argument budget covers every service and is whole dwords.
+    #[test]
+    fn argument_budget_covers_the_registry() {
+        assert_eq!(MAX_ARG_BYTES, 32);
+        assert_eq!(MAX_ARG_BYTES % 4, 0);
+        for (_, arg_bytes, _) in crate::kernel32::SERVICES {
+            assert!(
+                arg_bytes as usize <= MAX_ARG_BYTES,
+                "service arg block {arg_bytes} exceeds the budget"
+            );
+            assert_eq!(arg_bytes % 4, 0);
+        }
+    }
+
+    /// The documented NTSTATUS constants (public ABI).
     #[test]
     fn status_values_match_the_documented_constants() {
         assert_eq!(STATUS_ACCESS_VIOLATION, 0xC000_0005);
         assert_eq!(STATUS_INVALID_SYSTEM_SERVICE, 0xC000_001C);
     }
 
-    /// The vector contract: 0x2E, above the CPU exception range, so the
-    /// gate can never collide with an architectural exception.
+    /// 0x2E, above the CPU exception range.
     #[test]
     fn vector_is_the_syscall_vector() {
         assert_eq!(SYSCALL_VECTOR, 0x2E);
         assert!(SYSCALL_VECTOR > 31);
     }
 
-    /// The exit service is reachable at the documented number.
+    /// Exit is service 1 with a one-dword argument block.
     #[test]
     fn exit_is_service_one() {
         assert_eq!(SYS_EXIT, 1);
+        assert_eq!(
+            crate::kernel32::lookup_service(SYS_EXIT)
+                .map(|(bytes, _)| bytes),
+            Some(4)
+        );
     }
 }

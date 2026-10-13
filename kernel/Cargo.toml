@@ -32,6 +32,9 @@ fault-test-user = []
 # address as the syscall argument pointer, so faults inside the
 # kernel's argument copy end the process: `make test-fault-badargs`.
 fault-test-badargs = []
+# Loads the second corpus fixture (ret0.exe, the 35-import CRT startup
+# surface) instead of the first: the ret0 suite cases build with it.
+run-ret0 = []
 
 [dependencies]
 # Core no_std crates for future use
