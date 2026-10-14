@@ -1,0 +1,25 @@
+spin.exe - real-machine output shape, owner-confirmed 2026-10-14.
+Byte-exact capture is not meaningful for this program: the count of
+A/B progress lines in each alternating run is machine-timing
+dependent. The alternation, the uninterrupted C block, and the
+ordering below are the confirmed invariants.
+
+main: spinners started
+< A and B progress lines alternate >
+main: starting high-priority thread
+C 5000000
+C 10000000
+C 15000000
+C 20000000
+C 25000000
+C 30000000
+C 35000000
+C 40000000
+C 45000000
+C 50000000
+C done, checksum 1283106752
+< A and B resume alternating >
+A done, checksum 1283106752
+B done, checksum 1283106752
+main: all threads finished
+spin: ok

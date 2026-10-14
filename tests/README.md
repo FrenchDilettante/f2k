@@ -48,6 +48,24 @@ not committed.
   window, paints "Hello, world!" once with `TextOut`, then closes
   itself and exits 0; the first test to import user32.dll and
   gdi32.dll.
+- `thread` - scheduler smoke: the main thread creates one child
+  that prints from its own stack and exits; completion is observed
+  through a shared flag (no wait APIs), so a single CPU must take
+  the CPU away from the spinning main thread for the child to run.
+- `pingpong` - scheduler smoke: two threads alternate strictly for
+  five turns through two auto-reset events, so each blocking wait
+  must actually block; the final wait on the child's thread handle
+  captures the thread-exit signaling contract.
+- `sleep` - scheduler smoke: `Sleep(200)` measured in tick counts
+  with `GetTickCount`, a pure-yield `Sleep(0)`, and a timed wait on
+  a never-signaled event reporting timeout - the timer machinery
+  behind all of them.
+- `spin` - scheduler smoke: three equal-work spinner threads, two
+  at normal priority interleaving by quantum-end round-robin, a
+  third raised above normal preempting them until it finishes.
+- `suspend` - scheduler smoke: a worker frozen across a long sleep
+  while suspended, then resumed and completed, with the documented
+  suspend-count returns (0 then 1).
 
 ## Building
 
@@ -70,3 +88,8 @@ runs the sequence `exit0`, `ret0`, `bsscheck`, `bsscheck`, `crash`,
 on COM1, which the suite cases assert. Once disk I/O exists,
 fixtures load from the disk image instead and the embedding goes
 away.
+
+The scheduler smoke tests (`thread`, `pingpong`, `sleep`, `spin`,
+`suspend`) join the same embedding one per workstream slice, in
+dependency order, as the scheduler grows; each asserts the
+real-machine captured output of its stage.

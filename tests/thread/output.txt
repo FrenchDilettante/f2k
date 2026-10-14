@@ -1,0 +1,7 @@
+thread.exe - real-machine output, owner-confirmed 2026-10-14
+
+main: creating a child thread
+main: child not started yet, spinning until it reports
+child: running on my own stack
+main: child finished
+thread: ok

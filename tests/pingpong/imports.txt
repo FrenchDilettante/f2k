@@ -1,0 +1,50 @@
+pingpong.exe - verified facts from the binary
+
+PE32, subsystem CUI (console), ImageBase 0x400000, SectionAlignment 0x1000, AddressOfEntryPoint RVA 0x11E2, SizeOfImage 0x8000. Static /ML CRT.
+No relocation directory (44 imports resolve at the fixed base).
+Imports, all from KERNEL32.dll:
+
+HeapCreate
+WaitForSingleObject
+CloseHandle
+CreateThread
+GetLastError
+CreateEventA
+GetCommandLineA
+GetVersion
+ExitProcess
+TerminateProcess
+GetCurrentProcess
+UnhandledExceptionFilter
+GetModuleFileNameA
+FreeEnvironmentStringsA
+FreeEnvironmentStringsW
+WideCharToMultiByte
+GetEnvironmentStrings
+GetEnvironmentStringsW
+SetHandleCount
+GetStdHandle
+GetFileType
+GetStartupInfoA
+HeapDestroy
+SetEvent
+VirtualFree
+HeapFree
+RtlUnwind
+WriteFile
+HeapAlloc
+GetCPInfo
+GetACP
+GetOEMCP
+VirtualAlloc
+HeapReAlloc
+GetProcAddress
+LoadLibraryA
+FlushFileBuffers
+SetFilePointer
+MultiByteToWideChar
+LCMapStringA
+LCMapStringW
+GetStringTypeA
+GetStringTypeW
+SetStdHandle

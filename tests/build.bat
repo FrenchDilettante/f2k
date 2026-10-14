@@ -56,5 +56,40 @@ if errorlevel 1 (echo build.bat: crash failed & exit /b 1)
 del crash.obj
 cd ..
 
+echo === thread
+cd thread
+cl /nologo thread.c
+if errorlevel 1 (echo build.bat: thread failed & exit /b 1)
+del thread.obj
+cd ..
+
+echo === pingpong
+cd pingpong
+cl /nologo pingpong.c
+if errorlevel 1 (echo build.bat: pingpong failed & exit /b 1)
+del pingpong.obj
+cd ..
+
+echo === sleep
+cd sleep
+cl /nologo sleep.c
+if errorlevel 1 (echo build.bat: sleep failed & exit /b 1)
+del sleep.obj
+cd ..
+
+echo === spin
+cd spin
+cl /nologo spin.c
+if errorlevel 1 (echo build.bat: spin failed & exit /b 1)
+del spin.obj
+cd ..
+
+echo === suspend
+cd suspend
+cl /nologo suspend.c
+if errorlevel 1 (echo build.bat: suspend failed & exit /b 1)
+del suspend.obj
+cd ..
+
 echo All tests built.
 exit /b 0
