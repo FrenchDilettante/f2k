@@ -17,18 +17,18 @@
 //! otherwise queues: at the head if it was preempted mid-quantum, at
 //! the tail if it merely became runnable.
 //!
-//! These are the data structures and their rules, host-tested; the
-//! wiring — the idle thread, the context switch that turns Standby
-//! into Running, the wait paths, the clock's per-tick quantum
-//! charge — is the kernel's to grow on top.
+//! The wiring sits on top: the idle thread (armed at boot, the
+//! processor's resting state), the context switch that turns Standby
+//! into Running, and — later slices — the wait paths and the clock's
+//! per-tick quantum charge.
 //!
 //! One processor, no locking: every method runs serialized at the
 //! dispatch level, which the interrupt core already raises around the
 //! dispatcher entries.
 
-// The scheduler's on-target consumers arrive with the context switch
-// (the idle thread, the switch, the runner conversion); until then
-// the module is exercised from its host tests only.
+// Parts of the state machines stay unwired until their slices land
+// (the wait paths, the preemption delivery, the thread-creation
+// surface); the idle thread and the switch are live.
 #![allow(dead_code)]
 
 use core::ptr::{addr_of, addr_of_mut, null_mut};
@@ -41,6 +41,17 @@ pub mod dispatcher;
 
 /// The process record's scheduling side: base priority, quantum.
 pub mod process;
+
+/// The context switch: the swap assembly, the startup stub, and the
+/// machine-state offsets they address threads through.
+pub mod switch;
+
+/// The startup frame builder: a fresh thread's first kernel stack
+/// contents, as pure layout.
+pub mod startup;
+
+/// The idle thread: the processor's resting thread and its loop.
+pub mod idle;
 
 // --- Constants -----------------------------------------------------------
 
@@ -226,6 +237,31 @@ pub(crate) unsafe fn unlink(entry: *mut Links) {
         let next = (*entry).next;
         (*prev).next = next;
         (*next).prev = prev;
+    }
+}
+
+/// Visit every attached thread's recorded gate-stack frames, in
+/// creation order (the teardown walk's collection: each live
+/// thread's slot frames exactly once).
+pub fn visit_gate_frames(process: &mut process::SchedProcess, visit: &mut dyn FnMut(u32)) {
+    let sentinel = process.threads.sentinel();
+    // SAFETY: the list is initialized and the entries stay linked
+    // for the walk.
+    let mut entry = unsafe { process.threads.first() };
+    while !entry.is_null() && !core::ptr::eq(entry, sentinel) {
+        // SAFETY: the entry is a live thread's process link on this
+        // list; the list holds only attached, live threads.
+        let thread = unsafe {
+            &*((entry as usize
+                - core::mem::offset_of!(thread::Thread, process_links))
+                as *const thread::Thread)
+        };
+        for &frame in &thread.gate_frames {
+            visit(frame);
+        }
+        // SAFETY: a linked entry's next pointer names the next entry
+        // (or the sentinel).
+        entry = unsafe { (*entry).next };
     }
 }
 

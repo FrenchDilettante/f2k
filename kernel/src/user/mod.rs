@@ -31,9 +31,34 @@ pub const USER_STACK_TOP: u32 = USER_STACK_PAGE + 4096;
 /// (the CRT installs its exception frames at fs:[0] first thing);
 /// mapped zeroed and writable by the loader.
 pub const TEB_PAGE: u32 = 0x0031_0000;
+/// The EFLAGS every planted user context carries: bit 1
+/// (architecturally one) plus the interrupt flag — user code runs
+/// enabled, IOPL 0 (port I/O stays privileged).
+pub const USER_EFLAGS: u32 = 0x0000_0202;
+
 /// The process parameters page: the staged command line,
 /// environment and module-name replays (see `kernel32`).
 pub const PARAMS_PAGE: u32 = 0x0032_0000;
+
+/// The region per-thread TEB pages allocate from (user window 2,
+/// mapped by no run path today). A process's first thread keeps the
+/// fixed TEB page below; later threads take one page from here.
+pub const THREAD_TEB_REGION: u32 = 0x0080_0000;
+
+/// Thread `index`'s TEB page.
+pub const fn thread_teb_va(index: u32) -> u32 {
+    if index == 0 {
+        TEB_PAGE
+    } else {
+        THREAD_TEB_REGION + (index - 1) * 4096
+    }
+}
+
+/// The region per-thread user stacks allocate from (user window 3),
+/// recorded for the thread-creation surface: thread `index` ≥ 1 gets
+/// the two pages ending at `THREAD_STACK_REGION + index * 0x2000`,
+/// growing down like the main thread's. Nothing consumes it yet.
+pub const THREAD_STACK_REGION: u32 = 0x00C0_0000;
 
 /// A kernel address the fault-test stub reads from ring 3: the kernel
 /// window is supervisor-only, so the read must fault.
@@ -140,7 +165,7 @@ core::arch::global_asm!(
     user_data = const USER_DATA_SELECTOR | 3,
     user_code = const USER_CODE_SELECTOR | 3,
     teb = const TEB_SELECTOR | 3,
-    user_eflags = const 0x0000_0202u32,
+    user_eflags = const USER_EFLAGS,
 );
 
 /// End of the user process: the exit service's landing point. The
@@ -312,6 +337,30 @@ mod tests {
         assert_eq!(addr_of!(frame.eflags) as usize - base, 12 * 4);
         assert_eq!(addr_of!(frame.user_esp) as usize - base, 13 * 4);
         assert_eq!(addr_of!(frame.user_ss) as usize - base, 14 * 4);
+    }
+
+/// Per-thread TEB pages: the first thread keeps the loader's fixed
+/// page; later threads take their own page from the region, so
+/// threads of one process never share a TEB.
+    #[test]
+    fn per_thread_teb_pages_are_distinct() {
+        assert_eq!(thread_teb_va(0), TEB_PAGE);
+        let pages = [thread_teb_va(0), thread_teb_va(1), thread_teb_va(2)];
+        assert_eq!(pages[1], THREAD_TEB_REGION);
+        assert_eq!(pages[2], THREAD_TEB_REGION + 4096);
+        for index in 1..pages.len() {
+            for other in 0..index {
+                assert_ne!(pages[index], pages[other]);
+            }
+            assert!(pages[index] > PARAMS_PAGE);
+            // 0x0200_0000: the heap region's base, the next mapped
+            // user window above the TEB region.
+            assert!(pages[index] < 0x0200_0000);
+        }
+        for &page in &pages {
+            assert_eq!(page % 4096, 0);
+            assert!(page < KERNEL_BASE);
+        }
     }
 
     /// The user pages: below the kernel window, page-aligned, the

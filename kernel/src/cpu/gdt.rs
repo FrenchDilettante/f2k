@@ -39,7 +39,10 @@ const _: () = assert!(
 /// Pack one descriptor (base, limit, access, flags) into 64 bits per
 /// the x86 layout: limit 15:0 | base 15:0 | base 23:16 | access |
 /// flags<<4|limit 19:16 | base 31:24.
-const fn make_entry(base: u32, limit: u32, access: u8, flags: u8) -> u64 {
+///
+/// Crate-visible: the context switch's descriptor-edit tests use it
+/// as the independent packing oracle.
+pub(crate) const fn make_entry(base: u32, limit: u32, access: u8, flags: u8) -> u64 {
     // `limit` is the raw 20-bit limit field; the G flag decides whether it
     // counts pages or bytes. With G=1, 0xFFFFF spans the full 4 GiB.
     assert!(limit <= 0xFFFFF, "limit must fit the 20-bit descriptor field");
@@ -60,7 +63,10 @@ const fn make_entry(base: u32, limit: u32, access: u8, flags: u8) -> u64 {
 /// GDT on every segment load — pre-setting keeps the entries stable.
 /// The only other architectural write is the busy bit `ltr` sets in
 /// the TSS descriptor, which is why the table's page stays writable.
-static mut GDT: [u64; 7] = [
+/// Exported by symbol: the context switch's assembly rewrites the
+/// TEB entry's base bytes at every thread switch.
+#[no_mangle]
+pub static mut GDT: [u64; 7] = [
     make_entry(0, 0, 0x00, 0x0),
     make_entry(0, 0xFFFFF, 0x9B, 0xC),
     make_entry(0, 0xFFFFF, 0x93, 0xC),
@@ -181,8 +187,12 @@ impl TaskStateSegment {
     }
 }
 
-/// The one TSS, loaded into the task register during init.
-static mut TSS: TaskStateSegment = TaskStateSegment::new();
+/// The one TSS, loaded into the task register during init. Exported
+/// by symbol: the switch's assembly installs the running thread's
+/// stack top as `esp0` at every switch (until the runner converts,
+/// the boot path installs the main thread's at process start).
+#[no_mangle]
+pub static mut TSS: TaskStateSegment = TaskStateSegment::new();
 
 #[cfg(target_arch = "x86")]
 use core::arch::asm;

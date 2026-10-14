@@ -78,9 +78,12 @@ pub(crate) fn halt() -> ! {
     }
 }
 
-/// Sleep until the next interrupt: IF on, halt. The interval clock
-/// wakes it. Interrupts must already be enabled hardware-wide.
+/// Sleep until the next interrupt: IF on, halt. The interrupt
+/// returns wake it. Interrupts must already be enabled
+/// hardware-wide. (The diagnostic boot feature's waiting primitive;
+/// the idle thread's loop keeps its own, model-tracked form.)
 #[cfg(target_arch = "x86")]
+#[cfg(feature = "irq-smoke")]
 pub(crate) fn wait_for_interrupt() {
     unsafe {
         asm!("sti", "hlt", options(nomem, nostack));
@@ -88,14 +91,12 @@ pub(crate) fn wait_for_interrupt() {
 }
 
 /// Idle forever with interrupts enabled: the kernel's resting state
-/// once no user process remains — the interval clock keeps waking the
-/// CPU and the deferred-work queue drains from here.
+/// once no thread remains — the idle thread's loop (the deferred-work
+/// queue drains at every pass, and the interval clock wakes the
+/// idle call).
 #[cfg(target_arch = "x86")]
 pub(crate) fn idle() -> ! {
-    loop {
-        wait_for_interrupt();
-        crate::interrupt::dpc::drain();
-    }
+    crate::sched::idle::idle_loop()
 }
 
 /// Kernel entry point
@@ -206,6 +207,12 @@ pub extern "C" fn kmain(magic: u32, multiboot_info: u32) -> ! {
         assert_eq!(heap.audit(), Ok(()));
     });
     serial_println!("F2K: kernel heap: alloc/free ok");
+
+    // The scheduler's resting state: the idle thread, armed while
+    // interrupts are still disabled (nothing is schedulable yet;
+    // its loop is the kernel's resting state once no thread
+    // remains).
+    crate::sched::idle::boot();
 
     // The interrupt subsystem: the remapped controller behind the
     // claim seam, the interval timer at the captured platform rate,

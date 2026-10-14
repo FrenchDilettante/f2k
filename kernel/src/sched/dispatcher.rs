@@ -21,7 +21,7 @@ use super::{
     unlink, List, Links, HIGHEST_PRIORITY, PRIORITY_LEVELS, QUANTUM_TICK, QUANTUM_WAIT_CHARGE,
     REALTIME_BASE, ROUND_TRIP_LIMIT, TIME_CRITICAL_CEILING,
 };
-use core::ptr::{addr_of_mut, null_mut};
+use core::ptr::{addr_of_mut, eq, null_mut};
 
 /// The dispatcher: ready queues, the summary, the processor slots.
 pub struct Dispatcher {
@@ -91,10 +91,35 @@ impl Dispatcher {
         self.current
     }
 
-    /// Install the idle thread and mark the processor idle.
+    /// Whether the processor is running its idle thread.
+    pub fn processor_idle(&self) -> bool {
+        self.processor_idle
+    }
+
+    /// Whether a switch away from the idle thread is warranted: a
+    /// Standby thread is pending or any ready queue is non-empty.
+    /// The idle loop's next-thread check, as a query.
+    pub fn has_schedulable(&self) -> bool {
+        !self.next.is_null() || self.ready_summary != 0
+    }
+
+    /// Install the idle thread and mark the processor idle. The boot
+    /// install: the processor is executing this very thread, so it
+    /// also takes the current slot.
     pub fn install_idle_thread(&mut self, thread: *mut Thread) {
         self.idle_thread = thread;
         self.processor_idle = true;
+        self.current = thread;
+        self.next = null_mut();
+    }
+
+/// The switching path's caller-side install: the selected thread
+/// takes the current slot, and the processor is marked idle exactly
+/// when it is the idle thread. The Standby-to-Running state write is
+/// the swap's own effect.
+    pub fn enter(&mut self, selected: *mut Thread) {
+        self.current = selected;
+        self.processor_idle = eq(selected, self.idle_thread);
     }
 
     /// Select the highest-priority ready thread at or above `floor`,
@@ -665,7 +690,7 @@ mod tests {
     }
 
     fn process(base: i8) -> *mut SchedProcess {
-        let p = Box::leak(Box::new(SchedProcess::new(base)));
+        let p = Box::leak(Box::new(SchedProcess::new(0x0090_0000, base)));
         p.init();
         p as *mut SchedProcess
     }

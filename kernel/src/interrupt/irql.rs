@@ -140,7 +140,35 @@ impl IrqlState {
             core::arch::asm!("cli", options(nomem, nostack, preserves_flags));
         }
     }
+}
 
+/// A thread's level ledger: the state the raise/lower pairs of one
+/// continuous execution are recorded against. Pairs belong to the
+/// thread whose stack their lowering code lives on, so a context
+/// switch captures and restores the ledger per thread.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct LevelSnapshot {
+    /// The level the thread was running at.
+    current: u8,
+    /// The interrupt-flag state the model carried.
+    interrupts: bool,
+    /// The unbalanced raises whose lowering code is on this thread's
+    /// stack.
+    depth: usize,
+    /// The flag state each of those raises captured.
+    saved: [bool; NESTING],
+}
+
+impl LevelSnapshot {
+    /// An empty ledger: passive, interrupts enabled, no pending
+    /// pairs. A thread record's initial value; a fresh thread's
+    /// first instructions adopt exactly this.
+    pub const fn empty() -> Self {
+        LevelSnapshot { current: 0, interrupts: true, depth: 0, saved: [false; NESTING] }
+    }
+}
+
+impl IrqlState {
     /// The transition audit: every raise has been paid back by a
     /// lower, and the level is back where it started.
     pub fn audit(&self) -> Result<(), &'static str> {
@@ -151,6 +179,40 @@ impl IrqlState {
             return Err("interrupt level stuck above passive");
         }
         Ok(())
+    }
+
+    /// Capture the level ledger (the context switch's switching-out
+    /// half). Read-only: the CPU state itself is untouched.
+    pub fn capture(&self) -> LevelSnapshot {
+        LevelSnapshot {
+            current: self.current,
+            interrupts: self.interrupts,
+            depth: self.depth,
+            saved: self.saved,
+        }
+    }
+
+/// Restore a captured ledger (the resumed thread's half). The real
+/// interrupt flag is not touched (the switch's popfd restored it);
+/// the counters are not touched either — the recorded pairs still
+/// balance on this thread's stack.
+    pub fn restore(&mut self, snapshot: LevelSnapshot) {
+        assert!(snapshot.depth <= NESTING, "corrupt level snapshot");
+        self.current = snapshot.current;
+        self.interrupts = snapshot.interrupts;
+        self.depth = snapshot.depth;
+        self.saved = snapshot.saved;
+    }
+
+/// A fresh thread's first instructions adopt an empty ledger:
+/// passive, no pending pairs, interrupts enabled. The previous
+/// thread's pending pairs live on its own stack and ledger.
+    pub fn begin_thread(&mut self) {
+        self.current = 0;
+        self.interrupts = true;
+        self.depth = 0;
+        self.saved = [false; NESTING];
+        self.unmask_interrupts();
     }
 }
 
@@ -297,5 +359,68 @@ mod tests {
         // Restore balance so the guard does not leak into other tests.
         irql.lower(PASSIVE);
         assert_eq!(irql.audit(), Ok(()));
+    }
+
+/// The ledger handover: one state plays the CPU, the timelines
+/// interleave on it, and every raised pair is paid back on its
+/// owning thread's ledger.
+    #[test]
+    fn capture_and_restore_hand_the_ledger_over() {
+        let mut cpu = IrqlState::new();
+
+        // Thread A raises two pairs, captures its ledger, and is
+        // switched away from mid-raise.
+        let a_inner = cpu.raise(DISPATCH);
+        let a_outer = cpu.raise(CLOCK);
+        let ledger_a = cpu.capture();
+        assert_eq!(ledger_a.depth, 2);
+
+        // A fresh thread takes the processor: it adopts an empty
+        // ledger, raises one pair, and switches out mid-raise.
+        cpu.begin_thread();
+        let b_inner = cpu.raise(CLOCK);
+        let ledger_b = cpu.capture();
+        assert_eq!(ledger_b.depth, 1);
+
+        // Thread B resumes: its ledger replaces the CPU's (the real
+        // interrupt flag came back with the switch's popfd), and
+        // its pending pair completes against its own ledger.
+        cpu.restore(ledger_b);
+        assert_eq!(cpu.current(), CLOCK);
+        cpu.lower(b_inner);
+        assert_eq!(cpu.current(), PASSIVE);
+
+        // Later thread A resumes and completes its own pair.
+        cpu.restore(ledger_a);
+        cpu.lower(a_outer);
+        cpu.lower(a_inner);
+        assert_eq!(cpu.current(), PASSIVE);
+        assert_eq!(cpu.audit(), Ok(()));
+    }
+
+    /// A fresh thread adopts an empty ledger: passive, no pending
+    /// pairs, interrupts enabled — whatever the previous thread had
+    /// pending is voided for it (the pending pairs live on that
+    /// thread's stack and its own ledger).
+    #[test]
+    fn a_fresh_thread_begins_with_an_empty_ledger() {
+        let mut irql = IrqlState::new();
+        irql.raise(DISPATCH);
+        irql.raise(HIGH);
+        assert!(!irql.interrupts_enabled());
+
+        irql.begin_thread();
+        assert_eq!(irql.current(), PASSIVE);
+        assert_eq!(irql.depth, 0);
+        assert!(irql.interrupts_enabled());
+
+        // Its first raise/lower pair works against the fresh ledger.
+        // The audit stays unbalanced: the two voided raises are
+        // still owed on the previous thread's stack — they balance
+        // when it resumes, not here.
+        let inner = irql.raise(DISPATCH);
+        irql.lower(inner);
+        assert_eq!(irql.current(), PASSIVE);
+        assert_eq!(irql.audit(), Err("interrupt level transitions unbalanced"));
     }
 }

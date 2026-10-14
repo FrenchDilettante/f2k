@@ -2,7 +2,11 @@
 
 use super::process::SchedProcess;
 use super::Links;
+use crate::interrupt::irql::LevelSnapshot;
 use core::ptr::addr_of_mut;
+
+/// The gate-slot index of a thread whose slot is not allocated yet.
+pub const NO_GATE_SLOT: u16 = 0xFFFF;
 
 /// A thread's scheduling state, as the dispatcher moves it around:
 /// created, queued, on the processor, selected as the processor's
@@ -30,62 +34,136 @@ pub enum ThreadState {
 
 /// A thread: one schedulable unit of execution.
 ///
-/// A thread is an intrusive kernel object: it carries the links for
-/// the ready queue and for its process's thread list, so the
-/// dispatcher queues it in place and allocation never happens on the
-/// scheduling path. A thread must be attached to exactly one process
-/// for as long as it exists, and must be unlinked from both lists
-/// (terminate does this) before it is dropped.
+/// An intrusive kernel object: it carries the links for the ready
+/// queue and its process's thread list, so queueing allocates
+/// nothing. The record leads with its machine state — the words the
+/// context switch's assembly addresses through pinned, compile-time
+/// checked offsets (saved esp, stack top, TEB page, level ledger).
+#[repr(C)]
 pub struct Thread {
-    /// The owning process; the source of the quantum and of the
-    /// priority class rules. Valid for the thread's lifetime.
-    pub(super) process: *mut SchedProcess,
-
-    /// The priority the scheduler queues and preempts by.
-    pub(super) priority: i8,
-    /// The priority the thread decays toward and is floored by.
-    pub(super) base_priority: i8,
-    /// Outstanding decay debt: subtracted once at the next decay,
-    /// then cleared.
-    pub(super) priority_decrement: i8,
-    /// Round trips left on a sticky boost before the thread drops
-    /// back to its base priority.
-    pub(super) decrement_count: u8,
-    /// Run time left before the scheduler reconsiders the processor.
-    pub(super) quantum: i8,
-    /// Whether a base-priority change pinned this thread to a class
-    /// edge: -1 pinned low, +1 pinned high, 0 free.
-    pub(super) saturation: i8,
-    /// Whether wait-exit boosts are refused for this thread (the
-    /// wait-exit gate; the wake boost itself does not consult it).
-    pub(super) disable_boost: bool,
+    // --- Machine state (the context switch's ABI) ---
 
     /// The scheduling state.
-    pub(super) state: ThreadState,
+    pub(crate) state: ThreadState,
+    /// The owning process; the source of the quantum and of the
+    /// priority class rules, and the identity a switch compares to
+    /// decide the CR3 load. Valid for the thread's lifetime.
+    pub(crate) process: *mut SchedProcess,
+    /// The saved kernel stack pointer: where a switch-out stored
+    /// this thread's switch frame, and what a switch-in loads as
+    /// the new `esp`. The startup-frame builder plants it for a
+    /// never-run thread.
+    pub(crate) kernel_stack: u32,
+    /// The kernel stack's top: this thread's gate-stack slot top,
+    /// which the switch installs as the TSS `esp0`.
+    pub(crate) initial_stack: u32,
+    /// The thread's TEB page: the base the switch writes into the
+    /// TEB segment descriptor. Zero for kernel and idle threads.
+    pub(crate) teb_va: u32,
+    /// Reserved for the thread's id/handle (the creation surface's
+    /// business). Zero at build.
+    pub(crate) thread_id: u32,
+    /// The thread's level ledger: captured at switch-out, restored
+    /// at resume. A fresh thread adopts an empty one.
+    pub(crate) level: LevelSnapshot,
+    /// The thread's gate-stack slot index in its process's window,
+    /// or the empty slot's value before allocation.
+    pub(crate) gate_slot: u16,
+    /// The slot's frames, recorded for exactly-once release (the
+    /// guard page below them is never mapped, so it is never
+    /// recorded).
+    pub(crate) gate_frames: [u32; crate::mem::paging::GATE_STACK_PAGES],
+
+    // --- Scheduling state ---
+
+    /// The priority the scheduler queues and preempts by.
+    pub(crate) priority: i8,
+    /// The priority the thread decays toward and is floored by.
+    pub(crate) base_priority: i8,
+    /// Outstanding decay debt: subtracted once at the next decay,
+    /// then cleared.
+    pub(crate) priority_decrement: i8,
+    /// Round trips left on a sticky boost before the thread drops
+    /// back to its base priority.
+    pub(crate) decrement_count: u8,
+    /// Run time left before the scheduler reconsiders the processor.
+    pub(crate) quantum: i8,
+    /// Whether a base-priority change pinned this thread to a class
+    /// edge: -1 pinned low, +1 pinned high, 0 free.
+    pub(crate) saturation: i8,
+    /// Whether wait-exit boosts are refused for this thread (the
+    /// wait-exit gate; the wake boost itself does not consult it).
+    pub(crate) disable_boost: bool,
     /// Set when the thread is pushed off the processor (or the
     /// standby slot) by a higher-priority arrival: it then requeues
     /// at the head of its ready list rather than the tail.
-    pub(super) preempted: bool,
-    /// Always false in F2K: the reference parks not-yet-runnable
-    /// threads on their process when the process is being swapped in,
-    /// and F2K has no process swapping. The flag survives as the
+    pub(crate) preempted: bool,
+    /// Always false in F2K: processes are never swapped out, so no
+    /// thread is ever parked on its process. The flag survives as the
     /// priority-change guard for the parked shape.
-    pub(super) parked_on_process: bool,
+    pub(crate) parked_on_process: bool,
     /// Set when the thread exits: the thread-object waits observe it.
-    pub(super) signaled: bool,
+    pub(crate) signaled: bool,
 
     /// The ready-queue membership link.
-    pub(super) ready_links: Links,
+    pub(crate) ready_links: Links,
     /// The owning process's thread-list membership link.
-    pub(super) process_links: Links,
+    pub(crate) process_links: Links,
 }
+
+// The machine-state layout contract with the switch's assembly: on
+// the 32-bit target the offsets it addresses threads through are the
+// real ones, or the kernel does not build. Host builds skip the pin
+// (their pointer width differs) and pin the field order below
+// instead.
+#[cfg(target_arch = "x86")]
+const _: () = {
+    assert!(
+        core::mem::offset_of!(Thread, state) as u32 == super::switch::THREAD_STATE_OFF
+    );
+    assert!(
+        core::mem::offset_of!(Thread, process) as u32 == super::switch::THREAD_PROCESS_OFF
+    );
+    assert!(
+        core::mem::offset_of!(Thread, kernel_stack) as u32
+            == super::switch::THREAD_KERNEL_STACK_OFF
+    );
+    assert!(
+        core::mem::offset_of!(Thread, initial_stack) as u32
+            == super::switch::THREAD_INITIAL_STACK_OFF
+    );
+    assert!(
+        core::mem::offset_of!(Thread, teb_va) as u32 == super::switch::THREAD_TEB_VA_OFF
+    );
+};
+
+/// The machine block leads the record in the assembly's field order,
+/// on every pointer width: state first, then the owner pointer, then
+/// the three stack/TEB words. (The host layout widens the pointer;
+/// the order is what stays pinned here.)
+const _: () = {
+    assert!(core::mem::offset_of!(Thread, state) == 0);
+    assert!(core::mem::offset_of!(Thread, process) > 0);
+    assert!(core::mem::offset_of!(Thread, kernel_stack) > core::mem::offset_of!(Thread, process));
+    assert!(core::mem::offset_of!(Thread, initial_stack) > core::mem::offset_of!(Thread, kernel_stack));
+    assert!(core::mem::offset_of!(Thread, teb_va) > core::mem::offset_of!(Thread, initial_stack));
+};
 
 impl Thread {
     /// A fresh, detached thread. Call [`Thread::attach_to`] before
-    /// any scheduler operation.
+    /// any scheduler operation, and give it machine state (stacks,
+    /// TEB) before it is ever readied.
     pub const fn empty() -> Self {
         Thread {
+            state: ThreadState::Initialized,
             process: core::ptr::null_mut(),
+            kernel_stack: 0,
+            initial_stack: 0,
+            teb_va: 0,
+            thread_id: 0,
+            level: LevelSnapshot::empty(),
+            gate_slot: NO_GATE_SLOT,
+            gate_frames: [0; crate::mem::paging::GATE_STACK_PAGES],
             priority: 0,
             base_priority: 0,
             priority_decrement: 0,
@@ -93,7 +171,6 @@ impl Thread {
             quantum: 0,
             saturation: 0,
             disable_boost: false,
-            state: ThreadState::Initialized,
             preempted: false,
             parked_on_process: false,
             signaled: false,
@@ -150,6 +227,27 @@ impl Thread {
         self.quantum
     }
 
+    /// The saved kernel stack pointer (what a switch-in loads).
+    pub fn kernel_stack(&self) -> u32 {
+        self.kernel_stack
+    }
+
+    /// The kernel stack's top (what the switch installs as `esp0`).
+    pub fn initial_stack(&self) -> u32 {
+        self.initial_stack
+    }
+
+    /// The thread's TEB page (the FS descriptor's base).
+    pub fn teb_va(&self) -> u32 {
+        self.teb_va
+    }
+
+    /// The thread's gate-stack slot index, or
+    /// [`NO_GATE_SLOT`] before allocation.
+    pub fn gate_slot(&self) -> u16 {
+        self.gate_slot
+    }
+
     /// The outstanding decay debt.
     pub fn priority_decrement(&self) -> i8 {
         self.priority_decrement
@@ -203,7 +301,7 @@ mod tests {
     /// seed advances per thread.
     #[test]
     fn attach_takes_process_data() {
-        let process = Box::leak(Box::new(SchedProcess::new(8)));
+        let process = Box::leak(Box::new(SchedProcess::new(0x0090_0000, 8)));
         process.init();
 
         let t1 = Box::leak(Box::new(Thread::empty()));

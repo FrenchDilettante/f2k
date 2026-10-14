@@ -136,17 +136,31 @@ pub const KERNEL_HALF_START: usize = (KERNEL_BASE >> 22) as usize;
 /// sits at `DIRECTORY_ENTRY_VA + i*4`. Distinct from the table
 /// window below, which addresses any window's page *table*.
 pub const DIRECTORY_ENTRY_VA: u32 = SELF_MAP_VA + ((SELF_MAP_SLOT as u32) << 12);
-/// The per-process ring-0 gate stack window: the first kernel window
-/// above the 8 MiB kernel image mapping (directory entry 514). The
-/// window's base page is the guard (deliberately never mapped), the
-/// 16 KiB stack sits above it, and the TSS `esp0` is
-/// [`GATE_STACK_TOP`].
+/// The per-process ring-0 gate stack window (directory entry 514):
+/// sub-allocated into per-thread slots, each a guard page plus the
+/// 16 KiB stack. Slot 0's top is [`GATE_STACK_TOP`], the stack the
+/// boot path has always installed.
 pub const GATE_STACK_WINDOW: u32 = KERNEL_BASE + 2 * 0x0040_0000;
 /// Gate stack pages, one frame each (16 KiB).
 pub const GATE_STACK_PAGES: usize = 4;
-/// The gate stack's top: one guard page plus the stack pages.
-pub const GATE_STACK_TOP: u32 =
-    GATE_STACK_WINDOW + ((GATE_STACK_PAGES + 1) as u32) * PAGE_SIZE;
+/// The gate stack's top: slot 0's top, the boot path's stack.
+pub const GATE_STACK_TOP: u32 = gate_slot_top(0);
+/// One thread's slot: a guard page plus the stack pages.
+pub const GATE_SLOT_STRIDE: u32 = ((GATE_STACK_PAGES + 1) as u32) * PAGE_SIZE;
+/// How many slots the window (one directory entry, 4 MiB) holds.
+/// The binding per-thread capacity of the process: an allocation
+/// past it is a bug, not a wrap.
+pub const GATE_SLOT_CAPACITY: usize = (0x0040_0000 / GATE_SLOT_STRIDE) as usize;
+
+/// Slot `index`'s base: its guard page, never mapped.
+pub const fn gate_slot_base(index: u32) -> u32 {
+    GATE_STACK_WINDOW + index * GATE_SLOT_STRIDE
+}
+
+/// Slot `index`'s top: the owning thread's `esp0` / stack top.
+pub const fn gate_slot_top(index: u32) -> u32 {
+    gate_slot_base(index) + GATE_SLOT_STRIDE
+}
 
 /// Install the self-map and the scratch table, once, right after
 /// [`teardown_low_identity`]. No TLB flushes needed: neither window
@@ -516,20 +530,37 @@ pub fn map_kernel_page(vaddr: u32, frame_phys: u32) {
     }
 }
 
-/// Map a fresh gate stack into the current address space: one frame
-/// per page, supervisor-only, above the window's unmapped guard page.
-/// Returns the frames, so the caller can release them at teardown;
-/// the stack top is always [`GATE_STACK_TOP`].
+/// Map a fresh gate-stack slot `index` into the current address
+/// space: one frame per page, supervisor-only, above the slot's
+/// unmapped guard page. Returns the frames for the owner thread to
+/// release at its exit.
+///
+/// # Panics
+///
+/// The index is past the window's capacity.
 #[cfg(target_arch = "x86")]
-pub fn map_gate_stack() -> [u32; GATE_STACK_PAGES] {
+pub fn map_gate_slot(index: u32) -> [u32; GATE_STACK_PAGES] {
+    assert!(
+        (index as usize) < GATE_SLOT_CAPACITY,
+        "gate-slot index past the window's capacity"
+    );
+    let base = gate_slot_base(index);
     let mut frames = [0u32; GATE_STACK_PAGES];
     for (i, slot) in frames.iter_mut().enumerate() {
         let frame = allocate_frame_phys();
         init_frame(frame, 0, &[]);
-        map_kernel_page(GATE_STACK_WINDOW + ((i + 1) as u32) * PAGE_SIZE, frame);
+        map_kernel_page(base + ((i + 1) as u32) * PAGE_SIZE, frame);
         *slot = frame;
     }
     frames
+}
+
+/// Map slot 0's gate stack into the current address space: the boot
+/// path's shape (the fault-test stubs, which run on the boot address
+/// space and own no process record).
+#[cfg(target_arch = "x86")]
+pub fn map_gate_stack() -> [u32; GATE_STACK_PAGES] {
+    map_gate_slot(0)
 }
 
 /// Read word `index` of `frame_phys` through the scratch window: the
@@ -612,9 +643,9 @@ mod tests {
     }
 
     /// The self-map and scratch slots sit at the NT-style addresses
-    /// (0xC0000000 and 0xC0400000, the slots the reference mm code
-    /// assumes), in the kernel window, distinct from the boot
-    /// entries (512, 513) and from each other.
+    /// (0xC0000000 and 0xC0400000, where Windows executables and
+    /// tooling expect them), in the kernel window, distinct from
+    /// the boot entries (512, 513) and from each other.
     #[test]
     fn runtime_access_slots_are_well_placed() {
         assert_eq!(SELF_MAP_SLOT, 768);

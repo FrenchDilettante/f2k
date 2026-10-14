@@ -4,17 +4,22 @@
 //! the base priority and the quantum. The quantum is fixed — set once
 //! here at creation to the kernel's one constant, never varied — so
 //! "the thread quantum" is always this record's value. A process is
-//! always resident in F2K (there is no process swapping), so the
-//! reference's process states collapse to the single fact of owning
-//! runnable threads or not.
+//! always resident in F2K (there is no process swapping), so a
+//! process's whole scheduling state is the fact of owning runnable
+//! threads or not.
 
 use super::{List, QUANTUM_RESET};
 
 /// The stack-count value meaning "no thread has been created yet".
 pub const NO_THREADS: u16 = 0x7FFF;
 
-/// A process's scheduling record.
+/// A process's scheduling record, leading with its directory base at
+/// a pinned offset: the context switch reads it through a thread's
+/// owner pointer when a switch changes process.
+#[repr(C)]
 pub struct SchedProcess {
+    /// The process's page-directory frame (physical address).
+    pub(super) dir_phys: u32,
     /// The priority every attached thread starts from.
     pub(super) base_priority: i8,
     /// The quantum every thread of this process resets to: the fixed
@@ -40,12 +45,13 @@ pub struct SchedProcess {
 }
 
 impl SchedProcess {
-    /// A scheduling record with the given base priority, the fixed
-    /// thread quantum, no threads, and both policies off. Call
-    /// [`SchedProcess::init`] once the record is at its final
-    /// address.
-    pub fn new(base_priority: i8) -> Self {
+    /// A scheduling record with the given directory base and base
+    /// priority, the fixed thread quantum, no threads, and both
+    /// policies off. Call [`SchedProcess::init`] once the record is
+    /// at its final address.
+    pub const fn new(dir_phys: u32, base_priority: i8) -> Self {
         SchedProcess {
+            dir_phys,
             base_priority,
             thread_quantum: QUANTUM_RESET,
             disable_boost: false,
@@ -54,6 +60,18 @@ impl SchedProcess {
             thread_seed: 0,
             threads: List::empty(),
         }
+    }
+
+    /// The process's page-directory frame.
+    pub fn dir_phys(&self) -> u32 {
+        self.dir_phys
+    }
+
+    /// Bind the directory base. The boot install's one late
+    /// binding: the kernel's own process record takes the directory
+    /// that is active at boot.
+    pub fn set_dir_phys(&mut self, dir_phys: u32) {
+        self.dir_phys = dir_phys;
     }
 
     /// Close the thread-list sentinel (see [`List::init`]).
@@ -101,12 +119,14 @@ impl SchedProcess {
 mod tests {
     use super::*;
 
-    /// A fresh record: base priority as given, the fixed quantum, the
-    /// no-threads sentinel, no threads, both policies off.
+    /// A fresh record: the directory base as given, base priority as
+    /// given, the fixed quantum, the no-threads sentinel, no
+    /// threads, both policies off.
     #[test]
     fn process_defaults() {
-        let process = Box::leak(Box::new(SchedProcess::new(8)));
+        let process = Box::leak(Box::new(SchedProcess::new(0x0090_0000, 8)));
         process.init();
+        assert_eq!(process.dir_phys(), 0x0090_0000);
         assert_eq!(process.base_priority(), 8);
         assert_eq!(process.thread_quantum(), 6);
         assert_eq!(process.stack_count(), NO_THREADS);
@@ -120,7 +140,7 @@ mod tests {
     /// previous value.
     #[test]
     fn disable_quantum_flag() {
-        let mut process = SchedProcess::new(8);
+        let mut process = SchedProcess::new(0x0090_0000, 8);
         assert!(!process.set_disable_quantum(true));
         assert!(process.disable_quantum());
         assert!(process.set_disable_quantum(false));
