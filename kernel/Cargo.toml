@@ -36,16 +36,24 @@ fault-test-badargs = []
 # surface) instead of the first: the ret0 suite cases build with it.
 run-ret0 = []
 # Loads the console fixture (hello.exe, the 40-import console-stdio
-# surface) instead of the first: the hello suite cases build with it
-# (docs/plans/console-observable.md).
+# surface) instead of the first: the hello suite cases build with it.
 run-hello = []
 # The multi-process suite case: exit0, ret0, bsscheck, bsscheck,
 # crash, exit0 run in sequence in one boot, each process torn down
-# and audited before the next starts (see
-# docs/plans/foundational-processes.md). The sequence runner and the
+# and audited before the next starts. The sequence runner and the
 # per-process teardown are the process workstream's deliverables; the
 # qemu-tests.yaml cases pin the COM1 shapes and fail until they land.
 run-process-suite = []
+# The interrupt/timer diagnostic boot:
+# a boot-time pass that reports the PIC remap, the PIT programming at
+# the captured 10.0144 ms tick, the live tick counter, the clock-ISR
+# DPC, and the interrupt-core audit on COM1, then lets the normal boot
+# proceed to the default image's exit — proving coexistence, not just
+# the diagnostic. The tick itself is default-on kernel machinery; the
+# feature gates only the diagnostic lines and the bounded tick wait.
+# The qemu-tests.yaml cases pin the COM1 shapes and fail until the
+# interrupt core lands.
+irq-smoke = []
 
 [dependencies]
 # Core no_std crates for future use

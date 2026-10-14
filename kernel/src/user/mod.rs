@@ -9,8 +9,11 @@
 //! Single tasking, run to completion: the exit syscall is the return
 //! path; faults raised by user code end the process, not the kernel.
 
+pub mod syscall;
+pub mod userheap;
+
 #[cfg(target_arch = "x86")]
-use crate::gdt::{TEB_SELECTOR, USER_CODE_SELECTOR, USER_DATA_SELECTOR};
+use crate::cpu::gdt::{TEB_SELECTOR, USER_CODE_SELECTOR, USER_DATA_SELECTOR};
 
 /// The fault-test stub's code page (the PE image base, which the
 /// fault-test builds never map).
@@ -90,8 +93,9 @@ pub struct TrapFrame {
 
 // Entry into ring 3: load the segments, build the iret frame, switch.
 // Never returns. FS takes the TEB segment and GS null (the captured
-// entry state); the pushed EFLAGS is bit 1 only — IF stays clear and
-// IOPL is 0, so port I/O stays privileged.
+// entry state); the pushed EFLAGS is bit 1 plus the interrupt flag —
+// user code runs with interrupts enabled. IOPL is 0, so port I/O
+// stays privileged and the serial backend stays kernel-only.
 #[cfg(target_arch = "x86")]
 unsafe extern "C" {
     pub fn enter_ring3(eip: u32, esp: u32) -> !;
@@ -136,7 +140,7 @@ core::arch::global_asm!(
     user_data = const USER_DATA_SELECTOR | 3,
     user_code = const USER_CODE_SELECTOR | 3,
     teb = const TEB_SELECTOR | 3,
-    user_eflags = const 0x0000_0002u32,
+    user_eflags = const 0x0000_0202u32,
 );
 
 /// End of the user process: the exit service's landing point. The
@@ -149,7 +153,7 @@ pub fn process_exited(code: u32) -> ! {
     {
         #[cfg(feature = "run-process-suite")]
         {
-            crate::runner::process_exited(code)
+            crate::process::runner::process_exited(code)
         }
         #[cfg(not(feature = "run-process-suite"))]
         {
@@ -159,7 +163,7 @@ pub fn process_exited(code: u32) -> ! {
             crate::mem::paging::activate_address_space(
                 crate::mem::paging::boot_directory_phys(),
             );
-            crate::halt()
+            crate::idle()
         }
     }
     #[cfg(not(target_arch = "x86"))]
@@ -179,7 +183,7 @@ pub fn process_exited(code: u32) -> ! {
 pub fn run_user_process() -> ! {
     #[cfg(feature = "run-process-suite")]
     {
-        crate::runner::run_suite()
+        crate::process::runner::run_suite()
     }
     #[cfg(not(feature = "run-process-suite"))]
     {
@@ -187,15 +191,15 @@ pub fn run_user_process() -> ! {
         {
             #[cfg(feature = "run-hello")]
             {
-                crate::loader::run_image(crate::loader::HELLO, "hello")
+                crate::exec::loader::run_image(crate::exec::loader::HELLO, "hello")
             }
             #[cfg(all(not(feature = "run-hello"), not(feature = "run-ret0")))]
             {
-                crate::loader::run_image(crate::loader::EXIT0, "exit0")
+                crate::exec::loader::run_image(crate::exec::loader::EXIT0, "exit0")
             }
             #[cfg(all(not(feature = "run-hello"), feature = "run-ret0"))]
             {
-                crate::loader::run_image(crate::loader::RET0, "ret0")
+                crate::exec::loader::run_image(crate::exec::loader::RET0, "ret0")
             }
         }
         #[cfg(any(feature = "fault-test-user", feature = "fault-test-badargs"))]
@@ -227,7 +231,7 @@ pub fn run_fault_stub() -> ! {
     // installs its own (image runs get one per process inside the
     // process object; the retired static stack used to serve this).
     let _gate_stack_frames = paging::map_gate_stack();
-    crate::gdt::set_gate_stack_top(paging::GATE_STACK_TOP);
+    crate::cpu::gdt::set_gate_stack_top(paging::GATE_STACK_TOP);
 
     crate::serial_println!(
         "F2K: entering ring 3 (code {:#010x}, stack {:#010x})",
@@ -244,7 +248,7 @@ pub fn run_fault_stub() -> ! {
 mod tests {
     use super::*;
     use crate::mem::paging::KERNEL_BASE;
-    use crate::syscall::SYSCALL_VECTOR;
+    use crate::user::syscall::SYSCALL_VECTOR;
     use core::mem::size_of;
     use core::ptr::addr_of;
 
@@ -268,7 +272,7 @@ mod tests {
     fn badargs_stub_bytes_match_their_encoding() {
         let mut expected = [0u8; 14];
         expected[0] = 0xB8;
-        expected[1..5].copy_from_slice(&crate::syscall::SYS_EXIT.to_le_bytes());
+        expected[1..5].copy_from_slice(&crate::user::syscall::SYS_EXIT.to_le_bytes());
         expected[5] = 0xBA;
         expected[6..10].copy_from_slice(&BAD_ARGS_PTR.to_le_bytes());
         expected[10] = 0xCD;
@@ -330,6 +334,6 @@ mod tests {
         assert_eq!(USER_STACK_TOP, USER_STACK_PAGE + 4096);
         assert!(TEB_PAGE > USER_STACK_TOP);
         assert!(PARAMS_PAGE > TEB_PAGE);
-        assert!(PARAMS_PAGE + 4096 < crate::pe::IMAGE_BASE);
+        assert!(PARAMS_PAGE + 4096 < crate::exec::pe::IMAGE_BASE);
     }
 }

@@ -87,7 +87,7 @@ impl Write for SerialPort {
 #[macro_export]
 macro_rules! serial_print {
     ($($arg:tt)*) => {
-        let mut writer = $crate::serial::SerialPort;
+        let mut writer = $crate::hw::serial::SerialPort;
         core::fmt::write(&mut writer, format_args!($($arg)*)).unwrap();
     };
 }
@@ -97,6 +97,6 @@ macro_rules! serial_print {
 macro_rules! serial_println {
     ($($arg:tt)*) => {
         $crate::serial_print!($($arg)*);
-        $crate::serial::write_byte_blocking(b'\n');
+        $crate::hw::serial::write_byte_blocking(b'\n');
     };
 }

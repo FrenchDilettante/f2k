@@ -700,8 +700,8 @@ impl Image {
 mod tests {
     use super::*;
 
-    const EXIT0: &[u8] = include_bytes!("../../tests/exit0/exit0.exe");
-    const RET0: &[u8] = include_bytes!("../../tests/ret0/ret0.exe");
+    const EXIT0: &[u8] = include_bytes!("../../../tests/exit0/exit0.exe");
+    const RET0: &[u8] = include_bytes!("../../../tests/ret0/ret0.exe");
 
     // exit0: NT at 0xb8, optional header at 0xd0, section table at 0x1b0;
     // ret0: NT at 0xc8, optional header at 0xe0, section table at 0x1c0.

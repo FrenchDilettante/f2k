@@ -128,10 +128,24 @@ f2k/
     └── src/
         ├── main.rs       # Kernel binary: links the ELF; panic handler
         ├── lib.rs        # Kernel library: kmain and all modules (unit-testable)
+        ├── c_lib.rs      # C library stubs (linker support)
         ├── boot/         # Boot-related code
         │   └── mod.rs    # Multiboot header and _start stub
-        ├── gdt.rs        # GDT: flat kernel + user segments, TEB segment, TSS (ring-0 stack for gate entries)
-        ├── idt.rs        # IDT: CPU exception dump on COM1; registers the syscall gate; faults classified by origin
+        ├── cpu/          # The CPU tables
+        │   ├── mod.rs        # Module root
+        │   ├── gdt.rs        # GDT: flat kernel + user segments, TEB segment, TSS (ring-0 stack for gate entries)
+        │   └── idt.rs        # IDT: CPU exception dump on COM1; the syscall gate; the hardware-vector stubs (shared frame shape)
+        ├── hw/           # The hardware layer: devices the kernel drives directly
+        │   ├── mod.rs        # Module root
+        │   ├── portio.rs     # Byte-wise I/O port access (abstract for host tests)
+        │   ├── pic.rs        # 8259A interrupt controller pair: remap, masks, end-of-interrupt, the spurious-interrupt claim
+        │   ├── pit.rs        # 8254 interval timer: channel 0 programming, the captured tick divisor
+        │   └── serial.rs     # COM1 serial port output
+        ├── interrupt/     # The interrupt core (hardware-neutral, host-testable)
+        │   ├── mod.rs        # Interrupt objects, the vector table, the claim protocol, the dispatch entry, the audit
+        │   ├── irql.rs       # Interrupt request levels: ordering, raise/lower save-restore, the interrupt-flag discipline
+        │   ├── dpc.rs        # Deferred procedure calls: single-flight queue, the request gate, retirement from either drain entry
+        │   └── clock.rs      # The interval clock: tick math (fractional accumulator, slewed system time), the clock's deferred work
         ├── mem/          # Memory management
         │   ├── mod.rs        # Module root
         │   ├── frame.rs      # Physical frame allocator: state-keyed FIFO lists, per-color chains
@@ -139,17 +153,21 @@ f2k/
         │   ├── paging.rs     # Boot page tables; runtime table access (self-map, scratch); per-process directories and user/kernel page mapping
         │   ├── heap.rs       # Kernel heap: fixed-pool free-list allocator (host-testable)
         │   └── bootmem.rs    # Boot-time initialization: frame database and heap from the memory map
-        ├── syscall.rs    # Syscall gate (int 0x2E, DPL 3): service dispatch, argument probe/copy, user-memory transfers
-        ├── pe.rs         # PE32 image parsing, mapping plan and IAT snap (host-testable)
-        ├── loader.rs     # Kernel-side image loader: staging, section mapping, entry into ring 3
-        ├── kernel32.rs   # Kernel-synthesized kernel32: 40-export service registry, thunk stubs, replayed startup values, console output
-        ├── cp1252.rs     # Codepage 1252 replay data: MB/WC tables, ctype flags, case mapping (host-testable)
-        ├── userheap.rs   # User-mode heap: first-fit allocator with coalescing; the CRT's VirtualAlloc region
-        ├── user.rs       # Ring 3: iret entry (TEB segment in FS), trap frame shape, fault-test stubs, process end
-        ├── process.rs    # The process object: per-process directory, ring-0 gate stack, user-heap state; the teardown walk
-        ├── runner.rs     # Sequential multi-process suite runner (run-process-suite feature): context switch, audits, summary
-        ├── serial.rs     # Serial port output
-        └── c_lib.rs      # C library stubs
+        ├── exec/         # Executable loading
+        │   ├── mod.rs        # Module root
+        │   ├── pe.rs         # PE32 image parsing, mapping plan and IAT snap (host-testable)
+        │   └── loader.rs     # Kernel-side image loader: staging, section mapping, entry into ring 3
+        ├── compat/       # The Windows compatibility layer
+        │   ├── mod.rs        # Module root
+        │   ├── kernel32.rs   # Kernel-synthesized kernel32: 40-export service registry, thunk stubs, replayed startup values, console output
+        │   └── cp1252.rs     # Codepage 1252 replay data: MB/WC tables, ctype flags, case mapping (host-testable)
+        ├── user/         # Ring 3: the user-mode boundary
+        │   ├── mod.rs        # iret entry (TEB segment in FS), trap frame shape, fault-test stubs, process end
+        │   ├── syscall.rs    # Syscall gate (int 0x2E, DPL 3): service dispatch, argument probe/copy, user-memory transfers
+        │   └── userheap.rs   # User-mode heap: first-fit allocator with coalescing; the CRT's VirtualAlloc region
+        └── process/      # Process lifetime
+            ├── mod.rs        # The process object: per-process directory, ring-0 gate stack, user-heap state; the teardown walk
+            └── runner.rs     # Sequential multi-process suite runner (run-process-suite feature): context switch, audits, summary
 ```
 
 ## Targets

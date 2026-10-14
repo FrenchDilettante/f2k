@@ -9,32 +9,32 @@
 //! stack. The snap happens in staging, before mapping: mapped pages
 //! carry their final protection and ring-0 writes must not touch them.
 
-use crate::pe::{self, Image};
+use crate::exec::pe::{self, Image};
 
 /// The first corpus fixture: no CRT, one import (`ExitProcess`).
-pub const EXIT0: &[u8] = include_bytes!("../../tests/exit0/exit0.exe");
+pub const EXIT0: &[u8] = include_bytes!("../../../tests/exit0/exit0.exe");
 
 /// The second corpus fixture: full CRT startup, 35 KERNEL32.dll
 /// imports (run with the `run-ret0` feature).
-pub const RET0: &[u8] = include_bytes!("../../tests/ret0/ret0.exe");
+pub const RET0: &[u8] = include_bytes!("../../../tests/ret0/ret0.exe");
 
 /// The console fixture: the ret0 CRT startup plus printf to stdout,
 /// 40 KERNEL32.dll imports (run with the `run-hello` feature).
 #[cfg(feature = "run-hello")]
-pub const HELLO: &[u8] = include_bytes!("../../tests/hello/hello.exe");
+pub const HELLO: &[u8] = include_bytes!("../../../tests/hello/hello.exe");
 
 /// The fresh-memory fixture: no CRT, one import; its `.bss` is all
 /// zero on a fresh process and the double run in the suite proves
 /// teardown re-zeroes frames (embedded for the `run-process-suite`
 /// feature).
 #[cfg(feature = "run-process-suite")]
-pub const BSSCHECK: &[u8] = include_bytes!("../../tests/bsscheck/bsscheck.exe");
+pub const BSSCHECK: &[u8] = include_bytes!("../../../tests/bsscheck/bsscheck.exe");
 
 /// The fault-containment fixture: no imports at all, faults through
 /// the NULL page as its first act (embedded for the
 /// `run-process-suite` feature).
 #[cfg(feature = "run-process-suite")]
-pub const CRASH: &[u8] = include_bytes!("../../tests/crash/crash.exe");
+pub const CRASH: &[u8] = include_bytes!("../../../tests/crash/crash.exe");
 
 /// The staging buffer size: the largest image the loader accepts
 /// (the corpus's biggest fixture is 0x8000).
@@ -102,8 +102,8 @@ pub fn run_image(file: &[u8], name: &'static str) -> ! {
 
     // The thunks must be mapped before the snap: IAT slots receive
     // user-space addresses.
-    crate::kernel32::init();
-    let snap = image.snap_imports(file, staging, crate::kernel32::MODULE_NAME, crate::kernel32::resolve);
+    crate::compat::kernel32::init();
+    let snap = image.snap_imports(file, staging, crate::compat::kernel32::MODULE_NAME, crate::compat::kernel32::resolve);
 
     // Map the staged image at the fixed base, one frame per page,
     // writable exactly where a mapped section is writable.
@@ -133,7 +133,7 @@ pub fn run_image(file: &[u8], name: &'static str) -> ! {
     paging::map_user_page(TEB_PAGE, teb_frame, true);
 
     // The process parameters page (staged replays).
-    crate::kernel32::init_params(name);
+    crate::compat::kernel32::init_params(name);
 
     crate::serial_println!(
         "F2K: image loaded (entry {:#010x}, {} pages, {} imports snapped)",
@@ -157,7 +157,7 @@ mod tests {
     use super::*;
     use crate::mem::paging::PAGE_SIZE;
 
-    const RET0: &[u8] = include_bytes!("../../tests/ret0/ret0.exe");
+    const RET0: &[u8] = include_bytes!("../../../tests/ret0/ret0.exe");
 
     /// All fixtures fit the staging buffer, page-aligned.
     #[test]

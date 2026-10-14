@@ -13,7 +13,7 @@
 //! in user memory — tiny user-mode stub pages for now, an
 //! ntdll-like user layer eventually.
 
-use crate::syscall::{read_user, write_user, ServiceFn, SYS_EXIT};
+use crate::user::syscall::{read_user, write_user, ServiceFn, SYS_EXIT};
 use crate::user::{PARAMS_PAGE, TEB_PAGE};
 
 /// The module name imports resolve against; the PE import descriptor
@@ -22,7 +22,7 @@ pub const MODULE_NAME: &str = "KERNEL32.dll";
 
 /// The user page the thunk stubs live in: above the largest image
 /// the loader maps, clear of every other mapped user page.
-pub const THUNK_PAGE: u32 = crate::pe::IMAGE_BASE + crate::pe::MAX_IMAGE_SIZE;
+pub const THUNK_PAGE: u32 = crate::exec::pe::IMAGE_BASE + crate::exec::pe::MAX_IMAGE_SIZE;
 
 /// Bytes of one thunk stub: lea / mov / int / ret imm16 (14 bytes).
 const STUB_LEN: usize = 14;
@@ -172,7 +172,7 @@ fn svc_write_file(frame: &mut crate::user::TrapFrame, args: &[u32]) {
 /// The console backend: one byte to COM1.
 #[cfg(target_arch = "x86")]
 fn console_write_byte(byte: u8) {
-    crate::serial::write_byte_blocking(byte);
+    crate::hw::serial::write_byte_blocking(byte);
 }
 
 /// Host builds compile the dispatch tables but never run them, so
@@ -293,7 +293,7 @@ fn svc_get_string_type_w(frame: &mut crate::user::TrapFrame, args: &[u32]) {
             ok = false;
             break;
         }
-        let flags = crate::cp1252::c1_flags(u16::from_le_bytes(wide));
+        let flags = crate::compat::cp1252::c1_flags(u16::from_le_bytes(wide));
         if write_user(out + 2 * i, &flags.to_le_bytes()).is_err() {
             ok = false;
             break;
@@ -377,7 +377,7 @@ fn svc_multi_byte_to_wide_char(frame: &mut crate::user::TrapFrame, args: &[u32])
             ok = false;
             break;
         }
-        let wide = crate::cp1252::MB_TO_WC[byte[0] as usize];
+        let wide = crate::compat::cp1252::MB_TO_WC[byte[0] as usize];
         if write_user(dst + 2 * i, &wide.to_le_bytes()).is_err() {
             ok = false;
             break;
@@ -425,7 +425,7 @@ fn svc_wide_char_to_multi_byte(frame: &mut crate::user::TrapFrame, args: &[u32])
             ok = false;
             break;
         }
-        let byte = crate::cp1252::wc_to_mb(u16::from_le_bytes(wide));
+        let byte = crate::compat::cp1252::wc_to_mb(u16::from_le_bytes(wide));
         if write_user(dst + i, &[byte]).is_err() {
             ok = false;
             break;
@@ -471,7 +471,7 @@ fn svc_lc_map_string_w(frame: &mut crate::user::TrapFrame, args: &[u32]) {
             ok = false;
             break;
         }
-        let mapped = crate::cp1252::map_case(u16::from_le_bytes(wide), upper);
+        let mapped = crate::compat::cp1252::map_case(u16::from_le_bytes(wide), upper);
         if write_user(dst + 2 * i, &mapped.to_le_bytes()).is_err() {
             ok = false;
             break;
@@ -485,46 +485,46 @@ fn svc_lc_map_string_w(frame: &mut crate::user::TrapFrame, args: &[u32]) {
 /// HeapCreate: reset and report the heap handle. Flags and sizes are
 /// recorded by nothing — the CRT trusts the handle.
 fn svc_heap_create(frame: &mut crate::user::TrapFrame, _args: &[u32]) {
-    frame.eax = crate::userheap::create();
+    frame.eax = crate::user::userheap::create();
 }
 
 /// HeapAlloc: serve (or zero-serve) from the heap region.
 fn svc_heap_alloc(frame: &mut crate::user::TrapFrame, args: &[u32]) {
-    if args[0] != crate::userheap::HEAP_HANDLE {
+    if args[0] != crate::user::userheap::HEAP_HANDLE {
         frame.eax = 0;
         return;
     }
-    frame.eax = crate::userheap::alloc(args[1], args[2] as usize);
+    frame.eax = crate::user::userheap::alloc(args[1], args[2] as usize);
 }
 
 /// HeapFree: validate and coalesce.
 fn svc_heap_free(frame: &mut crate::user::TrapFrame, args: &[u32]) {
-    if args[0] != crate::userheap::HEAP_HANDLE {
+    if args[0] != crate::user::userheap::HEAP_HANDLE {
         frame.eax = 0;
         return;
     }
-    frame.eax = crate::userheap::free(args[2]);
+    frame.eax = crate::user::userheap::free(args[2]);
 }
 
 /// HeapReAlloc: grow by allocate-copy-free, zeroing the extension
 /// when asked.
 fn svc_heap_realloc(frame: &mut crate::user::TrapFrame, args: &[u32]) {
-    if args[0] != crate::userheap::HEAP_HANDLE {
+    if args[0] != crate::user::userheap::HEAP_HANDLE {
         frame.eax = 0;
         return;
     }
-    frame.eax = crate::userheap::realloc(args[2], args[1], args[3] as usize);
+    frame.eax = crate::user::userheap::realloc(args[2], args[1], args[3] as usize);
 }
 
 /// HeapDestroy: accept the handle, reset the region.
 fn svc_heap_destroy(frame: &mut crate::user::TrapFrame, args: &[u32]) {
-    frame.eax = crate::userheap::destroy(args[0]);
+    frame.eax = crate::user::userheap::destroy(args[0]);
 }
 
 /// VirtualAlloc: the CRT's own region (reserve at NULL, contiguous
 /// commits). Protection flags are read-write throughout this surface.
 fn svc_virtual_alloc(frame: &mut crate::user::TrapFrame, args: &[u32]) {
-    frame.eax = crate::userheap::virtual_alloc(args[0], args[1], args[2]);
+    frame.eax = crate::user::userheap::virtual_alloc(args[0], args[1], args[2]);
 }
 
 /// VirtualFree: nothing on this surface is ever freed through it;
@@ -640,7 +640,7 @@ fn stub_bytes(service: u32, arg_bytes: u32) -> [u8; STUB_LEN] {
     let mut stub = [
         0x8D, 0x54, 0x24, 0x04, // lea edx, [esp+4]
         0xB8, 0, 0, 0, 0, // mov eax, service
-        0xCD, crate::syscall::SYSCALL_VECTOR as u8, // int 0x2E
+        0xCD, crate::user::syscall::SYSCALL_VECTOR as u8, // int 0x2E
         0xC2, 0, 0, // ret imm16 (stdcall argument cleanup)
     ];
     stub[5..9].copy_from_slice(&service.to_le_bytes());
@@ -686,10 +686,10 @@ pub fn init_params(name: &str) {
 mod tests {
     use super::*;
     use crate::mem::paging::KERNEL_BASE;
-    use crate::pe::Image;
+    use crate::exec::pe::Image;
 
-    const RET0: &[u8] = include_bytes!("../../tests/ret0/ret0.exe");
-    const HELLO: &[u8] = include_bytes!("../../tests/hello/hello.exe");
+    const RET0: &[u8] = include_bytes!("../../../tests/ret0/ret0.exe");
+    const HELLO: &[u8] = include_bytes!("../../../tests/hello/hello.exe");
 
     /// The corpus's kernel32 import surface (hello's 40 — ret0's 35
     /// plus the console-stdio group — the loader's snap contract):
@@ -722,7 +722,7 @@ mod tests {
         }
         // ExitProcess is service 1 (SYS_EXIT).
         assert_eq!(SERVICES[0].0, "ExitProcess");
-        assert_eq!(crate::syscall::SYS_EXIT, 1);
+        assert_eq!(crate::user::syscall::SYS_EXIT, 1);
         assert_eq!(lookup_service(0), None);
         assert_eq!(lookup_service(41), None);
         assert_eq!(lookup_service(u32::MAX), None);
@@ -767,7 +767,7 @@ mod tests {
             assert_eq!(stub[4], 0xB8);
             assert_eq!(&stub[5..9], &(index as u32 + 1).to_le_bytes());
             assert_eq!(stub[9], 0xCD);
-            assert_eq!(stub[10], crate::syscall::SYSCALL_VECTOR as u8);
+            assert_eq!(stub[10], crate::user::syscall::SYSCALL_VECTOR as u8);
             assert_eq!(stub[11], 0xC2);
             assert_eq!(&stub[12..14], &(arg_bytes as u16).to_le_bytes());
         }
@@ -815,7 +815,7 @@ mod tests {
     fn thunk_page_layout_is_consistent() {
         assert_eq!(THUNK_PAGE % 4096, 0);
         assert!(THUNK_PAGE < KERNEL_BASE);
-        assert!(THUNK_PAGE >= crate::pe::IMAGE_BASE + crate::pe::MAX_IMAGE_SIZE);
+        assert!(THUNK_PAGE >= crate::exec::pe::IMAGE_BASE + crate::exec::pe::MAX_IMAGE_SIZE);
         assert!(THUNK_PAGE + 4096 < KERNEL_BASE);
         let last = (SERVICES.len() - 1) as u32;
         assert!((last * STUB_STRIDE) as usize + STUB_LEN <= 4096);

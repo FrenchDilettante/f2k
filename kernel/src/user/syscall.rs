@@ -132,7 +132,7 @@ extern "C" fn syscall_dispatch(frame: &mut TrapFrame) {
     assert_eq!(frame.cs & 3, 3, "syscall gate raised from ring 0");
 
     // The service registry lives with the surface it implements.
-    let Some((arg_bytes, service)) = crate::kernel32::lookup_service(frame.eax) else {
+    let Some((arg_bytes, service)) = crate::compat::kernel32::lookup_service(frame.eax) else {
         frame.eax = STATUS_INVALID_SYSTEM_SERVICE;
         return;
     };
@@ -253,7 +253,7 @@ mod tests {
     fn argument_budget_covers_the_registry() {
         assert_eq!(MAX_ARG_BYTES, 32);
         assert_eq!(MAX_ARG_BYTES % 4, 0);
-        for (_, arg_bytes, _) in crate::kernel32::SERVICES {
+        for (_, arg_bytes, _) in crate::compat::kernel32::SERVICES {
             assert!(
                 arg_bytes as usize <= MAX_ARG_BYTES,
                 "service arg block {arg_bytes} exceeds the budget"
@@ -281,7 +281,7 @@ mod tests {
     fn exit_is_service_one() {
         assert_eq!(SYS_EXIT, 1);
         assert_eq!(
-            crate::kernel32::lookup_service(SYS_EXIT)
+            crate::compat::kernel32::lookup_service(SYS_EXIT)
                 .map(|(bytes, _)| bytes),
             Some(4)
         );

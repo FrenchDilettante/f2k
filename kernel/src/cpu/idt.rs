@@ -6,7 +6,7 @@
 //! become actionable output). Exceptions fire regardless of IF, so
 //! nothing here needs the PIC or `sti`; hardware IRQs come later.
 
-use crate::gdt::KERNEL_CODE_SELECTOR;
+use crate::cpu::gdt::KERNEL_CODE_SELECTOR;
 
 /// Number of CPU exception vectors (0-31).
 const EXCEPTION_VECTORS: usize = 32;
@@ -24,7 +24,7 @@ const IDT_VECTORS: usize = 256;
 /// so the handler reads them with `mov` instead.
 #[allow(dead_code)]
 #[repr(C)]
-struct ExceptionFrame {
+pub(crate) struct ExceptionFrame {
     edi: u32,
     esi: u32,
     ebp: u32,
@@ -33,7 +33,7 @@ struct ExceptionFrame {
     edx: u32,
     ecx: u32,
     eax: u32,
-    vector: u32,
+    pub(crate) vector: u32,
     error_code: u32,
     eip: u32,
     cs: u32,
@@ -179,9 +179,34 @@ pub unsafe fn init() {
         // The syscall gate (see `syscall.rs`): ring-3 reachable, entered
         // on the TSS ring-0 stack, the return path for user code.
         core::ptr::write_volatile(
-            base.add(crate::syscall::SYSCALL_VECTOR),
-            Gate::new_user(stub_addr(crate::syscall::syscall_gate_stub)),
+            base.add(crate::user::syscall::SYSCALL_VECTOR),
+            Gate::new_user(stub_addr(crate::user::syscall::syscall_gate_stub)),
         );
+
+        // The hardware vectors (see `interrupt/`): one interrupt-gate
+        // stub per vector in the remapped band. Nothing can raise
+        // them until the interrupt subsystem enables the lines.
+        let irq_stubs: [usize; 16] = [
+            stub_addr(irq_stub_0x30),
+            stub_addr(irq_stub_0x31),
+            stub_addr(irq_stub_0x32),
+            stub_addr(irq_stub_0x33),
+            stub_addr(irq_stub_0x34),
+            stub_addr(irq_stub_0x35),
+            stub_addr(irq_stub_0x36),
+            stub_addr(irq_stub_0x37),
+            stub_addr(irq_stub_0x38),
+            stub_addr(irq_stub_0x39),
+            stub_addr(irq_stub_0x3A),
+            stub_addr(irq_stub_0x3B),
+            stub_addr(irq_stub_0x3C),
+            stub_addr(irq_stub_0x3D),
+            stub_addr(irq_stub_0x3E),
+            stub_addr(irq_stub_0x3F),
+        ];
+        for (i, stub) in irq_stubs.iter().enumerate() {
+            core::ptr::write_volatile(base.add(crate::interrupt::FIRST_VECTOR as usize + i), Gate::new(*stub));
+        }
 
         // Build the IDTR on the stack: 6 bytes of limit + base, then lidt.
         let mut idtr = [0u8; 6];
@@ -365,19 +390,19 @@ extern "C" fn exception_handler(frame: &ExceptionFrame) -> ! {
     if from_user {
         #[cfg(feature = "run-process-suite")]
         {
-            crate::runner::process_faulted(frame.vector);
+            crate::process::runner::process_faulted(frame.vector);
         }
         #[cfg(not(feature = "run-process-suite"))]
         crate::serial_println!(
             "F2K: user process ended by fault (vector {}); halting",
             frame.vector
         );
-    } else if crate::syscall::copying_user_args() {
+    } else if crate::user::syscall::copying_user_args() {
         #[cfg(feature = "run-process-suite")]
         {
             // The fault was raised on the process's behalf inside a
             // user-memory copy: same containment, same report.
-            crate::runner::process_faulted(frame.vector);
+            crate::process::runner::process_faulted(frame.vector);
         }
         #[cfg(not(feature = "run-process-suite"))]
         crate::serial_println!(
@@ -536,6 +561,72 @@ define_exception_stubs!(
     30 => true,
     31 => false,
 );
+
+// --- Hardware interrupt stubs ---------------------------------------------
+//
+// One stub per vector in the remapped band (0x30-0x3F): complete the
+// frame in the shape shared with the exception stubs (error pad plus
+// vector around `pushad`), then the common tail calls the interrupt
+// core's dispatch with the frame and `iretd`s back to whoever was
+// interrupted — ring 0 or ring 3, the tail is the same.
+#[cfg(target_arch = "x86")]
+core::arch::global_asm!(
+    ".section .text.irq_stubs, \"ax\"",
+    ".macro IRQ_STUB n",
+    ".globl irq_stub_\\n",
+    "irq_stub_\\n:",
+    "    push 0",
+    "    push \\n",
+    "    jmp irq_common",
+    ".endm",
+    "IRQ_STUB 0x30",
+    "IRQ_STUB 0x31",
+    "IRQ_STUB 0x32",
+    "IRQ_STUB 0x33",
+    "IRQ_STUB 0x34",
+    "IRQ_STUB 0x35",
+    "IRQ_STUB 0x36",
+    "IRQ_STUB 0x37",
+    "IRQ_STUB 0x38",
+    "IRQ_STUB 0x39",
+    "IRQ_STUB 0x3A",
+    "IRQ_STUB 0x3B",
+    "IRQ_STUB 0x3C",
+    "IRQ_STUB 0x3D",
+    "IRQ_STUB 0x3E",
+    "IRQ_STUB 0x3F",
+    "irq_common:",
+    "    pushad",
+    "    cld", // Rust code requires a forward direction flag
+    "    push esp", // frame pointer (interrupt/mod.rs dispatch)
+    "    call {dispatch}",
+    "    add esp, 4", // drop the frame pointer
+    "    popad",
+    "    add esp, 8", // drop vector + error pad
+    "    iretd", // pops EIP, CS, EFLAGS (plus user ESP/SS from ring 3)
+    dispatch = sym crate::interrupt::dispatch,
+);
+
+#[cfg(target_arch = "x86")]
+unsafe extern "C" {
+    /// Hardware-vector stubs generated above, one per band vector.
+    fn irq_stub_0x30();
+    fn irq_stub_0x31();
+    fn irq_stub_0x32();
+    fn irq_stub_0x33();
+    fn irq_stub_0x34();
+    fn irq_stub_0x35();
+    fn irq_stub_0x36();
+    fn irq_stub_0x37();
+    fn irq_stub_0x38();
+    fn irq_stub_0x39();
+    fn irq_stub_0x3A();
+    fn irq_stub_0x3B();
+    fn irq_stub_0x3C();
+    fn irq_stub_0x3D();
+    fn irq_stub_0x3E();
+    fn irq_stub_0x3F();
+}
 
 #[cfg(test)]
 mod tests {

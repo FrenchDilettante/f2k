@@ -19,12 +19,12 @@ use crate::mem::paging;
 
 /// The suite: process i runs `SEQUENCE[i - 1]`.
 const SEQUENCE: [(&[u8], &str); 6] = [
-    (crate::loader::EXIT0, "exit0"),
-    (crate::loader::RET0, "ret0"),
-    (crate::loader::BSSCHECK, "bsscheck"),
-    (crate::loader::BSSCHECK, "bsscheck"),
-    (crate::loader::CRASH, "crash"),
-    (crate::loader::EXIT0, "exit0"),
+    (crate::exec::loader::EXIT0, "exit0"),
+    (crate::exec::loader::RET0, "ret0"),
+    (crate::exec::loader::BSSCHECK, "bsscheck"),
+    (crate::exec::loader::BSSCHECK, "bsscheck"),
+    (crate::exec::loader::CRASH, "crash"),
+    (crate::exec::loader::EXIT0, "exit0"),
 ];
 
 /// The index of the process running or just finished (1-based).
@@ -43,7 +43,7 @@ pub fn run_suite() -> ! {
     crate::process::record_allocator_baseline();
 
     let (image, name) = SEQUENCE[0];
-    crate::loader::run_image(image, name)
+    crate::exec::loader::run_image(image, name)
 }
 
 /// The exit service's suite landing point: report, then continue the
@@ -131,7 +131,7 @@ unsafe extern "C" fn continue_on_boot() -> ! {
             faults,
             leaks
         );
-        crate::halt()
+        crate::idle()
     }
     // Process index + 1 runs SEQUENCE[index].
     // SAFETY: suite state; single CPU; the next index is in bounds.
@@ -139,7 +139,7 @@ unsafe extern "C" fn continue_on_boot() -> ! {
         core::ptr::write_volatile(core::ptr::addr_of_mut!(CURRENT), index as usize + 1);
     }
     let (image, name) = SEQUENCE[index as usize];
-    crate::loader::run_image(image, name)
+    crate::exec::loader::run_image(image, name)
 }
 
 /// The index of the process running (or just finished).

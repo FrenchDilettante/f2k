@@ -13,47 +13,40 @@
 // Boot module (Multiboot header and _start stub)
 mod boot;
 
-// CPU tables: GDT (flat kernel + user segments, TSS) and IDT
-// (exception handlers, the syscall gate at 0x2E)
-mod gdt;
-mod idt;
+// The CPU tables: GDT (segments, TEB, TSS) and IDT (exceptions, the
+// syscall gate, the hardware-vector stubs)
+mod cpu;
+
+// The hardware layer: the interrupt controller pair, the interval
+// timer, and the serial port, reached through abstract port I/O
+mod hw;
+
+// The interrupt core: interrupt objects, the vector table, the level
+// discipline, the deferred procedure call queue, and the interval
+// clock
+mod interrupt;
 
 // Memory management: physical frame allocator
 mod mem;
 
-// System-call gate and service dispatch (int 0x2E, DPL 3)
-mod syscall;
+// Executable loading: PE32 parsing, and the kernel-side loader
+// (staging, section mapping, entry into ring 3)
+mod exec;
 
-// PE32 image parsing and import resolution for the image loader
-mod pe;
+// The Windows compatibility layer: the kernel-synthesized kernel32
+// and the codepage replay data behind its locale services
+mod compat;
 
-// Codepage 1252 replay data: the tables behind the locale services
-mod cp1252;
-
-// The user-mode heap the kernel32 heap services serve
-mod userheap;
-
-// Kernel-side image loader: staging, section mapping, entry into ring 3
-mod loader;
-
-// The kernel-synthesized kernel32: export table and user-mode thunks
-mod kernel32;
-
-// Ring 3: user-mode entry, the fault-test stubs, process end
+// Ring 3: user-mode entry, the syscall gate, the user-mode heap,
+// process end
 mod user;
 
-// The process object: per-process directory, gate stack, user heap
+// The process object and the suite runner: per-process directory,
+// gate stack, user heap
 mod process;
 
-// The sequential multi-process suite runner (run-process-suite)
-#[cfg(all(target_arch = "x86", feature = "run-process-suite"))]
-mod runner;
-
-// C library functions for bare-metal
+// C library functions for bare-metal (linker support)
 mod c_lib;
-
-// Serial port module
-mod serial;
 
 #[cfg(target_arch = "x86")]
 use core::arch::asm;
@@ -69,13 +62,35 @@ pub fn panic(info: &core::panic::PanicInfo) -> ! {
     halt()
 }
 
-/// Halt the CPU
+/// Halt the CPU with interrupts disabled: the terminal state of a
+/// kernel that cannot continue (panic, unhandled fault). Ticks do
+/// not resume here.
 #[cfg(target_arch = "x86")]
 pub(crate) fn halt() -> ! {
     loop {
         unsafe {
             asm!("cli", "hlt", options(nomem, nostack));
         }
+    }
+}
+
+/// Sleep until the next interrupt: IF on, halt. The interval clock
+/// wakes it. Interrupts must already be enabled hardware-wide.
+#[cfg(target_arch = "x86")]
+pub(crate) fn wait_for_interrupt() {
+    unsafe {
+        asm!("sti", "hlt", options(nomem, nostack));
+    }
+}
+
+/// Idle forever with interrupts enabled: the kernel's resting state
+/// once no user process remains — the interval clock keeps waking the
+/// CPU and the deferred-work queue drains from here.
+#[cfg(target_arch = "x86")]
+pub(crate) fn idle() -> ! {
+    loop {
+        wait_for_interrupt();
+        crate::interrupt::dpc::drain();
     }
 }
 
@@ -92,15 +107,15 @@ pub extern "C" fn kmain(magic: u32, multiboot_info: u32) -> ! {
     }
 
     // Initialize serial port first (for debugging)
-    serial::init();
+    crate::hw::serial::init();
 
     // Take over the CPU tables so faults print diagnostics on COM1
     // instead of triple-faulting.
     // SAFETY: boot CPU, ring 0, interrupts disabled, before any code
     // that might fault; sole GDT/IDT access.
-    unsafe { gdt::init() };
+    unsafe { crate::cpu::gdt::init() };
     // SAFETY: the GDT is loaded (selector 0x08 valid); same context.
-    unsafe { idt::init() };
+    unsafe { crate::cpu::idt::init() };
     serial_println!("F2K: GDT and IDT initialized");
 
     // Test-only fault injection: raise an exception right after init to
@@ -110,8 +125,8 @@ pub extern "C" fn kmain(magic: u32, multiboot_info: u32) -> ! {
     {
         serial_println!(
             "F2K: GDT after load: {:#018x} {:#018x}",
-            gdt::debug_descriptor(1),
-            gdt::debug_descriptor(2)
+            crate::cpu::gdt::debug_descriptor(1),
+            crate::cpu::gdt::debug_descriptor(2)
         );
         let esp: u32;
         unsafe { asm!("mov {}, esp", out(reg) esp, options(nomem, nostack)) };
@@ -187,6 +202,51 @@ pub extern "C" fn kmain(magic: u32, multiboot_info: u32) -> ! {
         assert_eq!(heap.audit(), Ok(()));
     });
     serial_println!("F2K: kernel heap: alloc/free ok");
+
+    // The interrupt subsystem: the remapped controller behind the
+    // claim seam, the interval timer at the captured platform rate,
+    // the interval clock connected to its vector — and interrupts
+    // fly from here on (the idle path and ring 3 both run with them
+    // enabled; the gates mask on entry).
+    // SAFETY: boot CPU, ring 0, interrupts disabled, sole access to
+    // the controllers; the IDT gates (exception, syscall, hardware
+    // vectors) are installed.
+    unsafe { interrupt::init() };
+
+    // The interrupt/timer diagnostic boot: report the hardware
+    // state, wait for the live tick and the clock's deferred work,
+    // and audit the whole subsystem — then fall through to the
+    // normal boot, proving the tick and the process machinery
+    // coexist rather than just the diagnostic running.
+    #[cfg(feature = "irq-smoke")]
+    {
+        use interrupt::clock::{ticks, timer_fired};
+
+        serial_println!("F2K: irq-smoke: PIC remapped (master 0x30, slave 0x38, IRQ0 unmasked)");
+        serial_println!("F2K: irq-smoke: PIT programmed (mode 3, divisor 11949, 10.0144 ms tick)");
+
+        // Bounded by the tick itself: each `sti;hlt` sleeps until the
+        // next interrupt, so progress here means the timer is live.
+        while ticks() < 5 {
+            wait_for_interrupt();
+        }
+        serial_println!("F2K: irq-smoke: timer live (>= 5 ticks observed)");
+
+        // The DPC the clock ISR enqueues must have run (the drain is
+        // part of every interrupt exit, and the idle path drains
+        // too).
+        while timer_fired() == 0 {
+            wait_for_interrupt();
+        }
+        serial_println!("F2K: irq-smoke: clock DPC fired");
+
+        let verdict = interrupt::audit();
+        if verdict == Ok(()) {
+            serial_println!("F2K: irq-smoke: interrupt audit: ok");
+        } else {
+            serial_println!("F2K: irq-smoke: interrupt audit: FAILED ({})", verdict.unwrap_err());
+        }
+    }
 
     // The user process: exit0 through the PE loader by default, ret0
     // (the CRT startup fixture) with the `run-ret0` feature. The image

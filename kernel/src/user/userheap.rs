@@ -675,7 +675,7 @@ mod tests {
         use crate::mem::paging::KERNEL_BASE;
         assert_eq!(HEAP_REGION_BASE % 0x10000, 0);
         assert_eq!(CRT_REGION_BASE % 0x10000, 0);
-        assert!(HEAP_REGION_BASE >= crate::kernel32::THUNK_PAGE);
+        assert!(HEAP_REGION_BASE >= crate::compat::kernel32::THUNK_PAGE);
         assert!(CRT_REGION_BASE >= HEAP_REGION_BASE + HEAP_REGION_MAX as u32);
         assert!(CRT_REGION_BASE + 0x100000 < KERNEL_BASE);
         // The stack (0x300000) and everything below the thunks stays

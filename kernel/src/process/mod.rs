@@ -17,6 +17,10 @@
 //! enforceable form: `static mut` outside the boot/cpu structures
 //! names no per-process user state).
 
+/// The sequential multi-process suite runner (`run-process-suite`).
+#[cfg(all(target_arch = "x86", feature = "run-process-suite"))]
+pub mod runner;
+
 #[cfg(target_arch = "x86")]
 use crate::mem::paging;
 
@@ -30,7 +34,7 @@ pub struct Process {
     /// teardown; the stack's top VA is the gate-stack window's top).
     gate_stack_frames: [u32; crate::mem::paging::GATE_STACK_PAGES],
     /// The user-heap bookkeeping (heap region + CRT region).
-    heap: crate::userheap::HeapState,
+    heap: crate::user::userheap::HeapState,
 }
 
 impl Process {
@@ -46,7 +50,7 @@ impl Process {
 
     /// The user-heap state (the kernel32 heap services are served
     /// from here).
-    pub fn heap_mut(&mut self) -> &mut crate::userheap::HeapState {
+    pub fn heap_mut(&mut self) -> &mut crate::user::userheap::HeapState {
         &mut self.heap
     }
 }
@@ -68,13 +72,13 @@ impl Process {
         paging::activate_address_space(dir_phys);
 
         let gate_stack_frames = paging::map_gate_stack();
-        crate::gdt::set_gate_stack_top(paging::GATE_STACK_TOP);
+        crate::cpu::gdt::set_gate_stack_top(paging::GATE_STACK_TOP);
 
         install(Process {
             name,
             dir_phys,
             gate_stack_frames,
-            heap: crate::userheap::HeapState::new(),
+            heap: crate::user::userheap::HeapState::new(),
         })
     }
 }
@@ -268,7 +272,7 @@ mod tests {
     /// heap starts with nothing committed and nothing reserved.
     #[test]
     fn fresh_process_state_starts_clean() {
-        let heap = crate::userheap::HeapState::new();
+        let heap = crate::user::userheap::HeapState::new();
         let mut process = Process {
             name: "fixture",
             dir_phys: 0x0090_0000,
@@ -279,7 +283,7 @@ mod tests {
         assert_eq!(process.dir_phys(), 0x0090_0000);
         // The heap state a service would see: creating the heap
         // reports the handle and resets nothing that exists.
-        assert_eq!(process.heap_mut().create(), crate::userheap::HEAP_HANDLE);
+        assert_eq!(process.heap_mut().create(), crate::user::userheap::HEAP_HANDLE);
     }
 
     // --- Teardown walk ------------------------------------------------

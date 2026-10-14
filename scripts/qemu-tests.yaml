@@ -92,10 +92,10 @@ cases:
       - "F2K: entering ring 3"
       - "F2K: user process exited normally (exit code=0)"
 
-  # The console-observable workstream (docs/plans/console-observable.md):
-  # hello runs the ret0 CRT startup, printf writes "Hello, world!"
-  # to stdout through WriteFile, then it exits 0 — the program's own
-  # output on COM1 (no F2K: prefix), before the exit line.
+  # The console-observable workstream: hello runs the ret0 CRT
+  # startup, printf writes "Hello, world!" to stdout through
+  # WriteFile, then it exits 0 — the program's own output on COM1
+  # (no F2K: prefix), before the exit line.
   - name: hello-smoke
     description: the console fixture prints "Hello, world!" as its own COM1 output and exits 0 (kernel path)
     image: kernel
@@ -182,3 +182,52 @@ cases:
       - "F2K: process 6 (exit0) exited normally (exit code=0)"
       - "F2K: process 6 teardown audit: frame database ok, kernel heap ok"
       - "F2K: process suite complete: 6 run, 1 faulted, 0 leaks"
+
+
+  # Interrupt/timer workstream: the
+  # irq-smoke diagnostic boot proves the hardware layer and the
+  # interrupt core are live — the PIC remap to the 0x30-0x3F band, the
+  # PIT programmed at the corpus-captured 10.0144 ms tick (divisor
+  # 11949), the tick counter crossing its threshold, the DPC the
+  # clock ISR enqueues, and the interrupt-core audit — and then the
+  # normal boot proceeds to the default image's exit, proving the
+  # tick and the process machinery coexist rather than just the
+  # diagnostic running. The tick is default-on kernel machinery (not
+  # a fixture selection); the feature gates only the diagnostic lines
+  # and the bounded tick wait.
+  #
+  # Expected to FAIL until the interrupt core lands: today the PIC is
+  # untouched, no tick exists, and the boot ends in cli;hlt.
+  - name: irq-smoke
+    description: the interrupt diagnostic boot reports the PIC remap, the live tick, the clock DPC, and the audit, then the default image exits 0 (kernel path)
+    image: kernel
+    features: [irq-smoke]
+    expects:
+      - "F2K Booted Successfully"
+      - "F2K: frame database audit: ok"
+      - "F2K: kernel heap: alloc/free ok"
+      - "F2K: irq-smoke: PIC remapped (master 0x30, slave 0x38, IRQ0 unmasked)"
+      - "F2K: irq-smoke: PIT programmed (mode 3, divisor 11949, 10.0144 ms tick)"
+      - "F2K: irq-smoke: timer live (>= 5 ticks observed)"
+      - "F2K: irq-smoke: clock DPC fired"
+      - "F2K: irq-smoke: interrupt audit: ok"
+      - "F2K: image loaded"
+      - "F2K: entering ring 3"
+      - "F2K: user process exited normally (exit code=0)"
+
+  - name: irq-smoke-disk
+    description: the interrupt diagnostic boot reports the PIC remap, the live tick, the clock DPC, and the audit, then the default image exits 0 (Limine disk path)
+    image: disk
+    features: [irq-smoke]
+    expects:
+      - "F2K Booted Successfully"
+      - "F2K: frame database audit: ok"
+      - "F2K: kernel heap: alloc/free ok"
+      - "F2K: irq-smoke: PIC remapped (master 0x30, slave 0x38, IRQ0 unmasked)"
+      - "F2K: irq-smoke: PIT programmed (mode 3, divisor 11949, 10.0144 ms tick)"
+      - "F2K: irq-smoke: timer live (>= 5 ticks observed)"
+      - "F2K: irq-smoke: clock DPC fired"
+      - "F2K: irq-smoke: interrupt audit: ok"
+      - "F2K: image loaded"
+      - "F2K: entering ring 3"
+      - "F2K: user process exited normally (exit code=0)"
