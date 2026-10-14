@@ -6,7 +6,8 @@
 //! codepages) are replays captured from a real Windows 2000
 //! machine; the locale group answers from the shipped
 //! codepage-1252 tables, the heap group from a genuine allocator
-//! (`userheap`), never-called imports from safe minimal floors.
+//! (`userheap`), `WriteFile` from the console backend (COM1),
+//! never-called imports from safe minimal floors.
 //!
 //! Quirk: kernel pages are supervisor-only, so the stubs must live
 //! in user memory — tiny user-mode stub pages for now, an
@@ -133,6 +134,52 @@ fn svc_get_file_type(frame: &mut crate::user::TrapFrame, _args: &[u32]) {
 fn svc_set_handle_count(frame: &mut crate::user::TrapFrame, args: &[u32]) {
     frame.eax = args[0];
 }
+
+/// Whether a handle is one this surface accepts console writes on:
+/// the replayed stdout and stderr char devices (stdin is read-only;
+/// no other handle exists).
+fn is_console_write_handle(handle: u32) -> bool {
+    handle == STD_OUTPUT || handle == STD_ERROR
+}
+
+/// WriteFile: the console observable. Streams the caller's bytes
+/// to COM1 on the replayed stdout/stderr handles and reports the
+/// full count — the CRT's writer sums that value, so a short report
+/// breaks its math. Anything else fails; a bad buffer or out
+/// pointer ends the process, not the kernel.
+fn svc_write_file(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    let (handle, buffer, count, written_out, overlapped) =
+        (args[0], args[1], args[2], args[3], args[4]);
+    if !is_console_write_handle(handle) || overlapped != 0 {
+        frame.eax = 0; // FALSE: nothing written
+        return;
+    }
+    for i in 0..count {
+        let mut byte = [0u8; 1];
+        if read_user(buffer.wrapping_add(i), &mut byte).is_err() {
+            frame.eax = 0;
+            return;
+        }
+        console_write_byte(byte[0]);
+    }
+    if written_out != 0 && write_user(written_out, &count.to_le_bytes()).is_err() {
+        frame.eax = 0;
+        return;
+    }
+    frame.eax = 1; // TRUE: `count` bytes written
+}
+
+/// The console backend: one byte to COM1.
+#[cfg(target_arch = "x86")]
+fn console_write_byte(byte: u8) {
+    crate::serial::write_byte_blocking(byte);
+}
+
+/// Host builds compile the dispatch tables but never run them, so
+/// the console backend is a no-op there.
+#[cfg(not(target_arch = "x86"))]
+fn console_write_byte(_byte: u8) {}
+
 
 /// GetCommandLineA: a pointer to the replayed command line.
 fn svc_get_command_line_a(frame: &mut crate::user::TrapFrame, _args: &[u32]) {
@@ -486,6 +533,27 @@ fn svc_virtual_free(frame: &mut crate::user::TrapFrame, _args: &[u32]) {
     frame.eax = 1;
 }
 
+/// CloseHandle: success floor. Nothing on this surface owns an
+/// object to close — only the CRT's fd-close path calls it, and the
+/// corpus never closes a handle.
+fn svc_close_handle(frame: &mut crate::user::TrapFrame, _args: &[u32]) {
+    frame.eax = 1;
+}
+
+/// FlushFileBuffers: success floor — the console backend is
+/// unbuffered, so every write is already flushed.
+fn svc_flush_file_buffers(frame: &mut crate::user::TrapFrame, _args: &[u32]) {
+    frame.eax = 1;
+}
+
+/// SetFilePointer: failure floor — no file handle exists to seek,
+/// so the documented failure return INVALID_SET_FILE_POINTER is the
+/// honest answer.
+fn svc_set_file_pointer(frame: &mut crate::user::TrapFrame, _args: &[u32]) {
+    frame.eax = u32::MAX;
+}
+
+
 /// Floor for the never-called imports: zero, no side effects.
 fn svc_floor_zero(frame: &mut crate::user::TrapFrame, _args: &[u32]) {
     frame.eax = 0;
@@ -500,10 +568,13 @@ fn svc_get_current_process(frame: &mut crate::user::TrapFrame, _args: &[u32]) {
 
 /// The service registry: one entry per export, in service-number
 /// order (a number is its position plus one; ExitProcess is pinned
-/// at service 1). Quirk: a name absent from here fails the loader's
-/// snap, so this set is exactly the corpus's import surface.
-pub const SERVICES: [(&str, u32, ServiceFn); 35] = [
+/// at service 1, the rest alphabetical). Quirk: a name absent from
+/// here fails the loader's snap, so this set is exactly the corpus's
+/// import surface.
+pub const SERVICES: [(&str, u32, ServiceFn); 40] = [
     ("ExitProcess", 4, svc_exit_process),
+    ("CloseHandle", 4, svc_close_handle),
+    ("FlushFileBuffers", 4, svc_flush_file_buffers),
     ("FreeEnvironmentStringsA", 4, svc_free_environment_strings),
     ("FreeEnvironmentStringsW", 4, svc_free_environment_strings),
     ("GetACP", 0, svc_get_acp),
@@ -513,6 +584,7 @@ pub const SERVICES: [(&str, u32, ServiceFn); 35] = [
     ("GetEnvironmentStrings", 0, svc_get_environment_strings),
     ("GetEnvironmentStringsW", 0, svc_get_environment_strings_w),
     ("GetFileType", 4, svc_get_file_type),
+    ("GetLastError", 0, svc_floor_zero),
     ("GetModuleFileNameA", 12, svc_get_module_file_name),
     ("GetOEMCP", 0, svc_get_oemcp),
     ("GetProcAddress", 8, svc_floor_zero),
@@ -531,13 +603,15 @@ pub const SERVICES: [(&str, u32, ServiceFn); 35] = [
     ("LoadLibraryA", 4, svc_floor_zero),
     ("MultiByteToWideChar", 24, svc_multi_byte_to_wide_char),
     ("RtlUnwind", 16, svc_floor_zero),
+    ("SetFilePointer", 16, svc_set_file_pointer),
     ("SetHandleCount", 4, svc_set_handle_count),
+    ("SetStdHandle", 8, svc_floor_zero),
     ("TerminateProcess", 8, svc_floor_zero),
     ("UnhandledExceptionFilter", 4, svc_floor_zero),
     ("VirtualAlloc", 16, svc_virtual_alloc),
     ("VirtualFree", 12, svc_virtual_free),
     ("WideCharToMultiByte", 32, svc_wide_char_to_multi_byte),
-    ("WriteFile", 20, svc_floor_zero),
+    ("WriteFile", 20, svc_write_file),
 ];
 
 /// Look a service up by number: its argument block size and handler.
@@ -615,10 +689,12 @@ mod tests {
     use crate::pe::Image;
 
     const RET0: &[u8] = include_bytes!("../../tests/ret0/ret0.exe");
+    const HELLO: &[u8] = include_bytes!("../../tests/hello/hello.exe");
 
-    /// The corpus's kernel32 import surface (ret0's 35, the loader's
-    /// snap contract): the registry must spell it exactly.
-    const CORPUS_IMPORTS: [&str; 35] = [
+    /// The corpus's kernel32 import surface (hello's 40 — ret0's 35
+    /// plus the console-stdio group — the loader's snap contract):
+    /// the registry must spell it exactly.
+    const CORPUS_IMPORTS: [&str; 40] = [
         "VirtualFree", "GetVersion", "ExitProcess", "TerminateProcess",
         "GetCurrentProcess", "UnhandledExceptionFilter", "GetModuleFileNameA",
         "FreeEnvironmentStringsA", "FreeEnvironmentStringsW",
@@ -628,14 +704,15 @@ mod tests {
         "WriteFile", "HeapAlloc", "GetCPInfo", "GetACP", "GetOEMCP",
         "VirtualAlloc", "HeapReAlloc", "GetProcAddress", "LoadLibraryA",
         "MultiByteToWideChar", "LCMapStringA", "LCMapStringW",
-        "GetStringTypeA", "GetStringTypeW",
+        "GetStringTypeA", "GetStringTypeW", "GetLastError",
+        "FlushFileBuffers", "SetFilePointer", "SetStdHandle", "CloseHandle",
     ];
 
     /// Registry consistency: names unique, numbers are positions plus
     /// one (ExitProcess pinned at 1), every corpus import resolves.
     #[test]
     fn registry_spells_the_corpus_surface() {
-        assert_eq!(SERVICES.len(), 35);
+        assert_eq!(SERVICES.len(), 40);
         for (i, &(name, arg_bytes, _)) in SERVICES.iter().enumerate() {
             assert!(!name.is_empty());
             assert_eq!(lookup_service(i as u32 + 1).map(|(b, _)| b), Some(arg_bytes));
@@ -647,7 +724,7 @@ mod tests {
         assert_eq!(SERVICES[0].0, "ExitProcess");
         assert_eq!(crate::syscall::SYS_EXIT, 1);
         assert_eq!(lookup_service(0), None);
-        assert_eq!(lookup_service(36), None);
+        assert_eq!(lookup_service(41), None);
         assert_eq!(lookup_service(u32::MAX), None);
         // Set equality with the corpus list.
         for name in CORPUS_IMPORTS {
@@ -669,6 +746,17 @@ mod tests {
         assert_eq!(result.thunks, 35);
     }
 
+    /// Every hello import (the 40-export console surface) resolves
+    /// against the real registry.
+    #[test]
+    fn hello_snaps_fully_against_the_registry() {
+        let image = Image::parse(HELLO).expect("hello parses");
+        let mut mapped = vec![0u8; image.size_of_image as usize];
+        image.map_into(HELLO, &mut mapped);
+        let result = image.snap_imports(HELLO, &mut mapped, MODULE_NAME, resolve);
+        assert_eq!(result.thunks, 40);
+    }
+
     /// Stub encoding: lea edx,[esp+4] / mov eax,service / int 0x2E /
     /// ret imm16 (the stdcall argument cleanup).
     #[test]
@@ -683,12 +771,27 @@ mod tests {
             assert_eq!(stub[11], 0xC2);
             assert_eq!(&stub[12..14], &(arg_bytes as u16).to_le_bytes());
         }
-        // The corpus's shapes: ExitProcess pops one dword,
-        // MultiByteToWideChar six, WideCharToMultiByte eight (the
-        // default-char pair).
-        assert_eq!(stub_bytes(1, 4)[12..14], [4, 0]);
-        assert_eq!(stub_bytes(27, 24)[12..14], [24, 0]);
-        assert_eq!(stub_bytes(34, 32)[12..14], [32, 0]);
+        // The corpus's argument-block shapes, looked up by name so
+        // registry renumbering cannot silently skew the pins.
+        let position = |name: &str| {
+            SERVICES
+                .iter()
+                .position(|&(export, ..)| export == name)
+                .unwrap_or_else(|| panic!("{name} missing"))
+        };
+        for (name, arg_bytes) in [
+            ("ExitProcess", 4),
+            ("MultiByteToWideChar", 24),
+            ("WideCharToMultiByte", 32),
+            ("WriteFile", 20),
+        ] {
+            let index = position(name);
+            assert_eq!(
+                stub_bytes(index as u32 + 1, SERVICES[index].1)[12..14],
+                (arg_bytes as u16).to_le_bytes(),
+                "{name}"
+            );
+        }
         assert_eq!(STUB_LEN, 14);
         assert_eq!(STUB_STRIDE, 16);
     }
@@ -843,21 +946,73 @@ mod tests {
         assert_eq!(frame.eax, 0xFFFF_FFFF);
     }
 
-    /// The never-called imports resolve to their floor handlers.
+    /// The never-called imports resolve to their floor handlers, and
+    /// the console floors answer with their decided shapes (no path
+    /// the corpus takes reaches them).
     #[test]
     fn never_called_shapes_resolve_to_their_floors() {
-        const NEVER_CALLED_ZERO: [&str; 8] = [
+        const NEVER_CALLED_ZERO: [&str; 9] = [
             "TerminateProcess", "UnhandledExceptionFilter", "GetProcAddress",
             "GetStringTypeA", "LCMapStringA", "LoadLibraryA", "RtlUnwind",
-            "WriteFile",
+            "GetLastError", "SetStdHandle",
         ];
         let floor = |name: &str| SERVICES.iter().find(|&&(n, ..)| n == name).unwrap().2;
         for name in NEVER_CALLED_ZERO {
             assert_eq!(floor(name) as usize, svc_floor_zero as usize, "{name}");
         }
         assert_eq!(floor("VirtualFree") as usize, svc_virtual_free as usize);
+        assert_eq!(floor("CloseHandle") as usize, svc_close_handle as usize);
+        assert_eq!(floor("FlushFileBuffers") as usize, svc_flush_file_buffers as usize);
+        assert_eq!(floor("SetFilePointer") as usize, svc_set_file_pointer as usize);
         let mut frame = zero_frame();
         svc_virtual_free(&mut frame, &[0; 4]);
+        assert_eq!(frame.eax, 1);
+        svc_close_handle(&mut frame, &[3]);
+        assert_eq!(frame.eax, 1);
+        svc_flush_file_buffers(&mut frame, &[0xF]);
+        assert_eq!(frame.eax, 1);
+        svc_set_file_pointer(&mut frame, &[0; 4]);
+        assert_eq!(frame.eax, 0xFFFF_FFFF); // INVALID_SET_FILE_POINTER
+        // GetLastError/SetStdHandle report failure without side
+        // effects.
+        svc_floor_zero(&mut frame, &[]);
+        assert_eq!(frame.eax, 0);
+    }
+
+    /// WriteFile's handle rules: only the replayed stdout and stderr
+    /// char devices accept writes; stdin (read-only) and anything
+    /// else fail.
+    #[test]
+    fn console_write_handles_are_stdout_and_stderr() {
+        assert!(is_console_write_handle(0x0F)); // stdout
+        assert!(is_console_write_handle(0x07)); // stderr
+        assert!(!is_console_write_handle(0x03)); // stdin
+        assert!(!is_console_write_handle(0));
+        assert!(!is_console_write_handle(1));
+        assert!(!is_console_write_handle(0xFFFF_FFFF));
+        assert!(!is_console_write_handle(0x1234_5678));
+    }
+
+    /// WriteFile's host-testable decision shapes (the copy itself
+    /// only runs on target): a bad handle or overlapped request
+    /// fails, a zero-length write succeeds with nothing to report.
+    #[test]
+    fn write_file_decision_shapes() {
+        let mut frame = zero_frame();
+        // Bad handle: FALSE before the buffer is touched.
+        let stdin_args = [0x03, 0x0040_0000, 14, 0, 0];
+        svc_write_file(&mut frame, &stdin_args);
+        assert_eq!(frame.eax, 0);
+        let closed_args = [0xFFFF_FFFF, 0x0040_0000, 14, 0, 0];
+        svc_write_file(&mut frame, &closed_args);
+        assert_eq!(frame.eax, 0);
+        // Overlapped I/O does not exist on this surface.
+        let overlapped_args = [0x0F, 0x0040_0000, 14, 0, 0x0050_0000];
+        svc_write_file(&mut frame, &overlapped_args);
+        assert_eq!(frame.eax, 0);
+        // Zero bytes, nowhere to report: TRUE, nothing written.
+        let empty_args = [0x0F, 0x0040_0000, 0, 0, 0];
+        svc_write_file(&mut frame, &empty_args);
         assert_eq!(frame.eax, 1);
     }
 

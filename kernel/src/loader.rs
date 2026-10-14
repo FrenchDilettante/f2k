@@ -18,6 +18,11 @@ pub const EXIT0: &[u8] = include_bytes!("../../tests/exit0/exit0.exe");
 /// imports (run with the `run-ret0` feature).
 pub const RET0: &[u8] = include_bytes!("../../tests/ret0/ret0.exe");
 
+/// The console fixture: the ret0 CRT startup plus printf to stdout,
+/// 40 KERNEL32.dll imports (run with the `run-hello` feature).
+#[cfg(feature = "run-hello")]
+pub const HELLO: &[u8] = include_bytes!("../../tests/hello/hello.exe");
+
 /// The fresh-memory fixture: no CRT, one import; its `.bss` is all
 /// zero on a fresh process and the double run in the suite proves
 /// teardown re-zeroes frames (embedded for the `run-process-suite`
@@ -154,11 +159,17 @@ mod tests {
 
     const RET0: &[u8] = include_bytes!("../../tests/ret0/ret0.exe");
 
-    /// Both fixtures fit the staging buffer, page-aligned.
+    /// All fixtures fit the staging buffer, page-aligned.
     #[test]
     fn fixtures_fit_staging() {
         for file in [EXIT0, RET0] {
             let image = Image::parse(file).expect("fixture parses");
+            assert_eq!(image.size_of_image % PAGE_SIZE, 0);
+            assert!(image.size_of_image as usize <= STAGING_SIZE);
+        }
+        #[cfg(feature = "run-hello")]
+        {
+            let image = Image::parse(HELLO).expect("hello parses");
             assert_eq!(image.size_of_image % PAGE_SIZE, 0);
             assert!(image.size_of_image as usize <= STAGING_SIZE);
         }

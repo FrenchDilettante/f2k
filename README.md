@@ -142,7 +142,7 @@ f2k/
         ├── syscall.rs    # Syscall gate (int 0x2E, DPL 3): service dispatch, argument probe/copy, user-memory transfers
         ├── pe.rs         # PE32 image parsing, mapping plan and IAT snap (host-testable)
         ├── loader.rs     # Kernel-side image loader: staging, section mapping, entry into ring 3
-        ├── kernel32.rs   # Kernel-synthesized kernel32: 35-export service registry, thunk stubs, replayed startup values
+        ├── kernel32.rs   # Kernel-synthesized kernel32: 40-export service registry, thunk stubs, replayed startup values, console output
         ├── cp1252.rs     # Codepage 1252 replay data: MB/WC tables, ctype flags, case mapping (host-testable)
         ├── userheap.rs   # User-mode heap: first-fit allocator with coalescing; the CRT's VirtualAlloc region
         ├── user.rs       # Ring 3: iret entry (TEB segment in FS), trap frame shape, fault-test stubs, process end

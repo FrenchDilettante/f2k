@@ -172,9 +172,9 @@ pub fn process_exited(code: u32) -> ! {
 }
 
 /// Launch the first user process: exit0 through the PE loader by
-/// default, ret0 with the `run-ret0` feature, a fault-test stub, or
-/// the full multi-process suite with `run-process-suite`. Never
-/// returns.
+/// default, ret0 with the `run-ret0` feature, hello with the
+/// `run-hello` feature, a fault-test stub, or the full multi-process
+/// suite with `run-process-suite`. Never returns.
 #[cfg(target_arch = "x86")]
 pub fn run_user_process() -> ! {
     #[cfg(feature = "run-process-suite")]
@@ -185,11 +185,15 @@ pub fn run_user_process() -> ! {
     {
         #[cfg(not(any(feature = "fault-test-user", feature = "fault-test-badargs")))]
         {
-            #[cfg(not(feature = "run-ret0"))]
+            #[cfg(feature = "run-hello")]
+            {
+                crate::loader::run_image(crate::loader::HELLO, "hello")
+            }
+            #[cfg(all(not(feature = "run-hello"), not(feature = "run-ret0")))]
             {
                 crate::loader::run_image(crate::loader::EXIT0, "exit0")
             }
-            #[cfg(feature = "run-ret0")]
+            #[cfg(all(not(feature = "run-hello"), feature = "run-ret0"))]
             {
                 crate::loader::run_image(crate::loader::RET0, "ret0")
             }

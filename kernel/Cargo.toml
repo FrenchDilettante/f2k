@@ -35,6 +35,10 @@ fault-test-badargs = []
 # Loads the second corpus fixture (ret0.exe, the 35-import CRT startup
 # surface) instead of the first: the ret0 suite cases build with it.
 run-ret0 = []
+# Loads the console fixture (hello.exe, the 40-import console-stdio
+# surface) instead of the first: the hello suite cases build with it
+# (docs/plans/console-observable.md).
+run-hello = []
 # The multi-process suite case: exit0, ret0, bsscheck, bsscheck,
 # crash, exit0 run in sequence in one boot, each process torn down
 # and audited before the next starts (see

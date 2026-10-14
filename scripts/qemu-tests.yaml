@@ -92,6 +92,37 @@ cases:
       - "F2K: entering ring 3"
       - "F2K: user process exited normally (exit code=0)"
 
+  # The console-observable workstream (docs/plans/console-observable.md):
+  # hello runs the ret0 CRT startup, printf writes "Hello, world!"
+  # to stdout through WriteFile, then it exits 0 — the program's own
+  # output on COM1 (no F2K: prefix), before the exit line.
+  - name: hello-smoke
+    description: the console fixture prints "Hello, world!" as its own COM1 output and exits 0 (kernel path)
+    image: kernel
+    features: [run-hello]
+    expects:
+      - "F2K Booted Successfully"
+      - "F2K: frame database audit: ok"
+      - "F2K: kernel heap: alloc/free ok"
+      - "F2K: image loaded"
+      - "F2K: entering ring 3"
+      - "Hello, world!"
+      - "F2K: user process exited normally (exit code=0)"
+
+  - name: hello-smoke-disk
+    description: the console fixture prints "Hello, world!" as its own COM1 output and exits 0 (Limine disk path)
+    image: disk
+    features: [run-hello]
+    expects:
+      - "F2K Booted Successfully"
+      - "F2K: frame database audit: ok"
+      - "F2K: kernel heap: alloc/free ok"
+      - "F2K: image loaded"
+      - "F2K: entering ring 3"
+      - "Hello, world!"
+      - "F2K: user process exited normally (exit code=0)"
+
+
   # Multi-process suite (foundational-processes workstream): one boot
   # runs the sequence exit0, ret0, bsscheck, bsscheck, crash, exit0,
   # tearing each process down to the post-boot baseline before the

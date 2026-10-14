@@ -40,7 +40,10 @@ not committed.
   surface (35 KERNEL32.dll imports; see `ret0/imports.txt`).
 - `hello` - the console rung: the same CRT startup, then `printf`
   writes "Hello, world!" to stdout and exits 0; the first test with
-  observable output.
+  observable output. Also carries `trace.txt`, the real-machine
+  import trace (21 of the watched imports called on the happy path,
+  one WriteFile, exit 0 — the oracle for the console-observable
+  workstream).
 - `hellogui` - the GUI rung: registers a window class, shows a
   window, paints "Hello, world!" once with `TextOut`, then closes
   itself and exits 0; the first test to import user32.dll and
@@ -57,9 +60,11 @@ code 0 means pass.
 
 Until F2K can read from its FAT32 disk partition, the on-target QEMU
 suite embeds fixtures directly in the kernel image
-(`include_bytes!`): the default kernel runs `exit0`, and the
-`run-ret0` feature selects `ret0`. The `run-process-suite` feature
-(the multi-process case) embeds `bsscheck` and `crash` as well and
+(`include_bytes!`): the default kernel runs `exit0`, the `run-ret0`
+feature selects `ret0`, and the `run-hello` feature selects `hello`
+(whose WriteFile output appears on COM1 as the program's own). The
+`run-process-suite` feature (the multi-process case) embeds
+`bsscheck` and `crash` as well and
 runs the sequence `exit0`, `ret0`, `bsscheck`, `bsscheck`, `crash`,
 `exit0` in one boot. Each boot prints the observed process exit code
 on COM1, which the suite cases assert. Once disk I/O exists,
