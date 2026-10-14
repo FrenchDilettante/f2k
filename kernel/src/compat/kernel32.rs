@@ -533,11 +533,210 @@ fn svc_virtual_free(frame: &mut crate::user::TrapFrame, _args: &[u32]) {
     frame.eax = 1;
 }
 
-/// CloseHandle: success floor. Nothing on this surface owns an
-/// object to close — only the CRT's fd-close path calls it, and the
-/// corpus never closes a handle.
-fn svc_close_handle(frame: &mut crate::user::TrapFrame, _args: &[u32]) {
-    frame.eax = 1;
+/// CloseHandle: release the table's claim on the handle. The
+/// object itself lives on (a waiter parked on it stays parked);
+/// a close that names nothing is refused.
+fn svc_close_handle(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    #[cfg(target_arch = "x86")]
+    {
+        frame.eax =
+            if crate::process::current_mut().handles_mut().close(args[0]) { 1 } else { 0 };
+    }
+    #[cfg(not(target_arch = "x86"))]
+    {
+        let _ = args;
+        frame.eax = 0;
+    }
+}
+
+/// INFINITE: the documented forever timeout.
+const INFINITE: u32 = 0xFFFF_FFFF;
+
+/// WAIT_FAILED: the documented wait failure return.
+const WAIT_FAILED: u32 = 0xFFFF_FFFF;
+
+/// CREATE_SUSPENDED: the one creation flag the subset refuses
+/// (there is no suspend machinery until the APC slice).
+const CREATE_SUSPENDED: u32 = 0x0000_0004;
+
+/// The Win32 timeout conversion: INFINITE waits forever; any
+/// other value is a relative interval in milliseconds (100 ns
+/// units inside the kernel), zero the immediate test.
+fn format_timeout(milliseconds: u32) -> Option<i64> {
+    if milliseconds == INFINITE {
+        None
+    } else {
+        Some(milliseconds as i64 * 10_000)
+    }
+}
+
+/// The creation-flags check: CREATE_SUSPENDED is refused (a
+/// suspended child could never run without the suspend
+/// machinery); every other bit is ignored.
+fn creation_flags_ok(flags: u32) -> bool {
+    flags & CREATE_SUSPENDED == 0
+}
+
+/// CreateEventA: a fresh event from the pool, inserted into the
+/// table. The flavor comes from bManualReset, the initial state
+/// from bInitialState; the subset ignores the attributes and
+/// refuses a name.
+fn svc_create_event_a(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    #[cfg(target_arch = "x86")]
+    {
+        let (_attributes, manual_reset, initial_state, name) =
+            (args[0], args[1], args[2], args[3]);
+        if name != 0 {
+            frame.eax = 0; // the subset has no named objects
+            return;
+        }
+        let kind = if manual_reset != 0 {
+            crate::sched::event::EventKind::Notification
+        } else {
+            crate::sched::event::EventKind::Synchronization
+        };
+        let Some(event) = crate::process::threads::new_event(kind, initial_state != 0) else {
+            frame.eax = 0;
+            return;
+        };
+        let slot = crate::sched::object::Slot {
+            kind: crate::sched::object::ObjectKind::Event,
+            waitable: event.waitable(),
+        };
+        frame.eax = crate::process::current_mut().handles_mut().insert(slot);
+    }
+    #[cfg(not(target_arch = "x86"))]
+    {
+        let _ = args;
+        frame.eax = 0;
+    }
+}
+
+/// SetEvent: signal the event the handle names, granting its
+/// waiters the event wake boost.
+fn svc_set_event(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    #[cfg(target_arch = "x86")]
+    {
+        let Some(slot) = crate::process::current_mut().handles_mut().lookup(args[0]) else {
+            frame.eax = 0;
+            return;
+        };
+        if slot.kind != crate::sched::object::ObjectKind::Event {
+            frame.eax = 0;
+            return;
+        }
+        // The event's waitable header leads the record, so the
+        // table's waitable pointer is the event itself.
+        let event = unsafe { &mut *(slot.waitable as *mut crate::sched::event::Event) };
+        event.set(
+            crate::sched::idle::dispatcher(),
+            crate::sched::event::EVENT_WAKE_INCREMENT,
+        );
+        frame.eax = 1;
+    }
+    #[cfg(not(target_arch = "x86"))]
+    {
+        let _ = args;
+        frame.eax = 0;
+    }
+}
+
+/// WaitForSingleObject: wait on the object the handle names, the
+/// documented timeout conversion, the status returned raw (the
+/// identity the Win32 ABI documents: 0 is WAIT_OBJECT_0, the
+/// timeout status is WAIT_TIMEOUT). A blocking wait parks the
+/// calling thread and switches the processor away; the wake's
+/// status lands in the return.
+fn svc_wait_for_single_object(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    #[cfg(target_arch = "x86")]
+    {
+        let Some(slot) = crate::process::current_mut().handles_mut().lookup(args[0]) else {
+            frame.eax = WAIT_FAILED;
+            return;
+        };
+        let dispatcher = crate::sched::idle::dispatcher();
+        let stamp = crate::sched::wait::ClockStamp {
+            system_time: crate::interrupt::clock::system_time(),
+            tick: crate::interrupt::clock::ticks(),
+        };
+        // SAFETY: the running thread, live and exclusive in the
+        // gate.
+        let current = unsafe { &mut *dispatcher.current_thread() };
+        match dispatcher.wait_single(
+            current,
+            slot.waitable,
+            crate::sched::wait::WaitReason::UserRequest,
+            crate::sched::wait::WaitMode::User,
+            false,
+            format_timeout(args[1]),
+            stamp,
+        ) {
+            crate::sched::wait::WaitDisposition::Complete(status) => frame.eax = status as u32,
+            crate::sched::wait::WaitDisposition::Yield => {
+                // The thread parks; the switch resumes here when a
+                // wake re-selects it.
+                dispatcher.park_and_switch();
+                frame.eax = current.wait_status() as u32;
+            }
+        }
+    }
+    #[cfg(not(target_arch = "x86"))]
+    {
+        let _ = args;
+        frame.eax = WAIT_FAILED;
+    }
+}
+
+/// CreateThread: a child thread on the current process. The
+/// start address and parameter are honored; the attributes,
+/// stack size (the per-thread default), and every creation flag
+/// but CREATE_SUSPENDED are refused; the identifier is written
+/// back only when the caller asked for it. The handle exists
+/// before the thread is made schedulable, so the creator can
+/// always wait on what it created.
+fn svc_create_thread(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    #[cfg(target_arch = "x86")]
+    {
+        let (_attributes, _stack_size, start, parameter, flags, thread_id_out) =
+            (args[0], args[1], args[2], args[3], args[4], args[5]);
+        if !creation_flags_ok(flags) {
+            frame.eax = 0;
+            return;
+        }
+        let Some((thread, id)) = crate::process::threads::spawn(start, parameter) else {
+            frame.eax = 0;
+            return;
+        };
+        let process = crate::process::current_mut();
+        // SAFETY: the created thread's record is at its final
+        // address for its life.
+        let slot = crate::sched::object::Slot {
+            kind: crate::sched::object::ObjectKind::Thread,
+            waitable: unsafe { (*thread).waitable() },
+        };
+        let handle = process.handles_mut().insert(slot);
+        if handle == 0 {
+            // The table is full: the record stays unused (never
+            // readied), and the caller sees the create fail.
+            frame.eax = 0;
+            return;
+        }
+        if thread_id_out != 0 {
+            if crate::user::syscall::write_user(thread_id_out, &id.to_le_bytes()).is_err() {
+                frame.eax = 0;
+                return;
+            }
+        }
+        // The handle exists; the thread becomes schedulable now.
+        // SAFETY: the created thread, live and exclusive here.
+        crate::sched::idle::dispatcher().make_ready(unsafe { &mut *thread });
+        frame.eax = handle;
+    }
+    #[cfg(not(target_arch = "x86"))]
+    {
+        let _ = args;
+        frame.eax = 0;
+    }
 }
 
 /// FlushFileBuffers: success floor — the console backend is
@@ -569,11 +768,13 @@ fn svc_get_current_process(frame: &mut crate::user::TrapFrame, _args: &[u32]) {
 /// The service registry: one entry per export, in service-number
 /// order (a number is its position plus one; ExitProcess is pinned
 /// at service 1, the rest alphabetical). Quirk: a name absent from
-/// here fails the loader's snap, so this set is exactly the corpus's
-/// import surface.
-pub const SERVICES: [(&str, u32, ServiceFn); 40] = [
+/// here fails the loader's snap, so this set is exactly the union
+/// of the checked-in fixtures' import surfaces.
+pub const SERVICES: [(&str, u32, ServiceFn); 44] = [
     ("ExitProcess", 4, svc_exit_process),
     ("CloseHandle", 4, svc_close_handle),
+    ("CreateEventA", 16, svc_create_event_a),
+    ("CreateThread", 24, svc_create_thread),
     ("FlushFileBuffers", 4, svc_flush_file_buffers),
     ("FreeEnvironmentStringsA", 4, svc_free_environment_strings),
     ("FreeEnvironmentStringsW", 4, svc_free_environment_strings),
@@ -603,6 +804,7 @@ pub const SERVICES: [(&str, u32, ServiceFn); 40] = [
     ("LoadLibraryA", 4, svc_floor_zero),
     ("MultiByteToWideChar", 24, svc_multi_byte_to_wide_char),
     ("RtlUnwind", 16, svc_floor_zero),
+    ("SetEvent", 4, svc_set_event),
     ("SetFilePointer", 16, svc_set_file_pointer),
     ("SetHandleCount", 4, svc_set_handle_count),
     ("SetStdHandle", 8, svc_floor_zero),
@@ -610,6 +812,7 @@ pub const SERVICES: [(&str, u32, ServiceFn); 40] = [
     ("UnhandledExceptionFilter", 4, svc_floor_zero),
     ("VirtualAlloc", 16, svc_virtual_alloc),
     ("VirtualFree", 12, svc_virtual_free),
+    ("WaitForSingleObject", 8, svc_wait_for_single_object),
     ("WideCharToMultiByte", 32, svc_wide_char_to_multi_byte),
     ("WriteFile", 20, svc_write_file),
 ];
@@ -648,8 +851,32 @@ fn stub_bytes(service: u32, arg_bytes: u32) -> [u8; STUB_LEN] {
     stub
 }
 
+/// The thread-exit trampoline: a child thread's user function
+/// returns onto this stub. It moves the function's return value
+/// (EAX) to the gate's argument register (the service number
+/// load would clobber it), raises the gate on the internal
+/// thread-exit service, and never returns.
+const TRAMPOLINE_LEN: usize = 9;
+
+fn trampoline_bytes(service: u32) -> [u8; TRAMPOLINE_LEN] {
+    let mut stub = [
+        0x89, 0xC2, // mov edx, eax (the user function's return value)
+        0xB8, 0, 0, 0, 0, // mov eax, service
+        0xCD, crate::user::syscall::SYSCALL_VECTOR as u8, // int 0x2E
+    ];
+    stub[3..7].copy_from_slice(&service.to_le_bytes());
+    stub
+}
+
+/// The trampoline's user-space address: the slot after the last
+/// service stub in the thunk page.
+pub fn thread_exit_trampoline() -> u32 {
+    THUNK_PAGE + SERVICES.len() as u32 * STUB_STRIDE
+}
+
 /// Map the thunk page: one zeroed frame, seeded and patched with the
-/// stubs, read-only user (the stubs execute; nothing writes).
+/// stubs, read-only user (the stubs execute; nothing writes). The
+/// thread-exit trampoline follows the service stubs.
 #[cfg(target_arch = "x86")]
 pub fn init() {
     let frame = crate::mem::paging::allocate_frame_phys();
@@ -661,6 +888,11 @@ pub fn init() {
             &stub_bytes(index as u32 + 1, arg_bytes),
         );
     }
+    crate::mem::paging::write_frame(
+        frame,
+        (SERVICES.len() as u32 * STUB_STRIDE) as usize,
+        &trampoline_bytes(crate::user::syscall::SYS_THREAD_EXIT),
+    );
     crate::mem::paging::map_user_page(THUNK_PAGE, frame, false);
 }
 
@@ -694,7 +926,8 @@ mod tests {
     /// The corpus's kernel32 import surface (hello's 40 — ret0's 35
     /// plus the console-stdio group — the loader's snap contract):
     /// the registry must spell it exactly.
-    const CORPUS_IMPORTS: [&str; 40] = [
+    const CORPUS_IMPORTS: [&str; 44] = [
+        "CreateThread", "CreateEventA", "SetEvent", "WaitForSingleObject",
         "VirtualFree", "GetVersion", "ExitProcess", "TerminateProcess",
         "GetCurrentProcess", "UnhandledExceptionFilter", "GetModuleFileNameA",
         "FreeEnvironmentStringsA", "FreeEnvironmentStringsW",
@@ -712,7 +945,7 @@ mod tests {
     /// one (ExitProcess pinned at 1), every corpus import resolves.
     #[test]
     fn registry_spells_the_corpus_surface() {
-        assert_eq!(SERVICES.len(), 40);
+        assert_eq!(SERVICES.len(), 44);
         for (i, &(name, arg_bytes, _)) in SERVICES.iter().enumerate() {
             assert!(!name.is_empty());
             assert_eq!(lookup_service(i as u32 + 1).map(|(b, _)| b), Some(arg_bytes));
@@ -724,7 +957,7 @@ mod tests {
         assert_eq!(SERVICES[0].0, "ExitProcess");
         assert_eq!(crate::user::syscall::SYS_EXIT, 1);
         assert_eq!(lookup_service(0), None);
-        assert_eq!(lookup_service(41), None);
+        assert_eq!(lookup_service(45), None);
         assert_eq!(lookup_service(u32::MAX), None);
         // Set equality with the corpus list.
         for name in CORPUS_IMPORTS {
@@ -807,6 +1040,27 @@ mod tests {
             assert_eq!(va, THUNK_PAGE + i as u32 * STUB_STRIDE);
             assert!(va >= THUNK_PAGE && (va as usize) + STUB_LEN <= (THUNK_PAGE + 4096) as usize);
         }
+    }
+
+    /// The thread-exit trampoline's bytes: the return value rides
+    /// to the gate's argument register, the service number loads
+    /// without clobbering it, the gate raises, nothing returns.
+    #[test]
+    fn the_thread_exit_trampoline_bytes() {
+        let stub = trampoline_bytes(crate::user::syscall::SYS_THREAD_EXIT);
+        assert_eq!(
+            stub,
+            [
+                0x89, 0xC2, // mov edx, eax
+                0xB8, 0x00, 0x00, 0x00, 0x80, // mov eax, SYS_THREAD_EXIT
+                0xCD, 0x2E, // int 0x2E
+            ]
+        );
+        assert_eq!(stub.len(), 9);
+        // The trampoline sits after the last service stub, on the
+        // same page.
+        assert_eq!(thread_exit_trampoline(), THUNK_PAGE + SERVICES.len() as u32 * STUB_STRIDE);
+        assert!((thread_exit_trampoline() as usize) + stub.len() <= (THUNK_PAGE + 4096) as usize);
     }
 
     /// The thunk page: user space, page-aligned, clear of everything
@@ -967,8 +1221,11 @@ mod tests {
         let mut frame = zero_frame();
         svc_virtual_free(&mut frame, &[0; 4]);
         assert_eq!(frame.eax, 1);
+        // A close of a handle no table holds is refused (the
+        // target resolves the current process's table; the host
+        // body is the same refusal).
         svc_close_handle(&mut frame, &[3]);
-        assert_eq!(frame.eax, 1);
+        assert_eq!(frame.eax, 0);
         svc_flush_file_buffers(&mut frame, &[0xF]);
         assert_eq!(frame.eax, 1);
         svc_set_file_pointer(&mut frame, &[0; 4]);

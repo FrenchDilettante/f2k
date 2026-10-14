@@ -174,7 +174,14 @@ core::arch::global_asm!(
 /// space; the multi-process suite hands the chain to the next
 /// process (its runner tears this one down).
 pub fn process_exited(code: u32) -> ! {
-    #[cfg(target_arch = "x86")]
+    #[cfg(all(target_arch = "x86", feature = "run-pingpong"))]
+    {
+        // The thread-ified boot: the process's exit is its last
+        // thread's exit (the report and the last-thread route are
+        // the exit path's own).
+        crate::process::threads::exit_thread(code as i32)
+    }
+    #[cfg(all(target_arch = "x86", not(feature = "run-pingpong")))]
     {
         #[cfg(feature = "run-process-suite")]
         {
@@ -214,15 +221,27 @@ pub fn run_user_process() -> ! {
     {
         #[cfg(not(any(feature = "fault-test-user", feature = "fault-test-badargs")))]
         {
-            #[cfg(feature = "run-hello")]
+            #[cfg(feature = "run-pingpong")]
+            {
+                crate::exec::loader::run_image(crate::exec::loader::PINGPONG, "pingpong")
+            }
+            #[cfg(all(not(feature = "run-pingpong"), feature = "run-hello"))]
             {
                 crate::exec::loader::run_image(crate::exec::loader::HELLO, "hello")
             }
-            #[cfg(all(not(feature = "run-hello"), not(feature = "run-ret0")))]
+            #[cfg(all(
+                not(feature = "run-pingpong"),
+                not(feature = "run-hello"),
+                not(feature = "run-ret0")
+            ))]
             {
                 crate::exec::loader::run_image(crate::exec::loader::EXIT0, "exit0")
             }
-            #[cfg(all(not(feature = "run-hello"), feature = "run-ret0"))]
+            #[cfg(all(
+                not(feature = "run-pingpong"),
+                not(feature = "run-hello"),
+                feature = "run-ret0"
+            ))]
             {
                 crate::exec::loader::run_image(crate::exec::loader::RET0, "ret0")
             }

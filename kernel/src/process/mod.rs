@@ -26,6 +26,11 @@
 #[cfg(all(target_arch = "x86", feature = "run-process-suite"))]
 pub mod runner;
 
+/// The smoke-subset thread surface: child-thread creation, the
+/// object pools, the thread-exit path.
+#[cfg(target_arch = "x86")]
+pub mod threads;
+
 #[cfg(target_arch = "x86")]
 use crate::mem::paging;
 
@@ -46,6 +51,8 @@ pub struct Process {
     gate_slots: GateSlots,
     /// The user-heap bookkeeping (heap region + CRT region).
     heap: crate::user::userheap::HeapState,
+    /// The handle table: the process's handles-to-objects.
+    handles: crate::sched::object::HandleTable,
 }
 
 // The scheduling record leads the process record: a thread's owner
@@ -73,6 +80,12 @@ impl Process {
     pub fn heap_mut(&mut self) -> &mut crate::user::userheap::HeapState {
         &mut self.heap
     }
+
+    /// The handle table (the object services are served from
+    /// here).
+    pub fn handles_mut(&mut self) -> &mut crate::sched::object::HandleTable {
+        &mut self.handles
+    }
 }
 
 #[cfg(target_arch = "x86")]
@@ -95,6 +108,7 @@ impl Process {
             main_thread: crate::sched::thread::Thread::empty(),
             gate_slots: GateSlots::empty(),
             heap: crate::user::userheap::HeapState::new(),
+            handles: crate::sched::object::HandleTable::empty(),
         });
 
         // The scheduling record's thread-list sentinel closes now
@@ -406,6 +420,7 @@ mod tests {
             main_thread: Thread::empty(),
             gate_slots: GateSlots::empty(),
             heap: HeapState::new(),
+            handles: crate::sched::object::HandleTable::empty(),
         };
         assert_eq!(process.name(), "fixture");
         assert_eq!(process.dir_phys(), 0x0090_0000);
@@ -550,6 +565,7 @@ mod tests {
             main_thread: Thread::empty(),
             gate_slots: GateSlots::empty(),
             heap: HeapState::new(),
+            handles: crate::sched::object::HandleTable::empty(),
         }));
         process.sched.init();
         // SAFETY: the process record is at its final address.

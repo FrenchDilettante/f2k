@@ -81,6 +81,10 @@ suite embeds fixtures directly in the kernel image
 (`include_bytes!`): the default kernel runs `exit0`, the `run-ret0`
 feature selects `ret0`, and the `run-hello` feature selects `hello`
 (whose WriteFile output appears on COM1 as the program's own). The
+`run-pingpong` feature (the blocking-wait smoke) selects `pingpong`
+with the thread-ified boot: the main thread enters ring 3 through
+the scheduler's first switch, and its thread and wait calls run
+against the landed scheduler machinery. The
 `run-process-suite` feature (the multi-process case) embeds
 `bsscheck` and `crash` as well and
 runs the sequence `exit0`, `ret0`, `bsscheck`, `bsscheck`, `crash`,

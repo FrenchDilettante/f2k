@@ -23,6 +23,12 @@ pub const RET0: &[u8] = include_bytes!("../../../tests/ret0/ret0.exe");
 #[cfg(feature = "run-hello")]
 pub const HELLO: &[u8] = include_bytes!("../../../tests/hello/hello.exe");
 
+/// The blocking-wait smoke fixture: two auto-reset events and a
+/// child thread alternate strictly for five turns (embedded for
+/// the `run-pingpong` feature).
+#[cfg(feature = "run-pingpong")]
+pub const PINGPONG: &[u8] = include_bytes!("../../../tests/pingpong/pingpong.exe");
+
 /// The fresh-memory fixture: no CRT, one import; its `.bss` is all
 /// zero on a fresh process and the double run in the suite proves
 /// teardown re-zeroes frames (embedded for the `run-process-suite`
@@ -146,10 +152,20 @@ pub fn run_image(file: &[u8], name: &'static str) -> ! {
         image.entry_va(),
         USER_STACK_TOP
     );
-    // SAFETY: image, stack, TEB and thunk pages are mapped with
-    // their final protections; the gate is DPL 3; the TSS carries
-    // the ring-0 stack.
-    unsafe { crate::user::enter_ring3(image.entry_va(), USER_STACK_TOP) }
+    // The entry: the thread-ified boot for the smoke (the main
+    // thread enters through the scheduler's first switch), the
+    // direct ring-3 entry for every other boot.
+    #[cfg(feature = "run-pingpong")]
+    {
+        crate::process::threads::enter_as_main_thread(image.entry_va(), USER_STACK_TOP)
+    }
+    #[cfg(not(feature = "run-pingpong"))]
+    {
+        // SAFETY: image, stack, TEB and thunk pages are mapped with
+        // their final protections; the gate is DPL 3; the TSS carries
+        // the ring-0 stack.
+        unsafe { crate::user::enter_ring3(image.entry_va(), USER_STACK_TOP) }
+    }
 }
 
 #[cfg(test)]

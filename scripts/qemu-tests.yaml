@@ -123,6 +123,54 @@ cases:
       - "F2K: user process exited normally (exit code=0)"
 
 
+  - name: pingpong-smoke
+    description: the blocking-wait smoke runs its captured five-turn alternation through two auto-reset events and a child thread, the child-handle wait returns 0, and the process exits cleanly (kernel path)
+    image: kernel
+    features: [run-pingpong]
+    expects:
+      - "F2K Booted Successfully"
+      - "F2K: frame database audit: ok"
+      - "F2K: kernel heap: alloc/free ok"
+      - "F2K: image loaded"
+      - "F2K: entering ring 3"
+      - "pong 0"
+      - "ping 0"
+      - "pong 1"
+      - "ping 1"
+      - "pong 2"
+      - "ping 2"
+      - "pong 3"
+      - "ping 3"
+      - "pong 4"
+      - "ping 4"
+      - "child handle wait returned 0"
+      - "pingpong: ok"
+      - "F2K: user process exited normally (exit code=0)"
+
+  - name: pingpong-smoke-disk
+    description: the blocking-wait smoke runs its captured five-turn alternation through two auto-reset events and a child thread, the child-handle wait returns 0, and the process exits cleanly (Limine disk path)
+    image: disk
+    features: [run-pingpong]
+    expects:
+      - "F2K Booted Successfully"
+      - "F2K: frame database audit: ok"
+      - "F2K: kernel heap: alloc/free ok"
+      - "F2K: image loaded"
+      - "F2K: entering ring 3"
+      - "pong 0"
+      - "ping 0"
+      - "pong 1"
+      - "ping 1"
+      - "pong 2"
+      - "ping 2"
+      - "pong 3"
+      - "ping 3"
+      - "pong 4"
+      - "ping 4"
+      - "child handle wait returned 0"
+      - "pingpong: ok"
+      - "F2K: user process exited normally (exit code=0)"
+
   # Multi-process suite (foundational-processes workstream): one boot
   # runs the sequence exit0, ret0, bsscheck, bsscheck, crash, exit0,
   # tearing each process down to the post-boot baseline before the

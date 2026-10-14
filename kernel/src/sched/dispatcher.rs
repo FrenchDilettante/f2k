@@ -38,6 +38,9 @@ pub struct Dispatcher {
     next: *mut Thread,
     /// The idle thread, entered when nothing else is schedulable.
     idle_thread: *mut Thread,
+    /// The waiting threads: the blocked-on-a-wait set, for the
+    /// audit's walk.
+    pub(super) waiting: List,
 }
 
 impl Dispatcher {
@@ -51,6 +54,7 @@ impl Dispatcher {
             current: null_mut(),
             next: null_mut(),
             idle_thread: null_mut(),
+            waiting: List::empty(),
         }
     }
 
@@ -64,10 +68,12 @@ impl Dispatcher {
         self.current = null_mut();
         self.next = null_mut();
         self.idle_thread = null_mut();
+        self.waiting.init();
     }
 
-    /// The ready-summary invariant: bit P is set exactly while ready
-    /// list P is non-empty.
+    /// The ready-summary and wait-structure invariants: bit P is
+    /// set exactly while ready list P is non-empty, and the wait
+    /// blocks and waiting threads agree.
     pub fn audit(&self) -> Result<(), &'static str> {
         let mut summary = 0u32;
         for (level, queue) in self.ready.iter().enumerate() {
@@ -78,7 +84,7 @@ impl Dispatcher {
         if summary != self.ready_summary {
             return Err("ready summary does not match the ready queues");
         }
-        Ok(())
+        self.audit_waits()
     }
 
     /// The Standby thread, if one is selected.
@@ -166,6 +172,10 @@ impl Dispatcher {
     /// queue; a thread that merely became runnable queues at the
     /// tail.
     pub fn make_ready(&mut self, thread: &mut Thread) {
+        assert!(
+            !(thread.state == ThreadState::Waiting && !thread.wait_block_head.is_null()),
+            "a waiting thread is readied only through the wait exit"
+        );
         let mut thread: *mut Thread = thread;
         loop {
             // SAFETY: the loop owns the thread exclusively; it is on
@@ -423,6 +433,24 @@ impl Dispatcher {
         old_increment
     }
 
+    /// Select a ready thread of `priority` into the standby slot:
+    /// the round-robin step the quantum end and the no-wait yield
+    /// share. Does nothing while a standby thread is already
+    /// pending; returns whether one was installed.
+    pub fn standby_from_ready(&mut self, priority: i8) -> bool {
+        if !self.next.is_null() {
+            return false;
+        }
+        let found = self.find_ready(priority);
+        if found.is_null() {
+            return false;
+        }
+        // SAFETY: the found thread is a live, unlinked thread.
+        unsafe { (*found).state = ThreadState::Standby };
+        self.next = found;
+        true
+    }
+
     /// The end of the running thread's quantum: reset the quantum,
     /// decay the priority one step toward the base (consuming any
     /// outstanding decay debt), and decide who runs next. A
@@ -460,17 +488,12 @@ impl Dispatcher {
 
         if new_priority != priority {
             self.apply_priority(thread, new_priority);
-        } else if self.next.is_null() {
-            let found = self.find_ready(priority);
-            if !found.is_null() {
-                // SAFETY: the found thread is a live, unlinked thread.
-                unsafe { (*found).state = ThreadState::Standby };
-                self.next = found;
-            }
-        } else {
+        } else if !self.next.is_null() {
             // Equal priority and a standby already pending: the
             // running thread stays until the switch.
             thread.preempted = false;
+        } else {
+            self.standby_from_ready(priority);
         }
         self.next
     }
@@ -492,24 +515,29 @@ impl Dispatcher {
     /// and threads with a time-critical base replenish outright.
     /// The wait machinery calls this at wait exit; the arithmetic
     /// lives here because the quantum ledger is one discipline.
-    pub fn charge_wait(&mut self, thread: &mut Thread) {
+    /// Returns whether the charge exhausted the quantum with the
+    /// priority left where it was — the condition the no-wait
+    /// tail's round-robin acts on.
+    pub fn charge_wait(&mut self, thread: &mut Thread) -> bool {
         let thread_quantum = unsafe { (*thread.process).thread_quantum };
         if thread.priority >= REALTIME_BASE
             || thread.base_priority >= TIME_CRITICAL_CEILING
         {
             thread.quantum = thread_quantum;
-            return;
+            return false;
         }
         thread.quantum -= QUANTUM_WAIT_CHARGE;
         if thread.quantum > 0 {
-            return;
+            return false;
         }
         thread.quantum = thread_quantum;
+        let priority = thread.priority;
         thread.priority -= thread.priority_decrement + 1;
         if thread.priority < thread.base_priority {
             thread.priority = thread.base_priority;
         }
         thread.priority_decrement = 0;
+        thread.priority == priority
     }
 
     /// Boost the running thread to the time-critical ceiling and keep
@@ -567,8 +595,9 @@ impl Dispatcher {
         self.make_ready(thread);
     }
 
-    /// Terminate the running thread: mark it signaled (the thread's
-    /// waiters observe the mark), remove it from its process's
+    /// Terminate the running thread: mark its object signaled (the
+    /// thread's waiters observe the mark), satisfy every wait
+    /// parked on the thread object, remove it from its process's
     /// thread list, mark it Terminated, return the kernel-stack
     /// loan, and select the processor's next thread. Returns the
     /// selected thread — the caller's context switch enters it.
@@ -577,7 +606,15 @@ impl Dispatcher {
         // SAFETY: the running thread is live and attached; its
         // process list and process are valid.
         let thread: &mut Thread = unsafe { &mut *self.current };
-        thread.signaled = true;
+        // The thread object signals once, forever, before the
+        // scheduling teardown: its waiters wake through the
+        // satisfy walk, with no priority boost — the exit path
+        // grants none.
+        thread.waitable.signal_state = 1;
+        if !thread.waitable.waiters.is_empty() {
+            let waiters = addr_of_mut!(thread.waitable);
+            self.satisfy_waiters(waiters, 0);
+        }
         unsafe { unlink(addr_of_mut!(thread.process_links)) };
         thread.state = ThreadState::Terminated;
         unsafe { (*thread.process).stack_count -= 1 };
@@ -1013,6 +1050,33 @@ mod tests {
 
         assert_eq!(d.select_next(), as_ptr(idle));
         assert!(d.processor_idle);
+    }
+
+    /// The standby round-robin step, shared by the quantum end
+    /// and the no-wait yield: an equal-priority ready thread takes
+    /// the empty standby slot; a pending standby or an empty
+    /// queue leaves it alone.
+    #[test]
+    fn standby_from_ready_installs_an_equal() {
+        let d = dispatcher();
+        let p = process(8);
+        let t = thread(p);
+        t.priority = 8;
+        d.make_ready(t);
+
+        assert!(d.standby_from_ready(8), "an equal is found and installed");
+        assert_eq!(d.next_thread(), as_ptr(t));
+        assert_eq!(t.state(), ThreadState::Standby);
+
+        // A pending standby blocks the install.
+        let other = thread(p);
+        other.priority = 8;
+        d.make_ready(other);
+        assert!(!d.standby_from_ready(8));
+        assert_eq!(d.next_thread(), as_ptr(t), "the pending standby is left alone");
+
+        // An empty queue installs nobody.
+        assert!(!d.standby_from_ready(12));
     }
 
     /// Termination: the thread is signaled and Terminated, leaves its

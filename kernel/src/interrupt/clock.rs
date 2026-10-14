@@ -243,6 +243,14 @@ pub fn ticks() -> u64 {
     unsafe { (*addr_of_mut!(CLOCK)).tick_count() }
 }
 
+/// The kernel clock's system time (100 ns units): the wait
+/// discipline's source of "now".
+#[cfg(target_arch = "x86")]
+pub fn system_time() -> u64 {
+    // SAFETY: read-only.
+    unsafe { (*addr_of_mut!(CLOCK)).system_time() }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

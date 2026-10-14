@@ -19,16 +19,17 @@
 //!
 //! The wiring sits on top: the idle thread (armed at boot, the
 //! processor's resting state), the context switch that turns Standby
-//! into Running, and — later slices — the wait paths and the clock's
-//! per-tick quantum charge.
+//! into Running, the wait discipline (block, wake, timeout), and —
+//! later slices — the preemption delivery and the thread-creation
+//! surface.
 //!
 //! One processor, no locking: every method runs serialized at the
 //! dispatch level, which the interrupt core already raises around the
 //! dispatcher entries.
 
 // Parts of the state machines stay unwired until their slices land
-// (the wait paths, the preemption delivery, the thread-creation
-// surface); the idle thread and the switch are live.
+// (the preemption delivery, the thread-creation surface); the idle
+// thread, the switch, and the wait paths are live.
 #![allow(dead_code)]
 
 use core::ptr::{addr_of, addr_of_mut, null_mut};
@@ -52,6 +53,16 @@ pub mod startup;
 
 /// The idle thread: the processor's resting thread and its loop.
 pub mod idle;
+
+/// The wait discipline: waitable objects, wait blocks, the block
+/// and wake paths, the timeout seam.
+pub mod wait;
+
+/// The event object: the smallest waitable object, both flavors.
+pub mod event;
+
+/// The handle table: the per-process handle-to-object indirection.
+pub mod object;
 
 // --- Constants -----------------------------------------------------------
 

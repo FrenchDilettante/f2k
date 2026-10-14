@@ -38,6 +38,12 @@ run-ret0 = []
 # Loads the console fixture (hello.exe, the 40-import console-stdio
 # surface) instead of the first: the hello suite cases build with it.
 run-hello = []
+# The blocking-wait smoke boot: the pingpong fixture runs with the
+# thread-ified entry — the main thread enters ring 3 through the
+# scheduler's first switch, and its CreateThread/CreateEventA/
+# SetEvent/WaitForSingleObject calls run against the landed wait
+# machinery. The qemu-tests.yaml cases pin the captured output.
+run-pingpong = []
 # The multi-process suite case: exit0, ret0, bsscheck, bsscheck,
 # crash, exit0 run in sequence in one boot, each process torn down
 # and audited before the next starts. The sequence runner and the

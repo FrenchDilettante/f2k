@@ -26,6 +26,13 @@ pub const USER_PROBE_LIMIT: u32 = crate::mem::paging::KERNEL_BASE;
 /// Service 1: process exit (the registry's ExitProcess entry).
 pub const SYS_EXIT: u32 = 1;
 
+/// The internal thread-exit service: outside the registry's
+/// range (nothing imports it; the registry's surface discipline
+/// keeps it that way). The thread-exit trampoline in the thunk
+/// page raises the gate on this number, carrying the user
+/// function's return value in the argument register.
+pub const SYS_THREAD_EXIT: u32 = 0x8000_0000;
+
 /// Documented NTSTATUS values (public ABI constants).
 pub const STATUS_ACCESS_VIOLATION: u32 = 0xC000_0005;
 pub const STATUS_INVALID_SYSTEM_SERVICE: u32 = 0xC000_001C;
@@ -130,6 +137,13 @@ extern "C" fn syscall_dispatch(frame: &mut TrapFrame) {
     // int 0x2Es. A ring-0 entry would mean the frame has no ring-3
     // tail and the machine is already off the rails.
     assert_eq!(frame.cs & 3, 3, "syscall gate raised from ring 0");
+
+    // The internal thread-exit service: the trampoline's number,
+    // before the registry (the exit path never returns to the
+    // frame).
+    if frame.eax == SYS_THREAD_EXIT {
+        crate::process::threads::exit_thread(frame.edx as i32);
+    }
 
     // The service registry lives with the surface it implements.
     let Some((arg_bytes, service)) = crate::compat::kernel32::lookup_service(frame.eax) else {

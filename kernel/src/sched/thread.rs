@@ -1,9 +1,13 @@
 //! The thread object: the scheduling state every thread carries.
 
 use super::process::SchedProcess;
+use super::wait::{
+    Timer, WaitBlock, WaitKind, WaitMode, WaitReason, Waitable, STATUS_TIMEOUT, WAIT_BLOCKS,
+    TIMER_BLOCK,
+};
 use super::Links;
 use crate::interrupt::irql::LevelSnapshot;
-use core::ptr::addr_of_mut;
+use core::ptr::{addr_of_mut, null_mut};
 
 /// The gate-slot index of a thread whose slot is not allocated yet.
 pub const NO_GATE_SLOT: u16 = 0xFFFF;
@@ -102,8 +106,35 @@ pub struct Thread {
     /// thread is ever parked on its process. The flag survives as the
     /// priority-change guard for the parked shape.
     pub(crate) parked_on_process: bool,
-    /// Set when the thread exits: the thread-object waits observe it.
-    pub(crate) signaled: bool,
+    /// Set when the thread exits: the thread-object waits observe
+    /// it. The thread is itself a waitable object; this is its
+    /// header's signal state.
+    pub(crate) waitable: Waitable,
+
+    // --- Wait state (the block discipline) ---
+
+    /// The wait blocks this thread owns: the first holds a
+    /// single-object wait, the last slot its timer block.
+    pub(crate) wait_blocks: [WaitBlock; WAIT_BLOCKS],
+    /// The circular chain head of the current wait's blocks, null
+    /// between waits.
+    pub(crate) wait_block_head: *mut WaitBlock,
+    /// The completion status of the current or last wait.
+    pub(crate) wait_status: i32,
+    /// Why the thread is waiting (diagnostic data).
+    pub(crate) wait_reason: WaitReason,
+    /// The mode of the current wait (inert until the APC
+    /// machinery exists).
+    pub(crate) wait_mode: WaitMode,
+    /// Whether an APC may break the current wait (inert until the
+    /// APC machinery exists).
+    pub(crate) wait_alertable: bool,
+    /// The tick stamp of the current wait.
+    pub(crate) wait_time: u64,
+    /// The thread's wait-timeout timer.
+    pub(crate) timer: Timer,
+    /// The dispatcher's waiting-list membership link.
+    pub(crate) wait_links: Links,
 
     /// The ready-queue membership link.
     pub(crate) ready_links: Links,
@@ -173,7 +204,16 @@ impl Thread {
             disable_boost: false,
             preempted: false,
             parked_on_process: false,
-            signaled: false,
+            waitable: Waitable::new(WaitKind::Thread, 0),
+            wait_blocks: [WaitBlock::detached(); WAIT_BLOCKS],
+            wait_block_head: null_mut(),
+            wait_status: 0,
+            wait_reason: WaitReason::Executive,
+            wait_mode: WaitMode::Kernel,
+            wait_alertable: false,
+            wait_time: 0,
+            timer: Timer::new(),
+            wait_links: Links::detached(),
             ready_links: Links::detached(),
             process_links: Links::detached(),
         }
@@ -195,6 +235,25 @@ impl Thread {
         self.quantum = process.thread_quantum;
         self.disable_boost = process.disable_boost;
         self.state = ThreadState::Initialized;
+
+        // The wait discipline's fixed wiring. The thread is a
+        // waitable object in its own right, every block names its
+        // owner, and the timer block's claim is constant for the
+        // thread's life — its object is the thread's own timer and
+        // its key the timeout status — so a wait only ever
+        // re-links it.
+        self.waitable.init();
+        self.timer.init();
+        let thread = self as *mut Thread;
+        for block in self.wait_blocks.iter_mut() {
+            block.thread = thread;
+        }
+        // SAFETY: the thread and its timer are at their final
+        // addresses; the pointer stays valid for the thread's
+        // lifetime.
+        self.wait_blocks[TIMER_BLOCK].object = addr_of_mut!(self.timer.waitable);
+        self.wait_blocks[TIMER_BLOCK].key = STATUS_TIMEOUT;
+        self.wait_blocks[TIMER_BLOCK].wait_all = false;
 
         // SAFETY: the thread's process link is detached and the
         // process's thread list is initialized (caller contract).
@@ -263,9 +322,40 @@ impl Thread {
         self.saturation
     }
 
-    /// Whether the thread has exited.
+    /// Whether the thread has exited: its waitable header's signal
+    /// state, set once at termination.
     pub fn signaled(&self) -> bool {
-        self.signaled
+        self.waitable.signal_state > 0
+    }
+
+    /// The waitable header, as the wait entry takes it.
+    pub fn waitable(&mut self) -> *mut Waitable {
+        addr_of_mut!(self.waitable)
+    }
+
+    /// The completion status of the current or last wait.
+    pub fn wait_status(&self) -> i32 {
+        self.wait_status
+    }
+
+    /// Why the thread is waiting.
+    pub fn wait_reason(&self) -> WaitReason {
+        self.wait_reason
+    }
+
+    /// The mode of the current wait.
+    pub fn wait_mode(&self) -> WaitMode {
+        self.wait_mode
+    }
+
+    /// Whether an APC may break the current wait.
+    pub fn wait_alertable(&self) -> bool {
+        self.wait_alertable
+    }
+
+    /// The tick stamp of the current wait.
+    pub fn wait_time(&self) -> u64 {
+        self.wait_time
     }
 
     /// The owning process.

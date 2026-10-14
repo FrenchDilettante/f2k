@@ -201,7 +201,7 @@ mod target {
 }
 
 #[cfg(target_arch = "x86")]
-pub(crate) use target::{boot, idle_loop};
+pub(crate) use target::{boot, dispatcher, idle_loop};
 
 #[cfg(test)]
 mod tests {
