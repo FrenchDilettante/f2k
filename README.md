@@ -104,70 +104,23 @@ f2k/
 │   └── qemu-tests.yaml    # On-target test cases (data, not Makefile targets)
 │
 ├── tests/            # Windows 2000 test corpus (see tests/README.md)
-│   ├── README.md         # Test conventions and one-line summaries
-│   ├── build.bat         # Rebuilds every fixture on the Windows 2000 machine
-│   ├── exit0/
-│   │   ├── exit0.c       # Baseline: no CRT, entry calls ExitProcess(0)
-│   │   ├── exit0.exe      # Fixture compiled on a real Windows 2000 machine
-│   │   └── imports.txt    # Verified import surface of the fixture
-│   ├── ret0/             # Baseline: CRT startup, main returns 0
-│   │   ├── ret0.c
-│   │   ├── ret0.exe       # Fixture compiled on a real Windows 2000 machine
-│   │   └── imports.txt    # Verified import surface of the fixture
-│   ├── hello/
-│   │   ├── hello.c        # Console rung: CRT + printf "Hello, world!"
-│   │   ├── hello.exe      # Fixture compiled on a real Windows 2000 machine
-│   │   └── imports.txt    # Verified import surface of the fixture
-│   └── hellogui/
-│       ├── hellogui.c     # GUI rung: window + TextOut, self-terminating
-│       ├── hellogui.exe   # Fixture compiled on a real Windows 2000 machine
-│       └── imports.txt    # Verified import surface of the fixture
 │
 └── kernel/           # F2K Kernel
     ├── Cargo.toml        # Kernel package
     └── src/
-        ├── main.rs       # Kernel binary: links the ELF; panic handler
-        ├── lib.rs        # Kernel library: kmain and all modules (unit-testable)
-        ├── c_lib.rs      # C library stubs (linker support)
         ├── boot/         # Boot-related code
-        │   └── mod.rs    # Multiboot header and _start stub
-        ├── cpu/          # The CPU tables
-        │   ├── mod.rs        # Module root
-        │   ├── gdt.rs        # GDT: flat kernel + user segments, TEB segment, TSS (ring-0 stack for gate entries)
-        │   └── idt.rs        # IDT: CPU exception dump on COM1; the syscall gate; the hardware-vector stubs (shared frame shape)
-        ├── hw/           # The hardware layer: devices the kernel drives directly
-        │   ├── mod.rs        # Module root
-        │   ├── portio.rs     # Byte-wise I/O port access (abstract for host tests)
-        │   ├── pic.rs        # 8259A interrupt controller pair: remap, masks, end-of-interrupt, the spurious-interrupt claim
-        │   ├── pit.rs        # 8254 interval timer: channel 0 programming, the captured tick divisor
-        │   └── serial.rs     # COM1 serial port output
-        ├── interrupt/     # The interrupt core (hardware-neutral, host-testable)
-        │   ├── mod.rs        # Interrupt objects, the vector table, the claim protocol, the dispatch entry, the audit
-        │   ├── irql.rs       # Interrupt request levels: ordering, raise/lower save-restore, the interrupt-flag discipline
-        │   ├── dpc.rs        # Deferred procedure calls: single-flight queue, the request gate, retirement from either drain entry
-        │   └── clock.rs      # The interval clock: tick math (fractional accumulator, slewed system time), the clock's deferred work
-        ├── mem/          # Memory management
-        │   ├── mod.rs        # Module root
-        │   ├── frame.rs      # Physical frame allocator: state-keyed FIFO lists, per-color chains
-        │   ├── multiboot.rs  # Multiboot 1 memory map parsing (host-testable)
-        │   ├── paging.rs     # Boot page tables; runtime table access (self-map, scratch); per-process directories and user/kernel page mapping
-        │   ├── heap.rs       # Kernel heap: fixed-pool free-list allocator (host-testable)
-        │   └── bootmem.rs    # Boot-time initialization: frame database and heap from the memory map
-        ├── exec/         # Executable loading
-        │   ├── mod.rs        # Module root
-        │   ├── pe.rs         # PE32 image parsing, mapping plan and IAT snap (host-testable)
-        │   └── loader.rs     # Kernel-side image loader: staging, section mapping, entry into ring 3
         ├── compat/       # The Windows compatibility layer
-        │   ├── mod.rs        # Module root
-        │   ├── kernel32.rs   # Kernel-synthesized kernel32: 40-export service registry, thunk stubs, replayed startup values, console output
-        │   └── cp1252.rs     # Codepage 1252 replay data: MB/WC tables, ctype flags, case mapping (host-testable)
+        ├── cpu/          # The CPU tables
+        ├── exec/         # Executable loading
+        ├── hw/           # The hardware layer: devices the kernel drives directly
+        ├── interrupt/    # The interrupt core (hardware-neutral, host-testable)
+        ├── mem/          # Memory management
+        ├── process/      # Process lifetime
+        ├── sched/        # The scheduler
         ├── user/         # Ring 3: the user-mode boundary
-        │   ├── mod.rs        # iret entry (TEB segment in FS), trap frame shape, fault-test stubs, process end
-        │   ├── syscall.rs    # Syscall gate (int 0x2E, DPL 3): service dispatch, argument probe/copy, user-memory transfers
-        │   └── userheap.rs   # User-mode heap: first-fit allocator with coalescing; the CRT's VirtualAlloc region
-        └── process/      # Process lifetime
-            ├── mod.rs        # The process object: per-process directory, ring-0 gate stack, user-heap state; the teardown walk
-            └── runner.rs     # Sequential multi-process suite runner (run-process-suite feature): context switch, audits, summary
+        ├── c_lib.rs      # C library stubs (linker support)
+        ├── lib.rs        # Kernel library: kmain and all modules (unit-testable)
+        └── main.rs       # Kernel binary: links the ELF; panic handler
 ```
 
 ## Targets

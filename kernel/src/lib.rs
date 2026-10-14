@@ -45,6 +45,10 @@ mod user;
 // gate stack, user heap
 mod process;
 
+// The scheduler: thread objects, priority bands, ready queues, the
+// quantum, the dispatcher's state machines
+mod sched;
+
 // C library functions for bare-metal (linker support)
 mod c_lib;
 
