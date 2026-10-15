@@ -20,6 +20,8 @@ pub const STATUS_NO_SUCH_DEVICE: NtStatus = 0xC000_000Eu32 as NtStatus;
 pub const STATUS_IO_TIMEOUT: NtStatus = 0xC000_00B5u32 as NtStatus;
 /// A device reported an error.
 pub const STATUS_IO_DEVICE_ERROR: NtStatus = 0xC000_0185u32 as NtStatus;
+/// The volume holds no file system the kernel recognizes (a refused mount).
+pub const STATUS_UNRECOGNIZED_VOLUME: NtStatus = 0xC000_014Fu32 as NtStatus;
 
 /// Whether a status reports success (the non-negative severities: success and informational).
 pub fn nt_success(status: NtStatus) -> bool {
@@ -40,6 +42,7 @@ mod tests {
         assert_eq!(STATUS_NO_SUCH_DEVICE as u32, 0xC000_000E);
         assert_eq!(STATUS_IO_TIMEOUT as u32, 0xC000_00B5);
         assert_eq!(STATUS_IO_DEVICE_ERROR as u32, 0xC000_0185);
+        assert_eq!(STATUS_UNRECOGNIZED_VOLUME as u32, 0xC000_014F);
 
         assert!(nt_success(STATUS_SUCCESS));
         assert!(nt_success(STATUS_TIMEOUT));
@@ -48,6 +51,7 @@ mod tests {
             STATUS_NO_SUCH_DEVICE,
             STATUS_IO_TIMEOUT,
             STATUS_IO_DEVICE_ERROR,
+            STATUS_UNRECOGNIZED_VOLUME,
         ] {
             assert!(!nt_success(status), "{:#010x} is an error", status as u32);
         }

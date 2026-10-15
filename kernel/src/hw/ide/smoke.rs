@@ -78,6 +78,8 @@ pub fn run() {
 
     use crate::block::registry::{registry, Role};
     use crate::block::{BlockDevice, BusType, DeviceInfo, DeviceKind};
+    use crate::fs::fat32::fat::FatEntry;
+    use crate::fs::fat32::volume::{boot_mount, with_boot_volume};
     use crate::hw::ide::disk::{self, LATCH};
     use crate::hw::ide::regs::SECTOR_SIZE;
     use crate::serial_println;
@@ -208,6 +210,43 @@ pub fn run() {
         data_region
     );
 
+    // The boot's mount of the partition: its state, reported in disk LBAs, and two FAT entries
+    // from one FAT sector — the second lookup is served by the cache.
+    match boot_mount() {
+        Some(Ok(())) => {}
+        Some(Err(error)) => panic!("disk-smoke: the boot volume was refused: {:?}", error),
+        None => panic!("disk-smoke: the boot mounted no volume"),
+    }
+    let (layout, cluster_3, cluster_2) =
+        with_boot_volume(|volume| (*volume.layout(), volume.fat_entry(3), volume.fat_entry(2)))
+            .unwrap();
+    assert_eq!(
+        (
+            layout.cluster_count,
+            layout.fat_start,
+            layout.data_start,
+            layout.root_cluster
+        ),
+        (127_006, 32, 2018, 2),
+        "disk-smoke: mount state"
+    );
+    serial_println!(
+        "F2K: disk-smoke: mount ok ({} clusters, FAT at LBA {}, data at LBA {}, root cluster {})",
+        layout.cluster_count,
+        entry.start + layout.fat_start,
+        entry.start + layout.data_start,
+        layout.root_cluster
+    );
+    assert_eq!(cluster_3, Ok(FatEntry::Next(4)), "disk-smoke: FAT[3]");
+    assert_eq!(cluster_2, Ok(FatEntry::EndOfChain), "disk-smoke: FAT[2]");
+    for (cluster, fat_entry) in [(3, cluster_3), (2, cluster_2)] {
+        serial_println!(
+            "F2K: disk-smoke: FAT cluster {} -> {}",
+            cluster,
+            fat_entry.unwrap()
+        );
+    }
+
     // 4. The first file's first sector, read through the partition (reported at its disk LBA),
     //    then an 8-sector run from the same place (one interrupt per sector).
     let file_sector = bpb.cluster_lba(0, FIRST_FILE_CLUSTER) as u64;
@@ -233,8 +272,8 @@ pub fn run() {
         crc32(run)
     );
 
-    // The interrupt accounting: one per sector moved — IDENTIFY's and the boot scan's MBR read
-    // included — and none unasked for.
+    // The interrupt accounting: one per sector moved — IDENTIFY's, the boot scan's MBR read, and
+    // the boot mount's boot-sector read included — and none unasked for.
     let verdict = crate::interrupt::audit();
     serial_println!(
         "F2K: disk-smoke: IRQ14 serviced {} interrupts ({} unsolicited), interrupt audit: {}",

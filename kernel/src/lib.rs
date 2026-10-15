@@ -47,6 +47,9 @@ mod status;
 // views, and the device registry
 mod block;
 
+// File systems: the FAT32 volume over a block device
+mod fs;
+
 // The scheduler: thread objects, priority bands, ready queues, the quantum, the dispatcher's state
 // machines
 mod sched;
@@ -282,6 +285,10 @@ pub extern "C" fn kmain(magic: u32, multiboot_info: u32) -> ! {
     if let Some(disk) = crate::hw::ide::disk::block_device() {
         crate::block::registry::scan_disk(disk);
     }
+
+    // The boot volume: the first registered partition, mounted as FAT32. Silent — a boot without
+    // a volume is normal, and a refused volume is left unmounted.
+    crate::fs::fat32::volume::mount_boot_volume();
 
     // The disk diagnostic boot: read the drive's identity, the MBR, the volume boot sector, and
     // the first file's sectors through the interrupt-driven path, then fall through to the normal

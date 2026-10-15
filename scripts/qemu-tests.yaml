@@ -481,8 +481,13 @@ cases:
   # 4096 bytes, and one IRQ14 per sector is expected, none unsolicited.
   # The reads go through the block layer: the disk and the one partition
   # the boot-time scan registers from its MBR, the volume read as that
-  # partition's own sectors. The scan's MBR read is the thirteenth
-  # interrupt (IDENTIFY 1, scan 1, then 1 + 1 + 1 + 8).
+  # partition's own sectors. The boot also mounts that partition as a
+  # FAT32 volume; the diagnostic reports the mount state (in disk LBAs)
+  # and two FAT entries from one FAT sector — the second lookup is a
+  # cache hit. Fifteen interrupts: IDENTIFY, the scan's MBR read, the
+  # mount's boot-sector read, the smoke's MBR and VBR reads, the FAT
+  # sector, the single-sector file read, and the 8-sector run
+  # (1 + 1 + 1 + 1 + 1 + 1 + 1 + 8).
   - name: disk-smoke
     description: the IDE diagnostic boot reads the MBR, the volume boot sector, and the first fixture's sectors through the block layer and IRQ14, then the default image exits 0 (Limine disk path)
     image: disk
@@ -495,9 +500,12 @@ cases:
       - "F2K: disk-smoke: block devices: 0 = ATA disk (131072 sectors of 512 bytes), 1 = partition 0 of device 0 (129024 sectors)"
       - "F2K: disk-smoke: MBR ok (signature 0xAA55, partition 0 type 0x0C at LBA 2048, 129024 sectors)"
       - "F2K: disk-smoke: volume boot sector ok (signature 0xAA55, 512 bytes/sector, 1 sector/cluster, 32 reserved, 2 FATs, 993 sectors/FAT, root cluster 2, data region at LBA 4066)"
+      - "F2K: disk-smoke: mount ok (127006 clusters, FAT at LBA 2080, data at LBA 4066, root cluster 2)"
+      - "F2K: disk-smoke: FAT cluster 3 -> 4"
+      - "F2K: disk-smoke: FAT cluster 2 -> end of chain"
       - "F2K: disk-smoke: LBA 4067 CRC-32 0x659C3505"
       - "F2K: disk-smoke: LBA 4067+8 CRC-32 0x15FB0DC0"
-      - "F2K: disk-smoke: IRQ14 serviced 13 interrupts (0 unsolicited), interrupt audit: ok"
+      - "F2K: disk-smoke: IRQ14 serviced 15 interrupts (0 unsolicited), interrupt audit: ok"
       - "F2K: image loaded"
       - "F2K: entering ring 3"
       - "F2K: user process exited normally (exit code=0)"
