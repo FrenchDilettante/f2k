@@ -129,12 +129,14 @@ pub const KERNEL_HALF_START: usize = (KERNEL_BASE >> 22) as usize;
 /// window's page *table*.
 pub const DIRECTORY_ENTRY_VA: u32 = SELF_MAP_VA + ((SELF_MAP_SLOT as u32) << 12);
 /// The per-process ring-0 gate stack window (directory entry 514): sub-allocated into per-thread
-/// slots, each a guard page plus the 16 KiB stack. Slot 0's top is [`GATE_STACK_TOP`], the stack
-/// the boot path has always installed.
+/// slots, each a guard page plus the 16 KiB stack. Slot 0's top is [`GATE_STACK_TOP`], a main
+/// thread's stack.
 pub const GATE_STACK_WINDOW: u32 = KERNEL_BASE + 2 * 0x0040_0000;
 /// Gate stack pages, one frame each (16 KiB).
 pub const GATE_STACK_PAGES: usize = 4;
-/// The gate stack's top: slot 0's top, the boot path's stack.
+/// Slot 0's top: the main thread's stack, pinned by the layout tests (the switch installs every
+/// thread's top from its record, so nothing else reads it).
+#[cfg(test)]
 pub const GATE_STACK_TOP: u32 = gate_slot_top(0);
 /// One thread's slot: a guard page plus the stack pages.
 pub const GATE_SLOT_STRIDE: u32 = ((GATE_STACK_PAGES + 1) as u32) * PAGE_SIZE;
@@ -573,13 +575,6 @@ pub fn map_gate_slot(index: u32) -> [u32; GATE_STACK_PAGES] {
         *slot = frame;
     }
     frames
-}
-
-/// Map slot 0's gate stack into the current address space: the boot path's shape (the fault-test
-/// stubs, which run on the boot address space and own no process record).
-#[cfg(target_arch = "x86")]
-pub fn map_gate_stack() -> [u32; GATE_STACK_PAGES] {
-    map_gate_slot(0)
 }
 
 /// Read word `index` of `frame_phys` through the scratch window: the one-page alias of any frame,

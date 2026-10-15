@@ -462,12 +462,13 @@ impl Dispatcher {
 
         if new_priority != priority {
             self.apply_priority(thread, new_priority);
-        } else if !self.next.is_null() {
-            // Equal priority and a standby already pending: the running thread stays until the
-            // switch.
-            thread.preempted = false;
-        } else {
+        } else if self.next.is_null() {
             self.standby_from_ready(priority);
+        }
+        // A thread whose quantum ended goes behind its equals when it is displaced, whatever
+        // displaced it: an earlier arrival's preemption mark must not put it back at the head.
+        if !self.next.is_null() {
+            thread.preempted = false;
         }
         self.next
     }
@@ -519,9 +520,13 @@ impl Dispatcher {
         // The target leaves the standby slot; the switch's caller enters it.
         self.next = null_mut();
         let current = self.current;
-        // SAFETY: the running thread is live, and not the target (the target was on the standby
-        // slot, never queued).
-        self.make_ready(unsafe { &mut *current });
+        // The displaced thread goes back on the ready ladder — unless it is the idle thread, which
+        // is never queued: selection reaches it only as the fallback.
+        if !eq(current, self.idle_thread) {
+            // SAFETY: the running thread is live, and not the target (the target was on the
+            // standby slot, never queued).
+            self.make_ready(unsafe { &mut *current });
+        }
         target
     }
 
@@ -662,17 +667,65 @@ impl Dispatcher {
         );
         // SAFETY: the running thread is live and attached; its process list and process are valid.
         let thread: &mut Thread = unsafe { &mut *self.current };
-        // The thread object signals once, forever, before the scheduling teardown: its waiters wake
-        // through the satisfy walk, with no priority boost — the exit path grants none.
+        self.retire(thread);
+        self.select_next()
+    }
+
+    /// Terminate `thread`, which is off the processor, without letting it run again: take it out
+    /// of whatever holds it — its ready queue, the standby slot, or its wait (the blocks, the
+    /// waiting list, the timer) — discard its queued APCs, then retire it exactly as its own exit
+    /// would. Its kernel stack keeps only abandoned frames; releasing it is the caller's.
+    pub fn terminate_other(&mut self, thread: &mut Thread) {
+        assert!(
+            !eq(thread, self.current),
+            "the running thread terminates through its own exit"
+        );
+        assert!(!eq(thread, self.idle_thread), "the idle thread never exits");
+        match thread.state {
+            ThreadState::Ready => {
+                let level = thread.priority as usize;
+                // SAFETY: a Ready thread is linked on the ready list of its priority.
+                unsafe { unlink(addr_of_mut!(thread.ready_links)) };
+                if self.ready[level].is_empty() {
+                    self.ready_summary &= !(1 << level as u32);
+                }
+            }
+            ThreadState::Standby => {
+                assert!(
+                    eq(self.next, thread),
+                    "a Standby thread holds the standby slot"
+                );
+                self.next = null_mut();
+            }
+            ThreadState::Waiting => self.unwind_wait(thread),
+            // Attached but never readied: nothing schedules it yet.
+            ThreadState::Initialized => {}
+            ThreadState::Running | ThreadState::Terminated | ThreadState::Transition => {
+                panic!("terminate of a thread in state {:?}", thread.state)
+            }
+        }
+        thread.apc_queueable = false;
+        Dispatcher::flush_apcs(thread, super::apc::ApcMode::Kernel);
+        Dispatcher::flush_apcs(thread, super::apc::ApcMode::User);
+        thread.kernel_apc_pending = false;
+        thread.user_apc_pending = false;
+        self.retire(thread);
+    }
+
+    /// The scheduling teardown every termination ends with: the thread object signals once,
+    /// forever, and its waiters wake through the satisfy walk with no priority boost (the exit
+    /// path grants none); then the thread leaves its process's list and is Terminated.
+    fn retire(&mut self, thread: &mut Thread) {
         thread.waitable.signal_state = 1;
         if !thread.waitable.waiters.is_empty() {
             let waiters = addr_of_mut!(thread.waitable);
             self.satisfy_waiters(waiters, 0);
         }
+        // SAFETY: an attached thread is linked on its process's thread list.
         unsafe { unlink(addr_of_mut!(thread.process_links)) };
         thread.state = ThreadState::Terminated;
+        // SAFETY: the process outlives its attached threads.
         unsafe { (*thread.process).stack_count -= 1 };
-        self.select_next()
     }
 
     /// Set the process's base priority to `new_base`, adjusting every attached thread's base and
@@ -1158,6 +1211,96 @@ mod tests {
         assert!(!d.terminate().is_null());
         assert_eq!(unsafe { (*p).stack_count() }, 0);
         assert!(unsafe { (*p).threads.is_empty() });
+    }
+
+    /// Terminating a Ready thread off the processor: it leaves its queue (the summary bit clears
+    /// with the last one at that priority, stays while another remains), signals, leaves the
+    /// process list, and is Terminated — nothing selects it again.
+    #[test]
+    fn terminate_other_takes_a_ready_thread_off_its_queue() {
+        let d = dispatcher();
+        let p = process(8);
+        let running = thread(p);
+        let first = thread(p);
+        let second = thread(p);
+        run(d, as_ptr(running));
+        d.make_ready(first);
+        d.make_ready(second);
+        assert_eq!(d.ready_summary, 1 << 8);
+
+        d.terminate_other(first);
+        assert_eq!(first.state(), ThreadState::Terminated);
+        assert!(first.signaled());
+        assert!(!first.apc_queueable);
+        assert_eq!(
+            d.ready_summary,
+            1 << 8,
+            "the other ready thread keeps the bit"
+        );
+        assert_eq!(unsafe { (*p).stack_count() }, 2);
+
+        d.terminate_other(second);
+        assert_eq!(d.ready_summary, 0);
+        assert!(d.ready[8].is_empty());
+        assert!(!d.has_schedulable());
+        assert_eq!(unsafe { (*p).stack_count() }, 1);
+        assert_eq!(d.audit(), Ok(()));
+    }
+
+    /// Terminating the Standby thread empties the standby slot: the switch never enters it.
+    #[test]
+    fn terminate_other_clears_the_standby_slot() {
+        let d = dispatcher();
+        let p = process(8);
+        let running = thread(p);
+        let next = thread(p);
+        run(d, as_ptr(running));
+        standby(d, as_ptr(next));
+
+        d.terminate_other(next);
+        assert!(d.next.is_null());
+        assert_eq!(next.state(), ThreadState::Terminated);
+        assert!(!d.has_schedulable());
+    }
+
+    /// An attached thread that was never readied terminates with nothing to unlink but its
+    /// process membership.
+    #[test]
+    fn terminate_other_retires_a_never_readied_thread() {
+        let d = dispatcher();
+        let p = process(8);
+        let running = thread(p);
+        let fresh = thread(p);
+        run(d, as_ptr(running));
+
+        d.terminate_other(fresh);
+        assert_eq!(fresh.state(), ThreadState::Terminated);
+        assert_eq!(unsafe { (*p).stack_count() }, 1);
+        assert_eq!(d.audit(), Ok(()));
+    }
+
+    /// The running thread exits through its own path, never through another's termination.
+    #[test]
+    #[should_panic(expected = "the running thread terminates through its own exit")]
+    fn terminate_other_refuses_the_running_thread() {
+        let d = dispatcher();
+        let p = process(8);
+        let running = thread(p);
+        run(d, as_ptr(running));
+        d.terminate_other(running);
+    }
+
+    /// A thread already terminated cannot terminate twice.
+    #[test]
+    #[should_panic(expected = "terminate of a thread in state Terminated")]
+    fn terminate_other_refuses_a_terminated_thread() {
+        let d = dispatcher();
+        let p = process(8);
+        let running = thread(p);
+        let other = thread(p);
+        run(d, as_ptr(running));
+        d.terminate_other(other);
+        d.terminate_other(other);
     }
 
     // --- Group D: the priority-change state machine -------------------------
@@ -2214,6 +2357,59 @@ mod tests {
         // The tail requeue: the queued equal keeps its place ahead.
         assert!(core::ptr::eq(d.find_ready(0), as_ptr(queued)));
         assert!(core::ptr::eq(d.find_ready(0), as_ptr(a)));
+    }
+
+    /// C1b: the same displacement when the quantum end also decays the priority: the decay leaves
+    /// the standby in place, and the thread still requeues behind the equal at its new level — the
+    /// earlier arrival's preemption mark does not put it at the head.
+    #[test]
+    fn a_decaying_quantum_end_still_requeues_at_the_tail() {
+        let d = dispatcher();
+        let p = process(8);
+        let a = thread(p);
+        a.priority = 10; // boosted above its base of 8
+        run(d, as_ptr(a));
+        let equal = thread(p);
+        equal.priority = 9;
+        d.make_ready(equal);
+        let higher = thread(p);
+        higher.priority = 12;
+        higher.base_priority = 12;
+        d.make_ready(higher); // takes the slot, flags a
+        assert!(a.preempted);
+
+        d.charge_running_tick();
+        d.charge_running_tick();
+        let target = d.dispatch_target();
+        assert!(core::ptr::eq(target, as_ptr(higher)));
+        assert_eq!(a.priority(), 9, "the quantum end decayed one step");
+        assert!(!a.preempted);
+        assert!(core::ptr::eq(d.find_ready(0), as_ptr(equal)));
+        assert!(core::ptr::eq(d.find_ready(0), as_ptr(a)));
+    }
+
+    /// C1c: a thread readied while the idle thread runs is switched to at the window, and the idle
+    /// thread is not queued behind it: it stays the fallback, off every ready list.
+    #[test]
+    fn the_window_never_queues_the_idle_thread() {
+        let d = dispatcher();
+        let p = process(8);
+        let idle_process = process(0);
+        let idle = thread(idle_process);
+        idle.state = ThreadState::Running;
+        d.install_idle_thread(as_ptr(idle));
+        let woken = thread(p);
+        d.make_ready(woken); // takes the idle processor: the standby slot
+
+        let target = d.dispatch_target();
+        assert!(core::ptr::eq(target, as_ptr(woken)));
+        assert_eq!(d.ready_summary, 0, "the idle thread is not on ready list 0");
+        assert!(!d.has_schedulable());
+        assert_eq!(
+            idle.state(),
+            ThreadState::Running,
+            "untouched until the switch"
+        );
     }
 
     /// C2: a request with no better thread is consumed to a refusal — the thread keeps the

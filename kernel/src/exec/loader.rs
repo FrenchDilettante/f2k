@@ -1,7 +1,8 @@
 //! Kernel-side image loader: run a PE32 file as the user process.
 //!
-//! [`run_image`] parses, stages the in-memory image, snaps the IAT against the kernel-synthesized
-//! kernel32, maps the pages with their final protections, and enters ring 3 at the entry point.
+//! [`load_image`] parses, stages the in-memory image, snaps the IAT against the kernel-synthesized
+//! kernel32, maps the pages with their final protections, and returns the entry point: the caller
+//! enters the process as its main thread, which the scheduler starts there.
 //!
 //! Quirk: the image is built in a staging buffer — a borrowed static, not a stack frame — because
 //! the loader runs on the small boot stack. The snap happens in staging, before mapping: mapped
@@ -80,10 +81,11 @@ fn page_writable(image: &Image, page_rva: u32) -> bool {
     })
 }
 
-/// Load `file` as the user process and enter ring 3 at its entry point; `name` stages the
-/// parameters page. Never returns.
+/// Load `file` as the new current process — parse, stage, create the process, snap the imports,
+/// map the image, stack, TEB and parameters pages — and return its entry point for the main
+/// thread's ladder. `name` stages the parameters page.
 #[cfg(target_arch = "x86")]
-pub fn run_image(file: &[u8], name: &'static str) -> ! {
+pub fn load_image(file: &[u8], name: &'static str) -> u32 {
     use crate::mem::paging::{self, PAGE_SIZE};
     use crate::user::{TEB_PAGE, USER_STACK_LOW_PAGE, USER_STACK_PAGE, USER_STACK_TOP};
 
@@ -113,10 +115,10 @@ pub fn run_image(file: &[u8], name: &'static str) -> ! {
     image.map_into(file, staging);
 
     // The process's own state, all in one place: a fresh address space (kernel half inherited,
-    // active on CR3), a fresh ring-0 gate stack (mapped supervisor-only with its guard page,
-    // installed as the TSS esp0), and fresh heap bookkeeping. Every mapping below (thunk page,
-    // image, stack, TEB, params) lands in this process's directory and its services see this
-    // process's heap.
+    // active on CR3), the main thread's ring-0 gate stack (mapped supervisor-only with its guard
+    // page; the switch into the thread installs it as the TSS esp0), and fresh heap bookkeeping.
+    // Every mapping below (thunk page, image, stack, TEB, params) lands in this process's
+    // directory and its services see this process's heap.
     crate::process::Process::start(name);
 
     // The thunks must be mapped before the snap: IAT slots receive user-space addresses.
@@ -169,30 +171,7 @@ pub fn run_image(file: &[u8], name: &'static str) -> ! {
         image.entry_va(),
         USER_STACK_TOP
     );
-    // The entry: the thread-ified boot for the smokes (the main thread enters through the
-    // scheduler's first switch), the direct ring-3 entry for every other boot.
-    #[cfg(any(
-        feature = "run-pingpong",
-        feature = "run-sleep",
-        feature = "run-spin",
-        feature = "run-respawn",
-        feature = "run-suspend"
-    ))]
-    {
-        crate::process::threads::enter_as_main_thread(image.entry_va(), USER_STACK_TOP)
-    }
-    #[cfg(not(any(
-        feature = "run-pingpong",
-        feature = "run-sleep",
-        feature = "run-spin",
-        feature = "run-respawn",
-        feature = "run-suspend"
-    )))]
-    {
-        // SAFETY: image, stack, TEB and thunk pages are mapped with their final protections; the
-        // gate is DPL 3; the TSS carries the ring-0 stack.
-        unsafe { crate::user::enter_ring3(image.entry_va(), USER_STACK_TOP) }
-    }
+    image.entry_va()
 }
 
 #[cfg(test)]

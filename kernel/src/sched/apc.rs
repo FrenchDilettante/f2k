@@ -332,8 +332,8 @@ impl Dispatcher {
     /// Take a thread's whole APC queue of `mode` out as one list, marking every entry not
     /// inserted; the pending flags are untouched (an armed flag over an empty queue is a harmless
     /// residue — the delivery's loop test never runs). Returns the first entry of the detached
-    /// circle, or null if the queue was empty. Nothing in the kernel calls this yet; the exit path
-    /// asserts its queue empty instead.
+    /// circle, or null if the queue was empty. The termination of a thread off the processor
+    /// discards its queues through this; a self-exit asserts its queue empty instead.
     pub fn flush_apcs(thread: &mut Thread, mode: ApcMode) -> *mut Links {
         let queue: &mut List = match mode {
             ApcMode::Kernel => &mut thread.kernel_apcs,
@@ -489,7 +489,16 @@ impl Dispatcher {
         thread.suspend_count += 1;
         if old == 0 && thread.freeze_count == 0 {
             let apc = addr_of_mut!(thread.suspend_apc);
-            self.queue_apc(apc, 0, 0, SUSPEND_WAKE_INCREMENT);
+            if !self.queue_apc(apc, 0, 0, SUSPEND_WAKE_INCREMENT) {
+                // The suspend APC is still queued from an earlier suspend that a resume undid
+                // before the thread ever delivered it: that resume released a count with nobody
+                // parked. The queued APC serves this suspend; the count it would find must go, or
+                // its wait would be satisfied at once and the thread would run on.
+                let semaphore = &mut thread.suspend_semaphore.waitable;
+                if semaphore.signal_state > 0 {
+                    semaphore.signal_state -= 1;
+                }
+            }
         }
         Ok(old)
     }
@@ -1338,6 +1347,32 @@ mod tests {
         assert_eq!(t.suspend_semaphore.count(), 0, "the satisfied wait consumed it");
     }
 
+    /// F6b: a suspend that finds the APC still queued — an earlier suspend that a resume undid
+    /// before the thread delivered it — takes back the count that resume left with nobody parked:
+    /// the queued APC then parks the thread, however many such pairs came before.
+    #[test]
+    fn a_suspend_over_a_still_queued_apc_takes_back_the_residue() {
+        let d = dispatcher();
+        let p = process(8);
+        let target = thread(p);
+        let caller = thread(p);
+        run(d, caller);
+        d.make_ready(target);
+
+        for _ in 0..3 {
+            assert_eq!(d.suspend_thread(target), Ok(0));
+            assert_eq!(d.resume_thread(target), 1);
+        }
+        assert_eq!(d.suspend_thread(target), Ok(0));
+        assert!(target.suspend_apc.inserted());
+        assert_eq!(target.suspend_semaphore.count(), 0, "no residue left");
+
+        // The target runs and delivers: it parks, suspended.
+        run(d, target);
+        assert_eq!(d.deliver_kernel_apcs(), ApcDelivery::Parked);
+        assert_eq!(target.state(), ThreadState::Waiting);
+    }
+
     /// F7: force-resume — the exit route's unconditional release, waiter or not; the waiter-less
     /// release leaves the residue count.
     #[test]
@@ -1450,6 +1485,47 @@ mod tests {
         run(d, t);
         d.resume_kernel_apcs();
         close_apc_queue(t);
+    }
+
+    /// G2b: a suspended thread terminated by another — the process-ending fault's route. It never
+    /// runs its own exit: its parked wait on the suspend semaphore is unwound, a still-queued APC
+    /// is discarded, and the semaphore is left with no waiter.
+    #[test]
+    fn a_suspended_thread_terminated_by_another_leaves_nothing_parked() {
+        // Parked inside the suspend APC's normal routine.
+        let d = dispatcher();
+        let p = process(8);
+        let suspended = thread(p);
+        let killer = thread(p);
+        run(d, suspended);
+        d.suspend_thread(suspended).unwrap();
+        assert_eq!(d.deliver_kernel_apcs(), ApcDelivery::Parked);
+        run(d, killer);
+
+        d.terminate_other(suspended);
+        assert_eq!(suspended.state(), ThreadState::Terminated);
+        assert!(suspended.suspend_semaphore.waitable.waiters.is_empty());
+        assert!(!d.has_schedulable());
+        assert_eq!(d.audit(), Ok(()));
+
+        // Suspended but never dispatched: the APC is still queued, and the termination discards
+        // it — queue empty, flags down, the record no longer inserted.
+        let d = dispatcher();
+        let p = process(8);
+        let queued = thread(p);
+        let killer = thread(p);
+        run(d, killer);
+        d.make_ready(queued);
+        d.suspend_thread(queued).unwrap();
+        assert!(queued.suspend_apc.inserted());
+
+        d.terminate_other(queued);
+        assert_eq!(queued.state(), ThreadState::Terminated);
+        assert!(queued.kernel_apcs.is_empty());
+        assert!(!queued.kernel_apc_pending);
+        assert!(!queued.suspend_apc.inserted());
+        assert!(!queued.apc_queueable);
+        assert_eq!(d.audit(), Ok(()));
     }
 
     /// G3: suspend of an exiting or exited thread is refused — the count does not move.

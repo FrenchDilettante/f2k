@@ -5,9 +5,11 @@
 //! processor is already executing it at install, so it is entered directly, never through the
 //! startup frame.
 //!
-//! The loop: the deferred-work queue drains first, then the next-thread check, then the idle call —
-//! interrupts disabled going into a decision pass, enabled coming out, and the halt never reached
-//! with them disabled.
+//! The loop: the deferred-work queue drains first, then an ended process is reaped, then the
+//! next-thread check, then the idle call — interrupts disabled going into a decision pass, enabled
+//! coming out, and the halt never reached with them disabled. The reap runs here because the idle
+//! thread's stack and address space survive every process: a process's last thread switches to
+//! it, and it tears the process down (and, on a suite boot, creates the next).
 
 use super::dispatcher::Dispatcher;
 use super::process::SchedProcess;
@@ -40,12 +42,15 @@ pub fn install(
     dispatcher.install_idle_thread(idle as *mut Thread);
 }
 
-/// One decision of the idle loop, in the decided order: the drain first, then the next-thread
-/// check, then the idle call.
+/// One decision of the idle loop, in the decided order: the drain first, then the reap, then the
+/// next-thread check, then the idle call.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum IdleAction {
     /// Drain the deferred-work queue (a drain may ready a thread; the caller re-steps after it).
     DrainDpc,
+    /// Tear down the process whose last thread has ended (a suite boot's next leg may be readied
+    /// by it; the caller re-steps after it).
+    Reap,
     /// A thread is schedulable: leave the loop toward the switch (the switch's own interrupt
     /// discipline takes over).
     SwitchToNext,
@@ -53,11 +58,14 @@ pub enum IdleAction {
     IdleCall,
 }
 
-/// The idle loop's decision order as a pure function: the drain precedes the next-thread check,
-/// which precedes the idle call. `dpc_pending` and `schedulable` are the loop's two inputs.
-pub fn idle_step(dpc_pending: bool, schedulable: bool) -> IdleAction {
+/// The idle loop's decision order as a pure function: the drain precedes the reap, which precedes
+/// the next-thread check, which precedes the idle call — a dead process is gone before anything
+/// else runs. `dpc_pending`, `reap_pending` and `schedulable` are the loop's three inputs.
+pub fn idle_step(dpc_pending: bool, reap_pending: bool, schedulable: bool) -> IdleAction {
     if dpc_pending {
         IdleAction::DrainDpc
+    } else if reap_pending {
+        IdleAction::Reap
     } else if schedulable {
         IdleAction::SwitchToNext
     } else {
@@ -123,11 +131,17 @@ mod target {
             irql::state_mut().mask_interrupts();
             match idle_step(
                 crate::interrupt::dpc::has_pending(),
+                crate::process::reap_pending(),
                 dispatcher().has_schedulable(),
             ) {
                 IdleAction::DrainDpc => {
                     // The drain may ready a thread: the next pass re-steps.
                     crate::interrupt::dpc::drain();
+                }
+                IdleAction::Reap => {
+                    // On the boot stack and, after the switch from the process's last thread, the
+                    // boot address space. The next pass re-steps.
+                    crate::process::reap();
                 }
                 IdleAction::SwitchToNext => {
                     switch_away_from_idle();
@@ -143,8 +157,7 @@ mod target {
     }
 
     /// The switch away from the idle thread: the dispatch level around the switch, the level-ledger
-    /// handover, the caller-side install, then the swap. Nothing readies a thread in this boot (no
-    /// thread-creation surface), so the smoke boots exercise it.
+    /// handover, the caller-side install, then the swap.
     fn switch_away_from_idle() {
         let previous = irql::state_mut().raise(irql::DISPATCH);
         let dispatch = dispatcher();
@@ -179,9 +192,9 @@ mod target {
         addr_of_mut!(IDLE_THREAD)
     }
 
-    /// Whether the processor is on the idle thread. Boots that enter ring 3 without a thread record
-    /// (the single-image and suite runs) run user code on it, so the thread services must refuse
-    /// to park, exit, or create relative to it.
+    /// Whether the processor is on the idle thread, which never blocks: kernel code that may block
+    /// (the disk path) checks first. User code never runs on the idle thread — every user context
+    /// is a thread of its process.
     pub(crate) fn on_idle_thread() -> bool {
         eq(dispatcher().current_thread(), idle_thread())
     }
@@ -257,20 +270,26 @@ mod tests {
 
     // D2: the loop's decision order.
 
-    /// The decision order: the drain precedes the next-thread check, which precedes the idle call —
-    /// and the idle call is reached only with nothing pending.
+    /// The decision order: the drain precedes the reap, which precedes the next-thread check, which
+    /// precedes the idle call — and the idle call is reached only with nothing pending.
     #[test]
     fn the_idle_loop_decision_order() {
         use IdleAction::*;
 
         // The drain always comes first: a drain may ready a thread, so the check order matters even
-        // when both inputs are set.
-        assert_eq!(idle_step(true, true), DrainDpc);
-        assert_eq!(idle_step(true, false), DrainDpc);
+        // when every input is set.
+        for reap in [false, true] {
+            for schedulable in [false, true] {
+                assert_eq!(idle_step(true, reap, schedulable), DrainDpc);
+            }
+        }
 
-        // After the drain (re-stepped with the queue empty): the next-thread check, then the idle
-        // call.
-        assert_eq!(idle_step(false, true), SwitchToNext);
-        assert_eq!(idle_step(false, false), IdleCall);
+        // After the drain: an ended process is torn down before any thread runs.
+        assert_eq!(idle_step(false, true, true), Reap);
+        assert_eq!(idle_step(false, true, false), Reap);
+
+        // Then the next-thread check, then the idle call.
+        assert_eq!(idle_step(false, false, true), SwitchToNext);
+        assert_eq!(idle_step(false, false, false), IdleCall);
     }
 }

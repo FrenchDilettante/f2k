@@ -400,7 +400,11 @@ pub fn drain() {
         // retire pass detaches entries the clock interrupt also links, so it starts masked, per its
         // contract. The lower restores the flag the raise captured.
         irql.mask_interrupts();
-        queue.retire(irql);
+        // The test above ran with interrupts possibly enabled: a nested interrupt's exit may have
+        // drained the queue since. The retire pass needs a non-empty queue, so test again, masked.
+        if !queue.is_empty() && !queue.routine_active {
+            queue.retire(irql);
+        }
         irql.lower(previous);
     }
 }

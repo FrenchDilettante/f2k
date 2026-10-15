@@ -103,7 +103,7 @@ mod target {
         }
     }
 
-    /// The idle thread's wait (the boot context, or ring 3 entered without a thread record): halt
+    /// The idle thread's wait (the boot context, before any user thread exists): halt
     /// between interrupts until the event is signaled, then take the signal. Every interrupt wakes
     /// the halt (the tick bounds the wait).
     fn halt_until_signaled() -> bool {

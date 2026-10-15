@@ -92,14 +92,6 @@ pub(crate) fn wait_for_interrupt() {
     }
 }
 
-/// Idle forever with interrupts enabled: the kernel's resting state once no thread remains — the
-/// idle thread's loop (the deferred-work queue drains at every pass, and the interval clock wakes
-/// the idle call).
-#[cfg(target_arch = "x86")]
-pub(crate) fn idle() -> ! {
-    crate::sched::idle::idle_loop()
-}
-
 /// Kernel entry point
 ///
 /// Called by `_start` (boot/mod.rs) with the values the Multiboot loader left in EAX and EBX.
@@ -296,8 +288,9 @@ pub extern "C" fn kmain(magic: u32, multiboot_info: u32) -> ! {
     #[cfg(feature = "disk-smoke")]
     crate::hw::ide::smoke::run();
 
-    // The user process: exit0 through the PE loader by default, ret0 (the CRT startup fixture) with
-    // the `run-ret0` feature. The image ends through its exit import, which reports the exit code
-    // on COM1; the kernel then halts (run to completion).
+    // The user process (exit0 through the PE loader by default; the run and fault-test features
+    // pick others), entered as its main thread: this boot context becomes the idle thread. The
+    // image ends through its exit import, which reports the exit code on COM1; the idle thread
+    // then tears the process down and rests.
     user::run_user_process()
 }

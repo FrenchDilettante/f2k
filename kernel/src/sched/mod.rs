@@ -20,9 +20,9 @@
 //! One processor, no locking: every method runs serialized at the dispatch level, which the
 //! interrupt core already raises around the dispatcher entries.
 
-// Parts of the state machines stay unwired until their consumers land (the forced-resume route's
-// caller is the future teardown conversion); the queues, the delivery, the suspend consumer, and
-// the re-wait are live.
+// Parts of the state machines stay unwired until their consumers land (the forced-resume route has
+// none: a process-ending termination takes a suspended thread off its wait directly); the queues,
+// the delivery, the suspend consumer, and the re-wait are live.
 #![allow(dead_code)]
 
 use core::ptr::{addr_of, addr_of_mut, null_mut};
@@ -245,27 +245,6 @@ pub(crate) unsafe fn unlink(entry: *mut Links) {
         let next = (*entry).next;
         (*prev).next = next;
         (*next).prev = prev;
-    }
-}
-
-/// Visit every attached thread's recorded gate-stack frames, in creation order (the teardown walk's
-/// collection: each live thread's slot frames exactly once).
-pub fn visit_gate_frames(process: &mut process::SchedProcess, visit: &mut dyn FnMut(u32)) {
-    let sentinel = process.threads.sentinel();
-    // SAFETY: the list is initialized and the entries stay linked for the walk.
-    let mut entry = unsafe { process.threads.first() };
-    while !entry.is_null() && !core::ptr::eq(entry, sentinel) {
-        // SAFETY: the entry is a live thread's process link on this list; the list holds only
-        // attached, live threads.
-        let thread = unsafe {
-            &*((entry as usize - core::mem::offset_of!(thread::Thread, process_links))
-                as *const thread::Thread)
-        };
-        for &frame in &thread.gate_frames {
-            visit(frame);
-        }
-        // SAFETY: a linked entry's next pointer names the next entry (or the sentinel).
-        entry = unsafe { (*entry).next };
     }
 }
 

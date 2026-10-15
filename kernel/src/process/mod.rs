@@ -10,12 +10,17 @@
 //! the process at a pinned offset, so a thread's owner pointer resolves the directory base the
 //! context switch loads.
 //!
-//! Single tasking, run to completion: at most one process exists at a time. The one kernel static
-//! here is the current-process pointer — the run-to-completion analog of a scheduler's current
-//! pointer. It is kernel state (like CR3 and the TSS), not per-process state; everything
-//! per-process lives inside the [`Process`] it points at. No other kernel static holds per-process
+//! One process at a time: each runs on its threads until its last thread ends, and the idle
+//! thread tears it down before the next is created. The one kernel static here is the
+//! current-process pointer — the process-level analog of a scheduler's current pointer. It is
+//! kernel state (like CR3 and the TSS), not per-process state; everything per-process lives inside
+//! the [`Process`] it points at. No other kernel static holds per-process
 //! state (the review enforceable form: `static mut` outside the boot/cpu structures names no
 //! per-process user state).
+
+/// The end of a thread and of its process, as decisions: the exit routing, the report lines,
+/// the suite's leg order and tally.
+pub mod exit;
 
 /// The sequential multi-process suite runner (`run-process-suite`).
 #[cfg(all(target_arch = "x86", feature = "run-process-suite"))]
@@ -47,6 +52,27 @@ pub struct Process {
     handles: crate::sched::object::HandleTable,
     /// An exited thread's gate stack, not yet released (see [`DeadStack`]).
     dead_stack: DeadStack,
+    /// The created threads' records, one per child; a terminated child's record is not reused.
+    child_threads: [crate::sched::thread::Thread; CHILD_THREADS],
+    /// The created events' records, handed out in order.
+    events: [crate::sched::event::Event; EVENTS],
+    /// How many event records are handed out.
+    events_used: usize,
+    /// Why the process ended, recorded by its last thread's exit; the idle thread's reap step
+    /// tears down a process once this is set.
+    end: Option<exit::ProcessEnd>,
+}
+
+/// How many threads a process can create besides its main thread.
+pub const CHILD_THREADS: usize = 3;
+
+/// How many events a process can create.
+pub const EVENTS: usize = 8;
+
+/// A fresh record set for [`Process::events`].
+const fn fresh_events() -> [crate::sched::event::Event; EVENTS] {
+    use crate::sched::event::{Event, EventKind};
+    [const { Event::new(EventKind::Notification, false) }; EVENTS]
 }
 
 /// One gate stack: its slot index and the frames mapped in it.
@@ -105,6 +131,12 @@ impl Process {
     pub fn handles_mut(&mut self) -> &mut crate::sched::object::HandleTable {
         &mut self.handles
     }
+
+    /// Record why the process ended: its last thread's exit, once.
+    pub fn set_end(&mut self, end: exit::ProcessEnd) {
+        assert!(self.end.is_none(), "a process ends once");
+        self.end = Some(end);
+    }
 }
 
 #[cfg(target_arch = "x86")]
@@ -126,6 +158,10 @@ impl Process {
             heap: crate::user::userheap::HeapState::new(),
             handles: crate::sched::object::HandleTable::empty(),
             dead_stack: DeadStack::empty(),
+            child_threads: [const { crate::sched::thread::Thread::empty() }; CHILD_THREADS],
+            events: fresh_events(),
+            events_used: 0,
+            end: None,
         });
 
         // The scheduling record's thread-list sentinel closes now that the record is at its final
@@ -141,16 +177,15 @@ impl Process {
         // SAFETY: the slot pages map into the current address space, above the slot's unmapped
         // guard page.
         let frames = paging::map_gate_slot(slot as u32);
-        // SAFETY: the main thread is not shared (single tasking).
+        // SAFETY: the main thread is not yet schedulable; nothing else reaches it.
         unsafe {
             (*thread).gate_slot = slot;
             (*thread).gate_frames = frames;
             (*thread).initial_stack = paging::gate_slot_top(slot as u32);
             (*thread).teb_va = crate::user::TEB_PAGE;
         }
-        // The boot path installs the main thread's stack top as the TSS `esp0` directly; the
-        // switch's own per-switch install takes over with the runner conversion.
-        crate::cpu::gdt::set_gate_stack_top(paging::gate_slot_top(slot as u32));
+        // The TSS `esp0` is the switch's to install: the first switch into the main thread loads
+        // its stack top.
     }
 }
 
@@ -218,8 +253,8 @@ impl GateSlots {
     }
 }
 
-/// The current process. Single tasking: installed at start, read by the service paths, and taken at
-/// exit by the teardown path.
+/// The current process. One at a time: installed at start, read by the service paths, and taken by
+/// the teardown once its last thread has ended.
 #[cfg(target_arch = "x86")]
 static mut CURRENT: Option<Process> = None;
 
@@ -265,19 +300,18 @@ pub fn current() -> &'static Process {
     }
 }
 
-// --- Teardown (the multi-process suite) -----------------------------------
+// --- Teardown -------------------------------------------------------------
 //
-// After a process exits or faults, the kernel switches back to the boot address space (on the boot
-// gate stack), then releases every frame the process owned: its user pages and their tables, the
-// gate stack's data frames and table, and the directory frame last. The walk reads the dead
-// directory through the scratch window — it is not mapped anywhere, and must not be: the kernel
-// never runs on a directory being freed.
+// A process whose last thread has ended is torn down by the idle thread, on the boot stack and the
+// boot address space (the switch to the idle thread loaded it): every frame the process owned is
+// released, and the directory frame last. The walk reads the dead directory through the scratch
+// window — it is not mapped anywhere, and must not be: the kernel never runs on a directory being
+// freed.
 
 /// Walk the process directory at `dir_phys` and release everything it owns exclusively: every
 /// present PTE's data frame in the user windows and their page tables, plus the gate window's
-/// table. The slot data frames are the threads' (released through
-/// [`crate::sched::visit_gate_frames`]); the shared kernel half is never touched, and the directory
-/// frame is the caller's, last.
+/// table. The gate slots' data frames are the threads' (released per thread, before this walk);
+/// the shared kernel half is never touched, and the directory frame is the caller's, last.
 pub fn release_address_space(
     dir_phys: u32,
     read_entry: impl Fn(u32, usize) -> u32,
@@ -309,17 +343,100 @@ pub fn release_address_space(
     }
 }
 
+/// Release every frame a finished process owns, in the teardown's order: per-thread first, then
+/// per-process. Every thread has ended by now and released its own gate stack from another stack —
+/// except the last one, whose exit could only park it: its frames go first (the mapping goes with
+/// the gate window's table). Then the address space, and the directory frame last of all.
+///
+/// # Panics
+///
+/// A thread is still attached: teardown follows the last thread's end, never precedes it.
+pub fn release_process(
+    process: &mut Process,
+    read_entry: impl Fn(u32, usize) -> u32,
+    mut release: impl FnMut(u32),
+) {
+    assert_eq!(
+        process.sched.stack_count(),
+        0,
+        "teardown of a process with attached threads"
+    );
+    let dir_phys = process.dir_phys();
+
+    // Per thread: the last exit's parked stack.
+    if let Some((_, frames)) = process.dead_stack.take() {
+        for frame in frames {
+            release(frame);
+        }
+    }
+
+    // Per process: user data frames and their tables from the walk, the gate window's table from
+    // its directory entry, then the directory itself.
+    release_address_space(dir_phys, read_entry, &mut release);
+    release(dir_phys);
+}
+
 /// The current process, removed from the current-process pointer, for teardown. Call only when the
 /// kernel has switched off the process's address space (its frames are then unreachable except
 /// through the scratch window).
-#[cfg(all(target_arch = "x86", feature = "run-process-suite"))]
-pub fn take_current() -> Process {
+#[cfg(target_arch = "x86")]
+fn take_current() -> Process {
     // SAFETY: single CPU; the teardown path is the only taker, run once per process after the
     // address-space switch.
     unsafe {
         let slot = &mut *core::ptr::addr_of_mut!(CURRENT);
         slot.take().expect("no process is running")
     }
+}
+
+/// Whether the idle thread has a process to reap: the current process has ended (its last thread's
+/// exit recorded why) and is not yet torn down.
+#[cfg(target_arch = "x86")]
+pub fn reap_pending() -> bool {
+    // SAFETY: single CPU; a read of the current-process slot.
+    unsafe {
+        (*core::ptr::addr_of!(CURRENT))
+            .as_ref()
+            .is_some_and(|process| process.end.is_some())
+    }
+}
+
+/// The idle thread's reap step: tear the ended process down, then let the boot decide what
+/// follows — a suite leg's audit and the next leg (or the summary), or, on a one-process boot,
+/// nothing: the idle thread rests.
+#[cfg(target_arch = "x86")]
+pub fn reap() {
+    let end = current().end.expect("reap of a process that has not ended");
+    teardown_current();
+    #[cfg(feature = "run-process-suite")]
+    runner::process_reaped(end);
+    #[cfg(not(feature = "run-process-suite"))]
+    let _ = end;
+}
+
+/// Tear the current process down: release every frame it owns, per thread then per process (see
+/// [`release_process`]), and retire the current-process slot.
+///
+/// Must run on the boot address space — the walk reads the dead directory through the scratch
+/// window, never through a mapping.
+#[cfg(target_arch = "x86")]
+fn teardown_current() {
+    use crate::mem::frame::FrameState;
+    use crate::mem::paging::{self, PAGE_SIZE};
+
+    // The process is torn down in place: its record holds absolute addresses into itself, and
+    // taking the slot would move it. The slot is retired only at the end.
+    let process = current_mut();
+    release_process(
+        process,
+        |frame, index| paging::read_frame_word(frame, index),
+        |frame_phys| {
+            crate::mem::bootmem::with_frame_db(|db| {
+                db.release(frame_phys / PAGE_SIZE, FrameState::Free);
+            });
+        },
+    );
+    take_current();
 }
 
 /// The post-boot free-frame count: the baseline the per-process teardown audits compare against.
@@ -340,67 +457,21 @@ pub fn record_allocator_baseline() {
     }
 }
 
-/// Tear the current process down completely: release every frame it owns (the directory frame
-/// last), then audit the frame database and the kernel heap against the post-boot baseline. Returns
-/// whether the state returned exactly to the baseline (zero leak).
-///
-/// Must run on the boot address space — the walk reads the dead directory through the scratch
-/// window, never through a mapping.
+/// The zero-leak audit after a teardown: the frame database must audit clean and stand exactly at
+/// the post-boot baseline, and the kernel heap must still audit clean (nothing per-process is
+/// allocated from it). The error carries the frame database's available count.
 #[cfg(all(target_arch = "x86", feature = "run-process-suite"))]
-pub fn teardown_current() -> bool {
-    use crate::mem::frame::FrameState;
-    use crate::mem::paging::{self, PAGE_SIZE};
-
-    // The process is torn down in place: its thread list's entries are absolute addresses into this
-    // very record, and taking the slot would zero them. The slot is retired only at the end.
-    let process = current_mut();
-    let dir_phys = process.dir_phys();
-
-    // SAFETY: the scratch window is installed in the boot directory; the release path is its sole
-    // user; the frame ids come straight out of the entries just read or the thread records.
-    let mut release = |frame_phys: u32| {
-        crate::mem::bootmem::with_frame_db(|db| {
-            db.release(frame_phys / PAGE_SIZE, FrameState::Free);
-        });
-    };
-
-    // The address space: user data frames and their tables from the walk, the gate window's table
-    // from its directory entry.
-    release_address_space(
-        dir_phys,
-        |frame, index| paging::read_frame_word(frame, index),
-        |frame_phys| release(frame_phys),
-    );
-
-    // Every live thread's gate-stack slot: each thread's recorded frames, exactly once (the guard
-    // pages were never mapped, so they are never released).
-    crate::sched::visit_gate_frames(&mut process.sched, &mut release);
-    // An exited thread's stack still awaiting release: its frames only (the gate window's table,
-    // with the mapping in it, went with the address space).
-    if let Some((_, frames)) = process.dead_stack.take() {
-        for frame in frames {
-            release(frame);
-        }
-    }
-
-    // The directory frame itself, last of all.
-    crate::mem::bootmem::with_frame_db(|db| {
-        db.release(dir_phys / PAGE_SIZE, FrameState::Free);
-    });
-
-    // Zero-leak audit: the frame database must be exactly at the post-boot baseline, and the kernel
-    // heap must still audit clean (nothing per-process is allocated from it).
-    let baseline = unsafe {
-        // SAFETY: recorded before the first process; read-only here.
-        core::ptr::read_volatile(core::ptr::addr_of!(BASELINE_FRAMES))
-    };
+pub fn audit_allocators() -> Result<(), u32> {
+    // SAFETY: recorded before the first process; read-only here.
+    let baseline = unsafe { core::ptr::read_volatile(core::ptr::addr_of!(BASELINE_FRAMES)) };
     let frames_ok =
         crate::mem::bootmem::with_frame_db(|db| db.audit().is_ok() && db.available() == baseline);
     let heap_ok = crate::mem::bootmem::with_heap(|heap| heap.audit().is_ok());
-
-    // The record's lists are dead: retire the current-process slot.
-    take_current();
-    frames_ok && heap_ok
+    if frames_ok && heap_ok {
+        Ok(())
+    } else {
+        Err(crate::mem::bootmem::with_frame_db(|db| db.available()))
+    }
 }
 
 #[cfg(test)]
@@ -431,6 +502,10 @@ mod tests {
             heap: HeapState::new(),
             handles: crate::sched::object::HandleTable::empty(),
             dead_stack: DeadStack::empty(),
+            child_threads: [const { crate::sched::thread::Thread::empty() }; CHILD_THREADS],
+            events: fresh_events(),
+            events_used: 0,
+            end: None,
         };
         assert_eq!(process.name(), "fixture");
         assert_eq!(process.dir_phys(), 0x0090_0000);
@@ -566,16 +641,14 @@ mod tests {
             self.frames[&frame][index]
         }
 
-        /// Run the real collection over the fake memory: the address-space walk plus the
-        /// thread-record frames — exactly what teardown does.
-        fn release(&mut self, dir: u32, process: &mut Process) {
+        /// Run the real teardown collection over the fake memory, in its order.
+        fn release(&mut self, process: &mut Process) {
             let mut released = core::mem::take(&mut self.released);
-            release_address_space(
-                dir,
+            release_process(
+                process,
                 |frame, index| self.read(frame, index),
                 |frame_phys| released.push(frame_phys),
             );
-            crate::sched::visit_gate_frames(&mut process.sched, &mut |frame| released.push(frame));
             self.released = released;
         }
 
@@ -585,10 +658,14 @@ mod tests {
         }
     }
 
-    /// A process whose main thread owns slot 0 and whose second thread owns slot 1, both with
-    /// recorded frames, plus a planted directory: two user tables (a TEB page and an image page)
-    /// and the gate window's table.
-    fn planted_process(dir: u32) -> (FakeMemory, &'static mut Process) {
+    /// The main thread's gate-stack frames (slot 0) and a child's (slot 1).
+    const MAIN_STACK: [u32; 4] = [0x00F1_0000, 0x00F2_0000, 0x00F3_0000, 0x00F4_0000];
+    const CHILD_STACK: [u32; 4] = [0x00F5_0000, 0x00F6_0000, 0x00F7_0000, 0x00F8_0000];
+
+    /// A planted directory — two user tables' worth (a TEB page and an image page) and the gate
+    /// window's table — and a process whose main thread owns slot 0 and whose child owns slot 1,
+    /// both attached.
+    fn planted_process(dir: u32) -> (FakeMemory, &'static mut Process, &'static mut Thread) {
         let mut mem = FakeMemory::new();
         let user_table = 0x00A0_0000;
         let gate_table = 0x00C0_0000;
@@ -620,30 +697,59 @@ mod tests {
             heap: HeapState::new(),
             handles: crate::sched::object::HandleTable::empty(),
             dead_stack: DeadStack::empty(),
+            child_threads: [const { crate::sched::thread::Thread::empty() }; CHILD_THREADS],
+            events: fresh_events(),
+            events_used: 0,
+            end: None,
         }));
         process.sched.init();
-        // SAFETY: the process record is at its final address.
         let sched = core::ptr::addr_of_mut!(process.sched);
+        let child = Box::leak(Box::new(Thread::empty()));
+        // SAFETY: the process record and the child are at their final addresses.
         unsafe {
-            (*core::ptr::addr_of_mut!(process.main_thread)).attach_to(&mut *sched);
-            (*core::ptr::addr_of_mut!(process.main_thread)).gate_frames =
-                [0x00F1_0000, 0x00F2_0000, 0x00F3_0000, 0x00F4_0000];
-            let second = Box::leak(Box::new(Thread::empty()));
-            second.attach_to(&mut *sched);
-            second.gate_frames = [0x00F5_0000, 0x00F6_0000, 0x00F7_0000, 0x00F8_0000];
+            let main = &mut *core::ptr::addr_of_mut!(process.main_thread);
+            main.attach_to(&mut *sched);
+            main.gate_slot = process.gate_slots.allocate();
+            main.gate_frames = MAIN_STACK;
+            child.attach_to(&mut *sched);
+            child.gate_slot = process.gate_slots.allocate();
+            child.gate_frames = CHILD_STACK;
         }
-        (mem, process)
+        (mem, process, child)
     }
 
-    /// The collection releases exactly the process's own frames, each exactly once: walked user
-    /// data frames and tables, the gate window's table, every live thread's recorded slot frames —
-    /// and nothing from the shared kernel half, not the directory frame. A thread's TEB page is
-    /// released once, by the walk (the thread records never hold user-half frames).
+    /// Run `thread`'s exit as the exit path does, on a host dispatcher: park its own stack and
+    /// release whatever an earlier exit parked (returned, for the caller to account), then the
+    /// scheduler's termination.
+    fn exit(process: &mut Process, thread: &mut Thread) -> Option<GateStack> {
+        let released = process
+            .dead_stack
+            .park((thread.gate_slot, thread.gate_frames));
+        let dispatcher = Box::leak(Box::new(crate::sched::dispatcher::Dispatcher::zeroed()));
+        dispatcher.init();
+        dispatcher.enter(thread);
+        dispatcher.terminate();
+        released
+    }
+
+    /// Teardown after every thread has exited releases exactly the process's own frames, each
+    /// exactly once: the last exit's parked stack, the walked user data frames and tables, the
+    /// gate window's table, and the directory — nothing from the shared kernel half. An earlier
+    /// exit's stack is not teardown's: the next exit released it. A thread's TEB page is released
+    /// once, by the walk (the thread records never hold user-half frames).
     #[test]
     fn teardown_releases_exactly_the_process_frames() {
         let dir = 0x0090_0000;
-        let (mut mem, process) = planted_process(dir);
-        mem.release(dir, process);
+        let (mut mem, process, child) = planted_process(dir);
+        // The child exits first, then the main thread — whose exit hands back the child's stack
+        // for release from its own.
+        assert_eq!(exit(process, child), None);
+        let main = core::ptr::addr_of_mut!(process.main_thread);
+        // SAFETY: the main thread lives inside the leaked process record.
+        assert_eq!(exit(process, unsafe { &mut *main }), Some((1, CHILD_STACK)));
+        assert_eq!(process.sched.stack_count(), 0);
+
+        mem.release(process);
 
         let mut released = mem.released.clone();
         released.sort_unstable();
@@ -651,26 +757,50 @@ mod tests {
             0x00A0_0000, // the user table
             0x00C0_0000, // the gate window's table
             0x00E0_0000, // the TEB/image data page
-            // The main thread's gate-stack frames.
-            0x00F1_0000,
-            0x00F2_0000,
-            0x00F3_0000,
-            0x00F4_0000,
-            // The second thread's gate-stack frames.
-            0x00F5_0000,
-            0x00F6_0000,
-            0x00F7_0000,
-            0x00F8_0000,
+            dir,         // the directory
         ];
+        expected.extend_from_slice(&MAIN_STACK);
         expected.sort_unstable();
         assert_eq!(released, expected);
         // Exactly once each, always.
         for frame in expected {
             assert_eq!(mem.count(frame), 1, "frame {frame:#x}");
         }
-        // The kernel half's targets and the directory itself stay.
+        // The child's stack was the main thread's exit to release; the kernel half's targets stay.
+        for frame in CHILD_STACK {
+            assert_eq!(mem.count(frame), 0);
+        }
         assert_eq!(mem.count(0x0010_0000), 0);
-        assert_eq!(mem.count(dir), 0);
+        assert_eq!(process.dead_stack.take(), None);
+    }
+
+    /// The teardown's order: per thread first (the parked stack), then per process (the
+    /// address-space walk), the directory frame last of all.
+    #[test]
+    fn teardown_releases_per_thread_then_per_process() {
+        let dir = 0x0090_0000;
+        let (mut mem, process, child) = planted_process(dir);
+        exit(process, child);
+        let main = core::ptr::addr_of_mut!(process.main_thread);
+        // SAFETY: the main thread lives inside the leaked process record.
+        exit(process, unsafe { &mut *main });
+
+        mem.release(process);
+        let released = &mem.released;
+        assert_eq!(&released[..4], &MAIN_STACK, "the parked stack first");
+        assert_eq!(released.last(), Some(&dir), "the directory last");
+        assert_eq!(released.len(), 4 + 3 + 1);
+    }
+
+    /// Teardown never precedes the last thread's end: a process with a thread still attached is
+    /// refused.
+    #[test]
+    #[should_panic(expected = "teardown of a process with attached threads")]
+    fn teardown_refuses_a_process_with_attached_threads() {
+        let dir = 0x0090_0000;
+        let (mut mem, process, child) = planted_process(dir);
+        exit(process, child);
+        mem.release(process);
     }
 
     /// The walk's user range ends below the gate window: the window is a kernel-half entry whose

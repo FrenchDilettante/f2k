@@ -141,10 +141,11 @@ extern "C" fn syscall_dispatch(frame: &mut TrapFrame) {
     assert_eq!(frame.cs & 3, 3, "syscall gate raised from ring 0");
 
     // The internal thread-exit service: the trampoline's number, before the registry (the exit path
-    // never returns to the frame). Only a user thread can exit: on a boot that runs ring 3 on the
-    // idle thread the number names no service.
+    // never returns to the frame). Only a created thread raises it — its return lands on the
+    // trampoline. A process's main thread has no trampoline under it and ends through the exit
+    // service: for it the number names no service.
     if frame.eax == SYS_THREAD_EXIT {
-        if crate::sched::idle::on_idle_thread() {
+        if crate::process::threads::on_main_thread() {
             frame.eax = STATUS_INVALID_SYSTEM_SERVICE;
             return;
         }

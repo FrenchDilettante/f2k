@@ -1,75 +1,57 @@
-//! The smoke-subset thread surface: child-thread creation, the object pools, and the thread-exit
-//! path.
+//! The smoke-subset thread surface: child-thread creation, the process's thread and event records,
+//! and the thread-exit path.
 //!
-//! CreateThread behind the synthesized kernel32: a child takes a thread record from the pool, a
+//! CreateThread behind the synthesized kernel32: a child takes a thread record from its process, a
 //! gate-stack slot from the process's window, its own TEB page and user stack from the per-thread
 //! regions, and a startup ladder the context switch enters — the same machinery the main thread's
 //! boot entry uses. The child's user function receives its parameter per the calling convention
 //! (planted at [esp+4] under a return address that is the kernel's thread-exit trampoline), so
 //! returning from the function terminates the thread with the return value as the exit status.
 //!
-//! The exit path, in its order: the per-thread teardown first (the gate stack is parked for
-//! release from another stack, and an earlier exit's parked stack is released), then the thread
-//! object signals and its waiters wake, then the thread leaves the process list and
-//! is Terminated, then the last-thread check routes either to the thread's end or the process's —
-//! the last thread's exit is the process's exit.
-
-use core::ptr::addr_of_mut;
+//! The exit path, in its order: the exit service's or a fault's terminations of the process's
+//! other threads first (both end the whole process); then the per-thread teardown (the gate stack
+//! is parked for release from another stack, and an earlier exit's parked stack is released); then
+//! the thread object signals and its waiters wake, and the thread leaves the process list and is
+//! Terminated;
+//! then the last-thread check routes either to the thread's end or the process's — the last
+//! thread's exit is the process's exit, which the idle thread tears down.
 
 use crate::mem::paging;
+use crate::process::exit::{self, Fault, ThreadEnd};
 use crate::process::Process;
 use crate::sched::dispatcher::Dispatcher;
 use crate::sched::thread::{Thread, ThreadState};
-
-/// The child-thread pool: fixed, one record per live child. Only never-used records are handed out;
-/// a terminated child's record is not reused (nothing reclaims it yet).
-static mut THREAD_POOL: [Thread; 3] = [const { Thread::empty() }; 3];
 
 /// The number of pages a per-thread user stack spans (the same two pages the main thread's stack
 /// has).
 const THREAD_STACK_PAGES: u32 = 2;
 
-/// A free child-thread record from the pool, or none (the program-visible create failure).
+/// A never-used child-thread record of the current process, with its ordinal, or none (the
+/// program-visible create failure). A terminated child's record is not reused within the process;
+/// the records go with the process.
 fn free_thread() -> Option<(&'static mut Thread, u32)> {
-    // SAFETY: single CPU; the pool is kernel state whose accessors run serialized by the gate.
-    let pool = unsafe { &mut *addr_of_mut!(THREAD_POOL) };
-    pool.iter_mut()
+    crate::process::current_mut()
+        .child_threads
+        .iter_mut()
         .enumerate()
         .find(|(_, thread)| thread.state() == ThreadState::Initialized)
         .map(|(index, thread)| (thread, index as u32 + 1))
 }
 
-/// The event pool: fixed, one record per created event. Events live until the process's teardown (a
-/// close releases only the table's claim), so allocation is a bump and exhaustion is the
-/// program-visible create failure.
-static mut EVENT_POOL: [crate::sched::event::Event; 8] = [const {
-    crate::sched::event::Event::new(crate::sched::event::EventKind::Notification, false)
-}; 8];
-
-/// The event pool's next-free index.
-static mut EVENT_POOL_NEXT: usize = 0;
-
-/// A fresh event from the pool, initialized for `kind` and `signaled`, or none (the pool is
-/// exhausted).
+/// A fresh event record of the current process, initialized for `kind` and `signaled`, or none
+/// (the records are exhausted). Events live until the process's teardown (a close releases only
+/// the table's claim), so allocation is a bump.
 pub fn new_event(
     kind: crate::sched::event::EventKind,
     signaled: bool,
 ) -> Option<&'static mut crate::sched::event::Event> {
-    // SAFETY: single CPU; the pool and its index are kernel state whose accessors run serialized by
-    // the gate.
-    let next = unsafe { core::ptr::read_volatile(core::ptr::addr_of!(EVENT_POOL_NEXT)) };
-    if next >= 8 {
-        return None;
-    }
-    // SAFETY: as above; the index advances by exactly one per event, never past the pool.
-    unsafe {
-        core::ptr::write_volatile(core::ptr::addr_of_mut!(EVENT_POOL_NEXT), next + 1);
-        let event = &mut *addr_of_mut!(EVENT_POOL);
-        let event = &mut event[next];
-        *event = crate::sched::event::Event::new(kind, signaled);
-        event.init();
-        Some(event)
-    }
+    let process = crate::process::current_mut();
+    let event = process.events.get_mut(process.events_used)?;
+    process.events_used += 1;
+    *event = crate::sched::event::Event::new(kind, signaled);
+    // The record is at its final address inside the installed process.
+    event.init();
+    Some(event)
 }
 
 /// Create a child thread: a pooled record attached to the current process, its gate-stack slot, TEB
@@ -146,17 +128,47 @@ pub fn spawn(start: u32, parameter: u32) -> Option<(*mut Thread, u32)> {
 }
 
 /// A user thread's system routine: the kernel function the startup stub calls before entering the
-/// thread's user context. Nothing needs to happen here yet; the stub's tail carries the thread
-/// straight into its user code.
-unsafe extern "C" fn user_thread_startup(_start: u32, _parameter: u32) {}
+/// thread's user context. A never-run thread has had no delivery window, so a kernel APC queued on
+/// it before its first dispatch — a suspend, or a creation suspended — runs here, before its first
+/// user instruction; the stub's tail then carries the thread into its user code.
+unsafe extern "C" fn user_thread_startup(_start: u32, _parameter: u32) {
+    crate::sched::idle::dispatcher().deliver_pending_apcs();
+}
 
-/// The thread-exit path: the exit status in hand, tear the calling thread down, signal its waiters,
-/// and switch to the next thread — never returning. The last thread's exit routes to the process's
-/// exit.
+/// The thread-exit path: the exit status in hand, end the calling thread — and its process, when
+/// it is the last thread. Never returns.
 pub fn exit_thread(exit_status: i32) -> ! {
+    end_thread(ThreadEnd::Exit(exit_status))
+}
+
+/// The process-exit path: every other thread of the process is terminated without running again,
+/// then the calling thread ends as the last, and the process with `code`. Never returns.
+pub fn exit_process(code: u32) -> ! {
+    end_thread(ThreadEnd::ExitProcess(code))
+}
+
+/// A fault raised on the running thread's behalf ends its process: every other thread of the
+/// process is terminated without running again, then this thread ends as the last. Never returns.
+pub fn fault_exit(fault: Fault) -> ! {
+    end_thread(ThreadEnd::Fault(fault))
+}
+
+/// The one exit path, in its order: the exit service's or a fault's terminations of the other
+/// threads first; then the per-thread teardown (the gate stack is parked for release from another
+/// stack, and an earlier exit's parked stack is released); then the thread object signals and its
+/// waiters wake, the thread leaves the process list and is Terminated; then, for the last thread,
+/// the process's end — the report, the handle table cleared, the end recorded for the idle
+/// thread's reap. The switch away ends the thread's timeline.
+fn end_thread(end: ThreadEnd) -> ! {
     let dispatcher = crate::sched::idle::dispatcher();
     // SAFETY: the running thread, live and exclusive in the gate.
     let current = dispatcher.current_thread();
+    let others = crate::process::current().sched.stack_count() - 1;
+    let plan = exit::plan(end, others);
+
+    if plan.terminate_others {
+        terminate_others(current);
+    }
 
     // The per-thread teardown first. The gate stack is the one this code runs on, so it cannot be
     // unmapped here: it is parked as the process's dead stack, released by whoever next runs on
@@ -183,24 +195,66 @@ pub fn exit_thread(exit_status: i32) -> ! {
     let selected = dispatcher.terminate();
     dispatcher.enter(selected);
 
-    // The last-thread route: a process with no threads must not linger — the last exit is the
-    // process's exit.
-    let process = crate::process::current_mut();
-    let last = process.sched.stack_count() == 0;
-    if last {
-        crate::serial_println!(
-            "F2K: user process exited normally (exit code={})",
-            exit_status as u32
+    // The last-thread route: a process with no threads must not linger — the last thread's end is
+    // the process's end. The idle thread tears it down once this thread is off its stack.
+    if let Some(end) = plan.process_end {
+        let process = crate::process::current_mut();
+        assert_eq!(
+            process.sched.stack_count(),
+            0,
+            "the process ends with its last thread"
         );
+        crate::serial_println!("{}", exit::EndReport { end, leg: leg() });
         process.handles_mut().clear();
+        process.set_end(end);
     }
 
-    // The switch away, at the dispatch level; the exiting thread's timeline ends at the swap.
+    // The switch away, at the dispatch level; the exiting thread's timeline ends at the swap, so
+    // its outstanding raises — this one included — are written off.
     let _previous = crate::interrupt::irql::state_mut().raise(crate::interrupt::irql::DISPATCH);
+    crate::interrupt::irql::state_mut().write_off_thread();
     // SAFETY: the selected thread is the selection discipline's own (a woken waiter, a ready
     // thread, or the idle fallback).
     unsafe { crate::sched::switch::swap_context(current, selected) };
     unreachable!("a terminated thread never resumes")
+}
+
+/// Terminate every thread of the current process but `current` (the running thread), none of them
+/// running again: each is taken off whatever holds it and retired, then its gate stack — not the
+/// one this code runs on — is released here.
+fn terminate_others(current: *mut Thread) {
+    let dispatcher = crate::sched::idle::dispatcher();
+    loop {
+        let process = crate::process::current_mut();
+        let other = process.sched.first_thread_except(current);
+        if other.is_null() {
+            break;
+        }
+        // SAFETY: an attached thread of this process, off the processor; the record outlives its
+        // termination (pool records are never reused, the main thread's lives in the process).
+        let other = unsafe { &mut *other };
+        dispatcher.terminate_other(other);
+        release_gate_stack(process, (other.gate_slot, other.gate_frames));
+    }
+}
+
+/// The suite leg the current process runs as, for its report; none on a one-process boot.
+fn leg() -> Option<exit::Leg> {
+    #[cfg(feature = "run-process-suite")]
+    {
+        Some(crate::process::runner::current_leg())
+    }
+    #[cfg(not(feature = "run-process-suite"))]
+    {
+        None
+    }
+}
+
+/// Whether the running thread is its process's main thread — the thread the process was entered
+/// on, whose stack carries no thread-exit trampoline.
+pub fn on_main_thread() -> bool {
+    let current = crate::sched::idle::dispatcher().current_thread();
+    core::ptr::eq(current, crate::process::current().main_thread())
 }
 
 /// Release an exited thread's gate stack: unmap the slot's pages from the (current) process
@@ -221,10 +275,10 @@ fn release_gate_stack(process: &mut Process, (slot, frames): crate::process::Gat
     }
 }
 
-/// The smoke boot's ring-3 entry: plant the main thread's startup ladder (the same frame shape a
-/// child gets), make it schedulable, and enter the idle loop — the first switch away from idle is
-/// into this thread. Never returns.
-pub fn enter_as_main_thread(entry: u32, user_esp: u32) -> ! {
+/// Make the current process's main thread schedulable at `entry`: plant its startup ladder (the
+/// same frame shape a child gets) and ready it. The next switch away from the idle thread enters
+/// it.
+pub fn start_main_thread(entry: u32, user_esp: u32) {
     let process: &'static mut Process = crate::process::current_mut();
     // The main thread's gate slot, TEB page and stack top were taken at process start; only the
     // ladder is missing.
@@ -239,10 +293,16 @@ pub fn enter_as_main_thread(entry: u32, user_esp: u32) -> ! {
         }),
     };
     // SAFETY: the thread's `initial_stack` names its mapped, empty kernel-stack slot (nothing has
-    // entered a gate yet in this boot).
+    // entered a gate on it yet).
     unsafe { crate::sched::startup::plant(thread, &params) };
 
     let dispatcher: &'static mut Dispatcher = crate::sched::idle::dispatcher();
     dispatcher.make_ready(thread);
+}
+
+/// The boot's ring-3 entry, the only one: start the current process's main thread and enter the
+/// idle loop — the first switch away from idle is into this thread. Never returns.
+pub fn enter_as_main_thread(entry: u32, user_esp: u32) -> ! {
+    start_main_thread(entry, user_esp);
     crate::sched::idle::idle_loop()
 }

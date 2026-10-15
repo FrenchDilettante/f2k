@@ -448,7 +448,8 @@ impl Dispatcher {
     }
 
     /// The wait exit: complete `thread`'s wait with `status` and a wake boost of `increment`. This
-    /// is the single owner of the Waiting state's exit — every wake site goes through it. It
+    /// is the single owner of the Waiting state's exit to the ready ladder — every wake site goes
+    /// through it (only termination leaves a wait otherwise, through the unwind alone). It
     /// unwinds the wait's blocks from their objects, leaves the waiting list, cancels the wait's
     /// timer if it is still live, applies the boost (the thread's no-boost policy gates it here —
     /// the boost itself leaves policy to its caller), charges the wait, and readies the thread.
@@ -460,8 +461,21 @@ impl Dispatcher {
         // The status is OR'd in, not assigned: a wait may carry a status its wake must preserve.
         thread.wait_status |= status;
 
-        // Unlink every block of the chain from the object it is parked on, then leave the waiting
-        // list.
+        self.unwind_wait(thread);
+
+        if !thread.disable_boost {
+            self.boost(thread, increment);
+        }
+        self.charge_wait(thread);
+        self.make_ready(thread);
+    }
+
+    /// The wait's unwind: unlink every block of `thread`'s chain from the object it is parked on,
+    /// leave the waiting list, and cancel the wait's timer if it is still live. The wait exit's
+    /// first half; the termination of a parked thread uses it alone — that thread never runs again,
+    /// so nothing readies it.
+    pub(super) fn unwind_wait(&mut self, thread: &mut Thread) {
+        debug_assert!(thread.state == ThreadState::Waiting);
         let mut block = thread.wait_block_head;
         // SAFETY: the chain is circular, every block is linked, and the walk returns to its head.
         unsafe {
@@ -482,12 +496,6 @@ impl Dispatcher {
         if thread.timer.inserted {
             self.timer_table.remove(&mut thread.timer);
         }
-
-        if !thread.disable_boost {
-            self.boost(thread, increment);
-        }
-        self.charge_wait(thread);
-        self.make_ready(thread);
     }
 
     /// Satisfy as many of `object`'s waits as its signal allows: while it is signaled and waiters
@@ -624,8 +632,23 @@ impl Dispatcher {
         crate::interrupt::irql::state_mut().lower(previous);
         // The wait-exit delivery: a kernel APC queued while this thread was parked — or armed by
         // the delivery that broke the wait — runs now, before the parked caller reads its wait
-        // status. This is where a thread woken mid-wait runs the APC that woke it.
-        crate::sched::idle::dispatcher().deliver_pending_apcs();
+        // status. This is where a thread woken mid-wait runs the APC that woke it. The status the
+        // wake left is the caller's: a delivered routine's own wait (the suspend APC parks) must
+        // not overwrite it.
+        crate::sched::idle::dispatcher().preserving_wait_status(|d| d.deliver_pending_apcs());
+    }
+
+    /// Run `deliver` on the running thread's timeline with its wait status preserved: whatever
+    /// waits the delivery itself performs, the thread's status afterwards is the one its last wake
+    /// left — the completion its parked caller is about to read.
+    pub(crate) fn preserving_wait_status(&mut self, deliver: impl FnOnce(&mut Dispatcher)) {
+        let thread = self.current_thread();
+        // SAFETY: the running thread, live; the delivery runs on its own timeline and returns to it.
+        let status = unsafe { (*thread).wait_status };
+        deliver(self);
+        // SAFETY: as above — the same thread, read through the pointer rather than the dispatcher
+        // (other threads may have run inside the delivery).
+        unsafe { (*thread).wait_status = status };
     }
 
     /// The no-wait quantum adjustment: the tail of a wait that was satisfied without blocking. A
@@ -1593,6 +1616,77 @@ mod tests {
         assert_eq!(d.audit_waits(), Ok(()));
     }
 
+    /// Terminating a parked thread off the processor unwinds its wait without readying it: the
+    /// block leaves the object, the thread leaves the waiting list, its timeout leaves the timer
+    /// table — and the object's later signal finds nobody.
+    #[test]
+    fn terminate_other_unwinds_a_parked_wait() {
+        let d = dispatcher();
+        let p = process(8);
+        let running = thread(p);
+        let parked = thread(p);
+        let ev = event(EventKind::Synchronization, false);
+        run(d, running);
+        block_on(d, parked, ev.waitable(), Some(1_000_000));
+        assert!(parked.timer.inserted);
+
+        d.terminate_other(parked);
+        assert_eq!(parked.state(), ThreadState::Terminated);
+        assert!(parked.wait_block_head.is_null());
+        assert!(!parked.timer.inserted, "the timeout left the table");
+        assert!(waiters(ev).is_empty());
+        assert!(d.waiting.is_empty());
+        assert!(!d.has_schedulable());
+        assert_eq!(d.audit(), Ok(()));
+        assert_eq!(d.timer_table.audit(), Ok(()));
+
+        // The event's signal has no one left to wake: it stays signaled.
+        ev.waitable.signal_state = 1;
+        d.satisfy_waiters(ev.waitable(), 0);
+        assert_eq!(ev.signal_state(), 1);
+        assert_eq!(parked.state(), ThreadState::Terminated);
+    }
+
+    /// Two threads off the processor, one parked on the other's thread object: in either order,
+    /// both end Terminated with the wait structures consistent. Terminating the waited-on thread
+    /// first wakes the waiter (its object signals), which the second termination takes back off
+    /// the ready ladder; terminating the waiter first leaves the other's object with no waiters.
+    #[test]
+    fn terminate_other_handles_threads_waiting_on_each_other() {
+        for waited_on_first in [true, false] {
+            let d = dispatcher();
+            let p = process(8);
+            let running = thread(p);
+            let waiter = thread(p);
+            let target = thread(p);
+            run(d, running);
+            d.make_ready(target);
+            block_on(d, waiter, target.waitable(), None);
+
+            if waited_on_first {
+                d.terminate_other(target);
+                assert!(
+                    waiter.state() == ThreadState::Ready || waiter.state() == ThreadState::Standby,
+                    "the signal woke the waiter"
+                );
+                d.terminate_other(waiter);
+            } else {
+                d.terminate_other(waiter);
+                assert!(target.waitable.waiters.is_empty());
+                d.terminate_other(target);
+            }
+            assert_eq!(waiter.state(), ThreadState::Terminated);
+            assert_eq!(target.state(), ThreadState::Terminated);
+            assert!(!d.has_schedulable());
+            assert_eq!(
+                unsafe { (*p).stack_count() },
+                1,
+                "only the running thread is left"
+            );
+            assert_eq!(d.audit(), Ok(()));
+        }
+    }
+
     // --- Group E: the timeout seam -------------------------------------------
 
     /// Due times come from the clock reading the caller took: due = now + interval, carried by the
@@ -1984,6 +2078,112 @@ mod tests {
         assert_eq!(parks, 2, "the wait parked, replayed, and completed");
         assert_eq!(status, STATUS_TIMEOUT);
         assert_eq!(t.timer.due_time(), 11_000, "the deadline never slipped");
+    }
+
+    /// E1b: a routine delivered at the wait exit may wait itself (the suspend APC parks), which
+    /// resets the thread's status field; the status the wake left survives the delivery — a
+    /// kernel-APC break, or a timeout that completed before the thread ran again.
+    #[test]
+    fn a_delivered_routines_wait_keeps_the_woken_status() {
+        for woken in [STATUS_KERNEL_APC, STATUS_TIMEOUT] {
+            let d = dispatcher();
+            let p = process(8);
+            let t = thread(p);
+            run(d, t);
+            let ev = event(EventKind::Notification, false);
+            block_on(d, t, ev.waitable(), Some(1_000_000));
+            if woken == STATUS_KERNEL_APC {
+                d.unwait(t, STATUS_KERNEL_APC, 0);
+            } else {
+                d.expire_timer(&mut t.timer);
+            }
+            run(d, t);
+
+            let inner = event(EventKind::Notification, true);
+            d.preserving_wait_status(|d| {
+                // SAFETY: the running thread, live.
+                let t = unsafe { &mut *d.current_thread() };
+                let nested = d.wait_single(
+                    t,
+                    inner.waitable(),
+                    WaitReason::Suspension,
+                    WaitMode::Kernel,
+                    false,
+                    None,
+                    stamp(20_000, 9),
+                );
+                assert_eq!(nested, complete(STATUS_SUCCESS));
+                assert_eq!(t.wait_status(), 0, "the nested wait reset the field");
+            });
+            assert_eq!(t.wait_status(), woken);
+        }
+    }
+
+    /// E1c: the replay loop over a wait whose kernel-APC delivery waits inside the park: the break
+    /// still reads as a break, so the wait replays and completes on its own terms (here, its
+    /// original deadline) — never as a spurious success.
+    #[test]
+    fn a_wait_broken_by_a_waiting_delivery_still_replays() {
+        let d = dispatcher();
+        let p = process(8);
+        let t = thread(p);
+        run(d, t);
+        let ev = event(EventKind::Notification, false);
+        let inner = event(EventKind::Notification, true);
+
+        let stamps = [stamp(10_000, 5), stamp(10_500, 6)];
+        let mut step = 0;
+        let mut parks = 0;
+        let status = wait_with_replay(
+            d,
+            || {
+                let s = stamps[step];
+                step += 1;
+                s
+            },
+            |d, t, stamp, replay| {
+                let timeout = replay_timeout(t, replay, Some(1_000), stamp.system_time);
+                d.wait_single(
+                    t,
+                    ev.waitable(),
+                    WaitReason::Executive,
+                    WaitMode::User,
+                    false,
+                    timeout,
+                    stamp,
+                )
+            },
+            |d| {
+                parks += 1;
+                // SAFETY: the parked thread, live.
+                let current = unsafe { &mut *d.current_thread() };
+                if parks == 1 {
+                    d.unwait(current, STATUS_KERNEL_APC, 0);
+                } else {
+                    d.expire_timer(&mut current.timer);
+                }
+                let selected = d.select_next();
+                d.enter(selected);
+                // SAFETY: the selected thread, live.
+                unsafe { (*selected).state = ThreadState::Running };
+                // The park's resume tail: the delivered routine waits on its own object.
+                d.preserving_wait_status(|d| {
+                    // SAFETY: the running thread, live.
+                    let t = unsafe { &mut *d.current_thread() };
+                    let _ = d.wait_single(
+                        t,
+                        inner.waitable(),
+                        WaitReason::Suspension,
+                        WaitMode::Kernel,
+                        false,
+                        None,
+                        stamp(10_400, 6),
+                    );
+                });
+            },
+        );
+        assert_eq!(parks, 2, "the break replayed instead of completing");
+        assert_eq!(status, STATUS_TIMEOUT);
     }
 
     /// E2: the replay re-tests satisfaction — a wake that raced the delivery completes the wait

@@ -1,18 +1,17 @@
-//! Ring 3: entering user mode and the end of the user process.
+//! Ring 3: the user layout, the boot's choice of what runs, and the end of the user process.
 //!
-//! The kernel maps the image, stack, TEB and parameters pages, enters ring 3 with an iret
-//! ([`enter_ring3`]), and the image ends the process through the exit service. The fault-test
-//! features substitute a hand-assembled stub ([`RING3_STUB`]) so the user-fault paths can be
-//! verified without a PE fixture.
+//! The kernel maps the image, stack, TEB and parameters pages and enters the process as its main
+//! thread: the scheduler's first switch into the thread leaves its startup ladder for ring 3. The
+//! image ends the process through the exit service. The fault-test features substitute a
+//! hand-assembled stub ([`RING3_STUB`]) so the user-fault paths can be verified without a PE
+//! fixture.
 //!
-//! Single tasking, run to completion: the exit syscall is the return path; faults raised by user
+//! Every user context is a thread: a thread's return ends the thread (the last thread's end is the
+//! process's), the exit service ends the process and all its threads, and faults raised by user
 //! code end the process, not the kernel.
 
 pub mod syscall;
 pub mod userheap;
-
-#[cfg(target_arch = "x86")]
-use crate::cpu::gdt::{TEB_SELECTOR, USER_CODE_SELECTOR, USER_DATA_SELECTOR};
 
 /// The fault-test stub's code page (the PE image base, which the fault-test builds never map).
 #[cfg(any(
@@ -159,101 +158,13 @@ pub struct TrapFrame {
     pub user_ss: u32,
 }
 
-// Entry into ring 3: load the segments, build the iret frame, switch. Never returns. FS takes the
-// TEB segment and GS null (the captured entry state); the pushed EFLAGS is bit 1 plus the interrupt
-// flag — user code runs with interrupts enabled. IOPL is 0, so port I/O stays privileged and the
-// serial backend stays kernel-only.
-#[cfg(target_arch = "x86")]
-unsafe extern "C" {
-    pub fn enter_ring3(eip: u32, esp: u32) -> !;
-}
-
-#[cfg(target_arch = "x86")]
-core::arch::global_asm!(
-    ".section .text.enter_ring3, \"ax\"",
-    ".global enter_ring3",
-    "enter_ring3:",
-    // Arguments: [esp+4] = user EIP, [esp+8] = user ESP. Load the user data segments for DS/ES, the
-    // TEB segment for FS, and null for GS; SS comes from the iret frame.
-    "    mov ax, {user_data}",
-    "    mov ds, ax",
-    "    mov es, ax",
-    "    mov ax, {teb}",
-    "    mov fs, ax",
-    "    xor eax, eax",
-    "    mov gs, ax",
-    "    mov edx, [esp + 4]",
-    "    mov ecx, [esp + 8]",
-    // A clean x87 unit with the control word a fresh Windows thread starts with: nothing a previous
-    // process left in the registers reaches this one.
-    "    fninit",
-    "    push {fpu_control}",
-    "    fldcw [esp]",
-    "    add esp, 4",
-    // iret frame: SS:ESP, EFLAGS, CS with RPL 3, EIP. The 32-bit form is spelled `iretd`: under the
-    // toolchain's integrated assembler for 32-bit x86 the bare `iret` assembles as the 16-bit form.
-    "    push {user_data}",
-    "    push ecx",
-    "    push {user_eflags}",
-    "    push {user_code}",
-    "    push edx",
-    // iret loads only EIP, CS, EFLAGS, ESP and SS: zero the rest so kernel pointers do not leak
-    // into user mode. (Entry register fidelity for real images is a recorded open item.)
-    "    xor eax, eax",
-    "    xor ebx, ebx",
-    "    xor ecx, ecx",
-    "    xor edx, edx",
-    "    xor esi, esi",
-    "    xor edi, edi",
-    "    xor ebp, ebp",
-    "    iretd",
-    user_data = const USER_DATA_SELECTOR | 3,
-    user_code = const USER_CODE_SELECTOR | 3,
-    teb = const TEB_SELECTOR | 3,
-    user_eflags = const USER_EFLAGS,
-    fpu_control = const crate::sched::thread::INITIAL_FPU_CONTROL as u32,
-);
-
-/// End of the user process: the exit service's landing point. The exit code is the only observable,
-/// making this line the suite's check. Single-process runs report and halt on the boot address
-/// space; the multi-process suite hands the chain to the next process (its runner tears this one
-/// down).
+/// The exit service's landing point: the process ends with `code` — its other threads are
+/// terminated, then the calling thread — and the exit code is reported (the line every boot's
+/// check reads). Never returns.
 pub fn process_exited(code: u32) -> ! {
-    #[cfg(all(
-        target_arch = "x86",
-        any(
-            feature = "run-pingpong",
-            feature = "run-sleep",
-            feature = "run-spin",
-            feature = "run-respawn"
-        )
-    ))]
+    #[cfg(target_arch = "x86")]
     {
-        // The thread-ified boot: the process's exit is its last thread's exit (the report and the
-        // last-thread route are the exit path's own).
-        crate::process::threads::exit_thread(code as i32)
-    }
-    #[cfg(all(
-        target_arch = "x86",
-        not(any(
-            feature = "run-pingpong",
-            feature = "run-sleep",
-            feature = "run-spin",
-            feature = "run-respawn"
-        ))
-    ))]
-    {
-        #[cfg(feature = "run-process-suite")]
-        {
-            crate::process::runner::process_exited(code)
-        }
-        #[cfg(not(feature = "run-process-suite"))]
-        {
-            crate::serial_println!("F2K: user process exited normally (exit code={})", code);
-            // Back to the boot directory before anything else runs on the process's tables.
-            crate::mem::paging::activate_address_space(crate::mem::paging::boot_directory_phys());
-            crate::idle()
-        }
+        crate::process::threads::exit_process(code)
     }
     #[cfg(not(target_arch = "x86"))]
     {
@@ -264,110 +175,78 @@ pub fn process_exited(code: u32) -> ! {
     }
 }
 
-/// Launch the first user process: exit0 through the PE loader by default, ret0 with the `run-ret0`
-/// feature, hello with the `run-hello` feature, the blocking-wait, timer, preemption, slot-reuse,
-/// or suspend smoke with `run-pingpong`/`run-sleep`/`run-spin`/`run-respawn`/`run-suspend` (all on
-/// the thread-ified boot), a fault-test stub, or the full multi-process suite with
-/// `run-process-suite`. Never returns.
+/// Launch the boot's user code: the multi-process suite with `run-process-suite`, a fault-test
+/// stub with a `fault-test-*` feature, or one image through the PE loader (see [`boot_image`]).
+/// Every path enters its process as a main thread through the idle loop. Never returns.
 #[cfg(target_arch = "x86")]
 pub fn run_user_process() -> ! {
     #[cfg(feature = "run-process-suite")]
     {
         crate::process::runner::run_suite()
     }
-    #[cfg(not(feature = "run-process-suite"))]
+    #[cfg(all(
+        not(feature = "run-process-suite"),
+        any(
+            feature = "fault-test-user",
+            feature = "fault-test-badargs",
+            feature = "fault-test-segments",
+            feature = "fault-test-threadexit"
+        )
+    ))]
     {
-        #[cfg(not(any(
+        run_fault_stub()
+    }
+    #[cfg(all(
+        not(feature = "run-process-suite"),
+        not(any(
             feature = "fault-test-user",
             feature = "fault-test-badargs",
             feature = "fault-test-segments",
             feature = "fault-test-threadexit"
-        )))]
-        {
-            #[cfg(feature = "run-pingpong")]
-            {
-                crate::exec::loader::run_image(crate::exec::loader::PINGPONG, "pingpong")
-            }
-            #[cfg(all(not(feature = "run-pingpong"), feature = "run-sleep"))]
-            {
-                crate::exec::loader::run_image(crate::exec::loader::SLEEP, "sleep")
-            }
-            #[cfg(all(
-                not(feature = "run-pingpong"),
-                not(feature = "run-sleep"),
-                feature = "run-spin"
-            ))]
-            {
-                crate::exec::loader::run_image(crate::exec::loader::SPIN, "spin")
-            }
-            #[cfg(all(
-                not(feature = "run-pingpong"),
-                not(feature = "run-sleep"),
-                not(feature = "run-spin"),
-                feature = "run-respawn"
-            ))]
-            {
-                crate::exec::loader::run_image(crate::exec::loader::RESPAWN, "respawn")
-            }
-            #[cfg(all(
-                not(feature = "run-pingpong"),
-                not(feature = "run-sleep"),
-                not(feature = "run-spin"),
-                not(feature = "run-respawn"),
-                feature = "run-suspend"
-            ))]
-            {
-                crate::exec::loader::run_image(crate::exec::loader::SUSPEND, "suspend")
-            }
-            #[cfg(all(
-                not(feature = "run-pingpong"),
-                not(feature = "run-sleep"),
-                not(feature = "run-spin"),
-                not(feature = "run-respawn"),
-                not(feature = "run-suspend"),
-                feature = "run-hello"
-            ))]
-            {
-                crate::exec::loader::run_image(crate::exec::loader::HELLO, "hello")
-            }
-            #[cfg(all(
-                not(feature = "run-pingpong"),
-                not(feature = "run-sleep"),
-                not(feature = "run-spin"),
-                not(feature = "run-respawn"),
-                not(feature = "run-suspend"),
-                not(feature = "run-hello"),
-                not(feature = "run-ret0")
-            ))]
-            {
-                crate::exec::loader::run_image(crate::exec::loader::EXIT0, "exit0")
-            }
-            #[cfg(all(
-                not(feature = "run-pingpong"),
-                not(feature = "run-sleep"),
-                not(feature = "run-spin"),
-                not(feature = "run-respawn"),
-                not(feature = "run-suspend"),
-                not(feature = "run-hello"),
-                feature = "run-ret0"
-            ))]
-            {
-                crate::exec::loader::run_image(crate::exec::loader::RET0, "ret0")
-            }
-        }
-        #[cfg(any(
-            feature = "fault-test-user",
-            feature = "fault-test-badargs",
-            feature = "fault-test-segments",
-            feature = "fault-test-threadexit"
-        ))]
-        {
-            run_fault_stub()
-        }
+        ))
+    ))]
+    {
+        let (image, name) = boot_image();
+        let entry = crate::exec::loader::load_image(image, name);
+        crate::process::threads::enter_as_main_thread(entry, USER_STACK_TOP)
     }
 }
 
-/// Map the fault-test stub's pages and enter ring 3. Never returns.
+/// The one image a one-process boot runs: the first fixture feature in this order — the
+/// blocking-wait, timer, preemption, slot-reuse, or suspend smoke
+/// (`run-pingpong`/`run-sleep`/`run-spin`/`run-respawn`/`run-suspend`), hello (`run-hello`),
+/// ret0 (`run-ret0`) — else exit0.
+#[cfg(all(
+    target_arch = "x86",
+    not(feature = "run-process-suite"),
+    not(any(
+        feature = "fault-test-user",
+        feature = "fault-test-badargs",
+        feature = "fault-test-segments",
+        feature = "fault-test-threadexit"
+    ))
+))]
+#[allow(unreachable_code)]
+fn boot_image() -> (&'static [u8], &'static str) {
+    #[cfg(feature = "run-pingpong")]
+    return (crate::exec::loader::PINGPONG, "pingpong");
+    #[cfg(feature = "run-sleep")]
+    return (crate::exec::loader::SLEEP, "sleep");
+    #[cfg(feature = "run-spin")]
+    return (crate::exec::loader::SPIN, "spin");
+    #[cfg(feature = "run-respawn")]
+    return (crate::exec::loader::RESPAWN, "respawn");
+    #[cfg(feature = "run-suspend")]
+    return (crate::exec::loader::SUSPEND, "suspend");
+    #[cfg(feature = "run-hello")]
+    return (crate::exec::loader::HELLO, "hello");
+    #[cfg(feature = "run-ret0")]
+    return (crate::exec::loader::RET0, "ret0");
+    (crate::exec::loader::EXIT0, "exit0")
+}
+
+/// Create the fault-test stub's process — its code and stack pages mapped in the process's own
+/// address space — and enter it as its main thread. Never returns.
 #[cfg(target_arch = "x86")]
 #[cfg(any(
     feature = "fault-test-user",
@@ -377,6 +256,8 @@ pub fn run_user_process() -> ! {
 ))]
 pub fn run_fault_stub() -> ! {
     use crate::mem::paging;
+
+    crate::process::Process::start("stub");
 
     let code_frame = paging::allocate_frame_phys();
     paging::init_frame(code_frame, 0, &RING3_STUB);
@@ -389,20 +270,12 @@ pub fn run_fault_stub() -> ! {
     paging::init_frame(stack_low, 0, &[]);
     paging::map_user_page(USER_STACK_LOW_PAGE, stack_low, true);
 
-    // The stubs enter ring 3 on the boot address space, so their gate entries need a ring-0 stack
-    // mapped there: every run path installs its own (image runs get one per process inside the
-    // process object; the retired static stack used to serve this).
-    let _gate_stack_frames = paging::map_gate_stack();
-    crate::cpu::gdt::set_gate_stack_top(paging::GATE_STACK_TOP);
-
     crate::serial_println!(
         "F2K: entering ring 3 (code {:#010x}, stack {:#010x})",
         USER_CODE_PAGE,
         USER_STACK_TOP
     );
-    // SAFETY: the code page is mapped readable (user), the stack page writable (user), the TSS
-    // carries the ring-0 stack, and the syscall gate is installed at DPL 3.
-    unsafe { enter_ring3(USER_CODE_PAGE, USER_STACK_TOP) }
+    crate::process::threads::enter_as_main_thread(USER_CODE_PAGE, USER_STACK_TOP)
 }
 
 #[cfg(test)]

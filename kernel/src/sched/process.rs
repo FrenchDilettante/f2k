@@ -6,6 +6,7 @@
 //! F2K (there is no process swapping), so a process's whole scheduling state is the fact of owning
 //! runnable threads or not.
 
+use super::thread::Thread;
 use super::{List, QUANTUM_RESET};
 
 /// The stack-count value meaning "no thread has been created yet".
@@ -103,6 +104,25 @@ impl SchedProcess {
         self.disable_quantum = disable;
         previous
     }
+
+    /// The first attached thread other than `except`, in creation order, or null. A
+    /// process-ending termination repeats this query, one termination per answer: each unlinks its
+    /// thread from this list, so the walk never holds a link across a change.
+    pub fn first_thread_except(&mut self, except: *const Thread) -> *mut Thread {
+        let sentinel = self.threads.sentinel();
+        // SAFETY: the list is initialized; its entries are attached threads' process links.
+        let mut entry = unsafe { self.threads.first() };
+        while !entry.is_null() && !core::ptr::eq(entry, sentinel) {
+            let thread =
+                (entry as usize - core::mem::offset_of!(Thread, process_links)) as *mut Thread;
+            if !core::ptr::eq(thread, except) {
+                return thread;
+            }
+            // SAFETY: a linked entry's next pointer names the next entry (or the sentinel).
+            entry = unsafe { (*entry).next };
+        }
+        core::ptr::null_mut()
+    }
 }
 
 #[cfg(test)]
@@ -123,6 +143,33 @@ mod tests {
         assert!(!process.disable_boost);
         assert!(!process.disable_quantum());
         assert_eq!(process.thread_seed(), 0);
+    }
+
+    /// The other-thread query: creation order, skipping the excepted thread, null once only it
+    /// (or nothing) is attached — and it follows the list as threads leave it.
+    #[test]
+    fn first_thread_except_walks_the_others() {
+        let process = Box::leak(Box::new(SchedProcess::new(0x0090_0000, 8)));
+        process.init();
+        let attach = |process: &mut SchedProcess| {
+            let thread = Box::leak(Box::new(Thread::empty()));
+            // SAFETY: both records are leaked at their final addresses.
+            unsafe { thread.attach_to(process) };
+            thread as *mut Thread
+        };
+        assert!(process.first_thread_except(core::ptr::null()).is_null());
+        let main = attach(process);
+        let first = attach(process);
+        let second = attach(process);
+
+        assert_eq!(process.first_thread_except(main), first);
+        assert_eq!(process.first_thread_except(first), main);
+        // SAFETY: the threads are attached; unlinking stands in for a termination.
+        unsafe { super::super::unlink(core::ptr::addr_of_mut!((*first).process_links)) };
+        assert_eq!(process.first_thread_except(main), second);
+        unsafe { super::super::unlink(core::ptr::addr_of_mut!((*second).process_links)) };
+        assert!(process.first_thread_except(main).is_null());
+        assert_eq!(process.first_thread_except(core::ptr::null()), main);
     }
 
     /// The quantum-end exemption flag is a plain store returning the previous value.

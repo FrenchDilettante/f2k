@@ -564,7 +564,7 @@ const INFINITE: u32 = 0xFFFF_FFFF;
 /// WAIT_FAILED: the documented wait failure return.
 const WAIT_FAILED: u32 = 0xFFFF_FFFF;
 
-/// CREATE_SUSPENDED: the one creation flag the subset refuses (no suspend machinery exists).
+/// CREATE_SUSPENDED: the creation flag that starts the thread with a suspend count of one.
 const CREATE_SUSPENDED: u32 = 0x0000_0004;
 
 /// The Win32 timeout conversion: INFINITE waits forever; any other value is a relative interval in
@@ -595,22 +595,18 @@ fn tick_count_ms(ticks: u64) -> u64 {
     ticks * crate::interrupt::clock::INTERVAL_100NS as u64 / 10_000
 }
 
-/// The creation-flags check: CREATE_SUSPENDED is refused (a suspended child could never run without
-/// the suspend machinery); every other bit is ignored.
-fn creation_flags_ok(flags: u32) -> bool {
-    flags & CREATE_SUSPENDED == 0
-}
-
-/// The SetThreadPriority value conversion: the band values are base-priority increments and pass
-/// straight through; the two edge specials name the class saturation pins instead.
-fn thread_priority_increment(value: i32) -> i32 {
+/// The SetThreadPriority value conversion: the five band values (-2..2) are base-priority
+/// increments and pass straight through; the two edge specials name the class saturation pins
+/// instead. Any other value is not a documented priority, and the call fails.
+fn thread_priority_increment(value: i32) -> Option<i32> {
     const TIME_CRITICAL: i32 = 15;
     const IDLE: i32 = -15;
     const SATURATION: i32 = 16;
     match value {
-        TIME_CRITICAL => SATURATION,
-        IDLE => -SATURATION,
-        other => other,
+        -2..=2 => Some(value),
+        TIME_CRITICAL => Some(SATURATION),
+        IDLE => Some(-SATURATION),
+        _ => None,
     }
 }
 
@@ -623,6 +619,11 @@ fn svc_create_event_a(frame: &mut crate::user::TrapFrame, args: &[u32]) {
         let (_attributes, manual_reset, initial_state, name) = (args[0], args[1], args[2], args[3]);
         if name != 0 {
             frame.eax = 0; // the subset has no named objects
+            return;
+        }
+        // A full table refuses before an event record is taken: the records are never given back.
+        if crate::process::current_mut().handles_mut().is_full() {
+            frame.eax = 0;
             return;
         }
         let kind = if manual_reset != 0 {
@@ -682,11 +683,6 @@ fn svc_set_event(frame: &mut crate::user::TrapFrame, args: &[u32]) {
 fn svc_wait_for_single_object(frame: &mut crate::user::TrapFrame, args: &[u32]) {
     #[cfg(target_arch = "x86")]
     {
-        // A boot without user threads runs ring 3 on the idle thread, which must never park.
-        if crate::sched::idle::on_idle_thread() {
-            frame.eax = WAIT_FAILED;
-            return;
-        }
         let Some(slot) = object_slot(args[0]) else {
             frame.eax = WAIT_FAILED;
             return;
@@ -726,12 +722,6 @@ fn svc_wait_for_single_object(frame: &mut crate::user::TrapFrame, args: &[u32]) 
 fn svc_sleep(frame: &mut crate::user::TrapFrame, args: &[u32]) {
     #[cfg(target_arch = "x86")]
     {
-        // A boot without user threads runs ring 3 on the idle thread, which must never park: the
-        // sleep returns at once.
-        if crate::sched::idle::on_idle_thread() {
-            frame.eax = 0;
-            return;
-        }
         let interval = sleep_interval(args[0]);
         // The delay runs through the shared blocking entry: a kernel APC breaks the sleep and the
         // entry replays it with the remaining time — the wake time never slips.
@@ -777,21 +767,15 @@ fn svc_get_tick_count(frame: &mut crate::user::TrapFrame, _args: &[u32]) {
 }
 
 /// CreateThread: a child thread on the current process. The start address and parameter are
-/// honored; the attributes, stack size (the per-thread default), and every creation flag but
-/// CREATE_SUSPENDED are refused; the identifier is written back only when the caller asked for it.
-/// The handle exists before the thread is made schedulable, so the creator can always wait on what
-/// it created.
+/// honored, and CREATE_SUSPENDED starts the thread suspended (a ResumeThread lets it run); the
+/// attributes, stack size (the per-thread default), and every other creation flag are ignored. The
+/// identifier is written back only when the caller asked for it. The handle exists before the
+/// thread is made schedulable, so the creator can always wait on what it created.
 fn svc_create_thread(frame: &mut crate::user::TrapFrame, args: &[u32]) {
     #[cfg(target_arch = "x86")]
     {
         let (_attributes, _stack_size, start, parameter, flags, thread_id_out) =
             (args[0], args[1], args[2], args[3], args[4], args[5]);
-        // A child needs a process whose threads the scheduler runs: a boot that runs ring 3 on
-        // the idle thread has none.
-        if !creation_flags_ok(flags) || crate::sched::idle::on_idle_thread() {
-            frame.eax = 0;
-            return;
-        }
         // Every refusal comes before the spawn: once a thread record is attached to the process
         // and its stacks are mapped, there is no unwinding it, so the create must not fail after.
         // A full handle table, or an identifier pointer the probe refuses, fails it here. (A
@@ -820,9 +804,18 @@ fn svc_create_thread(frame: &mut crate::user::TrapFrame, args: &[u32]) {
             let written = crate::user::syscall::write_user(thread_id_out, &id.to_le_bytes());
             assert!(written.is_ok(), "the identifier pointer passed the probe");
         }
+        let dispatcher = crate::sched::idle::dispatcher();
+        if flags & CREATE_SUSPENDED != 0 {
+            // The suspend APC queues on the never-run thread; its startup delivers it before the
+            // first user instruction, parking it until a resume. A fresh thread is never at the
+            // count's maximum nor terminating, so the suspend cannot be refused.
+            // SAFETY: the created thread, live and exclusive here.
+            let suspended = dispatcher.suspend_thread(unsafe { &mut *thread });
+            assert_eq!(suspended, Ok(0), "a fresh thread suspends");
+        }
         // The handle exists; the thread becomes schedulable now.
         // SAFETY: the created thread, live and exclusive here.
-        crate::sched::idle::dispatcher().make_ready(unsafe { &mut *thread });
+        dispatcher.make_ready(unsafe { &mut *thread });
         frame.eax = handle;
     }
     #[cfg(not(target_arch = "x86"))]
@@ -847,6 +840,10 @@ fn svc_set_thread_priority(frame: &mut crate::user::TrapFrame, args: &[u32]) {
     #[cfg(target_arch = "x86")]
     {
         let (handle, value) = (args[0], args[1] as i32);
+        let Some(increment) = thread_priority_increment(value) else {
+            frame.eax = 0;
+            return;
+        };
         let Some(slot) = object_slot(handle) else {
             frame.eax = 0;
             return;
@@ -858,7 +855,7 @@ fn svc_set_thread_priority(frame: &mut crate::user::TrapFrame, args: &[u32]) {
         let dispatcher = crate::sched::idle::dispatcher();
         // SAFETY: the slot's kind names a thread, and the record lives for the process's lifetime.
         let thread = unsafe { &mut *crate::sched::thread::Thread::from_waitable(slot.waitable) };
-        dispatcher.set_base_priority(thread, thread_priority_increment(value));
+        dispatcher.set_base_priority(thread, increment);
         frame.eax = 1;
     }
     #[cfg(not(target_arch = "x86"))]
@@ -1269,16 +1266,20 @@ mod tests {
     }
 
     /// The SetThreadPriority value conversion: the five band values are increments and pass
-    /// straight through; the two edge specials name the class saturation pins instead.
+    /// straight through; the two edge specials name the class saturation pins instead; every other
+    /// value — the extremes included, which would overflow the increment arithmetic — is refused.
     #[test]
     fn thread_priority_values_convert_to_increments() {
-        assert_eq!(thread_priority_increment(0), 0);
-        assert_eq!(thread_priority_increment(1), 1);
-        assert_eq!(thread_priority_increment(-1), -1);
-        assert_eq!(thread_priority_increment(2), 2);
-        assert_eq!(thread_priority_increment(-2), -2);
-        assert_eq!(thread_priority_increment(15), 16);
-        assert_eq!(thread_priority_increment(-15), -16);
+        assert_eq!(thread_priority_increment(0), Some(0));
+        assert_eq!(thread_priority_increment(1), Some(1));
+        assert_eq!(thread_priority_increment(-1), Some(-1));
+        assert_eq!(thread_priority_increment(2), Some(2));
+        assert_eq!(thread_priority_increment(-2), Some(-2));
+        assert_eq!(thread_priority_increment(15), Some(16));
+        assert_eq!(thread_priority_increment(-15), Some(-16));
+        for refused in [3, -3, 7, 14, 16, -16, i32::MAX, i32::MIN] {
+            assert_eq!(thread_priority_increment(refused), None, "{refused}");
+        }
     }
 
     /// The tick count's millisecond conversion, floored once at the read: the tick count times the

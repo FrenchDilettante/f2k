@@ -66,7 +66,9 @@ pub trait Controller {
     /// Claim a delivered vector at the given level: probe the interrupt, raise the level, and
     /// return the previous one — or report the interrupt spurious (nothing raised).
     fn claim(&mut self, vector: u8, level: Irql) -> Claim;
-    /// End a claimed interrupt: lower back to the recorded level and acknowledge the chip.
+    /// End a claimed interrupt: acknowledge the chip, then lower back to the recorded level. The
+    /// acknowledgment comes first, while interrupts are still masked: the lower may re-enable
+    /// them, and an interrupt taken there may switch threads before this exit resumes.
     fn end(&mut self, previous: Irql, vector: u8);
     /// Enable (unmask) the vector's line; false if it could not be.
     fn enable(&mut self, vector: u8) -> bool;
@@ -447,8 +449,8 @@ mod target {
         }
 
         fn end(&mut self, previous: Irql, vector: u8) {
-            irql::state_mut().lower(previous);
             self.end_of_interrupt(vector);
+            irql::state_mut().lower(previous);
         }
 
         fn enable(&mut self, vector: u8) -> bool {
@@ -679,8 +681,8 @@ mod tests {
         }
 
         fn end(&mut self, previous: Irql, vector: u8) {
-            self.irql.lower(previous);
             self.complete(vector);
+            self.irql.lower(previous);
             self.ends.borrow_mut().push((previous, vector));
         }
 

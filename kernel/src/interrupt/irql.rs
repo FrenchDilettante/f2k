@@ -209,6 +209,14 @@ impl IrqlState {
         self.saved = snapshot.saved;
     }
 
+    /// A dying thread's last switch: its outstanding raises are never lowered — the thread's stack
+    /// is abandoned with their lowering code on it — so they are counted as paid, keeping the
+    /// transition audit balanced across thread exits. The ledger itself is the next thread's to
+    /// replace.
+    pub fn write_off_thread(&mut self) {
+        self.lowers = self.lowers.wrapping_add(self.depth as u32);
+    }
+
     /// A fresh thread's first instructions adopt an empty ledger: passive, no pending pairs,
     /// interrupts enabled. The previous thread's pending pairs live on its own stack and ledger.
     pub fn begin_thread(&mut self) {
@@ -361,6 +369,27 @@ mod tests {
         // Restore balance so the guard does not leak into other tests.
         irql.lower(PASSIVE);
         assert_eq!(irql.audit(), Ok(()));
+    }
+
+    /// A dying thread's write-off: its outstanding raises are never lowered, and the audit still
+    /// balances once the next thread's pairs are paid.
+    #[test]
+    fn a_dying_threads_raises_are_written_off() {
+        let mut cpu = IrqlState::new();
+        let resumed = cpu.raise(DISPATCH);
+        let ledger = cpu.capture();
+
+        // The dying thread: a raise left outstanding (a service's), then the exit's own.
+        cpu.begin_thread();
+        cpu.raise(APC);
+        cpu.raise(DISPATCH);
+        cpu.write_off_thread();
+        assert_eq!(cpu.audit(), Err("interrupt level transitions unbalanced"));
+
+        // The resumed thread pays its own pair.
+        cpu.restore(ledger);
+        cpu.lower(resumed);
+        assert_eq!(cpu.audit(), Ok(()));
     }
 
     /// The ledger handover: one state plays the CPU, the timelines interleave on it, and every

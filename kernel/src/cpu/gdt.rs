@@ -181,8 +181,7 @@ impl TaskStateSegment {
 }
 
 /// The one TSS, loaded into the task register during init. Exported by symbol: the switch's
-/// assembly installs the running thread's stack top as `esp0` at every switch (until the runner
-/// converts, the boot path installs the main thread's at process start).
+/// assembly installs the running thread's stack top as `esp0` at every switch.
 #[no_mangle]
 pub static mut TSS: TaskStateSegment = TaskStateSegment::new();
 
@@ -192,10 +191,9 @@ use core::arch::asm;
 /// Load our GDT, initialize the TSS and load the task register (CS is reloaded via a far jump in
 /// the assembly helper).
 ///
-/// The TSS's `esp0` starts zero: every run path that enters ring 3 installs its own ring-0 stack
-/// first — a per-process frame stack for image runs ([`crate::process`]), a boot gate stack for the
-/// fault-test stubs. A gate entry before any install would be a kernel bug (a zero esp0 faults
-/// contained, not silently corrupts).
+/// The TSS's `esp0` starts zero: ring 3 is only ever entered from a user thread, and the switch
+/// into that thread installs its gate-stack top first. A gate entry before any install would be a
+/// kernel bug (a zero esp0 faults contained, not silently corrupts).
 ///
 /// # Safety
 ///
@@ -229,18 +227,6 @@ pub unsafe fn init() {
     // task register and marks the descriptor busy in the GDT, and has no other effect.
     unsafe {
         asm!("ltr {tss:x}", tss = in(reg) TSS_SELECTOR, options(nostack, preserves_flags));
-    }
-}
-
-/// Point the TSS's `esp0` at `top`: the ring-0 stack gate entries from ring 3 switch to. Called at
-/// process start (and by the fault-test boot path) once the stack's pages are mapped in the current
-/// address space.
-#[cfg(target_arch = "x86")]
-pub fn set_gate_stack_top(top: u32) {
-    // SAFETY: single CPU, interrupts disabled throughout; the TSS's only other writer is boot-time
-    // init.
-    unsafe {
-        (*core::ptr::addr_of_mut!(TSS)).esp0 = top;
     }
 }
 

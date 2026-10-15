@@ -324,9 +324,9 @@ const NAMES: [&str; EXCEPTION_VECTORS] = [
     "Reserved (31)",
 ];
 
-/// Prints a diagnostic dump on COM1 and halts. Origin decides the final line: user-raised faults
-/// (including bad user pointers in syscall copies) end the user process; the rest are kernel
-/// faults.
+/// Prints a diagnostic dump on COM1, then lets the origin decide: user-raised faults (including
+/// bad user pointers in syscall copies) end the user process; the rest are kernel faults, which
+/// halt.
 #[allow(dead_code)] // referenced only from the generated stubs (sym operand)
 #[cfg(target_arch = "x86")]
 extern "C" fn exception_handler(frame: &ExceptionFrame) -> ! {
@@ -392,35 +392,26 @@ extern "C" fn exception_handler(frame: &ExceptionFrame) -> ! {
         crate::serial_println!("  CR2 (faulting address) {:#010x}", cr2);
     }
     // Classify the fault by origin. A fault raised by user code (or, while the kernel copies
-    // syscall arguments, by a bad user pointer on the kernel's behalf) ends the user process. A
-    // single-process kernel then has nothing left to run, so it halts — as the intended end of the
-    // process, reported as such, not as a kernel panic; the multi-process suite instead tears the
-    // process down and runs the next one. A kernel fault from any other origin stays the raw
+    // syscall arguments, by a bad user pointer on the kernel's behalf) ends the user process, not
+    // the kernel: the faulting thread's exit terminates every other thread of the process, reports
+    // the end, and the idle thread tears the process down (a suite boot then runs its next
+    // process; a one-process boot rests). A kernel fault from any other origin stays the raw
     // diagnostic halt.
     if from_user {
-        #[cfg(feature = "run-process-suite")]
-        {
-            crate::process::runner::process_faulted(frame.vector);
-        }
-        #[cfg(not(feature = "run-process-suite"))]
-        crate::serial_println!(
-            "F2K: user process ended by fault (vector {}); halting",
-            frame.vector
-        );
+        crate::process::threads::fault_exit(crate::process::exit::Fault {
+            vector: frame.vector,
+            in_user_copy: false,
+        });
     } else if crate::user::syscall::copying_user_args() {
         // The copy that set the flag never resumes: clear it here, or the next process's kernel
         // faults would be reported as its own.
         crate::user::syscall::end_user_attribution();
-        #[cfg(feature = "run-process-suite")]
-        {
-            // The fault was raised on the process's behalf inside a user-memory copy: same
-            // containment, same report.
-            crate::process::runner::process_faulted(frame.vector);
-        }
-        #[cfg(not(feature = "run-process-suite"))]
-        crate::serial_println!(
-            "F2K: user process ended by fault (bad user argument pointer); halting"
-        );
+        // The fault was raised on the process's behalf inside a user-memory copy: same
+        // containment, its own report.
+        crate::process::threads::fault_exit(crate::process::exit::Fault {
+            vector: frame.vector,
+            in_user_copy: true,
+        });
     }
     crate::halt();
 }
