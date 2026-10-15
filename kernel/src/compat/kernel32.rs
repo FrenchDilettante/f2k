@@ -457,8 +457,8 @@ fn svc_wide_char_to_multi_byte(frame: &mut crate::user::TrapFrame, args: &[u32])
 /// LCMapStringW: case mapping over the 1252 character set. UPPERCASE/LOWERCASE only; the locale is
 /// ignored (this surface replays one).
 fn svc_lc_map_string_w(frame: &mut crate::user::TrapFrame, args: &[u32]) {
-    const LCMAP_UPPERCASE: u32 = 0x0000_0100;
-    const LCMAP_LOWERCASE: u32 = 0x0000_0200;
+    const LCMAP_LOWERCASE: u32 = 0x0000_0100;
+    const LCMAP_UPPERCASE: u32 = 0x0000_0200;
     let (_locale, flags, src, cch_src, dst, cch_dst) =
         (args[0], args[1], args[2], args[3], args[4], args[5]);
     if flags != LCMAP_UPPERCASE && flags != LCMAP_LOWERCASE {
@@ -1119,7 +1119,7 @@ pub const SERVICES: [(&str, u32, ServiceFn); 51] = [
     ("GetVersion", 0, svc_get_version),
     ("HeapAlloc", 12, svc_heap_alloc),
     ("HeapCreate", 12, svc_heap_create),
-    ("HeapDestroy", 8, svc_heap_destroy),
+    ("HeapDestroy", 4, svc_heap_destroy),
     ("HeapFree", 12, svc_heap_free),
     ("HeapReAlloc", 16, svc_heap_realloc),
     ("LCMapStringA", 24, svc_floor_zero),

@@ -2,4 +2,6 @@
 //! behind its locale services.
 
 pub mod cp1252;
+#[cfg(test)]
+mod harness;
 pub mod kernel32;
