@@ -6,7 +6,8 @@
 
 # Comments: wrap at the same 100 columns as code, turn /* */ into //,
 # and format Rust code blocks inside doc comments.
-wrap_comments = true
+# Disabled: reflows _all_ comments, including bullet points.
+# wrap_comments = true
 comment_width = 100
 normalize_comments = true
 normalize_doc_attributes = true
