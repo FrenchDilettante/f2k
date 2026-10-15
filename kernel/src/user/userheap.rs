@@ -26,13 +26,10 @@ const STATE_FREE: u32 = 0;
 const STATE_IN_USE: u32 = 1;
 
 /// The heap region's fixed user address and cap.
-#[cfg(target_arch = "x86")]
 pub const HEAP_REGION_BASE: u32 = 0x0200_0000;
-#[cfg(target_arch = "x86")]
 pub const HEAP_REGION_MAX: usize = 0x0010_0000;
 
 /// The CRT region's base — the address VirtualAlloc reports for a NULL reservation.
-#[cfg(target_arch = "x86")]
 pub const CRT_REGION_BASE: u32 = 0x0210_0000;
 
 /// VirtualAlloc allocation types (public constants; the CRT passes them).
@@ -882,7 +879,6 @@ mod tests {
     }
 
     /// The target placement: both regions above every mapped area, 64 KiB-aligned, in user space.
-    #[cfg(target_arch = "x86")]
     #[test]
     fn regions_are_placed_clear_of_the_user_layout() {
         use crate::mem::paging::KERNEL_BASE;

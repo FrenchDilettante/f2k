@@ -1,14 +1,18 @@
-//! PE32 image parsing and import resolution for the image loader.
+//! PE32 image parsing, export lookup and import resolution for the image loader.
 //!
-//! Pure logic over a byte slice, with no kernel state: [`Image::parse`] validates a PE32
-//! executable's headers and section table, [`Image::map_into`] builds the in-memory image under the
-//! eager mapping rule (headers verbatim, then each section's raw bytes, zero-fill to the section
-//! extent), and [`Image::snap_imports`] resolves the import directory against a caller-supplied
-//! export table, writing thunk addresses into the IAT slots.
+//! Pure logic over a byte slice, with no kernel state: [`Image::parse`] validates a PE32 image's
+//! headers and section table — a program or a DLL, told apart by the file header's DLL flag —
+//! [`Image::map_into`] builds the in-memory image under the eager mapping rule (headers verbatim,
+//! then each section's raw bytes, zero-fill to the section extent), [`Image::exports`] reads the
+//! export directory of a mapped image, and [`Image::snap_imports`] resolves the import directory
+//! module by module through a caller-supplied resolver, writing addresses into the IAT slots.
+//!
+//! Every image maps at its own preferred base (no relocation machinery exists): the base must be a
+//! 64 KiB multiple and the image must fit below the kernel window.
 //!
 //! Failure discipline: questions of identity ("is this an image we load?") come back as
 //! [`Reject`]s; malformed bytes that would read past the buffer, and violations of the load
-//! contract, panic naming the violated contract. A run-to-completion image must have at least one
+//! contract, panic naming the violated contract. A run-to-completion program must have at least one
 //! live import, so a snap that resolves nothing is a contract violation, not a success.
 
 /// The DOS-header magic ("MZ").
@@ -23,15 +27,20 @@ const MACHINE_I386: u16 = 0x014C;
 /// The only optional-header layout this loader accepts: PE32 (not PE32+).
 const OPT_MAGIC_PE32: u16 = 0x010B;
 
-/// The only subsystem this loader accepts: console.
+/// The only subsystem this loader accepts for a program: console. A DLL's subsystem field is not
+/// consulted (the system DLLs carry either value).
 const SUBSYSTEM_CUI: u16 = 3;
 
-/// The fixed mapping base for user images: no relocation machinery exists, so an image must be
-/// linked to load exactly here.
-pub const IMAGE_BASE: u32 = 0x0040_0000;
+/// The file-header characteristic that makes an image a DLL.
+const FILE_DLL: u16 = 0x2000;
 
-/// The largest image this loader will map (the fixed base plus this cap bounds where images can
-/// live).
+/// The granularity a preferred base must be a multiple of (the format's 64 KiB rule).
+const IMAGE_BASE_ALIGNMENT: u32 = 0x1_0000;
+
+/// The end of user space: an image must end at or below it.
+pub const USER_SPACE_END: u32 = crate::mem::paging::KERNEL_BASE;
+
+/// The largest image this loader will map.
 pub const MAX_IMAGE_SIZE: u32 = 0x0100_0000;
 
 /// The section-count cap.
@@ -41,6 +50,8 @@ const MAX_SECTIONS: usize = 96;
 const MAX_DIRECTORIES: usize = 16;
 
 /// Data-directory indices the loader consumes.
+#[allow(dead_code)] // the DLL loader's: not yet wired on the target
+pub const DIR_EXPORT: usize = 0;
 pub const DIR_IMPORT: usize = 1;
 pub const DIR_BASERELOC: usize = 5;
 pub const DIR_IAT: usize = 12;
@@ -64,6 +75,9 @@ const SIZE_OPT_STANDARD: usize = 96;
 const SIZE_DIRECTORY_ENTRY: usize = 8;
 /// One import descriptor: five dwords, terminated by an all-zero one.
 const SIZE_IMPORT_DESCRIPTOR: usize = 20;
+/// The export directory's fixed part (its arrays and strings live elsewhere in the image).
+#[allow(dead_code)] // the DLL loader's: not yet wired on the target
+const SIZE_EXPORT_DIRECTORY: usize = 40;
 
 /// Why an image is not loadable. Identity questions only: bytes that merely do not describe a
 /// loadable PE32 image.
@@ -93,12 +107,16 @@ pub enum Reject {
     BadAlignment,
     /// SizeOfImage does not match the section layout.
     SizeOfImageMismatch,
-    /// Not linked for the fixed mapping base.
-    WrongImageBase,
-    /// Not a console image.
+    /// The preferred base is not a 64 KiB multiple (zero included).
+    ImageBaseUnaligned,
+    /// The image does not fit below the end of user space at its preferred base.
+    ImageOutsideUserSpace,
+    /// A program that is not a console image.
     WrongSubsystem,
-    /// No entry point.
+    /// A program without an entry point (a DLL may have none).
     NoEntryPoint,
+    /// A DLL where a program was asked for.
+    NotAProgram,
     /// The entry point is not inside an executable section.
     EntryNotExecutable,
     /// Sections are not contiguous and ordered.
@@ -182,6 +200,8 @@ pub struct Image {
     pub size_of_image: u32,
     pub size_of_headers: u32,
     pub subsystem: u16,
+    /// The file header's characteristics (the DLL flag among them).
+    pub characteristics: u16,
     directories: [DataDirectory; MAX_DIRECTORIES],
     num_directories: usize,
     sections: [Section; MAX_SECTIONS],
@@ -193,6 +213,140 @@ pub struct Image {
 pub struct SnapResult {
     pub descriptors: usize,
     pub thunks: usize,
+}
+
+/// Why an import did not resolve: the resolver has no module by that name, or the module has no
+/// such entry point.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unresolved {
+    NoModule,
+    NoEntry,
+}
+
+/// What an export slot holds: an address in the exporting image (an RVA), or a forwarder — the
+/// export lives in another module, named by a "MODULE.Name" or "MODULE.#ordinal" string.
+#[allow(dead_code)] // the DLL loader's: not yet wired on the target
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Export<'a> {
+    Address(u32),
+    Forwarder(&'a str),
+}
+
+/// A forwarder's target entry point: by name, or by ordinal ("MODULE.#ordinal").
+#[allow(dead_code)] // the DLL loader's: not yet wired on the target
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ForwardTarget<'a> {
+    Name(&'a str),
+    Ordinal(u32),
+}
+
+/// Split a forwarder string into its module and target. The module part is everything before the
+/// last dot and carries no extension (".dll" is implied, see [`same_module`]). `None` for a string
+/// without a dot or with an empty part — malformed exports are the caller's to report.
+#[allow(dead_code)] // the DLL loader's: not yet wired on the target
+pub fn split_forwarder(forwarder: &str) -> Option<(&str, ForwardTarget<'_>)> {
+    let (module, entry) = forwarder.rsplit_once('.')?;
+    if module.is_empty() || entry.is_empty() {
+        return None;
+    }
+    match entry.strip_prefix('#') {
+        Some(digits) => Some((module, ForwardTarget::Ordinal(digits.parse().ok()?))),
+        None => Some((module, ForwardTarget::Name(entry))),
+    }
+}
+
+/// Whether two module names designate the same module: ASCII-case-insensitively, with a missing
+/// extension standing for ".dll" (a forwarder names "NTDLL" for NTDLL.dll; an import descriptor
+/// spells the extension out).
+pub fn same_module(a: &str, b: &str) -> bool {
+    // `full` spelled with an extension, `bare` without: equal when `full` is `bare` plus ".dll".
+    fn implied_dll(full: &[u8], bare: &[u8]) -> bool {
+        full.len() == bare.len() + 4
+            && full[..bare.len()].eq_ignore_ascii_case(bare)
+            && full[bare.len()..].eq_ignore_ascii_case(b".dll")
+    }
+    match (a.contains('.'), b.contains('.')) {
+        (true, false) => implied_dll(a.as_bytes(), b.as_bytes()),
+        (false, true) => implied_dll(b.as_bytes(), a.as_bytes()),
+        _ => a.eq_ignore_ascii_case(b),
+    }
+}
+
+/// An image's export directory, as read from the mapped image: where its three arrays live and how
+/// they are numbered. Lookups read the arrays from the same mapped bytes.
+#[allow(dead_code)] // the DLL loader's: not yet wired on the target
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Exports {
+    /// The directory's own range: a function RVA inside it is a forwarder string.
+    directory_rva: u32,
+    directory_size: u32,
+    /// The ordinal of the address table's first slot.
+    pub ordinal_base: u32,
+    pub num_functions: u32,
+    pub num_names: u32,
+    functions_rva: u32,
+    names_rva: u32,
+    name_ordinals_rva: u32,
+}
+
+#[allow(dead_code)] // the DLL loader's: not yet wired on the target
+impl Exports {
+    /// The export with this name. Names compare exactly (export names are case-sensitive); the name
+    /// table is walked in full, so its sort order is not relied on.
+    pub fn by_name<'a>(&self, mapped: &'a [u8], name: &str) -> Option<Export<'a>> {
+        for index in 0..self.num_names as usize {
+            let name_rva = read_u32(mapped, self.names_rva as usize + index * 4, "export name");
+            if read_cstr(mapped, name_rva as usize, "export name") == name {
+                let slot = read_u16(
+                    mapped,
+                    self.name_ordinals_rva as usize + index * 2,
+                    "export name ordinal",
+                );
+                // The name-ordinal table holds address-table indexes, not biased ordinals.
+                assert!(
+                    (slot as u32) < self.num_functions,
+                    "export '{name}' names slot {slot} of a {}-slot address table",
+                    self.num_functions
+                );
+                return self.slot(mapped, slot as u32);
+            }
+        }
+        None
+    }
+
+    /// The export with this ordinal (biased by the directory's ordinal base).
+    pub fn by_ordinal<'a>(&self, mapped: &'a [u8], ordinal: u32) -> Option<Export<'a>> {
+        let slot = ordinal.checked_sub(self.ordinal_base)?;
+        if slot >= self.num_functions {
+            return None;
+        }
+        self.slot(mapped, slot)
+    }
+
+    /// Address-table slot `slot`: an unused slot (zero) exports nothing.
+    fn slot<'a>(&self, mapped: &'a [u8], slot: u32) -> Option<Export<'a>> {
+        let rva = read_u32(
+            mapped,
+            self.functions_rva as usize + slot as usize * 4,
+            "export address",
+        );
+        if rva == 0 {
+            return None;
+        }
+        if rva >= self.directory_rva && rva - self.directory_rva < self.directory_size {
+            return Some(Export::Forwarder(read_cstr(
+                mapped,
+                rva as usize,
+                "export forwarder",
+            )));
+        }
+        assert!(
+            rva < mapped.len() as u32,
+            "export RVA 0x{rva:x} is outside the image 0x{:x}",
+            mapped.len()
+        );
+        Some(Export::Address(rva))
+    }
 }
 
 /// Bounds-check a read: `what` at `[off, off + len)` must fit inside `bytes`. Violations are
@@ -264,6 +418,7 @@ impl Image {
         let machine = read_u16(file, nt + 4, "machine");
         let num_sections = read_u16(file, nt + 6, "section count") as usize;
         let size_optional = read_u16(file, nt + 20, "SizeOfOptionalHeader") as usize;
+        let characteristics = read_u16(file, nt + 22, "Characteristics");
         let opt = nt + SIZE_NT_SIGNATURE + SIZE_FILE_HEADER;
 
         if machine != MACHINE_I386 {
@@ -302,21 +457,29 @@ impl Image {
             };
         }
 
-        // Identity contracts.
+        // Identity contracts. A program must be a console image with an entry point; a DLL may be
+        // either subsystem and may have no entry point (nothing to call at attach).
+        let dll = characteristics & FILE_DLL != 0;
         if num_sections == 0 {
             return Err(Reject::NoSections);
         }
-        if image_base != IMAGE_BASE {
-            return Err(Reject::WrongImageBase);
+        if image_base == 0 || !image_base.is_multiple_of(IMAGE_BASE_ALIGNMENT) {
+            return Err(Reject::ImageBaseUnaligned);
         }
-        if subsystem != SUBSYSTEM_CUI {
+        if !dll && subsystem != SUBSYSTEM_CUI {
             return Err(Reject::WrongSubsystem);
         }
-        if entry_rva == 0 {
+        if !dll && entry_rva == 0 {
             return Err(Reject::NoEntryPoint);
         }
         if size_of_image > MAX_IMAGE_SIZE {
             return Err(Reject::ImageTooLarge);
+        }
+        if image_base
+            .checked_add(size_of_image)
+            .is_none_or(|end| end > USER_SPACE_END)
+        {
+            return Err(Reject::ImageOutsideUserSpace);
         }
 
         // The alignment bundle.
@@ -417,13 +580,14 @@ impl Image {
             return Err(Reject::SizeOfImageMismatch);
         }
 
-        // The entry point must be inside an executable section.
-        let entry_covered = (0..num_sections).any(|i| {
-            let s = &sections[i];
-            entry_rva >= s.virtual_address
-                && entry_rva < s.virtual_address + s.extent(section_alignment)
-                && s.characteristics & SCN_EXECUTE != 0
-        });
+        // The entry point, when there is one, must be inside an executable section.
+        let entry_covered = entry_rva == 0
+            || (0..num_sections).any(|i| {
+                let s = &sections[i];
+                entry_rva >= s.virtual_address
+                    && entry_rva < s.virtual_address + s.extent(section_alignment)
+                    && s.characteristics & SCN_EXECUTE != 0
+            });
         if !entry_covered {
             return Err(Reject::EntryNotExecutable);
         }
@@ -438,11 +602,65 @@ impl Image {
             size_of_image,
             size_of_headers,
             subsystem,
+            characteristics,
             directories,
             num_directories,
             sections,
             num_sections,
         })
+    }
+
+    /// Parse an image that must be a program: a DLL is refused.
+    pub fn parse_program(file: &[u8]) -> Result<Image, Reject> {
+        let image = Image::parse(file)?;
+        if image.is_dll() {
+            return Err(Reject::NotAProgram);
+        }
+        Ok(image)
+    }
+
+    /// Whether the image is a DLL (the file header's DLL flag, not the subsystem, decides).
+    pub fn is_dll(&self) -> bool {
+        self.characteristics & FILE_DLL != 0
+    }
+
+    /// The export directory of the mapped image `mapped`, if the image has one.
+    #[allow(dead_code)] // the DLL loader's: not yet wired on the target
+    pub fn exports(&self, mapped: &[u8]) -> Option<Exports> {
+        let (rva, size) = self.directory(DIR_EXPORT)?;
+        let at = rva as usize;
+        need(mapped, at, SIZE_EXPORT_DIRECTORY, "export directory");
+        let exports = Exports {
+            directory_rva: rva,
+            directory_size: size,
+            ordinal_base: read_u32(mapped, at + 16, "export directory"),
+            num_functions: read_u32(mapped, at + 20, "export directory"),
+            num_names: read_u32(mapped, at + 24, "export directory"),
+            functions_rva: read_u32(mapped, at + 28, "export directory"),
+            names_rva: read_u32(mapped, at + 32, "export directory"),
+            name_ordinals_rva: read_u32(mapped, at + 36, "export directory"),
+        };
+        // The arrays must lie inside the image: every lookup indexes them.
+        let array = |rva: u32, count: u32, width: usize, what: &str| {
+            let len = (count as usize).checked_mul(width).unwrap_or_else(|| {
+                panic!("{what} of {count} entries wraps");
+            });
+            need(mapped, rva as usize, len, what);
+        };
+        array(
+            exports.functions_rva,
+            exports.num_functions,
+            4,
+            "export address table",
+        );
+        array(exports.names_rva, exports.num_names, 4, "export name table");
+        array(
+            exports.name_ordinals_rva,
+            exports.num_names,
+            2,
+            "export name-ordinal table",
+        );
+        Some(exports)
     }
 
     pub fn section(&self, index: usize) -> &Section {
@@ -568,8 +786,8 @@ impl Image {
     }
 
     /// Read one import's name out of the file bytes. The name must live in file-backed bytes: the
-    /// zero tail cannot hold names. The hint is read but never authoritative. Ordinal imports have
-    /// no surface on the kernel's name-keyed export table.
+    /// zero tail cannot hold names. The hint is read but never authoritative. Ordinal imports are not
+    /// served: the resolver is name-keyed (the synthesized kernel32 has no ordinals).
     fn import_name<'a>(&self, file: &'a [u8], thunk: u32) -> &'a str {
         if thunk & ORDINAL_FLAG != 0 {
             panic!(
@@ -590,20 +808,34 @@ impl Image {
         read_cstr(file, off + 2, "import name")
     }
 
-    /// Resolve the import directory against an export table: `dll` is the only module this kernel
-    /// synthesizes, and `resolve` maps an export name to its thunk address. Each IAT slot receives
-    /// the resolved address; the original thunk array is left untouched. Descriptor and thunk reads
-    /// come from the mapped image (what the loader actually walks); import names come from the file
-    /// bytes (they must be file-backed).
+    /// A NUL-terminated string at `rva`, read out of the file bytes: it must lie inside the image
+    /// and be file-backed.
+    fn file_cstr<'a>(&self, file: &'a [u8], rva: u32, what: &str) -> &'a str {
+        assert!(
+            rva < self.size_of_image,
+            "{what} RVA 0x{rva:x} is outside the image 0x{:x}",
+            self.size_of_image
+        );
+        let off = self.rva_to_offset(rva).unwrap_or_else(|| {
+            panic!("{what} RVA 0x{rva:x} is not backed by file data");
+        });
+        read_cstr(file, off, what)
+    }
+
+    /// Resolve the import directory: `resolve` maps a (module, entry point) pair — the module as the
+    /// descriptor spells it — to the address the IAT slot receives. Each IAT slot is written; the
+    /// original thunk array is left untouched, and whatever the IAT held before (lookup values, or
+    /// addresses a bind step wrote against some other build of the module) is never trusted.
+    /// Descriptor and thunk reads come from the mapped image (what the loader actually walks);
+    /// module and entry-point names come from the file bytes (they must be file-backed).
     pub fn snap_imports(
         &self,
         file: &[u8],
         image: &mut [u8],
-        dll: &str,
-        mut resolve: impl FnMut(&str) -> Option<u32>,
+        mut resolve: impl FnMut(&str, &str) -> Result<u32, Unresolved>,
     ) -> SnapResult {
         let Some((import_rva, _)) = self.directory(DIR_IMPORT) else {
-            // No import directory: nothing to snap (an importless image must end by fault).
+            // No import directory: nothing to snap (an importless program must end by fault).
             return SnapResult::default();
         };
         let (iat_base, iat_size) = self.iat_region();
@@ -619,10 +851,7 @@ impl Image {
                 break;
             }
             result.descriptors += 1;
-            let module = read_cstr(image, name_rva as usize, "import module name");
-            if !module.eq_ignore_ascii_case(dll) {
-                panic!("import module '{module}' is not the kernel export module '{dll}'");
-            }
+            let module = self.file_cstr(file, name_rva, "import module name");
             // An import with no live references is skipped.
             if read_u32(image, first_thunk as usize, "thunk slot") == 0 {
                 off += SIZE_IMPORT_DESCRIPTOR;
@@ -646,8 +875,13 @@ impl Image {
                     break;
                 }
                 let name = self.import_name(file, thunk);
-                let address = resolve(name)
-                    .unwrap_or_else(|| panic!("entry point '{name}' not found in {dll}"));
+                let address = match resolve(module, name) {
+                    Ok(address) => address,
+                    Err(Unresolved::NoModule) => panic!("import module '{module}' is not loaded"),
+                    Err(Unresolved::NoEntry) => {
+                        panic!("entry point '{name}' not found in {module}")
+                    }
+                };
                 need(image, slot_off, 4, "IAT slot");
                 write_u32(image, slot_off, address, "IAT slot");
                 assert!(
@@ -662,9 +896,10 @@ impl Image {
             }
             off += SIZE_IMPORT_DESCRIPTOR;
         }
-        // A run-to-completion image must resolve at least one import: its exit path.
+        // A run-to-completion program must resolve at least one import: its exit path. A DLL may
+        // import nothing.
         assert!(
-            result.thunks > 0,
+            result.thunks > 0 || self.is_dll(),
             "image has no live imports (run-to-completion contract)"
         );
         result
@@ -780,9 +1015,16 @@ mod tests {
         let mut mapped = vec![0u8; image.size_of_image as usize];
         image.map_into(file, &mut mapped);
         let mut seen: Vec<String> = Vec::new();
-        let result = image.snap_imports(file, &mut mapped, "KERNEL32.dll", |name: &str| {
+        let result = image.snap_imports(file, &mut mapped, |module: &str, name: &str| {
+            if !same_module(module, "KERNEL32.dll") {
+                return Err(Unresolved::NoModule);
+            }
             seen.push(name.to_string());
-            table.iter().find(|(n, _)| *n == name).map(|(_, a)| *a)
+            table
+                .iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, a)| *a)
+                .ok_or(Unresolved::NoEntry)
         });
         (image, mapped, result, seen)
     }
@@ -927,9 +1169,40 @@ mod tests {
     }
 
     #[test]
-    fn foreign_image_base_rejects() {
-        let bad = patched(EXIT0, |b| w32(b, off_opt(b) + 28, 0x500000));
-        assert_eq!(Image::parse(&bad), Err(Reject::WrongImageBase));
+    fn the_preferred_base_is_the_mapping_base() {
+        // cmd.exe's preferred base: a program linked anywhere in user space parses there.
+        let moved = patched(EXIT0, |b| w32(b, off_opt(b) + 28, 0x4AD0_0000));
+        let image = parse_ok(&moved);
+        assert_eq!(image.image_base, 0x4AD0_0000);
+        assert_eq!(image.entry_va(), 0x4AD0_1000);
+    }
+
+    #[test]
+    fn unaligned_image_base_rejects() {
+        for base in [0, 0x0040_1000, 0x0040_8000] {
+            let bad = patched(EXIT0, |b| w32(b, off_opt(b) + 28, base));
+            assert_eq!(
+                Image::parse(&bad),
+                Err(Reject::ImageBaseUnaligned),
+                "{base:#x}"
+            );
+        }
+    }
+
+    #[test]
+    fn image_past_user_space_rejects() {
+        // exit0 spans 0x3000 bytes: at 0x7FFF0000 it still fits, one unit higher it reaches into
+        // the kernel window, and near the top of the address space its end wraps.
+        let fits = patched(EXIT0, |b| w32(b, off_opt(b) + 28, 0x7FFF_0000));
+        assert_eq!(parse_ok(&fits).image_base, 0x7FFF_0000);
+        for base in [USER_SPACE_END, 0xFFFF_0000] {
+            let bad = patched(EXIT0, |b| w32(b, off_opt(b) + 28, base));
+            assert_eq!(
+                Image::parse(&bad),
+                Err(Reject::ImageOutsideUserSpace),
+                "{base:#x}"
+            );
+        }
     }
 
     #[test]
@@ -962,6 +1235,50 @@ mod tests {
     fn non_console_subsystem_rejects() {
         let bad = patched(EXIT0, |b| w16(b, off_opt(b) + 68, 5));
         assert_eq!(Image::parse(&bad), Err(Reject::WrongSubsystem));
+    }
+
+    // ---- program or DLL ----
+
+    /// `src` with the file header's DLL flag set.
+    fn as_dll(src: &[u8]) -> Vec<u8> {
+        patched(src, |b| {
+            let at = off_nt(b) + 22;
+            w16(b, at, r16(b, at) | FILE_DLL);
+        })
+    }
+
+    #[test]
+    fn the_fixtures_are_programs() {
+        for src in [EXIT0, RET0] {
+            let image = Image::parse_program(src).expect("fixture parses as a program");
+            assert!(!image.is_dll());
+            assert_eq!(image.characteristics & FILE_DLL, 0);
+        }
+    }
+
+    #[test]
+    fn the_dll_flag_makes_a_dll() {
+        let dll = as_dll(EXIT0);
+        assert!(parse_ok(&dll).is_dll());
+        assert_eq!(Image::parse_program(&dll), Err(Reject::NotAProgram));
+    }
+
+    #[test]
+    fn a_dll_carries_either_subsystem() {
+        // The subsystem field does not tell a DLL apart: GUI-subsystem DLLs exist (msvcrt.dll).
+        for subsystem in [2, 3] {
+            let dll = patched(&as_dll(EXIT0), |b| w16(b, off_opt(b) + 68, subsystem));
+            assert!(parse_ok(&dll).is_dll(), "subsystem {subsystem}");
+        }
+    }
+
+    #[test]
+    fn a_dll_may_have_no_entry_point() {
+        let dll = patched(&as_dll(EXIT0), |b| w32(b, off_opt(b) + 16, 0));
+        assert_eq!(parse_ok(&dll).entry_rva, 0);
+        // A DLL's entry point, when it has one, is held to the executable-section rule.
+        let outside = patched(&as_dll(EXIT0), |b| w32(b, off_opt(b) + 16, 0x2000));
+        assert_eq!(Image::parse(&outside), Err(Reject::EntryNotExecutable));
     }
 
     // ---- section table and mapping plan ----
@@ -1248,7 +1565,7 @@ mod tests {
         image.map_into(&bad, &mut mapped);
         // Nothing to snap: the image imports nothing and must end by fault.
         assert_eq!(
-            image.snap_imports(&bad, &mut mapped, "KERNEL32.dll", |_| None),
+            image.snap_imports(&bad, &mut mapped, |_, _| Err(Unresolved::NoModule)),
             SnapResult::default()
         );
     }
@@ -1377,7 +1694,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "exceeds the buffer size")]
+    #[should_panic(expected = "import module name RVA 0x5000 is outside the image")]
     fn module_name_outside_image_panics() {
         let bad = patched(EXIT0, |b| w32(b, 0x2008 + 12, 0x5000));
         let _ = snap_default(&bad);
@@ -1424,12 +1741,54 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "is not the kernel export module")]
+    #[should_panic(expected = "import module 'USER32.dll' is not loaded")]
     fn foreign_module_panics() {
         let bad = patched(EXIT0, |b| {
-            b[0x2046..0x2046 + 10].copy_from_slice(b"USER32.dll");
+            b[0x2046..0x2046 + 11].copy_from_slice(b"USER32.dll\0");
         });
         let _ = snap_default(&bad);
+    }
+
+    #[test]
+    fn the_resolver_sees_the_module_as_spelled() {
+        let image = parse_ok(EXIT0);
+        let mut mapped = vec![0u8; image.size_of_image as usize];
+        image.map_into(EXIT0, &mut mapped);
+        let mut asked: Vec<(String, String)> = Vec::new();
+        image.snap_imports(EXIT0, &mut mapped, |module, name| {
+            asked.push((module.to_string(), name.to_string()));
+            Ok(0x5000_1000)
+        });
+        assert_eq!(
+            asked,
+            vec![("KERNEL32.dll".to_string(), "ExitProcess".to_string())]
+        );
+    }
+
+    #[test]
+    fn bound_iat_values_are_overwritten() {
+        // A bind step pre-fills the IAT with addresses inside some build of the module and stamps
+        // the descriptor's time-date field: the snap still resolves by name from the lookup array
+        // and overwrites the slot.
+        let bound = patched(EXIT0, |b| {
+            w32(b, 0x2000, 0x7C4E_1234);
+            w32(b, 0x2008 + 4, 0xFFFF_FFFF);
+        });
+        let (_, mapped, result, seen) = snap(&bound, &[("ExitProcess", 0x5000_1000)]);
+        assert_eq!(result.thunks, 1);
+        assert_eq!(seen, vec!["ExitProcess"]);
+        assert_eq!(r32(&mapped, 0x2000), 0x5000_1000);
+    }
+
+    #[test]
+    fn a_dll_may_import_nothing() {
+        let bad = patched(EXIT0, |b| {
+            w32(b, 0x2000, 0);
+            let at = off_nt(b) + 22;
+            w16(b, at, r16(b, at) | FILE_DLL);
+        });
+        let (_, _, result, _) = snap_default(&bad);
+        assert_eq!(result.thunks, 0);
     }
 
     #[test]
@@ -1448,6 +1807,224 @@ mod tests {
             w32(b, 0x2030, 0x3000);
         });
         let _ = snap_default(&bad);
+    }
+
+    // ---- exports ----
+    //
+    // No DLL fixture exists yet: the export directory is synthesized into exit0's .rdata padding
+    // (0x2100.., past the import surface's last byte at 0x2054), flagged as a DLL.
+
+    /// One address-table slot of a synthesized export directory.
+    #[derive(Clone, Copy)]
+    enum Slot<'a> {
+        Code(u32),
+        Unused,
+        Forward(&'a str),
+    }
+
+    /// Where the synthesized directory and its pieces live.
+    const EXPORT_DIR: usize = 0x2100;
+    const EXPORT_FUNCTIONS: usize = 0x2140;
+    const EXPORT_NAMES: usize = 0x2200;
+    const EXPORT_ORDINALS: usize = 0x2280;
+    const EXPORT_STRINGS: usize = 0x2300;
+    /// Forwarder strings must lie inside the directory's range: the range covers them.
+    const EXPORT_FORWARDERS: usize = 0x2400;
+    const EXPORT_DIR_SIZE: u32 = 0x400;
+
+    /// exit0 as a DLL exporting `slots` from ordinal `base`, with `names` naming address-table
+    /// slots. Names are written in the order given (a real linker sorts them).
+    fn with_exports(base: u32, slots: &[Slot], names: &[(&str, u16)]) -> Vec<u8> {
+        /// Write `s` NUL-terminated at `*at`, advance past it, and return its RVA.
+        fn put_str(b: &mut [u8], at: &mut usize, s: &str) -> u32 {
+            let rva = *at as u32;
+            b[*at..*at + s.len()].copy_from_slice(s.as_bytes());
+            b[*at + s.len()] = 0;
+            *at += s.len() + 1;
+            rva
+        }
+        patched(&as_dll(EXIT0), |b| {
+            w32(b, off_dir(b, DIR_EXPORT), EXPORT_DIR as u32);
+            w32(b, off_dir(b, DIR_EXPORT) + 4, EXPORT_DIR_SIZE);
+            let mut strings = EXPORT_STRINGS;
+            let module = put_str(b, &mut strings, "SYNTH.dll");
+            w32(b, EXPORT_DIR + 12, module);
+            w32(b, EXPORT_DIR + 16, base);
+            w32(b, EXPORT_DIR + 20, slots.len() as u32);
+            w32(b, EXPORT_DIR + 24, names.len() as u32);
+            w32(b, EXPORT_DIR + 28, EXPORT_FUNCTIONS as u32);
+            w32(b, EXPORT_DIR + 32, EXPORT_NAMES as u32);
+            w32(b, EXPORT_DIR + 36, EXPORT_ORDINALS as u32);
+            let mut forwarders = EXPORT_FORWARDERS;
+            for (i, slot) in slots.iter().enumerate() {
+                let value = match *slot {
+                    Slot::Code(rva) => rva,
+                    Slot::Unused => 0,
+                    Slot::Forward(target) => put_str(b, &mut forwarders, target),
+                };
+                w32(b, EXPORT_FUNCTIONS + 4 * i, value);
+            }
+            for (i, (name, slot)) in names.iter().enumerate() {
+                let rva = put_str(b, &mut strings, name);
+                w32(b, EXPORT_NAMES + 4 * i, rva);
+                w16(b, EXPORT_ORDINALS + 2 * i, *slot);
+            }
+        })
+    }
+
+    /// Map `file` and read its export directory.
+    fn exports_of(file: &[u8]) -> (Vec<u8>, Exports) {
+        let image = parse_ok(file);
+        let mut mapped = vec![0u8; image.size_of_image as usize];
+        image.map_into(file, &mut mapped);
+        let exports = image.exports(&mapped).expect("export directory present");
+        (mapped, exports)
+    }
+
+    /// A small export surface: ordinals 5..=8, slot 2 unused, slot 3 forwarded, one slot exported
+    /// by ordinal only.
+    fn synth() -> Vec<u8> {
+        with_exports(
+            5,
+            &[
+                Slot::Code(0x1000),
+                Slot::Code(0x1008),
+                Slot::Unused,
+                Slot::Forward("NTDLL.RtlAllocateHeap"),
+            ],
+            &[("Alpha", 0), ("Forwarded", 3), ("Gamma", 1)],
+        )
+    }
+
+    #[test]
+    fn the_fixtures_export_nothing() {
+        for src in [EXIT0, RET0] {
+            let image = parse_ok(src);
+            let mut mapped = vec![0u8; image.size_of_image as usize];
+            image.map_into(src, &mut mapped);
+            assert_eq!(image.exports(&mapped), None);
+        }
+    }
+
+    #[test]
+    fn export_directory_fields_parse() {
+        let (_, exports) = exports_of(&synth());
+        assert_eq!(exports.ordinal_base, 5);
+        assert_eq!(exports.num_functions, 4);
+        assert_eq!(exports.num_names, 3);
+    }
+
+    #[test]
+    fn exports_resolve_by_name() {
+        let (mapped, exports) = exports_of(&synth());
+        assert_eq!(
+            exports.by_name(&mapped, "Alpha"),
+            Some(Export::Address(0x1000))
+        );
+        assert_eq!(
+            exports.by_name(&mapped, "Gamma"),
+            Some(Export::Address(0x1008))
+        );
+        // Export names are case-sensitive, and a missing name is no export.
+        assert_eq!(exports.by_name(&mapped, "alpha"), None);
+        assert_eq!(exports.by_name(&mapped, "Delta"), None);
+    }
+
+    #[test]
+    fn exports_resolve_by_ordinal() {
+        let (mapped, exports) = exports_of(&synth());
+        assert_eq!(
+            exports.by_ordinal(&mapped, 5),
+            Some(Export::Address(0x1000))
+        );
+        assert_eq!(
+            exports.by_ordinal(&mapped, 6),
+            Some(Export::Address(0x1008))
+        );
+        // The unused slot exports nothing; ordinals outside [base, base + count) are no exports.
+        assert_eq!(exports.by_ordinal(&mapped, 7), None);
+        assert_eq!(exports.by_ordinal(&mapped, 4), None);
+        assert_eq!(exports.by_ordinal(&mapped, 9), None);
+    }
+
+    #[test]
+    fn a_slot_inside_the_directory_is_a_forwarder() {
+        let (mapped, exports) = exports_of(&synth());
+        let forwarded = Some(Export::Forwarder("NTDLL.RtlAllocateHeap"));
+        assert_eq!(exports.by_name(&mapped, "Forwarded"), forwarded);
+        assert_eq!(exports.by_ordinal(&mapped, 8), forwarded);
+    }
+
+    #[test]
+    fn the_name_table_order_is_not_relied_on() {
+        let unsorted = with_exports(
+            1,
+            &[Slot::Code(0x1000), Slot::Code(0x1004)],
+            &[("Zulu", 0), ("Alpha", 1)],
+        );
+        let (mapped, exports) = exports_of(&unsorted);
+        assert_eq!(
+            exports.by_name(&mapped, "Alpha"),
+            Some(Export::Address(0x1004))
+        );
+        assert_eq!(
+            exports.by_name(&mapped, "Zulu"),
+            Some(Export::Address(0x1000))
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "names slot 4 of a 4-slot address table")]
+    fn a_name_past_the_address_table_panics() {
+        let bad = with_exports(5, &[Slot::Code(0x1000); 4], &[("Alpha", 4)]);
+        let (mapped, exports) = exports_of(&bad);
+        let _ = exports.by_name(&mapped, "Alpha");
+    }
+
+    #[test]
+    #[should_panic(expected = "export address table")]
+    fn an_address_table_past_the_image_panics() {
+        let bad = patched(&synth(), |b| w32(b, EXPORT_DIR + 20, 0x1000));
+        let _ = exports_of(&bad);
+    }
+
+    #[test]
+    #[should_panic(expected = "outside the image")]
+    fn an_export_rva_past_the_image_panics() {
+        let bad = with_exports(1, &[Slot::Code(0x9000)], &[("Far", 0)]);
+        let (mapped, exports) = exports_of(&bad);
+        let _ = exports.by_name(&mapped, "Far");
+    }
+
+    #[test]
+    fn forwarders_split_into_module_and_target() {
+        assert_eq!(
+            split_forwarder("NTDLL.RtlAllocateHeap"),
+            Some(("NTDLL", ForwardTarget::Name("RtlAllocateHeap")))
+        );
+        assert_eq!(
+            split_forwarder("NTDLL.#12"),
+            Some(("NTDLL", ForwardTarget::Ordinal(12)))
+        );
+        // The last dot splits: a dotted module name keeps its dots.
+        assert_eq!(
+            split_forwarder("API.MS.Entry"),
+            Some(("API.MS", ForwardTarget::Name("Entry")))
+        );
+        for bad in ["NTDLL", ".Entry", "NTDLL.", "NTDLL.#", "NTDLL.#x1"] {
+            assert_eq!(split_forwarder(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn module_names_match_with_an_implied_dll_extension() {
+        assert!(same_module("KERNEL32.dll", "kernel32.DLL"));
+        assert!(same_module("NTDLL", "ntdll.dll"));
+        assert!(same_module("ntdll.dll", "NTDLL"));
+        assert!(same_module("NTDLL", "ntdll"));
+        assert!(!same_module("NTDLL", "NTDLL.EXE"));
+        assert!(!same_module("KERNEL32.dll", "KERNEL.dll"));
+        assert!(!same_module("KERNEL", "KERNEL32.dll"));
     }
 
     // ---- malformed files ----

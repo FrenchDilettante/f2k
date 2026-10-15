@@ -17,9 +17,9 @@ use crate::user::{PARAMS_PAGE, TEB_PAGE};
 /// (ASCII-case-insensitively).
 pub const MODULE_NAME: &str = "KERNEL32.dll";
 
-/// The user page the thunk stubs live in: above the largest image the loader maps, clear of every
-/// other mapped user page.
-pub const THUNK_PAGE: u32 = crate::exec::pe::IMAGE_BASE + crate::exec::pe::MAX_IMAGE_SIZE;
+/// The user page the thunk stubs live in: a fixed page of the system layout (window 5), clear of
+/// every other system region; the loader refuses an image that would cover it.
+pub const THUNK_PAGE: u32 = 0x0140_0000;
 
 /// Bytes of one thunk stub: lea / mov / int / ret imm16 (14 bytes).
 const STUB_LEN: usize = 14;
@@ -1375,7 +1375,7 @@ mod tests {
         let image = Image::parse(RET0).expect("ret0 parses");
         let mut mapped = vec![0u8; image.size_of_image as usize];
         image.map_into(RET0, &mut mapped);
-        let result = image.snap_imports(RET0, &mut mapped, MODULE_NAME, resolve);
+        let result = image.snap_imports(RET0, &mut mapped, crate::exec::loader::resolve_import);
         assert_eq!(result.thunks, 35);
     }
 
@@ -1385,7 +1385,7 @@ mod tests {
         let image = Image::parse(HELLO).expect("hello parses");
         let mut mapped = vec![0u8; image.size_of_image as usize];
         image.map_into(HELLO, &mut mapped);
-        let result = image.snap_imports(HELLO, &mut mapped, MODULE_NAME, resolve);
+        let result = image.snap_imports(HELLO, &mut mapped, crate::exec::loader::resolve_import);
         assert_eq!(result.thunks, 40);
     }
 
@@ -1396,7 +1396,7 @@ mod tests {
         let image = Image::parse(SLEEP).expect("sleep parses");
         let mut mapped = vec![0u8; image.size_of_image as usize];
         image.map_into(SLEEP, &mut mapped);
-        let result = image.snap_imports(SLEEP, &mut mapped, MODULE_NAME, resolve);
+        let result = image.snap_imports(SLEEP, &mut mapped, crate::exec::loader::resolve_import);
         assert_eq!(result.thunks, 44);
     }
 
@@ -1408,7 +1408,7 @@ mod tests {
         let image = Image::parse(SPIN).expect("spin parses");
         let mut mapped = vec![0u8; image.size_of_image as usize];
         image.map_into(SPIN, &mut mapped);
-        let result = image.snap_imports(SPIN, &mut mapped, MODULE_NAME, resolve);
+        let result = image.snap_imports(SPIN, &mut mapped, crate::exec::loader::resolve_import);
         assert_eq!(result.thunks, 44);
     }
 
@@ -1419,7 +1419,7 @@ mod tests {
         let image = Image::parse(SUSPEND).expect("suspend parses");
         let mut mapped = vec![0u8; image.size_of_image as usize];
         image.map_into(SUSPEND, &mut mapped);
-        let result = image.snap_imports(SUSPEND, &mut mapped, MODULE_NAME, resolve);
+        let result = image.snap_imports(SUSPEND, &mut mapped, crate::exec::loader::resolve_import);
         assert_eq!(result.thunks, 44);
     }
 
@@ -1430,7 +1430,7 @@ mod tests {
         let image = Image::parse(FILEIO).expect("fileio parses");
         let mut mapped = vec![0u8; image.size_of_image as usize];
         image.map_into(FILEIO, &mut mapped);
-        let result = image.snap_imports(FILEIO, &mut mapped, MODULE_NAME, resolve);
+        let result = image.snap_imports(FILEIO, &mut mapped, crate::exec::loader::resolve_import);
         assert_eq!(result.thunks, 42);
     }
 
@@ -1656,7 +1656,6 @@ mod tests {
     fn thunk_page_layout_is_consistent() {
         assert_eq!(THUNK_PAGE % 4096, 0);
         assert!(THUNK_PAGE < KERNEL_BASE);
-        assert!(THUNK_PAGE >= crate::exec::pe::IMAGE_BASE + crate::exec::pe::MAX_IMAGE_SIZE);
         assert!(THUNK_PAGE + 4096 < KERNEL_BASE);
         let last = (SERVICES.len() - 1) as u32;
         assert!((last * STUB_STRIDE) as usize + STUB_LEN <= 4096);

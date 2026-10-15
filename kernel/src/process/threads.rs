@@ -27,10 +27,6 @@ use crate::process::Process;
 use crate::sched::dispatcher::{Dispatcher, Termination};
 use crate::sched::thread::{Thread, ThreadState};
 
-/// The number of pages a per-thread user stack spans (the same two pages the main thread's stack
-/// has).
-const THREAD_STACK_PAGES: u32 = 2;
-
 /// A never-used child-thread record of the current process, with its ordinal, or none (the
 /// program-visible create failure). A terminated child's record is not reused within the process;
 /// the records go with the process.
@@ -96,9 +92,10 @@ pub fn spawn(start: u32, parameter: u32) -> Option<(*mut Thread, u32)> {
 
     // The user stack: two zeroed pages, growing down from the per-thread region's top for this
     // ordinal.
-    let stack_top = crate::user::THREAD_STACK_REGION + ordinal * (THREAD_STACK_PAGES * 0x1000);
+    let stack_top =
+        crate::user::THREAD_STACK_REGION + ordinal * (crate::user::THREAD_STACK_PAGES * 0x1000);
     let mut top_frame = 0;
-    for page in 0..THREAD_STACK_PAGES {
+    for page in 0..crate::user::THREAD_STACK_PAGES {
         let base = stack_top - (page + 1) * 0x1000;
         let frame = paging::allocate_frame_phys();
         if page == 0 {
