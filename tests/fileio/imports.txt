@@ -1,0 +1,48 @@
+fileio.exe - verified facts from the binary
+
+PE32, subsystem CUI (console), ImageBase 0x400000, SectionAlignment 0x1000, AddressOfEntryPoint RVA 0x136B, SizeOfImage 0x8000. Static /ML CRT.
+No relocation directory (42 imports resolve at the fixed base).
+Imports, all from KERNEL32.dll:
+
+HeapCreate
+SetFilePointer
+ReadFile
+CreateFileA
+GetLastError
+GetModuleFileNameA
+GetCommandLineA
+GetVersion
+ExitProcess
+TerminateProcess
+GetCurrentProcess
+UnhandledExceptionFilter
+FreeEnvironmentStringsA
+FreeEnvironmentStringsW
+WideCharToMultiByte
+GetEnvironmentStrings
+GetEnvironmentStringsW
+SetHandleCount
+GetStdHandle
+GetFileType
+GetStartupInfoA
+HeapDestroy
+CloseHandle
+VirtualFree
+HeapFree
+RtlUnwind
+WriteFile
+HeapAlloc
+GetCPInfo
+GetACP
+GetOEMCP
+VirtualAlloc
+HeapReAlloc
+GetProcAddress
+LoadLibraryA
+FlushFileBuffers
+MultiByteToWideChar
+LCMapStringA
+LCMapStringW
+GetStringTypeA
+GetStringTypeW
+SetStdHandle

@@ -572,6 +572,21 @@ mod target {
         }
     }
 
+    /// Connect a driver's interrupt object to its vector in the kernel table: wire the slot and
+    /// enable the line (see [`VectorTable::connect`]). The object is a static: the table keeps its
+    /// address for the kernel's lifetime.
+    pub fn connect(object: &'static mut InterruptObject) -> bool {
+        // SAFETY: single CPU; the table and controller accessors run serialized (the connect
+        // raises to the synchronization level for the state change).
+        unsafe {
+            (*addr_of_mut!(TABLE)).connect(
+                object,
+                &mut *addr_of_mut!(CONTROLLER),
+                irql::state_mut(),
+            )
+        }
+    }
+
     /// The interrupt subsystem's audit: the level transitions are balanced, every claimed interrupt
     /// was ended, no line is enabled without an object, and the chip carries no stuck in-service
     /// state.
@@ -599,7 +614,7 @@ mod target {
 #[cfg(target_arch = "x86")]
 // `audit` has no caller outside the diagnostic boot feature; the subsystem API stays complete.
 #[allow(unused_imports)]
-pub use target::{audit, init, spurious_count};
+pub use target::{audit, connect, init, spurious_count};
 
 /// The dispatch entry the IDT stubs call with the shared frame shape (target only): read the
 /// vector, service the interrupt, drain the deferred work.

@@ -109,6 +109,11 @@ disk: kernel limine
 	# MBR with one active FAT32 partition at 1 MiB; Limine's stage 2 goes in the gap before it
 	python3 $(SCRIPTS_DIR)/create_partition_table.py $(DISK_IMG) $(DISK_SIZE)
 	mformat -F -i $(DISK_IMG)@@1M -v F2K ::
+	# The disk-smoke checksum fixture goes in first: the first file into a
+	# fresh volume gets cluster 3 (LBA 4067), the sector the diagnostic
+	# reads. It must stay ahead of every other copy and the mmd below (a
+	# directory would take the cluster).
+	mcopy -i $(DISK_IMG)@@1M tests/hello/hello.exe ::/HELLO.EXE
 	mmd -i $(DISK_IMG)@@1M ::/boot ::/boot/limine
 	mcopy -i $(DISK_IMG)@@1M $(KERNEL_ELF) ::/f2k-kernel
 	mcopy -i $(DISK_IMG)@@1M $(LIMINE_SYS) $(LIMINE_CONF) ::/boot/limine/

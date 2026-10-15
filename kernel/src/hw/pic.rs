@@ -35,6 +35,9 @@ const ICW4_8086: u8 = 0x01;
 const MASTER_ICW3_SLAVE_ON_2: u8 = 0x04;
 const SLAVE_ICW3_IDENTITY_2: u8 = 0x02;
 
+/// The master's mask bit for the cascade line (IRQ 2, where the slave is wired).
+const CASCADE_BIT: u8 = MASTER_ICW3_SLAVE_ON_2;
+
 // Operating control words: a non-specific end-of-interrupt, and the read-register select that makes
 // the next command-port read return the in-service register.
 const OCW2_NON_SPECIFIC_EOI: u8 = 0x20;
@@ -105,22 +108,35 @@ impl<IoT: Io> Pic<IoT> {
         self.io.out(SLAVE_DATA, 0xFF);
     }
 
-    /// Clear (enable) one line by vector.
+    /// Clear (enable) one line by vector. A slave line also opens the master's cascade line, which
+    /// every slave interrupt passes through.
     pub fn unmask(&mut self, vector: u8) {
         let (port, bit) = self.line(vector);
         let mask = self.io.read(port) & !bit;
         self.io.out(port, mask);
+        if port == SLAVE_DATA {
+            let master = self.io.read(MASTER_DATA) & !CASCADE_BIT;
+            self.io.out(MASTER_DATA, master);
+        }
     }
 
-    /// Set (disable) one line by vector.
+    /// Set (disable) one line by vector. Masking the last open slave line closes the cascade too.
     pub fn mask(&mut self, vector: u8) {
         let (port, bit) = self.line(vector);
         let mask = self.io.read(port) | bit;
         self.io.out(port, mask);
+        if port == SLAVE_DATA && mask == 0xFF {
+            let master = self.io.read(MASTER_DATA) | CASCADE_BIT;
+            self.io.out(MASTER_DATA, master);
+        }
     }
 
-    /// Whether one line is enabled, by vector.
+    /// Whether one line is enabled, by vector. The cascade line is the slave's wiring, never a
+    /// device line: its vector is never delivered, so it never reports enabled.
     pub fn is_unmasked(&mut self, vector: u8) -> bool {
+        if self.is_cascade(vector) {
+            return false;
+        }
         let (port, bit) = self.line(vector);
         self.io.read(port) & bit == 0
     }
@@ -177,11 +193,20 @@ impl<IoT: Io> Pic<IoT> {
 
     /// The data port and line bit for a vector.
     fn line(&mut self, vector: u8) -> (u16, u8) {
+        assert!(
+            !self.is_cascade(vector),
+            "the cascade line carries the slave, not a device"
+        );
         if vector < self.slave_base {
             (MASTER_DATA, 1 << (vector - self.master_base))
         } else {
             (SLAVE_DATA, 1 << (vector - self.slave_base))
         }
+    }
+
+    /// Whether `vector` is the master's cascade line (IRQ 2).
+    fn is_cascade(&self, vector: u8) -> bool {
+        vector < self.slave_base && 1 << (vector - self.master_base) == CASCADE_BIT
     }
 }
 
@@ -296,6 +321,10 @@ mod tests {
                 _ => 0,
             }
         }
+
+        fn read_word(&mut self, _port: u16) -> u16 {
+            0
+        }
     }
 
     fn remapped() -> Pic<Sim> {
@@ -339,6 +368,55 @@ mod tests {
         assert!(!pic.is_unmasked(SLAVE_VECTOR_BASE));
         pic.mask(MASTER_VECTOR_BASE);
         assert!(!pic.is_unmasked(MASTER_VECTOR_BASE));
+    }
+
+    /// A slave line needs the master's cascade line open to reach the CPU: unmasking any slave line
+    /// opens it, and it closes only when the last slave line is masked again. The cascade itself
+    /// never reports as an enabled device line.
+    #[test]
+    fn slave_lines_open_and_close_the_cascade() {
+        let mut pic = remapped();
+        let cascade = MASTER_VECTOR_BASE + 2;
+        let master_mask = |pic: &mut Pic<Sim>| pic.io().master.imr;
+        assert_ne!(master_mask(&mut pic) & CASCADE_BIT, 0, "closed after remap");
+
+        pic.unmask(SLAVE_VECTOR_BASE + 6); // IRQ 14
+        assert_eq!(
+            master_mask(&mut pic) & CASCADE_BIT,
+            0,
+            "opened by a slave line"
+        );
+        assert_eq!(pic.io().slave.imr, !(1 << 6));
+        assert!(
+            !pic.is_unmasked(cascade),
+            "the cascade is not a device line"
+        );
+
+        pic.unmask(SLAVE_VECTOR_BASE + 4); // IRQ 12
+        pic.mask(SLAVE_VECTOR_BASE + 6);
+        assert_eq!(
+            master_mask(&mut pic) & CASCADE_BIT,
+            0,
+            "IRQ 12 still needs it"
+        );
+        pic.mask(SLAVE_VECTOR_BASE + 4);
+        assert_ne!(
+            master_mask(&mut pic) & CASCADE_BIT,
+            0,
+            "closed with the last slave line"
+        );
+
+        // Master lines never touch it.
+        pic.unmask(MASTER_VECTOR_BASE);
+        assert_ne!(master_mask(&mut pic) & CASCADE_BIT, 0);
+    }
+
+    /// Nothing connects to the cascade line: enabling it as a device line is a contract violation.
+    #[test]
+    #[should_panic(expected = "cascade line")]
+    fn the_cascade_line_is_not_connectable() {
+        let mut pic = remapped();
+        pic.unmask(MASTER_VECTOR_BASE + 2);
     }
 
     /// A real interrupt: the acknowledge cycle latched the line in-service, so the claim is Real

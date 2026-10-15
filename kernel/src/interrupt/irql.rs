@@ -20,6 +20,8 @@ pub const PASSIVE: Irql = Irql(0);
 pub const APC: Irql = Irql(1);
 /// Deferred procedure calls run at this level.
 pub const DISPATCH: Irql = Irql(2);
+/// The IDE disk interrupt (IRQ 14): a device level between dispatch and the hardware levels.
+pub const IDE: Irql = Irql(13);
 /// Profiling interrupts.
 pub const PROFILE: Irql = Irql(27);
 /// The interval clock interrupt.
@@ -254,6 +256,8 @@ mod tests {
         assert_eq!(HIGH, Irql(31));
         assert_eq!(SYNCH, Irql(28));
         assert!(CLOCK > DISPATCH);
+        assert_eq!(IDE, Irql(13));
+        assert!(IDE > DISPATCH && IDE < PROFILE, "a device level");
         assert!(HIGH > POWER);
         assert!(PASSIVE < APC && APC < DISPATCH);
     }

@@ -98,5 +98,12 @@ if errorlevel 1 (echo build.bat: respawn failed & exit /b 1)
 del respawn.obj
 cd ..
 
+echo === fileio
+cd fileio
+cl /nologo fileio.c
+if errorlevel 1 (echo build.bat: fileio failed & exit /b 1)
+del fileio.obj
+cd ..
+
 echo All tests built.
 exit /b 0

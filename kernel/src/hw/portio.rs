@@ -1,15 +1,18 @@
-//! Byte-wide I/O port access.
+//! I/O port access: byte-wide registers, plus the word-wide read a disk data port drains.
 //!
-//! The programmable device drivers (the interrupt controller and the interval timer) reach their
-//! registers through this trait, so their logic runs unchanged off-target against a simulated
-//! register file (the host unit tests) and on-target against real port I/O.
+//! The programmable device drivers (the interrupt controller, the interval timer, the disk
+//! controller) reach their registers through this trait, so their logic runs unchanged off-target
+//! against a simulated register file (the host unit tests) and on-target against real port I/O.
 
-/// Byte-wide access to the x86 I/O port space.
+/// Access to the x86 I/O port space.
 pub trait Io {
     /// Write one byte to a port.
     fn out(&mut self, port: u16, byte: u8);
     /// Read one byte from a port.
     fn read(&mut self, port: u16) -> u8;
+    /// Read one 16-bit word from a port in a single access (a data port that drains words must
+    /// not be read as two bytes).
+    fn read_word(&mut self, port: u16) -> u16;
 }
 
 /// The real I/O port space, reached with `in`/`out` instructions.
@@ -48,6 +51,20 @@ impl Io for Ports {
         }
         byte
     }
+
+    fn read_word(&mut self, port: u16) -> u16 {
+        let word: u16;
+        // SAFETY: as above.
+        unsafe {
+            core::arch::asm!(
+                "in ax, dx",
+                out("ax") word,
+                in("dx") port,
+                options(nomem, nostack, preserves_flags)
+            );
+        }
+        word
+    }
 }
 
 #[cfg(test)]
@@ -67,6 +84,12 @@ mod tests {
         fn read(&mut self, port: u16) -> u8 {
             self.regs[(port % 8) as usize]
         }
+
+        fn read_word(&mut self, port: u16) -> u16 {
+            let low = self.regs[(port % 8) as usize];
+            let high = self.regs[((port + 1) % 8) as usize];
+            u16::from_le_bytes([low, high])
+        }
     }
 
     /// The trait is the seam: a driver written against `Io` runs against the real ports on target
@@ -76,5 +99,14 @@ mod tests {
         let mut io = Fake { regs: [0; 8] };
         io.out(0x21, 0xFE);
         assert_eq!(io.read(0x21), 0xFE);
+    }
+
+    /// The word read returns one 16-bit value, low byte first (the x86 port order).
+    #[test]
+    fn the_word_read_is_little_endian() {
+        let mut io = Fake { regs: [0; 8] };
+        io.out(0x1F0, 0x34);
+        io.out(0x1F1, 0x12);
+        assert_eq!(io.read_word(0x1F0), 0x1234);
     }
 }

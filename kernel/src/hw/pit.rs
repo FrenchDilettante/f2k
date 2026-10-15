@@ -54,6 +54,10 @@ mod tests {
         fn read(&mut self, _port: u16) -> u8 {
             0
         }
+
+        fn read_word(&mut self, _port: u16) -> u16 {
+            0
+        }
     }
 
     /// The programming sequence: the mode word, then the divisor low byte, then the high byte, all

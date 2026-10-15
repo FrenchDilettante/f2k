@@ -470,3 +470,29 @@ cases:
       - "F2K: image loaded"
       - "F2K: entering ring 3"
       - "F2K: user process exited normally (exit code=0)"
+
+  # IDE driver: the disk-smoke diagnostic boot drives the IRQ14 PIO
+  # read path end to end — IDENTIFY, the MBR, the volume boot sector,
+  # and the first fixture's sector — then the default image exits 0:
+  # coexistence, not just the diagnostic. The disk build copies
+  # tests/hello/hello.exe into the volume first, so the fixture's bytes
+  # land on cluster 3 (LBA 4067; see the disk target in the Makefile);
+  # the expected checksums are the offline CRC-32s of its first 512 and
+  # 4096 bytes, and one IRQ14 per sector is expected, none unsolicited.
+  - name: disk-smoke
+    description: the IDE diagnostic boot reads the MBR, the volume boot sector, and the first fixture's sectors through IRQ14, then the default image exits 0 (Limine disk path)
+    image: disk
+    features: [disk-smoke]
+    ordered: true
+    expects:
+      - "F2K Booted Successfully"
+      - "F2K: ide: primary master: LBA28, 131072 sectors"
+      - "F2K: disk-smoke: drive detected (LBA supported, 131072 sectors)"
+      - "F2K: disk-smoke: MBR ok (signature 0xAA55, partition 0 type 0x0C at LBA 2048, 129024 sectors)"
+      - "F2K: disk-smoke: volume boot sector ok (signature 0xAA55, 512 bytes/sector, 1 sector/cluster, 32 reserved, 2 FATs, 993 sectors/FAT, root cluster 2, data region at LBA 4066)"
+      - "F2K: disk-smoke: LBA 4067 CRC-32 0x659C3505"
+      - "F2K: disk-smoke: LBA 4067+8 CRC-32 0x15FB0DC0"
+      - "F2K: disk-smoke: IRQ14 serviced 12 interrupts (0 unsolicited), interrupt audit: ok"
+      - "F2K: image loaded"
+      - "F2K: entering ring 3"
+      - "F2K: user process exited normally (exit code=0)"

@@ -88,6 +88,15 @@ run-process-suite = []
 # feature gates only the diagnostic lines and the bounded tick wait.
 # The qemu-tests.yaml cases pin the COM1 shapes.
 irq-smoke = []
+# The IDE diagnostic boot: after the driver comes up, a boot-time pass
+# reads the drive's identity, the MBR, the volume boot sector, and the
+# first fixture's sector through the IRQ14-driven read path and reports
+# them on COM1, then lets the normal boot proceed to the default image's
+# exit — coexistence, not just the diagnostic. The driver itself is
+# default-on kernel machinery; the feature gates only the diagnostic
+# lines. Disk path only (the image is the IDE primary master); the
+# qemu-tests.yaml case pins the COM1 shapes.
+disk-smoke = []
 
 [dependencies]
 # Core no_std crates for future use

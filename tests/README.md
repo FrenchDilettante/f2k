@@ -72,6 +72,15 @@ not committed.
   slot) the previous one released at its exit. The binary is
   built, its imports verified, and its output confirmed against
   the real-machine capture.
+- `fileio` - disk smoke: opens the program's own image from the
+  filesystem, reads the MZ and PE signatures, seeks back, and reads
+  the MZ again - the file API over the boot volume, the measuring
+  stick for the disk workstream. The output is derived only from
+  the file's own bytes, so it is identical wherever the same
+  executable runs. Built on the real Windows 2000 machine
+  (`fileio.exe`, 42 KERNEL32.dll imports - hello's 40 plus
+  `CreateFileA` and `ReadFile`; see `imports.txt`); the
+  real-machine captured output lands as `output.txt`.
 
 ## Building
 

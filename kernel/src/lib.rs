@@ -15,8 +15,8 @@ mod boot;
 // hardware-vector stubs)
 mod cpu;
 
-// The hardware layer: the interrupt controller pair, the interval timer, and the serial port,
-// reached through abstract port I/O
+// The hardware layer: the interrupt controller pair, the interval timer, the IDE disk, and the
+// serial port, reached through abstract port I/O
 mod hw;
 
 // The interrupt core: interrupt objects, the vector table, the level discipline, the deferred
@@ -266,6 +266,16 @@ pub extern "C" fn kmain(magic: u32, multiboot_info: u32) -> ! {
             );
         }
     }
+
+    // The IDE disk: detect the primary master, connect its interrupt, and IDENTIFY it. It needs
+    // the interrupt core (its reads complete through IRQ 14); the first user process comes after.
+    crate::hw::ide::disk::init();
+
+    // The disk diagnostic boot: read the drive's identity, the MBR, the volume boot sector, and
+    // the first file's sectors through the interrupt-driven path, then fall through to the normal
+    // boot.
+    #[cfg(feature = "disk-smoke")]
+    crate::hw::ide::smoke::run();
 
     // The user process: exit0 through the PE loader by default, ret0 (the CRT startup fixture) with
     // the `run-ret0` feature. The image ends through its exit import, which reports the exit code
