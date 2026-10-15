@@ -4,7 +4,8 @@
 //! snapped into IAT slots by the loader. Reported values (version, startup info, handles,
 //! codepages) are replays captured from a real Windows 2000 machine; the locale group answers from
 //! the shipped codepage-1252 tables, the heap group from a genuine allocator (`userheap`),
-//! `WriteFile` from the console backend (COM1), never-called imports from safe minimal floors.
+//! `WriteFile` from the console (the display, mirrored to COM1), never-called imports from safe
+//! minimal floors.
 //!
 //! Quirk: kernel pages are supervisor-only, so the stubs must live in user memory — tiny user-mode
 //! stub pages for now, an ntdll-like user layer eventually.
@@ -166,10 +167,11 @@ fn object_slot(handle: u32) -> Option<crate::sched::object::Slot> {
     crate::process::current_mut().handles_mut().lookup(handle)
 }
 
-/// WriteFile: the console observable. Streams the caller's bytes to COM1 on the replayed
-/// stdout/stderr handles and reports the full count — the CRT's writer sums that value, so a short
-/// report breaks its math. Anything else fails; a bad buffer or out pointer ends the process, not
-/// the kernel.
+/// WriteFile: the console observable. Streams the caller's bytes to the console (shown on the
+/// display, mirrored to COM1) on the replayed stdout/stderr handles and reports the full count —
+/// the CRT's writer sums that value, so a short report breaks its math. Anything else fails; a bad
+/// buffer or out pointer ends the process, not the kernel. Bytes reach the console in chunks;
+/// every byte read before a bad one is still written.
 fn svc_write_file(frame: &mut crate::user::TrapFrame, args: &[u32]) {
     let (handle, buffer, count, written_out, overlapped) =
         (args[0], args[1], args[2], args[3], args[4]);
@@ -177,14 +179,23 @@ fn svc_write_file(frame: &mut crate::user::TrapFrame, args: &[u32]) {
         frame.eax = 0; // FALSE: nothing written
         return;
     }
+    let mut chunk = [0u8; CONSOLE_CHUNK];
+    let mut filled = 0;
     for i in 0..count {
         let mut byte = [0u8; 1];
         if read_user(buffer.wrapping_add(i), &mut byte).is_err() {
+            console_write(&chunk[..filled]);
             frame.eax = 0;
             return;
         }
-        console_write_byte(byte[0]);
+        chunk[filled] = byte[0];
+        filled += 1;
+        if filled == CONSOLE_CHUNK {
+            console_write(&chunk);
+            filled = 0;
+        }
     }
+    console_write(&chunk[..filled]);
     if written_out != 0 && write_user(written_out, &count.to_le_bytes()).is_err() {
         frame.eax = 0;
         return;
@@ -192,16 +203,19 @@ fn svc_write_file(frame: &mut crate::user::TrapFrame, args: &[u32]) {
     frame.eax = 1; // TRUE: `count` bytes written
 }
 
-/// The console backend: one byte to COM1.
+/// How many bytes WriteFile hands the console at a time (each hand-off redraws the window once).
+const CONSOLE_CHUNK: usize = 256;
+
+/// The console backend.
 #[cfg(target_arch = "x86")]
-fn console_write_byte(byte: u8) {
-    crate::hw::serial::write_byte_blocking(byte);
+fn console_write(bytes: &[u8]) {
+    crate::console::write(bytes);
 }
 
 /// Host builds compile the dispatch tables but never run them, so the console backend is a no-op
 /// there.
 #[cfg(not(target_arch = "x86"))]
-fn console_write_byte(_byte: u8) {}
+fn console_write(_bytes: &[u8]) {}
 
 /// GetCommandLineA: a pointer to the replayed command line.
 fn svc_get_command_line_a(frame: &mut crate::user::TrapFrame, _args: &[u32]) {

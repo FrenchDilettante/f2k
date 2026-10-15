@@ -41,6 +41,11 @@ make clean
 
 ## Running
 
+The QEMU targets open a window: the VGA display, where the console shows program output. COM1
+(the kernel's log, plus a mirror of everything written to the console) and the QEMU monitor share
+the terminal: Ctrl-A C switches between them, Ctrl-A X quits. To run headless, override the flags:
+`make qemu QEMU_FLAGS="-m 256M -nographic -no-reboot -no-shutdown -net none"`.
+
 ### QEMU (ISO with Limine)
 ```bash
 make iso          # Create ISO first

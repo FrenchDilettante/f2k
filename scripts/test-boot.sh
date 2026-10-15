@@ -21,6 +21,11 @@
 #        BOOT_CONTIGUOUS    newline-separated strings that must match on
 #                           consecutive lines, in order (an uninterrupted
 #                           block), in addition to the expected strings
+#        BOOT_KEYS          newline-separated QEMU key names (sendkey
+#                           syntax: "h", "shift-a", "ret") typed into the
+#                           guest's keyboard once BOOT_KEYS_AFTER appears
+#                           on COM1, through a QEMU monitor socket
+#        BOOT_KEYS_AFTER    the COM1 string the keys wait for
 #
 # Every argument after the image is an expected COM1 string (a substring of
 # a line); the test passes only once all of them have appeared. With no extra
@@ -47,6 +52,8 @@ done
 BOOT_ORDERED="${BOOT_ORDERED:-0}"
 BOOT_FORBID="${BOOT_FORBID:-}"
 BOOT_CONTIGUOUS="${BOOT_CONTIGUOUS:-}"
+BOOT_KEYS="${BOOT_KEYS:-}"
+BOOT_KEYS_AFTER="${BOOT_KEYS_AFTER:-}"
 
 # One awk pass over the log answers every check. The lists travel as files
 # (one string per line) so no string is reinterpreted by the shell or awk.
@@ -102,10 +109,12 @@ QEMU_LOG="$(mktemp)"
 EXPECTS_FILE="$(mktemp)"
 FORBID_FILE="$(mktemp)"
 BLOCK_FILE="$(mktemp)"
+KEYS_DIR="$(mktemp -d)"
 QEMU_PID=""
 cleanup() {
     [ -n "$QEMU_PID" ] && kill "$QEMU_PID" 2>/dev/null
     rm -f "$SERIAL_LOG" "$QEMU_LOG" "$EXPECTS_FILE" "$FORBID_FILE" "$BLOCK_FILE"
+    rm -rf "$KEYS_DIR"
 }
 trap cleanup EXIT
 trap 'exit 130' INT TERM
@@ -135,10 +144,42 @@ case "$IMAGE" in
            fi ;;
 esac
 
+# A case that types gets a monitor socket to send its keys through.
+MONITOR_SOCK="$KEYS_DIR/monitor.sock"
+if [ -n "$BOOT_KEYS" ]; then
+    printf '%s\n' "$BOOT_KEYS" >"$KEYS_DIR/keys"
+    set -- "$@" -monitor "unix:$MONITOR_SOCK,server,nowait"
+else
+    set -- "$@" -monitor none
+fi
+
 # -no-reboot turns a triple fault into a QEMU exit, so crashes fail fast
-"$QEMU" "$@" -m 64M -display none -monitor none -net none \
+"$QEMU" "$@" -m 64M -display none -net none \
     -no-reboot -serial "file:$SERIAL_LOG" >"$QEMU_LOG" 2>&1 &
 QEMU_PID=$!
+
+# Type the keys, one sendkey per key, spaced so each press and release
+# completes before the next.
+send_keys() {
+    python3 - "$MONITOR_SOCK" "$KEYS_DIR/keys" <<'PYTHON'
+import socket
+import sys
+import time
+
+sock = socket.socket(socket.AF_UNIX)
+sock.connect(sys.argv[1])
+sock.settimeout(2)
+try:
+    sock.recv(4096)  # the monitor's banner
+except socket.timeout:
+    pass
+for key in open(sys.argv[2]).read().split():
+    sock.sendall(("sendkey %s\n" % key).encode())
+    time.sleep(0.2)
+sock.close()
+PYTHON
+}
+KEYS_SENT=0
 
 check() {
     match_log
@@ -154,6 +195,11 @@ check() {
 ticks=0
 while [ "$ticks" -lt $((BOOT_TIMEOUT * 10)) ]; do
     check
+    if [ -n "$BOOT_KEYS" ] && [ "$KEYS_SENT" -eq 0 ] \
+        && grep -qF -- "$BOOT_KEYS_AFTER" "$SERIAL_LOG"; then
+        KEYS_SENT=1
+        send_keys || report_failure "FAIL: could not send keys through the QEMU monitor"
+    fi
     kill -0 "$QEMU_PID" 2>/dev/null || break
     sleep 0.1
     ticks=$((ticks + 1))

@@ -8,7 +8,10 @@ strings that must appear for the case to pass. Optional keys tighten
 the match: `ordered: true` (the expects must appear in order, each on a
 later line), `contiguous` (strings that must appear on consecutive
 lines: an uninterrupted block), and `forbids` (strings that fail the
-case on sight, added to the suite default, "KERNEL PANIC"). The
+case on sight, added to the suite default, "KERNEL PANIC"). A case can
+also type: `keys` (`after`: a COM1 string; `send`: QEMU key names)
+sends the keys to the guest's keyboard through the QEMU monitor once
+`after` has appeared. The
 per-case engine — build, boot, assert — is scripts/test-boot.sh; this
 script adds the suite level: case selection, per-case builds, and a
 summary.
@@ -81,6 +84,19 @@ def load_cases(config_path):
                 fail(config_path, f"case {name!r}: '{key}' must be a list of strings")
         if not isinstance(case.get("ordered", False), bool):
             fail(config_path, f"case {name!r}: 'ordered' must be true or false")
+        keys = case.get("keys")
+        if keys is not None:
+            if (
+                not isinstance(keys, dict)
+                or not isinstance(keys.get("after"), str)
+                or not keys["after"]
+                or not isinstance(keys.get("send"), list)
+                or not keys["send"]
+                or not all(isinstance(k, str) and k and not any(c.isspace() for c in k)
+                           for k in keys["send"])
+            ):
+                fail(config_path, f"case {name!r}: 'keys' must have an 'after' string and a"
+                                  " non-empty 'send' list of key names")
     return cases
 
 
@@ -131,6 +147,9 @@ def run_case(case, kernel_elf, disk_img, timeout):
     env["BOOT_ORDERED"] = "1" if case.get("ordered", False) else "0"
     env["BOOT_FORBID"] = "\n".join(DEFAULT_FORBIDS + case.get("forbids", []))
     env["BOOT_CONTIGUOUS"] = "\n".join(case.get("contiguous", []))
+    keys = case.get("keys")
+    env["BOOT_KEYS_AFTER"] = keys["after"] if keys else ""
+    env["BOOT_KEYS"] = "\n".join(keys["send"]) if keys else ""
     cmd = [str(SCRIPTS / "test-boot.sh"), str(image), *case["expects"]]
     passed = subprocess.run(cmd, env=env).returncode == 0
     print(f"{PASS if passed else FAIL}: {case['name']}", flush=True)

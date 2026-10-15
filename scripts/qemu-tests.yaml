@@ -568,6 +568,100 @@ cases:
       - "F2K: entering ring 3"
       - "F2K: user process exited normally (exit code=0)"
 
+  # Console: the console-smoke diagnostic boot writes a known pattern
+  # through the console right after it comes up — thirty numbered lines
+  # (the window moves down six rows), then "a", a tab and "b" — and reads
+  # the VGA text grid and the CRT controller's cursor back: the display
+  # holds what the screen buffer's window shows. The pattern is mirrored
+  # to COM1 like all console output. Then the default image exits 0.
+  - name: console-smoke
+    description: the console diagnostic boot writes a pattern through the console and reads the VGA text grid and cursor back, then the default image exits 0 (kernel path)
+    image: kernel
+    features: [console-smoke]
+    ordered: true
+    expects:
+      - "F2K Booted Successfully"
+      - "F2K: console: VGA text 80x25, buffer 80x300"
+      - "F2K: console-smoke: window row 0: 'line 06'"
+      - "F2K: console-smoke: window row 23: 'line 29'"
+      - "F2K: console-smoke: window row 24: 'a       b'"
+      - "F2K: console-smoke: cursor at 1929 (shown)"
+      - "F2K: console-smoke: attribute 0x07"
+      - "F2K: image loaded"
+      - "F2K: user process exited normally (exit code=0)"
+
+  - name: console-smoke-disk
+    description: the console diagnostic boot writes a pattern through the console and reads the VGA text grid and cursor back, then the default image exits 0 (Limine disk path)
+    image: disk
+    features: [console-smoke]
+    ordered: true
+    expects:
+      - "F2K Booted Successfully"
+      - "F2K: console: VGA text 80x25, buffer 80x300"
+      - "F2K: console-smoke: window row 0: 'line 06'"
+      - "F2K: console-smoke: window row 23: 'line 29'"
+      - "F2K: console-smoke: window row 24: 'a       b'"
+      - "F2K: console-smoke: cursor at 1929 (shown)"
+      - "F2K: console-smoke: attribute 0x07"
+      - "F2K: image loaded"
+      - "F2K: user process exited normally (exit code=0)"
+
+  # Keyboard: the keyboard-smoke diagnostic boot waits for keys the
+  # runner types through the QEMU monitor (sendkey) once the diagnostic
+  # reports ready, reports each decoded key event — down/up, virtual
+  # key, set 1 scan code, character — then echoes the typed characters
+  # through the console and reads the display row back. Then the
+  # default image exits 0.
+  - name: keyboard-smoke
+    description: the keyboard diagnostic boot decodes injected keys (h, i, shift-a, Enter) into console key events and echoes them through the console, then the default image exits 0 (kernel path)
+    image: kernel
+    features: [keyboard-smoke]
+    keys:
+      after: "F2K: keyboard-smoke: ready"
+      send: [h, i, shift-a, ret]
+    ordered: true
+    expects:
+      - "F2K: keyboard: 8042 configured"
+      - "F2K: keyboard-smoke: ready (waiting for 10 key events)"
+      - "F2K: keyboard-smoke: down vk 0x48 scan 0x23 char 0x0068 state 0x0000"
+      - "F2K: keyboard-smoke: up vk 0x48 scan 0x23 char 0x0068 state 0x0000"
+      - "F2K: keyboard-smoke: down vk 0x49 scan 0x17 char 0x0069 state 0x0000"
+      - "F2K: keyboard-smoke: up vk 0x49 scan 0x17 char 0x0069 state 0x0000"
+      - "F2K: keyboard-smoke: down vk 0x10 scan 0x2a char 0x0000 state 0x0010"
+      - "F2K: keyboard-smoke: down vk 0x41 scan 0x1e char 0x0041 state 0x0010"
+      - "F2K: keyboard-smoke: up vk 0x41 scan 0x1e char 0x0041 state 0x0010"
+      - "F2K: keyboard-smoke: up vk 0x10 scan 0x2a char 0x0000 state 0x0000"
+      - "F2K: keyboard-smoke: down vk 0x0d scan 0x1c char 0x000d state 0x0000"
+      - "F2K: keyboard-smoke: up vk 0x0d scan 0x1c char 0x000d state 0x0000"
+      - "F2K: keyboard-smoke: echoed on window row 0: 'hiA'"
+      - "F2K: image loaded"
+      - "F2K: user process exited normally (exit code=0)"
+
+  - name: keyboard-smoke-disk
+    description: the keyboard diagnostic boot decodes injected keys (h, i, shift-a, Enter) into console key events and echoes them through the console, then the default image exits 0 (Limine disk path)
+    image: disk
+    features: [keyboard-smoke]
+    keys:
+      after: "F2K: keyboard-smoke: ready"
+      send: [h, i, shift-a, ret]
+    ordered: true
+    expects:
+      - "F2K: keyboard: 8042 configured"
+      - "F2K: keyboard-smoke: ready (waiting for 10 key events)"
+      - "F2K: keyboard-smoke: down vk 0x48 scan 0x23 char 0x0068 state 0x0000"
+      - "F2K: keyboard-smoke: up vk 0x48 scan 0x23 char 0x0068 state 0x0000"
+      - "F2K: keyboard-smoke: down vk 0x49 scan 0x17 char 0x0069 state 0x0000"
+      - "F2K: keyboard-smoke: up vk 0x49 scan 0x17 char 0x0069 state 0x0000"
+      - "F2K: keyboard-smoke: down vk 0x10 scan 0x2a char 0x0000 state 0x0010"
+      - "F2K: keyboard-smoke: down vk 0x41 scan 0x1e char 0x0041 state 0x0010"
+      - "F2K: keyboard-smoke: up vk 0x41 scan 0x1e char 0x0041 state 0x0010"
+      - "F2K: keyboard-smoke: up vk 0x10 scan 0x2a char 0x0000 state 0x0000"
+      - "F2K: keyboard-smoke: down vk 0x0d scan 0x1c char 0x000d state 0x0000"
+      - "F2K: keyboard-smoke: up vk 0x0d scan 0x1c char 0x000d state 0x0000"
+      - "F2K: keyboard-smoke: echoed on window row 0: 'hiA'"
+      - "F2K: image loaded"
+      - "F2K: user process exited normally (exit code=0)"
+
   # IDE driver: the disk-smoke diagnostic boot drives the IRQ14 PIO
   # read path end to end — IDENTIFY, the MBR, the volume boot sector,
   # and the first fixture's sector — then the default image exits 0:

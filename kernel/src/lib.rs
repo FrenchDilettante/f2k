@@ -34,6 +34,9 @@ mod exec;
 // behind its locale services
 mod compat;
 
+// The console: the screen buffer programs write to, shown on the VGA text display
+mod console;
+
 // Ring 3: user-mode entry, the syscall gate, the user-mode heap, process end
 mod user;
 
@@ -162,6 +165,16 @@ pub extern "C" fn kmain(magic: u32, multiboot_info: u32) -> ! {
     serial_println!("Phase 1: Foundation complete");
     serial_println!("Multiboot info at {:#010x}", multiboot_info);
 
+    // The console: draw its blank window over whatever the firmware left on the display. Program
+    // output reaches the display from here on (and is mirrored to COM1).
+    crate::console::init();
+    serial_println!("F2K: console: VGA text 80x25, buffer 80x300");
+
+    // The console diagnostic boot: write a known pattern through the console, then read the display
+    // and the cursor back — then fall through to the normal boot.
+    #[cfg(feature = "console-smoke")]
+    crate::console::smoke();
+
     // Hand every usable frame (minus the kernel image) to the frame allocator.
     mem::bootmem::boot_init(multiboot_info);
     mem::bootmem::with_frame_db(|db| {
@@ -272,6 +285,15 @@ pub extern "C" fn kmain(magic: u32, multiboot_info: u32) -> ! {
     // The IDE disk: detect the primary master, connect its interrupt, and IDENTIFY it. It needs
     // the interrupt core (its reads complete through IRQ 14); the first user process comes after.
     crate::hw::ide::disk::init();
+
+    // The keyboard: configure the 8042 and connect IRQ 1; its bytes reach the console's input
+    // queue through the keyboard DPC.
+    crate::hw::ps2::init();
+
+    // The keyboard diagnostic boot: wait for injected keys, report the decoded events, echo them
+    // through the console — then fall through to the normal boot.
+    #[cfg(feature = "keyboard-smoke")]
+    crate::console::keyboard_smoke();
 
     // The block devices: the disk, if there is one, and a view per primary partition on it.
     if let Some(disk) = crate::hw::ide::disk::block_device() {

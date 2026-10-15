@@ -31,9 +31,11 @@ OBJCOPY ?= x86_64-elf-objcopy
 NASM ?= nasm
 DD ?= dd
 
-# QEMU settings
+# QEMU settings: the console is the VGA display (a window); COM1 (the kernel log and the
+# console's mirror) and the QEMU monitor share the terminal (Ctrl-A C switches, Ctrl-A X quits).
+# Headless: QEMU_FLAGS="-m 256M -nographic -no-reboot -no-shutdown -net none".
 QEMU ?= qemu-system-i386
-QEMU_FLAGS ?= -m 256M -nographic -no-reboot -no-shutdown -net none
+QEMU_FLAGS ?= -m 256M -serial mon:stdio -no-reboot -no-shutdown -net none
 
 # Disk image settings
 DISK_IMG ?= $(BUILD_DIR)/$(TARGET)/debug/f2k-disk.img

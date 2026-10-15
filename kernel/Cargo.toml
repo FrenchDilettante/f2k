@@ -115,6 +115,22 @@ irq-smoke = []
 # lines. Disk path only (the image is the IDE primary master); the
 # qemu-tests.yaml case pins the COM1 shapes.
 disk-smoke = []
+# The console diagnostic boot: right after the console comes up, a
+# boot-time pass writes a known pattern through it (enough lines to
+# move the window, then a tab), reads the VGA text grid and the CRT
+# controller's cursor back, and reports them on COM1, then lets the
+# normal boot proceed to the default image's exit. The console itself
+# is default-on; the feature gates only the diagnostic. The
+# qemu-tests.yaml cases pin the COM1 shapes.
+console-smoke = []
+# The keyboard diagnostic boot: after the keyboard comes up, a
+# boot-time pass waits (ten seconds at most) for ten key events — the
+# qemu-tests.yaml case injects them through the QEMU monitor — reports
+# each decoded event on COM1, echoes the typed characters through the
+# console and reads the display row back, then lets the normal boot
+# proceed to the default image's exit. The keyboard itself is
+# default-on; the feature gates only the diagnostic.
+keyboard-smoke = []
 
 [dependencies]
 # Core no_std crates for future use
