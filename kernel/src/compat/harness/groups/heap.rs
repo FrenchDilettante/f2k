@@ -50,8 +50,11 @@ fn heap_destroy_pops_one_dword() {
     let image = Image::parse(RET0).expect("ret0 parses");
     let mut mapped = vec![0u8; image.size_of_image as usize];
     image.map_into(RET0, &mut mapped);
-    image.snap_imports(RET0, &mut mapped, "KERNEL32.dll", |name| {
-        Some(if name == "HeapDestroy" { MARK } else { 0x1000 })
+    image.snap_imports(RET0, &mut mapped, |module, name| {
+        if !crate::exec::pe::same_module(module, "KERNEL32.dll") {
+            return Err(crate::exec::pe::Unresolved::NoModule);
+        }
+        Ok(if name == "HeapDestroy" { MARK } else { 0x1000 })
     });
     let slot = (0..mapped.len() - 4)
         .step_by(4)

@@ -13,7 +13,8 @@
 pub mod syscall;
 pub mod userheap;
 
-/// The fault-test stub's code page (the PE image base, which the fault-test builds never map).
+/// The fault-test stub's code page (the corpus programs' preferred base, which the fault-test builds
+/// never map).
 #[cfg(any(
     feature = "fault-test-user",
     feature = "fault-test-badargs",
@@ -59,6 +60,10 @@ pub const fn thread_teb_va(index: u32) -> u32 {
 /// `THREAD_STACK_REGION + index * 0x2000`, growing down like the main thread's. Nothing consumes it
 /// yet.
 pub const THREAD_STACK_REGION: u32 = 0x00C0_0000;
+
+/// The number of pages a per-thread user stack spans (the same two pages the main thread's stack
+/// has).
+pub const THREAD_STACK_PAGES: u32 = 2;
 
 /// A kernel address the fault-test stub reads from ring 3: the kernel window is supervisor-only, so
 /// the read must fault.
@@ -582,6 +587,6 @@ mod tests {
         assert_eq!(USER_STACK_TOP, USER_STACK_PAGE + 4096);
         assert!(TEB_PAGE > USER_STACK_TOP);
         assert!(PARAMS_PAGE > TEB_PAGE);
-        assert!(PARAMS_PAGE + 4096 < crate::exec::pe::IMAGE_BASE);
+        assert!(PARAMS_PAGE + 4096 <= USER_CODE_PAGE);
     }
 }

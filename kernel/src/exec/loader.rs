@@ -1,9 +1,15 @@
 //! Kernel-side image loader: run a PE32 file from the boot volume as the user process.
 //!
 //! [`load_path`] reads the program's file off the boot volume by its path into a raw-file staging
-//! buffer; [`load_image`] then parses it, stages the in-memory image, snaps the IAT against the
-//! kernel-synthesized kernel32, maps the pages with their final protections, and returns the
-//! entry point: the caller enters the process as its main thread, which the scheduler starts there.
+//! buffer; [`load_image`] then parses it, checks that its preferred base places it clear of the
+//! system's fixed user regions, stages the in-memory image, snaps the IAT through the module table
+//! ([`resolve_import`]), maps the pages at the preferred base with their final protections, and
+//! returns the entry point: the caller enters the process as its main thread, which the scheduler
+//! starts there.
+//!
+//! Images are never relocated: an image maps at its preferred base or is refused. The module table
+//! holds one module today, the kernel-synthesized kernel32; an import naming any other module fails
+//! the snap.
 //!
 //! Quirk: the file and the image are built in staging buffers — borrowed statics, not stack frames
 //! — because the loader runs on the small boot stack. The snap happens in staging, before mapping:
@@ -11,15 +17,15 @@
 
 use core::fmt;
 
-use crate::exec::pe::{self, Image};
+use crate::exec::pe::{same_module, Image, Unresolved};
 use crate::fs::fat32::lookup::{lookup, LookupError};
 use crate::fs::fat32::read::read;
 use crate::fs::fat32::volume::Volume;
 use crate::status::{nt_success, NtStatus};
 
-/// The raw-file staging size: the largest program file the loader reads (the corpus's biggest
-/// fixture file is 0x7000 bytes).
-const FILE_STAGING_SIZE: usize = 0x8000;
+/// The raw-file staging size: the largest file the loader reads. Room for the era's system binaries
+/// (a few hundred KiB each); the corpus's biggest fixture file is 0x7000 bytes.
+const FILE_STAGING_SIZE: usize = 0x8_0000;
 
 /// Staging for the program's file as read off the volume (see the module doc).
 #[cfg(target_arch = "x86")]
@@ -106,14 +112,74 @@ pub fn load_path(path: &'static [u8], name: &'static str) -> u32 {
     load_image(&staging[..length], path, name)
 }
 
-/// The staging buffer size: the largest image the loader accepts (the corpus's biggest fixture is
-/// 0x8000).
-const STAGING_SIZE: usize = 0x8000;
+/// The image staging size: the largest in-memory image the loader accepts. Sized like the file
+/// staging; the corpus's biggest fixture image is 0x8000 bytes.
+const STAGING_SIZE: usize = 0x8_0000;
 
 /// Staging for the in-memory image (see the module doc).
 #[cfg(target_arch = "x86")]
 static mut IMAGE_STAGING: crate::mem::paging::Aligned<[u8; STAGING_SIZE]> =
     crate::mem::paging::Aligned([0; STAGING_SIZE]);
+
+/// The system's fixed user regions, as (name, start, end): an image may cover none of them. Images
+/// map at their preferred base (nothing is relocated), so one that would land on a region is
+/// refused, not moved. Quirk: the CRT region is open-ended — a NULL reservation starts at its base
+/// and extends as far as the request asks — so only its 64 KiB minimum is reserved here; a larger
+/// reservation that reaches an image's pages is not yet detected (no address-space bookkeeping
+/// exists).
+const SYSTEM_REGIONS: [(&str, u32, u32); 8] = {
+    use crate::user::userheap::{CRT_REGION_BASE, HEAP_REGION_BASE, HEAP_REGION_MAX};
+    use crate::user::{
+        PARAMS_PAGE, TEB_PAGE, THREAD_STACK_PAGES, THREAD_STACK_REGION, THREAD_TEB_REGION,
+        USER_STACK_LOW_PAGE, USER_STACK_TOP,
+    };
+    const PAGE: u32 = crate::mem::paging::PAGE_SIZE;
+    const CHILDREN: u32 = crate::process::CHILD_THREADS as u32;
+    const THUNK_PAGE: u32 = crate::compat::kernel32::THUNK_PAGE;
+    [
+        ("main thread stack", USER_STACK_LOW_PAGE, USER_STACK_TOP),
+        ("main thread TEB", TEB_PAGE, TEB_PAGE + PAGE),
+        ("process parameters", PARAMS_PAGE, PARAMS_PAGE + PAGE),
+        (
+            "child thread TEBs",
+            THREAD_TEB_REGION,
+            THREAD_TEB_REGION + CHILDREN * PAGE,
+        ),
+        (
+            "child thread stacks",
+            THREAD_STACK_REGION,
+            THREAD_STACK_REGION + CHILDREN * THREAD_STACK_PAGES * PAGE,
+        ),
+        ("kernel32 thunk page", THUNK_PAGE, THUNK_PAGE + PAGE),
+        (
+            "heap region",
+            HEAP_REGION_BASE,
+            HEAP_REGION_BASE + HEAP_REGION_MAX as u32,
+        ),
+        ("CRT region", CRT_REGION_BASE, CRT_REGION_BASE + 0x1_0000),
+    ]
+};
+
+/// The first system region that an image of `size` bytes at `base` would cover, if any.
+pub fn system_region_overlapping(base: u32, size: u32) -> Option<&'static str> {
+    let (start, end) = (base as u64, base as u64 + size as u64);
+    SYSTEM_REGIONS
+        .iter()
+        .find(|&&(_, region_start, region_end)| {
+            start < region_end as u64 && (region_start as u64) < end
+        })
+        .map(|&(name, ..)| name)
+}
+
+/// The module table: resolve `name` in `module` (as an import descriptor or a forwarder spells it)
+/// to the address an IAT slot receives. The kernel-synthesized kernel32 is the only module; any
+/// other name is not loaded.
+pub fn resolve_import(module: &str, name: &str) -> Result<u32, Unresolved> {
+    if same_module(module, crate::compat::kernel32::MODULE_NAME) {
+        return crate::compat::kernel32::resolve(name).ok_or(Unresolved::NoEntry);
+    }
+    Err(Unresolved::NoModule)
+}
 
 /// A page's write permission: writable when any section in it is writable (shared pages combine
 /// protections); uncovered pages (the header page) are read-only.
@@ -137,20 +203,32 @@ pub fn load_image(file: &[u8], path: &[u8], name: &'static str) -> u32 {
     use crate::mem::paging::{self, PAGE_SIZE};
     use crate::user::{TEB_PAGE, USER_STACK_LOW_PAGE, USER_STACK_PAGE, USER_STACK_TOP};
 
-    // Identity question: bytes this loader does not accept are reported, not panicked on.
-    let image = match Image::parse(file) {
+    // Identity questions: bytes this loader does not accept, an image it cannot stage, and a
+    // preferred base it cannot honor are reported, not panicked on.
+    let image = match Image::parse_program(file) {
         Ok(image) => image,
         Err(reject) => {
             crate::serial_println!("F2K: image rejected by the loader: {:?}", reject);
             crate::halt()
         }
     };
-    assert!(
-        image.size_of_image as usize <= STAGING_SIZE,
-        "image 0x{:x} exceeds the staging buffer 0x{:x}",
-        image.size_of_image,
-        STAGING_SIZE
-    );
+    if image.size_of_image as usize > STAGING_SIZE {
+        crate::serial_println!(
+            "F2K: image rejected by the loader: image {:#x} exceeds the staging {:#x}",
+            image.size_of_image,
+            STAGING_SIZE
+        );
+        crate::halt()
+    }
+    if let Some(region) = system_region_overlapping(image.image_base, image.size_of_image) {
+        crate::serial_println!(
+            "F2K: image rejected by the loader: [{:#010x}, {:#010x}) covers the {}",
+            image.image_base,
+            image.image_base as u64 + image.size_of_image as u64,
+            region
+        );
+        crate::halt()
+    }
 
     // Zero the staging explicitly: gaps the image does not describe must read as zero, not stale
     // staging bytes.
@@ -171,15 +249,10 @@ pub fn load_image(file: &[u8], path: &[u8], name: &'static str) -> u32 {
 
     // The thunks must be mapped before the snap: IAT slots receive user-space addresses.
     crate::compat::kernel32::init();
-    let snap = image.snap_imports(
-        file,
-        staging,
-        crate::compat::kernel32::MODULE_NAME,
-        crate::compat::kernel32::resolve,
-    );
+    let snap = image.snap_imports(file, staging, resolve_import);
 
-    // Map the staged image at the fixed base, one frame per page, writable exactly where a mapped
-    // section is writable.
+    // Map the staged image at its preferred base, one frame per page, writable exactly where a
+    // mapped section is writable.
     let pages = image.size_of_image.div_ceil(PAGE_SIZE);
     for page in 0..pages {
         let offset = (page * PAGE_SIZE) as usize;
@@ -187,7 +260,7 @@ pub fn load_image(file: &[u8], path: &[u8], name: &'static str) -> u32 {
         let frame = paging::allocate_frame_phys();
         paging::init_frame(frame, 0, &staging[offset..end]);
         paging::map_user_page(
-            pe::IMAGE_BASE + page * PAGE_SIZE,
+            image.image_base + page * PAGE_SIZE,
             frame,
             page_writable(&image, page * PAGE_SIZE),
         );
@@ -209,7 +282,8 @@ pub fn load_image(file: &[u8], path: &[u8], name: &'static str) -> u32 {
     crate::compat::kernel32::init_params(name, path);
 
     crate::serial_println!(
-        "F2K: image loaded (entry {:#010x}, {} pages, {} imports snapped)",
+        "F2K: image loaded (base {:#010x}, entry {:#010x}, {} pages, {} imports snapped)",
+        image.image_base,
         image.entry_va(),
         pages,
         snap.thunks
@@ -305,6 +379,116 @@ mod tests {
         assert!(!page_writable(&ret0, 0x4000));
     }
 
+    /// The system regions are ordered, disjoint, page-aligned and in user space.
+    #[test]
+    fn system_regions_are_ordered_and_disjoint() {
+        for (index, &(name, start, end)) in SYSTEM_REGIONS.iter().enumerate() {
+            assert!(start < end, "{name}");
+            assert_eq!(start % PAGE_SIZE, 0, "{name}");
+            assert_eq!(end % PAGE_SIZE, 0, "{name}");
+            assert!(end <= crate::exec::pe::USER_SPACE_END, "{name}");
+            if let Some(&(next, next_start, _)) = SYSTEM_REGIONS.get(index + 1) {
+                assert!(end <= next_start, "{name} runs into {next}");
+            }
+        }
+    }
+
+    /// Every corpus program places at its own preferred base, clear of the system regions.
+    #[test]
+    fn the_corpus_places_at_its_preferred_bases() {
+        for (name, file) in CORPUS {
+            let image = Image::parse_program(file).expect("fixture parses as a program");
+            assert_eq!(image.image_base, 0x0040_0000, "{name}");
+            assert_eq!(
+                system_region_overlapping(image.image_base, image.size_of_image),
+                None,
+                "{name}"
+            );
+        }
+    }
+
+    /// The era's system binaries place at their preferred bases (the images' measured bases, with a
+    /// generous size: none comes near a system region).
+    #[test]
+    fn system_binary_bases_place_cleanly() {
+        for base in [
+            0x4AD0_0000,
+            0x7800_0000,
+            0x7C4E_0000,
+            0x77E1_0000,
+            0x7C2D_0000,
+        ] {
+            assert_eq!(
+                system_region_overlapping(base, 0x0010_0000),
+                None,
+                "{base:#x}"
+            );
+        }
+    }
+
+    /// An image covering any page of a region is refused, edges included; one ending exactly where a
+    /// region starts is not.
+    #[test]
+    fn images_covering_a_system_region_are_refused() {
+        use crate::compat::kernel32::THUNK_PAGE;
+        assert_eq!(
+            system_region_overlapping(THUNK_PAGE, 0x1000),
+            Some("kernel32 thunk page")
+        );
+        assert_eq!(
+            system_region_overlapping(THUNK_PAGE - 0x1_0000, 0x1_0000),
+            None
+        );
+        assert_eq!(
+            system_region_overlapping(THUNK_PAGE - 0x1_0000, 0x1_1000),
+            Some("kernel32 thunk page")
+        );
+        // A 16 MiB image at the corpus base reaches the child-thread regions.
+        assert_eq!(
+            system_region_overlapping(0x0040_0000, crate::exec::pe::MAX_IMAGE_SIZE),
+            Some("child thread TEBs")
+        );
+        // The low window holds the main thread's pages.
+        assert_eq!(
+            system_region_overlapping(0x0001_0000, 0x0030_0000),
+            Some("main thread stack")
+        );
+        assert_eq!(
+            system_region_overlapping(0x0200_0000, 0x1_0000),
+            Some("heap region")
+        );
+        assert_eq!(
+            system_region_overlapping(0x0210_0000, 0x1_0000),
+            Some("CRT region")
+        );
+    }
+
+    /// The module table: kernel32's registry, under any spelling of its name; nothing else.
+    #[test]
+    fn imports_resolve_through_the_module_table() {
+        let exit = crate::compat::kernel32::resolve("ExitProcess");
+        assert!(exit.is_some());
+        for module in ["KERNEL32.dll", "kernel32.DLL", "KERNEL32"] {
+            assert_eq!(resolve_import(module, "ExitProcess").ok(), exit, "{module}");
+        }
+        assert_eq!(
+            resolve_import("KERNEL32.dll", "NoSuchExport"),
+            Err(Unresolved::NoEntry)
+        );
+        // Export names are case-sensitive.
+        assert_eq!(
+            resolve_import("KERNEL32.dll", "exitprocess"),
+            Err(Unresolved::NoEntry)
+        );
+        for module in ["MSVCRT.dll", "USER32.dll", "KERNEL32.exe"] {
+            assert_eq!(
+                resolve_import(module, "ExitProcess"),
+                Err(Unresolved::NoModule),
+                "{module}"
+            );
+        }
+    }
+
     const FILE: u8 = 0x20;
     const DIR: u8 = 0x10;
 
@@ -396,8 +580,8 @@ mod tests {
         );
         assert_eq!(FileError::Directory.to_string(), "a directory, not a file");
         assert_eq!(
-            FileError::TooLarge(40_000).to_string(),
-            "40000 bytes exceed the file staging (32768 bytes)"
+            FileError::TooLarge(600_000).to_string(),
+            "600000 bytes exceed the file staging (524288 bytes)"
         );
         assert_eq!(
             FileError::Read(STATUS_FILE_CORRUPT_ERROR).to_string(),
