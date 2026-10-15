@@ -20,8 +20,9 @@
 //! One processor, no locking: every method runs serialized at the dispatch level, which the
 //! interrupt core already raises around the dispatcher entries.
 
-// Parts of the state machines stay unwired until their slices land (the preemption delivery, the
-// thread-creation surface); the idle thread, the switch, and the wait paths are live.
+// Parts of the state machines stay unwired until their consumers land (the forced-resume route's
+// caller is the future teardown conversion); the queues, the delivery, the suspend consumer, and
+// the re-wait are live.
 #![allow(dead_code)]
 
 use core::ptr::{addr_of, addr_of_mut, null_mut};
@@ -58,6 +59,12 @@ pub mod event;
 
 /// The handle table: the per-process handle-to-object indirection.
 pub mod object;
+
+/// The APC machinery: the APC object, the queues, delivery, and the suspend consumer.
+pub mod apc;
+
+/// The semaphore object: a waitable whose signal state is a count.
+pub mod semaphore;
 
 // --- Constants -----------------------------------------------------------
 

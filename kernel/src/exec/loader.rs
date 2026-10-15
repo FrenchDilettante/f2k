@@ -36,6 +36,11 @@ pub const SLEEP: &[u8] = include_bytes!("../../../tests/sleep/sleep.exe");
 #[cfg(feature = "run-spin")]
 pub const SPIN: &[u8] = include_bytes!("../../../tests/spin/spin.exe");
 
+/// The suspend/resume smoke fixture: a worker is suspended through its builtin APC, proven frozen
+/// across a sleep, and resumed to finish (embedded for the `run-suspend` feature).
+#[cfg(feature = "run-suspend")]
+pub const SUSPEND: &[u8] = include_bytes!("../../../tests/suspend/suspend.exe");
+
 /// The thread-slot reuse smoke fixture: three rounds of create, wait, close, one child alive at a
 /// time, so every child after the first reuses the gate-stack resources the previous one released
 /// at its exit (embedded for the `run-respawn` feature).
@@ -170,7 +175,8 @@ pub fn run_image(file: &[u8], name: &'static str) -> ! {
         feature = "run-pingpong",
         feature = "run-sleep",
         feature = "run-spin",
-        feature = "run-respawn"
+        feature = "run-respawn",
+        feature = "run-suspend"
     ))]
     {
         crate::process::threads::enter_as_main_thread(image.entry_va(), USER_STACK_TOP)
@@ -179,7 +185,8 @@ pub fn run_image(file: &[u8], name: &'static str) -> ! {
         feature = "run-pingpong",
         feature = "run-sleep",
         feature = "run-spin",
-        feature = "run-respawn"
+        feature = "run-respawn",
+        feature = "run-suspend"
     )))]
     {
         // SAFETY: image, stack, TEB and thunk pages are mapped with their final protections; the

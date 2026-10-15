@@ -265,9 +265,10 @@ pub fn process_exited(code: u32) -> ! {
 }
 
 /// Launch the first user process: exit0 through the PE loader by default, ret0 with the `run-ret0`
-/// feature, hello with the `run-hello` feature, the blocking-wait, timer, preemption, or slot-reuse
-/// smoke with `run-pingpong`/`run-sleep`/`run-spin`/`run-respawn` (all on the thread-ified boot), a
-/// fault-test stub, or the full multi-process suite with `run-process-suite`. Never returns.
+/// feature, hello with the `run-hello` feature, the blocking-wait, timer, preemption, slot-reuse,
+/// or suspend smoke with `run-pingpong`/`run-sleep`/`run-spin`/`run-respawn`/`run-suspend` (all on
+/// the thread-ified boot), a fault-test stub, or the full multi-process suite with
+/// `run-process-suite`. Never returns.
 #[cfg(target_arch = "x86")]
 pub fn run_user_process() -> ! {
     #[cfg(feature = "run-process-suite")]
@@ -313,6 +314,17 @@ pub fn run_user_process() -> ! {
                 not(feature = "run-sleep"),
                 not(feature = "run-spin"),
                 not(feature = "run-respawn"),
+                feature = "run-suspend"
+            ))]
+            {
+                crate::exec::loader::run_image(crate::exec::loader::SUSPEND, "suspend")
+            }
+            #[cfg(all(
+                not(feature = "run-pingpong"),
+                not(feature = "run-sleep"),
+                not(feature = "run-spin"),
+                not(feature = "run-respawn"),
+                not(feature = "run-suspend"),
                 feature = "run-hello"
             ))]
             {
@@ -323,6 +335,7 @@ pub fn run_user_process() -> ! {
                 not(feature = "run-sleep"),
                 not(feature = "run-spin"),
                 not(feature = "run-respawn"),
+                not(feature = "run-suspend"),
                 not(feature = "run-hello"),
                 not(feature = "run-ret0")
             ))]
@@ -334,6 +347,7 @@ pub fn run_user_process() -> ! {
                 not(feature = "run-sleep"),
                 not(feature = "run-spin"),
                 not(feature = "run-respawn"),
+                not(feature = "run-suspend"),
                 not(feature = "run-hello"),
                 feature = "run-ret0"
             ))]

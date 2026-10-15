@@ -31,6 +31,7 @@ use super::{unlink, Links, List, REALTIME_BASE, TIME_CRITICAL_CEILING};
 /// The wait statuses: what a completed wait reports. The timeout value is the ABI the Win32 wait
 /// returns raw (WAIT_TIMEOUT).
 pub use crate::status::{STATUS_SUCCESS, STATUS_TIMEOUT};
+use crate::status::STATUS_KERNEL_APC;
 
 /// The low three bits of a waitable kind: the selector that decides whether a satisfied wait
 /// consumes the object's signal. The timer kinds share numbers with the event kinds through it.
@@ -58,6 +59,9 @@ pub enum WaitKind {
     SynchronizationEvent = 1,
     /// The thread object: signals once, at termination, forever.
     Thread = 6,
+    /// A counting semaphore: its signal state is the count, and one satisfied waiter consumes
+    /// exactly one of it.
+    Semaphore = 5,
     /// A timer that stays signaled once it expires.
     TimerNotification = 8,
     /// A timer whose signal serves a single waiter.
@@ -254,10 +258,12 @@ pub(crate) fn entry_to_block(entry: *mut Links) -> *mut WaitBlock {
 }
 
 /// Satisfy one waiter's claim on `object`: a synchronization flavor's signal is consumed by the
-/// take, everything else's stays.
+/// take, a semaphore's claim takes exactly one count, everything else's stays.
 fn consume_signal(object: &mut Waitable) {
-    if object.kind.consumes_signal() {
-        object.signal_state = 0;
+    match object.kind {
+        WaitKind::Semaphore => object.signal_state -= 1,
+        kind if kind.consumes_signal() => object.signal_state = 0,
+        _ => {}
     }
 }
 
@@ -616,6 +622,10 @@ impl Dispatcher {
         // SAFETY: as above.
         unsafe { crate::interrupt::irql::state_mut().restore((*current).level) };
         crate::interrupt::irql::state_mut().lower(previous);
+        // The wait-exit delivery: a kernel APC queued while this thread was parked — or armed by
+        // the delivery that broke the wait — runs now, before the parked caller reads its wait
+        // status. This is where a thread woken mid-wait runs the APC that woke it.
+        crate::sched::idle::dispatcher().deliver_pending_apcs();
     }
 
     /// The no-wait quantum adjustment: the tail of a wait that was satisfied without blocking. A
@@ -633,15 +643,17 @@ impl Dispatcher {
     }
 }
 
-/// Block the running thread on `object` from kernel code, with an optional timeout (100 ns units,
-/// relative), and return the wait's status (see [`wait_current_with`]).
+/// Block the running thread from kernel code, with an optional timeout (100 ns units, relative),
+/// and return the wait's status (see [`wait_current_with`]). A kernel APC breaks the wait; the
+/// replay re-plants from the due the first attempt recorded.
 #[cfg(target_arch = "x86")]
 pub fn wait_current(
     object: *mut Waitable,
     reason: WaitReason,
     timeout: Option<i64>,
 ) -> crate::status::NtStatus {
-    wait_current_with(|dispatcher, thread, stamp| {
+    wait_current_with(|dispatcher, thread, stamp, replay| {
+        let timeout = replay_timeout(thread, replay, timeout, stamp.system_time);
         dispatcher.wait_single(
             thread,
             object,
@@ -654,14 +666,75 @@ pub fn wait_current(
     })
 }
 
+/// The remaining interval from `now` to `due`, wrap-safe: a due already past reads as a negative
+/// interval, which the entries' wrapping due-time arithmetic turns back into the same past due —
+/// and the timer insert refuses it. This is how a replayed wait keeps its deadline.
+pub(crate) fn replay_interval(due: u64, now: u64) -> i64 {
+    due.wrapping_sub(now) as i64
+}
+
+/// What a replaying wait re-plants with: the remaining interval to the due its first attempt
+/// recorded (the thread's timer holds it; the wake's cancellation leaves it in place), the original
+/// timeout on a first attempt, or none for an untimed wait. A timed wait's deadline never slips
+/// across a delivery.
+pub(crate) fn replay_timeout(
+    thread: &Thread,
+    replay: bool,
+    timeout: Option<i64>,
+    now: u64,
+) -> Option<i64> {
+    if !replay {
+        timeout
+    } else if timeout.is_some() {
+        Some(replay_interval(thread.timer.due_time, now))
+    } else {
+        None
+    }
+}
+
+/// The blocking core every wait shares: run `start` — it either satisfies the wait at once or parks
+/// the thread — and after a park, read the wake's status, replaying the wait when a kernel APC broke
+/// it. The APC delivery itself has already run by the time the park returns (the resume tail
+/// delivers), so the replay re-enters `start` with the delivery's work done. Returns the wait's
+/// completion status.
+pub(crate) fn wait_with_replay(
+    dispatcher: &mut Dispatcher,
+    mut stamp_of: impl FnMut() -> ClockStamp,
+    mut start: impl FnMut(&mut Dispatcher, &mut Thread, ClockStamp, bool) -> WaitDisposition,
+    mut park: impl FnMut(&mut Dispatcher),
+) -> crate::status::NtStatus {
+    let mut replay = false;
+    loop {
+        // SAFETY: the running thread, live and exclusive in the serialized dispatcher.
+        let current: &mut Thread = unsafe { &mut *dispatcher.current_thread() };
+        match start(dispatcher, current, stamp_of(), replay) {
+            WaitDisposition::Complete(status) => return status,
+            WaitDisposition::Yield => {
+                park(dispatcher);
+                // Other threads ran inside the park: re-read the (now resumed) current thread.
+                // SAFETY: as above.
+                let current: &mut Thread = unsafe { &mut *dispatcher.current_thread() };
+                let status = current.wait_status();
+                if status != STATUS_KERNEL_APC {
+                    return status;
+                }
+                // The wake was for a kernel APC: replay the wait against whatever changed while
+                // the delivery ran.
+                replay = true;
+            }
+        }
+    }
+}
+
 /// Block the running thread through `start`, the wait entry (it either satisfies the wait at once
-/// or parks the thread), and return the wait's status. Interrupts are masked from the entry until
-/// the thread is parked — as in the syscall gate — so a signal cannot slip between them; the switch
-/// resumes here on the wake, and the interrupt flag is put back as the call found it. The idle
-/// thread cannot block, so calling this on it is a contract violation.
+/// or parks the thread), and return the wait's status — replaying the wait whenever a kernel APC
+/// breaks it, with the deadline preserved. Interrupts are masked from the entry until the thread is
+/// parked — as in the syscall gate — so a signal cannot slip between them; the switch resumes here
+/// on the wake, and the interrupt flag is put back as the call found it. The idle thread cannot
+/// block, so calling this on it is a contract violation.
 #[cfg(target_arch = "x86")]
 pub fn wait_current_with(
-    start: impl FnOnce(&mut Dispatcher, &mut Thread, ClockStamp) -> WaitDisposition,
+    mut start: impl FnMut(&mut Dispatcher, &mut Thread, ClockStamp, bool) -> WaitDisposition,
 ) -> crate::status::NtStatus {
     assert!(
         !crate::sched::idle::on_idle_thread(),
@@ -671,19 +744,21 @@ pub fn wait_current_with(
     let state = crate::interrupt::irql::state_mut();
     let enabled = state.interrupts_enabled();
     state.mask_interrupts();
-    let stamp = ClockStamp {
-        system_time: crate::interrupt::clock::system_time(),
-        tick: crate::interrupt::clock::ticks(),
-    };
-    // SAFETY: the running thread, live and exclusive with interrupts masked.
-    let current = unsafe { &mut *dispatcher.current_thread() };
-    let status = match start(dispatcher, current, stamp) {
-        WaitDisposition::Complete(status) => status,
-        WaitDisposition::Yield => {
-            dispatcher.park_and_switch();
-            current.wait_status()
-        }
-    };
+    // The level the wait is entered at — the APC break's gate. Every F2K wait enters at the
+    // passive level; the field keeps the gate armed for any future raised-level wait.
+    let wait_level = state.current();
+    let status = wait_with_replay(
+        dispatcher,
+        || ClockStamp {
+            system_time: crate::interrupt::clock::system_time(),
+            tick: crate::interrupt::clock::ticks(),
+        },
+        |dispatcher, thread, stamp, replay| {
+            thread.wait_irql = wait_level;
+            start(dispatcher, thread, stamp, replay)
+        },
+        |dispatcher| dispatcher.park_and_switch(),
+    );
     if enabled {
         state.unmask_interrupts();
     } else {
@@ -1854,5 +1929,249 @@ mod tests {
             "the debt survives a charge that does not exhaust"
         );
         assert_eq!(indebted.quantum(), 5);
+    }
+
+    // --- The re-wait: a kernel-APC-broken wait replays ----------------------
+
+
+    /// E1: a wait broken for a kernel APC replays with the deadline preserved — the replay
+    /// re-plants from the due the first attempt recorded, not a fresh now-plus-interval, and the
+    /// eventual timeout completes against the original deadline.
+    #[test]
+    fn a_kernel_apc_broken_wait_replays_without_slipping_the_deadline() {
+        let d = dispatcher();
+        let p = process(8);
+        let t = thread(p);
+        run(d, t);
+        let ev = event(EventKind::Notification, false);
+
+        // The fake clock: the first attempt at 10_000, the replay at 10_500 (the APC's delivery
+        // ran in between), the wake after the due.
+        let stamps = [stamp(10_000, 5), stamp(10_500, 6), stamp(11_500, 7)];
+        let mut step = 0;
+        let mut parks = 0;
+        let status = wait_with_replay(
+            d,
+            || {
+                let s = stamps[step];
+                step += 1;
+                s
+            },
+            |d, t, stamp, replay| {
+                let timeout = replay_timeout(t, replay, Some(1_000), stamp.system_time);
+                d.wait_single(t, ev.waitable(), WaitReason::Executive, WaitMode::User, false, timeout, stamp)
+            },
+            |d| {
+                parks += 1;
+                // The hand-driven wake: the first park breaks for a kernel APC; the second is the
+                // timer's expiry (the model of whatever would wake the thread).
+                let current = d.current_thread();
+                // SAFETY: the parked thread, live.
+                let current = unsafe { &mut *current };
+                if parks == 1 {
+                    d.unwait(current, STATUS_KERNEL_APC, 0);
+                } else {
+                    d.expire_timer(&mut current.timer);
+                }
+                // The dispatcher re-runs the woken thread (the host driver of the switch).
+                let selected = d.select_next();
+                assert!(!selected.is_null());
+                d.enter(selected);
+                // SAFETY: the selected thread, live.
+                unsafe { (*selected).state = ThreadState::Running };
+            },
+        );
+        assert_eq!(parks, 2, "the wait parked, replayed, and completed");
+        assert_eq!(status, STATUS_TIMEOUT);
+        assert_eq!(t.timer.due_time(), 11_000, "the deadline never slipped");
+    }
+
+    /// E2: the replay re-tests satisfaction — a wake that raced the delivery completes the wait
+    /// at once instead of re-parking.
+    #[test]
+    fn the_replay_re_tests_satisfaction() {
+        let d = dispatcher();
+        let p = process(8);
+        let t = thread(p);
+        run(d, t);
+        let ev = event(EventKind::Synchronization, false);
+        let waitable = ev.waitable();
+
+        let status = wait_with_replay(
+            d,
+            || stamp(10_000, 5),
+            |d, t, stamp, replay| {
+                let timeout = replay_timeout(t, replay, Some(1_000), stamp.system_time);
+                d.wait_single(t, waitable, WaitReason::Executive, WaitMode::User, false, timeout, stamp)
+            },
+            |d| {
+                // The park breaks for a kernel APC, and the event signals before the replay.
+                let current = d.current_thread();
+                // SAFETY: the parked thread, live.
+                let current = unsafe { &mut *current };
+                d.unwait(current, STATUS_KERNEL_APC, 0);
+                // The signal raced the delivery: set it, so the replay's satisfaction test finds
+                // it and the wait completes at once.
+                ev.set(d, EVENT_WAKE_INCREMENT);
+                let selected = d.select_next();
+                assert!(!selected.is_null());
+                d.enter(selected);
+                // SAFETY: the selected thread, live.
+                unsafe { (*selected).state = ThreadState::Running };
+            },
+        );
+        assert_eq!(status, STATUS_SUCCESS, "the replay found the signal");
+        assert_eq!(ev.waitable.signal_state(), 0, "the take consumed it");
+    }
+
+    /// E3: a deadline that passed during the delivery completes as a timeout — the replay's insert
+    /// refuses the past due and never parks.
+    #[test]
+    fn a_deadline_passed_during_delivery_completes_as_timeout() {
+        let d = dispatcher();
+        let p = process(8);
+        let t = thread(p);
+        run(d, t);
+        let ev = event(EventKind::Notification, false);
+
+        // The clock advances past the due (11_000) during the delivery.
+        let stamps = [stamp(10_000, 5), stamp(11_500, 6)];
+        let mut step = 0;
+        let mut parks = 0;
+        let status = wait_with_replay(
+            d,
+            || {
+                let s = stamps[step];
+                step += 1;
+                s
+            },
+            |d, t, stamp, replay| {
+                let timeout = replay_timeout(t, replay, Some(1_000), stamp.system_time);
+                d.wait_single(t, ev.waitable(), WaitReason::Executive, WaitMode::User, false, timeout, stamp)
+            },
+            |d| {
+                parks += 1;
+                let current = d.current_thread();
+                // SAFETY: the parked thread, live.
+                let current = unsafe { &mut *current };
+                d.unwait(current, STATUS_KERNEL_APC, 0);
+                let selected = d.select_next();
+                assert!(!selected.is_null());
+                d.enter(selected);
+                // SAFETY: the selected thread, live.
+                unsafe { (*selected).state = ThreadState::Running };
+            },
+        );
+        assert_eq!(parks, 1, "the replay never parked");
+        assert_eq!(status, STATUS_TIMEOUT);
+    }
+
+    /// E4: the delay's replay keeps its shape — a sleep broken by a kernel APC re-parks on its own
+    /// timer with the original due, and the caller sees the sleep succeed on the expiry.
+    #[test]
+    fn the_delay_replay_keeps_its_shape() {
+        let d = dispatcher();
+        let p = process(8);
+        let t = thread(p);
+        run(d, t);
+
+        let stamps = [stamp(10_000, 5), stamp(10_500, 6), stamp(11_500, 7)];
+        let mut step = 0;
+        let mut parks = 0;
+        let status = wait_with_replay(
+            d,
+            || {
+                let s = stamps[step];
+                step += 1;
+                s
+            },
+            |d, t, stamp, replay| {
+                let interval = if replay {
+                    replay_interval(t.timer.due_time, stamp.system_time)
+                } else {
+                    1_000
+                };
+                d.delay(t, WaitMode::User, false, interval, stamp)
+            },
+            |d| {
+                parks += 1;
+                let current = d.current_thread();
+                // SAFETY: the parked thread, live.
+                let current = unsafe { &mut *current };
+                if parks == 1 {
+                    d.unwait(current, STATUS_KERNEL_APC, 0);
+                } else {
+                    d.expire_timer(&mut current.timer);
+                }
+                let selected = d.select_next();
+                assert!(!selected.is_null());
+                d.enter(selected);
+                // SAFETY: the selected thread, live.
+                unsafe { (*selected).state = ThreadState::Running };
+            },
+        );
+        assert_eq!(parks, 2);
+        assert_eq!(
+            Dispatcher::delay_completed(status),
+            STATUS_SUCCESS,
+            "a timed-out sleep is a successful sleep"
+        );
+        assert_eq!(t.timer.due_time(), 11_000, "the wake time never slipped");
+    }
+
+    /// E5: the alertable and mode fields pass through the replay unchanged — the user-APC and
+    /// alert breaks are recorded seams (the runtime layer's delivery); the wait records keep the
+    /// fields for that day.
+    #[test]
+    fn the_replay_passes_the_alertability_and_mode_through() {
+        let d = dispatcher();
+        let p = process(8);
+        let t = thread(p);
+        run(d, t);
+        let ev = event(EventKind::Notification, false);
+        let waitable = ev.waitable();
+
+        let stamps = [stamp(10_000, 5), stamp(10_500, 6)];
+        let mut step = 0;
+        let mut parks = 0;
+        let status = wait_with_replay(
+            d,
+            || {
+                let s = stamps[step];
+                step += 1;
+                s
+            },
+            |d, t, stamp, replay| {
+                let timeout = replay_timeout(t, replay, Some(1_000), stamp.system_time);
+                d.wait_single(t, waitable, WaitReason::UserRequest, WaitMode::User, true, timeout, stamp)
+            },
+            |d| {
+                parks += 1;
+                                let current = d.current_thread();
+                // SAFETY: the parked thread, live.
+                let current = unsafe { &mut *current };
+                if parks == 1 {
+                    // The replay's park carries the same fields the first one planted.
+                    assert_eq!(current.wait_mode(), WaitMode::User);
+                    assert!(current.wait_alertable());
+                    d.unwait(current, STATUS_KERNEL_APC, 0);
+                } else {
+                    // The second park (the replay's) is observed with its fields intact, then
+                    // completed by the signal.
+                    assert_eq!(current.wait_mode(), WaitMode::User);
+                    assert!(current.wait_alertable());
+                    ev.set(d, EVENT_WAKE_INCREMENT);
+                }
+                let selected = d.select_next();
+                assert!(!selected.is_null());
+                d.enter(selected);
+                // SAFETY: the selected thread, live.
+                unsafe { (*selected).state = ThreadState::Running };
+            },
+        );
+        assert_eq!(parks, 2, "one break, one replay, one completion");
+        assert_eq!(status, STATUS_SUCCESS);
+        assert_eq!(t.wait_mode(), WaitMode::User, "the mode passed through");
+        assert!(t.wait_alertable(), "the alertability passed through");
     }
 }

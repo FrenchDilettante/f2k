@@ -111,9 +111,14 @@ impl DeviceLock {
             });
             return;
         }
-        let status = crate::sched::wait::wait_current_with(|dispatcher, thread, stamp| {
-            self.acquire_for(dispatcher, thread, stamp)
-        });
+        let status = crate::sched::wait::wait_current_with(
+            |dispatcher, thread, stamp, replay| {
+                // An untimed lock wait never replays differently: the APC break re-enters the same
+                // acquisition attempt.
+                let _ = replay;
+                self.acquire_for(dispatcher, thread, stamp)
+            },
+        );
         assert_eq!(
             status,
             crate::status::STATUS_SUCCESS,

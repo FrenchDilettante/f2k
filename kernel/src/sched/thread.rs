@@ -2,13 +2,16 @@
 
 use core::ptr::{addr_of_mut, null_mut};
 
+use super::apc::{nop_kernel_routine, suspend_apc_normal, Apc, ApcMode};
 use super::process::SchedProcess;
+use super::semaphore::Semaphore;
 use super::wait::{
     Timer, WaitBlock, WaitKind, WaitMode, WaitReason, Waitable, STATUS_TIMEOUT, TIMER_BLOCK,
     WAIT_BLOCKS,
 };
 use super::Links;
-use crate::interrupt::irql::LevelSnapshot;
+use super::List;
+use crate::interrupt::irql::{self, LevelSnapshot};
 
 /// The gate-slot index of a thread whose slot is not allocated yet.
 pub const NO_GATE_SLOT: u16 = 0xFFFF;
@@ -156,6 +159,38 @@ pub struct Thread {
     pub(crate) ready_links: Links,
     /// The owning process's thread-list membership link.
     pub(crate) process_links: Links,
+
+    // --- The APC machinery ---
+    /// The kernel-mode APC queue's sentinel.
+    pub(crate) kernel_apcs: List,
+    /// The user-mode APC queue's sentinel. Armed data: nothing queues a user APC until the
+    /// user-mode runtime layer exists.
+    pub(crate) user_apcs: List,
+    /// Whether a kernel APC is queued: the delivery windows' question, armed by the insert.
+    pub(crate) kernel_apc_pending: bool,
+    /// Whether a user APC is queued (armed data, like the queue it summarizes).
+    pub(crate) user_apc_pending: bool,
+    /// Whether a normal kernel APC's normal half is running — the gate that makes a blocking
+    /// normal routine safe (the suspend APC parks inside one).
+    pub(crate) kernel_apc_in_progress: bool,
+    /// The critical-region count: while nonzero, normal kernel APCs neither break waits nor
+    /// deliver. Nothing in F2K changes it from zero; the gates that read it stay live.
+    pub(crate) kernel_apc_disable: i8,
+    /// Whether APCs may be queued on this thread. On from attach, off from the exit path on.
+    pub(crate) apc_queueable: bool,
+    /// The thread's builtin suspend APC: a no-op kernel half, a normal half that parks on the
+    /// suspend semaphore.
+    pub(crate) suspend_apc: Apc,
+    /// The thread's builtin suspend semaphore — the suspend APC parks on it, resume releases it.
+    pub(crate) suspend_semaphore: Semaphore,
+    /// How many suspends are outstanding.
+    pub(crate) suspend_count: u8,
+    /// A second suspend authority's count. Constant zero in F2K — nothing freezes threads — but
+    /// the suspend and resume gates read it.
+    pub(crate) freeze_count: u8,
+    /// The level the current wait was entered at: a wait above the passive level is not
+    /// APC-breakable. F2K's waits are always entered at the passive level; the gate stays armed.
+    pub(crate) wait_irql: irql::Irql,
 }
 
 // The machine-state layout contract with the switch's assembly: on the 32-bit target the offsets it
@@ -225,6 +260,18 @@ impl Thread {
             wait_links: Links::detached(),
             ready_links: Links::detached(),
             process_links: Links::detached(),
+            kernel_apcs: List::empty(),
+            user_apcs: List::empty(),
+            kernel_apc_pending: false,
+            user_apc_pending: false,
+            kernel_apc_in_progress: false,
+            kernel_apc_disable: 0,
+            apc_queueable: true,
+            suspend_apc: Apc::detached(),
+            suspend_semaphore: Semaphore::new(super::apc::SUSPEND_SEMAPHORE_LIMIT),
+            suspend_count: 0,
+            freeze_count: 0,
+            wait_irql: irql::PASSIVE,
         }
     }
 
@@ -269,6 +316,20 @@ impl Thread {
             process.stack_count += 1;
         }
         process.thread_seed = process.thread_seed.wrapping_add(1);
+
+        // The APC machinery's fixed wiring: the queues' sentinels, the suspend semaphore, and the
+        // builtin suspend APC — its kernel half does nothing, its normal half parks the thread on
+        // the semaphore (the suspend itself).
+        self.kernel_apcs.init();
+        self.user_apcs.init();
+        self.suspend_semaphore.init();
+        self.suspend_apc.init(
+            thread,
+            nop_kernel_routine,
+            Some(suspend_apc_normal),
+            ApcMode::Kernel,
+            0,
+        );
     }
 
     /// The scheduling state.

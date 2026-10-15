@@ -173,6 +173,10 @@ pub fn exit_thread(exit_status: i32) -> ! {
         }
     }
 
+    // The APC queue closes before the scheduler teardown.
+    // SAFETY: the running thread, live and exclusive in the gate.
+    unsafe { crate::sched::apc::close_apc_queue(&mut *current) };
+
     // The thread object signals and its waiters wake (the satisfy step inside terminate), the
     // thread leaves the process list, and the processor's next thread is selected and takes the
     // current slot before the switch (the swap's caller-side install).

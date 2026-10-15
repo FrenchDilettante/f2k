@@ -315,6 +315,47 @@ cases:
       - "spin: ok"
       - "F2K: user process exited normally (exit code=0)"
 
+  # Suspend/resume smoke: the main thread
+  # suspends a spinning worker through its builtin suspend APC (queued
+  # at the service, delivered at the resume tail when the worker next
+  # runs — its normal routine parks it on the suspend semaphore),
+  # sleeps long enough that a runnable worker would have finished
+  # (the frozen check: a suspended thread makes no progress even with
+  # the CPU free), then resumes it to completion. The suspend and
+  # resume calls return the documented previous counts (0 then 1); the
+  # output is deterministic and pinned verbatim.
+  - name: suspend-smoke
+    description: the suspend/resume smoke freezes a worker through its suspend APC across a sleep and resumes it, with the previous-count returns pinned (kernel path)
+    image: kernel
+    features: [run-suspend]
+    expects:
+      - "F2K Booted Successfully"
+      - "F2K: frame database audit: ok"
+      - "F2K: kernel heap: alloc/free ok"
+      - "F2K: image loaded"
+      - "F2K: entering ring 3"
+      - "suspend returned 0"
+      - "worker frozen: yes"
+      - "resume returned 1"
+      - "suspend: ok"
+      - "F2K: user process exited normally (exit code=0)"
+
+  - name: suspend-smoke-disk
+    description: the suspend/resume smoke freezes a worker through its suspend APC across a sleep and resumes it, with the previous-count returns pinned (Limine disk path)
+    image: disk
+    features: [run-suspend]
+    expects:
+      - "F2K Booted Successfully"
+      - "F2K: frame database audit: ok"
+      - "F2K: kernel heap: alloc/free ok"
+      - "F2K: image loaded"
+      - "F2K: entering ring 3"
+      - "suspend returned 0"
+      - "worker frozen: yes"
+      - "resume returned 1"
+      - "suspend: ok"
+      - "F2K: user process exited normally (exit code=0)"
+
   # Thread-slot reuse smoke: the
   # main thread runs three rounds of create, wait for, close, one
   # child alive at a time, so every child after the first reuses

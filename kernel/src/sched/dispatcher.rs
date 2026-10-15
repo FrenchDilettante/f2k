@@ -532,6 +532,11 @@ impl Dispatcher {
     /// clock interrupt landing in it must not drain or deliver on top of it. A delivered switch
     /// leaves the calling frames in place on the calling thread's kernel stack: the interrupted
     /// exit unwinds when the thread is next resumed, its state untouched.
+    ///
+    /// The same window delivers the running thread's pending kernel APCs — after the dispatch
+    /// decision, mirroring the interrupt-exit order (the dispatch request outranks the APC request
+    /// on the way down). A decision that switches hands APC delivery to the tail below: the
+    /// resumed thread delivers its own.
     #[cfg(target_arch = "x86")]
     pub fn deliver_pending(&mut self) {
         if crate::interrupt::irql::state_mut().current() >= crate::interrupt::irql::DISPATCH {
@@ -541,6 +546,8 @@ impl Dispatcher {
         let target = self.dispatch_target();
         if target.is_null() {
             crate::interrupt::irql::state_mut().lower(previous);
+            // No switch: the running thread's own kernel APCs deliver here.
+            self.deliver_pending_apcs();
             return;
         }
         // SAFETY: the running thread, live and exclusive here.
@@ -559,6 +566,9 @@ impl Dispatcher {
         // SAFETY: as above.
         unsafe { crate::interrupt::irql::state_mut().restore((*current).level) };
         crate::interrupt::irql::state_mut().lower(previous);
+        // The resume delivery: a kernel APC queued on the thread while it was off the processor
+        // runs now, on the thread's own timeline, before its parked frames unwind.
+        crate::sched::idle::dispatcher().deliver_pending_apcs();
     }
 
     /// Charge one completed wait against `thread`'s quantum, with the same decay at exhaustion as a
@@ -751,6 +761,7 @@ fn entry_to_thread(entry: *mut Links) -> *mut Thread {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sched::apc::{Apc, ApcArgs, ApcDelivery, ApcMode};
     use crate::sched::process::SchedProcess;
     use crate::sched::thread::{Thread, ThreadState};
 
@@ -2419,5 +2430,67 @@ mod tests {
         assert_eq!(main.quantum(), QUANTUM_RESET);
         assert_eq!(equal.state, ThreadState::Ready);
         assert!(d.next_thread().is_null());
+    }
+
+    // --- The APC delivery window's order -------------------------------------
+
+    thread_local! {
+        static APC_KERNEL_ROUTINE_RAN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    fn apc_kernel_routine(_dispatcher: &mut Dispatcher, _apc: &mut Apc, _args: &mut ApcArgs) {
+        APC_KERNEL_ROUTINE_RAN.with(|ran| ran.set(true));
+    }
+
+    /// D7: the window's order — the dispatch decision (the quantum end, then the standby arrival)
+    /// runs first, and the kernel-APC delivery applies to the thread the decision left current. A
+    /// switch hands delivery to the resumed thread's own tail; the window never delivers on the
+    /// outgoing thread.
+    #[test]
+    fn the_window_decides_the_dispatch_before_delivering_apcs() {
+        // With a dispatch request pending and an equal-priority thread ready, the quantum-end
+        // round-robin selects it: the decision's target is the switch's, and the running thread's
+        // armed APC stays armed — the target delivers at its own resume tail, not here.
+        let d = dispatcher();
+        let p = process(8);
+        let main = thread(p);
+        run(d, main);
+        let equal = thread(p);
+        d.make_ready(equal);
+        let apc = Box::leak(Box::new(Apc::detached()));
+        apc.init(main, apc_kernel_routine, None, ApcMode::Kernel, 0);
+        assert!(d.queue_apc(apc, 0, 0, 0));
+        // The tick's quantum-end request: a charge that runs the quantum out arms the flag.
+        main.quantum = 0;
+        d.charge_running_tick();
+
+        let target = d.dispatch_target();
+        assert_eq!(target, equal as *mut Thread, "the decision switched");
+        assert!(
+            main.kernel_apc_pending,
+            "the outgoing thread's APC is the resumed tail's, not the window's"
+        );
+        assert!(
+            !APC_KERNEL_ROUTINE_RAN.with(|ran| ran.get()),
+            "nothing delivered on the outgoing thread"
+        );
+
+        // Without a dispatch request, the window delivers on the current thread directly: the
+        // decision leaves no target, and the armed APC runs here.
+        let d = dispatcher();
+        let p = process(8);
+        let solo = thread(p);
+        run(d, solo);
+        let apc = Box::leak(Box::new(Apc::detached()));
+        apc.init(solo, apc_kernel_routine, None, ApcMode::Kernel, 0);
+        assert!(d.queue_apc(apc, 0, 0, 0));
+
+        assert!(d.dispatch_target().is_null(), "no request, no target");
+        assert_eq!(d.deliver_kernel_apcs(), ApcDelivery::Delivered);
+        assert!(
+            APC_KERNEL_ROUTINE_RAN.with(|ran| ran.get()),
+            "the window delivered the armed APC on the current thread"
+        );
+        assert!(!solo.kernel_apc_pending);
     }
 }

@@ -691,29 +691,26 @@ fn svc_wait_for_single_object(frame: &mut crate::user::TrapFrame, args: &[u32]) 
             frame.eax = WAIT_FAILED;
             return;
         };
-        let dispatcher = crate::sched::idle::dispatcher();
-        let stamp = crate::sched::wait::ClockStamp {
-            system_time: crate::interrupt::clock::system_time(),
-            tick: crate::interrupt::clock::ticks(),
-        };
-        // SAFETY: the running thread, live and exclusive in the gate.
-        let current = unsafe { &mut *dispatcher.current_thread() };
-        match dispatcher.wait_single(
-            current,
-            slot.waitable,
-            crate::sched::wait::WaitReason::UserRequest,
-            crate::sched::wait::WaitMode::User,
-            false,
-            format_timeout(args[1]),
-            stamp,
-        ) {
-            crate::sched::wait::WaitDisposition::Complete(status) => frame.eax = status as u32,
-            crate::sched::wait::WaitDisposition::Yield => {
-                // The thread parks; the switch resumes here when a wake re-selects it.
-                dispatcher.park_and_switch();
-                frame.eax = current.wait_status() as u32;
-            }
-        }
+        // The wait runs through the shared blocking entry: a kernel APC breaks the wait and the
+        // entry replays it after the delivery, the deadline preserved.
+        let waitable = slot.waitable;
+        let timeout = format_timeout(args[1]);
+        let status = crate::sched::wait::wait_current_with(
+            |dispatcher, thread, stamp, replay| {
+                let timeout =
+                    crate::sched::wait::replay_timeout(thread, replay, timeout, stamp.system_time);
+                dispatcher.wait_single(
+                    thread,
+                    waitable,
+                    crate::sched::wait::WaitReason::UserRequest,
+                    crate::sched::wait::WaitMode::User,
+                    false,
+                    timeout,
+                    stamp,
+                )
+            },
+        );
+        frame.eax = status as u32;
     }
     #[cfg(not(target_arch = "x86"))]
     {
@@ -736,31 +733,28 @@ fn svc_sleep(frame: &mut crate::user::TrapFrame, args: &[u32]) {
             return;
         }
         let interval = sleep_interval(args[0]);
-        let dispatcher = crate::sched::idle::dispatcher();
-        let stamp = crate::sched::wait::ClockStamp {
-            system_time: crate::interrupt::clock::system_time(),
-            tick: crate::interrupt::clock::ticks(),
-        };
-        // SAFETY: the running thread, live and exclusive in the gate.
-        let current = unsafe { &mut *dispatcher.current_thread() };
-        match dispatcher.delay(
-            current,
-            crate::sched::wait::WaitMode::User,
-            false,
-            interval,
-            stamp,
-        ) {
-            crate::sched::wait::WaitDisposition::Complete(status) => {
-                frame.eax = crate::sched::dispatcher::Dispatcher::delay_completed(status) as u32;
-            }
-            crate::sched::wait::WaitDisposition::Yield => {
-                // The thread parks; the switch resumes here when the timer's expiry re-selects it.
-                dispatcher.park_and_switch();
-                frame.eax =
-                    crate::sched::dispatcher::Dispatcher::delay_completed(current.wait_status())
-                        as u32;
-            }
-        }
+        // The delay runs through the shared blocking entry: a kernel APC breaks the sleep and the
+        // entry replays it with the remaining time — the wake time never slips.
+        let status = crate::sched::wait::wait_current_with(
+            |dispatcher, thread, stamp, replay| {
+                let interval = if replay {
+                    crate::sched::wait::replay_interval(
+                        thread.timer.due_time,
+                        stamp.system_time,
+                    )
+                } else {
+                    interval
+                };
+                dispatcher.delay(
+                    thread,
+                    crate::sched::wait::WaitMode::User,
+                    false,
+                    interval,
+                    stamp,
+                )
+            },
+        );
+        frame.eax = crate::sched::dispatcher::Dispatcher::delay_completed(status) as u32;
     }
     #[cfg(not(target_arch = "x86"))]
     {
@@ -880,6 +874,72 @@ fn svc_set_file_pointer(frame: &mut crate::user::TrapFrame, _args: &[u32]) {
     frame.eax = u32::MAX;
 }
 
+/// SuspendThread: bump the target thread's suspend count and arm its builtin suspend APC — the
+/// APC's delivery parks the thread on its suspend semaphore. The return is the previous suspend
+/// count, or (DWORD)-1 for every refusal: a bad handle, a non-thread slot, an exited thread, or
+/// the documented count maximum.
+fn svc_suspend_thread(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    #[cfg(target_arch = "x86")]
+    {
+        let Some(slot) = object_slot(args[0]) else {
+            frame.eax = u32::MAX;
+            return;
+        };
+        if slot.kind != crate::sched::object::ObjectKind::Thread {
+            frame.eax = u32::MAX;
+            return;
+        }
+        let dispatcher = crate::sched::idle::dispatcher();
+        // SAFETY: the slot's kind names a thread, and the record lives for the process's lifetime.
+        let thread = unsafe { &mut *crate::sched::thread::Thread::from_waitable(slot.waitable) };
+        if thread.state() == crate::sched::thread::ThreadState::Terminated {
+            frame.eax = u32::MAX;
+            return;
+        }
+        match dispatcher.suspend_thread(thread) {
+            Ok(previous) => frame.eax = previous as u32,
+            Err(_) => frame.eax = u32::MAX,
+        }
+        // A self-suspend's APC delivers at the service boundary below — the caller never reaches
+        // user mode before its suspend APC runs.
+    }
+    #[cfg(not(target_arch = "x86"))]
+    {
+        let _ = args;
+        frame.eax = u32::MAX;
+    }
+}
+
+/// ResumeThread: release the suspend the count table decides — at one outstanding suspend the
+/// semaphore releases and the parked thread wakes. The return is the previous suspend count (zero
+/// for a thread nobody suspended), or (DWORD)-1 on the same refusal shape as SuspendThread.
+fn svc_resume_thread(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    #[cfg(target_arch = "x86")]
+    {
+        let Some(slot) = object_slot(args[0]) else {
+            frame.eax = u32::MAX;
+            return;
+        };
+        if slot.kind != crate::sched::object::ObjectKind::Thread {
+            frame.eax = u32::MAX;
+            return;
+        }
+        let dispatcher = crate::sched::idle::dispatcher();
+        // SAFETY: the slot's kind names a thread, and the record lives for the process's lifetime.
+        let thread = unsafe { &mut *crate::sched::thread::Thread::from_waitable(slot.waitable) };
+        if thread.state() == crate::sched::thread::ThreadState::Terminated {
+            frame.eax = u32::MAX;
+            return;
+        }
+        frame.eax = dispatcher.resume_thread(thread) as u32;
+    }
+    #[cfg(not(target_arch = "x86"))]
+    {
+        let _ = args;
+        frame.eax = u32::MAX;
+    }
+}
+
 /// Floor for the never-called imports: zero, no side effects.
 fn svc_floor_zero(frame: &mut crate::user::TrapFrame, _args: &[u32]) {
     frame.eax = 0;
@@ -896,7 +956,7 @@ fn svc_get_current_process(frame: &mut crate::user::TrapFrame, _args: &[u32]) {
 /// plus one; ExitProcess is pinned at service 1, the rest alphabetical). Quirk: a name absent from
 /// here fails the loader's snap, so this set is exactly the union of the checked-in fixtures'
 /// import surfaces.
-pub const SERVICES: [(&str, u32, ServiceFn); 47] = [
+pub const SERVICES: [(&str, u32, ServiceFn); 49] = [
     ("ExitProcess", 4, svc_exit_process),
     ("CloseHandle", 4, svc_close_handle),
     ("CreateEventA", 16, svc_create_event_a),
@@ -930,6 +990,7 @@ pub const SERVICES: [(&str, u32, ServiceFn); 47] = [
     ("LCMapStringW", 24, svc_lc_map_string_w),
     ("LoadLibraryA", 4, svc_floor_zero),
     ("MultiByteToWideChar", 24, svc_multi_byte_to_wide_char),
+    ("ResumeThread", 4, svc_resume_thread),
     ("RtlUnwind", 16, svc_floor_zero),
     ("SetEvent", 4, svc_set_event),
     ("SetFilePointer", 16, svc_set_file_pointer),
@@ -937,6 +998,7 @@ pub const SERVICES: [(&str, u32, ServiceFn); 47] = [
     ("SetStdHandle", 8, svc_floor_zero),
     ("SetThreadPriority", 8, svc_set_thread_priority),
     ("Sleep", 4, svc_sleep),
+    ("SuspendThread", 4, svc_suspend_thread),
     ("TerminateProcess", 8, svc_floor_zero),
     ("UnhandledExceptionFilter", 4, svc_floor_zero),
     ("VirtualAlloc", 16, svc_virtual_alloc),
@@ -1053,11 +1115,12 @@ mod tests {
     const HELLO: &[u8] = include_bytes!("../../../tests/hello/hello.exe");
     const SLEEP: &[u8] = include_bytes!("../../../tests/sleep/sleep.exe");
     const SPIN: &[u8] = include_bytes!("../../../tests/spin/spin.exe");
+    const SUSPEND: &[u8] = include_bytes!("../../../tests/suspend/suspend.exe");
 
     /// The corpus's kernel32 import surface (hello's 40 — ret0's 35 plus the console-stdio group —
-    /// the sleep smoke's two timer exports, and the spin smoke's thread-priority export; the
-    /// loader's snap contract): the registry must spell it exactly.
-    const CORPUS_IMPORTS: [&str; 47] = [
+    /// the timer smoke's two exports, the spin smoke's priority export, and the suspend smoke's
+    /// two suspend exports; the loader's snap contract): the registry must spell it exactly.
+    const CORPUS_IMPORTS: [&str; 49] = [
         "CreateThread",
         "CreateEventA",
         "SetEvent",
@@ -1105,13 +1168,15 @@ mod tests {
         "Sleep",
         "GetTickCount",
         "SetThreadPriority",
+        "SuspendThread",
+        "ResumeThread",
     ];
 
     /// Registry consistency: names unique, numbers are positions plus one (ExitProcess pinned at
     /// 1), every corpus import resolves.
     #[test]
     fn registry_spells_the_corpus_surface() {
-        assert_eq!(SERVICES.len(), 47);
+        assert_eq!(SERVICES.len(), 49);
         for (i, &(name, arg_bytes, _)) in SERVICES.iter().enumerate() {
             assert!(!name.is_empty());
             assert_eq!(
@@ -1126,7 +1191,7 @@ mod tests {
         assert_eq!(SERVICES[0].0, "ExitProcess");
         assert_eq!(crate::user::syscall::SYS_EXIT, 1);
         assert_eq!(lookup_service(0), None);
-        assert_eq!(lookup_service(48), None);
+        assert_eq!(lookup_service(50), None);
         assert_eq!(lookup_service(u32::MAX), None);
         // Set equality with the corpus list.
         for name in CORPUS_IMPORTS {
@@ -1178,6 +1243,17 @@ mod tests {
         let mut mapped = vec![0u8; image.size_of_image as usize];
         image.map_into(SPIN, &mut mapped);
         let result = image.snap_imports(SPIN, &mut mapped, MODULE_NAME, resolve);
+        assert_eq!(result.thunks, 44);
+    }
+
+    /// Every suspend import (the suspend smoke's 44-export surface) resolves against the real
+    /// registry.
+    #[test]
+    fn suspend_snaps_fully_against_the_registry() {
+        let image = Image::parse(SUSPEND).expect("suspend parses");
+        let mut mapped = vec![0u8; image.size_of_image as usize];
+        image.map_into(SUSPEND, &mut mapped);
+        let result = image.snap_imports(SUSPEND, &mut mapped, MODULE_NAME, resolve);
         assert_eq!(result.thunks, 44);
     }
 

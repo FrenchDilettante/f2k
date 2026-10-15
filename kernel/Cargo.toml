@@ -73,6 +73,13 @@ run-spin = []
 # reuses the gate-stack resources the previous one released at its
 # exit. The qemu-tests.yaml cases pin the captured output.
 run-respawn = []
+# The suspend/resume smoke boot: the suspend fixture runs with the
+# thread-ified entry — SuspendThread arms the worker's builtin suspend
+# APC (delivered at the resume tail, its normal routine parks the
+# worker on its suspend semaphore), Sleep proves the frozen worker made
+# no progress while parked, and ResumeThread releases it to finish. The
+# qemu-tests.yaml cases pin the captured output.
+run-suspend = []
 # The multi-process suite case: exit0, ret0, bsscheck, bsscheck,
 # crash, exit0 run in sequence in one boot, each process torn down
 # and audited before the next starts. The sequence runner and the
