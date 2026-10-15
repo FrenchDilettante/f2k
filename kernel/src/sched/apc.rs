@@ -723,7 +723,13 @@ mod tests {
         let t = thread(p);
 
         let present = Box::leak(Box::new(Apc::detached()));
-        present.init(t, recording_kernel, Some(recording_normal), ApcMode::User, 0x99);
+        present.init(
+            t,
+            recording_kernel,
+            Some(recording_normal),
+            ApcMode::User,
+            0x99,
+        );
         assert_eq!(present.mode, ApcMode::User);
         assert_eq!(present.normal_context, 0x99);
         assert!(present.normal_routine.is_some());
@@ -736,7 +742,13 @@ mod tests {
         assert!(!null.inserted());
 
         let kernel = Box::leak(Box::new(Apc::detached()));
-        kernel.init(t, recording_kernel, Some(recording_normal), ApcMode::Kernel, 0);
+        kernel.init(
+            t,
+            recording_kernel,
+            Some(recording_normal),
+            ApcMode::Kernel,
+            0,
+        );
         assert_eq!(kernel.mode, ApcMode::Kernel);
     }
 
@@ -811,7 +823,10 @@ mod tests {
         d.queue_apc(n1, 0, 0, 0);
         d.queue_apc(n2, 0, 0, 0);
         d.queue_apc(n3, 0, 0, 0);
-        assert_eq!(queued(t), vec![n1 as *mut Apc, n2 as *mut Apc, n3 as *mut Apc]);
+        assert_eq!(
+            queued(t),
+            vec![n1 as *mut Apc, n2 as *mut Apc, n3 as *mut Apc]
+        );
     }
 
     /// B2: a special lands after the queued specials and before the first normal, whatever the
@@ -853,7 +868,13 @@ mod tests {
         run(d, t);
         let first = normal(t);
         let user = Box::leak(Box::new(Apc::detached()));
-        user.init(t, recording_kernel, Some(recording_normal), ApcMode::User, 0);
+        user.init(
+            t,
+            recording_kernel,
+            Some(recording_normal),
+            ApcMode::User,
+            0,
+        );
 
         d.queue_apc(first, 0, 0, 0);
         d.queue_apc(user, 0, 0, 0);
@@ -972,7 +993,10 @@ mod tests {
         assert!(d.queue_apc(apc, 0, 0, 0));
         assert_eq!(t.state(), ThreadState::Ready, "the wait exit readied it");
         assert_eq!(t.wait_status(), STATUS_KERNEL_APC);
-        assert!(ev.waitable.waiters.is_empty(), "the wake unlinked the block");
+        assert!(
+            ev.waitable.waiters.is_empty(),
+            "the wake unlinked the block"
+        );
         assert!(!t.timer.inserted(), "the wake cancelled the wait's timer");
     }
 
@@ -999,11 +1023,15 @@ mod tests {
         block_on(d, t3, ev.waitable(), None);
 
         for (i, parked) in [t1, t2, t3].into_iter().enumerate() {
-                let apc = normal(parked);
+            let apc = normal(parked);
             assert!(d.queue_apc(apc, 0, 0, 0), "the queueing itself is ungated");
             assert!(parked.kernel_apc_pending);
             if i == 1 {
-                assert_eq!(parked.state(), ThreadState::Ready, "the ungated one unwaits");
+                assert_eq!(
+                    parked.state(),
+                    ThreadState::Ready,
+                    "the ungated one unwaits"
+                );
                 assert_eq!(parked.wait_status(), STATUS_KERNEL_APC);
             } else {
                 assert_eq!(
@@ -1049,7 +1077,10 @@ mod tests {
         assert!(d.queue_apc(apc, 0, 0, 0));
         assert!(worker.kernel_apc_pending);
         assert_eq!(worker.state(), ThreadState::Ready);
-        assert!(core::ptr::eq(d.current_thread(), main as *const Thread as *mut Thread));
+        assert!(core::ptr::eq(
+            d.current_thread(),
+            main as *const Thread as *mut Thread
+        ));
         assert!(d.next_thread().is_null());
     }
 
@@ -1077,8 +1108,14 @@ mod tests {
         run(d, t4);
 
         for (i, parked) in [t1, t2, t3, t4].into_iter().enumerate() {
-                let apc = Box::leak(Box::new(Apc::detached()));
-            apc.init(parked, recording_kernel, Some(recording_normal), ApcMode::User, 0);
+            let apc = Box::leak(Box::new(Apc::detached()));
+            apc.init(
+                parked,
+                recording_kernel,
+                Some(recording_normal),
+                ApcMode::User,
+                0,
+            );
             assert!(d.queue_apc(apc, 0, 0, 0));
             if i == 0 {
                 assert_eq!(parked.state(), ThreadState::Ready);
@@ -1153,7 +1190,11 @@ mod tests {
 
         assert_eq!(d.deliver_kernel_apcs(), ApcDelivery::Delivered);
         assert_eq!(recorded_calls(), vec!["kernel:pending-clear", "normal"]);
-        assert_eq!(recorded_arguments(), vec![0x11], "the first captured argument");
+        assert_eq!(
+            recorded_arguments(),
+            vec![0x11],
+            "the first captured argument"
+        );
         assert!(!t.kernel_apc_in_progress, "the bracket closed");
         assert!(queued(t).is_empty());
     }
@@ -1173,7 +1214,10 @@ mod tests {
         d.queue_apc(apc, 0, 0, 0);
 
         assert_eq!(d.deliver_kernel_apcs(), ApcDelivery::Delivered);
-        assert!(recorded_calls().is_empty(), "no routine with a recorder ran");
+        assert!(
+            recorded_calls().is_empty(),
+            "no routine with a recorder ran"
+        );
         assert!(queued(t).is_empty());
     }
 
@@ -1226,7 +1270,11 @@ mod tests {
         d.queue_apc(s1, 0, 0, 0);
         t.kernel_apc_disable = 1;
         assert_eq!(d.deliver_kernel_apcs(), ApcDelivery::Delivered);
-        assert_eq!(recorded_calls(), vec!["kernel:pending-clear"], "only the special ran");
+        assert_eq!(
+            recorded_calls(),
+            vec!["kernel:pending-clear"],
+            "only the special ran"
+        );
         assert!(gated.inserted());
         assert!(queued(t).len() == 1);
     }
@@ -1240,7 +1288,13 @@ mod tests {
         let t = thread(p);
         run(d, t);
         let apc = Box::leak(Box::new(Apc::detached()));
-        apc.init(t, recording_kernel, Some(recording_normal), ApcMode::User, 0);
+        apc.init(
+            t,
+            recording_kernel,
+            Some(recording_normal),
+            ApcMode::User,
+            0,
+        );
         d.queue_apc(apc, 0, 0, 0);
         t.user_apc_pending = true;
 
@@ -1292,7 +1346,11 @@ mod tests {
         assert_eq!(t.suspend_semaphore.count(), 1, "the release happened");
 
         assert_eq!(d.resume_thread(t), 0);
-        assert_eq!(t.suspend_semaphore.count(), 1, "the no-op row releases nothing");
+        assert_eq!(
+            t.suspend_semaphore.count(),
+            1,
+            "the no-op row releases nothing"
+        );
     }
 
     /// F3: the overflow — the count stays at the documented maximum and the caller sees the error.
@@ -1331,7 +1389,10 @@ mod tests {
         assert!(!t.timer.inserted(), "no timeout");
         assert_eq!(t.suspend_semaphore.count(), 0);
         assert!(!t.suspend_apc.inserted(), "the APC was taken for delivery");
-        assert!(t.kernel_apc_in_progress, "the delivery is suspended mid-routine");
+        assert!(
+            t.kernel_apc_in_progress,
+            "the delivery is suspended mid-routine"
+        );
 
         // The resume: the release wakes the parked thread through the satisfy walk; the dispatcher
         // re-runs it (the host driver of the switch the release would schedule).
@@ -1344,7 +1405,11 @@ mod tests {
         d.resume_kernel_apcs();
         assert!(!t.kernel_apc_in_progress);
         assert!(t.kernel_apcs.is_empty());
-        assert_eq!(t.suspend_semaphore.count(), 0, "the satisfied wait consumed it");
+        assert_eq!(
+            t.suspend_semaphore.count(),
+            0,
+            "the satisfied wait consumed it"
+        );
     }
 
     /// F6b: a suspend that finds the APC still queued — an earlier suspend that a resume undid
@@ -1397,11 +1462,19 @@ mod tests {
         let ready = thread(p);
         run(d, ready);
         d.suspend_thread(ready).unwrap();
-        assert_eq!(ready.state(), ThreadState::Running, "the C1 arm: no movement");
+        assert_eq!(
+            ready.state(),
+            ThreadState::Running,
+            "the C1 arm: no movement"
+        );
 
         assert_eq!(d.force_resume_thread(ready), 1);
         assert_eq!(ready.suspend_count, 0);
-        assert_eq!(ready.suspend_semaphore.count(), 1, "the waiter-less residue");
+        assert_eq!(
+            ready.suspend_semaphore.count(),
+            1,
+            "the waiter-less residue"
+        );
         // The queued APC stays: a delivery that finds the count signaled takes it at once.
         assert!(ready.suspend_apc.inserted());
     }
@@ -1420,7 +1493,10 @@ mod tests {
         t.freeze_count = 1;
         assert_eq!(d.suspend_thread(t), Ok(0));
         assert_eq!(t.suspend_count, 1);
-        assert!(!t.suspend_apc.inserted(), "the freeze gate refused the queue");
+        assert!(
+            !t.suspend_apc.inserted(),
+            "the freeze gate refused the queue"
+        );
         assert_eq!(d.resume_thread(t), 1);
         assert_eq!(t.suspend_count, 0);
         assert_eq!(t.suspend_semaphore.count(), 0, "no release");

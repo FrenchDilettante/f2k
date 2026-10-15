@@ -20,6 +20,15 @@ use super::{
     QUANTUM_WAIT_CHARGE, REALTIME_BASE, ROUND_TRIP_LIMIT, TIME_CRITICAL_CEILING,
 };
 
+/// How a requested termination of another thread went (see [`Dispatcher::request_termination`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Termination {
+    /// The thread is terminated.
+    Done,
+    /// The thread is inside a critical region: it ends by its own exit as it leaves.
+    Deferred,
+}
+
 /// The dispatcher: ready queues, the summary, the processor slots.
 pub struct Dispatcher {
     /// One ready list per priority level.
@@ -669,6 +678,34 @@ impl Dispatcher {
         let thread: &mut Thread = unsafe { &mut *self.current };
         self.retire(thread);
         self.select_next()
+    }
+
+    /// Terminate `thread`, another thread off the processor: at once ([`Dispatcher::terminate_other`])
+    /// — or, while it is inside a critical region, where it may hold what others need (the volume
+    /// and its drive mid-command), once it leaves the region, by its own exit. A deferred thread
+    /// keeps its state and its wait runs on to completion; from the request on it accepts no APCs
+    /// and its queued ones are discarded, as a terminated thread's are. A thread whose termination
+    /// is already pending is not terminated again.
+    pub fn request_termination(&mut self, thread: &mut Thread) -> Termination {
+        assert!(
+            !thread.terminate_pending,
+            "a thread's termination is requested once"
+        );
+        if !thread.in_critical_region() {
+            self.terminate_other(thread);
+            return Termination::Done;
+        }
+        assert!(
+            !eq(thread, self.current),
+            "the running thread terminates through its own exit"
+        );
+        thread.terminate_pending = true;
+        thread.apc_queueable = false;
+        Dispatcher::flush_apcs(thread, super::apc::ApcMode::Kernel);
+        Dispatcher::flush_apcs(thread, super::apc::ApcMode::User);
+        thread.kernel_apc_pending = false;
+        thread.user_apc_pending = false;
+        Termination::Deferred
     }
 
     /// Terminate `thread`, which is off the processor, without letting it run again: take it out

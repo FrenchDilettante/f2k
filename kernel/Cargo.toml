@@ -40,6 +40,11 @@ fault-test-segments = []
 # thread-exit service on a boot without user threads, then exits with
 # the service's status: the service must be refused, not panic.
 fault-test-threadexit = []
+# Swaps the ring-3 smoke stub for one that ends its process while a
+# second thread is inside a disk read (ExitProcess against a ReadFile
+# blocked on the drive), then checks after the teardown that the volume
+# is usable again: the lock released, the drive between commands.
+fault-test-exitio = []
 # Loads the second corpus fixture (ret0.exe, the 35-import CRT startup
 # surface) instead of the first: the ret0 suite cases build with it.
 run-ret0 = []
@@ -80,6 +85,12 @@ run-respawn = []
 # no progress while parked, and ResumeThread releases it to finish. The
 # qemu-tests.yaml cases pin the captured output.
 run-suspend = []
+# The file smoke boot: the fileio fixture opens its own image on the
+# boot volume through CreateFileA (by the path GetModuleFileNameA
+# reports), reads the MZ and PE signatures with ReadFile across
+# SetFilePointer seeks, and prints what it found. The qemu-tests.yaml
+# cases pin the captured output.
+run-fileio = []
 # The multi-process suite case: exit0, ret0, bsscheck, bsscheck,
 # crash, exit0 run in sequence in one boot, each process torn down
 # and audited before the next starts. The sequence runner and the

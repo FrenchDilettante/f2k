@@ -14,14 +14,15 @@
 
 use crate::process::exit::{self, AfterLeg, AuditReport, ProcessEnd, SuiteTally};
 
-/// The suite: process i runs `SEQUENCE[i - 1]`.
+/// The suite: process i runs `SEQUENCE[i - 1]`, a program's path on the boot volume and its
+/// process name.
 const SEQUENCE: [(&[u8], &str); 6] = [
-    (crate::exec::loader::EXIT0, "exit0"),
-    (crate::exec::loader::RET0, "ret0"),
-    (crate::exec::loader::BSSCHECK, "bsscheck"),
-    (crate::exec::loader::BSSCHECK, "bsscheck"),
-    (crate::exec::loader::CRASH, "crash"),
-    (crate::exec::loader::EXIT0, "exit0"),
+    (b"exit0.exe", "exit0"),
+    (b"ret0.exe", "ret0"),
+    (b"bsscheck.exe", "bsscheck"),
+    (b"bsscheck.exe", "bsscheck"),
+    (b"crash.exe", "crash"),
+    (b"exit0.exe", "exit0"),
 ];
 
 /// The index of the process running or just finished (1-based).
@@ -64,13 +65,13 @@ pub fn process_reaped(end: ProcessEnd) {
     }
 }
 
-/// Create leg `index`'s process and ready its main thread; the idle loop's next pass switches to
-/// it.
+/// Create leg `index`'s process — its program read off the boot volume — and ready its main
+/// thread; the idle loop's next pass switches to it.
 fn start_leg(index: u32) {
     // SAFETY: suite state; single CPU, written only here.
     unsafe { core::ptr::write_volatile(core::ptr::addr_of_mut!(CURRENT), index) };
-    let (image, name) = SEQUENCE[index as usize - 1];
-    let entry = crate::exec::loader::load_image(image, name);
+    let (path, name) = SEQUENCE[index as usize - 1];
+    let entry = crate::exec::loader::load_path(path, name);
     crate::process::threads::start_main_thread(entry, crate::user::USER_STACK_TOP);
 }
 

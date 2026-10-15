@@ -28,10 +28,10 @@ use core::ptr::{addr_of_mut, eq, null_mut};
 use super::dispatcher::Dispatcher;
 use super::thread::{Thread, ThreadState};
 use super::{unlink, Links, List, REALTIME_BASE, TIME_CRITICAL_CEILING};
+use crate::status::STATUS_KERNEL_APC;
 /// The wait statuses: what a completed wait reports. The timeout value is the ABI the Win32 wait
 /// returns raw (WAIT_TIMEOUT).
 pub use crate::status::{STATUS_SUCCESS, STATUS_TIMEOUT};
-use crate::status::STATUS_KERNEL_APC;
 
 /// The low three bits of a waitable kind: the selector that decides whether a satisfied wait
 /// consumes the object's signal. The timer kinds share numbers with the event kinds through it.
@@ -1687,6 +1687,67 @@ mod tests {
         }
     }
 
+    /// A termination requested for a thread inside a critical region is deferred: the thread keeps
+    /// its wait — the object's signal still completes it — accepts no APCs from then on, and its
+    /// queued ones are discarded. Outside a region the request terminates at once.
+    #[test]
+    fn request_termination_defers_a_thread_in_a_critical_region() {
+        use crate::sched::dispatcher::Termination;
+        let d = dispatcher();
+        let p = process(8);
+        let running = thread(p);
+        let inside = thread(p);
+        let outside = thread(p);
+        let ev = event(EventKind::Synchronization, false);
+        let other = event(EventKind::Synchronization, false);
+        run(d, running);
+        inside.enter_critical_region();
+        block_on(d, inside, ev.waitable(), Some(1_000_000));
+        block_on(d, outside, other.waitable(), None);
+
+        // A suspend queued inside the region is gated: the wait stays parked.
+        assert_eq!(d.suspend_thread(inside), Ok(0));
+        assert_eq!(inside.state(), ThreadState::Waiting);
+        assert!(inside.suspend_apc.inserted());
+
+        assert_eq!(d.request_termination(inside), Termination::Deferred);
+        assert!(inside.termination_pending());
+        assert_eq!(inside.state(), ThreadState::Waiting, "the wait runs on");
+        assert!(!inside.suspend_apc.inserted(), "queued APCs are discarded");
+        assert!(inside.kernel_apcs.is_empty());
+        assert_eq!(
+            d.suspend_thread(inside),
+            Err(crate::status::STATUS_THREAD_IS_TERMINATING)
+        );
+        assert_eq!(unsafe { (*p).stack_count() }, 3, "still attached");
+
+        // Its wait completes as any other wait does.
+        ev.set(d, EVENT_WAKE_INCREMENT);
+        assert!(matches!(
+            inside.state(),
+            ThreadState::Ready | ThreadState::Standby
+        ));
+
+        assert_eq!(d.request_termination(outside), Termination::Done);
+        assert_eq!(outside.state(), ThreadState::Terminated);
+        assert!(waiters(other).is_empty());
+        assert_eq!(unsafe { (*p).stack_count() }, 2);
+        assert_eq!(d.audit(), Ok(()));
+    }
+
+    #[test]
+    #[should_panic(expected = "requested once")]
+    fn a_deferred_termination_is_not_requested_twice() {
+        let d = dispatcher();
+        let p = process(8);
+        let running = thread(p);
+        let inside = thread(p);
+        run(d, running);
+        inside.enter_critical_region();
+        d.request_termination(inside);
+        d.request_termination(inside);
+    }
+
     // --- Group E: the timeout seam -------------------------------------------
 
     /// Due times come from the clock reading the caller took: due = now + interval, carried by the
@@ -2027,7 +2088,6 @@ mod tests {
 
     // --- The re-wait: a kernel-APC-broken wait replays ----------------------
 
-
     /// E1: a wait broken for a kernel APC replays with the deadline preserved — the replay
     /// re-plants from the due the first attempt recorded, not a fresh now-plus-interval, and the
     /// eventual timeout completes against the original deadline.
@@ -2053,7 +2113,15 @@ mod tests {
             },
             |d, t, stamp, replay| {
                 let timeout = replay_timeout(t, replay, Some(1_000), stamp.system_time);
-                d.wait_single(t, ev.waitable(), WaitReason::Executive, WaitMode::User, false, timeout, stamp)
+                d.wait_single(
+                    t,
+                    ev.waitable(),
+                    WaitReason::Executive,
+                    WaitMode::User,
+                    false,
+                    timeout,
+                    stamp,
+                )
             },
             |d| {
                 parks += 1;
@@ -2202,7 +2270,15 @@ mod tests {
             || stamp(10_000, 5),
             |d, t, stamp, replay| {
                 let timeout = replay_timeout(t, replay, Some(1_000), stamp.system_time);
-                d.wait_single(t, waitable, WaitReason::Executive, WaitMode::User, false, timeout, stamp)
+                d.wait_single(
+                    t,
+                    waitable,
+                    WaitReason::Executive,
+                    WaitMode::User,
+                    false,
+                    timeout,
+                    stamp,
+                )
             },
             |d| {
                 // The park breaks for a kernel APC, and the event signals before the replay.
@@ -2247,7 +2323,15 @@ mod tests {
             },
             |d, t, stamp, replay| {
                 let timeout = replay_timeout(t, replay, Some(1_000), stamp.system_time);
-                d.wait_single(t, ev.waitable(), WaitReason::Executive, WaitMode::User, false, timeout, stamp)
+                d.wait_single(
+                    t,
+                    ev.waitable(),
+                    WaitReason::Executive,
+                    WaitMode::User,
+                    false,
+                    timeout,
+                    stamp,
+                )
             },
             |d| {
                 parks += 1;
@@ -2343,11 +2427,19 @@ mod tests {
             },
             |d, t, stamp, replay| {
                 let timeout = replay_timeout(t, replay, Some(1_000), stamp.system_time);
-                d.wait_single(t, waitable, WaitReason::UserRequest, WaitMode::User, true, timeout, stamp)
+                d.wait_single(
+                    t,
+                    waitable,
+                    WaitReason::UserRequest,
+                    WaitMode::User,
+                    true,
+                    timeout,
+                    stamp,
+                )
             },
             |d| {
                 parks += 1;
-                                let current = d.current_thread();
+                let current = d.current_thread();
                 // SAFETY: the parked thread, live.
                 let current = unsafe { &mut *current };
                 if parks == 1 {

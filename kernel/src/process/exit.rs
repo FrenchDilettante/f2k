@@ -3,9 +3,11 @@
 //!
 //! One exit path serves every boot. A thread's return ends the running thread, and the last live
 //! thread's end is the process's end. The exit service and a fault end the process outright:
-//! every other thread is terminated first, without running again, then the calling thread. The
-//! process's end is then reported, and the idle thread tears the process down — after which a
-//! suite boot starts its next leg (or prints its summary) and a one-process boot rests.
+//! every other thread is terminated first, without running again, then the calling thread. A
+//! thread inside a critical region (holding the volume and its drive) is the exception: it runs on
+//! to the region's end and ends itself there, and the process's end passes to the last such
+//! thread. The process's end is then reported, and the idle thread tears the process down — after
+//! which a suite boot starts its next leg (or prints its summary) and a one-process boot rests.
 
 use core::fmt;
 
@@ -28,6 +30,9 @@ pub enum ThreadEnd {
     ExitProcess(u32),
     /// A fault raised on the thread's behalf.
     Fault(Fault),
+    /// A termination deferred by a critical region, completing as the thread leaves it. It carries
+    /// the process's end, handed on by the exit or fault that requested the termination.
+    Terminated(ProcessEnd),
 }
 
 /// Why a process ended.
@@ -66,7 +71,27 @@ pub fn plan(end: ThreadEnd, others: u16) -> ExitPlan {
             terminate_others: others > 0,
             process_end: Some(ProcessEnd::Faulted(fault)),
         },
+        ThreadEnd::Terminated(end) => ExitPlan {
+            terminate_others: false,
+            process_end: (others == 0).then_some(end),
+        },
     }
+}
+
+/// The plan once the other threads' terminations ran, `deferred` of them still finishing a
+/// critical region: the process does not end with this thread then — its end passes to the last
+/// of them (returned, for the process to hold until that thread's exit).
+pub fn hand_over(plan: ExitPlan, deferred: u16) -> (ExitPlan, Option<ProcessEnd>) {
+    if deferred == 0 {
+        return (plan, None);
+    }
+    (
+        ExitPlan {
+            process_end: None,
+            ..plan
+        },
+        plan.process_end,
+    )
 }
 
 /// The suite leg a process runs as: its 1-based index and fixture name. A one-process boot has
@@ -385,5 +410,45 @@ mod tests {
                 leaks: 1
             }
         );
+    }
+
+    /// A deferred termination ends its thread with the end it was handed, and the process with it
+    /// only from the last thread; it never terminates others.
+    #[test]
+    fn a_deferred_termination_carries_the_handed_end() {
+        let end = ProcessEnd::Exited(0);
+        assert_eq!(
+            plan(ThreadEnd::Terminated(end), 1),
+            ExitPlan {
+                terminate_others: false,
+                process_end: None
+            }
+        );
+        assert_eq!(
+            plan(ThreadEnd::Terminated(end), 0),
+            ExitPlan {
+                terminate_others: false,
+                process_end: Some(end)
+            }
+        );
+    }
+
+    /// The hand-over: with every other thread terminated the plan stands; with some still finishing
+    /// a critical region, the process's end passes to them and this thread ends alone.
+    #[test]
+    fn the_process_end_passes_to_deferred_threads() {
+        let fault = Fault {
+            vector: 14,
+            in_user_copy: false,
+        };
+        for end in [ThreadEnd::ExitProcess(3), ThreadEnd::Fault(fault)] {
+            let planned = plan(end, 2);
+            assert_eq!(hand_over(planned, 0), (planned, None));
+            let (after, handed) = hand_over(planned, 1);
+            assert_eq!(after.process_end, None);
+            assert!(after.terminate_others);
+            assert_eq!(handed, planned.process_end);
+            assert!(handed.is_some());
+        }
     }
 }

@@ -16,7 +16,7 @@ summary.
 Usage:
   run-qemu-tests.py <config.yaml> [--image kernel|disk|all]
                     [--only NAME ...] [--list]
-                    [--kernel PATH] [--disk PATH] [--kernel-dir DIR]
+                    [--kernel PATH] [--disk PATH]
                     [--timeout SECONDS]
 """
 import argparse
@@ -95,29 +95,24 @@ def select_cases(cases, image, only):
     return picked
 
 
-def run_case(case, kernel_dir, kernel_elf, disk_img, timeout):
-    """Build the case's kernel and boot it; return True on pass.
+def run_case(case, kernel_elf, disk_img, timeout):
+    """Build the case's kernel and disk and boot them; return True on pass.
 
-    Kernel cases build the kernel with the case's features. Disk cases
-    rebuild the disk image every time, with the case's features (or
-    none): the disk embeds one kernel, and the image on disk is
-    whatever the previous build left, so booting it unrebuilt could
-    test another case's kernel.
+    Every case rebuilds the disk image, with the case's features (or
+    none): the volume carries the programs the kernel loads, so every
+    boot has it attached. The disk build also builds the kernel ELF
+    with those features. Disk cases boot the image through Limine (the
+    disk embeds one kernel, and the image on disk is whatever the
+    previous build left, so booting it unrebuilt could test another
+    case's kernel); kernel cases boot the ELF through QEMU's Multiboot
+    loader with the same disk as the IDE primary master.
     """
     features = case.get("features", [])
-    if case["image"] == "disk":
-        build = ["make", "disk", f"CARGO_FEATURES={','.join(features)}"]
-        build_cwd = REPO_ROOT
-        build_what = "disk build"
-    else:
-        build = ["cargo", "build"]
-        if features:
-            build += ["--features", ",".join(features)]
-        build_cwd = kernel_dir
-        build_what = "kernel build"
+    build = ["make", "disk", f"CARGO_FEATURES={','.join(features)}"]
+    build_what = "disk build"
     built = subprocess.run(
         build,
-        cwd=build_cwd,
+        cwd=REPO_ROOT,
         stderr=subprocess.STDOUT,
         stdout=subprocess.PIPE,
         text=True,
@@ -129,6 +124,8 @@ def run_case(case, kernel_dir, kernel_elf, disk_img, timeout):
 
     image = kernel_elf if case["image"] == "kernel" else disk_img
     env = dict(os.environ)
+    if case["image"] == "kernel":
+        env["BOOT_DISK"] = str(disk_img)
     if timeout is not None:
         env["BOOT_TIMEOUT"] = str(timeout)
     env["BOOT_ORDERED"] = "1" if case.get("ordered", False) else "0"
@@ -153,7 +150,6 @@ def main():
     ap.add_argument("--list", action="store_true", help="list case names and exit")
     ap.add_argument("--kernel", default=str(REPO_ROOT / "target/x86-f2k/debug/f2k-kernel"))
     ap.add_argument("--disk", default=str(REPO_ROOT / "target/x86-f2k/debug/f2k-disk.img"))
-    ap.add_argument("--kernel-dir", default=str(REPO_ROOT / "kernel"))
     ap.add_argument("--timeout", type=int, help="per-case boot timeout in seconds")
     args = ap.parse_args()
 
@@ -170,7 +166,7 @@ def main():
     results = []
     for case in selected:
         print(f"=== {case['name']}: {case.get('description', '')}", flush=True)
-        results.append(run_case(case, args.kernel_dir, args.kernel, args.disk, args.timeout))
+        results.append(run_case(case, args.kernel, args.disk, args.timeout))
 
     failed = len(results) - sum(results)
     print(f"\n{len(results) - failed} passed, {failed} failed", flush=True)

@@ -13,7 +13,7 @@ pub mod boot_sector;
 pub mod dirent;
 pub mod fat;
 #[cfg(test)]
-mod fixtures;
+pub(crate) mod fixtures;
 pub mod layout;
 pub mod lookup;
 pub mod path;

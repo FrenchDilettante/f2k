@@ -40,6 +40,9 @@ DISK_IMG ?= $(BUILD_DIR)/$(TARGET)/debug/f2k-disk.img
 ISO_IMG ?= $(BUILD_DIR)/$(TARGET)/debug/f2k.iso
 # 64MB disk image (131072 * 512 bytes): large enough for a spec-compliant FAT32 partition
 DISK_SIZE ?= 131072
+# The corpus fixtures the disk carries in its root directory (tests/<name>/<name>.exe, stored as
+# NAME.EXE), after HELLO.EXE: the boots load their images from the volume by these paths.
+DISK_FIXTURES ?= exit0 ret0 pingpong sleep spin suspend respawn bsscheck crash fileio
 
 # Limine bootloader settings
 LIMINE_DIR ?= $(BOOT_DIR)/limine
@@ -58,7 +61,7 @@ help:
 	@echo "Targets:"
 	@echo "  all           - Build everything and create bootable disk"
 	@echo "  kernel       - Build the kernel only"
-	@echo "  qemu         - Build the kernel and boot it directly in QEMU (Multiboot)"
+	@echo "  qemu         - Build the disk and boot the kernel directly in QEMU (Multiboot, disk attached)"
 	@echo "  test         - Run the on-target QEMU test suite (kernel path)"
 	@echo "  test-disk    - Run the on-target QEMU test suite (disk path)"
 	@echo "  run-tests    - Run host unit tests (cargo test --lib)"
@@ -89,9 +92,9 @@ kernel:
 	@echo "Kernel built: $(KERNEL_ELF)"
 
 .PHONY: qemu
-qemu: kernel
-	@echo "Booting F2K in QEMU (Multiboot via -kernel). Exit with Ctrl-A X."
-	$(QEMU) $(QEMU_FLAGS) -kernel $(KERNEL_ELF)
+qemu: disk
+	@echo "Booting F2K in QEMU (Multiboot via -kernel, the disk attached). Exit with Ctrl-A X."
+	$(QEMU) $(QEMU_FLAGS) -kernel $(KERNEL_ELF) -drive file=$(DISK_IMG),format=raw,if=ide
 
 .PHONY: kernel-bin
 kernel-bin:
@@ -117,6 +120,12 @@ disk: kernel limine
 	mmd -i $(DISK_IMG)@@1M ::/boot ::/boot/limine
 	mcopy -i $(DISK_IMG)@@1M $(KERNEL_ELF) ::/f2k-kernel
 	mcopy -i $(DISK_IMG)@@1M $(LIMINE_SYS) $(LIMINE_CONF) ::/boot/limine/
+	# The corpus the boots run, by 8.3 name: the loader reads every image from
+	# the volume by path. The root's entries stay within its one sector.
+	for fixture in $(DISK_FIXTURES); do \
+		mcopy -i $(DISK_IMG)@@1M tests/$$fixture/$$fixture.exe \
+			::/$$(echo $$fixture | tr a-z A-Z).EXE || exit 1; \
+	done
 	$(LIMINE_BIN) bios-install $(DISK_IMG)
 	@echo "Disk image created: $(DISK_IMG)"
 
@@ -227,6 +236,6 @@ iso: kernel limine
 	@echo "ISO created: $(ISO_IMG)"
 
 .PHONY: qemu_iso
-qemu_iso: iso
-	@echo "Starting F2K ISO in QEMU..."
-	$(QEMU) $(QEMU_FLAGS) -cdrom $(ISO_IMG) -boot d
+qemu_iso: iso disk
+	@echo "Starting F2K ISO in QEMU (the disk attached for the volume)..."
+	$(QEMU) $(QEMU_FLAGS) -cdrom $(ISO_IMG) -boot d -drive file=$(DISK_IMG),format=raw,if=ide

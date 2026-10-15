@@ -11,6 +11,9 @@
 #
 # Usage: scripts/test-boot.sh [kernel-elf | disk.img | cdrom.iso] [expected ...]
 # Env:   QEMU (default qemu-system-i386), BOOT_TIMEOUT seconds (default 10)
+#        BOOT_DISK          a raw disk image attached as the IDE primary master
+#                           when booting a kernel ELF (the volume the kernel
+#                           loads its programs from)
 #        BOOT_ORDERED=1     the expected strings must match on successive
 #                           lines, in argument order (each on its own line)
 #        BOOT_FORBID        newline-separated strings that fail the test as
@@ -122,7 +125,14 @@ report_failure() {
 case "$IMAGE" in
     *.img) set -- -drive "file=$IMAGE,format=raw,if=ide" ;;
     *.iso) set -- -cdrom "$IMAGE" -boot d ;;
-    *)     set -- -kernel "$IMAGE" ;;
+    *)     set -- -kernel "$IMAGE"
+           if [ -n "${BOOT_DISK:-}" ]; then
+               if [ ! -f "$BOOT_DISK" ]; then
+                   echo "FAIL: disk not found: $BOOT_DISK (run 'make disk' first)"
+                   exit 1
+               fi
+               set -- "$@" -drive "file=$BOOT_DISK,format=raw,if=ide"
+           fi ;;
 esac
 
 # -no-reboot turns a triple fault into a QEMU exit, so crashes fail fast

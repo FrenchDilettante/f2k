@@ -50,6 +50,8 @@ pub struct Process {
     heap: crate::user::userheap::HeapState,
     /// The handle table: the process's handles-to-objects.
     handles: crate::sched::object::HandleTable,
+    /// The open files the table's file slots name.
+    files: crate::fs::file::OpenFiles,
     /// An exited thread's gate stack, not yet released (see [`DeadStack`]).
     dead_stack: DeadStack,
     /// The created threads' records, one per child; a terminated child's record is not reused.
@@ -61,6 +63,9 @@ pub struct Process {
     /// Why the process ended, recorded by its last thread's exit; the idle thread's reap step
     /// tears down a process once this is set.
     end: Option<exit::ProcessEnd>,
+    /// The end an exit or fault decided while some threads were still finishing a critical region:
+    /// the last of them ends the process with it.
+    handed_end: Option<exit::ProcessEnd>,
 }
 
 /// How many threads a process can create besides its main thread.
@@ -132,6 +137,61 @@ impl Process {
         &mut self.handles
     }
 
+    /// Open `file` (a file, not a directory) at its start and return its new handle; null when the
+    /// open-file records or the handle table are full.
+    pub fn open_file(&mut self, file: crate::fs::fat32::lookup::File) -> u32 {
+        if self.handles.is_full() {
+            return 0;
+        }
+        let Some(index) = self.files.open(file) else {
+            return 0;
+        };
+        self.handles.insert(crate::sched::object::Slot::File(index))
+    }
+
+    /// The open file a handle names; none when it names no file.
+    pub fn file_mut(&mut self, handle: u32) -> Option<&mut crate::fs::file::OpenFile> {
+        match self.handles.lookup(handle)? {
+            crate::sched::object::Slot::File(index) => Some(self.files.get_mut(index)),
+            _ => None,
+        }
+    }
+
+    /// Close a handle: the table's claim ends, and an open file's record is released with it.
+    /// False when the handle names nothing.
+    pub fn close_handle(&mut self, handle: u32) -> bool {
+        match self.handles.close(handle) {
+            Some(crate::sched::object::Slot::File(index)) => {
+                self.files.release(index);
+                true
+            }
+            Some(_) => true,
+            None => false,
+        }
+    }
+
+    /// Release every handle and open file at once: the process-exit step.
+    pub fn release_handles(&mut self) {
+        self.handles.clear();
+        self.files.clear();
+    }
+
+    /// Hold the process's end for the threads still finishing a critical region (see
+    /// [`exit::hand_over`]), once.
+    pub fn hand_end(&mut self, end: exit::ProcessEnd) {
+        assert!(
+            self.handed_end.is_none(),
+            "a process's end is handed on once"
+        );
+        self.handed_end = Some(end);
+    }
+
+    /// The end held for the threads finishing a critical region; none unless an exit or fault
+    /// handed one on.
+    pub fn handed_end(&self) -> Option<exit::ProcessEnd> {
+        self.handed_end
+    }
+
     /// Record why the process ended: its last thread's exit, once.
     pub fn set_end(&mut self, end: exit::ProcessEnd) {
         assert!(self.end.is_none(), "a process ends once");
@@ -157,11 +217,13 @@ impl Process {
             gate_slots: GateSlots::empty(),
             heap: crate::user::userheap::HeapState::new(),
             handles: crate::sched::object::HandleTable::empty(),
+            files: crate::fs::file::OpenFiles::empty(),
             dead_stack: DeadStack::empty(),
             child_threads: [const { crate::sched::thread::Thread::empty() }; CHILD_THREADS],
             events: fresh_events(),
             events_used: 0,
             end: None,
+            handed_end: None,
         });
 
         // The scheduling record's thread-list sentinel closes now that the record is at its final
@@ -412,6 +474,8 @@ pub fn reap() {
     runner::process_reaped(end);
     #[cfg(not(feature = "run-process-suite"))]
     let _ = end;
+    #[cfg(all(not(feature = "run-process-suite"), feature = "fault-test-exitio"))]
+    crate::user::check_volume_after_teardown();
 }
 
 /// Tear the current process down: release every frame it owns, per thread then per process (see
@@ -501,11 +565,13 @@ mod tests {
             gate_slots: GateSlots::empty(),
             heap: HeapState::new(),
             handles: crate::sched::object::HandleTable::empty(),
+            files: crate::fs::file::OpenFiles::empty(),
             dead_stack: DeadStack::empty(),
             child_threads: [const { crate::sched::thread::Thread::empty() }; CHILD_THREADS],
             events: fresh_events(),
             events_used: 0,
             end: None,
+            handed_end: None,
         };
         assert_eq!(process.name(), "fixture");
         assert_eq!(process.dir_phys(), 0x0090_0000);
@@ -519,6 +585,110 @@ mod tests {
             process.heap_mut().create(),
             crate::user::userheap::HEAP_HANDLE
         );
+    }
+
+    fn fresh_process() -> Process {
+        Process {
+            sched: SchedProcess::new(0x0090_0000, 8),
+            name: "fixture",
+            main_thread: Thread::empty(),
+            gate_slots: GateSlots::empty(),
+            heap: HeapState::new(),
+            handles: crate::sched::object::HandleTable::empty(),
+            files: crate::fs::file::OpenFiles::empty(),
+            dead_stack: DeadStack::empty(),
+            child_threads: [const { crate::sched::thread::Thread::empty() }; CHILD_THREADS],
+            events: fresh_events(),
+            events_used: 0,
+            end: None,
+            handed_end: None,
+        }
+    }
+
+    fn a_file(size: u32) -> crate::fs::fat32::lookup::File {
+        crate::fs::fat32::lookup::File {
+            first_cluster: 3,
+            size,
+            directory: false,
+        }
+    }
+
+    // --- File handles (the table's file slots and the open-file records) -----
+
+    /// An open file is a table handle naming a record: found by its handle with its own position,
+    /// released by the close (record and slot together), and a handle that names another kind of
+    /// object, or nothing, names no file.
+    #[test]
+    fn file_handles_open_look_up_and_close() {
+        let mut process = fresh_process();
+        let first = process.open_file(a_file(100));
+        let second = process.open_file(a_file(200));
+        assert_eq!((first, second), (4, 8));
+        process.file_mut(first).unwrap().position = 60;
+        assert_eq!(process.file_mut(second).unwrap().position, 0);
+        assert_eq!(process.file_mut(second).unwrap().file.size, 200);
+        assert_eq!(process.file_mut(first | 0x3).unwrap().position, 60);
+
+        assert!(process.close_handle(first));
+        assert!(process.file_mut(first).is_none());
+        assert!(!process.close_handle(first), "a double close");
+        assert_eq!(process.files.live(), 1);
+
+        // The freed slot and record come back for the next open, at position zero.
+        assert_eq!(process.open_file(a_file(300)), first);
+        assert_eq!(process.file_mut(first).unwrap().position, 0);
+        assert_eq!(process.file_mut(first).unwrap().file.size, 300);
+
+        // An event's handle names no file.
+        let event = Box::leak(Box::new(crate::sched::event::Event::new(
+            crate::sched::event::EventKind::Notification,
+            false,
+        )));
+        let handle = process
+            .handles
+            .insert(crate::sched::object::Slot::Event(event.waitable()));
+        assert!(process.file_mut(handle).is_none());
+        assert!(process.file_mut(0x40).is_none());
+        assert!(process.close_handle(handle));
+        assert_eq!(process.files.live(), 2, "closing an event leaves the files");
+    }
+
+    /// The opens stop when the records run out, and when the table does — a refused open takes
+    /// nothing.
+    #[test]
+    fn file_opens_stop_at_either_limit() {
+        let mut process = fresh_process();
+        for _ in 0..crate::fs::file::OPEN_FILES {
+            assert_ne!(process.open_file(a_file(1)), 0);
+        }
+        assert_eq!(process.open_file(a_file(1)), 0, "the records are full");
+        assert_eq!(process.handles.live(), crate::fs::file::OPEN_FILES);
+
+        let mut crowded = fresh_process();
+        let event = Box::leak(Box::new(crate::sched::event::Event::new(
+            crate::sched::event::EventKind::Notification,
+            false,
+        )));
+        while !crowded.handles.is_full() {
+            crowded
+                .handles
+                .insert(crate::sched::object::Slot::Event(event.waitable()));
+        }
+        assert_eq!(crowded.open_file(a_file(1)), 0, "the table is full");
+        assert_eq!(crowded.files.live(), 0, "no record taken");
+    }
+
+    /// The process-exit step releases every file handle and record at once.
+    #[test]
+    fn the_exit_step_releases_open_files() {
+        let mut process = fresh_process();
+        let handle = process.open_file(a_file(10));
+        process.open_file(a_file(20));
+        process.release_handles();
+        assert_eq!(process.handles.live(), 0);
+        assert_eq!(process.files.live(), 0);
+        assert!(process.file_mut(handle).is_none());
+        assert_eq!(process.open_file(a_file(30)), 4, "the table starts over");
     }
 
     // --- The dead-stack handoff (slot reuse after a thread exit) -----------
@@ -696,11 +866,13 @@ mod tests {
             gate_slots: GateSlots::empty(),
             heap: HeapState::new(),
             handles: crate::sched::object::HandleTable::empty(),
+            files: crate::fs::file::OpenFiles::empty(),
             dead_stack: DeadStack::empty(),
             child_threads: [const { crate::sched::thread::Thread::empty() }; CHILD_THREADS],
             events: fresh_events(),
             events_used: 0,
             end: None,
+            handed_end: None,
         }));
         process.sched.init();
         let sched = core::ptr::addr_of_mut!(process.sched);

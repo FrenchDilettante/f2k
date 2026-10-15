@@ -1,8 +1,8 @@
 //! The handle table: the per-process indirection between the Win32 handle values programs pass
-//! around and the kernel's waitable objects.
+//! around and the kernel's objects.
 //!
-//! One table per process, a fixed slot array: each slot holds a live object (an event or a thread)
-//! or nothing. The handle value encodes its slot as the index shifted left two — the platform's
+//! One table per process, a fixed slot array: each slot holds a live object (an event, a thread, or
+//! an open file) or nothing. The handle value encodes its slot as the index shifted left two — the platform's
 //! documented shape, a multiple of four with the low tag bits ignored on lookup — and slot zero is
 //! never handed out, so the first handle is 4 and no valid handle is zero or the all-ones
 //! pseudo-handle. Freed slots are reused most-recently-freed-first.
@@ -10,7 +10,9 @@
 //! The subset keeps only the table discipline: no reference counting (objects live until the
 //! process ends, so a close releases only the table slot — a waiter parked on the object stays
 //! parked), no security, no quota, no duplication, no named objects. The table's owner is the
-//! process record, so the process exit empties it by dropping the record.
+//! process record, so the process exit empties it by dropping the record. An open file's state is a
+//! record of the process's own (`fs::file`), which the slot names by index: the close hands the
+//! released slot back so the process can release that record with it.
 
 use crate::sched::wait::Waitable;
 
@@ -21,22 +23,26 @@ pub const HANDLE_SLOTS: usize = 16;
 /// A handle's slot index: the value shifted right two (the low two tag bits are ignored on decode).
 pub const HANDLE_SHIFT: u32 = 2;
 
-/// What a slot holds.
+/// One table slot: what it holds.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum ObjectKind {
-    /// An event object.
-    Event,
-    /// A thread object (waitable at its termination).
-    Thread,
+pub enum Slot {
+    /// An event object, by its waitable header.
+    Event(*mut Waitable),
+    /// A thread object (waitable at its termination), by its waitable header.
+    Thread(*mut Waitable),
+    /// An open file: the index of the process's open-file record.
+    File(usize),
 }
 
-/// One table slot.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct Slot {
-    /// What the slot holds.
-    pub kind: ObjectKind,
-    /// The object's waitable header.
-    pub waitable: *mut Waitable,
+impl Slot {
+    /// The waitable header of a waitable object; none for an open file (the subset does not wait on
+    /// files).
+    pub fn waitable(self) -> Option<*mut Waitable> {
+        match self {
+            Slot::Event(waitable) | Slot::Thread(waitable) => Some(waitable),
+            Slot::File(_) => None,
+        }
+    }
 }
 
 /// A process's handle table.
@@ -93,17 +99,15 @@ impl HandleTable {
         self.slots[index]
     }
 
-    /// Release the slot a handle names. False when the handle names nothing (a double close, a
-    /// foreign value). The object itself lives on: only the table's claim ends.
-    pub fn close(&mut self, handle: u32) -> bool {
-        let Some(_) = self.lookup(handle) else {
-            return false;
-        };
+    /// Release the slot a handle names, returning what it held. None when the handle names nothing
+    /// (a double close, a foreign value). The object itself lives on: only the table's claim ends.
+    pub fn close(&mut self, handle: u32) -> Option<Slot> {
+        let slot = self.lookup(handle)?;
         let index = (handle >> HANDLE_SHIFT) as usize;
         self.slots[index] = None;
         self.freed[self.freed_top] = index as u32;
         self.freed_top += 1;
-        true
+        Some(slot)
     }
 
     /// Empty the table: the process-exit step, releasing every slot's claim at once (the objects
@@ -129,10 +133,7 @@ mod tests {
             crate::sched::wait::WaitKind::NotificationEvent,
             0,
         )));
-        Slot {
-            kind: ObjectKind::Event,
-            waitable: waitable as *mut Waitable,
-        }
+        Slot::Event(waitable as *mut Waitable)
     }
 
     // --- Group A: encoding, allocation, reuse -------------------------------
@@ -162,8 +163,8 @@ mod tests {
         let h3 = table.insert(event_slot());
         assert_eq!((h1, h2, h3), (4, 8, 12));
 
-        assert!(table.close(h2));
-        assert!(table.close(h1));
+        assert!(table.close(h2).is_some());
+        assert!(table.close(h1).is_some());
         assert_eq!(table.lookup(h1), None, "the closed value is a miss");
         assert_eq!(table.lookup(h2), None);
 
@@ -205,7 +206,7 @@ mod tests {
         assert_eq!(table.insert(event_slot()), 0, "exhausted: no handle");
 
         // A close frees a slot again.
-        assert!(table.close(4));
+        assert!(table.close(4).is_some());
         assert!(!table.is_full());
         assert_eq!(table.insert(event_slot()), 4);
         assert!(table.is_full());
@@ -230,7 +231,41 @@ mod tests {
     fn a_double_close_is_refused() {
         let mut table = HandleTable::empty();
         let handle = table.insert(event_slot());
-        assert!(table.close(handle));
-        assert!(!table.close(handle), "the second close finds nothing");
+        assert!(table.close(handle).is_some());
+        assert_eq!(table.close(handle), None, "the second close finds nothing");
+    }
+
+    // --- Group B: file slots ------------------------------------------------
+
+    /// File slots share the table with the waitable objects: inserted, looked up by their record
+    /// index, and handed back by the close (the process releases the record with it). A file has no
+    /// waitable header.
+    #[test]
+    fn file_slots_insert_look_up_and_close() {
+        let mut table = HandleTable::empty();
+        let event = table.insert(event_slot());
+        let file = table.insert(Slot::File(3));
+        assert_eq!(file, 8);
+        assert_eq!(table.lookup(file), Some(Slot::File(3)));
+        assert_eq!(table.lookup(file | 0x3), Some(Slot::File(3)));
+        assert_eq!(Slot::File(3).waitable(), None);
+        assert!(table.lookup(event).unwrap().waitable().is_some());
+
+        assert_eq!(table.close(file), Some(Slot::File(3)), "the released slot");
+        assert_eq!(table.lookup(file), None);
+        assert_eq!(table.close(file), None);
+        assert_eq!(table.insert(Slot::File(0)), file, "the slot is reused");
+        assert_eq!(table.live(), 2);
+    }
+
+    /// The process-exit step releases file slots with everything else.
+    #[test]
+    fn clear_releases_file_slots() {
+        let mut table = HandleTable::empty();
+        table.insert(Slot::File(0));
+        table.insert(Slot::File(1));
+        table.clear();
+        assert_eq!(table.live(), 0);
+        assert_eq!(table.lookup(4), None);
     }
 }

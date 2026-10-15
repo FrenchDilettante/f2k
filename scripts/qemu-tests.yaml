@@ -1,11 +1,12 @@
 # QEMU on-target test suite.
 #
-# Each case builds the kernel (optionally with cargo features), boots it
-# in QEMU via scripts/test-boot.sh, and passes once every expected
-# string has appeared on COM1. `image: kernel` boots the freshly built
-# kernel ELF through QEMU's Multiboot loader; `image: disk` rebuilds the
-# disk image with the case's features (or none) and boots it through
-# Limine.
+# Each case builds the kernel and the disk image (optionally with cargo
+# features), boots it in QEMU via scripts/test-boot.sh, and passes once
+# every expected string has appeared on COM1. The disk is attached to
+# every case as the IDE primary master: its volume carries the programs
+# the kernel loads. `image: kernel` boots the freshly built kernel ELF
+# through QEMU's Multiboot loader; `image: disk` boots the disk image
+# itself through Limine.
 #
 # Matching: each expected string is a substring of some COM1 line, in
 # any order. `ordered: true` requires them in order, each on a later
@@ -79,6 +80,23 @@ cases:
     expects:
       - "F2K: entering ring 3"
       - "F2K: user process exited normally (exit code=3221225500)"
+
+  # Exit during a disk read: a stub process opens HELLO.EXE and starts
+  # a time-critical child that seeks and reads a sector in a loop; the
+  # main thread runs again only while the child waits on the drive, and
+  # calls ExitProcess there. The child must finish its read — releasing
+  # the volume and the drive — before it ends, so the process's end is
+  # reported by the child, and the idle thread's lookup after the
+  # teardown finds the volume usable.
+  - name: fault-exitio
+    description: ExitProcess while another thread is blocked inside a disk read leaves the volume usable after the teardown
+    image: kernel
+    features: [fault-test-exitio]
+    ordered: true
+    expects:
+      - "F2K: entering ring 3"
+      - "F2K: user process exited normally (exit code=0)"
+      - "F2K: exit-during-read: volume usable after teardown (HELLO.EXE, 28672 bytes)"
 
   - name: boot-smoke-disk
     description: full boot through the first PE image (exit0) to its exit syscall (Limine disk path)
@@ -465,6 +483,44 @@ cases:
       - "F2K: process 6 (exit0) exited normally (exit code=0)"
       - "F2K: process 6 teardown audit: frame database ok, kernel heap ok"
       - "F2K: process suite complete: 6 run, 1 faulted, 0 leaks"
+
+
+  # File smoke: the fileio fixture opens its own image on the boot
+  # volume — CreateFileA on the path GetModuleFileNameA reports, the
+  # volume path the loader read it from — reads the MZ signature,
+  # seeks to e_lfanew and reads the PE signature, seeks back and
+  # reads the MZ again. Every line derives from the file's own bytes,
+  # so tests/fileio/output.txt (the real machine's capture) is pinned
+  # verbatim, in order.
+  - name: fileio-smoke
+    description: the file smoke opens its own image by its module path, reads the MZ and PE signatures across seeks, and prints the captured lines (kernel path)
+    image: kernel
+    features: [run-fileio]
+    ordered: true
+    expects:
+      - "F2K Booted Successfully"
+      - "F2K: image loaded"
+      - "F2K: entering ring 3"
+      - "MZ ok"
+      - "PE ok"
+      - "MZ again ok"
+      - "fileio: ok"
+      - "F2K: user process exited normally (exit code=0)"
+
+  - name: fileio-smoke-disk
+    description: the file smoke opens its own image by its module path, reads the MZ and PE signatures across seeks, and prints the captured lines (Limine disk path)
+    image: disk
+    features: [run-fileio]
+    ordered: true
+    expects:
+      - "F2K Booted Successfully"
+      - "F2K: image loaded"
+      - "F2K: entering ring 3"
+      - "MZ ok"
+      - "PE ok"
+      - "MZ again ok"
+      - "fileio: ok"
+      - "F2K: user process exited normally (exit code=0)"
 
 
   # Interrupt/timer core: the

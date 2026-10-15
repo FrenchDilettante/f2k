@@ -91,25 +91,28 @@ code 0 means pass.
 
 ## How F2K consumes these
 
-Until F2K can read from its FAT32 disk partition, the on-target QEMU
-suite embeds fixtures directly in the kernel image
-(`include_bytes!`): the default kernel runs `exit0`, the `run-ret0`
-feature selects `ret0`, and the `run-hello` feature selects `hello`
-(whose WriteFile output appears on COM1 as the program's own). The
-`run-pingpong` feature (the blocking-wait smoke) selects `pingpong`
-with the thread-ified boot: the main thread enters ring 3 through
-the scheduler's first switch, and its thread and wait calls run
-against the landed scheduler machinery. The
-`run-process-suite` feature (the multi-process case) embeds
-`bsscheck` and `crash` as well and
-runs the sequence `exit0`, `ret0`, `bsscheck`, `bsscheck`, `crash`,
-`exit0` in one boot. Each boot prints the observed process exit code
-on COM1, which the suite cases assert. Once disk I/O exists,
-fixtures load from the disk image instead and the embedding goes
-away.
+F2K loads every fixture from its boot disk: the disk build copies
+the fixtures the suite runs into the FAT32 volume's root directory
+by their 8.3 names (`EXIT0.EXE`, `RET0.EXE`, ...; see `DISK_FIXTURES`
+in the Makefile), and the kernel reads the selected program off the
+volume by path before loading it. The suite attaches that disk to
+every case, kernel-path cases included. The default kernel runs
+`exit0`, the `run-ret0` feature selects `ret0`, and the `run-hello`
+feature selects `hello` (whose WriteFile output appears on COM1 as
+the program's own). The `run-pingpong` feature (the blocking-wait
+smoke) selects `pingpong` with the thread-ified boot: the main thread
+enters ring 3 through the scheduler's first switch, and its thread
+and wait calls run against the landed scheduler machinery. The
+`run-process-suite` feature (the multi-process case) runs the
+sequence `exit0`, `ret0`, `bsscheck`, `bsscheck`, `crash`, `exit0` in
+one boot. The `run-fileio` feature selects `fileio`, which opens its
+own image on the volume through the module path the loader staged.
+Each boot prints the observed process exit code on COM1, which the
+suite cases assert. Host unit tests still read the checked-in `.exe`
+files directly (`include_bytes!`, test builds only).
 
 The scheduler smoke tests (`thread`, `pingpong`, `sleep`, `spin`,
-`respawn`, `suspend`) join the same embedding one per scheduler
+`respawn`, `suspend`) join the corpus one per scheduler
 stage, in dependency order, as the scheduler grows; each asserts
 the real-machine captured output of its stage. The
 `run-respawn` feature selects `respawn` on the thread-ified boot,

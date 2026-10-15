@@ -165,10 +165,7 @@ mod tests {
 
         // The second release wakes the second waiter likewise.
         assert_eq!(d.release_semaphore(&mut semaphore, 1, 0), Ok(0));
-        assert_eq!(
-            w2.state(),
-            crate::sched::thread::ThreadState::Ready
-        );
+        assert_eq!(w2.state(), crate::sched::thread::ThreadState::Ready);
         assert_eq!(semaphore.count(), 0);
 
         // The multi-count variant: a release of two serves both waiters, one count each.

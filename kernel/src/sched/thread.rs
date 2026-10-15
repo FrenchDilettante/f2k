@@ -174,10 +174,16 @@ pub struct Thread {
     /// normal routine safe (the suspend APC parks inside one).
     pub(crate) kernel_apc_in_progress: bool,
     /// The critical-region count: while nonzero, normal kernel APCs neither break waits nor
-    /// deliver. Nothing in F2K changes it from zero; the gates that read it stay live.
+    /// deliver, and a termination waits for the thread to leave. Code that holds a shared resource
+    /// across a blocking wait (the boot volume and its drive) runs inside one.
     pub(crate) kernel_apc_disable: i8,
     /// Whether APCs may be queued on this thread. On from attach, off from the exit path on.
     pub(crate) apc_queueable: bool,
+    /// Whether a termination waits for this thread to leave its critical region: set by the request
+    /// (see [`Dispatcher::request_termination`]), acted on by the thread itself as it leaves.
+    ///
+    /// [`Dispatcher::request_termination`]: super::dispatcher::Dispatcher::request_termination
+    pub(crate) terminate_pending: bool,
     /// The thread's builtin suspend APC: a no-op kernel half, a normal half that parks on the
     /// suspend semaphore.
     pub(crate) suspend_apc: Apc,
@@ -267,6 +273,7 @@ impl Thread {
             kernel_apc_in_progress: false,
             kernel_apc_disable: 0,
             apc_queueable: true,
+            terminate_pending: false,
             suspend_apc: Apc::detached(),
             suspend_semaphore: Semaphore::new(super::apc::SUSPEND_SEMAPHORE_LIMIT),
             suspend_count: 0,
@@ -335,6 +342,35 @@ impl Thread {
     /// The scheduling state.
     pub fn state(&self) -> ThreadState {
         self.state
+    }
+
+    /// Enter a critical region (regions nest): until the thread leaves the outermost, normal kernel
+    /// APCs wait, and so does a termination.
+    pub fn enter_critical_region(&mut self) {
+        self.kernel_apc_disable = self
+            .kernel_apc_disable
+            .checked_add(1)
+            .expect("critical regions nest too deep");
+    }
+
+    /// Leave a critical region; true when it was the outermost.
+    pub fn leave_critical_region(&mut self) -> bool {
+        assert!(
+            self.kernel_apc_disable > 0,
+            "leaving a critical region never entered"
+        );
+        self.kernel_apc_disable -= 1;
+        self.kernel_apc_disable == 0
+    }
+
+    /// Whether the thread is inside a critical region.
+    pub fn in_critical_region(&self) -> bool {
+        self.kernel_apc_disable != 0
+    }
+
+    /// Whether a termination waits for the thread to leave its critical region.
+    pub fn termination_pending(&self) -> bool {
+        self.terminate_pending
     }
 
     /// The current priority.
@@ -522,5 +558,28 @@ mod tests {
         let first = unsafe { process.threads.first() };
         assert_eq!(first, core::ptr::addr_of_mut!(t1.process_links));
         assert!(!process.threads.is_empty());
+    }
+
+    /// Critical regions nest: only leaving the outermost reports it, and the count is the gate the
+    /// APC machinery reads.
+    #[test]
+    fn critical_regions_nest() {
+        let mut thread = Thread::empty();
+        assert!(!thread.in_critical_region());
+        thread.enter_critical_region();
+        thread.enter_critical_region();
+        assert!(thread.in_critical_region());
+        assert_eq!(thread.kernel_apc_disable, 2);
+        assert!(!thread.leave_critical_region(), "the inner region");
+        assert!(thread.in_critical_region());
+        assert!(thread.leave_critical_region(), "the outermost");
+        assert!(!thread.in_critical_region());
+        assert!(!thread.termination_pending());
+    }
+
+    #[test]
+    #[should_panic(expected = "never entered")]
+    fn leaving_an_unentered_region_is_a_contract_violation() {
+        Thread::empty().leave_critical_region();
     }
 }

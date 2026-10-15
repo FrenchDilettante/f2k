@@ -125,15 +125,18 @@ mod target {
     }
 
     /// Run `body` on the boot volume, serialized against its other users; none when no volume is
-    /// mounted.
+    /// mounted. The whole use — the lock and the drive's commands under it — is one critical region
+    /// of the running thread: a suspend or a termination waits until the volume is released.
     pub fn with_boot_volume<R>(body: impl FnOnce(&mut Volume) -> R) -> Option<R> {
-        LOCK.with(|| {
-            // SAFETY: the lock makes this the only user of the volume.
-            let mount = unsafe { &mut *addr_of_mut!(MOUNT) };
-            match mount {
-                Some(Ok(volume)) => Some(body(volume)),
-                _ => None,
-            }
+        crate::process::threads::critical_region(|| {
+            LOCK.with(|| {
+                // SAFETY: the lock makes this the only user of the volume.
+                let mount = unsafe { &mut *addr_of_mut!(MOUNT) };
+                match mount {
+                    Some(Ok(volume)) => Some(body(volume)),
+                    _ => None,
+                }
+            })
         })
     }
 }

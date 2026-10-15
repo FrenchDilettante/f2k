@@ -19,6 +19,7 @@ pub mod userheap;
     feature = "fault-test-badargs",
     feature = "fault-test-segments",
     feature = "fault-test-threadexit",
+    feature = "fault-test-exitio",
     test
 ))]
 pub const USER_CODE_PAGE: u32 = 0x0040_0000;
@@ -135,6 +136,115 @@ pub const RING3_STUB: [u8; 22] = [
     0x90, // pad
 ];
 
+/// The exit-during-read stub, before its service numbers are patched in: the main thread opens
+/// HELLO.EXE and creates a child, raised time-critical, that seeks to the start and reads a sector
+/// forever; main runs again only while the child waits on the disk, and ends the process there. The
+/// zeroed immediates are the service numbers ([`EXIT_DURING_READ_SERVICES`]).
+#[cfg(any(feature = "fault-test-exitio", test))]
+#[rustfmt::skip]
+const EXIT_DURING_READ_TEMPLATE: [u8; 156] = [
+    // main:
+    0x6A, 0x00, // push 0 (hTemplateFile)
+    0x6A, 0x00, // push 0 (dwFlagsAndAttributes)
+    0x6A, 0x03, // push OPEN_EXISTING
+    0x6A, 0x00, // push 0 (lpSecurityAttributes)
+    0x6A, 0x01, // push FILE_SHARE_READ
+    0x68, 0x00, 0x00, 0x00, 0x80, // push GENERIC_READ
+    0xB8, 0x92, 0x00, 0x40, 0x00, // mov eax, path (0x00400092)
+    0x50, // push eax (lpFileName)
+    0x89, 0xE2, // mov edx, esp
+    0xB8, 0x00, 0x00, 0x00, 0x00, // 0x17: mov eax, CreateFileA
+    0xCD, 0x2E, // int 0x2E
+    0x83, 0xC4, 0x1C, // add esp, 28
+    0x89, 0xC3, // mov ebx, eax (the file handle)
+    0x6A, 0x00, // push 0 (lpThreadId)
+    0x6A, 0x00, // push 0 (dwCreationFlags)
+    0x53, // push ebx (lpParameter: the file handle)
+    0xB8, 0x5A, 0x00, 0x40, 0x00, // mov eax, child (0x0040005A)
+    0x50, // push eax (lpStartAddress)
+    0x6A, 0x00, // push 0 (dwStackSize)
+    0x6A, 0x00, // push 0 (lpThreadAttributes)
+    0x89, 0xE2, // mov edx, esp
+    0xB8, 0x00, 0x00, 0x00, 0x00, // 0x34: mov eax, CreateThread
+    0xCD, 0x2E, // int 0x2E
+    0x83, 0xC4, 0x18, // add esp, 24
+    0x6A, 0x0F, // push THREAD_PRIORITY_TIME_CRITICAL
+    0x50, // push eax (the child's handle)
+    0x89, 0xE2, // mov edx, esp
+    0xB8, 0x00, 0x00, 0x00, 0x00, // 0x43: mov eax, SetThreadPriority (the child preempts here)
+    0xCD, 0x2E, // int 0x2E
+    0x83, 0xC4, 0x08, // add esp, 8
+    0x6A, 0x00, // push 0 (uExitCode)
+    0x89, 0xE2, // mov edx, esp
+    0xB8, 0x00, 0x00, 0x00, 0x00, // 0x51: mov eax, ExitProcess (the child is inside a read)
+    0xCD, 0x2E, // int 0x2E
+    0xEB, 0xFE, // 0x58: jmp $
+    // child (0x5A):
+    0x8B, 0x5C, 0x24, 0x04, // mov ebx, [esp+4] (the file handle)
+    0x81, 0xEC, 0x00, 0x02, 0x00, 0x00, // sub esp, 0x200
+    0x89, 0xE7, // mov edi, esp (the buffer)
+    // child_loop (0x66):
+    0x6A, 0x00, // push FILE_BEGIN
+    0x6A, 0x00, // push 0 (lpDistanceToMoveHigh)
+    0x6A, 0x00, // push 0 (lDistanceToMove)
+    0x53, // push ebx
+    0x89, 0xE2, // mov edx, esp
+    0xB8, 0x00, 0x00, 0x00, 0x00, // 0x6F: mov eax, SetFilePointer
+    0xCD, 0x2E, // int 0x2E
+    0x83, 0xC4, 0x10, // add esp, 16
+    0x6A, 0x00, // push 0 (lpOverlapped)
+    0x6A, 0x00, // push 0 (lpNumberOfBytesRead)
+    0x68, 0x00, 0x02, 0x00, 0x00, // push 512
+    0x57, // push edi
+    0x53, // push ebx
+    0x89, 0xE2, // mov edx, esp
+    0xB8, 0x00, 0x00, 0x00, 0x00, // 0x86: mov eax, ReadFile
+    0xCD, 0x2E, // int 0x2E
+    0x83, 0xC4, 0x14, // add esp, 20
+    0xEB, 0xD4, // jmp child_loop
+    // path (0x92):
+    b'h', b'e', b'l', b'l', b'o', b'.', b'e', b'x', b'e', 0,
+];
+
+/// Where the template's service-number immediates sit (each one byte past its `mov eax` opcode),
+/// and the export each names.
+#[cfg(any(feature = "fault-test-exitio", test))]
+const EXIT_DURING_READ_SERVICES: [(usize, &str); 6] = [
+    (0x18, "CreateFileA"),
+    (0x35, "CreateThread"),
+    (0x44, "SetThreadPriority"),
+    (0x52, "ExitProcess"),
+    (0x70, "SetFilePointer"),
+    (0x87, "ReadFile"),
+];
+
+/// The exit-during-read stub: the template with the registry's service numbers patched in at build
+/// time, so a registry change cannot leave it calling the wrong services.
+#[cfg(any(feature = "fault-test-exitio", test))]
+pub const EXIT_DURING_READ_STUB: [u8; 156] = {
+    let mut stub = EXIT_DURING_READ_TEMPLATE;
+    let mut index = 0;
+    while index < EXIT_DURING_READ_SERVICES.len() {
+        let (offset, name) = EXIT_DURING_READ_SERVICES[index];
+        let number = crate::compat::kernel32::service_number(name).to_le_bytes();
+        stub[offset] = number[0];
+        stub[offset + 1] = number[1];
+        stub[offset + 2] = number[2];
+        stub[offset + 3] = number[3];
+        index += 1;
+    }
+    stub
+};
+
+#[cfg(all(
+    feature = "fault-test-exitio",
+    not(feature = "fault-test-user"),
+    not(feature = "fault-test-badargs"),
+    not(feature = "fault-test-segments"),
+    not(feature = "fault-test-threadexit")
+))]
+pub const RING3_STUB: [u8; 156] = EXIT_DURING_READ_STUB;
+
 /// Trap frame the gate stubs build on the ring-0 stack, in the shape shared with the exception
 /// stubs (the CPU pushes the ring-3 tail; the stub pushes the rest in the same order).
 #[allow(dead_code)]
@@ -176,7 +286,8 @@ pub fn process_exited(code: u32) -> ! {
 }
 
 /// Launch the boot's user code: the multi-process suite with `run-process-suite`, a fault-test
-/// stub with a `fault-test-*` feature, or one image through the PE loader (see [`boot_image`]).
+/// stub with a `fault-test-*` feature, or one image from the boot volume through the PE loader
+/// (see [`boot_image`]).
 /// Every path enters its process as a main thread through the idle loop. Never returns.
 #[cfg(target_arch = "x86")]
 pub fn run_user_process() -> ! {
@@ -190,7 +301,8 @@ pub fn run_user_process() -> ! {
             feature = "fault-test-user",
             feature = "fault-test-badargs",
             feature = "fault-test-segments",
-            feature = "fault-test-threadexit"
+            feature = "fault-test-threadexit",
+            feature = "fault-test-exitio"
         )
     ))]
     {
@@ -202,20 +314,22 @@ pub fn run_user_process() -> ! {
             feature = "fault-test-user",
             feature = "fault-test-badargs",
             feature = "fault-test-segments",
-            feature = "fault-test-threadexit"
+            feature = "fault-test-threadexit",
+            feature = "fault-test-exitio"
         ))
     ))]
     {
-        let (image, name) = boot_image();
-        let entry = crate::exec::loader::load_image(image, name);
+        let (path, name) = boot_image();
+        let entry = crate::exec::loader::load_path(path, name);
         crate::process::threads::enter_as_main_thread(entry, USER_STACK_TOP)
     }
 }
 
-/// The one image a one-process boot runs: the first fixture feature in this order — the
-/// blocking-wait, timer, preemption, slot-reuse, or suspend smoke
-/// (`run-pingpong`/`run-sleep`/`run-spin`/`run-respawn`/`run-suspend`), hello (`run-hello`),
-/// ret0 (`run-ret0`) — else exit0.
+/// The one image a one-process boot runs, as its path on the boot volume and its process name: the
+/// first fixture feature in this order — the blocking-wait, timer, preemption, slot-reuse,
+/// suspend, or file smoke (`run-pingpong`/`run-sleep`/`run-spin`/`run-respawn`/`run-suspend`/
+/// `run-fileio`), hello (`run-hello`), ret0 (`run-ret0`) — else exit0. The paths are
+/// root-relative; the lookup folds case, so the lowercase spelling finds the stored uppercase name.
 #[cfg(all(
     target_arch = "x86",
     not(feature = "run-process-suite"),
@@ -223,26 +337,29 @@ pub fn run_user_process() -> ! {
         feature = "fault-test-user",
         feature = "fault-test-badargs",
         feature = "fault-test-segments",
-        feature = "fault-test-threadexit"
+        feature = "fault-test-threadexit",
+        feature = "fault-test-exitio"
     ))
 ))]
 #[allow(unreachable_code)]
 fn boot_image() -> (&'static [u8], &'static str) {
     #[cfg(feature = "run-pingpong")]
-    return (crate::exec::loader::PINGPONG, "pingpong");
+    return (b"pingpong.exe", "pingpong");
     #[cfg(feature = "run-sleep")]
-    return (crate::exec::loader::SLEEP, "sleep");
+    return (b"sleep.exe", "sleep");
     #[cfg(feature = "run-spin")]
-    return (crate::exec::loader::SPIN, "spin");
+    return (b"spin.exe", "spin");
     #[cfg(feature = "run-respawn")]
-    return (crate::exec::loader::RESPAWN, "respawn");
+    return (b"respawn.exe", "respawn");
     #[cfg(feature = "run-suspend")]
-    return (crate::exec::loader::SUSPEND, "suspend");
+    return (b"suspend.exe", "suspend");
+    #[cfg(feature = "run-fileio")]
+    return (b"fileio.exe", "fileio");
     #[cfg(feature = "run-hello")]
-    return (crate::exec::loader::HELLO, "hello");
+    return (b"hello.exe", "hello");
     #[cfg(feature = "run-ret0")]
-    return (crate::exec::loader::RET0, "ret0");
-    (crate::exec::loader::EXIT0, "exit0")
+    return (b"ret0.exe", "ret0");
+    (b"exit0.exe", "exit0")
 }
 
 /// Create the fault-test stub's process — its code and stack pages mapped in the process's own
@@ -252,7 +369,8 @@ fn boot_image() -> (&'static [u8], &'static str) {
     feature = "fault-test-user",
     feature = "fault-test-badargs",
     feature = "fault-test-segments",
-    feature = "fault-test-threadexit"
+    feature = "fault-test-threadexit",
+    feature = "fault-test-exitio"
 ))]
 pub fn run_fault_stub() -> ! {
     use crate::mem::paging;
@@ -276,6 +394,29 @@ pub fn run_fault_stub() -> ! {
         USER_STACK_TOP
     );
     crate::process::threads::enter_as_main_thread(USER_CODE_PAGE, USER_STACK_TOP)
+}
+
+/// The exit-during-read boot's check, on the idle thread after the process's teardown: the volume
+/// must be usable again — its lock free, the drive between commands — so a lookup succeeds.
+#[cfg(all(target_arch = "x86", feature = "fault-test-exitio"))]
+pub fn check_volume_after_teardown() {
+    let found = crate::fs::fat32::volume::with_boot_volume(|volume| {
+        crate::fs::fat32::lookup::lookup(volume, b"hello.exe")
+    });
+    match found {
+        Some(Ok(file)) => {
+            crate::serial_println!(
+                "F2K: exit-during-read: volume usable after teardown (HELLO.EXE, {} bytes)",
+                file.size
+            );
+        }
+        other => {
+            crate::serial_println!(
+                "F2K: exit-during-read: volume unusable after teardown ({:?})",
+                other
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -315,6 +456,46 @@ mod tests {
         expected[12] = 0xEB;
         expected[13] = 0xFE;
         assert_eq!(RING3_STUB, expected);
+    }
+
+    /// The exit-during-read stub: each patch site is a `mov eax, imm32` raising the gate right
+    /// after, carrying its export's service number; the two absolute addresses name the child
+    /// entry and the path string inside the code page.
+    #[test]
+    fn exit_during_read_stub_patches_its_service_numbers() {
+        for (offset, name) in EXIT_DURING_READ_SERVICES {
+            assert_eq!(EXIT_DURING_READ_STUB[offset - 1], 0xB8, "{name}: mov eax");
+            assert_eq!(
+                &EXIT_DURING_READ_STUB[offset + 4..offset + 6],
+                &[0xCD, SYSCALL_VECTOR as u8],
+                "{name}: int"
+            );
+            let number = u32::from_le_bytes(
+                EXIT_DURING_READ_STUB[offset..offset + 4]
+                    .try_into()
+                    .unwrap(),
+            );
+            assert_eq!(
+                crate::compat::kernel32::resolve(name),
+                Some(crate::compat::kernel32::THUNK_PAGE + (number - 1) * 16),
+                "{name}"
+            );
+        }
+        assert_eq!(
+            u32::from_le_bytes(EXIT_DURING_READ_STUB[0x52..0x56].try_into().unwrap()),
+            crate::user::syscall::SYS_EXIT
+        );
+        let child = USER_CODE_PAGE + 0x5A;
+        let path = USER_CODE_PAGE + 0x92;
+        assert_eq!(&EXIT_DURING_READ_STUB[0x29..0x2D], &child.to_le_bytes());
+        assert_eq!(&EXIT_DURING_READ_STUB[0x10..0x14], &path.to_le_bytes());
+        assert_eq!(
+            &EXIT_DURING_READ_STUB[0x5A..0x5E],
+            &[0x8B, 0x5C, 0x24, 0x04]
+        );
+        assert_eq!(&EXIT_DURING_READ_STUB[0x92..], b"hello.exe\0");
+        // The loop's back jump lands on its first instruction.
+        assert_eq!(0x92 + (EXIT_DURING_READ_STUB[0x91] as i8 as i32), 0x66);
     }
 
     /// The fault-test addresses: the kernel-window probe inside the supervisor-only window; the

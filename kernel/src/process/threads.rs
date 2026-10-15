@@ -15,11 +15,16 @@
 //! Terminated;
 //! then the last-thread check routes either to the thread's end or the process's — the last
 //! thread's exit is the process's exit, which the idle thread tears down.
+//!
+//! A thread inside a critical region ([`critical_region`]) is not terminated where it stands: it
+//! may hold the boot volume with its drive mid-command. Its termination is deferred — it finishes
+//! the region, releasing what it holds, and ends itself as it leaves — and the process's end passes
+//! to the last such thread.
 
 use crate::mem::paging;
 use crate::process::exit::{self, Fault, ThreadEnd};
 use crate::process::Process;
-use crate::sched::dispatcher::Dispatcher;
+use crate::sched::dispatcher::{Dispatcher, Termination};
 use crate::sched::thread::{Thread, ThreadState};
 
 /// The number of pages a per-thread user stack spans (the same two pages the main thread's stack
@@ -141,20 +146,42 @@ pub fn exit_thread(exit_status: i32) -> ! {
     end_thread(ThreadEnd::Exit(exit_status))
 }
 
-/// The process-exit path: every other thread of the process is terminated without running again,
-/// then the calling thread ends as the last, and the process with `code`. Never returns.
+/// The process-exit path: every other thread of the process is terminated without running again
+/// (a thread inside a critical region finishes it first), then the calling thread ends, and the
+/// process with `code` — from the last thread. Never returns.
 pub fn exit_process(code: u32) -> ! {
     end_thread(ThreadEnd::ExitProcess(code))
 }
 
 /// A fault raised on the running thread's behalf ends its process: every other thread of the
-/// process is terminated without running again, then this thread ends as the last. Never returns.
+/// process is terminated without running again (a thread inside a critical region finishes it
+/// first), then this thread ends. Never returns.
 pub fn fault_exit(fault: Fault) -> ! {
     end_thread(ThreadEnd::Fault(fault))
 }
 
+/// Run `body` inside a critical region of the running thread: normal kernel APCs (a suspend)
+/// neither break its waits nor deliver until it leaves, and a termination requested meanwhile waits
+/// for it too. The body releases what it holds before the region ends, so a thread whose
+/// termination is pending ends here, as it leaves the outermost region, holding nothing.
+pub fn critical_region<R>(body: impl FnOnce() -> R) -> R {
+    // SAFETY: the running thread, live; the body's waits return on this same thread.
+    unsafe { (*crate::sched::idle::dispatcher().current_thread()).enter_critical_region() };
+    let result = body();
+    // SAFETY: as above.
+    let thread = unsafe { &mut *crate::sched::idle::dispatcher().current_thread() };
+    if thread.leave_critical_region() && thread.termination_pending() {
+        let end = crate::process::current()
+            .handed_end()
+            .expect("a deferred termination has the process's end to hand on");
+        end_thread(ThreadEnd::Terminated(end))
+    }
+    result
+}
+
 /// The one exit path, in its order: the exit service's or a fault's terminations of the other
-/// threads first; then the per-thread teardown (the gate stack is parked for release from another
+/// threads first (the process's end passing to any that finish a critical region first); then the
+/// per-thread teardown (the gate stack is parked for release from another
 /// stack, and an earlier exit's parked stack is released); then the thread object signals and its
 /// waiters wake, the thread leaves the process list and is Terminated; then, for the last thread,
 /// the process's end — the report, the handle table cleared, the end recorded for the idle
@@ -164,10 +191,20 @@ fn end_thread(end: ThreadEnd) -> ! {
     // SAFETY: the running thread, live and exclusive in the gate.
     let current = dispatcher.current_thread();
     let others = crate::process::current().sched.stack_count() - 1;
-    let plan = exit::plan(end, others);
+    let mut plan = exit::plan(end, others);
+    // SAFETY: the running thread, live.
+    assert!(
+        !unsafe { &*current }.in_critical_region(),
+        "a thread ends outside critical regions"
+    );
 
     if plan.terminate_others {
-        terminate_others(current);
+        let deferred = terminate_others(current);
+        let (after, handed) = exit::hand_over(plan, deferred);
+        plan = after;
+        if let Some(end) = handed {
+            crate::process::current_mut().hand_end(end);
+        }
     }
 
     // The per-thread teardown first. The gate stack is the one this code runs on, so it cannot be
@@ -205,7 +242,7 @@ fn end_thread(end: ThreadEnd) -> ! {
             "the process ends with its last thread"
         );
         crate::serial_println!("{}", exit::EndReport { end, leg: leg() });
-        process.handles_mut().clear();
+        process.release_handles();
         process.set_end(end);
     }
 
@@ -221,20 +258,24 @@ fn end_thread(end: ThreadEnd) -> ! {
 
 /// Terminate every thread of the current process but `current` (the running thread), none of them
 /// running again: each is taken off whatever holds it and retired, then its gate stack — not the
-/// one this code runs on — is released here.
-fn terminate_others(current: *mut Thread) {
+/// one this code runs on — is released here. A thread inside a critical region is the exception: it
+/// runs on to the region's end and ends itself there. Returns how many were deferred so.
+fn terminate_others(current: *mut Thread) -> u16 {
     let dispatcher = crate::sched::idle::dispatcher();
+    let mut deferred = 0;
     loop {
         let process = crate::process::current_mut();
         let other = process.sched.first_thread_except(current);
         if other.is_null() {
-            break;
+            return deferred;
         }
         // SAFETY: an attached thread of this process, off the processor; the record outlives its
         // termination (pool records are never reused, the main thread's lives in the process).
         let other = unsafe { &mut *other };
-        dispatcher.terminate_other(other);
-        release_gate_stack(process, (other.gate_slot, other.gate_frames));
+        match dispatcher.request_termination(other) {
+            Termination::Done => release_gate_stack(process, (other.gate_slot, other.gate_frames)),
+            Termination::Deferred => deferred += 1,
+        }
     }
 }
 

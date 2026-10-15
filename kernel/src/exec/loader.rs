@@ -1,63 +1,110 @@
-//! Kernel-side image loader: run a PE32 file as the user process.
+//! Kernel-side image loader: run a PE32 file from the boot volume as the user process.
 //!
-//! [`load_image`] parses, stages the in-memory image, snaps the IAT against the kernel-synthesized
-//! kernel32, maps the pages with their final protections, and returns the entry point: the caller
-//! enters the process as its main thread, which the scheduler starts there.
+//! [`load_path`] reads the program's file off the boot volume by its path into a raw-file staging
+//! buffer; [`load_image`] then parses it, stages the in-memory image, snaps the IAT against the
+//! kernel-synthesized kernel32, maps the pages with their final protections, and returns the
+//! entry point: the caller enters the process as its main thread, which the scheduler starts there.
 //!
-//! Quirk: the image is built in a staging buffer — a borrowed static, not a stack frame — because
-//! the loader runs on the small boot stack. The snap happens in staging, before mapping: mapped
-//! pages carry their final protection and ring-0 writes must not touch them.
+//! Quirk: the file and the image are built in staging buffers — borrowed statics, not stack frames
+//! — because the loader runs on the small boot stack. The snap happens in staging, before mapping:
+//! mapped pages carry their final protection and ring-0 writes must not touch them.
+
+use core::fmt;
 
 use crate::exec::pe::{self, Image};
+use crate::fs::fat32::lookup::{lookup, LookupError};
+use crate::fs::fat32::read::read;
+use crate::fs::fat32::volume::Volume;
+use crate::status::{nt_success, NtStatus};
 
-/// The first corpus fixture: no CRT, one import (`ExitProcess`).
-pub const EXIT0: &[u8] = include_bytes!("../../../tests/exit0/exit0.exe");
+/// The raw-file staging size: the largest program file the loader reads (the corpus's biggest
+/// fixture file is 0x7000 bytes).
+const FILE_STAGING_SIZE: usize = 0x8000;
 
-/// The second corpus fixture: full CRT startup, 35 KERNEL32.dll imports (run with the `run-ret0`
-/// feature).
-pub const RET0: &[u8] = include_bytes!("../../../tests/ret0/ret0.exe");
+/// Staging for the program's file as read off the volume (see the module doc).
+#[cfg(target_arch = "x86")]
+static mut FILE_STAGING: crate::mem::paging::Aligned<[u8; FILE_STAGING_SIZE]> =
+    crate::mem::paging::Aligned([0; FILE_STAGING_SIZE]);
 
-/// The console fixture: the ret0 CRT startup plus printf to stdout, 40 KERNEL32.dll imports (run
-/// with the `run-hello` feature).
-#[cfg(feature = "run-hello")]
-pub const HELLO: &[u8] = include_bytes!("../../../tests/hello/hello.exe");
+/// Why a program's file could not be read off the volume.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FileError {
+    /// The path did not resolve.
+    Lookup(LookupError),
+    /// The path names a directory.
+    Directory,
+    /// The file (its size in bytes) is larger than the raw staging buffer.
+    TooLarge(u32),
+    /// The chain read failed: corruption, or the device.
+    Read(NtStatus),
+}
 
-/// The blocking-wait smoke fixture: two auto-reset events and a child thread alternate strictly for
-/// five turns (embedded for the `run-pingpong` feature).
-#[cfg(feature = "run-pingpong")]
-pub const PINGPONG: &[u8] = include_bytes!("../../../tests/pingpong/pingpong.exe");
+impl fmt::Display for FileError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            FileError::Lookup(error) => write!(
+                f,
+                "lookup failed ({:?}, status {:#010x})",
+                error,
+                error.status() as u32
+            ),
+            FileError::Directory => write!(f, "a directory, not a file"),
+            FileError::TooLarge(size) => write!(
+                f,
+                "{} bytes exceed the file staging ({} bytes)",
+                size, FILE_STAGING_SIZE
+            ),
+            FileError::Read(status) => write!(f, "read failed (status {:#010x})", status as u32),
+        }
+    }
+}
 
-/// The timer smoke fixture: Sleep and a timed wait report their spans through GetTickCount
-/// (embedded for the `run-sleep` feature).
-#[cfg(feature = "run-sleep")]
-pub const SLEEP: &[u8] = include_bytes!("../../../tests/sleep/sleep.exe");
+/// Read the file at `path` (root-relative, see the FAT path layer) into the start of `buffer`,
+/// which bounds the size accepted. Returns the file's length.
+pub fn read_image_file(
+    volume: &mut Volume,
+    path: &[u8],
+    buffer: &mut [u8],
+) -> Result<usize, FileError> {
+    let file = lookup(volume, path).map_err(FileError::Lookup)?;
+    if file.directory {
+        return Err(FileError::Directory);
+    }
+    if file.size as usize > buffer.len() {
+        return Err(FileError::TooLarge(file.size));
+    }
+    let status = read(volume, &file, buffer);
+    if !nt_success(status) {
+        return Err(FileError::Read(status));
+    }
+    Ok(file.size as usize)
+}
 
-/// The preemption smoke fixture: same-priority spinners alternate at quantum ends and a raised
-/// thread runs uninterrupted (embedded for the `run-spin` feature).
-#[cfg(feature = "run-spin")]
-pub const SPIN: &[u8] = include_bytes!("../../../tests/spin/spin.exe");
-
-/// The suspend/resume smoke fixture: a worker is suspended through its builtin APC, proven frozen
-/// across a sleep, and resumed to finish (embedded for the `run-suspend` feature).
-#[cfg(feature = "run-suspend")]
-pub const SUSPEND: &[u8] = include_bytes!("../../../tests/suspend/suspend.exe");
-
-/// The thread-slot reuse smoke fixture: three rounds of create, wait, close, one child alive at a
-/// time, so every child after the first reuses the gate-stack resources the previous one released
-/// at its exit (embedded for the `run-respawn` feature).
-#[cfg(feature = "run-respawn")]
-pub const RESPAWN: &[u8] = include_bytes!("../../../tests/respawn/respawn.exe");
-
-/// The fresh-memory fixture: no CRT, one import; its `.bss` is all zero on a fresh process and the
-/// double run in the suite proves teardown re-zeroes frames (embedded for the `run-process-suite`
-/// feature).
-#[cfg(feature = "run-process-suite")]
-pub const BSSCHECK: &[u8] = include_bytes!("../../../tests/bsscheck/bsscheck.exe");
-
-/// The fault-containment fixture: no imports at all, faults through the NULL page as its first act
-/// (embedded for the `run-process-suite` feature).
-#[cfg(feature = "run-process-suite")]
-pub const CRASH: &[u8] = include_bytes!("../../../tests/crash/crash.exe");
+/// Load the program at `path` on the boot volume as the new current process (see [`load_image`])
+/// and return its entry point. A file that cannot be read is reported on COM1 and halts, as a
+/// rejected image does. The read blocks on the disk: the boot context halts between interrupts
+/// until it completes.
+#[cfg(target_arch = "x86")]
+pub fn load_path(path: &'static [u8], name: &'static str) -> u32 {
+    // SAFETY: single-threaded boot (or the idle thread's reap step), the only staging user.
+    let staging = unsafe { &mut (*core::ptr::addr_of_mut!(FILE_STAGING)).0 };
+    let shown = core::str::from_utf8(path).unwrap_or("(not ASCII)");
+    let read = crate::fs::fat32::volume::with_boot_volume(|volume| {
+        read_image_file(volume, path, &mut staging[..])
+    });
+    let length = match read {
+        Some(Ok(length)) => length,
+        Some(Err(error)) => {
+            crate::serial_println!("F2K: image file {} not loaded: {}", shown, error);
+            crate::halt()
+        }
+        None => {
+            crate::serial_println!("F2K: image file {} not loaded: no boot volume", shown);
+            crate::halt()
+        }
+    };
+    load_image(&staging[..length], path, name)
+}
 
 /// The staging buffer size: the largest image the loader accepts (the corpus's biggest fixture is
 /// 0x8000).
@@ -83,9 +130,10 @@ fn page_writable(image: &Image, page_rva: u32) -> bool {
 
 /// Load `file` as the new current process — parse, stage, create the process, snap the imports,
 /// map the image, stack, TEB and parameters pages — and return its entry point for the main
-/// thread's ladder. `name` stages the parameters page.
+/// thread's ladder. `name` names the process and stages the command line; `path`, the file's volume
+/// path, stages the module file name.
 #[cfg(target_arch = "x86")]
-pub fn load_image(file: &[u8], name: &'static str) -> u32 {
+pub fn load_image(file: &[u8], path: &[u8], name: &'static str) -> u32 {
     use crate::mem::paging::{self, PAGE_SIZE};
     use crate::user::{TEB_PAGE, USER_STACK_LOW_PAGE, USER_STACK_PAGE, USER_STACK_TOP};
 
@@ -158,7 +206,7 @@ pub fn load_image(file: &[u8], name: &'static str) -> u32 {
     paging::map_user_page(TEB_PAGE, teb_frame, true);
 
     // The process parameters page (staged replays).
-    crate::compat::kernel32::init_params(name);
+    crate::compat::kernel32::init_params(name, path);
 
     crate::serial_println!(
         "F2K: image loaded (entry {:#010x}, {} pages, {} imports snapped)",
@@ -177,35 +225,52 @@ pub fn load_image(file: &[u8], name: &'static str) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fs::fat32::fixtures::{record, Crafted};
     use crate::mem::paging::PAGE_SIZE;
+    use crate::status::{STATUS_FILE_CORRUPT_ERROR, STATUS_NO_SUCH_FILE};
 
+    const EXIT0: &[u8] = include_bytes!("../../../tests/exit0/exit0.exe");
     const RET0: &[u8] = include_bytes!("../../../tests/ret0/ret0.exe");
 
-    /// All fixtures fit the staging buffer, page-aligned.
+    /// The corpus the disk carries (see the Makefile's disk target), by fixture name.
+    const CORPUS: [(&str, &[u8]); 11] = [
+        ("hello", include_bytes!("../../../tests/hello/hello.exe")),
+        ("exit0", EXIT0),
+        ("ret0", RET0),
+        (
+            "pingpong",
+            include_bytes!("../../../tests/pingpong/pingpong.exe"),
+        ),
+        ("sleep", include_bytes!("../../../tests/sleep/sleep.exe")),
+        ("spin", include_bytes!("../../../tests/spin/spin.exe")),
+        (
+            "suspend",
+            include_bytes!("../../../tests/suspend/suspend.exe"),
+        ),
+        (
+            "respawn",
+            include_bytes!("../../../tests/respawn/respawn.exe"),
+        ),
+        (
+            "bsscheck",
+            include_bytes!("../../../tests/bsscheck/bsscheck.exe"),
+        ),
+        ("crash", include_bytes!("../../../tests/crash/crash.exe")),
+        ("fileio", include_bytes!("../../../tests/fileio/fileio.exe")),
+    ];
+
+    /// Every corpus file fits the file staging, and every image it describes fits the image
+    /// staging, page-aligned.
     #[test]
     fn fixtures_fit_staging() {
-        for file in [EXIT0, RET0] {
+        for (name, file) in CORPUS {
+            assert!(file.len() <= FILE_STAGING_SIZE, "{name}'s file");
             let image = Image::parse(file).expect("fixture parses");
-            assert_eq!(image.size_of_image % PAGE_SIZE, 0);
-            assert!(image.size_of_image as usize <= STAGING_SIZE);
-        }
-        #[cfg(feature = "run-hello")]
-        {
-            let image = Image::parse(HELLO).expect("hello parses");
-            assert_eq!(image.size_of_image % PAGE_SIZE, 0);
-            assert!(image.size_of_image as usize <= STAGING_SIZE);
-        }
-        #[cfg(feature = "run-process-suite")]
-        for file in [BSSCHECK, CRASH] {
-            let image = Image::parse(file).expect("suite fixture parses");
-            assert_eq!(image.size_of_image % PAGE_SIZE, 0);
-            assert!(image.size_of_image as usize <= STAGING_SIZE);
-        }
-        #[cfg(feature = "run-respawn")]
-        {
-            let image = Image::parse(RESPAWN).expect("respawn parses");
-            assert_eq!(image.size_of_image % PAGE_SIZE, 0);
-            assert!(image.size_of_image as usize <= STAGING_SIZE);
+            assert_eq!(image.size_of_image % PAGE_SIZE, 0, "{name}");
+            assert!(
+                image.size_of_image as usize <= STAGING_SIZE,
+                "{name}'s image"
+            );
         }
     }
 
@@ -238,5 +303,105 @@ mod tests {
         assert!(!page_writable(&ret0, 0));
         assert!(page_writable(&ret0, 0x5000));
         assert!(!page_writable(&ret0, 0x4000));
+    }
+
+    const FILE: u8 = 0x20;
+    const DIR: u8 = 0x10;
+
+    /// A crafted volume (1-sector clusters) whose root holds `EXIT0.EXE` — the real fixture, along
+    /// clusters 3.. — a subdirectory, and `EMPTY.BIN`.
+    fn volume_with_exit0() -> (Crafted, u32) {
+        let clusters = EXIT0.len().div_ceil(512) as u32;
+        let chain: Vec<u32> = (3..3 + clusters).collect();
+        let mut crafted = Crafted::new(1, 2 + clusters as usize + 1);
+        crafted.chain(&chain);
+        for (cluster, piece) in chain.iter().zip(EXIT0.chunks(512)) {
+            crafted.cluster(*cluster, piece);
+        }
+        let sub = 3 + clusters;
+        crafted.directory(
+            2,
+            &[
+                record(b"EXIT0   EXE", FILE, 3, EXIT0.len() as u32),
+                record(b"SUB        ", DIR, sub, 0),
+                record(b"EMPTY   BIN", FILE, 0, 0),
+            ],
+        );
+        (crafted, sub)
+    }
+
+    /// The loader's read: the path as the boots spell it (lowercase; the stored name is uppercase)
+    /// delivers the fixture's bytes, which parse as the image.
+    #[test]
+    fn a_program_is_read_by_its_path() {
+        let (crafted, _) = volume_with_exit0();
+        let mut volume = Volume::mount(crafted.device()).unwrap();
+        let mut buffer = vec![0u8; FILE_STAGING_SIZE];
+        let length = read_image_file(&mut volume, b"exit0.exe", &mut buffer).unwrap();
+        assert_eq!(&buffer[..length], EXIT0);
+        assert_eq!(
+            Image::parse(&buffer[..length]).unwrap().entry_va(),
+            0x0040_1000
+        );
+
+        let empty = read_image_file(&mut volume, b"EMPTY.BIN", &mut buffer);
+        assert_eq!(
+            empty,
+            Ok(0),
+            "an empty file reads as nothing (the parse refuses it)"
+        );
+    }
+
+    /// The refusals, each distinct: a missing file, a malformed path, a directory, a file larger
+    /// than the staging, and a corrupt chain.
+    #[test]
+    fn unreadable_programs_are_refused() {
+        let (mut crafted, _) = volume_with_exit0();
+        let mut volume = Volume::mount(crafted.device()).unwrap();
+        let mut buffer = vec![0u8; FILE_STAGING_SIZE];
+        assert_eq!(
+            read_image_file(&mut volume, b"missing.exe", &mut buffer),
+            Err(FileError::Lookup(LookupError::NotFound))
+        );
+        assert_eq!(
+            read_image_file(&mut volume, b"not-an-8.3-name.exe", &mut buffer),
+            Err(FileError::Lookup(LookupError::Invalid))
+        );
+        assert_eq!(
+            read_image_file(&mut volume, b"sub", &mut buffer),
+            Err(FileError::Directory)
+        );
+        assert_eq!(
+            read_image_file(&mut volume, b"exit0.exe", &mut buffer[..EXIT0.len() - 1]),
+            Err(FileError::TooLarge(EXIT0.len() as u32))
+        );
+
+        crafted.fat(5, 0);
+        let mut broken = Volume::mount(crafted.device()).unwrap();
+        assert_eq!(
+            read_image_file(&mut broken, b"exit0.exe", &mut buffer),
+            Err(FileError::Read(STATUS_FILE_CORRUPT_ERROR))
+        );
+    }
+
+    /// The COM1 wording of each refusal carries its status.
+    #[test]
+    fn refusals_report_their_status() {
+        assert_eq!(
+            FileError::Lookup(LookupError::NotFound).to_string(),
+            format!(
+                "lookup failed (NotFound, status {:#010x})",
+                STATUS_NO_SUCH_FILE as u32
+            )
+        );
+        assert_eq!(FileError::Directory.to_string(), "a directory, not a file");
+        assert_eq!(
+            FileError::TooLarge(40_000).to_string(),
+            "40000 bytes exceed the file staging (32768 bytes)"
+        );
+        assert_eq!(
+            FileError::Read(STATUS_FILE_CORRUPT_ERROR).to_string(),
+            "read failed (status 0xc0000102)"
+        );
     }
 }

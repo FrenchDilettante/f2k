@@ -48,7 +48,8 @@ make qemu_iso    # Boot ISO in QEMU
 ```
 
 ### QEMU (Direct kernel)
-The kernel is a Multiboot 1 ELF, so QEMU can load it without a bootloader:
+The kernel is a Multiboot 1 ELF, so QEMU can load it without a bootloader (the disk image is
+still attached: the kernel loads its programs from the disk's volume):
 ```bash
 make qemu        # Exit with Ctrl-A X
 ```
@@ -153,7 +154,7 @@ f2k/
 | Target | Description |
 |--------|-------------|
 | `make kernel` | Build the kernel (ELF) |
-| `make qemu` | Build the kernel and boot it directly in QEMU |
+| `make qemu` | Build the disk and boot the kernel directly in QEMU, the disk attached |
 | `make test` | Run the on-target QEMU suite (kernel path) |
 | `make test-disk` | Run the on-target QEMU suite (Limine disk path) |
 | `make run-tests` | Run host unit tests |

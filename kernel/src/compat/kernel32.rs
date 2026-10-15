@@ -9,6 +9,7 @@
 //! Quirk: kernel pages are supervisor-only, so the stubs must live in user memory — tiny user-mode
 //! stub pages for now, an ntdll-like user layer eventually.
 
+use crate::fs::file::SeekMethod;
 use crate::user::syscall::{read_user, write_user, ServiceFn, SYS_EXIT};
 use crate::user::{PARAMS_PAGE, TEB_PAGE};
 
@@ -41,6 +42,16 @@ const STD_INPUT: u32 = 3;
 const STD_OUTPUT: u32 = 0x07;
 const STD_ERROR: u32 = 0x0B;
 const INVALID_HANDLE_VALUE: u32 = 0xFFFF_FFFF;
+/// SetFilePointer's failure return.
+const INVALID_SET_FILE_POINTER: u32 = 0xFFFF_FFFF;
+/// CreateFileA's read access right.
+const GENERIC_READ: u32 = 0x8000_0000;
+/// CreateFileA's open-an-existing-file disposition.
+const OPEN_EXISTING: u32 = 3;
+/// CreateFileA's overlapped-I/O flag.
+const FILE_FLAG_OVERLAPPED: u32 = 0x4000_0000;
+/// The ANSI path limit, terminator included.
+const MAX_PATH: usize = 260;
 
 /// GetFileType's replay for the standard handles: character device.
 const FILE_TYPE_CHAR: u32 = 2;
@@ -88,8 +99,10 @@ const CPINFO: [u8; 18] = {
 pub const CMDLINE_OFFSET: u32 = 0x00;
 /// Offset of the wide environment block; the empty replay is the lone double-NUL terminator.
 pub const ENV_OFFSET: u32 = 0x40;
-/// Offset of the module file name ("ret0.exe"), NUL-terminated.
+/// Offset of the module file name (the image's volume path, "ret0.exe"), NUL-terminated.
 pub const MODULE_OFFSET: u32 = 0x80;
+/// The module file name's staging room, terminator included.
+pub const MODULE_ROOM: usize = 64;
 
 // --- Services -------------------------------------------------------
 
@@ -224,7 +237,7 @@ fn svc_get_module_file_name(frame: &mut crate::user::TrapFrame, args: &[u32]) {
     }
     // The staged name lives in the kernel-written parameters page; walking to its NUL is a
     // kernel-side read of our own data.
-    let mut name = [0u8; 64];
+    let mut name = [0u8; MODULE_ROOM];
     let mut len = 0;
     while len < name.len() {
         // SAFETY: the parameters page is mapped and kernel-written before ring 3 is entered;
@@ -536,20 +549,20 @@ fn svc_virtual_free(frame: &mut crate::user::TrapFrame, _args: &[u32]) {
     frame.eax = 1;
 }
 
-/// CloseHandle: release the table's claim on the handle. The object itself lives on (a waiter
-/// parked on it stays parked); a close that names nothing is refused.
+/// CloseHandle: release the table's claim on the handle, and an open file's record with it. The
+/// object itself lives on (a waiter parked on it stays parked); a close that names nothing is
+/// refused.
 fn svc_close_handle(frame: &mut crate::user::TrapFrame, args: &[u32]) {
     #[cfg(target_arch = "x86")]
     {
         // The console handles are fixed replays with no table claim: closing one succeeds and
         // changes nothing.
-        frame.eax = if is_console_handle(args[0])
-            || crate::process::current_mut().handles_mut().close(args[0])
-        {
-            1
-        } else {
-            0
-        };
+        frame.eax =
+            if is_console_handle(args[0]) || crate::process::current_mut().close_handle(args[0]) {
+                1
+            } else {
+                0
+            };
     }
     #[cfg(not(target_arch = "x86"))]
     {
@@ -635,10 +648,7 @@ fn svc_create_event_a(frame: &mut crate::user::TrapFrame, args: &[u32]) {
             frame.eax = 0;
             return;
         };
-        let slot = crate::sched::object::Slot {
-            kind: crate::sched::object::ObjectKind::Event,
-            waitable: event.waitable(),
-        };
+        let slot = crate::sched::object::Slot::Event(event.waitable());
         frame.eax = crate::process::current_mut().handles_mut().insert(slot);
     }
     #[cfg(not(target_arch = "x86"))]
@@ -656,13 +666,13 @@ fn svc_set_event(frame: &mut crate::user::TrapFrame, args: &[u32]) {
             frame.eax = 0;
             return;
         };
-        if slot.kind != crate::sched::object::ObjectKind::Event {
+        let crate::sched::object::Slot::Event(waitable) = slot else {
             frame.eax = 0;
             return;
-        }
+        };
         // The event's waitable header leads the record, so the table's waitable pointer is the
         // event itself.
-        let event = unsafe { &mut *(slot.waitable as *mut crate::sched::event::Event) };
+        let event = unsafe { &mut *(waitable as *mut crate::sched::event::Event) };
         event.set(
             crate::sched::idle::dispatcher(),
             crate::sched::event::EVENT_WAKE_INCREMENT,
@@ -683,29 +693,27 @@ fn svc_set_event(frame: &mut crate::user::TrapFrame, args: &[u32]) {
 fn svc_wait_for_single_object(frame: &mut crate::user::TrapFrame, args: &[u32]) {
     #[cfg(target_arch = "x86")]
     {
-        let Some(slot) = object_slot(args[0]) else {
+        // A file handle names no waitable object on this surface: the wait fails like a bad handle.
+        let Some(waitable) = object_slot(args[0]).and_then(|slot| slot.waitable()) else {
             frame.eax = WAIT_FAILED;
             return;
         };
         // The wait runs through the shared blocking entry: a kernel APC breaks the wait and the
         // entry replays it after the delivery, the deadline preserved.
-        let waitable = slot.waitable;
         let timeout = format_timeout(args[1]);
-        let status = crate::sched::wait::wait_current_with(
-            |dispatcher, thread, stamp, replay| {
-                let timeout =
-                    crate::sched::wait::replay_timeout(thread, replay, timeout, stamp.system_time);
-                dispatcher.wait_single(
-                    thread,
-                    waitable,
-                    crate::sched::wait::WaitReason::UserRequest,
-                    crate::sched::wait::WaitMode::User,
-                    false,
-                    timeout,
-                    stamp,
-                )
-            },
-        );
+        let status = crate::sched::wait::wait_current_with(|dispatcher, thread, stamp, replay| {
+            let timeout =
+                crate::sched::wait::replay_timeout(thread, replay, timeout, stamp.system_time);
+            dispatcher.wait_single(
+                thread,
+                waitable,
+                crate::sched::wait::WaitReason::UserRequest,
+                crate::sched::wait::WaitMode::User,
+                false,
+                timeout,
+                stamp,
+            )
+        });
         frame.eax = status as u32;
     }
     #[cfg(not(target_arch = "x86"))]
@@ -725,25 +733,20 @@ fn svc_sleep(frame: &mut crate::user::TrapFrame, args: &[u32]) {
         let interval = sleep_interval(args[0]);
         // The delay runs through the shared blocking entry: a kernel APC breaks the sleep and the
         // entry replays it with the remaining time — the wake time never slips.
-        let status = crate::sched::wait::wait_current_with(
-            |dispatcher, thread, stamp, replay| {
-                let interval = if replay {
-                    crate::sched::wait::replay_interval(
-                        thread.timer.due_time,
-                        stamp.system_time,
-                    )
-                } else {
-                    interval
-                };
-                dispatcher.delay(
-                    thread,
-                    crate::sched::wait::WaitMode::User,
-                    false,
-                    interval,
-                    stamp,
-                )
-            },
-        );
+        let status = crate::sched::wait::wait_current_with(|dispatcher, thread, stamp, replay| {
+            let interval = if replay {
+                crate::sched::wait::replay_interval(thread.timer.due_time, stamp.system_time)
+            } else {
+                interval
+            };
+            dispatcher.delay(
+                thread,
+                crate::sched::wait::WaitMode::User,
+                false,
+                interval,
+                stamp,
+            )
+        });
         frame.eax = crate::sched::dispatcher::Dispatcher::delay_completed(status) as u32;
     }
     #[cfg(not(target_arch = "x86"))]
@@ -794,10 +797,7 @@ fn svc_create_thread(frame: &mut crate::user::TrapFrame, args: &[u32]) {
         };
         let process = crate::process::current_mut();
         // SAFETY: the created thread's record is at its final address for its life.
-        let slot = crate::sched::object::Slot {
-            kind: crate::sched::object::ObjectKind::Thread,
-            waitable: unsafe { (*thread).waitable() },
-        };
+        let slot = crate::sched::object::Slot::Thread(unsafe { (*thread).waitable() });
         let handle = process.handles_mut().insert(slot);
         assert_ne!(handle, 0, "the table had a free slot before the spawn");
         if thread_id_out != 0 {
@@ -848,13 +848,13 @@ fn svc_set_thread_priority(frame: &mut crate::user::TrapFrame, args: &[u32]) {
             frame.eax = 0;
             return;
         };
-        if slot.kind != crate::sched::object::ObjectKind::Thread {
+        let crate::sched::object::Slot::Thread(waitable) = slot else {
             frame.eax = 0;
             return;
-        }
+        };
         let dispatcher = crate::sched::idle::dispatcher();
         // SAFETY: the slot's kind names a thread, and the record lives for the process's lifetime.
-        let thread = unsafe { &mut *crate::sched::thread::Thread::from_waitable(slot.waitable) };
+        let thread = unsafe { &mut *crate::sched::thread::Thread::from_waitable(waitable) };
         dispatcher.set_base_priority(thread, increment);
         frame.eax = 1;
     }
@@ -865,10 +865,148 @@ fn svc_set_thread_priority(frame: &mut crate::user::TrapFrame, args: &[u32]) {
     }
 }
 
-/// SetFilePointer: failure floor — no file handle exists to seek, so the documented failure return
-/// INVALID_SET_FILE_POINTER is the honest answer.
-fn svc_set_file_pointer(frame: &mut crate::user::TrapFrame, _args: &[u32]) {
-    frame.eax = u32::MAX;
+/// SetFilePointer: move a file handle's position `lDistanceToMove` (signed) bytes from the start,
+/// the current position, or the end, and return the new position. Past the end is legal; a target
+/// before the start, a bad move method, and any handle that names no open file return
+/// INVALID_SET_FILE_POINTER. The high-word pointer is accepted and ignored: positions are 32-bit.
+fn svc_set_file_pointer(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    let (handle, distance, _distance_high, method) = (args[0], args[1] as i32, args[2], args[3]);
+    frame.eax = match (SeekMethod::from_raw(method), open_file(handle)) {
+        (Some(method), Some(file)) => file
+            .seek(distance, method)
+            .unwrap_or(INVALID_SET_FILE_POINTER),
+        _ => INVALID_SET_FILE_POINTER,
+    };
+}
+
+/// The open file a handle names in the current process; none for a console handle or any handle
+/// that names no file.
+#[cfg(target_arch = "x86")]
+fn open_file(handle: u32) -> Option<&'static mut crate::fs::file::OpenFile> {
+    if is_console_handle(handle) {
+        return None;
+    }
+    crate::process::current_mut().file_mut(handle)
+}
+
+/// Host builds have no process: no handle names an open file.
+#[cfg(not(target_arch = "x86"))]
+fn open_file(_handle: u32) -> Option<&'static mut crate::fs::file::OpenFile> {
+    None
+}
+
+/// Whether CreateFileA's request is one this read-only surface serves: read access to an existing
+/// file, not overlapped. The share mode is not enforced, and the attribute bits matter only to a
+/// creation, which is never one.
+fn is_supported_open(access: u32, disposition: u32, flags: u32) -> bool {
+    access == GENERIC_READ && disposition == OPEN_EXISTING && flags & FILE_FLAG_OVERLAPPED == 0
+}
+
+/// CreateFileA: open an existing file on the boot volume for reading. The path resolves as the
+/// loader's does: root-relative, 8.3, case-folded. A new handle on success; INVALID_HANDLE_VALUE for
+/// any other request, a path that does not resolve or names a directory, or a full table.
+fn svc_create_file_a(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    let (name, access, _share, _security, disposition, flags, _template) = (
+        args[0], args[1], args[2], args[3], args[4], args[5], args[6],
+    );
+    frame.eax = INVALID_HANDLE_VALUE;
+    if !is_supported_open(access, disposition, flags) {
+        return;
+    }
+    // The path is copied out of user memory before the volume is taken: a fault in the copy ends
+    // the process, which must not happen while it holds the volume.
+    let mut path = [0u8; MAX_PATH];
+    let Some(length) = walk_narrow(name).map(|length| length as usize - 1) else {
+        return;
+    };
+    if length >= MAX_PATH || read_user(name, &mut path[..length]).is_err() {
+        return;
+    }
+    #[cfg(target_arch = "x86")]
+    {
+        let found = crate::fs::fat32::volume::with_boot_volume(|volume| {
+            crate::fs::fat32::lookup::lookup(volume, &path[..length])
+        });
+        if let Some(Ok(file)) = found {
+            if !file.directory {
+                let handle = crate::process::current_mut().open_file(file);
+                if handle != 0 {
+                    frame.eax = handle;
+                }
+            }
+        }
+    }
+    #[cfg(not(target_arch = "x86"))]
+    let _ = path;
+}
+
+/// The bounce chunk ReadFile moves file bytes through: read off the volume into the kernel, then
+/// copied out to the caller once the volume is released.
+const READ_CHUNK: usize = 512;
+
+/// ReadFile: read from a file handle's position into the caller's buffer — what remains before the
+/// end, at most the request — store the count moved, and advance the position. A read at or past
+/// the end moves nothing and succeeds. Overlapped requests and every handle that names no open file
+/// fail; a bad buffer or count pointer ends the process, not the kernel.
+fn svc_read_file(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    let (handle, buffer, count, read_out, overlapped) =
+        (args[0], args[1], args[2], args[3], args[4]);
+    frame.eax = 0; // FALSE until the read completes
+    if overlapped != 0 {
+        return;
+    }
+    // A copy: the volume read blocks, and the record is not held across it.
+    let Some(start) = open_file(handle).map(|open| *open) else {
+        return;
+    };
+    let wanted = start.available(count);
+    let mut moved = 0u32;
+    while moved < wanted {
+        let take = (wanted - moved).min(READ_CHUNK as u32) as usize;
+        let mut chunk = [0u8; READ_CHUNK];
+        let Some(got) = read_volume(&start.file, start.position + moved, &mut chunk[..take]) else {
+            break;
+        };
+        if write_user(buffer.wrapping_add(moved), &chunk[..got]).is_err() {
+            break;
+        }
+        moved += got as u32;
+    }
+    // The position advances by what reached the caller, so a failed read leaves it after the bytes
+    // delivered. A handle closed meanwhile has no position left to advance.
+    if let Some(open) = open_file(handle) {
+        open.position = start.position + moved;
+    }
+    if read_out != 0 && write_user(read_out, &moved.to_le_bytes()).is_err() {
+        return;
+    }
+    if moved == wanted {
+        frame.eax = 1;
+    }
+}
+
+/// Read `out.len()` bytes of `file` from `offset` off the boot volume; none when the volume is
+/// missing or the read fails, or when it comes up short (the size said the bytes were there).
+#[cfg(target_arch = "x86")]
+fn read_volume(
+    file: &crate::fs::fat32::lookup::File,
+    offset: u32,
+    out: &mut [u8],
+) -> Option<usize> {
+    let read = crate::fs::fat32::volume::with_boot_volume(|volume| {
+        crate::fs::fat32::read::read_at(volume, file, offset, out)
+    })?;
+    read.ok().filter(|&got| got == out.len())
+}
+
+/// Host builds have no boot volume.
+#[cfg(not(target_arch = "x86"))]
+fn read_volume(
+    _file: &crate::fs::fat32::lookup::File,
+    _offset: u32,
+    _out: &mut [u8],
+) -> Option<usize> {
+    None
 }
 
 /// SuspendThread: bump the target thread's suspend count and arm its builtin suspend APC — the
@@ -882,13 +1020,13 @@ fn svc_suspend_thread(frame: &mut crate::user::TrapFrame, args: &[u32]) {
             frame.eax = u32::MAX;
             return;
         };
-        if slot.kind != crate::sched::object::ObjectKind::Thread {
+        let crate::sched::object::Slot::Thread(waitable) = slot else {
             frame.eax = u32::MAX;
             return;
-        }
+        };
         let dispatcher = crate::sched::idle::dispatcher();
         // SAFETY: the slot's kind names a thread, and the record lives for the process's lifetime.
-        let thread = unsafe { &mut *crate::sched::thread::Thread::from_waitable(slot.waitable) };
+        let thread = unsafe { &mut *crate::sched::thread::Thread::from_waitable(waitable) };
         if thread.state() == crate::sched::thread::ThreadState::Terminated {
             frame.eax = u32::MAX;
             return;
@@ -917,13 +1055,13 @@ fn svc_resume_thread(frame: &mut crate::user::TrapFrame, args: &[u32]) {
             frame.eax = u32::MAX;
             return;
         };
-        if slot.kind != crate::sched::object::ObjectKind::Thread {
+        let crate::sched::object::Slot::Thread(waitable) = slot else {
             frame.eax = u32::MAX;
             return;
-        }
+        };
         let dispatcher = crate::sched::idle::dispatcher();
         // SAFETY: the slot's kind names a thread, and the record lives for the process's lifetime.
-        let thread = unsafe { &mut *crate::sched::thread::Thread::from_waitable(slot.waitable) };
+        let thread = unsafe { &mut *crate::sched::thread::Thread::from_waitable(waitable) };
         if thread.state() == crate::sched::thread::ThreadState::Terminated {
             frame.eax = u32::MAX;
             return;
@@ -953,10 +1091,11 @@ fn svc_get_current_process(frame: &mut crate::user::TrapFrame, _args: &[u32]) {
 /// plus one; ExitProcess is pinned at service 1, the rest alphabetical). Quirk: a name absent from
 /// here fails the loader's snap, so this set is exactly the union of the checked-in fixtures'
 /// import surfaces.
-pub const SERVICES: [(&str, u32, ServiceFn); 49] = [
+pub const SERVICES: [(&str, u32, ServiceFn); 51] = [
     ("ExitProcess", 4, svc_exit_process),
     ("CloseHandle", 4, svc_close_handle),
     ("CreateEventA", 16, svc_create_event_a),
+    ("CreateFileA", 28, svc_create_file_a),
     ("CreateThread", 24, svc_create_thread),
     ("FlushFileBuffers", 4, svc_flush_file_buffers),
     ("FreeEnvironmentStringsA", 4, svc_free_environment_strings),
@@ -987,6 +1126,7 @@ pub const SERVICES: [(&str, u32, ServiceFn); 49] = [
     ("LCMapStringW", 24, svc_lc_map_string_w),
     ("LoadLibraryA", 4, svc_floor_zero),
     ("MultiByteToWideChar", 24, svc_multi_byte_to_wide_char),
+    ("ReadFile", 20, svc_read_file),
     ("ResumeThread", 4, svc_resume_thread),
     ("RtlUnwind", 16, svc_floor_zero),
     ("SetEvent", 4, svc_set_event),
@@ -1004,6 +1144,34 @@ pub const SERVICES: [(&str, u32, ServiceFn); 49] = [
     ("WideCharToMultiByte", 32, svc_wide_char_to_multi_byte),
     ("WriteFile", 20, svc_write_file),
 ];
+
+/// An export's service number (its registry position plus one), at build time: the hand-assembled
+/// stubs patch theirs from here. A name the registry does not hold fails the build.
+pub const fn service_number(name: &str) -> u32 {
+    let mut index = 0;
+    while index < SERVICES.len() {
+        if same_name(SERVICES[index].0.as_bytes(), name.as_bytes()) {
+            return index as u32 + 1;
+        }
+        index += 1;
+    }
+    panic!("no such export in the registry");
+}
+
+/// Byte equality, usable at build time.
+const fn same_name(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut index = 0;
+    while index < a.len() {
+        if a[index] != b[index] {
+            return false;
+        }
+        index += 1;
+    }
+    true
+}
 
 /// Look a service up by number: its argument block size and handler.
 pub fn lookup_service(number: u32) -> Option<(u32, ServiceFn)> {
@@ -1081,24 +1249,21 @@ pub fn init() {
     crate::mem::paging::map_user_page(THUNK_PAGE, frame, false);
 }
 
-/// Map the parameters page: command line, empty environment, module name, staged from `name` (the
-/// fixture name as invoked).
+/// Map the parameters page: the command line (`name`, the fixture name as invoked), the empty
+/// environment, and the module file name — `module`, the volume path the image was loaded from,
+/// verbatim, so CreateFileA resolves GetModuleFileNameA's answer back to the image.
 #[cfg(target_arch = "x86")]
-pub fn init_params(name: &str) {
+pub fn init_params(name: &str, module: &[u8]) {
+    assert!(name.len() < 32, "fixture name too long for the staging");
     assert!(
-        name.len() + 5 <= 32,
-        "fixture name too long for the staging"
+        module.len() < MODULE_ROOM,
+        "module path too long for the staging"
     );
-    let mut cmdline = [0u8; 32];
-    cmdline[..name.len()].copy_from_slice(name.as_bytes());
-    let mut module = [0u8; 32];
-    module[..name.len()].copy_from_slice(name.as_bytes());
-    module[name.len()..name.len() + 4].copy_from_slice(b".exe");
-
     let frame = crate::mem::paging::allocate_frame_phys();
-    crate::mem::paging::init_frame(frame, 0, &[]); // zeroed: the env terminator
-    crate::mem::paging::write_frame(frame, CMDLINE_OFFSET as usize, &cmdline[..name.len() + 1]);
-    crate::mem::paging::write_frame(frame, MODULE_OFFSET as usize, &module[..name.len() + 5]);
+    // Zeroed: the environment's terminator, and the strings' NULs after their bytes.
+    crate::mem::paging::init_frame(frame, 0, &[]);
+    crate::mem::paging::write_frame(frame, CMDLINE_OFFSET as usize, name.as_bytes());
+    crate::mem::paging::write_frame(frame, MODULE_OFFSET as usize, module);
     crate::mem::paging::map_user_page(PARAMS_PAGE, frame, true);
 }
 
@@ -1113,11 +1278,13 @@ mod tests {
     const SLEEP: &[u8] = include_bytes!("../../../tests/sleep/sleep.exe");
     const SPIN: &[u8] = include_bytes!("../../../tests/spin/spin.exe");
     const SUSPEND: &[u8] = include_bytes!("../../../tests/suspend/suspend.exe");
+    const FILEIO: &[u8] = include_bytes!("../../../tests/fileio/fileio.exe");
 
     /// The corpus's kernel32 import surface (hello's 40 — ret0's 35 plus the console-stdio group —
-    /// the timer smoke's two exports, the spin smoke's priority export, and the suspend smoke's
-    /// two suspend exports; the loader's snap contract): the registry must spell it exactly.
-    const CORPUS_IMPORTS: [&str; 49] = [
+    /// the timer smoke's two exports, the spin smoke's priority export, the suspend smoke's two
+    /// suspend exports, and the file smoke's open and read; the loader's snap contract): the
+    /// registry must spell it exactly.
+    const CORPUS_IMPORTS: [&str; 51] = [
         "CreateThread",
         "CreateEventA",
         "SetEvent",
@@ -1167,13 +1334,15 @@ mod tests {
         "SetThreadPriority",
         "SuspendThread",
         "ResumeThread",
+        "CreateFileA",
+        "ReadFile",
     ];
 
     /// Registry consistency: names unique, numbers are positions plus one (ExitProcess pinned at
     /// 1), every corpus import resolves.
     #[test]
     fn registry_spells_the_corpus_surface() {
-        assert_eq!(SERVICES.len(), 49);
+        assert_eq!(SERVICES.len(), 51);
         for (i, &(name, arg_bytes, _)) in SERVICES.iter().enumerate() {
             assert!(!name.is_empty());
             assert_eq!(
@@ -1188,7 +1357,7 @@ mod tests {
         assert_eq!(SERVICES[0].0, "ExitProcess");
         assert_eq!(crate::user::syscall::SYS_EXIT, 1);
         assert_eq!(lookup_service(0), None);
-        assert_eq!(lookup_service(50), None);
+        assert_eq!(lookup_service(52), None);
         assert_eq!(lookup_service(u32::MAX), None);
         // Set equality with the corpus list.
         for name in CORPUS_IMPORTS {
@@ -1252,6 +1421,96 @@ mod tests {
         image.map_into(SUSPEND, &mut mapped);
         let result = image.snap_imports(SUSPEND, &mut mapped, MODULE_NAME, resolve);
         assert_eq!(result.thunks, 44);
+    }
+
+    /// Every fileio import (hello's 40 plus CreateFileA and ReadFile) resolves against the real
+    /// registry.
+    #[test]
+    fn fileio_snaps_fully_against_the_registry() {
+        let image = Image::parse(FILEIO).expect("fileio parses");
+        let mut mapped = vec![0u8; image.size_of_image as usize];
+        image.map_into(FILEIO, &mut mapped);
+        let result = image.snap_imports(FILEIO, &mut mapped, MODULE_NAME, resolve);
+        assert_eq!(result.thunks, 42);
+    }
+
+    /// The registry keeps its order discipline: ExitProcess first, the rest alphabetical (ASCII
+    /// case-insensitively, as the names were placed).
+    #[test]
+    fn the_registry_is_alphabetical_after_exit_process() {
+        let names: Vec<String> = SERVICES
+            .iter()
+            .skip(1)
+            .map(|&(name, ..)| name.to_ascii_lowercase())
+            .collect();
+        let mut sorted = names.clone();
+        sorted.sort();
+        assert_eq!(names, sorted);
+        let arg_bytes = |name: &str| SERVICES.iter().find(|&&(n, ..)| n == name).unwrap().1;
+        assert_eq!(arg_bytes("CreateFileA"), 28);
+        assert_eq!(arg_bytes("ReadFile"), 20);
+    }
+
+    /// CreateFileA serves exactly read access to an existing file, synchronously: another access
+    /// mode, any other disposition, and an overlapped open are refused; the attribute bits pass.
+    #[test]
+    fn only_read_opens_of_existing_files_are_served() {
+        const GENERIC_WRITE: u32 = 0x4000_0000;
+        const CREATE_ALWAYS: u32 = 2;
+        const OPEN_ALWAYS: u32 = 4;
+        const FILE_ATTRIBUTE_NORMAL: u32 = 0x80;
+        assert!(is_supported_open(GENERIC_READ, OPEN_EXISTING, 0));
+        assert!(is_supported_open(
+            GENERIC_READ,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL
+        ));
+        assert!(!is_supported_open(GENERIC_WRITE, OPEN_EXISTING, 0));
+        assert!(!is_supported_open(
+            GENERIC_READ | GENERIC_WRITE,
+            OPEN_EXISTING,
+            0
+        ));
+        assert!(!is_supported_open(0, OPEN_EXISTING, 0));
+        assert!(!is_supported_open(GENERIC_READ, CREATE_ALWAYS, 0));
+        assert!(!is_supported_open(GENERIC_READ, OPEN_ALWAYS, 0));
+        assert!(!is_supported_open(
+            GENERIC_READ,
+            OPEN_EXISTING,
+            FILE_FLAG_OVERLAPPED
+        ));
+    }
+
+    /// The file services' host-testable refusal shapes (the opens and reads themselves run on
+    /// target): an unsupported open is INVALID_HANDLE_VALUE before the path is touched; a read is
+    /// FALSE on an overlapped request or a handle naming no open file — console handles included;
+    /// a seek on such a handle, or with a bad move method, is INVALID_SET_FILE_POINTER.
+    #[test]
+    fn file_service_refusal_shapes() {
+        let mut frame = zero_frame();
+        svc_create_file_a(
+            &mut frame,
+            &[0x0040_0000, 0x4000_0000, 1, 0, OPEN_EXISTING, 0, 0],
+        );
+        assert_eq!(frame.eax, INVALID_HANDLE_VALUE);
+        frame.eax = 0;
+        svc_create_file_a(&mut frame, &[0x0040_0000, GENERIC_READ, 1, 0, 2, 0, 0]);
+        assert_eq!(frame.eax, INVALID_HANDLE_VALUE);
+
+        frame.eax = 1;
+        svc_read_file(&mut frame, &[4, 0x0040_0000, 2, 0, 0x0050_0000]);
+        assert_eq!(frame.eax, 0, "overlapped");
+        for handle in [4, STD_INPUT, STD_OUTPUT, INVALID_HANDLE_VALUE, 0] {
+            frame.eax = 1;
+            svc_read_file(&mut frame, &[handle, 0x0040_0000, 2, 0, 0]);
+            assert_eq!(frame.eax, 0, "{handle:#x}");
+            frame.eax = 0;
+            svc_set_file_pointer(&mut frame, &[handle, 0x3C, 0, 0]);
+            assert_eq!(frame.eax, INVALID_SET_FILE_POINTER, "{handle:#x}");
+        }
+        frame.eax = 0;
+        svc_set_file_pointer(&mut frame, &[4, 0, 0, 3]);
+        assert_eq!(frame.eax, INVALID_SET_FILE_POINTER, "bad move method");
     }
 
     /// The sleep interval conversion: milliseconds to 100 ns units, exact; INFINITE is the longest
@@ -1412,7 +1671,11 @@ mod tests {
         let cmdline = PARAMS_PAGE + CMDLINE_OFFSET;
         let env = PARAMS_PAGE + ENV_OFFSET;
         let module = PARAMS_PAGE + MODULE_OFFSET;
-        assert!(cmdline + 32 <= env && env + 64 <= module && module + 64 <= PARAMS_PAGE + 4096);
+        assert!(
+            cmdline + 32 <= env
+                && env + 64 <= module
+                && module + MODULE_ROOM as u32 <= PARAMS_PAGE + 4096
+        );
     }
 
     /// The version dword splits into the CRT's globals (its own shift/mask recipe, restated
@@ -1598,6 +1861,7 @@ mod tests {
         assert_eq!(frame.eax, 0);
         svc_flush_file_buffers(&mut frame, &[0xF]);
         assert_eq!(frame.eax, 1);
+        // A seek on a handle that names no open file fails honestly.
         svc_set_file_pointer(&mut frame, &[0; 4]);
         assert_eq!(frame.eax, 0xFFFF_FFFF); // INVALID_SET_FILE_POINTER
 

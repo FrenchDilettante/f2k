@@ -8,6 +8,10 @@
 //! The idle thread cannot block — and a lock held by a parked thread would never come back while
 //! the idle thread halts — so on the idle thread (the boot context) the lock must be free: taking
 //! a held one there is a contract violation.
+//!
+//! Any other thread takes the lock only inside a critical region: its holder blocks under it (the
+//! drive's commands), and a termination must wait for it to release the lock rather than end it
+//! holding one.
 
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -64,14 +68,18 @@ impl DeviceLock {
         self.event().signaled()
     }
 
-    /// Take the lock for `thread`: at once if it is free, otherwise park `thread` on it (the
-    /// switch away is the caller's business, as with any wait).
+    /// Take the lock for `thread`, which must be inside a critical region: at once if it is free,
+    /// otherwise park `thread` on it (the switch away is the caller's business, as with any wait).
     pub fn acquire_for(
         &self,
         dispatcher: &mut Dispatcher,
         thread: &mut Thread,
         stamp: ClockStamp,
     ) -> WaitDisposition {
+        assert!(
+            thread.in_critical_region(),
+            "a device lock taken outside a critical region"
+        );
         dispatcher.wait_single(
             thread,
             self.event().waitable(),
@@ -111,14 +119,12 @@ impl DeviceLock {
             });
             return;
         }
-        let status = crate::sched::wait::wait_current_with(
-            |dispatcher, thread, stamp, replay| {
-                // An untimed lock wait never replays differently: the APC break re-enters the same
-                // acquisition attempt.
-                let _ = replay;
-                self.acquire_for(dispatcher, thread, stamp)
-            },
-        );
+        let status = crate::sched::wait::wait_current_with(|dispatcher, thread, stamp, replay| {
+            // An untimed lock wait never replays differently: the APC break re-enters the same
+            // acquisition attempt.
+            let _ = replay;
+            self.acquire_for(dispatcher, thread, stamp)
+        });
         assert_eq!(
             status,
             crate::status::STATUS_SUCCESS,
@@ -159,13 +165,21 @@ mod tests {
         dispatcher
     }
 
-    fn thread() -> &'static mut Thread {
+    /// A running thread outside any critical region.
+    fn bare_thread() -> &'static mut Thread {
         let process = Box::leak(Box::new(SchedProcess::new(0x0090_0000, 8)));
         process.init();
         let thread = Box::leak(Box::new(Thread::empty()));
         // SAFETY: both records are leaked at their final addresses.
         unsafe { thread.attach_to(process) };
         thread.state = ThreadState::Running;
+        thread
+    }
+
+    /// A running thread inside a critical region, as every taker of the lock must be.
+    fn thread() -> &'static mut Thread {
+        let thread = bare_thread();
+        thread.enter_critical_region();
         thread
     }
 
@@ -234,6 +248,14 @@ mod tests {
 
         lock.release_with(d);
         assert!(lock.is_free(), "the last release frees it");
+    }
+
+    /// A thread holding the lock may block under it (the drive's commands): it must be inside a
+    /// critical region, so a termination waits for it to release the lock.
+    #[test]
+    #[should_panic(expected = "outside a critical region")]
+    fn taking_the_lock_outside_a_critical_region_is_a_contract_violation() {
+        lock().acquire_for(dispatcher(), bare_thread(), NOW);
     }
 
     #[test]
