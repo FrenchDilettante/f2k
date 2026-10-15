@@ -61,6 +61,11 @@ impl Volume {
         &self.layout
     }
 
+    /// The device the volume lives on (its sector 0 is the boot sector).
+    pub fn device(&self) -> &'static dyn BlockDevice {
+        self.device
+    }
+
     /// The FAT entry of `cluster`, which must be a data cluster of the volume (callers validate
     /// clusters they read off the volume; the entries this returns are validated already). Reads
     /// through the FAT sector cache, blocking on the device on a miss.

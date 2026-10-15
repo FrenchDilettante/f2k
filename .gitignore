@@ -29,6 +29,9 @@ scripts/__pycache__
 *.vdi
 *.iso
 
+# Checked-in test fixtures (the host tests embed them at compile time)
+!kernel/src/fs/fat32/testdata/*.bin
+
 # Logs
 *.log
 

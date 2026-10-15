@@ -23,6 +23,16 @@ pub const STATUS_USER_APC: NtStatus = 0x0000_00C0;
 pub const STATUS_INVALID_PARAMETER: NtStatus = 0xC000_000Du32 as NtStatus;
 /// No such device (no usable disk where one was asked for).
 pub const STATUS_NO_SUCH_DEVICE: NtStatus = 0xC000_000Eu32 as NtStatus;
+/// No such file: a path component names no entry of its directory.
+pub const STATUS_NO_SUCH_FILE: NtStatus = 0xC000_000Fu32 as NtStatus;
+/// The caller's buffer cannot hold the data (a file read into less than the file's size).
+pub const STATUS_BUFFER_TOO_SMALL: NtStatus = 0xC000_0023u32 as NtStatus;
+/// The name is malformed (an empty path or component, or a component that is not an 8.3 name).
+pub const STATUS_OBJECT_NAME_INVALID: NtStatus = 0xC000_0033u32 as NtStatus;
+/// The file's on-volume structure is corrupt (a broken cluster chain or directory).
+pub const STATUS_FILE_CORRUPT_ERROR: NtStatus = 0xC000_0102u32 as NtStatus;
+/// A path continues through something that is not a directory.
+pub const STATUS_NOT_A_DIRECTORY: NtStatus = 0xC000_0103u32 as NtStatus;
 /// A device did not respond in time.
 pub const STATUS_IO_TIMEOUT: NtStatus = 0xC000_00B5u32 as NtStatus;
 /// A device reported an error.
@@ -61,6 +71,11 @@ mod tests {
         assert_eq!(STATUS_IO_TIMEOUT as u32, 0xC000_00B5);
         assert_eq!(STATUS_IO_DEVICE_ERROR as u32, 0xC000_0185);
         assert_eq!(STATUS_UNRECOGNIZED_VOLUME as u32, 0xC000_014F);
+        assert_eq!(STATUS_NO_SUCH_FILE as u32, 0xC000_000F);
+        assert_eq!(STATUS_BUFFER_TOO_SMALL as u32, 0xC000_0023);
+        assert_eq!(STATUS_OBJECT_NAME_INVALID as u32, 0xC000_0033);
+        assert_eq!(STATUS_FILE_CORRUPT_ERROR as u32, 0xC000_0102);
+        assert_eq!(STATUS_NOT_A_DIRECTORY as u32, 0xC000_0103);
 
         assert!(nt_success(STATUS_SUCCESS));
         assert!(nt_success(STATUS_TIMEOUT));
@@ -70,6 +85,11 @@ mod tests {
             STATUS_IO_TIMEOUT,
             STATUS_IO_DEVICE_ERROR,
             STATUS_UNRECOGNIZED_VOLUME,
+            STATUS_NO_SUCH_FILE,
+            STATUS_BUFFER_TOO_SMALL,
+            STATUS_OBJECT_NAME_INVALID,
+            STATUS_FILE_CORRUPT_ERROR,
+            STATUS_NOT_A_DIRECTORY,
         ] {
             assert!(!nt_success(status), "{:#010x} is an error", status as u32);
         }

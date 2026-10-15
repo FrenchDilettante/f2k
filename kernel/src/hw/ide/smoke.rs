@@ -79,6 +79,8 @@ pub fn run() {
     use crate::block::registry::{registry, Role};
     use crate::block::{BlockDevice, BusType, DeviceInfo, DeviceKind};
     use crate::fs::fat32::fat::FatEntry;
+    use crate::fs::fat32::lookup::lookup;
+    use crate::fs::fat32::read::read as read_file;
     use crate::fs::fat32::volume::{boot_mount, with_boot_volume};
     use crate::hw::ide::disk::{self, LATCH};
     use crate::hw::ide::regs::SECTOR_SIZE;
@@ -95,6 +97,8 @@ pub fn run() {
     const RUN_SECTORS: usize = 8;
 
     static mut RUN: [u8; RUN_SECTORS * SECTOR_SIZE] = [0; RUN_SECTORS * SECTOR_SIZE];
+    /// Room for the whole first file.
+    static mut FILE: [u8; 32 * 1024] = [0; 32 * 1024];
 
     fn read(device: &dyn BlockDevice, lba: u64, buffer: &mut [u8]) {
         let status = device.read(lba, buffer);
@@ -247,6 +251,38 @@ pub fn run() {
         );
     }
 
+    // The first file, found by name in the root directory and read whole through its cluster
+    // chain: the bytes the pinned sector checksums came from, now delivered by the file system.
+    // SAFETY: the diagnostic runs once, in the boot context; the buffer is its alone.
+    let file_buffer = unsafe { &mut *addr_of_mut!(FILE) };
+    let (hello, hello_status) = with_boot_volume(|volume| {
+        let hello = lookup(volume, b"HELLO.EXE");
+        let status = hello.map(|file| read_file(volume, &file, &mut file_buffer[..]));
+        (hello, status)
+    })
+    .unwrap();
+    let hello = hello.unwrap_or_else(|error| panic!("disk-smoke: HELLO.EXE lookup: {:?}", error));
+    assert_eq!(
+        (hello.first_cluster, hello.size, hello.directory),
+        (3, 28_672, false),
+        "disk-smoke: HELLO.EXE's entry"
+    );
+    serial_println!(
+        "F2K: disk-smoke: HELLO.EXE: {} bytes, first cluster {}",
+        hello.size,
+        hello.first_cluster
+    );
+    let status = hello_status.unwrap();
+    assert!(
+        nt_success(status),
+        "disk-smoke: HELLO.EXE read failed with status {:#010x}",
+        status as u32
+    );
+    serial_println!(
+        "F2K: disk-smoke: HELLO.EXE via chain: CRC-32 {:#010X}",
+        crc32(&file_buffer[..hello.size as usize])
+    );
+
     // 4. The first file's first sector, read through the partition (reported at its disk LBA),
     //    then an 8-sector run from the same place (one interrupt per sector).
     let file_sector = bpb.cluster_lba(0, FIRST_FILE_CLUSTER) as u64;
@@ -272,8 +308,9 @@ pub fn run() {
         crc32(run)
     );
 
-    // The interrupt accounting: one per sector moved — IDENTIFY's, the boot scan's MBR read, and
-    // the boot mount's boot-sector read included — and none unasked for.
+    // The interrupt accounting: one per sector moved — IDENTIFY's, the boot scan's MBR read, the
+    // boot mount's boot-sector read, and the file's directory and cluster reads included — and
+    // none unasked for.
     let verdict = crate::interrupt::audit();
     serial_println!(
         "F2K: disk-smoke: IRQ14 serviced {} interrupts ({} unsolicited), interrupt audit: {}",

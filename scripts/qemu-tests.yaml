@@ -528,7 +528,11 @@ cases:
   # cache hit. Fifteen interrupts: IDENTIFY, the scan's MBR read, the
   # mount's boot-sector read, the smoke's MBR and VBR reads, the FAT
   # sector, the single-sector file read, and the 8-sector run
-  # (1 + 1 + 1 + 1 + 1 + 1 + 1 + 8).
+  # (1 + 1 + 1 + 1 + 1 + 1 + 1 + 8). The diagnostic then finds
+  # HELLO.EXE by name in the root directory and reads it through its
+  # cluster chain; the CRC-32 pinned for it is the offline checksum of
+  # tests/hello/hello.exe whole.
+  # 72 = those 15 + the root directory's 1 sector + HELLO.EXE's 56 clusters (its FAT sector is already cached).
   - name: disk-smoke
     description: the IDE diagnostic boot reads the MBR, the volume boot sector, and the first fixture's sectors through the block layer and IRQ14, then the default image exits 0 (Limine disk path)
     image: disk
@@ -544,9 +548,11 @@ cases:
       - "F2K: disk-smoke: mount ok (127006 clusters, FAT at LBA 2080, data at LBA 4066, root cluster 2)"
       - "F2K: disk-smoke: FAT cluster 3 -> 4"
       - "F2K: disk-smoke: FAT cluster 2 -> end of chain"
+      - "F2K: disk-smoke: HELLO.EXE: 28672 bytes, first cluster 3"
+      - "F2K: disk-smoke: HELLO.EXE via chain: CRC-32 0x89BBE49C"
       - "F2K: disk-smoke: LBA 4067 CRC-32 0x659C3505"
       - "F2K: disk-smoke: LBA 4067+8 CRC-32 0x15FB0DC0"
-      - "F2K: disk-smoke: IRQ14 serviced 15 interrupts (0 unsolicited), interrupt audit: ok"
+      - "F2K: disk-smoke: IRQ14 serviced 72 interrupts (0 unsolicited), interrupt audit: ok"
       - "F2K: image loaded"
       - "F2K: entering ring 3"
       - "F2K: user process exited normally (exit code=0)"
