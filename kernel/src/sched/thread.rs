@@ -1,20 +1,20 @@
 //! The thread object: the scheduling state every thread carries.
 
+use core::ptr::{addr_of_mut, null_mut};
+
 use super::process::SchedProcess;
 use super::wait::{
-    Timer, WaitBlock, WaitKind, WaitMode, WaitReason, Waitable, STATUS_TIMEOUT, WAIT_BLOCKS,
-    TIMER_BLOCK,
+    Timer, WaitBlock, WaitKind, WaitMode, WaitReason, Waitable, STATUS_TIMEOUT, TIMER_BLOCK,
+    WAIT_BLOCKS,
 };
 use super::Links;
 use crate::interrupt::irql::LevelSnapshot;
-use core::ptr::{addr_of_mut, null_mut};
 
 /// The gate-slot index of a thread whose slot is not allocated yet.
 pub const NO_GATE_SLOT: u16 = 0xFFFF;
 
-/// A thread's scheduling state, as the dispatcher moves it around:
-/// created, queued, on the processor, selected as the processor's
-/// next thread, exited, blocked.
+/// A thread's scheduling state, as the dispatcher moves it around: created, queued, on the
+/// processor, selected as the processor's next thread, exited, blocked.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum ThreadState {
@@ -30,104 +30,87 @@ pub enum ThreadState {
     Terminated = 4,
     /// Blocked on a dispatcher object (the wait machinery's state).
     Waiting = 5,
-    /// Between wake and ready, waiting for its kernel stack to be
-    /// swapped in. Never entered: F2K never swaps kernel stacks out,
-    /// so a woken thread goes straight to ready.
+    /// Between wake and ready, waiting for its kernel stack to be swapped in. Never entered: F2K
+    /// never swaps kernel stacks out, so a woken thread goes straight to ready.
     Transition = 6,
 }
 
 /// A thread: one schedulable unit of execution.
 ///
-/// An intrusive kernel object: it carries the links for the ready
-/// queue and its process's thread list, so queueing allocates
-/// nothing. The record leads with its machine state — the words the
-/// context switch's assembly addresses through pinned, compile-time
-/// checked offsets (saved esp, stack top, TEB page, level ledger).
+/// An intrusive kernel object: it carries the links for the ready queue and its process's thread
+/// list, so queueing allocates nothing. The record leads with its machine state — the words the
+/// context switch's assembly addresses through pinned, compile-time checked offsets (saved esp,
+/// stack top, TEB page, level ledger).
 #[repr(C)]
 pub struct Thread {
     // --- Machine state (the context switch's ABI) ---
-
     /// The scheduling state.
     pub(crate) state: ThreadState,
-    /// The owning process; the source of the quantum and of the
-    /// priority class rules, and the identity a switch compares to
-    /// decide the CR3 load. Valid for the thread's lifetime.
+    /// The owning process; the source of the quantum and of the priority class rules, and the
+    /// identity a switch compares to decide the CR3 load. Valid for the thread's lifetime.
     pub(crate) process: *mut SchedProcess,
-    /// The saved kernel stack pointer: where a switch-out stored
-    /// this thread's switch frame, and what a switch-in loads as
-    /// the new `esp`. The startup-frame builder plants it for a
+    /// The saved kernel stack pointer: where a switch-out stored this thread's switch frame, and
+    /// what a switch-in loads as the new `esp`. The startup-frame builder plants it for a
     /// never-run thread.
     pub(crate) kernel_stack: u32,
-    /// The kernel stack's top: this thread's gate-stack slot top,
-    /// which the switch installs as the TSS `esp0`.
+    /// The kernel stack's top: this thread's gate-stack slot top, which the switch installs as the
+    /// TSS `esp0`.
     pub(crate) initial_stack: u32,
-    /// The thread's TEB page: the base the switch writes into the
-    /// TEB segment descriptor. Zero for kernel and idle threads.
+    /// The thread's TEB page: the base the switch writes into the TEB segment descriptor. Zero for
+    /// kernel and idle threads.
     pub(crate) teb_va: u32,
-    /// Reserved for the thread's id/handle (the creation surface's
-    /// business). Zero at build.
+    /// Reserved for the thread's id/handle (the creation surface's business). Zero at build.
     pub(crate) thread_id: u32,
-    /// The thread's level ledger: captured at switch-out, restored
-    /// at resume. A fresh thread adopts an empty one.
+    /// The thread's level ledger: captured at switch-out, restored at resume. A fresh thread
+    /// adopts an empty one.
     pub(crate) level: LevelSnapshot,
-    /// The thread's gate-stack slot index in its process's window,
-    /// or the empty slot's value before allocation.
+    /// The thread's gate-stack slot index in its process's window, or the empty slot's value
+    /// before allocation.
     pub(crate) gate_slot: u16,
-    /// The slot's frames, recorded for exactly-once release (the
-    /// guard page below them is never mapped, so it is never
-    /// recorded).
+    /// The slot's frames, recorded for exactly-once release (the guard page below them is never
+    /// mapped, so it is never recorded).
     pub(crate) gate_frames: [u32; crate::mem::paging::GATE_STACK_PAGES],
 
     // --- Scheduling state ---
-
     /// The priority the scheduler queues and preempts by.
     pub(crate) priority: i8,
     /// The priority the thread decays toward and is floored by.
     pub(crate) base_priority: i8,
-    /// Outstanding decay debt: subtracted once at the next decay,
-    /// then cleared.
+    /// Outstanding decay debt: subtracted once at the next decay, then cleared.
     pub(crate) priority_decrement: i8,
-    /// Round trips left on a sticky boost before the thread drops
-    /// back to its base priority.
+    /// Round trips left on a sticky boost before the thread drops back to its base priority.
     pub(crate) decrement_count: u8,
     /// Run time left before the scheduler reconsiders the processor.
     pub(crate) quantum: i8,
-    /// Whether a base-priority change pinned this thread to a class
-    /// edge: -1 pinned low, +1 pinned high, 0 free.
+    /// Whether a base-priority change pinned this thread to a class edge: -1 pinned low, +1 pinned
+    /// high, 0 free.
     pub(crate) saturation: i8,
-    /// Whether wait-exit boosts are refused for this thread (the
-    /// wait-exit gate; the wake boost itself does not consult it).
+    /// Whether wait-exit boosts are refused for this thread (the wait-exit gate; the wake boost
+    /// itself does not consult it).
     pub(crate) disable_boost: bool,
-    /// Set when the thread is pushed off the processor (or the
-    /// standby slot) by a higher-priority arrival: it then requeues
-    /// at the head of its ready list rather than the tail.
+    /// Set when the thread is pushed off the processor (or the standby slot) by a higher-priority
+    /// arrival: it then requeues at the head of its ready list rather than the tail.
     pub(crate) preempted: bool,
-    /// Always false in F2K: processes are never swapped out, so no
-    /// thread is ever parked on its process. The flag survives as the
-    /// priority-change guard for the parked shape.
+    /// Always false in F2K: processes are never swapped out, so no thread is ever parked on its
+    /// process. The flag survives as the priority-change guard for the parked shape.
     pub(crate) parked_on_process: bool,
-    /// Set when the thread exits: the thread-object waits observe
-    /// it. The thread is itself a waitable object; this is its
-    /// header's signal state.
+    /// Set when the thread exits: the thread-object waits observe it. The thread is itself a
+    /// waitable object; this is its header's signal state.
     pub(crate) waitable: Waitable,
 
     // --- Wait state (the block discipline) ---
-
-    /// The wait blocks this thread owns: the first holds a
-    /// single-object wait, the last slot its timer block.
+    /// The wait blocks this thread owns: the first holds a single-object wait, the last slot its
+    /// timer block.
     pub(crate) wait_blocks: [WaitBlock; WAIT_BLOCKS],
-    /// The circular chain head of the current wait's blocks, null
-    /// between waits.
+    /// The circular chain head of the current wait's blocks, null between waits.
     pub(crate) wait_block_head: *mut WaitBlock,
     /// The completion status of the current or last wait.
     pub(crate) wait_status: i32,
     /// Why the thread is waiting (diagnostic data).
     pub(crate) wait_reason: WaitReason,
-    /// The mode of the current wait (inert until the APC
-    /// machinery exists).
+    /// The mode of the current wait (inert until the APC machinery exists).
     pub(crate) wait_mode: WaitMode,
-    /// Whether an APC may break the current wait (inert until the
-    /// APC machinery exists).
+    /// Whether an APC may break the current wait (inert until the APC machinery exists).
     pub(crate) wait_alertable: bool,
     /// The tick stamp of the current wait.
     pub(crate) wait_time: u64,
@@ -142,19 +125,13 @@ pub struct Thread {
     pub(crate) process_links: Links,
 }
 
-// The machine-state layout contract with the switch's assembly: on
-// the 32-bit target the offsets it addresses threads through are the
-// real ones, or the kernel does not build. Host builds skip the pin
-// (their pointer width differs) and pin the field order below
-// instead.
+// The machine-state layout contract with the switch's assembly: on the 32-bit target the offsets it
+// addresses threads through are the real ones, or the kernel does not build. Host builds skip the
+// pin (their pointer width differs) and pin the field order below instead.
 #[cfg(target_arch = "x86")]
 const _: () = {
-    assert!(
-        core::mem::offset_of!(Thread, state) as u32 == super::switch::THREAD_STATE_OFF
-    );
-    assert!(
-        core::mem::offset_of!(Thread, process) as u32 == super::switch::THREAD_PROCESS_OFF
-    );
+    assert!(core::mem::offset_of!(Thread, state) as u32 == super::switch::THREAD_STATE_OFF);
+    assert!(core::mem::offset_of!(Thread, process) as u32 == super::switch::THREAD_PROCESS_OFF);
     assert!(
         core::mem::offset_of!(Thread, kernel_stack) as u32
             == super::switch::THREAD_KERNEL_STACK_OFF
@@ -163,27 +140,25 @@ const _: () = {
         core::mem::offset_of!(Thread, initial_stack) as u32
             == super::switch::THREAD_INITIAL_STACK_OFF
     );
-    assert!(
-        core::mem::offset_of!(Thread, teb_va) as u32 == super::switch::THREAD_TEB_VA_OFF
-    );
+    assert!(core::mem::offset_of!(Thread, teb_va) as u32 == super::switch::THREAD_TEB_VA_OFF);
 };
 
-/// The machine block leads the record in the assembly's field order,
-/// on every pointer width: state first, then the owner pointer, then
-/// the three stack/TEB words. (The host layout widens the pointer;
-/// the order is what stays pinned here.)
+/// The machine block leads the record in the assembly's field order, on every pointer width: state
+/// first, then the owner pointer, then the three stack/TEB words. (The host layout widens the
+/// pointer; the order is what stays pinned here.)
 const _: () = {
     assert!(core::mem::offset_of!(Thread, state) == 0);
     assert!(core::mem::offset_of!(Thread, process) > 0);
     assert!(core::mem::offset_of!(Thread, kernel_stack) > core::mem::offset_of!(Thread, process));
-    assert!(core::mem::offset_of!(Thread, initial_stack) > core::mem::offset_of!(Thread, kernel_stack));
+    assert!(
+        core::mem::offset_of!(Thread, initial_stack) > core::mem::offset_of!(Thread, kernel_stack)
+    );
     assert!(core::mem::offset_of!(Thread, teb_va) > core::mem::offset_of!(Thread, initial_stack));
 };
 
 impl Thread {
-    /// A fresh, detached thread. Call [`Thread::attach_to`] before
-    /// any scheduler operation, and give it machine state (stacks,
-    /// TEB) before it is ever readied.
+    /// A fresh, detached thread. Call [`Thread::attach_to`] before any scheduler operation, and
+    /// give it machine state (stacks, TEB) before it is ever readied.
     pub const fn empty() -> Self {
         Thread {
             state: ThreadState::Initialized,
@@ -219,15 +194,14 @@ impl Thread {
         }
     }
 
-    /// Attach to `process`: take the process's base priority, quantum
-    /// and boost policy, join its thread list, and account the kernel
-    /// stack. After this the thread is Initialized and schedulable.
+    /// Attach to `process`: take the process's base priority, quantum and boost policy, join its
+    /// thread list, and account the kernel stack. After this the thread is Initialized and
+    /// schedulable.
     ///
     /// # Safety
     ///
-    /// The process must outlive the thread's membership in its list
-    /// (the first link is written here), and both objects must be at
-    /// their final addresses.
+    /// The process must outlive the thread's membership in its list (the first link is written
+    /// here), and both objects must be at their final addresses.
     pub unsafe fn attach_to(&mut self, process: &mut SchedProcess) {
         self.process = process as *mut SchedProcess;
         self.base_priority = process.base_priority;
@@ -236,27 +210,24 @@ impl Thread {
         self.disable_boost = process.disable_boost;
         self.state = ThreadState::Initialized;
 
-        // The wait discipline's fixed wiring. The thread is a
-        // waitable object in its own right, every block names its
-        // owner, and the timer block's claim is constant for the
-        // thread's life — its object is the thread's own timer and
-        // its key the timeout status — so a wait only ever
-        // re-links it.
+        // The wait discipline's fixed wiring. The thread is a waitable object in its own right,
+        // every block names its owner, and the timer block's claim is constant for the thread's
+        // life — its object is the thread's own timer and its key the timeout status — so a wait
+        // only ever re-links it.
         self.waitable.init();
         self.timer.init();
         let thread = self as *mut Thread;
         for block in self.wait_blocks.iter_mut() {
             block.thread = thread;
         }
-        // SAFETY: the thread and its timer are at their final
-        // addresses; the pointer stays valid for the thread's
-        // lifetime.
+        // SAFETY: the thread and its timer are at their final addresses; the pointer stays valid
+        // for the thread's lifetime.
         self.wait_blocks[TIMER_BLOCK].object = addr_of_mut!(self.timer.waitable);
         self.wait_blocks[TIMER_BLOCK].key = STATUS_TIMEOUT;
         self.wait_blocks[TIMER_BLOCK].wait_all = false;
 
-        // SAFETY: the thread's process link is detached and the
-        // process's thread list is initialized (caller contract).
+        // SAFETY: the thread's process link is detached and the process's thread list is
+        // initialized (caller contract).
         unsafe { process.threads.push_back(addr_of_mut!(self.process_links)) };
         if process.stack_count == super::process::NO_THREADS {
             process.stack_count = 1;
@@ -301,8 +272,7 @@ impl Thread {
         self.teb_va
     }
 
-    /// The thread's gate-stack slot index, or
-    /// [`NO_GATE_SLOT`] before allocation.
+    /// The thread's gate-stack slot index, or [`NO_GATE_SLOT`] before allocation.
     pub fn gate_slot(&self) -> u16 {
         self.gate_slot
     }
@@ -322,8 +292,7 @@ impl Thread {
         self.saturation
     }
 
-    /// Whether the thread has exited: its waitable header's signal
-    /// state, set once at termination.
+    /// Whether the thread has exited: its waitable header's signal state, set once at termination.
     pub fn signaled(&self) -> bool {
         self.waitable.signal_state > 0
     }
@@ -333,11 +302,9 @@ impl Thread {
         addr_of_mut!(self.waitable)
     }
 
-    /// The thread a thread-kind waitable header belongs to: the
-    /// header is the thread's own, at a fixed offset in the
-    /// record. The caller must know the header is a thread's (a
-    /// handle table slot's kind, say); a foreign header is a
-    /// caller bug.
+    /// The thread a thread-kind waitable header belongs to: the header is the thread's own, at a
+    /// fixed offset in the record. The caller must know the header is a thread's (a handle table
+    /// slot's kind, say); a foreign header is a caller bug.
     pub fn from_waitable(waitable: *mut Waitable) -> *mut Thread {
         debug_assert_eq!(unsafe { (*waitable).kind() }, WaitKind::Thread);
         (waitable as usize - core::mem::offset_of!(Thread, waitable)) as *mut Thread
@@ -382,8 +349,8 @@ impl Thread {
 mod tests {
     use super::*;
 
-    /// The state ordinals: stable, distinct, with the lifecycle order
-    /// the dump paths and any raw state byte depend on.
+    /// The state ordinals: stable, distinct, with the lifecycle order the dump paths and any raw
+    /// state byte depend on.
     #[test]
     fn state_ordinals() {
         assert_eq!(ThreadState::Initialized as u8, 0);
@@ -395,8 +362,7 @@ mod tests {
         assert_eq!(ThreadState::Transition as u8, 6);
     }
 
-    /// The waitable header belongs to its thread: the reverse
-    /// mapping returns the owning record.
+    /// The waitable header belongs to its thread: the reverse mapping returns the owning record.
     #[test]
     fn from_waitable_returns_the_owning_thread() {
         let p = Box::leak(Box::new(SchedProcess::new(0x0090_0000, 8)));
@@ -410,10 +376,9 @@ mod tests {
         ));
     }
 
-    /// Attaching takes the scheduling data from the process: base and
-    /// current priority, quantum, boost policy; the state is
-    /// Initialized; the stack count moves off its sentinel and the
-    /// seed advances per thread.
+    /// Attaching takes the scheduling data from the process: base and current priority, quantum,
+    /// boost policy; the state is Initialized; the stack count moves off its sentinel and the seed
+    /// advances per thread.
     #[test]
     fn attach_takes_process_data() {
         let process = Box::leak(Box::new(SchedProcess::new(0x0090_0000, 8)));

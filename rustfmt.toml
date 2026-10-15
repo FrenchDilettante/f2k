@@ -1,0 +1,17 @@
+# rustfmt configuration (`make fmt` / `make fmt-check`).
+#
+# Defaults otherwise (100-column max_width, reorder_imports and
+# reorder_modules on). The options below are nightly-only; the pinned
+# toolchain (rust-toolchain) is nightly, so `cargo fmt` picks them up.
+
+# Comments: wrap at the same 100 columns as code, turn /* */ into //,
+# and format Rust code blocks inside doc comments.
+wrap_comments = true
+comment_width = 100
+normalize_comments = true
+normalize_doc_attributes = true
+format_code_in_doc_comments = true
+
+# Imports: std/core/alloc first, then external crates, then
+# crate/super/self, each group sorted alphabetically.
+group_imports = "StdExternalCrate"

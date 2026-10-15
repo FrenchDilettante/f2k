@@ -1,30 +1,24 @@
-//! The handle table: the per-process indirection between the
-//! Win32 handle values programs pass around and the kernel's
-//! waitable objects.
+//! The handle table: the per-process indirection between the Win32 handle values programs pass
+//! around and the kernel's waitable objects.
 //!
-//! One table per process, a fixed slot array: each slot holds a
-//! live object (an event or a thread) or nothing. The handle value
-//! encodes its slot as the index shifted left two — the platform's
-//! documented shape, a multiple of four with the low tag bits
-//! ignored on lookup — and slot zero is never handed out, so the
-//! first handle is 4 and no valid handle is zero or the all-ones
+//! One table per process, a fixed slot array: each slot holds a live object (an event or a thread)
+//! or nothing. The handle value encodes its slot as the index shifted left two — the platform's
+//! documented shape, a multiple of four with the low tag bits ignored on lookup — and slot zero is
+//! never handed out, so the first handle is 4 and no valid handle is zero or the all-ones
 //! pseudo-handle. Freed slots are reused most-recently-freed-first.
 //!
-//! The subset keeps only the table discipline: no reference
-//! counting (objects live until the process ends, so a close
-//! releases only the table slot — a waiter parked on the object
-//! stays parked), no security, no quota, no duplication, no named
-//! objects. The table's owner is the process record, so the
-//! process exit empties it by dropping the record.
+//! The subset keeps only the table discipline: no reference counting (objects live until the
+//! process ends, so a close releases only the table slot — a waiter parked on the object stays
+//! parked), no security, no quota, no duplication, no named objects. The table's owner is the
+//! process record, so the process exit empties it by dropping the record.
 
 use crate::sched::wait::Waitable;
 
-/// The table's slot capacity. Exhaustion is a program-visible
-/// failure (the create returns no handle), not a bug.
+/// The table's slot capacity. Exhaustion is a program-visible failure (the create returns no
+/// handle), not a bug.
 pub const HANDLE_SLOTS: usize = 16;
 
-/// A handle's slot index: the value shifted right two (the low
-/// two tag bits are ignored on decode).
+/// A handle's slot index: the value shifted right two (the low two tag bits are ignored on decode).
 pub const HANDLE_SHIFT: u32 = 2;
 
 /// What a slot holds.
@@ -58,8 +52,7 @@ pub struct HandleTable {
 }
 
 impl HandleTable {
-    /// An empty table; no `init` needed (no self-referential
-    /// state).
+    /// An empty table; no `init` needed (no self-referential state).
     pub const fn empty() -> Self {
         HandleTable {
             slots: [None; HANDLE_SLOTS],
@@ -69,8 +62,7 @@ impl HandleTable {
         }
     }
 
-    /// Insert `slot`, returning its handle. Null when every slot
-    /// is taken.
+    /// Insert `slot`, returning its handle. Null when every slot is taken.
     pub fn insert(&mut self, slot: Slot) -> u32 {
         let index = if self.freed_top > 0 {
             self.freed_top -= 1;
@@ -86,8 +78,8 @@ impl HandleTable {
         index << HANDLE_SHIFT
     }
 
-    /// The slot a handle names, or none. The low tag bits are
-    /// ignored; a closed or out-of-range handle is a miss.
+    /// The slot a handle names, or none. The low tag bits are ignored; a closed or out-of-range
+    /// handle is a miss.
     pub fn lookup(&self, handle: u32) -> Option<Slot> {
         let index = (handle >> HANDLE_SHIFT) as usize;
         if index == 0 || index >= HANDLE_SLOTS {
@@ -96,9 +88,8 @@ impl HandleTable {
         self.slots[index]
     }
 
-    /// Release the slot a handle names. False when the handle
-    /// names nothing (a double close, a foreign value). The
-    /// object itself lives on: only the table's claim ends.
+    /// Release the slot a handle names. False when the handle names nothing (a double close, a
+    /// foreign value). The object itself lives on: only the table's claim ends.
     pub fn close(&mut self, handle: u32) -> bool {
         let Some(_) = self.lookup(handle) else {
             return false;
@@ -110,9 +101,8 @@ impl HandleTable {
         true
     }
 
-    /// Empty the table: the process-exit step, releasing every
-    /// slot's claim at once (the objects themselves die with the
-    /// process's teardown).
+    /// Empty the table: the process-exit step, releasing every slot's claim at once (the objects
+    /// themselves die with the process's teardown).
     pub fn clear(&mut self) {
         *self = HandleTable::empty();
     }
@@ -134,14 +124,16 @@ mod tests {
             crate::sched::wait::WaitKind::NotificationEvent,
             0,
         )));
-        Slot { kind: ObjectKind::Event, waitable: waitable as *mut Waitable }
+        Slot {
+            kind: ObjectKind::Event,
+            waitable: waitable as *mut Waitable,
+        }
     }
 
     // --- Group A: encoding, allocation, reuse -------------------------------
 
-    /// The encoding: handles are multiples of four, slot zero is
-    /// never handed out (the first handle is 4), and no valid
-    /// handle collides with zero or the all-ones pseudo-handle.
+    /// The encoding: handles are multiples of four, slot zero is never handed out (the first handle
+    /// is 4), and no valid handle collides with zero or the all-ones pseudo-handle.
     #[test]
     fn handles_are_index_shifted_left_two() {
         let mut table = HandleTable::empty();
@@ -155,9 +147,8 @@ mod tests {
         assert_eq!(table.live(), 2);
     }
 
-    /// A freed slot is reused before a fresh one, the most
-    /// recently freed first; the closed value decodes to nothing
-    /// in between.
+    /// A freed slot is reused before a fresh one, the most recently freed first; the closed value
+    /// decodes to nothing in between.
     #[test]
     fn freed_slots_reuse_most_recently_freed_first() {
         let mut table = HandleTable::empty();
@@ -179,22 +170,24 @@ mod tests {
         assert_eq!(table.live(), 4);
     }
 
-    /// Lookup: the low two tag bits are ignored, a miss is a miss
-    /// — zero, out-of-range, and the all-ones pseudo-handle all
-    /// name nothing.
+    /// Lookup: the low two tag bits are ignored, a miss is a miss — zero, out-of-range, and the
+    /// all-ones pseudo-handle all name nothing.
     #[test]
     fn lookup_ignores_tag_bits_and_misses_cleanly() {
         let mut table = HandleTable::empty();
         let handle = table.insert(event_slot());
         assert!(table.lookup(handle).is_some());
-        assert!(table.lookup(handle | 0x3).is_some(), "the tag bits are ignored");
+        assert!(
+            table.lookup(handle | 0x3).is_some(),
+            "the tag bits are ignored"
+        );
         assert_eq!(table.lookup(0), None);
         assert_eq!(table.lookup(u32::MAX), None);
         assert_eq!(table.lookup((HANDLE_SLOTS as u32) << HANDLE_SHIFT), None);
     }
 
-    /// Exhaustion: a full table's create returns no handle, and
-    /// the table stays consistent (closes keep working).
+    /// Exhaustion: a full table's create returns no handle, and the table stays consistent (closes
+    /// keep working).
     #[test]
     fn a_full_table_refuses_inserts() {
         let mut table = HandleTable::empty();

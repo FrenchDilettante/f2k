@@ -1,19 +1,15 @@
 //! PE32 image parsing and import resolution for the image loader.
 //!
-//! Pure logic over a byte slice, with no kernel state: [`Image::parse`]
-//! validates a PE32 executable's headers and section table,
-//! [`Image::map_into`] builds the in-memory image under the eager
-//! mapping rule (headers verbatim, then each section's raw bytes,
-//! zero-fill to the section extent), and [`Image::snap_imports`]
-//! resolves the import directory against a caller-supplied export
-//! table, writing thunk addresses into the IAT slots.
+//! Pure logic over a byte slice, with no kernel state: [`Image::parse`] validates a PE32
+//! executable's headers and section table, [`Image::map_into`] builds the in-memory image under the
+//! eager mapping rule (headers verbatim, then each section's raw bytes, zero-fill to the section
+//! extent), and [`Image::snap_imports`] resolves the import directory against a caller-supplied
+//! export table, writing thunk addresses into the IAT slots.
 //!
-//! Failure discipline: questions of identity ("is this an image we
-//! load?") come back as [`Reject`]s; malformed bytes that would read
-//! past the buffer, and violations of the load contract, panic naming
-//! the violated contract. A run-to-completion image must have at least
-//! one live import, so a snap that resolves nothing is a contract
-//! violation, not a success.
+//! Failure discipline: questions of identity ("is this an image we load?") come back as
+//! [`Reject`]s; malformed bytes that would read past the buffer, and violations of the load
+//! contract, panic naming the violated contract. A run-to-completion image must have at least one
+//! live import, so a snap that resolves nothing is a contract violation, not a success.
 
 /// The DOS-header magic ("MZ").
 const DOS_MAGIC: u16 = 0x5A4D;
@@ -30,12 +26,12 @@ const OPT_MAGIC_PE32: u16 = 0x010B;
 /// The only subsystem this loader accepts: console.
 const SUBSYSTEM_CUI: u16 = 3;
 
-/// The fixed mapping base for user images: no relocation machinery
-/// exists, so an image must be linked to load exactly here.
+/// The fixed mapping base for user images: no relocation machinery exists, so an image must be
+/// linked to load exactly here.
 pub const IMAGE_BASE: u32 = 0x0040_0000;
 
-/// The largest image this loader will map (the fixed base plus this
-/// cap bounds where images can live).
+/// The largest image this loader will map (the fixed base plus this cap bounds where images can
+/// live).
 pub const MAX_IMAGE_SIZE: u32 = 0x0100_0000;
 
 /// The section-count cap.
@@ -69,8 +65,8 @@ const SIZE_DIRECTORY_ENTRY: usize = 8;
 /// One import descriptor: five dwords, terminated by an all-zero one.
 const SIZE_IMPORT_DESCRIPTOR: usize = 20;
 
-/// Why an image is not loadable. Identity questions only: bytes that
-/// merely do not describe a loadable PE32 image.
+/// Why an image is not loadable. Identity questions only: bytes that merely do not describe a
+/// loadable PE32 image.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reject {
     /// No DOS-header magic.
@@ -122,8 +118,8 @@ pub struct DataDirectory {
     pub size: u32,
 }
 
-/// One section-table row, with the zero-raw-size fix applied (a
-/// section with no raw data has no meaningful raw offset either).
+/// One section-table row, with the zero-raw-size fix applied (a section with no raw data has no
+/// meaningful raw offset either).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Section {
     pub name: [u8; 8],
@@ -143,8 +139,8 @@ impl Section {
         })
     }
 
-    /// The size that counts for mapping: the virtual size, or the raw
-    /// size when the virtual size is zero.
+    /// The size that counts for mapping: the virtual size, or the raw size when the virtual size is
+    /// zero.
     fn effective_vsize(&self) -> u32 {
         if self.virtual_size == 0 {
             self.raw_size
@@ -153,14 +149,13 @@ impl Section {
         }
     }
 
-    /// The section's footprint in the image, rounded up to the section
-    /// alignment.
+    /// The section's footprint in the image, rounded up to the section alignment.
     fn extent(&self, section_alignment: u32) -> u32 {
         round_up(self.effective_vsize().max(self.raw_size), section_alignment)
     }
 
-    /// How many raw bytes the mapping copies for this section: the raw
-    /// data, capped at the rounded-up virtual size.
+    /// How many raw bytes the mapping copies for this section: the raw data, capped at the
+    /// rounded-up virtual size.
     fn copy_len(&self, section_alignment: u32) -> u32 {
         self.raw_size
             .min(round_up(self.effective_vsize(), section_alignment))
@@ -176,8 +171,8 @@ impl Section {
     }
 }
 
-/// A parsed PE32 image: the fields the loader needs, plus the section
-/// table. Borrows nothing: everything is copied out at parse time.
+/// A parsed PE32 image: the fields the loader needs, plus the section table. Borrows nothing:
+/// everything is copied out at parse time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Image {
     pub entry_rva: u32,
@@ -193,17 +188,15 @@ pub struct Image {
     num_sections: usize,
 }
 
-/// The outcome of an import snap: descriptors walked and IAT slots
-/// written.
+/// The outcome of an import snap: descriptors walked and IAT slots written.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SnapResult {
     pub descriptors: usize,
     pub thunks: usize,
 }
 
-/// Bounds-check a read: `what` at `[off, off + len)` must fit inside
-/// `bytes`. Violations are malformed-image bounds, so they panic
-/// naming what was being read.
+/// Bounds-check a read: `what` at `[off, off + len)` must fit inside `bytes`. Violations are
+/// malformed-image bounds, so they panic naming what was being read.
 fn need(bytes: &[u8], off: usize, len: usize, what: &str) {
     let end = off.checked_add(len).unwrap_or_else(|| {
         panic!("{what} at 0x{off:x} wraps");
@@ -230,8 +223,8 @@ fn write_u32(bytes: &mut [u8], off: usize, value: u32, what: &str) {
     bytes[off..off + 4].copy_from_slice(&value.to_le_bytes());
 }
 
-/// A NUL-terminated string at `off`. An unterminated string is
-/// malformed bytes, so it panics; so does a non-UTF-8 one.
+/// A NUL-terminated string at `off`. An unterminated string is malformed bytes, so it panics; so
+/// does a non-UTF-8 one.
 fn read_cstr<'a>(bytes: &'a [u8], off: usize, what: &str) -> &'a str {
     need(bytes, off, 1, what);
     let end = bytes[off..]
@@ -253,9 +246,8 @@ fn round_up(v: u32, align: u32) -> u32 {
 impl Image {
     /// Parse and validate a PE32 executable.
     ///
-    /// `Err` means the bytes are not an image this loader accepts;
-    /// panics mean the bytes are malformed in a way that would read
-    /// past the buffer (each panic names what was being read).
+    /// `Err` means the bytes are not an image this loader accepts; panics mean the bytes are
+    /// malformed in a way that would read past the buffer (each panic names what was being read).
     pub fn parse(file: &[u8]) -> Result<Image, Reject> {
         // DOS header.
         need(file, 0, SIZE_DOS_HEADER, "DOS header");
@@ -263,12 +255,7 @@ impl Image {
             return Err(Reject::NotDos);
         }
         let nt = read_u32(file, OFF_E_LFANEW, "e_lfanew") as usize;
-        need(
-            file,
-            nt,
-            SIZE_NT_SIGNATURE + SIZE_FILE_HEADER,
-            "NT header",
-        );
+        need(file, nt, SIZE_NT_SIGNATURE + SIZE_FILE_HEADER, "NT header");
         if read_u32(file, nt, "PE signature") != PE_SIGNATURE {
             return Err(Reject::NotPe);
         }
@@ -289,8 +276,7 @@ impl Image {
         if magic != OPT_MAGIC_PE32 {
             return Err(Reject::NotPe32);
         }
-        let num_directories =
-            read_u32(file, opt + 92, "NumberOfRvaAndSizes") as usize;
+        let num_directories = read_u32(file, opt + 92, "NumberOfRvaAndSizes") as usize;
         if num_directories > MAX_DIRECTORIES {
             return Err(Reject::TooManyDirectories);
         }
@@ -347,8 +333,7 @@ impl Image {
             return Err(Reject::BadAlignment);
         }
 
-        // Section table: it lives inside the header region, which lives
-        // inside the image.
+        // Section table: it lives inside the header region, which lives inside the image.
         let table = opt + size_optional;
         need(
             file,
@@ -376,8 +361,8 @@ impl Image {
             raw_offset: 0,
             characteristics: 0,
         }; MAX_SECTIONS];
-        // The header region ends at the first section; sections must
-        // tile the image from there, contiguously and in order.
+        // The header region ends at the first section; sections must tile the image from there,
+        // contiguously and in order.
         let mut running_va = round_up(size_of_headers, section_alignment) as u64;
         for i in 0..num_sections {
             let at = table + i * SIZE_SECTION_HEADER;
@@ -443,9 +428,8 @@ impl Image {
             return Err(Reject::EntryNotExecutable);
         }
 
-        // An image without an import directory is legal: it imports
-        // nothing and must end by fault (the fault-containment
-        // fixture) — the loader snaps zero imports.
+        // An image without an import directory is legal: it imports nothing and must end by fault
+        // (the fault-containment fixture) — the loader snaps zero imports.
         Ok(Image {
             entry_rva,
             image_base,
@@ -469,9 +453,8 @@ impl Image {
         self.num_sections
     }
 
-    /// The section whose raw data backs `rva`, if any. The bound is the
-    /// raw size: file-mode lookups can only find bytes that exist in
-    /// the file.
+    /// The section whose raw data backs `rva`, if any. The bound is the raw size: file-mode lookups
+    /// can only find bytes that exist in the file.
     pub fn section_for_rva(&self, rva: u32) -> Option<usize> {
         (0..self.num_sections).find(|&i| {
             let s = &self.sections[i];
@@ -479,8 +462,8 @@ impl Image {
         })
     }
 
-    /// File-mode RVA to file offset: header-region RVAs resolve
-    /// directly, others through the section table.
+    /// File-mode RVA to file offset: header-region RVAs resolve directly, others through the
+    /// section table.
     pub fn rva_to_offset(&self, rva: u32) -> Option<usize> {
         if rva < self.size_of_headers {
             return Some(rva as usize);
@@ -490,9 +473,8 @@ impl Image {
         Some((rva - s.virtual_address + s.raw_offset) as usize)
     }
 
-    /// A data directory, if the image has it. A directory whose RVA
-    /// points outside the image is malformed bytes, not an absent
-    /// directory.
+    /// A data directory, if the image has it. A directory whose RVA points outside the image is
+    /// malformed bytes, not an absent directory.
     pub fn directory(&self, index: usize) -> Option<(u32, u32)> {
         if index >= self.num_directories {
             return None;
@@ -525,9 +507,8 @@ impl Image {
         self.image_base + self.entry_rva
     }
 
-    /// Build the in-memory image: headers verbatim, then each
-    /// section's raw bytes, zero-filled to the section extent.
-    /// `out` must be at least `size_of_image` bytes.
+    /// Build the in-memory image: headers verbatim, then each section's raw bytes, zero-filled to
+    /// the section extent. `out` must be at least `size_of_image` bytes.
     pub fn map_into(&self, file: &[u8], out: &mut [u8]) {
         assert!(
             out.len() >= self.size_of_image as usize,
@@ -550,8 +531,9 @@ impl Image {
             if copy_len > 0 {
                 need(file, s.raw_offset as usize, copy_len, "section raw data");
                 need(out, dst, copy_len, "section mapping");
-                out[dst..dst + copy_len]
-                    .copy_from_slice(&file[s.raw_offset as usize..s.raw_offset as usize + copy_len]);
+                out[dst..dst + copy_len].copy_from_slice(
+                    &file[s.raw_offset as usize..s.raw_offset as usize + copy_len],
+                );
             }
             let extent = s.extent(self.section_alignment) as usize;
             if extent > copy_len {
@@ -561,9 +543,8 @@ impl Image {
         }
     }
 
-    /// The IAT region: the IAT directory when the linker emitted one,
-    /// else the whole raw extent of the section holding the import
-    /// directory. Call only when an import directory exists (the
+    /// The IAT region: the IAT directory when the linker emitted one, else the whole raw extent of
+    /// the section holding the import directory. Call only when an import directory exists (the
     /// zero-import image never reaches here).
     fn iat_region(&self) -> (u32, u32) {
         if let Some((rva, size)) = self.directory(DIR_IAT) {
@@ -586,9 +567,8 @@ impl Image {
         panic!("unable to locate the IAT region");
     }
 
-    /// Read one import's name out of the file bytes. The name must
-    /// live in file-backed bytes: the zero tail cannot hold names.
-    /// The hint is read but never authoritative. Ordinal imports have
+    /// Read one import's name out of the file bytes. The name must live in file-backed bytes: the
+    /// zero tail cannot hold names. The hint is read but never authoritative. Ordinal imports have
     /// no surface on the kernel's name-keyed export table.
     fn import_name<'a>(&self, file: &'a [u8], thunk: u32) -> &'a str {
         if thunk & ORDINAL_FLAG != 0 {
@@ -610,13 +590,11 @@ impl Image {
         read_cstr(file, off + 2, "import name")
     }
 
-    /// Resolve the import directory against an export table: `dll` is
-    /// the only module this kernel synthesizes, and `resolve` maps an
-    /// export name to its thunk address. Each IAT slot receives the
-    /// resolved address; the original thunk array is left untouched.
-    /// Descriptor and thunk reads come from the mapped image (what the
-    /// loader actually walks); import names come from the file bytes
-    /// (they must be file-backed).
+    /// Resolve the import directory against an export table: `dll` is the only module this kernel
+    /// synthesizes, and `resolve` maps an export name to its thunk address. Each IAT slot receives
+    /// the resolved address; the original thunk array is left untouched. Descriptor and thunk reads
+    /// come from the mapped image (what the loader actually walks); import names come from the file
+    /// bytes (they must be file-backed).
     pub fn snap_imports(
         &self,
         file: &[u8],
@@ -625,8 +603,7 @@ impl Image {
         mut resolve: impl FnMut(&str) -> Option<u32>,
     ) -> SnapResult {
         let Some((import_rva, _)) = self.directory(DIR_IMPORT) else {
-            // No import directory: nothing to snap (an importless
-            // image must end by fault).
+            // No import directory: nothing to snap (an importless image must end by fault).
             return SnapResult::default();
         };
         let (iat_base, iat_size) = self.iat_region();
@@ -651,9 +628,8 @@ impl Image {
                 off += SIZE_IMPORT_DESCRIPTOR;
                 continue;
             }
-            // A thunk array pointer that does not point inside the
-            // image is bogus; the first-thunk array is walked in
-            // place instead.
+            // A thunk array pointer that does not point inside the image is bogus; the first-thunk
+            // array is walked in place instead.
             let lookup = if original_first_thunk < self.size_of_headers
                 || original_first_thunk >= self.size_of_image
             {
@@ -686,8 +662,7 @@ impl Image {
             }
             off += SIZE_IMPORT_DESCRIPTOR;
         }
-        // A run-to-completion image must resolve at least one import:
-        // its exit path.
+        // A run-to-completion image must resolve at least one import: its exit path.
         assert!(
             result.thunks > 0,
             "image has no live imports (run-to-completion contract)"
@@ -703,12 +678,10 @@ mod tests {
     const EXIT0: &[u8] = include_bytes!("../../../tests/exit0/exit0.exe");
     const RET0: &[u8] = include_bytes!("../../../tests/ret0/ret0.exe");
 
-    // exit0: NT at 0xb8, optional header at 0xd0, section table at 0x1b0;
-    // ret0: NT at 0xc8, optional header at 0xe0, section table at 0x1c0.
-    // Import surfaces: exit0 has one import (KERNEL32.dll!ExitProcess,
-    // hint/name at 0x2038, IL at 0x2030, IAT at 0x2000, module name at
-    // 0x2046); ret0 has 35 (IL at 0x441c, IAT at 0x4000, module name at
-    // 0x4708).
+    // exit0: NT at 0xb8, optional header at 0xd0, section table at 0x1b0; ret0: NT at 0xc8,
+    // optional header at 0xe0, section table at 0x1c0. Import surfaces: exit0 has one import
+    // (KERNEL32.dll!ExitProcess, hint/name at 0x2038, IL at 0x2030, IAT at 0x2000, module name at
+    // 0x2046); ret0 has 35 (IL at 0x441c, IAT at 0x4000, module name at 0x4708).
 
     /// The ret0 import order, as the linker emitted it.
     const RET0_IMPORTS: [&str; 35] = [
@@ -800,12 +773,9 @@ mod tests {
         Image::parse(file).expect("fixture parses")
     }
 
-    /// Map a fixture (or a mutated copy) and snap its imports against
-    /// `table`, recording every name the resolver saw.
-    fn snap(
-        file: &[u8],
-        table: &[(&str, u32)],
-    ) -> (Image, Vec<u8>, SnapResult, Vec<String>) {
+    /// Map a fixture (or a mutated copy) and snap its imports against `table`, recording every name
+    /// the resolver saw.
+    fn snap(file: &[u8], table: &[(&str, u32)]) -> (Image, Vec<u8>, SnapResult, Vec<String>) {
         let image = parse_ok(file);
         let mut mapped = vec![0u8; image.size_of_image as usize];
         image.map_into(file, &mut mapped);
@@ -818,8 +788,8 @@ mod tests {
     }
 
     fn snap_default(file: &[u8]) -> (Image, Vec<u8>, SnapResult, Vec<String>) {
-        // A full kernel32 stand-in covering both fixtures; the ret0
-        // list contains ExitProcess (index 2).
+        // A full kernel32 stand-in covering both fixtures; the ret0 list contains ExitProcess
+        // (index 2).
         let table: Vec<(&str, u32)> = RET0_IMPORTS
             .iter()
             .enumerate()
@@ -879,9 +849,8 @@ mod tests {
 
     #[test]
     fn lfanew_without_signature_rejects() {
-        // 0x100 is inside the file but in the DOS stub: the offset is
-        // readable, the content is not a PE signature. A clean reject,
-        // not a bounds panic.
+        // 0x100 is inside the file but in the DOS stub: the offset is readable, the content is not
+        // a PE signature. A clean reject, not a bounds panic.
         let bad = patched(EXIT0, |b| w32(b, 0x3c, 0x100));
         assert_eq!(Image::parse(&bad), Err(Reject::NotPe));
     }
@@ -906,8 +875,8 @@ mod tests {
 
     #[test]
     fn section_table_offset_is_honored() {
-        // The table follows SizeOfOptionalHeader, not a fixed offset:
-        // exit0 0x1b0, ret0 0x1c0, each starting with ".text".
+        // The table follows SizeOfOptionalHeader, not a fixed offset: exit0 0x1b0, ret0 0x1c0, each
+        // starting with ".text".
         let e = parse_ok(EXIT0);
         assert_eq!(e.section(0).name_str(), ".text");
         assert_eq!(off_table(EXIT0), 0x1b0);
@@ -1068,9 +1037,8 @@ mod tests {
 
     #[test]
     fn zero_only_section_maps_zeroes() {
-        // .rdata loses its raw data: the mapping plan shows a full
-        // zero extent. The import surface then has no file-backed
-        // bytes, which the snap enforces.
+        // .rdata loses its raw data: the mapping plan shows a full zero extent. The import surface
+        // then has no file-backed bytes, which the snap enforces.
         let bad = patched(EXIT0, |b| w32(b, off_sec(b, 1) + S_RAWSIZE, 0));
         let image = parse_ok(&bad);
         assert_eq!(image.section_copy_len(1), 0);
@@ -1085,8 +1053,7 @@ mod tests {
         let e = parse_ok(EXIT0);
         let mut mapped = vec![0u8; e.size_of_image as usize];
         e.map_into(EXIT0, &mut mapped);
-        // .text holds 0xd live bytes; the rest of the page is the
-        // file's own padding, mapped as-is.
+        // .text holds 0xd live bytes; the rest of the page is the file's own padding, mapped as-is.
         assert_eq!(&mapped[0x1000..0x100d], &EXIT0[0x1000..0x100d]);
         assert_eq!(&mapped[0x100d..0x2000], &EXIT0[0x100d..0x2000]);
     }
@@ -1199,8 +1166,8 @@ mod tests {
     fn header_region_rvas_resolve_directly() {
         let e = parse_ok(EXIT0);
         assert_eq!(e.rva_to_offset(0x100), Some(0x100));
-        // 0xfff is below the first section: no section backs it, but
-        // the header region resolves it directly.
+        // 0xfff is below the first section: no section backs it, but the header region resolves it
+        // directly.
         assert_eq!(e.section_for_rva(0xfff), None);
         assert_eq!(e.rva_to_offset(0xfff), Some(0xfff));
     }
@@ -1217,8 +1184,8 @@ mod tests {
 
     #[test]
     fn raw_tail_rva_resolves_file_mode() {
-        // 0x100d is past .text's virtual size but inside its raw
-        // data: the file-mode bound is the raw size.
+        // 0x100d is past .text's virtual size but inside its raw data: the file-mode bound is the
+        // raw size.
         let e = parse_ok(EXIT0);
         assert_eq!(e.rva_to_offset(0x100d), Some(0x100d));
     }
@@ -1230,8 +1197,8 @@ mod tests {
             w32(b, off_opt(b) + 56, 0x4000);
         });
         let image = parse_ok(&bad);
-        // 0x3000 is inside the section extent but past the raw data:
-        // valid zero memory in the image, no file backing.
+        // 0x3000 is inside the section extent but past the raw data: valid zero memory in the
+        // image, no file backing.
         assert_eq!(image.section_for_rva(0x3000), None);
         assert_eq!(image.rva_to_offset(0x3000), None);
         let mut mapped = vec![0u8; image.size_of_image as usize];
@@ -1265,8 +1232,8 @@ mod tests {
 
     #[test]
     fn directory_count_bounds_lookups() {
-        // Twelve directories: the IAT slot (index 12) reads as absent
-        // even though its bytes are still in the file.
+        // Twelve directories: the IAT slot (index 12) reads as absent even though its bytes are
+        // still in the file.
         let bad = patched(EXIT0, |b| w32(b, off_opt(b) + 92, 12));
         let image = parse_ok(&bad);
         assert_eq!(image.directory(DIR_IAT), None);
@@ -1279,8 +1246,7 @@ mod tests {
         let image = parse_ok(&bad);
         let mut mapped = vec![0u8; image.size_of_image as usize];
         image.map_into(&bad, &mut mapped);
-        // Nothing to snap: the image imports nothing and must end by
-        // fault.
+        // Nothing to snap: the image imports nothing and must end by fault.
         assert_eq!(
             image.snap_imports(&bad, &mut mapped, "KERNEL32.dll", |_| None),
             SnapResult::default()
@@ -1367,8 +1333,7 @@ mod tests {
     fn bogus_lookup_pointer_falls_back_to_the_iat() {
         for oft in [0u32, 0x3000] {
             let bad = patched(EXIT0, |b| w32(b, 0x2008, oft));
-            let (_, _, result, seen) =
-                snap(&bad, &[("ExitProcess", 0x5000_1000)]);
+            let (_, _, result, seen) = snap(&bad, &[("ExitProcess", 0x5000_1000)]);
             assert_eq!(result.thunks, 1);
             assert_eq!(seen, vec!["ExitProcess"]);
         }
@@ -1377,9 +1342,8 @@ mod tests {
     #[test]
     #[should_panic(expected = "outside the image")]
     fn terminator_slot_is_not_assumed() {
-        // The walk stops at the zero slot, not at a count: a nonzero
-        // value where the terminator should be is walked as an import
-        // and fails on the bogus name.
+        // The walk stops at the zero slot, not at a count: a nonzero value where the terminator
+        // should be is walked as an import and fails on the bogus name.
         let bad = patched(EXIT0, |b| w32(b, 0x2034, 0x0000_beef));
         let _ = snap_default(&bad);
     }
@@ -1422,8 +1386,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "not NUL-terminated")]
     fn unterminated_module_name_panics() {
-        // Point the module name at a tail with no NUL before the image
-        // ends.
+        // Point the module name at a tail with no NUL before the image ends.
         let bad = patched(EXIT0, |b| {
             w32(b, 0x2008 + 12, 0x2ff8);
             b[0x2ff8..0x3000].fill(0xaa);
@@ -1511,8 +1474,7 @@ mod tests {
     fn cross_field_contract_holds_on_fixtures() {
         for src in [EXIT0, RET0] {
             let (image, _, result, _) = snap_default(src);
-            // The IAT directory covers every slot the walk writes,
-            // terminator included.
+            // The IAT directory covers every slot the walk writes, terminator included.
             let (iat_rva, iat_size) = image.directory(DIR_IAT).unwrap();
             let ft = r32(src, image.directory(DIR_IMPORT).unwrap().0 as usize + 16);
             assert!(ft >= iat_rva);

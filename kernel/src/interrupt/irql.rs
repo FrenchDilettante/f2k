@@ -1,19 +1,14 @@
-//! The interrupt request level: the kernel's ranking of "what kind of
-//! context is running".
+//! The interrupt request level: the kernel's ranking of "what kind of context is running".
 //!
-//! Levels 0-2 are the software levels (passive, APC, dispatch);
-//! 27-31 are the hardware levels (profile, clock, inter-processor,
-//! power, high). A hardware interrupt claims its level on entry and
-//! lowers back on exit, so the level is balanced at rest; nesting is
-//! safe because a second interrupt at or below the current level is
-//! not accepted while the first is being served.
+//! Levels 0-2 are the software levels (passive, APC, dispatch); 27-31 are the hardware levels
+//! (profile, clock, inter-processor, power, high). A hardware interrupt claims its level on entry
+//! and lowers back on exit, so the level is balanced at rest; nesting is safe because a second
+//! interrupt at or below the current level is not accepted while the first is being served.
 //!
-//! The level slots live in one [`IrqlState`]: raise returns the
-//! previous level, lower restores it. The same state carries the
-//! interrupt-flag discipline: transitions at or above the clock
-//! level run with interrupts masked, transitions below it leave them
-//! enabled — the dispatch software level must not block the tick,
-//! and the tick must block everything.
+//! The level slots live in one [`IrqlState`]: raise returns the previous level, lower restores it.
+//! The same state carries the interrupt-flag discipline: transitions at or above the clock level
+//! run with interrupts masked, transitions below it leave them enabled — the dispatch software
+//! level must not block the tick, and the tick must block everything.
 
 /// One interrupt request level. Ordered: a higher value preempts.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
@@ -33,28 +28,26 @@ pub const CLOCK: Irql = Irql(28);
 pub const IPI: Irql = Irql(29);
 /// Power-fail interrupts.
 pub const POWER: Irql = Irql(30);
-/// The synchronization level (one below IPI; same numeric value as
-/// the clock level on this platform).
+/// The synchronization level (one below IPI; same numeric value as the clock level on this
+/// platform).
 pub const SYNCH: Irql = Irql(28);
 /// Everything masks below this.
 pub const HIGH: Irql = Irql(31);
 
-/// The lowest hardware level: at or above it, interrupts stay
-/// masked across transitions; below it they run enabled.
+/// The lowest hardware level: at or above it, interrupts stay masked across transitions; below it
+/// they run enabled.
 pub const HARDWARE_FLOOR: Irql = CLOCK;
 
-/// How deep raise/lower pairs may nest (a hardware claim, a
-/// deferred-work drain, a dispatcher lock: a handful, bounded).
+/// How deep raise/lower pairs may nest (a hardware claim, a deferred-work drain, a dispatcher lock:
+/// a handful, bounded).
 const NESTING: usize = 8;
 
 /// One CPU's level slot and interrupt-flag discipline.
 ///
-/// A raise/lower pair is a save/restore: raising masks interrupts,
-/// records the interrupted flag state, and re-enables only below the
-/// hardware floor; lowering restores the recorded flag state — a
-/// pair entered with interrupts masked leaves them masked, so code
-/// that runs inside a handler (a deferred-work enqueue, for example)
-/// cannot accidentally re-enable the world.
+/// A raise/lower pair is a save/restore: raising masks interrupts, records the interrupted flag
+/// state, and re-enables only below the hardware floor; lowering restores the recorded flag state —
+/// a pair entered with interrupts masked leaves them masked, so code that runs inside a handler (a
+/// deferred-work enqueue, for example) cannot accidentally re-enable the world.
 pub struct IrqlState {
     current: u8,
     interrupts: bool,
@@ -66,8 +59,7 @@ pub struct IrqlState {
 }
 
 impl IrqlState {
-    /// Fresh state: passive level, interrupts enabled, no
-    /// transitions recorded.
+    /// Fresh state: passive level, interrupts enabled, no transitions recorded.
     pub const fn new() -> Self {
         Self {
             current: 0,
@@ -89,10 +81,9 @@ impl IrqlState {
         self.interrupts
     }
 
-    /// Raise to `level`, returning the previous level. The
-    /// interrupted flag state is captured first; interrupts are then
-    /// masked for the transition and re-enabled only below the
-    /// hardware floor.
+    /// Raise to `level`, returning the previous level. The interrupted flag state is captured
+    /// first; interrupts are then masked for the transition and re-enabled only below the hardware
+    /// floor.
     pub fn raise(&mut self, level: Irql) -> Irql {
         assert!(self.depth < NESTING, "interrupt level nesting overflow");
         self.saved[self.depth] = self.interrupts;
@@ -107,9 +98,8 @@ impl IrqlState {
         Irql(previous)
     }
 
-    /// Lower back to `level`, restoring the interrupt-flag state the
-    /// matching raise captured. Lowering above the entry level is a
-    /// bug and is refused.
+    /// Lower back to `level`, restoring the interrupt-flag state the matching raise captured.
+    /// Lowering above the entry level is a bug and is refused.
     pub fn lower(&mut self, level: Irql) {
         self.mask_interrupts();
         assert!(level.0 <= self.current, "lowering above the current level");
@@ -142,35 +132,37 @@ impl IrqlState {
     }
 }
 
-/// A thread's level ledger: the state the raise/lower pairs of one
-/// continuous execution are recorded against. Pairs belong to the
-/// thread whose stack their lowering code lives on, so a context
-/// switch captures and restores the ledger per thread.
+/// A thread's level ledger: the state the raise/lower pairs of one continuous execution are
+/// recorded against. Pairs belong to the thread whose stack their lowering code lives on, so a
+/// context switch captures and restores the ledger per thread.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct LevelSnapshot {
     /// The level the thread was running at.
     current: u8,
     /// The interrupt-flag state the model carried.
     interrupts: bool,
-    /// The unbalanced raises whose lowering code is on this thread's
-    /// stack.
+    /// The unbalanced raises whose lowering code is on this thread's stack.
     depth: usize,
     /// The flag state each of those raises captured.
     saved: [bool; NESTING],
 }
 
 impl LevelSnapshot {
-    /// An empty ledger: passive, interrupts enabled, no pending
-    /// pairs. A thread record's initial value; a fresh thread's
-    /// first instructions adopt exactly this.
+    /// An empty ledger: passive, interrupts enabled, no pending pairs. A thread record's initial
+    /// value; a fresh thread's first instructions adopt exactly this.
     pub const fn empty() -> Self {
-        LevelSnapshot { current: 0, interrupts: true, depth: 0, saved: [false; NESTING] }
+        LevelSnapshot {
+            current: 0,
+            interrupts: true,
+            depth: 0,
+            saved: [false; NESTING],
+        }
     }
 }
 
 impl IrqlState {
-    /// The transition audit: every raise has been paid back by a
-    /// lower, and the level is back where it started.
+    /// The transition audit: every raise has been paid back by a lower, and the level is back where
+    /// it started.
     pub fn audit(&self) -> Result<(), &'static str> {
         if self.raises != self.lowers {
             return Err("interrupt level transitions unbalanced");
@@ -181,8 +173,8 @@ impl IrqlState {
         Ok(())
     }
 
-    /// Capture the level ledger (the context switch's switching-out
-    /// half). Read-only: the CPU state itself is untouched.
+    /// Capture the level ledger (the context switch's switching-out half). Read-only: the CPU state
+    /// itself is untouched.
     pub fn capture(&self) -> LevelSnapshot {
         LevelSnapshot {
             current: self.current,
@@ -192,10 +184,9 @@ impl IrqlState {
         }
     }
 
-/// Restore a captured ledger (the resumed thread's half). The real
-/// interrupt flag is not touched (the switch's popfd restored it);
-/// the counters are not touched either — the recorded pairs still
-/// balance on this thread's stack.
+    /// Restore a captured ledger (the resumed thread's half). The real interrupt flag is not
+    /// touched (the switch's popfd restored it); the counters are not touched either — the recorded
+    /// pairs still balance on this thread's stack.
     pub fn restore(&mut self, snapshot: LevelSnapshot) {
         assert!(snapshot.depth <= NESTING, "corrupt level snapshot");
         self.current = snapshot.current;
@@ -204,9 +195,8 @@ impl IrqlState {
         self.saved = snapshot.saved;
     }
 
-/// A fresh thread's first instructions adopt an empty ledger:
-/// passive, no pending pairs, interrupts enabled. The previous
-/// thread's pending pairs live on its own stack and ledger.
+    /// A fresh thread's first instructions adopt an empty ledger: passive, no pending pairs,
+    /// interrupts enabled. The previous thread's pending pairs live on its own stack and ledger.
     pub fn begin_thread(&mut self) {
         self.current = 0;
         self.interrupts = true;
@@ -222,13 +212,11 @@ impl IrqlState {
 #[cfg(target_arch = "x86")]
 static mut STATE: IrqlState = IrqlState::new();
 
-/// The kernel's level state. Mutating it performs the real
-/// interrupt-flag transitions.
+/// The kernel's level state. Mutating it performs the real interrupt-flag transitions.
 ///
 /// # Safety (target)
 ///
-/// Single CPU; access is serialized by the level discipline and the
-/// interrupt gates.
+/// Single CPU; access is serialized by the level discipline and the interrupt gates.
 #[cfg(target_arch = "x86")]
 pub fn state_mut() -> &'static mut IrqlState {
     // SAFETY: single CPU; every caller runs serialized.
@@ -239,10 +227,9 @@ pub fn state_mut() -> &'static mut IrqlState {
 mod tests {
     use super::*;
 
-    /// The level ordering table: the software levels, the hardware
-    /// levels, and the aliases — the clock level sits above the
-    /// dispatch level, so a tick never runs a deferred routine on
-    /// top of itself.
+    /// The level ordering table: the software levels, the hardware levels, and the aliases — the
+    /// clock level sits above the dispatch level, so a tick never runs a deferred routine on top of
+    /// itself.
     #[test]
     fn level_ordering_matches_the_platform() {
         assert_eq!(PASSIVE, Irql(0));
@@ -259,9 +246,8 @@ mod tests {
         assert!(PASSIVE < APC && APC < DISPATCH);
     }
 
-    /// A raise/lower pair is balanced: the sequence raise(X) then
-    /// lower(previous) leaves the level (and the audit) unchanged,
-    /// for every X above the entry level.
+    /// A raise/lower pair is balanced: the sequence raise(X) then lower(previous) leaves the level
+    /// (and the audit) unchanged, for every X above the entry level.
     #[test]
     fn raise_lower_pairs_are_balanced() {
         for x in [APC, DISPATCH, PROFILE, CLOCK, IPI, POWER, HIGH] {
@@ -275,8 +261,8 @@ mod tests {
         }
     }
 
-    /// Nested claims stack: raising from an already-raised level
-    /// returns the intermediate level, and lowering unwinds it.
+    /// Nested claims stack: raising from an already-raised level returns the intermediate level,
+    /// and lowering unwinds it.
     #[test]
     fn nested_claims_stack_and_unwind() {
         let mut irql = IrqlState::new();
@@ -292,9 +278,8 @@ mod tests {
         assert_eq!(irql.audit(), Ok(()));
     }
 
-    /// Interrupt-flag discipline: transitions at or above the clock
-    /// level keep interrupts masked; below it they run enabled. A
-    /// pair entered with interrupts masked (inside a handler, say)
+    /// Interrupt-flag discipline: transitions at or above the clock level keep interrupts masked;
+    /// below it they run enabled. A pair entered with interrupts masked (inside a handler, say)
     /// leaves them masked — the restore is what the pair promised.
     #[test]
     fn hardware_levels_mask_software_levels_enable() {
@@ -305,7 +290,10 @@ mod tests {
         assert!(!irql.interrupts_enabled(), "the tick must run masked");
 
         irql.lower(DISPATCH);
-        assert!(irql.interrupts_enabled(), "dispatch must not block the tick");
+        assert!(
+            irql.interrupts_enabled(),
+            "dispatch must not block the tick"
+        );
 
         irql.raise(HIGH);
         assert!(!irql.interrupts_enabled());
@@ -315,15 +303,14 @@ mod tests {
         assert_eq!(irql.audit(), Ok(()));
     }
 
-    /// A raise/lower pair entered with interrupts masked leaves them
-    /// masked: code that runs inside a handler cannot accidentally
-    /// re-enable the world on its way out.
+    /// A raise/lower pair entered with interrupts masked leaves them masked: code that runs inside
+    /// a handler cannot accidentally re-enable the world on its way out.
     #[test]
     fn a_pair_entered_masked_leaves_masked() {
         let mut irql = IrqlState::new();
         irql.mask_interrupts();
-        // A software-level pair inside a masked context: still
-        // masked coming out, whatever the level.
+        // A software-level pair inside a masked context: still masked coming out, whatever the
+        // level.
         let inner = irql.raise(DISPATCH);
         irql.lower(inner);
         assert!(!irql.interrupts_enabled());
@@ -335,9 +322,8 @@ mod tests {
         assert_eq!(irql.audit(), Ok(()));
     }
 
-    /// Lowering above the current level is a bug: the state refuses,
-    /// so a mispaired exit cannot silently corrupt the stack of
-    /// levels.
+    /// Lowering above the current level is a bug: the state refuses, so a mispaired exit cannot
+    /// silently corrupt the stack of levels.
     #[test]
     fn lowering_above_current_is_refused() {
         let mut irql = IrqlState::new();
@@ -349,8 +335,8 @@ mod tests {
         assert!(result.is_err());
     }
 
-    /// An unbalanced audit is detectable: a raise without its lower
-    /// leaves the level stuck and the audit failing.
+    /// An unbalanced audit is detectable: a raise without its lower leaves the level stuck and the
+    /// audit failing.
     #[test]
     fn unbalanced_transitions_fail_the_audit() {
         let mut irql = IrqlState::new();
@@ -361,30 +347,27 @@ mod tests {
         assert_eq!(irql.audit(), Ok(()));
     }
 
-/// The ledger handover: one state plays the CPU, the timelines
-/// interleave on it, and every raised pair is paid back on its
-/// owning thread's ledger.
+    /// The ledger handover: one state plays the CPU, the timelines interleave on it, and every
+    /// raised pair is paid back on its owning thread's ledger.
     #[test]
     fn capture_and_restore_hand_the_ledger_over() {
         let mut cpu = IrqlState::new();
 
-        // Thread A raises two pairs, captures its ledger, and is
-        // switched away from mid-raise.
+        // Thread A raises two pairs, captures its ledger, and is switched away from mid-raise.
         let a_inner = cpu.raise(DISPATCH);
         let a_outer = cpu.raise(CLOCK);
         let ledger_a = cpu.capture();
         assert_eq!(ledger_a.depth, 2);
 
-        // A fresh thread takes the processor: it adopts an empty
-        // ledger, raises one pair, and switches out mid-raise.
+        // A fresh thread takes the processor: it adopts an empty ledger, raises one pair, and
+        // switches out mid-raise.
         cpu.begin_thread();
         let b_inner = cpu.raise(CLOCK);
         let ledger_b = cpu.capture();
         assert_eq!(ledger_b.depth, 1);
 
-        // Thread B resumes: its ledger replaces the CPU's (the real
-        // interrupt flag came back with the switch's popfd), and
-        // its pending pair completes against its own ledger.
+        // Thread B resumes: its ledger replaces the CPU's (the real interrupt flag came back with
+        // the switch's popfd), and its pending pair completes against its own ledger.
         cpu.restore(ledger_b);
         assert_eq!(cpu.current(), CLOCK);
         cpu.lower(b_inner);
@@ -398,9 +381,8 @@ mod tests {
         assert_eq!(cpu.audit(), Ok(()));
     }
 
-    /// A fresh thread adopts an empty ledger: passive, no pending
-    /// pairs, interrupts enabled — whatever the previous thread had
-    /// pending is voided for it (the pending pairs live on that
+    /// A fresh thread adopts an empty ledger: passive, no pending pairs, interrupts enabled —
+    /// whatever the previous thread had pending is voided for it (the pending pairs live on that
     /// thread's stack and its own ledger).
     #[test]
     fn a_fresh_thread_begins_with_an_empty_ledger() {
@@ -414,10 +396,9 @@ mod tests {
         assert_eq!(irql.depth, 0);
         assert!(irql.interrupts_enabled());
 
-        // Its first raise/lower pair works against the fresh ledger.
-        // The audit stays unbalanced: the two voided raises are
-        // still owed on the previous thread's stack — they balance
-        // when it resumes, not here.
+        // Its first raise/lower pair works against the fresh ledger. The audit stays unbalanced:
+        // the two voided raises are still owed on the previous thread's stack — they balance when
+        // it resumes, not here.
         let inner = irql.raise(DISPATCH);
         irql.lower(inner);
         assert_eq!(irql.current(), PASSIVE);

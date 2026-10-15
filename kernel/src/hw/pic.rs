@@ -1,26 +1,22 @@
 //! 8259A interrupt controller: the two-chip ISA cascade.
 //!
-//! The boot remaps the chips so ISA IRQ 0-15 arrive as CPU vectors
-//! 0x30-0x3F (clear of the syscall gate at 0x2E), keeps every line
-//! masked until a driver connects it, and drives the end-of-interrupt
-//! discipline.
+//! The boot remaps the chips so ISA IRQ 0-15 arrive as CPU vectors 0x30-0x3F (clear of the syscall
+//! gate at 0x2E), keeps every line masked until a driver connects it, and drives the
+//! end-of-interrupt discipline.
 //!
-//! The controller owns the datasheet's spurious-interrupt quirk: a
-//! line that deasserts before the CPU acknowledges is delivered as
-//! IRQ7 (or IRQ15) with no in-service bit set anywhere. The
-//! in-service register therefore separates a real interrupt from a
-//! spurious one — a spurious master interrupt needs no
-//! end-of-interrupt at all, while a spurious slave interrupt must
-//! still end the master's cascade service (that in-service bit is
-//! real), but never the slave's.
+//! The controller owns the datasheet's spurious-interrupt quirk: a line that deasserts before the
+//! CPU acknowledges is delivered as IRQ7 (or IRQ15) with no in-service bit set anywhere. The
+//! in-service register therefore separates a real interrupt from a spurious one — a spurious master
+//! interrupt needs no end-of-interrupt at all, while a spurious slave interrupt must still end the
+//! master's cascade service (that in-service bit is real), but never the slave's.
 
 use crate::hw::portio::Io;
 
 /// First vector the master chip delivers (IRQ 0).
 pub const MASTER_VECTOR_BASE: u8 = 0x30;
 
-/// First vector the slave chip delivers (IRQ 8). The cascade wiring
-/// forces this to the master base plus 8.
+/// First vector the slave chip delivers (IRQ 8). The cascade wiring forces this to the master base
+/// plus 8.
 pub const SLAVE_VECTOR_BASE: u8 = MASTER_VECTOR_BASE + 8;
 
 /// Last vector the cascade delivers (IRQ 15).
@@ -32,34 +28,30 @@ const MASTER_DATA: u16 = 0x21;
 const SLAVE_CMD: u16 = 0xA0;
 const SLAVE_DATA: u16 = 0xA1;
 
-// Initialization command words: edge-triggered, cascade mode, a
-// fourth word needed; the master has its slave on line 2, the slave
-// answers on cascade identity 2; both run in 8086 mode.
+// Initialization command words: edge-triggered, cascade mode, a fourth word needed; the master has
+// its slave on line 2, the slave answers on cascade identity 2; both run in 8086 mode.
 const ICW1_INIT: u8 = 0x11;
 const ICW4_8086: u8 = 0x01;
 const MASTER_ICW3_SLAVE_ON_2: u8 = 0x04;
 const SLAVE_ICW3_IDENTITY_2: u8 = 0x02;
 
-// Operating control words: a non-specific end-of-interrupt, and the
-// read-register select that makes the next command-port read return
-// the in-service register.
+// Operating control words: a non-specific end-of-interrupt, and the read-register select that makes
+// the next command-port read return the in-service register.
 const OCW2_NON_SPECIFIC_EOI: u8 = 0x20;
 const OCW3_READ_IN_SERVICE: u8 = 0x0B;
 
-/// The verdict of claiming a delivered vector: whether the interrupt
-/// was real, and — for a spurious one — which end-of-interrupt work
-/// (if any) the controller already had to perform.
+/// The verdict of claiming a delivered vector: whether the interrupt was real, and — for a spurious
+/// one — which end-of-interrupt work (if any) the controller already had to perform.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Verdict {
-    /// A real interrupt: the in-service bit is set; the caller must
-    /// end the interrupt ([`Pic::end_of_interrupt`]) when done.
+    /// A real interrupt: the in-service bit is set; the caller must end the interrupt
+    /// ([`Pic::end_of_interrupt`]) when done.
     Real,
-    /// A spurious master interrupt: no bit was in service, so the
-    /// caller must not acknowledge it in any way.
+    /// A spurious master interrupt: no bit was in service, so the caller must not acknowledge it
+    /// in any way.
     SpuriousNoEoi,
-    /// A spurious slave interrupt: no slave bit was in service, but
-    /// the master's cascade bit was — the controller has already
-    /// ended the cascade service; the caller must not end anything.
+    /// A spurious slave interrupt: no slave bit was in service, but the master's cascade bit was —
+    /// the controller has already ended the cascade service; the caller must not end anything.
     SpuriousCascadeEnded,
 }
 
@@ -73,7 +65,11 @@ pub struct Pic<IoT: Io> {
 impl<IoT: Io> Pic<IoT> {
     /// An unmapped pair. Call [`Pic::remap`] before use.
     pub const fn new(io: IoT) -> Self {
-        Self { io, master_base: 0, slave_base: 0 }
+        Self {
+            io,
+            master_base: 0,
+            slave_base: 0,
+        }
     }
 
     /// The underlying port access.
@@ -83,10 +79,9 @@ impl<IoT: Io> Pic<IoT> {
 
     /// Remap the cascade and mask every line.
     ///
-    /// The four-word initialization sequence per chip sets the vector
-    /// bases and the cascade wiring; the masks close with every line
-    /// disabled — a line is unmasked only when a driver connects it,
-    /// so an unconnected vector's line can never raise it.
+    /// The four-word initialization sequence per chip sets the vector bases and the cascade wiring;
+    /// the masks close with every line disabled — a line is unmasked only when a driver connects
+    /// it, so an unconnected vector's line can never raise it.
     pub fn remap(&mut self, master_base: u8, slave_base: u8) {
         self.master_base = master_base;
         self.slave_base = slave_base;
@@ -130,9 +125,8 @@ impl<IoT: Io> Pic<IoT> {
         self.io.read(port) & bit == 0
     }
 
-    /// Claim a delivered vector: probe the in-service register and
-    /// settle the spurious question, performing the cascade
-    /// end-of-interrupt a spurious slave interrupt demands.
+    /// Claim a delivered vector: probe the in-service register and settle the spurious question,
+    /// performing the cascade end-of-interrupt a spurious slave interrupt demands.
     pub fn claim(&mut self, vector: u8) -> Verdict {
         if vector < self.slave_base {
             if self.in_service_bit(vector) {
@@ -143,15 +137,15 @@ impl<IoT: Io> Pic<IoT> {
         } else if self.in_service_bit(vector) {
             Verdict::Real
         } else {
-            // The master took the cascade; end its service so the
-            // cascade line can deliver again. The slave needs nothing.
+            // The master took the cascade; end its service so the cascade line can deliver again.
+            // The slave needs nothing.
             self.io.out(MASTER_CMD, OCW2_NON_SPECIFIC_EOI);
             Verdict::SpuriousCascadeEnded
         }
     }
 
-    /// End a real interrupt: acknowledge the chip that served it —
-    /// and, for a slave line, the master's cascade service too.
+    /// End a real interrupt: acknowledge the chip that served it — and, for a slave line, the
+    /// master's cascade service too.
     pub fn end_of_interrupt(&mut self, vector: u8) {
         if vector >= self.slave_base {
             self.io.out(SLAVE_CMD, OCW2_NON_SPECIFIC_EOI);
@@ -159,17 +153,16 @@ impl<IoT: Io> Pic<IoT> {
         self.io.out(MASTER_CMD, OCW2_NON_SPECIFIC_EOI);
     }
 
-    /// Whether the in-service register of both chips is clear: the
-    /// on-target check that no interrupt was left half-served.
+    /// Whether the in-service register of both chips is clear: the on-target check that no
+    /// interrupt was left half-served.
     pub fn in_service_clear(&mut self) -> bool {
         let master = self.read_in_service(false);
         let slave = self.read_in_service(true);
         master == 0 && slave == 0
     }
 
-    /// Read the in-service bit for a vector: select the in-service
-    /// register on the chip that would serve it, then read bit
-    /// (vector mod 8).
+    /// Read the in-service bit for a vector: select the in-service register on the chip that would
+    /// serve it, then read bit (vector mod 8).
     fn in_service_bit(&mut self, vector: u8) -> bool {
         let slave = vector >= self.slave_base;
         self.read_in_service(slave) & (1 << (vector & 7)) != 0
@@ -196,9 +189,8 @@ impl<IoT: Io> Pic<IoT> {
 mod tests {
     use super::*;
 
-    /// A simulated 8259A pair: interrupt mask, in-service and
-    /// request registers per chip, with command-port writes decoded
-    /// the way the chips decode them.
+    /// A simulated 8259A pair: interrupt mask, in-service and request registers per chip, with
+    /// command-port writes decoded the way the chips decode them.
     struct Sim {
         master: Chip,
         slave: Chip,
@@ -215,18 +207,32 @@ mod tests {
     impl Sim {
         fn new() -> Self {
             Self {
-                master: Chip { imr: 0, isr: 0, irr: 0, select_isr: false },
-                slave: Chip { imr: 0, isr: 0, irr: 0, select_isr: false },
+                master: Chip {
+                    imr: 0,
+                    isr: 0,
+                    irr: 0,
+                    select_isr: false,
+                },
+                slave: Chip {
+                    imr: 0,
+                    isr: 0,
+                    irr: 0,
+                    select_isr: false,
+                },
                 writes: Vec::new(),
             }
         }
 
         fn chip_mut(&mut self, port: u16) -> &mut Chip {
-            if port >= SLAVE_CMD { &mut self.slave } else { &mut self.master }
+            if port >= SLAVE_CMD {
+                &mut self.slave
+            } else {
+                &mut self.master
+            }
         }
 
-        /// Model the CPU's interrupt-acknowledge cycle for a line:
-        /// the chip latches the line into its in-service register.
+        /// Model the CPU's interrupt-acknowledge cycle for a line: the chip latches the line into
+        /// its in-service register.
         fn acknowledge(&mut self, vector: u8) {
             if vector >= SLAVE_VECTOR_BASE {
                 self.slave.isr |= 1 << (vector & 7);
@@ -244,8 +250,7 @@ mod tests {
                 .collect()
         }
 
-        /// The end-of-interrupt writes issued so far (OCW2 0x20 to a
-        /// command port).
+        /// The end-of-interrupt writes issued so far (OCW2 0x20 to a command port).
         fn eoi_writes(&self) -> Vec<(u16, u8)> {
             self.writes
                 .iter()
@@ -262,8 +267,7 @@ mod tests {
                 MASTER_CMD | SLAVE_CMD => {
                     let chip = self.chip_mut(port);
                     if byte & 0x20 != 0 {
-                        // Non-specific EOI: clear the
-                        // highest-priority in-service bit.
+                        // Non-specific EOI: clear the highest-priority in-service bit.
                         if let Some(bit) = (0..8).find(|&i| chip.isr & (1 << i) != 0) {
                             chip.isr &= !(1 << bit);
                         }
@@ -282,7 +286,11 @@ mod tests {
             match port {
                 MASTER_CMD | SLAVE_CMD => {
                     let chip = self.chip_mut(port);
-                    if chip.select_isr { chip.isr } else { chip.irr }
+                    if chip.select_isr {
+                        chip.isr
+                    } else {
+                        chip.irr
+                    }
                 }
                 MASTER_DATA | SLAVE_DATA => self.chip_mut(port).imr,
                 _ => 0,
@@ -296,9 +304,8 @@ mod tests {
         pic
     }
 
-    /// The initialization sequence: per chip an ICW1 on the command
-    /// port, then ICW2 (the vector base), ICW3 (the cascade wiring)
-    /// and ICW4 (8086 mode) on the data port, in that order.
+    /// The initialization sequence: per chip an ICW1 on the command port, then ICW2 (the vector
+    /// base), ICW3 (the cascade wiring) and ICW4 (8086 mode) on the data port, in that order.
     #[test]
     fn remap_writes_the_initialization_sequence() {
         let mut pic = remapped();
@@ -314,13 +321,15 @@ mod tests {
         );
     }
 
-    /// After remap every line is masked; unmasking and masking one
-    /// line touches exactly its bit.
+    /// After remap every line is masked; unmasking and masking one line touches exactly its bit.
     #[test]
     fn masks_start_closed_and_toggle_per_line() {
         let mut pic = remapped();
         for vector in MASTER_VECTOR_BASE..=LAST_VECTOR {
-            assert!(!pic.is_unmasked(vector), "vector {vector:#x} unmasked after remap");
+            assert!(
+                !pic.is_unmasked(vector),
+                "vector {vector:#x} unmasked after remap"
+            );
         }
         pic.unmask(MASTER_VECTOR_BASE); // IRQ 0
         assert!(pic.is_unmasked(MASTER_VECTOR_BASE));
@@ -332,10 +341,9 @@ mod tests {
         assert!(!pic.is_unmasked(MASTER_VECTOR_BASE));
     }
 
-    /// A real interrupt: the acknowledge cycle latched the line
-    /// in-service, so the claim is Real and the end-of-interrupt
-    /// clears the in-service bits (the cascade bit included for a
-    /// slave line).
+    /// A real interrupt: the acknowledge cycle latched the line in-service, so the claim is Real
+    /// and the end-of-interrupt clears the in-service bits (the cascade bit included for a slave
+    /// line).
     #[test]
     fn claim_real_master_and_slave_interrupts() {
         let mut pic = remapped();
@@ -354,8 +362,8 @@ mod tests {
         assert!(pic.in_service_clear());
     }
 
-    /// A spurious IRQ7: nothing was in service, so the claim issues
-    /// no acknowledgment at all — and the handler must not either.
+    /// A spurious IRQ7: nothing was in service, so the claim issues no acknowledgment at all — and
+    /// the handler must not either.
     #[test]
     fn spurious_master_interrupt_needs_no_eoi() {
         let mut pic = remapped();
@@ -365,16 +373,18 @@ mod tests {
         assert!(pic.in_service_clear());
     }
 
-    /// A spurious IRQ15: the slave served nothing, but the master's
-    /// cascade bit is really in service — the claim ends the cascade
-    /// (and only the cascade) itself.
+    /// A spurious IRQ15: the slave served nothing, but the master's cascade bit is really in
+    /// service — the claim ends the cascade (and only the cascade) itself.
     #[test]
     fn spurious_slave_interrupt_ends_only_the_cascade() {
         let mut pic = remapped();
         // The cascade fired, the slave answered with nothing.
         pic.io().master.isr |= 1 << 2;
         let eois_before = pic.io().eoi_writes();
-        assert_eq!(pic.claim(SLAVE_VECTOR_BASE + 7), Verdict::SpuriousCascadeEnded);
+        assert_eq!(
+            pic.claim(SLAVE_VECTOR_BASE + 7),
+            Verdict::SpuriousCascadeEnded
+        );
         let sim = pic.io();
         assert_eq!(sim.eoi_writes().len(), eois_before.len() + 1);
         assert_eq!(
@@ -385,8 +395,8 @@ mod tests {
         assert!(pic.in_service_clear());
     }
 
-    /// The vector bases leave the whole IRQ band clear of the
-    /// syscall gate at 0x2E, and the two chips cover 16 lines.
+    /// The vector bases leave the whole IRQ band clear of the syscall gate at 0x2E, and the two
+    /// chips cover 16 lines.
     #[test]
     fn vector_band_lays_out_around_the_syscall_gate() {
         assert_eq!(MASTER_VECTOR_BASE, 0x30);

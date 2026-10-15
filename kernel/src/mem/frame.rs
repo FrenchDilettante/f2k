@@ -1,64 +1,59 @@
 //! Physical frame allocator.
 //!
-//! The frame database owns one [`FrameEntry`] per physical frame. Frames
-//! not in use are linked onto one of six lists, keyed by state: Zeroed,
-//! Free, Standby, Modified, ModifiedNoWrite and Bad. The first three
-//! count as available (allocatable in some form); the available counter
-//! is always exactly the sum of those three list lengths.
+//! The frame database owns one [`FrameEntry`] per physical frame. Frames not in use are linked onto
+//! one of six lists, keyed by state: Zeroed, Free, Standby, Modified, ModifiedNoWrite and Bad. The
+//! first three count as available (allocatable in some form); the available counter is always
+//! exactly the sum of those three list lengths.
 //!
-//! Zeroed and Free frames are additionally threaded onto per-color
-//! chains (color = frame number modulo the color count) so allocation
-//! can honor a color preference in constant time. The head of a list is
-//! always the head of its own color chain, and every color chain is
-//! exactly the subsequence of the list's frames with that color.
+//! Zeroed and Free frames are additionally threaded onto per-color chains (color = frame number
+//! modulo the color count) so allocation can honor a color preference in constant time. The head of
+//! a list is always the head of its own color chain, and every color chain is exactly the
+//! subsequence of the list's frames with that color.
 //!
 //! Policy:
 //! - Releasing a frame appends at the tail, so reuse is FIFO.
-//! - Allocating a zeroed frame prefers Zeroed, then Free, then Standby,
-//!   requesting zeroing for frames that were not already zeroed.
-//! - Allocating an arbitrary frame prefers Free, then Zeroed, then
-//!   Standby, and never requests zeroing.
-//! - Taking a specific Free/Zeroed frame and unlinking frames from the
-//!   other lists are separate operations with separate contracts.
+//! - Allocating a zeroed frame prefers Zeroed, then Free, then Standby, requesting zeroing for
+//!   frames that were not already zeroed.
+//! - Allocating an arbitrary frame prefers Free, then Zeroed, then Standby, and never requests
+//!   zeroing.
+//! - Taking a specific Free/Zeroed frame and unlinking frames from the other lists are separate
+//!   operations with separate contracts.
 //!
-//! This module is pure bookkeeping over an in-memory table: no unsafe
-//! code and no hardware access. The kernel wires it to real memory by
-//! providing the frame table and (later) real workers via
+//! This module is pure bookkeeping over an in-memory table: no unsafe code and no hardware access.
+//! The kernel wires it to real memory by providing the frame table and (later) real workers via
 //! [`FrameHooks`].
 
 /// Physical frame number. Frame 0 is reserved and never allocated.
 pub type FrameId = u32;
 
-/// Primary cache color of a frame. This platform has a single primary
-/// color; the per-frame field stays zero.
+/// Primary cache color of a frame. This platform has a single primary color; the per-frame field
+/// stays zero.
 pub const PRIMARY_COLOR: u32 = 0;
 
 /// Lower bound on the configured color count.
 pub const MIN_COLOR_COUNT: usize = 2;
-/// Upper bound on the configured color count. The count must be a
-/// power of two in `[MIN_COLOR_COUNT, MAX_COLOR_COUNT]`.
+/// Upper bound on the configured color count. The count must be a power of two in
+/// `[MIN_COLOR_COUNT, MAX_COLOR_COUNT]`.
 pub const MAX_COLOR_COUNT: usize = 1024;
 
 /// Default color count used by the kernel and tests.
 pub const DEFAULT_COLOR_COUNT: usize = 4;
 
-/// Frame table capacity: 256 MiB of 4 KiB frames, matching the
-/// development machine memory (the Makefile's QEMU flags). The boot
-/// frame table is sized by this; usable memory beyond it is ignored.
+/// Frame table capacity: 256 MiB of 4 KiB frames, matching the development machine memory (the
+/// Makefile's QEMU flags). The boot frame table is sized by this; usable memory beyond it is
+/// ignored.
 pub const MAX_FRAMES: usize = 65_536;
 
-/// Lifecycle state of a frame. Frames are on one of the six list states
-/// or off-list ([`FrameState::Active`] or [`FrameState::Transition`]).
+/// Lifecycle state of a frame. Frames are on one of the six list states or off-list
+/// ([`FrameState::Active`] or [`FrameState::Transition`]).
 ///
 /// The grouping below is load-bearing policy, not documentation:
 /// - "available" states can satisfy allocations (zeroed/free/standby),
 /// - "colored" states keep a per-color chain (zeroed/free),
-/// - "transition" states count towards the transition tallies
-///   (standby/modified/modified-no-write).
+/// - "transition" states count towards the transition tallies (standby/modified/modified-no-write).
 ///
-/// `Active` is discriminant 0 on purpose: a fresh [`FrameEntry`] is
-/// then all-zero, so zeroed memory is a valid fresh entry and large
-/// frame tables live in BSS instead of bloating the image's data.
+/// `Active` is discriminant 0 on purpose: a fresh [`FrameEntry`] is then all-zero, so zeroed memory
+/// is a valid fresh entry and large frame tables live in BSS instead of bloating the image's data.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FrameState {
     /// In use; not on any list. Discriminant 0 (see above).
@@ -80,8 +75,7 @@ pub enum FrameState {
 }
 
 impl FrameState {
-    /// Frames in these states satisfy allocations and count as
-    /// available.
+    /// Frames in these states satisfy allocations and count as available.
     pub const fn counts_as_available(self) -> bool {
         matches!(
             self,
@@ -108,9 +102,8 @@ impl FrameState {
     }
 }
 
-/// Per-frame flags. Cleared by allocation paths that pop a list head;
-/// left untouched when a specific frame is taken, so the caller can
-/// finish its own state transition.
+/// Per-frame flags. Cleared by allocation paths that pop a list head; left untouched when a
+/// specific frame is taken, so the caller can finish its own state transition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct FrameFlags(u16);
 
@@ -125,8 +118,8 @@ impl FrameFlags {
     pub const PROTOTYPE_PTE: Self = Self(1 << 3);
     /// The frame contents are invalid after an I/O error.
     pub const IN_PAGE_ERROR: Self = Self(1 << 4);
-    /// The frame is scheduled for removal: divert it to the Bad list
-    /// instead of any available list on release.
+    /// The frame is scheduled for removal: divert it to the Bad list instead of any available list
+    /// on release.
     pub const REMOVAL_REQUESTED: Self = Self(1 << 5);
 
     pub const fn empty() -> Self {
@@ -150,8 +143,8 @@ impl FrameFlags {
     }
 }
 
-/// Per-frame bookkeeping entry. Owned by the [`FrameDb`]; the link
-/// fields are only meaningful while the frame is on a list.
+/// Per-frame bookkeeping entry. Owned by the [`FrameDb`]; the link fields are only meaningful while
+/// the frame is on a list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FrameEntry {
     next: Option<FrameId>,
@@ -206,9 +199,8 @@ struct ColorBucket {
     tail: Option<FrameId>,
 }
 
-/// The per-color chain heads for the two colored states. Kept outside
-/// [`FrameDb`] so the database itself stays small: boot code holds it
-/// by value without a multi-kilobyte stack frame.
+/// The per-color chain heads for the two colored states. Kept outside [`FrameDb`] so the database
+/// itself stays small: boot code holds it by value without a multi-kilobyte stack frame.
 #[derive(Debug)]
 pub struct ColorTables {
     inner: [[ColorBucket; MAX_COLOR_COUNT]; 2],
@@ -231,45 +223,40 @@ impl ColorTables {
 pub enum UnlinkOutcome {
     /// The frame was removed from its list.
     Unlinked,
-    /// The frame has references with no mappings: an I/O transfer is
-    /// in flight, so the frame was left untouched. Retry later.
+    /// The frame has references with no mappings: an I/O transfer is in flight, so the frame was
+    /// left untouched. Retry later.
     Busy,
 }
 
-/// Side effects of the frame allocator, wired to real workers by the
-/// kernel and to recording doubles by tests. All methods have default
-/// no-op implementations.
+/// Side effects of the frame allocator, wired to real workers by the kernel and to recording
+/// doubles by tests. All methods have default no-op implementations.
 pub trait FrameHooks {
-    /// The frame's contents must be zeroed before it is handed out as
-    /// a zeroed frame. Fired by [`FrameDb::allocate_zeroed`] when the
-    /// frame did not come from the Zeroed list.
+    /// The frame's contents must be zeroed before it is handed out as a zeroed frame. Fired by
+    /// [`FrameDb::allocate_zeroed`] when the frame did not come from the Zeroed list.
     fn zero_frame(&mut self, _frame: FrameId) {}
 
-    /// The frame's contents just became zeroed: either released into
-    /// the Zeroed list, or zeroed on demand during allocation.
+    /// The frame's contents just became zeroed: either released into the Zeroed list, or zeroed on
+    /// demand during allocation.
     fn stamp_zeroed(&mut self, _frame: FrameId) {}
 
-    /// The frame was released from Standby: its transition mapping slot
-    /// must be restored. Fired on standby head-removal and on the
-    /// removal-requested diversion path.
+    /// The frame was released from Standby: its transition mapping slot must be restored. Fired on
+    /// standby head-removal and on the removal-requested diversion path.
     fn restore_transition(&mut self, _frame: FrameId) {}
 
-    /// Available frames dropped below the configured minimum. The
-    /// listener should free more frames. Fired on every removal path
-    /// that crosses the threshold.
+    /// Available frames dropped below the configured minimum. The listener should free more frames.
+    /// Fired on every removal path that crosses the threshold.
     fn reclaim_frames(&mut self) {}
 
-    /// Available frames reached the low water mark. Fired on the
-    /// release path whenever the count becomes exactly the low mark.
+    /// Available frames reached the low water mark. Fired on the release path whenever the count
+    /// becomes exactly the low mark.
     fn available_low(&mut self) {}
 
-    /// Available frames reached the high water mark. Fired on the
-    /// release path whenever the count becomes exactly the high mark.
+    /// Available frames reached the high water mark. Fired on the release path whenever the count
+    /// becomes exactly the high mark.
     fn available_high(&mut self) {}
 
-    /// The Free list reached the configured zeroing threshold and no
-    /// zeroing pass is running. The listener should drain free frames
-    /// into the Zeroed list, then call [`FrameDb::zeroing_done`].
+    /// The Free list reached the configured zeroing threshold and no zeroing pass is running. The
+    /// listener should drain free frames into the Zeroed list, then call [`FrameDb::zeroing_done`].
     fn zeroing_needed(&mut self) {}
 }
 
@@ -278,8 +265,7 @@ pub struct NoHooks;
 
 impl FrameHooks for NoHooks {}
 
-/// Ways the frame database can be internally inconsistent; reported by
-/// [`FrameDb::audit`].
+/// Ways the frame database can be internally inconsistent; reported by [`FrameDb::audit`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuditError {
     /// A list link points outside the valid frame range.
@@ -304,12 +290,12 @@ pub enum AuditError {
     ColorChainMismatch { state: FrameState },
 }
 
-/// The physical frame database: frame table, per-state FIFO lists,
-/// per-color chains, accounting counters, and hooks.
+/// The physical frame database: frame table, per-state FIFO lists, per-color chains, accounting
+/// counters, and hooks.
 ///
-/// The frame table is borrowed for the database's lifetime; the kernel
-/// supplies a table sized from the boot memory map, tests leak a boxed
-/// slice. Index 0 is reserved; valid frames are 1..table_len.
+/// The frame table is borrowed for the database's lifetime; the kernel supplies a table sized from
+/// the boot memory map, tests leak a boxed slice. Index 0 is reserved; valid frames are
+/// 1..table_len.
 pub struct FrameDb<H: FrameHooks = NoHooks> {
     frames: &'static mut [FrameEntry],
     buckets: &'static mut ColorTables,
@@ -334,8 +320,8 @@ pub struct FrameDb<H: FrameHooks = NoHooks> {
     zero_threshold: u32,
     /// True while a zeroing pass is running (suppresses re-requests).
     zeroing_armed: bool,
-    /// Available-page water marks; hooks fire when the count passes
-    /// exactly through them on release.
+    /// Available-page water marks; hooks fire when the count passes exactly through them on
+    /// release.
     low_water: u32,
     high_water: u32,
 
@@ -345,9 +331,8 @@ pub struct FrameDb<H: FrameHooks = NoHooks> {
 }
 
 impl<H: FrameHooks> FrameDb<H> {
-    /// Build a database over `frames` (index 0 reserved) and the color
-    /// chain heads in `buckets`, with `colors` colors and the given
-    /// hooks. Water marks default to 2 (low) and 19 (high); the
+    /// Build a database over `frames` (index 0 reserved) and the color chain heads in `buckets`,
+    /// with `colors` colors and the given hooks. Water marks default to 2 (low) and 19 (high); the
     /// free-page minimum and zeroing threshold default to "never".
     pub fn new(
         frames: &'static mut [FrameEntry],
@@ -382,14 +367,14 @@ impl<H: FrameHooks> FrameDb<H> {
         }
     }
 
-    /// Configure the available-page floor that triggers
-    /// [`FrameHooks::reclaim_frames`]. Zero (the default) means never.
+    /// Configure the available-page floor that triggers [`FrameHooks::reclaim_frames`]. Zero (the
+    /// default) means never.
     pub fn set_min_free_pages(&mut self, min_free: u32) {
         self.min_free = min_free;
     }
 
-    /// Configure the Free-list length that requests a zeroing pass.
-    /// `u32::MAX` (the default) means never.
+    /// Configure the Free-list length that requests a zeroing pass. `u32::MAX` (the default) means
+    /// never.
     pub fn set_zeroing_threshold(&mut self, threshold: u32) {
         self.zero_threshold = threshold;
     }
@@ -400,8 +385,7 @@ impl<H: FrameHooks> FrameDb<H> {
         self.zeroing_armed = false;
     }
 
-    /// Total frames that can satisfy allocations (zeroed + free +
-    /// standby).
+    /// Total frames that can satisfy allocations (zeroed + free + standby).
     pub fn available(&self) -> u32 {
         self.available
     }
@@ -413,7 +397,11 @@ impl<H: FrameHooks> FrameDb<H> {
 
     /// Read-only access to a frame's entry.
     pub fn entry(&self, frame: FrameId) -> &FrameEntry {
-        assert!(frame != 0 && (frame as usize) < self.frames.len(), "invalid frame id {}", frame);
+        assert!(
+            frame != 0 && (frame as usize) < self.frames.len(),
+            "invalid frame id {}",
+            frame
+        );
         &self.frames[frame as usize]
     }
 
@@ -421,7 +409,11 @@ impl<H: FrameHooks> FrameDb<H> {
     // Internal accessors
 
     fn entry_mut(&mut self, frame: FrameId) -> &mut FrameEntry {
-        assert!(frame != 0 && (frame as usize) < self.frames.len(), "invalid frame id {}", frame);
+        assert!(
+            frame != 0 && (frame as usize) < self.frames.len(),
+            "invalid frame id {}",
+            frame
+        );
         &mut self.frames[frame as usize]
     }
 
@@ -458,14 +450,13 @@ impl<H: FrameHooks> FrameDb<H> {
         }
     }
 
-    /// Color of a frame: its position in the color chains, derived
-    /// from the frame number.
+    /// Color of a frame: its position in the color chains, derived from the frame number.
     fn color_of(&self, frame: FrameId) -> usize {
         (frame & self.color_mask) as usize
     }
 
-    /// Transition tally bookkeeping; keeps the share/private split in
-    /// lockstep with the transition list lengths.
+    /// Transition tally bookkeeping; keeps the share/private split in lockstep with the transition
+    /// list lengths.
     fn tally_add(&mut self, frame: FrameId) {
         if self.entry(frame).flags.contains(FrameFlags::PROTOTYPE_PTE) {
             self.transition_shared += 1;
@@ -531,8 +522,8 @@ impl<H: FrameHooks> FrameDb<H> {
         self.entry_mut(frame).next_color = None;
     }
 
-    /// Stitch the main chain around `frame` (already known to be on
-    /// `state`'s list), decrement the total, and clear its links.
+    /// Stitch the main chain around `frame` (already known to be on `state`'s list), decrement the
+    /// total, and clear its links.
     fn stitch_around(&mut self, frame: FrameId, state: FrameState) {
         let next = self.entry(frame).next;
         let prev = self.entry(frame).prev;
@@ -552,9 +543,9 @@ impl<H: FrameHooks> FrameDb<H> {
         entry.prev = None;
     }
 
-    /// Removal-side accounting shared by every removal path: available
-    /// count, transition tallies (reading flags while they are still
-    /// intact), the standby restore hook, and the low-frames hook.
+    /// Removal-side accounting shared by every removal path: available count, transition tallies
+    /// (reading flags while they are still intact), the standby restore hook, and the low-frames
+    /// hook.
     fn removal_accounting(&mut self, state: FrameState, frame: FrameId, restore_on_standby: bool) {
         if state.counts_as_available() {
             self.available -= 1;
@@ -577,9 +568,9 @@ impl<H: FrameHooks> FrameDb<H> {
 
     /// Release `frame` onto the list for `state`, appending at the tail.
     ///
-    /// The frame must be off-list with no references. If the frame is
-    /// flagged [`FrameFlags::REMOVAL_REQUESTED`] and the target is an
-    /// available state, the frame is diverted to the Bad list instead.
+    /// The frame must be off-list with no references. If the frame is flagged
+    /// [`FrameFlags::REMOVAL_REQUESTED`] and the target is an available state, the frame is
+    /// diverted to the Bad list instead.
     pub fn release(&mut self, frame: FrameId, state: FrameState) {
         {
             let entry = self.entry(frame);
@@ -653,9 +644,8 @@ impl<H: FrameHooks> FrameDb<H> {
 
     /// Remove and return the head frame of the list for `state`.
     ///
-    /// Not valid for the Modified list, which is drained by its writer
-    /// (that path owns the ordering). The frame's flags are cleared;
-    /// its color stays. Panics if the list is empty.
+    /// Not valid for the Modified list, which is drained by its writer (that path owns the
+    /// ordering). The frame's flags are cleared; its color stays. Panics if the list is empty.
     pub fn pop(&mut self, state: FrameState) -> FrameId {
         assert!(
             state != FrameState::Modified,
@@ -709,12 +699,10 @@ impl<H: FrameHooks> FrameDb<H> {
         frame
     }
 
-    /// Unlink a specific frame from a non-colored list (Standby,
-    /// Modified, ModifiedNoWrite or Bad).
+    /// Unlink a specific frame from a non-colored list (Standby, Modified, ModifiedNoWrite or Bad).
     ///
-    /// If the frame has references and no mappings, an I/O transfer is
-    /// in flight: the call returns [`UnlinkOutcome::Busy`] and the list
-    /// is untouched. The frame's flags are left as they are.
+    /// If the frame has references and no mappings, an I/O transfer is in flight: the call returns
+    /// [`UnlinkOutcome::Busy`] and the list is untouched. The frame's flags are left as they are.
     pub fn unlink(&mut self, frame: FrameId) -> UnlinkOutcome {
         let state = {
             let entry = self.entry(frame);
@@ -730,9 +718,7 @@ impl<H: FrameHooks> FrameDb<H> {
                 "free/zeroed frames must be taken with take() to keep color chains consistent"
             );
             assert!(
-                !entry
-                    .flags
-                    .contains(FrameFlags::WRITE_IN_PROGRESS)
+                !entry.flags.contains(FrameFlags::WRITE_IN_PROGRESS)
                     && !entry.flags.contains(FrameFlags::READ_IN_PROGRESS),
                 "cannot unlink a frame with I/O in progress"
             );
@@ -746,12 +732,10 @@ impl<H: FrameHooks> FrameDb<H> {
         UnlinkOutcome::Unlinked
     }
 
-    /// Take a specific frame off the Zeroed or Free list, for callers
-    /// that need exactly this frame.
+    /// Take a specific frame off the Zeroed or Free list, for callers that need exactly this frame.
     ///
-    /// The frame's flags are left as they are; the caller owns the rest
-    /// of the transition. Panics if the frame is not on a colored list
-    /// or not on its color chain.
+    /// The frame's flags are left as they are; the caller owns the rest of the transition. Panics
+    /// if the frame is not on a colored list or not on its color chain.
     pub fn take(&mut self, frame: FrameId) {
         let state = {
             let entry = self.entry(frame);
@@ -761,9 +745,7 @@ impl<H: FrameHooks> FrameDb<H> {
                 "take() only accepts zeroed or free frames"
             );
             assert!(
-                !entry
-                    .flags
-                    .contains(FrameFlags::WRITE_IN_PROGRESS)
+                !entry.flags.contains(FrameFlags::WRITE_IN_PROGRESS)
                     && !entry.flags.contains(FrameFlags::READ_IN_PROGRESS),
                 "cannot take a frame with I/O in progress"
             );
@@ -773,8 +755,8 @@ impl<H: FrameHooks> FrameDb<H> {
 
         self.stitch_around(frame, state);
 
-        // Color chain removal. The head case is O(1); otherwise walk
-        // the chain to find the parent (bounded by the table length).
+        // Color chain removal. The head case is O(1); otherwise walk the chain to find the parent
+        // (bounded by the table length).
         let color = self.color_of(frame);
         let next_color = self.entry(frame).next_color;
         let bucket_head = self.buckets.inner[Self::color_table(state)][color].head;
@@ -815,8 +797,8 @@ impl<H: FrameHooks> FrameDb<H> {
         self.removal_accounting(state, frame, false);
     }
 
-    /// Allocation-path removal of a colored frame known to be the head
-    /// of its color chain. Clears flags and applies removal accounting.
+    /// Allocation-path removal of a colored frame known to be the head of its color chain. Clears
+    /// flags and applies removal accounting.
     fn pop_colored(&mut self, frame: FrameId) {
         let state = self.entry(frame).state;
         assert!(
@@ -855,9 +837,8 @@ impl<H: FrameHooks> FrameDb<H> {
 
     /// Allocate a zeroed frame, preferring color `color`.
     ///
-    /// Preference order: the Zeroed list (requested color, then any),
-    /// the Free list (requested color, then any, zeroing on demand),
-    /// then Standby (zeroing on demand). Panics if nothing is
+    /// Preference order: the Zeroed list (requested color, then any), the Free list (requested
+    /// color, then any, zeroing on demand), then Standby (zeroing on demand). Panics if nothing is
     /// available.
     pub fn allocate_zeroed(&mut self, color: u32) -> FrameId {
         assert!(self.available != 0, "no frames are available");
@@ -887,8 +868,14 @@ impl<H: FrameHooks> FrameDb<H> {
         }
 
         // Both colored lists are empty by chain; their totals must agree.
-        assert_eq!(self.zeroed.total, 0, "zeroed chain is empty but the list is not");
-        assert_eq!(self.free.total, 0, "free chain is empty but the list is not");
+        assert_eq!(
+            self.zeroed.total, 0,
+            "zeroed chain is empty but the list is not"
+        );
+        assert_eq!(
+            self.free.total, 0,
+            "free chain is empty but the list is not"
+        );
         assert!(self.standby.total != 0, "no frames are available");
 
         let frame = self.pop(FrameState::Standby);
@@ -896,12 +883,11 @@ impl<H: FrameHooks> FrameDb<H> {
         frame
     }
 
-    /// Allocate any frame, preferring color `color` and non-zeroed
-    /// content (no zeroing is ever requested).
+    /// Allocate any frame, preferring color `color` and non-zeroed content (no zeroing is ever
+    /// requested).
     ///
-    /// Preference order: the Free list (requested color, then any), the
-    /// Zeroed list (requested color, then any), then Standby. Panics if
-    /// nothing is available.
+    /// Preference order: the Free list (requested color, then any), the Zeroed list (requested
+    /// color, then any), then Standby. Panics if nothing is available.
     pub fn allocate(&mut self, color: u32) -> FrameId {
         assert!(self.available != 0, "no frames are available");
         assert!((color as usize) < self.colors, "color out of range");
@@ -928,8 +914,14 @@ impl<H: FrameHooks> FrameDb<H> {
         }
 
         // Both colored lists are empty by chain; their totals must agree.
-        assert_eq!(self.free.total, 0, "free chain is empty but the list is not");
-        assert_eq!(self.zeroed.total, 0, "zeroed chain is empty but the list is not");
+        assert_eq!(
+            self.free.total, 0,
+            "free chain is empty but the list is not"
+        );
+        assert_eq!(
+            self.zeroed.total, 0,
+            "zeroed chain is empty but the list is not"
+        );
         assert!(self.standby.total != 0, "no frames are available");
 
         self.pop(FrameState::Standby)
@@ -944,20 +936,17 @@ impl<H: FrameHooks> FrameDb<H> {
     // -----------------------------------------------------------------
     // Consistency audit
 
-    /// Check every invariant the database maintains silently. Returns
-    /// `Ok(())` when they all hold, or the first violation found.
+    /// Check every invariant the database maintains silently. Returns `Ok(())` when they all hold,
+    /// or the first violation found.
     ///
-    /// Per list: the chain terminates without cycles or out-of-range
-    /// frames, the total equals the chain length, head and tail links
-    /// match the chain ends, backward links mirror forward links, and
-    /// every listed frame's state names its list. Globally: the
-    /// available counter equals the sum of the available lists, the
-    /// transition tallies equal the sum of the transition lists, each
-    /// list head is its color-chain head, and every color chain is the
-    /// color-matching subsequence of its list.
+    /// Per list: the chain terminates without cycles or out-of-range frames, the total equals the
+    /// chain length, head and tail links match the chain ends, backward links mirror forward links,
+    /// and every listed frame's state names its list. Globally: the available counter equals the
+    /// sum of the available lists, the transition tallies equal the sum of the transition lists,
+    /// each list head is its color-chain head, and every color chain is the color-matching
+    /// subsequence of its list.
     ///
-    /// Allocation-free: walks chains with bounded steps instead of
-    /// collecting them.
+    /// Allocation-free: walks chains with bounded steps instead of collecting them.
     pub fn audit(&self) -> Result<(), AuditError> {
         let states = [
             FrameState::Zeroed,
@@ -971,8 +960,7 @@ impl<H: FrameHooks> FrameDb<H> {
         for &state in &states {
             let list = self.list(state);
 
-            // Forward walk: range, termination, per-frame state, and
-            // backward-link agreement.
+            // Forward walk: range, termination, per-frame state, and backward-link agreement.
             let mut count = 0u32;
             let mut first: Option<FrameId> = None;
             let mut last: Option<FrameId> = None;
@@ -1030,8 +1018,8 @@ impl<H: FrameHooks> FrameDb<H> {
         }
         self.assert_tallies();
 
-        // Color chains: each must be the color-matching subsequence of
-        // its list, and the list head must be its own chain head.
+        // Color chains: each must be the color-matching subsequence of its list, and the list head
+        // must be its own chain head.
         for state in [FrameState::Zeroed, FrameState::Free] {
             let head = self.list(state).head;
             if let Some(h) = head {
@@ -1044,15 +1032,13 @@ impl<H: FrameHooks> FrameDb<H> {
                 let bucket = &self.buckets.inner[Self::color_table(state)][color];
                 let chain_budget = 2 * self.frames.len() as u32 + 2;
 
-                // Walk the color-filtered list and the color chain in
-                // lockstep.
+                // Walk the color-filtered list and the color chain in lockstep.
                 let mut list_cur = self.list(state).head;
                 let mut bucket_cur = bucket.head;
                 let mut last_matched: Option<FrameId> = None;
                 let mut steps = 0u32;
                 loop {
-                    // Advance the list cursor to the next frame of
-                    // this color.
+                    // Advance the list cursor to the next frame of this color.
                     while let Some(f) = list_cur {
                         if self.color_of(f) == color {
                             break;
@@ -1094,8 +1080,9 @@ impl<H: FrameHooks> FrameDb<H> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use FrameState::*;
+
+    use super::*;
 
     const TABLE: usize = 64;
 
@@ -1139,7 +1126,12 @@ mod tests {
         let table: &'static mut [FrameEntry] =
             Box::leak(vec![FrameEntry::new(); TABLE].into_boxed_slice());
         let buckets: &'static mut ColorTables = Box::leak(Box::new(ColorTables::new()));
-        FrameDb::new(table, buckets, DEFAULT_COLOR_COUNT, RecordingHooks::default())
+        FrameDb::new(
+            table,
+            buckets,
+            DEFAULT_COLOR_COUNT,
+            RecordingHooks::default(),
+        )
     }
 
     fn release_all(db: &mut FrameDb<RecordingHooks>, state: FrameState, frames: &[FrameId]) {
@@ -1425,8 +1417,7 @@ mod tests {
         assert_eq!(db.allocate(1), 9);
         assert!(db.hooks.zeroed.is_empty());
 
-        // The zeroed allocation makes the opposite choice on the same
-        // state: zeroed over free.
+        // The zeroed allocation makes the opposite choice on the same state: zeroed over free.
         {
             let mut db = new_db();
             release_all(&mut db, Free, &[5]);

@@ -4,7 +4,7 @@ A Windows 2000-compatible operating system written in Rust.
 
 ## Prerequisites
 
-This project uses Nightly Rust via the `rust-toolchain` file, which also pulls in the `rust-src` and `clippy` components. Your default toolchain remains unaffected.
+This project uses Nightly Rust via the `rust-toolchain` file, which also pulls in the `rust-src`, `clippy` and `rustfmt` components. Your default toolchain remains unaffected.
 
 ### macOS (ARM64 or x86_64):
 ```bash
@@ -83,11 +83,23 @@ scripts/run-qemu-tests.py scripts/qemu-tests.yaml --only fault-ud
 make check
 ```
 
+### Formatting
+Sources are formatted with rustfmt (settings in `rustfmt.toml`): 100
+columns for code and comments, imports grouped (std/core, external,
+crate) and sorted. rustfmt splits overlong comment lines and reflows
+list items, but never joins short prose lines, so wrap new comments at
+100 yourself. Hand-laid tables opt out with `#[rustfmt::skip]`.
+```bash
+make fmt         # format everything
+make fmt-check   # fail if anything is unformatted
+```
+
 ## Project Structure
 
 ```
 f2k/
 ├── rust-toolchain    # Nightly Rust for this project
+├── rustfmt.toml      # rustfmt settings (make fmt)
 ├── Cargo.toml        # Workspace manifest
 ├── Makefile          # Build system
 ├── x86-f2k.json      # Rust target: 32-bit x86 bare metal
@@ -134,6 +146,9 @@ f2k/
 | `make test` | Run the boot smoke test |
 | `make test-disk` | Run the boot smoke test on the disk image |
 | `make run-tests` | Run host unit tests |
+| `make check` | `cargo check` + clippy |
+| `make fmt` | Format all Rust sources |
+| `make fmt-check` | Fail if any Rust source is unformatted |
 | `make test-fault` | On-target exception dump tests (#UD and #GP) |
 | `make limine` | Download Limine bootloader |
 | `make iso` | Create bootable ISO with Limine |

@@ -59,6 +59,9 @@ help:
 	@echo "  test         - Run the on-target QEMU test suite (kernel path)"
 	@echo "  test-disk    - Run the on-target QEMU test suite (disk path)"
 	@echo "  run-tests    - Run host unit tests (cargo test --lib)"
+	@echo "  check        - cargo check + clippy"
+	@echo "  fmt          - Format all Rust sources (rustfmt)"
+	@echo "  fmt-check    - Fail if any Rust source is not formatted"
 	@echo "  kernel-bin   - Convert kernel to raw binary"
 	@echo "  disk         - Create Limine-bootable hard disk image (needs mtools)"
 	@echo "  limine       - Download/setup limine bootloader (if needed)"
@@ -154,6 +157,14 @@ check:
 	@echo "Checking code..."
 	cd $(KERNEL_DIR) && cargo check
 	cd $(KERNEL_DIR) && cargo clippy
+
+# Formatting: settings live in rustfmt.toml at the workspace root.
+.PHONY: fmt fmt-check
+fmt:
+	cargo fmt --all
+
+fmt-check:
+	cargo fmt --all -- --check
 
 # =============================================================================
 # Limine Bootloader Targets

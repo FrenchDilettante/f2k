@@ -1,35 +1,30 @@
-//! The interrupt core: interrupt objects, the vector table, and the
-//! interrupt claim protocol, with the level discipline
-//! ([`irql`]), the deferred procedure call queue ([`dpc`]), and the
-//! interval clock ([`clock`]).
+//! The interrupt core: interrupt objects, the vector table, and the interrupt claim protocol, with
+//! the level discipline ([`irql`]), the deferred procedure call queue ([`dpc`]), and the interval
+//! clock ([`clock`]).
 //!
-//! A driver connects an interrupt object to a hardware vector;
-//! connect wires the vector's slot and enables (unmasks) its line,
-//! disconnect masks the line and clears the slot. An unconnected
-//! vector's line stays masked, so its stub can never be reached by a
-//! real interrupt — reaching one means the kernel's own invariant is
-//! broken. Two sharable objects with the same trigger mode may share
-//! a vector; the pair is served in order.
+//! A driver connects an interrupt object to a hardware vector; connect wires the vector's slot and
+//! enables (unmasks) its line, disconnect masks the line and clears the slot. An unconnected
+//! vector's line stays masked, so its stub can never be reached by a real interrupt — reaching one
+//! means the kernel's own invariant is broken. Two sharable objects with the same trigger mode may
+//! share a vector; the pair is served in order.
 //!
-//! Everything the core knows about the chip arrives through the
-//! [`Controller`] seam: claim probes the delivered interrupt (a
-//! spurious one — the chip's acknowledge-time quirk — is dropped
-//! without raising anything, and the controller performs the partial
-//! acknowledgment the quirk demands), end lowers back and
-//! acknowledges, enable/disable drive the line masks. The core is
-//! hardware-neutral: the programmable-controller implementation sits
-//! behind the same seam a future implementation can replace.
+//! Everything the core knows about the chip arrives through the [`Controller`] seam: claim probes
+//! the delivered interrupt (a spurious one — the chip's acknowledge-time quirk — is dropped without
+//! raising anything, and the controller performs the partial acknowledgment the quirk demands), end
+//! lowers back and acknowledges, enable/disable drive the line masks. The core is hardware-neutral:
+//! the programmable-controller implementation sits behind the same seam a future implementation can
+//! replace.
 
 pub mod clock;
 pub mod dpc;
 pub mod irql;
 
-use crate::interrupt::irql::{Irql, IrqlState, HIGH, SYNCH};
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicBool, Ordering};
 
-/// First hardware vector (the band the remap programs the chips
-/// with; IRQ 0).
+use crate::interrupt::irql::{Irql, IrqlState, HIGH, SYNCH};
+
+/// First hardware vector (the band the remap programs the chips with; IRQ 0).
 pub const FIRST_VECTOR: u8 = crate::hw::pic::MASTER_VECTOR_BASE;
 
 /// Last hardware vector (IRQ 15).
@@ -38,47 +33,40 @@ pub const LAST_VECTOR: u8 = crate::hw::pic::LAST_VECTOR;
 /// How many hardware vectors the band holds.
 pub const VECTOR_COUNT: usize = (LAST_VECTOR - FIRST_VECTOR + 1) as usize;
 
-/// The vectors the IDT fills with interrupt stubs, in order. One
-/// source of truth for the generated stubs, the table, and the tests.
+/// The vectors the IDT fills with interrupt stubs, in order. One source of truth for the generated
+/// stubs, the table, and the tests.
 pub const IRQ_VECTORS: [u8; VECTOR_COUNT] = [
-    0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3A, 0x3B, 0x3C, 0x3D,
-    0x3E, 0x3F,
+    0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3A, 0x3B, 0x3C, 0x3D, 0x3E, 0x3F,
 ];
 
 /// The claim verdict of a delivered interrupt.
 pub enum Claim {
-    /// A real interrupt: the level was raised to the object's level;
-    /// the claimer must run the service and then end it
-    /// ([`Controller::end`]) exactly once. Carries the previous
-    /// level.
+    /// A real interrupt: the level was raised to the object's level; the claimer must run the
+    /// service and then end it ([`Controller::end`]) exactly once. Carries the previous level.
     Accepted(Irql),
-    /// A spurious interrupt: nothing was raised, and the controller
-    /// has already performed whatever partial acknowledgment the
-    /// chip's quirk demands. The claimer must do nothing at all.
+    /// A spurious interrupt: nothing was raised, and the controller has already performed whatever
+    /// partial acknowledgment the chip's quirk demands. The claimer must do nothing at all.
     Spurious,
 }
 
 /// What servicing a delivered vector did.
 pub enum Outcome {
-    /// A connected object's service ran, and the interrupt was
-    /// ended (level lowered, chip acknowledged).
+    /// A connected object's service ran, and the interrupt was ended (level lowered, chip
+    /// acknowledged).
     Served,
     /// The interrupt was spurious and was dropped.
     Spurious,
-    /// A real interrupt arrived on a vector with no connected
-    /// object — the masked-line invariant is broken. The interrupt
-    /// was ended, but the caller must treat this as a kernel bug.
+    /// A real interrupt arrived on a vector with no connected object — the masked-line invariant
+    /// is broken. The interrupt was ended, but the caller must treat this as a kernel bug.
     Unexpected,
 }
 
 /// The hardware seam: everything the core knows about the chip.
 pub trait Controller {
-    /// Claim a delivered vector at the given level: probe the
-    /// interrupt, raise the level, and return the previous one — or
-    /// report the interrupt spurious (nothing raised).
+    /// Claim a delivered vector at the given level: probe the interrupt, raise the level, and
+    /// return the previous one — or report the interrupt spurious (nothing raised).
     fn claim(&mut self, vector: u8, level: Irql) -> Claim;
-    /// End a claimed interrupt: lower back to the recorded level and
-    /// acknowledge the chip.
+    /// End a claimed interrupt: lower back to the recorded level and acknowledge the chip.
     fn end(&mut self, previous: Irql, vector: u8);
     /// Enable (unmask) the vector's line; false if it could not be.
     fn enable(&mut self, vector: u8) -> bool;
@@ -90,9 +78,8 @@ pub trait Controller {
     fn in_service_clear(&mut self) -> bool;
 }
 
-/// An interrupt service: `(object, service_context)`. The return
-/// value reports the interrupt handled; a shared vector runs every
-/// object's service regardless.
+/// An interrupt service: `(object, service_context)`. The return value reports the interrupt
+/// handled; a shared vector runs every object's service regardless.
 pub type InterruptService = fn(&InterruptObject, usize) -> bool;
 
 /// One connected (or connectable) interrupt.
@@ -136,15 +123,14 @@ impl InterruptObject {
     }
 }
 
-/// A service that can never be called: the zeroed object's
-/// placeholder (a connected object always has a real service).
+/// A service that can never be called: the zeroed object's placeholder (a connected object always
+/// has a real service).
 fn never_service(_object: &InterruptObject, _context: usize) -> bool {
     false
 }
 
-/// Fill an interrupt object: the service and its context, the vector
-/// and its level, the synchronize level, and the sharing mode. The
-/// object starts disconnected. Validity is checked at connect.
+/// Fill an interrupt object: the service and its context, the vector and its level, the synchronize
+/// level, and the sharing mode. The object starts disconnected. Validity is checked at connect.
 pub fn initialize(
     object: &mut InterruptObject,
     service: InterruptService,
@@ -186,23 +172,26 @@ pub struct VectorTable {
 
 #[derive(Clone, Copy)]
 struct Slot {
-    /// The connected objects, in service order. A chain is exactly
-    /// two (a driver may share its line with one other).
+    /// The connected objects, in service order. A chain is exactly two (a driver may share its
+    /// line with one other).
     objects: [Option<NonNull<InterruptObject>>; 2],
 }
 
 impl Slot {
-    const EMPTY: Slot = Slot { objects: [None, None] };
+    const EMPTY: Slot = Slot {
+        objects: [None, None],
+    };
 }
 
 impl VectorTable {
     /// An empty table: every slot unconnected.
     pub const fn zeroed() -> Self {
-        Self { slots: [Slot::EMPTY; VECTOR_COUNT] }
+        Self {
+            slots: [Slot::EMPTY; VECTOR_COUNT],
+        }
     }
 
-    /// The object's slot index, or none if the vector is outside the
-    /// hardware band.
+    /// The object's slot index, or none if the vector is outside the hardware band.
     fn index_of(vector: u8) -> Option<usize> {
         if vector < FIRST_VECTOR || vector > LAST_VECTOR {
             None
@@ -211,8 +200,7 @@ impl VectorTable {
         }
     }
 
-    /// Classify a vector (the four-way state an outside observer
-    /// would read off the table).
+    /// Classify a vector (the four-way state an outside observer would read off the table).
     pub fn classify(&self, vector: u8) -> VectorState {
         let Some(index) = Self::index_of(vector) else {
             return VectorState::Unknown;
@@ -231,9 +219,8 @@ impl VectorTable {
             return [None, None];
         };
         let to_ref = |slot: Option<NonNull<InterruptObject>>| {
-            // SAFETY: the table only holds pointers to objects its
-            // callers connected; those objects outlive the table's
-            // use of them (they are statics or the caller's).
+            // SAFETY: the table only holds pointers to objects its callers connected; those objects
+            // outlive the table's use of them (they are statics or the caller's).
             slot.map(|p| unsafe { p.as_ref() })
         };
         [
@@ -242,20 +229,18 @@ impl VectorTable {
         ]
     }
 
-    /// Connect `object` to its vector: wire the slot and enable the
-    /// line. Returns whether it connected: an already-connected
-    /// object connects nowhere, an invalid one is refused without
-    /// side effects, a failing enable rolls everything back, and a
-    /// sharable newcomer may join a compatible incumbent.
+    /// Connect `object` to its vector: wire the slot and enable the line. Returns whether it
+    /// connected: an already-connected object connects nowhere, an invalid one is refused without
+    /// side effects, a failing enable rolls everything back, and a sharable newcomer may join a
+    /// compatible incumbent.
     pub fn connect(
         &mut self,
         object: &mut InterruptObject,
         controller: &mut dyn Controller,
         irql: &mut IrqlState,
     ) -> bool {
-        // The validity gate: the level must fit the platform's
-        // scale, the synchronize level must not undercut it, and the
-        // vector must lie in the hardware band.
+        // The validity gate: the level must fit the platform's scale, the synchronize level must
+        // not undercut it, and the vector must lie in the hardware band.
         if object.level > HIGH
             || object.synchronize_level < object.level
             || Self::index_of(object.vector).is_none()
@@ -275,8 +260,8 @@ impl VectorTable {
         let mut connected_now = false;
 
         if slot.objects[0].is_none() {
-            // An unconnected vector: wire the slot, then enable the
-            // line. A failing enable leaves everything as it was.
+            // An unconnected vector: wire the slot, then enable the line. A failing enable leaves
+            // everything as it was.
             object.connected = true;
             slot.objects[0] = Some(NonNull::from(&*object));
             if controller.enable(object.vector) {
@@ -286,12 +271,10 @@ impl VectorTable {
                 object.connected = false;
             }
         } else {
-            // A connected vector: only a sharable newcomer with the
-            // same trigger mode may join, and only into the one free
-            // chain slot.
-            // SAFETY: the incumbent outlives this call (it is a
-            // static or its caller's object); only its sharing
-            // fields are read.
+            // A connected vector: only a sharable newcomer with the same trigger mode may join, and
+            // only into the one free chain slot.
+            // SAFETY: the incumbent outlives this call (it is a static or its caller's object);
+            // only its sharing fields are read.
             let incumbent = unsafe { slot.objects[0].unwrap().as_ref() };
             let compatible = object.shareable
                 && incumbent.shareable
@@ -307,9 +290,8 @@ impl VectorTable {
         connected_now
     }
 
-    /// Disconnect `object`: mask the line (unless another object
-    /// still serves it) and clear the slot. Returns whether the
-    /// object had been connected.
+    /// Disconnect `object`: mask the line (unless another object still serves it) and clear the
+    /// slot. Returns whether the object had been connected.
     pub fn disconnect(
         &mut self,
         object: &mut InterruptObject,
@@ -324,21 +306,19 @@ impl VectorTable {
             let self_ptr = NonNull::from(&*object);
 
             if slot.objects[1].is_some() {
-                // Chain surgery: removing the head promotes the
-                // second object; removing the second just opens the
-                // slot. The line stays enabled either way.
+                // Chain surgery: removing the head promotes the second object; removing the second
+                // just opens the slot. The line stays enabled either way.
                 if slot.objects[0] == Some(self_ptr) {
                     slot.objects[0] = slot.objects[1];
                 }
                 slot.objects[1] = None;
             } else if slot.objects[0] == Some(self_ptr) {
-                // The last object on the vector: mask the line and
-                // clear the slot.
+                // The last object on the vector: mask the line and clear the slot.
                 controller.disable(object.vector);
                 slot.objects[0] = None;
             } else {
-                // The object is connected but not on this vector's
-                // slot — the state machine is broken; refuse.
+                // The object is connected but not on this vector's slot — the state machine is
+                // broken; refuse.
                 irql.lower(previous);
                 return false;
             }
@@ -348,9 +328,8 @@ impl VectorTable {
         was_connected
     }
 
-    /// Run `routine` with the object's service excluded: raised to
-    /// the synchronize level, under the object's lock, lowered back
-    /// after. Returns the routine's result.
+    /// Run `routine` with the object's service excluded: raised to the synchronize level, under the
+    /// object's lock, lowered back after. Returns the routine's result.
     pub fn synchronize_execution(
         &self,
         object: &InterruptObject,
@@ -358,9 +337,8 @@ impl VectorTable {
         context: usize,
         irql: &mut IrqlState,
     ) -> bool {
-        // Raise first, then take the lock: the level is what keeps
-        // the service out; the lock is what keeps other synchronizers
-        // out.
+        // Raise first, then take the lock: the level is what keeps the service out; the lock is
+        // what keeps other synchronizers out.
         let previous = irql.raise(object.synchronize_level);
         while object.lock.swap(true, Ordering::SeqCst) {
             core::hint::spin_loop();
@@ -371,9 +349,8 @@ impl VectorTable {
         result
     }
 
-    /// The table's audit: no vector may be enabled without a
-    /// connected object, and no interrupt may be left half-served on
-    /// the chip.
+    /// The table's audit: no vector may be enabled without a connected object, and no interrupt may
+    /// be left half-served on the chip.
     pub fn audit(&mut self, controller: &mut dyn Controller) -> Result<(), &'static str> {
         for vector in IRQ_VECTORS {
             let connected = self.connected(vector)[0].is_some();
@@ -389,15 +366,12 @@ impl VectorTable {
     }
 }
 
-/// Service a delivered vector through the claim protocol: claim
-/// (which settles the spurious question and raises the level), run
-/// the connected services, end (which lowers and acknowledges).
+/// Service a delivered vector through the claim protocol: claim (which settles the spurious
+/// question and raises the level), run the connected services, end (which lowers and acknowledges).
 ///
-/// A spurious interrupt is dropped: no service runs, the level never
-/// moved, the chip was acknowledged exactly as its quirk demands. A
-/// real interrupt on an unconnected vector is ended properly but
-/// reported [`Outcome::Unexpected`] — the caller treats it as a
-/// kernel bug.
+/// A spurious interrupt is dropped: no service runs, the level never moved, the chip was
+/// acknowledged exactly as its quirk demands. A real interrupt on an unconnected vector is ended
+/// properly but reported [`Outcome::Unexpected`] — the caller treats it as a kernel bug.
 pub fn service_interrupt(
     table: &VectorTable,
     controller: &mut dyn Controller,
@@ -407,9 +381,8 @@ pub fn service_interrupt(
     let level = match first {
         Some(object) => object.level,
         None => {
-            // No object: claim at the highest level — spurious is
-            // the expected outcome (the chip's quirk can deliver a
-            // spurious vector whose line was never enabled).
+            // No object: claim at the highest level — spurious is the expected outcome (the chip's
+            // quirk can deliver a spurious vector whose line was never enabled).
             match controller.claim(vector, HIGH) {
                 Claim::Spurious => return Outcome::Spurious,
                 Claim::Accepted(previous) => {
@@ -423,8 +396,8 @@ pub fn service_interrupt(
     match controller.claim(vector, level) {
         Claim::Spurious => Outcome::Spurious,
         Claim::Accepted(previous) => {
-            // Run the connected services in order; every object on a
-            // shared vector gets the interrupt.
+            // Run the connected services in order; every object on a shared vector gets the
+            // interrupt.
             if let Some(object) = first {
                 (object.service)(object, object.service_context);
             }
@@ -441,12 +414,13 @@ pub fn service_interrupt(
 
 #[cfg(target_arch = "x86")]
 mod target {
+    use core::ptr::{addr_of, addr_of_mut};
+
     use super::*;
     use crate::cpu::idt::ExceptionFrame;
-    use crate::interrupt::irql;
     use crate::hw::pic::{self, Pic, Verdict};
     use crate::hw::portio::Ports;
-    use core::ptr::{addr_of, addr_of_mut};
+    use crate::interrupt::irql;
 
     /// The kernel's vector table.
     pub(super) static mut TABLE: VectorTable = VectorTable::zeroed();
@@ -463,11 +437,11 @@ mod target {
     impl Controller for Pic<Ports> {
         fn claim(&mut self, vector: u8, level: Irql) -> Claim {
             match self.claim(vector) {
-                // Real: raise to the service level. The level state
-                // performs the interrupt-flag transition.
+                // Real: raise to the service level. The level state performs the interrupt-flag
+                // transition.
                 Verdict::Real => Claim::Accepted(irql::state_mut().raise(level)),
-                // Spurious: the chip work is already done inside the
-                // controller; nothing was raised.
+                // Spurious: the chip work is already done inside the controller; nothing was
+                // raised.
                 Verdict::SpuriousNoEoi | Verdict::SpuriousCascadeEnded => Claim::Spurious,
             }
         }
@@ -503,20 +477,21 @@ mod target {
         true
     }
 
-    /// The assembly stub's landing: service the interrupt the frame
-    /// names, then drain the deferred-work queue (the dispatch
-    /// software level runs on the way down, at the interrupt exit),
-    /// then deliver any pending dispatch request — a quantum the
-    /// tick ended, or a thread the drained work readied at a
-    /// higher priority. A delivered switch resumes this exit when
-    /// the interrupted thread next runs.
+    /// The assembly stub's landing: service the interrupt the frame names, then drain the
+    /// deferred-work queue (the dispatch software level runs on the way down, at the interrupt
+    /// exit), then deliver any pending dispatch request — a quantum the tick ended, or a thread the
+    /// drained work readied at a higher priority. A delivered switch resumes this exit when the
+    /// interrupted thread next runs.
     extern "C" fn dispatch(frame: &ExceptionFrame) {
         let vector = frame.vector as u8;
-        // SAFETY: single CPU; the table and controller are kernel
-        // statics whose accessors run serialized by the level
-        // discipline (the gates mask on entry).
+        // SAFETY: single CPU; the table and controller are kernel statics whose accessors run
+        // serialized by the level discipline (the gates mask on entry).
         unsafe {
-            let outcome = service_interrupt(&*addr_of_mut!(TABLE), &mut *addr_of_mut!(CONTROLLER), vector);
+            let outcome = service_interrupt(
+                &*addr_of_mut!(TABLE),
+                &mut *addr_of_mut!(CONTROLLER),
+                vector,
+            );
             match outcome {
                 Outcome::Served => {
                     core::ptr::write_volatile(
@@ -556,14 +531,12 @@ mod target {
         dispatch(frame)
     }
 
-    /// Bring up the interrupt subsystem: remap the chips, program
-    /// the interval timer, connect the clock, and let interrupts
-    /// fly.
+    /// Bring up the interrupt subsystem: remap the chips, program the interval timer, connect the
+    /// clock, and let interrupts fly.
     ///
     /// # Safety
     ///
-    /// Boot CPU, ring 0, with interrupts disabled, before any code
-    /// that expects the tick.
+    /// Boot CPU, ring 0, with interrupts disabled, before any code that expects the tick.
     pub unsafe fn init() {
         unsafe {
             // The 8259 pair: vectors 0x30-0x3F, every line masked.
@@ -587,8 +560,11 @@ mod target {
                 false,
                 false,
             );
-            let connected =
-                (*addr_of_mut!(TABLE)).connect(clock, &mut *addr_of_mut!(CONTROLLER), irql::state_mut());
+            let connected = (*addr_of_mut!(TABLE)).connect(
+                clock,
+                &mut *addr_of_mut!(CONTROLLER),
+                irql::state_mut(),
+            );
             assert!(connected, "connecting the interval clock failed");
 
             // Interrupts fly from here on.
@@ -596,13 +572,11 @@ mod target {
         }
     }
 
-    /// The interrupt subsystem's audit: the level transitions are
-    /// balanced, every claimed interrupt was ended, no line is
-    /// enabled without an object, and the chip carries no stuck
-    /// in-service state.
+    /// The interrupt subsystem's audit: the level transitions are balanced, every claimed interrupt
+    /// was ended, no line is enabled without an object, and the chip carries no stuck in-service
+    /// state.
     pub fn audit() -> Result<(), &'static str> {
-        // SAFETY: read-only except the table audit's controller
-        // probes; single CPU.
+        // SAFETY: read-only except the table audit's controller probes; single CPU.
         unsafe {
             irql::state_mut().audit()?;
             let claimed = core::ptr::read_volatile(addr_of!(CLAIMED));
@@ -623,14 +597,12 @@ mod target {
 }
 
 #[cfg(target_arch = "x86")]
-// `audit` has no caller outside the diagnostic boot feature; the
-// subsystem API stays complete.
+// `audit` has no caller outside the diagnostic boot feature; the subsystem API stays complete.
 #[allow(unused_imports)]
 pub use target::{audit, init, spurious_count};
 
-/// The dispatch entry the IDT stubs call with the shared frame shape
-/// (target only): read the vector, service the interrupt, drain the
-/// deferred work.
+/// The dispatch entry the IDT stubs call with the shared frame shape (target only): read the
+/// vector, service the interrupt, drain the deferred work.
 #[cfg(target_arch = "x86")]
 pub extern "C" fn dispatch(frame: &crate::cpu::idt::ExceptionFrame) {
     target::dispatch_entry(frame)
@@ -638,11 +610,12 @@ pub extern "C" fn dispatch(frame: &crate::cpu::idt::ExceptionFrame) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::cell::RefCell;
 
-    /// A fake controller: per-line enable/in-service bits, a
-    /// level state, and a log of the claim/end/enable/disable calls.
+    use super::*;
+
+    /// A fake controller: per-line enable/in-service bits, a level state, and a log of the
+    /// claim/end/enable/disable calls.
     struct FakeController {
         enabled: [bool; VECTOR_COUNT],
         in_service: [bool; VECTOR_COUNT],
@@ -668,8 +641,8 @@ mod tests {
             }
         }
 
-        /// Acknowledge a line (set its in-service bit), as the
-        /// CPU's interrupt-acknowledge cycle would.
+        /// Acknowledge a line (set its in-service bit), as the CPU's interrupt-acknowledge cycle
+        /// would.
         fn acknowledge(&mut self, vector: u8) {
             self.in_service[(vector - FIRST_VECTOR) as usize] = true;
         }
@@ -745,8 +718,8 @@ mod tests {
         object
     }
 
-    /// The vector band: 0x30-0x3F, exactly 16 vectors, clear of the
-    /// syscall gate at 0x2E, matching the chips' programmed bases.
+    /// The vector band: 0x30-0x3F, exactly 16 vectors, clear of the syscall gate at 0x2E, matching
+    /// the chips' programmed bases.
     #[test]
     fn the_hardware_vector_band() {
         assert_eq!(FIRST_VECTOR, 0x30);
@@ -760,9 +733,8 @@ mod tests {
         assert!(!IRQ_VECTORS.contains(&(crate::user::syscall::SYSCALL_VECTOR as u8)));
     }
 
-    /// Initialize fills every field and connects nothing: the service
-    /// and context round-trip, the levels round-trip, sharing and
-    /// mode round-trip, and the object starts disconnected with a
+    /// Initialize fills every field and connects nothing: the service and context round-trip, the
+    /// levels round-trip, sharing and mode round-trip, and the object starts disconnected with a
     /// free lock.
     #[test]
     fn initialize_fills_everything_and_connects_nothing() {
@@ -793,9 +765,8 @@ mod tests {
         let _ = probe as usize; // type-level witness: services are plain fn pointers
     }
 
-    /// The validity gate: an over-scaled level, a synchronize level
-    /// below the service level, or an out-of-band vector each leave
-    /// the table and the controller untouched.
+    /// The validity gate: an over-scaled level, a synchronize level below the service level, or an
+    /// out-of-band vector each leave the table and the controller untouched.
     #[test]
     fn invalid_parameters_are_refused_without_side_effects() {
         let mut controller = FakeController::new();
@@ -828,9 +799,8 @@ mod tests {
         assert!(controller.ends.borrow().is_empty());
     }
 
-    /// Connect on an unconnected vector: the slot is wired, the line
-    /// is enabled exactly once with the object's vector, and the
-    /// object reports connected.
+    /// Connect on an unconnected vector: the slot is wired, the line is enabled exactly once with
+    /// the object's vector, and the object reports connected.
     #[test]
     fn connect_wires_the_slot_and_enables_the_line_once() {
         let mut table = VectorTable::zeroed();
@@ -845,8 +815,8 @@ mod tests {
         assert_eq!(*controller.enables.borrow(), vec![FIRST_VECTOR + 4]);
     }
 
-    /// A failing enable rolls the connect back: the slot is unwired,
-    /// the object stays disconnected, and connect reports failure.
+    /// A failing enable rolls the connect back: the slot is unwired, the object stays disconnected,
+    /// and connect reports failure.
     #[test]
     fn a_failing_enable_rolls_the_connect_back() {
         let mut table = VectorTable::zeroed();
@@ -875,9 +845,8 @@ mod tests {
         assert_eq!(controller.enables.borrow().len(), 1);
     }
 
-    /// Sharing: a sharable newcomer with the same trigger mode joins
-    /// the incumbent into a chain; anything incompatible is refused
-    /// and changes nothing.
+    /// Sharing: a sharable newcomer with the same trigger mode joins the incumbent into a chain;
+    /// anything incompatible is refused and changes nothing.
     #[test]
     fn a_compatible_newcomer_chains_onto_the_incumbent() {
         let mut table = VectorTable::zeroed();
@@ -894,8 +863,7 @@ mod tests {
         assert!(table.connect(&mut newcomer, &mut controller, &mut irql));
         assert_eq!(table.classify(FIRST_VECTOR + 9), VectorState::Chained);
 
-        // The refusal matrix: not shareable, mode mismatch, or a
-        // third object (the chain is two).
+        // The refusal matrix: not shareable, mode mismatch, or a third object (the chain is two).
         let mut third = object_at(FIRST_VECTOR + 9);
         third.shareable = true;
         assert!(!table.connect(&mut third, &mut controller, &mut irql));
@@ -916,8 +884,8 @@ mod tests {
         assert_eq!(table2.classify(FIRST_VECTOR + 9), VectorState::Connected);
     }
 
-    /// Disconnect: removing the only object masks the line and
-    /// clears the slot; an unconnected object reports false.
+    /// Disconnect: removing the only object masks the line and clears the slot; an unconnected
+    /// object reports false.
     #[test]
     fn disconnect_masks_the_line_and_clears_the_slot() {
         let mut table = VectorTable::zeroed();
@@ -936,9 +904,8 @@ mod tests {
         assert!(!table.disconnect(&mut object, &mut controller, &mut irql));
     }
 
-    /// Chain surgery: removing the head promotes the second object;
-    /// removing the second opens the slot; removing the last of all
-    /// masks the line. The line stays enabled while any object
+    /// Chain surgery: removing the head promotes the second object; removing the second opens the
+    /// slot; removing the last of all masks the line. The line stays enabled while any object
     /// remains.
     #[test]
     fn chain_surgery_head_second_and_last() {
@@ -978,8 +945,8 @@ mod tests {
         assert_eq!(controller.disables.borrow().len(), 1);
     }
 
-    /// The four-way classification over the table: unconnected,
-    /// connected, chained — and unknown outside the band.
+    /// The four-way classification over the table: unconnected, connected, chained — and unknown
+    /// outside the band.
     #[test]
     fn classification_is_the_four_way_state() {
         let mut table = VectorTable::zeroed();
@@ -1002,10 +969,9 @@ mod tests {
         assert_eq!(table.classify(FIRST_VECTOR + 5), VectorState::Chained);
     }
 
-    /// The claim protocol: an accepted claim is followed by exactly
-    /// one end (the service ran first); a spurious claim by none — no
-    /// service, no raise, nothing acknowledged beyond what the
-    /// controller already owned.
+    /// The claim protocol: an accepted claim is followed by exactly one end (the service ran
+    /// first); a spurious claim by none — no service, no raise, nothing acknowledged beyond what
+    /// the controller already owned.
     #[test]
     fn the_claim_protocol_pairs_one_end_with_each_acceptance() {
         let mut table = VectorTable::zeroed();
@@ -1024,8 +990,8 @@ mod tests {
         assert_eq!(controller.irql.current(), crate::interrupt::irql::PASSIVE);
         assert!(controller.in_service_clear());
 
-        // A spurious interrupt: nothing in service, nothing claimed
-        // beyond the probe, nothing ended, no service run.
+        // A spurious interrupt: nothing in service, nothing claimed beyond the probe, nothing
+        // ended, no service run.
         SERVICE_CALLS.with(|calls| calls.borrow_mut().clear());
         let outcome = service_interrupt(&table, &mut controller, FIRST_VECTOR);
         assert!(matches!(outcome, Outcome::Spurious));
@@ -1033,8 +999,8 @@ mod tests {
         assert_eq!(SERVICE_CALLS.with(|c| c.borrow().len()), 0);
         assert_eq!(controller.irql.current(), crate::interrupt::irql::PASSIVE);
 
-        // A real interrupt on an unconnected vector: ended properly,
-        // but reported as the kernel bug it is.
+        // A real interrupt on an unconnected vector: ended properly, but reported as the kernel bug
+        // it is.
         let mut controller2 = FakeController::new();
         controller2.acknowledge(FIRST_VECTOR + 6);
         let outcome = service_interrupt(&table, &mut controller2, FIRST_VECTOR + 6);
@@ -1043,8 +1009,8 @@ mod tests {
         assert!(controller2.in_service_clear());
     }
 
-    /// The connect/disconnect state machine can never leave a line
-    /// enabled without a connected object (the audit).
+    /// The connect/disconnect state machine can never leave a line enabled without a connected
+    /// object (the audit).
     #[test]
     fn no_line_enabled_without_an_object() {
         let mut table = VectorTable::zeroed();
@@ -1058,15 +1024,13 @@ mod tests {
         assert!(table.disconnect(&mut object, &mut controller, &mut irql));
         assert_eq!(table.audit(&mut controller), Ok(()));
 
-        // An enable without a connect (a controller gone rogue) is
-        // what the audit exists to catch.
+        // An enable without a connect (a controller gone rogue) is what the audit exists to catch.
         controller.enabled[(FIRST_VECTOR + 11 - FIRST_VECTOR) as usize] = true;
         assert!(table.audit(&mut controller).is_err());
     }
 
-    /// Synchronize: the routine runs raised to the object's
-    /// synchronize level, under the object's lock, with the level
-    /// lowered back after.
+    /// Synchronize: the routine runs raised to the object's synchronize level, under the object's
+    /// lock, with the level lowered back after.
     struct SyncProbe {
         level: RefCell<Option<Irql>>,
         lock: RefCell<Option<bool>>,
@@ -1082,8 +1046,7 @@ mod tests {
     fn sync_routine(_context: usize) -> bool {
         // The thread-locals hold the raw pointers the probe reads.
         let level = SYNC_IRQL.with(|s| unsafe { (*(*s.borrow())).current() });
-        let locked =
-            SYNC_OBJECT.with(|o| unsafe { (*(*o.borrow())).lock.load(Ordering::SeqCst) });
+        let locked = SYNC_OBJECT.with(|o| unsafe { (*(*o.borrow())).lock.load(Ordering::SeqCst) });
         SYNC_PROBE.with(|p| unsafe {
             let probe = &mut *(*p.borrow());
             *probe.level.borrow_mut() = Some(level);
@@ -1098,15 +1061,33 @@ mod tests {
         let mut object = object_at(FIRST_VECTOR + 2);
         object.synchronize_level = Irql(8);
         let mut irql = IrqlState::new();
-        let mut probe = SyncProbe { level: RefCell::new(None), lock: RefCell::new(None) };
+        let mut probe = SyncProbe {
+            level: RefCell::new(None),
+            lock: RefCell::new(None),
+        };
         SYNC_IRQL.with(|s| *s.borrow_mut() = &mut irql as *mut IrqlState);
         SYNC_OBJECT.with(|o| *o.borrow_mut() = &object as *const InterruptObject);
         SYNC_PROBE.with(|p| *p.borrow_mut() = &mut probe as *mut SyncProbe);
 
         assert!(table.synchronize_execution(&object, sync_routine, 0, &mut irql));
-        assert_eq!(*probe.level.borrow(), Some(Irql(8)), "raised during the routine");
-        assert_eq!(*probe.lock.borrow(), Some(true), "the lock is held during the routine");
-        assert_eq!(irql.current(), crate::interrupt::irql::PASSIVE, "lowered after");
-        assert!(!object.lock.load(Ordering::SeqCst), "the lock is released after");
+        assert_eq!(
+            *probe.level.borrow(),
+            Some(Irql(8)),
+            "raised during the routine"
+        );
+        assert_eq!(
+            *probe.lock.borrow(),
+            Some(true),
+            "the lock is held during the routine"
+        );
+        assert_eq!(
+            irql.current(),
+            crate::interrupt::irql::PASSIVE,
+            "lowered after"
+        );
+        assert!(
+            !object.lock.load(Ordering::SeqCst),
+            "the lock is released after"
+        );
     }
 }

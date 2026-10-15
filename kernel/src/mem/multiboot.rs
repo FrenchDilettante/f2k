@@ -1,14 +1,12 @@
 //! Multiboot 1 boot-time memory information.
 //!
 //! Two layers:
-//! - pure, host-testable logic: parsing the memory-map record stream
-//!   and turning available regions into usable frame ranges;
-//! - the loader-provided structures, read by the kernel from the
-//!   physical address passed in EBX.
+//! - pure, host-testable logic: parsing the memory-map record stream and turning available regions
+//!   into usable frame ranges;
+//! - the loader-provided structures, read by the kernel from the physical address passed in EBX.
 //!
-//! Memory-map records are packed, unaligned and variable-size, so they
-//! are parsed from byte slices with explicit little-endian reads rather
-//! than struct casts.
+//! Memory-map records are packed, unaligned and variable-size, so they are parsed from byte slices
+//! with explicit little-endian reads rather than struct casts.
 
 use super::frame::FrameId;
 
@@ -23,13 +21,12 @@ pub mod flags {
 /// Memory-map record type: usable RAM.
 pub const MEMORY_AVAILABLE: u32 = 1;
 
-/// Smallest well-formed memory-map record payload: `size` (4 bytes,
-/// excluded from itself), base (8), length (8), type (4).
+/// Smallest well-formed memory-map record payload: `size` (4 bytes, excluded from itself), base
+/// (8), length (8), type (4).
 const MIN_RECORD_PAYLOAD: u32 = 20;
 
-/// The Multiboot 1 information structure the loader points EBX at.
-/// Only the fields F2K reads are listed; offsets are part of the
-/// Multiboot 1 contract.
+/// The Multiboot 1 information structure the loader points EBX at. Only the fields F2K reads are
+/// listed; offsets are part of the Multiboot 1 contract.
 #[repr(C)]
 pub struct MultibootInfo {
     pub flags: u32,
@@ -51,8 +48,8 @@ pub struct MultibootInfo {
     pub mmap_addr: u32,
 }
 
-/// A validated run of usable frames: `first`, `first + 1`, ...,
-/// `first + count - 1`, where every frame is 4 KiB.
+/// A validated run of usable frames: `first`, `first + 1`, ..., `first + count - 1`, where every
+/// frame is 4 KiB.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UsableRange {
     pub first: FrameId,
@@ -77,10 +74,9 @@ fn read_u64(buf: &[u8], off: usize) -> Option<u64> {
 
 /// Convert one available region (byte granularity) into usable frames.
 ///
-/// The base is rounded up to 4 KiB; the end is rounded down and clamped
-/// to the frame table's capacity. Frame 0 (the real-mode interrupt
-/// vector area) is never handed out. Returns `None` for regions that
-/// hold no whole usable frame.
+/// The base is rounded up to 4 KiB; the end is rounded down and clamped to the frame table's
+/// capacity. Frame 0 (the real-mode interrupt vector area) is never handed out. Returns `None` for
+/// regions that hold no whole usable frame.
 pub fn usable_frames_in(base: u64, len: u64, max_frames: usize) -> Option<UsableRange> {
     if len == 0 {
         return None;
@@ -111,9 +107,8 @@ pub struct UsableRanges<'a> {
     max_frames: usize,
 }
 
-/// Parse the memory-map record stream (the buffer at
-/// `MultibootInfo::mmap_addr`) and yield the usable frame ranges of
-/// every available region, in record order.
+/// Parse the memory-map record stream (the buffer at `MultibootInfo::mmap_addr`) and yield the
+/// usable frame ranges of every available region, in record order.
 pub fn usable_ranges(map: &[u8], max_frames: usize) -> UsableRanges<'_> {
     UsableRanges {
         buf: map,
@@ -187,7 +182,13 @@ mod tests {
     fn region_clamped_to_table_capacity() {
         // Frame 256 (1 MiB) onwards, table holds 300 frames.
         let range = usable_frames_in(0x100000, 0x10_0000, 300).unwrap();
-        assert_eq!(range, UsableRange { first: 256, count: 44 });
+        assert_eq!(
+            range,
+            UsableRange {
+                first: 256,
+                count: 44
+            }
+        );
     }
 
     #[test]
@@ -204,13 +205,18 @@ mod tests {
         map.extend(record(0, 0x9FC00, MEMORY_AVAILABLE));
         map.extend(record(0x9FC00, 0x6400, 2)); // reserved
         map.extend(record(0x100000, 0x1000, MEMORY_AVAILABLE));
-        let ranges: Vec<UsableRange> =
-            usable_ranges(&map, MAX_FRAMES).collect();
+        let ranges: Vec<UsableRange> = usable_ranges(&map, MAX_FRAMES).collect();
         assert_eq!(
             ranges,
             vec![
-                UsableRange { first: 1, count: 158 },
-                UsableRange { first: 256, count: 1 },
+                UsableRange {
+                    first: 1,
+                    count: 158
+                },
+                UsableRange {
+                    first: 256,
+                    count: 1
+                },
             ]
         );
     }

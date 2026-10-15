@@ -1,56 +1,44 @@
-//! The wait discipline: how a thread blocks on a waitable object,
-//! and how the object wakes it.
+//! The wait discipline: how a thread blocks on a waitable object, and how the object wakes it.
 //!
-//! A waitable object carries a header — its kind, its signal
-//! state, and the list of the wait blocks parked on it. An event
-//! is nothing but the header; a thread's own record is waitable
-//! the same way (it signals once, at termination); a timer is the
-//! third kind, and the timeout machinery below is built on each
-//! thread owning one.
+//! A waitable object carries a header — its kind, its signal state, and the list of the wait blocks
+//! parked on it. An event is nothing but the header; a thread's own record is waitable the same way
+//! (it signals once, at termination); a timer is the third kind, and the timeout machinery below is
+//! built on each thread owning one.
 //!
-//! A thread that cannot be satisfied at once joins the object: it
-//! plants a wait block on the object's waiters list, takes a
-//! circular chain of its own blocks describing everything the
-//! wait covers, and enters the Waiting state. Whatever wakes it
-//! — a signal on the object, a rival resolution cancelling the
-//! wait, an expiry — goes through one exit, [`Dispatcher::unwait`],
-//! which unwinds the chain, cancels the wait's timer, applies the
-//! wake boost and the wait charge, and readies the thread. The
-//! state's exit has a single owner: a waiting thread is readied
-//! through the wait exit and nothing else.
+//! A thread that cannot be satisfied at once joins the object: it plants a wait block on the
+//! object's waiters list, takes a circular chain of its own blocks describing everything the wait
+//! covers, and enters the Waiting state. Whatever wakes it — a signal on the object, a rival
+//! resolution cancelling the wait, an expiry — goes through one exit, [`Dispatcher::unwait`], which
+//! unwinds the chain, cancels the wait's timer, applies the wake boost and the wait charge, and
+//! readies the thread. The state's exit has a single owner: a waiting thread is readied through the
+//! wait exit and nothing else.
 //!
-//! A timeout is the thread's own timer, inserted into the timer
-//! table: the wait computes a due time from the clock reading its
-//! caller took and hands it over; when the due time is live the
-//! table carries it and the wait blocks; the clock's expiry work
-//! walks the table, signals each due timer, and satisfies its
-//! waiters like any other object — with the timeout status
-//! planted in the timer block at thread setup, the timeout needs
-//! no special wake path at all.
+//! A timeout is the thread's own timer, inserted into the timer table: the wait computes a due time
+//! from the clock reading its caller took and hands it over; when the due time is live the table
+//! carries it and the wait blocks; the clock's expiry work walks the table, signals each due timer,
+//! and satisfies its waiters like any other object — with the timeout status planted in the timer
+//! block at thread setup, the timeout needs no special wake path at all.
 //!
-//! One processor, no locking: everything here runs serialized at
-//! the dispatch level, so there are no races to arbitrate — which
-//! of a wake and an expiry "wins" is decided by which runs first,
-//! and the loser finds its lists already unwound.
+//! One processor, no locking: everything here runs serialized at the dispatch level, so there are
+//! no races to arbitrate — which of a wake and an expiry "wins" is decided by which runs first, and
+//! the loser finds its lists already unwound.
+
+use core::ptr::{addr_of_mut, eq, null_mut};
 
 use super::dispatcher::Dispatcher;
 use super::thread::{Thread, ThreadState};
-use super::{unlink, List, Links, REALTIME_BASE, TIME_CRITICAL_CEILING};
-use core::ptr::{addr_of_mut, eq, null_mut};
+use super::{unlink, Links, List, REALTIME_BASE, TIME_CRITICAL_CEILING};
 
-/// The wait statuses, as documented NTSTATUS values: what a
-/// completed wait reports. The timeout value is the ABI the Win32
-/// wait returns raw (WAIT_TIMEOUT).
+/// The wait statuses, as documented NTSTATUS values: what a completed wait reports. The timeout
+/// value is the ABI the Win32 wait returns raw (WAIT_TIMEOUT).
 pub const STATUS_SUCCESS: i32 = 0x0000_0000;
 pub const STATUS_TIMEOUT: i32 = 0x0000_0102;
 
-/// The low three bits of a waitable kind: the selector that
-/// decides whether a satisfied wait consumes the object's signal.
-/// The timer kinds share numbers with the event kinds through it.
+/// The low three bits of a waitable kind: the selector that decides whether a satisfied wait
+/// consumes the object's signal. The timer kinds share numbers with the event kinds through it.
 pub const WAIT_KIND_MASK: u8 = 0x7;
 
-/// The number of wait blocks a thread owns: the builtin set plus
-/// its timer block (the last slot).
+/// The number of wait blocks a thread owns: the builtin set plus its timer block (the last slot).
 pub const WAIT_BLOCKS: usize = 4;
 
 /// The slot of the thread's timer block.
@@ -59,18 +47,16 @@ pub const TIMER_BLOCK: usize = WAIT_BLOCKS - 1;
 /// The priority increment a timer expiry grants its waiters: none.
 pub const TIMER_WAKE_INCREMENT: i8 = 0;
 
-/// The kind of a waitable object, as the satisfy machinery reads
-/// it. The ordinals are stable kernel data: the masked low three
-/// bits select the signal-consumption rule, so the timer kinds sit
-/// on the event rule through the mask.
+/// The kind of a waitable object, as the satisfy machinery reads it. The ordinals are stable kernel
+/// data: the masked low three bits select the signal-consumption rule, so the timer kinds sit on
+/// the event rule through the mask.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum WaitKind {
-    /// A manual-reset event: signaled until cleared, and one
-    /// signal wakes every waiter present.
+    /// A manual-reset event: signaled until cleared, and one signal wakes every waiter present.
     NotificationEvent = 0,
-    /// An auto-reset event: one signal wakes exactly one waiter,
-    /// and the satisfy consumes the signal.
+    /// An auto-reset event: one signal wakes exactly one waiter, and the satisfy consumes the
+    /// signal.
     SynchronizationEvent = 1,
     /// The thread object: signals once, at termination, forever.
     Thread = 6,
@@ -81,17 +67,16 @@ pub enum WaitKind {
 }
 
 impl WaitKind {
-    /// Whether satisfying one waiter consumes the object's
-    /// signal: the synchronization flavors do (through the
-    /// three-bit mask, which folds the timer flavors onto the
-    /// event rule), everything else does not.
+    /// Whether satisfying one waiter consumes the object's signal: the synchronization flavors do
+    /// (through the three-bit mask, which folds the timer flavors onto the event rule), everything
+    /// else does not.
     pub fn consumes_signal(self) -> bool {
         (self as u8 & WAIT_KIND_MASK) == WaitKind::SynchronizationEvent as u8
     }
 }
 
-/// The header every waitable object carries: what kind it is,
-/// whether it is signaled, and which threads are parked on it.
+/// The header every waitable object carries: what kind it is, whether it is signaled, and which
+/// threads are parked on it.
 #[repr(C)]
 pub struct Waitable {
     /// The object's kind.
@@ -103,15 +88,23 @@ pub struct Waitable {
 }
 
 impl Waitable {
-    /// A fresh, unsignaled header; call [`Waitable::init`] once
-    /// the owning object is at its final address.
+    /// A fresh, unsignaled header; call [`Waitable::init`] once the owning object is at its final
+    /// address.
     pub const fn new(kind: WaitKind, signal_state: i32) -> Self {
-        Waitable { kind, signal_state, waiters: List::empty() }
+        Waitable {
+            kind,
+            signal_state,
+            waiters: List::empty(),
+        }
     }
 
     /// A fresh, signaled header.
     pub const fn signaled(kind: WaitKind) -> Self {
-        Waitable { kind, signal_state: 1, waiters: List::empty() }
+        Waitable {
+            kind,
+            signal_state: 1,
+            waiters: List::empty(),
+        }
     }
 
     /// Close the waiters sentinel; call once at the final address.
@@ -130,30 +123,25 @@ impl Waitable {
     }
 }
 
-/// A wait's timer: the record the timeout machinery inserts,
-/// removes, and expires. Each thread owns one for its wait
-/// timeouts.
+/// A wait's timer: the record the timeout machinery inserts, removes, and expires. Each thread owns
+/// one for its wait timeouts.
 #[repr(C)]
 pub struct Timer {
-    /// The timer as a waitable object: expiry signals it and
-    /// satisfies its waiters.
+    /// The timer as a waitable object: expiry signals it and satisfies its waiters.
     pub(crate) waitable: Waitable,
-    /// The due time the timer carries while held, a clock reading
-    /// (100 ns units) compared as an unsigned value — the largest
-    /// dues read as far future, not past.
+    /// The due time the timer carries while held, a clock reading (100 ns units) compared as an
+    /// unsigned value — the largest dues read as far future, not past.
     pub(crate) due_time: u64,
     /// Whether the timer table currently holds the timer.
     pub(crate) inserted: bool,
-    /// The timer-table membership link: the bucket list while
-    /// held, the expiry walk's collection list mid-walk — a timer
-    /// is on exactly one at a time.
+    /// The timer-table membership link: the bucket list while held, the expiry walk's collection
+    /// list mid-walk — a timer is on exactly one at a time.
     pub(crate) links: Links,
 }
 
 impl Timer {
-    /// A fresh timer, uninserted and unsignaled; call
-    /// [`Timer::init`] once the owning thread is at its final
-    /// address.
+    /// A fresh timer, uninserted and unsignaled; call [`Timer::init`] once the owning thread is at
+    /// its final address.
     pub const fn new() -> Self {
         Timer {
             waitable: Waitable::new(WaitKind::TimerNotification, 0),
@@ -179,12 +167,10 @@ impl Timer {
     }
 }
 
-/// One thread's claim on one object: linked on the object's
-/// waiters list and chained circularly to the thread's other
-/// blocks for the same wait. A thread embeds a fixed set: the
-/// first block holds a single-object wait, its timer block joins
-/// when the wait carries a timeout, and the timer block alone is
-/// a delay.
+/// One thread's claim on one object: linked on the object's waiters list and chained circularly to
+/// the thread's other blocks for the same wait. A thread embeds a fixed set: the first block holds
+/// a single-object wait, its timer block joins when the wait carries a timeout, and the timer block
+/// alone is a delay.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct WaitBlock {
@@ -196,18 +182,16 @@ pub struct WaitBlock {
     pub(crate) object: *mut Waitable,
     /// The next block of the same wait, circularly.
     pub(crate) next_block: *mut WaitBlock,
-    /// The status this block's satisfaction reports: the object
-    /// block carries success, the timer block the timeout.
+    /// The status this block's satisfaction reports: the object block carries success, the timer
+    /// block the timeout.
     pub(crate) key: i32,
-    /// Whether the block is a wait-all claim. The multiple-object
-    /// wait that would construct one is not built; the satisfy
-    /// walk keeps the rule anyway.
+    /// Whether the block is a wait-all claim. The multiple-object wait that would construct one is
+    /// not built; the satisfy walk keeps the rule anyway.
     pub(crate) wait_all: bool,
 }
 
 impl WaitBlock {
-    /// A detached block; the owning thread wires the fields at
-    /// attach and per wait.
+    /// A detached block; the owning thread wires the fields at attach and per wait.
     pub const fn detached() -> Self {
         WaitBlock {
             links: Links::detached(),
@@ -220,8 +204,7 @@ impl WaitBlock {
     }
 }
 
-/// Why a thread waits. Diagnostic data the dump paths read; the
-/// delay wait carries its own.
+/// Why a thread waits. Diagnostic data the dump paths read; the delay wait carries its own.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum WaitReason {
@@ -235,8 +218,8 @@ pub enum WaitReason {
     UserRequest = 6,
 }
 
-/// The mode of a wait. Inert data until the APC machinery exists;
-/// user-mode APC delivery is its consumer.
+/// The mode of a wait. Inert data until the APC machinery exists; user-mode APC delivery is its
+/// consumer.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum WaitMode {
@@ -246,9 +229,8 @@ pub enum WaitMode {
     User = 1,
 }
 
-/// A reading of the kernel clock, taken by the wait's caller: the
-/// system time (100 ns units) for due-time math, the tick count
-/// for the wait-time stamp.
+/// A reading of the kernel clock, taken by the wait's caller: the system time (100 ns units) for
+/// due-time math, the tick count for the wait-time stamp.
 #[derive(Clone, Copy)]
 pub struct ClockStamp {
     /// The system-time accumulator's value.
@@ -262,9 +244,8 @@ pub struct ClockStamp {
 pub enum WaitDisposition {
     /// The wait completed without blocking, with the status.
     Complete(i32),
-    /// The thread is Waiting and the caller must switch away. The
-    /// completion status lands in the thread's wait-status field
-    /// when the wake runs; the thread's resume side reads it.
+    /// The thread is Waiting and the caller must switch away. The completion status lands in the
+    /// thread's wait-status field when the wake runs; the thread's resume side reads it.
     Yield,
 }
 
@@ -274,9 +255,8 @@ pub(crate) fn entry_to_block(entry: *mut Links) -> *mut WaitBlock {
     (entry as usize - core::mem::offset_of!(WaitBlock, links)) as *mut WaitBlock
 }
 
-/// Satisfy one waiter's claim on `object`: a synchronization
-/// flavor's signal is consumed by the take, everything else's
-/// stays.
+/// Satisfy one waiter's claim on `object`: a synchronization flavor's signal is consumed by the
+/// take, everything else's stays.
 fn consume_signal(object: &mut Waitable) {
     if object.kind.consumes_signal() {
         object.signal_state = 0;
@@ -284,11 +264,9 @@ fn consume_signal(object: &mut Waitable) {
 }
 
 impl Dispatcher {
-    /// Wait on a single object. Satisfies the wait at once when
-    /// the object is signaled or the timeout is zero or already
-    /// past; otherwise parks the thread: a wait block on the
-    /// object, the state Waiting, the waiting list — and the
-    /// switch away is the caller's business.
+    /// Wait on a single object. Satisfies the wait at once when the object is signaled or the
+    /// timeout is zero or already past; otherwise parks the thread: a wait block on the object, the
+    /// state Waiting, the waiting list — and the switch away is the caller's business.
     pub fn wait_single(
         &mut self,
         thread: &mut Thread,
@@ -299,14 +277,13 @@ impl Dispatcher {
         timeout: Option<i64>,
         stamp: ClockStamp,
     ) -> WaitDisposition {
-        // A fresh wait starts from a clean completion status: the
-        // wake ORs its status into the field.
+        // A fresh wait starts from a clean completion status: the wake ORs its status into the
+        // field.
         thread.wait_status = 0;
 
-        // An already-signaled object satisfies the wait outright.
-        // The take consumes an auto-reset flavor's signal; the
-        // thread never leaves the Running state, and the wait it
-        // did not block on still costs its quantum charge.
+        // An already-signaled object satisfies the wait outright. The take consumes an auto-reset
+        // flavor's signal; the thread never leaves the Running state, and the wait it did not block
+        // on still costs its quantum charge.
         // SAFETY: the object is a live, initialized waitable.
         let object: &mut Waitable = unsafe { &mut *object };
         if object.signal_state > 0 {
@@ -315,11 +292,9 @@ impl Dispatcher {
             return WaitDisposition::Complete(STATUS_SUCCESS);
         }
 
-        // Plant the object block. Its fields are per-wait; the
-        // chain is closed below, with the timer block when a
-        // timeout arms one.
-        // SAFETY: the block lives inside the thread for its
-        // lifetime.
+        // Plant the object block. Its fields are per-wait; the chain is closed below, with the
+        // timer block when a timeout arms one.
+        // SAFETY: the block lives inside the thread for its lifetime.
         let block: *mut WaitBlock = addr_of_mut!(thread.wait_blocks[0]);
         thread.wait_block_head = block;
         // SAFETY: as above.
@@ -337,27 +312,29 @@ impl Dispatcher {
 
         match timeout {
             Some(interval) => {
-                // The wait chain: object block, timer block,
-                // circularly. The timer block's own claim is
-                // constant per thread — its object, its key (the
-                // timeout status), its wait type — planted once at
-                // thread setup; the wait only re-links it.
+                // The wait chain: object block, timer block, circularly. The timer block's own
+                // claim is constant per thread — its object, its key (the timeout status), its wait
+                // type — planted once at thread setup; the wait only re-links it.
                 // SAFETY: both blocks live inside the thread.
-                let timer_block: *mut WaitBlock =
-                    addr_of_mut!(thread.wait_blocks[TIMER_BLOCK]);
+                let timer_block: *mut WaitBlock = addr_of_mut!(thread.wait_blocks[TIMER_BLOCK]);
                 // SAFETY: as above.
                 unsafe {
                     (*block).next_block = timer_block;
                     (*timer_block).next_block = block;
-                    // SAFETY: the timer's waiters list is
-                    // initialized at thread attach, and the block
-                    // is on no list.
-                    thread.timer.waitable.waiters.push_back(addr_of_mut!((*timer_block).links));
+                    // SAFETY: the timer's waiters list is initialized at thread attach, and the
+                    // block is on no list.
+                    thread
+                        .timer
+                        .waitable
+                        .waiters
+                        .push_back(addr_of_mut!((*timer_block).links));
                 }
                 let due = stamp.system_time.wrapping_add(interval as u64);
-                if !self.timer_table.insert(&mut thread.timer, due, stamp.system_time) {
-                    // Already past: the wait reports a timeout and
-                    // unwinds what it linked.
+                if !self
+                    .timer_table
+                    .insert(&mut thread.timer, due, stamp.system_time)
+                {
+                    // Already past: the wait reports a timeout and unwinds what it linked.
                     // SAFETY: linked above.
                     unsafe { unlink(addr_of_mut!((*timer_block).links)) };
                     self.charge_nowait(thread);
@@ -365,42 +342,34 @@ impl Dispatcher {
                 }
             }
             None => {
-                // No timeout: the one-block chain closes on
-                // itself.
+                // No timeout: the one-block chain closes on itself.
                 // SAFETY: as above.
                 unsafe { (*block).next_block = block };
             }
         }
 
-        // Join the object's waiters at the tail: waits satisfy
-        // first-blocked-first-woken.
-        // SAFETY: the block is on no list; the object's waiters
-        // list is initialized.
+        // Join the object's waiters at the tail: waits satisfy first-blocked-first-woken.
+        // SAFETY: the block is on no list; the object's waiters list is initialized.
         unsafe { object.waiters.push_back(addr_of_mut!((*block).links)) };
 
-        // The block path: the wait's parameters land on the thread
-        // and it joins the waiting list, in the Waiting state. The
-        // switch away is the caller's business.
+        // The block path: the wait's parameters land on the thread and it joins the waiting list,
+        // in the Waiting state. The switch away is the caller's business.
         thread.wait_alertable = alertable;
         thread.wait_mode = mode;
         thread.wait_reason = reason;
         thread.wait_time = stamp.tick;
         thread.state = ThreadState::Waiting;
-        // SAFETY: the thread is on no waiting list; the
-        // dispatcher's list is initialized.
+        // SAFETY: the thread is on no waiting list; the dispatcher's list is initialized.
         unsafe { self.waiting.push_back(addr_of_mut!(thread.wait_links)) };
         WaitDisposition::Yield
     }
 
-    /// The delay wait: park `thread` on its own timer for
-    /// `interval` (100 ns units, relative — or negative, an
-    /// absolute due already past) — the sleep shape. The chain is
-    /// the timer block alone, so the expiry is the only possible
-    /// wake. An interval already past never parks: a boosted
-    /// thread drops to its base priority, is readied with a fresh
-    /// quantum when an equal-priority thread can take over, and
-    /// the caller yields; with nobody to take over the delay
-    /// completes at once.
+    /// The delay wait: park `thread` on its own timer for `interval` (100 ns units, relative — or
+    /// negative, an absolute due already past) — the sleep shape. The chain is the timer block
+    /// alone, so the expiry is the only possible wake. An interval already past never parks: a
+    /// boosted thread drops to its base priority, is readied with a fresh quantum when an
+    /// equal-priority thread can take over, and the caller yields; with nobody to take over the
+    /// delay completes at once.
     pub fn delay(
         &mut self,
         thread: &mut Thread,
@@ -413,22 +382,27 @@ impl Dispatcher {
         let block: *mut WaitBlock = addr_of_mut!(thread.wait_blocks[TIMER_BLOCK]);
         thread.wait_block_head = block;
         thread.wait_status = 0;
-        // SAFETY: as above; the timer's waiters list is
-        // initialized at thread attach, and the block is on no
-        // list.
+        // SAFETY: as above; the timer's waiters list is initialized at thread attach, and the block
+        // is on no list.
         unsafe {
             (*block).next_block = block;
-            thread.timer.waitable.waiters.push_back(addr_of_mut!((*block).links));
+            thread
+                .timer
+                .waitable
+                .waiters
+                .push_back(addr_of_mut!((*block).links));
         }
 
-        // The wrap-safe due: the longest relative interval wraps to
-        // the far side of the clock, a far future — not a past.
+        // The wrap-safe due: the longest relative interval wraps to the far side of the clock, a
+        // far future — not a past.
         let due = stamp.system_time.wrapping_add(interval as u64);
-        if !self.timer_table.insert(&mut thread.timer, due, stamp.system_time) {
-            // Already past: never a wait state. Drop a boosted
-            // variable thread to its base — the drop itself may
-            // select a replacement — then try to hand the
-            // processor to an equal if nobody was selected.
+        if !self
+            .timer_table
+            .insert(&mut thread.timer, due, stamp.system_time)
+        {
+            // Already past: never a wait state. Drop a boosted variable thread to its base — the
+            // drop itself may select a replacement — then try to hand the processor to an equal if
+            // nobody was selected.
             // SAFETY: linked above; the thread stays unparked.
             unsafe { unlink(addr_of_mut!((*block).links)) };
             let base = thread.base_priority;
@@ -441,8 +415,7 @@ impl Dispatcher {
             }
             if !self.next_thread().is_null() {
                 thread.preempted = false;
-                // SAFETY: the thread is attached; its process
-                // outlives it.
+                // SAFETY: the thread is attached; its process outlives it.
                 thread.quantum = unsafe { (*thread.process).thread_quantum };
                 self.make_ready(thread);
                 return WaitDisposition::Yield;
@@ -460,9 +433,8 @@ impl Dispatcher {
         WaitDisposition::Yield
     }
 
-    /// The delay's resume-side conversion: a sleep that timed out
-    /// is a successful sleep. The thread's wait status carries
-    /// the timeout; the delay completes as success.
+    /// The delay's resume-side conversion: a sleep that timed out is a successful sleep. The
+    /// thread's wait status carries the timeout; the delay completes as success.
     pub fn delay_completed(status: i32) -> i32 {
         if status == STATUS_TIMEOUT {
             STATUS_SUCCESS
@@ -471,28 +443,23 @@ impl Dispatcher {
         }
     }
 
-    /// The wait exit: complete `thread`'s wait with `status` and a
-    /// wake boost of `increment`. This is the single owner of the
-    /// Waiting state's exit — every wake site goes through it. It
-    /// unwinds the wait's blocks from their objects, leaves the
-    /// waiting list, cancels the wait's timer if it is still live,
-    /// applies the boost (the thread's no-boost policy gates it
-    /// here — the boost itself leaves policy to its caller),
-    /// charges the wait, and readies the thread.
+    /// The wait exit: complete `thread`'s wait with `status` and a wake boost of `increment`. This
+    /// is the single owner of the Waiting state's exit — every wake site goes through it. It
+    /// unwinds the wait's blocks from their objects, leaves the waiting list, cancels the wait's
+    /// timer if it is still live, applies the boost (the thread's no-boost policy gates it here —
+    /// the boost itself leaves policy to its caller), charges the wait, and readies the thread.
     pub fn unwait(&mut self, thread: &mut Thread, status: i32, increment: i8) {
         assert!(
             thread.state == ThreadState::Waiting,
             "the wait exit runs on a waiting thread"
         );
-        // The status is OR'd in, not assigned: a wait may carry a
-        // status its wake must preserve.
+        // The status is OR'd in, not assigned: a wait may carry a status its wake must preserve.
         thread.wait_status |= status;
 
-        // Unlink every block of the chain from the object it is
-        // parked on, then leave the waiting list.
+        // Unlink every block of the chain from the object it is parked on, then leave the waiting
+        // list.
         let mut block = thread.wait_block_head;
-        // SAFETY: the chain is circular, every block is linked,
-        // and the walk returns to its head.
+        // SAFETY: the chain is circular, every block is linked, and the walk returns to its head.
         unsafe {
             loop {
                 unlink(addr_of_mut!((*block).links));
@@ -504,12 +471,10 @@ impl Dispatcher {
         }
         // SAFETY: a waiting thread is on the waiting list.
         unsafe { unlink(addr_of_mut!(thread.wait_links)) };
-        // The wait is unwound: no chain to walk until the next
-        // one, and the ready path may check.
+        // The wait is unwound: no chain to walk until the next one, and the ready path may check.
         thread.wait_block_head = null_mut();
 
-        // A wake beats its timeout: cancel the wait's timer if it
-        // is still live.
+        // A wake beats its timeout: cancel the wait's timer if it is still live.
         if thread.timer.inserted {
             self.timer_table.remove(&mut thread.timer);
         }
@@ -521,17 +486,14 @@ impl Dispatcher {
         self.make_ready(thread);
     }
 
-    /// Satisfy as many of `object`'s waits as its signal allows:
-    /// while it is signaled and waiters are parked, wake the head
-    /// waiter with `increment`. An auto-reset flavor's signal
-    /// serves exactly one waiter; every other kind's serves all
-    /// present at once.
+    /// Satisfy as many of `object`'s waits as its signal allows: while it is signaled and waiters
+    /// are parked, wake the head waiter with `increment`. An auto-reset flavor's signal serves
+    /// exactly one waiter; every other kind's serves all present at once.
     pub fn satisfy_waiters(&mut self, object: *mut Waitable, increment: i8) {
         // SAFETY: the object is a live, initialized waitable.
         let object: &mut Waitable = unsafe { &mut *object };
         let sentinel = object.waiters.sentinel();
-        // SAFETY: the waiters list is initialized and its entries
-        // are wait blocks.
+        // SAFETY: the waiters list is initialized and its entries are wait blocks.
         let mut entry = unsafe { object.waiters.first() };
         while object.signal_state > 0 && !entry.is_null() && !eq(entry, sentinel) {
             // SAFETY: the entry is a wait block's links field.
@@ -542,14 +504,11 @@ impl Dispatcher {
 
             // SAFETY: the wait-all flag is a plain read.
             if unsafe { (*block).wait_all } {
-                // A wait-all claim needs every object of its chain
-                // signaled; otherwise it stays parked and the walk
-                // moves on.
-                // SAFETY: the chain is circular and every non-
-                // timer block names a live waitable.
+                // A wait-all claim needs every object of its chain signaled; otherwise it stays
+                // parked and the walk moves on.
+                // SAFETY: the chain is circular and every non- timer block names a live waitable.
                 if !unsafe { chain_all_signaled(block) } {
-                    // SAFETY: a linked entry's next pointer names
-                    // the next waiter.
+                    // SAFETY: a linked entry's next pointer names the next waiter.
                     entry = unsafe { (*entry).next };
                     continue;
                 }
@@ -561,16 +520,14 @@ impl Dispatcher {
 
             // SAFETY: the waking thread is a live, waiting thread.
             self.unwait(unsafe { &mut *thread }, key, increment);
-            // The wake unlinked the head block: continue from the
-            // new head.
+            // The wake unlinked the head block: continue from the new head.
             // SAFETY: as above.
             entry = unsafe { object.waiters.first() };
         }
     }
 
-    /// Expire `timer`: signal it and satisfy its waiters with no
-    /// priority increment — what the clock's expiry work does per
-    /// due timer, in the order its walk collected them. A timer an
+    /// Expire `timer`: signal it and satisfy its waiters with no priority increment — what the
+    /// clock's expiry work does per due timer, in the order its walk collected them. A timer an
     /// earlier wake already cancelled expires as a no-op.
     pub fn expire_timer(&mut self, timer: *mut Timer) {
         // SAFETY: the timer is a live, initialized record.
@@ -583,11 +540,9 @@ impl Dispatcher {
         self.satisfy_waiters(waitable, TIMER_WAKE_INCREMENT);
     }
 
-    /// The wait structures' audit: the waiting list holds only
-    /// waiting threads, every block of a waiting thread's chain is
-    /// linked on exactly the object it names, and every block
-    /// parked on such an object belongs to a waiting thread's
-    /// chain.
+    /// The wait structures' audit: the waiting list holds only waiting threads, every block of a
+    /// waiting thread's chain is linked on exactly the object it names, and every block parked on
+    /// such an object belongs to a waiting thread's chain.
     pub fn audit_waits(&self) -> Result<(), &'static str> {
         let sentinel = list_sentinel(&self.waiting);
         // SAFETY: read-only walks of initialized lists.
@@ -598,8 +553,7 @@ impl Dispatcher {
                 if (*thread).state != ThreadState::Waiting {
                     return Err("a non-waiting thread is on the waiting list");
                 }
-                // The chain: every block linked, and its object's
-                // list holding it.
+                // The chain: every block linked, and its object's list holding it.
                 let head = (*thread).wait_block_head;
                 let mut block = head;
                 loop {
@@ -610,8 +564,8 @@ impl Dispatcher {
                     if !list_holds(&(*object).waiters, addr_of_mut!((*block).links)) {
                         return Err("a wait block is not on its object's list");
                     }
-                    // The reverse: every block parked on this
-                    // object belongs to a waiting thread's chain.
+                    // The reverse: every block parked on this object belongs to a waiting thread's
+                    // chain.
                     let osentinel = (*object).waiters.sentinel();
                     let mut oentry = (*object).waiters.first();
                     while !oentry.is_null() && !eq(oentry, osentinel) {
@@ -635,18 +589,14 @@ impl Dispatcher {
         Ok(())
     }
 
-    /// The block path's switch away, and back. The calling thread
-    /// has just parked on a wait: capture its level ledger, select
-    /// the next thread, and swap away — the caller's frames stay
-    /// on its own kernel stack, and the switch resumes them when a
-    /// wake re-selects the thread. The resume side restores the
-    /// (now woken) thread's ledger and pays the raise this site
-    /// made; the wake's completion status is the thread's
-    /// wait-status field.
+    /// The block path's switch away, and back. The calling thread has just parked on a wait:
+    /// capture its level ledger, select the next thread, and swap away — the caller's frames stay
+    /// on its own kernel stack, and the switch resumes them when a wake re-selects the thread. The
+    /// resume side restores the (now woken) thread's ledger and pays the raise this site made; the
+    /// wake's completion status is the thread's wait-status field.
     #[cfg(target_arch = "x86")]
     pub fn park_and_switch(&mut self) {
-        let previous =
-            crate::interrupt::irql::state_mut().raise(crate::interrupt::irql::DISPATCH);
+        let previous = crate::interrupt::irql::state_mut().raise(crate::interrupt::irql::DISPATCH);
         // SAFETY: the running thread, live and exclusive here.
         let old = self.current_thread();
         // SAFETY: as above.
@@ -657,9 +607,8 @@ impl Dispatcher {
             "selection always yields the idle fallback"
         );
         self.enter(selected);
-        // SAFETY: the selected thread's frame is planted (fresh) or
-        // saved (resumed) — the selection discipline guarantees it —
-        // and the dispatch level masks the dispatcher context.
+        // SAFETY: the selected thread's frame is planted (fresh) or saved (resumed) — the selection
+        // discipline guarantees it — and the dispatch level masks the dispatcher context.
         unsafe { super::switch::swap_context(old, selected) };
         // The parked thread's timeline resumes here.
         // SAFETY: the running thread, live.
@@ -669,18 +618,13 @@ impl Dispatcher {
         crate::interrupt::irql::state_mut().lower(previous);
     }
 
-    /// The no-wait quantum adjustment: the tail of a wait that was
-    /// satisfied without blocking. A variable thread below the
-    /// time-critical base is charged one unit for the wait; at
-    /// exhaustion the quantum resets and the priority decays one
-    /// step, and when the decay left the priority alone, an
-    /// equal-priority ready thread takes the standby slot — the
-    /// round-robin among equals. Realtime threads and
-    /// time-critical bases are not adjusted at all.
+    /// The no-wait quantum adjustment: the tail of a wait that was satisfied without blocking. A
+    /// variable thread below the time-critical base is charged one unit for the wait; at exhaustion
+    /// the quantum resets and the priority decays one step, and when the decay left the priority
+    /// alone, an equal-priority ready thread takes the standby slot — the round-robin among equals.
+    /// Realtime threads and time-critical bases are not adjusted at all.
     fn charge_nowait(&mut self, thread: &mut Thread) {
-        if thread.priority >= REALTIME_BASE
-            || thread.base_priority >= TIME_CRITICAL_CEILING
-        {
+        if thread.priority >= REALTIME_BASE || thread.base_priority >= TIME_CRITICAL_CEILING {
             return;
         }
         if self.charge_wait(thread) {
@@ -691,22 +635,18 @@ impl Dispatcher {
 
 // --- The timeout machinery -------------------------------------------------
 //
-// The wait discipline's timer contract: a wait computes a due time
-// from the clock reading its caller took (wrap-safe unsigned
-// arithmetic — the longest relative interval wraps to the far
-// future, not the past) and hands it to the timer table, which
-// orders it into its buckets and drives its expiry from the clock
-// (see [`crate::sched::timer`]). The wait paths here insert and
-// cancel through the table; the expiry entry above is what the
-// clock's expiry work calls per collected timer — the wake itself
-// needs no special path at all.
+// The wait discipline's timer contract: a wait computes a due time from the clock reading its
+// caller took (wrap-safe unsigned arithmetic — the longest relative interval wraps to the far
+// future, not the past) and hands it to the timer table, which orders it into its buckets and
+// drives its expiry from the clock (see [`crate::sched::timer`]). The wait paths here insert and
+// cancel through the table; the expiry entry above is what the clock's expiry work calls per
+// collected timer — the wake itself needs no special path at all.
 
 // --- The walk helpers -----------------------------------------------------
 
-/// Whether every object of a wait-all chain is signaled. The head
-/// block's object is the one under test; the rest are checked
-/// here, skipping the timer block — its key, the timeout status,
-/// is the chain's not-an-object marker.
+/// Whether every object of a wait-all chain is signaled. The head block's object is the one under
+/// test; the rest are checked here, skipping the timer block — its key, the timeout status, is the
+/// chain's not-an-object marker.
 // SAFETY-contract: `block` heads a circular chain of live blocks.
 unsafe fn chain_all_signaled(block: *mut WaitBlock) -> bool {
     unsafe {
@@ -724,8 +664,7 @@ unsafe fn chain_all_signaled(block: *mut WaitBlock) -> bool {
     true
 }
 
-/// Consume the signal of every non-timer object of a wait-all
-/// chain, head included.
+/// Consume the signal of every non-timer object of a wait-all chain, head included.
 // SAFETY-contract: as `chain_all_signaled`.
 unsafe fn satisfy_chain(block: *mut WaitBlock) {
     unsafe {
@@ -742,8 +681,7 @@ unsafe fn satisfy_chain(block: *mut WaitBlock) {
     }
 }
 
-/// Whether `block`'s links are wired into a list: both neighbors
-/// point back at it.
+/// Whether `block`'s links are wired into a list: both neighbors point back at it.
 // SAFETY-contract: `block` is a live wait block.
 unsafe fn linked(block: *mut WaitBlock) -> bool {
     unsafe {
@@ -755,8 +693,7 @@ unsafe fn linked(block: *mut WaitBlock) -> bool {
 }
 
 /// Whether `list` holds `entry`.
-// SAFETY-contract: `list` is initialized; `entry` is a live links
-// field.
+// SAFETY-contract: `list` is initialized; `entry` is a live links field.
 unsafe fn list_holds(list: &List, entry: *mut Links) -> bool {
     unsafe {
         let sentinel = list_sentinel(list);
@@ -771,15 +708,13 @@ unsafe fn list_holds(list: &List, entry: *mut Links) -> bool {
     false
 }
 
-/// A list's sentinel, read-only (the audit walks must not borrow
-/// what they inspect).
+/// A list's sentinel, read-only (the audit walks must not borrow what they inspect).
 fn list_sentinel(list: &List) -> *mut Links {
     core::ptr::addr_of!(list.head) as *mut Links
 }
 
 /// Whether `chain` (a circular wait-block chain) holds `block`.
-// SAFETY-contract: `chain` heads a circular chain; `block` is a
-// live wait block.
+// SAFETY-contract: `chain` heads a circular chain; `block` is a live wait block.
 unsafe fn chain_holds(chain: *mut WaitBlock, block: *mut WaitBlock) -> bool {
     unsafe {
         let mut probe = chain;
@@ -809,9 +744,8 @@ mod tests {
 
     // --- The rig ----------------------------------------------------------
     //
-    // The same style as the dispatcher tests: kernel objects live
-    // at fixed addresses for as long as they are linked, so the
-    // rig leaks everything it creates.
+    // The same style as the dispatcher tests: kernel objects live at fixed addresses for as long as
+    // they are linked, so the rig leaks everything it creates.
 
     fn dispatcher() -> &'static mut Dispatcher {
         let d = Box::leak(Box::new(Dispatcher::zeroed()));
@@ -853,8 +787,8 @@ mod tests {
         ev
     }
 
-    /// Block `t` on `object` (with the rig's fixed clock reading),
-    /// asserting the wait actually parked it.
+    /// Block `t` on `object` (with the rig's fixed clock reading), asserting the wait actually
+    /// parked it.
     fn block_on(d: &mut Dispatcher, t: &mut Thread, object: *mut Waitable, timeout: Option<i64>) {
         match d.wait_single(
             t,
@@ -880,16 +814,14 @@ mod tests {
         let list = &event.waitable.waiters;
         let sentinel = list_sentinel(list);
         let mut parked = Vec::new();
-        // SAFETY: the list is initialized; the entries are wait
-        // blocks parked on the event.
+        // SAFETY: the list is initialized; the entries are wait blocks parked on the event.
         let mut entry = unsafe { list.first() };
         while !entry.is_null() && !eq(entry, sentinel) {
             // SAFETY: the entry is a wait block's links field.
             let block = entry_to_block(entry);
             // SAFETY: the block's thread is live.
             parked.push(unsafe { (*block).thread });
-            // SAFETY: a linked entry's next pointer names the next
-            // waiter.
+            // SAFETY: a linked entry's next pointer names the next waiter.
             entry = unsafe { (*entry).next };
         }
         parked
@@ -897,10 +829,9 @@ mod tests {
 
     // --- Group B: construction and the block path ---------------------------
 
-    /// Thread setup wires the wait fields: the thread is a
-    /// waitable object of its own kind, every block names its
-    /// owner, and the timer block's claim is planted once — its
-    /// object the thread's own timer, its key the timeout status.
+    /// Thread setup wires the wait fields: the thread is a waitable object of its own kind, every
+    /// block names its owner, and the timer block's claim is planted once — its object the thread's
+    /// own timer, its key the timeout status.
     #[test]
     fn thread_setup_wires_the_wait_fields() {
         let p = process(8);
@@ -922,9 +853,8 @@ mod tests {
         assert_eq!(t.wait_status(), STATUS_SUCCESS);
     }
 
-    /// The wait chain: without a timeout the object block closes
-    /// on itself; with one it runs object block -> timer block ->
-    /// object block, the timer block parked on the thread's timer.
+    /// The wait chain: without a timeout the object block closes on itself; with one it runs object
+    /// block -> timer block -> object block, the timer block parked on the thread's timer.
     #[test]
     fn wait_block_construction() {
         let d = dispatcher();
@@ -936,7 +866,10 @@ mod tests {
         let head = t1.wait_block_head;
         // SAFETY: the chain is live for the wait.
         unsafe {
-            assert!(eq((*head).next_block, head), "the one-block chain closes on itself");
+            assert!(
+                eq((*head).next_block, head),
+                "the one-block chain closes on itself"
+            );
             assert!(eq((*head).object, ev.waitable()));
             assert_eq!((*head).key, STATUS_SUCCESS);
             assert!(!(*head).wait_all);
@@ -954,8 +887,7 @@ mod tests {
         assert_eq!(t2.timer.due_time(), 10_000 + 1_000_000);
     }
 
-    /// Waiters join the object at the tail: satisfaction order is
-    /// first-blocked-first-woken.
+    /// Waiters join the object at the tail: satisfaction order is first-blocked-first-woken.
     #[test]
     fn waiters_join_the_tail() {
         let d = dispatcher();
@@ -972,9 +904,8 @@ mod tests {
         assert_eq!(waiters(ev), vec![as_ptr(t1), as_ptr(t2), as_ptr(t3)]);
     }
 
-    /// The block path lands the wait's parameters on the thread
-    /// and takes it out of scheduling: Waiting, on the waiting
-    /// list, on no ready list.
+    /// The block path lands the wait's parameters on the thread and takes it out of scheduling:
+    /// Waiting, on the waiting list, on no ready list.
     #[test]
     fn the_block_path_lands_the_wait_fields() {
         let d = dispatcher();
@@ -1008,9 +939,8 @@ mod tests {
 
     // --- Group C: the immediate-satisfaction paths ---------------------------
 
-    /// An already-signaled notification event satisfies the wait
-    /// outright: the signal survives the take, the thread never
-    /// leaves Running, and the quantum is still charged.
+    /// An already-signaled notification event satisfies the wait outright: the signal survives the
+    /// take, the thread never leaves Running, and the quantum is still charged.
     #[test]
     fn a_signaled_notification_event_satisfies_without_side_effects() {
         let d = dispatcher();
@@ -1020,19 +950,34 @@ mod tests {
         let ev = event(EventKind::Notification, true);
 
         assert_eq!(
-            d.wait_single(t, ev.waitable(), WaitReason::Executive, WaitMode::Kernel, false, None, stamp(0, 0)),
+            d.wait_single(
+                t,
+                ev.waitable(),
+                WaitReason::Executive,
+                WaitMode::Kernel,
+                false,
+                None,
+                stamp(0, 0)
+            ),
             complete(STATUS_SUCCESS)
         );
-        assert_eq!(ev.signal_state(), 1, "the notification signal survives the take");
+        assert_eq!(
+            ev.signal_state(),
+            1,
+            "the notification signal survives the take"
+        );
         assert!(waiters(ev).is_empty());
         assert_eq!(t.state(), ThreadState::Running);
-        assert_eq!(t.quantum(), 5, "the wait it did not block on still costs its charge");
+        assert_eq!(
+            t.quantum(),
+            5,
+            "the wait it did not block on still costs its charge"
+        );
         assert_eq!(d.audit_waits(), Ok(()));
     }
 
-    /// An already-signaled synchronization event satisfies the
-    /// wait and consumes the signal: one signal serves exactly one
-    /// waiter, even when the waiter arrives after the signal.
+    /// An already-signaled synchronization event satisfies the wait and consumes the signal: one
+    /// signal serves exactly one waiter, even when the waiter arrives after the signal.
     #[test]
     fn a_signaled_synchronization_event_resets_on_the_take() {
         let d = dispatcher();
@@ -1042,21 +987,36 @@ mod tests {
         let ev = event(EventKind::Synchronization, true);
 
         assert_eq!(
-            d.wait_single(t, ev.waitable(), WaitReason::Executive, WaitMode::Kernel, false, None, stamp(0, 0)),
+            d.wait_single(
+                t,
+                ev.waitable(),
+                WaitReason::Executive,
+                WaitMode::Kernel,
+                false,
+                None,
+                stamp(0, 0)
+            ),
             complete(STATUS_SUCCESS)
         );
         assert_eq!(ev.signal_state(), 0, "the take consumes the parked signal");
 
         // The next wait on the cleared event cannot be satisfied.
         assert_eq!(
-            d.wait_single(t, ev.waitable(), WaitReason::Executive, WaitMode::Kernel, false, Some(0), stamp(0, 0)),
+            d.wait_single(
+                t,
+                ev.waitable(),
+                WaitReason::Executive,
+                WaitMode::Kernel,
+                false,
+                Some(0),
+                stamp(0, 0)
+            ),
             complete(STATUS_TIMEOUT)
         );
     }
 
-    /// The satisfaction dispatch keys on the signal state alone:
-    /// every waitable kind decides by it (no owner-based branch
-    /// exists for any kind). The thread object is no exception.
+    /// The satisfaction dispatch keys on the signal state alone: every waitable kind decides by it
+    /// (no owner-based branch exists for any kind). The thread object is no exception.
     #[test]
     fn the_satisfaction_dispatch_keys_on_the_signal_state() {
         let d = dispatcher();
@@ -1074,9 +1034,8 @@ mod tests {
         assert_eq!(d.audit_waits(), Ok(()));
     }
 
-    /// A zero timeout never blocks, even for an instant: no wait
-    /// block is linked, the thread stays Running, and the quantum
-    /// charge still runs.
+    /// A zero timeout never blocks, even for an instant: no wait block is linked, the thread stays
+    /// Running, and the quantum charge still runs.
     #[test]
     fn a_zero_timeout_never_blocks() {
         let d = dispatcher();
@@ -1086,7 +1045,15 @@ mod tests {
         let ev = event(EventKind::Notification, false);
 
         assert_eq!(
-            d.wait_single(t, ev.waitable(), WaitReason::Executive, WaitMode::Kernel, false, Some(0), stamp(0, 0)),
+            d.wait_single(
+                t,
+                ev.waitable(),
+                WaitReason::Executive,
+                WaitMode::Kernel,
+                false,
+                Some(0),
+                stamp(0, 0)
+            ),
             complete(STATUS_TIMEOUT)
         );
         assert!(waiters(ev).is_empty());
@@ -1094,9 +1061,8 @@ mod tests {
         assert_eq!(t.quantum(), 5);
     }
 
-    /// At the wait entry, "the object is signaled now" dominates
-    /// "the deadline passed now": a satisfied wait reports success
-    /// even with a zero timeout, which is simply dropped.
+    /// At the wait entry, "the object is signaled now" dominates "the deadline passed now": a
+    /// satisfied wait reports success even with a zero timeout, which is simply dropped.
     #[test]
     fn a_signaled_object_beats_a_due_deadline() {
         let d = dispatcher();
@@ -1106,17 +1072,24 @@ mod tests {
         let ev = event(EventKind::Notification, true);
 
         assert_eq!(
-            d.wait_single(t, ev.waitable(), WaitReason::Executive, WaitMode::Kernel, false, Some(0), stamp(0, 0)),
+            d.wait_single(
+                t,
+                ev.waitable(),
+                WaitReason::Executive,
+                WaitMode::Kernel,
+                false,
+                Some(0),
+                stamp(0, 0)
+            ),
             complete(STATUS_SUCCESS)
         );
         assert_eq!(ev.signal_state(), 1);
     }
 
-    /// A due time already past is the timeout decision's verdict,
-    /// not the wait's arithmetic: the wait hands the due time over, trusts
-    /// the false, and reports a timeout without parking. A
-    /// negative interval is an absolute due time — an absolute
-    /// already past is the shape that reaches it.
+    /// A due time already past is the timeout decision's verdict, not the wait's arithmetic: the
+    /// wait hands the due time over, trusts the false, and reports a timeout without parking. A
+    /// negative interval is an absolute due time — an absolute already past is the shape that
+    /// reaches it.
     #[test]
     fn a_due_time_already_past_times_out_at_once() {
         let d = dispatcher();
@@ -1126,40 +1099,62 @@ mod tests {
         let ev = event(EventKind::Notification, false);
 
         assert_eq!(
-            d.wait_single(t, ev.waitable(), WaitReason::Executive, WaitMode::Kernel, false, Some(-5), stamp(10_000, 0)),
+            d.wait_single(
+                t,
+                ev.waitable(),
+                WaitReason::Executive,
+                WaitMode::Kernel,
+                false,
+                Some(-5),
+                stamp(10_000, 0)
+            ),
             complete(STATUS_TIMEOUT)
         );
         assert!(waiters(ev).is_empty());
         assert_eq!(t.state(), ThreadState::Running);
         assert!(!t.timer.inserted());
-        assert_eq!(t.timer.waitable.signal_state(), 0, "the failed insert leaves the timer unsignaled");
+        assert_eq!(
+            t.timer.waitable.signal_state(),
+            0,
+            "the failed insert leaves the timer unsignaled"
+        );
         assert_eq!(t.quantum(), 5);
     }
 
-    /// The no-wait quantum adjustment: the charge, the decay
-    /// (floored only below the base), the realtime exemption, and
-    /// the round-robin tail — installed only when the decay left
-    /// the priority alone and the standby slot is empty.
+    /// The no-wait quantum adjustment: the charge, the decay (floored only below the base), the
+    /// realtime exemption, and the round-robin tail — installed only when the decay left the
+    /// priority alone and the standby slot is empty.
     #[test]
     fn the_nowait_charge_exhausts_decays_and_round_robins() {
         let d = dispatcher();
         let p = process(8);
 
-        // Exhaustion: the quantum resets and the priority decays
-        // one step — 11 - 1 = 10, above the base, so no floor.
+        // Exhaustion: the quantum resets and the priority decays one step — 11 - 1 = 10, above the
+        // base, so no floor.
         let t = thread(p);
         run(d, t);
         t.priority = 11;
         t.quantum = 1;
         let signaled = event(EventKind::Notification, true);
         assert_eq!(
-            d.wait_single(t, signaled.waitable(), WaitReason::Executive, WaitMode::Kernel, false, None, stamp(0, 0)),
+            d.wait_single(
+                t,
+                signaled.waitable(),
+                WaitReason::Executive,
+                WaitMode::Kernel,
+                false,
+                None,
+                stamp(0, 0)
+            ),
             complete(STATUS_SUCCESS)
         );
         assert_eq!(t.quantum(), 6);
         assert_eq!(t.priority(), 10);
         assert_eq!(t.priority_decrement(), 0);
-        assert!(d.next_thread().is_null(), "a decay that moved the priority installs nobody");
+        assert!(
+            d.next_thread().is_null(),
+            "a decay that moved the priority installs nobody"
+        );
 
         // A positive quantum survives the charge with no decay.
         let t2 = thread(p);
@@ -1167,7 +1162,15 @@ mod tests {
         t2.priority = 11;
         t2.quantum = 2;
         assert_eq!(
-            d.wait_single(t2, signaled.waitable(), WaitReason::Executive, WaitMode::Kernel, false, None, stamp(0, 0)),
+            d.wait_single(
+                t2,
+                signaled.waitable(),
+                WaitReason::Executive,
+                WaitMode::Kernel,
+                false,
+                None,
+                stamp(0, 0)
+            ),
             complete(STATUS_SUCCESS)
         );
         assert_eq!(t2.quantum(), 1);
@@ -1179,15 +1182,22 @@ mod tests {
         t3.priority = 24;
         t3.quantum = 3;
         assert_eq!(
-            d.wait_single(t3, signaled.waitable(), WaitReason::Executive, WaitMode::Kernel, false, None, stamp(0, 0)),
+            d.wait_single(
+                t3,
+                signaled.waitable(),
+                WaitReason::Executive,
+                WaitMode::Kernel,
+                false,
+                None,
+                stamp(0, 0)
+            ),
             complete(STATUS_SUCCESS)
         );
         assert_eq!(t3.quantum(), 3);
         assert_eq!(t3.priority(), 24);
 
-        // The tail: exhaustion at the base leaves the priority
-        // alone, and an equal-priority ready thread takes the
-        // standby slot — round-robin among equals.
+        // The tail: exhaustion at the base leaves the priority alone, and an equal-priority ready
+        // thread takes the standby slot — round-robin among equals.
         let d2 = dispatcher();
         let t4 = thread(p);
         run(d2, t4);
@@ -1195,13 +1205,25 @@ mod tests {
         let other = thread(p);
         d2.make_ready(other);
         assert_eq!(
-            d2.wait_single(t4, signaled.waitable(), WaitReason::Executive, WaitMode::Kernel, false, None, stamp(0, 0)),
+            d2.wait_single(
+                t4,
+                signaled.waitable(),
+                WaitReason::Executive,
+                WaitMode::Kernel,
+                false,
+                None,
+                stamp(0, 0)
+            ),
             complete(STATUS_SUCCESS)
         );
         assert_eq!(t4.priority(), 8, "8 - 1 floors back at the base: unchanged");
         assert_eq!(d2.next_thread(), as_ptr(other));
         assert_eq!(other.state(), ThreadState::Standby);
-        assert_eq!(t4.state(), ThreadState::Running, "the running thread keeps the processor until the switch");
+        assert_eq!(
+            t4.state(),
+            ThreadState::Running,
+            "the running thread keeps the processor until the switch"
+        );
 
         // Exclusivity: a pending standby blocks the install.
         let d3 = dispatcher();
@@ -1211,18 +1233,34 @@ mod tests {
         let pending = thread(p);
         pending.priority = 9;
         d3.make_ready(pending);
-        assert_eq!(d3.next_thread(), as_ptr(pending), "the higher arrival took the standby slot");
         assert_eq!(
-            d3.wait_single(t5, signaled.waitable(), WaitReason::Executive, WaitMode::Kernel, false, None, stamp(0, 0)),
+            d3.next_thread(),
+            as_ptr(pending),
+            "the higher arrival took the standby slot"
+        );
+        assert_eq!(
+            d3.wait_single(
+                t5,
+                signaled.waitable(),
+                WaitReason::Executive,
+                WaitMode::Kernel,
+                false,
+                None,
+                stamp(0, 0)
+            ),
             complete(STATUS_SUCCESS)
         );
-        assert_eq!(d3.next_thread(), as_ptr(pending), "the pending standby is left alone");
+        assert_eq!(
+            d3.next_thread(),
+            as_ptr(pending),
+            "the pending standby is left alone"
+        );
     }
 
     // --- Group D: the signal side -------------------------------------------
 
-    /// A notification event wakes every waiter present at set
-    /// time, in wait order, and keeps its signal.
+    /// A notification event wakes every waiter present at set time, in wait order, and keeps its
+    /// signal.
     #[test]
     fn a_notification_event_wakes_every_waiter_in_order() {
         let d = dispatcher();
@@ -1237,7 +1275,11 @@ mod tests {
         block_on(d, t3, ev.waitable(), None);
 
         assert_eq!(ev.set(d, EVENT_WAKE_INCREMENT), 0);
-        assert_eq!(ev.signal_state(), 1, "a notification signal outlives the wake");
+        assert_eq!(
+            ev.signal_state(),
+            1,
+            "a notification signal outlives the wake"
+        );
         assert!(waiters(ev).is_empty());
         for t in [&t1, &t2, &t3] {
             assert_eq!(t.state(), ThreadState::Ready);
@@ -1250,9 +1292,8 @@ mod tests {
         assert_eq!(d.audit_waits(), Ok(()));
     }
 
-    /// A synchronization event's signal serves exactly one waiter
-    /// — the head, the oldest — and the event is clear again
-    /// after each set.
+    /// A synchronization event's signal serves exactly one waiter — the head, the oldest — and the
+    /// event is clear again after each set.
     #[test]
     fn a_synchronization_event_wakes_exactly_the_head_waiter() {
         let d = dispatcher();
@@ -1284,9 +1325,8 @@ mod tests {
         assert_eq!(ev.signal_state(), 1);
     }
 
-    /// The synchronization fast path: with a single waiter the set
-    /// serves it directly and the signal state is never written —
-    /// it stays clear, which a one-waiter walk would have left
+    /// The synchronization fast path: with a single waiter the set serves it directly and the
+    /// signal state is never written — it stays clear, which a one-waiter walk would have left
     /// anyway.
     #[test]
     fn the_synchronization_fast_path_leaves_the_state_clear() {
@@ -1297,15 +1337,18 @@ mod tests {
 
         block_on(d, t, ev.waitable(), None);
         assert_eq!(ev.set(d, EVENT_WAKE_INCREMENT), 0);
-        assert_eq!(ev.signal_state(), 0, "the state is never written on the fast path");
+        assert_eq!(
+            ev.signal_state(),
+            0,
+            "the state is never written on the fast path"
+        );
         assert_eq!(t.state(), ThreadState::Ready);
         assert_eq!(t.wait_status(), STATUS_SUCCESS);
     }
 
-    /// A wait-all head block takes the notification path instead
-    /// of the fast one: the state is written, the satisfy walk
-    /// runs — and a claim whose chain holds an unsignaled object
-    /// stays parked under the written signal.
+    /// A wait-all head block takes the notification path instead of the fast one: the state is
+    /// written, the satisfy walk runs — and a claim whose chain holds an unsignaled object stays
+    /// parked under the written signal.
     #[test]
     fn a_wait_all_head_takes_the_notification_path() {
         let d = dispatcher();
@@ -1314,15 +1357,14 @@ mod tests {
         let a = event(EventKind::Synchronization, false);
         let b = event(EventKind::Notification, false);
 
-        // A hand-wired wait-all claim: block on A, then grow the
-        // chain to a second object block on B (the multiple-object
-        // wait that would construct this is not built; the branch
-        // it drives is).
+        // A hand-wired wait-all claim: block on A, then grow the chain to a second object block on
+        // B (the multiple-object wait that would construct this is not built; the branch it drives
+        // is).
         block_on(d, t, a.waitable(), None);
         let head = t.wait_block_head;
         let second = addr_of_mut!(t.wait_blocks[1]);
-        // SAFETY: both blocks live inside the thread; the objects
-        // are initialized, and the second block is on no list.
+        // SAFETY: both blocks live inside the thread; the objects are initialized, and the second
+        // block is on no list.
         unsafe {
             (*head).wait_all = true;
             (*second).thread = as_ptr(t);
@@ -1336,16 +1378,23 @@ mod tests {
         assert_eq!(d.audit_waits(), Ok(()));
 
         a.set(d, EVENT_WAKE_INCREMENT);
-        assert_eq!(a.signal_state(), 1, "the notification path writes the signal");
-        assert_eq!(t.state(), ThreadState::Waiting, "the unsignaled B parks the claim");
+        assert_eq!(
+            a.signal_state(),
+            1,
+            "the notification path writes the signal"
+        );
+        assert_eq!(
+            t.state(),
+            ThreadState::Waiting,
+            "the unsignaled B parks the claim"
+        );
         assert_eq!(waiters(a), vec![as_ptr(t)]);
         assert_eq!(b.signal_state(), 0);
     }
 
-    /// The wait exit's discipline: the status lands (OR'd in), the
-    /// chain unwinds from every object, the timer cancels, the
-    /// boost applies with its gate, the wait is charged, and the
-    /// thread readies.
+    /// The wait exit's discipline: the status lands (OR'd in), the chain unwinds from every object,
+    /// the timer cancels, the boost applies with its gate, the wait is charged, and the thread
+    /// readies.
     #[test]
     fn the_wait_exit_unwinds_the_wait() {
         let d = dispatcher();
@@ -1358,18 +1407,26 @@ mod tests {
 
         assert_eq!(t.wait_status(), STATUS_SUCCESS);
         assert!(waiters(ev).is_empty());
-        assert!(t.timer.waitable.waiters.is_empty(), "the timer block left the timer's list");
+        assert!(
+            t.timer.waitable.waiters.is_empty(),
+            "the timer block left the timer's list"
+        );
         assert!(!t.timer.inserted(), "the wake cancelled the timer");
-        assert!(t.wait_block_head.is_null(), "the chain is gone until the next wait");
+        assert!(
+            t.wait_block_head.is_null(),
+            "the chain is gone until the next wait"
+        );
         assert_eq!(t.state(), ThreadState::Ready);
         assert_eq!(t.priority(), 9, "the wake boost: base 8 plus 1");
-        assert_eq!(t.quantum(), 5, "boosted to a fresh quantum, then charged for the wait");
+        assert_eq!(
+            t.quantum(),
+            5,
+            "boosted to a fresh quantum, then charged for the wait"
+        );
         assert_eq!(d.audit_waits(), Ok(()));
 
-        // The status is OR'd in, not assigned: a pre-set status
-        // survives the wake. The entry always zeroes the field, so
-        // only a wake-time pre-set status can observe the
-        // distinction here.
+        // The status is OR'd in, not assigned: a pre-set status survives the wake. The entry always
+        // zeroes the field, so only a wake-time pre-set status can observe the distinction here.
         let t2 = thread(p);
         block_on(d, t2, ev.waitable(), None);
         t2.wait_status = 0x80;
@@ -1377,10 +1434,8 @@ mod tests {
         assert_eq!(t2.wait_status(), 0x80);
     }
 
-    /// Thread termination satisfies the thread object's waiters:
-    /// the object signals once, forever, before the scheduling
-    /// teardown, and a woken waiter is what the processor runs
-    /// next.
+    /// Thread termination satisfies the thread object's waiters: the object signals once, forever,
+    /// before the scheduling teardown, and a woken waiter is what the processor runs next.
     #[test]
     fn termination_satisfies_the_thread_waiters() {
         let d = dispatcher();
@@ -1396,15 +1451,18 @@ mod tests {
         assert_eq!(child.state(), ThreadState::Terminated);
         assert_eq!(main.state(), ThreadState::Ready);
         assert_eq!(main.wait_status(), STATUS_SUCCESS);
-        assert_eq!(selected, as_ptr(main), "the woken waiter is the next thread");
+        assert_eq!(
+            selected,
+            as_ptr(main),
+            "the woken waiter is the next thread"
+        );
         assert_eq!(d.audit_waits(), Ok(()));
     }
 
     // --- Group E: the timeout seam -------------------------------------------
 
-    /// Due times come from the clock reading the caller took:
-    /// due = now + interval, carried by the timer with the
-    /// inserted mark. An already-past due is refused.
+    /// Due times come from the clock reading the caller took: due = now + interval, carried by the
+    /// timer with the inserted mark. An already-past due is refused.
     #[test]
     fn due_times_come_from_the_clock_reading() {
         let d = dispatcher();
@@ -1428,20 +1486,26 @@ mod tests {
         assert!(t.timer.inserted());
         assert_eq!(d.audit_waits(), Ok(()));
 
-        // The refused arm: an absolute due already past —
-        // unsignaled and unheld.
+        // The refused arm: an absolute due already past — unsignaled and unheld.
         let t2 = thread(p);
         assert_eq!(
-            d.wait_single(t2, ev.waitable(), WaitReason::Executive, WaitMode::Kernel, false, Some(-1), stamp(5_000, 3)),
+            d.wait_single(
+                t2,
+                ev.waitable(),
+                WaitReason::Executive,
+                WaitMode::Kernel,
+                false,
+                Some(-1),
+                stamp(5_000, 3)
+            ),
             complete(STATUS_TIMEOUT)
         );
         assert!(!t2.timer.inserted());
         assert_eq!(t2.timer.waitable.signal_state(), 0);
     }
 
-    /// Expiry through the seam entry: the timer signals, the walk
-    /// unwakes the waiter with the planted timeout status and no
-    /// boost, and the whole wait unwinds — the object block leaves
+    /// Expiry through the seam entry: the timer signals, the walk unwakes the waiter with the
+    /// planted timeout status and no boost, and the whole wait unwinds — the object block leaves
     /// the event too.
     #[test]
     fn expiry_delivers_the_timeout_through_the_seam() {
@@ -1463,9 +1527,8 @@ mod tests {
         assert_eq!(d.audit_waits(), Ok(()));
     }
 
-    /// A wake beats its expiry: the signal-side unwait cancels
-    /// the timer, and the late expiry finds empty lists — a thread
-    /// is never unwoken twice for one wait.
+    /// A wake beats its expiry: the signal-side unwait cancels the timer, and the late expiry finds
+    /// empty lists — a thread is never unwoken twice for one wait.
     #[test]
     fn a_wake_cancels_the_timer_and_the_late_expiry_is_a_no_op() {
         let d = dispatcher();
@@ -1479,14 +1542,17 @@ mod tests {
         assert!(!t.timer.inserted());
 
         d.expire_timer(addr_of_mut!(t.timer));
-        assert_eq!(t.wait_status(), STATUS_SUCCESS, "the loser of the race finds empty lists");
+        assert_eq!(
+            t.wait_status(),
+            STATUS_SUCCESS,
+            "the loser of the race finds empty lists"
+        );
         assert_eq!(t.state(), ThreadState::Ready);
         assert_eq!(d.audit_waits(), Ok(()));
     }
 
-    /// An expiry beats its wake: the timeout wins, the object
-    /// block unlinks, and the later set finds nobody — it only
-    /// writes the signal.
+    /// An expiry beats its wake: the timeout wins, the object block unlinks, and the later set
+    /// finds nobody — it only writes the signal.
     #[test]
     fn an_expiry_wins_and_the_late_set_finds_nobody() {
         let d = dispatcher();
@@ -1504,11 +1570,10 @@ mod tests {
         assert_eq!(t.state(), ThreadState::Ready);
     }
 
-    /// The delay wait: the chain is the timer block alone, the
-    /// wake is the expiry, and a sleep that timed out completes as
-    /// a success. An already-expired delay never parks: it drops a
-    /// boosted thread to its base and hands the processor to an
-    /// equal, or completes at once with nobody to take over.
+    /// The delay wait: the chain is the timer block alone, the wake is the expiry, and a sleep that
+    /// timed out completes as a success. An already-expired delay never parks: it drops a boosted
+    /// thread to its base and hands the processor to an equal, or completes at once with nobody to
+    /// take over.
     #[test]
     fn the_delay_wait_blocks_on_the_timer_alone() {
         let d = dispatcher();
@@ -1523,7 +1588,10 @@ mod tests {
         }
         assert_eq!(t.state(), ThreadState::Waiting);
         assert_eq!(t.wait_reason(), WaitReason::DelayExecution);
-        assert!(eq(t.wait_block_head, addr_of_mut!(t.wait_blocks[TIMER_BLOCK])));
+        assert!(eq(
+            t.wait_block_head,
+            addr_of_mut!(t.wait_blocks[TIMER_BLOCK])
+        ));
         // SAFETY: the chain is live for the wait.
         unsafe { assert!(eq((*t.wait_block_head).next_block, t.wait_block_head)) };
         assert!(t.timer.inserted());
@@ -1537,8 +1605,8 @@ mod tests {
     /// The delay's yield arm: already expired, never a wait state.
     #[test]
     fn an_expired_delay_yields_the_processor() {
-        // Nobody to take over: completes at once, boosted thread
-        // dropped to its base, no wait state consumed.
+        // Nobody to take over: completes at once, boosted thread dropped to its base, no wait state
+        // consumed.
         let d = dispatcher();
         let p = process(8);
         let t = thread(p);
@@ -1548,13 +1616,17 @@ mod tests {
             d.delay(t, WaitMode::Kernel, false, -1, stamp(100, 1)),
             complete(STATUS_SUCCESS)
         );
-        assert_eq!(t.priority(), 8, "the yield drops a boosted thread to its base");
+        assert_eq!(
+            t.priority(),
+            8,
+            "the yield drops a boosted thread to its base"
+        );
         assert_eq!(t.state(), ThreadState::Running);
         assert!(!t.timer.inserted());
         assert_eq!(d.audit_waits(), Ok(()));
 
-        // An equal ready to take over: the current thread is
-        // readied with a fresh quantum and the delay yields.
+        // An equal ready to take over: the current thread is readied with a fresh quantum and the
+        // delay yields.
         let d2 = dispatcher();
         let p2 = process(8);
         let t2 = thread(p2);
@@ -1577,9 +1649,8 @@ mod tests {
 
     // --- Group F: cross-cutting invariants -----------------------------------
 
-    /// The wait exit is the only owner of the Waiting state's
-    /// exit: it lands the thread on the ready ladder, never
-    /// directly on the processor.
+    /// The wait exit is the only owner of the Waiting state's exit: it lands the thread on the
+    /// ready ladder, never directly on the processor.
     #[test]
     fn the_wait_exit_is_the_only_waiting_state_exit() {
         let d = dispatcher();
@@ -1626,9 +1697,8 @@ mod tests {
         d.make_ready(t);
     }
 
-    /// The wait-structure audit: consistent across objects and
-    /// threads mid-flight and after wakes; a non-waiting thread
-    /// on the waiting list is an audit failure.
+    /// The wait-structure audit: consistent across objects and threads mid-flight and after wakes;
+    /// a non-waiting thread on the waiting list is an audit failure.
     #[test]
     fn the_wait_audit_tracks_the_structures() {
         let d = dispatcher();
@@ -1647,35 +1717,46 @@ mod tests {
         ev_a.set(d, EVENT_WAKE_INCREMENT);
         assert_eq!(d.audit_waits(), Ok(()), "after the wake");
 
-        // The negative: a thread on the waiting list that is not
-        // waiting is an audit failure.
+        // The negative: a thread on the waiting list that is not waiting is an audit failure.
         let stray = thread(p);
-        // SAFETY: the list is initialized; the stray thread's wait
-        // link is detached.
+        // SAFETY: the list is initialized; the stray thread's wait link is detached.
         unsafe { d.waiting.push_back(addr_of_mut!(stray.wait_links)) };
         assert!(d.audit_waits().is_err());
     }
 
-    /// The wake boost's cap and gate: computed past the cap lands
-    /// at the top of the variable band, a realtime thread gets no
-    /// boost and a full replenish, and a disabled or debt-carrying
-    /// thread gets no boost but is still charged.
+    /// The wake boost's cap and gate: computed past the cap lands at the top of the variable band,
+    /// a realtime thread gets no boost and a full replenish, and a disabled or debt-carrying thread
+    /// gets no boost but is still charged.
     #[test]
     fn the_wake_boost_caps_and_gates() {
         let d = dispatcher();
         let p15 = process(15);
         let capped = thread(p15);
         capped.priority = 15;
-        block_on(d, capped, event(EventKind::Notification, false).waitable(), None);
+        block_on(
+            d,
+            capped,
+            event(EventKind::Notification, false).waitable(),
+            None,
+        );
         d.unwait(capped, STATUS_SUCCESS, EVENT_WAKE_INCREMENT);
         assert_eq!(capped.priority(), 15, "computed 16 lands capped at 15");
-        assert_eq!(capped.quantum(), 6, "a time-critical base replenishes instead of charging");
+        assert_eq!(
+            capped.quantum(),
+            6,
+            "a time-critical base replenishes instead of charging"
+        );
 
         let p = process(8);
         let rt = thread(p);
         rt.priority = 16;
         rt.quantum = 2;
-        block_on(d, rt, event(EventKind::Notification, false).waitable(), None);
+        block_on(
+            d,
+            rt,
+            event(EventKind::Notification, false).waitable(),
+            None,
+        );
         d.unwait(rt, STATUS_SUCCESS, EVENT_WAKE_INCREMENT);
         assert_eq!(rt.priority(), 16, "realtime: no boost");
         assert_eq!(rt.quantum(), 6, "realtime: full replenish");
@@ -1683,7 +1764,12 @@ mod tests {
         let gated = thread(p);
         gated.disable_boost = true;
         gated.quantum = 6;
-        block_on(d, gated, event(EventKind::Notification, false).waitable(), None);
+        block_on(
+            d,
+            gated,
+            event(EventKind::Notification, false).waitable(),
+            None,
+        );
         d.unwait(gated, STATUS_SUCCESS, EVENT_WAKE_INCREMENT);
         assert_eq!(gated.priority(), 8, "the policy gate refuses the boost");
         assert_eq!(gated.quantum(), 5, "the charge is unconditional");
@@ -1691,10 +1777,23 @@ mod tests {
         let indebted = thread(p);
         indebted.priority_decrement = 2;
         indebted.quantum = 6;
-        block_on(d, indebted, event(EventKind::Notification, false).waitable(), None);
+        block_on(
+            d,
+            indebted,
+            event(EventKind::Notification, false).waitable(),
+            None,
+        );
         d.unwait(indebted, STATUS_SUCCESS, EVENT_WAKE_INCREMENT);
-        assert_eq!(indebted.priority(), 8, "outstanding decay debt refuses the boost");
-        assert_eq!(indebted.priority_decrement(), 2, "the debt survives a charge that does not exhaust");
+        assert_eq!(
+            indebted.priority(),
+            8,
+            "outstanding decay debt refuses the boost"
+        );
+        assert_eq!(
+            indebted.priority_decrement(),
+            2,
+            "the debt survives a charge that does not exhaust"
+        );
         assert_eq!(indebted.quantum(), 5);
     }
 }

@@ -1,40 +1,35 @@
 //! The deferred procedure call queue.
 //!
-//! An interrupt service routine can defer work: instead of doing it
-//! at the interrupt level it enqueues a DPC — a routine that runs
-//! later, at the dispatch level, with interrupts enabled around the
-//! call. The discipline:
+//! An interrupt service routine can defer work: instead of doing it at the interrupt level it
+//! enqueues a DPC — a routine that runs later, at the dispatch level, with interrupts enabled
+//! around the call. The discipline:
 //!
-//!  - single flight: a DPC that is already queued is not re-enqueued,
-//!    and the first insertion's arguments stand,
-//!  - placement: high-importance DPCs go to the head, the rest to
-//!    the tail,
-//!  - the request gate: an enqueue asks for a dispatch interrupt only
-//!    when no routine is active, none was already requested, and the
-//!    importance/depth/rate table says a request is warranted,
-//!  - retirement drains in order, clears the inserted state *before*
-//!    the call (so a routine may re-enqueue itself), and clears the
-//!    active/requested flags only once the queue empties — then
-//!    re-checks once more to close the race with an enqueue that
-//!    arrived mid-drain.
+//!  - single flight: a DPC that is already queued is not re-enqueued, and the first insertion's
+//!    arguments stand,
+//!  - placement: high-importance DPCs go to the head, the rest to the tail,
+//!  - the request gate: an enqueue asks for a dispatch interrupt only when no routine is active,
+//!    none was already requested, and the importance/depth/rate table says a request is warranted,
+//!  - retirement drains in order, clears the inserted state *before* the call (so a routine may
+//!    re-enqueue itself), and clears the active/requested flags only once the queue empties — then
+//!    re-checks once more to close the race with an enqueue that arrived mid-drain.
 //!
-//! A DPC is an intrusive list member: the queue links through the
-//! Dpc itself, so nothing is allocated and the same object can be
-//! re-enqueued for its whole life.
+//! A DPC is an intrusive list member: the queue links through the Dpc itself, so nothing is
+//! allocated and the same object can be re-enqueued for its whole life.
 
-use crate::interrupt::irql::{IrqlState, HIGH};
 use core::ptr::{addr_of, addr_of_mut, null_mut};
 use core::sync::atomic::{AtomicBool, Ordering};
 
-/// A deferred routine: `(dpc, context, argument1, argument2)`. The
-/// arguments are the ones stored at insertion time.
+use crate::interrupt::irql::{IrqlState, HIGH};
+
+/// A deferred routine: `(dpc, context, argument1, argument2)`. The arguments are the ones stored at
+/// insertion time.
 pub type DpcRoutine = fn(&Dpc, usize, usize, usize);
 
 /// How urgently a DPC wants to run.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Importance {
-    /// Below the depth/rate thresholds: requested only when the queue
-    /// is deep enough or the request rate low enough.
+    /// Below the depth/rate thresholds: requested only when the queue is deep enough or the
+    /// request rate low enough.
     Low,
     /// Requested as soon as the queue is idle (the default).
     Medium,
@@ -42,8 +37,7 @@ pub enum Importance {
     High,
 }
 
-/// Intrusive list links, shared by every queued DPC and the queue's
-/// own sentinel.
+/// Intrusive list links, shared by every queued DPC and the queue's own sentinel.
 struct Links {
     next: *mut Links,
     prev: *mut Links,
@@ -54,25 +48,26 @@ pub struct Dpc {
     routine: DpcRoutine,
     context: usize,
     importance: Importance,
-    /// Queue links. Valid while queued (and briefly during the
-    /// detach step of retirement).
+    /// Queue links. Valid while queued (and briefly during the detach step of retirement).
     links: Links,
     argument1: usize,
     argument2: usize,
-    /// Single-flight mark: set at insertion, cleared before the call
-    /// (or on removal). A second insert of a queued DPC is a no-op.
+    /// Single-flight mark: set at insertion, cleared before the call (or on removal). A second
+    /// insert of a queued DPC is a no-op.
     queued: AtomicBool,
 }
 
 impl Dpc {
-    /// A DPC that will call `routine` with `context`, at medium
-    /// importance, not queued.
+    /// A DPC that will call `routine` with `context`, at medium importance, not queued.
     pub const fn new(routine: DpcRoutine, context: usize) -> Self {
         Self {
             routine,
             context,
             importance: Importance::Medium,
-            links: Links { next: null_mut(), prev: null_mut() },
+            links: Links {
+                next: null_mut(),
+                prev: null_mut(),
+            },
             argument1: 0,
             argument2: 0,
             queued: AtomicBool::new(false),
@@ -95,8 +90,8 @@ pub struct DpcQueue {
     count: i32,
     last_count: i32,
     request_rate: i32,
-    /// The request-gate thresholds: a Low-importance DPC is requested
-    /// only once the queue is at least this deep...
+    /// The request-gate thresholds: a Low-importance DPC is requested only once the queue is at
+    /// least this deep...
     max_depth: i32,
     /// ...or the recent request rate has fallen under this.
     min_rate: i32,
@@ -112,7 +107,10 @@ impl DpcQueue {
     /// A zeroed queue; call [`DpcQueue::init`] before use.
     pub const fn zeroed() -> Self {
         Self {
-            head: Links { next: null_mut(), prev: null_mut() },
+            head: Links {
+                next: null_mut(),
+                prev: null_mut(),
+            },
             depth: 0,
             count: 0,
             last_count: 0,
@@ -163,9 +161,8 @@ impl DpcQueue {
         self.request_rate
     }
 
-    /// Enqueue `dpc` with the given arguments. Returns whether it was
-    /// queued: an already-queued DPC is left alone (its first
-    /// insertion's arguments stand).
+    /// Enqueue `dpc` with the given arguments. Returns whether it was queued: an already-queued DPC
+    /// is left alone (its first insertion's arguments stand).
     pub fn insert(
         &mut self,
         dpc: &mut Dpc,
@@ -176,14 +173,14 @@ impl DpcQueue {
         let previous = irql.raise(HIGH);
         let was_queued = dpc.queued.swap(true, Ordering::SeqCst);
         let inserted = if !was_queued {
-            // Freshly claimed: store the arguments, link, and ask for
-            // a dispatch interrupt if the gate is open.
+            // Freshly claimed: store the arguments, link, and ask for a dispatch interrupt if the
+            // gate is open.
             self.count += 1;
             self.depth += 1;
             dpc.argument1 = argument1;
             dpc.argument2 = argument2;
-            // SAFETY: the sentinel is linked and the DPC is on no
-            // list (the flag just moved to true).
+            // SAFETY: the sentinel is linked and the DPC is on no list (the flag just moved to
+            // true).
             unsafe {
                 if dpc.importance == Importance::High {
                     link_after(addr_of_mut!(self.head), dpc);
@@ -215,8 +212,8 @@ impl DpcQueue {
         irql.mask_interrupts();
         let was_queued = dpc.queued.load(Ordering::SeqCst);
         if was_queued {
-            // The reference re-checks under its lock: the DPC may
-            // have been retired between the first read and here.
+            // The reference re-checks under its lock: the DPC may have been retired between the
+            // first read and here.
             if dpc.queued.load(Ordering::SeqCst) {
                 self.depth -= 1;
                 // SAFETY: the DPC is on this queue's list.
@@ -230,24 +227,20 @@ impl DpcQueue {
         was_queued
     }
 
-    /// Run every queued DPC. Contract: interrupts masked on entry,
-    /// masked on return; interrupts are enabled around each routine.
-    /// The caller holds the dispatch level.
+    /// Run every queued DPC. Contract: interrupts masked on entry, masked on return; interrupts are
+    /// enabled around each routine. The caller holds the dispatch level.
     pub fn retire(&mut self, irql: &mut IrqlState) {
         loop {
             self.routine_active = true;
 
-            // Detach the head and capture its call before clearing
-            // the inserted state.
-            // SAFETY: the list is non-empty (callers check) and the
-            // sentinel is linked.
+            // Detach the head and capture its call before clearing the inserted state.
+            // SAFETY: the list is non-empty (callers check) and the sentinel is linked.
             let dpc: &Dpc = unsafe { &*detach_head(self) };
             let routine = dpc.routine;
-            let (context, argument1, argument2) =
-                (dpc.context, dpc.argument1, dpc.argument2);
+            let (context, argument1, argument2) = (dpc.context, dpc.argument1, dpc.argument2);
 
-            // Clear the inserted state BEFORE the call, so the
-            // routine may re-enqueue this very DPC.
+            // Clear the inserted state BEFORE the call, so the routine may re-enqueue this very
+            // DPC.
             dpc.queued.store(false, Ordering::SeqCst);
             self.depth -= 1;
 
@@ -259,9 +252,8 @@ impl DpcQueue {
                 continue;
             }
 
-            // Only now, with the list empty, clear the drain state —
-            // and check one last time: an enqueue that arrived while
-            // the last routine was running must not be left behind.
+            // Only now, with the list empty, clear the drain state — and check one last time: an
+            // enqueue that arrived while the last routine was running must not be left behind.
             self.routine_active = false;
             self.interrupt_requested = false;
             if !self.is_empty() {
@@ -271,8 +263,8 @@ impl DpcQueue {
         }
     }
 
-    /// Fold the enqueue-count history into the request-rate average.
-    /// Called by the interval clock's full-tick accounting.
+    /// Fold the enqueue-count history into the request-rate average. Called by the interval clock's
+    /// full-tick accounting.
     pub fn update_request_rate(&mut self) {
         let current = self.count;
         let last = self.last_count;
@@ -283,10 +275,9 @@ impl DpcQueue {
 
 // --- The intrusive list ---------------------------------------------------
 //
-// Plain pointer surgery on the Dpc links: the queue's sentinel and
-// the DPCs form a circular doubly-linked list, which is what makes
-// removal of an arbitrary DPC (and head/tail insertion) constant
-// time with no allocation.
+// Plain pointer surgery on the Dpc links: the queue's sentinel and the DPCs form a circular
+// doubly-linked list, which is what makes removal of an arbitrary DPC (and head/tail insertion)
+// constant time with no allocation.
 
 /// `Dpc`'s links member, as a link pointer.
 fn links_of(dpc: *const Dpc) -> *mut Links {
@@ -297,8 +288,7 @@ fn links_of(dpc: *const Dpc) -> *mut Links {
 ///
 /// # Safety
 ///
-/// `anchor` is the sentinel or a link currently on this queue's
-/// list; `dpc` is on no list.
+/// `anchor` is the sentinel or a link currently on this queue's list; `dpc` is on no list.
 unsafe fn link_after(anchor: *mut Links, dpc: &mut Dpc) {
     let entry = links_of(dpc);
     let next = (*anchor).next;
@@ -339,9 +329,8 @@ unsafe fn unlink(dpc: &Dpc) {
 ///
 /// # Safety
 ///
-/// The queue is initialized and non-empty; the returned pointer's
-/// reference must not outlive the retire iteration (the next
-/// iteration or an insert may touch the DPC).
+/// The queue is initialized and non-empty; the returned pointer's reference must not outlive the
+/// retire iteration (the next iteration or an insert may touch the DPC).
 unsafe fn detach_head(queue: *mut DpcQueue) -> *const Dpc {
     let sentinel = addr_of_mut!((*queue).head);
     let entry = (*sentinel).next;
@@ -357,8 +346,8 @@ unsafe fn detach_head(queue: *mut DpcQueue) -> *const Dpc {
 #[cfg(target_arch = "x86")]
 static mut QUEUE: DpcQueue = DpcQueue::zeroed();
 
-/// Initialize the kernel queue at boot. The request-gate thresholds:
-/// a Low-importance DPC is requested once four are queued.
+/// Initialize the kernel queue at boot. The request-gate thresholds: a Low-importance DPC is
+/// requested once four are queued.
 ///
 /// # Safety
 ///
@@ -372,17 +361,21 @@ pub unsafe fn init() {
 /// Enqueue a DPC on the kernel queue (see [`DpcQueue::insert`]).
 #[cfg(target_arch = "x86")]
 pub fn enqueue(dpc: &mut Dpc, argument1: usize, argument2: usize) -> bool {
-    // SAFETY: single CPU; the queue and the level state are kernel
-    // statics whose accessors run serialized by the level discipline.
+    // SAFETY: single CPU; the queue and the level state are kernel statics whose accessors run
+    // serialized by the level discipline.
     unsafe {
-        (*addr_of_mut!(QUEUE)).insert(dpc, argument1, argument2, crate::interrupt::irql::state_mut())
+        (*addr_of_mut!(QUEUE)).insert(
+            dpc,
+            argument1,
+            argument2,
+            crate::interrupt::irql::state_mut(),
+        )
     }
 }
 
-/// Drain the kernel queue at the dispatch level: the shared body of
-/// the two retirement entries — the hardware-interrupt exit and the
-/// idle loop. The routine-active flag keeps a drain started from one
-/// entry from double-draining into the other.
+/// Drain the kernel queue at the dispatch level: the shared body of the two retirement entries —
+/// the hardware-interrupt exit and the idle loop. The routine-active flag keeps a drain started
+/// from one entry from double-draining into the other.
 #[cfg(target_arch = "x86")]
 pub fn drain() {
     // SAFETY: as above.
@@ -398,16 +391,14 @@ pub fn drain() {
     }
 }
 
-/// Whether the kernel queue has work pending (target helper for the
-/// interrupt audit).
+/// Whether the kernel queue has work pending (target helper for the interrupt audit).
 #[cfg(target_arch = "x86")]
 pub fn has_pending() -> bool {
     // SAFETY: read-only access.
     unsafe { !(*addr_of_mut!(QUEUE)).is_empty() }
 }
 
-/// The kernel queue (target helper for the clock's runtime
-/// accounting).
+/// The kernel queue (target helper for the clock's runtime accounting).
 ///
 /// # Safety (target)
 ///
@@ -420,9 +411,10 @@ pub(crate) fn queue_mut() -> &'static mut DpcQueue {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+
     use super::*;
     use crate::interrupt::irql::DISPATCH;
-    use std::cell::Cell;
 
     fn fresh() -> (DpcQueue, IrqlState) {
         let mut queue = DpcQueue::zeroed();
@@ -430,8 +422,8 @@ mod tests {
         (queue, IrqlState::new())
     }
 
-    /// Records, per call: (argument1, was-still-queued,
-    /// interrupts-were-enabled, routine-was-active).
+    /// Records, per call: (argument1, was-still-queued, interrupts-were-enabled,
+    /// routine-was-active).
     #[derive(Default)]
     struct Rec {
         calls: std::cell::RefCell<Vec<(usize, bool, bool, bool)>>,
@@ -449,22 +441,16 @@ mod tests {
         }
     }
 
-    // The retire path must be reachable from the routines for the
-    // mid-drain enqueue tests — through raw pointers, mirroring how
-    // the kernel's ISRs reach the statics.
+    // The retire path must be reachable from the routines for the mid-drain enqueue tests — through
+    // raw pointers, mirroring how the kernel's ISRs reach the statics.
     thread_local! {
         static TEST_QUEUE: Cell<*mut DpcQueue> = const { Cell::new(core::ptr::null_mut()) };
         static TEST_IRQL: Cell<*mut IrqlState> = const { Cell::new(core::ptr::null_mut()) };
         static FOLLOW_REC: Cell<*const Rec> = const { Cell::new(core::ptr::null()) };
     }
 
-    /// Bind the thread-locals, run `body` with the queue and level
-    /// state, then unbind.
-    fn with_queue(
-        max_depth: i32,
-        min_rate: i32,
-        body: impl FnOnce(&mut DpcQueue, &mut IrqlState),
-    ) {
+    /// Bind the thread-locals, run `body` with the queue and level state, then unbind.
+    fn with_queue(max_depth: i32, min_rate: i32, body: impl FnOnce(&mut DpcQueue, &mut IrqlState)) {
         let mut queue = DpcQueue::zeroed();
         queue.init(max_depth, min_rate);
         let mut irql = IrqlState::new();
@@ -486,8 +472,8 @@ mod tests {
         Dpc::new(Rec::routine, std::rc::Rc::as_ptr(rec) as usize)
     }
 
-    /// A fresh DPC carries the routine and context, defaults to
-    /// medium importance, and is not queued.
+    /// A fresh DPC carries the routine and context, defaults to medium importance, and is not
+    /// queued.
     #[test]
     fn fresh_dpc_defaults() {
         let (_, dpc) = recording_dpc(0);
@@ -497,8 +483,8 @@ mod tests {
         assert_eq!(dpc.argument2, 0);
     }
 
-    /// A fresh insert queues, stores the arguments, bumps the depth,
-    /// keeps FIFO order, and puts a High-importance DPC at the head.
+    /// A fresh insert queues, stores the arguments, bumps the depth, keeps FIFO order, and puts a
+    /// High-importance DPC at the head.
     #[test]
     fn fresh_inserts_store_arguments_and_order() {
         with_queue(4, 0, |queue, irql| {
@@ -517,18 +503,22 @@ mod tests {
             queue.retire(irql);
             irql.lower(crate::interrupt::irql::PASSIVE);
 
-            // High importance ran first; the rest in FIFO order, each
-            // with its insertion-time arguments, in true call order.
-            let order: Vec<usize> =
-                rec.calls.take().into_iter().map(|(arg, _, _, _)| arg).collect();
+            // High importance ran first; the rest in FIFO order, each with its insertion-time
+            // arguments, in true call order.
+            let order: Vec<usize> = rec
+                .calls
+                .take()
+                .into_iter()
+                .map(|(arg, _, _, _)| arg)
+                .collect();
             assert_eq!(order, vec![30, 10, 20]);
             assert!(queue.is_empty());
             assert_eq!(queue.depth(), 0);
         });
     }
 
-    /// Re-inserting a queued DPC is a no-op: the second insert
-    /// returns false and the first insertion's arguments stand.
+    /// Re-inserting a queued DPC is a no-op: the second insert returns false and the first
+    /// insertion's arguments stand.
     #[test]
     fn reinserting_a_queued_dpc_is_a_no_op() {
         with_queue(4, 0, |queue, irql| {
@@ -544,9 +534,8 @@ mod tests {
         });
     }
 
-    /// Remove dequeues a queued DPC (and reports it); removing an
-    /// idle one reports false; a double remove reports false the
-    /// second time.
+    /// Remove dequeues a queued DPC (and reports it); removing an idle one reports false; a double
+    /// remove reports false the second time.
     #[test]
     fn remove_returns_whether_the_dpc_was_queued() {
         with_queue(4, 0, |queue, irql| {
@@ -569,9 +558,8 @@ mod tests {
         });
     }
 
-    /// The dispatch-request gate, as a decision table: nothing is
-    /// requested while a routine is active or a request is already
-    /// outstanding; otherwise a Medium/High DPC (or a Low one past
+    /// The dispatch-request gate, as a decision table: nothing is requested while a routine is
+    /// active or a request is already outstanding; otherwise a Medium/High DPC (or a Low one past
     /// the depth threshold) requests.
     #[test]
     fn the_request_gate_decision_table() {
@@ -600,8 +588,7 @@ mod tests {
             assert!(queue.interrupt_requested());
         });
 
-        // Clear, Low importance, depth under the threshold and rate
-        // at the floor: not requested...
+        // Clear, Low importance, depth under the threshold and rate at the floor: not requested...
         with_queue(4, 0, |queue, irql| {
             let (_, mut dpc) = recording_dpc(1);
             dpc.set_importance(Importance::Low);
@@ -632,8 +619,7 @@ mod tests {
             assert_eq!(queue.dispatch_requests(), 1);
         });
 
-        // Rate-driven: a Low DPC requests once the recent rate has
-        // fallen under the floor.
+        // Rate-driven: a Low DPC requests once the recent rate has fallen under the floor.
         with_queue(4, 1, |queue, irql| {
             queue.request_rate = 0;
             let (_, mut dpc) = recording_dpc(1);
@@ -643,10 +629,9 @@ mod tests {
         });
     }
 
-    /// Retire discipline: the inserted state is cleared before the
-    /// call, interrupts are enabled around the routine, the
-    /// routine-active flag is set for the whole pass and cleared
-    /// only when the queue empties.
+    /// Retire discipline: the inserted state is cleared before the call, interrupts are enabled
+    /// around the routine, the routine-active flag is set for the whole pass and cleared only when
+    /// the queue empties.
     #[test]
     fn retire_clears_state_before_the_call_and_enables_interrupts() {
         with_queue(4, 0, |queue, irql| {
@@ -658,17 +643,25 @@ mod tests {
 
             let calls = rec.calls.take();
             assert_eq!(calls.len(), 1);
-            assert_eq!(calls[0].1, false, "inserted state must be cleared before the call");
-            assert_eq!(calls[0].2, true, "interrupts must be enabled around the routine");
-            assert_eq!(calls[0].3, true, "routine-active must be set during the pass");
+            assert_eq!(
+                calls[0].1, false,
+                "inserted state must be cleared before the call"
+            );
+            assert_eq!(
+                calls[0].2, true,
+                "interrupts must be enabled around the routine"
+            );
+            assert_eq!(
+                calls[0].3, true,
+                "routine-active must be set during the pass"
+            );
             assert!(!queue.routine_active());
             assert!(!queue.interrupt_requested());
         });
     }
 
-    /// The race-close invariant: a DPC enqueued from inside a retire
-    /// routine (while the queue "looked" empty) is not lost — the
-    /// same retire pass drains it.
+    /// The race-close invariant: a DPC enqueued from inside a retire routine (while the queue
+    /// "looked" empty) is not lost — the same retire pass drains it.
     #[test]
     fn a_mid_retire_enqueue_is_not_lost() {
         with_queue(4, 0, |queue, irql| {
@@ -679,20 +672,22 @@ mod tests {
             queue.retire(irql);
             irql.lower(crate::interrupt::irql::PASSIVE);
 
-            // dpc1's routine enqueued the follow-up DPC while the
-            // queue was otherwise empty; the same pass must have
-            // drained it.
+            // dpc1's routine enqueued the follow-up DPC while the queue was otherwise empty; the
+            // same pass must have drained it.
             let follow_calls = FOLLOW_REC.with(|f| unsafe { (*f.get()).calls.take() });
-            assert_eq!(follow_calls.len(), 1, "the mid-drain enqueue must not be lost");
+            assert_eq!(
+                follow_calls.len(),
+                1,
+                "the mid-drain enqueue must not be lost"
+            );
             assert_eq!(follow_calls[0].0, 7, "the follow-up ran with its arguments");
             assert!(queue.is_empty());
             assert!(!queue.routine_active());
         });
     }
 
-    /// The chained routine: enqueues the follow-up DPC (leaked, so it
-    /// outlives the pass) and records that the active flag blocks a
-    /// new dispatch request mid-drain.
+    /// The chained routine: enqueues the follow-up DPC (leaked, so it outlives the pass) and
+    /// records that the active flag blocks a new dispatch request mid-drain.
     fn chained_routine(_dpc: &Dpc, _context: usize, _a1: usize, _a2: usize) {
         let rec: &'static Rec = Box::leak(Box::new(Rec::default()));
         let follow: &'static mut Dpc =
@@ -703,16 +698,14 @@ mod tests {
             let irql = TEST_IRQL.with(|i| unsafe { &mut *i.get() });
             follow.set_importance(Importance::Low);
             assert!(queue.insert(follow, 7, 0, irql));
-            // Mid-drain: no NEW dispatch request is issued (the
-            // first DPC's request is still outstanding, which is
-            // exactly why the gate stays closed).
+            // Mid-drain: no NEW dispatch request is issued (the first DPC's request is still
+            // outstanding, which is exactly why the gate stays closed).
             assert_eq!(queue.dispatch_requests(), 1);
         });
     }
 
-    /// Both retirement entries drain without double-draining: after
-    /// the first drain the queue is empty and the second entry is a
-    /// no-op.
+    /// Both retirement entries drain without double-draining: after the first drain the queue is
+    /// empty and the second entry is a no-op.
     #[test]
     fn both_retirement_entries_drain_once() {
         with_queue(4, 0, |queue, irql| {

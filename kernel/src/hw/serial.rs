@@ -16,18 +16,18 @@ pub fn init() {
     unsafe {
         // Disable interrupts
         write_byte(COM1 + 1, 0x00);
-        
+
         // Set baud rate divisor to 3 (38400 baud for 1.8432 MHz clock)
         write_byte(COM1 + 3, 0x80); // Set DLAB (bit 7)
         write_byte(COM1 + 0, 0x03); // Low byte of divisor
         write_byte(COM1 + 1, 0x00); // High byte of divisor
-        
+
         // 8 bits, no parity, one stop bit
         write_byte(COM1 + 3, 0x03);
-        
+
         // Enable FIFO, clear them
         write_byte(COM1 + 2, 0xC7);
-        
+
         // Mark data terminal ready and request to send
         write_byte(COM1 + 4, 0x0B);
     }
@@ -35,8 +35,8 @@ pub fn init() {
 
 /// Write a byte to an I/O port.
 ///
-/// The UART lives in x86 I/O port space, which is only reachable with the
-/// `in`/`out` instructions. A volatile pointer write to 0x3F8 would hit RAM.
+/// The UART lives in x86 I/O port space, which is only reachable with the `in`/`out` instructions.
+/// A volatile pointer write to 0x3F8 would hit RAM.
 #[cfg(target_arch = "x86")]
 unsafe fn write_byte(port: u16, byte: u8) {
     asm!("out dx, al", in("dx") port, in("al") byte, options(nomem, nostack, preserves_flags));

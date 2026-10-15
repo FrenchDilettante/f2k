@@ -1,9 +1,7 @@
-//! Kernel heap: a fixed-pool allocator for loader and runtime
-//! structures.
+//! Kernel heap: a fixed-pool allocator for loader and runtime structures.
 //!
-//! Design: one static pool, blocks carved from a doubly-linked free
-//! list, first fit. Block layout (offsets from the pool base, all
-//! sizes multiples of 8):
+//! Design: one static pool, blocks carved from a doubly-linked free list, first fit. Block layout
+//! (offsets from the pool base, all sizes multiples of 8):
 //!
 //! ```text
 //! off + 0  payload size (u32)   off + 4  free flag (u32)
@@ -11,15 +9,12 @@
 //! off + 8 + size  payload size copy (u32) + padding (u32)
 //! ```
 //!
-//! The trailing size copy lets a freed block merge with its
-//! predecessor. Free blocks keep the free-list links in their payload
-//! (`next` then `prev`, pool offsets). No coalescing metadata beyond
-//! that; the whole pool is one block chain, which [`KernelHeap::audit`]
-//! can walk and check.
+//! The trailing size copy lets a freed block merge with its predecessor. Free blocks keep the
+//! free-list links in their payload (`next` then `prev`, pool offsets). No coalescing metadata
+//! beyond that; the whole pool is one block chain, which [`KernelHeap::audit`] can walk and check.
 //!
-//! This is an independent, deliberately small design (the executive's
-//! tagged pools are a much larger machine, ported separately when the
-//! compatibility layer needs them).
+//! This is an independent, deliberately small design (the executive's tagged pools are a much
+//! larger machine, ported separately when the compatibility layer needs them).
 
 use core::alloc::Layout;
 use core::ptr::NonNull;
@@ -35,8 +30,8 @@ const MIN_SPLIT: usize = HEADER_SIZE + MIN_PAYLOAD + FOOTER_SIZE;
 /// Pool offset meaning "no link".
 const NONE: u32 = u32::MAX;
 
-/// A fixed-pool heap. The pool is borrowed for the heap's lifetime;
-/// the kernel supplies a static array, tests leak a boxed slice.
+/// A fixed-pool heap. The pool is borrowed for the heap's lifetime; the kernel supplies a static
+/// array, tests leak a boxed slice.
 pub struct KernelHeap {
     pool: &'static mut [u8],
     free_head: Option<u32>,
@@ -45,12 +40,17 @@ pub struct KernelHeap {
 impl KernelHeap {
     /// Build a heap over `pool` (one big free block).
     ///
-    /// The pool must be 8-byte aligned (the boot pool's type
-    /// guarantees it) and its length a
+    /// The pool must be 8-byte aligned (the boot pool's type guarantees it) and its length a
     /// positive multiple of 8.
     pub fn new(pool: &'static mut [u8]) -> Self {
-        assert!(pool.len().is_multiple_of(8), "pool length must be a multiple of 8");
-        assert!(pool.len() >= HEADER_SIZE + MIN_PAYLOAD + FOOTER_SIZE, "pool too small");
+        assert!(
+            pool.len().is_multiple_of(8),
+            "pool length must be a multiple of 8"
+        );
+        assert!(
+            pool.len() >= HEADER_SIZE + MIN_PAYLOAD + FOOTER_SIZE,
+            "pool too small"
+        );
         let payload = (pool.len() - HEADER_SIZE - FOOTER_SIZE) as u32;
         let mut heap = KernelHeap {
             pool,
@@ -66,8 +66,8 @@ impl KernelHeap {
     // Raw field access. Offsets are 4-byte aligned by construction.
 
     fn rd(&self, off: usize) -> u32 {
-        // SAFETY: callers only pass offsets inside the pool, computed
-        // from block boundaries; reads are unaligned-tolerant.
+        // SAFETY: callers only pass offsets inside the pool, computed from block boundaries; reads
+        // are unaligned-tolerant.
         unsafe { (self.pool.as_ptr().add(off) as *const u32).read_unaligned() }
     }
 
@@ -98,7 +98,10 @@ impl KernelHeap {
 
     /// Free-list links, kept in the block payload.
     fn links(&self, off: u32) -> (u32, u32) {
-        (self.rd(off as usize + HEADER_SIZE), self.rd(off as usize + HEADER_SIZE + 4))
+        (
+            self.rd(off as usize + HEADER_SIZE),
+            self.rd(off as usize + HEADER_SIZE + 4),
+        )
     }
 
     fn link(&mut self, off: u32, next: u32, prev: u32) {
@@ -138,9 +141,8 @@ impl KernelHeap {
 
     /// Allocate `layout` bytes (alignment must be at most 8).
     ///
-    /// First fit; a block larger than needed is split when the
-    /// remainder can hold a minimal block. Returns `None` when no
-    /// block fits.
+    /// First fit; a block larger than needed is split when the remainder can hold a minimal block.
+    /// Returns `None` when no block fits.
     pub fn alloc(&mut self, layout: Layout) -> Option<NonNull<u8>> {
         assert!(layout.align() <= 8, "kernel heap aligns to at most 8 bytes");
         let size = layout.size().max(MIN_PAYLOAD).next_multiple_of(8) as u32;
@@ -163,8 +165,8 @@ impl KernelHeap {
         let payload = self.size(cur);
         let remainder = payload - size;
         if remainder >= MIN_SPLIT as u32 {
-            // Split: the allocated block takes the front, the
-            // remainder stays in the free list in the same position.
+            // Split: the allocated block takes the front, the remainder stays in the free list in
+            // the same position.
             let rest = cur + (HEADER_SIZE + FOOTER_SIZE) as u32 + size;
             let rest_payload = payload - size - (HEADER_SIZE + FOOTER_SIZE) as u32;
             let (next, prev_l) = self.links(cur);
@@ -184,8 +186,8 @@ impl KernelHeap {
             self.write_block(cur, payload, false);
         }
 
-        // SAFETY: the payload lies inside the pool and is 8-byte
-        // aligned (block starts and sizes are multiples of 8).
+        // SAFETY: the payload lies inside the pool and is 8-byte aligned (block starts and sizes
+        // are multiples of 8).
         Some(unsafe {
             NonNull::new_unchecked(self.pool.as_mut_ptr().add(cur as usize + HEADER_SIZE))
         })
@@ -193,8 +195,8 @@ impl KernelHeap {
 
     /// Free an allocation returned by [`KernelHeap::alloc`].
     ///
-    /// Merges with the adjacent blocks when they are free. Panics on
-    /// a pointer that is not a live allocation head.
+    /// Merges with the adjacent blocks when they are free. Panics on a pointer that is not a live
+    /// allocation head.
     pub fn dealloc(&mut self, ptr: NonNull<u8>) {
         let base = self.pool.as_ptr() as usize;
         let payload = ptr.as_ptr() as usize;
@@ -215,8 +217,8 @@ impl KernelHeap {
             payload_size += (HEADER_SIZE + FOOTER_SIZE) as u32 + next_size;
         }
 
-        // Merge with the previous block when it is free (the footer
-        // right before our header carries its payload size).
+        // Merge with the previous block when it is free (the footer right before our header carries
+        // its payload size).
         let mut off = off;
         if off > 0 {
             let prev_size = self.rd(off as usize - FOOTER_SIZE);
@@ -237,9 +239,8 @@ impl KernelHeap {
 
     /// Check the heap's invariants. Returns `Ok(())` when they hold.
     ///
-    /// Walks the whole block chain and checks: headers and footers
-    /// agree, the chain exactly covers the pool, every free block is
-    /// on the free list exactly once, and the list links are mutual.
+    /// Walks the whole block chain and checks: headers and footers agree, the chain exactly covers
+    /// the pool, every free block is on the free list exactly once, and the list links are mutual.
     pub fn audit(&self) -> Result<(), HeapError> {
         // The block chain must tile the pool exactly.
         let mut off = 0usize;
@@ -268,8 +269,7 @@ impl KernelHeap {
             return Err(HeapError::ChainDoesNotCoverPool);
         }
 
-        // The free list holds exactly the free blocks, once each, with
-        // mutual links.
+        // The free list holds exactly the free blocks, once each, with mutual links.
         let mut cur = self.free_head.unwrap_or(NONE);
         let mut prev = NONE;
         let mut listed = 0usize;
@@ -298,8 +298,7 @@ impl KernelHeap {
     }
 }
 
-/// Ways the heap can be internally inconsistent; reported by
-/// [`KernelHeap::audit`].
+/// Ways the heap can be internally inconsistent; reported by [`KernelHeap::audit`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HeapError {
     /// A block header or footer lies outside the pool.
@@ -332,7 +331,8 @@ mod tests {
     }
 
     fn alloc(heap: &mut KernelHeap, size: usize) -> NonNull<u8> {
-        heap.alloc(Layout::from_size_align(size, 8).unwrap()).unwrap()
+        heap.alloc(Layout::from_size_align(size, 8).unwrap())
+            .unwrap()
     }
 
     #[test]
@@ -379,9 +379,8 @@ mod tests {
         heap.dealloc(a);
         heap.dealloc(b);
         assert_eq!(heap.audit(), Ok(()));
-        // The merged hole fits a + b plus both headers: allocate it
-        // exactly (224 payload), so no split remainder sits between
-        // the hole and c and the next merge starts at c.
+        // The merged hole fits a + b plus both headers: allocate it exactly (224 payload), so no
+        // split remainder sits between the hole and c and the next merge starts at c.
         let big = alloc(&mut heap, 224);
         assert_eq!(a.as_ptr(), big.as_ptr());
 
@@ -401,8 +400,7 @@ mod tests {
         assert_eq!(heap.alloc(Layout::from_size_align(POOL, 8).unwrap()), None);
         heap.dealloc(big);
 
-        // A small allocation splits the big free block; the remainder
-        // still serves the rest.
+        // A small allocation splits the big free block; the remainder still serves the rest.
         let small = alloc(&mut heap, 32);
         let rest = alloc(&mut heap, POOL - 256);
         assert_ne!(small.as_ptr(), rest.as_ptr());
@@ -426,7 +424,9 @@ mod tests {
             heap.dealloc(p);
         }
         assert_eq!(heap.audit(), Ok(()));
-        assert!(heap.alloc(Layout::from_size_align(POOL - 64, 8).unwrap()).is_some());
+        assert!(heap
+            .alloc(Layout::from_size_align(POOL - 64, 8).unwrap())
+            .is_some());
     }
 
     #[test]

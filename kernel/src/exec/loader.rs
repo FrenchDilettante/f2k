@@ -1,61 +1,54 @@
 //! Kernel-side image loader: run a PE32 file as the user process.
 //!
-//! [`run_image`] parses, stages the in-memory image, snaps the IAT
-//! against the kernel-synthesized kernel32, maps the pages with their
-//! final protections, and enters ring 3 at the entry point.
+//! [`run_image`] parses, stages the in-memory image, snaps the IAT against the kernel-synthesized
+//! kernel32, maps the pages with their final protections, and enters ring 3 at the entry point.
 //!
-//! Quirk: the image is built in a staging buffer — a borrowed static,
-//! not a stack frame — because the loader runs on the small boot
-//! stack. The snap happens in staging, before mapping: mapped pages
-//! carry their final protection and ring-0 writes must not touch them.
+//! Quirk: the image is built in a staging buffer — a borrowed static, not a stack frame — because
+//! the loader runs on the small boot stack. The snap happens in staging, before mapping: mapped
+//! pages carry their final protection and ring-0 writes must not touch them.
 
 use crate::exec::pe::{self, Image};
 
 /// The first corpus fixture: no CRT, one import (`ExitProcess`).
 pub const EXIT0: &[u8] = include_bytes!("../../../tests/exit0/exit0.exe");
 
-/// The second corpus fixture: full CRT startup, 35 KERNEL32.dll
-/// imports (run with the `run-ret0` feature).
+/// The second corpus fixture: full CRT startup, 35 KERNEL32.dll imports (run with the `run-ret0`
+/// feature).
 pub const RET0: &[u8] = include_bytes!("../../../tests/ret0/ret0.exe");
 
-/// The console fixture: the ret0 CRT startup plus printf to stdout,
-/// 40 KERNEL32.dll imports (run with the `run-hello` feature).
+/// The console fixture: the ret0 CRT startup plus printf to stdout, 40 KERNEL32.dll imports (run
+/// with the `run-hello` feature).
 #[cfg(feature = "run-hello")]
 pub const HELLO: &[u8] = include_bytes!("../../../tests/hello/hello.exe");
 
-/// The blocking-wait smoke fixture: two auto-reset events and a
-/// child thread alternate strictly for five turns (embedded for
-/// the `run-pingpong` feature).
+/// The blocking-wait smoke fixture: two auto-reset events and a child thread alternate strictly for
+/// five turns (embedded for the `run-pingpong` feature).
 #[cfg(feature = "run-pingpong")]
 pub const PINGPONG: &[u8] = include_bytes!("../../../tests/pingpong/pingpong.exe");
 
-/// The timer smoke fixture: Sleep and a timed wait report their
-/// spans through GetTickCount (embedded for the `run-sleep`
-/// feature).
+/// The timer smoke fixture: Sleep and a timed wait report their spans through GetTickCount
+/// (embedded for the `run-sleep` feature).
 #[cfg(feature = "run-sleep")]
 pub const SLEEP: &[u8] = include_bytes!("../../../tests/sleep/sleep.exe");
 
-/// The preemption smoke fixture: same-priority spinners alternate
-/// at quantum ends and a raised thread runs uninterrupted
-/// (embedded for the `run-spin` feature).
+/// The preemption smoke fixture: same-priority spinners alternate at quantum ends and a raised
+/// thread runs uninterrupted (embedded for the `run-spin` feature).
 #[cfg(feature = "run-spin")]
 pub const SPIN: &[u8] = include_bytes!("../../../tests/spin/spin.exe");
 
-/// The fresh-memory fixture: no CRT, one import; its `.bss` is all
-/// zero on a fresh process and the double run in the suite proves
-/// teardown re-zeroes frames (embedded for the `run-process-suite`
+/// The fresh-memory fixture: no CRT, one import; its `.bss` is all zero on a fresh process and the
+/// double run in the suite proves teardown re-zeroes frames (embedded for the `run-process-suite`
 /// feature).
 #[cfg(feature = "run-process-suite")]
 pub const BSSCHECK: &[u8] = include_bytes!("../../../tests/bsscheck/bsscheck.exe");
 
-/// The fault-containment fixture: no imports at all, faults through
-/// the NULL page as its first act (embedded for the
-/// `run-process-suite` feature).
+/// The fault-containment fixture: no imports at all, faults through the NULL page as its first act
+/// (embedded for the `run-process-suite` feature).
 #[cfg(feature = "run-process-suite")]
 pub const CRASH: &[u8] = include_bytes!("../../../tests/crash/crash.exe");
 
-/// The staging buffer size: the largest image the loader accepts
-/// (the corpus's biggest fixture is 0x8000).
+/// The staging buffer size: the largest image the loader accepts (the corpus's biggest fixture is
+/// 0x8000).
 const STAGING_SIZE: usize = 0x8000;
 
 /// Staging for the in-memory image (see the module doc).
@@ -63,9 +56,8 @@ const STAGING_SIZE: usize = 0x8000;
 static mut IMAGE_STAGING: crate::mem::paging::Aligned<[u8; STAGING_SIZE]> =
     crate::mem::paging::Aligned([0; STAGING_SIZE]);
 
-/// A page's write permission: writable when any section in it is
-/// writable (shared pages combine protections); uncovered pages (the
-/// header page) are read-only.
+/// A page's write permission: writable when any section in it is writable (shared pages combine
+/// protections); uncovered pages (the header page) are read-only.
 fn page_writable(image: &Image, page_rva: u32) -> bool {
     let start = page_rva;
     let end = page_rva + crate::mem::paging::PAGE_SIZE;
@@ -77,15 +69,14 @@ fn page_writable(image: &Image, page_rva: u32) -> bool {
     })
 }
 
-/// Load `file` as the user process and enter ring 3 at its entry
-/// point; `name` stages the parameters page. Never returns.
+/// Load `file` as the user process and enter ring 3 at its entry point; `name` stages the
+/// parameters page. Never returns.
 #[cfg(target_arch = "x86")]
 pub fn run_image(file: &[u8], name: &'static str) -> ! {
     use crate::mem::paging::{self, PAGE_SIZE};
     use crate::user::{TEB_PAGE, USER_STACK_LOW_PAGE, USER_STACK_PAGE, USER_STACK_TOP};
 
-    // Identity question: bytes this loader does not accept are
-    // reported, not panicked on.
+    // Identity question: bytes this loader does not accept are reported, not panicked on.
     let image = match Image::parse(file) {
         Ok(image) => image,
         Err(reject) => {
@@ -100,8 +91,8 @@ pub fn run_image(file: &[u8], name: &'static str) -> ! {
         STAGING_SIZE
     );
 
-    // Zero the staging explicitly: gaps the image does not describe
-    // must read as zero, not stale staging bytes.
+    // Zero the staging explicitly: gaps the image does not describe must read as zero, not stale
+    // staging bytes.
     // SAFETY: single-threaded boot, the only staging user.
     let staging = unsafe {
         let buffer = &mut *core::ptr::addr_of_mut!(IMAGE_STAGING);
@@ -110,21 +101,24 @@ pub fn run_image(file: &[u8], name: &'static str) -> ! {
     staging.fill(0);
     image.map_into(file, staging);
 
-    // The process's own state, all in one place: a fresh address space
-    // (kernel half inherited, active on CR3), a fresh ring-0 gate
-    // stack (mapped supervisor-only with its guard page, installed as
-    // the TSS esp0), and fresh heap bookkeeping. Every mapping below
-    // (thunk page, image, stack, TEB, params) lands in this process's
-    // directory and its services see this process's heap.
+    // The process's own state, all in one place: a fresh address space (kernel half inherited,
+    // active on CR3), a fresh ring-0 gate stack (mapped supervisor-only with its guard page,
+    // installed as the TSS esp0), and fresh heap bookkeeping. Every mapping below (thunk page,
+    // image, stack, TEB, params) lands in this process's directory and its services see this
+    // process's heap.
     crate::process::Process::start(name);
 
-    // The thunks must be mapped before the snap: IAT slots receive
-    // user-space addresses.
+    // The thunks must be mapped before the snap: IAT slots receive user-space addresses.
     crate::compat::kernel32::init();
-    let snap = image.snap_imports(file, staging, crate::compat::kernel32::MODULE_NAME, crate::compat::kernel32::resolve);
+    let snap = image.snap_imports(
+        file,
+        staging,
+        crate::compat::kernel32::MODULE_NAME,
+        crate::compat::kernel32::resolve,
+    );
 
-    // Map the staged image at the fixed base, one frame per page,
-    // writable exactly where a mapped section is writable.
+    // Map the staged image at the fixed base, one frame per page, writable exactly where a mapped
+    // section is writable.
     let pages = image.size_of_image.div_ceil(PAGE_SIZE);
     for page in 0..pages {
         let offset = (page * PAGE_SIZE) as usize;
@@ -164,18 +158,16 @@ pub fn run_image(file: &[u8], name: &'static str) -> ! {
         image.entry_va(),
         USER_STACK_TOP
     );
-    // The entry: the thread-ified boot for the smokes (the main
-    // thread enters through the scheduler's first switch), the
-    // direct ring-3 entry for every other boot.
+    // The entry: the thread-ified boot for the smokes (the main thread enters through the
+    // scheduler's first switch), the direct ring-3 entry for every other boot.
     #[cfg(any(feature = "run-pingpong", feature = "run-sleep", feature = "run-spin"))]
     {
         crate::process::threads::enter_as_main_thread(image.entry_va(), USER_STACK_TOP)
     }
     #[cfg(not(any(feature = "run-pingpong", feature = "run-sleep", feature = "run-spin")))]
     {
-        // SAFETY: image, stack, TEB and thunk pages are mapped with
-        // their final protections; the gate is DPL 3; the TSS carries
-        // the ring-0 stack.
+        // SAFETY: image, stack, TEB and thunk pages are mapped with their final protections; the
+        // gate is DPL 3; the TSS carries the ring-0 stack.
         unsafe { crate::user::enter_ring3(image.entry_va(), USER_STACK_TOP) }
     }
 }
@@ -231,8 +223,7 @@ mod tests {
         assert_eq!(writable, vec![0x5000 / PAGE_SIZE]);
     }
 
-    /// Uncovered pages (the header) are read-only; only .data's own
-    /// page is writable.
+    /// Uncovered pages (the header) are read-only; only .data's own page is writable.
     #[test]
     fn page_protection_rules() {
         let ret0 = Image::parse(RET0).expect("ret0 parses");

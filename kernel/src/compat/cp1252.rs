@@ -1,14 +1,14 @@
 //! Codepage 1252 replay data and conversions.
 //!
-//! The CRT's locale services answer from this single-byte codepage's
-//! tables. The byte-to-Unicode table is the shipped `c_1252` data:
-//! identity except 27 bytes in 0x80-0x9F. The reverse direction is its
-//! own inverse (every entry maps back), so no second table is kept.
+//! The CRT's locale services answer from this single-byte codepage's tables. The byte-to-Unicode
+//! table is the shipped `c_1252` data: identity except 27 bytes in 0x80-0x9F. The reverse direction
+//! is its own inverse (every entry maps back), so no second table is kept.
 
 /// The codepage's default character for unmapped code points.
 pub const DEFAULT_CHAR: u8 = b'?';
 
 /// Byte-to-Unicode for all 256 bytes.
+#[rustfmt::skip]
 pub const MB_TO_WC: [u16; 256] = [
     0x0000, 0x0001, 0x0002, 0x0003, 0x0004, 0x0005, 0x0006, 0x0007,
     0x0008, 0x0009, 0x000A, 0x000B, 0x000C, 0x000D, 0x000E, 0x000F,
@@ -44,8 +44,8 @@ pub const MB_TO_WC: [u16; 256] = [
     0x00F8, 0x00F9, 0x00FA, 0x00FB, 0x00FC, 0x00FD, 0x00FE, 0x00FF,
 ];
 
-/// Unicode-to-byte: the inverse of [`MB_TO_WC`] (the table is
-/// injective). Unmapped code points map to [`DEFAULT_CHAR`].
+/// Unicode-to-byte: the inverse of [`MB_TO_WC`] (the table is injective). Unmapped code points map
+/// to [`DEFAULT_CHAR`].
 pub fn wc_to_mb(wide: u16) -> u8 {
     for (byte, &mapped) in MB_TO_WC.iter().enumerate() {
         if mapped == wide {
@@ -55,8 +55,7 @@ pub fn wc_to_mb(wide: u16) -> u8 {
     DEFAULT_CHAR
 }
 
-/// The C1_* character-type bits GetStringTypeW reports
-/// (CT_CTYPE1, dwInfoType 1).
+/// The C1_* character-type bits GetStringTypeW reports (CT_CTYPE1, dwInfoType 1).
 pub const C1_UPPER: u16 = 0x0001;
 pub const C1_LOWER: u16 = 0x0002;
 pub const C1_DIGIT: u16 = 0x0004;
@@ -67,9 +66,9 @@ pub const C1_BLANK: u16 = 0x0040;
 pub const C1_XDIGIT: u16 = 0x0080;
 pub const C1_ALPHA: u16 = 0x0100;
 
-/// Character-type flags for one wide character (CT_CTYPE1): ASCII and
-/// Latin-1 standard classifications, the codepage's own letters cased,
-/// its symbols PUNCT. The corpus only pins the ASCII samples.
+/// Character-type flags for one wide character (CT_CTYPE1): ASCII and Latin-1 standard
+/// classifications, the codepage's own letters cased, its symbols PUNCT. The corpus only pins the
+/// ASCII samples.
 pub fn c1_flags(wide: u16) -> u16 {
     match wide {
         0x00..=0x08 | 0x0E..=0x1F | 0x7F => C1_CNTRL,
@@ -83,10 +82,33 @@ pub fn c1_flags(wide: u16) -> u16 {
         // ASCII punctuation.
         0x21..=0x2F | 0x3A..=0x40 | 0x5B..=0x60 | 0x7B..=0x7E => C1_PUNCT,
         // Latin-1 punctuation and symbols.
-        0xA0 | 0xA1 | 0xA7 | 0xA9 | 0xAB | 0xAD | 0xAE | 0xB0 | 0xB1
-        | 0xB5 | 0xB6 | 0xB7 | 0xBB | 0xBF | 0xF7 | 0x2013 | 0x2014
-        | 0x2018..=0x201F | 0x2020..=0x2022 | 0x2026 | 0x2030 | 0x2039
-        | 0x203A | 0x20AC | 0x2122 | 0x02C6 | 0x02DC => C1_PUNCT,
+        0xA0
+        | 0xA1
+        | 0xA7
+        | 0xA9
+        | 0xAB
+        | 0xAD
+        | 0xAE
+        | 0xB0
+        | 0xB1
+        | 0xB5
+        | 0xB6
+        | 0xB7
+        | 0xBB
+        | 0xBF
+        | 0xF7
+        | 0x2013
+        | 0x2014
+        | 0x2018..=0x201F
+        | 0x2020..=0x2022
+        | 0x2026
+        | 0x2030
+        | 0x2039
+        | 0x203A
+        | 0x20AC
+        | 0x2122
+        | 0x02C6
+        | 0x02DC => C1_PUNCT,
         // Latin-1 letters with case.
         0xAA | 0xBA | 0xDF => C1_LOWER | C1_ALPHA,
         0xC0..=0xD6 | 0xD8..=0xDE => C1_UPPER | C1_ALPHA,
@@ -100,18 +122,17 @@ pub fn c1_flags(wide: u16) -> u16 {
     }
 }
 
-/// Case mapping for one wide character (the LCMapStringW core);
-/// `upper` selects LCMAP_UPPERCASE. Quirk: sharp s has no
-/// single-character uppercase and maps to itself.
+/// Case mapping for one wide character (the LCMapStringW core); `upper` selects LCMAP_UPPERCASE.
+/// Quirk: sharp s has no single-character uppercase and maps to itself.
 pub fn map_case(wide: u16, upper: bool) -> u16 {
     let mapped = match wide {
-        0x61..=0x7A if upper => wide - 0x20, // a-z -> A-Z
-        0x41..=0x5A if !upper => wide + 0x20, // A-Z -> a-z
-        0xE0..=0xF6 | 0xF8..=0xFE if upper => wide - 0x20, // à-þ -> À-Þ
+        0x61..=0x7A if upper => wide - 0x20,                // a-z -> A-Z
+        0x41..=0x5A if !upper => wide + 0x20,               // A-Z -> a-z
+        0xE0..=0xF6 | 0xF8..=0xFE if upper => wide - 0x20,  // à-þ -> À-Þ
         0xC0..=0xD6 | 0xD8..=0xDE if !upper => wide + 0x20, // À-Þ -> à-þ
-        0xFF if upper => 0x178, // ÿ -> Ÿ
-        0x178 if !upper => 0xFF, // Ÿ -> ÿ
-        0x153 if upper => 0x152, // œ -> Œ
+        0xFF if upper => 0x178,                             // ÿ -> Ÿ
+        0x178 if !upper => 0xFF,                            // Ÿ -> ÿ
+        0x153 if upper => 0x152,                            // œ -> Œ
         0x152 if !upper => 0x153,
         0x161 if upper => 0x160, // š -> Š
         0x160 if !upper => 0x161,
@@ -126,8 +147,8 @@ pub fn map_case(wide: u16, upper: bool) -> u16 {
 mod tests {
     use super::*;
 
-    /// The 27 divergent bytes, straight from the shipped c_1252 table:
-    /// everything else is identity (asserted separately).
+    /// The 27 divergent bytes, straight from the shipped c_1252 table: everything else is identity
+    /// (asserted separately).
     const DIVERGENT: [(u8, u16); 27] = [
         (0x80, 0x20AC),
         (0x82, 0x201A),
@@ -175,8 +196,8 @@ mod tests {
         assert_eq!(MB_TO_WC[0xFF], 0x00FF);
     }
 
-    /// The reverse direction: every entry maps back (injective);
-    /// unmapped code points fall to the default char.
+    /// The reverse direction: every entry maps back (injective); unmapped code points fall to the
+    /// default char.
     #[test]
     fn wc_to_mb_inverts_the_table() {
         for byte in 0..256u16 {
@@ -187,8 +208,7 @@ mod tests {
         assert_eq!(DEFAULT_CHAR, b'?');
     }
 
-    /// Ctype samples: hex letters carry XDIGIT, plain letters case,
-    /// '0' DIGIT, space SPACE.
+    /// Ctype samples: hex letters carry XDIGIT, plain letters case, '0' DIGIT, space SPACE.
     #[test]
     fn c1_flags_pin_the_documented_samples() {
         assert_eq!(c1_flags(b'A' as u16), C1_UPPER | C1_ALPHA | C1_XDIGIT);
@@ -211,8 +231,8 @@ mod tests {
         assert_eq!(c1_flags(0x20AC), C1_PUNCT);
     }
 
-    /// Case samples: both directions over ASCII, Latin-1 and the
-    /// codepage specials; sharp s stays itself.
+    /// Case samples: both directions over ASCII, Latin-1 and the codepage specials; sharp s stays
+    /// itself.
     #[test]
     fn case_mapping_pins_the_documented_samples() {
         assert_eq!(map_case(b'a' as u16, true), b'A' as u16);
