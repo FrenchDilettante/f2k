@@ -23,11 +23,7 @@ To build F2K, you need a cross-compilation linker for x86 (32-bit) ELF binaries.
 
 On macOS, install it with Homebrew:
 
-    brew install FiloSottile/tap/x86_64-elf-binutils
-
-On macOS ARM (M1/M2), use Rosetta:
-
-    arch -x86_64 brew install FiloSottile/tap/x86_64-elf-binutils
+    brew install x86_64-elf-binutils
 
 On Linux (Debian/Ubuntu):
 

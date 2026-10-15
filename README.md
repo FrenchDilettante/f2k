@@ -4,16 +4,18 @@ A Windows 2000-compatible operating system written in Rust.
 
 ## Prerequisites
 
-This project uses Nightly Rust via the `rust-toolchain` file. Your default toolchain remains unaffected.
+This project uses Nightly Rust via the `rust-toolchain` file, which also pulls in the `rust-src` and `clippy` components. Your default toolchain remains unaffected.
 
 ### macOS (ARM64 or x86_64):
 ```bash
-brew install rust FiloSottile/tap/x86_64-elf-binutils nasm xorriso mtools
+brew install rust x86_64-elf-binutils nasm xorriso mtools qemu
+# PyYAML for the on-target suite (Homebrew's Python blocks a plain pip install)
+pip3 install --user --break-system-packages pyyaml
 ```
 
 ### Linux (x86_64):
 ```bash
-sudo apt install rustc cargo binutils nasm xorriso mtools qemu-system-x86
+sudo apt install rustc cargo binutils nasm xorriso mtools qemu-system-x86 python3-yaml
 ```
 
 ## Building

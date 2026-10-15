@@ -6,6 +6,9 @@ target/
 # Cargo generated files
 Cargo.lock
 
+# Python generated files
+scripts/__pycache__
+
 # IDE files
 .idea/
 .vscode/

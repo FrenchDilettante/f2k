@@ -1,1 +1,5 @@
-nightly
+[toolchain]
+channel = "nightly"
+# rust-src: build-std compiles core/alloc (kernel) and std (host tests) from source
+# clippy: make check
+components = ["rust-src", "clippy"]

@@ -23,7 +23,8 @@ from pathlib import Path
 try:
     import yaml
 except ImportError:
-    sys.exit("PyYAML is required: pip install pyyaml (or apt install python3-yaml)")
+    sys.exit("PyYAML is required: pip3 install --user --break-system-packages pyyaml"
+             " (or apt install python3-yaml)")
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = Path(__file__).resolve().parent
