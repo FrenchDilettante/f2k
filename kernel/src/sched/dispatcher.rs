@@ -17,6 +17,7 @@
 
 use super::process::SchedProcess;
 use super::thread::{Thread, ThreadState};
+use super::timer::TimerTable;
 use super::{
     unlink, List, Links, HIGHEST_PRIORITY, PRIORITY_LEVELS, QUANTUM_TICK, QUANTUM_WAIT_CHARGE,
     REALTIME_BASE, ROUND_TRIP_LIMIT, TIME_CRITICAL_CEILING,
@@ -41,6 +42,9 @@ pub struct Dispatcher {
     /// The waiting threads: the blocked-on-a-wait set, for the
     /// audit's walk.
     pub(super) waiting: List,
+    /// The timer table: the due-time-ordered home of wait
+    /// timeouts, driven by the clock's deferred expiry work.
+    pub(super) timer_table: TimerTable,
 }
 
 impl Dispatcher {
@@ -55,6 +59,7 @@ impl Dispatcher {
             next: null_mut(),
             idle_thread: null_mut(),
             waiting: List::empty(),
+            timer_table: TimerTable::zeroed(),
         }
     }
 
@@ -69,6 +74,8 @@ impl Dispatcher {
         self.next = null_mut();
         self.idle_thread = null_mut();
         self.waiting.init();
+        self.timer_table
+            .init(crate::interrupt::clock::INTERVAL_100NS as u64);
     }
 
     /// The ready-summary and wait-structure invariants: bit P is

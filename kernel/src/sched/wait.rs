@@ -19,14 +19,14 @@
 //! state's exit has a single owner: a waiting thread is readied
 //! through the wait exit and nothing else.
 //!
-//! A timeout is the thread's own timer inserted through the seam
-//! at the bottom of this module: the wait computes a due time and
-//! hands it over; when the due time is live the timer carries it
-//! and the wait blocks; the expiry entry signals the timer and
-//! satisfies its waiters like any other object, with the timeout
-//! status planted in the timer block at thread setup — the
-//! timeout needs no special wake path at all. The timer table
-//! itself is a later slice; the seam's entries are its contract.
+//! A timeout is the thread's own timer, inserted into the timer
+//! table: the wait computes a due time from the clock reading its
+//! caller took and hands it over; when the due time is live the
+//! table carries it and the wait blocks; the clock's expiry work
+//! walks the table, signals each due timer, and satisfies its
+//! waiters like any other object — with the timeout status
+//! planted in the timer block at thread setup, the timeout needs
+//! no special wake path at all.
 //!
 //! One processor, no locking: everything here runs serialized at
 //! the dispatch level, so there are no races to arbitrate — which
@@ -130,17 +130,24 @@ impl Waitable {
     }
 }
 
-/// A wait's timer: the record the timeout seam inserts, removes,
-/// and expires. Each thread owns one for its wait timeouts.
+/// A wait's timer: the record the timeout machinery inserts,
+/// removes, and expires. Each thread owns one for its wait
+/// timeouts.
 #[repr(C)]
 pub struct Timer {
     /// The timer as a waitable object: expiry signals it and
     /// satisfies its waiters.
     pub(crate) waitable: Waitable,
-    /// The due time the seam recorded, in 100 ns units.
-    pub(crate) due_time: i64,
-    /// Whether the seam currently holds the timer.
+    /// The due time the timer carries while held, a clock reading
+    /// (100 ns units) compared as an unsigned value — the largest
+    /// dues read as far future, not past.
+    pub(crate) due_time: u64,
+    /// Whether the timer table currently holds the timer.
     pub(crate) inserted: bool,
+    /// The timer-table membership link: the bucket list while
+    /// held, the expiry walk's collection list mid-walk — a timer
+    /// is on exactly one at a time.
+    pub(crate) links: Links,
 }
 
 impl Timer {
@@ -152,6 +159,7 @@ impl Timer {
             waitable: Waitable::new(WaitKind::TimerNotification, 0),
             due_time: 0,
             inserted: false,
+            links: Links::detached(),
         }
     }
 
@@ -161,11 +169,11 @@ impl Timer {
     }
 
     /// The recorded due time, in 100 ns units.
-    pub fn due_time(&self) -> i64 {
+    pub fn due_time(&self) -> u64 {
         self.due_time
     }
 
-    /// Whether the seam currently holds the timer.
+    /// Whether the table currently holds the timer.
     pub fn inserted(&self) -> bool {
         self.inserted
     }
@@ -346,8 +354,8 @@ impl Dispatcher {
                     // is on no list.
                     thread.timer.waitable.waiters.push_back(addr_of_mut!((*timer_block).links));
                 }
-                let due = stamp.system_time as i64 + interval;
-                if !timer_insert(&mut thread.timer, due, stamp.system_time) {
+                let due = stamp.system_time.wrapping_add(interval as u64);
+                if !self.timer_table.insert(&mut thread.timer, due, stamp.system_time) {
                     // Already past: the wait reports a timeout and
                     // unwinds what it linked.
                     // SAFETY: linked above.
@@ -413,8 +421,10 @@ impl Dispatcher {
             thread.timer.waitable.waiters.push_back(addr_of_mut!((*block).links));
         }
 
-        let due = stamp.system_time as i64 + interval;
-        if !timer_insert(&mut thread.timer, due, stamp.system_time) {
+        // The wrap-safe due: the longest relative interval wraps to
+        // the far side of the clock, a far future — not a past.
+        let due = stamp.system_time.wrapping_add(interval as u64);
+        if !self.timer_table.insert(&mut thread.timer, due, stamp.system_time) {
             // Already past: never a wait state. Drop a boosted
             // variable thread to its base — the drop itself may
             // select a replacement — then try to hand the
@@ -501,7 +511,7 @@ impl Dispatcher {
         // A wake beats its timeout: cancel the wait's timer if it
         // is still live.
         if thread.timer.inserted {
-            timer_remove(&mut thread.timer);
+            self.timer_table.remove(&mut thread.timer);
         }
 
         if !thread.disable_boost {
@@ -560,13 +570,13 @@ impl Dispatcher {
 
     /// Expire `timer`: signal it and satisfy its waiters with no
     /// priority increment — what the clock's expiry work does per
-    /// due timer. A timer an earlier wake already cancelled expires
-    /// as a no-op.
+    /// due timer, in the order its walk collected them. A timer an
+    /// earlier wake already cancelled expires as a no-op.
     pub fn expire_timer(&mut self, timer: *mut Timer) {
         // SAFETY: the timer is a live, initialized record.
         let timer: &mut Timer = unsafe { &mut *timer };
         if timer.inserted {
-            timer_remove(timer);
+            self.timer_table.remove(timer);
         }
         timer.waitable.signal_state = 1;
         let waitable = addr_of_mut!(timer.waitable);
@@ -679,35 +689,17 @@ impl Dispatcher {
     }
 }
 
-// --- The timeout seam -----------------------------------------------------
+// --- The timeout machinery -------------------------------------------------
 //
-// The wait discipline's timer contract: the wait computes a due
-// time from the clock reading its caller took and hands it to
-// these entries. This slice hosts them against the timer record
-// alone — a due time and an inserted mark; the timer table that
-// orders and drives them is the next slice's, and it inherits
-// this contract as-is.
-
-/// Insert `timer` at `due` (100 ns units): clear any stale signal,
-/// record the due time, and mark it held. False means the due time
-/// has already passed — the timer stays unsignaled and unheld, and
-/// the wait reports a timeout at once.
-pub fn timer_insert(timer: &mut Timer, due: i64, now: u64) -> bool {
-    timer.waitable.signal_state = 0;
-    if due <= now as i64 {
-        timer.inserted = false;
-        return false;
-    }
-    timer.due_time = due;
-    timer.inserted = true;
-    true
-}
-
-/// Cancel `timer`: release the seam's hold, leaving the due time
-/// recorded. A cancelled timer expires as a no-op.
-pub fn timer_remove(timer: &mut Timer) {
-    timer.inserted = false;
-}
+// The wait discipline's timer contract: a wait computes a due time
+// from the clock reading its caller took (wrap-safe unsigned
+// arithmetic — the longest relative interval wraps to the far
+// future, not the past) and hands it to the timer table, which
+// orders it into its buckets and drives its expiry from the clock
+// (see [`crate::sched::timer`]). The wait paths here insert and
+// cancel through the table; the expiry entry above is what the
+// clock's expiry work calls per collected timer — the wake itself
+// needs no special path at all.
 
 // --- The walk helpers -----------------------------------------------------
 

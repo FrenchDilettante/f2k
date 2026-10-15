@@ -29,6 +29,12 @@ pub const HELLO: &[u8] = include_bytes!("../../../tests/hello/hello.exe");
 #[cfg(feature = "run-pingpong")]
 pub const PINGPONG: &[u8] = include_bytes!("../../../tests/pingpong/pingpong.exe");
 
+/// The timer smoke fixture: Sleep and a timed wait report their
+/// spans through GetTickCount (embedded for the `run-sleep`
+/// feature).
+#[cfg(feature = "run-sleep")]
+pub const SLEEP: &[u8] = include_bytes!("../../../tests/sleep/sleep.exe");
+
 /// The fresh-memory fixture: no CRT, one import; its `.bss` is all
 /// zero on a fresh process and the double run in the suite proves
 /// teardown re-zeroes frames (embedded for the `run-process-suite`
@@ -152,14 +158,14 @@ pub fn run_image(file: &[u8], name: &'static str) -> ! {
         image.entry_va(),
         USER_STACK_TOP
     );
-    // The entry: the thread-ified boot for the smoke (the main
+    // The entry: the thread-ified boot for the smokes (the main
     // thread enters through the scheduler's first switch), the
     // direct ring-3 entry for every other boot.
-    #[cfg(feature = "run-pingpong")]
+    #[cfg(any(feature = "run-pingpong", feature = "run-sleep"))]
     {
         crate::process::threads::enter_as_main_thread(image.entry_va(), USER_STACK_TOP)
     }
-    #[cfg(not(feature = "run-pingpong"))]
+    #[cfg(not(any(feature = "run-pingpong", feature = "run-sleep")))]
     {
         // SAFETY: image, stack, TEB and thunk pages are mapped with
         // their final protections; the gate is DPL 3; the TSS carries

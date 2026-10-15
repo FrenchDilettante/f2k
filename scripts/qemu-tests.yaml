@@ -171,6 +171,46 @@ cases:
       - "pingpong: ok"
       - "F2K: user process exited normally (exit code=0)"
 
+  # Timer smoke (scheduler-threads workstream, slice S4): the main
+  # thread parks in the timer table through Sleep(200) (the idle
+  # thread owns the processor while it sleeps), yields through
+  # Sleep(0), and times out a wait on a never-signaled event after
+  # 100 ms. Both spans read whole ticks: the GetTickCount reads and
+  # the sleeps' due times derive from the same tick-quantized
+  # accumulator, so the captured cadence (exactly 200 and exactly
+  # 100) is pinned verbatim.
+  - name: sleep-smoke
+    description: the timer smoke parks the main thread in the timer table for a 200 ms sleep, yields through Sleep(0), and times out a 100 ms wait, reporting both spans at the captured cadence (kernel path)
+    image: kernel
+    features: [run-sleep]
+    expects:
+      - "F2K Booted Successfully"
+      - "F2K: frame database audit: ok"
+      - "F2K: kernel heap: alloc/free ok"
+      - "F2K: image loaded"
+      - "F2K: entering ring 3"
+      - "sleep 200ms spanned 200 ticks"
+      - "sleep 0 returned"
+      - "timed wait: timeout after 100 ticks"
+      - "sleep: ok"
+      - "F2K: user process exited normally (exit code=0)"
+
+  - name: sleep-smoke-disk
+    description: the timer smoke parks the main thread in the timer table for a 200 ms sleep, yields through Sleep(0), and times out a 100 ms wait, reporting both spans at the captured cadence (Limine disk path)
+    image: disk
+    features: [run-sleep]
+    expects:
+      - "F2K Booted Successfully"
+      - "F2K: frame database audit: ok"
+      - "F2K: kernel heap: alloc/free ok"
+      - "F2K: image loaded"
+      - "F2K: entering ring 3"
+      - "sleep 200ms spanned 200 ticks"
+      - "sleep 0 returned"
+      - "timed wait: timeout after 100 ticks"
+      - "sleep: ok"
+      - "F2K: user process exited normally (exit code=0)"
+
   # Multi-process suite (foundational-processes workstream): one boot
   # runs the sequence exit0, ret0, bsscheck, bsscheck, crash, exit0,
   # tearing each process down to the post-boot baseline before the

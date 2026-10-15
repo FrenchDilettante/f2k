@@ -44,6 +44,13 @@ run-hello = []
 # SetEvent/WaitForSingleObject calls run against the landed wait
 # machinery. The qemu-tests.yaml cases pin the captured output.
 run-pingpong = []
+# The timer smoke boot: the sleep fixture runs with the thread-ified
+# entry — Sleep parks the main thread in the timer table (the idle
+# thread owns the processor while it sleeps), the timed wait blocks
+# on a never-signaled event until its timeout, and GetTickCount
+# reads the tick count. The qemu-tests.yaml cases pin the captured
+# output.
+run-sleep = []
 # The multi-process suite case: exit0, ret0, bsscheck, bsscheck,
 # crash, exit0 run in sequence in one boot, each process torn down
 # and audited before the next starts. The sequence runner and the

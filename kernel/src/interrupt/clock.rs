@@ -10,12 +10,16 @@
 //!
 //! The rate lives entirely in the four variables set by
 //! [`Clock::set_time_increment`]; the tick math itself is
-//! rate-agnostic. On a full tick the clock enqueues its deferred
-//! work (the timer-expiry DPC) with the same single-flight discipline
-//! every DPC enqueue uses, and the runtime accounting folds the DPC
-//! request-rate history.
+//! rate-agnostic. On a full tick the clock checks the timer table's
+//! hand pair (the buckets of ticks N-1 and N) against the advanced
+//! interrupt time and, when a timer is due, enqueues its deferred
+//! expiry work with the firing tick's low word — the same
+//! single-flight discipline every DPC enqueue uses. The runtime
+//! accounting folds the DPC request-rate history.
 
 use crate::interrupt::dpc::{Dpc, DpcQueue};
+
+#[cfg(target_arch = "x86")]
 use core::ptr::addr_of_mut;
 
 /// The interval in 100 ns units a real machine of this platform
@@ -152,19 +156,13 @@ impl Clock {
     pub fn account_runtime(&self, queue: &mut DpcQueue) {
         queue.update_request_rate();
     }
-
-    /// Whether the deferred timer work should run this tick. The
-    /// timer-table walk it will become is future work (the scheduler
-    /// milestone); for now the clock's deferred work runs on every
-    /// full tick, which is what exercises the machinery.
-    fn timer_work_due(&self) -> bool {
-        true
-    }
 }
 
-/// The deferred timer routine: the clock's DPC callback. The
-/// timer-table expiry scan it will perform is future work; the call
-/// itself is the observable.
+/// The deferred timer routine: the clock's DPC callback — the
+/// timer table's expiry walk. The argument is the firing tick's
+/// low word (the trigger's), and the walk scans the table from
+/// that tick's bucket through the current one, waking every
+/// thread whose timeout came due.
 static mut TIMER_FIRED: u32 = 0;
 
 /// How many times the deferred timer routine has run.
@@ -173,13 +171,21 @@ pub fn timer_fired() -> u32 {
     unsafe { core::ptr::read_volatile(core::ptr::addr_of!(TIMER_FIRED)) }
 }
 
-fn timer_routine(_dpc: &Dpc, _context: usize, _argument1: usize, _argument2: usize) {
+#[cfg(target_arch = "x86")]
+fn timer_routine(_dpc: &Dpc, _context: usize, argument1: usize, _argument2: usize) {
     // SAFETY: single CPU, called with interrupts enabled from the
-    // retire pass.
+    // retire pass at the dispatch level — the dispatcher's entries
+    // run serialized there.
     unsafe {
         core::ptr::write_volatile(
             core::ptr::addr_of_mut!(TIMER_FIRED),
             core::ptr::read_volatile(core::ptr::addr_of!(TIMER_FIRED)) + 1,
+        );
+        let clock = &*addr_of_mut!(CLOCK);
+        crate::sched::idle::dispatcher().expire_timers(
+            clock.interrupt_time(),
+            clock.tick_count() as u32,
+            argument1 as u32,
         );
     }
 }
@@ -201,23 +207,29 @@ pub const CLOCK_VECTOR: u8 = crate::hw::pic::MASTER_VECTOR_BASE;
 
 /// The clock's interrupt service body: run at the clock level with
 /// interrupts masked, after the interrupt has been claimed. Updates
-/// the clock and enqueues the deferred timer work when it is due.
+/// the clock and enqueues the deferred timer work when a timer is
+/// due — the timer table's hand check, with the firing tick's low
+/// word as the argument the walk resumes from.
 #[cfg(target_arch = "x86")]
 pub fn service() {
     // SAFETY: single CPU; the clock, its DPC, the queue, and the
     // level state are kernel statics whose accessors run serialized
-    // by the level discipline.
+    // by the level discipline — the clock level masks the
+    // dispatcher's.
     unsafe {
         let clock = &mut *addr_of_mut!(CLOCK);
         if let Tick::Full = clock.tick() {
-            if clock.timer_work_due() {
-                // The ISR's enqueue: single-flight (a queued DPC is
-                // left alone), tail-linked, the low tick word carried
-                // as the argument, and a dispatch request through the
-                // same gate every enqueue uses.
-                let tick_low = clock.tick_count() as u32;
+            let tick_low = clock.tick_count() as u32;
+            // The hand check at the transition to tick N: the
+            // buckets of ticks N-1 and N against the just-advanced
+            // interrupt time. A due head fires the deferred work,
+            // single-flight like every enqueue, carrying the firing
+            // tick's low word.
+            if let Some(argument) =
+                crate::sched::idle::dispatcher().timer_trigger(clock.interrupt_time(), tick_low)
+            {
                 let dpc = &mut *addr_of_mut!(TIMER_DPC);
-                crate::interrupt::dpc::enqueue(dpc, tick_low as usize, 0);
+                crate::interrupt::dpc::enqueue(dpc, argument as usize, 0);
             }
             clock.account_runtime(crate::interrupt::dpc::queue_mut());
         }
@@ -249,6 +261,14 @@ pub fn ticks() -> u64 {
 pub fn system_time() -> u64 {
     // SAFETY: read-only.
     unsafe { (*addr_of_mut!(CLOCK)).system_time() }
+}
+
+/// The kernel clock's interrupt time (100 ns units): the time base
+/// the timer table's expiry checks read.
+#[cfg(target_arch = "x86")]
+pub fn interrupt_time() -> u64 {
+    // SAFETY: read-only.
+    unsafe { (*addr_of_mut!(CLOCK)).interrupt_time() }
 }
 
 #[cfg(test)]
@@ -363,19 +383,6 @@ mod tests {
             assert_eq!(queue.request_rate(), expected);
         }
         assert_eq!(queue.depth(), 4, "accounting does not drain the queue");
-    }
-
-    /// The clock's deferred work runs per the minimal trigger (every
-    /// full tick) — the stand-in for the timer-table walk.
-    #[test]
-    fn the_deferred_timer_work_runs_every_full_tick() {
-        let mut clock = Clock::new();
-        clock.set_time_increment(INTERVAL_100NS, FINEST_100NS);
-        for i in 0..3 {
-            assert_eq!(clock.tick(), Tick::Full);
-            assert!(clock.timer_work_due());
-            let _ = i;
-        }
     }
 
     /// The captured constants: the interval a real machine of this

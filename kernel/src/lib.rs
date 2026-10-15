@@ -243,6 +243,29 @@ pub extern "C" fn kmain(magic: u32, multiboot_info: u32) -> ! {
         }
         serial_println!("F2K: irq-smoke: timer live (>= 5 ticks observed)");
 
+        // The deferred timer work fires only when a timer is due
+        // (the table's hand check), so park one: the current
+        // thread's (the idle thread's) own timer, due one tick
+        // out. The expiry signals it — nobody waits on it — and
+        // the DPC's run is the observable.
+        {
+            use interrupt::clock::INTERVAL_100NS;
+            let dispatcher = crate::sched::idle::dispatcher();
+            let previous =
+                crate::interrupt::irql::state_mut().raise(crate::interrupt::irql::DISPATCH);
+            // SAFETY: the current thread (the idle thread, armed at
+            // boot) is live and exclusive here; its timer is
+            // initialized and on no list.
+            let current = unsafe { &mut *dispatcher.current_thread() };
+            let now = interrupt::clock::system_time();
+            assert!(
+                dispatcher
+                    .timer_table()
+                    .insert(&mut current.timer, now + INTERVAL_100NS as u64, now)
+            );
+            crate::interrupt::irql::state_mut().lower(previous);
+        }
+
         // The DPC the clock ISR enqueues must have run (the drain is
         // part of every interrupt exit, and the idle path drains
         // too).

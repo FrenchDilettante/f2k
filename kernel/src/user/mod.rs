@@ -174,14 +174,14 @@ core::arch::global_asm!(
 /// space; the multi-process suite hands the chain to the next
 /// process (its runner tears this one down).
 pub fn process_exited(code: u32) -> ! {
-    #[cfg(all(target_arch = "x86", feature = "run-pingpong"))]
+    #[cfg(all(target_arch = "x86", any(feature = "run-pingpong", feature = "run-sleep")))]
     {
         // The thread-ified boot: the process's exit is its last
         // thread's exit (the report and the last-thread route are
         // the exit path's own).
         crate::process::threads::exit_thread(code as i32)
     }
-    #[cfg(all(target_arch = "x86", not(feature = "run-pingpong")))]
+    #[cfg(all(target_arch = "x86", not(any(feature = "run-pingpong", feature = "run-sleep"))))]
     {
         #[cfg(feature = "run-process-suite")]
         {
@@ -209,8 +209,10 @@ pub fn process_exited(code: u32) -> ! {
 
 /// Launch the first user process: exit0 through the PE loader by
 /// default, ret0 with the `run-ret0` feature, hello with the
-/// `run-hello` feature, a fault-test stub, or the full multi-process
-/// suite with `run-process-suite`. Never returns.
+/// `run-hello` feature, the blocking-wait or timer smoke with
+/// `run-pingpong`/`run-sleep` (both on the thread-ified boot), a
+/// fault-test stub, or the full multi-process suite with
+/// `run-process-suite`. Never returns.
 #[cfg(target_arch = "x86")]
 pub fn run_user_process() -> ! {
     #[cfg(feature = "run-process-suite")]
@@ -225,12 +227,21 @@ pub fn run_user_process() -> ! {
             {
                 crate::exec::loader::run_image(crate::exec::loader::PINGPONG, "pingpong")
             }
-            #[cfg(all(not(feature = "run-pingpong"), feature = "run-hello"))]
+            #[cfg(all(not(feature = "run-pingpong"), feature = "run-sleep"))]
+            {
+                crate::exec::loader::run_image(crate::exec::loader::SLEEP, "sleep")
+            }
+            #[cfg(all(
+                not(feature = "run-pingpong"),
+                not(feature = "run-sleep"),
+                feature = "run-hello"
+            ))]
             {
                 crate::exec::loader::run_image(crate::exec::loader::HELLO, "hello")
             }
             #[cfg(all(
                 not(feature = "run-pingpong"),
+                not(feature = "run-sleep"),
                 not(feature = "run-hello"),
                 not(feature = "run-ret0")
             ))]
@@ -239,6 +250,7 @@ pub fn run_user_process() -> ! {
             }
             #[cfg(all(
                 not(feature = "run-pingpong"),
+                not(feature = "run-sleep"),
                 not(feature = "run-hello"),
                 feature = "run-ret0"
             ))]

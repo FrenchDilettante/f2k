@@ -55,8 +55,12 @@ pub mod startup;
 pub mod idle;
 
 /// The wait discipline: waitable objects, wait blocks, the block
-/// and wake paths, the timeout seam.
+/// and wake paths, the timeout machinery.
 pub mod wait;
+
+/// The timer table: the due-time-ordered buckets that hold wait
+/// timeouts, and the clock-driven expiry walk.
+pub mod timer;
 
 /// The event object: the smallest waitable object, both flavors.
 pub mod event;

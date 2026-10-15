@@ -570,6 +570,26 @@ fn format_timeout(milliseconds: u32) -> Option<i64> {
     }
 }
 
+/// The sleep interval conversion: INFINITE is not a wait at all
+/// but the longest relative interval the ABI can name — the delay
+/// parks for a due time on the far side of the clock. Every other
+/// value is milliseconds to 100 ns units.
+fn sleep_interval(milliseconds: u32) -> i64 {
+    if milliseconds == INFINITE {
+        i64::MIN
+    } else {
+        milliseconds as i64 * 10_000
+    }
+}
+
+/// The tick count to milliseconds, floored once at the read: the
+/// tick count times the clock's interval, in ms. The same
+/// accumulators the sleeps' due times derive from, so a sleep
+/// spans whole ticks and the span reads back as requested.
+fn tick_count_ms(ticks: u64) -> u64 {
+    ticks * crate::interrupt::clock::INTERVAL_100NS as u64 / 10_000
+}
+
 /// The creation-flags check: CREATE_SUSPENDED is refused (a
 /// suspended child could never run without the suspend
 /// machinery); every other bit is ignored.
@@ -687,6 +707,62 @@ fn svc_wait_for_single_object(frame: &mut crate::user::TrapFrame, args: &[u32]) 
     }
 }
 
+/// Sleep: park the calling thread for the requested milliseconds
+/// — the delay discipline on the caller's own timer, in the timer
+/// table. Zero is the pure yield (the immediate test); INFINITE
+/// parks for the longest interval the ABI names. The return is
+/// void; the delay's resume-side conversion makes a timed-out
+/// sleep a successful one, and 0 rides in `eax`.
+fn svc_sleep(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    #[cfg(target_arch = "x86")]
+    {
+        let interval = sleep_interval(args[0]);
+        let dispatcher = crate::sched::idle::dispatcher();
+        let stamp = crate::sched::wait::ClockStamp {
+            system_time: crate::interrupt::clock::system_time(),
+            tick: crate::interrupt::clock::ticks(),
+        };
+        // SAFETY: the running thread, live and exclusive in the
+        // gate.
+        let current = unsafe { &mut *dispatcher.current_thread() };
+        match dispatcher.delay(
+            current,
+            crate::sched::wait::WaitMode::User,
+            false,
+            interval,
+            stamp,
+        ) {
+            crate::sched::wait::WaitDisposition::Complete(status) => {
+                frame.eax = crate::sched::dispatcher::Dispatcher::delay_completed(status) as u32;
+            }
+            crate::sched::wait::WaitDisposition::Yield => {
+                // The thread parks; the switch resumes here when
+                // the timer's expiry re-selects it.
+                dispatcher.park_and_switch();
+                frame.eax = crate::sched::dispatcher::Dispatcher::delay_completed(current.wait_status()) as u32;
+            }
+        }
+    }
+    #[cfg(not(target_arch = "x86"))]
+    {
+        let _ = args;
+        frame.eax = 0;
+    }
+}
+
+/// GetTickCount: the milliseconds since boot, derived from the
+/// tick count and the clock's interval, floored once at the read.
+fn svc_get_tick_count(frame: &mut crate::user::TrapFrame, _args: &[u32]) {
+    #[cfg(target_arch = "x86")]
+    {
+        frame.eax = tick_count_ms(crate::interrupt::clock::ticks()) as u32;
+    }
+    #[cfg(not(target_arch = "x86"))]
+    {
+        frame.eax = 0;
+    }
+}
+
 /// CreateThread: a child thread on the current process. The
 /// start address and parameter are honored; the attributes,
 /// stack size (the per-thread default), and every creation flag
@@ -770,7 +846,7 @@ fn svc_get_current_process(frame: &mut crate::user::TrapFrame, _args: &[u32]) {
 /// at service 1, the rest alphabetical). Quirk: a name absent from
 /// here fails the loader's snap, so this set is exactly the union
 /// of the checked-in fixtures' import surfaces.
-pub const SERVICES: [(&str, u32, ServiceFn); 44] = [
+pub const SERVICES: [(&str, u32, ServiceFn); 46] = [
     ("ExitProcess", 4, svc_exit_process),
     ("CloseHandle", 4, svc_close_handle),
     ("CreateEventA", 16, svc_create_event_a),
@@ -793,6 +869,7 @@ pub const SERVICES: [(&str, u32, ServiceFn); 44] = [
     ("GetStdHandle", 4, svc_get_std_handle),
     ("GetStringTypeA", 20, svc_floor_zero),
     ("GetStringTypeW", 16, svc_get_string_type_w),
+    ("GetTickCount", 0, svc_get_tick_count),
     ("GetVersion", 0, svc_get_version),
     ("HeapAlloc", 12, svc_heap_alloc),
     ("HeapCreate", 12, svc_heap_create),
@@ -808,6 +885,7 @@ pub const SERVICES: [(&str, u32, ServiceFn); 44] = [
     ("SetFilePointer", 16, svc_set_file_pointer),
     ("SetHandleCount", 4, svc_set_handle_count),
     ("SetStdHandle", 8, svc_floor_zero),
+    ("Sleep", 4, svc_sleep),
     ("TerminateProcess", 8, svc_floor_zero),
     ("UnhandledExceptionFilter", 4, svc_floor_zero),
     ("VirtualAlloc", 16, svc_virtual_alloc),
@@ -922,11 +1000,13 @@ mod tests {
 
     const RET0: &[u8] = include_bytes!("../../../tests/ret0/ret0.exe");
     const HELLO: &[u8] = include_bytes!("../../../tests/hello/hello.exe");
+    const SLEEP: &[u8] = include_bytes!("../../../tests/sleep/sleep.exe");
 
     /// The corpus's kernel32 import surface (hello's 40 — ret0's 35
-    /// plus the console-stdio group — the loader's snap contract):
-    /// the registry must spell it exactly.
-    const CORPUS_IMPORTS: [&str; 44] = [
+    /// plus the console-stdio group — and the sleep smoke's two
+    /// timer exports; the loader's snap contract): the registry
+    /// must spell it exactly.
+    const CORPUS_IMPORTS: [&str; 46] = [
         "CreateThread", "CreateEventA", "SetEvent", "WaitForSingleObject",
         "VirtualFree", "GetVersion", "ExitProcess", "TerminateProcess",
         "GetCurrentProcess", "UnhandledExceptionFilter", "GetModuleFileNameA",
@@ -939,13 +1019,14 @@ mod tests {
         "MultiByteToWideChar", "LCMapStringA", "LCMapStringW",
         "GetStringTypeA", "GetStringTypeW", "GetLastError",
         "FlushFileBuffers", "SetFilePointer", "SetStdHandle", "CloseHandle",
+        "Sleep", "GetTickCount",
     ];
 
     /// Registry consistency: names unique, numbers are positions plus
     /// one (ExitProcess pinned at 1), every corpus import resolves.
     #[test]
     fn registry_spells_the_corpus_surface() {
-        assert_eq!(SERVICES.len(), 44);
+        assert_eq!(SERVICES.len(), 46);
         for (i, &(name, arg_bytes, _)) in SERVICES.iter().enumerate() {
             assert!(!name.is_empty());
             assert_eq!(lookup_service(i as u32 + 1).map(|(b, _)| b), Some(arg_bytes));
@@ -957,7 +1038,7 @@ mod tests {
         assert_eq!(SERVICES[0].0, "ExitProcess");
         assert_eq!(crate::user::syscall::SYS_EXIT, 1);
         assert_eq!(lookup_service(0), None);
-        assert_eq!(lookup_service(45), None);
+        assert_eq!(lookup_service(47), None);
         assert_eq!(lookup_service(u32::MAX), None);
         // Set equality with the corpus list.
         for name in CORPUS_IMPORTS {
@@ -988,6 +1069,71 @@ mod tests {
         image.map_into(HELLO, &mut mapped);
         let result = image.snap_imports(HELLO, &mut mapped, MODULE_NAME, resolve);
         assert_eq!(result.thunks, 40);
+    }
+
+    /// Every sleep import (the timer smoke's 44-export surface —
+    /// hello's 42 plus Sleep and GetTickCount) resolves against
+    /// the real registry.
+    #[test]
+    fn sleep_snaps_fully_against_the_registry() {
+        let image = Image::parse(SLEEP).expect("sleep parses");
+        let mut mapped = vec![0u8; image.size_of_image as usize];
+        image.map_into(SLEEP, &mut mapped);
+        let result = image.snap_imports(SLEEP, &mut mapped, MODULE_NAME, resolve);
+        assert_eq!(result.thunks, 44);
+    }
+
+    /// The sleep interval conversion: milliseconds to 100 ns
+    /// units, exact; INFINITE is the longest relative interval
+    /// the ABI names, not a special kernel value.
+    #[test]
+    fn sleep_intervals_convert_exactly() {
+        assert_eq!(sleep_interval(200), 2_000_000);
+        assert_eq!(sleep_interval(100), 1_000_000);
+        assert_eq!(sleep_interval(5), 50_000);
+        assert_eq!(sleep_interval(0), 0);
+        assert_eq!(sleep_interval(INFINITE), i64::MIN);
+    }
+
+    /// The tick count's millisecond conversion, floored once at
+    /// the read: the tick count times the captured interval. The
+    /// ms clock runs a hair ahead of the round number (a tick is
+    /// 10.0144 ms), never behind.
+    #[test]
+    fn tick_counts_floor_to_milliseconds() {
+        assert_eq!(tick_count_ms(0), 0);
+        assert_eq!(tick_count_ms(1), 10);
+        assert_eq!(tick_count_ms(10), 100);
+        assert_eq!(tick_count_ms(20), 200);
+        assert_eq!(tick_count_ms(50), 500);
+        assert_eq!(tick_count_ms(100), 1001);
+    }
+
+    /// The captured cadence, as arithmetic: a sleep of ms
+    /// milliseconds parks for ceil(ms × 10_000 / interval) whole
+    /// ticks (the tick is the resolution floor), and both
+    /// GetTickCount reads derive from the same tick-quantized
+    /// accumulator, so the span reads back as the requested value
+    /// at the captured boot phase. (A phase change could carry
+    /// the tick's fractional overshoot into a carry — 0.288 ms per
+    /// 20-tick span — a property of the floor, not a timer bug.)
+    #[test]
+    fn the_captured_cadence_is_whole_ticks_floored() {
+        const INTERVAL: u64 = crate::interrupt::clock::INTERVAL_100NS as u64;
+        for (milliseconds, span) in [(200u64, 20u64), (100, 10), (0, 0), (5, 1)] {
+            let interval = milliseconds * 10_000;
+            let ticks = interval.div_ceil(INTERVAL);
+            assert_eq!(ticks, span, "{milliseconds} ms");
+            // The span at the canonical phase (entry at tick 0)
+            // reads back as requested; Sleep(5) quantizes to the
+            // tick — the resolution floor.
+            let read = tick_count_ms(span) - tick_count_ms(0);
+            if milliseconds == 5 {
+                assert_eq!(read, 10);
+            } else {
+                assert_eq!(read, milliseconds);
+            }
+        }
     }
 
     /// Stub encoding: lea edx,[esp+4] / mov eax,service / int 0x2E /
