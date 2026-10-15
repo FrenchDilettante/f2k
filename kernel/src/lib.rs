@@ -40,6 +40,13 @@ mod user;
 // The process object and the suite runner: per-process directory, gate stack, user heap
 mod process;
 
+// NT status codes: the documented values the kernel's internal APIs report
+mod status;
+
+// Block devices: the description and read contract every storage device implements, partition
+// views, and the device registry
+mod block;
+
 // The scheduler: thread objects, priority bands, ready queues, the quantum, the dispatcher's state
 // machines
 mod sched;
@@ -270,6 +277,11 @@ pub extern "C" fn kmain(magic: u32, multiboot_info: u32) -> ! {
     // The IDE disk: detect the primary master, connect its interrupt, and IDENTIFY it. It needs
     // the interrupt core (its reads complete through IRQ 14); the first user process comes after.
     crate::hw::ide::disk::init();
+
+    // The block devices: the disk, if there is one, and a view per primary partition on it.
+    if let Some(disk) = crate::hw::ide::disk::block_device() {
+        crate::block::registry::scan_disk(disk);
+    }
 
     // The disk diagnostic boot: read the drive's identity, the MBR, the volume boot sector, and
     // the first file's sectors through the interrupt-driven path, then fall through to the normal

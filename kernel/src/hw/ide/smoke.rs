@@ -1,9 +1,9 @@
-//! The `disk-smoke` boot diagnostic: after the driver comes up, read the drive's identity, the
-//! MBR, the volume boot sector, and the first file the disk build copies into the volume, all
-//! through the IRQ-driven read path, and report each on COM1.
+//! The `disk-smoke` boot diagnostic: after the driver comes up and the block layer has scanned the
+//! disk, read the drive's identity, the MBR, the volume boot sector, and the first file the disk
+//! build copies into the volume, all through the block devices and the IRQ-driven read path, and
+//! report each on COM1.
 //!
-//! The decoders here read only the fields the diagnostic checks; they are not a partition or
-//! filesystem layer.
+//! The decoders here read only the fields the diagnostic checks; they are not a filesystem layer.
 
 /// CRC-32 (the IEEE 802.3 polynomial, reflected) of `bytes`.
 pub fn crc32(bytes: &[u8]) -> u32 {
@@ -34,24 +34,6 @@ fn le32(sector: &[u8], offset: usize) -> u32 {
 /// The boot-sector signature word at offset 510 (0xAA55 on a valid MBR or volume boot sector).
 pub fn signature(sector: &[u8]) -> u16 {
     le16(sector, 510)
-}
-
-/// One MBR partition entry's type and extent.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct PartitionEntry {
-    pub kind: u8,
-    pub start: u32,
-    pub sectors: u32,
-}
-
-/// Partition entry `index` (0-3) of an MBR: 16-byte entries from offset 446.
-pub fn partition_entry(mbr: &[u8], index: usize) -> PartitionEntry {
-    let entry = 446 + 16 * index;
-    PartitionEntry {
-        kind: mbr[entry + 4],
-        start: le32(mbr, entry + 8),
-        sectors: le32(mbr, entry + 12),
-    }
 }
 
 /// The FAT32 BIOS parameter block fields the diagnostic checks.
@@ -94,15 +76,17 @@ impl Bpb {
 pub fn run() {
     use core::ptr::addr_of_mut;
 
+    use crate::block::registry::{registry, Role};
+    use crate::block::{BlockDevice, BusType, DeviceInfo, DeviceKind};
     use crate::hw::ide::disk::{self, LATCH};
-    use crate::hw::ide::nt_success;
     use crate::hw::ide::regs::SECTOR_SIZE;
     use crate::serial_println;
+    use crate::status::nt_success;
 
     /// The disk image the disk build lays down: 64 MiB, one FAT32 partition at 1 MiB.
-    const DISK_SECTORS: u32 = 131_072;
-    const VOLUME_START: u32 = 2048;
-    const VOLUME_SECTORS: u32 = 129_024;
+    const DISK_SECTORS: u64 = 131_072;
+    const VOLUME_START: u64 = 2048;
+    const VOLUME_SECTORS: u64 = 129_024;
     /// The first file copied into the fresh volume lands on the first free cluster.
     const FIRST_FILE_CLUSTER: u32 = 3;
     /// The multi-sector run read from the same place.
@@ -110,8 +94,8 @@ pub fn run() {
 
     static mut RUN: [u8; RUN_SECTORS * SECTOR_SIZE] = [0; RUN_SECTORS * SECTOR_SIZE];
 
-    fn read(lba: u32, buffer: &mut [u8]) {
-        let status = disk::read(lba, buffer);
+    fn read(device: &dyn BlockDevice, lba: u64, buffer: &mut [u8]) {
+        let status = device.read(lba, buffer);
         assert!(
             nt_success(status),
             "disk-smoke: read at LBA {} failed with status {:#010x}",
@@ -120,28 +104,66 @@ pub fn run() {
         );
     }
 
-    // 1. The drive: IDENTIFY reported LBA support and the image's size.
+    // 1. The drive: IDENTIFY reported LBA support and the image's size, and the block layer
+    //    describes it.
     let identity = disk::identity().expect("disk-smoke: no usable disk on the primary master");
     assert!(identity.lba);
-    assert_eq!(identity.sectors, DISK_SECTORS, "disk-smoke: sector count");
+    assert_eq!(
+        identity.sectors as u64, DISK_SECTORS,
+        "disk-smoke: sector count"
+    );
+    let devices = registry();
+    let (disk_id, disk_entry) = devices
+        .iter()
+        .find(|(_, entry)| entry.role == Role::Disk)
+        .expect("disk-smoke: the disk is not registered");
+    let disk_device = disk_entry.device;
+    assert_eq!(
+        disk_device.info(),
+        DeviceInfo {
+            kind: DeviceKind::Disk,
+            bus: BusType::Ata,
+            sector_size: 512,
+            sectors: DISK_SECTORS,
+            removable: false,
+            read_only: false,
+        },
+        "disk-smoke: the disk's description"
+    );
     serial_println!(
         "F2K: disk-smoke: drive detected (LBA supported, {} sectors)",
         identity.sectors
     );
 
-    // 2. The MBR.
+    // The registered devices: the disk and the one partition its table carries.
+    assert_eq!(devices.iter().count(), 2, "disk-smoke: registered devices");
+    let (partition_id, partition_entry) = devices
+        .iter()
+        .find(|(_, entry)| matches!(entry.role, Role::Partition { disk, .. } if disk == disk_id))
+        .expect("disk-smoke: no partition registered");
+    let Role::Partition { entry, .. } = partition_entry.role else {
+        unreachable!()
+    };
+    let volume = partition_entry.device;
+    serial_println!(
+        "F2K: disk-smoke: block devices: {} = ATA disk ({} sectors of {} bytes), {} = partition {} of device {} ({} sectors)",
+        disk_id.0,
+        disk_device.info().sectors,
+        disk_device.info().sector_size,
+        partition_id.0,
+        entry.index,
+        disk_id.0,
+        volume.info().sectors
+    );
+
+    // 2. The MBR, read through the disk, and the partition the walk found in it.
     let mut sector = [0u8; SECTOR_SIZE];
-    read(0, &mut sector);
+    read(disk_device, 0, &mut sector);
     let mbr_signature = signature(&sector);
-    let entry = partition_entry(&sector, 0);
     assert_eq!(mbr_signature, 0xAA55, "disk-smoke: MBR signature");
     assert_eq!(
-        entry,
-        PartitionEntry {
-            kind: 0x0C,
-            start: VOLUME_START,
-            sectors: VOLUME_SECTORS
-        },
+        (entry.index, entry.kind, entry.start, entry.sectors),
+        (0, 0x0C, VOLUME_START, VOLUME_SECTORS),
         "disk-smoke: partition 0"
     );
     serial_println!(
@@ -152,8 +174,8 @@ pub fn run() {
         entry.sectors
     );
 
-    // 3. The volume boot sector and its BPB.
-    read(entry.start, &mut sector);
+    // 3. The volume boot sector — sector 0 of the partition — and its BPB.
+    read(volume, 0, &mut sector);
     let volume_signature = signature(&sector);
     let bpb = Bpb::decode(&sector);
     assert_eq!(
@@ -172,7 +194,7 @@ pub fn run() {
         },
         "disk-smoke: BPB"
     );
-    let data_region = bpb.data_region(entry.start);
+    let data_region = bpb.data_region(entry.start as u32);
     assert_eq!(data_region, 4066, "disk-smoke: data region");
     serial_println!(
         "F2K: disk-smoke: volume boot sector ok (signature {:#06X}, {} bytes/sector, {} sector/cluster, {} reserved, {} FATs, {} sectors/FAT, root cluster {}, data region at LBA {})",
@@ -186,10 +208,11 @@ pub fn run() {
         data_region
     );
 
-    // 4. The first file's first sector, then an 8-sector run from the same place (one interrupt per
-    //    sector).
-    let file_lba = bpb.cluster_lba(entry.start, FIRST_FILE_CLUSTER);
-    read(file_lba, &mut sector);
+    // 4. The first file's first sector, read through the partition (reported at its disk LBA),
+    //    then an 8-sector run from the same place (one interrupt per sector).
+    let file_sector = bpb.cluster_lba(0, FIRST_FILE_CLUSTER) as u64;
+    let file_lba = entry.start + file_sector;
+    read(volume, file_sector, &mut sector);
     serial_println!(
         "F2K: disk-smoke: LBA {} CRC-32 {:#010X}",
         file_lba,
@@ -197,7 +220,7 @@ pub fn run() {
     );
     // SAFETY: the diagnostic runs once, in the boot context; the buffer is its alone.
     let run = unsafe { &mut *addr_of_mut!(RUN) };
-    read(file_lba, run);
+    read(volume, file_sector, run);
     assert_eq!(
         &run[..SECTOR_SIZE],
         &sector[..],
@@ -210,7 +233,8 @@ pub fn run() {
         crc32(run)
     );
 
-    // The interrupt accounting: one per sector moved, IDENTIFY's included, none unasked for.
+    // The interrupt accounting: one per sector moved — IDENTIFY's and the boot scan's MBR read
+    // included — and none unasked for.
     let verdict = crate::interrupt::audit();
     serial_println!(
         "F2K: disk-smoke: IRQ14 serviced {} interrupts ({} unsolicited), interrupt audit: {}",
@@ -232,33 +256,15 @@ mod tests {
         assert_eq!(crc32(b""), 0);
     }
 
-    /// The MBR decode: the signature word and partition entry 0's type, start, and length, at
-    /// their offsets.
+    /// The signature word is read at offset 510, little-endian.
     #[test]
-    fn mbr_fields_decode_at_their_offsets() {
-        let mut mbr = [0u8; 512];
-        mbr[446 + 4] = 0x0C;
-        mbr[446 + 8..446 + 12].copy_from_slice(&2048u32.to_le_bytes());
-        mbr[446 + 12..446 + 16].copy_from_slice(&129_024u32.to_le_bytes());
-        mbr[510] = 0x55;
-        mbr[511] = 0xAA;
-        assert_eq!(signature(&mbr), 0xAA55);
-        assert_eq!(
-            partition_entry(&mbr, 0),
-            PartitionEntry {
-                kind: 0x0C,
-                start: 2048,
-                sectors: 129_024
-            }
-        );
-        assert_eq!(
-            partition_entry(&mbr, 1),
-            PartitionEntry {
-                kind: 0,
-                start: 0,
-                sectors: 0
-            }
-        );
+    fn the_signature_is_the_word_at_offset_510() {
+        let mut sector = [0u8; 512];
+        sector[510] = 0x55;
+        sector[511] = 0xAA;
+        assert_eq!(signature(&sector), 0xAA55);
+        sector[511] = 0;
+        assert_eq!(signature(&sector), 0x0055);
     }
 
     /// The BPB decode, and the layout the disk image's volume has: the data region at

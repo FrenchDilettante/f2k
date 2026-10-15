@@ -37,17 +37,20 @@ mod target {
     use core::sync::atomic::{AtomicBool, Ordering};
 
     use super::*;
+    use crate::block::lock::DeviceLock;
+    use crate::block::{check_request, BlockDevice, BusType, DeviceInfo, DeviceKind};
     use crate::hw::ide::identify::{self, Identity};
     use crate::hw::ide::latch::Completion;
     use crate::hw::ide::read;
-    use crate::hw::ide::regs::{PRIMARY_BASE, PRIMARY_CONTROL, PRIMARY_VECTOR};
+    use crate::hw::ide::regs::{PRIMARY_BASE, PRIMARY_CONTROL, PRIMARY_VECTOR, SECTOR_SIZE};
     use crate::hw::portio::Ports;
     use crate::interrupt::dpc::{self, Dpc};
     use crate::interrupt::irql;
     use crate::interrupt::InterruptObject;
     use crate::sched::event::EventKind;
-    use crate::sched::wait::{ClockStamp, WaitDisposition, WaitMode, WaitReason};
+    use crate::sched::wait::WaitReason;
     use crate::serial_println;
+    use crate::status::NtStatus;
 
     static mut CHANNEL: Channel<Ports> = Channel::new(Ports, PRIMARY_BASE, PRIMARY_CONTROL);
     static mut OBJECT: InterruptObject = InterruptObject::zeroed();
@@ -135,41 +138,17 @@ mod target {
         }
     }
 
-    /// A thread's wait: block on the event with the timeout, as the syscall gate does —
-    /// interrupts masked from the signal check until the thread is parked, so a completion cannot
-    /// slip between them.
+    /// A thread's wait: block on the event with the timeout (see [`wait_current`]).
+    ///
+    /// [`wait_current`]: crate::sched::wait::wait_current
     fn block_until_signaled() -> bool {
-        let dispatcher = crate::sched::idle::dispatcher();
-        let state = irql::state_mut();
-        let enabled = state.interrupts_enabled();
-        state.mask_interrupts();
-        let stamp = ClockStamp {
-            system_time: crate::interrupt::clock::system_time(),
-            tick: crate::interrupt::clock::ticks(),
-        };
-        // SAFETY: the running thread, live and exclusive with interrupts masked.
-        let current = unsafe { &mut *dispatcher.current_thread() };
         let timeout =
             COMPLETION_TIMEOUT_TICKS as i64 * crate::interrupt::clock::INTERVAL_100NS as i64;
         // SAFETY: the event is a static, initialized at bring-up.
         let waitable = unsafe { (*addr_of_mut!(EVENT)).waitable() };
-        let status = match dispatcher.wait_single(
-            current,
-            waitable,
-            WaitReason::Executive,
-            WaitMode::Kernel,
-            false,
-            Some(timeout),
-            stamp,
-        ) {
-            WaitDisposition::Complete(status) => status,
-            WaitDisposition::Yield => {
-                dispatcher.park_and_switch();
-                current.wait_status()
-            }
-        };
-        restore_interrupts(enabled);
-        status == crate::sched::wait::STATUS_SUCCESS
+        let status =
+            crate::sched::wait::wait_current(waitable, WaitReason::Executive, Some(timeout));
+        status == crate::status::STATUS_SUCCESS
     }
 
     /// Bring the disk up: detect the primary master, connect its interrupt, IDENTIFY it, and record
@@ -206,6 +185,7 @@ mod target {
                 Ok(identity) => {
                     *addr_of_mut!(IDENTITY) = Some(identity);
                     *addr_of_mut!(CAPACITY) = identity.sectors;
+                    IDE_DISK.lock.init();
                     serial_println!(
                         "F2K: ide: primary master: LBA28, {} sectors",
                         identity.sectors
@@ -223,7 +203,7 @@ mod target {
     /// invalid-parameter (the run leaves the disk), I/O timeout, or device error. The buffer must
     /// hold whole sectors.
     #[must_use]
-    pub fn read(lba: u32, buffer: &mut [u8]) -> i32 {
+    pub fn read(lba: u32, buffer: &mut [u8]) -> NtStatus {
         assert!(
             !IN_FLIGHT.swap(true, Ordering::SeqCst),
             "overlapping disk reads: the driver has one request slot"
@@ -249,11 +229,48 @@ mod target {
         // SAFETY: written once at bring-up.
         unsafe { *addr_of_mut!(IDENTITY) }
     }
+
+    /// The disk as a block device. Its lock queues concurrent readers ahead of the driver's one
+    /// request slot (whose assert stays as the backstop).
+    pub struct IdeDisk {
+        lock: DeviceLock,
+    }
+
+    static IDE_DISK: IdeDisk = IdeDisk {
+        lock: DeviceLock::new(),
+    };
+
+    impl BlockDevice for IdeDisk {
+        fn info(&self) -> DeviceInfo {
+            DeviceInfo {
+                kind: DeviceKind::Disk,
+                bus: BusType::Ata,
+                sector_size: SECTOR_SIZE as u32,
+                // SAFETY: written once at bring-up.
+                sectors: unsafe { *addr_of_mut!(CAPACITY) } as u64,
+                removable: false,
+                read_only: false,
+            }
+        }
+
+        fn read(&self, lba: u64, buffer: &mut [u8]) -> NtStatus {
+            if let Err(status) = check_request(&self.info(), lba, buffer) {
+                return status;
+            }
+            // The run is on the disk, whose LBA28 capacity fits in 32 bits.
+            self.lock.with(|| read(lba as u32, buffer))
+        }
+    }
+
+    /// The disk as a block device, if bring-up found a usable disk.
+    pub fn block_device() -> Option<&'static dyn BlockDevice> {
+        identity().map(|_| &IDE_DISK as &'static dyn BlockDevice)
+    }
 }
 
 #[cfg(target_arch = "x86")]
 #[allow(unused_imports)]
-pub use target::{identity, init, read};
+pub use target::{block_device, identity, init, read};
 
 #[cfg(test)]
 mod tests {
@@ -261,9 +278,9 @@ mod tests {
         COMMAND, IDENTIFY_DEVICE, PRIMARY_BASE, PRIMARY_CONTROL, PRIMARY_VECTOR,
     };
     use super::super::sim::{SimChannel, DISK};
-    use super::super::STATUS_SUCCESS;
     use super::*;
     use crate::hw::portio::Io;
+    use crate::status::STATUS_SUCCESS;
 
     /// The interrupt path end to end on the host: the object connected at the IDE vector and
     /// level, the claim raising to that level, the service routine's single acknowledging status

@@ -28,15 +28,3 @@ mod sim;
 #[cfg(any(test, feature = "disk-smoke"))]
 pub mod smoke;
 mod taskfile;
-
-// NT-shaped completion statuses. Negative (severity error) means failure.
-pub use crate::sched::wait::STATUS_SUCCESS;
-pub const STATUS_INVALID_PARAMETER: i32 = 0xC000_000Du32 as i32;
-pub const STATUS_NO_SUCH_DEVICE: i32 = 0xC000_000Eu32 as i32;
-pub const STATUS_IO_TIMEOUT: i32 = 0xC000_00B5u32 as i32;
-pub const STATUS_IO_DEVICE_ERROR: i32 = 0xC000_0185u32 as i32;
-
-/// Whether an NT status reports success (any non-error severity).
-pub fn nt_success(status: i32) -> bool {
-    status >= 0
-}

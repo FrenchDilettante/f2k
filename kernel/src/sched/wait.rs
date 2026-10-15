@@ -28,11 +28,9 @@ use core::ptr::{addr_of_mut, eq, null_mut};
 use super::dispatcher::Dispatcher;
 use super::thread::{Thread, ThreadState};
 use super::{unlink, Links, List, REALTIME_BASE, TIME_CRITICAL_CEILING};
-
-/// The wait statuses, as documented NTSTATUS values: what a completed wait reports. The timeout
-/// value is the ABI the Win32 wait returns raw (WAIT_TIMEOUT).
-pub const STATUS_SUCCESS: i32 = 0x0000_0000;
-pub const STATUS_TIMEOUT: i32 = 0x0000_0102;
+/// The wait statuses: what a completed wait reports. The timeout value is the ABI the Win32 wait
+/// returns raw (WAIT_TIMEOUT).
+pub use crate::status::{STATUS_SUCCESS, STATUS_TIMEOUT};
 
 /// The low three bits of a waitable kind: the selector that decides whether a satisfied wait
 /// consumes the object's signal. The timer kinds share numbers with the event kinds through it.
@@ -633,6 +631,65 @@ impl Dispatcher {
             self.standby_from_ready(thread.priority);
         }
     }
+}
+
+/// Block the running thread on `object` from kernel code, with an optional timeout (100 ns units,
+/// relative), and return the wait's status (see [`wait_current_with`]).
+#[cfg(target_arch = "x86")]
+pub fn wait_current(
+    object: *mut Waitable,
+    reason: WaitReason,
+    timeout: Option<i64>,
+) -> crate::status::NtStatus {
+    wait_current_with(|dispatcher, thread, stamp| {
+        dispatcher.wait_single(
+            thread,
+            object,
+            reason,
+            WaitMode::Kernel,
+            false,
+            timeout,
+            stamp,
+        )
+    })
+}
+
+/// Block the running thread through `start`, the wait entry (it either satisfies the wait at once
+/// or parks the thread), and return the wait's status. Interrupts are masked from the entry until
+/// the thread is parked — as in the syscall gate — so a signal cannot slip between them; the switch
+/// resumes here on the wake, and the interrupt flag is put back as the call found it. The idle
+/// thread cannot block, so calling this on it is a contract violation.
+#[cfg(target_arch = "x86")]
+pub fn wait_current_with(
+    start: impl FnOnce(&mut Dispatcher, &mut Thread, ClockStamp) -> WaitDisposition,
+) -> crate::status::NtStatus {
+    assert!(
+        !crate::sched::idle::on_idle_thread(),
+        "the idle thread cannot block"
+    );
+    let dispatcher = crate::sched::idle::dispatcher();
+    let state = crate::interrupt::irql::state_mut();
+    let enabled = state.interrupts_enabled();
+    state.mask_interrupts();
+    let stamp = ClockStamp {
+        system_time: crate::interrupt::clock::system_time(),
+        tick: crate::interrupt::clock::ticks(),
+    };
+    // SAFETY: the running thread, live and exclusive with interrupts masked.
+    let current = unsafe { &mut *dispatcher.current_thread() };
+    let status = match start(dispatcher, current, stamp) {
+        WaitDisposition::Complete(status) => status,
+        WaitDisposition::Yield => {
+            dispatcher.park_and_switch();
+            current.wait_status()
+        }
+    };
+    if enabled {
+        state.unmask_interrupts();
+    } else {
+        state.mask_interrupts();
+    }
+    status
 }
 
 // --- The timeout machinery -------------------------------------------------

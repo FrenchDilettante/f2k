@@ -3,10 +3,10 @@
 
 use super::channel::Channel;
 use super::latch::{Completion, Latch};
-use super::nt_success;
 use super::regs::{IDENTIFY_DEVICE, SECTOR_SIZE};
 use super::taskfile::TaskFile;
 use crate::hw::portio::Io;
+use crate::status::{nt_success, NtStatus};
 
 /// What IDENTIFY DEVICE reports that the driver uses.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -35,7 +35,7 @@ pub enum Absent {
     /// Nothing answers on the master position.
     NoDevice,
     /// A device answers but IDENTIFY DEVICE failed (an ATAPI device aborts it), with the status.
-    NotAta(i32),
+    NotAta(NtStatus),
     /// The disk does not support LBA addressing.
     NoLba,
 }

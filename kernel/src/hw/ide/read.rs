@@ -5,8 +5,10 @@ use super::channel::Channel;
 use super::latch::{Completion, Latch};
 use super::regs::{MAX_SECTORS_PER_COMMAND, READ_SECTORS, SECTOR_SIZE};
 use super::taskfile::pack_lba28;
-use super::{nt_success, STATUS_INVALID_PARAMETER, STATUS_NO_SUCH_DEVICE, STATUS_SUCCESS};
 use crate::hw::portio::Io;
+use crate::status::{
+    nt_success, NtStatus, STATUS_INVALID_PARAMETER, STATUS_NO_SUCH_DEVICE, STATUS_SUCCESS,
+};
 
 /// Read `buffer.len() / 512` contiguous sectors starting at `lba` from a disk of `capacity`
 /// sectors (0: no disk), one READ SECTORS command per 256. Returns an NT status.
@@ -18,7 +20,7 @@ pub fn read<IoT: Io, C: Completion<IoT>>(
     capacity: u32,
     lba: u32,
     buffer: &mut [u8],
-) -> i32 {
+) -> NtStatus {
     assert!(
         !buffer.is_empty() && buffer.len() % SECTOR_SIZE == 0,
         "a disk read moves whole sectors"
@@ -55,8 +57,8 @@ mod tests {
         COMMAND, DEVICE, LBA_HIGH, LBA_LOW, LBA_MID, PRIMARY_BASE, SECTOR_COUNT,
     };
     use super::super::sim::{expected, ready, writes, Deliver, DISK};
-    use super::super::STATUS_IO_TIMEOUT;
     use super::*;
+    use crate::status::STATUS_IO_TIMEOUT;
 
     /// READ SECTORS: count, LBA low/mid/high, device, then the command — and nothing written while
     /// the device was busy or holding data.

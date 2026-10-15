@@ -8,8 +8,8 @@ use super::regs::{
     POLL_BOUND, SECTOR_COUNT, SECTOR_SIZE, STATUS,
 };
 use super::taskfile::TaskFile;
-use super::{STATUS_IO_DEVICE_ERROR, STATUS_IO_TIMEOUT, STATUS_SUCCESS};
 use crate::hw::portio::Io;
+use crate::status::{NtStatus, STATUS_IO_DEVICE_ERROR, STATUS_IO_TIMEOUT, STATUS_SUCCESS};
 
 /// One channel's registers.
 pub struct Channel<IoT: Io> {
@@ -63,7 +63,7 @@ impl<IoT: Io> Channel<IoT> {
         task_file: TaskFile,
         command: u8,
         buffer: &mut [u8],
-    ) -> i32 {
+    ) -> NtStatus {
         assert!(
             !buffer.is_empty() && buffer.len() % SECTOR_SIZE == 0,
             "a PIO transfer moves whole sectors"
@@ -154,7 +154,7 @@ impl<IoT: Io> Channel<IoT> {
 
     /// A command that failed with ERR: read the error register (the device's diagnosis) and
     /// report the failure.
-    fn device_error(&mut self) -> i32 {
+    fn device_error(&mut self) -> NtStatus {
         let _error = self.io.read(self.base + ERROR);
         STATUS_IO_DEVICE_ERROR
     }
