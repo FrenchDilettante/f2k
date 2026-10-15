@@ -75,6 +75,19 @@ VBoxManage startvm F2K
 make run-tests
 ```
 
+### The kernel32 contract harness
+The compatibility surface's behavior is pinned host-side by the
+contract harness (`kernel/src/compat/harness/`, all `#[cfg(test)]`):
+each export's scenarios live under its API group, disabled by
+default (`#[ignore]`) and switched on as implementations migrate.
+The ledger (`scripts/kernel32-ledger.yaml`) maps every export to
+its group, contract status, and scenarios; the report script prints
+the per-group progress (`--check` verifies the ledger against the
+scenario sources, `--run` fills the passing column).
+```bash
+.venv/bin/python scripts/kernel32-ledger.py --check
+```
+
 ### On-target QEMU suite
 The cases (kernel features to build with, image to boot, expected
 COM1 strings) are data in `scripts/qemu-tests.yaml`;
@@ -127,7 +140,9 @@ f2k/
 │   ├── create_partition_table.py  # MBR partition table for the disk image
 │   ├── test-boot.sh       # Boot one image in QEMU and assert COM1 strings
 │   ├── run-qemu-tests.py  # On-target suite runner: builds and boots per case
-│   └── qemu-tests.yaml    # On-target test cases (data, not Makefile targets)
+│   ├── qemu-tests.yaml    # On-target test cases (data, not Makefile targets)
+│   ├── kernel32-ledger.py   # kernel32 contract ledger report (host-side)
+│   └── kernel32-ledger.yaml  # The contract ledger (data, not Makefile targets)
 │
 ├── tests/            # Windows 2000 test corpus (see tests/README.md)
 │
