@@ -505,7 +505,11 @@ mod target {
 
     /// The assembly stub's landing: service the interrupt the frame
     /// names, then drain the deferred-work queue (the dispatch
-    /// software level runs on the way down, at the interrupt exit).
+    /// software level runs on the way down, at the interrupt exit),
+    /// then deliver any pending dispatch request — a quantum the
+    /// tick ended, or a thread the drained work readied at a
+    /// higher priority. A delivered switch resumes this exit when
+    /// the interrupted thread next runs.
     extern "C" fn dispatch(frame: &ExceptionFrame) {
         let vector = frame.vector as u8;
         // SAFETY: single CPU; the table and controller are kernel
@@ -524,6 +528,7 @@ mod target {
                         core::ptr::read_volatile(addr_of!(ENDED)) + 1,
                     );
                     crate::interrupt::dpc::drain();
+                    crate::sched::idle::dispatcher().deliver_pending();
                 }
                 Outcome::Spurious => {
                     core::ptr::write_volatile(

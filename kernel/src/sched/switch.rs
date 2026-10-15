@@ -274,7 +274,7 @@ pub fn switch_plan(old: &super::thread::Thread, new: &super::thread::Thread, dpc
 }
 
 /// Rewrite a TEB descriptor entry's base bytes to `teb`: a complete
-/// base rewrite touching no other byte. The host-side oracle for
+/// base rewrite touching no other byte — the host-side model of
 /// the assembly's three stores.
 pub fn teb_entry_after_edit(entry: u64, teb: u32) -> u64 {
     let mut bytes = entry.to_le_bytes();

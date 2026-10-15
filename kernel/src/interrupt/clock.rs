@@ -5,8 +5,9 @@
 //! the time increment to interrupt time; a fractional accumulator
 //! (fed by the same increment and refilled by the maximum) decides
 //! whether the interrupt was a full tick — only a full tick advances
-//! system time and the tick count. System time moves by the
-//! adjustable time-slew value, the tick count does not.
+//! system time, the tick count, and the running thread's quantum.
+//! System time moves by the adjustable time-slew value, the tick
+//! count does not.
 //!
 //! The rate lives entirely in the four variables set by
 //! [`Clock::set_time_increment`]; the tick math itself is
@@ -232,6 +233,10 @@ pub fn service() {
                 crate::interrupt::dpc::enqueue(dpc, argument as usize, 0);
             }
             clock.account_runtime(crate::interrupt::dpc::queue_mut());
+            // A full tick charges the running thread's quantum; a
+            // charge that runs the quantum out requests the
+            // dispatch window's decision at this interrupt's exit.
+            crate::sched::idle::dispatcher().charge_running_tick();
         }
     }
 }
@@ -399,6 +404,42 @@ mod tests {
             crate::hw::pit::divisor_for_100ns(FINEST_100NS),
             1_197,
             "the finest rate's divisor"
+        );
+    }
+
+    /// The full-tick arm is the only charge site: a fractional
+    /// interrupt advances the time but leaves the running thread's
+    /// quantum alone; the full tick that follows charges it.
+    #[test]
+    fn only_a_full_tick_charges_the_quantum() {
+        use crate::sched::dispatcher::Dispatcher;
+        use crate::sched::process::SchedProcess;
+        use crate::sched::thread::{Thread, ThreadState};
+
+        let d = Box::leak(Box::new(Dispatcher::zeroed()));
+        d.init();
+        let p = Box::leak(Box::new(SchedProcess::new(0x0090_0000, 8)));
+        p.init();
+        let t = Box::leak(Box::new(Thread::empty()));
+        // SAFETY: both records are leaked at their final addresses.
+        unsafe { t.attach_to(p) };
+        t.state = ThreadState::Running;
+        d.enter(t as *const Thread as *mut Thread);
+
+        let mut clock = Clock::new();
+        clock.set_time_increment(100_000, 10_000);
+        clock.time_increment = 50_000; // a source twice as fast
+
+        // The service's composition: the charge runs inside the
+        // full-tick arm and nowhere else.
+        assert_eq!(clock.tick(), Tick::Fractional);
+        assert_eq!(t.quantum(), crate::sched::QUANTUM_RESET, "a fractional tick charges nothing");
+        assert_eq!(clock.tick(), Tick::Full);
+        d.charge_running_tick();
+        assert_eq!(
+            t.quantum(),
+            crate::sched::QUANTUM_RESET - crate::sched::QUANTUM_TICK,
+            "one full tick charges once"
         );
     }
 }

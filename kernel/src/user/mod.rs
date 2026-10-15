@@ -174,14 +174,14 @@ core::arch::global_asm!(
 /// space; the multi-process suite hands the chain to the next
 /// process (its runner tears this one down).
 pub fn process_exited(code: u32) -> ! {
-    #[cfg(all(target_arch = "x86", any(feature = "run-pingpong", feature = "run-sleep")))]
+    #[cfg(all(target_arch = "x86", any(feature = "run-pingpong", feature = "run-sleep", feature = "run-spin")))]
     {
         // The thread-ified boot: the process's exit is its last
         // thread's exit (the report and the last-thread route are
         // the exit path's own).
         crate::process::threads::exit_thread(code as i32)
     }
-    #[cfg(all(target_arch = "x86", not(any(feature = "run-pingpong", feature = "run-sleep"))))]
+    #[cfg(all(target_arch = "x86", not(any(feature = "run-pingpong", feature = "run-sleep", feature = "run-spin"))))]
     {
         #[cfg(feature = "run-process-suite")]
         {
@@ -209,10 +209,10 @@ pub fn process_exited(code: u32) -> ! {
 
 /// Launch the first user process: exit0 through the PE loader by
 /// default, ret0 with the `run-ret0` feature, hello with the
-/// `run-hello` feature, the blocking-wait or timer smoke with
-/// `run-pingpong`/`run-sleep` (both on the thread-ified boot), a
-/// fault-test stub, or the full multi-process suite with
-/// `run-process-suite`. Never returns.
+/// `run-hello` feature, the blocking-wait, timer, or preemption
+/// smoke with `run-pingpong`/`run-sleep`/`run-spin` (all on the
+/// thread-ified boot), a fault-test stub, or the full
+/// multi-process suite with `run-process-suite`. Never returns.
 #[cfg(target_arch = "x86")]
 pub fn run_user_process() -> ! {
     #[cfg(feature = "run-process-suite")]
@@ -234,6 +234,15 @@ pub fn run_user_process() -> ! {
             #[cfg(all(
                 not(feature = "run-pingpong"),
                 not(feature = "run-sleep"),
+                feature = "run-spin"
+            ))]
+            {
+                crate::exec::loader::run_image(crate::exec::loader::SPIN, "spin")
+            }
+            #[cfg(all(
+                not(feature = "run-pingpong"),
+                not(feature = "run-sleep"),
+                not(feature = "run-spin"),
                 feature = "run-hello"
             ))]
             {
@@ -242,6 +251,7 @@ pub fn run_user_process() -> ! {
             #[cfg(all(
                 not(feature = "run-pingpong"),
                 not(feature = "run-sleep"),
+                not(feature = "run-spin"),
                 not(feature = "run-hello"),
                 not(feature = "run-ret0")
             ))]
@@ -251,6 +261,7 @@ pub fn run_user_process() -> ! {
             #[cfg(all(
                 not(feature = "run-pingpong"),
                 not(feature = "run-sleep"),
+                not(feature = "run-spin"),
                 not(feature = "run-hello"),
                 feature = "run-ret0"
             ))]

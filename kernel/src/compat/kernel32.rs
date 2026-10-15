@@ -556,7 +556,7 @@ const INFINITE: u32 = 0xFFFF_FFFF;
 const WAIT_FAILED: u32 = 0xFFFF_FFFF;
 
 /// CREATE_SUSPENDED: the one creation flag the subset refuses
-/// (there is no suspend machinery until the APC slice).
+/// (no suspend machinery exists).
 const CREATE_SUSPENDED: u32 = 0x0000_0004;
 
 /// The Win32 timeout conversion: INFINITE waits forever; any
@@ -595,6 +595,20 @@ fn tick_count_ms(ticks: u64) -> u64 {
 /// machinery); every other bit is ignored.
 fn creation_flags_ok(flags: u32) -> bool {
     flags & CREATE_SUSPENDED == 0
+}
+
+/// The SetThreadPriority value conversion: the band values are
+/// base-priority increments and pass straight through; the two
+/// edge specials name the class saturation pins instead.
+fn thread_priority_increment(value: i32) -> i32 {
+    const TIME_CRITICAL: i32 = 15;
+    const IDLE: i32 = -15;
+    const SATURATION: i32 = 16;
+    match value {
+        TIME_CRITICAL => SATURATION,
+        IDLE => -SATURATION,
+        other => other,
+    }
 }
 
 /// CreateEventA: a fresh event from the pool, inserted into the
@@ -821,6 +835,41 @@ fn svc_flush_file_buffers(frame: &mut crate::user::TrapFrame, _args: &[u32]) {
     frame.eax = 1;
 }
 
+/// SetThreadPriority: set a thread's base-priority increment from
+/// its process's base. The handle must name a thread; the value is
+/// the increment conversion (the band values, or one of the two
+/// saturation specials). The kernel's base-priority machinery
+/// requeues, boosts, or preempts as the thread's state requires —
+/// a raised Ready thread requests the processor, and the service
+/// boundary delivers the request before the caller returns. The
+/// return is the documented success boolean.
+fn svc_set_thread_priority(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    #[cfg(target_arch = "x86")]
+    {
+        let (handle, value) = (args[0], args[1] as i32);
+        let Some(slot) = crate::process::current_mut().handles_mut().lookup(handle) else {
+            frame.eax = 0;
+            return;
+        };
+        if slot.kind != crate::sched::object::ObjectKind::Thread {
+            frame.eax = 0;
+            return;
+        }
+        let dispatcher = crate::sched::idle::dispatcher();
+        // SAFETY: the slot's kind names a thread, and the record
+        // lives for the process's lifetime.
+        let thread =
+            unsafe { &mut *crate::sched::thread::Thread::from_waitable(slot.waitable) };
+        dispatcher.set_base_priority(thread, thread_priority_increment(value));
+        frame.eax = 1;
+    }
+    #[cfg(not(target_arch = "x86"))]
+    {
+        let _ = args;
+        frame.eax = 0;
+    }
+}
+
 /// SetFilePointer: failure floor — no file handle exists to seek,
 /// so the documented failure return INVALID_SET_FILE_POINTER is the
 /// honest answer.
@@ -846,7 +895,7 @@ fn svc_get_current_process(frame: &mut crate::user::TrapFrame, _args: &[u32]) {
 /// at service 1, the rest alphabetical). Quirk: a name absent from
 /// here fails the loader's snap, so this set is exactly the union
 /// of the checked-in fixtures' import surfaces.
-pub const SERVICES: [(&str, u32, ServiceFn); 46] = [
+pub const SERVICES: [(&str, u32, ServiceFn); 47] = [
     ("ExitProcess", 4, svc_exit_process),
     ("CloseHandle", 4, svc_close_handle),
     ("CreateEventA", 16, svc_create_event_a),
@@ -885,6 +934,7 @@ pub const SERVICES: [(&str, u32, ServiceFn); 46] = [
     ("SetFilePointer", 16, svc_set_file_pointer),
     ("SetHandleCount", 4, svc_set_handle_count),
     ("SetStdHandle", 8, svc_floor_zero),
+    ("SetThreadPriority", 8, svc_set_thread_priority),
     ("Sleep", 4, svc_sleep),
     ("TerminateProcess", 8, svc_floor_zero),
     ("UnhandledExceptionFilter", 4, svc_floor_zero),
@@ -1001,12 +1051,14 @@ mod tests {
     const RET0: &[u8] = include_bytes!("../../../tests/ret0/ret0.exe");
     const HELLO: &[u8] = include_bytes!("../../../tests/hello/hello.exe");
     const SLEEP: &[u8] = include_bytes!("../../../tests/sleep/sleep.exe");
+    const SPIN: &[u8] = include_bytes!("../../../tests/spin/spin.exe");
 
     /// The corpus's kernel32 import surface (hello's 40 — ret0's 35
-    /// plus the console-stdio group — and the sleep smoke's two
-    /// timer exports; the loader's snap contract): the registry
-    /// must spell it exactly.
-    const CORPUS_IMPORTS: [&str; 46] = [
+    /// plus the console-stdio group — the sleep smoke's two timer
+    /// exports, and the spin smoke's thread-priority export; the
+    /// loader's snap contract): the registry must spell it
+    /// exactly.
+    const CORPUS_IMPORTS: [&str; 47] = [
         "CreateThread", "CreateEventA", "SetEvent", "WaitForSingleObject",
         "VirtualFree", "GetVersion", "ExitProcess", "TerminateProcess",
         "GetCurrentProcess", "UnhandledExceptionFilter", "GetModuleFileNameA",
@@ -1019,14 +1071,14 @@ mod tests {
         "MultiByteToWideChar", "LCMapStringA", "LCMapStringW",
         "GetStringTypeA", "GetStringTypeW", "GetLastError",
         "FlushFileBuffers", "SetFilePointer", "SetStdHandle", "CloseHandle",
-        "Sleep", "GetTickCount",
+        "Sleep", "GetTickCount", "SetThreadPriority",
     ];
 
     /// Registry consistency: names unique, numbers are positions plus
     /// one (ExitProcess pinned at 1), every corpus import resolves.
     #[test]
     fn registry_spells_the_corpus_surface() {
-        assert_eq!(SERVICES.len(), 46);
+        assert_eq!(SERVICES.len(), 47);
         for (i, &(name, arg_bytes, _)) in SERVICES.iter().enumerate() {
             assert!(!name.is_empty());
             assert_eq!(lookup_service(i as u32 + 1).map(|(b, _)| b), Some(arg_bytes));
@@ -1038,7 +1090,7 @@ mod tests {
         assert_eq!(SERVICES[0].0, "ExitProcess");
         assert_eq!(crate::user::syscall::SYS_EXIT, 1);
         assert_eq!(lookup_service(0), None);
-        assert_eq!(lookup_service(47), None);
+        assert_eq!(lookup_service(48), None);
         assert_eq!(lookup_service(u32::MAX), None);
         // Set equality with the corpus list.
         for name in CORPUS_IMPORTS {
@@ -1083,6 +1135,19 @@ mod tests {
         assert_eq!(result.thunks, 44);
     }
 
+    /// Every spin import (the preemption smoke's 44-export surface
+    /// — hello's console group plus the thread exports, with
+    /// SetThreadPriority the smoke's own addition) resolves against
+    /// the real registry.
+    #[test]
+    fn spin_snaps_fully_against_the_registry() {
+        let image = Image::parse(SPIN).expect("spin parses");
+        let mut mapped = vec![0u8; image.size_of_image as usize];
+        image.map_into(SPIN, &mut mapped);
+        let result = image.snap_imports(SPIN, &mut mapped, MODULE_NAME, resolve);
+        assert_eq!(result.thunks, 44);
+    }
+
     /// The sleep interval conversion: milliseconds to 100 ns
     /// units, exact; INFINITE is the longest relative interval
     /// the ABI names, not a special kernel value.
@@ -1093,6 +1158,20 @@ mod tests {
         assert_eq!(sleep_interval(5), 50_000);
         assert_eq!(sleep_interval(0), 0);
         assert_eq!(sleep_interval(INFINITE), i64::MIN);
+    }
+
+    /// The SetThreadPriority value conversion: the five band
+    /// values are increments and pass straight through; the two
+    /// edge specials name the class saturation pins instead.
+    #[test]
+    fn thread_priority_values_convert_to_increments() {
+        assert_eq!(thread_priority_increment(0), 0);
+        assert_eq!(thread_priority_increment(1), 1);
+        assert_eq!(thread_priority_increment(-1), -1);
+        assert_eq!(thread_priority_increment(2), 2);
+        assert_eq!(thread_priority_increment(-2), -2);
+        assert_eq!(thread_priority_increment(15), 16);
+        assert_eq!(thread_priority_increment(-15), -16);
     }
 
     /// The tick count's millisecond conversion, floored once at
@@ -1234,7 +1313,7 @@ mod tests {
     }
 
     /// The version dword splits into the CRT's globals (its own
-    /// shift/mask recipe, restated as the oracle).
+    /// shift/mask recipe, restated independently).
     #[test]
     fn version_splits_like_the_crt() {
         assert_eq!(VERSION, 0x0893_0005);
@@ -1292,7 +1371,7 @@ mod tests {
         let mut frame = zero_frame();
         svc_get_file_type(&mut frame, &[3]);
         assert_eq!(frame.eax, 2);
-        // The CRT's flag decode, restated as the oracle.
+        // The CRT's flag decode, restated independently.
         let device_flag = |kind: u32| match kind {
             0 => "unusable",
             2 => "char",

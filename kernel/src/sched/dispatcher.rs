@@ -19,8 +19,8 @@ use super::process::SchedProcess;
 use super::thread::{Thread, ThreadState};
 use super::timer::TimerTable;
 use super::{
-    unlink, List, Links, HIGHEST_PRIORITY, PRIORITY_LEVELS, QUANTUM_TICK, QUANTUM_WAIT_CHARGE,
-    REALTIME_BASE, ROUND_TRIP_LIMIT, TIME_CRITICAL_CEILING,
+    unlink, List, Links, HIGHEST_PRIORITY, PRIORITY_LEVELS, QUANTUM_RESET, QUANTUM_TICK,
+    QUANTUM_WAIT_CHARGE, REALTIME_BASE, ROUND_TRIP_LIMIT, TIME_CRITICAL_CEILING,
 };
 use core::ptr::{addr_of_mut, eq, null_mut};
 
@@ -45,6 +45,10 @@ pub struct Dispatcher {
     /// The timer table: the due-time-ordered home of wait
     /// timeouts, driven by the clock's deferred expiry work.
     pub(super) timer_table: TimerTable,
+    /// Whether the running thread's quantum ran out at the last
+    /// full tick: the dispatch window's question, consumed (and
+    /// cleared) before the quantum decision runs.
+    quantum_end_requested: bool,
 }
 
 impl Dispatcher {
@@ -60,6 +64,7 @@ impl Dispatcher {
             idle_thread: null_mut(),
             waiting: List::empty(),
             timer_table: TimerTable::zeroed(),
+            quantum_end_requested: false,
         }
     }
 
@@ -74,6 +79,7 @@ impl Dispatcher {
         self.next = null_mut();
         self.idle_thread = null_mut();
         self.waiting.init();
+        self.quantum_end_requested = false;
         self.timer_table
             .init(crate::interrupt::clock::INTERVAL_100NS as u64);
     }
@@ -508,13 +514,96 @@ impl Dispatcher {
     /// Charge one clock tick against `thread`'s quantum. Returns
     /// whether the quantum ended: the charge leaves a positive
     /// quantum alone; at zero it flags the end — except for the idle
-    /// thread, which is never flagged.
+    /// thread, which is never flagged (so its ledger runs off the
+    /// bottom; the arithmetic wraps like the byte counter it is,
+    /// and nothing reads it).
     pub fn tick_quantum(&mut self, thread: &mut Thread) -> bool {
-        thread.quantum -= QUANTUM_TICK;
+        thread.quantum = thread.quantum.wrapping_sub(QUANTUM_TICK);
         if thread.quantum > 0 {
             return false;
         }
         !core::ptr::eq(thread, self.idle_thread)
+    }
+
+    /// Charge the running thread's quantum for one full tick, and
+    /// request the dispatch window's decision when the charge runs
+    /// the quantum out. The charge consults neither the
+    /// interrupted frame nor the processor's mode — whoever is
+    /// current is charged, whatever it was doing. The idle thread
+    /// is charged like any other but never requests.
+    pub(crate) fn charge_running_tick(&mut self) {
+        let current = self.current;
+        if current.is_null() {
+            return;
+        }
+        // SAFETY: the running thread is live and attached.
+        if self.tick_quantum(unsafe { &mut *current }) {
+            self.quantum_end_requested = true;
+        }
+    }
+
+    /// The dispatch window's decision: consume a pending request —
+    /// the tick's quantum end first, else a standby arrival — and,
+    /// when another thread should run, re-ready the running
+    /// thread (its displacement flag decides head vs tail) and
+    /// return the switch target; null when the running thread
+    /// keeps the processor. The request is cleared before the
+    /// quantum decision, and the decision re-verifies the
+    /// quantum, so a stale or mid-window re-armed request costs
+    /// nothing and survives for the next window.
+    pub fn dispatch_target(&mut self) -> *mut Thread {
+        if self.quantum_end_requested {
+            self.quantum_end_requested = false;
+            self.quantum_end();
+        }
+        let target = self.next;
+        if target.is_null() || core::ptr::eq(target, self.current) {
+            return null_mut();
+        }
+        // The target leaves the standby slot; the switch's caller
+        // enters it.
+        self.next = null_mut();
+        let current = self.current;
+        // SAFETY: the running thread is live, and not the target
+        // (the target was on the standby slot, never queued).
+        self.make_ready(unsafe { &mut *current });
+        target
+    }
+
+    /// Deliver a pending dispatch request at a dispatch point: the
+    /// interrupt exit (after the deferred work has run) and the
+    /// service boundary. The window opens only below the dispatch
+    /// level — a request armed inside an open window (the clock
+    /// can preempt it) waits for the next one. A delivered switch
+    /// leaves the calling frames in place on the calling thread's
+    /// kernel stack: the interrupted exit unwinds when the thread
+    /// is next resumed, its state untouched.
+    #[cfg(target_arch = "x86")]
+    pub fn deliver_pending(&mut self) {
+        if crate::interrupt::irql::state_mut().current() >= crate::interrupt::irql::DISPATCH {
+            return;
+        }
+        let target = self.dispatch_target();
+        if target.is_null() {
+            return;
+        }
+        let previous = crate::interrupt::irql::state_mut()
+            .raise(crate::interrupt::irql::DISPATCH);
+        // SAFETY: the running thread, live and exclusive here.
+        let old = self.current_thread();
+        // SAFETY: as above.
+        unsafe { (*old).level = crate::interrupt::irql::state_mut().capture() };
+        self.enter(target);
+        // SAFETY: the target's frame is planted (fresh) or saved
+        // (resumed) — the selection discipline guarantees it — and
+        // the dispatch level masks the dispatcher context.
+        unsafe { super::switch::swap_context(old, target) };
+        // The preempted thread's timeline resumes here.
+        // SAFETY: the running thread, live.
+        let current = self.current_thread();
+        // SAFETY: as above.
+        unsafe { crate::interrupt::irql::state_mut().restore((*current).level) };
+        crate::interrupt::irql::state_mut().lower(previous);
     }
 
     /// Charge one completed wait against `thread`'s quantum, with the
@@ -1891,5 +1980,475 @@ mod tests {
         assert_eq!(high.priority(), 15);
         assert_eq!(low.base_priority(), 1, "the variable floor");
         assert_eq!(low.priority(), 1);
+    }
+
+    // --- The tick's quantum charge --------------------------------------------
+
+    /// A1: the two-tick cadence — the charge is half the reset, so
+    /// a fresh quantum survives exactly one full tick and ends on
+    /// the second; the window's decision resets it, and the cycle
+    /// repeats.
+    #[test]
+    fn the_quantum_charge_runs_out_every_second_tick() {
+        let d = dispatcher();
+        let p = process(8);
+        let t = thread(p);
+        run(d, as_ptr(t));
+
+        // One charge: mid-quantum, no request.
+        d.charge_running_tick();
+        assert_eq!(t.quantum(), QUANTUM_RESET - QUANTUM_TICK);
+        assert!(!d.quantum_end_requested, "a mid-quantum charge requests nothing");
+
+        // Second charge: the quantum ends, the request is armed.
+        d.charge_running_tick();
+        assert_eq!(t.quantum(), 0);
+        assert!(d.quantum_end_requested, "the quantum end arms the request");
+
+        // The window consumes the request; with nobody else
+        // schedulable the decision resets the quantum and the
+        // thread continues.
+        assert!(d.dispatch_target().is_null());
+        assert!(!d.quantum_end_requested, "the window consumes the request");
+        assert_eq!(t.quantum(), QUANTUM_RESET);
+
+        // The cycle repeats.
+        d.charge_running_tick();
+        assert!(!d.quantum_end_requested);
+        d.charge_running_tick();
+        assert!(d.quantum_end_requested);
+    }
+
+    /// A2: the charge is mode- and context-blind — it lands on
+    /// whoever is current, taking no frame and no mode, whatever
+    /// the tick interrupted.
+    #[test]
+    fn the_charge_lands_on_whoever_is_current() {
+        let d = dispatcher();
+        let p = process(8);
+        let a = thread(p);
+        let b = thread(p);
+        run(d, as_ptr(a));
+        d.charge_running_tick();
+        assert_eq!(a.quantum(), QUANTUM_RESET - QUANTUM_TICK);
+        assert_eq!(b.quantum(), QUANTUM_RESET, "a non-current thread is untouched");
+
+        run(d, as_ptr(b));
+        d.charge_running_tick();
+        assert_eq!(b.quantum(), QUANTUM_RESET - QUANTUM_TICK);
+        assert_eq!(a.quantum(), QUANTUM_RESET - QUANTUM_TICK);
+    }
+
+    /// A3: the end test is signed — a charge landing on an
+    /// already-exhausted quantum still ends it (zero or negative,
+    /// not merely zero).
+    #[test]
+    fn an_exhausted_quantum_still_ends() {
+        let d = dispatcher();
+        let p = process(8);
+        let t = thread(p);
+        run(d, as_ptr(t));
+        t.quantum = 2;
+        d.charge_running_tick();
+        assert_eq!(t.quantum(), -1);
+        assert!(d.quantum_end_requested);
+    }
+
+    /// A4: the idle thread is charged like any other thread but
+    /// never requests — the gate sits between the charge and the
+    /// request, never around the charge.
+    #[test]
+    fn the_idle_thread_is_charged_but_never_requests() {
+        let d = dispatcher();
+        let p = process(0);
+        let idle = thread(p);
+        d.install_idle_thread(as_ptr(idle));
+        run(d, as_ptr(idle));
+
+        d.charge_running_tick();
+        assert_eq!(idle.quantum(), QUANTUM_RESET - QUANTUM_TICK);
+        assert!(!d.quantum_end_requested);
+        d.charge_running_tick();
+        assert_eq!(idle.quantum(), 0, "the idle thread's quantum is real data");
+        assert!(!d.quantum_end_requested, "only the request is gated");
+        assert!(d.dispatch_target().is_null());
+
+        // The ledger's floor: a charge at the byte floor wraps
+        // (the counter is a signed byte), and the wrap reads
+        // positive — the never-reset ledger keeps wrapping
+        // harmlessly, and no request ever arms.
+        idle.quantum = i8::MIN;
+        d.charge_running_tick();
+        assert_eq!(idle.quantum(), i8::MIN.wrapping_sub(QUANTUM_TICK));
+        assert!(!d.quantum_end_requested);
+    }
+
+    // --- The request rules ------------------------------------------------------
+
+    /// B2: making a thread ready at strictly higher priority than
+    /// the running thread requests the processor; an equal arrival
+    /// never does — round-robin among equals happens only at
+    /// quantum end.
+    #[test]
+    fn a_strictly_higher_arrival_requests_and_an_equal_does_not() {
+        let d = dispatcher();
+        let p = process(8);
+        let main = thread(p);
+        run(d, as_ptr(main));
+
+        let higher = thread(p);
+        higher.priority = 10;
+        higher.base_priority = 10;
+        d.make_ready(higher);
+        assert!(core::ptr::eq(d.next_thread(), as_ptr(higher)), "the higher arrival takes the standby slot");
+        assert!(main.preempted, "the running thread is marked for the head requeue");
+
+        // The equal arrival: no request, a plain tail queueing.
+        let d = dispatcher();
+        let p = process(8);
+        let main = thread(p);
+        run(d, as_ptr(main));
+        let equal = thread(p);
+        d.make_ready(equal);
+        assert!(d.next_thread().is_null(), "an equal arrival never requests");
+        assert!(!main.preempted);
+        assert_eq!(equal.state, ThreadState::Ready);
+    }
+
+    /// B3: the priority-change arms produce the same request data
+    /// as an arrival — a Ready thread raised above the running
+    /// thread, and a Running thread lowered below a ready one.
+    #[test]
+    fn priority_changes_request_the_processor() {
+        // A Ready thread raised: it re-readies through the
+        // strictly-higher rule.
+        let d = dispatcher();
+        let p = process(8);
+        let main = thread(p);
+        run(d, as_ptr(main));
+        let raised = thread(p);
+        d.make_ready(raised);
+        d.apply_priority(raised, 9);
+        assert!(core::ptr::eq(d.next_thread(), as_ptr(raised)));
+        assert!(main.preempted);
+
+        // A Running thread lowered: the replacement look selects a
+        // ready thread at or above the new priority.
+        let d = dispatcher();
+        let p = process(9);
+        let main = thread(p);
+        run(d, as_ptr(main));
+        let better = thread(p);
+        d.make_ready(better); // equal to the runner: queued, no request
+        assert!(d.next_thread().is_null());
+        d.apply_priority(main, 7);
+        assert!(
+            core::ptr::eq(d.next_thread(), as_ptr(better)),
+            "the lowered thread's replacement is selected"
+        );
+    }
+
+    /// B4: an idle processor takes a readied thread as a handoff,
+    /// not a preemption — nothing is displaced and nothing is
+    /// flagged.
+    #[test]
+    fn an_idle_processor_takes_the_thread_without_preemption() {
+        let d = dispatcher();
+        let p = process(0);
+        let idle = thread(p);
+        d.install_idle_thread(as_ptr(idle));
+        run(d, as_ptr(idle));
+
+        let p2 = process(8);
+        let t = thread(p2);
+        d.make_ready(t);
+        assert!(core::ptr::eq(d.next_thread(), as_ptr(t)));
+        assert!(!idle.preempted, "the handoff displaces nobody");
+    }
+
+    /// B5: the disable-quantum realtime exemption lives in the
+    /// decision, not in the charge — the request is armed, then
+    /// consumed to a refusal: the quantum refills to the maximum
+    /// and nobody is selected.
+    #[test]
+    fn the_realtime_exemption_refuses_at_the_decision() {
+        let d = dispatcher();
+        let p = process(20);
+        unsafe { (*p).disable_quantum = true };
+        let rt = thread(p);
+        run(d, as_ptr(rt));
+        assert!(rt.priority() >= REALTIME_BASE);
+
+        // A ready equal stays queued through the whole sequence.
+        let other = thread(p);
+        d.make_ready(other);
+        assert!(d.next_thread().is_null(), "an equal arrival never requests");
+
+        d.charge_running_tick();
+        d.charge_running_tick();
+        assert!(d.quantum_end_requested, "the charge itself is not exempted");
+        assert!(d.dispatch_target().is_null(), "the exemption refuses the switch");
+        assert_eq!(rt.quantum(), i8::MAX);
+        assert_eq!(other.state, ThreadState::Ready, "the queued equal is untouched");
+    }
+
+    // --- The delivery decision ----------------------------------------------------
+
+    /// C1: a quantum end with a better thread switches, and the
+    /// displaced running thread requeues at the tail — a
+    /// round-robined thread keeps its turn order among equals.
+    #[test]
+    fn a_quantum_end_switches_to_the_equal_and_requeues_at_the_tail() {
+        let d = dispatcher();
+        let p = process(8);
+        let a = thread(p);
+        run(d, as_ptr(a));
+        let b = thread(p);
+        d.make_ready(b); // queued at 8
+
+        d.charge_running_tick();
+        d.charge_running_tick();
+        let target = d.dispatch_target();
+        assert!(core::ptr::eq(target, as_ptr(b)), "the round-robin look finds the equal");
+        assert!(d.next_thread().is_null(), "the target leaves the slot");
+        assert_eq!(b.state, ThreadState::Standby, "the caller enters the target");
+        assert_eq!(a.state, ThreadState::Ready);
+        assert!(!a.preempted, "the quantum-end path flags nobody");
+        // The tail requeue: the selection order keeps the
+        // round-robin's FIFO among equals.
+        assert!(core::ptr::eq(d.find_ready(0), as_ptr(a)));
+    }
+
+    /// C1's strictly-higher variant: the quantum-end loser still
+    /// requeues at the tail even when a strictly higher thread had
+    /// taken the slot — the quantum decision clears the
+    /// displacement flag before the requeue spends it.
+    #[test]
+    fn a_quantum_end_clears_the_displacement_before_the_requeue() {
+        let d = dispatcher();
+        let p = process(8);
+        let a = thread(p);
+        run(d, as_ptr(a));
+        // A queued equal gives the tail requeue something to fall
+        // behind.
+        let queued = thread(p);
+        d.make_ready(queued);
+        let higher = thread(p);
+        higher.priority = 12;
+        higher.base_priority = 12;
+        d.make_ready(higher); // takes the slot, flags a
+        assert!(a.preempted);
+
+        d.charge_running_tick();
+        d.charge_running_tick();
+        let target = d.dispatch_target();
+        assert!(core::ptr::eq(target, as_ptr(higher)));
+        assert!(!a.preempted, "the decision cleared the flag");
+        // The tail requeue: the queued equal keeps its place ahead.
+        assert!(core::ptr::eq(d.find_ready(0), as_ptr(queued)));
+        assert!(core::ptr::eq(d.find_ready(0), as_ptr(a)));
+    }
+
+    /// C2: a request with no better thread is consumed to a
+    /// refusal — the thread keeps the processor with a fresh
+    /// quantum.
+    #[test]
+    fn a_request_with_no_better_thread_is_a_refusal() {
+        let d = dispatcher();
+        let p = process(8);
+        let a = thread(p);
+        run(d, as_ptr(a));
+
+        d.charge_running_tick();
+        d.charge_running_tick();
+        assert!(d.dispatch_target().is_null());
+        assert!(!d.quantum_end_requested);
+        assert_eq!(a.quantum(), QUANTUM_RESET);
+        assert_eq!(a.state, ThreadState::Running, "the thread keeps the processor");
+    }
+
+    /// C3: a strictly-higher standby — the shape a drained
+    /// deferred-work routine leaves — switches mid-quantum, with
+    /// the displaced thread requeued at the head.
+    #[test]
+    fn a_standby_from_the_drained_work_switches_at_the_head_requeue() {
+        let d = dispatcher();
+        let p = process(8);
+        let a = thread(p);
+        run(d, as_ptr(a));
+        a.quantum = QUANTUM_RESET - QUANTUM_TICK; // mid-quantum
+
+        // A queued equal gives the head requeue something to be
+        // ahead of.
+        let queued = thread(p);
+        d.make_ready(queued);
+
+        // The drain's effect: a strictly higher thread readied.
+        let woken = thread(p);
+        woken.priority = 12;
+        woken.base_priority = 12;
+        d.make_ready(woken);
+        assert!(core::ptr::eq(d.next_thread(), as_ptr(woken)));
+
+        let target = d.dispatch_target();
+        assert!(core::ptr::eq(target, as_ptr(woken)));
+        assert!(!d.quantum_end_requested, "no quantum was involved");
+        // The displaced thread went to the head of its queue.
+        assert!(core::ptr::eq(d.find_ready(0), as_ptr(a)));
+        assert!(core::ptr::eq(d.find_ready(0), as_ptr(queued)));
+    }
+
+    /// C4: the window's order — the drained work first, then the
+    /// quantum decision — is what lets an equal readied by the
+    /// drain win the round-robin look in the same window.
+    #[test]
+    fn the_window_sees_what_the_drain_readied() {
+        let d = dispatcher();
+        let p = process(8);
+        let a = thread(p);
+        run(d, as_ptr(a));
+        d.charge_running_tick();
+        d.charge_running_tick(); // the quantum ends, the request arms
+
+        // The drained work readies an equal — after the request,
+        // before the decision.
+        let s = thread(p);
+        d.make_ready(s);
+
+        let target = d.dispatch_target();
+        assert!(core::ptr::eq(target, as_ptr(s)), "the post-drain table feeds the decision");
+        assert!(d.next_thread().is_null());
+    }
+
+    /// C5: the decision is frame-agnostic — it consults thread
+    /// state alone; the interrupted frame's mode is not an input
+    /// (the entry takes none).
+    #[test]
+    fn the_decision_reads_thread_state_alone() {
+        // The decision is reached from whatever context the window
+        // opened in; the entry's only inputs are the dispatcher's
+        // own state, so every context decides identically.
+        let d = dispatcher();
+        let p = process(8);
+        let a = thread(p);
+        run(d, as_ptr(a));
+        let b = thread(p);
+        d.make_ready(b);
+        d.charge_running_tick();
+        d.charge_running_tick();
+        assert!(core::ptr::eq(d.dispatch_target(), as_ptr(b)));
+    }
+
+    // --- The request lifecycle -----------------------------------------------------
+
+    /// D1: the request is cleared before the decision runs — the
+    /// consumption is unconditional, refusal included.
+    #[test]
+    fn the_request_is_cleared_before_the_decision() {
+        let d = dispatcher();
+        let p = process(8);
+        let a = thread(p);
+        run(d, as_ptr(a));
+        d.charge_running_tick();
+        d.charge_running_tick();
+        assert!(d.quantum_end_requested);
+        assert!(d.dispatch_target().is_null());
+        assert!(!d.quantum_end_requested, "even a refused request is consumed");
+    }
+
+    /// D2: the request is edge-armed per quantum end — only an
+    /// end arms it, only a window consumes it, and nothing merges
+    /// or queues in between.
+    #[test]
+    fn the_request_is_edge_armed_and_window_consumed() {
+        let d = dispatcher();
+        let p = process(8);
+        let a = thread(p);
+        run(d, as_ptr(a));
+
+        d.charge_running_tick();
+        assert!(!d.quantum_end_requested, "a mid-quantum charge arms nothing");
+        d.charge_running_tick();
+        assert!(d.quantum_end_requested);
+        // A second end (a charge landing on the exhausted quantum
+        // mid-window) merges into the same one-bit request.
+        d.charge_running_tick();
+        assert!(d.quantum_end_requested);
+        assert!(d.dispatch_target().is_null());
+        assert!(!d.quantum_end_requested, "one bit, one consumption");
+
+        // The next cycle arms fresh.
+        d.charge_running_tick();
+        d.charge_running_tick();
+        assert!(d.quantum_end_requested);
+    }
+
+    /// D3: a stale request — one that outlived the window it armed
+    /// (the quantum was reset before the window ran) — is consumed
+    /// to a no-op: the decision re-verifies the quantum.
+    #[test]
+    fn a_stale_request_is_consumed_to_a_no_op() {
+        let d = dispatcher();
+        let p = process(8);
+        let a = thread(p);
+        run(d, as_ptr(a));
+        let b = thread(p);
+        d.make_ready(b);
+
+        // A's quantum is positive (fresh), but a request is
+        // pending — the stale shape.
+        d.quantum_end_requested = true;
+        assert!(d.dispatch_target().is_null(), "the decision re-verifies, not trusts");
+        assert_eq!(a.state, ThreadState::Running, "the quantum's owner keeps the processor");
+        assert_eq!(b.state, ThreadState::Ready, "the queued equal is not stolen");
+    }
+
+    // --- The service-boundary delivery -----------------------------------------------
+
+    /// E1 (with F2's composition): a service that raises a ready
+    /// thread above the caller leaves the request pending, and the
+    /// boundary check delivers it — the caller is requeued at the
+    /// head, having been displaced by a strictly higher thread.
+    #[test]
+    fn the_boundary_check_delivers_the_service_request() {
+        let d = dispatcher();
+        let p = process(8);
+        let main = thread(p);
+        run(d, as_ptr(main));
+        let child = thread(p);
+        d.make_ready(child); // queued at 8
+
+        // The service's kernel work: raise the child above the
+        // caller.
+        d.set_base_priority(child, 1);
+        assert!(core::ptr::eq(d.next_thread(), as_ptr(child)), "the raise requests");
+        assert!(main.preempted);
+
+        // The boundary check: the same decision, no quantum
+        // involved.
+        let target = d.dispatch_target();
+        assert!(core::ptr::eq(target, as_ptr(child)));
+        assert!(d.next_thread().is_null());
+        // The displaced caller requeues at the head: its
+        // displacement flag decides head vs tail.
+        assert!(core::ptr::eq(d.find_ready(0), as_ptr(main)));
+    }
+
+    /// E2: with nothing pending, the check is a free no-op — no
+    /// thread's state, quantum, or queue position moves.
+    #[test]
+    fn the_boundary_check_without_a_request_is_a_no_op() {
+        let d = dispatcher();
+        let p = process(8);
+        let main = thread(p);
+        run(d, as_ptr(main));
+        let equal = thread(p);
+        d.make_ready(equal); // equal: queued, no request
+
+        assert!(d.dispatch_target().is_null());
+        assert_eq!(main.state, ThreadState::Running);
+        assert_eq!(main.quantum(), QUANTUM_RESET);
+        assert_eq!(equal.state, ThreadState::Ready);
+        assert!(d.next_thread().is_null());
     }
 }

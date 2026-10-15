@@ -40,8 +40,8 @@ const _: () = assert!(
 /// the x86 layout: limit 15:0 | base 15:0 | base 23:16 | access |
 /// flags<<4|limit 19:16 | base 31:24.
 ///
-/// Crate-visible: the context switch's descriptor-edit tests use it
-/// as the independent packing oracle.
+/// Crate-visible: the context switch's descriptor-edit tests check
+/// their entries against an independent packing of the same fields.
 pub(crate) const fn make_entry(base: u32, limit: u32, access: u8, flags: u8) -> u64 {
     // `limit` is the raw 20-bit limit field; the G flag decides whether it
     // counts pages or bytes. With G=1, 0xFFFFF spans the full 4 GiB.
@@ -299,12 +299,12 @@ core::arch::global_asm!(
 mod tests {
     use super::*;
 
-    /// Independent packing oracle: packs a segment descriptor straight from
+    /// An independent packing: builds a segment descriptor straight from
     /// the x86 layout — 20-bit limit split across bytes 0-1 and the low
     /// nibble of byte 6, 32-bit base split across bytes 2-3, byte 4 and
     /// byte 7, access byte 5, flags nibble in the high half of byte 6.
     /// Pres is always set, D/B always 1, Sys/L always 0.
-    fn oracle_entry(base: u32, limit: u32, type_field: u8, dpl: u8, gran: bool) -> u64 {
+    fn packed_entry(base: u32, limit: u32, type_field: u8, dpl: u8, gran: bool) -> u64 {
         let limit_hi = ((limit >> 16) & 0xF) as u64;
         let access = (0x80u8 | (dpl << 5) | type_field) as u64;
         let flags = limit_hi | 0x40 | ((gran as u64) << 7);
@@ -344,7 +344,7 @@ mod tests {
         assert_eq!(teb & 0xFFFF, 0x0FFF); // limit
         assert_eq!((teb >> 40) & 0xFF, 0xF3); // access byte
         assert_eq!((teb >> 52) & 0xF, 0x4); // flags nibble
-        assert_eq!(teb_descriptor(), oracle_entry(crate::user::TEB_PAGE, 0xFFF, 0x13, 3, false));
+        assert_eq!(teb_descriptor(), packed_entry(crate::user::TEB_PAGE, 0xFFF, 0x13, 3, false));
     }
 
     /// Selector layout; the ring-3 entry forms CS/SS/FS with RPL 3.
@@ -365,13 +365,13 @@ mod tests {
         assert_eq!(core::mem::size_of::<[u64; 7]>() - 1, 55);
     }
 
-    /// The TSS descriptor against an independent packing oracle
+    /// The TSS descriptor against an independent packing
     /// (access 0x89, non-busy for `ltr`).
     #[test]
-    fn tss_descriptor_matches_independent_oracle() {
-        // Independent oracle: byte 6 carries only limit 19:16, the
+    fn tss_descriptor_matches_independent_packing() {
+        // Independent packing: byte 6 carries only limit 19:16, the
         // flags nibble stays clear (32-bit-vs-16-bit is the type nibble).
-        fn tss_oracle(base: u32, limit: u32) -> u64 {
+        fn packed_tss(base: u32, limit: u32) -> u64 {
             let limit_hi = ((limit >> 16) & 0xF) as u64;
             (((base >> 24) as u64) << 56)
                 | (limit_hi << 48)
@@ -381,7 +381,7 @@ mod tests {
                 | ((limit & 0xFFFF) as u64)
         }
         for &(base, limit) in &[(0u32, 0x67u32), (0x0012_3456, 0x67), (0xFFFF_0000, 0x1_2345)] {
-            assert_eq!(tss_descriptor(base, limit), tss_oracle(base, limit));
+            assert_eq!(tss_descriptor(base, limit), packed_tss(base, limit));
         }
         // Hand-decoded per the byte layout.
         assert_eq!(tss_descriptor(0x0012_3456, 0x67), 0x0000_8912_3456_0067);
@@ -430,10 +430,10 @@ mod tests {
         assert_eq!(tss.ss0, 0); // init sets it to the kernel data selector
     }
 
-    /// make_entry against the oracle for non-flat inputs: byte-granular,
-    /// ring-3, high bases, split limits.
+    /// make_entry against the independent packing for non-flat inputs:
+    /// byte-granular, ring-3, high bases, split limits.
     #[test]
-    fn packing_matches_independent_oracle() {
+    fn packing_matches_independent_packing() {
         // Limits are raw 20-bit fields (make_entry asserts they fit).
         let cases: &[(u32, u32)] = &[
             (0, 0xF_FFFF),
@@ -445,22 +445,22 @@ mod tests {
         for &(base, limit) in cases {
             assert_eq!(
                 make_entry(base, limit, 0x9B, 0xC),
-                oracle_entry(base, limit, 0x1B, 0, true),
+                packed_entry(base, limit, 0x1B, 0, true),
                 "code descriptor base={base:#x} limit={limit:#x}"
             );
             assert_eq!(
                 make_entry(base, limit, 0x93, 0xC),
-                oracle_entry(base, limit, 0x13, 0, true),
+                packed_entry(base, limit, 0x13, 0, true),
                 "data descriptor base={base:#x} limit={limit:#x}"
             );
         }
         assert_eq!(
             make_entry(0x10_0000, 0xF_FFFF, 0x9B, 0x4),
-            oracle_entry(0x10_0000, 0xF_FFFF, 0x1B, 0, false)
+            packed_entry(0x10_0000, 0xF_FFFF, 0x1B, 0, false)
         );
         assert_eq!(
             make_entry(0, 0xF_FFFF, 0xFB, 0xC),
-            oracle_entry(0, 0xF_FFFF, 0x1B, 3, true)
+            packed_entry(0, 0xF_FFFF, 0x1B, 3, true)
         );
     }
 

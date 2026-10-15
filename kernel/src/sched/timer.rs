@@ -332,7 +332,7 @@ mod tests {
         dues
     }
 
-    // --- The wait rig (the landed wait tests' shape) ------------------
+    // --- The wait rig (the wait tests' shape) ---------------------------
 
     fn dispatcher() -> &'static mut Dispatcher {
         let dispatcher = Box::leak(Box::new(Dispatcher::zeroed()));

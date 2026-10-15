@@ -159,6 +159,14 @@ extern "C" fn syscall_dispatch(frame: &mut TrapFrame) {
     let mut args = [0u32; MAX_ARG_BYTES / 4];
     copy_user_args(frame.edx, arg_bytes, &mut args);
     service(frame, &args[..arg_bytes as usize / 4]);
+
+    // The service boundary is where a same-processor preemption
+    // lands: a thread the service readied at strictly higher
+    // priority — or a quantum the tick ended mid-service — is
+    // switched to here, before the caller returns to user mode.
+    // Nothing after this point writes the frame: the service's
+    // result rides out whenever the thread resumes.
+    crate::sched::idle::dispatcher().deliver_pending();
 }
 
 // Gate stub: entered from ring 3 through the DPL-3 interrupt gate.

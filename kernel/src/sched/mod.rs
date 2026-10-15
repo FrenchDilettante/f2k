@@ -19,8 +19,8 @@
 //!
 //! The wiring sits on top: the idle thread (armed at boot, the
 //! processor's resting state), the context switch that turns Standby
-//! into Running, the wait discipline (block, wake, timeout), and —
-//! later slices — the preemption delivery and the thread-creation
+//! into Running, the wait discipline (block, wake, timeout), the
+//! timer table, the preemption delivery, and the thread-creation
 //! surface.
 //!
 //! One processor, no locking: every method runs serialized at the

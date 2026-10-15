@@ -42,8 +42,8 @@ not committed.
   writes "Hello, world!" to stdout and exits 0; the first test with
   observable output. Also carries `trace.txt`, the real-machine
   import trace (21 of the watched imports called on the happy path,
-  one WriteFile, exit 0 — the oracle for the console-observable
-  workstream).
+  one WriteFile, exit 0 — the real-machine baseline for the
+  console-observable corpus).
 - `hellogui` - the GUI rung: registers a window class, shows a
   window, paints "Hello, world!" once with `TextOut`, then closes
   itself and exits 0; the first test to import user32.dll and
@@ -94,6 +94,6 @@ fixtures load from the disk image instead and the embedding goes
 away.
 
 The scheduler smoke tests (`thread`, `pingpong`, `sleep`, `spin`,
-`suspend`) join the same embedding one per workstream slice, in
+`suspend`) join the same embedding one per scheduler stage, in
 dependency order, as the scheduler grows; each asserts the
 real-machine captured output of its stage.

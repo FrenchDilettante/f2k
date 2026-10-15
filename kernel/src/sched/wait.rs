@@ -236,7 +236,7 @@ pub enum WaitReason {
 }
 
 /// The mode of a wait. Inert data until the APC machinery exists;
-/// user-mode APC delivery is its seam.
+/// user-mode APC delivery is its consumer.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum WaitMode {
@@ -1112,8 +1112,8 @@ mod tests {
         assert_eq!(ev.signal_state(), 1);
     }
 
-    /// A due time already past is the seam's verdict, not the
-    /// wait's arithmetic: the wait hands the due time over, trusts
+    /// A due time already past is the timeout decision's verdict,
+    /// not the wait's arithmetic: the wait hands the due time over, trusts
     /// the false, and reports a timeout without parking. A
     /// negative interval is an absolute due time — an absolute
     /// already past is the shape that reaches it.

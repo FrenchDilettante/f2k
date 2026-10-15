@@ -161,8 +161,8 @@ mod target {
 
 /// The switch away from the idle thread: the dispatch level around
 /// the switch, the level-ledger handover, the caller-side install,
-/// then the swap. Nothing readies a thread yet (the thread-creation
-/// surface has not landed), so this is armed machinery.
+/// then the swap. Nothing readies a thread in this boot (no
+/// thread-creation surface), so the smoke boots exercise it.
     fn switch_away_from_idle() {
         let previous = irql::state_mut().raise(irql::DISPATCH);
         let dispatch = dispatcher();

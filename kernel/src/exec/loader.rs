@@ -35,6 +35,12 @@ pub const PINGPONG: &[u8] = include_bytes!("../../../tests/pingpong/pingpong.exe
 #[cfg(feature = "run-sleep")]
 pub const SLEEP: &[u8] = include_bytes!("../../../tests/sleep/sleep.exe");
 
+/// The preemption smoke fixture: same-priority spinners alternate
+/// at quantum ends and a raised thread runs uninterrupted
+/// (embedded for the `run-spin` feature).
+#[cfg(feature = "run-spin")]
+pub const SPIN: &[u8] = include_bytes!("../../../tests/spin/spin.exe");
+
 /// The fresh-memory fixture: no CRT, one import; its `.bss` is all
 /// zero on a fresh process and the double run in the suite proves
 /// teardown re-zeroes frames (embedded for the `run-process-suite`
@@ -161,11 +167,11 @@ pub fn run_image(file: &[u8], name: &'static str) -> ! {
     // The entry: the thread-ified boot for the smokes (the main
     // thread enters through the scheduler's first switch), the
     // direct ring-3 entry for every other boot.
-    #[cfg(any(feature = "run-pingpong", feature = "run-sleep"))]
+    #[cfg(any(feature = "run-pingpong", feature = "run-sleep", feature = "run-spin"))]
     {
         crate::process::threads::enter_as_main_thread(image.entry_va(), USER_STACK_TOP)
     }
-    #[cfg(not(any(feature = "run-pingpong", feature = "run-sleep")))]
+    #[cfg(not(any(feature = "run-pingpong", feature = "run-sleep", feature = "run-spin")))]
     {
         // SAFETY: image, stack, TEB and thunk pages are mapped with
         // their final protections; the gate is DPL 3; the TSS carries

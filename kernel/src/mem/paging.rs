@@ -628,7 +628,7 @@ mod tests {
         assert!(pd.0.iter().all(|&e| e == 0));
     }
 
-    /// Independent bit oracle: entry bit 0 is present, bit 1 is R/W,
+    /// Independent bit check: entry bit 0 is present, bit 1 is R/W,
     /// bit 2 is user/supervisor. The constants must name exactly those.
     #[test]
     fn flag_bits_match_the_x86_entry_layout() {

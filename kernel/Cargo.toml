@@ -41,7 +41,7 @@ run-hello = []
 # The blocking-wait smoke boot: the pingpong fixture runs with the
 # thread-ified entry — the main thread enters ring 3 through the
 # scheduler's first switch, and its CreateThread/CreateEventA/
-# SetEvent/WaitForSingleObject calls run against the landed wait
+# SetEvent/WaitForSingleObject calls run against the wait
 # machinery. The qemu-tests.yaml cases pin the captured output.
 run-pingpong = []
 # The timer smoke boot: the sleep fixture runs with the thread-ified
@@ -51,10 +51,18 @@ run-pingpong = []
 # reads the tick count. The qemu-tests.yaml cases pin the captured
 # output.
 run-sleep = []
+# The preemption smoke boot: the spin fixture runs with the
+# thread-ified entry — two same-priority spinners alternate at
+# quantum ends (round-robin from the tick), a third thread raised
+# above them runs its block uninterrupted (the service-boundary
+# delivery), and the checksums prove the work loops completed
+# under preemption. The qemu-tests.yaml cases pin the captured
+# shape.
+run-spin = []
 # The multi-process suite case: exit0, ret0, bsscheck, bsscheck,
 # crash, exit0 run in sequence in one boot, each process torn down
 # and audited before the next starts. The sequence runner and the
-# per-process teardown are the process workstream's deliverables; the
+# per-process teardown are the runner's deliverables; the
 # qemu-tests.yaml cases pin the COM1 shapes and fail until they land.
 run-process-suite = []
 # The interrupt/timer diagnostic boot:

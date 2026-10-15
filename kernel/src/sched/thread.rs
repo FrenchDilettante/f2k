@@ -333,6 +333,16 @@ impl Thread {
         addr_of_mut!(self.waitable)
     }
 
+    /// The thread a thread-kind waitable header belongs to: the
+    /// header is the thread's own, at a fixed offset in the
+    /// record. The caller must know the header is a thread's (a
+    /// handle table slot's kind, say); a foreign header is a
+    /// caller bug.
+    pub fn from_waitable(waitable: *mut Waitable) -> *mut Thread {
+        debug_assert_eq!(unsafe { (*waitable).kind() }, WaitKind::Thread);
+        (waitable as usize - core::mem::offset_of!(Thread, waitable)) as *mut Thread
+    }
+
     /// The completion status of the current or last wait.
     pub fn wait_status(&self) -> i32 {
         self.wait_status
@@ -383,6 +393,21 @@ mod tests {
         assert_eq!(ThreadState::Terminated as u8, 4);
         assert_eq!(ThreadState::Waiting as u8, 5);
         assert_eq!(ThreadState::Transition as u8, 6);
+    }
+
+    /// The waitable header belongs to its thread: the reverse
+    /// mapping returns the owning record.
+    #[test]
+    fn from_waitable_returns_the_owning_thread() {
+        let p = Box::leak(Box::new(SchedProcess::new(0x0090_0000, 8)));
+        p.init();
+        let t = Box::leak(Box::new(Thread::empty()));
+        // SAFETY: both objects are leaked at their final addresses.
+        unsafe { t.attach_to(&mut *p) };
+        assert!(core::ptr::eq(
+            Thread::from_waitable(t.waitable()),
+            t as *const Thread as *mut Thread
+        ));
     }
 
     /// Attaching takes the scheduling data from the process: base and

@@ -92,7 +92,7 @@ cases:
       - "F2K: entering ring 3"
       - "F2K: user process exited normally (exit code=0)"
 
-  # The console-observable workstream: hello runs the ret0 CRT
+  # The console-observable corpus: hello runs the ret0 CRT
   # startup, printf writes "Hello, world!" to stdout through
   # WriteFile, then it exits 0 — the program's own output on COM1
   # (no F2K: prefix), before the exit line.
@@ -171,7 +171,7 @@ cases:
       - "pingpong: ok"
       - "F2K: user process exited normally (exit code=0)"
 
-  # Timer smoke (scheduler-threads workstream, slice S4): the main
+  # Timer smoke: the main
   # thread parks in the timer table through Sleep(200) (the idle
   # thread owns the processor while it sleeps), yields through
   # Sleep(0), and times out a wait on a never-signaled event after
@@ -211,7 +211,61 @@ cases:
       - "sleep: ok"
       - "F2K: user process exited normally (exit code=0)"
 
-  # Multi-process suite (foundational-processes workstream): one boot
+  # Preemption smoke: two
+  # same-priority spinners alternate at quantum ends (round-robin
+  # delivered from the tick — a quantum spans exactly two ticks),
+  # and a third thread raised above them through SetThreadPriority
+  # runs its whole block uninterrupted (the service-boundary
+  # delivery), before the pair resumes and finishes. The capture is
+  # shape-confirmed, not byte-exact: the per-run A/B progress line
+  # counts are timing-dependent, so the case pins the invariants —
+  # the C block's ten deterministic progress lines and completion,
+  # the A/B/C completions with their checksums, and the summary.
+  - name: spin-smoke
+    description: the preemption smoke interleaves two same-priority spinners at quantum ends and runs a raised thread's block uninterrupted, with all three checksums reported (kernel path)
+    image: kernel
+    features: [run-spin]
+    expects:
+      - "F2K Booted Successfully"
+      - "F2K: frame database audit: ok"
+      - "F2K: kernel heap: alloc/free ok"
+      - "F2K: image loaded"
+      - "F2K: entering ring 3"
+      - "main: spinners started"
+      - "main: starting high-priority thread"
+      - "C 5000000"
+      - "C 25000000"
+      - "C 50000000"
+      - "C done, checksum 1283106752"
+      - "A done, checksum 1283106752"
+      - "B done, checksum 1283106752"
+      - "main: all threads finished"
+      - "spin: ok"
+      - "F2K: user process exited normally (exit code=0)"
+
+  - name: spin-smoke-disk
+    description: the preemption smoke interleaves two same-priority spinners at quantum ends and runs a raised thread's block uninterrupted, with all three checksums reported (Limine disk path)
+    image: disk
+    features: [run-spin]
+    expects:
+      - "F2K Booted Successfully"
+      - "F2K: frame database audit: ok"
+      - "F2K: kernel heap: alloc/free ok"
+      - "F2K: image loaded"
+      - "F2K: entering ring 3"
+      - "main: spinners started"
+      - "main: starting high-priority thread"
+      - "C 5000000"
+      - "C 25000000"
+      - "C 50000000"
+      - "C done, checksum 1283106752"
+      - "A done, checksum 1283106752"
+      - "B done, checksum 1283106752"
+      - "main: all threads finished"
+      - "spin: ok"
+      - "F2K: user process exited normally (exit code=0)"
+
+  # Multi-process suite: one boot
   # runs the sequence exit0, ret0, bsscheck, bsscheck, crash, exit0,
   # tearing each process down to the post-boot baseline before the
   # next starts. COM1 protocol, pinned here (the sequence runner
@@ -225,7 +279,7 @@ cases:
   # index is asserted independently; the crash fixture writes through
   # the unmapped NULL page, which raises #PF (vector 14).
   #
-  # Expected to FAIL until the process workstream lands: today the
+  # Expected to FAIL until the sequence runner lands: today the
   # kernel runs the first process and halts.
   - name: process-suite
     description: sequential multi-process run (exit0, ret0, bsscheck x2, crash, exit0) with per-process teardown audits and a zero-leak summary (kernel path)
@@ -272,7 +326,7 @@ cases:
       - "F2K: process suite complete: 6 run, 1 faulted, 0 leaks"
 
 
-  # Interrupt/timer workstream: the
+  # Interrupt/timer core: the
   # irq-smoke diagnostic boot proves the hardware layer and the
   # interrupt core are live — the PIC remap to the 0x30-0x3F band, the
   # PIT programmed at the corpus-captured 10.0144 ms tick (divisor

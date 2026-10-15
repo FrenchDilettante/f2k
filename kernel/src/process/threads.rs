@@ -4,7 +4,7 @@
 //! CreateThread behind the synthesized kernel32: a child takes a
 //! thread record from the pool, a gate-stack slot from the
 //! process's window, its own TEB page and user stack from the
-//! per-thread regions, and a startup ladder the S2 switch enters —
+//! per-thread regions, and a startup ladder the context switch enters —
 //! the same machinery the main thread's boot entry uses. The
 //! child's user function receives its parameter per the calling
 //! convention (planted at [esp+4] under a return address that is
