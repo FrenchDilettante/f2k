@@ -37,14 +37,41 @@ fn kernel_frame_bounds() -> (u32, u32) {
     (start, end)
 }
 
-/// Release every frame of `range` except those the kernel occupies.
-fn release_range(db: &mut FrameDb<NoHooks>, range: UsableRange, kernel: (u32, u32)) {
+/// The end of the boot identity window: until the low identity mapping is torn down, physical
+/// `[0, 8 MiB)` reads at its own address. The Multiboot structures are read through it.
+const BOOT_IDENTITY_LIMIT: u64 = 0x80_0000;
+
+/// Release every frame of `range` except those the kernel occupies, those a reserved record of
+/// `map` covers, and those an earlier (overlapping) available record already released.
+fn release_range(
+    db: &mut FrameDb<NoHooks>,
+    range: UsableRange,
+    kernel: (u32, u32),
+    map: Option<&[u8]>,
+) {
     for frame in range.frames() {
         if frame >= kernel.0 && frame < kernel.1 {
             continue;
         }
+        if db.entry(frame).state.is_list_state() {
+            continue;
+        }
+        if map.is_some_and(|map| multiboot::frame_is_reserved(map, frame)) {
+            continue;
+        }
         db.release(frame, FrameState::Free);
     }
+}
+
+/// Panic unless `[addr, addr + len)` lies inside the boot identity window, naming `what`: a loader
+/// may place its structures anywhere below 4 GiB, and reading one past the window would fault with
+/// no diagnostic.
+fn assert_identity_readable(what: &str, addr: u32, len: usize) {
+    let end = addr as u64 + len as u64;
+    assert!(
+        end <= BOOT_IDENTITY_LIMIT,
+        "{what} at {addr:#010x} (+{len:#x}) lies outside the boot identity window"
+    );
 }
 
 /// Build the frame database from the Multiboot information at `multiboot_info_addr`.
@@ -53,8 +80,14 @@ fn release_range(db: &mut FrameDb<NoHooks>, range: UsableRange, kernel: (u32, u3
 /// Panics on a structure that provides neither: without a memory picture the kernel cannot manage
 /// frames at all.
 pub fn boot_init(multiboot_info_addr: u32) {
-    // SAFETY: the address is the one the Multiboot loader left in EBX; paging is off, so physical
-    // == linear; the Multiboot contract guarantees the structure is readable. Single-threaded boot.
+    assert_identity_readable(
+        "the Multiboot information",
+        multiboot_info_addr,
+        core::mem::size_of::<MultibootInfo>(),
+    );
+    // SAFETY: the address is the one the Multiboot loader left in EBX, inside the boot identity
+    // window (checked above), where physical == linear; the Multiboot contract guarantees the
+    // structure is readable. Single-threaded boot.
     let mbi: &MultibootInfo = unsafe { &*(multiboot_info_addr as *const MultibootInfo) };
     // SAFETY: the frame table is a static owned by this module; handing its only reference to the
     // database for the kernel's lifetime. Single-threaded boot.
@@ -81,20 +114,22 @@ pub fn boot_init(multiboot_info_addr: u32) {
         && mbi.mmap_length != 0
         && (mbi.mmap_length as usize) < 0x10_0000
     {
-        // SAFETY: mmap_addr/mmap_length describe the loader-owned memory-map record stream, within
-        // mapped RAM; the parser bounds-checks every record before reading it.
+        assert_identity_readable("the memory map", mbi.mmap_addr, mbi.mmap_length as usize);
+        // SAFETY: mmap_addr/mmap_length describe the loader-owned memory-map record stream, inside
+        // the boot identity window (checked above); the parser bounds-checks every record before
+        // reading it.
         let map: &[u8] = unsafe {
             core::slice::from_raw_parts(mbi.mmap_addr as *const u8, mbi.mmap_length as usize)
         };
         for range in multiboot::usable_ranges(map, MAX_FRAMES) {
-            release_range(&mut db, range, kernel);
+            release_range(&mut db, range, kernel, Some(map));
         }
     } else if mbi.flags & multiboot::flags::MEM_INFO != 0 && mbi.mem_upper != 0 {
         // No memory map: usable memory is one region starting at 1 MiB.
         if let Some(range) =
             multiboot::usable_frames_in(0x100000, mbi.mem_upper as u64 * 1024, MAX_FRAMES)
         {
-            release_range(&mut db, range, kernel);
+            release_range(&mut db, range, kernel, None);
         }
     } else {
         panic!("Multiboot info carries no memory information");

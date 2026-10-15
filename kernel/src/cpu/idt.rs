@@ -17,8 +17,9 @@ const EXCEPTION_VECTORS: usize = 32;
 const IDT_VECTORS: usize = 256;
 
 /// Registers saved by the common exception stub, in stack order. Constructed by assembly, never by
-/// Rust code. The segment registers are not part of the frame: LLVM assembles `push <segreg>` as a
-/// 16-bit push, so the handler reads them with `mov` instead.
+/// Rust code. The segment registers are not part of the frame: the stubs save them just below it
+/// ([`SavedSegments`]), moved through EAX as full words (LLVM assembles `push <segreg>` as a 16-bit
+/// push), so the frame shape every stub and the thread-startup ladder share stays unchanged.
 #[allow(dead_code)]
 #[repr(C)]
 pub(crate) struct ExceptionFrame {
@@ -35,6 +36,33 @@ pub(crate) struct ExceptionFrame {
     eip: u32,
     cs: u32,
     eflags: u32,
+}
+
+/// The interrupted context's data segments, as the entry stubs (exception, hardware-interrupt,
+/// syscall) save them: four words directly below the register frame, GS lowest. The stubs then
+/// load the kernel's data selector into DS/ES, so a ring-3 context that loaded a null or based
+/// selector cannot steer the kernel's data accesses; the returning stubs restore them before
+/// `popad`.
+#[allow(dead_code)]
+#[repr(C)]
+pub(crate) struct SavedSegments {
+    pub(crate) gs: u32,
+    pub(crate) fs: u32,
+    pub(crate) es: u32,
+    pub(crate) ds: u32,
+}
+
+impl SavedSegments {
+    /// The segments saved below `frame` (the stubs' layout).
+    ///
+    /// # Safety
+    ///
+    /// `frame` must be the pointer an entry stub passed, so the four words below it are the saved
+    /// segments.
+    pub(crate) unsafe fn below<T>(frame: *const T) -> &'static SavedSegments {
+        // SAFETY: per the contract, the stub stored the four words directly below the frame.
+        unsafe { &*(frame as *const SavedSegments).sub(1) }
+    }
 }
 
 /// The ring-3 tail the CPU pushes on the TSS stack when the exception was raised in ring 3: the
@@ -338,28 +366,16 @@ extern "C" fn exception_handler(frame: &ExceptionFrame) -> ! {
         frame.ebp,
         interrupted_esp(frame, user_esp)
     );
-    // Segment registers are read at dump time: pushing them in the stub would only store 16 bits
-    // per register (see comment on ExceptionFrame).
-    let (ds, es, fs, gs): (u32, u32, u32, u32);
-    unsafe {
-        core::arch::asm!(
-            "mov {}, ds",
-            "mov {}, es",
-            "mov {}, fs",
-            "mov {}, gs",
-            lateout(reg) ds,
-            lateout(reg) es,
-            lateout(reg) fs,
-            lateout(reg) gs,
-            options(nostack)
-        );
-    }
+    // The faulting context's segments, as the stub saved them (the handler itself runs on the
+    // kernel's DS/ES).
+    // SAFETY: `frame` is the pointer the common stub passed, above its saved segments.
+    let segments = unsafe { SavedSegments::below(frame) };
     crate::serial_println!(
         "  DS {:#04x}  ES {:#04x}  FS {:#04x}  GS {:#04x}",
-        ds,
-        es,
-        fs,
-        gs
+        segments.ds & 0xFFFF,
+        segments.es & 0xFFFF,
+        segments.fs & 0xFFFF,
+        segments.gs & 0xFFFF
     );
     if from_user {
         crate::serial_println!(
@@ -392,6 +408,9 @@ extern "C" fn exception_handler(frame: &ExceptionFrame) -> ! {
             frame.vector
         );
     } else if crate::user::syscall::copying_user_args() {
+        // The copy that set the flag never resumes: clear it here, or the next process's kernel
+        // faults would be reported as its own.
+        crate::user::syscall::end_user_attribution();
         #[cfg(feature = "run-process-suite")]
         {
             // The fault was raised on the process's behalf inside a user-memory copy: same
@@ -503,11 +522,26 @@ macro_rules! define_exception_stubs {
             "exception_common:",
             "    pushad",
             "    cld",
-            "    push esp",           // frame pointer: exception_handler(frame)
+            // The faulting context's data segments, below the frame (`SavedSegments`, read back
+            // by the dump); the handler runs on the kernel's.
+            "    mov eax, ds",
+            "    push eax",
+            "    mov eax, es",
+            "    push eax",
+            "    mov eax, fs",
+            "    push eax",
+            "    mov eax, gs",
+            "    push eax",
+            "    mov ax, {kernel_data}",
+            "    mov ds, ax",
+            "    mov es, ax",
+            "    lea eax, [esp + 16]", // frame pointer: exception_handler(frame)
+            "    push eax",
             "    call {handler}",
             "1:  cli",
             "    hlt",
             "    jmp 1b",
+            kernel_data = const crate::cpu::gdt::KERNEL_DATA_SELECTOR,
             handler = sym exception_handler,
         );
 
@@ -588,12 +622,37 @@ core::arch::global_asm!(
     "irq_common:",
     "    pushad",
     "    cld", // Rust code requires a forward direction flag
-    "    push esp", // frame pointer (interrupt/mod.rs dispatch)
+    // The interrupted data segments, below the frame (see `SavedSegments`); the handler runs on the
+    // kernel's.
+    "    mov eax, ds",
+    "    push eax",
+    "    mov eax, es",
+    "    push eax",
+    "    mov eax, fs",
+    "    push eax",
+    "    mov eax, gs",
+    "    push eax",
+    "    mov ax, {kernel_data}",
+    "    mov ds, ax",
+    "    mov es, ax",
+    "    lea eax, [esp + 16]", // frame pointer (interrupt/mod.rs dispatch): the pushad block
+    "    push eax",
     "    call {dispatch}",
     "    add esp, 4", // drop the frame pointer
+    // Restoring FS reloads the TEB descriptor's base: a thread resumed here by a switch inside the
+    // dispatch sees its own TEB.
+    "    pop eax",
+    "    mov gs, ax",
+    "    pop eax",
+    "    mov fs, ax",
+    "    pop eax",
+    "    mov es, ax",
+    "    pop eax",
+    "    mov ds, ax",
     "    popad",
     "    add esp, 8", // drop vector + error pad
     "    iretd", // pops EIP, CS, EFLAGS (plus user ESP/SS from ring 3)
+    kernel_data = const crate::cpu::gdt::KERNEL_DATA_SELECTOR,
     dispatch = sym crate::interrupt::dispatch,
 );
 

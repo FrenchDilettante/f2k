@@ -13,6 +13,36 @@ use crate::interrupt::irql::LevelSnapshot;
 /// The gate-slot index of a thread whose slot is not allocated yet.
 pub const NO_GATE_SLOT: u16 = 0xFFFF;
 
+/// A thread's saved x87 state, in the `fnsave`/`frstor` image (protected mode, 32-bit): control,
+/// status and tag words, the last instruction and operand pointers, then the eight 80-bit
+/// registers. The context switch saves the outgoing thread's and restores the incoming one's on
+/// every switch, so a preempted computation never resumes on another thread's registers.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(C, align(4))]
+pub struct FpuState(pub [u8; FPU_STATE_BYTES]);
+
+/// The `fnsave` image's size.
+pub const FPU_STATE_BYTES: usize = 108;
+
+/// The control word a new thread starts with: every exception masked, 53-bit precision, round to
+/// nearest — the value Windows NT gives a fresh thread (`fninit` alone would leave 64-bit
+/// precision).
+pub const INITIAL_FPU_CONTROL: u16 = 0x027F;
+
+impl FpuState {
+    /// A fresh thread's image: the initial control word, a clear status word, every register tagged
+    /// empty (the tag word 0xFFFF), everything else zero.
+    pub const fn initial() -> Self {
+        let mut bytes = [0u8; FPU_STATE_BYTES];
+        let control = INITIAL_FPU_CONTROL.to_le_bytes();
+        bytes[0] = control[0];
+        bytes[1] = control[1];
+        bytes[8] = 0xFF;
+        bytes[9] = 0xFF;
+        FpuState(bytes)
+    }
+}
+
 /// A thread's scheduling state, as the dispatcher moves it around: created, queued, on the
 /// processor, selected as the processor's next thread, exited, blocked.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -70,6 +100,9 @@ pub struct Thread {
     /// The slot's frames, recorded for exactly-once release (the guard page below them is never
     /// mapped, so it is never recorded).
     pub(crate) gate_frames: [u32; crate::mem::paging::GATE_STACK_PAGES],
+    /// The thread's x87 state while it is off the processor (saved and restored by the switch, at
+    /// the offset the assembly takes from this layout).
+    pub(crate) fpu: FpuState,
 
     // --- Scheduling state ---
     /// The priority the scheduler queues and preempts by.
@@ -170,6 +203,7 @@ impl Thread {
             level: LevelSnapshot::empty(),
             gate_slot: NO_GATE_SLOT,
             gate_frames: [0; crate::mem::paging::GATE_STACK_PAGES],
+            fpu: FpuState::initial(),
             priority: 0,
             base_priority: 0,
             priority_decrement: 0,
@@ -348,6 +382,27 @@ impl Thread {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A fresh thread's x87 image: the NT control word, a clear status word, every register tagged
+    /// empty, in the `fnsave` layout the switch restores from.
+    #[test]
+    fn a_fresh_thread_starts_with_the_initial_fpu_image() {
+        let image = Thread::empty().fpu.0;
+        assert_eq!(image.len(), 108);
+        assert_eq!(
+            u16::from_le_bytes([image[0], image[1]]),
+            0x027F,
+            "control word"
+        );
+        assert_eq!(u16::from_le_bytes([image[4], image[5]]), 0, "status word");
+        assert_eq!(
+            u16::from_le_bytes([image[8], image[9]]),
+            0xFFFF,
+            "tag word: all empty"
+        );
+        assert!(image[10..].iter().all(|&byte| byte == 0));
+        assert_eq!(core::mem::align_of::<FpuState>() % 4, 0);
+    }
 
     /// The state ordinals: stable, distinct, with the lifecycle order the dump paths and any raw
     /// state byte depend on.

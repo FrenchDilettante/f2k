@@ -490,6 +490,67 @@ pub fn map_kernel_page(vaddr: u32, frame_phys: u32) {
     }
 }
 
+/// Remove the kernel-half mapping at `vaddr` from the current directory and flush it from the TLB,
+/// returning the frame it named. The frame itself is the caller's to release.
+///
+/// # Panics
+///
+/// The same window rules as [`map_kernel_page`], or nothing mapped at `vaddr`.
+#[cfg(target_arch = "x86")]
+pub fn unmap_kernel_page(vaddr: u32) -> u32 {
+    assert!(vaddr % PAGE_SIZE == 0, "kernel address not page-aligned");
+    let window = (vaddr >> 22) as usize;
+    let index = ((vaddr >> 12) & 0x3FF) as usize;
+    assert!(
+        vaddr >= KERNEL_BASE,
+        "kernel mappings live in the kernel half"
+    );
+    assert!(
+        window != 512 && window != 513,
+        "kernel unmapping collides with the static kernel image window"
+    );
+    assert!(
+        window != SELF_MAP_SLOT && window != SCRATCH_SLOT,
+        "kernel unmapping collides with the runtime access windows"
+    );
+
+    // SAFETY: as `map_kernel_page`; the table exists because a mapping in it does.
+    unsafe {
+        let pde = (DIRECTORY_ENTRY_VA + (window as u32) * 4) as *const u32;
+        assert!(
+            pde.read_volatile() & PAGE_PRESENT != 0,
+            "kernel page not mapped"
+        );
+        let table = (SELF_MAP_VA + ((window as u32) << 12)) as *mut u32;
+        let pte = table.add(index).read_volatile();
+        assert!(pte & PAGE_PRESENT != 0, "kernel page not mapped");
+        table.add(index).write_volatile(0);
+        invlpg(vaddr);
+        pte & PAGE_ADDR_MASK
+    }
+}
+
+/// Unmap gate-stack slot `index`'s pages from the current address space: the inverse of
+/// [`map_gate_slot`]. Returns the frames that were mapped, for the owner to release. Never call it
+/// on the slot the processor is running on.
+///
+/// # Panics
+///
+/// The index is past the window's capacity, or a slot page is not mapped.
+#[cfg(target_arch = "x86")]
+pub fn unmap_gate_slot(index: u32) -> [u32; GATE_STACK_PAGES] {
+    assert!(
+        (index as usize) < GATE_SLOT_CAPACITY,
+        "gate-slot index past the window's capacity"
+    );
+    let base = gate_slot_base(index);
+    let mut frames = [0u32; GATE_STACK_PAGES];
+    for (i, slot) in frames.iter_mut().enumerate() {
+        *slot = unmap_kernel_page(base + ((i + 1) as u32) * PAGE_SIZE);
+    }
+    frames
+}
+
 /// Map a fresh gate-stack slot `index` into the current address space: one frame per page,
 /// supervisor-only, above the slot's unmapped guard page. Returns the frames for the owner thread
 /// to release at its exit.

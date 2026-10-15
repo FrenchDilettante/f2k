@@ -31,13 +31,15 @@ const STUB_STRIDE: u32 = 16;
 /// GetVersion's replay: 5.0, build 2195, NT.
 pub const VERSION: u32 = 0x0893_0005;
 
-/// GetStdHandle's replay handles: stdin 3, stdout 0xF, stderr 7.
+/// GetStdHandle's replay handles, per the real-machine trace (`tests/hello/trace.txt`): the
+/// GetFileType probes after each GetStdHandle, and the WriteFile that prints, name stdin 3, stdout
+/// 7, stderr 0xB. All three carry the console tag ([`is_console_handle`]).
 pub const STD_INPUT_HANDLE: u32 = 0xFFFF_FFF6; // -10
 pub const STD_OUTPUT_HANDLE: u32 = 0xFFFF_FFF5; // -11
 pub const STD_ERROR_HANDLE: u32 = 0xFFFF_FFF4; // -12
 const STD_INPUT: u32 = 3;
-const STD_OUTPUT: u32 = 0x0F;
-const STD_ERROR: u32 = 0x07;
+const STD_OUTPUT: u32 = 0x07;
+const STD_ERROR: u32 = 0x0B;
 const INVALID_HANDLE_VALUE: u32 = 0xFFFF_FFFF;
 
 /// GetFileType's replay for the standard handles: character device.
@@ -131,6 +133,24 @@ fn svc_set_handle_count(frame: &mut crate::user::TrapFrame, args: &[u32]) {
 /// char devices (stdin is read-only; no other handle exists).
 fn is_console_write_handle(handle: u32) -> bool {
     handle == STD_OUTPUT || handle == STD_ERROR
+}
+
+/// Whether `handle` is a console handle: Windows 2000 kernel32's `CONSOLE_HANDLE` test (low two
+/// bits set, bit 28 clear — so INVALID_HANDLE_VALUE is not one). Console handles are routed to the
+/// console, never decoded as object-table handles: the table ignores the low tag bits, so without
+/// this rule stdout would name a table slot.
+fn is_console_handle(handle: u32) -> bool {
+    handle & 0x1000_0003 == 0x3
+}
+
+/// The object-table slot `handle` names, for the services that take kernel-object handles. A
+/// console handle names none.
+#[cfg(target_arch = "x86")]
+fn object_slot(handle: u32) -> Option<crate::sched::object::Slot> {
+    if is_console_handle(handle) {
+        return None;
+    }
+    crate::process::current_mut().handles_mut().lookup(handle)
 }
 
 /// WriteFile: the console observable. Streams the caller's bytes to COM1 on the replayed
@@ -521,7 +541,11 @@ fn svc_virtual_free(frame: &mut crate::user::TrapFrame, _args: &[u32]) {
 fn svc_close_handle(frame: &mut crate::user::TrapFrame, args: &[u32]) {
     #[cfg(target_arch = "x86")]
     {
-        frame.eax = if crate::process::current_mut().handles_mut().close(args[0]) {
+        // The console handles are fixed replays with no table claim: closing one succeeds and
+        // changes nothing.
+        frame.eax = if is_console_handle(args[0])
+            || crate::process::current_mut().handles_mut().close(args[0])
+        {
             1
         } else {
             0
@@ -627,7 +651,7 @@ fn svc_create_event_a(frame: &mut crate::user::TrapFrame, args: &[u32]) {
 fn svc_set_event(frame: &mut crate::user::TrapFrame, args: &[u32]) {
     #[cfg(target_arch = "x86")]
     {
-        let Some(slot) = crate::process::current_mut().handles_mut().lookup(args[0]) else {
+        let Some(slot) = object_slot(args[0]) else {
             frame.eax = 0;
             return;
         };
@@ -658,7 +682,12 @@ fn svc_set_event(frame: &mut crate::user::TrapFrame, args: &[u32]) {
 fn svc_wait_for_single_object(frame: &mut crate::user::TrapFrame, args: &[u32]) {
     #[cfg(target_arch = "x86")]
     {
-        let Some(slot) = crate::process::current_mut().handles_mut().lookup(args[0]) else {
+        // A boot without user threads runs ring 3 on the idle thread, which must never park.
+        if crate::sched::idle::on_idle_thread() {
+            frame.eax = WAIT_FAILED;
+            return;
+        }
+        let Some(slot) = object_slot(args[0]) else {
             frame.eax = WAIT_FAILED;
             return;
         };
@@ -700,6 +729,12 @@ fn svc_wait_for_single_object(frame: &mut crate::user::TrapFrame, args: &[u32]) 
 fn svc_sleep(frame: &mut crate::user::TrapFrame, args: &[u32]) {
     #[cfg(target_arch = "x86")]
     {
+        // A boot without user threads runs ring 3 on the idle thread, which must never park: the
+        // sleep returns at once.
+        if crate::sched::idle::on_idle_thread() {
+            frame.eax = 0;
+            return;
+        }
         let interval = sleep_interval(args[0]);
         let dispatcher = crate::sched::idle::dispatcher();
         let stamp = crate::sched::wait::ClockStamp {
@@ -757,7 +792,21 @@ fn svc_create_thread(frame: &mut crate::user::TrapFrame, args: &[u32]) {
     {
         let (_attributes, _stack_size, start, parameter, flags, thread_id_out) =
             (args[0], args[1], args[2], args[3], args[4], args[5]);
-        if !creation_flags_ok(flags) {
+        // A child needs a process whose threads the scheduler runs: a boot that runs ring 3 on
+        // the idle thread has none.
+        if !creation_flags_ok(flags) || crate::sched::idle::on_idle_thread() {
+            frame.eax = 0;
+            return;
+        }
+        // Every refusal comes before the spawn: once a thread record is attached to the process
+        // and its stacks are mapped, there is no unwinding it, so the create must not fail after.
+        // A full handle table, or an identifier pointer the probe refuses, fails it here. (A
+        // pointer that passes the probe but names no page faults in the write below, which
+        // ends the whole process: nothing is left half-created for it to observe.)
+        if crate::process::current_mut().handles_mut().is_full()
+            || (thread_id_out != 0
+                && crate::user::syscall::probe_user_range(thread_id_out, 4).is_err())
+        {
             frame.eax = 0;
             return;
         }
@@ -772,17 +821,10 @@ fn svc_create_thread(frame: &mut crate::user::TrapFrame, args: &[u32]) {
             waitable: unsafe { (*thread).waitable() },
         };
         let handle = process.handles_mut().insert(slot);
-        if handle == 0 {
-            // The table is full: the record stays unused (never readied), and the caller sees the
-            // create fail.
-            frame.eax = 0;
-            return;
-        }
+        assert_ne!(handle, 0, "the table had a free slot before the spawn");
         if thread_id_out != 0 {
-            if crate::user::syscall::write_user(thread_id_out, &id.to_le_bytes()).is_err() {
-                frame.eax = 0;
-                return;
-            }
+            let written = crate::user::syscall::write_user(thread_id_out, &id.to_le_bytes());
+            assert!(written.is_ok(), "the identifier pointer passed the probe");
         }
         // The handle exists; the thread becomes schedulable now.
         // SAFETY: the created thread, live and exclusive here.
@@ -811,7 +853,7 @@ fn svc_set_thread_priority(frame: &mut crate::user::TrapFrame, args: &[u32]) {
     #[cfg(target_arch = "x86")]
     {
         let (handle, value) = (args[0], args[1] as i32);
-        let Some(slot) = crate::process::current_mut().handles_mut().lookup(handle) else {
+        let Some(slot) = object_slot(handle) else {
             frame.eax = 0;
             return;
         };
@@ -1369,8 +1411,8 @@ mod tests {
         let mut frame = zero_frame();
         for (index, handle) in [
             (STD_INPUT_HANDLE, 3),
-            (STD_OUTPUT_HANDLE, 0xF),
-            (STD_ERROR_HANDLE, 7),
+            (STD_OUTPUT_HANDLE, 7),
+            (STD_ERROR_HANDLE, 0xB),
         ] {
             svc_get_std_handle(&mut frame, &[index]);
             assert_eq!(frame.eax, handle);
@@ -1491,13 +1533,29 @@ mod tests {
     /// stdin (read-only) and anything else fail.
     #[test]
     fn console_write_handles_are_stdout_and_stderr() {
-        assert!(is_console_write_handle(0x0F)); // stdout
-        assert!(is_console_write_handle(0x07)); // stderr
+        assert!(is_console_write_handle(0x07)); // stdout
+        assert!(is_console_write_handle(0x0B)); // stderr
+        assert!(!is_console_write_handle(0x0F));
         assert!(!is_console_write_handle(0x03)); // stdin
         assert!(!is_console_write_handle(0));
         assert!(!is_console_write_handle(1));
         assert!(!is_console_write_handle(0xFFFF_FFFF));
         assert!(!is_console_write_handle(0x1234_5678));
+    }
+
+    /// The console tag: every replayed std handle carries it and object handles (multiples of four)
+    /// never do, so the object services can route on it; INVALID_HANDLE_VALUE is not a console
+    /// handle (the bit-28 mask).
+    #[test]
+    fn console_handles_are_told_apart_from_object_handles() {
+        for handle in [STD_INPUT, STD_OUTPUT, STD_ERROR] {
+            assert!(is_console_handle(handle), "{handle:#x}");
+        }
+        for handle in [4, 8, 12, 0x3C] {
+            assert!(!is_console_handle(handle), "{handle:#x}");
+        }
+        assert!(!is_console_handle(INVALID_HANDLE_VALUE));
+        assert!(!is_console_handle(0));
     }
 
     /// WriteFile's host-testable decision shapes (the copy itself only runs on target): a bad
@@ -1513,11 +1571,11 @@ mod tests {
         svc_write_file(&mut frame, &closed_args);
         assert_eq!(frame.eax, 0);
         // Overlapped I/O does not exist on this surface.
-        let overlapped_args = [0x0F, 0x0040_0000, 14, 0, 0x0050_0000];
+        let overlapped_args = [0x07, 0x0040_0000, 14, 0, 0x0050_0000];
         svc_write_file(&mut frame, &overlapped_args);
         assert_eq!(frame.eax, 0);
         // Zero bytes, nowhere to report: TRUE, nothing written.
-        let empty_args = [0x0F, 0x0040_0000, 0, 0, 0];
+        let empty_args = [0x07, 0x0040_0000, 0, 0, 0];
         svc_write_file(&mut frame, &empty_args);
         assert_eq!(frame.eax, 1);
     }

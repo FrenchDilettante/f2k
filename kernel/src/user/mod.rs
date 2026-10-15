@@ -15,7 +15,13 @@ pub mod userheap;
 use crate::cpu::gdt::{TEB_SELECTOR, USER_CODE_SELECTOR, USER_DATA_SELECTOR};
 
 /// The fault-test stub's code page (the PE image base, which the fault-test builds never map).
-#[cfg(any(feature = "fault-test-user", feature = "fault-test-badargs", test))]
+#[cfg(any(
+    feature = "fault-test-user",
+    feature = "fault-test-badargs",
+    feature = "fault-test-segments",
+    feature = "fault-test-threadexit",
+    test
+))]
 pub const USER_CODE_PAGE: u32 = 0x0040_0000;
 /// The user stack's top page, in its own 4 MiB window (window 0, whose boot identity mapping was
 /// removed). The stack spans two pages growing down — the CRT's startup passes need the room.
@@ -83,6 +89,53 @@ pub const RING3_STUB: [u8; 14] = [
     0xEB, 0xFE, // jmp $
 ];
 
+/// DS/ES loaded with the TEB selector (base TEB_PAGE, limit 0xFFF: legal at CPL 3), then a spin
+/// long enough that the clock preempts it many times over, then the exit service with code 7 (the
+/// argument block sits on the stack, which SS still reaches). The TEB segment rather than a null
+/// selector: real hardware faults on both once the kernel runs on them, but QEMU's TCG skips the
+/// null-selector check on flat data accesses, so only the based selector exposes the bug under
+/// emulation.
+#[cfg(all(
+    feature = "fault-test-segments",
+    not(feature = "fault-test-user"),
+    not(feature = "fault-test-badargs")
+))]
+#[rustfmt::skip]
+pub const RING3_STUB: [u8; 29] = [
+    0x66, 0xB8, 0x33, 0x00, // mov ax, TEB_SELECTOR | 3
+    0x8E, 0xD8, // mov ds, ax
+    0x8E, 0xC0, // mov es, ax
+    0xB9, 0x00, 0x00, 0x00, 0x08, // mov ecx, 0x08000000
+    0x49, // dec ecx
+    0x75, 0xFD, // jnz (back to dec ecx)
+    0x6A, 0x07, // push 7
+    0x89, 0xE2, // mov edx, esp
+    0xB8, 0x01, 0x00, 0x00, 0x00, // mov eax, SYS_EXIT (service 1)
+    0xCD, 0x2E, // int 0x2E
+    0xEB, 0xFE, // jmp $
+];
+
+/// Raise the internal thread-exit service with no user thread running, then exit with the status
+/// the gate returned in EAX.
+#[cfg(all(
+    feature = "fault-test-threadexit",
+    not(feature = "fault-test-user"),
+    not(feature = "fault-test-badargs"),
+    not(feature = "fault-test-segments")
+))]
+#[rustfmt::skip]
+pub const RING3_STUB: [u8; 22] = [
+    0xB8, 0x00, 0x00, 0x00, 0x80, // mov eax, SYS_THREAD_EXIT
+    0x31, 0xD2, // xor edx, edx
+    0xCD, 0x2E, // int 0x2E
+    0x50, // push eax
+    0x89, 0xE2, // mov edx, esp
+    0xB8, 0x01, 0x00, 0x00, 0x00, // mov eax, SYS_EXIT (service 1)
+    0xCD, 0x2E, // int 0x2E
+    0xEB, 0xFE, // jmp $
+    0x90, // pad
+];
+
 /// Trap frame the gate stubs build on the ring-0 stack, in the shape shared with the exception
 /// stubs (the CPU pushes the ring-3 tail; the stub pushes the rest in the same order).
 #[allow(dead_code)]
@@ -131,6 +184,12 @@ core::arch::global_asm!(
     "    mov gs, ax",
     "    mov edx, [esp + 4]",
     "    mov ecx, [esp + 8]",
+    // A clean x87 unit with the control word a fresh Windows thread starts with: nothing a previous
+    // process left in the registers reaches this one.
+    "    fninit",
+    "    push {fpu_control}",
+    "    fldcw [esp]",
+    "    add esp, 4",
     // iret frame: SS:ESP, EFLAGS, CS with RPL 3, EIP. The 32-bit form is spelled `iretd`: under the
     // toolchain's integrated assembler for 32-bit x86 the bare `iret` assembles as the 16-bit form.
     "    push {user_data}",
@@ -152,6 +211,7 @@ core::arch::global_asm!(
     user_code = const USER_CODE_SELECTOR | 3,
     teb = const TEB_SELECTOR | 3,
     user_eflags = const USER_EFLAGS,
+    fpu_control = const crate::sched::thread::INITIAL_FPU_CONTROL as u32,
 );
 
 /// End of the user process: the exit service's landing point. The exit code is the only observable,
@@ -161,7 +221,12 @@ core::arch::global_asm!(
 pub fn process_exited(code: u32) -> ! {
     #[cfg(all(
         target_arch = "x86",
-        any(feature = "run-pingpong", feature = "run-sleep", feature = "run-spin")
+        any(
+            feature = "run-pingpong",
+            feature = "run-sleep",
+            feature = "run-spin",
+            feature = "run-respawn"
+        )
     ))]
     {
         // The thread-ified boot: the process's exit is its last thread's exit (the report and the
@@ -170,7 +235,12 @@ pub fn process_exited(code: u32) -> ! {
     }
     #[cfg(all(
         target_arch = "x86",
-        not(any(feature = "run-pingpong", feature = "run-sleep", feature = "run-spin"))
+        not(any(
+            feature = "run-pingpong",
+            feature = "run-sleep",
+            feature = "run-spin",
+            feature = "run-respawn"
+        ))
     ))]
     {
         #[cfg(feature = "run-process-suite")]
@@ -195,9 +265,9 @@ pub fn process_exited(code: u32) -> ! {
 }
 
 /// Launch the first user process: exit0 through the PE loader by default, ret0 with the `run-ret0`
-/// feature, hello with the `run-hello` feature, the blocking-wait, timer, or preemption smoke with
-/// `run-pingpong`/`run-sleep`/`run-spin` (all on the thread-ified boot), a fault-test stub, or the
-/// full multi-process suite with `run-process-suite`. Never returns.
+/// feature, hello with the `run-hello` feature, the blocking-wait, timer, preemption, or slot-reuse
+/// smoke with `run-pingpong`/`run-sleep`/`run-spin`/`run-respawn` (all on the thread-ified boot), a
+/// fault-test stub, or the full multi-process suite with `run-process-suite`. Never returns.
 #[cfg(target_arch = "x86")]
 pub fn run_user_process() -> ! {
     #[cfg(feature = "run-process-suite")]
@@ -206,7 +276,12 @@ pub fn run_user_process() -> ! {
     }
     #[cfg(not(feature = "run-process-suite"))]
     {
-        #[cfg(not(any(feature = "fault-test-user", feature = "fault-test-badargs")))]
+        #[cfg(not(any(
+            feature = "fault-test-user",
+            feature = "fault-test-badargs",
+            feature = "fault-test-segments",
+            feature = "fault-test-threadexit"
+        )))]
         {
             #[cfg(feature = "run-pingpong")]
             {
@@ -228,6 +303,16 @@ pub fn run_user_process() -> ! {
                 not(feature = "run-pingpong"),
                 not(feature = "run-sleep"),
                 not(feature = "run-spin"),
+                feature = "run-respawn"
+            ))]
+            {
+                crate::exec::loader::run_image(crate::exec::loader::RESPAWN, "respawn")
+            }
+            #[cfg(all(
+                not(feature = "run-pingpong"),
+                not(feature = "run-sleep"),
+                not(feature = "run-spin"),
+                not(feature = "run-respawn"),
                 feature = "run-hello"
             ))]
             {
@@ -237,6 +322,7 @@ pub fn run_user_process() -> ! {
                 not(feature = "run-pingpong"),
                 not(feature = "run-sleep"),
                 not(feature = "run-spin"),
+                not(feature = "run-respawn"),
                 not(feature = "run-hello"),
                 not(feature = "run-ret0")
             ))]
@@ -247,6 +333,7 @@ pub fn run_user_process() -> ! {
                 not(feature = "run-pingpong"),
                 not(feature = "run-sleep"),
                 not(feature = "run-spin"),
+                not(feature = "run-respawn"),
                 not(feature = "run-hello"),
                 feature = "run-ret0"
             ))]
@@ -254,7 +341,12 @@ pub fn run_user_process() -> ! {
                 crate::exec::loader::run_image(crate::exec::loader::RET0, "ret0")
             }
         }
-        #[cfg(any(feature = "fault-test-user", feature = "fault-test-badargs"))]
+        #[cfg(any(
+            feature = "fault-test-user",
+            feature = "fault-test-badargs",
+            feature = "fault-test-segments",
+            feature = "fault-test-threadexit"
+        ))]
         {
             run_fault_stub()
         }
@@ -263,7 +355,12 @@ pub fn run_user_process() -> ! {
 
 /// Map the fault-test stub's pages and enter ring 3. Never returns.
 #[cfg(target_arch = "x86")]
-#[cfg(any(feature = "fault-test-user", feature = "fault-test-badargs"))]
+#[cfg(any(
+    feature = "fault-test-user",
+    feature = "fault-test-badargs",
+    feature = "fault-test-segments",
+    feature = "fault-test-threadexit"
+))]
 pub fn run_fault_stub() -> ! {
     use crate::mem::paging;
 

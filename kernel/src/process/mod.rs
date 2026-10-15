@@ -45,6 +45,35 @@ pub struct Process {
     heap: crate::user::userheap::HeapState,
     /// The handle table: the process's handles-to-objects.
     handles: crate::sched::object::HandleTable,
+    /// An exited thread's gate stack, not yet released (see [`DeadStack`]).
+    dead_stack: DeadStack,
+}
+
+/// One gate stack: its slot index and the frames mapped in it.
+pub type GateStack = (u16, [u32; crate::mem::paging::GATE_STACK_PAGES]);
+
+/// The process's exited-but-unreleased gate stack. A thread's exit runs on its own gate stack, so
+/// it cannot unmap it: the exit parks it here, and code running on another stack releases it — the
+/// next exit (which gets the earlier stack back from [`DeadStack::park`]), the next spawn, or the
+/// teardown. At most one stack is ever parked: a park hands the previous one back.
+pub struct DeadStack(Option<GateStack>);
+
+impl DeadStack {
+    /// Nothing parked.
+    pub const fn empty() -> Self {
+        DeadStack(None)
+    }
+
+    /// Park `stack` (the exiting thread's own) and return the previously parked one, which the
+    /// caller can release: it is not the stack the caller runs on.
+    pub fn park(&mut self, stack: GateStack) -> Option<GateStack> {
+        self.0.replace(stack)
+    }
+
+    /// Take the parked stack for release, if any.
+    pub fn take(&mut self) -> Option<GateStack> {
+        self.0.take()
+    }
 }
 
 // The scheduling record leads the process record: a thread's owner pointer and the process's
@@ -83,8 +112,9 @@ impl Process {
     /// Create the process and make it current: a fresh address space with the record installed at
     /// its final address, then its main thread taking the window's lowest free gate-stack slot, the
     /// fixed TEB page, and the process's scheduling data. Every later user mapping lands in this
-    /// process's directory.
-    pub fn start(name: &'static str) -> &'static mut Process {
+    /// process's directory. The record is reached through [`current_mut`] from then on: handing out
+    /// a `&'static mut` here would alias every later `current_mut` borrow.
+    pub fn start(name: &'static str) {
         let dir_phys = paging::create_address_space();
         paging::activate_address_space(dir_phys);
 
@@ -95,6 +125,7 @@ impl Process {
             gate_slots: GateSlots::empty(),
             heap: crate::user::userheap::HeapState::new(),
             handles: crate::sched::object::HandleTable::empty(),
+            dead_stack: DeadStack::empty(),
         });
 
         // The scheduling record's thread-list sentinel closes now that the record is at its final
@@ -120,7 +151,6 @@ impl Process {
         // The boot path installs the main thread's stack top as the TSS `esp0` directly; the
         // switch's own per-switch install takes over with the runner conversion.
         crate::cpu::gdt::set_gate_stack_top(paging::gate_slot_top(slot as u32));
-        process
     }
 }
 
@@ -345,6 +375,13 @@ pub fn teardown_current() -> bool {
     // Every live thread's gate-stack slot: each thread's recorded frames, exactly once (the guard
     // pages were never mapped, so they are never released).
     crate::sched::visit_gate_frames(&mut process.sched, &mut release);
+    // An exited thread's stack still awaiting release: its frames only (the gate window's table,
+    // with the mapping in it, went with the address space).
+    if let Some((_, frames)) = process.dead_stack.take() {
+        for frame in frames {
+            release(frame);
+        }
+    }
 
     // The directory frame itself, last of all.
     crate::mem::bootmem::with_frame_db(|db| {
@@ -393,6 +430,7 @@ mod tests {
             gate_slots: GateSlots::empty(),
             heap: HeapState::new(),
             handles: crate::sched::object::HandleTable::empty(),
+            dead_stack: DeadStack::empty(),
         };
         assert_eq!(process.name(), "fixture");
         assert_eq!(process.dir_phys(), 0x0090_0000);
@@ -406,6 +444,46 @@ mod tests {
             process.heap_mut().create(),
             crate::user::userheap::HEAP_HANDLE
         );
+    }
+
+    // --- The dead-stack handoff (slot reuse after a thread exit) -----------
+
+    /// An exit parks its own stack and hands back the one parked before it; a spawn takes whatever
+    /// is parked. At most one stack waits at any time.
+    #[test]
+    fn the_dead_stack_parks_one_and_hands_back_the_previous() {
+        let mut dead = DeadStack::empty();
+        assert_eq!(dead.take(), None);
+        assert_eq!(dead.park((1, [10, 11, 12, 13])), None);
+        assert_eq!(
+            dead.park((2, [20, 21, 22, 23])),
+            Some((1, [10, 11, 12, 13]))
+        );
+        assert_eq!(dead.take(), Some((2, [20, 21, 22, 23])));
+        assert_eq!(dead.take(), None);
+    }
+
+    /// The exit-then-spawn sequence the respawn fixture drives: a child's slot stays taken while
+    /// its stack is parked (its pages are still mapped), and the next spawn's release frees it
+    /// before the allocation, so the child after it gets the same slot back — unmapped first,
+    /// never double-mapped.
+    #[test]
+    fn a_spawn_after_an_exit_reuses_the_released_slot() {
+        let mut ledger = GateSlots::empty();
+        let mut dead = DeadStack::empty();
+        let main = ledger.allocate();
+        let first = ledger.allocate();
+        assert_eq!((main, first), (0, 1));
+
+        // The child exits: its stack is parked, its slot still taken.
+        assert_eq!(dead.park((first, [1, 2, 3, 4])), None);
+        assert!(ledger.is_taken(first));
+
+        // The next spawn releases the parked stack before it allocates.
+        let (slot, _) = dead.take().expect("the exited child's stack is parked");
+        ledger.release(slot);
+        assert_eq!(ledger.allocate(), first);
+        assert_eq!(dead.take(), None);
     }
 
     // --- The gate-slot ledger (B1/B2) --------------------------------------
@@ -541,6 +619,7 @@ mod tests {
             gate_slots: GateSlots::empty(),
             heap: HeapState::new(),
             handles: crate::sched::object::HandleTable::empty(),
+            dead_stack: DeadStack::empty(),
         }));
         process.sched.init();
         // SAFETY: the process record is at its final address.

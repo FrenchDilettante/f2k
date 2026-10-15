@@ -175,7 +175,7 @@ impl DpcQueue {
         let inserted = if !was_queued {
             // Freshly claimed: store the arguments, link, and ask for a dispatch interrupt if the
             // gate is open.
-            self.count += 1;
+            self.count = self.count.wrapping_add(1);
             self.depth += 1;
             dpc.argument1 = argument1;
             dpc.argument2 = argument2;
@@ -194,7 +194,7 @@ impl DpcQueue {
                     || self.request_rate < self.min_rate;
                 if warranted {
                     self.interrupt_requested = true;
-                    self.dispatch_requests += 1;
+                    self.dispatch_requests = self.dispatch_requests.wrapping_add(1);
                 }
             }
             true
@@ -269,7 +269,7 @@ impl DpcQueue {
         let current = self.count;
         let last = self.last_count;
         self.last_count = current;
-        self.request_rate = (current - last + self.request_rate) >> 1;
+        self.request_rate = current.wrapping_sub(last).wrapping_add(self.request_rate) >> 1;
     }
 }
 
@@ -374,18 +374,32 @@ pub fn enqueue(dpc: &mut Dpc, argument1: usize, argument2: usize) -> bool {
 }
 
 /// Drain the kernel queue at the dispatch level: the shared body of the two retirement entries —
-/// the hardware-interrupt exit and the idle loop. The routine-active flag keeps a drain started
-/// from one entry from double-draining into the other.
+/// the hardware-interrupt exit and the idle loop.
+///
+/// The drain refuses to run at or above the dispatch level, the same guarantee NT draws from its
+/// dispatch software interrupt, which cannot fire until the level drops below it. Raising to the
+/// dispatch level leaves the clock unmasked: a tick there could land inside dispatcher code (a
+/// park's selection, a switch's install) or inside a running routine, and a drain at that point
+/// would run timer expiry on top of the half-done ready-queue work. Refused work stays queued for
+/// the next entry that finds the level lower — the outer retire pass (which loops until the queue
+/// is empty), the next interrupt exit, or the idle loop — at most one tick later.
 #[cfg(target_arch = "x86")]
 pub fn drain() {
     // SAFETY: as above.
     unsafe {
         let queue = &mut *addr_of_mut!(QUEUE);
-        if queue.is_empty() {
+        if queue.is_empty() || queue.routine_active {
             return;
         }
         let irql = crate::interrupt::irql::state_mut();
+        if irql.current() >= crate::interrupt::irql::DISPATCH {
+            return;
+        }
         let previous = irql.raise(crate::interrupt::irql::DISPATCH);
+        // The raise re-enabled interrupts (the dispatch level is below the hardware floor); the
+        // retire pass detaches entries the clock interrupt also links, so it starts masked, per its
+        // contract. The lower restores the flag the raise captured.
+        irql.mask_interrupts();
         queue.retire(irql);
         irql.lower(previous);
     }

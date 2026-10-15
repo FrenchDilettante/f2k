@@ -76,6 +76,11 @@ core::arch::global_asm!(
     "start_high:",
     "    cld",
     "    mov esp, offset boot_stack_top",
+    // kmain's entry alignment: the ABI wants ESP + 4 a multiple of 16 at entry (the stack slot
+    // just above the return address), which makes the return address land 12 mod 16. Two argument
+    // words and the return address below the 16-aligned stack top reach only 4 mod 16, so 8 bytes
+    // of padding go between the stack top and the first argument.
+    "    sub esp, 8",
     "    push edi", // kmain arg 2: Multiboot info physical address
     "    push esi", // kmain arg 1: Multiboot magic
     // Absolute call: a relative call would be encoded against this trampoline's low address and

@@ -1,7 +1,8 @@
 //! The context switch: the swap assembly and a new thread's first instructions.
 //!
 //! [`swap_context`] moves the processor from one thread to another: it saves the caller's
-//! nonvolatile registers and `esp` into a switch frame on the old thread's kernel stack, installs
+//! nonvolatile registers and `esp` into a switch frame on the old thread's kernel stack, saves its
+//! x87 state into its record (restoring the new thread's), installs
 //! the new thread's stack top as the TSS `esp0`, rewrites the TEB descriptor's base, loads CR3 when
 //! the process changes, and resumes the new thread. [`THREAD_STARTUP`] is a fresh thread's first
 //! instructions, reached as the planted return address of the initial switch: it zeroes the
@@ -39,6 +40,10 @@ pub const THREAD_INITIAL_STACK_OFF: u32 = 12;
 /// descriptor (0 for kernel and idle threads). Host tests pin this to the thread record's
 /// `#[repr(C)]` layout.
 pub const THREAD_TEB_VA_OFF: u32 = 16;
+
+/// The saved-x87-state field's offset in the thread record (taken from the layout itself: nothing
+/// else depends on where it sits, so it is not pinned to a number).
+pub const THREAD_FPU_OFF: u32 = core::mem::offset_of!(super::thread::Thread, fpu) as u32;
 
 /// The directory-base offset inside the scheduling record, read only when the process changes.
 pub const PROCESS_DIR_PHYS_OFF: u32 = 0;
@@ -91,6 +96,10 @@ core::arch::global_asm!(
     // From here until the new esp is live no interrupt may run. Order: save the old esp, install
     // the new esp0, rewrite the TEB base, load CR3 (only on a process change), switch esp.
     "    cli",
+    // The x87 state: the old thread's saved (`fnsave` also reinitializes the unit), the new
+    // thread's restored. Both records are kernel statics, mapped in every directory.
+    "    fnsave [edi + {fpu_off}]",
+    "    frstor [esi + {fpu_off}]",
     "    mov [edi + {kstack_off}], esp",
     "    mov eax, [esi + {init_stack_off}]",
     "    mov edx, offset TSS",
@@ -127,6 +136,7 @@ core::arch::global_asm!(
     kstack_off = const THREAD_KERNEL_STACK_OFF,
     init_stack_off = const THREAD_INITIAL_STACK_OFF,
     teb_off = const THREAD_TEB_VA_OFF,
+    fpu_off = const THREAD_FPU_OFF,
     process_off = const THREAD_PROCESS_OFF,
     dir_phys_off = const PROCESS_DIR_PHYS_OFF,
     teb_lo = const TEB_BASE_LO_OFF,

@@ -64,6 +64,16 @@ pub fn copying_user_args() -> bool {
     unsafe { core::ptr::read_volatile(core::ptr::addr_of!(COPYING_USER_ARGS)) }
 }
 
+/// Clear the attribution flag: the exception handler's step when a fault inside a user-memory copy
+/// ends the process. The copy never returns to clear it itself, and a flag left set would attribute
+/// every later kernel fault to whichever process runs next.
+pub fn end_user_attribution() {
+    // SAFETY: as `with_user_attribution`.
+    unsafe {
+        core::ptr::write_volatile(core::ptr::addr_of_mut!(COPYING_USER_ARGS), false);
+    }
+}
+
 /// Run `body` under the attribution flag.
 fn with_user_attribution<T>(body: impl FnOnce() -> T) -> T {
     // SAFETY: single-threaded kernel context; the flag's only other reader is the exception
@@ -131,8 +141,13 @@ extern "C" fn syscall_dispatch(frame: &mut TrapFrame) {
     assert_eq!(frame.cs & 3, 3, "syscall gate raised from ring 0");
 
     // The internal thread-exit service: the trampoline's number, before the registry (the exit path
-    // never returns to the frame).
+    // never returns to the frame). Only a user thread can exit: on a boot that runs ring 3 on the
+    // idle thread the number names no service.
     if frame.eax == SYS_THREAD_EXIT {
+        if crate::sched::idle::on_idle_thread() {
+            frame.eax = STATUS_INVALID_SYSTEM_SERVICE;
+            return;
+        }
         crate::process::threads::exit_thread(frame.edx as i32);
     }
 
@@ -177,13 +192,39 @@ core::arch::global_asm!(
     "    push {vector}",
     "    pushad", // saves EAX (number) and EDX (argument pointer)
     "    cld", // Rust code requires a forward direction flag
-    "    push esp", // frame pointer (esp already points at the frame)
+    // The caller's data segments, saved below the frame (see `idt::SavedSegments`): ring 3 can load
+    // any selector the hardware permits (null, the TEB segment), so the kernel must never run on
+    // them.
+    "    mov eax, ds",
+    "    push eax",
+    "    mov eax, es",
+    "    push eax",
+    "    mov eax, fs",
+    "    push eax",
+    "    mov eax, gs",
+    "    push eax",
+    "    mov ax, {kernel_data}",
+    "    mov ds, ax",
+    "    mov es, ax",
+    "    lea eax, [esp + 16]", // frame pointer: the pushad block, above the saved segments
+    "    push eax",
     "    call {dispatch}",
     "    add esp, 4", // drop the frame pointer
+    // Restoring FS reloads the TEB descriptor, whose base the context switch rewrote for the
+    // thread now running: a thread resumed here sees its own TEB, not the last-entered one's.
+    "    pop eax",
+    "    mov gs, ax",
+    "    pop eax",
+    "    mov fs, ax",
+    "    pop eax",
+    "    mov es, ax",
+    "    pop eax",
+    "    mov ds, ax",
     "    popad", // EAX now carries the service's result
     "    add esp, 8", // drop vector + error pad
     "    iretd", // pops EIP, CS, EFLAGS, user ESP, user SS
     vector = const SYSCALL_VECTOR as u32,
+    kernel_data = const crate::cpu::gdt::KERNEL_DATA_SELECTOR,
     dispatch = sym syscall_dispatch,
 );
 

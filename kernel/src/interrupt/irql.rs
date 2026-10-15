@@ -94,7 +94,7 @@ impl IrqlState {
         if level < HARDWARE_FLOOR {
             self.unmask_interrupts();
         }
-        self.raises += 1;
+        self.raises = self.raises.wrapping_add(1);
         Irql(previous)
     }
 
@@ -110,7 +110,7 @@ impl IrqlState {
         if restore {
             self.unmask_interrupts();
         }
-        self.lowers += 1;
+        self.lowers = self.lowers.wrapping_add(1);
     }
 
     /// Set the interrupt flag.
@@ -119,6 +119,18 @@ impl IrqlState {
         #[cfg(target_arch = "x86")]
         unsafe {
             core::arch::asm!("sti", options(nomem, nostack, preserves_flags));
+        }
+    }
+
+    /// Set the interrupt flag and halt until the next interrupt, as one pair: the interrupt
+    /// shadow after `sti` (interrupts are only taken after the next instruction) makes the `hlt`
+    /// the first interruptible point, so no interrupt can be taken between the enable and the
+    /// halt — and then leave the processor sleeping a full tick after a wake it missed.
+    #[cfg(target_arch = "x86")]
+    pub fn unmask_and_halt(&mut self) {
+        self.interrupts = true;
+        unsafe {
+            core::arch::asm!("sti", "hlt", options(nomem, nostack, preserves_flags));
         }
     }
 

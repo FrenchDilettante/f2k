@@ -3,8 +3,15 @@
 # Each case builds the kernel (optionally with cargo features), boots it
 # in QEMU via scripts/test-boot.sh, and passes once every expected
 # string has appeared on COM1. `image: kernel` boots the freshly built
-# kernel ELF through QEMU's Multiboot loader; `image: disk` boots the
-# prebuilt disk image (built by `make disk` with the default kernel).
+# kernel ELF through QEMU's Multiboot loader; `image: disk` rebuilds the
+# disk image with the case's features (or none) and boots it through
+# Limine.
+#
+# Matching: each expected string is a substring of some COM1 line, in
+# any order. `ordered: true` requires them in order, each on a later
+# line; `contiguous` lists strings that must match consecutive lines
+# (an uninterrupted block); `forbids` lists strings that fail the case
+# on sight. "KERNEL PANIC" is forbidden in every case.
 #
 # Run the whole suite with `make test` (kernel cases) or `make test-disk`
 # (disk cases), or the runner directly:
@@ -56,6 +63,22 @@ cases:
       - "F2K: entering ring 3"
       - "CPU EXCEPTION: vector 14"
       - "F2K: user process ended by fault (bad user argument pointer); halting"
+
+  - name: fault-segments
+    description: ring 3 loads the TEB selector into DS/ES and keeps running across ticks and a syscall; the kernel's entry stubs load their own data segments
+    image: kernel
+    features: [fault-test-segments]
+    expects:
+      - "F2K: entering ring 3"
+      - "F2K: user process exited normally (exit code=7)"
+
+  - name: fault-threadexit
+    description: the internal thread-exit service on a boot without user threads is refused (STATUS_INVALID_SYSTEM_SERVICE), not a kernel panic
+    image: kernel
+    features: [fault-test-threadexit]
+    expects:
+      - "F2K: entering ring 3"
+      - "F2K: user process exited normally (exit code=3221225500)"
 
   - name: boot-smoke-disk
     description: full boot through the first PE image (exit0) to its exit syscall (Limine disk path)
@@ -127,6 +150,8 @@ cases:
     description: the blocking-wait smoke runs its captured five-turn alternation through two auto-reset events and a child thread, the child-handle wait returns 0, and the process exits cleanly (kernel path)
     image: kernel
     features: [run-pingpong]
+    # The strict alternation is the point: the turns must appear in order.
+    ordered: true
     expects:
       - "F2K Booted Successfully"
       - "F2K: frame database audit: ok"
@@ -151,6 +176,8 @@ cases:
     description: the blocking-wait smoke runs its captured five-turn alternation through two auto-reset events and a child thread, the child-handle wait returns 0, and the process exits cleanly (Limine disk path)
     image: disk
     features: [run-pingpong]
+    # The strict alternation is the point: the turns must appear in order.
+    ordered: true
     expects:
       - "F2K Booted Successfully"
       - "F2K: frame database audit: ok"
@@ -219,12 +246,27 @@ cases:
   # delivery), before the pair resumes and finishes. The capture is
   # shape-confirmed, not byte-exact: the per-run A/B progress line
   # counts are timing-dependent, so the case pins the invariants —
-  # the C block's ten deterministic progress lines and completion,
-  # the A/B/C completions with their checksums, and the summary.
+  # the C block's ten deterministic progress lines and completion as
+  # one uninterrupted block (`contiguous`), the A/B/C completions with
+  # their checksums, and the summary.
   - name: spin-smoke
     description: the preemption smoke interleaves two same-priority spinners at quantum ends and runs a raised thread's block uninterrupted, with all three checksums reported (kernel path)
     image: kernel
     features: [run-spin]
+    # The raised thread's block runs uninterrupted: its progress lines
+    # and completion appear on consecutive lines, no A/B line between.
+    contiguous:
+      - "C 5000000"
+      - "C 10000000"
+      - "C 15000000"
+      - "C 20000000"
+      - "C 25000000"
+      - "C 30000000"
+      - "C 35000000"
+      - "C 40000000"
+      - "C 45000000"
+      - "C 50000000"
+      - "C done, checksum 1283106752"
     expects:
       - "F2K Booted Successfully"
       - "F2K: frame database audit: ok"
@@ -233,9 +275,6 @@ cases:
       - "F2K: entering ring 3"
       - "main: spinners started"
       - "main: starting high-priority thread"
-      - "C 5000000"
-      - "C 25000000"
-      - "C 50000000"
       - "C done, checksum 1283106752"
       - "A done, checksum 1283106752"
       - "B done, checksum 1283106752"
@@ -247,6 +286,20 @@ cases:
     description: the preemption smoke interleaves two same-priority spinners at quantum ends and runs a raised thread's block uninterrupted, with all three checksums reported (Limine disk path)
     image: disk
     features: [run-spin]
+    # The raised thread's block runs uninterrupted: its progress lines
+    # and completion appear on consecutive lines, no A/B line between.
+    contiguous:
+      - "C 5000000"
+      - "C 10000000"
+      - "C 15000000"
+      - "C 20000000"
+      - "C 25000000"
+      - "C 30000000"
+      - "C 35000000"
+      - "C 40000000"
+      - "C 45000000"
+      - "C 50000000"
+      - "C done, checksum 1283106752"
     expects:
       - "F2K Booted Successfully"
       - "F2K: frame database audit: ok"
@@ -255,14 +308,64 @@ cases:
       - "F2K: entering ring 3"
       - "main: spinners started"
       - "main: starting high-priority thread"
-      - "C 5000000"
-      - "C 25000000"
-      - "C 50000000"
       - "C done, checksum 1283106752"
       - "A done, checksum 1283106752"
       - "B done, checksum 1283106752"
       - "main: all threads finished"
       - "spin: ok"
+      - "F2K: user process exited normally (exit code=0)"
+
+  # Thread-slot reuse smoke: the
+  # main thread runs three rounds of create, wait for, close, one
+  # child alive at a time, so every child after the first reuses
+  # the gate-stack resources (the slot and its frames) the
+  # previous one released at its exit — the kernel that keeps a
+  # freed stack mapped fails the second round's spawn, and the one
+  # that never releases fails the third (the slot ledger). The
+  # child/main alternation is deterministic (main waits for each
+  # child before creating the next), so the case pins the output
+  # in order. Three rounds exactly fit the thread pool (three
+  # records, never reclaimed); a fourth would refuse the create.
+  - name: respawn-smoke
+    description: the slot-reuse smoke runs three create/wait/close rounds, each child after the first reusing the previous one's released gate-stack resources, and exits cleanly (kernel path)
+    image: kernel
+    features: [run-respawn]
+    # The create/wait/close rounds must appear in order.
+    ordered: true
+    expects:
+      - "F2K Booted Successfully"
+      - "F2K: frame database audit: ok"
+      - "F2K: kernel heap: alloc/free ok"
+      - "F2K: image loaded"
+      - "F2K: entering ring 3"
+      - "child 1: running"
+      - "main: round 1: child finished"
+      - "child 2: running"
+      - "main: round 2: child finished"
+      - "child 3: running"
+      - "main: round 3: child finished"
+      - "respawn: ok"
+      - "F2K: user process exited normally (exit code=0)"
+
+  - name: respawn-smoke-disk
+    description: the slot-reuse smoke runs three create/wait/close rounds, each child after the first reusing the previous one's released gate-stack resources, and exits cleanly (Limine disk path)
+    image: disk
+    features: [run-respawn]
+    # The create/wait/close rounds must appear in order.
+    ordered: true
+    expects:
+      - "F2K Booted Successfully"
+      - "F2K: frame database audit: ok"
+      - "F2K: kernel heap: alloc/free ok"
+      - "F2K: image loaded"
+      - "F2K: entering ring 3"
+      - "child 1: running"
+      - "main: round 1: child finished"
+      - "child 2: running"
+      - "main: round 2: child finished"
+      - "child 3: running"
+      - "main: round 3: child finished"
+      - "respawn: ok"
       - "F2K: user process exited normally (exit code=0)"
 
   # Multi-process suite: one boot
@@ -278,9 +381,6 @@ cases:
   # The teardown line prints after every process (all six), so every
   # index is asserted independently; the crash fixture writes through
   # the unmapped NULL page, which raises #PF (vector 14).
-  #
-  # Expected to FAIL until the sequence runner lands: today the
-  # kernel runs the first process and halts.
   - name: process-suite
     description: sequential multi-process run (exit0, ret0, bsscheck x2, crash, exit0) with per-process teardown audits and a zero-leak summary (kernel path)
     image: kernel
@@ -337,9 +437,6 @@ cases:
   # diagnostic running. The tick is default-on kernel machinery (not
   # a fixture selection); the feature gates only the diagnostic lines
   # and the bounded tick wait.
-  #
-  # Expected to FAIL until the interrupt core lands: today the PIC is
-  # untouched, no tick exists, and the boot ends in cli;hlt.
   - name: irq-smoke
     description: the interrupt diagnostic boot reports the PIC remap, the live tick, the clock DPC, and the audit, then the default image exits 0 (kernel path)
     image: kernel

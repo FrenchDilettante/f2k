@@ -477,7 +477,9 @@ impl Dispatcher {
     /// thread, which is never flagged (so its ledger runs off the bottom; the arithmetic wraps like
     /// the byte counter it is, and nothing reads it).
     pub fn tick_quantum(&mut self, thread: &mut Thread) -> bool {
-        thread.quantum = thread.quantum.wrapping_sub(QUANTUM_TICK);
+        // Saturating: a thread charged for longer than its quantum without a dispatch window
+        // (about 43 ticks at the reset value) must not wrap back to a positive quantum.
+        thread.quantum = thread.quantum.saturating_sub(QUANTUM_TICK);
         if thread.quantum > 0 {
             return false;
         }
@@ -526,18 +528,21 @@ impl Dispatcher {
     /// Deliver a pending dispatch request at a dispatch point: the interrupt exit (after the
     /// deferred work has run) and the service boundary. The window opens only below the dispatch
     /// level — a request armed inside an open window (the clock can preempt it) waits for the next
-    /// one. A delivered switch leaves the calling frames in place on the calling thread's kernel
-    /// stack: the interrupted exit unwinds when the thread is next resumed, its state untouched.
+    /// one. The decision itself runs at the dispatch level: it re-readies the running thread, and a
+    /// clock interrupt landing in it must not drain or deliver on top of it. A delivered switch
+    /// leaves the calling frames in place on the calling thread's kernel stack: the interrupted
+    /// exit unwinds when the thread is next resumed, its state untouched.
     #[cfg(target_arch = "x86")]
     pub fn deliver_pending(&mut self) {
         if crate::interrupt::irql::state_mut().current() >= crate::interrupt::irql::DISPATCH {
             return;
         }
+        let previous = crate::interrupt::irql::state_mut().raise(crate::interrupt::irql::DISPATCH);
         let target = self.dispatch_target();
         if target.is_null() {
+            crate::interrupt::irql::state_mut().lower(previous);
             return;
         }
-        let previous = crate::interrupt::irql::state_mut().raise(crate::interrupt::irql::DISPATCH);
         // SAFETY: the running thread, live and exclusive here.
         let old = self.current_thread();
         // SAFETY: as above.
@@ -546,9 +551,11 @@ impl Dispatcher {
         // SAFETY: the target's frame is planted (fresh) or saved (resumed) — the selection
         // discipline guarantees it — and the dispatch level masks the dispatcher context.
         unsafe { super::switch::swap_context(old, target) };
-        // The preempted thread's timeline resumes here.
-        // SAFETY: the running thread, live.
-        let current = self.current_thread();
+        // The preempted thread's timeline resumes here. The current thread is re-read from the
+        // dispatcher static, not through `self`: other threads ran and rewrote the dispatcher in
+        // between, so a value held through this `&mut` (which the optimizer may forward from the
+        // `enter` above) would name the thread switched to, not the one resumed.
+        let current = crate::sched::idle::dispatcher().current_thread();
         // SAFETY: as above.
         unsafe { crate::interrupt::irql::state_mut().restore((*current).level) };
         crate::interrupt::irql::state_mut().lower(previous);
@@ -1996,13 +2003,29 @@ mod tests {
         assert!(!d.quantum_end_requested, "only the request is gated");
         assert!(d.dispatch_target().is_null());
 
-        // The ledger's floor: a charge at the byte floor wraps (the counter is a signed byte), and
-        // the wrap reads positive — the never-reset ledger keeps wrapping harmlessly, and no
-        // request ever arms.
+        // The ledger's floor: a charge at the byte floor saturates (the counter is a signed byte)
+        // rather than wrapping to a positive quantum — the never-reset ledger rests at the floor,
+        // and no request ever arms.
         idle.quantum = i8::MIN;
         d.charge_running_tick();
-        assert_eq!(idle.quantum(), i8::MIN.wrapping_sub(QUANTUM_TICK));
+        assert_eq!(idle.quantum(), i8::MIN);
         assert!(!d.quantum_end_requested);
+    }
+
+    /// A thread charged past its quantum without a dispatch window stays exhausted: the charge
+    /// saturates at the byte floor instead of wrapping back to a positive quantum (about 43 ticks
+    /// at the reset value) and silently granting the thread another one.
+    #[test]
+    fn an_overcharged_quantum_never_wraps_positive() {
+        let d = dispatcher();
+        let p = process(8);
+        let t = thread(p);
+        run(d, as_ptr(t));
+        t.quantum = i8::MIN + 1;
+        assert!(d.tick_quantum(t));
+        assert_eq!(t.quantum(), i8::MIN);
+        assert!(d.tick_quantum(t), "still exhausted at the floor");
+        assert_eq!(t.quantum(), i8::MIN);
     }
 
     // --- The request rules ------------------------------------------------------

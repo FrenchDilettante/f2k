@@ -610,9 +610,11 @@ impl Dispatcher {
         // SAFETY: the selected thread's frame is planted (fresh) or saved (resumed) — the selection
         // discipline guarantees it — and the dispatch level masks the dispatcher context.
         unsafe { super::switch::swap_context(old, selected) };
-        // The parked thread's timeline resumes here.
-        // SAFETY: the running thread, live.
-        let current = self.current_thread();
+        // The parked thread's timeline resumes here. The current thread is re-read from the
+        // dispatcher static, not through `self`: other threads ran and rewrote the dispatcher in
+        // between, so a value held through this `&mut` (which the optimizer may forward from the
+        // `enter` above) would name the thread switched to, not the one resumed.
+        let current = crate::sched::idle::dispatcher().current_thread();
         // SAFETY: as above.
         unsafe { crate::interrupt::irql::state_mut().restore((*current).level) };
         crate::interrupt::irql::state_mut().lower(previous);

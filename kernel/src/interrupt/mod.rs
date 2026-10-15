@@ -496,11 +496,11 @@ mod target {
                 Outcome::Served => {
                     core::ptr::write_volatile(
                         addr_of_mut!(CLAIMED),
-                        core::ptr::read_volatile(addr_of!(CLAIMED)) + 1,
+                        core::ptr::read_volatile(addr_of!(CLAIMED)).wrapping_add(1),
                     );
                     core::ptr::write_volatile(
                         addr_of_mut!(ENDED),
-                        core::ptr::read_volatile(addr_of!(ENDED)) + 1,
+                        core::ptr::read_volatile(addr_of!(ENDED)).wrapping_add(1),
                     );
                     crate::interrupt::dpc::drain();
                     crate::sched::idle::dispatcher().deliver_pending();
@@ -508,13 +508,13 @@ mod target {
                 Outcome::Spurious => {
                     core::ptr::write_volatile(
                         addr_of_mut!(SPURIOUS),
-                        core::ptr::read_volatile(addr_of!(SPURIOUS)) + 1,
+                        core::ptr::read_volatile(addr_of!(SPURIOUS)).wrapping_add(1),
                     );
                 }
                 Outcome::Unexpected => {
                     core::ptr::write_volatile(
                         addr_of_mut!(UNEXPECTED),
-                        core::ptr::read_volatile(addr_of!(UNEXPECTED)) + 1,
+                        core::ptr::read_volatile(addr_of!(UNEXPECTED)).wrapping_add(1),
                     );
                     crate::serial_println!(
                         "F2K: unexpected interrupt on vector {:#04x}; halting",

@@ -21,17 +21,25 @@ doctest = false
 [features]
 # Test-only fault injection (see kmain): raise a CPU exception right after
 # boot so the exception stubs and the COM1 dump can be verified on target
-# with `make test-fault-ud` / `make test-fault-gp`.
+# by the fault-ud / fault-gp cases of scripts/qemu-tests.yaml.
 fault-test-ud = []
 fault-test-gp = []
 # Swaps the ring-3 smoke stub for one that reads the supervisor-only
 # kernel window, so the user-process-fault path can be verified on
-# target with `make test-fault-user`.
+# target by the fault-user case.
 fault-test-user = []
 # Swaps the ring-3 smoke stub for one that passes an unmapped user
 # address as the syscall argument pointer, so faults inside the
-# kernel's argument copy end the process: `make test-fault-badargs`.
+# kernel's argument copy end the process: the fault-badargs case.
 fault-test-badargs = []
+# Swaps the ring-3 smoke stub for one that loads null DS/ES, spins across
+# several clock ticks, then exits through the syscall gate: the kernel's
+# entry stubs must not run on the user's data segments.
+fault-test-segments = []
+# Swaps the ring-3 smoke stub for one that raises the internal
+# thread-exit service on a boot without user threads, then exits with
+# the service's status: the service must be refused, not panic.
+fault-test-threadexit = []
 # Loads the second corpus fixture (ret0.exe, the 35-import CRT startup
 # surface) instead of the first: the ret0 suite cases build with it.
 run-ret0 = []
@@ -59,11 +67,17 @@ run-sleep = []
 # under preemption. The qemu-tests.yaml cases pin the captured
 # shape.
 run-spin = []
+# The thread-slot reuse smoke boot: the respawn fixture runs with
+# the thread-ified entry — three rounds of create, wait for, close
+# (one child alive at a time), so every child after the first
+# reuses the gate-stack resources the previous one released at its
+# exit. The qemu-tests.yaml cases pin the captured output.
+run-respawn = []
 # The multi-process suite case: exit0, ret0, bsscheck, bsscheck,
 # crash, exit0 run in sequence in one boot, each process torn down
 # and audited before the next starts. The sequence runner and the
 # per-process teardown are the runner's deliverables; the
-# qemu-tests.yaml cases pin the COM1 shapes and fail until they land.
+# qemu-tests.yaml cases pin the COM1 shapes.
 run-process-suite = []
 # The interrupt/timer diagnostic boot:
 # a boot-time pass that reports the PIC remap, the PIT programming at
@@ -72,8 +86,7 @@ run-process-suite = []
 # proceed to the default image's exit — proving coexistence, not just
 # the diagnostic. The tick itself is default-on kernel machinery; the
 # feature gates only the diagnostic lines and the bounded tick wait.
-# The qemu-tests.yaml cases pin the COM1 shapes and fail until the
-# interrupt core lands.
+# The qemu-tests.yaml cases pin the COM1 shapes.
 irq-smoke = []
 
 [dependencies]
@@ -82,11 +95,5 @@ irq-smoke = []
 # bitflags = "2.0"      # Bit flags
 # itoa = "1.0"          # Integer to ASCII conversion (no_std compatible)
 
-[profile.dev]
-panic = "abort"          # Abort on panic (we have no unwinding)
-opt-level = 0            # No optimization for debugging
-
-[profile.release]
-panic = "abort"          # Abort on panic
-opt-level = 2            # Optimize for size/speed
-lto = true               # Link-time optimization
+# Build profiles live in the workspace root's Cargo.toml: cargo ignores
+# profiles in member packages.

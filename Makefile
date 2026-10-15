@@ -24,6 +24,9 @@ BUILD_DIR ?= target
 SCRIPTS_DIR ?= scripts
 
 # Tools
+# The on-target suite runner needs PyYAML: prefer the repository's .venv
+# (where it is installed) over the system interpreter.
+PYTHON ?= $(if $(wildcard .venv/bin/python),.venv/bin/python,python3)
 OBJCOPY ?= x86_64-elf-objcopy
 NASM ?= nasm
 DD ?= dd
@@ -93,7 +96,7 @@ qemu: kernel
 .PHONY: kernel-bin
 kernel-bin:
 	@echo "Converting kernel to raw binary..."
-	$(OBJCOPY) -O binary --only-section=.text --only-section=.rodata \
+	$(OBJCOPY) -O binary \
 		$(BUILD_DIR)/$(TARGET)/debug/f2k-kernel \
 		$(BUILD_DIR)/$(TARGET)/debug/f2k-kernel.raw
 	@echo "Raw kernel: $(BUILD_DIR)/$(TARGET)/debug/f2k-kernel.raw"
@@ -139,10 +142,10 @@ clobber: clean
 # are data, not new Makefile targets.
 .PHONY: test test-disk
 test: kernel
-	@scripts/run-qemu-tests.py scripts/qemu-tests.yaml --image kernel
+	@$(PYTHON) scripts/run-qemu-tests.py scripts/qemu-tests.yaml --image kernel
 
 test-disk: disk
-	@scripts/run-qemu-tests.py scripts/qemu-tests.yaml --image disk
+	@$(PYTHON) scripts/run-qemu-tests.py scripts/qemu-tests.yaml --image disk
 
 .PHONY: run-tests
 run-tests:

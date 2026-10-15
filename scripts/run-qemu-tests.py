@@ -4,9 +4,14 @@ Run the QEMU on-target test suite described by a YAML file.
 
 Each case in the YAML names the image to boot (kernel ELF or disk
 image), optional cargo features to build the kernel with, and the COM1
-strings that must appear for the case to pass. The per-case engine —
-build, boot, assert — is scripts/test-boot.sh; this script adds the
-suite level: case selection, per-case builds, and a summary.
+strings that must appear for the case to pass. Optional keys tighten
+the match: `ordered: true` (the expects must appear in order, each on a
+later line), `contiguous` (strings that must appear on consecutive
+lines: an uninterrupted block), and `forbids` (strings that fail the
+case on sight, added to the suite default, "KERNEL PANIC"). The
+per-case engine — build, boot, assert — is scripts/test-boot.sh; this
+script adds the suite level: case selection, per-case builds, and a
+summary.
 
 Usage:
   run-qemu-tests.py <config.yaml> [--image kernel|disk|all]
@@ -23,11 +28,15 @@ from pathlib import Path
 try:
     import yaml
 except ImportError:
-    sys.exit("PyYAML is required: pip3 install --user --break-system-packages pyyaml"
+    sys.exit("PyYAML is required: run through `make test` (which uses the repository's .venv"
+             " when present), or install it: pip3 install --user --break-system-packages pyyaml"
              " (or apt install python3-yaml)")
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = Path(__file__).resolve().parent
+
+# Output no case may produce: a kernel panic is never an expected outcome.
+DEFAULT_FORBIDS = ["KERNEL PANIC"]
 
 PASS = f"[\033[92mPASS\033[0m]"
 FAIL = f"[\033[91mFAIL\033[0m]"
@@ -66,9 +75,12 @@ def load_cases(config_path):
             isinstance(e, str) and e for e in expects
         ):
             fail(config_path, f"case {name!r}: 'expects' must be a non-empty list of strings")
-        features = case.get("features", [])
-        if not isinstance(features, list) or not all(isinstance(x, str) and x for x in features):
-            fail(config_path, f"case {name!r}: 'features' must be a list of strings")
+        for key in ("features", "forbids", "contiguous"):
+            value = case.get(key, [])
+            if not isinstance(value, list) or not all(isinstance(x, str) and x for x in value):
+                fail(config_path, f"case {name!r}: '{key}' must be a list of strings")
+        if not isinstance(case.get("ordered", False), bool):
+            fail(config_path, f"case {name!r}: 'ordered' must be true or false")
     return cases
 
 
@@ -86,13 +98,14 @@ def select_cases(cases, image, only):
 def run_case(case, kernel_dir, kernel_elf, disk_img, timeout):
     """Build the case's kernel and boot it; return True on pass.
 
-    Kernel cases build the kernel with the case's features. A disk
-    case with features rebuilds the disk image with them (the disk
-    embeds one kernel, so a feature-selected fixture needs its own
-    image); a disk case without features boots the prebuilt image.
+    Kernel cases build the kernel with the case's features. Disk cases
+    rebuild the disk image every time, with the case's features (or
+    none): the disk embeds one kernel, and the image on disk is
+    whatever the previous build left, so booting it unrebuilt could
+    test another case's kernel.
     """
     features = case.get("features", [])
-    if case["image"] == "disk" and features:
+    if case["image"] == "disk":
         build = ["make", "disk", f"CARGO_FEATURES={','.join(features)}"]
         build_cwd = REPO_ROOT
         build_what = "disk build"
@@ -102,19 +115,25 @@ def run_case(case, kernel_dir, kernel_elf, disk_img, timeout):
             build += ["--features", ",".join(features)]
         build_cwd = kernel_dir
         build_what = "kernel build"
-    if subprocess.run(
+    built = subprocess.run(
         build,
         cwd=build_cwd,
-        stderr=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-    ).returncode != 0:
-        print(f"{FAIL}: {case['name']} ({build_what} failed)", flush=True)
+        stderr=subprocess.STDOUT,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    if built.returncode != 0:
+        print(f"{FAIL}: {case['name']} ({build_what} failed: {' '.join(build)})", flush=True)
+        print("\n".join(built.stdout.splitlines()[-40:]), flush=True)
         return False
 
     image = kernel_elf if case["image"] == "kernel" else disk_img
     env = dict(os.environ)
     if timeout is not None:
         env["BOOT_TIMEOUT"] = str(timeout)
+    env["BOOT_ORDERED"] = "1" if case.get("ordered", False) else "0"
+    env["BOOT_FORBID"] = "\n".join(DEFAULT_FORBIDS + case.get("forbids", []))
+    env["BOOT_CONTIGUOUS"] = "\n".join(case.get("contiguous", []))
     cmd = [str(SCRIPTS / "test-boot.sh"), str(image), *case["expects"]]
     passed = subprocess.run(cmd, env=env).returncode == 0
     print(f"{PASS if passed else FAIL}: {case['name']}", flush=True)

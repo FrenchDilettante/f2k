@@ -9,3 +9,11 @@ resolver = "2"
 
 [workspace.dependencies]
 # Shared dependencies can be listed here
+
+# Build profiles (cargo only honors them at the workspace root). Panic
+# behaviour is not set here: the kernel target spec (x86-f2k.json) already
+# says panic-strategy "abort", and a profile-level `panic` would leak into
+# the host unit tests' from-source std build and break it.
+[profile.release]
+opt-level = 2            # Optimize for size/speed
+lto = true               # Link-time optimization

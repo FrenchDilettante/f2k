@@ -91,5 +91,12 @@ if errorlevel 1 (echo build.bat: suspend failed & exit /b 1)
 del suspend.obj
 cd ..
 
+echo === respawn
+cd respawn
+cl /nologo respawn.c
+if errorlevel 1 (echo build.bat: respawn failed & exit /b 1)
+del respawn.obj
+cd ..
+
 echo All tests built.
 exit /b 0

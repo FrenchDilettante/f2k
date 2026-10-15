@@ -66,6 +66,12 @@ not committed.
 - `suspend` - scheduler smoke: a worker frozen across a long sleep
   while suspended, then resumed and completed, with the documented
   suspend-count returns (0 then 1).
+- `respawn` - scheduler smoke: three rounds of create a child,
+  wait for it, close it - one child alive at a time, so every
+  child after the first reuses the kernel resources (gate-stack
+  slot) the previous one released at its exit. The binary is
+  built, its imports verified, and its output confirmed against
+  the real-machine capture.
 
 ## Building
 
@@ -94,6 +100,8 @@ fixtures load from the disk image instead and the embedding goes
 away.
 
 The scheduler smoke tests (`thread`, `pingpong`, `sleep`, `spin`,
-`suspend`) join the same embedding one per scheduler stage, in
-dependency order, as the scheduler grows; each asserts the
-real-machine captured output of its stage.
+`respawn`, `suspend`) join the same embedding one per scheduler
+stage, in dependency order, as the scheduler grows; each asserts
+the real-machine captured output of its stage. The
+`run-respawn` feature selects `respawn` on the thread-ified boot,
+the same entry `run-pingpong` uses.

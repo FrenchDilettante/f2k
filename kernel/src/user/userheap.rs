@@ -7,6 +7,11 @@
 //! The allocator core is pure logic over a `&mut [u8]` region image (host-testable); the target
 //! glue maps pages on demand. Blocks carry an 8-byte header (size, state), 8-byte aligned;
 //! first-fit with splitting, free coalesces with both neighbors.
+//!
+//! The region is user memory: the program can overwrite any header (an overflow off the end of a
+//! block is enough). Every header the kernel reads is therefore untrusted — sizes are checked
+//! before they move a cursor ([`next_block`]), and a header that does not describe a block inside
+//! the region ends the walk as a failed call, never as a kernel panic or an endless loop.
 
 /// Heap block header size: one dword of block size (the user bytes, not counting the header), one
 /// dword of state.
@@ -36,9 +41,29 @@ pub const MEM_COMMIT: u32 = 0x1000;
 #[cfg(target_arch = "x86")]
 pub const MEM_RESERVE: u32 = 0x2000;
 
-/// Round a request up to the block alignment.
-fn round_up(request: usize) -> usize {
-    request.max(1).next_multiple_of(ALIGN)
+/// HeapAlloc/HeapReAlloc flag: zero the new bytes.
+const HEAP_ZERO_MEMORY: u32 = 0x0000_0008;
+/// HeapReAlloc flag: never move the block.
+const HEAP_REALLOC_IN_PLACE_ONLY: u32 = 0x0000_0010;
+
+/// Round a request up to the block alignment; none when the rounding overflows (a request near
+/// the top of the address space can never be served).
+fn round_up(request: usize) -> Option<usize> {
+    request.max(1).checked_next_multiple_of(ALIGN)
+}
+
+/// The block after the one at `offset` whose header claims `size` user bytes, or none when the
+/// claim is not a block: a size off the alignment, or an end past `top` (overflow included). Every
+/// walk steps through here, so a corrupted header can neither run a cursor out of the region nor
+/// stall it (each step advances by at least the header).
+fn next_block(offset: usize, size: u32, top: usize) -> Option<usize> {
+    if size as usize % ALIGN != 0 {
+        return None;
+    }
+    let next = offset
+        .checked_add(HEADER_SIZE)?
+        .checked_add(size as usize)?;
+    (next <= top).then_some(next)
 }
 
 /// Read one block header: (user size, state).
@@ -74,27 +99,27 @@ pub fn alloc_block(
     request: usize,
     zero: bool,
 ) -> Option<usize> {
-    let need = round_up(request);
-    if need > region.len() {
+    let need = round_up(request)?;
+    if need > region.len() || *top > region.len() {
         return None;
     }
 
     let mut offset = 0;
     while offset < *top {
         let (mut size, state) = read_header(region, offset);
+        // A header that is not a block ends the walk: the heap is corrupt, the call fails.
+        let mut next = next_block(offset, size, *top)?;
         if state == STATE_FREE {
             // Absorb following free blocks into this candidate.
-            loop {
-                let next = offset + HEADER_SIZE + size as usize;
-                if next >= *top {
-                    break;
-                }
+            while next < *top {
                 let (next_size, next_state) = read_header(region, next);
                 if next_state != STATE_FREE {
                     break;
                 }
-                size += HEADER_SIZE as u32 + next_size;
+                let after = next_block(next, next_size, *top)?;
+                size = (after - offset - HEADER_SIZE) as u32;
                 write_header(region, offset, size, STATE_FREE);
+                next = after;
             }
             if size as usize >= need {
                 let remainder = size as usize - need;
@@ -113,12 +138,12 @@ pub fn alloc_block(
                 return Some(offset + HEADER_SIZE);
             }
         }
-        offset += HEADER_SIZE + size as usize;
+        offset = next;
     }
 
     // Bump: a fresh in-use block at the top edge.
     let total = HEADER_SIZE + need;
-    if *top + total > region.len() {
+    if total > region.len() - *top {
         return None;
     }
     write_header(region, *top, need as u32, STATE_IN_USE);
@@ -132,17 +157,15 @@ pub fn alloc_block(
 
 /// A user offset must name a live block header; returns its offset.
 fn validate(region: &[u8], top: usize, user: usize) -> Option<usize> {
-    if user < HEADER_SIZE || user >= top || user % ALIGN != 0 || user > region.len() {
+    if user < HEADER_SIZE || user >= top || user % ALIGN != 0 || top > region.len() {
         return None;
     }
     let block = user - HEADER_SIZE;
     let (size, state) = read_header(region, block);
-    if state != STATE_IN_USE || size == 0 || size % ALIGN as u32 != 0 {
+    if state != STATE_IN_USE || size == 0 {
         return None;
     }
-    if block + HEADER_SIZE + size as usize > top {
-        return None;
-    }
+    next_block(block, size, top)?;
     Some(block)
 }
 
@@ -154,39 +177,42 @@ pub fn free_block(region: &mut [u8], top: usize, user: usize) -> bool {
     let (mut size, _) = read_header(region, block);
     write_header(region, block, size, STATE_FREE);
 
-    // Coalesce forward: absorb the next block while it is free.
-    loop {
-        let next = block + HEADER_SIZE + size as usize;
-        if next >= top {
-            break;
-        }
+    // Coalesce forward: absorb the next block while it is free. A corrupt neighbor stops the
+    // merge; the block itself is already freed.
+    let mut next = block + HEADER_SIZE + size as usize;
+    while next < top {
         let (next_size, next_state) = read_header(region, next);
         if next_state != STATE_FREE {
             break;
         }
-        size += HEADER_SIZE as u32 + next_size;
+        let Some(after) = next_block(next, next_size, top) else {
+            break;
+        };
+        size = (after - block - HEADER_SIZE) as u32;
         write_header(region, block, size, STATE_FREE);
+        next = after;
     }
 
     // Coalesce backward: the block that ends exactly where this one starts, when it is free,
-    // swallows this one.
+    // swallows this one. A corrupt header on the way stops the search.
     let mut cursor = 0;
     while cursor < block {
-        let (walk_size, _) = read_header(region, cursor);
-        let prev = cursor;
-        cursor += HEADER_SIZE + walk_size as usize;
-        if cursor == block {
-            let (prev_size, prev_state) = read_header(region, prev);
-            if prev_state == STATE_FREE {
+        let (walk_size, walk_state) = read_header(region, cursor);
+        let Some(after) = next_block(cursor, walk_size, top) else {
+            break;
+        };
+        if after == block {
+            if walk_state == STATE_FREE {
                 write_header(
                     region,
-                    prev,
-                    prev_size + HEADER_SIZE as u32 + size,
+                    cursor,
+                    walk_size + HEADER_SIZE as u32 + size,
                     STATE_FREE,
                 );
             }
             break;
         }
+        cursor = after;
     }
     true
 }
@@ -217,7 +243,9 @@ pub fn realloc_block(
         region[new + i] = region[user + i];
     }
     if zero {
-        region[new + old..new + round_up(request)].fill(0);
+        // The allocation succeeded, so the rounding did too.
+        let end = new + round_up(request).expect("rounded by the allocation");
+        region[new + old..end].fill(0);
     }
     free_block(region, *top, user);
     Some(new)
@@ -232,6 +260,51 @@ pub fn realloc_block(
 
 #[cfg(target_arch = "x86")]
 use crate::mem::paging::{self, PAGE_SIZE};
+
+/// The CRT region's bound: a reservation never reaches the kernel half.
+const CRT_REGION_LIMIT: u32 = crate::mem::paging::KERNEL_BASE;
+
+/// The size a NULL reservation of `size` bytes at `base` takes: whole pages (the documented
+/// rounding: the range covers every byte requested), at least one 64 KiB allocation-granularity
+/// unit, never past `CRT_REGION_LIMIT`. None when it cannot be served.
+fn crt_reservation(base: u32, size: u32) -> Option<u32> {
+    let size = size.max(0x1_0000).checked_next_multiple_of(0x1000)?;
+    (base.checked_add(size)? <= CRT_REGION_LIMIT).then_some(size)
+}
+
+/// A commit request's outcome against the CRT region's reservation and committed prefix (both
+/// lengths from the region base).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum CrtCommit {
+    /// Outside the reservation, overflowing, or not a contiguous extension of the prefix.
+    Refused,
+    /// Already inside the committed prefix: nothing to map.
+    Mapped,
+    /// Extend the committed prefix to cover this many bytes from the base.
+    Extend(u32),
+}
+
+/// Plan a commit of `size` bytes at `addr` (absolute) in the CRT region at `base`. Offsets, not
+/// addresses, are compared against the prefix: the prefix is a length.
+fn crt_commit(base: u32, reserved: u32, committed: u32, addr: u32, size: u32) -> CrtCommit {
+    if reserved == 0 || addr < base {
+        return CrtCommit::Refused;
+    }
+    let offset = addr - base;
+    let Some(end) = offset.checked_add(size) else {
+        return CrtCommit::Refused;
+    };
+    if end > reserved {
+        CrtCommit::Refused
+    } else if end <= committed {
+        CrtCommit::Mapped
+    } else if offset > committed {
+        // Only a contiguous extension is served.
+        CrtCommit::Refused
+    } else {
+        CrtCommit::Extend(end)
+    }
+}
 
 /// Per-process heap bookkeeping: the heap region's committed prefix and bump edge, and the CRT
 /// region's reservation and committed prefix. A fresh process starts from [`HeapState::new`];
@@ -298,7 +371,7 @@ impl HeapState {
     /// HeapAlloc: first-fit, committing more of the region when the bump path needs it; 0 on
     /// failure.
     pub fn alloc(&mut self, flags: u32, request: usize) -> u32 {
-        let zero = flags & 8 != 0; // HEAP_ZERO_MEMORY
+        let zero = flags & HEAP_ZERO_MEMORY != 0;
         loop {
             let region = self.heap_region();
             let mut top = self.top;
@@ -311,7 +384,11 @@ impl HeapState {
                     // The bump path needs more region. Commit one page beyond the need (so small
                     // streams do not re-commit per allocation) and retry; past the cap the request
                     // fails.
-                    let need = top + HEADER_SIZE + round_up(request);
+                    let Some(need) = round_up(request)
+                        .and_then(|rounded| top.checked_add(HEADER_SIZE + rounded))
+                    else {
+                        return 0;
+                    };
                     if need > HEAP_REGION_MAX || !self.commit_heap(need + PAGE_SIZE as usize) {
                         return 0;
                     }
@@ -333,15 +410,22 @@ impl HeapState {
         }
     }
 
-    /// HeapReAlloc over the region; 0 on failure.
+    /// HeapReAlloc over the region; 0 on failure. HEAP_REALLOC_IN_PLACE_ONLY never moves the
+    /// block: a shrink keeps it, a growth fails.
     pub fn realloc(&mut self, ptr: u32, flags: u32, request: usize) -> u32 {
-        let zero = flags & 8 != 0;
+        let zero = flags & HEAP_ZERO_MEMORY != 0;
         if ptr < HEAP_REGION_BASE {
             return 0;
         }
         let user = (ptr - HEAP_REGION_BASE) as usize;
         let region = self.heap_region();
         let mut top = self.top;
+        if flags & HEAP_REALLOC_IN_PLACE_ONLY != 0 {
+            return match block_size(region, top, user) {
+                Some(old) if request <= old => ptr,
+                _ => 0,
+            };
+        }
         match realloc_block(region, &mut top, user, request, zero) {
             Some(new) => {
                 self.top = top;
@@ -371,44 +455,46 @@ impl HeapState {
             if self.crt_reserved != 0 {
                 return 0; // a second live reservation is not served
             }
-            let size = size.max(0x10000) & !0xFFFF; // 64 KiB granularity
-            self.crt_reserved = size;
+            let Some(reserved) = crt_reservation(CRT_REGION_BASE, size) else {
+                return 0;
+            };
+            self.crt_reserved = reserved;
             if alloc_type & MEM_COMMIT != 0 {
-                return self.commit_crt(CRT_REGION_BASE, size);
+                self.commit_crt(size.min(reserved));
             }
             return CRT_REGION_BASE;
         }
 
         if alloc_type & MEM_COMMIT != 0 {
-            if self.crt_reserved == 0 || addr < CRT_REGION_BASE {
-                return 0;
-            }
-            if addr + size > CRT_REGION_BASE + self.crt_reserved {
-                return 0; // outside the reservation
-            }
-            if addr + size <= self.crt_committed {
-                return addr; // already mapped
-            }
-            if addr > CRT_REGION_BASE + self.crt_committed {
-                return 0; // only contiguous extension is served
-            }
-            return self.commit_crt(addr, size);
+            return match crt_commit(
+                CRT_REGION_BASE,
+                self.crt_reserved,
+                self.crt_committed,
+                addr,
+                size,
+            ) {
+                CrtCommit::Refused => 0,
+                CrtCommit::Mapped => addr,
+                CrtCommit::Extend(end) => {
+                    self.commit_crt(end);
+                    addr
+                }
+            };
         }
 
         0
     }
 
-    /// Map the CRT region's prefix up to `addr + size`.
-    fn commit_crt(&mut self, addr: u32, size: u32) -> u32 {
+    /// Map the CRT region's prefix up to `end` bytes from the base (whole pages).
+    fn commit_crt(&mut self, end: u32) {
         let start = self.crt_committed.div_ceil(PAGE_SIZE);
-        let end = (addr + size).div_ceil(PAGE_SIZE);
+        let end = end.div_ceil(PAGE_SIZE);
         for page in start..end {
             let frame = paging::allocate_frame_phys();
             paging::init_frame(frame, 0, &[]);
             paging::map_user_page(CRT_REGION_BASE + page * PAGE_SIZE, frame, true);
         }
-        self.crt_committed = end * PAGE_SIZE;
-        addr
+        self.crt_committed = self.crt_committed.max(end * PAGE_SIZE);
     }
 }
 
@@ -653,15 +739,146 @@ mod tests {
     /// Requests round to 8-byte blocks; user offsets stay 8-aligned.
     #[test]
     fn requests_round_to_the_alignment() {
-        assert_eq!(round_up(0), 8);
-        assert_eq!(round_up(1), 8);
-        assert_eq!(round_up(9), 16);
-        assert_eq!(round_up(0x41C4), 0x41C8);
+        assert_eq!(round_up(0), Some(8));
+        assert_eq!(round_up(1), Some(8));
+        assert_eq!(round_up(9), Some(16));
+        assert_eq!(round_up(0x41C4), Some(0x41C8));
         let mut arena = Arena::new();
         for request in [1, 3, 8, 9, 0x40] {
             let user = arena.alloc(request, false).expect("aligned");
             assert_eq!(user % 8, 0);
         }
+    }
+
+    // --- Untrusted headers: the region is user memory -------------------
+
+    /// Requests whose rounding or bump arithmetic overflows fail; they never panic. (The target's
+    /// usize is 32 bits, where `HeapAlloc(h, 0, 0xFFFFFFFF)` is exactly this.)
+    #[test]
+    fn requests_near_the_top_of_the_address_space_fail() {
+        assert_eq!(round_up(usize::MAX), None);
+        assert_eq!(round_up(usize::MAX - 6), None);
+        let mut arena = Arena::new();
+        assert_eq!(arena.alloc(usize::MAX, false), None);
+        assert_eq!(arena.alloc(usize::MAX - 7, true), None);
+        assert_eq!(
+            arena.alloc(0x8000, false),
+            None,
+            "header plus request > region"
+        );
+        assert_eq!(arena.top, 0);
+    }
+
+    /// The step rule: misaligned sizes and ends past the top are not blocks; a valid step moves at
+    /// least one header forward.
+    #[test]
+    fn next_block_refuses_what_is_not_a_block() {
+        assert_eq!(next_block(0, 8, 0x100), Some(16));
+        assert_eq!(next_block(0, 0, 0x100), Some(8));
+        assert_eq!(next_block(0, 4, 0x100), None, "misaligned");
+        assert_eq!(next_block(0, 0x100, 0x100), None, "past the top");
+        assert_eq!(next_block(usize::MAX - 4, 8, usize::MAX), None, "overflow");
+        assert_eq!(next_block(0, u32::MAX - 7, 0x100), None, "wraps on 32-bit");
+    }
+
+    /// A one-word underflow into the next block's header (the classic heap overrun) — a huge size,
+    /// a size that would step the cursor backwards on a 32-bit target, a misaligned size — makes
+    /// the calls that walk over it fail, never panic or spin.
+    #[test]
+    fn corrupt_headers_fail_the_walk() {
+        for bogus in [0xFFFF_FFF8u32, 0xFFFF_FFF0, 0x7FFF_FFF8, 0x13, 0x4000] {
+            let mut arena = Arena::new();
+            let a = arena.alloc(0x20, false).unwrap();
+            let b = arena.alloc(0x20, false).unwrap();
+            let _c = arena.alloc(0x20, false).unwrap();
+            // Overrun `a` into `b`'s header size word.
+            arena.bytes[b - HEADER_SIZE..b - HEADER_SIZE + 4].copy_from_slice(&bogus.to_le_bytes());
+            assert!(
+                !arena.free(b),
+                "{bogus:#x}: b's header no longer describes a block"
+            );
+            assert!(arena.free(a), "{bogus:#x}: a is intact and frees");
+            // a's slot is free again: a fitting request reuses it without touching b.
+            assert_eq!(arena.alloc(0x20, false), Some(a), "{bogus:#x}");
+            // A request that must walk past b's header fails cleanly.
+            let mut walk = Arena::new();
+            walk.bytes = arena.bytes;
+            walk.top = arena.top;
+            assert_eq!(walk.alloc(0x40, false), None, "{bogus:#x}: walk stops at b");
+        }
+    }
+
+    /// A free block whose header was overwritten with "free, huge" is not merged into a freed
+    /// neighbor: the forward coalesce checks the step.
+    #[test]
+    fn a_corrupt_free_neighbor_is_not_absorbed() {
+        let mut arena = Arena::new();
+        let a = arena.alloc(0x20, false).unwrap();
+        let b = arena.alloc(0x20, false).unwrap();
+        let _c = arena.alloc(0x20, false).unwrap();
+        assert!(arena.free(b));
+        arena.bytes[b - HEADER_SIZE..b - HEADER_SIZE + 4]
+            .copy_from_slice(&0xFFFF_FFF8u32.to_le_bytes());
+        assert!(arena.free(a));
+        let (a_size, a_state) = read_header(&arena.bytes, a - HEADER_SIZE);
+        assert_eq!((a_size, a_state), (0x20, STATE_FREE));
+    }
+
+    // --- The CRT region's VirtualAlloc planning ---------------------------
+
+    /// Reservations cover the request in whole pages, at least one granularity unit, below the
+    /// kernel half.
+    #[test]
+    fn crt_reservations_round_up_and_stay_in_user_space() {
+        let base = 0x0210_0000;
+        assert_eq!(crt_reservation(base, 0x10_0000), Some(0x10_0000));
+        assert_eq!(crt_reservation(base, 1), Some(0x1_0000));
+        assert_eq!(
+            crt_reservation(base, 0x1_0001),
+            Some(0x1_1000),
+            "rounded up, not down"
+        );
+        assert_eq!(crt_reservation(base, 0x8000_0000), None);
+        assert_eq!(crt_reservation(base, u32::MAX), None);
+    }
+
+    /// The captured CRT pair (reserve 1 MiB at NULL, commit 0x8000 at the base) commits exactly 32
+    /// KiB from the base: offsets, not absolute addresses, are compared with the prefix.
+    #[test]
+    fn crt_commits_plan_by_offset_from_the_base() {
+        let base = 0x0210_0000;
+        let reserved = 0x10_0000;
+        assert_eq!(
+            crt_commit(base, reserved, 0, base, 0x8000),
+            CrtCommit::Extend(0x8000)
+        );
+        // Contiguous growth extends; a repeat inside the prefix maps nothing.
+        assert_eq!(
+            crt_commit(base, reserved, 0x8000, base + 0x8000, 0x1000),
+            CrtCommit::Extend(0x9000)
+        );
+        assert_eq!(
+            crt_commit(base, reserved, 0x9000, base, 0x1000),
+            CrtCommit::Mapped
+        );
+        // Refusals: no reservation, below the base, past the reservation, a gap, an overflow.
+        assert_eq!(crt_commit(base, 0, 0, base, 0x1000), CrtCommit::Refused);
+        assert_eq!(
+            crt_commit(base, reserved, 0, base - 0x1000, 0x1000),
+            CrtCommit::Refused
+        );
+        assert_eq!(
+            crt_commit(base, reserved, 0, base, reserved + 1),
+            CrtCommit::Refused
+        );
+        assert_eq!(
+            crt_commit(base, reserved, 0x1000, base + 0x2000, 0x1000),
+            CrtCommit::Refused
+        );
+        assert_eq!(
+            crt_commit(base, reserved, 0, base + 0x1000, u32::MAX),
+            CrtCommit::Refused
+        );
     }
 
     /// The target placement: both regions above every mapped area, 64 KiB-aligned, in user space.

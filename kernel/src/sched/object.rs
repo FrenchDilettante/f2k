@@ -78,6 +78,11 @@ impl HandleTable {
         index << HANDLE_SHIFT
     }
 
+    /// Whether every slot is taken: the next insert would return no handle.
+    pub fn is_full(&self) -> bool {
+        self.freed_top == 0 && self.next_fresh as usize >= HANDLE_SLOTS
+    }
+
     /// The slot a handle names, or none. The low tag bits are ignored; a closed or out-of-range
     /// handle is a miss.
     pub fn lookup(&self, handle: u32) -> Option<Slot> {
@@ -191,15 +196,19 @@ mod tests {
     #[test]
     fn a_full_table_refuses_inserts() {
         let mut table = HandleTable::empty();
+        assert!(!table.is_full());
         for _ in 1..HANDLE_SLOTS {
             assert_ne!(table.insert(event_slot()), 0);
         }
         assert_eq!(table.live(), HANDLE_SLOTS - 1, "slot 0 never allocated");
+        assert!(table.is_full());
         assert_eq!(table.insert(event_slot()), 0, "exhausted: no handle");
 
         // A close frees a slot again.
         assert!(table.close(4));
+        assert!(!table.is_full());
         assert_eq!(table.insert(event_slot()), 4);
+        assert!(table.is_full());
     }
 
     /// The process-exit step: the table empties in one step.

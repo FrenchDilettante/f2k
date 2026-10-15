@@ -11,10 +11,17 @@
 #
 # Usage: scripts/test-boot.sh [kernel-elf | disk.img | cdrom.iso] [expected ...]
 # Env:   QEMU (default qemu-system-i386), BOOT_TIMEOUT seconds (default 10)
+#        BOOT_ORDERED=1     the expected strings must match on successive
+#                           lines, in argument order (each on its own line)
+#        BOOT_FORBID        newline-separated strings that fail the test as
+#                           soon as any appears (e.g. "KERNEL PANIC")
+#        BOOT_CONTIGUOUS    newline-separated strings that must match on
+#                           consecutive lines, in order (an uninterrupted
+#                           block), in addition to the expected strings
 #
-# Every argument after the image is an expected COM1 string; the test passes
-# only once all of them have appeared. With no extra arguments it checks the
-# boot banner.
+# Every argument after the image is an expected COM1 string (a substring of
+# a line); the test passes only once all of them have appeared. With no extra
+# arguments it checks the boot banner.
 
 set -u
 
@@ -34,12 +41,48 @@ for expected in "$@"; do
     EXPECTS="$EXPECTS$expected
 "
 done
+BOOT_ORDERED="${BOOT_ORDERED:-0}"
+BOOT_FORBID="${BOOT_FORBID:-}"
+BOOT_CONTIGUOUS="${BOOT_CONTIGUOUS:-}"
 
-all_expected_found() {
-    printf '%s\n' "$EXPECTS" | while IFS= read -r expected; do
-        [ -n "$expected" ] || continue
-        grep -qF -- "$expected" "$SERIAL_LOG" || return 1
-    done
+# One awk pass over the log answers every check. The lists travel as files
+# (one string per line) so no string is reinterpreted by the shell or awk.
+# Exit 0: everything matched; 1: not (yet); 2: a forbidden string appeared.
+match_log() {
+    awk -v ordered="$BOOT_ORDERED" \
+        -v expects_file="$EXPECTS_FILE" \
+        -v forbid_file="$FORBID_FILE" \
+        -v block_file="$BLOCK_FILE" '
+        function load(file, list,    line, n) {
+            n = 0
+            while ((getline line < file) > 0) if (line != "") list[n++] = line
+            close(file)
+            return n
+        }
+        BEGIN {
+            ne = load(expects_file, e); nf = load(forbid_file, f); nb = load(block_file, b)
+            next_e = 0; next_b = 0
+            for (i = 0; i < ne; i++) seen[i] = 0
+        }
+        {
+            for (i = 0; i < nf; i++) if (index($0, f[i]) > 0) { forbidden = f[i]; exit 2 }
+            if (ordered) {
+                if (next_e < ne && index($0, e[next_e]) > 0) next_e++
+            } else {
+                for (i = 0; i < ne; i++) if (!seen[i] && index($0, e[i]) > 0) seen[i] = 1
+            }
+            if (next_b < nb) {
+                if (index($0, b[next_b]) > 0) next_b++
+                else next_b = (index($0, b[0]) > 0) ? 1 : 0
+            }
+        }
+        END {
+            if (forbidden != "") { print "forbidden output: " forbidden > "/dev/stderr"; exit 2 }
+            if (ordered) { if (next_e < ne) exit 1 }
+            else for (i = 0; i < ne; i++) if (!seen[i]) exit 1
+            if (next_b < nb) exit 1
+            exit 0
+        }' "$SERIAL_LOG"
 }
 
 if [ ! -f "$IMAGE" ]; then
@@ -53,12 +96,28 @@ fi
 
 SERIAL_LOG="$(mktemp)"
 QEMU_LOG="$(mktemp)"
+EXPECTS_FILE="$(mktemp)"
+FORBID_FILE="$(mktemp)"
+BLOCK_FILE="$(mktemp)"
 QEMU_PID=""
 cleanup() {
     [ -n "$QEMU_PID" ] && kill "$QEMU_PID" 2>/dev/null
-    rm -f "$SERIAL_LOG" "$QEMU_LOG"
+    rm -f "$SERIAL_LOG" "$QEMU_LOG" "$EXPECTS_FILE" "$FORBID_FILE" "$BLOCK_FILE"
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT TERM
+printf '%s' "$EXPECTS" >"$EXPECTS_FILE"
+printf '%s\n' "$BOOT_FORBID" >"$FORBID_FILE"
+printf '%s\n' "$BOOT_CONTIGUOUS" >"$BLOCK_FILE"
+
+report_failure() {
+    echo "$1"
+    echo "--- serial output (COM1) ---"
+    cat "$SERIAL_LOG"
+    echo "--- QEMU output ---"
+    cat "$QEMU_LOG"
+    exit 1
+}
 
 case "$IMAGE" in
     *.img) set -- -drive "file=$IMAGE,format=raw,if=ide" ;;
@@ -71,30 +130,30 @@ esac
     -no-reboot -serial "file:$SERIAL_LOG" >"$QEMU_LOG" 2>&1 &
 QEMU_PID=$!
 
+check() {
+    match_log
+    case $? in
+        0)
+            echo "PASS: expected output received on COM1"
+            exit 0
+            ;;
+        2) report_failure "FAIL: forbidden output appeared on COM1" ;;
+    esac
+}
+
 ticks=0
 while [ "$ticks" -lt $((BOOT_TIMEOUT * 10)) ]; do
-    if all_expected_found "$@"; then
-        echo "PASS: expected output received on COM1"
-        exit 0
-    fi
+    check
     kill -0 "$QEMU_PID" 2>/dev/null || break
     sleep 0.1
     ticks=$((ticks + 1))
 done
 
 # One last look, in case QEMU wrote the output just before exiting
-if all_expected_found "$@"; then
-    echo "PASS: expected output received on COM1"
-    exit 0
-fi
+check
 
 if kill -0 "$QEMU_PID" 2>/dev/null; then
-    echo "FAIL: expected output not found within ${BOOT_TIMEOUT}s"
+    report_failure "FAIL: expected output not found within ${BOOT_TIMEOUT}s"
 else
-    echo "FAIL: QEMU exited before the expected output appeared"
+    report_failure "FAIL: QEMU exited before the expected output appeared"
 fi
-echo "--- serial output (COM1) ---"
-cat "$SERIAL_LOG"
-echo "--- QEMU output ---"
-cat "$QEMU_LOG"
-exit 1

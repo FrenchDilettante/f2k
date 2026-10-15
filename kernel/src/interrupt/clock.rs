@@ -128,13 +128,13 @@ impl Clock {
         self.tick_low = tick_low;
 
         if self.tick_offset > 0 {
-            self.interrupt_count += 1;
+            self.interrupt_count = self.interrupt_count.wrapping_add(1);
             return Tick::Fractional;
         }
 
         // A full tick refills the accumulator.
         self.tick_offset += self.maximum_increment as i32;
-        self.interrupt_count += 1;
+        self.interrupt_count = self.interrupt_count.wrapping_add(1);
         Tick::Full
     }
 
@@ -163,14 +163,11 @@ fn timer_routine(_dpc: &Dpc, _context: usize, argument1: usize, _argument2: usiz
     unsafe {
         core::ptr::write_volatile(
             core::ptr::addr_of_mut!(TIMER_FIRED),
-            core::ptr::read_volatile(core::ptr::addr_of!(TIMER_FIRED)) + 1,
+            core::ptr::read_volatile(core::ptr::addr_of!(TIMER_FIRED)).wrapping_add(1),
         );
-        let clock = &*addr_of_mut!(CLOCK);
-        crate::sched::idle::dispatcher().expire_timers(
-            clock.interrupt_time(),
-            clock.tick_count() as u32,
-            argument1 as u32,
-        );
+        // Both readings in one masked read: the routine runs with interrupts enabled.
+        let (now, tick) = read_clock(|clock| (clock.interrupt_time(), clock.tick_count() as u32));
+        crate::sched::idle::dispatcher().expire_timers(now, tick, argument1 as u32);
     }
 }
 
@@ -231,26 +228,39 @@ pub unsafe fn init() {
     unsafe { (*addr_of_mut!(CLOCK)).set_time_increment(INTERVAL_100NS, FINEST_100NS) };
 }
 
+/// Read the kernel clock with interrupts masked for the read, restoring the caller's flag exactly.
+/// The 64-bit fields are two loads on this processor; a tick taken in the gap — precisely when the
+/// low word carries — would hand back a value about 429 s off.
+#[cfg(target_arch = "x86")]
+fn read_clock<T>(read: impl FnOnce(&Clock) -> T) -> T {
+    let flags: u32;
+    // SAFETY: saves EFLAGS and clears IF; the matching restore below puts the flag back as it was,
+    // so the level model's view of it never changes.
+    unsafe { core::arch::asm!("pushfd", "pop {}", "cli", out(reg) flags, options(nomem)) };
+    // SAFETY: the clock's only writer is the clock interrupt, masked for the read.
+    let value = read(unsafe { &*addr_of_mut!(CLOCK) });
+    // SAFETY: restores the flags captured above.
+    unsafe { core::arch::asm!("push {}", "popfd", in(reg) flags, options(nomem)) };
+    value
+}
+
 /// The kernel clock's tick count (diagnostic and smoke reads).
 #[cfg(target_arch = "x86")]
 pub fn ticks() -> u64 {
-    // SAFETY: read-only.
-    unsafe { (*addr_of_mut!(CLOCK)).tick_count() }
+    read_clock(Clock::tick_count)
 }
 
 /// The kernel clock's system time (100 ns units): the wait discipline's source of "now".
 #[cfg(target_arch = "x86")]
 pub fn system_time() -> u64 {
-    // SAFETY: read-only.
-    unsafe { (*addr_of_mut!(CLOCK)).system_time() }
+    read_clock(Clock::system_time)
 }
 
 /// The kernel clock's interrupt time (100 ns units): the time base the timer table's expiry checks
 /// read.
 #[cfg(target_arch = "x86")]
 pub fn interrupt_time() -> u64 {
-    // SAFETY: read-only.
-    unsafe { (*addr_of_mut!(CLOCK)).interrupt_time() }
+    read_clock(Clock::interrupt_time)
 }
 
 #[cfg(test)]

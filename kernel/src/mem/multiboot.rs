@@ -83,7 +83,7 @@ pub fn usable_frames_in(base: u64, len: u64, max_frames: usize) -> Option<Usable
     }
     let end = base.checked_add(len)?;
     let end = end.min(max_frames as u64 * 4096);
-    let base_up = (base + 4095) & !4095u64;
+    let base_up = base.checked_add(4095)? & !4095u64;
     if end <= base_up {
         return None;
     }
@@ -100,48 +100,57 @@ pub fn usable_frames_in(base: u64, len: u64, max_frames: usize) -> Option<Usable
     Some(UsableRange { first, count })
 }
 
-/// Iterator over the usable frame ranges of a memory-map record stream.
-pub struct UsableRanges<'a> {
+/// Iterator over the records of a memory-map record stream: (base, length, type) per record, in
+/// record order. Stops at the first malformed or truncated record rather than guessing.
+pub struct Records<'a> {
     buf: &'a [u8],
     off: usize,
-    max_frames: usize,
+}
+
+/// The records of the memory-map record stream at `MultibootInfo::mmap_addr`.
+pub fn records(map: &[u8]) -> Records<'_> {
+    Records { buf: map, off: 0 }
+}
+
+impl<'a> Iterator for Records<'a> {
+    type Item = (u64, u64, u32);
+
+    fn next(&mut self) -> Option<(u64, u64, u32)> {
+        let size = read_u32(self.buf, self.off)?;
+        // Malformed or truncated record: stop rather than guess.
+        if size < MIN_RECORD_PAYLOAD {
+            return None;
+        }
+        let entry_end = self.off.checked_add(4 + size as usize)?;
+        if entry_end > self.buf.len() {
+            return None;
+        }
+        let base = read_u64(self.buf, self.off + 4)?;
+        let len = read_u64(self.buf, self.off + 12)?;
+        let kind = read_u32(self.buf, self.off + 20)?;
+        self.off = entry_end;
+        Some((base, len, kind))
+    }
 }
 
 /// Parse the memory-map record stream (the buffer at `MultibootInfo::mmap_addr`) and yield the
-/// usable frame ranges of every available region, in record order.
-pub fn usable_ranges(map: &[u8], max_frames: usize) -> UsableRanges<'_> {
-    UsableRanges {
-        buf: map,
-        off: 0,
-        max_frames,
-    }
+/// usable frame ranges of every available region, in record order. Ranges may overlap each other
+/// or a reserved record: firmware maps do both. [`frame_is_reserved`] answers the second; the
+/// caller's frame database answers the first.
+pub fn usable_ranges(map: &[u8], max_frames: usize) -> impl Iterator<Item = UsableRange> + '_ {
+    records(map)
+        .filter(|&(_, _, kind)| kind == MEMORY_AVAILABLE)
+        .filter_map(move |(base, len, _)| usable_frames_in(base, len, max_frames))
 }
 
-impl<'a> Iterator for UsableRanges<'a> {
-    type Item = UsableRange;
-
-    fn next(&mut self) -> Option<UsableRange> {
-        while let Some(size) = read_u32(self.buf, self.off) {
-            // Malformed or truncated record: stop rather than guess.
-            if size < MIN_RECORD_PAYLOAD {
-                return None;
-            }
-            let entry_end = self.off + 4 + size as usize;
-            if entry_end > self.buf.len() {
-                return None;
-            }
-            let base = read_u64(self.buf, self.off + 4)?;
-            let len = read_u64(self.buf, self.off + 12)?;
-            let kind = read_u32(self.buf, self.off + 20)?;
-            self.off = entry_end;
-            if kind == MEMORY_AVAILABLE {
-                if let Some(range) = usable_frames_in(base, len, self.max_frames) {
-                    return Some(range);
-                }
-            }
-        }
-        None
-    }
+/// Whether any record that is not available RAM covers any byte of `frame`. A frame an available
+/// record also lists is still not free to use: the reservation wins.
+pub fn frame_is_reserved(map: &[u8], frame: FrameId) -> bool {
+    let start = frame as u64 * 4096;
+    let end = start + 4096;
+    records(map).any(|(base, len, kind)| {
+        kind != MEMORY_AVAILABLE && len != 0 && base < end && base.saturating_add(len) > start
+    })
 }
 
 #[cfg(test)]
@@ -157,6 +166,31 @@ mod tests {
         v.extend_from_slice(&len.to_le_bytes());
         v.extend_from_slice(&kind.to_le_bytes());
         v
+    }
+
+    /// A base within a page of the top of the 64-bit space rounds up past it: no frames, no
+    /// overflow (and no wrap to frame 0).
+    #[test]
+    fn a_base_near_the_top_of_the_address_space_yields_nothing() {
+        assert!(usable_frames_in(0xFFFF_FFFF_FFFF_F001, 1, MAX_FRAMES).is_none());
+        assert!(usable_frames_in(u64::MAX - 10, 5, MAX_FRAMES).is_none());
+    }
+
+    /// Reserved records win over available ones: a frame either kind covers is reserved; partial
+    /// coverage counts; empty records and available records reserve nothing.
+    #[test]
+    fn reserved_records_cover_the_frames_they_touch() {
+        let mut map = Vec::new();
+        map.extend(record(0x10_0000, 0x10_0000, MEMORY_AVAILABLE));
+        map.extend(record(0x10_8000, 0x1000, 2));
+        map.extend(record(0x11_0800, 0x10, 3)); // inside one frame, unaligned
+        map.extend(record(0x12_0000, 0, 2)); // empty
+        assert!(!frame_is_reserved(&map, 0x100));
+        assert!(frame_is_reserved(&map, 0x108));
+        assert!(!frame_is_reserved(&map, 0x109));
+        assert!(frame_is_reserved(&map, 0x110));
+        assert!(!frame_is_reserved(&map, 0x120));
+        assert_eq!(records(&map).count(), 4);
     }
 
     #[test]

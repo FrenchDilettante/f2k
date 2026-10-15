@@ -36,6 +36,12 @@ pub const SLEEP: &[u8] = include_bytes!("../../../tests/sleep/sleep.exe");
 #[cfg(feature = "run-spin")]
 pub const SPIN: &[u8] = include_bytes!("../../../tests/spin/spin.exe");
 
+/// The thread-slot reuse smoke fixture: three rounds of create, wait, close, one child alive at a
+/// time, so every child after the first reuses the gate-stack resources the previous one released
+/// at its exit (embedded for the `run-respawn` feature).
+#[cfg(feature = "run-respawn")]
+pub const RESPAWN: &[u8] = include_bytes!("../../../tests/respawn/respawn.exe");
+
 /// The fresh-memory fixture: no CRT, one import; its `.bss` is all zero on a fresh process and the
 /// double run in the suite proves teardown re-zeroes frames (embedded for the `run-process-suite`
 /// feature).
@@ -160,11 +166,21 @@ pub fn run_image(file: &[u8], name: &'static str) -> ! {
     );
     // The entry: the thread-ified boot for the smokes (the main thread enters through the
     // scheduler's first switch), the direct ring-3 entry for every other boot.
-    #[cfg(any(feature = "run-pingpong", feature = "run-sleep", feature = "run-spin"))]
+    #[cfg(any(
+        feature = "run-pingpong",
+        feature = "run-sleep",
+        feature = "run-spin",
+        feature = "run-respawn"
+    ))]
     {
         crate::process::threads::enter_as_main_thread(image.entry_va(), USER_STACK_TOP)
     }
-    #[cfg(not(any(feature = "run-pingpong", feature = "run-sleep", feature = "run-spin")))]
+    #[cfg(not(any(
+        feature = "run-pingpong",
+        feature = "run-sleep",
+        feature = "run-spin",
+        feature = "run-respawn"
+    )))]
     {
         // SAFETY: image, stack, TEB and thunk pages are mapped with their final protections; the
         // gate is DPL 3; the TSS carries the ring-0 stack.
@@ -196,6 +212,12 @@ mod tests {
         #[cfg(feature = "run-process-suite")]
         for file in [BSSCHECK, CRASH] {
             let image = Image::parse(file).expect("suite fixture parses");
+            assert_eq!(image.size_of_image % PAGE_SIZE, 0);
+            assert!(image.size_of_image as usize <= STAGING_SIZE);
+        }
+        #[cfg(feature = "run-respawn")]
+        {
+            let image = Image::parse(RESPAWN).expect("respawn parses");
             assert_eq!(image.size_of_image % PAGE_SIZE, 0);
             assert!(image.size_of_image as usize <= STAGING_SIZE);
         }

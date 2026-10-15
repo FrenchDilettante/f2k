@@ -133,13 +133,10 @@ mod target {
                     switch_away_from_idle();
                 }
                 IdleAction::IdleCall => {
-                    // Enabled coming out, through the model so it stays in step with the flag; then
-                    // halt.
-                    irql::state_mut().unmask_interrupts();
-                    // SAFETY: interrupts are enabled; the halt wakes on the next interrupt.
-                    unsafe {
-                        core::arch::asm!("hlt", options(nomem, nostack, preserves_flags));
-                    }
+                    // Enabled through the model, so the flag stays in step with the hardware, and
+                    // halted in the same step: the step's decision was taken masked, and nothing
+                    // may run between the enable and the halt.
+                    irql::state_mut().unmask_and_halt();
                 }
             }
         }
@@ -181,10 +178,17 @@ mod target {
     fn idle_thread() -> *mut Thread {
         addr_of_mut!(IDLE_THREAD)
     }
+
+    /// Whether the processor is on the idle thread. Boots that enter ring 3 without a thread record
+    /// (the single-image and suite runs) run user code on it, so the thread services must refuse
+    /// to park, exit, or create relative to it.
+    pub(crate) fn on_idle_thread() -> bool {
+        eq(dispatcher().current_thread(), idle_thread())
+    }
 }
 
 #[cfg(target_arch = "x86")]
-pub(crate) use target::{boot, dispatcher, idle_loop};
+pub(crate) use target::{boot, dispatcher, idle_loop, on_idle_thread};
 
 #[cfg(test)]
 mod tests {

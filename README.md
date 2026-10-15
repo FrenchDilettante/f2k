@@ -6,16 +6,24 @@ A Windows 2000-compatible operating system written in Rust.
 
 This project uses Nightly Rust via the `rust-toolchain` file, which also pulls in the `rust-src`, `clippy` and `rustfmt` components. Your default toolchain remains unaffected.
 
+Rust must come from [rustup](https://rustup.rs): it is what reads the
+`rust-toolchain` file and installs the pinned nightly. A distribution
+`rustc`/`cargo` (Homebrew's `rust`, apt's `rustc cargo`) ignores the file
+and cannot build the kernel (`-Z build-std`, JSON target specs).
+
 ### macOS (ARM64 or x86_64):
 ```bash
-brew install rust x86_64-elf-binutils nasm xorriso mtools qemu
-# PyYAML for the on-target suite (Homebrew's Python blocks a plain pip install)
-pip3 install --user --break-system-packages pyyaml
+brew install rustup x86_64-elf-binutils xorriso mtools qemu
+rustup-init
+# PyYAML for the on-target suite, in a repository-local venv (`make test`
+# uses .venv/bin/python when it exists)
+python3 -m venv .venv && .venv/bin/pip install pyyaml
 ```
 
 ### Linux (x86_64):
 ```bash
-sudo apt install rustc cargo binutils nasm xorriso mtools qemu-system-x86 python3-yaml
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+sudo apt install binutils xorriso mtools qemu-system-x86 python3-yaml
 ```
 
 ## Building
@@ -70,12 +78,15 @@ make run-tests
 The cases (kernel features to build with, image to boot, expected
 COM1 strings) are data in `scripts/qemu-tests.yaml`;
 `scripts/run-qemu-tests.py` builds and runs them. Adding a case does
-not add a Makefile target.
+not add a Makefile target. Expected strings match anywhere in the
+COM1 log by default; a case can require them in order (`ordered`),
+as an uninterrupted block of lines (`contiguous`), or forbid strings
+(`forbids`). A kernel panic fails every case.
 ```bash
 make test        # all kernel-path cases (QEMU -kernel)
 make test-disk   # all disk-path cases (Limine disk image)
-scripts/run-qemu-tests.py scripts/qemu-tests.yaml --list   # list cases
-scripts/run-qemu-tests.py scripts/qemu-tests.yaml --only fault-ud
+.venv/bin/python scripts/run-qemu-tests.py scripts/qemu-tests.yaml --list   # list cases
+.venv/bin/python scripts/run-qemu-tests.py scripts/qemu-tests.yaml --only fault-ud
 ```
 
 ### Check code
@@ -105,7 +116,7 @@ f2k/
 ├── x86-f2k.json      # Rust target: 32-bit x86 bare metal
 │
 ├── boot/             # Bootloader files
-│   ├── boot_final.asm    # Custom boot sector source (unused)
+│   ├── *.asm, *.S        # Early custom boot sector experiments (unused)
 │   ├── limine.conf       # Limine config (ISO and disk image)
 │   └── limine/           # Limine bootloader (git submodule)
 │
@@ -143,13 +154,12 @@ f2k/
 |--------|-------------|
 | `make kernel` | Build the kernel (ELF) |
 | `make qemu` | Build the kernel and boot it directly in QEMU |
-| `make test` | Run the boot smoke test |
-| `make test-disk` | Run the boot smoke test on the disk image |
+| `make test` | Run the on-target QEMU suite (kernel path) |
+| `make test-disk` | Run the on-target QEMU suite (Limine disk path) |
 | `make run-tests` | Run host unit tests |
 | `make check` | `cargo check` + clippy |
 | `make fmt` | Format all Rust sources |
 | `make fmt-check` | Fail if any Rust source is unformatted |
-| `make test-fault` | On-target exception dump tests (#UD and #GP) |
 | `make limine` | Download Limine bootloader |
 | `make iso` | Create bootable ISO with Limine |
 | `make qemu_iso` | Build ISO and run in QEMU |

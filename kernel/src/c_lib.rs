@@ -42,3 +42,23 @@ pub unsafe extern "C" fn memcpy(dest: *mut c_void, src: *const c_void, n: usize)
     }
     dest
 }
+
+/// Memory move for bare-metal: `memcpy` that tolerates overlap, copying backwards when the
+/// destination starts inside the source. `ptr::copy`/`copy_within` with a non-constant length lower
+/// to this symbol. Target-only: host test builds link the platform's.
+#[cfg(target_arch = "x86")]
+#[no_mangle]
+pub unsafe extern "C" fn memmove(dest: *mut c_void, src: *const c_void, n: usize) -> *mut c_void {
+    let d = dest as *mut u8;
+    let s = src as *const u8;
+    if (d as usize) <= (s as usize) || (d as usize) >= (s as usize).wrapping_add(n) {
+        for i in 0..n {
+            *d.add(i) = *s.add(i);
+        }
+    } else {
+        for i in (0..n).rev() {
+            *d.add(i) = *s.add(i);
+        }
+    }
+    dest
+}

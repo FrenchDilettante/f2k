@@ -8,8 +8,9 @@
 //! (planted at [esp+4] under a return address that is the kernel's thread-exit trampoline), so
 //! returning from the function terminates the thread with the return value as the exit status.
 //!
-//! The exit path, in its order: the per-thread teardown first (the gate-stack frames and slot),
-//! then the thread object signals and its waiters wake, then the thread leaves the process list and
+//! The exit path, in its order: the per-thread teardown first (the gate stack is parked for
+//! release from another stack, and an earlier exit's parked stack is released), then the thread
+//! object signals and its waiters wake, then the thread leaves the process list and
 //! is Terminated, then the last-thread check routes either to the thread's end or the process's —
 //! the last thread's exit is the process's exit.
 
@@ -79,6 +80,11 @@ pub fn new_event(
 pub fn spawn(start: u32, parameter: u32) -> Option<(*mut Thread, u32)> {
     let (thread, ordinal) = free_thread()?;
     let process = crate::process::current_mut();
+    // An exited thread's stack is released before a slot is taken, so its slot is free to reuse
+    // (unmapped, not merely marked free).
+    if let Some(dead) = process.dead_stack.take() {
+        release_gate_stack(process, dead);
+    }
 
     // Attach: the scheduling data, the process-list membership, and the wait discipline's fixed
     // wiring.
@@ -152,10 +158,20 @@ pub fn exit_thread(exit_status: i32) -> ! {
     // SAFETY: the running thread, live and exclusive in the gate.
     let current = dispatcher.current_thread();
 
-    // The per-thread teardown first: release the gate-stack frames and the slot. Nothing allocates
-    // between here and the switch below (the satisfy walk and selection allocate nothing), so the
-    // frames are not reused while the stack still executes.
-    release_gate_slot(unsafe { &*current });
+    // The per-thread teardown first. The gate stack is the one this code runs on, so it cannot be
+    // unmapped here: it is parked as the process's dead stack, released by whoever next runs on
+    // another stack. An earlier exit's parked stack is released now (it is not this one).
+    {
+        let process = crate::process::current_mut();
+        // SAFETY: the running thread, live.
+        let thread = unsafe { &*current };
+        if let Some(previous) = process
+            .dead_stack
+            .park((thread.gate_slot, thread.gate_frames))
+        {
+            release_gate_stack(process, previous);
+        }
+    }
 
     // The thread object signals and its waiters wake (the satisfy step inside terminate), the
     // thread leaves the process list, and the processor's next thread is selected and takes the
@@ -183,13 +199,18 @@ pub fn exit_thread(exit_status: i32) -> ! {
     unreachable!("a terminated thread never resumes")
 }
 
-/// Release `thread`'s gate-stack resources: the slot's frames back to the frame database, the slot
-/// back to the ledger. The thread record itself is pooled and reused by its state.
-fn release_gate_slot(thread: &Thread) {
+/// Release an exited thread's gate stack: unmap the slot's pages from the (current) process
+/// directory, return the frames to the frame database, and the slot to the ledger. Never the stack
+/// the processor runs on: a stack is parked by its own exit and released only from another stack.
+fn release_gate_stack(process: &mut Process, (slot, frames): crate::process::GateStack) {
     use crate::mem::frame::FrameState;
-    let process = crate::process::current_mut();
-    process.gate_slots.release(thread.gate_slot);
-    for frame in thread.gate_frames {
+    let mapped = paging::unmap_gate_slot(slot as u32);
+    debug_assert_eq!(
+        mapped, frames,
+        "the slot maps the frames its thread recorded"
+    );
+    process.gate_slots.release(slot);
+    for frame in frames {
         crate::mem::bootmem::with_frame_db(|db| {
             db.release(frame / paging::PAGE_SIZE, FrameState::Free);
         });
