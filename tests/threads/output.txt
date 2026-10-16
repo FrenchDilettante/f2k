@@ -1,0 +1,100 @@
+>>> threads.exe create
+== create
+child returned its parameter doubled: exit code 42
+lpThreadId matches the child's GetCurrentThreadId: yes, nonzero yes
+child id differs from main's: yes
+two live children have distinct ids: yes
+exit code while running: 259 (STILL_ACTIVE is 259)
+exit codes after the gate opened: 5 6
+CreateThread with a NULL lpThreadId: handle yes
+GetCurrentThread: 0xFFFFFFFE, GetCurrentProcess: 0xFFFFFFFF
+DuplicateHandle(current thread): ret=1 err=-, a real handle yes
+waiting on the own thread handle times out: WAIT_TIMEOUT
+its exit code: 259
+threads: done
+>>> threads.exe exit
+== exit
+ExitThread(77): exit code 77
+TerminateThread of a blocked thread: ret=1 err=-
+its handle is signaled: WAIT_OBJECT_0
+exit code 88
+TerminateThread again: ret=0 err=87, exit code 88
+close a running thread's handle: ret=1 err=-
+the thread ran on and signaled: WAIT_OBJECT_0
+GetExitCodeThread(bogus): ret=0 err=6
+threads: done
+>>> threads.exe suspend
+== suspend
+CREATE_SUSPENDED: no progress before resume yes
+ResumeThread returned 1, progress after yes
+suspend, suspend, resume, resume returned 0 1 2 1
+suspended thread made no progress: yes
+ResumeThread of a running thread: 0 err=-
+suspend-count limit: refused after 127 suspensions err=156
+running again after resuming every suspension: yes
+SuspendThread of an exited thread: -1 err=5
+ResumeThread of an exited thread: 0 err=-
+thread suspended itself: progress 1
+resumed by main (returned 1): progress 2
+timed wait expired while suspended: still pending yes
+after resume the wait returned WAIT_TIMEOUT
+signaled while suspended: still pending yes
+after resume the wait returned WAIT_OBJECT_0
+the auto-reset signal was consumed by it: WAIT_TIMEOUT
+threads: done
+>>> threads.exe priority
+== priority
+initial priority: 0
+set/get round trips: -15->1/-15 -2->1/-2 -1->1/-1 0->1/0 1->1/1 2->1/2 15->1/15
+invalid levels: 3->0/87 -3->0/87 16->1/- -16->1/- 7->0/87
+GetPriorityClass: 0x20
+SetPriorityClass(high): ret=1 err=-, class now 0x80, thread priority 0
+SetPriorityClass(bogus): ret=1 err=-
+GetThreadPriorityBoost: ret=1 disabled 0
+after disabling: disabled 1
+SetThreadPriority of an exited thread: ret=1 err=-
+threads: done
+>>> threads.exe scale
+== scale
+32 sequential create/wait/close rounds: ok
+20 threads alive at once: created 20, distinct ids yes, none finished early yes
+all 20 released and finished: 20
+100 fire-and-forget threads: created 100, finished 100
+200 events created and closed one at a time: ok
+100 events alive at once: created 100, distinct yes, multiples of 4 yes
+threads: done
+>>> threads.exe tls
+== tls
+TlsAlloc: valid yes err=-
+fresh slot reads NULL: yes err=0
+child: slot started NULL yes with last error 0, kept its own value yes
+main: slot unchanged by the child yes
+__declspec(thread) in the child started at the initializers: 42 [initial]
+__declspec(thread) in main untouched by the child: 5 [main]
+TlsFree: ret=1 err=-
+TlsAlloc until exhaustion: 1087 slots, then err=8
+TlsAlloc after freeing them: valid yes err=-
+threads: done
+>>> threads.exe perthread
+== perthread
+last error: main 111, child 222
+errno: main 0, child 34
+FPU control word: child started with 0x0009001F (not main's 0x0009031F: yes)
+main's rounding mode unchanged by the child: yes
+child caught its own access violation: 0xC0000005
+threads: done
+>>> threads.exe crt
+== crt
+_beginthreadex(suspended): handle yes, id nonzero yes
+resumed (returned 1), _endthreadex(55): exit code 55
+_beginthread: handle yes
+its routine ran: WAIT_OBJECT_0, parameter 9
+threads: done
+>>> threads.exe mainexit
+== mainexit
+main: ExitThread(5) with a child running
+child: still running after main's ExitThread
+>>> threads.exe procexit
+== procexit
+main: waiting on the child
+child: ExitProcess(3)

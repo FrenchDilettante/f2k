@@ -1,0 +1,84 @@
+>>> fswrite.exe create
+== create
+CREATE_NEW, new: opened err=0, size now 0
+CREATE_NEW, existing: INVALID_HANDLE_VALUE err=80, size now 0
+CREATE_ALWAYS, existing: opened err=183, size now 0
+CREATE_ALWAYS, new: opened err=0, size now 0
+OPEN_ALWAYS, existing: opened err=183, size now 12
+OPEN_ALWAYS, new: opened err=0, size now 0
+TRUNCATE_EXISTING: opened err=0, size now 0
+TRUNCATE_EXISTING without write access: INVALID_HANDLE_VALUE err=87, size now 0
+TRUNCATE_EXISTING, missing: INVALID_HANDLE_VALUE err=2, size now -1
+OPEN_EXISTING, missing: INVALID_HANDLE_VALUE err=2, size now -1
+CREATE_NEW in a missing directory: INVALID_HANDLE_VALUE err=3, size now -1
+a bad disposition: INVALID_HANDLE_VALUE err=87, size now -1
+fswrite: done
+>>> fswrite.exe write
+== write
+100000 bytes in 3000-byte writes: ok, position 100000
+FlushFileBuffers: ret=1 err=-
+size after close: 100000
+read back: 100000 bytes, match yes
+write through a read-only handle: ret=0 err=5
+append: size 100004
+write 5000 past the end: size 105007
+the gap reads as zeros: yes
+SetEndOfFile at 1000: ret=1 err=-, size 1000
+SetEndOfFile growing to 70000: ret=1 size 70000, the extension zero yes
+zero-byte write: ret=1 put 0 err=-
+fswrite: done
+>>> fswrite.exe share
+== share
+writer sharing read, then a second writer: INVALID_HANDLE_VALUE err=32
+writer sharing read, then a reader: opened err=0
+reader sharing read, then a reader not sharing write: opened err=0
+reader sharing read and write, then a writer: opened err=0
+DeleteFileA of an open file: ret=0 err=32
+DeleteFileA after closing: ret=1 err=-
+FILE_FLAG_DELETE_ON_CLOSE: created yes err=0, exists while open yes
+after close: attributes 0xFFFFFFFF err=2
+fswrite: done
+>>> fswrite.exe names
+== names
+MoveFileA rename: ret=1 err=-, old gone yes, new size 7
+MoveFileA onto an existing file: ret=0 err=183
+MoveFileA into a subdirectory: ret=1 err=-
+MoveFileA of a missing file: ret=0 err=2
+CopyFileA: ret=1 err=0, size 5
+CopyFileA onto an existing file, failing if it exists: ret=0 err=80
+CopyFileA overwriting: ret=1 err=0, size 7
+DeleteFileA(missing): ret=0 err=2
+DeleteFileA(a directory): ret=0 err=5
+read-only attribute set: 0x00000001
+DeleteFileA(read-only): ret=1 err=-
+after clearing it: ret=0 err=2
+created a long name: size 4, short name [A Long Created Name.txt] err=-
+opened by its short name: size 4294967295
+fswrite: done
+>>> fswrite.exe dirs
+== dirs
+CreateDirectoryA: ret=1 err=-, attributes 0x00000010
+CreateDirectoryA again: ret=0 err=183
+CreateDirectoryA under a missing parent: ret=0 err=3
+RemoveDirectoryA(not empty): ret=0 err=145
+RemoveDirectoryA(empty): ret=1 err=-
+RemoveDirectoryA(missing): ret=0 err=2
+RemoveDirectoryA(a file): ret=0 err=267
+100 files in one directory: all written yes, listed 100
+emptied and removed: 1
+fswrite: done
+>>> fswrite.exe times
+== times
+SetFileTime(last write = 2001-02-03 04:05:06): ret=1 err=-
+read back: 2001-02-03 04:05:06
+fswrite: done
+>>> fswrite.exe crt
+== crt
+text-mode write of two lines: 20 bytes on disk
+append: 23 bytes
+r+ overwrite in place, read back: [line ONE]
+binary fwrite of 4: 4 written, 4 on disk
+rename: 0, size under the new name 4
+remove: 0
+remove again: -1 errno 2
+fswrite: done
