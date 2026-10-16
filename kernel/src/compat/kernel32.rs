@@ -1655,13 +1655,8 @@ mod tests {
     /// The corpus binaries the surface serves in full: every import of each resolves. The legacy
     /// fixtures that run on the surface (hellogui, a GUI program importing user32 and gdi32, is
     /// left out) and the sectioned fixtures already served.
-    const CORPUS: [(&str, &[u8]); 13] = [
+    const CORPUS: [(&str, &[u8]); 11] = [
         ("exit0", include_bytes!("../../../tests/exit0/exit0.exe")),
-        (
-            "bsscheck",
-            include_bytes!("../../../tests/bsscheck/bsscheck.exe"),
-        ),
-        ("crash", include_bytes!("../../../tests/crash/crash.exe")),
         ("ret0", RET0),
         ("hello", HELLO),
         ("thread", include_bytes!("../../../tests/thread/thread.exe")),

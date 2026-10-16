@@ -464,8 +464,8 @@ mod tests {
             "F2K: process 1 (exit0) exited normally (exit code=0)"
         );
         assert_eq!(
-            line(ProcessEnd::Faulted(PAGE_FAULT), (5, "crash")),
-            "F2K: process 5 (crash) ended by fault (vector 14, exit code=3221225477)"
+            line(ProcessEnd::Faulted(PAGE_FAULT), (5, "bare")),
+            "F2K: process 5 (bare) ended by fault (vector 14, exit code=3221225477)"
         );
         assert_eq!(
             line(ProcessEnd::Faulted(COPY_FAULT), (2, "ret0")),

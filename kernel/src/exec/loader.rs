@@ -324,8 +324,9 @@ mod tests {
     const EXIT0: &[u8] = include_bytes!("../../../tests/exit0/exit0.exe");
     const RET0: &[u8] = include_bytes!("../../../tests/ret0/ret0.exe");
 
-    /// The corpus the disk carries (see the Makefile's disk target), by fixture name.
-    const CORPUS: [(&str, &[u8]); 11] = [
+    /// The corpus the disk carries (see the Makefile's disk target), by fixture name: the legacy
+    /// smokes, then the sectioned fixtures.
+    const CORPUS: [(&str, &[u8]); 17] = [
         ("hello", include_bytes!("../../../tests/hello/hello.exe")),
         ("exit0", EXIT0),
         ("ret0", RET0),
@@ -343,12 +344,24 @@ mod tests {
             "respawn",
             include_bytes!("../../../tests/respawn/respawn.exe"),
         ),
-        (
-            "bsscheck",
-            include_bytes!("../../../tests/bsscheck/bsscheck.exe"),
-        ),
-        ("crash", include_bytes!("../../../tests/crash/crash.exe")),
         ("fileio", include_bytes!("../../../tests/fileio/fileio.exe")),
+        ("bare", include_bytes!("../../../tests/bare/bare.exe")),
+        (
+            "runtime",
+            include_bytes!("../../../tests/runtime/runtime.exe"),
+        ),
+        ("memory", include_bytes!("../../../tests/memory/memory.exe")),
+        (
+            "threads",
+            include_bytes!("../../../tests/threads/threads.exe"),
+        ),
+        ("sync", include_bytes!("../../../tests/sync/sync.exe")),
+        ("sched", include_bytes!("../../../tests/sched/sched.exe")),
+        ("files", include_bytes!("../../../tests/files/files.exe")),
+        (
+            "fswrite",
+            include_bytes!("../../../tests/fswrite/fswrite.exe"),
+        ),
     ];
 
     /// Every corpus file fits the file staging, and every image it describes fits the image

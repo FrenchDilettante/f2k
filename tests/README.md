@@ -62,15 +62,16 @@ They follow one set of conventions, from `common/f2kt.h`:
 The fixtures:
 
 - `bare` - no C runtime. With no argument: `.bss` zeroing (run twice
-  per boot, as `bsscheck` was), `.data` and `.rdata` contents, linker
+  in the multi-process boot, to catch frames reused unzeroed), `.data` and `.rdata` contents, linker
   pointer tables, entry stack alignment, a stack that grows to 256 KiB;
   the exit code is a mask of failed checks. With a mode: the entry
   point's return value as the exit code, a full 32-bit exit code,
   bad buffer pointers to `WriteFile`, code run from `.data`, and
   fifteen faults (NULL, `.rdata`, code, kernel addresses, divide by
   zero, `ud2`, `int3`, `hlt`, `cli`, `in`, `into`, stack overflow),
-  each ending the process with its NTSTATUS. Replaces `bsscheck` and
-  `crash`.
+  each ending the process with its NTSTATUS. Replaced `bsscheck` and
+  `crash` (removed: the multi-process suite runs `bare` in their
+  place).
 - `runtime` - the process environment: argv, version, modules and
   `GetProcAddress`/`LoadLibraryA`, the TEB/PEB fields compilers and
   runtimes read, last-error semantics and `FormatMessageA`, the
@@ -154,14 +155,6 @@ import trace, and the disk-smoke checksum file) stay.
 - `exit0` - no C runtime: the entry point calls `ExitProcess(0)`; a
   single import, so it exercises process creation, image mapping and
   the exit path and nothing else.
-- `bsscheck` - no C runtime: the entry point checks that its `.bss`
-  (uninitialized data) is all zero, scribbles a pattern over it, and
-  exits 0 only if the check passed. The suite runs it twice in one
-  boot: the second run catches teardown that reuses frames without
-  re-zeroing them.
-- `crash` - no C runtime, no imports: the entry point writes through
-  the unmapped NULL page as its first act and must fault. The suite
-  asserts the kernel contains the fault and keeps running.
 - `ret0` - the default MSVC 6 `/ML` CRT startup around
   `int main() { return 0; }`; exercises the full CRT initialization
   surface (35 KERNEL32.dll imports; see `ret0/imports.txt`).
@@ -231,8 +224,10 @@ smoke) selects `pingpong` with the thread-ified boot: the main thread
 enters ring 3 through the scheduler's first switch, and its thread
 and wait calls run against the landed scheduler machinery. The
 `run-process-suite` feature (the multi-process case) runs the
-sequence `exit0`, `ret0`, `bsscheck`, `bsscheck`, `crash`, `exit0` in
-one boot. The `run-fileio` feature selects `fileio`, which opens its
+sequence `exit0`, `ret0`, `bare`, `bare`, `bare null-write`, `exit0`
+in one boot (`bare` from `\CORPUS`): the second `bare` catches frames
+reused without re-zeroing, `bare null-write` a fault the kernel must
+contain before the last `exit0` runs. The `run-fileio` feature selects `fileio`, which opens its
 own image on the volume through the module path the loader staged.
 A boot can also choose its program by command line, with no feature:
 the text after `--` on the kernel command line is the program's own
