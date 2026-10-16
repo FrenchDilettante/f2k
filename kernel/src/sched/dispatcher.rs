@@ -753,6 +753,9 @@ impl Dispatcher {
     /// forever, and its waiters wake through the satisfy walk with no priority boost (the exit
     /// path grants none); then the thread leaves its process's list and is Terminated.
     fn retire(&mut self, thread: &mut Thread) {
+        // The mutexes it holds are abandoned first: their waiters take them before the thread's
+        // own waiters wake.
+        self.abandon_mutexes(thread);
         thread.waitable.signal_state = 1;
         if !thread.waitable.waiters.is_empty() {
             let waiters = addr_of_mut!(thread.waitable);

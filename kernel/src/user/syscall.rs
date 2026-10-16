@@ -33,6 +33,15 @@ pub const SYS_EXIT: u32 = 1;
 /// register.
 pub const SYS_THREAD_EXIT: u32 = 0x8000_0000;
 
+/// The internal APC-continue service, outside the registry's range like the thread exit: the APC
+/// dispatcher stub raises it once a user APC's routine returned, EDX pointing at the saved context.
+pub const SYS_APC_CONTINUE: u32 = 0x8000_0001;
+
+/// The internal critical-section services, raised by the native Enter and Leave under contention
+/// (EDX the section): wait for a leave to hand the section over, and signal the waiter.
+pub const SYS_CRITSEC_WAIT: u32 = 0x8000_0002;
+pub const SYS_CRITSEC_WAKE: u32 = 0x8000_0003;
+
 /// Documented NTSTATUS values (public ABI constants).
 pub const STATUS_ACCESS_VIOLATION: u32 = 0xC000_0005;
 pub const STATUS_INVALID_SYSTEM_SERVICE: u32 = 0xC000_001C;
@@ -223,26 +232,39 @@ extern "C" fn syscall_dispatch(frame: &mut TrapFrame) {
         crate::process::threads::exit_thread(frame.edx as i32);
     }
 
-    // The service registry lives with the surface it implements.
-    let Some((arg_bytes, service)) = crate::compat::kernel32::lookup_service(frame.eax) else {
-        frame.eax = STATUS_INVALID_SYSTEM_SERVICE;
-        return;
-    };
+    if frame.eax == SYS_CRITSEC_WAIT {
+        crate::compat::kernel32::critical_section_wait(frame.edx);
+    } else if frame.eax == SYS_CRITSEC_WAKE {
+        crate::compat::kernel32::critical_section_wake(frame.edx);
+    } else if frame.eax == SYS_APC_CONTINUE {
+        // The APC dispatcher stub's return: the interrupted context goes back into the frame (and
+        // the next queued user APC, if any, arms for the delivery below).
+        super::apc::continue_service(frame);
+    } else {
+        // The service registry lives with the surface it implements.
+        let Some((arg_bytes, service)) = crate::compat::kernel32::lookup_service(frame.eax) else {
+            frame.eax = STATUS_INVALID_SYSTEM_SERVICE;
+            return;
+        };
 
-    if let Err(status) = probe_user_range(frame.edx, arg_bytes) {
-        frame.eax = status;
-        return;
+        if let Err(status) = probe_user_range(frame.edx, arg_bytes) {
+            frame.eax = status;
+            return;
+        }
+
+        let mut args = [0u32; MAX_ARG_BYTES / 4];
+        copy_user_args(frame.edx, arg_bytes, &mut args);
+        service(frame, &args[..arg_bytes as usize / 4]);
     }
-
-    let mut args = [0u32; MAX_ARG_BYTES / 4];
-    copy_user_args(frame.edx, arg_bytes, &mut args);
-    service(frame, &args[..arg_bytes as usize / 4]);
 
     // The service boundary is where a same-processor preemption lands: a thread the service readied
     // at strictly higher priority — or a quantum the tick ended mid-service — is switched to here,
-    // before the caller returns to user mode. Nothing after this point writes the frame: the
-    // service's result rides out whenever the thread resumes.
+    // before the caller returns to user mode.
     crate::sched::idle::dispatcher().deliver_pending();
+    // The user-APC window: an alertable wait that completed for a user APC (or the continue
+    // service, with more queued) redirects the return through the APC dispatcher stub. Nothing
+    // after this writes the frame.
+    super::apc::deliver(frame);
 }
 
 // Gate stub: entered from ring 3 through the DPL-3 interrupt gate.

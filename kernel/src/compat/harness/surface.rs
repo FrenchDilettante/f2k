@@ -48,8 +48,8 @@ pub struct Signature {
 
 use Arg::{Pointer as P, Value as V};
 
-/// The public prototypes of the 80 exports.
-pub const SIGNATURES: [Signature; 80] = [
+/// The public prototypes of the 94 exports.
+pub const SIGNATURES: [Signature; 94] = [
     sig("ExitProcess", &[V("uExitCode")]),
     sig("CloseHandle", &[V("hObject")]),
     sig(
@@ -287,6 +287,20 @@ pub const SIGNATURES: [Signature; 80] = [
     sig("InitializeCriticalSection", &[P("lpCriticalSection")]),
     sig("LeaveCriticalSection", &[P("lpCriticalSection")]),
     sig("TryEnterCriticalSection", &[P("lpCriticalSection")]),
+    sig("CreateMutexA", &[P("lpMutexAttributes"), V("bInitialOwner"), P("lpName")]),
+    sig("CreateSemaphoreA", &[P("lpSemaphoreAttributes"), V("lInitialCount"), V("lMaximumCount"), P("lpName")]),
+    sig("OpenEventA", &[V("dwDesiredAccess"), V("bInheritHandle"), P("lpName")]),
+    sig("OpenMutexA", &[V("dwDesiredAccess"), V("bInheritHandle"), P("lpName")]),
+    sig("OpenSemaphoreA", &[V("dwDesiredAccess"), V("bInheritHandle"), P("lpName")]),
+    sig("PulseEvent", &[V("hEvent")]),
+    sig("QueueUserAPC", &[P("pfnAPC"), V("hThread"), V("dwData")]),
+    sig("ReleaseMutex", &[V("hMutex")]),
+    sig("ReleaseSemaphore", &[V("hSemaphore"), V("lReleaseCount"), P("lpPreviousCount")]),
+    sig("ResetEvent", &[V("hEvent")]),
+    sig("SignalObjectAndWait", &[V("hObjectToSignal"), V("hObjectToWaitOn"), V("dwMilliseconds"), V("bAlertable")]),
+    sig("SleepEx", &[V("dwMilliseconds"), V("bAlertable")]),
+    sig("WaitForMultipleObjects", &[V("nCount"), P("lpHandles"), V("bWaitAll"), V("dwMilliseconds")]),
+    sig("WaitForSingleObjectEx", &[V("hHandle"), V("dwMilliseconds"), V("bAlertable")]),
 ];
 
 const fn sig(export: &'static str, args: &'static [Arg]) -> Signature {
@@ -353,16 +367,21 @@ fn route(export: &str) -> Route {
             "the staged-name copy reads the parameters page directly",
         ),
         "ExitProcess" => Route::TargetOnly("the process exit runs through the scheduler"),
-        "TryEnterCriticalSection" => {
-            Route::TargetOnly("the section lives in the live process's memory")
-        }
-        "LeaveCriticalSection" => {
-            Route::TargetOnly("the section lives in the live process's memory")
-        }
+        "WaitForSingleObjectEx" => Route::TargetOnly("the wait runs through the scheduler"),
+        "WaitForMultipleObjects" => Route::TargetOnly("the wait runs through the scheduler"),
+        "SleepEx" => Route::TargetOnly("the delay runs through the scheduler"),
+        "SignalObjectAndWait" => Route::TargetOnly("the wait runs through the scheduler"),
+        "ResetEvent" => Route::TargetOnly("the handler runs against the live handle table"),
+        "ReleaseSemaphore" => Route::TargetOnly("the handler runs against the live handle table and scheduler"),
+        "ReleaseMutex" => Route::TargetOnly("the handler runs against the live handle table and scheduler"),
+        "QueueUserAPC" => Route::TargetOnly("the APC queues on a live thread"),
+        "PulseEvent" => Route::TargetOnly("the handler runs against the live handle table and scheduler"),
+        "OpenSemaphoreA" => Route::TargetOnly("the handler runs against the live handle table"),
+        "OpenMutexA" => Route::TargetOnly("the handler runs against the live handle table"),
+        "OpenEventA" => Route::TargetOnly("the handler runs against the live handle table"),
+        "CreateSemaphoreA" => Route::TargetOnly("the handler runs against the live handle table and scheduler"),
+        "CreateMutexA" => Route::TargetOnly("the handler runs against the live handle table and scheduler"),
         "InitializeCriticalSection" => {
-            Route::TargetOnly("the section lives in the live process's memory")
-        }
-        "EnterCriticalSection" => {
             Route::TargetOnly("the section lives in the live process's memory")
         }
         "DeleteCriticalSection" => {

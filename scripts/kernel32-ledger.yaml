@@ -481,3 +481,45 @@ exports:
   - export: TryEnterCriticalSection
     group: threads
     status: pinned
+  - export: CreateMutexA
+    group: threads
+    status: pinned
+  - export: CreateSemaphoreA
+    group: threads
+    status: pinned
+  - export: OpenEventA
+    group: threads
+    status: pinned
+  - export: OpenMutexA
+    group: threads
+    status: pinned
+  - export: OpenSemaphoreA
+    group: threads
+    status: pinned
+  - export: PulseEvent
+    group: threads
+    status: pinned
+  - export: QueueUserAPC
+    group: threads
+    status: pinned
+  - export: ReleaseMutex
+    group: threads
+    status: pinned
+  - export: ReleaseSemaphore
+    group: threads
+    status: pinned
+  - export: ResetEvent
+    group: threads
+    status: pinned
+  - export: SignalObjectAndWait
+    group: threads
+    status: pinned
+  - export: SleepEx
+    group: threads
+    status: pinned
+  - export: WaitForMultipleObjects
+    group: threads
+    status: pinned
+  - export: WaitForSingleObjectEx
+    group: threads
+    status: pinned

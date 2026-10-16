@@ -543,6 +543,9 @@ pub fn close_apc_queue(thread: &mut Thread) {
         thread.kernel_apcs.is_empty(),
         "a self-exiting thread has a queued kernel APC"
     );
+    // User APCs the thread never turned alertable for are discarded, their records freed.
+    Dispatcher::flush_apcs(thread, ApcMode::User);
+    thread.user_apc_pending = false;
 }
 
 /// What a delivery did.

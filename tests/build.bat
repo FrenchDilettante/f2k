@@ -42,13 +42,6 @@ if errorlevel 1 (echo build.bat: hellogui failed & exit /b 1)
 del hellogui.obj
 cd ..
 
-echo === pingpong
-cd pingpong
-cl /nologo pingpong.c
-if errorlevel 1 (echo build.bat: pingpong failed & exit /b 1)
-del pingpong.obj
-cd ..
-
 echo === sleep
 cd sleep
 cl /nologo sleep.c
@@ -61,13 +54,6 @@ cd spin
 cl /nologo spin.c
 if errorlevel 1 (echo build.bat: spin failed & exit /b 1)
 del spin.obj
-cd ..
-
-echo === suspend
-cd suspend
-cl /nologo suspend.c
-if errorlevel 1 (echo build.bat: suspend failed & exit /b 1)
-del suspend.obj
 cd ..
 
 echo === fileio

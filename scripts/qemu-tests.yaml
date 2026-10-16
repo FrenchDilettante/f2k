@@ -122,67 +122,16 @@ cases:
       - "Hello, world!"
       - "F2K: user process exited normally (exit code=0)"
 
-
-  - name: pingpong-smoke
-    description: the blocking-wait smoke runs its captured five-turn alternation through two auto-reset events and a child thread, the child-handle wait returns 0, and the process exits cleanly (kernel path)
-    image: kernel
-    features: [run-pingpong]
-    # The strict alternation is the point: the turns must appear in order.
-    ordered: true
-    expects:
-      - "F2K Booted Successfully"
-      - "F2K: frame database audit: ok"
-      - "F2K: kernel heap: alloc/free ok"
-      - "F2K: image loaded"
-      - "F2K: entering ring 3"
-      - "pong 0"
-      - "ping 0"
-      - "pong 1"
-      - "ping 1"
-      - "pong 2"
-      - "ping 2"
-      - "pong 3"
-      - "ping 3"
-      - "pong 4"
-      - "ping 4"
-      - "child handle wait returned 0"
-      - "pingpong: ok"
-      - "F2K: user process exited normally (exit code=0)"
-
-  - name: pingpong-smoke-disk
-    description: the blocking-wait smoke runs its captured five-turn alternation through two auto-reset events and a child thread, the child-handle wait returns 0, and the process exits cleanly (Limine disk path)
-    image: disk
-    features: [run-pingpong]
-    # The strict alternation is the point: the turns must appear in order.
-    ordered: true
-    expects:
-      - "F2K Booted Successfully"
-      - "F2K: frame database audit: ok"
-      - "F2K: kernel heap: alloc/free ok"
-      - "F2K: image loaded"
-      - "F2K: entering ring 3"
-      - "pong 0"
-      - "ping 0"
-      - "pong 1"
-      - "ping 1"
-      - "pong 2"
-      - "ping 2"
-      - "pong 3"
-      - "ping 3"
-      - "pong 4"
-      - "ping 4"
-      - "child handle wait returned 0"
-      - "pingpong: ok"
-      - "F2K: user process exited normally (exit code=0)"
-
   # Timer smoke: the main
   # thread parks in the timer table through Sleep(200) (the idle
   # thread owns the processor while it sleeps), yields through
   # Sleep(0), and times out a wait on a never-signaled event after
-  # 100 ms. Both spans read whole ticks: the GetTickCount reads and
-  # the sleeps' due times derive from the same tick-quantized
-  # accumulator, so the captured cadence (exactly 200 and exactly
-  # 100) is pinned verbatim.
+  # 100 ms. Both spans are whole ticks — 20 and 10 — because the
+  # sleeps' due times and the clock advance on the same tick, but
+  # GetTickCount floors 10.0144 ms ticks to milliseconds, so a span
+  # reads one millisecond long at some start phases (200 or 201, 100
+  # or 101), on Windows as here; the capture's 200 and 100 are one
+  # phase's reading. The patterns admit exactly that step.
   - name: sleep-smoke
     description: the timer smoke parks the main thread in the timer table for a 200 ms sleep, yields through Sleep(0), and times out a 100 ms wait, reporting both spans at the captured cadence (kernel path)
     image: kernel
@@ -193,9 +142,9 @@ cases:
       - "F2K: kernel heap: alloc/free ok"
       - "F2K: image loaded"
       - "F2K: entering ring 3"
-      - "sleep 200ms spanned 200 ticks"
+      - "re:^sleep 200ms spanned 20[01] ticks$"
       - "sleep 0 returned"
-      - "timed wait: timeout after 100 ticks"
+      - "re:^timed wait: timeout after 10[01] ticks$"
       - "sleep: ok"
       - "F2K: user process exited normally (exit code=0)"
 
@@ -209,9 +158,9 @@ cases:
       - "F2K: kernel heap: alloc/free ok"
       - "F2K: image loaded"
       - "F2K: entering ring 3"
-      - "sleep 200ms spanned 200 ticks"
+      - "re:^sleep 200ms spanned 20[01] ticks$"
       - "sleep 0 returned"
-      - "timed wait: timeout after 100 ticks"
+      - "re:^timed wait: timeout after 10[01] ticks$"
       - "sleep: ok"
       - "F2K: user process exited normally (exit code=0)"
 

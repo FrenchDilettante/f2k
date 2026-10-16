@@ -144,6 +144,21 @@ impl IrqlState {
             core::arch::asm!("cli", options(nomem, nostack, preserves_flags));
         }
     }
+
+    /// Open a one-instruction interrupt window from masked code and close it again: an interrupt
+    /// held pending meanwhile (a tick that fell inside a long service) is taken here, with every
+    /// consequence an interrupt exit has — a quantum it ends may switch the processor away and back.
+    /// The NOP is the window: STI's shadow would hold the interrupt across a CLI right behind it.
+    pub fn interrupt_window(&mut self) {
+        self.interrupts = true;
+        // SAFETY: the window runs the interrupt exit's own paths, which the caller's state must
+        // admit (no dispatcher state half-updated); the asm is a compiler barrier.
+        #[cfg(target_arch = "x86")]
+        unsafe {
+            core::arch::asm!("sti", "nop", "cli", options(nostack));
+        }
+        self.interrupts = false;
+    }
 }
 
 /// A thread's level ledger: the state the raise/lower pairs of one continuous execution are

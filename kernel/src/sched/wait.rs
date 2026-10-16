@@ -57,6 +57,9 @@ pub enum WaitKind {
     /// An auto-reset event: one signal wakes exactly one waiter, and the satisfy consumes the
     /// signal.
     SynchronizationEvent = 1,
+    /// A mutex (the NT mutant): signaled while free, and always for its owner (see
+    /// [`crate::sched::mutex`]).
+    Mutant = 2,
     /// The thread object: signals once, at termination, forever.
     Thread = 6,
     /// A counting semaphore: its signal state is the count, and one satisfied waiter consumes
@@ -251,21 +254,59 @@ pub enum WaitDisposition {
     Yield,
 }
 
+/// The alert test every wait entry runs before it would block: an alertable user-mode wait with user
+/// APCs queued does not block — it arms their delivery (the service boundary runs them on the way
+/// out) and completes with the user-APC status.
+fn test_alert(thread: &mut Thread, mode: WaitMode, alertable: bool) -> Option<i32> {
+    if alertable && mode == WaitMode::User && !thread.user_apcs.is_empty() {
+        thread.user_apc_pending = true;
+        return Some(crate::status::STATUS_USER_APC);
+    }
+    None
+}
+
 /// The wait block owning a waiters-list entry.
 // SAFETY-contract: `entry` is the links field of a live wait block.
 pub(crate) fn entry_to_block(entry: *mut Links) -> *mut WaitBlock {
     (entry as usize - core::mem::offset_of!(WaitBlock, links)) as *mut WaitBlock
 }
 
-/// Satisfy one waiter's claim on `object`: a synchronization flavor's signal is consumed by the
-/// take, a semaphore's claim takes exactly one count, everything else's stays.
-fn consume_signal(object: &mut Waitable) {
-    match object.kind {
-        WaitKind::Semaphore => object.signal_state -= 1,
-        kind if kind.consumes_signal() => object.signal_state = 0,
-        _ => {}
+/// Whether `object` would satisfy a wait by `thread` now: signaled — or, for a mutex, owned by
+/// `thread` already (the recursion).
+// SAFETY-contract: `object` is a live, initialized waitable.
+pub(crate) unsafe fn signaled_for(object: *mut Waitable, thread: *const Thread) -> bool {
+    unsafe {
+        if (*object).kind == WaitKind::Mutant {
+            return super::mutex::available_to(&*super::mutex::Mutex::from_waitable(object), thread);
+        }
+        (*object).signal_state > 0
     }
 }
+
+/// Satisfy `thread`'s claim on `object`: a synchronization flavor's signal is consumed by the take,
+/// a semaphore's claim takes exactly one count, a mutex's one unit of ownership, everything else's
+/// stays. Returns the status bits the take adds to the wait's completion: the abandonment of a
+/// mutex its last owner ended holding, else none.
+// SAFETY-contract: `object` is a live waitable that [`signaled_for`] `thread`; `thread` is live.
+pub(crate) unsafe fn consume_signal(object: *mut Waitable, thread: *mut Thread) -> i32 {
+    unsafe {
+        match (*object).kind {
+            WaitKind::Semaphore => (*object).signal_state -= 1,
+            WaitKind::Mutant => {
+                return super::mutex::acquire(
+                    &mut *super::mutex::Mutex::from_waitable(object),
+                    &mut *thread,
+                )
+            }
+            kind if kind.consumes_signal() => (*object).signal_state = 0,
+            _ => {}
+        }
+    }
+    0
+}
+
+/// The most objects one wait may name: the documented MAXIMUM_WAIT_OBJECTS.
+pub const MAXIMUM_WAIT_OBJECTS: usize = 64;
 
 impl Dispatcher {
     /// Wait on a single object. Satisfies the wait at once when the object is signaled or the
@@ -289,12 +330,14 @@ impl Dispatcher {
         // flavor's signal; the thread never leaves the Running state, and the wait it did not block
         // on still costs its quantum charge.
         // SAFETY: the object is a live, initialized waitable.
-        let object: &mut Waitable = unsafe { &mut *object };
-        if object.signal_state > 0 {
-            consume_signal(object);
+        if unsafe { signaled_for(object, thread) } {
+            // SAFETY: as above; the object is signaled for the thread.
+            let status = unsafe { consume_signal(object, thread) };
             self.charge_nowait(thread);
-            return WaitDisposition::Complete(STATUS_SUCCESS);
+            return WaitDisposition::Complete(STATUS_SUCCESS | status);
         }
+        // SAFETY: as above.
+        let object: &mut Waitable = unsafe { &mut *object };
 
         // Plant the object block. Its fields are per-wait; the chain is closed below, with the
         // timer block when a timeout arms one.
@@ -306,6 +349,11 @@ impl Dispatcher {
             (*block).object = object as *mut Waitable;
             (*block).key = STATUS_SUCCESS;
             (*block).wait_all = false;
+        }
+
+        // An alertable wait with user APCs queued completes at once, for their delivery.
+        if let Some(status) = test_alert(thread, mode, alertable) {
+            return WaitDisposition::Complete(status);
         }
 
         // A zero timeout never blocks, even for an instant.
@@ -368,6 +416,122 @@ impl Dispatcher {
         WaitDisposition::Yield
     }
 
+    /// Wait on several objects at once, through the thread's multiple-wait blocks — one per object.
+    /// A wait-any is satisfied
+    /// by the lowest-indexed object signaled for the thread and completes with that index; a
+    /// wait-all only once every object is, taking them all at once, and completes with success. An
+    /// abandoned mutex's take adds the abandonment to the status. Otherwise the thread parks with a
+    /// block on every object (wait-any keys are the indexes, wait-all keys success), chained
+    /// circularly with the timer block when a timeout arms one. The caller validates the count and,
+    /// for a wait-all, that no object repeats.
+    #[allow(clippy::too_many_arguments)]
+    pub fn wait_multiple(
+        &mut self,
+        thread: &mut Thread,
+        objects: &[*mut Waitable],
+        wait_all: bool,
+        reason: WaitReason,
+        mode: WaitMode,
+        alertable: bool,
+        timeout: Option<i64>,
+        stamp: ClockStamp,
+    ) -> WaitDisposition {
+        debug_assert!(!objects.is_empty() && objects.len() <= MAXIMUM_WAIT_OBJECTS);
+        thread.wait_status = 0;
+        let me = thread as *mut Thread;
+        // SAFETY: every object is a live, initialized waitable.
+        if wait_all {
+            if objects.iter().all(|&object| unsafe { signaled_for(object, me) }) {
+                let mut status = STATUS_SUCCESS;
+                for &object in objects {
+                    // SAFETY: as above; each is signaled for the thread, and none repeats.
+                    status |= unsafe { consume_signal(object, me) };
+                }
+                self.charge_nowait(thread);
+                return WaitDisposition::Complete(status);
+            }
+        } else if let Some(index) = objects
+            .iter()
+            .position(|&object| unsafe { signaled_for(object, me) })
+        {
+            // SAFETY: as above.
+            let status = unsafe { consume_signal(objects[index], me) };
+            self.charge_nowait(thread);
+            return WaitDisposition::Complete(index as i32 | status);
+        }
+
+        if let Some(status) = test_alert(thread, mode, alertable) {
+            return WaitDisposition::Complete(status);
+        }
+        if timeout == Some(0) {
+            self.charge_nowait(thread);
+            return WaitDisposition::Complete(STATUS_TIMEOUT);
+        }
+
+        // The chain: the object blocks in order, then the timer block when a timeout arms one,
+        // circularly.
+        let count = objects.len();
+        let blocks: *mut WaitBlock = thread.multi_blocks.as_mut_ptr();
+        // SAFETY: the thread's array holds `count` blocks, none on any list (no wait is in
+        // progress).
+        unsafe {
+            for (index, &object) in objects.iter().enumerate() {
+                let block = blocks.add(index);
+                block.write(WaitBlock {
+                    links: Links::detached(),
+                    thread: me,
+                    object,
+                    next_block: blocks.add((index + 1) % count),
+                    key: if wait_all { STATUS_SUCCESS } else { index as i32 },
+                    wait_all,
+                });
+            }
+        }
+        thread.wait_block_head = blocks;
+        if let Some(interval) = timeout {
+            let timer_block: *mut WaitBlock = addr_of_mut!(thread.wait_blocks[TIMER_BLOCK]);
+            // SAFETY: the blocks are the thread's own; the timer's
+            // waiters list is initialized at thread attach, and the block is on no list.
+            unsafe {
+                (*blocks.add(count - 1)).next_block = timer_block;
+                (*timer_block).next_block = blocks;
+                thread
+                    .timer
+                    .waitable
+                    .waiters
+                    .push_back(addr_of_mut!((*timer_block).links));
+            }
+            let due = stamp.system_time.wrapping_add(interval as u64);
+            if !self
+                .timer_table
+                .insert(&mut thread.timer, due, stamp.system_time)
+            {
+                // SAFETY: linked above.
+                unsafe { unlink(addr_of_mut!((*timer_block).links)) };
+                self.charge_nowait(thread);
+                return WaitDisposition::Complete(STATUS_TIMEOUT);
+            }
+        }
+        // Join every object's waiters at the tail.
+        // SAFETY: each block is on no list; each object's waiters list is initialized.
+        unsafe {
+            for (index, &object) in objects.iter().enumerate() {
+                (*object)
+                    .waiters
+                    .push_back(addr_of_mut!((*blocks.add(index)).links));
+            }
+        }
+
+        thread.wait_alertable = alertable;
+        thread.wait_mode = mode;
+        thread.wait_reason = reason;
+        thread.wait_time = stamp.tick;
+        thread.state = ThreadState::Waiting;
+        // SAFETY: the thread is on no waiting list.
+        unsafe { self.waiting.push_back(addr_of_mut!(thread.wait_links)) };
+        WaitDisposition::Yield
+    }
+
     /// The delay wait: park `thread` on its own timer for `interval` (100 ns units, relative — or
     /// negative, an absolute due already past) — the sleep shape. The chain is the timer block
     /// alone, so the expiry is the only possible wake. An interval already past never parks: a
@@ -382,10 +546,14 @@ impl Dispatcher {
         interval: i64,
         stamp: ClockStamp,
     ) -> WaitDisposition {
+        thread.wait_status = 0;
+        // An alertable delay with user APCs queued completes at once, for their delivery.
+        if let Some(status) = test_alert(thread, mode, alertable) {
+            return WaitDisposition::Complete(status);
+        }
         // SAFETY: the timer block lives inside the thread.
         let block: *mut WaitBlock = addr_of_mut!(thread.wait_blocks[TIMER_BLOCK]);
         thread.wait_block_head = block;
-        thread.wait_status = 0;
         // SAFETY: as above; the timer's waiters list is initialized at thread attach, and the block
         // is on no list.
         unsafe {
@@ -525,9 +693,14 @@ impl Dispatcher {
                     continue;
                 }
                 // SAFETY: as above.
-                unsafe { satisfy_chain(block) };
+                let status = unsafe { satisfy_chain(block) };
+                // SAFETY: the waking thread is live.
+                unsafe { (*thread).wait_status |= status };
             } else {
-                consume_signal(object);
+                // SAFETY: the object is signaled (the loop's test) and the thread is live.
+                let status = unsafe { consume_signal(object, thread) };
+                // SAFETY: as above.
+                unsafe { (*thread).wait_status |= status };
             }
 
             // SAFETY: the waking thread is a live, waiting thread.
@@ -809,11 +982,8 @@ unsafe fn chain_all_signaled(block: *mut WaitBlock) -> bool {
     unsafe {
         let mut probe = (*block).next_block;
         while !eq(probe, block) {
-            if (*probe).key != STATUS_TIMEOUT {
-                let object = (*probe).object;
-                if (*object).signal_state <= 0 {
-                    return false;
-                }
+            if (*probe).key != STATUS_TIMEOUT && !signaled_for((*probe).object, (*probe).thread) {
+                return false;
             }
             probe = (*probe).next_block;
         }
@@ -821,14 +991,16 @@ unsafe fn chain_all_signaled(block: *mut WaitBlock) -> bool {
     true
 }
 
-/// Consume the signal of every non-timer object of a wait-all chain, head included.
+/// Consume the signal of every non-timer object of a wait-all chain, head included. Returns the
+/// status bits the takes add (an abandoned mutex's).
 // SAFETY-contract: as `chain_all_signaled`.
-unsafe fn satisfy_chain(block: *mut WaitBlock) {
+unsafe fn satisfy_chain(block: *mut WaitBlock) -> i32 {
+    let mut status = 0;
     unsafe {
         let mut probe = block;
         loop {
             if (*probe).key != STATUS_TIMEOUT {
-                consume_signal(&mut *(*probe).object);
+                status |= consume_signal((*probe).object, (*probe).thread);
             }
             probe = (*probe).next_block;
             if eq(probe, block) {
@@ -836,6 +1008,7 @@ unsafe fn satisfy_chain(block: *mut WaitBlock) {
             }
         }
     }
+    status
 }
 
 /// Whether `block`'s links are wired into a list: both neighbors point back at it.

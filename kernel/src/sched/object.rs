@@ -1,8 +1,8 @@
 //! The handle table: the per-process indirection between the Win32 handle values programs pass
 //! around and the kernel's objects.
 //!
-//! One table per process, a fixed slot array: each slot holds a live object (an event, a thread, or
-//! an open file) or nothing. The handle value encodes its slot as the index shifted left two — the platform's
+//! One table per process, a fixed slot array: each slot holds a live object (an event, a semaphore,
+//! a mutex, a thread, or an open file) or nothing. The handle value encodes its slot as the index shifted left two — the platform's
 //! documented shape, a multiple of four with the low tag bits ignored on lookup — and slot zero is
 //! never handed out, so the first handle is 4 and no valid handle is zero or the all-ones
 //! pseudo-handle. Freed slots are reused most-recently-freed-first.
@@ -31,6 +31,10 @@ pub enum Slot {
     Event(*mut Waitable),
     /// A thread object (waitable at its termination), by its waitable header.
     Thread(*mut Waitable),
+    /// A semaphore, by its waitable header.
+    Semaphore(*mut Waitable),
+    /// A mutex, by its waitable header.
+    Mutex(*mut Waitable),
     /// An open file: the index of the process's open-file record.
     File(usize),
 }
@@ -40,7 +44,10 @@ impl Slot {
     /// files).
     pub fn waitable(self) -> Option<*mut Waitable> {
         match self {
-            Slot::Event(waitable) | Slot::Thread(waitable) => Some(waitable),
+            Slot::Event(waitable)
+            | Slot::Thread(waitable)
+            | Slot::Semaphore(waitable)
+            | Slot::Mutex(waitable) => Some(waitable),
             Slot::File(_) => None,
         }
     }

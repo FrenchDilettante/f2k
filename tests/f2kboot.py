@@ -157,11 +157,19 @@ def tail(log: str, count: int = 40) -> str:
 # --- The suite's expected-string rules ----------------------------------------------------------
 
 
+def matches(expected: str, line: str) -> bool:
+    """Whether a line satisfies an `expects` string: a substring, or a `re:` regular expression."""
+    if expected.startswith("re:"):
+        return re.search(expected[3:], line) is not None
+    return expected in line
+
+
 @dataclass
 class Expectation:
     """A suite case's COM1 rules: every `expects` string appears on some line (in order, each on a
     later line, when `ordered`); the `contiguous` strings match consecutive lines, in order; no
-    `forbids` string appears."""
+    `forbids` string appears. An `expects` string written `re:<pattern>` is a regular expression
+    searched in the line instead of a substring."""
 
     expects: list[str]
     ordered: bool = False
@@ -178,11 +186,11 @@ class Expectation:
                 if forbidden in line:
                     return "forbidden", forbidden
             if self.ordered:
-                if next_expect < len(self.expects) and self.expects[next_expect] in line:
+                if next_expect < len(self.expects) and matches(self.expects[next_expect], line):
                     next_expect += 1
             else:
                 for index, expected in enumerate(self.expects):
-                    if not seen[index] and expected in line:
+                    if not seen[index] and matches(expected, line):
                         seen[index] = True
             if next_block < len(self.contiguous):
                 if self.contiguous[next_block] in line:

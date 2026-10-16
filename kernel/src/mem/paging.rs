@@ -240,10 +240,15 @@ pub fn init_frame(frame_phys: u32, offset: usize, bytes: &[u8]) {
     unsafe { install_scratch(frame_phys) };
     // SAFETY: SCRATCH_VA now aliases exactly this frame, page-length.
     unsafe {
-        let words = SCRATCH_VA as *mut u32;
-        for i in 0..PT_ENTRIES {
-            words.add(i).write_volatile(0);
-        }
+        // One string store: a word loop is slow enough in a debug build to stretch every page
+        // allocation. The asm is opaque to the compiler, so the stores cannot be elided.
+        core::arch::asm!(
+            "rep stosd",
+            inout("ecx") PT_ENTRIES => _,
+            inout("edi") SCRATCH_VA => _,
+            in("eax") 0u32,
+            options(nostack, preserves_flags),
+        );
         let dst = SCRATCH_VA as *mut u8;
         for (i, &byte) in bytes.iter().enumerate() {
             dst.add(offset + i).write_volatile(byte);

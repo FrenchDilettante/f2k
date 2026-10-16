@@ -43,6 +43,20 @@ pub const MEMBERS: &[&str] = &[
     "InitializeCriticalSection",
     "LeaveCriticalSection",
     "TryEnterCriticalSection",
+    "CreateMutexA",
+    "CreateSemaphoreA",
+    "OpenEventA",
+    "OpenMutexA",
+    "OpenSemaphoreA",
+    "PulseEvent",
+    "QueueUserAPC",
+    "ReleaseMutex",
+    "ReleaseSemaphore",
+    "ResetEvent",
+    "SignalObjectAndWait",
+    "SleepEx",
+    "WaitForMultipleObjects",
+    "WaitForSingleObjectEx",
 ];
 
 const INFINITE: u32 = 0xFFFF_FFFF;
@@ -190,8 +204,8 @@ fn wait_for_single_object_converts_timeouts_and_returns_raw_statuses() {
     );
 }
 
-/// A wait on a thread completes once the thread has exited (the pingpong fixture's final wait
-/// returned 0). Ledger: threads/WaitForSingleObject.
+/// A wait on a thread completes once the thread has exited (the sync fixture's pingpong section's
+/// final wait returned 0). Ledger: threads/WaitForSingleObject.
 #[test]
 #[ignore = "ledger threads/WaitForSingleObject: the existing path waits in the scheduler \
             (target-only)"]

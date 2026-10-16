@@ -3,14 +3,15 @@
 Events, semaphores, mutexes, multi-object waits, user APCs, critical sections, interlocked
 operations, handle duplication and closing, and the original pingpong.
 
-One test per block of the real-machine capture, output.txt (see tests/README.md).
+One test per block of the real-machine capture, output.txt (see tests/README.md). Gating: F2K passes
+every block.
 """
 import pytest
 
 from f2kboot import blocks
 
 
-BLOCKS = blocks("sync")
+BLOCKS = blocks("sync", gate=True)
 
 
 @pytest.mark.parametrize("captured", BLOCKS)

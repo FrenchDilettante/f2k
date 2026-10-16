@@ -94,6 +94,8 @@ pub fn new_event(
         None => return None,
     };
     let event = &mut process.events[index];
+    // A reused record's old name, if any, does not come back with it.
+    process.objects.forget_name(event.waitable());
     *event = crate::sched::event::Event::new(kind, signaled);
     // The record is at its final address inside the installed process.
     event.init();
@@ -200,6 +202,8 @@ pub fn spawn(start: u32, parameter: u32) -> Option<(*mut Thread, u32)> {
 /// user instruction; the stub's tail then carries the thread into its user code.
 unsafe extern "C" fn user_thread_startup(_start: u32, _parameter: u32) {
     crate::sched::idle::dispatcher().deliver_pending_apcs();
+    // The startup's test alert: user APCs queued before the thread ever ran run before its code.
+    crate::user::apc::deliver_at_startup();
 }
 
 /// The thread-exit path: the exit status in hand, end the calling thread — and its process, when

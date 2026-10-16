@@ -98,7 +98,7 @@ The fixtures:
   and abandonment, `WaitForMultipleObjects`, user APCs, critical
   sections, interlocked operations, handle duplication and closing,
   and `pingpong` kept as a section (plus a `SignalObjectAndWait`
-  variant). Built with `/MT`. Replaces `pingpong`.
+  variant). Built with `/MT`. Replaced the `pingpong` smoke (retired).
 - `sched` - sleeps and timed waits in bands, the clocks, waitable
   timers, round-robin, preemption, yielding, the wake boost,
   suspension, and the starvation boost; pinned to one CPU. Built with
@@ -168,10 +168,6 @@ import trace, and the disk-smoke checksum file) stay.
   window, paints "Hello, world!" once with `TextOut`, then closes
   itself and exits 0; the first test to import user32.dll and
   gdi32.dll.
-- `pingpong` - scheduler smoke: two threads alternate strictly for
-  five turns through two auto-reset events, so each blocking wait
-  must actually block; the final wait on the child's thread handle
-  captures the thread-exit signaling contract.
 - `sleep` - scheduler smoke: `Sleep(200)` measured in tick counts
   with `GetTickCount`, a pure-yield `Sleep(0)`, and a timed wait on
   a never-signaled event reporting timeout - the timer machinery
@@ -206,10 +202,7 @@ volume by path before loading it. The suite attaches that disk to
 every case, kernel-path cases included. The default kernel runs
 `exit0`, the `run-ret0` feature selects `ret0`, and the `run-hello`
 feature selects `hello` (whose WriteFile output appears on COM1 as
-the program's own). The `run-pingpong` feature (the blocking-wait
-smoke) selects `pingpong` with the thread-ified boot: the main thread
-enters ring 3 through the scheduler's first switch, and its thread
-and wait calls run against the landed scheduler machinery. The
+the program's own). The
 `run-process-suite` feature (the multi-process case) runs the
 sequence `exit0`, `ret0`, `bare`, `bare`, `bare null-write`, `exit0`
 in one boot (`bare` from `\CORPUS`): the second `bare` catches frames
@@ -227,8 +220,24 @@ Each boot prints the observed process exit code on COM1, which the
 suite cases assert. Host unit tests still read the checked-in `.exe`
 files directly (`include_bytes!`, test builds only).
 
-The scheduler smoke tests (`pingpong`, `sleep`, `spin`)
+The scheduler smoke tests (`sleep`, `spin`)
 joined the corpus one per scheduler stage, in dependency order, as
 the scheduler grew; each asserts the real-machine captured output of
 its stage, and each retires once the sectioned fixture covering it
-passes (`thread`, `respawn` and `suspend` went with `threads`).
+passes (`thread`, `respawn` and `suspend` went with `threads`,
+`pingpong` with `sync`).
+
+Known issue, the `sleep` smoke's tick spans: its capture reads
+`sleep 200ms spanned 200 ticks` and `timed wait: timeout after 100
+ticks`, but those values depend on the tick phase the wait starts
+at. The waits last exactly 20 and 10 clock ticks, yet GetTickCount
+rounds the 10.0144 ms tick down to whole milliseconds, so the same
+wait reads one millisecond longer at some phases (201, 101) - on
+Windows 2000 as on F2K. The capture is one phase's sample, and any
+change in boot timing (a different disk layout, faster code) can
+move F2K to the other reading. The `sleep-smoke` cases in
+`scripts/qemu-tests.yaml` therefore match those two lines with `re:`
+patterns admitting exactly that one-millisecond step; an `expects`
+entry written `re:<pattern>` is a regular expression rather than a
+substring (`f2kboot.matches`). The `sched` fixture that will retire
+`sleep` measures spans in bands instead, so it has no such issue.

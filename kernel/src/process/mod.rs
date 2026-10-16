@@ -26,6 +26,9 @@ pub mod exit;
 #[cfg(all(target_arch = "x86", feature = "run-process-suite"))]
 pub mod runner;
 
+/// The synchronization-object records beyond events: semaphores, mutexes, user APCs, names.
+pub mod objects;
+
 /// The smoke-subset thread surface: child-thread creation, the object pools, the thread-exit path.
 #[cfg(target_arch = "x86")]
 pub mod threads;
@@ -72,6 +75,8 @@ pub struct Process {
     events: [crate::sched::event::Event; EVENTS],
     /// How many event records have ever been handed out (the pool's high-water mark).
     events_used: usize,
+    /// The semaphores, mutexes, user-APC records and object names, and the process's waitable.
+    objects: objects::SyncObjects,
     /// Why the process ended, recorded by its last thread's exit; the idle thread's reap step
     /// tears down a process once this is set.
     end: Option<exit::ProcessEnd>,
@@ -202,6 +207,17 @@ impl Process {
     /// The handle table (the object services are served from here).
     pub fn handles_mut(&mut self) -> &mut crate::sched::object::HandleTable {
         &mut self.handles
+    }
+
+    /// The handle table and the synchronization-object records, together (a create consults the
+    /// table while it takes a record).
+    pub fn objects_mut(
+        &mut self,
+    ) -> (
+        &mut crate::sched::object::HandleTable,
+        &mut objects::SyncObjects,
+    ) {
+        (&mut self.handles, &mut self.objects)
     }
 
     /// Open `file` (a file, not a directory) at its start and return its new handle; null when the
@@ -455,6 +471,7 @@ fn install(dir_phys: u32, name: &'static str) {
             ));
         }
         addr_of_mut!((*process).events_used).write(0);
+        objects::SyncObjects::write_empty(addr_of_mut!((*process).objects));
         addr_of_mut!((*process).end).write(None);
         addr_of_mut!((*process).handed_end).write(None);
         INSTALLED = true;
@@ -705,6 +722,7 @@ mod tests {
             child_threads: [const { crate::sched::thread::Thread::empty() }; CHILD_THREADS],
             events: fresh_events(),
             events_used: 0,
+            objects: objects::SyncObjects::empty(),
             end: None,
             handed_end: None,
         };
@@ -740,6 +758,7 @@ mod tests {
             child_threads: [const { crate::sched::thread::Thread::empty() }; CHILD_THREADS],
             events: fresh_events(),
             events_used: 0,
+            objects: objects::SyncObjects::empty(),
             end: None,
             handed_end: None,
         }
@@ -1016,6 +1035,7 @@ mod tests {
             child_threads: [const { crate::sched::thread::Thread::empty() }; CHILD_THREADS],
             events: fresh_events(),
             events_used: 0,
+            objects: objects::SyncObjects::empty(),
             end: None,
             handed_end: None,
         }));

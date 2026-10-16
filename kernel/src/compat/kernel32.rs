@@ -710,38 +710,21 @@ fn priority_class(value: u32) -> Option<(u32, i8)> {
         .find(|&(flag, _)| value & flag != 0)
 }
 
-/// CreateEventA: a fresh event from the pool, inserted into the table. The flavor comes from
-/// bManualReset, the initial state from bInitialState; the subset ignores the attributes and
-/// refuses a name.
+/// CreateEventA: a fresh event from the pool — its flavor from bManualReset, its initial state from
+/// bInitialState — or the named one already bound (see [`create_object`]). The attributes are
+/// ignored.
 fn svc_create_event_a(frame: &mut crate::user::TrapFrame, args: &[u32]) {
     #[cfg(target_arch = "x86")]
     {
         let (_attributes, manual_reset, initial_state, name) = (args[0], args[1], args[2], args[3]);
-        use crate::compat::error::{ERROR_NOT_ENOUGH_MEMORY, ERROR_NOT_SUPPORTED};
-        if name != 0 {
-            // The subset has no named objects yet.
-            crate::user::teb::set_last_error(ERROR_NOT_SUPPORTED);
-            frame.eax = 0;
-            return;
-        }
-        // A full table refuses before an event record is taken: the records are never given back.
-        if crate::process::current_mut().handles_mut().is_full() {
-            crate::user::teb::set_last_error(ERROR_NOT_ENOUGH_MEMORY);
-            frame.eax = 0;
-            return;
-        }
         let kind = if manual_reset != 0 {
             crate::sched::event::EventKind::Notification
         } else {
             crate::sched::event::EventKind::Synchronization
         };
-        let Some(event) = crate::process::threads::new_event(kind, initial_state != 0) else {
-            crate::user::teb::set_last_error(ERROR_NOT_ENOUGH_MEMORY);
-            frame.eax = 0;
-            return;
-        };
-        let slot = crate::sched::object::Slot::Event(event.waitable());
-        frame.eax = crate::process::current_mut().handles_mut().insert(slot);
+        frame.eax = create_object(name, crate::sched::object::Slot::Event, || {
+            crate::process::threads::new_event(kind, initial_state != 0).map(|event| event.waitable())
+        });
     }
     #[cfg(not(target_arch = "x86"))]
     {
@@ -790,28 +773,264 @@ fn svc_set_event(frame: &mut crate::user::TrapFrame, args: &[u32]) {
     }
 }
 
-/// WaitForSingleObject: wait on the object the handle names, the documented timeout conversion, the
-/// status returned raw (the identity the Win32 ABI documents: 0 is WAIT_OBJECT_0, the timeout
-/// status is WAIT_TIMEOUT). A blocking wait parks the calling thread and switches the processor
-/// away; the wake's status lands in the return.
+/// The waitable a handle names for the wait services: a table object's header, or the thread and
+/// process pseudo-handles' own objects. ERROR_INVALID_HANDLE otherwise (a file, a console handle,
+/// nothing).
+#[cfg(target_arch = "x86")]
+fn waitable_of(handle: u32) -> Result<*mut crate::sched::wait::Waitable, u32> {
+    match handle {
+        // SAFETY: the running thread's record, live while it runs a service.
+        CURRENT_THREAD => Ok(unsafe { (*crate::sched::idle::dispatcher().current_thread()).waitable() }),
+        CURRENT_PROCESS => Ok(crate::process::current_mut().objects_mut().1.process_waitable()),
+        _ => object_slot(handle)
+            .and_then(|slot| slot.waitable())
+            .ok_or(crate::compat::error::ERROR_INVALID_HANDLE),
+    }
+}
+
+/// The semaphore a handle names, or ERROR_INVALID_HANDLE (as [`thread_of`]).
+#[cfg(target_arch = "x86")]
+fn semaphore_of(handle: u32) -> Result<&'static mut crate::sched::semaphore::Semaphore, u32> {
+    match object_slot(handle) {
+        // SAFETY: the semaphore's waitable header leads its record, which lives in the process.
+        Some(crate::sched::object::Slot::Semaphore(waitable)) => {
+            Ok(unsafe { &mut *(waitable as *mut crate::sched::semaphore::Semaphore) })
+        }
+        _ => Err(crate::compat::error::ERROR_INVALID_HANDLE),
+    }
+}
+
+/// The mutex a handle names, or ERROR_INVALID_HANDLE (as [`thread_of`]).
+#[cfg(target_arch = "x86")]
+fn mutex_of(handle: u32) -> Result<&'static mut crate::sched::mutex::Mutex, u32> {
+    match object_slot(handle) {
+        // SAFETY: the mutex's waitable header leads its record, which lives in the process.
+        Some(crate::sched::object::Slot::Mutex(waitable)) => {
+            Ok(unsafe { &mut *crate::sched::mutex::Mutex::from_waitable(waitable) })
+        }
+        _ => Err(crate::compat::error::ERROR_INVALID_HANDLE),
+    }
+}
+
+/// An object-name argument into `out`: none for a null pointer (or an empty name, which names
+/// nothing), else its length. ERROR_FILENAME_EXCED_RANGE past MAX_PATH, ERROR_NOACCESS for a bad
+/// pointer.
+fn object_name(pointer: u32, out: &mut [u8; MAX_PATH]) -> Result<Option<usize>, u32> {
+    use crate::compat::error::{ERROR_FILENAME_EXCED_RANGE, ERROR_NOACCESS};
+    if pointer == 0 {
+        return Ok(None);
+    }
+    let length = walk_narrow(pointer).ok_or(ERROR_NOACCESS)? as usize - 1;
+    if length == 0 {
+        return Ok(None);
+    }
+    if length > MAX_PATH {
+        return Err(ERROR_FILENAME_EXCED_RANGE);
+    }
+    read_user(pointer, &mut out[..length]).map_err(|_| ERROR_NOACCESS)?;
+    Ok(Some(length))
+}
+
+/// Whether two slots name the same kind of object.
+fn same_kind(a: crate::sched::object::Slot, b: crate::sched::object::Slot) -> bool {
+    core::mem::discriminant(&a) == core::mem::discriminant(&b)
+}
+
+/// The create every named object kind shares (CreateEventA, CreateSemaphoreA, CreateMutexA): a
+/// name that binds a live object of the same kind opens it — a new handle, ERROR_ALREADY_EXISTS,
+/// the creation's other arguments ignored; one binding another kind fails with
+/// ERROR_INVALID_HANDLE. Otherwise `make` creates the object, its handle is inserted and the name
+/// bound, and the last error is cleared: Windows clears it on every successful create. Returns the
+/// handle, null on failure.
+#[cfg(target_arch = "x86")]
+fn create_object(
+    name: u32,
+    kind: fn(*mut crate::sched::wait::Waitable) -> crate::sched::object::Slot,
+    make: impl FnOnce() -> Option<*mut crate::sched::wait::Waitable>,
+) -> u32 {
+    use crate::compat::error::{ERROR_ALREADY_EXISTS, ERROR_INVALID_HANDLE, ERROR_NOT_ENOUGH_MEMORY};
+    use crate::user::teb::set_last_error;
+    let mut bytes = [0u8; MAX_PATH];
+    let name = match object_name(name, &mut bytes) {
+        Ok(length) => length.map(|length| &bytes[..length]),
+        Err(error) => {
+            set_last_error(error);
+            return 0;
+        }
+    };
+    {
+        let (handles, objects) = crate::process::current_mut().objects_mut();
+        // A full table refuses before a record is taken.
+        if handles.is_full() {
+            set_last_error(ERROR_NOT_ENOUGH_MEMORY);
+            return 0;
+        }
+        if let Some(existing) = name.and_then(|name| objects.lookup(handles, name)) {
+            if !same_kind(existing, kind(core::ptr::null_mut())) {
+                set_last_error(ERROR_INVALID_HANDLE);
+                return 0;
+            }
+            let handle = handles.insert(existing);
+            set_last_error(ERROR_ALREADY_EXISTS);
+            return handle;
+        }
+    }
+    let Some(waitable) = make() else {
+        set_last_error(ERROR_NOT_ENOUGH_MEMORY);
+        return 0;
+    };
+    let (handles, objects) = crate::process::current_mut().objects_mut();
+    let slot = kind(waitable);
+    let handle = handles.insert(slot);
+    if let Some(name) = name {
+        if objects.bind(handles, name, slot).is_err() {
+            // The record is dead again (no handle names it) and goes back to its pool.
+            handles.close(handle);
+            set_last_error(ERROR_NOT_ENOUGH_MEMORY);
+            return 0;
+        }
+    }
+    set_last_error(0);
+    handle
+}
+
+/// The open every named object kind shares (OpenEventA, OpenSemaphoreA, OpenMutexA): a new handle
+/// to the live object the name binds. ERROR_FILE_NOT_FOUND when it binds none, ERROR_INVALID_HANDLE
+/// when it binds another kind; the access and inheritance arguments are not modeled. The last
+/// error is left alone on success.
+#[cfg(target_arch = "x86")]
+fn open_object(name: u32, kind: fn(*mut crate::sched::wait::Waitable) -> crate::sched::object::Slot) -> u32 {
+    use crate::compat::error::{
+        ERROR_FILE_NOT_FOUND, ERROR_INVALID_HANDLE, ERROR_INVALID_PARAMETER, ERROR_NOT_ENOUGH_MEMORY,
+    };
+    use crate::user::teb::set_last_error;
+    let mut bytes = [0u8; MAX_PATH];
+    let name = match object_name(name, &mut bytes) {
+        Ok(Some(length)) => &bytes[..length],
+        Ok(None) => {
+            set_last_error(ERROR_INVALID_PARAMETER);
+            return 0;
+        }
+        Err(error) => {
+            set_last_error(error);
+            return 0;
+        }
+    };
+    let (handles, objects) = crate::process::current_mut().objects_mut();
+    let Some(existing) = objects.lookup(handles, name) else {
+        set_last_error(ERROR_FILE_NOT_FOUND);
+        return 0;
+    };
+    if !same_kind(existing, kind(core::ptr::null_mut())) {
+        set_last_error(ERROR_INVALID_HANDLE);
+        return 0;
+    }
+    let handle = handles.insert(existing);
+    if handle == 0 {
+        set_last_error(ERROR_NOT_ENOUGH_MEMORY);
+    }
+    handle
+}
+
+/// The priority increment a semaphore release grants the waiters it wakes.
+const SEMAPHORE_WAKE_INCREMENT: i8 = 1;
+
+/// The single-object wait the wait services share: the documented timeout conversion, the status
+/// returned raw — WAIT_OBJECT_0, WAIT_ABANDONED, WAIT_TIMEOUT, WAIT_IO_COMPLETION. A blocking wait
+/// parks the calling thread and switches the processor away; a kernel APC breaks it and the
+/// shared entry replays it after the delivery, the deadline preserved.
+#[cfg(target_arch = "x86")]
+fn wait_for(waitable: *mut crate::sched::wait::Waitable, milliseconds: u32, alertable: bool) -> u32 {
+    let timeout = format_timeout(milliseconds);
+    crate::sched::wait::wait_current_with(|dispatcher, thread, stamp, replay| {
+        let timeout = crate::sched::wait::replay_timeout(thread, replay, timeout, stamp.system_time);
+        dispatcher.wait_single(
+            thread,
+            waitable,
+            crate::sched::wait::WaitReason::UserRequest,
+            crate::sched::wait::WaitMode::User,
+            alertable,
+            timeout,
+            stamp,
+        )
+    }) as u32
+}
+
+/// The wait services' handle step: the waitable, or WAIT_FAILED with the error set.
+#[cfg(target_arch = "x86")]
+fn wait_service(frame: &mut crate::user::TrapFrame, handle: u32, milliseconds: u32, alertable: bool) {
+    match waitable_of(handle) {
+        Ok(waitable) => frame.eax = wait_for(waitable, milliseconds, alertable),
+        Err(error) => {
+            crate::user::teb::set_last_error(error);
+            frame.eax = WAIT_FAILED;
+        }
+    }
+}
+
+/// WaitForSingleObject: wait on the object the handle names (the thread and process
+/// pseudo-handles included), non-alertably.
 fn svc_wait_for_single_object(frame: &mut crate::user::TrapFrame, args: &[u32]) {
     #[cfg(target_arch = "x86")]
+    wait_service(frame, args[0], args[1], false);
+    #[cfg(not(target_arch = "x86"))]
     {
-        // A file handle names no waitable object on this surface: the wait fails like a bad handle.
-        let Some(waitable) = object_slot(args[0]).and_then(|slot| slot.waitable()) else {
-            crate::user::teb::set_last_error(crate::compat::error::ERROR_INVALID_HANDLE);
-            frame.eax = WAIT_FAILED;
-            return;
-        };
-        // The wait runs through the shared blocking entry: a kernel APC breaks the wait and the
-        // entry replays it after the delivery, the deadline preserved.
-        let timeout = format_timeout(args[1]);
+        let _ = args;
+        frame.eax = WAIT_FAILED;
+    }
+}
+
+/// WaitForSingleObjectEx: as WaitForSingleObject, alertably when asked — a user APC queued on the
+/// caller (or arriving while it waits) runs, and the wait returns WAIT_IO_COMPLETION.
+fn svc_wait_for_single_object_ex(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    #[cfg(target_arch = "x86")]
+    wait_service(frame, args[0], args[1], args[2] != 0);
+    #[cfg(not(target_arch = "x86"))]
+    {
+        let _ = args;
+        frame.eax = WAIT_FAILED;
+    }
+}
+
+/// WaitForMultipleObjects: wait on up to 64 objects at once — for any (the lowest signaled index,
+/// WAIT_OBJECT_0 + n or WAIT_ABANDONED_0 + n) or for all (WAIT_OBJECT_0, every object taken at
+/// once). ERROR_INVALID_PARAMETER for no objects, more than 64, or a wait-all naming an object
+/// twice; ERROR_INVALID_HANDLE for any handle naming no waitable object.
+fn svc_wait_for_multiple_objects(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    #[cfg(target_arch = "x86")]
+    {
+        use crate::compat::error::{ERROR_INVALID_PARAMETER, ERROR_NOACCESS};
+        use crate::sched::wait::MAXIMUM_WAIT_OBJECTS;
+        use crate::user::teb::set_last_error;
+        let (count, handles, wait_all, milliseconds) =
+            (args[0] as usize, args[1], args[2] != 0, args[3]);
+        frame.eax = WAIT_FAILED;
+        if count == 0 || count > MAXIMUM_WAIT_OBJECTS {
+            return set_last_error(ERROR_INVALID_PARAMETER);
+        }
+        let mut raw = [0u8; MAXIMUM_WAIT_OBJECTS * 4];
+        if read_user(handles, &mut raw[..count * 4]).is_err() {
+            return set_last_error(ERROR_NOACCESS);
+        }
+        let mut objects = [core::ptr::null_mut(); MAXIMUM_WAIT_OBJECTS];
+        for (object, handle) in objects.iter_mut().zip(raw.chunks_exact(4)).take(count) {
+            let handle = u32::from_le_bytes([handle[0], handle[1], handle[2], handle[3]]);
+            match waitable_of(handle) {
+                Ok(waitable) => *object = waitable,
+                Err(error) => return set_last_error(error),
+            }
+        }
+        let objects = &objects[..count];
+        if wait_all && (1..count).any(|index| objects[..index].contains(&objects[index])) {
+            return set_last_error(ERROR_INVALID_PARAMETER);
+        }
+        let timeout = format_timeout(milliseconds);
         let status = crate::sched::wait::wait_current_with(|dispatcher, thread, stamp, replay| {
-            let timeout =
-                crate::sched::wait::replay_timeout(thread, replay, timeout, stamp.system_time);
-            dispatcher.wait_single(
+            let timeout = crate::sched::wait::replay_timeout(thread, replay, timeout, stamp.system_time);
+            dispatcher.wait_multiple(
                 thread,
-                waitable,
+                objects,
+                wait_all,
                 crate::sched::wait::WaitReason::UserRequest,
                 crate::sched::wait::WaitMode::User,
                 false,
@@ -828,31 +1047,336 @@ fn svc_wait_for_single_object(frame: &mut crate::user::TrapFrame, args: &[u32]) 
     }
 }
 
-/// Sleep: park the calling thread for the requested milliseconds — the delay discipline on the
-/// caller's own timer, in the timer table. Zero is the pure yield (the immediate test); INFINITE
-/// parks for the longest interval the ABI names. The return is void; the delay's resume-side
-/// conversion makes a timed-out sleep a successful one, and 0 rides in `eax`.
+/// SignalObjectAndWait: signal one object — set an event, release a semaphore by one, or release a
+/// mutex — and wait on another, with nothing running in between (the gate runs with interrupts
+/// masked, and the woken thread runs only once the caller parks). The signal's own refusals fail
+/// the call before any wait: ERROR_TOO_MANY_POSTS, ERROR_NOT_OWNER, or ERROR_INVALID_HANDLE for an
+/// object that cannot be signaled.
+fn svc_signal_object_and_wait(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    #[cfg(target_arch = "x86")]
+    {
+        use crate::compat::error::{ERROR_INVALID_HANDLE, ERROR_NOT_OWNER, ERROR_TOO_MANY_POSTS};
+        use crate::sched::object::Slot;
+        use crate::user::teb::set_last_error;
+        let (signal, wait, milliseconds, alertable) = (args[0], args[1], args[2], args[3] != 0);
+        frame.eax = WAIT_FAILED;
+        let waitable = match waitable_of(wait) {
+            Ok(waitable) => waitable,
+            Err(error) => return set_last_error(error),
+        };
+        let dispatcher = crate::sched::idle::dispatcher();
+        let signaled = match object_slot(signal) {
+            Some(Slot::Event(_)) => {
+                if let Ok(event) = event_of(signal) {
+                    event.set(dispatcher, crate::sched::event::EVENT_WAKE_INCREMENT);
+                }
+                Ok(())
+            }
+            Some(Slot::Semaphore(_)) => semaphore_of(signal).and_then(|semaphore| {
+                dispatcher
+                    .release_semaphore(semaphore, 1, SEMAPHORE_WAKE_INCREMENT)
+                    .map(drop)
+                    .map_err(|_| ERROR_TOO_MANY_POSTS)
+            }),
+            Some(Slot::Mutex(_)) => mutex_of(signal).and_then(|mutex| {
+                dispatcher
+                    .release_mutex(mutex, dispatcher.current_thread())
+                    .map(drop)
+                    .map_err(|_| ERROR_NOT_OWNER)
+            }),
+            _ => Err(ERROR_INVALID_HANDLE),
+        };
+        if let Err(error) = signaled {
+            return set_last_error(error);
+        }
+        frame.eax = wait_for(waitable, milliseconds, alertable);
+    }
+    #[cfg(not(target_arch = "x86"))]
+    {
+        let _ = args;
+        frame.eax = WAIT_FAILED;
+    }
+}
+
+/// CreateSemaphoreA: a fresh semaphore at the initial count with the given maximum, or the named
+/// one already bound (see [`create_object`]). ERROR_INVALID_PARAMETER unless 0 <= initial <=
+/// maximum and the maximum is positive.
+fn svc_create_semaphore_a(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    #[cfg(target_arch = "x86")]
+    {
+        let (_attributes, initial, maximum, name) = (args[0], args[1] as i32, args[2] as i32, args[3]);
+        if maximum <= 0 || initial < 0 || initial > maximum {
+            crate::user::teb::set_last_error(crate::compat::error::ERROR_INVALID_PARAMETER);
+            frame.eax = 0;
+            return;
+        }
+        frame.eax = create_object(name, crate::sched::object::Slot::Semaphore, || {
+            let (handles, objects) = crate::process::current_mut().objects_mut();
+            objects
+                .new_semaphore(handles, initial, maximum)
+                .map(|semaphore| semaphore.waitable())
+        });
+    }
+    #[cfg(not(target_arch = "x86"))]
+    {
+        let _ = args;
+        frame.eax = 0;
+    }
+}
+
+/// OpenSemaphoreA: a new handle to the named semaphore (see [`open_object`]).
+fn svc_open_semaphore_a(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    #[cfg(target_arch = "x86")]
+    {
+        frame.eax = open_object(args[2], crate::sched::object::Slot::Semaphore);
+    }
+    #[cfg(not(target_arch = "x86"))]
+    {
+        let _ = args;
+        frame.eax = 0;
+    }
+}
+
+/// ReleaseSemaphore: add the count to the semaphore, waking as many waiters as it covers, and
+/// report the previous count when asked. ERROR_INVALID_PARAMETER for a count that is not positive,
+/// ERROR_TOO_MANY_POSTS past the maximum (the count unchanged, the previous count not written).
+fn svc_release_semaphore(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    #[cfg(target_arch = "x86")]
+    {
+        use crate::compat::error::{ERROR_INVALID_PARAMETER, ERROR_NOACCESS, ERROR_TOO_MANY_POSTS};
+        use crate::user::teb::set_last_error;
+        let (handle, count, previous_out) = (args[0], args[1] as i32, args[2]);
+        frame.eax = 0;
+        if previous_out != 0 && crate::user::syscall::probe_user_range(previous_out, 4).is_err() {
+            return set_last_error(ERROR_NOACCESS);
+        }
+        if count <= 0 {
+            return set_last_error(ERROR_INVALID_PARAMETER);
+        }
+        let semaphore = match semaphore_of(handle) {
+            Ok(semaphore) => semaphore,
+            Err(error) => return set_last_error(error),
+        };
+        match crate::sched::idle::dispatcher().release_semaphore(semaphore, count, SEMAPHORE_WAKE_INCREMENT) {
+            Ok(previous) => {
+                if previous_out != 0 && write_user(previous_out, &previous.to_le_bytes()).is_err() {
+                    return set_last_error(ERROR_NOACCESS);
+                }
+                frame.eax = 1;
+            }
+            Err(_) => set_last_error(ERROR_TOO_MANY_POSTS),
+        }
+    }
+    #[cfg(not(target_arch = "x86"))]
+    {
+        let _ = args;
+        frame.eax = 0;
+    }
+}
+
+/// CreateMutexA: a fresh mutex, owned by the caller when asked, or the named one already bound —
+/// whose ownership the call then leaves alone (see [`create_object`]).
+fn svc_create_mutex_a(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    #[cfg(target_arch = "x86")]
+    {
+        let (_attributes, initial_owner, name) = (args[0], args[1] != 0, args[2]);
+        frame.eax = create_object(name, crate::sched::object::Slot::Mutex, || {
+            let (handles, objects) = crate::process::current_mut().objects_mut();
+            let mutex = objects.new_mutex(handles)?;
+            if initial_owner {
+                // SAFETY: the running thread's record, live while it runs a service.
+                let thread = unsafe { &mut *crate::sched::idle::dispatcher().current_thread() };
+                crate::sched::mutex::acquire(mutex, thread);
+            }
+            Some(mutex.waitable())
+        });
+    }
+    #[cfg(not(target_arch = "x86"))]
+    {
+        let _ = args;
+        frame.eax = 0;
+    }
+}
+
+/// OpenMutexA: a new handle to the named mutex (see [`open_object`]).
+fn svc_open_mutex_a(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    #[cfg(target_arch = "x86")]
+    {
+        frame.eax = open_object(args[2], crate::sched::object::Slot::Mutex);
+    }
+    #[cfg(not(target_arch = "x86"))]
+    {
+        let _ = args;
+        frame.eax = 0;
+    }
+}
+
+/// ReleaseMutex: give up one unit of the caller's ownership; the last frees the mutex for its
+/// oldest waiter. ERROR_NOT_OWNER unless the caller owns it.
+fn svc_release_mutex(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    #[cfg(target_arch = "x86")]
+    {
+        use crate::user::teb::set_last_error;
+        frame.eax = 0;
+        let mutex = match mutex_of(args[0]) {
+            Ok(mutex) => mutex,
+            Err(error) => return set_last_error(error),
+        };
+        let dispatcher = crate::sched::idle::dispatcher();
+        match dispatcher.release_mutex(mutex, dispatcher.current_thread()) {
+            Ok(_) => frame.eax = 1,
+            Err(_) => set_last_error(crate::compat::error::ERROR_NOT_OWNER),
+        }
+    }
+    #[cfg(not(target_arch = "x86"))]
+    {
+        let _ = args;
+        frame.eax = 0;
+    }
+}
+
+/// OpenEventA: a new handle to the named event (see [`open_object`]).
+fn svc_open_event_a(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    #[cfg(target_arch = "x86")]
+    {
+        frame.eax = open_object(args[2], crate::sched::object::Slot::Event);
+    }
+    #[cfg(not(target_arch = "x86"))]
+    {
+        let _ = args;
+        frame.eax = 0;
+    }
+}
+
+/// ResetEvent: clear the event; a waiter parked on it stays parked.
+fn svc_reset_event(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    #[cfg(target_arch = "x86")]
+    {
+        match event_of(args[0]) {
+            Ok(event) => {
+                event.reset();
+                frame.eax = 1;
+            }
+            Err(error) => {
+                crate::user::teb::set_last_error(error);
+                frame.eax = 0;
+            }
+        }
+    }
+    #[cfg(not(target_arch = "x86"))]
+    {
+        let _ = args;
+        frame.eax = 0;
+    }
+}
+
+/// PulseEvent: signal the event for the waiters present — all of them for a manual-reset event,
+/// one for an auto-reset — and leave it cleared either way; with nobody waiting, nothing happens
+/// but the clear.
+fn svc_pulse_event(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    #[cfg(target_arch = "x86")]
+    {
+        match event_of(args[0]) {
+            Ok(event) => {
+                event.set(
+                    crate::sched::idle::dispatcher(),
+                    crate::sched::event::EVENT_WAKE_INCREMENT,
+                );
+                event.reset();
+                frame.eax = 1;
+            }
+            Err(error) => {
+                crate::user::teb::set_last_error(error);
+                frame.eax = 0;
+            }
+        }
+    }
+    #[cfg(not(target_arch = "x86"))]
+    {
+        let _ = args;
+        frame.eax = 0;
+    }
+}
+
+/// QueueUserAPC: queue the routine and its parameter on the thread's user-APC queue; it runs when
+/// that thread next waits alertably (or before its first instruction, if it never ran). A thread
+/// that is waiting alertably now is woken for it. Fails — returning zero and, as on Windows 2000,
+/// leaving the last error alone — for a handle naming no thread, a thread that has ended, or no
+/// free APC record.
+fn svc_queue_user_apc(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    #[cfg(target_arch = "x86")]
+    {
+        let (routine, thread, parameter) = (args[0], args[1], args[2]);
+        frame.eax = 0;
+        let Ok(target) = thread_of(thread) else {
+            return;
+        };
+        let Some(apc) = crate::process::current_mut().objects_mut().1.free_apc() else {
+            return;
+        };
+        apc.init(
+            target,
+            crate::sched::apc::nop_kernel_routine,
+            Some(crate::user::apc::user_normal_routine),
+            crate::sched::apc::ApcMode::User,
+            parameter as usize,
+        );
+        if crate::sched::idle::dispatcher().queue_apc(apc, routine as usize, 0, 0) {
+            frame.eax = 1;
+        }
+    }
+    #[cfg(not(target_arch = "x86"))]
+    {
+        let _ = args;
+        frame.eax = 0;
+    }
+}
+
+/// The delay the sleep services share: park the calling thread for the requested milliseconds — the
+/// delay discipline on the caller's own timer, in the timer table. Zero is the pure yield (the
+/// immediate test); INFINITE parks for the longest interval the ABI names. A kernel APC breaks the
+/// sleep and the shared entry replays it with the remaining time — the wake time never slips. The
+/// delay's resume-side conversion makes a timed-out sleep a successful one (0); an alertable sleep
+/// a user APC ended returns WAIT_IO_COMPLETION.
+#[cfg(target_arch = "x86")]
+fn delay_for(milliseconds: u32, alertable: bool) -> u32 {
+    let interval = sleep_interval(milliseconds);
+    let status = crate::sched::wait::wait_current_with(|dispatcher, thread, stamp, replay| {
+        let interval = if replay {
+            crate::sched::wait::replay_interval(thread.timer.due_time, stamp.system_time)
+        } else {
+            interval
+        };
+        dispatcher.delay(
+            thread,
+            crate::sched::wait::WaitMode::User,
+            alertable,
+            interval,
+            stamp,
+        )
+    });
+    crate::sched::dispatcher::Dispatcher::delay_completed(status) as u32
+}
+
+/// Sleep: the non-alertable delay. The return is void; 0 rides in `eax`.
 fn svc_sleep(frame: &mut crate::user::TrapFrame, args: &[u32]) {
     #[cfg(target_arch = "x86")]
     {
-        let interval = sleep_interval(args[0]);
-        // The delay runs through the shared blocking entry: a kernel APC breaks the sleep and the
-        // entry replays it with the remaining time — the wake time never slips.
-        let status = crate::sched::wait::wait_current_with(|dispatcher, thread, stamp, replay| {
-            let interval = if replay {
-                crate::sched::wait::replay_interval(thread.timer.due_time, stamp.system_time)
-            } else {
-                interval
-            };
-            dispatcher.delay(
-                thread,
-                crate::sched::wait::WaitMode::User,
-                false,
-                interval,
-                stamp,
-            )
-        });
-        frame.eax = crate::sched::dispatcher::Dispatcher::delay_completed(status) as u32;
+        frame.eax = delay_for(args[0], false);
+    }
+    #[cfg(not(target_arch = "x86"))]
+    {
+        let _ = args;
+        frame.eax = 0;
+    }
+}
+
+/// SleepEx: the delay, alertably when asked — queued user APCs run and the sleep returns
+/// WAIT_IO_COMPLETION; otherwise 0 once the time has passed.
+fn svc_sleep_ex(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    #[cfg(target_arch = "x86")]
+    {
+        frame.eax = delay_for(args[0], args[1] != 0);
     }
     #[cfg(not(target_arch = "x86"))]
     {
@@ -923,8 +1447,14 @@ fn svc_create_thread(frame: &mut crate::user::TrapFrame, args: &[u32]) {
             let suspended = dispatcher.suspend_thread(unsafe { &mut *thread });
             assert_eq!(suspended, Ok(0), "a fresh thread suspends");
         }
+        // A clock tick that fell inside the create (the gate masks interrupts, and a create maps and
+        // zeroes several pages) is taken before the new thread is schedulable — on Windows the tick
+        // lands while the creator is still inside the create — so a quantum it ends passes the
+        // processor on without the new thread jumping ahead of its creator.
+        crate::interrupt::irql::state_mut().interrupt_window();
         // The handle exists; the thread becomes schedulable now.
         // SAFETY: the created thread, live and exclusive here.
+        let dispatcher = crate::sched::idle::dispatcher();
         dispatcher.make_ready(unsafe { &mut *thread });
         frame.eax = handle;
     }
@@ -1487,62 +2017,66 @@ fn svc_init_critical_section(frame: &mut crate::user::TrapFrame, args: &[u32]) {
     frame.eax = 0;
 }
 
-/// EnterCriticalSection: acquire or re-enter the section; under contention, wait on its semaphore
-/// (an auto-reset event created on the first contention) until a leave hands it on.
-fn svc_enter_critical_section(frame: &mut crate::user::TrapFrame, args: &[u32]) {
-    frame.eax = 0;
-    #[cfg(target_arch = "x86")]
-    {
-        use crate::compat::critsec::Enter;
-        let (pointer, thread) = (args[0], current_thread_id());
-        loop {
-            let Some(mut section) = read_section(pointer) else {
-                return;
-            };
-            if section.enter(thread) == Enter::Acquired {
-                return write_section(pointer, &section);
-            }
-            if section.lock_semaphore == 0 {
-                section.lock_semaphore = new_section_semaphore();
-            }
-            write_section(pointer, &section);
-            let Ok(event) = event_of(section.lock_semaphore) else {
-                // No semaphore could be made (or the program closed it): the waiter polls instead,
-                // its entry withdrawn, a millisecond between tries.
-                section.withdraw();
-                write_section(pointer, &section);
-                crate::sched::wait::wait_current_with(|dispatcher, thread, stamp, _replay| {
-                    dispatcher.delay(
-                        thread,
-                        crate::sched::wait::WaitMode::User,
-                        false,
-                        10_000,
-                        stamp,
-                    )
-                });
-                continue;
-            };
-            let waitable = event.waitable();
-            crate::sched::wait::wait_current_with(|dispatcher, thread, stamp, _replay| {
-                dispatcher.wait_single(
-                    thread,
-                    waitable,
-                    crate::sched::wait::WaitReason::UserRequest,
-                    crate::sched::wait::WaitMode::User,
-                    false,
-                    None,
-                    stamp,
-                )
-            });
-            let Some(mut section) = read_section(pointer) else {
-                return;
-            };
-            section.withdraw();
-            write_section(pointer, &section);
-        }
+/// The status a contended critical section raises when no semaphore can be made for it: Windows 2000's
+/// EnterCriticalSection raises in low memory, and with no handler the process ends with it.
+const STATUS_NO_MEMORY: u32 = 0xC000_0017;
+
+/// A critical section's semaphore handle, created on first need (interrupts are off in the gate,
+/// so the check and the create are one step); the process ends if none can be made.
+#[cfg(target_arch = "x86")]
+fn section_semaphore(pointer: u32, section: &mut crate::compat::critsec::Section) -> &'static mut crate::sched::event::Event {
+    if section.lock_semaphore == 0 {
+        section.lock_semaphore = new_section_semaphore();
+        write_section(pointer, section);
     }
-    #[cfg(not(target_arch = "x86"))]
-    let _ = args;
+    match event_of(section.lock_semaphore) {
+        Ok(event) => event,
+        Err(_) => crate::process::threads::fault_exit(crate::process::exit::Fault {
+            vector: 0,
+            status: STATUS_NO_MEMORY,
+            in_user_copy: false,
+        }),
+    }
+}
+
+/// The contended enter's kernel half (the internal critical-section wait service; EDX the section):
+/// the native enter counted the caller as a waiter, so it waits on the section's semaphore until a
+/// leave hands the section over, then takes it.
+#[cfg(target_arch = "x86")]
+pub fn critical_section_wait(pointer: u32) {
+    let Some(mut section) = read_section(pointer) else {
+        return;
+    };
+    let waitable = section_semaphore(pointer, &mut section).waitable();
+    crate::sched::wait::wait_current_with(|dispatcher, thread, stamp, _replay| {
+        dispatcher.wait_single(
+            thread,
+            waitable,
+            crate::sched::wait::WaitReason::UserRequest,
+            crate::sched::wait::WaitMode::User,
+            false,
+            None,
+            stamp,
+        )
+    });
+    if let Some(mut section) = read_section(pointer) {
+        section.take(current_thread_id());
+        write_section(pointer, &section);
+    }
+}
+
+/// The contended leave's kernel half (the internal critical-section wake service; EDX the section):
+/// the native leave found a waiter counted, so the section's semaphore is signaled — created first
+/// if the waiter has not got that far.
+#[cfg(target_arch = "x86")]
+pub fn critical_section_wake(pointer: u32) {
+    let Some(mut section) = read_section(pointer) else {
+        return;
+    };
+    section_semaphore(pointer, &mut section).set(
+        crate::sched::idle::dispatcher(),
+        crate::sched::event::EVENT_WAKE_INCREMENT,
+    );
 }
 
 /// A critical section's semaphore: a fresh auto-reset event's handle, or 0 when none can be made.
@@ -1557,44 +2091,6 @@ fn new_section_semaphore() -> u32 {
     };
     let slot = crate::sched::object::Slot::Event(event.waitable());
     crate::process::current_mut().handles_mut().insert(slot)
-}
-
-/// TryEnterCriticalSection: acquire or re-enter the section if no other thread owns it.
-fn svc_try_enter_critical_section(frame: &mut crate::user::TrapFrame, args: &[u32]) {
-    frame.eax = 0;
-    #[cfg(target_arch = "x86")]
-    {
-        let Some(mut section) = read_section(args[0]) else {
-            return;
-        };
-        if section.try_enter(current_thread_id()) {
-            write_section(args[0], &section);
-            frame.eax = 1;
-        }
-    }
-    #[cfg(not(target_arch = "x86"))]
-    let _ = args;
-}
-
-/// LeaveCriticalSection: drop one entry; the last wakes a waiter through the semaphore.
-fn svc_leave_critical_section(frame: &mut crate::user::TrapFrame, args: &[u32]) {
-    frame.eax = 0;
-    let Some(mut section) = read_section(args[0]) else {
-        return;
-    };
-    let signal = section.leave();
-    write_section(args[0], &section);
-    #[cfg(target_arch = "x86")]
-    if signal {
-        if let Ok(event) = event_of(section.lock_semaphore) {
-            event.set(
-                crate::sched::idle::dispatcher(),
-                crate::sched::event::EVENT_WAKE_INCREMENT,
-            );
-        }
-    }
-    #[cfg(not(target_arch = "x86"))]
-    let _ = signal;
 }
 
 /// DeleteCriticalSection: close the section's semaphore, if it ever got one.
@@ -1840,15 +2336,16 @@ fn svc_floor_zero(frame: &mut crate::user::TrapFrame, _args: &[u32]) {
 /// its position plus one; ExitProcess is pinned at service 1, the rest alphabetical). Quirk: a name
 /// absent from here and from [`NATIVES`] fails the loader's snap, so the two together are the union
 /// of the corpus fixtures' import surfaces.
-pub const SERVICES: [(&str, u32, ServiceFn); 66] = [
+pub const SERVICES: [(&str, u32, ServiceFn); 77] = [
     ("ExitProcess", 4, svc_exit_process),
     ("CloseHandle", 4, svc_close_handle),
     ("CreateEventA", 16, svc_create_event_a),
     ("CreateFileA", 28, svc_create_file_a),
+    ("CreateMutexA", 12, svc_create_mutex_a),
+    ("CreateSemaphoreA", 16, svc_create_semaphore_a),
     ("CreateThread", 24, svc_create_thread),
     ("DeleteCriticalSection", 4, svc_delete_critical_section),
     ("DuplicateHandle", 28, svc_duplicate_handle),
-    ("EnterCriticalSection", 4, svc_enter_critical_section),
     ("ExitThread", 4, svc_exit_thread),
     ("FlushFileBuffers", 4, svc_flush_file_buffers),
     ("FreeEnvironmentStringsA", 4, svc_free_environment_strings),
@@ -1880,10 +2377,17 @@ pub const SERVICES: [(&str, u32, ServiceFn); 66] = [
     ("InitializeCriticalSection", 4, svc_init_critical_section),
     ("LCMapStringA", 24, svc_floor_zero),
     ("LCMapStringW", 24, svc_lc_map_string_w),
-    ("LeaveCriticalSection", 4, svc_leave_critical_section),
     ("LoadLibraryA", 4, svc_floor_zero),
     ("MultiByteToWideChar", 24, svc_multi_byte_to_wide_char),
+    ("OpenEventA", 12, svc_open_event_a),
+    ("OpenMutexA", 12, svc_open_mutex_a),
+    ("OpenSemaphoreA", 12, svc_open_semaphore_a),
+    ("PulseEvent", 4, svc_pulse_event),
+    ("QueueUserAPC", 12, svc_queue_user_apc),
     ("ReadFile", 20, svc_read_file),
+    ("ReleaseMutex", 4, svc_release_mutex),
+    ("ReleaseSemaphore", 12, svc_release_semaphore),
+    ("ResetEvent", 4, svc_reset_event),
     ("ResumeThread", 4, svc_resume_thread),
     ("RtlUnwind", 16, svc_floor_zero),
     ("SetErrorMode", 4, svc_set_error_mode),
@@ -1894,17 +2398,20 @@ pub const SERVICES: [(&str, u32, ServiceFn); 66] = [
     ("SetStdHandle", 8, svc_floor_zero),
     ("SetThreadPriority", 8, svc_set_thread_priority),
     ("SetThreadPriorityBoost", 8, svc_set_thread_priority_boost),
+    ("SignalObjectAndWait", 16, svc_signal_object_and_wait),
     ("Sleep", 4, svc_sleep),
+    ("SleepEx", 8, svc_sleep_ex),
     ("SuspendThread", 4, svc_suspend_thread),
     ("TerminateProcess", 8, svc_floor_zero),
     ("TerminateThread", 8, svc_terminate_thread),
     ("TlsAlloc", 0, svc_tls_alloc),
     ("TlsFree", 4, svc_tls_free),
-    ("TryEnterCriticalSection", 4, svc_try_enter_critical_section),
     ("UnhandledExceptionFilter", 4, svc_floor_zero),
     ("VirtualAlloc", 16, svc_virtual_alloc),
     ("VirtualFree", 12, svc_virtual_free),
+    ("WaitForMultipleObjects", 16, svc_wait_for_multiple_objects),
     ("WaitForSingleObject", 8, svc_wait_for_single_object),
+    ("WaitForSingleObjectEx", 12, svc_wait_for_single_object_ex),
     ("WideCharToMultiByte", 32, svc_wide_char_to_multi_byte),
     ("WriteFile", 20, svc_write_file),
 ];
@@ -1923,7 +2430,7 @@ const NATIVE_STRIDE: u32 = 128;
 /// any processor, with no kernel transition). Each entry: the export, the argument block its `ret`
 /// pops (stdcall), and its hand-assembled body.
 #[rustfmt::skip]
-pub const NATIVES: [(&str, u32, &[u8]); 14] = [
+pub const NATIVES: [(&str, u32, &[u8]); 17] = [
     // mov eax, fs:[34h] (LastErrorValue); ret
     ("GetLastError", 0, &[0x64, 0xA1, 0x34, 0x00, 0x00, 0x00, 0xC3]),
     // mov eax, [esp+4]; mov fs:[34h], eax; ret 4
@@ -1980,6 +2487,40 @@ pub const NATIVES: [(&str, u32, &[u8]); 14] = [
     // expansion: cmp ecx, 1088; jae invalid
     // mov eax, fs:[0F94h]; mov [eax+ecx*4-100h], edx; mov eax, 1; ret 8
     // invalid: mov dword fs:[34h], 87; xor eax, eax; ret 8
+    // The critical sections' native bodies (see `critsec`): LockCount at +4, RecursionCount at +8,
+    // OwningThread at +0Ch, the owner the TEB's ClientId.UniqueThread at fs:[24h].
+    // mov ecx, [esp+4]; mov eax, fs:[24h]; lock inc dword [ecx+4]; jnz contended
+    // mov [ecx+0Ch], eax; mov dword [ecx+8], 1; ret 4
+    // contended: cmp [ecx+0Ch], eax; jne wait; inc dword [ecx+8]; ret 4
+    // wait: mov edx, ecx; mov eax, SYS_CRITSEC_WAIT; int 2Eh; ret 4
+    ("EnterCriticalSection", 4, &[
+        0x8B, 0x4C, 0x24, 0x04, 0x64, 0xA1, 0x24, 0x00, 0x00, 0x00, 0xF0, 0xFF, 0x41, 0x04, 0x75,
+        0x0D, 0x89, 0x41, 0x0C, 0xC7, 0x41, 0x08, 0x01, 0x00, 0x00, 0x00, 0xC2, 0x04, 0x00, 0x39,
+        0x41, 0x0C, 0x75, 0x06, 0xFF, 0x41, 0x08, 0xC2, 0x04, 0x00, 0x89, 0xCA, 0xB8, 0x02, 0x00,
+        0x00, 0x80, 0xCD, 0x2E, 0xC2, 0x04, 0x00,
+    ]),
+    // mov ecx, [esp+4]; dec dword [ecx+8]; jnz still_owned
+    // mov dword [ecx+0Ch], 0; lock dec dword [ecx+4]; jge wake; ret 4
+    // still_owned: lock dec dword [ecx+4]; ret 4
+    // wake: mov edx, ecx; mov eax, SYS_CRITSEC_WAKE; int 2Eh; ret 4
+    ("LeaveCriticalSection", 4, &[
+        0x8B, 0x4C, 0x24, 0x04, 0xFF, 0x49, 0x08, 0x75, 0x10, 0xC7, 0x41, 0x0C, 0x00, 0x00, 0x00,
+        0x00, 0xF0, 0xFF, 0x49, 0x04, 0x7D, 0x0A, 0xC2, 0x04, 0x00, 0xF0, 0xFF, 0x49, 0x04, 0xC2,
+        0x04, 0x00, 0x89, 0xCA, 0xB8, 0x03, 0x00, 0x00, 0x80, 0xCD, 0x2E, 0xC2, 0x04, 0x00,
+    ]),
+    // mov ecx, [esp+4]; mov edx, fs:[24h]; mov eax, -1; push ebx; xor ebx, ebx
+    // lock cmpxchg [ecx+4], ebx; pop ebx; jnz busy
+    // mov [ecx+0Ch], edx; mov dword [ecx+8], 1; mov eax, 1; ret 4
+    // busy: cmp [ecx+0Ch], edx; jne fail; lock inc dword [ecx+4]; inc dword [ecx+8]
+    // mov eax, 1; ret 4
+    // fail: xor eax, eax; ret 4
+    ("TryEnterCriticalSection", 4, &[
+        0x8B, 0x4C, 0x24, 0x04, 0x64, 0x8B, 0x15, 0x24, 0x00, 0x00, 0x00, 0xB8, 0xFF, 0xFF, 0xFF,
+        0xFF, 0x53, 0x31, 0xDB, 0xF0, 0x0F, 0xB1, 0x59, 0x04, 0x5B, 0x75, 0x12, 0x89, 0x51, 0x0C,
+        0xC7, 0x41, 0x08, 0x01, 0x00, 0x00, 0x00, 0xB8, 0x01, 0x00, 0x00, 0x00, 0xC2, 0x04, 0x00,
+        0x39, 0x51, 0x0C, 0x75, 0x0F, 0xF0, 0xFF, 0x41, 0x04, 0xFF, 0x41, 0x08, 0xB8, 0x01, 0x00,
+        0x00, 0x00, 0xC2, 0x04, 0x00, 0x31, 0xC0, 0xC2, 0x04, 0x00,
+    ]),
     ("TlsSetValue", 8, &[
         0x8B, 0x4C, 0x24, 0x04, 0x8B, 0x54, 0x24, 0x08, 0x83, 0xF9, 0x40, 0x73, 0x10, 0x64, 0x89,
         0x14, 0x8D, 0x10, 0x0E, 0x00, 0x00, 0xB8, 0x01, 0x00, 0x00, 0x00, 0xC2, 0x08, 0x00, 0x81,
@@ -2089,6 +2630,31 @@ pub fn thread_exit_trampoline() -> u32 {
     THUNK_PAGE + SERVICES.len() as u32 * STUB_STRIDE
 }
 
+/// The APC dispatcher stub: a delivered user APC's return lands here (see [`crate::user::apc`]).
+/// Above it on the stack: the routine, its parameter, two zero arguments, then the saved context.
+/// It keeps the context's address in EDI (preserved across the stdcall routine), calls the routine,
+/// and raises the continue service with the address in the argument register; it never returns.
+const APC_DISPATCHER_LEN: usize = 16;
+
+fn apc_dispatcher_bytes() -> [u8; APC_DISPATCHER_LEN] {
+    #[rustfmt::skip]
+    let mut stub = [
+        0x8D, 0x7C, 0x24, 0x10, // lea edi, [esp+10h] (the saved context)
+        0x58, // pop eax (the routine)
+        0xFF, 0xD0, // call eax (its parameter on top)
+        0x89, 0xFA, // mov edx, edi
+        0xB8, 0, 0, 0, 0, // mov eax, SYS_APC_CONTINUE
+        0xCD, crate::user::syscall::SYSCALL_VECTOR as u8, // int 0x2E
+    ];
+    stub[10..14].copy_from_slice(&crate::user::syscall::SYS_APC_CONTINUE.to_le_bytes());
+    stub
+}
+
+/// The APC dispatcher stub's user-space address: the slot after the thread-exit trampoline's.
+pub fn apc_dispatcher() -> u32 {
+    thread_exit_trampoline() + STUB_STRIDE
+}
+
 /// Map the thunk page: one zeroed frame, seeded and patched with the stubs, read-only user (the
 /// stubs execute; nothing writes). The thread-exit trampoline follows the service stubs. The native
 /// page follows, built the same way from [`NATIVES`].
@@ -2107,6 +2673,11 @@ pub fn init() {
         frame,
         (SERVICES.len() as u32 * STUB_STRIDE) as usize,
         &trampoline_bytes(crate::user::syscall::SYS_THREAD_EXIT),
+    );
+    crate::mem::paging::write_frame(
+        frame,
+        (apc_dispatcher() - THUNK_PAGE) as usize,
+        &apc_dispatcher_bytes(),
     );
     crate::mem::paging::map_user_page(THUNK_PAGE, frame, false);
 
@@ -2168,10 +2739,6 @@ mod tests {
         ("exit0", include_bytes!("../../../tests/exit0/exit0.exe")),
         ("ret0", RET0),
         ("hello", HELLO),
-        (
-            "pingpong",
-            include_bytes!("../../../tests/pingpong/pingpong.exe"),
-        ),
         ("sleep", SLEEP),
         ("spin", SPIN),
         ("fileio", FILEIO),
@@ -2180,17 +2747,17 @@ mod tests {
             "threads",
             include_bytes!("../../../tests/threads/threads.exe"),
         ),
+        ("sync", include_bytes!("../../../tests/sync/sync.exe")),
     ];
 
     /// The sectioned fixtures the surface does not serve in full yet (tests/README.md): the work
     /// list. A binary moves to [`CORPUS`] once every one of its imports resolves.
-    const UPCOMING: [(&str, &[u8]); 6] = [
+    const UPCOMING: [(&str, &[u8]); 5] = [
         (
             "runtime",
             include_bytes!("../../../tests/runtime/runtime.exe"),
         ),
         ("memory", include_bytes!("../../../tests/memory/memory.exe")),
-        ("sync", include_bytes!("../../../tests/sync/sync.exe")),
         ("sched", include_bytes!("../../../tests/sched/sched.exe")),
         ("files", include_bytes!("../../../tests/files/files.exe")),
         (
@@ -2661,6 +3228,44 @@ mod tests {
             THUNK_PAGE + SERVICES.len() as u32 * STUB_STRIDE
         );
         assert!((thread_exit_trampoline() as usize) + stub.len() <= (THUNK_PAGE + 4096) as usize);
+    }
+
+    /// The critical sections' native bodies raise the internal contention services: the enter's
+    /// wait, the leave's wake (each `mov eax, imm32; int 2Eh` before its final `ret 4`).
+    #[test]
+    fn the_critical_section_natives_raise_the_contention_services() {
+        let body = |name: &str| NATIVES.iter().find(|&&(n, ..)| n == name).unwrap().2;
+        let raises = |body: &[u8], service: u32| {
+            let mut tail = vec![0xB8];
+            tail.extend_from_slice(&service.to_le_bytes());
+            tail.extend_from_slice(&[0xCD, 0x2E, 0xC2, 0x04, 0x00]);
+            body.ends_with(&tail)
+        };
+        assert!(raises(body("EnterCriticalSection"), crate::user::syscall::SYS_CRITSEC_WAIT));
+        assert!(raises(body("LeaveCriticalSection"), crate::user::syscall::SYS_CRITSEC_WAKE));
+        assert!(!body("TryEnterCriticalSection").contains(&0xCD), "a try never enters the kernel");
+    }
+
+    /// The APC dispatcher stub: the context's address kept in EDI across the routine's call, then
+    /// the continue service with it in EDX; it sits after the trampoline, on the same page.
+    #[test]
+    fn the_apc_dispatcher_bytes() {
+        let stub = apc_dispatcher_bytes();
+        assert_eq!(
+            stub,
+            [
+                0x8D, 0x7C, 0x24, 0x10, // lea edi, [esp+10h]
+                0x58, // pop eax
+                0xFF, 0xD0, // call eax
+                0x89, 0xFA, // mov edx, edi
+                0xB8, 0x01, 0x00, 0x00, 0x80, // mov eax, SYS_APC_CONTINUE
+                0xCD, 0x2E, // int 0x2E
+            ]
+        );
+        assert!(apc_dispatcher() >= thread_exit_trampoline() + TRAMPOLINE_LEN as u32);
+        assert!((apc_dispatcher() as usize) + stub.len() <= (THUNK_PAGE + 4096) as usize);
+        // The image's call frame is four words: the stub's EDI lands on the context.
+        assert_eq!(crate::user::apc::CALL_WORDS * 4, 0x10);
     }
 
     /// The thunk page: user space, page-aligned, clear of everything else, and all 35 stubs fit.

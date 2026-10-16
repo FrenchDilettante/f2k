@@ -383,14 +383,10 @@ mod tests {
 
     /// The corpus the disk carries (see the Makefile's disk target), by fixture name: the legacy
     /// smokes, then the sectioned fixtures.
-    const CORPUS: [(&str, &[u8]); 15] = [
+    const CORPUS: [(&str, &[u8]); 14] = [
         ("hello", include_bytes!("../../../tests/hello/hello.exe")),
         ("exit0", EXIT0),
         ("ret0", RET0),
-        (
-            "pingpong",
-            include_bytes!("../../../tests/pingpong/pingpong.exe"),
-        ),
         ("sleep", include_bytes!("../../../tests/sleep/sleep.exe")),
         ("spin", include_bytes!("../../../tests/spin/spin.exe")),
         ("fileio", include_bytes!("../../../tests/fileio/fileio.exe")),
