@@ -672,7 +672,8 @@ static void sec_crt(void)
     beginthread_ran = 0;
     h = _beginthread(plain_child, 0, (void *)9);
     line("_beginthread: handle %s", yesno(h != (unsigned long)-1));
-    line("its routine ran: %s, parameter %lu", wr(WaitForSingleObject(ran_event, WAIT_MS)), beginthread_ran);
+    r = WaitForSingleObject(ran_event, WAIT_MS);
+    line("its routine ran: %s, parameter %lu", wr(r), beginthread_ran);
     CloseHandle(ran_event);
 }
 

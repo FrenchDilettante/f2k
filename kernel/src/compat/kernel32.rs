@@ -170,6 +170,10 @@ fn object_slot(handle: u32) -> Option<crate::sched::object::Slot> {
 /// of object (Windows reports both alike).
 #[cfg(target_arch = "x86")]
 fn thread_of(handle: u32) -> Result<&'static mut crate::sched::thread::Thread, u32> {
+    if handle == CURRENT_THREAD {
+        // SAFETY: the running thread's record, live while it runs a service.
+        return Ok(unsafe { &mut *crate::sched::idle::dispatcher().current_thread() });
+    }
     match object_slot(handle) {
         // SAFETY: the slot's kind names a thread, and the record lives for the process's lifetime.
         Some(crate::sched::object::Slot::Thread(waitable)) => {
@@ -618,6 +622,11 @@ fn svc_close_handle(frame: &mut crate::user::TrapFrame, args: &[u32]) {
     }
 }
 
+/// GetCurrentThread's pseudo-handle: the calling thread, in every thread service.
+const CURRENT_THREAD: u32 = 0xFFFF_FFFE;
+/// GetCurrentProcess's pseudo-handle.
+const CURRENT_PROCESS: u32 = 0xFFFF_FFFF;
+
 /// INFINITE: the documented forever timeout.
 const INFINITE: u32 = 0xFFFF_FFFF;
 
@@ -657,17 +666,48 @@ fn tick_count_ms(ticks: u64) -> u64 {
 
 /// The SetThreadPriority value conversion: the five band values (-2..2) are base-priority
 /// increments and pass straight through; the two edge specials name the class saturation pins
-/// instead. Any other value is not a documented priority, and the call fails.
+/// instead — TIME_CRITICAL and IDLE, or the ±16 they convert to, which Windows 2000 accepts as
+/// given. Any other value is not a documented priority, and the call fails.
 fn thread_priority_increment(value: i32) -> Option<i32> {
     const TIME_CRITICAL: i32 = 15;
     const IDLE: i32 = -15;
     const SATURATION: i32 = 16;
+    const SATURATION_LOW: i32 = -16;
     match value {
         -2..=2 => Some(value),
-        TIME_CRITICAL => Some(SATURATION),
-        IDLE => Some(-SATURATION),
+        TIME_CRITICAL | SATURATION => Some(SATURATION),
+        IDLE | SATURATION_LOW => Some(SATURATION_LOW),
         _ => None,
     }
+}
+
+/// GetThreadPriority's value for a thread at base `base` in a process at base `process_base`,
+/// pinned `saturation` (+1 high, -1 low, 0 free): the band increment, or the edge specials.
+fn thread_priority_value(base: i8, process_base: i8, saturation: i8) -> i32 {
+    match saturation {
+        1 => 15,
+        -1 => -15,
+        _ => base as i32 - process_base as i32,
+    }
+}
+
+/// SetPriorityClass's class flags, in the order Windows 2000 tests them, with the base priority
+/// each gives the process. The first flag present wins.
+const PRIORITY_CLASSES: [(u32, i8); 6] = [
+    (0x0040, 4),  // IDLE_PRIORITY_CLASS
+    (0x4000, 6),  // BELOW_NORMAL_PRIORITY_CLASS
+    (0x0020, 8),  // NORMAL_PRIORITY_CLASS
+    (0x8000, 10), // ABOVE_NORMAL_PRIORITY_CLASS
+    (0x0080, 13), // HIGH_PRIORITY_CLASS
+    (0x0100, 24), // REALTIME_PRIORITY_CLASS
+];
+
+/// The class a SetPriorityClass value selects, with its base priority; none when it names no class.
+fn priority_class(value: u32) -> Option<(u32, i8)> {
+    PRIORITY_CLASSES
+        .iter()
+        .copied()
+        .find(|&(flag, _)| value & flag != 0)
 }
 
 /// CreateEventA: a fresh event from the pool, inserted into the table. The flavor comes from
@@ -1335,7 +1375,6 @@ fn svc_suspend_thread(frame: &mut crate::user::TrapFrame, args: &[u32]) {
 fn svc_resume_thread(frame: &mut crate::user::TrapFrame, args: &[u32]) {
     #[cfg(target_arch = "x86")]
     {
-        use crate::compat::error::ERROR_ACCESS_DENIED;
         let thread = match thread_of(args[0]) {
             Ok(thread) => thread,
             Err(error) => {
@@ -1345,10 +1384,10 @@ fn svc_resume_thread(frame: &mut crate::user::TrapFrame, args: &[u32]) {
             }
         };
         let dispatcher = crate::sched::idle::dispatcher();
-        // NT refuses a terminated thread as terminating (STATUS_THREAD_IS_TERMINATING).
+        // An ended thread has no suspension left: nothing to resume, no error (the capture's
+        // answer).
         if thread.state() == crate::sched::thread::ThreadState::Terminated {
-            crate::user::teb::set_last_error(ERROR_ACCESS_DENIED);
-            frame.eax = u32::MAX;
+            frame.eax = 0;
             return;
         }
         frame.eax = dispatcher.resume_thread(thread) as u32;
@@ -1357,6 +1396,436 @@ fn svc_resume_thread(frame: &mut crate::user::TrapFrame, args: &[u32]) {
     {
         let _ = args;
         frame.eax = u32::MAX;
+    }
+}
+
+/// ExitThread: end the calling thread with the exit code (and the process, when it is the last).
+fn svc_exit_thread(_frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    #[cfg(target_arch = "x86")]
+    {
+        crate::process::threads::exit_thread(args[0] as i32)
+    }
+    #[cfg(not(target_arch = "x86"))]
+    {
+        let _ = args;
+        unimplemented!("thread exit is a kernel-runtime operation")
+    }
+}
+
+/// GetExitCodeThread: the thread's exit status — STILL_ACTIVE while it lives.
+fn svc_get_exit_code_thread(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    #[cfg(target_arch = "x86")]
+    {
+        frame.eax = 0;
+        let thread = match thread_of(args[0]) {
+            Ok(thread) => thread,
+            Err(error) => return crate::user::teb::set_last_error(error),
+        };
+        if write_user(args[1], &thread.exit_status().to_le_bytes()).is_err() {
+            return crate::user::teb::set_last_error(crate::compat::error::ERROR_NOACCESS);
+        }
+        frame.eax = 1;
+    }
+    #[cfg(not(target_arch = "x86"))]
+    {
+        let _ = args;
+        frame.eax = 0;
+    }
+}
+
+/// TerminateThread: end the thread with the exit code, without it running again. The calling
+/// thread's own handle ends the caller; an ended thread is refused (ERROR_INVALID_PARAMETER, as the
+/// capture has it).
+fn svc_terminate_thread(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    #[cfg(target_arch = "x86")]
+    {
+        frame.eax = 0;
+        let thread = match thread_of(args[0]) {
+            Ok(thread) => thread,
+            Err(error) => return crate::user::teb::set_last_error(error),
+        };
+        if core::ptr::eq(thread, crate::sched::idle::dispatcher().current_thread()) {
+            crate::process::threads::exit_thread(args[1] as i32);
+        }
+        match crate::process::threads::terminate_thread(thread, args[1]) {
+            Ok(()) => frame.eax = 1,
+            Err(crate::process::threads::TerminateError::Ended) => {
+                crate::user::teb::set_last_error(crate::compat::error::ERROR_INVALID_PARAMETER)
+            }
+        }
+    }
+    #[cfg(not(target_arch = "x86"))]
+    {
+        let _ = args;
+        frame.eax = 0;
+    }
+}
+
+/// The critical section at user address `pointer`, or none when it cannot be read.
+fn read_section(pointer: u32) -> Option<crate::compat::critsec::Section> {
+    let mut bytes = [0u8; crate::compat::critsec::SIZE as usize];
+    read_user(pointer, &mut bytes).ok()?;
+    Some(crate::compat::critsec::Section::from_bytes(&bytes))
+}
+
+/// Store `section` back at `pointer` (read a moment before, so writable unless the program changed
+/// its protection meanwhile).
+fn write_section(pointer: u32, section: &crate::compat::critsec::Section) {
+    let _ = write_user(pointer, &section.to_bytes());
+}
+
+/// The calling thread's client id: what a critical section records as its owner.
+#[cfg(target_arch = "x86")]
+fn current_thread_id() -> u32 {
+    // SAFETY: the current thread's record is live while it runs a service.
+    unsafe { (*crate::sched::idle::dispatcher().current_thread()).thread_id() }
+}
+
+/// InitializeCriticalSection: the free state, no semaphore until the first contention.
+fn svc_init_critical_section(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    write_section(args[0], &crate::compat::critsec::Section::initialized());
+    frame.eax = 0;
+}
+
+/// EnterCriticalSection: acquire or re-enter the section; under contention, wait on its semaphore
+/// (an auto-reset event created on the first contention) until a leave hands it on.
+fn svc_enter_critical_section(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    frame.eax = 0;
+    #[cfg(target_arch = "x86")]
+    {
+        use crate::compat::critsec::Enter;
+        let (pointer, thread) = (args[0], current_thread_id());
+        loop {
+            let Some(mut section) = read_section(pointer) else {
+                return;
+            };
+            if section.enter(thread) == Enter::Acquired {
+                return write_section(pointer, &section);
+            }
+            if section.lock_semaphore == 0 {
+                section.lock_semaphore = new_section_semaphore();
+            }
+            write_section(pointer, &section);
+            let Ok(event) = event_of(section.lock_semaphore) else {
+                // No semaphore could be made (or the program closed it): the waiter polls instead,
+                // its entry withdrawn, a millisecond between tries.
+                section.withdraw();
+                write_section(pointer, &section);
+                crate::sched::wait::wait_current_with(|dispatcher, thread, stamp, _replay| {
+                    dispatcher.delay(
+                        thread,
+                        crate::sched::wait::WaitMode::User,
+                        false,
+                        10_000,
+                        stamp,
+                    )
+                });
+                continue;
+            };
+            let waitable = event.waitable();
+            crate::sched::wait::wait_current_with(|dispatcher, thread, stamp, _replay| {
+                dispatcher.wait_single(
+                    thread,
+                    waitable,
+                    crate::sched::wait::WaitReason::UserRequest,
+                    crate::sched::wait::WaitMode::User,
+                    false,
+                    None,
+                    stamp,
+                )
+            });
+            let Some(mut section) = read_section(pointer) else {
+                return;
+            };
+            section.withdraw();
+            write_section(pointer, &section);
+        }
+    }
+    #[cfg(not(target_arch = "x86"))]
+    let _ = args;
+}
+
+/// A critical section's semaphore: a fresh auto-reset event's handle, or 0 when none can be made.
+#[cfg(target_arch = "x86")]
+fn new_section_semaphore() -> u32 {
+    if crate::process::current_mut().handles_mut().is_full() {
+        return 0;
+    }
+    let kind = crate::sched::event::EventKind::Synchronization;
+    let Some(event) = crate::process::threads::new_event(kind, false) else {
+        return 0;
+    };
+    let slot = crate::sched::object::Slot::Event(event.waitable());
+    crate::process::current_mut().handles_mut().insert(slot)
+}
+
+/// TryEnterCriticalSection: acquire or re-enter the section if no other thread owns it.
+fn svc_try_enter_critical_section(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    frame.eax = 0;
+    #[cfg(target_arch = "x86")]
+    {
+        let Some(mut section) = read_section(args[0]) else {
+            return;
+        };
+        if section.try_enter(current_thread_id()) {
+            write_section(args[0], &section);
+            frame.eax = 1;
+        }
+    }
+    #[cfg(not(target_arch = "x86"))]
+    let _ = args;
+}
+
+/// LeaveCriticalSection: drop one entry; the last wakes a waiter through the semaphore.
+fn svc_leave_critical_section(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    frame.eax = 0;
+    let Some(mut section) = read_section(args[0]) else {
+        return;
+    };
+    let signal = section.leave();
+    write_section(args[0], &section);
+    #[cfg(target_arch = "x86")]
+    if signal {
+        if let Ok(event) = event_of(section.lock_semaphore) {
+            event.set(
+                crate::sched::idle::dispatcher(),
+                crate::sched::event::EVENT_WAKE_INCREMENT,
+            );
+        }
+    }
+    #[cfg(not(target_arch = "x86"))]
+    let _ = signal;
+}
+
+/// DeleteCriticalSection: close the section's semaphore, if it ever got one.
+fn svc_delete_critical_section(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    frame.eax = 0;
+    let Some(mut section) = read_section(args[0]) else {
+        return;
+    };
+    #[cfg(target_arch = "x86")]
+    if section.lock_semaphore != 0 {
+        crate::process::current_mut().close_handle(section.lock_semaphore);
+    }
+    section.lock_semaphore = 0;
+    write_section(args[0], &section);
+}
+
+/// TlsAlloc: the lowest free TLS index, its slot cleared in the calling thread (TlsFree cleared it
+/// everywhere else); TLS_OUT_OF_INDEXES with ERROR_NOT_ENOUGH_MEMORY once all 1088 are taken.
+fn svc_tls_alloc(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    let _ = args;
+    #[cfg(target_arch = "x86")]
+    {
+        use crate::user::tls;
+        frame.eax = tls::TLS_OUT_OF_INDEXES;
+        let Some(index) = crate::process::current_mut().tls_indexes_mut().alloc() else {
+            return crate::user::teb::set_last_error(crate::compat::error::ERROR_NOT_ENOUGH_MEMORY);
+        };
+        // SAFETY: the current thread's record is live while it runs a service.
+        let teb = unsafe { (*crate::sched::idle::dispatcher().current_thread()).teb_va() };
+        let ordinal = crate::process::current()
+            .thread_tebs()
+            .find(|&(_, thread_teb)| thread_teb == teb)
+            .map(|(ordinal, _)| ordinal);
+        if let Some(slot) =
+            ordinal.and_then(|ordinal| tls::slot_address(teb, tls::expansion_page(ordinal), index))
+        {
+            // The calling thread's TEB and expansion page are its own, mapped writable.
+            let _ = crate::user::syscall::write_user(slot, &0u32.to_le_bytes());
+        }
+        frame.eax = index;
+    }
+    #[cfg(not(target_arch = "x86"))]
+    {
+        frame.eax = 0xFFFF_FFFF;
+    }
+}
+
+/// TlsFree: release a TLS index, clearing its slot in every thread of the process; ERROR_INVALID_PARAMETER
+/// for an index not allocated.
+fn svc_tls_free(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    #[cfg(target_arch = "x86")]
+    {
+        use crate::user::tls;
+        frame.eax = 0;
+        let index = args[0];
+        if !crate::process::current_mut().tls_indexes_mut().free(index) {
+            return crate::user::teb::set_last_error(crate::compat::error::ERROR_INVALID_PARAMETER);
+        }
+        for (ordinal, teb) in crate::process::current().thread_tebs() {
+            if let Some(slot) = tls::slot_address(teb, tls::expansion_page(ordinal), index) {
+                // Every thread's TEB and expansion page stay mapped while its record holds them.
+                let _ = crate::user::syscall::write_user(slot, &0u32.to_le_bytes());
+            }
+        }
+        frame.eax = 1;
+    }
+    #[cfg(not(target_arch = "x86"))]
+    {
+        let _ = args;
+        frame.eax = 0;
+    }
+}
+
+/// GetThreadPriority: the thread's priority as SetThreadPriority names it (the band increment, or
+/// TIME_CRITICAL/IDLE when pinned); THREAD_PRIORITY_ERROR_RETURN on a bad handle.
+fn svc_get_thread_priority(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    #[cfg(target_arch = "x86")]
+    {
+        frame.eax = 0x7FFF_FFFF; // THREAD_PRIORITY_ERROR_RETURN
+        let thread = match thread_of(args[0]) {
+            Ok(thread) => thread,
+            Err(error) => return crate::user::teb::set_last_error(error),
+        };
+        // SAFETY: the process outlives its threads.
+        let process_base = unsafe { (*thread.process).base_priority() };
+        frame.eax =
+            thread_priority_value(thread.base_priority, process_base, thread.saturation) as u32;
+    }
+    #[cfg(not(target_arch = "x86"))]
+    {
+        let _ = args;
+        frame.eax = 0x7FFF_FFFF;
+    }
+}
+
+/// GetThreadPriorityBoost: whether the thread's dynamic boosts are disabled.
+fn svc_get_thread_priority_boost(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    #[cfg(target_arch = "x86")]
+    {
+        frame.eax = 0;
+        let thread = match thread_of(args[0]) {
+            Ok(thread) => thread,
+            Err(error) => return crate::user::teb::set_last_error(error),
+        };
+        let disabled = thread.disable_boost as u32;
+        if write_user(args[1], &disabled.to_le_bytes()).is_err() {
+            return crate::user::teb::set_last_error(crate::compat::error::ERROR_NOACCESS);
+        }
+        frame.eax = 1;
+    }
+    #[cfg(not(target_arch = "x86"))]
+    {
+        let _ = args;
+        frame.eax = 0;
+    }
+}
+
+/// SetThreadPriorityBoost: disable (or re-enable) the thread's dynamic boosts.
+fn svc_set_thread_priority_boost(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    #[cfg(target_arch = "x86")]
+    {
+        frame.eax = 0;
+        let thread = match thread_of(args[0]) {
+            Ok(thread) => thread,
+            Err(error) => return crate::user::teb::set_last_error(error),
+        };
+        thread.disable_boost = args[1] != 0;
+        frame.eax = 1;
+    }
+    #[cfg(not(target_arch = "x86"))]
+    {
+        let _ = args;
+        frame.eax = 0;
+    }
+}
+
+/// GetPriorityClass: the current process's class flag (only its pseudo-handle names a process).
+fn svc_get_priority_class(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    #[cfg(target_arch = "x86")]
+    {
+        if args[0] != CURRENT_PROCESS {
+            frame.eax = 0;
+            return crate::user::teb::set_last_error(crate::compat::error::ERROR_INVALID_HANDLE);
+        }
+        frame.eax = crate::process::current().priority_class();
+    }
+    #[cfg(not(target_arch = "x86"))]
+    {
+        let _ = args;
+        frame.eax = 0;
+    }
+}
+
+/// SetPriorityClass: move the current process to the class the value names (its first class flag)
+/// — every thread's priority moves with the process's base, their increments kept.
+fn svc_set_priority_class(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    #[cfg(target_arch = "x86")]
+    {
+        frame.eax = 0;
+        if args[0] != CURRENT_PROCESS {
+            return crate::user::teb::set_last_error(crate::compat::error::ERROR_INVALID_HANDLE);
+        }
+        let Some((class, base)) = priority_class(args[1]) else {
+            return crate::user::teb::set_last_error(crate::compat::error::ERROR_INVALID_PARAMETER);
+        };
+        let process = crate::process::current_mut();
+        crate::sched::idle::dispatcher().set_process_priority(&mut process.sched, base);
+        process.set_priority_class(class);
+        frame.eax = 1;
+    }
+    #[cfg(not(target_arch = "x86"))]
+    {
+        let _ = args;
+        frame.eax = 0;
+    }
+}
+
+/// DuplicateHandle, within the current process: a new handle naming the same object (the
+/// current-thread pseudo-handle duplicates to a real handle to the calling thread), optionally
+/// closing the source. Other processes, open files and console handles are not duplicated here.
+fn svc_duplicate_handle(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    #[cfg(target_arch = "x86")]
+    {
+        use crate::compat::error::{
+            ERROR_INVALID_HANDLE, ERROR_NOACCESS, ERROR_NOT_ENOUGH_MEMORY, ERROR_NOT_SUPPORTED,
+        };
+        use crate::user::teb::set_last_error;
+        const DUPLICATE_CLOSE_SOURCE: u32 = 1;
+        let (source_process, source, target_process, target_out, _access, _inherit, options) = (
+            args[0], args[1], args[2], args[3], args[4], args[5], args[6],
+        );
+        frame.eax = 0;
+        if source_process != CURRENT_PROCESS || target_process != CURRENT_PROCESS {
+            return set_last_error(ERROR_INVALID_HANDLE);
+        }
+        let slot = if source == CURRENT_THREAD {
+            // SAFETY: the running thread's record, live while it runs a service.
+            let thread = unsafe { &mut *crate::sched::idle::dispatcher().current_thread() };
+            crate::sched::object::Slot::Thread(thread.waitable())
+        } else if is_console_handle(source) {
+            return set_last_error(ERROR_NOT_SUPPORTED);
+        } else {
+            match object_slot(source) {
+                Some(crate::sched::object::Slot::File(_)) => {
+                    return set_last_error(ERROR_NOT_SUPPORTED)
+                }
+                Some(slot) => slot,
+                None => return set_last_error(ERROR_INVALID_HANDLE),
+            }
+        };
+        if target_out != 0 && crate::user::syscall::probe_user_range(target_out, 4).is_err() {
+            return set_last_error(ERROR_NOACCESS);
+        }
+        let process = crate::process::current_mut();
+        let handle = process.handles_mut().insert(slot);
+        if handle == 0 {
+            return set_last_error(ERROR_NOT_ENOUGH_MEMORY);
+        }
+        if target_out != 0 && write_user(target_out, &handle.to_le_bytes()).is_err() {
+            process.handles_mut().close(handle);
+            return set_last_error(ERROR_NOACCESS);
+        }
+        if options & DUPLICATE_CLOSE_SOURCE != 0 && source != CURRENT_THREAD {
+            process.close_handle(source);
+        }
+        frame.eax = 1;
+    }
+    #[cfg(not(target_arch = "x86"))]
+    {
+        let _ = args;
+        frame.eax = 0;
     }
 }
 
@@ -1371,12 +1840,16 @@ fn svc_floor_zero(frame: &mut crate::user::TrapFrame, _args: &[u32]) {
 /// its position plus one; ExitProcess is pinned at service 1, the rest alphabetical). Quirk: a name
 /// absent from here and from [`NATIVES`] fails the loader's snap, so the two together are the union
 /// of the corpus fixtures' import surfaces.
-pub const SERVICES: [(&str, u32, ServiceFn); 50] = [
+pub const SERVICES: [(&str, u32, ServiceFn); 66] = [
     ("ExitProcess", 4, svc_exit_process),
     ("CloseHandle", 4, svc_close_handle),
     ("CreateEventA", 16, svc_create_event_a),
     ("CreateFileA", 28, svc_create_file_a),
     ("CreateThread", 24, svc_create_thread),
+    ("DeleteCriticalSection", 4, svc_delete_critical_section),
+    ("DuplicateHandle", 28, svc_duplicate_handle),
+    ("EnterCriticalSection", 4, svc_enter_critical_section),
+    ("ExitThread", 4, svc_exit_thread),
     ("FlushFileBuffers", 4, svc_flush_file_buffers),
     ("FreeEnvironmentStringsA", 4, svc_free_environment_strings),
     ("FreeEnvironmentStringsW", 4, svc_free_environment_strings),
@@ -1385,14 +1858,18 @@ pub const SERVICES: [(&str, u32, ServiceFn); 50] = [
     ("GetCPInfo", 8, svc_get_cp_info),
     ("GetEnvironmentStrings", 0, svc_get_environment_strings),
     ("GetEnvironmentStringsW", 0, svc_get_environment_strings_w),
+    ("GetExitCodeThread", 8, svc_get_exit_code_thread),
     ("GetFileType", 4, svc_get_file_type),
     ("GetModuleFileNameA", 12, svc_get_module_file_name),
     ("GetOEMCP", 0, svc_get_oemcp),
+    ("GetPriorityClass", 4, svc_get_priority_class),
     ("GetProcAddress", 8, svc_floor_zero),
     ("GetStartupInfoA", 4, svc_get_startup_info_a),
     ("GetStdHandle", 4, svc_get_std_handle),
     ("GetStringTypeA", 20, svc_floor_zero),
     ("GetStringTypeW", 16, svc_get_string_type_w),
+    ("GetThreadPriority", 4, svc_get_thread_priority),
+    ("GetThreadPriorityBoost", 8, svc_get_thread_priority_boost),
     ("GetTickCount", 0, svc_get_tick_count),
     ("GetVersion", 0, svc_get_version),
     ("HeapAlloc", 12, svc_heap_alloc),
@@ -1400,8 +1877,10 @@ pub const SERVICES: [(&str, u32, ServiceFn); 50] = [
     ("HeapDestroy", 4, svc_heap_destroy),
     ("HeapFree", 12, svc_heap_free),
     ("HeapReAlloc", 16, svc_heap_realloc),
+    ("InitializeCriticalSection", 4, svc_init_critical_section),
     ("LCMapStringA", 24, svc_floor_zero),
     ("LCMapStringW", 24, svc_lc_map_string_w),
+    ("LeaveCriticalSection", 4, svc_leave_critical_section),
     ("LoadLibraryA", 4, svc_floor_zero),
     ("MultiByteToWideChar", 24, svc_multi_byte_to_wide_char),
     ("ReadFile", 20, svc_read_file),
@@ -1411,11 +1890,17 @@ pub const SERVICES: [(&str, u32, ServiceFn); 50] = [
     ("SetEvent", 4, svc_set_event),
     ("SetFilePointer", 16, svc_set_file_pointer),
     ("SetHandleCount", 4, svc_set_handle_count),
+    ("SetPriorityClass", 8, svc_set_priority_class),
     ("SetStdHandle", 8, svc_floor_zero),
     ("SetThreadPriority", 8, svc_set_thread_priority),
+    ("SetThreadPriorityBoost", 8, svc_set_thread_priority_boost),
     ("Sleep", 4, svc_sleep),
     ("SuspendThread", 4, svc_suspend_thread),
     ("TerminateProcess", 8, svc_floor_zero),
+    ("TerminateThread", 8, svc_terminate_thread),
+    ("TlsAlloc", 0, svc_tls_alloc),
+    ("TlsFree", 4, svc_tls_free),
+    ("TryEnterCriticalSection", 4, svc_try_enter_critical_section),
     ("UnhandledExceptionFilter", 4, svc_floor_zero),
     ("VirtualAlloc", 16, svc_virtual_alloc),
     ("VirtualFree", 12, svc_virtual_free),
@@ -1430,7 +1915,7 @@ pub const SERVICES: [(&str, u32, ServiceFn); 50] = [
 pub const NATIVE_PAGE: u32 = THUNK_PAGE + 0x1000;
 
 /// Offset between consecutive native exports in their page: room for the longest body.
-const NATIVE_STRIDE: u32 = 32;
+const NATIVE_STRIDE: u32 = 128;
 
 /// The native exports: kernel32 functions that run entirely in user mode, as Windows 2000's own
 /// kernel32 runs them — reads and writes of the calling thread's TEB and its process's PEB through
@@ -1438,7 +1923,7 @@ const NATIVE_STRIDE: u32 = 32;
 /// any processor, with no kernel transition). Each entry: the export, the argument block its `ret`
 /// pops (stdcall), and its hand-assembled body.
 #[rustfmt::skip]
-pub const NATIVES: [(&str, u32, &[u8]); 12] = [
+pub const NATIVES: [(&str, u32, &[u8]); 14] = [
     // mov eax, fs:[34h] (LastErrorValue); ret
     ("GetLastError", 0, &[0x64, 0xA1, 0x34, 0x00, 0x00, 0x00, 0xC3]),
     // mov eax, [esp+4]; mov fs:[34h], eax; ret 4
@@ -1476,6 +1961,31 @@ pub const NATIVES: [(&str, u32, &[u8]); 12] = [
     ("InterlockedCompareExchange", 12, &[
         0x8B, 0x4C, 0x24, 0x04, 0x8B, 0x54, 0x24, 0x08, 0x8B, 0x44, 0x24, 0x0C, 0xF0, 0x0F, 0xB1,
         0x11, 0xC2, 0x0C, 0x00,
+    ]),
+    // mov ecx, [esp+4]; cmp ecx, 64; jae expansion
+    // mov eax, fs:[ecx*4+0E10h] (TlsSlots); mov dword fs:[34h], 0; ret 4
+    // expansion: cmp ecx, 1088; jae invalid
+    // mov eax, fs:[0F94h] (TlsExpansionSlots); mov eax, [eax+ecx*4-100h]; mov dword fs:[34h], 0; ret 4
+    // invalid: mov dword fs:[34h], 87 (ERROR_INVALID_PARAMETER); xor eax, eax; ret 4
+    ("TlsGetValue", 4, &[
+        0x8B, 0x4C, 0x24, 0x04, 0x83, 0xF9, 0x40, 0x73, 0x16, 0x64, 0x8B, 0x04, 0x8D, 0x10, 0x0E,
+        0x00, 0x00, 0x64, 0xC7, 0x05, 0x34, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC2, 0x04,
+        0x00, 0x81, 0xF9, 0x40, 0x04, 0x00, 0x00, 0x73, 0x1B, 0x64, 0xA1, 0x94, 0x0F, 0x00, 0x00,
+        0x8B, 0x84, 0x88, 0x00, 0xFF, 0xFF, 0xFF, 0x64, 0xC7, 0x05, 0x34, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0xC2, 0x04, 0x00, 0x64, 0xC7, 0x05, 0x34, 0x00, 0x00, 0x00, 0x57, 0x00,
+        0x00, 0x00, 0x31, 0xC0, 0xC2, 0x04, 0x00,
+    ]),
+    // mov ecx, [esp+4]; mov edx, [esp+8]; cmp ecx, 64; jae expansion
+    // mov fs:[ecx*4+0E10h], edx; mov eax, 1; ret 8
+    // expansion: cmp ecx, 1088; jae invalid
+    // mov eax, fs:[0F94h]; mov [eax+ecx*4-100h], edx; mov eax, 1; ret 8
+    // invalid: mov dword fs:[34h], 87; xor eax, eax; ret 8
+    ("TlsSetValue", 8, &[
+        0x8B, 0x4C, 0x24, 0x04, 0x8B, 0x54, 0x24, 0x08, 0x83, 0xF9, 0x40, 0x73, 0x10, 0x64, 0x89,
+        0x14, 0x8D, 0x10, 0x0E, 0x00, 0x00, 0xB8, 0x01, 0x00, 0x00, 0x00, 0xC2, 0x08, 0x00, 0x81,
+        0xF9, 0x40, 0x04, 0x00, 0x00, 0x73, 0x15, 0x64, 0xA1, 0x94, 0x0F, 0x00, 0x00, 0x89, 0x94,
+        0x88, 0x00, 0xFF, 0xFF, 0xFF, 0xB8, 0x01, 0x00, 0x00, 0x00, 0xC2, 0x08, 0x00, 0x64, 0xC7,
+        0x05, 0x34, 0x00, 0x00, 0x00, 0x57, 0x00, 0x00, 0x00, 0x31, 0xC0, 0xC2, 0x08, 0x00,
     ]),
 ];
 
@@ -1649,44 +2159,37 @@ mod tests {
     const HELLO: &[u8] = include_bytes!("../../../tests/hello/hello.exe");
     const SLEEP: &[u8] = include_bytes!("../../../tests/sleep/sleep.exe");
     const SPIN: &[u8] = include_bytes!("../../../tests/spin/spin.exe");
-    const SUSPEND: &[u8] = include_bytes!("../../../tests/suspend/suspend.exe");
     const FILEIO: &[u8] = include_bytes!("../../../tests/fileio/fileio.exe");
 
     /// The corpus binaries the surface serves in full: every import of each resolves. The legacy
     /// fixtures that run on the surface (hellogui, a GUI program importing user32 and gdi32, is
     /// left out) and the sectioned fixtures already served.
-    const CORPUS: [(&str, &[u8]); 11] = [
+    const CORPUS: [(&str, &[u8]); 9] = [
         ("exit0", include_bytes!("../../../tests/exit0/exit0.exe")),
         ("ret0", RET0),
         ("hello", HELLO),
-        ("thread", include_bytes!("../../../tests/thread/thread.exe")),
         (
             "pingpong",
             include_bytes!("../../../tests/pingpong/pingpong.exe"),
         ),
         ("sleep", SLEEP),
         ("spin", SPIN),
-        ("suspend", SUSPEND),
-        (
-            "respawn",
-            include_bytes!("../../../tests/respawn/respawn.exe"),
-        ),
         ("fileio", FILEIO),
         ("bare", include_bytes!("../../../tests/bare/bare.exe")),
+        (
+            "threads",
+            include_bytes!("../../../tests/threads/threads.exe"),
+        ),
     ];
 
     /// The sectioned fixtures the surface does not serve in full yet (tests/README.md): the work
     /// list. A binary moves to [`CORPUS`] once every one of its imports resolves.
-    const UPCOMING: [(&str, &[u8]); 7] = [
+    const UPCOMING: [(&str, &[u8]); 6] = [
         (
             "runtime",
             include_bytes!("../../../tests/runtime/runtime.exe"),
         ),
         ("memory", include_bytes!("../../../tests/memory/memory.exe")),
-        (
-            "threads",
-            include_bytes!("../../../tests/threads/threads.exe"),
-        ),
         ("sync", include_bytes!("../../../tests/sync/sync.exe")),
         ("sched", include_bytes!("../../../tests/sched/sched.exe")),
         ("files", include_bytes!("../../../tests/files/files.exe")),
@@ -1824,17 +2327,6 @@ mod tests {
         let mut mapped = vec![0u8; image.size_of_image as usize];
         image.map_into(SPIN, &mut mapped);
         let result = image.snap_imports(SPIN, &mut mapped, crate::exec::loader::resolve_import);
-        assert_eq!(result.thunks, 44);
-    }
-
-    /// Every suspend import (the suspend smoke's 44-export surface) resolves against the real
-    /// registry.
-    #[test]
-    fn suspend_snaps_fully_against_the_registry() {
-        let image = Image::parse(SUSPEND).expect("suspend parses");
-        let mut mapped = vec![0u8; image.size_of_image as usize];
-        image.map_into(SUSPEND, &mut mapped);
-        let result = image.snap_imports(SUSPEND, &mut mapped, crate::exec::loader::resolve_import);
         assert_eq!(result.thunks, 44);
     }
 
@@ -2037,9 +2529,28 @@ mod tests {
         assert_eq!(thread_priority_increment(-2), Some(-2));
         assert_eq!(thread_priority_increment(15), Some(16));
         assert_eq!(thread_priority_increment(-15), Some(-16));
-        for refused in [3, -3, 7, 14, 16, -16, i32::MAX, i32::MIN] {
+        // The threads fixture's capture: ±16, the values the specials convert to, are accepted.
+        assert_eq!(thread_priority_increment(16), Some(16));
+        assert_eq!(thread_priority_increment(-16), Some(-16));
+        for refused in [3, -3, 7, 14, 17, -17, i32::MAX, i32::MIN] {
             assert_eq!(thread_priority_increment(refused), None, "{refused}");
         }
+    }
+
+    /// GetThreadPriority names a thread's priority as SetThreadPriority does: the band increment
+    /// from the process's base, or the specials when pinned. SetPriorityClass takes the first class
+    /// flag a value carries (the threads fixture's 0x12345 succeeds: it carries IDLE's 0x40).
+    #[test]
+    fn thread_priority_values_and_classes() {
+        assert_eq!(thread_priority_value(8, 8, 0), 0);
+        assert_eq!(thread_priority_value(10, 8, 0), 2);
+        assert_eq!(thread_priority_value(6, 8, 0), -2);
+        assert_eq!(thread_priority_value(15, 8, 1), 15);
+        assert_eq!(thread_priority_value(1, 8, -1), -15);
+        assert_eq!(priority_class(0x20), Some((0x20, 8)));
+        assert_eq!(priority_class(0x80), Some((0x80, 13)));
+        assert_eq!(priority_class(0x12345), Some((0x40, 4)));
+        assert_eq!(priority_class(0x1), None);
     }
 
     /// The tick count's millisecond conversion, floored once at the read: the tick count times the

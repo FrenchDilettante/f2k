@@ -92,8 +92,8 @@ The fixtures:
   scale (32 sequential, 20 concurrent, 100 fire-and-forget threads,
   hundreds of handles), TLS slots and `__declspec(thread)`, per-thread
   last error/errno/FPU/SEH, `_beginthreadex`, and named-only
-  `mainexit`/`procexit`. Built with `/MT`. Replaces `thread` and
-  `respawn`.
+  `mainexit`/`procexit`. Built with `/MT`. Replaced the `thread`,
+  `respawn` and `suspend` smokes (retired).
 - `sync` - events (`PulseEvent`, named objects), semaphores, mutexes
   and abandonment, `WaitForMultipleObjects`, user APCs, critical
   sections, interlocked operations, handle duplication and closing,
@@ -102,7 +102,7 @@ The fixtures:
 - `sched` - sleeps and timed waits in bands, the clocks, waitable
   timers, round-robin, preemption, yielding, the wake boost,
   suspension, and the starvation boost; pinned to one CPU. Built with
-  `/MT`. Replaces `sleep`, `spin` and `suspend`.
+  `/MT`. Replaces `sleep` and `spin` (`suspend` went with `threads`).
 - `files` - the read side of the file API over `files/DATA` (generated
   by `scripts/gen-files-data.py`; every byte is formula-defined): path
   forms and errors, chunked and boundary reads, seeks, metadata,
@@ -168,10 +168,6 @@ import trace, and the disk-smoke checksum file) stay.
   window, paints "Hello, world!" once with `TextOut`, then closes
   itself and exits 0; the first test to import user32.dll and
   gdi32.dll.
-- `thread` - scheduler smoke: the main thread creates one child
-  that prints from its own stack and exits; completion is observed
-  through a shared flag (no wait APIs), so a single CPU must take
-  the CPU away from the spinning main thread for the child to run.
 - `pingpong` - scheduler smoke: two threads alternate strictly for
   five turns through two auto-reset events, so each blocking wait
   must actually block; the final wait on the child's thread handle
@@ -183,15 +179,6 @@ import trace, and the disk-smoke checksum file) stay.
 - `spin` - scheduler smoke: three equal-work spinner threads, two
   at normal priority interleaving by quantum-end round-robin, a
   third raised above normal preempting them until it finishes.
-- `suspend` - scheduler smoke: a worker frozen across a long sleep
-  while suspended, then resumed and completed, with the documented
-  suspend-count returns (0 then 1).
-- `respawn` - scheduler smoke: three rounds of create a child,
-  wait for it, close it - one child alive at a time, so every
-  child after the first reuses the kernel resources (gate-stack
-  slot) the previous one released at its exit. The binary is
-  built, its imports verified, and its output confirmed against
-  the real-machine capture.
 - `fileio` - disk smoke: opens the program's own image from the
   filesystem, reads the MZ and PE signatures, seeks back, and reads
   the MZ again - the file API over the boot volume, the measuring
@@ -240,9 +227,8 @@ Each boot prints the observed process exit code on COM1, which the
 suite cases assert. Host unit tests still read the checked-in `.exe`
 files directly (`include_bytes!`, test builds only).
 
-The scheduler smoke tests (`thread`, `pingpong`, `sleep`, `spin`,
-`respawn`, `suspend`) join the corpus one per scheduler
-stage, in dependency order, as the scheduler grows; each asserts
-the real-machine captured output of its stage. The
-`run-respawn` feature selects `respawn` on the thread-ified boot,
-the same entry `run-pingpong` uses.
+The scheduler smoke tests (`pingpong`, `sleep`, `spin`)
+joined the corpus one per scheduler stage, in dependency order, as
+the scheduler grew; each asserts the real-machine captured output of
+its stage, and each retires once the sectioned fixture covering it
+passes (`thread`, `respawn` and `suspend` went with `threads`).

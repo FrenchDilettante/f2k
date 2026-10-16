@@ -1,3 +1,0 @@
-# The data tree is test input, binary files included: undo the repository-wide *.bin ignore.
-!*.bin
-!*.BIN

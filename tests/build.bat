@@ -42,13 +42,6 @@ if errorlevel 1 (echo build.bat: hellogui failed & exit /b 1)
 del hellogui.obj
 cd ..
 
-echo === thread
-cd thread
-cl /nologo thread.c
-if errorlevel 1 (echo build.bat: thread failed & exit /b 1)
-del thread.obj
-cd ..
-
 echo === pingpong
 cd pingpong
 cl /nologo pingpong.c
@@ -75,13 +68,6 @@ cd suspend
 cl /nologo suspend.c
 if errorlevel 1 (echo build.bat: suspend failed & exit /b 1)
 del suspend.obj
-cd ..
-
-echo === respawn
-cd respawn
-cl /nologo respawn.c
-if errorlevel 1 (echo build.bat: respawn failed & exit /b 1)
-del respawn.obj
 cd ..
 
 echo === fileio

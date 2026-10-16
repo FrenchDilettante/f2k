@@ -43,9 +43,16 @@ pub struct Process {
     name: &'static str,
     /// The process's client id (what GetCurrentProcessId reports).
     id: u32,
+    /// The priority class SetPriorityClass last set (the documented class flag).
+    priority_class: u32,
     /// The error mode SetErrorMode last set (the hard-error and fault dialogs it suppresses never
     /// exist here; the value is kept for its round trip).
     error_mode: u32,
+    /// The TLS indexes TlsAlloc has handed out.
+    tls_indexes: crate::user::tls::TlsIndexes,
+    /// The image's implicit-TLS template, copied into every new thread's block (none without a TLS
+    /// directory).
+    tls_template: Option<crate::user::tls::Template>,
     /// The process's main thread: the thread the boot path enters ring 3 on. Its record owns its
     /// gate-stack slot's frames.
     main_thread: crate::sched::thread::Thread,
@@ -59,11 +66,11 @@ pub struct Process {
     files: crate::fs::file::OpenFiles,
     /// An exited thread's gate stack, not yet released (see [`DeadStack`]).
     dead_stack: DeadStack,
-    /// The created threads' records, one per child; a terminated child's record is not reused.
+    /// The created threads' records; a terminated child's record is reused once no handle names it.
     child_threads: [crate::sched::thread::Thread; CHILD_THREADS],
-    /// The created events' records, handed out in order.
+    /// The created events' records, reused once unreferenced.
     events: [crate::sched::event::Event; EVENTS],
-    /// How many event records are handed out.
+    /// How many event records have ever been handed out (the pool's high-water mark).
     events_used: usize,
     /// Why the process ended, recorded by its last thread's exit; the idle thread's reap step
     /// tears down a process once this is set.
@@ -73,13 +80,19 @@ pub struct Process {
     handed_end: Option<exit::ProcessEnd>,
 }
 
-/// How many threads a process can create besides its main thread.
-pub const CHILD_THREADS: usize = 3;
+/// The default priority class (the documented NORMAL_PRIORITY_CLASS flag).
+pub const NORMAL_PRIORITY_CLASS: u32 = 0x20;
 
-/// How many events a process can create.
-pub const EVENTS: usize = 8;
+/// How many threads a process can have alive besides its main thread. A terminated thread's record
+/// is reused once no handle names it, so this bounds the live threads, not the threads created.
+pub const CHILD_THREADS: usize = 64;
 
-/// A fresh record set for [`Process::events`].
+/// How many events a process can have at once. An event's record is reused once no handle names it
+/// and no thread waits on it.
+pub const EVENTS: usize = 256;
+
+/// A fresh record set for [`Process::events`] (the tests build records by value).
+#[cfg(test)]
 const fn fresh_events() -> [crate::sched::event::Event; EVENTS] {
     use crate::sched::event::{Event, EventKind};
     [const { Event::new(EventKind::Notification, false) }; EVENTS]
@@ -127,6 +140,31 @@ impl Process {
         self.id
     }
 
+    /// The process's priority class (the documented class flag).
+    pub fn priority_class(&self) -> u32 {
+        self.priority_class
+    }
+
+    /// Record the process's priority class (the scheduling side is the caller's).
+    pub fn set_priority_class(&mut self, class: u32) {
+        self.priority_class = class;
+    }
+
+    /// The process's TLS indexes.
+    pub fn tls_indexes_mut(&mut self) -> &mut crate::user::tls::TlsIndexes {
+        &mut self.tls_indexes
+    }
+
+    /// The image's implicit-TLS template.
+    pub fn tls_template(&self) -> Option<crate::user::tls::Template> {
+        self.tls_template
+    }
+
+    /// Record the image's implicit-TLS template (the loader's, once).
+    pub fn set_tls_template(&mut self, template: Option<crate::user::tls::Template>) {
+        self.tls_template = template;
+    }
+
     /// Set the process's error mode, returning the previous one.
     pub fn swap_error_mode(&mut self, mode: u32) -> u32 {
         core::mem::replace(&mut self.error_mode, mode)
@@ -140,6 +178,20 @@ impl Process {
     /// The process's main thread.
     pub fn main_thread(&self) -> &crate::sched::thread::Thread {
         &self.main_thread
+    }
+
+    /// Every thread that has a TEB, as (ordinal, TEB address): the main thread at ordinal 0, then
+    /// the created threads (terminated ones too: their pages stay mapped until the record is
+    /// reused).
+    pub fn thread_tebs(&self) -> impl Iterator<Item = (u32, u32)> + '_ {
+        core::iter::once((0, self.main_thread.teb_va()))
+            .chain(
+                self.child_threads
+                    .iter()
+                    .enumerate()
+                    .map(|(index, thread)| (index as u32 + 1, thread.teb_va())),
+            )
+            .filter(|&(_, teb)| teb != 0)
     }
 
     /// The user-heap state (the kernel32 heap services are served from here).
@@ -225,23 +277,8 @@ impl Process {
         let dir_phys = paging::create_address_space();
         paging::activate_address_space(dir_phys);
 
-        let process = install(Process {
-            sched: crate::sched::process::SchedProcess::new(dir_phys, crate::sched::NORMAL_BASE),
-            name,
-            id: new_client_id(),
-            error_mode: 0,
-            main_thread: crate::sched::thread::Thread::empty(),
-            gate_slots: GateSlots::empty(),
-            heap: crate::user::userheap::HeapState::new(),
-            handles: crate::sched::object::HandleTable::empty(),
-            files: crate::fs::file::OpenFiles::empty(),
-            dead_stack: DeadStack::empty(),
-            child_threads: [const { crate::sched::thread::Thread::empty() }; CHILD_THREADS],
-            events: fresh_events(),
-            events_used: 0,
-            end: None,
-            handed_end: None,
-        });
+        install(dir_phys, name);
+        let process = current_mut();
 
         // The scheduling record's thread-list sentinel closes now that the record is at its final
         // address.
@@ -364,21 +401,63 @@ pub fn new_client_id() -> u32 {
     }
 }
 
-/// The current process. One at a time: installed at start, read by the service paths, and taken by
-/// the teardown once its last thread has ended.
+/// The current process. One at a time: installed at start, read by the service paths, and released
+/// by the teardown once its last thread has ended. The record is built where it lives, field by
+/// field: by value it would pass through the boot stack, which is smaller than the record.
 #[cfg(target_arch = "x86")]
-static mut CURRENT: Option<Process> = None;
+static mut CURRENT: core::mem::MaybeUninit<Process> = core::mem::MaybeUninit::uninit();
 
-/// Install `process` as current and return it.
+/// Whether [`CURRENT`] holds a process.
 #[cfg(target_arch = "x86")]
-fn install(process: Process) -> &'static mut Process {
+static mut INSTALLED: bool = false;
+
+// The record owns no resources of its own (its frames are released by the teardown walk), so
+// releasing it is forgetting it.
+#[cfg(target_arch = "x86")]
+const _: () = assert!(!core::mem::needs_drop::<Process>());
+
+/// Build a fresh process record in [`CURRENT`]: the address space at `dir_phys`, named `name`.
+#[cfg(target_arch = "x86")]
+fn install(dir_phys: u32, name: &'static str) {
+    use core::ptr::addr_of_mut;
     // SAFETY: single CPU, interrupts disabled; no process is running when a new one starts (run to
-    // completion, asserted).
+    // completion, asserted). Every field is written before the record is read.
     unsafe {
-        let slot = &mut *core::ptr::addr_of_mut!(CURRENT);
-        assert!(slot.is_none(), "a process is already running");
-        *slot = Some(process);
-        slot.as_mut().expect("just installed")
+        assert!(!INSTALLED, "a process is already running");
+        let process = (*addr_of_mut!(CURRENT)).as_mut_ptr();
+        addr_of_mut!((*process).sched).write(crate::sched::process::SchedProcess::new(
+            dir_phys,
+            crate::sched::NORMAL_BASE,
+        ));
+        addr_of_mut!((*process).name).write(name);
+        addr_of_mut!((*process).id).write(new_client_id());
+        addr_of_mut!((*process).priority_class).write(NORMAL_PRIORITY_CLASS);
+        addr_of_mut!((*process).error_mode).write(0);
+        addr_of_mut!((*process).tls_indexes).write(crate::user::tls::TlsIndexes::empty());
+        addr_of_mut!((*process).tls_template).write(None);
+        addr_of_mut!((*process).main_thread).write(crate::sched::thread::Thread::empty());
+        addr_of_mut!((*process).gate_slots).write(GateSlots::empty());
+        addr_of_mut!((*process).heap).write(crate::user::userheap::HeapState::new());
+        crate::sched::object::HandleTable::write_empty(addr_of_mut!((*process).handles));
+        addr_of_mut!((*process).files).write(crate::fs::file::OpenFiles::empty());
+        addr_of_mut!((*process).dead_stack).write(DeadStack::empty());
+        let threads = addr_of_mut!((*process).child_threads) as *mut crate::sched::thread::Thread;
+        for index in 0..CHILD_THREADS {
+            threads
+                .add(index)
+                .write(crate::sched::thread::Thread::empty());
+        }
+        let events = addr_of_mut!((*process).events) as *mut crate::sched::event::Event;
+        for index in 0..EVENTS {
+            events.add(index).write(crate::sched::event::Event::new(
+                crate::sched::event::EventKind::Notification,
+                false,
+            ));
+        }
+        addr_of_mut!((*process).events_used).write(0);
+        addr_of_mut!((*process).end).write(None);
+        addr_of_mut!((*process).handed_end).write(None);
+        INSTALLED = true;
     }
 }
 
@@ -392,8 +471,8 @@ pub fn current_mut() -> &'static mut Process {
     // SAFETY: single-threaded kernel; the pointer is installed before ring 3 is entered and has no
     // other writer.
     unsafe {
-        let slot = &mut *core::ptr::addr_of_mut!(CURRENT);
-        slot.as_mut().expect("no process is running")
+        assert!(INSTALLED, "no process is running");
+        (*core::ptr::addr_of_mut!(CURRENT)).assume_init_mut()
     }
 }
 
@@ -406,8 +485,8 @@ pub fn current_mut() -> &'static mut Process {
 pub fn current() -> &'static Process {
     // SAFETY: as `current_mut`.
     unsafe {
-        let slot = &mut *core::ptr::addr_of_mut!(CURRENT);
-        slot.as_ref().expect("no process is running")
+        assert!(INSTALLED, "no process is running");
+        (*core::ptr::addr_of!(CURRENT)).assume_init_ref()
     }
 }
 
@@ -487,16 +566,16 @@ pub fn release_process(
     release(dir_phys);
 }
 
-/// The current process, removed from the current-process pointer, for teardown. Call only when the
-/// kernel has switched off the process's address space (its frames are then unreachable except
-/// through the scratch window).
+/// Release the current process's record, for teardown. Call only when the kernel has switched off
+/// the process's address space (its frames are then unreachable except through the scratch
+/// window).
 #[cfg(target_arch = "x86")]
-fn take_current() -> Process {
-    // SAFETY: single CPU; the teardown path is the only taker, run once per process after the
+fn release_current() {
+    // SAFETY: single CPU; the teardown path is the only releaser, run once per process after the
     // address-space switch.
     unsafe {
-        let slot = &mut *core::ptr::addr_of_mut!(CURRENT);
-        slot.take().expect("no process is running")
+        assert!(INSTALLED, "no process is running");
+        INSTALLED = false;
     }
 }
 
@@ -506,9 +585,11 @@ fn take_current() -> Process {
 pub fn reap_pending() -> bool {
     // SAFETY: single CPU; a read of the current-process slot.
     unsafe {
-        (*core::ptr::addr_of!(CURRENT))
-            .as_ref()
-            .is_some_and(|process| process.end.is_some())
+        INSTALLED
+            && (*core::ptr::addr_of!(CURRENT))
+                .assume_init_ref()
+                .end
+                .is_some()
     }
 }
 
@@ -549,7 +630,7 @@ fn teardown_current() {
             });
         },
     );
-    take_current();
+    release_current();
 }
 
 /// The post-boot free-frame count: the baseline the per-process teardown audits compare against.
@@ -611,7 +692,10 @@ mod tests {
             sched: SchedProcess::new(0x0090_0000, 8),
             name: "fixture",
             id: FIRST_CLIENT_ID,
+            priority_class: NORMAL_PRIORITY_CLASS,
             error_mode: 0,
+            tls_indexes: crate::user::tls::TlsIndexes::empty(),
+            tls_template: None,
             main_thread: Thread::empty(),
             gate_slots: GateSlots::empty(),
             heap: HeapState::new(),
@@ -643,7 +727,10 @@ mod tests {
             sched: SchedProcess::new(0x0090_0000, 8),
             name: "fixture",
             id: FIRST_CLIENT_ID,
+            priority_class: NORMAL_PRIORITY_CLASS,
             error_mode: 0,
+            tls_indexes: crate::user::tls::TlsIndexes::empty(),
+            tls_template: None,
             main_thread: Thread::empty(),
             gate_slots: GateSlots::empty(),
             heap: HeapState::new(),
@@ -761,7 +848,7 @@ mod tests {
         assert_eq!(dead.take(), None);
     }
 
-    /// The exit-then-spawn sequence the respawn fixture drives: a child's slot stays taken while
+    /// The exit-then-spawn sequence of sequential create/wait/close rounds (the threads fixture's): a child's slot stays taken while
     /// its stack is parked (its pages are still mapped), and the next spawn's release frees it
     /// before the allocation, so the child after it gets the same slot back — unmapped first,
     /// never double-mapped.
@@ -916,7 +1003,10 @@ mod tests {
             sched: SchedProcess::new(dir, 8),
             name: "fixture",
             id: FIRST_CLIENT_ID,
+            priority_class: NORMAL_PRIORITY_CLASS,
             error_mode: 0,
+            tls_indexes: crate::user::tls::TlsIndexes::empty(),
+            tls_template: None,
             main_thread: Thread::empty(),
             gate_slots: GateSlots::empty(),
             heap: HeapState::new(),

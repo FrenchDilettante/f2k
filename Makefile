@@ -43,7 +43,7 @@ ISO_IMG ?= $(BUILD_DIR)/$(TARGET)/debug/f2k.iso
 DISK_SIZE ?= 131072
 # The corpus fixtures the disk carries in its root directory (tests/<name>/<name>.exe, stored as
 # NAME.EXE), after HELLO.EXE: the boots load their images from the volume by these paths.
-DISK_FIXTURES ?= exit0 ret0 pingpong sleep spin suspend respawn fileio
+DISK_FIXTURES ?= exit0 ret0 pingpong sleep spin fileio
 # The sectioned fixtures (tests/README.md), in their own directory, \CORPUS, the way each runs from
 # its own directory on the real machine: the root keeps its one cluster (the disk-smoke pins it).
 CORPUS_FIXTURES ?= bare runtime memory threads sync sched files fswrite
@@ -140,7 +140,6 @@ disk: kernel limine
 			::/CORPUS/$$(echo $$fixture | tr a-z A-Z).EXE || exit 1; \
 	done
 	mcopy -s -i $(DISK_IMG)@@1M tests/files/DATA ::/CORPUS/
-	mdel -i $(DISK_IMG)@@1M ::/CORPUS/DATA/.gitignore
 	mattrib -i $(DISK_IMG)@@1M +r ::/CORPUS/DATA/RDONLY.TXT
 	mattrib -i $(DISK_IMG)@@1M +h ::/CORPUS/DATA/HIDDEN.TXT
 	$(LIMINE_BIN) bios-install $(DISK_IMG)

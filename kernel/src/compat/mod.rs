@@ -2,6 +2,7 @@
 //! behind its locale services.
 
 pub mod cp1252;
+pub mod critsec;
 pub mod error;
 #[cfg(test)]
 mod harness;

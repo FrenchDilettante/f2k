@@ -48,8 +48,8 @@ pub struct Signature {
 
 use Arg::{Pointer as P, Value as V};
 
-/// The public prototypes of the 62 exports.
-pub const SIGNATURES: [Signature; 62] = [
+/// The public prototypes of the 80 exports.
+pub const SIGNATURES: [Signature; 80] = [
     sig("ExitProcess", &[V("uExitCode")]),
     sig("CloseHandle", &[V("hObject")]),
     sig(
@@ -252,6 +252,41 @@ pub const SIGNATURES: [Signature; 62] = [
         "InterlockedCompareExchange",
         &[P("Destination"), V("Exchange"), V("Comperand")],
     ),
+    sig(
+        "DuplicateHandle",
+        &[
+            V("hSourceProcessHandle"),
+            V("hSourceHandle"),
+            V("hTargetProcessHandle"),
+            P("lpTargetHandle"),
+            V("dwDesiredAccess"),
+            V("bInheritHandle"),
+            V("dwOptions"),
+        ],
+    ),
+    sig("ExitThread", &[V("dwExitCode")]),
+    sig("GetExitCodeThread", &[V("hThread"), P("lpExitCode")]),
+    sig("GetPriorityClass", &[V("hProcess")]),
+    sig("GetThreadPriority", &[V("hThread")]),
+    sig(
+        "GetThreadPriorityBoost",
+        &[V("hThread"), P("pDisablePriorityBoost")],
+    ),
+    sig("SetPriorityClass", &[V("hProcess"), V("dwPriorityClass")]),
+    sig(
+        "SetThreadPriorityBoost",
+        &[V("hThread"), V("DisablePriorityBoost")],
+    ),
+    sig("TerminateThread", &[V("hThread"), V("dwExitCode")]),
+    sig("TlsAlloc", &[]),
+    sig("TlsFree", &[V("dwTlsIndex")]),
+    sig("TlsGetValue", &[V("dwTlsIndex")]),
+    sig("TlsSetValue", &[V("dwTlsIndex"), P("lpTlsValue")]),
+    sig("DeleteCriticalSection", &[P("lpCriticalSection")]),
+    sig("EnterCriticalSection", &[P("lpCriticalSection")]),
+    sig("InitializeCriticalSection", &[P("lpCriticalSection")]),
+    sig("LeaveCriticalSection", &[P("lpCriticalSection")]),
+    sig("TryEnterCriticalSection", &[P("lpCriticalSection")]),
 ];
 
 const fn sig(export: &'static str, args: &'static [Arg]) -> Signature {
@@ -318,6 +353,32 @@ fn route(export: &str) -> Route {
             "the staged-name copy reads the parameters page directly",
         ),
         "ExitProcess" => Route::TargetOnly("the process exit runs through the scheduler"),
+        "TryEnterCriticalSection" => {
+            Route::TargetOnly("the section lives in the live process's memory")
+        }
+        "LeaveCriticalSection" => {
+            Route::TargetOnly("the section lives in the live process's memory")
+        }
+        "InitializeCriticalSection" => {
+            Route::TargetOnly("the section lives in the live process's memory")
+        }
+        "EnterCriticalSection" => {
+            Route::TargetOnly("the section lives in the live process's memory")
+        }
+        "DeleteCriticalSection" => {
+            Route::TargetOnly("the section lives in the live process's memory")
+        }
+        "TlsFree" => Route::TargetOnly("the index bitmap and slots belong to the live process"),
+        "TlsAlloc" => Route::TargetOnly("the index bitmap and slots belong to the live process"),
+        "TerminateThread" => Route::TargetOnly("the termination runs through the scheduler"),
+        "SetThreadPriorityBoost" => Route::TargetOnly("the handler writes the live thread records"),
+        "SetPriorityClass" => Route::TargetOnly("the class moves the live scheduler's priorities"),
+        "GetThreadPriorityBoost" => Route::TargetOnly("the handler reads the live thread records"),
+        "GetThreadPriority" => Route::TargetOnly("the handler reads the live thread records"),
+        "GetPriorityClass" => Route::TargetOnly("the class lives in the live process record"),
+        "GetExitCodeThread" => Route::TargetOnly("the handler reads the live thread records"),
+        "ExitThread" => Route::TargetOnly("the thread exit runs through the scheduler"),
+        "DuplicateHandle" => Route::TargetOnly("the handler runs against the live handle table"),
         "SetErrorMode" => Route::TargetOnly("the error mode lives in the live process record"),
         "VirtualAlloc" => {
             Route::TargetOnly("the CRT region maps pages into the live address space")

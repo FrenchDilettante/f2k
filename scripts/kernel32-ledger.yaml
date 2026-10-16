@@ -427,3 +427,57 @@ exports:
   - export: SetErrorMode
     group: termination
     status: pinned
+  - export: DuplicateHandle
+    group: threads
+    status: pinned
+  - export: ExitThread
+    group: threads
+    status: pinned
+  - export: GetExitCodeThread
+    group: threads
+    status: pinned
+  - export: GetPriorityClass
+    group: threads
+    status: pinned
+  - export: GetThreadPriority
+    group: threads
+    status: pinned
+  - export: GetThreadPriorityBoost
+    group: threads
+    status: pinned
+  - export: SetPriorityClass
+    group: threads
+    status: pinned
+  - export: SetThreadPriorityBoost
+    group: threads
+    status: pinned
+  - export: TerminateThread
+    group: threads
+    status: pinned
+  - export: TlsAlloc
+    group: threads
+    status: pinned
+  - export: TlsFree
+    group: threads
+    status: pinned
+  - export: TlsGetValue
+    group: threads
+    status: pinned
+  - export: TlsSetValue
+    group: threads
+    status: pinned
+  - export: DeleteCriticalSection
+    group: threads
+    status: pinned
+  - export: EnterCriticalSection
+    group: threads
+    status: pinned
+  - export: InitializeCriticalSection
+    group: threads
+    status: pinned
+  - export: LeaveCriticalSection
+    group: threads
+    status: pinned
+  - export: TryEnterCriticalSection
+    group: threads
+    status: pinned

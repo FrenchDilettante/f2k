@@ -68,6 +68,9 @@ pub enum ThreadState {
     Transition = 6,
 }
 
+/// The exit status of a thread that has not ended (the documented STILL_ACTIVE).
+pub const STILL_ACTIVE: u32 = 259;
+
 /// A thread: one schedulable unit of execution.
 ///
 /// An intrusive kernel object: it carries the links for the ready queue and its process's thread
@@ -96,6 +99,8 @@ pub struct Thread {
     pub(crate) thread_id: u32,
     /// The thread's user stack: its reservation and committed limit (none for kernel threads).
     pub(crate) user_stack: crate::user::stack::UserStack,
+    /// The thread's exit status: [`STILL_ACTIVE`] while it lives, then the status it ended with.
+    pub(crate) exit_status: u32,
     /// The thread's level ledger: captured at switch-out, restored at resume. A fresh thread
     /// adopts an empty one.
     pub(crate) level: LevelSnapshot,
@@ -244,6 +249,7 @@ impl Thread {
             teb_va: 0,
             thread_id: 0,
             user_stack: crate::user::stack::UserStack::none(),
+            exit_status: STILL_ACTIVE,
             level: LevelSnapshot::empty(),
             gate_slot: NO_GATE_SLOT,
             gate_frames: [0; crate::mem::paging::GATE_STACK_PAGES],
@@ -404,6 +410,11 @@ impl Thread {
     /// The thread's TEB page (the FS descriptor's base).
     pub fn teb_va(&self) -> u32 {
         self.teb_va
+    }
+
+    /// The thread's exit status (what GetExitCodeThread reports): [`STILL_ACTIVE`] until it ends.
+    pub fn exit_status(&self) -> u32 {
+        self.exit_status
     }
 
     /// The thread's client id (what GetCurrentThreadId reports), zero for kernel threads.

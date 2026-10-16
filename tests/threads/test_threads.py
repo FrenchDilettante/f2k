@@ -10,7 +10,17 @@ import pytest
 from f2kboot import blocks
 
 
-BLOCKS = blocks("threads")
+BLOCKS = blocks(
+    "threads",
+    gate=True,
+    pending={"perthread": "needs SEH: the child catches its own access violation in __try/__except"},
+    masks=(
+        # The binary captured reads the parameter before waiting for the routine (argument
+        # evaluation order): 9 or 0 by timing. The source waits first now; drop the mask once
+        # threads.exe is rebuilt and recaptured.
+        "its routine ran: WAIT_OBJECT_0, parameter *",
+    ),
+)
 
 
 @pytest.mark.parametrize("captured", BLOCKS)

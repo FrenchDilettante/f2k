@@ -1,6 +1,0 @@
-suspend.exe - real-machine output, owner-confirmed 2026-10-14
-
-suspend returned 0
-worker frozen: yes
-resume returned 1
-suspend: ok

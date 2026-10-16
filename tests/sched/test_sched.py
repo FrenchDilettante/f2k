@@ -11,7 +11,15 @@ import pytest
 from f2kboot import blocks
 
 
-BLOCKS = blocks("sched", timeout=30)
+BLOCKS = blocks(
+    "sched",
+    timeout=30,
+    masks=(
+        # SwitchToThread hands the processor to any ready thread on it, another process's
+        # included: whether ours ran first varies between runs on the real machine.
+        "SwitchToThread: returned 1, the new thread had run *",
+    ),
+)
 
 
 @pytest.mark.parametrize("captured", BLOCKS)

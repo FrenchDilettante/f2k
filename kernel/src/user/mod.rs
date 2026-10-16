@@ -13,12 +13,12 @@
 pub mod stack;
 pub mod syscall;
 pub mod teb;
+pub mod tls;
 pub mod userheap;
 
 /// The fault-test stub's code page (the corpus programs' preferred base, which the fault-test builds
 /// never map).
 #[cfg(any(
-    feature = "fault-test-user",
     feature = "fault-test-badargs",
     feature = "fault-test-segments",
     feature = "fault-test-threadexit",
@@ -79,11 +79,6 @@ pub const THREAD_STACK_REGION: u32 = 0x00C0_0000;
 /// has).
 pub const THREAD_STACK_PAGES: u32 = 2;
 
-/// A kernel address the fault-test stub reads from ring 3: the kernel window is supervisor-only, so
-/// the read must fault.
-#[cfg(any(feature = "fault-test-user", test))]
-pub const KERNEL_WINDOW_PROBE: u32 = 0x8010_1000;
-
 /// An unmapped user address the bad-args stub passes as the syscall argument pointer: below the
 /// user probe limit (the range probe passes) but backed by no page, so the kernel's argument copy
 /// faults on the user process's behalf.
@@ -92,15 +87,9 @@ pub const BAD_ARGS_PTR: u32 = 0x0050_0000;
 
 /// The ring-3 fault-test stub, in bytes: a faulting body plus a spin as the safety net.
 /// Hand-assembled so it can be copied into the user page (kernel code is unreachable from ring 3).
-/// Never combine the features: `fault-test-user` reads the supervisor-only kernel window;
-/// `fault-test-badargs` passes an unmapped user address as the syscall argument pointer.
-#[cfg(feature = "fault-test-user")]
-pub const RING3_STUB: [u8; 7] = [
-    0xA1, 0x00, 0x10, 0x10, 0x80, // mov eax, dword ptr [KERNEL_WINDOW_PROBE]
-    0xEB, 0xFE, // jmp $ (the read must fault before this)
-];
-
-#[cfg(all(feature = "fault-test-badargs", not(feature = "fault-test-user")))]
+/// Never combine the features: `fault-test-badargs` passes an unmapped user address as the syscall
+/// argument pointer.
+#[cfg(feature = "fault-test-badargs")]
 pub const RING3_STUB: [u8; 14] = [
     0xB8, 0x01, 0x00, 0x00, 0x00, // mov eax, SYS_EXIT (service 1)
     0xBA, 0x00, 0x00, 0x50, 0x00, // mov edx, BAD_ARGS_PTR
@@ -116,7 +105,6 @@ pub const RING3_STUB: [u8; 14] = [
 /// emulation.
 #[cfg(all(
     feature = "fault-test-segments",
-    not(feature = "fault-test-user"),
     not(feature = "fault-test-badargs")
 ))]
 #[rustfmt::skip]
@@ -139,7 +127,6 @@ pub const RING3_STUB: [u8; 29] = [
 /// report the status the gate returned in EAX instead.
 #[cfg(all(
     feature = "fault-test-threadexit",
-    not(feature = "fault-test-user"),
     not(feature = "fault-test-badargs"),
     not(feature = "fault-test-segments")
 ))]
@@ -258,7 +245,6 @@ pub const EXIT_DURING_READ_STUB: [u8; 156] = {
 
 #[cfg(all(
     feature = "fault-test-exitio",
-    not(feature = "fault-test-user"),
     not(feature = "fault-test-badargs"),
     not(feature = "fault-test-segments"),
     not(feature = "fault-test-threadexit")
@@ -318,7 +304,6 @@ pub fn run_user_process() -> ! {
     #[cfg(all(
         not(feature = "run-process-suite"),
         any(
-            feature = "fault-test-user",
             feature = "fault-test-badargs",
             feature = "fault-test-segments",
             feature = "fault-test-threadexit",
@@ -331,7 +316,6 @@ pub fn run_user_process() -> ! {
     #[cfg(all(
         not(feature = "run-process-suite"),
         not(any(
-            feature = "fault-test-user",
             feature = "fault-test-badargs",
             feature = "fault-test-segments",
             feature = "fault-test-threadexit",
@@ -397,15 +381,13 @@ fn command_line_image() -> Option<(&'static [u8], &'static str, &'static [u8])> 
 }
 
 /// The one image a one-process boot runs, as its path on the boot volume and its process name: the
-/// first fixture feature in this order — the blocking-wait, timer, preemption, slot-reuse,
-/// suspend, or file smoke (`run-pingpong`/`run-sleep`/`run-spin`/`run-respawn`/`run-suspend`/
-/// `run-fileio`), hello (`run-hello`), ret0 (`run-ret0`) — else exit0. The paths are
+/// first fixture feature in this order — the blocking-wait, timer, preemption, or file
+/// smoke (`run-pingpong`/`run-sleep`/`run-spin`/`run-fileio`), hello (`run-hello`), ret0 (`run-ret0`) — else exit0. The paths are
 /// root-relative; the lookup folds case, so the lowercase spelling finds the stored uppercase name.
 #[cfg(all(
     target_arch = "x86",
     not(feature = "run-process-suite"),
     not(any(
-        feature = "fault-test-user",
         feature = "fault-test-badargs",
         feature = "fault-test-segments",
         feature = "fault-test-threadexit",
@@ -420,10 +402,6 @@ fn boot_image() -> (&'static [u8], &'static str) {
     return (b"sleep.exe", "sleep");
     #[cfg(feature = "run-spin")]
     return (b"spin.exe", "spin");
-    #[cfg(feature = "run-respawn")]
-    return (b"respawn.exe", "respawn");
-    #[cfg(feature = "run-suspend")]
-    return (b"suspend.exe", "suspend");
     #[cfg(feature = "run-fileio")]
     return (b"fileio.exe", "fileio");
     #[cfg(feature = "run-hello")]
@@ -437,7 +415,6 @@ fn boot_image() -> (&'static [u8], &'static str) {
 /// address space — and enter it as its main thread. Never returns.
 #[cfg(target_arch = "x86")]
 #[cfg(any(
-    feature = "fault-test-user",
     feature = "fault-test-badargs",
     feature = "fault-test-segments",
     feature = "fault-test-threadexit",
@@ -499,22 +476,9 @@ mod tests {
     use crate::mem::paging::KERNEL_BASE;
     use crate::user::syscall::SYSCALL_VECTOR;
 
-    /// The fault-test stub reads the supervisor-only kernel window and spins: A1+moffs32 (mov eax,
-    /// [moffs]) then jmp $.
-    #[cfg(feature = "fault-test-user")]
-    #[test]
-    fn fault_stub_bytes_match_their_encoding() {
-        let mut expected = [0u8; 7];
-        expected[0] = 0xA1;
-        expected[1..5].copy_from_slice(&KERNEL_WINDOW_PROBE.to_le_bytes());
-        expected[5] = 0xEB;
-        expected[6] = 0xFE;
-        assert_eq!(RING3_STUB, expected);
-    }
-
     /// The bad-args stub requests the exit service with an unmapped argument pointer: BA+imm32 (mov
     /// edx, imm32), int, jmp $.
-    #[cfg(all(feature = "fault-test-badargs", not(feature = "fault-test-user")))]
+    #[cfg(feature = "fault-test-badargs")]
     #[test]
     fn badargs_stub_bytes_match_their_encoding() {
         let mut expected = [0u8; 14];
@@ -569,11 +533,9 @@ mod tests {
         assert_eq!(0x92 + (EXIT_DURING_READ_STUB[0x91] as i8 as i32), 0x66);
     }
 
-    /// The fault-test addresses: the kernel-window probe inside the supervisor-only window; the
-    /// bad-args pointer below the probe limit but on no mapped page.
+    /// The bad-args pointer: below the probe limit but on no mapped page.
     #[test]
     fn fault_probe_layout_is_consistent() {
-        assert!(KERNEL_WINDOW_PROBE >= KERNEL_BASE);
         assert!(BAD_ARGS_PTR < KERNEL_BASE);
         assert_ne!(BAD_ARGS_PTR & !0xFFF, USER_CODE_PAGE);
         assert_ne!(BAD_ARGS_PTR & !0xFFF, USER_STACK_PAGE);

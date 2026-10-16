@@ -54,6 +54,7 @@ const MAX_DIRECTORIES: usize = 16;
 pub const DIR_EXPORT: usize = 0;
 pub const DIR_IMPORT: usize = 1;
 pub const DIR_BASERELOC: usize = 5;
+pub const DIR_TLS: usize = 9;
 pub const DIR_IAT: usize = 12;
 
 /// The high bit of a thunk marks an import by ordinal, not by name.

@@ -127,7 +127,7 @@ static mut IMAGE_STAGING: crate::mem::paging::Aligned<[u8; STAGING_SIZE]> =
 /// and extends as far as the request asks — so only its 64 KiB minimum is reserved here; a larger
 /// reservation that reaches an image's pages is not yet detected (no address-space bookkeeping
 /// exists).
-const SYSTEM_REGIONS: [(&str, u32, u32); 9] = {
+const SYSTEM_REGIONS: [(&str, u32, u32); 10] = {
     use crate::user::userheap::{CRT_REGION_BASE, HEAP_REGION_BASE, HEAP_REGION_MAX};
     use crate::user::{
         PARAMS_PAGE, PEB_PAGE, TEB_PAGE, THREAD_STACK_PAGES, THREAD_STACK_REGION,
@@ -147,6 +147,11 @@ const SYSTEM_REGIONS: [(&str, u32, u32); 9] = {
             THREAD_TEB_REGION + CHILDREN * PAGE,
         ),
         (
+            "thread TLS pages",
+            crate::user::tls::TLS_REGION,
+            crate::user::tls::TLS_REGION + (CHILDREN + 1) * 2 * PAGE,
+        ),
+        (
             "child thread stacks",
             THREAD_STACK_REGION,
             THREAD_STACK_REGION + CHILDREN * THREAD_STACK_PAGES * PAGE,
@@ -164,6 +169,42 @@ const SYSTEM_REGIONS: [(&str, u32, u32); 9] = {
         ("CRT region", CRT_REGION_BASE, CRT_REGION_BASE + 0x1_0000),
     ]
 };
+
+/// The implicit-TLS template of the image staged in `staging` (none without a TLS directory),
+/// after writing index 0 to the image's index variable. A directory or template outside the image,
+/// or a block larger than a thread's implicit-TLS page holds, is refused.
+fn tls_template(
+    image: &Image,
+    staging: &mut [u8],
+) -> Result<Option<crate::user::tls::Template>, &'static str> {
+    use crate::user::tls;
+    let Some((rva, _)) = image.directory(crate::exec::pe::DIR_TLS) else {
+        return Ok(None);
+    };
+    let directory = staging
+        .get(rva as usize..)
+        .and_then(tls::parse_directory)
+        .ok_or("the TLS directory lies outside the image")?;
+    let (start, end, index_address, _callbacks, zero_fill) = directory;
+    let base = image.image_base;
+    let inside = |va: u32, length: u32| {
+        va >= base && (va - base) as u64 + length as u64 <= staging.len() as u64
+    };
+    if start > end || !inside(start, end - start) || !inside(index_address, 4) {
+        return Err("the TLS template lies outside the image");
+    }
+    let template = tls::Template {
+        start,
+        end,
+        zero_fill,
+    };
+    if template.size() > tls::IMPLICIT_ROOM as u64 {
+        return Err("the TLS block exceeds a thread's implicit-TLS page");
+    }
+    let index = (index_address - base) as usize;
+    staging[index..index + 4].copy_from_slice(&0u32.to_le_bytes());
+    Ok(Some(template))
+}
 
 /// The first system region that an image of `size` bytes at `base` would cover, if any.
 pub fn system_region_overlapping(base: u32, size: u32) -> Option<&'static str> {
@@ -245,6 +286,16 @@ pub fn load_image(file: &[u8], path: &[u8], name: &'static str, command_line: &[
     staging.fill(0);
     image.map_into(file, staging);
 
+    // Implicit TLS: the image's index variable reads 0 (its block is the first and only entry of
+    // every thread's array), and its template is recorded for the threads' blocks.
+    let tls_template = match tls_template(&image, staging) {
+        Ok(template) => template,
+        Err(reason) => {
+            crate::serial_println!("F2K: image rejected by the loader: {}", reason);
+            crate::halt()
+        }
+    };
+
     // The process's own state, all in one place: a fresh address space (kernel half inherited,
     // active on CR3), the main thread's ring-0 gate stack (mapped supervisor-only with its guard
     // page; the switch into the thread installs it as the TSS esp0), and fresh heap bookkeeping.
@@ -284,6 +335,10 @@ pub fn load_image(file: &[u8], path: &[u8], name: &'static str, command_line: &[
         paging::map_user_page(stack_page, stack_frame, true);
     }
 
+    // The main thread's TLS pages (ordinal 0), the block copied from the now-mapped template.
+    crate::process::current_mut().set_tls_template(tls_template);
+    let (tls_pointer, tls_expansion) = crate::user::tls::map_thread_pages(0, tls_template);
+
     // The thread block page, reached through the TEB segment, and the process block it points at.
     let process = crate::process::current();
     crate::user::teb::map_teb(&crate::user::teb::TebInit {
@@ -293,6 +348,8 @@ pub fn load_image(file: &[u8], path: &[u8], name: &'static str, command_line: &[
         process_id: process.id(),
         thread_id: process.main_thread().thread_id(),
         peb: crate::user::PEB_PAGE,
+        tls_pointer,
+        tls_expansion,
     });
     crate::user::teb::map_peb(image.image_base, crate::user::userheap::HEAP_HANDLE);
 
@@ -326,7 +383,7 @@ mod tests {
 
     /// The corpus the disk carries (see the Makefile's disk target), by fixture name: the legacy
     /// smokes, then the sectioned fixtures.
-    const CORPUS: [(&str, &[u8]); 17] = [
+    const CORPUS: [(&str, &[u8]); 15] = [
         ("hello", include_bytes!("../../../tests/hello/hello.exe")),
         ("exit0", EXIT0),
         ("ret0", RET0),
@@ -336,14 +393,6 @@ mod tests {
         ),
         ("sleep", include_bytes!("../../../tests/sleep/sleep.exe")),
         ("spin", include_bytes!("../../../tests/spin/spin.exe")),
-        (
-            "suspend",
-            include_bytes!("../../../tests/suspend/suspend.exe"),
-        ),
-        (
-            "respawn",
-            include_bytes!("../../../tests/respawn/respawn.exe"),
-        ),
         ("fileio", include_bytes!("../../../tests/fileio/fileio.exe")),
         ("bare", include_bytes!("../../../tests/bare/bare.exe")),
         (
@@ -422,6 +471,34 @@ mod tests {
                 assert!(end <= next_start, "{name} runs into {next}");
             }
         }
+    }
+
+    /// The threads fixture's `__declspec(thread)` data: a template inside the image, small enough
+    /// for a thread's page, its index variable set to 0; an image without a TLS directory has none.
+    #[test]
+    fn implicit_tls_templates() {
+        let file: &[u8] = include_bytes!("../../../tests/threads/threads.exe");
+        let image = Image::parse_program(file).expect("threads parses");
+        let mut staging = vec![0xAAu8; image.size_of_image as usize];
+        image.map_into(file, &mut staging);
+        let (rva, _) = image
+            .directory(crate::exec::pe::DIR_TLS)
+            .expect("threads has TLS");
+        let (_, _, index_address, ..) =
+            crate::user::tls::parse_directory(&staging[rva as usize..]).unwrap();
+        let index = (index_address - image.image_base) as usize;
+        staging[index..index + 4].copy_from_slice(&[0xAA; 4]);
+        let template = tls_template(&image, &mut staging)
+            .unwrap()
+            .expect("a template");
+        assert!(template.start >= image.image_base && template.start <= template.end);
+        assert!(template.size() > 0 && template.size() <= crate::user::tls::IMPLICIT_ROOM as u64);
+        assert_eq!(&staging[index..index + 4], &[0; 4]);
+
+        let mut staging = vec![0u8; Image::parse_program(EXIT0).unwrap().size_of_image as usize];
+        let exit0 = Image::parse_program(EXIT0).unwrap();
+        exit0.map_into(EXIT0, &mut staging);
+        assert_eq!(tls_template(&exit0, &mut staging), Ok(None));
     }
 
     /// Every corpus program places at its own preferred base, clear of the system regions.

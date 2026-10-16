@@ -23,6 +23,8 @@ scripts/__pycache__
 
 # Binary files
 *.bin
+# ...except the files fixture's data tree, which is test input.
+!/tests/files/DATA/**
 *.elf
 *.obj
 *.img

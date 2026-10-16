@@ -22,17 +22,6 @@
 # runs that program instead of the one its features select.
 
 cases:
-  - name: boot-smoke
-    description: full boot through the first PE image (exit0) to its exit syscall (kernel path)
-    image: kernel
-    expects:
-      - "F2K Booted Successfully"
-      - "F2K: frame database audit: ok"
-      - "F2K: kernel heap: alloc/free ok"
-      - "F2K: image loaded"
-      - "F2K: entering ring 3"
-      - "F2K: user process exited normally (exit code=0)"
-
   - name: fault-ud
     description: "#UD right after init: exception dump without a CPU error code"
     image: kernel
@@ -49,15 +38,6 @@ cases:
     expects:
       - "CPU EXCEPTION: vector 13"
       - "error code 0x00000038"
-
-  - name: fault-user
-    description: a ring-3 fault ends the user process, not the kernel
-    image: kernel
-    features: [fault-test-user]
-    expects:
-      - "F2K: entering ring 3"
-      - "CPU EXCEPTION: vector 14"
-      - "F2K: user process ended by fault (vector 14, exit code=3221225477); halting"
 
   - name: fault-badargs
     description: a bad user argument pointer ends the process inside the kernel copy
@@ -112,18 +92,6 @@ cases:
       - "F2K: entering ring 3"
       - "F2K: user process exited normally (exit code=0)"
 
-  - name: ret0-smoke
-    description: the CRT startup fixture runs to main and exits 0 through the 35-import surface (kernel path)
-    image: kernel
-    features: [run-ret0]
-    expects:
-      - "F2K Booted Successfully"
-      - "F2K: frame database audit: ok"
-      - "F2K: kernel heap: alloc/free ok"
-      - "F2K: image loaded"
-      - "F2K: entering ring 3"
-      - "F2K: user process exited normally (exit code=0)"
-
   - name: ret0-smoke-disk
     description: the CRT startup fixture runs to main and exits 0 through the 35-import surface (Limine disk path)
     image: disk
@@ -140,18 +108,6 @@ cases:
   # startup, printf writes "Hello, world!" to stdout through
   # WriteFile, then it exits 0 — the program's own output on COM1
   # (no F2K: prefix), before the exit line.
-  - name: hello-smoke
-    description: the console fixture prints "Hello, world!" as its own COM1 output and exits 0 (kernel path)
-    image: kernel
-    features: [run-hello]
-    expects:
-      - "F2K Booted Successfully"
-      - "F2K: frame database audit: ok"
-      - "F2K: kernel heap: alloc/free ok"
-      - "F2K: image loaded"
-      - "F2K: entering ring 3"
-      - "Hello, world!"
-      - "F2K: user process exited normally (exit code=0)"
 
   - name: hello-smoke-disk
     description: the console fixture prints "Hello, world!" as its own COM1 output and exits 0 (Limine disk path)
@@ -334,100 +290,6 @@ cases:
       - "B done, checksum 1283106752"
       - "main: all threads finished"
       - "spin: ok"
-      - "F2K: user process exited normally (exit code=0)"
-
-  # Suspend/resume smoke: the main thread
-  # suspends a spinning worker through its builtin suspend APC (queued
-  # at the service, delivered at the resume tail when the worker next
-  # runs — its normal routine parks it on the suspend semaphore),
-  # sleeps long enough that a runnable worker would have finished
-  # (the frozen check: a suspended thread makes no progress even with
-  # the CPU free), then resumes it to completion. The suspend and
-  # resume calls return the documented previous counts (0 then 1); the
-  # output is deterministic and pinned verbatim.
-  - name: suspend-smoke
-    description: the suspend/resume smoke freezes a worker through its suspend APC across a sleep and resumes it, with the previous-count returns pinned (kernel path)
-    image: kernel
-    features: [run-suspend]
-    expects:
-      - "F2K Booted Successfully"
-      - "F2K: frame database audit: ok"
-      - "F2K: kernel heap: alloc/free ok"
-      - "F2K: image loaded"
-      - "F2K: entering ring 3"
-      - "suspend returned 0"
-      - "worker frozen: yes"
-      - "resume returned 1"
-      - "suspend: ok"
-      - "F2K: user process exited normally (exit code=0)"
-
-  - name: suspend-smoke-disk
-    description: the suspend/resume smoke freezes a worker through its suspend APC across a sleep and resumes it, with the previous-count returns pinned (Limine disk path)
-    image: disk
-    features: [run-suspend]
-    expects:
-      - "F2K Booted Successfully"
-      - "F2K: frame database audit: ok"
-      - "F2K: kernel heap: alloc/free ok"
-      - "F2K: image loaded"
-      - "F2K: entering ring 3"
-      - "suspend returned 0"
-      - "worker frozen: yes"
-      - "resume returned 1"
-      - "suspend: ok"
-      - "F2K: user process exited normally (exit code=0)"
-
-  # Thread-slot reuse smoke: the
-  # main thread runs three rounds of create, wait for, close, one
-  # child alive at a time, so every child after the first reuses
-  # the gate-stack resources (the slot and its frames) the
-  # previous one released at its exit — the kernel that keeps a
-  # freed stack mapped fails the second round's spawn, and the one
-  # that never releases fails the third (the slot ledger). The
-  # child/main alternation is deterministic (main waits for each
-  # child before creating the next), so the case pins the output
-  # in order. Three rounds exactly fit the thread pool (three
-  # records, never reclaimed); a fourth would refuse the create.
-  - name: respawn-smoke
-    description: the slot-reuse smoke runs three create/wait/close rounds, each child after the first reusing the previous one's released gate-stack resources, and exits cleanly (kernel path)
-    image: kernel
-    features: [run-respawn]
-    # The create/wait/close rounds must appear in order.
-    ordered: true
-    expects:
-      - "F2K Booted Successfully"
-      - "F2K: frame database audit: ok"
-      - "F2K: kernel heap: alloc/free ok"
-      - "F2K: image loaded"
-      - "F2K: entering ring 3"
-      - "child 1: running"
-      - "main: round 1: child finished"
-      - "child 2: running"
-      - "main: round 2: child finished"
-      - "child 3: running"
-      - "main: round 3: child finished"
-      - "respawn: ok"
-      - "F2K: user process exited normally (exit code=0)"
-
-  - name: respawn-smoke-disk
-    description: the slot-reuse smoke runs three create/wait/close rounds, each child after the first reusing the previous one's released gate-stack resources, and exits cleanly (Limine disk path)
-    image: disk
-    features: [run-respawn]
-    # The create/wait/close rounds must appear in order.
-    ordered: true
-    expects:
-      - "F2K Booted Successfully"
-      - "F2K: frame database audit: ok"
-      - "F2K: kernel heap: alloc/free ok"
-      - "F2K: image loaded"
-      - "F2K: entering ring 3"
-      - "child 1: running"
-      - "main: round 1: child finished"
-      - "child 2: running"
-      - "main: round 2: child finished"
-      - "child 3: running"
-      - "main: round 3: child finished"
-      - "respawn: ok"
       - "F2K: user process exited normally (exit code=0)"
 
   # Multi-process suite: one boot

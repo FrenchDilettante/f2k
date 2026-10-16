@@ -1,9 +1,0 @@
-respawn.exe - real-machine output, owner-confirmed 2026-10-15
-
-child 1: running
-main: round 1: child finished
-child 2: running
-main: round 2: child finished
-child 3: running
-main: round 3: child finished
-respawn: ok

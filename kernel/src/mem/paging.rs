@@ -492,6 +492,34 @@ pub fn map_kernel_page(vaddr: u32, frame_phys: u32) {
     }
 }
 
+/// Remove the user mapping at `vaddr` from the current directory and flush it from the TLB,
+/// returning the frame it named (the caller's to release); none when nothing is mapped there.
+#[cfg(target_arch = "x86")]
+pub fn unmap_user_page(vaddr: u32) -> Option<u32> {
+    assert!(vaddr % PAGE_SIZE == 0, "user address not page-aligned");
+    assert!(
+        vaddr < KERNEL_BASE,
+        "user mappings live below the kernel window"
+    );
+    let window = (vaddr >> 22) as usize;
+    let index = ((vaddr >> 12) & 0x3FF) as usize;
+    // SAFETY: as `map_user_page`; the table is read only when its directory entry is present.
+    unsafe {
+        let pde = (DIRECTORY_ENTRY_VA + (window as u32) * 4) as *const u32;
+        if pde.read_volatile() & PAGE_PRESENT == 0 {
+            return None;
+        }
+        let table = (SELF_MAP_VA + ((window as u32) << 12)) as *mut u32;
+        let pte = table.add(index).read_volatile();
+        if pte & PAGE_PRESENT == 0 {
+            return None;
+        }
+        table.add(index).write_volatile(0);
+        invlpg(vaddr);
+        Some(pte & PAGE_ADDR_MASK)
+    }
+}
+
 /// Remove the kernel-half mapping at `vaddr` from the current directory and flush it from the TLB,
 /// returning the frame it named. The frame itself is the caller's to release.
 ///

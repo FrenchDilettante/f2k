@@ -20,10 +20,16 @@ pub mod teb_offset {
     pub const PROCESS_ID: u32 = 0x20;
     /// ClientId.UniqueThread.
     pub const THREAD_ID: u32 = 0x24;
+    /// ThreadLocalStoragePointer: the implicit-TLS block array (see [`crate::user::tls`]).
+    pub const THREAD_LOCAL_STORAGE_POINTER: u32 = 0x2C;
     /// ProcessEnvironmentBlock.
     pub const PEB: u32 = 0x30;
     /// LastErrorValue: what GetLastError reads and SetLastError writes.
     pub const LAST_ERROR: u32 = 0x34;
+    /// TlsSlots: the first 64 TLS slots.
+    pub const TLS_SLOTS: u32 = 0xE10;
+    /// TlsExpansionSlots: the page holding the other 1024.
+    pub const TLS_EXPANSION_SLOTS: u32 = 0xF94;
 }
 
 /// PEB field offsets.
@@ -52,10 +58,14 @@ pub struct TebInit {
     pub thread_id: u32,
     /// The process's PEB page.
     pub peb: u32,
+    /// The thread's implicit-TLS block array; zero for an image without TLS.
+    pub tls_pointer: u32,
+    /// The thread's TLS expansion-slot page.
+    pub tls_expansion: u32,
 }
 
 /// A fresh TEB's nonzero words, as (offset, value).
-pub fn teb_words(init: &TebInit) -> [(u32, u32); 7] {
+pub fn teb_words(init: &TebInit) -> [(u32, u32); 9] {
     [
         (teb_offset::EXCEPTION_LIST, END_OF_CHAIN),
         (teb_offset::STACK_BASE, init.stack_base),
@@ -64,6 +74,8 @@ pub fn teb_words(init: &TebInit) -> [(u32, u32); 7] {
         (teb_offset::PROCESS_ID, init.process_id),
         (teb_offset::THREAD_ID, init.thread_id),
         (teb_offset::PEB, init.peb),
+        (teb_offset::THREAD_LOCAL_STORAGE_POINTER, init.tls_pointer),
+        (teb_offset::TLS_EXPANSION_SLOTS, init.tls_expansion),
     ]
 }
 
@@ -133,6 +145,9 @@ mod tests {
         assert_eq!(teb_offset::THREAD_ID, 0x24);
         assert_eq!(teb_offset::PEB, 0x30);
         assert_eq!(teb_offset::LAST_ERROR, 0x34);
+        assert_eq!(teb_offset::THREAD_LOCAL_STORAGE_POINTER, 0x2C);
+        assert_eq!(teb_offset::TLS_SLOTS, 0xE10);
+        assert_eq!(teb_offset::TLS_EXPANSION_SLOTS, 0xF94);
         assert_eq!(peb_offset::IMAGE_BASE_ADDRESS, 0x08);
         assert_eq!(peb_offset::PROCESS_HEAP, 0x18);
     }
@@ -148,6 +163,8 @@ mod tests {
             process_id: 8,
             thread_id: 12,
             peb: 0x0033_0000,
+            tls_pointer: 0x0088_1000,
+            tls_expansion: 0x0088_0000,
         };
         let words = teb_words(&init);
         let value = |offset| words.iter().find(|&&(o, _)| o == offset).map(|&(_, v)| v);
@@ -158,6 +175,11 @@ mod tests {
         assert_eq!(value(teb_offset::PROCESS_ID), Some(8));
         assert_eq!(value(teb_offset::THREAD_ID), Some(12));
         assert_eq!(value(teb_offset::PEB), Some(0x0033_0000));
+        assert_eq!(
+            value(teb_offset::THREAD_LOCAL_STORAGE_POINTER),
+            Some(0x0088_1000)
+        );
+        assert_eq!(value(teb_offset::TLS_EXPANSION_SLOTS), Some(0x0088_0000));
         assert_eq!(value(teb_offset::LAST_ERROR), None);
         for &(offset, _) in &words {
             assert_eq!(offset % 4, 0);

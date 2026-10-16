@@ -202,6 +202,8 @@ class Expectation:
 # --- The corpus's capture blocks ------------------------------------------------------------------
 
 ENTER = "F2K: entering ring 3"
+# The boot's own checks, reported before any program runs: every block's boot must pass them.
+BOOT_CHECKS = ("F2K Booted Successfully", "F2K: frame database audit: ok", "F2K: kernel heap: alloc/free ok")
 END = re.compile(r"^F2K: user process (exited normally|ended by fault)")
 EXIT_CODE = re.compile(r"exit code=(\d+)")
 # Kernel output inside the program's span: its own report lines and the fault dump.
@@ -274,6 +276,13 @@ def compare_block(block: Block, log: str, masks: list[re.Pattern[str]]) -> str |
         at = next(i for i, line in enumerate(lines) if "KERNEL PANIC" in line)
         message = " ".join(line.strip() for line in lines[at:at + 3] if line.strip())
         return message
+    # The boot's own checks hold under every program: the kernel reports them and carries on.
+    failed = next((line.strip() for line in lines if "audit FAILED" in line or "audit: FAILED" in line), None)
+    if failed is not None:
+        return failed
+    for check in BOOT_CHECKS:
+        if not any(line.startswith(check) for line in lines):
+            return f"the boot did not report [{check}]"
     if not any(line.startswith(ENTER) for line in lines):
         refusal = next(
             (line.strip() for line in lines
@@ -326,6 +335,7 @@ def blocks(
     fixture: str,
     *,
     gate: bool = False,
+    pending: dict[str, str] | None = None,
     masks: tuple[str, ...] = (),
     timeout: float = CORPUS_TIMEOUT,
     retake: str | None = None,
@@ -335,6 +345,8 @@ def blocks(
     - `gate`: the blocks must pass. Without it the fixture is on the work list: its blocks run as
       expected failures (one that starts passing shows as XPASS; `--runxfail` shows why the others
       fail).
+    - `pending`: in a gated fixture, the sections still on the work list, each with what it waits
+      for: those blocks run as expected failures.
     - `masks`: capture lines that carry machine-specific values F2K cannot reproduce (an address,
       the size of a free region the real machine's other allocations bound). A capture line matching
       a mask matches any line that matches the same mask; "*" stands for any run of characters.
@@ -354,7 +366,10 @@ def blocks(
     for block in parse_capture(REPO_ROOT / "tests" / fixture / "output.txt"):
         seen[block.section] = seen.get(block.section, 0) + 1
         case_id = block.section if seen[block.section] == 1 else f"{block.section}#{seen[block.section]}"
-        params.append(pytest.param(Captured(fixture, block, patterns, timeout), id=case_id, marks=marks))
+        block_marks = marks
+        if gate and pending and block.section in pending:
+            block_marks = marks + [pytest.mark.xfail(reason=pending[block.section], strict=False)]
+        params.append(pytest.param(Captured(fixture, block, patterns, timeout), id=case_id, marks=block_marks))
     return params
 
 

@@ -7,9 +7,10 @@
 //! never handed out, so the first handle is 4 and no valid handle is zero or the all-ones
 //! pseudo-handle. Freed slots are reused most-recently-freed-first.
 //!
-//! The subset keeps only the table discipline: no reference counting (objects live until the
-//! process ends, so a close releases only the table slot — a waiter parked on the object stays
-//! parked), no security, no quota, no duplication, no named objects. The table's owner is the
+//! The subset keeps only the table discipline: no reference counting in the table itself (a close
+//! releases only the slot — a waiter parked on the object stays parked; the process's object pools
+//! reclaim a record once no slot names it, [`HandleTable::references`]), no security, no quota, no
+//! named objects. The table's owner is the
 //! process record, so the process exit empties it by dropping the record. An open file's state is a
 //! record of the process's own (`fs::file`), which the slot names by index: the close hands the
 //! released slot back so the process can release that record with it.
@@ -18,7 +19,7 @@ use crate::sched::wait::Waitable;
 
 /// The table's slot capacity. Exhaustion is a program-visible failure (the create returns no
 /// handle), not a bug.
-pub const HANDLE_SLOTS: usize = 16;
+pub const HANDLE_SLOTS: usize = 1024;
 
 /// A handle's slot index: the value shifted right two (the low two tag bits are ignored on decode).
 pub const HANDLE_SHIFT: u32 = 2;
@@ -68,6 +69,27 @@ impl HandleTable {
         }
     }
 
+    /// Write an empty table at `table`, element by element: by value the table would pass through
+    /// the caller's stack, and it is larger than a kernel stack has room for.
+    ///
+    /// # Safety
+    ///
+    /// `table` is valid for writes and aligned; its previous contents are overwritten, not dropped.
+    pub unsafe fn write_empty(table: *mut HandleTable) {
+        use core::ptr::addr_of_mut;
+        // SAFETY: the caller's contract; every field is written.
+        unsafe {
+            let slots = addr_of_mut!((*table).slots) as *mut Option<Slot>;
+            let freed = addr_of_mut!((*table).freed) as *mut u32;
+            for index in 0..HANDLE_SLOTS {
+                slots.add(index).write(None);
+                freed.add(index).write(0);
+            }
+            addr_of_mut!((*table).freed_top).write(0);
+            addr_of_mut!((*table).next_fresh).write(1);
+        }
+    }
+
     /// Insert `slot`, returning its handle. Null when every slot is taken.
     pub fn insert(&mut self, slot: Slot) -> u32 {
         let index = if self.freed_top > 0 {
@@ -113,7 +135,17 @@ impl HandleTable {
     /// Empty the table: the process-exit step, releasing every slot's claim at once (the objects
     /// themselves die with the process's teardown).
     pub fn clear(&mut self) {
-        *self = HandleTable::empty();
+        // SAFETY: a live table, written in place (it is larger than a kernel stack has room for).
+        unsafe { HandleTable::write_empty(self) };
+    }
+
+    /// How many slots name the waitable object `waitable` (an object a slot names is still
+    /// referenced: its record is not reclaimed).
+    pub fn references(&self, waitable: *mut Waitable) -> usize {
+        self.slots
+            .iter()
+            .filter(|slot| slot.and_then(Slot::waitable) == Some(waitable))
+            .count()
     }
 
     /// How many slots are taken.
@@ -151,6 +183,20 @@ mod tests {
         assert_ne!(h1, 0);
         assert_ne!(h1, u32::MAX);
         assert_eq!(table.live(), 2);
+    }
+
+    /// A table written in place over a used one is the empty table.
+    #[test]
+    fn a_table_written_in_place_is_empty() {
+        let mut table = Box::new(HandleTable::empty());
+        table.insert(event_slot());
+        table.close(4);
+        table.insert(event_slot());
+        // SAFETY: the box is a valid, aligned table; it holds nothing that needs dropping.
+        unsafe { HandleTable::write_empty(&mut *table) };
+        assert_eq!(table.live(), 0);
+        assert_eq!(table.insert(event_slot()), 4);
+        assert_eq!(table.insert(event_slot()), 8);
     }
 
     /// A freed slot is reused before a fresh one, the most recently freed first; the closed value

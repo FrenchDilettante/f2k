@@ -24,10 +24,6 @@ doctest = false
 # by the fault-ud / fault-gp cases of scripts/qemu-tests.yaml.
 fault-test-ud = []
 fault-test-gp = []
-# Swaps the ring-3 smoke stub for one that reads the supervisor-only
-# kernel window, so the user-process-fault path can be verified on
-# target by the fault-user case.
-fault-test-user = []
 # Swaps the ring-3 smoke stub for one that passes an unmapped user
 # address as the syscall argument pointer, so faults inside the
 # kernel's argument copy end the process: the fault-badargs case.
@@ -72,19 +68,6 @@ run-sleep = []
 # under preemption. The qemu-tests.yaml cases pin the captured
 # shape.
 run-spin = []
-# The thread-slot reuse smoke boot: the respawn fixture runs with
-# the thread-ified entry — three rounds of create, wait for, close
-# (one child alive at a time), so every child after the first
-# reuses the gate-stack resources the previous one released at its
-# exit. The qemu-tests.yaml cases pin the captured output.
-run-respawn = []
-# The suspend/resume smoke boot: the suspend fixture runs with the
-# thread-ified entry — SuspendThread arms the worker's builtin suspend
-# APC (delivered at the resume tail, its normal routine parks the
-# worker on its suspend semaphore), Sleep proves the frozen worker made
-# no progress while parked, and ResumeThread releases it to finish. The
-# qemu-tests.yaml cases pin the captured output.
-run-suspend = []
 # The file smoke boot: the fileio fixture opens its own image on the
 # boot volume through CreateFileA (by the path GetModuleFileNameA
 # reports), reads the MZ and PE signatures with ReadFile across
