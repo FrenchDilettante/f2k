@@ -20,6 +20,7 @@ CreateMutexA on the event's name: null yes err=6
 SetEvent(bogus): ret=0 err=6
 SetEvent(thread handle): ret=0 err=6
 sync: done
+<<< exit code=0
 >>> sync.exe semaphore
 == semaphore
 count 2 of 3: waits WAIT_OBJECT_0 WAIT_OBJECT_0 WAIT_TIMEOUT
@@ -35,6 +36,7 @@ named semaphore again: created yes err=183
 release through the second handle: previous 1 (the first creation's counts hold)
 OpenSemaphoreA: opened yes, wait WAIT_OBJECT_0
 sync: done
+<<< exit code=0
 >>> sync.exe mutex
 == mutex
 created owned: recursive waits WAIT_OBJECT_0 WAIT_OBJECT_0
@@ -50,6 +52,7 @@ named mutex again: created yes err=183
 OpenMutexA: opened yes err=-
 releases through the opened then the second handle (owned once): 1 0
 sync: done
+<<< exit code=0
 >>> sync.exe waitmulti
 == waitmulti
 any, indices 1 and 2 signaled: WAIT_OBJECT_0+1, then WAIT_OBJECT_0+2, then WAIT_TIMEOUT
@@ -75,6 +78,7 @@ single on the current thread: WAIT_TIMEOUT
 any over two running threads: WAIT_TIMEOUT
 all over the two threads after release: WAIT_OBJECT_0
 sync: done
+<<< exit code=0
 >>> sync.exe apc
 == apc
 QueueUserAPC to an alertable sleeper: ret=1 err=-
@@ -88,6 +92,7 @@ SleepEx(0, TRUE) with nothing queued: WAIT_OBJECT_0
 join: wait WAIT_TIMEOUT
 QueueUserAPC to a closed handle: ret=0 err=-
 sync: done
+<<< exit code=0
 >>> sync.exe critsec
 == critsec
 entered twice: RecursionCount 2, owned by this thread yes
@@ -97,6 +102,7 @@ left: RecursionCount 0, owner cleared yes
 TryEnterCriticalSection from another thread when free: 1
 4 threads x 100000 increments under the critical section: 400000
 sync: done
+<<< exit code=0
 >>> sync.exe interlocked
 == interlocked
 increment, decrement, decrement from 0: 1 0 -1, value -1
@@ -106,6 +112,7 @@ compare-exchange hit: returned 15, value 20
 compare-exchange miss: returned 20, value 20
 4 threads x 100000 InterlockedIncrement: 400000
 sync: done
+<<< exit code=0
 >>> sync.exe handles
 == handles
 DuplicateHandle(event): ret=1 err=-, a different handle yes
@@ -118,6 +125,7 @@ close NULL: ret=0 err=6
 close INVALID_HANDLE_VALUE (the process pseudo-handle): ret=0 err=6
 close the thread pseudo-handle: ret=0 err=6
 sync: done
+<<< exit code=0
 >>> sync.exe pingpong
 == pingpong
 pong 0
@@ -142,3 +150,4 @@ signal pong 3
 signal ping 4
 signal pong 4
 sync: done
+<<< exit code=0

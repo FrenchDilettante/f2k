@@ -13,6 +13,7 @@ OPEN_EXISTING, missing: INVALID_HANDLE_VALUE err=2, size now -1
 CREATE_NEW in a missing directory: INVALID_HANDLE_VALUE err=3, size now -1
 a bad disposition: INVALID_HANDLE_VALUE err=87, size now -1
 fswrite: done
+<<< exit code=0
 >>> fswrite.exe write
 == write
 100000 bytes in 3000-byte writes: ok, position 100000
@@ -27,6 +28,7 @@ SetEndOfFile at 1000: ret=1 err=-, size 1000
 SetEndOfFile growing to 70000: ret=1 size 70000, the extension zero yes
 zero-byte write: ret=1 put 0 err=-
 fswrite: done
+<<< exit code=0
 >>> fswrite.exe share
 == share
 writer sharing read, then a second writer: INVALID_HANDLE_VALUE err=32
@@ -38,6 +40,7 @@ DeleteFileA after closing: ret=1 err=-
 FILE_FLAG_DELETE_ON_CLOSE: created yes err=0, exists while open yes
 after close: attributes 0xFFFFFFFF err=2
 fswrite: done
+<<< exit code=0
 >>> fswrite.exe names
 == names
 MoveFileA rename: ret=1 err=-, old gone yes, new size 7
@@ -55,6 +58,7 @@ after clearing it: ret=0 err=2
 created a long name: size 4, short name [A Long Created Name.txt] err=-
 opened by its short name: size 4294967295
 fswrite: done
+<<< exit code=0
 >>> fswrite.exe dirs
 == dirs
 CreateDirectoryA: ret=1 err=-, attributes 0x00000010
@@ -67,11 +71,13 @@ RemoveDirectoryA(a file): ret=0 err=267
 100 files in one directory: all written yes, listed 100
 emptied and removed: 1
 fswrite: done
+<<< exit code=0
 >>> fswrite.exe times
 == times
 SetFileTime(last write = 2001-02-03 04:05:06): ret=1 err=-
 read back: 2001-02-03 04:05:06
 fswrite: done
+<<< exit code=0
 >>> fswrite.exe crt
 == crt
 text-mode write of two lines: 20 bytes on disk
@@ -82,3 +88,4 @@ rename: 0, size under the new name 4
 remove: 0
 remove again: -1 errno 2
 fswrite: done
+<<< exit code=0

@@ -8,6 +8,7 @@ pointers: function table: ok
 esp: 4-byte aligned at entry: ok
 stack: 256 KiB usable: ok
 bare: failed mask 0x00000000
+<<< exit code=0
 >>> bare.exe
 bss: 64 KiB zero: ok
 data: initializers: ok
@@ -18,6 +19,7 @@ pointers: function table: ok
 esp: 4-byte aligned at entry: ok
 stack: 256 KiB usable: ok
 bare: failed mask 0x00000000
+<<< exit code=0
 >>> bare.exe ret
 ret: returning 42 from the entry point
 <<< exit code=42
@@ -28,8 +30,10 @@ exit-code: ExitProcess(0x87654321)
 WriteFile from a kernel address: ret=0 err=998
 WriteFile from an unmapped user address: ret=0 err=1784
 badptr: survived
+<<< exit code=0
 >>> bare.exe data-exec
 data-exec: returned 42
+<<< exit code=0
 >>> bare.exe null-write
 fault: null-write
 <<< exit code=-1073741819

@@ -15,6 +15,7 @@ GetModuleFileNameA: name RUNTIME.EXE, length matches: yes, absolute: yes, err=-
 _pgmptr matches: yes
 GetModuleFileNameA into 4 bytes: ret=4 terminated at 3: no err=-
 runtime: done
+<<< exit code=0
 >>> runtime.exe version
 == version
 GetVersion: 0x08930005 (major 5, minor 0, build 2195, nt yes)
@@ -22,6 +23,7 @@ GetVersionExA: ret=1 5.0 build 2195 platform 2 csd [Service Pack 4] err=-
 GetVersionExA with a bad size: ret=0 err=122
 CRT: _osver 0x893 _winmajor 5 _winminor 0 _winver 0x500
 runtime: done
+<<< exit code=0
 >>> runtime.exe module
 == module
 GetModuleHandleA(NULL): 0x00400000
@@ -39,6 +41,7 @@ LoadLibraryA(kernel32.dll): same module yes err=-
 FreeLibrary: ret=1 err=-
 LoadLibraryA(nosuch.dll): ret null yes err=126
 runtime: done
+<<< exit code=0
 >>> runtime.exe teb
 == teb
 fs:[18h] self pointer: yes
@@ -52,6 +55,7 @@ PEB BeingDebugged: 0
 PEB ImageBaseAddress matches: yes
 PEB ProcessHeap matches: yes
 runtime: done
+<<< exit code=0
 >>> runtime.exe lasterror
 == lasterror
 set then get: 1234
@@ -63,6 +67,7 @@ FormatMessageA(2): ret=44 [The system cannot find the file specified.]
 FormatMessageA(5): ret=19 [Access is denied.]
 FormatMessageA(19088743): ret=0 err=317
 runtime: done
+<<< exit code=0
 >>> runtime.exe env
 == env
 SetEnvironmentVariableA: ret=1 err=-
@@ -81,6 +86,7 @@ CRT getenv after _putenv: [crt value]
 OS sees the _putenv variable: ret=9 [crt value]
 ExpandEnvironmentStringsA: ret=26 [[crt value] [%F2KNOSUCH%]] err=-
 runtime: done
+<<< exit code=0
 >>> runtime.exe locale
 == locale
 GetACP: 1252
@@ -199,6 +205,7 @@ setlocale(LC_ALL, ""): [English_United States.1252]
 user locale: toupper(E9) C9 isalpha(E9) 1
 user locale: %.2f of 1.5 [1.50]
 runtime: done
+<<< exit code=0
 >>> runtime.exe crt
 == crt
 sprintf ints: -42|42|ff|FF|10|z|str|   42|42   |00042|+42
@@ -228,6 +235,7 @@ strstr: stack, strchr: ,b,c, strrchr: ,c
 _itoa: ff
 _stricmp: 0, strncmp: 0
 runtime: done
+<<< exit code=0
 >>> runtime.exe seh
 == seh
 write to NULL: handled yes code 0xC0000005 flags 0 params 2 info 1 0
@@ -245,6 +253,7 @@ __leave: try, finally
 normal exit: try, finally
 stack overflow: handled yes code 0xC00000FD deeper than 256 frames yes
 runtime: done
+<<< exit code=0
 >>> runtime.exe unhandled
 == unhandled
 SetUnhandledExceptionFilter: a previous filter no
@@ -257,3 +266,4 @@ exit: calling exit(7)
 atexit: third registered
 atexit: second registered
 atexit: first registered
+<<< exit code=7

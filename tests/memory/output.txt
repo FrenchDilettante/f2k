@@ -5,6 +5,7 @@ application range 0x00010000..0x7FFEFFFF
 processor architecture 0, processors 1
 GlobalMemoryStatus: length 32, total virtual 0x7FFE0000, physical at least 16 MiB yes
 memory: done
+<<< exit code=0
 >>> memory.exe malloc
 == malloc
 1000 small blocks: failures 0, 8-byte aligned yes, contents intact yes
@@ -27,6 +28,7 @@ realloc across the small-block threshold and back: ok
 _msize: malloc(100) -> 104, malloc(5000) -> 5008
 _heapchk: -2
 memory: done
+<<< exit code=0
 >>> memory.exe heap
 == heap
 GetProcessHeap: non-null yes
@@ -48,6 +50,7 @@ HeapDestroy(capped): ret=1 err=-
 CRT and process heap blocks still intact: yes
 HEAP_GENERATE_EXCEPTIONS over the cap: raised yes code 0xC0000017
 memory: done
+<<< exit code=0
 >>> memory.exe local
 == local
 LocalAlloc(fixed, zeroinit): zero yes, LocalSize 100
@@ -62,6 +65,7 @@ GlobalAlloc(moveable, zeroinit): zero yes, handle from pointer yes
 GlobalReAlloc(9000): contents intact, GlobalSize 9000
 GlobalFree(moveable): returned null yes
 memory: done
+<<< exit code=0
 >>> memory.exe virtual
 == virtual
 reserve 1 byte: non-null yes, 64 KiB aligned yes err=-
@@ -96,6 +100,7 @@ reserve with a bad protection: returned 0x00000000 err=87
 reserve at 0x80000000: returned 0x00000000 err=87
 0x80000000: VirtualQuery ret=0 err=87
 memory: done
+<<< exit code=0
 >>> memory.exe protect
 == protect
 VirtualProtect read-only: ret=1 old 0x4 err=-
@@ -119,6 +124,7 @@ IsBadCodePtr(function) 0
 IsBadStringPtrA(literal) 0
 IsBadReadPtr(0x80000000) 1
 memory: done
+<<< exit code=0
 >>> memory.exe image
 == image
 headers: state 0x1000 protect 0x2 type 0x1000000 region 0x1000 allocprotect 0x80
@@ -128,6 +134,7 @@ section .rdata: protect 0x2 type 0x1000000 same allocation yes
 section .data: protect 0x8 type 0x1000000 same allocation yes
 past the image end: state 0x10000 protect 0x1 type 0x0 region 0xC000 allocprotect 0x0
 memory: done
+<<< exit code=0
 >>> memory.exe mapping
 == mapping
 CreateFileMappingA(paging file, 1 MiB): non-null yes err=0
@@ -146,6 +153,7 @@ UnmapViewOfFile: ret=1 err=-
 the other view keeps the data: yes
 UnmapViewOfFile again: ret=0 err=487
 memory: done
+<<< exit code=0
 >>> memory.exe stack
 == stack
 main: 256 KiB of recursion ok
@@ -158,3 +166,4 @@ child with a 4 MiB stack: 3 MiB of recursion ok, reservation 0x400000
 child with the default stack: 512 KiB of recursion ok, reservation 0x100000
 overflowing child: caught code 0xC00000FD, survived yes
 memory: done
+<<< exit code=0

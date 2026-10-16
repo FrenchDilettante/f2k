@@ -27,7 +27,8 @@ a file used as a directory: INVALID_HANDLE_VALUE err=3
 an empty path: INVALID_HANDLE_VALUE err=3
 a 300-character path: INVALID_HANDLE_VALUE err=206
 CREATE_NEW on an existing file: INVALID_HANDLE_VALUE err=80
-write access to a read-only file: INVALID_HANDLE_VALUE err=5
+write access to a read-only file: opened err=0
+write access to a read-only file: first byte 00 (0 read)
 SetCurrentDirectoryA(image directory): ret=1 err=-
 GetCurrentDirectoryA matches: yes
 GetCurrentDirectoryA into 2 bytes: returns the size needed yes err=-
@@ -42,50 +43,53 @@ SetCurrentDirectoryA(missing): ret=0 err=2
 GetFullPathNameA: length matches yes, under the image directory yes, file part [SMALL.TXT] err=-
 GetShortPathNameA(long name): final component [Long File Name.txt] err=-
 files: done
+<<< exit code=0
 >>> files.exe read
 == read
-chunks of 1 up to 2048: failed, 0 bytes in 0 reads
-chunks of 7 up to 16384: failed, 0 bytes in 0 reads
-chunks of 511 up to 150000: failed, 0 bytes in 0 reads
-chunks of 512 up to 150000: failed, 0 bytes in 0 reads
-chunks of 513 up to 150000: failed, 0 bytes in 0 reads
-chunks of 4096 up to 150000: failed, 0 bytes in 0 reads
-chunks of 65536 up to 150000: failed, 0 bytes in 0 reads
-chunks of 200000 up to 200000: failed, 0 bytes in 0 reads
-read across the end: ret=0 got 0, bytes yes
-read at the end: ret=0 got 0 err=6
-zero-byte read: ret=0 got 0
-read past the end: ret=0 got 0
-read into a read-only buffer: ret=0 got 0 err=6, position after 4294967295
+chunks of 1 up to 2048: ok, 2048 bytes in 2048 reads
+chunks of 7 up to 16384: ok, 16384 bytes in 2341 reads
+chunks of 511 up to 150000: ok, 150000 bytes in 294 reads
+chunks of 512 up to 150000: ok, 150000 bytes in 293 reads
+chunks of 513 up to 150000: ok, 150000 bytes in 293 reads
+chunks of 4096 up to 150000: ok, 150000 bytes in 37 reads
+chunks of 65536 up to 150000: ok, 150000 bytes in 3 reads
+chunks of 200000 up to 200000: ok, 150000 bytes in 2 reads
+read across the end: ret=1 got 10, bytes yes
+read at the end: ret=1 got 0 err=-
+zero-byte read: ret=1 got 0
+read past the end: ret=1 got 0
+read into a read-only buffer: ret=0 got 0 err=998, position after 0
 empty file: ret=1 got 0
-512-byte file read with 1024: got 0, bytes no
-then: ret=0 got 0
-4096-byte file in four 1024-byte reads: failed, then got 0
+512-byte file read with 1024: got 512, bytes yes
+then: ret=1 got 0
+4096-byte file in four 1024-byte reads: ok, then got 0
 SMALL.TXT: got 31, text matches yes
 files: done
+<<< exit code=0
 >>> files.exe seek
 == seek
-FILE_BEGIN 100: 4294967295
-FILE_CURRENT +50: 4294967295, bytes there no
-FILE_CURRENT -20: 4294967295
-FILE_END -10: 4294967295, read 0 bytes yes
-FILE_END 0: 4294967295
-FILE_END +1000: 4294967295, read there got 0
-FILE_BEGIN -1: 0xFFFFFFFF err=131, position kept 4294967295
-FILE_CURRENT -200000: 0xFFFFFFFF err=6, position kept 4294967295
-with a high dword of 0: 4294967295 high -1 err=6
-to 4 GiB (high dword 1): 0xFFFFFFFF high -1 err=6
-read back: 0xFFFFFFFF high 0
-FILE_END -5 as a 64-bit distance: 4294967295 high -1
+FILE_BEGIN 100: 100
+FILE_CURRENT +50: 150, bytes there yes
+FILE_CURRENT -20: 134
+FILE_END -10: 149990, read 10 bytes yes
+FILE_END 0: 150000
+FILE_END +1000: 151000, read there got 0
+FILE_BEGIN -1: 0xFFFFFFFF err=131, position kept 151000
+FILE_CURRENT -200000: 0xFFFFFFFF err=131, position kept 151000
+with a high dword of 0: 5 high 0 err=-
+to 4 GiB (high dword 1): 0x00000000 high 1 err=-
+read back: 0x00000000 high 1
+FILE_END -5 as a 64-bit distance: 149995 high 0
 bad move method: 0xFFFFFFFF err=87
 closed handle: 0xFFFFFFFF err=6
 files: done
+<<< exit code=0
 >>> files.exe meta
 == meta
-GetFileSize(BIG.BIN): 4294967295 high 7
-GetFileType(file): 0
-GetFileInformationByHandle: ret=0 attributes 0x132F50 size 1244812 high 1245008 links 1245104 err=6
-GetFileTime: ret=0 write time set yes
+GetFileSize(BIG.BIN): 150000 high 0
+GetFileType(file): 1
+GetFileInformationByHandle: ret=1 attributes 0x80 size 150000 high 0 links 1 err=-
+GetFileTime: ret=1 write time set yes
 GetFileSize(EMPTY.DAT): 0
 GetFileSize(bogus): 0xFFFFFFFF err=6
 GetFileAttributesA(DATA\SMALL.TXT): 0x00000080 err=-
@@ -102,22 +106,31 @@ GetDriveTypeA(its root): 4
 GetDiskFreeSpaceA: ret=1 bytes per sector 1 err=-
 GetVolumeInformationA: ret=1 max component 255 file system [VBoxSharedFolderFS] err=-
 files: done
+<<< exit code=0
 >>> files.exe find
 == find
-find DATA\*: 8 entries, ended with err=18
+find DATA\*: 12 entries, ended with err=18
   [.] short [] attributes 0x10 size 0
   [..] short [] attributes 0x10 size 0
+  [.gitignore] short [] attributes 0x82 size 107
+  [BIG.BIN] short [] attributes 0x80 size 150000
   [EMPTY.DAT] short [] attributes 0x80 size 0
+  [EXACT4K.BIN] short [] attributes 0x80 size 4096
+  [EXACT512.BIN] short [] attributes 0x80 size 512
   [HIDDEN.TXT] short [] attributes 0x80 size 8
   [Long File Name.txt] short [] attributes 0x80 size 11
   [RDONLY.TXT] short [] attributes 0x80 size 11
   [SMALL.TXT] short [] attributes 0x80 size 31
   [SUB] short [] attributes 0x10 size 0
   FindClose: ret=1 err=-
-find DATA\*.*: 8 entries, ended with err=18
+find DATA\*.*: 12 entries, ended with err=18
   [.] short [] attributes 0x10 size 0
   [..] short [] attributes 0x10 size 0
+  [.gitignore] short [] attributes 0x82 size 107
+  [BIG.BIN] short [] attributes 0x80 size 150000
   [EMPTY.DAT] short [] attributes 0x80 size 0
+  [EXACT4K.BIN] short [] attributes 0x80 size 4096
+  [EXACT512.BIN] short [] attributes 0x80 size 512
   [HIDDEN.TXT] short [] attributes 0x80 size 8
   [Long File Name.txt] short [] attributes 0x80 size 11
   [RDONLY.TXT] short [] attributes 0x80 size 11
@@ -151,24 +164,30 @@ find DATA: 1 entries, ended with err=18
 find DATA\*.XYZ: INVALID_HANDLE_VALUE err=2
 find NODIR\*: INVALID_HANDLE_VALUE err=3
 files: done
+<<< exit code=0
 >>> files.exe handles
 == handles
 64 handles to one file: opened 64
-two opens keep independent positions: 4294967295 and 4294967295
-a duplicated handle shares its position: original now at 4294967295, byte no
+two opens keep independent positions: 2 and 1
+a duplicated handle shares its position: original now at 3, byte yes
 second open of a file opened without sharing: INVALID_HANDLE_VALUE err=32
 exclusive open of a file already open: INVALID_HANDLE_VALUE err=32
 close: ret=1 err=-
 close again: ret=0 err=6
 read from the closed handle: ret=0 err=6
 files: done
+<<< exit code=0
 >>> files.exe crt
 == crt
-fopen rb + fread: 0 bytes yes
+fopen rb + fread: 1000 bytes yes
+fseek/ftell: size 150000, last byte yes, then EOF yes
+fclose: 0
 text mode fgets: length 30, ends with a bare newline yes
 binary mode fgets: length 31
 fopen(missing): null yes errno 2
-_open: a descriptor above the standard three no
+_open: a descriptor above the standard three yes
+_read 1000: 1000, _lseek to the end: 150000, _eof 1
+_close: 0
 _stat(SMALL.TXT): 0 size 31 regular yes
 _stat(DATA\SUB): 0 directory yes
 _stat(missing): -1 errno 2
@@ -177,11 +196,21 @@ _access(SMALL.TXT, 0): 0
 _access(RDONLY.TXT, write): 0 errno 0
 _fullpath folds .. like GetFullPathNameA: yes
 files: done
+<<< exit code=0
 >>> files.exe mapping
 == mapping
-CreateFileMappingA(BIG.BIN, read-only, whole file): created no err=87
+CreateFileMappingA(BIG.BIN, read-only, whole file): created yes err=0
+whole-file view: mapped yes, contents yes
+view at offset 64 KiB: contents yes
+view at offset 4 KiB: null yes err=1132
+a writable view of a read-only mapping: null yes err=5
+a write through the read-only view: faulted with 0xC0000005
+read-only mapping larger than the file: created no err=8
+mapping an empty file: created no err=1006
 files: done
+<<< exit code=0
 >>> files.exe concurrent
 == concurrent
-three threads reading BIG.BIN at once (512 x1, 4093 x2, 8192 x3): failed failed failed
+three threads reading BIG.BIN at once (512 x1, 4093 x2, 8192 x3): ok ok ok
 files: done
+<<< exit code=0

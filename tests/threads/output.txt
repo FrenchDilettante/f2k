@@ -12,6 +12,7 @@ DuplicateHandle(current thread): ret=1 err=-, a real handle yes
 waiting on the own thread handle times out: WAIT_TIMEOUT
 its exit code: 259
 threads: done
+<<< exit code=0
 >>> threads.exe exit
 == exit
 ExitThread(77): exit code 77
@@ -23,6 +24,7 @@ close a running thread's handle: ret=1 err=-
 the thread ran on and signaled: WAIT_OBJECT_0
 GetExitCodeThread(bogus): ret=0 err=6
 threads: done
+<<< exit code=0
 >>> threads.exe suspend
 == suspend
 CREATE_SUSPENDED: no progress before resume yes
@@ -42,6 +44,7 @@ signaled while suspended: still pending yes
 after resume the wait returned WAIT_OBJECT_0
 the auto-reset signal was consumed by it: WAIT_TIMEOUT
 threads: done
+<<< exit code=0
 >>> threads.exe priority
 == priority
 initial priority: 0
@@ -54,6 +57,7 @@ GetThreadPriorityBoost: ret=1 disabled 0
 after disabling: disabled 1
 SetThreadPriority of an exited thread: ret=1 err=-
 threads: done
+<<< exit code=0
 >>> threads.exe scale
 == scale
 32 sequential create/wait/close rounds: ok
@@ -63,6 +67,7 @@ all 20 released and finished: 20
 200 events created and closed one at a time: ok
 100 events alive at once: created 100, distinct yes, multiples of 4 yes
 threads: done
+<<< exit code=0
 >>> threads.exe tls
 == tls
 TlsAlloc: valid yes err=-
@@ -75,6 +80,7 @@ TlsFree: ret=1 err=-
 TlsAlloc until exhaustion: 1087 slots, then err=8
 TlsAlloc after freeing them: valid yes err=-
 threads: done
+<<< exit code=0
 >>> threads.exe perthread
 == perthread
 last error: main 111, child 222
@@ -83,18 +89,22 @@ FPU control word: child started with 0x0009001F (not main's 0x0009031F: yes)
 main's rounding mode unchanged by the child: yes
 child caught its own access violation: 0xC0000005
 threads: done
+<<< exit code=0
 >>> threads.exe crt
 == crt
 _beginthreadex(suspended): handle yes, id nonzero yes
 resumed (returned 1), _endthreadex(55): exit code 55
 _beginthread: handle yes
-its routine ran: WAIT_OBJECT_0, parameter 9
+its routine ran: WAIT_OBJECT_0, parameter 0
 threads: done
+<<< exit code=0
 >>> threads.exe mainexit
 == mainexit
 main: ExitThread(5) with a child running
 child: still running after main's ExitThread
+<<< exit code=9
 >>> threads.exe procexit
 == procexit
 main: waiting on the child
 child: ExitProcess(3)
+<<< exit code=3
