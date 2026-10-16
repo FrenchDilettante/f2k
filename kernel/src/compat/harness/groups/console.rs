@@ -14,6 +14,7 @@ pub const MEMBERS: &[&str] = &[
     "CloseHandle",
     "FlushFileBuffers",
     "GetLastError",
+    "SetLastError",
     "SetFilePointer",
     "SetStdHandle",
 ];
@@ -207,15 +208,6 @@ fn flush_file_buffers_succeeds() {
     assert_eq!(fixture.kernel.calls(), []);
 }
 
-/// GetLastError's floor: zero, always. Ledger: console/GetLastError.
-#[test]
-#[ignore = "ledger console/GetLastError: unpinned floor"]
-fn get_last_error_answers_with_the_floor() {
-    let mut fixture = Fixture::new();
-    assert_eq!(fixture.call("GetLastError", &[]), 0);
-    assert_eq!(fixture.kernel.calls(), []);
-}
-
 /// SetStdHandle's floor: zero (FALSE), and the standard handles stay as replayed. Ledger:
 /// console/SetStdHandle.
 #[test]
@@ -250,16 +242,17 @@ fn set_file_pointer_moves_by_each_method() {
             .nt_query_information_file(file)
             .unwrap()
             .position,
-        size + 16
+        (size + 16) as u64
     );
 }
 
-/// SetFilePointer accepts the high-word pointer and ignores it: positions are 32-bit. Ledger:
+/// SetFilePointer honors the high-word pointer: the distance is the 64-bit (high, low) pair, the
+/// return its new low dword, and the new high dword is written back. Ledger:
 /// console/SetFilePointer.
 #[test]
 #[ignore = "ledger console/SetFilePointer: the existing path seeks in the live process's files \
             (target-only)"]
-fn set_file_pointer_ignores_the_high_word() {
+fn set_file_pointer_honors_the_high_word() {
     let mut fixture = Fixture::new();
     let file = fixture.kernel.nt_create_file(b"fileio.exe").unwrap();
     let high = fixture.stage(&5u32.to_le_bytes());

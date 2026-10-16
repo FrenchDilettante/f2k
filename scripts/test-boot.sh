@@ -21,6 +21,9 @@
 #        BOOT_CONTIGUOUS    newline-separated strings that must match on
 #                           consecutive lines, in order (an uninterrupted
 #                           block), in addition to the expected strings
+#        BOOT_CMDLINE       the user program's command line, "<program>
+#                           [arguments]", passed after the kernel command
+#                           line's "--" separator (kernel ELF boots only)
 #
 # Every argument after the image is an expected COM1 string (a substring of
 # a line); the test passes only once all of them have appeared. With no extra
@@ -132,6 +135,9 @@ case "$IMAGE" in
                    exit 1
                fi
                set -- "$@" -drive "file=$BOOT_DISK,format=raw,if=ide"
+           fi
+           if [ -n "${BOOT_CMDLINE:-}" ]; then
+               set -- "$@" -append "-- $BOOT_CMDLINE"
            fi ;;
 esac
 

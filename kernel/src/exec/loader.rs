@@ -86,12 +86,12 @@ pub fn read_image_file(
     Ok(file.size as usize)
 }
 
-/// Load the program at `path` on the boot volume as the new current process (see [`load_image`])
-/// and return its entry point. A file that cannot be read is reported on COM1 and halts, as a
+/// Load the program at `path` on the boot volume as the new current process (see [`load_image`]),
+/// with `command_line` as what its GetCommandLineA reports, and return its entry point. A file that cannot be read is reported on COM1 and halts, as a
 /// rejected image does. The read blocks on the disk: the boot context halts between interrupts
 /// until it completes.
 #[cfg(target_arch = "x86")]
-pub fn load_path(path: &'static [u8], name: &'static str) -> u32 {
+pub fn load_path(path: &'static [u8], name: &'static str, command_line: &[u8]) -> u32 {
     // SAFETY: single-threaded boot (or the idle thread's reap step), the only staging user.
     let staging = unsafe { &mut (*core::ptr::addr_of_mut!(FILE_STAGING)).0 };
     let shown = core::str::from_utf8(path).unwrap_or("(not ASCII)");
@@ -109,7 +109,7 @@ pub fn load_path(path: &'static [u8], name: &'static str) -> u32 {
             crate::halt()
         }
     };
-    load_image(&staging[..length], path, name)
+    load_image(&staging[..length], path, name, command_line)
 }
 
 /// The image staging size: the largest in-memory image the loader accepts. Sized like the file
@@ -127,11 +127,11 @@ static mut IMAGE_STAGING: crate::mem::paging::Aligned<[u8; STAGING_SIZE]> =
 /// and extends as far as the request asks — so only its 64 KiB minimum is reserved here; a larger
 /// reservation that reaches an image's pages is not yet detected (no address-space bookkeeping
 /// exists).
-const SYSTEM_REGIONS: [(&str, u32, u32); 8] = {
+const SYSTEM_REGIONS: [(&str, u32, u32); 9] = {
     use crate::user::userheap::{CRT_REGION_BASE, HEAP_REGION_BASE, HEAP_REGION_MAX};
     use crate::user::{
-        PARAMS_PAGE, TEB_PAGE, THREAD_STACK_PAGES, THREAD_STACK_REGION, THREAD_TEB_REGION,
-        USER_STACK_LOW_PAGE, USER_STACK_TOP,
+        PARAMS_PAGE, PEB_PAGE, TEB_PAGE, THREAD_STACK_PAGES, THREAD_STACK_REGION,
+        THREAD_TEB_REGION, USER_STACK_LOW_PAGE, USER_STACK_TOP,
     };
     const PAGE: u32 = crate::mem::paging::PAGE_SIZE;
     const CHILDREN: u32 = crate::process::CHILD_THREADS as u32;
@@ -140,6 +140,7 @@ const SYSTEM_REGIONS: [(&str, u32, u32); 8] = {
         ("main thread stack", USER_STACK_LOW_PAGE, USER_STACK_TOP),
         ("main thread TEB", TEB_PAGE, TEB_PAGE + PAGE),
         ("process parameters", PARAMS_PAGE, PARAMS_PAGE + PAGE),
+        ("process environment block", PEB_PAGE, PEB_PAGE + PAGE),
         (
             "child thread TEBs",
             THREAD_TEB_REGION,
@@ -150,7 +151,11 @@ const SYSTEM_REGIONS: [(&str, u32, u32); 8] = {
             THREAD_STACK_REGION,
             THREAD_STACK_REGION + CHILDREN * THREAD_STACK_PAGES * PAGE,
         ),
-        ("kernel32 thunk page", THUNK_PAGE, THUNK_PAGE + PAGE),
+        (
+            "kernel32 thunk and native pages",
+            THUNK_PAGE,
+            THUNK_PAGE + 2 * PAGE,
+        ),
         (
             "heap region",
             HEAP_REGION_BASE,
@@ -199,7 +204,7 @@ fn page_writable(image: &Image, page_rva: u32) -> bool {
 /// thread's ladder. `name` names the process and stages the command line; `path`, the file's volume
 /// path, stages the module file name.
 #[cfg(target_arch = "x86")]
-pub fn load_image(file: &[u8], path: &[u8], name: &'static str) -> u32 {
+pub fn load_image(file: &[u8], path: &[u8], name: &'static str, command_line: &[u8]) -> u32 {
     use crate::mem::paging::{self, PAGE_SIZE};
     use crate::user::{TEB_PAGE, USER_STACK_LOW_PAGE, USER_STACK_PAGE, USER_STACK_TOP};
 
@@ -273,13 +278,20 @@ pub fn load_image(file: &[u8], path: &[u8], name: &'static str) -> u32 {
         paging::map_user_page(stack_page, stack_frame, true);
     }
 
-    // The thread block page, reached through the TEB segment.
-    let teb_frame = paging::allocate_frame_phys();
-    paging::init_frame(teb_frame, 0, &[]);
-    paging::map_user_page(TEB_PAGE, teb_frame, true);
+    // The thread block page, reached through the TEB segment, and the process block it points at.
+    let process = crate::process::current();
+    crate::user::teb::map_teb(&crate::user::teb::TebInit {
+        teb: TEB_PAGE,
+        stack_base: USER_STACK_TOP,
+        stack_limit: USER_STACK_LOW_PAGE,
+        process_id: process.id(),
+        thread_id: process.main_thread().thread_id(),
+        peb: crate::user::PEB_PAGE,
+    });
+    crate::user::teb::map_peb(image.image_base, crate::user::userheap::HEAP_HANDLE);
 
-    // The process parameters page (staged replays).
-    crate::compat::kernel32::init_params(name, path);
+    // The process parameters page: the command line, the environment, the module's own path.
+    crate::compat::kernel32::init_params(command_line, path);
 
     crate::serial_println!(
         "F2K: image loaded (base {:#010x}, entry {:#010x}, {} pages, {} imports snapped)",
@@ -431,17 +443,21 @@ mod tests {
     #[test]
     fn images_covering_a_system_region_are_refused() {
         use crate::compat::kernel32::THUNK_PAGE;
+        const REGION: Option<&str> = Some("kernel32 thunk and native pages");
+        assert_eq!(system_region_overlapping(THUNK_PAGE, 0x1000), REGION);
+        // The native page, the region's second.
         assert_eq!(
-            system_region_overlapping(THUNK_PAGE, 0x1000),
-            Some("kernel32 thunk page")
+            system_region_overlapping(THUNK_PAGE + 0x1000, 0x1000),
+            REGION
         );
+        assert_eq!(system_region_overlapping(THUNK_PAGE + 0x2000, 0x1000), None);
         assert_eq!(
             system_region_overlapping(THUNK_PAGE - 0x1_0000, 0x1_0000),
             None
         );
         assert_eq!(
             system_region_overlapping(THUNK_PAGE - 0x1_0000, 0x1_1000),
-            Some("kernel32 thunk page")
+            REGION
         );
         // A 16 MiB image at the corpus base reaches the child-thread regions.
         assert_eq!(

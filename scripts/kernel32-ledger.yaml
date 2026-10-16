@@ -170,17 +170,16 @@ exports:
       - {name: flush_file_buffers_succeeds, enabled: false}
   - export: GetLastError
     group: console
-    status: unpinned
-    reason: >-
-      floor (always zero): no service on the surface sets a last error, so its contract is not observable
-    tests:
-      - {name: get_last_error_answers_with_the_floor, enabled: false}
+    status: pinned
+  - export: SetLastError
+    group: console
+    status: pinned
   - export: SetFilePointer
     group: console
     status: dumped
     tests:
       - {name: set_file_pointer_moves_by_each_method, enabled: false}
-      - {name: set_file_pointer_ignores_the_high_word, enabled: false}
+      - {name: set_file_pointer_honors_the_high_word, enabled: false}
       - {name: set_file_pointer_refuses_bad_targets_and_methods, enabled: false}
       - {name: set_file_pointer_refuses_non_file_handles, enabled: false}
   - export: SetStdHandle
@@ -398,3 +397,33 @@ exports:
     status: dumped
     tests:
       - {name: virtual_free_succeeds_without_freeing, enabled: false}
+  - export: GetProcessHeap
+    group: heap
+    status: pinned
+  - export: GetCurrentThreadId
+    group: threads
+    status: pinned
+  - export: GetCurrentProcessId
+    group: threads
+    status: pinned
+  - export: GetCurrentThread
+    group: threads
+    status: pinned
+  - export: InterlockedIncrement
+    group: threads
+    status: pinned
+  - export: InterlockedDecrement
+    group: threads
+    status: pinned
+  - export: InterlockedExchange
+    group: threads
+    status: pinned
+  - export: InterlockedExchangeAdd
+    group: threads
+    status: pinned
+  - export: InterlockedCompareExchange
+    group: threads
+    status: pinned
+  - export: SetErrorMode
+    group: termination
+    status: pinned

@@ -26,7 +26,7 @@
 
 use super::boundary::{AddressSpace, KernelBoundary};
 use super::fake::{FakeKernel, HEAP_REGION_BASE, HEAP_REGION_MAX, MEM_COMMIT, PAGE_SIZE};
-use crate::compat::kernel32::SERVICES;
+use crate::compat::kernel32::{NATIVES, SERVICES};
 use crate::user::userheap::{alloc_block, free_block, realloc_block, HEADER_SIZE};
 use crate::user::TrapFrame;
 
@@ -48,8 +48,8 @@ pub struct Signature {
 
 use Arg::{Pointer as P, Value as V};
 
-/// The public prototypes of the 51 exports.
-pub const SIGNATURES: [Signature; 51] = [
+/// The public prototypes of the 62 exports.
+pub const SIGNATURES: [Signature; 62] = [
     sig("ExitProcess", &[V("uExitCode")]),
     sig("CloseHandle", &[V("hObject")]),
     sig(
@@ -238,6 +238,20 @@ pub const SIGNATURES: [Signature; 51] = [
             P("lpOverlapped"),
         ],
     ),
+    sig("SetLastError", &[V("dwErrCode")]),
+    sig("SetErrorMode", &[V("uMode")]),
+    sig("GetCurrentThreadId", &[]),
+    sig("GetCurrentProcessId", &[]),
+    sig("GetCurrentThread", &[]),
+    sig("GetProcessHeap", &[]),
+    sig("InterlockedIncrement", &[P("lpAddend")]),
+    sig("InterlockedDecrement", &[P("lpAddend")]),
+    sig("InterlockedExchange", &[P("Target"), V("Value")]),
+    sig("InterlockedExchangeAdd", &[P("Addend"), V("Value")]),
+    sig(
+        "InterlockedCompareExchange",
+        &[P("Destination"), V("Exchange"), V("Comperand")],
+    ),
 ];
 
 const fn sig(export: &'static str, args: &'static [Arg]) -> Signature {
@@ -257,9 +271,12 @@ pub fn prototype_arg_bytes(export: &str) -> u32 {
     4 * signature(export).args.len() as u32
 }
 
-/// The argument block the registry's stub pops for `export`.
+/// The argument block the surface's code pops for `export` (a service's stub or a native body).
 pub fn registry_arg_bytes(export: &str) -> u32 {
-    registry_entry(export).1
+    crate::compat::kernel32::exports()
+        .find(|&(name, _)| name == export)
+        .unwrap_or_else(|| panic!("{export} is not on the surface"))
+        .1
 }
 
 fn registry_entry(export: &str) -> (&'static str, u32, crate::user::syscall::ServiceFn) {
@@ -289,6 +306,9 @@ enum Route {
 }
 
 fn route(export: &str) -> Route {
+    if NATIVES.iter().any(|&(name, ..)| name == export) {
+        return Route::TargetOnly("a native export runs in user mode, on the calling thread's TEB");
+    }
     match export {
         "HeapAlloc" | "HeapCreate" | "HeapDestroy" | "HeapFree" | "HeapReAlloc" => Route::Heap,
         // The copy reads the parameters page through a raw kernel-side read; only the refusals
@@ -298,6 +318,7 @@ fn route(export: &str) -> Route {
             "the staged-name copy reads the parameters page directly",
         ),
         "ExitProcess" => Route::TargetOnly("the process exit runs through the scheduler"),
+        "SetErrorMode" => Route::TargetOnly("the error mode lives in the live process record"),
         "VirtualAlloc" => {
             Route::TargetOnly("the CRT region maps pages into the live address space")
         }
@@ -630,17 +651,17 @@ pub fn assert_argument_blocks(members: &[&str]) {
 mod tests {
     use super::*;
 
-    /// The prototypes cover the registry exactly, once each.
+    /// The prototypes cover the surface exactly, once each.
     #[test]
     fn prototypes_cover_the_registry() {
-        for (name, ..) in SERVICES {
+        for (name, _) in crate::compat::kernel32::exports() {
             assert_eq!(
                 SIGNATURES.iter().filter(|s| s.export == name).count(),
                 1,
                 "{name}"
             );
         }
-        assert_eq!(SIGNATURES.len(), SERVICES.len());
+        assert_eq!(SIGNATURES.len(), crate::compat::kernel32::exports().count());
     }
 
     /// The fence: every fenced pointer, and anything a handler adds to it, fails the user probe.

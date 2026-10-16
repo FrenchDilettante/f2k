@@ -116,7 +116,7 @@ pub enum Call {
     QueryInformationFile(u32),
     SetInformationFile {
         handle: u32,
-        position: u32,
+        position: u64,
     },
     WriteConsole {
         handle: u32,
@@ -610,13 +610,14 @@ impl KernelBoundary for FakeKernel {
         });
         let open = *self.open_file(handle)?;
         let count = open.available(buffer.len() as u32) as usize;
+        // `count` is nonzero only below the end, so the offset is within the 32-bit file.
         let read = crate::fs::fat32::read::read_at(
             &mut self.volume,
             &open.file,
-            open.position,
+            open.position as u32,
             &mut buffer[..count],
         )?;
-        self.open_file(handle)?.position = open.position + read as u32;
+        self.open_file(handle)?.position = open.position + read as u64;
         Ok(read as u32)
     }
 
@@ -629,7 +630,7 @@ impl KernelBoundary for FakeKernel {
         })
     }
 
-    fn nt_set_information_file(&mut self, handle: u32, position: u32) -> Result<(), NtStatus> {
+    fn nt_set_information_file(&mut self, handle: u32, position: u64) -> Result<(), NtStatus> {
         self.log(Call::SetInformationFile { handle, position });
         self.open_file(handle)?.position = position;
         Ok(())
@@ -714,7 +715,7 @@ mod tests {
         assert_eq!(
             kernel.nt_query_information_file(handle),
             Ok(FilePosition {
-                position: FILEIO_IMAGE.len() as u32,
+                position: FILEIO_IMAGE.len() as u64,
                 size: FILEIO_IMAGE.len() as u32
             })
         );

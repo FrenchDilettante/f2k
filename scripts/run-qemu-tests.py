@@ -7,9 +7,11 @@ image), optional cargo features to build the kernel with, and the COM1
 strings that must appear for the case to pass. Optional keys tighten
 the match: `ordered: true` (the expects must appear in order, each on a
 later line), `contiguous` (strings that must appear on consecutive
-lines: an uninterrupted block), and `forbids` (strings that fail the
-case on sight, added to the suite default, "KERNEL PANIC"). The
-per-case engine — build, boot, assert — is scripts/test-boot.sh; this
+lines: an uninterrupted block), `forbids` (strings that fail the
+case on sight, added to the suite default, "KERNEL PANIC"), and
+`cmdline` (the user program's command line, "<program> [arguments]",
+for kernel-path cases: the kernel runs that program instead of the one
+its features select). The per-case engine — build, boot, assert — is scripts/test-boot.sh; this
 script adds the suite level: case selection, per-case builds, and a
 summary.
 
@@ -81,6 +83,12 @@ def load_cases(config_path):
                 fail(config_path, f"case {name!r}: '{key}' must be a list of strings")
         if not isinstance(case.get("ordered", False), bool):
             fail(config_path, f"case {name!r}: 'ordered' must be true or false")
+        cmdline = case.get("cmdline")
+        if cmdline is not None:
+            if not isinstance(cmdline, str) or not cmdline.strip():
+                fail(config_path, f"case {name!r}: 'cmdline' must be a non-empty string")
+            if case["image"] != "kernel":
+                fail(config_path, f"case {name!r}: 'cmdline' needs image: kernel (QEMU -append)")
     return cases
 
 
@@ -131,6 +139,7 @@ def run_case(case, kernel_elf, disk_img, timeout):
     env["BOOT_ORDERED"] = "1" if case.get("ordered", False) else "0"
     env["BOOT_FORBID"] = "\n".join(DEFAULT_FORBIDS + case.get("forbids", []))
     env["BOOT_CONTIGUOUS"] = "\n".join(case.get("contiguous", []))
+    env["BOOT_CMDLINE"] = case.get("cmdline", "")
     cmd = [str(SCRIPTS / "test-boot.sh"), str(image), *case["expects"]]
     passed = subprocess.run(cmd, env=env).returncode == 0
     print(f"{PASS if passed else FAIL}: {case['name']}", flush=True)

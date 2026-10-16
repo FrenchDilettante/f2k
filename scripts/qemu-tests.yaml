@@ -534,6 +534,25 @@ cases:
   # diagnostic running. The tick is default-on kernel machinery (not
   # a fixture selection); the feature gates only the diagnostic lines
   # and the bounded tick wait.
+  # The boot command line chooses the program: no run feature, the
+  # program named after the kernel command line's "--". fileio opens its
+  # own image through the module path GetModuleFileNameA reports, now the
+  # drive-qualified C:\FILEIO.EXE, so the Win32 path resolution carries
+  # the open.
+  - name: cmdline-program
+    description: the user command line selects the program (fileio, no run feature), its module path drive-qualified (kernel path)
+    image: kernel
+    cmdline: "FILEIO.EXE"
+    ordered: true
+    expects:
+      - "F2K: command line: FILEIO.EXE"
+      - "F2K: entering ring 3"
+      - "MZ ok"
+      - "PE ok"
+      - "MZ again ok"
+      - "fileio: ok"
+      - "F2K: user process exited normally (exit code=0)"
+
   - name: irq-smoke
     description: the interrupt diagnostic boot reports the PIC remap, the live tick, the clock DPC, and the audit, then the default image exits 0 (kernel path)
     image: kernel

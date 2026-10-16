@@ -58,8 +58,8 @@ pub fn new_event(
 /// Create a child thread: a pooled record attached to the current process, its gate-stack slot, TEB
 /// page and user stack mapped, its startup ladder planted — but not readied: the service readies it
 /// once the caller's handle exists, so a thread never runs before its creator holds a way to wait
-/// on it. Returns the thread and its identifier (its pool ordinal, stable and nonzero for the
-/// thread's life). None is the program-visible failure: no free record.
+/// on it. Returns the thread and its identifier (its client id, never reused within the boot).
+/// None is the program-visible failure: no free record.
 pub fn spawn(start: u32, parameter: u32) -> Option<(*mut Thread, u32)> {
     let (thread, ordinal) = free_thread()?;
     let process = crate::process::current_mut();
@@ -84,16 +84,24 @@ pub fn spawn(start: u32, parameter: u32) -> Option<(*mut Thread, u32)> {
     thread.gate_frames = frames;
     thread.initial_stack = paging::gate_slot_top(slot as u32);
 
-    // The TEB page: the per-thread region, one page, zeroed.
-    thread.teb_va = crate::user::thread_teb_va(ordinal);
-    let teb_frame = paging::allocate_frame_phys();
-    paging::init_frame(teb_frame, 0, &[]);
-    paging::map_user_page(thread.teb_va, teb_frame, true);
-
-    // The user stack: two zeroed pages, growing down from the per-thread region's top for this
+    // The user stack's place: two pages, growing down from the per-thread region's top for this
     // ordinal.
     let stack_top =
         crate::user::THREAD_STACK_REGION + ordinal * (crate::user::THREAD_STACK_PAGES * 0x1000);
+
+    // The TEB page: the per-thread region, one page, carrying the thread's identity and stack.
+    thread.teb_va = crate::user::thread_teb_va(ordinal);
+    thread.thread_id = crate::process::new_client_id();
+    crate::user::teb::map_teb(&crate::user::teb::TebInit {
+        teb: thread.teb_va,
+        stack_base: stack_top,
+        stack_limit: stack_top - crate::user::THREAD_STACK_PAGES * 0x1000,
+        process_id: process.id(),
+        thread_id: thread.thread_id,
+        peb: crate::user::PEB_PAGE,
+    });
+
+    // The user stack: two zeroed pages below the top.
     let mut top_frame = 0;
     for page in 0..crate::user::THREAD_STACK_PAGES {
         let base = stack_top - (page + 1) * 0x1000;
@@ -126,7 +134,8 @@ pub fn spawn(start: u32, parameter: u32) -> Option<(*mut Thread, u32)> {
     // SAFETY: the thread's `initial_stack` names its freshly mapped, empty kernel-stack slot.
     unsafe { crate::sched::startup::plant(thread, &params) };
 
-    Some((thread as *mut Thread, ordinal))
+    let id = thread.thread_id;
+    Some((thread as *mut Thread, id))
 }
 
 /// A user thread's system routine: the kernel function the startup stub calls before entering the

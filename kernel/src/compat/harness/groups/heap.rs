@@ -16,6 +16,7 @@ pub const MEMBERS: &[&str] = &[
     "HeapDestroy",
     "HeapFree",
     "HeapReAlloc",
+    "GetProcessHeap",
 ];
 
 /// The CRT's HeapCreate: serialized, 4 KiB initial, growable.

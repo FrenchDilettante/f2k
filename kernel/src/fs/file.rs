@@ -3,8 +3,8 @@
 //!
 //! A process keeps a fixed set of records; a handle-table slot names one by index, and closing the
 //! handle (or ending the process) releases it. The files are read-only: a record holds the file's
-//! first cluster and size as the lookup found them, plus the position. Positions are 32-bit — the
-//! subset has no 64-bit offsets.
+//! first cluster and size as the lookup found them, plus the position. Positions are 64-bit, as
+//! Win32 file pointers are; files themselves stay within FAT32's 32-bit sizes.
 
 use super::fat32::lookup::File;
 
@@ -41,7 +41,7 @@ pub struct OpenFile {
     /// The file, as the lookup found it.
     pub file: File,
     /// Where the next read starts; may lie past the end (a read there moves nothing).
-    pub position: u32,
+    pub position: u64,
 }
 
 impl OpenFile {
@@ -51,16 +51,23 @@ impl OpenFile {
         OpenFile { file, position: 0 }
     }
 
-    /// Move the position `distance` bytes from where `method` says, returning the new position. A
-    /// target before the start, or past what 32 bits hold, is refused and the position stays.
-    /// Past the end is legal.
-    pub fn seek(&mut self, distance: i32, method: SeekMethod) -> Option<u32> {
+    /// The position `distance` bytes from where `method` says; none for a target before the start
+    /// (or past the signed 64-bit range Win32 pointers live in). Past the end is legal.
+    pub fn seek_target(&self, distance: i64, method: SeekMethod) -> Option<u64> {
         let base = match method {
             SeekMethod::Begin => 0,
-            SeekMethod::Current => self.position,
-            SeekMethod::End => self.file.size,
+            SeekMethod::Current => self.position as i64,
+            SeekMethod::End => self.file.size as i64,
         };
-        let target = u32::try_from(base as i64 + distance as i64).ok()?;
+        let target = base.checked_add(distance)?;
+        u64::try_from(target).ok()
+    }
+
+    /// Move the position `distance` bytes from where `method` says, returning the new position. A
+    /// target before the start is refused and the position stays. Past the end is legal.
+    #[cfg(test)]
+    pub fn seek(&mut self, distance: i64, method: SeekMethod) -> Option<u64> {
+        let target = self.seek_target(distance, method)?;
         self.position = target;
         Some(target)
     }
@@ -68,7 +75,9 @@ impl OpenFile {
     /// How many bytes a read of `count` at the position moves: what remains before the end, at
     /// most `count`; nothing at or past the end.
     pub fn available(&self, count: u32) -> u32 {
-        self.file.size.saturating_sub(self.position).min(count)
+        (self.file.size as u64)
+            .saturating_sub(self.position)
+            .min(count as u64) as u32
     }
 }
 
@@ -187,18 +196,21 @@ mod tests {
         assert_eq!(open.seek(500, SeekMethod::End), Some(1500));
         assert_eq!(open.available(10), 0);
         assert_eq!(
-            open.seek(i32::MAX, SeekMethod::Begin),
-            Some(i32::MAX as u32)
+            open.seek(i32::MAX as i64, SeekMethod::Begin),
+            Some(i32::MAX as u64)
         );
     }
 
-    /// A target past what 32 bits hold is refused (no 64-bit offsets).
+    /// Positions are 64-bit: past 4 GiB is a position, and reads there move nothing; only the
+    /// signed 64-bit range bounds them.
     #[test]
-    fn positions_stay_within_32_bits() {
+    fn positions_are_64_bit() {
         let mut open = OpenFile::new(file(u32::MAX - 10));
-        assert_eq!(open.seek(10, SeekMethod::End), Some(u32::MAX));
-        assert_eq!(open.seek(1, SeekMethod::Current), None);
-        assert_eq!(open.position, u32::MAX);
+        assert_eq!(open.seek(10, SeekMethod::End), Some(u32::MAX as u64));
+        assert_eq!(open.seek(1, SeekMethod::Current), Some(1 << 32));
+        assert_eq!(open.available(100), 0);
+        assert_eq!(open.seek(i64::MAX, SeekMethod::Current), None);
+        assert_eq!(open.position, 1 << 32, "a refused seek leaves the position");
     }
 
     /// A read moves what remains before the end, at most the request: all of it, the prefix that

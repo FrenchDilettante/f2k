@@ -71,7 +71,7 @@ fn start_leg(index: u32) {
     // SAFETY: suite state; single CPU, written only here.
     unsafe { core::ptr::write_volatile(core::ptr::addr_of_mut!(CURRENT), index) };
     let (path, name) = SEQUENCE[index as usize - 1];
-    let entry = crate::exec::loader::load_path(path, name);
+    let entry = crate::exec::loader::load_path(path, name, name.as_bytes());
     crate::process::threads::start_main_thread(entry, crate::user::USER_STACK_TOP);
 }
 

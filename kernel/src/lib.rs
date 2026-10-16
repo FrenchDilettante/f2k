@@ -161,6 +161,17 @@ pub extern "C" fn kmain(magic: u32, multiboot_info: u32) -> ! {
     serial_println!("Fenêtre 2000 - Windows 2000 compatible OS in Rust");
     serial_println!("Phase 1: Foundation complete");
     serial_println!("Multiboot info at {:#010x}", multiboot_info);
+    // The command line first: it lives in loader memory the frame allocator reclaims next.
+    #[cfg(target_arch = "x86")]
+    {
+        boot::cmdline::capture(multiboot_info);
+        if let Some(line) = boot::cmdline::user_command_line(boot::cmdline::kernel_command_line()) {
+            serial_println!(
+                "F2K: command line: {}",
+                core::str::from_utf8(line).unwrap_or("(not ASCII)")
+            );
+        }
+    }
 
     // Hand every usable frame (minus the kernel image) to the frame allocator.
     mem::bootmem::boot_init(multiboot_info);

@@ -36,11 +36,11 @@ pub const GROUPS: &[(&str, &[&str])] = &[
 /// The ledger, as checked in.
 const LEDGER: &str = include_str!("../../../../../scripts/kernel32-ledger.yaml");
 
-/// The groups partition the registry: every export in exactly one group, no name off the surface.
+/// The groups partition the surface: every export in exactly one group, no name off the surface.
 #[test]
 fn the_groups_partition_the_registry() {
-    use crate::compat::kernel32::SERVICES;
-    for (name, ..) in SERVICES {
+    use crate::compat::kernel32::exports;
+    for (name, _) in exports() {
         let owners: Vec<&str> = GROUPS
             .iter()
             .filter(|(_, members)| members.contains(&name))
@@ -49,7 +49,7 @@ fn the_groups_partition_the_registry() {
         assert_eq!(owners.len(), 1, "{name} belongs to {owners:?}");
     }
     let listed: usize = GROUPS.iter().map(|(_, members)| members.len()).sum();
-    assert_eq!(listed, SERVICES.len());
+    assert_eq!(listed, exports().count());
 }
 
 /// The ledger agrees with the groups: each group listed once, each export listed once under its
@@ -102,5 +102,5 @@ fn the_ledger_agrees_with_the_groups() {
             assert_eq!(listed[0].1, *group, "{member}'s ledger group");
         }
     }
-    assert_eq!(entries.len(), crate::compat::kernel32::SERVICES.len());
+    assert_eq!(entries.len(), crate::compat::kernel32::exports().count());
 }

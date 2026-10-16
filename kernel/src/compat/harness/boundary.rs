@@ -230,8 +230,8 @@ pub enum EventType {
 /// together: the two facts SetFilePointer needs).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct FilePosition {
-    /// Where the next read starts.
-    pub position: u32,
+    /// Where the next read starts (64-bit, as NT's file offsets are).
+    pub position: u64,
     /// The file's size in bytes.
     pub size: u32,
 }
@@ -343,7 +343,7 @@ pub trait KernelBoundary {
 
     /// NtSetInformationFile's FilePositionInformation class: move the file `handle` names to
     /// `position` (past the end is legal).
-    fn nt_set_information_file(&mut self, handle: u32, position: u32) -> Result<(), NtStatus>;
+    fn nt_set_information_file(&mut self, handle: u32, position: u64) -> Result<(), NtStatus>;
 
     /// The console backend: `bytes` written to the console handle `handle` (the serial line on the
     /// target).

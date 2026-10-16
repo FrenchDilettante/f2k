@@ -92,7 +92,7 @@ pub struct Thread {
     /// The thread's TEB page: the base the switch writes into the TEB segment descriptor. Zero for
     /// kernel and idle threads.
     pub(crate) teb_va: u32,
-    /// Reserved for the thread's id/handle (the creation surface's business). Zero at build.
+    /// The thread's client id: assigned when a user thread is created, zero for kernel threads.
     pub(crate) thread_id: u32,
     /// The thread's level ledger: captured at switch-out, restored at resume. A fresh thread
     /// adopts an empty one.
@@ -401,6 +401,11 @@ impl Thread {
     /// The thread's TEB page (the FS descriptor's base).
     pub fn teb_va(&self) -> u32 {
         self.teb_va
+    }
+
+    /// The thread's client id (what GetCurrentThreadId reports), zero for kernel threads.
+    pub fn thread_id(&self) -> u32 {
+        self.thread_id
     }
 
     /// The thread's gate-stack slot index, or [`NO_GATE_SLOT`] before allocation.

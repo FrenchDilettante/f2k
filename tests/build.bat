@@ -105,5 +105,61 @@ if errorlevel 1 (echo build.bat: fileio failed & exit /b 1)
 del fileio.obj
 cd ..
 
+echo === bare
+cd bare
+cl /nologo bare.c /link /NODEFAULTLIB /ENTRY:BareMain /SUBSYSTEM:CONSOLE kernel32.lib
+if errorlevel 1 (echo build.bat: bare failed & exit /b 1)
+del bare.obj
+cd ..
+
+echo === runtime
+cd runtime
+cl /nologo runtime.c
+if errorlevel 1 (echo build.bat: runtime failed & exit /b 1)
+del runtime.obj
+cd ..
+
+echo === memory
+cd memory
+cl /nologo memory.c
+if errorlevel 1 (echo build.bat: memory failed & exit /b 1)
+del memory.obj
+cd ..
+
+echo === threads
+cd threads
+cl /nologo /MT threads.c
+if errorlevel 1 (echo build.bat: threads failed & exit /b 1)
+del threads.obj
+cd ..
+
+echo === sync
+cd sync
+cl /nologo /MT sync.c
+if errorlevel 1 (echo build.bat: sync failed & exit /b 1)
+del sync.obj
+cd ..
+
+echo === sched
+cd sched
+cl /nologo /MT sched.c
+if errorlevel 1 (echo build.bat: sched failed & exit /b 1)
+del sched.obj
+cd ..
+
+echo === files
+cd files
+cl /nologo files.c
+if errorlevel 1 (echo build.bat: files failed & exit /b 1)
+del files.obj
+cd ..
+
+echo === fswrite
+cd fswrite
+cl /nologo fswrite.c
+if errorlevel 1 (echo build.bat: fswrite failed & exit /b 1)
+del fswrite.obj
+cd ..
+
 echo All tests built.
 exit /b 0

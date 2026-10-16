@@ -17,6 +17,14 @@ pub const MEMBERS: &[&str] = &[
     "SetThreadPriority",
     "SuspendThread",
     "ResumeThread",
+    "GetCurrentThreadId",
+    "GetCurrentProcessId",
+    "GetCurrentThread",
+    "InterlockedIncrement",
+    "InterlockedDecrement",
+    "InterlockedExchange",
+    "InterlockedExchangeAdd",
+    "InterlockedCompareExchange",
 ];
 
 const INFINITE: u32 = 0xFFFF_FFFF;

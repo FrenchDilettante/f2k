@@ -22,7 +22,110 @@ our own toolchain as well as the reference one; it lands when the
 toolchain can build it. Build intermediates (`.obj` etc.) are ignored,
 not committed.
 
-## Tests
+Shared pieces sit beside the tests: `common/f2kt.h` (the reporting and
+section helpers the sectioned fixtures include), `build.bat`, and
+`capture.bat` (the real-machine capture of the sectioned fixtures).
+
+## Sectioned fixtures
+
+The sectioned fixtures cover the public API by area rather than one
+smoke path each. Each is a list of named sections:
+`<fixture> <section>` runs one section, and the suite runs every
+section as its own process; with no argument a fixture runs all its
+sections except the named-only ones (those that end the process, or
+whose output depends on an interactive console).
+
+They follow one set of conventions, from `common/f2kt.h`:
+
+- **Observe, don't assert.** A line prints what a call returned
+  (`ret=0 err=288`); the real-machine capture is the expectation, and
+  where F2K disagrees, F2K is wrong. Nothing machine-specific is
+  printed: no addresses, handle values, thread ids, absolute paths or
+  raw timings (timing-shaped facts print as a verdict against a band).
+- **The last error is armed with a sentinel** before the call under
+  observation and printed as `-` when the call left it untouched, so
+  the captures pin which calls set, clear or keep it.
+- **One line, one `WriteFile`.** Output never interleaves across
+  threads and does not depend on CRT stdio buffering, so a redirected
+  capture matches the console.
+- **Critical paths are covered even where F2K has nothing yet**
+  (structured exception handling, thread-local storage, growable
+  heaps, waitable timers, file writes...): a fixture importing an
+  export F2K lacks fails to load until the export lands, which is the
+  point - the fixtures lead the kernel.
+
+The fixtures:
+
+- `bare` - no C runtime. With no argument: `.bss` zeroing (run twice
+  per boot, as `bsscheck` was), `.data` and `.rdata` contents, linker
+  pointer tables, entry stack alignment, a stack that grows to 256 KiB;
+  the exit code is a mask of failed checks. With a mode: the entry
+  point's return value as the exit code, a full 32-bit exit code,
+  bad buffer pointers to `WriteFile`, code run from `.data`, and
+  fifteen faults (NULL, `.rdata`, code, kernel addresses, divide by
+  zero, `ud2`, `int3`, `hlt`, `cli`, `in`, `into`, stack overflow),
+  each ending the process with its NTSTATUS. Replaces `bsscheck` and
+  `crash`.
+- `runtime` - the process environment: argv, version, modules and
+  `GetProcAddress`/`LoadLibraryA`, the TEB/PEB fields compilers and
+  runtimes read, last-error semantics and `FormatMessageA`, the
+  environment, code pages and string conversion, CRT formatting and
+  parsing, structured exception handling (faults, `RaiseException`,
+  filters, `__finally`, unwinding), plus named-only `console`,
+  `unhandled` and `exit`. Replaces `ret0` and `hello` as coverage
+  (`hello` stays as the CRT smoke and the disk-smoke file).
+- `memory` - `malloc`/`calloc`/`realloc`/`free` the way programs use
+  them (thousands of small blocks, past 1 MiB of them, 4/16/32 MiB,
+  realloc doubling to 4 MiB), the Win32 heap with private and capped
+  heaps, `LocalAlloc`/`GlobalAlloc`, `VirtualAlloc`/`VirtualFree`/
+  `VirtualQuery`/`VirtualProtect` and guard pages, the image's section
+  protections, paging-file mappings, stack growth and thread stack
+  sizes.
+- `threads` - creation, exit codes, `ExitThread`/`TerminateThread`,
+  suspend counts and suspension during waits, priorities and classes,
+  scale (32 sequential, 20 concurrent, 100 fire-and-forget threads,
+  hundreds of handles), TLS slots and `__declspec(thread)`, per-thread
+  last error/errno/FPU/SEH, `_beginthreadex`, and named-only
+  `mainexit`/`procexit`. Built with `/MT`. Replaces `thread` and
+  `respawn`.
+- `sync` - events (`PulseEvent`, named objects), semaphores, mutexes
+  and abandonment, `WaitForMultipleObjects`, user APCs, critical
+  sections, interlocked operations, handle duplication and closing,
+  and `pingpong` kept as a section (plus a `SignalObjectAndWait`
+  variant). Built with `/MT`. Replaces `pingpong`.
+- `sched` - sleeps and timed waits in bands, the clocks, waitable
+  timers, round-robin, preemption, yielding, the wake boost,
+  suspension, and the starvation boost; pinned to one CPU. Built with
+  `/MT`. Replaces `sleep`, `spin` and `suspend`.
+- `files` - the read side of the file API over `files/DATA` (generated
+  by `scripts/gen-files-data.py`; every byte is formula-defined): path
+  forms and errors, chunked and boundary reads, seeks, metadata,
+  `FindFirstFile` listings, share modes, CRT file I/O, read-only file
+  mappings, concurrent readers. Run `files/setup.bat` once on the real
+  machine (attributes git cannot carry). Replaces `fileio`.
+- `fswrite` - the write side (create dispositions, writes, truncation,
+  share modes, rename/copy/delete, directories, file times, CRT
+  writes) in a scratch directory. Parked until F2K writes to disk.
+
+Capture `files` and `fswrite` on a FAT32 volume where possible: F2K's
+boot volume is FAT32, and file-system details (its name, timestamps)
+differ on NTFS.
+
+### Capturing
+
+After `build.bat`, run `capture.bat` on the real machine: it runs every
+section as its own process and writes each fixture's `output.txt` as
+blocks of `>>> <command line>`, the output, and `<<< exit code=N`
+(ERRORLEVEL, signed). `runtime console` needs an interactive console
+and is captured by hand.
+
+## Legacy fixtures
+
+The single-path smokes below predate the sectioned fixtures. Each one's
+scenario reappears in a sectioned fixture (named above); they retire
+once the suite runs the sectioned fixture in their place. `exit0`
+(the one-import boot smoke) and `hello` (the CRT smoke, the pinned
+import trace, and the disk-smoke checksum file) stay.
 
 - `exit0` - no C runtime: the entry point calls `ExitProcess(0)`; a
   single import, so it exercises process creation, image mapping and
@@ -107,6 +210,13 @@ and wait calls run against the landed scheduler machinery. The
 sequence `exit0`, `ret0`, `bsscheck`, `bsscheck`, `crash`, `exit0` in
 one boot. The `run-fileio` feature selects `fileio`, which opens its
 own image on the volume through the module path the loader staged.
+A boot can also choose its program by command line, with no feature:
+the text after `--` on the kernel command line is the program's own
+command line, `<program> [arguments]` (QEMU's `-append "-- SYNC.EXE
+event"`, the suite's per-case `cmdline` key). The program's
+GetCommandLineA reports that text verbatim and its GetModuleFileNameA
+the drive-qualified image path (`C:\SYNC.EXE`). This is how the
+sectioned fixtures run: one section per boot, `<fixture> <section>`.
 Each boot prints the observed process exit code on COM1, which the
 suite cases assert. Host unit tests still read the checked-in `.exe`
 files directly (`include_bytes!`, test builds only).

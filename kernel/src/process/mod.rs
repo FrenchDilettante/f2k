@@ -41,6 +41,11 @@ pub struct Process {
     pub sched: crate::sched::process::SchedProcess,
     /// The fixture's name, as invoked (reported on COM1).
     name: &'static str,
+    /// The process's client id (what GetCurrentProcessId reports).
+    id: u32,
+    /// The error mode SetErrorMode last set (the hard-error and fault dialogs it suppresses never
+    /// exist here; the value is kept for its round trip).
+    error_mode: u32,
     /// The process's main thread: the thread the boot path enters ring 3 on. Its record owns its
     /// gate-stack slot's frames.
     main_thread: crate::sched::thread::Thread,
@@ -115,6 +120,16 @@ impl Process {
     /// The process's name.
     pub fn name(&self) -> &'static str {
         self.name
+    }
+
+    /// The process's client id.
+    pub fn id(&self) -> u32 {
+        self.id
+    }
+
+    /// Set the process's error mode, returning the previous one.
+    pub fn swap_error_mode(&mut self, mode: u32) -> u32 {
+        core::mem::replace(&mut self.error_mode, mode)
     }
 
     /// The process's page-directory frame.
@@ -213,6 +228,8 @@ impl Process {
         let process = install(Process {
             sched: crate::sched::process::SchedProcess::new(dir_phys, crate::sched::NORMAL_BASE),
             name,
+            id: new_client_id(),
+            error_mode: 0,
             main_thread: crate::sched::thread::Thread::empty(),
             gate_slots: GateSlots::empty(),
             heap: crate::user::userheap::HeapState::new(),
@@ -245,6 +262,7 @@ impl Process {
             (*thread).gate_frames = frames;
             (*thread).initial_stack = paging::gate_slot_top(slot as u32);
             (*thread).teb_va = crate::user::TEB_PAGE;
+            (*thread).thread_id = new_client_id();
         }
         // The TSS `esp0` is the switch's to install: the first switch into the main thread loads
         // its stack top.
@@ -312,6 +330,32 @@ impl GateSlots {
     /// Whether every slot is free.
     pub fn is_empty(&self) -> bool {
         self.occupied.iter().all(|word| *word == 0)
+    }
+}
+
+/// The next client id to hand out (see [`new_client_id`]).
+#[cfg(target_arch = "x86")]
+static mut NEXT_CLIENT_ID: u32 = FIRST_CLIENT_ID;
+
+/// The first client id: NT never hands out 0 (no object) or 4 (the System process).
+pub const FIRST_CLIENT_ID: u32 = 8;
+
+/// The id after `id`: client ids step by four, as NT's (they are handle-table indices there).
+pub const fn next_client_id(id: u32) -> u32 {
+    id + 4
+}
+
+/// A fresh client id for a process or a thread: processes and threads share one id space, as on
+/// NT, and an id is never reused within a boot (system state, not per-process state).
+#[cfg(target_arch = "x86")]
+pub fn new_client_id() -> u32 {
+    // SAFETY: single CPU; ids are handed out from service and boot paths only, never from an
+    // interrupt.
+    unsafe {
+        let next = &mut *core::ptr::addr_of_mut!(NEXT_CLIENT_ID);
+        let id = *next;
+        *next = next_client_id(id);
+        id
     }
 }
 
@@ -561,6 +605,8 @@ mod tests {
         let mut process = Process {
             sched: SchedProcess::new(0x0090_0000, 8),
             name: "fixture",
+            id: FIRST_CLIENT_ID,
+            error_mode: 0,
             main_thread: Thread::empty(),
             gate_slots: GateSlots::empty(),
             heap: HeapState::new(),
@@ -591,6 +637,8 @@ mod tests {
         Process {
             sched: SchedProcess::new(0x0090_0000, 8),
             name: "fixture",
+            id: FIRST_CLIENT_ID,
+            error_mode: 0,
             main_thread: Thread::empty(),
             gate_slots: GateSlots::empty(),
             heap: HeapState::new(),
@@ -862,6 +910,8 @@ mod tests {
         let process = Box::leak(Box::new(Process {
             sched: SchedProcess::new(dir, 8),
             name: "fixture",
+            id: FIRST_CLIENT_ID,
+            error_mode: 0,
             main_thread: Thread::empty(),
             gate_slots: GateSlots::empty(),
             heap: HeapState::new(),

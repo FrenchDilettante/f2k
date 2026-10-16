@@ -44,10 +44,6 @@ const STD_ERROR: u32 = 0x0B;
 const INVALID_HANDLE_VALUE: u32 = 0xFFFF_FFFF;
 /// SetFilePointer's failure return.
 const INVALID_SET_FILE_POINTER: u32 = 0xFFFF_FFFF;
-/// CreateFileA's read access right.
-const GENERIC_READ: u32 = 0x8000_0000;
-/// CreateFileA's open-an-existing-file disposition.
-const OPEN_EXISTING: u32 = 3;
 /// CreateFileA's overlapped-I/O flag.
 const FILE_FLAG_OVERLAPPED: u32 = 0x4000_0000;
 /// The ANSI path limit, terminator included.
@@ -95,14 +91,18 @@ const CPINFO: [u8; 18] = {
 
 // --- Process parameters page (the replayed ProcessParameters) -------
 
-/// Offset of the command line replay ("ret0") in the parameters page.
-pub const CMDLINE_OFFSET: u32 = 0x00;
+/// Offset of the command line in the parameters page: the boot's user command line verbatim, or
+/// the fixture's name for a build-selected program ("ret0").
+pub const CMDLINE_OFFSET: u32 = 0x000;
+/// The command line's staging room, terminator included.
+pub const CMDLINE_ROOM: usize = 0x400;
 /// Offset of the wide environment block; the empty replay is the lone double-NUL terminator.
-pub const ENV_OFFSET: u32 = 0x40;
-/// Offset of the module file name (the image's volume path, "ret0.exe"), NUL-terminated.
-pub const MODULE_OFFSET: u32 = 0x80;
+pub const ENV_OFFSET: u32 = 0x400;
+/// Offset of the module file name (the image's path in its Win32 form, "C:\RET0.EXE"),
+/// NUL-terminated.
+pub const MODULE_OFFSET: u32 = 0x800;
 /// The module file name's staging room, terminator included.
-pub const MODULE_ROOM: usize = 64;
+pub const MODULE_ROOM: usize = MAX_PATH;
 
 // --- Services -------------------------------------------------------
 
@@ -166,27 +166,65 @@ fn object_slot(handle: u32) -> Option<crate::sched::object::Slot> {
     crate::process::current_mut().handles_mut().lookup(handle)
 }
 
+/// The thread a handle names, or ERROR_INVALID_HANDLE: no such handle, or one naming another kind
+/// of object (Windows reports both alike).
+#[cfg(target_arch = "x86")]
+fn thread_of(handle: u32) -> Result<&'static mut crate::sched::thread::Thread, u32> {
+    match object_slot(handle) {
+        // SAFETY: the slot's kind names a thread, and the record lives for the process's lifetime.
+        Some(crate::sched::object::Slot::Thread(waitable)) => {
+            Ok(unsafe { &mut *crate::sched::thread::Thread::from_waitable(waitable) })
+        }
+        _ => Err(crate::compat::error::ERROR_INVALID_HANDLE),
+    }
+}
+
+/// The event a handle names, or ERROR_INVALID_HANDLE (as [`thread_of`]).
+#[cfg(target_arch = "x86")]
+fn event_of(handle: u32) -> Result<&'static mut crate::sched::event::Event, u32> {
+    match object_slot(handle) {
+        // The event's waitable header leads the record, so the table's waitable pointer is the
+        // event itself.
+        Some(crate::sched::object::Slot::Event(waitable)) => {
+            Ok(unsafe { &mut *(waitable as *mut crate::sched::event::Event) })
+        }
+        _ => Err(crate::compat::error::ERROR_INVALID_HANDLE),
+    }
+}
+
 /// WriteFile: the console observable. Streams the caller's bytes to COM1 on the replayed
 /// stdout/stderr handles and reports the full count — the CRT's writer sums that value, so a short
 /// report breaks its math. Anything else fails; a bad buffer or out pointer ends the process, not
 /// the kernel.
 fn svc_write_file(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    use crate::compat::error::{ERROR_INVALID_HANDLE, ERROR_INVALID_PARAMETER, ERROR_NOACCESS};
+    use crate::user::teb::set_last_error;
     let (handle, buffer, count, written_out, overlapped) =
         (args[0], args[1], args[2], args[3], args[4]);
-    if !is_console_write_handle(handle) || overlapped != 0 {
-        frame.eax = 0; // FALSE: nothing written
+    frame.eax = 0; // FALSE: nothing written
+    if overlapped != 0 {
+        set_last_error(ERROR_INVALID_PARAMETER);
+        return;
+    }
+    if !is_console_write_handle(handle) {
+        set_last_error(ERROR_INVALID_HANDLE);
+        return;
+    }
+    // A buffer the caller cannot name is refused before a byte reaches the console.
+    if crate::user::syscall::probe_user_range(buffer, count).is_err() {
+        set_last_error(ERROR_NOACCESS);
         return;
     }
     for i in 0..count {
         let mut byte = [0u8; 1];
         if read_user(buffer.wrapping_add(i), &mut byte).is_err() {
-            frame.eax = 0;
+            set_last_error(ERROR_NOACCESS);
             return;
         }
         console_write_byte(byte[0]);
     }
     if written_out != 0 && write_user(written_out, &count.to_le_bytes()).is_err() {
-        frame.eax = 0;
+        set_last_error(ERROR_NOACCESS);
         return;
     }
     frame.eax = 1; // TRUE: `count` bytes written
@@ -561,6 +599,7 @@ fn svc_close_handle(frame: &mut crate::user::TrapFrame, args: &[u32]) {
             if is_console_handle(args[0]) || crate::process::current_mut().close_handle(args[0]) {
                 1
             } else {
+                crate::user::teb::set_last_error(crate::compat::error::ERROR_INVALID_HANDLE);
                 0
             };
     }
@@ -630,12 +669,16 @@ fn svc_create_event_a(frame: &mut crate::user::TrapFrame, args: &[u32]) {
     #[cfg(target_arch = "x86")]
     {
         let (_attributes, manual_reset, initial_state, name) = (args[0], args[1], args[2], args[3]);
+        use crate::compat::error::{ERROR_NOT_ENOUGH_MEMORY, ERROR_NOT_SUPPORTED};
         if name != 0 {
-            frame.eax = 0; // the subset has no named objects
+            // The subset has no named objects yet.
+            crate::user::teb::set_last_error(ERROR_NOT_SUPPORTED);
+            frame.eax = 0;
             return;
         }
         // A full table refuses before an event record is taken: the records are never given back.
         if crate::process::current_mut().handles_mut().is_full() {
+            crate::user::teb::set_last_error(ERROR_NOT_ENOUGH_MEMORY);
             frame.eax = 0;
             return;
         }
@@ -645,6 +688,7 @@ fn svc_create_event_a(frame: &mut crate::user::TrapFrame, args: &[u32]) {
             crate::sched::event::EventKind::Synchronization
         };
         let Some(event) = crate::process::threads::new_event(kind, initial_state != 0) else {
+            crate::user::teb::set_last_error(ERROR_NOT_ENOUGH_MEMORY);
             frame.eax = 0;
             return;
         };
@@ -658,21 +702,33 @@ fn svc_create_event_a(frame: &mut crate::user::TrapFrame, args: &[u32]) {
     }
 }
 
+/// SetErrorMode: set the process's error mode and return the previous one. No hard-error or fault
+/// dialog exists to suppress — a fault ends the process with its status either way — so the mode
+/// only round-trips.
+fn svc_set_error_mode(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    #[cfg(target_arch = "x86")]
+    {
+        frame.eax = crate::process::current_mut().swap_error_mode(args[0]);
+    }
+    #[cfg(not(target_arch = "x86"))]
+    {
+        let _ = args;
+        frame.eax = 0;
+    }
+}
+
 /// SetEvent: signal the event the handle names, granting its waiters the event wake boost.
 fn svc_set_event(frame: &mut crate::user::TrapFrame, args: &[u32]) {
     #[cfg(target_arch = "x86")]
     {
-        let Some(slot) = object_slot(args[0]) else {
-            frame.eax = 0;
-            return;
+        let event = match event_of(args[0]) {
+            Ok(event) => event,
+            Err(error) => {
+                crate::user::teb::set_last_error(error);
+                frame.eax = 0;
+                return;
+            }
         };
-        let crate::sched::object::Slot::Event(waitable) = slot else {
-            frame.eax = 0;
-            return;
-        };
-        // The event's waitable header leads the record, so the table's waitable pointer is the
-        // event itself.
-        let event = unsafe { &mut *(waitable as *mut crate::sched::event::Event) };
         event.set(
             crate::sched::idle::dispatcher(),
             crate::sched::event::EVENT_WAKE_INCREMENT,
@@ -695,6 +751,7 @@ fn svc_wait_for_single_object(frame: &mut crate::user::TrapFrame, args: &[u32]) 
     {
         // A file handle names no waitable object on this surface: the wait fails like a bad handle.
         let Some(waitable) = object_slot(args[0]).and_then(|slot| slot.waitable()) else {
+            crate::user::teb::set_last_error(crate::compat::error::ERROR_INVALID_HANDLE);
             frame.eax = WAIT_FAILED;
             return;
         };
@@ -784,14 +841,19 @@ fn svc_create_thread(frame: &mut crate::user::TrapFrame, args: &[u32]) {
         // A full handle table, or an identifier pointer the probe refuses, fails it here. (A
         // pointer that passes the probe but names no page faults in the write below, which
         // ends the whole process: nothing is left half-created for it to observe.)
-        if crate::process::current_mut().handles_mut().is_full()
-            || (thread_id_out != 0
-                && crate::user::syscall::probe_user_range(thread_id_out, 4).is_err())
-        {
+        use crate::compat::error::{ERROR_NOACCESS, ERROR_NOT_ENOUGH_MEMORY};
+        if crate::process::current_mut().handles_mut().is_full() {
+            crate::user::teb::set_last_error(ERROR_NOT_ENOUGH_MEMORY);
+            frame.eax = 0;
+            return;
+        }
+        if thread_id_out != 0 && crate::user::syscall::probe_user_range(thread_id_out, 4).is_err() {
+            crate::user::teb::set_last_error(ERROR_NOACCESS);
             frame.eax = 0;
             return;
         }
         let Some((thread, id)) = crate::process::threads::spawn(start, parameter) else {
+            crate::user::teb::set_last_error(ERROR_NOT_ENOUGH_MEMORY);
             frame.eax = 0;
             return;
         };
@@ -841,20 +903,19 @@ fn svc_set_thread_priority(frame: &mut crate::user::TrapFrame, args: &[u32]) {
     {
         let (handle, value) = (args[0], args[1] as i32);
         let Some(increment) = thread_priority_increment(value) else {
+            crate::user::teb::set_last_error(crate::compat::error::ERROR_INVALID_PARAMETER);
             frame.eax = 0;
             return;
         };
-        let Some(slot) = object_slot(handle) else {
-            frame.eax = 0;
-            return;
-        };
-        let crate::sched::object::Slot::Thread(waitable) = slot else {
-            frame.eax = 0;
-            return;
+        let thread = match thread_of(handle) {
+            Ok(thread) => thread,
+            Err(error) => {
+                crate::user::teb::set_last_error(error);
+                frame.eax = 0;
+                return;
+            }
         };
         let dispatcher = crate::sched::idle::dispatcher();
-        // SAFETY: the slot's kind names a thread, and the record lives for the process's lifetime.
-        let thread = unsafe { &mut *crate::sched::thread::Thread::from_waitable(waitable) };
         dispatcher.set_base_priority(thread, increment);
         frame.eax = 1;
     }
@@ -865,18 +926,76 @@ fn svc_set_thread_priority(frame: &mut crate::user::TrapFrame, args: &[u32]) {
     }
 }
 
-/// SetFilePointer: move a file handle's position `lDistanceToMove` (signed) bytes from the start,
-/// the current position, or the end, and return the new position. Past the end is legal; a target
-/// before the start, a bad move method, and any handle that names no open file return
-/// INVALID_SET_FILE_POINTER. The high-word pointer is accepted and ignored: positions are 32-bit.
+/// SetFilePointer: move a file handle's position and return its low dword, as Windows 2000's
+/// kernel32 does it. With a high-dword pointer the distance is the 64-bit (high, low) pair and the
+/// new high dword is written back; without one it is the sign-extended low dword, and a target past
+/// 4 GiB is refused (ERROR_INVALID_PARAMETER). A target before the start is ERROR_NEGATIVE_SEEK
+/// and moves nothing; past the end is legal. A bad move method is ERROR_INVALID_PARAMETER, a handle
+/// that names no open file ERROR_INVALID_HANDLE. A success whose low dword reads as
+/// INVALID_SET_FILE_POINTER clears the last error, so the caller can tell it from a failure.
 fn svc_set_file_pointer(frame: &mut crate::user::TrapFrame, args: &[u32]) {
-    let (handle, distance, _distance_high, method) = (args[0], args[1] as i32, args[2], args[3]);
-    frame.eax = match (SeekMethod::from_raw(method), open_file(handle)) {
-        (Some(method), Some(file)) => file
-            .seek(distance, method)
-            .unwrap_or(INVALID_SET_FILE_POINTER),
-        _ => INVALID_SET_FILE_POINTER,
+    use crate::compat::error::{
+        ERROR_INVALID_HANDLE, ERROR_INVALID_PARAMETER, ERROR_NEGATIVE_SEEK, ERROR_NOACCESS,
     };
+    use crate::user::teb::set_last_error;
+    let (handle, low, high_out, method) = (args[0], args[1], args[2], args[3]);
+    frame.eax = INVALID_SET_FILE_POINTER;
+    let Some(method) = SeekMethod::from_raw(method) else {
+        set_last_error(ERROR_INVALID_PARAMETER);
+        return;
+    };
+    let Some(file) = open_file(handle) else {
+        set_last_error(ERROR_INVALID_HANDLE);
+        return;
+    };
+    let high = if high_out != 0 {
+        let mut bytes = [0u8; 4];
+        if read_user(high_out, &mut bytes).is_err() {
+            set_last_error(ERROR_NOACCESS);
+            return;
+        }
+        Some(i32::from_le_bytes(bytes))
+    } else {
+        None
+    };
+    match seek_distance(low, high).and_then(|distance| {
+        file.seek_target(distance, method)
+            .ok_or(ERROR_NEGATIVE_SEEK)
+            .and_then(|target| check_seek_target(target, high.is_some()))
+    }) {
+        Err(error) => set_last_error(error),
+        Ok(target) => {
+            file.position = target;
+            if high_out != 0
+                && write_user(high_out, &((target >> 32) as u32).to_le_bytes()).is_err()
+            {
+                set_last_error(ERROR_NOACCESS);
+                return;
+            }
+            if target as u32 == INVALID_SET_FILE_POINTER {
+                set_last_error(0);
+            }
+            frame.eax = target as u32;
+        }
+    }
+}
+
+/// SetFilePointer's distance: the 64-bit (high, low) pair when the caller passed a high dword, the
+/// sign-extended low dword otherwise.
+fn seek_distance(low: u32, high: Option<i32>) -> Result<i64, u32> {
+    Ok(match high {
+        Some(high) => ((high as i64) << 32) | low as i64,
+        None => low as i32 as i64,
+    })
+}
+
+/// A seek target a caller without a high dword cannot see past 4 GiB: refused, as Windows refuses
+/// it, rather than reported truncated.
+fn check_seek_target(target: u64, has_high: bool) -> Result<u64, u32> {
+    if !has_high && target > u32::MAX as u64 {
+        return Err(crate::compat::error::ERROR_INVALID_PARAMETER);
+    }
+    Ok(target)
 }
 
 /// The open file a handle names in the current process; none for a console handle or any handle
@@ -895,22 +1014,134 @@ fn open_file(_handle: u32) -> Option<&'static mut crate::fs::file::OpenFile> {
     None
 }
 
-/// Whether CreateFileA's request is one this read-only surface serves: read access to an existing
-/// file, not overlapped. The share mode is not enforced, and the attribute bits matter only to a
-/// creation, which is never one.
-fn is_supported_open(access: u32, disposition: u32, flags: u32) -> bool {
-    access == GENERIC_READ && disposition == OPEN_EXISTING && flags & FILE_FLAG_OVERLAPPED == 0
+/// CreateFileA's dispositions.
+const CREATE_NEW: u32 = 1;
+const CREATE_ALWAYS: u32 = 2;
+/// CreateFileA's open-an-existing-file disposition (the decision's default arm).
+#[cfg(test)]
+const OPEN_EXISTING: u32 = 3;
+const OPEN_ALWAYS: u32 = 4;
+const TRUNCATE_EXISTING: u32 = 5;
+/// The access rights that would modify the file: generic write and all, write and append data,
+/// delete.
+const WRITE_ACCESS: u32 = 0x4000_0000 | 0x1000_0000 | 0x2 | 0x4 | 0x1_0000;
+/// TRUNCATE_EXISTING's prerequisite right.
+const GENERIC_WRITE: u32 = 0x4000_0000;
+/// CreateFileA's read access right.
+#[cfg(test)]
+const GENERIC_READ: u32 = 0x8000_0000;
+
+/// What a path names, as CreateFileA's decision needs it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Found {
+    File,
+    Directory,
+    /// Nothing: the Win32 error the lookup reports (file or path not found).
+    Missing(u32),
 }
 
-/// CreateFileA: open an existing file on the boot volume for reading. The path resolves as the
-/// loader's does: root-relative, 8.3, case-folded. A new handle on success; INVALID_HANDLE_VALUE for
-/// any other request, a path that does not resolve or names a directory, or a full table.
+/// CreateFileA's decision on the read-only boot volume: open the existing file (with the last
+/// error the success sets, if any), or fail with the Win32 error. Requests that would create,
+/// truncate or write are write-protected; a directory has no file handle on this surface (backup
+/// semantics included); a file named with a trailing separator is not a name.
+fn open_decision(
+    access: u32,
+    disposition: u32,
+    found: Found,
+    trailing_separator: bool,
+) -> Result<Option<u32>, u32> {
+    use crate::compat::error::*;
+    if disposition == TRUNCATE_EXISTING && access & GENERIC_WRITE == 0 {
+        return Err(ERROR_INVALID_PARAMETER);
+    }
+    match found {
+        Found::Missing(error) => match disposition {
+            // Creating it would write the volume; a missing directory on the way stays itself.
+            CREATE_NEW | CREATE_ALWAYS | OPEN_ALWAYS if error == ERROR_FILE_NOT_FOUND => {
+                Err(ERROR_WRITE_PROTECT)
+            }
+            _ => Err(error),
+        },
+        _ if disposition == CREATE_NEW => Err(ERROR_FILE_EXISTS),
+        Found::Directory => Err(ERROR_ACCESS_DENIED),
+        Found::File if trailing_separator => Err(ERROR_INVALID_NAME),
+        Found::File => match disposition {
+            CREATE_ALWAYS | TRUNCATE_EXISTING => Err(ERROR_WRITE_PROTECT),
+            _ if access & WRITE_ACCESS != 0 => Err(ERROR_WRITE_PROTECT),
+            OPEN_ALWAYS => Ok(Some(ERROR_ALREADY_EXISTS)),
+            _ => Ok(None),
+        },
+    }
+}
+
+/// The Win32 error for a path whose lookup found nothing: the file is missing when its directory
+/// exists, the path when it does not (or the walk ran through a file).
+fn missing_error(parent_is_directory: bool) -> u32 {
+    if parent_is_directory {
+        crate::compat::error::ERROR_FILE_NOT_FOUND
+    } else {
+        crate::compat::error::ERROR_PATH_NOT_FOUND
+    }
+}
+
+/// Look a resolved path up on the boot volume: the file it names, or why not as CreateFileA's
+/// decision needs it. The root is a directory without a lookup.
+#[cfg(target_arch = "x86")]
+fn find_on_volume(
+    path: &crate::compat::path::VolumePath,
+) -> (Found, Option<crate::fs::fat32::lookup::File>) {
+    use crate::fs::fat32::lookup::{lookup, LookupError};
+    use crate::fs::fat32::volume::with_boot_volume;
+    if path.is_root() {
+        return (Found::Directory, None);
+    }
+    let found = with_boot_volume(|volume| lookup(volume, path.as_bytes()));
+    match found {
+        None => (
+            Found::Missing(crate::compat::error::ERROR_PATH_NOT_FOUND),
+            None,
+        ),
+        Some(Ok(file)) if file.directory => (Found::Directory, Some(file)),
+        Some(Ok(file)) => (Found::File, Some(file)),
+        Some(Err(LookupError::Corrupt)) => (
+            Found::Missing(crate::compat::error::ERROR_FILE_CORRUPT),
+            None,
+        ),
+        Some(Err(LookupError::Device(_))) => {
+            (Found::Missing(crate::compat::error::ERROR_IO_DEVICE), None)
+        }
+        // Not found, a component that is no 8.3 name, or a walk through a file: the parent decides
+        // between a missing file and a missing path.
+        Some(Err(_)) => {
+            let parent = path.parent();
+            let parent_is_directory = parent.is_empty()
+                || matches!(
+                    with_boot_volume(|volume| lookup(volume, parent)),
+                    Some(Ok(entry)) if entry.directory
+                );
+            (Found::Missing(missing_error(parent_is_directory)), None)
+        }
+    }
+}
+
+/// CreateFileA: open an existing file on the boot volume for reading. The path resolves as Win32
+/// resolves it (drive, separators, `.` and `..`, the current directory: see `compat::path`), then
+/// walks the volume's 8.3 entries case-folded. A new handle on success; otherwise
+/// INVALID_HANDLE_VALUE with the documented last error — not found, path not found, a directory,
+/// a bad name, write-protected for anything that would modify the volume, a full table.
 fn svc_create_file_a(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    use crate::compat::error::{ERROR_INVALID_PARAMETER, ERROR_NOT_SUPPORTED};
     let (name, access, _share, _security, disposition, flags, _template) = (
         args[0], args[1], args[2], args[3], args[4], args[5], args[6],
     );
     frame.eax = INVALID_HANDLE_VALUE;
-    if !is_supported_open(access, disposition, flags) {
+    // The refusals that need no path come first: the user path is not touched for them.
+    if !(CREATE_NEW..=TRUNCATE_EXISTING).contains(&disposition) {
+        crate::user::teb::set_last_error(ERROR_INVALID_PARAMETER);
+        return;
+    }
+    if flags & FILE_FLAG_OVERLAPPED != 0 {
+        crate::user::teb::set_last_error(ERROR_NOT_SUPPORTED);
         return;
     }
     // The path is copied out of user memory before the volume is taken: a fault in the copy ends
@@ -919,25 +1150,48 @@ fn svc_create_file_a(frame: &mut crate::user::TrapFrame, args: &[u32]) {
     let Some(length) = walk_narrow(name).map(|length| length as usize - 1) else {
         return;
     };
-    if length >= MAX_PATH || read_user(name, &mut path[..length]).is_err() {
+    if length >= MAX_PATH {
+        crate::user::teb::set_last_error(crate::compat::error::ERROR_FILENAME_EXCED_RANGE);
         return;
     }
+    if read_user(name, &mut path[..length]).is_err() {
+        return;
+    }
+    let resolved = match crate::compat::path::resolve(&path[..length], current_directory()) {
+        Ok(resolved) => resolved,
+        Err(error) => {
+            crate::user::teb::set_last_error(error);
+            return;
+        }
+    };
     #[cfg(target_arch = "x86")]
     {
-        let found = crate::fs::fat32::volume::with_boot_volume(|volume| {
-            crate::fs::fat32::lookup::lookup(volume, &path[..length])
-        });
-        if let Some(Ok(file)) = found {
-            if !file.directory {
+        let (found, file) = find_on_volume(&resolved);
+        match open_decision(access, disposition, found, resolved.trailing_separator()) {
+            Err(error) => crate::user::teb::set_last_error(error),
+            Ok(success_error) => {
+                let file = file.expect("an open decision names a file");
                 let handle = crate::process::current_mut().open_file(file);
-                if handle != 0 {
-                    frame.eax = handle;
+                if handle == 0 {
+                    crate::user::teb::set_last_error(
+                        crate::compat::error::ERROR_TOO_MANY_OPEN_FILES,
+                    );
+                    return;
                 }
+                if let Some(error) = success_error {
+                    crate::user::teb::set_last_error(error);
+                }
+                frame.eax = handle;
             }
         }
     }
     #[cfg(not(target_arch = "x86"))]
-    let _ = path;
+    let _ = (resolved, access);
+}
+
+/// The current directory's volume path: the root, until SetCurrentDirectoryA is served.
+fn current_directory() -> &'static [u8] {
+    b""
 }
 
 /// The bounce chunk ReadFile moves file bytes through: read off the volume into the kernel, then
@@ -949,25 +1203,41 @@ const READ_CHUNK: usize = 512;
 /// the end moves nothing and succeeds. Overlapped requests and every handle that names no open file
 /// fail; a bad buffer or count pointer ends the process, not the kernel.
 fn svc_read_file(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    use crate::compat::error::{
+        ERROR_INVALID_HANDLE, ERROR_INVALID_PARAMETER, ERROR_IO_DEVICE, ERROR_NOACCESS,
+    };
+    use crate::user::teb::set_last_error;
     let (handle, buffer, count, read_out, overlapped) =
         (args[0], args[1], args[2], args[3], args[4]);
     frame.eax = 0; // FALSE until the read completes
     if overlapped != 0 {
+        set_last_error(ERROR_INVALID_PARAMETER);
         return;
     }
     // A copy: the volume read blocks, and the record is not held across it.
     let Some(start) = open_file(handle).map(|open| *open) else {
+        set_last_error(ERROR_INVALID_HANDLE);
         return;
     };
     let wanted = start.available(count);
+    // A buffer the caller cannot name is refused before anything is read, as the system service
+    // probes it: nothing moves, the position stays.
+    if crate::user::syscall::probe_user_range(buffer, wanted).is_err() {
+        set_last_error(ERROR_NOACCESS);
+        return;
+    }
     let mut moved = 0u32;
     while moved < wanted {
         let take = (wanted - moved).min(READ_CHUNK as u32) as usize;
         let mut chunk = [0u8; READ_CHUNK];
-        let Some(got) = read_volume(&start.file, start.position + moved, &mut chunk[..take]) else {
+        // `wanted` is nonzero only below the end, so the offset is within the 32-bit file.
+        let offset = start.position as u32 + moved;
+        let Some(got) = read_volume(&start.file, offset, &mut chunk[..take]) else {
+            set_last_error(ERROR_IO_DEVICE);
             break;
         };
         if write_user(buffer.wrapping_add(moved), &chunk[..got]).is_err() {
+            set_last_error(ERROR_NOACCESS);
             break;
         }
         moved += got as u32;
@@ -975,9 +1245,10 @@ fn svc_read_file(frame: &mut crate::user::TrapFrame, args: &[u32]) {
     // The position advances by what reached the caller, so a failed read leaves it after the bytes
     // delivered. A handle closed meanwhile has no position left to advance.
     if let Some(open) = open_file(handle) {
-        open.position = start.position + moved;
+        open.position = start.position + moved as u64;
     }
     if read_out != 0 && write_user(read_out, &moved.to_le_bytes()).is_err() {
+        set_last_error(ERROR_NOACCESS);
         return;
     }
     if moved == wanted {
@@ -1016,24 +1287,29 @@ fn read_volume(
 fn svc_suspend_thread(frame: &mut crate::user::TrapFrame, args: &[u32]) {
     #[cfg(target_arch = "x86")]
     {
-        let Some(slot) = object_slot(args[0]) else {
-            frame.eax = u32::MAX;
-            return;
-        };
-        let crate::sched::object::Slot::Thread(waitable) = slot else {
-            frame.eax = u32::MAX;
-            return;
+        use crate::compat::error::ERROR_ACCESS_DENIED;
+        let thread = match thread_of(args[0]) {
+            Ok(thread) => thread,
+            Err(error) => {
+                crate::user::teb::set_last_error(error);
+                frame.eax = u32::MAX;
+                return;
+            }
         };
         let dispatcher = crate::sched::idle::dispatcher();
-        // SAFETY: the slot's kind names a thread, and the record lives for the process's lifetime.
-        let thread = unsafe { &mut *crate::sched::thread::Thread::from_waitable(waitable) };
+        // NT refuses a terminated thread as terminating (STATUS_THREAD_IS_TERMINATING).
         if thread.state() == crate::sched::thread::ThreadState::Terminated {
+            crate::user::teb::set_last_error(ERROR_ACCESS_DENIED);
             frame.eax = u32::MAX;
             return;
         }
         match dispatcher.suspend_thread(thread) {
             Ok(previous) => frame.eax = previous as u32,
-            Err(_) => frame.eax = u32::MAX,
+            Err(_) => {
+                // The count is at its maximum (STATUS_SUSPEND_COUNT_EXCEEDED).
+                crate::user::teb::set_last_error(crate::compat::error::ERROR_SIGNAL_REFUSED);
+                frame.eax = u32::MAX;
+            }
         }
         // A self-suspend's APC delivers at the service boundary below — the caller never reaches
         // user mode before its suspend APC runs.
@@ -1051,18 +1327,19 @@ fn svc_suspend_thread(frame: &mut crate::user::TrapFrame, args: &[u32]) {
 fn svc_resume_thread(frame: &mut crate::user::TrapFrame, args: &[u32]) {
     #[cfg(target_arch = "x86")]
     {
-        let Some(slot) = object_slot(args[0]) else {
-            frame.eax = u32::MAX;
-            return;
-        };
-        let crate::sched::object::Slot::Thread(waitable) = slot else {
-            frame.eax = u32::MAX;
-            return;
+        use crate::compat::error::ERROR_ACCESS_DENIED;
+        let thread = match thread_of(args[0]) {
+            Ok(thread) => thread,
+            Err(error) => {
+                crate::user::teb::set_last_error(error);
+                frame.eax = u32::MAX;
+                return;
+            }
         };
         let dispatcher = crate::sched::idle::dispatcher();
-        // SAFETY: the slot's kind names a thread, and the record lives for the process's lifetime.
-        let thread = unsafe { &mut *crate::sched::thread::Thread::from_waitable(waitable) };
+        // NT refuses a terminated thread as terminating (STATUS_THREAD_IS_TERMINATING).
         if thread.state() == crate::sched::thread::ThreadState::Terminated {
+            crate::user::teb::set_last_error(ERROR_ACCESS_DENIED);
             frame.eax = u32::MAX;
             return;
         }
@@ -1080,18 +1357,13 @@ fn svc_floor_zero(frame: &mut crate::user::TrapFrame, _args: &[u32]) {
     frame.eax = 0;
 }
 
-/// GetCurrentProcess: the documented pseudo-handle.
-fn svc_get_current_process(frame: &mut crate::user::TrapFrame, _args: &[u32]) {
-    frame.eax = INVALID_HANDLE_VALUE;
-}
-
 // --- The registry ----------------------------------------------------
 
-/// The service registry: one entry per export, in service-number order (a number is its position
-/// plus one; ExitProcess is pinned at service 1, the rest alphabetical). Quirk: a name absent from
-/// here fails the loader's snap, so this set is exactly the union of the checked-in fixtures'
-/// import surfaces.
-pub const SERVICES: [(&str, u32, ServiceFn); 51] = [
+/// The service registry: one entry per kernel-served export, in service-number order (a number is
+/// its position plus one; ExitProcess is pinned at service 1, the rest alphabetical). Quirk: a name
+/// absent from here and from [`NATIVES`] fails the loader's snap, so the two together are the union
+/// of the corpus fixtures' import surfaces.
+pub const SERVICES: [(&str, u32, ServiceFn); 50] = [
     ("ExitProcess", 4, svc_exit_process),
     ("CloseHandle", 4, svc_close_handle),
     ("CreateEventA", 16, svc_create_event_a),
@@ -1103,11 +1375,9 @@ pub const SERVICES: [(&str, u32, ServiceFn); 51] = [
     ("GetACP", 0, svc_get_acp),
     ("GetCommandLineA", 0, svc_get_command_line_a),
     ("GetCPInfo", 8, svc_get_cp_info),
-    ("GetCurrentProcess", 0, svc_get_current_process),
     ("GetEnvironmentStrings", 0, svc_get_environment_strings),
     ("GetEnvironmentStringsW", 0, svc_get_environment_strings_w),
     ("GetFileType", 4, svc_get_file_type),
-    ("GetLastError", 0, svc_floor_zero),
     ("GetModuleFileNameA", 12, svc_get_module_file_name),
     ("GetOEMCP", 0, svc_get_oemcp),
     ("GetProcAddress", 8, svc_floor_zero),
@@ -1129,6 +1399,7 @@ pub const SERVICES: [(&str, u32, ServiceFn); 51] = [
     ("ReadFile", 20, svc_read_file),
     ("ResumeThread", 4, svc_resume_thread),
     ("RtlUnwind", 16, svc_floor_zero),
+    ("SetErrorMode", 4, svc_set_error_mode),
     ("SetEvent", 4, svc_set_event),
     ("SetFilePointer", 16, svc_set_file_pointer),
     ("SetHandleCount", 4, svc_set_handle_count),
@@ -1144,6 +1415,75 @@ pub const SERVICES: [(&str, u32, ServiceFn); 51] = [
     ("WideCharToMultiByte", 32, svc_wide_char_to_multi_byte),
     ("WriteFile", 20, svc_write_file),
 ];
+
+// --- The native exports ----------------------------------------------
+
+/// The user page the native exports live in: the page after the thunk page.
+pub const NATIVE_PAGE: u32 = THUNK_PAGE + 0x1000;
+
+/// Offset between consecutive native exports in their page: room for the longest body.
+const NATIVE_STRIDE: u32 = 32;
+
+/// The native exports: kernel32 functions that run entirely in user mode, as Windows 2000's own
+/// kernel32 runs them — reads and writes of the calling thread's TEB and its process's PEB through
+/// FS (see [`crate::user::teb`]), constants, and the locked read-modify-write sequences (atomic on
+/// any processor, with no kernel transition). Each entry: the export, the argument block its `ret`
+/// pops (stdcall), and its hand-assembled body.
+#[rustfmt::skip]
+pub const NATIVES: [(&str, u32, &[u8]); 12] = [
+    // mov eax, fs:[34h] (LastErrorValue); ret
+    ("GetLastError", 0, &[0x64, 0xA1, 0x34, 0x00, 0x00, 0x00, 0xC3]),
+    // mov eax, [esp+4]; mov fs:[34h], eax; ret 4
+    ("SetLastError", 4, &[0x8B, 0x44, 0x24, 0x04, 0x64, 0xA3, 0x34, 0x00, 0x00, 0x00, 0xC2, 0x04, 0x00]),
+    // mov eax, fs:[24h] (ClientId.UniqueThread); ret
+    ("GetCurrentThreadId", 0, &[0x64, 0xA1, 0x24, 0x00, 0x00, 0x00, 0xC3]),
+    // mov eax, fs:[20h] (ClientId.UniqueProcess); ret
+    ("GetCurrentProcessId", 0, &[0x64, 0xA1, 0x20, 0x00, 0x00, 0x00, 0xC3]),
+    // mov eax, -2 (the current-thread pseudo-handle); ret
+    ("GetCurrentThread", 0, &[0xB8, 0xFE, 0xFF, 0xFF, 0xFF, 0xC3]),
+    // mov eax, -1 (the current-process pseudo-handle); ret
+    ("GetCurrentProcess", 0, &[0xB8, 0xFF, 0xFF, 0xFF, 0xFF, 0xC3]),
+    // mov eax, fs:[30h] (the PEB); mov eax, [eax+18h] (ProcessHeap); ret
+    ("GetProcessHeap", 0, &[0x64, 0xA1, 0x30, 0x00, 0x00, 0x00, 0x8B, 0x40, 0x18, 0xC3]),
+    // mov ecx, [esp+4]; mov eax, 1; lock xadd [ecx], eax; inc eax; ret 4
+    ("InterlockedIncrement", 4, &[
+        0x8B, 0x4C, 0x24, 0x04, 0xB8, 0x01, 0x00, 0x00, 0x00, 0xF0, 0x0F, 0xC1, 0x01, 0x40,
+        0xC2, 0x04, 0x00,
+    ]),
+    // mov ecx, [esp+4]; mov eax, -1; lock xadd [ecx], eax; dec eax; ret 4
+    ("InterlockedDecrement", 4, &[
+        0x8B, 0x4C, 0x24, 0x04, 0xB8, 0xFF, 0xFF, 0xFF, 0xFF, 0xF0, 0x0F, 0xC1, 0x01, 0x48,
+        0xC2, 0x04, 0x00,
+    ]),
+    // mov ecx, [esp+4]; mov eax, [esp+8]; xchg [ecx], eax (implicitly locked); ret 8
+    ("InterlockedExchange", 8, &[
+        0x8B, 0x4C, 0x24, 0x04, 0x8B, 0x44, 0x24, 0x08, 0x87, 0x01, 0xC2, 0x08, 0x00,
+    ]),
+    // mov ecx, [esp+4]; mov eax, [esp+8]; lock xadd [ecx], eax; ret 8
+    ("InterlockedExchangeAdd", 8, &[
+        0x8B, 0x4C, 0x24, 0x04, 0x8B, 0x44, 0x24, 0x08, 0xF0, 0x0F, 0xC1, 0x01, 0xC2, 0x08, 0x00,
+    ]),
+    // mov ecx, [esp+4]; mov edx, [esp+8] (exchange); mov eax, [esp+0Ch] (comparand);
+    // lock cmpxchg [ecx], edx; ret 0Ch — EAX returns the initial value either way
+    ("InterlockedCompareExchange", 12, &[
+        0x8B, 0x4C, 0x24, 0x04, 0x8B, 0x54, 0x24, 0x08, 0x8B, 0x44, 0x24, 0x0C, 0xF0, 0x0F, 0xB1,
+        0x11, 0xC2, 0x0C, 0x00,
+    ]),
+];
+
+/// Every export of the surface with the argument block its code pops: the services, then the
+/// native exports.
+#[cfg(test)]
+pub fn exports() -> impl Iterator<Item = (&'static str, u32)> {
+    SERVICES
+        .iter()
+        .map(|&(name, arg_bytes, _)| (name, arg_bytes))
+        .chain(
+            NATIVES
+                .iter()
+                .map(|&(name, arg_bytes, _)| (name, arg_bytes)),
+        )
+}
 
 /// An export's service number (its registry position plus one), at build time: the hand-assembled
 /// stubs patch theirs from here. A name the registry does not hold fails the build.
@@ -1182,13 +1522,16 @@ pub fn lookup_service(number: u32) -> Option<(u32, ServiceFn)> {
     Some((arg_bytes, service))
 }
 
-/// Resolve an export name to its stub's address in the thunk page. Exact match; case-insensitivity
-/// grows in with the real surface.
+/// Resolve an export name to its code's address: a service's stub in the thunk page, or a native
+/// export's body in the native page. Exact match: export names are case-sensitive.
 pub fn resolve(name: &str) -> Option<u32> {
-    SERVICES
+    if let Some(index) = SERVICES.iter().position(|&(export, ..)| export == name) {
+        return Some(THUNK_PAGE + index as u32 * STUB_STRIDE);
+    }
+    NATIVES
         .iter()
         .position(|&(export, ..)| export == name)
-        .map(|index| THUNK_PAGE + index as u32 * STUB_STRIDE)
+        .map(|index| NATIVE_PAGE + index as u32 * NATIVE_STRIDE)
 }
 
 /// One stub: EDX = caller arguments, EAX = service, raise the gate, return popping the argument
@@ -1229,7 +1572,8 @@ pub fn thread_exit_trampoline() -> u32 {
 }
 
 /// Map the thunk page: one zeroed frame, seeded and patched with the stubs, read-only user (the
-/// stubs execute; nothing writes). The thread-exit trampoline follows the service stubs.
+/// stubs execute; nothing writes). The thread-exit trampoline follows the service stubs. The native
+/// page follows, built the same way from [`NATIVES`].
 #[cfg(target_arch = "x86")]
 pub fn init() {
     let frame = crate::mem::paging::allocate_frame_phys();
@@ -1247,23 +1591,43 @@ pub fn init() {
         &trampoline_bytes(crate::user::syscall::SYS_THREAD_EXIT),
     );
     crate::mem::paging::map_user_page(THUNK_PAGE, frame, false);
+
+    let natives = crate::mem::paging::allocate_frame_phys();
+    crate::mem::paging::init_frame(natives, 0, NATIVES[0].2);
+    for (index, &(_, _, body)) in NATIVES.iter().enumerate().skip(1) {
+        crate::mem::paging::write_frame(natives, index * NATIVE_STRIDE as usize, body);
+    }
+    crate::mem::paging::map_user_page(NATIVE_PAGE, natives, false);
 }
 
-/// Map the parameters page: the command line (`name`, the fixture name as invoked), the empty
-/// environment, and the module file name — `module`, the volume path the image was loaded from,
-/// verbatim, so CreateFileA resolves GetModuleFileNameA's answer back to the image.
+/// The module file name GetModuleFileNameA reports for the image at volume path `module`: its
+/// Win32 form, drive and all, upper-cased as the volume's 8.3 entries store it. CreateFileA
+/// resolves it back to the image.
+pub fn module_file_name(module: &[u8], out: &mut [u8; MODULE_ROOM]) -> usize {
+    let length = crate::compat::path::win32_form(module, out);
+    out[..length].make_ascii_uppercase();
+    length
+}
+
+/// Map the parameters page: the command line, the empty environment, and the module file name of
+/// the image loaded from volume path `module`.
 #[cfg(target_arch = "x86")]
-pub fn init_params(name: &str, module: &[u8]) {
-    assert!(name.len() < 32, "fixture name too long for the staging");
+pub fn init_params(command_line: &[u8], module: &[u8]) {
     assert!(
-        module.len() < MODULE_ROOM,
+        command_line.len() < CMDLINE_ROOM,
+        "command line too long for the staging"
+    );
+    assert!(
+        module.len() + 3 < MODULE_ROOM,
         "module path too long for the staging"
     );
+    let mut name = [0u8; MODULE_ROOM];
+    let name_length = module_file_name(module, &mut name);
     let frame = crate::mem::paging::allocate_frame_phys();
     // Zeroed: the environment's terminator, and the strings' NULs after their bytes.
     crate::mem::paging::init_frame(frame, 0, &[]);
-    crate::mem::paging::write_frame(frame, CMDLINE_OFFSET as usize, name.as_bytes());
-    crate::mem::paging::write_frame(frame, MODULE_OFFSET as usize, module);
+    crate::mem::paging::write_frame(frame, CMDLINE_OFFSET as usize, command_line);
+    crate::mem::paging::write_frame(frame, MODULE_OFFSET as usize, &name[..name_length]);
     crate::mem::paging::map_user_page(PARAMS_PAGE, frame, true);
 }
 
@@ -1280,92 +1644,115 @@ mod tests {
     const SUSPEND: &[u8] = include_bytes!("../../../tests/suspend/suspend.exe");
     const FILEIO: &[u8] = include_bytes!("../../../tests/fileio/fileio.exe");
 
-    /// The corpus's kernel32 import surface (hello's 40 — ret0's 35 plus the console-stdio group —
-    /// the timer smoke's two exports, the spin smoke's priority export, the suspend smoke's two
-    /// suspend exports, and the file smoke's open and read; the loader's snap contract): the
-    /// registry must spell it exactly.
-    const CORPUS_IMPORTS: [&str; 51] = [
-        "CreateThread",
-        "CreateEventA",
-        "SetEvent",
-        "WaitForSingleObject",
-        "VirtualFree",
-        "GetVersion",
-        "ExitProcess",
-        "TerminateProcess",
-        "GetCurrentProcess",
-        "UnhandledExceptionFilter",
-        "GetModuleFileNameA",
-        "FreeEnvironmentStringsA",
-        "FreeEnvironmentStringsW",
-        "WideCharToMultiByte",
-        "GetEnvironmentStrings",
-        "GetEnvironmentStringsW",
-        "SetHandleCount",
-        "GetStdHandle",
-        "GetFileType",
-        "GetStartupInfoA",
-        "HeapDestroy",
-        "HeapCreate",
-        "GetCommandLineA",
-        "HeapFree",
-        "RtlUnwind",
-        "WriteFile",
-        "HeapAlloc",
-        "GetCPInfo",
-        "GetACP",
-        "GetOEMCP",
-        "VirtualAlloc",
-        "HeapReAlloc",
-        "GetProcAddress",
-        "LoadLibraryA",
-        "MultiByteToWideChar",
-        "LCMapStringA",
-        "LCMapStringW",
-        "GetStringTypeA",
-        "GetStringTypeW",
-        "GetLastError",
-        "FlushFileBuffers",
-        "SetFilePointer",
-        "SetStdHandle",
-        "CloseHandle",
-        "Sleep",
-        "GetTickCount",
-        "SetThreadPriority",
-        "SuspendThread",
-        "ResumeThread",
-        "CreateFileA",
-        "ReadFile",
+    /// The corpus binaries the surface serves: every checked-in fixture that runs on it (hellogui,
+    /// a GUI program importing user32 and gdi32, is the one left out).
+    const CORPUS: [(&str, &[u8]); 12] = [
+        ("exit0", include_bytes!("../../../tests/exit0/exit0.exe")),
+        (
+            "bsscheck",
+            include_bytes!("../../../tests/bsscheck/bsscheck.exe"),
+        ),
+        ("crash", include_bytes!("../../../tests/crash/crash.exe")),
+        ("ret0", RET0),
+        ("hello", HELLO),
+        ("thread", include_bytes!("../../../tests/thread/thread.exe")),
+        (
+            "pingpong",
+            include_bytes!("../../../tests/pingpong/pingpong.exe"),
+        ),
+        ("sleep", SLEEP),
+        ("spin", SPIN),
+        ("suspend", SUSPEND),
+        (
+            "respawn",
+            include_bytes!("../../../tests/respawn/respawn.exe"),
+        ),
+        ("fileio", FILEIO),
     ];
 
-    /// Registry consistency: names unique, numbers are positions plus one (ExitProcess pinned at
-    /// 1), every corpus import resolves.
+    /// Exports no checked-in binary imports yet: the sectioned fixtures' surface (tests/README.md),
+    /// served ahead of their binaries. An export leaves this list when a binary importing it lands.
+    const AWAITING_BINARIES: [&str; 11] = [
+        "SetErrorMode",
+        "SetLastError",
+        "GetCurrentThreadId",
+        "GetCurrentProcessId",
+        "GetCurrentThread",
+        "GetProcessHeap",
+        "InterlockedIncrement",
+        "InterlockedDecrement",
+        "InterlockedExchange",
+        "InterlockedExchangeAdd",
+        "InterlockedCompareExchange",
+    ];
+
+    /// A binary's imports, as (module, name), read through the loader's own import walk.
+    fn imports_of(file: &[u8]) -> Vec<(String, String)> {
+        let image = Image::parse(file).expect("the fixture parses");
+        let mut mapped = vec![0u8; image.size_of_image as usize];
+        image.map_into(file, &mut mapped);
+        let mut imports = Vec::new();
+        image.snap_imports(file, &mut mapped, |module, name| {
+            imports.push((module.to_string(), name.to_string()));
+            Ok(THUNK_PAGE)
+        });
+        imports
+    }
+
+    /// The surface serves exactly what the corpus binaries import: every import of every binary
+    /// resolves, and every export is imported by some binary or awaits its fixture's binary.
+    /// Registry consistency rides along: names unique across both tables, service numbers are
+    /// positions plus one, ExitProcess pinned at 1.
     #[test]
-    fn registry_spells_the_corpus_surface() {
-        assert_eq!(SERVICES.len(), 51);
-        for (i, &(name, arg_bytes, _)) in SERVICES.iter().enumerate() {
+    fn the_surface_is_the_corpus_import_surface() {
+        let names: Vec<&str> = exports().map(|(name, _)| name).collect();
+        for (i, name) in names.iter().enumerate() {
             assert!(!name.is_empty());
+            assert!(!names[i + 1..].contains(name), "{name} listed twice");
+        }
+        for (i, &(_, arg_bytes, _)) in SERVICES.iter().enumerate() {
             assert_eq!(
                 lookup_service(i as u32 + 1).map(|(b, _)| b),
                 Some(arg_bytes)
             );
-            for &(other, ..) in SERVICES.iter().skip(i + 1) {
-                assert_ne!(name, other);
-            }
         }
-        // ExitProcess is service 1 (SYS_EXIT).
         assert_eq!(SERVICES[0].0, "ExitProcess");
         assert_eq!(crate::user::syscall::SYS_EXIT, 1);
         assert_eq!(lookup_service(0), None);
-        assert_eq!(lookup_service(52), None);
+        assert_eq!(lookup_service(SERVICES.len() as u32 + 1), None);
         assert_eq!(lookup_service(u32::MAX), None);
-        // Set equality with the corpus list.
-        for name in CORPUS_IMPORTS {
-            assert!(SERVICES.iter().any(|&(n, ..)| n == name), "missing {name}");
-            assert!(resolve(name).is_some(), "unresolvable {name}");
+
+        let mut imported: Vec<String> = Vec::new();
+        for (fixture, file) in CORPUS {
+            for (module, name) in imports_of(file) {
+                assert!(
+                    module.eq_ignore_ascii_case("KERNEL32.dll"),
+                    "{fixture} imports {module}"
+                );
+                assert!(
+                    resolve(&name).is_some(),
+                    "{fixture} imports {name}, which is not served"
+                );
+                imported.push(name);
+            }
         }
-        for &(name, ..) in SERVICES.iter() {
-            assert!(CORPUS_IMPORTS.contains(&name), "extra export {name}");
+        for name in names {
+            let awaiting = AWAITING_BINARIES.contains(&name);
+            let used = imported.iter().any(|import| import == name);
+            assert!(
+                used || awaiting,
+                "{name} is served but no corpus binary imports it"
+            );
+            assert!(
+                !(used && awaiting),
+                "{name} is imported now: drop it from AWAITING_BINARIES"
+            );
+        }
+        for name in AWAITING_BINARIES {
+            assert!(
+                resolve(name).is_some(),
+                "{name} awaits a binary but is not served"
+            );
         }
     }
 
@@ -1451,50 +1838,115 @@ mod tests {
         assert_eq!(arg_bytes("ReadFile"), 20);
     }
 
-    /// CreateFileA serves exactly read access to an existing file, synchronously: another access
-    /// mode, any other disposition, and an overlapped open are refused; the attribute bits pass.
+    /// CreateFileA's decisions on the read-only volume: existing files open for reading (OPEN_ALWAYS
+    /// reporting ERROR_ALREADY_EXISTS); anything that would create, truncate or write is
+    /// write-protected; CREATE_NEW on an existing name is ERROR_FILE_EXISTS; a directory is access
+    /// denied; a missing name keeps its lookup's error under the opening dispositions.
     #[test]
-    fn only_read_opens_of_existing_files_are_served() {
-        const GENERIC_WRITE: u32 = 0x4000_0000;
-        const CREATE_ALWAYS: u32 = 2;
-        const OPEN_ALWAYS: u32 = 4;
-        const FILE_ATTRIBUTE_NORMAL: u32 = 0x80;
-        assert!(is_supported_open(GENERIC_READ, OPEN_EXISTING, 0));
-        assert!(is_supported_open(
-            GENERIC_READ,
-            OPEN_EXISTING,
-            FILE_ATTRIBUTE_NORMAL
-        ));
-        assert!(!is_supported_open(GENERIC_WRITE, OPEN_EXISTING, 0));
-        assert!(!is_supported_open(
-            GENERIC_READ | GENERIC_WRITE,
-            OPEN_EXISTING,
-            0
-        ));
-        assert!(!is_supported_open(0, OPEN_EXISTING, 0));
-        assert!(!is_supported_open(GENERIC_READ, CREATE_ALWAYS, 0));
-        assert!(!is_supported_open(GENERIC_READ, OPEN_ALWAYS, 0));
-        assert!(!is_supported_open(
-            GENERIC_READ,
-            OPEN_EXISTING,
-            FILE_FLAG_OVERLAPPED
-        ));
+    fn open_decisions_on_the_read_only_volume() {
+        use crate::compat::error::*;
+        let open = |access, disposition, found| open_decision(access, disposition, found, false);
+        assert_eq!(open(GENERIC_READ, OPEN_EXISTING, Found::File), Ok(None));
+        assert_eq!(open(0, OPEN_EXISTING, Found::File), Ok(None));
+        assert_eq!(
+            open(GENERIC_READ, OPEN_ALWAYS, Found::File),
+            Ok(Some(ERROR_ALREADY_EXISTS))
+        );
+        assert_eq!(
+            open(GENERIC_READ, CREATE_NEW, Found::File),
+            Err(ERROR_FILE_EXISTS)
+        );
+        assert_eq!(
+            open(GENERIC_READ, CREATE_NEW, Found::Directory),
+            Err(ERROR_FILE_EXISTS)
+        );
+        assert_eq!(
+            open(GENERIC_READ, CREATE_ALWAYS, Found::File),
+            Err(ERROR_WRITE_PROTECT)
+        );
+        assert_eq!(
+            open(GENERIC_WRITE, TRUNCATE_EXISTING, Found::File),
+            Err(ERROR_WRITE_PROTECT)
+        );
+        assert_eq!(
+            open(GENERIC_READ, TRUNCATE_EXISTING, Found::File),
+            Err(ERROR_INVALID_PARAMETER)
+        );
+        assert_eq!(
+            open(GENERIC_WRITE, OPEN_EXISTING, Found::File),
+            Err(ERROR_WRITE_PROTECT)
+        );
+        assert_eq!(
+            open(GENERIC_READ | GENERIC_WRITE, OPEN_EXISTING, Found::File),
+            Err(ERROR_WRITE_PROTECT)
+        );
+        assert_eq!(
+            open(GENERIC_READ, OPEN_EXISTING, Found::Directory),
+            Err(ERROR_ACCESS_DENIED)
+        );
+        let missing = Found::Missing(ERROR_FILE_NOT_FOUND);
+        let no_path = Found::Missing(ERROR_PATH_NOT_FOUND);
+        assert_eq!(
+            open(GENERIC_READ, OPEN_EXISTING, missing),
+            Err(ERROR_FILE_NOT_FOUND)
+        );
+        assert_eq!(
+            open(GENERIC_READ, OPEN_EXISTING, no_path),
+            Err(ERROR_PATH_NOT_FOUND)
+        );
+        assert_eq!(
+            open(GENERIC_WRITE, TRUNCATE_EXISTING, missing),
+            Err(ERROR_FILE_NOT_FOUND)
+        );
+        for disposition in [CREATE_NEW, CREATE_ALWAYS, OPEN_ALWAYS] {
+            assert_eq!(
+                open(GENERIC_WRITE, disposition, missing),
+                Err(ERROR_WRITE_PROTECT)
+            );
+            assert_eq!(
+                open(GENERIC_WRITE, disposition, no_path),
+                Err(ERROR_PATH_NOT_FOUND)
+            );
+        }
+        // A file named with a trailing separator is no name.
+        assert_eq!(
+            open_decision(GENERIC_READ, OPEN_EXISTING, Found::File, true),
+            Err(ERROR_INVALID_NAME)
+        );
+        assert_eq!(missing_error(true), ERROR_FILE_NOT_FOUND);
+        assert_eq!(missing_error(false), ERROR_PATH_NOT_FOUND);
     }
 
     /// The file services' host-testable refusal shapes (the opens and reads themselves run on
-    /// target): an unsupported open is INVALID_HANDLE_VALUE before the path is touched; a read is
+    /// target): a bad disposition or an overlapped open is INVALID_HANDLE_VALUE before the path is
+    /// touched; a read is
     /// FALSE on an overlapped request or a handle naming no open file — console handles included;
     /// a seek on such a handle, or with a bad move method, is INVALID_SET_FILE_POINTER.
     #[test]
     fn file_service_refusal_shapes() {
         let mut frame = zero_frame();
+        // A bad disposition and an overlapped open are refused before the path is read.
+        for disposition in [0, 6] {
+            frame.eax = 0;
+            svc_create_file_a(
+                &mut frame,
+                &[0x0040_0000, GENERIC_READ, 1, 0, disposition, 0, 0],
+            );
+            assert_eq!(frame.eax, INVALID_HANDLE_VALUE);
+        }
+        frame.eax = 0;
         svc_create_file_a(
             &mut frame,
-            &[0x0040_0000, 0x4000_0000, 1, 0, OPEN_EXISTING, 0, 0],
+            &[
+                0x0040_0000,
+                GENERIC_READ,
+                1,
+                0,
+                OPEN_EXISTING,
+                FILE_FLAG_OVERLAPPED,
+                0,
+            ],
         );
-        assert_eq!(frame.eax, INVALID_HANDLE_VALUE);
-        frame.eax = 0;
-        svc_create_file_a(&mut frame, &[0x0040_0000, GENERIC_READ, 1, 0, 2, 0, 0]);
         assert_eq!(frame.eax, INVALID_HANDLE_VALUE);
 
         frame.eax = 1;
@@ -1511,6 +1963,27 @@ mod tests {
         frame.eax = 0;
         svc_set_file_pointer(&mut frame, &[4, 0, 0, 3]);
         assert_eq!(frame.eax, INVALID_SET_FILE_POINTER, "bad move method");
+    }
+
+    /// SetFilePointer's distance and range rules, as Windows 2000's kernel32 has them: with a high
+    /// dword the distance is the 64-bit pair, without one the sign-extended low dword; a caller
+    /// without a high dword cannot be moved past 4 GiB.
+    #[test]
+    fn seek_distances_and_ranges() {
+        assert_eq!(seek_distance(0x10, None), Ok(0x10));
+        assert_eq!(seek_distance(0xFFFF_FFFF, None), Ok(-1));
+        assert_eq!(seek_distance(0xFFFF_FFFF, Some(0)), Ok(0xFFFF_FFFF));
+        assert_eq!(seek_distance(0, Some(1)), Ok(1 << 32));
+        assert_eq!(seek_distance(0xFFFF_FFFB, Some(-1)), Ok(-5));
+        assert_eq!(
+            check_seek_target(u32::MAX as u64, false),
+            Ok(u32::MAX as u64)
+        );
+        assert_eq!(
+            check_seek_target(1 << 32, false),
+            Err(crate::compat::error::ERROR_INVALID_PARAMETER)
+        );
+        assert_eq!(check_seek_target(1 << 32, true), Ok(1 << 32));
     }
 
     /// The sleep interval conversion: milliseconds to 100 ns units, exact; INFINITE is the longest
@@ -1661,7 +2134,8 @@ mod tests {
         assert!((last * STUB_STRIDE) as usize + STUB_LEN <= 4096);
     }
 
-    /// The parameters layout: the three replays do not overlap.
+    /// The parameters layout: the three replays do not overlap, and the command line has room for
+    /// the longest boot command line.
     #[test]
     fn params_page_layout_is_consistent() {
         assert_eq!(PARAMS_PAGE % 4096, 0);
@@ -1671,10 +2145,24 @@ mod tests {
         let env = PARAMS_PAGE + ENV_OFFSET;
         let module = PARAMS_PAGE + MODULE_OFFSET;
         assert!(
-            cmdline + 32 <= env
+            cmdline + CMDLINE_ROOM as u32 <= env
                 && env + 64 <= module
                 && module + MODULE_ROOM as u32 <= PARAMS_PAGE + 4096
         );
+        assert!(crate::boot::cmdline::MAX_LEN <= CMDLINE_ROOM);
+    }
+
+    /// The module file name is the image's Win32 path: drive-qualified, upper-cased like the
+    /// volume's short names, and it resolves back to the volume path the image came from.
+    #[test]
+    fn the_module_file_name_is_absolute() {
+        let mut out = [0u8; MODULE_ROOM];
+        let length = module_file_name(b"fileio.exe", &mut out);
+        assert_eq!(&out[..length], b"C:\\FILEIO.EXE");
+        let back = crate::compat::path::resolve(&out[..length], b"").unwrap();
+        assert!(back.as_bytes().eq_ignore_ascii_case(b"fileio.exe"));
+        let length = module_file_name(b"tests\\sync.exe", &mut out);
+        assert_eq!(&out[..length], b"C:\\TESTS\\SYNC.EXE");
     }
 
     /// The version dword splits into the CRT's globals (its own shift/mask recipe, restated
@@ -1814,19 +2302,73 @@ mod tests {
         assert!(CPINFO[6..18].iter().all(|&b| b == 0));
     }
 
-    /// GetCurrentProcess reports the documented pseudo-handle.
+    /// The native exports: each body fits its slot and ends in the return its argument block needs
+    /// (`ret`, or `ret imm16` popping the stdcall block); the TEB and PEB operands are the
+    /// layout's, the pseudo-handles the documented ones, and every read-modify-write is atomic.
     #[test]
-    fn current_process_is_the_pseudo_handle() {
-        let mut frame = zero_frame();
-        svc_get_current_process(&mut frame, &[]);
-        assert_eq!(frame.eax, 0xFFFF_FFFF);
+    fn native_exports_fit_and_return_their_blocks() {
+        use crate::user::teb::{peb_offset as peb, teb_offset as teb};
+        assert!(NATIVES.len() as u32 * NATIVE_STRIDE <= 4096);
+        for (index, &(name, arg_bytes, body)) in NATIVES.iter().enumerate() {
+            assert!(body.len() <= NATIVE_STRIDE as usize, "{name}");
+            if arg_bytes == 0 {
+                assert_eq!(body.last(), Some(&0xC3), "{name}");
+            } else {
+                assert_eq!(
+                    &body[body.len() - 3..],
+                    &[0xC2, arg_bytes as u8, 0],
+                    "{name}"
+                );
+            }
+            assert_eq!(
+                resolve(name),
+                Some(NATIVE_PAGE + index as u32 * NATIVE_STRIDE)
+            );
+        }
+        let body = |name: &str| NATIVES.iter().find(|&&(n, ..)| n == name).unwrap().2;
+        let fs_load = |offset: u32| [0x64, 0xA1, offset as u8, 0, 0, 0];
+        assert_eq!(&body("GetLastError")[..6], &fs_load(teb::LAST_ERROR));
+        assert_eq!(
+            &body("SetLastError")[4..10],
+            &[0x64, 0xA3, teb::LAST_ERROR as u8, 0, 0, 0]
+        );
+        assert_eq!(&body("GetCurrentThreadId")[..6], &fs_load(teb::THREAD_ID));
+        assert_eq!(&body("GetCurrentProcessId")[..6], &fs_load(teb::PROCESS_ID));
+        assert_eq!(&body("GetProcessHeap")[..6], &fs_load(teb::PEB));
+        assert_eq!(
+            &body("GetProcessHeap")[6..9],
+            &[0x8B, 0x40, peb::PROCESS_HEAP as u8]
+        );
+        assert_eq!(
+            &body("GetCurrentProcess")[1..5],
+            &0xFFFF_FFFFu32.to_le_bytes()
+        );
+        assert_eq!(
+            &body("GetCurrentThread")[1..5],
+            &0xFFFF_FFFEu32.to_le_bytes()
+        );
+        for name in [
+            "InterlockedIncrement",
+            "InterlockedDecrement",
+            "InterlockedExchangeAdd",
+            "InterlockedCompareExchange",
+        ] {
+            assert!(
+                body(name).windows(2).any(|pair| pair == [0xF0, 0x0F]),
+                "{name}: lock prefix"
+            );
+        }
+        // xchg with memory locks implicitly.
+        assert!(body("InterlockedExchange")
+            .windows(2)
+            .any(|pair| pair == [0x87, 0x01]));
     }
 
     /// The never-called imports resolve to their floor handlers, and the console floors answer with
     /// their decided shapes (no path the corpus takes reaches them).
     #[test]
     fn never_called_shapes_resolve_to_their_floors() {
-        const NEVER_CALLED_ZERO: [&str; 9] = [
+        const NEVER_CALLED_ZERO: [&str; 8] = [
             "TerminateProcess",
             "UnhandledExceptionFilter",
             "GetProcAddress",
@@ -1834,7 +2376,6 @@ mod tests {
             "LCMapStringA",
             "LoadLibraryA",
             "RtlUnwind",
-            "GetLastError",
             "SetStdHandle",
         ];
         let floor = |name: &str| SERVICES.iter().find(|&&(n, ..)| n == name).unwrap().2;
@@ -1864,7 +2405,7 @@ mod tests {
         svc_set_file_pointer(&mut frame, &[0; 4]);
         assert_eq!(frame.eax, 0xFFFF_FFFF); // INVALID_SET_FILE_POINTER
 
-        // GetLastError/SetStdHandle report failure without side effects.
+        // SetStdHandle reports failure without side effects.
         svc_floor_zero(&mut frame, &[]);
         assert_eq!(frame.eax, 0);
     }

@@ -8,6 +8,7 @@ pub const MEMBERS: &[&str] = &[
     "ExitProcess",
     "TerminateProcess",
     "GetCurrentProcess",
+    "SetErrorMode",
     "UnhandledExceptionFilter",
     "GetProcAddress",
     "LoadLibraryA",

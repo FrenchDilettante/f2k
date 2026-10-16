@@ -11,6 +11,7 @@
 //! code end the process, not the kernel.
 
 pub mod syscall;
+pub mod teb;
 pub mod userheap;
 
 /// The fault-test stub's code page (the corpus programs' preferred base, which the fault-test builds
@@ -41,6 +42,9 @@ pub const USER_EFLAGS: u32 = 0x0000_0202;
 /// The process parameters page: the staged command line, environment and module-name replays (see
 /// `kernel32`).
 pub const PARAMS_PAGE: u32 = 0x0032_0000;
+
+/// The process environment block's page (see [`teb`]): every thread's TEB points here.
+pub const PEB_PAGE: u32 = 0x0033_0000;
 
 /// The region per-thread TEB pages allocate from (user window 2, mapped by no run path today). A
 /// process's first thread keeps the fixed TEB page below; later threads take one page from here.
@@ -324,10 +328,61 @@ pub fn run_user_process() -> ! {
         ))
     ))]
     {
-        let (path, name) = boot_image();
-        let entry = crate::exec::loader::load_path(path, name);
+        let (path, name, command_line) = command_line_image().unwrap_or_else(|| {
+            let (path, name) = boot_image();
+            (path, name, name.as_bytes())
+        });
+        let entry = crate::exec::loader::load_path(path, name, command_line);
         crate::process::threads::enter_as_main_thread(entry, USER_STACK_TOP)
     }
+}
+
+/// The program the boot's user command line names (see [`crate::boot::cmdline`]), as its volume
+/// path, its process name (the file name's stem) and the command line itself; none without a user
+/// command line. A program token without an extension gets `.exe`, as CreateProcess gives it; one
+/// that names no volume path is reported and halts, like an image that does not load.
+#[cfg(target_arch = "x86")]
+fn command_line_image() -> Option<(&'static [u8], &'static str, &'static [u8])> {
+    use crate::boot::cmdline::{kernel_command_line, program_token, user_command_line};
+    use crate::compat::path::{resolve, MAX_PATH};
+
+    /// The program's volume path: built once, here, at boot.
+    static mut PROGRAM: ([u8; MAX_PATH], usize) = ([0; MAX_PATH], 0);
+
+    let line = user_command_line(kernel_command_line())?;
+    let token = program_token(line);
+    let resolved = match resolve(token, b"") {
+        Ok(resolved) if !resolved.is_root() => resolved,
+        other => {
+            crate::serial_println!(
+                "F2K: command line program {} names no file (error {})",
+                core::str::from_utf8(token).unwrap_or("(not ASCII)"),
+                other
+                    .err()
+                    .unwrap_or(crate::compat::error::ERROR_PATH_NOT_FOUND)
+            );
+            crate::halt()
+        }
+    };
+    // SAFETY: single-threaded boot; the buffer is written once, here, and only read afterwards.
+    let (buffer, length) = unsafe { &mut *core::ptr::addr_of_mut!(PROGRAM) };
+    let path = resolved.as_bytes();
+    buffer[..path.len()].copy_from_slice(path);
+    *length = path.len();
+    if !resolved.file_name().contains(&b'.') && *length + 4 < MAX_PATH {
+        buffer[*length..*length + 4].copy_from_slice(b".exe");
+        *length += 4;
+    }
+    let path: &'static [u8] = &buffer[..*length];
+    let file_name = &path[path
+        .iter()
+        .rposition(|&byte| byte == b'\\')
+        .map_or(0, |i| i + 1)..];
+    let stem = &file_name[..file_name
+        .iter()
+        .position(|&byte| byte == b'.')
+        .unwrap_or(file_name.len())];
+    Some((path, core::str::from_utf8(stem).unwrap_or("program"), line))
 }
 
 /// The one image a one-process boot runs, as its path on the boot volume and its process name: the
@@ -578,6 +633,7 @@ mod tests {
             USER_STACK_LOW_PAGE,
             TEB_PAGE,
             PARAMS_PAGE,
+            PEB_PAGE,
         ] {
             assert_eq!(page % 4096, 0);
             assert!(page < KERNEL_BASE);
@@ -587,6 +643,7 @@ mod tests {
         assert_eq!(USER_STACK_TOP, USER_STACK_PAGE + 4096);
         assert!(TEB_PAGE > USER_STACK_TOP);
         assert!(PARAMS_PAGE > TEB_PAGE);
-        assert!(PARAMS_PAGE + 4096 <= USER_CODE_PAGE);
+        assert!(PEB_PAGE >= PARAMS_PAGE + 4096);
+        assert!(PEB_PAGE + 4096 <= USER_CODE_PAGE);
     }
 }

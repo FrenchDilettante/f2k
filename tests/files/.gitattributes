@@ -1,0 +1,2 @@
+# The files fixture reads these bytes exactly: no line-ending conversion.
+DATA/** -text
