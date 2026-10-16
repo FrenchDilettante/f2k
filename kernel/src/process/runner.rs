@@ -72,7 +72,7 @@ fn start_leg(index: u32) {
     unsafe { core::ptr::write_volatile(core::ptr::addr_of_mut!(CURRENT), index) };
     let (path, name) = SEQUENCE[index as usize - 1];
     let entry = crate::exec::loader::load_path(path, name, name.as_bytes());
-    crate::process::threads::start_main_thread(entry, crate::user::USER_STACK_TOP);
+    crate::process::threads::start_main_thread(entry, crate::user::USER_ENTRY_ESP);
 }
 
 /// The index of the process running (or just finished).

@@ -14,7 +14,9 @@ rem -1073741819. Named-only sections that need an interactive console
 rem (runtime console) are not captured here: run them by hand.
 rem
 rem This file keeps CRLF line endings: cmd's label search misreads
-rem LF-only batch files.
+rem LF-only batch files. Every redirection leads its command: cmd reads
+rem a digit after "=" and before ">>" as a handle number, so a trailing
+rem "exit code=0>> output.txt" would lose the line.
 
 setlocal
 cd /d "%~dp0"
@@ -28,9 +30,9 @@ for %%M in (ret exit-code badptr data-exec null-write null-read null-call rdata-
 cd ..
 
 call :fixture runtime
-echo ^>^>^> runtime.exe args one "two words" back\slash "tail\\" x>> output.txt
-runtime.exe args one "two words" back\slash "tail\\" x>> output.txt 2>&1
-echo ^<^<^< exit code=%ERRORLEVEL%>> output.txt
+>> output.txt echo ^>^>^> runtime.exe args one "two words" back\slash "tail\\" x
+>> output.txt 2>&1 runtime.exe args one "two words" back\slash "tail\\" x
+>> output.txt echo ^<^<^< exit code=%ERRORLEVEL%
 for %%S in (version module teb lasterror env locale crt seh unhandled exit) do call :cap runtime.exe %%S
 cd ..
 
@@ -70,7 +72,7 @@ goto :eof
 
 rem Run one command line, appending its block to output.txt.
 :cap
-echo ^>^>^> %*>> output.txt
-%* >> output.txt 2>&1
-echo ^<^<^< exit code=%ERRORLEVEL%>> output.txt
+>> output.txt echo ^>^>^> %*
+>> output.txt 2>&1 %*
+>> output.txt echo ^<^<^< exit code=%ERRORLEVEL%
 goto :eof

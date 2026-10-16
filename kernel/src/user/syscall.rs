@@ -9,8 +9,12 @@
 //! against the kernel32 registry, probes and copies the arguments, and calls the service; the
 //! return path restores registers and `iretd`s back.
 //!
-//! Quirk: service-side user-memory transfers ([`read_user`], [`write_user`]) run under the
-//! attribution flag — a fault on a bad user pointer ends the user process, not the kernel.
+//! Service-side user-memory transfers ([`read_user`], [`write_user`]) are fault-tolerant: they
+//! run through one copy routine whose faulting instruction the exception handler knows, and a
+//! fault there resumes at the routine's fixup, so a bad user pointer is a failed transfer the
+//! service reports (as Windows reports ERROR_NOACCESS), not the end of the process. The argument
+//! copy runs under the attribution flag instead: a fault there ends the user process, not the
+//! kernel.
 
 use crate::user::TrapFrame;
 
@@ -88,33 +92,103 @@ fn with_user_attribution<T>(body: impl FnOnce() -> T) -> T {
     result
 }
 
-/// Read `bytes` from user memory (probe + attributed copy). An unmapped range faults, ending the
-/// user process.
-pub fn read_user(pointer: u32, bytes: &mut [u8]) -> Result<(), u32> {
-    probe_user_range(pointer, bytes.len() as u32)?;
-    // SAFETY: the range passed the probe and is user-accessible; a fault on an unmapped page is
-    // attributed to the user process.
-    with_user_attribution(|| unsafe {
-        let src = pointer as *const u8;
-        for (i, slot) in bytes.iter_mut().enumerate() {
-            *slot = src.add(i).read_volatile();
-        }
-    });
-    Ok(())
+// The fault-tolerant copy: cdecl `f2k_user_copy(dst, src, len)` returns the bytes not copied
+// (zero on success). A fault on the `rep movsb` leaves ECX at the bytes remaining; the exception
+// handler resumes such a fault at the fixup, which returns that count. A page fault on a user
+// stack's guard page grows the stack instead and the copy carries on (see `user::stack`).
+#[cfg(target_arch = "x86")]
+core::arch::global_asm!(
+    ".section .text.f2k_user_copy, \"ax\"",
+    ".global f2k_user_copy",
+    "f2k_user_copy:",
+    "    push esi",
+    "    push edi",
+    "    mov edi, [esp + 12]",
+    "    mov esi, [esp + 16]",
+    "    mov ecx, [esp + 20]",
+    "    cld",
+    ".global f2k_user_copy_insn",
+    "f2k_user_copy_insn:",
+    "    rep movsb",
+    ".global f2k_user_copy_fixup",
+    "f2k_user_copy_fixup:",
+    "    mov eax, ecx",
+    "    pop edi",
+    "    pop esi",
+    "    ret",
+);
+
+#[cfg(target_arch = "x86")]
+unsafe extern "C" {
+    fn f2k_user_copy(dst: *mut u8, src: *const u8, len: usize) -> usize;
+    fn f2k_user_copy_insn();
+    fn f2k_user_copy_fixup();
 }
 
-/// Write `bytes` to user memory (probe + attributed copy). An unmapped range faults, ending the
-/// user process.
+/// Where a ring-0 fault at `eip` resumes, when `eip` is the fault-tolerant copy's instruction.
+#[cfg(target_arch = "x86")]
+pub fn copy_fixup(eip: u32) -> Option<u32> {
+    // The labels' addresses, through pointers (a direct function-item cast is provenance-lossy).
+    let insn = f2k_user_copy_insn as *const () as usize as u32;
+    let fixup = f2k_user_copy_fixup as *const () as usize as u32;
+    (eip == insn).then_some(fixup)
+}
+
+/// Copy `len` bytes between kernel and user memory through the fault-tolerant routine.
+#[cfg(target_arch = "x86")]
+fn user_copy(dst: *mut u8, src: *const u8, len: usize) -> Result<(), u32> {
+    // SAFETY: one side is the caller's kernel buffer; the other passed the user probe, and a fault
+    // on it resumes at the routine's fixup.
+    let remaining = unsafe { f2k_user_copy(dst, src, len) };
+    if remaining == 0 {
+        Ok(())
+    } else {
+        Err(STATUS_ACCESS_VIOLATION)
+    }
+}
+
+/// Read `bytes` from user memory: probed, then copied fault-tolerantly. A range outside user space
+/// or a page that cannot be read fails with STATUS_ACCESS_VIOLATION, `bytes` partly written.
+pub fn read_user(pointer: u32, bytes: &mut [u8]) -> Result<(), u32> {
+    probe_user_range(pointer, bytes.len() as u32)?;
+    #[cfg(target_arch = "x86")]
+    {
+        user_copy(bytes.as_mut_ptr(), pointer as *const u8, bytes.len())
+    }
+    #[cfg(not(target_arch = "x86"))]
+    {
+        // Host builds never hold user pointers that pass the probe (the harness fences them into
+        // the kernel half); the plain copy is the shape only.
+        // SAFETY: as above.
+        unsafe {
+            let src = pointer as *const u8;
+            for (i, slot) in bytes.iter_mut().enumerate() {
+                *slot = src.add(i).read_volatile();
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Write `bytes` to user memory: probed, then copied fault-tolerantly. A range outside user space,
+/// or a page that is not mapped writable, fails with STATUS_ACCESS_VIOLATION, partly written.
 pub fn write_user(pointer: u32, bytes: &[u8]) -> Result<(), u32> {
     probe_user_range(pointer, bytes.len() as u32)?;
-    // SAFETY: as above.
-    with_user_attribution(|| unsafe {
-        let dst = pointer as *mut u8;
-        for (i, &byte) in bytes.iter().enumerate() {
-            dst.add(i).write_volatile(byte);
+    #[cfg(target_arch = "x86")]
+    {
+        user_copy(pointer as *mut u8, bytes.as_ptr(), bytes.len())
+    }
+    #[cfg(not(target_arch = "x86"))]
+    {
+        // SAFETY: as in `read_user`.
+        unsafe {
+            let dst = pointer as *mut u8;
+            for (i, &byte) in bytes.iter().enumerate() {
+                dst.add(i).write_volatile(byte);
+            }
         }
-    });
-    Ok(())
+        Ok(())
+    }
 }
 
 /// Copy `length` bytes of arguments from user memory into `out`.
@@ -141,14 +215,11 @@ extern "C" fn syscall_dispatch(frame: &mut TrapFrame) {
     assert_eq!(frame.cs & 3, 3, "syscall gate raised from ring 0");
 
     // The internal thread-exit service: the trampoline's number, before the registry (the exit path
-    // never returns to the frame). Only a created thread raises it — its return lands on the
-    // trampoline. A process's main thread has no trampoline under it and ends through the exit
-    // service: for it the number names no service.
+    // never returns to the frame). Every user thread's start routine returns onto the trampoline —
+    // a created thread's function, and the main thread's entry point, as Windows' process start
+    // routine calls it — so any thread may end this way; the last one's status is the process's
+    // exit code.
     if frame.eax == SYS_THREAD_EXIT {
-        if crate::process::threads::on_main_thread() {
-            frame.eax = STATUS_INVALID_SYSTEM_SERVICE;
-            return;
-        }
         crate::process::threads::exit_thread(frame.edx as i32);
     }
 

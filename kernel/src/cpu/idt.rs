@@ -1,8 +1,10 @@
 //! Interrupt Descriptor Table and CPU exception handling.
 //!
 //! Every CPU exception lands in one of 32 generated stubs, which save the register state and hand
-//! it to a Rust handler that prints a diagnostic dump to COM1 before halting (silent triple-fault
-//! resets become actionable output). Exceptions fire regardless of IF, so nothing here needs the
+//! it to a Rust handler. The handler resolves what it can — a user stack's guard page, a fault in
+//! the kernel's fault-tolerant user copy — and the stub resumes the interrupted context; anything
+//! else gets a diagnostic dump on COM1 (silent triple-fault resets become actionable output) and
+//! ends the user process, or halts the kernel. Exceptions fire regardless of IF, so nothing here needs the
 //! PIC or `sti`; hardware IRQs come later.
 
 use crate::cpu::gdt::KERNEL_CODE_SELECTOR;
@@ -90,8 +92,8 @@ struct Gate {
 impl Gate {
     /// 0x8E = present, ring 0, 32-bit interrupt gate (clears IF on entry).
     ///
-    /// Gates that user code must be able to raise use DPL 3 instead ([`Gate::new_user`]); software
-    /// exceptions (int3/into) will be DPL-3 gates in their own vectors later.
+    /// Gates that user code must be able to raise use DPL 3 instead ([`Gate::new_user`]): the
+    /// syscall gate and the software exceptions (int3, into).
     const INTERRUPT_ATTR: u8 = 0x8E;
 
     /// 0xEE = present, ring 3, 32-bit interrupt gate: ring-3 code may raise the vector with `int`;
@@ -197,6 +199,13 @@ pub unsafe fn init() {
         let base = core::ptr::addr_of_mut!(IDT) as *mut Gate;
         for (i, stub) in stubs.iter().enumerate() {
             core::ptr::write_volatile(base.add(i), Gate::new(*stub));
+        }
+
+        // The software exceptions user code raises itself, as on Windows: int3 (the breakpoint)
+        // and into (the overflow check) are ring-3 gates, so they raise their own exceptions
+        // rather than a general protection fault.
+        for vector in [3, 4] {
+            core::ptr::write_volatile(base.add(vector), Gate::new_user(stubs[vector]));
         }
 
         // The syscall gate (see `syscall.rs`): ring-3 reachable, entered on the TSS ring-0 stack,
@@ -324,12 +333,40 @@ const NAMES: [&str; EXCEPTION_VECTORS] = [
     "Reserved (31)",
 ];
 
-/// Prints a diagnostic dump on COM1, then lets the origin decide: user-raised faults (including
-/// bad user pointers in syscall copies) end the user process; the rest are kernel faults, which
-/// halt.
+/// Resolve the exception when it can be resolved and return, the stub resuming the interrupted
+/// context: a page fault on the running thread's stack guard grows the stack (from user code, or
+/// from the kernel's fault-tolerant user copy), and any other fault in that copy resumes at its
+/// fixup, the copy failing. Everything else prints a diagnostic dump on COM1 and the origin decides:
+/// user-raised faults (including bad user pointers in syscall argument copies) end the user process
+/// with the exception code they raise; the rest are kernel faults, which halt.
 #[allow(dead_code)] // referenced only from the generated stubs (sym operand)
 #[cfg(target_arch = "x86")]
-extern "C" fn exception_handler(frame: &ExceptionFrame) -> ! {
+extern "C" fn exception_handler(frame: &mut ExceptionFrame) {
+    let from_user = frame.cs & 3 != 0;
+    let in_copy = !from_user && crate::user::syscall::copy_fixup(frame.eip).is_some();
+    let cr2: u32 = if frame.vector == 14 {
+        let cr2: u32;
+        // SAFETY: reading CR2 has no side effect.
+        unsafe {
+            core::arch::asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack));
+        }
+        cr2
+    } else {
+        0
+    };
+    let mut stack_overflow = false;
+    if frame.vector == 14 && (from_user || in_copy) {
+        match crate::user::stack::grow_on_fault(cr2) {
+            crate::user::stack::Growth::Grown => return,
+            crate::user::stack::Growth::Overflow => stack_overflow = true,
+            crate::user::stack::Growth::NotGrown => {}
+        }
+    }
+    if in_copy && !stack_overflow {
+        frame.eip = crate::user::syscall::copy_fixup(frame.eip).expect("a copy fault has a fixup");
+        return;
+    }
+
     let name = NAMES
         .get(frame.vector as usize)
         .copied()
@@ -337,7 +374,6 @@ extern "C" fn exception_handler(frame: &ExceptionFrame) -> ! {
 
     // The ring-3 tail exists only for ring-3 exceptions; read it once, guarded, through the
     // extended frame.
-    let from_user = frame.cs & 3 != 0;
     let (user_esp, user_ss) = if from_user {
         (ring3_tail(frame), ring3_user_ss(frame))
     } else {
@@ -385,10 +421,6 @@ extern "C" fn exception_handler(frame: &ExceptionFrame) -> ! {
         );
     }
     if frame.vector == 14 {
-        let cr2: u32;
-        unsafe {
-            core::arch::asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack));
-        }
         crate::serial_println!("  CR2 (faulting address) {:#010x}", cr2);
     }
     // Classify the fault by origin. A fault raised by user code (or, while the kernel copies
@@ -397,9 +429,20 @@ extern "C" fn exception_handler(frame: &ExceptionFrame) -> ! {
     // the end, and the idle thread tears the process down (a suite boot then runs its next
     // process; a one-process boot rests). A kernel fault from any other origin stays the raw
     // diagnostic halt.
-    if from_user {
+    if from_user || in_copy {
+        let status = if stack_overflow {
+            crate::process::exit::status::STACK_OVERFLOW
+        } else {
+            let mut code = [0u8; 15];
+            let privileged = frame.vector == 13
+                && from_user
+                && read_code(frame.eip, &mut code)
+                && crate::process::exit::is_privileged_instruction(&code);
+            crate::process::exit::fault_status(frame.vector, privileged)
+        };
         crate::process::threads::fault_exit(crate::process::exit::Fault {
             vector: frame.vector,
+            status,
             in_user_copy: false,
         });
     } else if crate::user::syscall::copying_user_args() {
@@ -410,10 +453,29 @@ extern "C" fn exception_handler(frame: &ExceptionFrame) -> ! {
         // containment, its own report.
         crate::process::threads::fault_exit(crate::process::exit::Fault {
             vector: frame.vector,
+            status: crate::process::exit::status::ACCESS_VIOLATION,
             in_user_copy: true,
         });
     }
     crate::halt();
+}
+
+/// Read the faulting instruction's bytes at user address `eip`, as far as they are readable (the
+/// copy is fault-tolerant: an instruction ending a page reads short, its tail zeroed).
+#[cfg(target_arch = "x86")]
+fn read_code(eip: u32, out: &mut [u8]) -> bool {
+    let mut read = 0;
+    while read < out.len() {
+        let chunk = out.len() - read;
+        let page_left = (0x1000 - ((eip as usize + read) & 0xFFF)).min(chunk);
+        if crate::user::syscall::read_user(eip + read as u32, &mut out[read..read + page_left])
+            .is_err()
+        {
+            break;
+        }
+        read += page_left;
+    }
+    read > 0
 }
 
 /// The interrupted user ESP of a ring-3 exception: the CPU pushed it as part of the ring-3 tail.
@@ -509,7 +571,7 @@ macro_rules! define_exception_stubs {
             $(stub_line!($err, $vector),)*
             "",
             // Common tail: save registers, clear DF (interrupt gates do not, and Rust code requires
-            // it), call the handler, halt forever.
+            // it), call the handler; when it returns, restore and resume.
             "exception_common:",
             "    pushad",
             "    cld",
@@ -529,9 +591,21 @@ macro_rules! define_exception_stubs {
             "    lea eax, [esp + 16]", // frame pointer: exception_handler(frame)
             "    push eax",
             "    call {handler}",
-            "1:  cli",
-            "    hlt",
-            "    jmp 1b",
+            // The handler returns only when it resolved the exception (a stack page committed, a
+            // copy redirected to its fixup): resume the interrupted context, as the hardware tail
+            // does.
+            "    add esp, 4", // drop the frame pointer
+            "    pop eax",
+            "    mov gs, ax",
+            "    pop eax",
+            "    mov fs, ax",
+            "    pop eax",
+            "    mov es, ax",
+            "    pop eax",
+            "    mov ds, ax",
+            "    popad",
+            "    add esp, 8", // drop vector + error code
+            "    iretd",
             kernel_data = const crate::cpu::gdt::KERNEL_DATA_SELECTOR,
             handler = sym exception_handler,
         );

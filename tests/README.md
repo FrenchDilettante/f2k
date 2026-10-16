@@ -13,6 +13,8 @@ One directory per test, named after the test:
 tests/<name>/
 ├── <name>.c        # the source, built on the real Windows 2000 machine
 ├── <name>.exe      # the compiled fixture (committed; it is the point)
+├── output.txt      # the real-machine capture, where there is one
+├── test_<name>.py  # sectioned fixtures: the pytest file running the capture on F2K
 ├── imports.txt     # verified facts from the binary, where relevant
 └── <name>.rs       # planned: the same test for F2K's own Rust toolchain
 ```
@@ -23,8 +25,11 @@ toolchain can build it. Build intermediates (`.obj` etc.) are ignored,
 not committed.
 
 Shared pieces sit beside the tests: `common/f2kt.h` (the reporting and
-section helpers the sectioned fixtures include), `build.bat`, and
-`capture.bat` (the real-machine capture of the sectioned fixtures).
+section helpers the sectioned fixtures include), `build.bat`,
+`capture.bat` (the real-machine capture of the sectioned fixtures), and
+the pytest side: `conftest.py` and `f2kboot.py` (building, booting,
+comparing), and `test_suite.py`, which runs the legacy fixtures and the
+kernel's own diagnostic boots from `scripts/qemu-tests.yaml`.
 
 ## Sectioned fixtures
 
@@ -107,9 +112,10 @@ The fixtures:
   share modes, rename/copy/delete, directories, file times, CRT
   writes) in a scratch directory. Parked until F2K writes to disk.
 
-Capture `files` and `fswrite` on a FAT32 volume where possible: F2K's
-boot volume is FAT32, and file-system details (its name, timestamps)
-differ on NTFS.
+Capture `files` and `fswrite` from a local FAT32 volume: F2K's boot
+volume is FAT32, and file-system details differ elsewhere — NTFS has
+its own names and timestamps, and a VirtualBox shared folder has no
+short names, no attribute bits and reports a remote drive.
 
 ### Capturing
 
@@ -118,6 +124,24 @@ section as its own process and writes each fixture's `output.txt` as
 blocks of `>>> <command line>`, the output, and `<<< exit code=N`
 (ERRORLEVEL, signed). `runtime console` needs an interactive console
 and is captured by hand.
+
+### Running against F2K
+
+Each sectioned fixture's `test_<name>.py` runs its capture on the
+kernel, one pytest test per block (`make corpus` runs them all, the
+`corpus` marker): one boot per block, the block's command line passed
+on the kernel command line, the program's output compared line for line
+and its exit code checked. The
+disk build puts the sectioned fixtures in `\CORPUS` (the files
+fixture's data tree beside them), the way each runs from its own
+directory on the real machine. The file states what its comparison
+allows (`f2kboot.blocks`): `gate=True` once F2K passes every block
+(the others run as expected failures, a progress report: a block that
+starts passing shows as XPASS, and `--runxfail` shows each failure's
+first differing line), `masks` for the few capture lines that carry
+machine-specific values, a `timeout`, and `retake` for a capture to be
+retaken (its blocks skipped). Every boot's COM1 log stays under
+`target/qemu/logs/`.
 
 ## Legacy fixtures
 

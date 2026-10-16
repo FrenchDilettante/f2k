@@ -131,13 +131,13 @@ const SYSTEM_REGIONS: [(&str, u32, u32); 9] = {
     use crate::user::userheap::{CRT_REGION_BASE, HEAP_REGION_BASE, HEAP_REGION_MAX};
     use crate::user::{
         PARAMS_PAGE, PEB_PAGE, TEB_PAGE, THREAD_STACK_PAGES, THREAD_STACK_REGION,
-        THREAD_TEB_REGION, USER_STACK_LOW_PAGE, USER_STACK_TOP,
+        THREAD_TEB_REGION, USER_STACK_BASE, USER_STACK_TOP,
     };
     const PAGE: u32 = crate::mem::paging::PAGE_SIZE;
     const CHILDREN: u32 = crate::process::CHILD_THREADS as u32;
     const THUNK_PAGE: u32 = crate::compat::kernel32::THUNK_PAGE;
     [
-        ("main thread stack", USER_STACK_LOW_PAGE, USER_STACK_TOP),
+        ("main thread stack", USER_STACK_BASE, USER_STACK_TOP),
         ("main thread TEB", TEB_PAGE, TEB_PAGE + PAGE),
         ("process parameters", PARAMS_PAGE, PARAMS_PAGE + PAGE),
         ("process environment block", PEB_PAGE, PEB_PAGE + PAGE),
@@ -271,10 +271,16 @@ pub fn load_image(file: &[u8], path: &[u8], name: &'static str, command_line: &[
         );
     }
 
-    // The user stack: two zeroed, writable pages below the entry ESP.
+    // The user stack: two zeroed, writable pages committed at the top of the main thread's
+    // reservation (the rest commits on demand), the entry point's return address — the thread-exit
+    // trampoline — in the top dword.
     for stack_page in [USER_STACK_PAGE, USER_STACK_LOW_PAGE] {
         let stack_frame = paging::allocate_frame_phys();
         paging::init_frame(stack_frame, 0, &[]);
+        if stack_page == USER_STACK_PAGE {
+            let trampoline = crate::compat::kernel32::thread_exit_trampoline();
+            paging::write_frame(stack_frame, 0xFFC, &trampoline.to_le_bytes());
+        }
         paging::map_user_page(stack_page, stack_frame, true);
     }
 
@@ -303,7 +309,7 @@ pub fn load_image(file: &[u8], path: &[u8], name: &'static str, command_line: &[
     crate::serial_println!(
         "F2K: entering ring 3 (entry {:#010x}, stack {:#010x})",
         image.entry_va(),
-        USER_STACK_TOP
+        crate::user::USER_ENTRY_ESP
     );
     image.entry_va()
 }

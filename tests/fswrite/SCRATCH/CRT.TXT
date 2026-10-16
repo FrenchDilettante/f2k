@@ -1,3 +1,0 @@
-line ONE
-line two
-3

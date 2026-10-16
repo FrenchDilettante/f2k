@@ -101,7 +101,13 @@ pub fn spawn(start: u32, parameter: u32) -> Option<(*mut Thread, u32)> {
         peb: crate::user::PEB_PAGE,
     });
 
-    // The user stack: two zeroed pages below the top.
+    // The user stack: two zeroed pages below the top, all of its reservation (it does not grow
+    // yet).
+    thread.user_stack = crate::user::stack::UserStack::new(
+        stack_top,
+        crate::user::THREAD_STACK_PAGES * 0x1000,
+        crate::user::THREAD_STACK_PAGES * 0x1000,
+    );
     let mut top_frame = 0;
     for page in 0..crate::user::THREAD_STACK_PAGES {
         let base = stack_top - (page + 1) * 0x1000;
@@ -295,13 +301,6 @@ fn leg() -> Option<exit::Leg> {
     {
         None
     }
-}
-
-/// Whether the running thread is its process's main thread — the thread the process was entered
-/// on, whose stack carries no thread-exit trampoline.
-pub fn on_main_thread() -> bool {
-    let current = crate::sched::idle::dispatcher().current_thread();
-    core::ptr::eq(current, crate::process::current().main_thread())
 }
 
 /// Release an exited thread's gate stack: unmap the slot's pages from the (current) process

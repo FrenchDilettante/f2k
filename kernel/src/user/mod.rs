@@ -10,6 +10,7 @@
 //! process's), the exit service ends the process and all its threads, and faults raised by user
 //! code end the process, not the kernel.
 
+pub mod stack;
 pub mod syscall;
 pub mod teb;
 pub mod userheap;
@@ -30,8 +31,17 @@ pub const USER_CODE_PAGE: u32 = 0x0040_0000;
 pub const USER_STACK_PAGE: u32 = 0x0030_0000;
 /// The stack's second page, one below the top.
 pub const USER_STACK_LOW_PAGE: u32 = USER_STACK_PAGE - 4096;
-/// Initial user ESP: one past the stack's top page.
+/// One past the stack's top page.
 pub const USER_STACK_TOP: u32 = USER_STACK_PAGE + 4096;
+/// The main thread's stack reservation: 1 MiB, the MSVC linker's default, of which the two pages
+/// above are committed at start and the rest on demand (see [`stack`]).
+pub const USER_STACK_RESERVE: u32 = 0x10_0000;
+/// The reservation's lowest address.
+pub const USER_STACK_BASE: u32 = USER_STACK_TOP - USER_STACK_RESERVE;
+/// The main thread's entry ESP: one dword below the top, where the entry point's return address
+/// sits — the thread-exit trampoline, so returning from the entry point ends the thread with the
+/// returned value, as Windows' process start routine does.
+pub const USER_ENTRY_ESP: u32 = USER_STACK_TOP - 4;
 /// The thread block page, reached through the FS-based TEB segment (the CRT installs its exception
 /// frames at fs:[0] first thing); mapped zeroed and writable by the loader.
 pub const TEB_PAGE: u32 = 0x0031_0000;
@@ -124,8 +134,9 @@ pub const RING3_STUB: [u8; 29] = [
     0xEB, 0xFE, // jmp $
 ];
 
-/// Raise the internal thread-exit service with no user thread running, then exit with the status
-/// the gate returned in EAX.
+/// Raise the internal thread-exit service on the main thread with status 0: the main thread ends,
+/// and with it the process (exit code 0). Were the service refused, the exit service below would
+/// report the status the gate returned in EAX instead.
 #[cfg(all(
     feature = "fault-test-threadexit",
     not(feature = "fault-test-user"),
@@ -333,7 +344,7 @@ pub fn run_user_process() -> ! {
             (path, name, name.as_bytes())
         });
         let entry = crate::exec::loader::load_path(path, name, command_line);
-        crate::process::threads::enter_as_main_thread(entry, USER_STACK_TOP)
+        crate::process::threads::enter_as_main_thread(entry, USER_ENTRY_ESP)
     }
 }
 

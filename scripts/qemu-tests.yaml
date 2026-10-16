@@ -1,8 +1,8 @@
 # QEMU on-target test suite.
 #
 # Each case builds the kernel and the disk image (optionally with cargo
-# features), boots it in QEMU via scripts/test-boot.sh, and passes once
-# every expected string has appeared on COM1. The disk is attached to
+# features), boots it in QEMU (tests/test_suite.py, through pytest), and
+# passes once every expected string has appeared on COM1. The disk is attached to
 # every case as the IDE primary master: its volume carries the programs
 # the kernel loads. `image: kernel` boots the freshly built kernel ELF
 # through QEMU's Multiboot loader; `image: disk` boots the disk image
@@ -15,8 +15,11 @@
 # on sight. "KERNEL PANIC" is forbidden in every case.
 #
 # Run the whole suite with `make test` (kernel cases) or `make test-disk`
-# (disk cases), or the runner directly:
-#   scripts/run-qemu-tests.py scripts/qemu-tests.yaml [--only NAME ...]
+# (disk cases), or pytest directly (each case is one test, by name):
+#   uv run pytest tests/test_suite.py [-k NAME] [-n auto]
+#
+# `cmdline` (kernel cases) is the user program's command line: the kernel
+# runs that program instead of the one its features select.
 
 cases:
   - name: boot-smoke
@@ -54,7 +57,7 @@ cases:
     expects:
       - "F2K: entering ring 3"
       - "CPU EXCEPTION: vector 14"
-      - "F2K: user process ended by fault (vector 14); halting"
+      - "F2K: user process ended by fault (vector 14, exit code=3221225477); halting"
 
   - name: fault-badargs
     description: a bad user argument pointer ends the process inside the kernel copy
@@ -63,7 +66,7 @@ cases:
     expects:
       - "F2K: entering ring 3"
       - "CPU EXCEPTION: vector 14"
-      - "F2K: user process ended by fault (bad user argument pointer); halting"
+      - "F2K: user process ended by fault (bad user argument pointer, exit code=3221225477); halting"
 
   - name: fault-segments
     description: ring 3 loads the TEB selector into DS/ES and keeps running across ticks and a syscall; the kernel's entry stubs load their own data segments
@@ -74,12 +77,12 @@ cases:
       - "F2K: user process exited normally (exit code=7)"
 
   - name: fault-threadexit
-    description: the internal thread-exit service on a boot without user threads is refused (STATUS_INVALID_SYSTEM_SERVICE), not a kernel panic
+    description: the thread-exit service on the main thread ends it, and with it the process, with the thread's status (as returning from the entry point does)
     image: kernel
     features: [fault-test-threadexit]
     expects:
       - "F2K: entering ring 3"
-      - "F2K: user process exited normally (exit code=3221225500)"
+      - "F2K: user process exited normally (exit code=0)"
 
   # Exit during a disk read: a stub process opens HELLO.EXE and starts
   # a time-critical child that seeks and reads a sector in a loop; the
@@ -434,7 +437,7 @@ cases:
   # implements it; the shapes parallel the single-process lines with
   # the per-process index and name added):
   #   normal exit: F2K: process <i> (<name>) exited normally (exit code=N)
-  #   fault:       F2K: process <i> (<name>) ended by fault (vector N)
+  #   fault:       F2K: process <i> (<name>) ended by fault (vector N, exit code=X)
   #   teardown:    F2K: process <i> teardown audit: frame database ok, kernel heap ok
   #   summary:     F2K: process suite complete: 6 run, 1 faulted, 0 leaks
   # The teardown line prints after every process (all six), so every
@@ -456,7 +459,7 @@ cases:
       - "F2K: process 3 teardown audit: frame database ok, kernel heap ok"
       - "F2K: process 4 (bsscheck) exited normally (exit code=0)"
       - "F2K: process 4 teardown audit: frame database ok, kernel heap ok"
-      - "F2K: process 5 (crash) ended by fault (vector 14)"
+      - "F2K: process 5 (crash) ended by fault (vector 14, exit code=3221225477)"
       - "F2K: process 5 teardown audit: frame database ok, kernel heap ok"
       - "F2K: process 6 (exit0) exited normally (exit code=0)"
       - "F2K: process 6 teardown audit: frame database ok, kernel heap ok"
@@ -478,7 +481,7 @@ cases:
       - "F2K: process 3 teardown audit: frame database ok, kernel heap ok"
       - "F2K: process 4 (bsscheck) exited normally (exit code=0)"
       - "F2K: process 4 teardown audit: frame database ok, kernel heap ok"
-      - "F2K: process 5 (crash) ended by fault (vector 14)"
+      - "F2K: process 5 (crash) ended by fault (vector 14, exit code=3221225477)"
       - "F2K: process 5 teardown audit: frame database ok, kernel heap ok"
       - "F2K: process 6 (exit0) exited normally (exit code=0)"
       - "F2K: process 6 teardown audit: frame database ok, kernel heap ok"

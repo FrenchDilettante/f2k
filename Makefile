@@ -24,7 +24,8 @@ BUILD_DIR ?= target
 SCRIPTS_DIR ?= scripts
 
 # Tools
-# The on-target suite runner needs PyYAML: prefer the repository's .venv
+# The repository scripts need PyYAML: prefer the repository's .venv (uv sync creates it from
+# pyproject.toml)
 # (where it is installed) over the system interpreter.
 PYTHON ?= $(if $(wildcard .venv/bin/python),.venv/bin/python,python3)
 OBJCOPY ?= x86_64-elf-objcopy
@@ -43,6 +44,9 @@ DISK_SIZE ?= 131072
 # The corpus fixtures the disk carries in its root directory (tests/<name>/<name>.exe, stored as
 # NAME.EXE), after HELLO.EXE: the boots load their images from the volume by these paths.
 DISK_FIXTURES ?= exit0 ret0 pingpong sleep spin suspend respawn bsscheck crash fileio
+# The sectioned fixtures (tests/README.md), in their own directory, \CORPUS, the way each runs from
+# its own directory on the real machine: the root keeps its one cluster (the disk-smoke pins it).
+CORPUS_FIXTURES ?= bare runtime memory threads sync sched files fswrite
 
 # Limine bootloader settings
 LIMINE_DIR ?= $(BOOT_DIR)/limine
@@ -64,6 +68,7 @@ help:
 	@echo "  qemu         - Build the disk and boot the kernel directly in QEMU (Multiboot, disk attached)"
 	@echo "  test         - Run the on-target QEMU test suite (kernel path)"
 	@echo "  test-disk    - Run the on-target QEMU test suite (disk path)"
+	@echo "  corpus       - Run the sectioned corpus against its captures (a report)"
 	@echo "  run-tests    - Run host unit tests (cargo test --lib)"
 	@echo "  check        - cargo check + clippy"
 	@echo "  fmt          - Format all Rust sources (rustfmt)"
@@ -126,6 +131,18 @@ disk: kernel limine
 		mcopy -i $(DISK_IMG)@@1M tests/$$fixture/$$fixture.exe \
 			::/$$(echo $$fixture | tr a-z A-Z).EXE || exit 1; \
 	done
+	# The sectioned corpus in \CORPUS, with the files fixture's data tree beside
+	# FILES.EXE and the two attributes git cannot carry (tests/files/setup.bat
+	# sets them on the real machine).
+	mmd -i $(DISK_IMG)@@1M ::/CORPUS
+	for fixture in $(CORPUS_FIXTURES); do \
+		mcopy -i $(DISK_IMG)@@1M tests/$$fixture/$$fixture.exe \
+			::/CORPUS/$$(echo $$fixture | tr a-z A-Z).EXE || exit 1; \
+	done
+	mcopy -s -i $(DISK_IMG)@@1M tests/files/DATA ::/CORPUS/
+	mdel -i $(DISK_IMG)@@1M ::/CORPUS/DATA/.gitignore
+	mattrib -i $(DISK_IMG)@@1M +r ::/CORPUS/DATA/RDONLY.TXT
+	mattrib -i $(DISK_IMG)@@1M +h ::/CORPUS/DATA/HIDDEN.TXT
 	$(LIMINE_BIN) bios-install $(DISK_IMG)
 	@echo "Disk image created: $(DISK_IMG)"
 
@@ -150,16 +167,26 @@ clobber: clean
 	@echo "Removing target directory..."
 	-rm -rf $(BUILD_DIR)
 
-# On-target QEMU suite: scripts/qemu-tests.yaml describes the cases
-# (kernel features to build with, image to boot, expected COM1
-# strings); scripts/run-qemu-tests.py builds and runs them. New cases
-# are data, not new Makefile targets.
-.PHONY: test test-disk
-test: kernel
-	@$(PYTHON) scripts/run-qemu-tests.py scripts/qemu-tests.yaml --image kernel
+# On-target QEMU tests, through pytest (uv drives the environment, pyproject.toml): the suite's
+# cases are data in scripts/qemu-tests.yaml (kernel features to build with, image to boot, expected
+# COM1 strings); the sectioned corpus's tests are tests/<name>/test_<name>.py, one per fixture, over
+# its real-machine capture (the `corpus` marker). Each test
+# builds what it needs; boots run in parallel. New cases are data, not new Makefile targets.
+UV ?= uv
+PYTEST = $(UV) run pytest
+PYTEST_FLAGS ?= -n auto
 
-test-disk: disk
-	@$(PYTHON) scripts/run-qemu-tests.py scripts/qemu-tests.yaml --image disk
+.PHONY: test test-disk corpus
+test:
+	$(PYTEST) tests/test_suite.py -m kernel $(PYTEST_FLAGS)
+
+test-disk:
+	$(PYTEST) tests/test_suite.py -m disk $(PYTEST_FLAGS)
+
+# The sectioned corpus against its real-machine captures (gating fixtures must pass; the rest run as
+# expected failures, a progress report).
+corpus:
+	$(PYTEST) tests -m corpus $(PYTEST_FLAGS)
 
 .PHONY: run-tests
 run-tests:

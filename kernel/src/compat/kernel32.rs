@@ -215,13 +215,21 @@ fn svc_write_file(frame: &mut crate::user::TrapFrame, args: &[u32]) {
         set_last_error(ERROR_NOACCESS);
         return;
     }
-    for i in 0..count {
-        let mut byte = [0u8; 1];
-        if read_user(buffer.wrapping_add(i), &mut byte).is_err() {
-            set_last_error(ERROR_NOACCESS);
+    // The bytes move through a kernel chunk; a buffer that passed the probe but cannot be read is
+    // an invalid user buffer, as the console transfer reports it (ERROR_INVALID_USER_BUFFER), and
+    // what was read before it has reached the console.
+    let mut chunk = [0u8; 256];
+    let mut done = 0u32;
+    while done < count {
+        let take = (count - done).min(chunk.len() as u32) as usize;
+        if read_user(buffer.wrapping_add(done), &mut chunk[..take]).is_err() {
+            set_last_error(crate::compat::error::ERROR_INVALID_USER_BUFFER);
             return;
         }
-        console_write_byte(byte[0]);
+        for &byte in &chunk[..take] {
+            console_write_byte(byte);
+        }
+        done += take as u32;
     }
     if written_out != 0 && write_user(written_out, &count.to_le_bytes()).is_err() {
         set_last_error(ERROR_NOACCESS);
@@ -1644,9 +1652,10 @@ mod tests {
     const SUSPEND: &[u8] = include_bytes!("../../../tests/suspend/suspend.exe");
     const FILEIO: &[u8] = include_bytes!("../../../tests/fileio/fileio.exe");
 
-    /// The corpus binaries the surface serves: every checked-in fixture that runs on it (hellogui,
-    /// a GUI program importing user32 and gdi32, is the one left out).
-    const CORPUS: [(&str, &[u8]); 12] = [
+    /// The corpus binaries the surface serves in full: every import of each resolves. The legacy
+    /// fixtures that run on the surface (hellogui, a GUI program importing user32 and gdi32, is
+    /// left out) and the sectioned fixtures already served.
+    const CORPUS: [(&str, &[u8]); 13] = [
         ("exit0", include_bytes!("../../../tests/exit0/exit0.exe")),
         (
             "bsscheck",
@@ -1668,22 +1677,28 @@ mod tests {
             include_bytes!("../../../tests/respawn/respawn.exe"),
         ),
         ("fileio", FILEIO),
+        ("bare", include_bytes!("../../../tests/bare/bare.exe")),
     ];
 
-    /// Exports no checked-in binary imports yet: the sectioned fixtures' surface (tests/README.md),
-    /// served ahead of their binaries. An export leaves this list when a binary importing it lands.
-    const AWAITING_BINARIES: [&str; 11] = [
-        "SetErrorMode",
-        "SetLastError",
-        "GetCurrentThreadId",
-        "GetCurrentProcessId",
-        "GetCurrentThread",
-        "GetProcessHeap",
-        "InterlockedIncrement",
-        "InterlockedDecrement",
-        "InterlockedExchange",
-        "InterlockedExchangeAdd",
-        "InterlockedCompareExchange",
+    /// The sectioned fixtures the surface does not serve in full yet (tests/README.md): the work
+    /// list. A binary moves to [`CORPUS`] once every one of its imports resolves.
+    const UPCOMING: [(&str, &[u8]); 7] = [
+        (
+            "runtime",
+            include_bytes!("../../../tests/runtime/runtime.exe"),
+        ),
+        ("memory", include_bytes!("../../../tests/memory/memory.exe")),
+        (
+            "threads",
+            include_bytes!("../../../tests/threads/threads.exe"),
+        ),
+        ("sync", include_bytes!("../../../tests/sync/sync.exe")),
+        ("sched", include_bytes!("../../../tests/sched/sched.exe")),
+        ("files", include_bytes!("../../../tests/files/files.exe")),
+        (
+            "fswrite",
+            include_bytes!("../../../tests/fswrite/fswrite.exe"),
+        ),
     ];
 
     /// A binary's imports, as (module, name), read through the loader's own import walk.
@@ -1699,10 +1714,11 @@ mod tests {
         imports
     }
 
-    /// The surface serves exactly what the corpus binaries import: every import of every binary
-    /// resolves, and every export is imported by some binary or awaits its fixture's binary.
-    /// Registry consistency rides along: names unique across both tables, service numbers are
-    /// positions plus one, ExitProcess pinned at 1.
+    /// The surface serves exactly what the corpus binaries import: every import of every corpus
+    /// binary resolves, every export is imported by some corpus or upcoming binary, and an
+    /// upcoming binary that has become fully served is promoted. Registry consistency rides along:
+    /// names unique across both tables, service numbers are positions plus one, ExitProcess pinned
+    /// at 1.
     #[test]
     fn the_surface_is_the_corpus_import_surface() {
         let names: Vec<&str> = exports().map(|(name, _)| name).collect();
@@ -1723,35 +1739,52 @@ mod tests {
         assert_eq!(lookup_service(u32::MAX), None);
 
         let mut imported: Vec<String> = Vec::new();
-        for (fixture, file) in CORPUS {
-            for (module, name) in imports_of(file) {
+        for (fixture, file) in CORPUS.iter().chain(UPCOMING.iter()) {
+            let imports = imports_of(file);
+            let served = imports.iter().all(|(_, name)| resolve(name).is_some());
+            let in_corpus = CORPUS.iter().any(|(name, _)| name == fixture);
+            for (module, name) in &imports {
                 assert!(
                     module.eq_ignore_ascii_case("KERNEL32.dll"),
                     "{fixture} imports {module}"
                 );
-                assert!(
-                    resolve(&name).is_some(),
-                    "{fixture} imports {name}, which is not served"
-                );
-                imported.push(name);
+                if in_corpus {
+                    assert!(
+                        resolve(name).is_some(),
+                        "{fixture} imports {name}, which is not served"
+                    );
+                }
+                imported.push(name.clone());
             }
+            assert!(
+                in_corpus || !served,
+                "{fixture} is served in full now: move it from UPCOMING to CORPUS"
+            );
         }
         for name in names {
-            let awaiting = AWAITING_BINARIES.contains(&name);
-            let used = imported.iter().any(|import| import == name);
             assert!(
-                used || awaiting,
+                imported.iter().any(|import| import == name),
                 "{name} is served but no corpus binary imports it"
             );
-            assert!(
-                !(used && awaiting),
-                "{name} is imported now: drop it from AWAITING_BINARIES"
-            );
         }
-        for name in AWAITING_BINARIES {
-            assert!(
-                resolve(name).is_some(),
-                "{name} awaits a binary but is not served"
+    }
+
+    /// What each upcoming fixture still needs, as a report (`cargo test -- --ignored --nocapture
+    /// upcoming`): the imports the surface does not serve yet.
+    #[test]
+    #[ignore = "a report, not a check: the upcoming fixtures' missing imports"]
+    fn upcoming_fixtures_missing_imports() {
+        for (fixture, file) in UPCOMING {
+            let mut missing: Vec<String> = imports_of(file)
+                .into_iter()
+                .map(|(_, name)| name)
+                .filter(|name| resolve(name).is_none())
+                .collect();
+            missing.sort();
+            println!(
+                "{fixture}: {} missing: {}",
+                missing.len(),
+                missing.join(" ")
             );
         }
     }

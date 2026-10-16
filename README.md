@@ -13,17 +13,18 @@ and cannot build the kernel (`-Z build-std`, JSON target specs).
 
 ### macOS (ARM64 or x86_64):
 ```bash
-brew install rustup x86_64-elf-binutils xorriso mtools qemu
+brew install rustup x86_64-elf-binutils xorriso mtools qemu uv
 rustup-init
-# PyYAML for the on-target suite, in a repository-local venv (`make test`
-# uses .venv/bin/python when it exists)
-python3 -m venv .venv && .venv/bin/pip install pyyaml
+# The Python tooling (pytest for the on-target tests, PyYAML for the
+# scripts) in a repository-local .venv, from pyproject.toml
+uv sync
 ```
 
 ### Linux (x86_64):
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-sudo apt install binutils xorriso mtools qemu-system-x86 python3-yaml
+sudo apt install binutils xorriso mtools qemu-system-x86
+curl -LsSf https://astral.sh/uv/install.sh | sh && uv sync
 ```
 
 ## Building
@@ -85,22 +86,36 @@ its group, contract status, and scenarios; the report script prints
 the per-group progress (`--check` verifies the ledger against the
 scenario sources, `--run` fills the passing column).
 ```bash
-.venv/bin/python scripts/kernel32-ledger.py --check
+uv run scripts/kernel32-ledger.py --check
 ```
 
-### On-target QEMU suite
-The cases (kernel features to build with, image to boot, expected
-COM1 strings) are data in `scripts/qemu-tests.yaml`;
-`scripts/run-qemu-tests.py` builds and runs them. Adding a case does
-not add a Makefile target. Expected strings match anywhere in the
-COM1 log by default; a case can require them in order (`ordered`),
-as an uninterrupted block of lines (`contiguous`), or forbid strings
-(`forbids`). A kernel panic fails every case.
+### On-target QEMU tests
+The on-target tests run through pytest (`tests/test_suite.py`, each
+sectioned fixture's `tests/<name>/test_<name>.py`, helpers in
+`tests/f2kboot.py` and `tests/conftest.py`), so an IDE
+lists and runs them one by one. The suite's cases (kernel features to
+build with, image to boot, expected COM1 strings) are data in
+`scripts/qemu-tests.yaml`: one test per case. Expected strings match
+anywhere in the COM1 log by default; a case can require them in order
+(`ordered`), as an uninterrupted block of lines (`contiguous`), or
+forbid strings (`forbids`). A kernel panic fails every case. The
+sectioned fixtures' tests are their real-machine captures (see
+`tests/README.md`): one test per captured block, each fixture's file
+stating what its comparison allows.
+
+Each test builds the kernel and disk for its feature set (once per
+run, cached under `target/qemu/builds/`) and keeps its COM1 log under
+`target/qemu/logs/`. Boots attach the disk as a snapshot, so tests run
+in parallel (`-n auto`, pytest-xdist).
 ```bash
 make test        # all kernel-path cases (QEMU -kernel)
 make test-disk   # all disk-path cases (Limine disk image)
-.venv/bin/python scripts/run-qemu-tests.py scripts/qemu-tests.yaml --list   # list cases
-.venv/bin/python scripts/run-qemu-tests.py scripts/qemu-tests.yaml --only fault-ud
+make corpus      # the sectioned corpus against its captures
+uv run pytest --collect-only -q                     # list every test
+uv run pytest tests/test_suite.py -k fault-ud       # one case
+uv run pytest tests/bare -n auto                    # one fixture's blocks
+uv run pytest tests/runtime --runxfail              # see why the work list fails
+uv run pytest --no-build ...                        # reuse the last make disk
 ```
 
 ### Check code
@@ -138,13 +153,13 @@ f2k/
 │   ├── x86-elf-ld         # Linker wrapper
 │   ├── linker.x86         # Custom linker script
 │   ├── create_partition_table.py  # MBR partition table for the disk image
-│   ├── test-boot.sh       # Boot one image in QEMU and assert COM1 strings
-│   ├── run-qemu-tests.py  # On-target suite runner: builds and boots per case
 │   ├── qemu-tests.yaml    # On-target test cases (data, not Makefile targets)
 │   ├── kernel32-ledger.py   # kernel32 contract ledger report (host-side)
 │   └── kernel32-ledger.yaml  # The contract ledger (data, not Makefile targets)
 │
-├── tests/            # Windows 2000 test corpus (see tests/README.md)
+├── tests/            # Windows 2000 test corpus (see tests/README.md), and the
+│                     # pytest modules that boot it (test_suite.py, <name>/test_<name>.py)
+├── pyproject.toml    # Python tooling (uv): pytest, pytest-xdist, PyYAML
 │
 └── kernel/           # F2K Kernel
     ├── Cargo.toml        # Kernel package

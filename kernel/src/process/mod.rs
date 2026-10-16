@@ -263,6 +263,11 @@ impl Process {
             (*thread).initial_stack = paging::gate_slot_top(slot as u32);
             (*thread).teb_va = crate::user::TEB_PAGE;
             (*thread).thread_id = new_client_id();
+            (*thread).user_stack = crate::user::stack::UserStack::new(
+                crate::user::USER_STACK_TOP,
+                crate::user::USER_STACK_RESERVE,
+                crate::user::USER_STACK_TOP - crate::user::USER_STACK_LOW_PAGE,
+            );
         }
         // The TSS `esp0` is the switch's to install: the first switch into the main thread loads
         // its stack top.
