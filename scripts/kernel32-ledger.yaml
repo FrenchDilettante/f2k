@@ -209,6 +209,12 @@ exports:
     status: dumped
     tests:
       - {name: free_environment_strings_w_succeeds, enabled: false}
+  - export: GetEnvironmentVariableA
+    group: environment
+    status: pinned
+  - export: SetEnvironmentVariableA
+    group: environment
+    status: pinned
   - export: HeapAlloc
     group: heap
     status: enabled
@@ -311,6 +317,12 @@ exports:
     tests:
       - {name: get_string_type_w_classifies_ctype1, enabled: false}
       - {name: get_string_type_w_refusals_and_empty_counts, enabled: false}
+  - export: CompareStringA
+    group: locale
+    status: pinned
+  - export: CompareStringW
+    group: locale
+    status: pinned
   - export: CreateThread
     group: threads
     status: dumped
@@ -521,5 +533,41 @@ exports:
     group: threads
     status: pinned
   - export: WaitForSingleObjectEx
+    group: threads
+    status: pinned
+  - export: CancelWaitableTimer
+    group: threads
+    status: pinned
+  - export: CreateWaitableTimerA
+    group: threads
+    status: pinned
+  - export: GetLocalTime
+    group: threads
+    status: pinned
+  - export: GetSystemTime
+    group: threads
+    status: pinned
+  - export: GetSystemTimeAsFileTime
+    group: threads
+    status: pinned
+  - export: GetTimeZoneInformation
+    group: threads
+    status: pinned
+  - export: OpenWaitableTimerA
+    group: threads
+    status: pinned
+  - export: QueryPerformanceCounter
+    group: threads
+    status: pinned
+  - export: QueryPerformanceFrequency
+    group: threads
+    status: pinned
+  - export: SetProcessAffinityMask
+    group: threads
+    status: pinned
+  - export: SetWaitableTimer
+    group: threads
+    status: pinned
+  - export: SwitchToThread
     group: threads
     status: pinned

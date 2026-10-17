@@ -48,8 +48,8 @@ pub struct Signature {
 
 use Arg::{Pointer as P, Value as V};
 
-/// The public prototypes of the 94 exports.
-pub const SIGNATURES: [Signature; 94] = [
+/// The public prototypes of the 110 exports.
+pub const SIGNATURES: [Signature; 110] = [
     sig("ExitProcess", &[V("uExitCode")]),
     sig("CloseHandle", &[V("hObject")]),
     sig(
@@ -301,6 +301,31 @@ pub const SIGNATURES: [Signature; 94] = [
     sig("SleepEx", &[V("dwMilliseconds"), V("bAlertable")]),
     sig("WaitForMultipleObjects", &[V("nCount"), P("lpHandles"), V("bWaitAll"), V("dwMilliseconds")]),
     sig("WaitForSingleObjectEx", &[V("hHandle"), V("dwMilliseconds"), V("bAlertable")]),
+    sig("CancelWaitableTimer", &[V("hTimer")]),
+    sig("CreateWaitableTimerA", &[P("lpTimerAttributes"), V("bManualReset"), P("lpTimerName")]),
+    sig("GetLocalTime", &[P("lpSystemTime")]),
+    sig("GetSystemTime", &[P("lpSystemTime")]),
+    sig("GetSystemTimeAsFileTime", &[P("lpSystemTimeAsFileTime")]),
+    sig("GetTimeZoneInformation", &[P("lpTimeZoneInformation")]),
+    sig("OpenWaitableTimerA", &[V("dwDesiredAccess"), V("bInheritHandle"), P("lpTimerName")]),
+    sig("QueryPerformanceCounter", &[P("lpPerformanceCount")]),
+    sig("QueryPerformanceFrequency", &[P("lpFrequency")]),
+    sig("SetProcessAffinityMask", &[V("hProcess"), V("dwProcessAffinityMask")]),
+    sig(
+        "SetWaitableTimer",
+        &[V("hTimer"), P("pDueTime"), V("lPeriod"), P("pfnCompletionRoutine"), P("lpArgToCompletionRoutine"), V("fResume")],
+    ),
+    sig("SwitchToThread", &[]),
+    sig(
+        "CompareStringA",
+        &[V("Locale"), V("dwCmpFlags"), P("lpString1"), V("cchCount1"), P("lpString2"), V("cchCount2")],
+    ),
+    sig(
+        "CompareStringW",
+        &[V("Locale"), V("dwCmpFlags"), P("lpString1"), V("cchCount1"), P("lpString2"), V("cchCount2")],
+    ),
+    sig("GetEnvironmentVariableA", &[P("lpName"), P("lpBuffer"), V("nSize")]),
+    sig("SetEnvironmentVariableA", &[P("lpName"), P("lpValue")]),
 ];
 
 const fn sig(export: &'static str, args: &'static [Arg]) -> Signature {
@@ -374,6 +399,17 @@ fn route(export: &str) -> Route {
         "ResetEvent" => Route::TargetOnly("the handler runs against the live handle table"),
         "ReleaseSemaphore" => Route::TargetOnly("the handler runs against the live handle table and scheduler"),
         "ReleaseMutex" => Route::TargetOnly("the handler runs against the live handle table and scheduler"),
+        "CreateWaitableTimerA" | "SetWaitableTimer" | "CancelWaitableTimer" => {
+            Route::TargetOnly("the handler runs against the live handle table and scheduler")
+        }
+        "OpenWaitableTimerA" => Route::TargetOnly("the handler runs against the live handle table"),
+        "GetSystemTime" | "GetLocalTime" | "GetSystemTimeAsFileTime" | "QueryPerformanceCounter" => {
+            Route::TargetOnly("the handler reads the live clock")
+        }
+        "SwitchToThread" => Route::TargetOnly("the yield runs through the scheduler"),
+        "SetEnvironmentVariableA" | "GetEnvironmentVariableA" => {
+            Route::TargetOnly("the variables live in the live process record")
+        }
         "QueueUserAPC" => Route::TargetOnly("the APC queues on a live thread"),
         "PulseEvent" => Route::TargetOnly("the handler runs against the live handle table and scheduler"),
         "OpenSemaphoreA" => Route::TargetOnly("the handler runs against the live handle table"),

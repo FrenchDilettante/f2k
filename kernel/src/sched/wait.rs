@@ -142,6 +142,14 @@ pub struct Timer {
     /// The timer-table membership link: the bucket list while held, the expiry walk's collection
     /// list mid-walk — a timer is on exactly one at a time.
     pub(crate) links: Links,
+    /// The period a periodic timer re-arms by at each expiry (100 ns units); zero for a one-shot.
+    /// A thread's wait timer is always a one-shot.
+    pub(crate) period: u64,
+    /// The APC queued at each expiry, or null: a waitable timer's completion routine (see
+    /// [`crate::sched::waitable_timer`]).
+    pub(crate) apc: *mut super::apc::Apc,
+    /// The user routine the expiry APC runs (its first system argument).
+    pub(crate) apc_routine: usize,
 }
 
 impl Timer {
@@ -153,7 +161,17 @@ impl Timer {
             due_time: 0,
             inserted: false,
             links: Links::detached(),
+            period: 0,
+            apc: null_mut(),
+            apc_routine: 0,
         }
+    }
+
+    /// A fresh timer of `kind` (one of the two timer kinds), as [`Timer::new`].
+    pub const fn of_kind(kind: WaitKind) -> Self {
+        let mut timer = Timer::new();
+        timer.waitable.kind = kind;
+        timer
     }
 
     /// Close the header's waiters sentinel.

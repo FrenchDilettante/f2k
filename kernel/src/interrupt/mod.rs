@@ -546,6 +546,8 @@ mod target {
             // The 8254: the captured platform interval.
             let mut ports = Ports;
             crate::hw::pit::program_interval(&mut ports, crate::hw::pit::INTERVAL_DIVISOR);
+            // The wall clock's origin, read while the kernel clock still reads zero.
+            crate::compat::time::init(&mut ports);
 
             crate::interrupt::dpc::init();
             super::clock::init();

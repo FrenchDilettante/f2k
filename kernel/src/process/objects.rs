@@ -1,9 +1,10 @@
-//! The process's synchronization-object records beyond events: semaphores, mutexes, the user-APC
-//! records QueueUserAPC queues, the named-object table, and the process's own waitable.
+//! The process's synchronization-object records beyond events: semaphores, mutexes, waitable
+//! timers, the user-APC records QueueUserAPC queues, the named-object table, and the process's own
+//! waitable.
 //!
 //! Every pool hands out a record that is fresh or that nothing can reach any more — no handle names
-//! it, no thread waits on it, and (a mutex) no thread owns it — so a record is reused only once it
-//! is dead. Names live in a small table beside the pools: a name binds one object for as long as a
+//! it, no thread waits on it, (a mutex) no thread owns it, and (a timer) it is neither armed nor
+//! has an APC queued — so a record is reused only once it is dead. Names live in a small table beside the pools: a name binds one object for as long as a
 //! handle names the object (the platform drops a name with its object's last handle), so a lookup
 //! skips an entry whose object no handle names, and a record's reuse forgets whatever name it had.
 //! Names compare exactly (Win32 object names are case-sensitive).
@@ -11,13 +12,18 @@
 use crate::sched::apc::Apc;
 use crate::sched::mutex::Mutex;
 use crate::sched::object::{HandleTable, Slot};
+use crate::sched::dispatcher::Dispatcher;
 use crate::sched::semaphore::Semaphore;
+use crate::sched::thread::Thread;
 use crate::sched::wait::{WaitKind, Waitable};
+use crate::sched::waitable_timer::WaitableTimer;
 
 /// How many semaphores a process can have at once.
 pub const SEMAPHORES: usize = 64;
 /// How many mutexes a process can have at once.
 pub const MUTEXES: usize = 64;
+/// How many waitable timers a process can have at once.
+pub const TIMERS: usize = 32;
 /// How many user APCs can be queued at once, across the process's threads.
 pub const USER_APCS: usize = 64;
 /// How many named objects a process can have at once.
@@ -65,6 +71,8 @@ pub struct SyncObjects {
     semaphores_used: usize,
     mutexes: [Mutex; MUTEXES],
     mutexes_used: usize,
+    timers: [WaitableTimer; TIMERS],
+    timers_used: usize,
     apcs: [Apc; USER_APCS],
     names: [NamedObject; NAMES],
     /// The process object's waitable: signaled at the process's end (which no thread of the
@@ -81,6 +89,8 @@ impl SyncObjects {
             semaphores_used: 0,
             mutexes: [const { Mutex::new() }; MUTEXES],
             mutexes_used: 0,
+            timers: [const { WaitableTimer::new(true) }; TIMERS],
+            timers_used: 0,
             apcs: [const { Apc::detached() }; USER_APCS],
             names: [const { NamedObject::free() }; NAMES],
             process: Waitable::new(WaitKind::NotificationEvent, 0),
@@ -108,6 +118,11 @@ impl SyncObjects {
                 mutexes.add(index).write(Mutex::new());
             }
             addr_of_mut!((*objects).mutexes_used).write(0);
+            let timers = addr_of_mut!((*objects).timers) as *mut WaitableTimer;
+            for index in 0..TIMERS {
+                timers.add(index).write(WaitableTimer::new(true));
+            }
+            addr_of_mut!((*objects).timers_used).write(0);
             let apcs = addr_of_mut!((*objects).apcs) as *mut Apc;
             for index in 0..USER_APCS {
                 apcs.add(index).write(Apc::detached());
@@ -163,6 +178,38 @@ impl SyncObjects {
         *mutex = Mutex::new();
         mutex.init();
         Some(mutex)
+    }
+
+    /// A fresh, unarmed, unsignaled waitable timer of the given reset kind, or none (the records
+    /// are exhausted).
+    pub fn new_timer(&mut self, handles: &HandleTable, manual_reset: bool) -> Option<&mut WaitableTimer> {
+        let index = reusable(&mut self.timers[..], &mut self.timers_used, |timer| {
+            let waitable = timer.waitable();
+            // SAFETY: the record's header, at its final address.
+            !timer.busy() && handles.references(waitable) == 0 && unsafe { (*waitable).waiters.is_empty() }
+        })?;
+        let timer = &mut self.timers[index];
+        forget(&mut self.names, timer.waitable());
+        *timer = WaitableTimer::new(manual_reset);
+        timer.init();
+        Some(timer)
+    }
+
+    /// Cancel every timer whose completion APC targets `thread` (it is ending: nothing may queue to
+    /// it any more).
+    pub fn run_down_timers(&mut self, dispatcher: &mut Dispatcher, thread: *mut Thread) {
+        for timer in self.timers[..self.timers_used].iter_mut() {
+            if core::ptr::eq(timer.apc_thread(), thread) {
+                dispatcher.cancel_waitable_timer(timer);
+            }
+        }
+    }
+
+    /// Cancel every timer (the process is ending: its records leave the timer table).
+    pub fn cancel_timers(&mut self, dispatcher: &mut Dispatcher) {
+        for timer in self.timers[..self.timers_used].iter_mut() {
+            dispatcher.cancel_waitable_timer(timer);
+        }
     }
 
     /// A user-APC record that is in no queue, or none (every record is queued).

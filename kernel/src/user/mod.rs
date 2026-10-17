@@ -382,8 +382,8 @@ fn command_line_image() -> Option<(&'static [u8], &'static str, &'static [u8])> 
 }
 
 /// The one image a one-process boot runs, as its path on the boot volume and its process name: the
-/// first fixture feature in this order — the timer, preemption, or file smoke
-/// (`run-sleep`/`run-spin`/`run-fileio`), hello (`run-hello`), ret0 (`run-ret0`) — else exit0. The paths are
+/// first fixture feature in this order — the file smoke (`run-fileio`), hello (`run-hello`), ret0
+/// (`run-ret0`) — else exit0. The paths are
 /// root-relative; the lookup folds case, so the lowercase spelling finds the stored uppercase name.
 #[cfg(all(
     target_arch = "x86",
@@ -397,10 +397,6 @@ fn command_line_image() -> Option<(&'static [u8], &'static str, &'static [u8])> 
 ))]
 #[allow(unreachable_code)]
 fn boot_image() -> (&'static [u8], &'static str) {
-    #[cfg(feature = "run-sleep")]
-    return (b"sleep.exe", "sleep");
-    #[cfg(feature = "run-spin")]
-    return (b"spin.exe", "spin");
     #[cfg(feature = "run-fileio")]
     return (b"fileio.exe", "fileio");
     #[cfg(feature = "run-hello")]

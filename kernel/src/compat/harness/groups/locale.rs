@@ -15,6 +15,8 @@ pub const MEMBERS: &[&str] = &[
     "LCMapStringW",
     "GetStringTypeA",
     "GetStringTypeW",
+    "CompareStringA",
+    "CompareStringW",
 ];
 
 const CP_ACP: u32 = 0;

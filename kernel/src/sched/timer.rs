@@ -85,6 +85,19 @@ impl TimerTable {
     /// move the clock between the caller's reading and the link, so the entry check is exact.
     pub fn insert(&mut self, timer: &mut Timer, due: u64, now: u64) -> bool {
         timer.waitable.signal_state = 0;
+        self.link(timer, due, now)
+    }
+
+    /// A periodic timer's re-arm at its expiry: as [`TimerTable::insert`], but the signal the
+    /// expiry just set stands — a periodic timer is never reset by its own re-arm, only by a wait
+    /// that consumes the signal or a new set.
+    pub fn reinsert_periodic(&mut self, timer: &mut Timer, due: u64, now: u64) -> bool {
+        self.link(timer, due, now)
+    }
+
+    /// Record `due` and link `timer` into its bucket in due order; false (nothing linked) when the
+    /// due time is already past.
+    fn link(&mut self, timer: &mut Timer, due: u64, now: u64) -> bool {
         if due <= now {
             timer.inserted = false;
             return false;
@@ -185,7 +198,9 @@ impl TimerTable {
                 if !timer.inserted {
                     return Err("a bucket entry is not inserted");
                 }
-                if timer.waitable.signal_state != 0 {
+                // A periodic timer re-arms with its signal standing; every other entry was reset
+                // by its insert.
+                if timer.waitable.signal_state != 0 && timer.period == 0 {
                     return Err("a bucket entry is signaled");
                 }
                 if self.bucket_of(timer.due_time) != index {
@@ -223,11 +238,6 @@ impl Dispatcher {
         self.timer_table.trigger(now, tick_low)
     }
 
-    /// The timer table (the boot-time diagnostic parks a timer through it).
-    pub(crate) fn timer_table(&mut self) -> &mut TimerTable {
-        &mut self.timer_table
-    }
-
     /// The deferred expiry work: collect the timers due by `now` — from the buckets the `argument`
     /// tick names through the current one — and expire each in due order through the wait
     /// discipline's expiry entry. `tick_low` is the current tick's low word.
@@ -249,8 +259,38 @@ impl Dispatcher {
                 let timer = timer_of(entry);
                 (*timer).inserted = false;
                 self.expire_timer(timer);
+                self.timer_fired(&mut *timer, now);
             }
         }
+    }
+
+    /// What an expiry does past the signal-and-satisfy: queue the timer's APC (unless the previous
+    /// one is still queued), and re-arm a periodic timer one period from `now`. A thread's wait
+    /// timer has neither.
+    pub(crate) fn timer_fired(&mut self, timer: &mut Timer, now: u64) {
+        if !timer.apc.is_null() {
+            // SAFETY: a timer's APC record lives as long as the timer (both in one record).
+            if !unsafe { (*timer.apc).inserted } {
+                self.queue_apc(timer.apc, timer.apc_routine, 0, 0);
+            }
+        }
+        if timer.period != 0 && !timer.inserted {
+            // The period is at least a millisecond, so the re-arm is always in the future.
+            self.timer_table
+                .reinsert_periodic(timer, now + timer.period, now);
+        }
+    }
+
+    /// Cancel `timer`: out of the table, its period and APC dropped, a queued APC taken back out of
+    /// its thread's queue. Returns whether the timer was signaled.
+    pub(crate) fn cancel_timer(&mut self, timer: &mut Timer) -> bool {
+        self.timer_table.remove(timer);
+        timer.period = 0;
+        if !timer.apc.is_null() {
+            self.remove_apc(timer.apc);
+            timer.apc = null_mut();
+        }
+        timer.waitable.signal_state > 0
     }
 }
 

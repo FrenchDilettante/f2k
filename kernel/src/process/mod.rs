@@ -75,8 +75,11 @@ pub struct Process {
     events: [crate::sched::event::Event; EVENTS],
     /// How many event records have ever been handed out (the pool's high-water mark).
     events_used: usize,
-    /// The semaphores, mutexes, user-APC records and object names, and the process's waitable.
+    /// The semaphores, mutexes, timers, user-APC records and object names, and the process's
+    /// waitable.
     objects: objects::SyncObjects,
+    /// The environment variables.
+    environment: crate::compat::environment::Environment,
     /// Why the process ended, recorded by its last thread's exit; the idle thread's reap step
     /// tears down a process once this is set.
     end: Option<exit::ProcessEnd>,
@@ -218,6 +221,11 @@ impl Process {
         &mut objects::SyncObjects,
     ) {
         (&mut self.handles, &mut self.objects)
+    }
+
+    /// The environment variables.
+    pub fn environment_mut(&mut self) -> &mut crate::compat::environment::Environment {
+        &mut self.environment
     }
 
     /// Open `file` (a file, not a directory) at its start and return its new handle; null when the
@@ -472,6 +480,8 @@ fn install(dir_phys: u32, name: &'static str) {
         }
         addr_of_mut!((*process).events_used).write(0);
         objects::SyncObjects::write_empty(addr_of_mut!((*process).objects));
+        // All zeros is the empty store (written in place: by value it would pass the stack).
+        addr_of_mut!((*process).environment).write_bytes(0, 1);
         addr_of_mut!((*process).end).write(None);
         addr_of_mut!((*process).handed_end).write(None);
         INSTALLED = true;
@@ -723,6 +733,7 @@ mod tests {
             events: fresh_events(),
             events_used: 0,
             objects: objects::SyncObjects::empty(),
+            environment: crate::compat::environment::Environment::empty(),
             end: None,
             handed_end: None,
         };
@@ -759,6 +770,7 @@ mod tests {
             events: fresh_events(),
             events_used: 0,
             objects: objects::SyncObjects::empty(),
+            environment: crate::compat::environment::Environment::empty(),
             end: None,
             handed_end: None,
         }
@@ -1036,6 +1048,7 @@ mod tests {
             events: fresh_events(),
             events_used: 0,
             objects: objects::SyncObjects::empty(),
+            environment: crate::compat::environment::Environment::empty(),
             end: None,
             handed_end: None,
         }));

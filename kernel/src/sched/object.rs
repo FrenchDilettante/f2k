@@ -35,6 +35,8 @@ pub enum Slot {
     Semaphore(*mut Waitable),
     /// A mutex, by its waitable header.
     Mutex(*mut Waitable),
+    /// A waitable timer, by its waitable header.
+    Timer(*mut Waitable),
     /// An open file: the index of the process's open-file record.
     File(usize),
 }
@@ -47,7 +49,8 @@ impl Slot {
             Slot::Event(waitable)
             | Slot::Thread(waitable)
             | Slot::Semaphore(waitable)
-            | Slot::Mutex(waitable) => Some(waitable),
+            | Slot::Mutex(waitable)
+            | Slot::Timer(waitable) => Some(waitable),
             Slot::File(_) => None,
         }
     }

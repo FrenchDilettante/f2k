@@ -18,6 +18,8 @@ pub const STATUS_KERNEL_APC: NtStatus = 0x0000_0100;
 /// A wait broken so a user APC could be delivered: an alertable wait returns it once the queued
 /// APCs have run (the Win32 wait returns it raw, `WAIT_IO_COMPLETION`).
 pub const STATUS_USER_APC: NtStatus = 0x0000_00C0;
+/// A yield found no thread to hand the processor to (SwitchToThread returns FALSE).
+pub const STATUS_NO_YIELD_PERFORMED: NtStatus = 0x4000_0024;
 /// A wait took a mutex its previous owner ended holding: the wait succeeded, and the protected
 /// state may be inconsistent. OR'd with the satisfying index (`WAIT_ABANDONED_0 + n`).
 pub const STATUS_ABANDONED: NtStatus = 0x0000_0080;

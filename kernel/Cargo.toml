@@ -47,21 +47,6 @@ run-ret0 = []
 # Loads the console fixture (hello.exe, the 40-import console-stdio
 # surface) instead of the first: the hello suite cases build with it.
 run-hello = []
-# The timer smoke boot: the sleep fixture runs with the thread-ified
-# entry — Sleep parks the main thread in the timer table (the idle
-# thread owns the processor while it sleeps), the timed wait blocks
-# on a never-signaled event until its timeout, and GetTickCount
-# reads the tick count. The qemu-tests.yaml cases pin the captured
-# output.
-run-sleep = []
-# The preemption smoke boot: the spin fixture runs with the
-# thread-ified entry — two same-priority spinners alternate at
-# quantum ends (round-robin from the tick), a third thread raised
-# above them runs its block uninterrupted (the service-boundary
-# delivery), and the checksums prove the work loops completed
-# under preemption. The qemu-tests.yaml cases pin the captured
-# shape.
-run-spin = []
 # The file smoke boot: the fileio fixture opens its own image on the
 # boot volume through CreateFileA (by the path GetModuleFileNameA
 # reports), reads the MZ and PE signatures with ReadFile across
@@ -74,15 +59,6 @@ run-fileio = []
 # per-process teardown are the runner's deliverables; the
 # qemu-tests.yaml cases pin the COM1 shapes.
 run-process-suite = []
-# The interrupt/timer diagnostic boot:
-# a boot-time pass that reports the PIC remap, the PIT programming at
-# the captured 10.0144 ms tick, the live tick counter, the clock-ISR
-# DPC, and the interrupt-core audit on COM1, then lets the normal boot
-# proceed to the default image's exit — proving coexistence, not just
-# the diagnostic. The tick itself is default-on kernel machinery; the
-# feature gates only the diagnostic lines and the bounded tick wait.
-# The qemu-tests.yaml cases pin the COM1 shapes.
-irq-smoke = []
 # The IDE diagnostic boot: after the driver comes up, a boot-time pass
 # reads the drive's identity, the MBR, the volume boot sector, and the
 # first fixture's sector through the IRQ14-driven read path and reports

@@ -148,27 +148,12 @@ impl Clock {
 /// The deferred timer routine: the clock's DPC callback — the timer table's expiry walk. The
 /// argument is the firing tick's low word (the trigger's), and the walk scans the table from that
 /// tick's bucket through the current one, waking every thread whose timeout came due.
-static mut TIMER_FIRED: u32 = 0;
-
-/// How many times the deferred timer routine has run.
-pub fn timer_fired() -> u32 {
-    // SAFETY: single CPU; read-only.
-    unsafe { core::ptr::read_volatile(core::ptr::addr_of!(TIMER_FIRED)) }
-}
-
 #[cfg(target_arch = "x86")]
 fn timer_routine(_dpc: &Dpc, _context: usize, argument1: usize, _argument2: usize) {
-    // SAFETY: single CPU, called with interrupts enabled from the retire pass at the dispatch level
-    // — the dispatcher's entries run serialized there.
-    unsafe {
-        core::ptr::write_volatile(
-            core::ptr::addr_of_mut!(TIMER_FIRED),
-            core::ptr::read_volatile(core::ptr::addr_of!(TIMER_FIRED)).wrapping_add(1),
-        );
-        // Both readings in one masked read: the routine runs with interrupts enabled.
-        let (now, tick) = read_clock(|clock| (clock.interrupt_time(), clock.tick_count() as u32));
-        crate::sched::idle::dispatcher().expire_timers(now, tick, argument1 as u32);
-    }
+    // Both readings in one masked read: the routine runs with interrupts enabled, from the retire
+    // pass at the dispatch level — the dispatcher's entries run serialized there.
+    let (now, tick) = read_clock(|clock| (clock.interrupt_time(), clock.tick_count() as u32));
+    crate::sched::idle::dispatcher().expire_timers(now, tick, argument1 as u32);
 }
 
 // --- Target wiring: the kernel clock --------------------------------------
@@ -182,6 +167,20 @@ static mut CLOCK: Clock = Clock::new();
 /// enqueue.
 #[cfg(target_arch = "x86")]
 static mut TIMER_DPC: Dpc = Dpc::new(timer_routine, 0);
+
+/// How often the balance-set scan runs, in full ticks: about a second.
+pub const BALANCE_PERIOD_TICKS: u32 = 100;
+
+/// The balance-set scan's deferred work (see
+/// [`crate::sched::dispatcher::Dispatcher::scan_ready_queues`]): the platform runs it in its
+/// balance-set manager thread, woken once a second; here the clock enqueues it once a second.
+#[cfg(target_arch = "x86")]
+static mut BALANCE_DPC: Dpc = Dpc::new(balance_routine, 0);
+
+#[cfg(target_arch = "x86")]
+fn balance_routine(_dpc: &Dpc, _context: usize, _argument1: usize, _argument2: usize) {
+    crate::sched::idle::dispatcher().scan_ready_queues();
+}
 
 /// The vector the timer interrupt arrives on (IRQ 0 after the remap).
 pub const CLOCK_VECTOR: u8 = crate::hw::pic::MASTER_VECTOR_BASE;
@@ -211,7 +210,14 @@ pub fn service() {
             clock.account_runtime(crate::interrupt::dpc::queue_mut());
             // A full tick charges the running thread's quantum; a charge that runs the quantum out
             // requests the dispatch window's decision at this interrupt's exit.
-            crate::sched::idle::dispatcher().charge_running_tick();
+            let dispatcher = crate::sched::idle::dispatcher();
+            dispatcher.note_tick(clock.tick_count());
+            dispatcher.charge_running_tick();
+            // Once a second, the balance-set scan.
+            if tick_low % BALANCE_PERIOD_TICKS == 0 {
+                let dpc = &mut *addr_of_mut!(BALANCE_DPC);
+                crate::interrupt::dpc::enqueue(dpc, 0, 0);
+            }
         }
     }
 }

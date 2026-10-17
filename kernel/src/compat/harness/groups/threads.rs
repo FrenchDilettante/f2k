@@ -1,5 +1,6 @@
 //! Threads / sync: thread creation, suspension, and priority; unnamed events; waits and sleeps in
-//! milliseconds over the kernel's 100 ns intervals; the millisecond tick count. The scenarios pin
+//! milliseconds over the kernel's 100 ns intervals; waitable timers; the millisecond tick count,
+//! the wall clock, and the performance counter. The scenarios pin
 //! how each export translates onto the boundary, and the fixtures' captured outputs where the
 //! translation shows (the sleep and wait spans, the suspend counts).
 
@@ -57,6 +58,18 @@ pub const MEMBERS: &[&str] = &[
     "SleepEx",
     "WaitForMultipleObjects",
     "WaitForSingleObjectEx",
+    "CancelWaitableTimer",
+    "CreateWaitableTimerA",
+    "GetLocalTime",
+    "GetSystemTime",
+    "GetSystemTimeAsFileTime",
+    "GetTimeZoneInformation",
+    "OpenWaitableTimerA",
+    "QueryPerformanceCounter",
+    "QueryPerformanceFrequency",
+    "SetProcessAffinityMask",
+    "SetWaitableTimer",
+    "SwitchToThread",
 ];
 
 const INFINITE: u32 = 0xFFFF_FFFF;

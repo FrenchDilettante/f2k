@@ -102,7 +102,11 @@ The fixtures:
 - `sched` - sleeps and timed waits in bands, the clocks, waitable
   timers, round-robin, preemption, yielding, the wake boost,
   suspension, and the starvation boost; pinned to one CPU. Built with
-  `/MT`. Replaces `sleep` and `spin` (`suspend` went with `threads`).
+  `/MT`. Replaced the `sleep` and `spin` smokes (retired; `suspend`
+  went with `threads`). Gated, with `yield` pending: its capture's
+  `Sleep(10) does: no` shows another process's thread ready on the
+  pinned CPU (as the masked SwitchToThread line above it does), where
+  F2K's idle processor runs the lower-priority thread.
 - `files` - the read side of the file API over `files/DATA` (generated
   by `scripts/gen-files-data.py`; every byte is formula-defined): path
   forms and errors, chunked and boundary reads, seeks, metadata,
@@ -168,13 +172,6 @@ import trace, and the disk-smoke checksum file) stay.
   window, paints "Hello, world!" once with `TextOut`, then closes
   itself and exits 0; the first test to import user32.dll and
   gdi32.dll.
-- `sleep` - scheduler smoke: `Sleep(200)` measured in tick counts
-  with `GetTickCount`, a pure-yield `Sleep(0)`, and a timed wait on
-  a never-signaled event reporting timeout - the timer machinery
-  behind all of them.
-- `spin` - scheduler smoke: three equal-work spinner threads, two
-  at normal priority interleaving by quantum-end round-robin, a
-  third raised above normal preempting them until it finishes.
 - `fileio` - disk smoke: opens the program's own image from the
   filesystem, reads the MZ and PE signatures, seeks back, and reads
   the MZ again - the file API over the boot volume, the measuring
@@ -220,24 +217,20 @@ Each boot prints the observed process exit code on COM1, which the
 suite cases assert. Host unit tests still read the checked-in `.exe`
 files directly (`include_bytes!`, test builds only).
 
-The scheduler smoke tests (`sleep`, `spin`)
-joined the corpus one per scheduler stage, in dependency order, as
-the scheduler grew; each asserts the real-machine captured output of
-its stage, and each retires once the sectioned fixture covering it
-passes (`thread`, `respawn` and `suspend` went with `threads`,
-`pingpong` with `sync`).
+The scheduler smoke tests joined the corpus one per scheduler stage,
+in dependency order, as the scheduler grew, each asserting its
+stage's real-machine capture; all have retired now that the
+sectioned fixtures covering them pass (`thread`, `respawn` and
+`suspend` went with `threads`, `pingpong` with `sync`, `sleep` and
+`spin` with `sched`).
 
-Known issue, the `sleep` smoke's tick spans: its capture reads
+The `sleep` smoke's known issue went with it: its capture read
 `sleep 200ms spanned 200 ticks` and `timed wait: timeout after 100
-ticks`, but those values depend on the tick phase the wait starts
-at. The waits last exactly 20 and 10 clock ticks, yet GetTickCount
-rounds the 10.0144 ms tick down to whole milliseconds, so the same
-wait reads one millisecond longer at some phases (201, 101) - on
-Windows 2000 as on F2K. The capture is one phase's sample, and any
-change in boot timing (a different disk layout, faster code) can
-move F2K to the other reading. The `sleep-smoke` cases in
-`scripts/qemu-tests.yaml` therefore match those two lines with `re:`
-patterns admitting exactly that one-millisecond step; an `expects`
-entry written `re:<pattern>` is a regular expression rather than a
-substring (`f2kboot.matches`). The `sched` fixture that will retire
-`sleep` measures spans in bands instead, so it has no such issue.
+ticks`, one tick phase's sample - the waits last exactly 20 and 10
+clock ticks, but GetTickCount floors the 10.0144 ms tick to whole
+milliseconds, so the same waits read 201 and 101 at other phases, on
+Windows 2000 as on F2K, and boot timing moved F2K between them. Its
+YAML cases had to admit the step with `re:` patterns (an `expects`
+entry written `re:<pattern>` is a regular expression,
+`f2kboot.matches`, still available); `sched` measures spans in bands
+and has no such issue.

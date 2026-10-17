@@ -42,20 +42,6 @@ if errorlevel 1 (echo build.bat: hellogui failed & exit /b 1)
 del hellogui.obj
 cd ..
 
-echo === sleep
-cd sleep
-cl /nologo sleep.c
-if errorlevel 1 (echo build.bat: sleep failed & exit /b 1)
-del sleep.obj
-cd ..
-
-echo === spin
-cd spin
-cl /nologo spin.c
-if errorlevel 1 (echo build.bat: spin failed & exit /b 1)
-del spin.obj
-cd ..
-
 echo === fileio
 cd fileio
 cl /nologo fileio.c

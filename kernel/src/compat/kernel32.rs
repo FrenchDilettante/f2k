@@ -607,6 +607,7 @@ fn svc_close_handle(frame: &mut crate::user::TrapFrame, args: &[u32]) {
     {
         // The console handles are fixed replays with no table claim: closing one succeeds and
         // changes nothing.
+        let slot = object_slot(args[0]);
         frame.eax =
             if is_console_handle(args[0]) || crate::process::current_mut().close_handle(args[0]) {
                 1
@@ -614,6 +615,16 @@ fn svc_close_handle(frame: &mut crate::user::TrapFrame, args: &[u32]) {
                 crate::user::teb::set_last_error(crate::compat::error::ERROR_INVALID_HANDLE);
                 0
             };
+        // A timer's last handle cancels it: the platform deletes the object, and nothing may
+        // expire or queue an APC for a timer no program can reach.
+        if let Some(crate::sched::object::Slot::Timer(waitable)) = slot {
+            let (handles, _) = crate::process::current_mut().objects_mut();
+            if handles.references(waitable) == 0 {
+                // SAFETY: the timer's waitable header leads its record, which lives in the process.
+                let timer = unsafe { &mut *crate::sched::waitable_timer::WaitableTimer::from_waitable(waitable) };
+                crate::sched::idle::dispatcher().cancel_waitable_timer(timer);
+            }
+        }
     }
     #[cfg(not(target_arch = "x86"))]
     {
@@ -2330,20 +2341,420 @@ fn svc_floor_zero(frame: &mut crate::user::TrapFrame, _args: &[u32]) {
     frame.eax = 0;
 }
 
+// --- Waitable timers --------------------------------------------------
+
+/// The waitable timer a handle names, or ERROR_INVALID_HANDLE (as [`thread_of`]).
+#[cfg(target_arch = "x86")]
+fn timer_of(handle: u32) -> Result<&'static mut crate::sched::waitable_timer::WaitableTimer, u32> {
+    match object_slot(handle) {
+        // SAFETY: the timer's waitable header leads its record, which lives in the process.
+        Some(crate::sched::object::Slot::Timer(waitable)) => {
+            Ok(unsafe { &mut *crate::sched::waitable_timer::WaitableTimer::from_waitable(waitable) })
+        }
+        _ => Err(crate::compat::error::ERROR_INVALID_HANDLE),
+    }
+}
+
+/// CreateWaitableTimerA: a fresh, unarmed timer — manual-reset (a notification timer) or
+/// auto-reset (a synchronization timer) — or the named one already bound (see [`create_object`]).
+fn svc_create_waitable_timer_a(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    #[cfg(target_arch = "x86")]
+    {
+        let (manual_reset, name) = (args[1] != 0, args[2]);
+        frame.eax = create_object(name, crate::sched::object::Slot::Timer, || {
+            let (handles, objects) = crate::process::current_mut().objects_mut();
+            objects.new_timer(handles, manual_reset).map(|timer| timer.waitable())
+        });
+    }
+    #[cfg(not(target_arch = "x86"))]
+    {
+        let _ = args;
+        frame.eax = 0;
+    }
+}
+
+/// OpenWaitableTimerA: a new handle to the named timer (see [`open_object`]).
+fn svc_open_waitable_timer_a(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    #[cfg(target_arch = "x86")]
+    {
+        frame.eax = open_object(args[2], crate::sched::object::Slot::Timer);
+    }
+    #[cfg(not(target_arch = "x86"))]
+    {
+        let _ = args;
+        frame.eax = 0;
+    }
+}
+
+/// SetWaitableTimer: arm the timer (see [`crate::sched::waitable_timer`]). The due time is a
+/// FILETIME when positive (absolute: the wall clock's reading at expiry), 100 ns units from now when
+/// negative; the period is in milliseconds, zero for a one-shot. A completion routine is queued to
+/// the calling thread at each expiry, with its argument. The resume flag is not supported: the set
+/// succeeds with ERROR_NOT_SUPPORTED, as on a machine without power management. ERROR_NOACCESS for
+/// an unreadable due time, ERROR_INVALID_PARAMETER for a negative period.
+fn svc_set_waitable_timer(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    #[cfg(target_arch = "x86")]
+    {
+        use crate::compat::error::{ERROR_INVALID_PARAMETER, ERROR_NOACCESS, ERROR_NOT_SUPPORTED};
+        use crate::user::teb::set_last_error;
+        let (handle, due_pointer, period, routine, argument, resume) =
+            (args[0], args[1], args[2] as i32, args[3], args[4], args[5]);
+        frame.eax = 0;
+        let timer = match timer_of(handle) {
+            Ok(timer) => timer,
+            Err(error) => return set_last_error(error),
+        };
+        let mut due = [0u8; 8];
+        if read_user(due_pointer, &mut due).is_err() {
+            return set_last_error(ERROR_NOACCESS);
+        }
+        if period < 0 {
+            return set_last_error(ERROR_INVALID_PARAMETER);
+        }
+        let due = i64::from_le_bytes(due);
+        let now = crate::interrupt::clock::interrupt_time();
+        let due = if due < 0 {
+            now.wrapping_add(due.unsigned_abs())
+        } else {
+            // The wall clock is the kernel clock plus the boot's reading; a time before the boot
+            // is long past.
+            (due as u64).saturating_sub(crate::compat::time::boot_filetime())
+        };
+        let dispatcher = crate::sched::idle::dispatcher();
+        // The cancel first: the APC record may still be queued from the previous set.
+        dispatcher.cancel_waitable_timer(timer);
+        let routine = (routine != 0).then(|| {
+            timer.apc.init(
+                dispatcher.current_thread(),
+                crate::sched::apc::nop_kernel_routine,
+                Some(crate::user::apc::user_normal_routine),
+                crate::sched::apc::ApcMode::User,
+                argument as usize,
+            );
+            routine as usize
+        });
+        dispatcher.set_waitable_timer(timer, due, now, period as u64 * 10_000, routine);
+        if resume != 0 {
+            set_last_error(ERROR_NOT_SUPPORTED);
+        }
+        frame.eax = 1;
+    }
+    #[cfg(not(target_arch = "x86"))]
+    {
+        let _ = args;
+        frame.eax = 0;
+    }
+}
+
+/// CancelWaitableTimer: disarm the timer, its period and any queued completion APC dropped; the
+/// signal state is left as it was.
+fn svc_cancel_waitable_timer(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    #[cfg(target_arch = "x86")]
+    {
+        frame.eax = match timer_of(args[0]) {
+            Ok(timer) => {
+                crate::sched::idle::dispatcher().cancel_waitable_timer(timer);
+                1
+            }
+            Err(error) => {
+                crate::user::teb::set_last_error(error);
+                0
+            }
+        };
+    }
+    #[cfg(not(target_arch = "x86"))]
+    {
+        let _ = args;
+        frame.eax = 0;
+    }
+}
+
+// --- Wall clock and performance counter ------------------------------
+
+/// GetSystemTimeAsFileTime: the wall clock (see [`crate::compat::time`]).
+fn svc_get_system_time_as_file_time(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    frame.eax = 0;
+    #[cfg(target_arch = "x86")]
+    {
+        let _ = write_user(args[0], &crate::compat::time::system_filetime().to_le_bytes());
+    }
+    #[cfg(not(target_arch = "x86"))]
+    let _ = args;
+}
+
+/// GetSystemTime: the wall clock as a SYSTEMTIME, UTC.
+fn svc_get_system_time(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    frame.eax = 0;
+    #[cfg(target_arch = "x86")]
+    {
+        let now = crate::compat::time::system_time_from_filetime(crate::compat::time::system_filetime());
+        let _ = write_user(args[0], &now.to_bytes());
+    }
+    #[cfg(not(target_arch = "x86"))]
+    let _ = args;
+}
+
+/// GetLocalTime: the wall clock as a SYSTEMTIME, local — the same as UTC with no time zone
+/// configured.
+fn svc_get_local_time(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    svc_get_system_time(frame, args);
+}
+
+/// TIME_ZONE_ID_UNKNOWN: no daylight-saving rules in effect.
+const TIME_ZONE_ID_UNKNOWN: u32 = 0;
+/// sizeof(TIME_ZONE_INFORMATION).
+const TIME_ZONE_INFORMATION_SIZE: usize = 172;
+
+/// GetTimeZoneInformation: no time zone configured — a zero bias, no names, no daylight-saving
+/// dates — and TIME_ZONE_ID_UNKNOWN. ERROR_NOACCESS (and 0xFFFFFFFF) for an unwritable buffer.
+fn svc_get_time_zone_information(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    if write_user(args[0], &[0u8; TIME_ZONE_INFORMATION_SIZE]).is_err() {
+        crate::user::teb::set_last_error(crate::compat::error::ERROR_NOACCESS);
+        frame.eax = 0xFFFF_FFFF;
+        return;
+    }
+    frame.eax = TIME_ZONE_ID_UNKNOWN;
+}
+
+/// QueryPerformanceCounter: the performance counter (see [`crate::compat::time`]); ERROR_NOACCESS
+/// for an unwritable result.
+fn svc_query_performance_counter(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    #[cfg(target_arch = "x86")]
+    let count = crate::compat::time::performance_count(crate::interrupt::clock::interrupt_time());
+    #[cfg(not(target_arch = "x86"))]
+    let count = 0u64;
+    write_u64_result(frame, args[0], count);
+}
+
+/// QueryPerformanceFrequency: the counter's fixed frequency; ERROR_NOACCESS for an unwritable
+/// result.
+fn svc_query_performance_frequency(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    write_u64_result(frame, args[0], crate::compat::time::PERFORMANCE_FREQUENCY);
+}
+
+/// A BOOL service's 64-bit result: TRUE once written, FALSE with ERROR_NOACCESS otherwise.
+fn write_u64_result(frame: &mut crate::user::TrapFrame, pointer: u32, value: u64) {
+    if write_user(pointer, &value.to_le_bytes()).is_err() {
+        crate::user::teb::set_last_error(crate::compat::error::ERROR_NOACCESS);
+        frame.eax = 0;
+    } else {
+        frame.eax = 1;
+    }
+}
+
+// --- Scheduling -------------------------------------------------------
+
+/// SwitchToThread: hand the processor to any ready thread, a lower-priority one included (see
+/// [`crate::sched::dispatcher::Dispatcher::yield_execution`]). TRUE when another thread ran, FALSE
+/// when none was ready.
+fn svc_switch_to_thread(frame: &mut crate::user::TrapFrame, _args: &[u32]) {
+    #[cfg(target_arch = "x86")]
+    {
+        let status = crate::sched::wait::wait_current_with(|dispatcher, thread, _stamp, _replay| {
+            if dispatcher.yield_execution(thread) {
+                thread.wait_status = crate::status::STATUS_SUCCESS;
+                crate::sched::wait::WaitDisposition::Yield
+            } else {
+                crate::sched::wait::WaitDisposition::Complete(crate::status::STATUS_NO_YIELD_PERFORMED)
+            }
+        });
+        frame.eax = u32::from(status == crate::status::STATUS_SUCCESS);
+    }
+    #[cfg(not(target_arch = "x86"))]
+    {
+        frame.eax = 0;
+    }
+}
+
+/// The processors a process may run on: the one processor.
+const SYSTEM_AFFINITY: u32 = 1;
+
+/// SetProcessAffinityMask: the current process (its pseudo-handle — the only process handle a
+/// program holds) accepts any non-empty subset of the system's processors, which on one processor
+/// changes nothing. ERROR_INVALID_HANDLE for any other handle, ERROR_INVALID_PARAMETER for an empty
+/// mask or one naming a processor the system lacks.
+fn svc_set_process_affinity_mask(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    use crate::compat::error::{ERROR_INVALID_HANDLE, ERROR_INVALID_PARAMETER};
+    let (process, mask) = (args[0], args[1]);
+    frame.eax = 0;
+    if process != CURRENT_PROCESS {
+        return crate::user::teb::set_last_error(ERROR_INVALID_HANDLE);
+    }
+    if mask == 0 || mask & !SYSTEM_AFFINITY != 0 {
+        return crate::user::teb::set_last_error(ERROR_INVALID_PARAMETER);
+    }
+    frame.eax = 1;
+}
+
+// --- String comparison ------------------------------------------------
+
+/// A CompareString argument's length in code units: walked to its terminator for -1, else as
+/// given (its range checked). ERROR_INVALID_PARAMETER for a null string or a length below -1,
+/// ERROR_NOACCESS for an unreadable one.
+fn compare_length(pointer: u32, count: i32, unit: u32) -> Result<usize, u32> {
+    use crate::compat::error::{ERROR_INVALID_PARAMETER, ERROR_NOACCESS};
+    if pointer == 0 || count < -1 {
+        return Err(ERROR_INVALID_PARAMETER);
+    }
+    if count == -1 {
+        let walked = if unit == 1 { walk_narrow(pointer) } else { walk_wide(pointer) };
+        return walked.map(|length| length as usize - 1).ok_or(ERROR_NOACCESS);
+    }
+    crate::user::syscall::probe_user_range(pointer, count as u32 * unit).map_err(|_| ERROR_NOACCESS)?;
+    Ok(count as usize)
+}
+
+/// The comparison CompareStringA and CompareStringW share, over strings of `unit`-byte code units
+/// read in place through `decode` (see [`crate::compat::collate`]). The locale is not consulted:
+/// every locale compares the same. ERROR_INVALID_FLAGS for an unknown flag.
+fn compare_strings(frame: &mut crate::user::TrapFrame, args: &[u32], unit: u32, decode: fn(u32) -> u32) {
+    let (flags, a, a_count, b, b_count) = (args[1], args[2], args[3] as i32, args[4], args[5] as i32);
+    frame.eax = 0;
+    if flags & !crate::compat::collate::VALID_FLAGS != 0 {
+        return crate::user::teb::set_last_error(crate::compat::error::ERROR_INVALID_FLAGS);
+    }
+    let lengths = compare_length(a, a_count, unit).and_then(|a_len| Ok((a_len, compare_length(b, b_count, unit)?)));
+    let (a_len, b_len) = match lengths {
+        Ok(lengths) => lengths,
+        Err(error) => return crate::user::teb::set_last_error(error),
+    };
+    let read = |base: u32| {
+        move |index: usize| {
+            let mut bytes = [0u8; 2];
+            let _ = read_user(base + index as u32 * unit, &mut bytes[..unit as usize]);
+            decode(u32::from(u16::from_le_bytes(bytes)))
+        }
+    };
+    frame.eax = crate::compat::collate::compare_with(&read(a), a_len, &read(b), b_len, flags);
+}
+
+/// CompareStringA: the comparison over ANSI strings, each byte decoded through codepage 1252.
+fn svc_compare_string_a(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    compare_strings(frame, args, 1, |byte| u32::from(crate::compat::cp1252::MB_TO_WC[byte as usize]));
+}
+
+/// CompareStringW: the comparison over UTF-16 code units.
+fn svc_compare_string_w(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    compare_strings(frame, args, 2, |unit| unit);
+}
+
+// --- Environment variables --------------------------------------------
+
+/// The longest environment-variable name the services take.
+const MAX_ENV_NAME: usize = MAX_PATH;
+
+/// An environment-variable name argument into `out`: its length. ERROR_NOACCESS for an unreadable
+/// one, ERROR_INVALID_PARAMETER for a null or over-long one.
+fn env_name(pointer: u32, out: &mut [u8; MAX_ENV_NAME]) -> Result<usize, u32> {
+    use crate::compat::error::{ERROR_INVALID_PARAMETER, ERROR_NOACCESS};
+    if pointer == 0 {
+        return Err(ERROR_INVALID_PARAMETER);
+    }
+    let length = walk_narrow(pointer).ok_or(ERROR_NOACCESS)? as usize - 1;
+    if length > MAX_ENV_NAME {
+        return Err(ERROR_INVALID_PARAMETER);
+    }
+    read_user(pointer, &mut out[..length]).map_err(|_| ERROR_NOACCESS)?;
+    Ok(length)
+}
+
+/// SetEnvironmentVariableA: set the variable to the value, or delete it for a null value (see
+/// [`crate::compat::environment`]). The last error is left alone on success.
+/// ERROR_INVALID_PARAMETER for a bad name, ERROR_NOT_ENOUGH_MEMORY when the environment is full,
+/// ERROR_NOACCESS for an unreadable argument.
+fn svc_set_environment_variable_a(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    #[cfg(target_arch = "x86")]
+    {
+        use crate::compat::environment::EnvironmentError;
+        use crate::compat::error::{ERROR_INVALID_PARAMETER, ERROR_NOACCESS, ERROR_NOT_ENOUGH_MEMORY};
+        use crate::user::teb::set_last_error;
+        let (name, value) = (args[0], args[1]);
+        frame.eax = 0;
+        let mut bytes = [0u8; MAX_ENV_NAME];
+        let name = match env_name(name, &mut bytes) {
+            Ok(length) => &bytes[..length],
+            Err(error) => return set_last_error(error),
+        };
+        let environment = crate::process::current_mut().environment_mut();
+        let result = if value == 0 {
+            environment.set(name, None)
+        } else {
+            let Some(length) = walk_narrow(value) else {
+                return set_last_error(ERROR_NOACCESS);
+            };
+            // The walk read the whole value, so the copy cannot fault.
+            environment
+                .reserve(name, length as usize - 1)
+                .map(|slot| {
+                    let _ = read_user(value, slot);
+                })
+        };
+        match result {
+            Ok(()) => frame.eax = 1,
+            Err(EnvironmentError::InvalidName) => set_last_error(ERROR_INVALID_PARAMETER),
+            Err(EnvironmentError::Full) => set_last_error(ERROR_NOT_ENOUGH_MEMORY),
+        }
+    }
+    #[cfg(not(target_arch = "x86"))]
+    {
+        let _ = args;
+        frame.eax = 0;
+    }
+}
+
+/// GetEnvironmentVariableA: the variable's value into the buffer — its length, terminator
+/// excluded, when it fits; the size it needs, terminator included, when it does not (nothing
+/// written). ERROR_ENVVAR_NOT_FOUND (and 0) for an unset variable, ERROR_NOACCESS for an
+/// unreadable name or an unwritable buffer.
+fn svc_get_environment_variable_a(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    #[cfg(target_arch = "x86")]
+    {
+        use crate::compat::error::{ERROR_ENVVAR_NOT_FOUND, ERROR_NOACCESS};
+        use crate::user::teb::set_last_error;
+        let (name, buffer, size) = (args[0], args[1], args[2] as usize);
+        frame.eax = 0;
+        let mut bytes = [0u8; MAX_ENV_NAME];
+        let name = match env_name(name, &mut bytes) {
+            Ok(length) => &bytes[..length],
+            Err(error) => return set_last_error(error),
+        };
+        let Some(value) = crate::process::current_mut().environment_mut().get(name) else {
+            return set_last_error(ERROR_ENVVAR_NOT_FOUND);
+        };
+        if size <= value.len() {
+            frame.eax = value.len() as u32 + 1;
+            return;
+        }
+        if write_user(buffer, value).is_err() || write_user(buffer + value.len() as u32, &[0]).is_err() {
+            return set_last_error(ERROR_NOACCESS);
+        }
+        frame.eax = value.len() as u32;
+    }
+    #[cfg(not(target_arch = "x86"))]
+    {
+        let _ = args;
+        frame.eax = 0;
+    }
+}
+
 // --- The registry ----------------------------------------------------
 
 /// The service registry: one entry per kernel-served export, in service-number order (a number is
 /// its position plus one; ExitProcess is pinned at service 1, the rest alphabetical). Quirk: a name
 /// absent from here and from [`NATIVES`] fails the loader's snap, so the two together are the union
 /// of the corpus fixtures' import surfaces.
-pub const SERVICES: [(&str, u32, ServiceFn); 77] = [
+pub const SERVICES: [(&str, u32, ServiceFn); 93] = [
     ("ExitProcess", 4, svc_exit_process),
+    ("CancelWaitableTimer", 4, svc_cancel_waitable_timer),
     ("CloseHandle", 4, svc_close_handle),
+    ("CompareStringA", 24, svc_compare_string_a),
+    ("CompareStringW", 24, svc_compare_string_w),
     ("CreateEventA", 16, svc_create_event_a),
     ("CreateFileA", 28, svc_create_file_a),
     ("CreateMutexA", 12, svc_create_mutex_a),
     ("CreateSemaphoreA", 16, svc_create_semaphore_a),
     ("CreateThread", 24, svc_create_thread),
+    ("CreateWaitableTimerA", 12, svc_create_waitable_timer_a),
     ("DeleteCriticalSection", 4, svc_delete_critical_section),
     ("DuplicateHandle", 28, svc_duplicate_handle),
     ("ExitThread", 4, svc_exit_thread),
@@ -2355,8 +2766,10 @@ pub const SERVICES: [(&str, u32, ServiceFn); 77] = [
     ("GetCPInfo", 8, svc_get_cp_info),
     ("GetEnvironmentStrings", 0, svc_get_environment_strings),
     ("GetEnvironmentStringsW", 0, svc_get_environment_strings_w),
+    ("GetEnvironmentVariableA", 12, svc_get_environment_variable_a),
     ("GetExitCodeThread", 8, svc_get_exit_code_thread),
     ("GetFileType", 4, svc_get_file_type),
+    ("GetLocalTime", 4, svc_get_local_time),
     ("GetModuleFileNameA", 12, svc_get_module_file_name),
     ("GetOEMCP", 0, svc_get_oemcp),
     ("GetPriorityClass", 4, svc_get_priority_class),
@@ -2365,9 +2778,12 @@ pub const SERVICES: [(&str, u32, ServiceFn); 77] = [
     ("GetStdHandle", 4, svc_get_std_handle),
     ("GetStringTypeA", 20, svc_floor_zero),
     ("GetStringTypeW", 16, svc_get_string_type_w),
+    ("GetSystemTime", 4, svc_get_system_time),
+    ("GetSystemTimeAsFileTime", 4, svc_get_system_time_as_file_time),
     ("GetThreadPriority", 4, svc_get_thread_priority),
     ("GetThreadPriorityBoost", 8, svc_get_thread_priority_boost),
     ("GetTickCount", 0, svc_get_tick_count),
+    ("GetTimeZoneInformation", 4, svc_get_time_zone_information),
     ("GetVersion", 0, svc_get_version),
     ("HeapAlloc", 12, svc_heap_alloc),
     ("HeapCreate", 12, svc_heap_create),
@@ -2382,7 +2798,10 @@ pub const SERVICES: [(&str, u32, ServiceFn); 77] = [
     ("OpenEventA", 12, svc_open_event_a),
     ("OpenMutexA", 12, svc_open_mutex_a),
     ("OpenSemaphoreA", 12, svc_open_semaphore_a),
+    ("OpenWaitableTimerA", 12, svc_open_waitable_timer_a),
     ("PulseEvent", 4, svc_pulse_event),
+    ("QueryPerformanceCounter", 4, svc_query_performance_counter),
+    ("QueryPerformanceFrequency", 4, svc_query_performance_frequency),
     ("QueueUserAPC", 12, svc_queue_user_apc),
     ("ReadFile", 20, svc_read_file),
     ("ReleaseMutex", 4, svc_release_mutex),
@@ -2390,18 +2809,22 @@ pub const SERVICES: [(&str, u32, ServiceFn); 77] = [
     ("ResetEvent", 4, svc_reset_event),
     ("ResumeThread", 4, svc_resume_thread),
     ("RtlUnwind", 16, svc_floor_zero),
+    ("SetEnvironmentVariableA", 8, svc_set_environment_variable_a),
     ("SetErrorMode", 4, svc_set_error_mode),
     ("SetEvent", 4, svc_set_event),
     ("SetFilePointer", 16, svc_set_file_pointer),
     ("SetHandleCount", 4, svc_set_handle_count),
     ("SetPriorityClass", 8, svc_set_priority_class),
+    ("SetProcessAffinityMask", 8, svc_set_process_affinity_mask),
     ("SetStdHandle", 8, svc_floor_zero),
     ("SetThreadPriority", 8, svc_set_thread_priority),
     ("SetThreadPriorityBoost", 8, svc_set_thread_priority_boost),
+    ("SetWaitableTimer", 24, svc_set_waitable_timer),
     ("SignalObjectAndWait", 16, svc_signal_object_and_wait),
     ("Sleep", 4, svc_sleep),
     ("SleepEx", 8, svc_sleep_ex),
     ("SuspendThread", 4, svc_suspend_thread),
+    ("SwitchToThread", 0, svc_switch_to_thread),
     ("TerminateProcess", 8, svc_floor_zero),
     ("TerminateThread", 8, svc_terminate_thread),
     ("TlsAlloc", 0, svc_tls_alloc),
@@ -2728,19 +3151,15 @@ mod tests {
 
     const RET0: &[u8] = include_bytes!("../../../tests/ret0/ret0.exe");
     const HELLO: &[u8] = include_bytes!("../../../tests/hello/hello.exe");
-    const SLEEP: &[u8] = include_bytes!("../../../tests/sleep/sleep.exe");
-    const SPIN: &[u8] = include_bytes!("../../../tests/spin/spin.exe");
     const FILEIO: &[u8] = include_bytes!("../../../tests/fileio/fileio.exe");
 
     /// The corpus binaries the surface serves in full: every import of each resolves. The legacy
     /// fixtures that run on the surface (hellogui, a GUI program importing user32 and gdi32, is
     /// left out) and the sectioned fixtures already served.
-    const CORPUS: [(&str, &[u8]); 9] = [
+    const CORPUS: [(&str, &[u8]); 8] = [
         ("exit0", include_bytes!("../../../tests/exit0/exit0.exe")),
         ("ret0", RET0),
         ("hello", HELLO),
-        ("sleep", SLEEP),
-        ("spin", SPIN),
         ("fileio", FILEIO),
         ("bare", include_bytes!("../../../tests/bare/bare.exe")),
         (
@@ -2748,17 +3167,17 @@ mod tests {
             include_bytes!("../../../tests/threads/threads.exe"),
         ),
         ("sync", include_bytes!("../../../tests/sync/sync.exe")),
+        ("sched", include_bytes!("../../../tests/sched/sched.exe")),
     ];
 
     /// The sectioned fixtures the surface does not serve in full yet (tests/README.md): the work
     /// list. A binary moves to [`CORPUS`] once every one of its imports resolves.
-    const UPCOMING: [(&str, &[u8]); 5] = [
+    const UPCOMING: [(&str, &[u8]); 4] = [
         (
             "runtime",
             include_bytes!("../../../tests/runtime/runtime.exe"),
         ),
         ("memory", include_bytes!("../../../tests/memory/memory.exe")),
-        ("sched", include_bytes!("../../../tests/sched/sched.exe")),
         ("files", include_bytes!("../../../tests/files/files.exe")),
         (
             "fswrite",
@@ -2872,29 +3291,6 @@ mod tests {
         image.map_into(HELLO, &mut mapped);
         let result = image.snap_imports(HELLO, &mut mapped, crate::exec::loader::resolve_import);
         assert_eq!(result.thunks, 40);
-    }
-
-    /// Every sleep import (the timer smoke's 44-export surface — hello's 42 plus Sleep and
-    /// GetTickCount) resolves against the real registry.
-    #[test]
-    fn sleep_snaps_fully_against_the_registry() {
-        let image = Image::parse(SLEEP).expect("sleep parses");
-        let mut mapped = vec![0u8; image.size_of_image as usize];
-        image.map_into(SLEEP, &mut mapped);
-        let result = image.snap_imports(SLEEP, &mut mapped, crate::exec::loader::resolve_import);
-        assert_eq!(result.thunks, 44);
-    }
-
-    /// Every spin import (the preemption smoke's 44-export surface — hello's console group plus the
-    /// thread exports, with SetThreadPriority the smoke's own addition) resolves against the real
-    /// registry.
-    #[test]
-    fn spin_snaps_fully_against_the_registry() {
-        let image = Image::parse(SPIN).expect("spin parses");
-        let mut mapped = vec![0u8; image.size_of_image as usize];
-        image.map_into(SPIN, &mut mapped);
-        let result = image.snap_imports(SPIN, &mut mapped, crate::exec::loader::resolve_import);
-        assert_eq!(result.thunks, 44);
     }
 
     /// Every fileio import (hello's 40 plus CreateFileA and ReadFile) resolves against the real

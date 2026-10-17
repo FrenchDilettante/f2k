@@ -300,7 +300,9 @@ fn end_thread(end: ThreadEnd) -> ! {
         }
     }
 
-    // The APC queue closes before the scheduler teardown.
+    // The timers whose completion APC targets this thread are cancelled, then the APC queue
+    // closes, both before the scheduler teardown.
+    run_down_timers(current);
     // SAFETY: the running thread, live and exclusive in the gate.
     unsafe { crate::sched::apc::close_apc_queue(&mut *current) };
 
@@ -320,6 +322,8 @@ fn end_thread(end: ThreadEnd) -> ! {
             "the process ends with its last thread"
         );
         crate::serial_println!("{}", exit::EndReport { end, leg: leg() });
+        // Every timer leaves the timer table: its record dies with the process.
+        process.objects_mut().1.cancel_timers(dispatcher);
         process.release_handles();
         process.set_end(end);
     }
@@ -352,11 +356,22 @@ fn terminate_others(current: *mut Thread, status: u32) -> u16 {
         // termination (pool records are never reused, the main thread's lives in the process).
         let other = unsafe { &mut *other };
         other.exit_status = status;
+        run_down_timers(other);
         match dispatcher.request_termination(other) {
             Termination::Done => release_gate_stack(process, (other.gate_slot, other.gate_frames)),
             Termination::Deferred => deferred += 1,
         }
     }
+}
+
+/// Cancel the current process's timers whose completion APC targets `thread`, which is ending:
+/// nothing may queue to it any more (the platform's timer rundown at thread exit).
+fn run_down_timers(thread: *mut Thread) {
+    let dispatcher = crate::sched::idle::dispatcher();
+    crate::process::current_mut()
+        .objects_mut()
+        .1
+        .run_down_timers(dispatcher, thread);
 }
 
 /// Why TerminateThread refuses a target.
@@ -375,6 +390,7 @@ pub fn terminate_thread(target: &mut Thread, status: u32) -> Result<(), Terminat
         return Err(TerminateError::Ended);
     }
     target.exit_status = status;
+    run_down_timers(target);
     let dispatcher = crate::sched::idle::dispatcher();
     if dispatcher.request_termination(target) == Termination::Done {
         // Not the stack this code runs on: release it now.
