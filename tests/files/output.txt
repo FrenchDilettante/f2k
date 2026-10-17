@@ -12,7 +12,8 @@ long name: opened err=0
 long name: first byte 6C (1 read)
 long name, other case: opened err=0
 long name, other case: first byte 6C (1 read)
-short name: INVALID_HANDLE_VALUE err=2
+short name: opened err=0
+short name: first byte 6C (1 read)
 subdirectories: opened err=0
 subdirectories: first byte 6C (1 read)
 OPEN_ALWAYS on an existing file: opened err=183
@@ -27,8 +28,7 @@ a file used as a directory: INVALID_HANDLE_VALUE err=3
 an empty path: INVALID_HANDLE_VALUE err=3
 a 300-character path: INVALID_HANDLE_VALUE err=206
 CREATE_NEW on an existing file: INVALID_HANDLE_VALUE err=80
-write access to a read-only file: opened err=0
-write access to a read-only file: first byte 00 (0 read)
+write access to a read-only file: INVALID_HANDLE_VALUE err=5
 SetCurrentDirectoryA(image directory): ret=1 err=-
 GetCurrentDirectoryA matches: yes
 GetCurrentDirectoryA into 2 bytes: returns the size needed yes err=-
@@ -41,7 +41,7 @@ SetCurrentDirectoryA(DATA\SUB): ret=1 err=-
 ..\SMALL.TXT from DATA\SUB: first byte 46 (1 read)
 SetCurrentDirectoryA(missing): ret=0 err=2
 GetFullPathNameA: length matches yes, under the image directory yes, file part [SMALL.TXT] err=-
-GetShortPathNameA(long name): final component [Long File Name.txt] err=-
+GetShortPathNameA(long name): final component [LONGFI~1.TXT] err=-
 files: done
 <<< exit code=0
 >>> files.exe read
@@ -88,70 +88,68 @@ files: done
 == meta
 GetFileSize(BIG.BIN): 150000 high 0
 GetFileType(file): 1
-GetFileInformationByHandle: ret=1 attributes 0x80 size 150000 high 0 links 1 err=-
+GetFileInformationByHandle: ret=1 attributes 0x20 size 150000 high 0 links 1 err=-
 GetFileTime: ret=1 write time set yes
 GetFileSize(EMPTY.DAT): 0
 GetFileSize(bogus): 0xFFFFFFFF err=6
-GetFileAttributesA(DATA\SMALL.TXT): 0x00000080 err=-
-GetFileAttributesA(DATA\RDONLY.TXT): 0x00000080 err=-
-GetFileAttributesA(DATA\HIDDEN.TXT): 0x00000080 err=-
+GetFileAttributesA(DATA\SMALL.TXT): 0x00000020 err=-
+GetFileAttributesA(DATA\RDONLY.TXT): 0x00000021 err=-
+GetFileAttributesA(DATA\HIDDEN.TXT): 0x00000022 err=-
 GetFileAttributesA(DATA): 0x00000010 err=-
 GetFileAttributesA(DATA\SUB\DEEP): 0x00000010 err=-
-GetFileAttributesA(DATA\Long File Name.txt): 0x00000080 err=-
+GetFileAttributesA(DATA\Long File Name.txt): 0x00000020 err=-
 GetFileAttributesA(DATA\NOSUCH.TXT): 0xFFFFFFFF err=2
 GetFileAttributesA(NODIR\NOSUCH.TXT): 0xFFFFFFFF err=3
-GetFileAttributesExA(SMALL.TXT): ret=1 attributes 0x80 size 31 err=-
+GetFileAttributesExA(SMALL.TXT): ret=1 attributes 0x20 size 31 err=-
 image directory has a drive letter: yes
-GetDriveTypeA(its root): 4
-GetDiskFreeSpaceA: ret=1 bytes per sector 1 err=-
-GetVolumeInformationA: ret=1 max component 255 file system [VBoxSharedFolderFS] err=-
+GetDriveTypeA(its root): 3
+GetDiskFreeSpaceA: ret=1 bytes per sector 512 err=-
+GetVolumeInformationA: ret=1 max component 255 file system [FAT32] err=-
 files: done
 <<< exit code=0
 >>> files.exe find
 == find
-find DATA\*: 12 entries, ended with err=18
+find DATA\*: 11 entries, ended with err=18
   [.] short [] attributes 0x10 size 0
   [..] short [] attributes 0x10 size 0
-  [.gitignore] short [] attributes 0x82 size 107
-  [BIG.BIN] short [] attributes 0x80 size 150000
-  [EMPTY.DAT] short [] attributes 0x80 size 0
-  [EXACT4K.BIN] short [] attributes 0x80 size 4096
-  [EXACT512.BIN] short [] attributes 0x80 size 512
-  [HIDDEN.TXT] short [] attributes 0x80 size 8
-  [Long File Name.txt] short [] attributes 0x80 size 11
-  [RDONLY.TXT] short [] attributes 0x80 size 11
-  [SMALL.TXT] short [] attributes 0x80 size 31
+  [BIG.BIN] short [] attributes 0x20 size 150000
+  [EMPTY.DAT] short [] attributes 0x20 size 0
+  [EXACT4K.BIN] short [] attributes 0x20 size 4096
+  [EXACT512.BIN] short [] attributes 0x20 size 512
+  [HIDDEN.TXT] short [] attributes 0x22 size 8
+  [Long File Name.txt] short [LONGFI~1.TXT] attributes 0x20 size 11
+  [RDONLY.TXT] short [] attributes 0x21 size 11
+  [SMALL.TXT] short [] attributes 0x20 size 31
   [SUB] short [] attributes 0x10 size 0
   FindClose: ret=1 err=-
-find DATA\*.*: 12 entries, ended with err=18
+find DATA\*.*: 11 entries, ended with err=18
   [.] short [] attributes 0x10 size 0
   [..] short [] attributes 0x10 size 0
-  [.gitignore] short [] attributes 0x82 size 107
-  [BIG.BIN] short [] attributes 0x80 size 150000
-  [EMPTY.DAT] short [] attributes 0x80 size 0
-  [EXACT4K.BIN] short [] attributes 0x80 size 4096
-  [EXACT512.BIN] short [] attributes 0x80 size 512
-  [HIDDEN.TXT] short [] attributes 0x80 size 8
-  [Long File Name.txt] short [] attributes 0x80 size 11
-  [RDONLY.TXT] short [] attributes 0x80 size 11
-  [SMALL.TXT] short [] attributes 0x80 size 31
+  [BIG.BIN] short [] attributes 0x20 size 150000
+  [EMPTY.DAT] short [] attributes 0x20 size 0
+  [EXACT4K.BIN] short [] attributes 0x20 size 4096
+  [EXACT512.BIN] short [] attributes 0x20 size 512
+  [HIDDEN.TXT] short [] attributes 0x22 size 8
+  [Long File Name.txt] short [LONGFI~1.TXT] attributes 0x20 size 11
+  [RDONLY.TXT] short [] attributes 0x21 size 11
+  [SMALL.TXT] short [] attributes 0x20 size 31
   [SUB] short [] attributes 0x10 size 0
   FindClose: ret=1 err=-
 find DATA\*.TXT: 4 entries, ended with err=18
-  [HIDDEN.TXT] short [] attributes 0x80 size 8
-  [Long File Name.txt] short [] attributes 0x80 size 11
-  [RDONLY.TXT] short [] attributes 0x80 size 11
-  [SMALL.TXT] short [] attributes 0x80 size 31
+  [HIDDEN.TXT] short [] attributes 0x22 size 8
+  [Long File Name.txt] short [LONGFI~1.TXT] attributes 0x20 size 11
+  [RDONLY.TXT] short [] attributes 0x21 size 11
+  [SMALL.TXT] short [] attributes 0x20 size 31
   FindClose: ret=1 err=-
 find DATA\S*: 2 entries, ended with err=18
-  [SMALL.TXT] short [] attributes 0x80 size 31
+  [SMALL.TXT] short [] attributes 0x20 size 31
   [SUB] short [] attributes 0x10 size 0
   FindClose: ret=1 err=-
 find DATA\?????.TXT: 1 entries, ended with err=18
-  [SMALL.TXT] short [] attributes 0x80 size 31
+  [SMALL.TXT] short [] attributes 0x20 size 31
   FindClose: ret=1 err=-
 find DATA\Long*: 1 entries, ended with err=18
-  [Long File Name.txt] short [] attributes 0x80 size 11
+  [Long File Name.txt] short [LONGFI~1.TXT] attributes 0x20 size 11
   FindClose: ret=1 err=-
 find DATA\SUB\*: 3 entries, ended with err=18
   [.] short [] attributes 0x10 size 0
@@ -193,7 +191,7 @@ _stat(DATA\SUB): 0 directory yes
 _stat(missing): -1 errno 2
 _findfirst/_findnext DATA\*.TXT: 4
 _access(SMALL.TXT, 0): 0
-_access(RDONLY.TXT, write): 0 errno 0
+_access(RDONLY.TXT, write): -1 errno 13
 _fullpath folds .. like GetFullPathNameA: yes
 files: done
 <<< exit code=0

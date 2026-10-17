@@ -53,10 +53,10 @@ CopyFileA overwriting: ret=1 err=0, size 7
 DeleteFileA(missing): ret=0 err=2
 DeleteFileA(a directory): ret=0 err=5
 read-only attribute set: 0x00000001
-DeleteFileA(read-only): ret=1 err=-
-after clearing it: ret=0 err=2
-created a long name: size 4, short name [A Long Created Name.txt] err=-
-opened by its short name: size 4294967295
+DeleteFileA(read-only): ret=0 err=5
+after clearing it: ret=1 err=-
+created a long name: size 4, short name [ALONGC~1.TXT] err=-
+opened by its short name: size 4
 fswrite: done
 <<< exit code=0
 >>> fswrite.exe dirs

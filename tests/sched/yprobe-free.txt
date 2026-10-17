@@ -1,0 +1,31 @@
+processors 1, process affinity 0x1, system affinity 0x1
+-- round 1
+sched sequence         d=  10  before=0 during=0  slept    7.4 ms  ran at  +3942.3 ms  prio -1
+sched sequence         d=  20  before=0 during=0  slept   19.9 ms  ran at  +3004.3 ms  prio -1
+sched sequence         d=  50  before=0 during=0  slept   50.0 ms  ran at  +3004.3 ms  prio -1
+sched sequence         d= 200  before=0 during=0  slept  200.2 ms  ran at  +3004.3 ms  prio -1
+no Sleep(0)            d=  10  before=0 during=0  slept    9.9 ms  ran at  +3004.3 ms  prio -1
+suspended+resume       d=  10  before=0 during=0  slept    9.9 ms  ran at  +3005.0 ms  prio -1
+wait on the thread     d=  10  before=0 during=0  slept    9.2 ms  ran at  +3003.5 ms  prio -1
+idle priority          d=  10  before=0 during=0  slept    9.9 ms  ran at  +3004.3 ms  prio -15
+normal (control)       d=  10  before=0 during=1  slept    9.9 ms  ran at     +0.0 ms  prio 0
+-- round 2
+sched sequence         d=  10  before=0 during=0  slept   10.0 ms  ran at  +3995.8 ms  prio -1
+sched sequence         d=  20  before=0 during=0  slept   19.9 ms  ran at  +3004.3 ms  prio -1
+sched sequence         d=  50  before=0 during=0  slept   50.0 ms  ran at  +3004.3 ms  prio -1
+sched sequence         d= 200  before=0 during=0  slept  200.2 ms  ran at  +3004.3 ms  prio -1
+no Sleep(0)            d=  10  before=0 during=0  slept    9.9 ms  ran at  +3004.3 ms  prio -1
+suspended+resume       d=  10  before=0 during=0  slept    9.9 ms  ran at  +3004.3 ms  prio -1
+wait on the thread     d=  10  before=0 during=0  slept    9.9 ms  ran at  +3004.3 ms  prio -1
+idle priority          d=  10  before=0 during=0  slept    9.9 ms  ran at  +3004.3 ms  prio -15
+normal (control)       d=  10  before=0 during=1  slept    9.9 ms  ran at     +0.0 ms  prio 0
+-- round 3
+sched sequence         d=  10  before=0 during=0  slept   10.0 ms  ran at  +3995.8 ms  prio -1
+sched sequence         d=  20  before=0 during=0  slept   19.9 ms  ran at  +3004.3 ms  prio -1
+sched sequence         d=  50  before=0 during=0  slept   50.0 ms  ran at  +3004.3 ms  prio -1
+sched sequence         d= 200  before=0 during=0  slept  200.1 ms  ran at  +3004.2 ms  prio -1
+no Sleep(0)            d=  10  before=0 during=0  slept    9.9 ms  ran at  +3004.3 ms  prio -1
+suspended+resume       d=  10  before=0 during=0  slept    9.9 ms  ran at  +3004.2 ms  prio -1
+wait on the thread     d=  10  before=0 during=0  slept    9.9 ms  ran at  +3004.3 ms  prio -1
+idle priority          d=  10  before=0 during=0  slept    9.9 ms  ran at  +3004.3 ms  prio -15
+normal (control)       d=  10  before=0 during=1  slept    9.9 ms  ran at     +0.0 ms  prio 0
