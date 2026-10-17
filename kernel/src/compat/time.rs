@@ -111,6 +111,25 @@ pub fn system_time_from_filetime(filetime: u64) -> SystemTime {
     }
 }
 
+/// The FILETIME of a FAT timestamp (local time, which is UTC here): a date's year counts from
+/// 1980, a time's seconds come in units of two, and the hundredths (0-199) add up to two seconds
+/// more. A zero or impossible date is no time at all (zero).
+pub fn fat_filetime(date: u16, time: u16, hundredths: u8) -> u64 {
+    let (month, day) = (((date >> 5) & 0xF) as u8, (date & 0x1F) as u8);
+    if date == 0 || !(1..=12).contains(&month) || day == 0 {
+        return 0;
+    }
+    let civil = CivilTime {
+        year: 1980 + (date >> 9),
+        month,
+        day,
+        hour: (time >> 11) as u8,
+        minute: ((time >> 5) & 0x3F) as u8,
+        second: ((time & 0x1F) * 2) as u8,
+    };
+    filetime_from_civil(civil) + hundredths as u64 * 100_000
+}
+
 /// A clock reading (100 ns units) on the performance counter's scale.
 pub fn performance_count(units: u64) -> u64 {
     units / UNITS_PER_SECOND * PERFORMANCE_FREQUENCY
@@ -186,6 +205,17 @@ mod tests {
         );
         assert_eq!(system_time_from_filetime(0).day_of_week, 1, "1601-01-01 was a Monday");
         assert_eq!(system_time_from_filetime(FALLBACK_BOOT).day_of_week, 6, "2000-01-01: Saturday");
+    }
+
+    /// FAT timestamps: 2026-10-16 18:42:30 plus 57 hundredths, and the no-time zero date.
+    #[test]
+    fn fat_timestamps_convert() {
+        let date = ((2026 - 1980) << 9) | (10 << 5) | 16;
+        let time = (18 << 11) | (42 << 5) | 15;
+        let base = filetime_from_civil(civil(2026, 10, 16, 18, 42, 30));
+        assert_eq!(fat_filetime(date, time, 57), base + 5_700_000);
+        assert_eq!(fat_filetime(date, time, 0), base);
+        assert_eq!(fat_filetime(0, 0, 0), 0);
     }
 
     /// The performance counter: a second is the frequency, without overflow far from boot.

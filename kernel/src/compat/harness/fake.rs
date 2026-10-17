@@ -3,7 +3,7 @@
 //! Wherever the kernel's own machinery runs on the host, the fake runs it rather than a model of
 //! it: the per-process handle table (`sched::object`), the waitable headers and their signal
 //! discipline (`sched::wait`), the open-file records and their seek arithmetic (`fs::file`), and
-//! the FAT32 path lookup and file reads (`fs::fat32`) over a crafted volume carrying the fileio
+//! the FAT32 path lookup and file reads (`fs::fat32`) over a crafted volume carrying the hello
 //! fixture's real image. The parameters page is staged the way the loader stages it, and the
 //! codepage tables are the shipped codepage-1252 data.
 //!
@@ -62,19 +62,20 @@ const ALLOCATION_GRANULARITY: u32 = 0x1_0000;
 /// The page size commits round to.
 pub const PAGE_SIZE: u32 = 0x1000;
 
-/// The process the fake stages: the fileio fixture, as the loader launches it — the command line is
+/// The process the fake stages: a fixture that opens its own image (the hello fixture's), as the
+/// loader launches it — the command line is
 /// the fixture name as invoked, the image path the volume path it loaded from.
-pub const COMMAND_LINE: &[u8] = b"fileio";
-pub const IMAGE_PATH: &[u8] = b"fileio.exe";
+pub const COMMAND_LINE: &[u8] = b"hello";
+pub const IMAGE_PATH: &[u8] = b"hello.exe";
 
-/// The fileio fixture's real image: the file the crafted volume carries as FILEIO.EXE.
-pub const FILEIO_IMAGE: &[u8] = include_bytes!("../../../../tests/fileio/fileio.exe");
+/// The hello fixture's real image: the file the crafted volume carries as HELLO.EXE.
+pub const IMAGE: &[u8] = include_bytes!("../../../../tests/hello/hello.exe");
 
-/// The crafted volume's clusters: 4 KiB each (8 sectors), the root at 2, FILEIO.EXE at 3..=9, the
+/// The crafted volume's clusters: 4 KiB each (8 sectors), the root at 2, HELLO.EXE at 3..=9, the
 /// BOOT directory at 10.
 const SECTORS_PER_CLUSTER: u8 = 8;
 const CLUSTER_BYTES: usize = SECTORS_PER_CLUSTER as usize * 512;
-const FILEIO_FIRST_CLUSTER: u32 = 3;
+const IMAGE_FIRST_CLUSTER: u32 = 3;
 const BOOT_DIRECTORY_CLUSTER: u32 = 10;
 
 /// One logged boundary call.
@@ -326,30 +327,30 @@ impl Default for FakeKernel {
     }
 }
 
-/// The crafted boot volume: FILEIO.EXE (the fixture's image) and the empty BOOT directory in the
+/// The crafted boot volume: HELLO.EXE (the fixture's image) and the empty BOOT directory in the
 /// root.
 fn boot_volume() -> Crafted {
     use crate::fs::fat32::dirent::ATTR_DIRECTORY;
     const ATTR_ARCHIVE: u8 = 0x20;
-    let clusters = FILEIO_IMAGE.len().div_ceil(CLUSTER_BYTES) as u32;
-    assert_eq!(FILEIO_FIRST_CLUSTER + clusters, BOOT_DIRECTORY_CLUSTER);
+    let clusters = IMAGE.len().div_ceil(CLUSTER_BYTES) as u32;
+    assert_eq!(IMAGE_FIRST_CLUSTER + clusters, BOOT_DIRECTORY_CLUSTER);
     let mut crafted = Crafted::new(SECTORS_PER_CLUSTER, 9);
     crafted.directory(
         2,
         &[
             record(
-                b"FILEIO  EXE",
+                b"HELLO   EXE",
                 ATTR_ARCHIVE,
-                FILEIO_FIRST_CLUSTER,
-                FILEIO_IMAGE.len() as u32,
+                IMAGE_FIRST_CLUSTER,
+                IMAGE.len() as u32,
             ),
             record(b"BOOT       ", ATTR_DIRECTORY, BOOT_DIRECTORY_CLUSTER, 0),
         ],
     );
-    let chain: Vec<u32> = (FILEIO_FIRST_CLUSTER..BOOT_DIRECTORY_CLUSTER).collect();
+    let chain: Vec<u32> = (IMAGE_FIRST_CLUSTER..BOOT_DIRECTORY_CLUSTER).collect();
     crafted.chain(&chain);
-    for (index, bytes) in FILEIO_IMAGE.chunks(CLUSTER_BYTES).enumerate() {
-        crafted.cluster(FILEIO_FIRST_CLUSTER + index as u32, bytes);
+    for (index, bytes) in IMAGE.chunks(CLUSTER_BYTES).enumerate() {
+        crafted.cluster(IMAGE_FIRST_CLUSTER + index as u32, bytes);
     }
     crafted.fat(BOOT_DIRECTORY_CLUSTER, 0x0FFF_FFFF);
     crafted
@@ -690,13 +691,13 @@ mod tests {
         let parameters = kernel.process_parameters();
         assert_eq!(parameters.command_line, crate::user::PARAMS_PAGE);
         let memory = kernel.memory();
-        assert_eq!(memory.c_string(parameters.command_line), b"fileio");
+        assert_eq!(memory.c_string(parameters.command_line), b"hello");
         assert_eq!(
             memory.wide_string(parameters.environment),
             Vec::<u16>::new()
         );
         assert_eq!(memory.u32_at(parameters.environment), 0);
-        assert_eq!(memory.c_string(parameters.image_path), b"fileio.exe");
+        assert_eq!(memory.c_string(parameters.image_path), b"hello.exe");
     }
 
     /// The boot volume serves the fixture's image by its loader path, any case; the BOOT directory
@@ -704,22 +705,22 @@ mod tests {
     #[test]
     fn the_boot_volume_serves_the_fixture_image() {
         let mut kernel = FakeKernel::new();
-        let handle = kernel.nt_create_file(b"fileio.exe").unwrap();
+        let handle = kernel.nt_create_file(b"hello.exe").unwrap();
         assert_eq!(handle, 4, "the table's first handle");
-        let mut image = vec![0u8; FILEIO_IMAGE.len() + 16];
+        let mut image = vec![0u8; IMAGE.len() + 16];
         assert_eq!(
             kernel.nt_read_file(handle, &mut image),
-            Ok(FILEIO_IMAGE.len() as u32)
+            Ok(IMAGE.len() as u32)
         );
-        assert_eq!(&image[..FILEIO_IMAGE.len()], FILEIO_IMAGE);
+        assert_eq!(&image[..IMAGE.len()], IMAGE);
         assert_eq!(
             kernel.nt_query_information_file(handle),
             Ok(FilePosition {
-                position: FILEIO_IMAGE.len() as u64,
-                size: FILEIO_IMAGE.len() as u32
+                position: IMAGE.len() as u64,
+                size: IMAGE.len() as u32
             })
         );
-        assert!(kernel.nt_create_file(b"FILEIO.EXE").is_ok());
+        assert!(kernel.nt_create_file(b"HELLO.EXE").is_ok());
         assert_eq!(
             kernel.nt_create_file(b"boot"),
             Err(STATUS_FILE_IS_A_DIRECTORY)
@@ -738,11 +739,11 @@ mod tests {
         let event = kernel
             .nt_create_event(EventType::Synchronization, false)
             .unwrap();
-        let file = kernel.nt_create_file(b"fileio.exe").unwrap();
+        let file = kernel.nt_create_file(b"hello.exe").unwrap();
         assert_eq!((event, file), (4, 8));
         assert_eq!(kernel.nt_close(file), Ok(()));
         assert_eq!(kernel.nt_close(file), Err(STATUS_INVALID_HANDLE));
-        assert_eq!(kernel.nt_create_file(b"fileio.exe"), Ok(8));
+        assert_eq!(kernel.nt_create_file(b"hello.exe"), Ok(8));
         assert_eq!(kernel.live_handles(), 2);
     }
 
@@ -812,7 +813,7 @@ mod tests {
             kernel.nt_wait_for_single_object(thread, Some(0)),
             STATUS_SUCCESS
         );
-        let file = kernel.nt_create_file(b"fileio.exe").unwrap();
+        let file = kernel.nt_create_file(b"hello.exe").unwrap();
         assert_eq!(
             kernel.nt_wait_for_single_object(file, Some(0)),
             STATUS_OBJECT_TYPE_MISMATCH

@@ -124,11 +124,7 @@ mod tests {
     use crate::status::STATUS_IO_DEVICE_ERROR;
 
     fn file(first_cluster: u32, size: u32) -> File {
-        File {
-            first_cluster,
-            size,
-            directory: false,
-        }
+        File::plain(first_cluster, size, false)
     }
 
     /// A crafted volume holding `bytes` along `chain` (1-sector clusters).
@@ -323,11 +319,7 @@ mod tests {
     #[should_panic(expected = "not read as a file")]
     fn reading_a_directory_is_a_contract_violation() {
         let mut volume = volume_with(&[], &[3]);
-        let directory = File {
-            first_cluster: 2,
-            size: 0,
-            directory: true,
-        };
+        let directory = File::plain(2, 0, true);
         let _ = read(&mut volume, &directory, &mut []);
     }
 

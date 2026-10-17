@@ -6,6 +6,7 @@ pub mod cp1252;
 pub mod critsec;
 pub mod environment;
 pub mod error;
+pub mod fileapi;
 #[cfg(test)]
 mod harness;
 pub mod kernel32;

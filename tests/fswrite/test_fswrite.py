@@ -10,10 +10,7 @@ import pytest
 from f2kboot import blocks
 
 
-BLOCKS = blocks(
-    "fswrite",
-    retake="captured on a VirtualBox shared folder: retake on a local FAT32 volume",
-)
+BLOCKS = blocks("fswrite")
 
 
 @pytest.mark.parametrize("captured", BLOCKS)

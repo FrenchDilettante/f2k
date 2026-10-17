@@ -39,6 +39,10 @@ pub enum Slot {
     Timer(*mut Waitable),
     /// An open file: the index of the process's open-file record.
     File(usize),
+    /// A directory search (FindFirstFileA): the index of the process's search record.
+    Find(usize),
+    /// A file mapping (CreateFileMappingA): the index of the process's mapping record.
+    Section(usize),
 }
 
 impl Slot {
@@ -51,7 +55,7 @@ impl Slot {
             | Slot::Semaphore(waitable)
             | Slot::Mutex(waitable)
             | Slot::Timer(waitable) => Some(waitable),
-            Slot::File(_) => None,
+            Slot::File(_) | Slot::Find(_) | Slot::Section(_) => None,
         }
     }
 }
@@ -156,6 +160,11 @@ impl HandleTable {
             .iter()
             .filter(|slot| slot.and_then(Slot::waitable) == Some(waitable))
             .count()
+    }
+
+    /// How many slots hold exactly `slot` (the handles naming one record).
+    pub fn count(&self, slot: Slot) -> usize {
+        self.slots.iter().filter(|held| **held == Some(slot)).count()
     }
 
     /// How many slots are taken.

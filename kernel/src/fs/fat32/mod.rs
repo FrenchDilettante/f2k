@@ -5,11 +5,12 @@
 //! the boot mounts the first registered partition and keeps it for later users (`volume`). The
 //! boot sector and its gates are [`boot_sector`], the mount state and cluster math [`layout`],
 //! the entry decode and the FAT sector cache [`fat`], the mount and the boot volume [`volume`],
-//! directory records [`dirent`], path folding [`path`], the directory walk and path lookup
-//! [`lookup`], the chain read [`read`], and the host tests' shared volumes, devices, and captured
+//! directory records [`dirent`], path components [`path`], the directory walk with its long names
+//! [`dir`], path lookup [`lookup`], the chain read [`read`], and the host tests' shared volumes, devices, and captured
 //! sectors [`fixtures`].
 
 pub mod boot_sector;
+pub mod dir;
 pub mod dirent;
 pub mod fat;
 #[cfg(test)]

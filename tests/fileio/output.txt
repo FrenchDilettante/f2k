@@ -1,4 +1,0 @@
-MZ ok
-PE ok
-MZ again ok
-fileio: ok

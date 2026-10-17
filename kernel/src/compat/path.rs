@@ -98,6 +98,12 @@ impl VolumePath {
         self.len = self.parent().len();
     }
 
+    /// Append every component of an already-resolved volume path (the current directory's
+    /// update).
+    pub fn push_path(&mut self, path: &[u8]) -> Result<(), u32> {
+        self.push_all(path)
+    }
+
     /// Append every component of an already-resolved volume path.
     fn push_all(&mut self, path: &[u8]) -> Result<(), u32> {
         for component in path.split(|&byte| byte == SEPARATOR) {

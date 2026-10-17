@@ -1,7 +1,10 @@
 """files - the read side of the file API over files/DATA (files.c).
 
 Path forms and errors, chunked and boundary reads, seeks, metadata, FindFirstFile listings, share
-modes, CRT file I/O, read-only file mappings, and concurrent readers.
+modes, CRT file I/O, read-only file mappings, and concurrent readers. Captured on a local FAT32
+volume, as F2K's boot volume is.
+
+Gating: F2K passes every block but `mapping` (see its pending reason).
 
 One test per block of the real-machine capture, output.txt (see tests/README.md).
 """
@@ -12,8 +15,10 @@ from f2kboot import blocks
 
 BLOCKS = blocks(
     "files",
-    retake="captured on a VirtualBox shared folder (no short names, no attribute bits, a "
-    "remote drive) and without the .BIN data files: retake on a local FAT32 volume",
+    gate=True,
+    pending={
+        "mapping": "needs SEH: the write through the read-only view is caught in __try/__except",
+    },
 )
 
 

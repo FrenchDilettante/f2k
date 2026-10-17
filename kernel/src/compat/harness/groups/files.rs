@@ -1,13 +1,37 @@
 //! File handles: read-only opens of existing files on the boot volume (root-relative, 8.3,
 //! case-folded paths) and synchronous reads from the file position. The scenarios follow the
-//! fileio fixture: open its own image by the path GetModuleFileNameA reports, read the MZ and PE
+//! retired fileio smoke: open its own image by the path GetModuleFileNameA reports, read the MZ and PE
 //! signatures across seeks, read the MZ again.
 
 use crate::compat::harness::boundary::{EventType, KernelBoundary};
-use crate::compat::harness::fake::{Call, FILEIO_IMAGE};
+use crate::compat::harness::fake::{Call, IMAGE};
 use crate::compat::harness::surface::{assert_argument_blocks, Fixture, UNMAPPED};
 
-pub const MEMBERS: &[&str] = &["CreateFileA", "ReadFile"];
+pub const MEMBERS: &[&str] = &[
+    "CreateFileA",
+    "ReadFile",
+    "CreateFileMappingA",
+    "FileTimeToLocalFileTime",
+    "FileTimeToSystemTime",
+    "FindClose",
+    "FindFirstFileA",
+    "FindNextFileA",
+    "GetCurrentDirectoryA",
+    "GetDiskFreeSpaceA",
+    "GetDriveTypeA",
+    "GetFileAttributesA",
+    "GetFileAttributesExA",
+    "GetFileInformationByHandle",
+    "GetFileSize",
+    "GetFileTime",
+    "GetFullPathNameA",
+    "GetShortPathNameA",
+    "GetVolumeInformationA",
+    "MapViewOfFile",
+    "SetCurrentDirectoryA",
+    "SetEndOfFile",
+    "UnmapViewOfFile",
+];
 
 const GENERIC_READ: u32 = 0x8000_0000;
 const GENERIC_WRITE: u32 = 0x4000_0000;
@@ -19,7 +43,7 @@ const FILE_FLAG_OVERLAPPED: u32 = 0x4000_0000;
 const INVALID_HANDLE_VALUE: u32 = 0xFFFF_FFFF;
 const FILE_BEGIN: u32 = 0;
 
-/// CreateFileA as the fileio fixture opens: read access, shared for reading, an existing file, no
+/// CreateFileA as the fileio smoke opened: read access, shared for reading, an existing file, no
 /// flags or attributes.
 fn open(fixture: &mut Fixture, path: u32) -> u32 {
     fixture.call(
@@ -60,7 +84,7 @@ fn create_file_opens_the_image_by_its_module_path() {
     assert!(fixture
         .kernel
         .calls()
-        .contains(&Call::CreateFile(b"fileio.exe".to_vec())));
+        .contains(&Call::CreateFile(b"hello.exe".to_vec())));
 }
 
 /// CreateFileA resolves paths case-insensitively. Ledger: files/CreateFileA.
@@ -69,7 +93,7 @@ fn create_file_opens_the_image_by_its_module_path() {
             (target-only)"]
 fn create_file_folds_case() {
     let mut fixture = Fixture::new();
-    for name in [&b"FILEIO.EXE"[..], b"FileIO.Exe"] {
+    for name in [&b"HELLO.EXE"[..], b"HeLlO.ExE"] {
         let path = fixture.c_string(name);
         assert_ne!(open(&mut fixture, path), INVALID_HANDLE_VALUE, "{name:?}");
     }
@@ -110,14 +134,14 @@ fn create_file_refuses_unsupported_requests_first() {
             (target-only)"]
 fn create_file_refuses_unresolvable_paths_and_directories() {
     let mut fixture = Fixture::new();
-    let good = fixture.c_string(b"fileio.exe");
+    let good = fixture.c_string(b"hello.exe");
     let opened = open(&mut fixture, good);
     assert_ne!(opened, INVALID_HANDLE_VALUE, "the control opens");
     assert_eq!(fixture.call("CloseHandle", &[opened]), 1);
     for name in [
         &b"missing.exe"[..],
         b"toolongname.exe",
-        b"\\fileio.exe",
+        b"\\hello.exe",
         b"boot",
         b"",
     ] {
@@ -138,7 +162,7 @@ fn create_file_refuses_unresolvable_paths_and_directories() {
             (target-only)"]
 fn create_file_refuses_when_the_table_is_full() {
     let mut fixture = Fixture::new();
-    let path = fixture.c_string(b"fileio.exe");
+    let path = fixture.c_string(b"hello.exe");
     assert_ne!(
         open(&mut fixture, path),
         INVALID_HANDLE_VALUE,
@@ -153,13 +177,13 @@ fn create_file_refuses_when_the_table_is_full() {
     assert_eq!(open(&mut fixture, path), INVALID_HANDLE_VALUE);
 }
 
-/// The fileio fixture's reads: the MZ signature at 0, e_lfanew at 0x3C, the PE signature there, the
+/// The fileio smoke's reads: the MZ signature at 0, e_lfanew at 0x3C, the PE signature there, the
 /// MZ again after seeking back — each read TRUE, the full count stored. Ledger: files/ReadFile.
 #[test]
 #[ignore = "ledger files/ReadFile: the existing path reads the live boot volume (target-only)"]
 fn read_file_reads_the_image_signatures() {
     let mut fixture = Fixture::new();
-    let path = fixture.c_string(b"fileio.exe");
+    let path = fixture.c_string(b"hello.exe");
     let file = open(&mut fixture, path);
     assert_eq!(read(&mut fixture, file, 2), (1, 2, b"MZ".to_vec()));
     fixture.call("SetFilePointer", &[file, 0x3C, 0, FILE_BEGIN]);
@@ -168,7 +192,7 @@ fn read_file_reads_the_image_signatures() {
     let e_lfanew = u32::from_le_bytes(bytes.try_into().unwrap());
     assert_eq!(
         e_lfanew,
-        u32::from_le_bytes(FILEIO_IMAGE[0x3C..0x40].try_into().unwrap())
+        u32::from_le_bytes(IMAGE[0x3C..0x40].try_into().unwrap())
     );
     fixture.call("SetFilePointer", &[file, e_lfanew, 0, FILE_BEGIN]);
     assert_eq!(read(&mut fixture, file, 4), (1, 4, b"PE\0\0".to_vec()));
@@ -182,7 +206,7 @@ fn read_file_reads_the_image_signatures() {
 #[ignore = "ledger files/ReadFile: the existing path reads the live boot volume (target-only)"]
 fn read_file_advances_the_position() {
     let mut fixture = Fixture::new();
-    let path = fixture.c_string(b"fileio.exe");
+    let path = fixture.c_string(b"hello.exe");
     let file = open(&mut fixture, path);
     let mut whole = Vec::new();
     for _ in 0..3 {
@@ -190,7 +214,7 @@ fn read_file_advances_the_position() {
         assert_eq!((result, moved), (1, 700));
         whole.extend(bytes);
     }
-    assert_eq!(whole, FILEIO_IMAGE[..2100]);
+    assert_eq!(whole, IMAGE[..2100]);
 }
 
 /// ReadFile near the end moves what remains and succeeds; at or past the end it moves nothing and
@@ -199,13 +223,13 @@ fn read_file_advances_the_position() {
 #[ignore = "ledger files/ReadFile: the existing path reads the live boot volume (target-only)"]
 fn read_file_at_the_end_moves_what_remains() {
     let mut fixture = Fixture::new();
-    let path = fixture.c_string(b"fileio.exe");
+    let path = fixture.c_string(b"hello.exe");
     let file = open(&mut fixture, path);
-    let size = FILEIO_IMAGE.len() as u32;
+    let size = IMAGE.len() as u32;
     fixture.call("SetFilePointer", &[file, size - 4, 0, FILE_BEGIN]);
     assert_eq!(
         read(&mut fixture, file, 16),
-        (1, 4, FILEIO_IMAGE[size as usize - 4..].to_vec())
+        (1, 4, IMAGE[size as usize - 4..].to_vec())
     );
     assert_eq!(read(&mut fixture, file, 16), (1, 0, Vec::new()));
     fixture.call("SetFilePointer", &[file, size + 100, 0, FILE_BEGIN]);
@@ -217,7 +241,7 @@ fn read_file_at_the_end_moves_what_remains() {
 #[ignore = "ledger files/ReadFile: the existing path reads the live boot volume (target-only)"]
 fn read_file_without_a_count_pointer() {
     let mut fixture = Fixture::new();
-    let path = fixture.c_string(b"fileio.exe");
+    let path = fixture.c_string(b"hello.exe");
     let file = open(&mut fixture, path);
     let buffer = fixture.buffer(2);
     assert_eq!(fixture.call("ReadFile", &[file, buffer, 2, 0, 0]), 1);
@@ -235,7 +259,7 @@ fn read_file_refuses_overlapped_requests_and_non_files() {
         .kernel
         .nt_create_event(EventType::Notification, false)
         .unwrap();
-    let file = fixture.kernel.nt_create_file(b"fileio.exe").unwrap();
+    let file = fixture.kernel.nt_create_file(b"hello.exe").unwrap();
     let buffer = fixture.buffer(16);
     let moved = fixture.stage(&[0xCC; 4]);
     let overlapped = fixture.buffer(20);

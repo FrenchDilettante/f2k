@@ -396,6 +396,69 @@ exports:
       - {name: read_file_at_the_end_moves_what_remains, enabled: false}
       - {name: read_file_without_a_count_pointer, enabled: false}
       - {name: read_file_refuses_overlapped_requests_and_non_files, enabled: false}
+  - export: CreateFileMappingA
+    group: files
+    status: pinned
+  - export: FileTimeToLocalFileTime
+    group: files
+    status: pinned
+  - export: FileTimeToSystemTime
+    group: files
+    status: pinned
+  - export: FindClose
+    group: files
+    status: pinned
+  - export: FindFirstFileA
+    group: files
+    status: pinned
+  - export: FindNextFileA
+    group: files
+    status: pinned
+  - export: GetCurrentDirectoryA
+    group: files
+    status: pinned
+  - export: GetDiskFreeSpaceA
+    group: files
+    status: pinned
+  - export: GetDriveTypeA
+    group: files
+    status: pinned
+  - export: GetFileAttributesA
+    group: files
+    status: pinned
+  - export: GetFileAttributesExA
+    group: files
+    status: pinned
+  - export: GetFileInformationByHandle
+    group: files
+    status: pinned
+  - export: GetFileSize
+    group: files
+    status: pinned
+  - export: GetFileTime
+    group: files
+    status: pinned
+  - export: GetFullPathNameA
+    group: files
+    status: pinned
+  - export: GetShortPathNameA
+    group: files
+    status: pinned
+  - export: GetVolumeInformationA
+    group: files
+    status: pinned
+  - export: MapViewOfFile
+    group: files
+    status: pinned
+  - export: SetCurrentDirectoryA
+    group: files
+    status: pinned
+  - export: SetEndOfFile
+    group: files
+    status: pinned
+  - export: UnmapViewOfFile
+    group: files
+    status: pinned
   - export: VirtualAlloc
     group: virtual-memory
     status: dumped

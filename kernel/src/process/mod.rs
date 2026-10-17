@@ -67,6 +67,8 @@ pub struct Process {
     handles: crate::sched::object::HandleTable,
     /// The open files the table's file slots name.
     files: crate::fs::file::OpenFiles,
+    /// The current directory, the searches, the file mappings and the mapped views.
+    file_state: crate::compat::fileapi::FileState,
     /// An exited thread's gate stack, not yet released (see [`DeadStack`]).
     dead_stack: DeadStack,
     /// The created threads' records; a terminated child's record is reused once no handle names it.
@@ -228,16 +230,32 @@ impl Process {
         &mut self.environment
     }
 
-    /// Open `file` (a file, not a directory) at its start and return its new handle; null when the
-    /// open-file records or the handle table are full.
+    /// Open `file` at its start for reading, shared every way, and return its new handle; null when
+    /// the open-file records or the handle table are full.
     pub fn open_file(&mut self, file: crate::fs::fat32::lookup::File) -> u32 {
+        use crate::fs::file::{ACCESS_DELETE, ACCESS_READ, ACCESS_WRITE};
+        self.open_file_with(file, ACCESS_READ, ACCESS_READ | ACCESS_WRITE | ACCESS_DELETE)
+            .unwrap_or(0)
+    }
+
+    /// Open `file` (or a directory) at its start with `access` and `share`, and return its new
+    /// handle. Refused when an open of the same entry excludes it or a table is full.
+    pub fn open_file_with(
+        &mut self,
+        file: crate::fs::fat32::lookup::File,
+        access: u8,
+        share: u8,
+    ) -> Result<u32, crate::fs::file::OpenError> {
         if self.handles.is_full() {
-            return 0;
+            return Err(crate::fs::file::OpenError::Full);
         }
-        let Some(index) = self.files.open(file) else {
-            return 0;
-        };
-        self.handles.insert(crate::sched::object::Slot::File(index))
+        let index = self.files.open_with(file, access, share)?;
+        Ok(self.handles.insert(crate::sched::object::Slot::File(index)))
+    }
+
+    /// The file-API state: the current directory, searches, mappings and views.
+    pub fn file_state(&mut self) -> &mut crate::compat::fileapi::FileState {
+        &mut self.file_state
     }
 
     /// The open file a handle names; none when it names no file.
@@ -248,17 +266,22 @@ impl Process {
         }
     }
 
-    /// Close a handle: the table's claim ends, and an open file's record is released with it.
-    /// False when the handle names nothing.
+    /// Close a handle: the table's claim ends, and an open file's, a search's or a mapping's record
+    /// with the last handle naming it. False when the handle names nothing.
     pub fn close_handle(&mut self, handle: u32) -> bool {
-        match self.handles.close(handle) {
-            Some(crate::sched::object::Slot::File(index)) => {
-                self.files.release(index);
-                true
+        use crate::sched::object::Slot;
+        let Some(slot) = self.handles.close(handle) else {
+            return false;
+        };
+        if self.handles.count(slot) == 0 {
+            match slot {
+                Slot::File(index) => self.files.release(index),
+                Slot::Find(index) => self.file_state.release_find(index),
+                Slot::Section(index) => self.file_state.release_section(index),
+                _ => {}
             }
-            Some(_) => true,
-            None => false,
         }
+        true
     }
 
     /// Release every handle and open file at once: the process-exit step.
@@ -463,7 +486,7 @@ fn install(dir_phys: u32, name: &'static str) {
         addr_of_mut!((*process).gate_slots).write(GateSlots::empty());
         addr_of_mut!((*process).heap).write(crate::user::userheap::HeapState::new());
         crate::sched::object::HandleTable::write_empty(addr_of_mut!((*process).handles));
-        addr_of_mut!((*process).files).write(crate::fs::file::OpenFiles::empty());
+        crate::fs::file::OpenFiles::write_empty(addr_of_mut!((*process).files));
         addr_of_mut!((*process).dead_stack).write(DeadStack::empty());
         let threads = addr_of_mut!((*process).child_threads) as *mut crate::sched::thread::Thread;
         for index in 0..CHILD_THREADS {
@@ -482,6 +505,8 @@ fn install(dir_phys: u32, name: &'static str) {
         objects::SyncObjects::write_empty(addr_of_mut!((*process).objects));
         // All zeros is the empty store (written in place: by value it would pass the stack).
         addr_of_mut!((*process).environment).write_bytes(0, 1);
+        // All zeros is the fresh file-API state, likewise.
+        addr_of_mut!((*process).file_state).write_bytes(0, 1);
         addr_of_mut!((*process).end).write(None);
         addr_of_mut!((*process).handed_end).write(None);
         INSTALLED = true;
@@ -728,6 +753,7 @@ mod tests {
             heap: HeapState::new(),
             handles: crate::sched::object::HandleTable::empty(),
             files: crate::fs::file::OpenFiles::empty(),
+            file_state: crate::compat::fileapi::FileState::empty(),
             dead_stack: DeadStack::empty(),
             child_threads: [const { crate::sched::thread::Thread::empty() }; CHILD_THREADS],
             events: fresh_events(),
@@ -765,6 +791,7 @@ mod tests {
             heap: HeapState::new(),
             handles: crate::sched::object::HandleTable::empty(),
             files: crate::fs::file::OpenFiles::empty(),
+            file_state: crate::compat::fileapi::FileState::empty(),
             dead_stack: DeadStack::empty(),
             child_threads: [const { crate::sched::thread::Thread::empty() }; CHILD_THREADS],
             events: fresh_events(),
@@ -777,11 +804,7 @@ mod tests {
     }
 
     fn a_file(size: u32) -> crate::fs::fat32::lookup::File {
-        crate::fs::fat32::lookup::File {
-            first_cluster: 3,
-            size,
-            directory: false,
-        }
+        crate::fs::fat32::lookup::File::plain(3, size, false)
     }
 
     // --- File handles (the table's file slots and the open-file records) -----
@@ -870,12 +893,12 @@ mod tests {
     fn the_dead_stack_parks_one_and_hands_back_the_previous() {
         let mut dead = DeadStack::empty();
         assert_eq!(dead.take(), None);
-        assert_eq!(dead.park((1, [10, 11, 12, 13])), None);
+        assert_eq!(dead.park((1, [10, 11, 12, 13, 14, 15, 16, 17])), None);
         assert_eq!(
-            dead.park((2, [20, 21, 22, 23])),
-            Some((1, [10, 11, 12, 13]))
+            dead.park((2, [20, 21, 22, 23, 24, 25, 26, 27])),
+            Some((1, [10, 11, 12, 13, 14, 15, 16, 17]))
         );
-        assert_eq!(dead.take(), Some((2, [20, 21, 22, 23])));
+        assert_eq!(dead.take(), Some((2, [20, 21, 22, 23, 24, 25, 26, 27])));
         assert_eq!(dead.take(), None);
     }
 
@@ -892,7 +915,7 @@ mod tests {
         assert_eq!((main, first), (0, 1));
 
         // The child exits: its stack is parked, its slot still taken.
-        assert_eq!(dead.park((first, [1, 2, 3, 4])), None);
+        assert_eq!(dead.park((first, [1, 2, 3, 4, 5, 6, 7, 8])), None);
         assert!(ledger.is_taken(first));
 
         // The next spawn releases the parked stack before it allocates.
@@ -922,14 +945,14 @@ mod tests {
         assert_eq!(gate_slot_base(1), GATE_STACK_WINDOW + GATE_SLOT_STRIDE);
         assert_eq!(gate_slot_top(0), GATE_STACK_TOP);
         assert_eq!(gate_slot_top(1), gate_slot_base(1) + GATE_SLOT_STRIDE);
-        // The stride: one guard page plus the four stack pages.
-        assert_eq!(GATE_SLOT_STRIDE, 5 * 4096);
+        // The stride: one guard page plus the eight stack pages.
+        assert_eq!(GATE_SLOT_STRIDE, 9 * 4096);
         // Capacity: the window is one directory entry (4 MiB); an allocation past capacity is an
         // assert, not a wrap.
-        assert_eq!(GATE_SLOT_CAPACITY, 204);
+        assert_eq!(GATE_SLOT_CAPACITY, 113);
         assert_eq!(
-            (gate_slot_top(203) - GATE_STACK_WINDOW) / GATE_SLOT_STRIDE,
-            204
+            (gate_slot_top(112) - GATE_STACK_WINDOW) / GATE_SLOT_STRIDE,
+            113
         );
     }
 
@@ -1000,8 +1023,14 @@ mod tests {
     }
 
     /// The main thread's gate-stack frames (slot 0) and a child's (slot 1).
-    const MAIN_STACK: [u32; 4] = [0x00F1_0000, 0x00F2_0000, 0x00F3_0000, 0x00F4_0000];
-    const CHILD_STACK: [u32; 4] = [0x00F5_0000, 0x00F6_0000, 0x00F7_0000, 0x00F8_0000];
+    const MAIN_STACK: [u32; crate::mem::paging::GATE_STACK_PAGES] = [
+        0x00F1_0000, 0x00F2_0000, 0x00F3_0000, 0x00F4_0000, 0x00F1_1000, 0x00F2_1000, 0x00F3_1000,
+        0x00F4_1000,
+    ];
+    const CHILD_STACK: [u32; crate::mem::paging::GATE_STACK_PAGES] = [
+        0x00F5_0000, 0x00F6_0000, 0x00F7_0000, 0x00F8_0000, 0x00F5_1000, 0x00F6_1000, 0x00F7_1000,
+        0x00F8_1000,
+    ];
 
     /// A planted directory — two user tables' worth (a TEB page and an image page) and the gate
     /// window's table — and a process whose main thread owns slot 0 and whose child owns slot 1,
@@ -1043,6 +1072,7 @@ mod tests {
             heap: HeapState::new(),
             handles: crate::sched::object::HandleTable::empty(),
             files: crate::fs::file::OpenFiles::empty(),
+            file_state: crate::compat::fileapi::FileState::empty(),
             dead_stack: DeadStack::empty(),
             child_threads: [const { crate::sched::thread::Thread::empty() }; CHILD_THREADS],
             events: fresh_events(),
@@ -1137,9 +1167,9 @@ mod tests {
 
         mem.release(process);
         let released = &mem.released;
-        assert_eq!(&released[..4], &MAIN_STACK, "the parked stack first");
+        assert_eq!(&released[..MAIN_STACK.len()], &MAIN_STACK, "the parked stack first");
         assert_eq!(released.last(), Some(&dir), "the directory last");
-        assert_eq!(released.len(), 4 + 3 + 1);
+        assert_eq!(released.len(), MAIN_STACK.len() + 3 + 1);
     }
 
     /// Teardown never precedes the last thread's end: a process with a thread still attached is

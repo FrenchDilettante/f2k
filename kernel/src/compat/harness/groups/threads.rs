@@ -246,7 +246,7 @@ fn wait_for_single_object_fails_on_non_waitables() {
     let mut fixture = Fixture::new();
     let event = event(&mut fixture, EventType::Notification, true);
     assert_eq!(event >> 2, STDOUT >> 2);
-    let file = fixture.kernel.nt_create_file(b"fileio.exe").unwrap();
+    let file = fixture.kernel.nt_create_file(b"hello.exe").unwrap();
     for handle in [STDOUT, file, 0x40, 0, 0xFFFF_FFFF] {
         assert_eq!(
             fixture.call("WaitForSingleObject", &[handle, 0]),

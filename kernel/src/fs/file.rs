@@ -1,16 +1,25 @@
 //! Open files: the per-process records behind file handles — which file, and where the next read
 //! starts — and the seek arithmetic over them.
 //!
-//! A process keeps a fixed set of records; a handle-table slot names one by index, and closing the
-//! handle (or ending the process) releases it. The files are read-only: a record holds the file's
-//! first cluster and size as the lookup found them, plus the position. Positions are 64-bit, as
-//! Win32 file pointers are; files themselves stay within FAT32's 32-bit sizes.
+//! A process keeps a fixed set of records; a handle-table slot names one by index — a duplicated
+//! handle names the same record, sharing its position — and the last handle's close (or the
+//! process's end) releases it. A record holds the file as the lookup found it, the position, and
+//! the access and sharing the open asked for: an open is refused when it and an open already in
+//! place on the same entry exclude each other (the platform's share-access check). A directory
+//! opens too (backup semantics), for its metadata. Positions are 64-bit, as Win32 file pointers
+//! are; files themselves stay within FAT32's 32-bit sizes.
 
 use super::fat32::lookup::File;
 
 /// How many files a process can hold open at once. Exhaustion is a program-visible failure (the
 /// open returns no handle), not a bug.
-pub const OPEN_FILES: usize = 8;
+pub const OPEN_FILES: usize = 128;
+
+/// The access an open asks for, as the share check reads it; the share mode uses the same bits
+/// (FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_SHARE_DELETE).
+pub const ACCESS_READ: u8 = 1;
+pub const ACCESS_WRITE: u8 = 2;
+pub const ACCESS_DELETE: u8 = 4;
 
 /// Where a seek's distance is measured from: the documented `dwMoveMethod` values.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -42,13 +51,41 @@ pub struct OpenFile {
     pub file: File,
     /// Where the next read starts; may lie past the end (a read there moves nothing).
     pub position: u64,
+    /// The access the open was granted ([`ACCESS_READ`] and kin).
+    pub access: u8,
+    /// The sharing the open allows others (the same bits).
+    pub share: u8,
 }
 
 impl OpenFile {
-    /// A file opened at its start.
+    /// A file opened at its start for reading, shared every way.
+    #[cfg(test)]
     pub fn new(file: File) -> OpenFile {
-        assert!(!file.directory, "a directory is not opened as a file");
-        OpenFile { file, position: 0 }
+        OpenFile::with(file, ACCESS_READ, ACCESS_READ | ACCESS_WRITE | ACCESS_DELETE)
+    }
+
+    /// A file opened at its start with `access` and `share`.
+    pub fn with(file: File, access: u8, share: u8) -> OpenFile {
+        OpenFile {
+            file,
+            position: 0,
+            access,
+            share,
+        }
+    }
+
+    /// Whether this open is of the same entry as `file`.
+    pub fn same_entry(&self, file: &File) -> bool {
+        self.file.parent_cluster == file.parent_cluster
+            && self.file.index == file.index
+            && self.file.first_cluster == file.first_cluster
+    }
+
+    /// Whether this open and a new one asking `access` and allowing `share` exclude each other: one
+    /// asks for what the other does not share. An open asking none of the three shares with
+    /// everything.
+    pub fn excludes(&self, access: u8, share: u8) -> bool {
+        (access & !self.share) != 0 || (self.access & !share) != 0
     }
 
     /// The position `distance` bytes from where `method` says; none for a target before the start
@@ -81,25 +118,71 @@ impl OpenFile {
     }
 }
 
+/// Why an open found no record.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum OpenError {
+    /// An open of the same entry excludes it (ERROR_SHARING_VIOLATION).
+    Sharing,
+    /// Every record is taken.
+    Full,
+}
+
 /// A process's open-file records.
 pub struct OpenFiles {
     records: [Option<OpenFile>; OPEN_FILES],
 }
 
 impl OpenFiles {
-    /// No file open.
+    /// No file open (the tests build processes by value; the kernel writes the set in place).
+    #[cfg(test)]
     pub const fn empty() -> Self {
         OpenFiles {
             records: [None; OPEN_FILES],
         }
     }
 
-    /// Open `file` at its start in the lowest free record, returning its index; none when every
-    /// record is taken.
+    /// Write the empty set at `files`, record by record (by value it would pass the caller's
+    /// stack).
+    ///
+    /// # Safety
+    ///
+    /// `files` is valid for writes and aligned; its previous contents are overwritten, not dropped.
+    pub unsafe fn write_empty(files: *mut OpenFiles) {
+        // SAFETY: the caller's contract; every record is written.
+        unsafe {
+            let records = core::ptr::addr_of_mut!((*files).records) as *mut Option<OpenFile>;
+            for index in 0..OPEN_FILES {
+                records.add(index).write(None);
+            }
+        }
+    }
+
+    /// Open `file` at its start for reading, shared every way (see [`OpenFiles::open_with`]).
+    #[cfg(test)]
     pub fn open(&mut self, file: File) -> Option<usize> {
-        let index = self.records.iter().position(Option::is_none)?;
-        self.records[index] = Some(OpenFile::new(file));
-        Some(index)
+        self.open_with(file, ACCESS_READ, ACCESS_READ | ACCESS_WRITE | ACCESS_DELETE)
+            .ok()
+    }
+
+    /// Open `file` at its start with `access` and `share` in the lowest free record, returning
+    /// its index. Refused with [`OpenError::Sharing`] when an open of the same entry already in
+    /// place excludes it, [`OpenError::Full`] when every record is taken.
+    pub fn open_with(&mut self, file: File, access: u8, share: u8) -> Result<usize, OpenError> {
+        if self
+            .records
+            .iter()
+            .flatten()
+            .any(|open| open.same_entry(&file) && open.excludes(access, share))
+        {
+            return Err(OpenError::Sharing);
+        }
+        let index = self
+            .records
+            .iter()
+            .position(Option::is_none)
+            .ok_or(OpenError::Full)?;
+        self.records[index] = Some(OpenFile::with(file, access, share));
+        Ok(index)
     }
 
     /// The open file at `index`, which a live handle names.
@@ -119,7 +202,9 @@ impl OpenFiles {
 
     /// Release every record: the process-exit step.
     pub fn clear(&mut self) {
-        *self = OpenFiles::empty();
+        for record in self.records.iter_mut() {
+            *record = None;
+        }
     }
 
     /// How many records are taken (the tests' audit).
@@ -137,11 +222,7 @@ mod tests {
     use super::*;
 
     fn file(size: u32) -> File {
-        File {
-            first_cluster: 3,
-            size,
-            directory: false,
-        }
+        File::plain(3, size, false)
     }
 
     /// The documented move methods decode; anything else is refused.
@@ -260,13 +341,22 @@ mod tests {
         files.release(index);
     }
 
+    /// The share check: an open without sharing excludes any second open, and a second open that
+    /// shares nothing is excluded by any first; reads that share reads coexist; an open asking no
+    /// data access excludes nobody, and other entries are never consulted.
     #[test]
-    #[should_panic(expected = "not opened as a file")]
-    fn opening_a_directory_is_a_contract_violation() {
-        OpenFile::new(File {
-            first_cluster: 2,
-            size: 0,
-            directory: true,
-        });
+    fn opens_respect_each_others_sharing() {
+        let mut files = OpenFiles::empty();
+        let all = ACCESS_READ | ACCESS_WRITE | ACCESS_DELETE;
+        let first = files.open_with(file(1), ACCESS_READ, 0).unwrap();
+        assert_eq!(files.open_with(file(1), ACCESS_READ, all), Err(OpenError::Sharing));
+        assert_eq!(files.open_with(file(1), 0, all), Ok(1), "no data access");
+        files.release(first);
+        files.open_with(file(1), ACCESS_READ, ACCESS_READ).unwrap();
+        assert!(files.open_with(file(1), ACCESS_READ, ACCESS_READ).is_ok());
+        assert_eq!(files.open_with(file(1), ACCESS_READ, 0), Err(OpenError::Sharing), "exclusive");
+        let mut other = file(1);
+        other.index = 9;
+        assert!(files.open_with(other, ACCESS_READ, 0).is_ok(), "another entry");
     }
 }

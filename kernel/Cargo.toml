@@ -21,7 +21,7 @@ doctest = false
 [features]
 # Test-only fault injection (see kmain): raise a CPU exception right after
 # boot so the exception stubs and the COM1 dump can be verified on target
-# by the fault-ud / fault-gp cases of scripts/qemu-tests.yaml.
+# by the fault-ud / fault-gp cases of tests/kernel/test_kernel.py.
 fault-test-ud = []
 fault-test-gp = []
 # Swaps the ring-3 smoke stub for one that passes an unmapped user
@@ -47,17 +47,11 @@ run-ret0 = []
 # Loads the console fixture (hello.exe, the 40-import console-stdio
 # surface) instead of the first: the hello suite cases build with it.
 run-hello = []
-# The file smoke boot: the fileio fixture opens its own image on the
-# boot volume through CreateFileA (by the path GetModuleFileNameA
-# reports), reads the MZ and PE signatures with ReadFile across
-# SetFilePointer seeks, and prints what it found. The qemu-tests.yaml
-# cases pin the captured output.
-run-fileio = []
 # The multi-process suite case: exit0, ret0, bare, bare,
 # bare null-write, exit0 run in sequence in one boot, each process torn down
 # and audited before the next starts. The sequence runner and the
 # per-process teardown are the runner's deliverables; the
-# qemu-tests.yaml cases pin the COM1 shapes.
+# tests/kernel cases pin the COM1 shapes.
 run-process-suite = []
 # The IDE diagnostic boot: after the driver comes up, a boot-time pass
 # reads the drive's identity, the MBR, the volume boot sector, and the
@@ -66,7 +60,7 @@ run-process-suite = []
 # exit — coexistence, not just the diagnostic. The driver itself is
 # default-on kernel machinery; the feature gates only the diagnostic
 # lines. Disk path only (the image is the IDE primary master); the
-# qemu-tests.yaml case pins the COM1 shapes.
+# tests/kernel case pins the COM1 shapes.
 disk-smoke = []
 
 [dependencies]

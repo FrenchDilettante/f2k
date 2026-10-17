@@ -28,8 +28,10 @@ Shared pieces sit beside the tests: `common/f2kt.h` (the reporting and
 section helpers the sectioned fixtures include), `build.bat`,
 `capture.bat` (the real-machine capture of the sectioned fixtures), and
 the pytest side: `conftest.py` and `f2kboot.py` (building, booting,
-comparing), and `test_suite.py`, which runs the legacy fixtures and the
-kernel's own diagnostic boots from `scripts/qemu-tests.yaml`.
+comparing), and `kernel/test_kernel.py`, the kernel's own boots (the
+fault stubs, the Limine disk path, the multi-process suite, the IDE
+diagnostic), which have no Windows program capture to compare
+against.
 
 ## Sectioned fixtures
 
@@ -103,19 +105,25 @@ The fixtures:
   timers, round-robin, preemption, yielding, the wake boost,
   suspension, and the starvation boost; pinned to one CPU. Built with
   `/MT`. Replaced the `sleep` and `spin` smokes (retired; `suspend`
-  went with `threads`). Gated, with `yield` pending: its capture's
-  `Sleep(10) does: no` shows another process's thread ready on the
-  pinned CPU (as the masked SwitchToThread line above it does), where
-  F2K's idle processor runs the lower-priority thread.
+  went with `threads`). Gated. Its `yield` capture line `Sleep(10)
+  does: yes` comes from real hardware: the VirtualBox capture VM runs
+  at 100% CPU (a normal-priority thread yielding with `Sleep(0)`), so
+  below-normal threads there run only at the balance-set boost, 300
+  ticks in, and it answered `no`.
 - `files` - the read side of the file API over `files/DATA` (generated
   by `scripts/gen-files-data.py`; every byte is formula-defined): path
   forms and errors, chunked and boundary reads, seeks, metadata,
   `FindFirstFile` listings, share modes, CRT file I/O, read-only file
-  mappings, concurrent readers. Run `files/setup.bat` once on the real
-  machine (attributes git cannot carry). Replaces `fileio`.
+  mappings, concurrent readers. Captured on a local FAT32 volume, as
+  F2K's boot volume is (run `files/setup.bat` once on the real machine:
+  attributes git cannot carry). Gated, with `mapping` pending SEH (its
+  write through the read-only view is caught in `__try`/`__except`).
+  Replaced the `fileio` smoke and the `cmdline-program` case
+  (retired).
 - `fswrite` - the write side (create dispositions, writes, truncation,
   share modes, rename/copy/delete, directories, file times, CRT
-  writes) in a scratch directory. Parked until F2K writes to disk.
+  writes) in a scratch directory, captured on a local FAT32 volume.
+  On the work list until F2K writes to disk.
 
 Capture `files` and `fswrite` from a local FAT32 volume: F2K's boot
 volume is FAT32, and file-system details differ elsewhere — NTFS has
@@ -133,8 +141,8 @@ and is captured by hand.
 ### Running against F2K
 
 Each sectioned fixture's `test_<name>.py` runs its capture on the
-kernel, one pytest test per block (`make corpus` runs them all, the
-`corpus` marker): one boot per block, the block's command line passed
+kernel, one pytest test per block (`make test` runs them with
+everything else; `-m corpus` selects them alone): one boot per block, the block's command line passed
 on the kernel command line, the program's output compared line for line
 and its exit code checked. The
 disk build puts the sectioned fixtures in `\CORPUS` (the files
@@ -172,15 +180,6 @@ import trace, and the disk-smoke checksum file) stay.
   window, paints "Hello, world!" once with `TextOut`, then closes
   itself and exits 0; the first test to import user32.dll and
   gdi32.dll.
-- `fileio` - disk smoke: opens the program's own image from the
-  filesystem, reads the MZ and PE signatures, seeks back, and reads
-  the MZ again - the file API over the boot volume, the measuring
-  stick for the disk workstream. The output is derived only from
-  the file's own bytes, so it is identical wherever the same
-  executable runs. Built on the real Windows 2000 machine
-  (`fileio.exe`, 42 KERNEL32.dll imports - hello's 40 plus
-  `CreateFileA` and `ReadFile`; see `imports.txt`); the
-  real-machine captured output lands as `output.txt`.
 
 ## Building
 
@@ -204,8 +203,7 @@ the program's own). The
 sequence `exit0`, `ret0`, `bare`, `bare`, `bare null-write`, `exit0`
 in one boot (`bare` from `\CORPUS`): the second `bare` catches frames
 reused without re-zeroing, `bare null-write` a fault the kernel must
-contain before the last `exit0` runs. The `run-fileio` feature selects `fileio`, which opens its
-own image on the volume through the module path the loader staged.
+contain before the last `exit0` runs.
 A boot can also choose its program by command line, with no feature:
 the text after `--` on the kernel command line is the program's own
 command line, `<program> [arguments]` (QEMU's `-append "-- SYNC.EXE

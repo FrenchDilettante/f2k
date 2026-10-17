@@ -132,9 +132,20 @@ fn svc_get_std_handle(frame: &mut crate::user::TrapFrame, args: &[u32]) {
     };
 }
 
-/// GetFileType: a character device for every handle on this surface.
-fn svc_get_file_type(frame: &mut crate::user::TrapFrame, _args: &[u32]) {
-    frame.eax = FILE_TYPE_CHAR;
+/// FILE_TYPE_DISK: an open file.
+const FILE_TYPE_DISK: u32 = 1;
+
+/// GetFileType: a disk file for a handle naming an open file, a character device for every other
+/// handle on this surface (the console's).
+fn svc_get_file_type(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    #[cfg(target_arch = "x86")]
+    let is_file = matches!(object_slot(args[0]), Some(crate::sched::object::Slot::File(_)));
+    #[cfg(not(target_arch = "x86"))]
+    let is_file = {
+        let _ = args;
+        false
+    };
+    frame.eax = if is_file { FILE_TYPE_DISK } else { FILE_TYPE_CHAR };
 }
 
 /// SetHandleCount: report the requested count (the CRT ignores the result).
@@ -285,9 +296,26 @@ fn svc_get_module_file_name(frame: &mut crate::user::TrapFrame, args: &[u32]) {
         frame.eax = 0;
         return;
     }
+    let mut name = [0u8; MODULE_ROOM];
+    let len = staged_module_name(&mut name);
+    if len == name.len() {
+        frame.eax = 0; // unterminated staging: a kernel bug, fail safely
+        return;
+    }
+    let copy = len.min(max as usize - 1);
+    if write_user(buffer, &name[..copy]).is_err() || write_user(buffer + copy as u32, &[0]).is_err()
+    {
+        frame.eax = 0;
+        return;
+    }
+    frame.eax = copy as u32;
+}
+
+/// The staged module name (the image's drive-qualified path) into `name`: its length, or the
+/// buffer's whole length when the staging is unterminated.
+fn staged_module_name(name: &mut [u8; MODULE_ROOM]) -> usize {
     // The staged name lives in the kernel-written parameters page; walking to its NUL is a
     // kernel-side read of our own data.
-    let mut name = [0u8; MODULE_ROOM];
     let mut len = 0;
     while len < name.len() {
         // SAFETY: the parameters page is mapped and kernel-written before ring 3 is entered;
@@ -301,17 +329,7 @@ fn svc_get_module_file_name(frame: &mut crate::user::TrapFrame, args: &[u32]) {
         }
         len += 1;
     }
-    if len == name.len() {
-        frame.eax = 0; // unterminated staging: a kernel bug, fail safely
-        return;
-    }
-    let copy = len.min(max as usize - 1);
-    if write_user(buffer, &name[..copy]).is_err() || write_user(buffer + copy as u32, &[0]).is_err()
-    {
-        frame.eax = 0;
-        return;
-    }
-    frame.eax = copy as u32;
+    len
 }
 
 /// GetACP / GetOEMCP: the replayed codepages.
@@ -1603,12 +1621,53 @@ fn open_file(_handle: u32) -> Option<&'static mut crate::fs::file::OpenFile> {
     None
 }
 
+/// The open file (or directory) a handle names, copied (the file API's metadata reads).
+#[cfg(target_arch = "x86")]
+pub(crate) fn open_file_record(handle: u32) -> Option<crate::fs::file::OpenFile> {
+    open_file(handle).map(|open| *open)
+}
+
+/// Read `out.len()` bytes of `file` from `offset` (see `read_volume`), for the file API's views.
+#[cfg(target_arch = "x86")]
+pub(crate) fn read_volume_at(
+    file: &crate::fs::fat32::lookup::File,
+    offset: u32,
+    out: &mut [u8],
+) -> Option<usize> {
+    read_volume(file, offset, out)
+}
+
 /// CreateFileA's dispositions.
 const CREATE_NEW: u32 = 1;
 const CREATE_ALWAYS: u32 = 2;
 /// CreateFileA's open-an-existing-file disposition (the decision's default arm).
-#[cfg(test)]
 const OPEN_EXISTING: u32 = 3;
+/// FILE_FLAG_BACKUP_SEMANTICS: open a directory.
+const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+/// FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE: the share mode's bits, which the open
+/// records use as they are.
+const FILE_SHARE_ALL: u32 = 0x7;
+
+/// The share check's view of an access mask: reading (the generic read, execute and all rights,
+/// read and execute data, the maximum allowed), writing (generic write and all, write and append
+/// data), deleting (delete, generic all).
+fn granted_access(access: u32) -> u8 {
+    use crate::fs::file::{ACCESS_DELETE, ACCESS_READ, ACCESS_WRITE};
+    const READS: u32 = 0x8000_0000 | 0x2000_0000 | 0x1000_0000 | 0x0200_0000 | 0x1 | 0x20;
+    const WRITES: u32 = 0x4000_0000 | 0x1000_0000 | 0x2 | 0x4;
+    const DELETES: u32 = 0x1_0000 | 0x1000_0000;
+    let mut granted = 0;
+    if access & READS != 0 {
+        granted |= ACCESS_READ;
+    }
+    if access & WRITES != 0 {
+        granted |= ACCESS_WRITE;
+    }
+    if access & DELETES != 0 {
+        granted |= ACCESS_DELETE;
+    }
+    granted
+}
 const OPEN_ALWAYS: u32 = 4;
 const TRUNCATE_EXISTING: u32 = 5;
 /// The access rights that would modify the file: generic write and all, write and append data,
@@ -1713,14 +1772,17 @@ fn find_on_volume(
     }
 }
 
-/// CreateFileA: open an existing file on the boot volume for reading. The path resolves as Win32
-/// resolves it (drive, separators, `.` and `..`, the current directory: see `compat::path`), then
-/// walks the volume's 8.3 entries case-folded. A new handle on success; otherwise
-/// INVALID_HANDLE_VALUE with the documented last error — not found, path not found, a directory,
-/// a bad name, write-protected for anything that would modify the volume, a full table.
+/// CreateFileA: open an existing file on the boot volume for reading, or a directory with backup
+/// semantics. The path resolves as Win32 resolves it (drive, separators, `.` and `..`, the current
+/// directory: see `compat::path`), then walks the volume by long or 8.3 names, without regard to
+/// case. A new handle on success, the last error cleared (ERROR_ALREADY_EXISTS for OPEN_ALWAYS);
+/// otherwise INVALID_HANDLE_VALUE with the documented last error — not found, path not found, a
+/// directory without backup semantics, a bad name, a read-only file asked for write access, a
+/// sharing violation, write-protected for anything else that would modify the volume, a full
+/// table.
 fn svc_create_file_a(frame: &mut crate::user::TrapFrame, args: &[u32]) {
     use crate::compat::error::{ERROR_INVALID_PARAMETER, ERROR_NOT_SUPPORTED};
-    let (name, access, _share, _security, disposition, flags, _template) = (
+    let (name, access, share, _security, disposition, flags, _template) = (
         args[0], args[1], args[2], args[3], args[4], args[5], args[6],
     );
     frame.eax = INVALID_HANDLE_VALUE;
@@ -1746,7 +1808,8 @@ fn svc_create_file_a(frame: &mut crate::user::TrapFrame, args: &[u32]) {
     if read_user(name, &mut path[..length]).is_err() {
         return;
     }
-    let resolved = match crate::compat::path::resolve(&path[..length], current_directory()) {
+    let current = crate::compat::fileapi::current_directory();
+    let resolved = match crate::compat::path::resolve(&path[..length], current.as_bytes()) {
         Ok(resolved) => resolved,
         Err(error) => {
             crate::user::teb::set_last_error(error);
@@ -1755,32 +1818,65 @@ fn svc_create_file_a(frame: &mut crate::user::TrapFrame, args: &[u32]) {
     };
     #[cfg(target_arch = "x86")]
     {
+        use crate::compat::error::{
+            ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_SHARING_VIOLATION,
+            ERROR_TOO_MANY_OPEN_FILES,
+        };
+        use crate::fs::fat32::dirent::ATTR_READ_ONLY;
+        use crate::fs::file::{OpenError, ACCESS_DELETE, ACCESS_WRITE};
         let (found, file) = find_on_volume(&resolved);
-        match open_decision(access, disposition, found, resolved.trailing_separator()) {
+        // The root has no entry of its own: its File comes from the volume.
+        let file = file.or_else(|| {
+            (found == Found::Directory)
+                .then(|| crate::fs::fat32::volume::with_boot_volume(|v| crate::fs::fat32::lookup::root(v)))
+                .flatten()
+        });
+        let granted = granted_access(access);
+        let decision = match (found, file) {
+            // A directory opens only with backup semantics, and only as an existing one.
+            (Found::Directory, Some(directory))
+                if flags & FILE_FLAG_BACKUP_SEMANTICS != 0
+                    && (disposition == OPEN_EXISTING || disposition == OPEN_ALWAYS) =>
+            {
+                Ok((directory, (disposition == OPEN_ALWAYS).then_some(ERROR_ALREADY_EXISTS)))
+            }
+            // A read-only file refuses anything that would change it, before the volume's own
+            // write protection is consulted.
+            (Found::File, Some(existing))
+                if disposition != CREATE_NEW
+                    && existing.attributes & ATTR_READ_ONLY != 0
+                    && (granted & (ACCESS_WRITE | ACCESS_DELETE) != 0
+                        || disposition == CREATE_ALWAYS
+                        || disposition == TRUNCATE_EXISTING) =>
+            {
+                Err(ERROR_ACCESS_DENIED)
+            }
+            _ => open_decision(access, disposition, found, resolved.trailing_separator())
+                .map(|success_error| (file.expect("an open decision names a file"), success_error)),
+        };
+        match decision {
             Err(error) => crate::user::teb::set_last_error(error),
-            Ok(success_error) => {
-                let file = file.expect("an open decision names a file");
-                let handle = crate::process::current_mut().open_file(file);
-                if handle == 0 {
-                    crate::user::teb::set_last_error(
-                        crate::compat::error::ERROR_TOO_MANY_OPEN_FILES,
-                    );
-                    return;
+            Ok((file, success_error)) => {
+                let opened = crate::process::current_mut().open_file_with(
+                    file,
+                    granted,
+                    (share & FILE_SHARE_ALL) as u8,
+                );
+                match opened {
+                    Err(OpenError::Sharing) => crate::user::teb::set_last_error(ERROR_SHARING_VIOLATION),
+                    Err(OpenError::Full) => crate::user::teb::set_last_error(ERROR_TOO_MANY_OPEN_FILES),
+                    Ok(handle) => {
+                        // A successful open clears the last error, but for the existing file an
+                        // OPEN_ALWAYS found.
+                        crate::user::teb::set_last_error(success_error.unwrap_or(0));
+                        frame.eax = handle;
+                    }
                 }
-                if let Some(error) = success_error {
-                    crate::user::teb::set_last_error(error);
-                }
-                frame.eax = handle;
             }
         }
     }
     #[cfg(not(target_arch = "x86"))]
-    let _ = (resolved, access);
-}
-
-/// The current directory's volume path: the root, until SetCurrentDirectoryA is served.
-fn current_directory() -> &'static [u8] {
-    b""
+    let _ = (resolved, access, share);
 }
 
 /// The bounce chunk ReadFile moves file bytes through: read off the volume into the kernel, then
@@ -1808,6 +1904,15 @@ fn svc_read_file(frame: &mut crate::user::TrapFrame, args: &[u32]) {
         set_last_error(ERROR_INVALID_HANDLE);
         return;
     };
+    // A directory has no data to read, and a handle opened without read access reads nothing.
+    if start.file.directory {
+        set_last_error(crate::compat::error::ERROR_INVALID_FUNCTION);
+        return;
+    }
+    if start.access & crate::fs::file::ACCESS_READ == 0 {
+        set_last_error(crate::compat::error::ERROR_ACCESS_DENIED);
+        return;
+    }
     let wanted = start.available(count);
     // A buffer the caller cannot name is refused before anything is read, as the system service
     // probes it: nothing moves, the position stays.
@@ -2305,9 +2410,11 @@ fn svc_duplicate_handle(frame: &mut crate::user::TrapFrame, args: &[u32]) {
             return set_last_error(ERROR_NOT_SUPPORTED);
         } else {
             match object_slot(source) {
-                Some(crate::sched::object::Slot::File(_)) => {
-                    return set_last_error(ERROR_NOT_SUPPORTED)
+                // A search is no kernel object: its handle does not duplicate.
+                Some(crate::sched::object::Slot::Find(_)) => {
+                    return set_last_error(ERROR_INVALID_HANDLE)
                 }
+                // A duplicated file handle names the same open record: one position for both.
                 Some(slot) => slot,
                 None => return set_last_error(ERROR_INVALID_HANDLE),
             }
@@ -2743,7 +2850,7 @@ fn svc_get_environment_variable_a(frame: &mut crate::user::TrapFrame, args: &[u3
 /// its position plus one; ExitProcess is pinned at service 1, the rest alphabetical). Quirk: a name
 /// absent from here and from [`NATIVES`] fails the loader's snap, so the two together are the union
 /// of the corpus fixtures' import surfaces.
-pub const SERVICES: [(&str, u32, ServiceFn); 93] = [
+pub const SERVICES: [(&str, u32, ServiceFn); 114] = [
     ("ExitProcess", 4, svc_exit_process),
     ("CancelWaitableTimer", 4, svc_cancel_waitable_timer),
     ("CloseHandle", 4, svc_close_handle),
@@ -2751,6 +2858,7 @@ pub const SERVICES: [(&str, u32, ServiceFn); 93] = [
     ("CompareStringW", 24, svc_compare_string_w),
     ("CreateEventA", 16, svc_create_event_a),
     ("CreateFileA", 28, svc_create_file_a),
+    ("CreateFileMappingA", 24, crate::compat::fileapi::svc_create_file_mapping_a),
     ("CreateMutexA", 12, svc_create_mutex_a),
     ("CreateSemaphoreA", 16, svc_create_semaphore_a),
     ("CreateThread", 24, svc_create_thread),
@@ -2758,22 +2866,37 @@ pub const SERVICES: [(&str, u32, ServiceFn); 93] = [
     ("DeleteCriticalSection", 4, svc_delete_critical_section),
     ("DuplicateHandle", 28, svc_duplicate_handle),
     ("ExitThread", 4, svc_exit_thread),
+    ("FileTimeToLocalFileTime", 8, crate::compat::fileapi::svc_file_time_to_local_file_time),
+    ("FileTimeToSystemTime", 8, crate::compat::fileapi::svc_file_time_to_system_time),
+    ("FindClose", 4, crate::compat::fileapi::svc_find_close),
+    ("FindFirstFileA", 8, crate::compat::fileapi::svc_find_first_file_a),
+    ("FindNextFileA", 8, crate::compat::fileapi::svc_find_next_file_a),
     ("FlushFileBuffers", 4, svc_flush_file_buffers),
     ("FreeEnvironmentStringsA", 4, svc_free_environment_strings),
     ("FreeEnvironmentStringsW", 4, svc_free_environment_strings),
     ("GetACP", 0, svc_get_acp),
     ("GetCommandLineA", 0, svc_get_command_line_a),
     ("GetCPInfo", 8, svc_get_cp_info),
+    ("GetCurrentDirectoryA", 8, crate::compat::fileapi::svc_get_current_directory_a),
+    ("GetDiskFreeSpaceA", 20, crate::compat::fileapi::svc_get_disk_free_space_a),
+    ("GetDriveTypeA", 4, crate::compat::fileapi::svc_get_drive_type_a),
     ("GetEnvironmentStrings", 0, svc_get_environment_strings),
     ("GetEnvironmentStringsW", 0, svc_get_environment_strings_w),
     ("GetEnvironmentVariableA", 12, svc_get_environment_variable_a),
     ("GetExitCodeThread", 8, svc_get_exit_code_thread),
+    ("GetFileAttributesA", 4, crate::compat::fileapi::svc_get_file_attributes_a),
+    ("GetFileAttributesExA", 12, crate::compat::fileapi::svc_get_file_attributes_ex_a),
+    ("GetFileInformationByHandle", 8, crate::compat::fileapi::svc_get_file_information_by_handle),
+    ("GetFileSize", 8, crate::compat::fileapi::svc_get_file_size),
+    ("GetFileTime", 16, crate::compat::fileapi::svc_get_file_time),
     ("GetFileType", 4, svc_get_file_type),
+    ("GetFullPathNameA", 16, crate::compat::fileapi::svc_get_full_path_name_a),
     ("GetLocalTime", 4, svc_get_local_time),
     ("GetModuleFileNameA", 12, svc_get_module_file_name),
     ("GetOEMCP", 0, svc_get_oemcp),
     ("GetPriorityClass", 4, svc_get_priority_class),
     ("GetProcAddress", 8, svc_floor_zero),
+    ("GetShortPathNameA", 12, crate::compat::fileapi::svc_get_short_path_name_a),
     ("GetStartupInfoA", 4, svc_get_startup_info_a),
     ("GetStdHandle", 4, svc_get_std_handle),
     ("GetStringTypeA", 20, svc_floor_zero),
@@ -2785,6 +2908,7 @@ pub const SERVICES: [(&str, u32, ServiceFn); 93] = [
     ("GetTickCount", 0, svc_get_tick_count),
     ("GetTimeZoneInformation", 4, svc_get_time_zone_information),
     ("GetVersion", 0, svc_get_version),
+    ("GetVolumeInformationA", 32, crate::compat::fileapi::svc_get_volume_information_a),
     ("HeapAlloc", 12, svc_heap_alloc),
     ("HeapCreate", 12, svc_heap_create),
     ("HeapDestroy", 4, svc_heap_destroy),
@@ -2794,6 +2918,7 @@ pub const SERVICES: [(&str, u32, ServiceFn); 93] = [
     ("LCMapStringA", 24, svc_floor_zero),
     ("LCMapStringW", 24, svc_lc_map_string_w),
     ("LoadLibraryA", 4, svc_floor_zero),
+    ("MapViewOfFile", 20, crate::compat::fileapi::svc_map_view_of_file),
     ("MultiByteToWideChar", 24, svc_multi_byte_to_wide_char),
     ("OpenEventA", 12, svc_open_event_a),
     ("OpenMutexA", 12, svc_open_mutex_a),
@@ -2809,6 +2934,8 @@ pub const SERVICES: [(&str, u32, ServiceFn); 93] = [
     ("ResetEvent", 4, svc_reset_event),
     ("ResumeThread", 4, svc_resume_thread),
     ("RtlUnwind", 16, svc_floor_zero),
+    ("SetCurrentDirectoryA", 4, crate::compat::fileapi::svc_set_current_directory_a),
+    ("SetEndOfFile", 4, crate::compat::fileapi::svc_set_end_of_file),
     ("SetEnvironmentVariableA", 8, svc_set_environment_variable_a),
     ("SetErrorMode", 4, svc_set_error_mode),
     ("SetEvent", 4, svc_set_event),
@@ -2830,6 +2957,7 @@ pub const SERVICES: [(&str, u32, ServiceFn); 93] = [
     ("TlsAlloc", 0, svc_tls_alloc),
     ("TlsFree", 4, svc_tls_free),
     ("UnhandledExceptionFilter", 4, svc_floor_zero),
+    ("UnmapViewOfFile", 4, crate::compat::fileapi::svc_unmap_view_of_file),
     ("VirtualAlloc", 16, svc_virtual_alloc),
     ("VirtualFree", 12, svc_virtual_free),
     ("WaitForMultipleObjects", 16, svc_wait_for_multiple_objects),
@@ -3141,6 +3269,9 @@ pub fn init_params(command_line: &[u8], module: &[u8]) {
     crate::mem::paging::write_frame(frame, CMDLINE_OFFSET as usize, command_line);
     crate::mem::paging::write_frame(frame, MODULE_OFFSET as usize, &name[..name_length]);
     crate::mem::paging::map_user_page(PARAMS_PAGE, frame, true);
+    // The process starts in its image's own directory.
+    let directory = module.iter().rposition(|&b| b == b'\\').map_or(&[][..], |i| &module[..i]);
+    crate::process::current_mut().file_state().start_in(directory);
 }
 
 #[cfg(test)]
@@ -3151,7 +3282,6 @@ mod tests {
 
     const RET0: &[u8] = include_bytes!("../../../tests/ret0/ret0.exe");
     const HELLO: &[u8] = include_bytes!("../../../tests/hello/hello.exe");
-    const FILEIO: &[u8] = include_bytes!("../../../tests/fileio/fileio.exe");
 
     /// The corpus binaries the surface serves in full: every import of each resolves. The legacy
     /// fixtures that run on the surface (hellogui, a GUI program importing user32 and gdi32, is
@@ -3160,7 +3290,6 @@ mod tests {
         ("exit0", include_bytes!("../../../tests/exit0/exit0.exe")),
         ("ret0", RET0),
         ("hello", HELLO),
-        ("fileio", FILEIO),
         ("bare", include_bytes!("../../../tests/bare/bare.exe")),
         (
             "threads",
@@ -3168,17 +3297,17 @@ mod tests {
         ),
         ("sync", include_bytes!("../../../tests/sync/sync.exe")),
         ("sched", include_bytes!("../../../tests/sched/sched.exe")),
+        ("files", include_bytes!("../../../tests/files/files.exe")),
     ];
 
     /// The sectioned fixtures the surface does not serve in full yet (tests/README.md): the work
     /// list. A binary moves to [`CORPUS`] once every one of its imports resolves.
-    const UPCOMING: [(&str, &[u8]); 4] = [
+    const UPCOMING: [(&str, &[u8]); 3] = [
         (
             "runtime",
             include_bytes!("../../../tests/runtime/runtime.exe"),
         ),
         ("memory", include_bytes!("../../../tests/memory/memory.exe")),
-        ("files", include_bytes!("../../../tests/files/files.exe")),
         (
             "fswrite",
             include_bytes!("../../../tests/fswrite/fswrite.exe"),
@@ -3291,17 +3420,6 @@ mod tests {
         image.map_into(HELLO, &mut mapped);
         let result = image.snap_imports(HELLO, &mut mapped, crate::exec::loader::resolve_import);
         assert_eq!(result.thunks, 40);
-    }
-
-    /// Every fileio import (hello's 40 plus CreateFileA and ReadFile) resolves against the real
-    /// registry.
-    #[test]
-    fn fileio_snaps_fully_against_the_registry() {
-        let image = Image::parse(FILEIO).expect("fileio parses");
-        let mut mapped = vec![0u8; image.size_of_image as usize];
-        image.map_into(FILEIO, &mut mapped);
-        let result = image.snap_imports(FILEIO, &mut mapped, crate::exec::loader::resolve_import);
-        assert_eq!(result.thunks, 42);
     }
 
     /// The registry keeps its order discipline: ExitProcess first, the rest alphabetical (ASCII

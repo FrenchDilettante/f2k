@@ -90,15 +90,17 @@ uv run scripts/kernel32-ledger.py --check
 ```
 
 ### On-target QEMU tests
-The on-target tests run through pytest (`tests/test_suite.py`, each
-sectioned fixture's `tests/<name>/test_<name>.py`, helpers in
-`tests/f2kboot.py` and `tests/conftest.py`), so an IDE
-lists and runs them one by one. The suite's cases (kernel features to
-build with, image to boot, expected COM1 strings) are data in
-`scripts/qemu-tests.yaml`: one test per case. Expected strings match
-anywhere in the COM1 log by default; a case can require them in order
-(`ordered`), as an uninterrupted block of lines (`contiguous`), or
-forbid strings (`forbids`). A kernel panic fails every case. The
+The on-target tests run through pytest (each sectioned fixture's
+`tests/<name>/test_<name>.py`, the kernel's own boots in
+`tests/kernel/test_kernel.py`, helpers in `tests/f2kboot.py` and
+`tests/conftest.py`), so an IDE lists and runs them one by one. The
+kernel boots (the fault stubs, the Limine disk path, the multi-process
+suite, the IDE diagnostic) are cases in `test_kernel.py`: kernel
+features to build with, image to boot, expected COM1 strings, one test
+per case. Expected strings match anywhere in the COM1 log by default; a
+case can require them in order (`ordered`), as an uninterrupted block of
+lines (`contiguous`), or forbid strings (`forbids`). A kernel panic
+fails every case. The
 sectioned fixtures' tests are their real-machine captures (see
 `tests/README.md`): one test per captured block, each fixture's file
 stating what its comparison allows.
@@ -106,14 +108,12 @@ stating what its comparison allows.
 Each test builds the kernel and disk for its feature set (once per
 run, cached under `target/qemu/builds/`) and keeps its COM1 log under
 `target/qemu/logs/`. Boots attach the disk as a snapshot, so tests run
-in parallel (`-n auto`, pytest-xdist).
+in parallel (`-n 4` by default in `make test`, pytest-xdist).
 ```bash
-make test        # all kernel-path cases (QEMU -kernel)
-make test-disk   # all disk-path cases (Limine disk image)
-make corpus      # the sectioned corpus against its captures
+make test        # every on-target test: the kernel boots and the corpus
 uv run pytest --collect-only -q                     # list every test
-uv run pytest tests/test_suite.py -k fault-ud       # one case
-uv run pytest tests/bare -n auto                    # one fixture's blocks
+uv run pytest tests/kernel -k fault-ud            # one kernel case
+uv run pytest tests/bare -n 4                       # one fixture's blocks
 uv run pytest tests/runtime --runxfail              # see why the work list fails
 uv run pytest --no-build ...                        # reuse the last make disk
 ```
@@ -153,12 +153,11 @@ f2k/
 │   ├── x86-elf-ld         # Linker wrapper
 │   ├── linker.x86         # Custom linker script
 │   ├── create_partition_table.py  # MBR partition table for the disk image
-│   ├── qemu-tests.yaml    # On-target test cases (data, not Makefile targets)
 │   ├── kernel32-ledger.py   # kernel32 contract ledger report (host-side)
 │   └── kernel32-ledger.yaml  # The contract ledger (data, not Makefile targets)
 │
 ├── tests/            # Windows 2000 test corpus (see tests/README.md), and the
-│                     # pytest modules that boot it (test_suite.py, <name>/test_<name>.py)
+│                     # pytest modules that boot it (<name>/test_<name>.py, kernel/test_kernel.py)
 ├── pyproject.toml    # Python tooling (uv): pytest, pytest-xdist, PyYAML
 │
 └── kernel/           # F2K Kernel
@@ -185,8 +184,7 @@ f2k/
 |--------|-------------|
 | `make kernel` | Build the kernel (ELF) |
 | `make qemu` | Build the disk and boot the kernel directly in QEMU, the disk attached |
-| `make test` | Run the on-target QEMU suite (kernel path) |
-| `make test-disk` | Run the on-target QEMU suite (Limine disk path) |
+| `make test` | Run every on-target QEMU test (kernel boots and the corpus) |
 | `make run-tests` | Run host unit tests |
 | `make check` | `cargo check` + clippy |
 | `make fmt` | Format all Rust sources |

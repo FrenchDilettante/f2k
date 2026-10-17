@@ -382,8 +382,8 @@ fn command_line_image() -> Option<(&'static [u8], &'static str, &'static [u8])> 
 }
 
 /// The one image a one-process boot runs, as its path on the boot volume and its process name: the
-/// first fixture feature in this order — the file smoke (`run-fileio`), hello (`run-hello`), ret0
-/// (`run-ret0`) — else exit0. The paths are
+/// first fixture feature in this order — hello (`run-hello`), ret0 (`run-ret0`) — else exit0. The
+/// paths are
 /// root-relative; the lookup folds case, so the lowercase spelling finds the stored uppercase name.
 #[cfg(all(
     target_arch = "x86",
@@ -397,8 +397,6 @@ fn command_line_image() -> Option<(&'static [u8], &'static str, &'static [u8])> 
 ))]
 #[allow(unreachable_code)]
 fn boot_image() -> (&'static [u8], &'static str) {
-    #[cfg(feature = "run-fileio")]
-    return (b"fileio.exe", "fileio");
     #[cfg(feature = "run-hello")]
     return (b"hello.exe", "hello");
     #[cfg(feature = "run-ret0")]
@@ -430,6 +428,20 @@ pub fn run_fault_stub() -> ! {
     let stack_low = paging::allocate_frame_phys();
     paging::init_frame(stack_low, 0, &[]);
     paging::map_user_page(USER_STACK_LOW_PAGE, stack_low, true);
+
+    // The thread and process blocks every thread has: the services write the last error there.
+    let process = crate::process::current();
+    crate::user::teb::map_teb(&crate::user::teb::TebInit {
+        teb: TEB_PAGE,
+        stack_base: USER_STACK_TOP,
+        stack_limit: USER_STACK_LOW_PAGE,
+        process_id: process.id(),
+        thread_id: process.main_thread().thread_id(),
+        peb: PEB_PAGE,
+        tls_pointer: 0,
+        tls_expansion: 0,
+    });
+    crate::user::teb::map_peb(USER_CODE_PAGE, crate::user::userheap::HEAP_HANDLE);
 
     crate::serial_println!(
         "F2K: entering ring 3 (code {:#010x}, stack {:#010x})",

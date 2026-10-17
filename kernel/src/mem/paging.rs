@@ -129,11 +129,12 @@ pub const KERNEL_HALF_START: usize = (KERNEL_BASE >> 22) as usize;
 /// window's page *table*.
 pub const DIRECTORY_ENTRY_VA: u32 = SELF_MAP_VA + ((SELF_MAP_SLOT as u32) << 12);
 /// The per-process ring-0 gate stack window (directory entry 514): sub-allocated into per-thread
-/// slots, each a guard page plus the 16 KiB stack. Slot 0's top is [`GATE_STACK_TOP`], a main
+/// slots, each a guard page plus the 32 KiB stack. Slot 0's top is [`GATE_STACK_TOP`], a main
 /// thread's stack.
 pub const GATE_STACK_WINDOW: u32 = KERNEL_BASE + 2 * 0x0040_0000;
-/// Gate stack pages, one frame each (16 KiB).
-pub const GATE_STACK_PAGES: usize = 4;
+/// Gate stack pages, one frame each (32 KiB): room for the file system's walks under the debug
+/// build's frames.
+pub const GATE_STACK_PAGES: usize = 8;
 /// Slot 0's top: the main thread's stack, pinned by the layout tests (the switch installs every
 /// thread's top from its record, so nothing else reads it).
 #[cfg(test)]
@@ -824,7 +825,7 @@ mod tests {
 
     /// The gate stack window: the first kernel window above the 8 MiB kernel image mapping
     /// (directory entry 514, clear of the static window and the runtime access slots), with an
-    /// unmapped guard page at the window base and the 16 KiB stack above it — a gate-stack overflow
+    /// unmapped guard page at the window base and the 32 KiB stack above it — a gate-stack overflow
     /// faults into the guard instead of corrupting the kernel window below.
     #[test]
     fn gate_stack_window_layout() {
@@ -833,9 +834,11 @@ mod tests {
         for reserved in [512usize, 513, SELF_MAP_SLOT, SCRATCH_SLOT] {
             assert_ne!((GATE_STACK_WINDOW >> 22) as usize, reserved);
         }
-        assert_eq!(GATE_STACK_PAGES, 4);
-        assert_eq!(GATE_STACK_TOP, GATE_STACK_WINDOW + 5 * PAGE_SIZE);
-        assert_eq!(GATE_STACK_TOP, 0x8080_5000);
+        assert_eq!(GATE_STACK_PAGES, 8);
+        assert_eq!(GATE_STACK_TOP, GATE_STACK_WINDOW + 9 * PAGE_SIZE);
+        assert_eq!(GATE_STACK_TOP, 0x8080_9000);
+        // A process's threads all fit: the main thread and every child.
+        assert!(GATE_SLOT_CAPACITY > crate::process::CHILD_THREADS);
         // Everything (guard + stack) stays inside window 514.
         assert!(GATE_STACK_TOP < GATE_STACK_WINDOW + 0x0040_0000);
     }

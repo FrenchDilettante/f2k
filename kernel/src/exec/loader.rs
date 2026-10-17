@@ -383,11 +383,10 @@ mod tests {
 
     /// The corpus the disk carries (see the Makefile's disk target), by fixture name: the legacy
     /// smokes, then the sectioned fixtures.
-    const CORPUS: [(&str, &[u8]); 12] = [
+    const CORPUS: [(&str, &[u8]); 11] = [
         ("hello", include_bytes!("../../../tests/hello/hello.exe")),
         ("exit0", EXIT0),
         ("ret0", RET0),
-        ("fileio", include_bytes!("../../../tests/fileio/fileio.exe")),
         ("bare", include_bytes!("../../../tests/bare/bare.exe")),
         (
             "runtime",
@@ -642,8 +641,8 @@ mod tests {
         );
     }
 
-    /// The refusals, each distinct: a missing file, a malformed path, a directory, a file larger
-    /// than the staging, and a corrupt chain.
+    /// The refusals, each distinct: a missing file (by either kind of name), a malformed path, a
+    /// directory, a file larger than the staging, and a corrupt chain.
     #[test]
     fn unreadable_programs_are_refused() {
         let (mut crafted, _) = volume_with_exit0();
@@ -655,6 +654,10 @@ mod tests {
         );
         assert_eq!(
             read_image_file(&mut volume, b"not-an-8.3-name.exe", &mut buffer),
+            Err(FileError::Lookup(LookupError::NotFound))
+        );
+        assert_eq!(
+            read_image_file(&mut volume, b"what?.exe", &mut buffer),
             Err(FileError::Lookup(LookupError::Invalid))
         );
         assert_eq!(

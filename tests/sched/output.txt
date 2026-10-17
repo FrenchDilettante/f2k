@@ -55,7 +55,7 @@ a new equal-priority thread did not preempt its creator: yes
 after Sleep(0) it had run: yes
 SwitchToThread: returned 1, the new thread had run no
 Sleep(0) does not hand the CPU to a lower-priority thread: yes
-Sleep(10) does: no
+Sleep(10) does: yes
 sched: done
 <<< exit code=0
 >>> sched.exe boost

@@ -1,5 +1,5 @@
-"""Shared fixtures for the on-target QEMU tests: the suite (tests/test_suite.py) and the sectioned
-corpus (tests/<name>/test_<name>.py)."""
+"""Shared fixtures for the on-target QEMU tests: the kernel's own boots (tests/kernel/test_kernel.py)
+and the sectioned corpus (tests/<name>/test_<name>.py)."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -21,7 +21,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         "--boot-timeout",
         type=float,
         default=None,
-        help="seconds per boot, overriding the cases' own (suite default 10, corpus default 20)",
+        help="seconds per boot, overriding the cases' own (kernel cases default 10, corpus default 20)",
     )
 
 

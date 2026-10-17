@@ -1,5 +1,5 @@
 //! Command line / startup info: the process's own description, replayed. The command line and the
-//! image path are the kernel-staged process parameters (the fileio fixture as launched); the
+//! image path are the kernel-staged process parameters (a fixture as launched); the
 //! version dword and the startup-info image are constants of the surface.
 
 use crate::compat::harness::surface::{assert_argument_blocks, Fixture};
@@ -41,7 +41,7 @@ fn get_command_line_points_at_the_staged_command_line() {
         command_line,
         fixture.kernel.process_parameters().command_line
     );
-    assert_eq!(fixture.memory().c_string(command_line), b"fileio");
+    assert_eq!(fixture.memory().c_string(command_line), b"hello");
 }
 
 /// GetCommandLineA hands out the same block every call (the CRT parses it in place). Ledger:
@@ -107,7 +107,7 @@ fn get_module_file_name_copies_the_staged_image_path() {
     let mut fixture = Fixture::new();
     let buffer = fixture.stage(&[0xCC; 64]);
     assert_eq!(fixture.call("GetModuleFileNameA", &[0, buffer, 64]), 10);
-    assert_eq!(fixture.memory().bytes(buffer, 12), b"fileio.exe\0\xCC");
+    assert_eq!(fixture.memory().bytes(buffer, 12), b"hello.exe\0\xCC");
 }
 
 /// GetModuleFileNameA truncates to the buffer: `nSize - 1` bytes and the terminator, the return
@@ -124,7 +124,7 @@ fn get_module_file_name_truncates_to_the_buffer() {
     assert_eq!(fixture.call("GetModuleFileNameA", &[0, buffer, 1]), 0);
     assert_eq!(fixture.memory().bytes(buffer, 2), b"\0i");
     assert_eq!(fixture.call("GetModuleFileNameA", &[0, buffer, 11]), 10);
-    assert_eq!(fixture.memory().bytes(buffer, 11), b"fileio.exe\0");
+    assert_eq!(fixture.memory().bytes(buffer, 11), b"hello.exe\0");
 }
 
 /// GetModuleFileNameA refuses before touching anything: a module handle (only the process's own

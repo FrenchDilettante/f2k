@@ -190,7 +190,7 @@ fn close_handle_closes_object_handles_once() {
             (target-only)"]
 fn close_handle_releases_an_open_file() {
     let mut fixture = Fixture::new();
-    let file = fixture.kernel.nt_create_file(b"fileio.exe").unwrap();
+    let file = fixture.kernel.nt_create_file(b"hello.exe").unwrap();
     assert_eq!(fixture.call("CloseHandle", &[file]), 1);
     assert!(fixture.kernel.calls().contains(&Call::Close(file)));
     assert!(fixture.kernel.nt_query_information_file(file).is_err());
@@ -225,8 +225,8 @@ fn set_std_handle_answers_with_the_floor() {
             (target-only)"]
 fn set_file_pointer_moves_by_each_method() {
     let mut fixture = Fixture::new();
-    let file = fixture.kernel.nt_create_file(b"fileio.exe").unwrap();
-    let size = crate::compat::harness::fake::FILEIO_IMAGE.len() as u32;
+    let file = fixture.kernel.nt_create_file(b"hello.exe").unwrap();
+    let size = crate::compat::harness::fake::IMAGE.len() as u32;
     let seek = |fixture: &mut Fixture, distance: i32, method: u32| {
         fixture.call("SetFilePointer", &[file, distance as u32, 0, method])
     };
@@ -254,7 +254,7 @@ fn set_file_pointer_moves_by_each_method() {
             (target-only)"]
 fn set_file_pointer_honors_the_high_word() {
     let mut fixture = Fixture::new();
-    let file = fixture.kernel.nt_create_file(b"fileio.exe").unwrap();
+    let file = fixture.kernel.nt_create_file(b"hello.exe").unwrap();
     let high = fixture.stage(&5u32.to_le_bytes());
     assert_eq!(
         fixture.call("SetFilePointer", &[file, 0x80, high, FILE_BEGIN]),
@@ -270,7 +270,7 @@ fn set_file_pointer_honors_the_high_word() {
             (target-only)"]
 fn set_file_pointer_refuses_bad_targets_and_methods() {
     let mut fixture = Fixture::new();
-    let file = fixture.kernel.nt_create_file(b"fileio.exe").unwrap();
+    let file = fixture.kernel.nt_create_file(b"hello.exe").unwrap();
     assert_eq!(
         fixture.call("SetFilePointer", &[file, 0x10, 0, FILE_BEGIN]),
         0x10

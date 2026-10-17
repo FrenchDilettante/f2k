@@ -48,8 +48,8 @@ pub struct Signature {
 
 use Arg::{Pointer as P, Value as V};
 
-/// The public prototypes of the 110 exports.
-pub const SIGNATURES: [Signature; 110] = [
+/// The public prototypes of the 131 exports.
+pub const SIGNATURES: [Signature; 131] = [
     sig("ExitProcess", &[V("uExitCode")]),
     sig("CloseHandle", &[V("hObject")]),
     sig(
@@ -326,6 +326,27 @@ pub const SIGNATURES: [Signature; 110] = [
     ),
     sig("GetEnvironmentVariableA", &[P("lpName"), P("lpBuffer"), V("nSize")]),
     sig("SetEnvironmentVariableA", &[P("lpName"), P("lpValue")]),
+    sig("CreateFileMappingA", &[P("hFile"), V("lpAttributes"), V("flProtect"), V("dwMaximumSizeHigh"), V("dwMaximumSizeLow"), P("lpName")]),
+    sig("FileTimeToLocalFileTime", &[P("lpFileTime"), P("lpLocalFileTime")]),
+    sig("FileTimeToSystemTime", &[P("lpFileTime"), P("lpSystemTime")]),
+    sig("FindClose", &[V("hFindFile")]),
+    sig("FindFirstFileA", &[P("lpFileName"), P("lpFindFileData")]),
+    sig("FindNextFileA", &[V("hFindFile"), P("lpFindFileData")]),
+    sig("GetCurrentDirectoryA", &[V("nBufferLength"), P("lpBuffer")]),
+    sig("GetDiskFreeSpaceA", &[P("lpRootPathName"), P("lpSectorsPerCluster"), P("lpBytesPerSector"), P("lpNumberOfFreeClusters"), P("lpTotalNumberOfClusters")]),
+    sig("GetDriveTypeA", &[P("lpRootPathName")]),
+    sig("GetFileAttributesA", &[P("lpFileName")]),
+    sig("GetFileAttributesExA", &[P("lpFileName"), V("fInfoLevelId"), P("lpFileInformation")]),
+    sig("GetFileInformationByHandle", &[V("hFile"), P("lpFileInformation")]),
+    sig("GetFileSize", &[V("hFile"), P("lpFileSizeHigh")]),
+    sig("GetFileTime", &[V("hFile"), P("lpCreationTime"), P("lpLastAccessTime"), P("lpLastWriteTime")]),
+    sig("GetFullPathNameA", &[P("lpFileName"), V("nBufferLength"), P("lpBuffer"), P("lpFilePart")]),
+    sig("GetShortPathNameA", &[P("lpszLongPath"), P("lpszShortPath"), V("cchBuffer")]),
+    sig("GetVolumeInformationA", &[P("lpRootPathName"), P("lpVolumeNameBuffer"), V("nVolumeNameSize"), P("lpVolumeSerialNumber"), P("lpMaximumComponentLength"), P("lpFileSystemFlags"), P("lpFileSystemNameBuffer"), V("nFileSystemNameSize")]),
+    sig("MapViewOfFile", &[V("hFileMappingObject"), V("dwDesiredAccess"), V("dwFileOffsetHigh"), V("dwFileOffsetLow"), V("dwNumberOfBytesToMap")]),
+    sig("SetCurrentDirectoryA", &[P("lpPathName")]),
+    sig("SetEndOfFile", &[V("hFile")]),
+    sig("UnmapViewOfFile", &[P("lpBaseAddress")]),
 ];
 
 const fn sig(export: &'static str, args: &'static [Arg]) -> Signature {
@@ -407,6 +428,9 @@ fn route(export: &str) -> Route {
             Route::TargetOnly("the handler reads the live clock")
         }
         "SwitchToThread" => Route::TargetOnly("the yield runs through the scheduler"),
+        "CreateFileMappingA" | "FindClose" | "FindFirstFileA" | "FindNextFileA" | "GetCurrentDirectoryA" | "GetDiskFreeSpaceA" | "GetDriveTypeA" | "GetFileAttributesA" | "GetFileAttributesExA" | "GetFileInformationByHandle" | "GetFileSize" | "GetFileTime" | "GetFullPathNameA" | "GetShortPathNameA" | "GetVolumeInformationA" | "MapViewOfFile" | "SetCurrentDirectoryA" | "SetEndOfFile" | "UnmapViewOfFile" => {
+            Route::TargetOnly("the handler runs against the live volume, handle table, or address space")
+        }
         "SetEnvironmentVariableA" | "GetEnvironmentVariableA" => {
             Route::TargetOnly("the variables live in the live process record")
         }

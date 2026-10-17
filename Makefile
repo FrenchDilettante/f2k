@@ -43,7 +43,7 @@ ISO_IMG ?= $(BUILD_DIR)/$(TARGET)/debug/f2k.iso
 DISK_SIZE ?= 131072
 # The corpus fixtures the disk carries in its root directory (tests/<name>/<name>.exe, stored as
 # NAME.EXE), after HELLO.EXE: the boots load their images from the volume by these paths.
-DISK_FIXTURES ?= exit0 ret0 fileio
+DISK_FIXTURES ?= exit0 ret0
 # The sectioned fixtures (tests/README.md), in their own directory, \CORPUS, the way each runs from
 # its own directory on the real machine: the root keeps its one cluster (the disk-smoke pins it).
 CORPUS_FIXTURES ?= bare runtime memory threads sync sched files fswrite
@@ -66,9 +66,7 @@ help:
 	@echo "  all           - Build everything and create bootable disk"
 	@echo "  kernel       - Build the kernel only"
 	@echo "  qemu         - Build the disk and boot the kernel directly in QEMU (Multiboot, disk attached)"
-	@echo "  test         - Run the on-target QEMU test suite (kernel path)"
-	@echo "  test-disk    - Run the on-target QEMU test suite (disk path)"
-	@echo "  corpus       - Run the sectioned corpus against its captures (a report)"
+	@echo "  test         - Run every on-target QEMU test (kernel boots and the corpus)"
 	@echo "  run-tests    - Run host unit tests (cargo test --lib)"
 	@echo "  check        - cargo check + clippy"
 	@echo "  fmt          - Format all Rust sources (rustfmt)"
@@ -166,26 +164,20 @@ clobber: clean
 	@echo "Removing target directory..."
 	-rm -rf $(BUILD_DIR)
 
-# On-target QEMU tests, through pytest (uv drives the environment, pyproject.toml): the suite's
-# cases are data in scripts/qemu-tests.yaml (kernel features to build with, image to boot, expected
-# COM1 strings); the sectioned corpus's tests are tests/<name>/test_<name>.py, one per fixture, over
-# its real-machine capture (the `corpus` marker). Each test
-# builds what it needs; boots run in parallel. New cases are data, not new Makefile targets.
+# On-target QEMU tests, through pytest (uv drives the environment, pyproject.toml): the kernel's own
+# boots are tests/kernel/test_kernel.py (kernel features to build with, image to boot, expected
+# COM1 strings); the sectioned corpus's tests are tests/<name>/test_<name>.py, one per fixture,
+# over its real-machine capture (gating fixtures must pass; the rest run as expected failures, a
+# progress report). `make test` runs them all; each test builds what it needs, and boots run in
+# parallel. New cases are data, not new Makefile targets: narrow a run through pytest instead
+# (`make test PYTEST_FLAGS="-n 4 -m disk"`, or the `kernel` and `corpus` markers).
 UV ?= uv
 PYTEST = $(UV) run pytest
-PYTEST_FLAGS ?= -n auto
+PYTEST_FLAGS ?= -n 4
 
-.PHONY: test test-disk corpus
+.PHONY: test
 test:
-	$(PYTEST) tests/test_suite.py -m kernel $(PYTEST_FLAGS)
-
-test-disk:
-	$(PYTEST) tests/test_suite.py -m disk $(PYTEST_FLAGS)
-
-# The sectioned corpus against its real-machine captures (gating fixtures must pass; the rest run as
-# expected failures, a progress report).
-corpus:
-	$(PYTEST) tests -m corpus $(PYTEST_FLAGS)
+	$(PYTEST) tests $(PYTEST_FLAGS)
 
 .PHONY: run-tests
 run-tests:

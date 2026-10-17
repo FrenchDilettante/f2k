@@ -1,13 +1,13 @@
 """Boot F2K in QEMU for the test suites.
 
-Three pieces the suites share:
+Three pieces the test modules share:
 
 - builds: `make disk` with a set of cargo features, kept per feature set under target/qemu/builds
   and reused for the rest of the test run (the builds serialize across pytest-xdist workers on a
   file lock: they share cargo's target directory);
 - boots: QEMU with COM1 logged to a file, the disk attached as a snapshot (so boots run side by
   side), stopped as soon as the caller's check has its answer;
-- checks: the suite's expected-string rules (`Expectation`), and the corpus's capture blocks
+- checks: the kernel cases' expected-string rules (`Expectation`), and the corpus's capture blocks
   compared against the program output a boot carries (`Block`, `blocks`).
 """
 from __future__ import annotations
@@ -154,7 +154,7 @@ def tail(log: str, count: int = 40) -> str:
     return "\n".join(lines_of(log)[-count:])
 
 
-# --- The suite's expected-string rules ----------------------------------------------------------
+# --- The kernel cases' expected-string rules ---------------------------------------------------
 
 
 def matches(expected: str, line: str) -> bool:
@@ -166,7 +166,7 @@ def matches(expected: str, line: str) -> bool:
 
 @dataclass
 class Expectation:
-    """A suite case's COM1 rules: every `expects` string appears on some line (in order, each on a
+    """A kernel case's COM1 rules: every `expects` string appears on some line (in order, each on a
     later line, when `ordered`); the `contiguous` strings match consecutive lines, in order; no
     `forbids` string appears. An `expects` string written `re:<pattern>` is a regular expression
     searched in the line instead of a substring."""
