@@ -2,7 +2,7 @@
 //! and the kernel's boot volume, mounted from the first registered partition.
 
 use super::boot_sector::{validate, Refusal};
-use super::fat::{decode_entry, entry_position, FatCache, FatEntry};
+use super::fat::{decode_entry, entry_position, FatCache, FatEntry, ENTRY_MASK};
 use super::layout::Layout;
 use crate::block::BlockDevice;
 use crate::status::{nt_success, NtStatus, STATUS_UNRECOGNIZED_VOLUME};
@@ -33,6 +33,8 @@ pub struct Volume {
     device: &'static dyn BlockDevice,
     layout: Layout,
     cache: FatCache,
+    /// Where the next free-cluster search starts (an allocation's hint).
+    next_free: u32,
 }
 
 impl Volume {
@@ -53,6 +55,7 @@ impl Volume {
             device,
             layout,
             cache: FatCache::new(),
+            next_free: 2,
         })
     }
 
@@ -86,6 +89,52 @@ impl Volume {
             data[offset + 3],
         ]);
         Ok(decode_entry(raw, self.layout.max_cluster()))
+    }
+
+    /// How many FAT copies the volume keeps (every one is written).
+    pub fn fat_copies(&self) -> u32 {
+        ((self.layout.data_start - self.layout.fat_start) / self.layout.sectors_per_fat as u64) as u32
+    }
+
+    /// Set `cluster`'s FAT entry to `value` (its low 28 bits; the reserved high bits stay), in every
+    /// FAT copy and the cache.
+    pub fn set_fat_entry(&mut self, cluster: u32, value: u32) -> Result<(), NtStatus> {
+        assert!(
+            self.layout.is_data_cluster(cluster),
+            "cluster {} is not a data cluster of the volume",
+            cluster
+        );
+        let (sector, offset) = entry_position(cluster);
+        let lba = self.layout.fat_start + sector;
+        let mut data = *self.cache.sector(self.device, lba)?;
+        let old = u32::from_le_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]]);
+        let raw = old & !ENTRY_MASK | value & ENTRY_MASK;
+        data[offset..offset + 4].copy_from_slice(&raw.to_le_bytes());
+        for copy in 0..self.fat_copies() as u64 {
+            self.write_sector(lba + copy * self.layout.sectors_per_fat as u64, &data)?;
+        }
+        self.cache.store(lba, &data);
+        Ok(())
+    }
+
+    /// Read one sector of the volume.
+    pub fn read_sector(&self, lba: u64, data: &mut [u8; 512]) -> Result<(), NtStatus> {
+        let status = self.device.read(lba, data);
+        if nt_success(status) { Ok(()) } else { Err(status) }
+    }
+
+    /// Write one sector of the volume.
+    pub fn write_sector(&self, lba: u64, data: &[u8; 512]) -> Result<(), NtStatus> {
+        let status = self.device.write(lba, data);
+        if nt_success(status) { Ok(()) } else { Err(status) }
+    }
+
+    /// Where the next free-cluster search starts, and its update.
+    pub fn next_free(&self) -> u32 {
+        self.next_free
+    }
+    pub fn set_next_free(&mut self, cluster: u32) {
+        self.next_free = cluster;
     }
 }
 

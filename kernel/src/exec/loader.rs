@@ -128,9 +128,8 @@ static mut IMAGE_STAGING: crate::mem::paging::Aligned<[u8; STAGING_SIZE]> =
 /// reservation that reaches an image's pages is not yet detected (no address-space bookkeeping
 /// exists).
 const SYSTEM_REGIONS: [(&str, u32, u32); 10] = {
-    use crate::user::userheap::{CRT_REGION_BASE, HEAP_REGION_BASE, HEAP_REGION_MAX};
     use crate::user::{
-        PARAMS_PAGE, PEB_PAGE, TEB_PAGE, THREAD_STACK_PAGES, THREAD_STACK_REGION,
+        PARAMS_PAGE, PEB_PAGE, TEB_PAGE,
         THREAD_TEB_REGION, USER_STACK_BASE, USER_STACK_TOP,
     };
     const PAGE: u32 = crate::mem::paging::PAGE_SIZE;
@@ -142,6 +141,16 @@ const SYSTEM_REGIONS: [(&str, u32, u32); 10] = {
         ("process parameters", PARAMS_PAGE, PARAMS_PAGE + PAGE),
         ("process environment block", PEB_PAGE, PEB_PAGE + PAGE),
         (
+            "environment block (narrow)",
+            crate::compat::envapi::BLOCK_A,
+            crate::compat::envapi::BLOCK_A + crate::compat::envapi::BLOCK_A_PAGES * PAGE,
+        ),
+        (
+            "environment block (wide)",
+            crate::compat::envapi::BLOCK_W,
+            crate::compat::envapi::BLOCK_W + crate::compat::envapi::BLOCK_W_PAGES * PAGE,
+        ),
+        (
             "child thread TEBs",
             THREAD_TEB_REGION,
             THREAD_TEB_REGION + CHILDREN * PAGE,
@@ -152,21 +161,15 @@ const SYSTEM_REGIONS: [(&str, u32, u32); 10] = {
             crate::user::tls::TLS_REGION + (CHILDREN + 1) * 2 * PAGE,
         ),
         (
-            "child thread stacks",
-            THREAD_STACK_REGION,
-            THREAD_STACK_REGION + CHILDREN * THREAD_STACK_PAGES * PAGE,
-        ),
-        (
             "kernel32 thunk and native pages",
             THUNK_PAGE,
             THUNK_PAGE + 2 * PAGE,
         ),
         (
-            "heap region",
-            HEAP_REGION_BASE,
-            HEAP_REGION_BASE + HEAP_REGION_MAX as u32,
+            "kernel32 module headers",
+            crate::compat::modules::KERNEL32_BASE,
+            crate::compat::modules::KERNEL32_BASE + PAGE,
         ),
-        ("CRT region", CRT_REGION_BASE, CRT_REGION_BASE + 0x1_0000),
     ]
 };
 
@@ -225,6 +228,60 @@ pub fn resolve_import(module: &str, name: &str) -> Result<u32, Unresolved> {
         return crate::compat::kernel32::resolve(name).ok_or(Unresolved::NoEntry);
     }
     Err(Unresolved::NoModule)
+}
+
+/// A page's protection, as VirtualQuery reports it: the combined access of the sections in it (an
+/// image's writable pages are copy-on-write); uncovered pages (the header page) are read-only.
+fn page_protect(image: &Image, page_rva: u32) -> u32 {
+    use crate::mem::vm::{
+        PAGE_EXECUTE, PAGE_EXECUTE_READ, PAGE_EXECUTE_WRITECOPY, PAGE_READONLY, PAGE_WRITECOPY,
+    };
+    let end = page_rva + crate::mem::paging::PAGE_SIZE;
+    let (mut read, mut write, mut execute) = (false, false, false);
+    for i in 0..image.num_sections() {
+        let s = image.section(i);
+        if s.virtual_address < end && page_rva < s.virtual_address + image.section_extent(i) {
+            let (r, w, x) = s.protection();
+            read |= r;
+            write |= w;
+            execute |= x;
+        }
+    }
+    match (read, write, execute) {
+        (_, true, true) => PAGE_EXECUTE_WRITECOPY,
+        (true, false, true) => PAGE_EXECUTE_READ,
+        (false, false, true) => PAGE_EXECUTE,
+        (_, true, false) => PAGE_WRITECOPY,
+        // A section granting nothing still reads: no-access image pages are not served.
+        (_, false, false) => PAGE_READONLY,
+    }
+}
+
+#[cfg(target_arch = "x86")]
+/// Record the process's address space as VirtualQuery reports it: the image (one allocation, its
+/// pages carrying their sections' protections), and the areas the kernel maps itself.
+fn seed_regions(image: &Image) {
+    use crate::mem::vm::{Kind, Region, PAGE_EXECUTE_WRITECOPY, PAGE_READWRITE};
+    let space = crate::process::current_mut().vm();
+    space
+        .insert(Region {
+            base: image.image_base,
+            size: image.size_of_image.next_multiple_of(crate::mem::paging::PAGE_SIZE),
+            alloc_protect: PAGE_EXECUTE_WRITECOPY,
+            kind: Kind::Image,
+        })
+        .expect("a fresh address space takes the image");
+    for &(name, start, end) in SYSTEM_REGIONS.iter() {
+        let image = name == "kernel32 module headers";
+        space
+            .insert(Region {
+                base: start,
+                size: end - start,
+                alloc_protect: if image { PAGE_EXECUTE_WRITECOPY } else { PAGE_READWRITE },
+                kind: if image { Kind::Image } else { Kind::Private },
+            })
+            .expect("the system regions are disjoint from each other and the image");
+    }
 }
 
 /// A page's write permission: writable when any section in it is writable (shared pages combine
@@ -306,6 +363,7 @@ pub fn load_image(file: &[u8], path: &[u8], name: &'static str, command_line: &[
     // The thunks must be mapped before the snap: IAT slots receive user-space addresses.
     crate::compat::kernel32::init();
     let snap = image.snap_imports(file, staging, resolve_import);
+    seed_regions(&image);
 
     // Map the staged image at its preferred base, one frame per page, writable exactly where a
     // mapped section is writable.
@@ -315,11 +373,9 @@ pub fn load_image(file: &[u8], path: &[u8], name: &'static str, command_line: &[
         let end = (offset + PAGE_SIZE as usize).min(staging.len());
         let frame = paging::allocate_frame_phys();
         paging::init_frame(frame, 0, &staging[offset..end]);
-        paging::map_user_page(
-            image.image_base + page * PAGE_SIZE,
-            frame,
-            page_writable(&image, page * PAGE_SIZE),
-        );
+        let va = image.image_base + page * PAGE_SIZE;
+        paging::map_user_page(va, frame, page_writable(&image, page * PAGE_SIZE));
+        paging::set_user_pte(va, crate::mem::vm::encode(frame, page_protect(&image, page * PAGE_SIZE)));
     }
 
     // The user stack: two zeroed, writable pages committed at the top of the main thread's
@@ -330,10 +386,16 @@ pub fn load_image(file: &[u8], path: &[u8], name: &'static str, command_line: &[
         paging::init_frame(stack_frame, 0, &[]);
         if stack_page == USER_STACK_PAGE {
             let trampoline = crate::compat::kernel32::thread_exit_trampoline();
-            paging::write_frame(stack_frame, 0xFFC, &trampoline.to_le_bytes());
+            paging::write_frame(
+                stack_frame,
+                (crate::user::USER_ENTRY_ESP - USER_STACK_PAGE) as usize,
+                &trampoline.to_le_bytes(),
+            );
         }
         paging::map_user_page(stack_page, stack_frame, true);
     }
+    // The guard page below them: the stack's first touch past its committed pages commits it.
+    crate::user::stack::plant_guard(USER_STACK_LOW_PAGE - PAGE_SIZE);
 
     // The main thread's TLS pages (ordinal 0), the block copied from the now-mapped template.
     crate::process::current_mut().set_tls_template(tls_template);
@@ -351,7 +413,11 @@ pub fn load_image(file: &[u8], path: &[u8], name: &'static str, command_line: &[
         tls_pointer,
         tls_expansion,
     });
-    crate::user::teb::map_peb(image.image_base, crate::user::userheap::HEAP_HANDLE);
+    let process_heap = {
+        let (heaps, space) = crate::process::current_mut().heaps_and_vm();
+        heaps.create_process_heap(space)
+    };
+    crate::user::teb::map_peb(image.image_base, process_heap);
 
     // The process parameters page: the command line, the environment, the module's own path.
     crate::compat::kernel32::init_params(command_line, path);
@@ -445,6 +511,17 @@ mod tests {
 
     /// Uncovered pages (the header) are read-only; only .data's own page is writable.
     #[test]
+    fn image_pages_carry_their_sections_protections() {
+        use crate::mem::vm::{PAGE_EXECUTE_READ, PAGE_READONLY, PAGE_WRITECOPY};
+        let image = Image::parse(RET0).unwrap();
+        assert_eq!(page_protect(&image, 0), PAGE_READONLY, "the header page");
+        let rva = |i| image.section(i).virtual_address;
+        assert_eq!(page_protect(&image, rva(0)), PAGE_EXECUTE_READ);
+        assert_eq!(page_protect(&image, rva(1)), PAGE_READONLY);
+        assert_eq!(page_protect(&image, rva(2)), PAGE_WRITECOPY);
+    }
+
+    #[test]
     fn page_protection_rules() {
         let ret0 = Image::parse(RET0).expect("ret0 parses");
         assert!(!page_writable(&ret0, 0));
@@ -509,16 +586,15 @@ mod tests {
     }
 
     /// The era's system binaries place at their preferred bases (the images' measured bases, with a
-    /// generous size: none comes near a system region).
+    /// generous size: none comes near a system region) — but kernel32, which is the surface itself:
+    /// its measured base holds its module headers.
     #[test]
     fn system_binary_bases_place_cleanly() {
-        for base in [
-            0x4AD0_0000,
-            0x7800_0000,
-            0x7C4E_0000,
-            0x77E1_0000,
-            0x7C2D_0000,
-        ] {
+        assert_eq!(
+            system_region_overlapping(0x7C4E_0000, 0x1000),
+            Some("kernel32 module headers")
+        );
+        for base in [0x4AD0_0000, 0x7800_0000, 0x77E1_0000, 0x7C2D_0000] {
             assert_eq!(
                 system_region_overlapping(base, 0x0010_0000),
                 None,
@@ -558,14 +634,8 @@ mod tests {
             system_region_overlapping(0x0001_0000, 0x0030_0000),
             Some("main thread stack")
         );
-        assert_eq!(
-            system_region_overlapping(0x0200_0000, 0x1_0000),
-            Some("heap region")
-        );
-        assert_eq!(
-            system_region_overlapping(0x0210_0000, 0x1_0000),
-            Some("CRT region")
-        );
+        // The heaps are reservations of their own now: no fixed region to collide with.
+        assert_eq!(system_region_overlapping(0x0200_0000, 0x1_0000), None);
     }
 
     /// The module table: kernel32's registry, under any spelling of its name; nothing else.

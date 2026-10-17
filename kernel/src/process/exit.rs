@@ -24,6 +24,9 @@ pub struct Fault {
     pub in_user_copy: bool,
 }
 
+/// The vector a raised exception's end reports: it came from RaiseException, not a CPU trap.
+pub const RAISED_VECTOR: u32 = u32::MAX;
+
 /// The exception codes the faults raise (the documented NTSTATUS values).
 pub mod status {
     pub const ACCESS_VIOLATION: u32 = 0xC000_0005;
@@ -35,6 +38,7 @@ pub mod status {
     pub const PRIVILEGED_INSTRUCTION: u32 = 0xC000_0096;
     pub const STACK_OVERFLOW: u32 = 0xC000_00FD;
     pub const FLOAT_MULTIPLE_TRAPS: u32 = 0xC000_02B5;
+    pub const GUARD_PAGE_VIOLATION: u32 = 0x8000_0001;
     pub const DATATYPE_MISALIGNMENT: u32 = 0x8000_0002;
     pub const BREAKPOINT: u32 = 0x8000_0003;
     pub const SINGLE_STEP: u32 = 0x8000_0004;
@@ -182,6 +186,11 @@ impl fmt::Display for EndReport {
                 out,
                 "F2K: user process ended by fault (bad user argument pointer, exit code={}); \
                  halting",
+                fault.status
+            ),
+            (None, ProcessEnd::Faulted(fault)) if fault.vector == RAISED_VECTOR => write!(
+                out,
+                "F2K: user process ended by fault (raised exception, exit code={}); halting",
                 fault.status
             ),
             (None, ProcessEnd::Faulted(fault)) => write!(

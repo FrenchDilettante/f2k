@@ -49,3 +49,61 @@ impl BlockDevice for MemoryDisk {
         STATUS_SUCCESS
     }
 }
+
+/// A writable disk over a byte image (the FAT32 write tests'). Host tests run one thread per test,
+/// each over its own disk, so the image needs no lock.
+pub struct RamDisk {
+    bytes: core::cell::UnsafeCell<Vec<u8>>,
+}
+
+// SAFETY: each disk is used by the one test thread that made it.
+unsafe impl Sync for RamDisk {}
+
+impl RamDisk {
+    /// A disk over `bytes`, which holds whole sectors.
+    pub fn new(bytes: Vec<u8>) -> Self {
+        assert_eq!(bytes.len() % 512, 0, "a disk image holds whole sectors");
+        RamDisk {
+            bytes: core::cell::UnsafeCell::new(bytes),
+        }
+    }
+
+    /// The image as it stands.
+    pub fn image(&self) -> &[u8] {
+        // SAFETY: see the Sync note; no write is in progress while a test reads.
+        unsafe { &*self.bytes.get() }
+    }
+}
+
+impl BlockDevice for RamDisk {
+    fn info(&self) -> DeviceInfo {
+        DeviceInfo {
+            kind: DeviceKind::Disk,
+            bus: BusType::Virtual,
+            sector_size: 512,
+            sectors: (self.image().len() / 512) as u64,
+            removable: false,
+            read_only: false,
+        }
+    }
+
+    fn read(&self, lba: u64, buffer: &mut [u8]) -> NtStatus {
+        if let Err(status) = check_request(&self.info(), lba, buffer) {
+            return status;
+        }
+        let start = lba as usize * 512;
+        buffer.copy_from_slice(&self.image()[start..start + buffer.len()]);
+        STATUS_SUCCESS
+    }
+
+    fn write(&self, lba: u64, buffer: &[u8]) -> NtStatus {
+        if let Err(status) = check_request(&self.info(), lba, buffer) {
+            return status;
+        }
+        let start = lba as usize * 512;
+        // SAFETY: see the Sync note.
+        let bytes = unsafe { &mut *self.bytes.get() };
+        bytes[start..start + buffer.len()].copy_from_slice(buffer);
+        STATUS_SUCCESS
+    }
+}

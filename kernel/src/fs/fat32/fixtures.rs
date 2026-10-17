@@ -98,6 +98,10 @@ impl BlockDevice for Counting {
         }
         self.inner.read(lba, buffer)
     }
+
+    fn write(&self, lba: u64, buffer: &[u8]) -> NtStatus {
+        self.inner.write(lba, buffer)
+    }
 }
 
 /// The built disk image's root directory sector (cluster 2), captured once: the volume label,
@@ -190,6 +194,11 @@ impl Crafted {
     pub fn directory(&mut self, cluster: u32, records: &[[u8; 32]]) -> &mut Crafted {
         let bytes: Vec<u8> = records.iter().flatten().copied().collect();
         self.cluster(cluster, &bytes)
+    }
+
+    /// The volume as a device that takes writes.
+    pub fn writable(&self) -> &'static crate::block::memory::RamDisk {
+        Box::leak(Box::new(crate::block::memory::RamDisk::new(self.image.clone())))
     }
 
     /// The volume as a device.

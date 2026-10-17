@@ -65,6 +65,14 @@ pub trait BlockDevice: Sync {
     /// the transfer completes. Returns an NT status (see the module's read contract).
     #[must_use]
     fn read(&self, lba: u64, buffer: &mut [u8]) -> NtStatus;
+
+    /// Write `buffer.len() / sector_size` sectors starting at `lba` from `buffer`, blocking until
+    /// the transfer completes. A device that takes no writes refuses them (the default).
+    #[must_use]
+    fn write(&self, lba: u64, buffer: &[u8]) -> NtStatus {
+        let _ = (lba, buffer);
+        crate::status::STATUS_MEDIA_WRITE_PROTECTED
+    }
 }
 
 /// The checks every device's `read` starts with: the buffer holds whole sectors (a contract

@@ -11,6 +11,8 @@ pub const MEMBERS: &[&str] = &[
     "FreeEnvironmentStringsW",
     "GetEnvironmentVariableA",
     "SetEnvironmentVariableA",
+    "ExpandEnvironmentStringsA",
+    "SetEnvironmentVariableW",
 ];
 
 /// Every member pops the block its callers push. Ledger: environment.

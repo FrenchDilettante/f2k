@@ -221,10 +221,7 @@ impl SyncObjects {
     pub fn lookup(&self, handles: &HandleTable, name: &[u8]) -> Option<Slot> {
         self.names.iter().find_map(|entry| {
             let slot = entry.slot?;
-            let live = slot
-                .waitable()
-                .is_some_and(|waitable| handles.references(waitable) > 0);
-            (live && entry.name() == name).then_some(slot)
+            (alive(handles, slot) && entry.name() == name).then_some(slot)
         })
     }
 
@@ -236,10 +233,7 @@ impl SyncObjects {
         let entry = self
             .names
             .iter_mut()
-            .find(|entry| match entry.slot.and_then(Slot::waitable) {
-                Some(waitable) => handles.references(waitable) == 0,
-                None => true,
-            })
+            .find(|entry| entry.slot.is_none_or(|slot| !alive(handles, slot)))
             .ok_or(NameError::Full)?;
         entry.slot = Some(slot);
         entry.length = name.len() as u16;
@@ -250,6 +244,26 @@ impl SyncObjects {
     /// Forget the name bound to `waitable`, if any (its record is being reused).
     pub fn forget_name(&mut self, waitable: *mut Waitable) {
         forget(&mut self.names, waitable);
+    }
+}
+
+/// Whether a named object lives: a handle names it (a waitable object through any slot naming its
+/// header; another kind — a file mapping — through its own slot).
+fn alive(handles: &HandleTable, slot: Slot) -> bool {
+    match slot.waitable() {
+        Some(waitable) => handles.references(waitable) > 0,
+        None => handles.count(slot) > 0,
+    }
+}
+
+impl SyncObjects {
+    /// Forget the name bound to `slot`, if any (a record that is not waitable is being reused).
+    pub fn forget_slot(&mut self, slot: Slot) {
+        for entry in self.names.iter_mut() {
+            if entry.slot == Some(slot) {
+                *entry = NamedObject::free();
+            }
+        }
     }
 }
 

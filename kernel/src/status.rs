@@ -41,6 +41,10 @@ pub const STATUS_NOT_A_DIRECTORY: NtStatus = 0xC000_0103u32 as NtStatus;
 pub const STATUS_IO_TIMEOUT: NtStatus = 0xC000_00B5u32 as NtStatus;
 /// A device reported an error.
 pub const STATUS_IO_DEVICE_ERROR: NtStatus = 0xC000_0185u32 as NtStatus;
+/// The device takes no writes.
+pub const STATUS_MEDIA_WRITE_PROTECTED: NtStatus = 0xC000_00A2u32 as NtStatus;
+/// The volume has no free cluster left.
+pub const STATUS_DISK_FULL: NtStatus = 0xC000_007Fu32 as NtStatus;
 /// The volume holds no file system the kernel recognizes (a refused mount).
 pub const STATUS_UNRECOGNIZED_VOLUME: NtStatus = 0xC000_014Fu32 as NtStatus;
 /// A thread's suspend count is at its documented maximum (127).

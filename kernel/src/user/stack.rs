@@ -86,19 +86,45 @@ pub enum Growth {
     NotGrown,
 }
 
+/// Plant a stack's guard page at `page`: committed, read-write and guarded (PAGE_GUARD), so the
+/// first touch faults — and grows the stack. Without a frame to spare the stack has no guard; the
+/// touch below its limit still grows it.
+#[cfg(target_arch = "x86")]
+pub fn plant_guard(page: u32) {
+    use crate::mem::vm::{self, Pages, PAGE_GUARD, PAGE_READWRITE};
+    let mut pages = vm::CurrentPages;
+    if pages.entry(page) != 0 {
+        return;
+    }
+    if let Some(frame) = pages.zeroed_frame() {
+        pages.set_entry(page, vm::encode(frame, PAGE_READWRITE | PAGE_GUARD));
+    }
+}
+
 /// Grow the running thread's stack for a fault at `address`, when it is the guard page's: commit
-/// the page (zeroed, writable), move the limit, and record it in the TEB's StackLimit.
+/// the page (the guard's own frame, or a fresh one), plant the next guard below it, move the limit,
+/// and record it in the TEB's StackLimit.
 #[cfg(target_arch = "x86")]
 pub fn grow_on_fault(address: u32) -> Growth {
-    use crate::mem::paging;
+    use crate::mem::vm::{self, Pages, PAGE_READWRITE};
     // SAFETY: the running thread's record, live while it runs.
     let thread = unsafe { &mut *crate::sched::idle::dispatcher().current_thread() };
     let StackFault::Grow { page, overflow } = thread.user_stack.classify(address) else {
         return Growth::NotGrown;
     };
-    let frame = paging::allocate_frame_phys();
-    paging::init_frame(frame, 0, &[]);
-    paging::map_user_page(page, frame, true);
+    let mut pages = vm::CurrentPages;
+    let frame = match vm::decode(pages.entry(page)) {
+        Some((frame, _)) => Some(frame),
+        None => pages.zeroed_frame(),
+    };
+    let Some(frame) = frame else {
+        // No memory to grow into: the stack has overflowed as far as the program can tell.
+        return Growth::Overflow;
+    };
+    pages.set_entry(page, vm::encode(frame, PAGE_READWRITE));
+    if !overflow {
+        plant_guard(page - PAGE_SIZE);
+    }
     thread.user_stack = thread.user_stack.grown(page);
     let teb = thread.teb_va();
     if teb != 0 {

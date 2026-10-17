@@ -22,6 +22,7 @@ pub mod disk;
 mod identify;
 mod latch;
 mod read;
+mod write;
 mod regs;
 #[cfg(test)]
 mod sim;

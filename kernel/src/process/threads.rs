@@ -45,27 +45,44 @@ fn free_thread() -> Option<(&'static mut Thread, u32)> {
     let thread = &mut process.child_threads[index];
     let ordinal = index as u32 + 1;
     if thread.state() == ThreadState::Terminated {
-        release_thread_pages(ordinal);
+        release_thread_pages(ordinal, thread.user_stack.base);
         crate::user::tls::release_thread_pages(ordinal);
         *thread = Thread::empty();
     }
     Some((thread, ordinal))
 }
 
-/// Release the user pages a terminated thread at `ordinal` left mapped — its TEB and its stack —
-/// back to the frame database (the record is about to be reused).
-fn release_thread_pages(ordinal: u32) {
+/// Release the user pages a terminated thread at `ordinal` left mapped — its TEB page, and its stack
+/// reservation at `stack_base` — back to the frame database (the record is about to be reused).
+fn release_thread_pages(ordinal: u32, stack_base: u32) {
     use crate::mem::frame::FrameState;
-    let stack_top =
-        crate::user::THREAD_STACK_REGION + ordinal * (crate::user::THREAD_STACK_PAGES * 0x1000);
     let teb = crate::user::thread_teb_va(ordinal);
-    let stack_pages = (1..=crate::user::THREAD_STACK_PAGES).map(|page| stack_top - page * 0x1000);
-    for va in core::iter::once(teb).chain(stack_pages) {
-        if let Some(frame) = paging::unmap_user_page(va) {
-            crate::mem::bootmem::with_frame_db(|db| {
-                db.release(frame / paging::PAGE_SIZE, FrameState::Free);
-            });
-        }
+    if let Some(frame) = paging::unmap_user_page(teb) {
+        crate::mem::bootmem::with_frame_db(|db| {
+            db.release(frame / paging::PAGE_SIZE, FrameState::Free);
+        });
+    }
+    if stack_base != 0 {
+        let _ = crate::process::current_mut().vm().release(&mut crate::mem::vm::CurrentPages, stack_base);
+    }
+}
+
+/// STACK_SIZE_PARAM_IS_A_RESERVATION: CreateThread's stack size is the reservation, not the commit.
+const STACK_SIZE_PARAM_IS_A_RESERVATION: u32 = 0x1_0000;
+
+/// A child thread's stack reservation for CreateThread's `size` and `flags`, as Windows 2000 sizes
+/// it: a reservation rounds up to the allocation granularity; a commit size (the default reading)
+/// keeps the image's reservation — taken as the linker's default 1 MiB — unless it reaches it, when
+/// the reservation is the commit rounded up to a whole MiB.
+pub fn stack_reservation(size: u32, flags: u32) -> u32 {
+    const MIB: u32 = 0x10_0000;
+    let default = crate::user::USER_STACK_RESERVE;
+    if flags & STACK_SIZE_PARAM_IS_A_RESERVATION != 0 && size != 0 {
+        size.max(3 * 0x1000).next_multiple_of(crate::mem::vm::GRANULARITY)
+    } else if size >= default {
+        size.next_multiple_of(MIB)
+    } else {
+        default
     }
 }
 
@@ -107,9 +124,20 @@ pub fn new_event(
 /// once the caller's handle exists, so a thread never runs before its creator holds a way to wait
 /// on it. Returns the thread and its identifier (its client id, never reused within the boot).
 /// None is the program-visible failure: no free record.
-pub fn spawn(start: u32, parameter: u32) -> Option<(*mut Thread, u32)> {
+pub fn spawn(start: u32, parameter: u32, stack_size: u32, flags: u32) -> Option<(*mut Thread, u32)> {
+    use crate::mem::vm::{self, CurrentPages, Kind, Pages, PAGE_READWRITE};
     let (thread, ordinal) = free_thread()?;
     let process = crate::process::current_mut();
+    // The user stack's reservation, and its two top pages committed: the last refusal, before
+    // anything is attached.
+    let reserve = stack_reservation(stack_size, flags);
+    let committed = crate::user::THREAD_STACK_PAGES * 0x1000;
+    let stack_base = process.vm().reserve(None, reserve, PAGE_READWRITE, Kind::Private).ok()?;
+    let stack_top = stack_base + reserve;
+    if process.vm().commit(&mut CurrentPages, stack_top - committed, committed, PAGE_READWRITE).is_err() {
+        let _ = process.vm().release(&mut CurrentPages, stack_base);
+        return None;
+    }
     // An exited thread's stack is released before a slot is taken, so its slot is free to reuse
     // (unmapped, not merely marked free).
     if let Some(dead) = process.dead_stack.take() {
@@ -131,11 +159,6 @@ pub fn spawn(start: u32, parameter: u32) -> Option<(*mut Thread, u32)> {
     thread.gate_frames = frames;
     thread.initial_stack = paging::gate_slot_top(slot as u32);
 
-    // The user stack's place: two pages, growing down from the per-thread region's top for this
-    // ordinal.
-    let stack_top =
-        crate::user::THREAD_STACK_REGION + ordinal * (crate::user::THREAD_STACK_PAGES * 0x1000);
-
     // The TEB page: the per-thread region, one page, carrying the thread's identity and stack.
     thread.teb_va = crate::user::thread_teb_va(ordinal);
     thread.thread_id = crate::process::new_client_id();
@@ -153,23 +176,11 @@ pub fn spawn(start: u32, parameter: u32) -> Option<(*mut Thread, u32)> {
         tls_expansion,
     });
 
-    // The user stack: two zeroed pages below the top, all of its reservation (it does not grow
-    // yet).
-    thread.user_stack = crate::user::stack::UserStack::new(
-        stack_top,
-        crate::user::THREAD_STACK_PAGES * 0x1000,
-        crate::user::THREAD_STACK_PAGES * 0x1000,
-    );
-    let mut top_frame = 0;
-    for page in 0..crate::user::THREAD_STACK_PAGES {
-        let base = stack_top - (page + 1) * 0x1000;
-        let frame = paging::allocate_frame_phys();
-        if page == 0 {
-            top_frame = frame;
-        }
-        paging::init_frame(frame, 0, &[]);
-        paging::map_user_page(base, frame, true);
-    }
+    // The user stack: its two committed pages, the guard below them, the rest of the reservation
+    // committed as the stack grows.
+    thread.user_stack = crate::user::stack::UserStack::new(stack_top, reserve, committed);
+    crate::user::stack::plant_guard(stack_top - committed - 0x1000);
+    let (top_frame, _) = vm::decode(CurrentPages.entry(stack_top - 0x1000)).expect("just committed");
 
     // The trampoline's return address and the parameter, planted under the entry stack: the user
     // function sees its LPVOID at [esp+4] per the calling convention, and its `ret` lands on the

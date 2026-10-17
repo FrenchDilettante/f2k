@@ -42,6 +42,11 @@ pub const SYS_APC_CONTINUE: u32 = 0x8000_0001;
 pub const SYS_CRITSEC_WAIT: u32 = 0x8000_0002;
 pub const SYS_CRITSEC_WAKE: u32 = 0x8000_0003;
 
+/// The internal exception services, raised by the handler-call stubs with a handler's verdict in
+/// EDX: one for the search's calls, one for the unwind's (see [`super::seh`]).
+pub const SYS_SEH_SEARCH: u32 = 0x8000_0004;
+pub const SYS_SEH_UNWIND: u32 = 0x8000_0005;
+
 /// Documented NTSTATUS values (public ABI constants).
 pub const STATUS_ACCESS_VIOLATION: u32 = 0xC000_0005;
 pub const STATUS_INVALID_SYSTEM_SERVICE: u32 = 0xC000_001C;
@@ -236,6 +241,10 @@ extern "C" fn syscall_dispatch(frame: &mut TrapFrame) {
         crate::compat::kernel32::critical_section_wait(frame.edx);
     } else if frame.eax == SYS_CRITSEC_WAKE {
         crate::compat::kernel32::critical_section_wake(frame.edx);
+    } else if frame.eax == SYS_SEH_SEARCH {
+        super::seh::search_result(frame);
+    } else if frame.eax == SYS_SEH_UNWIND {
+        super::seh::unwind_result(frame);
     } else if frame.eax == SYS_APC_CONTINUE {
         // The APC dispatcher stub's return: the interrupted context goes back into the frame (and
         // the next queued user APC, if any, arms for the delivery below).

@@ -12,6 +12,7 @@ from f2kboot import blocks
 
 BLOCKS = blocks(
     "memory",
+    gate=True,
     masks=(
         # Free regions run to the next allocation, wherever the system put it.
         "released: state 0x10000 protect 0x1 type 0x0 region * allocprotect 0x0",

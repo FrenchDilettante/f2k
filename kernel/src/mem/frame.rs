@@ -385,6 +385,11 @@ impl<H: FrameHooks> FrameDb<H> {
         self.zeroing_armed = false;
     }
 
+    /// The frames the database describes (index 0, reserved, included).
+    pub fn frame_count(&self) -> u32 {
+        self.frames.len() as u32
+    }
+
     /// Total frames that can satisfy allocations (zeroed + free + standby).
     pub fn available(&self) -> u32 {
         self.available

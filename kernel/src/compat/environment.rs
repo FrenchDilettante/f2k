@@ -7,8 +7,7 @@
 //! was given). Setting a variable replaces its entry (at the end of the block); setting it to
 //! nothing deletes it.
 //!
-//! The block the startup replay hands the CRT (GetEnvironmentStrings) is still the replayed empty
-//! one: the variables set here are not yet reflected there.
+//! GetEnvironmentStrings hands out the block as it stands (see [`super::envapi`]).
 
 /// The store's capacity in bytes, entries and their terminators included.
 pub const ENVIRONMENT_BYTES: usize = 8192;
@@ -36,6 +35,11 @@ impl Environment {
             bytes: [0; ENVIRONMENT_BYTES],
             used: 0,
         }
+    }
+
+    /// The entries (`NAME=value`, without their terminators), in the block's order.
+    pub fn each(&self) -> impl Iterator<Item = &[u8]> {
+        self.entries().map(|(_, entry)| entry)
     }
 
     /// The entries, without their terminators.

@@ -440,7 +440,7 @@ impl KernelBoundary for FakeKernel {
         self.log(Call::Close(handle));
         match self.handles.close(handle) {
             Some(Slot::File(index)) => {
-                self.files.release(index);
+                let _ = self.files.release(index);
                 Ok(())
             }
             Some(_) => Ok(()),

@@ -17,6 +17,13 @@ pub const MEMBERS: &[&str] = &[
     "GetStringTypeW",
     "CompareStringA",
     "CompareStringW",
+    "GetLocaleInfoA",
+    "GetLocaleInfoW",
+    "GetUserDefaultLCID",
+    "GetSystemDefaultLCID",
+    "IsValidLocale",
+    "IsValidCodePage",
+    "EnumSystemLocalesA",
 ];
 
 const CP_ACP: u32 = 0;

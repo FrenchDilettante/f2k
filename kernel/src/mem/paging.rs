@@ -335,6 +335,52 @@ pub fn map_user_page(vaddr: u32, frame_phys: u32, writable: bool) {
     }
 }
 
+/// The current directory's page-table entry for user address `vaddr`, raw (present or not); 0 when
+/// its window has no table.
+#[cfg(target_arch = "x86")]
+pub fn user_pte(vaddr: u32) -> u32 {
+    assert!(vaddr < KERNEL_BASE, "user entries live below the kernel window");
+    let window = vaddr >> 22;
+    let index = (vaddr >> 12) & 0x3FF;
+    // SAFETY: as `map_user_page`; the table is read only when its directory entry is present.
+    unsafe {
+        let pde = (DIRECTORY_ENTRY_VA + window * 4) as *const u32;
+        if pde.read_volatile() & PAGE_PRESENT == 0 {
+            return 0;
+        }
+        ((SELF_MAP_VA + (window << 12)) as *const u32)
+            .add(index as usize)
+            .read_volatile()
+    }
+}
+
+/// Write the current directory's page-table entry for user address `vaddr` — any value, present or
+/// not (the address-space manager keeps committed but inaccessible pages as non-present entries
+/// that still name their frame) — and flush it. The window's table is allocated on first use.
+#[cfg(target_arch = "x86")]
+pub fn set_user_pte(vaddr: u32, entry: u32) {
+    assert!(vaddr % PAGE_SIZE == 0, "user address not page-aligned");
+    assert!(vaddr < KERNEL_BASE, "user entries live below the kernel window");
+    let window = vaddr >> 22;
+    let index = (vaddr >> 12) & 0x3FF;
+    // SAFETY: as `map_user_page`.
+    unsafe {
+        let pde = (DIRECTORY_ENTRY_VA + window * 4) as *mut u32;
+        if pde.read_volatile() & PAGE_PRESENT == 0 {
+            if entry == 0 {
+                return;
+            }
+            let table_phys = allocate_frame_phys();
+            init_frame(table_phys, 0, &[]);
+            pde.write_volatile(table_phys | PAGE_PRESENT | PAGE_WRITE | PAGE_USER);
+        }
+        ((SELF_MAP_VA + (window << 12)) as *mut u32)
+            .add(index as usize)
+            .write_volatile(entry);
+        invlpg(vaddr);
+    }
+}
+
 // --- Per-process address spaces --------------------------------------------
 //
 // A process owns a page-directory frame. Creation inherits the kernel half from the current

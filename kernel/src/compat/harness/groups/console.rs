@@ -17,6 +17,10 @@ pub const MEMBERS: &[&str] = &[
     "SetLastError",
     "SetFilePointer",
     "SetStdHandle",
+    "GetConsoleCP",
+    "GetConsoleOutputCP",
+    "GetConsoleMode",
+    "WriteConsoleA",
 ];
 
 const STD_INPUT_HANDLE: u32 = -10i32 as u32;

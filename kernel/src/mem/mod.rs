@@ -9,3 +9,4 @@ pub mod paging;
 /// tests instead; there is no boot loader to ask for memory there.
 #[cfg(target_arch = "x86")]
 pub mod bootmem;
+pub mod vm;

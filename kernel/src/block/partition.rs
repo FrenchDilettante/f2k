@@ -130,6 +130,13 @@ impl BlockDevice for Partition {
         }
         self.disk.read(self.entry.start + lba, buffer)
     }
+
+    fn write(&self, lba: u64, buffer: &[u8]) -> NtStatus {
+        if let Err(status) = check_request(&self.info(), lba, buffer) {
+            return status;
+        }
+        self.disk.write(self.entry.start + lba, buffer)
+    }
 }
 
 #[cfg(test)]

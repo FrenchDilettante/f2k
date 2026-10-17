@@ -14,20 +14,15 @@
 //!   caller memory fails its probe and takes its own failure return. Argument validation, return
 //!   values, and size queries run for real; a scenario that needs bytes moved does not pass on this
 //!   route.
-//! - **Heap**: the user heap's allocator core (`userheap::alloc_block` / `free_block` /
-//!   `realloc_block`) over the heap region, committed through the boundary. The per-call
-//!   composition around the core (the handle check, commit-and-retry, the in-place flag, the reset)
-//!   is target-only in the kernel and restated here from `userheap`.
 //! - **Target-only**: handlers whose host build is a stub (the scheduler and handle-table
-//!   services, the process exit, the address-space mapping). Calling one panics with the reason.
+//!   services, the process exit, the address space and the heaps living in it). Calling one panics with the reason.
 //!
 //! A future implementation of the exports implements [`Surface`] over a [`KernelBoundary`]; the
 //! fixture's surface of record then routes the migrated exports to it.
 
 use super::boundary::{AddressSpace, KernelBoundary};
-use super::fake::{FakeKernel, HEAP_REGION_BASE, HEAP_REGION_MAX, MEM_COMMIT, PAGE_SIZE};
+use super::fake::FakeKernel;
 use crate::compat::kernel32::{NATIVES, SERVICES};
-use crate::user::userheap::{alloc_block, free_block, realloc_block, HEADER_SIZE};
 use crate::user::TrapFrame;
 
 /// One argument of a prototype.
@@ -48,8 +43,8 @@ pub struct Signature {
 
 use Arg::{Pointer as P, Value as V};
 
-/// The public prototypes of the 131 exports.
-pub const SIGNATURES: [Signature; 131] = [
+/// The public prototypes of the 151 exports.
+pub const SIGNATURES: [Signature; 184] = [
     sig("ExitProcess", &[V("uExitCode")]),
     sig("CloseHandle", &[V("hObject")]),
     sig(
@@ -326,6 +321,26 @@ pub const SIGNATURES: [Signature; 131] = [
     ),
     sig("GetEnvironmentVariableA", &[P("lpName"), P("lpBuffer"), V("nSize")]),
     sig("SetEnvironmentVariableA", &[P("lpName"), P("lpValue")]),
+    sig("GetConsoleCP", &[]),
+    sig("GetConsoleOutputCP", &[]),
+    sig("GetConsoleMode", &[V("hConsoleHandle"), P("lpMode")]),
+    sig("WriteConsoleA", &[V("hConsoleOutput"), P("lpBuffer"), V("nNumberOfCharsToWrite"), P("lpNumberOfCharsWritten"), P("lpReserved")]),
+    sig("GetLocaleInfoA", &[V("Locale"), V("LCType"), P("lpLCData"), V("cchData")]),
+    sig("GetLocaleInfoW", &[V("Locale"), V("LCType"), P("lpLCData"), V("cchData")]),
+    sig("GetUserDefaultLCID", &[]),
+    sig("GetSystemDefaultLCID", &[]),
+    sig("IsValidLocale", &[V("Locale"), V("dwFlags")]),
+    sig("IsValidCodePage", &[V("CodePage")]),
+    sig("EnumSystemLocalesA", &[P("lpLocaleEnumProc"), V("dwFlags")]),
+    sig("ExpandEnvironmentStringsA", &[P("lpSrc"), P("lpDst"), V("nSize")]),
+    sig("SetEnvironmentVariableW", &[P("lpName"), P("lpValue")]),
+    sig("GetVersionExA", &[P("lpVersionInformation")]),
+    sig("FormatMessageA", &[V("dwFlags"), P("lpSource"), V("dwMessageId"), V("dwLanguageId"), P("lpBuffer"), V("nSize"), P("Arguments")]),
+    sig("HeapSize", &[V("hHeap"), V("dwFlags"), P("lpMem")]),
+    sig("RaiseException", &[V("dwExceptionCode"), V("dwExceptionFlags"), V("nNumberOfArguments"), P("lpArguments")]),
+    sig("SetUnhandledExceptionFilter", &[P("lpTopLevelExceptionFilter")]),
+    sig("FreeLibrary", &[V("hLibModule")]),
+    sig("GetModuleHandleA", &[P("lpModuleName")]),
     sig("CreateFileMappingA", &[P("hFile"), V("lpAttributes"), V("flProtect"), V("dwMaximumSizeHigh"), V("dwMaximumSizeLow"), P("lpName")]),
     sig("FileTimeToLocalFileTime", &[P("lpFileTime"), P("lpLocalFileTime")]),
     sig("FileTimeToSystemTime", &[P("lpFileTime"), P("lpSystemTime")]),
@@ -347,6 +362,39 @@ pub const SIGNATURES: [Signature; 131] = [
     sig("SetCurrentDirectoryA", &[P("lpPathName")]),
     sig("SetEndOfFile", &[V("hFile")]),
     sig("UnmapViewOfFile", &[P("lpBaseAddress")]),
+    sig("VirtualQuery", &[P("lpAddress"), P("lpBuffer"), V("dwLength")]),
+    sig("VirtualProtect", &[P("lpAddress"), V("dwSize"), V("flNewProtect"), P("lpflOldProtect")]),
+    sig("GetSystemInfo", &[P("lpSystemInfo")]),
+    sig("GlobalMemoryStatus", &[P("lpBuffer")]),
+    sig("IsBadReadPtr", &[P("lp"), V("ucb")]),
+    sig("IsBadWritePtr", &[P("lp"), V("ucb")]),
+    sig("IsBadCodePtr", &[P("lpfn")]),
+    sig("IsBadStringPtrA", &[P("lpsz"), V("ucchMax")]),
+    sig("HeapValidate", &[V("hHeap"), V("dwFlags"), P("lpMem")]),
+    sig("LocalAlloc", &[V("uFlags"), V("uBytes")]),
+    sig("LocalFree", &[V("hMem")]),
+    sig("LocalLock", &[V("hMem")]),
+    sig("LocalUnlock", &[V("hMem")]),
+    sig("LocalHandle", &[P("pMem")]),
+    sig("LocalSize", &[V("hMem")]),
+    sig("LocalFlags", &[V("hMem")]),
+    sig("LocalReAlloc", &[V("hMem"), V("uBytes"), V("uFlags")]),
+    sig("GlobalAlloc", &[V("uFlags"), V("dwBytes")]),
+    sig("GlobalFree", &[V("hMem")]),
+    sig("GlobalLock", &[V("hMem")]),
+    sig("GlobalUnlock", &[V("hMem")]),
+    sig("GlobalHandle", &[P("pMem")]),
+    sig("GlobalSize", &[V("hMem")]),
+    sig("GlobalReAlloc", &[V("hMem"), V("dwBytes"), V("uFlags")]),
+    sig("OpenFileMappingA", &[V("dwDesiredAccess"), V("bInheritHandle"), P("lpName")]),
+    sig("CopyFileA", &[P("lpExistingFileName"), P("lpNewFileName"), V("bFailIfExists")]),
+    sig("CreateDirectoryA", &[P("lpPathName"), P("lpSecurityAttributes")]),
+    sig("DeleteFileA", &[P("lpFileName")]),
+    sig("MoveFileA", &[P("lpExistingFileName"), P("lpNewFileName")]),
+    sig("RemoveDirectoryA", &[P("lpPathName")]),
+    sig("SetFileAttributesA", &[P("lpFileName"), V("dwFileAttributes")]),
+    sig("SetFileTime", &[V("hFile"), P("lpCreationTime"), P("lpLastAccessTime"), P("lpLastWriteTime")]),
+    sig("SystemTimeToFileTime", &[P("lpSystemTime"), P("lpFileTime")]),
 ];
 
 const fn sig(export: &'static str, args: &'static [Arg]) -> Signature {
@@ -394,8 +442,6 @@ enum Route {
     Registry,
     /// The registry's handler for argument shapes `reachable` accepts; target-only otherwise.
     Guarded(fn(&[u32]) -> bool, &'static str),
-    /// The heap adapter.
-    Heap,
     /// Not on the host.
     TargetOnly(&'static str),
 }
@@ -405,11 +451,18 @@ fn route(export: &str) -> Route {
         return Route::TargetOnly("a native export runs in user mode, on the calling thread's TEB");
     }
     match export {
-        "HeapAlloc" | "HeapCreate" | "HeapDestroy" | "HeapFree" | "HeapReAlloc" => Route::Heap,
+        "HeapAlloc" | "HeapCreate" | "HeapDestroy" | "HeapFree" | "HeapReAlloc" => {
+            Route::TargetOnly("the heaps live in the live process's address space")
+        }
         // The copy reads the parameters page through a raw kernel-side read; only the refusals
         // before it are reachable.
         "GetModuleFileNameA" => Route::Guarded(
-            |args| args[0] != 0 || args[2] == 0,
+            |args| {
+                let module = args[0] == 0
+                    || args[0] == 0x0040_0000
+                    || args[0] == crate::compat::modules::KERNEL32_BASE;
+                !module || args[2] == 0
+            },
             "the staged-name copy reads the parameters page directly",
         ),
         "ExitProcess" => Route::TargetOnly("the process exit runs through the scheduler"),
@@ -428,6 +481,18 @@ fn route(export: &str) -> Route {
             Route::TargetOnly("the handler reads the live clock")
         }
         "SwitchToThread" => Route::TargetOnly("the yield runs through the scheduler"),
+        "GetModuleHandleA" | "LoadLibraryA" => {
+            Route::TargetOnly("the image's name is read from the staged parameters page")
+        }
+        "ExpandEnvironmentStringsA"
+        | "SetEnvironmentVariableW"
+        | "GetEnvironmentStrings"
+        | "GetEnvironmentStringsW" => {
+            Route::TargetOnly("the variables live in the live process record")
+        }
+        "RaiseException" => Route::TargetOnly("the exception is dispatched to the live thread's handlers"),
+        "HeapSize" => Route::TargetOnly("the block lives in the live process's heap region"),
+        "RtlUnwind" => Route::TargetOnly("the unwind calls the live thread's handlers in user mode"),
         "CreateFileMappingA" | "FindClose" | "FindFirstFileA" | "FindNextFileA" | "GetCurrentDirectoryA" | "GetDiskFreeSpaceA" | "GetDriveTypeA" | "GetFileAttributesA" | "GetFileAttributesExA" | "GetFileInformationByHandle" | "GetFileSize" | "GetFileTime" | "GetFullPathNameA" | "GetShortPathNameA" | "GetVolumeInformationA" | "MapViewOfFile" | "SetCurrentDirectoryA" | "SetEndOfFile" | "UnmapViewOfFile" => {
             Route::TargetOnly("the handler runs against the live volume, handle table, or address space")
         }
@@ -460,7 +525,7 @@ fn route(export: &str) -> Route {
         "DuplicateHandle" => Route::TargetOnly("the handler runs against the live handle table"),
         "SetErrorMode" => Route::TargetOnly("the error mode lives in the live process record"),
         "VirtualAlloc" => {
-            Route::TargetOnly("the CRT region maps pages into the live address space")
+            Route::TargetOnly("the reservation lives in the live address space")
         }
         "CloseHandle"
         | "CreateEventA"
@@ -474,6 +539,21 @@ fn route(export: &str) -> Route {
         | "ResumeThread" => {
             Route::TargetOnly("the handler runs against the live handle table, scheduler, or clock")
         }
+        "VirtualFree" | "VirtualQuery" | "VirtualProtect" | "GetSystemInfo" | "GlobalMemoryStatus" | "IsBadReadPtr" | "IsBadWritePtr" | "IsBadCodePtr" | "IsBadStringPtrA" => {
+            Route::TargetOnly("the handler runs against the live address space or process record")
+        }
+        "HeapValidate" => {
+            Route::TargetOnly("the handler runs against the live address space or process record")
+        }
+        "LocalAlloc" | "LocalFree" | "LocalLock" | "LocalUnlock" | "LocalHandle" | "LocalSize" | "LocalFlags" | "LocalReAlloc" | "GlobalAlloc" | "GlobalFree" | "GlobalLock" | "GlobalUnlock" | "GlobalHandle" | "GlobalSize" | "GlobalReAlloc" => {
+            Route::TargetOnly("the handler runs against the live address space or process record")
+        }
+        "OpenFileMappingA" => {
+            Route::TargetOnly("the handler runs against the live address space or process record")
+        }
+        "CopyFileA" | "CreateDirectoryA" | "DeleteFileA" | "MoveFileA" | "RemoveDirectoryA" | "SetFileAttributesA" | "SetFileTime" | "SystemTimeToFileTime" => {
+            Route::TargetOnly("the handler runs against the live address space or process record")
+        }
         _ => Route::Registry,
     }
 }
@@ -486,9 +566,7 @@ const FENCE_STRIDE: u32 = 0x0100_0000;
 
 /// The existing implementation path (see the module docs).
 #[derive(Default)]
-pub struct ExistingPath {
-    heap: HeapAdapter,
-}
+pub struct ExistingPath;
 
 impl ExistingPath {
     pub fn new() -> ExistingPath {
@@ -534,153 +612,13 @@ impl ExistingPath {
 }
 
 impl Surface for ExistingPath {
-    fn call(&mut self, kernel: &mut dyn KernelBoundary, export: &str, args: &[u32]) -> u32 {
+    fn call(&mut self, _kernel: &mut dyn KernelBoundary, export: &str, args: &[u32]) -> u32 {
         match route(export) {
             Route::Registry => ExistingPath::registry(export, args),
             Route::Guarded(reachable, _) if reachable(args) => ExistingPath::registry(export, args),
             Route::Guarded(_, reason) | Route::TargetOnly(reason) => {
                 panic!("{export} is target-only on the existing path: {reason}")
             }
-            Route::Heap => self.heap.call(kernel, export, args),
-        }
-    }
-}
-
-/// The handle HeapCreate reports: the heap region's base (the user heap module's target constant).
-pub const HEAP_HANDLE: u32 = HEAP_REGION_BASE;
-
-/// HeapAlloc / HeapReAlloc flags (public constants).
-pub const HEAP_ZERO_MEMORY: u32 = 0x0000_0008;
-pub const HEAP_REALLOC_IN_PLACE_ONLY: u32 = 0x0000_0010;
-
-/// The heap services over the allocator core: the heap region's committed prefix and bump edge.
-#[derive(Default)]
-struct HeapAdapter {
-    committed: usize,
-    top: usize,
-}
-
-impl HeapAdapter {
-    fn call(&mut self, kernel: &mut dyn KernelBoundary, export: &str, args: &[u32]) -> u32 {
-        match export {
-            "HeapCreate" => self.create(),
-            "HeapDestroy" => self.destroy(args[0]),
-            _ if args[0] != HEAP_HANDLE => 0,
-            "HeapAlloc" => self.alloc(kernel, args[1], args[2] as usize),
-            "HeapFree" => self.free(kernel, args[2]),
-            "HeapReAlloc" => self.realloc(kernel, args[2], args[1], args[3] as usize),
-            _ => unreachable!("{export} is not a heap service"),
-        }
-    }
-
-    /// Reset the bump edge; the handle is a constant.
-    fn create(&mut self) -> u32 {
-        self.top = 0;
-        HEAP_HANDLE
-    }
-
-    fn destroy(&mut self, handle: u32) -> u32 {
-        if handle == HEAP_HANDLE {
-            self.create();
-            1
-        } else {
-            0
-        }
-    }
-
-    /// The region image: its committed prefix.
-    fn region<'a>(&self, kernel: &'a mut dyn KernelBoundary) -> &'a mut [u8] {
-        if self.committed == 0 {
-            return &mut [];
-        }
-        kernel
-            .memory()
-            .slice_mut(HEAP_REGION_BASE, self.committed as u32)
-            .expect("the committed prefix is mapped")
-    }
-
-    /// Commit the region so its image covers `bytes`, in whole pages; refused past the cap.
-    fn commit(&mut self, kernel: &mut dyn KernelBoundary, bytes: usize) -> bool {
-        if bytes <= self.committed {
-            return true;
-        }
-        if bytes > HEAP_REGION_MAX {
-            return false;
-        }
-        let end = bytes.next_multiple_of(PAGE_SIZE as usize);
-        let base = HEAP_REGION_BASE + self.committed as u32;
-        let size = (end - self.committed) as u32;
-        if kernel
-            .nt_allocate_virtual_memory(base, size, MEM_COMMIT)
-            .is_err()
-        {
-            return false;
-        }
-        self.committed = end;
-        true
-    }
-
-    /// First fit; when the bump path runs out of committed region, commit one page beyond the need
-    /// and retry; past the cap the request fails.
-    fn alloc(&mut self, kernel: &mut dyn KernelBoundary, flags: u32, request: usize) -> u32 {
-        let zero = flags & HEAP_ZERO_MEMORY != 0;
-        loop {
-            let mut top = self.top;
-            if let Some(user) = alloc_block(self.region(kernel), &mut top, request, zero) {
-                self.top = top;
-                return HEAP_REGION_BASE + user as u32;
-            }
-            let Some(need) = request
-                .max(1)
-                .checked_next_multiple_of(8)
-                .and_then(|rounded| top.checked_add(HEADER_SIZE + rounded))
-            else {
-                return 0;
-            };
-            if need > HEAP_REGION_MAX || !self.commit(kernel, need + PAGE_SIZE as usize) {
-                return 0;
-            }
-        }
-    }
-
-    fn free(&mut self, kernel: &mut dyn KernelBoundary, ptr: u32) -> u32 {
-        if ptr < HEAP_REGION_BASE {
-            return 0;
-        }
-        let user = (ptr - HEAP_REGION_BASE) as usize;
-        free_block(self.region(kernel), self.top, user) as u32
-    }
-
-    /// Resize within the committed region (a growth that needs more of it fails). The in-place
-    /// flag serves exactly the resizes that keep the block — decided on a scratch copy, so a
-    /// refused move leaves the region as it was.
-    fn realloc(
-        &mut self,
-        kernel: &mut dyn KernelBoundary,
-        ptr: u32,
-        flags: u32,
-        request: usize,
-    ) -> u32 {
-        let zero = flags & HEAP_ZERO_MEMORY != 0;
-        if ptr < HEAP_REGION_BASE {
-            return 0;
-        }
-        let user = (ptr - HEAP_REGION_BASE) as usize;
-        let region = self.region(kernel);
-        let mut top = self.top;
-        if flags & HEAP_REALLOC_IN_PLACE_ONLY != 0 {
-            let mut scratch = region.to_vec();
-            return match realloc_block(&mut scratch, &mut top, user, request, false) {
-                Some(kept) if kept == user => ptr,
-                _ => 0,
-            };
-        }
-        match realloc_block(region, &mut top, user, request, zero) {
-            Some(new) => {
-                self.top = top;
-                HEAP_REGION_BASE + new as u32
-            }
-            None => 0,
         }
     }
 }

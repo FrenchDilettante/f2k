@@ -13,6 +13,10 @@ pub const MEMBERS: &[&str] = &[
     "GetProcAddress",
     "LoadLibraryA",
     "RtlUnwind",
+    "RaiseException",
+    "SetUnhandledExceptionFilter",
+    "FreeLibrary",
+    "GetModuleHandleA",
 ];
 
 /// Every member pops the block its callers push. Ledger: termination.
@@ -56,45 +60,3 @@ fn terminate_process_answers_with_the_floor() {
     assert_eq!(fixture.kernel.calls(), []);
 }
 
-/// UnhandledExceptionFilter's floor: zero (EXCEPTION_CONTINUE_SEARCH), no side effects. Ledger:
-/// termination/UnhandledExceptionFilter.
-#[test]
-#[ignore = "ledger termination/UnhandledExceptionFilter: unpinned floor"]
-fn unhandled_exception_filter_answers_with_the_floor() {
-    let mut fixture = Fixture::new();
-    let pointers = fixture.buffer(8);
-    assert_eq!(fixture.call("UnhandledExceptionFilter", &[pointers]), 0);
-    assert_eq!(fixture.kernel.calls(), []);
-}
-
-/// GetProcAddress's floor: zero (no procedure), whatever is asked. Ledger:
-/// termination/GetProcAddress.
-#[test]
-#[ignore = "ledger termination/GetProcAddress: unpinned floor"]
-fn get_proc_address_answers_with_the_floor() {
-    let mut fixture = Fixture::new();
-    let name = fixture.c_string(b"MessageBoxA");
-    assert_eq!(fixture.call("GetProcAddress", &[0x7700_0000, name]), 0);
-    assert_eq!(fixture.kernel.calls(), []);
-}
-
-/// LoadLibraryA's floor: zero (no module), whatever is asked. Ledger: termination/LoadLibraryA.
-#[test]
-#[ignore = "ledger termination/LoadLibraryA: unpinned floor"]
-fn load_library_answers_with_the_floor() {
-    let mut fixture = Fixture::new();
-    let name = fixture.c_string(b"user32.dll");
-    assert_eq!(fixture.call("LoadLibraryA", &[name]), 0);
-    assert_eq!(fixture.kernel.calls(), []);
-}
-
-/// RtlUnwind's floor: returns (zero in EAX) without unwinding anything. Ledger:
-/// termination/RtlUnwind.
-#[test]
-#[ignore = "ledger termination/RtlUnwind: unpinned floor"]
-fn rtl_unwind_answers_with_the_floor() {
-    let mut fixture = Fixture::new();
-    let frame = fixture.buffer(16);
-    assert_eq!(fixture.call("RtlUnwind", &[frame, 0x0040_1000, 0, 0]), 0);
-    assert_eq!(fixture.kernel.calls(), []);
-}

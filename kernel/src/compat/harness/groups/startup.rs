@@ -9,6 +9,8 @@ pub const MEMBERS: &[&str] = &[
     "GetStartupInfoA",
     "GetModuleFileNameA",
     "GetVersion",
+    "GetVersionExA",
+    "FormatMessageA",
 ];
 
 /// Every member pops the block its callers push. Ledger: startup.
@@ -127,15 +129,15 @@ fn get_module_file_name_truncates_to_the_buffer() {
     assert_eq!(fixture.memory().bytes(buffer, 11), b"hello.exe\0");
 }
 
-/// GetModuleFileNameA refuses before touching anything: a module handle (only the process's own
-/// image, NULL, is named on this surface) and an empty buffer both return 0 and leave the buffer
-/// as it was. Ledger: startup/GetModuleFileNameA.
+/// GetModuleFileNameA refuses before touching anything: a handle naming no module (the image and
+/// kernel32 are the modules) and an empty buffer both return 0 and leave the buffer as it was.
+/// Ledger: startup/GetModuleFileNameA.
 #[test]
 fn get_module_file_name_refuses_module_handles_and_empty_buffers() {
     let mut fixture = Fixture::new();
     let buffer = fixture.stage(&[0xCC; 16]);
     assert_eq!(
-        fixture.call("GetModuleFileNameA", &[0x0040_0000, buffer, 16]),
+        fixture.call("GetModuleFileNameA", &[0x1234_0000, buffer, 16]),
         0
     );
     assert_eq!(fixture.call("GetModuleFileNameA", &[0, buffer, 0]), 0);

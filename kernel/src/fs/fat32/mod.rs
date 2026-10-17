@@ -20,3 +20,4 @@ pub mod lookup;
 pub mod path;
 pub mod read;
 pub mod volume;
+pub mod write;

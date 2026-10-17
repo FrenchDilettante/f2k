@@ -1,7 +1,7 @@
 //! The process object: every piece of per-process state in one place.
 //!
 //! A process owns its page directory (created per process, sharing the kernel's kernel half) and
-//! its user-heap bookkeeping ([`HeapState`]). The image, stack, TEB and parameters pages are mapped
+//! its heaps ([`crate::user::userheap::Heaps`]). The image, stack, TEB and parameters pages are mapped
 //! fresh each run into the process's directory, so they are per-process by construction.
 //!
 //! The per-thread state split: the ring-0 gate stack (the thread's kernel stack, what the TSS
@@ -62,13 +62,15 @@ pub struct Process {
     /// The gate-stack window's slot occupancy (which threads own which slots).
     gate_slots: GateSlots,
     /// The user-heap bookkeeping (heap region + CRT region).
-    heap: crate::user::userheap::HeapState,
+    heaps: crate::user::userheap::Heaps,
     /// The handle table: the process's handles-to-objects.
     handles: crate::sched::object::HandleTable,
     /// The open files the table's file slots name.
     files: crate::fs::file::OpenFiles,
     /// The current directory, the searches, the file mappings and the mapped views.
     file_state: crate::compat::fileapi::FileState,
+    /// The address space's regions (see [`crate::mem::vm`]).
+    vm: crate::mem::vm::AddressSpace,
     /// An exited thread's gate stack, not yet released (see [`DeadStack`]).
     dead_stack: DeadStack,
     /// The created threads' records; a terminated child's record is reused once no handle names it.
@@ -204,9 +206,10 @@ impl Process {
             .filter(|&(_, teb)| teb != 0)
     }
 
-    /// The user-heap state (the kernel32 heap services are served from here).
-    pub fn heap_mut(&mut self) -> &mut crate::user::userheap::HeapState {
-        &mut self.heap
+    /// The heaps and the address space they live in (the kernel32 heap services are served from
+    /// here).
+    pub fn heaps_and_vm(&mut self) -> (&mut crate::user::userheap::Heaps, &mut crate::mem::vm::AddressSpace) {
+        (&mut self.heaps, &mut self.vm)
     }
 
     /// The handle table (the object services are served from here).
@@ -253,9 +256,32 @@ impl Process {
         Ok(self.handles.insert(crate::sched::object::Slot::File(index)))
     }
 
+    /// The address space's regions.
+    pub fn vm(&mut self) -> &mut crate::mem::vm::AddressSpace {
+        &mut self.vm
+    }
+
     /// The file-API state: the current directory, searches, mappings and views.
     pub fn file_state(&mut self) -> &mut crate::compat::fileapi::FileState {
         &mut self.file_state
+    }
+
+    /// What a file mapping touches: the handles, the object names, the mapping records, and the
+    /// address space its views live in.
+    pub fn mapping_parts(
+        &mut self,
+    ) -> (
+        &mut crate::sched::object::HandleTable,
+        &mut objects::SyncObjects,
+        &mut crate::compat::fileapi::FileState,
+        &mut crate::mem::vm::AddressSpace,
+    ) {
+        (&mut self.handles, &mut self.objects, &mut self.file_state, &mut self.vm)
+    }
+
+    /// The open-file records.
+    pub fn open_files(&mut self) -> &mut crate::fs::file::OpenFiles {
+        &mut self.files
     }
 
     /// The open file a handle names; none when it names no file.
@@ -275,9 +301,18 @@ impl Process {
         };
         if self.handles.count(slot) == 0 {
             match slot {
-                Slot::File(index) => self.files.release(index),
+                Slot::File(index) => {
+                    let open = self.files.release(index);
+                    if open.delete_on_close && !self.files.is_open(&open.file) {
+                        crate::compat::filewrite::delete_closed(&open.file);
+                    }
+                }
                 Slot::Find(index) => self.file_state.release_find(index),
-                Slot::Section(index) => self.file_state.release_section(index),
+                Slot::Section(index) => {
+                    if let Some(store) = self.file_state.release_section(index) {
+                        crate::compat::fileapi::free_store(&mut self.vm, store);
+                    }
+                }
                 _ => {}
             }
         }
@@ -484,7 +519,8 @@ fn install(dir_phys: u32, name: &'static str) {
         addr_of_mut!((*process).tls_template).write(None);
         addr_of_mut!((*process).main_thread).write(crate::sched::thread::Thread::empty());
         addr_of_mut!((*process).gate_slots).write(GateSlots::empty());
-        addr_of_mut!((*process).heap).write(crate::user::userheap::HeapState::new());
+        // All zeros is no heap at all.
+        addr_of_mut!((*process).heaps).write_bytes(0, 1);
         crate::sched::object::HandleTable::write_empty(addr_of_mut!((*process).handles));
         crate::fs::file::OpenFiles::write_empty(addr_of_mut!((*process).files));
         addr_of_mut!((*process).dead_stack).write(DeadStack::empty());
@@ -507,6 +543,7 @@ fn install(dir_phys: u32, name: &'static str) {
         addr_of_mut!((*process).environment).write_bytes(0, 1);
         // All zeros is the fresh file-API state, likewise.
         addr_of_mut!((*process).file_state).write_bytes(0, 1);
+        crate::mem::vm::AddressSpace::write_empty(addr_of_mut!((*process).vm));
         addr_of_mut!((*process).end).write(None);
         addr_of_mut!((*process).handed_end).write(None);
         INSTALLED = true;
@@ -557,6 +594,7 @@ pub fn current() -> &'static Process {
 pub fn release_address_space(
     dir_phys: u32,
     read_entry: impl Fn(u32, usize) -> u32,
+    shared: impl Fn(u32) -> bool,
     mut release: impl FnMut(u32),
 ) {
     use crate::mem::paging::{
@@ -570,7 +608,10 @@ pub fn release_address_space(
         let table = pde & PAGE_ADDR_MASK;
         for index in 0..PT_ENTRIES {
             let pte = read_entry(table, index);
-            if pte & PAGE_PRESENT != 0 {
+            // A present page, or a committed one the program may not touch (it keeps its frame) —
+            // unless a view shares it: its frame is its section's store's, released there.
+            let va = (window as u32) << 22 | (index as u32) << 12;
+            if crate::mem::vm::names_frame(pte) && !shared(va) {
                 release(pte & PAGE_ADDR_MASK);
             }
         }
@@ -614,7 +655,11 @@ pub fn release_process(
 
     // Per process: user data frames and their tables from the walk, the gate window's table from
     // its directory entry, then the directory itself.
-    release_address_space(dir_phys, read_entry, &mut release);
+    let vm = &process.vm;
+    let is_shared = |region: &crate::mem::vm::Region| region.kind == crate::mem::vm::Kind::Mapped { shared: true };
+    let any_shared = vm.regions().any(is_shared);
+    let shared = |va: u32| any_shared && vm.region_at(va).is_some_and(|region| is_shared(&region));
+    release_address_space(dir_phys, read_entry, shared, &mut release);
     release(dir_phys);
 }
 
@@ -731,7 +776,6 @@ mod tests {
     };
     use crate::sched::process::SchedProcess;
     use crate::sched::thread::{Thread, NO_GATE_SLOT};
-    use crate::user::userheap::HeapState;
 
     // --- The process record (the per-thread state split's shape) --------
 
@@ -750,10 +794,11 @@ mod tests {
             tls_template: None,
             main_thread: Thread::empty(),
             gate_slots: GateSlots::empty(),
-            heap: HeapState::new(),
+            heaps: crate::user::userheap::Heaps::new(),
             handles: crate::sched::object::HandleTable::empty(),
             files: crate::fs::file::OpenFiles::empty(),
             file_state: crate::compat::fileapi::FileState::empty(),
+            vm: crate::mem::vm::AddressSpace::new(),
             dead_stack: DeadStack::empty(),
             child_threads: [const { crate::sched::thread::Thread::empty() }; CHILD_THREADS],
             events: fresh_events(),
@@ -769,12 +814,7 @@ mod tests {
         assert_eq!(process.main_thread().gate_slot(), NO_GATE_SLOT);
         assert!(process.gate_slots.is_empty());
 
-        // The heap state a service would see: creating the heap reports the handle and resets
-        // nothing that exists.
-        assert_eq!(
-            process.heap_mut().create(),
-            crate::user::userheap::HEAP_HANDLE
-        );
+        assert_eq!(process.heaps_and_vm().0.process_heap(), 0, "no process heap before the loader");
     }
 
     fn fresh_process() -> Process {
@@ -788,10 +828,11 @@ mod tests {
             tls_template: None,
             main_thread: Thread::empty(),
             gate_slots: GateSlots::empty(),
-            heap: HeapState::new(),
+            heaps: crate::user::userheap::Heaps::new(),
             handles: crate::sched::object::HandleTable::empty(),
             files: crate::fs::file::OpenFiles::empty(),
             file_state: crate::compat::fileapi::FileState::empty(),
+            vm: crate::mem::vm::AddressSpace::new(),
             dead_stack: DeadStack::empty(),
             child_threads: [const { crate::sched::thread::Thread::empty() }; CHILD_THREADS],
             events: fresh_events(),
@@ -1069,10 +1110,11 @@ mod tests {
             tls_template: None,
             main_thread: Thread::empty(),
             gate_slots: GateSlots::empty(),
-            heap: HeapState::new(),
+            heaps: crate::user::userheap::Heaps::new(),
             handles: crate::sched::object::HandleTable::empty(),
             files: crate::fs::file::OpenFiles::empty(),
             file_state: crate::compat::fileapi::FileState::empty(),
+            vm: crate::mem::vm::AddressSpace::new(),
             dead_stack: DeadStack::empty(),
             child_threads: [const { crate::sched::thread::Thread::empty() }; CHILD_THREADS],
             events: fresh_events(),

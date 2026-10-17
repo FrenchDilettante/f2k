@@ -81,14 +81,16 @@ The fixtures:
   parsing, structured exception handling (faults, `RaiseException`,
   filters, `__finally`, unwinding), plus named-only `console`,
   `unhandled` and `exit`. Replaces `ret0` and `hello` as coverage
-  (`hello` stays as the CRT smoke and the disk-smoke file).
+  (`hello` stays as the CRT smoke and the disk-smoke file). Gated; its
+  `console` block was captured by hand in an interactive console.
 - `memory` - `malloc`/`calloc`/`realloc`/`free` the way programs use
   them (thousands of small blocks, past 1 MiB of them, 4/16/32 MiB,
   realloc doubling to 4 MiB), the Win32 heap with private and capped
   heaps, `LocalAlloc`/`GlobalAlloc`, `VirtualAlloc`/`VirtualFree`/
   `VirtualQuery`/`VirtualProtect` and guard pages, the image's section
   protections, paging-file mappings, stack growth and thread stack
-  sizes.
+  sizes. Gated; two free-region sizes are masked (the real machine's
+  other allocations bound them).
 - `threads` - creation, exit codes, `ExitThread`/`TerminateThread`,
   suspend counts and suspension during waits, priorities and classes,
   scale (32 sequential, 20 concurrent, 100 fire-and-forget threads,
@@ -116,14 +118,14 @@ The fixtures:
   `FindFirstFile` listings, share modes, CRT file I/O, read-only file
   mappings, concurrent readers. Captured on a local FAT32 volume, as
   F2K's boot volume is (run `files/setup.bat` once on the real machine:
-  attributes git cannot carry). Gated, with `mapping` pending SEH (its
-  write through the read-only view is caught in `__try`/`__except`).
+  attributes git cannot carry). Gated.
   Replaced the `fileio` smoke and the `cmdline-program` case
   (retired).
 - `fswrite` - the write side (create dispositions, writes, truncation,
   share modes, rename/copy/delete, directories, file times, CRT
   writes) in a scratch directory, captured on a local FAT32 volume.
-  On the work list until F2K writes to disk.
+  Gated (the test disk boots as a QEMU snapshot, so its writes never
+  reach the image).
 
 Capture `files` and `fswrite` from a local FAT32 volume: F2K's boot
 volume is FAT32, and file-system details differ elsewhere — NTFS has

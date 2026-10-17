@@ -177,6 +177,8 @@ pub struct Thread {
     pub(crate) kernel_apc_pending: bool,
     /// Whether a user APC is queued (armed data, like the queue it summarizes).
     pub(crate) user_apc_pending: bool,
+    /// The exception walks in progress on the thread (see [`crate::user::seh`]).
+    pub(crate) seh: crate::user::seh::State,
     /// Whether a normal kernel APC's normal half is running — the gate that makes a blocking
     /// normal routine safe (the suspend APC parks inside one).
     pub(crate) kernel_apc_in_progress: bool,
@@ -285,6 +287,7 @@ impl Thread {
             user_apcs: List::empty(),
             kernel_apc_pending: false,
             user_apc_pending: false,
+            seh: crate::user::seh::State::new(),
             kernel_apc_in_progress: false,
             kernel_apc_disable: 0,
             apc_queueable: true,

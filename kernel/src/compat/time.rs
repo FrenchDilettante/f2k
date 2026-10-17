@@ -130,6 +130,69 @@ pub fn fat_filetime(date: u16, time: u16, hundredths: u8) -> u64 {
     filetime_from_civil(civil) + hundredths as u64 * 100_000
 }
 
+/// A FILETIME as a FAT timestamp (date, time, hundredths): local time, which is UTC here. Times
+/// before 1980 take the format's first day; the two-second units round down, the hundredths
+/// carry the rest.
+pub fn fat_from_filetime(filetime: u64) -> (u16, u16, u8) {
+    let civil = system_time_from_filetime(filetime);
+    if civil.year < 1980 {
+        return ((1 << 5) | 1, 0, 0);
+    }
+    let year = (civil.year - 1980).min(127);
+    let date = year << 9 | civil.month << 5 | civil.day;
+    let time = civil.hour << 11 | civil.minute << 5 | civil.second / 2;
+    let hundredths = (civil.second % 2) * 100 + civil.milliseconds / 10;
+    (date, time, hundredths as u8)
+}
+
+/// The FILETIME of a SYSTEMTIME (SystemTimeToFileTime): none for a field out of its range (the
+/// day of the week is not consulted).
+pub fn filetime_from_system_time(time: SystemTime) -> Option<u64> {
+    let leap = |y: u16| y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+    let days_in_month = match time.month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap(time.year) => 29,
+        2 => 28,
+        _ => return None,
+    };
+    if !(1601..=30827).contains(&time.year)
+        || !(1..=days_in_month).contains(&time.day)
+        || time.hour > 23
+        || time.minute > 59
+        || time.second > 59
+        || time.milliseconds > 999
+    {
+        return None;
+    }
+    let civil = CivilTime {
+        year: time.year,
+        month: time.month as u8,
+        day: time.day as u8,
+        hour: time.hour as u8,
+        minute: time.minute as u8,
+        second: time.second as u8,
+    };
+    Some(filetime_from_civil(civil) + time.milliseconds as u64 * 10_000)
+}
+
+impl SystemTime {
+    /// The structure from its 16 bytes.
+    pub fn from_bytes(bytes: &[u8; 16]) -> SystemTime {
+        let word = |i: usize| u16::from_le_bytes([bytes[i * 2], bytes[i * 2 + 1]]);
+        SystemTime {
+            year: word(0),
+            month: word(1),
+            day_of_week: word(2),
+            day: word(3),
+            hour: word(4),
+            minute: word(5),
+            second: word(6),
+            milliseconds: word(7),
+        }
+    }
+}
+
 /// A clock reading (100 ns units) on the performance counter's scale.
 pub fn performance_count(units: u64) -> u64 {
     units / UNITS_PER_SECOND * PERFORMANCE_FREQUENCY
@@ -165,6 +228,20 @@ pub fn system_filetime() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The fixture's time survives the round trip through a SYSTEMTIME and the FAT encoding.
+    #[test]
+    fn fat_round_trip() {
+        let st = SystemTime { year: 2001, month: 2, day_of_week: 0, day: 3, hour: 4, minute: 5, second: 6, milliseconds: 0 };
+        let ft = filetime_from_system_time(st).unwrap();
+        let (date, time, hundredths) = fat_from_filetime(ft);
+        assert_eq!(fat_filetime(date, time, 0), ft);
+        assert_eq!(hundredths, 0);
+        let back = system_time_from_filetime(fat_filetime(date, time, 0));
+        assert_eq!((back.year, back.month, back.day, back.hour, back.minute, back.second), (2001, 2, 3, 4, 5, 6));
+        assert_eq!(filetime_from_system_time(SystemTime { month: 13, ..st }), None);
+        assert_eq!(filetime_from_system_time(SystemTime { day: 29, month: 2, ..st }), None);
+    }
 
     fn civil(year: u16, month: u8, day: u8, hour: u8, minute: u8, second: u8) -> CivilTime {
         CivilTime {

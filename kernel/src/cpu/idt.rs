@@ -355,16 +355,44 @@ extern "C" fn exception_handler(frame: &mut ExceptionFrame) {
         0
     };
     let mut stack_overflow = false;
+    let mut guard_fired = false;
     if frame.vector == 14 && (from_user || in_copy) {
         match crate::user::stack::grow_on_fault(cr2) {
             crate::user::stack::Growth::Grown => return,
             crate::user::stack::Growth::Overflow => stack_overflow = true,
-            crate::user::stack::Growth::NotGrown => {}
+            crate::user::stack::Growth::NotGrown => {
+                // Any other guard page fires: the program's access raises the guard violation once;
+                // the kernel's copy simply goes through.
+                if crate::mem::vm::fire_guard(&mut crate::mem::vm::CurrentPages, cr2) {
+                    if in_copy {
+                        return;
+                    }
+                    guard_fired = true;
+                }
+            }
         }
     }
     if in_copy && !stack_overflow {
         frame.eip = crate::user::syscall::copy_fixup(frame.eip).expect("a copy fault has a fixup");
         return;
+    }
+
+    // A fault raised by user code goes to the thread's own exception handlers first; the frame then
+    // returns into the first of them. Only a fault nobody can take (no handler chain, no room for
+    // the exception's records) ends the process here.
+    if from_user {
+        let status = if guard_fired {
+            crate::process::exit::status::GUARD_PAGE_VIOLATION
+        } else {
+            user_fault_status(frame, stack_overflow)
+        };
+        let vector = frame.vector;
+        // SAFETY: a ring-3 exception frame carries the ring-3 tail: it has the syscall frame's
+        // shape, word for word.
+        let trap = unsafe { &mut *(frame as *mut ExceptionFrame as *mut crate::user::TrapFrame) };
+        if crate::user::seh::dispatch_fault(trap, vector, status, cr2) {
+            return;
+        }
     }
 
     let name = NAMES
@@ -430,16 +458,7 @@ extern "C" fn exception_handler(frame: &mut ExceptionFrame) {
     // process; a one-process boot rests). A kernel fault from any other origin stays the raw
     // diagnostic halt.
     if from_user || in_copy {
-        let status = if stack_overflow {
-            crate::process::exit::status::STACK_OVERFLOW
-        } else {
-            let mut code = [0u8; 15];
-            let privileged = frame.vector == 13
-                && from_user
-                && read_code(frame.eip, &mut code)
-                && crate::process::exit::is_privileged_instruction(&code);
-            crate::process::exit::fault_status(frame.vector, privileged)
-        };
+        let status = user_fault_status(frame, stack_overflow);
         crate::process::threads::fault_exit(crate::process::exit::Fault {
             vector: frame.vector,
             status,
@@ -458,6 +477,22 @@ extern "C" fn exception_handler(frame: &mut ExceptionFrame) {
         });
     }
     crate::halt();
+}
+
+/// The exception code a ring-3 (or in-copy) fault raises: the stack overflow the stack's bookkeeping
+/// decided, else the trap's own code, a protection fault telling a privileged instruction apart.
+#[cfg(target_arch = "x86")]
+fn user_fault_status(frame: &ExceptionFrame, stack_overflow: bool) -> u32 {
+    if stack_overflow {
+        return crate::process::exit::status::STACK_OVERFLOW;
+    }
+    let from_user = frame.cs & 3 != 0;
+    let mut code = [0u8; 15];
+    let privileged = frame.vector == 13
+        && from_user
+        && read_code(frame.eip, &mut code)
+        && crate::process::exit::is_privileged_instruction(&code);
+    crate::process::exit::fault_status(frame.vector, privileged)
 }
 
 /// Read the faulting instruction's bytes at user address `eip`, as far as they are readable (the

@@ -117,6 +117,69 @@ impl<IoT: Io> Channel<IoT> {
         STATUS_SUCCESS
     }
 
+    /// Run one PIO data-out command that writes `buffer`'s `buffer.len() / 512` sectors: per
+    /// sector, wait for the device to ask for the data (DRQ), fill it, and wait for the interrupt
+    /// that reports the sector taken. Returns an NT status: success, timeout, or device error.
+    #[must_use]
+    pub fn pio_out<C: Completion<IoT>>(
+        &mut self,
+        latch: &Latch,
+        completion: &mut C,
+        task_file: TaskFile,
+        command: u8,
+        buffer: &[u8],
+    ) -> NtStatus {
+        assert!(
+            !buffer.is_empty() && buffer.len() % SECTOR_SIZE == 0,
+            "a PIO transfer moves whole sectors"
+        );
+        if self.poll(|status| status & (BUSY | DRQ) == 0).is_none() {
+            return STATUS_IO_TIMEOUT;
+        }
+        self.write_task_file(task_file);
+        self.settle();
+        self.io.out(self.base + COMMAND, command);
+
+        for sector in buffer.chunks_exact(SECTOR_SIZE) {
+            // The device asks for the sector without an interrupt: poll for its request.
+            match self.poll(|status| status & BUSY == 0) {
+                None => return STATUS_IO_TIMEOUT,
+                Some(status) if status & ERR != 0 => return self.device_error(),
+                Some(status) if status & DRQ == 0 => return STATUS_IO_DEVICE_ERROR,
+                Some(_) => {}
+            }
+            // The interrupt follows the sector's last word.
+            latch.arm();
+            self.fill(sector);
+            if !completion.wait(&mut self.io, latch) {
+                latch.disarm();
+                return STATUS_IO_TIMEOUT;
+            }
+            if latch.status() & ERR != 0 {
+                return self.device_error();
+            }
+        }
+
+        if self.poll(|status| status & BUSY == 0).is_none() {
+            return STATUS_IO_TIMEOUT;
+        }
+        let status = self.alternate_status();
+        if status & ERR != 0 {
+            return self.device_error();
+        }
+        if status & DRQ != 0 {
+            return STATUS_IO_DEVICE_ERROR;
+        }
+        STATUS_SUCCESS
+    }
+
+    /// Fill one sector into the data port, 256 words.
+    fn fill(&mut self, sector: &[u8]) {
+        for pair in sector.chunks_exact(2) {
+            self.io.out_word(self.base + DATA, u16::from_le_bytes([pair[0], pair[1]]));
+        }
+    }
+
     fn write_task_file(&mut self, task_file: TaskFile) {
         self.io.out(self.base + SECTOR_COUNT, task_file.count);
         self.io.out(self.base + LBA_LOW, task_file.lba_low);

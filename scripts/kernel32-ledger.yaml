@@ -82,32 +82,16 @@ exports:
       - {name: get_current_process_is_the_pseudo_handle, enabled: false}
   - export: UnhandledExceptionFilter
     group: termination
-    status: unpinned
-    reason: >-
-      never-called floor (zero): the corpus imports it but never calls it, so no real behavior is observable
-    tests:
-      - {name: unhandled_exception_filter_answers_with_the_floor, enabled: false}
+    status: pinned
   - export: GetProcAddress
     group: termination
-    status: unpinned
-    reason: >-
-      never-called floor (NULL): the corpus imports it but never calls it, so no real behavior is observable
-    tests:
-      - {name: get_proc_address_answers_with_the_floor, enabled: false}
+    status: pinned
   - export: LoadLibraryA
     group: termination
-    status: unpinned
-    reason: >-
-      never-called floor (NULL): the corpus imports it but never calls it, so no real behavior is observable
-    tests:
-      - {name: load_library_answers_with_the_floor, enabled: false}
+    status: pinned
   - export: RtlUnwind
     group: termination
-    status: unpinned
-    reason: >-
-      never-called floor (returns, unwinds nothing): the corpus imports it but never calls it, so no real behavior is observable
-    tests:
-      - {name: rtl_unwind_answers_with_the_floor, enabled: false}
+    status: pinned
   - export: GetCommandLineA
     group: startup
     status: enabled
@@ -132,6 +116,12 @@ exports:
     status: enabled
     tests:
       - {name: get_version_reports_5_0_build_2195, enabled: true}
+  - export: GetVersionExA
+    group: startup
+    status: pinned
+  - export: FormatMessageA
+    group: startup
+    status: pinned
   - export: GetStdHandle
     group: console
     status: dumped
@@ -189,6 +179,18 @@ exports:
       never-called floor (FALSE, no effect): the corpus imports it but never calls it, so no real behavior is observable
     tests:
       - {name: set_std_handle_answers_with_the_floor, enabled: false}
+  - export: GetConsoleCP
+    group: console
+    status: pinned
+  - export: GetConsoleOutputCP
+    group: console
+    status: pinned
+  - export: GetConsoleMode
+    group: console
+    status: pinned
+  - export: WriteConsoleA
+    group: console
+    status: pinned
   - export: GetEnvironmentStrings
     group: environment
     status: dumped
@@ -215,19 +217,18 @@ exports:
   - export: SetEnvironmentVariableA
     group: environment
     status: pinned
+  - export: ExpandEnvironmentStringsA
+    group: environment
+    status: pinned
+  - export: SetEnvironmentVariableW
+    group: environment
+    status: pinned
   - export: HeapAlloc
     group: heap
-    status: enabled
-    tests:
-      - {name: heap_alloc_serves_aligned_blocks_inside_the_region, enabled: true}
-      - {name: heap_alloc_commits_the_region_on_demand, enabled: true}
-      - {name: heap_alloc_refuses_foreign_handles_and_oversized_requests, enabled: true}
-      - {name: heap_alloc_zeroes_a_reused_block_on_request, enabled: true}
+    status: pinned
   - export: HeapCreate
     group: heap
-    status: enabled
-    tests:
-      - {name: heap_create_reports_the_heap_handle, enabled: true}
+    status: pinned
   - export: HeapDestroy
     group: heap
     status: enabled
@@ -236,24 +237,12 @@ exports:
       heap-initialization failure path); heap_destroy_pops_one_dword pins the fixture's 4
     tests:
       - {name: heap_destroy_pops_one_dword, enabled: true}
-      - {name: heap_destroy_resets_the_heap, enabled: true}
   - export: HeapFree
     group: heap
-    status: enabled
-    tests:
-      - {name: heap_free_releases_live_blocks_only, enabled: true}
-      - {name: heap_free_coalesces_neighbors, enabled: true}
+    status: pinned
   - export: HeapReAlloc
     group: heap
-    status: enabled
-    note: >-
-      a growth is served from the already committed region only: one that needs a commit fails where a HeapAlloc of the same size succeeds (heap_realloc_growth_does_not_commit)
-    tests:
-      - {name: heap_realloc_grows_by_moving, enabled: true}
-      - {name: heap_realloc_shrinking_keeps_the_block, enabled: true}
-      - {name: heap_realloc_in_place_only_never_moves, enabled: true}
-      - {name: heap_realloc_growth_does_not_commit, enabled: true}
-      - {name: heap_realloc_refuses_foreign_handles_and_dead_blocks, enabled: true}
+    status: pinned
   - export: GetACP
     group: locale
     status: dumped
@@ -268,7 +257,7 @@ exports:
     group: locale
     status: dumped
     note: >-
-      CP_OEMCP (1) is refused: only CP_ACP, 1252 and 437 are served
+      the installed code pages are 437, 850, 1252 and UTF-8 (CP_ACP and CP_OEMCP name 1252 and 437); 850 has no conversion table
     tests:
       - {name: get_cp_info_fills_the_single_byte_image, enabled: false}
       - {name: get_cp_info_refuses_other_code_pages, enabled: false}
@@ -283,7 +272,7 @@ exports:
     group: locale
     status: dumped
     note: >-
-      lpDefaultChar and lpUsedDefaultChar are never read or written, even when the default character is substituted
+      a single-byte page best-fits Latin Extended-A to the base letter before substituting the default character; UTF-8 refuses a default or its report (ERROR_INVALID_PARAMETER)
     tests:
       - {name: wide_char_to_multi_byte_refusals_and_size_queries, enabled: false}
       - {name: wide_char_to_multi_byte_converts_through_the_table, enabled: false}
@@ -321,6 +310,27 @@ exports:
     group: locale
     status: pinned
   - export: CompareStringW
+    group: locale
+    status: pinned
+  - export: GetLocaleInfoA
+    group: locale
+    status: pinned
+  - export: GetLocaleInfoW
+    group: locale
+    status: pinned
+  - export: GetUserDefaultLCID
+    group: locale
+    status: pinned
+  - export: GetSystemDefaultLCID
+    group: locale
+    status: pinned
+  - export: IsValidLocale
+    group: locale
+    status: pinned
+  - export: IsValidCodePage
+    group: locale
+    status: pinned
+  - export: EnumSystemLocalesA
     group: locale
     status: pinned
   - export: CreateThread
@@ -411,6 +421,33 @@ exports:
   - export: FindFirstFileA
     group: files
     status: pinned
+  - export: OpenFileMappingA
+    group: files
+    status: pinned
+  - export: CopyFileA
+    group: files
+    status: pinned
+  - export: CreateDirectoryA
+    group: files
+    status: pinned
+  - export: DeleteFileA
+    group: files
+    status: pinned
+  - export: MoveFileA
+    group: files
+    status: pinned
+  - export: RemoveDirectoryA
+    group: files
+    status: pinned
+  - export: SetFileAttributesA
+    group: files
+    status: pinned
+  - export: SetFileTime
+    group: files
+    status: pinned
+  - export: SystemTimeToFileTime
+    group: files
+    status: pinned
   - export: FindNextFileA
     group: files
     status: pinned
@@ -461,19 +498,87 @@ exports:
     status: pinned
   - export: VirtualAlloc
     group: virtual-memory
-    status: dumped
-    tests:
-      - {name: virtual_alloc_reserves_at_null, enabled: false}
-      - {name: virtual_alloc_commits_contiguously, enabled: false}
-      - {name: virtual_alloc_refuses_other_reservations_and_stray_commits, enabled: false}
-      - {name: virtual_alloc_rounds_reservations, enabled: false}
+    status: pinned
   - export: VirtualFree
     group: virtual-memory
-    status: dumped
-    tests:
-      - {name: virtual_free_succeeds_without_freeing, enabled: false}
+    status: pinned
   - export: GetProcessHeap
     group: heap
+    status: pinned
+  - export: HeapSize
+    group: heap
+    status: pinned
+  - export: HeapValidate
+    group: heap
+    status: pinned
+  - export: LocalAlloc
+    group: heap
+    status: pinned
+  - export: LocalFree
+    group: heap
+    status: pinned
+  - export: LocalLock
+    group: heap
+    status: pinned
+  - export: LocalUnlock
+    group: heap
+    status: pinned
+  - export: LocalHandle
+    group: heap
+    status: pinned
+  - export: LocalSize
+    group: heap
+    status: pinned
+  - export: LocalFlags
+    group: heap
+    status: pinned
+  - export: LocalReAlloc
+    group: heap
+    status: pinned
+  - export: GlobalAlloc
+    group: heap
+    status: pinned
+  - export: GlobalFree
+    group: heap
+    status: pinned
+  - export: GlobalLock
+    group: heap
+    status: pinned
+  - export: GlobalUnlock
+    group: heap
+    status: pinned
+  - export: GlobalHandle
+    group: heap
+    status: pinned
+  - export: GlobalSize
+    group: heap
+    status: pinned
+  - export: GlobalReAlloc
+    group: heap
+    status: pinned
+  - export: VirtualQuery
+    group: virtual-memory
+    status: pinned
+  - export: VirtualProtect
+    group: virtual-memory
+    status: pinned
+  - export: GetSystemInfo
+    group: virtual-memory
+    status: pinned
+  - export: GlobalMemoryStatus
+    group: virtual-memory
+    status: pinned
+  - export: IsBadReadPtr
+    group: virtual-memory
+    status: pinned
+  - export: IsBadWritePtr
+    group: virtual-memory
+    status: pinned
+  - export: IsBadCodePtr
+    group: virtual-memory
+    status: pinned
+  - export: IsBadStringPtrA
+    group: virtual-memory
     status: pinned
   - export: GetCurrentThreadId
     group: threads
@@ -500,6 +605,18 @@ exports:
     group: threads
     status: pinned
   - export: SetErrorMode
+    group: termination
+    status: pinned
+  - export: RaiseException
+    group: termination
+    status: pinned
+  - export: SetUnhandledExceptionFilter
+    group: termination
+    status: pinned
+  - export: FreeLibrary
+    group: termination
+    status: pinned
+  - export: GetModuleHandleA
     group: termination
     status: pinned
   - export: DuplicateHandle

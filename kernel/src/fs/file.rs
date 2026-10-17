@@ -55,6 +55,8 @@ pub struct OpenFile {
     pub access: u8,
     /// The sharing the open allows others (the same bits).
     pub share: u8,
+    /// Whether the file goes when its last open closes (FILE_FLAG_DELETE_ON_CLOSE).
+    pub delete_on_close: bool,
 }
 
 impl OpenFile {
@@ -71,14 +73,14 @@ impl OpenFile {
             position: 0,
             access,
             share,
+            delete_on_close: false,
         }
     }
 
-    /// Whether this open is of the same entry as `file`.
+    /// Whether this open is of the same entry as `file` (an entry is its directory and its record
+    /// index there; a file's first cluster changes as it is written).
     pub fn same_entry(&self, file: &File) -> bool {
-        self.file.parent_cluster == file.parent_cluster
-            && self.file.index == file.index
-            && self.file.first_cluster == file.first_cluster
+        self.file.parent_cluster == file.parent_cluster && self.file.index == file.index
     }
 
     /// Whether this open and a new one asking `access` and allowing `share` exclude each other: one
@@ -192,12 +194,34 @@ impl OpenFiles {
             .expect("a file handle names a live record")
     }
 
-    /// Release the record at `index`: its handle was closed.
-    pub fn release(&mut self, index: usize) {
-        assert!(
-            self.records[index].take().is_some(),
-            "release of a free file record"
-        );
+    /// Release the record at `index`: its handle was closed. Returns the record.
+    pub fn release(&mut self, index: usize) -> OpenFile {
+        self.records[index].take().expect("release of a free file record")
+    }
+
+    /// Whether any record opens the entry `file` names.
+    pub fn is_open(&self, file: &File) -> bool {
+        self.records.iter().flatten().any(|open| open.same_entry(file))
+    }
+
+    /// Whether every record of the entry `file` names shares `share` (and there is one at least
+    /// when `any`): the check a delete or a rename of an open file makes.
+    pub fn all_share(&self, file: &File, share: u8) -> bool {
+        self.records
+            .iter()
+            .flatten()
+            .filter(|open| open.same_entry(file))
+            .all(|open| open.share & share == share)
+    }
+
+    /// Every record of the entry `old` names now sees `new` (the entry changed: written, resized,
+    /// renamed, its attributes or times set); positions stay.
+    pub fn refresh(&mut self, old: &File, new: &File) {
+        for open in self.records.iter_mut().flatten() {
+            if open.same_entry(old) {
+                open.file = *new;
+            }
+        }
     }
 
     /// Release every record: the process-exit step.

@@ -12,6 +12,7 @@
 
 pub mod stack;
 pub mod apc;
+pub mod seh;
 pub mod syscall;
 pub mod teb;
 pub mod tls;
@@ -39,10 +40,12 @@ pub const USER_STACK_TOP: u32 = USER_STACK_PAGE + 4096;
 pub const USER_STACK_RESERVE: u32 = 0x10_0000;
 /// The reservation's lowest address.
 pub const USER_STACK_BASE: u32 = USER_STACK_TOP - USER_STACK_RESERVE;
-/// The main thread's entry ESP: one dword below the top, where the entry point's return address
-/// sits — the thread-exit trampoline, so returning from the entry point ends the thread with the
-/// returned value, as Windows' process start routine does.
-pub const USER_ENTRY_ESP: u32 = USER_STACK_TOP - 4;
+/// The main thread's entry ESP: two dwords below the top. The entry point's return address sits
+/// there — the thread-exit trampoline, so returning from the entry point ends the thread with the
+/// returned value, as Windows' process start routine does — and a zeroed dword above it stands for
+/// that routine's frame: the CRT reads its caller's slots through the entry's frame pointer (its
+/// exception path stores `[ebp+8]`), which must not run off the stack's top.
+pub const USER_ENTRY_ESP: u32 = USER_STACK_TOP - 8;
 /// The thread block page, reached through the FS-based TEB segment (the CRT installs its exception
 /// frames at fs:[0] first thing); mapped zeroed and writable by the loader.
 pub const TEB_PAGE: u32 = 0x0031_0000;
@@ -441,7 +444,7 @@ pub fn run_fault_stub() -> ! {
         tls_pointer: 0,
         tls_expansion: 0,
     });
-    crate::user::teb::map_peb(USER_CODE_PAGE, crate::user::userheap::HEAP_HANDLE);
+    crate::user::teb::map_peb(USER_CODE_PAGE, 0);
 
     crate::serial_println!(
         "F2K: entering ring 3 (code {:#010x}, stack {:#010x})",

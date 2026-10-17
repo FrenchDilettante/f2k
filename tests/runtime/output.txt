@@ -267,3 +267,25 @@ atexit: third registered
 atexit: second registered
 atexit: first registered
 <<< exit code=7
+>>> runtime.exe console
+== console
+std handles valid: in yes out yes err yes
+std handles distinct: yes
+GetFileType: in 2 out 2 err 2
+GetConsoleCP 437 GetConsoleOutputCP 437
+GetConsoleMode(out): ret=1 err=-
+console: WriteFile
+WriteFile: ret=1 written=20 err=-
+console: WriteConsoleA
+WriteConsoleA: ret=1 written=24 err=-
+console: WriteFile to stderr
+WriteFile(stderr): ret=1 written=30 err=-
+console: printf 42 text
+console: puts
+console: fprintf(stderr)
+c
+console: _write
+console: _write returned 16
+console: _isatty(1) 1
+runtime: done
+<<< exit code=0

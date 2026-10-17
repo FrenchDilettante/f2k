@@ -18,9 +18,12 @@
 //! entry's long name and then its 8.3 name, without regard to case. The search remembers where it
 //! stopped, by record index, and resumes after it.
 //!
-//! A file mapping of a file opened for reading is a section of the file's bytes; a view is a copy of
-//! them at map time in fresh pages of the process's view window, mapped read-only. Views start on
-//! the 64 KiB allocation granularity.
+//! A file mapping is a section: of a file opened for reading — its views are copies of the file's
+//! bytes at map time — or of the paging file — committed pages of its own (its store, a hidden
+//! reservation) that every view maps, so a write through one view shows in all of them. A view is
+//! a reservation of its own in the process's address space (MEM_MAPPED), on the 64 KiB allocation
+//! granularity. A section lives while a handle or a view names it; a named one (the paging-file
+//! kind) is found by its name while a handle names it.
 
 use crate::compat::error::*;
 use crate::compat::path::{resolve, VolumePath, MAX_PATH};
@@ -35,10 +38,6 @@ pub const SECTIONS: usize = 16;
 /// How many mapped views a process can hold at once.
 pub const VIEWS: usize = 32;
 
-/// Where mapped views live: a window of user space nothing else claims.
-pub const VIEW_REGION_BASE: u32 = 0x6000_0000;
-/// The window's end (exclusive).
-pub const VIEW_REGION_END: u32 = 0x7000_0000;
 /// The allocation granularity: views start on it, and view offsets must be multiples of it.
 pub const ALLOCATION_GRANULARITY: u32 = 0x1_0000;
 
@@ -66,12 +65,18 @@ pub struct Find {
 #[derive(Clone, Copy)]
 pub struct Section {
     used: bool,
-    /// The mapped file, as its open found it.
+    /// The mapped file, as its open found it (a file-backed section).
     file: File,
+    /// A paging-file section's store: the base of the reservation holding its pages; zero for a
+    /// file-backed section.
+    store: u32,
     /// The section's size in bytes.
     size: u32,
     /// Whether views may be writable (a read-write mapping).
     writable: bool,
+    /// Whether a handle still names it, and how many views map it.
+    open: bool,
+    views: u32,
 }
 
 /// One mapped view.
@@ -79,7 +84,8 @@ pub struct Section {
 pub struct View {
     used: bool,
     base: u32,
-    pages: u32,
+    /// The section it maps.
+    section: u32,
 }
 
 /// A process's file-API state. All zeros is the fresh state: the current directory the root, no
@@ -106,13 +112,16 @@ impl FileState {
         const SECTION: Section = Section {
             used: false,
             file: File::plain(0, 0, false),
+            store: 0,
             size: 0,
             writable: false,
+            open: false,
+            views: 0,
         };
         const VIEW: View = View {
             used: false,
             base: 0,
-            pages: 0,
+            section: 0,
         };
         FileState {
             current_set: false,
@@ -135,9 +144,22 @@ impl FileState {
         self.finds[index].used = false;
     }
 
-    /// Release a mapping record (its last handle closed); its views stay mapped.
-    pub fn release_section(&mut self, index: usize) {
-        self.sections[index].used = false;
+    /// A mapping's last handle closed: its views stay mapped, and the record lives on while they
+    /// do. The store to free when the section is gone with it.
+    pub fn release_section(&mut self, index: usize) -> Option<u32> {
+        let section = &mut self.sections[index];
+        section.open = false;
+        self.retire(index)
+    }
+
+    /// Free a section nothing names any more: the record, and its store to give back.
+    fn retire(&mut self, index: usize) -> Option<u32> {
+        let section = &mut self.sections[index];
+        if !section.used || section.open || section.views != 0 {
+            return None;
+        }
+        section.used = false;
+        (section.store != 0).then_some(section.store)
     }
 }
 
@@ -275,7 +297,7 @@ pub fn current_directory() -> VolumePath {
 }
 
 /// Resolve a path argument against the current directory.
-fn resolve_arg(pointer: u32) -> Result<VolumePath, u32> {
+pub(crate) fn resolve_arg(pointer: u32) -> Result<VolumePath, u32> {
     let mut bytes = [0u8; MAX_PATH];
     let len = path_arg(pointer, &mut bytes)?;
     resolve(&bytes[..len], current_directory().as_bytes())
@@ -333,7 +355,7 @@ fn win32_path(path: &VolumePath, out: &mut [u8; MAX_PATH + 4]) -> usize {
 }
 
 /// Run a service body, reporting its error through the last error and `failure` in EAX.
-fn serve(frame: &mut crate::user::TrapFrame, failure: u32, body: impl FnOnce() -> Result<u32, u32>) {
+pub(crate) fn serve(frame: &mut crate::user::TrapFrame, failure: u32, body: impl FnOnce() -> Result<u32, u32>) {
     frame.eax = match body() {
         Ok(value) => value,
         Err(error) => {
@@ -540,15 +562,18 @@ pub fn svc_get_file_information_by_handle(frame: &mut crate::user::TrapFrame, ar
     });
 }
 
-/// SetEndOfFile: the volume is read-only, and no handle is opened for writing; a handle without
-/// write access is ERROR_ACCESS_DENIED.
+/// SetEndOfFile: the file ends at the handle's position, shrunk or grown with zeros (see
+/// `filewrite`); a handle without write access is ERROR_ACCESS_DENIED.
 pub fn svc_set_end_of_file(frame: &mut crate::user::TrapFrame, args: &[u32]) {
     serve(frame, 0, || {
-        let open = handle_file(args[0])?;
-        if open.access & crate::fs::file::ACCESS_WRITE == 0 {
-            return Err(ERROR_ACCESS_DENIED);
+        #[cfg(target_arch = "x86")]
+        {
+            crate::compat::filewrite::set_end_of_file(args[0])
         }
-        Err(ERROR_WRITE_PROTECT)
+        #[cfg(not(target_arch = "x86"))]
+        {
+            handle_file(args[0]).map(|_| 1)
+        }
     });
 }
 
@@ -908,67 +933,156 @@ const PAGE_WRITECOPY: u32 = 0x08;
 /// The view access rights.
 const FILE_MAP_WRITE: u32 = 0x0002;
 
-/// CreateFileMappingA: a mapping of a file opened for reading (a read-write mapping needs write
-/// access). A size of zero is the file's size; an empty file cannot be mapped (ERROR_FILE_INVALID),
-/// and a read-only mapping cannot reach past the file's end (ERROR_NOT_ENOUGH_MEMORY). A paging-file
-/// mapping (no file) is not served. The last error is cleared on success.
+/// Give a paging-file section's store back (the section is gone).
+#[cfg(target_arch = "x86")]
+pub fn free_store(space: &mut crate::mem::vm::AddressSpace, store: u32) {
+    let _ = space.release(&mut crate::mem::vm::CurrentPages, store);
+}
+
+#[cfg(not(target_arch = "x86"))]
+pub fn free_store(_space: &mut crate::mem::vm::AddressSpace, _store: u32) {}
+
+/// CreateFileMappingA. Of a file opened for reading (a read-write mapping needs write access): a
+/// size of zero is the file's size; an empty file cannot be mapped (ERROR_FILE_INVALID), and a
+/// read-only mapping cannot reach past the file's end (ERROR_NOT_ENOUGH_MEMORY). Of the paging file
+/// (INVALID_HANDLE_VALUE): a size is required (ERROR_INVALID_PARAMETER), the pages are committed
+/// zeroed. A name that binds a live mapping opens it instead (a new handle, ERROR_ALREADY_EXISTS);
+/// one binding another kind of object is ERROR_INVALID_HANDLE. The last error is cleared on
+/// success.
 pub fn svc_create_file_mapping_a(frame: &mut crate::user::TrapFrame, args: &[u32]) {
-    let (handle, _attributes, protect, size_high, size_low, _name) =
+    let (handle, _attributes, protect, size_high, size_low, name) =
         (args[0], args[1], args[2], args[3], args[4], args[5]);
     serve(frame, 0, || {
-        if handle == u32::MAX {
-            return Err(ERROR_INVALID_HANDLE);
-        }
-        let open = handle_file(handle)?;
-        if open.file.directory {
-            return Err(ERROR_INVALID_HANDLE);
+        let mut bytes = [0u8; MAX_PATH];
+        let name = crate::compat::kernel32::object_name(name, &mut bytes)?.map(|length| &bytes[..length]);
+        if let Some(existing) = name.and_then(lookup_name) {
+            let handle = existing?;
+            set_last_error(ERROR_ALREADY_EXISTS);
+            return Ok(handle);
         }
         let writable = match protect & 0xFF {
             PAGE_READONLY | PAGE_WRITECOPY => false,
             PAGE_READWRITE => true,
             _ => return Err(ERROR_INVALID_PARAMETER),
         };
-        let wants = crate::fs::file::ACCESS_READ | if writable { crate::fs::file::ACCESS_WRITE } else { 0 };
-        if open.access & wants != wants {
-            return Err(ERROR_ACCESS_DENIED);
-        }
-        let size = if size_high == 0 && size_low == 0 {
-            if open.file.size == 0 {
-                return Err(ERROR_FILE_INVALID);
+        let section = if handle == u32::MAX {
+            if size_high != 0 || size_low == 0 {
+                return Err(ERROR_INVALID_PARAMETER);
             }
-            open.file.size
-        } else if size_high != 0 || size_low > open.file.size {
-            return Err(if writable { ERROR_WRITE_PROTECT } else { ERROR_NOT_ENOUGH_MEMORY });
+            Section {
+                used: true,
+                file: File::plain(0, 0, false),
+                store: 0,
+                size: size_low,
+                writable,
+                open: true,
+                views: 0,
+            }
         } else {
-            size_low
+            let open = handle_file(handle)?;
+            if open.file.directory {
+                return Err(ERROR_INVALID_HANDLE);
+            }
+            let wants = crate::fs::file::ACCESS_READ | if writable { crate::fs::file::ACCESS_WRITE } else { 0 };
+            if open.access & wants != wants {
+                return Err(ERROR_ACCESS_DENIED);
+            }
+            let size = if size_high == 0 && size_low == 0 {
+                if open.file.size == 0 {
+                    return Err(ERROR_FILE_INVALID);
+                }
+                open.file.size
+            } else if size_high != 0 || size_low > open.file.size {
+                return Err(if writable { ERROR_WRITE_PROTECT } else { ERROR_NOT_ENOUGH_MEMORY });
+            } else {
+                size_low
+            };
+            Section {
+                used: true,
+                file: open.file,
+                store: 0,
+                size,
+                writable,
+                open: true,
+                views: 0,
+            }
         };
-        let section = Section {
-            used: true,
-            file: open.file,
-            size,
-            writable,
-        };
-        let handle = insert_section(section)?;
+        let handle = insert_section(section, handle == u32::MAX, name)?;
         set_last_error(0);
         Ok(handle)
     });
 }
 
+/// The live mapping `name` binds, as a new handle to it; ERROR_INVALID_HANDLE when it binds
+/// another kind of object; none when it binds nothing.
 #[cfg(target_arch = "x86")]
-fn insert_section(section: Section) -> Result<u32, u32> {
-    let process = crate::process::current_mut();
-    if process.handles_mut().is_full() {
-        return Err(ERROR_NOT_ENOUGH_MEMORY);
-    }
-    let state = process.file_state();
-    let index = state.sections.iter().position(|s| !s.used).ok_or(ERROR_NOT_ENOUGH_MEMORY)?;
-    state.sections[index] = section;
-    Ok(process.handles_mut().insert(crate::sched::object::Slot::Section(index)))
+fn lookup_name(name: &[u8]) -> Option<Result<u32, u32>> {
+    let (handles, objects, _, _) = crate::process::current_mut().mapping_parts();
+    let slot = objects.lookup(handles, name)?;
+    Some(match slot {
+        crate::sched::object::Slot::Section(_) if handles.is_full() => Err(ERROR_NOT_ENOUGH_MEMORY),
+        crate::sched::object::Slot::Section(_) => Ok(handles.insert(slot)),
+        _ => Err(ERROR_INVALID_HANDLE),
+    })
 }
 
 #[cfg(not(target_arch = "x86"))]
-fn insert_section(_section: Section) -> Result<u32, u32> {
+fn lookup_name(_name: &[u8]) -> Option<Result<u32, u32>> {
+    None
+}
+
+/// Record a section, its store committed (a paging-file section), a handle to it inserted and its
+/// name bound.
+#[cfg(target_arch = "x86")]
+fn insert_section(mut section: Section, paging_file: bool, name: Option<&[u8]>) -> Result<u32, u32> {
+    use crate::mem::vm::{CurrentPages, Kind};
+    use crate::sched::object::Slot;
+    let (handles, objects, state, space) = crate::process::current_mut().mapping_parts();
+    if handles.is_full() {
+        return Err(ERROR_NOT_ENOUGH_MEMORY);
+    }
+    let index = state.sections.iter().position(|s| !s.used).ok_or(ERROR_NOT_ENOUGH_MEMORY)?;
+    if paging_file {
+        let store = space
+            .reserve(None, section.size, PAGE_READWRITE, Kind::Mapped { shared: false })
+            .map_err(|_| ERROR_NOT_ENOUGH_MEMORY)?;
+        let size = space.region_at(store).expect("just reserved").size;
+        if space.commit(&mut CurrentPages, store, size, PAGE_READWRITE).is_err() {
+            let _ = space.release(&mut CurrentPages, store);
+            return Err(ERROR_NOT_ENOUGH_MEMORY);
+        }
+        section.store = store;
+    }
+    // A reused record's old name does not come back with it.
+    objects.forget_slot(Slot::Section(index));
+    state.sections[index] = section;
+    let handle = handles.insert(Slot::Section(index));
+    if let Some(name) = name {
+        if objects.bind(handles, name, Slot::Section(index)).is_err() {
+            crate::process::current_mut().close_handle(handle);
+            return Err(ERROR_NOT_ENOUGH_MEMORY);
+        }
+    }
+    Ok(handle)
+}
+
+#[cfg(not(target_arch = "x86"))]
+fn insert_section(_section: Section, _paging_file: bool, _name: Option<&[u8]>) -> Result<u32, u32> {
     Err(ERROR_NOT_ENOUGH_MEMORY)
+}
+
+/// OpenFileMappingA: a new handle to the live mapping the name binds. ERROR_FILE_NOT_FOUND when it
+/// binds none, ERROR_INVALID_HANDLE when it binds another kind of object; the access and
+/// inheritance arguments are not modeled.
+pub fn svc_open_file_mapping_a(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    let name = args[2];
+    serve(frame, 0, || {
+        let mut bytes = [0u8; MAX_PATH];
+        let name = crate::compat::kernel32::object_name(name, &mut bytes)?
+            .map(|length| &bytes[..length])
+            .ok_or(ERROR_INVALID_PARAMETER)?;
+        lookup_name(name).unwrap_or(Err(ERROR_FILE_NOT_FOUND))
+    });
 }
 
 /// MapViewOfFile: map `bytes` of the section from `offset` (zero bytes: to its end). The offset is a
@@ -979,12 +1093,11 @@ pub fn svc_map_view_of_file(frame: &mut crate::user::TrapFrame, args: &[u32]) {
     serve(frame, 0, || {
         #[cfg(target_arch = "x86")]
         {
-            let section = match crate::process::current_mut().handles_mut().lookup(handle) {
-                Some(crate::sched::object::Slot::Section(index)) => {
-                    crate::process::current_mut().file_state().sections[index]
-                }
+            let index = match crate::process::current_mut().handles_mut().lookup(handle) {
+                Some(crate::sched::object::Slot::Section(index)) => index,
                 _ => return Err(ERROR_INVALID_HANDLE),
             };
+            let section = crate::process::current_mut().file_state().sections[index];
             if access & FILE_MAP_WRITE != 0 && !section.writable {
                 return Err(ERROR_ACCESS_DENIED);
             }
@@ -998,7 +1111,7 @@ pub fn svc_map_view_of_file(frame: &mut crate::user::TrapFrame, args: &[u32]) {
             if bytes > section.size - offset_low {
                 return Err(ERROR_ACCESS_DENIED);
             }
-            map_view(&section, offset_low, bytes, access & FILE_MAP_WRITE != 0)
+            map_view(index, &section, offset_low, bytes, access & FILE_MAP_WRITE != 0)
         }
         #[cfg(not(target_arch = "x86"))]
         {
@@ -1008,87 +1121,84 @@ pub fn svc_map_view_of_file(frame: &mut crate::user::TrapFrame, args: &[u32]) {
     });
 }
 
-/// Map a copy of `bytes` of the section's file from `offset` at the lowest free granule of the view
-/// window: fresh frames, filled with the file's bytes (zeros past its end), mapped read-only unless
-/// `writable`.
+/// Map `bytes` of section `index` from `offset` as a reservation of its own: a paging-file
+/// section's store pages themselves, or copies of a file's bytes (zeros past its end) in fresh
+/// pages; read-only unless `writable`.
 #[cfg(target_arch = "x86")]
-fn map_view(section: &Section, offset: u32, bytes: u32, writable: bool) -> Result<u32, u32> {
-    use crate::mem::paging;
-    let pages = bytes.div_ceil(PAGE_SIZE);
-    let span = (pages * PAGE_SIZE).div_ceil(ALLOCATION_GRANULARITY) * ALLOCATION_GRANULARITY;
-    let state = crate::process::current_mut().file_state();
+fn map_view(index: usize, section: &Section, offset: u32, bytes: u32, writable: bool) -> Result<u32, u32> {
+    use crate::mem::vm::{self, CurrentPages, Kind, Pages};
+    let (_, _, state, space) = crate::process::current_mut().mapping_parts();
     let slot = state.views.iter().position(|v| !v.used).ok_or(ERROR_NOT_ENOUGH_MEMORY)?;
-    // The lowest granule-aligned gap the span fits.
-    let mut base = VIEW_REGION_BASE;
-    loop {
-        if base + span > VIEW_REGION_END {
+    let pages = bytes.div_ceil(PAGE_SIZE);
+    let protect = if writable { PAGE_READWRITE } else { PAGE_READONLY };
+    let section_protect = if section.writable { PAGE_READWRITE } else { PAGE_READONLY };
+    let shared = section.store != 0;
+    let base = space
+        .reserve(None, pages * PAGE_SIZE, section_protect, Kind::Mapped { shared })
+        .map_err(|_| ERROR_NOT_ENOUGH_MEMORY)?;
+    let mut table = CurrentPages;
+    if shared {
+        for page in 0..pages {
+            let (frame, _) = vm::decode(table.entry(section.store + offset + page * PAGE_SIZE))
+                .expect("a store is committed whole");
+            table.set_entry(base + page * PAGE_SIZE, vm::encode(frame, protect));
+        }
+    } else {
+        if space.commit(&mut table, base, pages * PAGE_SIZE, protect).is_err() {
+            let _ = space.release(&mut table, base);
             return Err(ERROR_NOT_ENOUGH_MEMORY);
         }
-        let overlap = state.views.iter().filter(|v| v.used).find(|v| {
-            let end = v.base + (v.pages * PAGE_SIZE).div_ceil(ALLOCATION_GRANULARITY) * ALLOCATION_GRANULARITY;
-            base < end && v.base < base + span
-        });
-        match overlap {
-            Some(view) => {
-                base = view.base + (view.pages * PAGE_SIZE).div_ceil(ALLOCATION_GRANULARITY) * ALLOCATION_GRANULARITY
+        let mut buffer = [0u8; PAGE_SIZE as usize];
+        for page in 0..pages {
+            let at = offset + page * PAGE_SIZE;
+            let take = section.file.size.saturating_sub(at).min(PAGE_SIZE) as usize;
+            if take == 0 {
+                continue;
             }
-            None => break,
+            if crate::compat::kernel32::read_volume_at(&section.file, at, &mut buffer[..take]).is_none() {
+                let _ = space.release(&mut table, base);
+                return Err(ERROR_IO_DEVICE);
+            }
+            let (frame, _) = vm::decode(table.entry(base + page * PAGE_SIZE)).expect("just committed");
+            crate::mem::paging::write_frame(frame, 0, &buffer[..take]);
         }
     }
-    let mut page = [0u8; PAGE_SIZE as usize];
-    for index in 0..pages {
-        let at = offset + index * PAGE_SIZE;
-        let take = section.file.size.saturating_sub(at).min(PAGE_SIZE) as usize;
-        page.fill(0);
-        if take != 0
-            && crate::compat::kernel32::read_volume_at(&section.file, at, &mut page[..take]).is_none()
-        {
-            unmap_pages(base, index);
-            return Err(ERROR_IO_DEVICE);
-        }
-        let frame = paging::allocate_frame_phys();
-        paging::init_frame(frame, 0, &page);
-        paging::map_user_page(base + index * PAGE_SIZE, frame, writable);
-    }
-    let state = crate::process::current_mut().file_state();
     state.views[slot] = View {
         used: true,
         base,
-        pages,
+        section: index as u32,
     };
+    state.sections[index].views += 1;
     Ok(base)
 }
 
-/// Unmap `pages` pages from `base`, releasing their frames.
-#[cfg(target_arch = "x86")]
-fn unmap_pages(base: u32, pages: u32) {
-    use crate::mem::frame::FrameState;
-    use crate::mem::paging;
-    for index in 0..pages {
-        if let Some(frame) = paging::unmap_user_page(base + index * PAGE_SIZE) {
-            crate::mem::bootmem::with_frame_db(|db| db.release(frame / PAGE_SIZE, FrameState::Free));
-        }
-    }
-}
-
-/// UnmapViewOfFile: unmap the view starting at the address; ERROR_INVALID_ADDRESS for any other.
+/// UnmapViewOfFile: unmap the view starting at the address (a section nothing names any more goes
+/// with its last view); ERROR_INVALID_ADDRESS for any other address.
 pub fn svc_unmap_view_of_file(frame: &mut crate::user::TrapFrame, args: &[u32]) {
+    let address = args[0];
     serve(frame, 0, || {
         #[cfg(target_arch = "x86")]
         {
-            let state = crate::process::current_mut().file_state();
+            let (_, _, state, space) = crate::process::current_mut().mapping_parts();
             let view = state
                 .views
                 .iter_mut()
-                .find(|v| v.used && v.base == args[0])
+                .find(|v| v.used && v.base == address)
                 .ok_or(ERROR_INVALID_ADDRESS)?;
             view.used = false;
-            let (base, pages) = (view.base, view.pages);
-            unmap_pages(base, pages);
+            let index = view.section as usize;
+            let _ = space.release(&mut crate::mem::vm::CurrentPages, address);
+            state.sections[index].views -= 1;
+            if let Some(store) = state.retire(index) {
+                free_store(space, store);
+            }
             Ok(1)
         }
         #[cfg(not(target_arch = "x86"))]
-        Err(ERROR_INVALID_ADDRESS)
+        {
+            let _ = address;
+            Err(ERROR_INVALID_ADDRESS)
+        }
     });
 }
 
