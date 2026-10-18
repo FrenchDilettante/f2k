@@ -1,6 +1,9 @@
 //! Codepage 1252 replay data and conversions.
 //!
-//! The CRT's locale services answer from this single-byte codepage's tables. The byte-to-Unicode
+//! The CRT's locale services answer from this single-byte codepage's tables; the kernel widens the
+//! process parameters' strings through them, and kernel32 narrows them back (GetCommandLineA,
+//! GetModuleFileNameA), as Windows 2000's kernel and ntdll both carry the code page tables. The
+//! byte-to-Unicode
 //! table is the shipped `c_1252` data: identity except 27 bytes in 0x80-0x9F. The reverse direction
 //! is its own inverse (every entry maps back), so no second table is kept.
 

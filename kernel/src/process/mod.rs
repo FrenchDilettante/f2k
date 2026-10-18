@@ -63,6 +63,8 @@ pub struct Process {
     pub sched: crate::sched::process::SchedProcess,
     /// The fixture's name, as invoked (reported on COM1).
     name: &'static str,
+    /// The process's client id (what GetCurrentProcessId reports, through the TEB).
+    id: u32,
     /// The process's object: what a handle to the process names and a wait on it waits for. It
     /// holds the process's own reference until the teardown's end, and its index is the record's in
     /// the pool.
@@ -78,6 +80,9 @@ pub struct Process {
     handles: crate::sched::object::HandleTable,
     /// The open files the table's file entries name.
     files: crate::fs::file::OpenFiles,
+    /// The process's console handles: the console server's own, outside the handle table, as
+    /// Windows 2000's csrss keeps them (see `crate::csr`).
+    console: rtl::console::Handles,
     /// An exited thread's gate stack, not yet released (see [`DeadStack`]).
     dead_stack: DeadStack,
     /// Why the process ended, recorded by its last thread's exit; the idle thread's reap step
@@ -152,9 +157,19 @@ impl Process {
         self.name
     }
 
+    /// The process's client id.
+    pub fn id(&self) -> u32 {
+        self.id
+    }
+
     /// The process's object.
     pub fn object(&self) -> crate::ob::ObjectId {
         self.object
+    }
+
+    /// The console handles (the console server serves them).
+    pub fn console_mut(&mut self) -> &mut rtl::console::Handles {
+        &mut self.console
     }
 
     /// The process's page-directory frame.
@@ -335,6 +350,7 @@ impl Process {
             (*thread).gate_frames = frames;
             (*thread).initial_stack = paging::gate_slot_top(slot as u32);
             (*thread).teb_va = crate::user::TEB_PAGE;
+            (*thread).thread_id = new_client_id();
         }
         // The TSS `esp0` is the switch's to install: the first switch into the main thread loads
         // its stack top.
@@ -411,6 +427,33 @@ impl GateSlots {
     }
 }
 
+/// The next client id to hand out (see [`new_client_id`]).
+#[cfg(target_arch = "x86")]
+static mut NEXT_CLIENT_ID: u32 = FIRST_CLIENT_ID;
+
+/// The first client id: NT never hands out 0 (no object) or 4 (the System process).
+pub const FIRST_CLIENT_ID: u32 = 8;
+
+/// The id after `id`: client ids step by four, as the platform's do (handle-table indices
+/// there).
+pub const fn next_client_id(id: u32) -> u32 {
+    id + 4
+}
+
+/// A fresh client id for a process or a thread: processes and threads share one id space, as on
+/// NT, and an id is never reused within a boot (system state, not per-process state).
+#[cfg(target_arch = "x86")]
+pub fn new_client_id() -> u32 {
+    // SAFETY: single CPU; ids are handed out from service and boot paths only, never from an
+    // interrupt.
+    unsafe {
+        let next = &mut *core::ptr::addr_of_mut!(NEXT_CLIENT_ID);
+        let id = *next;
+        *next = next_client_id(id);
+        id
+    }
+}
+
 /// Build a fresh process record at `process`: the address space at `dir_phys`, named `name`,
 /// standing for process object `object`, field by field (by value the record would pass the
 /// caller's stack).
@@ -434,12 +477,14 @@ unsafe fn write_fresh(
             crate::sched::NORMAL_BASE,
         ));
         addr_of_mut!((*process).name).write(name);
+        addr_of_mut!((*process).id).write(new_client_id());
         addr_of_mut!((*process).object).write(object);
         addr_of_mut!((*process).gate_slots).write(GateSlots::empty());
         addr_of_mut!((*process).heap).write(crate::user::userheap::HeapState::new());
         crate::mem::vm::AddressSpace::write_empty(addr_of_mut!((*process).vm));
         crate::sched::object::HandleTable::write_empty(addr_of_mut!((*process).handles));
         addr_of_mut!((*process).files).write(crate::fs::file::OpenFiles::empty());
+        addr_of_mut!((*process).console).write(rtl::console::Handles::standard());
         addr_of_mut!((*process).dead_stack).write(DeadStack::empty());
         addr_of_mut!((*process).end).write(None);
         addr_of_mut!((*process).handed_end).write(None);
@@ -683,6 +728,7 @@ mod tests {
         Process {
             sched: SchedProcess::new(dir, 8),
             name: "fixture",
+            id: FIRST_CLIENT_ID,
             object: crate::ob::ObjectId {
                 kind: crate::ob::ObjectType::Process,
                 index: 0,
@@ -693,6 +739,7 @@ mod tests {
             vm: crate::mem::vm::AddressSpace::new(),
             handles: crate::sched::object::HandleTable::empty(),
             files: crate::fs::file::OpenFiles::empty(),
+            console: rtl::console::Handles::standard(),
             dead_stack: DeadStack::empty(),
             end: None,
             handed_end: None,
@@ -702,6 +749,16 @@ mod tests {
 
     fn fresh_process() -> Box<Process> {
         Box::new(record_at(0x0090_0000))
+    }
+
+    /// Client ids are NT's: never 0 or 4 (the System process), stepping by four, one space for
+    /// processes and threads.
+    #[test]
+    fn client_ids_step_by_four_from_eight() {
+        assert_eq!(FIRST_CLIENT_ID, 8);
+        assert_eq!(next_client_id(FIRST_CLIENT_ID), 12);
+        assert_eq!(next_client_id(next_client_id(FIRST_CLIENT_ID)), 16);
+        assert_eq!(record_at(0x0090_0000).id(), FIRST_CLIENT_ID);
     }
 
     /// A fresh process: the scheduling record leads it (the directory base at the pinned offset),

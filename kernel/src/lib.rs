@@ -30,8 +30,7 @@ mod mem;
 // into ring 3)
 mod exec;
 
-// The Windows compatibility layer: kernel32's kernel-served exports and the codepage replay data
-// behind its locale services
+// The Windows compatibility layer: kernel32's kernel-served exports
 mod compat;
 
 // Ring 3: user-mode entry, the syscall gate and its argument types, the user-mode heap, process end
@@ -40,6 +39,10 @@ mod user;
 // The NT system services: Windows 2000's Nt* calls, by Windows 2000's numbers, over the object
 // manager
 mod nt;
+
+// The console server: the kernel's stand-in for csrss, which kernel32's console calls reach through
+// ntdll's CsrClientCallServer
+mod csr;
 
 // The process object and the suite runner: per-process directory, gate stack, user heap
 mod process;

@@ -198,6 +198,8 @@ pub struct Image {
     pub size_of_image: u32,
     pub size_of_headers: u32,
     pub subsystem: u16,
+    /// The subsystem version the image was linked for (major, minor).
+    pub subsystem_version: (u16, u16),
     /// The file header's characteristics (the DLL flag among them).
     pub characteristics: u16,
     directories: [DataDirectory; MAX_DIRECTORIES],
@@ -496,6 +498,10 @@ impl Image {
         let size_of_image = read_u32(file, opt + 56, "SizeOfImage");
         let size_of_headers = read_u32(file, opt + 60, "SizeOfHeaders");
         let subsystem = read_u16(file, opt + 68, "Subsystem");
+        let subsystem_version = (
+            read_u16(file, opt + 48, "MajorSubsystemVersion"),
+            read_u16(file, opt + 50, "MinorSubsystemVersion"),
+        );
 
         let mut directories = [DataDirectory { rva: 0, size: 0 }; MAX_DIRECTORIES];
         for i in 0..num_directories {
@@ -651,6 +657,7 @@ impl Image {
             size_of_image,
             size_of_headers,
             subsystem,
+            subsystem_version,
             characteristics,
             directories,
             num_directories,
@@ -1071,6 +1078,7 @@ mod tests {
         assert_eq!(e.size_of_image, 0x3000);
         assert_eq!(e.size_of_headers, 0x1000);
         assert_eq!(e.subsystem, 3);
+        assert_eq!(e.subsystem_version, (4, 0), "MSVC 6's link default");
         assert_eq!(e.num_sections(), 2);
         assert_eq!(e.entry_va(), 0x401000);
 

@@ -4,32 +4,19 @@
 //! exports are generated service stubs, each raising the gate on its service number with the
 //! caller's arguments; this module holds the services they reach, the registry the gate dispatches
 //! through ([`SERVICES`], generated from the export specs, userland/<dll>/exports.toml), and the
-//! replays they answer from. Reported values (version, startup info, handles, codepages) are replays
-//! captured from a real Windows 2000 machine; the locale group answers from the shipped
-//! codepage-1252 tables, the heap group from a genuine allocator (`userheap`), `WriteFile` from the
-//! console backend (COM1), never-called imports from safe minimal floors. The move to user mode
-//! goes group by group, deleting each group's services here.
+//! replays they answer from. Reported values (codepages) are replays captured from a real Windows
+//! 2000 machine; the locale group answers from the shipped codepage-1252 tables, the heap group from
+//! a genuine allocator (`userheap`), never-called imports from safe minimal floors. The move to
+//! user mode goes group by group, deleting each group's services here — the console and the
+//! start-up calls are kernel32's own code now, over the console server (`crate::csr`) and the PEB
+//! (`user::teb`).
 
 use crate::fs::file::SeekMethod;
 use crate::user::syscall::{read_user, write_user, ServiceFn};
 use crate::user::PARAMS_PAGE;
-#[cfg(test)]
-use crate::user::TEB_PAGE;
 
 // --- Replay data (captured on a real Windows 2000 SP4 machine) ------
 
-/// GetVersion's replay: 5.0, build 2195, NT.
-pub const VERSION: u32 = 0x0893_0005;
-
-/// GetStdHandle's replay handles, per the real-machine trace (`tests/hello/trace.txt`): the
-/// GetFileType probes after each GetStdHandle, and the WriteFile that prints, name stdin 3, stdout
-/// 7, stderr 0xB. All three carry the console tag ([`is_console_handle`]).
-pub const STD_INPUT_HANDLE: u32 = 0xFFFF_FFF6; // -10
-pub const STD_OUTPUT_HANDLE: u32 = 0xFFFF_FFF5; // -11
-pub const STD_ERROR_HANDLE: u32 = 0xFFFF_FFF4; // -12
-const STD_INPUT: u32 = 3;
-const STD_OUTPUT: u32 = 0x07;
-const STD_ERROR: u32 = 0x0B;
 const INVALID_HANDLE_VALUE: u32 = 0xFFFF_FFFF;
 /// SetFilePointer's failure return.
 const INVALID_SET_FILE_POINTER: u32 = 0xFFFF_FFFF;
@@ -41,9 +28,6 @@ const OPEN_EXISTING: u32 = 3;
 const FILE_FLAG_OVERLAPPED: u32 = 0x4000_0000;
 /// The ANSI path limit, terminator included.
 const MAX_PATH: usize = 260;
-
-/// GetFileType's replay for the standard handles: character device.
-const FILE_TYPE_CHAR: u32 = 2;
 
 /// The codepages the surface reports: ANSI 1252, OEM 437.
 pub const ACP: u32 = 1252;
@@ -58,21 +42,6 @@ const fn put32(image: &mut [u8], offset: usize, value: u32) {
     image[offset + 3] = bytes[3];
 }
 
-/// The 68-byte STARTUPINFOA image GetStartupInfoA writes, in public struct field order. Quirk:
-/// cbReserved2/lpReserved2 are zero — that is what makes the CRT skip its inherited-stdio path.
-const STARTUP_INFO: [u8; 68] = {
-    let mut image = [0u8; 68];
-    put32(&mut image, 0, 68); // cb
-    put32(&mut image, 20, 1); // dwY
-    put32(&mut image, 24, 100); // dwXSize
-    put32(&mut image, 28, 100); // dwYSize
-    image[48] = 1; // wShowWindow (SW_SHOWNORMAL)
-    put32(&mut image, 56, INVALID_HANDLE_VALUE); // hStdInput
-    put32(&mut image, 60, INVALID_HANDLE_VALUE); // hStdOutput
-    put32(&mut image, 64, INVALID_HANDLE_VALUE); // hStdError
-    image
-};
-
 /// The 18-byte CPINFO image GetCPInfo writes. Quirk: LeadByte[0]==0 is what skips the CRT's DBCS
 /// parse.
 const CPINFO: [u8; 18] = {
@@ -82,63 +51,11 @@ const CPINFO: [u8; 18] = {
     image
 };
 
-// --- Process parameters page (the replayed ProcessParameters) -------
-
-/// Offset of the command line in the parameters page: the boot's user command line
-/// (`CORPUS\sync.exe event`), or the program name a build chooses ("ret0"), NUL-terminated.
-pub const CMDLINE_OFFSET: u32 = 0x000;
-/// The command line's staging room, terminator included: the longest kernel command line kept
-/// (`boot::cmdline::MAX_LEN`) fits.
-pub const CMDLINE_ROOM: usize = 0x200;
-/// Offset of the wide environment block; the empty replay is the lone double-NUL terminator.
-pub const ENV_OFFSET: u32 = 0x200;
-/// Offset of the module file name (the image's volume path, "ret0.exe"), NUL-terminated.
-pub const MODULE_OFFSET: u32 = 0x240;
-/// The module file name's staging room, terminator included.
-pub const MODULE_ROOM: usize = 260;
-
 // --- Services -------------------------------------------------------
 
 /// ExitProcess: end the process, carrying the exit code.
 fn svc_exit_process(_frame: &mut crate::user::TrapFrame, args: &[u32]) {
     crate::user::process_exited(args[0])
-}
-
-/// GetVersion: the replayed report dword.
-fn svc_get_version(frame: &mut crate::user::TrapFrame, _args: &[u32]) {
-    frame.eax = VERSION;
-}
-
-/// GetStartupInfoA: write the 68-byte replay image. Void return.
-fn svc_get_startup_info_a(frame: &mut crate::user::TrapFrame, args: &[u32]) {
-    frame.eax = 0;
-    let _ = write_user(args[0], &STARTUP_INFO);
-}
-
-/// GetStdHandle: the replayed fixed handles; anything else fails.
-fn svc_get_std_handle(frame: &mut crate::user::TrapFrame, args: &[u32]) {
-    frame.eax = match args[0] {
-        STD_INPUT_HANDLE => STD_INPUT,
-        STD_OUTPUT_HANDLE => STD_OUTPUT,
-        STD_ERROR_HANDLE => STD_ERROR,
-        _ => INVALID_HANDLE_VALUE,
-    };
-}
-
-/// GetFileType: a character device for every handle on this surface.
-fn svc_get_file_type(frame: &mut crate::user::TrapFrame, _args: &[u32]) {
-    frame.eax = FILE_TYPE_CHAR;
-}
-
-/// SetHandleCount: report the requested count (the CRT ignores the result).
-fn svc_set_handle_count(frame: &mut crate::user::TrapFrame, args: &[u32]) {
-    frame.eax = args[0];
-}
-
-/// Whether a handle is one this surface accepts console writes on: the replayed stdout and stderr
-/// char devices (stdin is read-only; no other handle exists).
-fn is_console_write_handle(handle: u32) -> bool {
-    handle == STD_OUTPUT || handle == STD_ERROR
 }
 
 /// Whether `handle` is a console handle: Windows 2000 kernel32's `CONSOLE_HANDLE` test (low two
@@ -190,51 +107,10 @@ fn waitable_of(handle: u32) -> Option<(crate::ob::ObjectId, *mut crate::sched::w
     Some((id, crate::ob::directory().waitable(id)?))
 }
 
-/// WriteFile: the console observable. Streams the caller's bytes to COM1 on the replayed
-/// stdout/stderr handles and reports the full count — the CRT's writer sums that value, so a short
-/// report breaks its math. Anything else fails; a bad buffer or out pointer ends the process, not
-/// the kernel.
-fn svc_write_file(frame: &mut crate::user::TrapFrame, args: &[u32]) {
-    let (handle, buffer, count, written_out, overlapped) =
-        (args[0], args[1], args[2], args[3], args[4]);
-    if !is_console_write_handle(handle) || overlapped != 0 {
-        frame.eax = 0; // FALSE: nothing written
-        return;
-    }
-    for i in 0..count {
-        let mut byte = [0u8; 1];
-        if read_user(buffer.wrapping_add(i), &mut byte).is_err() {
-            frame.eax = 0;
-            return;
-        }
-        console_write_byte(byte[0]);
-    }
-    if written_out != 0 && write_user(written_out, &count.to_le_bytes()).is_err() {
-        frame.eax = 0;
-        return;
-    }
-    frame.eax = 1; // TRUE: `count` bytes written
-}
-
-/// The console backend: one byte to COM1.
-#[cfg(target_arch = "x86")]
-fn console_write_byte(byte: u8) {
-    crate::hw::serial::write_byte_blocking(byte);
-}
-
-/// Host builds compile the dispatch tables but never run them, so the console backend is a no-op
-/// there.
-#[cfg(not(target_arch = "x86"))]
-fn console_write_byte(_byte: u8) {}
-
-/// GetCommandLineA: a pointer to the replayed command line.
-fn svc_get_command_line_a(frame: &mut crate::user::TrapFrame, _args: &[u32]) {
-    frame.eax = PARAMS_PAGE + CMDLINE_OFFSET;
-}
-
-/// GetEnvironmentStringsW: a pointer to the replayed (empty) wide environment block.
+/// GetEnvironmentStringsW: a pointer to the (empty) wide environment block the process parameters
+/// point at (`user::params::ENVIRONMENT_BUFFER`).
 fn svc_get_environment_strings_w(frame: &mut crate::user::TrapFrame, _args: &[u32]) {
-    frame.eax = PARAMS_PAGE + ENV_OFFSET;
+    frame.eax = PARAMS_PAGE + crate::user::params::ENVIRONMENT_BUFFER;
 }
 
 /// GetEnvironmentStrings (A variant): report failure. The CRT calls the W variant first and never
@@ -247,40 +123,6 @@ fn svc_get_environment_strings(frame: &mut crate::user::TrapFrame, _args: &[u32]
 /// through the A entry.
 fn svc_free_environment_strings(frame: &mut crate::user::TrapFrame, _args: &[u32]) {
     frame.eax = 1;
-}
-
-/// GetModuleFileNameA: copy the staged module name, NUL-terminated within the caller's size; report
-/// the copied length.
-fn svc_get_module_file_name(frame: &mut crate::user::TrapFrame, args: &[u32]) {
-    let module = args[0];
-    let buffer = args[1];
-    let max = args[2];
-    if module != 0 || max == 0 {
-        frame.eax = 0;
-        return;
-    }
-    // The staged name lives in the parameters page: user memory, which the program owns like any
-    // of its pages. It is read as user memory is, through the copy.
-    let mut name = [0u8; MODULE_ROOM];
-    if read_user(PARAMS_PAGE + MODULE_OFFSET, &mut name).is_err() {
-        frame.eax = 0;
-        return;
-    }
-    let len = name
-        .iter()
-        .position(|&byte| byte == 0)
-        .unwrap_or(name.len());
-    if len == name.len() {
-        frame.eax = 0; // unterminated staging: a kernel bug, fail safely
-        return;
-    }
-    let copy = len.min(max as usize - 1);
-    if write_user(buffer, &name[..copy]).is_err() || write_user(buffer + copy as u32, &[0]).is_err()
-    {
-        frame.eax = 0;
-        return;
-    }
-    frame.eax = copy as u32;
 }
 
 /// GetACP / GetOEMCP: the replayed codepages.
@@ -333,7 +175,7 @@ fn svc_get_string_type_w(frame: &mut crate::user::TrapFrame, args: &[u32]) {
             ok = false;
             break;
         }
-        let flags = crate::compat::cp1252::c1_flags(u16::from_le_bytes(wide));
+        let flags = rtl::cp1252::c1_flags(u16::from_le_bytes(wide));
         if write_user(out + 2 * i, &flags.to_le_bytes()).is_err() {
             ok = false;
             break;
@@ -417,7 +259,7 @@ fn svc_multi_byte_to_wide_char(frame: &mut crate::user::TrapFrame, args: &[u32])
             ok = false;
             break;
         }
-        let wide = crate::compat::cp1252::MB_TO_WC[byte[0] as usize];
+        let wide = rtl::cp1252::MB_TO_WC[byte[0] as usize];
         if write_user(dst + 2 * i, &wide.to_le_bytes()).is_err() {
             ok = false;
             break;
@@ -464,7 +306,7 @@ fn svc_wide_char_to_multi_byte(frame: &mut crate::user::TrapFrame, args: &[u32])
             ok = false;
             break;
         }
-        let byte = crate::compat::cp1252::wc_to_mb(u16::from_le_bytes(wide));
+        let byte = rtl::cp1252::wc_to_mb(u16::from_le_bytes(wide));
         if write_user(dst + i, &[byte]).is_err() {
             ok = false;
             break;
@@ -508,7 +350,7 @@ fn svc_lc_map_string_w(frame: &mut crate::user::TrapFrame, args: &[u32]) {
             ok = false;
             break;
         }
-        let mapped = crate::compat::cp1252::map_case(u16::from_le_bytes(wide), upper);
+        let mapped = rtl::cp1252::map_case(u16::from_le_bytes(wide), upper);
         if write_user(dst + 2 * i, &mapped.to_le_bytes()).is_err() {
             ok = false;
             break;
@@ -566,29 +408,6 @@ fn svc_virtual_alloc(frame: &mut crate::user::TrapFrame, args: &[u32]) {
 /// VirtualFree: nothing on this surface is ever freed through it; report success.
 fn svc_virtual_free(frame: &mut crate::user::TrapFrame, _args: &[u32]) {
     frame.eax = 1;
-}
-
-/// CloseHandle: release the table's claim on the handle, and its reference on what it names — an
-/// object goes with its last reference (a waiter parked on it holds one, so it stays parked on a
-/// live object), an open file's record with its handle. A close that names nothing is refused.
-fn svc_close_handle(frame: &mut crate::user::TrapFrame, args: &[u32]) {
-    #[cfg(target_arch = "x86")]
-    {
-        // The console handles are fixed replays with no table claim: closing one succeeds and
-        // changes nothing.
-        frame.eax = if is_console_handle(args[0])
-            || crate::user::args::calling_process().close_handle(args[0])
-        {
-            1
-        } else {
-            0
-        };
-    }
-    #[cfg(not(target_arch = "x86"))]
-    {
-        let _ = args;
-        frame.eax = 0;
-    }
 }
 
 /// INFINITE: the documented forever timeout.
@@ -842,12 +661,6 @@ fn svc_create_thread(frame: &mut crate::user::TrapFrame, args: &[u32]) {
     }
 }
 
-/// FlushFileBuffers: success floor — the console backend is unbuffered, so every write is already
-/// flushed.
-fn svc_flush_file_buffers(frame: &mut crate::user::TrapFrame, _args: &[u32]) {
-    frame.eax = 1;
-}
-
 /// SetThreadPriority: set a thread's base-priority increment from its process's base. The handle
 /// must name a thread; the value is the increment conversion (the band values, or one of the two
 /// saturation specials). The kernel's base-priority machinery requeues, boosts, or preempts as the
@@ -914,7 +727,8 @@ fn is_supported_open(access: u32, disposition: u32, flags: u32) -> bool {
 }
 
 /// CreateFileA: open an existing file on the boot volume for reading. The path resolves as the
-/// loader's does: root-relative, 8.3, case-folded. A new handle on success; INVALID_HANDLE_VALUE for
+/// loader's does: root-relative, 8.3, case-folded, a drive prefix and leading backslashes dropped
+/// (the boot volume is the only volume: GetModuleFileNameA's `C:\...` names the image). A new handle on success; INVALID_HANDLE_VALUE for
 /// any other request, a path that does not resolve or names a directory, or a full table.
 fn svc_create_file_a(frame: &mut crate::user::TrapFrame, args: &[u32]) {
     let (name, access, _share, _security, disposition, flags, _template) = (
@@ -936,7 +750,7 @@ fn svc_create_file_a(frame: &mut crate::user::TrapFrame, args: &[u32]) {
     #[cfg(target_arch = "x86")]
     {
         let found = crate::fs::fat32::volume::with_boot_volume(|volume| {
-            crate::fs::fat32::lookup::lookup(volume, &path[..length])
+            crate::fs::fat32::lookup::lookup(volume, crate::user::volume_path(&path[..length]))
         });
         if let Some(Ok(file)) = found {
             if !file.directory {
@@ -1123,32 +937,9 @@ pub fn lookup_service(number: u32) -> Option<(u32, ServiceFn)> {
     Some((arg_bytes, service))
 }
 
-/// Map the parameters page into `space` (the new process's): the command line (`command_line`, the program as invoked with its
-/// arguments), the empty environment, and the module file name — `module`, the volume path the
-/// image was loaded from, verbatim, so CreateFileA resolves GetModuleFileNameA's answer back to the
-/// image.
-#[cfg(target_arch = "x86")]
-pub fn init_params(space: &mut crate::mem::vm::AddressSpace, command_line: &[u8], module: &[u8]) {
-    assert!(
-        command_line.len() < CMDLINE_ROOM,
-        "command line too long for the staging"
-    );
-    assert!(
-        module.len() < MODULE_ROOM,
-        "module path too long for the staging"
-    );
-    let frame = crate::mem::paging::allocate_frame_phys();
-    // Zeroed: the environment's terminator, and the strings' NULs after their bytes.
-    crate::mem::paging::init_frame(frame, 0, &[]);
-    crate::mem::paging::write_frame(frame, CMDLINE_OFFSET as usize, command_line);
-    crate::mem::paging::write_frame(frame, MODULE_OFFSET as usize, module);
-    crate::mem::vm::map_prepared(space, PARAMS_PAGE, frame, crate::mem::vm::PAGE_READWRITE);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mem::paging::KERNEL_BASE;
 
     /// The registry's numbering: ExitProcess is the first service (SYS_EXIT), the others follow it
     /// from the base; numbers outside the registry name no service; the names are unique.
@@ -1156,8 +947,9 @@ mod tests {
     fn the_registry_numbers_from_its_base() {
         assert_eq!(
             SERVICES.len(),
-            49,
-            "the kernel's served surface, less GetLastError and GetCurrentProcess (kernel32's natives)"
+            37,
+            "the kernel's served surface, less kernel32's own console and start-up calls and its \
+             natives (the last error, the current process)"
         );
         assert_eq!(WIN32_SERVICE_BASE, 0x2000);
         assert_eq!(SERVICES[0].0, "ExitProcess");
@@ -1250,7 +1042,7 @@ mod tests {
         frame.eax = 1;
         svc_read_file(&mut frame, &[4, 0x0040_0000, 2, 0, 0x0050_0000]);
         assert_eq!(frame.eax, 0, "overlapped");
-        for handle in [4, STD_INPUT, STD_OUTPUT, INVALID_HANDLE_VALUE, 0] {
+        for handle in [4, 3, 7, INVALID_HANDLE_VALUE, 0] {
             frame.eax = 1;
             svc_read_file(&mut frame, &[handle, 0x0040_0000, 2, 0, 0]);
             assert_eq!(frame.eax, 0, "{handle:#x}");
@@ -1327,143 +1119,16 @@ mod tests {
         }
     }
 
-    /// The parameters layout: the three replays do not overlap.
+    /// The environment's replay pointer is the process parameters' empty block; the A variant
+    /// reports failure; the W/A free pair succeeds.
     #[test]
-    fn params_page_layout_is_consistent() {
-        assert_eq!(PARAMS_PAGE % 4096, 0);
-        assert!(PARAMS_PAGE < KERNEL_BASE);
-        assert!(PARAMS_PAGE != TEB_PAGE);
-        let cmdline = PARAMS_PAGE + CMDLINE_OFFSET;
-        let env = PARAMS_PAGE + ENV_OFFSET;
-        let module = PARAMS_PAGE + MODULE_OFFSET;
-        assert!(
-            cmdline + CMDLINE_ROOM as u32 <= env
-                && env + 64 <= module
-                && module + MODULE_ROOM as u32 <= PARAMS_PAGE + 4096
-        );
-        // The longest user command line the boot keeps fits, with its terminator.
-        assert!(crate::boot::cmdline::MAX_LEN <= CMDLINE_ROOM);
-    }
-
-    /// The version dword splits into the CRT's globals (its own shift/mask recipe, restated
-    /// independently).
-    #[test]
-    fn version_splits_like_the_crt() {
-        assert_eq!(VERSION, 0x0893_0005);
-        let major = VERSION & 0xFF;
-        let minor = (VERSION >> 8) & 0xFF;
-        let build = (VERSION >> 16) & 0xFFFF;
-        let platform = VERSION >> 31;
-        assert_eq!(major, 5);
-        assert_eq!(minor, 0);
-        assert_eq!(build, 2195);
-        assert_eq!(platform, 0);
-        assert_eq!((major << 8) | minor, 0x0500); // _winver
-        assert_eq!((platform << 15) | build, 0x0893); // _osver
-    }
-
-    /// The startup-info image against the capture; cbReserved2/ lpReserved2 zero is what skips the
-    /// CRT's inherited-stdio path.
-    #[test]
-    fn startup_info_image_matches_the_capture() {
-        assert_eq!(STARTUP_INFO.len(), 68);
-        assert_eq!(
-            u32::from_le_bytes(STARTUP_INFO[0..4].try_into().unwrap()),
-            68
-        );
-        // dwY
-        assert_eq!(
-            u32::from_le_bytes(STARTUP_INFO[20..24].try_into().unwrap()),
-            1
-        );
-        assert_eq!(
-            u32::from_le_bytes(STARTUP_INFO[24..28].try_into().unwrap()),
-            100
-        );
-        assert_eq!(
-            u32::from_le_bytes(STARTUP_INFO[28..32].try_into().unwrap()),
-            100
-        );
-        // dwFlags
-        assert_eq!(
-            u32::from_le_bytes(STARTUP_INFO[44..48].try_into().unwrap()),
-            0
-        );
-        // SW_SHOWNORMAL
-        assert_eq!(
-            u16::from_le_bytes(STARTUP_INFO[48..50].try_into().unwrap()),
-            1
-        );
-        // cbReserved2
-        assert_eq!(
-            u16::from_le_bytes(STARTUP_INFO[50..52].try_into().unwrap()),
-            0
-        );
-        // lpReserved2
-        assert_eq!(
-            u32::from_le_bytes(STARTUP_INFO[52..56].try_into().unwrap()),
-            0
-        );
-        for handle in [56, 60, 64] {
-            assert_eq!(
-                u32::from_le_bytes(STARTUP_INFO[handle..handle + 4].try_into().unwrap()),
-                0xFFFF_FFFF
-            );
-        }
-    }
-
-    /// The captured handle mapping; anything else fails.
-    #[test]
-    fn std_handles_replay_the_capture() {
+    fn the_environment_replays_the_parameters_block() {
         let mut frame = zero_frame();
-        for (index, handle) in [
-            (STD_INPUT_HANDLE, 3),
-            (STD_OUTPUT_HANDLE, 7),
-            (STD_ERROR_HANDLE, 0xB),
-        ] {
-            svc_get_std_handle(&mut frame, &[index]);
-            assert_eq!(frame.eax, handle);
-        }
-        svc_get_std_handle(&mut frame, &[0]);
-        assert_eq!(frame.eax, 0xFFFF_FFFF);
-        svc_get_std_handle(&mut frame, &[42]);
-        assert_eq!(frame.eax, 0xFFFF_FFFF);
-    }
-
-    /// FILE_TYPE_CHAR, classified as a character device by the CRT's own decode (0 unusable, 2
-    /// char, 3 pipe, else disk).
-    #[test]
-    fn file_type_replays_char_device() {
-        let mut frame = zero_frame();
-        svc_get_file_type(&mut frame, &[3]);
-        assert_eq!(frame.eax, 2);
-        // The CRT's flag decode, restated independently.
-        let device_flag = |kind: u32| match kind {
-            0 => "unusable",
-            2 => "char",
-            3 => "pipe",
-            _ => "disk",
-        };
-        assert_eq!(device_flag(frame.eax), "char");
-    }
-
-    /// SetHandleCount reports its argument back; the CRT ignores it.
-    #[test]
-    fn set_handle_count_is_the_identity() {
-        let mut frame = zero_frame();
-        svc_set_handle_count(&mut frame, &[0x20]);
-        assert_eq!(frame.eax, 0x20);
-    }
-
-    /// The replay pointers sit at the staged parameters offsets.
-    #[test]
-    fn string_pointers_replay_the_params_page() {
-        let mut frame = zero_frame();
-        svc_get_command_line_a(&mut frame, &[]);
-        assert_eq!(frame.eax, PARAMS_PAGE + CMDLINE_OFFSET);
         svc_get_environment_strings_w(&mut frame, &[]);
-        assert_eq!(frame.eax, PARAMS_PAGE + ENV_OFFSET);
-        // The A variant reports failure; the W/A free pair succeeds.
+        assert_eq!(
+            frame.eax,
+            PARAMS_PAGE + crate::user::params::ENVIRONMENT_BUFFER
+        );
         svc_get_environment_strings(&mut frame, &[]);
         assert_eq!(frame.eax, 0);
         svc_free_environment_strings(&mut frame, &[0x0032_0040]);
@@ -1487,24 +1152,17 @@ mod tests {
     /// corpus takes reaches them).
     #[test]
     fn never_called_shapes_resolve_to_their_floors() {
-        const NEVER_CALLED_ZERO: [&str; 6] = [
-            "TerminateProcess",
+        const NEVER_CALLED_ZERO: [&str; 4] = [
             "UnhandledExceptionFilter",
             "GetStringTypeA",
             "LCMapStringA",
             "RtlUnwind",
-            "SetStdHandle",
         ];
         let floor = |name: &str| SERVICES.iter().find(|&&(n, ..)| n == name).unwrap().2;
         for name in NEVER_CALLED_ZERO {
             assert_eq!(floor(name) as usize, svc_floor_zero as usize, "{name}");
         }
         assert_eq!(floor("VirtualFree") as usize, svc_virtual_free as usize);
-        assert_eq!(floor("CloseHandle") as usize, svc_close_handle as usize);
-        assert_eq!(
-            floor("FlushFileBuffers") as usize,
-            svc_flush_file_buffers as usize
-        );
         assert_eq!(
             floor("SetFilePointer") as usize,
             svc_set_file_pointer as usize
@@ -1512,33 +1170,13 @@ mod tests {
         let mut frame = zero_frame();
         svc_virtual_free(&mut frame, &[0; 4]);
         assert_eq!(frame.eax, 1);
-        // A close of a handle no table holds is refused (the target resolves the current process's
-        // table; the host body is the same refusal).
-        svc_close_handle(&mut frame, &[3]);
-        assert_eq!(frame.eax, 0);
-        svc_flush_file_buffers(&mut frame, &[0xF]);
-        assert_eq!(frame.eax, 1);
         // A seek on a handle that names no open file fails honestly.
         svc_set_file_pointer(&mut frame, &[0; 4]);
         assert_eq!(frame.eax, 0xFFFF_FFFF); // INVALID_SET_FILE_POINTER
 
-        // SetStdHandle reports failure without side effects.
+        // The floors report zero without side effects.
         svc_floor_zero(&mut frame, &[]);
         assert_eq!(frame.eax, 0);
-    }
-
-    /// WriteFile's handle rules: only the replayed stdout and stderr char devices accept writes;
-    /// stdin (read-only) and anything else fail.
-    #[test]
-    fn console_write_handles_are_stdout_and_stderr() {
-        assert!(is_console_write_handle(0x07)); // stdout
-        assert!(is_console_write_handle(0x0B)); // stderr
-        assert!(!is_console_write_handle(0x0F));
-        assert!(!is_console_write_handle(0x03)); // stdin
-        assert!(!is_console_write_handle(0));
-        assert!(!is_console_write_handle(1));
-        assert!(!is_console_write_handle(0xFFFF_FFFF));
-        assert!(!is_console_write_handle(0x1234_5678));
     }
 
     /// The console tag: every replayed std handle carries it and object handles (multiples of four)
@@ -1546,7 +1184,7 @@ mod tests {
     /// handle (the bit-28 mask).
     #[test]
     fn console_handles_are_told_apart_from_object_handles() {
-        for handle in [STD_INPUT, STD_OUTPUT, STD_ERROR] {
+        for handle in [3, 7, 0xB] {
             assert!(is_console_handle(handle), "{handle:#x}");
         }
         for handle in [4, 8, 12, 0x3C] {
@@ -1554,28 +1192,6 @@ mod tests {
         }
         assert!(!is_console_handle(INVALID_HANDLE_VALUE));
         assert!(!is_console_handle(0));
-    }
-
-    /// WriteFile's host-testable decision shapes (the copy itself only runs on target): a bad
-    /// handle or overlapped request fails, a zero-length write succeeds with nothing to report.
-    #[test]
-    fn write_file_decision_shapes() {
-        let mut frame = zero_frame();
-        // Bad handle: FALSE before the buffer is touched.
-        let stdin_args = [0x03, 0x0040_0000, 14, 0, 0];
-        svc_write_file(&mut frame, &stdin_args);
-        assert_eq!(frame.eax, 0);
-        let closed_args = [0xFFFF_FFFF, 0x0040_0000, 14, 0, 0];
-        svc_write_file(&mut frame, &closed_args);
-        assert_eq!(frame.eax, 0);
-        // Overlapped I/O does not exist on this surface.
-        let overlapped_args = [0x07, 0x0040_0000, 14, 0, 0x0050_0000];
-        svc_write_file(&mut frame, &overlapped_args);
-        assert_eq!(frame.eax, 0);
-        // Zero bytes, nowhere to report: TRUE, nothing written.
-        let empty_args = [0x07, 0x0040_0000, 0, 0, 0];
-        svc_write_file(&mut frame, &empty_args);
-        assert_eq!(frame.eax, 1);
     }
 
     fn zero_frame() -> crate::user::TrapFrame {

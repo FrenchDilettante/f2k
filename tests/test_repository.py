@@ -244,13 +244,13 @@ def kernel32_exports() -> list[dict]:
 
 
 # The kernel32 exports the kernel still serves (the kernel's transitional Win32 services: `legacy`
-# handlers and `floor` answers, generated int 2Eh stubs). Each increment moves its group to
-# kernel32's own code over ntdll and lowers this; C1 retires the last.
-SERVED_KERNEL32_EXPORTS = 48
+# handlers and `floor` answers, generated int 2Eh stubs). The move to kernel32's own code goes
+# group by group over ntdll and lowers this; the last group's move retires it.
+SERVED_KERNEL32_EXPORTS = 36
 
 # The kernel32 exports the corpus imports that are not built yet (`unimplemented` stubs failing with
 # ERROR_CALL_NOT_IMPLEMENTED, each naming its increment). It only goes down.
-UNIMPLEMENTED_KERNEL32_EXPORTS = 126
+UNIMPLEMENTED_KERNEL32_EXPORTS = 117
 
 
 def test_served_kernel32_exports_only_go_down():

@@ -10,7 +10,6 @@
 
 pub mod console;
 pub mod locale;
-pub mod startup;
 
 // `GROUPS`: every API group's key, title and members, generated from the export spec
 // (userland/kernel32/exports.toml) by the build script.

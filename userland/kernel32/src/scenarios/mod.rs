@@ -2,7 +2,15 @@
 //! (`scenarios` in userland/kernel32/exports.toml), calling the export as a program does — by its
 //! stdcall body, with the caller's memory where it is. `scripts/ledger.py` reports over them, and
 //! runs them. A scenario pinning a known divergence is checked in disabled, its reason leading with
-//! the gap's id (`#[ignore = "K32-4: ..."]`).
-//!
-//! None yet: the group modules arrive with the exports they pin, as later work moves them here
-//! (the trivial natives are assembly, pinned by the fixtures).
+//! the gap's id (`#[ignore = "K32-4: ..."]`, or the increment that closes it, `B5: ...`).
+
+mod console;
+mod files;
+mod modules;
+mod startup;
+mod threads;
+
+/// The calling test thread's last error.
+fn last_error() -> u32 {
+    crate::base::last_error()
+}

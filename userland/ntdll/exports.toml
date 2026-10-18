@@ -14,6 +14,10 @@ key = "nt"
 title = "system services"
 
 [[group]]
+key = "csr"
+title = "the client-server runtime"
+
+[[group]]
 key = "exceptions"
 title = "exceptions"
 
@@ -29,6 +33,24 @@ group = "nt"
 args = ["handle Handle"]
 impl = { syscall = "crate::nt::object::close" }
 pinned_by = ["files/open"]
+
+[[export]]
+name = "NtTerminateProcess"
+group = "nt"
+args = ["handle ProcessHandle", "u32 ExitStatus"]
+impl = { syscall = "crate::nt::process::terminate_process" }
+note = "the calling process's handle ends it (no other process is reachable); the null handle, ExitProcess's first step, comes with ExitProcess (B7)"
+unpinned = "kernel32's TerminateProcess is its only caller, and no fixture block calls that (the C runtime's fatal paths do)"
+
+# --- the client-server runtime (src/csr.s) --------------------------------------------------------
+
+[[export]]
+name = "CsrClientCallServer"
+group = "csr"
+args = ["ptr ApiMessage", "ptr CaptureBuffer", "u32 ApiNumber", "u32 ArgLength"]
+impl = { native = "CsrClientCallServer" }
+note = "one internal service (SYS_CSR_CALL) to the kernel's console server, F2K's stand-in for csrss"
+pinned_by = ["runtime/console", "bare/badptr"]
 
 # --- the status mapping (src/status.rs, over rtl::status) ------------------------------------------
 

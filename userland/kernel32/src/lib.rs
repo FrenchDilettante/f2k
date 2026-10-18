@@ -7,16 +7,24 @@
 //! spec declares it `impl = { native = "<Name>" }`). The DLL (src/main.rs) links this library; the
 //! host tests run its code against [`nt`]'s stand-ins.
 //!
-//! The shared helpers are here ([`base`]: the last error, and a failed service's status mapped to
-//! it). The exports' bodies are not, yet: the trivial natives are assembly (src/natives.s), the
-//! rest are the kernel's transitional Win32 services (generated stubs) or unimplemented stubs, which
-//! later work rewrites here group by group (`tests/test_repository.py` ratchets both counts
-//! down).
+//! The shared helpers are [`base`]'s (the last error, a failed service's status mapped to it, the
+//! PEB and the process parameters). The groups: the console ([`console`], to the console server),
+//! the start-up calls ([`startup`]), the image's name ([`module`]), the handle calls ([`sync`],
+//! [`files`]) and the process's end ([`process`]). The trivial natives are assembly
+//! (src/natives.s); the rest are the kernel's transitional Win32 services (generated stubs) or
+//! unimplemented stubs, which later work rewrites here group by group
+//! (`tests/test_repository.py` ratchets both counts down).
 
 #![cfg_attr(not(test), no_std)]
 
 pub mod base;
+pub mod console;
+pub mod files;
+pub mod module;
 pub mod nt;
+pub mod process;
+pub mod startup;
+pub mod sync;
 
 #[cfg(test)]
 mod scenarios;

@@ -121,7 +121,7 @@ fn the_system_dlls_serve_the_registry() {
         ("ExitProcess", 4),
         ("MultiByteToWideChar", 24),
         ("WideCharToMultiByte", 32),
-        ("WriteFile", 20),
+        ("ReadFile", 20),
     ] {
         let &(_, found, _) = SERVICES
             .iter()
@@ -129,8 +129,9 @@ fn the_system_dlls_serve_the_registry() {
             .unwrap();
         assert_eq!(found, arg_bytes, "{name}");
     }
-    // The natives: the trivial ones, kernel32's own assembly.
-    assert_eq!(NATIVE_EXPORTS.len(), 9);
+    // The natives: kernel32's own code (the trivial ones its assembly; the console and start-up
+    // calls its Rust).
+    assert_eq!(NATIVE_EXPORTS.len(), 30);
     for &(name, _) in &NATIVE_EXPORTS {
         let address = kernel32_export(name).unwrap_or_else(|| panic!("kernel32 exports no {name}"));
         addresses.push(address);

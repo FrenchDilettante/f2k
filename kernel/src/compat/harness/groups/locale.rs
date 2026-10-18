@@ -2,7 +2,8 @@
 //! pages (1252, 437, 850, UTF-8) described; conversions, case mapping, and character typing
 //! answered from the code page tables. The runtime fixture's locale block is the contract.
 
-use crate::compat::cp1252;
+use rtl::cp1252;
+
 use crate::compat::harness::surface::{Fixture, UNMAPPED};
 
 const CP_ACP: u32 = 0;

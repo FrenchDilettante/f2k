@@ -1,8 +1,8 @@
 # kernel32's native exports: functions that run entirely in user mode, as Windows 2000's own
 # kernel32 runs them. They read and write the calling thread's TEB through FS (the NT layout:
-# LastErrorValue at 34h), return the pseudo-handles, or run the locked read-modify-write sequences
-# (atomic on any processor, with no kernel transition). Every export is stdcall: its `ret` pops its
-# argument block.
+# ClientId at 20h, LastErrorValue at 34h), return the pseudo-handles, or run the locked
+# read-modify-write sequences (atomic on any processor, with no kernel transition). Every export is
+# stdcall: its `ret` pops its argument block.
 .text
 
 .p2align 4
@@ -17,6 +17,20 @@ _f2k_export_SetLastError:
     mov eax, dword ptr [esp+4]
     mov dword ptr fs:[0x34], eax
     ret 4
+
+# The calling thread's process's client id (TEB ClientId.UniqueProcess).
+.p2align 4
+.globl _f2k_export_GetCurrentProcessId
+_f2k_export_GetCurrentProcessId:
+    mov eax, dword ptr fs:[0x20]
+    ret
+
+# The calling thread's client id (TEB ClientId.UniqueThread).
+.p2align 4
+.globl _f2k_export_GetCurrentThreadId
+_f2k_export_GetCurrentThreadId:
+    mov eax, dword ptr fs:[0x24]
+    ret
 
 # The current-thread pseudo-handle.
 .p2align 4

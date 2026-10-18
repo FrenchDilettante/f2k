@@ -61,18 +61,8 @@ pub fn signature(export: &str) -> &'static Signature {
 
 /// The registry's handlers the host runs: the ones whose work is the caller's memory and the
 /// surface's constants (the kept scenarios' exports).
-const HOST_RUNNABLE: [&str; 18] = [
-    "GetStdHandle",
-    "GetFileType",
-    "SetHandleCount",
-    "WriteFile",
-    "FlushFileBuffers",
-    "SetStdHandle",
+const HOST_RUNNABLE: [&str; 8] = [
     "SetFilePointer",
-    "GetVersion",
-    "GetCommandLineA",
-    "GetStartupInfoA",
-    "GetModuleFileNameA",
     "GetACP",
     "GetOEMCP",
     "GetCPInfo",

@@ -79,6 +79,9 @@ disk-smoke = []
 exportgen = { path = "../tools/exportgen" }
 
 [dependencies]
+# The runtime library the system DLLs compile too (as Windows 2000's Rtl is linked into both ntdll
+# and ntoskrnl): the code page tables, the console server's rules.
+rtl = { path = "../userland/rtl" }
 # Core no_std crates for future use
 # spin = "0.9.8"        # Spinlocks and mutable statics
 # bitflags = "2.0"      # Bit flags

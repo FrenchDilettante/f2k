@@ -12,7 +12,9 @@
 //! code end the process, not the kernel.
 
 pub mod args;
+pub mod params;
 pub mod syscall;
+pub mod teb;
 pub mod userheap;
 
 /// The fault-test stub's code page (the corpus programs' preferred base, which the fault-test builds
@@ -34,16 +36,21 @@ pub const USER_STACK_PAGE: u32 = 0x0030_0000;
 pub const USER_STACK_LOW_PAGE: u32 = USER_STACK_PAGE - 4096;
 /// Initial user ESP: one past the stack's top page.
 pub const USER_STACK_TOP: u32 = USER_STACK_PAGE + 4096;
-/// The thread block page, reached through the FS-based TEB segment (the CRT installs its exception
-/// frames at fs:[0] first thing); mapped zeroed and writable by the loader.
+/// The main thread's TEB page, reached through the FS-based TEB segment (the CRT installs its
+/// exception frames at fs:[0] first thing); the loader maps it with the fresh TEB's words
+/// ([`teb`]).
 pub const TEB_PAGE: u32 = 0x0031_0000;
 /// The EFLAGS every planted user context carries: bit 1 (architecturally one) plus the interrupt
 /// flag — user code runs enabled, IOPL 0 (port I/O stays privileged).
 pub const USER_EFLAGS: u32 = 0x0000_0202;
 
-/// The process parameters page: the staged command line, environment and module-name replays (see
-/// `kernel32`).
+/// The process parameters pages: RTL_USER_PROCESS_PARAMETERS and its strings ([`params`], two
+/// pages from here).
 pub const PARAMS_PAGE: u32 = 0x0032_0000;
+
+/// The PEB page: the process environment block ([`teb`]), and past the PEB proper the system DLLs'
+/// own per-process slots.
+pub const PEB_PAGE: u32 = 0x0033_0000;
 
 /// The region per-thread TEB pages allocate from (user window 2, mapped by no run path today). A
 /// process's first thread keeps the fixed TEB page below; later threads take one page from here.
@@ -654,6 +661,7 @@ mod tests {
             USER_STACK_LOW_PAGE,
             TEB_PAGE,
             PARAMS_PAGE,
+            PEB_PAGE,
         ] {
             assert_eq!(page % 4096, 0);
             assert!(page < KERNEL_BASE);
@@ -663,6 +671,7 @@ mod tests {
         assert_eq!(USER_STACK_TOP, USER_STACK_PAGE + 4096);
         assert!(TEB_PAGE > USER_STACK_TOP);
         assert!(PARAMS_PAGE > TEB_PAGE);
-        assert!(PARAMS_PAGE + 4096 <= USER_CODE_PAGE);
+        assert!(PARAMS_PAGE + params::PAGES * 4096 <= PEB_PAGE);
+        assert!(PEB_PAGE + 4096 <= USER_CODE_PAGE);
     }
 }

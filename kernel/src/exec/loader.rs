@@ -126,11 +126,11 @@ static mut IMAGE_STAGING: crate::mem::paging::Aligned<[u8; STAGING_SIZE]> =
 /// refused, not moved. Quirk: the CRT region is open-ended — a NULL reservation starts at its base
 /// and extends as far as the request asks — so only its 64 KiB minimum is reserved here; a larger
 /// reservation that would reach an image's pages fails, as the address space refuses an overlap.
-const SYSTEM_REGIONS: [(&str, u32, u32); 9] = {
+const SYSTEM_REGIONS: [(&str, u32, u32); 10] = {
     use crate::user::userheap::{CRT_REGION_BASE, HEAP_REGION_BASE, HEAP_REGION_MAX};
     use crate::user::{
-        PARAMS_PAGE, TEB_PAGE, THREAD_STACK_PAGES, THREAD_STACK_REGION, THREAD_TEB_REGION,
-        USER_STACK_LOW_PAGE, USER_STACK_TOP,
+        PARAMS_PAGE, PEB_PAGE, TEB_PAGE, THREAD_STACK_PAGES, THREAD_STACK_REGION,
+        THREAD_TEB_REGION, USER_STACK_LOW_PAGE, USER_STACK_TOP,
     };
     const PAGE: u32 = crate::mem::paging::PAGE_SIZE;
     const CHILDREN: u32 = crate::process::CHILD_THREADS as u32;
@@ -138,7 +138,12 @@ const SYSTEM_REGIONS: [(&str, u32, u32); 9] = {
     [
         ("main thread stack", USER_STACK_LOW_PAGE, USER_STACK_TOP),
         ("main thread TEB", TEB_PAGE, TEB_PAGE + PAGE),
-        ("process parameters", PARAMS_PAGE, PARAMS_PAGE + PAGE),
+        (
+            "process parameters",
+            PARAMS_PAGE,
+            PARAMS_PAGE + crate::user::params::PAGES * PAGE,
+        ),
+        ("process environment block", PEB_PAGE, PEB_PAGE + PAGE),
         (
             "child thread TEBs",
             THREAD_TEB_REGION,
@@ -310,9 +315,9 @@ fn page_writable(image: &Image, page_rva: u32) -> bool {
 }
 
 /// Load `file` as the new current process — parse, stage, create the process, snap the imports,
-/// map the image, stack, TEB and parameters pages — and return its entry point for the main
-/// thread's ladder. `name` names the process; `command_line` is staged as its command line, and
-/// `path`, the file's volume path, as its module file name.
+/// map the image, stack, TEB, parameters and PEB pages — and return its entry point for the main
+/// thread's ladder. `name` names the process; `command_line` is the process parameters' command
+/// line, and `path`, the file's volume path, their image path (in its Win32 form, `C:\...`).
 #[cfg(target_arch = "x86")]
 pub fn load_image(file: &[u8], path: &[u8], name: &'static str, command_line: &[u8]) -> u32 {
     use crate::mem::paging::{self, PAGE_SIZE};
@@ -361,7 +366,9 @@ pub fn load_image(file: &[u8], path: &[u8], name: &'static str, command_line: &[
     // page; the switch into the thread installs it as the TSS esp0), and fresh heap bookkeeping.
     // Every mapping below (system DLLs, image, stack, TEB, params) lands in this process's
     // directory and its services see this process's heap.
-    let space = crate::process::Process::start(name).vm();
+    let process = crate::process::Process::start(name);
+    let (process_id, thread_id) = (process.id(), process.main_thread().thread_id());
+    let space = process.vm();
     // The regions first: every user page the kernel maps lies in one.
     seed_regions(space, image.image_base, image.size_of_image);
 
@@ -387,11 +394,33 @@ pub fn load_image(file: &[u8], path: &[u8], name: &'static str, command_line: &[
         vm::map_zeroed(space, stack_page, vm::PAGE_READWRITE);
     }
 
-    // The thread block page, reached through the TEB segment.
-    vm::map_zeroed(space, TEB_PAGE, vm::PAGE_READWRITE);
+    // The main thread's TEB, reached through the TEB segment: its stack, its client id and its
+    // process's, the PEB.
+    crate::user::teb::map_teb(
+        space,
+        &crate::user::teb::TebInit {
+            teb: TEB_PAGE,
+            stack_base: USER_STACK_TOP,
+            stack_limit: USER_STACK_LOW_PAGE,
+            deallocation_stack: USER_STACK_LOW_PAGE,
+            process_id,
+            thread_id,
+            peb: crate::user::PEB_PAGE,
+        },
+    );
 
-    // The process parameters page (staged replays).
-    crate::compat::kernel32::init_params(space, command_line, path);
+    // The process parameters (the command line, the image's path, the standard handles), and the
+    // PEB pointing at them: the system's version and the image's subsystem.
+    crate::user::params::map(space, command_line, path);
+    crate::user::teb::map_peb(
+        space,
+        &crate::user::teb::PebInit {
+            image_base: image.image_base,
+            parameters: crate::user::PARAMS_PAGE,
+            subsystem: image.subsystem,
+            subsystem_version: image.subsystem_version,
+        },
+    );
 
     crate::serial_println!(
         "F2K: image loaded (base {:#010x}, entry {:#010x}, {} pages, {} imports snapped)",

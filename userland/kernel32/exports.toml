@@ -120,7 +120,9 @@ pinned_by = ["bare/*", "files/*", "fswrite/*", "memory/*", "runtime/*", "threads
 name = "TerminateProcess"
 group = "termination"
 args = ["handle hProcess", "u32 uExitCode"]
-impl = { floor = "FALSE, the process not ended: the corpus imports it but never calls it" }
+impl = { native = "TerminateProcess" }
+note = "the C runtime's fatal paths (abort, a /GS failure) call it; no fixture block reaches them"
+scenarios = ["terminations_reach_what_their_handles_name"]
 
 [[export]]
 name = "GetCurrentProcess"
@@ -216,9 +218,10 @@ pinned_by = ["runtime/module"]
 name = "GetModuleHandleA"
 group = "termination"
 args = ["strA?[261] lpModuleName"]
-impl = { unimplemented = "B10: modules" }
-fails = "NULL"
+impl = { native = "GetModuleHandleA" }
+note = "the image's handle for a null name (the PEB's ImageBaseAddress); a name waits for the module lists (B10), ERROR_CALL_NOT_IMPLEMENTED until then"
 pinned_by = ["memory/image", "runtime/module", "runtime/teb"]
+scenarios = ["get_module_handle_of_null_is_the_image", "get_module_handle_finds_kernel32_by_name"]
 
 # --- command line / startup info ------------------------------------------------------------------
 
@@ -226,7 +229,7 @@ pinned_by = ["memory/image", "runtime/module", "runtime/teb"]
 name = "GetCommandLineA"
 group = "startup"
 args = []
-impl = { legacy = "svc_get_command_line_a" }
+impl = { native = "GetCommandLineA" }
 pinned_by = ["bare/*", "files/*", "fswrite/*", "memory/*", "runtime/*"]
 scenarios = ["get_command_line_is_the_same_pointer_every_call"]
 
@@ -234,23 +237,23 @@ scenarios = ["get_command_line_is_the_same_pointer_every_call"]
 name = "GetStartupInfoA"
 group = "startup"
 args = ["ptr lpStartupInfo"]
-impl = { legacy = "svc_get_startup_info_a" }
+impl = { native = "GetStartupInfoA" }
 pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
-scenarios = ["get_startup_info_fills_the_replayed_image", "get_startup_info_returns_zero"]
+scenarios = ["get_startup_info_fills_the_replayed_image"]
 
 [[export]]
 name = "GetModuleFileNameA"
 group = "startup"
 args = ["handle hModule", "ptr lpFilename", "u32 nSize"]
-impl = { legacy = "svc_get_module_file_name" }
+impl = { native = "GetModuleFileNameA" }
 pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
-scenarios = ["get_module_file_name_refuses_module_handles_and_empty_buffers"]
+scenarios = ["get_module_file_name_refuses_module_handles_and_empty_buffers", "get_module_file_name_copies_the_full_path"]
 
 [[export]]
 name = "GetVersion"
 group = "startup"
 args = []
-impl = { legacy = "svc_get_version" }
+impl = { native = "GetVersion" }
 pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
 scenarios = ["get_version_reports_5_0_build_2195"]
 
@@ -258,9 +261,9 @@ scenarios = ["get_version_reports_5_0_build_2195"]
 name = "GetVersionExA"
 group = "startup"
 args = ["ptr lpVersionInformation"]
-impl = { unimplemented = "B1: console and process start-up" }
-fails = "FALSE"
+impl = { native = "GetVersionExA" }
 pinned_by = ["runtime/version"]
+scenarios = ["get_version_ex_reports_service_pack_4"]
 
 [[export]]
 name = "FormatMessageA"
@@ -276,7 +279,7 @@ pinned_by = ["runtime/lasterror"]
 name = "GetStdHandle"
 group = "console"
 args = ["u32 nStdHandle"]
-impl = { legacy = "svc_get_std_handle" }
+impl = { native = "GetStdHandle" }
 pinned_by = [
     "bare/*",
     "files/*",
@@ -287,21 +290,25 @@ pinned_by = [
     "sync/*",
     "threads/*",
 ]
-scenarios = ["get_std_handle_replays_the_captured_handles", "set_std_handle_answers_with_the_floor"]
+scenarios = [
+    "get_std_handle_replays_the_captured_handles",
+    "get_std_handle_refuses_an_unknown_type_with_invalid_handle",
+]
 
 [[export]]
 name = "GetFileType"
 group = "console"
 args = ["handle hFile"]
-impl = { legacy = "svc_get_file_type" }
+impl = { native = "GetFileType" }
 pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
-scenarios = ["get_file_type_reports_a_character_device"]
+scenarios = ["get_file_type_answers_the_device_type"]
+note = "a console handle naming a console object is FILE_TYPE_CHAR (VerifyConsoleIoHandle at the console server); any other handle FILE_TYPE_DISK until NtQueryVolumeInformationFile reports its device (B8)"
 
 [[export]]
 name = "SetHandleCount"
 group = "console"
 args = ["u32 uNumber"]
-impl = { legacy = "svc_set_handle_count" }
+impl = { native = "SetHandleCount" }
 pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
 scenarios = ["set_handle_count_reports_its_argument"]
 
@@ -309,7 +316,7 @@ scenarios = ["set_handle_count_reports_its_argument"]
 name = "WriteFile"
 group = "console"
 args = ["handle hFile", "ptr lpBuffer", "u32 nNumberOfBytesToWrite", "ptr lpNumberOfBytesWritten", "ptr lpOverlapped"]
-impl = { legacy = "svc_write_file" }
+impl = { native = "WriteFile" }
 pinned_by = [
     "bare/*",
     "files/*",
@@ -325,12 +332,13 @@ scenarios = [
     "write_file_refuses_other_handles_and_overlapped_requests",
     "write_file_writes_to_the_console",
 ]
+note = "a console handle's bytes go to WriteConsoleA (its OVERLAPPED the reserved argument), as Windows 2000's WriteFile hands them; a file handle's write is NtWriteFile's (B9), ERROR_CALL_NOT_IMPLEMENTED until then"
 
 [[export]]
 name = "CloseHandle"
 group = "console"
 args = ["handle hObject"]
-impl = { legacy = "svc_close_handle" }
+impl = { native = "CloseHandle" }
 pinned_by = [
     "files/*",
     "fswrite/create",
@@ -353,14 +361,16 @@ pinned_by = [
     "sync/*",
     "threads/*",
 ]
+scenarios = ["console_handles_close_and_duplicate_at_their_server", "close_handle_closes_kernel_handles_through_nt_close"]
 
 [[export]]
 name = "FlushFileBuffers"
 group = "console"
 args = ["handle hFile"]
-impl = { legacy = "svc_flush_file_buffers" }
+impl = { native = "FlushFileBuffers" }
 pinned_by = ["fswrite/write"]
 scenarios = ["flush_file_buffers_succeeds"]
+note = "a console handle's input buffer is flushed at the console server (FlushConsoleInputBuffer: an output handle is ERROR_INVALID_HANDLE), as Windows 2000's; a file handle's flush succeeds until NtFlushBuffersFile (B9)"
 
 [[export]]
 name = "GetLastError"
@@ -420,8 +430,8 @@ scenarios = ["set_file_pointer_refuses_non_file_handles"]
 name = "SetStdHandle"
 group = "console"
 args = ["u32 nStdHandle", "handle hHandle"]
-impl = { floor = "FALSE, no effect: the corpus imports it but never calls it" }
-scenarios = ["set_std_handle_answers_with_the_floor"]
+impl = { native = "SetStdHandle" }
+scenarios = ["set_std_handle_replaces_the_parameters_handle"]
 
 [[export]]
 name = "SetLastError"
@@ -475,35 +485,36 @@ pinned_by = [
 name = "GetConsoleCP"
 group = "console"
 args = []
-impl = { unimplemented = "B1: console and process start-up" }
-fails = "never"
+impl = { native = "GetConsoleCP" }
 pinned_by = ["runtime/console"]
+scenarios = ["the_console_code_pages_are_the_oem_one"]
 
 [[export]]
 name = "GetConsoleOutputCP"
 group = "console"
 args = []
-impl = { unimplemented = "B1: console and process start-up" }
-fails = "never"
+impl = { native = "GetConsoleOutputCP" }
 pinned_by = ["runtime/console"]
+scenarios = ["the_console_code_pages_are_the_oem_one"]
 
 [[export]]
 name = "GetConsoleMode"
 group = "console"
 args = ["handle hConsoleHandle", "ptr<u32> lpMode"]
-impl = { unimplemented = "B1: console and process start-up" }
-fails = "FALSE"
+impl = { native = "GetConsoleMode" }
 pinned_by = ["runtime/console"]
+scenarios = ["get_console_mode_answers_per_handle"]
 
 [[export]]
 name = "WriteConsoleA"
 group = "console"
 args = ["handle hConsoleOutput", "ptr lpBuffer", "u32 nNumberOfCharsToWrite", "ptr<u32> lpNumberOfCharsWritten", "ptr lpReserved"]
-impl = { unimplemented = "B1: console and process start-up" }
-fails = "FALSE"
+impl = { native = "WriteConsoleA" }
 pinned_by = ["runtime/console", "bare/badptr"]
 
 # --- environment ----------------------------------------------------------------------------------
+note = "the bytes to the console server (CsrClientCallServer); kernel32's WriteFile hands a console handle's bytes here"
+scenarios = ["write_console_a_writes_to_the_console", "write_console_a_count_pointer_and_empty_writes", "write_console_a_refuses_other_handles_and_reserved_arguments", "write_console_a_reports_buffers_it_cannot_read"]
 
 [[export]]
 name = "GetEnvironmentStrings"
@@ -1063,16 +1074,14 @@ pinned_by = ["sched/freeze", "sched/preempt", "threads/*"]
 name = "GetCurrentThreadId"
 group = "threads"
 args = []
-impl = { unimplemented = "B1: console and process start-up" }
-fails = "never"
+impl = { native = "GetCurrentThreadId" }
 pinned_by = ["runtime/teb", "sync/critsec", "threads/create", "threads/priority", "threads/scale"]
 
 [[export]]
 name = "GetCurrentProcessId"
 group = "threads"
 args = []
-impl = { unimplemented = "B1: console and process start-up" }
-fails = "never"
+impl = { native = "GetCurrentProcessId" }
 pinned_by = ["runtime/teb"]
 
 [[export]]
@@ -1129,9 +1138,10 @@ pinned_by = ["sync/interlocked"]
 name = "DuplicateHandle"
 group = "threads"
 args = ["handle hSourceProcessHandle", "handle hSourceHandle", "handle hTargetProcessHandle", "ptr<u32> lpTargetHandle", "u32 dwDesiredAccess", "bool bInheritHandle", "u32 dwOptions"]
-impl = { unimplemented = "B5: synchronization and APCs" }
-fails = "FALSE"
+impl = { native = "DuplicateHandle" }
 pinned_by = ["files/handles", "sync/handles", "threads/create"]
+note = "a console handle is its server's to duplicate (DuplicateConsoleHandle); any other handle is NtDuplicateObject's (B5), ERROR_CALL_NOT_IMPLEMENTED until then"
+scenarios = ["console_handles_close_and_duplicate_at_their_server", "duplicate_handle_duplicates_kernel_handles"]
 
 [[export]]
 name = "ExitThread"

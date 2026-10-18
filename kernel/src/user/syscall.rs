@@ -8,7 +8,8 @@
 //!   serve is STATUS_NOT_IMPLEMENTED;
 //! - from `WIN32_SERVICE_BASE` (0x2000): the transitional Win32 services (kernel32's stubs over
 //!   the kernel's handlers, `compat::kernel32`), the Win32 answer in EAX;
-//! - [`SYS_THREAD_EXIT`]: the F2K-internal thread exit ntdll's trampoline raises.
+//! - [`SYS_THREAD_EXIT`]: the F2K-internal thread exit ntdll's trampoline raises;
+//! - [`SYS_CSR_CALL`]: the F2K-internal client-server call, ntdll's CsrClientCallServer (`csr`).
 //!
 //! Anything else is STATUS_INVALID_SYSTEM_SERVICE. Windows 2000 masks the number (its table index
 //! in bits 12-13, the service in the low 12 bits); F2K compares it whole. The gate is a 32-bit
@@ -42,6 +43,12 @@ pub const SYS_EXIT: u32 = 0x2001;
 /// (F2kThreadExitTrampoline) raises the gate on this number, carrying the user function's return
 /// value in the argument register.
 pub const SYS_THREAD_EXIT: u32 = 0x8000_0000;
+
+/// The internal client-server call (ntdll's CsrClientCallServer, F2K's stand-in for Windows 2000's
+/// LPC request to csrss): EDX points at its four arguments — the message, the capture buffer, the
+/// API number and the API data's length — which the kernel's console server answers
+/// ([`crate::csr`]), the message's ReturnValue in EAX.
+pub const SYS_CSR_CALL: u32 = 0x8000_0010;
 
 /// Documented NTSTATUS values (public ABI constants).
 pub const STATUS_ACCESS_VIOLATION: u32 = 0xC000_0005;
@@ -288,10 +295,12 @@ extern "C" fn syscall_dispatch(frame: &mut TrapFrame) {
         crate::process::threads::exit_thread(frame.edx as i32);
     }
 
-    // A Windows 2000 system service, or a transitional Win32 service (whose registry lives with
-    // the surface it implements).
+    // A Windows 2000 system service, the client-server call, or a transitional Win32 service
+    // (whose registry lives with the surface it implements).
     let found = if frame.eax < crate::nt::NT_SERVICE_LIMIT {
         crate::nt::lookup(frame.eax).ok_or(STATUS_NOT_IMPLEMENTED)
+    } else if frame.eax == SYS_CSR_CALL {
+        Ok(crate::csr::SERVICE)
     } else {
         crate::compat::kernel32::lookup_service(frame.eax).ok_or(STATUS_INVALID_SYSTEM_SERVICE)
     };
@@ -478,11 +487,15 @@ mod tests {
     }
 
     /// The ranges do not meet: Windows 2000's services, the transitional Win32 table, F2K's internal
-    /// thread exit.
+    /// services (the thread exit, the client-server call), which are distinct.
     #[test]
     fn the_service_ranges_do_not_meet() {
         assert!(crate::nt::NT_SERVICE_LIMIT <= crate::compat::kernel32::WIN32_SERVICE_BASE);
         assert!(SYS_THREAD_EXIT > crate::compat::kernel32::WIN32_SERVICE_BASE + 0x1000);
+        assert!(SYS_CSR_CALL > crate::compat::kernel32::WIN32_SERVICE_BASE + 0x1000);
+        assert_ne!(SYS_CSR_CALL, SYS_THREAD_EXIT);
+        assert_ne!(SYS_CSR_CALL, SYS_EXIT);
+        assert!((crate::csr::SERVICE.0 as usize) <= MAX_ARG_BYTES);
     }
 
     /// Exit is the registry's first service, with a one-dword argument block.

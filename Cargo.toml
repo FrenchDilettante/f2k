@@ -28,8 +28,8 @@ lto = true               # Link-time optimization
 # beside the dev kernel instead of over it). The kernel crate itself stays unoptimized: optimizing it
 # exposes undefined behaviour the dev build tolerates (its intrusive lists are rewritten through raw
 # pointers while `&mut` borrows of their owners are live, which `noalias` lets LLVM cache across,
-# hanging the timer table's expiry walk). Everything under it is optimized: core, alloc and
-# compiler_builtins (memcpy, memset). The debug checks stay on throughout.
+# hanging the timer table's expiry walk). Everything under it is optimized: core, alloc,
+# compiler_builtins (memcpy, memset) and rtl. The debug checks stay on throughout.
 [profile.dev-opt]
 inherits = "dev"
 debug-assertions = true

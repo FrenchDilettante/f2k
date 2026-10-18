@@ -7,7 +7,6 @@ gate = true
 [pending]
 '(default)' = "B4: virtual memory and sections (the image check's 256 KiB of stack grows past the two committed pages)"
 ret = "B3: exceptions (the entry point returns into BaseProcessStart's frame, which the main thread does not have yet)"
-badptr = "B1: console and process start-up"
 null-write = "B3: exceptions"
 null-read = "B3: exceptions"
 null-call = "B3: exceptions"
