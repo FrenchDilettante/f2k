@@ -239,22 +239,17 @@ fn svc_get_module_file_name(frame: &mut crate::user::TrapFrame, args: &[u32]) {
         frame.eax = 0;
         return;
     }
-    // The staged name lives in the kernel-written parameters page; walking to its NUL is a
-    // kernel-side read of our own data.
+    // The staged name lives in the parameters page: user memory, which the program owns like any
+    // of its pages. It is read as user memory is, through the copy.
     let mut name = [0u8; MODULE_ROOM];
-    let mut len = 0;
-    while len < name.len() {
-        // SAFETY: the parameters page is mapped and kernel-written before ring 3 is entered;
-        // single-threaded access.
-        let byte = unsafe {
-            core::ptr::read_volatile((PARAMS_PAGE + MODULE_OFFSET + len as u32) as *const u8)
-        };
-        name[len] = byte;
-        if byte == 0 {
-            break;
-        }
-        len += 1;
+    if read_user(PARAMS_PAGE + MODULE_OFFSET, &mut name).is_err() {
+        frame.eax = 0;
+        return;
     }
+    let len = name
+        .iter()
+        .position(|&byte| byte == 0)
+        .unwrap_or(name.len());
     if len == name.len() {
         frame.eax = 0; // unterminated staging: a kernel bug, fail safely
         return;
@@ -1250,7 +1245,12 @@ pub fn init() {
         (SERVICES.len() as u32 * STUB_STRIDE) as usize,
         &trampoline_bytes(crate::user::syscall::SYS_THREAD_EXIT),
     );
-    crate::mem::paging::map_user_page(THUNK_PAGE, frame, false);
+    crate::mem::vm::map_prepared(
+        crate::process::current_mut().vm(),
+        THUNK_PAGE,
+        frame,
+        crate::mem::vm::PAGE_READONLY,
+    );
 }
 
 /// Map the parameters page: the command line (`command_line`, the program as invoked with its
@@ -1272,7 +1272,12 @@ pub fn init_params(command_line: &[u8], module: &[u8]) {
     crate::mem::paging::init_frame(frame, 0, &[]);
     crate::mem::paging::write_frame(frame, CMDLINE_OFFSET as usize, command_line);
     crate::mem::paging::write_frame(frame, MODULE_OFFSET as usize, module);
-    crate::mem::paging::map_user_page(PARAMS_PAGE, frame, true);
+    crate::mem::vm::map_prepared(
+        crate::process::current_mut().vm(),
+        PARAMS_PAGE,
+        frame,
+        crate::mem::vm::PAGE_READWRITE,
+    );
 }
 
 #[cfg(test)]

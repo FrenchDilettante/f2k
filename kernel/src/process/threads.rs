@@ -85,10 +85,9 @@ pub fn spawn(start: u32, parameter: u32) -> Option<(*mut Thread, u32)> {
     thread.initial_stack = paging::gate_slot_top(slot as u32);
 
     // The TEB page: the per-thread region, one page, zeroed.
+    use crate::mem::vm::{self, PAGE_READWRITE};
     thread.teb_va = crate::user::thread_teb_va(ordinal);
-    let teb_frame = paging::allocate_frame_phys();
-    paging::init_frame(teb_frame, 0, &[]);
-    paging::map_user_page(thread.teb_va, teb_frame, true);
+    vm::map_zeroed(process.vm(), thread.teb_va, PAGE_READWRITE);
 
     // The user stack: two zeroed pages, growing down from the per-thread region's top for this
     // ordinal.
@@ -97,12 +96,10 @@ pub fn spawn(start: u32, parameter: u32) -> Option<(*mut Thread, u32)> {
     let mut top_frame = 0;
     for page in 0..crate::user::THREAD_STACK_PAGES {
         let base = stack_top - (page + 1) * 0x1000;
-        let frame = paging::allocate_frame_phys();
+        let frame = vm::map_zeroed(process.vm(), base, PAGE_READWRITE);
         if page == 0 {
             top_frame = frame;
         }
-        paging::init_frame(frame, 0, &[]);
-        paging::map_user_page(base, frame, true);
     }
 
     // The trampoline's return address and the parameter, planted under the entry stack: the user

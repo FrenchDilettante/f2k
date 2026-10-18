@@ -129,3 +129,67 @@ def test_check_all_runs_the_test_systems():
     at = [plan.find(step) for step in steps]
     assert all(index >= 0 for index in at), dict(zip(steps, at))
     assert at == sorted(at), "the steps run fastest first"
+
+
+# --- Kernel memory safety ------------------------------------------------------------------------
+
+# The kernel's raw memory forms: volatile reads and writes, and slices built from raw parts. Once a
+# process runs, the kernel touches user memory only through the fault-tolerant copy
+# (`user::syscall::read_user` / `write_user`): a program owns every page of its own, the TEB and the
+# parameters page included, and a raw access to such a page would reach it outside the copy's
+# containment. The files below use the raw forms on memory that is not the program's, or before
+# any program runs; a new file needs its reason here (or the copy instead).
+RAW_ACCESS_ALLOWED = {
+    "kernel/src/boot/cmdline.rs": "the Multiboot command line, read at boot before any process",
+    "kernel/src/cpu/gdt.rs": "the kernel's own descriptor table",
+    "kernel/src/cpu/idt.rs": "the kernel's own interrupt table",
+    "kernel/src/interrupt/clock.rs": "the clock's fired counter, a kernel static",
+    "kernel/src/interrupt/mod.rs": "the interrupt counters, kernel statics",
+    "kernel/src/mem/bootmem.rs": "the boot memory map and the frame database, before any process",
+    "kernel/src/mem/paging.rs": "the page tables and frames, through the kernel's own windows",
+    "kernel/src/process/mod.rs": "the allocator baseline, a kernel static",
+    "kernel/src/process/runner.rs": "the suite's process index, a kernel static",
+    "kernel/src/sched/startup.rs": "a new thread's kernel gate stack",
+    "kernel/src/user/syscall.rs": "the copy primitives themselves and the attribution flag",
+    "kernel/src/user/userheap.rs": "the user heap's region, kernel-side until the user-mode heap",
+}
+RAW_FORMS = ("read_volatile", "write_volatile", "from_raw_parts")
+
+
+def kernel_code_lines():
+    """Each kernel source file's path (repository-relative) and its lines outside line comments."""
+    for path in sorted((f2kboot.REPO_ROOT / "kernel" / "src").rglob("*.rs")):
+        relative = str(path.relative_to(f2kboot.REPO_ROOT))
+        lines = path.read_text().splitlines()
+        yield relative, [(number, line) for number, line in enumerate(lines, start=1)
+                         if not line.lstrip().startswith("//")]
+
+
+def test_raw_memory_access_stays_off_user_memory():
+    """Raw memory forms appear only in the files that touch memory no program owns: everything else
+    reaches user memory through the fault-tolerant copy."""
+    found = {relative for relative, lines in kernel_code_lines()
+             if any(form in line for _, line in lines for form in RAW_FORMS)}
+    unexpected = sorted(found - set(RAW_ACCESS_ALLOWED))
+    assert not unexpected, (
+        f"raw memory forms in {unexpected}: reach user memory through read_user/write_user, "
+        "or add the file to RAW_ACCESS_ALLOWED with the reason its memory is not a program's"
+    )
+    stale = sorted(set(RAW_ACCESS_ALLOWED) - found)
+    assert not stale, f"RAW_ACCESS_ALLOWED names files without raw forms any more: {stale}"
+
+
+# The user page-table entries' writers: the address-space manager alone. Everything else maps,
+# commits, guards and releases user pages through `mem::vm` (`map_prepared`, `map_zeroed`,
+# `commit`, `plant_guard`, `decommit`, `release`), so every user page lies in a region and every
+# frame's release goes through the one place that knows which entries own one.
+PTE_WRITERS = {"kernel/src/mem/vm.rs", "kernel/src/mem/paging.rs"}
+PTE_FORMS = ("set_user_pte(", "user_pte(", ".set_entry(", "map_user_page(")
+
+
+def test_only_the_address_space_writes_user_entries():
+    """The raw user-entry access appears only in `mem::vm` and the `paging` primitives under it."""
+    found = [f"{relative}:{number}" for relative, lines in kernel_code_lines()
+             if relative not in PTE_WRITERS
+             for number, line in lines if any(form in line for form in PTE_FORMS)]
+    assert not found, f"user page-table entries written outside mem::vm: {found}"

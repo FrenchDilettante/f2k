@@ -10,7 +10,8 @@
 //! The boot tables are link-time identity constants; the directory is filled by the entry stub,
 //! which addresses it physically before paging is on. Everything below `KERNEL_BASE` is unmapped
 //! after the teardown; user pages and their tables are created at runtime ([`init_frame`],
-//! [`map_user_page`]).
+//! [`set_user_pte`]). The user entries' only writer is the address-space manager
+//! ([`crate::mem::vm`]): the raw entry access here serves it alone.
 
 #[cfg(target_arch = "x86")]
 use core::arch::asm;
@@ -280,51 +281,68 @@ pub fn allocate_frame_phys() -> u32 {
     frame * PAGE_SIZE
 }
 
-/// Map `vaddr` to `frame_phys`: present, user, writable if asked. The window's table is allocated
-/// on first use; double mappings panic.
+/// The current directory's page-table entry for user address `vaddr`, raw (present or not); 0 when
+/// its window has no table.
 ///
-/// The mapping lands in the **current** directory — the one CR3 points at — reached through its
-/// self-map window, so it targets the active process's address space, not any particular static.
+/// Both the window's directory entry (DIRECTORY_ENTRY_VA + window*4, through the directory's own
+/// self-map slot) and its page table (SELF_MAP_VA + window*4096, through the self-map window) are
+/// reached through the **current** directory — the one CR3 points at — so the access targets the
+/// active process's address space. The CPU may set accessed/dirty bits on any entry as a side
+/// effect of ordinary memory traffic, so all reads and writes are volatile.
+#[cfg(target_arch = "x86")]
+pub fn user_pte(vaddr: u32) -> u32 {
+    assert!(
+        vaddr < KERNEL_BASE,
+        "user entries live below the kernel window"
+    );
+    let window = vaddr >> 22;
+    let index = (vaddr >> 12) & 0x3FF;
+    // SAFETY: the self-map window is live in every directory; the table is read only when its
+    // directory entry is present.
+    unsafe {
+        let pde = (DIRECTORY_ENTRY_VA + window * 4) as *const u32;
+        if pde.read_volatile() & PAGE_PRESENT == 0 {
+            return 0;
+        }
+        ((SELF_MAP_VA + (window << 12)) as *const u32)
+            .add(index as usize)
+            .read_volatile()
+    }
+}
+
+/// Write the current directory's page-table entry for user address `vaddr` — any value, present or
+/// not (the address-space manager keeps committed but inaccessible pages as non-present entries
+/// that still name their frame) — and flush it. The window's table is allocated on first use.
 ///
 /// # Panics
 ///
-/// Unaligned `vaddr`/`frame_phys`, kernel-window `vaddr`, already mapped.
+/// Unaligned or kernel-window `vaddr`.
 #[cfg(target_arch = "x86")]
-pub fn map_user_page(vaddr: u32, frame_phys: u32, writable: bool) {
+pub fn set_user_pte(vaddr: u32, entry: u32) {
     assert!(vaddr % PAGE_SIZE == 0, "user address not page-aligned");
-    assert!(frame_phys % PAGE_SIZE == 0, "frame not page-aligned");
     assert!(
         vaddr < KERNEL_BASE,
-        "user mappings live below the kernel window"
+        "user entries live below the kernel window"
     );
-    let window = (vaddr >> 22) as usize;
-    let index = ((vaddr >> 12) & 0x3FF) as usize;
-
-    // Both the window's directory entry (DIRECTORY_ENTRY_VA + window*4, through the directory's own
-    // self-map slot) and its page table (SELF_MAP_VA + window*4096, through the self-map window)
-    // are reached through the current directory: the entries live wherever CR3 points. The CPU may
-    // set accessed/dirty bits on any entry as a side effect of ordinary memory traffic, so all
-    // reads and writes are volatile.
-    // SAFETY: the boot context is the only mutator of user windows.
+    let window = vaddr >> 22;
+    let index = (vaddr >> 12) & 0x3FF;
+    // SAFETY: as `user_pte`; the address-space manager is the only mutator of user windows.
     unsafe {
-        let pde = (DIRECTORY_ENTRY_VA + (window as u32) * 4) as *mut u32;
+        let pde = (DIRECTORY_ENTRY_VA + window * 4) as *mut u32;
         if pde.read_volatile() & PAGE_PRESENT == 0 {
+            if entry == 0 {
+                return;
+            }
             let table_phys = allocate_frame_phys();
             // Quirk: zero the table while it is still unreachable — present garbage entries must
-            // never become speculatively walkable.
+            // never become speculatively walkable. A user window must be traversable by ring 3; the
+            // per-page user/supervisor and read/write bits decide the rest.
             init_frame(table_phys, 0, &[]);
-            // A user window must be traversable by ring 3; the per-page user/supervisor and
-            // read/write bits decide the rest.
             pde.write_volatile(table_phys | PAGE_PRESENT | PAGE_WRITE | PAGE_USER);
         }
-        let table = (SELF_MAP_VA + ((window as u32) << 12)) as *mut u32;
-        assert_eq!(
-            table.add(index).read_volatile() & PAGE_PRESENT,
-            0,
-            "user page already mapped"
-        );
-        let entry = frame_phys | PAGE_PRESENT | PAGE_USER | if writable { PAGE_WRITE } else { 0 };
-        table.add(index).write_volatile(entry);
+        ((SELF_MAP_VA + (window << 12)) as *mut u32)
+            .add(index as usize)
+            .write_volatile(entry);
         invlpg(vaddr);
     }
 }
@@ -444,7 +462,7 @@ pub fn activate_address_space(dir_phys: u32) {
 
 /// Map `vaddr` to `frame_phys` for the kernel only: present, writable, supervisor (no user bit —
 /// ring 3 must not reach these pages). The window's table is allocated on first use, like
-/// [`map_user_page`]; the mapping lands in the current directory.
+/// [`set_user_pte`]'s; the mapping lands in the current directory.
 ///
 /// # Panics
 ///
@@ -646,7 +664,7 @@ mod tests {
         assert_eq!(PAGE_PRESENT, 1);
         assert_eq!(PAGE_WRITE, 1 << 1);
         assert_eq!(PAGE_USER, 1 << 2);
-        // Read-only user page, the strictest mapping map_user_page builds: present + user.
+        // Read-only user page, the strictest mapping a user entry carries: present + user.
         assert_eq!(PAGE_PRESENT | PAGE_USER, 0x5);
         // Writable user page: present + R/W + user.
         assert_eq!(PAGE_PRESENT | PAGE_WRITE | PAGE_USER, 0x7);
@@ -737,7 +755,7 @@ mod tests {
     /// The directory doubles as window 768's own page table (its self-map entry points at itself),
     /// so it is reachable at a second fixed window: directory entry i resolves at
     /// DIRECTORY_ENTRY_VA + i*4, which is how `create_address_space` reads the base and
-    /// `map_user_page` writes window entries — going through the self-map entry itself, never
+    /// `set_user_pte` writes window entries — going through the self-map entry itself, never
     /// through user windows that may be unmapped.
     #[test]
     fn the_directory_is_reachable_through_its_own_window() {

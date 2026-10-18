@@ -1,8 +1,10 @@
 //! The process object: every piece of per-process state in one place.
 //!
-//! A process owns its page directory (created per process, sharing the kernel's kernel half) and
-//! its user-heap bookkeeping ([`HeapState`]). The image, stack, TEB and parameters pages are mapped
-//! fresh each run into the process's directory, so they are per-process by construction.
+//! A process owns its page directory (created per process, sharing the kernel's kernel half), its
+//! address space's regions ([`crate::mem::vm::AddressSpace`], the only writer of its user entries)
+//! and its user-heap bookkeeping ([`HeapState`]). The image, stack, TEB and parameters pages are
+//! mapped fresh each run into the process's directory, each inside a region the loader seeds first,
+//! so they are per-process by construction.
 //!
 //! The per-thread state split: the ring-0 gate stack (the thread's kernel stack, what the TSS
 //! `esp0` points into) is per-thread, sub-allocated as slots of the process's window
@@ -48,6 +50,9 @@ pub struct Process {
     gate_slots: GateSlots,
     /// The user-heap bookkeeping (heap region + CRT region).
     heap: crate::user::userheap::HeapState,
+    /// The address space's regions: every user page the process holds lies in one, and every
+    /// mapping, commit and release of its pages goes through it.
+    vm: crate::mem::vm::AddressSpace,
     /// The handle table: the process's handles-to-objects.
     handles: crate::sched::object::HandleTable,
     /// The open files the table's file slots name.
@@ -132,6 +137,21 @@ impl Process {
         &mut self.heap
     }
 
+    /// The address space (every user mapping goes through it).
+    pub fn vm(&mut self) -> &mut crate::mem::vm::AddressSpace {
+        &mut self.vm
+    }
+
+    /// The user-heap state and the address space its pages are committed in, together.
+    pub fn heap_and_vm(
+        &mut self,
+    ) -> (
+        &mut crate::user::userheap::HeapState,
+        &mut crate::mem::vm::AddressSpace,
+    ) {
+        (&mut self.heap, &mut self.vm)
+    }
+
     /// The handle table (the object services are served from here).
     pub fn handles_mut(&mut self) -> &mut crate::sched::object::HandleTable {
         &mut self.handles
@@ -201,30 +221,17 @@ impl Process {
 
 #[cfg(target_arch = "x86")]
 impl Process {
-    /// Create the process and make it current: a fresh address space with the record installed at
-    /// its final address, then its main thread taking the window's lowest free gate-stack slot, the
-    /// fixed TEB page, and the process's scheduling data. Every later user mapping lands in this
-    /// process's directory. The record is reached through [`current_mut`] from then on: handing out
-    /// a `&'static mut` here would alias every later `current_mut` borrow.
+    /// Create the process and make it current: a fresh address space with the record built in
+    /// place at its final address (the region table alone is too big for the caller's stack), then
+    /// its main thread taking the window's lowest free gate-stack slot, the fixed TEB page, and the
+    /// process's scheduling data. Every later user mapping lands in this process's directory, inside
+    /// one of its regions. The record is reached through [`current_mut`] from then on: handing out a
+    /// `&'static mut` here would alias every later `current_mut` borrow.
     pub fn start(name: &'static str) {
         let dir_phys = paging::create_address_space();
         paging::activate_address_space(dir_phys);
 
-        let process = install(Process {
-            sched: crate::sched::process::SchedProcess::new(dir_phys, crate::sched::NORMAL_BASE),
-            name,
-            main_thread: crate::sched::thread::Thread::empty(),
-            gate_slots: GateSlots::empty(),
-            heap: crate::user::userheap::HeapState::new(),
-            handles: crate::sched::object::HandleTable::empty(),
-            files: crate::fs::file::OpenFiles::empty(),
-            dead_stack: DeadStack::empty(),
-            child_threads: [const { crate::sched::thread::Thread::empty() }; CHILD_THREADS],
-            events: fresh_events(),
-            events_used: 0,
-            end: None,
-            handed_end: None,
-        });
+        let process = install(dir_phys, name);
 
         // The scheduling record's thread-list sentinel closes now that the record is at its final
         // address.
@@ -318,18 +325,60 @@ impl GateSlots {
 /// The current process. One at a time: installed at start, read by the service paths, and taken by
 /// the teardown once its last thread has ended.
 #[cfg(target_arch = "x86")]
-static mut CURRENT: Option<Process> = None;
+static mut CURRENT: core::mem::MaybeUninit<Process> = core::mem::MaybeUninit::uninit();
 
-/// Install `process` as current and return it.
+/// Whether [`CURRENT`] holds a process: set once its record is built, cleared by the teardown.
 #[cfg(target_arch = "x86")]
-fn install(process: Process) -> &'static mut Process {
+static mut RUNNING: bool = false;
+
+/// Build a fresh process record for the address space at `dir_phys` in place as the current one,
+/// and return it.
+#[cfg(target_arch = "x86")]
+fn install(dir_phys: u32, name: &'static str) -> &'static mut Process {
     // SAFETY: single CPU, interrupts disabled; no process is running when a new one starts (run to
-    // completion, asserted).
+    // completion, asserted), so the record's storage is free.
     unsafe {
-        let slot = &mut *core::ptr::addr_of_mut!(CURRENT);
-        assert!(slot.is_none(), "a process is already running");
-        *slot = Some(process);
-        slot.as_mut().expect("just installed")
+        assert!(
+            !*core::ptr::addr_of!(RUNNING),
+            "a process is already running"
+        );
+        let process = (*core::ptr::addr_of_mut!(CURRENT)).as_mut_ptr();
+        write_fresh(process, dir_phys, name);
+        *core::ptr::addr_of_mut!(RUNNING) = true;
+        &mut *process
+    }
+}
+
+/// Build a fresh process record at `process`: the address space at `dir_phys`, named `name`, field
+/// by field (by value the record would pass the caller's stack).
+///
+/// # Safety
+///
+/// `process` is valid for writes, aligned, and the record's final address; its previous contents
+/// are overwritten, not dropped.
+#[cfg(target_arch = "x86")]
+unsafe fn write_fresh(process: *mut Process, dir_phys: u32, name: &'static str) {
+    use core::ptr::addr_of_mut;
+    // SAFETY: the caller's contract; every field is written before the record is read.
+    unsafe {
+        addr_of_mut!((*process).sched).write(crate::sched::process::SchedProcess::new(
+            dir_phys,
+            crate::sched::NORMAL_BASE,
+        ));
+        addr_of_mut!((*process).name).write(name);
+        addr_of_mut!((*process).main_thread).write(crate::sched::thread::Thread::empty());
+        addr_of_mut!((*process).gate_slots).write(GateSlots::empty());
+        addr_of_mut!((*process).heap).write(crate::user::userheap::HeapState::new());
+        crate::mem::vm::AddressSpace::write_empty(addr_of_mut!((*process).vm));
+        addr_of_mut!((*process).handles).write(crate::sched::object::HandleTable::empty());
+        addr_of_mut!((*process).files).write(crate::fs::file::OpenFiles::empty());
+        addr_of_mut!((*process).dead_stack).write(DeadStack::empty());
+        addr_of_mut!((*process).child_threads)
+            .write([const { crate::sched::thread::Thread::empty() }; CHILD_THREADS]);
+        addr_of_mut!((*process).events).write(fresh_events());
+        addr_of_mut!((*process).events_used).write(0);
+        addr_of_mut!((*process).end).write(None);
+        addr_of_mut!((*process).handed_end).write(None);
     }
 }
 
@@ -340,11 +389,11 @@ fn install(process: Process) -> &'static mut Process {
 /// No process is running.
 #[cfg(target_arch = "x86")]
 pub fn current_mut() -> &'static mut Process {
-    // SAFETY: single-threaded kernel; the pointer is installed before ring 3 is entered and has no
+    // SAFETY: single-threaded kernel; the record is built before ring 3 is entered and has no
     // other writer.
     unsafe {
-        let slot = &mut *core::ptr::addr_of_mut!(CURRENT);
-        slot.as_mut().expect("no process is running")
+        assert!(*core::ptr::addr_of!(RUNNING), "no process is running");
+        &mut *(*core::ptr::addr_of_mut!(CURRENT)).as_mut_ptr()
     }
 }
 
@@ -357,8 +406,8 @@ pub fn current_mut() -> &'static mut Process {
 pub fn current() -> &'static Process {
     // SAFETY: as `current_mut`.
     unsafe {
-        let slot = &mut *core::ptr::addr_of_mut!(CURRENT);
-        slot.as_ref().expect("no process is running")
+        assert!(*core::ptr::addr_of!(RUNNING), "no process is running");
+        &*(*core::ptr::addr_of!(CURRENT)).as_ptr()
     }
 }
 
@@ -371,8 +420,9 @@ pub fn current() -> &'static Process {
 // freed.
 
 /// Walk the process directory at `dir_phys` and release everything it owns exclusively: every
-/// present PTE's data frame in the user windows and their page tables, plus the gate window's
-/// table. The gate slots' data frames are the threads' (released per thread, before this walk);
+/// committed PTE's data frame in the user windows — present, or committed but inaccessible (a
+/// no-access or guard page still names its frame) — and their page tables, plus the gate
+/// window's table. The gate slots' data frames are the threads' (released per thread, before this walk);
 /// the shared kernel half is never touched, and the directory frame is the caller's, last.
 pub fn release_address_space(
     dir_phys: u32,
@@ -390,7 +440,7 @@ pub fn release_address_space(
         let table = pde & PAGE_ADDR_MASK;
         for index in 0..PT_ENTRIES {
             let pte = read_entry(table, index);
-            if pte & PAGE_PRESENT != 0 {
+            if crate::mem::vm::names_frame(pte) {
                 release(pte & PAGE_ADDR_MASK);
             }
         }
@@ -438,16 +488,17 @@ pub fn release_process(
     release(dir_phys);
 }
 
-/// The current process, removed from the current-process pointer, for teardown. Call only when the
-/// kernel has switched off the process's address space (its frames are then unreachable except
-/// through the scratch window).
+/// Retire the current process's record, for teardown: the slot is free for the next process. Call
+/// only when the kernel has switched off the process's address space (its frames are then
+/// unreachable except through the scratch window) and released them.
 #[cfg(target_arch = "x86")]
-fn take_current() -> Process {
+fn take_current() {
     // SAFETY: single CPU; the teardown path is the only taker, run once per process after the
     // address-space switch.
     unsafe {
-        let slot = &mut *core::ptr::addr_of_mut!(CURRENT);
-        slot.take().expect("no process is running")
+        let running = &mut *core::ptr::addr_of_mut!(RUNNING);
+        assert!(*running, "no process is running");
+        *running = false;
     }
 }
 
@@ -457,9 +508,7 @@ fn take_current() -> Process {
 pub fn reap_pending() -> bool {
     // SAFETY: single CPU; a read of the current-process slot.
     unsafe {
-        (*core::ptr::addr_of!(CURRENT))
-            .as_ref()
-            .is_some_and(|process| process.end.is_some())
+        *core::ptr::addr_of!(RUNNING) && (*(*core::ptr::addr_of!(CURRENT)).as_ptr()).end.is_some()
     }
 }
 
@@ -561,6 +610,7 @@ mod tests {
         gate_slot_base, gate_slot_top, GATE_SLOT_CAPACITY, GATE_SLOT_STRIDE, GATE_STACK_TOP,
         GATE_STACK_WINDOW, KERNEL_HALF_START, PAGE_PRESENT, PT_ENTRIES,
     };
+    use crate::mem::vm::{encode, PAGE_GUARD, PAGE_NOACCESS, PAGE_READWRITE};
     use crate::sched::process::SchedProcess;
     use crate::sched::thread::{Thread, NO_GATE_SLOT};
     use crate::user::userheap::HeapState;
@@ -578,6 +628,7 @@ mod tests {
             main_thread: Thread::empty(),
             gate_slots: GateSlots::empty(),
             heap: HeapState::new(),
+            vm: crate::mem::vm::AddressSpace::new(),
             handles: crate::sched::object::HandleTable::empty(),
             files: crate::fs::file::OpenFiles::empty(),
             dead_stack: DeadStack::empty(),
@@ -608,6 +659,7 @@ mod tests {
             main_thread: Thread::empty(),
             gate_slots: GateSlots::empty(),
             heap: HeapState::new(),
+            vm: crate::mem::vm::AddressSpace::new(),
             handles: crate::sched::object::HandleTable::empty(),
             files: crate::fs::file::OpenFiles::empty(),
             dead_stack: DeadStack::empty(),
@@ -867,8 +919,16 @@ mod tests {
             ],
         );
         // The TEB pages (user half: the walk owns them, so the thread records must not hold them)
-        // and one image page.
-        mem.plant(user_table, &[(0, 0x00E0_0000 | PAGE_PRESENT)]);
+        // and one image page; a page the program made no-access and a guard page, both committed
+        // but not present: they still name their frames.
+        mem.plant(
+            user_table,
+            &[
+                (0, 0x00E0_0000 | PAGE_PRESENT),
+                (1, encode(0x00E1_0000, PAGE_NOACCESS)),
+                (2, encode(0x00E2_0000, PAGE_READWRITE | PAGE_GUARD)),
+            ],
+        );
         mem.plant(gate_table, &[]);
 
         // Boxed to its final address before anything links into it: the thread list's entries are
@@ -879,6 +939,7 @@ mod tests {
             main_thread: Thread::empty(),
             gate_slots: GateSlots::empty(),
             heap: HeapState::new(),
+            vm: crate::mem::vm::AddressSpace::new(),
             handles: crate::sched::object::HandleTable::empty(),
             files: crate::fs::file::OpenFiles::empty(),
             dead_stack: DeadStack::empty(),
@@ -919,8 +980,8 @@ mod tests {
     }
 
     /// Teardown after every thread has exited releases exactly the process's own frames, each
-    /// exactly once: the last exit's parked stack, the walked user data frames and tables, the
-    /// gate window's table, and the directory — nothing from the shared kernel half. An earlier
+    /// exactly once: the last exit's parked stack, the walked user data frames (committed pages the
+    /// program may not touch included) and tables, the gate window's table, and the directory — nothing from the shared kernel half. An earlier
     /// exit's stack is not teardown's: the next exit released it. A thread's TEB page is released
     /// once, by the walk (the thread records never hold user-half frames).
     #[test]
@@ -943,6 +1004,8 @@ mod tests {
             0x00A0_0000, // the user table
             0x00C0_0000, // the gate window's table
             0x00E0_0000, // the TEB/image data page
+            0x00E1_0000, // the no-access page
+            0x00E2_0000, // the guard page
             dir,         // the directory
         ];
         expected.extend_from_slice(&MAIN_STACK);
@@ -975,7 +1038,7 @@ mod tests {
         let released = &mem.released;
         assert_eq!(&released[..4], &MAIN_STACK, "the parked stack first");
         assert_eq!(released.last(), Some(&dir), "the directory last");
-        assert_eq!(released.len(), 4 + 3 + 1);
+        assert_eq!(released.len(), 4 + 5 + 1);
     }
 
     /// Teardown never precedes the last thread's end: a process with a thread still attached is

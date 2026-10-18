@@ -256,7 +256,9 @@ pub fn realloc_block(
 // state.
 
 #[cfg(target_arch = "x86")]
-use crate::mem::paging::{self, PAGE_SIZE};
+use crate::mem::paging::PAGE_SIZE;
+#[cfg(target_arch = "x86")]
+use crate::mem::vm::{AddressSpace, CurrentPages, Kind, PAGE_READWRITE};
 
 /// The CRT region's bound: a reservation never reaches the kernel half.
 const CRT_REGION_LIMIT: u32 = crate::mem::paging::KERNEL_BASE;
@@ -338,9 +340,9 @@ impl HeapState {
 
 #[cfg(target_arch = "x86")]
 impl HeapState {
-    /// Map zeroed user pages so the region image covers `bytes`; fails past the region cap,
-    /// idempotent.
-    fn commit_heap(&mut self, bytes: usize) -> bool {
+    /// Commit zeroed user pages in `space`'s heap region so the region image covers `bytes`; fails
+    /// past the region cap or without frames, idempotent.
+    fn commit_heap(&mut self, space: &mut AddressSpace, bytes: usize) -> bool {
         if bytes <= self.committed {
             return true;
         }
@@ -349,10 +351,14 @@ impl HeapState {
         }
         let start = (self.committed as u32).div_ceil(PAGE_SIZE);
         let end = (bytes as u32).div_ceil(PAGE_SIZE);
-        for page in start..end {
-            let frame = paging::allocate_frame_phys();
-            paging::init_frame(frame, 0, &[]);
-            paging::map_user_page(HEAP_REGION_BASE + page * PAGE_SIZE, frame, true);
+        let committed = space.commit(
+            &mut CurrentPages,
+            HEAP_REGION_BASE + start * PAGE_SIZE,
+            (end - start) * PAGE_SIZE,
+            PAGE_READWRITE,
+        );
+        if committed.is_err() {
+            return false;
         }
         self.committed = end as usize * PAGE_SIZE as usize;
         true
@@ -367,7 +373,7 @@ impl HeapState {
 
     /// HeapAlloc: first-fit, committing more of the region when the bump path needs it; 0 on
     /// failure.
-    pub fn alloc(&mut self, flags: u32, request: usize) -> u32 {
+    pub fn alloc(&mut self, space: &mut AddressSpace, flags: u32, request: usize) -> u32 {
         let zero = flags & HEAP_ZERO_MEMORY != 0;
         loop {
             let region = self.heap_region();
@@ -386,7 +392,8 @@ impl HeapState {
                     else {
                         return 0;
                     };
-                    if need > HEAP_REGION_MAX || !self.commit_heap(need + PAGE_SIZE as usize) {
+                    if need > HEAP_REGION_MAX || !self.commit_heap(space, need + PAGE_SIZE as usize)
+                    {
                         return 0;
                     }
                 }
@@ -442,9 +449,17 @@ impl HeapState {
         }
     }
 
-    /// VirtualAlloc for the CRT region: NULL reservations return the fixed base; commits extend the
-    /// mapped prefix (the CRT commits at the base, then grows contiguously). 0 for anything else.
-    pub fn virtual_alloc(&mut self, addr: u32, size: u32, alloc_type: u32) -> u32 {
+    /// VirtualAlloc for the CRT region: NULL reservations return the fixed base, the reservation a
+    /// region of `space`; commits extend the committed prefix (the CRT commits at the base, then
+    /// grows contiguously). 0 for anything else, a reservation reaching another region (an image)
+    /// included, and when no frame is left for a commit.
+    pub fn virtual_alloc(
+        &mut self,
+        space: &mut AddressSpace,
+        addr: u32,
+        size: u32,
+        alloc_type: u32,
+    ) -> u32 {
         if alloc_type & MEM_RESERVE != 0 {
             if addr != 0 {
                 return 0; // only NULL reservations are served
@@ -455,9 +470,22 @@ impl HeapState {
             let Some(reserved) = crt_reservation(CRT_REGION_BASE, size) else {
                 return 0;
             };
+            let region = space.reserve(
+                Some(CRT_REGION_BASE),
+                reserved,
+                PAGE_READWRITE,
+                Kind::Private,
+            );
+            if region.is_err() {
+                return 0;
+            }
             self.crt_reserved = reserved;
-            if alloc_type & MEM_COMMIT != 0 {
-                self.commit_crt(size.min(reserved));
+            if alloc_type & MEM_COMMIT != 0 && !self.commit_crt(space, size.min(reserved)) {
+                // The reservation goes with the failed commit, as one allocation.
+                let _ = space.release(&mut CurrentPages, CRT_REGION_BASE);
+                self.crt_reserved = 0;
+                self.crt_committed = 0;
+                return 0;
             }
             return CRT_REGION_BASE;
         }
@@ -472,26 +500,32 @@ impl HeapState {
             ) {
                 CrtCommit::Refused => 0,
                 CrtCommit::Mapped => addr,
-                CrtCommit::Extend(end) => {
-                    self.commit_crt(end);
-                    addr
-                }
+                CrtCommit::Extend(end) if self.commit_crt(space, end) => addr,
+                CrtCommit::Extend(_) => 0,
             };
         }
 
         0
     }
 
-    /// Map the CRT region's prefix up to `end` bytes from the base (whole pages).
-    fn commit_crt(&mut self, end: u32) {
+    /// Commit the CRT region's prefix up to `end` bytes from the base (whole pages); false without
+    /// frames.
+    fn commit_crt(&mut self, space: &mut AddressSpace, end: u32) -> bool {
         let start = self.crt_committed.div_ceil(PAGE_SIZE);
         let end = end.div_ceil(PAGE_SIZE);
-        for page in start..end {
-            let frame = paging::allocate_frame_phys();
-            paging::init_frame(frame, 0, &[]);
-            paging::map_user_page(CRT_REGION_BASE + page * PAGE_SIZE, frame, true);
+        if end > start {
+            let committed = space.commit(
+                &mut CurrentPages,
+                CRT_REGION_BASE + start * PAGE_SIZE,
+                (end - start) * PAGE_SIZE,
+                PAGE_READWRITE,
+            );
+            if committed.is_err() {
+                return false;
+            }
         }
         self.crt_committed = self.crt_committed.max(end * PAGE_SIZE);
+        true
     }
 }
 
@@ -507,9 +541,8 @@ mod target {
         crate::process::current_mut().heap_mut().create()
     }
     pub fn alloc(flags: u32, request: usize) -> u32 {
-        crate::process::current_mut()
-            .heap_mut()
-            .alloc(flags, request)
+        let (heap, space) = crate::process::current_mut().heap_and_vm();
+        heap.alloc(space, flags, request)
     }
     pub fn free(ptr: u32) -> u32 {
         crate::process::current_mut().heap_mut().free(ptr)
@@ -523,9 +556,8 @@ mod target {
         crate::process::current_mut().heap_mut().destroy(handle)
     }
     pub fn virtual_alloc(addr: u32, size: u32, alloc_type: u32) -> u32 {
-        crate::process::current_mut()
-            .heap_mut()
-            .virtual_alloc(addr, size, alloc_type)
+        let (heap, space) = crate::process::current_mut().heap_and_vm();
+        heap.virtual_alloc(space, addr, size, alloc_type)
     }
 }
 

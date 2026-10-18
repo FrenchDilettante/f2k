@@ -4,6 +4,7 @@ pub mod frame;
 pub mod heap;
 pub mod multiboot;
 pub mod paging;
+pub mod vm;
 
 /// Boot-time frame database, built from the Multiboot memory map. Host builds run the modules' unit
 /// tests instead; there is no boot loader to ask for memory there.

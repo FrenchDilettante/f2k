@@ -1,7 +1,8 @@
 //! Ring 3: the user layout, the boot's choice of what runs, and the end of the user process.
 //!
-//! The kernel maps the image, stack, TEB and parameters pages and enters the process as its main
-//! thread: the scheduler's first switch into the thread leaves its startup ladder for ring 3. The
+//! The kernel maps the image, stack, TEB and parameters pages — each inside a region of the
+//! process's address space (`mem::vm`), the one writer of its page-table entries — and enters the
+//! process as its main thread: the scheduler's first switch into the thread leaves its startup ladder for ring 3. The
 //! image ends the process through the exit service. The fault-test features substitute a
 //! hand-assembled stub ([`RING3_STUB`]) so the user-fault paths can be verified without a PE
 //! fixture.
@@ -410,20 +411,18 @@ pub fn volume_path(token: &[u8]) -> &[u8] {
     feature = "fault-test-exitio"
 ))]
 pub fn run_fault_stub() -> ! {
-    use crate::mem::paging;
+    use crate::mem::{paging, vm};
 
     crate::process::Process::start("stub");
+    // The stub's one code page stands where an image would, with the system areas around it.
+    let space = crate::process::current_mut().vm();
+    crate::exec::loader::seed_regions(space, USER_CODE_PAGE, paging::PAGE_SIZE);
 
     let code_frame = paging::allocate_frame_phys();
     paging::init_frame(code_frame, 0, &RING3_STUB);
-    paging::map_user_page(USER_CODE_PAGE, code_frame, false);
-
-    let stack_frame = paging::allocate_frame_phys();
-    paging::init_frame(stack_frame, 0, &[]);
-    paging::map_user_page(USER_STACK_PAGE, stack_frame, true);
-    let stack_low = paging::allocate_frame_phys();
-    paging::init_frame(stack_low, 0, &[]);
-    paging::map_user_page(USER_STACK_LOW_PAGE, stack_low, true);
+    vm::map_prepared(space, USER_CODE_PAGE, code_frame, vm::PAGE_EXECUTE_READ);
+    vm::map_zeroed(space, USER_STACK_PAGE, vm::PAGE_READWRITE);
+    vm::map_zeroed(space, USER_STACK_LOW_PAGE, vm::PAGE_READWRITE);
 
     crate::serial_println!(
         "F2K: entering ring 3 (code {:#010x}, stack {:#010x})",
