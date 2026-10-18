@@ -1,0 +1,16 @@
+[package]
+name = "ntdll"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "ntdll"
+path = "src/main.rs"
+test = false
+
+[dependencies]
+rtl = { path = "../rtl" }
+
+# The build script generates the stubs and the .def from the export specs.
+[build-dependencies]
+exportgen = { path = "../../tools/exportgen" }

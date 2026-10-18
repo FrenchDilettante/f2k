@@ -33,6 +33,8 @@ BOOT_DIR ?= boot
 KERNEL_DIR ?= kernel
 BUILD_DIR ?= target
 SCRIPTS_DIR ?= scripts
+EXPORTGEN_DIR ?= tools/exportgen
+USERLAND_DIR ?= userland
 
 # Tools
 OBJCOPY ?= x86_64-elf-objcopy
@@ -72,7 +74,8 @@ help:
 	@echo ""
 	@echo "Targets:"
 	@echo "  all           - Build everything and create bootable disk"
-	@echo "  kernel       - Build the kernel only"
+	@echo "  userland     - Build the system DLLs (ntdll.dll, kernel32.dll) the kernel embeds"
+	@echo "  kernel       - Build the kernel (the system DLLs first)"
 	@echo "  qemu         - Build the disk and boot the kernel directly in QEMU (Multiboot, disk attached)"
 	@echo "  test         - Run every on-target QEMU test (kernel boots and the corpus)"
 	@echo "  run-tests    - Run host unit tests (cargo test --lib)"
@@ -98,8 +101,17 @@ help:
 .PHONY: all
 all: disk
 
+# The system DLLs (userland/, its own Cargo workspace and target): the kernel embeds them, so they
+# build first. Their generated stubs and .def come from the export specs
+# (userland/<dll>/exports.toml, through tools/exportgen), the source the kernel's service registry
+# is generated from too.
+.PHONY: userland
+userland:
+	@echo "Building the system DLLs..."
+	cd $(USERLAND_DIR) && cargo build --release
+
 .PHONY: kernel
-kernel:
+kernel: userland
 	@echo "Building F2K kernel..."
 	rm -f $(KERNEL_STAMP)
 	cd $(KERNEL_DIR) && cargo build --profile $(KERNEL_PROFILE) $(FEATURE_FLAGS)
@@ -160,7 +172,7 @@ run: disk
 	$(QEMU) $(QEMU_FLAGS) -drive file=$(DISK_IMG),format=raw,if=ide
 
 .PHONY: release
-release:
+release: userland
 	@echo "Building F2K kernel (release mode)..."
 	cd $(KERNEL_DIR) && cargo build --release
 	@echo "Kernel built: $(BUILD_DIR)/$(TARGET)/release/f2k-kernel"
@@ -169,6 +181,7 @@ release:
 clean:
 	@echo "Cleaning build artifacts..."
 	cd $(KERNEL_DIR) && cargo clean
+	cd $(USERLAND_DIR) && cargo clean
 
 .PHONY: clobber
 clobber: clean
@@ -198,16 +211,25 @@ check-all:
 	$(MAKE) test
 
 .PHONY: run-tests
-run-tests:
+run-tests: userland
 	@echo "Running host unit tests..."
 	# CARGO_UNSTABLE_BUILD_STD=std: the workspace config builds core from
 	# source for the kernel; for host tests that collides with the host's
 	# prebuilt std, so build std (and its deps) from source instead.
 	cd $(KERNEL_DIR) && CARGO_UNSTABLE_BUILD_STD=std cargo test --lib --target $(RUST_HOST_TARGET)
+	# The export-spec generator the build scripts run (a host crate of its own).
+	cd $(EXPORTGEN_DIR) && CARGO_UNSTABLE_BUILD_STD=std cargo test --target $(RUST_HOST_TARGET)
+	# The userland runtime's host tests, under the root configuration as the kernel's are (std
+	# built from source): the userland workspace's own configuration would hand them a from-source
+	# core beside the prebuilt std (its build-std array cannot be emptied from the command line).
+	CARGO_UNSTABLE_BUILD_STD=std cargo test --manifest-path $(USERLAND_DIR)/rtl/Cargo.toml --target $(RUST_HOST_TARGET) --target-dir target/userland-host
+	# kernel32's user-mode code (its library).
+	CARGO_UNSTABLE_BUILD_STD=std cargo test --manifest-path $(USERLAND_DIR)/kernel32/Cargo.toml --lib --target $(RUST_HOST_TARGET) --target-dir target/userland-host
 
 .PHONY: check
-check:
+check: userland
 	@echo "Checking code..."
+	cd $(USERLAND_DIR) && cargo clippy --release
 	cd $(KERNEL_DIR) && cargo check
 	cd $(KERNEL_DIR) && cargo clippy
 
@@ -215,9 +237,13 @@ check:
 .PHONY: fmt fmt-check
 fmt:
 	cargo fmt --all
+	cd $(EXPORTGEN_DIR) && cargo fmt
+	cd $(USERLAND_DIR) && cargo fmt --all
 
 fmt-check:
 	cargo fmt --all -- --check
+	cd $(EXPORTGEN_DIR) && cargo fmt -- --check
+	cd $(USERLAND_DIR) && cargo fmt --all -- --check
 
 # =============================================================================
 # Limine Bootloader Targets

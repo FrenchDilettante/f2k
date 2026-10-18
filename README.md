@@ -29,8 +29,18 @@ curl -LsSf https://astral.sh/uv/install.sh | sh && uv sync
 
 ## Building
 
+The system DLLs (`userland/`: `ntdll.dll` and `kernel32.dll`, real PE32 images) build first: the
+kernel embeds them and maps them into every process. `userland/` is its own Cargo workspace with
+its own target (`userland/i686-f2k-pe.json`, linked by the toolchain's `rust-lld` in its MSVC
+mode); `make kernel` builds it first, and the DLLs land in `target/userland/`. The kernel's build
+script reads them, so a bare `cargo check` or `cargo build` in `kernel/` (and rust-analyzer) fails
+until `make userland` has run once.
+
 ```bash
-# Build kernel only
+# Build the system DLLs only
+make userland
+
+# Build the kernel (the system DLLs first)
 make kernel
 
 # Build bootable ISO with Limine (boots the kernel via Multiboot 1)
@@ -75,6 +85,15 @@ VBoxManage startvm F2K
 ```bash
 make run-tests
 ```
+
+### The export specs
+Each system DLL's exports are declared once, in `userland/<dll>/exports.toml` (the file's header
+documents its records): name, API group, prototype and implementation. `tools/exportgen` reads
+the specs and generates what derives from them: the kernel's service registry and the tables its
+tests check the built DLLs against (through the kernel's build script), and, for the DLL builds,
+the `.def` file and the service stubs (`userland/build-support/stubs.rs`). kernel32's exports are
+still master's kernel-served surface: each is a generated stub raising the gate (`int 2Eh`) on its
+service number, numbered from 0x2000 across both DLLs' specs, ExitProcess first.
 
 ### The kernel32 contract harness
 The compatibility surface's behavior is pinned host-side by the
@@ -180,8 +199,13 @@ f2k/
 ├── pyproject.toml    # The Python tooling (uv): pytest for the on-target tests
 ├── tests/            # Windows 2000 test corpus and the pytest suite (see tests/README.md)
 │
+├── tools/exportgen/  # The export specs' reader and generator (a host crate, outside the workspace)
+├── userland/         # The system DLLs (own workspace and target): rtl, ntdll, kernel32, each
+│                     # DLL's export spec in userland/<dll>/exports.toml
+│
 └── kernel/           # F2K Kernel
     ├── Cargo.toml        # Kernel package
+    ├── build.rs          # The service registry from the export specs; the embedded DLLs
     └── src/
         ├── boot/         # Boot-related code
         ├── compat/       # The Windows compatibility layer
@@ -202,12 +226,13 @@ f2k/
 
 | Target | Description |
 |--------|-------------|
-| `make kernel` | Build the kernel (ELF) |
+| `make userland` | Build the system DLLs (`target/userland/`) |
+| `make kernel` | Build the kernel (ELF), the system DLLs first |
 | `make qemu` | Build the disk and boot the kernel directly in QEMU, the disk attached |
 | `make test` | Run every on-target QEMU test (pytest: the kernel boots and the corpus) |
 | `make run-tests` | Run host unit tests |
 | `make check-all` | `run-tests`, then `test` |
-| `make check` | `cargo check` + clippy |
+| `make check` | `cargo check` + clippy (the kernel and the userland crates) |
 | `make fmt` | Format all Rust sources |
 | `make fmt-check` | Fail if any Rust source is unformatted |
 | `make limine` | Download Limine bootloader |

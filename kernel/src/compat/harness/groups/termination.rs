@@ -66,10 +66,10 @@ fn unhandled_exception_filter_answers_with_the_floor() {
     assert_eq!(fixture.kernel.calls(), []);
 }
 
-/// GetProcAddress's floor: zero (no procedure), whatever is asked. Ledger:
-/// termination/GetProcAddress.
+/// GetProcAddress: zero (no procedure) for a handle naming no module (the module table holds the
+/// system DLLs alone: `exec::modules`). Ledger: termination/GetProcAddress.
 #[test]
-#[ignore = "ledger termination/GetProcAddress: unpinned floor"]
+#[ignore = "ledger termination/GetProcAddress: unpinned"]
 fn get_proc_address_answers_with_the_floor() {
     let mut fixture = Fixture::new();
     let name = fixture.c_string(b"MessageBoxA");
@@ -77,9 +77,10 @@ fn get_proc_address_answers_with_the_floor() {
     assert_eq!(fixture.kernel.calls(), []);
 }
 
-/// LoadLibraryA's floor: zero (no module), whatever is asked. Ledger: termination/LoadLibraryA.
+/// LoadLibraryA: zero (no module) for a DLL other than the system DLLs (no other DLL loads:
+/// `exec::modules`). Ledger: termination/LoadLibraryA.
 #[test]
-#[ignore = "ledger termination/LoadLibraryA: unpinned floor"]
+#[ignore = "ledger termination/LoadLibraryA: unpinned"]
 fn load_library_answers_with_the_floor() {
     let mut fixture = Fixture::new();
     let name = fixture.c_string(b"user32.dll");

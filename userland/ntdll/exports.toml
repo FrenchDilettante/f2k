@@ -1,0 +1,33 @@
+# ntdll.dll's exports: the one source every list of them derives from (the format is kernel32's,
+# documented in userland/kernel32/exports.toml).
+#
+# Today ntdll carries the kernel-served export Windows 2000 places there (RtlUnwind, which kernel32
+# forwards to) and the F2K-internal entry point the kernel sends a thread to (`internal = true`: not
+# a Windows 2000 export). Windows 2000's system services and ntdll's user-mode runtime come with
+# later work.
+
+[[group]]
+key = "exceptions"
+title = "exceptions"
+
+[[group]]
+key = "internal"
+title = "F2K-internal entry points"
+
+# --- exceptions -----------------------------------------------------------------------------------
+
+[[export]]
+name = "RtlUnwind"
+group = "exceptions"
+args = ["ptr TargetFrame", "u32 TargetIp", "ptr ExceptionRecord", "u32 ReturnValue"]
+impl = { floor = "returns, unwinding nothing: the corpus imports it but never calls it" }
+
+# --- F2K-internal entry points --------------------------------------------------------------------
+
+[[export]]
+name = "F2kThreadExitTrampoline"
+group = "internal"
+args = []
+impl = { native = "F2kThreadExitTrampoline" }
+internal = true
+note = "a child thread's function returns onto it (its return value the thread's exit code): the kernel plants its address under the thread's first frame"

@@ -1,0 +1,417 @@
+# kernel32.dll's exports: the one source every list of them derives from.
+#
+# tools/exportgen reads this file and generates the kernel's service registry (the kernel's build
+# script) and, for the DLL build, the module-definition file and the service stubs
+# (userland/build-support/stubs.rs). Never copy an export's facts elsewhere: derive them from here.
+#
+# The file is TOML in the subset tools/exportgen/src/toml.rs reads (it refuses anything else).
+#
+# [[group]]      an API group, the unit the exports are reported by:
+#   key          its key (exports name it), title  its heading
+#
+# [[export]]     one export, in its group's section:
+#   name         the export name (case-sensitive, as GetProcAddress matches it)
+#   group        its API group's key
+#   args         the prototype's arguments, first first: "<kind> <name>". The kind says what the
+#                caller pushes:
+#                  u32          a dword value (counts, flags, code addresses)
+#                  i32          a signed dword (a count where -1 means "to the NUL")
+#                  bool         a Win32 BOOL (nonzero is true)
+#                  handle       a handle value
+#                  ptr          a pointer into caller memory
+#                  ptr<T>       a pointer to one T (u8, u16, u32, i32, u64)
+#                  u64          a quadword by value (two dwords, low first)
+#                  strA, strW   a NUL-terminated string the call reads; strA? allows NULL, strA[260]
+#                               gives the platform's limit on its length in units, the NUL included
+#                the argument block its callers push and its body pops (stdcall) is 4 bytes per
+#                argument, 8 per u64
+#   impl         how it is implemented, an inline table with one key:
+#                  { legacy = "<handler>" }   the kernel serves it through a handler on the raw
+#                                             argument block, fn(&mut TrapFrame, &[u32]) (its path in
+#                                             compat::kernel32's scope): the kernel's served
+#                                             surface, until its group moves to user mode
+#                  { native = "<body>" }      it runs in user mode: the DLL's own code, an
+#                                             f2k_export_<Name> symbol (build-support/stubs.rs)
+#                  { forward = "MODULE.Export" }  forwarded to another module's export (the same
+#                                             prototype)
+#                  { floor = "<why>" }        a deliberate fixed answer (zero, the kernel's shared
+#                                             floor handler), and why
+#                  { unimplemented = "<why>" }  listed but not exported yet
+#   ordinal      optional: the export ordinal, from the platform's own table (none yet: the
+#                ordinals are sequential placeholders)
+#   fails        optional: its failure return value: an integer (0, -1, 0x...), FALSE, NULL,
+#                INVALID_HANDLE_VALUE, WAIT_FAILED, INVALID_FILE_SIZE, INVALID_SET_FILE_POINTER,
+#                INVALID_FILE_ATTRIBUTES, TLS_OUT_OF_INDEXES, or void / never
+#   note         optional: a fact worth keeping beside the export
+#   pinned_by    optional: the fixture blocks pinning its behavior: "<fixture>/<section>", or
+#                "<fixture>/*" for every block of the fixture
+#   scenarios    optional: the host scenarios pinning it (test function names)
+#   unpinned     optional: why an implemented export has no evidence yet
+#   internal     optional: true for an F2K-internal entry point, not a Windows 2000 export
+#
+# Service numbers are internal (the registry and the stubs are both generated): the served
+# exports across the system DLLs' specs are numbered from 0x2000, ExitProcess first (0x2001), the
+# others in case-insensitive name order.
+#
+# What kernel32 exports today is the kernel's served surface, exactly the corpus's import surface:
+# every served export a kernel stub, RtlUnwind a forwarder into ntdll (as on Windows 2000).
+
+[[group]]
+key = "termination"
+title = "termination"
+
+[[group]]
+key = "startup"
+title = "command line / startup info"
+
+[[group]]
+key = "console"
+title = "console handles"
+
+[[group]]
+key = "environment"
+title = "environment"
+
+[[group]]
+key = "heap"
+title = "heap"
+
+[[group]]
+key = "locale"
+title = "locale / string conversion"
+
+[[group]]
+key = "threads"
+title = "threads / sync"
+
+[[group]]
+key = "files"
+title = "file handles"
+
+[[group]]
+key = "virtual-memory"
+title = "virtual memory"
+
+# --- termination ----------------------------------------------------------------------------------
+
+[[export]]
+name = "ExitProcess"
+group = "termination"
+args = ["u32 uExitCode"]
+impl = { legacy = "svc_exit_process" }
+
+[[export]]
+name = "TerminateProcess"
+group = "termination"
+args = ["handle hProcess", "u32 uExitCode"]
+impl = { floor = "FALSE, the process not ended: the corpus imports it but never calls it" }
+
+[[export]]
+name = "GetCurrentProcess"
+group = "termination"
+args = []
+impl = { legacy = "svc_get_current_process" }
+
+[[export]]
+name = "UnhandledExceptionFilter"
+group = "termination"
+args = ["ptr ExceptionInfo"]
+impl = { floor = "EXCEPTION_CONTINUE_SEARCH (zero), no effect: the corpus imports it but never calls it" }
+
+[[export]]
+name = "GetProcAddress"
+group = "termination"
+args = ["handle hModule", "ptr lpProcName"]
+impl = { legacy = "crate::exec::modules::svc_get_proc_address" }
+
+[[export]]
+name = "LoadLibraryA"
+group = "termination"
+args = ["strA lpFileName"]
+impl = { legacy = "crate::exec::modules::svc_load_library_a" }
+
+[[export]]
+name = "RtlUnwind"
+group = "termination"
+args = ["ptr TargetFrame", "u32 TargetIp", "ptr ExceptionRecord", "u32 ReturnValue"]
+impl = { forward = "NTDLL.RtlUnwind" }
+
+# --- command line / startup info ------------------------------------------------------------------
+
+[[export]]
+name = "GetCommandLineA"
+group = "startup"
+args = []
+impl = { legacy = "svc_get_command_line_a" }
+
+[[export]]
+name = "GetStartupInfoA"
+group = "startup"
+args = ["ptr lpStartupInfo"]
+impl = { legacy = "svc_get_startup_info_a" }
+
+[[export]]
+name = "GetModuleFileNameA"
+group = "startup"
+args = ["handle hModule", "ptr lpFilename", "u32 nSize"]
+impl = { legacy = "svc_get_module_file_name" }
+
+[[export]]
+name = "GetVersion"
+group = "startup"
+args = []
+impl = { legacy = "svc_get_version" }
+
+# --- console handles ------------------------------------------------------------------------------
+
+[[export]]
+name = "GetStdHandle"
+group = "console"
+args = ["u32 nStdHandle"]
+impl = { legacy = "svc_get_std_handle" }
+
+[[export]]
+name = "GetFileType"
+group = "console"
+args = ["handle hFile"]
+impl = { legacy = "svc_get_file_type" }
+
+[[export]]
+name = "SetHandleCount"
+group = "console"
+args = ["u32 uNumber"]
+impl = { legacy = "svc_set_handle_count" }
+
+[[export]]
+name = "WriteFile"
+group = "console"
+args = ["handle hFile", "ptr lpBuffer", "u32 nNumberOfBytesToWrite", "ptr lpNumberOfBytesWritten", "ptr lpOverlapped"]
+impl = { legacy = "svc_write_file" }
+
+[[export]]
+name = "CloseHandle"
+group = "console"
+args = ["handle hObject"]
+impl = { legacy = "svc_close_handle" }
+
+[[export]]
+name = "FlushFileBuffers"
+group = "console"
+args = ["handle hFile"]
+impl = { legacy = "svc_flush_file_buffers" }
+
+[[export]]
+name = "GetLastError"
+group = "console"
+args = []
+impl = { floor = "always zero: no service on the surface sets a last error yet" }
+
+[[export]]
+name = "SetFilePointer"
+group = "console"
+args = ["handle hFile", "i32 lDistanceToMove", "ptr lpDistanceToMoveHigh", "u32 dwMoveMethod"]
+impl = { legacy = "svc_set_file_pointer" }
+
+[[export]]
+name = "SetStdHandle"
+group = "console"
+args = ["u32 nStdHandle", "handle hHandle"]
+impl = { floor = "FALSE, no effect: the corpus imports it but never calls it" }
+
+# --- environment ----------------------------------------------------------------------------------
+
+[[export]]
+name = "GetEnvironmentStrings"
+group = "environment"
+args = []
+impl = { legacy = "svc_get_environment_strings" }
+
+[[export]]
+name = "GetEnvironmentStringsW"
+group = "environment"
+args = []
+impl = { legacy = "svc_get_environment_strings_w" }
+
+[[export]]
+name = "FreeEnvironmentStringsA"
+group = "environment"
+args = ["ptr lpszEnvironmentBlock"]
+impl = { legacy = "svc_free_environment_strings" }
+
+[[export]]
+name = "FreeEnvironmentStringsW"
+group = "environment"
+args = ["ptr lpszEnvironmentBlock"]
+impl = { legacy = "svc_free_environment_strings" }
+
+# --- heap -----------------------------------------------------------------------------------------
+
+[[export]]
+name = "HeapAlloc"
+group = "heap"
+args = ["handle hHeap", "u32 dwFlags", "u32 dwBytes"]
+impl = { legacy = "svc_heap_alloc" }
+
+[[export]]
+name = "HeapCreate"
+group = "heap"
+args = ["u32 flOptions", "u32 dwInitialSize", "u32 dwMaximumSize"]
+impl = { legacy = "svc_heap_create" }
+
+[[export]]
+name = "HeapDestroy"
+group = "heap"
+args = ["handle hHeap"]
+impl = { legacy = "svc_heap_destroy" }
+
+[[export]]
+name = "HeapFree"
+group = "heap"
+args = ["handle hHeap", "u32 dwFlags", "ptr lpMem"]
+impl = { legacy = "svc_heap_free" }
+
+[[export]]
+name = "HeapReAlloc"
+group = "heap"
+args = ["handle hHeap", "u32 dwFlags", "ptr lpMem", "u32 dwBytes"]
+impl = { legacy = "svc_heap_realloc" }
+
+# --- locale / string conversion -------------------------------------------------------------------
+
+[[export]]
+name = "GetACP"
+group = "locale"
+args = []
+impl = { legacy = "svc_get_acp" }
+
+[[export]]
+name = "GetOEMCP"
+group = "locale"
+args = []
+impl = { legacy = "svc_get_oemcp" }
+
+[[export]]
+name = "GetCPInfo"
+group = "locale"
+args = ["u32 CodePage", "ptr lpCPInfo"]
+impl = { legacy = "svc_get_cp_info" }
+
+[[export]]
+name = "MultiByteToWideChar"
+group = "locale"
+args = ["u32 CodePage", "u32 dwFlags", "ptr lpMultiByteStr", "i32 cbMultiByte", "ptr lpWideCharStr", "i32 cchWideChar"]
+impl = { legacy = "svc_multi_byte_to_wide_char" }
+
+[[export]]
+name = "WideCharToMultiByte"
+group = "locale"
+args = ["u32 CodePage", "u32 dwFlags", "ptr lpWideCharStr", "i32 cchWideChar", "ptr lpMultiByteStr", "i32 cbMultiByte", "ptr lpDefaultChar", "ptr lpUsedDefaultChar"]
+impl = { legacy = "svc_wide_char_to_multi_byte" }
+
+[[export]]
+name = "LCMapStringA"
+group = "locale"
+args = ["u32 Locale", "u32 dwMapFlags", "ptr lpSrcStr", "i32 cchSrc", "ptr lpDestStr", "i32 cchDest"]
+impl = { floor = "zero, nothing written: the C runtime imports it but calls the W form" }
+
+[[export]]
+name = "LCMapStringW"
+group = "locale"
+args = ["u32 Locale", "u32 dwMapFlags", "ptr lpSrcStr", "i32 cchSrc", "ptr lpDestStr", "i32 cchDest"]
+impl = { legacy = "svc_lc_map_string_w" }
+
+[[export]]
+name = "GetStringTypeA"
+group = "locale"
+args = ["u32 Locale", "u32 dwInfoType", "ptr lpSrcStr", "i32 cchSrc", "ptr lpCharType"]
+impl = { floor = "zero, nothing written: the C runtime imports it but calls the W form" }
+
+[[export]]
+name = "GetStringTypeW"
+group = "locale"
+args = ["u32 dwInfoType", "ptr lpSrcStr", "i32 cchSrc", "ptr lpCharType"]
+impl = { legacy = "svc_get_string_type_w" }
+
+# --- threads / sync -------------------------------------------------------------------------------
+
+[[export]]
+name = "CreateThread"
+group = "threads"
+args = ["ptr lpThreadAttributes", "u32 dwStackSize", "u32 lpStartAddress", "u32 lpParameter", "u32 dwCreationFlags", "ptr lpThreadId"]
+impl = { legacy = "svc_create_thread" }
+
+[[export]]
+name = "CreateEventA"
+group = "threads"
+args = ["ptr lpEventAttributes", "bool bManualReset", "bool bInitialState", "strA? lpName"]
+impl = { legacy = "svc_create_event_a" }
+
+[[export]]
+name = "SetEvent"
+group = "threads"
+args = ["handle hEvent"]
+impl = { legacy = "svc_set_event" }
+
+[[export]]
+name = "Sleep"
+group = "threads"
+args = ["u32 dwMilliseconds"]
+impl = { legacy = "svc_sleep" }
+
+[[export]]
+name = "WaitForSingleObject"
+group = "threads"
+args = ["handle hHandle", "u32 dwMilliseconds"]
+impl = { legacy = "svc_wait_for_single_object" }
+
+[[export]]
+name = "GetTickCount"
+group = "threads"
+args = []
+impl = { legacy = "svc_get_tick_count" }
+
+[[export]]
+name = "SetThreadPriority"
+group = "threads"
+args = ["handle hThread", "i32 nPriority"]
+impl = { legacy = "svc_set_thread_priority" }
+
+[[export]]
+name = "SuspendThread"
+group = "threads"
+args = ["handle hThread"]
+impl = { legacy = "svc_suspend_thread" }
+
+[[export]]
+name = "ResumeThread"
+group = "threads"
+args = ["handle hThread"]
+impl = { legacy = "svc_resume_thread" }
+
+# --- file handles ---------------------------------------------------------------------------------
+
+[[export]]
+name = "CreateFileA"
+group = "files"
+args = ["strA lpFileName", "u32 dwDesiredAccess", "u32 dwShareMode", "ptr lpSecurityAttributes", "u32 dwCreationDisposition", "u32 dwFlagsAndAttributes", "handle hTemplateFile"]
+impl = { legacy = "svc_create_file_a" }
+
+[[export]]
+name = "ReadFile"
+group = "files"
+args = ["handle hFile", "ptr lpBuffer", "u32 nNumberOfBytesToRead", "ptr lpNumberOfBytesRead", "ptr lpOverlapped"]
+impl = { legacy = "svc_read_file" }
+
+# --- virtual memory -------------------------------------------------------------------------------
+
+[[export]]
+name = "VirtualAlloc"
+group = "virtual-memory"
+args = ["u32 lpAddress", "u32 dwSize", "u32 flAllocationType", "u32 flProtect"]
+impl = { legacy = "svc_virtual_alloc" }
+
+[[export]]
+name = "VirtualFree"
+group = "virtual-memory"
+args = ["u32 lpAddress", "u32 dwSize", "u32 dwFreeType"]
+impl = { legacy = "svc_virtual_free" }

@@ -91,14 +91,14 @@ exports:
     group: termination
     status: unpinned
     reason: >-
-      never-called floor (NULL): the corpus imports it but never calls it, so no real behavior is observable
+      the system DLLs' exports through the module table (NULL otherwise): the corpus imports it but never calls it, so no real behavior is observable
     tests:
       - {name: get_proc_address_answers_with_the_floor, enabled: false}
   - export: LoadLibraryA
     group: termination
     status: unpinned
     reason: >-
-      never-called floor (NULL): the corpus imports it but never calls it, so no real behavior is observable
+      the system DLLs' handles (NULL for any other module): the corpus imports it but never calls it, so no real behavior is observable
     tests:
       - {name: load_library_answers_with_the_floor, enabled: false}
   - export: RtlUnwind

@@ -20,13 +20,14 @@ pub const SYSCALL_VECTOR: usize = 0x2E;
 /// The first byte of kernel space: the user probe limit.
 pub const USER_PROBE_LIMIT: u32 = crate::mem::paging::KERNEL_BASE;
 
-/// Service 1: process exit (the registry's ExitProcess entry).
-pub const SYS_EXIT: u32 = 1;
+/// Process exit: the registry's first service, ExitProcess (`compat::kernel32::SERVICES`, numbered
+/// from its base, 0x2000).
+pub const SYS_EXIT: u32 = 0x2001;
 
 /// The internal thread-exit service: outside the registry's range (nothing imports it; the
-/// registry's surface discipline keeps it that way). The thread-exit trampoline in the thunk page
-/// raises the gate on this number, carrying the user function's return value in the argument
-/// register.
+/// registry's surface discipline keeps it that way). ntdll's thread-exit trampoline
+/// (F2kThreadExitTrampoline) raises the gate on this number, carrying the user function's return
+/// value in the argument register.
 pub const SYS_THREAD_EXIT: u32 = 0x8000_0000;
 
 /// Documented NTSTATUS values (public ABI constants).
@@ -328,10 +329,14 @@ mod tests {
         assert!(SYSCALL_VECTOR > 31);
     }
 
-    /// Exit is service 1 with a one-dword argument block.
+    /// Exit is the registry's first service, with a one-dword argument block.
     #[test]
-    fn exit_is_service_one() {
-        assert_eq!(SYS_EXIT, 1);
+    fn exit_is_the_first_service() {
+        assert_eq!(SYS_EXIT, 0x2001);
+        assert_eq!(
+            crate::compat::kernel32::service_number("ExitProcess"),
+            SYS_EXIT
+        );
         assert_eq!(
             crate::compat::kernel32::lookup_service(SYS_EXIT).map(|(bytes, _)| bytes),
             Some(4)

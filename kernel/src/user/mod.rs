@@ -89,7 +89,7 @@ pub const RING3_STUB: [u8; 7] = [
 
 #[cfg(all(feature = "fault-test-badargs", not(feature = "fault-test-user")))]
 pub const RING3_STUB: [u8; 14] = [
-    0xB8, 0x01, 0x00, 0x00, 0x00, // mov eax, SYS_EXIT (service 1)
+    0xB8, 0x01, 0x20, 0x00, 0x00, // mov eax, SYS_EXIT (0x2001)
     0xBA, 0x00, 0x00, 0x50, 0x00, // mov edx, BAD_ARGS_PTR
     0xCD, 0x2E, // int 0x2E (syscall gate)
     0xEB, 0xFE, // jmp $
@@ -116,7 +116,7 @@ pub const RING3_STUB: [u8; 29] = [
     0x75, 0xFD, // jnz (back to dec ecx)
     0x6A, 0x07, // push 7
     0x89, 0xE2, // mov edx, esp
-    0xB8, 0x01, 0x00, 0x00, 0x00, // mov eax, SYS_EXIT (service 1)
+    0xB8, 0x01, 0x20, 0x00, 0x00, // mov eax, SYS_EXIT (0x2001)
     0xCD, 0x2E, // int 0x2E
     0xEB, 0xFE, // jmp $
 ];
@@ -136,7 +136,7 @@ pub const RING3_STUB: [u8; 22] = [
     0xCD, 0x2E, // int 0x2E
     0x50, // push eax
     0x89, 0xE2, // mov edx, esp
-    0xB8, 0x01, 0x00, 0x00, 0x00, // mov eax, SYS_EXIT (service 1)
+    0xB8, 0x01, 0x20, 0x00, 0x00, // mov eax, SYS_EXIT (0x2001)
     0xCD, 0x2E, // int 0x2E
     0xEB, 0xFE, // jmp $
     0x90, // pad
@@ -524,8 +524,12 @@ mod tests {
                     .unwrap(),
             );
             assert_eq!(
-                crate::compat::kernel32::resolve(name),
-                Some(crate::compat::kernel32::THUNK_PAGE + (number - 1) * 16),
+                number,
+                crate::compat::kernel32::service_number(name),
+                "{name}"
+            );
+            assert!(
+                crate::compat::kernel32::lookup_service(number).is_some(),
                 "{name}"
             );
         }

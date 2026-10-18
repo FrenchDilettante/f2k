@@ -1,31 +1,20 @@
-//! The kernel-synthesized kernel32 export surface.
+//! kernel32's kernel-served exports: the transitional Win32 services behind kernel32.dll's stubs.
 //!
-//! No real kernel32.dll exists yet: a name -> service registry plus one user page of thunk stubs,
-//! snapped into IAT slots by the loader. Reported values (version, startup info, handles,
-//! codepages) are replays captured from a real Windows 2000 machine; the locale group answers from
-//! the shipped codepage-1252 tables, the heap group from a genuine allocator (`userheap`),
-//! `WriteFile` from the console backend (COM1), never-called imports from safe minimal floors.
-//!
-//! Quirk: kernel pages are supervisor-only, so the stubs must live in user memory — tiny user-mode
-//! stub pages for now, an ntdll-like user layer eventually.
+//! kernel32.dll is a real DLL (userland/kernel32, mapped into every process: `exec::modules`). Its
+//! exports are generated service stubs, each raising the gate on its service number with the
+//! caller's arguments; this module holds the services they reach, the registry the gate dispatches
+//! through ([`SERVICES`], generated from the export specs, userland/<dll>/exports.toml), and the
+//! replays they answer from. Reported values (version, startup info, handles, codepages) are replays
+//! captured from a real Windows 2000 machine; the locale group answers from the shipped
+//! codepage-1252 tables, the heap group from a genuine allocator (`userheap`), `WriteFile` from the
+//! console backend (COM1), never-called imports from safe minimal floors. The move to user mode
+//! goes group by group, deleting each group's services here.
 
 use crate::fs::file::SeekMethod;
-use crate::user::syscall::{read_user, write_user, ServiceFn, SYS_EXIT};
-use crate::user::{PARAMS_PAGE, TEB_PAGE};
-
-/// The module name imports resolve against; the PE import descriptor must name it
-/// (ASCII-case-insensitively).
-pub const MODULE_NAME: &str = "KERNEL32.dll";
-
-/// The user page the thunk stubs live in: a fixed page of the system layout (window 5), clear of
-/// every other system region; the loader refuses an image that would cover it.
-pub const THUNK_PAGE: u32 = 0x0140_0000;
-
-/// Bytes of one thunk stub: lea / mov / int / ret imm16 (14 bytes).
-const STUB_LEN: usize = 14;
-
-/// Offset between consecutive stubs in the thunk page.
-const STUB_STRIDE: u32 = 16;
+use crate::user::syscall::{read_user, write_user, ServiceFn};
+use crate::user::PARAMS_PAGE;
+#[cfg(test)]
+use crate::user::TEB_PAGE;
 
 // --- Replay data (captured on a real Windows 2000 SP4 machine) ------
 
@@ -1096,71 +1085,20 @@ fn svc_get_current_process(frame: &mut crate::user::TrapFrame, _args: &[u32]) {
 
 // --- The registry ----------------------------------------------------
 
-/// The service registry: one entry per export, in service-number order (a number is its position
-/// plus one; ExitProcess is pinned at service 1, the rest alphabetical). Quirk: a name absent from
-/// here fails the loader's snap, so this set is exactly the union of the checked-in fixtures'
-/// import surfaces.
-pub const SERVICES: [(&str, u32, ServiceFn); 51] = [
-    ("ExitProcess", 4, svc_exit_process),
-    ("CloseHandle", 4, svc_close_handle),
-    ("CreateEventA", 16, svc_create_event_a),
-    ("CreateFileA", 28, svc_create_file_a),
-    ("CreateThread", 24, svc_create_thread),
-    ("FlushFileBuffers", 4, svc_flush_file_buffers),
-    ("FreeEnvironmentStringsA", 4, svc_free_environment_strings),
-    ("FreeEnvironmentStringsW", 4, svc_free_environment_strings),
-    ("GetACP", 0, svc_get_acp),
-    ("GetCommandLineA", 0, svc_get_command_line_a),
-    ("GetCPInfo", 8, svc_get_cp_info),
-    ("GetCurrentProcess", 0, svc_get_current_process),
-    ("GetEnvironmentStrings", 0, svc_get_environment_strings),
-    ("GetEnvironmentStringsW", 0, svc_get_environment_strings_w),
-    ("GetFileType", 4, svc_get_file_type),
-    ("GetLastError", 0, svc_floor_zero),
-    ("GetModuleFileNameA", 12, svc_get_module_file_name),
-    ("GetOEMCP", 0, svc_get_oemcp),
-    ("GetProcAddress", 8, svc_floor_zero),
-    ("GetStartupInfoA", 4, svc_get_startup_info_a),
-    ("GetStdHandle", 4, svc_get_std_handle),
-    ("GetStringTypeA", 20, svc_floor_zero),
-    ("GetStringTypeW", 16, svc_get_string_type_w),
-    ("GetTickCount", 0, svc_get_tick_count),
-    ("GetVersion", 0, svc_get_version),
-    ("HeapAlloc", 12, svc_heap_alloc),
-    ("HeapCreate", 12, svc_heap_create),
-    ("HeapDestroy", 4, svc_heap_destroy),
-    ("HeapFree", 12, svc_heap_free),
-    ("HeapReAlloc", 16, svc_heap_realloc),
-    ("LCMapStringA", 24, svc_floor_zero),
-    ("LCMapStringW", 24, svc_lc_map_string_w),
-    ("LoadLibraryA", 4, svc_floor_zero),
-    ("MultiByteToWideChar", 24, svc_multi_byte_to_wide_char),
-    ("ReadFile", 20, svc_read_file),
-    ("ResumeThread", 4, svc_resume_thread),
-    ("RtlUnwind", 16, svc_floor_zero),
-    ("SetEvent", 4, svc_set_event),
-    ("SetFilePointer", 16, svc_set_file_pointer),
-    ("SetHandleCount", 4, svc_set_handle_count),
-    ("SetStdHandle", 8, svc_floor_zero),
-    ("SetThreadPriority", 8, svc_set_thread_priority),
-    ("Sleep", 4, svc_sleep),
-    ("SuspendThread", 4, svc_suspend_thread),
-    ("TerminateProcess", 8, svc_floor_zero),
-    ("UnhandledExceptionFilter", 4, svc_floor_zero),
-    ("VirtualAlloc", 16, svc_virtual_alloc),
-    ("VirtualFree", 12, svc_virtual_free),
-    ("WaitForSingleObject", 8, svc_wait_for_single_object),
-    ("WideCharToMultiByte", 32, svc_wide_char_to_multi_byte),
-    ("WriteFile", 20, svc_write_file),
-];
+// The service registry: `WIN32_SERVICE_BASE`, and `SERVICES`, one (export, argument bytes,
+// handler) entry per kernel-served export, in service-number order, generated from the export specs
+// (userland/<dll>/exports.toml) by the build script. A floor's handler is `svc_floor_zero`; a
+// legacy handler's path resolves in this module's scope.
+include!(concat!(env!("OUT_DIR"), "/kernel32_services.rs"));
 
-/// An export's service number (its registry position plus one), at build time: the hand-assembled
-/// stubs patch theirs from here. A name the registry does not hold fails the build.
+/// An export's service number (the base plus its registry position plus one), at build time: the
+/// hand-assembled fault-test stubs patch theirs from here. A name the registry does not hold fails
+/// the build.
 pub const fn service_number(name: &str) -> u32 {
     let mut index = 0;
     while index < SERVICES.len() {
         if same_name(SERVICES[index].0.as_bytes(), name.as_bytes()) {
-            return index as u32 + 1;
+            return WIN32_SERVICE_BASE + index as u32 + 1;
         }
         index += 1;
     }
@@ -1182,80 +1120,11 @@ const fn same_name(a: &[u8], b: &[u8]) -> bool {
     true
 }
 
-/// Look a service up by number: its argument block size and handler.
+/// Look a transitional Win32 service up by number: its argument block size and handler.
 pub fn lookup_service(number: u32) -> Option<(u32, ServiceFn)> {
-    if number == 0 || number as usize > SERVICES.len() {
-        return None;
-    }
-    let (_, arg_bytes, service) = SERVICES[number as usize - 1];
+    let position = number.checked_sub(WIN32_SERVICE_BASE + 1)? as usize;
+    let &(_, arg_bytes, service) = SERVICES.get(position)?;
     Some((arg_bytes, service))
-}
-
-/// Resolve an export name to its stub's address in the thunk page. Exact match; case-insensitivity
-/// grows in with the real surface.
-pub fn resolve(name: &str) -> Option<u32> {
-    SERVICES
-        .iter()
-        .position(|&(export, ..)| export == name)
-        .map(|index| THUNK_PAGE + index as u32 * STUB_STRIDE)
-}
-
-/// One stub: EDX = caller arguments, EAX = service, raise the gate, return popping the argument
-/// block. Quirk: kernel32 exports are stdcall, so the callee cleans the arguments — the ret size is
-/// load-bearing, not the ret.
-fn stub_bytes(service: u32, arg_bytes: u32) -> [u8; STUB_LEN] {
-    #[rustfmt::skip]
-    let mut stub = [
-        0x8D, 0x54, 0x24, 0x04, // lea edx, [esp+4]
-        0xB8, 0, 0, 0, 0, // mov eax, service
-        0xCD, crate::user::syscall::SYSCALL_VECTOR as u8, // int 0x2E
-        0xC2, 0, 0, // ret imm16 (stdcall argument cleanup)
-    ];
-    stub[5..9].copy_from_slice(&service.to_le_bytes());
-    stub[12..14].copy_from_slice(&(arg_bytes as u16).to_le_bytes());
-    stub
-}
-
-/// The thread-exit trampoline: a child thread's user function returns onto this stub. It moves the
-/// function's return value (EAX) to the gate's argument register (the service number load would
-/// clobber it), raises the gate on the internal thread-exit service, and never returns.
-const TRAMPOLINE_LEN: usize = 9;
-
-fn trampoline_bytes(service: u32) -> [u8; TRAMPOLINE_LEN] {
-    #[rustfmt::skip]
-    let mut stub = [
-        0x89, 0xC2, // mov edx, eax (the user function's return value)
-        0xB8, 0, 0, 0, 0, // mov eax, service
-        0xCD, crate::user::syscall::SYSCALL_VECTOR as u8, // int 0x2E
-    ];
-    stub[3..7].copy_from_slice(&service.to_le_bytes());
-    stub
-}
-
-/// The trampoline's user-space address: the slot after the last service stub in the thunk page.
-pub fn thread_exit_trampoline() -> u32 {
-    THUNK_PAGE + SERVICES.len() as u32 * STUB_STRIDE
-}
-
-/// Map the thunk page into `space` (the new process's): one zeroed frame, seeded and patched with the stubs, read-only user (the
-/// stubs execute; nothing writes). The thread-exit trampoline follows the service stubs.
-#[cfg(target_arch = "x86")]
-pub fn init(space: &mut crate::mem::vm::AddressSpace) {
-    let frame = crate::mem::paging::allocate_frame_phys();
-    crate::mem::paging::init_frame(frame, 0, &stub_bytes(1, SERVICES[0].1));
-    for (index, &(_, arg_bytes, _)) in SERVICES.iter().enumerate().skip(1) {
-        crate::mem::paging::write_frame(
-            frame,
-            (index as u32 * STUB_STRIDE) as usize,
-            &stub_bytes(index as u32 + 1, arg_bytes),
-        );
-    }
-    crate::mem::paging::write_frame(
-        frame,
-        (SERVICES.len() as u32 * STUB_STRIDE) as usize,
-        &trampoline_bytes(crate::user::syscall::SYS_THREAD_EXIT),
-    );
-    crate::mem::vm::map_prepared(space, THUNK_PAGE, frame, crate::mem::vm::PAGE_READONLY);
 }
 
 /// Map the parameters page into `space` (the new process's): the command line (`command_line`, the program as invoked with its
@@ -1283,168 +1152,36 @@ pub fn init_params(space: &mut crate::mem::vm::AddressSpace, command_line: &[u8]
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::exec::pe::Image;
     use crate::mem::paging::KERNEL_BASE;
 
-    const RET0: &[u8] = include_bytes!("../../../tests/ret0/ret0.exe");
-    const HELLO: &[u8] = include_bytes!("../../../tests/hello/hello.exe");
-    const SLEEP: &[u8] = include_bytes!("../../../tests/sleep/sleep.exe");
-    const SPIN: &[u8] = include_bytes!("../../../tests/spin/spin.exe");
-    const SUSPEND: &[u8] = include_bytes!("../../../tests/suspend/suspend.exe");
-    const FILEIO: &[u8] = include_bytes!("../../../tests/fileio/fileio.exe");
-
-    /// The corpus's kernel32 import surface (hello's 40 — ret0's 35 plus the console-stdio group —
-    /// the timer smoke's two exports, the spin smoke's priority export, the suspend smoke's two
-    /// suspend exports, and the file smoke's open and read; the loader's snap contract): the
-    /// registry must spell it exactly.
-    const CORPUS_IMPORTS: [&str; 51] = [
-        "CreateThread",
-        "CreateEventA",
-        "SetEvent",
-        "WaitForSingleObject",
-        "VirtualFree",
-        "GetVersion",
-        "ExitProcess",
-        "TerminateProcess",
-        "GetCurrentProcess",
-        "UnhandledExceptionFilter",
-        "GetModuleFileNameA",
-        "FreeEnvironmentStringsA",
-        "FreeEnvironmentStringsW",
-        "WideCharToMultiByte",
-        "GetEnvironmentStrings",
-        "GetEnvironmentStringsW",
-        "SetHandleCount",
-        "GetStdHandle",
-        "GetFileType",
-        "GetStartupInfoA",
-        "HeapDestroy",
-        "HeapCreate",
-        "GetCommandLineA",
-        "HeapFree",
-        "RtlUnwind",
-        "WriteFile",
-        "HeapAlloc",
-        "GetCPInfo",
-        "GetACP",
-        "GetOEMCP",
-        "VirtualAlloc",
-        "HeapReAlloc",
-        "GetProcAddress",
-        "LoadLibraryA",
-        "MultiByteToWideChar",
-        "LCMapStringA",
-        "LCMapStringW",
-        "GetStringTypeA",
-        "GetStringTypeW",
-        "GetLastError",
-        "FlushFileBuffers",
-        "SetFilePointer",
-        "SetStdHandle",
-        "CloseHandle",
-        "Sleep",
-        "GetTickCount",
-        "SetThreadPriority",
-        "SuspendThread",
-        "ResumeThread",
-        "CreateFileA",
-        "ReadFile",
-    ];
-
-    /// Registry consistency: names unique, numbers are positions plus one (ExitProcess pinned at
-    /// 1), every corpus import resolves.
+    /// The registry's numbering: ExitProcess is the first service (SYS_EXIT), the others follow it
+    /// from the base; numbers outside the registry name no service; the names are unique.
     #[test]
-    fn registry_spells_the_corpus_surface() {
-        assert_eq!(SERVICES.len(), 51);
-        for (i, &(name, arg_bytes, _)) in SERVICES.iter().enumerate() {
-            assert!(!name.is_empty());
-            assert_eq!(
-                lookup_service(i as u32 + 1).map(|(b, _)| b),
-                Some(arg_bytes)
-            );
-            for &(other, ..) in SERVICES.iter().skip(i + 1) {
-                assert_ne!(name, other);
-            }
-        }
-        // ExitProcess is service 1 (SYS_EXIT).
+    fn the_registry_numbers_from_its_base() {
+        assert_eq!(SERVICES.len(), 51, "the kernel's served surface");
+        assert_eq!(WIN32_SERVICE_BASE, 0x2000);
         assert_eq!(SERVICES[0].0, "ExitProcess");
-        assert_eq!(crate::user::syscall::SYS_EXIT, 1);
-        assert_eq!(lookup_service(0), None);
-        assert_eq!(lookup_service(52), None);
-        assert_eq!(lookup_service(u32::MAX), None);
-        // Set equality with the corpus list.
-        for name in CORPUS_IMPORTS {
-            assert!(SERVICES.iter().any(|&(n, ..)| n == name), "missing {name}");
-            assert!(resolve(name).is_some(), "unresolvable {name}");
+        assert_eq!(crate::user::syscall::SYS_EXIT, WIN32_SERVICE_BASE + 1);
+        assert_eq!(
+            service_number("ExitProcess"),
+            crate::user::syscall::SYS_EXIT
+        );
+        for (i, &(name, arg_bytes, _)) in SERVICES.iter().enumerate() {
+            let number = WIN32_SERVICE_BASE + i as u32 + 1;
+            assert_eq!(service_number(name), number, "{name}");
+            assert_eq!(lookup_service(number).map(|(b, _)| b), Some(arg_bytes));
+            assert!(SERVICES[i + 1..].iter().all(|&(other, ..)| other != name));
         }
-        for &(name, ..) in SERVICES.iter() {
-            assert!(CORPUS_IMPORTS.contains(&name), "extra export {name}");
+        for number in [
+            0,
+            1,
+            51,
+            WIN32_SERVICE_BASE,
+            WIN32_SERVICE_BASE + 52,
+            u32::MAX,
+        ] {
+            assert_eq!(lookup_service(number).map(|(b, _)| b), None, "{number:#x}");
         }
-    }
-
-    /// Every ret0 import resolves against the real registry.
-    #[test]
-    fn ret0_snaps_fully_against_the_registry() {
-        let image = Image::parse(RET0).expect("ret0 parses");
-        let mut mapped = vec![0u8; image.size_of_image as usize];
-        image.map_into(RET0, &mut mapped);
-        let result = image.snap_imports(RET0, &mut mapped, crate::exec::loader::resolve_import);
-        assert_eq!(result.thunks, 35);
-    }
-
-    /// Every hello import (the 40-export console surface) resolves against the real registry.
-    #[test]
-    fn hello_snaps_fully_against_the_registry() {
-        let image = Image::parse(HELLO).expect("hello parses");
-        let mut mapped = vec![0u8; image.size_of_image as usize];
-        image.map_into(HELLO, &mut mapped);
-        let result = image.snap_imports(HELLO, &mut mapped, crate::exec::loader::resolve_import);
-        assert_eq!(result.thunks, 40);
-    }
-
-    /// Every sleep import (the timer smoke's 44-export surface — hello's 42 plus Sleep and
-    /// GetTickCount) resolves against the real registry.
-    #[test]
-    fn sleep_snaps_fully_against_the_registry() {
-        let image = Image::parse(SLEEP).expect("sleep parses");
-        let mut mapped = vec![0u8; image.size_of_image as usize];
-        image.map_into(SLEEP, &mut mapped);
-        let result = image.snap_imports(SLEEP, &mut mapped, crate::exec::loader::resolve_import);
-        assert_eq!(result.thunks, 44);
-    }
-
-    /// Every spin import (the preemption smoke's 44-export surface — hello's console group plus the
-    /// thread exports, with SetThreadPriority the smoke's own addition) resolves against the real
-    /// registry.
-    #[test]
-    fn spin_snaps_fully_against_the_registry() {
-        let image = Image::parse(SPIN).expect("spin parses");
-        let mut mapped = vec![0u8; image.size_of_image as usize];
-        image.map_into(SPIN, &mut mapped);
-        let result = image.snap_imports(SPIN, &mut mapped, crate::exec::loader::resolve_import);
-        assert_eq!(result.thunks, 44);
-    }
-
-    /// Every suspend import (the suspend smoke's 44-export surface) resolves against the real
-    /// registry.
-    #[test]
-    fn suspend_snaps_fully_against_the_registry() {
-        let image = Image::parse(SUSPEND).expect("suspend parses");
-        let mut mapped = vec![0u8; image.size_of_image as usize];
-        image.map_into(SUSPEND, &mut mapped);
-        let result = image.snap_imports(SUSPEND, &mut mapped, crate::exec::loader::resolve_import);
-        assert_eq!(result.thunks, 44);
-    }
-
-    /// Every fileio import (hello's 40 plus CreateFileA and ReadFile) resolves against the real
-    /// registry.
-    #[test]
-    fn fileio_snaps_fully_against_the_registry() {
-        let image = Image::parse(FILEIO).expect("fileio parses");
-        let mut mapped = vec![0u8; image.size_of_image as usize];
-        image.map_into(FILEIO, &mut mapped);
-        let result = image.snap_imports(FILEIO, &mut mapped, crate::exec::loader::resolve_import);
-        assert_eq!(result.thunks, 42);
     }
 
     /// The registry keeps its order discipline: ExitProcess first, the rest alphabetical (ASCII
@@ -1588,90 +1325,6 @@ mod tests {
                 assert_eq!(read, milliseconds);
             }
         }
-    }
-
-    /// Stub encoding: lea edx,[esp+4] / mov eax,service / int 0x2E / ret imm16 (the stdcall
-    /// argument cleanup).
-    #[test]
-    fn stub_bytes_match_their_encoding() {
-        for (index, &(name, arg_bytes, _)) in SERVICES.iter().enumerate() {
-            let stub = stub_bytes(index as u32 + 1, arg_bytes);
-            assert_eq!(&stub[..4], &[0x8D, 0x54, 0x24, 0x04], "{name}");
-            assert_eq!(stub[4], 0xB8);
-            assert_eq!(&stub[5..9], &(index as u32 + 1).to_le_bytes());
-            assert_eq!(stub[9], 0xCD);
-            assert_eq!(stub[10], crate::user::syscall::SYSCALL_VECTOR as u8);
-            assert_eq!(stub[11], 0xC2);
-            assert_eq!(&stub[12..14], &(arg_bytes as u16).to_le_bytes());
-        }
-        // The corpus's argument-block shapes, looked up by name so registry renumbering cannot
-        // silently skew the pins.
-        let position = |name: &str| {
-            SERVICES
-                .iter()
-                .position(|&(export, ..)| export == name)
-                .unwrap_or_else(|| panic!("{name} missing"))
-        };
-        for (name, arg_bytes) in [
-            ("ExitProcess", 4),
-            ("MultiByteToWideChar", 24),
-            ("WideCharToMultiByte", 32),
-            ("WriteFile", 20),
-        ] {
-            let index = position(name);
-            assert_eq!(
-                stub_bytes(index as u32 + 1, SERVICES[index].1)[12..14],
-                (arg_bytes as u16).to_le_bytes(),
-                "{name}"
-            );
-        }
-        assert_eq!(STUB_LEN, 14);
-        assert_eq!(STUB_STRIDE, 16);
-    }
-
-    /// Known names resolve to their stub, stride apart; unknown do not.
-    #[test]
-    fn resolve_addresses_the_stubs() {
-        assert_eq!(resolve("ExitProcess"), Some(THUNK_PAGE));
-        assert_eq!(resolve("exitprocess"), None);
-        assert_eq!(resolve("NtCreateFile"), None);
-        for (i, &(name, ..)) in SERVICES.iter().enumerate() {
-            let va = resolve(name).expect("export resolves");
-            assert_eq!(va, THUNK_PAGE + i as u32 * STUB_STRIDE);
-            assert!(va >= THUNK_PAGE && (va as usize) + STUB_LEN <= (THUNK_PAGE + 4096) as usize);
-        }
-    }
-
-    /// The thread-exit trampoline's bytes: the return value rides to the gate's argument register,
-    /// the service number loads without clobbering it, the gate raises, nothing returns.
-    #[test]
-    fn the_thread_exit_trampoline_bytes() {
-        let stub = trampoline_bytes(crate::user::syscall::SYS_THREAD_EXIT);
-        assert_eq!(
-            stub,
-            [
-                0x89, 0xC2, // mov edx, eax
-                0xB8, 0x00, 0x00, 0x00, 0x80, // mov eax, SYS_THREAD_EXIT
-                0xCD, 0x2E, // int 0x2E
-            ]
-        );
-        assert_eq!(stub.len(), 9);
-        // The trampoline sits after the last service stub, on the same page.
-        assert_eq!(
-            thread_exit_trampoline(),
-            THUNK_PAGE + SERVICES.len() as u32 * STUB_STRIDE
-        );
-        assert!((thread_exit_trampoline() as usize) + stub.len() <= (THUNK_PAGE + 4096) as usize);
-    }
-
-    /// The thunk page: user space, page-aligned, clear of everything else, and all 35 stubs fit.
-    #[test]
-    fn thunk_page_layout_is_consistent() {
-        assert_eq!(THUNK_PAGE % 4096, 0);
-        assert!(THUNK_PAGE < KERNEL_BASE);
-        assert!(THUNK_PAGE + 4096 < KERNEL_BASE);
-        let last = (SERVICES.len() - 1) as u32;
-        assert!((last * STUB_STRIDE) as usize + STUB_LEN <= 4096);
     }
 
     /// The parameters layout: the three replays do not overlap.
@@ -1837,17 +1490,16 @@ mod tests {
         assert_eq!(frame.eax, 0xFFFF_FFFF);
     }
 
-    /// The never-called imports resolve to their floor handlers, and the console floors answer with
-    /// their decided shapes (no path the corpus takes reaches them).
+    /// The never-called imports resolve to their floor handlers (RtlUnwind ntdll's, kernel32
+    /// forwarding to it), and the console floors answer with their decided shapes (no path the
+    /// corpus takes reaches them).
     #[test]
     fn never_called_shapes_resolve_to_their_floors() {
-        const NEVER_CALLED_ZERO: [&str; 9] = [
+        const NEVER_CALLED_ZERO: [&str; 7] = [
             "TerminateProcess",
             "UnhandledExceptionFilter",
-            "GetProcAddress",
             "GetStringTypeA",
             "LCMapStringA",
-            "LoadLibraryA",
             "RtlUnwind",
             "GetLastError",
             "SetStdHandle",
@@ -1933,12 +1585,6 @@ mod tests {
         let empty_args = [0x07, 0x0040_0000, 0, 0, 0];
         svc_write_file(&mut frame, &empty_args);
         assert_eq!(frame.eax, 1);
-    }
-
-    /// The module name matches both fixtures' import descriptors.
-    #[test]
-    fn module_name_is_kernel32() {
-        assert_eq!(MODULE_NAME, "KERNEL32.dll");
     }
 
     fn zero_frame() -> crate::user::TrapFrame {

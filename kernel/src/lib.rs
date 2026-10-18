@@ -30,7 +30,7 @@ mod mem;
 // into ring 3)
 mod exec;
 
-// The Windows compatibility layer: the kernel-synthesized kernel32 and the codepage replay data
+// The Windows compatibility layer: kernel32's kernel-served exports and the codepage replay data
 // behind its locale services
 mod compat;
 

@@ -50,7 +50,6 @@ const MAX_SECTIONS: usize = 96;
 const MAX_DIRECTORIES: usize = 16;
 
 /// Data-directory indices the loader consumes.
-#[allow(dead_code)] // the DLL loader's: not yet wired on the target
 pub const DIR_EXPORT: usize = 0;
 pub const DIR_IMPORT: usize = 1;
 pub const DIR_BASERELOC: usize = 5;
@@ -76,7 +75,6 @@ const SIZE_DIRECTORY_ENTRY: usize = 8;
 /// One import descriptor: five dwords, terminated by an all-zero one.
 const SIZE_IMPORT_DESCRIPTOR: usize = 20;
 /// The export directory's fixed part (its arrays and strings live elsewhere in the image).
-#[allow(dead_code)] // the DLL loader's: not yet wired on the target
 const SIZE_EXPORT_DIRECTORY: usize = 40;
 
 /// Why an image is not loadable. Identity questions only: bytes that merely do not describe a
@@ -225,7 +223,6 @@ pub enum Unresolved {
 
 /// What an export slot holds: an address in the exporting image (an RVA), or a forwarder — the
 /// export lives in another module, named by a "MODULE.Name" or "MODULE.#ordinal" string.
-#[allow(dead_code)] // the DLL loader's: not yet wired on the target
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Export<'a> {
     Address(u32),
@@ -233,7 +230,6 @@ pub enum Export<'a> {
 }
 
 /// A forwarder's target entry point: by name, or by ordinal ("MODULE.#ordinal").
-#[allow(dead_code)] // the DLL loader's: not yet wired on the target
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ForwardTarget<'a> {
     Name(&'a str),
@@ -243,7 +239,6 @@ pub enum ForwardTarget<'a> {
 /// Split a forwarder string into its module and target. The module part is everything before the
 /// last dot and carries no extension (".dll" is implied, see [`same_module`]). `None` for a string
 /// without a dot or with an empty part — malformed exports are the caller's to report.
-#[allow(dead_code)] // the DLL loader's: not yet wired on the target
 pub fn split_forwarder(forwarder: &str) -> Option<(&str, ForwardTarget<'_>)> {
     let (module, entry) = forwarder.rsplit_once('.')?;
     if module.is_empty() || entry.is_empty() {
@@ -274,7 +269,6 @@ pub fn same_module(a: &str, b: &str) -> bool {
 
 /// An image's export directory, as read from the mapped image: where its three arrays live and how
 /// they are numbered. Lookups read the arrays from the same mapped bytes.
-#[allow(dead_code)] // the DLL loader's: not yet wired on the target
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Exports {
     /// The directory's own range: a function RVA inside it is a forwarder string.
@@ -289,8 +283,62 @@ pub struct Exports {
     name_ordinals_rva: u32,
 }
 
-#[allow(dead_code)] // the DLL loader's: not yet wired on the target
 impl Exports {
+    /// The export directory at `rva` (`size` bytes) of the mapped image `mapped`, its arrays checked
+    /// to lie inside the image.
+    fn read(mapped: &[u8], rva: u32, size: u32) -> Exports {
+        let at = rva as usize;
+        need(mapped, at, SIZE_EXPORT_DIRECTORY, "export directory");
+        let exports = Exports {
+            directory_rva: rva,
+            directory_size: size,
+            ordinal_base: read_u32(mapped, at + 16, "export directory"),
+            num_functions: read_u32(mapped, at + 20, "export directory"),
+            num_names: read_u32(mapped, at + 24, "export directory"),
+            functions_rva: read_u32(mapped, at + 28, "export directory"),
+            names_rva: read_u32(mapped, at + 32, "export directory"),
+            name_ordinals_rva: read_u32(mapped, at + 36, "export directory"),
+        };
+        // The arrays must lie inside the image: every lookup indexes them.
+        let array = |rva: u32, count: u32, width: usize, what: &str| {
+            let len = (count as usize).checked_mul(width).unwrap_or_else(|| {
+                panic!("{what} of {count} entries wraps");
+            });
+            need(mapped, rva as usize, len, what);
+        };
+        array(
+            exports.functions_rva,
+            exports.num_functions,
+            4,
+            "export address table",
+        );
+        array(exports.names_rva, exports.num_names, 4, "export name table");
+        array(
+            exports.name_ordinals_rva,
+            exports.num_names,
+            2,
+            "export name-ordinal table",
+        );
+        exports
+    }
+
+    /// The export directory of a PE32 image `mapped` (a file whose offsets are its RVAs, or the
+    /// mapped image), read straight from its headers, if it has one. For lookups on a small stack:
+    /// a parsed [`Image`] takes several KiB, too much for a system service's gate stack. The image
+    /// must be one [`Image::parse`] accepts (the system DLLs are, pinned by their tests).
+    pub fn in_headers(mapped: &[u8]) -> Option<Exports> {
+        let nt = read_u32(mapped, OFF_E_LFANEW, "e_lfanew") as usize;
+        let opt = nt + SIZE_NT_SIGNATURE + SIZE_FILE_HEADER;
+        let directories = read_u32(mapped, opt + SIZE_OPT_STANDARD - 4, "NumberOfRvaAndSizes");
+        if directories as usize <= DIR_EXPORT {
+            return None;
+        }
+        let entry = opt + SIZE_OPT_STANDARD + DIR_EXPORT * SIZE_DIRECTORY_ENTRY;
+        let rva = read_u32(mapped, entry, "export directory entry");
+        let size = read_u32(mapped, entry + 4, "export directory entry");
+        (rva != 0).then(|| Exports::read(mapped, rva, size))
+    }
+
     /// The export with this name. Names compare exactly (export names are case-sensitive); the name
     /// table is walked in full, so its sort order is not relied on.
     pub fn by_name<'a>(&self, mapped: &'a [u8], name: &str) -> Option<Export<'a>> {
@@ -315,6 +363,7 @@ impl Exports {
     }
 
     /// The export with this ordinal (biased by the directory's ordinal base).
+    #[allow(dead_code)] // the system DLLs' ordinals are sequential placeholders, not the real system's
     pub fn by_ordinal<'a>(&self, mapped: &'a [u8], ordinal: u32) -> Option<Export<'a>> {
         let slot = ordinal.checked_sub(self.ordinal_base)?;
         if slot >= self.num_functions {
@@ -624,43 +673,13 @@ impl Image {
         self.characteristics & FILE_DLL != 0
     }
 
-    /// The export directory of the mapped image `mapped`, if the image has one.
-    #[allow(dead_code)] // the DLL loader's: not yet wired on the target
+    /// The export directory of the mapped image `mapped`, if the image has one. The kernel's own
+    /// lookups read it from the headers alone ([`Exports::in_headers`]); the tests hold the two
+    /// to agree.
+    #[cfg(test)]
     pub fn exports(&self, mapped: &[u8]) -> Option<Exports> {
         let (rva, size) = self.directory(DIR_EXPORT)?;
-        let at = rva as usize;
-        need(mapped, at, SIZE_EXPORT_DIRECTORY, "export directory");
-        let exports = Exports {
-            directory_rva: rva,
-            directory_size: size,
-            ordinal_base: read_u32(mapped, at + 16, "export directory"),
-            num_functions: read_u32(mapped, at + 20, "export directory"),
-            num_names: read_u32(mapped, at + 24, "export directory"),
-            functions_rva: read_u32(mapped, at + 28, "export directory"),
-            names_rva: read_u32(mapped, at + 32, "export directory"),
-            name_ordinals_rva: read_u32(mapped, at + 36, "export directory"),
-        };
-        // The arrays must lie inside the image: every lookup indexes them.
-        let array = |rva: u32, count: u32, width: usize, what: &str| {
-            let len = (count as usize).checked_mul(width).unwrap_or_else(|| {
-                panic!("{what} of {count} entries wraps");
-            });
-            need(mapped, rva as usize, len, what);
-        };
-        array(
-            exports.functions_rva,
-            exports.num_functions,
-            4,
-            "export address table",
-        );
-        array(exports.names_rva, exports.num_names, 4, "export name table");
-        array(
-            exports.name_ordinals_rva,
-            exports.num_names,
-            2,
-            "export name-ordinal table",
-        );
-        Some(exports)
+        Some(Exports::read(mapped, rva, size))
     }
 
     pub fn section(&self, index: usize) -> &Section {
@@ -787,7 +806,7 @@ impl Image {
 
     /// Read one import's name out of the file bytes. The name must live in file-backed bytes: the
     /// zero tail cannot hold names. The hint is read but never authoritative. Ordinal imports are not
-    /// served: the resolver is name-keyed (the synthesized kernel32 has no ordinals).
+    /// served: the resolver is name-keyed (the system DLLs' ordinals are not Windows 2000's yet).
     fn import_name<'a>(&self, file: &'a [u8], thunk: u32) -> &'a str {
         if thunk & ORDINAL_FLAG != 0 {
             panic!(
@@ -1878,6 +1897,11 @@ mod tests {
         let mut mapped = vec![0u8; image.size_of_image as usize];
         image.map_into(file, &mut mapped);
         let exports = image.exports(&mapped).expect("export directory present");
+        assert_eq!(
+            Exports::in_headers(&mapped),
+            Some(exports),
+            "the headers' reading agrees"
+        );
         (mapped, exports)
     }
 
@@ -1903,6 +1927,7 @@ mod tests {
             let mut mapped = vec![0u8; image.size_of_image as usize];
             image.map_into(src, &mut mapped);
             assert_eq!(image.exports(&mapped), None);
+            assert_eq!(Exports::in_headers(&mapped), None);
         }
     }
 

@@ -69,6 +69,11 @@ irq-smoke = []
 # tests/kernel case pins the COM1 shapes.
 disk-smoke = []
 
+# The build script generates the kernel's service registry from the system DLLs' export specs
+# (userland/<dll>/exports.toml) and points the kernel at the DLLs it embeds.
+[build-dependencies]
+exportgen = { path = "../tools/exportgen" }
+
 [dependencies]
 # Core no_std crates for future use
 # spin = "0.9.8"        # Spinlocks and mutable statics

@@ -2,14 +2,14 @@
 //!
 //! [`load_path`] reads the program's file off the boot volume by its path into a raw-file staging
 //! buffer; [`load_image`] then parses it, checks that its preferred base places it clear of the
-//! system's fixed user regions, stages the in-memory image, snaps the IAT through the module table
-//! ([`resolve_import`]), maps the pages at the preferred base with their final protections, and
-//! returns the entry point: the caller enters the process as its main thread, which the scheduler
-//! starts there.
+//! system's fixed user regions, stages the in-memory image, maps the system DLLs
+//! ([`map_system_dlls`]), snaps the IAT through the module table ([`resolve_import`]), maps the
+//! pages at the preferred base with their final protections, and returns the entry point: the
+//! caller enters the process as its main thread, which the scheduler starts there.
 //!
 //! Images are never relocated: an image maps at its preferred base or is refused. The module table
-//! holds one module today, the kernel-synthesized kernel32; an import naming any other module fails
-//! the snap.
+//! holds the system DLLs, ntdll and kernel32 (`exec::modules`); an import naming any other module
+//! fails the snap.
 //!
 //! Quirk: the file and the image are built in staging buffers — borrowed statics, not stack frames
 //! — because the loader runs on the small boot stack. The snap happens in staging, before mapping:
@@ -17,7 +17,7 @@
 
 use core::fmt;
 
-use crate::exec::pe::{same_module, Image, Unresolved};
+use crate::exec::pe::{Image, Unresolved};
 use crate::fs::fat32::lookup::{lookup, LookupError};
 use crate::fs::fat32::read::read;
 use crate::fs::fat32::volume::Volume;
@@ -126,7 +126,7 @@ static mut IMAGE_STAGING: crate::mem::paging::Aligned<[u8; STAGING_SIZE]> =
 /// refused, not moved. Quirk: the CRT region is open-ended — a NULL reservation starts at its base
 /// and extends as far as the request asks — so only its 64 KiB minimum is reserved here; a larger
 /// reservation that would reach an image's pages fails, as the address space refuses an overlap.
-const SYSTEM_REGIONS: [(&str, u32, u32); 8] = {
+const SYSTEM_REGIONS: [(&str, u32, u32); 9] = {
     use crate::user::userheap::{CRT_REGION_BASE, HEAP_REGION_BASE, HEAP_REGION_MAX};
     use crate::user::{
         PARAMS_PAGE, TEB_PAGE, THREAD_STACK_PAGES, THREAD_STACK_REGION, THREAD_TEB_REGION,
@@ -134,7 +134,7 @@ const SYSTEM_REGIONS: [(&str, u32, u32); 8] = {
     };
     const PAGE: u32 = crate::mem::paging::PAGE_SIZE;
     const CHILDREN: u32 = crate::process::CHILD_THREADS as u32;
-    const THUNK_PAGE: u32 = crate::compat::kernel32::THUNK_PAGE;
+    use crate::exec::modules::{KERNEL32_BASE, KERNEL32_SIZE, NTDLL_BASE, NTDLL_SIZE};
     [
         ("main thread stack", USER_STACK_LOW_PAGE, USER_STACK_TOP),
         ("main thread TEB", TEB_PAGE, TEB_PAGE + PAGE),
@@ -149,13 +149,18 @@ const SYSTEM_REGIONS: [(&str, u32, u32); 8] = {
             THREAD_STACK_REGION,
             THREAD_STACK_REGION + CHILDREN * THREAD_STACK_PAGES * PAGE,
         ),
-        ("kernel32 thunk page", THUNK_PAGE, THUNK_PAGE + PAGE),
         (
             "heap region",
             HEAP_REGION_BASE,
             HEAP_REGION_BASE + HEAP_REGION_MAX as u32,
         ),
         (CRT_REGION, CRT_REGION_BASE, CRT_REGION_BASE + 0x1_0000),
+        ("ntdll.dll image", NTDLL_BASE, NTDLL_BASE + NTDLL_SIZE),
+        (
+            "kernel32.dll image",
+            KERNEL32_BASE,
+            KERNEL32_BASE + KERNEL32_SIZE,
+        ),
     ]
 };
 
@@ -174,13 +179,10 @@ pub fn system_region_overlapping(base: u32, size: u32) -> Option<&'static str> {
 }
 
 /// The module table: resolve `name` in `module` (as an import descriptor or a forwarder spells it)
-/// to the address an IAT slot receives. The kernel-synthesized kernel32 is the only module; any
-/// other name is not loaded.
+/// to the address an IAT slot receives. The system DLLs are the only modules; any other name is not
+/// loaded.
 pub fn resolve_import(module: &str, name: &str) -> Result<u32, Unresolved> {
-    if same_module(module, crate::compat::kernel32::MODULE_NAME) {
-        return crate::compat::kernel32::resolve(name).ok_or(Unresolved::NoEntry);
-    }
-    Err(Unresolved::NoModule)
+    crate::exec::modules::resolve(module, name)
 }
 
 /// A page's protection, as a query reports it: the combined access of the sections in it; uncovered
@@ -214,8 +216,9 @@ fn page_protect(image: &Image, page_rva: u32) -> u32 {
 
 /// Record the process's address space as a query reports it: the image of `image_size` bytes at
 /// `image_base` (one allocation, its pages carrying their sections' protections), and the areas the
-/// kernel maps itself. Every user page the kernel maps lies in one of these regions. The CRT region
-/// is not seeded: its reservation is the program's VirtualAlloc, sized as it asks (`userheap`).
+/// kernel maps itself, the system DLLs' images among them (MEM_IMAGE allocations, as the program's
+/// own). Every user page the kernel maps lies in one of these regions. The CRT region is not
+/// seeded: its reservation is the program's VirtualAlloc, sized as it asks (`userheap`).
 pub fn seed_regions(space: &mut crate::mem::vm::AddressSpace, image_base: u32, image_size: u32) {
     use crate::mem::vm::{Kind, Region, PAGE_EXECUTE_WRITECOPY, PAGE_READWRITE};
     space
@@ -230,14 +233,64 @@ pub fn seed_regions(space: &mut crate::mem::vm::AddressSpace, image_base: u32, i
         if name == CRT_REGION {
             continue;
         }
+        let image = name.ends_with(".dll image");
         space
             .insert(Region {
                 base: start,
                 size: end - start,
-                alloc_protect: PAGE_READWRITE,
-                kind: Kind::Private,
+                alloc_protect: if image {
+                    PAGE_EXECUTE_WRITECOPY
+                } else {
+                    PAGE_READWRITE
+                },
+                kind: if image { Kind::Image } else { Kind::Private },
             })
             .expect("the system regions are disjoint from each other and the image");
+    }
+}
+
+/// Staging for a system DLL's image while it is mapped (the program's image is staged separately,
+/// and is in staging while the DLLs map).
+#[cfg(target_arch = "x86")]
+static mut DLL_STAGING: crate::mem::paging::Aligned<[u8; DLL_STAGING_SIZE]> =
+    crate::mem::paging::Aligned([0; DLL_STAGING_SIZE]);
+
+/// The largest system DLL image the staging holds.
+#[cfg(target_arch = "x86")]
+const DLL_STAGING_SIZE: usize = 0x4_0000;
+
+/// Map the system DLLs (`exec::modules`) into the current process at their bases: each image
+/// staged from its embedded file, its imports snapped against the module table, then mapped one
+/// frame per page with its sections' protections, inside its own MEM_IMAGE region (seeded with the
+/// system areas). The pages are copied per process, the process's own (a write to a DLL's data
+/// stays in the process): sharing them copy-on-write waits for the sections work.
+#[cfg(target_arch = "x86")]
+pub fn map_system_dlls(space: &mut crate::mem::vm::AddressSpace) {
+    use crate::mem::paging::{self, PAGE_SIZE};
+    use crate::mem::vm;
+    for dll in crate::exec::modules::SYSTEM_DLLS.iter() {
+        let image = dll.image();
+        assert!(
+            image.size_of_image as usize <= DLL_STAGING_SIZE,
+            "{} exceeds the DLL staging",
+            dll.file_name
+        );
+        // SAFETY: single-threaded boot (or the idle thread's reap step), the only staging user.
+        let staging = unsafe {
+            let buffer = &mut *core::ptr::addr_of_mut!(DLL_STAGING);
+            &mut buffer.0[..image.size_of_image as usize]
+        };
+        staging.fill(0);
+        image.map_into(dll.file, staging);
+        image.snap_imports(dll.file, staging, resolve_import);
+        for page in 0..image.size_of_image.div_ceil(PAGE_SIZE) {
+            let offset = (page * PAGE_SIZE) as usize;
+            let end = (offset + PAGE_SIZE as usize).min(staging.len());
+            let frame = paging::allocate_frame_phys();
+            paging::init_frame(frame, 0, &staging[offset..end]);
+            let va = image.image_base + page * PAGE_SIZE;
+            vm::map_prepared(space, va, frame, page_protect(&image, page * PAGE_SIZE));
+        }
     }
 }
 
@@ -306,14 +359,15 @@ pub fn load_image(file: &[u8], path: &[u8], name: &'static str, command_line: &[
     // The process's own state, all in one place: a fresh address space (kernel half inherited,
     // active on CR3), the main thread's ring-0 gate stack (mapped supervisor-only with its guard
     // page; the switch into the thread installs it as the TSS esp0), and fresh heap bookkeeping.
-    // Every mapping below (thunk page, image, stack, TEB, params) lands in this process's
+    // Every mapping below (system DLLs, image, stack, TEB, params) lands in this process's
     // directory and its services see this process's heap.
     let space = crate::process::Process::start(name).vm();
     // The regions first: every user page the kernel maps lies in one.
     seed_regions(space, image.image_base, image.size_of_image);
 
-    // The thunks must be mapped before the snap: IAT slots receive user-space addresses.
-    crate::compat::kernel32::init(space);
+    // The system DLLs, in load order, before the snap: IAT slots receive their user-space
+    // addresses.
+    map_system_dlls(space);
     let snap = image.snap_imports(file, staging, resolve_import);
 
     // Map the staged image at its preferred base, one frame per page, each with its sections'
@@ -551,13 +605,15 @@ mod tests {
     /// generous size: none comes near a system region).
     #[test]
     fn system_binary_bases_place_cleanly() {
-        for base in [
-            0x4AD0_0000,
-            0x7800_0000,
-            0x7C4E_0000,
-            0x77E1_0000,
-            0x7C2D_0000,
-        ] {
+        assert_eq!(
+            system_region_overlapping(0x7C4E_0000, 0x1000),
+            Some("kernel32.dll image")
+        );
+        assert_eq!(
+            system_region_overlapping(0x77F8_0000, 0x1000),
+            Some("ntdll.dll image")
+        );
+        for base in [0x4AD0_0000, 0x7800_0000, 0x77E1_0000, 0x7C2D_0000] {
             assert_eq!(
                 system_region_overlapping(base, 0x0010_0000),
                 None,
@@ -570,18 +626,29 @@ mod tests {
     /// region starts is not.
     #[test]
     fn images_covering_a_system_region_are_refused() {
-        use crate::compat::kernel32::THUNK_PAGE;
+        use crate::exec::modules::{KERNEL32_BASE, KERNEL32_SIZE, NTDLL_BASE};
+        const REGION: Option<&str> = Some("kernel32.dll image");
+        assert_eq!(system_region_overlapping(KERNEL32_BASE, 0x1000), REGION);
+        // The image's last page.
         assert_eq!(
-            system_region_overlapping(THUNK_PAGE, 0x1000),
-            Some("kernel32 thunk page")
+            system_region_overlapping(KERNEL32_BASE + KERNEL32_SIZE - 0x1000, 0x1000),
+            REGION
         );
         assert_eq!(
-            system_region_overlapping(THUNK_PAGE - 0x1_0000, 0x1_0000),
+            system_region_overlapping(KERNEL32_BASE + KERNEL32_SIZE, 0x1000),
             None
         );
         assert_eq!(
-            system_region_overlapping(THUNK_PAGE - 0x1_0000, 0x1_1000),
-            Some("kernel32 thunk page")
+            system_region_overlapping(KERNEL32_BASE - 0x1_0000, 0x1_0000),
+            None
+        );
+        assert_eq!(
+            system_region_overlapping(KERNEL32_BASE - 0x1_0000, 0x1_1000),
+            REGION
+        );
+        assert_eq!(
+            system_region_overlapping(NTDLL_BASE, 0x1000),
+            Some("ntdll.dll image")
         );
         // A 16 MiB image at the corpus base reaches the child-thread regions.
         assert_eq!(
@@ -603,10 +670,11 @@ mod tests {
         );
     }
 
-    /// The module table: kernel32's registry, under any spelling of its name; nothing else.
+    /// The module table: the system DLLs' exports, under any spelling of the module's name; nothing
+    /// else.
     #[test]
     fn imports_resolve_through_the_module_table() {
-        let exit = crate::compat::kernel32::resolve("ExitProcess");
+        let exit = crate::exec::modules::kernel32_export("ExitProcess");
         assert!(exit.is_some());
         for module in ["KERNEL32.dll", "kernel32.DLL", "KERNEL32"] {
             assert_eq!(resolve_import(module, "ExitProcess").ok(), exit, "{module}");
@@ -619,6 +687,11 @@ mod tests {
         assert_eq!(
             resolve_import("KERNEL32.dll", "exitprocess"),
             Err(Unresolved::NoEntry)
+        );
+        // kernel32's RtlUnwind forwards into ntdll.
+        assert_eq!(
+            resolve_import("KERNEL32.dll", "RtlUnwind"),
+            resolve_import("ntdll.dll", "RtlUnwind")
         );
         for module in ["MSVCRT.dll", "USER32.dll", "KERNEL32.exe"] {
             assert_eq!(

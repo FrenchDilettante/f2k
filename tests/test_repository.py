@@ -79,10 +79,10 @@ def test_captures_match_their_sources(fixture: str):
 
 @pytest.mark.parametrize("fixture", SECTIONED)
 def test_pending_blocks_name_their_increment(fixture: str):
-    """Every pending block says which rebuild increment enables it (`<increment>: <subsystem>`),
-    so an increment knows the entries it removes."""
+    """Every pending block says which rebuild increment enables it (`<increment>: <subsystem>`, the
+    increment a split's half, A4b, when it has one), so an increment knows the entries it removes."""
     for section, reason in f2kboot.declaration(fixture).get("pending", {}).items():
-        assert re.match(r"[A-C]\d+: \S", reason), f"{section!r}: {reason!r} names no increment"
+        assert re.match(r"[A-C]\d+[ab]?: \S", reason), f"{section!r}: {reason!r} names no increment"
 
 
 def test_the_capture_script_lists_bares_modes():

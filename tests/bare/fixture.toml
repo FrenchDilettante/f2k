@@ -6,9 +6,9 @@ gate = true
 # The blocks this kernel does not pass yet, each with the increment that enables it (none of
 # this fixture's blocks run yet: its imports are not all served).
 [pending]
-'(default)' = "A4: real system DLLs (bare.exe imports SetLastError and SetErrorMode, which the kernel's kernel32 does not serve yet)"
-ret = "A4: real system DLLs (bare.exe imports SetLastError and SetErrorMode, which the kernel's kernel32 does not serve yet)"
-exit-code = "A4: real system DLLs (bare.exe imports SetLastError and SetErrorMode, which the kernel's kernel32 does not serve yet)"
+'(default)' = "A4b: the unimplemented stubs (bare.exe imports SetLastError and SetErrorMode, which kernel32.dll does not export yet)"
+ret = "A4b: the unimplemented stubs (bare.exe imports SetLastError and SetErrorMode, which kernel32.dll does not export yet)"
+exit-code = "A4b: the unimplemented stubs (bare.exe imports SetLastError and SetErrorMode, which kernel32.dll does not export yet)"
 badptr = "B1: console and process start-up"
 data-exec = "B3: exceptions"
 null-write = "B3: exceptions"

@@ -1,12 +1,12 @@
 //! The smoke-subset thread surface: child-thread creation, the thread records, and the thread-exit
 //! path.
 //!
-//! CreateThread behind the synthesized kernel32: a child takes a thread record from the object
+//! CreateThread behind kernel32's served export: a child takes a thread record from the object
 //! manager's thread pool (its object holding the thread's own reference until its end), a
 //! gate-stack slot from the process's window, its own TEB page and user stack from the per-thread
 //! regions, and a startup ladder the context switch enters — the same machinery the main thread's
 //! boot entry uses. The child's user function receives its parameter per the calling convention
-//! (planted at [esp+4] under a return address that is the kernel's thread-exit trampoline), so
+//! (planted at [esp+4] under a return address that is ntdll's thread-exit trampoline), so
 //! returning from the function terminates the thread with the return value as the exit status.
 //!
 //! The exit path, in its order: the exit service's or a fault's terminations of the process's
@@ -128,7 +128,7 @@ pub fn spawn(
     // The trampoline's return address and the parameter, planted under the entry stack: the user
     // function sees its LPVOID at [esp+4] per the calling convention, and its `ret` lands on the
     // thread-exit trampoline, never in the void.
-    let trampoline = crate::compat::kernel32::thread_exit_trampoline();
+    let trampoline = crate::exec::modules::thread_exit_trampoline();
     paging::write_frame(top_frame, 0xFF8, &trampoline.to_le_bytes());
     paging::write_frame(top_frame, 0xFFC, &parameter.to_le_bytes());
 

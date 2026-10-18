@@ -5,6 +5,12 @@
 members = [
     "kernel",
 ]
+exclude = [
+    # The ring-3 code (the system DLLs) is its own workspace, with its own target: userland/.
+    "userland",
+    # A host library (the build scripts' generator): this workspace builds for the kernel target.
+    "tools/exportgen",
+]
 resolver = "2"
 
 [workspace.dependencies]

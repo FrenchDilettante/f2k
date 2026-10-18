@@ -916,10 +916,11 @@ mod tests {
         use crate::mem::paging::KERNEL_BASE;
         assert_eq!(HEAP_REGION_BASE % 0x10000, 0);
         assert_eq!(CRT_REGION_BASE % 0x10000, 0);
-        assert!(HEAP_REGION_BASE >= crate::compat::kernel32::THUNK_PAGE);
         assert!(CRT_REGION_BASE >= HEAP_REGION_BASE + HEAP_REGION_MAX as u32);
         assert!(CRT_REGION_BASE + 0x100000 < KERNEL_BASE);
-        // The stack (0x300000) and everything below the thunks stays clear of both regions.
+        // Both stay below the system DLLs.
+        assert!(CRT_REGION_BASE + 0x100000 <= crate::exec::modules::NTDLL_BASE);
+        // The stack (0x300000) and the pages above it stay clear of both regions.
         assert!(HEAP_REGION_BASE > 0x0032_0000);
     }
 }

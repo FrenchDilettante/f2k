@@ -1,0 +1,10 @@
+[package]
+name = "exportgen"
+version = "0.1.0"
+edition = "2021"
+description = "Reads the system DLLs' export specs (userland/<dll>/exports.toml) and generates what derives from them"
+license = "MIT OR Apache-2.0"
+
+# No dependencies: the specs use a TOML subset this crate reads itself (see `toml`), so the kernel
+# build pulls nothing in.
+[dependencies]
