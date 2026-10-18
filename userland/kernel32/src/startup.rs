@@ -159,16 +159,10 @@ const OSVERSIONINFOA_SIZE: u32 = 148;
 const OSVERSIONINFOEXA_SIZE: u32 = 156;
 const CSD_ROOM: usize = 128;
 
-/// The extended structure's suite mask and product type: no suites, a workstation (VER_NT_
-/// WORKSTATION), the capture machine's. Windows 2000 reads them from the shared data page, which
-/// F2K maps with the clock (B2).
-const SUITE_MASK: u16 = 0;
-const PRODUCT_TYPE: u16 = 1;
-
 /// GetVersionExA: the PEB's version — major, minor, build, platform — and its service pack's name
 /// (narrowed, the rest of szCSDVersion cleared), and in the extended structure the service pack's
-/// numbers (OSCSDVersion's bytes), the suite mask and the product type. ERROR_INSUFFICIENT_BUFFER
-/// for a structure size that is neither form's.
+/// numbers (OSCSDVersion's bytes), the suite mask and the product type (the shared data page's).
+/// ERROR_INSUFFICIENT_BUFFER for a structure size that is neither form's.
 ///
 /// # Safety
 ///
@@ -208,8 +202,8 @@ pub unsafe extern "system" fn get_version_ex_a(info: *mut u8) -> u32 {
         let tail = [
             (service_pack >> 8) as u16,
             (service_pack & 0xFF) as u16,
-            SUITE_MASK,
-            PRODUCT_TYPE,
+            crate::shared::read(crate::shared::SUITE_MASK) as u16,
+            crate::shared::read(crate::shared::NT_PRODUCT_TYPE) as u8 as u16,
         ];
         for (at, field) in tail.iter().enumerate() {
             // SAFETY: the caller's extended structure.

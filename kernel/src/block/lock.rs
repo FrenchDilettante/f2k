@@ -190,7 +190,7 @@ mod tests {
     }
 
     const NOW: ClockStamp = ClockStamp {
-        system_time: 0,
+        interrupt_time: 0,
         tick: 0,
     };
 

@@ -372,7 +372,7 @@ mod tests {
         let event = Box::leak(Box::new(Event::new(EventKind::Synchronization, false)));
         event.init();
         let stamp = ClockStamp {
-            system_time: 0,
+            interrupt_time: 0,
             tick: 0,
         };
         assert_eq!(

@@ -1,9 +1,10 @@
 //! The runtime library, as Windows 2000's Rtl: the support code the system DLLs link.
 //!
 //! What every build shares, host-tested: the status mapping ([`status`]: RtlNtStatusToDosError's
-//! table, which kernel32 reports every failed system service through), code page 1252's tables
-//! ([`cp1252`]), and the console server's message format and rules ([`console`]: kernel32's side
-//! and the kernel's stand-in for csrss share them).
+//! table, which kernel32 reports every failed system service through), the code pages and their
+//! conversions ([`codepage`], [`cp1252`]), the time conversions ([`time`]), and the console
+//! server's message format and rules ([`console`]: kernel32's side and the kernel's stand-in for
+//! csrss share them).
 //!
 //! On the DLLs' target (i686 Windows) only: what the compiler expects of an MSVC environment without
 //! its CRT (the 64-bit division helpers LLVM calls on i686-*-windows-msvc, `_aulldiv`, `_aullrem`,
@@ -12,12 +13,14 @@
 
 #![cfg_attr(not(test), no_std)]
 
+pub mod codepage;
 pub mod console;
 pub mod cp1252;
 pub mod status;
 mod status_table;
 #[cfg(all(target_arch = "x86", target_os = "windows", not(test)))]
 pub mod sys;
+pub mod time;
 
 // The helpers' cores are the MSVC environment's (`msvc`, x86 only) and the host tests'.
 #[cfg_attr(not(all(target_arch = "x86", target_os = "windows")), allow(dead_code))]

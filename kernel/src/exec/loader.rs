@@ -126,7 +126,7 @@ static mut IMAGE_STAGING: crate::mem::paging::Aligned<[u8; STAGING_SIZE]> =
 /// refused, not moved. Quirk: the CRT region is open-ended — a NULL reservation starts at its base
 /// and extends as far as the request asks — so only its 64 KiB minimum is reserved here; a larger
 /// reservation that would reach an image's pages fails, as the address space refuses an overlap.
-const SYSTEM_REGIONS: [(&str, u32, u32); 10] = {
+const SYSTEM_REGIONS: [(&str, u32, u32); 11] = {
     use crate::user::userheap::{CRT_REGION_BASE, HEAP_REGION_BASE, HEAP_REGION_MAX};
     use crate::user::{
         PARAMS_PAGE, PEB_PAGE, TEB_PAGE, THREAD_STACK_PAGES, THREAD_STACK_REGION,
@@ -166,8 +166,16 @@ const SYSTEM_REGIONS: [(&str, u32, u32); 10] = {
             KERNEL32_BASE,
             KERNEL32_BASE + KERNEL32_SIZE,
         ),
+        (
+            SHARED_DATA_REGION,
+            crate::user::shared::USER_ADDRESS,
+            crate::user::shared::USER_ADDRESS + PAGE,
+        ),
     ]
 };
+
+/// The shared data page's name among the system regions (KUSER_SHARED_DATA, read-only).
+const SHARED_DATA_REGION: &str = "shared data";
 
 /// The CRT region's name among the system regions.
 const CRT_REGION: &str = "CRT region";
@@ -239,15 +247,16 @@ pub fn seed_regions(space: &mut crate::mem::vm::AddressSpace, image_base: u32, i
             continue;
         }
         let image = name.ends_with(".dll image");
+        let alloc_protect = match name {
+            _ if image => PAGE_EXECUTE_WRITECOPY,
+            SHARED_DATA_REGION => crate::mem::vm::PAGE_READONLY,
+            _ => PAGE_READWRITE,
+        };
         space
             .insert(Region {
                 base: start,
                 size: end - start,
-                alloc_protect: if image {
-                    PAGE_EXECUTE_WRITECOPY
-                } else {
-                    PAGE_READWRITE
-                },
+                alloc_protect,
                 kind: if image { Kind::Image } else { Kind::Private },
             })
             .expect("the system regions are disjoint from each other and the image");
@@ -375,6 +384,8 @@ pub fn load_image(file: &[u8], path: &[u8], name: &'static str, command_line: &[
     // The system DLLs, in load order, before the snap: IAT slots receive their user-space
     // addresses.
     map_system_dlls(space);
+    // KUSER_SHARED_DATA, read-only, the kernel's page.
+    crate::user::shared::map_into(space);
     let snap = image.snap_imports(file, staging, resolve_import);
 
     // Map the staged image at its preferred base, one frame per page, each with its sections'

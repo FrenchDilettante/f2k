@@ -4,12 +4,11 @@
 //! exports are generated service stubs, each raising the gate on its service number with the
 //! caller's arguments; this module holds the services they reach, the registry the gate dispatches
 //! through ([`SERVICES`], generated from the export specs, userland/<dll>/exports.toml), and the
-//! replays they answer from. Reported values (codepages) are replays captured from a real Windows
-//! 2000 machine; the locale group answers from the shipped codepage-1252 tables, the heap group from
-//! a genuine allocator (`userheap`), never-called imports from safe minimal floors. The move to
-//! user mode goes group by group, deleting each group's services here — the console and the
-//! start-up calls are kernel32's own code now, over the console server (`crate::csr`) and the PEB
-//! (`user::teb`).
+//! replays they answer from. The heap group answers from a genuine allocator (`userheap`),
+//! never-called imports from safe minimal floors. Each increment moves a group to user mode and
+//! deletes its services here (the console and the start-up calls are kernel32's own code now, over
+//! the console server, `crate::csr`, and the PEB, `user::teb`; the locale group, the clocks and the
+//! system messages too, over `rtl::codepage` and the shared data page, `user::shared`).
 
 use crate::fs::file::SeekMethod;
 use crate::user::syscall::{read_user, write_user, ServiceFn};
@@ -28,28 +27,6 @@ const OPEN_EXISTING: u32 = 3;
 const FILE_FLAG_OVERLAPPED: u32 = 0x4000_0000;
 /// The ANSI path limit, terminator included.
 const MAX_PATH: usize = 260;
-
-/// The codepages the surface reports: ANSI 1252, OEM 437.
-pub const ACP: u32 = 1252;
-pub const OEMCP: u32 = 437;
-
-/// Store a u32 into a byte image, little-endian (const-context helper: slice copies are not const).
-const fn put32(image: &mut [u8], offset: usize, value: u32) {
-    let bytes = value.to_le_bytes();
-    image[offset] = bytes[0];
-    image[offset + 1] = bytes[1];
-    image[offset + 2] = bytes[2];
-    image[offset + 3] = bytes[3];
-}
-
-/// The 18-byte CPINFO image GetCPInfo writes. Quirk: LeadByte[0]==0 is what skips the CRT's DBCS
-/// parse.
-const CPINFO: [u8; 18] = {
-    let mut image = [0u8; 18];
-    put32(&mut image, 0, 1); // MaxCharSize
-    image[4] = b'?'; // DefaultChar[0]... DefaultChar[1] stays 0
-    image
-};
 
 // --- Services -------------------------------------------------------
 
@@ -123,240 +100,6 @@ fn svc_get_environment_strings(frame: &mut crate::user::TrapFrame, _args: &[u32]
 /// through the A entry.
 fn svc_free_environment_strings(frame: &mut crate::user::TrapFrame, _args: &[u32]) {
     frame.eax = 1;
-}
-
-/// GetACP / GetOEMCP: the replayed codepages.
-fn svc_get_acp(frame: &mut crate::user::TrapFrame, _args: &[u32]) {
-    frame.eax = ACP;
-}
-
-fn svc_get_oemcp(frame: &mut crate::user::TrapFrame, _args: &[u32]) {
-    frame.eax = OEMCP;
-}
-
-/// GetCPInfo: the single-byte image (ANSI and OEM alike); 1 on success, 0 on an unsupported
-/// codepage.
-fn svc_get_cp_info(frame: &mut crate::user::TrapFrame, args: &[u32]) {
-    match args[0] {
-        0 | ACP | OEMCP => {
-            if write_user(args[1], &CPINFO).is_err() {
-                frame.eax = 0;
-            } else {
-                frame.eax = 1;
-            }
-        }
-        _ => frame.eax = 0,
-    }
-}
-
-/// GetStringTypeW: classify each wide char (CT_CTYPE1 only), writing the flag words.
-fn svc_get_string_type_w(frame: &mut crate::user::TrapFrame, args: &[u32]) {
-    const CT_CTYPE1: u32 = 1;
-    let (info, src, cch, out) = (args[0], args[1], args[2], args[3]);
-    if info != CT_CTYPE1 {
-        frame.eax = 0;
-        return;
-    }
-    match cch {
-        0 => {
-            frame.eax = 1; // nothing to classify
-            return;
-        }
-        u32::MAX => {
-            frame.eax = 0; // NUL-terminated form: not on this surface
-            return;
-        }
-        _ => {}
-    }
-    let mut ok = true;
-    for i in 0..cch {
-        let mut wide = [0u8; 2];
-        if read_user(src + 2 * i, &mut wide).is_err() {
-            ok = false;
-            break;
-        }
-        let flags = rtl::cp1252::c1_flags(u16::from_le_bytes(wide));
-        if write_user(out + 2 * i, &flags.to_le_bytes()).is_err() {
-            ok = false;
-            break;
-        }
-    }
-    frame.eax = if ok { 1 } else { 0 };
-}
-
-/// The only flag the CRT passes to MultiByteToWideChar.
-const MB_PRECOMPOSED: u32 = 0x0000_0001;
-
-/// Whether a codepage names this surface's table (CP_ACP=0 counts).
-fn is_1252(cp: u32) -> bool {
-    cp == 0 || cp == ACP // CP_ACP resolves to the ANSI codepage
-}
-
-/// Count a NUL-terminated user string, terminator included; None on a bad range or a missing
-/// terminator (capped).
-fn walk_narrow(src: u32) -> Option<u32> {
-    let mut len = 0u32;
-    while len < 0x1_0000 {
-        let mut byte = [0u8; 1];
-        read_user(src + len, &mut byte).ok()?;
-        if byte[0] == 0 {
-            return Some(len + 1);
-        }
-        len += 1;
-    }
-    None
-}
-
-/// The wide form of [`walk_narrow`].
-fn walk_wide(src: u32) -> Option<u32> {
-    let mut len = 0u32;
-    while len < 0x1_0000 {
-        let mut wide = [0u8; 2];
-        read_user(src + 2 * len, &mut wide).ok()?;
-        if u16::from_le_bytes(wide) == 0 {
-            return Some(len + 1);
-        }
-        len += 1;
-    }
-    None
-}
-
-/// MultiByteToWideChar through the 1252 table: size query (NULL destination) or convert, with
-/// explicit or NUL-terminated counts.
-fn svc_multi_byte_to_wide_char(frame: &mut crate::user::TrapFrame, args: &[u32]) {
-    let (cp, flags, src, cch_src, dst, cch_dst) =
-        (args[0], args[1], args[2], args[3], args[4], args[5]);
-    if !is_1252(cp) || flags & !MB_PRECOMPOSED != 0 {
-        frame.eax = 0;
-        return;
-    }
-    let count = match cch_src {
-        0 => {
-            frame.eax = 0;
-            return;
-        }
-        u32::MAX => match walk_narrow(src) {
-            Some(count) => count,
-            None => {
-                frame.eax = 0;
-                return;
-            }
-        },
-        count => count,
-    };
-    if dst == 0 {
-        frame.eax = count; // size query
-        return;
-    }
-    if cch_dst < count {
-        frame.eax = 0;
-        return;
-    }
-    let mut ok = true;
-    for i in 0..count {
-        let mut byte = [0u8; 1];
-        if read_user(src + i, &mut byte).is_err() {
-            ok = false;
-            break;
-        }
-        let wide = rtl::cp1252::MB_TO_WC[byte[0] as usize];
-        if write_user(dst + 2 * i, &wide.to_le_bytes()).is_err() {
-            ok = false;
-            break;
-        }
-    }
-    frame.eax = if ok { count } else { 0 };
-}
-
-/// WideCharToMultiByte: the table's inverse, any flags (the table maps all its own code points, so
-/// the default-char pair never fires). Size query or convert, as above.
-fn svc_wide_char_to_multi_byte(frame: &mut crate::user::TrapFrame, args: &[u32]) {
-    let (cp, _flags, src, cch_src, dst, cch_dst) =
-        (args[0], args[1], args[2], args[3], args[4], args[5]);
-    if !is_1252(cp) {
-        frame.eax = 0;
-        return;
-    }
-    let count = match cch_src {
-        0 => {
-            frame.eax = 0;
-            return;
-        }
-        u32::MAX => match walk_wide(src) {
-            Some(count) => count,
-            None => {
-                frame.eax = 0;
-                return;
-            }
-        },
-        count => count,
-    };
-    if dst == 0 {
-        frame.eax = count; // size query
-        return;
-    }
-    if cch_dst < count {
-        frame.eax = 0;
-        return;
-    }
-    let mut ok = true;
-    for i in 0..count {
-        let mut wide = [0u8; 2];
-        if read_user(src + 2 * i, &mut wide).is_err() {
-            ok = false;
-            break;
-        }
-        let byte = rtl::cp1252::wc_to_mb(u16::from_le_bytes(wide));
-        if write_user(dst + i, &[byte]).is_err() {
-            ok = false;
-            break;
-        }
-    }
-    frame.eax = if ok { count } else { 0 };
-}
-
-/// LCMapStringW: case mapping over the 1252 character set. UPPERCASE/LOWERCASE only; the locale is
-/// ignored (this surface replays one).
-fn svc_lc_map_string_w(frame: &mut crate::user::TrapFrame, args: &[u32]) {
-    const LCMAP_LOWERCASE: u32 = 0x0000_0100;
-    const LCMAP_UPPERCASE: u32 = 0x0000_0200;
-    let (_locale, flags, src, cch_src, dst, cch_dst) =
-        (args[0], args[1], args[2], args[3], args[4], args[5]);
-    if flags != LCMAP_UPPERCASE && flags != LCMAP_LOWERCASE {
-        frame.eax = 0;
-        return;
-    }
-    let upper = flags == LCMAP_UPPERCASE;
-    let count = match cch_src {
-        0 | u32::MAX => {
-            // The corpus passes explicit counts; the NUL-terminated form is not on this surface.
-            frame.eax = 0;
-            return;
-        }
-        count => count,
-    };
-    if dst == 0 {
-        frame.eax = count; // size query
-        return;
-    }
-    if cch_dst < count {
-        frame.eax = 0;
-        return;
-    }
-    let mut ok = true;
-    for i in 0..count {
-        let mut wide = [0u8; 2];
-        if read_user(src + 2 * i, &mut wide).is_err() {
-            ok = false;
-            break;
-        }
-        let mapped = rtl::cp1252::map_case(u16::from_le_bytes(wide), upper);
-        if write_user(dst + 2 * i, &mapped.to_le_bytes()).is_err() {
-            ok = false;
-            break;
-        }
-    }
-    frame.eax = if ok { count } else { 0 };
 }
 
 // Heap services: the genuine allocator lives in `userheap`.
@@ -438,13 +181,6 @@ fn sleep_interval(milliseconds: u32) -> i64 {
     } else {
         milliseconds as i64 * 10_000
     }
-}
-
-/// The tick count to milliseconds, floored once at the read: the tick count times the clock's
-/// interval, in ms. The same accumulators the sleeps' due times derive from, so a sleep spans whole
-/// ticks and the span reads back as requested.
-fn tick_count_ms(ticks: u64) -> u64 {
-    ticks * crate::interrupt::clock::INTERVAL_100NS as u64 / 10_000
 }
 
 /// The SetThreadPriority value conversion: the five band values (-2..2) are base-priority
@@ -538,7 +274,7 @@ fn svc_wait_for_single_object(frame: &mut crate::user::TrapFrame, args: &[u32]) 
         let status = crate::ob::waiting(&[object], || {
             crate::sched::wait::wait_current_with(|dispatcher, thread, stamp, replay| {
                 let timeout =
-                    crate::sched::wait::replay_timeout(thread, replay, timeout, stamp.system_time);
+                    crate::sched::wait::replay_timeout(thread, replay, timeout, stamp.interrupt_time);
                 dispatcher.wait_single(
                     thread,
                     waitable,
@@ -571,7 +307,7 @@ fn svc_sleep(frame: &mut crate::user::TrapFrame, args: &[u32]) {
         // entry replays it with the remaining time — the wake time never slips.
         let status = crate::sched::wait::wait_current_with(|dispatcher, thread, stamp, replay| {
             let interval = if replay {
-                crate::sched::wait::replay_interval(thread.timer.due_time, stamp.system_time)
+                crate::sched::wait::replay_interval(thread.timer.due_time, stamp.interrupt_time)
             } else {
                 interval
             };
@@ -588,19 +324,6 @@ fn svc_sleep(frame: &mut crate::user::TrapFrame, args: &[u32]) {
     #[cfg(not(target_arch = "x86"))]
     {
         let _ = args;
-        frame.eax = 0;
-    }
-}
-
-/// GetTickCount: the milliseconds since boot, derived from the tick count and the clock's interval,
-/// floored once at the read.
-fn svc_get_tick_count(frame: &mut crate::user::TrapFrame, _args: &[u32]) {
-    #[cfg(target_arch = "x86")]
-    {
-        frame.eax = tick_count_ms(crate::interrupt::clock::ticks()) as u32;
-    }
-    #[cfg(not(target_arch = "x86"))]
-    {
         frame.eax = 0;
     }
 }
@@ -701,6 +424,21 @@ fn svc_set_file_pointer(frame: &mut crate::user::TrapFrame, args: &[u32]) {
             .unwrap_or(INVALID_SET_FILE_POINTER),
         _ => INVALID_SET_FILE_POINTER,
     };
+}
+
+/// Count a NUL-terminated user string, terminator included; None on a bad range or a missing
+/// terminator (capped).
+fn walk_narrow(src: u32) -> Option<u32> {
+    let mut len = 0u32;
+    while len < 0x1_0000 {
+        let mut byte = [0u8; 1];
+        read_user(src + len, &mut byte).ok()?;
+        if byte[0] == 0 {
+            return Some(len + 1);
+        }
+        len += 1;
+    }
+    None
 }
 
 /// The open file a handle names in the current process; none for a console handle or any handle
@@ -947,9 +685,9 @@ mod tests {
     fn the_registry_numbers_from_its_base() {
         assert_eq!(
             SERVICES.len(),
-            37,
-            "the kernel's served surface, less kernel32's own console and start-up calls and its \
-             natives (the last error, the current process)"
+            27,
+            "the served surface, less kernel32's natives (the last error, the current process, \
+             the console and start-up calls, and the locale group and clock)"
         );
         assert_eq!(WIN32_SERVICE_BASE, 0x2000);
         assert_eq!(SERVICES[0].0, "ExitProcess");
@@ -1083,42 +821,6 @@ mod tests {
         }
     }
 
-    /// The tick count's millisecond conversion, floored once at the read: the tick count times the
-    /// captured interval. The ms clock runs a hair ahead of the round number (a tick is 10.0144
-    /// ms), never behind.
-    #[test]
-    fn tick_counts_floor_to_milliseconds() {
-        assert_eq!(tick_count_ms(0), 0);
-        assert_eq!(tick_count_ms(1), 10);
-        assert_eq!(tick_count_ms(10), 100);
-        assert_eq!(tick_count_ms(20), 200);
-        assert_eq!(tick_count_ms(50), 500);
-        assert_eq!(tick_count_ms(100), 1001);
-    }
-
-    /// The captured cadence, as arithmetic: a sleep of ms milliseconds parks for ceil(ms × 10_000 /
-    /// interval) whole ticks (the tick is the resolution floor), and both GetTickCount reads derive
-    /// from the same tick-quantized accumulator, so the span reads back as the requested value at
-    /// the captured boot phase. (A phase change could carry the tick's fractional overshoot into a
-    /// carry — 0.288 ms per 20-tick span — a property of the floor, not a timer bug.)
-    #[test]
-    fn the_captured_cadence_is_whole_ticks_floored() {
-        const INTERVAL: u64 = crate::interrupt::clock::INTERVAL_100NS as u64;
-        for (milliseconds, span) in [(200u64, 20u64), (100, 10), (0, 0), (5, 1)] {
-            let interval = milliseconds * 10_000;
-            let ticks = interval.div_ceil(INTERVAL);
-            assert_eq!(ticks, span, "{milliseconds} ms");
-            // The span at the canonical phase (entry at tick 0) reads back as requested; Sleep(5)
-            // quantizes to the tick — the resolution floor.
-            let read = tick_count_ms(span) - tick_count_ms(0);
-            if milliseconds == 5 {
-                assert_eq!(read, 10);
-            } else {
-                assert_eq!(read, milliseconds);
-            }
-        }
-    }
-
     /// The environment's replay pointer is the process parameters' empty block; the A variant
     /// reports failure; the W/A free pair succeeds.
     #[test]
@@ -1135,29 +837,12 @@ mod tests {
         assert_eq!(frame.eax, 1);
     }
 
-    /// The codepages and the CPINFO image (lead bytes clear is what skips the CRT's DBCS parse).
-    #[test]
-    fn cpinfo_image_matches_the_capture() {
-        assert_eq!(ACP, 1252);
-        assert_eq!(OEMCP, 437);
-        assert_eq!(CPINFO.len(), 18);
-        assert_eq!(u32::from_le_bytes(CPINFO[0..4].try_into().unwrap()), 1);
-        assert_eq!(CPINFO[4], b'?');
-        assert_eq!(CPINFO[5], 0);
-        assert!(CPINFO[6..18].iter().all(|&b| b == 0));
-    }
-
     /// The never-called imports resolve to their floor handlers (RtlUnwind ntdll's, kernel32
     /// forwarding to it), and the console floors answer with their decided shapes (no path the
     /// corpus takes reaches them).
     #[test]
     fn never_called_shapes_resolve_to_their_floors() {
-        const NEVER_CALLED_ZERO: [&str; 4] = [
-            "UnhandledExceptionFilter",
-            "GetStringTypeA",
-            "LCMapStringA",
-            "RtlUnwind",
-        ];
+        const NEVER_CALLED_ZERO: [&str; 2] = ["UnhandledExceptionFilter", "RtlUnwind"];
         let floor = |name: &str| SERVICES.iter().find(|&&(n, ..)| n == name).unwrap().2;
         for name in NEVER_CALLED_ZERO {
             assert_eq!(floor(name) as usize, svc_floor_zero as usize, "{name}");

@@ -1,8 +1,86 @@
 //! The startup group's user-mode exports: the command line, the startup information and the
 //! version, from the PEB and the process parameters as the kernel lays them out (the host's
-//! stand-in pages, `nt::threads`).
+//! stand-in pages, `nt::threads`), and FormatMessageA's system messages.
 
 use super::last_error;
+use crate::message::format_message_a;
+
+const FROM_SYSTEM: u32 = 0x1000;
+const ALLOCATE_BUFFER: u32 = 0x0100;
+const FROM_STRING: u32 = 0x0400;
+const MAX_WIDTH_MASK: u32 = 0x00FF;
+
+/// FormatMessageA writes the message, its CR LF and terminator; refuses what it does not serve.
+#[test]
+fn system_messages_format_into_the_buffer() {
+    let mut buffer = [0xCCu8; 64];
+    let none = core::ptr::null();
+    let length = unsafe { format_message_a(FROM_SYSTEM, none, 2, 0, buffer.as_mut_ptr(), 64, none) };
+    assert_eq!(length, 44);
+    assert_eq!(&buffer[..45], b"The system cannot find the file specified.\r\n\0");
+    assert_eq!(unsafe { format_message_a(FROM_SYSTEM, none, 2, 0, buffer.as_mut_ptr(), 44, none) }, 0);
+    assert_eq!(last_error(), 122);
+    let flags = FROM_SYSTEM | FROM_STRING;
+    assert_eq!(unsafe { format_message_a(flags, none, 2, 0, buffer.as_mut_ptr(), 64, none) }, 0);
+    assert_eq!(last_error(), 87);
+    assert_eq!(unsafe { format_message_a(FROM_SYSTEM, none, 0x0123_4567, 0, buffer.as_mut_ptr(), 64, none) }, 0);
+    assert_eq!(last_error(), 317);
+}
+
+/// The block an allocating call handed back: its first `length` bytes. (B6 frees it as LocalFree
+/// frees a fixed block, RtlFreeHeap on the process heap.)
+fn take(block: *mut u8, length: usize) -> std::vec::Vec<u8> {
+    unsafe { core::slice::from_raw_parts(block, length) }.to_vec()
+}
+
+/// FORMAT_MESSAGE_ALLOCATE_BUFFER: the buffer argument is where the message's block (LocalFree's
+/// to free) goes, at least `nSize` bytes; a failure leaves a null pointer there.
+#[test]
+#[ignore = "B6: FORMAT_MESSAGE_ALLOCATE_BUFFER needs the process heap (RtlAllocateHeap, LocalAlloc)"]
+fn an_allocated_buffer_holds_the_message() {
+    let none = core::ptr::null();
+    let mut block: *mut u8 = 0x1234 as *mut u8;
+    let slot = &mut block as *mut *mut u8 as *mut u8;
+    let flags = FROM_SYSTEM | ALLOCATE_BUFFER;
+    assert_eq!(unsafe { format_message_a(flags, none, 5, 0, slot, 0, none) }, 19);
+    assert_eq!(take(block, 20), b"Access is denied.\r\n\0");
+    // nSize is the least the block holds.
+    assert_eq!(unsafe { format_message_a(flags, none, 5, 0, slot, 200, none) }, 19);
+    assert_eq!(take(block, 200)[..20], b"Access is denied.\r\n\0"[..]);
+    block = 0x1234 as *mut u8;
+    assert_eq!(unsafe { format_message_a(flags, none, 0x0123_4567, 0, slot, 0, none) }, 0);
+    assert_eq!(last_error(), 317);
+    assert!(block.is_null(), "a failed call leaves no block");
+}
+
+/// Until the process heap is ntdll's (B6), FORMAT_MESSAGE_ALLOCATE_BUFFER has no block to hand
+/// out: a null pointer where the buffer argument points, and ERROR_NOT_ENOUGH_MEMORY.
+#[test]
+fn an_allocating_call_fails_without_the_process_heap() {
+    let none = core::ptr::null();
+    let mut block: *mut u8 = 0x1234 as *mut u8;
+    let slot = &mut block as *mut *mut u8 as *mut u8;
+    let flags = FROM_SYSTEM | ALLOCATE_BUFFER;
+    assert_eq!(unsafe { format_message_a(flags, none, 5, 0, slot, 0, none) }, 0);
+    assert_eq!(last_error(), 8);
+    assert!(block.is_null());
+}
+
+/// FORMAT_MESSAGE_MAX_WIDTH_MASK: the message's regular line break is ignored (a blank in its
+/// place) and none is generated. A width of 1 to 254 breaks the lines at blanks, CR LF in a
+/// blank's place, a line running past the width only where one word does.
+#[test]
+fn the_width_drops_the_line_break() {
+    let mut buffer = [0xCCu8; 64];
+    let none = core::ptr::null();
+    let length = unsafe { format_message_a(FROM_SYSTEM | MAX_WIDTH_MASK, none, 2, 0, buffer.as_mut_ptr(), 64, none) };
+    assert_eq!(length, 43);
+    assert_eq!(&buffer[..44], b"The system cannot find the file specified. \0");
+    let length = unsafe { format_message_a(FROM_SYSTEM | 20, none, 2, 0, buffer.as_mut_ptr(), 64, none) };
+    assert_eq!(&buffer[..length as usize + 1], b"The system cannot\r\nfind the file\r\nspecified. \0");
+    let length = unsafe { format_message_a(FROM_SYSTEM | 5, none, 5, 0, buffer.as_mut_ptr(), 64, none) };
+    assert_eq!(&buffer[..length as usize + 1], b"Access\r\nis\r\ndenied. \0");
+}
 
 /// GetVersion: 5.0, build 2195, the NT platform bit clear — the dword the CRT splits into its
 /// version globals, from the PEB's version fields.
@@ -17,11 +95,13 @@ fn get_version_reports_5_0_build_2195() {
 }
 
 /// GetVersionExA: the PEB's version and its service pack's name ("Service Pack 4", the rest of the
-/// field cleared), the extended tail's service pack 4.0, no suites and a workstation; a size that
-/// is neither structure's is ERROR_INSUFFICIENT_BUFFER (the runtime fixture's "bad size" line),
-/// the structure untouched past its size.
+/// field cleared), the extended tail's service pack 4.0, no suites and a workstation (the shared
+/// data page's suite mask and product type); a size that is neither structure's is
+/// ERROR_INSUFFICIENT_BUFFER (the runtime fixture's "bad size" line), the structure untouched past
+/// its size.
 #[test]
 fn get_version_ex_reports_service_pack_4() {
+    crate::shared::host::set(crate::shared::NT_PRODUCT_TYPE, 1);
     let mut info = [0xCCu8; 156];
     info[..4].copy_from_slice(&156u32.to_le_bytes());
     // SAFETY: an OSVERSIONINFOEXA.

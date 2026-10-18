@@ -29,6 +29,7 @@ macro_rules! unserved {
 pub mod call;
 pub mod object;
 pub mod process;
+pub mod system;
 
 use crate::user::syscall::ServiceFn;
 

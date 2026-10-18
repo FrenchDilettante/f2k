@@ -235,12 +235,13 @@ pub enum WaitMode {
     User = 1,
 }
 
-/// A reading of the kernel clock, taken by the wait's caller: the system time (100 ns units) for
-/// due-time math, the tick count for the wait-time stamp.
+/// A reading of the kernel clock, taken by the wait's caller: the interrupt time (100 ns units) for
+/// due-time math — the clock the timer table expires against, so every due is on one clock, as
+/// on Windows 2000 — and the tick count for the wait-time stamp.
 #[derive(Clone, Copy)]
 pub struct ClockStamp {
-    /// The system-time accumulator's value.
-    pub system_time: u64,
+    /// The interrupt time.
+    pub interrupt_time: u64,
     /// The tick count.
     pub tick: u64,
 }
@@ -337,10 +338,10 @@ impl Dispatcher {
                         .waiters
                         .push_back(addr_of_mut!((*timer_block).links));
                 }
-                let due = stamp.system_time.wrapping_add(interval as u64);
+                let due = stamp.interrupt_time.wrapping_add(interval as u64);
                 if !self
                     .timer_table
-                    .insert(&mut thread.timer, due, stamp.system_time)
+                    .insert(&mut thread.timer, due, stamp.interrupt_time)
                 {
                     // Already past: the wait reports a timeout and unwinds what it linked.
                     // SAFETY: linked above.
@@ -403,10 +404,10 @@ impl Dispatcher {
 
         // The wrap-safe due: the longest relative interval wraps to the far side of the clock, a
         // far future — not a past.
-        let due = stamp.system_time.wrapping_add(interval as u64);
+        let due = stamp.interrupt_time.wrapping_add(interval as u64);
         if !self
             .timer_table
-            .insert(&mut thread.timer, due, stamp.system_time)
+            .insert(&mut thread.timer, due, stamp.interrupt_time)
         {
             // Already past: never a wait state. Drop a boosted variable thread to its base — the
             // drop itself may select a replacement — then try to hand the processor to an equal if
@@ -680,7 +681,7 @@ pub fn wait_current(
     timeout: Option<i64>,
 ) -> crate::status::NtStatus {
     wait_current_with(|dispatcher, thread, stamp, replay| {
-        let timeout = replay_timeout(thread, replay, timeout, stamp.system_time);
+        let timeout = replay_timeout(thread, replay, timeout, stamp.interrupt_time);
         dispatcher.wait_single(
             thread,
             object,
@@ -776,10 +777,7 @@ pub fn wait_current_with(
     let wait_level = state.current();
     let status = wait_with_replay(
         dispatcher,
-        || ClockStamp {
-            system_time: crate::interrupt::clock::system_time(),
-            tick: crate::interrupt::clock::ticks(),
-        },
+        crate::interrupt::clock::stamp,
         |dispatcher, thread, stamp, replay| {
             thread.wait_irql = wait_level;
             start(dispatcher, thread, stamp, replay)
@@ -938,8 +936,8 @@ mod tests {
         r as *const T as *mut T
     }
 
-    fn stamp(system_time: u64, tick: u64) -> ClockStamp {
-        ClockStamp { system_time, tick }
+    fn stamp(interrupt_time: u64, tick: u64) -> ClockStamp {
+        ClockStamp { interrupt_time, tick }
     }
 
     fn event(kind: EventKind, signaled: bool) -> &'static mut Event {
@@ -2116,7 +2114,7 @@ mod tests {
                 s
             },
             |d, t, stamp, replay| {
-                let timeout = replay_timeout(t, replay, Some(1_000), stamp.system_time);
+                let timeout = replay_timeout(t, replay, Some(1_000), stamp.interrupt_time);
                 d.wait_single(
                     t,
                     ev.waitable(),
@@ -2214,7 +2212,7 @@ mod tests {
                 s
             },
             |d, t, stamp, replay| {
-                let timeout = replay_timeout(t, replay, Some(1_000), stamp.system_time);
+                let timeout = replay_timeout(t, replay, Some(1_000), stamp.interrupt_time);
                 d.wait_single(
                     t,
                     ev.waitable(),
@@ -2273,7 +2271,7 @@ mod tests {
             d,
             || stamp(10_000, 5),
             |d, t, stamp, replay| {
-                let timeout = replay_timeout(t, replay, Some(1_000), stamp.system_time);
+                let timeout = replay_timeout(t, replay, Some(1_000), stamp.interrupt_time);
                 d.wait_single(
                     t,
                     waitable,
@@ -2326,7 +2324,7 @@ mod tests {
                 s
             },
             |d, t, stamp, replay| {
-                let timeout = replay_timeout(t, replay, Some(1_000), stamp.system_time);
+                let timeout = replay_timeout(t, replay, Some(1_000), stamp.interrupt_time);
                 d.wait_single(
                     t,
                     ev.waitable(),
@@ -2375,7 +2373,7 @@ mod tests {
             },
             |d, t, stamp, replay| {
                 let interval = if replay {
-                    replay_interval(t.timer.due_time, stamp.system_time)
+                    replay_interval(t.timer.due_time, stamp.interrupt_time)
                 } else {
                     1_000
                 };
@@ -2430,7 +2428,7 @@ mod tests {
                 s
             },
             |d, t, stamp, replay| {
-                let timeout = replay_timeout(t, replay, Some(1_000), stamp.system_time);
+                let timeout = replay_timeout(t, replay, Some(1_000), stamp.interrupt_time);
                 d.wait_single(
                     t,
                     waitable,

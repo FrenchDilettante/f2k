@@ -13,6 +13,7 @@
 
 pub mod args;
 pub mod params;
+pub mod shared;
 pub mod syscall;
 pub mod teb;
 pub mod userheap;

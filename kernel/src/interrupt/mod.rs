@@ -550,6 +550,10 @@ mod target {
             // The 8254: the captured platform interval.
             let mut ports = Ports;
             crate::hw::pit::program_interval(&mut ports, crate::hw::pit::INTERVAL_DIVISOR);
+            // The wall clock's origin, read while the kernel clock still reads zero.
+            crate::time::init(&mut ports);
+            // The shared data page, its system time that reading, before the first tick updates it.
+            crate::user::shared::init(crate::time::boot_filetime());
 
             crate::interrupt::dpc::init();
             super::clock::init();
@@ -615,12 +619,20 @@ mod target {
         // SAFETY: read-only.
         unsafe { core::ptr::read_volatile(addr_of!(SPURIOUS)) }
     }
+
+    /// Whether the clock's line has a request the processor has not taken yet: a tick the
+    /// performance counter's reader must count, interrupts masked around it.
+    pub fn clock_requested() -> bool {
+        // SAFETY: single CPU; the caller masks interrupts, so no claim runs between the select and
+        // the read.
+        unsafe { (*addr_of_mut!(CONTROLLER)).requested(super::clock::CLOCK_VECTOR) }
+    }
 }
 
 #[cfg(target_arch = "x86")]
 // `audit` has no caller outside the irq-smoke diagnostic; the subsystem API stays complete.
 #[allow(unused_imports)]
-pub use target::{audit, connect, init, spurious_count};
+pub use target::{audit, clock_requested, connect, init, spurious_count};
 
 /// The dispatch entry the IDT stubs call with the shared frame shape (target only): read the
 /// vector, service the interrupt, drain the deferred work.

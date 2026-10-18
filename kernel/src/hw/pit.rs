@@ -1,9 +1,12 @@
 //! 8254 interval timer: channel 0 drives the interval-clock interrupt.
 //!
-//! Channel 0 is programmed once, at boot, in mode 3 (square wave) with a two-byte divisor; the
-//! output gate feeds the timer line and the device reloads itself, so the interrupt service never
-//! touches the chip. The divisor is the corpus-captured platform value — the interval a real
-//! machine of this family reports as its default time increment.
+//! Channel 0 is programmed once, at boot, in mode 2 (the rate generator, as the platform's
+//! uniprocessor HAL programs it) with a two-byte divisor; the output gate feeds the timer line and
+//! the device reloads itself, so the interrupt service never touches the chip. In mode 2 the count
+//! runs down by one per input clock from the divisor, so the latched count says how far into the
+//! interval the timer is: the performance counter's resolution. The divisor is the
+//! corpus-captured platform value — the interval a real machine of this family reports as its
+//! default time increment.
 
 use crate::hw::portio::Io;
 
@@ -14,8 +17,11 @@ pub const INPUT_FREQUENCY_HZ: u32 = 1_193_182;
 const CHANNEL0: u16 = 0x40;
 const CONTROL: u16 = 0x43;
 
-/// Channel 0, read/write both bytes, mode 3, binary count.
-pub const MODE3_LO_HIBYTE: u8 = 0x36;
+/// Channel 0, read/write both bytes, mode 2, binary count.
+pub const MODE2_LO_HIBYTE: u8 = 0x34;
+
+/// Channel 0's counter-latch command: the next two data-port reads return the count as it was.
+const LATCH_CHANNEL0: u8 = 0x00;
 
 /// The read-back command for channel 0's status alone (its count not latched).
 #[cfg(any(test, feature = "irq-smoke"))]
@@ -35,11 +41,20 @@ pub fn divisor_for_100ns(interval_100ns: u32) -> u16 {
     periods as u16
 }
 
-/// Program channel 0 with `divisor` (mode 3, both bytes).
+/// Program channel 0 with `divisor` (mode 2, both bytes).
 pub fn program_interval<IoT: Io>(io: &mut IoT, divisor: u16) {
-    io.out(CONTROL, MODE3_LO_HIBYTE);
+    io.out(CONTROL, MODE2_LO_HIBYTE);
     io.out(CHANNEL0, (divisor & 0xFF) as u8);
     io.out(CHANNEL0, (divisor >> 8) as u8);
+}
+
+/// Channel 0's current count, latched (the divisor just after a reload, down to 1 at the end of
+/// the interval). The caller masks interrupts: the latch and its two reads are one access.
+pub fn read_count<IoT: Io>(io: &mut IoT) -> u16 {
+    io.out(CONTROL, LATCH_CHANNEL0);
+    let low = io.read(CHANNEL0);
+    let high = io.read(CHANNEL0);
+    u16::from(high) << 8 | u16::from(low)
 }
 
 /// A channel's programming, as its control word sets it and its read-back status reports it (the
@@ -89,8 +104,10 @@ pub fn read_back_status<IoT: Io>(io: &mut IoT) -> u8 {
 mod tests {
     use super::*;
 
+    /// The control writes, and channel 0's latched count read back a byte at a time, low first.
     struct Log {
         writes: Vec<(u16, u8)>,
+        count: u16,
     }
 
     impl Io for Log {
@@ -98,8 +115,11 @@ mod tests {
             self.writes.push((port, byte));
         }
 
-        fn read(&mut self, _port: u16) -> u8 {
-            0
+        fn read(&mut self, port: u16) -> u8 {
+            assert_eq!(port, CHANNEL0);
+            let byte = self.count as u8;
+            self.count >>= 8;
+            byte
         }
 
         fn read_word(&mut self, _port: u16) -> u16 {
@@ -107,16 +127,24 @@ mod tests {
         }
     }
 
-    /// The programming sequence: the mode word, then the divisor low byte, then the high byte, all
-    /// on channel 0.
+    /// The programming sequence: the mode word (mode 2, the rate generator), then the divisor low
+    /// byte, then the high byte, all on channel 0.
     #[test]
     fn program_interval_writes_mode_then_both_divisor_bytes() {
-        let mut log = Log { writes: Vec::new() };
+        let mut log = Log { writes: Vec::new(), count: 0 };
         program_interval(&mut log, INTERVAL_DIVISOR);
         assert_eq!(
             log.writes,
-            vec![(CONTROL, 0x36), (CHANNEL0, 0xAD), (CHANNEL0, 0x2E)]
+            vec![(CONTROL, 0x34), (CHANNEL0, 0xAD), (CHANNEL0, 0x2E)]
         );
+    }
+
+    /// Reading the count: the latch command for channel 0, then its low byte and its high byte.
+    #[test]
+    fn the_count_reads_latched_low_byte_first() {
+        let mut log = Log { writes: Vec::new(), count: 0x2E05 };
+        assert_eq!(read_count(&mut log), 0x2E05);
+        assert_eq!(log.writes, vec![(CONTROL, 0x00)]);
     }
 
     /// The captured interval round-trips: the platform's 100144-unit time increment resolves to
@@ -133,22 +161,22 @@ mod tests {
         assert_eq!(period_100ns as u32, INTERVAL_100NS);
     }
 
-    /// The control word decodes to the programming the read-back reports: mode 3, both bytes,
+    /// The control word decodes to the programming the read-back reports: mode 2, both bytes,
     /// binary; a status byte's output and null-count bits and the mode alias leave it unchanged.
     #[test]
     fn the_control_word_and_the_read_back_status_decode_alike() {
-        let programmed = Programming::decode(MODE3_LO_HIBYTE);
+        let programmed = Programming::decode(MODE2_LO_HIBYTE);
         assert_eq!(
             programmed,
             Programming {
-                mode: 3,
+                mode: 2,
                 access: 3,
                 bcd: false
             }
         );
         assert_eq!(programmed.access_name(), "lobyte/hibyte");
-        assert_eq!(Programming::decode(0x80 | 0x40 | 0x36), programmed);
-        assert_eq!(Programming::decode(0x3E), programmed); // mode 7, the alias of 3
+        assert_eq!(Programming::decode(0x80 | 0x40 | 0x34), programmed);
+        assert_eq!(Programming::decode(0x3C), programmed); // mode 6, the alias of 2
         assert_eq!(
             Programming::decode(0x15),
             Programming {
@@ -162,7 +190,7 @@ mod tests {
     /// The read-back: the status command on the control port, then the status from channel 0.
     #[test]
     fn read_back_sends_the_status_command_then_reads_channel_0() {
-        let mut log = Log { writes: Vec::new() };
+        let mut log = Log { writes: Vec::new(), count: 0 };
         read_back_status(&mut log);
         assert_eq!(log.writes, vec![(CONTROL, 0xE2)]);
     }

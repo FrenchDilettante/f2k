@@ -119,8 +119,8 @@ fn the_system_dlls_serve_the_registry() {
     // the pins.
     for (name, arg_bytes) in [
         ("ExitProcess", 4),
-        ("MultiByteToWideChar", 24),
-        ("WideCharToMultiByte", 32),
+        ("CreateFileA", 28),
+        ("SetFilePointer", 16),
         ("ReadFile", 20),
     ] {
         let &(_, found, _) = SERVICES
@@ -129,9 +129,9 @@ fn the_system_dlls_serve_the_registry() {
             .unwrap();
         assert_eq!(found, arg_bytes, "{name}");
     }
-    // The natives: kernel32's own code (the trivial ones its assembly; the console and start-up
-    // calls its Rust).
-    assert_eq!(NATIVE_EXPORTS.len(), 30);
+    // The natives: kernel32's own code (the trivial ones its assembly; the console, start-up,
+    // locale and clock calls its Rust).
+    assert_eq!(NATIVE_EXPORTS.len(), 59);
     for &(name, _) in &NATIVE_EXPORTS {
         let address = kernel32_export(name).unwrap_or_else(|| panic!("kernel32 exports no {name}"));
         addresses.push(address);
@@ -158,8 +158,8 @@ fn unimplemented_exports_fail_the_call() {
         ("FindFirstFileA", 0xFFFF_FFFF, 8),
         ("GetFileAttributesA", 0xFFFF_FFFF, 4),
         ("WaitForMultipleObjects", 0xFFFF_FFFF, 16),
-        ("GetTimeZoneInformation", 0xFFFF_FFFF, 4),
-        ("GetSystemTimeAsFileTime", 0, 4),
+        ("GetThreadPriority", 0x7FFF_FFFF, 4),
+        ("DeleteCriticalSection", 0, 4),
     ] {
         let mut stub = vec![0x64, 0xC7, 0x05, 0x34, 0, 0, 0, 120, 0, 0, 0, 0xB8];
         stub.extend_from_slice(&fails.to_le_bytes());

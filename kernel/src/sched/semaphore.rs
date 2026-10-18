@@ -113,7 +113,7 @@ mod tests {
     /// Park `t` on `semaphore`, asserting the wait blocked.
     fn park_on(d: &mut Dispatcher, t: &mut Thread, semaphore: &mut Semaphore) {
         let stamp = crate::sched::wait::ClockStamp {
-            system_time: 10_000,
+            interrupt_time: 10_000,
             tick: 5,
         };
         match d.wait_single(

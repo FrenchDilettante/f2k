@@ -107,6 +107,14 @@ impl Clock {
         self.interrupt_count
     }
 
+    /// The wait discipline's reading: interrupt time, the clock every due is on, and the tick count.
+    pub fn stamp(&self) -> crate::sched::wait::ClockStamp {
+        crate::sched::wait::ClockStamp {
+            interrupt_time: self.interrupt_time,
+            tick: self.tick_count,
+        }
+    }
+
     /// One interval interrupt: advance interrupt time, decide whether this was a full tick, and
     /// (only then) advance system time and the tick count. The rate lives in the set-time
     /// variables; nothing here knows the hardware.
@@ -197,7 +205,10 @@ pub fn service() {
     // dispatcher's.
     unsafe {
         let clock = &mut *addr_of_mut!(CLOCK);
-        if let Tick::Full = clock.tick() {
+        let tick = clock.tick();
+        let full = matches!(tick, Tick::Full).then(|| (clock.system_time(), clock.tick_count()));
+        crate::user::shared::update(clock.interrupt_time(), full);
+        if let Tick::Full = tick {
             let tick_low = clock.tick_count() as u32;
             // The hand check at the transition to tick N: the buckets of ticks N-1 and N against
             // the just-advanced interrupt time. A due head fires the deferred work, single-flight
@@ -251,7 +262,7 @@ pub fn ticks() -> u64 {
     read_clock(Clock::tick_count)
 }
 
-/// The kernel clock's system time (100 ns units): the wait discipline's source of "now".
+/// The kernel clock's system time (100 ns units): the wall clock's, less the boot's reading.
 #[cfg(target_arch = "x86")]
 pub fn system_time() -> u64 {
     read_clock(Clock::system_time)
@@ -264,10 +275,59 @@ pub fn interrupt_time() -> u64 {
     read_clock(Clock::interrupt_time)
 }
 
+/// The wait discipline's source of "now": interrupt time and the tick count, in one read.
+#[cfg(target_arch = "x86")]
+pub fn stamp() -> crate::sched::wait::ClockStamp {
+    read_clock(Clock::stamp)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::interrupt::irql::IrqlState;
+
+    /// One clock for every due: a wait's stamp reads interrupt time, the clock the timer
+    /// table expires against, so a slewed system time moves no wait's deadline.
+    #[test]
+    fn a_wait_expires_on_interrupt_time_whatever_the_slew() {
+        use crate::sched::dispatcher::Dispatcher;
+        use crate::sched::process::SchedProcess;
+        use crate::sched::thread::{Thread, ThreadState};
+        use crate::sched::wait::{WaitDisposition, WaitMode};
+
+        let d = Box::leak(Box::new(Dispatcher::zeroed()));
+        d.init();
+        let p = Box::leak(Box::new(SchedProcess::new(0x0090_0000, 8)));
+        p.init();
+        let t = Box::leak(Box::new(Thread::empty()));
+        // SAFETY: both records are leaked at their final addresses.
+        unsafe { t.attach_to(p) };
+
+        let mut clock = Clock::new();
+        clock.set_time_increment(INTERVAL_100NS, FINEST_100NS);
+        clock.time_adjustment = INTERVAL_100NS / 2; // system time slewed to half speed
+        for _ in 0..10 {
+            clock.tick();
+        }
+        assert_eq!(clock.stamp().interrupt_time, clock.interrupt_time());
+        assert_eq!(clock.stamp().tick, 10);
+        assert_ne!(clock.system_time(), clock.interrupt_time(), "the slew shows");
+        let interval = 3 * INTERVAL_100NS as i64;
+        assert_eq!(
+            d.delay(t, WaitMode::User, false, interval, clock.stamp()),
+            WaitDisposition::Yield
+        );
+        for n in 1..=3 {
+            clock.tick();
+            let tick = clock.tick_count() as u32;
+            d.expire_timers(clock.interrupt_time(), tick, tick - 1);
+            assert_eq!(
+                t.state() == ThreadState::Ready,
+                n == 3,
+                "woken at the third tick, not before"
+            );
+        }
+    }
 
     /// The rate contract: the maximum stands as increment, slew value, and accumulator start; the
     /// minimum has a 1 ms floor.

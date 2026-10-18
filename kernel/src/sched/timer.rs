@@ -330,9 +330,9 @@ mod tests {
         event
     }
 
-    fn stamp(system_time: u64, tick_count: u64) -> ClockStamp {
+    fn stamp(interrupt_time: u64, tick_count: u64) -> ClockStamp {
         ClockStamp {
-            system_time,
+            interrupt_time,
             tick: tick_count,
         }
     }

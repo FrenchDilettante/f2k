@@ -622,6 +622,10 @@ fn release_address_space_of(process: &mut Process) {
         process,
         |frame, index| paging::read_frame_word(frame, index),
         |frame_phys| {
+            // The shared data page is mapped into every process and freed by none.
+            if crate::user::shared::is_frame(frame_phys) {
+                return;
+            }
             crate::mem::bootmem::with_frame_db(|db| {
                 db.release(frame_phys / PAGE_SIZE, FrameState::Free);
             });
@@ -926,7 +930,7 @@ mod tests {
         assert_eq!(dead.take(), None);
     }
 
-    // --- The gate-slot ledger (B1/B2) --------------------------------------
+    // --- The gate-slot ledger ------------------------------------------------
 
     /// The ledger hands out the lowest free index; slot 0's top is the stack every boot has
     /// installed (the loader contract survives as the main thread's esp0), and two threads never
@@ -976,7 +980,7 @@ mod tests {
         assert!(refused.is_err());
     }
 
-    // --- Teardown accounting (B5) ------------------------------------------
+    // --- Teardown accounting -------------------------------------------------
     //
     // Fake physical memory: frames as pages of 1024 words, released frames collected with counts.
 

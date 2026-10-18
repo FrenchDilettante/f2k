@@ -165,7 +165,8 @@ RAW_ACCESS_ALLOWED = {
     "kernel/src/process/runner.rs": "the suite's process index, a kernel static",
     "kernel/src/sched/startup.rs": "a new thread's kernel gate stack",
     "kernel/src/user/syscall.rs": "the copy primitives themselves and the attribution flag",
-    "kernel/src/user/userheap.rs": "the user heap's region, kernel-side until the user-mode heap",
+    "kernel/src/user/shared.rs": "the shared data page through the kernel's own mapping of its frame",
+    "kernel/src/user/userheap.rs": "the user heap's region (GAP-VM-1: kernel-side until the user-mode heap, B6)",
 }
 RAW_FORMS = ("read_volatile", "write_volatile", "from_raw_parts")
 
@@ -244,13 +245,13 @@ def kernel32_exports() -> list[dict]:
 
 
 # The kernel32 exports the kernel still serves (the kernel's transitional Win32 services: `legacy`
-# handlers and `floor` answers, generated int 2Eh stubs). The move to kernel32's own code goes
-# group by group over ntdll and lowers this; the last group's move retires it.
-SERVED_KERNEL32_EXPORTS = 36
+# handlers and `floor` answers, generated int 2Eh stubs). Each group moved to kernel32's own code
+# over ntdll lowers this; the last one retires it.
+SERVED_KERNEL32_EXPORTS = 26
 
 # The kernel32 exports the corpus imports that are not built yet (`unimplemented` stubs failing with
 # ERROR_CALL_NOT_IMPLEMENTED, each naming its increment). It only goes down.
-UNIMPLEMENTED_KERNEL32_EXPORTS = 117
+UNIMPLEMENTED_KERNEL32_EXPORTS = 98
 
 
 def test_served_kernel32_exports_only_go_down():

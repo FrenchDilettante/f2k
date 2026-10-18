@@ -15,7 +15,7 @@ yield = ["SwitchToThread: returned 1, the new thread had run *"]
 # thread data"): it needs TlsAlloc, TlsGetValue and TlsSetValue (B7's), so whichever of B5 and B7
 # lands first brings them.
 [pending]
-clock = "B2: locale, time, messages and the last error"
+clock = "B5: the C runtime's TlsAlloc, TlsGetValue and TlsSetValue (R6016; B7's if it lands first): the clocks themselves are B2's"
 sleep = "B5: synchronization and APCs"
 timer = "B5: synchronization and APCs"
 rr = "B7: threads and scheduling"

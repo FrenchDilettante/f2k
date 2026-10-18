@@ -51,7 +51,7 @@ pub fn run() {
         slave_mask
     );
 
-    let programmed = Programming::decode(pit::MODE3_LO_HIBYTE);
+    let programmed = Programming::decode(pit::MODE2_LO_HIBYTE);
     serial_println!(
         "F2K: irq-smoke: PIT programmed (mode {}, divisor {}, {}.{:04} ms tick)",
         programmed.mode,
@@ -86,7 +86,7 @@ pub fn run() {
     // SAFETY: the current thread (the idle thread, armed at boot) is live and exclusive here; its
     // timer is initialized and on no list.
     let current = unsafe { &mut *dispatcher.current_thread() };
-    let now = clock::system_time();
+    let now = clock::interrupt_time();
     assert!(dispatcher.timer_table().insert(
         &mut current.timer,
         now + clock::INTERVAL_100NS as u64,

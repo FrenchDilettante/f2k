@@ -38,13 +38,13 @@ BOOTED = (
     "F2K: kernel heap: alloc/free ok",
 )
 
-# The irq-smoke boot's lines, in order (both boot paths). The PIT runs in mode 3, the square wave.
+# The irq-smoke boot's lines, in order (both boot paths). The PIT runs in mode 2, the rate generator.
 IRQ_SMOKE = (
     *BOOTED,
     "F2K: irq-smoke: PIC remapped (master 0x30, slave 0x38, IRQ0 unmasked)",
     "F2K: irq-smoke: PIC line masks: master 0xfe, slave 0xff",
-    "F2K: irq-smoke: PIT programmed (mode 3, divisor 11949, 10.0144 ms tick)",
-    "F2K: irq-smoke: PIT channel 0 read-back: mode 3, lobyte/hibyte, binary",
+    "F2K: irq-smoke: PIT programmed (mode 2, divisor 11949, 10.0144 ms tick)",
+    "F2K: irq-smoke: PIT channel 0 read-back: mode 2, lobyte/hibyte, binary",
     "F2K: irq-smoke: timer live (>= 5 ticks observed)",
     "F2K: irq-smoke: clock DPC fired",
     "F2K: irq-smoke: interrupt audit: ok",
@@ -350,7 +350,7 @@ CASES = (
     # interrupt core are live, then the normal boot proceeds to the default image's exit (the tick
     # and the process machinery coexist, not just the diagnostic). Read from the hardware where it
     # can be: the PIC's line masks (IRQ0 the one line open before the disk connects IRQ14), the
-    # PIT's read-back status for channel 0 (mode 3, both bytes, binary) beside the corpus-captured
+    # PIT's read-back status for channel 0 (mode 2, both bytes, binary) beside the corpus-captured
     # divisor (11949 = 10.0144 ms); the tick counter crossing 5 (IRQ0 arrives on 0x30: on the
     # BIOS's 0x08 it would be a double fault), the clock DPC's timer expiry, and the interrupt
     # audit. The diagnostic is a feature; the tick is default-on kernel machinery.

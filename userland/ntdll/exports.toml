@@ -42,6 +42,21 @@ impl = { syscall = "crate::nt::process::terminate_process" }
 note = "the calling process's handle ends it (no other process is reachable); the null handle, ExitProcess's first step, comes with ExitProcess (B7)"
 unpinned = "kernel32's TerminateProcess is its only caller, and no fixture block calls that (the C runtime's fatal paths do)"
 
+[[export]]
+name = "NtQuerySystemInformation"
+group = "nt"
+args = ["u32 SystemInformationClass", "ptr SystemInformation", "u32 SystemInformationLength", "ptr<u32> ReturnLength"]
+impl = { syscall = "crate::nt::system::query_system_information" }
+note = "answers SystemCurrentTimeZoneInformation (44) alone; the other classes are STATUS_INVALID_INFO_CLASS (the basic, processor and performance classes come with GetSystemInfo, B4)"
+unpinned = "kernel32's GetTimeZoneInformation is its caller, which no fixture block is known to reach"
+
+[[export]]
+name = "NtQueryPerformanceCounter"
+group = "nt"
+args = ["ptr<u64> PerformanceCounter", "ptr<u64> PerformanceFrequency"]
+impl = { syscall = "crate::nt::system::query_performance_counter" }
+pinned_by = ["sched/clock"]
+
 # --- the client-server runtime (src/csr.s) --------------------------------------------------------
 
 [[export]]

@@ -38,10 +38,11 @@ const SLAVE_ICW3_IDENTITY_2: u8 = 0x02;
 /// The master's mask bit for the cascade line (IRQ 2, where the slave is wired).
 const CASCADE_BIT: u8 = MASTER_ICW3_SLAVE_ON_2;
 
-// Operating control words: a non-specific end-of-interrupt, and the read-register select that makes
-// the next command-port read return the in-service register.
+// Operating control words: a non-specific end-of-interrupt, and the read-register selects that make
+// the next command-port read return the in-service or the request register.
 const OCW2_NON_SPECIFIC_EOI: u8 = 0x20;
 const OCW3_READ_IN_SERVICE: u8 = 0x0B;
+const OCW3_READ_REQUEST: u8 = 0x0A;
 
 /// The verdict of claiming a delivered vector: whether the interrupt was real, and — for a spurious
 /// one — which end-of-interrupt work (if any) the controller already had to perform.
@@ -179,6 +180,15 @@ impl<IoT: Io> Pic<IoT> {
             self.io.out(SLAVE_CMD, OCW2_NON_SPECIFIC_EOI);
         }
         self.io.out(MASTER_CMD, OCW2_NON_SPECIFIC_EOI);
+    }
+
+    /// Whether a line has raised a request the processor has not acknowledged yet, by vector: its
+    /// bit in the request register of the chip that serves it. (Every in-service probe selects its
+    /// own register, so this read leaves nothing selected that they rely on.)
+    pub fn requested(&mut self, vector: u8) -> bool {
+        let cmd = if vector >= self.slave_base { SLAVE_CMD } else { MASTER_CMD };
+        self.io.out(cmd, OCW3_READ_REQUEST);
+        self.io.read(cmd) & (1 << (vector & 7)) != 0
     }
 
     /// Whether the in-service register of both chips is clear: the on-target check that no
@@ -496,6 +506,21 @@ mod tests {
         );
         assert_eq!(sim.slave.isr, 0); // the slave was never served
         assert!(pic.in_service_clear());
+    }
+
+    /// A raised line not yet acknowledged shows in the request register (the clock's tick the
+    /// performance counter must count before it is taken); the in-service probe still reads the
+    /// in-service register after it.
+    #[test]
+    fn a_pending_request_reads_from_the_request_register() {
+        let mut pic = remapped();
+        assert!(!pic.requested(MASTER_VECTOR_BASE));
+        pic.io().master.irr = 0x01;
+        assert!(pic.requested(MASTER_VECTOR_BASE));
+        assert!(!pic.requested(MASTER_VECTOR_BASE + 1));
+        assert_eq!(pic.claim(MASTER_VECTOR_BASE), Verdict::SpuriousNoEoi, "nothing in service yet");
+        pic.io().acknowledge(MASTER_VECTOR_BASE);
+        assert_eq!(pic.claim(MASTER_VECTOR_BASE), Verdict::Real);
     }
 
     /// The vector bases leave the whole IRQ band clear of the syscall gate at 0x2E, and the two

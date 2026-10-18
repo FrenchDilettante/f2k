@@ -49,6 +49,16 @@ unsafe extern "system" {
     /// RtlNtStatusToDosError: the Win32 error a status maps to (the status kept as the thread's
     /// last status).
     pub fn RtlNtStatusToDosError(status: u32) -> u32;
+    /// NtQuerySystemInformation: the class's structure into the caller's buffer (F2K answers the
+    /// time zone, class 44).
+    pub fn NtQuerySystemInformation(
+        class: u32,
+        information: *mut u8,
+        length: u32,
+        return_length: *mut u32,
+    ) -> u32;
+    /// NtQueryPerformanceCounter: the counter and, when asked, its frequency.
+    pub fn NtQueryPerformanceCounter(counter: *mut u64, frequency: *mut u64) -> u32;
 }
 
 #[cfg(test)]
@@ -101,6 +111,51 @@ pub mod host {
 
     pub unsafe extern "system" fn RtlNtStatusToDosError(status: u32) -> u32 {
         rtl::status::dos_error(status)
+    }
+
+    /// The performance counter's stand-in values.
+    pub const COUNTER: u64 = 0x1234_5678_9ABC;
+    pub const FREQUENCY: u64 = 1_193_182;
+
+    /// NtQuerySystemInformation, as the kernel answers it: the time zone (44: no zone, a zero
+    /// structure) at its size.
+    pub unsafe extern "system" fn NtQuerySystemInformation(
+        class: u32,
+        information: *mut u8,
+        length: u32,
+        _return_length: *mut u32,
+    ) -> u32 {
+        let status = answer();
+        if status != 0 {
+            return status;
+        }
+        assert_eq!(
+            (class, length),
+            (44, 172),
+            "the stand-in answers the time zone at its size"
+        );
+        // SAFETY: the caller's buffer of `length` bytes.
+        unsafe { information.write_bytes(0, length as usize) };
+        0
+    }
+
+    /// NtQueryPerformanceCounter: the stand-in counter and, when asked, frequency.
+    pub unsafe extern "system" fn NtQueryPerformanceCounter(
+        counter: *mut u64,
+        frequency: *mut u64,
+    ) -> u32 {
+        let status = answer();
+        if status != 0 {
+            return status;
+        }
+        // SAFETY: the caller's counter and, when given, frequency.
+        unsafe {
+            counter.write(COUNTER);
+            if !frequency.is_null() {
+                frequency.write(FREQUENCY);
+            }
+        }
+        0
     }
 
     /// The writes the console showed since the last look.

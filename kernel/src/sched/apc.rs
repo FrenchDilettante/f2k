@@ -190,7 +190,7 @@ pub(crate) fn suspend_apc_normal(
     #[cfg(not(target_arch = "x86"))]
     {
         let stamp = super::wait::ClockStamp {
-            system_time: 0,
+            interrupt_time: 0,
             tick: 0,
         };
         let _ = dispatcher.wait_single(
@@ -597,8 +597,8 @@ mod tests {
         t.state = ThreadState::Running;
     }
 
-    fn stamp(system_time: u64, tick: u64) -> ClockStamp {
-        ClockStamp { system_time, tick }
+    fn stamp(interrupt_time: u64, tick: u64) -> ClockStamp {
+        ClockStamp { interrupt_time, tick }
     }
 
     /// Block `t` on `object` in a kernel-mode wait, asserting the wait parked it.

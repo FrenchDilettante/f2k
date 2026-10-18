@@ -269,9 +269,14 @@ scenarios = ["get_version_ex_reports_service_pack_4"]
 name = "FormatMessageA"
 group = "startup"
 args = ["u32 dwFlags", "ptr lpSource", "u32 dwMessageId", "u32 dwLanguageId", "ptr lpBuffer", "u32 nSize", "ptr Arguments"]
-impl = { unimplemented = "B2: locale, time, messages and the last error" }
-fails = "0"
+impl = { native = "FormatMessageA" }
 pinned_by = ["runtime/lasterror"]
+scenarios = [
+    "system_messages_format_into_the_buffer",
+    "an_allocated_buffer_holds_the_message",
+    "an_allocating_call_fails_without_the_process_heap",
+    "the_width_drops_the_line_break",
+]
 
 # --- console handles ------------------------------------------------------------------------------
 
@@ -762,7 +767,7 @@ pinned_by = ["memory/local"]
 name = "GetACP"
 group = "locale"
 args = []
-impl = { legacy = "svc_get_acp" }
+impl = { native = "GetACP" }
 pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
 scenarios = ["get_acp_reports_1252"]
 
@@ -770,7 +775,7 @@ scenarios = ["get_acp_reports_1252"]
 name = "GetOEMCP"
 group = "locale"
 args = []
-impl = { legacy = "svc_get_oemcp" }
+impl = { native = "GetOEMCP" }
 pinned_by = ["runtime/locale"]
 scenarios = ["get_oemcp_reports_437"]
 
@@ -778,7 +783,8 @@ scenarios = ["get_oemcp_reports_437"]
 name = "GetCPInfo"
 group = "locale"
 args = ["u32 CodePage", "ptr lpCPInfo"]
-impl = { legacy = "svc_get_cp_info" }
+impl = { native = "GetCPInfo" }
+note = "the installed code pages are 437, 850, 1252 and UTF-8 (CP_ACP and CP_OEMCP name 1252 and 437); 850 has no conversion table"
 pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
 scenarios = [
     "get_cp_info_fills_the_single_byte_image",
@@ -789,130 +795,136 @@ scenarios = [
 name = "MultiByteToWideChar"
 group = "locale"
 args = ["u32 CodePage", "u32 dwFlags", "ptr lpMultiByteStr", "i32 cbMultiByte", "ptr lpWideCharStr", "i32 cchWideChar"]
-impl = { legacy = "svc_multi_byte_to_wide_char" }
+impl = { native = "MultiByteToWideChar" }
 pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
 scenarios = [
     "multi_byte_to_wide_char_converts_through_the_table",
     "multi_byte_to_wide_char_refusals",
     "multi_byte_to_wide_char_size_queries_and_short_destinations",
+    "multi_byte_to_wide_char_uses_glyph_chars",
+    "the_converters_take_strings_past_64k",
 ]
 
 [[export]]
 name = "WideCharToMultiByte"
 group = "locale"
 args = ["u32 CodePage", "u32 dwFlags", "ptr lpWideCharStr", "i32 cchWideChar", "ptr lpMultiByteStr", "i32 cbMultiByte", "ptr lpDefaultChar", "ptr lpUsedDefaultChar"]
-impl = { legacy = "svc_wide_char_to_multi_byte" }
+impl = { native = "WideCharToMultiByte" }
+note = "a single-byte page best-fits Latin Extended-A to the base letter (unless WC_NO_BEST_FIT_CHARS) before substituting the default character; UTF-8 refuses a default or its report (ERROR_INVALID_PARAMETER)"
 pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
 scenarios = [
     "wide_char_to_multi_byte_converts_through_the_table",
     "wide_char_to_multi_byte_refusals_and_size_queries",
+    "wide_char_to_multi_byte_takes_no_best_fit",
+    "the_converters_take_strings_past_64k",
 ]
 
 [[export]]
 name = "LCMapStringA"
 group = "locale"
 args = ["u32 Locale", "u32 dwMapFlags", "ptr lpSrcStr", "i32 cchSrc", "ptr lpDestStr", "i32 cchDest"]
-impl = { floor = "zero, nothing written: the C runtime imports it but calls the W form" }
+impl = { native = "LCMapStringA" }
 pinned_by = ["runtime/locale"]
+scenarios = ["the_narrow_nls_calls_take_long_sources"]
 
 [[export]]
 name = "LCMapStringW"
 group = "locale"
 args = ["u32 Locale", "u32 dwMapFlags", "ptr lpSrcStr", "i32 cchSrc", "ptr lpDestStr", "i32 cchDest"]
-impl = { legacy = "svc_lc_map_string_w" }
+impl = { native = "LCMapStringW" }
 pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
 scenarios = [
     "lc_map_string_w_maps_case",
     "lc_map_string_w_refusals_and_size_queries",
     "lc_map_string_w_takes_a_terminated_source",
+    "lc_map_string_w_follows_the_nls_conventions",
 ]
 
 [[export]]
 name = "GetStringTypeA"
 group = "locale"
 args = ["u32 Locale", "u32 dwInfoType", "ptr lpSrcStr", "i32 cchSrc", "ptr lpCharType"]
-impl = { floor = "zero, nothing written: the C runtime imports it but calls the W form" }
+impl = { native = "GetStringTypeA" }
 pinned_by = ["runtime/locale"]
+scenarios = ["the_narrow_nls_calls_take_long_sources"]
 
 [[export]]
 name = "GetStringTypeW"
 group = "locale"
 args = ["u32 dwInfoType", "ptr lpSrcStr", "i32 cchSrc", "ptr lpCharType"]
-impl = { legacy = "svc_get_string_type_w" }
+impl = { native = "GetStringTypeW" }
 pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
 scenarios = [
     "get_string_type_w_classifies_ctype1",
     "get_string_type_w_refusals_and_empty_counts",
     "get_string_type_w_takes_a_terminated_source",
+    "get_string_type_w_takes_any_negative_count_as_terminated",
 ]
 
 [[export]]
 name = "CompareStringA"
 group = "locale"
 args = ["u32 Locale", "u32 dwCmpFlags", "ptr lpString1", "i32 cchCount1", "ptr lpString2", "i32 cchCount2"]
-impl = { unimplemented = "B2: locale, time, messages and the last error" }
-fails = "0"
+impl = { native = "CompareStringA" }
 pinned_by = ["runtime/locale"]
+scenarios = ["the_narrow_nls_calls_take_long_sources"]
 
 [[export]]
 name = "CompareStringW"
 group = "locale"
 args = ["u32 Locale", "u32 dwCmpFlags", "ptr lpString1", "i32 cchCount1", "ptr lpString2", "i32 cchCount2"]
-impl = { unimplemented = "B2: locale, time, messages and the last error" }
-fails = "0"
+impl = { native = "CompareStringW" }
+unpinned = "imported by the C runtime's string collation; no fixture block is known to reach it"
 
 [[export]]
 name = "GetLocaleInfoA"
 group = "locale"
 args = ["u32 Locale", "u32 LCType", "ptr lpLCData", "i32 cchData"]
-impl = { unimplemented = "B2: locale, time, messages and the last error" }
-fails = "0"
+impl = { native = "GetLocaleInfoA" }
 pinned_by = ["runtime/locale"]
+scenarios = ["the_locale_answers_its_values", "a_number_comes_back_as_a_dword"]
 
 [[export]]
 name = "GetLocaleInfoW"
 group = "locale"
 args = ["u32 Locale", "u32 LCType", "ptr lpLCData", "i32 cchData"]
-impl = { unimplemented = "B2: locale, time, messages and the last error" }
-fails = "0"
+impl = { native = "GetLocaleInfoW" }
+scenarios = ["the_locale_answers_its_values", "a_number_comes_back_as_a_dword"]
 
 [[export]]
 name = "GetUserDefaultLCID"
 group = "locale"
 args = []
-impl = { unimplemented = "B2: locale, time, messages and the last error" }
-fails = "never"
+impl = { native = "GetUserDefaultLCID" }
 pinned_by = ["runtime/locale"]
 
 [[export]]
 name = "GetSystemDefaultLCID"
 group = "locale"
 args = []
-impl = { unimplemented = "B2: locale, time, messages and the last error" }
-fails = "never"
+impl = { native = "GetSystemDefaultLCID" }
 pinned_by = ["runtime/locale"]
 
 [[export]]
 name = "IsValidLocale"
 group = "locale"
 args = ["u32 Locale", "u32 dwFlags"]
-impl = { unimplemented = "B2: locale, time, messages and the last error" }
-fails = "FALSE"
+impl = { native = "IsValidLocale" }
+unpinned = "imported by the C runtime's setlocale; no fixture block is known to reach it"
 
 [[export]]
 name = "IsValidCodePage"
 group = "locale"
 args = ["u32 CodePage"]
-impl = { unimplemented = "B2: locale, time, messages and the last error" }
-fails = "FALSE"
+impl = { native = "IsValidCodePage" }
 pinned_by = ["runtime/locale"]
 
 [[export]]
 name = "EnumSystemLocalesA"
 group = "locale"
 args = ["ptr lpLocaleEnumProc", "u32 dwFlags"]
-impl = { unimplemented = "B2: locale, time, messages and the last error" }
-fails = "FALSE"
+impl = { native = "EnumSystemLocalesA" }
+unpinned = "imported by the C runtime's setlocale; no fixture block is known to reach it"
 
 # --- threads / sync -------------------------------------------------------------------------------
 
@@ -1035,7 +1047,7 @@ pinned_by = [
 name = "GetTickCount"
 group = "threads"
 args = []
-impl = { legacy = "svc_get_tick_count" }
+impl = { native = "GetTickCount" }
 pinned_by = [
     "runtime/lasterror",
     "runtime/module",
@@ -1048,6 +1060,7 @@ pinned_by = [
     "sched/timer",
     "threads/scale",
 ]
+scenarios = ["the_tick_count_scales_the_shared_ticks"]
 
 [[export]]
 name = "SetThreadPriority"
@@ -1411,32 +1424,32 @@ pinned_by = ["sched/timer"]
 name = "GetLocalTime"
 group = "threads"
 args = ["ptr lpSystemTime"]
-impl = { unimplemented = "B2: locale, time, messages and the last error" }
-fails = "void"
+impl = { native = "GetLocalTime" }
 pinned_by = ["sched/clock"]
+scenarios = ["the_system_and_local_times_read_the_shared_page"]
 
 [[export]]
 name = "GetSystemTime"
 group = "threads"
 args = ["ptr lpSystemTime"]
-impl = { unimplemented = "B2: locale, time, messages and the last error" }
-fails = "void"
+impl = { native = "GetSystemTime" }
 pinned_by = ["sched/clock"]
+scenarios = ["the_system_and_local_times_read_the_shared_page"]
 
 [[export]]
 name = "GetSystemTimeAsFileTime"
 group = "threads"
 args = ["ptr lpSystemTimeAsFileTime"]
-impl = { unimplemented = "B2: locale, time, messages and the last error" }
-fails = "void"
+impl = { native = "GetSystemTimeAsFileTime" }
 pinned_by = ["sched/clock", "sched/timer"]
+scenarios = ["the_system_and_local_times_read_the_shared_page"]
 
 [[export]]
 name = "GetTimeZoneInformation"
 group = "threads"
 args = ["ptr lpTimeZoneInformation"]
-impl = { unimplemented = "B2: locale, time, messages and the last error" }
-fails = "0xFFFF_FFFF"
+impl = { native = "GetTimeZoneInformation" }
+scenarios = ["the_time_zone_comes_from_the_system"]
 
 [[export]]
 name = "OpenWaitableTimerA"
@@ -1450,17 +1463,17 @@ pinned_by = ["sched/timer"]
 name = "QueryPerformanceCounter"
 group = "threads"
 args = ["ptr<u64> lpPerformanceCount"]
-impl = { unimplemented = "B2: locale, time, messages and the last error" }
-fails = "FALSE"
+impl = { native = "QueryPerformanceCounter" }
 pinned_by = ["sched/clock"]
+scenarios = ["the_performance_counter_comes_from_the_system"]
 
 [[export]]
 name = "QueryPerformanceFrequency"
 group = "threads"
 args = ["ptr<u64> lpFrequency"]
-impl = { unimplemented = "B2: locale, time, messages and the last error" }
-fails = "FALSE"
+impl = { native = "QueryPerformanceFrequency" }
 pinned_by = ["sched/clock"]
+scenarios = ["the_performance_counter_comes_from_the_system"]
 
 [[export]]
 name = "SetProcessAffinityMask"
@@ -1537,16 +1550,16 @@ pinned_by = ["files/mapping", "memory/mapping"]
 name = "FileTimeToLocalFileTime"
 group = "files"
 args = ["ptr lpFileTime", "ptr lpLocalFileTime"]
-impl = { unimplemented = "B2: locale, time, messages and the last error" }
-fails = "FALSE"
+impl = { native = "FileTimeToLocalFileTime" }
+scenarios = ["the_system_and_local_times_read_the_shared_page"]
 
 [[export]]
 name = "FileTimeToSystemTime"
 group = "files"
 args = ["ptr lpFileTime", "ptr lpSystemTime"]
-impl = { unimplemented = "B2: locale, time, messages and the last error" }
-fails = "FALSE"
+impl = { native = "FileTimeToSystemTime" }
 pinned_by = ["fswrite/times"]
+scenarios = ["the_conversions_round_trip_and_refuse_out_of_range_values"]
 
 [[export]]
 name = "FindClose"
@@ -1632,9 +1645,9 @@ pinned_by = ["fswrite/times"]
 name = "SystemTimeToFileTime"
 group = "files"
 args = ["ptr lpSystemTime", "ptr lpFileTime"]
-impl = { unimplemented = "B2: locale, time, messages and the last error" }
-fails = "FALSE"
+impl = { native = "SystemTimeToFileTime" }
 pinned_by = ["fswrite/times"]
+scenarios = ["the_conversions_round_trip_and_refuse_out_of_range_values"]
 
 [[export]]
 name = "FindNextFileA"
