@@ -1,0 +1,153 @@
+>>> sync.exe event
+== event
+manual, initially set: WAIT_OBJECT_0, still WAIT_OBJECT_0
+ResetEvent: ret=1 err=-, now WAIT_TIMEOUT
+SetEvent: ret=1 err=-, now WAIT_OBJECT_0
+auto, initially set: WAIT_OBJECT_0, then WAIT_TIMEOUT
+auto set twice: WAIT_OBJECT_0, then WAIT_TIMEOUT
+PulseEvent manual, no waiters: woken 0, event left WAIT_TIMEOUT
+PulseEvent manual, two waiters: woken 2, event left WAIT_TIMEOUT
+PulseEvent auto, two waiters: woken 1, event left WAIT_TIMEOUT
+SetEvent auto, two waiters: woken 1
+second SetEvent: woken 2
+named event: created yes err=0
+named event again: created yes err=183, initial state ignored: WAIT_TIMEOUT
+set through the second handle, seen through the first: WAIT_OBJECT_0
+OpenEventA: opened yes err=-
+reset through the opened handle: WAIT_TIMEOUT
+OpenEventA(missing): null yes err=2
+CreateMutexA on the event's name: null yes err=6
+SetEvent(bogus): ret=0 err=6
+SetEvent(thread handle): ret=0 err=6
+sync: done
+<<< exit code=0
+>>> sync.exe semaphore
+== semaphore
+count 2 of 3: waits WAIT_OBJECT_0 WAIT_OBJECT_0 WAIT_TIMEOUT
+release 1: ret=1 previous 0 err=-
+release 3 past the maximum: ret=0 previous -1 err=298
+count unchanged by the refused release: WAIT_OBJECT_0 WAIT_TIMEOUT
+release 3 from zero: ret=1 previous 0
+release 0: ret=0 err=87
+initial above maximum: null yes err=87
+maximum zero: null yes err=87
+negative initial: null yes err=87
+named semaphore again: created yes err=183
+release through the second handle: previous 1 (the first creation's counts hold)
+OpenSemaphoreA: opened yes, wait WAIT_OBJECT_0
+sync: done
+<<< exit code=0
+>>> sync.exe mutex
+== mutex
+created owned: recursive waits WAIT_OBJECT_0 WAIT_OBJECT_0
+another thread: wait WAIT_TIMEOUT, ReleaseMutex ret=0 err=288
+three releases: 1 1 1
+a fourth release: ret=0 err=288
+unowned: another thread waits WAIT_OBJECT_0 and releases ret=1
+owner exited holding it (its wait was WAIT_OBJECT_0)
+next wait: WAIT_ABANDONED
+release after taking an abandoned mutex: ret=1 err=-
+then a normal wait: WAIT_OBJECT_0
+named mutex again: created yes err=183
+OpenMutexA: opened yes err=-
+releases through the opened then the second handle (owned once): 1 0
+sync: done
+<<< exit code=0
+>>> sync.exe waitmulti
+== waitmulti
+any, indices 1 and 2 signaled: WAIT_OBJECT_0+1, then WAIT_OBJECT_0+2, then WAIT_TIMEOUT
+all, two of three signaled: WAIT_TIMEOUT
+nothing consumed: WAIT_OBJECT_0 WAIT_OBJECT_0 WAIT_TIMEOUT
+all, three of three signaled: WAIT_OBJECT_0
+all consumed: WAIT_TIMEOUT
+all over event, mutex and semaphore: WAIT_OBJECT_0
+after: manual event WAIT_OBJECT_0, semaphore WAIT_TIMEOUT
+any over an event and an abandoned mutex: WAIT_ABANDONED+1
+65 events created: 65
+any over 64, the last signaled: WAIT_OBJECT_0+63
+any over 65: WAIT_FAILED err=87
+an empty array: WAIT_FAILED err=87
+all with a duplicate: WAIT_FAILED err=87
+any with a duplicate: WAIT_TIMEOUT err=-
+any with a bogus handle: WAIT_FAILED err=6
+any over closed handles: WAIT_FAILED err=6
+single on a bogus handle: WAIT_FAILED err=6
+single on NULL: WAIT_FAILED err=6
+single on the current process: WAIT_TIMEOUT
+single on the current thread: WAIT_TIMEOUT
+any over two running threads: WAIT_TIMEOUT
+all over the two threads after release: WAIT_OBJECT_0
+sync: done
+<<< exit code=0
+>>> sync.exe apc
+== apc
+QueueUserAPC to an alertable sleeper: ret=1 err=-
+SleepEx returned WAIT_IO_COMPLETION, APCs run [1]
+three APCs to a thread in a non-alertable Sleep: run before it turned alertable 0
+then SleepEx(0, TRUE) returned WAIT_IO_COMPLETION, APCs run [123]
+alertable WaitForSingleObjectEx returned WAIT_IO_COMPLETION, APCs run [4]
+APC to self: not run before an alertable wait []
+SleepEx(0, TRUE) returned WAIT_IO_COMPLETION, APCs run [5]
+SleepEx(0, TRUE) with nothing queued: WAIT_OBJECT_0
+join: wait WAIT_TIMEOUT
+QueueUserAPC to a closed handle: ret=0 err=-
+sync: done
+<<< exit code=0
+>>> sync.exe critsec
+== critsec
+entered twice: RecursionCount 2, owned by this thread yes
+TryEnterCriticalSection from another thread while owned: 0
+TryEnterCriticalSection recursively: 1
+left: RecursionCount 0, owner cleared yes
+TryEnterCriticalSection from another thread when free: 1
+4 threads x 100000 increments under the critical section: 400000
+sync: done
+<<< exit code=0
+>>> sync.exe interlocked
+== interlocked
+increment, decrement, decrement from 0: 1 0 -1, value -1
+exchange: returned -1, value 10
+exchange-add 5: returned 10, value 15
+compare-exchange hit: returned 15, value 20
+compare-exchange miss: returned 20, value 20
+4 threads x 100000 InterlockedIncrement: 400000
+sync: done
+<<< exit code=0
+>>> sync.exe handles
+== handles
+DuplicateHandle(event): ret=1 err=-, a different handle yes
+set through the duplicate, seen through the original: WAIT_OBJECT_0
+the duplicate outlives the original: WAIT_OBJECT_0
+close a handle another thread waits on: ret=1 err=-
+the waiter's wait ended with WAIT_TIMEOUT
+close it again: ret=0 err=6
+close NULL: ret=0 err=6
+close INVALID_HANDLE_VALUE (the process pseudo-handle): ret=0 err=6
+close the thread pseudo-handle: ret=0 err=6
+sync: done
+<<< exit code=0
+>>> sync.exe pingpong
+== pingpong
+pong 0
+ping 0
+pong 1
+ping 1
+pong 2
+ping 2
+pong 3
+ping 3
+pong 4
+ping 4
+child handle wait returned 0
+signal ping 0
+signal pong 0
+signal ping 1
+signal pong 1
+signal ping 2
+signal pong 2
+signal ping 3
+signal pong 3
+signal ping 4
+signal pong 4
+sync: done
+<<< exit code=0

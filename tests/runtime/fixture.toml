@@ -1,0 +1,24 @@
+# runtime: one test per block of the real-machine capture (output.txt, with the hand-captured
+# console block in overrides.txt); see tests/README.md.
+description = "runtime - the process environment a C program starts into (runtime.c): argv, version, modules, the TEB and PEB, last-error semantics, the environment, code pages and string conversion, CRT formatting, structured exception handling, and the CRT's exit path."
+kind = "sectioned"
+gate = true
+[masks]
+# The breakpoint record's second parameter is a stack address.
+seh = ["int 3: handled yes code 0x80000003 flags 0 params 3 info 0 *"]
+
+# The blocks this kernel does not pass yet, each with the increment that enables it (none of
+# this fixture's blocks run yet: its imports are not all served).
+[pending]
+'args one "two words" back\slash "tail\\" x' = "B1: console and process start-up"
+version = "B1: console and process start-up"
+console = "B1: console and process start-up"
+crt = "B1: console and process start-up"
+exit = "B1: console and process start-up"
+teb = "B1: console and process start-up"
+locale = "B2: locale, time, messages and the last error"
+lasterror = "B2: locale, time, messages and the last error"
+seh = "B3: exceptions"
+unhandled = "B3: exceptions"
+env = "B6: the heap, Local/Global and the environment"
+module = "B10: modules"

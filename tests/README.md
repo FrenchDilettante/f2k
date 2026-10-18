@@ -13,6 +13,10 @@ One directory per test, named after the test:
 tests/<name>/
 ├── <name>.c        # the source, built on the real Windows 2000 machine
 ├── <name>.exe      # the compiled fixture (committed; it is the point)
+├── fixture.toml    # the declaration: its kind, and how its capture compares (served fixtures)
+├── output.txt      # the real-machine capture, where there is one
+├── overrides.txt   # blocks the capture script cannot take (an interactive console...), if any
+├── test_<name>.py  # sectioned fixtures: binds the fixture's tests (f2kboot.corpus_test)
 ├── imports.txt     # verified facts from the binary, where relevant
 └── <name>.rs       # planned: the same test for F2K's own Rust toolchain
 ```
@@ -22,19 +26,190 @@ our own toolchain as well as the reference one; it lands when the
 toolchain can build it. Build intermediates (`.obj` etc.) are ignored,
 not committed.
 
-## Tests
+Shared pieces sit beside the tests: `common/f2kt.h` (the reporting and
+section helpers the sectioned fixtures include), `build.bat`,
+`capture.bat` (the real-machine capture of the sectioned fixtures), and
+the pytest side: `conftest.py` and `f2kboot.py` (building, booting,
+comparing), `kernel/test_kernel.py`, the kernel's own boots (the
+fault stubs, the Limine disk path, the multi-process suite, the
+interrupt and IDE diagnostics, and the single-path program smokes
+below), which have no sectioned capture to compare against, and `test_limine.py`, a few corpus blocks booted
+through Limine instead of QEMU's Multiboot loader.
+
+## Sectioned fixtures
+
+The sectioned fixtures cover the public API by area rather than one
+smoke path each. Each is a list of named sections:
+`<fixture> <section>` runs one section, and the suite runs every
+section as its own process; with no argument a fixture runs all its
+sections except the named-only ones (those that end the process, or
+whose output depends on an interactive console).
+
+They follow one set of conventions, from `common/f2kt.h`:
+
+- **Observe, don't assert.** A line prints what a call returned
+  (`ret=0 err=288`); the real-machine capture is the expectation, and
+  where F2K disagrees, F2K is wrong. Nothing machine-specific is
+  printed: no addresses, handle values, thread ids, absolute paths or
+  raw timings (timing-shaped facts print as a verdict against a band).
+- **The last error is armed with a sentinel** before the call under
+  observation and printed as `-` when the call left it untouched, so
+  the captures pin which calls set, clear or keep it.
+- **One line, one `WriteFile`.** Output never interleaves across
+  threads and does not depend on CRT stdio buffering, so a redirected
+  capture matches the console.
+- **Critical paths are covered even where F2K has nothing yet**
+  (structured exception handling, thread-local storage, growable
+  heaps, waitable timers, file writes...): a fixture importing an
+  export F2K lacks fails to load until the export lands, which is the
+  point - the fixtures lead the kernel.
+
+The fixtures:
+
+- `bare` - no C runtime. With no argument: `.bss` zeroing (run twice
+  in the multi-process boot, to catch frames reused unzeroed), `.data` and `.rdata` contents, linker
+  pointer tables, entry stack alignment, a stack that grows to 256 KiB;
+  the exit code is a mask of failed checks. With a mode: the entry
+  point's return value as the exit code, a full 32-bit exit code,
+  bad buffer pointers to `WriteFile`, code run from `.data`, and
+  fifteen faults (NULL, `.rdata`, code, kernel addresses, divide by
+  zero, `ud2`, `int3`, `hlt`, `cli`, `in`, `into`, stack overflow),
+  each ending the process with its NTSTATUS. Replaces `bsscheck` and
+  `crash` once its blocks pass (B3: the multi-process suite then runs
+  `bare` in their place).
+- `runtime` - the process environment: argv, version, modules and
+  `GetProcAddress`/`LoadLibraryA`, the TEB/PEB fields compilers and
+  runtimes read, last-error semantics and `FormatMessageA`, the
+  environment, code pages and string conversion, CRT formatting and
+  parsing, structured exception handling (faults, `RaiseException`,
+  filters, `__finally`, unwinding), plus named-only `console`,
+  `unhandled` and `exit`. Replaces `ret0` and `hello` as coverage
+  (`hello` stays as the CRT smoke and the disk-smoke file). Gated; its
+  `console` block was captured by hand in an interactive console (it
+  lives in `runtime/overrides.txt`).
+- `memory` - `malloc`/`calloc`/`realloc`/`free` the way programs use
+  them (thousands of small blocks, past 1 MiB of them, 4/16/32 MiB,
+  realloc doubling to 4 MiB), the Win32 heap with private and capped
+  heaps, `LocalAlloc`/`GlobalAlloc`, `VirtualAlloc`/`VirtualFree`/
+  `VirtualQuery`/`VirtualProtect` and guard pages, the image's section
+  protections, paging-file mappings, stack growth and thread stack
+  sizes. Gated; two free-region sizes are masked (the real machine's
+  other allocations bound them).
+- `threads` - creation, exit codes, `ExitThread`/`TerminateThread`,
+  suspend counts and suspension during waits, priorities and classes,
+  scale (32 sequential, 20 concurrent, 100 fire-and-forget threads,
+  hundreds of handles), TLS slots and `__declspec(thread)`, per-thread
+  last error/errno/FPU/SEH, `_beginthreadex`, and named-only
+  `mainexit`/`procexit`. Built with `/MT`. Replaces the `thread`,
+  `respawn` and `suspend` smokes once its blocks pass (B7).
+- `sync` - events (`PulseEvent`, named objects), semaphores, mutexes
+  and abandonment, `WaitForMultipleObjects`, user APCs, critical
+  sections, interlocked operations, handle duplication and closing,
+  and `pingpong` kept as a section (plus a `SignalObjectAndWait`
+  variant). Built with `/MT`. Replaces the `pingpong` smoke once its
+  blocks pass (B5).
+- `sched` - sleeps and timed waits in bands, the clocks, waitable
+  timers, round-robin, preemption, yielding, the wake boost,
+  suspension, and the starvation boost; pinned to one CPU. Built with
+  `/MT`. Replaces the `sleep` (B5) and `spin` (B7) smokes once its
+  blocks pass (`suspend` goes with `threads`). Gated. Its `yield` capture line `Sleep(10)
+  does: yes` comes from real hardware: the VirtualBox capture VM runs
+  at 100% CPU (a normal-priority thread yielding with `Sleep(0)`), so
+  below-normal threads there run only at the balance-set boost, 300
+  ticks in, and it answered `no`.
+- `files` - the read side of the file API over `files/DATA` (generated
+  by `scripts/gen-files-data.py`; every byte is formula-defined): path
+  forms and errors, chunked and boundary reads, seeks, metadata,
+  `FindFirstFile` listings, share modes, CRT file I/O, read-only file
+  mappings, concurrent readers. Captured on a local FAT32 volume, as
+  F2K's boot volume is (run `files/setup.bat` once on the real machine:
+  attributes git cannot carry). Gated.
+  Replaces the `fileio` smoke once its blocks pass (B8).
+- `fswrite` - the write side (create dispositions, writes, truncation,
+  share modes, rename/copy/delete, directories, file times, CRT
+  writes) in a scratch directory, captured on a local FAT32 volume.
+  Gated (the test disk boots as a QEMU snapshot, so its writes never
+  reach the image).
+
+Capture `files` and `fswrite` from a local FAT32 volume: F2K's boot
+volume is FAT32, and file-system details differ elsewhere — NTFS has
+its own names and timestamps, and a VirtualBox shared folder has no
+short names, no attribute bits and reports a remote drive.
+
+### Capturing
+
+After `build.bat`, run `capture.bat` on the real machine: it runs every
+section as its own process and writes each fixture's `output.txt` as
+blocks of `>>> <command line>`, the output, and `<<< exit code=N`
+(ERRORLEVEL, signed), after a provenance header (the OS build, the
+machine, the date, and the binary's source stamp). The fixtures built on
+`common/f2kt.h` list their own sections (`<fixture>.exe --list`), so
+the script captures whatever the binary declares; `bare`'s modes are
+listed in the script.
+
+`build.bat` stamps each of those binaries with the CRC-32 of its source
+and `f2kt.h` (`common/srcsum.c` computes it; `<fixture>.exe --source`
+prints it), and `test_repository.py` checks the stamp against the
+checked-in source, so a stale binary shows. Binaries built before the
+stamp existed skip that check; once `build.bat` has rebuilt them all, set
+`REQUIRE_SOURCE_STAMPS = True` in `test_repository.py`.
+
+A block the script cannot take goes in the fixture's `overrides.txt`
+(same format, its reasons in the header): `runtime console` needs an
+interactive console, and `sched yield`'s `Sleep(10) does: yes` is the
+real-hardware answer the VirtualBox capture VM cannot give. The suite
+merges it over `output.txt` (a block replaces the captured block with
+the same command line, or comes after them), so a recapture never drops
+it.
+
+### Running against F2K
+
+Each sectioned fixture's capture runs on the
+kernel, one pytest test per block (`make test` runs them with
+everything else; `-m corpus` selects them alone): one boot per block, the block's command line passed
+on the kernel command line, the program's output compared line for line
+and its exit code checked. The
+disk build puts the sectioned fixtures in `\CORPUS` (the files
+fixture's data tree beside them), the way each runs from its own
+directory on the real machine. The fixture's declaration,
+`fixture.toml`, states what its comparison allows: `gate = true` once
+F2K passes every block, `[pending]` for the blocks still on the work
+list (each with the rebuild increment that enables it: `yield =
+"B7: threads and scheduling"`), both run as
+strict expected failures (a block that starts passing fails the run, so
+the marker goes with the fix; `--runxfail` shows each failure's first
+differing line), `[masks]` for the few capture lines that carry
+machine-specific values (per section, `"virtual" = ["... region *
+..."]`: each `*` one value, a run of non-blank characters, and only in
+that section's block), a `timeout`, and `retake` for a capture to be
+retaken (its blocks skipped). A `[pending]` or `[masks]` section with
+no captured block is an error, as is a mask that matches none of its
+block's lines. The fixture's `test_<name>.py` only binds
+`f2kboot.corpus_test("<name>")`. Every corpus boot goes through QEMU's
+Multiboot loader (`-kernel`, the command line by `-append`), except
+`test_limine.py`'s: a few blocks (the scenarios the retired smokes ran
+on both paths, the command line, the memory map) booted from the disk
+through Limine, on a copy of the disk whose Limine entry carries the
+block's command line (`cmdline:`), compared against the same capture
+with the same declaration. The Makefile's corpus derives from the
+declarations too: a new fixture is its directory and its
+`fixture.toml`. Every boot's COM1 log stays under
+`target/qemu/logs/`.
+
+## Legacy fixtures
+
+The single-path smokes below predate the sectioned fixtures. Each one's
+scenario reappears in a sectioned fixture (named above); they retire
+once the suite passes the sectioned fixture's blocks in their place
+(`tests/test_limine.py` names each successor). `exit0` (the one-import
+boot smoke) and `hello` (the CRT smoke, the pinned import trace, and
+the disk-smoke checksum file) stay. Their checks are the kernel cases
+in `kernel/test_kernel.py`; `exit0`, `ret0` and `hello` carry a
+`fixture.toml` of kind `smoke` (no capture).
 
 - `exit0` - no C runtime: the entry point calls `ExitProcess(0)`; a
   single import, so it exercises process creation, image mapping and
   the exit path and nothing else.
-- `bsscheck` - no C runtime: the entry point checks that its `.bss`
-  (uninitialized data) is all zero, scribbles a pattern over it, and
-  exits 0 only if the check passed. The suite runs it twice in one
-  boot: the second run catches teardown that reuses frames without
-  re-zeroing them.
-- `crash` - no C runtime, no imports: the entry point writes through
-  the unmapped NULL page as its first act and must fault. The suite
-  asserts the kernel contains the fault and keeps running.
 - `ret0` - the default MSVC 6 `/ML` CRT startup around
   `int main() { return 0; }`; exercises the full CRT initialization
   surface (35 KERNEL32.dll imports; see `ret0/imports.txt`).
@@ -48,39 +223,16 @@ not committed.
   window, paints "Hello, world!" once with `TextOut`, then closes
   itself and exits 0; the first test to import user32.dll and
   gdi32.dll.
-- `thread` - scheduler smoke: the main thread creates one child
-  that prints from its own stack and exits; completion is observed
-  through a shared flag (no wait APIs), so a single CPU must take
-  the CPU away from the spinning main thread for the child to run.
-- `pingpong` - scheduler smoke: two threads alternate strictly for
-  five turns through two auto-reset events, so each blocking wait
-  must actually block; the final wait on the child's thread handle
-  captures the thread-exit signaling contract.
-- `sleep` - scheduler smoke: `Sleep(200)` measured in tick counts
-  with `GetTickCount`, a pure-yield `Sleep(0)`, and a timed wait on
-  a never-signaled event reporting timeout - the timer machinery
-  behind all of them.
-- `spin` - scheduler smoke: three equal-work spinner threads, two
-  at normal priority interleaving by quantum-end round-robin, a
-  third raised above normal preempting them until it finishes.
-- `suspend` - scheduler smoke: a worker frozen across a long sleep
-  while suspended, then resumed and completed, with the documented
-  suspend-count returns (0 then 1).
-- `respawn` - scheduler smoke: three rounds of create a child,
-  wait for it, close it - one child alive at a time, so every
-  child after the first reuses the kernel resources (gate-stack
-  slot) the previous one released at its exit. The binary is
-  built, its imports verified, and its output confirmed against
-  the real-machine capture.
-- `fileio` - disk smoke: opens the program's own image from the
-  filesystem, reads the MZ and PE signatures, seeks back, and reads
-  the MZ again - the file API over the boot volume, the measuring
-  stick for the disk workstream. The output is derived only from
-  the file's own bytes, so it is identical wherever the same
-  executable runs. Built on the real Windows 2000 machine
-  (`fileio.exe`, 42 KERNEL32.dll imports - hello's 40 plus
-  `CreateFileA` and `ReadFile`; see `imports.txt`); the
-  real-machine captured output lands as `output.txt`.
+- `bsscheck` and `crash` - the multi-process suite's image checks
+  (`.bss` zeroed, run twice) and its NULL-write fault (until `bare`
+  replaces them, B3).
+- `pingpong`, `sleep`, `spin`, `suspend`, `respawn`, `thread` - the
+  scheduler smokes, one per scheduler stage: the blocking-wait
+  alternation, the timer table, preemption, suspension, thread-slot
+  reuse, and thread creation (`thread` has a capture but no kernel
+  case: the disk's root directory is full).
+- `fileio` - opens its own image by its module path and reads its
+  signatures across seeks.
 
 ## Building
 
@@ -92,28 +244,37 @@ code 0 means pass.
 ## How F2K consumes these
 
 F2K loads every fixture from its boot disk: the disk build copies
-the fixtures the suite runs into the FAT32 volume's root directory
-by their 8.3 names (`EXIT0.EXE`, `RET0.EXE`, ...; see `DISK_FIXTURES`
-in the Makefile), and the kernel reads the selected program off the
-volume by path before loading it. The suite attaches that disk to
-every case, kernel-path cases included. The default kernel runs
-`exit0`, the `run-ret0` feature selects `ret0`, and the `run-hello`
-feature selects `hello` (whose WriteFile output appears on COM1 as
-the program's own). The `run-pingpong` feature (the blocking-wait
-smoke) selects `pingpong` with the thread-ified boot: the main thread
-enters ring 3 through the scheduler's first switch, and its thread
-and wait calls run against the landed scheduler machinery. The
-`run-process-suite` feature (the multi-process case) runs the
-sequence `exit0`, `ret0`, `bsscheck`, `bsscheck`, `crash`, `exit0` in
-one boot. The `run-fileio` feature selects `fileio`, which opens its
-own image on the volume through the module path the loader staged.
-Each boot prints the observed process exit code on COM1, which the
-suite cases assert. Host unit tests still read the checked-in `.exe`
-files directly (`include_bytes!`, test builds only).
+the single-path fixtures into the FAT32 volume's root directory by
+their 8.3 names (`EXIT0.EXE`, `RET0.EXE`, ...; see `DISK_FIXTURES` in
+the Makefile; the root's one cluster is full) and the sectioned
+fixtures into `\CORPUS`, and the kernel reads the selected program off
+the volume by path before loading it. The suite attaches that disk to
+every case, kernel-path cases included.
 
-The scheduler smoke tests (`thread`, `pingpong`, `sleep`, `spin`,
-`respawn`, `suspend`) join the corpus one per scheduler
-stage, in dependency order, as the scheduler grows; each asserts
-the real-machine captured output of its stage. The
-`run-respawn` feature selects `respawn` on the thread-ified boot,
-the same entry `run-pingpong` uses.
+A boot chooses its program by command line: the text after `--` on
+the kernel command line is the program's own command line,
+`<program> [arguments]` (QEMU's `-append "-- CORPUS\sync.exe event"`,
+the Limine entry's `cmdline:`, a kernel case's `cmdline`). Its first
+token is the image's root-relative volume path (`.exe` added when it
+has no extension); the program's GetCommandLineA reports the whole
+text verbatim and its GetModuleFileNameA the volume path. Without a
+command line the kernel runs `exit0`. The `run-process-suite` feature
+(the multi-process case) runs the sequence `exit0`, `ret0`,
+`bsscheck`, `bsscheck`, `crash`, `exit0` in one boot: the second
+`bsscheck` catches frames reused without re-zeroing, `crash` a fault
+the kernel must contain before the last `exit0` runs. Each boot
+prints the observed process exit code on COM1 and then the teardown
+audit (`F2K: teardown audit: frame database ok, kernel heap ok`), which
+the corpus comparison waits for. Host unit tests still read the
+checked-in `.exe` files directly (`include_bytes!`, test builds
+only).
+
+The `sleep` smoke pins `sleep 200ms spanned 200 ticks` and `timed
+wait: timeout after 100 ticks`, one tick phase's sample: the waits last
+exactly 20 and 10 clock ticks, and GetTickCount floors the 10.0144 ms
+tick to whole milliseconds, so the same waits can read 201 and 101 at
+other phases (on Windows 2000 as on F2K). F2K's tick count derives from
+the same tick-quantized accumulator as the waits, so it reads 200 and
+100; should that change, an `expects` entry written `re:<pattern>` is a
+regular expression (`f2kboot.matches`). `sched` measures spans in bands
+and has no such issue.

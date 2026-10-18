@@ -1,0 +1,21 @@
+# memory: one test per block of the real-machine capture (output.txt); see tests/README.md.
+description = "memory - allocation, address space, and stacks (memory.c): the C runtime heap the way programs use it, the Win32 heaps, Local/Global memory, the virtual memory API and its protections, the image's own sections, paging-file mappings, and stacks."
+kind = "sectioned"
+gate = true
+[masks]
+# Free regions run to the next allocation, wherever the system put it.
+virtual = ["released: state 0x10000 protect 0x1 type 0x0 region * allocprotect 0x0"]
+image = ["past the image end: state 0x10000 protect 0x1 type 0x0 region * allocprotect 0x0"]
+
+# The blocks this kernel does not pass yet, each with the increment that enables it (none of
+# this fixture's blocks run yet: its imports are not all served).
+[pending]
+sysinfo = "B4: virtual memory and sections"
+virtual = "B4: virtual memory and sections"
+protect = "B4: virtual memory and sections"
+image = "B4: virtual memory and sections"
+stack = "B4: virtual memory and sections"
+malloc = "B6: the heap, Local/Global and the environment"
+heap = "B6: the heap, Local/Global and the environment"
+local = "B6: the heap, Local/Global and the environment"
+mapping = "B8: files, objects and the read side (it maps a file)"

@@ -1,0 +1,3 @@
+# ret0: served, no capture (the kernel cases in tests/kernel/test_kernel.py boot it).
+description = "ret0 - the C runtime's startup and exit around a main returning 0 (the CRT startup import surface)."
+kind = "smoke"

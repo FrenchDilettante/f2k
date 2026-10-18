@@ -86,12 +86,12 @@ pub fn read_image_file(
     Ok(file.size as usize)
 }
 
-/// Load the program at `path` on the boot volume as the new current process (see [`load_image`])
-/// and return its entry point. A file that cannot be read is reported on COM1 and halts, as a
+/// Load the program at `path` on the boot volume as the new current process (see [`load_image`]),
+/// with `command_line` as what its GetCommandLineA reports, and return its entry point. A file that cannot be read is reported on COM1 and halts, as a
 /// rejected image does. The read blocks on the disk: the boot context halts between interrupts
 /// until it completes.
 #[cfg(target_arch = "x86")]
-pub fn load_path(path: &'static [u8], name: &'static str) -> u32 {
+pub fn load_path(path: &'static [u8], name: &'static str, command_line: &[u8]) -> u32 {
     // SAFETY: single-threaded boot (or the idle thread's reap step), the only staging user.
     let staging = unsafe { &mut (*core::ptr::addr_of_mut!(FILE_STAGING)).0 };
     let shown = core::str::from_utf8(path).unwrap_or("(not ASCII)");
@@ -109,7 +109,7 @@ pub fn load_path(path: &'static [u8], name: &'static str) -> u32 {
             crate::halt()
         }
     };
-    load_image(&staging[..length], path, name)
+    load_image(&staging[..length], path, name, command_line)
 }
 
 /// The image staging size: the largest in-memory image the loader accepts. Sized like the file
@@ -196,10 +196,10 @@ fn page_writable(image: &Image, page_rva: u32) -> bool {
 
 /// Load `file` as the new current process — parse, stage, create the process, snap the imports,
 /// map the image, stack, TEB and parameters pages — and return its entry point for the main
-/// thread's ladder. `name` names the process and stages the command line; `path`, the file's volume
-/// path, stages the module file name.
+/// thread's ladder. `name` names the process; `command_line` is staged as its command line, and
+/// `path`, the file's volume path, as its module file name.
 #[cfg(target_arch = "x86")]
-pub fn load_image(file: &[u8], path: &[u8], name: &'static str) -> u32 {
+pub fn load_image(file: &[u8], path: &[u8], name: &'static str, command_line: &[u8]) -> u32 {
     use crate::mem::paging::{self, PAGE_SIZE};
     use crate::user::{TEB_PAGE, USER_STACK_LOW_PAGE, USER_STACK_PAGE, USER_STACK_TOP};
 
@@ -279,7 +279,7 @@ pub fn load_image(file: &[u8], path: &[u8], name: &'static str) -> u32 {
     paging::map_user_page(TEB_PAGE, teb_frame, true);
 
     // The process parameters page (staged replays).
-    crate::compat::kernel32::init_params(name, path);
+    crate::compat::kernel32::init_params(command_line, path);
 
     crate::serial_println!(
         "F2K: image loaded (base {:#010x}, entry {:#010x}, {} pages, {} imports snapped)",

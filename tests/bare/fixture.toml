@@ -1,0 +1,28 @@
+# bare: one test per block of the real-machine capture (output.txt); see tests/README.md.
+description = "bare - the image and process contract without a C runtime (bare.c): the image as the loader maps it, the entry point's return value as the exit code, a full 32-bit exit code, bad buffers to WriteFile, code run from .data, and fifteen faults each ending the process with its exception code."
+kind = "sectioned"
+gate = true
+
+# The blocks this kernel does not pass yet, each with the increment that enables it (none of
+# this fixture's blocks run yet: its imports are not all served).
+[pending]
+'(default)' = "A4: real system DLLs (bare.exe imports SetLastError and SetErrorMode, which the kernel's kernel32 does not serve yet)"
+ret = "A4: real system DLLs (bare.exe imports SetLastError and SetErrorMode, which the kernel's kernel32 does not serve yet)"
+exit-code = "A4: real system DLLs (bare.exe imports SetLastError and SetErrorMode, which the kernel's kernel32 does not serve yet)"
+badptr = "B1: console and process start-up"
+data-exec = "B3: exceptions"
+null-write = "B3: exceptions"
+null-read = "B3: exceptions"
+null-call = "B3: exceptions"
+rdata-write = "B3: exceptions"
+code-write = "B3: exceptions"
+kernel-read = "B3: exceptions"
+kernel-write = "B3: exceptions"
+div-zero = "B3: exceptions"
+ud2 = "B3: exceptions"
+int3 = "B3: exceptions"
+hlt = "B3: exceptions"
+cli = "B3: exceptions"
+io-in = "B3: exceptions"
+into = "B3: exceptions"
+stack-overflow = "B4: virtual memory and sections"

@@ -95,14 +95,18 @@ const CPINFO: [u8; 18] = {
 
 // --- Process parameters page (the replayed ProcessParameters) -------
 
-/// Offset of the command line replay ("ret0") in the parameters page.
-pub const CMDLINE_OFFSET: u32 = 0x00;
+/// Offset of the command line in the parameters page: the boot's user command line
+/// (`CORPUS\sync.exe event`), or the program name a build chooses ("ret0"), NUL-terminated.
+pub const CMDLINE_OFFSET: u32 = 0x000;
+/// The command line's staging room, terminator included: the longest kernel command line kept
+/// (`boot::cmdline::MAX_LEN`) fits.
+pub const CMDLINE_ROOM: usize = 0x200;
 /// Offset of the wide environment block; the empty replay is the lone double-NUL terminator.
-pub const ENV_OFFSET: u32 = 0x40;
+pub const ENV_OFFSET: u32 = 0x200;
 /// Offset of the module file name (the image's volume path, "ret0.exe"), NUL-terminated.
-pub const MODULE_OFFSET: u32 = 0x80;
+pub const MODULE_OFFSET: u32 = 0x240;
 /// The module file name's staging room, terminator included.
-pub const MODULE_ROOM: usize = 64;
+pub const MODULE_ROOM: usize = 260;
 
 // --- Services -------------------------------------------------------
 
@@ -1249,12 +1253,16 @@ pub fn init() {
     crate::mem::paging::map_user_page(THUNK_PAGE, frame, false);
 }
 
-/// Map the parameters page: the command line (`name`, the fixture name as invoked), the empty
-/// environment, and the module file name — `module`, the volume path the image was loaded from,
-/// verbatim, so CreateFileA resolves GetModuleFileNameA's answer back to the image.
+/// Map the parameters page: the command line (`command_line`, the program as invoked with its
+/// arguments), the empty environment, and the module file name — `module`, the volume path the
+/// image was loaded from, verbatim, so CreateFileA resolves GetModuleFileNameA's answer back to the
+/// image.
 #[cfg(target_arch = "x86")]
-pub fn init_params(name: &str, module: &[u8]) {
-    assert!(name.len() < 32, "fixture name too long for the staging");
+pub fn init_params(command_line: &[u8], module: &[u8]) {
+    assert!(
+        command_line.len() < CMDLINE_ROOM,
+        "command line too long for the staging"
+    );
     assert!(
         module.len() < MODULE_ROOM,
         "module path too long for the staging"
@@ -1262,7 +1270,7 @@ pub fn init_params(name: &str, module: &[u8]) {
     let frame = crate::mem::paging::allocate_frame_phys();
     // Zeroed: the environment's terminator, and the strings' NULs after their bytes.
     crate::mem::paging::init_frame(frame, 0, &[]);
-    crate::mem::paging::write_frame(frame, CMDLINE_OFFSET as usize, name.as_bytes());
+    crate::mem::paging::write_frame(frame, CMDLINE_OFFSET as usize, command_line);
     crate::mem::paging::write_frame(frame, MODULE_OFFSET as usize, module);
     crate::mem::paging::map_user_page(PARAMS_PAGE, frame, true);
 }
@@ -1671,10 +1679,12 @@ mod tests {
         let env = PARAMS_PAGE + ENV_OFFSET;
         let module = PARAMS_PAGE + MODULE_OFFSET;
         assert!(
-            cmdline + 32 <= env
+            cmdline + CMDLINE_ROOM as u32 <= env
                 && env + 64 <= module
                 && module + MODULE_ROOM as u32 <= PARAMS_PAGE + 4096
         );
+        // The longest user command line the boot keeps fits, with its terminator.
+        assert!(crate::boot::cmdline::MAX_LEN <= CMDLINE_ROOM);
     }
 
     /// The version dword splits into the CRT's globals (its own shift/mask recipe, restated

@@ -8,6 +8,9 @@
 /// Value a Multiboot 1 loader leaves in EAX when it enters the kernel.
 pub const MULTIBOOT_BOOTLOADER_MAGIC: u32 = 0x2BAD_B002;
 
+/// The kernel command line and the user command line it carries.
+pub mod cmdline;
+
 #[cfg(target_arch = "x86")]
 core::arch::global_asm!(
     // Multiboot header. Must be 4-byte aligned and within the first 8 KiB of the file; the linker

@@ -1,0 +1,169 @@
+>>> memory.exe sysinfo
+== sysinfo
+page size 0x1000 granularity 0x10000
+application range 0x00010000..0x7FFEFFFF
+processor architecture 0, processors 1
+GlobalMemoryStatus: length 32, total virtual 0x7FFE0000, physical at least 16 MiB yes
+memory: done
+<<< exit code=0
+>>> memory.exe malloc
+== malloc
+1000 small blocks: failures 0, 8-byte aligned yes, contents intact yes
+odd blocks freed and reallocated: everything intact yes
+20 rounds of 200 blocks freed in scrambled order: intact yes
+1.5 MiB of 500-byte blocks, pass 1: failures 0, intact yes
+1.5 MiB of 500-byte blocks, pass 2: failures 0, intact yes
+malloc(4 MiB): ok
+malloc(16 MiB): ok
+32 blocks of 1 MiB live at once: failures 0, intact yes
+malloc(0): non-null yes, distinct yes
+malloc(0x7FFFFFF0): null yes errno 0
+free(NULL): survived
+calloc over freed dirty blocks: large zero yes, small zero yes
+realloc doubling 2 KiB -> 4 MiB: ok (reached 4096 KiB)
+realloc shrink 4 MiB -> 100 bytes: ok
+realloc(NULL, 50): non-null yes
+realloc(p, 0): returned null yes
+realloc across the small-block threshold and back: ok
+_msize: malloc(100) -> 104, malloc(5000) -> 5008
+_heapchk: -2
+memory: done
+<<< exit code=0
+>>> memory.exe heap
+== heap
+GetProcessHeap: non-null yes
+HeapAlloc(100): 8-byte aligned yes, HeapSize 100 err=-
+HEAP_ZERO_MEMORY: zero yes
+HeapReAlloc grow: contents intact, HeapSize 10000
+HeapReAlloc grow with HEAP_ZERO_MEMORY: extension zero yes
+HeapReAlloc in-place shrink: same block yes, HeapSize 50
+HeapFree: ret=1 err=-
+HeapReAlloc in-place growth into a neighbour: null yes err=-
+HeapCreate: growable yes, capped yes, distinct from each other and the process heap yes
+blocks from four heaps are distinct: yes
+growable heap: 8 MiB block ok
+capped heap (128 KiB): 16 KiB blocks before refusal 7
+HeapValidate(capped): ret=1 err=-
+HeapDestroy(growable): ret=1 err=-
+after destroying one heap the others are intact: yes
+HeapDestroy(capped): ret=1 err=-
+CRT and process heap blocks still intact: yes
+HEAP_GENERATE_EXCEPTIONS over the cap: raised yes code 0xC0000017
+memory: done
+<<< exit code=0
+>>> memory.exe local
+== local
+LocalAlloc(fixed, zeroinit): zero yes, LocalSize 100
+LocalReAlloc(5000, moveable): contents intact, LocalSize 5000
+LocalFree: returned null yes
+LocalAlloc(moveable): handle is not the pointer yes, lock count 1
+LocalHandle(pointer) gives the handle back: yes
+LocalFree(moveable): returned null yes
+GlobalAlloc(fixed): usable as a pointer yes, GlobalSize 100
+GlobalFree: returned null yes
+GlobalAlloc(moveable, zeroinit): zero yes, handle from pointer yes
+GlobalReAlloc(9000): contents intact, GlobalSize 9000
+GlobalFree(moveable): returned null yes
+memory: done
+<<< exit code=0
+>>> memory.exe virtual
+== virtual
+reserve 1 byte: non-null yes, 64 KiB aligned yes err=-
+reserved byte: state 0x2000 protect 0x0 type 0x20000 region 0x1000 allocprotect 0x1
+release: ret=1 err=-
+released: state 0x10000 protect 0x1 type 0x0 region 0x77B50000 allocprotect 0x0
+reserve 1 MiB: non-null yes
+commit two pages inside: at the requested address yes err=-
+region before the commit: state 0x2000 protect 0x0 type 0x20000 region 0x10000 allocprotect 0x4
+committed pages: state 0x1000 protect 0x4 type 0x20000 region 0x2000 allocprotect 0x4
+region after the commit: state 0x2000 protect 0x0 type 0x20000 region 0xEE000 allocprotect 0x4
+committed pages are zero: yes
+decommit: ret=1 err=-
+decommitted: state 0x2000 protect 0x0 type 0x20000 region 0xF0000 allocprotect 0x4
+recommit: zero again yes
+commit overlapping a committed page: ok yes, its contents kept yes
+release with a nonzero size: ret=0 err=87
+release not at the allocation base: ret=0 err=487
+release the 1 MiB reservation: ret=1 err=-
+reserve at 0x20000000: returned 0x20000000 err=-
+reserve the same range again: returned 0x00000000 err=487
+reserve+commit at 0x30001234: returned 0x30000000 err=-
+its region: state 0x1000 protect 0x4 type 0x20000 region 0x3000 allocprotect 0x4
+commit without a reservation: returned 0x00000000 err=487
+reserve+commit 3 pages: zero yes
+64 reservations of 64 KiB: failures 0, all distinct and released yes
+reserve 256 MiB: non-null yes
+commit 16 pieces of 256 KiB across it: ok
+an uncommitted gap: state 0x2000 protect 0x0 type 0x20000 region 0x800000 allocprotect 0x4
+reserve 0 bytes: returned 0x00000000 err=87
+reserve with a bad protection: returned 0x00000000 err=87
+reserve at 0x80000000: returned 0x00000000 err=87
+0x80000000: VirtualQuery ret=0 err=87
+memory: done
+<<< exit code=0
+>>> memory.exe protect
+== protect
+VirtualProtect read-only: ret=1 old 0x4 err=-
+read-only page: state 0x1000 protect 0x2 type 0x20000 region 0x1000 allocprotect 0x4
+read-only page still reads: yes
+write to it: faulted yes code 0xC0000005 write 1 address matches yes
+IsBadWritePtr 1 IsBadReadPtr 0
+VirtualProtect no-access: ret=1 old 0x4 err=-
+read from it: faulted yes code 0xC0000005 write 0
+IsBadReadPtr 1
+VirtualProtect guard: ret=1 old 0x4 err=-
+first touch: faulted yes code 0x80000001
+second touch: faulted no
+guard page after firing: state 0x1000 protect 0x4 type 0x20000 region 0x1000 allocprotect 0x4
+VirtualProtect all back to read-write: ret=1 old 0x2 err=-
+contents survived the protection changes: yes
+VirtualProtect past the committed range: ret=0 err=487
+IsBadReadPtr(NULL) 1
+IsBadWritePtr(.rdata) 1
+IsBadCodePtr(function) 0
+IsBadStringPtrA(literal) 0
+IsBadReadPtr(0x80000000) 1
+memory: done
+<<< exit code=0
+>>> memory.exe image
+== image
+headers: state 0x1000 protect 0x2 type 0x1000000 region 0x1000 allocprotect 0x80
+headers: allocation base is the image yes
+section .text: protect 0x20 type 0x1000000 same allocation yes
+section .rdata: protect 0x2 type 0x1000000 same allocation yes
+section .data: protect 0x8 type 0x1000000 same allocation yes
+past the image end: state 0x10000 protect 0x1 type 0x0 region 0xC000 allocprotect 0x0
+memory: done
+<<< exit code=0
+>>> memory.exe mapping
+== mapping
+CreateFileMappingA(paging file, 1 MiB): non-null yes err=0
+two views: both mapped yes, distinct yes, zero yes
+a write through one view shows in the other: yes
+view: type 0x40000 protect 0x4 region 0x100000
+view at offset 64 KiB: sees the data yes
+view at offset 4 KiB: null yes err=1132
+named mapping: non-null yes err=0
+named mapping again: non-null yes err=183
+OpenFileMappingA sees the named mapping's data: yes
+OpenFileMappingA(missing): null yes err=2
+close the mapping handle with views mapped: ret=1 err=-
+views still valid: yes
+UnmapViewOfFile: ret=1 err=-
+the other view keeps the data: yes
+UnmapViewOfFile again: ret=0 err=487
+memory: done
+<<< exit code=0
+>>> memory.exe stack
+== stack
+main: 256 KiB of recursion ok
+main: a 64 KiB local ok
+main: _alloca(200 KiB) ok
+main: stack reservation 0x100000
+main: page below the stack limit: protect 0x104 state 0x1000
+child with a 256 KiB stack: 200 KiB of recursion ok, reservation 0x100000
+child with a 4 MiB stack: 3 MiB of recursion ok, reservation 0x400000
+child with the default stack: 512 KiB of recursion ok, reservation 0x100000
+overflowing child: caught code 0xC00000FD, survived yes
+memory: done
+<<< exit code=0

@@ -1,0 +1,24 @@
+# sched: one test per block of the real-machine capture (output.txt, with the real-hardware yield
+# block in overrides.txt); see tests/README.md. The starvation section alone takes about six
+# seconds, hence the longer timeout.
+description = "sched - time and scheduling, as verdicts (sched.c, /MT): sleeps and timed waits in bands, the clocks, waitable timers, round-robin, preemption, yielding, the wake boost, suspension, and the starvation boost."
+kind = "sectioned"
+gate = true
+timeout = 30
+[masks]
+# SwitchToThread hands the processor to any ready thread on it, another process's included:
+# whether ours ran first varies between runs on the real machine.
+yield = ["SwitchToThread: returned 1, the new thread had run *"]
+
+# The blocks this kernel does not pass yet, each with the increment that enables it (none of
+# this fixture's blocks run yet: its imports are not all served).
+[pending]
+clock = "B2: locale, time, messages and the last error"
+sleep = "B5: synchronization and APCs"
+timer = "B5: synchronization and APCs"
+rr = "B7: threads and scheduling"
+preempt = "B7: threads and scheduling"
+boost = "B7: threads and scheduling"
+freeze = "B7: threads and scheduling"
+starve = "B7: threads and scheduling"
+yield = "B7: threads and scheduling (a known flake: always deselected)"

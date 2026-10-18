@@ -18,9 +18,13 @@
 pub mod clock;
 pub mod dpc;
 pub mod irql;
-
+#[cfg(all(target_arch = "x86", feature = "irq-smoke"))]
+mod smoke;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicBool, Ordering};
+
+#[cfg(all(target_arch = "x86", feature = "irq-smoke"))]
+pub use smoke::run as smoke;
 
 use crate::interrupt::irql::{Irql, IrqlState, HIGH, SYNCH};
 
@@ -614,7 +618,7 @@ mod target {
 }
 
 #[cfg(target_arch = "x86")]
-// `audit` has no caller outside the diagnostic boot feature; the subsystem API stays complete.
+// `audit` has no caller outside the irq-smoke diagnostic; the subsystem API stays complete.
 #[allow(unused_imports)]
 pub use target::{audit, connect, init, spurious_count};
 

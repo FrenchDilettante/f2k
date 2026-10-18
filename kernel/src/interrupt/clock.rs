@@ -235,12 +235,13 @@ pub unsafe fn init() {
 fn read_clock<T>(read: impl FnOnce(&Clock) -> T) -> T {
     let flags: u32;
     // SAFETY: saves EFLAGS and clears IF; the matching restore below puts the flag back as it was,
-    // so the level model's view of it never changes.
-    unsafe { core::arch::asm!("pushfd", "pop {}", "cli", out(reg) flags, options(nomem)) };
+    // so the level model's view of it never changes. Neither is `nomem`: the read must stay
+    // between them, and be redone at each call (the interrupt advances the clock).
+    unsafe { core::arch::asm!("pushfd", "pop {}", "cli", out(reg) flags) };
     // SAFETY: the clock's only writer is the clock interrupt, masked for the read.
     let value = read(unsafe { &*addr_of_mut!(CLOCK) });
     // SAFETY: restores the flags captured above.
-    unsafe { core::arch::asm!("push {}", "popfd", in(reg) flags, options(nomem)) };
+    unsafe { core::arch::asm!("push {}", "popfd", in(reg) flags) };
     value
 }
 

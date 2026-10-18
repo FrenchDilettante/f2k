@@ -1,0 +1,23 @@
+# threads: one test per block of the real-machine capture (output.txt); see tests/README.md.
+description = "threads - thread lifecycle and per-thread state (threads.c, /MT): creation and exit codes, suspension, priorities, scale, TLS and __declspec(thread), per-thread last error, errno, FPU and SEH, the CRT's thread starts, and the main thread's own exits."
+kind = "sectioned"
+gate = true
+[masks]
+# The binary captured reads the parameter before waiting for the routine (argument evaluation
+# order): 9 or 0 by timing. The source waits first now; drop the mask once threads.exe is
+# rebuilt and recaptured.
+crt = ["its routine ran: WAIT_OBJECT_0, parameter *"]
+
+# The blocks this kernel does not pass yet, each with the increment that enables it (none of
+# this fixture's blocks run yet: its imports are not all served).
+[pending]
+create = "B7: threads and scheduling"
+exit = "B7: threads and scheduling"
+suspend = "B7: threads and scheduling"
+priority = "B7: threads and scheduling"
+scale = "B7: threads and scheduling"
+tls = "B7: threads and scheduling"
+perthread = "B7: threads and scheduling"
+crt = "B7: threads and scheduling"
+mainexit = "B7: threads and scheduling"
+procexit = "B7: threads and scheduling"

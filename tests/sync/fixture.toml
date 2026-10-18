@@ -1,0 +1,17 @@
+# sync: one test per block of the real-machine capture (output.txt); see tests/README.md.
+description = "sync - synchronization objects and waits (sync.c, /MT): events, semaphores, mutexes, multi-object waits, user APCs, critical sections, interlocked operations, handle duplication and closing, and the original pingpong."
+kind = "sectioned"
+gate = true
+
+# The blocks this kernel does not pass yet, each with the increment that enables it (none of
+# this fixture's blocks run yet: its imports are not all served).
+[pending]
+event = "B5: synchronization and APCs"
+semaphore = "B5: synchronization and APCs"
+mutex = "B5: synchronization and APCs"
+waitmulti = "B5: synchronization and APCs"
+apc = "B5: synchronization and APCs"
+critsec = "B5: synchronization and APCs"
+interlocked = "B5: synchronization and APCs"
+handles = "B5: synchronization and APCs"
+pingpong = "B5: synchronization and APCs"

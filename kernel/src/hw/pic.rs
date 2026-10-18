@@ -102,6 +102,18 @@ impl<IoT: Io> Pic<IoT> {
         self.mask_all();
     }
 
+    /// The vector bases the remap programmed: (master, slave).
+    #[cfg(any(test, feature = "irq-smoke"))]
+    pub fn vector_bases(&self) -> (u8, u8) {
+        (self.master_base, self.slave_base)
+    }
+
+    /// The two chips' interrupt mask registers, (master, slave): a set bit is a masked line.
+    #[cfg(any(test, feature = "irq-smoke"))]
+    pub fn line_masks(&mut self) -> (u8, u8) {
+        (self.io.read(MASTER_DATA), self.io.read(SLAVE_DATA))
+    }
+
     /// Mask all 16 lines (the data-port image after reset).
     pub fn mask_all(&mut self) {
         self.io.out(MASTER_DATA, 0xFF);
@@ -348,6 +360,19 @@ mod tests {
             pic.io().writes_to(SLAVE_DATA),
             vec![SLAVE_VECTOR_BASE, 0x02, 0x01, 0xFF]
         );
+    }
+
+    /// The readers the irq-smoke diagnostic reports: the bases the remap programmed, and the mask
+    /// registers as the chips hold them (IRQ 0 open alone; then IRQ 14, which opens the cascade).
+    #[test]
+    fn bases_and_line_masks_read_back() {
+        let mut pic = remapped();
+        assert_eq!(pic.vector_bases(), (0x30, 0x38));
+        assert_eq!(pic.line_masks(), (0xFF, 0xFF));
+        pic.unmask(MASTER_VECTOR_BASE);
+        assert_eq!(pic.line_masks(), (0xFE, 0xFF));
+        pic.unmask(SLAVE_VECTOR_BASE + 6);
+        assert_eq!(pic.line_masks(), (0xFA, 0xBF));
     }
 
     /// After remap every line is masked; unmasking and masking one line touches exactly its bit.

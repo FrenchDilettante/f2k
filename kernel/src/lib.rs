@@ -81,17 +81,6 @@ pub(crate) fn halt() -> ! {
     }
 }
 
-/// Sleep until the next interrupt: IF on, halt. The interrupt returns wake it. Interrupts must
-/// already be enabled hardware-wide. (The diagnostic boot feature's waiting primitive; the idle
-/// thread's loop keeps its own, model-tracked form.)
-#[cfg(target_arch = "x86")]
-#[cfg(feature = "irq-smoke")]
-pub(crate) fn wait_for_interrupt() {
-    unsafe {
-        asm!("sti", "hlt", options(nomem, nostack));
-    }
-}
-
 /// Kernel entry point
 ///
 /// Called by `_start` (boot/mod.rs) with the values the Multiboot loader left in EAX and EBX.
@@ -161,6 +150,14 @@ pub extern "C" fn kmain(magic: u32, multiboot_info: u32) -> ! {
     serial_println!("Fenêtre 2000 - Windows 2000 compatible OS in Rust");
     serial_println!("Phase 1: Foundation complete");
     serial_println!("Multiboot info at {:#010x}", multiboot_info);
+    // The command line first: it lives in loader memory the frame allocator reclaims next.
+    boot::cmdline::capture(multiboot_info);
+    if let Some(line) = boot::cmdline::user_command_line(boot::cmdline::kernel_command_line()) {
+        serial_println!(
+            "F2K: command line: {}",
+            core::str::from_utf8(line).unwrap_or("(not ASCII)")
+        );
+    }
 
     // Hand every usable frame (minus the kernel image) to the frame allocator.
     mem::bootmem::boot_init(multiboot_info);
@@ -218,56 +215,7 @@ pub extern "C" fn kmain(magic: u32, multiboot_info: u32) -> ! {
     // boot, proving the tick and the process machinery coexist rather than just the diagnostic
     // running.
     #[cfg(feature = "irq-smoke")]
-    {
-        use interrupt::clock::{ticks, timer_fired};
-
-        serial_println!("F2K: irq-smoke: PIC remapped (master 0x30, slave 0x38, IRQ0 unmasked)");
-        serial_println!("F2K: irq-smoke: PIT programmed (mode 3, divisor 11949, 10.0144 ms tick)");
-
-        // Bounded by the tick itself: each `sti;hlt` sleeps until the next interrupt, so progress
-        // here means the timer is live.
-        while ticks() < 5 {
-            wait_for_interrupt();
-        }
-        serial_println!("F2K: irq-smoke: timer live (>= 5 ticks observed)");
-
-        // The deferred timer work fires only when a timer is due (the table's hand check), so park
-        // one: the current thread's (the idle thread's) own timer, due one tick out. The expiry
-        // signals it — nobody waits on it — and the DPC's run is the observable.
-        {
-            use interrupt::clock::INTERVAL_100NS;
-            let dispatcher = crate::sched::idle::dispatcher();
-            let previous =
-                crate::interrupt::irql::state_mut().raise(crate::interrupt::irql::DISPATCH);
-            // SAFETY: the current thread (the idle thread, armed at boot) is live and exclusive
-            // here; its timer is initialized and on no list.
-            let current = unsafe { &mut *dispatcher.current_thread() };
-            let now = interrupt::clock::system_time();
-            assert!(dispatcher.timer_table().insert(
-                &mut current.timer,
-                now + INTERVAL_100NS as u64,
-                now
-            ));
-            crate::interrupt::irql::state_mut().lower(previous);
-        }
-
-        // The DPC the clock ISR enqueues must have run (the drain is part of every interrupt exit,
-        // and the idle path drains too).
-        while timer_fired() == 0 {
-            wait_for_interrupt();
-        }
-        serial_println!("F2K: irq-smoke: clock DPC fired");
-
-        let verdict = interrupt::audit();
-        if verdict == Ok(()) {
-            serial_println!("F2K: irq-smoke: interrupt audit: ok");
-        } else {
-            serial_println!(
-                "F2K: irq-smoke: interrupt audit: FAILED ({})",
-                verdict.unwrap_err()
-            );
-        }
-    }
+    interrupt::smoke();
 
     // The IDE disk: detect the primary master, connect its interrupt, and IDENTIFY it. It needs
     // the interrupt core (its reads complete through IRQ 14); the first user process comes after.
@@ -288,8 +236,8 @@ pub extern "C" fn kmain(magic: u32, multiboot_info: u32) -> ! {
     #[cfg(feature = "disk-smoke")]
     crate::hw::ide::smoke::run();
 
-    // The user process (exit0 through the PE loader by default; the run and fault-test features
-    // pick others), entered as its main thread: this boot context becomes the idle thread. The
+    // The user process (the program the kernel command line names, else exit0, through the PE
+    // loader; the fault-test features and the process suite substitute their own), entered as its main thread: this boot context becomes the idle thread. The
     // image ends through its exit import, which reports the exit code on COM1; the idle thread
     // then tears the process down and rests.
     user::run_user_process()

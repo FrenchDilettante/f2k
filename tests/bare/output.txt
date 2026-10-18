@@ -1,0 +1,81 @@
+>>> bare.exe
+bss: 64 KiB zero: ok
+data: initializers: ok
+data: three-page object: ok
+rdata: string hash: ok
+pointers: data table: ok
+pointers: function table: ok
+esp: 4-byte aligned at entry: ok
+stack: 256 KiB usable: ok
+bare: failed mask 0x00000000
+<<< exit code=0
+>>> bare.exe
+bss: 64 KiB zero: ok
+data: initializers: ok
+data: three-page object: ok
+rdata: string hash: ok
+pointers: data table: ok
+pointers: function table: ok
+esp: 4-byte aligned at entry: ok
+stack: 256 KiB usable: ok
+bare: failed mask 0x00000000
+<<< exit code=0
+>>> bare.exe ret
+ret: returning 42 from the entry point
+<<< exit code=42
+>>> bare.exe exit-code
+exit-code: ExitProcess(0x87654321)
+<<< exit code=-2023406815
+>>> bare.exe badptr
+WriteFile from a kernel address: ret=0 err=998
+WriteFile from an unmapped user address: ret=0 err=1784
+badptr: survived
+<<< exit code=0
+>>> bare.exe data-exec
+data-exec: returned 42
+<<< exit code=0
+>>> bare.exe null-write
+fault: null-write
+<<< exit code=-1073741819
+>>> bare.exe null-read
+fault: null-read
+<<< exit code=-1073741819
+>>> bare.exe null-call
+fault: null-call
+<<< exit code=-1073741819
+>>> bare.exe rdata-write
+fault: rdata-write
+<<< exit code=-1073741819
+>>> bare.exe code-write
+fault: code-write
+<<< exit code=-1073741819
+>>> bare.exe kernel-read
+fault: kernel-read
+<<< exit code=-1073741819
+>>> bare.exe kernel-write
+fault: kernel-write
+<<< exit code=-1073741819
+>>> bare.exe div-zero
+fault: div-zero
+<<< exit code=-1073741676
+>>> bare.exe ud2
+fault: ud2
+<<< exit code=-1073741795
+>>> bare.exe int3
+fault: int3
+<<< exit code=-2147483645
+>>> bare.exe hlt
+fault: hlt
+<<< exit code=-1073741674
+>>> bare.exe cli
+fault: cli
+<<< exit code=-1073741674
+>>> bare.exe io-in
+fault: io-in
+<<< exit code=-1073741674
+>>> bare.exe into
+fault: into
+<<< exit code=-1073741675
+>>> bare.exe stack-overflow
+fault: stack-overflow
+<<< exit code=-1073741571

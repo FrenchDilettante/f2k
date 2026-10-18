@@ -115,12 +115,14 @@ impl IrqlState {
         self.lowers = self.lowers.wrapping_add(1);
     }
 
-    /// Set the interrupt flag.
+    /// Set the interrupt flag. Not `nomem`, here or at the other flag changes: an interrupt
+    /// writes memory the code after the enable (or before the mask) reads, so each must be a
+    /// compiler barrier — an optimizing build otherwise hoists such a read out of a halt loop.
     pub fn unmask_interrupts(&mut self) {
         self.interrupts = true;
         #[cfg(target_arch = "x86")]
         unsafe {
-            core::arch::asm!("sti", options(nomem, nostack, preserves_flags));
+            core::arch::asm!("sti", options(nostack, preserves_flags));
         }
     }
 
@@ -132,7 +134,7 @@ impl IrqlState {
     pub fn unmask_and_halt(&mut self) {
         self.interrupts = true;
         unsafe {
-            core::arch::asm!("sti", "hlt", options(nomem, nostack, preserves_flags));
+            core::arch::asm!("sti", "hlt", options(nostack, preserves_flags));
         }
     }
 
@@ -141,7 +143,7 @@ impl IrqlState {
         self.interrupts = false;
         #[cfg(target_arch = "x86")]
         unsafe {
-            core::arch::asm!("cli", options(nomem, nostack, preserves_flags));
+            core::arch::asm!("cli", options(nostack, preserves_flags));
         }
     }
 }

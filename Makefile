@@ -10,12 +10,23 @@ TARGET ?= x86-f2k
 RUST_HOST_TARGET ?= $(shell rustc -vV | sed -n 's/^host: //p')
 # Build options (target spec, build-std, linker) live in .cargo/config.toml,
 # so cargo and rust-analyzer use the same settings as make.
-KERNEL_ELF ?= $(BUILD_DIR)/$(TARGET)/debug/f2k-kernel
+# The cargo profile the kernel builds with: dev (unoptimized, the default), or dev-opt (optimized,
+# the debug assertions and overflow checks kept; Cargo.toml). Each builds in its own directory.
+KERNEL_PROFILE ?= dev
+PROFILE_DIR = $(if $(filter dev,$(KERNEL_PROFILE)),debug,$(KERNEL_PROFILE))
+OUT_DIR = $(BUILD_DIR)/$(TARGET)/$(PROFILE_DIR)
+KERNEL_ELF ?= $(OUT_DIR)/f2k-kernel
 # Cargo features for kernel builds (comma-separated, no spaces). The
 # on-target suite passes them per case; manual builds accept them too
 # (e.g. `make disk CARGO_FEATURES=run-ret0`).
 CARGO_FEATURES ?=
 FEATURE_FLAGS = $(if $(CARGO_FEATURES),--features $(CARGO_FEATURES),)
+# The build stamps: what the kernel ELF and the disk image were built with, beside each (the
+# suite's --no-build refuses a build whose stamps differ from what a test needs). Removed before a
+# build, written once it succeeded.
+KERNEL_STAMP = $(KERNEL_ELF).build
+DISK_STAMP = $(DISK_IMG).build
+BUILD_STAMP = features=$(CARGO_FEATURES)\nprofile=$(KERNEL_PROFILE)
 
 # Directories
 BOOT_DIR ?= boot
@@ -24,9 +35,6 @@ BUILD_DIR ?= target
 SCRIPTS_DIR ?= scripts
 
 # Tools
-# The on-target suite runner needs PyYAML: prefer the repository's .venv
-# (where it is installed) over the system interpreter.
-PYTHON ?= $(if $(wildcard .venv/bin/python),.venv/bin/python,python3)
 OBJCOPY ?= x86_64-elf-objcopy
 NASM ?= nasm
 DD ?= dd
@@ -36,13 +44,17 @@ QEMU ?= qemu-system-i386
 QEMU_FLAGS ?= -m 256M -nographic -no-reboot -no-shutdown -net none
 
 # Disk image settings
-DISK_IMG ?= $(BUILD_DIR)/$(TARGET)/debug/f2k-disk.img
-ISO_IMG ?= $(BUILD_DIR)/$(TARGET)/debug/f2k.iso
+DISK_IMG ?= $(OUT_DIR)/f2k-disk.img
+ISO_IMG ?= $(OUT_DIR)/f2k.iso
 # 64MB disk image (131072 * 512 bytes): large enough for a spec-compliant FAT32 partition
 DISK_SIZE ?= 131072
 # The corpus fixtures the disk carries in its root directory (tests/<name>/<name>.exe, stored as
 # NAME.EXE), after HELLO.EXE: the boots load their images from the volume by these paths.
 DISK_FIXTURES ?= exit0 ret0 pingpong sleep spin suspend respawn bsscheck crash fileio
+# The sectioned fixtures (tests/README.md), in their own directory, \CORPUS, the way each runs from
+# its own directory on the real machine: the root keeps its one cluster (the disk-smoke pins it).
+# They are the fixtures whose declaration, tests/<name>/fixture.toml, says kind "sectioned".
+CORPUS_FIXTURES ?= $(sort $(patsubst tests/%/fixture.toml,%,$(shell grep -l '^kind = "sectioned"' tests/*/fixture.toml)))
 
 # Limine bootloader settings
 LIMINE_DIR ?= $(BOOT_DIR)/limine
@@ -62,9 +74,9 @@ help:
 	@echo "  all           - Build everything and create bootable disk"
 	@echo "  kernel       - Build the kernel only"
 	@echo "  qemu         - Build the disk and boot the kernel directly in QEMU (Multiboot, disk attached)"
-	@echo "  test         - Run the on-target QEMU test suite (kernel path)"
-	@echo "  test-disk    - Run the on-target QEMU test suite (disk path)"
+	@echo "  test         - Run every on-target QEMU test (kernel boots and the corpus)"
 	@echo "  run-tests    - Run host unit tests (cargo test --lib)"
+	@echo "  check-all    - run-tests, then test"
 	@echo "  check        - cargo check + clippy"
 	@echo "  fmt          - Format all Rust sources (rustfmt)"
 	@echo "  fmt-check    - Fail if any Rust source is not formatted"
@@ -81,6 +93,7 @@ help:
 	@echo "  ARCH=x86             - Target architecture (default: x86)"
 	@echo "  TARGET=x86-f2k       - Rust target (default: x86-f2k)"
 	@echo "  DISK_IMG=...         - Disk image path"
+	@echo "  KERNEL_PROFILE=dev   - Kernel cargo profile: dev, or dev-opt (optimized, checks kept)"
 
 .PHONY: all
 all: disk
@@ -88,7 +101,9 @@ all: disk
 .PHONY: kernel
 kernel:
 	@echo "Building F2K kernel..."
-	cd $(KERNEL_DIR) && cargo build $(FEATURE_FLAGS)
+	rm -f $(KERNEL_STAMP)
+	cd $(KERNEL_DIR) && cargo build --profile $(KERNEL_PROFILE) $(FEATURE_FLAGS)
+	printf '$(BUILD_STAMP)\n' > $(KERNEL_STAMP)
 	@echo "Kernel built: $(KERNEL_ELF)"
 
 .PHONY: qemu
@@ -99,15 +114,13 @@ qemu: disk
 .PHONY: kernel-bin
 kernel-bin:
 	@echo "Converting kernel to raw binary..."
-	$(OBJCOPY) -O binary \
-		$(BUILD_DIR)/$(TARGET)/debug/f2k-kernel \
-		$(BUILD_DIR)/$(TARGET)/debug/f2k-kernel.raw
-	@echo "Raw kernel: $(BUILD_DIR)/$(TARGET)/debug/f2k-kernel.raw"
+	$(OBJCOPY) -O binary $(KERNEL_ELF) $(KERNEL_ELF).raw
+	@echo "Raw kernel: $(KERNEL_ELF).raw"
 
 .PHONY: disk
 disk: kernel limine
 	@echo "Creating Limine-bootable disk image..."
-	rm -f $(DISK_IMG)
+	rm -f $(DISK_IMG) $(DISK_STAMP)
 	$(DD) if=/dev/zero of=$(DISK_IMG) bs=512 count=$(DISK_SIZE)
 	# MBR with one active FAT32 partition at 1 MiB; Limine's stage 2 goes in the gap before it
 	python3 $(SCRIPTS_DIR)/create_partition_table.py $(DISK_IMG) $(DISK_SIZE)
@@ -126,7 +139,19 @@ disk: kernel limine
 		mcopy -i $(DISK_IMG)@@1M tests/$$fixture/$$fixture.exe \
 			::/$$(echo $$fixture | tr a-z A-Z).EXE || exit 1; \
 	done
+	# The sectioned corpus in \CORPUS, with the files fixture's data tree beside
+	# FILES.EXE and the two attributes git cannot carry (tests/files/setup.bat
+	# sets them on the real machine).
+	mmd -i $(DISK_IMG)@@1M ::/CORPUS
+	for fixture in $(CORPUS_FIXTURES); do \
+		mcopy -i $(DISK_IMG)@@1M tests/$$fixture/$$fixture.exe \
+			::/CORPUS/$$(echo $$fixture | tr a-z A-Z).EXE || exit 1; \
+	done
+	mcopy -s -i $(DISK_IMG)@@1M tests/files/DATA ::/CORPUS/
+	mattrib -i $(DISK_IMG)@@1M +r ::/CORPUS/DATA/RDONLY.TXT
+	mattrib -i $(DISK_IMG)@@1M +h ::/CORPUS/DATA/HIDDEN.TXT
 	$(LIMINE_BIN) bios-install $(DISK_IMG)
+	cp $(KERNEL_STAMP) $(DISK_STAMP)
 	@echo "Disk image created: $(DISK_IMG)"
 
 .PHONY: run
@@ -150,16 +175,27 @@ clobber: clean
 	@echo "Removing target directory..."
 	-rm -rf $(BUILD_DIR)
 
-# On-target QEMU suite: scripts/qemu-tests.yaml describes the cases
-# (kernel features to build with, image to boot, expected COM1
-# strings); scripts/run-qemu-tests.py builds and runs them. New cases
-# are data, not new Makefile targets.
-.PHONY: test test-disk
-test: kernel
-	@$(PYTHON) scripts/run-qemu-tests.py scripts/qemu-tests.yaml --image kernel
+# On-target QEMU tests, through pytest (uv drives the environment, pyproject.toml): the kernel's own
+# boots are tests/kernel/test_kernel.py (kernel features to build with, image to boot, expected
+# COM1 strings); the sectioned corpus's tests are tests/<name>/test_<name>.py, one per fixture,
+# over its real-machine capture (gating fixtures must pass; the rest run as expected failures, a
+# progress report). `make test` runs them all; each test builds what it needs, and boots run in
+# parallel. New cases are data, not new Makefile targets: narrow a run through pytest instead
+# (`make test PYTEST_FLAGS="-n 4 -m disk"`, or the `kernel` and `corpus` markers).
+UV ?= uv
+PYTEST = $(UV) run pytest
+PYTEST_FLAGS ?= -n 4
 
-test-disk: disk
-	@$(PYTHON) scripts/run-qemu-tests.py scripts/qemu-tests.yaml --image disk
+.PHONY: test
+test:
+	F2K_KERNEL_PROFILE=$(KERNEL_PROFILE) $(PYTEST) tests $(PYTEST_FLAGS)
+
+# Everything a change is verified with, fastest first, stopping at the first failure: the host unit
+# tests and the on-target suite (PYTEST_FLAGS passes through, e.g. "-n 2").
+.PHONY: check-all
+check-all:
+	$(MAKE) run-tests
+	$(MAKE) test
 
 .PHONY: run-tests
 run-tests:
@@ -187,22 +223,25 @@ fmt-check:
 # Limine Bootloader Targets
 # =============================================================================
 
-ISO_DIR ?= $(BUILD_DIR)/$(TARGET)/debug/iso
+ISO_DIR ?= $(OUT_DIR)/iso
 
 .PHONY: limine
 limine:
 	@echo "Setting up limine bootloader..."
 	@mkdir -p $(LIMINE_DIR)
+	@# A private temporary directory, so parallel checkouts (worktrees) don't race on the download.
+	@# The limine binary is copied last: it's what marks the setup as done.
 	@if [ ! -f $(LIMINE_BIN) ]; then \
+		tmp=$$(mktemp -d "$${TMPDIR:-/tmp}/limine.XXXXXX") && \
+		trap 'rm -rf "$$tmp"' EXIT && \
 		echo "Downloading limine binary release..." && \
-		curl -sL -o /tmp/limine.tar.xz https://github.com/Limine-Bootloader/Limine/releases/download/v12.9.3/limine-binary.tar.xz && \
-		tar xJf /tmp/limine.tar.xz -C /tmp && \
-		$(MAKE) -C /tmp/limine-binary limine && \
-		cp /tmp/limine-binary/limine $(LIMINE_DIR)/ && \
-		cp /tmp/limine-binary/limine-bios.sys $(LIMINE_DIR)/ && \
-		cp /tmp/limine-binary/limine-bios-cd.bin $(LIMINE_DIR)/ && \
-		chmod +x $(LIMINE_BIN) && \
-		rm -rf /tmp/limine-binary /tmp/limine.tar.xz ; \
+		curl -fsSL -o "$$tmp/limine.tar.xz" https://github.com/Limine-Bootloader/Limine/releases/download/v12.9.3/limine-binary.tar.xz && \
+		tar xJf "$$tmp/limine.tar.xz" -C "$$tmp" && \
+		$(MAKE) -C "$$tmp/limine-binary" limine && \
+		cp "$$tmp/limine-binary/limine-bios.sys" $(LIMINE_DIR)/ && \
+		cp "$$tmp/limine-binary/limine-bios-cd.bin" $(LIMINE_DIR)/ && \
+		cp "$$tmp/limine-binary/limine" $(LIMINE_DIR)/ && \
+		chmod +x $(LIMINE_BIN) ; \
 	fi
 	@echo "Limine bootloader ready in $(LIMINE_DIR)/"
 

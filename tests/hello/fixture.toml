@@ -1,0 +1,4 @@
+# hello: served, no capture (the kernel cases boot it; its trace.txt is a real-machine trace of the
+# C runtime's calls, and the disk-smoke case reads it back as a file).
+description = "hello - the console-stdio C program: printf through the C runtime to WriteFile."
+kind = "smoke"

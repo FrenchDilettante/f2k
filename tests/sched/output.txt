@@ -1,0 +1,78 @@
+>>> sched.exe sleep
+== sleep
+Sleep(200) in [190, 300] ms: yes
+Sleep(0) returns at once (< 20 ms): yes
+Sleep(1) in [0, 40] ms: yes
+ten Sleep(10) in [90, 320] ms: yes
+SleepEx(100, FALSE): returned 0, in [90, 200] ms yes
+timed wait of 100 ms on an unsignaled event: WAIT_TIMEOUT, in [90, 200] ms yes
+zero-timeout wait: WAIT_TIMEOUT, immediate yes
+sched: done
+<<< exit code=0
+>>> sched.exe clock
+== clock
+GetTickCount: monotonic yes, advances in steps of at most 16 ms yes
+QueryPerformanceFrequency: ret=1 nonzero yes
+performance counter across Sleep(200) in [190, 300] ms: yes
+system time across Sleep(200) in [150, 300] ms: yes
+clock() across Sleep(200) in [150, 300] ms: yes
+tick count across Sleep(200) in [190, 300] ms: yes
+GetSystemTime fields valid: yes
+GetLocalTime fields valid: yes
+time() after 2000-01-01: yes
+sched: done
+<<< exit code=0
+>>> sched.exe timer
+== timer
+CreateWaitableTimer(manual): created yes, unsignaled WAIT_TIMEOUT
+relative 100 ms: set 1, wait WAIT_OBJECT_0, in [90, 200] ms yes
+manual timer stays signaled: WAIT_OBJECT_0
+re-arming resets it: WAIT_TIMEOUT
+absolute now+150 ms: set 1, wait WAIT_OBJECT_0, in [100, 260] ms yes
+periodic 50 ms, auto-reset: set 1, five periods yes, in [200, 400] ms yes
+auto-reset consumed by the wait: WAIT_TIMEOUT
+CancelWaitableTimer: ret=1, then a 200 ms wait WAIT_TIMEOUT
+completion routine: SleepEx returned WAIT_IO_COMPLETION, ran 1 time(s) with argument 7
+named timer again: created yes err=183
+set through one handle, waited through the other: WAIT_OBJECT_0
+OpenWaitableTimerA: opened yes, signaled WAIT_OBJECT_0
+sched: done
+<<< exit code=0
+>>> sched.exe rr
+== rr
+two equal spinners: alternated at least 20 times within 5 s yes, both progressed yes
+sched: done
+<<< exit code=0
+>>> sched.exe preempt
+== preempt
+above-normal arrival ran while both spinners were frozen: yes
+spinners resumed afterwards: yes
+sched: done
+<<< exit code=0
+>>> sched.exe yield
+== yield
+a new equal-priority thread did not preempt its creator: yes
+after Sleep(0) it had run: yes
+SwitchToThread: returned 1, the new thread had run no
+Sleep(0) does not hand the CPU to a lower-priority thread: yes
+Sleep(10) does: no
+sched: done
+<<< exit code=0
+>>> sched.exe boost
+== boost
+woken waiter ran before its setter continued past SetEvent: yes (wait WAIT_OBJECT_0)
+sched: done
+<<< exit code=0
+>>> sched.exe freeze
+== freeze
+suspended spinner made no progress: yes
+resumed spinner progressed: yes
+sleeper's 100 ms Sleep had not returned while suspended: yes
+it returned after the resume, at least 300 ms in: yes
+sched: done
+<<< exit code=0
+>>> sched.exe starve
+== starve
+idle-priority thread starved by a spinner still ran: yes, within [1, 6] s yes
+sched: done
+<<< exit code=0

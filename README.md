@@ -13,17 +13,18 @@ and cannot build the kernel (`-Z build-std`, JSON target specs).
 
 ### macOS (ARM64 or x86_64):
 ```bash
-brew install rustup x86_64-elf-binutils xorriso mtools qemu
+brew install rustup x86_64-elf-binutils xorriso mtools qemu uv
 rustup-init
-# PyYAML for the on-target suite, in a repository-local venv (`make test`
-# uses .venv/bin/python when it exists)
-python3 -m venv .venv && .venv/bin/pip install pyyaml
+# The Python tooling (pytest for the on-target tests) in a
+# repository-local .venv, from pyproject.toml
+uv sync
 ```
 
 ### Linux (x86_64):
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-sudo apt install binutils xorriso mtools qemu-system-x86 python3-yaml
+sudo apt install binutils xorriso mtools qemu-system-x86
+curl -LsSf https://astral.sh/uv/install.sh | sh && uv sync
 ```
 
 ## Building
@@ -85,23 +86,57 @@ its group, contract status, and scenarios; the report script prints
 the per-group progress (`--check` verifies the ledger against the
 scenario sources, `--run` fills the passing column).
 ```bash
-.venv/bin/python scripts/kernel32-ledger.py --check
+uv run --with pyyaml scripts/kernel32-ledger.py --check
 ```
 
-### On-target QEMU suite
-The cases (kernel features to build with, image to boot, expected
-COM1 strings) are data in `scripts/qemu-tests.yaml`;
-`scripts/run-qemu-tests.py` builds and runs them. Adding a case does
-not add a Makefile target. Expected strings match anywhere in the
-COM1 log by default; a case can require them in order (`ordered`),
-as an uninterrupted block of lines (`contiguous`), or forbid strings
-(`forbids`). A kernel panic fails every case.
+### Everything
+`make check-all` runs the test systems in turn, fastest first,
+stopping at the first failure: the host unit tests (`make run-tests`)
+and the on-target suite (`make test`; `PYTEST_FLAGS` passes through).
 ```bash
-make test        # all kernel-path cases (QEMU -kernel)
-make test-disk   # all disk-path cases (Limine disk image)
-.venv/bin/python scripts/run-qemu-tests.py scripts/qemu-tests.yaml --list   # list cases
-.venv/bin/python scripts/run-qemu-tests.py scripts/qemu-tests.yaml --only fault-ud
+make check-all PYTEST_FLAGS="-n 2"
 ```
+
+### On-target QEMU tests
+The on-target tests run through pytest (each sectioned fixture's
+`tests/<name>/test_<name>.py`, the kernel's own boots in
+`tests/kernel/test_kernel.py`, helpers in `tests/f2kboot.py` and
+`tests/conftest.py`), so an IDE lists and runs them one by one. The
+kernel boots (the fault stubs, the Limine disk path, the program
+smokes, the multi-process suite, the interrupt and IDE diagnostics) are
+cases in `test_kernel.py`: kernel features to build with, image to
+boot, the program's command line, expected COM1 strings, one test per
+case. Expected strings match anywhere in the COM1 log by default; a
+case can require them in order (`ordered`), as an uninterrupted block of
+lines (`contiguous`), or forbid strings (`forbids`). A kernel panic
+fails every case. The sectioned fixtures' tests are their real-machine
+captures (see `tests/README.md`): one test per captured block, each
+fixture's `fixture.toml` stating what its comparison allows and which
+blocks are still pending.
+
+Each test builds the kernel and disk for its feature set (once per
+run, cached under `target/qemu/builds/`) and keeps its COM1 log under
+`target/qemu/logs/`; each run starts by removing the builds of earlier
+runs and logs older than two days. Boots attach the disk as a snapshot,
+so tests run in parallel (`-n 4` by default in `make test`,
+pytest-xdist).
+```bash
+make test        # every on-target test: the kernel boots and the corpus
+uv run pytest --collect-only -q                     # list every test
+uv run pytest tests/kernel -k fault-ud              # one kernel case
+uv run pytest tests/bare -n 4                       # one fixture's blocks
+uv run pytest tests/runtime --runxfail              # see why the work list fails
+uv run pytest --no-build ...                        # reuse the last make disk (its features only)
+make test KERNEL_PROFILE=dev-opt                    # the kernel's dependencies optimized
+```
+
+`KERNEL_PROFILE` picks the kernel's cargo profile (`make kernel`,
+`disk`, `qemu`, `test`...; the suite reads it as `F2K_KERNEL_PROFILE`):
+`dev`, the default, or `dev-opt` (Cargo.toml), which builds in its own
+directory and optimizes everything under the kernel crate (core, alloc,
+compiler_builtins' memcpy and memset) with the debug assertions and
+overflow checks kept. The kernel crate itself stays unoptimized there:
+an optimized kernel hangs (see the profile's comment).
 
 ### Check code
 ```bash
@@ -138,13 +173,12 @@ f2k/
 │   ├── x86-elf-ld         # Linker wrapper
 │   ├── linker.x86         # Custom linker script
 │   ├── create_partition_table.py  # MBR partition table for the disk image
-│   ├── test-boot.sh       # Boot one image in QEMU and assert COM1 strings
-│   ├── run-qemu-tests.py  # On-target suite runner: builds and boots per case
-│   ├── qemu-tests.yaml    # On-target test cases (data, not Makefile targets)
+│   ├── gen-files-data.py  # The files fixture's data tree (tests/files/DATA)
 │   ├── kernel32-ledger.py   # kernel32 contract ledger report (host-side)
 │   └── kernel32-ledger.yaml  # The contract ledger (data, not Makefile targets)
 │
-├── tests/            # Windows 2000 test corpus (see tests/README.md)
+├── pyproject.toml    # The Python tooling (uv): pytest for the on-target tests
+├── tests/            # Windows 2000 test corpus and the pytest suite (see tests/README.md)
 │
 └── kernel/           # F2K Kernel
     ├── Cargo.toml        # Kernel package
@@ -170,9 +204,9 @@ f2k/
 |--------|-------------|
 | `make kernel` | Build the kernel (ELF) |
 | `make qemu` | Build the disk and boot the kernel directly in QEMU, the disk attached |
-| `make test` | Run the on-target QEMU suite (kernel path) |
-| `make test-disk` | Run the on-target QEMU suite (Limine disk path) |
+| `make test` | Run every on-target QEMU test (pytest: the kernel boots and the corpus) |
 | `make run-tests` | Run host unit tests |
+| `make check-all` | `run-tests`, then `test` |
 | `make check` | `cargo check` + clippy |
 | `make fmt` | Format all Rust sources |
 | `make fmt-check` | Fail if any Rust source is unformatted |

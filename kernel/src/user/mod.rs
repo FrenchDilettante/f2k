@@ -291,8 +291,8 @@ pub fn process_exited(code: u32) -> ! {
 }
 
 /// Launch the boot's user code: the multi-process suite with `run-process-suite`, a fault-test
-/// stub with a `fault-test-*` feature, or one image from the boot volume through the PE loader
-/// (see [`boot_image`]).
+/// stub with a `fault-test-*` feature, or one image from the boot volume through the PE loader: the
+/// program the kernel command line names (see [`command_line_image`]), else exit0.
 /// Every path enters its process as a main thread through the idle loop. Never returns.
 #[cfg(target_arch = "x86")]
 pub fn run_user_process() -> ! {
@@ -311,6 +311,9 @@ pub fn run_user_process() -> ! {
         )
     ))]
     {
+        // The teardown audit's baseline: the boot's permanent allocations are done, the process
+        // has taken nothing yet.
+        crate::process::record_allocator_baseline();
         run_fault_stub()
     }
     #[cfg(all(
@@ -324,47 +327,76 @@ pub fn run_user_process() -> ! {
         ))
     ))]
     {
-        let (path, name) = boot_image();
-        let entry = crate::exec::loader::load_path(path, name);
+        let (path, name, command_line): (&'static [u8], &'static str, &'static [u8]) =
+            command_line_image().unwrap_or((b"exit0.exe", "exit0", b"exit0"));
+        // The teardown audit's baseline: the boot's permanent allocations are done, the process
+        // has taken nothing yet.
+        crate::process::record_allocator_baseline();
+        let entry = crate::exec::loader::load_path(path, name, command_line);
         crate::process::threads::enter_as_main_thread(entry, USER_STACK_TOP)
     }
 }
 
-/// The one image a one-process boot runs, as its path on the boot volume and its process name: the
-/// first fixture feature in this order — the blocking-wait, timer, preemption, slot-reuse,
-/// suspend, or file smoke (`run-pingpong`/`run-sleep`/`run-spin`/`run-respawn`/`run-suspend`/
-/// `run-fileio`), hello (`run-hello`), ret0 (`run-ret0`) — else exit0. The paths are
-/// root-relative; the lookup folds case, so the lowercase spelling finds the stored uppercase name.
-#[cfg(all(
-    target_arch = "x86",
-    not(feature = "run-process-suite"),
-    not(any(
-        feature = "fault-test-user",
-        feature = "fault-test-badargs",
-        feature = "fault-test-segments",
-        feature = "fault-test-threadexit",
-        feature = "fault-test-exitio"
-    ))
-))]
-#[allow(unreachable_code)]
-fn boot_image() -> (&'static [u8], &'static str) {
-    #[cfg(feature = "run-pingpong")]
-    return (b"pingpong.exe", "pingpong");
-    #[cfg(feature = "run-sleep")]
-    return (b"sleep.exe", "sleep");
-    #[cfg(feature = "run-spin")]
-    return (b"spin.exe", "spin");
-    #[cfg(feature = "run-respawn")]
-    return (b"respawn.exe", "respawn");
-    #[cfg(feature = "run-suspend")]
-    return (b"suspend.exe", "suspend");
-    #[cfg(feature = "run-fileio")]
-    return (b"fileio.exe", "fileio");
-    #[cfg(feature = "run-hello")]
-    return (b"hello.exe", "hello");
-    #[cfg(feature = "run-ret0")]
-    return (b"ret0.exe", "ret0");
-    (b"exit0.exe", "exit0")
+/// The longest program path the command line may name (Win32's MAX_PATH).
+#[cfg(target_arch = "x86")]
+const MAX_PATH: usize = 260;
+
+/// The program the boot's user command line names (see [`crate::boot::cmdline`]), as its volume
+/// path, its process name (the file name's stem) and the command line itself; none without a user
+/// command line (the boot then runs exit0). The program token is a root-relative path on the boot
+/// volume (`CORPUS\sync.exe`; a leading `C:` or backslash is dropped); one without an extension
+/// gets `.exe`, as CreateProcess gives it, and one that is not a well-formed volume path is
+/// reported and halts, like an image that does not load.
+#[cfg(target_arch = "x86")]
+fn command_line_image() -> Option<(&'static [u8], &'static str, &'static [u8])> {
+    use crate::boot::cmdline::{kernel_command_line, program_token, user_command_line};
+
+    /// The program's volume path: built once, here, at boot.
+    static mut PROGRAM: ([u8; MAX_PATH], usize) = ([0; MAX_PATH], 0);
+
+    let line = user_command_line(kernel_command_line())?;
+    let token = program_token(line);
+    let path = volume_path(token);
+    // SAFETY: single-threaded boot; the buffer is written once, here, and only read afterwards.
+    let (buffer, length) = unsafe { &mut *core::ptr::addr_of_mut!(PROGRAM) };
+    let file_name_start = path
+        .iter()
+        .rposition(|&byte| byte == b'\\')
+        .map_or(0, |i| i + 1);
+    let needs_extension = !path[file_name_start..].contains(&b'.');
+    let total = path.len() + if needs_extension { 4 } else { 0 };
+    if !crate::fs::fat32::path::is_valid(path) || total >= MAX_PATH {
+        crate::serial_println!(
+            "F2K: command line program {} names no file",
+            core::str::from_utf8(token).unwrap_or("(not ASCII)")
+        );
+        crate::halt()
+    }
+    buffer[..path.len()].copy_from_slice(path);
+    if needs_extension {
+        buffer[path.len()..total].copy_from_slice(b".exe");
+    }
+    *length = total;
+    let path: &'static [u8] = &buffer[..*length];
+    let file_name = &path[file_name_start..];
+    let stem = &file_name[..file_name
+        .iter()
+        .position(|&byte| byte == b'.')
+        .unwrap_or(file_name.len())];
+    Some((path, core::str::from_utf8(stem).unwrap_or("program"), line))
+}
+
+/// A program token as a root-relative volume path: a drive prefix (`C:`) and leading backslashes
+/// dropped (the boot volume is the only volume).
+pub fn volume_path(token: &[u8]) -> &[u8] {
+    let mut path = token;
+    if path.len() >= 2 && path[1] == b':' && path[0].is_ascii_alphabetic() {
+        path = &path[2..];
+    }
+    while let Some(rest) = path.strip_prefix(b"\\") {
+        path = rest;
+    }
+    path
 }
 
 /// Create the fault-test stub's process — its code and stack pages mapped in the process's own
@@ -427,6 +459,19 @@ pub fn check_volume_after_teardown() {
 #[cfg(test)]
 mod tests {
     use core::mem::size_of;
+
+    /// A command line's program token names a root-relative path on the boot volume: a drive
+    /// prefix and leading backslashes go, the rest is the path as given.
+    #[test]
+    fn the_program_token_is_a_root_relative_volume_path() {
+        assert_eq!(super::volume_path(b"CORPUS\\sync.exe"), b"CORPUS\\sync.exe");
+        assert_eq!(
+            super::volume_path(b"C:\\CORPUS\\sync.exe"),
+            b"CORPUS\\sync.exe"
+        );
+        assert_eq!(super::volume_path(b"\\ret0.exe"), b"ret0.exe");
+        assert_eq!(super::volume_path(b"ret0"), b"ret0");
+    }
     use core::ptr::addr_of;
 
     use super::*;

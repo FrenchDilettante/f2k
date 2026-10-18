@@ -51,7 +51,13 @@ pub fn current_leg() -> exit::Leg {
 pub fn process_reaped(end: ProcessEnd) {
     let index = current_index();
     let audit = crate::process::audit_allocators();
-    crate::serial_println!("{}", AuditReport { index, audit });
+    crate::serial_println!(
+        "{}",
+        AuditReport {
+            index: Some(index),
+            audit
+        }
+    );
 
     // SAFETY: suite state; single CPU, touched only from the idle thread's reap step.
     let tally = unsafe { &mut *core::ptr::addr_of_mut!(TALLY) };
@@ -71,7 +77,7 @@ fn start_leg(index: u32) {
     // SAFETY: suite state; single CPU, written only here.
     unsafe { core::ptr::write_volatile(core::ptr::addr_of_mut!(CURRENT), index) };
     let (path, name) = SEQUENCE[index as usize - 1];
-    let entry = crate::exec::loader::load_path(path, name);
+    let entry = crate::exec::loader::load_path(path, name, name.as_bytes());
     crate::process::threads::start_main_thread(entry, crate::user::USER_STACK_TOP);
 }
 

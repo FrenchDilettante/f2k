@@ -17,3 +17,17 @@ resolver = "2"
 [profile.release]
 opt-level = 2            # Optimize for size/speed
 lto = true               # Link-time optimization
+
+# The test kernel's optimized variant: `make ... KERNEL_PROFILE=dev-opt` (target/x86-f2k/dev-opt/,
+# beside the dev kernel instead of over it). The kernel crate itself stays unoptimized: optimizing it
+# exposes undefined behaviour the dev build tolerates (its intrusive lists are rewritten through raw
+# pointers while `&mut` borrows of their owners are live, which `noalias` lets LLVM cache across,
+# hanging the timer table's expiry walk). Everything under it is optimized: core, alloc and
+# compiler_builtins (memcpy, memset). The debug checks stay on throughout.
+[profile.dev-opt]
+inherits = "dev"
+debug-assertions = true
+overflow-checks = true
+
+[profile.dev-opt.package."*"]
+opt-level = 2

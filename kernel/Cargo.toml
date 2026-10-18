@@ -21,7 +21,7 @@ doctest = false
 [features]
 # Test-only fault injection (see kmain): raise a CPU exception right after
 # boot so the exception stubs and the COM1 dump can be verified on target
-# by the fault-ud / fault-gp cases of scripts/qemu-tests.yaml.
+# by the fault-ud / fault-gp cases of tests/kernel/test_kernel.py.
 fault-test-ud = []
 fault-test-gp = []
 # Swaps the ring-3 smoke stub for one that reads the supervisor-only
@@ -45,66 +45,19 @@ fault-test-threadexit = []
 # blocked on the drive), then checks after the teardown that the volume
 # is usable again: the lock released, the drive between commands.
 fault-test-exitio = []
-# Loads the second corpus fixture (ret0.exe, the 35-import CRT startup
-# surface) instead of the first: the ret0 suite cases build with it.
-run-ret0 = []
-# Loads the console fixture (hello.exe, the 40-import console-stdio
-# surface) instead of the first: the hello suite cases build with it.
-run-hello = []
-# The blocking-wait smoke boot: the pingpong fixture runs with the
-# thread-ified entry — the main thread enters ring 3 through the
-# scheduler's first switch, and its CreateThread/CreateEventA/
-# SetEvent/WaitForSingleObject calls run against the wait
-# machinery. The qemu-tests.yaml cases pin the captured output.
-run-pingpong = []
-# The timer smoke boot: the sleep fixture runs with the thread-ified
-# entry — Sleep parks the main thread in the timer table (the idle
-# thread owns the processor while it sleeps), the timed wait blocks
-# on a never-signaled event until its timeout, and GetTickCount
-# reads the tick count. The qemu-tests.yaml cases pin the captured
-# output.
-run-sleep = []
-# The preemption smoke boot: the spin fixture runs with the
-# thread-ified entry — two same-priority spinners alternate at
-# quantum ends (round-robin from the tick), a third thread raised
-# above them runs its block uninterrupted (the service-boundary
-# delivery), and the checksums prove the work loops completed
-# under preemption. The qemu-tests.yaml cases pin the captured
-# shape.
-run-spin = []
-# The thread-slot reuse smoke boot: the respawn fixture runs with
-# the thread-ified entry — three rounds of create, wait for, close
-# (one child alive at a time), so every child after the first
-# reuses the gate-stack resources the previous one released at its
-# exit. The qemu-tests.yaml cases pin the captured output.
-run-respawn = []
-# The suspend/resume smoke boot: the suspend fixture runs with the
-# thread-ified entry — SuspendThread arms the worker's builtin suspend
-# APC (delivered at the resume tail, its normal routine parks the
-# worker on its suspend semaphore), Sleep proves the frozen worker made
-# no progress while parked, and ResumeThread releases it to finish. The
-# qemu-tests.yaml cases pin the captured output.
-run-suspend = []
-# The file smoke boot: the fileio fixture opens its own image on the
-# boot volume through CreateFileA (by the path GetModuleFileNameA
-# reports), reads the MZ and PE signatures with ReadFile across
-# SetFilePointer seeks, and prints what it found. The qemu-tests.yaml
-# cases pin the captured output.
-run-fileio = []
 # The multi-process suite case: exit0, ret0, bsscheck, bsscheck,
 # crash, exit0 run in sequence in one boot, each process torn down
 # and audited before the next starts. The sequence runner and the
 # per-process teardown are the runner's deliverables; the
-# qemu-tests.yaml cases pin the COM1 shapes.
+# tests/kernel cases pin the COM1 shapes.
 run-process-suite = []
-# The interrupt/timer diagnostic boot:
-# a boot-time pass that reports the PIC remap, the PIT programming at
-# the captured 10.0144 ms tick, the live tick counter, the clock-ISR
-# DPC, and the interrupt-core audit on COM1, then lets the normal boot
-# proceed to the default image's exit — proving coexistence, not just
-# the diagnostic. The tick itself is default-on kernel machinery; the
-# feature gates only the diagnostic lines and the bounded tick wait.
-# The qemu-tests.yaml cases pin the COM1 shapes.
+# The interrupt/timer diagnostic boot: once the interrupt subsystem is up, a
+# boot-time pass reports the PIC remap and line masks, the PIT programming
+# (read back from channel 0) at the captured 10.0144 ms tick, the live tick
+# counter, the clock DPC's timer expiry, and the interrupt-core audit on COM1,
+# then lets the normal boot proceed to the default image's exit. The tick is
+# default-on kernel machinery; the feature gates only the diagnostic lines and
+# their bounded waits. The tests/kernel irq-smoke cases pin the COM1 shapes.
 irq-smoke = []
 # The IDE diagnostic boot: after the driver comes up, a boot-time pass
 # reads the drive's identity, the MBR, the volume boot sector, and the
@@ -113,7 +66,7 @@ irq-smoke = []
 # exit — coexistence, not just the diagnostic. The driver itself is
 # default-on kernel machinery; the feature gates only the diagnostic
 # lines. Disk path only (the image is the IDE primary master); the
-# qemu-tests.yaml case pins the COM1 shapes.
+# tests/kernel case pins the COM1 shapes.
 disk-smoke = []
 
 [dependencies]

@@ -133,27 +133,47 @@ impl fmt::Display for EndReport {
     }
 }
 
-/// The suite's per-leg teardown audit line: the allocators back at the post-boot baseline, or the
-/// leak with the frame database's available count.
-#[cfg(any(test, feature = "run-process-suite"))]
-pub struct AuditReport {
-    pub index: u32,
-    pub audit: Result<(), u32>,
+/// What a teardown audit found wrong: the frame database's available count against the post-boot
+/// baseline, and whether each allocator's own structure audit held.
+#[cfg(any(test, target_arch = "x86"))]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Leak {
+    /// Free frames after the teardown.
+    pub available: u32,
+    /// Free frames before the process started.
+    pub baseline: u32,
+    /// Whether the frame database's structure audit held.
+    pub frames_audit_ok: bool,
+    /// Whether the kernel heap's structure audit held.
+    pub heap_audit_ok: bool,
 }
 
-#[cfg(any(test, feature = "run-process-suite"))]
+/// The teardown audit line every process's end is followed by: the allocators back at the
+/// post-boot baseline, or what is off. A suite leg's line names the leg's index; a one-process
+/// boot's names none.
+#[cfg(any(test, target_arch = "x86"))]
+pub struct AuditReport {
+    pub index: Option<u32>,
+    pub audit: Result<(), Leak>,
+}
+
+#[cfg(any(test, target_arch = "x86"))]
 impl fmt::Display for AuditReport {
     fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
+        out.write_str("F2K: ")?;
+        if let Some(index) = self.index {
+            write!(out, "process {index} ")?;
+        }
+        let verdict = |ok: bool| if ok { "ok" } else { "corrupt" };
         match self.audit {
-            Ok(()) => write!(
+            Ok(()) => out.write_str("teardown audit: frame database ok, kernel heap ok"),
+            Err(leak) => write!(
                 out,
-                "F2K: process {} teardown audit: frame database ok, kernel heap ok",
-                self.index
-            ),
-            Err(available) => write!(
-                out,
-                "F2K: process {} teardown audit FAILED: allocator state leaked (available {})",
-                self.index, available
+                "teardown audit FAILED: {} frames available, {} before the process (frame database {}, kernel heap {})",
+                leak.available,
+                leak.baseline,
+                verdict(leak.frames_audit_ok),
+                verdict(leak.heap_audit_ok)
             ),
         }
     }
@@ -350,19 +370,47 @@ mod tests {
         );
         assert_eq!(
             AuditReport {
-                index: 3,
+                index: Some(3),
                 audit: Ok(())
             }
             .to_string(),
             "F2K: process 3 teardown audit: frame database ok, kernel heap ok"
         );
+        let leak = Leak {
+            available: 1234,
+            baseline: 1240,
+            frames_audit_ok: true,
+            heap_audit_ok: false,
+        };
         assert_eq!(
             AuditReport {
-                index: 4,
-                audit: Err(1234)
+                index: Some(4),
+                audit: Err(leak)
             }
             .to_string(),
-            "F2K: process 4 teardown audit FAILED: allocator state leaked (available 1234)"
+            "F2K: process 4 teardown audit FAILED: 1234 frames available, 1240 before the process \
+             (frame database ok, kernel heap corrupt)"
+        );
+        // A one-process boot's line names no leg.
+        assert_eq!(
+            AuditReport {
+                index: None,
+                audit: Ok(())
+            }
+            .to_string(),
+            "F2K: teardown audit: frame database ok, kernel heap ok"
+        );
+        assert_eq!(
+            AuditReport {
+                index: None,
+                audit: Err(Leak {
+                    frames_audit_ok: false,
+                    ..leak
+                })
+            }
+            .to_string(),
+            "F2K: teardown audit FAILED: 1234 frames available, 1240 before the process \
+             (frame database corrupt, kernel heap corrupt)"
         );
     }
 

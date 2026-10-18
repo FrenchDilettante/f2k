@@ -464,8 +464,8 @@ pub fn reap_pending() -> bool {
 }
 
 /// The idle thread's reap step: tear the ended process down, then let the boot decide what
-/// follows — a suite leg's audit and the next leg (or the summary), or, on a one-process boot,
-/// nothing: the idle thread rests.
+/// follows — a suite leg's audit and the next leg (or the summary), or, on a one-process boot, the
+/// teardown audit line, after which the idle thread rests.
 #[cfg(target_arch = "x86")]
 pub fn reap() {
     let end = current().end.expect("reap of a process that has not ended");
@@ -473,7 +473,16 @@ pub fn reap() {
     #[cfg(feature = "run-process-suite")]
     runner::process_reaped(end);
     #[cfg(not(feature = "run-process-suite"))]
-    let _ = end;
+    {
+        let _ = end;
+        crate::serial_println!(
+            "{}",
+            exit::AuditReport {
+                index: None,
+                audit: audit_allocators()
+            }
+        );
+    }
     #[cfg(all(not(feature = "run-process-suite"), feature = "fault-test-exitio"))]
     crate::user::check_volume_after_teardown();
 }
@@ -505,14 +514,14 @@ fn teardown_current() {
 
 /// The post-boot free-frame count: the baseline the per-process teardown audits compare against.
 /// Recorded once the boot's own permanent allocations are done, before the first process starts.
-#[cfg(all(target_arch = "x86", feature = "run-process-suite"))]
+#[cfg(target_arch = "x86")]
 static mut BASELINE_FRAMES: u32 = 0;
 
 /// Record the allocator baseline (`available()` at the call site).
-#[cfg(all(target_arch = "x86", feature = "run-process-suite"))]
+#[cfg(target_arch = "x86")]
 pub fn record_allocator_baseline() {
-    // SAFETY: single CPU; written once at suite start before the first process, read by the
-    // teardown audits.
+    // SAFETY: single CPU; written once at boot before the first process, read by the teardown
+    // audits.
     unsafe {
         core::ptr::write_volatile(
             core::ptr::addr_of_mut!(BASELINE_FRAMES),
@@ -523,18 +532,23 @@ pub fn record_allocator_baseline() {
 
 /// The zero-leak audit after a teardown: the frame database must audit clean and stand exactly at
 /// the post-boot baseline, and the kernel heap must still audit clean (nothing per-process is
-/// allocated from it). The error carries the frame database's available count.
-#[cfg(all(target_arch = "x86", feature = "run-process-suite"))]
-pub fn audit_allocators() -> Result<(), u32> {
+/// allocated from it). The error carries what is off.
+#[cfg(target_arch = "x86")]
+pub fn audit_allocators() -> Result<(), exit::Leak> {
     // SAFETY: recorded before the first process; read-only here.
     let baseline = unsafe { core::ptr::read_volatile(core::ptr::addr_of!(BASELINE_FRAMES)) };
-    let frames_ok =
-        crate::mem::bootmem::with_frame_db(|db| db.audit().is_ok() && db.available() == baseline);
-    let heap_ok = crate::mem::bootmem::with_heap(|heap| heap.audit().is_ok());
-    if frames_ok && heap_ok {
+    let (frames_audit_ok, available) =
+        crate::mem::bootmem::with_frame_db(|db| (db.audit().is_ok(), db.available()));
+    let heap_audit_ok = crate::mem::bootmem::with_heap(|heap| heap.audit().is_ok());
+    if frames_audit_ok && heap_audit_ok && available == baseline {
         Ok(())
     } else {
-        Err(crate::mem::bootmem::with_frame_db(|db| db.available()))
+        Err(exit::Leak {
+            available,
+            baseline,
+            frames_audit_ok,
+            heap_audit_ok,
+        })
     }
 }
 

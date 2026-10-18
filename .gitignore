@@ -23,6 +23,8 @@ scripts/__pycache__
 
 # Binary files
 *.bin
+# ...except the files fixture's data tree, which is test input.
+!/tests/files/DATA/**
 *.elf
 *.obj
 *.img
@@ -43,3 +45,8 @@ temp/
 boot/limine/*.o
 boot/limine/limine
 boot/limine/limine.sys
+
+# Python tooling (uv)
+.venv/
+__pycache__/
+.pytest_cache/

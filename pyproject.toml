@@ -1,0 +1,27 @@
+[project]
+name = "f2k"
+version = "0.1.0"
+description = "F2K's tooling: the on-target QEMU tests and the repository scripts"
+readme = "README.md"
+# 3.11: the scripts and the suite read TOML (the export specs, the fixture declarations) with
+# the standard library's tomllib.
+requires-python = ">=3.11"
+dependencies = []
+
+[dependency-groups]
+dev = ["pytest>=8", "pytest-xdist>=3.5"]
+
+[tool.uv]
+# Tooling only: nothing here is a Python package to build or install.
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# The suites share their helpers (tests/f2kboot.py) by module name.
+pythonpath = ["tests"]
+addopts = ["-ra"]
+markers = [
+    "kernel: a suite case booting the kernel ELF through QEMU's Multiboot loader",
+    "disk: a suite case booting the disk image through Limine",
+    "corpus: a sectioned-corpus block, checked against its real-machine capture",
+]

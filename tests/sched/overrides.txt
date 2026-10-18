@@ -1,0 +1,16 @@
+# sched: blocks the capture script cannot take, merged over output.txt by tests/f2kboot.py
+# (a block here replaces the captured block with the same command line, or adds one).
+#
+# sched.exe yield: the real-hardware answer. The VirtualBox capture VM, its CPU pegged by the
+# guest (a normal-priority thread yielding with Sleep(0)), runs below-normal threads only at the
+# balance-set boost, 300 ticks in, and answered 'Sleep(10) does: no' (output.txt keeps that);
+# on real hardware it is 'yes'.
+>>> sched.exe yield
+== yield
+a new equal-priority thread did not preempt its creator: yes
+after Sleep(0) it had run: yes
+SwitchToThread: returned 1, the new thread had run no
+Sleep(0) does not hand the CPU to a lower-priority thread: yes
+Sleep(10) does: yes
+sched: done
+<<< exit code=0

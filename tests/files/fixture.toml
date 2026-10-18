@@ -1,0 +1,20 @@
+# files: one test per block of the real-machine capture (output.txt); see tests/README.md. The read
+# block's five thousand small reads take about twenty seconds in the unoptimized kernel, each through
+# kernel32's ReadFile and NtReadFile, hence the longer timeout.
+description = "files - the read side of the file API over files/DATA (files.c): path forms and errors, chunked and boundary reads, seeks, metadata, FindFirstFile listings, share modes, CRT file I/O, read-only file mappings, and concurrent readers. Captured on a local FAT32 volume, as F2K's boot volume is."
+kind = "sectioned"
+gate = true
+timeout = 40
+
+# The blocks this kernel does not pass yet, each with the increment that enables it (none of
+# this fixture's blocks run yet: its imports are not all served).
+[pending]
+open = "B8: files, objects and the read side"
+read = "B8: files, objects and the read side"
+seek = "B8: files, objects and the read side"
+meta = "B8: files, objects and the read side"
+find = "B8: files, objects and the read side"
+handles = "B8: files, objects and the read side"
+crt = "B8: files, objects and the read side"
+mapping = "B8: files, objects and the read side"
+concurrent = "B8: files, objects and the read side"
