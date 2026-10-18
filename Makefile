@@ -79,7 +79,8 @@ help:
 	@echo "  qemu         - Build the disk and boot the kernel directly in QEMU (Multiboot, disk attached)"
 	@echo "  test         - Run every on-target QEMU test (kernel boots and the corpus)"
 	@echo "  run-tests    - Run host unit tests (cargo test --lib)"
-	@echo "  check-all    - run-tests, then test"
+	@echo "  ledger       - The export ledger: the specs checked, the host scenarios run, the report"
+	@echo "  check-all    - run-tests, then ledger, then test"
 	@echo "  check        - cargo check + clippy"
 	@echo "  fmt          - Format all Rust sources (rustfmt)"
 	@echo "  fmt-check    - Fail if any Rust source is not formatted"
@@ -204,11 +205,20 @@ test:
 	F2K_KERNEL_PROFILE=$(KERNEL_PROFILE) $(PYTEST) tests $(PYTEST_FLAGS)
 
 # Everything a change is verified with, fastest first, stopping at the first failure: the host unit
-# tests and the on-target suite (PYTEST_FLAGS passes through, e.g. "-n 2").
+# tests, the export ledger (the specs against the captures and the scenarios, every scenario run),
+# and the on-target suite (PYTEST_FLAGS passes through, e.g. "-n 2").
 .PHONY: check-all
 check-all:
 	$(MAKE) run-tests
+	$(MAKE) ledger
 	$(MAKE) test
+
+# The system DLLs' export ledger (scripts/ledger.py): every export's status, computed from its
+# evidence. --check holds the specs against the captures and the scenarios; --run runs every host
+# scenario, ignored ones included, and fails once a known gap's scenario passes.
+.PHONY: ledger
+ledger: userland
+	$(UV) run scripts/ledger.py --check --run
 
 .PHONY: run-tests
 run-tests: userland

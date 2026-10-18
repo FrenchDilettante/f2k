@@ -299,6 +299,8 @@ impl Process {
     /// in this process's directory, inside one of its regions. Returns the record for the caller's
     /// setup (the loader's), which threads it through rather than reaching for the current process
     /// again.
+    // The record is the pool's, not borrowed from `name` (see `pool::create`).
+    #[allow(clippy::mut_from_ref)]
     pub fn start(name: &'static str) -> &'static mut Process {
         let dir_phys = paging::create_address_space();
         paging::activate_address_space(dir_phys);

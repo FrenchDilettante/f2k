@@ -10,17 +10,25 @@
 //!   gate-raising bodies of the exports the kernel serves), its module-definition (`.def`) file,
 //!   and the kernel ABI constants its assembly uses ([`abi`]).
 //!
-//! The kernel-served exports are the transitional Win32 services (the kernel's kernel32 surface,
-//! which later work moves to user mode group by group), numbered from [`WIN32_SERVICE_BASE`], a
-//! service table Windows 2000 does not have (its table index 2): ExitProcess is the base plus 1;
-//! the other served exports follow in case-insensitive name order. Both the kernel's registry and
-//! the stubs come from here, so the two sides agree by construction.
+//! Two kinds of export enter the kernel, each through its own numbering:
+//!
+//! - ntdll's `Nt*` system services (`impl = { syscall = ... }`) carry Windows 2000's own numbers
+//!   ([`w2k`]), below [`w2k::service_limit`]: the kernel's NT service table is theirs.
+//! - The transitional Win32 services (the kernel's kernel32 surface, which later work moves to
+//!   user mode group by group) are numbered from [`WIN32_SERVICE_BASE`], a service table Windows
+//!   2000 does not have (its table index 2): ExitProcess is the base plus 1; the other served
+//!   exports follow in case-insensitive name order.
+//!
+//! Both the kernel's tables and the stubs come from here, so the two sides agree by construction.
+//! An export listed but not built yet (`impl = { unimplemented = ... }`) gets a generated body that
+//! fails the call (ERROR_CALL_NOT_IMPLEMENTED), so every import a program names resolves.
 //!
 //! The specs are TOML read through [`toml`], a strict reader for the subset they are written in.
 
 pub mod abi;
 pub mod emit;
 pub mod toml;
+pub mod w2k;
 
 use std::path::Path;
 
@@ -75,8 +83,8 @@ pub struct Arg {
     pub name: String,
 }
 
-/// An argument's kind: what the caller pushes (the argument block derives from it), and what the
-/// argument is.
+/// An argument's kind: what the caller pushes (the argument block derives from it), and, for a
+/// system service, what its handler receives (see [`emit::nt_services`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ArgKind {
     /// A dword value: a count, flags, a code address (`u32`).
@@ -115,6 +123,11 @@ pub enum Pointee {
 }
 
 impl Pointee {
+    /// The Rust type the handler sees it as.
+    pub fn rust(self) -> &'static str {
+        self.word()
+    }
+
     fn word(self) -> &'static str {
         match self {
             Pointee::U8 => "u8",
@@ -138,6 +151,11 @@ impl Pointee {
 }
 
 impl ArgKind {
+    /// Whether the harness's prototypes list it as a pointer (it names caller memory).
+    pub fn is_pointer(self) -> bool {
+        matches!(self, ArgKind::Ptr | ArgKind::PtrTo(_) | ArgKind::Str { .. })
+    }
+
     /// The bytes the caller pushes.
     pub fn bytes(self) -> u32 {
         match self {
@@ -219,6 +237,11 @@ pub const WIN32_SERVICE_BASE: u32 = 0x2000;
 /// How an export is implemented.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Implementation {
+    /// A Windows 2000 system service (ntdll's `Nt*`): the stub raises the gate on its Windows 2000
+    /// number ([`w2k`]), and the kernel's NT service table serves it through a typed handler (its
+    /// path from the crate root), `fn(&mut NtCall, <the arguments by kind>) -> NtResult`, the
+    /// NTSTATUS in EAX. ntdll exports it under its `Zw` name too, at the same stub.
+    Syscall(String),
     /// Served by the kernel through a handler on the raw argument block, `fn(&mut TrapFrame,
     /// &[u32])` (its path in `compat::kernel32`'s scope): one of the kernel's served exports, until
     /// its group moves to user mode.
@@ -229,11 +252,18 @@ pub enum Implementation {
     Forward(String),
     /// A deliberate fixed answer (zero, from the kernel's shared floor handler), and why.
     Floor(String),
-    /// Not implemented, and why it is listed: the DLL does not export it yet.
+    /// Not implemented yet (the value names the increment that implements it): a generated body
+    /// sets the last error to ERROR_CALL_NOT_IMPLEMENTED and returns the export's `fails` value
+    /// (zero without one), popping its argument block.
     Unimplemented(String),
 }
 
 impl Implementation {
+    /// Whether the export is a Windows 2000 system service.
+    pub fn is_syscall(&self) -> bool {
+        matches!(self, Implementation::Syscall(_))
+    }
+
     /// Whether the kernel serves the export as a transitional Win32 service (it has a number from
     /// [`WIN32_SERVICE_BASE`]).
     pub fn is_served(&self) -> bool {
@@ -258,6 +288,19 @@ impl Export {
             Implementation::Floor(_) => Some(FLOOR_HANDLER.to_string()),
             _ => None,
         }
+    }
+
+    /// A system service's generated wrapper: the NT service table's entry for it.
+    pub fn nt_wrapper(&self) -> String {
+        format!("nt_{}", self.name)
+    }
+
+    /// A system service's Windows 2000 number.
+    pub fn syscall_number(&self) -> Option<u32> {
+        self.implementation
+            .is_syscall()
+            .then(|| w2k::service_number(&self.name))
+            .flatten()
     }
 
     /// The value it returns on failure (`fails`), as a dword.
@@ -478,6 +521,15 @@ fn read_export(table: &Table, index: usize, groups: &[Group]) -> Result<Export, 
                 return Err(format!("{context}: impl.{kind} must be a string"));
             };
             match kind.as_str() {
+                "syscall" => {
+                    if w2k::service_number(&name).is_none() {
+                        return Err(format!(
+                            "{context}: a syscall is a Windows 2000 system service (Nt*), and {name} \
+                             is not one"
+                        ));
+                    }
+                    Implementation::Syscall(value.clone())
+                }
                 "legacy" => Implementation::Legacy(value.clone()),
                 "native" => Implementation::Native(value.clone()),
                 "forward" => {
@@ -495,7 +547,7 @@ fn read_export(table: &Table, index: usize, groups: &[Group]) -> Result<Export, 
                 "unimplemented" => Implementation::Unimplemented(value.clone()),
                 _ => {
                     return Err(format!(
-                        "{context}: impl kind {kind:?} (legacy, native, forward, floor, \
+                        "{context}: impl kind {kind:?} (syscall, legacy, native, forward, floor, \
                          unimplemented)"
                     ))
                 }
@@ -539,6 +591,17 @@ fn read_export(table: &Table, index: usize, groups: &[Group]) -> Result<Export, 
                  as INVALID_HANDLE_VALUE, void or never)"
             ));
         }
+    }
+    if implementation.is_syscall() && fails.is_some() {
+        return Err(format!(
+            "{context}: a syscall returns its NTSTATUS: it declares no failure return (fails)"
+        ));
+    }
+    if implementation.is_syscall() && args.iter().any(|a| matches!(a.kind, ArgKind::Str { .. })) {
+        return Err(format!(
+            "{context}: a syscall takes no strA or strW (NT's strings are UNICODE_STRINGs behind \
+             pointers)"
+        ));
     }
     Ok(Export {
         name,
@@ -749,11 +812,11 @@ ordinal = 0x10
         }
     }
 
-    /// The kinds a spec no longer takes: the typed services and the system services are later
-    /// increments' (an unknown kind is refused, not misread).
+    /// The kinds a spec does not take: the reference's typed services are not rebuilt (an unknown
+    /// kind is refused, not misread).
     #[test]
     fn refuses_unknown_impl_kinds() {
-        for kind in ["service", "syscall", "native2"] {
+        for kind in ["service", "native2"] {
             let text = SPEC.replacen(
                 "{ legacy = \"svc_get_version\" }",
                 &format!("{{ {kind} = \"x\" }}"),
@@ -793,6 +856,31 @@ ordinal = 0x10
             assert_eq!(fail_value(text), Some(value), "{text}");
         }
         assert_eq!(fail_value("maybe"), None);
+    }
+
+    #[test]
+    fn syscalls_take_windows_2000s_numbers() {
+        let spec = parse_spec(
+            "[[group]]\nkey = \"nt\"\ntitle = \"nt\"\n\n[[export]]\nname = \"NtClose\"\ngroup = \"nt\"\n\
+             args = [\"handle Handle\"]\nimpl = { syscall = \"crate::nt::object::close\" }\n",
+        )
+        .unwrap();
+        let close = spec.export("NtClose").unwrap();
+        assert_eq!(close.syscall_number(), Some(0x18));
+        assert!(
+            !close.implementation.is_served(),
+            "not a transitional service"
+        );
+        assert_eq!(close.nt_wrapper(), "nt_NtClose");
+        let text = "[[group]]\nkey = \"nt\"\ntitle = \"nt\"\n\n[[export]]\nname = \"NtNoSuch\"\n\
+                    group = \"nt\"\nargs = []\nimpl = { syscall = \"x\" }\n";
+        assert!(parse_spec(text).unwrap_err().contains("not one"));
+        let text = "[[group]]\nkey = \"nt\"\ntitle = \"nt\"\n\n[[export]]\nname = \"NtClose\"\n\
+                    group = \"nt\"\nargs = []\nimpl = { syscall = \"x\" }\nfails = \"0\"\n";
+        assert!(parse_spec(text).unwrap_err().contains("NTSTATUS"));
+        let text = "[[group]]\nkey = \"nt\"\ntitle = \"nt\"\n\n[[export]]\nname = \"NtClose\"\n\
+                    group = \"nt\"\nargs = [\"strA x\"]\nimpl = { syscall = \"x\" }\n";
+        assert!(parse_spec(text).unwrap_err().contains("UNICODE_STRING"));
     }
 
     #[test]

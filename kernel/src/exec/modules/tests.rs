@@ -129,16 +129,48 @@ fn the_system_dlls_serve_the_registry() {
             .unwrap();
         assert_eq!(found, arg_bytes, "{name}");
     }
-    // No natives yet: every kernel32 export is a served stub or a forwarder.
-    assert_eq!(NATIVE_EXPORTS.len(), 0);
+    // The natives: the trivial ones, kernel32's own assembly.
+    assert_eq!(NATIVE_EXPORTS.len(), 9);
+    for &(name, _) in &NATIVE_EXPORTS {
+        let address = kernel32_export(name).unwrap_or_else(|| panic!("kernel32 exports no {name}"));
+        addresses.push(address);
+    }
     addresses.push(thread_exit_trampoline());
     addresses.sort_unstable();
     addresses.dedup();
     assert_eq!(
         addresses.len(),
-        SERVICES.len() + 1,
+        SERVICES.len() + NATIVE_EXPORTS.len() + 1,
         "every export has its own code"
     );
+}
+
+/// Every unimplemented export has its own generated body: the last error set to
+/// ERROR_CALL_NOT_IMPLEMENTED through FS (mov dword ptr fs:[34h], 120), the spec's failure value
+/// in EAX, then the stdcall return popping its argument block.
+#[test]
+fn unimplemented_exports_fail_the_call() {
+    // (export, its failure value, its argument block), as the spec declares them.
+    for (name, fails, arg_bytes) in [
+        ("SetErrorMode", 0u32, 4u16),
+        ("CreateMutexA", 0, 12),
+        ("FindFirstFileA", 0xFFFF_FFFF, 8),
+        ("GetFileAttributesA", 0xFFFF_FFFF, 4),
+        ("WaitForMultipleObjects", 0xFFFF_FFFF, 16),
+        ("GetTimeZoneInformation", 0xFFFF_FFFF, 4),
+        ("GetSystemTimeAsFileTime", 0, 4),
+    ] {
+        let mut stub = vec![0x64, 0xC7, 0x05, 0x34, 0, 0, 0, 120, 0, 0, 0, 0xB8];
+        stub.extend_from_slice(&fails.to_le_bytes());
+        stub.push(0xC2);
+        stub.extend_from_slice(&arg_bytes.to_le_bytes());
+        let found = bytes_at(kernel32_export(name).unwrap_or_else(|| panic!("no {name}")));
+        assert!(
+            found.starts_with(&stub),
+            "{name}: {:02x?}",
+            &found[..stub.len()]
+        );
+    }
 }
 
 /// ntdll's thread-exit trampoline: the function's return value moves to the gate's argument
@@ -152,9 +184,29 @@ fn the_thread_exit_trampoline_keeps_its_protocol() {
     assert!(bytes_at(thread_exit_trampoline()).starts_with(&expected));
 }
 
-/// The corpus binaries the kernel runs today (the root directory's programs): the import surface
-/// kernel32 serves.
-const CORPUS: [(&str, &[u8]); 12] = [
+/// The corpus binaries (the smokes in the root directory, the sectioned fixtures in \CORPUS): the
+/// import surface kernel32 exports.
+const CORPUS: [(&str, &[u8]); 20] = [
+    ("bare", include_bytes!("../../../../tests/bare/bare.exe")),
+    ("files", include_bytes!("../../../../tests/files/files.exe")),
+    (
+        "fswrite",
+        include_bytes!("../../../../tests/fswrite/fswrite.exe"),
+    ),
+    (
+        "memory",
+        include_bytes!("../../../../tests/memory/memory.exe"),
+    ),
+    (
+        "runtime",
+        include_bytes!("../../../../tests/runtime/runtime.exe"),
+    ),
+    ("sched", include_bytes!("../../../../tests/sched/sched.exe")),
+    ("sync", include_bytes!("../../../../tests/sync/sync.exe")),
+    (
+        "threads",
+        include_bytes!("../../../../tests/threads/threads.exe"),
+    ),
     ("exit0", include_bytes!("../../../../tests/exit0/exit0.exe")),
     ("ret0", include_bytes!("../../../../tests/ret0/ret0.exe")),
     ("hello", include_bytes!("../../../../tests/hello/hello.exe")),
@@ -205,7 +257,7 @@ fn imports_of(file: &[u8]) -> Vec<(String, String)> {
 #[test]
 fn the_surface_is_the_corpus_import_surface() {
     let names: Vec<&str> = DLL_EXPORTS.iter().map(|&(name, _)| name).collect();
-    assert_eq!(names.len(), 51, "the kernel's surface");
+    assert_eq!(names.len(), 184, "the corpus's import surface");
     for (i, name) in names.iter().enumerate() {
         assert!(!names[i + 1..].contains(name), "{name} listed twice");
         assert!(

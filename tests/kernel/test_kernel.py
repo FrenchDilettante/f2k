@@ -174,13 +174,13 @@ CASES = (
     ),
     Case(
         name="fault-badargs",
-        description="a bad user argument pointer ends the process inside the kernel copy",
+        description="a bad user argument pointer ends the process inside the kernel's argument copy, with the access violation as its exit code",
         image="kernel",
         features=("fault-test-badargs",),
         expects=(
             "F2K: entering ring 3",
             "CPU EXCEPTION: vector 14",
-            "F2K: user process ended by fault (bad user argument pointer); halting",
+            "F2K: user process ended by fault (bad user argument pointer, exit code=3221225477); halting",
         ),
     ),
     Case(
@@ -191,6 +191,16 @@ CASES = (
         expects=(
             "F2K: entering ring 3",
             "F2K: user process exited normally (exit code=7)",
+        ),
+    ),
+    Case(
+        name="nt-close",
+        description="NtClose by Windows 2000's service number (0x18) on a handle naming nothing answers STATUS_INVALID_HANDLE through the NT service table",
+        image="kernel",
+        features=("fault-test-ntclose",),
+        expects=(
+            "F2K: entering ring 3",
+            "F2K: user process exited normally (exit code=3221225480)",
         ),
     ),
     Case(

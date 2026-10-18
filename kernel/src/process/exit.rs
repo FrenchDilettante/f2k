@@ -16,9 +16,18 @@ use core::fmt;
 pub struct Fault {
     /// The CPU exception vector.
     pub vector: u32,
+    /// The NTSTATUS the fault raises: the process's exit code, as an unhandled exception's code is
+    /// on Windows (the access violation's for every fault, until the exception dispatch tells the
+    /// traps apart).
+    pub status: u32,
     /// Whether the fault was raised inside the kernel's copy of user memory (a bad user pointer
     /// passed to a service) rather than by user code itself; either way it is the process's.
     pub in_user_copy: bool,
+}
+
+/// The exception codes the faults raise (the documented NTSTATUS values).
+pub mod status {
+    pub const ACCESS_VIOLATION: u32 = 0xC000_0005;
 }
 
 /// Why a thread ends.
@@ -46,12 +55,11 @@ pub enum ProcessEnd {
 
 impl ProcessEnd {
     /// The process's exit code, its object's on signaling (GetExitCodeProcess's answer): the exit
-    /// code, or, for a fault, STATUS_ACCESS_VIOLATION — Windows reports the unhandled exception's
-    /// code, which the fault does not carry until the exception dispatch does.
+    /// code, or the fault's exception code, as an unhandled exception's is on Windows.
     pub fn exit_status(self) -> u32 {
         match self {
             ProcessEnd::Exited(code) => code,
-            ProcessEnd::Faulted(_) => crate::user::syscall::STATUS_ACCESS_VIOLATION,
+            ProcessEnd::Faulted(fault) => fault.status,
         }
     }
 }
@@ -125,7 +133,9 @@ impl fmt::Display for EndReport {
             }
             (None, ProcessEnd::Faulted(fault)) if fault.in_user_copy => write!(
                 out,
-                "F2K: user process ended by fault (bad user argument pointer); halting"
+                "F2K: user process ended by fault (bad user argument pointer, exit code={}); \
+                 halting",
+                fault.status
             ),
             (None, ProcessEnd::Faulted(fault)) => write!(
                 out,
@@ -262,10 +272,12 @@ mod tests {
 
     const PAGE_FAULT: Fault = Fault {
         vector: 14,
+        status: status::ACCESS_VIOLATION,
         in_user_copy: false,
     };
     const COPY_FAULT: Fault = Fault {
         vector: 14,
+        status: status::ACCESS_VIOLATION,
         in_user_copy: true,
     };
 
@@ -353,7 +365,8 @@ mod tests {
         );
         assert_eq!(
             line(ProcessEnd::Faulted(COPY_FAULT)),
-            "F2K: user process ended by fault (bad user argument pointer); halting"
+            "F2K: user process ended by fault (bad user argument pointer, exit code=3221225477); \
+             halting"
         );
     }
 
@@ -507,6 +520,7 @@ mod tests {
     fn the_process_end_passes_to_deferred_threads() {
         let fault = Fault {
             vector: 14,
+            status: status::ACCESS_VIOLATION,
             in_user_copy: false,
         };
         for end in [ThreadEnd::ExitProcess(3), ThreadEnd::Fault(fault)] {

@@ -174,7 +174,7 @@ fixture's data tree beside them), the way each runs from its own
 directory on the real machine. The fixture's declaration,
 `fixture.toml`, states what its comparison allows: `gate = true` once
 F2K passes every block, `[pending]` for the blocks still on the work
-list (each with the rebuild increment that enables it: `yield =
+list (each with the increment that enables it: `yield =
 "B7: threads and scheduling"`), both run as
 strict expected failures (a block that starts passing fails the run, so
 the marker goes with the fix; `--runxfail` shows each failure's first

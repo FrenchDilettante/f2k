@@ -576,12 +576,13 @@ fn svc_close_handle(frame: &mut crate::user::TrapFrame, args: &[u32]) {
     {
         // The console handles are fixed replays with no table claim: closing one succeeds and
         // changes nothing.
-        frame.eax =
-            if is_console_handle(args[0]) || crate::process::current_mut().close_handle(args[0]) {
-                1
-            } else {
-                0
-            };
+        frame.eax = if is_console_handle(args[0])
+            || crate::user::args::calling_process().close_handle(args[0])
+        {
+            1
+        } else {
+            0
+        };
     }
     #[cfg(not(target_arch = "x86"))]
     {
@@ -1078,11 +1079,6 @@ fn svc_floor_zero(frame: &mut crate::user::TrapFrame, _args: &[u32]) {
     frame.eax = 0;
 }
 
-/// GetCurrentProcess: the documented pseudo-handle.
-fn svc_get_current_process(frame: &mut crate::user::TrapFrame, _args: &[u32]) {
-    frame.eax = INVALID_HANDLE_VALUE;
-}
-
 // --- The registry ----------------------------------------------------
 
 // The service registry: `WIN32_SERVICE_BASE`, and `SERVICES`, one (export, argument bytes,
@@ -1158,7 +1154,11 @@ mod tests {
     /// from the base; numbers outside the registry name no service; the names are unique.
     #[test]
     fn the_registry_numbers_from_its_base() {
-        assert_eq!(SERVICES.len(), 51, "the kernel's served surface");
+        assert_eq!(
+            SERVICES.len(),
+            49,
+            "the kernel's served surface, less GetLastError and GetCurrentProcess (kernel32's natives)"
+        );
         assert_eq!(WIN32_SERVICE_BASE, 0x2000);
         assert_eq!(SERVICES[0].0, "ExitProcess");
         assert_eq!(crate::user::syscall::SYS_EXIT, WIN32_SERVICE_BASE + 1);
@@ -1482,26 +1482,17 @@ mod tests {
         assert!(CPINFO[6..18].iter().all(|&b| b == 0));
     }
 
-    /// GetCurrentProcess reports the documented pseudo-handle.
-    #[test]
-    fn current_process_is_the_pseudo_handle() {
-        let mut frame = zero_frame();
-        svc_get_current_process(&mut frame, &[]);
-        assert_eq!(frame.eax, 0xFFFF_FFFF);
-    }
-
     /// The never-called imports resolve to their floor handlers (RtlUnwind ntdll's, kernel32
     /// forwarding to it), and the console floors answer with their decided shapes (no path the
     /// corpus takes reaches them).
     #[test]
     fn never_called_shapes_resolve_to_their_floors() {
-        const NEVER_CALLED_ZERO: [&str; 7] = [
+        const NEVER_CALLED_ZERO: [&str; 6] = [
             "TerminateProcess",
             "UnhandledExceptionFilter",
             "GetStringTypeA",
             "LCMapStringA",
             "RtlUnwind",
-            "GetLastError",
             "SetStdHandle",
         ];
         let floor = |name: &str| SERVICES.iter().find(|&&(n, ..)| n == name).unwrap().2;
@@ -1531,7 +1522,7 @@ mod tests {
         svc_set_file_pointer(&mut frame, &[0; 4]);
         assert_eq!(frame.eax, 0xFFFF_FFFF); // INVALID_SET_FILE_POINTER
 
-        // GetLastError/SetStdHandle report failure without side effects.
+        // SetStdHandle reports failure without side effects.
         svc_floor_zero(&mut frame, &[]);
         assert_eq!(frame.eax, 0);
     }

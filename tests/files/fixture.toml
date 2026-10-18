@@ -6,8 +6,7 @@ kind = "sectioned"
 gate = true
 timeout = 40
 
-# The blocks this kernel does not pass yet, each with the increment that enables it (none of
-# this fixture's blocks run yet: its imports are not all served).
+# The blocks this kernel does not pass yet, each with the increment that enables it.
 [pending]
 open = "B8: files, objects and the read side"
 read = "B8: files, objects and the read side"
@@ -17,4 +16,3 @@ find = "B8: files, objects and the read side"
 handles = "B8: files, objects and the read side"
 crt = "B8: files, objects and the read side"
 mapping = "B8: files, objects and the read side"
-concurrent = "B8: files, objects and the read side"

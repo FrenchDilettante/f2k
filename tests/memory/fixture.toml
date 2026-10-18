@@ -7,8 +7,7 @@ gate = true
 virtual = ["released: state 0x10000 protect 0x1 type 0x0 region * allocprotect 0x0"]
 image = ["past the image end: state 0x10000 protect 0x1 type 0x0 region * allocprotect 0x0"]
 
-# The blocks this kernel does not pass yet, each with the increment that enables it (none of
-# this fixture's blocks run yet: its imports are not all served).
+# The blocks this kernel does not pass yet, each with the increment that enables it.
 [pending]
 sysinfo = "B4: virtual memory and sections"
 virtual = "B4: virtual memory and sections"

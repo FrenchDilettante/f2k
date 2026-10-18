@@ -1,16 +1,29 @@
 //! System-call gate (vector 0x2E) and service dispatch.
 //!
 //! The ABI: EAX carries the service number, EDX a pointer to the arguments in user memory, the
-//! result returns in EAX (NTSTATUS for native services, BOOL/pointer for the kernel32-style ones).
-//! The gate is a 32-bit interrupt gate at DPL 3 (so entry clears IF).
+//! result returns in EAX. Three ranges of numbers:
+//!
+//! - below `nt::NT_SERVICE_LIMIT` (0xF8): Windows 2000's system services, by Windows 2000's own
+//!   numbers (ntdll's `Nt*` stubs; `nt`), the NTSTATUS in EAX; a number in that range F2K does not
+//!   serve is STATUS_NOT_IMPLEMENTED;
+//! - from `WIN32_SERVICE_BASE` (0x2000): the transitional Win32 services (kernel32's stubs over
+//!   the kernel's handlers, `compat::kernel32`), the Win32 answer in EAX;
+//! - [`SYS_THREAD_EXIT`]: the F2K-internal thread exit ntdll's trampoline raises.
+//!
+//! Anything else is STATUS_INVALID_SYSTEM_SERVICE. Windows 2000 masks the number (its table index
+//! in bits 12-13, the service in the low 12 bits); F2K compares it whole. The gate is a 32-bit
+//! interrupt gate at DPL 3 (so entry clears IF).
 //!
 //! Entry choreography: the CPU switches to the TSS ring-0 stack and pushes the ring-3 tail; the
 //! stub completes a frame shared with the exception stubs; the dispatcher validates the number
-//! against the kernel32 registry, probes and copies the arguments, and calls the service; the
+//! against the service tables, probes and copies the arguments, and calls the service; the
 //! return path restores registers and `iretd`s back.
 //!
-//! Quirk: service-side user-memory transfers ([`read_user`], [`write_user`]) run under the
-//! attribution flag — a fault on a bad user pointer ends the user process, not the kernel.
+//! Service-side user-memory transfers ([`read_user`], [`write_user`]) are fault-tolerant: they
+//! run through one copy routine whose faulting instruction the exception handler knows, and a
+//! fault there resumes at the routine's fixup, so a bad user pointer is a failed transfer the
+//! service reports (STATUS_ACCESS_VIOLATION), not the end of the process. The argument copy runs
+//! under the attribution flag instead: a fault there ends the user process, not the kernel.
 
 use crate::user::TrapFrame;
 
@@ -33,10 +46,12 @@ pub const SYS_THREAD_EXIT: u32 = 0x8000_0000;
 /// Documented NTSTATUS values (public ABI constants).
 pub const STATUS_ACCESS_VIOLATION: u32 = 0xC000_0005;
 pub const STATUS_INVALID_SYSTEM_SERVICE: u32 = 0xC000_001C;
+pub const STATUS_NOT_IMPLEMENTED: u32 = 0xC000_0002;
 
 /// Largest argument block the dispatcher copies onto the kernel stack. Sized up front so the gate
-/// path stays allocation-free; the largest service is WideCharToMultiByte's 32 bytes.
-pub const MAX_ARG_BYTES: usize = 32;
+/// path stays allocation-free: Windows 2000's largest services, NtCreateFile's and
+/// NtQueryDirectoryFile's, take eleven arguments.
+pub const MAX_ARG_BYTES: usize = 44;
 
 /// A service: places its result in the frame's EAX slot.
 pub type ServiceFn = fn(&mut TrapFrame, &[u32]);
@@ -89,33 +104,153 @@ fn with_user_attribution<T>(body: impl FnOnce() -> T) -> T {
     result
 }
 
-/// Read `bytes` from user memory (probe + attributed copy). An unmapped range faults, ending the
-/// user process.
-pub fn read_user(pointer: u32, bytes: &mut [u8]) -> Result<(), u32> {
-    probe_user_range(pointer, bytes.len() as u32)?;
-    // SAFETY: the range passed the probe and is user-accessible; a fault on an unmapped page is
-    // attributed to the user process.
-    with_user_attribution(|| unsafe {
-        let src = pointer as *const u8;
-        for (i, slot) in bytes.iter_mut().enumerate() {
-            *slot = src.add(i).read_volatile();
-        }
-    });
-    Ok(())
+// The fault-tolerant copy: cdecl `f2k_user_copy(dst, src, len)` returns the bytes not copied
+// (zero on success). A fault on the `rep movsb` leaves ECX at the bytes remaining; the exception
+// handler resumes such a fault at the fixup (`cpu::idt`), which returns that count.
+#[cfg(target_arch = "x86")]
+core::arch::global_asm!(
+    ".section .text.f2k_user_copy, \"ax\"",
+    ".global f2k_user_copy",
+    "f2k_user_copy:",
+    "    push esi",
+    "    push edi",
+    "    mov edi, [esp + 12]",
+    "    mov esi, [esp + 16]",
+    "    mov ecx, [esp + 20]",
+    "    cld",
+    ".global f2k_user_copy_insn",
+    "f2k_user_copy_insn:",
+    "    rep movsb",
+    ".global f2k_user_copy_fixup",
+    "f2k_user_copy_fixup:",
+    "    mov eax, ecx",
+    "    pop edi",
+    "    pop esi",
+    "    ret",
+);
+
+#[cfg(target_arch = "x86")]
+unsafe extern "C" {
+    fn f2k_user_copy(dst: *mut u8, src: *const u8, len: usize) -> usize;
+    fn f2k_user_copy_insn();
+    fn f2k_user_copy_fixup();
 }
 
-/// Write `bytes` to user memory (probe + attributed copy). An unmapped range faults, ending the
-/// user process.
+/// Where a ring-0 fault at `eip` resumes, when `eip` is the fault-tolerant copy's instruction.
+#[cfg(target_arch = "x86")]
+pub fn copy_fixup(eip: u32) -> Option<u32> {
+    // The labels' addresses, through pointers (a direct function-item cast is provenance-lossy).
+    let insn = f2k_user_copy_insn as *const () as usize as u32;
+    let fixup = f2k_user_copy_fixup as *const () as usize as u32;
+    (eip == insn).then_some(fixup)
+}
+
+/// Copy `len` bytes between kernel and user memory through the fault-tolerant routine.
+#[cfg(target_arch = "x86")]
+fn user_copy(dst: *mut u8, src: *const u8, len: usize) -> Result<(), u32> {
+    // SAFETY: one side is the caller's kernel buffer; the other passed the user probe, and a fault
+    // on it resumes at the routine's fixup.
+    let remaining = unsafe { f2k_user_copy(dst, src, len) };
+    if remaining == 0 {
+        Ok(())
+    } else {
+        Err(STATUS_ACCESS_VIOLATION)
+    }
+}
+
+/// Read `bytes` from user memory: probed, then copied fault-tolerantly. A range outside user space
+/// or a page that cannot be read fails with STATUS_ACCESS_VIOLATION, `bytes` partly written.
+pub fn read_user(pointer: u32, bytes: &mut [u8]) -> Result<(), u32> {
+    probe_user_range(pointer, bytes.len() as u32)?;
+    #[cfg(target_arch = "x86")]
+    {
+        user_copy(bytes.as_mut_ptr(), pointer as *const u8, bytes.len())
+    }
+    #[cfg(not(target_arch = "x86"))]
+    {
+        host::with_memory(bytes.len(), |memory| memory.read(pointer, bytes))
+    }
+}
+
+/// Write `bytes` to user memory: probed, then copied fault-tolerantly. A range outside user space,
+/// or a page that is not mapped writable, fails with STATUS_ACCESS_VIOLATION, partly written.
 pub fn write_user(pointer: u32, bytes: &[u8]) -> Result<(), u32> {
     probe_user_range(pointer, bytes.len() as u32)?;
-    // SAFETY: as above.
-    with_user_attribution(|| unsafe {
-        let dst = pointer as *mut u8;
-        for (i, &byte) in bytes.iter().enumerate() {
-            dst.add(i).write_volatile(byte);
+    #[cfg(target_arch = "x86")]
+    {
+        user_copy(pointer as *mut u8, bytes.as_ptr(), bytes.len())
+    }
+    #[cfg(not(target_arch = "x86"))]
+    {
+        host::with_memory(bytes.len(), |memory| memory.write(pointer, bytes))
+    }
+}
+
+/// Host builds' user memory: a 32-bit address space no host pointer can stand for, so the copies
+/// go through [`host::UserMemory`], the memory a test installs for its thread
+/// ([`host::install`]; the contract harness's fixture does). With none installed, every access
+/// fails as an unmapped page does.
+#[cfg(not(target_arch = "x86"))]
+pub mod host {
+    use super::STATUS_ACCESS_VIOLATION;
+
+    /// A user address space, as the copies see it: a range that is not all mapped fails with
+    /// STATUS_ACCESS_VIOLATION.
+    pub trait UserMemory {
+        fn read(&self, pointer: u32, bytes: &mut [u8]) -> Result<(), u32>;
+        fn write(&mut self, pointer: u32, bytes: &[u8]) -> Result<(), u32>;
+    }
+
+    /// A memory the tests install: shared with the test, which stages and inspects it.
+    #[cfg(test)]
+    pub type Shared = std::rc::Rc<core::cell::RefCell<dyn UserMemory>>;
+
+    #[cfg(test)]
+    std::thread_local! {
+        static MEMORY: core::cell::RefCell<Option<Shared>> = const { core::cell::RefCell::new(None) };
+    }
+
+    /// Make `memory` the calling thread's user memory, until the returned guard drops.
+    #[cfg(test)]
+    pub fn install(memory: Shared) -> Installed {
+        MEMORY.with(|slot| *slot.borrow_mut() = Some(memory));
+        Installed(())
+    }
+
+    /// The installed memory's lifetime: dropping it uninstalls.
+    #[cfg(test)]
+    pub struct Installed(());
+
+    #[cfg(test)]
+    impl Drop for Installed {
+        fn drop(&mut self) {
+            MEMORY.with(|slot| *slot.borrow_mut() = None);
         }
-    });
-    Ok(())
+    }
+
+    /// Run `access` (of `length` bytes) on the installed memory; STATUS_ACCESS_VIOLATION with
+    /// none. An empty access touches nothing and succeeds, as on the target.
+    pub(super) fn with_memory(
+        length: usize,
+        access: impl FnOnce(&mut dyn UserMemory) -> Result<(), u32>,
+    ) -> Result<(), u32> {
+        if length == 0 {
+            return Ok(());
+        }
+        #[cfg(test)]
+        {
+            let memory = MEMORY.with(|slot| slot.borrow().clone());
+            match memory {
+                Some(memory) => access(&mut *memory.borrow_mut()),
+                None => Err(STATUS_ACCESS_VIOLATION),
+            }
+        }
+        #[cfg(not(test))]
+        {
+            let _ = access;
+            Err(STATUS_ACCESS_VIOLATION)
+        }
+    }
 }
 
 /// Copy `length` bytes of arguments from user memory into `out`.
@@ -153,10 +288,19 @@ extern "C" fn syscall_dispatch(frame: &mut TrapFrame) {
         crate::process::threads::exit_thread(frame.edx as i32);
     }
 
-    // The service registry lives with the surface it implements.
-    let Some((arg_bytes, service)) = crate::compat::kernel32::lookup_service(frame.eax) else {
-        frame.eax = STATUS_INVALID_SYSTEM_SERVICE;
-        return;
+    // A Windows 2000 system service, or a transitional Win32 service (whose registry lives with
+    // the surface it implements).
+    let found = if frame.eax < crate::nt::NT_SERVICE_LIMIT {
+        crate::nt::lookup(frame.eax).ok_or(STATUS_NOT_IMPLEMENTED)
+    } else {
+        crate::compat::kernel32::lookup_service(frame.eax).ok_or(STATUS_INVALID_SYSTEM_SERVICE)
+    };
+    let (arg_bytes, service) = match found {
+        Ok(found) => found,
+        Err(status) => {
+            frame.eax = status;
+            return;
+        }
     };
 
     if let Err(status) = probe_user_range(frame.edx, arg_bytes) {
@@ -301,12 +445,16 @@ mod tests {
         );
     }
 
-    /// The argument budget covers every service and is whole dwords.
+    /// The argument budget covers every service, of both tables, and is whole dwords.
     #[test]
     fn argument_budget_covers_the_registry() {
-        assert_eq!(MAX_ARG_BYTES, 32);
+        assert_eq!(MAX_ARG_BYTES, 44);
         assert_eq!(MAX_ARG_BYTES % 4, 0);
-        for (_, arg_bytes, _) in crate::compat::kernel32::SERVICES {
+        let nt = crate::nt::NT_SERVICES.iter().map(|&(_, _, bytes, _)| bytes);
+        let win32 = crate::compat::kernel32::SERVICES
+            .iter()
+            .map(|&(_, bytes, _)| bytes);
+        for arg_bytes in nt.chain(win32) {
             assert!(
                 arg_bytes as usize <= MAX_ARG_BYTES,
                 "service arg block {arg_bytes} exceeds the budget"
@@ -327,6 +475,14 @@ mod tests {
     fn vector_is_the_syscall_vector() {
         assert_eq!(SYSCALL_VECTOR, 0x2E);
         assert!(SYSCALL_VECTOR > 31);
+    }
+
+    /// The ranges do not meet: Windows 2000's services, the transitional Win32 table, F2K's internal
+    /// thread exit.
+    #[test]
+    fn the_service_ranges_do_not_meet() {
+        assert!(crate::nt::NT_SERVICE_LIMIT <= crate::compat::kernel32::WIN32_SERVICE_BASE);
+        assert!(SYS_THREAD_EXIT > crate::compat::kernel32::WIN32_SERVICE_BASE + 0x1000);
     }
 
     /// Exit is the registry's first service, with a one-dword argument block.

@@ -1,10 +1,17 @@
 # ntdll.dll's exports: the one source every list of them derives from (the format is kernel32's,
 # documented in userland/kernel32/exports.toml).
 #
-# Today ntdll carries the kernel-served export Windows 2000 places there (RtlUnwind, which kernel32
-# forwards to) and the F2K-internal entry point the kernel sends a thread to (`internal = true`: not
-# a Windows 2000 export). Windows 2000's system services and ntdll's user-mode runtime come with
-# later work.
+# ntdll carries Windows 2000's system services (`impl = { syscall = "<the kernel's typed handler>" }`:
+# the stub raises the gate on the service's Windows 2000 number, from w2k-services.txt, and the
+# export is there under its Zw name too; the handler is `fn(&mut NtCall, <arguments>) -> NtResult`,
+# the NTSTATUS its answer), its user-mode exports (RtlNtStatusToDosError, the mapping kernel32
+# reports a failed service through), the kernel-served export Windows 2000 places here (RtlUnwind,
+# which kernel32 forwards to), and the F2K-internal entry point the kernel sends a thread to
+# (`internal = true`: not a Windows 2000 export).
+
+[[group]]
+key = "nt"
+title = "system services"
 
 [[group]]
 key = "exceptions"
@@ -13,6 +20,24 @@ title = "exceptions"
 [[group]]
 key = "internal"
 title = "F2K-internal entry points"
+
+# --- system services (the kernel's NT service table, kernel/src/nt) ------------------------------
+
+[[export]]
+name = "NtClose"
+group = "nt"
+args = ["handle Handle"]
+impl = { syscall = "crate::nt::object::close" }
+pinned_by = ["files/open"]
+
+# --- the status mapping (src/status.rs, over rtl::status) ------------------------------------------
+
+[[export]]
+name = "RtlNtStatusToDosError"
+group = "nt"
+args = ["u32 Status"]
+impl = { native = "RtlNtStatusToDosError" }
+pinned_by = ["files/open"]
 
 # --- exceptions -----------------------------------------------------------------------------------
 

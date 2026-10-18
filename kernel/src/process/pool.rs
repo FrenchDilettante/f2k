@@ -56,6 +56,9 @@ fn index_of(owner: *const crate::sched::process::SchedProcess) -> Option<u16> {
 /// at a time) and its record at the same index, built in place over the address space at
 /// `dir_phys`, named `name`; the kernel is attached to it until its main thread runs.
 #[cfg(target_arch = "x86")]
+// The record is the pool's, not borrowed from `name`: the lint reads the name's reference as the
+// input the returned one comes from.
+#[allow(clippy::mut_from_ref)]
 pub(super) fn create(dir_phys: u32, name: &'static str) -> &'static mut Process {
     let object = crate::ob::directory()
         .create_process()

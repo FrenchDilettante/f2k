@@ -120,12 +120,26 @@ def test_binaries_are_built_from_the_checked_in_source(fixture: str):
     )
 
 
+def test_the_ledger_checks_out():
+    """The export specs agree with the captures and the scenarios (scripts/ledger.py --check):
+    every pinned_by block exists in its fixture's capture, every scenario exists and is named,
+    every implemented export has evidence, every gap's reason leads with its id."""
+    import sys
+
+    result = subprocess.run(
+        [sys.executable, str(f2kboot.REPO_ROOT / "scripts" / "ledger.py"), "--check"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_check_all_runs_the_test_systems():
-    """`make check-all` is the one command a change is verified with: the host unit tests, then
-    the on-target suite (fastest first)."""
+    """`make check-all` is the one command a change is verified with: the host unit tests, the
+    export ledger's check and scenarios, and the on-target suite, in that order (fastest first)."""
     plan = subprocess.run(["make", "-n", "check-all"], cwd=f2kboot.REPO_ROOT, capture_output=True,
                           text=True, check=True).stdout
-    steps = ["cargo test --lib", "pytest tests"]
+    steps = ["cargo test --lib", "scripts/ledger.py --check --run", "pytest tests"]
     at = [plan.find(step) for step in steps]
     assert all(index >= 0 for index in at), dict(zip(steps, at))
     assert at == sorted(at), "the steps run fastest first"
@@ -218,3 +232,150 @@ def test_current_mut_call_sites_only_go_down():
         f"{sites} current_mut() call sites, below the recorded {CURRENT_MUT_SITES}: lower "
         f"CURRENT_MUT_SITES in tests/test_repository.py to {sites} so the ratchet holds"
     )
+
+
+# --- kernel32 as Windows 2000 builds it ----------------------------------------------------------
+
+import tomllib
+
+
+def kernel32_exports() -> list[dict]:
+    return tomllib.loads((f2kboot.REPO_ROOT / "userland" / "kernel32" / "exports.toml").read_text())["export"]
+
+
+# The kernel32 exports the kernel still serves (the kernel's transitional Win32 services: `legacy`
+# handlers and `floor` answers, generated int 2Eh stubs). Each increment moves its group to
+# kernel32's own code over ntdll and lowers this; C1 retires the last.
+SERVED_KERNEL32_EXPORTS = 48
+
+# The kernel32 exports the corpus imports that are not built yet (`unimplemented` stubs failing with
+# ERROR_CALL_NOT_IMPLEMENTED, each naming its increment). It only goes down.
+UNIMPLEMENTED_KERNEL32_EXPORTS = 126
+
+
+def test_served_kernel32_exports_only_go_down():
+    """The kernel-served kernel32 exports are a ratchet: an increment that moves a group lowers the
+    recorded count, and nothing adds a served export back."""
+    served = [e["name"] for e in kernel32_exports() if {"legacy", "floor"} & set(e["impl"])]
+    assert len(served) <= SERVED_KERNEL32_EXPORTS, (
+        f"{len(served)} kernel-served kernel32 exports, above the ceiling of "
+        f"{SERVED_KERNEL32_EXPORTS}: write the export in kernel32's own code over ntdll"
+    )
+    assert len(served) == SERVED_KERNEL32_EXPORTS, (
+        f"{len(served)} kernel-served kernel32 exports, below the recorded {SERVED_KERNEL32_EXPORTS}: "
+        f"lower SERVED_KERNEL32_EXPORTS to {len(served)} so the ratchet holds"
+    )
+
+
+def test_unimplemented_kernel32_exports_only_go_down():
+    """The unimplemented stubs are a ratchet: an increment that builds its exports lowers the
+    recorded count, and no export goes back to a stub."""
+    stubs = [e["name"] for e in kernel32_exports() if "unimplemented" in e["impl"]]
+    assert len(stubs) <= UNIMPLEMENTED_KERNEL32_EXPORTS, (
+        f"{len(stubs)} unimplemented kernel32 exports, above the ceiling of "
+        f"{UNIMPLEMENTED_KERNEL32_EXPORTS}"
+    )
+    assert len(stubs) == UNIMPLEMENTED_KERNEL32_EXPORTS, (
+        f"{len(stubs)} unimplemented kernel32 exports, below the recorded "
+        f"{UNIMPLEMENTED_KERNEL32_EXPORTS}: lower UNIMPLEMENTED_KERNEL32_EXPORTS to {len(stubs)} so "
+        "the ratchet holds"
+    )
+
+
+def test_unimplemented_exports_name_their_increment():
+    """Every unimplemented export says which rebuild increment builds it (`<increment>: <what>`)."""
+    for export in kernel32_exports():
+        reason = export["impl"].get("unimplemented")
+        if reason is not None:
+            assert re.match(r"[A-C]\d+[ab]?: \S", reason), f"{export['name']}: {reason!r}"
+
+
+def test_the_spec_lists_every_fixture_import():
+    """kernel32's spec lists every kernel32 function the corpus fixtures import (implemented, or an
+    unimplemented stub), so every fixture loads: the loader stops at the first missing import.
+    hellogui imports user32 and gdi32, which F2K does not have."""
+    exported = {e["name"] for e in kernel32_exports()}
+    for exe in sorted((f2kboot.REPO_ROOT / "tests").glob("*/*.exe")):
+        if exe.parent.name == "hellogui":
+            continue
+        missing = sorted(set(pe_imports(exe).get("kernel32.dll", [])) - exported)
+        assert not missing, f"{exe.name} imports {missing}"
+
+
+def pe_rva_reader(data: bytes):
+    """A PE file's dword reader, its RVA-to-offset map, and its optional header's offset."""
+    word = lambda at: int.from_bytes(data[at:at + 4], "little")
+    pe = word(0x3C)
+    optional = pe + 24
+    sections = int.from_bytes(data[pe + 6:pe + 8], "little")
+    header = optional + int.from_bytes(data[pe + 20:pe + 22], "little")
+    table = []
+    for index in range(sections):
+        entry = header + 40 * index
+        table.append((word(entry + 12), max(word(entry + 8), word(entry + 16)), word(entry + 20),
+                      word(entry + 36), word(entry + 16)))
+
+    def offset(rva: int) -> int:
+        for va, size, raw, _, _ in table:
+            if va <= rva < va + size:
+                return rva - va + raw
+        raise ValueError(f"RVA {rva:#x} is in no section")
+
+    return word, offset, optional, table
+
+
+def pe_imports(path: Path) -> dict[str, list[str]]:
+    """A PE image's imports: module (lower case) -> imported names (`#n` for an ordinal)."""
+    data = path.read_bytes()
+    word, offset, optional, _ = pe_rva_reader(data)
+    imports_rva = word(optional + 96 + 8)
+    found: dict[str, list[str]] = {}
+    at = offset(imports_rva) if imports_rva else None
+    while at is not None and word(at + 12):
+        name_at = offset(word(at + 12))
+        module = data[name_at:data.index(b"\0", name_at)].decode().lower()
+        thunk = offset(word(at) or word(at + 16))
+        names = found.setdefault(module, [])
+        while word(thunk):
+            entry = word(thunk)
+            if entry & 0x8000_0000:
+                names.append(f"#{entry & 0xFFFF}")
+            else:
+                hint_at = offset(entry) + 2
+                names.append(data[hint_at:data.index(b"\0", hint_at)].decode())
+            thunk += 4
+        at += 20
+    return found
+
+
+def int2eh_pairs(path: Path) -> int:
+    """How many `int 2Eh` byte pairs a DLL's executable sections hold."""
+    data = path.read_bytes()
+    _, _, _, table = pe_rva_reader(data)
+    return sum(
+        data[raw:raw + size].count(b"\xcd\x2e")
+        for _, _, raw, characteristics, size in table
+        if characteristics & 0x2000_0000  # IMAGE_SCN_MEM_EXECUTE
+    )
+
+
+def kernel32_dll(builder) -> Path:
+    builder([])
+    return f2kboot.REPO_ROOT / "target" / "userland" / "i686-f2k-pe" / "release" / "kernel32.dll"
+
+
+def test_kernel32_imports_nothing_but_ntdll(builder):
+    """kernel32.dll's imports name ntdll.dll at most: Windows 2000's kernel32 imports ntdll alone."""
+    modules = set(pe_imports(kernel32_dll(builder)))
+    assert modules <= {"ntdll.dll"}, modules
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="C1: kernel32's served exports are int 2Eh stubs until their groups move over ntdll",
+)
+def test_kernel32_enters_the_kernel_only_through_ntdll(builder):
+    """Windows 2000's kernel32 holds no `int 2Eh`: only ntdll's stubs enter the kernel, every
+    kernel32 export being user-mode code over ntdll."""
+    gates = int2eh_pairs(kernel32_dll(builder))
+    assert gates == 0, f"{gates} int 2Eh byte pairs in kernel32's code"

@@ -5,8 +5,7 @@ kind = "sectioned"
 gate = true
 timeout = 40
 
-# The blocks this kernel does not pass yet, each with the increment that enables it (none of
-# this fixture's blocks run yet: its imports are not all served).
+# The blocks this kernel does not pass yet, each with the increment that enables it.
 [pending]
 create = "B9: files, the FAT32 write side"
 write = "B9: files, the FAT32 write side"

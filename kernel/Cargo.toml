@@ -45,6 +45,10 @@ fault-test-threadexit = []
 # blocked on the drive), then checks after the teardown that the volume
 # is usable again: the lock released, the drive between commands.
 fault-test-exitio = []
+# Swaps the ring-3 smoke stub for one that raises NtClose by Windows
+# 2000's service number (0x18) on a handle naming nothing, then exits
+# with the status: the NT service table must answer STATUS_INVALID_HANDLE.
+fault-test-ntclose = []
 # The multi-process suite case: exit0, ret0, bsscheck, bsscheck,
 # crash, exit0 run in sequence in one boot, each process torn down
 # and audited before the next starts. The sequence runner and the

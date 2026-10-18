@@ -8,8 +8,10 @@ gate = true
 # rebuilt and recaptured.
 crt = ["its routine ran: WAIT_OBJECT_0, parameter *"]
 
-# The blocks this kernel does not pass yet, each with the increment that enables it (none of
-# this fixture's blocks run yet: its imports are not all served).
+# The blocks this kernel does not pass yet, each with the increment that enables it.
+# Every block stops in the multithreaded C runtime's start-up first ("R6016 - not enough space for
+# thread data"): it needs TlsAlloc, TlsGetValue and TlsSetValue (B7's), so whichever of B5 and B7
+# lands first brings them.
 [pending]
 create = "B7: threads and scheduling"
 exit = "B7: threads and scheduling"

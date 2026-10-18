@@ -11,6 +11,7 @@
 //! process's), the exit service ends the process and all its threads, and faults raised by user
 //! code end the process, not the kernel.
 
+pub mod args;
 pub mod syscall;
 pub mod userheap;
 
@@ -22,6 +23,7 @@ pub mod userheap;
     feature = "fault-test-segments",
     feature = "fault-test-threadexit",
     feature = "fault-test-exitio",
+    feature = "fault-test-ntclose",
     test
 ))]
 pub const USER_CODE_PAGE: u32 = 0x0040_0000;
@@ -251,6 +253,30 @@ pub const EXIT_DURING_READ_STUB: [u8; 156] = {
 ))]
 pub const RING3_STUB: [u8; 156] = EXIT_DURING_READ_STUB;
 
+/// NtClose through ntdll's gate number (Windows 2000's 0x18) on a handle naming nothing, then exit
+/// with the status the gate returned in EAX (STATUS_INVALID_HANDLE): the NT service table answers
+/// by Windows 2000's numbers.
+#[cfg(all(
+    feature = "fault-test-ntclose",
+    not(feature = "fault-test-user"),
+    not(feature = "fault-test-badargs"),
+    not(feature = "fault-test-segments"),
+    not(feature = "fault-test-threadexit"),
+    not(feature = "fault-test-exitio")
+))]
+#[rustfmt::skip]
+pub const RING3_STUB: [u8; 23] = [
+    0x6A, 0x44, // push 0x44 (a handle naming nothing)
+    0x89, 0xE2, // mov edx, esp
+    0xB8, 0x18, 0x00, 0x00, 0x00, // mov eax, NtClose (0x18)
+    0xCD, 0x2E, // int 0x2E
+    0x50, // push eax
+    0x89, 0xE2, // mov edx, esp
+    0xB8, 0x01, 0x20, 0x00, 0x00, // mov eax, SYS_EXIT (0x2001)
+    0xCD, 0x2E, // int 0x2E
+    0xEB, 0xFE, // jmp $
+];
+
 /// Trap frame the gate stubs build on the ring-0 stack, in the shape shared with the exception
 /// stubs (the CPU pushes the ring-3 tail; the stub pushes the rest in the same order).
 #[allow(dead_code)]
@@ -308,7 +334,8 @@ pub fn run_user_process() -> ! {
             feature = "fault-test-badargs",
             feature = "fault-test-segments",
             feature = "fault-test-threadexit",
-            feature = "fault-test-exitio"
+            feature = "fault-test-exitio",
+            feature = "fault-test-ntclose"
         )
     ))]
     {
@@ -324,7 +351,8 @@ pub fn run_user_process() -> ! {
             feature = "fault-test-badargs",
             feature = "fault-test-segments",
             feature = "fault-test-threadexit",
-            feature = "fault-test-exitio"
+            feature = "fault-test-exitio",
+            feature = "fault-test-ntclose"
         ))
     ))]
     {
@@ -408,7 +436,8 @@ pub fn volume_path(token: &[u8]) -> &[u8] {
     feature = "fault-test-badargs",
     feature = "fault-test-segments",
     feature = "fault-test-threadexit",
-    feature = "fault-test-exitio"
+    feature = "fault-test-exitio",
+    feature = "fault-test-ntclose"
 ))]
 pub fn run_fault_stub() -> ! {
     use crate::mem::{paging, vm};

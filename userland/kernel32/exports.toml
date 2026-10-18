@@ -1,28 +1,31 @@
 # kernel32.dll's exports: the one source every list of them derives from.
 #
-# tools/exportgen reads this file and generates the kernel's service registry (the kernel's build
-# script) and, for the DLL build, the module-definition file and the service stubs
-# (userland/build-support/stubs.rs). Never copy an export's facts elsewhere: derive them from here.
+# tools/exportgen reads this file and generates the kernel's service registry and its tables of the
+# DLL's exports (the kernel's build script), and, for the DLL build, the module-definition file and
+# the generated bodies (userland/build-support/stubs.rs). scripts/ledger.py reports over it. Never
+# copy an export's facts elsewhere: derive them from here.
 #
 # The file is TOML in the subset tools/exportgen/src/toml.rs reads (it refuses anything else).
 #
-# [[group]]      an API group, the unit the exports are reported by:
+# [[group]]      an API group, the unit the ledger reports by:
 #   key          its key (exports name it), title  its heading
 #
 # [[export]]     one export, in its group's section:
 #   name         the export name (case-sensitive, as GetProcAddress matches it)
 #   group        its API group's key
 #   args         the prototype's arguments, first first: "<kind> <name>". The kind says what the
-#                caller pushes:
-#                  u32          a dword value (counts, flags, code addresses)
-#                  i32          a signed dword (a count where -1 means "to the NUL")
-#                  bool         a Win32 BOOL (nonzero is true)
-#                  handle       a handle value
-#                  ptr          a pointer into caller memory
-#                  ptr<T>       a pointer to one T (u8, u16, u32, i32, u64)
-#                  u64          a quadword by value (two dwords, low first)
-#                  strA, strW   a NUL-terminated string the call reads; strA? allows NULL, strA[260]
-#                               gives the platform's limit on its length in units, the NUL included
+#                caller pushes and, for a system service (ntdll's), what its kernel handler
+#                receives:
+#                  u32          a dword value (counts, flags, code addresses)        u32
+#                  i32          a signed dword (a count where -1 means "to the NUL")  i32
+#                  bool         a Win32 BOOL (nonzero is true)                       bool
+#                  handle       a handle value                                       Handle
+#                  ptr          a pointer into caller memory                         UserAddr
+#                  ptr<T>       a pointer to one T (u8, u16, u32, i32, u64)          UserPtr<T>
+#                  u64          a quadword by value (two dwords, low first)          u64
+#                  strA, strW   a NUL-terminated string the call reads (not a system service's);
+#                               strA? allows NULL, strA[260] gives the platform's limit on its
+#                               length in units, the NUL included
 #                the argument block its callers push and its body pops (stdcall) is 4 bytes per
 #                argument, 8 per u64
 #   impl         how it is implemented, an inline table with one key:
@@ -31,30 +34,42 @@
 #                                             compat::kernel32's scope): the kernel's served
 #                                             surface, until its group moves to user mode
 #                  { native = "<body>" }      it runs in user mode: the DLL's own code, an
-#                                             f2k_export_<Name> symbol (build-support/stubs.rs)
+#                                             `f2k_export_<Name>` body in its Rust or assembly
+#                  { syscall = "<path>" }     ntdll's system services only: the stub raises the gate
+#                                             on Windows 2000's number (see userland/ntdll/exports.toml)
 #                  { forward = "MODULE.Export" }  forwarded to another module's export (the same
 #                                             prototype)
 #                  { floor = "<why>" }        a deliberate fixed answer (zero, the kernel's shared
 #                                             floor handler), and why
-#                  { unimplemented = "<why>" }  listed but not exported yet
+#                  { unimplemented = "<increment>: <what>" }  listed, not built yet: a generated
+#                                             body sets the last error to ERROR_CALL_NOT_IMPLEMENTED
+#                                             (120) and returns `fails` (zero without one), popping
+#                                             the arguments; the increment that builds it is named
 #   ordinal      optional: the export ordinal, from the platform's own table (none yet: the
 #                ordinals are sequential placeholders)
 #   fails        optional: its failure return value: an integer (0, -1, 0x...), FALSE, NULL,
 #                INVALID_HANDLE_VALUE, WAIT_FAILED, INVALID_FILE_SIZE, INVALID_SET_FILE_POINTER,
-#                INVALID_FILE_ATTRIBUTES, TLS_OUT_OF_INDEXES, or void / never
+#                INVALID_FILE_ATTRIBUTES, TLS_OUT_OF_INDEXES, or void / never (it returns nothing /
+#                cannot fail)
 #   note         optional: a fact worth keeping beside the export
-#   pinned_by    optional: the fixture blocks pinning its behavior: "<fixture>/<section>", or
-#                "<fixture>/*" for every block of the fixture
-#   scenarios    optional: the host scenarios pinning it (test function names)
-#   unpinned     optional: why an implemented export has no evidence yet
+#   pinned_by    the fixture blocks pinning its behavior: "<fixture>/<section>" (a block of
+#                tests/<fixture>/output.txt; "(default)" is the block run with no section), or
+#                "<fixture>/*" for every block of the fixture (what the C runtime's startup calls)
+#   scenarios    the host scenarios pinning it (test function names under
+#                kernel/src/compat/harness/groups, or userland/kernel32/src/scenarios)
+#   unpinned     why an implemented export has no evidence yet (scripts/ledger.py lists it)
 #   internal     optional: true for an F2K-internal entry point, not a Windows 2000 export
+#
+# A gap is an expected-failure test, not a field here: a pending block in the fixture's
+# fixture.toml, or an #[ignore = "<gap id>: ..."] scenario; the ledger derives the status from them.
 #
 # Service numbers are internal (the registry and the stubs are both generated): the served
 # exports across the system DLLs' specs are numbered from 0x2000, ExitProcess first (0x2001), the
 # others in case-insensitive name order.
 #
-# What kernel32 exports today is the kernel's served surface, exactly the corpus's import surface:
-# every served export a kernel stub, RtlUnwind a forwarder into ntdll (as on Windows 2000).
+# kernel32 exports every function the corpus fixtures import: the kernel's served surface (a kernel stub
+# each), the trivial natives (src/natives.s), RtlUnwind a forwarder into ntdll (as on Windows 2000),
+# and an unimplemented stub for the rest, each naming the increment that builds it.
 
 [[group]]
 key = "termination"
@@ -99,6 +114,7 @@ name = "ExitProcess"
 group = "termination"
 args = ["u32 uExitCode"]
 impl = { legacy = "svc_exit_process" }
+pinned_by = ["bare/*", "files/*", "fswrite/*", "memory/*", "runtime/*", "threads/procexit"]
 
 [[export]]
 name = "TerminateProcess"
@@ -110,31 +126,99 @@ impl = { floor = "FALSE, the process not ended: the corpus imports it but never 
 name = "GetCurrentProcess"
 group = "termination"
 args = []
-impl = { legacy = "svc_get_current_process" }
+impl = { native = "GetCurrentProcess" }
+pinned_by = [
+    "files/handles",
+    "sched/*",
+    "sync/handles",
+    "sync/waitmulti",
+    "threads/create",
+    "threads/priority",
+]
 
 [[export]]
 name = "UnhandledExceptionFilter"
 group = "termination"
 args = ["ptr ExceptionInfo"]
 impl = { floor = "EXCEPTION_CONTINUE_SEARCH (zero), no effect: the corpus imports it but never calls it" }
+pinned_by = ["runtime/unhandled"]
 
 [[export]]
 name = "GetProcAddress"
 group = "termination"
 args = ["handle hModule", "ptr lpProcName"]
 impl = { legacy = "crate::exec::modules::svc_get_proc_address" }
+pinned_by = ["runtime/module"]
 
 [[export]]
 name = "LoadLibraryA"
 group = "termination"
 args = ["strA lpFileName"]
 impl = { legacy = "crate::exec::modules::svc_load_library_a" }
+pinned_by = ["runtime/module"]
 
 [[export]]
 name = "RtlUnwind"
 group = "termination"
 args = ["ptr TargetFrame", "u32 TargetIp", "ptr ExceptionRecord", "u32 ReturnValue"]
 impl = { forward = "NTDLL.RtlUnwind" }
+
+[[export]]
+name = "SetErrorMode"
+group = "termination"
+args = ["u32 uMode"]
+impl = { unimplemented = "B7: threads and scheduling" }
+fails = "never"
+pinned_by = [
+    "bare/cli",
+    "bare/code-write",
+    "bare/div-zero",
+    "bare/hlt",
+    "bare/int3",
+    "bare/into",
+    "bare/io-in",
+    "bare/kernel-read",
+    "bare/kernel-write",
+    "bare/null-call",
+    "bare/null-read",
+    "bare/null-write",
+    "bare/rdata-write",
+    "bare/stack-overflow",
+    "bare/ud2",
+    "runtime/unhandled",
+]
+
+[[export]]
+name = "RaiseException"
+group = "termination"
+args = ["u32 dwExceptionCode", "u32 dwExceptionFlags", "u32 nNumberOfArguments", "ptr lpArguments"]
+impl = { unimplemented = "B3: exceptions" }
+fails = "void"
+pinned_by = ["runtime/seh"]
+
+[[export]]
+name = "SetUnhandledExceptionFilter"
+group = "termination"
+args = ["ptr lpTopLevelExceptionFilter"]
+impl = { unimplemented = "B3: exceptions" }
+fails = "NULL"
+pinned_by = ["runtime/unhandled"]
+
+[[export]]
+name = "FreeLibrary"
+group = "termination"
+args = ["handle hLibModule"]
+impl = { unimplemented = "B10: modules" }
+fails = "FALSE"
+pinned_by = ["runtime/module"]
+
+[[export]]
+name = "GetModuleHandleA"
+group = "termination"
+args = ["strA?[261] lpModuleName"]
+impl = { unimplemented = "B10: modules" }
+fails = "NULL"
+pinned_by = ["memory/image", "runtime/module", "runtime/teb"]
 
 # --- command line / startup info ------------------------------------------------------------------
 
@@ -143,24 +227,48 @@ name = "GetCommandLineA"
 group = "startup"
 args = []
 impl = { legacy = "svc_get_command_line_a" }
+pinned_by = ["bare/*", "files/*", "fswrite/*", "memory/*", "runtime/*"]
+scenarios = ["get_command_line_is_the_same_pointer_every_call"]
 
 [[export]]
 name = "GetStartupInfoA"
 group = "startup"
 args = ["ptr lpStartupInfo"]
 impl = { legacy = "svc_get_startup_info_a" }
+pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
+scenarios = ["get_startup_info_fills_the_replayed_image", "get_startup_info_returns_zero"]
 
 [[export]]
 name = "GetModuleFileNameA"
 group = "startup"
 args = ["handle hModule", "ptr lpFilename", "u32 nSize"]
 impl = { legacy = "svc_get_module_file_name" }
+pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
+scenarios = ["get_module_file_name_refuses_module_handles_and_empty_buffers"]
 
 [[export]]
 name = "GetVersion"
 group = "startup"
 args = []
 impl = { legacy = "svc_get_version" }
+pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
+scenarios = ["get_version_reports_5_0_build_2195"]
+
+[[export]]
+name = "GetVersionExA"
+group = "startup"
+args = ["ptr lpVersionInformation"]
+impl = { unimplemented = "B1: console and process start-up" }
+fails = "FALSE"
+pinned_by = ["runtime/version"]
+
+[[export]]
+name = "FormatMessageA"
+group = "startup"
+args = ["u32 dwFlags", "ptr lpSource", "u32 dwMessageId", "u32 dwLanguageId", "ptr lpBuffer", "u32 nSize", "ptr Arguments"]
+impl = { unimplemented = "B2: locale, time, messages and the last error" }
+fails = "0"
+pinned_by = ["runtime/lasterror"]
 
 # --- console handles ------------------------------------------------------------------------------
 
@@ -169,54 +277,231 @@ name = "GetStdHandle"
 group = "console"
 args = ["u32 nStdHandle"]
 impl = { legacy = "svc_get_std_handle" }
+pinned_by = [
+    "bare/*",
+    "files/*",
+    "fswrite/*",
+    "memory/*",
+    "runtime/*",
+    "sched/*",
+    "sync/*",
+    "threads/*",
+]
+scenarios = ["get_std_handle_replays_the_captured_handles", "set_std_handle_answers_with_the_floor"]
 
 [[export]]
 name = "GetFileType"
 group = "console"
 args = ["handle hFile"]
 impl = { legacy = "svc_get_file_type" }
+pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
+scenarios = ["get_file_type_reports_a_character_device"]
 
 [[export]]
 name = "SetHandleCount"
 group = "console"
 args = ["u32 uNumber"]
 impl = { legacy = "svc_set_handle_count" }
+pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
+scenarios = ["set_handle_count_reports_its_argument"]
 
 [[export]]
 name = "WriteFile"
 group = "console"
 args = ["handle hFile", "ptr lpBuffer", "u32 nNumberOfBytesToWrite", "ptr lpNumberOfBytesWritten", "ptr lpOverlapped"]
 impl = { legacy = "svc_write_file" }
+pinned_by = [
+    "bare/*",
+    "files/*",
+    "fswrite/*",
+    "memory/*",
+    "runtime/*",
+    "sched/*",
+    "sync/*",
+    "threads/*",
+]
+scenarios = [
+    "write_file_count_pointer_and_empty_writes",
+    "write_file_refuses_other_handles_and_overlapped_requests",
+    "write_file_writes_to_the_console",
+]
 
 [[export]]
 name = "CloseHandle"
 group = "console"
 args = ["handle hObject"]
 impl = { legacy = "svc_close_handle" }
+pinned_by = [
+    "files/*",
+    "fswrite/create",
+    "fswrite/dirs",
+    "fswrite/names",
+    "fswrite/share",
+    "fswrite/times",
+    "fswrite/write",
+    "memory/mapping",
+    "memory/stack",
+    "runtime/lasterror",
+    "sched/boost",
+    "sched/freeze",
+    "sched/preempt",
+    "sched/rr",
+    "sched/sleep",
+    "sched/starve",
+    "sched/timer",
+    "sched/yield",
+    "sync/*",
+    "threads/*",
+]
 
 [[export]]
 name = "FlushFileBuffers"
 group = "console"
 args = ["handle hFile"]
 impl = { legacy = "svc_flush_file_buffers" }
+pinned_by = ["fswrite/write"]
+scenarios = ["flush_file_buffers_succeeds"]
 
 [[export]]
 name = "GetLastError"
 group = "console"
 args = []
-impl = { floor = "always zero: no service on the surface sets a last error yet" }
+impl = { native = "GetLastError" }
+pinned_by = [
+    "bare/*",
+    "files/find",
+    "files/handles",
+    "files/mapping",
+    "files/meta",
+    "files/open",
+    "files/read",
+    "files/seek",
+    "fswrite/create",
+    "fswrite/dirs",
+    "fswrite/names",
+    "fswrite/share",
+    "fswrite/times",
+    "fswrite/write",
+    "memory/heap",
+    "memory/image",
+    "memory/mapping",
+    "memory/protect",
+    "memory/stack",
+    "memory/virtual",
+    "runtime/args",
+    "runtime/console",
+    "runtime/env",
+    "runtime/lasterror",
+    "runtime/locale",
+    "runtime/module",
+    "runtime/version",
+    "sched/*",
+    "sync/*",
+    "threads/create",
+    "threads/exit",
+    "threads/mainexit",
+    "threads/perthread",
+    "threads/priority",
+    "threads/procexit",
+    "threads/scale",
+    "threads/suspend",
+    "threads/tls",
+]
 
 [[export]]
 name = "SetFilePointer"
 group = "console"
 args = ["handle hFile", "i32 lDistanceToMove", "ptr lpDistanceToMoveHigh", "u32 dwMoveMethod"]
 impl = { legacy = "svc_set_file_pointer" }
+pinned_by = ["files/handles", "files/read", "files/seek", "fswrite/write"]
+scenarios = ["set_file_pointer_refuses_non_file_handles"]
 
 [[export]]
 name = "SetStdHandle"
 group = "console"
 args = ["u32 nStdHandle", "handle hHandle"]
 impl = { floor = "FALSE, no effect: the corpus imports it but never calls it" }
+scenarios = ["set_std_handle_answers_with_the_floor"]
+
+[[export]]
+name = "SetLastError"
+group = "console"
+args = ["u32 dwErrCode"]
+impl = { native = "SetLastError" }
+pinned_by = [
+    "bare/*",
+    "files/find",
+    "files/handles",
+    "files/mapping",
+    "files/meta",
+    "files/open",
+    "files/read",
+    "files/seek",
+    "fswrite/create",
+    "fswrite/dirs",
+    "fswrite/names",
+    "fswrite/share",
+    "fswrite/times",
+    "fswrite/write",
+    "memory/heap",
+    "memory/image",
+    "memory/mapping",
+    "memory/protect",
+    "memory/virtual",
+    "runtime/args",
+    "runtime/console",
+    "runtime/env",
+    "runtime/lasterror",
+    "runtime/locale",
+    "runtime/module",
+    "runtime/teb",
+    "runtime/version",
+    "sched/timer",
+    "sync/apc",
+    "sync/event",
+    "sync/handles",
+    "sync/mutex",
+    "sync/semaphore",
+    "sync/waitmulti",
+    "threads/create",
+    "threads/exit",
+    "threads/perthread",
+    "threads/priority",
+    "threads/suspend",
+    "threads/tls",
+]
+
+[[export]]
+name = "GetConsoleCP"
+group = "console"
+args = []
+impl = { unimplemented = "B1: console and process start-up" }
+fails = "never"
+pinned_by = ["runtime/console"]
+
+[[export]]
+name = "GetConsoleOutputCP"
+group = "console"
+args = []
+impl = { unimplemented = "B1: console and process start-up" }
+fails = "never"
+pinned_by = ["runtime/console"]
+
+[[export]]
+name = "GetConsoleMode"
+group = "console"
+args = ["handle hConsoleHandle", "ptr<u32> lpMode"]
+impl = { unimplemented = "B1: console and process start-up" }
+fails = "FALSE"
+pinned_by = ["runtime/console"]
+
+[[export]]
+name = "WriteConsoleA"
+group = "console"
+args = ["handle hConsoleOutput", "ptr lpBuffer", "u32 nNumberOfCharsToWrite", "ptr<u32> lpNumberOfCharsWritten", "ptr lpReserved"]
+impl = { unimplemented = "B1: console and process start-up" }
+fails = "FALSE"
+pinned_by = ["runtime/console", "bare/badptr"]
 
 # --- environment ----------------------------------------------------------------------------------
 
@@ -225,24 +510,59 @@ name = "GetEnvironmentStrings"
 group = "environment"
 args = []
 impl = { legacy = "svc_get_environment_strings" }
+pinned_by = ["runtime/env"]
 
 [[export]]
 name = "GetEnvironmentStringsW"
 group = "environment"
 args = []
 impl = { legacy = "svc_get_environment_strings_w" }
+pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
 
 [[export]]
 name = "FreeEnvironmentStringsA"
 group = "environment"
 args = ["ptr lpszEnvironmentBlock"]
 impl = { legacy = "svc_free_environment_strings" }
+pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
 
 [[export]]
 name = "FreeEnvironmentStringsW"
 group = "environment"
 args = ["ptr lpszEnvironmentBlock"]
 impl = { legacy = "svc_free_environment_strings" }
+pinned_by = ["runtime/env"]
+
+[[export]]
+name = "GetEnvironmentVariableA"
+group = "environment"
+args = ["strA? lpName", "ptr lpBuffer", "u32 nSize"]
+impl = { unimplemented = "B6: the heap, Local/Global and the environment" }
+fails = "0"
+pinned_by = ["runtime/env"]
+
+[[export]]
+name = "SetEnvironmentVariableA"
+group = "environment"
+args = ["strA? lpName", "strA? lpValue"]
+impl = { unimplemented = "B6: the heap, Local/Global and the environment" }
+fails = "FALSE"
+pinned_by = ["runtime/env"]
+
+[[export]]
+name = "ExpandEnvironmentStringsA"
+group = "environment"
+args = ["strA lpSrc", "ptr lpDst", "u32 nSize"]
+impl = { unimplemented = "B6: the heap, Local/Global and the environment" }
+fails = "0"
+pinned_by = ["runtime/env"]
+
+[[export]]
+name = "SetEnvironmentVariableW"
+group = "environment"
+args = ["strW? lpName", "strW?[32768] lpValue"]
+impl = { unimplemented = "B6: the heap, Local/Global and the environment" }
+fails = "FALSE"
 
 # --- heap -----------------------------------------------------------------------------------------
 
@@ -251,30 +571,179 @@ name = "HeapAlloc"
 group = "heap"
 args = ["handle hHeap", "u32 dwFlags", "u32 dwBytes"]
 impl = { legacy = "svc_heap_alloc" }
+pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
 
 [[export]]
 name = "HeapCreate"
 group = "heap"
 args = ["u32 flOptions", "u32 dwInitialSize", "u32 dwMaximumSize"]
 impl = { legacy = "svc_heap_create" }
+pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
 
 [[export]]
 name = "HeapDestroy"
 group = "heap"
 args = ["handle hHeap"]
 impl = { legacy = "svc_heap_destroy" }
+pinned_by = ["memory/heap"]
 
 [[export]]
 name = "HeapFree"
 group = "heap"
 args = ["handle hHeap", "u32 dwFlags", "ptr lpMem"]
 impl = { legacy = "svc_heap_free" }
+pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
 
 [[export]]
 name = "HeapReAlloc"
 group = "heap"
 args = ["handle hHeap", "u32 dwFlags", "ptr lpMem", "u32 dwBytes"]
 impl = { legacy = "svc_heap_realloc" }
+pinned_by = ["memory/heap"]
+
+[[export]]
+name = "GetProcessHeap"
+group = "heap"
+args = []
+impl = { unimplemented = "B6: the heap, Local/Global and the environment" }
+fails = "NULL"
+pinned_by = ["memory/heap", "runtime/teb"]
+
+[[export]]
+name = "HeapSize"
+group = "heap"
+args = ["u32 hHeap", "u32 dwFlags", "ptr lpMem"]
+impl = { unimplemented = "B6: the heap, Local/Global and the environment" }
+fails = "-1"
+pinned_by = ["memory/heap"]
+
+[[export]]
+name = "HeapValidate"
+group = "heap"
+args = ["u32 hHeap", "u32 dwFlags", "ptr lpMem"]
+impl = { unimplemented = "B6: the heap, Local/Global and the environment" }
+fails = "FALSE"
+pinned_by = ["memory/heap"]
+
+[[export]]
+name = "LocalAlloc"
+group = "heap"
+args = ["u32 uFlags", "u32 uBytes"]
+impl = { unimplemented = "B6: the heap, Local/Global and the environment" }
+fails = "NULL"
+pinned_by = ["memory/local"]
+
+[[export]]
+name = "LocalFree"
+group = "heap"
+args = ["u32 hMem"]
+impl = { unimplemented = "B6: the heap, Local/Global and the environment" }
+note = "its failure return is the handle passed in, which the stub cannot give: it returns NULL (success) with the last error set"
+pinned_by = ["memory/local"]
+
+[[export]]
+name = "LocalLock"
+group = "heap"
+args = ["u32 hMem"]
+impl = { unimplemented = "B6: the heap, Local/Global and the environment" }
+fails = "NULL"
+pinned_by = ["memory/local"]
+
+[[export]]
+name = "LocalUnlock"
+group = "heap"
+args = ["u32 hMem"]
+impl = { unimplemented = "B6: the heap, Local/Global and the environment" }
+fails = "FALSE"
+pinned_by = ["memory/local"]
+
+[[export]]
+name = "LocalHandle"
+group = "heap"
+args = ["ptr pMem"]
+impl = { unimplemented = "B6: the heap, Local/Global and the environment" }
+fails = "NULL"
+pinned_by = ["memory/local"]
+
+[[export]]
+name = "LocalSize"
+group = "heap"
+args = ["u32 hMem"]
+impl = { unimplemented = "B6: the heap, Local/Global and the environment" }
+fails = "0"
+pinned_by = ["memory/local"]
+
+[[export]]
+name = "LocalFlags"
+group = "heap"
+args = ["u32 hMem"]
+impl = { unimplemented = "B6: the heap, Local/Global and the environment" }
+fails = "0x8000"
+pinned_by = ["memory/local"]
+
+[[export]]
+name = "LocalReAlloc"
+group = "heap"
+args = ["u32 hMem", "u32 uBytes", "u32 uFlags"]
+impl = { unimplemented = "B6: the heap, Local/Global and the environment" }
+fails = "NULL"
+pinned_by = ["memory/local"]
+
+[[export]]
+name = "GlobalAlloc"
+group = "heap"
+args = ["u32 uFlags", "u32 dwBytes"]
+impl = { unimplemented = "B6: the heap, Local/Global and the environment" }
+fails = "NULL"
+pinned_by = ["memory/local"]
+
+[[export]]
+name = "GlobalFree"
+group = "heap"
+args = ["u32 hMem"]
+impl = { unimplemented = "B6: the heap, Local/Global and the environment" }
+note = "its failure return is the handle passed in, which the stub cannot give: it returns NULL (success) with the last error set"
+pinned_by = ["memory/local"]
+
+[[export]]
+name = "GlobalLock"
+group = "heap"
+args = ["u32 hMem"]
+impl = { unimplemented = "B6: the heap, Local/Global and the environment" }
+fails = "NULL"
+pinned_by = ["memory/local"]
+
+[[export]]
+name = "GlobalUnlock"
+group = "heap"
+args = ["u32 hMem"]
+impl = { unimplemented = "B6: the heap, Local/Global and the environment" }
+fails = "FALSE"
+pinned_by = ["memory/local"]
+
+[[export]]
+name = "GlobalHandle"
+group = "heap"
+args = ["ptr pMem"]
+impl = { unimplemented = "B6: the heap, Local/Global and the environment" }
+fails = "NULL"
+pinned_by = ["memory/local"]
+
+[[export]]
+name = "GlobalSize"
+group = "heap"
+args = ["u32 hMem"]
+impl = { unimplemented = "B6: the heap, Local/Global and the environment" }
+fails = "0"
+pinned_by = ["memory/local"]
+
+[[export]]
+name = "GlobalReAlloc"
+group = "heap"
+args = ["u32 hMem", "u32 dwBytes", "u32 uFlags"]
+impl = { unimplemented = "B6: the heap, Local/Global and the environment" }
+fails = "NULL"
+pinned_by = ["memory/local"]
 
 # --- locale / string conversion -------------------------------------------------------------------
 
@@ -283,54 +752,156 @@ name = "GetACP"
 group = "locale"
 args = []
 impl = { legacy = "svc_get_acp" }
+pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
+scenarios = ["get_acp_reports_1252"]
 
 [[export]]
 name = "GetOEMCP"
 group = "locale"
 args = []
 impl = { legacy = "svc_get_oemcp" }
+pinned_by = ["runtime/locale"]
+scenarios = ["get_oemcp_reports_437"]
 
 [[export]]
 name = "GetCPInfo"
 group = "locale"
 args = ["u32 CodePage", "ptr lpCPInfo"]
 impl = { legacy = "svc_get_cp_info" }
+pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
+scenarios = [
+    "get_cp_info_fills_the_single_byte_image",
+    "get_cp_info_reports_utf_8_and_refuses_an_unknown_code_page",
+]
 
 [[export]]
 name = "MultiByteToWideChar"
 group = "locale"
 args = ["u32 CodePage", "u32 dwFlags", "ptr lpMultiByteStr", "i32 cbMultiByte", "ptr lpWideCharStr", "i32 cchWideChar"]
 impl = { legacy = "svc_multi_byte_to_wide_char" }
+pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
+scenarios = [
+    "multi_byte_to_wide_char_converts_through_the_table",
+    "multi_byte_to_wide_char_refusals",
+    "multi_byte_to_wide_char_size_queries_and_short_destinations",
+]
 
 [[export]]
 name = "WideCharToMultiByte"
 group = "locale"
 args = ["u32 CodePage", "u32 dwFlags", "ptr lpWideCharStr", "i32 cchWideChar", "ptr lpMultiByteStr", "i32 cbMultiByte", "ptr lpDefaultChar", "ptr lpUsedDefaultChar"]
 impl = { legacy = "svc_wide_char_to_multi_byte" }
+pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
+scenarios = [
+    "wide_char_to_multi_byte_converts_through_the_table",
+    "wide_char_to_multi_byte_refusals_and_size_queries",
+]
 
 [[export]]
 name = "LCMapStringA"
 group = "locale"
 args = ["u32 Locale", "u32 dwMapFlags", "ptr lpSrcStr", "i32 cchSrc", "ptr lpDestStr", "i32 cchDest"]
 impl = { floor = "zero, nothing written: the C runtime imports it but calls the W form" }
+pinned_by = ["runtime/locale"]
 
 [[export]]
 name = "LCMapStringW"
 group = "locale"
 args = ["u32 Locale", "u32 dwMapFlags", "ptr lpSrcStr", "i32 cchSrc", "ptr lpDestStr", "i32 cchDest"]
 impl = { legacy = "svc_lc_map_string_w" }
+pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
+scenarios = [
+    "lc_map_string_w_maps_case",
+    "lc_map_string_w_refusals_and_size_queries",
+    "lc_map_string_w_takes_a_terminated_source",
+]
 
 [[export]]
 name = "GetStringTypeA"
 group = "locale"
 args = ["u32 Locale", "u32 dwInfoType", "ptr lpSrcStr", "i32 cchSrc", "ptr lpCharType"]
 impl = { floor = "zero, nothing written: the C runtime imports it but calls the W form" }
+pinned_by = ["runtime/locale"]
 
 [[export]]
 name = "GetStringTypeW"
 group = "locale"
 args = ["u32 dwInfoType", "ptr lpSrcStr", "i32 cchSrc", "ptr lpCharType"]
 impl = { legacy = "svc_get_string_type_w" }
+pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
+scenarios = [
+    "get_string_type_w_classifies_ctype1",
+    "get_string_type_w_refusals_and_empty_counts",
+    "get_string_type_w_takes_a_terminated_source",
+]
+
+[[export]]
+name = "CompareStringA"
+group = "locale"
+args = ["u32 Locale", "u32 dwCmpFlags", "ptr lpString1", "i32 cchCount1", "ptr lpString2", "i32 cchCount2"]
+impl = { unimplemented = "B2: locale, time, messages and the last error" }
+fails = "0"
+pinned_by = ["runtime/locale"]
+
+[[export]]
+name = "CompareStringW"
+group = "locale"
+args = ["u32 Locale", "u32 dwCmpFlags", "ptr lpString1", "i32 cchCount1", "ptr lpString2", "i32 cchCount2"]
+impl = { unimplemented = "B2: locale, time, messages and the last error" }
+fails = "0"
+
+[[export]]
+name = "GetLocaleInfoA"
+group = "locale"
+args = ["u32 Locale", "u32 LCType", "ptr lpLCData", "i32 cchData"]
+impl = { unimplemented = "B2: locale, time, messages and the last error" }
+fails = "0"
+pinned_by = ["runtime/locale"]
+
+[[export]]
+name = "GetLocaleInfoW"
+group = "locale"
+args = ["u32 Locale", "u32 LCType", "ptr lpLCData", "i32 cchData"]
+impl = { unimplemented = "B2: locale, time, messages and the last error" }
+fails = "0"
+
+[[export]]
+name = "GetUserDefaultLCID"
+group = "locale"
+args = []
+impl = { unimplemented = "B2: locale, time, messages and the last error" }
+fails = "never"
+pinned_by = ["runtime/locale"]
+
+[[export]]
+name = "GetSystemDefaultLCID"
+group = "locale"
+args = []
+impl = { unimplemented = "B2: locale, time, messages and the last error" }
+fails = "never"
+pinned_by = ["runtime/locale"]
+
+[[export]]
+name = "IsValidLocale"
+group = "locale"
+args = ["u32 Locale", "u32 dwFlags"]
+impl = { unimplemented = "B2: locale, time, messages and the last error" }
+fails = "FALSE"
+
+[[export]]
+name = "IsValidCodePage"
+group = "locale"
+args = ["u32 CodePage"]
+impl = { unimplemented = "B2: locale, time, messages and the last error" }
+fails = "FALSE"
+pinned_by = ["runtime/locale"]
+
+[[export]]
+name = "EnumSystemLocalesA"
+group = "locale"
+args = ["ptr lpLocaleEnumProc", "u32 dwFlags"]
+impl = { unimplemented = "B2: locale, time, messages and the last error" }
+fails = "FALSE"
 
 # --- threads / sync -------------------------------------------------------------------------------
 
@@ -339,54 +910,571 @@ name = "CreateThread"
 group = "threads"
 args = ["ptr lpThreadAttributes", "u32 dwStackSize", "u32 lpStartAddress", "u32 lpParameter", "u32 dwCreationFlags", "ptr lpThreadId"]
 impl = { legacy = "svc_create_thread" }
+pinned_by = [
+    "files/concurrent",
+    "memory/stack",
+    "sched/boost",
+    "sched/freeze",
+    "sched/preempt",
+    "sched/rr",
+    "sched/starve",
+    "sched/yield",
+    "sync/apc",
+    "sync/critsec",
+    "sync/event",
+    "sync/handles",
+    "sync/interlocked",
+    "sync/mutex",
+    "sync/pingpong",
+    "sync/waitmulti",
+    "threads/create",
+    "threads/exit",
+    "threads/mainexit",
+    "threads/perthread",
+    "threads/priority",
+    "threads/procexit",
+    "threads/scale",
+    "threads/suspend",
+    "threads/tls",
+]
 
 [[export]]
 name = "CreateEventA"
 group = "threads"
 args = ["ptr lpEventAttributes", "bool bManualReset", "bool bInitialState", "strA? lpName"]
 impl = { legacy = "svc_create_event_a" }
+pinned_by = [
+    "sched/boost",
+    "sched/sleep",
+    "sync/apc",
+    "sync/event",
+    "sync/handles",
+    "sync/pingpong",
+    "sync/waitmulti",
+    "threads/create",
+    "threads/crt",
+    "threads/exit",
+    "threads/scale",
+    "threads/suspend",
+]
 
 [[export]]
 name = "SetEvent"
 group = "threads"
 args = ["handle hEvent"]
 impl = { legacy = "svc_set_event" }
+pinned_by = [
+    "sched/boost",
+    "sync/apc",
+    "sync/event",
+    "sync/handles",
+    "sync/pingpong",
+    "sync/waitmulti",
+    "threads/create",
+    "threads/crt",
+    "threads/exit",
+    "threads/scale",
+    "threads/suspend",
+]
 
 [[export]]
 name = "Sleep"
 group = "threads"
 args = ["u32 dwMilliseconds"]
 impl = { legacy = "svc_sleep" }
+pinned_by = [
+    "sched/clock",
+    "sched/freeze",
+    "sched/preempt",
+    "sched/rr",
+    "sched/sleep",
+    "sched/starve",
+    "sched/yield",
+    "sync/apc",
+    "sync/event",
+    "sync/handles",
+    "threads/exit",
+    "threads/mainexit",
+    "threads/procexit",
+    "threads/scale",
+    "threads/suspend",
+]
 
 [[export]]
 name = "WaitForSingleObject"
 group = "threads"
 args = ["handle hHandle", "u32 dwMilliseconds"]
 impl = { legacy = "svc_wait_for_single_object" }
+pinned_by = [
+    "files/*",
+    "memory/stack",
+    "sched/boost",
+    "sched/freeze",
+    "sched/preempt",
+    "sched/rr",
+    "sched/sleep",
+    "sched/starve",
+    "sched/timer",
+    "sched/yield",
+    "sync/*",
+    "threads/*",
+]
 
 [[export]]
 name = "GetTickCount"
 group = "threads"
 args = []
 impl = { legacy = "svc_get_tick_count" }
+pinned_by = [
+    "runtime/lasterror",
+    "runtime/module",
+    "sched/clock",
+    "sched/freeze",
+    "sched/preempt",
+    "sched/rr",
+    "sched/sleep",
+    "sched/starve",
+    "sched/timer",
+    "threads/scale",
+]
 
 [[export]]
 name = "SetThreadPriority"
 group = "threads"
 args = ["handle hThread", "i32 nPriority"]
 impl = { legacy = "svc_set_thread_priority" }
+pinned_by = ["sched/*", "threads/priority"]
 
 [[export]]
 name = "SuspendThread"
 group = "threads"
 args = ["handle hThread"]
 impl = { legacy = "svc_suspend_thread" }
+pinned_by = ["sched/freeze", "threads/suspend"]
 
 [[export]]
 name = "ResumeThread"
 group = "threads"
 args = ["handle hThread"]
 impl = { legacy = "svc_resume_thread" }
+pinned_by = ["sched/freeze", "sched/preempt", "threads/*"]
+
+[[export]]
+name = "GetCurrentThreadId"
+group = "threads"
+args = []
+impl = { unimplemented = "B1: console and process start-up" }
+fails = "never"
+pinned_by = ["runtime/teb", "sync/critsec", "threads/create", "threads/priority", "threads/scale"]
+
+[[export]]
+name = "GetCurrentProcessId"
+group = "threads"
+args = []
+impl = { unimplemented = "B1: console and process start-up" }
+fails = "never"
+pinned_by = ["runtime/teb"]
+
+[[export]]
+name = "GetCurrentThread"
+group = "threads"
+args = []
+impl = { native = "GetCurrentThread" }
+pinned_by = [
+    "sched/*",
+    "sync/apc",
+    "sync/handles",
+    "sync/waitmulti",
+    "threads/create",
+    "threads/priority",
+    "threads/suspend",
+]
+
+[[export]]
+name = "InterlockedIncrement"
+group = "threads"
+args = ["ptr lpAddend"]
+impl = { native = "InterlockedIncrement" }
+pinned_by = ["sync/event", "sync/interlocked", "sync/waitmulti", "threads/scale"]
+
+[[export]]
+name = "InterlockedDecrement"
+group = "threads"
+args = ["ptr lpAddend"]
+impl = { native = "InterlockedDecrement" }
+pinned_by = ["sync/interlocked"]
+
+[[export]]
+name = "InterlockedExchange"
+group = "threads"
+args = ["ptr Target", "u32 Value"]
+impl = { native = "InterlockedExchange" }
+pinned_by = ["sync/interlocked"]
+
+[[export]]
+name = "InterlockedExchangeAdd"
+group = "threads"
+args = ["ptr Addend", "u32 Value"]
+impl = { native = "InterlockedExchangeAdd" }
+pinned_by = ["sync/interlocked"]
+
+[[export]]
+name = "InterlockedCompareExchange"
+group = "threads"
+args = ["ptr Destination", "u32 Exchange", "u32 Comperand"]
+impl = { native = "InterlockedCompareExchange" }
+pinned_by = ["sync/interlocked"]
+
+[[export]]
+name = "DuplicateHandle"
+group = "threads"
+args = ["handle hSourceProcessHandle", "handle hSourceHandle", "handle hTargetProcessHandle", "ptr<u32> lpTargetHandle", "u32 dwDesiredAccess", "bool bInheritHandle", "u32 dwOptions"]
+impl = { unimplemented = "B5: synchronization and APCs" }
+fails = "FALSE"
+pinned_by = ["files/handles", "sync/handles", "threads/create"]
+
+[[export]]
+name = "ExitThread"
+group = "threads"
+args = ["u32 dwExitCode"]
+impl = { unimplemented = "B7: threads and scheduling" }
+fails = "never"
+pinned_by = ["threads/exit", "threads/mainexit"]
+
+[[export]]
+name = "GetExitCodeThread"
+group = "threads"
+args = ["handle hThread", "ptr<u32> lpExitCode"]
+impl = { unimplemented = "B7: threads and scheduling" }
+fails = "FALSE"
+pinned_by = ["threads/*"]
+
+[[export]]
+name = "GetPriorityClass"
+group = "threads"
+args = ["handle hProcess"]
+impl = { unimplemented = "B7: threads and scheduling" }
+fails = "0"
+pinned_by = ["threads/priority"]
+
+[[export]]
+name = "GetThreadPriority"
+group = "threads"
+args = ["handle hThread"]
+impl = { unimplemented = "B7: threads and scheduling" }
+fails = "0x7FFF_FFFF"
+pinned_by = ["threads/priority"]
+
+[[export]]
+name = "GetThreadPriorityBoost"
+group = "threads"
+args = ["handle hThread", "ptr<u32> pDisablePriorityBoost"]
+impl = { unimplemented = "B7: threads and scheduling" }
+fails = "FALSE"
+pinned_by = ["threads/priority"]
+
+[[export]]
+name = "SetPriorityClass"
+group = "threads"
+args = ["handle hProcess", "u32 dwPriorityClass"]
+impl = { unimplemented = "B7: threads and scheduling" }
+fails = "FALSE"
+pinned_by = ["threads/priority"]
+
+[[export]]
+name = "SetThreadPriorityBoost"
+group = "threads"
+args = ["handle hThread", "bool DisablePriorityBoost"]
+impl = { unimplemented = "B7: threads and scheduling" }
+fails = "FALSE"
+pinned_by = ["threads/priority"]
+
+[[export]]
+name = "TerminateThread"
+group = "threads"
+args = ["handle hThread", "u32 dwExitCode"]
+impl = { unimplemented = "B7: threads and scheduling" }
+fails = "FALSE"
+pinned_by = ["threads/exit"]
+
+[[export]]
+name = "TlsAlloc"
+group = "threads"
+args = []
+impl = { unimplemented = "B7: threads and scheduling" }
+fails = "TLS_OUT_OF_INDEXES"
+pinned_by = ["threads/tls"]
+
+[[export]]
+name = "TlsFree"
+group = "threads"
+args = ["u32 dwTlsIndex"]
+impl = { unimplemented = "B7: threads and scheduling" }
+fails = "FALSE"
+pinned_by = ["threads/tls"]
+
+[[export]]
+name = "TlsGetValue"
+group = "threads"
+args = ["u32 dwTlsIndex"]
+impl = { unimplemented = "B7: threads and scheduling" }
+fails = "0"
+pinned_by = ["threads/tls"]
+
+[[export]]
+name = "TlsSetValue"
+group = "threads"
+args = ["u32 dwTlsIndex", "ptr lpTlsValue"]
+impl = { unimplemented = "B7: threads and scheduling" }
+fails = "FALSE"
+pinned_by = ["threads/tls"]
+
+[[export]]
+name = "DeleteCriticalSection"
+group = "threads"
+args = ["ptr lpCriticalSection"]
+impl = { unimplemented = "B5: synchronization and APCs" }
+fails = "void"
+pinned_by = ["sync/critsec"]
+
+[[export]]
+name = "EnterCriticalSection"
+group = "threads"
+args = ["ptr lpCriticalSection"]
+impl = { unimplemented = "B5: synchronization and APCs" }
+fails = "void"
+pinned_by = ["sync/critsec"]
+
+[[export]]
+name = "InitializeCriticalSection"
+group = "threads"
+args = ["ptr lpCriticalSection"]
+impl = { unimplemented = "B5: synchronization and APCs" }
+fails = "void"
+pinned_by = ["sync/critsec"]
+
+[[export]]
+name = "LeaveCriticalSection"
+group = "threads"
+args = ["ptr lpCriticalSection"]
+impl = { unimplemented = "B5: synchronization and APCs" }
+fails = "void"
+pinned_by = ["sync/critsec"]
+
+[[export]]
+name = "TryEnterCriticalSection"
+group = "threads"
+args = ["ptr lpCriticalSection"]
+impl = { unimplemented = "B5: synchronization and APCs" }
+fails = "FALSE"
+pinned_by = ["sync/critsec"]
+
+[[export]]
+name = "CreateMutexA"
+group = "threads"
+args = ["ptr lpMutexAttributes", "bool bInitialOwner", "strA? lpName"]
+impl = { unimplemented = "B5: synchronization and APCs" }
+fails = "NULL"
+pinned_by = ["sync/event", "sync/mutex", "sync/waitmulti"]
+
+[[export]]
+name = "CreateSemaphoreA"
+group = "threads"
+args = ["ptr lpSemaphoreAttributes", "i32 lInitialCount", "i32 lMaximumCount", "strA? lpName"]
+impl = { unimplemented = "B5: synchronization and APCs" }
+fails = "NULL"
+pinned_by = ["sync/semaphore", "sync/waitmulti"]
+
+[[export]]
+name = "OpenEventA"
+group = "threads"
+args = ["u32 dwDesiredAccess", "bool bInheritHandle", "strA? lpName"]
+impl = { unimplemented = "B5: synchronization and APCs" }
+fails = "NULL"
+pinned_by = ["sync/event"]
+
+[[export]]
+name = "OpenMutexA"
+group = "threads"
+args = ["u32 dwDesiredAccess", "bool bInheritHandle", "strA? lpName"]
+impl = { unimplemented = "B5: synchronization and APCs" }
+fails = "NULL"
+pinned_by = ["sync/mutex"]
+
+[[export]]
+name = "OpenSemaphoreA"
+group = "threads"
+args = ["u32 dwDesiredAccess", "bool bInheritHandle", "strA? lpName"]
+impl = { unimplemented = "B5: synchronization and APCs" }
+fails = "NULL"
+pinned_by = ["sync/semaphore"]
+
+[[export]]
+name = "PulseEvent"
+group = "threads"
+args = ["handle hEvent"]
+impl = { unimplemented = "B5: synchronization and APCs" }
+fails = "FALSE"
+pinned_by = ["sync/event"]
+
+[[export]]
+name = "QueueUserAPC"
+group = "threads"
+args = ["ptr pfnAPC", "handle hThread", "u32 dwData"]
+impl = { unimplemented = "B5: synchronization and APCs" }
+fails = "FALSE"
+pinned_by = ["sync/apc"]
+
+[[export]]
+name = "ReleaseMutex"
+group = "threads"
+args = ["handle hMutex"]
+impl = { unimplemented = "B5: synchronization and APCs" }
+fails = "FALSE"
+pinned_by = ["sync/mutex", "sync/waitmulti"]
+
+[[export]]
+name = "ReleaseSemaphore"
+group = "threads"
+args = ["handle hSemaphore", "i32 lReleaseCount", "ptr<i32> lpPreviousCount"]
+impl = { unimplemented = "B5: synchronization and APCs" }
+fails = "FALSE"
+pinned_by = ["sync/semaphore"]
+
+[[export]]
+name = "ResetEvent"
+group = "threads"
+args = ["handle hEvent"]
+impl = { unimplemented = "B5: synchronization and APCs" }
+fails = "FALSE"
+pinned_by = ["sync/event", "sync/pingpong"]
+
+[[export]]
+name = "SignalObjectAndWait"
+group = "threads"
+args = ["handle hObjectToSignal", "handle hObjectToWaitOn", "u32 dwMilliseconds", "bool bAlertable"]
+impl = { unimplemented = "B5: synchronization and APCs" }
+fails = "WAIT_FAILED"
+pinned_by = ["sync/pingpong"]
+
+[[export]]
+name = "SleepEx"
+group = "threads"
+args = ["u32 dwMilliseconds", "bool bAlertable"]
+impl = { unimplemented = "B5: synchronization and APCs" }
+fails = "never"
+pinned_by = ["sched/sleep", "sched/timer", "sync/apc"]
+
+[[export]]
+name = "WaitForMultipleObjects"
+group = "threads"
+args = ["u32 nCount", "ptr lpHandles", "bool bWaitAll", "u32 dwMilliseconds"]
+impl = { unimplemented = "B5: synchronization and APCs" }
+fails = "WAIT_FAILED"
+pinned_by = ["sync/waitmulti"]
+
+[[export]]
+name = "WaitForSingleObjectEx"
+group = "threads"
+args = ["handle hHandle", "u32 dwMilliseconds", "bool bAlertable"]
+impl = { unimplemented = "B5: synchronization and APCs" }
+fails = "WAIT_FAILED"
+pinned_by = ["sync/apc"]
+
+[[export]]
+name = "CancelWaitableTimer"
+group = "threads"
+args = ["handle hTimer"]
+impl = { unimplemented = "B5: synchronization and APCs" }
+fails = "FALSE"
+pinned_by = ["sched/timer"]
+
+[[export]]
+name = "CreateWaitableTimerA"
+group = "threads"
+args = ["ptr lpTimerAttributes", "bool bManualReset", "strA? lpTimerName"]
+impl = { unimplemented = "B5: synchronization and APCs" }
+fails = "NULL"
+pinned_by = ["sched/timer"]
+
+[[export]]
+name = "GetLocalTime"
+group = "threads"
+args = ["ptr lpSystemTime"]
+impl = { unimplemented = "B2: locale, time, messages and the last error" }
+fails = "void"
+pinned_by = ["sched/clock"]
+
+[[export]]
+name = "GetSystemTime"
+group = "threads"
+args = ["ptr lpSystemTime"]
+impl = { unimplemented = "B2: locale, time, messages and the last error" }
+fails = "void"
+pinned_by = ["sched/clock"]
+
+[[export]]
+name = "GetSystemTimeAsFileTime"
+group = "threads"
+args = ["ptr lpSystemTimeAsFileTime"]
+impl = { unimplemented = "B2: locale, time, messages and the last error" }
+fails = "void"
+pinned_by = ["sched/clock", "sched/timer"]
+
+[[export]]
+name = "GetTimeZoneInformation"
+group = "threads"
+args = ["ptr lpTimeZoneInformation"]
+impl = { unimplemented = "B2: locale, time, messages and the last error" }
+fails = "0xFFFF_FFFF"
+
+[[export]]
+name = "OpenWaitableTimerA"
+group = "threads"
+args = ["u32 dwDesiredAccess", "bool bInheritHandle", "strA? lpTimerName"]
+impl = { unimplemented = "B5: synchronization and APCs" }
+fails = "NULL"
+pinned_by = ["sched/timer"]
+
+[[export]]
+name = "QueryPerformanceCounter"
+group = "threads"
+args = ["ptr<u64> lpPerformanceCount"]
+impl = { unimplemented = "B2: locale, time, messages and the last error" }
+fails = "FALSE"
+pinned_by = ["sched/clock"]
+
+[[export]]
+name = "QueryPerformanceFrequency"
+group = "threads"
+args = ["ptr<u64> lpFrequency"]
+impl = { unimplemented = "B2: locale, time, messages and the last error" }
+fails = "FALSE"
+pinned_by = ["sched/clock"]
+
+[[export]]
+name = "SetProcessAffinityMask"
+group = "threads"
+args = ["handle hProcess", "u32 dwProcessAffinityMask"]
+impl = { unimplemented = "B7: threads and scheduling" }
+fails = "FALSE"
+pinned_by = ["sched/*"]
+
+[[export]]
+name = "SetWaitableTimer"
+group = "threads"
+args = ["handle hTimer", "ptr<u64> pDueTime", "i32 lPeriod", "ptr pfnCompletionRoutine", "ptr lpArgToCompletionRoutine", "bool fResume"]
+impl = { unimplemented = "B5: synchronization and APCs" }
+fails = "FALSE"
+pinned_by = ["sched/timer"]
+
+[[export]]
+name = "SwitchToThread"
+group = "threads"
+args = []
+impl = { unimplemented = "B5: synchronization and APCs" }
+fails = "never"
+pinned_by = ["sched/yield"]
 
 # --- file handles ---------------------------------------------------------------------------------
 
@@ -395,12 +1483,283 @@ name = "CreateFileA"
 group = "files"
 args = ["strA lpFileName", "u32 dwDesiredAccess", "u32 dwShareMode", "ptr lpSecurityAttributes", "u32 dwCreationDisposition", "u32 dwFlagsAndAttributes", "handle hTemplateFile"]
 impl = { legacy = "svc_create_file_a" }
+pinned_by = [
+    "files/concurrent",
+    "files/handles",
+    "files/mapping",
+    "files/meta",
+    "files/open",
+    "files/read",
+    "files/seek",
+    "fswrite/create",
+    "fswrite/dirs",
+    "fswrite/names",
+    "fswrite/share",
+    "fswrite/times",
+    "fswrite/write",
+]
 
 [[export]]
 name = "ReadFile"
 group = "files"
 args = ["handle hFile", "ptr lpBuffer", "u32 nNumberOfBytesToRead", "ptr lpNumberOfBytesRead", "ptr lpOverlapped"]
 impl = { legacy = "svc_read_file" }
+pinned_by = [
+    "files/concurrent",
+    "files/crt",
+    "files/find",
+    "files/handles",
+    "files/open",
+    "files/read",
+    "files/seek",
+    "fswrite/write",
+]
+
+[[export]]
+name = "CreateFileMappingA"
+group = "files"
+args = ["handle hFile", "ptr lpAttributes", "u32 flProtect", "u32 dwMaximumSizeHigh", "u32 dwMaximumSizeLow", "strA?[260] lpName"]
+impl = { unimplemented = "B4: virtual memory and sections" }
+fails = "NULL"
+pinned_by = ["files/mapping", "memory/mapping"]
+
+[[export]]
+name = "FileTimeToLocalFileTime"
+group = "files"
+args = ["ptr lpFileTime", "ptr lpLocalFileTime"]
+impl = { unimplemented = "B2: locale, time, messages and the last error" }
+fails = "FALSE"
+
+[[export]]
+name = "FileTimeToSystemTime"
+group = "files"
+args = ["ptr lpFileTime", "ptr lpSystemTime"]
+impl = { unimplemented = "B2: locale, time, messages and the last error" }
+fails = "FALSE"
+pinned_by = ["fswrite/times"]
+
+[[export]]
+name = "FindClose"
+group = "files"
+args = ["handle hFindFile"]
+impl = { unimplemented = "B8: files: objects and the read side" }
+fails = "FALSE"
+pinned_by = ["files/find", "fswrite/*"]
+
+[[export]]
+name = "FindFirstFileA"
+group = "files"
+args = ["strA[260] lpFileName", "ptr lpFindFileData"]
+impl = { unimplemented = "B8: files: objects and the read side" }
+fails = "INVALID_HANDLE_VALUE"
+pinned_by = ["files/find", "fswrite/*"]
+
+[[export]]
+name = "OpenFileMappingA"
+group = "files"
+args = ["u32 dwDesiredAccess", "bool bInheritHandle", "strA?[260] lpName"]
+impl = { unimplemented = "B4: virtual memory and sections" }
+fails = "NULL"
+pinned_by = ["memory/mapping"]
+
+[[export]]
+name = "CopyFileA"
+group = "files"
+args = ["strA[260] lpExistingFileName", "strA[260] lpNewFileName", "bool bFailIfExists"]
+impl = { unimplemented = "B9: files: the FAT32 write side" }
+fails = "FALSE"
+pinned_by = ["fswrite/names"]
+
+[[export]]
+name = "CreateDirectoryA"
+group = "files"
+args = ["strA[260] lpPathName", "ptr lpSecurityAttributes"]
+impl = { unimplemented = "B9: files: the FAT32 write side" }
+fails = "FALSE"
+pinned_by = ["fswrite/*"]
+
+[[export]]
+name = "DeleteFileA"
+group = "files"
+args = ["strA[260] lpFileName"]
+impl = { unimplemented = "B9: files: the FAT32 write side" }
+fails = "FALSE"
+pinned_by = ["fswrite/*"]
+
+[[export]]
+name = "MoveFileA"
+group = "files"
+args = ["strA[260] lpExistingFileName", "strA[260] lpNewFileName"]
+impl = { unimplemented = "B9: files: the FAT32 write side" }
+fails = "FALSE"
+pinned_by = ["fswrite/names"]
+
+[[export]]
+name = "RemoveDirectoryA"
+group = "files"
+args = ["strA[260] lpPathName"]
+impl = { unimplemented = "B9: files: the FAT32 write side" }
+fails = "FALSE"
+pinned_by = ["fswrite/*"]
+
+[[export]]
+name = "SetFileAttributesA"
+group = "files"
+args = ["strA[260] lpFileName", "u32 dwFileAttributes"]
+impl = { unimplemented = "B9: files: the FAT32 write side" }
+fails = "FALSE"
+pinned_by = ["fswrite/*"]
+
+[[export]]
+name = "SetFileTime"
+group = "files"
+args = ["handle hFile", "ptr lpCreationTime", "ptr lpLastAccessTime", "ptr lpLastWriteTime"]
+impl = { unimplemented = "B9: files: the FAT32 write side" }
+fails = "FALSE"
+pinned_by = ["fswrite/times"]
+
+[[export]]
+name = "SystemTimeToFileTime"
+group = "files"
+args = ["ptr lpSystemTime", "ptr lpFileTime"]
+impl = { unimplemented = "B2: locale, time, messages and the last error" }
+fails = "FALSE"
+pinned_by = ["fswrite/times"]
+
+[[export]]
+name = "FindNextFileA"
+group = "files"
+args = ["handle hFindFile", "ptr lpFindFileData"]
+impl = { unimplemented = "B8: files: objects and the read side" }
+fails = "FALSE"
+pinned_by = ["files/find", "fswrite/*"]
+
+[[export]]
+name = "GetCurrentDirectoryA"
+group = "files"
+args = ["u32 nBufferLength", "ptr lpBuffer"]
+impl = { unimplemented = "B8: files: objects and the read side" }
+fails = "0"
+pinned_by = ["files/open"]
+
+[[export]]
+name = "GetDiskFreeSpaceA"
+group = "files"
+args = ["strA?[260] lpRootPathName", "ptr<u32> lpSectorsPerCluster", "ptr<u32> lpBytesPerSector", "ptr<u32> lpNumberOfFreeClusters", "ptr<u32> lpTotalNumberOfClusters"]
+impl = { unimplemented = "B8: files: objects and the read side" }
+fails = "FALSE"
+pinned_by = ["files/meta"]
+
+[[export]]
+name = "GetDriveTypeA"
+group = "files"
+args = ["strA?[260] lpRootPathName"]
+impl = { unimplemented = "B8: files: objects and the read side" }
+fails = "never"
+pinned_by = ["files/meta"]
+
+[[export]]
+name = "GetFileAttributesA"
+group = "files"
+args = ["strA[260] lpFileName"]
+impl = { unimplemented = "B8: files: objects and the read side" }
+fails = "INVALID_FILE_ATTRIBUTES"
+pinned_by = ["files/find", "files/meta", "fswrite/dirs", "fswrite/names", "fswrite/share"]
+
+[[export]]
+name = "GetFileAttributesExA"
+group = "files"
+args = ["strA[260] lpFileName", "u32 fInfoLevelId", "ptr lpFileInformation"]
+impl = { unimplemented = "B8: files: objects and the read side" }
+fails = "FALSE"
+pinned_by = [
+    "files/meta",
+    "fswrite/create",
+    "fswrite/crt",
+    "fswrite/dirs",
+    "fswrite/names",
+    "fswrite/write",
+]
+
+[[export]]
+name = "GetFileInformationByHandle"
+group = "files"
+args = ["handle hFile", "ptr lpFileInformation"]
+impl = { unimplemented = "B8: files: objects and the read side" }
+fails = "FALSE"
+pinned_by = ["files/meta"]
+
+[[export]]
+name = "GetFileSize"
+group = "files"
+args = ["handle hFile", "ptr<u32> lpFileSizeHigh"]
+impl = { unimplemented = "B8: files: objects and the read side" }
+fails = "INVALID_FILE_SIZE"
+pinned_by = ["files/meta", "fswrite/write"]
+
+[[export]]
+name = "GetFileTime"
+group = "files"
+args = ["handle hFile", "ptr lpCreationTime", "ptr lpLastAccessTime", "ptr lpLastWriteTime"]
+impl = { unimplemented = "B8: files: objects and the read side" }
+fails = "FALSE"
+pinned_by = ["files/meta", "fswrite/times"]
+
+[[export]]
+name = "GetFullPathNameA"
+group = "files"
+args = ["strA[260] lpFileName", "u32 nBufferLength", "ptr lpBuffer", "ptr<u32> lpFilePart"]
+impl = { unimplemented = "B8: files: objects and the read side" }
+fails = "0"
+pinned_by = ["files/open"]
+
+[[export]]
+name = "GetShortPathNameA"
+group = "files"
+args = ["strA[260] lpszLongPath", "ptr lpszShortPath", "u32 cchBuffer"]
+impl = { unimplemented = "B8: files: objects and the read side" }
+fails = "0"
+pinned_by = ["files/open", "fswrite/names"]
+
+[[export]]
+name = "GetVolumeInformationA"
+group = "files"
+args = ["strA?[260] lpRootPathName", "ptr lpVolumeNameBuffer", "u32 nVolumeNameSize", "ptr<u32> lpVolumeSerialNumber", "ptr<u32> lpMaximumComponentLength", "ptr<u32> lpFileSystemFlags", "ptr lpFileSystemNameBuffer", "u32 nFileSystemNameSize"]
+impl = { unimplemented = "B8: files: objects and the read side" }
+fails = "FALSE"
+pinned_by = ["files/meta"]
+
+[[export]]
+name = "MapViewOfFile"
+group = "files"
+args = ["handle hFileMappingObject", "u32 dwDesiredAccess", "u32 dwFileOffsetHigh", "u32 dwFileOffsetLow", "u32 dwNumberOfBytesToMap"]
+impl = { unimplemented = "B4: virtual memory and sections" }
+fails = "NULL"
+pinned_by = ["files/mapping", "memory/mapping"]
+
+[[export]]
+name = "SetCurrentDirectoryA"
+group = "files"
+args = ["strA[260] lpPathName"]
+impl = { unimplemented = "B8: files: objects and the read side" }
+fails = "FALSE"
+pinned_by = ["files/open"]
+
+[[export]]
+name = "SetEndOfFile"
+group = "files"
+args = ["handle hFile"]
+impl = { unimplemented = "B9: files: the FAT32 write side" }
+fails = "FALSE"
+pinned_by = ["fswrite/write"]
+
+[[export]]
+name = "UnmapViewOfFile"
+group = "files"
+args = ["ptr lpBaseAddress"]
+impl = { unimplemented = "B4: virtual memory and sections" }
+fails = "FALSE"
+pinned_by = ["files/mapping", "memory/mapping"]
 
 # --- virtual memory -------------------------------------------------------------------------------
 
@@ -409,9 +1768,75 @@ name = "VirtualAlloc"
 group = "virtual-memory"
 args = ["u32 lpAddress", "u32 dwSize", "u32 flAllocationType", "u32 flProtect"]
 impl = { legacy = "svc_virtual_alloc" }
+pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
 
 [[export]]
 name = "VirtualFree"
 group = "virtual-memory"
 args = ["u32 lpAddress", "u32 dwSize", "u32 dwFreeType"]
 impl = { legacy = "svc_virtual_free" }
+pinned_by = ["files/read", "memory/protect", "memory/virtual"]
+
+[[export]]
+name = "VirtualQuery"
+group = "virtual-memory"
+args = ["ptr lpAddress", "ptr lpBuffer", "u32 dwLength"]
+impl = { unimplemented = "B4: virtual memory and sections" }
+fails = "0"
+pinned_by = ["memory/image", "memory/mapping", "memory/protect", "memory/stack", "memory/virtual"]
+
+[[export]]
+name = "VirtualProtect"
+group = "virtual-memory"
+args = ["ptr lpAddress", "u32 dwSize", "u32 flNewProtect", "ptr<u32> lpflOldProtect"]
+impl = { unimplemented = "B4: virtual memory and sections" }
+fails = "FALSE"
+pinned_by = ["memory/protect"]
+
+[[export]]
+name = "GetSystemInfo"
+group = "virtual-memory"
+args = ["ptr lpSystemInfo"]
+impl = { unimplemented = "B4: virtual memory and sections" }
+fails = "void"
+pinned_by = ["memory/sysinfo"]
+
+[[export]]
+name = "GlobalMemoryStatus"
+group = "virtual-memory"
+args = ["ptr lpBuffer"]
+impl = { unimplemented = "B4: virtual memory and sections" }
+fails = "void"
+pinned_by = ["memory/sysinfo"]
+
+[[export]]
+name = "IsBadReadPtr"
+group = "virtual-memory"
+args = ["ptr lp", "u32 ucb"]
+impl = { unimplemented = "B4: virtual memory and sections" }
+fails = "never"
+pinned_by = ["memory/protect"]
+
+[[export]]
+name = "IsBadWritePtr"
+group = "virtual-memory"
+args = ["ptr lp", "u32 ucb"]
+impl = { unimplemented = "B4: virtual memory and sections" }
+fails = "never"
+pinned_by = ["memory/protect"]
+
+[[export]]
+name = "IsBadCodePtr"
+group = "virtual-memory"
+args = ["ptr lpfn"]
+impl = { unimplemented = "B4: virtual memory and sections" }
+fails = "never"
+pinned_by = ["memory/protect"]
+
+[[export]]
+name = "IsBadStringPtrA"
+group = "virtual-memory"
+args = ["ptr lpsz", "u32 ucchMax"]
+impl = { unimplemented = "B4: virtual memory and sections" }
+fails = "never"
+pinned_by = ["memory/protect"]

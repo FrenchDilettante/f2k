@@ -1,11 +1,19 @@
 //! The runtime library, as Windows 2000's Rtl: the support code the system DLLs link.
 //!
-//! On the DLLs' target (i686 Windows) it provides what the compiler expects of an MSVC environment
-//! without its CRT: the 64-bit division helpers LLVM calls on i686-*-windows-msvc (`_aulldiv`,
-//! `_aullrem`, `_alldiv`, `_allrem`), the `_fltused` marker, and the panic handler. The helpers'
-//! cores are host-tested.
+//! What every build shares, host-tested: the status mapping ([`status`]: RtlNtStatusToDosError's
+//! table, which kernel32 reports every failed system service through).
+//!
+//! On the DLLs' target (i686 Windows) only: what the compiler expects of an MSVC environment without
+//! its CRT (the 64-bit division helpers LLVM calls on i686-*-windows-msvc, `_aulldiv`, `_aullrem`,
+//! `_alldiv`, `_allrem`, and the `_fltused` marker; their cores are host-tested), the panic
+//! handler, and [`sys`], the calling thread's TEB.
 
 #![cfg_attr(not(test), no_std)]
+
+pub mod status;
+mod status_table;
+#[cfg(all(target_arch = "x86", target_os = "windows", not(test)))]
+pub mod sys;
 
 // The helpers' cores are the MSVC environment's (`msvc`, x86 only) and the host tests'.
 #[cfg_attr(not(all(target_arch = "x86", target_os = "windows")), allow(dead_code))]

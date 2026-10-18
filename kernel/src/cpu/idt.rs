@@ -1,8 +1,9 @@
 //! Interrupt Descriptor Table and CPU exception handling.
 //!
 //! Every CPU exception lands in one of 32 generated stubs, which save the register state and hand
-//! it to a Rust handler that prints a diagnostic dump to COM1 before halting (silent triple-fault
-//! resets become actionable output). Exceptions fire regardless of IF, so nothing here needs the
+//! it to a Rust handler. A fault in the kernel's fault-tolerant user copy resumes at the copy's
+//! fixup, the copy failing; anything else gets a diagnostic dump on COM1 (silent triple-fault resets
+//! become actionable output) and ends the user process, or halts the kernel. Exceptions fire regardless of IF, so nothing here needs the
 //! PIC or `sti`; hardware IRQs come later.
 
 use crate::cpu::gdt::KERNEL_CODE_SELECTOR;
@@ -324,12 +325,24 @@ const NAMES: [&str; EXCEPTION_VECTORS] = [
     "Reserved (31)",
 ];
 
-/// Prints a diagnostic dump on COM1, then lets the origin decide: user-raised faults (including
-/// bad user pointers in syscall copies) end the user process; the rest are kernel faults, which
-/// halt.
+/// Resolve the exception when it can be resolved and return, the stub resuming the interrupted
+/// context: a fault in the kernel's fault-tolerant user copy resumes at the copy's fixup, the copy
+/// failing (`user::syscall::copy_fixup`). Everything else prints a diagnostic dump on COM1 and the
+/// origin decides: user-raised faults (including bad user pointers in syscall argument copies) end
+/// the user process; the rest are kernel faults, which halt.
 #[allow(dead_code)] // referenced only from the generated stubs (sym operand)
 #[cfg(target_arch = "x86")]
-extern "C" fn exception_handler(frame: &ExceptionFrame) -> ! {
+extern "C" fn exception_handler(frame: &mut ExceptionFrame) {
+    // A fault inside the fault-tolerant copy (a page the program may not touch: unmapped,
+    // protected, the kernel's) fails the copy at its fixup, rather than the process ending inside
+    // the service.
+    if frame.cs & 3 == 0 {
+        if let Some(fixup) = crate::user::syscall::copy_fixup(frame.eip) {
+            frame.eip = fixup;
+            return;
+        }
+    }
+
     let name = NAMES
         .get(frame.vector as usize)
         .copied()
@@ -400,6 +413,7 @@ extern "C" fn exception_handler(frame: &ExceptionFrame) -> ! {
     if from_user {
         crate::process::threads::fault_exit(crate::process::exit::Fault {
             vector: frame.vector,
+            status: crate::process::exit::status::ACCESS_VIOLATION,
             in_user_copy: false,
         });
     } else if crate::user::syscall::copying_user_args() {
@@ -410,6 +424,7 @@ extern "C" fn exception_handler(frame: &ExceptionFrame) -> ! {
         // containment, its own report.
         crate::process::threads::fault_exit(crate::process::exit::Fault {
             vector: frame.vector,
+            status: crate::process::exit::status::ACCESS_VIOLATION,
             in_user_copy: true,
         });
     }
@@ -509,7 +524,7 @@ macro_rules! define_exception_stubs {
             $(stub_line!($err, $vector),)*
             "",
             // Common tail: save registers, clear DF (interrupt gates do not, and Rust code requires
-            // it), call the handler, halt forever.
+            // it), call the handler; when it returns, restore and resume.
             "exception_common:",
             "    pushad",
             "    cld",
@@ -529,9 +544,20 @@ macro_rules! define_exception_stubs {
             "    lea eax, [esp + 16]", // frame pointer: exception_handler(frame)
             "    push eax",
             "    call {handler}",
-            "1:  cli",
-            "    hlt",
-            "    jmp 1b",
+            // The handler returns only when it resolved the exception (a copy redirected to its
+            // fixup): resume the interrupted context, as the hardware tail does.
+            "    add esp, 4", // drop the frame pointer
+            "    pop eax",
+            "    mov gs, ax",
+            "    pop eax",
+            "    mov fs, ax",
+            "    pop eax",
+            "    mov es, ax",
+            "    pop eax",
+            "    mov ds, ax",
+            "    popad",
+            "    add esp, 8", // drop vector + error code
+            "    iretd",
             kernel_data = const crate::cpu::gdt::KERNEL_DATA_SELECTOR,
             handler = sym exception_handler,
         );

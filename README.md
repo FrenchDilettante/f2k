@@ -86,32 +86,34 @@ VBoxManage startvm F2K
 make run-tests
 ```
 
-### The export specs
+### The export specs and the ledger
 Each system DLL's exports are declared once, in `userland/<dll>/exports.toml` (the file's header
-documents its records): name, API group, prototype and implementation. `tools/exportgen` reads
-the specs and generates what derives from them: the kernel's service registry and the tables its
-tests check the built DLLs against (through the kernel's build script), and, for the DLL builds,
-the `.def` file and the service stubs (`userland/build-support/stubs.rs`). kernel32's exports are
-still master's kernel-served surface: each is a generated stub raising the gate (`int 2Eh`) on its
-service number, numbered from 0x2000 across both DLLs' specs, ExitProcess first.
+documents its records): name, API group, prototype, implementation and evidence. `tools/exportgen`
+reads the specs and generates what derives from them: the kernel's NT service table (ntdll's
+`Nt*` system services, by Windows 2000's own numbers, `userland/ntdll/w2k-services.txt`), its
+transitional service registry, and the tables its tests check the built DLLs against (through the
+kernel's build script), and, for the DLL builds, the `.def` file and the generated bodies
+(`userland/build-support/stubs.rs`): ntdll's `Nt*`/`Zw*` stubs, the transitional services'
+stubs (the kernel's kernel-served kernel32 exports, numbered from 0x2000 across both DLLs' specs,
+ExitProcess first), and an unimplemented stub for every export the corpus imports that is not built
+yet (ERROR_CALL_NOT_IMPLEMENTED, the spec's failure value), so every fixture loads.
 
-### The kernel32 contract harness
-The compatibility surface's behavior is pinned host-side by the
-contract harness (`kernel/src/compat/harness/`, all `#[cfg(test)]`):
-each export's scenarios live under its API group, disabled by
-default (`#[ignore]`) and switched on as implementations migrate.
-The ledger (`scripts/kernel32-ledger.yaml`) maps every export to
-its group, contract status, and scenarios; the report script prints
-the per-group progress (`--check` verifies the ledger against the
-scenario sources, `--run` fills the passing column).
+The ledger report derives each export's status from its evidence: the fixture blocks pinning it
+(`pinned_by`) and the host scenarios (`scenarios`: the contract harness's,
+`kernel/src/compat/harness/groups`, over the kernel's handlers, and kernel32's own,
+`userland/kernel32/src/scenarios`). A known gap is an expected-failure test: a strict pending
+block in its fixture's `fixture.toml`, or an `#[ignore = "<gap id>: ..."]` scenario.
 ```bash
-uv run --with pyyaml scripts/kernel32-ledger.py --check
+uv run scripts/ledger.py --check
+uv run scripts/ledger.py --run
+make ledger      # both
 ```
 
 ### Everything
 `make check-all` runs the test systems in turn, fastest first,
-stopping at the first failure: the host unit tests (`make run-tests`)
-and the on-target suite (`make test`; `PYTEST_FLAGS` passes through).
+stopping at the first failure: the host unit tests (`make run-tests`),
+the ledger (`make ledger`) and the on-target suite (`make test`;
+`PYTEST_FLAGS` passes through).
 ```bash
 make check-all PYTEST_FLAGS="-n 2"
 ```
@@ -193,8 +195,8 @@ f2k/
 │   ├── linker.x86         # Custom linker script
 │   ├── create_partition_table.py  # MBR partition table for the disk image
 │   ├── gen-files-data.py  # The files fixture's data tree (tests/files/DATA)
-│   ├── kernel32-ledger.py   # kernel32 contract ledger report (host-side)
-│   └── kernel32-ledger.yaml  # The contract ledger (data, not Makefile targets)
+│   ├── gen-nt-tables.py   # Windows 2000's service numbers and the status table, regenerated
+│   └── ledger.py          # The export ledger report over the specs (host-side)
 │
 ├── pyproject.toml    # The Python tooling (uv): pytest for the on-target tests
 ├── tests/            # Windows 2000 test corpus and the pytest suite (see tests/README.md)
@@ -231,7 +233,8 @@ f2k/
 | `make qemu` | Build the disk and boot the kernel directly in QEMU, the disk attached |
 | `make test` | Run every on-target QEMU test (pytest: the kernel boots and the corpus) |
 | `make run-tests` | Run host unit tests |
-| `make check-all` | `run-tests`, then `test` |
+| `make ledger` | Check the export ledger and run its host scenarios |
+| `make check-all` | `run-tests`, `ledger` and `test`, in that order |
 | `make check` | `cargo check` + clippy (the kernel and the userland crates) |
 | `make fmt` | Format all Rust sources |
 | `make fmt-check` | Fail if any Rust source is unformatted |

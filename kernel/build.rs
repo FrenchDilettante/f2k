@@ -1,8 +1,10 @@
 //! Generates the tables that derive from the system DLLs' export specs
-//! (`userland/<dll>/exports.toml`, read through `tools/exportgen`): the kernel's service registry
-//! (`compat::kernel32`'s `SERVICES`), and kernel32's native exports' and all its exports' declared
-//! argument blocks, for the tests that check the built DLLs against the specs. The generated files
-//! land in OUT_DIR, included where the tables live.
+//! (`userland/<dll>/exports.toml`, read through `tools/exportgen`): the kernel's NT service table
+//! (`nt`'s `NT_SERVICES`, ntdll's system services by Windows 2000's numbers), its transitional
+//! service registry (`compat::kernel32`'s `SERVICES`), kernel32's native exports' and all its
+//! exports' declared argument blocks, for the tests that check the built DLLs against the specs,
+//! and the contract harness's prototypes and API groups. The generated files land in OUT_DIR,
+//! included where the tables live.
 //!
 //! It also points the kernel at the system DLLs it embeds (userland/: ntdll.dll and kernel32.dll,
 //! mapped into every process). They are built first, by the userland workspace (`make userland`);
@@ -30,6 +32,21 @@ fn main() {
         &out,
         "kernel32_services.rs",
         exportgen::emit::kernel_services(&[&kernel32, &ntdll], "userland/<dll>/exports.toml"),
+    );
+    write(
+        &out,
+        "nt_services.rs",
+        exportgen::emit::nt_services(&ntdll, "userland/ntdll/exports.toml"),
+    );
+    write(
+        &out,
+        "kernel32_signatures.rs",
+        exportgen::emit::harness_signatures(&kernel32, source),
+    );
+    write(
+        &out,
+        "kernel32_groups.rs",
+        exportgen::emit::harness_groups(&kernel32, source),
     );
     write(
         &out,
