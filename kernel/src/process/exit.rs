@@ -44,6 +44,18 @@ pub enum ProcessEnd {
     Faulted(Fault),
 }
 
+impl ProcessEnd {
+    /// The process's exit code, its object's on signaling (GetExitCodeProcess's answer): the exit
+    /// code, or, for a fault, STATUS_ACCESS_VIOLATION — Windows reports the unhandled exception's
+    /// code, which the fault does not carry until the exception dispatch does.
+    pub fn exit_status(self) -> u32 {
+        match self {
+            ProcessEnd::Exited(code) => code,
+            ProcessEnd::Faulted(_) => crate::user::syscall::STATUS_ACCESS_VIOLATION,
+        }
+    }
+}
+
 /// What a thread's end does.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct ExitPlan {
@@ -458,6 +470,14 @@ mod tests {
                 leaks: 1
             }
         );
+    }
+
+    /// The process's exit code: an exit's own code, and a fault's exception code (the access
+    /// violation's until the fault carries its own).
+    #[test]
+    fn the_exit_status_of_an_end() {
+        assert_eq!(ProcessEnd::Exited(7).exit_status(), 7);
+        assert_eq!(ProcessEnd::Faulted(PAGE_FAULT).exit_status(), 0xC000_0005);
     }
 
     /// A deferred termination ends its thread with the end it was handed, and the process with it

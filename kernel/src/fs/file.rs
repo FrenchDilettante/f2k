@@ -113,8 +113,7 @@ impl OpenFiles {
         *self = OpenFiles::empty();
     }
 
-    /// How many records are taken (the tests' audit).
-    #[cfg(test)]
+    /// How many records are taken (the teardown's object audit).
     pub fn live(&self) -> usize {
         self.records
             .iter()

@@ -48,4 +48,8 @@ SECTIONS
      * treat [kernel_start, kernel_end) as whole occupied frames. */
     . = ALIGN(4096);
     _kernel_end = .;
+
+    /* The boot maps the kernel window over physical [0, 8 MiB): the image (its statics, the
+     * process pool's records among them) must end inside it. */
+    ASSERT(_kernel_end <= 0x80800000, "the kernel image outgrows the 8 MiB kernel window")
 }

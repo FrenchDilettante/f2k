@@ -26,8 +26,9 @@ import pytest
 
 import f2kboot
 
-# Output no case may produce: a kernel panic is never an expected outcome.
-DEFAULT_FORBIDS = ("KERNEL PANIC",)
+# Output no case may produce: a kernel panic is never an expected outcome, nor an object that
+# outlived its process (the object audit, in every teardown).
+DEFAULT_FORBIDS = ("KERNEL PANIC", "F2K: object audit FAILED")
 DEFAULT_TIMEOUT = 10.0
 
 # Every full boot's own checks, before any program runs.

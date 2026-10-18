@@ -30,8 +30,27 @@ use super::boundary::{
 use crate::fs::fat32::fixtures::{record, Crafted};
 use crate::fs::fat32::volume::Volume;
 use crate::fs::file::{OpenFile, OpenFiles};
-use crate::sched::object::{HandleTable, Slot};
+use crate::sched::object::HandleTable;
 use crate::sched::wait::{WaitKind, Waitable};
+
+/// What one of the fake's handle slots holds: its objects by their waitable headers (the fake
+/// models no object manager), or an open file's record.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Slot {
+    Event(*mut Waitable),
+    Thread(*mut Waitable),
+    File(usize),
+}
+
+impl Slot {
+    /// The waitable header of a waitable object; none for an open file.
+    fn waitable(self) -> Option<*mut Waitable> {
+        match self {
+            Slot::Event(waitable) | Slot::Thread(waitable) => Some(waitable),
+            Slot::File(_) => None,
+        }
+    }
+}
 use crate::status::{
     NtStatus, STATUS_INVALID_PARAMETER, STATUS_SUCCESS, STATUS_SUSPEND_COUNT_EXCEEDED,
     STATUS_THREAD_IS_TERMINATING, STATUS_TIMEOUT,
@@ -143,7 +162,7 @@ pub struct ThreadRecord {
 pub struct FakeKernel {
     memory: AddressSpace,
     parameters: ProcessParameters,
-    handles: HandleTable,
+    handles: HandleTable<Slot>,
     threads: Vec<ThreadRecord>,
     next_thread_id: u32,
     files: OpenFiles,

@@ -54,6 +54,9 @@ mod fs;
 // machines
 mod sched;
 
+// The object manager: the typed object pools, object ids, pointer and handle counts, names
+mod ob;
+
 // C library functions for bare-metal (linker support)
 mod c_lib;
 

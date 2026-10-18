@@ -46,6 +46,10 @@ pub const TIMER_BLOCK: usize = WAIT_BLOCKS - 1;
 /// The priority increment a timer expiry grants its waiters: none.
 pub const TIMER_WAKE_INCREMENT: i8 = 0;
 
+/// The most objects one wait may name: the documented MAXIMUM_WAIT_OBJECTS (the object manager
+/// holds a reference on each for the wait's life).
+pub const MAXIMUM_WAIT_OBJECTS: usize = 64;
+
 /// The kind of a waitable object, as the satisfy machinery reads it. The ordinals are stable kernel
 /// data: the masked low three bits select the signal-consumption rule, so the timer kinds sit on
 /// the event rule through the mask.

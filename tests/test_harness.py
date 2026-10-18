@@ -28,6 +28,11 @@ def test_a_failed_teardown_audit_is_the_failure():
     assert f2kboot.teardown_problem(ENDED + [LEAKED]) == LEAKED
 
 
+def test_an_object_leak_is_the_failure():
+    leak = "F2K: object audit FAILED: 1 objects or file records outlived their process"
+    assert f2kboot.teardown_problem(ENDED + [leak, CLEAN]) == leak
+
+
 def test_a_missing_teardown_audit_fails():
     assert f2kboot.teardown_problem(ENDED) == "the process ended, but its teardown audit never arrived"
     assert not f2kboot.teardown_audited("\n".join(ENDED))

@@ -1,8 +1,9 @@
 //! The semaphore object: a waitable whose signal state is a count.
 //!
 //! One satisfied waiter consumes exactly one count, so a release wakes as many waiters as it adds.
-//! The one consumer is the thread's builtin suspend semaphore (the suspend APC's normal routine
-//! parks on it); it is a kernel-internal object, not a handle-table kind.
+//! The thread's builtin suspend semaphore is one (the suspend APC's normal routine parks on it, a
+//! kernel-internal object); the object manager's semaphore objects, which handles name, are the
+//! others.
 
 use core::ptr::addr_of_mut;
 

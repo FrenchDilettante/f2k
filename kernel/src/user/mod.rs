@@ -413,9 +413,8 @@ pub fn volume_path(token: &[u8]) -> &[u8] {
 pub fn run_fault_stub() -> ! {
     use crate::mem::{paging, vm};
 
-    crate::process::Process::start("stub");
     // The stub's one code page stands where an image would, with the system areas around it.
-    let space = crate::process::current_mut().vm();
+    let space = crate::process::Process::start("stub").vm();
     crate::exec::loader::seed_regions(space, USER_CODE_PAGE, paging::PAGE_SIZE);
 
     let code_frame = paging::allocate_frame_phys();

@@ -591,6 +591,10 @@ def compare_block(block: Block, log: str, masks: list[re.Pattern[str]]) -> str |
 # audit FAILED: ..."). A suite leg's line names the leg ("F2K: process 3 teardown audit ...").
 TEARDOWN = re.compile(r"^F2K: (?:process \d+ )?teardown audit")
 
+# The object audit's line, printed only when objects outlived their process (a reference leak),
+# before the teardown audit line.
+OBJECT_LEAK = re.compile(r"^F2K: object audit FAILED")
+
 
 def teardown_audited(log: str) -> bool:
     """Whether the boot has gone as far as a corpus block needs: the process ended and was torn
@@ -610,6 +614,9 @@ def teardown_problem(lines: list[str]) -> str | None:
         return "the process ended, but its teardown audit never arrived"
     if "FAILED" in audit:
         return audit
+    leak = next((line.strip() for line in lines if OBJECT_LEAK.match(line)), None)
+    if leak is not None:
+        return leak
     return None
 
 

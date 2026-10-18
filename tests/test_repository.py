@@ -193,3 +193,28 @@ def test_only_the_address_space_writes_user_entries():
              if relative not in PTE_WRITERS
              for number, line in lines if any(form in line for form in PTE_FORMS)]
     assert not found, f"user page-table entries written outside mem::vm: {found}"
+
+
+# --- The process record ---------------------------------------------------------------------------
+
+# The `current_mut()` call sites in the kernel: each hands out an aliasable `&'static mut Process`
+# (explicit borrows retire them). The count may only go down.
+CURRENT_MUT_SITES = 13
+
+
+def test_current_mut_call_sites_only_go_down():
+    """New code takes the process part it needs as a parameter instead of reaching for the
+    `&'static mut` singleton; the recorded count is the ceiling, lowered as sites go."""
+    call = re.compile(r"(?<!fn )\bcurrent_mut\(\)")
+    sites = sum(
+        len(call.findall(path.read_text()))
+        for path in (f2kboot.REPO_ROOT / "kernel" / "src").rglob("*.rs")
+    )
+    assert sites <= CURRENT_MUT_SITES, (
+        f"{sites} current_mut() call sites, above the ceiling of {CURRENT_MUT_SITES}: pass the "
+        "process part the code needs as a parameter instead"
+    )
+    assert sites == CURRENT_MUT_SITES, (
+        f"{sites} current_mut() call sites, below the recorded {CURRENT_MUT_SITES}: lower "
+        f"CURRENT_MUT_SITES in tests/test_repository.py to {sites} so the ratchet holds"
+    )

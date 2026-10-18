@@ -160,14 +160,45 @@ fn is_console_handle(handle: u32) -> bool {
     handle & 0x1000_0003 == 0x3
 }
 
-/// The object-table slot `handle` names, for the services that take kernel-object handles. A
-/// console handle names none.
+/// The object `handle` names when it is of `kind`, referenced for the caller's scope; none for a
+/// console handle, a handle naming nothing or another kind of object, or an open file (Windows
+/// reports them alike, an invalid handle).
 #[cfg(target_arch = "x86")]
-fn object_slot(handle: u32) -> Option<crate::sched::object::Slot> {
+fn referenced(handle: u32, kind: crate::ob::ObjectType) -> Option<crate::ob::ObRef> {
     if is_console_handle(handle) {
         return None;
     }
-    crate::process::current_mut().handles_mut().lookup(handle)
+    crate::ob::reference_by_handle(handle, Some(kind))
+}
+
+/// The event a handle names, referenced for the caller's scope.
+#[cfg(target_arch = "x86")]
+fn event_of(handle: u32) -> Option<crate::ob::Referenced<crate::sched::event::Event>> {
+    let reference = referenced(handle, crate::ob::ObjectType::Event)?;
+    let record = reference.event();
+    Some(crate::ob::Referenced::new(reference, record))
+}
+
+/// The thread a handle names, referenced for the caller's scope.
+#[cfg(target_arch = "x86")]
+fn thread_of(handle: u32) -> Option<crate::ob::Referenced<crate::sched::thread::Thread>> {
+    let reference = referenced(handle, crate::ob::ObjectType::Thread)?;
+    let record = reference.thread();
+    Some(crate::ob::Referenced::new(reference, record))
+}
+
+/// The waitable a handle names for the wait services, with the object it belongs to (the wait
+/// holds it); none for a console handle, an open file or nothing.
+#[cfg(target_arch = "x86")]
+fn waitable_of(handle: u32) -> Option<(crate::ob::ObjectId, *mut crate::sched::wait::Waitable)> {
+    if is_console_handle(handle) {
+        return None;
+    }
+    let id = crate::process::current()
+        .handles()
+        .lookup(handle)?
+        .object_id()?;
+    Some((id, crate::ob::directory().waitable(id)?))
 }
 
 /// WriteFile: the console observable. Streams the caller's bytes to COM1 on the replayed
@@ -548,9 +579,9 @@ fn svc_virtual_free(frame: &mut crate::user::TrapFrame, _args: &[u32]) {
     frame.eax = 1;
 }
 
-/// CloseHandle: release the table's claim on the handle, and an open file's record with it. The
-/// object itself lives on (a waiter parked on it stays parked); a close that names nothing is
-/// refused.
+/// CloseHandle: release the table's claim on the handle, and its reference on what it names — an
+/// object goes with its last reference (a waiter parked on it holds one, so it stays parked on a
+/// live object), an open file's record with its handle. A close that names nothing is refused.
 fn svc_close_handle(frame: &mut crate::user::TrapFrame, args: &[u32]) {
     #[cfg(target_arch = "x86")]
     {
@@ -622,7 +653,7 @@ fn thread_priority_increment(value: i32) -> Option<i32> {
     }
 }
 
-/// CreateEventA: a fresh event from the pool, inserted into the table. The flavor comes from
+/// CreateEventA: a fresh event object, published with its handle. The flavor comes from
 /// bManualReset, the initial state from bInitialState; the subset ignores the attributes and
 /// refuses a name.
 fn svc_create_event_a(frame: &mut crate::user::TrapFrame, args: &[u32]) {
@@ -633,8 +664,9 @@ fn svc_create_event_a(frame: &mut crate::user::TrapFrame, args: &[u32]) {
             frame.eax = 0; // the subset has no named objects
             return;
         }
-        // A full table refuses before an event record is taken: the records are never given back.
-        if crate::process::current_mut().handles_mut().is_full() {
+        let process = crate::process::current_mut();
+        // A full table refuses before an object is made.
+        if process.handles().is_full() {
             frame.eax = 0;
             return;
         }
@@ -643,12 +675,12 @@ fn svc_create_event_a(frame: &mut crate::user::TrapFrame, args: &[u32]) {
         } else {
             crate::sched::event::EventKind::Synchronization
         };
-        let Some(event) = crate::process::threads::new_event(kind, initial_state != 0) else {
+        let Some(id) = crate::ob::directory().create_event(kind, initial_state != 0) else {
             frame.eax = 0;
             return;
         };
-        let slot = crate::sched::object::Slot::Event(event.waitable());
-        frame.eax = crate::process::current_mut().handles_mut().insert(slot);
+        frame.eax =
+            crate::ob::publish(process, id, crate::ob::EVENT_ALL_ACCESS, false, None).unwrap_or(0);
     }
     #[cfg(not(target_arch = "x86"))]
     {
@@ -661,17 +693,10 @@ fn svc_create_event_a(frame: &mut crate::user::TrapFrame, args: &[u32]) {
 fn svc_set_event(frame: &mut crate::user::TrapFrame, args: &[u32]) {
     #[cfg(target_arch = "x86")]
     {
-        let Some(slot) = object_slot(args[0]) else {
+        let Some(mut event) = event_of(args[0]) else {
             frame.eax = 0;
             return;
         };
-        let crate::sched::object::Slot::Event(waitable) = slot else {
-            frame.eax = 0;
-            return;
-        };
-        // The event's waitable header leads the record, so the table's waitable pointer is the
-        // event itself.
-        let event = unsafe { &mut *(waitable as *mut crate::sched::event::Event) };
         event.set(
             crate::sched::idle::dispatcher(),
             crate::sched::event::EVENT_WAKE_INCREMENT,
@@ -688,30 +713,33 @@ fn svc_set_event(frame: &mut crate::user::TrapFrame, args: &[u32]) {
 /// WaitForSingleObject: wait on the object the handle names, the documented timeout conversion, the
 /// status returned raw (the identity the Win32 ABI documents: 0 is WAIT_OBJECT_0, the timeout
 /// status is WAIT_TIMEOUT). A blocking wait parks the calling thread and switches the processor
-/// away; the wake's status lands in the return.
+/// away; the wake's status lands in the return. The wait holds its object throughout, replays
+/// included: a handle closed meanwhile leaves it waiting on a live object.
 fn svc_wait_for_single_object(frame: &mut crate::user::TrapFrame, args: &[u32]) {
     #[cfg(target_arch = "x86")]
     {
         // A file handle names no waitable object on this surface: the wait fails like a bad handle.
-        let Some(waitable) = object_slot(args[0]).and_then(|slot| slot.waitable()) else {
+        let Some((object, waitable)) = waitable_of(args[0]) else {
             frame.eax = WAIT_FAILED;
             return;
         };
         // The wait runs through the shared blocking entry: a kernel APC breaks the wait and the
         // entry replays it after the delivery, the deadline preserved.
         let timeout = format_timeout(args[1]);
-        let status = crate::sched::wait::wait_current_with(|dispatcher, thread, stamp, replay| {
-            let timeout =
-                crate::sched::wait::replay_timeout(thread, replay, timeout, stamp.system_time);
-            dispatcher.wait_single(
-                thread,
-                waitable,
-                crate::sched::wait::WaitReason::UserRequest,
-                crate::sched::wait::WaitMode::User,
-                false,
-                timeout,
-                stamp,
-            )
+        let status = crate::ob::waiting(&[object], || {
+            crate::sched::wait::wait_current_with(|dispatcher, thread, stamp, replay| {
+                let timeout =
+                    crate::sched::wait::replay_timeout(thread, replay, timeout, stamp.system_time);
+                dispatcher.wait_single(
+                    thread,
+                    waitable,
+                    crate::sched::wait::WaitReason::UserRequest,
+                    crate::sched::wait::WaitMode::User,
+                    false,
+                    timeout,
+                    stamp,
+                )
+            })
         });
         frame.eax = status as u32;
     }
@@ -783,21 +811,21 @@ fn svc_create_thread(frame: &mut crate::user::TrapFrame, args: &[u32]) {
         // A full handle table, or an identifier pointer the probe refuses, fails it here. (A
         // pointer that passes the probe but names no page faults in the write below, which
         // ends the whole process: nothing is left half-created for it to observe.)
-        if crate::process::current_mut().handles_mut().is_full()
+        let process = crate::process::current_mut();
+        if process.handles().is_full()
             || (thread_id_out != 0
                 && crate::user::syscall::probe_user_range(thread_id_out, 4).is_err())
         {
             frame.eax = 0;
             return;
         }
-        let Some((thread, id)) = crate::process::threads::spawn(start, parameter) else {
+        let Some((object, thread, id)) = crate::process::threads::spawn(process, start, parameter)
+        else {
             frame.eax = 0;
             return;
         };
-        let process = crate::process::current_mut();
-        // SAFETY: the created thread's record is at its final address for its life.
-        let slot = crate::sched::object::Slot::Thread(unsafe { (*thread).waitable() });
-        let handle = process.handles_mut().insert(slot);
+        // The handle joins the thread's own reference (which its end releases).
+        let handle = crate::ob::open(process, object, crate::ob::THREAD_ALL_ACCESS, false);
         assert_ne!(handle, 0, "the table had a free slot before the spawn");
         if thread_id_out != 0 {
             let written = crate::user::syscall::write_user(thread_id_out, &id.to_le_bytes());
@@ -843,18 +871,12 @@ fn svc_set_thread_priority(frame: &mut crate::user::TrapFrame, args: &[u32]) {
             frame.eax = 0;
             return;
         };
-        let Some(slot) = object_slot(handle) else {
-            frame.eax = 0;
-            return;
-        };
-        let crate::sched::object::Slot::Thread(waitable) = slot else {
+        let Some(mut thread) = thread_of(handle) else {
             frame.eax = 0;
             return;
         };
         let dispatcher = crate::sched::idle::dispatcher();
-        // SAFETY: the slot's kind names a thread, and the record lives for the process's lifetime.
-        let thread = unsafe { &mut *crate::sched::thread::Thread::from_waitable(waitable) };
-        dispatcher.set_base_priority(thread, increment);
+        dispatcher.set_base_priority(&mut thread, increment);
         frame.eax = 1;
     }
     #[cfg(not(target_arch = "x86"))]
@@ -1015,22 +1037,16 @@ fn read_volume(
 fn svc_suspend_thread(frame: &mut crate::user::TrapFrame, args: &[u32]) {
     #[cfg(target_arch = "x86")]
     {
-        let Some(slot) = object_slot(args[0]) else {
-            frame.eax = u32::MAX;
-            return;
-        };
-        let crate::sched::object::Slot::Thread(waitable) = slot else {
+        let Some(mut thread) = thread_of(args[0]) else {
             frame.eax = u32::MAX;
             return;
         };
         let dispatcher = crate::sched::idle::dispatcher();
-        // SAFETY: the slot's kind names a thread, and the record lives for the process's lifetime.
-        let thread = unsafe { &mut *crate::sched::thread::Thread::from_waitable(waitable) };
         if thread.state() == crate::sched::thread::ThreadState::Terminated {
             frame.eax = u32::MAX;
             return;
         }
-        match dispatcher.suspend_thread(thread) {
+        match dispatcher.suspend_thread(&mut thread) {
             Ok(previous) => frame.eax = previous as u32,
             Err(_) => frame.eax = u32::MAX,
         }
@@ -1050,22 +1066,16 @@ fn svc_suspend_thread(frame: &mut crate::user::TrapFrame, args: &[u32]) {
 fn svc_resume_thread(frame: &mut crate::user::TrapFrame, args: &[u32]) {
     #[cfg(target_arch = "x86")]
     {
-        let Some(slot) = object_slot(args[0]) else {
-            frame.eax = u32::MAX;
-            return;
-        };
-        let crate::sched::object::Slot::Thread(waitable) = slot else {
+        let Some(mut thread) = thread_of(args[0]) else {
             frame.eax = u32::MAX;
             return;
         };
         let dispatcher = crate::sched::idle::dispatcher();
-        // SAFETY: the slot's kind names a thread, and the record lives for the process's lifetime.
-        let thread = unsafe { &mut *crate::sched::thread::Thread::from_waitable(waitable) };
         if thread.state() == crate::sched::thread::ThreadState::Terminated {
             frame.eax = u32::MAX;
             return;
         }
-        frame.eax = dispatcher.resume_thread(thread) as u32;
+        frame.eax = dispatcher.resume_thread(&mut thread) as u32;
     }
     #[cfg(not(target_arch = "x86"))]
     {
@@ -1227,10 +1237,10 @@ pub fn thread_exit_trampoline() -> u32 {
     THUNK_PAGE + SERVICES.len() as u32 * STUB_STRIDE
 }
 
-/// Map the thunk page: one zeroed frame, seeded and patched with the stubs, read-only user (the
+/// Map the thunk page into `space` (the new process's): one zeroed frame, seeded and patched with the stubs, read-only user (the
 /// stubs execute; nothing writes). The thread-exit trampoline follows the service stubs.
 #[cfg(target_arch = "x86")]
-pub fn init() {
+pub fn init(space: &mut crate::mem::vm::AddressSpace) {
     let frame = crate::mem::paging::allocate_frame_phys();
     crate::mem::paging::init_frame(frame, 0, &stub_bytes(1, SERVICES[0].1));
     for (index, &(_, arg_bytes, _)) in SERVICES.iter().enumerate().skip(1) {
@@ -1245,20 +1255,15 @@ pub fn init() {
         (SERVICES.len() as u32 * STUB_STRIDE) as usize,
         &trampoline_bytes(crate::user::syscall::SYS_THREAD_EXIT),
     );
-    crate::mem::vm::map_prepared(
-        crate::process::current_mut().vm(),
-        THUNK_PAGE,
-        frame,
-        crate::mem::vm::PAGE_READONLY,
-    );
+    crate::mem::vm::map_prepared(space, THUNK_PAGE, frame, crate::mem::vm::PAGE_READONLY);
 }
 
-/// Map the parameters page: the command line (`command_line`, the program as invoked with its
+/// Map the parameters page into `space` (the new process's): the command line (`command_line`, the program as invoked with its
 /// arguments), the empty environment, and the module file name — `module`, the volume path the
 /// image was loaded from, verbatim, so CreateFileA resolves GetModuleFileNameA's answer back to the
 /// image.
 #[cfg(target_arch = "x86")]
-pub fn init_params(command_line: &[u8], module: &[u8]) {
+pub fn init_params(space: &mut crate::mem::vm::AddressSpace, command_line: &[u8], module: &[u8]) {
     assert!(
         command_line.len() < CMDLINE_ROOM,
         "command line too long for the staging"
@@ -1272,12 +1277,7 @@ pub fn init_params(command_line: &[u8], module: &[u8]) {
     crate::mem::paging::init_frame(frame, 0, &[]);
     crate::mem::paging::write_frame(frame, CMDLINE_OFFSET as usize, command_line);
     crate::mem::paging::write_frame(frame, MODULE_OFFSET as usize, module);
-    crate::mem::vm::map_prepared(
-        crate::process::current_mut().vm(),
-        PARAMS_PAGE,
-        frame,
-        crate::mem::vm::PAGE_READWRITE,
-    );
+    crate::mem::vm::map_prepared(space, PARAMS_PAGE, frame, crate::mem::vm::PAGE_READWRITE);
 }
 
 #[cfg(test)]

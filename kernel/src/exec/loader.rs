@@ -308,21 +308,16 @@ pub fn load_image(file: &[u8], path: &[u8], name: &'static str, command_line: &[
     // page; the switch into the thread installs it as the TSS esp0), and fresh heap bookkeeping.
     // Every mapping below (thunk page, image, stack, TEB, params) lands in this process's
     // directory and its services see this process's heap.
-    crate::process::Process::start(name);
+    let space = crate::process::Process::start(name).vm();
     // The regions first: every user page the kernel maps lies in one.
-    seed_regions(
-        crate::process::current_mut().vm(),
-        image.image_base,
-        image.size_of_image,
-    );
+    seed_regions(space, image.image_base, image.size_of_image);
 
     // The thunks must be mapped before the snap: IAT slots receive user-space addresses.
-    crate::compat::kernel32::init();
+    crate::compat::kernel32::init(space);
     let snap = image.snap_imports(file, staging, resolve_import);
 
     // Map the staged image at its preferred base, one frame per page, each with its sections'
     // protection (writable exactly where a mapped section is writable).
-    let space = crate::process::current_mut().vm();
     let pages = image.size_of_image.div_ceil(PAGE_SIZE);
     for page in 0..pages {
         let offset = (page * PAGE_SIZE) as usize;
@@ -342,7 +337,7 @@ pub fn load_image(file: &[u8], path: &[u8], name: &'static str, command_line: &[
     vm::map_zeroed(space, TEB_PAGE, vm::PAGE_READWRITE);
 
     // The process parameters page (staged replays).
-    crate::compat::kernel32::init_params(command_line, path);
+    crate::compat::kernel32::init_params(space, command_line, path);
 
     crate::serial_println!(
         "F2K: image loaded (base {:#010x}, entry {:#010x}, {} pages, {} imports snapped)",

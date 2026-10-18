@@ -541,8 +541,8 @@ mod target {
         crate::process::current_mut().heap_mut().create()
     }
     pub fn alloc(flags: u32, request: usize) -> u32 {
-        let (heap, space) = crate::process::current_mut().heap_and_vm();
-        heap.alloc(space, flags, request)
+        let parts = crate::process::current_mut().parts_mut();
+        parts.heap.alloc(parts.vm, flags, request)
     }
     pub fn free(ptr: u32) -> u32 {
         crate::process::current_mut().heap_mut().free(ptr)
@@ -556,8 +556,8 @@ mod target {
         crate::process::current_mut().heap_mut().destroy(handle)
     }
     pub fn virtual_alloc(addr: u32, size: u32, alloc_type: u32) -> u32 {
-        let (heap, space) = crate::process::current_mut().heap_and_vm();
-        heap.virtual_alloc(space, addr, size, alloc_type)
+        let parts = crate::process::current_mut().parts_mut();
+        parts.heap.virtual_alloc(parts.vm, addr, size, alloc_type)
     }
 }
 
