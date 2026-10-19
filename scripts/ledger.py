@@ -5,19 +5,15 @@ Report the system DLLs' export ledger: every export of every spec
 
 An export's evidence is the fixture blocks pinning it (`pinned_by`,
 blocks of tests/<fixture>/output.txt) and the host scenarios pinning it
-(`scenarios`: the contract harness's tests of the kernel-served exports,
-kernel/src/compat/harness/groups, and kernel32's host tests of its
-user-mode exports, userland/kernel32/src/scenarios). A known gap is an
-expected-failure test: a block pending in its fixture's fixture.toml, or
-a scenario carrying #[ignore = "<gap id>: <why>"]; a gap id is a finding's id
-(FS-1, GAP-OB-3) or the increment that closes it (B2).
-The status is computed, never written:
+(`scenarios`: kernel32's host tests of its user-mode exports,
+userland/kernel32/src/scenarios). A known gap is an expected-failure
+test: a block pending in its fixture's fixture.toml, or a scenario
+carrying #[ignore = "<gap id>: <why>"]; a gap id is a review finding's
+(FS-1, GAP-OB-3) or the rebuild increment that closes it (B2). The
+status is computed, never written:
 
-  unimplemented  listed, not implemented (impl.unimplemented: a stub failing
-                 with ERROR_CALL_NOT_IMPLEMENTED, naming its increment)
   internal       an F2K-internal entry point (`internal = true`), not a
                  Windows 2000 export: counted apart, no evidence asked
-  floor          a deliberate fixed answer (impl.floor)
   forward        forwarded to another module's export (impl.forward)
   unpinned       implemented, no evidence yet (the spec says why: `unpinned`)
   partial        some evidence is a known gap (a pending block, an ignored
@@ -55,9 +51,6 @@ TESTS = REPO_ROOT / "tests"
 # Where the scenarios live: (their directory, the module cargo prints their test paths under, the
 # cargo test command's arguments and directory).
 SCENARIO_SUITES = [
-    # The kernel's contract harness: the kernel's served exports, through their handlers.
-    (REPO_ROOT / "kernel" / "src" / "compat" / "harness" / "groups", "compat::harness::groups",
-     ["cargo", "test", "--lib"], REPO_ROOT / "kernel"),
     # kernel32's user-mode exports.
     (REPO_ROOT / "userland" / "kernel32" / "src" / "scenarios", "scenarios",
      ["cargo", "test", "--manifest-path", "userland/kernel32/Cargo.toml", "--lib",
@@ -67,7 +60,7 @@ SCENARIO_PATH = " or ".join(path for _, path, _, _ in SCENARIO_SUITES)
 # A gap id: a finding's id (FS-1, K32-4), a recorded gap (GAP-OB-3), or the increment that
 # closes a gap (B2, A4b).
 GAP_ID = re.compile(r"^((?:GAP-)?[A-Z0-9]+-\d+[a-z]?|[A-C]\d+[ab]?):")
-STATUSES = ("complete", "host-only", "partial", "unpinned", "floor", "forward", "unimplemented", "internal")
+STATUSES = ("complete", "host-only", "partial", "unpinned", "forward", "internal")
 
 
 def load_specs():
@@ -137,10 +130,6 @@ def status_of(export, scenarios, outcomes):
     implementation = export["impl"]
     if export.get("internal"):
         return "internal", []
-    if "unimplemented" in implementation:
-        return "unimplemented", []
-    if "floor" in implementation:
-        return "floor", []
     if "forward" in implementation:
         return "forward", []
     pinned = export.get("pinned_by", [])
@@ -185,8 +174,7 @@ def check(specs, scenarios):
                 named.add(test)
                 if test not in scenarios:
                     problems.append(f"{where}: scenario {test} does not exist under {SCENARIO_PATH}")
-            implemented = not export.get("internal") and not any(
-                k in export["impl"] for k in ("unimplemented", "floor", "forward"))
+            implemented = not export.get("internal") and "forward" not in export["impl"]
             evidence = export.get("pinned_by") or export.get("scenarios")
             if implemented and not evidence and not export.get("unpinned"):
                 problems.append(f"{where}: implemented with no evidence: pin it (pinned_by, scenarios) "
@@ -266,11 +254,6 @@ def report(specs, scenarios, outcomes):
             print(f"\nUnpinned ({len(unpinned)}):")
             for export in unpinned:
                 print(f"  {export['group']}/{export['name']}: {export.get('unpinned', '(no reason)')}")
-        floors = [e for e in exports if "floor" in e["impl"]]
-        if floors:
-            print(f"\nFloors ({len(floors)}):")
-            for export in floors:
-                print(f"  {export['group']}/{export['name']}: {export['impl']['floor']}")
         noted = [e for e in exports if e.get("note")]
         if noted:
             print(f"\nNotes ({len(noted)}):")

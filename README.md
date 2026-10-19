@@ -88,21 +88,30 @@ make run-tests
 
 ### The export specs and the ledger
 Each system DLL's exports are declared once, in `userland/<dll>/exports.toml` (the file's header
-documents its records): name, API group, prototype, implementation and evidence. `tools/exportgen`
-reads the specs and generates what derives from them: the kernel's NT service table (ntdll's
-`Nt*` system services, by Windows 2000's own numbers, `userland/ntdll/w2k-services.txt`), its
-transitional service registry, and the tables its tests check the built DLLs against (through the
-kernel's build script), and, for the DLL builds, the `.def` file and the generated bodies
-(`userland/build-support/stubs.rs`): ntdll's `Nt*`/`Zw*` stubs, the transitional services'
-stubs (the kernel's kernel-served kernel32 exports, numbered from 0x2000 across both DLLs' specs,
-ExitProcess first), and an unimplemented stub for every export the corpus imports that is not built
-yet (ERROR_CALL_NOT_IMPLEMENTED, the spec's failure value), so every fixture loads.
+documents its records): name, API group, prototype, implementation, and the evidence pinning it,
+the fixture blocks (`pinned_by`) and the host scenarios (`scenarios`). `tools/exportgen` reads the
+specs and generates what derives from them: the kernel's NT service table (ntdll's `Nt*` system
+services, by Windows 2000's own numbers, `userland/ntdll/w2k-services.txt`) and the tables its
+tests check the built DLLs against (through the kernel's build script), and, for the DLL builds,
+the `.def` file and ntdll's `Nt*`/`Zw*` stubs (`userland/build-support/stubs.rs`).
 
-The ledger report derives each export's status from its evidence: the fixture blocks pinning it
-(`pinned_by`) and the host scenarios (`scenarios`: the contract harness's,
-`kernel/src/compat/harness/groups`, over the kernel's handlers, and kernel32's own,
-`userland/kernel32/src/scenarios`). A known gap is an expected-failure test: a strict pending
-block in its fixture's `fixture.toml`, or an `#[ignore = "<gap id>: ..."]` scenario.
+Only ntdll's system services enter the kernel, as on Windows 2000: an `impl = { syscall = "..." }`
+export's stub raises the gate on Windows 2000's own service number, and the kernel's typed handler
+(`kernel/src/nt/`) takes its arguments by the kinds the spec gives them (`handle`, `ptr`,
+`ptr<u32>`..., see the spec's header) and answers an NTSTATUS. Every kernel32 export is kernel32's
+own user-mode code over ntdll (`impl = { native = "..." }`, or a forwarder into ntdll), which sets
+the last error from the NTSTATUS through `RtlNtStatusToDosError`. The kernel has no Win32 layer.
+
+The host scenarios (`userland/kernel32/src/scenarios/`, all `#[cfg(test)]`) call kernel32's
+exports as a program does, against host stand-ins for ntdll. A known gap is an expected-failure
+test: a scenario marked `#[ignore = "<gap id>: <why>"]`, or a strict pending block in its
+fixture's `fixture.toml`; gaps no test can capture are listed in [docs/status.md](docs/status.md),
+with the branch's status.
+
+The ledger report derives each export's status from its evidence (complete, host-only, partial,
+unpinned, forward, internal). `--check` checks the specs against the captures and the scenarios;
+`--run` runs every scenario, ignored ones included, and fails once a gap's test passes (the marker
+goes with the fix).
 ```bash
 uv run scripts/ledger.py --check
 uv run scripts/ledger.py --run
@@ -204,18 +213,22 @@ f2k/
 ├── tools/exportgen/  # The export specs' reader and generator (a host crate, outside the workspace)
 ├── userland/         # The system DLLs (own workspace and target): rtl, ntdll, kernel32, each
 │                     # DLL's export spec in userland/<dll>/exports.toml
+├── docs/status.md    # Work done, decisions, known gaps and issues, assumptions to verify
 │
 └── kernel/           # F2K Kernel
     ├── Cargo.toml        # Kernel package
-    ├── build.rs          # The service registry from the export specs; the embedded DLLs
+    ├── build.rs          # The NT service table from the export specs; the embedded DLLs
     └── src/
+        ├── block/        # Block devices, partitions, and the device registry
         ├── boot/         # Boot-related code
-        ├── compat/       # The Windows compatibility layer
         ├── cpu/          # The CPU tables
-        ├── exec/         # Executable loading
+        ├── exec/         # Executable loading, and the system DLLs every process maps
+        ├── fs/           # FAT32 over the block devices, and the open files
         ├── hw/           # The hardware layer: devices the kernel drives directly
         ├── interrupt/    # The interrupt core (hardware-neutral, host-testable)
         ├── mem/          # Memory management
+        ├── nt/           # The NT system services, by Windows 2000's numbers
+        ├── ob/           # The object manager: handles and the objects they name
         ├── process/      # Process lifetime
         ├── sched/        # The scheduler
         ├── user/         # Ring 3: the user-mode boundary

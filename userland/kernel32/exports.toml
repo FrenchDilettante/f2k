@@ -1,9 +1,9 @@
 # kernel32.dll's exports: the one source every list of them derives from.
 #
-# tools/exportgen reads this file and generates the kernel's service registry and its tables of the
-# DLL's exports (the kernel's build script), and, for the DLL build, the module-definition file and
-# the generated bodies (userland/build-support/stubs.rs). scripts/ledger.py reports over it. Never
-# copy an export's facts elsewhere: derive them from here.
+# tools/exportgen reads this file and generates the kernel's tables of the DLL's exports and native
+# exports (the kernel's build script; the kernel's tests check the built DLL against them), and, for
+# the DLL build, the module-definition file (userland/build-support/stubs.rs). scripts/ledger.py
+# reports over it. Never copy an export's facts elsewhere: derive them from here.
 #
 # The file is TOML in the subset tools/exportgen/src/toml.rs reads (it refuses anything else).
 #
@@ -29,22 +29,13 @@
 #                the argument block its callers push and its body pops (stdcall) is 4 bytes per
 #                argument, 8 per u64
 #   impl         how it is implemented, an inline table with one key:
-#                  { legacy = "<handler>" }   the kernel serves it through a handler on the raw
-#                                             argument block, fn(&mut TrapFrame, &[u32]) (its path in
-#                                             compat::kernel32's scope): the kernel's served
-#                                             surface, until its group moves to user mode
 #                  { native = "<body>" }      it runs in user mode: the DLL's own code, an
 #                                             `f2k_export_<Name>` body in its Rust or assembly
 #                  { syscall = "<path>" }     ntdll's system services only: the stub raises the gate
 #                                             on Windows 2000's number (see userland/ntdll/exports.toml)
 #                  { forward = "MODULE.Export" }  forwarded to another module's export (the same
 #                                             prototype)
-#                  { floor = "<why>" }        a deliberate fixed answer (zero, the kernel's shared
-#                                             floor handler), and why
-#                  { unimplemented = "<increment>: <what>" }  listed, not built yet: a generated
-#                                             body sets the last error to ERROR_CALL_NOT_IMPLEMENTED
-#                                             (120) and returns `fails` (zero without one), popping
-#                                             the arguments; the increment that builds it is named
+#                no export enters the kernel but ntdll's system services: kernel32 is user code
 #   ordinal      optional: the export ordinal, from the platform's own table (none yet: the
 #                ordinals are sequential placeholders)
 #   fails        optional: its failure return value: an integer (0, -1, 0x...), FALSE, NULL,
@@ -56,21 +47,18 @@
 #                tests/<fixture>/output.txt; "(default)" is the block run with no section), or
 #                "<fixture>/*" for every block of the fixture (what the C runtime's startup calls)
 #   scenarios    the host scenarios pinning it (test function names under
-#                kernel/src/compat/harness/groups, or userland/kernel32/src/scenarios)
+#                userland/kernel32/src/scenarios)
 #   unpinned     why an implemented export has no evidence yet (scripts/ledger.py lists it)
 #   internal     optional: true for an F2K-internal entry point, not a Windows 2000 export
 #
 # A gap is an expected-failure test, not a field here: a pending block in the fixture's
 # fixture.toml, or an #[ignore = "<gap id>: ..."] scenario; the ledger derives the status from them.
 #
-# Service numbers are internal (the registry and the stubs are both generated): the served
-# exports across the system DLLs' specs are numbered from 0x2000, ExitProcess first (0x2001), the
-# others in case-insensitive name order.
-#
-# kernel32 exports every function the corpus fixtures import: the kernel's served surface (a kernel stub
-# each), its own user-mode code (src/lib.rs, the assembly natives), RtlUnwind a forwarder into ntdll
-# (as on Windows 2000), and an unimplemented stub for the rest, each naming the increment that
-# builds it. One F2K-internal export: BaseProcessStartThunk, where the kernel starts a main thread.
+# kernel32 exports every function the corpus fixtures import, all of it user-mode code: its own
+# (src/lib.rs, the assembly natives) over ntdll's system services, and forwarders into ntdll where
+# Windows 2000 has them (RtlUnwind, the critical sections, the heap calls). Two F2K-internal
+# exports: BaseProcessStartThunk and BaseThreadStartThunk, where the kernel starts a main thread
+# and a child thread.
 
 [[group]]
 key = "termination"

@@ -4,10 +4,8 @@
 //! DLL beside the assembly natives (src/natives.s), the critical sections' initialization
 //! (src/critsec.s, over ntdll's), the heap and Local/Global functions (src/memory.s, over ntdll's
 //! heap exports, their bodies here), the thread start thunks (src/start.s), the pointer probes
-//! (src/probe.s) and the bodies generated from the export spec
-//! (exports.toml): the kernel's transitional Win32 services' stubs (EDX = the caller's arguments,
-//! EAX = the service number, the gate, then the stdcall return popping the argument block), and the
-//! unimplemented exports' (ERROR_CALL_NOT_IMPLEMENTED and the spec's failure value). RtlUnwind, the
+//! (src/probe.s), and the generated stubs file (empty for kernel32: only ntdll's system services
+//! have generated bodies). RtlUnwind, the
 //! critical sections' Enter, Leave, TryEnter and Delete, and HeapAlloc, HeapFree, HeapReAlloc,
 //! HeapSize and HeapValidate are forwarders: they live in ntdll, as on Windows 2000.
 

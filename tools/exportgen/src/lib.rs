@@ -4,24 +4,15 @@
 //! header documents its records). This crate reads a spec ([`load`]), checks it, and emits what
 //! derives from it ([`emit`]):
 //!
-//! - for the kernel (through its build script): the service dispatch table, and the native exports'
-//!   and the DLL's exports' argument blocks (the kernel's tests check the built DLLs against them);
-//! - for the system DLL builds (userland/build-support/stubs.rs): each DLL's service stubs (the
-//!   gate-raising bodies of the exports the kernel serves), its module-definition (`.def`) file,
-//!   and the kernel ABI constants its assembly uses ([`abi`]).
+//! - for the kernel (through its build script): the NT service table, and the native exports' and
+//!   the DLL's exports' argument blocks (the kernel's tests check the built DLLs against them);
+//! - for the system DLL builds (userland/build-support/stubs.rs): each DLL's system-service stubs,
+//!   its module-definition (`.def`) file, and the kernel ABI constants its assembly uses ([`abi`]).
 //!
-//! Two kinds of export enter the kernel, each through its own numbering:
-//!
-//! - ntdll's `Nt*` system services (`impl = { syscall = ... }`) carry Windows 2000's own numbers
-//!   ([`w2k`]), below [`w2k::service_limit`]: the kernel's NT service table is theirs.
-//! - The transitional Win32 services (the kernel's kernel32 surface, which later work moves to
-//!   user mode group by group) are numbered from [`WIN32_SERVICE_BASE`], a service table Windows
-//!   2000 does not have (its table index 2): ExitProcess is the base plus 1; the other served
-//!   exports follow in case-insensitive name order.
-//!
-//! Both the kernel's tables and the stubs come from here, so the two sides agree by construction.
-//! An export listed but not built yet (`impl = { unimplemented = ... }`) gets a generated body that
-//! fails the call (ERROR_CALL_NOT_IMPLEMENTED), so every import a program names resolves.
+//! Only ntdll's `Nt*` system services (`impl = { syscall = ... }`) enter the kernel, as on Windows
+//! 2000, by Windows 2000's own numbers ([`w2k`], below [`w2k::service_limit`]): the kernel's NT
+//! service table and ntdll's stubs both come from here, so the two sides agree by construction.
+//! Every other export is user-mode code: a native body, or a forwarder to another DLL's export.
 //!
 //! The specs are TOML read through [`toml`], a strict reader for the subset they are written in.
 
@@ -151,11 +142,6 @@ impl Pointee {
 }
 
 impl ArgKind {
-    /// Whether the harness's prototypes list it as a pointer (it names caller memory).
-    pub fn is_pointer(self) -> bool {
-        matches!(self, ArgKind::Ptr | ArgKind::PtrTo(_) | ArgKind::Str { .. })
-    }
-
     /// The bytes the caller pushes.
     pub fn bytes(self) -> u32 {
         match self {
@@ -230,10 +216,6 @@ impl ArgKind {
     }
 }
 
-/// The first transitional Win32 service's number, less one: the services Windows 2000 does not have,
-/// in the gate's table index 2 (`(EAX >> 12) & 3`), which Windows 2000 leaves empty.
-pub const WIN32_SERVICE_BASE: u32 = 0x2000;
-
 /// How an export is implemented.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Implementation {
@@ -242,20 +224,10 @@ pub enum Implementation {
     /// path from the crate root), `fn(&mut NtCall, <the arguments by kind>) -> NtResult`, the
     /// NTSTATUS in EAX. ntdll exports it under its `Zw` name too, at the same stub.
     Syscall(String),
-    /// Served by the kernel through a handler on the raw argument block, `fn(&mut TrapFrame,
-    /// &[u32])` (its path in `compat::kernel32`'s scope): one of the kernel's served exports, until
-    /// its group moves to user mode.
-    Legacy(String),
     /// Runs in user mode: the body's name.
     Native(String),
     /// Forwarded to another module's export (`NTDLL.RtlUnwind`).
     Forward(String),
-    /// A deliberate fixed answer (zero, from the kernel's shared floor handler), and why.
-    Floor(String),
-    /// Not implemented yet (the value names the increment that implements it): a generated body
-    /// sets the last error to ERROR_CALL_NOT_IMPLEMENTED and returns the export's `fails` value
-    /// (zero without one), popping its argument block.
-    Unimplemented(String),
 }
 
 impl Implementation {
@@ -263,31 +235,12 @@ impl Implementation {
     pub fn is_syscall(&self) -> bool {
         matches!(self, Implementation::Syscall(_))
     }
-
-    /// Whether the kernel serves the export as a transitional Win32 service (it has a number from
-    /// [`WIN32_SERVICE_BASE`]).
-    pub fn is_served(&self) -> bool {
-        matches!(self, Implementation::Legacy(_) | Implementation::Floor(_))
-    }
 }
-
-/// The handler the floors share.
-pub const FLOOR_HANDLER: &str = "svc_floor_zero";
 
 impl Export {
     /// The argument block the export's callers push and its body pops (stdcall).
     pub fn arg_bytes(&self) -> u32 {
         self.args.iter().map(|arg| arg.kind.bytes()).sum()
-    }
-
-    /// The kernel handler its registry entry names, for a served export: its legacy handler, or the
-    /// floors' handler.
-    pub fn handler(&self) -> Option<String> {
-        match &self.implementation {
-            Implementation::Legacy(path) => Some(path.clone()),
-            Implementation::Floor(_) => Some(FLOOR_HANDLER.to_string()),
-            _ => None,
-        }
     }
 
     /// A system service's generated wrapper: the NT service table's entry for it.
@@ -334,32 +287,11 @@ pub fn fail_value(text: &str) -> Option<u32> {
     })
 }
 
-/// The kernel's transitional service registry over every DLL's spec: the served exports in
-/// service-number order (number = [`WIN32_SERVICE_BASE`] + position + 1; ExitProcess first, then
-/// case-insensitive name order).
-pub fn registry<'a>(specs: &[&'a Spec]) -> Vec<&'a Export> {
-    let mut served: Vec<&Export> = specs
-        .iter()
-        .flat_map(|spec| spec.exports.iter())
-        .filter(|e| e.implementation.is_served())
-        .collect();
-    served.sort_by_key(|e| (e.name != "ExitProcess", e.name.to_ascii_lowercase()));
-    served
-}
-
 /// The system DLLs' specs, checked together: `(dll, spec)` pairs, the DLL named as its module
-/// (`kernel32`, `ntdll`). A served export is served once across them (the registry names it once),
-/// and a forward names an export of a listed DLL with the same prototype.
+/// (`kernel32`, `ntdll`). A forward names an export of a listed DLL with the same prototype.
 pub fn check_together(specs: &[(&str, &Spec)]) -> Result<(), String> {
-    let mut served: Vec<&str> = Vec::new();
     for (dll, spec) in specs {
         for export in &spec.exports {
-            if export.implementation.is_served() {
-                if served.contains(&export.name.as_str()) {
-                    return Err(format!("{dll}/{}: served by two DLLs", export.name));
-                }
-                served.push(&export.name);
-            }
             if let Implementation::Forward(target) = &export.implementation {
                 let (module, name) = target
                     .split_once('.')
@@ -390,23 +322,12 @@ pub fn check_together(specs: &[(&str, &Spec)]) -> Result<(), String> {
 }
 
 impl Spec {
-    /// This spec's served exports in service-number order (the registry of this spec alone; see
-    /// [`registry`] for the system DLLs together).
-    pub fn services(&self) -> Vec<&Export> {
-        registry(&[self])
-    }
-
     /// The native exports, in file order.
     pub fn natives(&self) -> Vec<&Export> {
         self.exports
             .iter()
             .filter(|e| matches!(e.implementation, Implementation::Native(_)))
             .collect()
-    }
-
-    /// The members of group `key`, in file order.
-    pub fn members(&self, key: &str) -> Vec<&Export> {
-        self.exports.iter().filter(|e| e.group == key).collect()
     }
 
     /// The export named `name`.
@@ -530,7 +451,6 @@ fn read_export(table: &Table, index: usize, groups: &[Group]) -> Result<Export, 
                     }
                     Implementation::Syscall(value.clone())
                 }
-                "legacy" => Implementation::Legacy(value.clone()),
                 "native" => Implementation::Native(value.clone()),
                 "forward" => {
                     let valid = value.split_once('.').is_some_and(|(module, export)| {
@@ -543,12 +463,9 @@ fn read_export(table: &Table, index: usize, groups: &[Group]) -> Result<Export, 
                     }
                     Implementation::Forward(value.clone())
                 }
-                "floor" => Implementation::Floor(value.clone()),
-                "unimplemented" => Implementation::Unimplemented(value.clone()),
                 _ => {
                     return Err(format!(
-                        "{context}: impl kind {kind:?} (syscall, legacy, native, forward, floor, \
-                         unimplemented)"
+                        "{context}: impl kind {kind:?} (syscall, native, forward)"
                     ))
                 }
             }
@@ -727,13 +644,13 @@ title = "termination"
 name = "GetVersion"
 group = "termination"
 args = []
-impl = { legacy = "svc_get_version" }
+impl = { native = "GetVersion" }
 
 [[export]]
 name = "ExitProcess"
 group = "termination"
 args = ["u32 uExitCode"]
-impl = { legacy = "svc_exit_process" }
+impl = { native = "ExitProcess" }
 pinned_by = ["bare/*"]
 
 [[export]]
@@ -746,7 +663,7 @@ impl = { native = "GetLastError" }
 name = "SetStdHandle"
 group = "termination"
 args = ["u32 nStdHandle", "u32 hHandle"]
-impl = { floor = "never called" }
+impl = { native = "SetStdHandle" }
 
 [[export]]
 name = "HeapAlloc"
@@ -760,16 +677,19 @@ ordinal = 0x10
     #[test]
     fn reads_every_argument_kind() {
         let text = SPEC.replacen(
-            "args = []\nimpl = { legacy = \"svc_get_version\" }",
+            "args = []\nimpl = { native = \"GetVersion\" }",
             "args = [\"u32 a\", \"i32 b\", \"bool c\", \"handle d\", \"ptr e\", \"ptr<u32> f\", \
-             \"u64 g\", \"strA h\", \"strW?[260] i\"]\nimpl = { legacy = \"svc_get_version\" }\n\
+             \"u64 g\", \"strA h\", \"strW?[260] i\"]\nimpl = { native = \"GetVersion\" }\n\
              fails = \"INVALID_HANDLE_VALUE\"",
             1,
         );
         assert_ne!(text, SPEC);
         let spec = parse_spec(&text).unwrap();
         let version = spec.export("GetVersion").unwrap();
-        assert_eq!(version.handler().as_deref(), Some("svc_get_version"));
+        assert_eq!(
+            version.implementation,
+            Implementation::Native("GetVersion".into())
+        );
         assert_eq!(version.fail_value(), Some(0xFFFF_FFFF));
         assert_eq!(version.arg_bytes(), 40);
         assert_eq!(version.args[5].kind, ArgKind::PtrTo(Pointee::U32));
@@ -812,13 +732,13 @@ ordinal = 0x10
         }
     }
 
-    /// The kinds a spec does not take: the reference's typed services are not rebuilt (an unknown
-    /// kind is refused, not misread).
+    /// The Win32 service kinds are gone: no export enters the kernel but ntdll's system services,
+    /// and every export the spec lists is built (an unknown kind is refused, not misread).
     #[test]
-    fn refuses_unknown_impl_kinds() {
-        for kind in ["service", "native2"] {
+    fn the_win32_service_kinds_are_gone() {
+        for kind in ["service", "legacy", "floor", "unimplemented", "native2"] {
             let text = SPEC.replacen(
-                "{ legacy = \"svc_get_version\" }",
+                "{ native = \"GetVersion\" }",
                 &format!("{{ {kind} = \"x\" }}"),
                 1,
             );
@@ -836,10 +756,10 @@ ordinal = 0x10
         assert_eq!(exit.pinned_by, ["bare/*"]);
         assert_eq!(spec.export("HeapAlloc").unwrap().ordinal, Some(16));
         assert_eq!(
-            spec.export("SetStdHandle").unwrap().handler().as_deref(),
-            Some(FLOOR_HANDLER)
+            spec.export("HeapAlloc").unwrap().implementation,
+            Implementation::Forward("NTDLL.RtlAllocateHeap".into())
         );
-        assert_eq!(spec.export("GetLastError").unwrap().handler(), None);
+        assert_eq!(spec.natives().len(), 4);
     }
 
     #[test]
@@ -867,10 +787,6 @@ ordinal = 0x10
         .unwrap();
         let close = spec.export("NtClose").unwrap();
         assert_eq!(close.syscall_number(), Some(0x18));
-        assert!(
-            !close.implementation.is_served(),
-            "not a transitional service"
-        );
         assert_eq!(close.nt_wrapper(), "nt_NtClose");
         let text = "[[group]]\nkey = \"nt\"\ntitle = \"nt\"\n\n[[export]]\nname = \"NtNoSuch\"\n\
                     group = \"nt\"\nargs = []\nimpl = { syscall = \"x\" }\n";
@@ -884,24 +800,17 @@ ordinal = 0x10
     }
 
     #[test]
-    fn exit_process_is_service_one_then_names_in_case_insensitive_order() {
-        let spec = parse_spec(SPEC).unwrap();
-        let order: Vec<&str> = spec.services().iter().map(|e| e.name.as_str()).collect();
-        assert_eq!(order, ["ExitProcess", "GetVersion", "SetStdHandle"]);
-    }
-
-    #[test]
     fn refuses_bad_records() {
         for (from, to, message) in [
             ("args = []", "args = [\"dword x\"]", "argument kind"),
             (
                 "impl = { native = \"GetLastError\" }",
-                "impl = { native = \"A\", floor = \"B\" }",
+                "impl = { native = \"A\", forward = \"B\" }",
                 "one key",
             ),
             (
-                "group = \"termination\"\nargs = []\nimpl = { legacy",
-                "group = \"other\"\nargs = []\nimpl = { legacy",
+                "group = \"termination\"\nargs = []\nimpl = { native = \"GetVersion",
+                "group = \"other\"\nargs = []\nimpl = { native = \"GetVersion",
                 "unknown group",
             ),
             (

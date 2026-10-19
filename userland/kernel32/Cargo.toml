@@ -3,13 +3,12 @@ name = "kernel32"
 version = "0.1.0"
 edition = "2021"
 
-# kernel32's user-mode code, host-testable: its exports' bodies as they move out of the kernel (none
-# yet: every export is a kernel-served stub or a forwarder).
+# kernel32's user-mode code, host-testable: its exports' bodies, over ntdll's.
 [lib]
 name = "kernel32"
 path = "src/lib.rs"
 
-# The DLL: the library's exports and the generated service stubs.
+# The DLL: the library's exports, the assembly natives and the forwarders.
 [[bin]]
 name = "kernel32"
 path = "src/main.rs"
@@ -18,6 +17,6 @@ test = false
 [dependencies]
 rtl = { path = "../rtl" }
 
-# The build script generates the stubs and the .def from the export specs.
+# The build script generates the .def from the export specs.
 [build-dependencies]
 exportgen = { path = "../../tools/exportgen" }

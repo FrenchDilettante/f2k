@@ -1,13 +1,11 @@
 //! System-call gate (vector 0x2E) and service dispatch.
 //!
 //! The ABI: EAX carries the service number, EDX a pointer to the arguments in user memory, the
-//! result returns in EAX. Three ranges of numbers:
+//! result returns in EAX. Two kinds of number:
 //!
 //! - below `nt::NT_SERVICE_LIMIT` (0xF8): Windows 2000's system services, by Windows 2000's own
 //!   numbers (ntdll's `Nt*` stubs; `nt`), the NTSTATUS in EAX; a number in that range F2K does not
 //!   serve is STATUS_NOT_IMPLEMENTED;
-//! - from `WIN32_SERVICE_BASE` (0x2000): the transitional Win32 services (kernel32's stubs over the kernel's
-//!   own handlers, `compat::kernel32`), the Win32 answer in EAX;
 //! - [`SYS_CSR_CALL`]: the F2K-internal client-server call, ntdll's CsrClientCallServer (`csr`).
 //!
 //! Anything else is STATUS_INVALID_SYSTEM_SERVICE. Windows 2000 masks the number (its table index
@@ -184,7 +182,7 @@ pub fn write_user(pointer: u32, bytes: &[u8]) -> Result<(), u32> {
 
 /// Host builds' user memory: a 32-bit address space no host pointer can stand for, so the copies
 /// go through [`host::UserMemory`], the memory a test installs for its thread
-/// ([`host::install`]; the contract harness's fixture does). With none installed, every access
+/// ([`host::install`]; the NT services' host tests do). With none installed, every access
 /// fails as an unmapped page does.
 #[cfg(not(target_arch = "x86"))]
 pub mod host {
@@ -272,14 +270,13 @@ extern "C" fn syscall_dispatch(frame: &mut TrapFrame) {
     // would mean the frame has no ring-3 tail and the machine is already off the rails.
     assert_eq!(frame.cs & 3, 3, "syscall gate raised from ring 0");
 
-    // A Windows 2000 system service, the client-server call, or a transitional Win32 service
-    // (whose registry lives with the surface it implements).
+    // A Windows 2000 system service, or the client-server call.
     let found = if frame.eax < crate::nt::NT_SERVICE_LIMIT {
         crate::nt::lookup(frame.eax).ok_or(STATUS_NOT_IMPLEMENTED)
     } else if frame.eax == SYS_CSR_CALL {
         Ok(crate::csr::SERVICE)
     } else {
-        crate::compat::kernel32::lookup_service(frame.eax).ok_or(STATUS_INVALID_SYSTEM_SERVICE)
+        Err(STATUS_INVALID_SYSTEM_SERVICE)
     };
     let (arg_bytes, service) = match found {
         Ok(found) => found,
@@ -434,16 +431,12 @@ mod tests {
         );
     }
 
-    /// The argument budget covers every service, of both tables, and is whole dwords.
+    /// The argument budget covers every service and is whole dwords.
     #[test]
     fn argument_budget_covers_the_registry() {
         assert_eq!(MAX_ARG_BYTES, 44);
         assert_eq!(MAX_ARG_BYTES % 4, 0);
-        let nt = crate::nt::NT_SERVICES.iter().map(|&(_, _, bytes, _)| bytes);
-        let win32 = crate::compat::kernel32::SERVICES
-            .iter()
-            .map(|&(_, bytes, _)| bytes);
-        for arg_bytes in nt.chain(win32) {
+        for arg_bytes in crate::nt::NT_SERVICES.iter().map(|&(_, _, bytes, _)| bytes) {
             assert!(
                 arg_bytes as usize <= MAX_ARG_BYTES,
                 "service arg block {arg_bytes} exceeds the budget"
@@ -466,12 +459,10 @@ mod tests {
         assert!(SYSCALL_VECTOR > 31);
     }
 
-    /// The ranges do not meet: Windows 2000's services, the transitional Win32 table, F2K's internal
-    /// client-server call.
+    /// The ranges do not meet: Windows 2000's services, F2K's internal client-server call.
     #[test]
     fn the_service_ranges_do_not_meet() {
-        assert!(crate::nt::NT_SERVICE_LIMIT <= crate::compat::kernel32::WIN32_SERVICE_BASE);
-        assert!(SYS_CSR_CALL > crate::compat::kernel32::WIN32_SERVICE_BASE + 0x1000);
+        assert!(crate::nt::NT_SERVICE_LIMIT < SYS_CSR_CALL & 0xFFFF_0000);
         assert!((crate::csr::SERVICE.0 as usize) <= MAX_ARG_BYTES);
     }
 }

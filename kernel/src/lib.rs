@@ -30,9 +30,6 @@ mod mem;
 // into ring 3)
 mod exec;
 
-// The Windows compatibility layer: kernel32's kernel-served exports
-mod compat;
-
 // Ring 3: user-mode entry, the syscall gate and its argument types, the user-mode heap, process end
 mod user;
 

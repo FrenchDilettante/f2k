@@ -1,10 +1,9 @@
-//! What the specs generate: Rust tables for the kernel and its contract harness, and each system
-//! DLL's stubs (the transitional services', the system services', the unimplemented exports'
-//! bodies) and module-definition (`.def`) file.
+//! What the specs generate: Rust tables for the kernel (the NT service table, the DLLs' declared
+//! exports), and each system DLL's system-service stubs and module-definition (`.def`) file.
 
 use std::fmt::Write;
 
-use crate::{registry, w2k, ArgKind, Export, Implementation, Spec, WIN32_SERVICE_BASE};
+use crate::{w2k, ArgKind, Export, Implementation, Spec};
 
 /// The line every generated Rust file starts with.
 fn banner(source: &str) -> String {
@@ -13,45 +12,6 @@ fn banner(source: &str) -> String {
 
 fn quote(text: &str) -> String {
     format!("{text:?}")
-}
-
-/// The kernel's transitional service registry over the system DLLs' specs: `WIN32_SERVICE_BASE`,
-/// and `SERVICES`, one `(export, argument bytes, handler)` entry per served export in
-/// service-number order. Handler paths resolve in the including module's scope
-/// (`compat::kernel32`), where `ServiceFn` is in scope too.
-pub fn kernel_services(specs: &[&Spec], source: &str) -> String {
-    let services = registry(specs);
-    let mut out = banner(source);
-    writeln!(
-        out,
-        "/// The transitional Win32 services' numbering: service n is `WIN32_SERVICE_BASE + n`, n from 1.\n\
-         pub const WIN32_SERVICE_BASE: u32 = {WIN32_SERVICE_BASE:#x};\n"
-    )
-    .unwrap();
-    out.push_str(
-        "/// The service registry: one entry per kernel-served export, in service-number order (a number is\n\
-         /// the base plus its position plus one; ExitProcess first, the rest in case-insensitive name\n\
-         /// order), across the system DLLs' export specs. A name absent from here and from the DLLs'\n\
-         /// natives fails the loader's snap.\n",
-    );
-    writeln!(
-        out,
-        "pub const SERVICES: [(&str, u32, ServiceFn); {}] = [",
-        services.len()
-    )
-    .unwrap();
-    for export in &services {
-        let handler = export.handler().expect("a served export has a handler");
-        writeln!(
-            out,
-            "    ({}, {}, {handler}),",
-            quote(&export.name),
-            export.arg_bytes()
-        )
-        .unwrap();
-    }
-    out.push_str("];\n");
-    out
 }
 
 /// The kernel's NT service table over ntdll's spec: `NT_SERVICE_LIMIT` (Windows 2000's
@@ -185,8 +145,8 @@ pub fn kernel_natives(spec: &Spec, source: &str) -> String {
 }
 
 /// Every export the DLL's table carries, whatever implements it: `DLL_EXPORTS`, `(export,
-/// argument bytes)` in file order (internal entry points left out). The served exports alone are
-/// the registry's; this is the DLL's surface, its forwarders into the other DLL included.
+/// argument bytes)` in file order (internal entry points left out): the DLL's surface, its
+/// forwarders into the other DLL included.
 pub fn dll_exports(spec: &Spec, source: &str) -> String {
     let exports: Vec<_> = spec.exports.iter().filter(|e| !e.internal).collect();
     let mut out = banner(source);
@@ -210,128 +170,8 @@ pub fn dll_exports(spec: &Spec, source: &str) -> String {
     out
 }
 
-/// The contract harness's prototypes: `SIGNATURES`, one `Signature` per export (internal entry
-/// points left out: they are no public prototype), built with the including module's `sig` and its
-/// `V` (value) and `P` (pointer) argument constructors. A quadword argument is two values
-/// (`name.lo`, `name.hi`), the dwords its callers push.
-pub fn harness_signatures(spec: &Spec, source: &str) -> String {
-    let exports: Vec<_> = spec.exports.iter().filter(|e| !e.internal).collect();
-    let mut out = banner(source);
-    out.push_str("/// The public prototypes of every export, from the export spec.\n");
-    writeln!(
-        out,
-        "pub const SIGNATURES: [Signature; {}] = [",
-        exports.len()
-    )
-    .unwrap();
-    for export in exports {
-        let args: Vec<String> = export
-            .args
-            .iter()
-            .flat_map(|arg| match arg.kind {
-                ArgKind::U64 => vec![
-                    format!("V({})", quote(&format!("{}.lo", arg.name))),
-                    format!("V({})", quote(&format!("{}.hi", arg.name))),
-                ],
-                kind if kind.is_pointer() => vec![format!("P({})", quote(&arg.name))],
-                _ => vec![format!("V({})", quote(&arg.name))],
-            })
-            .collect();
-        writeln!(
-            out,
-            "    sig({}, &[{}]),",
-            quote(&export.name),
-            args.join(", ")
-        )
-        .unwrap();
-    }
-    out.push_str("];\n");
-    out
-}
-
-/// The API groups: `GROUPS`, `(key, title, members)` in spec order, the members in spec order
-/// (internal entry points left out).
-pub fn harness_groups(spec: &Spec, source: &str) -> String {
-    let mut out = banner(source);
-    out.push_str(
-        "/// Every API group: its key, its title, and its members, from the export spec.\n",
-    );
-    out.push_str("pub const GROUPS: &[(&str, &str, &[&str])] = &[\n");
-    for group in &spec.groups {
-        let members: Vec<String> = spec
-            .members(&group.key)
-            .iter()
-            .filter(|e| !e.internal)
-            .map(|e| quote(&e.name))
-            .collect();
-        writeln!(
-            out,
-            "    ({}, {}, &[{}]),",
-            quote(&group.key),
-            quote(&group.title),
-            members.join(", ")
-        )
-        .unwrap();
-    }
-    out.push_str("];\n");
-    out
-}
-
-/// A served export's stub: the body of the DLL's export that hands the call to the kernel.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ServiceStub {
-    pub export: String,
-    /// The service number ([`WIN32_SERVICE_BASE`] plus the kernel's registry position plus one).
-    pub number: u32,
-    /// The argument block its `ret` pops (stdcall).
-    pub arg_bytes: u32,
-}
-
-/// The served exports' stubs over the system DLLs' specs, in service-number order: the numbering
-/// of [`kernel_services`], so the DLLs and the kernel agree by construction.
-pub fn service_stubs(specs: &[&Spec]) -> Vec<ServiceStub> {
-    registry(specs)
-        .iter()
-        .enumerate()
-        .map(|(index, export)| ServiceStub {
-            export: export.name.clone(),
-            number: WIN32_SERVICE_BASE + index as u32 + 1,
-            arg_bytes: export.arg_bytes(),
-        })
-        .collect()
-}
-
 /// The system-call gate's vector.
 pub const SYSCALL_VECTOR: u8 = 0x2E;
-
-/// A stub's machine code: `lea edx, [esp+4]` (EDX = the caller's arguments), `mov eax, number`,
-/// `int 0x2E`, `ret arg_bytes`.
-pub fn stub_bytes(stub: &ServiceStub) -> [u8; 14] {
-    let mut bytes = [
-        0x8D,
-        0x54,
-        0x24,
-        0x04,
-        0xB8,
-        0,
-        0,
-        0,
-        0,
-        0xCD,
-        SYSCALL_VECTOR,
-        0xC2,
-        0,
-        0,
-    ];
-    bytes[5..9].copy_from_slice(&stub.number.to_le_bytes());
-    bytes[12..14].copy_from_slice(&(stub.arg_bytes as u16).to_le_bytes());
-    bytes
-}
-
-/// The symbol a generated stub's code carries in a DLL (the `.def` maps the export name to it).
-pub fn stub_symbol(export: &str) -> String {
-    format!("_f2k_svc_{export}")
-}
 
 /// The symbol a system service's stub carries in ntdll (the `.def` maps its `Nt` and `Zw` names to
 /// it).
@@ -374,26 +214,6 @@ fn syscalls(spec: &Spec) -> Vec<(&Export, u32)> {
     services
 }
 
-/// The symbol an unimplemented export's generated body carries in a DLL (the `.def` maps the export
-/// name to it).
-pub fn unimplemented_symbol(export: &str) -> String {
-    format!("_f2k_unimpl_{export}")
-}
-
-/// ERROR_CALL_NOT_IMPLEMENTED: the last error an unimplemented export's body sets.
-pub const ERROR_CALL_NOT_IMPLEMENTED: u32 = 120;
-
-/// The TEB's LastErrorValue: the body reaches the calling thread's TEB through FS, as Windows 2000's
-/// SetLastError does.
-pub const TEB_LAST_ERROR_VALUE: u32 = 0x34;
-
-/// `spec`'s unimplemented exports, in spec order.
-fn unimplemented(spec: &Spec) -> impl Iterator<Item = &Export> {
-    spec.exports
-        .iter()
-        .filter(|e| matches!(e.implementation, Implementation::Unimplemented(_)))
-}
-
 /// The `ret` popping `export`'s argument block (stdcall).
 fn ret(export: &Export) -> String {
     match export.arg_bytes() {
@@ -407,33 +227,12 @@ pub fn hand_symbol(export: &str) -> String {
     format!("_f2k_export_{export}")
 }
 
-/// `dll`'s generated bodies as Intel-syntax assembly: one global [`stub_symbol`] per export its spec
-/// serves, in service-number order (numbered across `specs`, the system DLLs' specs); one global
-/// [`nt_stub_symbol`] per system service, in number order; one global [`unimplemented_symbol`] per
-/// unimplemented export, in spec order (the last error set to ERROR_CALL_NOT_IMPLEMENTED, the
-/// `fails` value returned, the argument block popped). The gate vector is the `SYSCALL_VECTOR`
-/// constant the DLL's constants file sets (see `abi`).
+/// `dll`'s generated bodies as Intel-syntax assembly: one global [`nt_stub_symbol`] per system
+/// service its spec declares, in number order. The gate vector is the `SYSCALL_VECTOR` constant the
+/// DLL's constants file sets (see `abi`).
 pub fn dll_stubs(specs: &[(&str, &Spec)], dll: &str) -> String {
-    let all: Vec<&Spec> = specs.iter().map(|(_, spec)| *spec).collect();
     let own = own_spec(specs, dll);
     let mut out = String::from(".text\n");
-    for stub in service_stubs(&all).into_iter().filter(|stub| {
-        own.export(&stub.export)
-            .is_some_and(|e| e.implementation.is_served())
-    }) {
-        let ret = if stub.arg_bytes == 0 {
-            "ret".to_string()
-        } else {
-            format!("ret {}", stub.arg_bytes)
-        };
-        writeln!(
-            out,
-            ".p2align 4\n.globl {symbol}\n{symbol}:\n    lea edx, [esp+4]\n    mov eax, {number}\n    int SYSCALL_VECTOR\n    {ret}",
-            symbol = stub_symbol(&stub.export),
-            number = stub.number,
-        )
-        .unwrap();
-    }
     for (export, number) in syscalls(own) {
         writeln!(
             out,
@@ -443,32 +242,19 @@ pub fn dll_stubs(specs: &[(&str, &Spec)], dll: &str) -> String {
         )
         .unwrap();
     }
-    for export in unimplemented(own) {
-        writeln!(
-            out,
-            ".p2align 4\n.globl {symbol}\n{symbol}:\n    mov dword ptr fs:[{TEB_LAST_ERROR_VALUE:#x}], {ERROR_CALL_NOT_IMPLEMENTED}\n    mov eax, {fails:#x}\n    {ret}",
-            symbol = unimplemented_symbol(&export.name),
-            fails = export.fail_value().unwrap_or(0),
-            ret = ret(export),
-        )
-        .unwrap();
-    }
     out
 }
 
-/// `dll`'s module-definition file: its served exports (to their stubs, in service-number order),
-/// then its hand-written exports (to their code, in `hand_exports` order: the order of the `.globl`
-/// lines of its assembly sources), then its system services (each under its `Nt` and its `Zw` name,
-/// to its stub, in number order), then its unimplemented exports (to their generated bodies, in
-/// spec order), then its forwarders (`Name=MODULE.Export`, in spec order). An export's ordinal is
-/// its spec's when it has one, otherwise the next free one. `hand_exports` must be exactly the
-/// spec's natives.
+/// `dll`'s module-definition file: its hand-written exports (to their code, in `hand_exports`
+/// order: the order of the `.globl` lines of its assembly sources), then its system services (each
+/// under its `Nt` and its `Zw` name, to its stub, in number order), then its forwarders
+/// (`Name=MODULE.Export`, in spec order). An export's ordinal is its spec's when it has one,
+/// otherwise the next free one. `hand_exports` must be exactly the spec's natives.
 pub fn dll_def(
     specs: &[(&str, &Spec)],
     dll: &str,
     hand_exports: &[String],
 ) -> Result<String, String> {
-    let all: Vec<&Spec> = specs.iter().map(|(_, spec)| *spec).collect();
     let own = own_spec(specs, dll);
     let mut natives: Vec<&str> = own.natives().iter().map(|e| e.name.as_str()).collect();
     let mut written: Vec<&str> = hand_exports.iter().map(String::as_str).collect();
@@ -480,17 +266,6 @@ pub fn dll_def(
         ));
     }
     let mut lines: Vec<(&str, String)> = Vec::new();
-    for stub in service_stubs(&all) {
-        if let Some(export) = own
-            .export(&stub.export)
-            .filter(|e| e.implementation.is_served())
-        {
-            lines.push((
-                &export.name,
-                format!("{}={}", export.name, &stub_symbol(&export.name)[1..]),
-            ));
-        }
-    }
     for name in hand_exports {
         let export = own.export(name).expect("checked against the natives above");
         lines.push((
@@ -506,16 +281,6 @@ pub fn dll_def(
         let symbol = &nt_stub_symbol(nt)[1..];
         lines.push((nt, format!("{nt}={symbol}")));
         lines.push((zw, format!("{zw}={symbol}")));
-    }
-    for export in unimplemented(own) {
-        lines.push((
-            &export.name,
-            format!(
-                "{}={}",
-                export.name,
-                &unimplemented_symbol(&export.name)[1..]
-            ),
-        ));
     }
     for export in &own.exports {
         if let Implementation::Forward(target) = &export.implementation {
@@ -564,7 +329,7 @@ title = "exceptions"
 name = "RtlUnwind"
 group = "exceptions"
 args = ["ptr TargetFrame"]
-impl = { legacy = "svc_rtl_unwind" }
+impl = { native = "RtlUnwind" }
 
 [[export]]
 name = "F2kHelper"
@@ -580,20 +345,10 @@ internal = true
         (parse_spec(&kernel32).unwrap(), parse_spec(NTDLL).unwrap())
     }
 
-    #[test]
-    fn the_registry_numbers_across_the_dlls() {
-        let (kernel32, ntdll) = both();
-        let text = kernel_services(&[&kernel32, &ntdll], "test");
-        let body: Vec<&str> = text.lines().filter(|l| l.starts_with("    (")).collect();
-        assert_eq!(
-            body,
-            [
-                "    (\"ExitProcess\", 4, svc_exit_process),",
-                "    (\"GetVersion\", 0, svc_get_version),",
-                "    (\"RtlUnwind\", 4, svc_rtl_unwind),",
-                "    (\"SetStdHandle\", 8, svc_floor_zero),",
-            ]
-        );
+    fn natives() -> Vec<String> {
+        ["ExitProcess", "GetVersion", "GetLastError", "SetStdHandle"]
+            .map(String::from)
+            .to_vec()
     }
 
     #[test]
@@ -611,13 +366,14 @@ internal = true
         ))
         .unwrap();
         crate::check_together(&[("kernel32", &kernel32), ("ntdll", &ntdll)]).unwrap();
-        let error = crate::check_together(&[
-            ("kernel32", &kernel32),
-            ("ntdll", &ntdll),
-            ("again", &kernel32),
-        ])
-        .unwrap_err();
-        assert!(error.contains("served by two DLLs"), "{error}");
+        let ntdll = parse_spec(&format!(
+            "{NTDLL}\n[[export]]\nname = \"RtlAllocateHeap\"\ngroup = \"exceptions\"\n\
+             args = [\"u32 hHeap\"]\nimpl = {{ native = \"x\" }}\n"
+        ))
+        .unwrap();
+        let error =
+            crate::check_together(&[("kernel32", &kernel32), ("ntdll", &ntdll)]).unwrap_err();
+        assert!(error.contains("prototype differs"), "{error}");
     }
 
     #[test]
@@ -635,38 +391,6 @@ internal = true
             !kernel_natives(&parse_spec(NTDLL).unwrap(), "t").contains("F2kHelper"),
             "internal"
         );
-    }
-
-    /// An unimplemented export gets a generated body: the last error set to
-    /// ERROR_CALL_NOT_IMPLEMENTED, its `fails` value returned (zero without one), its argument block
-    /// popped; the `.def` exports it, and the kernel serves nothing for it.
-    #[test]
-    fn unimplemented_exports_fail_the_call() {
-        let text = format!(
-            "{SPEC}\n[[export]]\nname = \"Beep\"\ngroup = \"termination\"\nargs = [\"u32 a\", \"u32 b\"]\n\
-             impl = {{ unimplemented = \"A4b\" }}\nfails = \"INVALID_HANDLE_VALUE\"\n\n\
-             [[export]]\nname = \"Quiet\"\ngroup = \"termination\"\nargs = []\n\
-             impl = {{ unimplemented = \"B1\" }}\n"
-        );
-        let spec = parse_spec(&text).unwrap();
-        let specs = [("kernel32", &spec)];
-        let stubs = dll_stubs(&specs, "kernel32");
-        assert!(
-            stubs.contains(
-                ".globl _f2k_unimpl_Beep\n_f2k_unimpl_Beep:\n    mov dword ptr fs:[0x34], 120\n    \
-                 mov eax, 0xffffffff\n    ret 8\n"
-            ),
-            "{stubs}"
-        );
-        assert!(stubs.contains(
-            "_f2k_unimpl_Quiet:\n    mov dword ptr fs:[0x34], 120\n    mov eax, 0x0\n    ret\n"
-        ));
-        let def = dll_def(&specs, "kernel32", &["GetLastError".to_string()]).unwrap();
-        assert!(
-            def.contains("  Beep=f2k_unimpl_Beep @5\n  Quiet=f2k_unimpl_Quiet @6\n"),
-            "{def}"
-        );
-        assert!(!kernel_services(&[&spec], "t").contains("Beep"));
     }
 
     const SYSCALLS: &str = r#"
@@ -709,10 +433,6 @@ impl = { syscall = "crate::nt::object::close" }
             "{stubs}"
         );
         assert!(!dll_stubs(&specs, "kernel32").contains("_f2k_nt_"));
-        assert!(
-            !kernel_services(&[&kernel32, &ntdll], "t").contains("NtClose"),
-            "not a Win32 service"
-        );
         let def = dll_def(&specs, "ntdll", &[]).unwrap();
         assert_eq!(
             def,
@@ -725,68 +445,30 @@ impl = { syscall = "crate::nt::object::close" }
         );
     }
 
-    #[test]
-    fn harness_signatures_and_groups() {
-        let spec = parse_spec(SPEC).unwrap();
-        let sigs = harness_signatures(&spec, "t");
-        assert!(
-            sigs.contains("sig(\"SetStdHandle\", &[V(\"nStdHandle\"), V(\"hHandle\")]),"),
-            "{sigs}"
-        );
-        assert!(sigs.contains("[Signature; 5]"));
-        let groups = harness_groups(&spec, "t");
-        assert!(groups.contains(
-            "(\"termination\", \"termination\", &[\"GetVersion\", \"ExitProcess\", \"GetLastError\", \"SetStdHandle\", \"HeapAlloc\"]),"
-        ));
-    }
-
+    /// kernel32 generates no bodies: its exports are its own code and its forwarders. The `.def`
+    /// maps the hand-written exports in their sources' order, then the forwarders.
     #[test]
     fn each_dll_gets_its_stubs_and_def() {
         let (kernel32, ntdll) = both();
         let specs = [("kernel32", &kernel32), ("ntdll", &ntdll)];
-        let stubs = dll_stubs(&specs, "kernel32");
-        assert!(
-            stubs.starts_with(
-                ".text\n.p2align 4\n.globl _f2k_svc_ExitProcess\n_f2k_svc_ExitProcess:\n"
-            ),
-            "{stubs}"
-        );
-        assert!(
-            stubs.contains("    mov eax, 8196\n    int SYSCALL_VECTOR\n    ret 8\n"),
-            "SetStdHandle is service 4 of the Win32 table"
-        );
-        assert!(stubs.contains("_f2k_svc_GetVersion:\n    lea edx, [esp+4]\n    mov eax, 8194\n    int SYSCALL_VECTOR\n    ret\n"));
-        assert!(!stubs.contains("RtlUnwind"), "ntdll serves it");
-        let def = dll_def(&specs, "kernel32", &["GetLastError".to_string()]).unwrap();
+        assert_eq!(dll_stubs(&specs, "kernel32"), ".text\n");
+        assert_eq!(dll_stubs(&specs, "ntdll"), ".text\n");
+        let def = dll_def(&specs, "kernel32", &natives()).unwrap();
         assert_eq!(
             def,
-            "LIBRARY kernel32.dll\nEXPORTS\n  ExitProcess=f2k_svc_ExitProcess @1\n  GetVersion=f2k_svc_GetVersion @2\n  \
-             SetStdHandle=f2k_svc_SetStdHandle @3\n  GetLastError=f2k_export_GetLastError @4\n  \
-             HeapAlloc=NTDLL.RtlAllocateHeap @16\n  RtlUnwind=NTDLL.RtlUnwind @5\n"
+            "LIBRARY kernel32.dll\nEXPORTS\n  ExitProcess=f2k_export_ExitProcess @1\n  \
+             GetVersion=f2k_export_GetVersion @2\n  GetLastError=f2k_export_GetLastError @3\n  \
+             SetStdHandle=f2k_export_SetStdHandle @4\n  HeapAlloc=NTDLL.RtlAllocateHeap @16\n  \
+             RtlUnwind=NTDLL.RtlUnwind @5\n"
         );
-        let def = dll_def(&specs, "ntdll", &["F2kHelper".to_string()]).unwrap();
-        assert_eq!(def, "LIBRARY ntdll.dll\nEXPORTS\n  RtlUnwind=f2k_svc_RtlUnwind @1\n  F2kHelper=f2k_export_F2kHelper @2\n");
+        let def = dll_def(&specs, "ntdll", &["RtlUnwind".into(), "F2kHelper".into()]).unwrap();
+        assert_eq!(
+            def,
+            "LIBRARY ntdll.dll\nEXPORTS\n  RtlUnwind=f2k_export_RtlUnwind @1\n  \
+             F2kHelper=f2k_export_F2kHelper @2\n"
+        );
         assert!(dll_def(&specs, "kernel32", &[])
             .unwrap_err()
             .contains("natives"));
-        assert!(dll_stubs(&specs, "ntdll").contains("mov eax, 8195\n"));
-    }
-
-    #[test]
-    fn stub_bytes_follow_the_numbering() {
-        let spec = parse_spec(SPEC).unwrap();
-        let stubs = service_stubs(&[&spec]);
-        assert_eq!(
-            stubs[0],
-            ServiceStub {
-                export: "ExitProcess".into(),
-                number: 0x2001,
-                arg_bytes: 4
-            }
-        );
-        assert_eq!(
-            stub_bytes(&stubs[2]),
-            [0x8D, 0x54, 0x24, 0x04, 0xB8, 3, 0x20, 0, 0, 0xCD, 0x2E, 0xC2, 8, 0]
-        );
     }
 }

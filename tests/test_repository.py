@@ -242,57 +242,29 @@ def kernel32_exports() -> list[dict]:
     return tomllib.loads((f2kboot.REPO_ROOT / "userland" / "kernel32" / "exports.toml").read_text())["export"]
 
 
-# The kernel32 exports the kernel still serves (the kernel's transitional Win32 services:
-# `legacy` handlers and `floor` answers, generated int 2Eh stubs). Each increment moved its
-# group to kernel32's own code over ntdll and lowered this; the modules moved the last, and
-# the service layer's deletion follows.
-SERVED_KERNEL32_EXPORTS = 0
-
-# The kernel32 exports the corpus imports that are not built yet (`unimplemented` stubs failing with
-# ERROR_CALL_NOT_IMPLEMENTED, each naming its increment). It only goes down.
-UNIMPLEMENTED_KERNEL32_EXPORTS = 0
-
-
-def test_served_kernel32_exports_only_go_down():
-    """The kernel-served kernel32 exports are a ratchet: an increment that moves a group lowers the
-    recorded count, and nothing adds a served export back."""
-    served = [e["name"] for e in kernel32_exports() if {"legacy", "floor"} & set(e["impl"])]
-    assert len(served) <= SERVED_KERNEL32_EXPORTS, (
-        f"{len(served)} kernel-served kernel32 exports, above the ceiling of "
-        f"{SERVED_KERNEL32_EXPORTS}: write the export in kernel32's own code over ntdll"
+def test_no_export_is_a_kernel_served_win32_service():
+    """Every kernel32 export is kernel32's own code over ntdll: the kernel serves no Win32 service
+    and has no Win32 layer (kernel/src/compat), and the specs' transitional kinds (impl service,
+    legacy and floor, served from 0x2000, and the unimplemented stubs) are gone: exportgen no longer
+    reads them. Only ntdll's system services (impl syscall) enter the kernel."""
+    transitional = [
+        f"{spec.parent.name}/{export['name']}"
+        for spec in sorted((f2kboot.REPO_ROOT / "userland").glob("*/exports.toml"))
+        for export in tomllib.loads(spec.read_text())["export"]
+        if {"service", "legacy", "floor", "unimplemented"} & set(export["impl"])
+    ]
+    assert not transitional, (
+        f"exports served by the kernel as Win32 services, or stubs: {transitional}: write them in "
+        "the DLL's user-mode code over ntdll's system services"
     )
-    assert len(served) == SERVED_KERNEL32_EXPORTS, (
-        f"{len(served)} kernel-served kernel32 exports, below the recorded {SERVED_KERNEL32_EXPORTS}: "
-        f"lower SERVED_KERNEL32_EXPORTS to {len(served)} so the ratchet holds"
+    assert not (f2kboot.REPO_ROOT / "kernel" / "src" / "compat").exists(), (
+        "kernel/src/compat is back: the kernel speaks NT; Win32 is kernel32's user-mode code"
     )
-
-
-def test_unimplemented_kernel32_exports_only_go_down():
-    """The unimplemented stubs are a ratchet: an increment that builds its exports lowers the
-    recorded count, and no export goes back to a stub."""
-    stubs = [e["name"] for e in kernel32_exports() if "unimplemented" in e["impl"]]
-    assert len(stubs) <= UNIMPLEMENTED_KERNEL32_EXPORTS, (
-        f"{len(stubs)} unimplemented kernel32 exports, above the ceiling of "
-        f"{UNIMPLEMENTED_KERNEL32_EXPORTS}"
-    )
-    assert len(stubs) == UNIMPLEMENTED_KERNEL32_EXPORTS, (
-        f"{len(stubs)} unimplemented kernel32 exports, below the recorded "
-        f"{UNIMPLEMENTED_KERNEL32_EXPORTS}: lower UNIMPLEMENTED_KERNEL32_EXPORTS to {len(stubs)} so "
-        "the ratchet holds"
-    )
-
-
-def test_unimplemented_exports_name_their_increment():
-    """Every unimplemented export says which rebuild increment builds it (`<increment>: <what>`)."""
-    for export in kernel32_exports():
-        reason = export["impl"].get("unimplemented")
-        if reason is not None:
-            assert re.match(r"[A-C]\d+[ab]?: \S", reason), f"{export['name']}: {reason!r}"
 
 
 def test_the_spec_lists_every_fixture_import():
-    """kernel32's spec lists every kernel32 function the corpus fixtures import (implemented, or an
-    unimplemented stub), so every fixture loads: the loader stops at the first missing import.
+    """kernel32's spec lists every kernel32 function the corpus fixtures import, so every fixture
+    loads: the loader stops at the first missing import.
     hellogui imports user32 and gdi32, which F2K does not have."""
     exported = {e["name"] for e in kernel32_exports()}
     for exe in sorted((f2kboot.REPO_ROOT / "tests").glob("*/*.exe")):

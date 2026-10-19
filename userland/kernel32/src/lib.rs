@@ -19,9 +19,8 @@
 //! memory and the system's memory facts ([`vm`]) and the paging file's mappings ([`filemap`]). The
 //! heap and Local/Global functions are the DLL's (src/main.rs and src/memory.s, over ntdll's heap
 //! exports). The trivial natives (src/natives.s), the main thread's start (src/start.s) and the
-//! pointer probes (src/probe.s) are assembly; the rest are the kernel's transitional Win32 services
-//! (generated stubs) or unimplemented stubs, which the increments rewrite here group by group
-//! (`tests/test_repository.py` ratchets both counts down).
+//! pointer probes (src/probe.s) are assembly. No export enters the kernel itself: only ntdll's
+//! system-service stubs do (`tests/test_repository.py` checks the built DLL holds no `int 2Eh`).
 
 #![cfg_attr(not(test), no_std)]
 

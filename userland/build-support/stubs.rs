@@ -1,10 +1,11 @@
 // Shared by the system DLLs' build scripts (`include!`d): generate the DLL's assembly constants,
-// service stubs and .def from the export specs (userland/<dll>/exports.toml, through
+// system-service stubs and .def from the export specs (userland/<dll>/exports.toml, through
 // tools/exportgen), then link it as a DLL at its base.
 //
-// Symbol conventions the .def maps to export names (exportgen's `stub_symbol` / `hand_symbol`):
-// - `_f2k_svc_<Export>`: a kernel-served export's generated stub (lea edx,[esp+4]; mov eax,N;
-//   int 2Eh; ret <argument bytes>), numbered as the kernel's registry is.
+// Symbol conventions the .def maps to export names (exportgen's `nt_stub_symbol` / `hand_symbol`):
+// - `_f2k_nt_<Export>`: a system service's generated stub in ntdll (mov eax,N; lea edx,[esp+4];
+//   int 2Eh; ret <argument bytes>), N its Windows 2000 number; the .def exports it under its `Nt`
+//   and its `Zw` name.
 // - `_f2k_export_<Export>`: a hand-written export in the crate's assembly sources (a `.globl` line
 //   names it) or its Rust sources (an `export_name = "f2k_export_<Export>"` stdcall function); they
 //   must be exactly the spec's natives.
@@ -12,8 +13,7 @@
 
 use std::path::{Path, PathBuf};
 
-/// The system DLLs whose specs are read and checked together (a forward names the other's export,
-/// and the service numbering runs across both).
+/// The system DLLs whose specs are read and checked together (a forward names the other's export).
 const DLLS: [&str; 2] = ["kernel32", "ntdll"];
 
 /// The hand-written exports a source declares: an assembly source's `.globl _f2k_export_<Name>`
@@ -53,8 +53,8 @@ fn rust_sources(dir: &Path) -> Vec<PathBuf> {
 }
 
 /// Generate `dll`'s build inputs into OUT_DIR and link it: `consts.s` (the kernel ABI constants as
-/// `.set`s), `stubs.s` (its kernel-served exports' stubs), and the .def (those, the hand-written
-/// exports of `asm_sources` and the Rust sources, and its forwarders).
+/// `.set`s), `stubs.s` (its system services' stubs), and the .def (the hand-written exports of
+/// `asm_sources` and the Rust sources, those stubs, and its forwarders).
 fn build_dll(dll: &str, base: u32, asm_sources: &[&str]) {
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());

@@ -113,7 +113,7 @@ all: disk
 
 # The system DLLs (userland/, its own Cargo workspace and target): the kernel embeds them, so they
 # build first. Their generated stubs and .def come from the export specs
-# (userland/<dll>/exports.toml, through tools/exportgen), the source the kernel's service registry
+# (userland/<dll>/exports.toml, through tools/exportgen), the source the kernel's NT service table
 # is generated from too.
 .PHONY: userland
 userland:

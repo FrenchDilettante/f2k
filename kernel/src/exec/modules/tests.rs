@@ -1,9 +1,8 @@
 //! The system DLLs as the kernel embeds them: the module table's images and resolution, the built
-//! DLLs against the export specs (every served export's stub, the natives, the forwarders), and the
-//! import surface of the corpus binaries the kernel runs.
+//! DLLs against the export specs (the natives, the forwarders), and the import surface of the
+//! corpus binaries the kernel runs.
 
 use super::*;
-use crate::compat::kernel32::{SERVICES, WIN32_SERVICE_BASE};
 
 // `NATIVE_EXPORTS`: kernel32's native exports (its user-mode code), (export, argument bytes), as the
 // spec declares them.
@@ -87,33 +86,11 @@ fn bytes_at(address: u32) -> &'static [u8] {
     &dll.file[(address - dll.base) as usize..]
 }
 
-/// Every service the registry holds is a system DLL export (kernel32's, or ntdll's that kernel32
-/// forwards to) whose stub raises the gate on its number and returns popping its argument block:
-/// lea edx,[esp+4] / mov eax,service (WIN32_SERVICE_BASE + its position + 1) / int 0x2E / ret
-/// imm16 (the stdcall cleanup; `ret` for an empty block). Every export has its own code. A DLL
-/// built from another version of the specs fails here.
+/// kernel32's surface is its own code: every native export, and the start thunks, has its own code
+/// (no two share an address). A DLL built from another version of the specs fails here.
 #[test]
-fn the_system_dlls_serve_the_registry() {
+fn every_export_has_its_own_code() {
     let mut addresses = Vec::new();
-    for (index, &(name, arg_bytes, _)) in SERVICES.iter().enumerate() {
-        let mut stub = vec![0x8D, 0x54, 0x24, 0x04, 0xB8];
-        stub.extend_from_slice(&(WIN32_SERVICE_BASE + index as u32 + 1).to_le_bytes());
-        stub.extend_from_slice(&[0xCD, crate::user::syscall::SYSCALL_VECTOR as u8]);
-        if arg_bytes == 0 {
-            stub.push(0xC3);
-        } else {
-            stub.push(0xC2);
-            stub.extend_from_slice(&(arg_bytes as u16).to_le_bytes());
-        }
-        let address = kernel32_export(name).unwrap_or_else(|| panic!("kernel32 exports no {name}"));
-        let found = bytes_at(address);
-        assert!(
-            found.starts_with(&stub),
-            "{name}: {:02x?}",
-            &found[..stub.len()]
-        );
-        addresses.push(address);
-    }
     // The natives: kernel32's own code (the trivial ones, the exception filter and the pointer
     // probes its assembly, the TLS slots' reads and writes; the console, start-up, locale, clock,
     // virtual-memory, mapping, synchronization, timer, sleep, APC, affinity, TLS-index,
@@ -132,7 +109,7 @@ fn the_system_dlls_serve_the_registry() {
     addresses.dedup();
     assert_eq!(
         addresses.len(),
-        SERVICES.len() + NATIVE_EXPORTS.len() + 2,
+        NATIVE_EXPORTS.len() + 2,
         "every export has its own code"
     );
 }
