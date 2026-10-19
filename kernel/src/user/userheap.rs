@@ -1,8 +1,8 @@
 //! The user-mode heap the kernel32 heap services serve.
 //!
-//! Two areas, two owners: the heap region (blocks served by HeapAlloc, managed here) and the CRT
-//! region (raw VirtualAlloc pages the CRT manages itself). Quirk: the real system placed the CRT's
-//! reservation exactly on this kernel's user stack, so both areas sit deliberately far from it.
+//! The heap region: blocks served by HeapAlloc, managed here (the C runtime's own VirtualAlloc
+//! pages are its reservations, through NtAllocateVirtualMemory). Until the heap moves into ntdll,
+//! the region sits at a fixed address clear of the user stack.
 //!
 //! The allocator core is pure logic over a `&mut [u8]` region image (host-testable); the target
 //! glue maps pages on demand. Blocks carry an 8-byte header (size, state), 8-byte aligned;
@@ -28,15 +28,6 @@ const STATE_IN_USE: u32 = 1;
 /// The heap region's fixed user address and cap.
 pub const HEAP_REGION_BASE: u32 = 0x0200_0000;
 pub const HEAP_REGION_MAX: usize = 0x0010_0000;
-
-/// The CRT region's base — the address VirtualAlloc reports for a NULL reservation.
-pub const CRT_REGION_BASE: u32 = 0x0210_0000;
-
-/// VirtualAlloc allocation types (public constants; the CRT passes them).
-#[cfg(target_arch = "x86")]
-pub const MEM_COMMIT: u32 = 0x1000;
-#[cfg(target_arch = "x86")]
-pub const MEM_RESERVE: u32 = 0x2000;
 
 /// HeapAlloc/HeapReAlloc flag: zero the new bytes.
 const HEAP_ZERO_MEMORY: u32 = 0x0000_0008;
@@ -258,75 +249,23 @@ pub fn realloc_block(
 #[cfg(target_arch = "x86")]
 use crate::mem::paging::PAGE_SIZE;
 #[cfg(target_arch = "x86")]
-use crate::mem::vm::{AddressSpace, CurrentPages, Kind, PAGE_READWRITE};
+use crate::mem::vm::{AddressSpace, CurrentPages, PAGE_READWRITE};
 
-/// The CRT region's bound: a reservation never reaches the kernel half.
-const CRT_REGION_LIMIT: u32 = crate::mem::paging::KERNEL_BASE;
-
-/// The size a NULL reservation of `size` bytes at `base` takes: whole pages (the documented
-/// rounding: the range covers every byte requested), at least one 64 KiB allocation-granularity
-/// unit, never past `CRT_REGION_LIMIT`. None when it cannot be served.
-fn crt_reservation(base: u32, size: u32) -> Option<u32> {
-    let size = size.max(0x1_0000).checked_next_multiple_of(0x1000)?;
-    (base.checked_add(size)? <= CRT_REGION_LIMIT).then_some(size)
-}
-
-/// A commit request's outcome against the CRT region's reservation and committed prefix (both
-/// lengths from the region base).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum CrtCommit {
-    /// Outside the reservation, overflowing, or not a contiguous extension of the prefix.
-    Refused,
-    /// Already inside the committed prefix: nothing to map.
-    Mapped,
-    /// Extend the committed prefix to cover this many bytes from the base.
-    Extend(u32),
-}
-
-/// Plan a commit of `size` bytes at `addr` (absolute) in the CRT region at `base`. Offsets, not
-/// addresses, are compared against the prefix: the prefix is a length.
-fn crt_commit(base: u32, reserved: u32, committed: u32, addr: u32, size: u32) -> CrtCommit {
-    if reserved == 0 || addr < base {
-        return CrtCommit::Refused;
-    }
-    let offset = addr - base;
-    let Some(end) = offset.checked_add(size) else {
-        return CrtCommit::Refused;
-    };
-    if end > reserved {
-        CrtCommit::Refused
-    } else if end <= committed {
-        CrtCommit::Mapped
-    } else if offset > committed {
-        // Only a contiguous extension is served.
-        CrtCommit::Refused
-    } else {
-        CrtCommit::Extend(end)
-    }
-}
-
-/// Per-process heap bookkeeping: the heap region's committed prefix and bump edge, and the CRT
-/// region's reservation and committed prefix. A fresh process starts from [`HeapState::new`];
+/// Per-process heap bookkeeping: the heap region's committed prefix and bump edge. A fresh process starts from [`HeapState::new`];
 /// nothing survives the process that owns it.
 pub struct HeapState {
     /// The heap region's committed prefix, in bytes.
     committed: usize,
     /// The heap region's bump edge (blocks live below it).
     top: usize,
-    /// The CRT region's reservation size (0 until VirtualAlloc reserves at NULL).
-    crt_reserved: u32,
-    /// The CRT region's committed prefix, in bytes.
-    crt_committed: u32,
 }
 
 impl HeapState {
-    /// Fresh state: nothing committed, nothing reserved.
+    /// Fresh state: nothing committed.
     pub const fn new() -> Self {
         Self {
             committed: 0,
             top: 0,
-            crt_reserved: 0,
-            crt_committed: 0,
         }
     }
 
@@ -449,84 +388,6 @@ impl HeapState {
         }
     }
 
-    /// VirtualAlloc for the CRT region: NULL reservations return the fixed base, the reservation a
-    /// region of `space`; commits extend the committed prefix (the CRT commits at the base, then
-    /// grows contiguously). 0 for anything else, a reservation reaching another region (an image)
-    /// included, and when no frame is left for a commit.
-    pub fn virtual_alloc(
-        &mut self,
-        space: &mut AddressSpace,
-        addr: u32,
-        size: u32,
-        alloc_type: u32,
-    ) -> u32 {
-        if alloc_type & MEM_RESERVE != 0 {
-            if addr != 0 {
-                return 0; // only NULL reservations are served
-            }
-            if self.crt_reserved != 0 {
-                return 0; // a second live reservation is not served
-            }
-            let Some(reserved) = crt_reservation(CRT_REGION_BASE, size) else {
-                return 0;
-            };
-            let region = space.reserve(
-                Some(CRT_REGION_BASE),
-                reserved,
-                PAGE_READWRITE,
-                Kind::Private,
-            );
-            if region.is_err() {
-                return 0;
-            }
-            self.crt_reserved = reserved;
-            if alloc_type & MEM_COMMIT != 0 && !self.commit_crt(space, size.min(reserved)) {
-                // The reservation goes with the failed commit, as one allocation.
-                let _ = space.release(&mut CurrentPages, CRT_REGION_BASE);
-                self.crt_reserved = 0;
-                self.crt_committed = 0;
-                return 0;
-            }
-            return CRT_REGION_BASE;
-        }
-
-        if alloc_type & MEM_COMMIT != 0 {
-            return match crt_commit(
-                CRT_REGION_BASE,
-                self.crt_reserved,
-                self.crt_committed,
-                addr,
-                size,
-            ) {
-                CrtCommit::Refused => 0,
-                CrtCommit::Mapped => addr,
-                CrtCommit::Extend(end) if self.commit_crt(space, end) => addr,
-                CrtCommit::Extend(_) => 0,
-            };
-        }
-
-        0
-    }
-
-    /// Commit the CRT region's prefix up to `end` bytes from the base (whole pages); false without
-    /// frames.
-    fn commit_crt(&mut self, space: &mut AddressSpace, end: u32) -> bool {
-        let start = self.crt_committed.div_ceil(PAGE_SIZE);
-        let end = end.div_ceil(PAGE_SIZE);
-        if end > start {
-            let committed = space.commit(
-                &mut CurrentPages,
-                CRT_REGION_BASE + start * PAGE_SIZE,
-                (end - start) * PAGE_SIZE,
-                PAGE_READWRITE,
-            );
-            if committed.is_err() {
-                return false;
-            }
-        }
-        self.crt_committed = self.crt_committed.max(end * PAGE_SIZE);
-        true
-    }
 }
 
 /// The handle HeapCreate reports (nonzero, address-styled like real handles).
@@ -555,10 +416,6 @@ mod target {
     pub fn destroy(handle: u32) -> u32 {
         crate::process::current_mut().heap_mut().destroy(handle)
     }
-    pub fn virtual_alloc(addr: u32, size: u32, alloc_type: u32) -> u32 {
-        let parts = crate::process::current_mut().parts_mut();
-        parts.heap.virtual_alloc(parts.vm, addr, size, alloc_type)
-    }
 }
 
 #[cfg(target_arch = "x86")]
@@ -573,8 +430,6 @@ mod host {
     }
 
     pub const HEAP_HANDLE: u32 = 0;
-    pub const MEM_COMMIT: u32 = 0x1000;
-    pub const MEM_RESERVE: u32 = 0x2000;
 
     pub fn create() -> u32 {
         target_only()
@@ -589,9 +444,6 @@ mod host {
         target_only()
     }
     pub fn destroy(_handle: u32) -> u32 {
-        target_only()
-    }
-    pub fn virtual_alloc(_addr: u32, _size: u32, _alloc_type: u32) -> u32 {
         target_only()
     }
 }
@@ -853,74 +705,13 @@ mod tests {
         assert_eq!((a_size, a_state), (0x20, STATE_FREE));
     }
 
-    // --- The CRT region's VirtualAlloc planning ---------------------------
-
-    /// Reservations cover the request in whole pages, at least one granularity unit, below the
-    /// kernel half.
+    /// The target placement: the region above every mapped area, 64 KiB-aligned, in user space,
+    /// below the system DLLs.
     #[test]
-    fn crt_reservations_round_up_and_stay_in_user_space() {
-        let base = 0x0210_0000;
-        assert_eq!(crt_reservation(base, 0x10_0000), Some(0x10_0000));
-        assert_eq!(crt_reservation(base, 1), Some(0x1_0000));
-        assert_eq!(
-            crt_reservation(base, 0x1_0001),
-            Some(0x1_1000),
-            "rounded up, not down"
-        );
-        assert_eq!(crt_reservation(base, 0x8000_0000), None);
-        assert_eq!(crt_reservation(base, u32::MAX), None);
-    }
-
-    /// The captured CRT pair (reserve 1 MiB at NULL, commit 0x8000 at the base) commits exactly 32
-    /// KiB from the base: offsets, not absolute addresses, are compared with the prefix.
-    #[test]
-    fn crt_commits_plan_by_offset_from_the_base() {
-        let base = 0x0210_0000;
-        let reserved = 0x10_0000;
-        assert_eq!(
-            crt_commit(base, reserved, 0, base, 0x8000),
-            CrtCommit::Extend(0x8000)
-        );
-        // Contiguous growth extends; a repeat inside the prefix maps nothing.
-        assert_eq!(
-            crt_commit(base, reserved, 0x8000, base + 0x8000, 0x1000),
-            CrtCommit::Extend(0x9000)
-        );
-        assert_eq!(
-            crt_commit(base, reserved, 0x9000, base, 0x1000),
-            CrtCommit::Mapped
-        );
-        // Refusals: no reservation, below the base, past the reservation, a gap, an overflow.
-        assert_eq!(crt_commit(base, 0, 0, base, 0x1000), CrtCommit::Refused);
-        assert_eq!(
-            crt_commit(base, reserved, 0, base - 0x1000, 0x1000),
-            CrtCommit::Refused
-        );
-        assert_eq!(
-            crt_commit(base, reserved, 0, base, reserved + 1),
-            CrtCommit::Refused
-        );
-        assert_eq!(
-            crt_commit(base, reserved, 0x1000, base + 0x2000, 0x1000),
-            CrtCommit::Refused
-        );
-        assert_eq!(
-            crt_commit(base, reserved, 0, base + 0x1000, u32::MAX),
-            CrtCommit::Refused
-        );
-    }
-
-    /// The target placement: both regions above every mapped area, 64 KiB-aligned, in user space.
-    #[test]
-    fn regions_are_placed_clear_of_the_user_layout() {
-        use crate::mem::paging::KERNEL_BASE;
+    fn the_region_is_placed_clear_of_the_user_layout() {
         assert_eq!(HEAP_REGION_BASE % 0x10000, 0);
-        assert_eq!(CRT_REGION_BASE % 0x10000, 0);
-        assert!(CRT_REGION_BASE >= HEAP_REGION_BASE + HEAP_REGION_MAX as u32);
-        assert!(CRT_REGION_BASE + 0x100000 < KERNEL_BASE);
-        // Both stay below the system DLLs.
-        assert!(CRT_REGION_BASE + 0x100000 <= crate::exec::modules::NTDLL_BASE);
-        // The stack (0x300000) and the pages above it stay clear of both regions.
+        assert!(HEAP_REGION_BASE + HEAP_REGION_MAX as u32 <= crate::exec::modules::NTDLL_BASE);
+        // The stack (0x300000) and the pages above it stay clear of the region.
         assert!(HEAP_REGION_BASE > 0x0032_0000);
     }
 }

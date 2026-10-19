@@ -123,20 +123,18 @@ static mut IMAGE_STAGING: crate::mem::paging::Aligned<[u8; STAGING_SIZE]> =
 
 /// The system's fixed user regions, as (name, start, end): an image may cover none of them. Images
 /// map at their preferred base (nothing is relocated), so one that would land on a region is
-/// refused, not moved. Quirk: the CRT region is open-ended — a NULL reservation starts at its base
-/// and extends as far as the request asks — so only its 64 KiB minimum is reserved here; a larger
-/// reservation that would reach an image's pages fails, as the address space refuses an overlap.
-const SYSTEM_REGIONS: [(&str, u32, u32); 11] = {
-    use crate::user::userheap::{CRT_REGION_BASE, HEAP_REGION_BASE, HEAP_REGION_MAX};
+/// refused, not moved. The main thread's stack is its whole reservation (1 MiB, committed on
+/// demand below its two top pages, see `user::stack`).
+const SYSTEM_REGIONS: [(&str, u32, u32); 9] = {
+    use crate::user::userheap::{HEAP_REGION_BASE, HEAP_REGION_MAX};
     use crate::user::{
-        PARAMS_PAGE, PEB_PAGE, TEB_PAGE, THREAD_STACK_PAGES, THREAD_STACK_REGION,
-        THREAD_TEB_REGION, USER_STACK_LOW_PAGE, USER_STACK_TOP,
+        PARAMS_PAGE, PEB_PAGE, TEB_PAGE, THREAD_TEB_REGION, USER_STACK_BASE, USER_STACK_TOP,
     };
     const PAGE: u32 = crate::mem::paging::PAGE_SIZE;
     const CHILDREN: u32 = crate::process::CHILD_THREADS as u32;
     use crate::exec::modules::{KERNEL32_BASE, KERNEL32_SIZE, NTDLL_BASE, NTDLL_SIZE};
     [
-        ("main thread stack", USER_STACK_LOW_PAGE, USER_STACK_TOP),
+        ("main thread stack", USER_STACK_BASE, USER_STACK_TOP),
         ("main thread TEB", TEB_PAGE, TEB_PAGE + PAGE),
         (
             "process parameters",
@@ -150,16 +148,10 @@ const SYSTEM_REGIONS: [(&str, u32, u32); 11] = {
             THREAD_TEB_REGION + CHILDREN * PAGE,
         ),
         (
-            "child thread stacks",
-            THREAD_STACK_REGION,
-            THREAD_STACK_REGION + CHILDREN * THREAD_STACK_PAGES * PAGE,
-        ),
-        (
             "heap region",
             HEAP_REGION_BASE,
             HEAP_REGION_BASE + HEAP_REGION_MAX as u32,
         ),
-        (CRT_REGION, CRT_REGION_BASE, CRT_REGION_BASE + 0x1_0000),
         ("ntdll.dll image", NTDLL_BASE, NTDLL_BASE + NTDLL_SIZE),
         (
             "kernel32.dll image",
@@ -176,9 +168,6 @@ const SYSTEM_REGIONS: [(&str, u32, u32); 11] = {
 
 /// The shared data page's name among the system regions (KUSER_SHARED_DATA, read-only).
 const SHARED_DATA_REGION: &str = "shared data";
-
-/// The CRT region's name among the system regions.
-const CRT_REGION: &str = "CRT region";
 
 /// The first system region that an image of `size` bytes at `base` would cover, if any.
 pub fn system_region_overlapping(base: u32, size: u32) -> Option<&'static str> {
@@ -198,13 +187,12 @@ pub fn resolve_import(module: &str, name: &str) -> Result<u32, Unresolved> {
     crate::exec::modules::resolve(module, name)
 }
 
-/// A page's protection, as a query reports it: the combined access of the sections in it; uncovered
-/// pages (the header page) are read-only. Windows 2000 maps an image's writable pages copy-on-write
-/// (PAGE_WRITECOPY until written); until the copy-on-write fault exists they map read-write, which
-/// is what a written page reports.
+/// A page's protection, as a query reports it: the combined access of the sections in it (an
+/// image's writable pages are copy-on-write, PAGE_WRITECOPY until written, as Windows 2000 maps
+/// them); uncovered pages (the header page) are read-only.
 fn page_protect(image: &Image, page_rva: u32) -> u32 {
     use crate::mem::vm::{
-        PAGE_EXECUTE, PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE, PAGE_READONLY, PAGE_READWRITE,
+        PAGE_EXECUTE, PAGE_EXECUTE_READ, PAGE_EXECUTE_WRITECOPY, PAGE_READONLY, PAGE_WRITECOPY,
     };
     let end = page_rva + crate::mem::paging::PAGE_SIZE;
     let (mut read, mut write, mut execute) = (false, false, false);
@@ -218,10 +206,10 @@ fn page_protect(image: &Image, page_rva: u32) -> u32 {
         }
     }
     match (read, write, execute) {
-        (_, true, true) => PAGE_EXECUTE_READWRITE,
+        (_, true, true) => PAGE_EXECUTE_WRITECOPY,
         (true, false, true) => PAGE_EXECUTE_READ,
         (false, false, true) => PAGE_EXECUTE,
-        (_, true, false) => PAGE_READWRITE,
+        (_, true, false) => PAGE_WRITECOPY,
         // A section granting nothing still reads: no-access image pages are not served.
         (_, false, false) => PAGE_READONLY,
     }
@@ -230,8 +218,7 @@ fn page_protect(image: &Image, page_rva: u32) -> u32 {
 /// Record the process's address space as a query reports it: the image of `image_size` bytes at
 /// `image_base` (one allocation, its pages carrying their sections' protections), and the areas the
 /// kernel maps itself, the system DLLs' images among them (MEM_IMAGE allocations, as the program's
-/// own). Every user page the kernel maps lies in one of these regions. The CRT region is not
-/// seeded: its reservation is the program's VirtualAlloc, sized as it asks (`userheap`).
+/// own). Every user page the kernel maps lies in one of these regions.
 pub fn seed_regions(space: &mut crate::mem::vm::AddressSpace, image_base: u32, image_size: u32) {
     use crate::mem::vm::{Kind, Region, PAGE_EXECUTE_WRITECOPY, PAGE_READWRITE};
     space
@@ -243,9 +230,6 @@ pub fn seed_regions(space: &mut crate::mem::vm::AddressSpace, image_base: u32, i
         })
         .expect("a fresh address space takes the image");
     for &(name, start, end) in SYSTEM_REGIONS.iter() {
-        if name == CRT_REGION {
-            continue;
-        }
         let image = name.ends_with(".dll image");
         let alloc_protect = match name {
             _ if image => PAGE_EXECUTE_WRITECOPY,
@@ -273,23 +257,30 @@ static mut DLL_STAGING: crate::mem::paging::Aligned<[u8; DLL_STAGING_SIZE]> =
 #[cfg(target_arch = "x86")]
 const DLL_STAGING_SIZE: usize = 0x4_0000;
 
-/// Map the system DLLs (`exec::modules`) into the current process at their bases: each image
-/// staged from its embedded file, its imports snapped against the module table, then mapped one
-/// frame per page with its sections' protections, inside its own MEM_IMAGE region (seeded with the
-/// system areas). The pages are copied per process, the process's own (a write to a DLL's data
-/// stays in the process): sharing them copy-on-write waits for the sections work.
+/// The pages a system DLL image may span: what the staging holds.
 #[cfg(target_arch = "x86")]
-pub fn map_system_dlls(space: &mut crate::mem::vm::AddressSpace) {
+const DLL_PAGES: usize = DLL_STAGING_SIZE / crate::mem::paging::PAGE_SIZE as usize;
+
+/// The system DLLs' pages, made once at boot ([`prepare_system_dlls`]): each DLL's frames, page by
+/// page — the kernel's, every process mapping them as one more holder.
+#[cfg(target_arch = "x86")]
+static mut DLL_FRAMES: [[u32; DLL_PAGES]; crate::exec::modules::SYSTEM_DLLS.len()] =
+    [[0; DLL_PAGES]; crate::exec::modules::SYSTEM_DLLS.len()];
+
+/// Make the system DLLs' pages (`exec::modules`), once, before the first process: each image staged
+/// from its embedded file, its imports snapped against the module table (the bases are fixed, so
+/// the snapped pages are every process's), then copied into frames of the kernel's, one per page.
+#[cfg(target_arch = "x86")]
+pub fn prepare_system_dlls() {
     use crate::mem::paging::{self, PAGE_SIZE};
-    use crate::mem::vm;
-    for dll in crate::exec::modules::SYSTEM_DLLS.iter() {
+    for (index, dll) in crate::exec::modules::SYSTEM_DLLS.iter().enumerate() {
         let image = dll.image();
         assert!(
             image.size_of_image as usize <= DLL_STAGING_SIZE,
             "{} exceeds the DLL staging",
             dll.file_name
         );
-        // SAFETY: single-threaded boot (or the idle thread's reap step), the only staging user.
+        // SAFETY: single-threaded boot, the only staging user.
         let staging = unsafe {
             let buffer = &mut *core::ptr::addr_of_mut!(DLL_STAGING);
             &mut buffer.0[..image.size_of_image as usize]
@@ -302,8 +293,35 @@ pub fn map_system_dlls(space: &mut crate::mem::vm::AddressSpace) {
             let end = (offset + PAGE_SIZE as usize).min(staging.len());
             let frame = paging::allocate_frame_phys();
             paging::init_frame(frame, 0, &staging[offset..end]);
+            // SAFETY: single-threaded boot; read-only once made.
+            unsafe { (*core::ptr::addr_of_mut!(DLL_FRAMES))[index][page as usize] = frame };
+        }
+    }
+}
+
+/// Map the system DLLs into the current process at their bases, each page with its sections'
+/// protections inside the DLL's own MEM_IMAGE region (seeded with the system areas): the kernel's
+/// frames ([`prepare_system_dlls`]), shared — a page the process makes writable is copy-on-write,
+/// its writes its own (`mem::vm`).
+#[cfg(target_arch = "x86")]
+pub fn map_system_dlls(space: &mut crate::mem::vm::AddressSpace) {
+    use crate::mem::paging::PAGE_SIZE;
+    use crate::mem::vm::CurrentPages;
+    for (index, dll) in crate::exec::modules::SYSTEM_DLLS.iter().enumerate() {
+        let image = dll.image();
+        for page in 0..image.size_of_image.div_ceil(PAGE_SIZE) {
+            // SAFETY: made at boot, read-only afterwards.
+            let frame = unsafe { (*core::ptr::addr_of!(DLL_FRAMES))[index][page as usize] };
+            assert_ne!(frame, 0, "the system DLLs are prepared at boot");
             let va = image.image_base + page * PAGE_SIZE;
-            vm::map_prepared(space, va, frame, page_protect(&image, page * PAGE_SIZE));
+            space
+                .map_shared(
+                    &mut CurrentPages,
+                    va,
+                    frame,
+                    page_protect(&image, page * PAGE_SIZE),
+                )
+                .expect("a system DLL maps once, inside its region");
         }
     }
 }
@@ -331,7 +349,9 @@ fn page_writable(image: &Image, page_rva: u32) -> bool {
 pub fn load_image(file: &[u8], path: &[u8], name: &'static str, command_line: &[u8]) -> u32 {
     use crate::mem::paging::{self, PAGE_SIZE};
     use crate::mem::vm;
-    use crate::user::{TEB_PAGE, USER_STACK_LOW_PAGE, USER_STACK_PAGE, USER_STACK_TOP};
+    use crate::user::{
+        TEB_PAGE, USER_STACK_BASE, USER_STACK_LOW_PAGE, USER_STACK_PAGE, USER_STACK_TOP,
+    };
 
     // Identity questions: bytes this loader does not accept, an image it cannot stage, and a
     // preferred base it cannot honor are reported, not panicked on.
@@ -400,10 +420,13 @@ pub fn load_image(file: &[u8], path: &[u8], name: &'static str, command_line: &[
         vm::map_prepared(space, va, frame, page_protect(&image, page * PAGE_SIZE));
     }
 
-    // The user stack: two zeroed, writable pages below the entry ESP.
+    // The user stack: two zeroed, writable pages committed at the top of the main thread's
+    // reservation, below the entry ESP (the rest commits on demand).
     for stack_page in [USER_STACK_PAGE, USER_STACK_LOW_PAGE] {
         vm::map_zeroed(space, stack_page, vm::PAGE_READWRITE);
     }
+    // The guard page below them: the stack's first touch past its committed pages grows it.
+    crate::user::stack::plant_guard(space, USER_STACK_LOW_PAGE - PAGE_SIZE);
 
     // The main thread's TEB, reached through the TEB segment: its stack, its client id and its
     // process's, the PEB.
@@ -413,7 +436,7 @@ pub fn load_image(file: &[u8], path: &[u8], name: &'static str, command_line: &[
             teb: TEB_PAGE,
             stack_base: USER_STACK_TOP,
             stack_limit: USER_STACK_LOW_PAGE,
-            deallocation_stack: USER_STACK_LOW_PAGE,
+            deallocation_stack: USER_STACK_BASE,
             process_id,
             thread_id,
             peb: crate::user::PEB_PAGE,
@@ -459,7 +482,7 @@ mod tests {
     const RET0: &[u8] = include_bytes!("../../../tests/ret0/ret0.exe");
 
     /// The corpus the disk carries (see the Makefile's disk target), by fixture name.
-    const CORPUS: [(&str, &[u8]); 10] = [
+    const CORPUS: [(&str, &[u8]); 9] = [
         ("hello", include_bytes!("../../../tests/hello/hello.exe")),
         ("exit0", EXIT0),
         ("ret0", RET0),
@@ -476,10 +499,6 @@ mod tests {
         (
             "respawn",
             include_bytes!("../../../tests/respawn/respawn.exe"),
-        ),
-        (
-            "bsscheck",
-            include_bytes!("../../../tests/bsscheck/bsscheck.exe"),
         ),
         ("fileio", include_bytes!("../../../tests/fileio/fileio.exe")),
     ];
@@ -522,20 +541,20 @@ mod tests {
     }
 
     /// Uncovered pages (the header) are read-only; each section's page carries its section's
-    /// access, the writable one read-write.
+    /// access, the writable one copy-on-write (memory/image's `.data: protect 0x8`).
     #[test]
     fn image_pages_carry_their_sections_protections() {
-        use crate::mem::vm::{PAGE_EXECUTE_READ, PAGE_READONLY, PAGE_READWRITE};
+        use crate::mem::vm::{PAGE_EXECUTE_READ, PAGE_READONLY, PAGE_WRITECOPY};
         let image = Image::parse(RET0).unwrap();
         assert_eq!(page_protect(&image, 0), PAGE_READONLY, "the header page");
         let rva = |i| image.section(i).virtual_address;
         assert_eq!(page_protect(&image, rva(0)), PAGE_EXECUTE_READ);
         assert_eq!(page_protect(&image, rva(1)), PAGE_READONLY);
-        assert_eq!(page_protect(&image, rva(2)), PAGE_READWRITE);
+        assert_eq!(page_protect(&image, rva(2)), PAGE_WRITECOPY);
     }
 
     /// Every corpus image seeds its address space: the image one allocation, each system area its
-    /// own region, the CRT region left to the program's reservation.
+    /// own region.
     #[test]
     fn the_corpus_seeds_its_regions() {
         use crate::mem::vm::{AddressSpace, Kind, MEM_IMAGE, MEM_PRIVATE};
@@ -552,13 +571,8 @@ mod tests {
                 "{name}"
             );
             for &(area, start, end) in SYSTEM_REGIONS.iter() {
-                let region = space.region_at(start);
-                if area == CRT_REGION {
-                    assert_eq!(region, None, "{name}: {area}");
-                } else {
-                    let region = region.expect(area);
-                    assert_eq!((region.base, region.size), (start, end - start), "{area}");
-                }
+                let region = space.region_at(start).expect(area);
+                assert_eq!((region.base, region.size), (start, end - start), "{area}");
             }
             let fake = NoPages;
             assert_eq!(space.query(&fake, image.image_base).mem_type, MEM_IMAGE);
@@ -581,10 +595,20 @@ mod tests {
             None
         }
         fn free_frame(&mut self, _frame: u32) {}
+        fn share_frame(&mut self, _frame: u32) {}
+        fn frame_shared(&self, _frame: u32) -> bool {
+            false
+        }
+        fn copy_frame(&mut self, _from: u32, _to: u32) {}
+        fn frame_word(&self, _frame: u32, _index: u32) -> u32 {
+            0
+        }
+        fn set_frame_word(&mut self, _frame: u32, _index: u32, _value: u32) {}
     }
 
-    /// The mapping's protection and the write permission agree on every page of the corpus: the
-    /// hardware writes exactly where a section is writable.
+    /// The mapping's protection and the write permission agree on every page of the corpus: a page
+    /// is copy-on-write exactly where a section is writable, and the hardware writes none of them
+    /// until the first write makes the page the process's own.
     #[test]
     fn page_protections_are_writable_where_their_sections_are() {
         use crate::mem::vm::{decode, encode};
@@ -595,8 +619,16 @@ mod tests {
                 let entry = encode(0x0050_0000, protect);
                 assert_eq!(decode(entry), Some((0x0050_0000, protect)), "{name}");
                 assert_eq!(
-                    entry & crate::mem::paging::PAGE_WRITE != 0,
+                    matches!(
+                        protect,
+                        crate::mem::vm::PAGE_WRITECOPY | crate::mem::vm::PAGE_EXECUTE_WRITECOPY
+                    ),
                     page_writable(&image, page * PAGE_SIZE),
+                    "{name} page {page}"
+                );
+                assert_eq!(
+                    entry & crate::mem::paging::PAGE_WRITE,
+                    0,
                     "{name} page {page}"
                 );
             }
@@ -705,7 +737,8 @@ mod tests {
         );
         assert_eq!(
             system_region_overlapping(0x0210_0000, 0x1_0000),
-            Some("CRT region")
+            None,
+            "the C runtime's reservations are the program's own (VirtualAlloc)"
         );
     }
 

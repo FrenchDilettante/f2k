@@ -51,13 +51,6 @@ if errorlevel 1 (echo build.bat: hellogui failed & exit /b 1)
 del hellogui.obj
 cd ..
 
-echo === bsscheck
-cd bsscheck
-cl /nologo bsscheck.c /link /NODEFAULTLIB /ENTRY:BssMain /SUBSYSTEM:CONSOLE kernel32.lib
-if errorlevel 1 (echo build.bat: bsscheck failed & exit /b 1)
-del bsscheck.obj
-cd ..
-
 echo === thread
 cd thread
 cl /nologo thread.c

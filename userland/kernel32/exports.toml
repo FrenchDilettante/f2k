@@ -1550,8 +1550,7 @@ pinned_by = [
 name = "CreateFileMappingA"
 group = "files"
 args = ["handle hFile", "ptr lpAttributes", "u32 flProtect", "u32 dwMaximumSizeHigh", "u32 dwMaximumSizeLow", "strA?[260] lpName"]
-impl = { unimplemented = "B4: virtual memory and sections" }
-fails = "NULL"
+impl = { native = "CreateFileMappingA" }
 pinned_by = ["files/mapping", "memory/mapping"]
 
 [[export]]
@@ -1589,8 +1588,7 @@ pinned_by = ["files/find", "fswrite/*"]
 name = "OpenFileMappingA"
 group = "files"
 args = ["u32 dwDesiredAccess", "bool bInheritHandle", "strA?[260] lpName"]
-impl = { unimplemented = "B4: virtual memory and sections" }
-fails = "NULL"
+impl = { native = "OpenFileMappingA" }
 pinned_by = ["memory/mapping"]
 
 [[export]]
@@ -1764,8 +1762,7 @@ pinned_by = ["files/meta"]
 name = "MapViewOfFile"
 group = "files"
 args = ["handle hFileMappingObject", "u32 dwDesiredAccess", "u32 dwFileOffsetHigh", "u32 dwFileOffsetLow", "u32 dwNumberOfBytesToMap"]
-impl = { unimplemented = "B4: virtual memory and sections" }
-fails = "NULL"
+impl = { native = "MapViewOfFile" }
 pinned_by = ["files/mapping", "memory/mapping"]
 
 [[export]]
@@ -1788,8 +1785,7 @@ pinned_by = ["fswrite/write"]
 name = "UnmapViewOfFile"
 group = "files"
 args = ["ptr lpBaseAddress"]
-impl = { unimplemented = "B4: virtual memory and sections" }
-fails = "FALSE"
+impl = { native = "UnmapViewOfFile" }
 pinned_by = ["files/mapping", "memory/mapping"]
 
 # --- virtual memory -------------------------------------------------------------------------------
@@ -1798,46 +1794,42 @@ pinned_by = ["files/mapping", "memory/mapping"]
 name = "VirtualAlloc"
 group = "virtual-memory"
 args = ["u32 lpAddress", "u32 dwSize", "u32 flAllocationType", "u32 flProtect"]
-impl = { legacy = "svc_virtual_alloc" }
+impl = { native = "VirtualAlloc" }
 pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
 
 [[export]]
 name = "VirtualFree"
 group = "virtual-memory"
 args = ["u32 lpAddress", "u32 dwSize", "u32 dwFreeType"]
-impl = { legacy = "svc_virtual_free" }
+impl = { native = "VirtualFree" }
 pinned_by = ["files/read", "memory/protect", "memory/virtual"]
 
 [[export]]
 name = "VirtualQuery"
 group = "virtual-memory"
 args = ["ptr lpAddress", "ptr lpBuffer", "u32 dwLength"]
-impl = { unimplemented = "B4: virtual memory and sections" }
-fails = "0"
+impl = { native = "VirtualQuery" }
 pinned_by = ["memory/image", "memory/mapping", "memory/protect", "memory/stack", "memory/virtual"]
 
 [[export]]
 name = "VirtualProtect"
 group = "virtual-memory"
 args = ["ptr lpAddress", "u32 dwSize", "u32 flNewProtect", "ptr<u32> lpflOldProtect"]
-impl = { unimplemented = "B4: virtual memory and sections" }
-fails = "FALSE"
+impl = { native = "VirtualProtect" }
 pinned_by = ["memory/protect"]
 
 [[export]]
 name = "GetSystemInfo"
 group = "virtual-memory"
 args = ["ptr lpSystemInfo"]
-impl = { unimplemented = "B4: virtual memory and sections" }
-fails = "void"
+impl = { native = "GetSystemInfo" }
 pinned_by = ["memory/sysinfo"]
 
 [[export]]
 name = "GlobalMemoryStatus"
 group = "virtual-memory"
 args = ["ptr lpBuffer"]
-impl = { unimplemented = "B4: virtual memory and sections" }
-fails = "void"
+impl = { native = "GlobalMemoryStatus" }
 pinned_by = ["memory/sysinfo"]
 
 [[export]]

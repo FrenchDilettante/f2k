@@ -45,7 +45,7 @@ fault-test-exitio = []
 # 2000's service number (0x18) on a handle naming nothing, then exits
 # with the status: the NT service table must answer STATUS_INVALID_HANDLE.
 fault-test-ntclose = []
-# The multi-process suite case: exit0, ret0, bsscheck, bsscheck,
+# The multi-process suite case: exit0, ret0, bare, bare,
 # bare null-write, exit0 run in sequence in one boot, each process torn down
 # and audited before the next starts. The sequence runner and the
 # per-process teardown are the runner's deliverables; the

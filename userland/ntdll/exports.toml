@@ -63,8 +63,8 @@ name = "NtQuerySystemInformation"
 group = "nt"
 args = ["u32 SystemInformationClass", "ptr SystemInformation", "u32 SystemInformationLength", "ptr<u32> ReturnLength"]
 impl = { syscall = "crate::nt::system::query_system_information" }
-note = "answers SystemCurrentTimeZoneInformation (44) alone; the other classes are STATUS_INVALID_INFO_CLASS (the basic, processor and performance classes come with GetSystemInfo)"
-unpinned = "kernel32's GetTimeZoneInformation is its caller, which no fixture block is known to reach"
+note = "answers SystemBasicInformation (0), SystemProcessorInformation (1), SystemPerformanceInformation (2) and SystemCurrentTimeZoneInformation (44); the other classes are STATUS_INVALID_INFO_CLASS (GAP-NT-7)"
+pinned_by = ["memory/sysinfo"]
 
 [[export]]
 name = "NtQueryPerformanceCounter"
@@ -72,6 +72,77 @@ group = "nt"
 args = ["ptr<u64> PerformanceCounter", "ptr<u64> PerformanceFrequency"]
 impl = { syscall = "crate::nt::system::query_performance_counter" }
 pinned_by = ["sched/clock"]
+
+[[export]]
+name = "NtQueryInformationProcess"
+group = "nt"
+args = ["handle ProcessHandle", "u32 ProcessInformationClass", "ptr ProcessInformation", "u32 ProcessInformationLength", "ptr<u32> ReturnLength"]
+impl = { syscall = "crate::nt::process::query_information_process" }
+note = "answers ProcessVmCounters (3) alone, of the calling process only: GAP-NT-7, GAP-PS-4"
+pinned_by = ["memory/sysinfo"]
+
+[[export]]
+name = "NtAllocateVirtualMemory"
+group = "nt"
+args = ["handle ProcessHandle", "ptr<u32> BaseAddress", "u32 ZeroBits", "ptr<u32> RegionSize", "u32 AllocationType", "u32 Protect"]
+impl = { syscall = "crate::nt::memory::allocate_virtual_memory" }
+note = "the calling process only (NtCurrentProcess): GAP-PS-4"
+pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
+
+[[export]]
+name = "NtFreeVirtualMemory"
+group = "nt"
+args = ["handle ProcessHandle", "ptr<u32> BaseAddress", "ptr<u32> RegionSize", "u32 FreeType"]
+impl = { syscall = "crate::nt::memory::free_virtual_memory" }
+note = "the calling process only (NtCurrentProcess): GAP-PS-4"
+pinned_by = ["memory/virtual"]
+
+[[export]]
+name = "NtQueryVirtualMemory"
+group = "nt"
+args = ["handle ProcessHandle", "u32 BaseAddress", "u32 MemoryInformationClass", "ptr MemoryInformation", "u32 MemoryInformationLength", "ptr<u32> ReturnLength"]
+impl = { syscall = "crate::nt::memory::query_virtual_memory" }
+note = "MemoryBasicInformation, of the calling process only (NtCurrentProcess): GAP-PS-4"
+pinned_by = ["memory/image", "memory/mapping", "memory/protect", "memory/stack", "memory/virtual"]
+
+[[export]]
+name = "NtProtectVirtualMemory"
+group = "nt"
+args = ["handle ProcessHandle", "ptr<u32> BaseAddress", "ptr<u32> NumberOfBytesToProtect", "u32 NewAccessProtection", "ptr<u32> OldAccessProtection"]
+impl = { syscall = "crate::nt::memory::protect_virtual_memory" }
+note = "the calling process only (NtCurrentProcess): GAP-PS-4"
+pinned_by = ["memory/protect"]
+
+[[export]]
+name = "NtCreateSection"
+group = "nt"
+args = ["ptr<u32> SectionHandle", "u32 DesiredAccess", "ptr ObjectAttributes", "ptr<u64> MaximumSize", "u32 SectionPageProtection", "u32 AllocationAttributes", "handle FileHandle"]
+impl = { syscall = "crate::nt::section::create_section" }
+note = "data sections of the paging file, named in \\BaseNamedObjects; a file's section is STATUS_NOT_IMPLEMENTED until the file objects (B8), SEC_IMAGE too (GAP-VM-8)"
+pinned_by = ["files/mapping", "memory/mapping"]
+
+[[export]]
+name = "NtOpenSection"
+group = "nt"
+args = ["ptr<u32> SectionHandle", "u32 DesiredAccess", "ptr ObjectAttributes"]
+impl = { syscall = "crate::nt::section::open_section" }
+pinned_by = ["memory/mapping"]
+
+[[export]]
+name = "NtMapViewOfSection"
+group = "nt"
+args = ["handle SectionHandle", "handle ProcessHandle", "ptr<u32> BaseAddress", "u32 ZeroBits", "u32 CommitSize", "ptr<u64> SectionOffset", "ptr<u32> ViewSize", "u32 InheritDisposition", "u32 AllocationType", "u32 Win32Protect"]
+impl = { syscall = "crate::nt::section::map_view_of_section" }
+note = "into the calling process only (NtCurrentProcess): GAP-PS-4"
+pinned_by = ["files/mapping", "memory/mapping"]
+
+[[export]]
+name = "NtUnmapViewOfSection"
+group = "nt"
+args = ["handle ProcessHandle", "ptr BaseAddress"]
+impl = { syscall = "crate::nt::section::unmap_view_of_section" }
+note = "of the calling process only (NtCurrentProcess): GAP-PS-4"
+pinned_by = ["files/mapping", "memory/mapping"]
 
 # --- the client-server runtime (src/csr.s) --------------------------------------------------------
 

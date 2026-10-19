@@ -17,6 +17,7 @@ pub mod args;
 pub mod params;
 pub mod seh;
 pub mod shared;
+pub mod stack;
 pub mod syscall;
 pub mod teb;
 pub mod userheap;
@@ -39,6 +40,11 @@ pub const USER_STACK_PAGE: u32 = 0x0030_0000;
 pub const USER_STACK_LOW_PAGE: u32 = USER_STACK_PAGE - 4096;
 /// One past the stack's top page: the stack's base (the TEB's StackBase).
 pub const USER_STACK_TOP: u32 = USER_STACK_PAGE + 4096;
+/// The main thread's stack reservation: 1 MiB, the MSVC linker's default, of which the two pages
+/// above are committed at start and the rest on demand (see [`stack`]).
+pub const USER_STACK_RESERVE: u32 = 0x10_0000;
+/// The reservation's lowest address.
+pub const USER_STACK_BASE: u32 = USER_STACK_TOP - USER_STACK_RESERVE;
 /// The main thread's initial ESP: one dword below the stack's base, as Windows 2000's
 /// BaseInitializeContext leaves it (its `Esp -= sizeof(Parameter)`); BaseProcessStartThunk pushes
 /// its frame from there.
@@ -86,14 +92,8 @@ pub const fn thread_teb_va(index: u32) -> u32 {
     }
 }
 
-/// The region per-thread user stacks allocate from (user window 3), recorded for the
-/// thread-creation surface: thread `index` ≥ 1 gets the two pages ending at
-/// `THREAD_STACK_REGION + index * 0x2000`, growing down like the main thread's. Nothing consumes it
-/// yet.
-pub const THREAD_STACK_REGION: u32 = 0x00C0_0000;
-
-/// The number of pages a per-thread user stack spans (the same two pages the main thread's stack
-/// has).
+/// The pages a created thread's stack starts with committed at the top of its reservation (the
+/// same two the main thread's has); the rest commits on demand (see [`stack`]).
 pub const THREAD_STACK_PAGES: u32 = 2;
 
 /// An unmapped user address the bad-args stub passes as the syscall argument pointer: below the
@@ -336,6 +336,9 @@ pub fn process_exited(code: u32) -> ! {
 /// Every path enters its process as a main thread through the idle loop. Never returns.
 #[cfg(target_arch = "x86")]
 pub fn run_user_process() -> ! {
+    // The system DLLs' pages: the kernel's for the boot's life, every process one more holder of
+    // them — made before the teardown audit's baseline, as the boot's other permanent pages are.
+    crate::exec::loader::prepare_system_dlls();
     #[cfg(feature = "run-process-suite")]
     {
         crate::process::runner::run_suite()

@@ -3,8 +3,9 @@
 //!
 //! CreateThread behind kernel32's served export: a child takes a thread record from the object
 //! manager's thread pool (its object holding the thread's own reference until its end), a
-//! gate-stack slot from the process's window, its own TEB page and user stack from the per-thread
-//! regions, and a startup ladder the context switch enters — the same machinery the main thread's
+//! gate-stack slot from the process's window, its own TEB page from the per-thread region, its user
+//! stack as a reservation of its own (committed on demand below its two top pages, the guard
+//! planted under them, as NT's stacks grow: `user::stack`), and a startup ladder the context switch enters — the same machinery the main thread's
 //! boot entry uses. The child's user function receives its parameter per the calling convention
 //! (planted at [esp+4] under a return address that is ntdll's thread-exit trampoline), so
 //! returning from the function terminates the thread with the return value as the exit status.
@@ -31,8 +32,8 @@ use crate::sched::thread::{Thread, ThreadState};
 /// A fresh thread object for a created thread, with its record and ordinal, or none (the
 /// program-visible create failure): a record never used, or one whose thread has terminated and
 /// that nothing references any more (nothing can reach it again). The ordinal (the record's index)
-/// places the thread's TEB and user stack, so a reused record's pages are released before they are
-/// mapped afresh. The object holds the thread's own reference.
+/// places the thread's TEB, so a reused record's pages — its TEB and its stack's reservation — are
+/// released before they are mapped afresh. The object holds the thread's own reference.
 fn free_thread(
     space: &mut crate::mem::vm::AddressSpace,
 ) -> Option<(crate::ob::ObjectId, &'static mut Thread, u32)> {
@@ -42,16 +43,16 @@ fn free_thread(
     let thread = directory.threads.record(id.index);
     let ordinal = id.index as u32;
     if thread.state() == ThreadState::Terminated {
-        release_thread_pages(space, ordinal);
+        release_thread_pages(space, ordinal, thread.stack_reservation);
     }
     *thread = Thread::empty();
     Some((id, thread, ordinal))
 }
 
-/// Release the user pages a terminated thread at `ordinal` left mapped — its TEB page and its user
-/// stack — through the address space (the record is about to be reused). Their regions stay: they
-/// are the system's per-ordinal areas.
-fn release_thread_pages(space: &mut crate::mem::vm::AddressSpace, ordinal: u32) {
+/// Release the user pages a terminated thread at `ordinal` left — its TEB page, through the
+/// address space (its region stays: the system's per-ordinal area), and its stack's reservation
+/// based at `stack`, whole (the record is about to be reused).
+fn release_thread_pages(space: &mut crate::mem::vm::AddressSpace, ordinal: u32, stack: u32) {
     use crate::mem::vm::CurrentPages;
     let decommitted = space.decommit(
         &mut CurrentPages,
@@ -59,34 +60,37 @@ fn release_thread_pages(space: &mut crate::mem::vm::AddressSpace, ordinal: u32) 
         paging::PAGE_SIZE,
     );
     debug_assert!(decommitted.is_ok(), "a thread's TEB lies in its region");
-    let stack_pages = crate::user::THREAD_STACK_PAGES * paging::PAGE_SIZE;
-    let decommitted = space.decommit(
-        &mut CurrentPages,
-        thread_stack_top(ordinal) - stack_pages,
-        stack_pages,
-    );
-    debug_assert!(decommitted.is_ok(), "a thread's stack lies in its region");
-}
-
-/// The top of the user stack of the thread at `ordinal`: the per-thread region's slot for it,
-/// growing down.
-fn thread_stack_top(ordinal: u32) -> u32 {
-    crate::user::THREAD_STACK_REGION
-        + ordinal * (crate::user::THREAD_STACK_PAGES * paging::PAGE_SIZE)
+    if stack != 0 {
+        // The program may have released it itself: then there is nothing left to release.
+        let _ = space.release(&mut CurrentPages, stack);
+    }
 }
 
 /// Create a child thread: a pooled record attached to the current process, its gate-stack slot, TEB
 /// page and user stack mapped, its startup ladder planted — but not readied: the service readies it
 /// once the caller's handle exists, so a thread never runs before its creator holds a way to wait
 /// on it. Returns the thread's object (holding the thread's own reference), its record, and its
-/// client id (what GetCurrentThreadId reports in it). None is the program-visible failure: no free
-/// record.
+/// client id (what GetCurrentThreadId reports in it). The stack is reserved as `stack_size` asks
+/// (CreateThread's dwStackSize, see `user::stack::reservation_for`). None is the program-visible
+/// failure: no free record, or no room for the stack's reservation.
 pub fn spawn(
     process: &mut Process,
     start: u32,
     parameter: u32,
+    stack_size: u32,
 ) -> Option<(crate::ob::ObjectId, *mut Thread, u32)> {
+    use crate::mem::vm::{self, Kind, PAGE_READWRITE};
     let (object, thread, ordinal) = free_thread(process.vm())?;
+    // The stack's reservation: refused here, before anything is attached, the object goes back.
+    let reserve = crate::user::stack::reservation_for(stack_size);
+    let Ok(stack_base) = process
+        .vm()
+        .reserve(None, reserve, PAGE_READWRITE, Kind::Private)
+    else {
+        crate::ob::release(object);
+        return None;
+    };
+    thread.stack_reservation = stack_base;
     // An exited thread's stack is released before a slot is taken, so its slot is free to reuse
     // (unmapped, not merely marked free).
     if let Some(dead) = process.dead_stack.take() {
@@ -113,9 +117,8 @@ pub fn spawn(
 
     // The TEB page: the per-thread region, one page, the fresh TEB's words on it — its stack, its
     // client id and its process's, the PEB.
-    use crate::mem::vm::{self, PAGE_READWRITE};
     thread.teb_va = crate::user::thread_teb_va(ordinal);
-    let stack_top = thread_stack_top(ordinal);
+    let stack_top = stack_base + reserve;
     let stack_limit = stack_top - crate::user::THREAD_STACK_PAGES * paging::PAGE_SIZE;
     let process_id = process.id();
     crate::user::teb::map_teb(
@@ -124,15 +127,15 @@ pub fn spawn(
             teb: thread.teb_va,
             stack_base: stack_top,
             stack_limit,
-            deallocation_stack: stack_limit,
+            deallocation_stack: stack_base,
             process_id,
             thread_id: thread.thread_id,
             peb: crate::user::PEB_PAGE,
         },
     );
 
-    // The user stack: two zeroed pages, growing down from the per-thread region's top for this
-    // ordinal.
+    // The user stack: two zeroed pages at the top of its reservation, growing down, and the guard
+    // page below them.
     let mut top_frame = 0;
     for page in 0..crate::user::THREAD_STACK_PAGES {
         let base = stack_top - (page + 1) * 0x1000;
@@ -141,6 +144,7 @@ pub fn spawn(
             top_frame = frame;
         }
     }
+    crate::user::stack::plant_guard(process.vm(), stack_limit - paging::PAGE_SIZE);
 
     // The trampoline's return address and the parameter, planted under the entry stack: the user
     // function sees its LPVOID at [esp+4] per the calling convention, and its `ret` lands on the

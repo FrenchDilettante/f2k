@@ -74,9 +74,9 @@ The fixtures:
   bad buffer pointers to `WriteFile`, code run from `.data`, and
   fifteen faults (NULL, `.rdata`, code, kernel addresses, divide by
   zero, `ud2`, `int3`, `hlt`, `cli`, `in`, `into`, stack overflow),
-  each ending the process with its NTSTATUS. Replaces `crash` (the
-  multi-process suite runs `bare null-write` in its place) and
-  `bsscheck` once its default run passes.
+  each ending the process with its NTSTATUS. Replaces `crash` and
+  `bsscheck` (the multi-process suite runs `bare` and `bare null-write`
+  in their place).
 - `runtime` - the process environment: argv, version, modules and
   `GetProcAddress`/`LoadLibraryA`, the TEB/PEB fields compilers and
   runtimes read, last-error semantics and `FormatMessageA`, the
@@ -252,8 +252,6 @@ in `kernel/test_kernel.py`; `exit0`, `ret0` and `hello` carry a
   window, paints "Hello, world!" once with `TextOut`, then closes
   itself and exits 0; the first test to import user32.dll and
   gdi32.dll.
-- `bsscheck` - the multi-process suite's image checks (`.bss` zeroed,
-  run twice), until `bare`'s default run replaces it.
 - `pingpong`, `sleep`, `spin`, `suspend`, `respawn`, `thread` - the
   scheduler smokes, one per scheduler stage: the blocking-wait
   alternation, the timer table, preemption, suspension, thread-slot
@@ -288,8 +286,8 @@ has no extension); the program's GetCommandLineA reports the whole
 text verbatim and its GetModuleFileNameA the volume path. Without a
 command line the kernel runs `exit0`. The `run-process-suite` feature
 (the multi-process case) runs the sequence `exit0`, `ret0`,
-`bsscheck`, `bsscheck`, `bare null-write`, `exit0` in one boot: the
-second `bsscheck` catches frames reused without re-zeroing, `bare
+`bare`, `bare`, `bare null-write`, `exit0` in one boot: the second
+`bare` catches frames reused without re-zeroing, `bare
 null-write` a fault that must end its process (through kernel32's
 start frame, with the access violation's code) before the last `exit0`
 runs. Each boot

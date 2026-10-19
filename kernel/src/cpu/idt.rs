@@ -347,8 +347,10 @@ const NAMES: [&str; EXCEPTION_VECTORS] = [
 ];
 
 /// Resolve the exception when it can be resolved and return, the stub resuming the interrupted
-/// context: a fault in the kernel's fault-tolerant user copy resumes at the copy's fixup, the copy
-/// failing (`user::syscall::copy_fixup`), and a fault raised by user code returns into the thread's
+/// context: a write to a copy-on-write page makes the page the process's own, and a guard page
+/// firing in the running thread's stack grows the stack (from user code, or from the kernel's
+/// fault-tolerant user copy); any other fault in that copy resumes at its fixup, the copy failing
+/// (`user::syscall::copy_fixup`), and a fault raised by user code returns into the thread's
 /// user-mode exception dispatcher (`user::seh::dispatch_fault`). Everything else prints a
 /// diagnostic dump on COM1 and the origin decides: user-raised faults (including bad user pointers
 /// in syscall argument copies) end the user process with the exception code they raise; the rest
@@ -356,17 +358,8 @@ const NAMES: [&str; EXCEPTION_VECTORS] = [
 #[allow(dead_code)] // referenced only from the generated stubs (sym operand)
 #[cfg(target_arch = "x86")]
 extern "C" fn exception_handler(frame: &mut ExceptionFrame) {
-    // A fault inside the fault-tolerant copy (a page the program may not touch: unmapped,
-    // protected, the kernel's) fails the copy at its fixup, rather than the process ending inside
-    // the service.
-    if frame.cs & 3 == 0 {
-        if let Some(fixup) = crate::user::syscall::copy_fixup(frame.eip) {
-            frame.eip = fixup;
-            return;
-        }
-    }
-
     let from_user = frame.cs & 3 != 0;
+    let in_copy = !from_user && crate::user::syscall::copy_fixup(frame.eip).is_some();
     let cr2: u32 = if frame.vector == 14 {
         let cr2: u32;
         // SAFETY: reading CR2 has no side effect.
@@ -377,12 +370,44 @@ extern "C" fn exception_handler(frame: &mut ExceptionFrame) {
     } else {
         0
     };
+    // The exception code a user fault raises, when the page-fault resolution below decides it.
+    let mut raised = None;
+    if frame.vector == 14 && (from_user || in_copy) {
+        // A write to a present copy-on-write page (error code: present, write) makes the page its
+        // own and the write resumes — the program's, or the kernel's copy on its behalf.
+        if frame.error_code & 0b11 == 0b11
+            && crate::mem::vm::copy_on_write(&mut crate::mem::vm::CurrentPages, cr2)
+        {
+            return;
+        }
+        // A guard page fires, once. Inside the running thread's stack it grows the stack and the
+        // access resumes; any other guard's access raises the guard violation — the program's, or,
+        // for the kernel's copy, a failed copy (as the platform's probe of one fails), the guard
+        // spent.
+        if crate::mem::vm::fire_guard(&mut crate::mem::vm::CurrentPages, cr2) {
+            use crate::process::exit::status;
+            use crate::user::stack::{grow_on_guard, Growth};
+            match grow_on_guard(cr2) {
+                Growth::Grown => return,
+                Growth::Overflow => raised = Some(status::STACK_OVERFLOW),
+                Growth::NotStack => raised = Some(status::GUARD_PAGE_VIOLATION),
+            }
+        }
+    }
+    // Whatever the stack's growth did not resolve fails the kernel's copy at its fixup: a spent
+    // guard, the stack's overflow (the call fails, as a probe of the last page does on the
+    // platform, rather than the process ending inside the service), a page it may not touch
+    // (unmapped, protected, the kernel's).
+    if in_copy {
+        frame.eip = crate::user::syscall::copy_fixup(frame.eip).expect("a copy fault has a fixup");
+        return;
+    }
 
     // A fault raised by user code goes to the thread's own exception handlers first; the frame then
     // returns into ntdll's dispatcher with the exception's records. Only a fault nobody can take
     // (no handler chain, no room for the records) ends the process here.
     if from_user {
-        let status = user_fault_status(frame);
+        let status = user_fault_status(frame, raised);
         let vector = frame.vector;
         // SAFETY: a ring-3 exception frame carries the ring-3 tail: it has the syscall frame's
         // shape, word for word.
@@ -457,7 +482,7 @@ extern "C" fn exception_handler(frame: &mut ExceptionFrame) {
     if from_user {
         crate::process::threads::fault_exit(crate::process::exit::Fault {
             vector: frame.vector,
-            status: user_fault_status(frame),
+            status: user_fault_status(frame, raised),
             in_user_copy: false,
         });
     } else if crate::user::syscall::copying_user_args() {
@@ -475,10 +500,14 @@ extern "C" fn exception_handler(frame: &mut ExceptionFrame) {
     crate::halt();
 }
 
-/// The exception code a ring-3 fault raises: the trap's own code, a protection fault telling a
-/// privileged instruction apart by the faulting instruction's bytes.
+/// The exception code a ring-3 fault raises: the one the page-fault resolution `raised` (the stack's
+/// overflow, a guard violation), else the trap's own code, a protection fault telling a privileged
+/// instruction apart by the faulting instruction's bytes.
 #[cfg(target_arch = "x86")]
-fn user_fault_status(frame: &ExceptionFrame) -> u32 {
+fn user_fault_status(frame: &ExceptionFrame, raised: Option<u32>) -> u32 {
+    if let Some(status) = raised {
+        return status;
+    }
     let mut code = [0u8; 15];
     let privileged = frame.vector == 13
         && frame.cs & 3 != 0

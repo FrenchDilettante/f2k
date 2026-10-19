@@ -256,9 +256,11 @@ impl Process {
     }
 
     /// Finish what the object manager left to the process when one of its objects' last handle or
-    /// last reference went (no kind leaves anything yet: see [`crate::ob::Followup`]).
+    /// last reference went: a section's hold on its frames.
     pub fn finish(&mut self, followup: crate::ob::Followup) {
-        match followup {}
+        match followup {
+            crate::ob::Followup::Section { frames } => crate::nt::section::release_frames(frames),
+        }
     }
 
     /// Insert a handle to object `id` with `access` and `inheritance`, the object counting it; null
@@ -621,16 +623,29 @@ fn teardown(process: &'static mut Process) {
 fn release_address_space_of(process: &mut Process) {
     use crate::mem::frame::FrameState;
     use crate::mem::paging::{self, PAGE_SIZE};
+    // The views go first, each dropping its reference on its section (a section nothing else
+    // references goes with it, dropping its hold on its frames).
+    let directory = crate::ob::directory();
+    let dispatcher = crate::sched::idle::dispatcher();
+    let mut gone = [None; crate::mem::vm::VIEWS];
+    let mut count = 0;
+    process.vm().drop_views(|section| {
+        gone[count] = directory.dereference(section, dispatcher);
+        count += 1;
+    });
+    for followup in gone[..count].iter().flatten() {
+        process.finish(*followup);
+    }
     release_process(
         process,
         |frame, index| paging::read_frame_word(frame, index),
         |frame_phys| {
-            // The shared data page is mapped into every process and freed by none.
-            if crate::user::shared::is_frame(frame_phys) {
-                return;
-            }
+            // A frame goes back with its last holder: the system DLLs' pages and the shared data
+            // page are the kernel's, every process one more holder of them.
             crate::mem::bootmem::with_frame_db(|db| {
-                db.release(frame_phys / PAGE_SIZE, FrameState::Free);
+                if db.unshare(frame_phys / PAGE_SIZE) {
+                    db.release(frame_phys / PAGE_SIZE, FrameState::Free);
+                }
             });
         },
     );
@@ -643,7 +658,7 @@ fn release_address_space_of(process: &mut Process) {
 fn audit_objects(process: &mut Process) {
     let leaked =
         crate::ob::directory().process_ended(crate::sched::idle::dispatcher(), |followup| {
-            match followup {}
+            process.finish(followup)
         }) + process.files.live();
     process.files.clear();
     if leaked != 0 {

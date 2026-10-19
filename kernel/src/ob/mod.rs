@@ -42,6 +42,7 @@ pub enum ObjectType {
     Semaphore,
     Thread,
     Process,
+    Section,
 }
 
 /// An object's identity: its kind, its record in that kind's pool, and the record's generation.
@@ -93,6 +94,7 @@ pub const EVENT_ALL_ACCESS: u32 = 0x001F_0003;
 pub const SEMAPHORE_ALL_ACCESS: u32 = 0x001F_0003;
 pub const THREAD_ALL_ACCESS: u32 = 0x001F_03FF;
 pub const PROCESS_ALL_ACCESS: u32 = 0x001F_0FFF;
+pub const SECTION_ALL_ACCESS: u32 = 0x000F_001F;
 /// The access an open file's handle is granted: FILE_GENERIC_READ (the files the kernel opens are
 /// opened for reading).
 pub const FILE_GENERIC_READ: u32 = 0x0012_0089;
@@ -104,6 +106,8 @@ pub const STILL_ACTIVE: u32 = 259;
 pub const EVENTS: usize = 256;
 /// How many semaphores can exist at once.
 pub const SEMAPHORES: usize = 64;
+/// How many sections can exist at once.
+pub const SECTIONS: usize = 16;
 /// How many thread records exist: the current process's main thread (record 0) and its created
 /// threads (records 1 on). A record's index is its thread's ordinal, which places its TEB and stack
 /// pages (single-process for now: the ordinals are the process's).
@@ -225,12 +229,41 @@ impl ProcessObject {
     }
 }
 
+/// A section object's body: the mapping itself (on NT, the section and its segment). It is the
+/// kernel's, not a process's: a view names it by its object, and its frames outlive the handle that
+/// made it while a view references it. Paging-file sections only: a file's comes with the file
+/// objects.
+#[derive(Clone, Copy)]
+pub struct SectionObject {
+    /// Its frames, page by page, made as views first need them (zeroed: the paging file's).
+    pub frames: crate::mem::vm::SectionFrames,
+    /// The section's size in bytes.
+    pub size: u32,
+    /// Whether views may be writable (a read-write mapping).
+    pub writable: bool,
+}
+
+impl SectionObject {
+    /// A record holding no mapping (a pool's fresh record).
+    pub const fn none() -> Self {
+        SectionObject {
+            frames: crate::mem::vm::SectionFrames::empty(),
+            size: 0,
+            writable: false,
+        }
+    }
+}
+
 /// What a caller must finish once an object's last handle or last reference went: the work outside
 /// the object manager's reach, which the process finishes ([`crate::process::Process::finish`]).
-/// No kind here leaves any: a section's frames and a file object's cleanup and close are the
-/// variants the kinds that need them bring.
+/// A file object's cleanup and close are the variants the file objects bring.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Followup {}
+pub enum Followup {
+    /// A section was deleted: its frames (taken out of its record) are the caller's to release.
+    Section {
+        frames: crate::mem::vm::SectionFrames,
+    },
+}
 
 /// A program's object name as the namespace keeps it: without a `Global\` or `Local\` prefix.
 /// There is one session, so the global namespace and the session's local one are the same
@@ -293,6 +326,7 @@ pub struct Directory {
     pub semaphores: Pool<Semaphore, SEMAPHORES>,
     pub threads: Pool<Thread, THREADS>,
     pub processes: Pool<ProcessObject, PROCESSES>,
+    pub sections: Pool<SectionObject, SECTIONS>,
     names: [NameEntry; NAMES],
     waits: [WaitReferences; THREADS],
 }
@@ -314,6 +348,7 @@ impl Directory {
             Pool::write_empty(addr_of_mut!((*directory).semaphores), || Semaphore::new(0));
             Pool::write_empty(addr_of_mut!((*directory).threads), Thread::empty);
             Pool::write_empty(addr_of_mut!((*directory).processes), ProcessObject::new);
+            Pool::write_empty(addr_of_mut!((*directory).sections), SectionObject::none);
             let names = addr_of_mut!((*directory).names) as *mut NameEntry;
             for index in 0..NAMES {
                 names.add(index).write(NameEntry::free());
@@ -331,6 +366,7 @@ impl Directory {
             ObjectType::Semaphore => &mut self.semaphores.headers,
             ObjectType::Thread => &mut self.threads.headers,
             ObjectType::Process => &mut self.processes.headers,
+            ObjectType::Section => &mut self.sections.headers,
         };
         let header = headers.get_mut(id.index as usize)?;
         (header.live && header.generation == id.generation).then_some(header)
@@ -342,6 +378,7 @@ impl Directory {
             ObjectType::Semaphore => self.semaphores.headers[index as usize].generation,
             ObjectType::Thread => self.threads.headers[index as usize].generation,
             ObjectType::Process => self.processes.headers[index as usize].generation,
+            ObjectType::Section => self.sections.headers[index as usize].generation,
         };
         ObjectId {
             kind,
@@ -403,6 +440,13 @@ impl Directory {
         Some(self.id(ObjectType::Process, index))
     }
 
+    /// A section object holding `section` (the mapping).
+    pub fn create_section(&mut self, section: SectionObject) -> Option<ObjectId> {
+        let index = self.sections.allocate_in(0..SECTIONS)?;
+        *self.sections.record(index) = section;
+        Some(self.id(ObjectType::Section, index))
+    }
+
     // --- Typed access ------------------------------------------------------------------------
 
     pub fn event(&mut self, id: ObjectId) -> Option<&mut Event> {
@@ -423,6 +467,11 @@ impl Directory {
     pub fn process(&mut self, id: ObjectId) -> Option<&mut ProcessObject> {
         (id.kind == ObjectType::Process).then_some(())?;
         self.processes.get(id.index, id.generation)
+    }
+
+    pub fn section(&mut self, id: ObjectId) -> Option<&mut SectionObject> {
+        (id.kind == ObjectType::Section).then_some(())?;
+        self.sections.get(id.index, id.generation)
     }
 
     /// The live process object at process pool `index`, if any.
@@ -451,7 +500,7 @@ impl Directory {
         }
     }
 
-    /// The waitable header of a waitable object; none for a dead id.
+    /// The waitable header of a waitable object; none for a section or a dead id.
     pub fn waitable(&mut self, id: ObjectId) -> Option<*mut Waitable> {
         match id.kind {
             ObjectType::Event => self.event(id).map(Event::waitable),
@@ -460,6 +509,7 @@ impl Directory {
             ObjectType::Process => self
                 .process(id)
                 .map(|process| core::ptr::addr_of_mut!(process.waitable)),
+            ObjectType::Section => None,
         }
     }
 
@@ -534,20 +584,33 @@ impl Directory {
     }
 
     /// Delete the object `id` names: its kind's teardown, then the record is dead and its id stale.
-    /// No kind here needs more than that: a waitable's last reference is gone, so nothing waits on
-    /// it; a thread's record stays as it ended (its pages are released when the record is reused);
-    /// a process's record is free for the next process once its object is gone.
+    /// A section leaves its frames to the caller; no other kind here needs more than the record
+    /// going: a waitable's last reference is gone, so nothing waits on it; a thread's record stays
+    /// as it ended (its pages are released when the record is reused); a process's record is free
+    /// for the next process once its object is gone.
     fn delete(&mut self, id: ObjectId, dispatcher: &mut Dispatcher) -> Option<Followup> {
         // The kinds whose deletion acts on the scheduler (a timer leaving the timer table, an
         // owned mutex its owner's list) take it from here.
         let _ = dispatcher;
+        let followup = match id.kind {
+            ObjectType::Section => {
+                let section =
+                    core::mem::replace(self.sections.record(id.index), SectionObject::none());
+                Some(Followup::Section {
+                    frames: section.frames,
+                })
+            }
+            ObjectType::Event | ObjectType::Semaphore | ObjectType::Thread | ObjectType::Process => {
+                None
+            }
+        };
         self.forget_name(id);
         let header = self.header(id).expect("deleting a live object");
         header.live = false;
         header.pointers = 0;
         header.handles = 0;
         header.generation = header.generation.wrapping_add(1);
-        None
+        followup
     }
 
     // --- Names -------------------------------------------------------------------------------
@@ -626,8 +689,9 @@ impl Directory {
     /// The process is gone (one process at a time: every object was its own): every object still
     /// live is deleted — none should be, once its handles closed and its threads ended — and every
     /// thread record starts over (its pages went with the address space). Returns how many objects
-    /// outlived their process; what a deleted one leaves is handed to `finish`. Process objects are
-    /// not swept: a process's own goes with its own reference, at its teardown's end.
+    /// outlived their process; what a deleted one leaves (a leaked section's hold on its frames) is
+    /// handed to `finish`. Process objects are not swept: a process's own goes with its own
+    /// reference, at its teardown's end.
     pub fn process_ended(
         &mut self,
         dispatcher: &mut Dispatcher,
@@ -635,7 +699,12 @@ impl Directory {
     ) -> usize {
         // The processes outlive their own end.
         let leaked = self.live_objects() - self.processes.live();
-        for kind in [ObjectType::Event, ObjectType::Semaphore, ObjectType::Thread] {
+        for kind in [
+            ObjectType::Event,
+            ObjectType::Semaphore,
+            ObjectType::Thread,
+            ObjectType::Section,
+        ] {
             for index in 0..self.capacity(kind) {
                 let id = self.id(kind, index as u16);
                 if self.is_live(id) {
@@ -661,12 +730,17 @@ impl Directory {
             ObjectType::Semaphore => SEMAPHORES,
             ObjectType::Thread => THREADS,
             ObjectType::Process => PROCESSES,
+            ObjectType::Section => SECTIONS,
         }
     }
 
     /// How many objects are live, of every kind.
     pub fn live_objects(&self) -> usize {
-        self.events.live() + self.semaphores.live() + self.threads.live() + self.processes.live()
+        self.events.live()
+            + self.semaphores.live()
+            + self.threads.live()
+            + self.processes.live()
+            + self.sections.live()
     }
 }
 
@@ -728,6 +802,12 @@ impl ObRef {
         directory()
             .thread(self.id)
             .expect("a referenced thread lives")
+    }
+
+    pub fn section(&self) -> &'static mut SectionObject {
+        directory()
+            .section(self.id)
+            .expect("a referenced section lives")
     }
 }
 
@@ -803,7 +883,7 @@ pub fn reference_by_handle(handle: u32, kind: Option<ObjectType>) -> Option<ObRe
 #[cfg(target_arch = "x86")]
 pub fn release(id: ObjectId) {
     if let Some(followup) = directory().dereference(id, crate::sched::idle::dispatcher()) {
-        match followup {}
+        crate::user::args::calling_process().finish(followup);
     }
 }
 
@@ -875,7 +955,7 @@ fn release_wait(index: u16) {
     directory().release_wait(
         index,
         crate::sched::idle::dispatcher(),
-        |followup| match followup {},
+        |followup| crate::user::args::calling_process().finish(followup),
     );
 }
 

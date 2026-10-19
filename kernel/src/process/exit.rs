@@ -36,10 +36,11 @@ pub mod status {
     pub const INTEGER_DIVIDE_BY_ZERO: u32 = 0xC000_0094;
     pub const INTEGER_OVERFLOW: u32 = 0xC000_0095;
     pub const PRIVILEGED_INSTRUCTION: u32 = 0xC000_0096;
-    /// Raised when the stack's guard page cannot grow it.
-    #[allow(dead_code)]
+    /// Raised when the stack's guard page cannot grow it (with only the reservation's
+    /// never-committed bottom page left).
     pub const STACK_OVERFLOW: u32 = 0xC000_00FD;
     pub const FLOAT_MULTIPLE_TRAPS: u32 = 0xC000_02B5;
+    /// A guard page fired outside the running thread's stack (its access raises this, once).
     pub const GUARD_PAGE_VIOLATION: u32 = 0x8000_0001;
     pub const DATATYPE_MISALIGNMENT: u32 = 0x8000_0002;
     pub const BREAKPOINT: u32 = 0x8000_0003;

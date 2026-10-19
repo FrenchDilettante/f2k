@@ -1,12 +1,12 @@
 //! The sequential multi-process suite runner (`run-process-suite`).
 //!
-//! One boot runs six processes: `exit0`, `ret0`, `bsscheck`, `bsscheck`, `bare null-write`,
-//! `exit0` — each created, run to completion, torn down with the allocator audits re-run, then the
-//! next. The first and last are the same fixture at the same image base, so the suite can only pass
-//! with per-process directories; the second `bsscheck` proves teardown returns frames re-zeroed;
-//! `bare null-write` proves a user fault ends the process with its exception code (through
-//! kernel32's BaseProcessStart frame), not the kernel. (`bare`'s default run replaces `bsscheck`
-//! once the main thread's stack grows: its image check needs 256 KiB of stack.)
+//! One boot runs six processes: `exit0`, `ret0`, `bare`, `bare`, `bare null-write`, `exit0` —
+//! each created, run to completion, torn down with the allocator audits re-run, then the next. The
+//! first and last are the same fixture at the same image base, so the suite can only pass with
+//! per-process directories; `bare`'s default run (its image checks, 256 KiB of stack grown on
+//! demand) twice proves teardown returns frames re-zeroed; `bare null-write` proves a user fault
+//! ends the process with its exception code (through kernel32's BaseProcessStart frame), not the
+//! kernel.
 //!
 //! The suite is a loop the idle thread drives. Each leg's process is created and entered as its
 //! main thread — the ladder every boot uses — and runs on the scheduler to its exit or fault. Its
@@ -21,8 +21,8 @@ use crate::process::exit::{self, AfterLeg, AuditReport, ProcessEnd, SuiteTally};
 const SEQUENCE: [(&[u8], &str, &[u8]); 6] = [
     (b"exit0.exe", "exit0", b"exit0"),
     (b"ret0.exe", "ret0", b"ret0"),
-    (b"bsscheck.exe", "bsscheck", b"bsscheck"),
-    (b"bsscheck.exe", "bsscheck", b"bsscheck"),
+    (b"corpus\\bare.exe", "bare", b"bare.exe"),
+    (b"corpus\\bare.exe", "bare", b"bare.exe"),
     (b"corpus\\bare.exe", "bare", b"bare.exe null-write"),
     (b"exit0.exe", "exit0", b"exit0"),
 ];

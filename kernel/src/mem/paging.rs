@@ -272,6 +272,36 @@ pub fn write_frame(frame_phys: u32, offset: usize, bytes: &[u8]) {
     }
 }
 
+/// Read `out.len()` bytes of a frame at `offset`, through the scratch alias.
+#[cfg(target_arch = "x86")]
+pub fn read_frame(frame_phys: u32, offset: usize, out: &mut [u8]) {
+    assert!(frame_phys & (PAGE_SIZE - 1) == 0, "frame not page-aligned");
+    assert!(
+        offset + out.len() <= PAGE_SIZE as usize,
+        "read past the end of the frame"
+    );
+    // SAFETY: the boot context is the only scratch-slot user.
+    unsafe { install_scratch(frame_phys) };
+    // SAFETY: SCRATCH_VA now aliases exactly this frame, page-length.
+    unsafe {
+        let src = SCRATCH_VA as *const u8;
+        for (i, slot) in out.iter_mut().enumerate() {
+            *slot = src.add(offset + i).read_volatile();
+        }
+    }
+}
+
+/// Copy a whole frame's contents into another (a copy-on-write's private copy), through the
+/// scratch alias a chunk at a time.
+#[cfg(target_arch = "x86")]
+pub fn copy_frame(from_phys: u32, to_phys: u32) {
+    let mut chunk = [0u8; 512];
+    for offset in (0..PAGE_SIZE as usize).step_by(chunk.len()) {
+        read_frame(from_phys, offset, &mut chunk);
+        write_frame(to_phys, offset, &chunk);
+    }
+}
+
 /// Allocate one frame, physical address. Quirk: the database never zeroes frames, so the contents
 /// are undefined until the caller runs [`init_frame`] — every frame handed to user space does.
 #[cfg(target_arch = "x86")]

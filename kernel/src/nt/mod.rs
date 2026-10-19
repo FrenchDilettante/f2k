@@ -26,10 +26,15 @@ macro_rules! unserved {
     )*};
 }
 
+pub mod attributes;
 pub mod call;
 pub mod exception;
+pub mod memory;
 pub mod object;
 pub mod process;
+pub mod section;
+#[cfg(target_arch = "x86")]
+mod sync;
 pub mod system;
 
 use crate::user::syscall::ServiceFn;

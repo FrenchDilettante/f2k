@@ -12,8 +12,9 @@
 //! the start-up calls ([`startup`]), the image's name ([`module`]), the handle calls ([`sync`],
 //! [`files`]), the process's end ([`process`]), exceptions ([`except`]: RaiseException, the
 //! pointer probes' unwind), the locale group ([`locale`] over `rtl::codepage`, with [`collate`] and
-//! [`localeinfo`]), the clocks ([`time`], over the shared data page, [`shared`]) and the system
-//! messages ([`message`]). The trivial natives (src/natives.s), the main thread's start
+//! [`localeinfo`]), the clocks ([`time`], over the shared data page, [`shared`]), the system
+//! messages ([`message`]), virtual memory and the system's memory facts ([`vm`]) and the paging
+//! file's mappings ([`filemap`]). The trivial natives (src/natives.s), the main thread's start
 //! (src/start.s) and the pointer probes (src/probe.s) are assembly; the rest are the kernel's transitional Win32 services (generated stubs) or
 //! unimplemented stubs, which the increments rewrite here group by group
 //! (`tests/test_repository.py` ratchets both counts down).
@@ -25,6 +26,7 @@ pub mod collate;
 pub mod console;
 pub mod error;
 pub mod except;
+pub mod filemap;
 pub mod files;
 pub mod locale;
 pub mod localeinfo;
@@ -36,6 +38,7 @@ pub mod shared;
 pub mod startup;
 pub mod sync;
 pub mod time;
+pub mod vm;
 
 #[cfg(test)]
 mod scenarios;

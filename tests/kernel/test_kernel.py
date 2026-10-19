@@ -53,7 +53,7 @@ IRQ_SMOKE = (
     "F2K: user process exited normally (exit code=0)",
 )
 
-# The multi-process suite's lines: exit0, ret0, bsscheck, bsscheck, bare null-write, exit0 in one
+# The multi-process suite's lines: exit0, ret0, bare, bare, bare null-write, exit0 in one
 # boot, each process torn down to the post-boot baseline before the next starts. COM1 protocol (the
 # sequence runner implements it; the shapes parallel the single-process lines with the per-process
 # index and name added):
@@ -66,16 +66,17 @@ IRQ_SMOKE = (
 # 14): the access violation reaches kernel32's BaseProcessStart frame, whose
 # UnhandledExceptionFilter verdict calls ExitProcess with STATUS_ACCESS_VIOLATION — an exit, not a
 # kernel-ended fault (F2K's own expectation, as Windows 2000 builds the start frame; the fixture's
-# exit code is the same either way). bare's default run takes bsscheck's legs once the stack grows.
+# exit code is the same either way). bare's default run (its image checks, 256 KiB of stack grown
+# on demand) is legs 3 and 4.
 PROCESS_SUITE = (
     *BOOTED,
     "F2K: process 1 (exit0) exited normally (exit code=0)",
     "F2K: process 1 teardown audit: frame database ok, kernel heap ok",
     "F2K: process 2 (ret0) exited normally (exit code=0)",
     "F2K: process 2 teardown audit: frame database ok, kernel heap ok",
-    "F2K: process 3 (bsscheck) exited normally (exit code=0)",
+    "F2K: process 3 (bare) exited normally (exit code=0)",
     "F2K: process 3 teardown audit: frame database ok, kernel heap ok",
-    "F2K: process 4 (bsscheck) exited normally (exit code=0)",
+    "F2K: process 4 (bare) exited normally (exit code=0)",
     "F2K: process 4 teardown audit: frame database ok, kernel heap ok",
     "F2K: process 5 (bare) exited normally (exit code=3221225477)",
     "F2K: process 5 teardown audit: frame database ok, kernel heap ok",
@@ -334,7 +335,7 @@ CASES = (
     ),
     *both_paths(
         "process-suite",
-        "sequential multi-process run (exit0, ret0, bsscheck x2, bare null-write, exit0) with per-process teardown audits and a zero-leak summary",
+        "sequential multi-process run (exit0, ret0, bare x2, bare null-write, exit0) with per-process teardown audits and a zero-leak summary",
         features=("run-process-suite",),
         expects=PROCESS_SUITE,
     ),

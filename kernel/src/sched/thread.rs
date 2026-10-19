@@ -95,6 +95,10 @@ pub struct Thread {
     /// The thread's client id (what GetCurrentThreadId reports, through its TEB): handed out when a
     /// user thread is created; zero for kernel threads.
     pub(crate) thread_id: u32,
+    /// The base of the thread's user-stack reservation, released with the record (zero for kernel
+    /// threads, and for the main thread, whose stack is a system region). How far the stack has
+    /// grown is the TEB's to say (see `user::stack`).
+    pub(crate) stack_reservation: u32,
     /// The thread's level ledger: captured at switch-out, restored at resume. A fresh thread
     /// adopts an empty one.
     pub(crate) level: LevelSnapshot,
@@ -242,6 +246,7 @@ impl Thread {
             initial_stack: 0,
             teb_va: 0,
             thread_id: 0,
+            stack_reservation: 0,
             level: LevelSnapshot::empty(),
             gate_slot: NO_GATE_SLOT,
             gate_frames: [0; crate::mem::paging::GATE_STACK_PAGES],

@@ -5,8 +5,8 @@
 //! Windows 2000's do.
 //!
 //! One frame, the kernel's: written through its own mapping at 0xFFDF0000 (where Windows 2000's
-//! kernel keeps it), mapped into each process, whose teardown leaves it alone (it is no process's
-//! to free: [`is_frame`]; the frame holders, once they exist, make it one more holder instead). The clock interrupt
+//! kernel keeps it), mapped into each process as one more holder of it (`mem::vm::map_shared`), so
+//! a process's teardown drops its hold and leaves the frame to the kernel. The clock interrupt
 //! updates the times ([`update`]); a KSYSTEM_TIME is written High2Time, LowPart, High1Time, so a
 //! reader that sees High1Time equal to High2Time read a consistent value.
 
@@ -109,19 +109,20 @@ pub fn update(interrupt_time: u64, full_tick: Option<(u64, u64)>) {
     }
 }
 
-/// Map the page into `space` (the running process's), read-only, inside its region.
+/// Map the page into `space` (the running process's), read-only, inside its region: one more
+/// holder of the kernel's frame.
 #[cfg(target_arch = "x86")]
 pub fn map_into(space: &mut crate::mem::vm::AddressSpace) {
     // SAFETY: made at boot, read-only afterwards.
     let frame = unsafe { FRAME };
-    crate::mem::vm::map_prepared(space, USER_ADDRESS, frame, crate::mem::vm::PAGE_READONLY);
-}
-
-/// Whether `frame` is the page's: the kernel's, which a process's teardown must not free.
-#[cfg(target_arch = "x86")]
-pub fn is_frame(frame: u32) -> bool {
-    // SAFETY: made at boot, read-only afterwards.
-    frame == unsafe { FRAME }
+    space
+        .map_shared(
+            &mut crate::mem::vm::CurrentPages,
+            USER_ADDRESS,
+            frame,
+            crate::mem::vm::PAGE_READONLY,
+        )
+        .expect("the shared data page maps once, inside its region");
 }
 
 #[cfg(test)]

@@ -213,8 +213,8 @@ def test_only_the_address_space_writes_user_entries():
 # --- The process record ---------------------------------------------------------------------------
 
 # The `current_mut()` call sites in the kernel: each hands out an aliasable `&'static mut Process`
-# (explicit borrows retire them). The count may only go down.
-CURRENT_MUT_SITES = 13
+# (to be replaced by explicit borrows). The count may only go down.
+CURRENT_MUT_SITES = 12
 
 
 def test_current_mut_call_sites_only_go_down():
@@ -245,13 +245,13 @@ def kernel32_exports() -> list[dict]:
 
 
 # The kernel32 exports the kernel still serves (the kernel's transitional Win32 services: `legacy`
-# handlers and `floor` answers, generated int 2Eh stubs). Each group moved to kernel32's own code
-# over ntdll lowers this; the last one retires it.
-SERVED_KERNEL32_EXPORTS = 25
+# handlers and `floor` answers, generated int 2Eh stubs). Each increment moves its group to
+# kernel32's own code over ntdll and lowers this, until the last is retired.
+SERVED_KERNEL32_EXPORTS = 23
 
 # The kernel32 exports the corpus imports that are not built yet (`unimplemented` stubs failing with
 # ERROR_CALL_NOT_IMPLEMENTED, each naming its increment). It only goes down.
-UNIMPLEMENTED_KERNEL32_EXPORTS = 92
+UNIMPLEMENTED_KERNEL32_EXPORTS = 84
 
 
 def test_served_kernel32_exports_only_go_down():

@@ -7,6 +7,13 @@ use super::call::{Handle, NtCall, NtResult, STATUS_INVALID_HANDLE};
 /// The current-process pseudo-handle (NtCurrentProcess).
 pub const CURRENT_PROCESS: u32 = 0xFFFF_FFFF;
 
+/// Whether `handle` is a console handle (the console server's pseudo-handles: the low two tag
+/// bits set, bit 28 clear — so INVALID_HANDLE_VALUE is not one). Console handles are the console
+/// server's, never decoded as object-table handles.
+pub(crate) fn is_console_handle(handle: u32) -> bool {
+    handle & 0x1000_0003 == 0x3
+}
+
 /// Whether `handle` names the calling process: its pseudo-handle, or a handle to its object. No
 /// other process is reachable.
 #[cfg(target_arch = "x86")]

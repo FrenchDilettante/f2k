@@ -142,17 +142,6 @@ fn svc_heap_destroy(frame: &mut crate::user::TrapFrame, args: &[u32]) {
     frame.eax = crate::user::userheap::destroy(args[0]);
 }
 
-/// VirtualAlloc: the CRT's own region (reserve at NULL, contiguous commits). Protection flags are
-/// read-write throughout this surface.
-fn svc_virtual_alloc(frame: &mut crate::user::TrapFrame, args: &[u32]) {
-    frame.eax = crate::user::userheap::virtual_alloc(args[0], args[1], args[2]);
-}
-
-/// VirtualFree: nothing on this surface is ever freed through it; report success.
-fn svc_virtual_free(frame: &mut crate::user::TrapFrame, _args: &[u32]) {
-    frame.eax = 1;
-}
-
 /// INFINITE: the documented forever timeout.
 const INFINITE: u32 = 0xFFFF_FFFF;
 
@@ -336,7 +325,7 @@ fn svc_sleep(frame: &mut crate::user::TrapFrame, args: &[u32]) {
 fn svc_create_thread(frame: &mut crate::user::TrapFrame, args: &[u32]) {
     #[cfg(target_arch = "x86")]
     {
-        let (_attributes, _stack_size, start, parameter, flags, thread_id_out) =
+        let (_attributes, stack_size, start, parameter, flags, thread_id_out) =
             (args[0], args[1], args[2], args[3], args[4], args[5]);
         // Every refusal comes before the spawn: once a thread record is attached to the process
         // and its stacks are mapped, there is no unwinding it, so the create must not fail after.
@@ -351,7 +340,7 @@ fn svc_create_thread(frame: &mut crate::user::TrapFrame, args: &[u32]) {
             frame.eax = 0;
             return;
         }
-        let Some((object, thread, id)) = crate::process::threads::spawn(process, start, parameter)
+        let Some((object, thread, id)) = crate::process::threads::spawn(process, start, parameter, stack_size)
         else {
             frame.eax = 0;
             return;
@@ -687,10 +676,10 @@ mod tests {
     fn the_registry_numbers_from_its_base() {
         assert_eq!(
             SERVICES.len(),
-            25,
-            "the kernel's served surface, less kernel32's natives (the last error, the current process, \
-             the console and start-up calls, the locale group and clock, the exception filter) \
-             and ntdll's RtlUnwind"
+            23,
+            "the kernel's served surface, less kernel32's natives (the last error, the current \
+             process, the console and start-up calls, the locale group and clock, the exception \
+             filter, the virtual memory) and ntdll's RtlUnwind"
         );
         assert_eq!(WIN32_SERVICE_BASE, 0x2000);
         assert_eq!(SERVICES[0].0, "ExitProcess");
@@ -849,14 +838,11 @@ mod tests {
         assert!(SERVICES
             .iter()
             .all(|&(_, _, handler)| handler as usize != svc_floor_zero as usize));
-        assert_eq!(floor("VirtualFree") as usize, svc_virtual_free as usize);
         assert_eq!(
             floor("SetFilePointer") as usize,
             svc_set_file_pointer as usize
         );
         let mut frame = zero_frame();
-        svc_virtual_free(&mut frame, &[0; 4]);
-        assert_eq!(frame.eax, 1);
         // A seek on a handle that names no open file fails honestly.
         svc_set_file_pointer(&mut frame, &[0; 4]);
         assert_eq!(frame.eax, 0xFFFF_FFFF); // INVALID_SET_FILE_POINTER

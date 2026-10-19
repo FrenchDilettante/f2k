@@ -38,6 +38,14 @@ pub fn succeeded(status: u32) -> u32 {
 /// The current-process pseudo-handle (NtCurrentProcess).
 pub const CURRENT_PROCESS: u32 = 0xFFFF_FFFF;
 
+/// A SECURITY_ATTRIBUTES, as a create's caller passes it.
+#[repr(C)]
+pub struct SecurityAttributes {
+    pub length: u32,
+    pub security_descriptor: *const u8,
+    pub inherit_handle: u32,
+}
+
 /// Whether a handle is a console handle (Windows 2000's CONSOLE_HANDLE: the low two bits set, bit 28
 /// clear, so INVALID_HANDLE_VALUE is not one). Console handles are not kernel handles: kernel32
 /// routes them to the console server (see [`crate::console`]).

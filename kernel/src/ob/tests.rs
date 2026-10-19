@@ -401,3 +401,33 @@ fn entries_name_objects_or_records() {
     };
     assert_eq!(file.object_id(), None);
 }
+
+/// A section is no waitable; its deletion hands its frames back to the caller, a view's reference
+/// keeping it past its last handle, and its record starts over.
+#[test]
+fn a_deleted_section_hands_back_its_frames() {
+    let directory = directory();
+    let dispatcher = dispatcher();
+    let section = SectionObject {
+        size: 3,
+        ..SectionObject::none()
+    };
+    let id = directory.create_section(section).unwrap();
+    assert_eq!(directory.waitable(id), None, "a section is not waitable");
+    assert_eq!(directory.section(id).map(|section| section.size), Some(3));
+    published(directory, id, dispatcher);
+    // A view's reference keeps it past its handle.
+    assert!(directory.reference(id));
+    assert_eq!(closed(directory, id, dispatcher), vec![]);
+    assert_eq!(
+        directory.dereference(id, dispatcher),
+        Some(Followup::Section {
+            frames: crate::mem::vm::SectionFrames::empty()
+        })
+    );
+    assert_eq!(
+        directory.sections.record(id.index).size,
+        0,
+        "the record holds no mapping any more"
+    );
+}

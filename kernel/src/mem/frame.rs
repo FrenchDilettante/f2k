@@ -158,7 +158,9 @@ pub struct FrameEntry {
     pub flags: FrameFlags,
     /// Outstanding references (I/O or mapping).
     pub refcount: u16,
-    /// Mapping share count; meaningful while refcount > 0.
+    /// The in-use frame's holders beyond its first ([`FrameDb::share`]): the views of a section
+    /// mapping its frame, besides the section. Zero for a frame with one holder, and for every frame
+    /// on a list.
     pub share_count: u32,
 }
 
@@ -385,6 +387,11 @@ impl<H: FrameHooks> FrameDb<H> {
         self.zeroing_armed = false;
     }
 
+    /// The frames the database describes (index 0, reserved, included).
+    pub fn frame_count(&self) -> u32 {
+        self.frames.len() as u32
+    }
+
     /// Total frames that can satisfy allocations (zeroed + free + standby).
     pub fn available(&self) -> u32 {
         self.available
@@ -403,6 +410,36 @@ impl<H: FrameHooks> FrameDb<H> {
             frame
         );
         &self.frames[frame as usize]
+    }
+
+    // -----------------------------------------------------------------
+    // Holders
+
+    /// Count one more holder of an in-use frame: a view mapping a section's frame, besides the
+    /// section. A frame starts with one holder, whoever allocated it.
+    pub fn share(&mut self, frame: FrameId) {
+        let entry = self.entry_mut(frame);
+        assert_eq!(
+            entry.state,
+            FrameState::Active,
+            "sharing a frame that is not in use"
+        );
+        entry.share_count += 1;
+    }
+
+    /// Drop one holder of an in-use frame: true when it was the last, the caller then releasing it.
+    pub fn unshare(&mut self, frame: FrameId) -> bool {
+        let entry = self.entry_mut(frame);
+        assert_eq!(
+            entry.state,
+            FrameState::Active,
+            "unsharing a frame that is not in use"
+        );
+        if entry.share_count == 0 {
+            return true;
+        }
+        entry.share_count -= 1;
+        false
     }
 
     // -----------------------------------------------------------------
@@ -577,6 +614,10 @@ impl<H: FrameHooks> FrameDb<H> {
             assert_eq!(
                 entry.refcount, 0,
                 "releasing a frame with outstanding references"
+            );
+            assert_eq!(
+                entry.share_count, 0,
+                "releasing a frame other holders still map"
             );
             assert!(!entry.state.is_list_state(), "frame is already on a list");
         }
@@ -1138,6 +1179,32 @@ mod tests {
         for &f in frames {
             db.release(f, state);
         }
+    }
+
+    /// A frame's holders: each share adds one, each unshare drops one, and the last unshare says so
+    /// (the frame is then the caller's to release); releasing a frame still shared is refused.
+    #[test]
+    fn holders_count_down_to_the_last() {
+        let mut db = new_db();
+        release_all(&mut db, Free, &[3]);
+        let frame = db.allocate(PRIMARY_COLOR);
+        db.share(frame);
+        db.share(frame);
+        assert!(!db.unshare(frame));
+        assert!(!db.unshare(frame));
+        assert!(db.unshare(frame), "the last holder");
+        db.release(frame, Free);
+        assert_eq!(db.audit(), Ok(()));
+    }
+
+    #[test]
+    #[should_panic(expected = "other holders still map")]
+    fn releasing_a_shared_frame_is_refused() {
+        let mut db = new_db();
+        release_all(&mut db, Free, &[3]);
+        let frame = db.allocate(PRIMARY_COLOR);
+        db.share(frame);
+        db.release(frame, Free);
     }
 
     #[test]

@@ -3,7 +3,3 @@ description = "bare - the image and process contract without a C runtime (bare.c
 kind = "sectioned"
 gate = true
 
-# The blocks this kernel does not pass yet, each with the increment that enables it.
-[pending]
-'(default)' = "B4: virtual memory and sections (the image check's 256 KiB of stack grows past the two committed pages)"
-stack-overflow = "B4: virtual memory and sections"

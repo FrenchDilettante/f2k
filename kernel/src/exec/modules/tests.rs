@@ -130,9 +130,9 @@ fn the_system_dlls_serve_the_registry() {
         assert_eq!(found, arg_bytes, "{name}");
     }
     // The natives: kernel32's own code (the trivial ones, the exception filter and the pointer
-    // probes its assembly; the console, start-up, locale and clock calls and RaiseException its
-    // Rust). The internal start thunk is not among them.
-    assert_eq!(NATIVE_EXPORTS.len(), 66);
+    // probes its assembly; the console, start-up, locale, clock, virtual-memory and mapping calls
+    // and RaiseException its Rust). The internal start thunk is not among them.
+    assert_eq!(NATIVE_EXPORTS.len(), 76);
     for &(name, _) in &NATIVE_EXPORTS {
         let address = kernel32_export(name).unwrap_or_else(|| panic!("kernel32 exports no {name}"));
         addresses.push(address);
@@ -227,7 +227,7 @@ fn the_thread_exit_trampoline_keeps_its_protocol() {
 
 /// The corpus binaries (the smokes in the root directory, the sectioned fixtures in \CORPUS): the
 /// import surface kernel32 exports.
-const CORPUS: [(&str, &[u8]); 19] = [
+const CORPUS: [(&str, &[u8]); 18] = [
     ("bare", include_bytes!("../../../../tests/bare/bare.exe")),
     ("files", include_bytes!("../../../../tests/files/files.exe")),
     (
@@ -264,10 +264,6 @@ const CORPUS: [(&str, &[u8]); 19] = [
     (
         "respawn",
         include_bytes!("../../../../tests/respawn/respawn.exe"),
-    ),
-    (
-        "bsscheck",
-        include_bytes!("../../../../tests/bsscheck/bsscheck.exe"),
     ),
     (
         "fileio",
