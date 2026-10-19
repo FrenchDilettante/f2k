@@ -86,7 +86,7 @@ pub fn performance_counter() -> u64 {
     let pending = crate::interrupt::clock_requested();
     // SAFETY: the reader's one user, serialized with interrupts masked.
     let value = unsafe {
-        (*core::ptr::addr_of_mut!(PERFORMANCE_COUNTER)).read(base, count, pending, crate::hw::pit::INTERVAL_DIVISOR)
+        (*core::ptr::addr_of_mut!(PERFORMANCE_COUNTER)).read(base, count, pending, crate::hw::pit::programmed_divisor())
     };
     if enabled {
         state.unmask_interrupts();

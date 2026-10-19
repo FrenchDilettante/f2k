@@ -412,7 +412,7 @@ assert len({case.name for case in CASES}) == len(CASES), "case names are unique"
     "case",
     [pytest.param(case, id=case.name, marks=getattr(pytest.mark, case.image)) for case in CASES],
 )
-def test_kernel(case, builder, log_path, boot_timeout):
+def test_kernel(case, builder, log_path, boot_timeout, write_profile):
     """The case's description, as the case states it."""
     build = builder(list(case.features))
     expectation = f2kboot.Expectation(
@@ -429,6 +429,7 @@ def test_kernel(case, builder, log_path, boot_timeout):
         timeout=boot_timeout(DEFAULT_TIMEOUT),
         done=lambda log: expectation.check(log)[0] != "pending",
     )
+    write_profile(log, build)
     status, detail = expectation.check(log)
     if status == "pass":
         return

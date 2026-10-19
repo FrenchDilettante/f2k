@@ -41,11 +41,24 @@ pub fn divisor_for_100ns(interval_100ns: u32) -> u16 {
     periods as u16
 }
 
-/// Program channel 0 with `divisor` (mode 2, both bytes).
+/// Program channel 0 with `divisor` (mode 2, both bytes). The last value programmed is what
+/// [`programmed_divisor`] reports (the performance counter's within-tick scale).
 pub fn program_interval<IoT: Io>(io: &mut IoT, divisor: u16) {
     io.out(CONTROL, MODE2_LO_HIBYTE);
     io.out(CHANNEL0, (divisor & 0xFF) as u8);
     io.out(CHANNEL0, (divisor >> 8) as u8);
+    // SAFETY: single CPU; the boot programs the channel before interrupts fly, and only the
+    // perf-trace rate change reprograms it (also with interrupts disabled).
+    unsafe { core::ptr::write_volatile(core::ptr::addr_of_mut!(PROGRAMMED), divisor) };
+}
+
+/// The divisor channel 0 was last programmed with.
+static mut PROGRAMMED: u16 = INTERVAL_DIVISOR;
+
+/// The interval channel 0 currently runs (see [`program_interval`]).
+pub fn programmed_divisor() -> u16 {
+    // SAFETY: written only while programming the channel; read-only afterwards.
+    unsafe { core::ptr::read_volatile(core::ptr::addr_of!(PROGRAMMED)) }
 }
 
 /// Channel 0's current count, latched (the divisor just after a reload, down to 1 at the end of
@@ -131,7 +144,10 @@ mod tests {
     /// byte, then the high byte, all on channel 0.
     #[test]
     fn program_interval_writes_mode_then_both_divisor_bytes() {
-        let mut log = Log { writes: Vec::new(), count: 0 };
+        let mut log = Log {
+            writes: Vec::new(),
+            count: 0,
+        };
         program_interval(&mut log, INTERVAL_DIVISOR);
         assert_eq!(
             log.writes,
@@ -142,7 +158,10 @@ mod tests {
     /// Reading the count: the latch command for channel 0, then its low byte and its high byte.
     #[test]
     fn the_count_reads_latched_low_byte_first() {
-        let mut log = Log { writes: Vec::new(), count: 0x2E05 };
+        let mut log = Log {
+            writes: Vec::new(),
+            count: 0x2E05,
+        };
         assert_eq!(read_count(&mut log), 0x2E05);
         assert_eq!(log.writes, vec![(CONTROL, 0x00)]);
     }
@@ -190,7 +209,10 @@ mod tests {
     /// The read-back: the status command on the control port, then the status from channel 0.
     #[test]
     fn read_back_sends_the_status_command_then_reads_channel_0() {
-        let mut log = Log { writes: Vec::new(), count: 0 };
+        let mut log = Log {
+            writes: Vec::new(),
+            count: 0,
+        };
         read_back_status(&mut log);
         assert_eq!(log.writes, vec![(CONTROL, 0xE2)]);
     }

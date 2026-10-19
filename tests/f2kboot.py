@@ -157,7 +157,11 @@ def prune(work: Path = WORK, now: float | None = None) -> None:
                 shutil.rmtree(entry, ignore_errors=True)
         elif older(entry, BUILD_AGE):
             entry.unlink(missing_ok=True)
-    for directory, age in ((work / "logs", LOG_AGE), (work / "variants", BUILD_AGE)):
+    for directory, age in (
+        (work / "logs", LOG_AGE),
+        (work / "profiles", LOG_AGE),
+        (work / "variants", BUILD_AGE),
+    ):
         for entry in directory.iterdir() if directory.is_dir() else ():
             if entry.is_file() and older(entry, age):
                 entry.unlink(missing_ok=True)
@@ -740,3 +744,10 @@ def log_path_for(nodeid: str) -> Path:
     """Where a test's COM1 log goes: target/qemu/logs/<test id>.log."""
     safe = re.sub(r"[^A-Za-z0-9._-]+", "_", nodeid.split("::", 1)[-1]).strip("_")
     return WORK / "logs" / f"{safe}.log"
+
+
+def profile_path_for(nodeid: str) -> Path:
+    """Where a test's performance profile goes (the suite's `--perf-trace`): target/qemu/profiles/
+    <test id>.json, beside the boot's COM1 log, loadable at profiler.firefox.com."""
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", nodeid.split("::", 1)[-1]).strip("_")
+    return WORK / "profiles" / f"{safe}.json"

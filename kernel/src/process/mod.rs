@@ -582,6 +582,9 @@ pub fn reap() {
     #[cfg(not(feature = "run-process-suite"))]
     {
         let _ = end;
+        // Before the audit line: the harness stops the boot on it, so the dump must land first.
+        #[cfg(feature = "perf-trace")]
+        crate::perf::report();
         crate::serial_println!(
             "{}",
             exit::AuditReport {

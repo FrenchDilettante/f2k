@@ -87,6 +87,13 @@ impl Clock {
         self.tick_offset = maximum as i32;
     }
 
+    /// Run the clock's source `per_tick` times per platform tick: every interrupt advances
+    /// interrupt time by a `per_tick`th of the maximum, so ticks, system time, and quanta keep
+    /// the platform rate. `per_tick` must divide the maximum evenly, or the tick drifts.
+    pub fn set_source_per_tick(&mut self, per_tick: u32) {
+        self.time_increment = self.maximum_increment / per_tick;
+    }
+
     /// Full ticks since boot.
     pub fn tick_count(&self) -> u64 {
         self.tick_count
@@ -239,6 +246,18 @@ pub unsafe fn init() {
     unsafe { (*addr_of_mut!(CLOCK)).set_time_increment(INTERVAL_100NS, FINEST_100NS) };
 }
 
+/// Run the kernel clock's source `per_tick` times per platform tick (the perf trace's sampling
+/// rate; see [`Clock::set_source_per_tick`]).
+///
+/// # Safety
+///
+/// Boot CPU, interrupts disabled, before the first tick (the perf trace's init calls this).
+#[cfg(target_arch = "x86")]
+pub unsafe fn set_source_per_tick(per_tick: u32) {
+    // SAFETY: sole access, before interrupts are enabled.
+    unsafe { (*addr_of_mut!(CLOCK)).set_source_per_tick(per_tick) };
+}
+
 /// Read the kernel clock with interrupts masked for the read, restoring the caller's flag exactly.
 /// The 64-bit fields are two loads on this processor; a tick taken in the gap — precisely when the
 /// low word carries — would hand back a value about 429 s off.
@@ -311,7 +330,11 @@ mod tests {
         }
         assert_eq!(clock.stamp().interrupt_time, clock.interrupt_time());
         assert_eq!(clock.stamp().tick, 10);
-        assert_ne!(clock.system_time(), clock.interrupt_time(), "the slew shows");
+        assert_ne!(
+            clock.system_time(),
+            clock.interrupt_time(),
+            "the slew shows"
+        );
         let interval = 3 * INTERVAL_100NS as i64;
         assert_eq!(
             d.delay(t, WaitMode::User, false, interval, clock.stamp()),
@@ -379,6 +402,30 @@ mod tests {
         assert_eq!(clock.tick_count(), 2);
         assert_eq!(clock.interrupt_time(), 200_000);
         assert_eq!(clock.interrupt_count(), 4);
+    }
+
+    /// A source run per-tick by `set_source_per_tick` keeps the platform tick: full ticks arrive
+    /// every `per_tick` interrupts, and N of them are N maxima of interrupt time.
+    #[test]
+    fn a_per_tick_source_keeps_the_platform_tick() {
+        let mut clock = Clock::new();
+        clock.set_time_increment(INTERVAL_100NS, FINEST_100NS);
+        clock.set_source_per_tick(4);
+
+        for _ in 0..3 {
+            assert_eq!(clock.tick(), Tick::Fractional);
+        }
+        assert_eq!(clock.tick(), Tick::Full);
+        assert_eq!(clock.tick_count(), 1);
+        assert_eq!(clock.interrupt_time(), INTERVAL_100NS as u64);
+
+        for _ in 0..3 {
+            assert_eq!(clock.tick(), Tick::Fractional);
+        }
+        assert_eq!(clock.tick(), Tick::Full);
+        assert_eq!(clock.tick_count(), 2);
+        assert_eq!(clock.interrupt_time(), 2 * INTERVAL_100NS as u64);
+        assert_eq!(clock.interrupt_count(), 8);
     }
 
     /// System time slews by the adjustment while the tick count counts ticks: halving the

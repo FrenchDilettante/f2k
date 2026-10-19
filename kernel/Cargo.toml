@@ -72,6 +72,13 @@ irq-smoke = []
 # lines. Disk path only (the image is the IDE primary master); the
 # tests/kernel case pins the COM1 shapes.
 disk-smoke = []
+# The opt-in performance trace: the interval clock's interrupt samples the
+# interrupted context and its frame-pointer call stack into a static ring
+# buffer, and the boot's end dumps it on COM1 before the line the harness
+# stops the boot on. The suite's `--perf-trace` builds with it (forcing frame
+# pointers, per the Makefile) and turns each boot's log into a
+# profiler.firefox.com profile. Nothing of the trace compiles without it.
+perf-trace = []
 
 # The build script generates the kernel's service registry from the system DLLs' export specs
 # (userland/<dll>/exports.toml) and points the kernel at the DLLs it embeds.

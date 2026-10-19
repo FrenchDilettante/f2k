@@ -28,6 +28,15 @@ KERNEL_STAMP = $(KERNEL_ELF).build
 DISK_STAMP = $(DISK_IMG).build
 BUILD_STAMP = features=$(CARGO_FEATURES)\nprofile=$(KERNEL_PROFILE)
 
+# The perf-trace build forces frame pointers for its stack walk. Cargo's RUSTFLAGS replaces the
+# target's rustflags in .cargo/config.toml, so the whole set is spelled out here — keep them in
+# sync.
+KERNEL_RUSTFLAGS = -Z unstable-options -C relocation-model=static -C code-model=kernel \
+                   -C link-arg=-nostdlib -C link-arg=-static
+ifneq (,$(findstring perf-trace,$(CARGO_FEATURES)))
+export RUSTFLAGS := $(KERNEL_RUSTFLAGS) -C force-frame-pointers=yes
+endif
+
 # Directories
 BOOT_DIR ?= boot
 KERNEL_DIR ?= kernel

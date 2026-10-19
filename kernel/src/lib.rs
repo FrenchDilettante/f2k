@@ -68,6 +68,11 @@ mod ob;
 // the system services and the shared data page report
 mod time;
 
+// The opt-in performance trace (the perf-trace feature): the clock interrupt's sampler and the
+// COM1 dump the harness turns into a profiler.firefox.com profile
+#[cfg(feature = "perf-trace")]
+mod perf;
+
 // C library functions for bare-metal (linker support)
 mod c_lib;
 

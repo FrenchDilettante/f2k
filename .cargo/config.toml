@@ -24,6 +24,9 @@ json-target-spec = true
 linker = "scripts/x86-elf-ld"
 # Disable PIC for the kernel: static relocation model, kernel code model.
 # Scoped to the kernel target so host unit tests link normally.
+# NOTE: the Makefile's perf-trace build repeats this list under RUSTFLAGS
+# (adding -C force-frame-pointers=yes for the performance trace's stack
+# walk; cargo's RUSTFLAGS replaces this list) — keep the two in sync.
 rustflags = [
     "-Z", "unstable-options",
     "-C", "relocation-model=static",

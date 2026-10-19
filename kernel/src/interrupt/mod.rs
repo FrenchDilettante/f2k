@@ -490,6 +490,11 @@ mod target {
     /// interrupted thread next runs.
     extern "C" fn dispatch(frame: &ExceptionFrame) {
         let vector = frame.vector as u8;
+        // The performance trace samples on the clock's vector: the tick is its clock.
+        #[cfg(feature = "perf-trace")]
+        if vector == super::clock::CLOCK_VECTOR {
+            crate::perf::sample(frame);
+        }
         // SAFETY: single CPU; the table and controller are kernel statics whose accessors run
         // serialized by the level discipline (the gates mask on entry).
         unsafe {
@@ -557,6 +562,9 @@ mod target {
 
             crate::interrupt::dpc::init();
             super::clock::init();
+            // The performance trace's sampling rate, if the kernel command line asks for one.
+            #[cfg(feature = "perf-trace")]
+            crate::perf::init();
 
             // The interval clock: IRQ 0, served at the clock level.
             let clock = &mut *addr_of_mut!(CLOCK_OBJECT);

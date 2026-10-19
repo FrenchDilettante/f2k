@@ -196,6 +196,35 @@ declarations too: a new fixture is its directory and its
 `fixture.toml`. Every boot's COM1 log stays under
 `target/qemu/logs/`.
 
+### Tracing a slow block
+
+`--perf-trace` builds the kernel with its `perf-trace` cargo feature and,
+once each boot is done, turns its COM1 log into a performance profile
+beside it: `target/qemu/profiles/<test id>.json`, one file per boot,
+loadable at profiler.firefox.com (Load profile from file). The kernel's
+interval clock then samples the interrupted context and its call stack on
+every tick and dumps the samples before the line the harness stops the
+boot on; nothing of the trace compiles without the feature. The stack walk
+follows the frame-pointer chain, which the perf build forces (the
+Makefile passes the flag; the first perf build rebuilds core and alloc),
+and every step of a user stack is validated against the process's own
+regions before it is read. The converter, scripts/perf_profile.py —
+runnable by hand on any kept log — writes the profile: the kernel's
+samples one thread, the ring-3 samples another, the flame graph a call
+tree over real stacks.
+
+The sampling rate is `SAMPLES_PER_TICK` in kernel/src/perf.rs
+(samples per platform tick, 1, 2, 4, 8, or 16). Above 1 the
+interrupt source runs faster, which can quantize a timed wait one
+tick longer, so the tick-exact pins (the sleep smoke's) hold only at
+the default 1 — a profiling build is for inspection, not
+verification. A boot longer than the buffer's 1024 samples keeps its
+most recent ones, up to 24 frames deep. Every booting suite gets its
+profile — the corpus blocks, the Limine blocks, and the kernel cases
+alike; a boot that halts before its teardown (a fault case's kernel
+halt) has no dump to take, and a case whose last expectation passes
+before the teardown may cut the dump short.
+
 ## Legacy fixtures
 
 The single-path smokes below predate the sectioned fixtures. Each one's

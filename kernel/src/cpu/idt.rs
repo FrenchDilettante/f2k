@@ -77,6 +77,19 @@ struct Ring3ExceptionFrame {
     user_ss: u32,
 }
 
+impl ExceptionFrame {
+    /// The interrupted instruction pointer and code segment (the perf trace's sample; the
+    /// segment's RPL says which ring was running).
+    pub(crate) fn interrupted_pc(&self) -> (u32, u32) {
+        (self.eip, self.cs)
+    }
+
+    /// The interrupted frame pointer (where the perf trace's stack walk starts).
+    pub(crate) fn interrupted_ebp(&self) -> u32 {
+        self.ebp
+    }
+}
+
 /// One 32-bit IDT gate descriptor: interrupt gate, present, ring 0.
 #[derive(Clone, Copy)]
 #[repr(C, packed)]

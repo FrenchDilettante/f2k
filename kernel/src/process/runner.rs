@@ -66,6 +66,9 @@ pub fn process_reaped(end: ProcessEnd) {
     match exit::after_leg(index, SEQUENCE.len() as u32) {
         AfterLeg::Next(next) => start_leg(next),
         AfterLeg::Summary => {
+            // Before the summary line: the harness stops the boot on it.
+            #[cfg(feature = "perf-trace")]
+            crate::perf::report();
             crate::serial_println!("{}", tally);
         }
     }
