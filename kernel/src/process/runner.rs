@@ -1,10 +1,12 @@
 //! The sequential multi-process suite runner (`run-process-suite`).
 //!
-//! One boot runs six processes: `exit0`, `ret0`, `bsscheck`, `bsscheck`, `crash`, `exit0` — each
-//! created, run to completion, torn down with the allocator audits re-run, then the next. The first
-//! and last are the same fixture at the same image base, so the suite can only pass with
-//! per-process directories; the `crash` leg proves a user fault ends the process, not the kernel;
-//! the second `bsscheck` proves teardown returns frames re-zeroed.
+//! One boot runs six processes: `exit0`, `ret0`, `bsscheck`, `bsscheck`, `bare null-write`,
+//! `exit0` — each created, run to completion, torn down with the allocator audits re-run, then the
+//! next. The first and last are the same fixture at the same image base, so the suite can only pass
+//! with per-process directories; the second `bsscheck` proves teardown returns frames re-zeroed;
+//! `bare null-write` proves a user fault ends the process with its exception code (through
+//! kernel32's BaseProcessStart frame), not the kernel. (`bare`'s default run replaces `bsscheck`
+//! once the main thread's stack grows: its image check needs 256 KiB of stack.)
 //!
 //! The suite is a loop the idle thread drives. Each leg's process is created and entered as its
 //! main thread — the ladder every boot uses — and runs on the scheduler to its exit or fault. Its
@@ -14,15 +16,15 @@
 
 use crate::process::exit::{self, AfterLeg, AuditReport, ProcessEnd, SuiteTally};
 
-/// The suite: process i runs `SEQUENCE[i - 1]`, a program's path on the boot volume and its
-/// process name.
-const SEQUENCE: [(&[u8], &str); 6] = [
-    (b"exit0.exe", "exit0"),
-    (b"ret0.exe", "ret0"),
-    (b"bsscheck.exe", "bsscheck"),
-    (b"bsscheck.exe", "bsscheck"),
-    (b"crash.exe", "crash"),
-    (b"exit0.exe", "exit0"),
+/// The suite: process i runs `SEQUENCE[i - 1]`: a program's path on the boot volume, its process
+/// name, and its command line (what its GetCommandLineA reports; `bare` reads its mode there).
+const SEQUENCE: [(&[u8], &str, &[u8]); 6] = [
+    (b"exit0.exe", "exit0", b"exit0"),
+    (b"ret0.exe", "ret0", b"ret0"),
+    (b"bsscheck.exe", "bsscheck", b"bsscheck"),
+    (b"bsscheck.exe", "bsscheck", b"bsscheck"),
+    (b"corpus\\bare.exe", "bare", b"bare.exe null-write"),
+    (b"exit0.exe", "exit0", b"exit0"),
 ];
 
 /// The index of the process running or just finished (1-based).
@@ -79,9 +81,9 @@ pub fn process_reaped(end: ProcessEnd) {
 fn start_leg(index: u32) {
     // SAFETY: suite state; single CPU, written only here.
     unsafe { core::ptr::write_volatile(core::ptr::addr_of_mut!(CURRENT), index) };
-    let (path, name) = SEQUENCE[index as usize - 1];
-    let entry = crate::exec::loader::load_path(path, name, name.as_bytes());
-    crate::process::threads::start_main_thread(entry, crate::user::USER_STACK_TOP);
+    let (path, name, command_line) = SEQUENCE[index as usize - 1];
+    let entry = crate::exec::loader::load_path(path, name, command_line);
+    crate::process::threads::start_main_thread(crate::user::main_thread_start(entry));
 }
 
 /// The index of the process running (or just finished).

@@ -27,6 +27,7 @@ macro_rules! unserved {
 }
 
 pub mod call;
+pub mod exception;
 pub mod object;
 pub mod process;
 pub mod system;

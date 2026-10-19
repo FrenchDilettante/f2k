@@ -4,18 +4,20 @@
 //! table, which kernel32 reports every failed system service through), the code pages and their
 //! conversions ([`codepage`], [`cp1252`]), the time conversions ([`time`]), and the console
 //! server's message format and rules ([`console`]: kernel32's side and the kernel's stand-in for
-//! csrss share them).
+//! csrss share them), and structured exception handling's walks ([`seh`]: ntdll's
+//! RtlDispatchException and RtlUnwind, with the CONTEXT and record layouts the kernel writes).
 //!
 //! On the DLLs' target (i686 Windows) only: what the compiler expects of an MSVC environment without
 //! its CRT (the 64-bit division helpers LLVM calls on i686-*-windows-msvc, `_aulldiv`, `_aullrem`,
 //! `_alldiv`, `_allrem`, and the `_fltused` marker; their cores are host-tested), the panic
-//! handler, and [`sys`], the calling thread's TEB.
+//! handler, and [`sys`], the calling thread's TEB, the gate and the raises.
 
 #![cfg_attr(not(test), no_std)]
 
 pub mod codepage;
 pub mod console;
 pub mod cp1252;
+pub mod seh;
 pub mod status;
 mod status_table;
 #[cfg(all(target_arch = "x86", target_os = "windows", not(test)))]

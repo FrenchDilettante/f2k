@@ -59,6 +59,17 @@ unsafe extern "system" {
     ) -> u32;
     /// NtQueryPerformanceCounter: the counter and, when asked, its frequency.
     pub fn NtQueryPerformanceCounter(counter: *mut u64, frequency: *mut u64) -> u32;
+    /// RtlRaiseException: the record raised from the caller (its context captured; a continued
+    /// exception returns).
+    pub fn RtlRaiseException(record: *mut rtl::seh::ExceptionRecord);
+    /// RtlUnwind: the thread's exception chain unwound to the target frame, then a return to the
+    /// caller.
+    pub fn RtlUnwind(
+        target_frame: u32,
+        target_ip: u32,
+        record: *mut rtl::seh::ExceptionRecord,
+        return_value: u32,
+    );
 }
 
 #[cfg(test)]
@@ -111,6 +122,30 @@ pub mod host {
 
     pub unsafe extern "system" fn RtlNtStatusToDosError(status: u32) -> u32 {
         rtl::status::dos_error(status)
+    }
+
+    std::thread_local! {
+        /// The records RtlRaiseException was handed, in order.
+        pub static RAISED: RefCell<std::vec::Vec<rtl::seh::ExceptionRecord>> = const { RefCell::new(std::vec::Vec::new()) };
+        /// RtlUnwind's calls: the target frame and the record.
+        pub static UNWOUND: RefCell<std::vec::Vec<(u32, rtl::seh::ExceptionRecord)>> = const { RefCell::new(std::vec::Vec::new()) };
+    }
+
+    /// RtlRaiseException: the record kept (no handler: the raise returns, as a continued one does).
+    pub unsafe extern "system" fn RtlRaiseException(record: *mut rtl::seh::ExceptionRecord) {
+        // SAFETY: the caller's record.
+        RAISED.with(|raised| raised.borrow_mut().push(unsafe { *record }));
+    }
+
+    /// RtlUnwind: the target and the record kept (no frames to unwind).
+    pub unsafe extern "system" fn RtlUnwind(
+        target: u32,
+        _ip: u32,
+        record: *mut rtl::seh::ExceptionRecord,
+        _value: u32,
+    ) {
+        // SAFETY: the caller's record.
+        UNWOUND.with(|calls| calls.borrow_mut().push((target, unsafe { *record })));
     }
 
     /// The performance counter's stand-in values.

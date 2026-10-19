@@ -2,5 +2,9 @@
 include!("../build-support/stubs.rs");
 
 fn main() {
-    build_dll("ntdll", 0x77F8_0000, &["src/internal.s", "src/csr.s"]);
+    build_dll(
+        "ntdll",
+        0x77F8_0000,
+        &["src/internal.s", "src/except.s", "src/csr.s"],
+    );
 }

@@ -58,13 +58,6 @@ if errorlevel 1 (echo build.bat: bsscheck failed & exit /b 1)
 del bsscheck.obj
 cd ..
 
-echo === crash
-cd crash
-cl /nologo crash.c /link /NODEFAULTLIB /ENTRY:CrashMain /SUBSYSTEM:CONSOLE
-if errorlevel 1 (echo build.bat: crash failed & exit /b 1)
-del crash.obj
-cd ..
-
 echo === thread
 cd thread
 cl /nologo thread.c

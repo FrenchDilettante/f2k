@@ -2,3 +2,9 @@
 name = "rtl"
 version = "0.1.0"
 edition = "2021"
+
+# The build script reads the kernel's ABI constants (the gate's vector) and Windows 2000's service
+# numbers through the export generator, the same source the system DLLs' assembly constants come
+# from.
+[build-dependencies]
+exportgen = { path = "../../tools/exportgen" }

@@ -626,7 +626,9 @@ fn svc_resume_thread(frame: &mut crate::user::TrapFrame, args: &[u32]) {
     }
 }
 
-/// Floor for the never-called imports: zero, no side effects.
+/// Floor for the never-called imports: zero, no side effects. (The export spec's floor kind; no
+/// export is one.)
+#[allow(dead_code)]
 fn svc_floor_zero(frame: &mut crate::user::TrapFrame, _args: &[u32]) {
     frame.eax = 0;
 }
@@ -685,9 +687,10 @@ mod tests {
     fn the_registry_numbers_from_its_base() {
         assert_eq!(
             SERVICES.len(),
-            27,
-            "the served surface, less kernel32's natives (the last error, the current process, \
-             the console and start-up calls, and the locale group and clock)"
+            25,
+            "the kernel's served surface, less kernel32's natives (the last error, the current process, \
+             the console and start-up calls, the locale group and clock, the exception filter) \
+             and ntdll's RtlUnwind"
         );
         assert_eq!(WIN32_SERVICE_BASE, 0x2000);
         assert_eq!(SERVICES[0].0, "ExitProcess");
@@ -837,16 +840,15 @@ mod tests {
         assert_eq!(frame.eax, 1);
     }
 
-    /// The never-called imports resolve to their floor handlers (RtlUnwind ntdll's, kernel32
-    /// forwarding to it), and the console floors answer with their decided shapes (no path the
-    /// corpus takes reaches them).
+    /// The served shapes no path the corpus takes reaches answer with their decided values, and no
+    /// export is a floor any more (UnhandledExceptionFilter is kernel32's code and RtlUnwind
+    /// ntdll's).
     #[test]
     fn never_called_shapes_resolve_to_their_floors() {
-        const NEVER_CALLED_ZERO: [&str; 2] = ["UnhandledExceptionFilter", "RtlUnwind"];
         let floor = |name: &str| SERVICES.iter().find(|&&(n, ..)| n == name).unwrap().2;
-        for name in NEVER_CALLED_ZERO {
-            assert_eq!(floor(name) as usize, svc_floor_zero as usize, "{name}");
-        }
+        assert!(SERVICES
+            .iter()
+            .all(|&(_, _, handler)| handler as usize != svc_floor_zero as usize));
         assert_eq!(floor("VirtualFree") as usize, svc_virtual_free as usize);
         assert_eq!(
             floor("SetFilePointer") as usize,

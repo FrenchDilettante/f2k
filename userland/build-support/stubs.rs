@@ -77,10 +77,9 @@ fn build_dll(dll: &str, base: u32, asm_sources: &[&str]) {
         specs.iter().map(|(name, spec)| (*name, spec)).collect();
     exportgen::check_together(&specs).unwrap_or_else(|e| panic!("the export specs disagree: {e}"));
 
-    println!(
-        "cargo:rerun-if-changed={}",
-        repo.join("kernel/src/user/syscall.rs").display()
-    );
+    for relative in ["kernel/src/user/syscall.rs", "kernel/src/user/teb.rs"] {
+        println!("cargo:rerun-if-changed={}", repo.join(relative).display());
+    }
     let constants = exportgen::abi::kernel_constants(&repo).unwrap_or_else(|e| panic!("{e}"));
     std::fs::write(out.join("consts.s"), exportgen::abi::consts_s(&constants)).unwrap();
     std::fs::write(out.join("stubs.s"), exportgen::emit::dll_stubs(&specs, dll)).unwrap();

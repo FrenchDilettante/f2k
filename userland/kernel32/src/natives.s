@@ -1,7 +1,8 @@
 # kernel32's native exports: functions that run entirely in user mode, as Windows 2000's own
 # kernel32 runs them. They read and write the calling thread's TEB through FS (the NT layout:
-# ClientId at 20h, LastErrorValue at 34h), return the pseudo-handles, or run the locked
-# read-modify-write sequences (atomic on any processor, with no kernel transition). Every export is
+# ClientId at 20h, LastErrorValue at 34h, the PEB at 30h), return the pseudo-handles, run the locked
+# read-modify-write sequences (atomic on any processor, with no kernel transition), or keep the
+# top-level exception filter. Every export is
 # stdcall: its `ret` pops its argument block.
 .text
 
@@ -90,3 +91,32 @@ _f2k_export_InterlockedCompareExchange:
     mov eax, dword ptr [esp+12]
     lock cmpxchg dword ptr [ecx], edx
     ret 12
+
+# The top-level exception filter lives in the process's PEB page at TOP_LEVEL_FILTER (an offset
+# past the PEB proper). The previous filter is returned.
+.p2align 4
+.globl _f2k_export_SetUnhandledExceptionFilter
+_f2k_export_SetUnhandledExceptionFilter:
+    mov eax, dword ptr [esp+4]
+    mov ecx, dword ptr fs:[0x30]
+    xchg dword ptr [ecx+TOP_LEVEL_FILTER], eax
+    ret 4
+
+# The default unhandled-exception verdict, as Windows 2000 gives it with no debugger and the fault
+# dialog suppressed: the top-level filter's verdict when it has one other than continue search,
+# else execute the handler (the process ends with the exception's code).
+.p2align 4
+.globl _f2k_export_UnhandledExceptionFilter
+_f2k_export_UnhandledExceptionFilter:
+    mov ecx, dword ptr fs:[0x30]
+    mov eax, dword ptr [ecx+TOP_LEVEL_FILTER]
+    test eax, eax
+    jz .Lfilter_execute
+    push dword ptr [esp+4]
+    call eax
+    test eax, eax
+    jnz .Lfilter_done
+.Lfilter_execute:
+    mov eax, 1
+.Lfilter_done:
+    ret 4

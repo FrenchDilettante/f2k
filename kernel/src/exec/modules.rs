@@ -16,9 +16,13 @@
 //! are sequential placeholders, not the real system's.
 //!
 //! The kernel's loader snaps the image's imports through this table (`exec::loader`), the kernel
-//! finds here the entry point it sends a returning child thread to (ntdll's thread-exit
-//! trampoline), and kernel32's served GetProcAddress and LoadLibraryA look the system DLLs up here.
+//! finds here the entry points it sends user code to (kernel32's BaseProcessStartThunk for a main
+//! thread, ntdll's KiUserExceptionDispatcher for an exception, ntdll's thread-exit trampoline for a
+//! returning child thread), and kernel32's served GetProcAddress and LoadLibraryA look the system
+//! DLLs up here.
 //! No other DLL loads.
+
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use crate::exec::pe::{
     same_module, split_forwarder, Export, Exports, ForwardTarget, Image, Unresolved,
@@ -57,7 +61,6 @@ pub static SYSTEM_DLLS: [SystemDll; 2] = [
 
 /// ntdll's and kernel32's places in [`SYSTEM_DLLS`].
 pub const NTDLL: usize = 0;
-#[cfg(test)]
 pub const KERNEL32: usize = 1;
 
 /// A DLL file's SizeOfImage, at build time (the system regions reserve the images' extents).
@@ -139,6 +142,43 @@ pub fn kernel32_export(name: &str) -> Option<u32> {
 /// value. An F2K-internal export, found by name.
 pub fn thread_exit_trampoline() -> u32 {
     resolve_in(NTDLL, "F2kThreadExitTrampoline", 0).expect("ntdll exports F2kThreadExitTrampoline")
+}
+
+/// An entry point the kernel redirects user code to, resolved once into `slot` (0: not yet).
+/// Resolving one parses a DLL's export directory, which takes most of a clock tick in the
+/// unoptimized kernel; the DLLs are embedded and mapped at their fixed bases, so an address holds
+/// for the whole boot.
+fn redirect_target(slot: &AtomicU32, resolve: impl FnOnce() -> u32) -> u32 {
+    match slot.load(Ordering::Relaxed) {
+        0 => {
+            let address = resolve();
+            slot.store(address, Ordering::Relaxed);
+            address
+        }
+        address => address,
+    }
+}
+
+/// kernel32's BaseProcessStartThunk (userland/kernel32/src/start.s), where every image's main thread
+/// starts (EAX its entry point; see `user::main_thread_start`). An F2K-internal export: Windows
+/// 2000's kernel32 exports none of its start thunks, its CreateProcess finding them in its own code
+/// — F2K's kernel creates the process, and finds it by name.
+pub fn process_start_thunk() -> u32 {
+    static RESOLVED: AtomicU32 = AtomicU32::new(0);
+    redirect_target(&RESOLVED, || {
+        resolve_in(KERNEL32, "BaseProcessStartThunk", 0)
+            .expect("kernel32 exports BaseProcessStartThunk")
+    })
+}
+
+/// ntdll's KiUserExceptionDispatcher: an exception's dispatch enters user mode there (see
+/// [`crate::user::seh`]).
+pub fn exception_dispatcher() -> u32 {
+    static RESOLVED: AtomicU32 = AtomicU32::new(0);
+    redirect_target(&RESOLVED, || {
+        resolve_in(NTDLL, "KiUserExceptionDispatcher", 0)
+            .expect("ntdll exports KiUserExceptionDispatcher")
+    })
 }
 
 /// The system DLL a module name names: a path or a bare file name, in any case, the extension

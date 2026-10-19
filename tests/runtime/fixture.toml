@@ -9,7 +9,6 @@ seh = ["int 3: handled yes code 0x80000003 flags 0 params 3 info 0 *"]
 
 # The blocks this kernel does not pass yet, each with the increment that enables it.
 [pending]
-seh = "B3: exceptions"
-unhandled = "B3: exceptions"
+seh = "B4: virtual memory and sections (its last case, the stack overflow, needs the stack's guard page and growth: every other line passes)"
 env = "B6: the heap, Local/Global and the environment"
 module = "B10: modules"

@@ -129,9 +129,10 @@ fn the_system_dlls_serve_the_registry() {
             .unwrap();
         assert_eq!(found, arg_bytes, "{name}");
     }
-    // The natives: kernel32's own code (the trivial ones its assembly; the console, start-up,
-    // locale and clock calls its Rust).
-    assert_eq!(NATIVE_EXPORTS.len(), 59);
+    // The natives: kernel32's own code (the trivial ones, the exception filter and the pointer
+    // probes its assembly; the console, start-up, locale and clock calls and RaiseException its
+    // Rust). The internal start thunk is not among them.
+    assert_eq!(NATIVE_EXPORTS.len(), 66);
     for &(name, _) in &NATIVE_EXPORTS {
         let address = kernel32_export(name).unwrap_or_else(|| panic!("kernel32 exports no {name}"));
         addresses.push(address);
@@ -144,6 +145,45 @@ fn the_system_dlls_serve_the_registry() {
         SERVICES.len() + NATIVE_EXPORTS.len() + 1,
         "every export has its own code"
     );
+}
+
+/// The entry points the kernel sends user code to keep their protocols: ntdll's exception
+/// dispatcher calls its body with the two pointers the kernel left on top (it never returns: a
+/// `ud2` follows); kernel32's start thunk clears EBP and pushes the main thread's entry point
+/// under a zero return address, then jumps to its body. The exception-filter natives address the
+/// top-level filter's slot in the PEB page.
+#[test]
+fn the_entry_points_keep_their_protocols() {
+    let dispatcher = bytes_at(exception_dispatcher());
+    assert_eq!(dispatcher[0], 0xE8, "KiUserExceptionDispatcher: a call");
+    assert_eq!(
+        &dispatcher[5..7],
+        &[0x0F, 0x0B],
+        "KiUserExceptionDispatcher: then ud2"
+    );
+    assert_eq!(
+        Some(exception_dispatcher()),
+        resolve("ntdll.dll", "KiUserExceptionDispatcher").ok()
+    );
+    let thunk = bytes_at(process_start_thunk());
+    assert_eq!(
+        &thunk[..5],
+        &[0x31, 0xED, 0x50, 0x6A, 0x00],
+        "BaseProcessStartThunk"
+    );
+    assert!(
+        matches!(thunk[5], 0xE9 | 0xEB),
+        "BaseProcessStartThunk: a jump"
+    );
+    assert_eq!(
+        Some(process_start_thunk()),
+        kernel32_export("BaseProcessStartThunk")
+    );
+    let slot = crate::user::teb::peb_offset::TOP_LEVEL_FILTER.to_le_bytes();
+    for name in ["SetUnhandledExceptionFilter", "UnhandledExceptionFilter"] {
+        let body = bytes_at(kernel32_export(name).unwrap());
+        assert!(body[..32].windows(4).any(|w| w == slot), "{name}");
+    }
 }
 
 /// Every unimplemented export has its own generated body: the last error set to
@@ -187,7 +227,7 @@ fn the_thread_exit_trampoline_keeps_its_protocol() {
 
 /// The corpus binaries (the smokes in the root directory, the sectioned fixtures in \CORPUS): the
 /// import surface kernel32 exports.
-const CORPUS: [(&str, &[u8]); 20] = [
+const CORPUS: [(&str, &[u8]); 19] = [
     ("bare", include_bytes!("../../../../tests/bare/bare.exe")),
     ("files", include_bytes!("../../../../tests/files/files.exe")),
     (
@@ -229,7 +269,6 @@ const CORPUS: [(&str, &[u8]); 20] = [
         "bsscheck",
         include_bytes!("../../../../tests/bsscheck/bsscheck.exe"),
     ),
-    ("crash", include_bytes!("../../../../tests/crash/crash.exe")),
     (
         "fileio",
         include_bytes!("../../../../tests/fileio/fileio.exe"),

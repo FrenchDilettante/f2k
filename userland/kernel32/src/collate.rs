@@ -239,7 +239,7 @@ mod tests {
         assert_eq!(cmp("a b", "ab", NORM_IGNORESYMBOLS), CSTR_EQUAL);
     }
 
-    /// The word sort's last level (K32-9): the left-out characters by position, then by their own
+    /// The word sort's last level: the left-out characters by position, then by their own
     /// weight — the apostrophe before the hyphen — so "co'op" and "co-op" differ; a string with
     /// fewer of them, the rest alike, sorts first.
     #[test]

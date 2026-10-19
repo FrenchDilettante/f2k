@@ -74,9 +74,9 @@ The fixtures:
   bad buffer pointers to `WriteFile`, code run from `.data`, and
   fifteen faults (NULL, `.rdata`, code, kernel addresses, divide by
   zero, `ud2`, `int3`, `hlt`, `cli`, `in`, `into`, stack overflow),
-  each ending the process with its NTSTATUS. Replaces `bsscheck` and
-  `crash` once its blocks pass (B3: the multi-process suite then runs
-  `bare` in their place).
+  each ending the process with its NTSTATUS. Replaces `crash` (the
+  multi-process suite runs `bare null-write` in its place) and
+  `bsscheck` once its default run passes.
 - `runtime` - the process environment: argv, version, modules and
   `GetProcAddress`/`LoadLibraryA`, the TEB/PEB fields compilers and
   runtimes read, last-error semantics and `FormatMessageA`, the
@@ -101,17 +101,17 @@ The fixtures:
   hundreds of handles), TLS slots and `__declspec(thread)`, per-thread
   last error/errno/FPU/SEH, `_beginthreadex`, and named-only
   `mainexit`/`procexit`. Built with `/MT`. Replaces the `thread`,
-  `respawn` and `suspend` smokes once its blocks pass (B7).
+  `respawn` and `suspend` smokes once their blocks pass.
 - `sync` - events (`PulseEvent`, named objects), semaphores, mutexes
   and abandonment, `WaitForMultipleObjects`, user APCs, critical
   sections, interlocked operations, handle duplication and closing,
   and `pingpong` kept as a section (plus a `SignalObjectAndWait`
   variant). Built with `/MT`. Replaces the `pingpong` smoke once its
-  blocks pass (B5).
+  blocks pass.
 - `sched` - sleeps and timed waits in bands, the clocks, waitable
   timers, round-robin, preemption, yielding, the wake boost,
   suspension, and the starvation boost; pinned to one CPU. Built with
-  `/MT`. Replaces the `sleep` (B5) and `spin` (B7) smokes once its
+  `/MT`. Replaces the `sleep` and `spin` smokes once their
   blocks pass (`suspend` goes with `threads`). Gated. Its `yield` capture line `Sleep(10)
   does: yes` comes from real hardware: the VirtualBox capture VM runs
   at 100% CPU (a normal-priority thread yielding with `Sleep(0)`), so
@@ -124,7 +124,7 @@ The fixtures:
   mappings, concurrent readers. Captured on a local FAT32 volume, as
   F2K's boot volume is (run `files/setup.bat` once on the real machine:
   attributes git cannot carry). Gated.
-  Replaces the `fileio` smoke once its blocks pass (B8).
+  Replaces the `fileio` smoke once its blocks pass.
 - `fswrite` - the write side (create dispositions, writes, truncation,
   share modes, rename/copy/delete, directories, file times, CRT
   writes) in a scratch directory, captured on a local FAT32 volume.
@@ -252,9 +252,8 @@ in `kernel/test_kernel.py`; `exit0`, `ret0` and `hello` carry a
   window, paints "Hello, world!" once with `TextOut`, then closes
   itself and exits 0; the first test to import user32.dll and
   gdi32.dll.
-- `bsscheck` and `crash` - the multi-process suite's image checks
-  (`.bss` zeroed, run twice) and its NULL-write fault (until `bare`
-  replaces them, B3).
+- `bsscheck` - the multi-process suite's image checks (`.bss` zeroed,
+  run twice), until `bare`'s default run replaces it.
 - `pingpong`, `sleep`, `spin`, `suspend`, `respawn`, `thread` - the
   scheduler smokes, one per scheduler stage: the blocking-wait
   alternation, the timer table, preemption, suspension, thread-slot
@@ -289,9 +288,11 @@ has no extension); the program's GetCommandLineA reports the whole
 text verbatim and its GetModuleFileNameA the volume path. Without a
 command line the kernel runs `exit0`. The `run-process-suite` feature
 (the multi-process case) runs the sequence `exit0`, `ret0`,
-`bsscheck`, `bsscheck`, `crash`, `exit0` in one boot: the second
-`bsscheck` catches frames reused without re-zeroing, `crash` a fault
-the kernel must contain before the last `exit0` runs. Each boot
+`bsscheck`, `bsscheck`, `bare null-write`, `exit0` in one boot: the
+second `bsscheck` catches frames reused without re-zeroing, `bare
+null-write` a fault that must end its process (through kernel32's
+start frame, with the access violation's code) before the last `exit0`
+runs. Each boot
 prints the observed process exit code on COM1 and then the teardown
 audit (`F2K: teardown audit: frame database ok, kernel heap ok`), which
 the corpus comparison waits for. Host unit tests still read the

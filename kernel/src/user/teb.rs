@@ -55,9 +55,14 @@ pub mod peb_offset {
     /// CSDVersion: the service pack's name, a UNICODE_STRING (GetVersionExA's szCSDVersion; its
     /// buffer on the process parameters' pages, `user::params::CSD_VERSION_BUFFER`).
     pub const CSD_VERSION: u32 = 0x1DC;
+    /// kernel32's top-level exception filter (SetUnhandledExceptionFilter's): past the PEB proper on
+    /// its page; kernel32's natives reach it through FS (the system DLLs' assembly reads the value
+    /// off this line, see tools/exportgen's `abi`).
+    pub const TOP_LEVEL_FILTER: u32 = 0x800;
     // Past the PEB proper (0x1E8 bytes), the system DLLs' own data (they keep no writable
-    // sections): kernel32's narrow command line and startup information (0x8A0, 0x8A4: pointers,
-    // see `user::params`). The page starts zeroed; the kernel writes none of them.
+    // sections): kernel32's top-level filter (0x800, above), its narrow command line and startup
+    // information (0x8A0, 0x8A4: pointers, see `user::params`). The page starts zeroed; the kernel
+    // writes none of them.
 }
 
 /// The empty SEH chain's terminator: the frame link Windows starts every thread with.

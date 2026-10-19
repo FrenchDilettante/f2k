@@ -2,5 +2,9 @@
 include!("../build-support/stubs.rs");
 
 fn main() {
-    build_dll("kernel32", 0x7C4E_0000, &["src/natives.s"]);
+    build_dll(
+        "kernel32",
+        0x7C4E_0000,
+        &["src/natives.s", "src/start.s", "src/probe.s"],
+    );
 }

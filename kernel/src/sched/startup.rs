@@ -29,25 +29,35 @@ pub struct StartParams {
     pub user: Option<UserStart>,
 }
 
-/// A user thread's initial user-mode state: the entry point and the stack top it runs on.
+/// A user thread's initial user-mode state: the entry point and the stack top it runs on, and the
+/// registers its start sets (the rest zero): a main thread's EAX names the image's entry point for
+/// kernel32's BaseProcessStartThunk.
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub struct UserStart {
     pub eip: u32,
     pub esp: u32,
+    pub eax: u32,
+    pub ebx: u32,
+    pub ecx: u32,
+    pub edx: u32,
+    pub esi: u32,
+    pub edi: u32,
+    pub ebp: u32,
 }
 
-/// The planted trap frame for a user thread's initial state: GP slots zeroed (kernel pointers must
-/// not leak into user mode), no vector or error code, RPL 3 in both segment slots, interrupts
-/// enabled.
+/// The planted trap frame for a user thread's initial state: the GP slots the start gives (zero
+/// otherwise: kernel pointers must not leak into user mode), no vector or error code, RPL 3 in both
+/// segment slots, interrupts enabled.
 pub fn user_trap_frame(user: &UserStart) -> TrapFrame {
     TrapFrame {
-        edi: 0,
-        esi: 0,
-        ebp: 0,
+        edi: user.edi,
+        esi: user.esi,
+        ebp: user.ebp,
         esp: 0,
-        ebx: 0,
-        edx: 0,
-        ecx: 0,
-        eax: 0,
+        ebx: user.ebx,
+        edx: user.edx,
+        ecx: user.ecx,
+        eax: user.eax,
         vector: 0,
         error_code: 0,
         eip: user.eip,
@@ -218,6 +228,7 @@ mod tests {
             &params(Some(UserStart {
                 eip: 0x0040_1234,
                 esp: 0x0030_8000,
+                ..Default::default()
             })),
             STARTUP,
         );
@@ -254,6 +265,7 @@ mod tests {
             &params(Some(UserStart {
                 eip: 0x0040_1234,
                 esp: 0x0030_8000,
+                ..Default::default()
             })),
             STARTUP,
         );
@@ -280,6 +292,7 @@ mod tests {
         let frame = user_trap_frame(&UserStart {
             eip: 0x0040_1234,
             esp: 0x0030_8000,
+            ..Default::default()
         });
         assert_eq!(frame.eip, 0x0040_1234);
         assert_eq!(frame.user_esp, 0x0030_8000);
@@ -296,6 +309,17 @@ mod tests {
             assert_eq!(gp, 0);
         }
         assert_eq!(core::mem::size_of::<TrapFrame>(), 60);
+        let frame = user_trap_frame(&UserStart {
+            eip: 0x7C4E_1000,
+            esp: 0x0030_0FFC,
+            eax: 0x0040_1000,
+            ..Default::default()
+        });
+        assert_eq!(
+            frame.eax, 0x0040_1000,
+            "the start's EAX: a main thread's entry point"
+        );
+        assert_eq!((frame.ebx, frame.edi), (0, 0));
     }
 
     // A4: the user-context flag and the argument words.
@@ -310,6 +334,7 @@ mod tests {
             &params(Some(UserStart {
                 eip: 0x0040_1234,
                 esp: 0x0030_8000,
+                ..Default::default()
             })),
             STARTUP,
         );
@@ -356,6 +381,7 @@ mod tests {
             &params(Some(UserStart {
                 eip: 0x0040_1234,
                 esp: 0x0030_8000,
+                ..Default::default()
             })),
             STARTUP,
         );
@@ -385,6 +411,7 @@ mod tests {
                 &params(Some(UserStart {
                     eip: 0x0040_1234,
                     esp: 0x0030_8000,
+                    ..Default::default()
                 })),
                 STARTUP,
             );

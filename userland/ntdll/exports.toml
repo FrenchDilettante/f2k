@@ -5,9 +5,9 @@
 # the stub raises the gate on the service's Windows 2000 number, from w2k-services.txt, and the
 # export is there under its Zw name too; the handler is `fn(&mut NtCall, <arguments>) -> NtResult`,
 # the NTSTATUS its answer), its user-mode exports (RtlNtStatusToDosError, the mapping kernel32
-# reports a failed service through), the kernel-served export Windows 2000 places here (RtlUnwind,
-# which kernel32 forwards to), and the F2K-internal entry point the kernel sends a thread to
-# (`internal = true`: not a Windows 2000 export).
+# reports a failed service through; the exception dispatcher and RtlUnwind, which kernel32 forwards
+# to), and the F2K-internal entry point the kernel sends a thread to (`internal = true`: not a
+# Windows 2000 export).
 
 [[group]]
 key = "nt"
@@ -39,15 +39,31 @@ name = "NtTerminateProcess"
 group = "nt"
 args = ["handle ProcessHandle", "u32 ExitStatus"]
 impl = { syscall = "crate::nt::process::terminate_process" }
-note = "the calling process's handle ends it (no other process is reachable); the null handle, ExitProcess's first step, comes with ExitProcess (B7)"
+note = "the calling process's handle ends it (no other process is reachable); the null handle, ExitProcess's first step, comes with ExitProcess"
 unpinned = "kernel32's TerminateProcess is its only caller, and no fixture block calls that (the C runtime's fatal paths do)"
+
+[[export]]
+name = "NtContinue"
+group = "nt"
+args = ["ptr Context", "u32 TestAlert"]
+impl = { syscall = "crate::nt::exception::continue_context" }
+note = "resumes the CONTEXT's control and integer registers (TF honoured, privileged flags masked). The debug and floating-point registers are not restored; TestAlert is ignored until user APCs are delivered through KiUserApcDispatcher"
+pinned_by = ["runtime/seh", "runtime/unhandled"]
+
+[[export]]
+name = "NtRaiseException"
+group = "nt"
+args = ["ptr ExceptionRecord", "ptr Context", "u32 FirstChance"]
+impl = { syscall = "crate::nt::exception::raise_exception" }
+note = "first chance: the records copied below the context's stack pointer and KiUserExceptionDispatcher entered (no debugger); second chance: the process ends with the code (no debugger, no exception port)"
+pinned_by = ["runtime/seh"]
 
 [[export]]
 name = "NtQuerySystemInformation"
 group = "nt"
 args = ["u32 SystemInformationClass", "ptr SystemInformation", "u32 SystemInformationLength", "ptr<u32> ReturnLength"]
 impl = { syscall = "crate::nt::system::query_system_information" }
-note = "answers SystemCurrentTimeZoneInformation (44) alone; the other classes are STATUS_INVALID_INFO_CLASS (the basic, processor and performance classes come with GetSystemInfo, B4)"
+note = "answers SystemCurrentTimeZoneInformation (44) alone; the other classes are STATUS_INVALID_INFO_CLASS (the basic, processor and performance classes come with GetSystemInfo)"
 unpinned = "kernel32's GetTimeZoneInformation is its caller, which no fixture block is known to reach"
 
 [[export]]
@@ -79,10 +95,34 @@ pinned_by = ["files/open"]
 # --- exceptions -----------------------------------------------------------------------------------
 
 [[export]]
+name = "KiUserExceptionDispatcher"
+group = "exceptions"
+args = ["ptr ExceptionRecord", "ptr Context"]
+impl = { native = "KiUserExceptionDispatcher" }
+note = "the kernel enters user mode here with an exception's records on the stack: the search (RtlDispatchException), then NtContinue or the second chance"
+pinned_by = ["runtime/seh", "runtime/unhandled", "bare/null-write"]
+
+[[export]]
+name = "RtlRaiseException"
+group = "exceptions"
+args = ["ptr ExceptionRecord"]
+impl = { native = "RtlRaiseException" }
+pinned_by = ["runtime/seh"]
+
+[[export]]
+name = "RtlRaiseStatus"
+group = "exceptions"
+args = ["u32 Status"]
+impl = { native = "RtlRaiseStatus" }
+unpinned = "the dispatcher raises through it only when NtContinue or NtRaiseException fails, which no fixture block reaches"
+
+[[export]]
 name = "RtlUnwind"
 group = "exceptions"
 args = ["ptr TargetFrame", "u32 TargetIp", "ptr ExceptionRecord", "u32 ReturnValue"]
-impl = { floor = "returns, unwinding nothing: the corpus imports it but never calls it" }
+impl = { native = "RtlUnwind" }
+note = "x86 NT's semantics: TargetIp ignored, the caller resumed through NtContinue; collided unwinds, INVALID_UNWIND_TARGET and BAD_STACK; a NULL target is an exit unwind, then the second chance"
+pinned_by = ["runtime/seh", "runtime/unhandled", "bare/null-write"]
 
 # --- F2K-internal entry points --------------------------------------------------------------------
 

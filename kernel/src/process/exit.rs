@@ -2,7 +2,7 @@
 //! process's end reports on COM1, and what the kernel does once the process is torn down.
 //!
 //! One exit path serves every boot. A thread's return ends the running thread, and the last live
-//! thread's end is the process's end. The exit service and a fault end the process outright:
+//! thread's end is the process's end. NtTerminateProcess and a fault end the process outright:
 //! every other thread is terminated first, without running again, then the calling thread. A
 //! thread inside a critical region (holding the volume and its drive) is the exception: it runs on
 //! to the region's end and ends itself there, and the process's end passes to the last such
@@ -16,18 +16,82 @@ use core::fmt;
 pub struct Fault {
     /// The CPU exception vector.
     pub vector: u32,
-    /// The NTSTATUS the fault raises: the process's exit code, as an unhandled exception's code is
-    /// on Windows (the access violation's for every fault, until the exception dispatch tells the
-    /// traps apart).
+    /// The NTSTATUS the fault raises (see [`fault_status`]): the process's exit code, as an
+    /// unhandled exception's code is on Windows.
     pub status: u32,
     /// Whether the fault was raised inside the kernel's copy of user memory (a bad user pointer
     /// passed to a service) rather than by user code itself; either way it is the process's.
     pub in_user_copy: bool,
 }
 
+/// The vector a raised exception's end reports: it came from RaiseException, not a CPU trap.
+pub const RAISED_VECTOR: u32 = u32::MAX;
+
 /// The exception codes the faults raise (the documented NTSTATUS values).
 pub mod status {
     pub const ACCESS_VIOLATION: u32 = 0xC000_0005;
+    pub const ILLEGAL_INSTRUCTION: u32 = 0xC000_001D;
+    pub const ARRAY_BOUNDS_EXCEEDED: u32 = 0xC000_008C;
+    pub const FLOAT_INVALID_OPERATION: u32 = 0xC000_0090;
+    pub const INTEGER_DIVIDE_BY_ZERO: u32 = 0xC000_0094;
+    pub const INTEGER_OVERFLOW: u32 = 0xC000_0095;
+    pub const PRIVILEGED_INSTRUCTION: u32 = 0xC000_0096;
+    /// Raised when the stack's guard page cannot grow it.
+    #[allow(dead_code)]
+    pub const STACK_OVERFLOW: u32 = 0xC000_00FD;
+    pub const FLOAT_MULTIPLE_TRAPS: u32 = 0xC000_02B5;
+    pub const GUARD_PAGE_VIOLATION: u32 = 0x8000_0001;
+    pub const DATATYPE_MISALIGNMENT: u32 = 0x8000_0002;
+    pub const BREAKPOINT: u32 = 0x8000_0003;
+    pub const SINGLE_STEP: u32 = 0x8000_0004;
+}
+
+/// The exception code a user-mode trap raises, as Windows 2000's trap handlers map them. A general
+/// protection fault is a privileged instruction when the faulting instruction is one (`privileged`,
+/// see [`is_privileged_instruction`]) and an access violation otherwise; a page fault is an access
+/// violation (the stack overflow is decided before this, from the stack's own bookkeeping).
+pub fn fault_status(vector: u32, privileged: bool) -> u32 {
+    match vector {
+        0 => status::INTEGER_DIVIDE_BY_ZERO,
+        1 => status::SINGLE_STEP,
+        3 => status::BREAKPOINT,
+        4 => status::INTEGER_OVERFLOW,
+        5 => status::ARRAY_BOUNDS_EXCEEDED,
+        6 => status::ILLEGAL_INSTRUCTION,
+        13 if privileged => status::PRIVILEGED_INSTRUCTION,
+        16 => status::FLOAT_INVALID_OPERATION,
+        17 => status::DATATYPE_MISALIGNMENT,
+        19 => status::FLOAT_MULTIPLE_TRAPS,
+        _ => status::ACCESS_VIOLATION,
+    }
+}
+
+/// Whether the instruction starting at `code` (its first bytes) is one ring 3 may not execute: the
+/// I/O instructions (IOPL is 0), HLT, CLI/STI, and the system-register group. Prefixes are skipped.
+pub fn is_privileged_instruction(code: &[u8]) -> bool {
+    const PREFIXES: [u8; 11] = [
+        0x26, 0x2E, 0x36, 0x3E, 0x64, 0x65, 0x66, 0x67, 0xF0, 0xF2, 0xF3,
+    ];
+    let mut bytes = code
+        .iter()
+        .copied()
+        .skip_while(|byte| PREFIXES.contains(byte));
+    match bytes.next() {
+        // in/out imm8, in/out dx, ins/outs, hlt, cli, sti.
+        Some(0xE4..=0xE7 | 0xEC..=0xEF | 0x6C..=0x6F | 0xF4 | 0xFA | 0xFB) => true,
+        // lgdt/lidt/lmsw/invlpg (0F 01 /2 /3 /6 /7), lldt/ltr (0F 00 /2 /3), clts, invd, wbinvd,
+        // mov to and from control and debug registers, wrmsr, rdmsr.
+        Some(0x0F) => match bytes.next() {
+            Some(0x01) => matches!(
+                bytes.next().map(|modrm| (modrm >> 3) & 7),
+                Some(2 | 3 | 6 | 7)
+            ),
+            Some(0x00) => matches!(bytes.next().map(|modrm| (modrm >> 3) & 7), Some(2 | 3)),
+            Some(0x06 | 0x08 | 0x09 | 0x20..=0x23 | 0x30 | 0x32) => true,
+            _ => false,
+        },
+        _ => false,
+    }
 }
 
 /// Why a thread ends.
@@ -35,7 +99,8 @@ pub mod status {
 pub enum ThreadEnd {
     /// The thread's return (its exit trampoline), with the exit status.
     Exit(i32),
-    /// The exit service: the process ends with this exit code, all its threads with it.
+    /// The exit service (kernel32's ExitProcess, NtTerminateProcess): the process ends with this
+    /// exit code, all its threads with it.
     ExitProcess(u32),
     /// A fault raised on the thread's behalf.
     Fault(Fault),
@@ -54,8 +119,8 @@ pub enum ProcessEnd {
 }
 
 impl ProcessEnd {
-    /// The process's exit code, its object's on signaling (GetExitCodeProcess's answer): the exit
-    /// code, or the fault's exception code, as an unhandled exception's is on Windows.
+    /// The process's exit code (GetExitCodeProcess's answer, and its object's on signaling): the
+    /// exit code, or the fault's exception code, as an unhandled exception's is on Windows.
     pub fn exit_status(self) -> u32 {
         match self {
             ProcessEnd::Exited(code) => code,
@@ -75,7 +140,7 @@ pub struct ExitPlan {
 
 /// Route a thread's end, given how many other threads of its process are still attached. A
 /// thread's return ends only its thread while others live on, and the process — with that status
-/// as its code — from the last thread; the exit service and a fault end the process whatever lives
+/// as its code — from the last thread; NtTerminateProcess and a fault end the process whatever lives
 /// on, terminating the others first.
 pub fn plan(end: ThreadEnd, others: u16) -> ExitPlan {
     match end {
@@ -137,10 +202,15 @@ impl fmt::Display for EndReport {
                  halting",
                 fault.status
             ),
+            (None, ProcessEnd::Faulted(fault)) if fault.vector == RAISED_VECTOR => write!(
+                out,
+                "F2K: user process ended by fault (raised exception, exit code={}); halting",
+                fault.status
+            ),
             (None, ProcessEnd::Faulted(fault)) => write!(
                 out,
-                "F2K: user process ended by fault (vector {}); halting",
-                fault.vector
+                "F2K: user process ended by fault (vector {}, exit code={}); halting",
+                fault.vector, fault.status
             ),
             (Some((index, name)), ProcessEnd::Exited(code)) => write!(
                 out,
@@ -148,8 +218,8 @@ impl fmt::Display for EndReport {
             ),
             (Some((index, name)), ProcessEnd::Faulted(fault)) => write!(
                 out,
-                "F2K: process {index} ({name}) ended by fault (vector {})",
-                fault.vector
+                "F2K: process {index} ({name}) ended by fault (vector {}, exit code={})",
+                fault.vector, fault.status
             ),
         }
     }
@@ -281,6 +351,65 @@ mod tests {
         in_user_copy: true,
     };
 
+    /// A process's exit code: its last thread's or ExitProcess's code, or the ending fault's
+    /// exception code (what its object signals with).
+    #[test]
+    fn a_process_exits_with_its_code_or_its_fault() {
+        assert_eq!(ProcessEnd::Exited(3).exit_status(), 3);
+        assert_eq!(ProcessEnd::Faulted(PAGE_FAULT).exit_status(), 0xC000_0005);
+    }
+
+    /// The trap codes, as Windows 2000 raises them (the bare fixture's capture: an access
+    /// violation 0xC0000005, divide by zero 0xC0000094, ud2 0xC000001D, int3 0x80000003, hlt/cli/in
+    /// 0xC0000096, into 0xC0000095).
+    #[test]
+    fn faults_raise_their_exception_codes() {
+        assert_eq!(fault_status(14, false), 0xC000_0005);
+        assert_eq!(fault_status(0, false), 0xC000_0094);
+        assert_eq!(fault_status(6, false), 0xC000_001D);
+        assert_eq!(fault_status(3, false), 0x8000_0003);
+        assert_eq!(fault_status(13, true), 0xC000_0096);
+        assert_eq!(fault_status(13, false), 0xC000_0005);
+        assert_eq!(fault_status(4, false), 0xC000_0095);
+        assert_eq!(status::STACK_OVERFLOW, 0xC000_00FD);
+    }
+
+    /// The privileged-instruction decode: the fixture's hlt, cli and `in al, dx`, the rest of the
+    /// group, prefixes skipped; ordinary instructions are not.
+    #[test]
+    fn privileged_instructions_are_recognized() {
+        for code in [
+            &[0xF4][..],
+            &[0xFA],
+            &[0xFB],
+            &[0xEC],
+            &[0xE4, 0x60],
+            &[0xEE],
+            &[0x66, 0xED],
+            &[0xF3, 0x6C],
+            &[0x0F, 0x01, 0x15],
+            &[0x0F, 0x01, 0x38],
+            &[0x0F, 0x00, 0x18],
+            &[0x0F, 0x20, 0xC0],
+            &[0x0F, 0x22, 0xD8],
+            &[0x0F, 0x30],
+            &[0x0F, 0x06],
+        ] {
+            assert!(is_privileged_instruction(code), "{code:02X?}");
+        }
+        for code in [
+            &[0x8B, 0x00][..],
+            &[0xCD, 0x2E],
+            &[0x0F, 0x01, 0x05],
+            &[0x0F, 0x0B],
+            &[0x0F, 0xA2],
+            &[0x66],
+            &[],
+        ] {
+            assert!(!is_privileged_instruction(code), "{code:02X?}");
+        }
+    }
+
     /// A thread's return ends only its thread while others live on, and the process — with its
     /// status as the exit code — from the last thread. It never terminates anyone else.
     #[test]
@@ -306,7 +435,7 @@ mod tests {
         );
     }
 
-    /// The exit service ends the process from any thread, with its own code: the others are
+    /// NtTerminateProcess ends the process from any thread, with its own code: the others are
     /// terminated first when there are any — the code is the caller's, never a survivor's.
     #[test]
     fn the_exit_service_ends_the_process_from_any_thread() {
@@ -361,7 +490,7 @@ mod tests {
         );
         assert_eq!(
             line(ProcessEnd::Faulted(PAGE_FAULT)),
-            "F2K: user process ended by fault (vector 14); halting"
+            "F2K: user process ended by fault (vector 14, exit code=3221225477); halting"
         );
         assert_eq!(
             line(ProcessEnd::Faulted(COPY_FAULT)),
@@ -386,12 +515,12 @@ mod tests {
             "F2K: process 1 (exit0) exited normally (exit code=0)"
         );
         assert_eq!(
-            line(ProcessEnd::Faulted(PAGE_FAULT), (5, "crash")),
-            "F2K: process 5 (crash) ended by fault (vector 14)"
+            line(ProcessEnd::Faulted(PAGE_FAULT), (5, "bare")),
+            "F2K: process 5 (bare) ended by fault (vector 14, exit code=3221225477)"
         );
         assert_eq!(
             line(ProcessEnd::Faulted(COPY_FAULT), (2, "ret0")),
-            "F2K: process 2 (ret0) ended by fault (vector 14)"
+            "F2K: process 2 (ret0) ended by fault (vector 14, exit code=3221225477)"
         );
         assert_eq!(
             AuditReport {
@@ -485,14 +614,6 @@ mod tests {
         );
     }
 
-    /// The process's exit code: an exit's own code, and a fault's exception code (the access
-    /// violation's until the fault carries its own).
-    #[test]
-    fn the_exit_status_of_an_end() {
-        assert_eq!(ProcessEnd::Exited(7).exit_status(), 7);
-        assert_eq!(ProcessEnd::Faulted(PAGE_FAULT).exit_status(), 0xC000_0005);
-    }
-
     /// A deferred termination ends its thread with the end it was handed, and the process with it
     /// only from the last thread; it never terminates others.
     #[test]
@@ -518,11 +639,7 @@ mod tests {
     /// a critical region, the process's end passes to them and this thread ends alone.
     #[test]
     fn the_process_end_passes_to_deferred_threads() {
-        let fault = Fault {
-            vector: 14,
-            status: status::ACCESS_VIOLATION,
-            in_user_copy: false,
-        };
+        let fault = PAGE_FAULT;
         for end in [ThreadEnd::ExitProcess(3), ThreadEnd::Fault(fault)] {
             let planned = plan(end, 2);
             assert_eq!(hand_over(planned, 0), (planned, None));

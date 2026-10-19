@@ -68,8 +68,9 @@
 # others in case-insensitive name order.
 #
 # kernel32 exports every function the corpus fixtures import: the kernel's served surface (a kernel stub
-# each), the trivial natives (src/natives.s), RtlUnwind a forwarder into ntdll (as on Windows 2000),
-# and an unimplemented stub for the rest, each naming the increment that builds it.
+# each), its own user-mode code (src/lib.rs, the assembly natives), RtlUnwind a forwarder into ntdll
+# (as on Windows 2000), and an unimplemented stub for the rest, each naming the increment that
+# builds it. One F2K-internal export: BaseProcessStartThunk, where the kernel starts a main thread.
 
 [[group]]
 key = "termination"
@@ -142,8 +143,17 @@ pinned_by = [
 name = "UnhandledExceptionFilter"
 group = "termination"
 args = ["ptr ExceptionInfo"]
-impl = { floor = "EXCEPTION_CONTINUE_SEARCH (zero), no effect: the corpus imports it but never calls it" }
-pinned_by = ["runtime/unhandled"]
+impl = { native = "UnhandledExceptionFilter" }
+note = "the top-level filter's verdict when it gives one other than continue search, else execute the handler (no debugger, the fault dialog suppressed): the process ends with the code"
+pinned_by = ["runtime/unhandled", "bare/null-write"]
+
+[[export]]
+name = "BaseProcessStartThunk"
+group = "termination"
+args = []
+impl = { native = "BaseProcessStartThunk" }
+internal = true
+note = "every image's main thread starts here (EAX its entry point): BaseProcessStart calls it under kernel32's exception frame, its return value to ExitProcess until ExitThread is user code (Windows 2000 calls ExitThread). Windows 2000's kernel32 does not export it; F2K's kernel, which makes the process, finds it by name"
 
 [[export]]
 name = "GetProcAddress"
@@ -194,16 +204,14 @@ pinned_by = [
 name = "RaiseException"
 group = "termination"
 args = ["u32 dwExceptionCode", "u32 dwExceptionFlags", "u32 nNumberOfArguments", "ptr lpArguments"]
-impl = { unimplemented = "B3: exceptions" }
-fails = "void"
+impl = { native = "RaiseException" }
 pinned_by = ["runtime/seh"]
 
 [[export]]
 name = "SetUnhandledExceptionFilter"
 group = "termination"
 args = ["ptr lpTopLevelExceptionFilter"]
-impl = { unimplemented = "B3: exceptions" }
-fails = "NULL"
+impl = { native = "SetUnhandledExceptionFilter" }
 pinned_by = ["runtime/unhandled"]
 
 [[export]]
@@ -219,7 +227,7 @@ name = "GetModuleHandleA"
 group = "termination"
 args = ["strA?[261] lpModuleName"]
 impl = { native = "GetModuleHandleA" }
-note = "the image's handle for a null name (the PEB's ImageBaseAddress); a name waits for the module lists (B10), ERROR_CALL_NOT_IMPLEMENTED until then"
+note = "the image's handle for a null name (the PEB's ImageBaseAddress); a name waits for the module lists, ERROR_CALL_NOT_IMPLEMENTED until then"
 pinned_by = ["memory/image", "runtime/module", "runtime/teb"]
 scenarios = ["get_module_handle_of_null_is_the_image", "get_module_handle_finds_kernel32_by_name"]
 
@@ -307,7 +315,7 @@ args = ["handle hFile"]
 impl = { native = "GetFileType" }
 pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
 scenarios = ["get_file_type_answers_the_device_type"]
-note = "a console handle naming a console object is FILE_TYPE_CHAR (VerifyConsoleIoHandle at the console server); any other handle FILE_TYPE_DISK until NtQueryVolumeInformationFile reports its device (B8)"
+note = "a console handle naming a console object is FILE_TYPE_CHAR (VerifyConsoleIoHandle at the console server); any other handle FILE_TYPE_DISK until NtQueryVolumeInformationFile reports its device"
 
 [[export]]
 name = "SetHandleCount"
@@ -337,7 +345,7 @@ scenarios = [
     "write_file_refuses_other_handles_and_overlapped_requests",
     "write_file_writes_to_the_console",
 ]
-note = "a console handle's bytes go to WriteConsoleA (its OVERLAPPED the reserved argument), as Windows 2000's WriteFile hands them; a file handle's write is NtWriteFile's (B9), ERROR_CALL_NOT_IMPLEMENTED until then"
+note = "a console handle's bytes go to WriteConsoleA (its OVERLAPPED the reserved argument), as Windows 2000's WriteFile hands them; a file handle's write is NtWriteFile's, ERROR_CALL_NOT_IMPLEMENTED until then"
 
 [[export]]
 name = "CloseHandle"
@@ -375,7 +383,7 @@ args = ["handle hFile"]
 impl = { native = "FlushFileBuffers" }
 pinned_by = ["fswrite/write"]
 scenarios = ["flush_file_buffers_succeeds"]
-note = "a console handle's input buffer is flushed at the console server (FlushConsoleInputBuffer: an output handle is ERROR_INVALID_HANDLE), as Windows 2000's; a file handle's flush succeeds until NtFlushBuffersFile (B9)"
+note = "a console handle's input buffer is flushed at the console server (FlushConsoleInputBuffer: an output handle is ERROR_INVALID_HANDLE), as Windows 2000's; a file handle's flush succeeds until NtFlushBuffersFile"
 
 [[export]]
 name = "GetLastError"
@@ -1153,7 +1161,7 @@ group = "threads"
 args = ["handle hSourceProcessHandle", "handle hSourceHandle", "handle hTargetProcessHandle", "ptr<u32> lpTargetHandle", "u32 dwDesiredAccess", "bool bInheritHandle", "u32 dwOptions"]
 impl = { native = "DuplicateHandle" }
 pinned_by = ["files/handles", "sync/handles", "threads/create"]
-note = "a console handle is its server's to duplicate (DuplicateConsoleHandle); any other handle is NtDuplicateObject's (B5), ERROR_CALL_NOT_IMPLEMENTED until then"
+note = "a console handle is its server's to duplicate (DuplicateConsoleHandle); any other handle is NtDuplicateObject's, ERROR_CALL_NOT_IMPLEMENTED until then"
 scenarios = ["console_handles_close_and_duplicate_at_their_server", "duplicate_handle_duplicates_kernel_handles"]
 
 [[export]]
@@ -1836,30 +1844,27 @@ pinned_by = ["memory/sysinfo"]
 name = "IsBadReadPtr"
 group = "virtual-memory"
 args = ["ptr lp", "u32 ucb"]
-impl = { unimplemented = "B4: virtual memory and sections" }
-fails = "never"
+impl = { native = "IsBadReadPtr" }
+note = "a probe under its own exception frame (src/probe.s), as Windows 2000's __try probe: a fault answers TRUE"
 pinned_by = ["memory/protect"]
 
 [[export]]
 name = "IsBadWritePtr"
 group = "virtual-memory"
 args = ["ptr lp", "u32 ucb"]
-impl = { unimplemented = "B4: virtual memory and sections" }
-fails = "never"
+impl = { native = "IsBadWritePtr" }
 pinned_by = ["memory/protect"]
 
 [[export]]
 name = "IsBadCodePtr"
 group = "virtual-memory"
 args = ["ptr lpfn"]
-impl = { unimplemented = "B4: virtual memory and sections" }
-fails = "never"
+impl = { native = "IsBadCodePtr" }
 pinned_by = ["memory/protect"]
 
 [[export]]
 name = "IsBadStringPtrA"
 group = "virtual-memory"
 args = ["ptr lpsz", "u32 ucchMax"]
-impl = { unimplemented = "B4: virtual memory and sections" }
-fails = "never"
+impl = { native = "IsBadStringPtrA" }
 pinned_by = ["memory/protect"]

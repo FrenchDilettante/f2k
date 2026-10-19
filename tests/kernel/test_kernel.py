@@ -53,17 +53,20 @@ IRQ_SMOKE = (
     "F2K: user process exited normally (exit code=0)",
 )
 
-# The multi-process suite's lines: exit0, ret0, bsscheck, bsscheck, crash, exit0 in one boot, each
-# process torn down to the post-boot baseline before the next starts. COM1 protocol (the sequence
-# runner implements it; the shapes parallel the single-process lines with the per-process index
-# and name added):
+# The multi-process suite's lines: exit0, ret0, bsscheck, bsscheck, bare null-write, exit0 in one
+# boot, each process torn down to the post-boot baseline before the next starts. COM1 protocol (the
+# sequence runner implements it; the shapes parallel the single-process lines with the per-process
+# index and name added):
 #   normal exit: F2K: process <i> (<name>) exited normally (exit code=N)
-#   fault:       F2K: process <i> (<name>) ended by fault (vector N)
+#   fault:       F2K: process <i> (<name>) ended by fault (vector N, exit code=X)
 #   teardown:    F2K: process <i> teardown audit: frame database ok, kernel heap ok
-#   summary:     F2K: process suite complete: 6 run, 1 faulted, 0 leaks
+#   summary:     F2K: process suite complete: 6 run, 0 faulted, 0 leaks
 # The teardown line prints after every process (all six), so every index is asserted
-# independently; the crash fixture writes through the unmapped NULL page, which raises #PF
-# (vector 14).
+# independently. bare null-write writes through the unmapped NULL page, which raises #PF (vector
+# 14): the access violation reaches kernel32's BaseProcessStart frame, whose
+# UnhandledExceptionFilter verdict calls ExitProcess with STATUS_ACCESS_VIOLATION — an exit, not a
+# kernel-ended fault (F2K's own expectation, as Windows 2000 builds the start frame; the fixture's
+# exit code is the same either way). bare's default run takes bsscheck's legs once the stack grows.
 PROCESS_SUITE = (
     *BOOTED,
     "F2K: process 1 (exit0) exited normally (exit code=0)",
@@ -74,11 +77,11 @@ PROCESS_SUITE = (
     "F2K: process 3 teardown audit: frame database ok, kernel heap ok",
     "F2K: process 4 (bsscheck) exited normally (exit code=0)",
     "F2K: process 4 teardown audit: frame database ok, kernel heap ok",
-    "F2K: process 5 (crash) ended by fault (vector 14)",
+    "F2K: process 5 (bare) exited normally (exit code=3221225477)",
     "F2K: process 5 teardown audit: frame database ok, kernel heap ok",
     "F2K: process 6 (exit0) exited normally (exit code=0)",
     "F2K: process 6 teardown audit: frame database ok, kernel heap ok",
-    "F2K: process suite complete: 6 run, 1 faulted, 0 leaks",
+    "F2K: process suite complete: 6 run, 0 faulted, 0 leaks",
 )
 
 # What a one-process boot reports once its program has run and its process is gone.
@@ -159,17 +162,6 @@ CASES = (
         expects=(
             "CPU EXCEPTION: vector 13",
             "error code 0x00000038",
-        ),
-    ),
-    Case(
-        name="fault-user",
-        description="a ring-3 fault ends the user process, not the kernel",
-        image="kernel",
-        features=("fault-test-user",),
-        expects=(
-            "F2K: entering ring 3",
-            "CPU EXCEPTION: vector 14",
-            "F2K: user process ended by fault (vector 14); halting",
         ),
     ),
     Case(
@@ -342,7 +334,7 @@ CASES = (
     ),
     *both_paths(
         "process-suite",
-        "sequential multi-process run (exit0, ret0, bsscheck x2, crash, exit0) with per-process teardown audits and a zero-leak summary",
+        "sequential multi-process run (exit0, ret0, bsscheck x2, bare null-write, exit0) with per-process teardown audits and a zero-leak summary",
         features=("run-process-suite",),
         expects=PROCESS_SUITE,
     ),

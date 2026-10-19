@@ -158,6 +158,7 @@ pub fn spawn(
         user: Some(crate::sched::startup::UserStart {
             eip: start,
             esp: stack_top - 8,
+            ..Default::default()
         }),
     };
     // SAFETY: the thread's `initial_stack` names its freshly mapped, empty kernel-stack slot.
@@ -368,21 +369,18 @@ fn release_gate_stack(process: &mut Process, (slot, frames): crate::process::Gat
     }
 }
 
-/// Make the current process's main thread schedulable at `entry`: plant its startup ladder (the
-/// same frame shape a child gets) and ready it. The next switch away from the idle thread enters
-/// it.
-pub fn start_main_thread(entry: u32, user_esp: u32) {
+/// Make the current process's main thread schedulable in its initial context `user` (see
+/// [`crate::user::main_thread_start`]): plant its startup ladder (the same frame shape a child gets)
+/// and ready it. The next switch away from the idle thread enters it.
+pub fn start_main_thread(user: crate::sched::startup::UserStart) {
     // The main thread's gate slot, TEB page and stack top were taken at process start; only the
     // ladder is missing.
     let thread = crate::process::current().main_thread();
     let params = crate::sched::startup::StartParams {
         system_routine: user_thread_startup as u32,
-        start_routine: entry,
+        start_routine: user.eip,
         start_context: 0,
-        user: Some(crate::sched::startup::UserStart {
-            eip: entry,
-            esp: user_esp,
-        }),
+        user: Some(user),
     };
     // SAFETY: the thread's `initial_stack` names its mapped, empty kernel-stack slot (nothing has
     // entered a gate on it yet).
@@ -394,7 +392,7 @@ pub fn start_main_thread(entry: u32, user_esp: u32) {
 
 /// The boot's ring-3 entry, the only one: start the current process's main thread and enter the
 /// idle loop — the first switch away from idle is into this thread. Never returns.
-pub fn enter_as_main_thread(entry: u32, user_esp: u32) -> ! {
-    start_main_thread(entry, user_esp);
+pub fn enter_as_main_thread(user: crate::sched::startup::UserStart) -> ! {
+    start_main_thread(user);
     crate::sched::idle::idle_loop()
 }

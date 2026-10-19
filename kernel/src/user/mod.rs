@@ -2,17 +2,20 @@
 //!
 //! The kernel maps the image, stack, TEB and parameters pages — each inside a region of the
 //! process's address space (`mem::vm`), the one writer of its page-table entries — and enters the
-//! process as its main thread: the scheduler's first switch into the thread leaves its startup ladder for ring 3. The
-//! image ends the process through the exit service. The fault-test features substitute a
-//! hand-assembled stub ([`RING3_STUB`]) so the user-fault paths can be verified without a PE
-//! fixture.
+//! process as its main thread: the scheduler's first switch into the thread leaves its startup ladder for ring 3,
+//! at kernel32's BaseProcessStartThunk ([`main_thread_start`]), whose frame calls the image's entry
+//! point under kernel32's exception registration and ends the process through the exit service.
+//! The fault-test features substitute a hand-assembled stub ([`RING3_STUB`]) so the kernel's own
+//! paths can be verified without a PE fixture.
 //!
 //! Every user context is a thread: a thread's return ends the thread (the last thread's end is the
 //! process's), the exit service ends the process and all its threads, and faults raised by user
-//! code end the process, not the kernel.
+//! code go to the thread's own exception handlers ([`seh`]); one nobody takes ends the process, not
+//! the kernel.
 
 pub mod args;
 pub mod params;
+pub mod seh;
 pub mod shared;
 pub mod syscall;
 pub mod teb;
@@ -21,7 +24,6 @@ pub mod userheap;
 /// The fault-test stub's code page (the corpus programs' preferred base, which the fault-test builds
 /// never map).
 #[cfg(any(
-    feature = "fault-test-user",
     feature = "fault-test-badargs",
     feature = "fault-test-segments",
     feature = "fault-test-threadexit",
@@ -35,8 +37,12 @@ pub const USER_CODE_PAGE: u32 = 0x0040_0000;
 pub const USER_STACK_PAGE: u32 = 0x0030_0000;
 /// The stack's second page, one below the top.
 pub const USER_STACK_LOW_PAGE: u32 = USER_STACK_PAGE - 4096;
-/// Initial user ESP: one past the stack's top page.
+/// One past the stack's top page: the stack's base (the TEB's StackBase).
 pub const USER_STACK_TOP: u32 = USER_STACK_PAGE + 4096;
+/// The main thread's initial ESP: one dword below the stack's base, as Windows 2000's
+/// BaseInitializeContext leaves it (its `Esp -= sizeof(Parameter)`); BaseProcessStartThunk pushes
+/// its frame from there.
+pub const USER_INITIAL_ESP: u32 = USER_STACK_TOP - 4;
 /// The main thread's TEB page, reached through the FS-based TEB segment (the CRT installs its
 /// exception frames at fs:[0] first thing); the loader maps it with the fresh TEB's words
 /// ([`teb`]).
@@ -57,6 +63,20 @@ pub const PEB_PAGE: u32 = 0x0033_0000;
 /// process's first thread keeps the fixed TEB page below; later threads take one page from here.
 pub const THREAD_TEB_REGION: u32 = 0x0080_0000;
 
+/// The main thread's initial context for an image whose entry point is `entry`, as Windows 2000's
+/// CreateProcess builds it (BaseInitializeContext): EIP kernel32's BaseProcessStartThunk, EAX the
+/// entry point, ESP [`USER_INITIAL_ESP`]. The thunk calls the entry point under kernel32's
+/// exception frame (UnhandledExceptionFilter's verdict, then ExitProcess with the code) and ends
+/// the process with its return value.
+pub fn main_thread_start(entry: u32) -> crate::sched::startup::UserStart {
+    crate::sched::startup::UserStart {
+        eip: crate::exec::modules::process_start_thunk(),
+        esp: USER_INITIAL_ESP,
+        eax: entry,
+        ..Default::default()
+    }
+}
+
 /// Thread `index`'s TEB page.
 pub const fn thread_teb_va(index: u32) -> u32 {
     if index == 0 {
@@ -76,11 +96,6 @@ pub const THREAD_STACK_REGION: u32 = 0x00C0_0000;
 /// has).
 pub const THREAD_STACK_PAGES: u32 = 2;
 
-/// A kernel address the fault-test stub reads from ring 3: the kernel window is supervisor-only, so
-/// the read must fault.
-#[cfg(any(feature = "fault-test-user", test))]
-pub const KERNEL_WINDOW_PROBE: u32 = 0x8010_1000;
-
 /// An unmapped user address the bad-args stub passes as the syscall argument pointer: below the
 /// user probe limit (the range probe passes) but backed by no page, so the kernel's argument copy
 /// faults on the user process's behalf.
@@ -89,15 +104,9 @@ pub const BAD_ARGS_PTR: u32 = 0x0050_0000;
 
 /// The ring-3 fault-test stub, in bytes: a faulting body plus a spin as the safety net.
 /// Hand-assembled so it can be copied into the user page (kernel code is unreachable from ring 3).
-/// Never combine the features: `fault-test-user` reads the supervisor-only kernel window;
-/// `fault-test-badargs` passes an unmapped user address as the syscall argument pointer.
-#[cfg(feature = "fault-test-user")]
-pub const RING3_STUB: [u8; 7] = [
-    0xA1, 0x00, 0x10, 0x10, 0x80, // mov eax, dword ptr [KERNEL_WINDOW_PROBE]
-    0xEB, 0xFE, // jmp $ (the read must fault before this)
-];
-
-#[cfg(all(feature = "fault-test-badargs", not(feature = "fault-test-user")))]
+/// Never combine the features: `fault-test-badargs` passes an unmapped user address as the syscall
+/// argument pointer.
+#[cfg(feature = "fault-test-badargs")]
 pub const RING3_STUB: [u8; 14] = [
     0xB8, 0x01, 0x20, 0x00, 0x00, // mov eax, SYS_EXIT (0x2001)
     0xBA, 0x00, 0x00, 0x50, 0x00, // mov edx, BAD_ARGS_PTR
@@ -113,7 +122,6 @@ pub const RING3_STUB: [u8; 14] = [
 /// emulation.
 #[cfg(all(
     feature = "fault-test-segments",
-    not(feature = "fault-test-user"),
     not(feature = "fault-test-badargs")
 ))]
 #[rustfmt::skip]
@@ -135,7 +143,6 @@ pub const RING3_STUB: [u8; 29] = [
 /// the gate returned in EAX.
 #[cfg(all(
     feature = "fault-test-threadexit",
-    not(feature = "fault-test-user"),
     not(feature = "fault-test-badargs"),
     not(feature = "fault-test-segments")
 ))]
@@ -254,7 +261,6 @@ pub const EXIT_DURING_READ_STUB: [u8; 156] = {
 
 #[cfg(all(
     feature = "fault-test-exitio",
-    not(feature = "fault-test-user"),
     not(feature = "fault-test-badargs"),
     not(feature = "fault-test-segments"),
     not(feature = "fault-test-threadexit")
@@ -266,7 +272,6 @@ pub const RING3_STUB: [u8; 156] = EXIT_DURING_READ_STUB;
 /// by Windows 2000's numbers.
 #[cfg(all(
     feature = "fault-test-ntclose",
-    not(feature = "fault-test-user"),
     not(feature = "fault-test-badargs"),
     not(feature = "fault-test-segments"),
     not(feature = "fault-test-threadexit"),
@@ -338,7 +343,6 @@ pub fn run_user_process() -> ! {
     #[cfg(all(
         not(feature = "run-process-suite"),
         any(
-            feature = "fault-test-user",
             feature = "fault-test-badargs",
             feature = "fault-test-segments",
             feature = "fault-test-threadexit",
@@ -355,7 +359,6 @@ pub fn run_user_process() -> ! {
     #[cfg(all(
         not(feature = "run-process-suite"),
         not(any(
-            feature = "fault-test-user",
             feature = "fault-test-badargs",
             feature = "fault-test-segments",
             feature = "fault-test-threadexit",
@@ -370,7 +373,7 @@ pub fn run_user_process() -> ! {
         // has taken nothing yet.
         crate::process::record_allocator_baseline();
         let entry = crate::exec::loader::load_path(path, name, command_line);
-        crate::process::threads::enter_as_main_thread(entry, USER_STACK_TOP)
+        crate::process::threads::enter_as_main_thread(main_thread_start(entry))
     }
 }
 
@@ -440,7 +443,6 @@ pub fn volume_path(token: &[u8]) -> &[u8] {
 /// address space — and enter it as its main thread. Never returns.
 #[cfg(target_arch = "x86")]
 #[cfg(any(
-    feature = "fault-test-user",
     feature = "fault-test-badargs",
     feature = "fault-test-segments",
     feature = "fault-test-threadexit",
@@ -465,7 +467,11 @@ pub fn run_fault_stub() -> ! {
         USER_CODE_PAGE,
         USER_STACK_TOP
     );
-    crate::process::threads::enter_as_main_thread(USER_CODE_PAGE, USER_STACK_TOP)
+    crate::process::threads::enter_as_main_thread(crate::sched::startup::UserStart {
+        eip: USER_CODE_PAGE,
+        esp: USER_STACK_TOP,
+        ..Default::default()
+    })
 }
 
 /// The exit-during-read boot's check, on the idle thread after the process's teardown: the volume
@@ -513,22 +519,9 @@ mod tests {
     use crate::mem::paging::KERNEL_BASE;
     use crate::user::syscall::SYSCALL_VECTOR;
 
-    /// The fault-test stub reads the supervisor-only kernel window and spins: A1+moffs32 (mov eax,
-    /// [moffs]) then jmp $.
-    #[cfg(feature = "fault-test-user")]
-    #[test]
-    fn fault_stub_bytes_match_their_encoding() {
-        let mut expected = [0u8; 7];
-        expected[0] = 0xA1;
-        expected[1..5].copy_from_slice(&KERNEL_WINDOW_PROBE.to_le_bytes());
-        expected[5] = 0xEB;
-        expected[6] = 0xFE;
-        assert_eq!(RING3_STUB, expected);
-    }
-
     /// The bad-args stub requests the exit service with an unmapped argument pointer: BA+imm32 (mov
     /// edx, imm32), int, jmp $.
-    #[cfg(all(feature = "fault-test-badargs", not(feature = "fault-test-user")))]
+    #[cfg(feature = "fault-test-badargs")]
     #[test]
     fn badargs_stub_bytes_match_their_encoding() {
         let mut expected = [0u8; 14];
@@ -587,11 +580,9 @@ mod tests {
         assert_eq!(0x92 + (EXIT_DURING_READ_STUB[0x91] as i8 as i32), 0x66);
     }
 
-    /// The fault-test addresses: the kernel-window probe inside the supervisor-only window; the
-    /// bad-args pointer below the probe limit but on no mapped page.
+    /// The fault-test addresses: the bad-args pointer below the probe limit but on no mapped page.
     #[test]
     fn fault_probe_layout_is_consistent() {
-        assert!(KERNEL_WINDOW_PROBE >= KERNEL_BASE);
         assert!(BAD_ARGS_PTR < KERNEL_BASE);
         assert_ne!(BAD_ARGS_PTR & !0xFFF, USER_CODE_PAGE);
         assert_ne!(BAD_ARGS_PTR & !0xFFF, USER_STACK_PAGE);
