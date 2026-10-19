@@ -223,6 +223,11 @@ impl Process {
         &mut self.vm
     }
 
+    /// The address space, to read (a query that changes nothing).
+    pub fn space(&self) -> &crate::mem::vm::AddressSpace {
+        &self.vm
+    }
+
     /// The user-APC records.
     pub fn sync_mut(&mut self) -> &mut objects::SyncObjects {
         &mut self.objects

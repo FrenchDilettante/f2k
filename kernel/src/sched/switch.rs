@@ -2,12 +2,12 @@
 //!
 //! [`swap_context`] moves the processor from one thread to another: it saves the caller's
 //! nonvolatile registers and `esp` into a switch frame on the old thread's kernel stack, saves its
-//! x87 state into its record (restoring the new thread's), installs
-//! the new thread's stack top as the TSS `esp0`, rewrites the TEB descriptor's base, loads CR3 when
-//! the process changes, and resumes the new thread. [`THREAD_STARTUP`] is a fresh thread's first
-//! instructions, reached as the planted return address of the initial switch: it zeroes the
-//! registers, lowers the level, calls the system routine, and a user thread then enters ring 3 from
-//! its planted trap frame.
+//! floating-point state (x87, MXCSR and the XMM registers) into its record (restoring the new
+//! thread's), installs the new thread's stack top as the TSS `esp0`, rewrites the TEB descriptor's
+//! base, loads CR3 when the process changes, and resumes the new thread. [`THREAD_STARTUP`] is a
+//! fresh thread's first instructions, reached as the planted return address of the initial switch:
+//! it zeroes the registers, lowers the level, calls the system routine, and a user thread then
+//! enters ring 3 from its planted trap frame.
 //!
 //! Load-bearing discipline: `cli` spans the CR3 load and the `esp` switch — kernel stacks live in a
 //! per-process window, so the old stack dies at the CR3 load and the new one is not mapped until it
@@ -41,8 +41,9 @@ pub const THREAD_INITIAL_STACK_OFF: u32 = 12;
 /// `#[repr(C)]` layout.
 pub const THREAD_TEB_VA_OFF: u32 = 16;
 
-/// The saved-x87-state field's offset in the thread record (taken from the layout itself: nothing
-/// else depends on where it sits, so it is not pinned to a number).
+/// The saved floating-point state's offset in the thread record (taken from the layout itself:
+/// nothing else depends on where it sits, so it is not pinned to a number; the record's layout
+/// keeps it 16-byte aligned, as `fxsave` needs).
 pub const THREAD_FPU_OFF: u32 = core::mem::offset_of!(super::thread::Thread, fpu) as u32;
 
 /// The directory-base offset inside the scheduling record, read only when the process changes.
@@ -96,10 +97,11 @@ core::arch::global_asm!(
     // From here until the new esp is live no interrupt may run. Order: save the old esp, install
     // the new esp0, rewrite the TEB base, load CR3 (only on a process change), switch esp.
     "    cli",
-    // The x87 state: the old thread's saved (`fnsave` also reinitializes the unit), the new
-    // thread's restored. Both records are kernel statics, mapped in every directory.
-    "    fnsave [edi + {fpu_off}]",
-    "    frstor [esi + {fpu_off}]",
+    // The floating-point state: the old thread's saved, the new thread's restored (`fxrstor`
+    // replaces the whole unit's state, so nothing of the old thread's survives the switch). Both
+    // records are kernel statics, mapped in every directory.
+    "    fxsave [edi + {fpu_off}]",
+    "    fxrstor [esi + {fpu_off}]",
     "    mov [edi + {kstack_off}], esp",
     "    mov eax, [esi + {init_stack_off}]",
     "    mov edx, offset TSS",

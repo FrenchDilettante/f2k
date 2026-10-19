@@ -24,7 +24,10 @@ def test_batch_files_keep_crlf_line_endings(path: Path):
 
 TESTS = f2kboot.REPO_ROOT / "tests"
 DECLARED = sorted(path.parent.name for path in TESTS.glob("*/fixture.toml"))
-SECTIONED = [name for name in DECLARED if f2kboot.declaration(name)["kind"] == "sectioned"]
+# The sectioned fixtures declared ahead of their real-machine files (f2kboot.awaited) are left out
+# of the checks on those files.
+SECTIONED = [name for name in DECLARED
+             if f2kboot.declaration(name)["kind"] == "sectioned" and not f2kboot.awaited(name)]
 # The fixtures built on common/f2kt.h: their section table lists them (and --list prints it).
 LISTED = [name for name in SECTIONED if '"../common/f2kt.h"' in (TESTS / name / f"{name}.c").read_text()]
 # Set once tests/build.bat has rebuilt every fixture: a binary without its source stamp then fails
@@ -49,6 +52,11 @@ def test_fixture_declarations_read(fixture: str):
     declared = f2kboot.declaration(fixture)
     assert set(declared) <= DECLARATION_KEYS, set(declared) - DECLARATION_KEYS
     assert declared["kind"] in ("sectioned", "smoke")
+    if declared["kind"] == "sectioned" and f2kboot.awaited(fixture):
+        return  # declared ahead of its program and capture: none of them is there
+    if declared["kind"] == "sectioned":
+        missing = [path.name for path in f2kboot.real_machine_files(fixture) if not path.is_file()]
+        assert not missing, f"the real-machine files come together: {missing} missing"
     assert (TESTS / fixture / f"{fixture}.exe").is_file()
     assert (TESTS / fixture / "output.txt").is_file() == (declared["kind"] == "sectioned")
 
@@ -157,9 +165,12 @@ RAW_ACCESS_ALLOWED = {
     "kernel/src/boot/cmdline.rs": "the Multiboot command line, read at boot before any process",
     "kernel/src/cpu/gdt.rs": "the kernel's own descriptor table",
     "kernel/src/cpu/idt.rs": "the kernel's own interrupt table",
+    "kernel/src/hw/pit.rs": "the programmed divisor, a kernel static",
     "kernel/src/interrupt/mod.rs": "the interrupt counters, kernel statics",
     "kernel/src/mem/bootmem.rs": "the boot memory map and the frame database, before any process",
     "kernel/src/mem/paging.rs": "the page tables and frames, through the kernel's own windows",
+    "kernel/src/perf.rs": "the sampler's interval static, and (perf-trace builds only) the frame-pointer"
+    " walk of a sampled stack, each frame checked against the process's regions first",
     "kernel/src/process/mod.rs": "the allocator baseline, a kernel static",
     "kernel/src/process/runner.rs": "the suite's process index, a kernel static",
     "kernel/src/sched/startup.rs": "a new thread's kernel gate stack",

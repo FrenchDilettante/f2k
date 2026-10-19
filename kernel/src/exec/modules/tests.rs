@@ -282,3 +282,30 @@ fn the_corpus_snaps_fully_against_the_module_table() {
 fn module_name_is_kernel32() {
     assert_eq!(KERNEL32_NAME, "KERNEL32.dll");
 }
+
+/// A lookup by ordinal lands where the lookup by name does: kernel32's ExitProcess by the ordinal
+/// its name table gives it, and an ordinal outside the directory's range is no entry.
+#[test]
+fn ordinals_resolve_through_the_export_directory() {
+    let dll = &SYSTEM_DLLS[KERNEL32];
+    let exports = Exports::in_headers(dll.file).unwrap();
+    let ordinal = (0..exports.num_functions)
+        .map(|slot| exports.ordinal_base + slot)
+        .find(|&ordinal| {
+            exports.by_ordinal(dll.file, ordinal) == exports.by_name(dll.file, "ExitProcess")
+        })
+        .expect("ExitProcess has an ordinal");
+    assert_eq!(
+        resolve_target(KERNEL32, ForwardTarget::Ordinal(ordinal), 0),
+        resolve("KERNEL32.dll", "ExitProcess")
+    );
+    let past = exports.ordinal_base + exports.num_functions;
+    assert_eq!(
+        resolve_target(KERNEL32, ForwardTarget::Ordinal(past), 0),
+        Err(Unresolved::NoEntry)
+    );
+    assert_eq!(
+        resolve_target(KERNEL32, ForwardTarget::Ordinal(exports.ordinal_base.wrapping_sub(1)), 0),
+        Err(Unresolved::NoEntry)
+    );
+}

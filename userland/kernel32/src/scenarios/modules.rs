@@ -5,12 +5,11 @@
 use super::{last_error, UNREAD};
 use crate::base::set_last_error;
 use crate::module::{free_library, get_module_file_name_a, get_module_handle_a, get_proc_address, load_library_a};
-use crate::nt::{ASKED, GET_TICK_COUNT, IMAGE_BASE as IMAGE, IMAGE_PATH, KERNEL32, NTDLL};
+use crate::nt::{ASKED, GET_TICK_COUNT, GET_TICK_COUNT_ORDINAL, IMAGE_BASE as IMAGE, IMAGE_PATH, KERNEL32, NTDLL};
 
 const ERROR_INVALID_PARAMETER: u32 = 87;
 const ERROR_MOD_NOT_FOUND: u32 = 126;
 const ERROR_PROC_NOT_FOUND: u32 = 127;
-const ERROR_INVALID_ORDINAL: u32 = 182;
 const ERROR_FILENAME_EXCED_RANGE: u32 = 206;
 
 /// A NUL-terminated copy of `text`.
@@ -121,17 +120,18 @@ fn free_library_answers_for_modules() {
     assert_eq!(last_error(), ERROR_MOD_NOT_FOUND);
 }
 
-/// GetProcAddress: a null handle is the image's; an ordinal (a value below 0x10000) finds nothing
-/// yet (ERROR_INVALID_ORDINAL, never reading it as a name); a handle naming no module is
-/// ERROR_MOD_NOT_FOUND; names are exact.
+/// GetProcAddress: a null handle is the image's; an ordinal (a value below 0x10000) is looked up as
+/// one, never read as a name (one the module does not export is ERROR_PROC_NOT_FOUND); a handle
+/// naming no module is ERROR_MOD_NOT_FOUND; names are exact.
 #[test]
 fn procedures_come_from_the_loader() {
     assert_eq!(unsafe { get_proc_address(KERNEL32, c(b"gettickcount").as_ptr()) }, 0);
     assert_eq!(last_error(), ERROR_PROC_NOT_FOUND);
     assert_eq!(unsafe { get_proc_address(0, c(b"GetTickCount").as_ptr()) }, 0, "the image exports nothing");
     assert_eq!(last_error(), ERROR_PROC_NOT_FOUND);
+    assert_eq!(unsafe { get_proc_address(KERNEL32, GET_TICK_COUNT_ORDINAL as usize as *const u8) }, GET_TICK_COUNT);
     assert_eq!(unsafe { get_proc_address(KERNEL32, UNREAD as *const u8) }, 0);
-    assert_eq!(last_error(), ERROR_INVALID_ORDINAL);
+    assert_eq!(last_error(), ERROR_PROC_NOT_FOUND);
     assert_eq!(unsafe { get_proc_address(0x1234_0000, c(b"GetTickCount").as_ptr()) }, 0);
     assert_eq!(last_error(), ERROR_MOD_NOT_FOUND);
 }

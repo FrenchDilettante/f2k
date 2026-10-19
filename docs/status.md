@@ -314,6 +314,26 @@ with `make check-all` green.
 - One repository check, that no export is a kernel-served Win32 service or a stub and that
   `kernel/src/compat` doesn't exist, replaces the served and unimplemented ratchets.
 
+### C2. DLLs load from the volume
+
+- **The FXSAVE area:** a thread's floating-point state is a 512-byte, 16-byte aligned FXSAVE
+  image (x87, SSE and MXCSR), saved and restored by every switch; boot enables CR4.OSFXSR and
+  OSXMMEXCPT (a CPU without FXSR refuses to boot). A fresh thread starts with control word 0x27F
+  (the `threads` capture's 53-bit precision) and MXCSR 0x1F80.
+- **Image sections:** NtCreateSection takes SEC_IMAGE over a file, parsed by the loader's own
+  parse (which now refuses a truncated file instead of panicking); its view is the whole image at
+  its preferred base, never relocated (STATUS_CONFLICTING_ADDRESSES), its pages built from the file
+  page by page with their sections' protections.
+- **LdrLoadDll loads from the volume:** a bare name in the current directory, then the root; the
+  file opened with NtOpenFile and mapped as an image section; the entry on the process heap in the
+  three lists; the imports snapped in user mode against the lists (recursively loading what is
+  missing), the same lookup GetProcAddress uses. LdrUnloadDll's last reference unmaps the module and
+  releases its imports. No DllMain runs.
+- **Ordinals resolve** (biased by the export directory's base) and **forwarders split at the first
+  dot**, in rtl's lookup and the kernel's resolver alike.
+- **The `dll` fixture** (a program and its companion DLL) is declared and wired, awaiting its
+  real-machine build and capture; companion DLLs go beside their program in `\CORPUS`.
+
 ---
 
 ## 2. Architectural decisions
@@ -494,10 +514,14 @@ or host scenario can show is an expected-failure test instead (see decision 3).
     lists; on Windows 2000 that is ntdll's LdrpInitialize, in user mode.
   - The system DLLs' DllMain isn't called (their entries' EntryPoint is 0), and LdrShutdownThread
     and LdrShutdownProcess run no DllMain or TLS callbacks.
-  - No DLL loads from disk: LdrLoadDll finds only the exe, ntdll and kernel32. No relocations,
-    recursive imports or TLS callbacks for other DLLs; the exe's own TLS callbacks don't run, and
-    its entry's TlsIndex is 0.
-  - The module lists have no hash table, and ordinals find nothing.
+  - A DLL loads only at its preferred base (no relocations), from the current directory or the
+    volume's root (no DLL search path, no `C:\WINNT\system32`); its DllMain and TLS callbacks
+    don't run; a forwarder naming a module not loaded is not followed by loading it. The exe's own
+    TLS callbacks don't run, and its entry's TlsIndex is 0.
+  - The module lists have no hash table. The system DLLs' ordinals are their export specs'
+    numbering, not Windows 2000's.
+  - A malformed image past its headers (an import or export table reading out of the image) still
+    panics the kernel's parse of the program image; a DLL's tables are read in user mode.
 - **Thread and process start and exit:**
   - no CSR (basesrv) notification on thread creation or process exit;
   - the thread's Win32 start address isn't recorded;

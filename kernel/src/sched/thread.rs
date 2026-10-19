@@ -16,32 +16,56 @@ use crate::interrupt::irql::{self, LevelSnapshot};
 /// The gate-slot index of a thread whose slot is not allocated yet.
 pub const NO_GATE_SLOT: u16 = 0xFFFF;
 
-/// A thread's saved x87 state, in the `fnsave`/`frstor` image (protected mode, 32-bit): control,
-/// status and tag words, the last instruction and operand pointers, then the eight 80-bit
-/// registers. The context switch saves the outgoing thread's and restores the incoming one's on
-/// every switch, so a preempted computation never resumes on another thread's registers.
+/// A thread's saved floating-point state, in the `fxsave`/`fxrstor` image: the x87 control,
+/// status and abridged tag words, the last instruction and operand pointers, MXCSR, the eight x87
+/// registers and the eight XMM registers. The system DLLs are compiled for SSE2, so the XMM
+/// registers and MXCSR are live in user code as much as the x87 registers are. The context switch
+/// saves the outgoing thread's and restores the incoming one's on every switch, so a preempted
+/// computation never resumes on another thread's registers. The instructions fault on an image
+/// that is not 16-byte aligned.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[repr(C, align(4))]
+#[repr(C, align(16))]
 pub struct FpuState(pub [u8; FPU_STATE_BYTES]);
 
-/// The `fnsave` image's size.
-pub const FPU_STATE_BYTES: usize = 108;
+/// The `fxsave` image's size, and the alignment `fxsave` and `fxrstor` need.
+pub const FPU_STATE_BYTES: usize = 512;
+pub const FPU_STATE_ALIGN: usize = 16;
+
+/// The image's fields, by byte offset: the x87 control word, status word, abridged tag byte (a bit
+/// per register, set when it holds a value) and last opcode; MXCSR and the mask of its writable
+/// bits; the x87/MMX registers and the XMM registers, 16 bytes each.
+pub const FPU_FCW: usize = 0;
+pub const FPU_FSW: usize = 2;
+pub const FPU_FTW: usize = 4;
+pub const FPU_FOP: usize = 6;
+pub const FPU_MXCSR: usize = 24;
+pub const FPU_MXCSR_MASK: usize = 28;
+pub const FPU_ST0: usize = 32;
+pub const FPU_XMM0: usize = 160;
 
 /// The control word a new thread starts with: every exception masked, 53-bit precision, round to
 /// nearest — the value Windows NT gives a fresh thread (`fninit` alone would leave 64-bit
 /// precision).
 pub const INITIAL_FPU_CONTROL: u16 = 0x027F;
 
+/// The MXCSR a new thread starts with: every SIMD exception masked, round to nearest, denormals
+/// kept (the processor's reset value).
+pub const INITIAL_MXCSR: u32 = 0x1F80;
+
 impl FpuState {
-    /// A fresh thread's image: the initial control word, a clear status word, every register tagged
-    /// empty (the tag word 0xFFFF), everything else zero.
+    /// A fresh thread's image: the initial control word and MXCSR, a clear status word, every
+    /// register empty (an abridged tag of zero), everything else zero.
     pub const fn initial() -> Self {
         let mut bytes = [0u8; FPU_STATE_BYTES];
         let control = INITIAL_FPU_CONTROL.to_le_bytes();
-        bytes[0] = control[0];
-        bytes[1] = control[1];
-        bytes[8] = 0xFF;
-        bytes[9] = 0xFF;
+        bytes[FPU_FCW] = control[0];
+        bytes[FPU_FCW + 1] = control[1];
+        let mxcsr = INITIAL_MXCSR.to_le_bytes();
+        let mut index = 0;
+        while index < mxcsr.len() {
+            bytes[FPU_MXCSR + index] = mxcsr[index];
+            index += 1;
+        }
         FpuState(bytes)
     }
 }
@@ -113,8 +137,8 @@ pub struct Thread {
     /// The slot's frames, recorded for exactly-once release (the guard page below them is never
     /// mapped, so it is never recorded).
     pub(crate) gate_frames: [u32; crate::mem::paging::GATE_STACK_PAGES],
-    /// The thread's x87 state while it is off the processor (saved and restored by the switch, at
-    /// the offset the assembly takes from this layout).
+    /// The thread's floating-point state while it is off the processor (saved and restored by the
+    /// switch, at the offset the assembly takes from this layout; 16-byte aligned, as the record).
     pub(crate) fpu: FpuState,
 
     // --- Scheduling state ---
@@ -248,6 +272,9 @@ const _: () = {
         core::mem::offset_of!(Thread, initial_stack) > core::mem::offset_of!(Thread, kernel_stack)
     );
     assert!(core::mem::offset_of!(Thread, teb_va) > core::mem::offset_of!(Thread, initial_stack));
+    // `fxsave` and `fxrstor` fault on an unaligned image: the record's alignment carries it.
+    assert!(core::mem::offset_of!(Thread, fpu) % FPU_STATE_ALIGN == 0);
+    assert!(core::mem::align_of::<Thread>() >= FPU_STATE_ALIGN);
 };
 
 impl Thread {
@@ -316,6 +343,12 @@ impl Thread {
     /// The process must outlive the thread's membership in its list (the first link is written
     /// here), and both objects must be at their final addresses.
     pub unsafe fn attach_to(&mut self, process: &mut SchedProcess) {
+        // Every thread is attached at its final address before it first runs: the place the
+        // switch saves its floating-point state to.
+        assert!(
+            (core::ptr::addr_of!(self.fpu) as usize).is_multiple_of(FPU_STATE_ALIGN),
+            "a thread's floating-point area is 16-byte aligned"
+        );
         self.process = process as *mut SchedProcess;
         self.base_priority = process.base_priority;
         self.priority = self.base_priority;
@@ -516,25 +549,46 @@ impl Thread {
 mod tests {
     use super::*;
 
-    /// A fresh thread's x87 image: the NT control word, a clear status word, every register tagged
-    /// empty, in the `fnsave` layout the switch restores from.
+    /// A fresh thread's image, in the `fxsave` layout the switch restores from: the NT control
+    /// word, the reset MXCSR, every register empty, everything else zero.
     #[test]
     fn a_fresh_thread_starts_with_the_initial_fpu_image() {
         let image = Thread::empty().fpu.0;
-        assert_eq!(image.len(), 108);
-        assert_eq!(
-            u16::from_le_bytes([image[0], image[1]]),
-            0x027F,
-            "control word"
-        );
-        assert_eq!(u16::from_le_bytes([image[4], image[5]]), 0, "status word");
-        assert_eq!(
-            u16::from_le_bytes([image[8], image[9]]),
-            0xFFFF,
-            "tag word: all empty"
-        );
-        assert!(image[10..].iter().all(|&byte| byte == 0));
-        assert_eq!(core::mem::align_of::<FpuState>() % 4, 0);
+        assert_eq!(image.len(), 512);
+        let half = |at: usize| u16::from_le_bytes([image[at], image[at + 1]]);
+        let word = |at: usize| u32::from_le_bytes(image[at..at + 4].try_into().unwrap());
+        assert_eq!(half(FPU_FCW), 0x027F, "control word");
+        assert_eq!(word(FPU_MXCSR), 0x1F80, "MXCSR");
+        for (at, &byte) in image.iter().enumerate() {
+            let set =
+                (FPU_FCW..FPU_FCW + 2).contains(&at) || (FPU_MXCSR..FPU_MXCSR + 4).contains(&at);
+            if !set {
+                assert_eq!(byte, 0, "byte {at}: status, tag and registers clear");
+            }
+        }
+    }
+
+    /// The image's layout: the field offsets, the eight x87/MMX registers between the header and
+    /// the eight XMM registers, all inside the image.
+    #[test]
+    fn the_fpu_image_layout() {
+        assert_eq!((FPU_FCW, FPU_FSW, FPU_FTW, FPU_FOP), (0, 2, 4, 6));
+        assert_eq!((FPU_MXCSR, FPU_MXCSR_MASK), (24, 28));
+        assert_eq!(FPU_ST0 + 8 * 16, FPU_XMM0);
+        assert!(FPU_XMM0 + 8 * 16 <= FPU_STATE_BYTES);
+        assert_eq!(core::mem::size_of::<FpuState>(), 512);
+    }
+
+    /// The alignment rule: the image type, its place in the record and the record itself are
+    /// 16-byte aligned, so every thread record holds an image `fxsave` accepts.
+    #[test]
+    fn the_fpu_image_is_16_byte_aligned() {
+        assert_eq!(core::mem::align_of::<FpuState>(), 16);
+        assert_eq!(core::mem::offset_of!(Thread, fpu) % 16, 0);
+        assert!(core::mem::align_of::<Thread>() >= 16);
+        assert_eq!(super::super::switch::THREAD_FPU_OFF % 16, 0);
+        let thread = Box::new(Thread::empty());
+        assert_eq!(core::ptr::addr_of!(thread.fpu) as usize % 16, 0);
     }
 
     /// The state ordinals: stable, distinct, with the lifecycle order the dump paths and any raw

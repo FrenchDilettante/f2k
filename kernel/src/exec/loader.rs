@@ -9,7 +9,8 @@
 //!
 //! Images are never relocated: an image maps at its preferred base or is refused. The module table
 //! holds the system DLLs, ntdll and kernel32 (`exec::modules`); an import naming any other module
-//! fails the snap.
+//! fails the snap. A DLL loaded at run time maps through the same parse and page protections, as
+//! an image section's view (`nt::section`, page by page: [`Image::map_page`]).
 //!
 //! Quirk: the file and the image are built in staging buffers — borrowed statics, not stack frames
 //! — because the loader runs on the small boot stack. The snap happens in staging, before mapping:
@@ -189,7 +190,7 @@ pub fn resolve_import(module: &str, name: &str) -> Result<u32, Unresolved> {
 /// A page's protection, as a query reports it: the combined access of the sections in it (an
 /// image's writable pages are copy-on-write, PAGE_WRITECOPY until written, as Windows 2000 maps
 /// them); uncovered pages (the header page) are read-only.
-fn page_protect(image: &Image, page_rva: u32) -> u32 {
+pub(crate) fn page_protect(image: &Image, page_rva: u32) -> u32 {
     use crate::mem::vm::{
         PAGE_EXECUTE, PAGE_EXECUTE_READ, PAGE_EXECUTE_WRITECOPY, PAGE_READONLY, PAGE_WRITECOPY,
     };
@@ -847,6 +848,43 @@ mod tests {
             read_image_file(&mut broken, b"exit0.exe", &mut buffer),
             Err(FileError::Read(STATUS_FILE_CORRUPT_ERROR))
         );
+    }
+
+    /// An image section's pages, as a mapping builds them off the volume: exit0, stored as a DLL
+    /// on a crafted volume, parses from its first page alone (the file's length known), and each
+    /// page read through the file's chain is the page the whole-image mapping holds.
+    #[test]
+    fn an_image_maps_page_by_page_off_the_volume() {
+        use crate::fs::fat32::lookup::lookup;
+        use crate::fs::fat32::read::read_at;
+        let mut dll = EXIT0.to_vec();
+        let characteristics = u32::from_le_bytes(dll[0x3C..0x40].try_into().unwrap()) as usize + 22;
+        dll[characteristics + 1] |= 0x20; // IMAGE_FILE_DLL
+        let clusters = dll.len().div_ceil(512) as u32;
+        let chain: Vec<u32> = (3..3 + clusters).collect();
+        let mut crafted = Crafted::new(1, 2 + clusters as usize);
+        crafted.chain(&chain);
+        for (cluster, piece) in chain.iter().zip(dll.chunks(512)) {
+            crafted.cluster(*cluster, piece);
+        }
+        crafted.directory(2, &[record(b"COMPANIODLL", FILE, 3, dll.len() as u32)]);
+        let mut volume = Volume::mount(crafted.device()).unwrap();
+        let file = lookup(&mut volume, b"companio.dll").unwrap();
+
+        let mut headers = vec![0u8; 0x1000];
+        assert_eq!(read_at(&mut volume, &file, 0, &mut headers), Ok(0x1000));
+        let image = Image::parse_headers(&headers, file.size as usize).unwrap();
+        assert!(image.is_dll());
+        let mut whole = vec![0u8; image.size_of_image as usize];
+        image.map_into(&dll, &mut whole);
+        let mut page = vec![0u8; PAGE_SIZE as usize];
+        for (index, expected) in whole.chunks(PAGE_SIZE as usize).enumerate() {
+            let built = image.map_page(index as u32 * PAGE_SIZE, &mut page, |offset, out| {
+                read_at(&mut volume, &file, offset, out) == Ok(out.len())
+            });
+            assert!(built, "page {index}");
+            assert_eq!(&page[..], expected, "page {index}");
+        }
     }
 
     /// The COM1 wording of each refusal carries its status.

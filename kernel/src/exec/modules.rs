@@ -12,16 +12,18 @@
 //! aside), and the kernel reads kernel-owned bytes a program cannot revoke. A forwarder
 //! (kernel32's RtlUnwind names NTDLL.RtlUnwind) resolves in the module it names. Names compare as
 //! the platform compares them: module names without regard to case (a name without an extension is
-//! taken as `.dll`), export names exactly. A lookup by ordinal finds nothing: the DLLs' ordinals
-//! are sequential placeholders, not the real system's.
+//! taken as `.dll`), export names exactly. A forwarder splits at its first dot and may name its
+//! target by ordinal (`MODULE.#n`). The DLLs' ordinals are their export specs' numbering, not
+//! Windows 2000's.
 //!
 //! The kernel's loader snaps the image's imports through this table (`exec::loader`), and the
 //! kernel finds here the entry points it sends user code to (kernel32's BaseProcessStartThunk for a
 //! main thread, ntdll's LdrInitializeThunk for every thread's start, KiUserExceptionDispatcher for
 //! an exception and KiUserApcDispatcher for a user APC). The Win32 module calls are kernel32's and
 //! ntdll's own code (GetModuleHandleA and the rest over LdrGetDllHandle and the rest), over the
-//! PEB's module lists the kernel builds at the process's creation (`user::ldr`). No other DLL
-//! loads.
+//! PEB's module lists the kernel builds at the process's creation (`user::ldr`). Any other DLL is
+//! ntdll's to load at run time (LdrLoadDll, over an image section: `nt::section`), its imports
+//! snapped in user mode against the lists.
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
@@ -98,6 +100,12 @@ impl SystemDll {
     fn export(&self, name: &str) -> Option<Export<'static>> {
         Exports::in_headers(self.file)?.by_name(self.file, name)
     }
+
+    /// The export with ordinal `ordinal` (biased by the directory's base), read as [`Self::export`]
+    /// reads names.
+    fn export_by_ordinal(&self, ordinal: u32) -> Option<Export<'static>> {
+        Exports::in_headers(self.file)?.by_ordinal(self.file, ordinal)
+    }
 }
 
 /// How many forwarders a resolution follows before it is refused (a cycle in the DLLs' build).
@@ -112,15 +120,25 @@ fn system_dll(name: &str) -> Option<usize> {
 
 /// The address of the entry point `name` that system DLL `index` exports, its forwarders followed.
 pub(crate) fn resolve_in(index: usize, name: &str, depth: u32) -> Result<u32, Unresolved> {
+    resolve_target(index, ForwardTarget::Name(name), depth)
+}
+
+/// The address of `target` (a name or an ordinal) in system DLL `index`, its forwarders followed
+/// (each one split at its first dot).
+fn resolve_target(index: usize, target: ForwardTarget, depth: u32) -> Result<u32, Unresolved> {
     let dll = &SYSTEM_DLLS[index];
-    match dll.export(name).ok_or(Unresolved::NoEntry)? {
+    let export = match target {
+        ForwardTarget::Name(name) => dll.export(name),
+        ForwardTarget::Ordinal(ordinal) => dll.export_by_ordinal(ordinal),
+    };
+    match export.ok_or(Unresolved::NoEntry)? {
         Export::Address(rva) => Ok(dll.base + rva),
         Export::Forwarder(forwarder) => {
             let (module, target) = split_forwarder(forwarder).ok_or(Unresolved::NoEntry)?;
-            let (ForwardTarget::Name(target), true) = (target, depth < FORWARD_DEPTH) else {
+            if depth >= FORWARD_DEPTH {
                 return Err(Unresolved::NoEntry);
-            };
-            resolve_in(
+            }
+            resolve_target(
                 system_dll(module).ok_or(Unresolved::NoModule)?,
                 target,
                 depth + 1,

@@ -16,17 +16,27 @@
 //! A view's protection needs the section handle's access, as Windows 2000 checks it when it
 //! references the handle (SECTION_MAP_WRITE for a read-write view, SECTION_MAP_READ for the others:
 //! STATUS_ACCESS_DENIED), and a read-write view needs a section made read-write
-//! (STATUS_SECTION_PROTECTION). Data sections only: SEC_IMAGE is not supported.
+//! (STATUS_SECTION_PROTECTION).
+//!
+//! An image section (SEC_IMAGE) is of a PE file, parsed at its creation by the loader's own parse
+//! (`exec::pe`: a file it refuses is STATUS_INVALID_IMAGE_FORMAT): it is the image as mapped, its
+//! size the image's. Its one view is the whole image at its preferred base — an image is never
+//! relocated, so a base another region holds is STATUS_CONFLICTING_ADDRESSES — a MEM_IMAGE
+//! reservation whose pages carry their sections' protections, as the loader maps a program's (a
+//! writable section's pages copy-on-write: the section's frames stay the file's). Its frames are
+//! made page by page as the first view needs them, each read from the file through the image's
+//! section table. Nothing is snapped: the imports are the mapper's to resolve (ntdll's loader).
 
 use super::call::{Status, STATUS_INVALID_HANDLE};
 use super::memory::{STATUS_INVALID_PAGE_PROTECTION, STATUS_INVALID_PARAMETER_4};
 
 pub const STATUS_ACCESS_DENIED: Status = Status(0xC000_0022);
-const STATUS_NOT_IMPLEMENTED: Status = Status(0xC000_0002);
 const STATUS_NOT_MAPPED_VIEW: Status = Status(0xC000_0019);
 const STATUS_INVALID_VIEW_SIZE: Status = Status(0xC000_001F);
 const STATUS_SECTION_TOO_BIG: Status = Status(0xC000_0040);
 const STATUS_SECTION_PROTECTION: Status = Status(0xC000_004E);
+const STATUS_INVALID_FILE_FOR_SECTION: Status = Status(0xC000_0020);
+const STATUS_INVALID_IMAGE_FORMAT: Status = Status(0xC000_007B);
 const STATUS_MEDIA_WRITE_PROTECTED: Status = Status(0xC000_00A2);
 const STATUS_INVALID_PARAMETER_6: Status = Status(0xC000_00F4);
 const STATUS_INVALID_PARAMETER_8: Status = Status(0xC000_00F6);
@@ -41,6 +51,10 @@ const PAGE_NOACCESS: u32 = 0x01;
 const PAGE_READONLY: u32 = 0x02;
 const PAGE_READWRITE: u32 = 0x04;
 const PAGE_WRITECOPY: u32 = 0x08;
+const PAGE_EXECUTE: u32 = 0x10;
+const PAGE_EXECUTE_READ: u32 = 0x20;
+const PAGE_EXECUTE_READWRITE: u32 = 0x40;
+const PAGE_EXECUTE_WRITECOPY: u32 = 0x80;
 
 /// NtCreateSection's allocation attributes.
 const SEC_FILE: u32 = 0x0080_0000;
@@ -109,7 +123,7 @@ pub fn plan(
         return Err(STATUS_INVALID_PARAMETER_6);
     }
     if allocation & SEC_IMAGE != 0 {
-        return Err(STATUS_NOT_IMPLEMENTED);
+        return image_plan(protect, file);
     }
     let writable = match protect {
         PAGE_READONLY | PAGE_WRITECOPY => false,
@@ -148,6 +162,65 @@ pub fn plan(
         return Err(STATUS_SECTION_TOO_BIG);
     }
     Ok(Plan { size, writable })
+}
+
+/// An image section's rules over its file, before the image itself is read (see
+/// [`image_layout`]): a file opened for reading (or executing), and a page protection a view of
+/// code takes (any but no-access); the size is the image's, settled by its parse.
+fn image_plan(protect: u32, file: Option<Backing>) -> Result<Plan, Status> {
+    let file = file.ok_or(STATUS_INVALID_FILE_FOR_SECTION)?;
+    if !matches!(
+        protect,
+        PAGE_READONLY
+            | PAGE_READWRITE
+            | PAGE_WRITECOPY
+            | PAGE_EXECUTE
+            | PAGE_EXECUTE_READ
+            | PAGE_EXECUTE_READWRITE
+            | PAGE_EXECUTE_WRITECOPY
+    ) {
+        return Err(STATUS_INVALID_PAGE_PROTECTION);
+    }
+    if file.directory {
+        return Err(STATUS_INVALID_HANDLE);
+    }
+    if !file.read {
+        return Err(STATUS_ACCESS_DENIED);
+    }
+    if file.size == 0 {
+        return Err(STATUS_MAPPED_FILE_SIZE_ZERO);
+    }
+    Ok(Plan { size: file.size, writable: false })
+}
+
+/// The bytes an image section reads first: the file's first page, which holds its headers.
+pub const IMAGE_HEADERS: usize = 0x1000;
+
+/// An image's layout, from its first bytes `headers` (up to [`IMAGE_HEADERS`]) in a file of
+/// `file_size` bytes: its preferred base and its size as mapped. STATUS_INVALID_IMAGE_FORMAT for a
+/// file the loader's parse refuses, a truncated one included.
+pub fn image_layout(headers: &[u8], file_size: u32) -> Result<(u32, u32), Status> {
+    let image = crate::exec::pe::Image::parse_headers(headers, file_size as usize)
+        .map_err(|_| STATUS_INVALID_IMAGE_FORMAT)?;
+    if image.size_of_image as u64 > crate::mem::vm::SECTION_MAX {
+        return Err(STATUS_SECTION_TOO_BIG);
+    }
+    Ok((image.image_base, image.size_of_image))
+}
+
+/// An image section's view rules: the whole image (no offset, no size short of it) at its
+/// preferred base (zero: there), through a handle that may map it for reading or executing.
+pub fn image_view(access: u32, base: u32, offset: u64, bytes: u32, image_base: u32, size: u32) -> Result<(), Status> {
+    if section_access(access) & (SECTION_MAP_READ | SECTION_MAP_EXECUTE) == 0 {
+        return Err(STATUS_ACCESS_DENIED);
+    }
+    if offset != 0 || bytes != 0 && bytes < size {
+        return Err(STATUS_INVALID_VIEW_SIZE);
+    }
+    if base != 0 && base != image_base {
+        return Err(crate::nt::memory::STATUS_CONFLICTING_ADDRESSES);
+    }
+    Ok(())
 }
 
 /// The section access a handle's granted access amounts to, its generic rights mapped as the
@@ -304,14 +377,23 @@ mod target {
                 writable: plan.writable,
                 ..ob::SectionObject::none()
             },
-            Some((file_object, file, _)) => ob::SectionObject {
-                file,
-                paging_file: false,
-                frames: crate::mem::vm::SectionFrames::empty(),
-                size: plan.size,
-                writable: plan.writable,
-                file_object: Some(file_object),
-            },
+            Some((file_object, file, _)) => {
+                // An image's size and base are its headers': read and parsed now.
+                let (image_base, size) = if allocation & SEC_IMAGE != 0 {
+                    crate::process::threads::critical_region(|| read_layout(&file))?
+                } else {
+                    (0, plan.size)
+                };
+                ob::SectionObject {
+                    file,
+                    paging_file: false,
+                    frames: crate::mem::vm::SectionFrames::empty(),
+                    size,
+                    writable: plan.writable,
+                    file_object: Some(file_object),
+                    image_base,
+                }
+            }
         };
         sync::create(slot, access, attributes, ObjectType::Section, || {
             let directory = ob::directory();
@@ -325,6 +407,16 @@ mod target {
             // A failed publication deletes the object, which gives the file back.
             Some(id)
         })
+    }
+
+    /// An image file's layout (see [`image_layout`]), from its first page as the volume holds it.
+    fn read_layout(file: &crate::fs::fat32::lookup::File) -> Result<(u32, u32), Status> {
+        let mut headers = [0u8; IMAGE_HEADERS];
+        let headers = &mut headers[..IMAGE_HEADERS.min(file.size as usize)];
+        if crate::fs::io::read_file_at(file, 0, headers).is_none() {
+            return Err(STATUS_IO_DEVICE_ERROR);
+        }
+        image_layout(headers, file.size)
     }
 
     /// NtOpenSection: a new handle to the live section the name binds (see `sync`'s open).
@@ -355,7 +447,8 @@ mod target {
 
     /// NtMapViewOfSection (see [`view`]): a view of the section in the calling process, at the base
     /// asked for or anywhere, its pages the section's frames (made now when no view needed them
-    /// yet: a file's bytes, zeros past its end, or the paging file's zeros) — read-write for PAGE_READWRITE, copy-on-write for PAGE_WRITECOPY, read-only or
+    /// yet: a file's bytes, zeros past its end, or the paging file's zeros) — read-write for
+    /// PAGE_READWRITE, copy-on-write for PAGE_WRITECOPY, read-only or
     /// no-access otherwise. The base, the offset and the view's size (whole pages) written back. The
     /// commit size is not used (a view's pages are all committed).
     #[allow(clippy::too_many_arguments)]
@@ -384,6 +477,15 @@ mod target {
         let length = capture(size)?;
         let (object, access) = section_of(section.raw())?;
         let record = *object.section();
+        if record.image_base != 0 {
+            image_view(access, requested, at, length, record.image_base, record.size)?;
+            let mapped = with_space(call, process, |space, pages| {
+                map_image(space, pages, object.id())
+            })?;
+            base.write(mapped)?;
+            size.write(record.size)?;
+            return Ok(STATUS_SUCCESS);
+        }
         let bytes = view(
             access,
             protect,
@@ -509,14 +611,98 @@ mod target {
         Ok(base)
     }
 
+    /// Map the image section `object` names as its one view: the whole image at its preferred base
+    /// (STATUS_CONFLICTING_ADDRESSES when another region holds any of it), a MEM_IMAGE reservation
+    /// whose pages carry their sections' protections. A page not made yet is built from the file,
+    /// through the image's section table (its headers parsed again from the file's first page).
+    fn map_image(
+        space: &mut crate::mem::vm::AddressSpace,
+        table: &mut CurrentPages,
+        object: ObjectId,
+    ) -> Result<u32, Status> {
+        use crate::exec::loader::page_protect;
+        use crate::mem::vm::PAGE_EXECUTE_WRITECOPY;
+        if !space.has_view_room() {
+            return Err(STATUS_NO_MEMORY);
+        }
+        let directory = ob::directory();
+        let file = {
+            let section = *directory.section(object).expect("the caller holds the section");
+            match section
+                .file_object
+                .and_then(|file_object| directory.file(file_object).map(|object| object.record))
+            {
+                Some(record) => crate::fs::file::records().get(record).file,
+                None => section.file,
+            }
+        };
+        let mut buffer = [0u8; PAGE as usize];
+        let headers = (file.size as usize).min(IMAGE_HEADERS);
+        if crate::fs::io::read_file_at(&file, 0, &mut buffer[..headers]).is_none() {
+            return Err(STATUS_IO_DEVICE_ERROR);
+        }
+        let image = crate::exec::pe::Image::parse_headers(&buffer[..headers], file.size as usize)
+            .map_err(|_| STATUS_INVALID_IMAGE_FORMAT)?;
+        let section = directory
+            .section(object)
+            .expect("the caller holds the section");
+        let base = space
+            .reserve(
+                Some(image.image_base),
+                image.size_of_image,
+                PAGE_EXECUTE_WRITECOPY,
+                Kind::Image,
+            )
+            .map_err(|error| match error {
+                crate::mem::vm::VmError::InvalidAddress | crate::mem::vm::VmError::InvalidParameter => {
+                    STATUS_CONFLICTING_ADDRESSES
+                }
+                crate::mem::vm::VmError::NoMemory => STATUS_NO_MEMORY,
+            })?;
+        for page in 0..image.size_of_image.div_ceil(PAGE) {
+            let rva = page * PAGE;
+            let made = section.frames.made(table, page);
+            // A page not yet made is built first: a read that fails maps nothing.
+            if made.is_none()
+                && !image.map_page(rva, &mut buffer, |offset, out| {
+                    crate::fs::io::read_file_at(&file, offset, out).is_some()
+                })
+            {
+                let _ = space.release(table, base);
+                return Err(STATUS_IO_DEVICE_ERROR);
+            }
+            let frame = match made {
+                Some(frame) => Ok(frame),
+                None => section.frames.frame(table, page, |frame| {
+                    crate::mem::paging::write_frame(frame, 0, &buffer);
+                }),
+            };
+            let mapped = frame.and_then(|frame| {
+                space.map_shared(table, base + rva, frame, page_protect(&image, rva))
+            });
+            if mapped.is_err() {
+                let _ = space.release(table, base);
+                return Err(STATUS_NO_MEMORY);
+            }
+        }
+        let recorded = space.add_view(base, object);
+        debug_assert!(recorded, "the view table had room");
+        // The view holds its section for as long as it is mapped.
+        let held = directory.reference(object);
+        debug_assert!(held, "a section being mapped lives");
+        Ok(base)
+    }
+
     /// NtUnmapViewOfSection: unmap the view holding the address — any address inside it names it,
     /// as on Windows 2000 — (a section nothing names any more goes with its last view);
     /// STATUS_NOT_MAPPED_VIEW for an address no view holds.
     pub fn unmap_view_of_section(call: &mut NtCall, process: Handle, address: UserAddr) -> NtResult {
         let object = with_space(call, process, |space, pages| {
+            // A data view, or an image section's (the image and the system DLLs, mapped by the
+            // kernel itself, are no views).
             let base = space
                 .region_at(address.raw())
-                .filter(|region| region.kind == Kind::Mapped)
+                .filter(|region| matches!(region.kind, Kind::Mapped | Kind::Image))
                 .ok_or(STATUS_NOT_MAPPED_VIEW)?
                 .base;
             let object = space.take_view(base).ok_or(STATUS_NOT_MAPPED_VIEW)?;
@@ -596,7 +782,8 @@ mod tests {
         assert_eq!(error(plan(Some(1 << 32), PAGE_READWRITE, commit, None)), 87);
         assert_eq!(
             plan(Some(0x1000), PAGE_READONLY, SEC_IMAGE, None),
-            Err(STATUS_NOT_IMPLEMENTED)
+            Err(STATUS_INVALID_FILE_FOR_SECTION),
+            "an image section needs its file"
         );
         assert_eq!(
             error(plan(Some(crate::mem::vm::SECTION_MAX + 1), PAGE_READWRITE, commit, None)),
@@ -653,6 +840,62 @@ mod tests {
         assert_eq!(error(plan(None, PAGE_READONLY, commit, Some(directory))), 6);
         assert_eq!(error(plan(None, 0x10, commit, Some(FILE))), 87, "PAGE_EXECUTE");
         assert_eq!(error(plan(None, PAGE_READONLY, 0, Some(FILE))), 87, "no allocation attribute");
+    }
+
+    /// Image sections (LdrLoadDll's): of a file opened for reading, not empty, not a directory,
+    /// with any protection but no-access; the size is the image's, read from its headers.
+    #[test]
+    fn the_image_section_rules() {
+        let image = SEC_IMAGE;
+        assert_eq!(
+            plan(None, PAGE_EXECUTE, image, Some(FILE)),
+            Ok(Plan { size: FILE.size, writable: false })
+        );
+        assert_eq!(plan(None, PAGE_READWRITE, image, Some(FILE)).map(|plan| plan.writable), Ok(false));
+        assert_eq!(plan(None, PAGE_EXECUTE, image, None), Err(STATUS_INVALID_FILE_FOR_SECTION));
+        assert_eq!(plan(None, PAGE_NOACCESS, image, Some(FILE)), Err(STATUS_INVALID_PAGE_PROTECTION));
+        let directory = Backing { directory: true, ..FILE };
+        assert_eq!(plan(None, PAGE_EXECUTE, image, Some(directory)), Err(STATUS_INVALID_HANDLE));
+        let unreadable = Backing { read: false, ..FILE };
+        assert_eq!(plan(None, PAGE_EXECUTE, image, Some(unreadable)), Err(STATUS_ACCESS_DENIED));
+        let empty = Backing { size: 0, ..FILE };
+        assert_eq!(plan(None, PAGE_EXECUTE, image, Some(empty)), Err(STATUS_MAPPED_FILE_SIZE_ZERO));
+    }
+
+    const EXIT0: &[u8] = include_bytes!("../../../tests/exit0/exit0.exe");
+
+    /// An image's layout is its headers' (preferred base, SizeOfImage); a file the loader's parse
+    /// refuses — not a PE file, a foreign one, a truncated one — is STATUS_INVALID_IMAGE_FORMAT.
+    #[test]
+    fn image_layouts_come_from_the_headers() {
+        let size = EXIT0.len() as u32;
+        assert_eq!(image_layout(&EXIT0[..IMAGE_HEADERS], size), Ok((0x0040_0000, 0x3000)));
+        assert_eq!(image_layout(b"plain text, not an image", 24), Err(STATUS_INVALID_IMAGE_FORMAT));
+        assert_eq!(image_layout(&EXIT0[..0x40], 0x40), Err(STATUS_INVALID_IMAGE_FORMAT));
+        assert_eq!(image_layout(&EXIT0[..IMAGE_HEADERS], size - 1), Err(STATUS_INVALID_IMAGE_FORMAT));
+        let mut foreign = EXIT0[..IMAGE_HEADERS].to_vec();
+        let machine = u32::from_le_bytes(foreign[0x3C..0x40].try_into().unwrap()) as usize + 4;
+        foreign[machine..machine + 2].copy_from_slice(&0x8664u16.to_le_bytes());
+        assert_eq!(image_layout(&foreign, size), Err(STATUS_INVALID_IMAGE_FORMAT));
+    }
+
+    /// An image section's view is the whole image at its preferred base: no offset, no size short
+    /// of the image, another base a conflict (an image is never relocated); the handle must map it
+    /// for reading or executing.
+    #[test]
+    fn image_views_are_the_whole_image_at_its_base() {
+        let (base, size) = (0x1000_0000, 0x3000);
+        let map = SECTION_QUERY | SECTION_MAP_READ;
+        assert_eq!(image_view(map, 0, 0, 0, base, size), Ok(()));
+        assert_eq!(image_view(map, base, 0, size, base, size), Ok(()));
+        assert_eq!(image_view(SECTION_QUERY | SECTION_MAP_EXECUTE, 0, 0, 0, base, size), Ok(()));
+        assert_eq!(image_view(SECTION_QUERY, 0, 0, 0, base, size), Err(STATUS_ACCESS_DENIED));
+        assert_eq!(
+            image_view(map, 0x2000_0000, 0, 0, base, size),
+            Err(crate::nt::memory::STATUS_CONFLICTING_ADDRESSES)
+        );
+        assert_eq!(image_view(map, 0, 0x1_0000, 0, base, size), Err(STATUS_INVALID_VIEW_SIZE));
+        assert_eq!(image_view(map, 0, 0, 0x1000, base, size), Err(STATUS_INVALID_VIEW_SIZE));
     }
 
     /// The views' refusals: a read-write view needs SECTION_MAP_WRITE (ERROR_ACCESS_DENIED) and a

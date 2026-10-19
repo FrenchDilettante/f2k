@@ -253,8 +253,8 @@ unsafe fn walk(mut ebp: u32, cs: u32, frames: &mut [u32; MAX_STACK]) -> usize {
 /// Whether the current process's address space records a region containing `address`.
 #[cfg(target_arch = "x86")]
 fn user_mapped(address: u32) -> bool {
-    crate::process::pool::current_mut()
-        .vm()
+    crate::process::pool::current()
+        .space()
         .region_at(address)
         .is_some()
 }

@@ -11,9 +11,12 @@
 //! 64 KiB multiple and the image must fit below the kernel window.
 //!
 //! Failure discipline: questions of identity ("is this an image we load?") come back as
-//! [`Reject`]s; malformed bytes that would read past the buffer, and violations of the load
-//! contract, panic naming the violated contract. A run-to-completion program must have at least one
-//! live import, so a snap that resolves nothing is a contract violation, not a success.
+//! [`Reject`]s, a header that would read past its bytes or a section whose raw data lies past the
+//! file's end among them ([`Reject::Truncated`]: any file a program names is parsed); malformed
+//! bytes past the parse (an export or import table reading out of the image), and violations of
+//! the load contract, panic naming the violated contract. A run-to-completion program must
+//! have at least one live import, so a snap that resolves nothing is a contract violation, not
+//! a success.
 
 /// The DOS-header magic ("MZ").
 const DOS_MAGIC: u16 = 0x5A4D;
@@ -125,6 +128,8 @@ pub enum Reject {
     ZeroExtent,
     /// The image exceeds the loader's size cap.
     ImageTooLarge,
+    /// A header, the section table or a section's raw data lies past the bytes (or the file).
+    Truncated,
 }
 
 /// One data-directory entry.
@@ -148,6 +153,7 @@ pub struct Section {
 
 impl Section {
     /// The section name; an 8-byte name has no terminator, by format.
+    #[cfg(test)]
     pub fn name_str(&self) -> &str {
         let len = self.name.iter().position(|&b| b == 0).unwrap_or(8);
         core::str::from_utf8(&self.name[..len]).unwrap_or_else(|_| {
@@ -241,10 +247,11 @@ pub enum ForwardTarget<'a> {
 }
 
 /// Split a forwarder string into its module and target. The module part is everything before the
-/// last dot and carries no extension (".dll" is implied, see [`same_module`]). `None` for a string
-/// without a dot or with an empty part — malformed exports are the caller's to report.
+/// first dot and carries no extension (".dll" is implied, see [`same_module`]); the target is
+/// everything after it, dots included. `None` for a string without a dot or with an empty part —
+/// malformed exports are the caller's to report.
 pub fn split_forwarder(forwarder: &str) -> Option<(&str, ForwardTarget<'_>)> {
-    let (module, entry) = forwarder.rsplit_once('.')?;
+    let (module, entry) = forwarder.split_once('.')?;
     if module.is_empty() || entry.is_empty() {
         return None;
     }
@@ -377,7 +384,6 @@ impl Exports {
     }
 
     /// The export with this ordinal (biased by the directory's ordinal base).
-    #[allow(dead_code)] // the system DLLs' ordinals are sequential placeholders, not the real system's
     pub fn by_ordinal<'a>(&self, mapped: &'a [u8], ordinal: u32) -> Option<Export<'a>> {
         let slot = ordinal.checked_sub(self.ordinal_base)?;
         if slot >= self.num_functions {
@@ -452,6 +458,14 @@ fn read_cstr<'a>(bytes: &'a [u8], off: usize, what: &str) -> &'a str {
         .unwrap_or_else(|_| panic!("{what} is not valid UTF-8"))
 }
 
+/// Whether `[off, off + len)` lies inside `bytes`: a header range that does not is a truncated image.
+fn fits(bytes: &[u8], off: usize, len: usize) -> Result<(), Reject> {
+    match off.checked_add(len) {
+        Some(end) if end <= bytes.len() => Ok(()),
+        _ => Err(Reject::Truncated),
+    }
+}
+
 /// Round `v` up to a multiple of `align` (which must be nonzero).
 fn round_up(v: u32, align: u32) -> u32 {
     let bumped = v
@@ -463,16 +477,23 @@ fn round_up(v: u32, align: u32) -> u32 {
 impl Image {
     /// Parse and validate a PE32 executable.
     ///
-    /// `Err` means the bytes are not an image this loader accepts; panics mean the bytes are
-    /// malformed in a way that would read past the buffer (each panic names what was being read).
+    /// `Err` means the bytes are not an image this loader accepts, a truncated one included.
     pub fn parse(file: &[u8]) -> Result<Image, Reject> {
+        Image::parse_headers(file, file.len())
+    }
+
+    /// Parse and validate a PE32 image from its first bytes, `headers` (the header region at
+    /// least: the DOS and NT headers and the section table), the whole file being `file_len`
+    /// bytes long: its sections' raw data must lie inside the file, not inside `headers`.
+    pub fn parse_headers(headers: &[u8], file_len: usize) -> Result<Image, Reject> {
+        let file = headers;
         // DOS header.
-        need(file, 0, SIZE_DOS_HEADER, "DOS header");
+        fits(file, 0, SIZE_DOS_HEADER)?;
         if read_u16(file, 0, "DOS magic") != DOS_MAGIC {
             return Err(Reject::NotDos);
         }
         let nt = read_u32(file, OFF_E_LFANEW, "e_lfanew") as usize;
-        need(file, nt, SIZE_NT_SIGNATURE + SIZE_FILE_HEADER, "NT header");
+        fits(file, nt, SIZE_NT_SIGNATURE + SIZE_FILE_HEADER)?;
         if read_u32(file, nt, "PE signature") != PE_SIGNATURE {
             return Err(Reject::NotPe);
         }
@@ -490,7 +511,7 @@ impl Image {
         }
 
         // Optional header.
-        need(file, opt, SIZE_OPT_STANDARD, "optional header");
+        fits(file, opt, SIZE_OPT_STANDARD)?;
         let magic = read_u16(file, opt, "optional-header magic");
         if magic != OPT_MAGIC_PE32 {
             return Err(Reject::NotPe32);
@@ -502,7 +523,7 @@ impl Image {
         if SIZE_OPT_STANDARD + num_directories * SIZE_DIRECTORY_ENTRY > size_optional {
             return Err(Reject::OptionalHeaderTooSmall);
         }
-        need(file, opt, size_optional, "optional header");
+        fits(file, opt, size_optional)?;
 
         let entry_rva = read_u32(file, opt + 16, "AddressOfEntryPoint");
         let image_base = read_u32(file, opt + 28, "ImageBase");
@@ -566,12 +587,7 @@ impl Image {
 
         // Section table: it lives inside the header region, which lives inside the image.
         let table = opt + size_optional;
-        need(
-            file,
-            table,
-            num_sections * SIZE_SECTION_HEADER,
-            "section table",
-        );
+        fits(file, table, num_sections * SIZE_SECTION_HEADER)?;
         if num_sections > MAX_SECTIONS {
             return Err(Reject::TooManySections);
         }
@@ -581,6 +597,9 @@ impl Image {
         }
         if size_of_headers >= size_of_image {
             return Err(Reject::HeadersOutsideImage);
+        }
+        if size_of_headers as usize > file_len {
+            return Err(Reject::Truncated);
         }
 
         // Sections and their mapping plan.
@@ -611,21 +630,11 @@ impl Image {
             if section.raw_size == 0 {
                 section.raw_offset = 0;
             }
-            let name_str = section.name_str();
             // The raw range must not wrap and must exist in the file.
-            assert!(
-                section.raw_offset.checked_add(section.raw_size).is_some(),
-                "section {name_str} raw range 0x{:x}+0x{:x} wraps",
-                section.raw_offset,
-                section.raw_size
-            );
-            assert!(
-                (section.raw_offset + section.raw_size) as usize <= file.len(),
-                "section {name_str} raw data [0x{:x}, 0x{:x}) exceeds the file length 0x{:x}",
-                section.raw_offset,
-                section.raw_offset + section.raw_size,
-                file.len()
-            );
+            match section.raw_offset.checked_add(section.raw_size) {
+                Some(end) if end as usize <= file_len => {}
+                _ => return Err(Reject::Truncated),
+            }
             let extent = section.extent(section_alignment);
             if extent == 0 {
                 return Err(Reject::ZeroExtent);
@@ -799,6 +808,38 @@ impl Image {
                 out[dst + copy_len..dst + extent].fill(0);
             }
         }
+    }
+
+    /// One page of the in-memory image as [`Image::map_into`] builds it — the headers verbatim, each
+    /// section's raw bytes, zeros elsewhere — the page at `page_rva` into `out` (one page), its
+    /// bytes read from the file by `read` (a file offset and the bytes to fill there). False when a
+    /// read fails. For a mapping made page by page, without the file or the image in memory.
+    pub fn map_page(
+        &self,
+        page_rva: u32,
+        out: &mut [u8],
+        mut read: impl FnMut(u32, &mut [u8]) -> bool,
+    ) -> bool {
+        out.fill(0);
+        let page_end = page_rva as u64 + out.len() as u64;
+        // (RVA, bytes copied, file offset) for the headers, then each section.
+        let pieces = core::iter::once((0, self.size_of_headers, 0)).chain(
+            self.sections[..self.num_sections].iter().map(|s| {
+                (s.virtual_address, s.copy_len(self.section_alignment), s.raw_offset)
+            }),
+        );
+        for (rva, len, offset) in pieces {
+            let start = (rva as u64).max(page_rva as u64);
+            let end = (rva as u64 + len as u64).min(page_end);
+            if start >= end {
+                continue;
+            }
+            let into = &mut out[(start - page_rva as u64) as usize..(end - page_rva as u64) as usize];
+            if !read(offset + (start - rva as u64) as u32, into) {
+                return false;
+            }
+        }
+        true
     }
 
     /// The IAT region: the IAT directory when the linker emitted one, else the whole raw extent of
@@ -1117,17 +1158,15 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "exceeds the buffer size")]
-    fn lfanew_straddling_eof_panics() {
+    fn lfanew_straddling_eof_is_truncated() {
         let bad = patched(EXIT0, |b| w32(b, 0x3c, (b.len() - 1) as u32));
-        let _ = Image::parse(&bad);
+        assert_eq!(Image::parse(&bad), Err(Reject::Truncated));
     }
 
     #[test]
-    #[should_panic(expected = "exceeds the buffer size")]
-    fn lfanew_wrapping_panics() {
+    fn lfanew_wrapping_is_truncated() {
         let bad = patched(EXIT0, |b| w32(b, 0x3c, 0xffff_fff0));
-        let _ = Image::parse(&bad);
+        assert_eq!(Image::parse(&bad), Err(Reject::Truncated));
     }
 
     #[test]
@@ -1175,10 +1214,9 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "exceeds the buffer size")]
-    fn section_table_beyond_file_panics() {
+    fn section_table_beyond_file_is_truncated() {
         let bad = patched(EXIT0, |b| w16(b, off_nt(b) + 6, 0x200));
-        let _ = Image::parse(&bad);
+        assert_eq!(Image::parse(&bad), Err(Reject::Truncated));
     }
 
     #[test]
@@ -1448,6 +1486,40 @@ mod tests {
         assert_eq!(Image::parse(&bad), Err(Reject::SectionDiscontiguous));
     }
 
+    /// Page by page, the image is the one `map_into` builds (the corpus, and a DLL); a read that
+    /// fails fails the page.
+    #[test]
+    fn pages_map_as_the_whole_image_does() {
+        const PAGE: usize = 0x1000;
+        for src in [EXIT0, RET0, &as_dll(EXIT0)[..]] {
+            let image = parse_ok(src);
+            let mut mapped = vec![0u8; image.size_of_image as usize];
+            image.map_into(src, &mut mapped);
+            let mut page = vec![0xAAu8; PAGE];
+            for (index, expected) in mapped.chunks(PAGE).enumerate() {
+                let read = |offset: u32, out: &mut [u8]| {
+                    out.copy_from_slice(&src[offset as usize..offset as usize + out.len()]);
+                    true
+                };
+                assert!(image.map_page((index * PAGE) as u32, &mut page, read));
+                assert_eq!(&page[..], expected, "page {index}");
+            }
+            assert!(!image.map_page(0, &mut page, |_, _| false), "a failed read fails the page");
+        }
+    }
+
+    /// The parse from the headers alone, given the file's length: the same image; a file shorter
+    /// than its headers or its sections' raw data is truncated.
+    #[test]
+    fn the_headers_parse_alone() {
+        for src in [EXIT0, RET0] {
+            assert_eq!(Image::parse_headers(&src[..0x1000], src.len()), Image::parse(src));
+            assert_eq!(Image::parse_headers(&src[..0x1000], 0xFFF), Err(Reject::Truncated));
+        }
+        // exit0's last section's raw data ends the file.
+        assert_eq!(Image::parse_headers(&EXIT0[..0x1000], EXIT0.len() - 1), Err(Reject::Truncated));
+    }
+
     #[test]
     fn headers_map_verbatim() {
         for src in [EXIT0, RET0] {
@@ -1459,19 +1531,17 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "wraps")]
-    fn raw_range_wrap_panics() {
+    fn raw_range_wrap_is_truncated() {
         let bad = patched(EXIT0, |b| {
             w32(b, off_sec(b, 0) + S_RAWOFF, 0xffff_f000);
         });
-        let _ = Image::parse(&bad);
+        assert_eq!(Image::parse(&bad), Err(Reject::Truncated));
     }
 
     #[test]
-    #[should_panic(expected = "exceeds the file length")]
-    fn raw_data_past_eof_panics() {
+    fn raw_data_past_eof_is_truncated() {
         let bad = patched(EXIT0, |b| w32(b, off_sec(b, 1) + S_RAWSIZE, 0x2000));
-        let _ = Image::parse(&bad);
+        assert_eq!(Image::parse(&bad), Err(Reject::Truncated));
     }
 
     #[test]
@@ -2053,10 +2123,15 @@ mod tests {
             split_forwarder("NTDLL.#12"),
             Some(("NTDLL", ForwardTarget::Ordinal(12)))
         );
-        // The last dot splits: a dotted module name keeps its dots.
+        // The first dot splits: everything after it is the entry, dots and all.
         assert_eq!(
             split_forwarder("API.MS.Entry"),
-            Some(("API.MS", ForwardTarget::Name("Entry")))
+            Some(("API", ForwardTarget::Name("MS.Entry")))
+        );
+        assert_eq!(
+            split_forwarder("NTDLL.#12.x"),
+            None,
+            "an ordinal target is digits alone"
         );
         for bad in ["NTDLL", ".Entry", "NTDLL.", "NTDLL.#", "NTDLL.#x1"] {
             assert_eq!(split_forwarder(bad), None, "{bad}");
@@ -2077,21 +2152,18 @@ mod tests {
     // ---- malformed files ----
 
     #[test]
-    #[should_panic(expected = "exceeds the file length")]
-    fn file_cut_to_headers_panics() {
-        let _ = Image::parse(&EXIT0[..0x1000]);
+    fn file_cut_to_headers_is_truncated() {
+        assert_eq!(Image::parse(&EXIT0[..0x1000]), Err(Reject::Truncated));
     }
 
     #[test]
-    #[should_panic(expected = "exceeds the buffer size")]
-    fn file_cut_to_dos_header_panics() {
-        let _ = Image::parse(&EXIT0[..0x40]);
+    fn file_cut_to_dos_header_is_truncated() {
+        assert_eq!(Image::parse(&EXIT0[..0x40]), Err(Reject::Truncated));
     }
 
     #[test]
-    #[should_panic(expected = "exceeds the file length")]
-    fn file_missing_last_raw_byte_panics() {
-        let _ = Image::parse(&EXIT0[..EXIT0.len() - 1]);
+    fn file_missing_last_raw_byte_is_truncated() {
+        assert_eq!(Image::parse(&EXIT0[..EXIT0.len() - 1]), Err(Reject::Truncated));
     }
 
     #[test]

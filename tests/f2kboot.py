@@ -708,11 +708,35 @@ def declaration(fixture: str) -> dict:
         return tomllib.load(file)
 
 
+# A sectioned fixture's real-machine files: its program (and the source it is built from) and its
+# capture. A fixture declared before they are checked in has none of them: it is awaited.
+REAL_MACHINE_FILES = ("{name}.exe", "{name}.c", "output.txt")
+
+
+def real_machine_files(fixture: str) -> list[Path]:
+    """A sectioned fixture's real-machine files (REAL_MACHINE_FILES), by path."""
+    directory = REPO_ROOT / "tests" / fixture
+    return [directory / name.format(name=fixture) for name in REAL_MACHINE_FILES]
+
+
+def awaited(fixture: str) -> bool:
+    """Whether a fixture is declared ahead of its real-machine files: none of them is checked in
+    (tests/test_repository.py refuses a fixture holding only some)."""
+    return not any(path.exists() for path in real_machine_files(fixture))
+
+
 def corpus_params(fixture: str) -> list:
-    """A sectioned fixture's blocks as pytest parameters, as its declaration says to compare them."""
+    """A sectioned fixture's blocks as pytest parameters, as its declaration says to compare them;
+    one skipped parameter for a fixture still awaiting its real-machine files."""
+    import pytest
+
     declared = declaration(fixture)
     if declared.get("kind") != "sectioned":
         raise ValueError(f"tests/{fixture}/fixture.toml does not declare a sectioned fixture")
+    if awaited(fixture):
+        reason = (f"{fixture} awaits its real-machine build and capture "
+                  f"({', '.join(path.name for path in real_machine_files(fixture))})")
+        return [pytest.param(None, id="awaited", marks=[pytest.mark.corpus, pytest.mark.skip(reason=reason)])]
     return blocks(
         fixture,
         gate=declared.get("gate", False),

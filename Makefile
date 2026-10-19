@@ -64,8 +64,11 @@ DISK_SIZE ?= 131072
 DISK_FIXTURES ?= exit0 ret0
 # The sectioned fixtures (tests/README.md), in their own directory, \CORPUS, the way each runs from
 # its own directory on the real machine: the root keeps its one cluster (the disk-smoke pins it).
-# They are the fixtures whose declaration, tests/<name>/fixture.toml, says kind "sectioned".
-CORPUS_FIXTURES ?= $(sort $(patsubst tests/%/fixture.toml,%,$(shell grep -l '^kind = "sectioned"' tests/*/fixture.toml)))
+# They are the fixtures whose declaration, tests/<name>/fixture.toml, says kind "sectioned", less
+# those declared ahead of their real-machine build (no tests/<name>/<name>.exe yet). Each one's
+# companion DLLs (tests/<name>/*.dll) go beside it, as they sit beside the program on the real
+# machine.
+CORPUS_FIXTURES ?= $(sort $(foreach fixture,$(patsubst tests/%/fixture.toml,%,$(shell grep -l '^kind = "sectioned"' tests/*/fixture.toml)),$(if $(wildcard tests/$(fixture)/$(fixture).exe),$(fixture))))
 
 # Limine bootloader settings
 LIMINE_DIR ?= $(BOOT_DIR)/limine
@@ -168,6 +171,11 @@ disk: kernel limine
 	for fixture in $(CORPUS_FIXTURES); do \
 		mcopy -i $(DISK_IMG)@@1M tests/$$fixture/$$fixture.exe \
 			::/CORPUS/$$(echo $$fixture | tr a-z A-Z).EXE || exit 1; \
+		for dll in tests/$$fixture/*.dll; do \
+			[ -f "$$dll" ] || continue; \
+			mcopy -i $(DISK_IMG)@@1M "$$dll" \
+				::/CORPUS/$$(basename "$$dll" | tr a-z A-Z) || exit 1; \
+		done; \
 	done
 	mcopy -s -i $(DISK_IMG)@@1M tests/files/DATA ::/CORPUS/
 	mattrib -i $(DISK_IMG)@@1M +r ::/CORPUS/DATA/RDONLY.TXT

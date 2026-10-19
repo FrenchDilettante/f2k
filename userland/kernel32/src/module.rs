@@ -77,8 +77,8 @@ pub unsafe extern "system" fn get_module_handle_a(name: *const u8) -> u32 {
     unsafe { by_name(name, nt::LdrGetDllHandle) }
 }
 
-/// LoadLibraryA: the module the name names, loaded (LdrLoadDll: only a module the process already
-/// has, ERROR_MOD_NOT_FOUND for any other). A null name is ERROR_INVALID_PARAMETER.
+/// LoadLibraryA: the module the name names, loaded (LdrLoadDll: one the process has, or one it
+/// finds on the volume; ERROR_MOD_NOT_FOUND for none). A null name is ERROR_INVALID_PARAMETER.
 ///
 /// # Safety
 ///
@@ -93,9 +93,9 @@ pub unsafe extern "system" fn load_library_a(name: *const u8) -> u32 {
     unsafe { by_name(name, nt::LdrLoadDll) }
 }
 
-/// FreeLibrary: one reference to the module fewer (LdrUnloadDll; the modules the process starts
-/// with stay). ERROR_MOD_NOT_FOUND for a handle naming no module, as Windows 2000 maps
-/// LdrUnloadDll's STATUS_DLL_NOT_FOUND.
+/// FreeLibrary: one reference to the module fewer (LdrUnloadDll: a loaded module's last goes with
+/// it; the modules the process starts with stay). ERROR_MOD_NOT_FOUND for a handle naming no
+/// module, as Windows 2000 maps LdrUnloadDll's STATUS_DLL_NOT_FOUND.
 #[unsafe(export_name = "f2k_export_FreeLibrary")]
 pub extern "system" fn free_library(module: u32) -> u32 {
     // SAFETY: ntdll's export.
@@ -113,9 +113,10 @@ const MAX_EXPORT_NAME: usize = 0xFFFE;
 
 /// GetProcAddress: the address of the module's export (the image's for a null handle) named
 /// `name`, exactly (LdrGetProcedureAddress, forwarders followed), or of the ordinal a value below
-/// 0x10000 in its place is (none is found yet: the DLLs' ordinals are not Windows 2000's).
-/// ERROR_PROC_NOT_FOUND for a name the module does not export, ERROR_MOD_NOT_FOUND for a handle
-/// naming no module; an export at the module's own base is no export (Windows 2000's check).
+/// 0x10000 in its place is (the system DLLs' ordinals are their export specs' numbering).
+/// ERROR_PROC_NOT_FOUND for a name or an ordinal the module does not export, ERROR_MOD_NOT_FOUND
+/// for a handle naming no module; an export at the module's own base is no export (Windows 2000's
+/// check).
 ///
 /// # Safety
 ///

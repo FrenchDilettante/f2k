@@ -214,7 +214,7 @@ unsafe fn terminated<'a>(string: *const u16) -> &'a [u16] {
 }
 
 /// The current directory's DOS path and handle, copied under the PEB lock into `out`: its length.
-fn current_directory(out: &mut [u16; MAX_PATH + 1]) -> (usize, u32) {
+pub(crate) fn current_directory(out: &mut [u16; MAX_PATH + 1]) -> (usize, u32) {
     let lock = sys::peb_lock();
     lock.enter(&sys::Native);
     // SAFETY: the DOS path's buffer holds its length.

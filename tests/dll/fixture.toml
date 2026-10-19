@@ -1,0 +1,7 @@
+# dll: one test per block of the real-machine capture (output.txt); see tests/README.md. Its
+# companion DLL (tests/dll/*.dll) goes beside dll.exe in \CORPUS, as it sits beside the program on
+# the real machine. Declared ahead of its real-machine build: until dll.exe, dll.c and output.txt
+# are checked in, the fixture is one skipped test.
+description = "dll - a program and its companion DLL: LoadLibraryA of the DLL from the program's directory, GetProcAddress by name and by ordinal, a call into it, and FreeLibrary."
+kind = "sectioned"
+gate = true

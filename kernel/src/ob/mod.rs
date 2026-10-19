@@ -259,6 +259,8 @@ pub struct SectionObject {
     pub writable: bool,
     /// A file's section: the file object it holds (the file stays open while it is mapped).
     pub file_object: Option<ObjectId>,
+    /// An image section's preferred base, where its one view maps (zero: a data section).
+    pub image_base: u32,
 }
 
 impl SectionObject {
@@ -271,6 +273,7 @@ impl SectionObject {
             size: 0,
             writable: false,
             file_object: None,
+            image_base: 0,
         }
     }
 }

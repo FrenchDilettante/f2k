@@ -118,6 +118,9 @@ pub extern "C" fn kmain(magic: u32, multiboot_info: u32) -> ! {
     // SAFETY: the GDT is loaded (selector 0x08 valid); same context.
     unsafe { crate::cpu::idt::init() };
     serial_println!("F2K: GDT and IDT initialized");
+    // Every thread's floating-point state is saved with `fxsave`: enabled before the first switch.
+    // SAFETY: boot CPU, ring 0, before any thread exists.
+    unsafe { crate::cpu::fpu::init() };
 
     // Test-only fault injection: raise an exception right after init to exercise the stubs and the
     // COM1 dump on target. The diagnostics prove the CPU did not write to the GDT and pin the

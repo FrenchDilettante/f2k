@@ -720,7 +720,7 @@ name = "LdrLoadDll"
 group = "loader"
 args = ["ptr DllPath", "ptr DllCharacteristics", "ptr DllName", "ptr<u32> DllHandle"]
 impl = { native = "LdrLoadDll" }
-note = "finds a module the process already has (nothing loads from disk yet: STATUS_DLL_NOT_FOUND), its load count raised"
+note = "a module the lists hold, its load count raised, or one loaded from the volume (the current directory, then the root): an image section mapped at its preferred base, never relocated, its imports snapped in user mode; no DllMain runs"
 pinned_by = ["runtime/module"]
 
 [[export]]
@@ -728,7 +728,7 @@ name = "LdrUnloadDll"
 group = "loader"
 args = ["u32 DllHandle"]
 impl = { native = "LdrUnloadDll" }
-note = "a module's load count lowered; nothing is ever unmapped"
+note = "a module's load count lowered: a loaded module's last reference unmaps it and releases its imports; the modules the process starts with stay"
 pinned_by = ["runtime/module"]
 
 [[export]]
@@ -736,7 +736,7 @@ name = "LdrGetProcedureAddress"
 group = "loader"
 args = ["u32 DllHandle", "ptr ProcedureName", "u32 ProcedureNumber", "ptr<u32> ProcedureAddress"]
 impl = { native = "LdrGetProcedureAddress" }
-note = "the export directory as mapped, forwarders followed; an ordinal finds nothing (STATUS_ORDINAL_NOT_FOUND) until the DLLs' ordinals are Windows 2000's"
+note = "the export directory as mapped, by name or by ordinal, forwarders followed (split at the first dot); the system DLLs' ordinals are their specs' numbering, not Windows 2000's"
 pinned_by = ["runtime/module"]
 
 # --- the loader's thread start and end (src/ldr.s, src/main.rs over rtl::heap and rtl::ldr) ---------

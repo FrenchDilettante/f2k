@@ -2185,6 +2185,8 @@ pub mod modules {
     pub const KERNEL32: u32 = 0x7C4E_0000;
     /// GetTickCount's stand-in address in kernel32.
     pub const GET_TICK_COUNT: u32 = KERNEL32 + 0x1000;
+    /// GetTickCount's ordinal in the stand-in kernel32.
+    pub const GET_TICK_COUNT_ORDINAL: u32 = 7;
 
     /// The modules' full paths, in load order (the image's the parameters' ImagePathName).
     pub const MODULE_PATHS: [(u32, &str); 3] = [
@@ -2194,7 +2196,6 @@ pub mod modules {
     ];
 
     const STATUS_DLL_NOT_FOUND: u32 = 0xC000_0135;
-    const STATUS_ORDINAL_NOT_FOUND: u32 = 0xC000_0138;
     const STATUS_ENTRYPOINT_NOT_FOUND: u32 = 0xC000_0139;
 
     std::thread_local! {
@@ -2294,11 +2295,11 @@ pub mod modules {
         }
     }
 
-    /// kernel32's GetTickCount alone is an export (by its exact name).
+    /// kernel32's GetTickCount alone is an export (by its exact name, or by its ordinal).
     pub unsafe extern "system" fn LdrGetProcedureAddress(
         module: u32,
         name: *const AnsiString,
-        _ordinal: u32,
+        ordinal: u32,
         address: *mut u32,
     ) -> u32 {
         if let Some(status) = failure() {
@@ -2309,7 +2310,12 @@ pub mod modules {
         }
         // SAFETY: the caller's string, when given.
         let Some(name) = (unsafe { name.as_ref() }) else {
-            return STATUS_ORDINAL_NOT_FOUND;
+            if module == KERNEL32 && ordinal == GET_TICK_COUNT_ORDINAL {
+                // SAFETY: the caller's address.
+                unsafe { address.write(GET_TICK_COUNT) };
+                return 0;
+            }
+            return STATUS_ENTRYPOINT_NOT_FOUND;
         };
         // SAFETY: as above.
         let name = unsafe { core::slice::from_raw_parts(name.buffer, usize::from(name.length)) };
