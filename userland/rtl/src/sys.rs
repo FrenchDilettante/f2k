@@ -19,7 +19,8 @@ include!(concat!(env!("OUT_DIR"), "/abi.rs"));
 const TEB_SELF: u32 = 0x18;
 /// The TEB's ClientId.UniqueThread.
 const TEB_THREAD_ID: u32 = 0x24;
-/// The TEB's TlsExpansionSlots.
+/// The TEB's ThreadLocalStoragePointer (the implicit-TLS block array) and TlsExpansionSlots.
+pub const TEB_THREAD_LOCAL_STORAGE_POINTER: usize = 0x2C;
 pub const TEB_TLS_EXPANSION_SLOTS: usize = 0xF94;
 /// The TEB's pointer to the process's PEB, and the PEB's NumberOfProcessors.
 const TEB_PEB: u32 = 0x30;
@@ -33,10 +34,17 @@ const PEB_PROCESS_HEAP: usize = 0x18;
 /// proper on its page; LdrInitializeThunk makes it on the process's first thread).
 const PEB_HEAP_LIST: usize = 0x88;
 const PEB_HEAP_LIST_LOCK: usize = 0x840;
-/// Where F2K keeps the lock the PEB's FastPebLock points at: past the PEB proper on its page
-/// (Windows 2000 keeps it in ntdll's data). The kernel plants it free with the PEB until ntdll's
-/// process start makes it (B7).
+/// The PEB's FastPebLock, with the routines that take and release it, and where F2K keeps the lock
+/// it points at: past the PEB proper on its page, after the heap list's (Windows 2000 keeps it in
+/// ntdll's data). LdrInitializeThunk makes it on the process's first thread.
+const PEB_FAST_PEB_LOCK: usize = 0x1C;
+const PEB_FAST_PEB_LOCK_ROUTINE: usize = 0x20;
+const PEB_FAST_PEB_UNLOCK_ROUTINE: usize = 0x24;
 const PEB_LOCK_STORAGE: usize = 0x860;
+/// The PEB's LoaderLock, and where F2K keeps the lock it points at: past the PEB proper on its page
+/// (Windows 2000 keeps LdrpLoaderLock in ntdll's data).
+const PEB_LOADER_LOCK: usize = 0xA0;
+const LOADER_LOCK_STORAGE: usize = 0x900;
 
 /// The calling thread's system.
 pub struct Native;
@@ -69,9 +77,36 @@ pub fn peb() -> usize {
 /// The PEB lock (FastPebLock): what serializes the process-wide state's changes (the TLS bitmaps,
 /// kernel32's lazy per-process state).
 pub fn peb_lock() -> &'static CriticalSection {
-    // SAFETY: the lock's storage is on the PEB page, mapped for the process's whole life, and a
-    // free critical section from the process's creation on.
+    // SAFETY: the lock's storage is on the PEB page, mapped for the process's whole life, and made
+    // a critical section by the process's first thread (`init_peb_lock`) before anything takes it.
     unsafe { &*((peb() + PEB_LOCK_STORAGE) as *const CriticalSection) }
+}
+
+/// Make the PEB lock (the process's first thread, before anything else runs): the section
+/// initialized and the PEB's FastPebLock pointing at it, with the routines that take and release
+/// it (`enter`, `leave`: ntdll's RtlEnterCriticalSection and RtlLeaveCriticalSection).
+pub fn init_peb_lock(enter: usize, leave: usize) {
+    let peb = peb();
+    let _ = peb_lock().initialize(&Native, 0);
+    write(peb + PEB_FAST_PEB_LOCK, peb + PEB_LOCK_STORAGE);
+    write(peb + PEB_FAST_PEB_LOCK_ROUTINE, enter);
+    write(peb + PEB_FAST_PEB_UNLOCK_ROUTINE, leave);
+}
+
+/// The loader lock (the PEB's LoaderLock): what the loader holds while it reads or changes the
+/// module lists.
+pub fn loader_lock() -> &'static CriticalSection {
+    // SAFETY: as the PEB lock's: on the PEB page, made by the process's first thread
+    // (`init_loader_lock`) before anything takes it.
+    unsafe { &*((peb() + LOADER_LOCK_STORAGE) as *const CriticalSection) }
+}
+
+/// Make the loader lock (the process's first thread, before anything else runs): the section
+/// initialized and the PEB's LoaderLock pointing at it.
+pub fn init_loader_lock() {
+    let peb = peb();
+    let _ = loader_lock().initialize(&Native, 0);
+    write(peb + PEB_LOADER_LOCK, peb + LOADER_LOCK_STORAGE);
 }
 
 /// A dword of user memory.

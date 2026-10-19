@@ -65,17 +65,16 @@ fn exports_resolve_through_the_module_table() {
         (NTDLL_BASE..NTDLL_BASE + NTDLL_SIZE).contains(&unwind),
         "the forwarder resolves in ntdll"
     );
-    let trampoline = thread_exit_trampoline();
-    assert!((NTDLL_BASE..NTDLL_BASE + NTDLL_SIZE).contains(&trampoline));
-    assert_eq!(resolve("ntdll", "F2kThreadExitTrampoline"), Ok(trampoline));
+    // The thread-exit trampoline is gone: every thread's start routine returns into kernel32's
+    // start frame, which calls ExitThread.
     assert_eq!(
-        thread_exit_trampoline(),
-        trampoline,
-        "the cache holds the export"
+        resolve("ntdll", "F2kThreadExitTrampoline"),
+        Err(Unresolved::NoEntry)
     );
     assert_eq!(
-        resolve("KERNEL32.dll", "F2kThreadExitTrampoline"),
-        Err(Unresolved::NoEntry)
+        Some(ldr_initialize_thunk()),
+        resolve("ntdll", "LdrInitializeThunk").ok(),
+        "the cache holds the export"
     );
 }
 
@@ -118,7 +117,6 @@ fn the_system_dlls_serve_the_registry() {
     // The corpus's argument-block shapes, looked up by name so a renumbering cannot silently skew
     // the pins.
     for (name, arg_bytes) in [
-        ("ExitProcess", 4),
         ("CreateFileA", 28),
         ("SetFilePointer", 16),
         ("ReadFile", 20),
@@ -134,18 +132,20 @@ fn the_system_dlls_serve_the_registry() {
     // virtual-memory, mapping, synchronization, timer, sleep, APC, affinity, TLS-index and
     // environment calls and RaiseException its Rust, the heap and Local/Global calls its own over
     // ntdll's heap).
-    // The internal start thunk is not among them.
-    assert_eq!(NATIVE_EXPORTS.len(), 131);
+    // The internal start thunks are not among them.
+    assert_eq!(NATIVE_EXPORTS.len(), 145);
     for &(name, _) in &NATIVE_EXPORTS {
         let address = kernel32_export(name).unwrap_or_else(|| panic!("kernel32 exports no {name}"));
         addresses.push(address);
     }
-    addresses.push(thread_exit_trampoline());
+    for thunk in ["BaseProcessStartThunk", "BaseThreadStartThunk"] {
+        addresses.push(kernel32_export(thunk).unwrap_or_else(|| panic!("kernel32 exports no {thunk}")));
+    }
     addresses.sort_unstable();
     addresses.dedup();
     assert_eq!(
         addresses.len(),
-        SERVICES.len() + NATIVE_EXPORTS.len() + 1,
+        SERVICES.len() + NATIVE_EXPORTS.len() + 2,
         "every export has its own code"
     );
 }
@@ -154,8 +154,8 @@ fn the_system_dlls_serve_the_registry() {
 /// dispatcher calls its body with the two pointers the kernel left on top (it never returns: a
 /// `ud2` follows), its APC dispatcher calls the routine the kernel left on top, then resumes the
 /// context above it, and its LdrInitializeThunk runs its body, then resumes the same; kernel32's
-/// start thunk clears EBP and pushes the main thread's entry point under a zero return address,
-/// then jumps to its body. The exception-filter natives address the top-level filter's slot in the
+/// start thunks clear EBP and push their registers (the main thread's entry point; a child's
+/// parameter, then its start address) under a zero return address, then jump to their bodies. The exception-filter natives address the top-level filter's slot in the
 /// PEB page.
 #[test]
 fn the_entry_points_keep_their_protocols() {
@@ -206,6 +206,16 @@ fn the_entry_points_keep_their_protocols() {
         Some(process_start_thunk()),
         kernel32_export("BaseProcessStartThunk")
     );
+    let thunk = bytes_at(kernel32_export("BaseThreadStartThunk").unwrap());
+    assert_eq!(
+        &thunk[..6],
+        &[0x31, 0xED, 0x53, 0x50, 0x6A, 0x00],
+        "BaseThreadStartThunk"
+    );
+    assert!(
+        matches!(thunk[6], 0xE9 | 0xEB),
+        "BaseThreadStartThunk: a jump"
+    );
     let slot = crate::user::teb::peb_offset::TOP_LEVEL_FILTER.to_le_bytes();
     for name in ["SetUnhandledExceptionFilter", "UnhandledExceptionFilter"] {
         let body = bytes_at(kernel32_export(name).unwrap());
@@ -220,12 +230,9 @@ fn the_entry_points_keep_their_protocols() {
 fn unimplemented_exports_fail_the_call() {
     // (export, its failure value, its argument block), as the spec declares them.
     for (name, fails, arg_bytes) in [
-        ("SetErrorMode", 0u32, 4u16),
-        ("TerminateThread", 0, 8),
-        ("FindFirstFileA", 0xFFFF_FFFF, 8),
+        ("FindFirstFileA", 0xFFFF_FFFFu32, 8u16),
         ("GetFileAttributesA", 0xFFFF_FFFF, 4),
         ("GetVolumeInformationA", 0, 32),
-        ("GetThreadPriority", 0x7FFF_FFFF, 4),
         ("CopyFileA", 0, 12),
     ] {
         let mut stub = vec![0x64, 0xC7, 0x05, 0x34, 0, 0, 0, 120, 0, 0, 0, 0xB8];
@@ -241,20 +248,9 @@ fn unimplemented_exports_fail_the_call() {
     }
 }
 
-/// ntdll's thread-exit trampoline: the function's return value moves to the gate's argument
-/// register, the internal thread-exit service's number loads without clobbering it, the gate
-/// raises, nothing returns.
-#[test]
-fn the_thread_exit_trampoline_keeps_its_protocol() {
-    let mut expected = vec![0x89, 0xC2, 0xB8]; // mov edx, eax; mov eax, imm32
-    expected.extend_from_slice(&crate::user::syscall::SYS_THREAD_EXIT.to_le_bytes());
-    expected.extend_from_slice(&[0xCD, crate::user::syscall::SYSCALL_VECTOR as u8]);
-    assert!(bytes_at(thread_exit_trampoline()).starts_with(&expected));
-}
-
 /// The corpus binaries (the smokes in the root directory, the sectioned fixtures in \CORPUS): the
 /// import surface kernel32 exports.
-const CORPUS: [(&str, &[u8]); 16] = [
+const CORPUS: [(&str, &[u8]); 12] = [
     ("bare", include_bytes!("../../../../tests/bare/bare.exe")),
     ("files", include_bytes!("../../../../tests/files/files.exe")),
     (
@@ -278,22 +274,9 @@ const CORPUS: [(&str, &[u8]); 16] = [
     ("exit0", include_bytes!("../../../../tests/exit0/exit0.exe")),
     ("ret0", include_bytes!("../../../../tests/ret0/ret0.exe")),
     ("hello", include_bytes!("../../../../tests/hello/hello.exe")),
-    ("spin", include_bytes!("../../../../tests/spin/spin.exe")),
-    (
-        "suspend",
-        include_bytes!("../../../../tests/suspend/suspend.exe"),
-    ),
-    (
-        "respawn",
-        include_bytes!("../../../../tests/respawn/respawn.exe"),
-    ),
     (
         "fileio",
         include_bytes!("../../../../tests/fileio/fileio.exe"),
-    ),
-    (
-        "thread",
-        include_bytes!("../../../../tests/thread/thread.exe"),
     ),
 ];
 
@@ -346,17 +329,11 @@ fn the_surface_is_the_corpus_import_surface() {
 }
 
 /// Each corpus binary snaps every import through the module table: the counts are each binary's
-/// import surface (ret0's 35, hello's 40 — ret0's plus the console-stdio group — the spin and
-/// suspend smokes' 44, the file smoke's 42).
+/// import surface (ret0's 35, hello's 40 — ret0's plus the console-stdio group — the file smoke's
+/// 42).
 #[test]
 fn the_corpus_snaps_fully_against_the_module_table() {
-    for (fixture, thunks) in [
-        ("ret0", 35),
-        ("hello", 40),
-        ("spin", 44),
-        ("suspend", 44),
-        ("fileio", 42),
-    ] {
+    for (fixture, thunks) in [("ret0", 35), ("hello", 40), ("fileio", 42)] {
         let (_, file) = CORPUS.iter().find(|(name, _)| *name == fixture).unwrap();
         let image = Image::parse(file).expect("the fixture parses");
         let mut mapped = vec![0u8; image.size_of_image as usize];

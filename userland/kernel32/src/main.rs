@@ -3,7 +3,7 @@
 //! The library (src/lib.rs) is the home of kernel32's user-mode code; this binary links it into the
 //! DLL beside the assembly natives (src/natives.s), the critical sections' initialization
 //! (src/critsec.s, over ntdll's), the heap and Local/Global functions (src/memory.s, over ntdll's
-//! heap exports, their bodies here), the main thread's start (src/start.s), the pointer probes
+//! heap exports, their bodies here), the thread start thunks (src/start.s), the pointer probes
 //! (src/probe.s) and the bodies generated from the export spec
 //! (exports.toml): the kernel's transitional Win32 services' stubs (EDX = the caller's arguments,
 //! EAX = the service number, the gate, then the stdcall return popping the argument block), and the

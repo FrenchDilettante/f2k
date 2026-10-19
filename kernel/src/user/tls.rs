@@ -8,7 +8,9 @@
 //! headers, `user::teb`); the kernel's part is NtSetInformationThread's ThreadZeroTlsCell, which
 //! TlsFree asks to zero the freed index's slot in every thread that has one (`nt::thread`).
 //!
-//! Implicit TLS (an image's `__declspec(thread)` data) comes with ntdll's thread initialization.
+//! Implicit TLS (an image's `__declspec(thread)` data) is user memory too: ntdll's thread
+//! initialization (LdrInitializeThunk) makes each thread's block on the process heap from the
+//! image's TLS directory, its pointer at TEB+0x2C, and LdrShutdownThread gives it back.
 
 /// The TEB's own slots.
 pub const TEB_SLOTS: u32 = 64;

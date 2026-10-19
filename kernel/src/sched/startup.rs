@@ -29,9 +29,10 @@ pub struct StartParams {
     pub user: Option<UserStart>,
 }
 
-/// A user thread's initial user-mode state: the entry point and the stack top it runs on, and the
-/// registers its start sets (the rest zero): a main thread's EAX names the image's entry point for
-/// kernel32's BaseProcessStartThunk.
+/// A user thread's initial user-mode state: the entry point, the stack top it runs on, and its
+/// integer registers — zero, unless the thread's creator gave a CONTEXT (NtCreateThread's: the main
+/// thread's EAX names the image's entry point for kernel32's BaseProcessStartThunk, a child's EAX
+/// and EBX its start address and parameter for BaseThreadStartThunk).
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub struct UserStart {
     pub eip: u32,
@@ -43,6 +44,17 @@ pub struct UserStart {
     pub esi: u32,
     pub edi: u32,
     pub ebp: u32,
+}
+
+/// A created thread's user stack, as its creator allocated it (NtCreateThread's INITIAL_TEB):
+/// StackBase (one past its top), StackLimit (the lowest committed byte, above the guard page) and
+/// StackAllocationBase (the reservation's base, which the thread's record keeps so the reservation
+/// goes back once the record is reused).
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+pub struct InitialStack {
+    pub base: u32,
+    pub limit: u32,
+    pub allocation_base: u32,
 }
 
 /// The planted trap frame for a user thread's initial state: the GP slots the start gives (zero
@@ -309,17 +321,22 @@ mod tests {
             assert_eq!(gp, 0);
         }
         assert_eq!(core::mem::size_of::<TrapFrame>(), 60);
+        // A start with registers (a CONTEXT's) carries them into the frame.
         let frame = user_trap_frame(&UserStart {
             eip: 0x7C4E_1000,
             esp: 0x0030_0FFC,
             eax: 0x0040_1000,
+            ebx: 0x1234,
             ..Default::default()
         });
         assert_eq!(
-            frame.eax, 0x0040_1000,
-            "the start's EAX: a main thread's entry point"
+            (frame.eip, frame.user_esp, frame.eax, frame.ebx),
+            (0x7C4E_1000, 0x0030_0FFC, 0x0040_1000, 0x1234)
         );
-        assert_eq!((frame.ebx, frame.edi), (0, 0));
+        assert_eq!(
+            (frame.ecx, frame.edx, frame.esi, frame.edi, frame.ebp, frame.esp),
+            (0, 0, 0, 0, 0, 0)
+        );
     }
 
     // A4: the user-context flag and the argument words.

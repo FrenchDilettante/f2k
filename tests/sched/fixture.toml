@@ -12,5 +12,4 @@ yield = ["SwitchToThread: returned 1, the new thread had run *"]
 
 # The blocks this kernel does not pass yet, each with the increment that enables it.
 [pending]
-starve = "B7: the balance-set scan (a thread ready for about three seconds without running takes the balance boost)"
 yield = "B7: threads and scheduling (a known flake: always deselected)"

@@ -17,9 +17,9 @@
 //!
 //! The kernel's loader snaps the image's imports through this table (`exec::loader`), the kernel
 //! finds here the entry points it sends user code to (kernel32's BaseProcessStartThunk for a main
-//! thread, ntdll's KiUserExceptionDispatcher for an exception, ntdll's thread-exit trampoline for a
-//! returning child thread), and kernel32's served GetProcAddress and LoadLibraryA look the system
-//! DLLs up here.
+//! thread, ntdll's LdrInitializeThunk for every thread's start, KiUserExceptionDispatcher for an
+//! exception and KiUserApcDispatcher for a user APC), and kernel32's served GetProcAddress and
+//! LoadLibraryA look the system DLLs up here.
 //! No other DLL loads.
 
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -135,17 +135,6 @@ pub const KERNEL32_NAME: &str = "KERNEL32.dll";
 #[cfg(test)]
 pub fn kernel32_export(name: &str) -> Option<u32> {
     resolve(KERNEL32_NAME, name).ok()
-}
-
-/// ntdll's F2kThreadExitTrampoline (userland/ntdll/src/internal.s): a child thread's user function
-/// returns onto it, and it raises the internal thread-exit service with the function's return
-/// value. An F2K-internal export, found by name.
-pub fn thread_exit_trampoline() -> u32 {
-    static RESOLVED: AtomicU32 = AtomicU32::new(0);
-    redirect_target(&RESOLVED, || {
-        resolve_in(NTDLL, "F2kThreadExitTrampoline", 0)
-            .expect("ntdll exports F2kThreadExitTrampoline")
-    })
 }
 
 /// An entry point the kernel redirects user code to, resolved once into `slot` (0: not yet).

@@ -12,11 +12,11 @@
 //! family, kernel32's HeapAlloc, HeapFree, HeapReAlloc, HeapSize and HeapValidate forwarding here:
 //! `src/heap.s` over `rtl::heap`); the environment (RtlSetEnvironmentVariable,
 //! RtlQueryEnvironmentVariable_U, RtlExpandEnvironmentStrings_U: `src/env.rs` over `rtl::env`);
-//! the loader's share of a thread's start, LdrInitializeThunk, which the kernel delivers before a
-//! fresh thread's first instruction (`src/ldr.s`: the process heap); and the F2K-internal entry
-//! point the kernel sends a thread to (`src/internal.s`): the thread-exit trampoline a child
-//! thread's function returns onto. The kernel finds the trampoline, LdrInitializeThunk and the two
-//! dispatchers by their export names; kernel32's surface carries Windows 2000's names alone.
+//! and the loader's share of a thread's start and end: LdrInitializeThunk, which the kernel
+//! delivers before a fresh thread's first instruction (`src/ldr.s`: the process heap, the PEB lock
+//! and the loader lock, the thread's implicit TLS), and LdrShutdownThread and LdrShutdownProcess,
+//! kernel32's ExitThread's and ExitProcess's. The kernel finds LdrInitializeThunk and the two
+//! dispatchers by their export names.
 
 #![no_std]
 #![no_main]
@@ -30,7 +30,6 @@ mod status;
 core::arch::global_asm!(
     include_str!(concat!(env!("OUT_DIR"), "/consts.s")),
     include_str!(concat!(env!("OUT_DIR"), "/stubs.s")),
-    include_str!("internal.s"),
     include_str!("ldr.s"),
     include_str!("except.s"),
     include_str!("csr.s"),
@@ -40,6 +39,7 @@ core::arch::global_asm!(
 
 use rtl::critsec::{CriticalSection, STATUS_SUCCESS};
 use rtl::heap::{HEAP_GENERATE_EXCEPTIONS, HEAP_GROWABLE, HEAP_REALLOC_IN_PLACE_ONLY};
+use rtl::ldr;
 use rtl::sys::{self, Native};
 
 // The critical sections' bodies, cdecl, called by src/critsec.s's exports. A section pointer is
@@ -221,21 +221,85 @@ extern "C" fn f2k_rtl_validate_heap(handle: usize, flags: u32, pointer: usize) -
     )
 }
 
-// The loader's share of a thread's start: LdrInitializeThunk's body (src/ldr.s calls it).
+// The loader's share of a thread's start and end: LdrInitializeThunk's body (src/ldr.s calls it),
+// LdrShutdownThread (kernel32's ExitThread) and LdrShutdownProcess (kernel32's ExitProcess).
 
 /// A fresh thread's initialization, before anything else it runs in user mode: the process's first
-/// thread makes the heap list's lock and the process heap (PEB+0x18, the list's first entry). A
-/// heap that finds no room is left unmade (the program meets a null process heap). B7 adds the
-/// rest of Windows 2000's LdrpInitialize here: the PEB lock and the loader lock (the kernel plants
-/// the PEB lock free until then), and every thread's implicit-TLS block (`rtl::ldr`).
+/// thread makes the heap list's lock and the process heap (PEB+0x18), the PEB lock and the loader
+/// lock; every thread its implicit-TLS block, when the image has a TLS directory. What finds no
+/// room is left undone (the program meets a null process heap or TLS pointer).
 #[unsafe(no_mangle)]
 extern "C" fn f2k_ldr_initialize() {
     if sys::process_heap_handle() == 0 {
         let process = sys::process();
-        // SAFETY: the PEB's lock slot, zero until now (no other thread of the process runs yet).
+        // SAFETY: the PEB's lock slot, zero until now (no other thread exists yet).
         let _ = unsafe { &*process.lock }.initialize(&Native, 0);
         if let Some(heap) = process.create(&Native, 0, 0, 0) {
             sys::set_process_heap(heap.handle());
         }
+        // The PEB lock, with the routines that take and release it, then the loader lock.
+        unsafe extern "C" {
+            #[link_name = "f2k_export_RtlEnterCriticalSection"]
+            static ENTER: u8;
+            #[link_name = "f2k_export_RtlLeaveCriticalSection"]
+            static LEAVE: u8;
+        }
+        // The exports' code, by address only.
+        let (enter, leave) = (
+            core::ptr::addr_of!(ENTER) as usize,
+            core::ptr::addr_of!(LEAVE) as usize,
+        );
+        sys::init_peb_lock(enter, leave);
+        sys::init_loader_lock();
     }
+    let base = sys::image_base();
+    let Some(directory) =
+        ldr::tls_directory(|offset| Some(sys::read(base + offset as usize) as u32))
+    else {
+        return;
+    };
+    if sys::process_heap_handle() == 0 || directory.block_size().is_none() {
+        return;
+    }
+    let raw = (directory.end - directory.start) as usize;
+    let block = ldr::thread_block(
+        &Native,
+        sys::process_heap(),
+        directory.start as usize,
+        raw,
+        directory.zero_fill as usize,
+    );
+    if let Some(array) = block {
+        sys::write(sys::teb() + sys::TEB_THREAD_LOCAL_STORAGE_POINTER, array);
+    }
+}
+
+/// LdrShutdownThread: a thread ending through ExitThread gives its implicit-TLS block and its TLS
+/// expansion slots back to the process heap (Windows 2000 also sends DLL_THREAD_DETACH here; F2K
+/// calls no DllMain).
+#[unsafe(export_name = "f2k_export_LdrShutdownThread")]
+pub extern "system" fn ldr_shutdown_thread() -> u32 {
+    if sys::process_heap_handle() == 0 {
+        return 0;
+    }
+    let (teb, heap) = (sys::teb(), sys::process_heap());
+    let array = sys::read(teb + sys::TEB_THREAD_LOCAL_STORAGE_POINTER);
+    if array != 0 {
+        sys::write(teb + sys::TEB_THREAD_LOCAL_STORAGE_POINTER, 0);
+        ldr::free_thread_block(&Native, heap, array);
+    }
+    let slots = sys::read(teb + sys::TEB_TLS_EXPANSION_SLOTS);
+    if slots != 0 {
+        sys::write(teb + sys::TEB_TLS_EXPANSION_SLOTS, 0);
+        heap.free(&Native, 0, slots);
+    }
+    0
+}
+
+/// LdrShutdownProcess: kernel32's ExitProcess calls it once the process's other threads are gone.
+/// Windows 2000 sends DLL_PROCESS_DETACH and runs the image's TLS callbacks here; F2K calls no
+/// DllMain and runs no TLS callback, so nothing is left to do.
+#[unsafe(export_name = "f2k_export_LdrShutdownProcess")]
+pub extern "system" fn ldr_shutdown_process() -> u32 {
+    0
 }

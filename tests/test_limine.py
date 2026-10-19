@@ -3,7 +3,7 @@ block's command line (Limine's `cmdline`), instead of QEMU's Multiboot loader (`
 `-append`), which every other corpus boot uses.
 
 These are the sectioned successors of the single-path smokes' Limine (`-disk`) variants in
-tests/kernel/test_kernel.py (pingpong and sleep, retired; spin, suspend, respawn, fileio), which retire as these
+tests/kernel/test_kernel.py (pingpong, sleep, spin, suspend and respawn, retired; fileio), which retire as these
 pass, plus the command line's own path through a real loader (`runtime args`) and the loader's
 memory map (`memory sysinfo`). Each block compares against the same capture, with the same declaration, as its Multiboot
 run in tests/<fixture>/test_<fixture>.py.

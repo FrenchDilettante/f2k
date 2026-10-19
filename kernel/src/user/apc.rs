@@ -139,8 +139,9 @@ pub fn deliver_at_startup() {
 /// The loader's thread initialization, before everything else a fresh thread runs in user mode,
 /// as Windows 2000 delivers LdrInitializeThunk (the thread's first user APC): its planted frame —
 /// its first instruction — is saved on its user stack under an APC call frame (all zero: no
-/// routine), and the return lands on ntdll's LdrInitializeThunk, which makes the process heap (the
-/// process's first thread), then resumes the saved context through NtContinue with TestAlert TRUE —
+/// routine), and the return lands on ntdll's LdrInitializeThunk, which makes the process heap and
+/// the PEB and loader locks (the process's first thread) and the thread's implicit-TLS block, then
+/// resumes the saved context through NtContinue with TestAlert TRUE —
 /// so user APCs queued before the thread ran deliver after it, in queue order, before the first
 /// instruction. False, nothing delivered, for a process without the system DLLs (the fault-test
 /// stubs' raw code page has no loader to run). A user stack the image cannot be written to ends the

@@ -16,22 +16,6 @@
 
 use crate::mem::paging::PAGE_SIZE;
 
-/// The default stack reservation: 1 MiB, the MSVC linker's SizeOfStackReserve (F2K takes the
-/// default rather than the image's own field).
-pub const DEFAULT_RESERVE: u32 = 0x10_0000;
-
-/// A created thread's stack reservation for a requested stack size (CreateThread's dwStackSize, the
-/// commit on Windows 2000): the default reservation, or — when the request reaches it — the request
-/// rounded up to a whole MiB, as BaseCreateStack sizes it.
-pub fn reservation_for(requested: u32) -> u32 {
-    let commit = requested.next_multiple_of(PAGE_SIZE);
-    if commit >= DEFAULT_RESERVE {
-        commit.next_multiple_of(0x10_0000)
-    } else {
-        DEFAULT_RESERVE
-    }
-}
-
 /// What a guard page that fired at an address means for a stack.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum GuardFault {
@@ -158,16 +142,6 @@ mod tests {
             GuardFault::NotStack,
             "no stack recorded"
         );
-    }
-
-    /// A created thread's reservation: the default 1 MiB below it, the request rounded up to a
-    /// whole MiB from it (memory/stack's 256 KiB, 4 MiB and default children).
-    #[test]
-    fn created_stacks_reserve_as_base_create_stack_does() {
-        assert_eq!(reservation_for(0), 0x10_0000);
-        assert_eq!(reservation_for(256 * 1024), 0x10_0000);
-        assert_eq!(reservation_for(4 * 1024 * 1024), 0x40_0000);
-        assert_eq!(reservation_for(0x10_0001), 0x20_0000);
     }
 
     /// Growing page by page ends in the overflow with the bottom page left uncommitted.

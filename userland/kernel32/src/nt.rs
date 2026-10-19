@@ -56,7 +56,7 @@ unsafe extern "system" {
     /// NtClose: the handle released (STATUS_INVALID_HANDLE for one naming nothing).
     pub fn NtClose(handle: u32) -> u32;
     /// NtTerminateProcess: the process the handle names ended with the status (the calling one
-    /// only: it does not return then).
+    /// only: it does not return then); no handle, the caller's other threads.
     pub fn NtTerminateProcess(process: u32, status: u32) -> u32;
     /// The console server's call (the message's ReturnValue).
     pub fn CsrClientCallServer(
@@ -212,7 +212,8 @@ unsafe extern "system" {
         argument2: usize,
         argument3: usize,
     ) -> u32;
-    /// NtSetInformationProcess: the class's value set (F2K answers ProcessAffinityMask, class 21).
+    /// NtSetInformationProcess: the class's value set (F2K answers the hard-error mode, 12, the
+    /// priority class, 18, and the affinity, 21).
     pub fn NtSetInformationProcess(
         process: u32,
         class: u32,
@@ -242,13 +243,45 @@ unsafe extern "system" {
         attributes: u32,
         options: u32,
     ) -> u32;
-    /// NtSetInformationThread: the class's value set (F2K answers ThreadZeroTlsCell, class 10).
+    /// NtSetInformationThread: the class's value set (F2K answers the priority, 2, the base
+    /// priority, 3, the affinity, 4, ThreadZeroTlsCell, 10, and the boost, 14).
     pub fn NtSetInformationThread(
         thread: u32,
         class: u32,
         information: *const u8,
         length: u32,
     ) -> u32;
+    /// NtQueryInformationThread: the class's value (F2K answers the basic information, 0,
+    /// ThreadAmILastThread, 12, and the boost, 14).
+    pub fn NtQueryInformationThread(
+        thread: u32,
+        class: u32,
+        information: *mut u8,
+        length: u32,
+        returned: *mut u32,
+    ) -> u32;
+    /// NtSuspendThread and NtResumeThread: the suspend count raised or lowered, the previous one
+    /// written back.
+    pub fn NtSuspendThread(thread: u32, previous: *mut u32) -> u32;
+    pub fn NtResumeThread(thread: u32, previous: *mut u32) -> u32;
+    /// NtCreateThread: a thread of the calling process, on the stack the INITIAL_TEB describes and
+    /// starting in the CONTEXT.
+    pub fn NtCreateThread(
+        handle: *mut u32,
+        access: u32,
+        attributes: *const ObjectAttributes,
+        process: u32,
+        client_id: *mut usize,
+        context: *const u32,
+        initial_teb: *const crate::thread::InitialTeb,
+        create_suspended: u32,
+    ) -> u32;
+    /// NtTerminateThread: the thread the handle names ended with the status (no handle: the
+    /// caller, refused as its process's last thread).
+    pub fn NtTerminateThread(thread: u32, status: u32) -> u32;
+    /// The loader's share of a thread's and the process's end.
+    pub fn LdrShutdownThread() -> u32;
+    pub fn LdrShutdownProcess() -> u32;
     /// The PEB lock, taken and released (what serializes the process-wide state).
     pub fn RtlAcquirePebLock();
     pub fn RtlReleasePebLock();
@@ -293,6 +326,8 @@ unsafe extern "system" {
 
 #[cfg(test)]
 pub use host::*;
+#[cfg(test)]
+pub use threads::*;
 
 /// The host tests' ntdll: stand-ins with the imports' shapes.
 #[cfg(test)]
@@ -305,8 +340,6 @@ pub mod host {
         pub static FAIL_NEXT: Cell<u32> = const { Cell::new(0) };
         /// The handles NtClose was given, in order.
         pub static CLOSED: RefCell<std::vec::Vec<u32>> = const { RefCell::new(std::vec::Vec::new()) };
-        /// The NtTerminateProcess calls: the handle and the status.
-        pub static TERMINATED: RefCell<std::vec::Vec<(u32, u32)>> = const { RefCell::new(std::vec::Vec::new()) };
         /// The console server's handles for the test's process (a fresh process's to start).
         pub static CONSOLE_HANDLES: Cell<rtl::console::Handles> = const { Cell::new(rtl::console::Handles::standard()) };
         /// The bytes each console write showed, with its handle.
@@ -318,25 +351,14 @@ pub mod host {
         FAIL_NEXT.with(|fail| fail.replace(0))
     }
 
-    /// STATUS_INVALID_HANDLE: the kernel's answer for a process handle naming another process.
-    const STATUS_INVALID_HANDLE: u32 = 0xC000_0008;
-    /// NtCurrentProcess.
-    const CURRENT_PROCESS: u32 = 0xFFFF_FFFF;
+    /// The arranged failure, if any (reset): the thread and process stand-ins' form of [`answer`].
+    pub(crate) fn failure() -> Option<u32> {
+        Some(answer()).filter(|&status| status != 0)
+    }
 
     pub unsafe extern "system" fn NtClose(handle: u32) -> u32 {
         CLOSED.with(|closed| closed.borrow_mut().push(handle));
         answer()
-    }
-
-    /// NtTerminateProcess: recorded; only the current process is reachable (the kernel's rule), and
-    /// the stand-in returns where the kernel would not.
-    pub unsafe extern "system" fn NtTerminateProcess(process: u32, status: u32) -> u32 {
-        TERMINATED.with(|terminated| terminated.borrow_mut().push((process, status)));
-        if process == CURRENT_PROCESS {
-            0
-        } else {
-            STATUS_INVALID_HANDLE
-        }
     }
 
     pub unsafe extern "system" fn RtlNtStatusToDosError(status: u32) -> u32 {
@@ -372,8 +394,6 @@ pub mod host {
         pub static LAST_TIMEOUT: Cell<Option<i64>> = const { Cell::new(None) };
         /// The handles the last wait stand-in was handed.
         pub static LAST_WAITED: RefCell<std::vec::Vec<u32>> = const { RefCell::new(std::vec::Vec::new()) };
-        /// The indexes NtSetInformationThread's ThreadZeroTlsCell was handed, in order.
-        pub static ZEROED_TLS: RefCell<std::vec::Vec<u32>> = const { RefCell::new(std::vec::Vec::new()) };
         /// How deep the stand-in PEB lock is held.
         pub static PEB_LOCK_DEPTH: Cell<u32> = const { Cell::new(0) };
     }
@@ -451,36 +471,6 @@ pub mod host {
         answer()
     }
 
-    /// NtSetInformationProcess: ProcessAffinityMask alone, the kernel's checks (the length, the
-    /// current process, a non-empty subset of the one processor).
-    pub unsafe extern "system" fn NtSetInformationProcess(
-        process: u32,
-        class: u32,
-        information: *const u8,
-        length: u32,
-    ) -> u32 {
-        let status = answer();
-        if status != 0 {
-            return status;
-        }
-        if class != 21 {
-            return 0xC000_0003; // STATUS_INVALID_INFO_CLASS
-        }
-        if length != 4 {
-            return 0xC000_0004; // STATUS_INFO_LENGTH_MISMATCH
-        }
-        if process != CURRENT_PROCESS {
-            return STATUS_INVALID_HANDLE;
-        }
-        // SAFETY: the caller's value, four bytes.
-        let mask = unsafe { information.cast::<u32>().read_unaligned() };
-        if mask == 1 {
-            0
-        } else {
-            0xC000_000D // STATUS_INVALID_PARAMETER
-        }
-    }
-
     pub unsafe extern "system" fn NtWaitForSingleObject(
         handle: u32,
         _alertable: u32,
@@ -531,33 +521,6 @@ pub mod host {
             unsafe { target.write(HANDLE) };
         }
         status
-    }
-
-    /// NtSetInformationThread: ThreadZeroTlsCell alone, the kernel's checks (the calling thread's
-    /// pseudo-handle, an index below 1088), the index recorded.
-    pub unsafe extern "system" fn NtSetInformationThread(
-        thread: u32,
-        class: u32,
-        information: *const u8,
-        length: u32,
-    ) -> u32 {
-        let status = answer();
-        if status != 0 {
-            return status;
-        }
-        if class != 10 {
-            return rtl::status::STATUS_INVALID_INFO_CLASS;
-        }
-        if length != 4 {
-            return rtl::status::STATUS_INFO_LENGTH_MISMATCH;
-        }
-        // SAFETY: the caller's value.
-        let value = unsafe { (information as *const u32).read_unaligned() };
-        if thread != 0xFFFF_FFFE || value >= 1088 {
-            return 0xC000_000D;
-        }
-        ZEROED_TLS.with(|zeroed| zeroed.borrow_mut().push(value));
-        0
     }
 
     pub unsafe extern "system" fn RtlAcquirePebLock() {
@@ -765,36 +728,6 @@ pub mod host {
         0
     }
 
-    /// NtQueryInformationProcess: the current process's VM counters (class 3), its virtual size
-    /// [`VIRTUAL_SIZE`].
-    pub unsafe extern "system" fn NtQueryInformationProcess(
-        process: u32,
-        class: u32,
-        information: *mut u8,
-        length: u32,
-        _returned: *mut u32,
-    ) -> u32 {
-        let status = answer();
-        if status != 0 {
-            return status;
-        }
-        if process != CURRENT_PROCESS {
-            return STATUS_INVALID_HANDLE;
-        }
-        match (class, length) {
-            (3, 44) => {
-                // SAFETY: the caller's VM_COUNTERS.
-                unsafe {
-                    information.write_bytes(0, 44);
-                    words(information, &[VIRTUAL_SIZE, VIRTUAL_SIZE]);
-                }
-                0
-            }
-            (3, _) => rtl::status::STATUS_INFO_LENGTH_MISMATCH,
-            _ => rtl::status::STATUS_INVALID_INFO_CLASS,
-        }
-    }
-
     std::thread_local! {
         /// The last virtual-memory or view call the stand-ins were handed: its base (a view's
         /// offset), size and the type or protection it asked for.
@@ -804,6 +737,14 @@ pub mod host {
         pub static LAST_SECTION: Cell<Option<(u32, u32, u32, u32, Option<i64>)>> = const { Cell::new(None) };
         /// The object name the last create or open stand-in was handed, and its root.
         pub static LAST_NAME: RefCell<Option<(u32, std::vec::Vec<u16>)>> = const { RefCell::new(None) };
+        /// Every allocation, free and protection, in order: the service, the base and size it was
+        /// handed, and the type or protection it asked for.
+        pub static VM_CALLS: RefCell<std::vec::Vec<(&'static str, usize, usize, u32)>> = const { RefCell::new(std::vec::Vec::new()) };
+    }
+
+    /// The virtual-memory calls taken since the last look.
+    pub fn vm_calls() -> std::vec::Vec<(&'static str, usize, usize, u32)> {
+        VM_CALLS.with(|calls| std::mem::take(&mut *calls.borrow_mut()))
     }
 
     /// The base the allocation and view stand-ins hand back.
@@ -822,6 +763,7 @@ pub mod host {
         // SAFETY: the caller's in/out values.
         unsafe {
             LAST_VM.with(|cell| cell.set(Some((base.read(), size.read(), kind))));
+            VM_CALLS.with(|calls| calls.borrow_mut().push(("allocate", base.read(), size.read(), kind)));
             let status = answer();
             if status != 0 {
                 return status;
@@ -839,6 +781,7 @@ pub mod host {
     ) -> u32 {
         // SAFETY: the caller's in/out values.
         LAST_VM.with(|cell| cell.set(Some(unsafe { (base.read(), size.read(), kind) })));
+        VM_CALLS.with(|calls| calls.borrow_mut().push(("free", unsafe { base.read() }, unsafe { size.read() }, kind)));
         answer()
     }
 
@@ -851,6 +794,7 @@ pub mod host {
     ) -> u32 {
         // SAFETY: the caller's in/out values.
         LAST_VM.with(|cell| cell.set(Some(unsafe { (base.read(), size.read(), protect) })));
+        VM_CALLS.with(|calls| calls.borrow_mut().push(("protect", unsafe { base.read() }, unsafe { size.read() }, protect)));
         let status = answer();
         if status != 0 {
             return status;
@@ -1050,10 +994,29 @@ pub mod host {
     }
 }
 
-/// The host tests' process: a PEB, process parameters and TEB laid out as the kernel lays them out
-/// (`kernel/src/user/teb.rs`, `user/params.rs`).
+/// The host tests' process and threads: a PEB, process parameters and TEB laid out as the kernel
+/// lays them out, and the thread and process information services over a small model of the
+/// kernel's records (the rules `kernel/src/nt/thread.rs` and `nt/process.rs` apply).
 #[cfg(test)]
+#[allow(non_snake_case)]
 pub mod threads {
+    use std::cell::{Cell, RefCell};
+
+    use super::host::{failure, VIRTUAL_SIZE};
+
+    /// The pseudo-handles: the current process (-1) and the current thread (-2).
+    pub const CURRENT_PROCESS: u32 = 0xFFFF_FFFF;
+    pub const CURRENT_THREAD: u32 = 0xFFFF_FFFE;
+    /// A second thread's handle, and one naming an ended thread.
+    pub const THREAD: u32 = 0x48;
+    pub const ENDED_THREAD: u32 = 0x4C;
+
+    const STATUS_INVALID_INFO_CLASS: u32 = 0xC000_0003;
+    const STATUS_INFO_LENGTH_MISMATCH: u32 = 0xC000_0004;
+    const STATUS_INVALID_HANDLE: u32 = 0xC000_0008;
+    const STATUS_INVALID_PARAMETER: u32 = 0xC000_000D;
+    const STATUS_SUSPEND_COUNT_EXCEEDED: u32 = 0xC000_004A;
+    const STATUS_THREAD_IS_TERMINATING: u32 = 0xC000_004B;
     /// The process's stand-in pages.
     pub struct HostProcess {
         pub peb: usize,
@@ -1149,5 +1112,309 @@ pub mod threads {
     /// The calling test thread's process.
     pub fn process() -> &'static HostProcess {
         PROCESS.with(|process| *process)
+    }
+
+    /// A thread as the stand-ins keep it.
+    #[derive(Clone, Copy, Debug)]
+    pub struct HostThread {
+        pub exit_status: u32,
+        pub priority: i32,
+        /// The base priority's increment, the saturation value (±16) when pinned.
+        pub base: i32,
+        pub disable_boost: bool,
+        pub suspend_count: u32,
+        pub ended: bool,
+    }
+
+    const LIVE: HostThread = HostThread { exit_status: 259, priority: 8, base: 0, disable_boost: false, suspend_count: 0, ended: false };
+
+    std::thread_local! {
+        /// The threads, by handle: the current one, another, and one that ended with 7.
+        pub static THREADS: RefCell<std::vec::Vec<(u32, HostThread)>> = RefCell::new(std::vec![
+            (CURRENT_THREAD, LIVE),
+            (THREAD, LIVE),
+            (ENDED_THREAD, HostThread { exit_status: 7, ended: true, ..LIVE }),
+        ]);
+        /// The process's hard-error mode (1 at its start) and priority class (2, normal).
+        pub static HARD_ERROR_MODE: Cell<u32> = const { Cell::new(1) };
+        pub static PRIORITY_CLASS: Cell<u8> = const { Cell::new(2) };
+        /// The TLS indexes ThreadZeroTlsCell was asked to clear.
+        pub static ZEROED_TLS: RefCell<std::vec::Vec<u32>> = const { RefCell::new(std::vec::Vec::new()) };
+    }
+
+    /// The thread `handle` names, changed by `change`; STATUS_INVALID_HANDLE for no thread.
+    fn with_thread<R>(handle: u32, change: impl FnOnce(&mut HostThread) -> R) -> Result<R, u32> {
+        THREADS.with(|threads| {
+            let mut threads = threads.borrow_mut();
+            let thread = threads.iter_mut().find(|(h, _)| *h == handle).ok_or(STATUS_INVALID_HANDLE)?;
+            Ok(change(&mut thread.1))
+        })
+    }
+
+    /// A stand-in's answer: its status, or the arranged failure.
+    fn answer(result: Result<(), u32>) -> u32 {
+        result.err().unwrap_or(0)
+    }
+
+    /// A thread NtCreateThread made: its access, whether its handle is inheritable, its process,
+    /// its CONTEXT's words, its stack, and whether it was made suspended.
+    #[derive(Clone, Debug)]
+    pub struct Created {
+        pub access: u32,
+        pub inherit: bool,
+        pub process: u32,
+        pub context: std::vec::Vec<u32>,
+        pub stack: crate::thread::InitialTeb,
+        pub suspended: bool,
+    }
+
+    /// The handle and thread id the next created thread gets.
+    pub const CREATED_THREAD: u32 = 0x60;
+    pub const CREATED_ID: usize = 0x24;
+
+    std::thread_local! {
+        /// The threads NtCreateThread made.
+        pub static CREATED: RefCell<std::vec::Vec<Created>> = const { RefCell::new(std::vec::Vec::new()) };
+        /// The NtTerminateThread and NtTerminateProcess calls: the handle and the status.
+        pub static TERMINATED: RefCell<std::vec::Vec<(&'static str, u32, u32)>> = const { RefCell::new(std::vec::Vec::new()) };
+        /// The status the next NtCreateThread fails with (0: it succeeds).
+        pub static CREATE_FAILS: Cell<u32> = const { Cell::new(0) };
+    }
+
+    /// NtCreateThread: the thread recorded (a created-suspended one with its suspend count), its
+    /// handle and client id written back.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe extern "system" fn NtCreateThread(
+        handle: *mut u32,
+        access: u32,
+        attributes: *const super::ObjectAttributes,
+        process: u32,
+        client_id: *mut usize,
+        context: *const u32,
+        initial_teb: *const crate::thread::InitialTeb,
+        create_suspended: u32,
+    ) -> u32 {
+        if let Some(status) = failure().or(Some(CREATE_FAILS.with(|fails| fails.replace(0))).filter(|&status| status != 0)) {
+            return status;
+        }
+        // SAFETY: the caller's structures.
+        let (inherit, context, stack) = unsafe {
+            (
+                attributes.as_ref().is_some_and(|attributes| attributes.attributes & 2 != 0),
+                std::slice::from_raw_parts(context, crate::thread::CONTEXT_WORDS).to_vec(),
+                *initial_teb,
+            )
+        };
+        let suspended = create_suspended != 0;
+        CREATED.with(|created| created.borrow_mut().push(Created { access, inherit, process, context, stack, suspended }));
+        THREADS.with(|threads| {
+            threads.borrow_mut().push((CREATED_THREAD, HostThread { suspend_count: u32::from(suspended), ..LIVE }))
+        });
+        // SAFETY: the caller's out values.
+        unsafe {
+            handle.write(CREATED_THREAD);
+            client_id.write(8);
+            client_id.add(1).write(CREATED_ID);
+        }
+        0
+    }
+
+    /// NtTerminateThread: recorded; an ended thread is STATUS_INVALID_PARAMETER, a handle naming
+    /// no thread STATUS_INVALID_HANDLE (a null handle, the caller, is taken).
+    pub unsafe extern "system" fn NtTerminateThread(thread: u32, status: u32) -> u32 {
+        TERMINATED.with(|terminated| terminated.borrow_mut().push(("thread", thread, status)));
+        if thread == 0 {
+            return 0;
+        }
+        answer(with_thread(thread, |thread| {
+            if thread.ended {
+                return Err(STATUS_INVALID_PARAMETER);
+            }
+            thread.ended = true;
+            thread.exit_status = status;
+            Ok(())
+        })
+        .and_then(|result| result))
+    }
+
+    /// NtTerminateProcess: recorded; only the current process (or a null handle) is reachable.
+    pub unsafe extern "system" fn NtTerminateProcess(process: u32, status: u32) -> u32 {
+        TERMINATED.with(|terminated| terminated.borrow_mut().push(("process", process, status)));
+        if process == 0 || process == CURRENT_PROCESS {
+            0
+        } else {
+            STATUS_INVALID_HANDLE
+        }
+    }
+
+    pub unsafe extern "system" fn LdrShutdownThread() -> u32 {
+        0
+    }
+
+    pub unsafe extern "system" fn LdrShutdownProcess() -> u32 {
+        0
+    }
+
+    pub unsafe extern "system" fn NtSuspendThread(thread: u32, previous: *mut u32) -> u32 {
+        if let Some(status) = failure() {
+            return status;
+        }
+        answer(with_thread(thread, |thread| {
+            if thread.ended {
+                return Err(STATUS_THREAD_IS_TERMINATING);
+            }
+            if thread.suspend_count == 127 {
+                return Err(STATUS_SUSPEND_COUNT_EXCEEDED);
+            }
+            // SAFETY: the caller's count, when given.
+            unsafe { previous.as_mut().map(|previous| *previous = thread.suspend_count) };
+            thread.suspend_count += 1;
+            Ok(())
+        })
+        .and_then(|result| result))
+    }
+
+    pub unsafe extern "system" fn NtResumeThread(thread: u32, previous: *mut u32) -> u32 {
+        if let Some(status) = failure() {
+            return status;
+        }
+        answer(with_thread(thread, |thread| {
+            // SAFETY: the caller's count, when given.
+            unsafe { previous.as_mut().map(|previous| *previous = thread.suspend_count) };
+            thread.suspend_count = thread.suspend_count.saturating_sub(1);
+        }))
+    }
+
+    pub unsafe extern "system" fn NtQueryInformationThread(
+        thread: u32,
+        class: u32,
+        information: *mut u8,
+        length: u32,
+        _returned: *mut u32,
+    ) -> u32 {
+        if let Some(status) = failure() {
+            return status;
+        }
+        let size = match class {
+            0 => 28,
+            14 => 4,
+            _ => return STATUS_INVALID_INFO_CLASS,
+        };
+        if length != size {
+            return STATUS_INFO_LENGTH_MISMATCH;
+        }
+        answer(with_thread(thread, |thread| {
+            let words: &[u32] = if class == 0 {
+                &[thread.exit_status, process().teb as u32, 8, 12, 1, thread.priority as u32, thread.base as u32]
+            } else {
+                &[u32::from(thread.disable_boost)]
+            };
+            for (at, word) in words.iter().enumerate() {
+                // SAFETY: the caller's structure, `length` bytes.
+                unsafe { (information as *mut u32).add(at).write_unaligned(*word) };
+            }
+        }))
+    }
+
+    pub unsafe extern "system" fn NtSetInformationThread(thread: u32, class: u32, information: *const u8, length: u32) -> u32 {
+        if let Some(status) = failure() {
+            return status;
+        }
+        if ![2, 3, 4, 10, 14].contains(&class) {
+            return STATUS_INVALID_INFO_CLASS;
+        }
+        if length != 4 {
+            return STATUS_INFO_LENGTH_MISMATCH;
+        }
+        // SAFETY: the caller's value.
+        let value = unsafe { (information as *const u32).read_unaligned() };
+        match class {
+            3 => {
+                if !matches!(value as i32, -2..=2 | 16 | -16) {
+                    return STATUS_INVALID_PARAMETER;
+                }
+                answer(with_thread(thread, |thread| thread.base = value as i32))
+            }
+            10 => {
+                if thread != CURRENT_THREAD || value >= 1088 {
+                    return STATUS_INVALID_PARAMETER;
+                }
+                ZEROED_TLS.with(|zeroed| zeroed.borrow_mut().push(value));
+                let teb = process().teb;
+                let slot = if value < 64 {
+                    teb + 0xE10 + 4 * value as usize
+                } else {
+                    match crate::base::read_pointer(teb + 0xF94) {
+                        0 => return 0,
+                        expansion => expansion + 4 * (value as usize - 64),
+                    }
+                };
+                crate::base::write(slot, 0);
+                0
+            }
+            14 => answer(with_thread(thread, |thread| thread.disable_boost = value != 0)),
+            _ => answer(with_thread(thread, |_| ())),
+        }
+    }
+
+    pub unsafe extern "system" fn NtQueryInformationProcess(
+        process: u32,
+        class: u32,
+        information: *mut u8,
+        length: u32,
+        _returned: *mut u32,
+    ) -> u32 {
+        if let Some(status) = failure() {
+            return status;
+        }
+        if process != CURRENT_PROCESS {
+            return STATUS_INVALID_HANDLE;
+        }
+        let words: std::vec::Vec<u32> = match (class, length) {
+            (3, 44) => {
+                let mut counters = std::vec![0; 11];
+                counters[..2].copy_from_slice(&[VIRTUAL_SIZE, VIRTUAL_SIZE]);
+                counters
+            }
+            (12, 4) => std::vec![HARD_ERROR_MODE.with(Cell::get)],
+            (18, 2) => {
+                // SAFETY: the caller's PROCESS_PRIORITY_CLASS.
+                unsafe { information.cast::<[u8; 2]>().write([0, PRIORITY_CLASS.with(Cell::get)]) };
+                return 0;
+            }
+            (3 | 12 | 18, _) => return STATUS_INFO_LENGTH_MISMATCH,
+            _ => return STATUS_INVALID_INFO_CLASS,
+        };
+        for (at, word) in words.iter().enumerate() {
+            // SAFETY: the caller's structure, `length` bytes.
+            unsafe { (information as *mut u32).add(at).write_unaligned(*word) };
+        }
+        0
+    }
+
+    pub unsafe extern "system" fn NtSetInformationProcess(process: u32, class: u32, information: *const u8, length: u32) -> u32 {
+        if let Some(status) = failure() {
+            return status;
+        }
+        let size = match class {
+            12 | 21 => 4,
+            18 => 2,
+            _ => return STATUS_INVALID_INFO_CLASS,
+        };
+        if length != size {
+            return STATUS_INFO_LENGTH_MISMATCH;
+        }
+        if process != CURRENT_PROCESS {
+            return STATUS_INVALID_HANDLE;
+        }
+        // SAFETY: the caller's value, `length` bytes.
+        let bytes = unsafe { core::slice::from_raw_parts(information, length as usize) };
+        match class {
+            12 => HARD_ERROR_MODE.with(|mode| mode.set(u32::from_le_bytes(bytes.try_into().unwrap()))),
+            18 if (1..=6).contains(&bytes[1]) => PRIORITY_CLASS.with(|class| class.set(bytes[1])),
+            21 if bytes == [1, 0, 0, 0] => {}
+            _ => return STATUS_INVALID_PARAMETER,
+        }
+        0
     }
 }

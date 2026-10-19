@@ -10,9 +10,9 @@ Multiboot loader with the disk attached (`image="kernel"`) or the disk itself th
 "KERNEL PANIC" fails every case. `cmdline` is the user program's command line: QEMU's `-append`
 on a kernel boot, the Limine entry's `cmdline` on a disk boot; without one the kernel runs exit0.
 
-The program smokes (spin, suspend, respawn, fileio) run the root directory's
-single-path fixtures, selected by the command line, until the sectioned blocks that succeed them
-replace them (tests/test_limine.py names each successor).
+The program smokes (ret0, hello, fileio) run the root directory's single-path fixtures, selected by
+the command line; fileio's goes once the sectioned blocks that succeed it pass
+(tests/test_limine.py names each successor).
 
     uv run pytest tests/kernel                 # every case
     uv run pytest tests/kernel -m kernel       # the Multiboot cases (-m disk: the Limine ones)
@@ -139,10 +139,6 @@ def program_smoke(program: str, description: str, expects: tuple[str, ...], **fi
     )
 
 
-# The preemption smoke's raised thread runs its block uninterrupted: its progress lines and
-# completion appear on consecutive lines, no A/B line between.
-SPIN_C_BLOCK = tuple(f"C {n * 5_000_000}" for n in range(1, 11)) + ("C done, checksum 1283106752",)
-
 CASES = (
     Case(
         name="fault-ud",
@@ -198,17 +194,18 @@ CASES = (
     ),
     Case(
         name="fault-threadexit",
-        description="the internal thread-exit service on a boot without user threads is refused (STATUS_INVALID_SYSTEM_SERVICE), not a kernel panic",
+        description="NtTerminateThread on the main thread ends it, and with it the process, with the thread's status (as returning from the entry point does)",
         image="kernel",
         features=("fault-test-threadexit",),
         expects=(
             "F2K: entering ring 3",
-            "F2K: user process exited normally (exit code=3221225500)",
+            "F2K: user process exited normally (exit code=0)",
         ),
     ),
     # Exit during a disk read: a stub process opens HELLO.EXE and starts a time-critical child that
-    # seeks and reads a sector in a loop; the main thread runs again only while the child waits on
-    # the drive, and calls ExitProcess there. The child must finish its read — releasing the volume
+    # seeks and reads a sector in a loop (NtCreateThread on a stack it allocated, raised through
+    # NtSetInformationThread); the main thread runs again only while the child waits on the drive,
+    # and calls NtTerminateProcess there. The child must finish its read — releasing the volume
     # and the drive — before it ends, so the process's end is reported by the child, and the idle
     # thread's lookup after the teardown finds the volume usable.
     Case(
@@ -242,58 +239,6 @@ CASES = (
         "hello",
         "the console fixture prints \"Hello, world!\" as its own COM1 output and exits 0",
         expects=("Hello, world!",),
-        ordered=True,
-    ),
-    # Preemption smoke: two same-priority spinners alternate at quantum ends (round-robin delivered
-    # from the tick — a quantum spans exactly two ticks), and a third thread raised above them
-    # through SetThreadPriority runs its whole block uninterrupted (the service-boundary delivery),
-    # before the pair resumes and finishes. The per-run A/B progress line counts are
-    # timing-dependent, so the case pins the invariants: the C block's ten progress lines and
-    # completion as one uninterrupted block (`contiguous`), the A/B/C completions with their
-    # checksums, and the summary.
-    *program_smoke(
-        "spin",
-        "the preemption smoke interleaves two same-priority spinners at quantum ends and runs a raised thread's block uninterrupted, with all three checksums reported",
-        expects=(
-            "main: spinners started",
-            "main: starting high-priority thread",
-            "C done, checksum 1283106752",
-            "A done, checksum 1283106752",
-            "B done, checksum 1283106752",
-            "main: all threads finished",
-            "spin: ok",
-        ),
-        contiguous=SPIN_C_BLOCK,
-    ),
-    # Suspend/resume smoke: the main thread suspends a spinning worker through its builtin suspend
-    # APC, sleeps long enough that a runnable worker would have finished (the frozen check), then
-    # resumes it to completion. The suspend and resume calls return the documented previous counts
-    # (0 then 1).
-    *program_smoke(
-        "suspend",
-        "the suspend/resume smoke freezes a worker through its suspend APC across a sleep and resumes it, with the previous-count returns pinned",
-        expects=(
-            "suspend returned 0",
-            "worker frozen: yes",
-            "resume returned 1",
-            "suspend: ok",
-        ),
-    ),
-    # Thread-slot reuse smoke: three rounds of create, wait for, close, one child alive at a time,
-    # so every child after the first reuses the gate-stack resources the previous one released at
-    # its exit. The child/main alternation is deterministic, so the case pins the output in order.
-    *program_smoke(
-        "respawn",
-        "the slot-reuse smoke runs three create/wait/close rounds, each child after the first reusing the previous one's released gate-stack resources, and exits cleanly",
-        expects=(
-            "child 1: running",
-            "main: round 1: child finished",
-            "child 2: running",
-            "main: round 2: child finished",
-            "child 3: running",
-            "main: round 3: child finished",
-            "respawn: ok",
-        ),
         ordered=True,
     ),
     # File smoke: the fileio fixture opens its own image on the boot volume — CreateFileA on the

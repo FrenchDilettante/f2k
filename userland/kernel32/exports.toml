@@ -114,7 +114,7 @@ title = "virtual memory"
 name = "ExitProcess"
 group = "termination"
 args = ["u32 uExitCode"]
-impl = { legacy = "svc_exit_process" }
+impl = { native = "ExitProcess" }
 pinned_by = ["bare/*", "files/*", "fswrite/*", "memory/*", "runtime/*", "threads/procexit"]
 
 [[export]]
@@ -153,7 +153,7 @@ group = "termination"
 args = []
 impl = { native = "BaseProcessStartThunk" }
 internal = true
-note = "every image's main thread starts here (EAX its entry point): BaseProcessStart calls it under kernel32's exception frame, its return value to ExitProcess until ExitThread is user code (Windows 2000 calls ExitThread). Windows 2000's kernel32 does not export it; F2K's kernel, which makes the process, finds it by name"
+note = "every image's main thread starts here (EAX its entry point): BaseProcessStart calls it under kernel32's exception frame, its return value to ExitThread. Windows 2000's kernel32 does not export it; F2K's kernel, which makes the process, finds it by name"
 
 [[export]]
 name = "GetProcAddress"
@@ -179,8 +179,7 @@ impl = { forward = "NTDLL.RtlUnwind" }
 name = "SetErrorMode"
 group = "termination"
 args = ["u32 uMode"]
-impl = { unimplemented = "B7: threads and scheduling" }
-fails = "never"
+impl = { native = "SetErrorMode" }
 pinned_by = [
     "bare/cli",
     "bare/code-write",
@@ -199,6 +198,7 @@ pinned_by = [
     "bare/ud2",
     "runtime/unhandled",
 ]
+scenarios = ["error_modes_round_trip"]
 
 [[export]]
 name = "RaiseException"
@@ -933,8 +933,8 @@ unpinned = "imported by the C runtime's setlocale; no fixture block is known to 
 [[export]]
 name = "CreateThread"
 group = "threads"
-args = ["ptr lpThreadAttributes", "u32 dwStackSize", "u32 lpStartAddress", "u32 lpParameter", "u32 dwCreationFlags", "ptr lpThreadId"]
-impl = { legacy = "svc_create_thread" }
+args = ["ptr lpThreadAttributes", "u32 dwStackSize", "u32 lpStartAddress", "u32 lpParameter", "u32 dwCreationFlags", "ptr<u32> lpThreadId"]
+impl = { native = "CreateThread" }
 pinned_by = [
     "files/concurrent",
     "memory/stack",
@@ -962,6 +962,15 @@ pinned_by = [
     "threads/suspend",
     "threads/tls",
 ]
+scenarios = ["create_thread_builds_the_stack_and_the_context", "create_thread_honours_its_flags", "create_thread_refusals_give_the_stack_back"]
+
+[[export]]
+name = "BaseThreadStartThunk"
+group = "threads"
+args = []
+impl = { native = "BaseThreadStartThunk" }
+internal = true
+note = "CreateThread's threads start here (EAX the start address, EBX the parameter): BaseThreadStart calls the routine under kernel32's exception frame, its return value to ExitThread. Windows 2000's kernel32 does not export it"
 
 [[export]]
 name = "CreateEventA"
@@ -1069,22 +1078,25 @@ scenarios = ["the_tick_count_scales_the_shared_ticks"]
 name = "SetThreadPriority"
 group = "threads"
 args = ["handle hThread", "i32 nPriority"]
-impl = { legacy = "svc_set_thread_priority" }
+impl = { native = "SetThreadPriority" }
 pinned_by = ["sched/*", "threads/priority"]
+scenarios = ["priorities_round_trip"]
 
 [[export]]
 name = "SuspendThread"
 group = "threads"
 args = ["handle hThread"]
-impl = { legacy = "svc_suspend_thread" }
+impl = { native = "SuspendThread" }
 pinned_by = ["sched/freeze", "threads/suspend"]
+scenarios = ["suspend_counts_and_refusals"]
 
 [[export]]
 name = "ResumeThread"
 group = "threads"
 args = ["handle hThread"]
-impl = { legacy = "svc_resume_thread" }
+impl = { native = "ResumeThread" }
 pinned_by = ["sched/freeze", "sched/preempt", "threads/*"]
+scenarios = ["suspend_counts_and_refusals"]
 
 [[export]]
 name = "GetCurrentThreadId"
@@ -1163,65 +1175,64 @@ scenarios = ["console_handles_close_and_duplicate_at_their_server", "duplicate_h
 name = "ExitThread"
 group = "threads"
 args = ["u32 dwExitCode"]
-impl = { unimplemented = "B7: threads and scheduling" }
-fails = "never"
+impl = { native = "ExitThread" }
 pinned_by = ["threads/exit", "threads/mainexit"]
 
 [[export]]
 name = "GetExitCodeThread"
 group = "threads"
 args = ["handle hThread", "ptr<u32> lpExitCode"]
-impl = { unimplemented = "B7: threads and scheduling" }
-fails = "FALSE"
+impl = { native = "GetExitCodeThread" }
 pinned_by = ["threads/*"]
+scenarios = ["exit_codes_come_from_the_basic_information"]
 
 [[export]]
 name = "GetPriorityClass"
 group = "threads"
 args = ["handle hProcess"]
-impl = { unimplemented = "B7: threads and scheduling" }
-fails = "0"
+impl = { native = "GetPriorityClass" }
 pinned_by = ["threads/priority"]
+scenarios = ["priority_classes_round_trip"]
 
 [[export]]
 name = "GetThreadPriority"
 group = "threads"
 args = ["handle hThread"]
-impl = { unimplemented = "B7: threads and scheduling" }
-fails = "0x7FFF_FFFF"
+impl = { native = "GetThreadPriority" }
 pinned_by = ["threads/priority"]
+scenarios = ["priorities_round_trip"]
 
 [[export]]
 name = "GetThreadPriorityBoost"
 group = "threads"
 args = ["handle hThread", "ptr<u32> pDisablePriorityBoost"]
-impl = { unimplemented = "B7: threads and scheduling" }
-fails = "FALSE"
+impl = { native = "GetThreadPriorityBoost" }
 pinned_by = ["threads/priority"]
+scenarios = ["boosts_disable_and_enable"]
 
 [[export]]
 name = "SetPriorityClass"
 group = "threads"
 args = ["handle hProcess", "u32 dwPriorityClass"]
-impl = { unimplemented = "B7: threads and scheduling" }
-fails = "FALSE"
+impl = { native = "SetPriorityClass" }
 pinned_by = ["threads/priority"]
+scenarios = ["priority_classes_round_trip"]
 
 [[export]]
 name = "SetThreadPriorityBoost"
 group = "threads"
 args = ["handle hThread", "bool DisablePriorityBoost"]
-impl = { unimplemented = "B7: threads and scheduling" }
-fails = "FALSE"
+impl = { native = "SetThreadPriorityBoost" }
 pinned_by = ["threads/priority"]
+scenarios = ["boosts_disable_and_enable"]
 
 [[export]]
 name = "TerminateThread"
 group = "threads"
 args = ["handle hThread", "u32 dwExitCode"]
-impl = { unimplemented = "B7: threads and scheduling" }
-fails = "FALSE"
+impl = { native = "TerminateThread" }
 pinned_by = ["threads/exit"]
+scenarios = ["terminations_reach_what_their_handles_name"]
 
 [[export]]
 name = "TlsAlloc"

@@ -481,19 +481,10 @@ mod tests {
     const RET0: &[u8] = include_bytes!("../../../tests/ret0/ret0.exe");
 
     /// The corpus the disk carries (see the Makefile's disk target), by fixture name.
-    const CORPUS: [(&str, &[u8]); 7] = [
+    const CORPUS: [(&str, &[u8]); 4] = [
         ("hello", include_bytes!("../../../tests/hello/hello.exe")),
         ("exit0", EXIT0),
         ("ret0", RET0),
-        ("spin", include_bytes!("../../../tests/spin/spin.exe")),
-        (
-            "suspend",
-            include_bytes!("../../../tests/suspend/suspend.exe"),
-        ),
-        (
-            "respawn",
-            include_bytes!("../../../tests/respawn/respawn.exe"),
-        ),
         ("fileio", include_bytes!("../../../tests/fileio/fileio.exe")),
     ];
 

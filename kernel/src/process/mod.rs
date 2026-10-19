@@ -72,6 +72,12 @@ pub struct Process {
     /// holds the process's own reference until the teardown's end, and its index is the record's in
     /// the pool.
     object: crate::ob::ObjectId,
+    /// The priority class (PROCESS_PRIORITY_CLASS_*, ProcessPriorityClass's value).
+    priority_class: u8,
+    /// The hard-error mode (DefaultHardErrorProcessing, ProcessDefaultHardErrorMode's value: the
+    /// hard-error and fault dialogs it governs never exist here; the value is kept for its round
+    /// trip).
+    hard_error_mode: u32,
     /// The gate-stack window's slot occupancy (which threads own which slots).
     gate_slots: GateSlots,
     /// The address space's regions: every user page the process holds lies in one, and every
@@ -112,12 +118,16 @@ pub struct ProcessParts<'a> {
     pub dead_stack: &'a mut DeadStack,
 }
 
+/// The default priority class: PROCESS_PRIORITY_CLASS_NORMAL.
+pub const NORMAL_PRIORITY_CLASS: u8 = crate::nt::process::PRIORITY_CLASS_NORMAL;
+/// The default hard-error mode: 1, hard errors reported (a process created without
+/// CREATE_DEFAULT_ERROR_MODE's parent mode; kernel32's SetErrorMode reads it as mode 0).
+pub const DEFAULT_HARD_ERROR_MODE: u32 = 1;
+
 /// How many threads a process can have alive besides its main thread. A terminated thread's record
 /// is reused once nothing references its object, so this bounds the live threads, not the threads
-/// created. Four covers the sync fixture's four concurrent workers; the threads fixture's scale
-/// block wants Windows 2000's 64 (the sleep smoke, whose 200-tick span moved with the boot's
-/// length, which grows with the thread pool, is retired).
-pub const CHILD_THREADS: usize = 4;
+/// created (the threads fixture's scale block keeps 64 children alive at once).
+pub const CHILD_THREADS: usize = 64;
 
 /// The main thread's record in the object manager's thread pool (created threads take the records
 /// after it; a record's index is its thread's ordinal).
@@ -173,6 +183,26 @@ impl Process {
     /// The console handles (the console server serves them).
     pub fn console_mut(&mut self) -> &mut rtl::console::Handles {
         &mut self.console
+    }
+
+    /// The process's priority class (PROCESS_PRIORITY_CLASS_*).
+    pub fn priority_class(&self) -> u8 {
+        self.priority_class
+    }
+
+    /// Record the process's priority class (the scheduling side is the caller's).
+    pub fn set_priority_class(&mut self, class: u8) {
+        self.priority_class = class;
+    }
+
+    /// The process's hard-error mode.
+    pub fn hard_error_mode(&self) -> u32 {
+        self.hard_error_mode
+    }
+
+    /// Set the process's hard-error mode.
+    pub fn set_hard_error_mode(&mut self, mode: u32) {
+        self.hard_error_mode = mode;
     }
 
     /// The process's page-directory frame.
@@ -494,6 +524,8 @@ unsafe fn write_fresh(
         addr_of_mut!((*process).name).write(name);
         addr_of_mut!((*process).id).write(new_client_id());
         addr_of_mut!((*process).object).write(object);
+        addr_of_mut!((*process).priority_class).write(NORMAL_PRIORITY_CLASS);
+        addr_of_mut!((*process).hard_error_mode).write(DEFAULT_HARD_ERROR_MODE);
         addr_of_mut!((*process).gate_slots).write(GateSlots::empty());
         crate::mem::vm::AddressSpace::write_empty(addr_of_mut!((*process).vm));
         crate::sched::object::HandleTable::write_empty(addr_of_mut!((*process).handles));
@@ -768,6 +800,8 @@ mod tests {
                 index: 0,
                 generation: 0,
             },
+            priority_class: NORMAL_PRIORITY_CLASS,
+            hard_error_mode: DEFAULT_HARD_ERROR_MODE,
             gate_slots: GateSlots::empty(),
             vm: crate::mem::vm::AddressSpace::new(),
             handles: crate::sched::object::HandleTable::empty(),

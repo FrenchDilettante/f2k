@@ -68,6 +68,9 @@ pub enum ThreadState {
     Transition = 6,
 }
 
+/// The exit status of a thread that has not ended (the documented STILL_ACTIVE).
+pub const STILL_ACTIVE: u32 = 259;
+
 /// A thread: one schedulable unit of execution.
 ///
 /// An intrusive kernel object: it carries the links for the ready queue and its process's thread
@@ -99,6 +102,8 @@ pub struct Thread {
     /// threads, and for the main thread, whose stack is a system region). How far the stack has
     /// grown is the TEB's to say (see `user::stack`).
     pub(crate) stack_reservation: u32,
+    /// The thread's exit status: [`STILL_ACTIVE`] while it lives, then the status it ended with.
+    pub(crate) exit_status: u32,
     /// The thread's level ledger: captured at switch-out, restored at resume. A fresh thread
     /// adopts an empty one.
     pub(crate) level: LevelSnapshot,
@@ -209,6 +214,9 @@ pub struct Thread {
     /// waiting thread's stack: a wake may unwind them from any thread's context, and the kernel
     /// stacks are mapped per process.
     pub(crate) multi_blocks: [WaitBlock; super::wait::MAXIMUM_WAIT_OBJECTS],
+    /// Whether the thread runs its own exit path: a critical region it leaves there (the exit's
+    /// own volume work) no longer ends it.
+    pub(crate) exiting: bool,
 }
 
 // The machine-state layout contract with the switch's assembly: on the 32-bit target the offsets it
@@ -254,6 +262,7 @@ impl Thread {
             teb_va: 0,
             thread_id: 0,
             stack_reservation: 0,
+            exit_status: STILL_ACTIVE,
             level: LevelSnapshot::empty(),
             gate_slot: NO_GATE_SLOT,
             gate_frames: [0; crate::mem::paging::GATE_STACK_PAGES],
@@ -294,6 +303,7 @@ impl Thread {
             wait_irql: irql::PASSIVE,
             owned_mutexes: List::empty(),
             multi_blocks: [WaitBlock::detached(); super::wait::MAXIMUM_WAIT_OBJECTS],
+            exiting: false,
         }
     }
 
@@ -417,6 +427,11 @@ impl Thread {
     /// The thread's TEB page (the FS descriptor's base).
     pub fn teb_va(&self) -> u32 {
         self.teb_va
+    }
+
+    /// The thread's exit status (what GetExitCodeThread reports): [`STILL_ACTIVE`] until it ends.
+    pub fn exit_status(&self) -> u32 {
+        self.exit_status
     }
 
     /// The thread's client id, zero for kernel threads.

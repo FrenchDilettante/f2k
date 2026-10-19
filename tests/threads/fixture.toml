@@ -7,14 +7,3 @@ gate = true
 # order): 9 or 0 by timing. The source waits first now; drop the mask once threads.exe is
 # rebuilt and recaptured.
 crt = ["its routine ran: WAIT_OBJECT_0, parameter *"]
-
-# The blocks this kernel does not pass yet, each with the increment that enables it.
-[pending]
-create = "B7: threads and scheduling"
-exit = "B7: threads and scheduling"
-suspend = "B7: threads and scheduling"
-priority = "B7: threads and scheduling"
-scale = "B7: threads and scheduling"
-tls = "B7: threads and scheduling"
-crt = "B7: threads and scheduling"
-mainexit = "B7: threads and scheduling"

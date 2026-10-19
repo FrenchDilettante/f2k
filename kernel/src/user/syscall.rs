@@ -6,9 +6,8 @@
 //! - below `nt::NT_SERVICE_LIMIT` (0xF8): Windows 2000's system services, by Windows 2000's own
 //!   numbers (ntdll's `Nt*` stubs; `nt`), the NTSTATUS in EAX; a number in that range F2K does not
 //!   serve is STATUS_NOT_IMPLEMENTED;
-//! - from `WIN32_SERVICE_BASE` (0x2000): the transitional Win32 services (kernel32's stubs over
-//!   the kernel's handlers, `compat::kernel32`), the Win32 answer in EAX;
-//! - [`SYS_THREAD_EXIT`]: the F2K-internal thread exit ntdll's trampoline raises;
+//! - from `WIN32_SERVICE_BASE` (0x2000): the transitional Win32 services (kernel32's stubs over the kernel's
+//!   own handlers, `compat::kernel32`), the Win32 answer in EAX;
 //! - [`SYS_CSR_CALL`]: the F2K-internal client-server call, ntdll's CsrClientCallServer (`csr`).
 //!
 //! Anything else is STATUS_INVALID_SYSTEM_SERVICE. Windows 2000 masks the number (its table index
@@ -33,16 +32,6 @@ pub const SYSCALL_VECTOR: usize = 0x2E;
 
 /// The first byte of kernel space: the user probe limit.
 pub const USER_PROBE_LIMIT: u32 = crate::mem::paging::KERNEL_BASE;
-
-/// Process exit: the registry's first service, ExitProcess (`compat::kernel32::SERVICES`, numbered
-/// from its base, 0x2000).
-pub const SYS_EXIT: u32 = 0x2001;
-
-/// The internal thread-exit service: outside the registry's range (nothing imports it; the
-/// registry's surface discipline keeps it that way). ntdll's thread-exit trampoline
-/// (F2kThreadExitTrampoline) raises the gate on this number, carrying the user function's return
-/// value in the argument register.
-pub const SYS_THREAD_EXIT: u32 = 0x8000_0000;
 
 /// The internal client-server call (ntdll's CsrClientCallServer, F2K's stand-in for Windows 2000's
 /// LPC request to csrss): EDX points at its four arguments — the message, the capture buffer, the
@@ -283,18 +272,6 @@ extern "C" fn syscall_dispatch(frame: &mut TrapFrame) {
     // would mean the frame has no ring-3 tail and the machine is already off the rails.
     assert_eq!(frame.cs & 3, 3, "syscall gate raised from ring 0");
 
-    // The internal thread-exit service: the trampoline's number, before the registry (the exit path
-    // never returns to the frame). Only a created thread raises it — its return lands on the
-    // trampoline. A process's main thread has no trampoline under it and ends through the exit
-    // service: for it the number names no service.
-    if frame.eax == SYS_THREAD_EXIT {
-        if crate::process::threads::on_main_thread() {
-            frame.eax = STATUS_INVALID_SYSTEM_SERVICE;
-            return;
-        }
-        crate::process::threads::exit_thread(frame.edx as i32);
-    }
-
     // A Windows 2000 system service, the client-server call, or a transitional Win32 service
     // (whose registry lives with the surface it implements).
     let found = if frame.eax < crate::nt::NT_SERVICE_LIMIT {
@@ -490,28 +467,11 @@ mod tests {
     }
 
     /// The ranges do not meet: Windows 2000's services, the transitional Win32 table, F2K's internal
-    /// services (the thread exit, the client-server call), which are distinct.
+    /// client-server call.
     #[test]
     fn the_service_ranges_do_not_meet() {
         assert!(crate::nt::NT_SERVICE_LIMIT <= crate::compat::kernel32::WIN32_SERVICE_BASE);
-        assert!(SYS_THREAD_EXIT > crate::compat::kernel32::WIN32_SERVICE_BASE + 0x1000);
         assert!(SYS_CSR_CALL > crate::compat::kernel32::WIN32_SERVICE_BASE + 0x1000);
-        assert_ne!(SYS_CSR_CALL, SYS_THREAD_EXIT);
-        assert_ne!(SYS_CSR_CALL, SYS_EXIT);
         assert!((crate::csr::SERVICE.0 as usize) <= MAX_ARG_BYTES);
-    }
-
-    /// Exit is the registry's first service, with a one-dword argument block.
-    #[test]
-    fn exit_is_the_first_service() {
-        assert_eq!(SYS_EXIT, 0x2001);
-        assert_eq!(
-            crate::compat::kernel32::service_number("ExitProcess"),
-            SYS_EXIT
-        );
-        assert_eq!(
-            crate::compat::kernel32::lookup_service(SYS_EXIT).map(|(bytes, _)| bytes),
-            Some(4)
-        );
     }
 }

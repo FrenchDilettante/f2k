@@ -100,8 +100,8 @@ The fixtures:
   scale (32 sequential, 20 concurrent, 100 fire-and-forget threads,
   hundreds of handles), TLS slots and `__declspec(thread)`, per-thread
   last error/errno/FPU/SEH, `_beginthreadex`, and named-only
-  `mainexit`/`procexit`. Built with `/MT`. Replaces the `thread`,
-  `respawn` and `suspend` smokes once their blocks pass.
+  `mainexit`/`procexit`. Built with `/MT`. Replaced the `thread`,
+  `respawn` and `suspend` smokes.
 - `sync` - events (`PulseEvent`, named objects), semaphores, mutexes
   and abandonment, `WaitForMultipleObjects`, user APCs, critical
   sections, interlocked operations, handle duplication and closing,
@@ -110,8 +110,7 @@ The fixtures:
 - `sched` - sleeps and timed waits in bands, the clocks, waitable
   timers, round-robin, preemption, yielding, the wake boost,
   suspension, and the starvation boost; pinned to one CPU. Built with
-  `/MT`. Replaced the `sleep` smoke; replaces the `spin` smoke
-  once its blocks pass (`suspend` goes with `threads`). Gated. Its `yield` capture line `Sleep(10)
+  `/MT`. Replaced the `sleep` and `spin` smokes. Gated. Its `yield` capture line `Sleep(10)
   does: yes` comes from real hardware: the VirtualBox capture VM runs
   at 100% CPU (a normal-priority thread yielding with `Sleep(0)`), so
   below-normal threads there run only at the balance-set boost, 300
@@ -251,10 +250,6 @@ in `kernel/test_kernel.py`; `exit0`, `ret0` and `hello` carry a
   window, paints "Hello, world!" once with `TextOut`, then closes
   itself and exits 0; the first test to import user32.dll and
   gdi32.dll.
-- `spin`, `suspend`, `respawn`, `thread` - the scheduler smokes, one
-  per scheduler stage: preemption, suspension, thread-slot reuse, and
-  thread creation (`thread` has a capture but no kernel
-  case: the disk's root directory is full).
 - `fileio` - opens its own image by its module path and reads its
   signatures across seeks.
 

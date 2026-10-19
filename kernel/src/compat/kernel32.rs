@@ -8,7 +8,8 @@
 //! here (the console and the start-up calls are kernel32's own code now, over the console server,
 //! `crate::csr`, and the PEB, `user::teb`; the locale group, the clocks and the system messages
 //! too, over `rtl::codepage` and the shared data page, `user::shared`; the heaps, Local/Global
-//! memory and the environment are ntdll's and kernel32's user code over the process's own memory).
+//! memory and the environment are ntdll's and kernel32's user code over the process's own memory;
+//! the threads and the process's end kernel32's code over ntdll's thread and process services).
 
 use crate::fs::file::SeekMethod;
 use crate::user::syscall::{read_user, write_user, ServiceFn};
@@ -29,143 +30,12 @@ const MAX_PATH: usize = 260;
 
 // --- Services -------------------------------------------------------
 
-/// ExitProcess: end the process, carrying the exit code.
-fn svc_exit_process(_frame: &mut crate::user::TrapFrame, args: &[u32]) {
-    crate::user::process_exited(args[0])
-}
-
 /// Whether `handle` is a console handle: Windows 2000 kernel32's `CONSOLE_HANDLE` test (low two
 /// bits set, bit 28 clear — so INVALID_HANDLE_VALUE is not one). Console handles are routed to the
 /// console, never decoded as object-table handles: the table ignores the low tag bits, so without
 /// this rule stdout would name a table slot.
 fn is_console_handle(handle: u32) -> bool {
     handle & 0x1000_0003 == 0x3
-}
-
-/// The object `handle` names when it is of `kind`, referenced for the caller's scope; none for a
-/// console handle, a handle naming nothing or another kind of object, or an open file (Windows
-/// reports them alike, an invalid handle).
-#[cfg(target_arch = "x86")]
-fn referenced(handle: u32, kind: crate::ob::ObjectType) -> Option<crate::ob::ObRef> {
-    if is_console_handle(handle) {
-        return None;
-    }
-    crate::ob::reference_by_handle(handle, Some(kind))
-}
-
-/// The thread a handle names, referenced for the caller's scope.
-#[cfg(target_arch = "x86")]
-fn thread_of(handle: u32) -> Option<crate::ob::Referenced<crate::sched::thread::Thread>> {
-    let reference = referenced(handle, crate::ob::ObjectType::Thread)?;
-    let record = reference.thread();
-    Some(crate::ob::Referenced::new(reference, record))
-}
-
-/// CREATE_SUSPENDED: the creation flag that starts the thread with a suspend count of one.
-const CREATE_SUSPENDED: u32 = 0x0000_0004;
-
-/// The SetThreadPriority value conversion: the five band values (-2..2) are base-priority
-/// increments and pass straight through; the two edge specials name the class saturation pins
-/// instead. Any other value is not a documented priority, and the call fails.
-fn thread_priority_increment(value: i32) -> Option<i32> {
-    const TIME_CRITICAL: i32 = 15;
-    const IDLE: i32 = -15;
-    const SATURATION: i32 = 16;
-    match value {
-        -2..=2 => Some(value),
-        TIME_CRITICAL => Some(SATURATION),
-        IDLE => Some(-SATURATION),
-        _ => None,
-    }
-}
-
-/// CreateThread: a child thread on the current process. The start address and parameter are
-/// honored, and CREATE_SUSPENDED starts the thread suspended (a ResumeThread lets it run); the
-/// attributes, stack size (the per-thread default), and every other creation flag are ignored. The
-/// identifier is written back only when the caller asked for it. The handle exists before the
-/// thread is made schedulable, so the creator can always wait on what it created.
-fn svc_create_thread(frame: &mut crate::user::TrapFrame, args: &[u32]) {
-    #[cfg(target_arch = "x86")]
-    {
-        let (_attributes, stack_size, start, parameter, flags, thread_id_out) =
-            (args[0], args[1], args[2], args[3], args[4], args[5]);
-        // Every refusal comes before the spawn: once a thread record is attached to the process
-        // and its stacks are mapped, there is no unwinding it, so the create must not fail after.
-        // A full handle table, or an identifier pointer the probe refuses, fails it here. (A
-        // pointer that passes the probe but names no page faults in the write below, which
-        // ends the whole process: nothing is left half-created for it to observe.)
-        let process = crate::process::current_mut();
-        if process.handles().is_full()
-            || (thread_id_out != 0
-                && crate::user::syscall::probe_user_range(thread_id_out, 4).is_err())
-        {
-            frame.eax = 0;
-            return;
-        }
-        let Some((object, thread, id)) = crate::process::threads::spawn(process, start, parameter, stack_size)
-        else {
-            frame.eax = 0;
-            return;
-        };
-        // The handle joins the thread's own reference (which its end releases).
-        let handle = crate::ob::open(process, object, crate::ob::THREAD_ALL_ACCESS, false);
-        assert_ne!(handle, 0, "the table had a free slot before the spawn");
-        if thread_id_out != 0 {
-            let written = crate::user::syscall::write_user(thread_id_out, &id.to_le_bytes());
-            assert!(written.is_ok(), "the identifier pointer passed the probe");
-        }
-        let dispatcher = crate::sched::idle::dispatcher();
-        if flags & CREATE_SUSPENDED != 0 {
-            // The suspend APC queues on the never-run thread; its startup delivers it before the
-            // first user instruction, parking it until a resume. A fresh thread is never at the
-            // count's maximum nor terminating, so the suspend cannot be refused.
-            // SAFETY: the created thread, live and exclusive here.
-            let suspended = dispatcher.suspend_thread(unsafe { &mut *thread });
-            assert_eq!(suspended, Ok(0), "a fresh thread suspends");
-        }
-        // A clock tick that fell inside the create (the gate masks interrupts, and a create maps and
-        // zeroes pages) is taken before the new thread is schedulable — on Windows the tick lands
-        // while the creator is still inside the create — so a quantum it ends passes the processor
-        // on without the new thread jumping ahead of its creator.
-        crate::interrupt::irql::state_mut().interrupt_window();
-        // The handle exists; the thread becomes schedulable now.
-        // SAFETY: the created thread, live and exclusive here.
-        crate::sched::idle::dispatcher().make_ready(unsafe { &mut *thread });
-        frame.eax = handle;
-    }
-    #[cfg(not(target_arch = "x86"))]
-    {
-        let _ = args;
-        frame.eax = 0;
-    }
-}
-
-/// SetThreadPriority: set a thread's base-priority increment from its process's base. The handle
-/// must name a thread; the value is the increment conversion (the band values, or one of the two
-/// saturation specials). The kernel's base-priority machinery requeues, boosts, or preempts as the
-/// thread's state requires — a raised Ready thread requests the processor, and the service boundary
-/// delivers the request before the caller returns. The return is the documented success boolean.
-fn svc_set_thread_priority(frame: &mut crate::user::TrapFrame, args: &[u32]) {
-    #[cfg(target_arch = "x86")]
-    {
-        let (handle, value) = (args[0], args[1] as i32);
-        let Some(increment) = thread_priority_increment(value) else {
-            frame.eax = 0;
-            return;
-        };
-        let Some(mut thread) = thread_of(handle) else {
-            frame.eax = 0;
-            return;
-        };
-        let dispatcher = crate::sched::idle::dispatcher();
-        dispatcher.set_base_priority(&mut thread, increment);
-        frame.eax = 1;
-    }
-    #[cfg(not(target_arch = "x86"))]
-    {
-        let _ = args;
-        frame.eax = 0;
-    }
 }
 
 /// SetFilePointer: move a file handle's position `lDistanceToMove` (signed) bytes from the start,
@@ -328,60 +198,6 @@ fn read_volume(
     None
 }
 
-/// SuspendThread: bump the target thread's suspend count and arm its builtin suspend APC — the
-/// APC's delivery parks the thread on its suspend semaphore. The return is the previous suspend
-/// count, or (DWORD)-1 for every refusal: a bad handle, a non-thread slot, an exited thread, or
-/// the documented count maximum.
-fn svc_suspend_thread(frame: &mut crate::user::TrapFrame, args: &[u32]) {
-    #[cfg(target_arch = "x86")]
-    {
-        let Some(mut thread) = thread_of(args[0]) else {
-            frame.eax = u32::MAX;
-            return;
-        };
-        let dispatcher = crate::sched::idle::dispatcher();
-        if thread.state() == crate::sched::thread::ThreadState::Terminated {
-            frame.eax = u32::MAX;
-            return;
-        }
-        match dispatcher.suspend_thread(&mut thread) {
-            Ok(previous) => frame.eax = previous as u32,
-            Err(_) => frame.eax = u32::MAX,
-        }
-        // A self-suspend's APC delivers at the service boundary below — the caller never reaches
-        // user mode before its suspend APC runs.
-    }
-    #[cfg(not(target_arch = "x86"))]
-    {
-        let _ = args;
-        frame.eax = u32::MAX;
-    }
-}
-
-/// ResumeThread: release the suspend the count table decides — at one outstanding suspend the
-/// semaphore releases and the parked thread wakes. The return is the previous suspend count (zero
-/// for a thread nobody suspended), or (DWORD)-1 on the same refusal shape as SuspendThread.
-fn svc_resume_thread(frame: &mut crate::user::TrapFrame, args: &[u32]) {
-    #[cfg(target_arch = "x86")]
-    {
-        let Some(mut thread) = thread_of(args[0]) else {
-            frame.eax = u32::MAX;
-            return;
-        };
-        let dispatcher = crate::sched::idle::dispatcher();
-        if thread.state() == crate::sched::thread::ThreadState::Terminated {
-            frame.eax = u32::MAX;
-            return;
-        }
-        frame.eax = dispatcher.resume_thread(&mut thread) as u32;
-    }
-    #[cfg(not(target_arch = "x86"))]
-    {
-        let _ = args;
-        frame.eax = u32::MAX;
-    }
-}
-
 /// Floor for the never-called imports: zero, no side effects. (The export spec's floor kind; no
 /// export is one.)
 #[allow(dead_code)]
@@ -398,7 +214,7 @@ fn svc_floor_zero(frame: &mut crate::user::TrapFrame, _args: &[u32]) {
 include!(concat!(env!("OUT_DIR"), "/kernel32_services.rs"));
 
 /// An export's service number (the base plus its registry position plus one), at build time: the
-/// hand-assembled fault-test stubs patch theirs from here. A name the registry does not hold fails
+/// hand-assembled exit-during-read stub patches its file calls' from here. A name the registry does not hold fails
 /// the build.
 pub const fn service_number(name: &str) -> u32 {
     let mut index = 0;
@@ -437,25 +253,19 @@ pub fn lookup_service(number: u32) -> Option<(u32, ServiceFn)> {
 mod tests {
     use super::*;
 
-    /// The registry's numbering: ExitProcess is the first service (SYS_EXIT), the others follow it
-    /// from the base; numbers outside the registry name no service; the names are unique.
+    /// The registry's numbering: the services follow the base; numbers outside the registry name no
+    /// service; the names are unique.
     #[test]
     fn the_registry_numbers_from_its_base() {
         assert_eq!(
             SERVICES.len(),
-            10,
+            5,
             "the served surface, less kernel32's natives (the last error, the current process, \
              the console and start-up calls, the locale group and clock, the exception filter, \
-             the virtual memory, the events and waits, Sleep, the heaps and environment) \
-             and ntdll's RtlUnwind"
+             the virtual memory, the events and waits, Sleep, the heaps and environment, \
+             the threads and the process's end) and ntdll's RtlUnwind"
         );
         assert_eq!(WIN32_SERVICE_BASE, 0x2000);
-        assert_eq!(SERVICES[0].0, "ExitProcess");
-        assert_eq!(crate::user::syscall::SYS_EXIT, WIN32_SERVICE_BASE + 1);
-        assert_eq!(
-            service_number("ExitProcess"),
-            crate::user::syscall::SYS_EXIT
-        );
         for (i, &(name, arg_bytes, _)) in SERVICES.iter().enumerate() {
             let number = WIN32_SERVICE_BASE + i as u32 + 1;
             assert_eq!(service_number(name), number, "{name}");
@@ -474,13 +284,13 @@ mod tests {
         }
     }
 
-    /// The registry keeps its order discipline: ExitProcess first, the rest alphabetical (ASCII
-    /// case-insensitively, as the names were placed).
+    /// The registry keeps its order discipline: alphabetical (ASCII case-insensitively, as the names
+    /// were placed; ExitProcess, which the generator would place first, is kernel32's own code
+    /// now).
     #[test]
-    fn the_registry_is_alphabetical_after_exit_process() {
+    fn the_registry_is_alphabetical() {
         let names: Vec<String> = SERVICES
             .iter()
-            .skip(1)
             .map(|&(name, ..)| name.to_ascii_lowercase())
             .collect();
         let mut sorted = names.clone();
@@ -551,23 +361,6 @@ mod tests {
         frame.eax = 0;
         svc_set_file_pointer(&mut frame, &[4, 0, 0, 3]);
         assert_eq!(frame.eax, INVALID_SET_FILE_POINTER, "bad move method");
-    }
-
-    /// The SetThreadPriority value conversion: the five band values are increments and pass
-    /// straight through; the two edge specials name the class saturation pins instead; every other
-    /// value — the extremes included, which would overflow the increment arithmetic — is refused.
-    #[test]
-    fn thread_priority_values_convert_to_increments() {
-        assert_eq!(thread_priority_increment(0), Some(0));
-        assert_eq!(thread_priority_increment(1), Some(1));
-        assert_eq!(thread_priority_increment(-1), Some(-1));
-        assert_eq!(thread_priority_increment(2), Some(2));
-        assert_eq!(thread_priority_increment(-2), Some(-2));
-        assert_eq!(thread_priority_increment(15), Some(16));
-        assert_eq!(thread_priority_increment(-15), Some(-16));
-        for refused in [3, -3, 7, 14, 16, -16, i32::MAX, i32::MIN] {
-            assert_eq!(thread_priority_increment(refused), None, "{refused}");
-        }
     }
 
     /// The served shapes no path the corpus takes reaches answer with their decided values, and no

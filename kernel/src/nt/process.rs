@@ -1,45 +1,125 @@
-//! The process services: NtTerminateProcess, NtQueryInformationProcess (the virtual-memory
-//! counters) and NtSetInformationProcess (the affinity). kernel32's TerminateProcess,
-//! GlobalMemoryStatus and SetProcessAffinityMask are Win32 code over them, as on Windows 2000. The
-//! other classes (the hard-error mode, the priority class) come with the thread calls.
+//! The process services: NtTerminateProcess, and NtQueryInformationProcess and
+//! NtSetInformationProcess, the classes kernel32's process calls ask. kernel32's
+//! ExitProcess, TerminateProcess, GlobalMemoryStatus (the virtual-memory counters),
+//! Get/SetPriorityClass, SetProcessAffinityMask and SetErrorMode are Win32 code over these, as on
+//! Windows 2000.
 //!
-//! Only the calling process is reachable: its pseudo-handle (NtCurrentProcess), or a handle to its
-//! object; any other handle is STATUS_INVALID_HANDLE.
+//! Only the calling process is reachable: its pseudo-handle (NtCurrentProcess), or a handle to it
+//! Any other handle is STATUS_INVALID_HANDLE, checked before the information is.
+//! The information's length is the class's structure's exactly, as Windows 2000 checks it
+//! (STATUS_INFO_LENGTH_MISMATCH).
 
 use super::call::{
-    Handle, NtCall, NtResult, Status, UserAddr, UserPtr, STATUS_INVALID_HANDLE, STATUS_SUCCESS,
+    Handle, NtCall, NtResult, Status, UserAddr, UserPtr, STATUS_INVALID_HANDLE,
+    STATUS_INVALID_PARAMETER, STATUS_SUCCESS,
 };
-use super::system::{STATUS_INFO_LENGTH_MISMATCH, STATUS_INVALID_INFO_CLASS};
+use super::memory::{with_space, STATUS_INFO_LENGTH_MISMATCH, STATUS_INVALID_INFO_CLASS};
 
-/// ProcessVmCounters: VM_COUNTERS (query), and its size.
+/// PROCESSINFOCLASS: the classes F2K answers.
+/// ProcessBasicInformation: PROCESS_BASIC_INFORMATION (query).
+pub const PROCESS_BASIC_INFORMATION: u32 = 0;
+/// ProcessVmCounters: VM_COUNTERS (query).
 pub const PROCESS_VM_COUNTERS: u32 = 3;
-pub const VM_COUNTERS_SIZE: u32 = 44;
-
-/// ProcessAffinityMask: the processors the process may run on, a KAFFINITY (set), and its size.
+/// ProcessDefaultHardErrorMode: the process's hard-error mode, a ULONG (query and set).
+pub const PROCESS_DEFAULT_HARD_ERROR_MODE: u32 = 12;
+/// ProcessPriorityClass: PROCESS_PRIORITY_CLASS (query and set).
+pub const PROCESS_PRIORITY_CLASS: u32 = 18;
+/// ProcessAffinityMask: the processors the process may run on, a KAFFINITY (set).
 pub const PROCESS_AFFINITY_MASK: u32 = 21;
-const AFFINITY_MASK_SIZE: u32 = 4;
+
+/// The classes' structures' sizes: PROCESS_BASIC_INFORMATION (ExitStatus, PebBaseAddress,
+/// AffinityMask, BasePriority, UniqueProcessId, InheritedFromUniqueProcessId), VM_COUNTERS, and
+/// PROCESS_PRIORITY_CLASS (Foreground, a BOOLEAN; PriorityClass, a UCHAR).
+pub const PROCESS_BASIC_INFORMATION_SIZE: u32 = 24;
+pub const VM_COUNTERS_SIZE: u32 = 44;
+pub const PROCESS_PRIORITY_CLASS_SIZE: u32 = 2;
+
+/// A live process's exit status: STATUS_PENDING (kernel32's STILL_ACTIVE).
+const STATUS_PENDING: u32 = 0x103;
+
+/// The priority classes (PROCESS_PRIORITY_CLASS_*), and each one's base priority (Windows 2000's
+/// PspPriorityTable): idle 4, normal 8, high 13, realtime 24, below normal 6, above normal 10.
+pub const PRIORITY_CLASS_NORMAL: u8 = 2;
+const PRIORITY_CLASS_BASES: [i8; 7] = [0, 4, 8, 13, 24, 6, 10];
+
+/// The base priority a priority class gives the process; STATUS_INVALID_PARAMETER for a value
+/// naming no class (Windows 2000 refuses past ABOVE_NORMAL, 6; F2K refuses UNKNOWN, 0, as well).
+pub fn class_base_priority(class: u8) -> Result<i8, Status> {
+    match PRIORITY_CLASS_BASES.get(class as usize) {
+        Some(&base) if class != 0 => Ok(base),
+        _ => Err(STATUS_INVALID_PARAMETER),
+    }
+}
+
+/// Dwords as the bytes of the structure they lay out (the rest zero).
+fn layout<const N: usize>(words: &[u32]) -> [u8; N] {
+    let mut bytes = [0u8; N];
+    for (i, word) in words.iter().enumerate() {
+        bytes[i * 4..i * 4 + 4].copy_from_slice(&word.to_le_bytes());
+    }
+    bytes
+}
 
 /// VM_COUNTERS for a process reserving `reserved` bytes: its virtual size (the peak is not kept: it
 /// reads as the current size); the page-fault, working-set, pool and paging-file counters zero.
 pub fn vm_counters(reserved: u32) -> [u8; VM_COUNTERS_SIZE as usize] {
-    super::system::layout(&[reserved, reserved])
+    layout(&[reserved, reserved])
 }
 
-/// The structure a query of `class` into `length` bytes answers with: the VM counters' size, or
-/// the status that refuses it (STATUS_INVALID_INFO_CLASS for the classes F2K does not answer;
-/// the counters take their structure's length exactly).
-pub fn information_size(class: u32, length: u32) -> Result<u32, Status> {
-    if class != PROCESS_VM_COUNTERS {
-        return Err(STATUS_INVALID_INFO_CLASS);
-    }
-    if length != VM_COUNTERS_SIZE {
-        return Err(STATUS_INFO_LENGTH_MISMATCH);
-    }
-    Ok(VM_COUNTERS_SIZE)
+/// PROCESS_BASIC_INFORMATION for the live process `id` at base priority `base`: still running, its
+/// PEB at the PEB page, the one processor, no parent recorded.
+pub fn basic_information(id: u32, base: i8) -> [u8; PROCESS_BASIC_INFORMATION_SIZE as usize] {
+    layout(&[
+        STATUS_PENDING,
+        crate::user::PEB_PAGE,
+        super::thread::SYSTEM_AFFINITY,
+        base as u32,
+        id,
+        0,
+    ])
 }
 
-/// NtQueryInformationProcess: the calling process's virtual-memory counters (see
-/// [`vm_counters`]).
+/// The class's size: its structure's (none for a class F2K does not answer).
+fn size_of(class: u32) -> Option<u32> {
+    match class {
+        PROCESS_BASIC_INFORMATION => Some(PROCESS_BASIC_INFORMATION_SIZE),
+        PROCESS_VM_COUNTERS => Some(VM_COUNTERS_SIZE),
+        PROCESS_DEFAULT_HARD_ERROR_MODE | PROCESS_AFFINITY_MASK => Some(4),
+        PROCESS_PRIORITY_CLASS => Some(PROCESS_PRIORITY_CLASS_SIZE),
+        _ => None,
+    }
+}
+
+/// The process a handle names, when it is the calling process.
+pub(super) fn current(process: Handle) -> Result<(), Status> {
+    if crate::nt::object::names_current_process(process.raw()) {
+        Ok(())
+    } else {
+        Err(STATUS_INVALID_HANDLE)
+    }
+}
+
+/// NtTerminateProcess(ProcessHandle, ExitStatus): no handle terminates every other thread of the
+/// calling process with the status, the caller running on (ExitProcess's first step on Windows
+/// 2000, before the loader's shutdown); a handle naming the calling process ends it — its other
+/// threads first, then the caller — with the status as its exit code. Only the calling process is
+/// reachable: any other handle is STATUS_INVALID_HANDLE.
+pub fn terminate_process(call: &mut NtCall, process: Handle, status: u32) -> NtResult {
+    if process.raw() == 0 {
+        #[cfg(target_arch = "x86")]
+        crate::process::threads::terminate_other_threads(call.process(), status);
+        #[cfg(not(target_arch = "x86"))]
+        let _ = call;
+        return Ok(STATUS_SUCCESS);
+    }
+    current(process)?;
+    crate::user::process_exited(status)
+}
+
+/// NtQueryInformationProcess: the basic information, the virtual-memory counters (of the
+/// pseudo-handle's process only, as before), the hard-error mode and the priority class (never
+/// foreground: no window has the focus). STATUS_INVALID_INFO_CLASS for the classes F2K does not
+/// answer.
 pub fn query_information_process(
     call: &mut NtCall,
     process: Handle,
@@ -48,71 +128,121 @@ pub fn query_information_process(
     length: u32,
     return_length: UserPtr<u32>,
 ) -> NtResult {
-    let size = information_size(class, length)?;
-    let reserved = super::memory::with_space(call, process, |space, _| {
-        Ok::<_, Status>(space.reserved_size())
-    })?;
-    information.write(&vm_counters(reserved))?;
+    let size = match class {
+        PROCESS_AFFINITY_MASK => None,
+        class => size_of(class),
+    }
+    .ok_or(STATUS_INVALID_INFO_CLASS)?;
+    if length != size {
+        return Err(STATUS_INFO_LENGTH_MISMATCH);
+    }
+    if class == PROCESS_VM_COUNTERS {
+        let reserved = with_space(call, process, |space, _| {
+            Ok::<_, Status>(space.reserved_size())
+        })?;
+        information.write(&vm_counters(reserved))?;
+    } else {
+        current(process)?;
+        #[cfg(target_arch = "x86")]
+        {
+            let record = call.process();
+            match class {
+                PROCESS_BASIC_INFORMATION => information.write(&basic_information(
+                    record.id(),
+                    record.sched.base_priority(),
+                ))?,
+                PROCESS_DEFAULT_HARD_ERROR_MODE => {
+                    UserPtr::<u32>::at(information.raw()).write(record.hard_error_mode())?
+                }
+                _ => information.write(&[0, record.priority_class()])?,
+            }
+        }
+    }
     return_length.write_optional(size)?;
     Ok(STATUS_SUCCESS)
 }
 
-/// NtSetInformationProcess: the affinity (a non-empty subset of the one processor: nothing to
-/// change; STATUS_INVALID_PARAMETER otherwise). The class and length are checked first, then the
-/// handle (the calling process's only), then the value. STATUS_INVALID_INFO_CLASS for the classes
-/// F2K does not answer.
+/// NtSetInformationProcess: the hard-error mode (kept for its round trip: no hard-error or fault
+/// dialog exists to suppress), the priority class (every thread's priority moves with the process's
+/// base, their increments kept; the realtime class needs no privilege here) and the affinity (a
+/// non-empty subset of the one processor: nothing to change). The handle is checked first, then
+/// the value. STATUS_INVALID_INFO_CLASS for the classes F2K does not answer.
 pub fn set_information_process(
-    _call: &mut NtCall,
+    call: &mut NtCall,
     process: Handle,
     class: u32,
     information: UserAddr,
     length: u32,
 ) -> NtResult {
-    if class != PROCESS_AFFINITY_MASK {
-        return Err(STATUS_INVALID_INFO_CLASS);
+    let size = match class {
+        PROCESS_DEFAULT_HARD_ERROR_MODE | PROCESS_PRIORITY_CLASS | PROCESS_AFFINITY_MASK => {
+            size_of(class)
+        }
+        _ => None,
     }
-    if length != AFFINITY_MASK_SIZE {
+    .ok_or(STATUS_INVALID_INFO_CLASS)?;
+    if length != size {
         return Err(STATUS_INFO_LENGTH_MISMATCH);
     }
     current(process)?;
     let mut value = [0u8; 4];
-    information.read(&mut value)?;
-    super::thread::affinity_mask(u32::from_le_bytes(value))?;
-    Ok(STATUS_SUCCESS)
-}
-
-/// STATUS_NOT_IMPLEMENTED: the null handle's form, which no caller uses yet.
-const STATUS_NOT_IMPLEMENTED: Status = Status(0xC000_0002);
-
-/// The process a handle names, when it is the calling process.
-pub(super) fn current(process: Handle) -> Result<(), Status> {
-    if super::object::names_current_process(process.raw()) {
-        Ok(())
-    } else {
-        Err(STATUS_INVALID_HANDLE)
+    information.read(&mut value[..size as usize])?;
+    match class {
+        PROCESS_DEFAULT_HARD_ERROR_MODE => {
+            #[cfg(target_arch = "x86")]
+            call.process()
+                .set_hard_error_mode(u32::from_le_bytes(value));
+        }
+        PROCESS_PRIORITY_CLASS => {
+            let base = class_base_priority(value[1])?;
+            #[cfg(target_arch = "x86")]
+            {
+                let record = call.process();
+                crate::sched::idle::dispatcher().set_process_priority(&mut record.sched, base);
+                record.set_priority_class(value[1]);
+            }
+            #[cfg(not(target_arch = "x86"))]
+            let _ = base;
+        }
+        _ => {
+            super::thread::affinity_mask(u32::from_le_bytes(value))?;
+        }
     }
-}
-
-/// NtTerminateProcess(ProcessHandle, ExitStatus): a handle naming the calling process ends it —
-/// its other threads first, then the caller — with the status as its exit code, what kernel32's
-/// TerminateProcess of its own process asks. Any other handle is STATUS_INVALID_HANDLE. The null
-/// handle (every other thread of the calling process, ExitProcess's first step on Windows 2000)
-/// comes with ExitProcess's move to kernel32: STATUS_NOT_IMPLEMENTED until then.
-pub fn terminate_process(call: &mut NtCall, process: Handle, status: u32) -> NtResult {
+    #[cfg(not(target_arch = "x86"))]
     let _ = call;
-    if process.raw() == 0 {
-        return Err(STATUS_NOT_IMPLEMENTED);
-    }
-    current(process)?;
-    crate::user::process_exited(status)
+    Ok(STATUS_SUCCESS)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn word(bytes: &[u8], at: usize) -> u32 {
+        u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap())
+    }
+
+    #[test]
+    fn the_counters_report_the_virtual_size() {
+        assert_eq!(&vm_counters(0x5_0000)[..8], &[0, 0, 5, 0, 0, 0, 5, 0]);
+    }
+
+    /// PROCESS_BASIC_INFORMATION's layout: still running, the PEB page, the processor, the base
+    /// priority and the client id.
+    #[test]
+    fn the_basic_information_is_the_nt_layout() {
+        let bytes = basic_information(8, 13);
+        assert_eq!(
+            (word(&bytes, 0), word(&bytes, 4), word(&bytes, 8)),
+            (0x103, crate::user::PEB_PAGE, 1)
+        );
+        assert_eq!(
+            (word(&bytes, 12), word(&bytes, 16), word(&bytes, 20)),
+            (13, 8, 0)
+        );
+    }
+
     /// Only the calling process is reachable: the host has no handle table, so the pseudo-handle
-    /// alone names it; anything else is an invalid handle, the null handle not implemented yet.
+    /// alone names it; anything else is an invalid handle.
     #[test]
     fn only_the_calling_process_is_reachable() {
         assert_eq!(current(Handle(0xFFFF_FFFF)), Ok(()));
@@ -124,19 +254,16 @@ mod tests {
             terminate_process(&mut call, Handle(0x44), 3),
             Err(STATUS_INVALID_HANDLE)
         );
-        assert_eq!(
-            terminate_process(&mut call, Handle(0), 3),
-            Err(STATUS_NOT_IMPLEMENTED)
-        );
     }
 
     /// The affinity: the class's exact length, the calling process alone, and a non-empty subset of
     /// the one processor (SetProcessAffinityMask's ERROR_INVALID_PARAMETER and ERROR_INVALID_HANDLE).
     #[test]
     fn the_affinity_is_the_one_processor() {
-        use crate::user::syscall::host::{install, UserMemory};
         use std::cell::RefCell;
         use std::rc::Rc;
+
+        use crate::user::syscall::host::{install, UserMemory};
         struct Word(Vec<u8>);
         impl UserMemory for Word {
             fn read(&self, pointer: u32, bytes: &mut [u8]) -> Result<(), u32> {
@@ -155,10 +282,22 @@ mod tests {
         let mut call = NtCall::new(&mut frame);
         let me = Handle(0xFFFF_FFFF);
         let at = UserAddr(0x10000);
-        assert_eq!(set_information_process(&mut call, me, 21, at, 4), Ok(STATUS_SUCCESS));
-        assert_eq!(set_information_process(&mut call, me, 21, at, 8), Err(STATUS_INFO_LENGTH_MISMATCH));
-        assert_eq!(set_information_process(&mut call, me, 12, at, 4), Err(STATUS_INVALID_INFO_CLASS));
-        assert_eq!(set_information_process(&mut call, Handle(0x44), 21, at, 4), Err(STATUS_INVALID_HANDLE));
+        assert_eq!(
+            set_information_process(&mut call, me, 21, at, 4),
+            Ok(STATUS_SUCCESS)
+        );
+        assert_eq!(
+            set_information_process(&mut call, me, 21, at, 8),
+            Err(STATUS_INFO_LENGTH_MISMATCH)
+        );
+        assert_eq!(
+            set_information_process(&mut call, me, 13, at, 4),
+            Err(STATUS_INVALID_INFO_CLASS)
+        );
+        assert_eq!(
+            set_information_process(&mut call, Handle(0x44), 21, at, 4),
+            Err(STATUS_INVALID_HANDLE)
+        );
         for mask in [0u32, 2, 3] {
             memory.borrow_mut().0 = mask.to_le_bytes().to_vec();
             assert_eq!(
@@ -174,15 +313,16 @@ mod tests {
         );
     }
 
-    /// The VM counters: their structure's exact length, the virtual size twice (current and peak);
-    /// every other class is not answered.
+    /// The classes' base priorities: the threads fixture's priority block moves the process to the
+    /// high class (13) and back to normal (8).
     #[test]
-    fn the_vm_counters_are_the_reservations() {
-        assert_eq!(information_size(3, 44), Ok(44));
-        assert_eq!(information_size(3, 48), Err(STATUS_INFO_LENGTH_MISMATCH));
-        assert_eq!(information_size(0, 24), Err(STATUS_INVALID_INFO_CLASS));
-        let counters = vm_counters(0x12_3000);
-        assert_eq!(&counters[..8], &[0, 0x30, 0x12, 0, 0, 0x30, 0x12, 0]);
-        assert!(counters[8..].iter().all(|&byte| byte == 0));
+    fn priority_classes_give_windows_2000s_bases() {
+        let bases: Vec<_> = (1..=6)
+            .map(|class| class_base_priority(class).unwrap())
+            .collect();
+        assert_eq!(bases, [4, 8, 13, 24, 6, 10]);
+        assert_eq!(class_base_priority(PRIORITY_CLASS_NORMAL), Ok(8));
+        assert_eq!(class_base_priority(0), Err(STATUS_INVALID_PARAMETER));
+        assert_eq!(class_base_priority(7), Err(STATUS_INVALID_PARAMETER));
     }
 }

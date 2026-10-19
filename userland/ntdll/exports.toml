@@ -58,8 +58,8 @@ name = "NtTerminateProcess"
 group = "nt"
 args = ["handle ProcessHandle", "u32 ExitStatus"]
 impl = { syscall = "crate::nt::process::terminate_process" }
-note = "the calling process's handle ends it (no other process is reachable); the null handle, ExitProcess's first step, comes with ExitProcess"
-unpinned = "kernel32's TerminateProcess is its only caller, and no fixture block calls that (the C runtime's fatal paths do)"
+note = "no handle terminates the caller's other threads; the calling process's handle ends it (no other process is reachable)"
+pinned_by = ["bare/*", "runtime/exit", "threads/procexit", "threads/mainexit"]
 
 [[export]]
 name = "NtContinue"
@@ -97,16 +97,16 @@ name = "NtQueryInformationProcess"
 group = "nt"
 args = ["handle ProcessHandle", "u32 ProcessInformationClass", "ptr ProcessInformation", "u32 ProcessInformationLength", "ptr<u32> ReturnLength"]
 impl = { syscall = "crate::nt::process::query_information_process" }
-note = "answers ProcessVmCounters (3) alone, of the calling process only"
-pinned_by = ["memory/sysinfo"]
+note = "answers ProcessBasicInformation (0), ProcessVmCounters (3), ProcessDefaultHardErrorMode (12) and ProcessPriorityClass (18), of the calling process only"
+pinned_by = ["memory/sysinfo", "threads/priority"]
 
 [[export]]
 name = "NtSetInformationProcess"
 group = "nt"
 args = ["handle ProcessHandle", "u32 ProcessInformationClass", "ptr ProcessInformation", "u32 ProcessInformationLength"]
 impl = { syscall = "crate::nt::process::set_information_process" }
-note = "answers ProcessAffinityMask (21) alone, of the calling process only; the hard-error mode and the priority class come with the thread calls"
-pinned_by = ["sched/*"]
+note = "answers ProcessDefaultHardErrorMode (12), ProcessPriorityClass (18) and ProcessAffinityMask (21), of the calling process only"
+pinned_by = ["sched/*", "threads/priority"]
 
 [[export]]
 name = "NtAllocateVirtualMemory"
@@ -346,8 +346,46 @@ name = "NtSetInformationThread"
 group = "nt"
 args = ["handle ThreadHandle", "u32 ThreadInformationClass", "ptr ThreadInformation", "u32 ThreadInformationLength"]
 impl = { syscall = "crate::nt::thread::set_information_thread" }
-note = "answers ThreadZeroTlsCell (10) alone, TlsFree's; the other classes come with the thread calls"
-pinned_by = ["threads/tls"]
+note = "answers ThreadPriority (2), ThreadBasePriority (3), ThreadAffinityMask (4), ThreadZeroTlsCell (10) and ThreadPriorityBoost (14), the other classes unserved"
+pinned_by = ["sched/*", "threads/priority", "threads/tls"]
+
+[[export]]
+name = "NtCreateThread"
+group = "nt"
+args = ["ptr<u32> ThreadHandle", "u32 DesiredAccess", "ptr ObjectAttributes", "handle ProcessHandle", "ptr ClientId", "ptr ThreadContext", "ptr InitialTeb", "u32 CreateSuspended"]
+impl = { syscall = "crate::nt::thread::create_thread" }
+note = "in the calling process only, on the stack the INITIAL_TEB describes and starting in the CONTEXT (its segments and EFLAGS every user thread's)"
+pinned_by = ["threads/*", "sched/*", "memory/stack"]
+
+[[export]]
+name = "NtTerminateThread"
+group = "nt"
+args = ["handle ThreadHandle", "u32 ExitStatus"]
+impl = { syscall = "crate::nt::thread::terminate_thread" }
+note = "no handle is the caller, refused as its process's last thread (STATUS_CANT_TERMINATE_SELF); an ended thread is STATUS_INVALID_PARAMETER"
+pinned_by = ["threads/exit", "threads/mainexit"]
+
+[[export]]
+name = "NtSuspendThread"
+group = "nt"
+args = ["handle ThreadHandle", "ptr<u32> PreviousSuspendCount"]
+impl = { syscall = "crate::nt::thread::suspend_thread" }
+pinned_by = ["sched/freeze", "threads/suspend"]
+
+[[export]]
+name = "NtResumeThread"
+group = "nt"
+args = ["handle ThreadHandle", "ptr<u32> PreviousSuspendCount"]
+impl = { syscall = "crate::nt::thread::resume_thread" }
+pinned_by = ["sched/freeze", "sched/preempt", "threads/*"]
+
+[[export]]
+name = "NtQueryInformationThread"
+group = "nt"
+args = ["handle ThreadHandle", "u32 ThreadInformationClass", "ptr ThreadInformation", "u32 ThreadInformationLength", "ptr<u32> ReturnLength"]
+impl = { syscall = "crate::nt::thread::query_information_thread" }
+note = "answers ThreadBasicInformation (0), ThreadAmILastThread (12) and ThreadPriorityBoost (14), the other classes unserved"
+pinned_by = ["threads/*"]
 
 # --- the client-server runtime (src/csr.s) --------------------------------------------------------
 
@@ -464,7 +502,7 @@ name = "RtlAcquirePebLock"
 group = "threads"
 args = []
 impl = { native = "RtlAcquirePebLock" }
-note = "the PEB lock (PEB+0x1C, its storage at PEB+0x860), planted free by the kernel's PEB until ntdll's process start makes it"
+note = "the PEB lock (PEB+0x1C, its storage at PEB+0x860), made by LdrInitializeThunk on the process's first thread"
 pinned_by = ["sync/*"]
 
 [[export]]
@@ -548,22 +586,28 @@ args = ["ptr Environment", "ptr Source", "ptr Destination", "ptr<u32> ReturnedLe
 impl = { native = "RtlExpandEnvironmentStrings_U" }
 pinned_by = ["runtime/env"]
 
-# --- the loader's thread start (src/ldr.s, src/main.rs over rtl::heap) ----------------------------
+# --- the loader's thread start and end (src/ldr.s, src/main.rs over rtl::heap and rtl::ldr) ---------
 
 [[export]]
 name = "LdrInitializeThunk"
 group = "loader"
 args = ["ptr NormalContext", "ptr SystemArgument1", "ptr SystemArgument2"]
 impl = { native = "LdrInitializeThunk" }
-note = "the kernel delivers a fresh thread's initialization here, like a user APC over its initial context: the process heap (the first thread), then NtContinue of the context; the thread's implicit TLS comes with the thread calls"
-pinned_by = ["runtime/*", "memory/heap"]
-
-# --- F2K-internal entry points --------------------------------------------------------------------
+note = "the kernel delivers a fresh thread's initialization here, like a user APC over its initial context: the process heap, the PEB lock and the loader lock (the first thread), the thread's TLS, then NtContinue of the context"
+pinned_by = ["threads/tls", "runtime/*", "memory/heap"]
 
 [[export]]
-name = "F2kThreadExitTrampoline"
-group = "internal"
+name = "LdrShutdownThread"
+group = "loader"
 args = []
-impl = { native = "F2kThreadExitTrampoline" }
-internal = true
-note = "a child thread's function returns onto it (its return value the thread's exit code): the kernel plants its address under the thread's first frame"
+impl = { native = "LdrShutdownThread" }
+note = "the thread's implicit-TLS block and TLS expansion slots back to the process heap (no DLL_THREAD_DETACH: DllMain is not called)"
+pinned_by = ["threads/exit", "threads/tls"]
+
+[[export]]
+name = "LdrShutdownProcess"
+group = "loader"
+args = []
+impl = { native = "LdrShutdownProcess" }
+note = "nothing to run: no DLL_PROCESS_DETACH (DllMain is not called) and no TLS callbacks"
+pinned_by = ["runtime/exit"]

@@ -98,10 +98,10 @@ pub fn is_privileged_instruction(code: &[u8]) -> bool {
 /// Why a thread ends.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ThreadEnd {
-    /// The thread's return (its exit trampoline), with the exit status.
+    /// The thread's own end (NtTerminateThread: kernel32's ExitThread, a start routine's return),
+    /// with the exit status.
     Exit(i32),
-    /// The exit service (kernel32's ExitProcess, NtTerminateProcess): the process ends with this
-    /// exit code, all its threads with it.
+    /// NtTerminateProcess: the process ends with this exit code, all its threads with it.
     ExitProcess(u32),
     /// A fault raised on the thread's behalf.
     Fault(Fault),

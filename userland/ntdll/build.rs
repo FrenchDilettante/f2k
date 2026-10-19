@@ -6,7 +6,6 @@ fn main() {
         "ntdll",
         0x77F8_0000,
         &[
-            "src/internal.s",
             "src/ldr.s",
             "src/except.s",
             "src/csr.s",

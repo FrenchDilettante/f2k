@@ -29,6 +29,15 @@ pub enum Termination {
     Deferred,
 }
 
+/// How long a thread sits ready without running before the balance-set scan boosts it, in ticks:
+/// the platform's constant (four of its nominal 75-tick seconds), about three seconds at this
+/// clock's 10 ms tick.
+pub const READY_WITHOUT_RUNNING: u64 = 4 * 75;
+/// How many ready threads one balance-set scan examines at most.
+pub const THREAD_SCAN_LIMIT: usize = 16;
+/// How many ready threads one balance-set scan boosts at most.
+pub const THREAD_READY_LIMIT: usize = 10;
+
 /// The dispatcher: ready queues, the summary, the processor slots.
 pub struct Dispatcher {
     /// One ready list per priority level.
@@ -52,6 +61,12 @@ pub struct Dispatcher {
     /// Whether the running thread's quantum ran out at the last full tick: the dispatch window's
     /// question, consumed (and cleared) before the quantum decision runs.
     quantum_end_requested: bool,
+    /// The clock's tick count as of its last full tick: the stamp a thread takes as it joins a
+    /// ready queue, which the balance-set scan measures ready-without-running time against.
+    tick: u64,
+    /// The priority level the next balance-set scan starts at (the scans take turns over the
+    /// levels).
+    scan_level: i8,
 }
 
 impl Dispatcher {
@@ -68,6 +83,8 @@ impl Dispatcher {
             waiting: List::empty(),
             timer_table: TimerTable::zeroed(),
             quantum_end_requested: false,
+            tick: 0,
+            scan_level: 1,
         }
     }
 
@@ -83,6 +100,8 @@ impl Dispatcher {
         self.idle_thread = null_mut();
         self.waiting.init();
         self.quantum_end_requested = false;
+        self.tick = 0;
+        self.scan_level = 1;
         self.timer_table
             .init(crate::interrupt::clock::INTERVAL_100NS as u64);
     }
@@ -225,8 +244,9 @@ impl Dispatcher {
                 }
             }
 
-            // Nobody to preempt: queue by priority.
+            // Nobody to preempt: queue by priority, stamped with the tick it joins at.
             t.state = ThreadState::Ready;
+            t.wait_time = self.tick;
             // SAFETY: the thread is on no ready list (see above) and its ready link is valid.
             unsafe {
                 let entry = addr_of_mut!(t.ready_links);
@@ -456,6 +476,7 @@ impl Dispatcher {
         }
         thread.preempted = false;
         thread.state = ThreadState::Ready;
+        thread.wait_time = self.tick;
         let priority = thread.priority;
         // SAFETY: the running thread is on no ready list; its ready link is valid.
         unsafe {
@@ -540,6 +561,11 @@ impl Dispatcher {
         if self.tick_quantum(unsafe { &mut *current }) {
             self.quantum_end_requested = true;
         }
+    }
+
+    /// Record the clock's tick count at a full tick (the ready-queue stamps' source).
+    pub(crate) fn note_tick(&mut self, tick: u64) {
+        self.tick = tick;
     }
 
     /// The dispatch window's decision: consume a pending request — the tick's quantum end first,
@@ -684,7 +710,9 @@ impl Dispatcher {
     /// will fall back on its next decay.
     pub fn balance_boost(&mut self, thread: &mut Thread) {
         debug_assert!(
-            thread.state != ThreadState::Ready || thread.parked_on_process,
+            thread.state != ThreadState::Ready
+                || thread.parked_on_process
+                || !self.ready_queue_holds(thread),
             "balance boost on a still-queued thread"
         );
         let thread_quantum = unsafe { (*thread.process).thread_quantum };
@@ -694,6 +722,67 @@ impl Dispatcher {
         thread.priority = boost_priority;
         thread.quantum = thread_quantum * 2;
         self.make_ready(thread);
+    }
+
+    /// Whether `thread`'s priority level's ready queue holds it (the debug checks' walk).
+    fn ready_queue_holds(&self, thread: &Thread) -> bool {
+        let queue = &self.ready[thread.priority as usize];
+        let sentinel = core::ptr::addr_of!(queue.head) as *mut Links;
+        let target = core::ptr::addr_of!(thread.ready_links) as *mut Links;
+        // SAFETY: a read-only walk of an initialized list.
+        let mut entry = unsafe { queue.first() };
+        while !entry.is_null() && !eq(entry, sentinel) {
+            if eq(entry, target) {
+                return true;
+            }
+            // SAFETY: a linked entry's next names the next entry (or the sentinel).
+            entry = unsafe { (*entry).next };
+        }
+        false
+    }
+
+    /// The balance-set scan, once a second (the platform's balance-set manager): a thread that has
+    /// sat ready without running for [`READY_WITHOUT_RUNNING`] ticks — starved by higher-priority
+    /// work — takes the balance boost and runs. The scan covers the variable levels below the
+    /// boost level, starting where the previous scan stopped; it examines at most
+    /// [`THREAD_SCAN_LIMIT`] threads and boosts at most [`THREAD_READY_LIMIT`]. Returns how many it
+    /// boosted.
+    pub fn scan_ready_queues(&mut self) -> usize {
+        let top = REALTIME_BASE - 2;
+        let mut level = self.scan_level.clamp(1, top);
+        let (mut examined, mut boosted) = (0, 0);
+        for _ in 0..top {
+            if self.ready_summary & (1 << level as u32) != 0 {
+                let queue = &mut self.ready[level as usize];
+                let sentinel = queue.sentinel();
+                // SAFETY: the queue is initialized and non-empty; its entries are ready threads.
+                let mut entry = unsafe { queue.first() };
+                while !eq(entry, sentinel) && examined < THREAD_SCAN_LIMIT && boosted < THREAD_READY_LIMIT {
+                    // SAFETY: as above; the next entry is read before this one may be unlinked.
+                    let next = unsafe { (*entry).next };
+                    let thread = entry_to_thread(entry);
+                    examined += 1;
+                    // SAFETY: a queued thread is live.
+                    let thread = unsafe { &mut *thread };
+                    if self.tick.wrapping_sub(thread.wait_time) >= READY_WITHOUT_RUNNING {
+                        // SAFETY: the thread is linked on this queue.
+                        unsafe { unlink(entry) };
+                        if self.ready[level as usize].is_empty() {
+                            self.ready_summary &= !(1 << level as u32);
+                        }
+                        self.balance_boost(thread);
+                        boosted += 1;
+                    }
+                    entry = next;
+                }
+            }
+            if examined >= THREAD_SCAN_LIMIT || boosted >= THREAD_READY_LIMIT {
+                break;
+            }
+            level = if level == top { 1 } else { level + 1 };
+        }
+        self.scan_level = level;
+        boosted
     }
 
     /// Terminate the running thread: mark its object signaled (the thread's waiters observe the
@@ -1939,6 +2028,30 @@ mod tests {
         assert_eq!(t.quantum(), 12, "6 * 2: the doubled quantum");
         assert_eq!(t.state(), ThreadState::Ready);
         assert_eq!(d.find_ready(0), as_ptr(t));
+    }
+
+    /// The balance-set scan: a thread ready for the full threshold is boosted and preempts the
+    /// spinner that starved it; one ready for less is left alone.
+    #[test]
+    fn the_scan_boosts_a_starved_thread() {
+        let d = dispatcher();
+        let p = process(8);
+        let hog = thread(p);
+        hog.priority = 8;
+        run(d, as_ptr(hog));
+        d.note_tick(1000);
+        let starved = thread(p);
+        starved.priority = 1;
+        starved.base_priority = 1;
+        d.make_ready(starved);
+        assert_eq!(starved.wait_time(), 1000, "stamped as it queued");
+
+        d.note_tick(1000 + READY_WITHOUT_RUNNING - 1);
+        assert_eq!(d.scan_ready_queues(), 0, "not starved long enough yet");
+        d.note_tick(1000 + READY_WITHOUT_RUNNING);
+        assert_eq!(d.scan_ready_queues(), 1);
+        assert_eq!(starved.priority(), REALTIME_BASE - 1);
+        assert_eq!(d.next_thread(), as_ptr(starved), "the boost preempts the spinner");
     }
 
     /// The yield: nothing ready, no yield; a ready lower-priority thread takes the processor, and

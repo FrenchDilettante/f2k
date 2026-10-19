@@ -186,6 +186,20 @@ static mut CLOCK: Clock = Clock::new();
 #[cfg(target_arch = "x86")]
 static mut TIMER_DPC: Dpc = Dpc::new(timer_routine, 0);
 
+/// How often the balance-set scan runs, in full ticks: about a second.
+pub const BALANCE_PERIOD_TICKS: u32 = 100;
+
+/// The balance-set scan's deferred work (see
+/// [`crate::sched::dispatcher::Dispatcher::scan_ready_queues`]): the platform runs it in its
+/// balance-set manager thread, woken once a second; here the clock enqueues it once a second.
+#[cfg(target_arch = "x86")]
+static mut BALANCE_DPC: Dpc = Dpc::new(balance_routine, 0);
+
+#[cfg(target_arch = "x86")]
+fn balance_routine(_dpc: &Dpc, _context: usize, _argument1: usize, _argument2: usize) {
+    crate::sched::idle::dispatcher().scan_ready_queues();
+}
+
 /// The vector the timer interrupt arrives on (IRQ 0 after the remap).
 pub const CLOCK_VECTOR: u8 = crate::hw::pic::MASTER_VECTOR_BASE;
 
@@ -217,7 +231,14 @@ pub fn service() {
             clock.account_runtime(crate::interrupt::dpc::queue_mut());
             // A full tick charges the running thread's quantum; a charge that runs the quantum out
             // requests the dispatch window's decision at this interrupt's exit.
-            crate::sched::idle::dispatcher().charge_running_tick();
+            let dispatcher = crate::sched::idle::dispatcher();
+            dispatcher.note_tick(clock.tick_count());
+            dispatcher.charge_running_tick();
+            // Once a second, the balance-set scan.
+            if tick_low % BALANCE_PERIOD_TICKS == 0 {
+                let dpc = &mut *addr_of_mut!(BALANCE_DPC);
+                crate::interrupt::dpc::enqueue(dpc, 0, 0);
+            }
         }
     }
 }
