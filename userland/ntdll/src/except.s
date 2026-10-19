@@ -1,6 +1,7 @@
 # The exception dispatcher's entry points (Windows 2000's ntdll keeps them in assembly too): the
-# kernel's way into user mode for an exception, RtlUnwind's context capture, and ExecuteHandler2's
-# registration around a handler's call. Their bodies are Rust (src/except.rs over rtl::seh, cdecl).
+# kernel's way into user mode for an exception and for a user APC, RtlUnwind's context capture, and
+# ExecuteHandler2's registration around a handler's call. Their bodies are Rust (src/except.rs over
+# rtl::seh, cdecl).
 .text
 
 # The kernel enters user mode here for every exception it dispatches, a fault's or
@@ -12,6 +13,24 @@
 .globl _f2k_export_KiUserExceptionDispatcher
 _f2k_export_KiUserExceptionDispatcher:
     call _f2k_user_exception_dispatch
+    ud2
+
+# The kernel delivers a user APC here: the routine at [esp], then its three arguments (the
+# context and the two system arguments), then the interrupted CONTEXT. EDI (preserved across the
+# stdcall routine) keeps the context's address; NtContinue resumes it, TestAlert TRUE (the next
+# queued user APC, if any, delivers on its way out). Only a failed NtContinue returns: its status
+# is raised.
+.p2align 4
+.globl _f2k_export_KiUserApcDispatcher
+_f2k_export_KiUserApcDispatcher:
+    lea edi, [esp+0x10]
+    pop eax
+    call eax
+    push 1
+    push edi
+    call _f2k_nt_NtContinue
+    push eax
+    call _f2k_raise_failed_status
     ud2
 
 # RtlUnwind(TargetFrame, TargetIp, ExceptionRecord, ReturnValue): the caller's context captured as

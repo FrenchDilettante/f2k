@@ -10,7 +10,7 @@ Multiboot loader with the disk attached (`image="kernel"`) or the disk itself th
 "KERNEL PANIC" fails every case. `cmdline` is the user program's command line: QEMU's `-append`
 on a kernel boot, the Limine entry's `cmdline` on a disk boot; without one the kernel runs exit0.
 
-The program smokes (sleep, spin, suspend, respawn, fileio) run the root directory's
+The program smokes (spin, suspend, respawn, fileio) run the root directory's
 single-path fixtures, selected by the command line, until the sectioned blocks that succeed them
 replace them (tests/test_limine.py names each successor).
 
@@ -243,21 +243,6 @@ CASES = (
         "the console fixture prints \"Hello, world!\" as its own COM1 output and exits 0",
         expects=("Hello, world!",),
         ordered=True,
-    ),
-    # Timer smoke: the main thread parks in the timer table through Sleep(200) (the idle thread
-    # owns the processor while it sleeps), yields through Sleep(0), and times out a wait on a
-    # never-signaled event after 100 ms. Both spans read whole ticks: the GetTickCount reads and the
-    # sleeps' due times derive from the same tick-quantized accumulator, so the captured cadence
-    # (exactly 200 and exactly 100) is pinned verbatim.
-    *program_smoke(
-        "sleep",
-        "the timer smoke parks the main thread in the timer table for a 200 ms sleep, yields through Sleep(0), and times out a 100 ms wait, reporting both spans at the captured cadence",
-        expects=(
-            "sleep 200ms spanned 200 ticks",
-            "sleep 0 returned",
-            "timed wait: timeout after 100 ticks",
-            "sleep: ok",
-        ),
     ),
     # Preemption smoke: two same-priority spinners alternate at quantum ends (round-robin delivered
     # from the tick — a quantum spans exactly two ticks), and a third thread raised above them

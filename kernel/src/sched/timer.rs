@@ -85,6 +85,19 @@ impl TimerTable {
     /// move the clock between the caller's reading and the link, so the entry check is exact.
     pub fn insert(&mut self, timer: &mut Timer, due: u64, now: u64) -> bool {
         timer.waitable.signal_state = 0;
+        self.link(timer, due, now)
+    }
+
+    /// A periodic timer's re-arm at its expiry: as [`TimerTable::insert`], but the signal the
+    /// expiry just set stands — a periodic timer is never reset by its own re-arm, only by a wait
+    /// that consumes the signal or a new set.
+    pub fn reinsert_periodic(&mut self, timer: &mut Timer, due: u64, now: u64) -> bool {
+        self.link(timer, due, now)
+    }
+
+    /// Record `due` and link `timer` into its bucket in due order; false (nothing linked) when the
+    /// due time is already past.
+    fn link(&mut self, timer: &mut Timer, due: u64, now: u64) -> bool {
         if due <= now {
             timer.inserted = false;
             return false;
@@ -185,7 +198,9 @@ impl TimerTable {
                 if !timer.inserted {
                     return Err("a bucket entry is not inserted");
                 }
-                if timer.waitable.signal_state != 0 {
+                // A periodic timer re-arms with its signal standing; every other entry was reset
+                // by its insert.
+                if timer.waitable.signal_state != 0 && timer.period == 0 {
                     return Err("a bucket entry is signaled");
                 }
                 if self.bucket_of(timer.due_time) != index {
@@ -223,15 +238,11 @@ impl Dispatcher {
         self.timer_table.trigger(now, tick_low)
     }
 
-    /// The timer table (the boot-time diagnostic parks a timer through it).
-    pub(crate) fn timer_table(&mut self) -> &mut TimerTable {
-        &mut self.timer_table
-    }
-
     /// The deferred expiry work: collect the timers due by `now` — from the buckets the `argument`
     /// tick names through the current one — and expire each in due order through the wait
-    /// discipline's expiry entry. `tick_low` is the current tick's low word.
-    pub(crate) fn expire_timers(&mut self, now: u64, tick_low: u32, argument: u32) {
+    /// discipline's expiry entry. `tick_low` is the current tick's low word; `signal_time` is the
+    /// wall clock's reading for the pass (a FILETIME), what the expired timers' APCs are given.
+    pub(crate) fn expire_timers(&mut self, now: u64, tick_low: u32, argument: u32, signal_time: u64) {
         // The collection list: timers unlinked from their buckets await their expiry here, in due
         // order.
         let mut expired = List::empty();
@@ -249,8 +260,44 @@ impl Dispatcher {
                 let timer = timer_of(entry);
                 (*timer).inserted = false;
                 self.expire_timer(timer);
+                self.timer_fired(&mut *timer, now, signal_time);
             }
         }
+    }
+
+    /// What an expiry does past the signal-and-satisfy: queue the timer's APC (unless the previous
+    /// one is still queued) with the signal time, a FILETIME, as its two system arguments (low
+    /// dword, high dword: what a completion routine receives on Windows 2000), and re-arm a
+    /// periodic timer one period from `now`. A thread's wait timer has neither.
+    pub(crate) fn timer_fired(&mut self, timer: &mut Timer, now: u64, signal_time: u64) {
+        if !timer.apc.is_null() {
+            // SAFETY: a timer's APC record lives as long as the timer (both in one record).
+            if !unsafe { (*timer.apc).inserted } {
+                self.queue_apc(
+                    timer.apc,
+                    signal_time as u32 as usize,
+                    (signal_time >> 32) as usize,
+                    0,
+                );
+            }
+        }
+        if timer.period != 0 && !timer.inserted {
+            // The period is at least a millisecond, so the re-arm is always in the future.
+            self.timer_table
+                .reinsert_periodic(timer, now + timer.period, now);
+        }
+    }
+
+    /// Cancel `timer`: out of the table, its period and APC dropped, a queued APC taken back out of
+    /// its thread's queue. Returns whether the timer was signaled.
+    pub(crate) fn cancel_timer(&mut self, timer: &mut Timer) -> bool {
+        self.timer_table.remove(timer);
+        timer.period = 0;
+        if !timer.apc.is_null() {
+            self.remove_apc(timer.apc);
+            timer.apc = null_mut();
+        }
+        timer.waitable.signal_state > 0
     }
 }
 
@@ -429,7 +476,7 @@ mod tests {
         // At the transition to tick 1300 the second arm fires (the exact-multiple head); the walk
         // expires the head only — the tail is not due yet.
         assert_eq!(dispatcher.timer_trigger(tick(1300), 1300), Some(1300));
-        dispatcher.expire_timers(tick(1300), 1300, 1300);
+        dispatcher.expire_timers(tick(1300), 1300, 1300, 0);
         assert!(!early.inserted());
         assert_eq!(early.waitable.signal_state(), 1);
         assert!(late.inserted());
@@ -441,7 +488,7 @@ mod tests {
         // The tail expires at tick 1301, through the first arm (its bucket is tick 1300's) with
         // argument 1300.
         assert_eq!(dispatcher.timer_trigger(tick(1301), 1301), Some(1300));
-        dispatcher.expire_timers(tick(1301), 1301, 1300);
+        dispatcher.expire_timers(tick(1301), 1301, 1300, 0);
         assert_eq!(late.waitable.signal_state(), 1);
         assert_eq!(dispatcher.timer_table.audit(), Ok(()));
     }
@@ -543,7 +590,7 @@ mod tests {
         assert!(dispatcher
             .timer_table
             .insert(behind, tick(999) + 50_000, tick(999)));
-        dispatcher.expire_timers(now, 1002, 1000);
+        dispatcher.expire_timers(now, 1002, 1000, 0);
         assert!(!in_range.inserted());
         assert_eq!(in_range.waitable.signal_state(), 1);
         // Behind the argument's bucket: this walk's range is [1000, 1002]; bucket 103 is not in it.
@@ -552,7 +599,7 @@ mod tests {
         assert_eq!(dispatcher.timer_table.audit(), Ok(()));
 
         // The older argument covers it.
-        dispatcher.expire_timers(now, 1002, 999);
+        dispatcher.expire_timers(now, 1002, 999, 0);
         assert!(!behind.inserted());
     }
 
@@ -564,7 +611,7 @@ mod tests {
         let stale = fresh_timer();
         assert!(dispatcher.timer_table.insert(stale, tick(500), tick(400)));
         // 130 ticks late: over the 128-bucket round.
-        dispatcher.expire_timers(tick(1130), 1130, 1000);
+        dispatcher.expire_timers(tick(1130), 1130, 1000, 0);
         assert!(!stale.inserted());
         assert_eq!(stale.waitable.signal_state(), 1);
     }
@@ -584,7 +631,7 @@ mod tests {
             .timer_table
             .insert(tail, tick(1000) + 90_000, tick(1000)));
         // Mid-tick: the head is due, the tail is not.
-        dispatcher.expire_timers(tick(1000) + 60_000, 1000, 1000);
+        dispatcher.expire_timers(tick(1000) + 60_000, 1000, 1000, 0);
         assert!(!head.inserted());
         assert_eq!(head.waitable.signal_state(), 1);
         assert!(tail.inserted());
@@ -614,7 +661,7 @@ mod tests {
             .timer_table
             .insert(outside, tick(1163), tick(1000)));
 
-        dispatcher.expire_timers(tick(1160), 131, 126);
+        dispatcher.expire_timers(tick(1160), 131, 126, 0);
         for expired in [a, b, c] {
             assert!(!expired.inserted(), "expired");
             assert_eq!(expired.waitable.signal_state(), 1);
@@ -650,7 +697,7 @@ mod tests {
         // The transition to tick 1010: the first arm's bucket (1009 — the tick sleeper_b's due
         // falls within) holds its timer; the argument is that tick.
         assert_eq!(dispatcher.timer_trigger(tick(1010), 1010), Some(1009));
-        dispatcher.expire_timers(tick(1010), 1010, 1009);
+        dispatcher.expire_timers(tick(1010), 1010, 1009, 0);
         assert_eq!(sleeper_b.wait_status(), STATUS_TIMEOUT);
         assert_eq!(
             Dispatcher::delay_completed(sleeper_b.wait_status()),
@@ -659,7 +706,7 @@ mod tests {
         assert_eq!(sleeper_b.state(), ThreadState::Ready);
         assert!(sleeper_a.timer.inserted());
 
-        dispatcher.expire_timers(tick(1020), 1020, 1019);
+        dispatcher.expire_timers(tick(1020), 1020, 1019, 0);
         assert_eq!(
             Dispatcher::delay_completed(sleeper_a.wait_status()),
             STATUS_SUCCESS
@@ -735,7 +782,7 @@ mod tests {
 
         // The walk at and past the would-be due tick: nothing expires for it, and the thread keeps
         // the wake's status.
-        dispatcher.expire_timers(tick(1020), 1020, 1019);
+        dispatcher.expire_timers(tick(1020), 1020, 1019, 0);
         assert_eq!(waiter.wait_status(), STATUS_SUCCESS);
         assert_eq!(waiter.state(), ThreadState::Ready);
         assert_eq!(dispatcher.timer_table.audit(), Ok(()));
@@ -817,7 +864,7 @@ mod tests {
             stamp(tick(1000), 1000),
         );
         assert_eq!(dispatcher.timer_trigger(tick(1010), 1010), Some(1009));
-        dispatcher.expire_timers(tick(1010), 1010, 1009);
+        dispatcher.expire_timers(tick(1010), 1010, 1009, 0);
         assert_eq!(waiter.wait_status(), STATUS_TIMEOUT);
         assert_eq!(waiter.state(), ThreadState::Ready);
         assert_eq!(ev.signal_state(), 0);

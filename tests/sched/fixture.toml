@@ -11,14 +11,6 @@ timeout = 30
 yield = ["SwitchToThread: returned 1, the new thread had run *"]
 
 # The blocks this kernel does not pass yet, each with the increment that enables it.
-# Every block starts with SetProcessAffinityMask.
 [pending]
-clock = "B7: SetProcessAffinityMask, the block's first call (the clocks themselves are B2's)"
-sleep = "B5b: timers, sleeps, APCs and SwitchToThread (and B7's SetProcessAffinityMask, its first call)"
-timer = "B5b: timers, sleeps, APCs and SwitchToThread (and B7's SetProcessAffinityMask, its first call)"
-rr = "B7: threads and scheduling"
-preempt = "B7: threads and scheduling"
-boost = "B7: threads and scheduling"
-freeze = "B7: threads and scheduling"
-starve = "B7: threads and scheduling"
+starve = "B7: the balance-set scan (a thread ready for about three seconds without running takes the balance boost)"
 yield = "B7: threads and scheduling (a known flake: always deselected)"

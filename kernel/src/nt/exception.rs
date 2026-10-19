@@ -1,9 +1,9 @@
 //! The exception services ntdll's user-mode dispatcher comes back to the kernel through (see
-//! [`crate::user::seh`]): NtContinue resumes a CONTEXT — a handled exception's, an unwind's
-//! caller — and NtRaiseException raises an exception user code built: its first chance dispatched
-//! exactly as a fault is (the records copied below the context's stack pointer,
-//! KiUserExceptionDispatcher entered), its second chance the process's end with the code (no
-//! debugger, no exception port), as Windows 2000's dispatch does then.
+//! [`crate::user::seh`]): NtContinue resumes a CONTEXT — a handled exception's, an unwind's caller,
+//! a delivered user APC's interrupted one — and NtRaiseException raises an exception user code
+//! built: its first chance dispatched exactly as a fault is (the records copied below the context's
+//! stack pointer, KiUserExceptionDispatcher entered), its second chance the process's end with the
+//! code (no debugger, no exception port), as Windows 2000 does then.
 
 use super::call::{Status, UserAddr, STATUS_INVALID_PARAMETER};
 use crate::user::seh::{self, CONTEXT_SIZE, EXCEPTION_MAXIMUM_PARAMETERS, RECORD_SIZE};
@@ -39,13 +39,15 @@ mod target {
 
     /// NtContinue(Context, TestAlert): the context's registers back into the caller's frame (the
     /// sets its flags name; see [`seh::restore_context`]), so the service returns into it — EAX
-    /// included. TestAlert (a BOOLEAN) arms the delivery of the thread's next queued user APC on
-    /// the way out on Windows 2000; here it is ignored: user APCs are delivered without
-    /// KiUserApcDispatcher's NtContinue for now.
-    pub fn continue_context(call: &mut NtCall, context: UserAddr, _test_alert: u32) -> NtResult {
+    /// included. TestAlert (a BOOLEAN) arms the delivery of the thread's next queued user APC, on
+    /// the way out.
+    pub fn continue_context(call: &mut NtCall, context: UserAddr, test_alert: u32) -> NtResult {
         let image = read_context(context)?;
         let frame = call.frame();
         seh::restore_context(frame, &image);
+        if test_alert & 0xFF != 0 {
+            crate::user::apc::test_alert();
+        }
         Ok(frame.eax)
     }
 

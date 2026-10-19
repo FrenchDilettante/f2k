@@ -1012,7 +1012,7 @@ pinned_by = [
 name = "Sleep"
 group = "threads"
 args = ["u32 dwMilliseconds"]
-impl = { legacy = "svc_sleep" }
+impl = { native = "Sleep" }
 pinned_by = [
     "sched/clock",
     "sched/freeze",
@@ -1162,7 +1162,7 @@ group = "threads"
 args = ["handle hSourceProcessHandle", "handle hSourceHandle", "handle hTargetProcessHandle", "ptr<u32> lpTargetHandle", "u32 dwDesiredAccess", "bool bInheritHandle", "u32 dwOptions"]
 impl = { native = "DuplicateHandle" }
 pinned_by = ["files/handles", "sync/handles", "threads/create"]
-note = "a console handle is its server's to duplicate (DuplicateConsoleHandle); any other handle is NtDuplicateObject's, within the calling process (GAP-PS-4); a file handle's duplicate waits for the file objects (B8)"
+note = "a console handle is its server's to duplicate (DuplicateConsoleHandle); any other handle is NtDuplicateObject's, within the calling process; a file handle's duplicate waits for the file objects"
 scenarios = ["console_handles_close_and_duplicate_at_their_server", "duplicate_handle_duplicates_kernel_handles"]
 
 [[export]]
@@ -1340,8 +1340,7 @@ pinned_by = ["sync/event"]
 name = "QueueUserAPC"
 group = "threads"
 args = ["ptr pfnAPC", "handle hThread", "u32 dwData"]
-impl = { unimplemented = "B5b: timers, sleeps, APCs and SwitchToThread" }
-fails = "FALSE"
+impl = { native = "QueueUserAPC" }
 pinned_by = ["sync/apc"]
 
 [[export]]
@@ -1377,8 +1376,7 @@ scenarios = ["waits_on_console_handles_wait_for_input"]
 name = "SleepEx"
 group = "threads"
 args = ["u32 dwMilliseconds", "bool bAlertable"]
-impl = { unimplemented = "B5b: timers, sleeps, APCs and SwitchToThread" }
-fails = "never"
+impl = { native = "SleepEx" }
 pinned_by = ["sched/sleep", "sched/timer", "sync/apc"]
 
 [[export]]
@@ -1400,16 +1398,14 @@ pinned_by = ["sync/apc"]
 name = "CancelWaitableTimer"
 group = "threads"
 args = ["handle hTimer"]
-impl = { unimplemented = "B5b: timers, sleeps, APCs and SwitchToThread" }
-fails = "FALSE"
+impl = { native = "CancelWaitableTimer" }
 pinned_by = ["sched/timer"]
 
 [[export]]
 name = "CreateWaitableTimerA"
 group = "threads"
 args = ["ptr lpTimerAttributes", "bool bManualReset", "strA? lpTimerName"]
-impl = { unimplemented = "B5b: timers, sleeps, APCs and SwitchToThread" }
-fails = "NULL"
+impl = { native = "CreateWaitableTimerA" }
 pinned_by = ["sched/timer"]
 
 [[export]]
@@ -1447,8 +1443,7 @@ scenarios = ["the_time_zone_comes_from_the_system"]
 name = "OpenWaitableTimerA"
 group = "threads"
 args = ["u32 dwDesiredAccess", "bool bInheritHandle", "strA? lpTimerName"]
-impl = { unimplemented = "B5b: timers, sleeps, APCs and SwitchToThread" }
-fails = "NULL"
+impl = { native = "OpenWaitableTimerA" }
 pinned_by = ["sched/timer"]
 
 [[export]]
@@ -1471,24 +1466,22 @@ scenarios = ["the_performance_counter_comes_from_the_system"]
 name = "SetProcessAffinityMask"
 group = "threads"
 args = ["handle hProcess", "u32 dwProcessAffinityMask"]
-impl = { unimplemented = "B7: threads and scheduling" }
-fails = "FALSE"
+impl = { native = "SetProcessAffinityMask" }
 pinned_by = ["sched/*"]
+scenarios = ["affinity_is_the_one_processor"]
 
 [[export]]
 name = "SetWaitableTimer"
 group = "threads"
 args = ["handle hTimer", "ptr<u64> pDueTime", "i32 lPeriod", "ptr pfnCompletionRoutine", "ptr lpArgToCompletionRoutine", "bool fResume"]
-impl = { unimplemented = "B5b: timers, sleeps, APCs and SwitchToThread" }
-fails = "FALSE"
+impl = { native = "SetWaitableTimer" }
 pinned_by = ["sched/timer"]
 
 [[export]]
 name = "SwitchToThread"
 group = "threads"
 args = []
-impl = { unimplemented = "B5b: timers, sleeps, APCs and SwitchToThread" }
-fails = "never"
+impl = { native = "SwitchToThread" }
 pinned_by = ["sched/yield"]
 
 # --- file handles ---------------------------------------------------------------------------------

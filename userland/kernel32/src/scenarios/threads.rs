@@ -1,10 +1,11 @@
-//! The process's end: TerminateProcess over NtTerminateProcess (the host's stand-in records the
-//! calls; only the current process is reachable); the TLS indexes over the stand-in PEB's bitmaps.
+//! The process's end and affinity: TerminateProcess over NtTerminateProcess (the host's stand-in
+//! records the calls; only the current process is reachable), SetProcessAffinityMask over
+//! NtSetInformationProcess; the TLS indexes over the stand-in PEB's bitmaps.
 
 use crate::base::last_error;
 use crate::nt::threads::process;
 use crate::nt::{TERMINATED, ZEROED_TLS};
-use crate::process::terminate_process;
+use crate::process::{set_process_affinity_mask, terminate_process};
 use crate::thread::{tls_alloc, tls_free};
 
 const CURRENT_PROCESS: u32 = 0xFFFF_FFFF;
@@ -27,6 +28,21 @@ fn terminations_reach_what_their_handles_name() {
     assert_eq!(terminate_process(CURRENT_PROCESS, 3), 1);
     let calls = TERMINATED.with(|terminated| terminated.borrow().clone());
     assert_eq!(calls, [(BOGUS, 3), (CURRENT_PROCESS, 3)]);
+}
+
+/// SetProcessAffinityMask: the one processor's mask; an empty mask or one naming a processor the
+/// system lacks is ERROR_INVALID_PARAMETER, another handle ERROR_INVALID_HANDLE.
+#[test]
+fn affinity_is_the_one_processor() {
+    assert_eq!(set_process_affinity_mask(CURRENT_PROCESS, 1), 1);
+    for mask in [0, 2, 3] {
+        assert_eq!(
+            (set_process_affinity_mask(CURRENT_PROCESS, mask), last_error()),
+            (0, 87),
+            "{mask:#x}"
+        );
+    }
+    assert_eq!((set_process_affinity_mask(BOGUS, 1), last_error()), (0, 6));
 }
 
 /// The TLS indexes: the lowest free first, the caller's slot cleared; all 1088, then

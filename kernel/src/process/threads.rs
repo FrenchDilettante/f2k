@@ -175,9 +175,11 @@ pub fn spawn(
 /// A user thread's system routine: the kernel function the startup stub calls before entering the
 /// thread's user context. A never-run thread has had no delivery window, so a kernel APC queued on
 /// it before its first dispatch — a suspend, or a creation suspended — runs here, before its first
-/// user instruction; the stub's tail then carries the thread into its user code.
+/// user instruction, and so do the user APCs queued on it before it ran (its test alert); the
+/// stub's tail then carries the thread into its user code.
 unsafe extern "C" fn user_thread_startup(_start: u32, _parameter: u32) {
     crate::sched::idle::dispatcher().deliver_pending_apcs();
+    crate::user::apc::deliver_at_startup();
 }
 
 /// The thread-exit path: the exit status in hand, end the calling thread — and its process, when
@@ -268,12 +270,15 @@ fn end_thread(end: ThreadEnd) -> ! {
     }
 
     // The process's end, step 2: every handle closes while this thread still runs, as CloseHandle
-    // would — the objects go with their last references.
+    // would — the objects go with their last references (a timer leaves the timer table, an owned
+    // mutex its owner's list).
     if plan.process_end.is_some() {
         process.release_handles();
     }
 
-    // The APC queue closes before the scheduler teardown.
+    // The timers whose completion APC targets this thread are cancelled, then the APC queue
+    // closes, both before the scheduler teardown.
+    run_down_timers(current);
     // SAFETY: the running thread, live and exclusive in the gate.
     unsafe { crate::sched::apc::close_apc_queue(&mut *current) };
 
@@ -325,6 +330,7 @@ fn terminate_others(process: &mut Process, current: *mut Thread) -> u16 {
         // SAFETY: an attached thread of this process, off the processor; the record outlives its
         // termination (it is renewed only by a create, which nothing runs here).
         let other = unsafe { &mut *other };
+        run_down_timers(other);
         match dispatcher.request_termination(other) {
             Termination::Done => {
                 release_gate_stack(process, (other.gate_slot, other.gate_frames));
@@ -334,6 +340,12 @@ fn terminate_others(process: &mut Process, current: *mut Thread) -> u16 {
             Termination::Deferred => deferred += 1,
         }
     }
+}
+
+/// Cancel the current process's timers whose completion APC targets `thread`, which is ending:
+/// nothing may queue to it any more (the platform's timer rundown at thread exit).
+fn run_down_timers(thread: *mut Thread) {
+    crate::ob::directory().run_down_timers(crate::sched::idle::dispatcher(), thread);
 }
 
 /// The suite leg the current process runs as, for its report; none on a one-process boot.

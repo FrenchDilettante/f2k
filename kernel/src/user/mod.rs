@@ -13,6 +13,7 @@
 //! code go to the thread's own exception handlers ([`seh`]); one nobody takes ends the process, not
 //! the kernel.
 
+pub mod apc;
 pub mod args;
 pub mod params;
 pub mod seh;

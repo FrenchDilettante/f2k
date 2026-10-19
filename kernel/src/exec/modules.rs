@@ -141,7 +141,11 @@ pub fn kernel32_export(name: &str) -> Option<u32> {
 /// returns onto it, and it raises the internal thread-exit service with the function's return
 /// value. An F2K-internal export, found by name.
 pub fn thread_exit_trampoline() -> u32 {
-    resolve_in(NTDLL, "F2kThreadExitTrampoline", 0).expect("ntdll exports F2kThreadExitTrampoline")
+    static RESOLVED: AtomicU32 = AtomicU32::new(0);
+    redirect_target(&RESOLVED, || {
+        resolve_in(NTDLL, "F2kThreadExitTrampoline", 0)
+            .expect("ntdll exports F2kThreadExitTrampoline")
+    })
 }
 
 /// An entry point the kernel redirects user code to, resolved once into `slot` (0: not yet).
@@ -168,6 +172,15 @@ pub fn process_start_thunk() -> u32 {
     redirect_target(&RESOLVED, || {
         resolve_in(KERNEL32, "BaseProcessStartThunk", 0)
             .expect("kernel32 exports BaseProcessStartThunk")
+    })
+}
+
+/// ntdll's KiUserApcDispatcher: a user APC's delivery enters user mode there (see
+/// [`crate::user::apc`]).
+pub fn apc_dispatcher() -> u32 {
+    static RESOLVED: AtomicU32 = AtomicU32::new(0);
+    redirect_target(&RESOLVED, || {
+        resolve_in(NTDLL, "KiUserApcDispatcher", 0).expect("ntdll exports KiUserApcDispatcher")
     })
 }
 

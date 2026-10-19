@@ -2,8 +2,8 @@
 //!
 //! An APC is a request to run code on a particular thread — the kernel's way to make a thread do
 //! something at a point it did not choose. Each thread owns two queues, kernel-mode and user-mode;
-//! the kernel queue is live machinery, the user queue is armed data whose delivery belongs to the
-//! user-mode runtime layer (see [`USER_APC_DISPATCHER`]).
+//! the kernel queue is delivered here, the user queue on the thread's way back to user mode, through
+//! ntdll's KiUserApcDispatcher (see [`crate::user::apc`]).
 //!
 //! The queue discipline keeps specials ahead of normals: a special (no normal routine) lands after
 //! the queued specials, a normal at the tail — so delivery order is specials first, then normals in
@@ -45,19 +45,13 @@ pub const MAX_SUSPEND_COUNT: u8 = 127;
 /// plus a later release must both fit.
 pub const SUSPEND_SEMAPHORE_LIMIT: i32 = 2;
 
-/// The user-mode APC dispatcher: the address execution continues at when a user APC is delivered.
-/// It belongs to the user-mode runtime layer, which does not exist yet — the loader-supplied
-/// pointer is captured when that layer lands. Until then it is zero, nothing produces a user APC,
-/// and the user queue and its pending flag ride as armed data.
-pub const USER_APC_DISPATCHER: u32 = 0;
-
 /// Which of a thread's two APC queues an APC belongs to.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum ApcMode {
     /// The kernel queue: delivered by this machinery.
     Kernel = 0,
-    /// The user queue: armed data — the delivery belongs to the runtime layer.
+    /// The user queue: delivered in user mode (see [`crate::user::apc`]).
     User = 1,
 }
 
@@ -104,6 +98,10 @@ pub struct Apc {
     pub(crate) mode: ApcMode,
     /// The context the normal routine receives. Forced to zero for a special.
     pub(crate) normal_context: usize,
+    /// A user APC's routine: the user-mode address its delivery calls with the context and both
+    /// system arguments (Windows 2000 keeps it as the normal routine; here that slot holds the
+    /// user-mode marker, [`crate::user::apc::user_normal_routine`]). Zero for a kernel APC.
+    pub(crate) user_routine: usize,
     /// The first system argument, captured at insert.
     pub(crate) system_argument1: usize,
     /// The second system argument, captured at insert.
@@ -123,6 +121,7 @@ impl Apc {
             normal_routine: None,
             mode: ApcMode::Kernel,
             normal_context: 0,
+            user_routine: 0,
             system_argument1: 0,
             system_argument2: 0,
             inserted: false,
@@ -289,8 +288,8 @@ impl Dispatcher {
                 }
             }
             ApcMode::User => {
-                // The user arm: an alertable user-mode wait breaks; nothing else. No F2K code
-                // builds a user APC — the fields are armed data for the runtime layer's delivery.
+                // The user arm: an alertable user-mode wait breaks; nothing else (the delivery is
+                // the thread's own, on its way back to user mode: `user::apc`).
                 if thread.state == ThreadState::Waiting
                     && thread.wait_mode == WaitMode::User
                     && thread.wait_alertable
@@ -369,8 +368,8 @@ impl Dispatcher {
     /// being lost. Specials run first and to completion; normals run kernel-routine-then-normal,
     /// the normal half at the passive level, one at a time, gated by an in-progress normal and the
     /// thread's disable count — a gated normal stops the delivery with the queue intact (deferred,
-    /// not dropped). The user tail does not exist here: no user APC can be delivered before the
-    /// runtime layer lands (see [`USER_APC_DISPATCHER`]).
+    /// not dropped). The user queue is not delivered here: a user APC runs in user mode (see
+    /// [`crate::user::apc`]).
     pub fn deliver_kernel_apcs(&mut self) -> ApcDelivery {
         // SAFETY: the running thread, live and exclusive here (the serialized dispatcher).
         let thread: &mut Thread = unsafe { &mut *self.current_thread() };
@@ -543,6 +542,9 @@ pub fn close_apc_queue(thread: &mut Thread) {
         thread.kernel_apcs.is_empty(),
         "a self-exiting thread has a queued kernel APC"
     );
+    // User APCs the thread never turned alertable for are discarded, their records freed.
+    Dispatcher::flush_apcs(thread, ApcMode::User);
+    thread.user_apc_pending = false;
 }
 
 /// What a delivery did.
@@ -1279,8 +1281,8 @@ mod tests {
         assert!(queued(t).len() == 1);
     }
 
-    /// D6: the user tail is armed data and nothing delivers it — a user APC queued with its pending
-    /// flag set delivers nothing, its queue untouched.
+    /// D6: the kernel delivery leaves the user queue alone — a user APC queued with its pending flag
+    /// set delivers nothing here (its delivery is in user mode), its queue untouched.
     #[test]
     fn nothing_delivers_a_user_apc() {
         let d = dispatcher();
@@ -1302,7 +1304,6 @@ mod tests {
         assert!(recorded_calls().is_empty(), "no user routine ran");
         assert!(apc.inserted(), "the user queue is untouched");
         assert!(t.user_apc_pending, "the armed flag stays");
-        assert_eq!(USER_APC_DISPATCHER, 0, "the trampoline seam is unarmed");
     }
 
     // --- Group F: the suspend consumer -------------------------------------------

@@ -1,6 +1,5 @@
-//! Synchronization objects, waits and handles: kernel32's own code over ntdll's system services,
-//! as on Windows 2000. The waitable timers, the sleeps, SwitchToThread and QueueUserAPC join them
-//! with B5b. The narrow names convert through the ANSI code
+//! Synchronization objects, waits, sleeps, handles and user APCs: kernel32's own code over ntdll's
+//! system services, as on Windows 2000. The narrow names convert through the ANSI code
 //! page (Windows 2000 converts into the thread's static Unicode string, MAX_PATH + 1 units: a
 //! longer name is ERROR_FILENAME_EXCED_RANGE); named objects are made in `\BaseNamedObjects`,
 //! OBJ_OPENIF ([`crate::base::format_object_attributes`]); a failed service's status sets the
@@ -25,11 +24,16 @@ use crate::nt::{self, ObjectAttributes, UnicodeString};
 const INVALID_HANDLE_VALUE: u32 = 0xFFFF_FFFF;
 
 const WAIT_FAILED: u32 = 0xFFFF_FFFF;
+const WAIT_IO_COMPLETION: u32 = 0xC0;
 
+const STATUS_USER_APC: u32 = 0xC0;
 const STATUS_ALERTED: u32 = 0x101;
 const STATUS_OBJECT_NAME_EXISTS: u32 = 0x4000_0000;
+const STATUS_NO_YIELD_PERFORMED: u32 = 0x4000_0024;
+const STATUS_TIMER_RESUME_IGNORED: u32 = 0x4000_0025;
 const STATUS_INVALID_PARAMETER: u32 = 0xC000_000D;
 
+const ERROR_NOT_SUPPORTED: u32 = 50;
 const ERROR_INVALID_PARAMETER: u32 = 87;
 const ERROR_ALREADY_EXISTS: u32 = 183;
 const ERROR_FILENAME_EXCED_RANGE: u32 = 206;
@@ -37,8 +41,9 @@ const ERROR_FILENAME_EXCED_RANGE: u32 = 206;
 const EVENT_ALL_ACCESS: u32 = 0x001F_0003;
 const MUTANT_ALL_ACCESS: u32 = 0x001F_0001;
 const SEMAPHORE_ALL_ACCESS: u32 = 0x001F_0003;
+const TIMER_ALL_ACCESS: u32 = 0x001F_0003;
 
-/// The event types: notification (manual-reset) and synchronization (auto-reset).
+/// The event and timer types: notification (manual-reset) and synchronization (auto-reset).
 const NOTIFICATION: u32 = 0;
 const SYNCHRONIZATION: u32 = 1;
 
@@ -79,8 +84,8 @@ fn boolean(value: u32) -> u32 {
 }
 
 /// The create every named kind shares (CreateEventA, CreateMutexA, CreateSemaphoreA,
-/// CreateFileMappingA; CreateWaitableTimerA with B5b): the name converted, the attributes
-/// formatted, `service` raised with them. On success the handle, the last error ERROR_ALREADY_EXISTS when the name bound an
+/// CreateWaitableTimerA, CreateFileMappingA): the name converted, the attributes formatted,
+/// `service` raised with them. On success the handle, the last error ERROR_ALREADY_EXISTS when the name bound an
 /// existing object and cleared otherwise (Windows clears it on every successful create); on
 /// failure null with the status's error.
 ///
@@ -132,8 +137,8 @@ pub(crate) unsafe fn create(
     handle
 }
 
-/// The open every named kind shares (OpenEventA, OpenMutexA, OpenSemaphoreA, OpenFileMappingA;
-/// OpenWaitableTimerA with B5b): the named object in `\BaseNamedObjects`, with the access asked
+/// The open every named kind shares (OpenEventA, OpenMutexA, OpenSemaphoreA, OpenWaitableTimerA,
+/// OpenFileMappingA): the named object in `\BaseNamedObjects`, with the access asked
 /// for and inheritable when asked. ERROR_INVALID_PARAMETER without a name; the status's error when it
 /// cannot be opened. The last error is left alone on success.
 ///
@@ -149,7 +154,7 @@ pub(crate) unsafe fn open(
     let mut units = [0u16; MAX_PATH + 1];
     // SAFETY: the caller's string, when given.
     let length = match (!name.is_null()).then(|| unsafe { widen(name, &mut units) }) {
-        // An empty name names nothing (an assumption: F2K's answer before ARCH-6, unverified).
+        // An empty name names nothing (an assumption: F2K's answer, unverified).
         None | Some(Ok(0)) => {
             set_last_error(ERROR_INVALID_PARAMETER);
             return 0;
@@ -349,7 +354,98 @@ pub unsafe extern "system" fn release_semaphore(
     succeeded(unsafe { nt::NtReleaseSemaphore(semaphore, count, previous) })
 }
 
-// --- Waits ----------------------------------------------------------------------------------------
+// --- Waitable timers ------------------------------------------------------------------------------
+
+/// CreateWaitableTimerA: an unarmed manual-reset (notification) or auto-reset (synchronization)
+/// timer, or the named one already bound.
+///
+/// # Safety
+///
+/// `security` is null or a SECURITY_ATTRIBUTES; `name` null or a NUL-terminated string.
+#[unsafe(export_name = "f2k_export_CreateWaitableTimerA")]
+pub unsafe extern "system" fn create_waitable_timer_a(
+    security: *const SecurityAttributes,
+    manual_reset: u32,
+    name: *const u8,
+) -> u32 {
+    let timer_type = if manual_reset != 0 {
+        NOTIFICATION
+    } else {
+        SYNCHRONIZATION
+    };
+    // SAFETY: the caller's arguments; ntdll's export.
+    unsafe {
+        create(security, name, |handle, attributes| {
+            nt::NtCreateTimer(handle, TIMER_ALL_ACCESS, attributes, timer_type)
+        })
+    }
+}
+
+/// OpenWaitableTimerA (see [`open`]).
+///
+/// # Safety
+///
+/// `name` is null or a NUL-terminated string.
+#[unsafe(export_name = "f2k_export_OpenWaitableTimerA")]
+pub unsafe extern "system" fn open_waitable_timer_a(
+    access: u32,
+    inherit: u32,
+    name: *const u8,
+) -> u32 {
+    // SAFETY: the caller's string; ntdll's export.
+    unsafe {
+        open(access, inherit, name, |handle, access, attributes| {
+            nt::NtOpenTimer(handle, access, attributes)
+        })
+    }
+}
+
+/// SetWaitableTimer: arm the timer — the due time a FILETIME when positive, relative 100 ns units
+/// when negative; the period in milliseconds; the completion routine queued to the caller at each
+/// expiry. Resuming the machine is not supported: the set succeeds with ERROR_NOT_SUPPORTED.
+///
+/// # Safety
+///
+/// `due_time` points at a LARGE_INTEGER (the service reads it).
+#[unsafe(export_name = "f2k_export_SetWaitableTimer")]
+pub unsafe extern "system" fn set_waitable_timer(
+    timer: u32,
+    due_time: *const i64,
+    period: i32,
+    routine: usize,
+    argument: usize,
+    resume: u32,
+) -> u32 {
+    // SAFETY: ntdll's export.
+    let status = unsafe {
+        nt::NtSetTimer(
+            timer,
+            due_time,
+            routine,
+            argument,
+            boolean(resume),
+            period,
+            core::ptr::null_mut(),
+        )
+    };
+    if !nt_success(status) {
+        set_last_nt_error(status);
+        return 0;
+    }
+    if status == STATUS_TIMER_RESUME_IGNORED {
+        set_last_error(ERROR_NOT_SUPPORTED);
+    }
+    1
+}
+
+/// CancelWaitableTimer: disarm the timer, its signal state left as it was.
+#[unsafe(export_name = "f2k_export_CancelWaitableTimer")]
+pub extern "system" fn cancel_waitable_timer(timer: u32) -> u32 {
+    // SAFETY: ntdll's export, the state not asked for.
+    succeeded(unsafe { nt::NtCancelTimer(timer, core::ptr::null_mut()) })
+}
+
+// --- Waits and sleeps -----------------------------------------------------------------------------
 
 /// A wait's answer: its status (WAIT_OBJECT_0 + n, WAIT_ABANDONED_0 + n, WAIT_TIMEOUT,
 /// WAIT_IO_COMPLETION), or WAIT_FAILED with the status's error. An alerted alertable wait waits
@@ -441,7 +537,45 @@ pub extern "system" fn signal_object_and_wait(
     })
 }
 
-// --- Handles --------------------------------------------------------------------------------------
+/// SleepEx: the delay, alertably when asked — queued user APCs run and the sleep returns
+/// WAIT_IO_COMPLETION; otherwise 0 once the time has passed. INFINITE sleeps for the longest
+/// relative interval there is, as on Windows 2000.
+#[unsafe(export_name = "f2k_export_SleepEx")]
+pub extern "system" fn sleep_ex(milliseconds: u32, alertable: u32) -> u32 {
+    let mut interval = 0;
+    let mut timeout = format_timeout(milliseconds, &mut interval);
+    let forever = i64::MIN;
+    if timeout.is_null() {
+        timeout = &forever;
+    }
+    loop {
+        // SAFETY: ntdll's export, over the interval above.
+        let status = unsafe { nt::NtDelayExecution(boolean(alertable), timeout) };
+        if alertable != 0 && status == STATUS_ALERTED {
+            continue;
+        }
+        return if status == STATUS_USER_APC {
+            WAIT_IO_COMPLETION
+        } else {
+            0
+        };
+    }
+}
+
+/// Sleep: the non-alertable delay.
+#[unsafe(export_name = "f2k_export_Sleep")]
+pub extern "system" fn sleep(milliseconds: u32) {
+    sleep_ex(milliseconds, 0);
+}
+
+/// SwitchToThread: hand the processor to any ready thread; TRUE when another ran.
+#[unsafe(export_name = "f2k_export_SwitchToThread")]
+pub extern "system" fn switch_to_thread() -> u32 {
+    // SAFETY: ntdll's export.
+    u32::from(unsafe { nt::NtYieldExecution() } != STATUS_NO_YIELD_PERFORMED)
+}
+
+// --- Handles and APCs -----------------------------------------------------------------------------
 
 /// CloseHandle: the handle closed (NtClose; a standard handle's pseudo-value the process
 /// parameters' handle, and a console handle closed by its server, CloseConsoleHandle, as Windows
@@ -456,7 +590,7 @@ pub extern "system" fn close_handle(object: u32) -> u32 {
     succeeded(unsafe { nt::NtClose(object) })
 }
 
-/// DuplicateHandle: a new handle to the object, in the target process (the calling one: GAP-PS-4),
+/// DuplicateHandle: a new handle to the object, in the target process (the calling one),
 /// with the access asked for or the source's (DUPLICATE_SAME_ACCESS), inheritable when asked, the
 /// source closed when asked (DUPLICATE_CLOSE_SOURCE). A console handle is its server's to duplicate
 /// (DuplicateConsoleHandle, as Windows 2000's), within the calling process only
@@ -503,6 +637,16 @@ pub unsafe extern "system" fn duplicate_handle(
             options,
         )
     })
+}
+
+/// QueueUserAPC: queue the routine and its parameter on the thread's user-APC queue. Fails —
+/// returning zero and, as on Windows 2000, leaving the last error alone — when the service does.
+#[unsafe(export_name = "f2k_export_QueueUserAPC")]
+pub extern "system" fn queue_user_apc(routine: usize, thread: u32, parameter: usize) -> u32 {
+    // SAFETY: ntdll's export.
+    u32::from(nt_success(unsafe {
+        nt::NtQueueApcThread(thread, routine, parameter, 0, 0)
+    }))
 }
 
 #[cfg(test)]
@@ -553,7 +697,7 @@ mod tests {
     }
 
     /// A name converts into the thread's static Unicode string, as on Windows 2000: MAX_PATH
-    /// characters are a name (ARCH-4 s3's 260-character limit, confirmed), one more is
+    /// characters are a name (the 260-character limit, confirmed), one more is
     /// ERROR_FILENAME_EXCED_RANGE.
     #[test]
     fn names_past_max_path_and_missing_names_are_refused() {
@@ -605,11 +749,44 @@ mod tests {
         assert_eq!(last_error(), ERROR_INVALID_PARAMETER);
     }
 
+    /// The sleeps: a relative interval in 100 ns units, INFINITE the longest relative one, an
+    /// alertable sleep that ran APCs WAIT_IO_COMPLETION; SwitchToThread FALSE when nothing ran.
     #[test]
-    fn handles_close_through_their_service() {
+    fn sleeps_delay_for_relative_intervals() {
+        assert_eq!(sleep_ex(5, 0), 0);
+        assert_eq!(LAST_TIMEOUT.with(|cell| cell.get()), Some(-50_000));
+        sleep(crate::base::INFINITE);
+        assert_eq!(LAST_TIMEOUT.with(|cell| cell.get()), Some(i64::MIN));
+        fail_next(STATUS_USER_APC);
+        assert_eq!(sleep_ex(0, 1), WAIT_IO_COMPLETION);
+        fail_next(STATUS_NO_YIELD_PERFORMED);
+        assert_eq!(switch_to_thread(), 0);
+        assert_eq!(switch_to_thread(), 1);
+    }
+
+    #[test]
+    fn handles_close_and_apcs_queue_through_their_services() {
         set_last_error(0);
         fail_next(0xC000_0008);
         assert_eq!(close_handle(0), 0);
         assert_eq!(last_error(), 6);
+        set_last_error(0);
+        fail_next(0xC000_0008);
+        assert_eq!(queue_user_apc(0x1000, 0, 0), 0);
+        assert_eq!(last_error(), 0, "QueueUserAPC leaves the last error alone");
+    }
+
+    /// The resume flag is not supported: the set succeeds, the last error ERROR_NOT_SUPPORTED.
+    #[test]
+    fn a_resumed_timer_succeeds_without_resume_support() {
+        set_last_error(0);
+        let due = -1i64;
+        fail_next(STATUS_TIMER_RESUME_IGNORED);
+        // SAFETY: a due time.
+        assert_eq!(unsafe { set_waitable_timer(HANDLE, &due, 0, 0, 0, 1) }, 1);
+        assert_eq!(last_error(), ERROR_NOT_SUPPORTED);
+        // An unnamed timer passes no attributes at all.
+        // SAFETY: no name, no security attributes.
+        assert_eq!(unsafe { create_waitable_timer_a(core::ptr::null(), 0, core::ptr::null()) }, HANDLE);
     }
 }

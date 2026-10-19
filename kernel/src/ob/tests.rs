@@ -191,6 +191,43 @@ fn a_wait_holds_its_object_through_its_last_handle() {
     );
 }
 
+/// A timer whose last handle closes while a thread waits on it stays armed — the wait holds
+/// it — and the wait's return releases it: the timer leaves the timer table only then.
+#[test]
+fn a_wait_holds_a_timer_through_its_last_handle() {
+    let directory = directory();
+    let dispatcher = dispatcher();
+    let waiter = directory.create_thread_in(1..THREADS).unwrap();
+    let timer = directory.create_timer(true).unwrap();
+    published(directory, timer, dispatcher);
+    let record = directory.timer(timer).unwrap();
+    dispatcher.set_waitable_timer(record, 1_000_000, 0, 0, false, 0);
+    assert!(directory.timer(timer).unwrap().armed());
+
+    directory.hold_wait(waiter.index, &[timer]);
+    assert_eq!(directory.counts(timer), Some((2, 1)));
+    assert_eq!(closed(directory, timer, dispatcher), vec![], "the program closes its handle");
+    assert!(directory.is_live(timer), "the wait holds it");
+    assert!(directory.timer(timer).unwrap().armed(), "still armed for its waiter");
+
+    let mut followups = Vec::new();
+    directory.release_wait(waiter.index, dispatcher, |followup| followups.push(followup));
+    assert!(followups.is_empty());
+    assert!(!directory.is_live(timer), "the wait's return released the last reference");
+    assert!(!directory.timers.record(timer.index).armed(), "deletion cancelled it");
+}
+
+/// A timer the process's end sweeps (a leaked reference) leaves the timer table with it.
+#[test]
+fn the_process_end_disarms_a_leaked_timer() {
+    let directory = directory();
+    let dispatcher = dispatcher();
+    let leaked = directory.create_timer(true).unwrap();
+    dispatcher.set_waitable_timer(directory.timer(leaked).unwrap(), 1_000_000, 0, 0, false, 0);
+    assert_eq!(directory.process_ended(dispatcher, |_| {}), 1);
+    assert!(!directory.timers.record(leaked.index).armed(), "the leaked timer left the table");
+}
+
 /// A wait's references keep its objects from being recycled while the waiter is away (a
 /// suspend unwinds the wait, which replays later): the record cannot go to a new object.
 #[test]

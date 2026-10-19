@@ -186,6 +186,39 @@ unsafe extern "system" {
         attributes: *const ObjectAttributes,
     ) -> u32;
     pub fn NtReleaseSemaphore(handle: u32, count: i32, previous: *mut i32) -> u32;
+    pub fn NtCreateTimer(
+        handle: *mut u32,
+        access: u32,
+        attributes: *const ObjectAttributes,
+        timer_type: u32,
+    ) -> u32;
+    pub fn NtOpenTimer(handle: *mut u32, access: u32, attributes: *const ObjectAttributes) -> u32;
+    pub fn NtSetTimer(
+        handle: u32,
+        due: *const i64,
+        routine: usize,
+        context: usize,
+        resume: u32,
+        period: i32,
+        previous: *mut u8,
+    ) -> u32;
+    pub fn NtCancelTimer(handle: u32, current: *mut u8) -> u32;
+    pub fn NtDelayExecution(alertable: u32, interval: *const i64) -> u32;
+    pub fn NtYieldExecution() -> u32;
+    pub fn NtQueueApcThread(
+        thread: u32,
+        routine: usize,
+        argument1: usize,
+        argument2: usize,
+        argument3: usize,
+    ) -> u32;
+    /// NtSetInformationProcess: the class's value set (F2K answers ProcessAffinityMask, class 21).
+    pub fn NtSetInformationProcess(
+        process: u32,
+        class: u32,
+        information: *const u8,
+        length: u32,
+    ) -> u32;
     pub fn NtWaitForSingleObject(handle: u32, alertable: u32, timeout: *const i64) -> u32;
     pub fn NtWaitForMultipleObjects(
         count: u32,
@@ -353,6 +386,8 @@ pub mod host {
         NtOpenMutant();
         NtCreateSemaphore(initial: i32, maximum: i32);
         NtOpenSemaphore();
+        NtCreateTimer(timer_type: u32);
+        NtOpenTimer();
     }
 
     /// The services whose stand-ins only answer (the arranged status, or success).
@@ -371,6 +406,46 @@ pub mod host {
         NtPulseEvent(handle: u32, previous: *mut i32);
         NtReleaseMutant(handle: u32, previous: *mut i32);
         NtReleaseSemaphore(handle: u32, count: i32, previous: *mut i32);
+        NtSetTimer(handle: u32, due: *const i64, routine: usize, context: usize, resume: u32, period: i32, previous: *mut u8);
+        NtCancelTimer(handle: u32, current: *mut u8);
+        NtYieldExecution();
+        NtQueueApcThread(thread: u32, routine: usize, argument1: usize, argument2: usize, argument3: usize);
+    }
+
+    /// NtDelayExecution: the interval recorded.
+    pub unsafe extern "system" fn NtDelayExecution(_alertable: u32, interval: *const i64) -> u32 {
+        record_timeout(interval);
+        answer()
+    }
+
+    /// NtSetInformationProcess: ProcessAffinityMask alone, the kernel's checks (the length, the
+    /// current process, a non-empty subset of the one processor).
+    pub unsafe extern "system" fn NtSetInformationProcess(
+        process: u32,
+        class: u32,
+        information: *const u8,
+        length: u32,
+    ) -> u32 {
+        let status = answer();
+        if status != 0 {
+            return status;
+        }
+        if class != 21 {
+            return 0xC000_0003; // STATUS_INVALID_INFO_CLASS
+        }
+        if length != 4 {
+            return 0xC000_0004; // STATUS_INFO_LENGTH_MISMATCH
+        }
+        if process != CURRENT_PROCESS {
+            return STATUS_INVALID_HANDLE;
+        }
+        // SAFETY: the caller's value, four bytes.
+        let mask = unsafe { information.cast::<u32>().read_unaligned() };
+        if mask == 1 {
+            0
+        } else {
+            0xC000_000D // STATUS_INVALID_PARAMETER
+        }
     }
 
     pub unsafe extern "system" fn NtWaitForSingleObject(

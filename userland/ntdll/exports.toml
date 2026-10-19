@@ -52,8 +52,8 @@ name = "NtContinue"
 group = "nt"
 args = ["ptr Context", "u32 TestAlert"]
 impl = { syscall = "crate::nt::exception::continue_context" }
-note = "resumes the CONTEXT's control and integer registers (TF honoured, privileged flags masked). The debug and floating-point registers are not restored; TestAlert is ignored until user APCs are delivered through KiUserApcDispatcher (B5b)"
-pinned_by = ["runtime/seh", "runtime/unhandled"]
+note = "resumes the CONTEXT's control and integer registers (TF honoured, privileged flags masked); TestAlert arms the next queued user APC. The debug and floating-point registers are not restored"
+pinned_by = ["runtime/seh", "runtime/unhandled", "sync/apc"]
 
 [[export]]
 name = "NtRaiseException"
@@ -68,7 +68,7 @@ name = "NtQuerySystemInformation"
 group = "nt"
 args = ["u32 SystemInformationClass", "ptr SystemInformation", "u32 SystemInformationLength", "ptr<u32> ReturnLength"]
 impl = { syscall = "crate::nt::system::query_system_information" }
-note = "answers SystemBasicInformation (0), SystemProcessorInformation (1), SystemPerformanceInformation (2) and SystemCurrentTimeZoneInformation (44); the other classes are STATUS_INVALID_INFO_CLASS (GAP-NT-7)"
+note = "answers SystemBasicInformation (0), SystemProcessorInformation (1), SystemPerformanceInformation (2) and SystemCurrentTimeZoneInformation (44); the other classes are STATUS_INVALID_INFO_CLASS"
 pinned_by = ["memory/sysinfo"]
 
 [[export]]
@@ -83,15 +83,23 @@ name = "NtQueryInformationProcess"
 group = "nt"
 args = ["handle ProcessHandle", "u32 ProcessInformationClass", "ptr ProcessInformation", "u32 ProcessInformationLength", "ptr<u32> ReturnLength"]
 impl = { syscall = "crate::nt::process::query_information_process" }
-note = "answers ProcessVmCounters (3) alone, of the calling process only: GAP-NT-7, GAP-PS-4"
+note = "answers ProcessVmCounters (3) alone, of the calling process only"
 pinned_by = ["memory/sysinfo"]
+
+[[export]]
+name = "NtSetInformationProcess"
+group = "nt"
+args = ["handle ProcessHandle", "u32 ProcessInformationClass", "ptr ProcessInformation", "u32 ProcessInformationLength"]
+impl = { syscall = "crate::nt::process::set_information_process" }
+note = "answers ProcessAffinityMask (21) alone, of the calling process only; the hard-error mode and the priority class come with the thread calls"
+pinned_by = ["sched/*"]
 
 [[export]]
 name = "NtAllocateVirtualMemory"
 group = "nt"
 args = ["handle ProcessHandle", "ptr<u32> BaseAddress", "u32 ZeroBits", "ptr<u32> RegionSize", "u32 AllocationType", "u32 Protect"]
 impl = { syscall = "crate::nt::memory::allocate_virtual_memory" }
-note = "the calling process only (NtCurrentProcess): GAP-PS-4"
+note = "the calling process only (NtCurrentProcess)"
 pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
 
 [[export]]
@@ -99,7 +107,7 @@ name = "NtFreeVirtualMemory"
 group = "nt"
 args = ["handle ProcessHandle", "ptr<u32> BaseAddress", "ptr<u32> RegionSize", "u32 FreeType"]
 impl = { syscall = "crate::nt::memory::free_virtual_memory" }
-note = "the calling process only (NtCurrentProcess): GAP-PS-4"
+note = "the calling process only (NtCurrentProcess)"
 pinned_by = ["memory/virtual"]
 
 [[export]]
@@ -107,7 +115,7 @@ name = "NtQueryVirtualMemory"
 group = "nt"
 args = ["handle ProcessHandle", "u32 BaseAddress", "u32 MemoryInformationClass", "ptr MemoryInformation", "u32 MemoryInformationLength", "ptr<u32> ReturnLength"]
 impl = { syscall = "crate::nt::memory::query_virtual_memory" }
-note = "MemoryBasicInformation, of the calling process only (NtCurrentProcess): GAP-PS-4"
+note = "MemoryBasicInformation, of the calling process only (NtCurrentProcess)"
 pinned_by = ["memory/image", "memory/mapping", "memory/protect", "memory/stack", "memory/virtual"]
 
 [[export]]
@@ -115,7 +123,7 @@ name = "NtProtectVirtualMemory"
 group = "nt"
 args = ["handle ProcessHandle", "ptr<u32> BaseAddress", "ptr<u32> NumberOfBytesToProtect", "u32 NewAccessProtection", "ptr<u32> OldAccessProtection"]
 impl = { syscall = "crate::nt::memory::protect_virtual_memory" }
-note = "the calling process only (NtCurrentProcess): GAP-PS-4"
+note = "the calling process only (NtCurrentProcess)"
 pinned_by = ["memory/protect"]
 
 [[export]]
@@ -123,7 +131,7 @@ name = "NtCreateSection"
 group = "nt"
 args = ["ptr<u32> SectionHandle", "u32 DesiredAccess", "ptr ObjectAttributes", "ptr<u64> MaximumSize", "u32 SectionPageProtection", "u32 AllocationAttributes", "handle FileHandle"]
 impl = { syscall = "crate::nt::section::create_section" }
-note = "data sections of the paging file, named in \\BaseNamedObjects; a file's section is STATUS_NOT_IMPLEMENTED until the file objects (B8), SEC_IMAGE too (GAP-VM-8)"
+note = "data sections of the paging file, named in \\BaseNamedObjects; a file's section is STATUS_NOT_IMPLEMENTED until the file objects exist, SEC_IMAGE too"
 pinned_by = ["files/mapping", "memory/mapping"]
 
 [[export]]
@@ -138,7 +146,7 @@ name = "NtMapViewOfSection"
 group = "nt"
 args = ["handle SectionHandle", "handle ProcessHandle", "ptr<u32> BaseAddress", "u32 ZeroBits", "u32 CommitSize", "ptr<u64> SectionOffset", "ptr<u32> ViewSize", "u32 InheritDisposition", "u32 AllocationType", "u32 Win32Protect"]
 impl = { syscall = "crate::nt::section::map_view_of_section" }
-note = "into the calling process only (NtCurrentProcess): GAP-PS-4"
+note = "into the calling process only (NtCurrentProcess)"
 pinned_by = ["files/mapping", "memory/mapping"]
 
 [[export]]
@@ -146,7 +154,7 @@ name = "NtUnmapViewOfSection"
 group = "nt"
 args = ["handle ProcessHandle", "ptr BaseAddress"]
 impl = { syscall = "crate::nt::section::unmap_view_of_section" }
-note = "of the calling process only (NtCurrentProcess): GAP-PS-4"
+note = "of the calling process only (NtCurrentProcess)"
 pinned_by = ["files/mapping", "memory/mapping"]
 
 [[export]]
@@ -242,6 +250,34 @@ impl = { syscall = "crate::nt::sync::release_semaphore" }
 pinned_by = ["sync/semaphore"]
 
 [[export]]
+name = "NtCreateTimer"
+group = "nt"
+args = ["ptr<u32> TimerHandle", "u32 DesiredAccess", "ptr ObjectAttributes", "u32 TimerType"]
+impl = { syscall = "crate::nt::sync::create_timer" }
+pinned_by = ["sched/timer"]
+
+[[export]]
+name = "NtOpenTimer"
+group = "nt"
+args = ["ptr<u32> TimerHandle", "u32 DesiredAccess", "ptr ObjectAttributes"]
+impl = { syscall = "crate::nt::sync::open_timer" }
+pinned_by = ["sched/timer"]
+
+[[export]]
+name = "NtSetTimer"
+group = "nt"
+args = ["handle TimerHandle", "ptr<u64> DueTime", "ptr TimerApcRoutine", "ptr TimerContext", "u32 ResumeTimer", "i32 Period", "ptr PreviousState"]
+impl = { syscall = "crate::nt::sync::set_timer" }
+pinned_by = ["sched/timer"]
+
+[[export]]
+name = "NtCancelTimer"
+group = "nt"
+args = ["handle TimerHandle", "ptr CurrentState"]
+impl = { syscall = "crate::nt::sync::cancel_timer" }
+pinned_by = ["sched/timer"]
+
+[[export]]
 name = "NtWaitForSingleObject"
 group = "nt"
 args = ["handle Handle", "u32 Alertable", "ptr<u64> Timeout"]
@@ -263,19 +299,40 @@ impl = { syscall = "crate::nt::sync::signal_and_wait_for_single_object" }
 pinned_by = ["sync/pingpong"]
 
 [[export]]
+name = "NtDelayExecution"
+group = "nt"
+args = ["u32 Alertable", "ptr<u64> DelayInterval"]
+impl = { syscall = "crate::nt::sync::delay_execution" }
+pinned_by = ["sched/sleep", "sync/apc"]
+
+[[export]]
+name = "NtYieldExecution"
+group = "nt"
+args = []
+impl = { syscall = "crate::nt::sync::yield_execution" }
+pinned_by = ["sched/yield"]
+
+[[export]]
 name = "NtDuplicateObject"
 group = "nt"
 args = ["handle SourceProcessHandle", "handle SourceHandle", "handle TargetProcessHandle", "ptr<u32> TargetHandle", "u32 DesiredAccess", "u32 HandleAttributes", "u32 Options"]
 impl = { syscall = "crate::nt::sync::duplicate_object" }
-note = "within the calling process only (GAP-PS-4)"
+note = "within the calling process only"
 pinned_by = ["sync/handles"]
+
+[[export]]
+name = "NtQueueApcThread"
+group = "nt"
+args = ["handle ThreadHandle", "ptr ApcRoutine", "ptr ApcArgument1", "ptr ApcArgument2", "ptr ApcArgument3"]
+impl = { syscall = "crate::nt::sync::queue_apc_thread" }
+pinned_by = ["sync/apc"]
 
 [[export]]
 name = "NtSetInformationThread"
 group = "nt"
 args = ["handle ThreadHandle", "u32 ThreadInformationClass", "ptr ThreadInformation", "u32 ThreadInformationLength"]
 impl = { syscall = "crate::nt::thread::set_information_thread" }
-note = "answers ThreadZeroTlsCell (10) alone, TlsFree's; the other classes come with the thread calls (B7): GAP-NT-7"
+note = "answers ThreadZeroTlsCell (10) alone, TlsFree's; the other classes come with the thread calls"
 pinned_by = ["threads/tls"]
 
 # --- the client-server runtime (src/csr.s) --------------------------------------------------------
@@ -306,6 +363,14 @@ args = ["ptr ExceptionRecord", "ptr Context"]
 impl = { native = "KiUserExceptionDispatcher" }
 note = "the kernel enters user mode here with an exception's records on the stack: the search (RtlDispatchException), then NtContinue or the second chance"
 pinned_by = ["runtime/seh", "runtime/unhandled", "bare/null-write"]
+
+[[export]]
+name = "KiUserApcDispatcher"
+group = "exceptions"
+args = ["ptr NormalRoutine", "ptr NormalContext", "ptr SystemArgument1", "ptr SystemArgument2"]
+impl = { native = "KiUserApcDispatcher" }
+note = "the kernel delivers a user APC here: the routine called, then NtContinue of the interrupted context, TestAlert TRUE"
+pinned_by = ["sync/apc"]
 
 [[export]]
 name = "RtlRaiseException"
@@ -385,7 +450,7 @@ name = "RtlAcquirePebLock"
 group = "threads"
 args = []
 impl = { native = "RtlAcquirePebLock" }
-note = "the PEB lock (PEB+0x1C, its storage at PEB+0x860), planted free by the kernel's PEB until ntdll's process start makes it (B7)"
+note = "the PEB lock (PEB+0x1C, its storage at PEB+0x860), planted free by the kernel's PEB until ntdll's process start makes it"
 pinned_by = ["sync/*"]
 
 [[export]]

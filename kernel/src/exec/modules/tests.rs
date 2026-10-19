@@ -131,9 +131,10 @@ fn the_system_dlls_serve_the_registry() {
     }
     // The natives: kernel32's own code (the trivial ones, the exception filter and the pointer
     // probes its assembly, the TLS slots' reads and writes; the console, start-up, locale, clock,
-    // virtual-memory, mapping, synchronization and TLS-index calls and RaiseException its Rust).
+    // virtual-memory, mapping, synchronization, timer, sleep, APC, affinity and TLS-index calls and
+    // RaiseException its Rust).
     // The internal start thunk is not among them.
-    assert_eq!(NATIVE_EXPORTS.len(), 96);
+    assert_eq!(NATIVE_EXPORTS.len(), 105);
     for &(name, _) in &NATIVE_EXPORTS {
         let address = kernel32_export(name).unwrap_or_else(|| panic!("kernel32 exports no {name}"));
         addresses.push(address);
@@ -150,7 +151,8 @@ fn the_system_dlls_serve_the_registry() {
 
 /// The entry points the kernel sends user code to keep their protocols: ntdll's exception
 /// dispatcher calls its body with the two pointers the kernel left on top (it never returns: a
-/// `ud2` follows); kernel32's start thunk clears EBP and pushes the main thread's entry point
+/// `ud2` follows), and its APC dispatcher calls the routine the kernel left on top, then resumes
+/// the context above it; kernel32's start thunk clears EBP and pushes the main thread's entry point
 /// under a zero return address, then jumps to its body. The exception-filter natives address the
 /// top-level filter's slot in the PEB page.
 #[test]
@@ -166,6 +168,17 @@ fn the_entry_points_keep_their_protocols() {
         Some(exception_dispatcher()),
         resolve("ntdll.dll", "KiUserExceptionDispatcher").ok()
     );
+    // The APC dispatcher keeps the context's address (past the four-word call frame) in EDI, pops
+    // and calls the routine, then NtContinue(context, TRUE); a failed one's status is raised.
+    let apc = bytes_at(apc_dispatcher());
+    assert_eq!(
+        &apc[..10],
+        &[0x8D, 0x7C, 0x24, 0x10, 0x58, 0xFF, 0xD0, 0x6A, 0x01, 0x57],
+        "KiUserApcDispatcher"
+    );
+    assert_eq!(apc[10], 0xE8, "KiUserApcDispatcher: NtContinue's call");
+    assert_eq!(apc[15], 0x50, "KiUserApcDispatcher: then the status pushed");
+    assert_eq!(crate::user::apc::CALL_WORDS * 4, 0x10);
     let thunk = bytes_at(process_start_thunk());
     assert_eq!(
         &thunk[..5],
@@ -195,12 +208,12 @@ fn unimplemented_exports_fail_the_call() {
     // (export, its failure value, its argument block), as the spec declares them.
     for (name, fails, arg_bytes) in [
         ("SetErrorMode", 0u32, 4u16),
-        ("CreateWaitableTimerA", 0, 12),
+        ("TerminateThread", 0, 8),
         ("FindFirstFileA", 0xFFFF_FFFF, 8),
         ("GetFileAttributesA", 0xFFFF_FFFF, 4),
-        ("SetWaitableTimer", 0, 24),
+        ("GetVolumeInformationA", 0, 32),
         ("GetThreadPriority", 0x7FFF_FFFF, 4),
-        ("QueueUserAPC", 0, 12),
+        ("CopyFileA", 0, 12),
     ] {
         let mut stub = vec![0x64, 0xC7, 0x05, 0x34, 0, 0, 0, 120, 0, 0, 0, 0xB8];
         stub.extend_from_slice(&fails.to_le_bytes());
@@ -228,7 +241,7 @@ fn the_thread_exit_trampoline_keeps_its_protocol() {
 
 /// The corpus binaries (the smokes in the root directory, the sectioned fixtures in \CORPUS): the
 /// import surface kernel32 exports.
-const CORPUS: [(&str, &[u8]); 17] = [
+const CORPUS: [(&str, &[u8]); 16] = [
     ("bare", include_bytes!("../../../../tests/bare/bare.exe")),
     ("files", include_bytes!("../../../../tests/files/files.exe")),
     (
@@ -252,7 +265,6 @@ const CORPUS: [(&str, &[u8]); 17] = [
     ("exit0", include_bytes!("../../../../tests/exit0/exit0.exe")),
     ("ret0", include_bytes!("../../../../tests/ret0/ret0.exe")),
     ("hello", include_bytes!("../../../../tests/hello/hello.exe")),
-    ("sleep", include_bytes!("../../../../tests/sleep/sleep.exe")),
     ("spin", include_bytes!("../../../../tests/spin/spin.exe")),
     (
         "suspend",
@@ -321,14 +333,13 @@ fn the_surface_is_the_corpus_import_surface() {
 }
 
 /// Each corpus binary snaps every import through the module table: the counts are each binary's
-/// import surface (ret0's 35, hello's 40 — ret0's plus the console-stdio group — the timer, spin
-/// and suspend smokes' 44, the file smoke's 42).
+/// import surface (ret0's 35, hello's 40 — ret0's plus the console-stdio group — the spin and
+/// suspend smokes' 44, the file smoke's 42).
 #[test]
 fn the_corpus_snaps_fully_against_the_module_table() {
     for (fixture, thunks) in [
         ("ret0", 35),
         ("hello", 40),
-        ("sleep", 44),
         ("spin", 44),
         ("suspend", 44),
         ("fileio", 42),

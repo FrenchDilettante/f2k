@@ -60,7 +60,14 @@ pub mod sync {
         wait_for_single_object(Handle, u32, UserPtr<u64>);
         wait_for_multiple_objects(u32, UserAddr, u32, u32, UserPtr<u64>);
         signal_and_wait_for_single_object(Handle, Handle, u32, UserPtr<u64>);
+        create_timer(UserPtr<u32>, u32, UserAddr, u32);
+        open_timer(UserPtr<u32>, u32, UserAddr);
+        set_timer(Handle, UserPtr<u64>, UserAddr, UserAddr, u32, i32, UserAddr);
+        cancel_timer(Handle, UserAddr);
+        delay_execution(u32, UserPtr<u64>);
+        yield_execution();
         duplicate_object(Handle, Handle, Handle, UserPtr<u32>, u32, u32, u32);
+        queue_apc_thread(Handle, UserAddr, UserAddr, UserAddr, UserAddr);
     }
 }
 

@@ -140,6 +140,13 @@ extern "C" fn f2k_rtl_unwind(
     Thread.raise_chained(status, record)
 }
 
+/// A failed NtContinue's status, raised (KiUserApcDispatcher's end).
+#[unsafe(no_mangle)]
+extern "C" fn f2k_raise_failed_status(status: u32) -> ! {
+    // SAFETY: the raise never returns.
+    unsafe { sys::raise_status(status) }
+}
+
 /// RtlRaiseException (rtl::sys captures the caller's context).
 #[unsafe(naked)]
 #[unsafe(export_name = "f2k_export_RtlRaiseException")]

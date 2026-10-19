@@ -434,6 +434,37 @@ impl Dispatcher {
         true
     }
 
+    /// The yield SwitchToThread asks for (the platform's NtYieldExecution): when any ready thread
+    /// at priority 1 or above can take the processor — a lower-priority one included — the running
+    /// `thread` gives it up: its quantum replenished, its priority decayed one step toward its base
+    /// (the decay debt consumed), and it queues at the tail of its level directly. It does not go
+    /// through [`Dispatcher::make_ready`], which would let it take the standby slot straight back
+    /// from a lower-priority thread. Returns whether it yielded; the caller then switches away.
+    pub fn yield_execution(&mut self, thread: &mut Thread) -> bool {
+        if self.next.is_null() {
+            self.standby_from_ready(1);
+        }
+        if self.next.is_null() {
+            return false;
+        }
+        // SAFETY: the thread is attached; its process outlives it.
+        thread.quantum = unsafe { (*thread.process).thread_quantum };
+        if thread.priority < REALTIME_BASE {
+            let decayed = thread.priority - (thread.priority_decrement + 1);
+            thread.priority = decayed.max(thread.base_priority);
+            thread.priority_decrement = 0;
+        }
+        thread.preempted = false;
+        thread.state = ThreadState::Ready;
+        let priority = thread.priority;
+        // SAFETY: the running thread is on no ready list; its ready link is valid.
+        unsafe {
+            self.ready[priority as usize].push_back(addr_of_mut!(thread.ready_links));
+        }
+        self.ready_summary |= 1 << priority as u32;
+        true
+    }
+
     /// The end of the running thread's quantum: reset the quantum, decay the priority one step
     /// toward the base (consuming any outstanding decay debt), and decide who runs next. A realtime
     /// thread does not decay; if its priority is unchanged and no standby is pending, the
@@ -1908,6 +1939,30 @@ mod tests {
         assert_eq!(t.quantum(), 12, "6 * 2: the doubled quantum");
         assert_eq!(t.state(), ThreadState::Ready);
         assert_eq!(d.find_ready(0), as_ptr(t));
+    }
+
+    /// The yield: nothing ready, no yield; a ready lower-priority thread takes the processor, and
+    /// the yielder queues behind it at its decayed priority.
+    #[test]
+    fn the_yield_hands_the_processor_to_any_ready_thread() {
+        let d = dispatcher();
+        let p = process(8);
+        let running = thread(p);
+        running.priority = 10;
+        running.base_priority = 8;
+        run(d, as_ptr(running));
+        assert!(!d.yield_execution(running), "nothing else is ready");
+        assert_eq!(running.priority(), 10, "a refused yield changes nothing");
+
+        let low = thread(p);
+        low.priority = 4;
+        low.base_priority = 4;
+        d.make_ready(low);
+        assert!(d.yield_execution(running));
+        assert_eq!(d.next_thread(), as_ptr(low), "the lower-priority thread is selected");
+        assert_eq!(running.state(), ThreadState::Ready);
+        assert_eq!(running.priority(), 9, "decayed one step");
+        assert_eq!(d.find_ready(0), as_ptr(running));
     }
 
     /// The round-trip boost: to the ceiling with a doubled quantum, renewed per round trip, and

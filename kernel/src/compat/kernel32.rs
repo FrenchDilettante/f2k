@@ -120,22 +120,8 @@ fn svc_heap_destroy(frame: &mut crate::user::TrapFrame, args: &[u32]) {
     frame.eax = crate::user::userheap::destroy(args[0]);
 }
 
-/// INFINITE: the documented forever timeout.
-const INFINITE: u32 = 0xFFFF_FFFF;
-
 /// CREATE_SUSPENDED: the creation flag that starts the thread with a suspend count of one.
 const CREATE_SUSPENDED: u32 = 0x0000_0004;
-
-/// The sleep interval conversion: INFINITE is not a wait at all but the longest relative interval
-/// the ABI can name — the delay parks for a due time on the far side of the clock. Every other
-/// value is milliseconds to 100 ns units.
-fn sleep_interval(milliseconds: u32) -> i64 {
-    if milliseconds == INFINITE {
-        i64::MIN
-    } else {
-        milliseconds as i64 * 10_000
-    }
-}
 
 /// The SetThreadPriority value conversion: the five band values (-2..2) are base-priority
 /// increments and pass straight through; the two edge specials name the class saturation pins
@@ -149,39 +135,6 @@ fn thread_priority_increment(value: i32) -> Option<i32> {
         TIME_CRITICAL => Some(SATURATION),
         IDLE => Some(-SATURATION),
         _ => None,
-    }
-}
-
-/// Sleep: park the calling thread for the requested milliseconds — the delay discipline on the
-/// caller's own timer, in the timer table. Zero is the pure yield (the immediate test); INFINITE
-/// parks for the longest interval the ABI names. The return is void; the delay's resume-side
-/// conversion makes a timed-out sleep a successful one, and 0 rides in `eax`.
-fn svc_sleep(frame: &mut crate::user::TrapFrame, args: &[u32]) {
-    #[cfg(target_arch = "x86")]
-    {
-        let interval = sleep_interval(args[0]);
-        // The delay runs through the shared blocking entry: a kernel APC breaks the sleep and the
-        // entry replays it with the remaining time — the wake time never slips.
-        let status = crate::sched::wait::wait_current_with(|dispatcher, thread, stamp, replay| {
-            let interval = if replay {
-                crate::sched::wait::replay_interval(thread.timer.due_time, stamp.interrupt_time)
-            } else {
-                interval
-            };
-            dispatcher.delay(
-                thread,
-                crate::sched::wait::WaitMode::User,
-                false,
-                interval,
-                stamp,
-            )
-        });
-        frame.eax = crate::sched::dispatcher::Dispatcher::delay_completed(status) as u32;
-    }
-    #[cfg(not(target_arch = "x86"))]
-    {
-        let _ = args;
-        frame.eax = 0;
     }
 }
 
@@ -229,9 +182,14 @@ fn svc_create_thread(frame: &mut crate::user::TrapFrame, args: &[u32]) {
             let suspended = dispatcher.suspend_thread(unsafe { &mut *thread });
             assert_eq!(suspended, Ok(0), "a fresh thread suspends");
         }
+        // A clock tick that fell inside the create (the gate masks interrupts, and a create maps and
+        // zeroes pages) is taken before the new thread is schedulable — on Windows the tick lands
+        // while the creator is still inside the create — so a quantum it ends passes the processor
+        // on without the new thread jumping ahead of its creator.
+        crate::interrupt::irql::state_mut().interrupt_window();
         // The handle exists; the thread becomes schedulable now.
         // SAFETY: the created thread, live and exclusive here.
-        dispatcher.make_ready(unsafe { &mut *thread });
+        crate::sched::idle::dispatcher().make_ready(unsafe { &mut *thread });
         frame.eax = handle;
     }
     #[cfg(not(target_arch = "x86"))]
@@ -544,10 +502,10 @@ mod tests {
     fn the_registry_numbers_from_its_base() {
         assert_eq!(
             SERVICES.len(),
-            20,
-            "kernel32's served surface, less its natives (the last error, the current process, \
+            19,
+            "the served surface, less kernel32's natives (the last error, the current process, \
              the console and start-up calls, the locale group and clock, the exception filter, \
-             the virtual memory, the events and waits) and ntdll's RtlUnwind"
+             the virtual memory, the events and waits, Sleep) and ntdll's RtlUnwind"
         );
         assert_eq!(WIN32_SERVICE_BASE, 0x2000);
         assert_eq!(SERVICES[0].0, "ExitProcess");
@@ -651,17 +609,6 @@ mod tests {
         frame.eax = 0;
         svc_set_file_pointer(&mut frame, &[4, 0, 0, 3]);
         assert_eq!(frame.eax, INVALID_SET_FILE_POINTER, "bad move method");
-    }
-
-    /// The sleep interval conversion: milliseconds to 100 ns units, exact; INFINITE is the longest
-    /// relative interval the ABI names, not a special kernel value.
-    #[test]
-    fn sleep_intervals_convert_exactly() {
-        assert_eq!(sleep_interval(200), 2_000_000);
-        assert_eq!(sleep_interval(100), 1_000_000);
-        assert_eq!(sleep_interval(5), 50_000);
-        assert_eq!(sleep_interval(0), 0);
-        assert_eq!(sleep_interval(INFINITE), i64::MIN);
     }
 
     /// The SetThreadPriority value conversion: the five band values are increments and pass

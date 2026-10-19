@@ -323,9 +323,12 @@ extern "C" fn syscall_dispatch(frame: &mut TrapFrame) {
 
     // The service boundary is where a same-processor preemption lands: a thread the service readied
     // at strictly higher priority — or a quantum the tick ended mid-service — is switched to here,
-    // before the caller returns to user mode. Nothing after this point writes the frame: the
-    // service's result rides out whenever the thread resumes.
+    // before the caller returns to user mode.
     crate::sched::idle::dispatcher().deliver_pending();
+    // The user-APC window: an alertable wait that completed for a user APC (or NtContinue's test
+    // alert, with more queued) redirects the return through KiUserApcDispatcher. Nothing after
+    // this writes the frame.
+    super::apc::deliver(frame);
 }
 
 // Gate stub: entered from ring 3 through the DPL-3 interrupt gate.

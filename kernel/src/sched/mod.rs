@@ -69,6 +69,9 @@ pub mod semaphore;
 /// The mutex object: a waitable owned recursively, abandoned by an owner's end.
 pub mod mutex;
 
+/// Waitable timers: the program's timer object, its period and completion APC.
+pub mod waitable_timer;
+
 // --- Constants -----------------------------------------------------------
 
 /// The number of priority levels: one ready list and one summary bit each.

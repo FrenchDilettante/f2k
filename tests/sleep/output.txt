@@ -1,7 +1,0 @@
-sleep.exe - real-machine output, owner-confirmed 2026-10-14.
-The spans are exact: no drift from the requested durations.
-
-sleep 200ms spanned 200 ticks
-sleep 0 returned
-timed wait: timeout after 100 ticks
-sleep: ok

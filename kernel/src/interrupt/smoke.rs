@@ -14,10 +14,14 @@ use crate::hw::pit::{self, Programming};
 use crate::hw::portio::Ports;
 use crate::interrupt::clock::{self, CLOCK_VECTOR};
 use crate::interrupt::irql;
+use crate::sched::waitable_timer::WaitableTimer;
 use crate::serial_println;
 
 /// The ticks the diagnostic waits for before it calls the timer live.
 const LIVE_TICKS: u64 = 5;
+
+/// The diagnostic's timer: the clock's deferred work signals it.
+static mut TIMER: WaitableTimer = WaitableTimer::new(true);
 
 /// Sleep until the next interrupt: IF on, halt (interrupts are already enabled hardware-wide here;
 /// the idle thread's loop keeps its own, model-tracked form). Not `nomem`: the interrupt it waits
@@ -78,25 +82,29 @@ pub fn run() {
         LIVE_TICKS
     );
 
-    // The deferred timer work fires only when a timer is due (the table's hand check), so park
-    // one: the current thread's (the idle thread's) own timer, due one tick out. The expiry
-    // signals it — nobody waits on it — and the DPC's run is the observable.
-    let dispatcher = crate::sched::idle::dispatcher();
+    // The deferred timer work runs only when a timer is due (the table's hand check), so arm one:
+    // a notification timer of the diagnostic's own, due one tick out. Its expiry, the DPC's walk,
+    // signals it — nobody waits on it, and the signal is the observable.
+    let timer = addr_of_mut!(TIMER);
     let previous = irql::state_mut().raise(irql::DISPATCH);
-    // SAFETY: the current thread (the idle thread, armed at boot) is live and exclusive here; its
-    // timer is initialized and on no list.
-    let current = unsafe { &mut *dispatcher.current_thread() };
     let now = clock::interrupt_time();
-    assert!(dispatcher.timer_table().insert(
-        &mut current.timer,
-        now + clock::INTERVAL_100NS as u64,
-        now
-    ));
+    // SAFETY: single CPU, at the dispatch level; the timer is this diagnostic's static, armed once,
+    // here, and initialized at its final address before the set.
+    unsafe {
+        (*timer).init();
+        crate::sched::idle::dispatcher().set_waitable_timer(
+            &mut *timer,
+            now + pit::INTERVAL_100NS as u64,
+            now,
+            0,
+            false,
+            0,
+        );
+    }
     irql::state_mut().lower(previous);
-
-    // The DPC the clock ISR enqueues must have run (the drain is part of every interrupt exit,
-    // and the idle path drains too).
-    while clock::timer_fired() == 0 {
+    // SAFETY: the expiry writes the signal state at the dispatch level, inside an interrupt; each
+    // read goes through the pointer after the halt (a memory clobber), so it sees the write.
+    while unsafe { (*timer).timer.waitable.signal_state() } == 0 {
         wait_for_interrupt();
     }
     serial_println!("F2K: irq-smoke: clock DPC fired");

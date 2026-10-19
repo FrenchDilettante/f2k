@@ -15,6 +15,19 @@ use super::memory::{STATUS_INFO_LENGTH_MISMATCH, STATUS_INVALID_INFO_CLASS};
 /// calling thread's handle only).
 pub const THREAD_ZERO_TLS_CELL: u32 = 10;
 
+/// The processors there are: the one.
+pub const SYSTEM_AFFINITY: u32 = 1;
+
+/// An affinity mask a thread or process takes: a non-empty subset of the system's processors;
+/// STATUS_INVALID_PARAMETER otherwise.
+pub fn affinity_mask(mask: u32) -> Result<u32, Status> {
+    if mask == 0 || mask & !SYSTEM_AFFINITY != 0 {
+        Err(STATUS_INVALID_PARAMETER)
+    } else {
+        Ok(mask)
+    }
+}
+
 /// The calling thread's pseudo-handle (NtCurrentThread).
 const CURRENT_THREAD: u32 = super::object::CURRENT_THREAD;
 

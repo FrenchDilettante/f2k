@@ -2,7 +2,3 @@
 description = "sync - synchronization objects and waits (sync.c, /MT): events, semaphores, mutexes, multi-object waits, user APCs, critical sections, interlocked operations, handle duplication and closing, and the original pingpong."
 kind = "sectioned"
 gate = true
-
-# The blocks this kernel does not pass yet, each with the increment that enables it.
-[pending]
-apc = "B5b: QueueUserAPC and the alertable waits' user APCs"

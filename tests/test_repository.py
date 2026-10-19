@@ -157,7 +157,6 @@ RAW_ACCESS_ALLOWED = {
     "kernel/src/boot/cmdline.rs": "the Multiboot command line, read at boot before any process",
     "kernel/src/cpu/gdt.rs": "the kernel's own descriptor table",
     "kernel/src/cpu/idt.rs": "the kernel's own interrupt table",
-    "kernel/src/interrupt/clock.rs": "the clock's fired counter, a kernel static",
     "kernel/src/interrupt/mod.rs": "the interrupt counters, kernel statics",
     "kernel/src/mem/bootmem.rs": "the boot memory map and the frame database, before any process",
     "kernel/src/mem/paging.rs": "the page tables and frames, through the kernel's own windows",
@@ -247,11 +246,11 @@ def kernel32_exports() -> list[dict]:
 # The kernel32 exports the kernel still serves (the kernel's transitional Win32 services: `legacy`
 # handlers and `floor` answers, generated int 2Eh stubs). Each increment moves its group to
 # kernel32's own code over ntdll and lowers this; C1 retires the last.
-SERVED_KERNEL32_EXPORTS = 20
+SERVED_KERNEL32_EXPORTS = 19
 
 # The kernel32 exports the corpus imports that are not built yet (`unimplemented` stubs failing with
 # ERROR_CALL_NOT_IMPLEMENTED, each naming its increment). It only goes down.
-UNIMPLEMENTED_KERNEL32_EXPORTS = 63
+UNIMPLEMENTED_KERNEL32_EXPORTS = 55
 
 
 def test_served_kernel32_exports_only_go_down():

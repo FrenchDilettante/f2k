@@ -36,6 +36,7 @@ use crate::sched::mutex::Mutex;
 use crate::sched::semaphore::Semaphore;
 use crate::sched::thread::Thread;
 use crate::sched::wait::{Waitable, MAXIMUM_WAIT_OBJECTS};
+use crate::sched::waitable_timer::WaitableTimer;
 
 /// The kinds of objects a handle can name.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -43,6 +44,7 @@ pub enum ObjectType {
     Event,
     Semaphore,
     Mutex,
+    Timer,
     Thread,
     Process,
     Section,
@@ -114,6 +116,8 @@ pub const EVENTS: usize = 256;
 pub const SEMAPHORES: usize = 64;
 /// How many mutexes can exist at once.
 pub const MUTEXES: usize = 64;
+/// How many waitable timers can exist at once.
+pub const TIMERS: usize = 32;
 /// How many sections can exist at once.
 pub const SECTIONS: usize = 16;
 /// How many thread records exist: the current process's main thread (record 0) and its created
@@ -336,6 +340,7 @@ pub struct Directory {
     pub events: Pool<Event, EVENTS>,
     pub semaphores: Pool<Semaphore, SEMAPHORES>,
     pub mutexes: Pool<Mutex, MUTEXES>,
+    pub timers: Pool<WaitableTimer, TIMERS>,
     pub threads: Pool<Thread, THREADS>,
     pub processes: Pool<ProcessObject, PROCESSES>,
     pub sections: Pool<SectionObject, SECTIONS>,
@@ -360,6 +365,7 @@ impl Directory {
             });
             Pool::write_empty(addr_of_mut!((*directory).semaphores), || Semaphore::new(0));
             Pool::write_empty(addr_of_mut!((*directory).mutexes), Mutex::new);
+            Pool::write_empty(addr_of_mut!((*directory).timers), || WaitableTimer::new(true));
             Pool::write_empty(addr_of_mut!((*directory).threads), Thread::empty);
             Pool::write_empty(addr_of_mut!((*directory).processes), ProcessObject::new);
             Pool::write_empty(addr_of_mut!((*directory).sections), SectionObject::none);
@@ -380,6 +386,7 @@ impl Directory {
             ObjectType::Event => &mut self.events.headers,
             ObjectType::Semaphore => &mut self.semaphores.headers,
             ObjectType::Mutex => &mut self.mutexes.headers,
+            ObjectType::Timer => &mut self.timers.headers,
             ObjectType::Thread => &mut self.threads.headers,
             ObjectType::Process => &mut self.processes.headers,
             ObjectType::Section => &mut self.sections.headers,
@@ -394,6 +401,7 @@ impl Directory {
             ObjectType::Event => self.events.headers[index as usize].generation,
             ObjectType::Semaphore => self.semaphores.headers[index as usize].generation,
             ObjectType::Mutex => self.mutexes.headers[index as usize].generation,
+            ObjectType::Timer => self.timers.headers[index as usize].generation,
             ObjectType::Thread => self.threads.headers[index as usize].generation,
             ObjectType::Process => self.processes.headers[index as usize].generation,
             ObjectType::Section => self.sections.headers[index as usize].generation,
@@ -449,6 +457,15 @@ impl Directory {
         Some(self.id(ObjectType::Mutex, index))
     }
 
+    /// A fresh, unarmed, unsignaled waitable timer.
+    pub fn create_timer(&mut self, manual_reset: bool) -> Option<ObjectId> {
+        let index = self.timers.allocate_in(0..TIMERS)?;
+        let timer = self.timers.record(index);
+        *timer = WaitableTimer::new(manual_reset);
+        timer.init();
+        Some(self.id(ObjectType::Timer, index))
+    }
+
     /// A thread record for a new thread object, in `range` (record 0 is the main thread's; created
     /// threads take 1 on). The record is returned as it was left — a dead thread's record still
     /// holds what its pages need for release; the caller renews it. Holds the thread's own
@@ -490,6 +507,11 @@ impl Directory {
     pub fn mutex(&mut self, id: ObjectId) -> Option<&mut Mutex> {
         (id.kind == ObjectType::Mutex).then_some(())?;
         self.mutexes.get(id.index, id.generation)
+    }
+
+    pub fn timer(&mut self, id: ObjectId) -> Option<&mut WaitableTimer> {
+        (id.kind == ObjectType::Timer).then_some(())?;
+        self.timers.get(id.index, id.generation)
     }
 
     pub fn thread(&mut self, id: ObjectId) -> Option<&mut Thread> {
@@ -539,6 +561,7 @@ impl Directory {
             ObjectType::Event => self.event(id).map(Event::waitable),
             ObjectType::Semaphore => self.semaphore(id).map(Semaphore::waitable),
             ObjectType::Mutex => self.mutex(id).map(Mutex::waitable),
+            ObjectType::Timer => self.timer(id).map(WaitableTimer::waitable),
             ObjectType::Thread => self.thread(id).map(Thread::waitable),
             ObjectType::Process => self
                 .process(id)
@@ -624,6 +647,12 @@ impl Directory {
     /// reused); a process's record is free for the next process once its object is gone.
     fn delete(&mut self, id: ObjectId, dispatcher: &mut Dispatcher) -> Option<Followup> {
         let followup = match id.kind {
+            ObjectType::Timer => {
+                // Nothing may expire or queue an APC for a timer no one can reach.
+                let timer = self.timers.record(id.index);
+                dispatcher.cancel_waitable_timer(timer);
+                None
+            }
             ObjectType::Mutex => {
                 // An owned mutex leaves its owner's list (the owner's end has nothing to abandon).
                 dispatcher.forget_mutex(self.mutexes.record(id.index));
@@ -724,6 +753,18 @@ impl Directory {
 
     // --- Rundown -----------------------------------------------------------------------------
 
+    /// Cancel every live timer whose completion APC targets `thread` (it is ending: nothing may
+    /// queue to it any more).
+    pub fn run_down_timers(&mut self, dispatcher: &mut Dispatcher, thread: *mut Thread) {
+        for index in 0..self.timers.used {
+            if self.timers.headers[index].live
+                && core::ptr::eq(self.timers.records[index].apc_thread(), thread)
+            {
+                dispatcher.cancel_waitable_timer(&mut self.timers.records[index]);
+            }
+        }
+    }
+
     /// The process is gone (one process at a time: every object was its own): every object still
     /// live is deleted — none should be, once its handles closed and its threads ended — and every
     /// thread record starts over (its pages went with the address space). Returns how many objects
@@ -741,6 +782,7 @@ impl Directory {
             ObjectType::Event,
             ObjectType::Semaphore,
             ObjectType::Mutex,
+            ObjectType::Timer,
             ObjectType::Thread,
             ObjectType::Section,
         ] {
@@ -768,6 +810,7 @@ impl Directory {
             ObjectType::Event => EVENTS,
             ObjectType::Semaphore => SEMAPHORES,
             ObjectType::Mutex => MUTEXES,
+            ObjectType::Timer => TIMERS,
             ObjectType::Thread => THREADS,
             ObjectType::Process => PROCESSES,
             ObjectType::Section => SECTIONS,
@@ -780,6 +823,7 @@ impl Directory {
         self.events.live()
             + self.semaphores.live()
             + self.mutexes.live()
+            + self.timers.live()
             + self.threads.live()
             + self.processes.live()
             + self.sections.live()
@@ -854,6 +898,10 @@ impl ObRef {
         directory()
             .mutex(self.id)
             .expect("a referenced mutex lives")
+    }
+
+    pub fn timer(&self) -> &'static mut WaitableTimer {
+        directory().timer(self.id).expect("a referenced timer lives")
     }
 
     pub fn thread(&self) -> &'static mut Thread {

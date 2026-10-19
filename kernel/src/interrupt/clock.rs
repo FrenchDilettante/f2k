@@ -163,27 +163,15 @@ impl Clock {
 /// The deferred timer routine: the clock's DPC callback — the timer table's expiry walk. The
 /// argument is the firing tick's low word (the trigger's), and the walk scans the table from that
 /// tick's bucket through the current one, waking every thread whose timeout came due.
-static mut TIMER_FIRED: u32 = 0;
-
-/// How many times the deferred timer routine has run.
-pub fn timer_fired() -> u32 {
-    // SAFETY: single CPU; read-only.
-    unsafe { core::ptr::read_volatile(core::ptr::addr_of!(TIMER_FIRED)) }
-}
-
 #[cfg(target_arch = "x86")]
 fn timer_routine(_dpc: &Dpc, _context: usize, argument1: usize, _argument2: usize) {
-    // SAFETY: single CPU, called with interrupts enabled from the retire pass at the dispatch level
-    // — the dispatcher's entries run serialized there.
-    unsafe {
-        core::ptr::write_volatile(
-            core::ptr::addr_of_mut!(TIMER_FIRED),
-            core::ptr::read_volatile(core::ptr::addr_of!(TIMER_FIRED)).wrapping_add(1),
-        );
-        // Both readings in one masked read: the routine runs with interrupts enabled.
-        let (now, tick) = read_clock(|clock| (clock.interrupt_time(), clock.tick_count() as u32));
-        crate::sched::idle::dispatcher().expire_timers(now, tick, argument1 as u32);
-    }
+    // The readings in one masked read: the routine runs with interrupts enabled, from the retire
+    // pass at the dispatch level — the dispatcher's entries run serialized there. The system time
+    // is the pass's signal time, what the expired timers' APCs are given.
+    let (now, tick, system_time) =
+        read_clock(|clock| (clock.interrupt_time(), clock.tick_count() as u32, clock.system_time()));
+    let signal_time = crate::time::boot_filetime() + system_time;
+    crate::sched::idle::dispatcher().expire_timers(now, tick, argument1 as u32, signal_time);
 }
 
 // --- Target wiring: the kernel clock --------------------------------------
@@ -343,7 +331,7 @@ mod tests {
         for n in 1..=3 {
             clock.tick();
             let tick = clock.tick_count() as u32;
-            d.expire_timers(clock.interrupt_time(), tick, tick - 1);
+            d.expire_timers(clock.interrupt_time(), tick, tick - 1, 0);
             assert_eq!(
                 t.state() == ThreadState::Ready,
                 n == 3,

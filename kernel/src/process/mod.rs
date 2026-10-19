@@ -43,6 +43,9 @@ pub mod runner;
 /// The process pool and the current process.
 pub mod pool;
 
+/// The process's own synchronization records: the user-APC records QueueUserAPC queues.
+pub mod objects;
+
 pub use pool::MAX_PROCESSES;
 #[cfg(target_arch = "x86")]
 pub use pool::{current, current_mut, reap_pending};
@@ -85,6 +88,8 @@ pub struct Process {
     console: rtl::console::Handles,
     /// An exited thread's gate stack, not yet released (see [`DeadStack`]).
     dead_stack: DeadStack,
+    /// The user-APC records (the objects themselves are the object manager's).
+    objects: objects::SyncObjects,
     /// Why the process ended, recorded by its last thread's exit; the idle thread's reap step
     /// tears down a process once this is set.
     end: Option<exit::ProcessEnd>,
@@ -114,9 +119,8 @@ pub struct ProcessParts<'a> {
 /// How many threads a process can have alive besides its main thread. A terminated thread's record
 /// is reused once nothing references its object, so this bounds the live threads, not the threads
 /// created. Four covers the sync fixture's four concurrent workers; the threads fixture's scale
-/// block wants Windows 2000's 64, once the sleep smoke has retired: its first span (20
-/// ticks of 10.0144 ms, read as 200 or 201 by the tick count at its start) moves with the boot's
-/// length, which grows with the thread pool.
+/// block wants Windows 2000's 64 (the sleep smoke, whose 200-tick span moved with the boot's
+/// length, which grows with the thread pool, is retired).
 pub const CHILD_THREADS: usize = 4;
 
 /// The main thread's record in the object manager's thread pool (created threads take the records
@@ -201,6 +205,11 @@ impl Process {
     /// The address space (every user mapping goes through it).
     pub fn vm(&mut self) -> &mut crate::mem::vm::AddressSpace {
         &mut self.vm
+    }
+
+    /// The user-APC records.
+    pub fn sync_mut(&mut self) -> &mut objects::SyncObjects {
+        &mut self.objects
     }
 
     /// The handle table, for lookups.
@@ -502,6 +511,7 @@ unsafe fn write_fresh(
         addr_of_mut!((*process).files).write(crate::fs::file::OpenFiles::empty());
         addr_of_mut!((*process).console).write(rtl::console::Handles::standard());
         addr_of_mut!((*process).dead_stack).write(DeadStack::empty());
+        objects::SyncObjects::write_empty(addr_of_mut!((*process).objects));
         addr_of_mut!((*process).end).write(None);
         addr_of_mut!((*process).handed_end).write(None);
         addr_of_mut!((*process).torn_down).write(false);
@@ -777,6 +787,7 @@ mod tests {
             files: crate::fs::file::OpenFiles::empty(),
             console: rtl::console::Handles::standard(),
             dead_stack: DeadStack::empty(),
+            objects: objects::SyncObjects::empty(),
             end: None,
             handed_end: None,
             torn_down: false,

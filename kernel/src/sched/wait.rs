@@ -142,6 +142,12 @@ pub struct Timer {
     /// The timer-table membership link: the bucket list while held, the expiry walk's collection
     /// list mid-walk — a timer is on exactly one at a time.
     pub(crate) links: Links,
+    /// The period a periodic timer re-arms by at each expiry (100 ns units); zero for a one-shot.
+    /// A thread's wait timer is always a one-shot.
+    pub(crate) period: u64,
+    /// The APC queued at each expiry, or null: a waitable timer's completion routine (see
+    /// [`crate::sched::waitable_timer`]).
+    pub(crate) apc: *mut super::apc::Apc,
 }
 
 impl Timer {
@@ -153,7 +159,16 @@ impl Timer {
             due_time: 0,
             inserted: false,
             links: Links::detached(),
+            period: 0,
+            apc: null_mut(),
         }
+    }
+
+    /// A fresh timer of `kind` (one of the two timer kinds), as [`Timer::new`].
+    pub const fn of_kind(kind: WaitKind) -> Self {
+        let mut timer = Timer::new();
+        timer.waitable.kind = kind;
+        timer
     }
 
     /// Close the header's waiters sentinel.
@@ -870,6 +885,18 @@ pub(crate) fn replay_interval(due: u64, now: u64) -> i64 {
     due.wrapping_sub(now) as i64
 }
 
+/// A LARGE_INTEGER due time (a timer's) on the timer table's clock: negative values are an
+/// interval from `now`, the interrupt time; positive ones an absolute system time, which is its
+/// distance from `wall`, the wall clock's reading at `now` (a FILETIME), from `now` — the table
+/// knows one clock, whatever the system time's slew. An absolute time already past is due now.
+pub fn due_time(value: i64, now: u64, wall: u64) -> u64 {
+    if value < 0 {
+        now.wrapping_add(value.unsigned_abs())
+    } else {
+        now + (value as u64).saturating_sub(wall)
+    }
+}
+
 /// What a replaying wait re-plants with: the remaining interval to the due its first attempt
 /// recorded (the thread's timer holds it; the wake's cancellation leaves it in place), the original
 /// timeout on a first attempt, or none for an untimed wait. A timed wait's deadline never slips
@@ -1107,6 +1134,18 @@ mod tests {
 
     fn stamp(interrupt_time: u64, tick: u64) -> ClockStamp {
         ClockStamp { interrupt_time, tick }
+    }
+
+    /// A timer's due time on the one clock: a relative one from interrupt time; an absolute
+    /// one (a system time) as its distance from the wall clock's reading, from interrupt time too,
+    /// whatever lies between the two clocks; an absolute one already past due at once.
+    #[test]
+    fn a_due_time_is_on_interrupt_time() {
+        let (now, wall) = (5_000_000, 126_256_467_067_890_000);
+        assert_eq!(due_time(-1_000_000, now, wall), 6_000_000);
+        assert_eq!(due_time(wall as i64 + 2_000_000, now, wall), 7_000_000);
+        assert_eq!(due_time(wall as i64 - 1, now, wall), now);
+        assert_eq!(due_time(1, now, wall), now);
     }
 
     fn event(kind: EventKind, signaled: bool) -> &'static mut Event {

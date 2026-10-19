@@ -61,7 +61,7 @@ ISO_IMG ?= $(OUT_DIR)/f2k.iso
 DISK_SIZE ?= 131072
 # The corpus fixtures the disk carries in its root directory (tests/<name>/<name>.exe, stored as
 # NAME.EXE), after HELLO.EXE: the boots load their images from the volume by these paths.
-DISK_FIXTURES ?= exit0 ret0 sleep spin suspend respawn fileio
+DISK_FIXTURES ?= exit0 ret0 spin suspend respawn fileio
 # The sectioned fixtures (tests/README.md), in their own directory, \CORPUS, the way each runs from
 # its own directory on the real machine: the root keeps its one cluster (the disk-smoke pins it).
 # They are the fixtures whose declaration, tests/<name>/fixture.toml, says kind "sectioned".

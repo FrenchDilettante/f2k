@@ -168,12 +168,13 @@ pub struct Thread {
     // --- The APC machinery ---
     /// The kernel-mode APC queue's sentinel.
     pub(crate) kernel_apcs: List,
-    /// The user-mode APC queue's sentinel. Armed data: nothing queues a user APC until the
-    /// user-mode runtime layer exists.
+    /// The user-mode APC queue's sentinel: QueueUserAPC's and the waitable timers' APCs, delivered
+    /// in user mode (see [`crate::user::apc`]).
     pub(crate) user_apcs: List,
     /// Whether a kernel APC is queued: the delivery windows' question, armed by the insert.
     pub(crate) kernel_apc_pending: bool,
-    /// Whether a user APC is queued (armed data, like the queue it summarizes).
+    /// Whether a user APC's delivery is armed: an alertable wait completed for one, or NtContinue's
+    /// test alert found more queued.
     pub(crate) user_apc_pending: bool,
     /// Whether a normal kernel APC's normal half is running — the gate that makes a blocking
     /// normal routine safe (the suspend APC parks inside one).

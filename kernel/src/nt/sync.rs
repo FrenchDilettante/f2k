@@ -1,8 +1,8 @@
-//! The synchronization services: events, mutants and semaphores, named in `\BaseNamedObjects` or
-//! not; the waits on any waitable object; and handle duplication. kernel32's waits and object calls
-//! are Win32 code over these, as on Windows 2000. The named objects' create and open are shared
-//! with the sections (NtCreateSection, NtOpenSection). The timers, the delays, the yield and the
-//! user APCs will join them.
+//! The synchronization services: events, mutants, semaphores and timers, named in
+//! `\BaseNamedObjects` or not; the waits on any waitable object; the delays and the yield; handle
+//! duplication; and user APCs. kernel32's waits, sleeps and object calls are Win32 code over these,
+//! as on Windows 2000. The named objects' create and open are shared with the sections
+//! (NtCreateSection, NtOpenSection).
 //!
 //! The answers are Windows 2000's statuses: a wait returns STATUS_WAIT_0 + n,
 //! STATUS_ABANDONED_WAIT_0 + n, STATUS_TIMEOUT, STATUS_USER_APC or STATUS_ALERTED; a create that
@@ -25,6 +25,8 @@ use crate::ob::{self, ObjectId, ObjectType};
 use crate::sched::event::{EventKind, EVENT_WAKE_INCREMENT};
 use crate::sched::wait::{self, WaitMode, WaitReason, Waitable, MAXIMUM_WAIT_OBJECTS};
 
+const STATUS_UNSUCCESSFUL: Status = Status(0xC000_0001);
+const STATUS_NO_MEMORY: Status = Status(0xC000_0017);
 const STATUS_INVALID_PARAMETER_MIX: Status = Status(0xC000_0030);
 const STATUS_OBJECT_NAME_COLLISION: Status = Status(0xC000_0035);
 const STATUS_SEMAPHORE_LIMIT_EXCEEDED: Status = Status(0xC000_0047);
@@ -32,6 +34,7 @@ const STATUS_INSUFFICIENT_RESOURCES: Status = Status(0xC000_009A);
 const STATUS_INVALID_PARAMETER_1: Status = Status(0xC000_00EF);
 const STATUS_INVALID_PARAMETER_3: Status = Status(0xC000_00F1);
 const STATUS_OBJECT_NAME_EXISTS: u32 = 0x4000_0000;
+const STATUS_TIMER_RESUME_IGNORED: u32 = 0x4000_0025;
 
 /// The priority increment a semaphore release grants the waiters it wakes.
 const SEMAPHORE_WAKE_INCREMENT: i8 = 1;
@@ -400,6 +403,115 @@ pub fn release_semaphore(
     Ok(STATUS_SUCCESS)
 }
 
+// --- Timers ---------------------------------------------------------------------------------------
+
+/// NtCreateTimer: a NotificationTimer (0, manual-reset) or a SynchronizationTimer (1, auto-reset),
+/// unarmed, or the named one already bound (see [`create`]).
+pub fn create_timer(
+    _call: &mut NtCall,
+    slot: UserPtr<u32>,
+    access: u32,
+    attributes: UserAddr,
+    timer_type: u32,
+) -> NtResult {
+    let manual_reset = match timer_type {
+        0 => true,
+        1 => false,
+        _ => return Err(STATUS_INVALID_PARAMETER),
+    };
+    create(slot, access, attributes, ObjectType::Timer, || {
+        ob::directory().create_timer(manual_reset)
+    })
+}
+
+/// NtOpenTimer (see [`open`]).
+pub fn open_timer(
+    _call: &mut NtCall,
+    slot: UserPtr<u32>,
+    access: u32,
+    attributes: UserAddr,
+) -> NtResult {
+    open(slot, access, attributes, ObjectType::Timer)
+}
+
+/// Write a BOOLEAN out argument, when given.
+fn write_boolean(at: UserAddr, value: bool) -> Result<(), Status> {
+    if !at.is_null() {
+        at.write(&[u8::from(value)])?;
+    }
+    Ok(())
+}
+
+/// NtSetTimer: arm the timer (see [`crate::sched::waitable_timer`]). The due time is absolute (a
+/// system time) when positive, relative when negative, both on the timer table's one clock (see
+/// [`wait::due_time`]); the period is in milliseconds, zero for a one-shot. A completion routine is
+/// queued to the calling thread at each expiry, with its context and the time the timer was
+/// signaled (a FILETIME's low and high dwords). Whether the timer was armed before goes into
+/// `previous` when given. The resume flag is not supported: the set succeeds with
+/// STATUS_TIMER_RESUME_IGNORED, as on a machine without power management.
+/// STATUS_INVALID_PARAMETER for a negative period.
+#[allow(clippy::too_many_arguments)]
+pub fn set_timer(
+    _call: &mut NtCall,
+    timer: Handle,
+    due_time: UserPtr<u64>,
+    routine: UserAddr,
+    context: UserAddr,
+    resume: u32,
+    period: i32,
+    previous: UserAddr,
+) -> NtResult {
+    probe(previous.raw(), 1)?;
+    let reference = object_of(timer.raw(), ObjectType::Timer)?;
+    let due = due_time.read()? as i64;
+    if period < 0 {
+        return Err(STATUS_INVALID_PARAMETER);
+    }
+    let timer = reference.timer();
+    let now = crate::interrupt::clock::interrupt_time();
+    let signal_time = crate::time::system_filetime();
+    let due = wait::due_time(due, now, signal_time);
+    let dispatcher = crate::sched::idle::dispatcher();
+    // The cancel first: the APC record may still be queued from the previous set.
+    let armed = dispatcher.cancel_waitable_timer(timer);
+    let completion = !routine.is_null();
+    if completion {
+        crate::user::apc::init(
+            &mut timer.apc,
+            dispatcher.current_thread(),
+            routine.raw(),
+            context.raw(),
+        );
+    }
+    dispatcher.set_waitable_timer(
+        timer,
+        due,
+        now,
+        period as u64 * 10_000,
+        completion,
+        signal_time,
+    );
+    write_boolean(previous, armed)?;
+    Ok(if boolean(resume) {
+        STATUS_TIMER_RESUME_IGNORED
+    } else {
+        STATUS_SUCCESS
+    })
+}
+
+/// NtCancelTimer: disarm the timer, its period and any queued completion APC dropped; the signal
+/// state is left as it was, and goes into `current` when given.
+pub fn cancel_timer(_call: &mut NtCall, timer: Handle, current: UserAddr) -> NtResult {
+    probe(current.raw(), 1)?;
+    let reference = object_of(timer.raw(), ObjectType::Timer)?;
+    let timer = reference.timer();
+    crate::sched::idle::dispatcher().cancel_waitable_timer(timer);
+    // SAFETY: the timer's own waitable header, live while the reference is held.
+    let signaled = unsafe { (*timer.waitable()).signal_state() } > 0;
+    write_boolean(current, signaled)?;
+    Ok(STATUS_SUCCESS)
+}
+
 // --- Waits ----------------------------------------------------------------------------------------
 
 /// A timeout argument as the waits take it: none (a null pointer) waits forever; otherwise the
@@ -597,7 +709,41 @@ pub fn signal_and_wait_for_single_object(
     Ok(wait_one(waitable, timeout, boolean(alertable)))
 }
 
-// --- Handles --------------------------------------------------------------------------------------
+/// NtDelayExecution: park the calling thread for the interval (see [`timeout_of`]) — the delay
+/// discipline on the caller's own timer. An interval already past is the pure yield; the longest
+/// relative one parks for good. A kernel APC breaks the delay and the shared entry replays it with
+/// the remaining time; the delay completes as STATUS_SUCCESS, or STATUS_USER_APC when an alertable
+/// one ran user APCs.
+pub fn delay_execution(_call: &mut NtCall, alertable: u32, interval: UserPtr<u64>) -> NtResult {
+    let interval = interval_of(interval.read()? as i64);
+    let alertable = boolean(alertable);
+    let status = wait::wait_current_with(|dispatcher, thread, stamp, replay| {
+        let interval = if replay {
+            wait::replay_interval(thread.timer.due_time, stamp.interrupt_time)
+        } else {
+            interval
+        };
+        dispatcher.delay(thread, WaitMode::User, alertable, interval, stamp)
+    });
+    Ok(crate::sched::dispatcher::Dispatcher::delay_completed(status) as u32)
+}
+
+/// NtYieldExecution: hand the processor to any ready thread, a lower-priority one included (see
+/// [`crate::sched::dispatcher::Dispatcher::yield_execution`]). STATUS_SUCCESS when another thread
+/// ran, STATUS_NO_YIELD_PERFORMED when none was ready.
+pub fn yield_execution(_call: &mut NtCall) -> NtResult {
+    let status = wait::wait_current_with(|dispatcher, thread, _stamp, _replay| {
+        if dispatcher.yield_execution(thread) {
+            thread.wait_status = crate::status::STATUS_SUCCESS;
+            wait::WaitDisposition::Yield
+        } else {
+            wait::WaitDisposition::Complete(crate::status::STATUS_NO_YIELD_PERFORMED)
+        }
+    });
+    Ok(status as u32)
+}
+
+// --- Handles and APCs -----------------------------------------------------------------------------
 
 /// NtDuplicateObject, within the calling process: a new handle naming the same object (the
 /// current-thread and current-process pseudo-handles duplicate to real handles to their objects),
@@ -678,4 +824,39 @@ pub fn duplicate_object(
         options,
         |handle| target.write_optional(handle),
     )
+}
+
+/// NtQueueApcThread: queue `routine` on the thread's user-APC queue, with its three arguments; it
+/// runs when that thread next waits alertably (or before its first instruction, if it never ran),
+/// and a thread waiting alertably now is woken for it. STATUS_INVALID_HANDLE for a handle
+/// naming no thread, STATUS_NO_MEMORY with no free APC record, STATUS_UNSUCCESSFUL for a thread
+/// that has ended.
+pub fn queue_apc_thread(
+    call: &mut NtCall,
+    thread: Handle,
+    routine: UserAddr,
+    argument1: UserAddr,
+    argument2: UserAddr,
+    argument3: UserAddr,
+) -> NtResult {
+    let reference = if thread.raw() == CURRENT_THREAD {
+        ob::current_thread()
+            .and_then(ob::reference)
+            .ok_or(STATUS_INVALID_HANDLE)?
+    } else {
+        object_of(thread.raw(), ObjectType::Thread)?
+    };
+    let target = reference.thread() as *mut crate::sched::thread::Thread;
+    let apc = call
+        .process()
+        .sync_mut()
+        .free_apc()
+        .ok_or(STATUS_NO_MEMORY)?;
+    crate::user::apc::init(apc, target, routine.raw(), argument1.raw());
+    let dispatcher = crate::sched::idle::dispatcher();
+    if dispatcher.queue_apc(apc, argument2.raw() as usize, argument3.raw() as usize, 0) {
+        Ok(STATUS_SUCCESS)
+    } else {
+        Err(STATUS_UNSUCCESSFUL)
+    }
 }
