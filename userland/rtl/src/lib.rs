@@ -27,6 +27,7 @@ pub mod heap;
 pub mod heapcore;
 pub mod ldr;
 pub mod localmem;
+pub mod path;
 pub mod seh;
 pub mod status;
 mod status_table;

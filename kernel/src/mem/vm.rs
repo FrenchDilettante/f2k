@@ -776,8 +776,7 @@ impl SectionFrames {
     }
 
     /// The frame of the section's page `index`, when it is made (a file's section reads its page
-    /// only when it is not; a file's section is not served yet).
-    #[cfg_attr(target_arch = "x86", allow(dead_code))]
+    /// only when it is not).
     pub fn made(&self, pages: &impl Pages, index: u32) -> Option<u32> {
         let table = *self.tables.get((index / 1024) as usize)?;
         (table != 0)

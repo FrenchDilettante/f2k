@@ -8,8 +8,6 @@
 //! leading with the gap's id (`#[ignore = "K32-4: ..."]`); `scripts/ledger.py --run` fails once it
 //! passes, so the marker goes with the fix.
 
-pub mod console;
-
 // `GROUPS`: every API group's key, title and members, generated from the export spec
 // (userland/kernel32/exports.toml) by the build script.
 include!(concat!(env!("OUT_DIR"), "/kernel32_groups.rs"));

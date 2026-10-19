@@ -420,7 +420,7 @@ mod tests {
     /// stack overrun faults instead of corrupting the slot below).
     #[test]
     fn the_frame_fits_the_slot() {
-        for index in [0u32, 1, 7, 203] {
+        for index in [0u32, 1, 7, 112] {
             let top = gate_slot_top(index);
             let base = gate_slot_base(index);
             let ladder = build_ladder(
@@ -458,7 +458,7 @@ mod tests {
             }
         }
         // The stride and slot arithmetic the bounds rely on.
-        assert_eq!(GATE_SLOT_STRIDE, 0x5000);
+        assert_eq!(GATE_SLOT_STRIDE, 0x9000);
         assert_eq!(gate_slot_top(0), crate::mem::paging::GATE_STACK_TOP);
     }
 }

@@ -314,7 +314,7 @@ args = ["handle hFile"]
 impl = { native = "GetFileType" }
 pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
 scenarios = ["get_file_type_answers_the_device_type"]
-note = "a console handle naming a console object is FILE_TYPE_CHAR (VerifyConsoleIoHandle at the console server); any other handle FILE_TYPE_DISK until NtQueryVolumeInformationFile reports its device"
+note = "a console handle naming a console object is FILE_TYPE_CHAR (VerifyConsoleIoHandle at the console server); any other the device type NtQueryVolumeInformationFile reports"
 
 [[export]]
 name = "SetHandleCount"
@@ -434,9 +434,9 @@ pinned_by = [
 name = "SetFilePointer"
 group = "console"
 args = ["handle hFile", "i32 lDistanceToMove", "ptr lpDistanceToMoveHigh", "u32 dwMoveMethod"]
-impl = { legacy = "svc_set_file_pointer" }
+impl = { native = "SetFilePointer" }
 pinned_by = ["files/handles", "files/read", "files/seek", "fswrite/write"]
-scenarios = ["set_file_pointer_refuses_non_file_handles"]
+scenarios = ["set_file_pointer_refuses_non_file_handles", "set_file_pointer_moves_from_each_base"]
 
 [[export]]
 name = "SetStdHandle"
@@ -1168,7 +1168,7 @@ group = "threads"
 args = ["handle hSourceProcessHandle", "handle hSourceHandle", "handle hTargetProcessHandle", "ptr<u32> lpTargetHandle", "u32 dwDesiredAccess", "bool bInheritHandle", "u32 dwOptions"]
 impl = { native = "DuplicateHandle" }
 pinned_by = ["files/handles", "sync/handles", "threads/create"]
-note = "a console handle is its server's to duplicate (DuplicateConsoleHandle); any other handle is NtDuplicateObject's, within the calling process; a file handle's duplicate waits for the file objects"
+note = "a console handle is its server's to duplicate (DuplicateConsoleHandle); any other handle is NtDuplicateObject's, within the calling process — a file handle's duplicate shares its file object and its position"
 scenarios = ["console_handles_close_and_duplicate_at_their_server", "duplicate_handle_duplicates_kernel_handles"]
 
 [[export]]
@@ -1495,7 +1495,7 @@ pinned_by = ["sched/yield"]
 name = "CreateFileA"
 group = "files"
 args = ["strA lpFileName", "u32 dwDesiredAccess", "u32 dwShareMode", "ptr lpSecurityAttributes", "u32 dwCreationDisposition", "u32 dwFlagsAndAttributes", "handle hTemplateFile"]
-impl = { legacy = "svc_create_file_a" }
+impl = { native = "CreateFileA" }
 pinned_by = [
     "files/concurrent",
     "files/handles",
@@ -1511,12 +1511,14 @@ pinned_by = [
     "fswrite/times",
     "fswrite/write",
 ]
+scenarios = ["create_file_maps_its_arguments_onto_nt_create_file", "create_file_refuses_as_windows_2000_does", "truncate_existing_cuts_the_file_once_open"]
+note = "the read and open dispositions; CREATE_NEW and OPEN_ALWAYS on an existing file answer as Windows 2000's; making or overwriting a file is the write side's (ERROR_WRITE_PROTECT until then)"
 
 [[export]]
 name = "ReadFile"
 group = "files"
 args = ["handle hFile", "ptr lpBuffer", "u32 nNumberOfBytesToRead", "ptr lpNumberOfBytesRead", "ptr lpOverlapped"]
-impl = { legacy = "svc_read_file" }
+impl = { native = "ReadFile" }
 pinned_by = [
     "files/concurrent",
     "files/crt",
@@ -1527,6 +1529,8 @@ pinned_by = [
     "files/seek",
     "fswrite/write",
 ]
+scenarios = ["read_file_counts_what_moved"]
+note = "a console handle's read is the console server's (ReadConsoleA): the input handle reads nothing and succeeds (F2K's console has no keyboard)"
 
 [[export]]
 name = "CreateFileMappingA"
@@ -1554,16 +1558,15 @@ scenarios = ["the_conversions_round_trip_and_refuse_out_of_range_values"]
 name = "FindClose"
 group = "files"
 args = ["handle hFindFile"]
-impl = { unimplemented = "B8: files: objects and the read side" }
-fails = "FALSE"
+impl = { native = "FindClose" }
 pinned_by = ["files/find", "fswrite/*"]
+scenarios = ["find_handles_refuse_the_invalid_value"]
 
 [[export]]
 name = "FindFirstFileA"
 group = "files"
 args = ["strA[260] lpFileName", "ptr lpFindFileData"]
-impl = { unimplemented = "B8: files: objects and the read side" }
-fails = "INVALID_HANDLE_VALUE"
+impl = { native = "FindFirstFileA" }
 pinned_by = ["files/find", "fswrite/*"]
 
 [[export]]
@@ -1641,48 +1644,44 @@ scenarios = ["the_conversions_round_trip_and_refuse_out_of_range_values"]
 name = "FindNextFileA"
 group = "files"
 args = ["handle hFindFile", "ptr lpFindFileData"]
-impl = { unimplemented = "B8: files: objects and the read side" }
-fails = "FALSE"
+impl = { native = "FindNextFileA" }
 pinned_by = ["files/find", "fswrite/*"]
+scenarios = ["find_handles_refuse_the_invalid_value"]
 
 [[export]]
 name = "GetCurrentDirectoryA"
 group = "files"
 args = ["u32 nBufferLength", "ptr lpBuffer"]
-impl = { unimplemented = "B8: files: objects and the read side" }
-fails = "0"
+impl = { native = "GetCurrentDirectoryA" }
 pinned_by = ["files/open"]
+scenarios = ["the_current_directory_moves_and_reads_back"]
 
 [[export]]
 name = "GetDiskFreeSpaceA"
 group = "files"
 args = ["strA?[260] lpRootPathName", "ptr<u32> lpSectorsPerCluster", "ptr<u32> lpBytesPerSector", "ptr<u32> lpNumberOfFreeClusters", "ptr<u32> lpTotalNumberOfClusters"]
-impl = { unimplemented = "B8: files: objects and the read side" }
-fails = "FALSE"
+impl = { native = "GetDiskFreeSpaceA" }
 pinned_by = ["files/meta"]
 
 [[export]]
 name = "GetDriveTypeA"
 group = "files"
 args = ["strA?[260] lpRootPathName"]
-impl = { unimplemented = "B8: files: objects and the read side" }
-fails = "never"
+impl = { native = "GetDriveTypeA" }
 pinned_by = ["files/meta"]
 
 [[export]]
 name = "GetFileAttributesA"
 group = "files"
 args = ["strA[260] lpFileName"]
-impl = { unimplemented = "B8: files: objects and the read side" }
-fails = "INVALID_FILE_ATTRIBUTES"
+impl = { native = "GetFileAttributesA" }
 pinned_by = ["files/find", "files/meta", "fswrite/dirs", "fswrite/names", "fswrite/share"]
 
 [[export]]
 name = "GetFileAttributesExA"
 group = "files"
 args = ["strA[260] lpFileName", "u32 fInfoLevelId", "ptr lpFileInformation"]
-impl = { unimplemented = "B8: files: objects and the read side" }
-fails = "FALSE"
+impl = { native = "GetFileAttributesExA" }
 pinned_by = [
     "files/meta",
     "fswrite/create",
@@ -1696,48 +1695,43 @@ pinned_by = [
 name = "GetFileInformationByHandle"
 group = "files"
 args = ["handle hFile", "ptr lpFileInformation"]
-impl = { unimplemented = "B8: files: objects and the read side" }
-fails = "FALSE"
+impl = { native = "GetFileInformationByHandle" }
 pinned_by = ["files/meta"]
 
 [[export]]
 name = "GetFileSize"
 group = "files"
 args = ["handle hFile", "ptr<u32> lpFileSizeHigh"]
-impl = { unimplemented = "B8: files: objects and the read side" }
-fails = "INVALID_FILE_SIZE"
+impl = { native = "GetFileSize" }
 pinned_by = ["files/meta", "fswrite/write"]
 
 [[export]]
 name = "GetFileTime"
 group = "files"
 args = ["handle hFile", "ptr lpCreationTime", "ptr lpLastAccessTime", "ptr lpLastWriteTime"]
-impl = { unimplemented = "B8: files: objects and the read side" }
-fails = "FALSE"
+impl = { native = "GetFileTime" }
 pinned_by = ["files/meta", "fswrite/times"]
 
 [[export]]
 name = "GetFullPathNameA"
 group = "files"
 args = ["strA[260] lpFileName", "u32 nBufferLength", "ptr lpBuffer", "ptr<u32> lpFilePart"]
-impl = { unimplemented = "B8: files: objects and the read side" }
-fails = "0"
+impl = { native = "GetFullPathNameA" }
 pinned_by = ["files/open"]
+scenarios = ["get_full_path_name_folds_against_the_current_directory"]
 
 [[export]]
 name = "GetShortPathNameA"
 group = "files"
 args = ["strA[260] lpszLongPath", "ptr lpszShortPath", "u32 cchBuffer"]
-impl = { unimplemented = "B8: files: objects and the read side" }
-fails = "0"
+impl = { native = "GetShortPathNameA" }
 pinned_by = ["files/open", "fswrite/names"]
 
 [[export]]
 name = "GetVolumeInformationA"
 group = "files"
 args = ["strA?[260] lpRootPathName", "ptr lpVolumeNameBuffer", "u32 nVolumeNameSize", "ptr<u32> lpVolumeSerialNumber", "ptr<u32> lpMaximumComponentLength", "ptr<u32> lpFileSystemFlags", "ptr lpFileSystemNameBuffer", "u32 nFileSystemNameSize"]
-impl = { unimplemented = "B8: files: objects and the read side" }
-fails = "FALSE"
+impl = { native = "GetVolumeInformationA" }
 pinned_by = ["files/meta"]
 
 [[export]]
@@ -1751,9 +1745,9 @@ pinned_by = ["files/mapping", "memory/mapping"]
 name = "SetCurrentDirectoryA"
 group = "files"
 args = ["strA[260] lpPathName"]
-impl = { unimplemented = "B8: files: objects and the read side" }
-fails = "FALSE"
+impl = { native = "SetCurrentDirectoryA" }
 pinned_by = ["files/open"]
+scenarios = ["the_current_directory_moves_and_reads_back", "a_directory_that_cannot_be_opened_is_refused"]
 
 [[export]]
 name = "SetEndOfFile"

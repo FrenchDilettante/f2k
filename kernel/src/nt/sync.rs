@@ -766,18 +766,13 @@ pub fn duplicate_object(
     use super::object::{duplicate_entry, DuplicateTable, TargetProcess};
     use crate::ob::Target;
 
-    /// The calling process's table: an object's handle counts on the object. An open file's
-    /// record is not an object yet and has no count to share between two handles: its duplicate
-    /// cannot be made until the file objects exist.
+    /// The calling process's table: an object's handle counts on the object (a file object's
+    /// duplicate shares its position, as the files fixture's handles block shows).
     struct Calling;
     impl DuplicateTable for Calling {
         fn insert(&mut self, entry: ob::Entry) -> u32 {
-            match entry.target {
-                Target::Object(id) => {
-                    calling_process().insert_object(id, entry.access, entry.inherit)
-                }
-                Target::File(_) => 0,
-            }
+            let Target::Object(id) = entry.target;
+            calling_process().insert_object(id, entry.access, entry.inherit)
         }
 
         fn close(&mut self, handle: u32) {

@@ -462,10 +462,9 @@ fn a_process_object_signals_its_end() {
     );
 }
 
-/// A handle-table entry names an object by its id, or a record of the process's own that is not
-/// an object: only the first resolves to an object.
+/// A handle-table entry names an object by its id (an open file's is its file object).
 #[test]
-fn entries_name_objects_or_records() {
+fn entries_name_objects() {
     let id = ObjectId {
         kind: ObjectType::Event,
         index: 3,
@@ -474,22 +473,30 @@ fn entries_name_objects_or_records() {
     let entry = Entry::object(id, EVENT_ALL_ACCESS, true);
     assert_eq!(entry.object_id(), Some(id));
     assert!(entry.inherit);
-    let file = Entry {
-        target: Target::File(2),
-        access: FILE_GENERIC_READ,
-        inherit: false,
+    let file = ObjectId {
+        kind: ObjectType::File,
+        index: 2,
+        generation: 0,
     };
-    assert_eq!(file.object_id(), None);
+    assert_eq!(Entry::object(file, 0x0012_0089, false).object_id(), Some(file));
 }
 
-/// A section is no waitable; its deletion hands its frames back to the caller, a view's reference
-/// keeping it past its last handle, and its record starts over.
+/// A section is no waitable; its deletion hands its frames (and a file's section its file object)
+/// back to the caller, a view's reference keeping it past its last handle, and its record starts
+/// over.
 #[test]
 fn a_deleted_section_hands_back_its_frames() {
     let directory = directory();
     let dispatcher = dispatcher();
+    let file_object = ObjectId {
+        kind: ObjectType::File,
+        index: 2,
+        generation: 5,
+    };
     let section = SectionObject {
         size: 3,
+        paging_file: false,
+        file_object: Some(file_object),
         ..SectionObject::none()
     };
     let id = directory.create_section(section).unwrap();
@@ -502,12 +509,57 @@ fn a_deleted_section_hands_back_its_frames() {
     assert_eq!(
         directory.dereference(id, dispatcher),
         Some(Followup::Section {
-            frames: crate::mem::vm::SectionFrames::empty()
+            frames: crate::mem::vm::SectionFrames::empty(),
+            file_object: Some(file_object),
         })
     );
     assert_eq!(
         directory.sections.record(id.index).size,
         0,
         "the record holds no mapping any more"
+    );
+}
+
+/// A file object's last handle is its cleanup (share access, delete-on-close), and its last
+/// reference its close: a mapping's reference holds it between the two. It is no waitable.
+#[test]
+fn a_file_object_cleans_up_then_closes() {
+    let directory = directory();
+    let dispatcher = dispatcher();
+    let id = directory
+        .create_file(4, crate::fs::file::ACCESS_READ, 0x8000_0000, crate::fs::file::SHARE_ALL)
+        .unwrap();
+    assert_eq!(directory.waitable(id), None, "a file object is not waitable");
+    directory.file(id).unwrap().delete_on_close = true;
+    published(directory, id, dispatcher);
+    assert!(directory.handle_opened(id), "a duplicate");
+    assert_eq!(closed(directory, id, dispatcher), vec![], "another handle remains");
+    assert!(directory.reference(id), "a section's");
+    assert_eq!(
+        closed(directory, id, dispatcher),
+        vec![Followup::FileCleanup {
+            record: 4,
+            access: 1,
+            share: 7,
+            delete_on_close: true,
+            search: 0
+        }]
+    );
+    assert_eq!(directory.dereference(id, dispatcher), Some(Followup::FileClose { record: 4 }));
+    // Both at once when nothing else holds it.
+    let id = directory.create_file(5, 0, 0x80, 0).unwrap();
+    published(directory, id, dispatcher);
+    assert_eq!(
+        closed(directory, id, dispatcher),
+        vec![
+            Followup::FileCleanup {
+                record: 5,
+                access: 0,
+                share: 0,
+                delete_on_close: false,
+                search: 0
+            },
+            Followup::FileClose { record: 5 },
+        ]
     );
 }

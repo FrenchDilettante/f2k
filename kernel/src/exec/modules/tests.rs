@@ -116,11 +116,7 @@ fn the_system_dlls_serve_the_registry() {
     }
     // The corpus's argument-block shapes, looked up by name so a renumbering cannot silently skew
     // the pins.
-    for (name, arg_bytes) in [
-        ("CreateFileA", 28),
-        ("SetFilePointer", 16),
-        ("ReadFile", 20),
-    ] {
+    for (name, arg_bytes) in [("GetProcAddress", 8), ("LoadLibraryA", 4)] {
         let &(_, found, _) = SERVICES
             .iter()
             .find(|&&(export, ..)| export == name)
@@ -129,11 +125,11 @@ fn the_system_dlls_serve_the_registry() {
     }
     // The natives: kernel32's own code (the trivial ones, the exception filter and the pointer
     // probes its assembly, the TLS slots' reads and writes; the console, start-up, locale, clock,
-    // virtual-memory, mapping, synchronization, timer, sleep, APC, affinity, TLS-index and
-    // environment calls and RaiseException its Rust, the heap and Local/Global calls its own over
+    // virtual-memory, mapping, synchronization, timer, sleep, APC, affinity, TLS-index,
+    // environment, file and current-directory calls and RaiseException its Rust, the heap and Local/Global calls its own over
     // ntdll's heap).
     // The internal start thunks are not among them.
-    assert_eq!(NATIVE_EXPORTS.len(), 145);
+    assert_eq!(NATIVE_EXPORTS.len(), 163);
     for &(name, _) in &NATIVE_EXPORTS {
         let address = kernel32_export(name).unwrap_or_else(|| panic!("kernel32 exports no {name}"));
         addresses.push(address);
@@ -230,9 +226,8 @@ fn the_entry_points_keep_their_protocols() {
 fn unimplemented_exports_fail_the_call() {
     // (export, its failure value, its argument block), as the spec declares them.
     for (name, fails, arg_bytes) in [
-        ("FindFirstFileA", 0xFFFF_FFFFu32, 8u16),
-        ("GetFileAttributesA", 0xFFFF_FFFF, 4),
-        ("GetVolumeInformationA", 0, 32),
+        ("SetFileAttributesA", 0u32, 8u16),
+        ("DeleteFileA", 0, 4),
         ("CopyFileA", 0, 12),
     ] {
         let mut stub = vec![0x64, 0xC7, 0x05, 0x34, 0, 0, 0, 120, 0, 0, 0, 0xB8];
@@ -250,7 +245,7 @@ fn unimplemented_exports_fail_the_call() {
 
 /// The corpus binaries (the smokes in the root directory, the sectioned fixtures in \CORPUS): the
 /// import surface kernel32 exports.
-const CORPUS: [(&str, &[u8]); 12] = [
+const CORPUS: [(&str, &[u8]); 11] = [
     ("bare", include_bytes!("../../../../tests/bare/bare.exe")),
     ("files", include_bytes!("../../../../tests/files/files.exe")),
     (
@@ -274,10 +269,6 @@ const CORPUS: [(&str, &[u8]); 12] = [
     ("exit0", include_bytes!("../../../../tests/exit0/exit0.exe")),
     ("ret0", include_bytes!("../../../../tests/ret0/ret0.exe")),
     ("hello", include_bytes!("../../../../tests/hello/hello.exe")),
-    (
-        "fileio",
-        include_bytes!("../../../../tests/fileio/fileio.exe"),
-    ),
 ];
 
 /// A binary's imports, as (module, name), read through the loader's own import walk.
@@ -329,11 +320,10 @@ fn the_surface_is_the_corpus_import_surface() {
 }
 
 /// Each corpus binary snaps every import through the module table: the counts are each binary's
-/// import surface (ret0's 35, hello's 40 — ret0's plus the console-stdio group — the file smoke's
-/// 42).
+/// import surface (ret0's 35, hello's 40 — ret0's plus the console-stdio group).
 #[test]
 fn the_corpus_snaps_fully_against_the_module_table() {
-    for (fixture, thunks) in [("ret0", 35), ("hello", 40), ("fileio", 42)] {
+    for (fixture, thunks) in [("ret0", 35), ("hello", 40)] {
         let (_, file) = CORPUS.iter().find(|(name, _)| *name == fixture).unwrap();
         let image = Image::parse(file).expect("the fixture parses");
         let mut mapped = vec![0u8; image.size_of_image as usize];

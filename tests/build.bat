@@ -51,11 +51,6 @@ if errorlevel 1 (echo build.bat: hellogui failed & exit /b 1)
 del hellogui.obj
 cd ..
 
-echo === fileio
-cd fileio
-cl /nologo fileio.c
-if errorlevel 1 (echo build.bat: fileio failed & exit /b 1)
-del fileio.obj
 cd ..
 
 echo === bare

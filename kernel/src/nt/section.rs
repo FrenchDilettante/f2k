@@ -2,21 +2,23 @@
 //! NtUnmapViewOfSection. kernel32's CreateFileMappingA, OpenFileMappingA, MapViewOfFile and
 //! UnmapViewOfFile are Win32 code over these, as on Windows 2000.
 //!
-//! A section is of the paging file (no file handle): a file's comes with the file objects, and
-//! until then a file handle is STATUS_NOT_IMPLEMENTED. A section owns its frames
-//! (`mem::vm::SectionFrames`), made zeroed as views first need them, and every view maps them, so
-//! a write through one view shows in all of them; a PAGE_WRITECOPY view maps them copy-on-write,
-//! its writes its own. A view is a reservation of its own in the process's address space
-//! (MEM_MAPPED), on the 64 KiB allocation granularity. A section is an object (see [`crate::ob`]),
-//! named in `\BaseNamedObjects` through the shared create and open (`nt::sync`): it lives while a
-//! handle or a view references it, its frames while it or a view holds them.
+//! A section is of a file opened for reading, or of the paging file (no file handle). It owns its
+//! frames (`mem::vm::SectionFrames`), made as views first need them — a file's pages filled from
+//! the file then (a copy as of that moment: later writes to the file are not seen), the
+//! paging file's zeroed — and every view maps them, so a write through one view shows in all of
+//! them; a PAGE_WRITECOPY view maps them copy-on-write, its writes its own. A view is a reservation
+//! of its own in the process's address space (MEM_MAPPED), on the 64 KiB allocation granularity. A
+//! section is an object (see [`crate::ob`]), named in `\BaseNamedObjects` through the shared create
+//! and open (`nt::sync`): it lives while a handle or a view references it, its frames while it or a
+//! view holds them. A file's section holds the file object it was made from, so the file stays
+//! open — and cannot be truncated or deleted — while it is mapped.
 //!
 //! A view's protection needs the section handle's access, as Windows 2000 checks it when it
 //! references the handle (SECTION_MAP_WRITE for a read-write view, SECTION_MAP_READ for the others:
 //! STATUS_ACCESS_DENIED), and a read-write view needs a section made read-write
 //! (STATUS_SECTION_PROTECTION). Data sections only: SEC_IMAGE is not supported.
 
-use super::call::Status;
+use super::call::{Status, STATUS_INVALID_HANDLE};
 use super::memory::{STATUS_INVALID_PAGE_PROTECTION, STATUS_INVALID_PARAMETER_4};
 
 pub const STATUS_ACCESS_DENIED: Status = Status(0xC000_0022);
@@ -25,9 +27,13 @@ const STATUS_NOT_MAPPED_VIEW: Status = Status(0xC000_0019);
 const STATUS_INVALID_VIEW_SIZE: Status = Status(0xC000_001F);
 const STATUS_SECTION_TOO_BIG: Status = Status(0xC000_0040);
 const STATUS_SECTION_PROTECTION: Status = Status(0xC000_004E);
+const STATUS_MEDIA_WRITE_PROTECTED: Status = Status(0xC000_00A2);
 const STATUS_INVALID_PARAMETER_6: Status = Status(0xC000_00F4);
 const STATUS_INVALID_PARAMETER_8: Status = Status(0xC000_00F6);
 const STATUS_INVALID_PARAMETER_9: Status = Status(0xC000_00F7);
+const STATUS_MAPPED_FILE_SIZE_ZERO: Status = Status(0xC000_011E);
+#[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
+const STATUS_IO_DEVICE_ERROR: Status = Status(0xC000_0185);
 const STATUS_MAPPED_ALIGNMENT: Status = Status(0xC000_0220);
 
 /// The page protections a section and a view take.
@@ -64,6 +70,16 @@ const MAXIMUM_ALLOWED: u32 = 0x0200_0000;
 /// The allocation granularity: views start on it, and view offsets are multiples of it.
 const GRANULARITY: u32 = crate::mem::vm::GRANULARITY;
 
+/// The file a section is made of, as its creation checks it: its size, whether it is a directory,
+/// and whether its handle was granted read and write access.
+#[derive(Clone, Copy)]
+pub struct Backing {
+    pub size: u32,
+    pub directory: bool,
+    pub read: bool,
+    pub write: bool,
+}
+
 /// What a section's creation settles on: its size, and whether its views may write it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Plan {
@@ -71,12 +87,21 @@ pub struct Plan {
     pub writable: bool,
 }
 
-/// NtCreateSection's rules, over the maximum size asked for, the page protection, the allocation
-/// attributes and whether a file was named. The paging file's section needs a size (zero or none:
-/// STATUS_INVALID_PARAMETER_4); a file's is not served yet (STATUS_NOT_IMPLEMENTED). A
-/// section's frames are named within what its frame tables can hold
+/// NtCreateSection's rules, over the maximum size asked for (none: the file's), the page
+/// protection, the allocation attributes and the file (none: the paging file). The paging file's
+/// section needs a size (zero or none: STATUS_INVALID_PARAMETER_4); a file's is at most the file's
+/// size (a read-only one larger is STATUS_SECTION_TOO_BIG; a read-write one larger would extend the
+/// file on Windows 2000 and is refused, STATUS_MEDIA_WRITE_PROTECTED), and an empty file maps
+/// nothing (STATUS_MAPPED_FILE_SIZE_ZERO). Its handle must have been granted read access, and write
+/// access too for a read-write section (STATUS_ACCESS_DENIED); a directory is no file to map
+/// (STATUS_INVALID_HANDLE). A section's frames are named within what its frame tables can hold
 /// (STATUS_SECTION_TOO_BIG past it).
-pub fn plan(maximum: Option<u64>, protect: u32, allocation: u32, file: bool) -> Result<Plan, Status> {
+pub fn plan(
+    maximum: Option<u64>,
+    protect: u32,
+    allocation: u32,
+    file: Option<Backing>,
+) -> Result<Plan, Status> {
     if allocation & !(SEC_FILE | SEC_IMAGE | SEC_RESERVE | SEC_COMMIT | SEC_NOCACHE) != 0
         || allocation & (SEC_IMAGE | SEC_RESERVE | SEC_COMMIT) == 0
         || allocation & (SEC_RESERVE | SEC_COMMIT) == SEC_RESERVE | SEC_COMMIT
@@ -91,13 +116,33 @@ pub fn plan(maximum: Option<u64>, protect: u32, allocation: u32, file: bool) -> 
         PAGE_READWRITE => true,
         _ => return Err(STATUS_INVALID_PAGE_PROTECTION),
     };
-    if file {
-        return Err(STATUS_NOT_IMPLEMENTED);
-    }
-    let size = match maximum.filter(|&size| size != 0) {
-        None => return Err(STATUS_INVALID_PARAMETER_4),
-        Some(size) if size > u32::MAX as u64 => return Err(STATUS_INVALID_PARAMETER_4),
-        Some(size) => size as u32,
+    let maximum = maximum.filter(|&size| size != 0);
+    let size = match file {
+        None => match maximum {
+            None => return Err(STATUS_INVALID_PARAMETER_4),
+            Some(size) if size > u32::MAX as u64 => return Err(STATUS_INVALID_PARAMETER_4),
+            Some(size) => size as u32,
+        },
+        Some(file) => {
+            if file.directory {
+                return Err(STATUS_INVALID_HANDLE);
+            }
+            if !file.read || writable && !file.write {
+                return Err(STATUS_ACCESS_DENIED);
+            }
+            match maximum {
+                None if file.size == 0 => return Err(STATUS_MAPPED_FILE_SIZE_ZERO),
+                None => file.size,
+                Some(size) if size > file.size as u64 => {
+                    return Err(if writable {
+                        STATUS_MEDIA_WRITE_PROTECTED
+                    } else {
+                        STATUS_SECTION_TOO_BIG
+                    });
+                }
+                Some(size) => size as u32,
+            }
+        }
     };
     if size as u64 > crate::mem::vm::SECTION_MAX {
         return Err(STATUS_SECTION_TOO_BIG);
@@ -179,26 +224,6 @@ pub fn view_arguments(inherit: u32, allocation: u32, protect: u32) -> Result<(),
     Ok(())
 }
 
-/// Map `pages` pages of `frames` from section page `first` at `base` (a fresh view reservation of
-/// `space`) with `protect`, each made zeroed when no view needed it yet. ERROR_NOT_ENOUGH_MEMORY
-/// without a frame: the caller releases the reservation, and the pages mapped so far with it.
-pub fn map_frames(
-    space: &mut crate::mem::vm::AddressSpace,
-    pages: &mut impl crate::mem::vm::Pages,
-    frames: &mut crate::mem::vm::SectionFrames,
-    base: u32,
-    first: u32,
-    count: u32,
-    protect: u32,
-) -> Result<(), crate::mem::vm::VmError> {
-    use crate::mem::vm::PAGE;
-    for page in 0..count {
-        let frame = frames.frame(pages, first + page, |_| ())?;
-        space.map_shared(pages, base + page * PAGE, frame, protect)?;
-    }
-    Ok(())
-}
-
 #[cfg(target_arch = "x86")]
 pub use target::*;
 
@@ -206,10 +231,7 @@ pub use target::*;
 mod target {
     use super::*;
     use crate::mem::vm::{CurrentPages, Kind, PAGE};
-    use crate::nt::call::{
-        calling_process, Handle, NtCall, NtResult, UserAddr, UserPtr, STATUS_INVALID_HANDLE,
-        STATUS_SUCCESS,
-    };
+    use crate::nt::call::{calling_process, Handle, NtCall, NtResult, UserAddr, UserPtr, STATUS_SUCCESS};
     use crate::nt::memory::{
         capture, with_space, STATUS_CONFLICTING_ADDRESSES, STATUS_INVALID_PARAMETER_2,
         STATUS_NO_MEMORY,
@@ -223,8 +245,37 @@ mod target {
         frames.release(&mut CurrentPages);
     }
 
-    /// NtCreateSection (see [`plan`]): a section of the paging file, named or not (see `sync`'s
-    /// create). Its frames are made as views need them.
+    /// The file object a handle names, with its file as its record holds it now and the access the
+    /// handle's open was granted. STATUS_INVALID_HANDLE for a handle naming nothing (a console
+    /// handle included), STATUS_OBJECT_TYPE_MISMATCH for one naming another kind.
+    fn file_of(handle: u32) -> Result<(ObjectId, crate::fs::fat32::lookup::File, Backing), Status> {
+        if is_console_handle(handle) {
+            return Err(STATUS_INVALID_HANDLE);
+        }
+        let id = calling_process()
+            .handles()
+            .lookup(handle)
+            .and_then(|entry| entry.object_id())
+            .ok_or(STATUS_INVALID_HANDLE)?;
+        if id.kind != ObjectType::File {
+            return Err(crate::nt::attributes::STATUS_OBJECT_TYPE_MISMATCH);
+        }
+        let object = ob::directory().file(id).ok_or(STATUS_INVALID_HANDLE)?;
+        let file = crate::fs::file::records().get(object.record).file;
+        let backing = Backing {
+            size: file.size,
+            directory: file.directory,
+            read: object.access & crate::fs::file::ACCESS_READ != 0,
+            write: object.access & crate::fs::file::ACCESS_WRITE != 0,
+        };
+        Ok((id, file, backing))
+    }
+
+    /// NtCreateSection (see [`plan`]): a section of the file the handle names, or of the paging file
+    /// (no handle), named or not (see `sync`'s create). A file's section holds its file object, and
+    /// the file counts it as mapped: the file stays open while the section lives, and cannot be
+    /// truncated nor deleted meanwhile. The section's deletion gives both back. Its frames are made
+    /// as views need them.
     #[allow(clippy::too_many_arguments)]
     pub fn create_section(
         _call: &mut NtCall,
@@ -241,14 +292,38 @@ mod target {
         } else {
             Some(maximum.read()?)
         };
-        let plan = plan(maximum, protect, allocation, file.raw() != 0)?;
-        let section = ob::SectionObject {
-            size: plan.size,
-            writable: plan.writable,
-            ..ob::SectionObject::none()
+        let backing = if file.raw() == 0 {
+            None
+        } else {
+            Some(file_of(file.raw())?)
+        };
+        let plan = plan(maximum, protect, allocation, backing.map(|(_, _, backing)| backing))?;
+        let section = match backing {
+            None => ob::SectionObject {
+                size: plan.size,
+                writable: plan.writable,
+                ..ob::SectionObject::none()
+            },
+            Some((file_object, file, _)) => ob::SectionObject {
+                file,
+                paging_file: false,
+                frames: crate::mem::vm::SectionFrames::empty(),
+                size: plan.size,
+                writable: plan.writable,
+                file_object: Some(file_object),
+            },
         };
         sync::create(slot, access, attributes, ObjectType::Section, || {
-            ob::directory().create_section(section)
+            let directory = ob::directory();
+            let id = directory.create_section(section)?;
+            if let Some(file_object) = section.file_object {
+                let held = directory.reference(file_object);
+                debug_assert!(held, "the handle's file object lives");
+                let record = directory.file(file_object).expect("held").record;
+                crate::fs::file::records().get_mut(record).user_mapped += 1;
+            }
+            // A failed publication deletes the object, which gives the file back.
+            Some(id)
         })
     }
 
@@ -279,12 +354,12 @@ mod target {
     }
 
     /// NtMapViewOfSection (see [`view`]): a view of the section in the calling process, at the base
-    /// asked for or anywhere, its pages the section's frames (made zeroed when no view needed them
-    /// yet) — read-write for PAGE_READWRITE, copy-on-write for PAGE_WRITECOPY, read-only or
+    /// asked for or anywhere, its pages the section's frames (made now when no view needed them
+    /// yet: a file's bytes, zeros past its end, or the paging file's zeros) — read-write for PAGE_READWRITE, copy-on-write for PAGE_WRITECOPY, read-only or
     /// no-access otherwise. The base, the offset and the view's size (whole pages) written back. The
     /// commit size is not used (a view's pages are all committed).
     #[allow(clippy::too_many_arguments)]
-    pub fn map_view_of_section(
+    fn map_view_of_section_held(
         call: &mut NtCall,
         section: Handle,
         process: Handle,
@@ -326,6 +401,31 @@ mod target {
         Ok(STATUS_SUCCESS)
     }
 
+    /// NtMapViewOfSection (see [`map_view_of_section_held`]), as one critical region: a file's
+    /// pages are read with the section referenced, and a termination requested meanwhile ends the
+    /// thread only once the reference has gone.
+    #[allow(clippy::too_many_arguments)]
+    pub fn map_view_of_section(
+        call: &mut NtCall,
+        section: Handle,
+        process: Handle,
+        base: UserPtr<u32>,
+        zero_bits: u32,
+        commit_size: u32,
+        offset: UserPtr<u64>,
+        size: UserPtr<u32>,
+        inherit: u32,
+        allocation: u32,
+        protect: u32,
+    ) -> NtResult {
+        crate::process::threads::critical_region(|| {
+            map_view_of_section_held(
+                call, section, process, base, zero_bits, commit_size, offset, size, inherit,
+                allocation, protect,
+            )
+        })
+    }
+
     /// Map `bytes` of the section `object` names from `offset` as a reservation of its own (at
     /// `requested`, or the lowest free range), its pages the section's frames.
     fn map_view(
@@ -341,6 +441,18 @@ mod target {
             return Err(STATUS_NO_MEMORY);
         }
         let directory = ob::directory();
+        // A file's pages are made from the file as its record holds it now (the section keeps it
+        // open).
+        let file = {
+            let section = *directory.section(object).expect("the caller holds the section");
+            match section
+                .file_object
+                .and_then(|file_object| directory.file(file_object).map(|object| object.record))
+            {
+                Some(record) => crate::fs::file::records().get(record).file,
+                None => section.file,
+            }
+        };
         let section = directory
             .section(object)
             .expect("the caller holds the section");
@@ -362,18 +474,32 @@ mod target {
                 crate::mem::vm::VmError::InvalidParameter => STATUS_INVALID_PARAMETER_2,
                 crate::mem::vm::VmError::NoMemory => STATUS_NO_MEMORY,
             })?;
-        let mapped = map_frames(
-            space,
-            table,
-            &mut section.frames,
-            base,
-            offset / PAGE,
-            pages,
-            protect,
-        );
-        if mapped.is_err() {
-            let _ = space.release(table, base);
-            return Err(STATUS_NO_MEMORY);
+        let mut buffer = [0u8; PAGE as usize];
+        for page in 0..pages {
+            let at = offset + page * PAGE;
+            let made = section.frames.made(table, at / PAGE);
+            // A file's page not yet made is read first: a read that fails maps nothing.
+            let take = if made.is_none() && !section.paging_file {
+                file.size.saturating_sub(at).min(PAGE) as usize
+            } else {
+                0
+            };
+            if take != 0 && crate::fs::io::read_file_at(&file, at, &mut buffer[..take]).is_none() {
+                let _ = space.release(table, base);
+                return Err(STATUS_IO_DEVICE_ERROR);
+            }
+            let frame = match made {
+                Some(frame) => Ok(frame),
+                None => section.frames.frame(table, at / PAGE, |frame| {
+                    crate::mem::paging::write_frame(frame, 0, &buffer[..take]);
+                }),
+            };
+            let mapped =
+                frame.and_then(|frame| space.map_shared(table, base + page * PAGE, frame, protect));
+            if mapped.is_err() {
+                let _ = space.release(table, base);
+                return Err(STATUS_NO_MEMORY);
+            }
         }
         let recorded = space.add_view(base, object);
         debug_assert!(recorded, "the view table had room");
@@ -432,55 +558,101 @@ mod tests {
     }
 
     /// The paging file's sections (memory/mapping's): a read-write one of a size; the refusals map
-    /// to the errors the captures print. A file's section is not served yet.
+    /// to the errors the captures print.
     #[test]
     fn the_section_rules() {
         let commit = SEC_COMMIT;
         assert_eq!(
-            plan(Some(0x10_0000), PAGE_READWRITE, commit, false),
+            plan(Some(0x10_0000), PAGE_READWRITE, commit, None),
             Ok(Plan {
                 size: 0x10_0000,
                 writable: true
             })
         );
         assert_eq!(
-            plan(Some(0x1000), PAGE_WRITECOPY, SEC_RESERVE, false).map(|plan| plan.writable),
+            plan(Some(0x1000), PAGE_WRITECOPY, SEC_RESERVE, None).map(|plan| plan.writable),
             Ok(false)
         );
         assert_eq!(
-            error(plan(None, PAGE_READWRITE, commit, false)),
+            error(plan(None, PAGE_READWRITE, commit, None)),
             87,
             "the paging file needs a size"
         );
-        assert_eq!(error(plan(Some(0), PAGE_READWRITE, commit, false)), 87);
+        assert_eq!(error(plan(Some(0), PAGE_READWRITE, commit, None)), 87);
         assert_eq!(
-            error(plan(Some(0x1000), 0x10, commit, false)),
+            error(plan(Some(0x1000), 0x10, commit, None)),
             87,
             "PAGE_EXECUTE"
         );
         assert_eq!(
-            error(plan(Some(0x1000), PAGE_READONLY, 0, false)),
+            error(plan(Some(0x1000), PAGE_READONLY, 0, None)),
             87,
             "no allocation attribute"
         );
         assert_eq!(
-            error(plan(Some(0x1000), PAGE_READONLY, SEC_RESERVE | SEC_COMMIT, false)),
+            error(plan(Some(0x1000), PAGE_READONLY, SEC_RESERVE | SEC_COMMIT, None)),
             87
         );
-        assert_eq!(error(plan(Some(1 << 32), PAGE_READWRITE, commit, false)), 87);
+        assert_eq!(error(plan(Some(1 << 32), PAGE_READWRITE, commit, None)), 87);
         assert_eq!(
-            plan(Some(0x1000), PAGE_READONLY, commit, true),
-            Err(STATUS_NOT_IMPLEMENTED),
-            "a file's section is not served yet"
-        );
-        assert_eq!(
-            plan(Some(0x1000), PAGE_READONLY, SEC_IMAGE, false),
+            plan(Some(0x1000), PAGE_READONLY, SEC_IMAGE, None),
             Err(STATUS_NOT_IMPLEMENTED)
         );
         assert_eq!(
-            error(plan(Some(crate::mem::vm::SECTION_MAX + 1), PAGE_READWRITE, commit, false)),
+            error(plan(Some(crate::mem::vm::SECTION_MAX + 1), PAGE_READWRITE, commit, None)),
             8
         );
+    }
+
+    const FILE: Backing = Backing {
+        size: 0x2_0000,
+        directory: false,
+        read: true,
+        write: false,
+    };
+
+    /// A file's sections (files/mapping's): the file's size when none is asked, no larger than the
+    /// file, never of an empty file, of a directory or of an open that may not read; read-write only
+    /// over an open that may write.
+    #[test]
+    fn the_file_section_rules() {
+        let commit = SEC_COMMIT;
+        assert_eq!(
+            plan(None, PAGE_READONLY, commit, Some(FILE)),
+            Ok(Plan { size: 0x2_0000, writable: false })
+        );
+        assert_eq!(
+            plan(Some(0x1000), PAGE_READONLY, commit, Some(FILE)),
+            Ok(Plan { size: 0x1000, writable: false })
+        );
+        assert_eq!(
+            error(plan(Some(0x2_0000 + 100_000), PAGE_READONLY, commit, Some(FILE))),
+            8,
+            "larger than the file"
+        );
+        let empty = Backing { size: 0, ..FILE };
+        assert_eq!(error(plan(None, PAGE_READONLY, commit, Some(empty))), 1006, "an empty file");
+        assert_eq!(
+            error(plan(None, PAGE_READWRITE, commit, Some(FILE))),
+            5,
+            "a read-write section of a read-only open"
+        );
+        let writable = Backing { write: true, ..FILE };
+        assert_eq!(
+            plan(None, PAGE_READWRITE, commit, Some(writable)),
+            Ok(Plan { size: 0x2_0000, writable: true })
+        );
+        assert_eq!(
+            error(plan(Some(0x3_0000), PAGE_READWRITE, commit, Some(writable))),
+            19,
+            "a read-write section past the file would extend it"
+        );
+        let unreadable = Backing { read: false, ..FILE };
+        assert_eq!(error(plan(None, PAGE_READONLY, commit, Some(unreadable))), 5);
+        let directory = Backing { directory: true, ..FILE };
+        assert_eq!(error(plan(None, PAGE_READONLY, commit, Some(directory))), 6);
+        assert_eq!(error(plan(None, 0x10, commit, Some(FILE))), 87, "PAGE_EXECUTE");
+        assert_eq!(error(plan(None, PAGE_READONLY, 0, Some(FILE))), 87, "no allocation attribute");
     }
 
     /// The views' refusals: a read-write view needs SECTION_MAP_WRITE (ERROR_ACCESS_DENIED) and a

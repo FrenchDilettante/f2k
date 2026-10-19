@@ -29,6 +29,7 @@ macro_rules! unserved {
 pub mod attributes;
 pub mod call;
 pub mod exception;
+pub mod file;
 pub mod memory;
 pub mod object;
 pub mod process;

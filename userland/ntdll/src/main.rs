@@ -12,7 +12,9 @@
 //! family, kernel32's HeapAlloc, HeapFree, HeapReAlloc, HeapSize and HeapValidate forwarding here:
 //! `src/heap.s` over `rtl::heap`); the environment (RtlSetEnvironmentVariable,
 //! RtlQueryEnvironmentVariable_U, RtlExpandEnvironmentStrings_U: `src/env.rs` over `rtl::env`);
-//! and the loader's share of a thread's start and end: LdrInitializeThunk, which the kernel
+//! the current directory and the DOS paths (RtlSetCurrentDirectory_U, RtlGetCurrentDirectory_U,
+//! RtlGetFullPathName_U, RtlDosPathNameToNtPathName_U: `src/curdir.rs` over `rtl::path`); and the
+//! loader's share of a thread's start and end: LdrInitializeThunk, which the kernel
 //! delivers before a fresh thread's first instruction (`src/ldr.s`: the process heap, the PEB lock
 //! and the loader lock, the thread's implicit TLS), and LdrShutdownThread and LdrShutdownProcess,
 //! kernel32's ExitThread's and ExitProcess's. The kernel finds LdrInitializeThunk and the two
@@ -23,6 +25,7 @@
 
 extern crate rtl;
 
+mod curdir;
 mod env;
 mod except;
 mod status;
@@ -226,7 +229,7 @@ extern "C" fn f2k_rtl_validate_heap(handle: usize, flags: u32, pointer: usize) -
 
 /// A fresh thread's initialization, before anything else it runs in user mode: the process's first
 /// thread makes the heap list's lock and the process heap (PEB+0x18), the PEB lock and the loader
-/// lock; every thread its implicit-TLS block, when the image has a TLS directory. What finds no
+/// lock, and opens the starting current directory's handle; every thread its implicit-TLS block, when the image has a TLS directory. What finds no
 /// room is left undone (the program meets a null process heap or TLS pointer).
 #[unsafe(no_mangle)]
 extern "C" fn f2k_ldr_initialize() {
@@ -251,6 +254,7 @@ extern "C" fn f2k_ldr_initialize() {
         );
         sys::init_peb_lock(enter, leave);
         sys::init_loader_lock();
+        curdir::open_starting_directory();
     }
     let base = sys::image_base();
     let Some(directory) =

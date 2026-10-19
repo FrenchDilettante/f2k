@@ -10,9 +10,8 @@ Multiboot loader with the disk attached (`image="kernel"`) or the disk itself th
 "KERNEL PANIC" fails every case. `cmdline` is the user program's command line: QEMU's `-append`
 on a kernel boot, the Limine entry's `cmdline` on a disk boot; without one the kernel runs exit0.
 
-The program smokes (ret0, hello, fileio) run the root directory's single-path fixtures, selected by
-the command line; fileio's goes once the sectioned blocks that succeed it pass
-(tests/test_limine.py names each successor).
+The program smokes (ret0, hello) run the root directory's single-path fixtures, selected by the
+command line (tests/test_limine.py names the sectioned blocks that succeeded the retired ones).
 
     uv run pytest tests/kernel                 # every case
     uv run pytest tests/kernel -m kernel       # the Multiboot cases (-m disk: the Limine ones)
@@ -239,17 +238,6 @@ CASES = (
         "hello",
         "the console fixture prints \"Hello, world!\" as its own COM1 output and exits 0",
         expects=("Hello, world!",),
-        ordered=True,
-    ),
-    # File smoke: the fileio fixture opens its own image on the boot volume — CreateFileA on the
-    # path GetModuleFileNameA reports, the volume path the loader read it from — reads the MZ
-    # signature, seeks to e_lfanew and reads the PE signature, seeks back and reads the MZ again.
-    # Every line derives from the file's own bytes, so tests/fileio/output.txt (the real machine's
-    # capture) is pinned verbatim, in order.
-    *program_smoke(
-        "fileio",
-        "the file smoke opens its own image by its module path, reads the MZ and PE signatures across seeks, and prints the captured lines",
-        expects=("MZ ok", "PE ok", "MZ again ok", "fileio: ok"),
         ordered=True,
     ),
     *both_paths(

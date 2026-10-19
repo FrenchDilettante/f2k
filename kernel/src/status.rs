@@ -41,6 +41,8 @@ pub const STATUS_NOT_A_DIRECTORY: NtStatus = 0xC000_0103u32 as NtStatus;
 pub const STATUS_IO_TIMEOUT: NtStatus = 0xC000_00B5u32 as NtStatus;
 /// A device reported an error.
 pub const STATUS_IO_DEVICE_ERROR: NtStatus = 0xC000_0185u32 as NtStatus;
+/// The device takes no writes (the boot volume's, until the FAT32 write side).
+pub const STATUS_MEDIA_WRITE_PROTECTED: NtStatus = 0xC000_00A2u32 as NtStatus;
 /// The volume holds no file system the kernel recognizes (a refused mount).
 pub const STATUS_UNRECOGNIZED_VOLUME: NtStatus = 0xC000_014Fu32 as NtStatus;
 /// A thread's suspend count is at its documented maximum (127).
@@ -51,6 +53,16 @@ pub const STATUS_SEMAPHORE_LIMIT_EXCEEDED: NtStatus = 0xC000_0047u32 as NtStatus
 pub const STATUS_MUTANT_NOT_OWNED: NtStatus = 0xC000_0046u32 as NtStatus;
 /// The thread is terminating; operations that would queue work on it are refused.
 pub const STATUS_THREAD_IS_TERMINATING: NtStatus = 0xC000_004Bu32 as NtStatus;
+/// A path's directory is missing (or a component on the way is a file).
+pub const STATUS_OBJECT_PATH_NOT_FOUND: NtStatus = 0xC000_003Au32 as NtStatus;
+/// An open of the same file excludes this one.
+pub const STATUS_SHARING_VIOLATION: NtStatus = 0xC000_0043u32 as NtStatus;
+/// The file is being deleted: it goes with its last open's cleanup, and no new open is allowed.
+pub const STATUS_DELETE_PENDING: NtStatus = 0xC000_0056u32 as NtStatus;
+/// A table the call needs is full (the handle table).
+pub const STATUS_INSUFFICIENT_RESOURCES: NtStatus = 0xC000_009Au32 as NtStatus;
+/// Every open-file record or file object is taken.
+pub const STATUS_TOO_MANY_OPENED_FILES: NtStatus = 0xC000_011Fu32 as NtStatus;
 
 /// Whether a status reports success (the non-negative severities: success and informational).
 pub fn nt_success(status: NtStatus) -> bool {

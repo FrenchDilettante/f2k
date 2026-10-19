@@ -161,103 +161,106 @@ pub const RING3_STUB: [u8; 28] = [
     0x90, // pad
 ];
 
-/// The exit-during-read stub, before its service numbers are patched in: the main thread opens
-/// HELLO.EXE (CreateFileA, still kernel-served), allocates a stack for a child at [`CHILD_STACK`]
-/// (NtAllocateVirtualMemory: a page for its CONTEXT, then two stack pages) and creates the child
-/// there (NtCreateThread, EIP its loop, EBX the file handle), raises it time-critical
-/// (NtSetInformationThread's ThreadBasePriority, as kernel32's SetThreadPriority asks it) to seek to
-/// the start and read a sector forever (SetFilePointer and ReadFile, still kernel-served); main
-/// runs again only while the child waits on the disk, and ends the process there
-/// (NtTerminateProcess). The thread and process calls are Windows 2000's services by their own
-/// numbers; the zeroed immediates are the served file calls' ([`EXIT_DURING_READ_SERVICES`]). The
-/// INITIAL_TEB follows the code and the path.
+/// The exit-during-read stub: the main thread opens HELLO.EXE (NtOpenFile), allocates a stack for a
+/// child at [`CHILD_STACK`] (NtAllocateVirtualMemory: a page for its CONTEXT, then two stack pages)
+/// and creates the child there (NtCreateThread, EIP its loop, EBX the file handle), raises it
+/// time-critical (NtSetInformationThread's ThreadBasePriority, as kernel32's SetThreadPriority asks
+/// it) to read the file's first sector forever (NtReadFile at offset zero); main runs again only
+/// while the child waits on the disk, and ends the process there (NtTerminateProcess). Every number
+/// is Windows 2000's; the INITIAL_TEB, the name's OBJECT_ATTRIBUTES, UNICODE_STRING and units follow
+/// the code.
 #[cfg(any(feature = "fault-test-exitio", test))]
 #[rustfmt::skip]
-const EXIT_DURING_READ_TEMPLATE: [u8; 272] = [
-    0x6A, 0x00, // 0x00: push 0 (hTemplateFile)
-    0x6A, 0x00, // 0x02: push 0 (dwFlagsAndAttributes)
-    0x6A, 0x03, // 0x04: push OPEN_EXISTING
-    0x6A, 0x00, // 0x06: push 0 (lpSecurityAttributes)
-    0x6A, 0x01, // 0x08: push FILE_SHARE_READ
-    0x68, 0x00, 0x00, 0x00, 0x80, // 0x0a: push GENERIC_READ
-    0xB8, 0xF2, 0x00, 0x40, 0x00, // 0x0f: mov eax, path
-    0x50, // 0x14: push eax (lpFileName)
-    0x89, 0xE2, // 0x15: mov edx, esp
-    0xB8, 0x00, 0x00, 0x00, 0x00, // 0x17: mov eax, CreateFileA (patched)
-    0xCD, 0x2E, // 0x1c: int 0x2E
-    0x83, 0xC4, 0x1C, // 0x1e: add esp, 28
-    0x89, 0xC3, // 0x21: mov ebx, eax (the file handle)
-    0x68, 0x00, 0x30, 0x00, 0x00, // 0x23: push 0x3000 (RegionSize: the context page and two stack pages)
-    0x68, 0x00, 0x00, 0x60, 0x00, // 0x28: push CHILD_STACK (BaseAddress)
-    0x89, 0xE0, // 0x2d: mov eax, esp (&base)
-    0x8D, 0x4C, 0x24, 0x04, // 0x2f: lea ecx, [esp+4] (&size)
-    0x6A, 0x04, // 0x33: push PAGE_READWRITE
-    0x68, 0x00, 0x30, 0x00, 0x00, // 0x35: push MEM_COMMIT | MEM_RESERVE
-    0x51, // 0x3a: push ecx (RegionSize)
-    0x6A, 0x00, // 0x3b: push 0 (ZeroBits)
-    0x50, // 0x3d: push eax (BaseAddress)
-    0x6A, 0xFF, // 0x3e: push NtCurrentProcess
-    0x89, 0xE2, // 0x40: mov edx, esp
-    0xB8, 0x10, 0x00, 0x00, 0x00, // 0x42: mov eax, NtAllocateVirtualMemory (0x10)
-    0xCD, 0x2E, // 0x47: int 0x2E
-    0x83, 0xC4, 0x20, // 0x49: add esp, 32 (the arguments and both slots)
-    0xC7, 0x05, 0x00, 0x00, 0x60, 0x00, 0x03, 0x00, 0x01, 0x00, // 0x4c: mov dword [CHILD_STACK], CONTEXT_CONTROL | CONTEXT_INTEGER
-    0x89, 0x1D, 0xA4, 0x00, 0x60, 0x00, // 0x56: mov [CHILD_STACK+0xA4], ebx (the context's EBX: the file handle)
-    0xC7, 0x05, 0xB8, 0x00, 0x60, 0x00, 0xBE, 0x00, 0x40, 0x00, // 0x5c: mov dword [CHILD_STACK+0xB8], child (EIP)
-    0xC7, 0x05, 0xC4, 0x00, 0x60, 0x00, 0x00, 0x30, 0x60, 0x00, // 0x66: mov dword [CHILD_STACK+0xC4], CHILD_STACK + 0x3000 (ESP)
-    0x6A, 0x00, // 0x70: push 0 (the child's handle slot)
-    0x89, 0xE0, // 0x72: mov eax, esp
-    0x6A, 0x00, // 0x74: push 0 (CreateSuspended)
-    0x68, 0xFC, 0x00, 0x40, 0x00, // 0x76: push initial_teb
-    0x68, 0x00, 0x00, 0x60, 0x00, // 0x7b: push CHILD_STACK (ThreadContext)
-    0x6A, 0x00, // 0x80: push 0 (ClientId)
-    0x6A, 0xFF, // 0x82: push NtCurrentProcess
-    0x6A, 0x00, // 0x84: push 0 (ObjectAttributes)
-    0x68, 0xFF, 0x03, 0x1F, 0x00, // 0x86: push THREAD_ALL_ACCESS
-    0x50, // 0x8b: push eax (ThreadHandle)
-    0x89, 0xE2, // 0x8c: mov edx, esp
-    0xB8, 0x2E, 0x00, 0x00, 0x00, // 0x8e: mov eax, NtCreateThread (0x2E)
-    0xCD, 0x2E, // 0x93: int 0x2E
-    0x83, 0xC4, 0x20, // 0x95: add esp, 32
-    0x58, // 0x98: pop eax (the child's handle)
-    0x6A, 0x10, // 0x99: push 16 (the saturation THREAD_PRIORITY_TIME_CRITICAL converts to)
-    0x89, 0xE1, // 0x9b: mov ecx, esp (&priority)
-    0x6A, 0x04, // 0x9d: push 4 (ThreadInformationLength)
-    0x51, // 0x9f: push ecx (ThreadInformation)
-    0x6A, 0x03, // 0xa0: push ThreadBasePriority
-    0x50, // 0xa2: push eax (the child's handle)
-    0x89, 0xE2, // 0xa3: mov edx, esp
-    0xB8, 0xC7, 0x00, 0x00, 0x00, // 0xa5: mov eax, NtSetInformationThread (0xC7: the child preempts here)
-    0xCD, 0x2E, // 0xaa: int 0x2E
-    0x83, 0xC4, 0x14, // 0xac: add esp, 20 (the arguments and the priority)
-    0x6A, 0x00, // 0xaf: push 0 (ExitStatus)
-    0x6A, 0xFF, // 0xb1: push NtCurrentProcess
-    0x89, 0xE2, // 0xb3: mov edx, esp
-    0xB8, 0xE0, 0x00, 0x00, 0x00, // 0xb5: mov eax, NtTerminateProcess (0xE0: the child is inside a read)
-    0xCD, 0x2E, // 0xba: int 0x2E
-    0xEB, 0xFE, // 0xbc: jmp $
-    0x81, 0xEC, 0x00, 0x02, 0x00, 0x00, // 0xbe: child (EBX the file handle): sub esp, 0x200
-    0x89, 0xE7, // 0xc4: mov edi, esp (the buffer)
-    0x6A, 0x00, // 0xc6: child_loop: push FILE_BEGIN
-    0x6A, 0x00, // 0xc8: push 0 (lpDistanceToMoveHigh)
-    0x6A, 0x00, // 0xca: push 0 (lDistanceToMove)
-    0x53, // 0xcc: push ebx
-    0x89, 0xE2, // 0xcd: mov edx, esp
-    0xB8, 0x00, 0x00, 0x00, 0x00, // 0xcf: mov eax, SetFilePointer (patched)
-    0xCD, 0x2E, // 0xd4: int 0x2E
-    0x83, 0xC4, 0x10, // 0xd6: add esp, 16
-    0x6A, 0x00, // 0xd9: push 0 (lpOverlapped)
-    0x6A, 0x00, // 0xdb: push 0 (lpNumberOfBytesRead)
-    0x68, 0x00, 0x02, 0x00, 0x00, // 0xdd: push 512
-    0x57, // 0xe2: push edi
-    0x53, // 0xe3: push ebx
-    0x89, 0xE2, // 0xe4: mov edx, esp
-    0xB8, 0x00, 0x00, 0x00, 0x00, // 0xe6: mov eax, ReadFile (patched)
-    0xCD, 0x2E, // 0xeb: int 0x2E
-    0x83, 0xC4, 0x14, // 0xed: add esp, 20
-    0xEB, 0xD4, // 0xf0: jmp child_loop
-    b'h', b'e', b'l', b'l', b'o', b'.', b'e', b'x', b'e', 0, // 0xf2: path
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x30, 0x60, 0x00, 0x00, 0x10, 0x60, 0x00, 0x00, 0x00, 0x60, 0x00, // 0xfc: INITIAL_TEB (no old stack; base, limit, allocation base)
+pub const EXIT_DURING_READ_STUB: [u8; 344] = [
+    0x83, 0xEC, 0x0C, // 0x00: sub esp, 12 (the handle's slot, then the I/O status block)
+    0x89, 0xE0, // 0x03: mov eax, esp (&handle)
+    0x8D, 0x4C, 0x24, 0x04, // 0x05: lea ecx, [esp+4] (&io_status)
+    0x6A, 0x60, // 0x09: push FILE_SYNCHRONOUS_IO_NONALERT | FILE_NON_DIRECTORY_FILE
+    0x6A, 0x01, // 0x0B: push FILE_SHARE_READ
+    0x51, // 0x0D: push ecx (IoStatusBlock)
+    0x68, 0x18, 0x01, 0x40, 0x00, // 0x0E: push attributes
+    0x68, 0x00, 0x00, 0x10, 0x80, // 0x13: push GENERIC_READ | SYNCHRONIZE
+    0x50, // 0x18: push eax (FileHandle)
+    0x89, 0xE2, // 0x19: mov edx, esp
+    0xB8, 0x64, 0x00, 0x00, 0x00, // 0x1B: mov eax, NtOpenFile (0x64)
+    0xCD, 0x2E, // 0x20: int 0x2E
+    0x83, 0xC4, 0x18, // 0x22: add esp, 24
+    0x8B, 0x1C, 0x24, // 0x25: mov ebx, [esp] (the file handle)
+    0x83, 0xC4, 0x0C, // 0x28: add esp, 12
+    0x68, 0x00, 0x30, 0x00, 0x00, // 0x2B: push 0x3000 (RegionSize: the context page and two stack pages)
+    0x68, 0x00, 0x00, 0x60, 0x00, // 0x30: push CHILD_STACK (BaseAddress)
+    0x89, 0xE0, // 0x35: mov eax, esp (&base)
+    0x8D, 0x4C, 0x24, 0x04, // 0x37: lea ecx, [esp+4] (&size)
+    0x6A, 0x04, // 0x3B: push PAGE_READWRITE
+    0x68, 0x00, 0x30, 0x00, 0x00, // 0x3D: push MEM_COMMIT | MEM_RESERVE
+    0x51, // 0x42: push ecx (RegionSize)
+    0x6A, 0x00, // 0x43: push 0 (ZeroBits)
+    0x50, // 0x45: push eax (BaseAddress)
+    0x6A, 0xFF, // 0x46: push NtCurrentProcess
+    0x89, 0xE2, // 0x48: mov edx, esp
+    0xB8, 0x10, 0x00, 0x00, 0x00, // 0x4A: mov eax, NtAllocateVirtualMemory (0x10)
+    0xCD, 0x2E, // 0x4F: int 0x2E
+    0x83, 0xC4, 0x20, // 0x51: add esp, 32 (the arguments and both slots)
+    0xC7, 0x05, 0x00, 0x00, 0x60, 0x00, 0x03, 0x00, 0x01, 0x00, // 0x54: mov dword [CHILD_STACK], CONTEXT_CONTROL | CONTEXT_INTEGER
+    0x89, 0x1D, 0xA4, 0x00, 0x60, 0x00, // 0x5E: mov [CHILD_STACK+0xA4], ebx (the context's EBX: the file handle)
+    0xC7, 0x05, 0xB8, 0x00, 0x60, 0x00, 0xC6, 0x00, 0x40, 0x00, // 0x64: mov dword [CHILD_STACK+0xB8], child (EIP)
+    0xC7, 0x05, 0xC4, 0x00, 0x60, 0x00, 0x00, 0x30, 0x60, 0x00, // 0x6E: mov dword [CHILD_STACK+0xC4], CHILD_STACK + 0x3000 (ESP)
+    0x6A, 0x00, // 0x78: push 0 (the child's handle slot)
+    0x89, 0xE0, // 0x7A: mov eax, esp
+    0x6A, 0x00, // 0x7C: push 0 (CreateSuspended)
+    0x68, 0x04, 0x01, 0x40, 0x00, // 0x7E: push initial_teb
+    0x68, 0x00, 0x00, 0x60, 0x00, // 0x83: push CHILD_STACK (ThreadContext)
+    0x6A, 0x00, // 0x88: push 0 (ClientId)
+    0x6A, 0xFF, // 0x8A: push NtCurrentProcess
+    0x6A, 0x00, // 0x8C: push 0 (ObjectAttributes)
+    0x68, 0xFF, 0x03, 0x1F, 0x00, // 0x8E: push THREAD_ALL_ACCESS
+    0x50, // 0x93: push eax (ThreadHandle)
+    0x89, 0xE2, // 0x94: mov edx, esp
+    0xB8, 0x2E, 0x00, 0x00, 0x00, // 0x96: mov eax, NtCreateThread (0x2E)
+    0xCD, 0x2E, // 0x9B: int 0x2E
+    0x83, 0xC4, 0x20, // 0x9D: add esp, 32
+    0x58, // 0xA0: pop eax (the child's handle)
+    0x6A, 0x10, // 0xA1: push 16 (the saturation THREAD_PRIORITY_TIME_CRITICAL converts to)
+    0x89, 0xE1, // 0xA3: mov ecx, esp (&priority)
+    0x6A, 0x04, // 0xA5: push 4 (ThreadInformationLength)
+    0x51, // 0xA7: push ecx (ThreadInformation)
+    0x6A, 0x03, // 0xA8: push ThreadBasePriority
+    0x50, // 0xAA: push eax (the child's handle)
+    0x89, 0xE2, // 0xAB: mov edx, esp
+    0xB8, 0xC7, 0x00, 0x00, 0x00, // 0xAD: mov eax, NtSetInformationThread (0xC7: the child preempts here)
+    0xCD, 0x2E, // 0xB2: int 0x2E
+    0x83, 0xC4, 0x14, // 0xB4: add esp, 20 (the arguments and the priority)
+    0x6A, 0x00, // 0xB7: push 0 (ExitStatus)
+    0x6A, 0xFF, // 0xB9: push NtCurrentProcess
+    0x89, 0xE2, // 0xBB: mov edx, esp
+    0xB8, 0xE0, 0x00, 0x00, 0x00, // 0xBD: mov eax, NtTerminateProcess (0xE0: the child is inside a read)
+    0xCD, 0x2E, // 0xC2: int 0x2E
+    0xEB, 0xFE, // 0xC4: jmp $
+    0x81, 0xEC, 0x00, 0x02, 0x00, 0x00, // 0xC6: child (EBX the file handle): sub esp, 0x200
+    0x89, 0xE7, // 0xCC: mov edi, esp (the buffer)
+    0x83, 0xEC, 0x10, // 0xCE: sub esp, 16 (the offset, zero, then the I/O status block)
+    0xC7, 0x04, 0x24, 0x00, 0x00, 0x00, 0x00, // 0xD1: mov dword [esp], 0
+    0xC7, 0x44, 0x24, 0x04, 0x00, 0x00, 0x00, 0x00, // 0xD8: mov dword [esp+4], 0
+    0x89, 0xE6, // 0xE0: mov esi, esp (&offset)
+    0x6A, 0x00, // 0xE2: child_loop: push 0 (Key)
+    0x56, // 0xE4: push esi (ByteOffset: the start)
+    0x68, 0x00, 0x02, 0x00, 0x00, // 0xE5: push 512 (Length)
+    0x57, // 0xEA: push edi (Buffer)
+    0x8D, 0x46, 0x08, // 0xEB: lea eax, [esi+8]
+    0x50, // 0xEE: push eax (IoStatusBlock)
+    0x6A, 0x00, // 0xEF: push 0 (ApcContext)
+    0x6A, 0x00, // 0xF1: push 0 (ApcRoutine)
+    0x6A, 0x00, // 0xF3: push 0 (Event)
+    0x53, // 0xF5: push ebx (FileHandle)
+    0x89, 0xE2, // 0xF6: mov edx, esp
+    0xB8, 0xA1, 0x00, 0x00, 0x00, // 0xF8: mov eax, NtReadFile (0xA1)
+    0xCD, 0x2E, // 0xFD: int 0x2E
+    0x83, 0xC4, 0x24, // 0xFF: add esp, 36
+    0xEB, 0xDE, // 0x102: jmp child_loop
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x30, 0x60, 0x00, 0x00, 0x10, 0x60, 0x00, 0x00, 0x00, 0x60, 0x00, // 0x104: INITIAL_TEB (no old stack; base, limit, allocation base)
+    0x18, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x30, 0x01, 0x40, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // 0x118: OBJECT_ATTRIBUTES (24, no root, the name, OBJ_CASE_INSENSITIVE)
+    0x20, 0x00, 0x20, 0x00, 0x38, 0x01, 0x40, 0x00, // 0x130: UNICODE_STRING
+    0x5C, 0x00, 0x3F, 0x00, 0x3F, 0x00, 0x5C, 0x00, 0x43, 0x00, 0x3A, 0x00, 0x5C, 0x00, 0x48, 0x00, 0x45, 0x00, 0x4C, 0x00, 0x4C, 0x00, 0x4F, 0x00, 0x2E, 0x00, 0x45, 0x00, 0x58, 0x00, 0x45, 0x00, // 0x138: the name
 ];
 
 /// Where the exit-during-read stub's child stack (its CONTEXT's page, then two stack pages) is
@@ -265,40 +268,13 @@ const EXIT_DURING_READ_TEMPLATE: [u8; 272] = [
 #[cfg(any(feature = "fault-test-exitio", test))]
 pub const CHILD_STACK: u32 = 0x0060_0000;
 
-/// Where the template's served service-number immediates sit (each one byte past its `mov eax`
-/// opcode), and the export each names.
-#[cfg(any(feature = "fault-test-exitio", test))]
-const EXIT_DURING_READ_SERVICES: [(usize, &str); 3] = [
-    (0x18, "CreateFileA"),
-    (0xD0, "SetFilePointer"),
-    (0xE7, "ReadFile"),
-];
-
-/// The exit-during-read stub: the template with the registry's service numbers patched in at build
-/// time, so a registry change cannot leave it calling the wrong services.
-#[cfg(any(feature = "fault-test-exitio", test))]
-pub const EXIT_DURING_READ_STUB: [u8; 272] = {
-    let mut stub = EXIT_DURING_READ_TEMPLATE;
-    let mut index = 0;
-    while index < EXIT_DURING_READ_SERVICES.len() {
-        let (offset, name) = EXIT_DURING_READ_SERVICES[index];
-        let number = crate::compat::kernel32::service_number(name).to_le_bytes();
-        stub[offset] = number[0];
-        stub[offset + 1] = number[1];
-        stub[offset + 2] = number[2];
-        stub[offset + 3] = number[3];
-        index += 1;
-    }
-    stub
-};
-
 #[cfg(all(
     feature = "fault-test-exitio",
     not(feature = "fault-test-badargs"),
     not(feature = "fault-test-segments"),
     not(feature = "fault-test-threadexit")
 ))]
-pub const RING3_STUB: [u8; 272] = EXIT_DURING_READ_STUB;
+pub const RING3_STUB: [u8; 344] = EXIT_DURING_READ_STUB;
 
 /// NtClose through ntdll's gate number (Windows 2000's 0x18) on a handle naming nothing, then
 /// NtTerminateProcess with the status the gate returned in EAX (STATUS_INVALID_HANDLE): the NT
@@ -573,61 +549,52 @@ mod tests {
         assert_eq!(RING3_STUB, expected);
     }
 
-    /// The exit-during-read stub: each patch site is a `mov eax, imm32` raising the gate right
-    /// after, carrying its served export's service number; the NT calls carry Windows 2000's own
-    /// numbers; the absolute addresses name the child entry, the path string and the INITIAL_TEB
-    /// inside the code page, and the INITIAL_TEB the child's stack above its CONTEXT's page.
+    /// The exit-during-read stub: every `mov eax, imm32` raising the gate right after carries
+    /// Windows 2000's number for its service, in the stub's order; the absolute addresses name the
+    /// child's entry, its INITIAL_TEB (the stack it is created on) and the name's structures inside
+    /// the code page, and its CONTEXT the child's loop, stack top and file handle.
     #[test]
-    fn exit_during_read_stub_patches_its_service_numbers() {
-        let word =
-            |at: usize| u32::from_le_bytes(EXIT_DURING_READ_STUB[at..at + 4].try_into().unwrap());
-        let gate = |at: usize| {
-            assert_eq!(EXIT_DURING_READ_STUB[at - 1], 0xB8, "{at:#x}: mov eax");
-            assert_eq!(
-                &EXIT_DURING_READ_STUB[at + 4..at + 6],
-                &[0xCD, SYSCALL_VECTOR as u8],
-                "{at:#x}: int"
-            );
-            word(at)
-        };
-        for (offset, name) in EXIT_DURING_READ_SERVICES {
-            let number = gate(offset);
-            assert_eq!(
-                number,
-                crate::compat::kernel32::service_number(name),
-                "{name}"
-            );
-            assert!(
-                crate::compat::kernel32::lookup_service(number).is_some(),
-                "{name}"
-            );
-        }
-        // NtAllocateVirtualMemory, NtCreateThread, NtSetInformationThread, NtTerminateProcess.
-        for (offset, number) in [(0x43, 0x10), (0x8F, 0x2E), (0xA6, 0xC7), (0xB6, 0xE0)] {
-            assert_eq!(gate(offset), number, "{offset:#x}");
-            assert!(crate::nt::lookup(number).is_some(), "{number:#x}");
-        }
-        let (child, path, initial_teb): (usize, usize, usize) = (0xBE, 0xF2, 0xFC);
-        assert_eq!(
-            word(0x62),
-            USER_CODE_PAGE + child as u32,
-            "the context's EIP"
-        );
-        assert_eq!(word(0x10), USER_CODE_PAGE + path as u32);
-        assert_eq!(word(0x77), USER_CODE_PAGE + initial_teb as u32);
-        assert_eq!(&EXIT_DURING_READ_STUB[child..child + 2], &[0x81, 0xEC]);
-        assert_eq!(&EXIT_DURING_READ_STUB[path..initial_teb], b"hello.exe\0");
-        assert_eq!(
-            [
-                word(initial_teb + 8),
-                word(initial_teb + 12),
-                word(initial_teb + 16)
-            ],
-            [CHILD_STACK + 0x3000, CHILD_STACK + 0x1000, CHILD_STACK]
-        );
-        assert_eq!(initial_teb + 20, EXIT_DURING_READ_STUB.len());
+    fn exit_during_read_stub_raises_windows_2000_services() {
+        let stub = &EXIT_DURING_READ_STUB;
+        let gates: Vec<u32> = (1..stub.len() - 6)
+            .filter(|&at| stub[at - 1] == 0xB8 && stub[at + 4..at + 6] == [0xCD, SYSCALL_VECTOR as u8])
+            .map(|at| u32::from_le_bytes(stub[at..at + 4].try_into().unwrap()))
+            .collect();
+        let nt = |name: &str| crate::nt::NT_SERVICES.iter().find(|entry| entry.1 == name).unwrap().0;
+        let expected: Vec<u32> = [
+            "NtOpenFile",
+            "NtAllocateVirtualMemory",
+            "NtCreateThread",
+            "NtSetInformationThread",
+            "NtTerminateProcess",
+            "NtReadFile",
+        ]
+        .iter()
+        .map(|name| nt(name))
+        .collect();
+        assert_eq!(gates, expected);
+        // The priority is ThreadBasePriority's saturation value, pushed before the arguments.
+        assert_eq!(&stub[0xA1..0xAA], &[0x6A, 0x10, 0x89, 0xE1, 0x6A, 0x04, 0x51, 0x6A, 0x03]);
+        let word = |at: usize| u32::from_le_bytes(stub[at..at + 4].try_into().unwrap());
+        // The child's CONTEXT: control and integer registers, EBX the file handle, EIP the child,
+        // ESP the top of the two stack pages above the context's page.
+        assert_eq!((word(0x56), word(0x5A)), (CHILD_STACK, 0x0001_0003));
+        assert_eq!(&stub[0x5E..0x60], &[0x89, 0x1D], "mov [CONTEXT.Ebx], ebx");
+        assert_eq!(word(0x60), CHILD_STACK + 0xA4);
+        assert_eq!((word(0x66), word(0x6A)), (CHILD_STACK + 0xB8, USER_CODE_PAGE + 0xC6), "the child");
+        assert_eq!((word(0x70), word(0x74)), (CHILD_STACK + 0xC4, CHILD_STACK + 0x3000));
+        assert_eq!(&stub[0xC6..0xCC], &[0x81, 0xEC, 0x00, 0x02, 0x00, 0x00], "the child's first instruction");
+        // The INITIAL_TEB: no old stack; the two stack pages, the reservation from the context's.
+        assert_eq!(word(0x7F), USER_CODE_PAGE + 0x104, "the initial TEB");
+        let teb: Vec<u32> = (0..5).map(|i| word(0x104 + 4 * i)).collect();
+        assert_eq!(teb, [0, 0, CHILD_STACK + 0x3000, CHILD_STACK + 0x1000, CHILD_STACK]);
+        assert_eq!(word(0x0F), USER_CODE_PAGE + 0x118, "the attributes");
+        assert_eq!(word(0x118 + 8), USER_CODE_PAGE + 0x130, "the attributes name the string");
+        assert_eq!(word(0x130 + 4), USER_CODE_PAGE + 0x138, "the string names its units");
+        let name: Vec<u16> = stub[0x138..].chunks(2).map(|pair| u16::from_le_bytes([pair[0], pair[1]])).collect();
+        assert_eq!(String::from_utf16(&name).unwrap(), "\\??\\C:\\HELLO.EXE");
         // The loop's back jump lands on its first instruction.
-        assert_eq!(0xF2 + (EXIT_DURING_READ_STUB[0xF1] as i8 as i32), 0xC6);
+        assert_eq!(0x104 + (stub[0x103] as i8 as i32), 0xE2);
     }
 
     /// The fault-test addresses: the bad-args pointer below the probe limit but on no mapped page.

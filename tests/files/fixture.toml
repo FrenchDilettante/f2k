@@ -5,14 +5,3 @@ description = "files - the read side of the file API over files/DATA (files.c): 
 kind = "sectioned"
 gate = true
 timeout = 40
-
-# The blocks this kernel does not pass yet, each with the increment that enables it.
-[pending]
-open = "B8: files, objects and the read side"
-read = "B8: files, objects and the read side"
-seek = "B8: files, objects and the read side"
-meta = "B8: files, objects and the read side"
-find = "B8: files, objects and the read side"
-handles = "B8: files, objects and the read side"
-crt = "B8: files, objects and the read side"
-mapping = "B8: files, objects and the read side"

@@ -122,7 +122,7 @@ The fixtures:
   mappings, concurrent readers. Captured on a local FAT32 volume, as
   F2K's boot volume is (run `files/setup.bat` once on the real machine:
   attributes git cannot carry). Gated.
-  Replaces the `fileio` smoke once its blocks pass.
+  Replaced the `fileio` smoke.
 - `fswrite` - the write side (create dispositions, writes, truncation,
   share modes, rename/copy/delete, directories, file times, CRT
   writes) in a scratch directory, captured on a local FAT32 volume.
@@ -250,8 +250,6 @@ in `kernel/test_kernel.py`; `exit0`, `ret0` and `hello` carry a
   window, paints "Hello, world!" once with `TextOut`, then closes
   itself and exits 0; the first test to import user32.dll and
   gdi32.dll.
-- `fileio` - opens its own image by its module path and reads its
-  signatures across seeks.
 
 ## Building
 

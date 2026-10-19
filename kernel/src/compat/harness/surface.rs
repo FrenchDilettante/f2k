@@ -60,8 +60,9 @@ pub fn signature(export: &str) -> &'static Signature {
 }
 
 /// The registry's handlers the host runs: the ones whose work is the caller's memory and the
-/// surface's constants (the kept scenarios' exports).
-const HOST_RUNNABLE: [&str; 1] = ["SetFilePointer"];
+/// surface's constants. None is left: every served export still in the registry runs on live
+/// kernel state (SetFilePointer, the last, moved to kernel32 with the files).
+const HOST_RUNNABLE: [&str; 0] = [];
 
 fn registry_entry(export: &str) -> Option<(&'static str, u32, crate::user::syscall::ServiceFn)> {
     SERVICES.iter().find(|(name, ..)| *name == export).copied()

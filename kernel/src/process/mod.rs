@@ -83,10 +83,9 @@ pub struct Process {
     /// The address space's regions: every user page the process holds lies in one, and every
     /// mapping, commit and release of its pages goes through it.
     vm: crate::mem::vm::AddressSpace,
-    /// The handle table: the process's handles-to-objects.
+    /// The handle table: the process's handles-to-objects (its open files' among them: a file
+    /// object each, see `crate::fs::file`).
     handles: crate::sched::object::HandleTable,
-    /// The open files the table's file entries name.
-    files: crate::fs::file::OpenFiles,
     /// The process's console handles: the console server's own, outside the handle table, as
     /// Windows 2000's csrss keeps them (see `crate::csr`).
     console: rtl::console::Handles,
@@ -110,8 +109,6 @@ pub struct ProcessParts<'a> {
     pub vm: &'a mut crate::mem::vm::AddressSpace,
     /// The handle table.
     pub handles: &'a mut crate::sched::object::HandleTable,
-    /// The open files the table's file entries name.
-    pub files: &'a mut crate::fs::file::OpenFiles,
     /// The gate-stack window's slot occupancy.
     pub gate_slots: &'a mut GateSlots,
     /// An exited thread's gate stack, not yet released.
@@ -210,13 +207,12 @@ impl Process {
         self.sched.dir_phys()
     }
 
-    /// The record's parts, borrowed apart: what a service needs several of at once (the handle
-    /// table and the open files its entries name, say) without re-borrowing the whole record.
+    /// The record's parts, borrowed apart: what a service needs several of at once (the address
+    /// space and the handle table, say) without re-borrowing the whole record.
     pub fn parts_mut(&mut self) -> ProcessParts<'_> {
         ProcessParts {
             vm: &mut self.vm,
             handles: &mut self.handles,
-            files: &mut self.files,
             gate_slots: &mut self.gate_slots,
             dead_stack: &mut self.dead_stack,
         }
@@ -237,33 +233,9 @@ impl Process {
         &self.handles
     }
 
-    /// Open `file` (a file, not a directory) at its start and return its new handle; null when the
-    /// open-file records or the handle table are full.
-    pub fn open_file(&mut self, file: crate::fs::fat32::lookup::File) -> u32 {
-        if self.handles.is_full() {
-            return 0;
-        }
-        let Some(index) = self.files.open(file) else {
-            return 0;
-        };
-        self.handles.insert(crate::ob::Entry {
-            target: crate::ob::Target::File(index),
-            access: crate::ob::FILE_GENERIC_READ,
-            inherit: false,
-        })
-    }
-
-    /// The open file a handle names; none when it names no file.
-    pub fn file_mut(&mut self, handle: u32) -> Option<&mut crate::fs::file::OpenFile> {
-        match self.handles.lookup(handle)?.target {
-            crate::ob::Target::File(index) => Some(self.files.get_mut(index)),
-            crate::ob::Target::Object(_) => None,
-        }
-    }
-
-    /// Close a handle: the table's claim ends — an object's handle, with its reference (the last
-    /// reference deletes the object); an open file's record with it. False when the handle names
-    /// nothing.
+    /// Close a handle: the table's claim ends — the object's handle, with its reference (the last
+    /// handle cleans a file object up, the last reference deletes the object). False when the handle
+    /// names nothing.
     pub fn close_handle(&mut self, handle: u32) -> bool {
         let Some(entry) = self.handles.close(handle) else {
             return false;
@@ -275,7 +247,6 @@ impl Process {
     /// Release what one closed handle named.
     fn release_entry(&mut self, entry: crate::ob::Entry) {
         match entry.target {
-            crate::ob::Target::File(index) => self.files.release(index),
             #[cfg(target_arch = "x86")]
             crate::ob::Target::Object(id) => crate::ob::directory().handle_closed(
                 id,
@@ -288,10 +259,34 @@ impl Process {
     }
 
     /// Finish what the object manager left to the process when one of its objects' last handle or
-    /// last reference went: a section's hold on its frames.
+    /// last reference went: a section's hold on its frames (and a file's section's on its file
+    /// object), a file object's cleanup and its record's close.
     pub fn finish(&mut self, followup: crate::ob::Followup) {
+        use crate::ob::Followup;
         match followup {
-            crate::ob::Followup::Section { frames } => crate::nt::section::release_frames(frames),
+            Followup::Section { frames, file_object } => {
+                crate::nt::section::release_frames(frames);
+                #[cfg(target_arch = "x86")]
+                if let Some(file_object) = file_object {
+                    if let Some(followup) = unmap_file(file_object) {
+                        self.finish(followup);
+                    }
+                }
+                #[cfg(not(target_arch = "x86"))]
+                let _ = file_object;
+            }
+            #[cfg(target_arch = "x86")]
+            Followup::FileCleanup {
+                record,
+                access,
+                share,
+                delete_on_close,
+                search,
+            } => crate::fs::io::cleanup(record, access, share, delete_on_close, search),
+            #[cfg(target_arch = "x86")]
+            Followup::FileClose { record } => crate::fs::io::close(record),
+            #[cfg(not(target_arch = "x86"))]
+            Followup::FileCleanup { .. } | Followup::FileClose { .. } => {}
         }
     }
 
@@ -529,7 +524,6 @@ unsafe fn write_fresh(
         addr_of_mut!((*process).gate_slots).write(GateSlots::empty());
         crate::mem::vm::AddressSpace::write_empty(addr_of_mut!((*process).vm));
         crate::sched::object::HandleTable::write_empty(addr_of_mut!((*process).handles));
-        addr_of_mut!((*process).files).write(crate::fs::file::OpenFiles::empty());
         addr_of_mut!((*process).console).write(rtl::console::Handles::standard());
         addr_of_mut!((*process).dead_stack).write(DeadStack::empty());
         objects::SyncObjects::write_empty(addr_of_mut!((*process).objects));
@@ -698,14 +692,16 @@ fn release_address_space_of(process: &mut Process) {
 
 /// The object audit: every object was the process's (one process runs at a time), and with its
 /// handles closed, its waits returned and its threads ended, none is left — nor any open-file
-/// record. One that is would be a reference leak: it is reported, and swept all the same.
+/// record. One that is would be a reference leak: it is reported, and swept all the same (a leaked
+/// section's frames given back; the file records are forgotten whole).
 #[cfg(target_arch = "x86")]
-fn audit_objects(process: &mut Process) {
+fn audit_objects(_process: &mut Process) {
     let leaked =
         crate::ob::directory().process_ended(crate::sched::idle::dispatcher(), |followup| {
-            process.finish(followup)
-        }) + process.files.live();
-    process.files.clear();
+            if let crate::ob::Followup::Section { frames, .. } = followup {
+                crate::nt::section::release_frames(frames);
+            }
+        }) + crate::fs::file::records().clear();
     if leaked != 0 {
         crate::serial_println!(
             "F2K: object audit FAILED: {} objects or file records outlived their process",
@@ -731,6 +727,16 @@ fn signal_end(process: &mut Process, end: exit::ProcessEnd) {
 fn release_record(process: &mut Process) {
     let _ = crate::ob::directory().dereference(process.object, crate::sched::idle::dispatcher());
     pool::detach();
+}
+
+/// A file-backed section is gone: its file is mapped once less, and the section's reference on the
+/// file object goes (the followup is the object's close, when that was its last reference).
+#[cfg(target_arch = "x86")]
+fn unmap_file(file_object: crate::ob::ObjectId) -> Option<crate::ob::Followup> {
+    let directory = crate::ob::directory();
+    let record = directory.file(file_object)?.record;
+    crate::fs::file::records().get_mut(record).user_mapped -= 1;
+    directory.dereference(file_object, crate::sched::idle::dispatcher())
 }
 
 /// The post-boot free-frame count: the baseline the per-process teardown audits compare against.
@@ -805,7 +811,6 @@ mod tests {
             gate_slots: GateSlots::empty(),
             vm: crate::mem::vm::AddressSpace::new(),
             handles: crate::sched::object::HandleTable::empty(),
-            files: crate::fs::file::OpenFiles::empty(),
             console: rtl::console::Handles::standard(),
             dead_stack: DeadStack::empty(),
             objects: objects::SyncObjects::empty(),
@@ -842,28 +847,15 @@ mod tests {
         assert_eq!(process.handles().live(), 0);
     }
 
-    /// The parts borrow apart: the address space, the handle table and the open files, all at once.
+    /// The parts borrow apart: the address space and the handle table, all at once.
     #[test]
     fn the_parts_borrow_apart() {
         let mut process = fresh_process();
         let parts = process.parts_mut();
-        let index = parts.files.open(a_file(5)).unwrap();
-        let handle = parts.handles.insert(crate::ob::Entry {
-            target: crate::ob::Target::File(index),
-            access: crate::ob::FILE_GENERIC_READ,
-            inherit: false,
-        });
+        let handle = parts.handles.insert(event_entry());
         assert!(parts.vm.region_at(0x0040_0000).is_none());
         assert!(parts.gate_slots.is_empty() && parts.dead_stack.take().is_none());
-        assert_eq!(process.file_mut(handle).unwrap().file.size, 5);
-    }
-
-    fn a_file(size: u32) -> crate::fs::fat32::lookup::File {
-        crate::fs::fat32::lookup::File {
-            first_cluster: 3,
-            size,
-            directory: false,
-        }
+        assert_eq!(process.handles().lookup(handle), Some(event_entry()));
     }
 
     /// A handle-table entry naming an event (the host has no object manager to count it).
@@ -879,70 +871,18 @@ mod tests {
         )
     }
 
-    // --- File handles (the table's file entries and the open-file records) -----
-
-    /// An open file is a table handle naming a record: found by its handle with its own position,
-    /// released by the close (record and slot together), and a handle that names another kind of
-    /// object, or nothing, names no file.
+    /// The process-exit step closes every handle at once (an open file's among them: a file object
+    /// is an object like any other, its cleanup the object manager's), and the table starts over.
     #[test]
-    fn file_handles_open_look_up_and_close() {
+    fn the_exit_step_releases_every_handle() {
         let mut process = fresh_process();
-        let first = process.open_file(a_file(100));
-        let second = process.open_file(a_file(200));
-        assert_eq!((first, second), (4, 8));
-        process.file_mut(first).unwrap().position = 60;
-        assert_eq!(process.file_mut(second).unwrap().position, 0);
-        assert_eq!(process.file_mut(second).unwrap().file.size, 200);
-        assert_eq!(process.file_mut(first | 0x3).unwrap().position, 60);
-
-        assert!(process.close_handle(first));
-        assert!(process.file_mut(first).is_none());
-        assert!(!process.close_handle(first), "a double close");
-        assert_eq!(process.files.live(), 1);
-
-        // The freed slot and record come back for the next open, at position zero.
-        assert_eq!(process.open_file(a_file(300)), first);
-        assert_eq!(process.file_mut(first).unwrap().position, 0);
-        assert_eq!(process.file_mut(first).unwrap().file.size, 300);
-
-        // An event's handle names no file.
         let handle = process.handles.insert(event_entry());
-        assert!(process.file_mut(handle).is_none());
-        assert!(process.file_mut(0x40).is_none());
-        assert!(process.close_handle(handle));
-        assert_eq!(process.files.live(), 2, "closing an event leaves the files");
-    }
-
-    /// The opens stop when the records run out, and when the table does — a refused open takes
-    /// nothing.
-    #[test]
-    fn file_opens_stop_at_either_limit() {
-        let mut process = fresh_process();
-        for _ in 0..crate::fs::file::OPEN_FILES {
-            assert_ne!(process.open_file(a_file(1)), 0);
-        }
-        assert_eq!(process.open_file(a_file(1)), 0, "the records are full");
-        assert_eq!(process.handles.live(), crate::fs::file::OPEN_FILES);
-
-        let mut crowded = fresh_process();
-        while !crowded.handles.is_full() {
-            crowded.handles.insert(event_entry());
-        }
-        assert_eq!(crowded.open_file(a_file(1)), 0, "the table is full");
-        assert_eq!(crowded.files.live(), 0, "no record taken");
-    }
-
-    /// The process-exit step releases every file handle and record at once.
-    #[test]
-    fn the_exit_step_releases_open_files() {
-        let mut process = fresh_process();
-        let handle = process.open_file(a_file(10));
-        process.open_file(a_file(20));
+        process.handles.insert(event_entry());
         process.release_handles();
         assert_eq!(process.handles.live(), 0);
-        assert_eq!(process.files.live(), 0);
-        assert!(process.file_mut(handle).is_none());
-        assert_eq!(process.open_file(a_file(30)), 4, "the table starts over");
+        assert!(process.handles().lookup(handle).is_none());
+        assert!(!process.close_handle(handle), "closed already");
+        assert_eq!(process.handles.insert(event_entry()), 4, "the table starts over");
     }
 
     // --- The dead-stack handoff (slot reuse after a thread exit) -----------
@@ -953,12 +893,12 @@ mod tests {
     fn the_dead_stack_parks_one_and_hands_back_the_previous() {
         let mut dead = DeadStack::empty();
         assert_eq!(dead.take(), None);
-        assert_eq!(dead.park((1, [10, 11, 12, 13])), None);
+        assert_eq!(dead.park((1, [10, 11, 12, 13, 14, 15, 16, 17])), None);
         assert_eq!(
-            dead.park((2, [20, 21, 22, 23])),
-            Some((1, [10, 11, 12, 13]))
+            dead.park((2, [20, 21, 22, 23, 24, 25, 26, 27])),
+            Some((1, [10, 11, 12, 13, 14, 15, 16, 17]))
         );
-        assert_eq!(dead.take(), Some((2, [20, 21, 22, 23])));
+        assert_eq!(dead.take(), Some((2, [20, 21, 22, 23, 24, 25, 26, 27])));
         assert_eq!(dead.take(), None);
     }
 
@@ -975,7 +915,7 @@ mod tests {
         assert_eq!((main, first), (0, 1));
 
         // The child exits: its stack is parked, its slot still taken.
-        assert_eq!(dead.park((first, [1, 2, 3, 4])), None);
+        assert_eq!(dead.park((first, [1, 2, 3, 4, 5, 6, 7, 8])), None);
         assert!(ledger.is_taken(first));
 
         // The next spawn releases the parked stack before it allocates.
@@ -1005,14 +945,14 @@ mod tests {
         assert_eq!(gate_slot_base(1), GATE_STACK_WINDOW + GATE_SLOT_STRIDE);
         assert_eq!(gate_slot_top(0), GATE_STACK_TOP);
         assert_eq!(gate_slot_top(1), gate_slot_base(1) + GATE_SLOT_STRIDE);
-        // The stride: one guard page plus the four stack pages.
-        assert_eq!(GATE_SLOT_STRIDE, 5 * 4096);
+        // The stride: one guard page plus the eight stack pages.
+        assert_eq!(GATE_SLOT_STRIDE, 9 * 4096);
         // Capacity: the window is one directory entry (4 MiB); an allocation past capacity is an
         // assert, not a wrap.
-        assert_eq!(GATE_SLOT_CAPACITY, 204);
+        assert_eq!(GATE_SLOT_CAPACITY, 113);
         assert_eq!(
-            (gate_slot_top(203) - GATE_STACK_WINDOW) / GATE_SLOT_STRIDE,
-            204
+            (gate_slot_top(112) - GATE_STACK_WINDOW) / GATE_SLOT_STRIDE,
+            113
         );
     }
 
@@ -1083,8 +1023,26 @@ mod tests {
     }
 
     /// The main thread's gate-stack frames (slot 0) and a child's (slot 1).
-    const MAIN_STACK: [u32; 4] = [0x00F1_0000, 0x00F2_0000, 0x00F3_0000, 0x00F4_0000];
-    const CHILD_STACK: [u32; 4] = [0x00F5_0000, 0x00F6_0000, 0x00F7_0000, 0x00F8_0000];
+    const MAIN_STACK: [u32; crate::mem::paging::GATE_STACK_PAGES] = [
+        0x00F1_0000,
+        0x00F2_0000,
+        0x00F3_0000,
+        0x00F4_0000,
+        0x00F1_1000,
+        0x00F2_1000,
+        0x00F3_1000,
+        0x00F4_1000,
+    ];
+    const CHILD_STACK: [u32; crate::mem::paging::GATE_STACK_PAGES] = [
+        0x00F5_0000,
+        0x00F6_0000,
+        0x00F7_0000,
+        0x00F8_0000,
+        0x00F5_1000,
+        0x00F6_1000,
+        0x00F7_1000,
+        0x00F8_1000,
+    ];
 
     /// A planted directory — two user tables' worth (a TEB page and an image page) and the gate
     /// window's table — and a process whose main thread owns slot 0 and whose child owns slot 1,
@@ -1214,9 +1172,9 @@ mod tests {
 
         mem.release(process);
         let released = &mem.released;
-        assert_eq!(&released[..4], &MAIN_STACK, "the parked stack first");
+        assert_eq!(&released[..MAIN_STACK.len()], &MAIN_STACK, "the parked stack first");
         assert_eq!(released.last(), Some(&dir), "the directory last");
-        assert_eq!(released.len(), 4 + 5 + 1);
+        assert_eq!(released.len(), MAIN_STACK.len() + 5 + 1);
     }
 
     /// Teardown never precedes the last thread's end: a process with a thread still attached is

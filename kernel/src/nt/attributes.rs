@@ -169,13 +169,18 @@ pub enum Root {
     None,
     /// `\BaseNamedObjects`.
     NamedObjects,
+    /// A file object (a directory's, for a name relative to it).
+    #[cfg(target_arch = "x86")]
+    File(crate::ob::ObjectId),
     /// Any other object.
     Other,
 }
 
 /// What `handle` names in the calling process, as a root directory: `\BaseNamedObjects` for a
-/// handle to the directory object (NtOpenDirectoryObject's); STATUS_INVALID_HANDLE for a handle
-/// naming nothing (a console handle included).
+/// handle to the directory object (NtOpenDirectoryObject's), the file object of a directory the
+/// file services name relative to (ntdll's names under the current directory, see
+/// `nt::file::name`); STATUS_INVALID_HANDLE for a handle naming nothing (a console handle
+/// included).
 #[cfg(target_arch = "x86")]
 pub fn root_of(handle: u32) -> Result<Root, Status> {
     if handle == 0 {
@@ -190,6 +195,7 @@ pub fn root_of(handle: u32) -> Result<Root, Status> {
         .ok_or(STATUS_INVALID_HANDLE)?;
     Ok(match entry.object_id() {
         Some(id) if id.kind == crate::ob::ObjectType::Directory => Root::NamedObjects,
+        Some(id) if id.kind == crate::ob::ObjectType::File => Root::File(id),
         _ => Root::Other,
     })
 }

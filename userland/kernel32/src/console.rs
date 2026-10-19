@@ -1,14 +1,13 @@
 //! The console: the standard handles (the process parameters' StandardInput, StandardOutput and
 //! StandardError), and the console calls, sent to the console server through ntdll's
-//! CsrClientCallServer as Windows 2000's kernel32 sends them to csrss (ARCH-6 group 7). F2K's
+//! CsrClientCallServer as Windows 2000's kernel32 sends them to csrss. F2K's
 //! server is the kernel's stand-in for csrss (`rtl::console` holds its message format and rules):
 //! console handles are its own, never kernel handles, and its screen is the serial line.
 //!
 //! kernel32's other calls hand console handles here where Windows 2000's do: WriteFile and ReadFile
 //! (WriteConsoleA, ReadConsoleA), FlushFileBuffers (FlushConsoleInputBuffer), GetFileType
 //! (VerifyConsoleIoHandle), CloseHandle (CloseConsoleHandle) and DuplicateHandle
-//! (DuplicateConsoleHandle), and the waits (the console's input-wait handle, [`wait_handle`]);
-//! ReadFile's console branch ([`read_console`]) waits for ReadFile's move to kernel32 (B8). The host
+//! (DuplicateConsoleHandle), and the waits (the console's input-wait handle, [`wait_handle`]). The host
 //! tests' CsrClientCallServer serves the same rules, the bytes written recorded
 //! ([`console_writes`]).
 

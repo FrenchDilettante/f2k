@@ -1,14 +1,18 @@
 //! Directory entries: one 32-byte record of a directory, decoded into what the walk acts on.
 //!
 //! The first byte is structural — 0x00 ends the directory, 0xE5 marks a deleted entry, and 0x05
-//! stands for a name that really starts with 0xE5. Long-file-name records (attributes 0x0F) and
-//! the volume label are skipped, and so are a subdirectory's `.` and `..` records: the path layer
-//! resolves those itself.
+//! stands for a name that really starts with 0xE5. A long-file-name record (attributes 0x0F)
+//! carries 13 UTF-16 units of the name of the 8.3 entry it precedes (see [`super::dir`]); the
+//! volume label is told apart, and so are a subdirectory's `.` and `..` records, which the path
+//! layer resolves itself and a directory listing shows.
 
 /// Bytes per directory entry.
 pub const ENTRY_SIZE: usize = 32;
 
 /// Attribute bits.
+pub const ATTR_READ_ONLY: u8 = 0x01;
+pub const ATTR_HIDDEN: u8 = 0x02;
+pub const ATTR_SYSTEM: u8 = 0x04;
 pub const ATTR_VOLUME_LABEL: u8 = 0x08;
 pub const ATTR_DIRECTORY: u8 = 0x10;
 /// The attribute value of a long-file-name record.
@@ -17,6 +21,23 @@ pub const ATTR_LONG_NAME: u8 = 0x0F;
 /// A name or extension byte that pads.
 const SPACE: u8 = b' ';
 
+/// The NT case bits (byte 12): an 8.3 name stored without a long name shows its base or its
+/// extension in lower case.
+pub const CASE_LOWER_BASE: u8 = 0x08;
+pub const CASE_LOWER_EXTENSION: u8 = 0x10;
+
+/// A record's timestamps, as stored: local time, in the FAT date and time encodings (a date's
+/// year counts from 1980, a time's seconds in units of two; the creation time adds hundredths).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Times {
+    pub create_hundredths: u8,
+    pub create_time: u16,
+    pub create_date: u16,
+    pub access_date: u16,
+    pub write_time: u16,
+    pub write_date: u16,
+}
+
 /// A file or subdirectory's record.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct DirEntry {
@@ -24,16 +45,38 @@ pub struct DirEntry {
     /// already undone.
     pub name: [u8; 11],
     pub attributes: u8,
+    /// The NT case bits.
+    pub case: u8,
     /// The first cluster, both halves combined (0 for an empty file).
     pub first_cluster: u32,
     /// The size in bytes (0 for a directory).
     pub size: u32,
+    pub times: Times,
 }
 
 impl DirEntry {
     pub fn is_directory(&self) -> bool {
         self.attributes & ATTR_DIRECTORY != 0
     }
+}
+
+/// One long-file-name record: its place in the name and the units it carries.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct LongPart {
+    /// The part's ordinal, 1 for the name's first 13 units.
+    pub order: u8,
+    /// Whether this is the name's last part (the first record of the run on disk).
+    pub last: bool,
+    /// The checksum of the 8.3 name the run belongs to.
+    pub checksum: u8,
+    /// The units, NUL-terminated and 0xFFFF-padded in the last part.
+    pub units: [u16; 13],
+}
+
+/// The checksum a long-name run carries of its 8.3 entry's stored name.
+pub fn checksum(name: &[u8; 11]) -> u8 {
+    name.iter()
+        .fold(0u8, |sum, &byte| sum.rotate_right(1).wrapping_add(byte))
 }
 
 /// What one 32-byte record is.
@@ -43,10 +86,10 @@ pub enum Record {
     End,
     Deleted,
     /// A long-file-name record.
-    LongName,
+    LongName(LongPart),
     VolumeLabel,
     /// A subdirectory's `.` or `..` record.
-    Dot,
+    Dot(DirEntry),
     Entry(DirEntry),
 }
 
@@ -59,28 +102,50 @@ pub fn decode(bytes: &[u8]) -> Record {
         _ => {}
     }
     let attributes = bytes[11];
+    let u16_at = |offset: usize| u16::from_le_bytes([bytes[offset], bytes[offset + 1]]);
     // A long-name record's attributes include the label bit, so it is told apart first.
     if attributes == ATTR_LONG_NAME {
-        return Record::LongName;
+        let mut units = [0u16; 13];
+        let offsets = (1..11).step_by(2).chain((14..26).step_by(2)).chain((28..32).step_by(2));
+        for (unit, offset) in units.iter_mut().zip(offsets) {
+            *unit = u16_at(offset);
+        }
+        return Record::LongName(LongPart {
+            order: bytes[0] & 0x1F,
+            last: bytes[0] & 0x40 != 0,
+            checksum: bytes[13],
+            units,
+        });
     }
     if attributes & ATTR_VOLUME_LABEL != 0 {
         return Record::VolumeLabel;
     }
     let mut name = [0u8; 11];
     name.copy_from_slice(&bytes[..11]);
-    if name == *b".          " || name == *b"..         " {
-        return Record::Dot;
-    }
+    let dot = name == *b".          " || name == *b"..         ";
     if name[0] == 0x05 {
         name[0] = 0xE5;
     }
-    let u16_at = |offset: usize| u16::from_le_bytes([bytes[offset], bytes[offset + 1]]);
-    Record::Entry(DirEntry {
+    let entry = DirEntry {
         name,
         attributes,
+        case: bytes[12],
         first_cluster: (u16_at(20) as u32) << 16 | u16_at(26) as u32,
         size: u32::from_le_bytes([bytes[28], bytes[29], bytes[30], bytes[31]]),
-    })
+        times: Times {
+            create_hundredths: bytes[13],
+            create_time: u16_at(14),
+            create_date: u16_at(16),
+            access_date: u16_at(18),
+            write_time: u16_at(22),
+            write_date: u16_at(24),
+        },
+    };
+    if dot {
+        Record::Dot(entry)
+    } else {
+        Record::Entry(entry)
+    }
 }
 
 /// The stored form of an 8.3 name from its parts: the name and extension bytes, space-padded (the
@@ -107,8 +172,10 @@ mod tests {
             Record::Entry(DirEntry {
                 name: *b"HELLO   EXE",
                 attributes: 0x20,
+                case: 0,
                 first_cluster: 3,
                 size: 28_672,
+                times: Times::default(),
             })
         );
     }
@@ -135,16 +202,16 @@ mod tests {
         let mut deleted = record(b"HELLO   EXE", 0x20, 3, 1);
         deleted[0] = 0xE5;
         assert_eq!(decode(&deleted), Record::Deleted);
-        assert_eq!(
+        assert!(matches!(
             decode(&record(b"Af\x002\x00k\x00-\x00k\x00", 0x0F, 0, 0)),
-            Record::LongName
-        );
+            Record::LongName(part) if part.order == 1 && part.last && part.units[0] == u16::from(b'f')
+        ));
         assert_eq!(
             decode(&record(b"F2K        ", 0x08, 0, 0)),
             Record::VolumeLabel
         );
-        assert_eq!(decode(&record(b".          ", 0x10, 9, 0)), Record::Dot);
-        assert_eq!(decode(&record(b"..         ", 0x10, 0, 0)), Record::Dot);
+        assert!(matches!(decode(&record(b".          ", 0x10, 9, 0)), Record::Dot(e) if e.first_cluster == 9));
+        assert!(matches!(decode(&record(b"..         ", 0x10, 0, 0)), Record::Dot(_)));
         match decode(&record(b"BOOT       ", 0x10, 59, 0)) {
             Record::Entry(entry) => assert!(entry.is_directory()),
             other => panic!("{other:?}"),
@@ -158,6 +225,48 @@ mod tests {
         bytes[0] = 0x05;
         match decode(&bytes) {
             Record::Entry(entry) => assert_eq!(&entry.name, b"\xE5NAME   TXT"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// The checksum a long name carries of its 8.3 entry (the rotate-and-add over the 11 bytes).
+    #[test]
+    fn the_short_name_checksum() {
+        let mut sum = 0u8;
+        for &byte in b"LONGFI~1TXT" {
+            sum = (if sum & 1 != 0 { 0x80u8 } else { 0 })
+                .wrapping_add(sum >> 1)
+                .wrapping_add(byte);
+        }
+        assert_eq!(checksum(b"LONGFI~1TXT"), sum);
+    }
+
+    /// The timestamps and the case bits decode at their offsets.
+    #[test]
+    fn the_timestamps_decode() {
+        let mut bytes = record(b"SMALL   TXT", 0x20, 5, 31);
+        bytes[12] = CASE_LOWER_EXTENSION;
+        bytes[13] = 57;
+        bytes[14..16].copy_from_slice(&0x1234u16.to_le_bytes());
+        bytes[16..18].copy_from_slice(&0x5678u16.to_le_bytes());
+        bytes[18..20].copy_from_slice(&0x5679u16.to_le_bytes());
+        bytes[22..24].copy_from_slice(&0x9ABCu16.to_le_bytes());
+        bytes[24..26].copy_from_slice(&0x567Au16.to_le_bytes());
+        match decode(&bytes) {
+            Record::Entry(entry) => {
+                assert_eq!(entry.case, CASE_LOWER_EXTENSION);
+                assert_eq!(
+                    entry.times,
+                    Times {
+                        create_hundredths: 57,
+                        create_time: 0x1234,
+                        create_date: 0x5678,
+                        access_date: 0x5679,
+                        write_time: 0x9ABC,
+                        write_date: 0x567A,
+                    }
+                );
+            }
             other => panic!("{other:?}"),
         }
     }

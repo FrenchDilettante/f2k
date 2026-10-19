@@ -481,11 +481,10 @@ mod tests {
     const RET0: &[u8] = include_bytes!("../../../tests/ret0/ret0.exe");
 
     /// The corpus the disk carries (see the Makefile's disk target), by fixture name.
-    const CORPUS: [(&str, &[u8]); 4] = [
+    const CORPUS: [(&str, &[u8]); 3] = [
         ("hello", include_bytes!("../../../tests/hello/hello.exe")),
         ("exit0", EXIT0),
         ("ret0", RET0),
-        ("fileio", include_bytes!("../../../tests/fileio/fileio.exe")),
     ];
 
     /// Every corpus file fits the file staging, and every image it describes fits the image
@@ -806,8 +805,8 @@ mod tests {
         );
     }
 
-    /// The refusals, each distinct: a missing file, a malformed path, a directory, a file larger
-    /// than the staging, and a corrupt chain.
+    /// The refusals, each distinct: a missing file (by its 8.3 or its long name), a malformed path,
+    /// a directory, a file larger than the staging, and a corrupt chain.
     #[test]
     fn unreadable_programs_are_refused() {
         let (mut crafted, _) = volume_with_exit0();
@@ -819,6 +818,11 @@ mod tests {
         );
         assert_eq!(
             read_image_file(&mut volume, b"not-an-8.3-name.exe", &mut buffer),
+            Err(FileError::Lookup(LookupError::NotFound)),
+            "a long name the directory does not hold"
+        );
+        assert_eq!(
+            read_image_file(&mut volume, b"what?.exe", &mut buffer),
             Err(FileError::Lookup(LookupError::Invalid))
         );
         assert_eq!(

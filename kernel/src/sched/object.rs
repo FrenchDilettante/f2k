@@ -135,7 +135,7 @@ impl<E: Copy> HandleTable<E> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ob::{Entry, ObjectId, ObjectType, Target};
+    use crate::ob::{Entry, ObjectId, ObjectType};
 
     fn event_entry() -> Entry {
         Entry::object(
@@ -149,12 +149,16 @@ mod tests {
         )
     }
 
-    fn file_entry(index: usize, access: u32, inherit: bool) -> Entry {
-        Entry {
-            target: Target::File(index),
+    fn file_entry(index: u16, access: u32, inherit: bool) -> Entry {
+        Entry::object(
+            ObjectId {
+                kind: ObjectType::File,
+                index,
+                generation: 0,
+            },
             access,
             inherit,
-        }
+        )
     }
 
     // --- Group A: encoding, allocation, reuse -------------------------------
@@ -256,7 +260,7 @@ mod tests {
         let mut released = Vec::new();
         table.drain(|entry| released.push(entry.target));
         assert_eq!(released.len(), 2);
-        assert!(released.contains(&Target::File(3)));
+        assert!(released.contains(&file_entry(3, 0, false).target));
         assert_eq!(table.live(), 0);
         assert_eq!(table.lookup(4), None);
         // And the table works again after.
@@ -284,39 +288,17 @@ mod tests {
         table.insert(event_entry());
         let entry = table.lookup(file | 0x3).unwrap();
         assert_eq!((entry.access, entry.inherit), (0x8000_0000, true));
-        let target = Target::File(3);
+        let target = file_entry(3, 0, false).target;
         assert_eq!(table.count(|entry| entry.target == target), 2);
         table.close(again);
         assert_eq!(table.count(|entry| entry.target == target), 1);
-        assert_eq!(entry.object_id(), None, "a file record is no object");
-    }
-
-    /// File entries share the table with the objects: inserted, looked up by their record index,
-    /// and handed back by the close (the process releases the record with it).
-    #[test]
-    fn file_entries_insert_look_up_and_close() {
-        let mut table: HandleTable = HandleTable::empty();
-        let event = table.insert(event_entry());
-        let file = table.insert(file_entry(3, 0, false));
-        assert_eq!(file, 8);
         assert_eq!(
-            table.lookup(file).map(|entry| entry.target),
-            Some(Target::File(3))
+            entry.object_id(),
+            Some(ObjectId {
+                kind: ObjectType::File,
+                index: 3,
+                generation: 0
+            })
         );
-        assert!(table.lookup(event).unwrap().object_id().is_some());
-
-        assert_eq!(
-            table.close(file).map(|entry| entry.target),
-            Some(Target::File(3)),
-            "the released slot"
-        );
-        assert_eq!(table.lookup(file), None);
-        assert_eq!(table.close(file), None);
-        assert_eq!(
-            table.insert(file_entry(0, 0, false)),
-            file,
-            "the slot is reused"
-        );
-        assert_eq!(table.live(), 2);
     }
 }

@@ -48,6 +48,8 @@ pub enum ObjectType {
     Thread,
     Process,
     Section,
+    /// A file object: one open of a file or directory (see [`crate::fs::file`]).
+    File,
     /// An object directory: `\BaseNamedObjects`, the one there is (permanent).
     Directory,
 }
@@ -60,12 +62,11 @@ pub struct ObjectId {
     pub generation: u16,
 }
 
-/// What a handle-table entry names: an object, or one of the process's own records that is not an
-/// object (an open file's record, until files become objects).
+/// What a handle-table entry names: an object (a directory search is kernel32's own structure on
+/// the process heap, as on Windows 2000, not a kernel handle).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Target {
     Object(ObjectId),
-    File(usize),
 }
 
 /// One handle-table entry: what the handle names, the access it was granted, and whether a child
@@ -89,10 +90,8 @@ impl Entry {
 
     /// The object the entry names, if it names one.
     pub fn object_id(&self) -> Option<ObjectId> {
-        match self.target {
-            Target::Object(id) => Some(id),
-            Target::File(_) => None,
-        }
+        let Target::Object(id) = self.target;
+        Some(id)
     }
 }
 
@@ -103,9 +102,6 @@ pub const EVENT_ALL_ACCESS: u32 = 0x001F_0003;
 pub const THREAD_ALL_ACCESS: u32 = 0x001F_03FF;
 pub const PROCESS_ALL_ACCESS: u32 = 0x001F_0FFF;
 pub const SECTION_ALL_ACCESS: u32 = 0x000F_001F;
-/// The access an open file's handle is granted: FILE_GENERIC_READ (the files the kernel opens are
-/// opened for reading).
-pub const FILE_GENERIC_READ: u32 = 0x0012_0089;
 
 /// GetExitCodeProcess's and GetExitCodeThread's answer for one still running.
 pub const STILL_ACTIVE: u32 = 259;
@@ -120,6 +116,8 @@ pub const MUTEXES: usize = 64;
 pub const TIMERS: usize = 32;
 /// How many sections can exist at once.
 pub const SECTIONS: usize = 16;
+/// How many file objects can exist at once.
+pub const FILES: usize = crate::fs::file::OPEN_FILES;
 /// How many thread records exist: the current process's main thread (record 0) and its created
 /// threads (records 1 on). A record's index is its thread's ordinal, which places its TEB and stack
 /// pages (single-process for now: the ordinals are the process's).
@@ -246,38 +244,59 @@ impl ProcessObject {
 
 /// A section object's body: the mapping itself (on NT, the section and its segment). It is the
 /// kernel's, not a process's: a view names it by its object, and its frames outlive the handle that
-/// made it while a view references it. Paging-file sections only: a file's comes with the file
-/// objects.
+/// made it while a view references it.
 #[derive(Clone, Copy)]
 pub struct SectionObject {
-    /// Its frames, page by page, made as views first need them (zeroed: the paging file's).
+    /// The mapped file, as its open found it (a file-backed section).
+    pub file: crate::fs::fat32::lookup::File,
+    /// Whether it is the paging file's (its pages start zeroed) rather than a file's.
+    pub paging_file: bool,
+    /// Its frames, page by page, made as views first need them.
     pub frames: crate::mem::vm::SectionFrames,
     /// The section's size in bytes.
     pub size: u32,
     /// Whether views may be writable (a read-write mapping).
     pub writable: bool,
+    /// A file's section: the file object it holds (the file stays open while it is mapped).
+    pub file_object: Option<ObjectId>,
 }
 
 impl SectionObject {
     /// A record holding no mapping (a pool's fresh record).
     pub const fn none() -> Self {
         SectionObject {
+            file: crate::fs::fat32::lookup::File::plain(0, 0, false),
+            paging_file: true,
             frames: crate::mem::vm::SectionFrames::empty(),
             size: 0,
             writable: false,
+            file_object: None,
         }
     }
 }
 
 /// What a caller must finish once an object's last handle or last reference went: the work outside
 /// the object manager's reach, which the process finishes ([`crate::process::Process::finish`]).
-/// A file object's cleanup and close are the variants the file objects bring.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Followup {
-    /// A section was deleted: its frames (taken out of its record) are the caller's to release.
+    /// A section was deleted: its frames (taken out of its record) and the file object a file's
+    /// section held are the caller's to release.
     Section {
         frames: crate::mem::vm::SectionFrames,
+        file_object: Option<ObjectId>,
     },
+    /// A file object's last handle closed (its cleanup): its share access leaves the file's record,
+    /// its delete-on-close marks the file delete-pending, and the last cleanup of a delete-pending
+    /// file deletes it; its directory search (if any) goes back to the pool.
+    FileCleanup {
+        record: u16,
+        access: u8,
+        share: u8,
+        delete_on_close: bool,
+        search: u16,
+    },
+    /// A file object was deleted: its reference on the file's record goes.
+    FileClose { record: u16 },
 }
 
 /// A program's object name as the namespace keeps it: without a `Global\` or `Local\` prefix.
@@ -344,6 +363,7 @@ pub struct Directory {
     pub threads: Pool<Thread, THREADS>,
     pub processes: Pool<ProcessObject, PROCESSES>,
     pub sections: Pool<SectionObject, SECTIONS>,
+    pub files: Pool<crate::fs::file::FileObject, FILES>,
     pub directories: Pool<(), DIRECTORIES>,
     names: [NameEntry; NAMES],
     waits: [WaitReferences; THREADS],
@@ -369,6 +389,9 @@ impl Directory {
             Pool::write_empty(addr_of_mut!((*directory).threads), Thread::empty);
             Pool::write_empty(addr_of_mut!((*directory).processes), ProcessObject::new);
             Pool::write_empty(addr_of_mut!((*directory).sections), SectionObject::none);
+            Pool::write_empty(addr_of_mut!((*directory).files), || {
+                crate::fs::file::FileObject::new(0, 0, 0, 0)
+            });
             Pool::write_empty(addr_of_mut!((*directory).directories), || ());
             let names = addr_of_mut!((*directory).names) as *mut NameEntry;
             for index in 0..NAMES {
@@ -390,6 +413,7 @@ impl Directory {
             ObjectType::Thread => &mut self.threads.headers,
             ObjectType::Process => &mut self.processes.headers,
             ObjectType::Section => &mut self.sections.headers,
+            ObjectType::File => &mut self.files.headers,
             ObjectType::Directory => &mut self.directories.headers,
         };
         let header = headers.get_mut(id.index as usize)?;
@@ -405,6 +429,7 @@ impl Directory {
             ObjectType::Thread => self.threads.headers[index as usize].generation,
             ObjectType::Process => self.processes.headers[index as usize].generation,
             ObjectType::Section => self.sections.headers[index as usize].generation,
+            ObjectType::File => self.files.headers[index as usize].generation,
             ObjectType::Directory => self.directories.headers[index as usize].generation,
         };
         ObjectId {
@@ -492,6 +517,22 @@ impl Directory {
         Some(self.id(ObjectType::Section, index))
     }
 
+    /// A file object of file record `record`, opened for `access` (as the share check reads it;
+    /// `granted` the file rights) and allowing `share`.
+    pub fn create_file(
+        &mut self,
+        record: u16,
+        access: u8,
+        granted: u32,
+        share: u8,
+    ) -> Option<ObjectId> {
+        let index = self.files.allocate_in(0..FILES)?;
+        let file = self.files.record(index);
+        *file = crate::fs::file::FileObject::new(record, access, granted, share);
+        file.init();
+        Some(self.id(ObjectType::File, index))
+    }
+
     // --- Typed access ------------------------------------------------------------------------
 
     pub fn event(&mut self, id: ObjectId) -> Option<&mut Event> {
@@ -529,6 +570,11 @@ impl Directory {
         self.sections.get(id.index, id.generation)
     }
 
+    pub fn file(&mut self, id: ObjectId) -> Option<&mut crate::fs::file::FileObject> {
+        (id.kind == ObjectType::File).then_some(())?;
+        self.files.get(id.index, id.generation)
+    }
+
     /// The live process object at process pool `index`, if any.
     pub fn processes_live(&mut self, index: u16) -> Option<ObjectId> {
         let id = self.id(ObjectType::Process, index);
@@ -555,7 +601,8 @@ impl Directory {
         }
     }
 
-    /// The waitable header of a waitable object; none for a section, the directory or a dead id.
+    /// The waitable header of a waitable object; none for a section, a file object (its I/O
+    /// completes at once: nothing waits on it), the directory or a dead id.
     pub fn waitable(&mut self, id: ObjectId) -> Option<*mut Waitable> {
         match id.kind {
             ObjectType::Event => self.event(id).map(Event::waitable),
@@ -566,7 +613,7 @@ impl Directory {
             ObjectType::Process => self
                 .process(id)
                 .map(|process| core::ptr::addr_of_mut!(process.waitable)),
-            ObjectType::Section | ObjectType::Directory => None,
+            ObjectType::Section | ObjectType::File | ObjectType::Directory => None,
         }
     }
 
@@ -618,9 +665,9 @@ impl Directory {
         }
     }
 
-    /// A handle to `id` was closed: the last handle drops the object's name, and the handle's
-    /// reference goes with it (the last reference deletes the object). What the caller must finish
-    /// is handed to `finish`, in order.
+    /// A handle to `id` was closed: the last handle drops the object's name and cleans up a file
+    /// object, and the handle's reference goes with it (the last reference deletes the object).
+    /// What the caller must finish is handed to `finish`, in order.
     pub fn handle_closed(
         &mut self,
         id: ObjectId,
@@ -634,6 +681,16 @@ impl Directory {
         header.handles -= 1;
         if header.handles == 0 {
             self.forget_name(id);
+            if id.kind == ObjectType::File {
+                let file = self.files.record(id.index);
+                finish(Followup::FileCleanup {
+                    record: file.record,
+                    access: file.access,
+                    share: file.share,
+                    delete_on_close: file.delete_on_close,
+                    search: file.search,
+                });
+            }
         }
         if let Some(followup) = self.dereference(id, dispatcher) {
             finish(followup);
@@ -641,7 +698,8 @@ impl Directory {
     }
 
     /// Delete the object `id` names: its kind's teardown, then the record is dead and its id stale.
-    /// A section leaves its frames to the caller; an owned mutex leaves its owner's list; no other
+    /// A section leaves its frames (and a file's section its file object) to the caller, a file
+    /// object its record's reference; an owned mutex leaves its owner's list; no other
     /// kind here needs more than the record going: a waitable's last reference is gone, so nothing
     /// waits on it; a thread's record stays as it ended (its pages are released when the record is
     /// reused); a process's record is free for the next process once its object is gone.
@@ -663,8 +721,12 @@ impl Directory {
                     core::mem::replace(self.sections.record(id.index), SectionObject::none());
                 Some(Followup::Section {
                     frames: section.frames,
+                    file_object: section.file_object,
                 })
             }
+            ObjectType::File => Some(Followup::FileClose {
+                record: self.files.record(id.index).record,
+            }),
             ObjectType::Event
             | ObjectType::Semaphore
             | ObjectType::Thread
@@ -785,6 +847,7 @@ impl Directory {
             ObjectType::Timer,
             ObjectType::Thread,
             ObjectType::Section,
+            ObjectType::File,
         ] {
             for index in 0..self.capacity(kind) {
                 let id = self.id(kind, index as u16);
@@ -814,6 +877,7 @@ impl Directory {
             ObjectType::Thread => THREADS,
             ObjectType::Process => PROCESSES,
             ObjectType::Section => SECTIONS,
+            ObjectType::File => FILES,
             ObjectType::Directory => DIRECTORIES,
         }
     }
@@ -827,6 +891,7 @@ impl Directory {
             + self.threads.live()
             + self.processes.live()
             + self.sections.live()
+            + self.files.live()
             + self.directories.live()
     }
 

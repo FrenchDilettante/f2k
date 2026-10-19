@@ -26,6 +26,22 @@ pub struct ObjectAttributes {
     pub security_quality_of_service: *const u8,
 }
 
+/// RTL_RELATIVE_NAME, Windows 2000's: a name relative to a directory, and the directory's handle
+/// (RtlDosPathNameToNtPathName_U's answer for a path under the current directory).
+#[repr(C)]
+pub struct RelativeName {
+    pub name: UnicodeString,
+    pub containing_directory: u32,
+}
+
+/// An IO_STATUS_BLOCK: the status and the information (a count, or what an open did).
+#[repr(C)]
+#[derive(Default)]
+pub struct IoStatus {
+    pub status: u32,
+    pub information: u32,
+}
+
 /// A CSR_API_MSG, Windows 2000's: the LPC header, the capture buffer, the API number, the server's
 /// answer, then the API's data (see `rtl::console`: F2K's console server's dwords, pointer-sized so
 /// the host tests' buffers are host addresses).
@@ -287,6 +303,100 @@ unsafe extern "system" {
     pub fn RtlReleasePebLock();
     /// RtlInitializeCriticalSection: the section free, no event until the first contention.
     pub fn RtlInitializeCriticalSection(section: *mut u8) -> u32;
+    /// A critical section entered, left and deleted (a find handle's lock).
+    pub fn RtlEnterCriticalSection(section: *mut u8) -> u32;
+    pub fn RtlLeaveCriticalSection(section: *mut u8) -> u32;
+    pub fn RtlDeleteCriticalSection(section: *mut u8) -> u32;
+    /// The file services (the read side): a file or directory opened, read, queried and set (its
+    /// position), a directory listed, a name's attributes, the volume's facts.
+    pub fn NtCreateFile(
+        handle: *mut u32,
+        access: u32,
+        attributes: *const ObjectAttributes,
+        io_status: *mut IoStatus,
+        allocation: *const u64,
+        file_attributes: u32,
+        share: u32,
+        disposition: u32,
+        options: u32,
+        ea: *const u8,
+        ea_length: u32,
+    ) -> u32;
+    pub fn NtOpenFile(
+        handle: *mut u32,
+        access: u32,
+        attributes: *const ObjectAttributes,
+        io_status: *mut IoStatus,
+        share: u32,
+        options: u32,
+    ) -> u32;
+    pub fn NtReadFile(
+        handle: u32,
+        event: u32,
+        routine: usize,
+        context: usize,
+        io_status: *mut IoStatus,
+        buffer: *mut u8,
+        length: u32,
+        offset: *const u64,
+        key: *const u32,
+    ) -> u32;
+    pub fn NtQueryInformationFile(
+        handle: u32,
+        io_status: *mut IoStatus,
+        information: *mut u8,
+        length: u32,
+        class: u32,
+    ) -> u32;
+    pub fn NtSetInformationFile(
+        handle: u32,
+        io_status: *mut IoStatus,
+        information: *const u8,
+        length: u32,
+        class: u32,
+    ) -> u32;
+    pub fn NtQueryDirectoryFile(
+        handle: u32,
+        event: u32,
+        routine: usize,
+        context: usize,
+        io_status: *mut IoStatus,
+        information: *mut u8,
+        length: u32,
+        class: u32,
+        single: u32,
+        name: *const UnicodeString,
+        restart: u32,
+    ) -> u32;
+    pub fn NtQueryAttributesFile(attributes: *const ObjectAttributes, information: *mut u8) -> u32;
+    pub fn NtQueryFullAttributesFile(
+        attributes: *const ObjectAttributes,
+        information: *mut u8,
+    ) -> u32;
+    pub fn NtQueryVolumeInformationFile(
+        handle: u32,
+        io_status: *mut IoStatus,
+        information: *mut u8,
+        length: u32,
+        class: u32,
+    ) -> u32;
+    /// The DOS paths (ntdll's, against the current directory): a path's NT form (relative to the
+    /// current directory's handle when it is under it), and its full form.
+    pub fn RtlDosPathNameToNtPathName_U(
+        dos: *const u16,
+        nt: *mut UnicodeString,
+        file_part: *mut *mut u16,
+        relative: *mut RelativeName,
+    ) -> u32;
+    pub fn RtlGetFullPathName_U(
+        path: *const u16,
+        buffer_length: u32,
+        buffer: *mut u16,
+        file_part: *mut *mut u16,
+    ) -> u32;
+    /// The current directory: its DOS path read, and changed (the new one opened).
+    pub fn RtlGetCurrentDirectory_U(buffer_length: u32, buffer: *mut u16) -> u32;
+    pub fn RtlSetCurrentDirectory_U(path: *const UnicodeString) -> u32;
     /// RtlRaiseStatus: the status raised as a noncontinuable exception.
     pub fn RtlRaiseStatus(status: u32) -> !;
     /// The heaps (ntdll's RtlCreateHeap family): a heap made and destroyed, a block allocated,
@@ -324,6 +434,8 @@ unsafe extern "system" {
     ) -> u32;
 }
 
+#[cfg(test)]
+pub use files::*;
 #[cfg(test)]
 pub use host::*;
 #[cfg(test)]
@@ -991,6 +1103,548 @@ pub mod host {
         message.api_number = api;
         message.return_value = status;
         status
+    }
+}
+
+/// The host tests' file services: one stand-in file, named by [`host::HANDLE`] (any other handle
+/// names nothing), the calls recorded for the scenarios to read; the current directory as ntdll
+/// keeps it (its DOS path, its trailing separator kept; open as [`CURRENT_DIRECTORY_HANDLE`]), and
+/// the runtime library's path code as ntdll runs it over it.
+#[cfg(test)]
+#[allow(non_snake_case)]
+pub mod files {
+    use std::cell::RefCell;
+    use std::string::String;
+    use std::vec::Vec;
+
+    use super::host::{FAIL_NEXT, HANDLE};
+    use super::{IoStatus, ObjectAttributes, RelativeName, UnicodeString};
+
+    /// The current directory's handle, as the stand-in's paths name it.
+    pub const CURRENT_DIRECTORY_HANDLE: u32 = 0x48;
+    const STATUS_INVALID_HANDLE: u32 = 0xC000_0008;
+    const STATUS_END_OF_FILE: u32 = 0xC000_0011;
+
+    /// A file service call, as the stand-in took it.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub enum Call {
+        /// NtCreateFile or NtOpenFile (or an attributes query): the access, the root, the name, the
+        /// share, the disposition (FILE_OPEN for NtOpenFile), the options and the attributes.
+        Open {
+            access: u32,
+            root: u32,
+            name: String,
+            share: u32,
+            disposition: u32,
+            options: u32,
+            attributes: u32,
+        },
+        Read {
+            handle: u32,
+            length: u32,
+            offset: Option<u64>,
+        },
+        Query {
+            handle: u32,
+            class: u32,
+        },
+        Set {
+            handle: u32,
+            class: u32,
+            bytes: Vec<u8>,
+        },
+        Volume {
+            handle: u32,
+            class: u32,
+        },
+    }
+
+    /// The stand-in file: its size and position, its attributes, and what an open answers.
+    #[derive(Clone, Copy)]
+    pub struct File {
+        pub size: u64,
+        pub position: u64,
+        pub attributes: u32,
+        /// The IO_STATUS_BLOCK Information the next open answers (FILE_OPENED by default).
+        pub opened: u32,
+    }
+
+    std::thread_local! {
+        pub static CALLS: RefCell<Vec<Call>> = const { RefCell::new(Vec::new()) };
+        pub static FILE: RefCell<File> = const {
+            RefCell::new(File { size: 0, position: 0, attributes: 0x20, opened: 1 })
+        };
+        /// The current directory's DOS path (its trailing separator kept), as ntdll keeps it.
+        pub static CURRENT_DIRECTORY: RefCell<Vec<u16>> =
+            RefCell::new("C:\\".encode_utf16().collect());
+    }
+
+    /// The calls taken since the last look, and none kept.
+    pub fn calls() -> Vec<Call> {
+        CALLS.with(|calls| std::mem::take(&mut *calls.borrow_mut()))
+    }
+
+    fn record(call: Call) {
+        CALLS.with(|calls| calls.borrow_mut().push(call));
+    }
+
+    /// The status the stand-in fails with, once (FAIL_NEXT).
+    fn failure() -> Option<u32> {
+        let status = FAIL_NEXT.with(|cell| cell.replace(0));
+        (status != 0).then_some(status)
+    }
+
+    unsafe fn text(string: *const UnicodeString) -> String {
+        // SAFETY: the caller's string.
+        let string = unsafe { &*string };
+        let units = if string.length == 0 {
+            &[][..]
+        } else {
+            // SAFETY: as above.
+            unsafe { std::slice::from_raw_parts(string.buffer, string.length as usize / 2) }
+        };
+        String::from_utf16_lossy(units)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn opened(
+        handle: *mut u32,
+        access: u32,
+        attributes: *const ObjectAttributes,
+        io_status: *mut IoStatus,
+        share: u32,
+        disposition: u32,
+        options: u32,
+        file_attributes: u32,
+    ) -> u32 {
+        // SAFETY: the caller's attributes and their name.
+        let (root, name) =
+            unsafe { ((*attributes).root_directory, text((*attributes).object_name)) };
+        record(Call::Open {
+            access,
+            root,
+            name,
+            share,
+            disposition,
+            options,
+            attributes: file_attributes,
+        });
+        if let Some(status) = failure() {
+            return status;
+        }
+        // SAFETY: the caller's slots.
+        unsafe {
+            handle.write(HANDLE);
+            io_status.write(IoStatus {
+                status: 0,
+                information: FILE.with(|file| file.borrow().opened),
+            });
+        }
+        0
+    }
+
+    pub unsafe extern "system" fn NtCreateFile(
+        handle: *mut u32,
+        access: u32,
+        attributes: *const ObjectAttributes,
+        io_status: *mut IoStatus,
+        _allocation: *const u64,
+        file_attributes: u32,
+        share: u32,
+        disposition: u32,
+        options: u32,
+        _ea: *const u8,
+        _ea_length: u32,
+    ) -> u32 {
+        // SAFETY: the caller's arguments.
+        unsafe {
+            opened(
+                handle,
+                access,
+                attributes,
+                io_status,
+                share,
+                disposition,
+                options,
+                file_attributes,
+            )
+        }
+    }
+
+    pub unsafe extern "system" fn NtOpenFile(
+        handle: *mut u32,
+        access: u32,
+        attributes: *const ObjectAttributes,
+        io_status: *mut IoStatus,
+        share: u32,
+        options: u32,
+    ) -> u32 {
+        // SAFETY: the caller's arguments.
+        unsafe { opened(handle, access, attributes, io_status, share, 1, options, 0) }
+    }
+
+    /// The stand-in file's answer for `handle`: the arranged failure, or STATUS_INVALID_HANDLE for
+    /// a handle naming no file.
+    fn checked(handle: u32) -> Result<(), u32> {
+        if let Some(status) = failure() {
+            return Err(status);
+        }
+        if handle != HANDLE {
+            return Err(STATUS_INVALID_HANDLE);
+        }
+        Ok(())
+    }
+
+    unsafe fn offset_of(offset: *const u64) -> Option<u64> {
+        // SAFETY: the caller's offset, when given.
+        (!offset.is_null()).then(|| unsafe { offset.read() })
+    }
+
+    pub unsafe extern "system" fn NtReadFile(
+        handle: u32,
+        _event: u32,
+        _routine: usize,
+        _context: usize,
+        io_status: *mut IoStatus,
+        buffer: *mut u8,
+        length: u32,
+        offset: *const u64,
+        _key: *const u32,
+    ) -> u32 {
+        // SAFETY: the caller's offset.
+        let at = unsafe { offset_of(offset) };
+        record(Call::Read {
+            handle,
+            length,
+            offset: at,
+        });
+        if let Err(status) = checked(handle) {
+            return status;
+        }
+        FILE.with(|file| {
+            let mut file = file.borrow_mut();
+            let start = at.unwrap_or(file.position);
+            if length != 0 && start >= file.size {
+                return STATUS_END_OF_FILE;
+            }
+            let moved = (file.size - start).min(length as u64) as u32;
+            // SAFETY: the caller's buffer and status block.
+            unsafe {
+                buffer.write_bytes(0x5A, moved as usize);
+                io_status.write(IoStatus {
+                    status: 0,
+                    information: moved,
+                });
+            }
+            file.position = start + moved as u64;
+            0
+        })
+    }
+
+    pub unsafe extern "system" fn NtQueryInformationFile(
+        handle: u32,
+        _io_status: *mut IoStatus,
+        information: *mut u8,
+        length: u32,
+        class: u32,
+    ) -> u32 {
+        record(Call::Query { handle, class });
+        if let Err(status) = checked(handle) {
+            return status;
+        }
+        let file = FILE.with(|file| *file.borrow());
+        let mut answer = std::vec![0u8; length as usize];
+        match class {
+            4 => answer[32..36].copy_from_slice(&file.attributes.to_le_bytes()),
+            5 => answer[8..16].copy_from_slice(&file.size.to_le_bytes()),
+            14 => answer[..8].copy_from_slice(&file.position.to_le_bytes()),
+            18 => {
+                answer[32..36].copy_from_slice(&file.attributes.to_le_bytes());
+                answer[48..56].copy_from_slice(&file.size.to_le_bytes());
+                answer[56..60].copy_from_slice(&1u32.to_le_bytes());
+            }
+            _ => panic!("the stand-in answers no class {class}"),
+        }
+        // SAFETY: the caller's buffer of `length` bytes.
+        unsafe { information.copy_from_nonoverlapping(answer.as_ptr(), length as usize) };
+        0
+    }
+
+    pub unsafe extern "system" fn NtSetInformationFile(
+        handle: u32,
+        _io_status: *mut IoStatus,
+        information: *const u8,
+        length: u32,
+        class: u32,
+    ) -> u32 {
+        // SAFETY: the caller's buffer of `length` bytes.
+        let bytes = unsafe { std::slice::from_raw_parts(information, length as usize) }.to_vec();
+        record(Call::Set {
+            handle,
+            class,
+            bytes: bytes.clone(),
+        });
+        if let Err(status) = checked(handle) {
+            return status;
+        }
+        let quad = u64::from_le_bytes(bytes[..8.min(bytes.len())].try_into().unwrap_or([0; 8]));
+        FILE.with(|file| match class {
+            14 => file.borrow_mut().position = quad,
+            20 => file.borrow_mut().size = quad,
+            _ => {}
+        });
+        0
+    }
+
+    pub unsafe extern "system" fn NtQueryDirectoryFile(
+        _handle: u32,
+        _event: u32,
+        _routine: usize,
+        _context: usize,
+        _io_status: *mut IoStatus,
+        _information: *mut u8,
+        _length: u32,
+        _class: u32,
+        _single: u32,
+        _name: *const UnicodeString,
+        _restart: u32,
+    ) -> u32 {
+        failure().unwrap_or(0x8000_0006)
+    }
+
+    pub unsafe extern "system" fn NtQueryAttributesFile(
+        attributes: *const ObjectAttributes,
+        information: *mut u8,
+    ) -> u32 {
+        // SAFETY: the caller's attributes.
+        let (root, name) =
+            unsafe { ((*attributes).root_directory, text((*attributes).object_name)) };
+        record(Call::Open {
+            access: 0,
+            root,
+            name,
+            share: 0,
+            disposition: 1,
+            options: 0,
+            attributes: 0,
+        });
+        if let Some(status) = failure() {
+            return status;
+        }
+        let attributes = FILE.with(|file| file.borrow().attributes);
+        // SAFETY: the caller's FILE_BASIC_INFORMATION.
+        unsafe {
+            information.write_bytes(0, 40);
+            information
+                .add(32)
+                .copy_from_nonoverlapping(attributes.to_le_bytes().as_ptr(), 4);
+        }
+        0
+    }
+
+    pub unsafe extern "system" fn NtQueryFullAttributesFile(
+        attributes: *const ObjectAttributes,
+        information: *mut u8,
+    ) -> u32 {
+        // SAFETY: the caller's attributes.
+        let (root, name) =
+            unsafe { ((*attributes).root_directory, text((*attributes).object_name)) };
+        record(Call::Open {
+            access: 0,
+            root,
+            name,
+            share: 0,
+            disposition: 1,
+            options: 0,
+            attributes: 0,
+        });
+        if let Some(status) = failure() {
+            return status;
+        }
+        let file = FILE.with(|file| *file.borrow());
+        // SAFETY: the caller's FILE_NETWORK_OPEN_INFORMATION.
+        unsafe {
+            information.write_bytes(0, 56);
+            information
+                .add(40)
+                .copy_from_nonoverlapping(file.size.to_le_bytes().as_ptr(), 8);
+            information
+                .add(48)
+                .copy_from_nonoverlapping(file.attributes.to_le_bytes().as_ptr(), 4);
+        }
+        0
+    }
+
+    pub unsafe extern "system" fn NtQueryVolumeInformationFile(
+        handle: u32,
+        _io_status: *mut IoStatus,
+        information: *mut u8,
+        length: u32,
+        class: u32,
+    ) -> u32 {
+        record(Call::Volume { handle, class });
+        if let Err(status) = checked(handle) {
+            return status;
+        }
+        assert_eq!((class, length), (4, 8), "the stand-in answers the device");
+        // SAFETY: the caller's FILE_FS_DEVICE_INFORMATION: a disk.
+        unsafe {
+            information.write_bytes(0, 8);
+            *information = 7;
+        }
+        0
+    }
+
+    /// A NUL-terminated string's units.
+    unsafe fn terminated<'a>(string: *const u16) -> &'a [u16] {
+        let mut length = 0;
+        // SAFETY: the caller's string, read to its terminator.
+        while unsafe { string.add(length).read() } != 0 {
+            length += 1;
+        }
+        // SAFETY: as above.
+        unsafe { std::slice::from_raw_parts(string, length) }
+    }
+
+    /// RtlDosPathNameToNtPathName_U over the stand-in's current directory (open), as ntdll runs it:
+    /// its buffer on the stand-in heap (RtlAllocateHeap's), which the caller frees.
+    pub unsafe extern "system" fn RtlDosPathNameToNtPathName_U(
+        dos: *const u16,
+        nt: *mut UnicodeString,
+        file_part: *mut *mut u16,
+        relative: *mut RelativeName,
+    ) -> u32 {
+        const ROOM: usize = 268;
+        // SAFETY: the caller's string.
+        let path = unsafe { terminated(dos) };
+        let current = CURRENT_DIRECTORY.with(|current| current.borrow().clone());
+        // SAFETY: the stand-in heap.
+        let base = unsafe { super::host::RtlAllocateHeap(0, 0, 2 * ROOM) } as *mut u16;
+        // SAFETY: a fresh block of ROOM units.
+        let buffer = unsafe { std::slice::from_raw_parts_mut(base, ROOM) };
+        let Ok(name) = rtl::path::dos_path_to_nt(path, &current, true, buffer) else {
+            // SAFETY: the block just made.
+            unsafe { super::host::RtlFreeHeap(0, 0, base as *mut u8) };
+            return 0;
+        };
+        // SAFETY: the caller's structures; the pointers stay inside the block.
+        unsafe {
+            *nt = UnicodeString {
+                length: (2 * name.length) as u16,
+                maximum_length: (2 * ROOM) as u16,
+                buffer: base,
+            };
+            if !file_part.is_null() {
+                *file_part = name.file_part.map_or(std::ptr::null_mut(), |at| base.add(at));
+            }
+            if !relative.is_null() {
+                *relative = match name.relative {
+                    Some(at) => RelativeName {
+                        name: UnicodeString {
+                            length: (2 * (name.length - at)) as u16,
+                            maximum_length: (2 * (name.length - at)) as u16,
+                            buffer: base.add(at),
+                        },
+                        containing_directory: CURRENT_DIRECTORY_HANDLE,
+                    },
+                    None => RelativeName {
+                        name: UnicodeString {
+                            length: 0,
+                            maximum_length: 0,
+                            buffer: std::ptr::null_mut(),
+                        },
+                        containing_directory: 0,
+                    },
+                };
+            }
+        }
+        1
+    }
+
+    /// RtlGetFullPathName_U over the stand-in's current directory.
+    pub unsafe extern "system" fn RtlGetFullPathName_U(
+        path: *const u16,
+        buffer_length: u32,
+        buffer: *mut u16,
+        file_part: *mut *mut u16,
+    ) -> u32 {
+        // SAFETY: the caller's string.
+        let path = unsafe { terminated(path) };
+        let current = CURRENT_DIRECTORY.with(|current| current.borrow().clone());
+        let mut full = [0u16; 1040];
+        let Ok((length, part)) = rtl::path::full_path_name(path, &current, &mut full) else {
+            return 0;
+        };
+        if (buffer_length as usize) < 2 * (length + 1) {
+            return (2 * (length + 1)) as u32;
+        }
+        // SAFETY: the caller's buffer holds the path and its terminator.
+        unsafe {
+            buffer.copy_from_nonoverlapping(full.as_ptr(), length + 1);
+            if !file_part.is_null() {
+                *file_part = part.map_or(std::ptr::null_mut(), |at| buffer.add(at));
+            }
+        }
+        (2 * length) as u32
+    }
+
+    /// RtlGetCurrentDirectory_U, over the stand-in's current directory.
+    pub unsafe extern "system" fn RtlGetCurrentDirectory_U(
+        buffer_length: u32,
+        buffer: *mut u16,
+    ) -> u32 {
+        CURRENT_DIRECTORY.with(|current| {
+            let current = current.borrow();
+            let mut length = current.len();
+            if length > 3 && current[length - 1] == u16::from(b'\\') {
+                length -= 1;
+            }
+            if (buffer_length as usize) < 2 * (length + 1) {
+                return (2 * (length + 1)) as u32;
+            }
+            // SAFETY: the caller's buffer holds the path and its terminator.
+            unsafe {
+                buffer.copy_from_nonoverlapping(current.as_ptr(), length);
+                buffer.add(length).write(0);
+            }
+            (2 * length) as u32
+        })
+    }
+
+    /// RtlSetCurrentDirectory_U, the stand-in's: made absolute and folded as ntdll does
+    /// (rtl::path), the open standing in by FAIL_NEXT.
+    pub unsafe extern "system" fn RtlSetCurrentDirectory_U(path: *const UnicodeString) -> u32 {
+        if let Some(status) = failure() {
+            return status;
+        }
+        // SAFETY: the caller's string.
+        let units =
+            unsafe { std::slice::from_raw_parts((*path).buffer, (*path).length as usize / 2) };
+        let mut out = [0u16; 261];
+        let current = CURRENT_DIRECTORY.with(|current| current.borrow().clone());
+        match rtl::path::full_path_name(units, &current, &mut out[..260]) {
+            Ok((mut length, _)) => {
+                if out[length - 1] != u16::from(b'\\') {
+                    out[length] = u16::from(b'\\');
+                    length += 1;
+                }
+                CURRENT_DIRECTORY.with(|current| *current.borrow_mut() = out[..length].to_vec());
+                0
+            }
+            Err(rtl::path::PathError::Empty) => rtl::status::STATUS_OBJECT_NAME_INVALID,
+            Err(rtl::path::PathError::TooLong) => rtl::status::STATUS_NAME_TOO_LONG,
+        }
+    }
+
+    /// The critical sections a find handle's lock takes (one thread: nothing to wait for).
+    pub unsafe extern "system" fn RtlEnterCriticalSection(_section: *mut u8) -> u32 {
+        0
+    }
+    pub unsafe extern "system" fn RtlLeaveCriticalSection(_section: *mut u8) -> u32 {
+        0
+    }
+    pub unsafe extern "system" fn RtlDeleteCriticalSection(_section: *mut u8) -> u32 {
+        0
     }
 }
 

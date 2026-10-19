@@ -10,7 +10,9 @@
 //! 2000's does.
 //!
 //! The kernel writes only the process's starting values and never reads the block back. The
-//! current directory (empty: no process has one yet) comes with the file objects. The environment
+//! current directory starts as the image's own directory, its DOS path alone: ntdll's process
+//! start opens its handle, and it is ntdll's to change from then on (RtlSetCurrentDirectory_U) and
+//! to resolve relative paths against (its handle the root of the NT names it makes). The environment
 //! block the block's Environment points at is user mode's from the start, as on Windows 2000: the
 //! kernel maps it empty ([`ENVIRONMENT_BLOCK`]), and ntdll's environment functions edit it and move
 //! it to a larger allocation when it outgrows its region.
@@ -130,9 +132,10 @@ pub fn widen(text: &[u8], out: &mut [u8]) -> usize {
 pub struct Header {
     /// The block's address (its strings follow it).
     pub base: u32,
-    /// The bytes of the command line and the image's path, in UTF-16.
+    /// The bytes of the command line, the image's path and the current directory, in UTF-16.
     pub command_line: u32,
     pub image_path: u32,
+    pub current_directory: u32,
     /// The environment block's address.
     pub environment: u32,
     /// The standard input, output and error handles.
@@ -152,10 +155,14 @@ pub fn header(fields: &Header) -> [u8; SIZE as usize] {
     put(offset::STANDARD_INPUT, &fields.standard[0].to_le_bytes());
     put(offset::STANDARD_OUTPUT, &fields.standard[1].to_le_bytes());
     put(offset::STANDARD_ERROR, &fields.standard[2].to_le_bytes());
-    // No current directory yet: its room is there, its string empty.
+    // The current directory's DOS path (no handle: ntdll's process start opens it).
     put(
         offset::CURRENT_DIRECTORY,
-        &unicode_string(0, PATH_ROOM, fields.base + CURRENT_DIRECTORY_BUFFER),
+        &unicode_string(
+            fields.current_directory,
+            PATH_ROOM,
+            fields.base + CURRENT_DIRECTORY_BUFFER,
+        ),
     );
     put(
         offset::IMAGE_PATH_NAME,
@@ -194,10 +201,23 @@ pub fn module_file_name(module: &[u8], out: &mut [u8; MODULE_ROOM]) -> usize {
     length
 }
 
+/// The current directory a process starts in: the directory of the image's Win32 path, with its
+/// trailing separator (`C:\` for the root, `C:\DIR\` otherwise), into `out`; its length.
+pub fn starting_directory(image_path: &[u8], out: &mut [u8; MODULE_ROOM]) -> usize {
+    let length = image_path
+        .iter()
+        .rposition(|&byte| byte == b'\\')
+        .map_or(0, |at| at + 1)
+        .min(MODULE_ROOM);
+    out[..length].copy_from_slice(&image_path[..length]);
+    length
+}
+
 /// Map the parameters pages at [`crate::user::PARAMS_PAGE`] into `space` (the current address
 /// space) and write the block: the command line, the image's Win32 path (from its volume path
-/// `module`), the standard handles and the environment block's address; and the service pack's
-/// name. The environment block's region is mapped too, its zeroed pages an empty block.
+/// `module`), the current directory (the image's own), the standard handles and the environment
+/// block's address; and the service pack's name. The environment block's region is mapped too, its
+/// zeroed pages an empty block.
 #[cfg(target_arch = "x86")]
 pub fn map(space: &mut crate::mem::vm::AddressSpace, command_line: &[u8], module: &[u8]) {
     use crate::mem::{paging::PAGE_SIZE, vm};
@@ -218,12 +238,21 @@ pub fn map(space: &mut crate::mem::vm::AddressSpace, command_line: &[u8], module
     let _ = write_user(base + COMMAND_LINE_BUFFER, &wide[..command_line_bytes]);
     let image_path_bytes = widen(&name[..name_length], &mut wide[..PATH_ROOM as usize - 2]);
     let _ = write_user(base + IMAGE_PATH_BUFFER, &wide[..image_path_bytes]);
+    let mut directory = [0u8; MODULE_ROOM];
+    let directory_length = starting_directory(&name[..name_length], &mut directory);
+    let current_directory_bytes =
+        widen(&directory[..directory_length], &mut wide[..PATH_ROOM as usize - 2]);
+    let _ = write_user(
+        base + CURRENT_DIRECTORY_BUFFER,
+        &wide[..current_directory_bytes],
+    );
     let csd_version_bytes = widen(CSD_VERSION_TEXT, &mut wide);
     let _ = write_user(base + CSD_VERSION_BUFFER, &wide[..csd_version_bytes]);
     let block = header(&Header {
         base,
         command_line: command_line_bytes as u32,
         image_path: image_path_bytes as u32,
+        current_directory: current_directory_bytes as u32,
         environment: ENVIRONMENT_BLOCK,
         standard: [STD_INPUT, STD_OUTPUT, STD_ERROR],
     });
@@ -260,6 +289,7 @@ mod tests {
             base,
             command_line: 8,
             image_path: 22,
+            current_directory: 6,
             environment: ENVIRONMENT_BLOCK,
             standard: [3, 7, 11],
         });
@@ -286,7 +316,7 @@ mod tests {
                 half(offset::CURRENT_DIRECTORY + 2),
                 word(offset::CURRENT_DIRECTORY + 4)
             ),
-            (0, PATH_ROOM as u16, base + CURRENT_DIRECTORY_BUFFER)
+            (6, PATH_ROOM as u16, base + CURRENT_DIRECTORY_BUFFER)
         );
         assert_eq!(word(offset::ENVIRONMENT), ENVIRONMENT_BLOCK);
         assert_eq!(
@@ -316,6 +346,16 @@ mod tests {
                 "{string:#x}: none"
             );
         }
+    }
+
+    /// A process starts in its image's directory, its trailing separator kept (a root's too).
+    #[test]
+    fn the_starting_directory_is_the_images() {
+        let mut out = [0u8; MODULE_ROOM];
+        let length = starting_directory(b"C:\\CORPUS\\FILES.EXE", &mut out);
+        assert_eq!(&out[..length], b"C:\\CORPUS\\");
+        let length = starting_directory(b"C:\\RET0.EXE", &mut out);
+        assert_eq!(&out[..length], b"C:\\");
     }
 
     /// The pages' contents do not overlap: the block and its strings and the service pack's name,

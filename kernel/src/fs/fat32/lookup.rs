@@ -6,12 +6,12 @@
 //! records are never consulted. A broken chain or a record pointing outside the volume fails the
 //! lookup as corrupt, never as a panic.
 
-use super::dirent::{decode, DirEntry, Record, ENTRY_SIZE};
-use super::fat::FatEntry;
+use super::dir::{walk, Listed};
+use super::dirent::{Times, ATTR_DIRECTORY};
 use super::path::{components, is_valid, Component};
 use super::volume::Volume;
 use crate::status::{
-    nt_success, NtStatus, STATUS_FILE_CORRUPT_ERROR, STATUS_NOT_A_DIRECTORY, STATUS_NO_SUCH_FILE,
+    NtStatus, STATUS_FILE_CORRUPT_ERROR, STATUS_NOT_A_DIRECTORY, STATUS_NO_SUCH_FILE,
     STATUS_OBJECT_NAME_INVALID,
 };
 
@@ -26,13 +26,58 @@ pub struct File {
     /// The size in bytes (0 for a directory).
     pub size: u32,
     pub directory: bool,
+    /// The attribute bits (the root's: a directory).
+    pub attributes: u8,
+    /// The timestamps as stored (the root has none).
+    pub times: Times,
+    /// The entry's identity: its directory's first cluster and its record index there. The root's
+    /// is (0, 0).
+    pub parent_cluster: u32,
+    pub index: u32,
+}
+
+impl File {
+    /// A file or directory with no attributes beyond the directory bit, no timestamps, and no
+    /// identity (the tests' shorthand).
+    pub const fn plain(first_cluster: u32, size: u32, directory: bool) -> File {
+        File {
+            first_cluster,
+            size,
+            directory,
+            attributes: if directory { ATTR_DIRECTORY } else { 0 },
+            times: Times {
+                create_hundredths: 0,
+                create_time: 0,
+                create_date: 0,
+                access_date: 0,
+                write_time: 0,
+                write_date: 0,
+            },
+            parent_cluster: 0,
+            index: 0,
+        }
+    }
+
+    /// The entry `listed` of the directory starting at `parent_cluster`.
+    pub fn of(listed: &Listed, parent_cluster: u32) -> File {
+        let entry = &listed.entry;
+        File {
+            first_cluster: entry.first_cluster,
+            size: if entry.is_directory() { 0 } else { entry.size },
+            directory: entry.is_directory(),
+            attributes: entry.attributes,
+            times: entry.times,
+            parent_cluster,
+            index: listed.index,
+        }
+    }
 }
 
 /// Why a lookup failed.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum LookupError {
-    /// The path is malformed: empty, an empty component, a component that is not an 8.3 name, or
-    /// deeper than [`MAX_DEPTH`].
+    /// The path is malformed: empty, an empty component, a component no name may be, or deeper
+    /// than [`MAX_DEPTH`].
     Invalid,
     /// A component names no entry of its directory.
     NotFound,
@@ -57,57 +102,44 @@ impl LookupError {
     }
 }
 
-/// Find the entry named `name` (stored form) in the directory starting at `cluster`, in the
-/// directory's own order; none when the directory has no such entry.
-pub fn find(
-    volume: &mut Volume,
-    mut cluster: u32,
-    name: &[u8; 11],
-) -> Result<Option<DirEntry>, LookupError> {
-    let layout = *volume.layout();
-    let mut sector = [0u8; 512];
-    // A chain longer than the volume has clusters loops.
-    for _ in 0..layout.cluster_count {
-        if !layout.is_data_cluster(cluster) {
-            return Err(LookupError::Corrupt);
+/// Find the entry answering to `name` (its long or its 8.3 name, any case) in the directory
+/// starting at `cluster`, in the directory's own order; none when the directory has no such entry.
+/// The dot records answer to nothing.
+pub fn find(volume: &mut Volume, cluster: u32, name: &[u8]) -> Result<Option<Listed>, LookupError> {
+    let mut found = None;
+    walk(volume, cluster, |listed| {
+        if !listed.dot && listed.matches(name) {
+            found = Some(*listed);
+            return false;
         }
-        let first = layout.cluster_lba(cluster);
-        for index in 0..layout.sectors_per_cluster as u64 {
-            let status = volume.device().read(first + index, &mut sector);
-            if !nt_success(status) {
-                return Err(LookupError::Device(status));
-            }
-            for bytes in sector.chunks_exact(ENTRY_SIZE) {
-                match decode(bytes) {
-                    Record::End => return Ok(None),
-                    Record::Entry(entry) if entry.name == *name => return Ok(Some(entry)),
-                    _ => {}
-                }
-            }
-        }
-        cluster = match volume.fat_entry(cluster).map_err(LookupError::Device)? {
-            FatEntry::Next(next) => next,
-            FatEntry::EndOfChain => return Ok(None),
-            FatEntry::Free | FatEntry::Bad | FatEntry::Corrupt(_) => {
-                return Err(LookupError::Corrupt)
-            }
-        };
-    }
-    Err(LookupError::Corrupt)
+        true
+    })?;
+    Ok(found)
+}
+
+/// The root directory's File.
+pub fn root(volume: &Volume) -> File {
+    File::plain(volume.layout().root_cluster, 0, true)
 }
 
 /// Look up a root-relative path (see [`super::path`]): the file or directory it names.
 pub fn lookup(volume: &mut Volume, path: &[u8]) -> Result<File, LookupError> {
+    lookup_with(volume, path, |_| {})
+}
+
+/// [`lookup`], calling `step` with the entry each name component matched, in order.
+pub fn lookup_with(
+    volume: &mut Volume,
+    path: &[u8],
+    mut step: impl FnMut(&Listed),
+) -> Result<File, LookupError> {
     if !is_valid(path) {
         return Err(LookupError::Invalid);
     }
-    let root = File {
-        first_cluster: volume.layout().root_cluster,
-        size: 0,
-        directory: true,
-    };
-    // The directories above the current one, for `..`.
-    let mut parents = [root; MAX_DEPTH];
+    let root = root(volume);
+    // The directories above the current one, for `..`, by first cluster (a parent is a directory,
+    // and `..` names it without its entry's details: the walk keeps the gate stack small).
+    let mut parents = [0u32; MAX_DEPTH];
     let mut depth = 0;
     let mut current = root;
     for component in components(path) {
@@ -119,22 +151,19 @@ pub fn lookup(volume: &mut Volume, path: &[u8]) -> Result<File, LookupError> {
             Component::Parent => {
                 if depth > 0 {
                     depth -= 1;
-                    current = parents[depth];
+                    current = File::plain(parents[depth], 0, true);
                 }
             }
             Component::Name(name) => {
-                let entry =
-                    find(volume, current.first_cluster, &name)?.ok_or(LookupError::NotFound)?;
+                let listed =
+                    find(volume, current.first_cluster, name)?.ok_or(LookupError::NotFound)?;
                 if depth == MAX_DEPTH {
                     return Err(LookupError::Invalid);
                 }
-                parents[depth] = current;
+                step(&listed);
+                parents[depth] = current.first_cluster;
                 depth += 1;
-                current = File {
-                    first_cluster: entry.first_cluster,
-                    size: if entry.is_directory() { 0 } else { entry.size },
-                    directory: entry.is_directory(),
-                };
+                current = File::of(&listed, current.first_cluster);
             }
         }
     }
@@ -154,36 +183,24 @@ mod tests {
     }
 
     /// The real root directory: HELLO.EXE at cluster 3 with 28672 bytes — found by any case — the
-    /// BOOT directory, and the kernel's short name; the label and the long-name record are never
-    /// matched, and the long name itself is not an 8.3 name.
+    /// BOOT directory, and the kernel by its short name and by its long name; the label is never
+    /// matched.
     #[test]
     fn the_real_root_directory() {
         let mut volume = Volume::mount(built_volume_with_root()).unwrap();
-        let hello = File {
-            first_cluster: 3,
-            size: 28_672,
-            directory: false,
-        };
-        assert_eq!(lookup(&mut volume, b"HELLO.EXE"), Ok(hello));
-        assert_eq!(lookup(&mut volume, b"hello.exe"), Ok(hello));
-        assert_eq!(
-            lookup(&mut volume, b"boot"),
-            Ok(File {
-                first_cluster: 59,
-                size: 0,
-                directory: true
-            })
-        );
+        let shape = |file: Result<File, LookupError>| file.map(|f| (f.first_cluster, f.size, f.directory));
+        assert_eq!(shape(lookup(&mut volume, b"HELLO.EXE")), Ok((3, 28_672, false)));
+        assert_eq!(shape(lookup(&mut volume, b"hello.exe")), Ok((3, 28_672, false)));
+        assert_eq!(shape(lookup(&mut volume, b"boot")), Ok((59, 0, true)));
         assert!(matches!(lookup(&mut volume, b"F2K-KE~1"), Ok(file) if file.first_cluster == 61));
         assert_eq!(
             lookup(&mut volume, b"F2K"),
             Err(LookupError::NotFound),
             "the label"
         );
-        assert_eq!(
-            lookup(&mut volume, b"f2k-kernel"),
-            Err(LookupError::Invalid),
-            "a long name"
+        assert!(
+            matches!(lookup(&mut volume, b"f2k-kernel"), Ok(file) if file.first_cluster == 61),
+            "the long name"
         );
         assert_eq!(
             lookup(&mut volume, b"MISSING.TXT"),
@@ -232,17 +249,27 @@ mod tests {
         assert_eq!(lookup(&mut volume, b"VOLUME"), Err(LookupError::NotFound));
     }
 
-    /// An entry whose stored name begins with the 0x05 escape is found by its real first byte.
+    /// An entry whose stored name begins with the 0x05 escape is an entry, its real first byte
+    /// 0xE5: in code page 437, where short names are stored, that is a sigma, which no code page
+    /// 1252 name spells — the 1252 byte 0xE5 (a ring a) is another character, and does not find it.
+    /// An entry stored with 437's capital ring A (0x8F) is what it finds.
     #[test]
-    fn the_escape_matches_its_real_first_byte() {
+    fn the_escape_stands_for_a_real_first_byte() {
         let mut escaped = record(b"XNAME   TXT", FILE, 4, 1);
         escaped[0] = 0x05;
         let mut crafted = Crafted::new(1, 4);
-        crafted.directory(2, &[escaped]);
+        crafted.directory(2, &[escaped, record(b"\x8FNAME   TXT", FILE, 5, 1)]);
         let mut volume = mount(&crafted);
+        let mut first = None;
+        walk(&mut volume, 2, |listed| {
+            first = Some(listed.entry.name[0]);
+            false
+        })
+        .unwrap();
+        assert_eq!(first, Some(0xE5));
         assert_eq!(
             lookup(&mut volume, b"\xE5name.txt").map(|f| f.first_cluster),
-            Ok(4)
+            Ok(5)
         );
     }
 
@@ -321,14 +348,7 @@ mod tests {
         assert_eq!(top(&mut volume, b".\\sub\\.\\inner.txt"), Ok(7));
         assert_eq!(top(&mut volume, b"..\\..\\top.txt"), Ok(6));
         assert_eq!(top(&mut volume, b"sub\\..\\..\\sub\\inner.txt"), Ok(7));
-        assert_eq!(
-            lookup(&mut volume, b"."),
-            Ok(File {
-                first_cluster: 2,
-                size: 0,
-                directory: true
-            })
-        );
+        assert_eq!(lookup(&mut volume, b"."), Ok(File::plain(2, 0, true)));
         assert_eq!(
             top(&mut volume, b"sub\\inner.txt\\.."),
             Err(LookupError::NotADirectory)
@@ -355,10 +375,11 @@ mod tests {
             b"\\FILE.TXT",
             b"SUB\\",
             b"SUB\\\\INNER.TXT",
-            b"long-name.txt",
+            b"WHAT?.TXT",
         ] {
             assert_eq!(lookup(&mut volume, bad), Err(LookupError::Invalid));
         }
+        assert_eq!(lookup(&mut volume, b"long-name.txt"), Err(LookupError::NotFound));
         assert_eq!(lookup(&mut volume, b"NOPE.TXT"), Err(LookupError::NotFound));
         assert_eq!(
             lookup(&mut volume, b"NOPE\\INNER.TXT"),

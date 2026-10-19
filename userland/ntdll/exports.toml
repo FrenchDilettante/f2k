@@ -145,7 +145,7 @@ name = "NtCreateSection"
 group = "nt"
 args = ["ptr<u32> SectionHandle", "u32 DesiredAccess", "ptr ObjectAttributes", "ptr<u64> MaximumSize", "u32 SectionPageProtection", "u32 AllocationAttributes", "handle FileHandle"]
 impl = { syscall = "crate::nt::section::create_section" }
-note = "data sections of the paging file, named in \\BaseNamedObjects; a file's section is STATUS_NOT_IMPLEMENTED until the file objects exist, SEC_IMAGE too"
+note = "data sections of a file or of the paging file, named in \\BaseNamedObjects; SEC_IMAGE is STATUS_NOT_IMPLEMENTED"
 pinned_by = ["files/mapping", "memory/mapping"]
 
 [[export]]
@@ -170,6 +170,78 @@ args = ["handle ProcessHandle", "ptr BaseAddress"]
 impl = { syscall = "crate::nt::section::unmap_view_of_section" }
 note = "of the calling process only (NtCurrentProcess)"
 pinned_by = ["files/mapping", "memory/mapping"]
+
+# --- the file services (kernel/src/nt/file: the read side; the write side is not served yet) -------
+
+[[export]]
+name = "NtCreateFile"
+group = "nt"
+args = ["ptr<u32> FileHandle", "u32 DesiredAccess", "ptr ObjectAttributes", "ptr IoStatusBlock", "ptr<u64> AllocationSize", "u32 FileAttributes", "u32 ShareAccess", "u32 CreateDisposition", "u32 CreateOptions", "ptr EaBuffer", "u32 EaLength"]
+impl = { syscall = "crate::nt::file::create_file" }
+note = "an absolute name (\\??\\C:\\...) or one relative to a directory's file object; the opening dispositions (making or overwriting a file is STATUS_MEDIA_WRITE_PROTECTED until the write side); the allocation size and extended attributes are not consulted"
+pinned_by = ["files/*"]
+
+[[export]]
+name = "NtOpenFile"
+group = "nt"
+args = ["ptr<u32> FileHandle", "u32 DesiredAccess", "ptr ObjectAttributes", "ptr IoStatusBlock", "u32 ShareAccess", "u32 OpenOptions"]
+impl = { syscall = "crate::nt::file::open_file" }
+note = "an absolute name (\\??\\C:\\...) or one relative to a directory's file object"
+pinned_by = ["files/open", "files/find"]
+
+[[export]]
+name = "NtReadFile"
+group = "nt"
+args = ["handle FileHandle", "handle Event", "ptr ApcRoutine", "ptr ApcContext", "ptr IoStatusBlock", "ptr Buffer", "u32 Length", "ptr<u64> ByteOffset", "ptr<u32> Key"]
+impl = { syscall = "crate::nt::file::read_file" }
+note = "completes at once; an APC routine is STATUS_NOT_IMPLEMENTED"
+pinned_by = ["files/read", "files/seek", "files/handles", "files/concurrent"]
+
+[[export]]
+name = "NtQueryInformationFile"
+group = "nt"
+args = ["handle FileHandle", "ptr IoStatusBlock", "ptr FileInformation", "u32 Length", "u32 FileInformationClass"]
+impl = { syscall = "crate::nt::file::query_information_file" }
+note = "the basic, standard, internal, EA, access, position, mode, alignment, all (no name) and network-open classes"
+pinned_by = ["files/meta", "files/seek"]
+
+[[export]]
+name = "NtSetInformationFile"
+group = "nt"
+args = ["handle FileHandle", "ptr IoStatusBlock", "ptr FileInformation", "u32 Length", "u32 FileInformationClass"]
+impl = { syscall = "crate::nt::file::set_information_file" }
+note = "the position class; the basic, rename, disposition and size classes are the write side's (STATUS_MEDIA_WRITE_PROTECTED until then, a mapped file's cut STATUS_USER_MAPPED_FILE)"
+pinned_by = ["files/seek"]
+
+[[export]]
+name = "NtQueryDirectoryFile"
+group = "nt"
+args = ["handle FileHandle", "handle Event", "ptr ApcRoutine", "ptr ApcContext", "ptr IoStatusBlock", "ptr FileInformation", "u32 Length", "u32 FileInformationClass", "u32 ReturnSingleEntry", "ptr FileName", "u32 RestartScan"]
+impl = { syscall = "crate::nt::file::query_directory_file" }
+note = "the directory, full-directory, both-directory and names classes"
+pinned_by = ["files/find", "files/crt"]
+
+[[export]]
+name = "NtQueryAttributesFile"
+group = "nt"
+args = ["ptr ObjectAttributes", "ptr FileInformation"]
+impl = { syscall = "crate::nt::file::query_attributes_file" }
+pinned_by = ["files/meta"]
+
+[[export]]
+name = "NtQueryFullAttributesFile"
+group = "nt"
+args = ["ptr ObjectAttributes", "ptr FileInformation"]
+impl = { syscall = "crate::nt::file::query_full_attributes_file" }
+pinned_by = ["files/meta"]
+
+[[export]]
+name = "NtQueryVolumeInformationFile"
+group = "nt"
+args = ["handle FileHandle", "ptr IoStatusBlock", "ptr FsInformation", "u32 Length", "u32 FsInformationClass"]
+impl = { syscall = "crate::nt::file::query_volume_information_file" }
+note = "the volume, size, device, attribute and full-size classes"
+pinned_by = ["files/meta"]
 
 [[export]]
 name = "NtOpenDirectoryObject"
@@ -562,6 +634,37 @@ group = "heap"
 args = ["u32 hHeap", "u32 dwFlags", "ptr lpMem"]
 impl = { native = "RtlValidateHeap" }
 pinned_by = ["memory/heap"]
+
+# --- the current directory (src/curdir.rs over rtl::path) -----------------------------------------
+
+[[export]]
+name = "RtlGetCurrentDirectory_U"
+group = "paths"
+args = ["u32 BufferLength", "ptr Buffer"]
+impl = { native = "RtlGetCurrentDirectory_U" }
+pinned_by = ["files/open"]
+
+[[export]]
+name = "RtlSetCurrentDirectory_U"
+group = "paths"
+args = ["ptr PathName"]
+impl = { native = "RtlSetCurrentDirectory_U" }
+pinned_by = ["files/open"]
+
+[[export]]
+name = "RtlGetFullPathName_U"
+group = "paths"
+args = ["ptr FileName", "u32 BufferLength", "ptr Buffer", "ptr<u32> FilePart"]
+impl = { native = "RtlGetFullPathName_U" }
+pinned_by = ["files/open", "files/crt"]
+
+[[export]]
+name = "RtlDosPathNameToNtPathName_U"
+group = "paths"
+args = ["ptr DosFileName", "ptr NtFileName", "ptr<u32> FilePart", "ptr RelativeName"]
+impl = { native = "RtlDosPathNameToNtPathName_U" }
+note = "a relative path under the current directory comes back relative to its handle (RTL_RELATIVE_NAME)"
+pinned_by = ["files/*"]
 
 # --- the environment (src/env.rs over rtl::env) ---------------------------------------------------
 

@@ -1,6 +1,6 @@
 //! File mappings: kernel32's own code over ntdll's section services, as on Windows 2000. A mapping
-//! is a section of the paging file (INVALID_HANDLE_VALUE; a file's mapping is the kernel's to refuse
-//! until the file objects, B8), made or opened by name in `\BaseNamedObjects` as the
+//! is a section of a file (its handle) or of the paging file (INVALID_HANDLE_VALUE), made or opened
+//! by name in `\BaseNamedObjects` as the
 //! synchronization objects are (the shared create and open of [`crate::sync`], relative to the
 //! directory's handle, BaseGetNamedObjectDirectory); a view is mapped into the calling process
 //! (NtCurrentProcess). A failed service's status sets the last error through BaseSetLastNTError.
@@ -40,11 +40,12 @@ const FILE_MAP_READ: u32 = 0x0004;
 /// NtMapViewOfSection's ViewShare disposition.
 const VIEW_SHARE: u32 = 1;
 
-/// CreateFileMappingA: a section of the paging file (INVALID_HANDLE_VALUE, which needs a size) of
-/// the size asked for, read-only, read-write or copy-on-write (another protection is
-/// ERROR_INVALID_PARAMETER); or the named one already bound (ERROR_ALREADY_EXISTS). The last error
-/// is cleared on success (see [`sync::create`]). A file's handle goes to the service, which refuses
-/// it until the file objects (B8).
+/// CreateFileMappingA: a section of the file (the size asked for, or the file's when none is) or of
+/// the paging file (INVALID_HANDLE_VALUE, which needs a size), read-only, read-write or
+/// copy-on-write (another protection is ERROR_INVALID_PARAMETER); or the named one already bound
+/// (ERROR_ALREADY_EXISTS). The last error is cleared on success (see [`sync::create`]). The file's
+/// rules are the section service's (an empty file ERROR_FILE_INVALID, one smaller than the size
+/// asked ERROR_NOT_ENOUGH_MEMORY).
 ///
 /// # Safety
 ///
