@@ -19,6 +19,15 @@ fn dispatcher() -> &'static mut Dispatcher {
     d
 }
 
+fn thread() -> &'static mut Thread {
+    let process = Box::leak(Box::new(crate::sched::process::SchedProcess::new(0x0090_0000, 8)));
+    process.init();
+    let thread = Box::leak(Box::new(Thread::empty()));
+    // SAFETY: both are leaked at their final addresses.
+    unsafe { thread.attach_to(process) };
+    thread
+}
+
 /// Close a handle to `id`, collecting what the caller must finish.
 fn closed(directory: &mut Directory, id: ObjectId, dispatcher: &mut Dispatcher) -> Vec<Followup> {
     let mut followups = Vec::new();
@@ -271,6 +280,40 @@ fn the_pools_exhaust() {
     }
     assert_eq!(directory.create_semaphore(0, 1), None);
     assert_eq!(directory.live_objects(), SEMAPHORES);
+}
+
+/// A deleted mutex its owner still held leaves the owner's list: the owner's end then has
+/// nothing of it to abandon.
+#[test]
+fn a_deleted_owned_mutex_leaves_its_owner() {
+    let directory = directory();
+    let dispatcher = dispatcher();
+    let owner = thread();
+    let id = directory.create_mutex().unwrap();
+    crate::sched::mutex::acquire(directory.mutex(id).unwrap(), owner);
+    assert!(!owner.owned_mutexes.is_empty());
+    assert!(directory.waitable(id).is_some(), "a mutex is waitable");
+    assert_eq!(directory.dereference(id, dispatcher), None);
+    assert!(owner.owned_mutexes.is_empty(), "the deletion unlinked it");
+    dispatcher.abandon_mutexes(owner);
+}
+
+/// `\BaseNamedObjects` is made once, at its first need, and is permanent: no process's end
+/// deletes it, nor counts it as a leak; no wait can name it.
+#[test]
+fn the_named_objects_directory_is_permanent() {
+    let directory = directory();
+    let dispatcher = dispatcher();
+    let id = directory.named_objects().unwrap();
+    assert_eq!(directory.named_objects(), Some(id), "one directory");
+    assert_eq!(directory.waitable(id), None);
+    // An open's handle, then its close: the creator's reference stays.
+    assert!(directory.handle_opened(id));
+    assert_eq!(closed(directory, id, dispatcher), vec![]);
+    assert_eq!(directory.counts(id), Some((1, 0)));
+    assert_eq!(directory.process_ended(dispatcher, |_| {}), 0);
+    assert!(directory.is_live(id), "it outlives every process");
+    assert_eq!(directory.named_objects(), Some(id));
 }
 
 /// The process's end deletes whatever outlived it (a reference leak, reported) and starts every

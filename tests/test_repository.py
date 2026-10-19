@@ -166,7 +166,7 @@ RAW_ACCESS_ALLOWED = {
     "kernel/src/sched/startup.rs": "a new thread's kernel gate stack",
     "kernel/src/user/syscall.rs": "the copy primitives themselves and the attribution flag",
     "kernel/src/user/shared.rs": "the shared data page through the kernel's own mapping of its frame",
-    "kernel/src/user/userheap.rs": "the user heap's region (GAP-VM-1: kernel-side until the user-mode heap, B6)",
+    "kernel/src/user/userheap.rs": "the user heap's region (kernel-side until the user-mode heap grows)",
 }
 RAW_FORMS = ("read_volatile", "write_volatile", "from_raw_parts")
 
@@ -213,8 +213,8 @@ def test_only_the_address_space_writes_user_entries():
 # --- The process record ---------------------------------------------------------------------------
 
 # The `current_mut()` call sites in the kernel: each hands out an aliasable `&'static mut Process`
-# (to be replaced by explicit borrows). The count may only go down.
-CURRENT_MUT_SITES = 12
+# (explicit borrows retire them). The count may only go down.
+CURRENT_MUT_SITES = 11
 
 
 def test_current_mut_call_sites_only_go_down():
@@ -246,12 +246,12 @@ def kernel32_exports() -> list[dict]:
 
 # The kernel32 exports the kernel still serves (the kernel's transitional Win32 services: `legacy`
 # handlers and `floor` answers, generated int 2Eh stubs). Each increment moves its group to
-# kernel32's own code over ntdll and lowers this, until the last is retired.
-SERVED_KERNEL32_EXPORTS = 23
+# kernel32's own code over ntdll and lowers this; C1 retires the last.
+SERVED_KERNEL32_EXPORTS = 20
 
 # The kernel32 exports the corpus imports that are not built yet (`unimplemented` stubs failing with
 # ERROR_CALL_NOT_IMPLEMENTED, each naming its increment). It only goes down.
-UNIMPLEMENTED_KERNEL32_EXPORTS = 84
+UNIMPLEMENTED_KERNEL32_EXPORTS = 63
 
 
 def test_served_kernel32_exports_only_go_down():

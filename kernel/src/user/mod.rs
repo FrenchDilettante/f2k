@@ -20,6 +20,7 @@ pub mod shared;
 pub mod stack;
 pub mod syscall;
 pub mod teb;
+pub mod tls;
 pub mod userheap;
 
 /// The fault-test stub's code page (the corpus programs' preferred base, which the fault-test builds

@@ -113,8 +113,11 @@ pub struct ProcessParts<'a> {
 
 /// How many threads a process can have alive besides its main thread. A terminated thread's record
 /// is reused once nothing references its object, so this bounds the live threads, not the threads
-/// created.
-pub const CHILD_THREADS: usize = 3;
+/// created. Four covers the sync fixture's four concurrent workers; the threads fixture's scale
+/// block wants Windows 2000's 64, once the sleep smoke has retired: its first span (20
+/// ticks of 10.0144 ms, read as 200 or 201 by the tick count at its start) moves with the boot's
+/// length, which grows with the thread pool.
+pub const CHILD_THREADS: usize = 4;
 
 /// The main thread's record in the object manager's thread pool (created threads take the records
 /// after it; a record's index is its thread's ordinal).
@@ -272,6 +275,17 @@ impl Process {
         }
         self.handles
             .insert(crate::ob::Entry::object(id, access, inherit))
+    }
+
+    /// Every thread that has a TEB, as (ordinal, TEB address): the main thread at ordinal 0, then
+    /// the created threads (terminated ones too: their pages stay mapped until the record is
+    /// reused).
+    #[cfg(target_arch = "x86")]
+    pub fn thread_tebs(&self) -> impl Iterator<Item = (u32, u32)> {
+        (0..crate::ob::THREADS as u16).filter_map(|index| {
+            let teb = crate::ob::directory().threads.record(index).teb_va();
+            (teb != 0).then_some((index as u32, teb))
+        })
     }
 
     /// Release every handle at once: the process-exit step. Each closes as a CloseHandle would.

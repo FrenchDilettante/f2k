@@ -1,32 +1,18 @@
 //! File mappings: kernel32's own code over ntdll's section services, as on Windows 2000. A mapping
 //! is a section of the paging file (INVALID_HANDLE_VALUE; a file's mapping is the kernel's to refuse
-//! until the file objects), made or opened by name in `\BaseNamedObjects`; a view is mapped into
-//! the calling process (NtCurrentProcess). A failed service's status sets the last error through
-//! BaseSetLastNTError.
-//!
-//! Windows 2000 names its objects relative to the `\BaseNamedObjects` directory's handle
-//! (BaseGetNamedObjectDirectory); until that directory object comes with the synchronization
-//! services, the names are spelled absolutely (`\BaseNamedObjects\<name>`), which the object
-//! manager resolves to the same place.
+//! until the file objects, B8), made or opened by name in `\BaseNamedObjects` as the
+//! synchronization objects are (the shared create and open of [`crate::sync`], relative to the
+//! directory's handle, BaseGetNamedObjectDirectory); a view is mapped into the calling process
+//! (NtCurrentProcess). A failed service's status sets the last error through BaseSetLastNTError.
 
-use rtl::cp1252;
 use rtl::status::nt_success;
 
-use crate::base::{set_last_error, set_last_nt_error, succeeded, SecurityAttributes, CURRENT_PROCESS};
-use crate::nt::{self, ObjectAttributes, UnicodeString};
+use crate::base::{set_last_nt_error, succeeded, SecurityAttributes, CURRENT_PROCESS};
+use crate::nt;
+use crate::sync;
 
 const INVALID_HANDLE_VALUE: u32 = 0xFFFF_FFFF;
 const STATUS_INVALID_PARAMETER: u32 = 0xC000_000D;
-const STATUS_OBJECT_NAME_EXISTS: u32 = 0x4000_0000;
-
-const ERROR_INVALID_PARAMETER: u32 = 87;
-const ERROR_ALREADY_EXISTS: u32 = 183;
-const ERROR_FILENAME_EXCED_RANGE: u32 = 206;
-
-/// OBJECT_ATTRIBUTES' Attributes: OBJ_INHERIT, and OBJ_OPENIF (a create opens an existing object of
-/// its name).
-const OBJ_INHERIT: u32 = 0x2;
-const OBJ_OPENIF: u32 = 0x80;
 
 /// The page protections a mapping and a view take.
 const PAGE_NOACCESS: u32 = 0x01;
@@ -54,95 +40,11 @@ const FILE_MAP_READ: u32 = 0x0004;
 /// NtMapViewOfSection's ViewShare disposition.
 const VIEW_SHARE: u32 = 1;
 
-/// The ANSI path limit: an object name's longest, in characters.
-const MAX_PATH: usize = 260;
-
-/// The named objects' directory, which an absolute name starts with.
-const NAMED_OBJECTS: &[u8] = b"\\BaseNamedObjects\\";
-
-/// Room for an absolute object name: the directory's prefix and the longest name.
-const NAME_UNITS: usize = NAMED_OBJECTS.len() + MAX_PATH + 1;
-
-/// An ANSI object name into UTF-16 after the named objects' prefix in `out`: the whole name's length
-/// in units, none for an empty name; ERROR_FILENAME_EXCED_RANGE past MAX_PATH characters.
-///
-/// # Safety
-///
-/// `name` points at a NUL-terminated string (a bad pointer faults the caller, as on the platform).
-unsafe fn absolute_name(name: *const u8, out: &mut [u16; NAME_UNITS]) -> Result<usize, u32> {
-    for (unit, &byte) in out.iter_mut().zip(NAMED_OBJECTS) {
-        *unit = u16::from(byte);
-    }
-    let mut length = 0;
-    loop {
-        // SAFETY: the caller's string, read to its terminator.
-        let byte = unsafe { name.add(length).read() };
-        if byte == 0 {
-            return Ok(NAMED_OBJECTS.len() + length);
-        }
-        if length == MAX_PATH {
-            return Err(ERROR_FILENAME_EXCED_RANGE);
-        }
-        out[NAMED_OBJECTS.len() + length] = cp1252::MB_TO_WC[byte as usize];
-        length += 1;
-    }
-}
-
-/// A UNICODE_STRING over the first `length` units of `units`.
-fn unicode_string(units: &mut [u16], length: usize) -> UnicodeString {
-    UnicodeString {
-        length: (2 * length) as u16,
-        maximum_length: (2 * units.len()) as u16,
-        buffer: units.as_mut_ptr(),
-    }
-}
-
-/// The OBJECT_ATTRIBUTES a create passes (BaseFormatObjectAttributes): none with neither security
-/// attributes nor a name; otherwise inheritable as the security attributes ask, and a name is
-/// OBJ_OPENIF (an existing object of the name is opened).
-///
-/// # Safety
-///
-/// `security` is null or points at a SECURITY_ATTRIBUTES; `name` outlives the attributes' use.
-unsafe fn format_object_attributes(
-    out: &mut ObjectAttributes,
-    security: *const SecurityAttributes,
-    name: Option<&UnicodeString>,
-) -> *const ObjectAttributes {
-    if security.is_null() && name.is_none() {
-        return core::ptr::null();
-    }
-    // SAFETY: the caller's structure, when given.
-    let (mut attributes, descriptor) = match unsafe { security.as_ref() } {
-        Some(security) => (
-            if security.inherit_handle != 0 {
-                OBJ_INHERIT
-            } else {
-                0
-            },
-            security.security_descriptor,
-        ),
-        None => (0, core::ptr::null()),
-    };
-    if name.is_some() {
-        attributes |= OBJ_OPENIF;
-    }
-    *out = ObjectAttributes {
-        length: 24,
-        root_directory: 0,
-        object_name: name.map_or(core::ptr::null(), |name| name as *const UnicodeString),
-        attributes,
-        security_descriptor: descriptor,
-        security_quality_of_service: core::ptr::null(),
-    };
-    out
-}
-
 /// CreateFileMappingA: a section of the paging file (INVALID_HANDLE_VALUE, which needs a size) of
 /// the size asked for, read-only, read-write or copy-on-write (another protection is
 /// ERROR_INVALID_PARAMETER); or the named one already bound (ERROR_ALREADY_EXISTS). The last error
-/// is cleared on success, as Windows clears it on every successful create. A file's handle goes to
-/// the service, which refuses it until the file objects.
+/// is cleared on success (see [`sync::create`]). A file's handle goes to the service, which refuses
+/// it until the file objects (B8).
 ///
 /// # Safety
 ///
@@ -171,71 +73,34 @@ pub unsafe extern "system" fn create_file_mapping_a(
         };
     let maximum = (i64::from(size_high) << 32) | i64::from(size_low);
     let file = if file == INVALID_HANDLE_VALUE { 0 } else { file };
-    let mut units = [0u16; NAME_UNITS];
-    let mut string = UnicodeString {
-        length: 0,
-        maximum_length: 0,
-        buffer: core::ptr::null_mut(),
-    };
-    let named = !name.is_null();
-    if named {
-        // SAFETY: the caller's string.
-        match unsafe { absolute_name(name, &mut units) } {
-            Ok(length) => string = unicode_string(&mut units, length),
-            Err(error) => {
-                set_last_error(error);
-                return 0;
+    // SAFETY: the caller's arguments; ntdll's export.
+    unsafe {
+        sync::create(security, name, |handle, object_attributes| {
+            if !matches!(protect, PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY)
+                || file == 0 && maximum == 0
+            {
+                return STATUS_INVALID_PARAMETER;
             }
-        }
+            let size = if maximum != 0 {
+                &maximum as *const i64
+            } else {
+                core::ptr::null()
+            };
+            nt::NtCreateSection(
+                handle,
+                access,
+                object_attributes,
+                size,
+                protect,
+                allocation,
+                file,
+            )
+        })
     }
-    if !matches!(protect, PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY)
-        || file == 0 && maximum == 0
-    {
-        set_last_nt_error(STATUS_INVALID_PARAMETER);
-        return 0;
-    }
-    let mut object_attributes = core::mem::MaybeUninit::<ObjectAttributes>::uninit();
-    // SAFETY: the caller's security attributes; the name outlives the call.
-    let object_attributes = unsafe {
-        format_object_attributes(
-            &mut *object_attributes.as_mut_ptr(),
-            security,
-            named.then_some(&string),
-        )
-    };
-    let size = if maximum != 0 {
-        &maximum as *const i64
-    } else {
-        core::ptr::null()
-    };
-    let mut handle = 0;
-    // SAFETY: ntdll's export, over the values above.
-    let status = unsafe {
-        nt::NtCreateSection(
-            &mut handle,
-            access,
-            object_attributes,
-            size,
-            protect,
-            allocation,
-            file,
-        )
-    };
-    if !nt_success(status) {
-        set_last_nt_error(status);
-        return 0;
-    }
-    set_last_error(if status == STATUS_OBJECT_NAME_EXISTS {
-        ERROR_ALREADY_EXISTS
-    } else {
-        0
-    });
-    handle
 }
 
 /// OpenFileMappingA: the named mapping in `\BaseNamedObjects`, with the access asked for
-/// (FILE_MAP_COPY asks to read) and inheritable when asked. ERROR_INVALID_PARAMETER without a name;
-/// the status's error when it cannot be opened. The last error is left alone on success.
+/// (FILE_MAP_COPY asks to read) and inheritable when asked (see [`sync::open`]).
 ///
 /// # Safety
 ///
@@ -251,41 +116,12 @@ pub unsafe extern "system" fn open_file_mapping_a(
     } else {
         access
     };
-    let mut units = [0u16; NAME_UNITS];
-    // SAFETY: the caller's string, when given.
-    let length = match (!name.is_null()).then(|| unsafe { absolute_name(name, &mut units) }) {
-        // An empty name names nothing (an assumption, unverified against Windows 2000).
-        None => {
-            set_last_error(ERROR_INVALID_PARAMETER);
-            return 0;
-        }
-        Some(Ok(length)) if length == NAMED_OBJECTS.len() => {
-            set_last_error(ERROR_INVALID_PARAMETER);
-            return 0;
-        }
-        Some(Err(error)) => {
-            set_last_error(error);
-            return 0;
-        }
-        Some(Ok(length)) => length,
-    };
-    let string = unicode_string(&mut units, length);
-    let attributes = ObjectAttributes {
-        length: 24,
-        root_directory: 0,
-        object_name: &string,
-        attributes: if inherit != 0 { OBJ_INHERIT } else { 0 },
-        security_descriptor: core::ptr::null(),
-        security_quality_of_service: core::ptr::null(),
-    };
-    let mut handle = 0;
-    // SAFETY: ntdll's export, over the attributes above.
-    let status = unsafe { nt::NtOpenSection(&mut handle, access, &attributes) };
-    if !nt_success(status) {
-        set_last_nt_error(status);
-        return 0;
+    // SAFETY: the caller's string; ntdll's export.
+    unsafe {
+        sync::open(access, inherit, name, |handle, access, attributes| {
+            nt::NtOpenSection(handle, access, attributes)
+        })
     }
-    handle
 }
 
 /// MapViewOfFile: a view of `bytes` of the mapping (zero: to its end) from the offset, anywhere in
@@ -343,8 +179,8 @@ pub extern "system" fn unmap_view_of_file(base: usize) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::base::last_error;
-    use crate::nt::host::{BASE, FAIL_NEXT, HANDLE, LAST_NAME, LAST_SECTION, LAST_VM};
+    use crate::base::{last_error, set_last_error};
+    use crate::nt::host::{BASE, DIRECTORY, FAIL_NEXT, HANDLE, LAST_NAME, LAST_SECTION, LAST_VM};
 
     fn fail_next(status: u32) {
         FAIL_NEXT.with(|cell| cell.set(status));
@@ -355,8 +191,8 @@ mod tests {
     }
 
     /// The memory fixture's mapping block: a paging-file mapping of 1 MiB (the last error cleared),
-    /// a named one made again (ERROR_ALREADY_EXISTS) in `\BaseNamedObjects`, a missing name
-    /// (ERROR_FILE_NOT_FOUND).
+    /// a named one made again (ERROR_ALREADY_EXISTS) relative to `\BaseNamedObjects`'s handle, a
+    /// missing name (ERROR_FILE_NOT_FOUND).
     #[test]
     fn mappings_are_named_sections() {
         set_last_error(99);
@@ -398,7 +234,7 @@ mod tests {
         );
         assert_eq!(last_error(), 183);
         let (root, name) = LAST_NAME.with(|cell| cell.borrow_mut().take()).unwrap();
-        assert_eq!((root, name), (0, wide("\\BaseNamedObjects\\M")));
+        assert_eq!((root, name), (DIRECTORY, wide("M")));
         fail_next(rtl::status::STATUS_OBJECT_NAME_NOT_FOUND);
         // SAFETY: a NUL-terminated name.
         assert_eq!(
@@ -407,7 +243,7 @@ mod tests {
         );
         assert_eq!(last_error(), 2);
         let (_, name) = LAST_NAME.with(|cell| cell.borrow_mut().take()).unwrap();
-        assert_eq!(name, wide("\\BaseNamedObjects\\missing"));
+        assert_eq!(name, wide("missing"));
         // SAFETY: an empty name.
         assert_eq!(
             unsafe { open_file_mapping_a(FILE_MAP_READ, 0, c"".as_ptr().cast()) },

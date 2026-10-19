@@ -2,7 +2,8 @@
 //!
 //! What every build shares, host-tested: the status mapping ([`status`]: RtlNtStatusToDosError's
 //! table, which kernel32 reports every failed system service through), the code pages and their
-//! conversions ([`codepage`], [`cp1252`]), the time conversions ([`time`]), and the console
+//! conversions ([`codepage`], [`cp1252`]), the time conversions ([`time`]), the critical sections
+//! ([`critsec`]: ntdll's RtlEnterCriticalSection family, over the system it is handed), and the console
 //! server's message format and rules ([`console`]: kernel32's side and the kernel's stand-in for
 //! csrss share them), and structured exception handling's walks ([`seh`]: ntdll's
 //! RtlDispatchException and RtlUnwind, with the CONTEXT and record layouts the kernel writes).
@@ -17,6 +18,7 @@
 pub mod codepage;
 pub mod console;
 pub mod cp1252;
+pub mod critsec;
 pub mod seh;
 pub mod status;
 mod status_table;

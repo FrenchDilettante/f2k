@@ -6,7 +6,8 @@
 # export is there under its Zw name too; the handler is `fn(&mut NtCall, <arguments>) -> NtResult`,
 # the NTSTATUS its answer), its user-mode exports (RtlNtStatusToDosError, the mapping kernel32
 # reports a failed service through; the exception dispatcher and RtlUnwind, which kernel32 forwards
-# to), and the F2K-internal entry point the kernel sends a thread to (`internal = true`: not a
+# to; the critical sections, which kernel32's Enter, Leave, TryEnter and Delete forward to, and the
+# PEB lock), and the F2K-internal entry point the kernel sends a thread to (`internal = true`: not a
 # Windows 2000 export).
 
 [[group]]
@@ -20,6 +21,10 @@ title = "the client-server runtime"
 [[group]]
 key = "exceptions"
 title = "exceptions"
+
+[[group]]
+key = "threads"
+title = "critical sections"
 
 [[group]]
 key = "internal"
@@ -47,7 +52,7 @@ name = "NtContinue"
 group = "nt"
 args = ["ptr Context", "u32 TestAlert"]
 impl = { syscall = "crate::nt::exception::continue_context" }
-note = "resumes the CONTEXT's control and integer registers (TF honoured, privileged flags masked). The debug and floating-point registers are not restored; TestAlert is ignored until user APCs are delivered through KiUserApcDispatcher"
+note = "resumes the CONTEXT's control and integer registers (TF honoured, privileged flags masked). The debug and floating-point registers are not restored; TestAlert is ignored until user APCs are delivered through KiUserApcDispatcher (B5b)"
 pinned_by = ["runtime/seh", "runtime/unhandled"]
 
 [[export]]
@@ -144,6 +149,135 @@ impl = { syscall = "crate::nt::section::unmap_view_of_section" }
 note = "of the calling process only (NtCurrentProcess): GAP-PS-4"
 pinned_by = ["files/mapping", "memory/mapping"]
 
+[[export]]
+name = "NtOpenDirectoryObject"
+group = "nt"
+args = ["ptr<u32> DirectoryHandle", "u32 DesiredAccess", "ptr ObjectAttributes"]
+impl = { syscall = "crate::nt::sync::open_directory_object" }
+note = "\\BaseNamedObjects alone, the one directory (kernel32's named objects are made in it)"
+pinned_by = ["sync/event"]
+
+[[export]]
+name = "NtCreateEvent"
+group = "nt"
+args = ["ptr<u32> EventHandle", "u32 DesiredAccess", "ptr ObjectAttributes", "u32 EventType", "u32 InitialState"]
+impl = { syscall = "crate::nt::sync::create_event" }
+pinned_by = ["sync/event", "sync/waitmulti", "sync/critsec"]
+
+[[export]]
+name = "NtOpenEvent"
+group = "nt"
+args = ["ptr<u32> EventHandle", "u32 DesiredAccess", "ptr ObjectAttributes"]
+impl = { syscall = "crate::nt::sync::open_event" }
+pinned_by = ["sync/event"]
+
+[[export]]
+name = "NtSetEvent"
+group = "nt"
+args = ["handle EventHandle", "ptr<i32> PreviousState"]
+impl = { syscall = "crate::nt::sync::set_event" }
+pinned_by = ["sync/event", "sync/critsec"]
+
+[[export]]
+name = "NtResetEvent"
+group = "nt"
+args = ["handle EventHandle", "ptr<i32> PreviousState"]
+impl = { syscall = "crate::nt::sync::reset_event" }
+pinned_by = ["sync/event"]
+
+[[export]]
+name = "NtClearEvent"
+group = "nt"
+args = ["handle EventHandle"]
+impl = { syscall = "crate::nt::sync::clear_event" }
+pinned_by = ["sync/event", "sync/pingpong"]
+
+[[export]]
+name = "NtPulseEvent"
+group = "nt"
+args = ["handle EventHandle", "ptr<i32> PreviousState"]
+impl = { syscall = "crate::nt::sync::pulse_event" }
+pinned_by = ["sync/event"]
+
+[[export]]
+name = "NtCreateMutant"
+group = "nt"
+args = ["ptr<u32> MutantHandle", "u32 DesiredAccess", "ptr ObjectAttributes", "u32 InitialOwner"]
+impl = { syscall = "crate::nt::sync::create_mutant" }
+pinned_by = ["sync/mutex"]
+
+[[export]]
+name = "NtOpenMutant"
+group = "nt"
+args = ["ptr<u32> MutantHandle", "u32 DesiredAccess", "ptr ObjectAttributes"]
+impl = { syscall = "crate::nt::sync::open_mutant" }
+pinned_by = ["sync/mutex"]
+
+[[export]]
+name = "NtReleaseMutant"
+group = "nt"
+args = ["handle MutantHandle", "ptr<i32> PreviousCount"]
+impl = { syscall = "crate::nt::sync::release_mutant" }
+pinned_by = ["sync/mutex"]
+
+[[export]]
+name = "NtCreateSemaphore"
+group = "nt"
+args = ["ptr<u32> SemaphoreHandle", "u32 DesiredAccess", "ptr ObjectAttributes", "i32 InitialCount", "i32 MaximumCount"]
+impl = { syscall = "crate::nt::sync::create_semaphore" }
+pinned_by = ["sync/semaphore"]
+
+[[export]]
+name = "NtOpenSemaphore"
+group = "nt"
+args = ["ptr<u32> SemaphoreHandle", "u32 DesiredAccess", "ptr ObjectAttributes"]
+impl = { syscall = "crate::nt::sync::open_semaphore" }
+pinned_by = ["sync/semaphore"]
+
+[[export]]
+name = "NtReleaseSemaphore"
+group = "nt"
+args = ["handle SemaphoreHandle", "i32 ReleaseCount", "ptr<i32> PreviousCount"]
+impl = { syscall = "crate::nt::sync::release_semaphore" }
+pinned_by = ["sync/semaphore"]
+
+[[export]]
+name = "NtWaitForSingleObject"
+group = "nt"
+args = ["handle Handle", "u32 Alertable", "ptr<u64> Timeout"]
+impl = { syscall = "crate::nt::sync::wait_for_single_object" }
+pinned_by = ["sync/*"]
+
+[[export]]
+name = "NtWaitForMultipleObjects"
+group = "nt"
+args = ["u32 Count", "ptr Handles", "u32 WaitType", "u32 Alertable", "ptr<u64> Timeout"]
+impl = { syscall = "crate::nt::sync::wait_for_multiple_objects" }
+pinned_by = ["sync/waitmulti"]
+
+[[export]]
+name = "NtSignalAndWaitForSingleObject"
+group = "nt"
+args = ["handle SignalHandle", "handle WaitHandle", "u32 Alertable", "ptr<u64> Timeout"]
+impl = { syscall = "crate::nt::sync::signal_and_wait_for_single_object" }
+pinned_by = ["sync/pingpong"]
+
+[[export]]
+name = "NtDuplicateObject"
+group = "nt"
+args = ["handle SourceProcessHandle", "handle SourceHandle", "handle TargetProcessHandle", "ptr<u32> TargetHandle", "u32 DesiredAccess", "u32 HandleAttributes", "u32 Options"]
+impl = { syscall = "crate::nt::sync::duplicate_object" }
+note = "within the calling process only (GAP-PS-4)"
+pinned_by = ["sync/handles"]
+
+[[export]]
+name = "NtSetInformationThread"
+group = "nt"
+args = ["handle ThreadHandle", "u32 ThreadInformationClass", "ptr ThreadInformation", "u32 ThreadInformationLength"]
+impl = { syscall = "crate::nt::thread::set_information_thread" }
+note = "answers ThreadZeroTlsCell (10) alone, TlsFree's; the other classes come with the thread calls (B7): GAP-NT-7"
+pinned_by = ["threads/tls"]
+
 # --- the client-server runtime (src/csr.s) --------------------------------------------------------
 
 [[export]]
@@ -194,6 +328,72 @@ args = ["ptr TargetFrame", "u32 TargetIp", "ptr ExceptionRecord", "u32 ReturnVal
 impl = { native = "RtlUnwind" }
 note = "x86 NT's semantics: TargetIp ignored, the caller resumed through NtContinue; collided unwinds, INVALID_UNWIND_TARGET and BAD_STACK; a NULL target is an exit unwind, then the second chance"
 pinned_by = ["runtime/seh", "runtime/unhandled", "bare/null-write"]
+
+# --- critical sections and the PEB lock (src/critsec.s over rtl::critsec) ----------------------
+
+[[export]]
+name = "RtlInitializeCriticalSection"
+group = "threads"
+args = ["ptr lpCriticalSection"]
+impl = { native = "RtlInitializeCriticalSection" }
+unpinned = "no fixture imports it from ntdll; kernel32's InitializeCriticalSection runs the same body (rtl::critsec), pinned by sync/critsec"
+
+[[export]]
+name = "RtlInitializeCriticalSectionAndSpinCount"
+group = "threads"
+args = ["ptr lpCriticalSection", "u32 dwSpinCount"]
+impl = { native = "RtlInitializeCriticalSectionAndSpinCount" }
+unpinned = "no fixture imports it from ntdll (kernel32's InitializeCriticalSectionAndSpinCount waits for a corpus binary importing it); its body (rtl::critsec) is host-tested with the spin count and the preallocated event"
+
+[[export]]
+name = "RtlEnterCriticalSection"
+group = "threads"
+args = ["ptr lpCriticalSection"]
+impl = { native = "RtlEnterCriticalSection" }
+pinned_by = ["sync/critsec"]
+
+[[export]]
+name = "RtlTryEnterCriticalSection"
+group = "threads"
+args = ["ptr lpCriticalSection"]
+impl = { native = "RtlTryEnterCriticalSection" }
+pinned_by = ["sync/critsec"]
+
+[[export]]
+name = "RtlLeaveCriticalSection"
+group = "threads"
+args = ["ptr lpCriticalSection"]
+impl = { native = "RtlLeaveCriticalSection" }
+pinned_by = ["sync/critsec"]
+
+[[export]]
+name = "RtlDeleteCriticalSection"
+group = "threads"
+args = ["ptr lpCriticalSection"]
+impl = { native = "RtlDeleteCriticalSection" }
+pinned_by = ["sync/critsec"]
+
+[[export]]
+name = "RtlSetCriticalSectionSpinCount"
+group = "threads"
+args = ["ptr lpCriticalSection", "u32 dwSpinCount"]
+impl = { native = "RtlSetCriticalSectionSpinCount" }
+unpinned = "no fixture imports it from ntdll (kernel32's SetCriticalSectionSpinCount, which forwards here on Windows 2000, waits for a corpus binary importing it); its body (rtl::critsec) is host-tested"
+
+[[export]]
+name = "RtlAcquirePebLock"
+group = "threads"
+args = []
+impl = { native = "RtlAcquirePebLock" }
+note = "the PEB lock (PEB+0x1C, its storage at PEB+0x860), planted free by the kernel's PEB until ntdll's process start makes it (B7)"
+pinned_by = ["sync/*"]
+
+[[export]]
+name = "RtlReleasePebLock"
+group = "threads"
+args = []
+impl = { native = "RtlReleasePebLock" }
+pinned_by = ["sync/*"]
 
 # --- F2K-internal entry points --------------------------------------------------------------------
 

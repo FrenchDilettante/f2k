@@ -10,9 +10,10 @@
 //! reference: the creator's while it builds the object, each handle's, each wait's (a waiting thread
 //! holds its objects for the wait's whole life, replays after an APC included), a thread's own while
 //! it runs, a process's own until its teardown ends. The handle count is the handles alone. The last
-//! handle's close drops the object's name (a named object is temporary); the last reference deletes the
-//! object, and its record is free for reuse. Nothing scans handle tables to decide whether an object
-//! lives.
+//! handle's close drops the object's name (NT's temporary objects); the last reference deletes the
+//! object — an owned mutex leaves its owner's list — and its record is free for reuse. Nothing scans
+//! handle tables to decide whether an object lives. `\BaseNamedObjects` itself is a directory
+//! object, permanent: made at its first open, never deleted.
 //!
 //! Names live in one namespace for all kinds (the `\BaseNamedObjects` directory): a name binds one
 //! live object, compares exactly (Win32 object names are case-sensitive), and goes with the bound
@@ -31,6 +32,7 @@ use core::mem::MaybeUninit;
 
 use crate::sched::dispatcher::Dispatcher;
 use crate::sched::event::{Event, EventKind};
+use crate::sched::mutex::Mutex;
 use crate::sched::semaphore::Semaphore;
 use crate::sched::thread::Thread;
 use crate::sched::wait::{Waitable, MAXIMUM_WAIT_OBJECTS};
@@ -40,9 +42,12 @@ use crate::sched::wait::{Waitable, MAXIMUM_WAIT_OBJECTS};
 pub enum ObjectType {
     Event,
     Semaphore,
+    Mutex,
     Thread,
     Process,
     Section,
+    /// An object directory: `\BaseNamedObjects`, the one there is (permanent).
+    Directory,
 }
 
 /// An object's identity: its kind, its record in that kind's pool, and the record's generation.
@@ -89,9 +94,10 @@ impl Entry {
     }
 }
 
-/// The documented all-access masks, granted to the creator's handle.
+/// The documented all-access masks, granted to the creator's handle (an event's the services
+/// take from their caller: the tests' entries name it).
+#[cfg_attr(not(test), allow(dead_code))]
 pub const EVENT_ALL_ACCESS: u32 = 0x001F_0003;
-pub const SEMAPHORE_ALL_ACCESS: u32 = 0x001F_0003;
 pub const THREAD_ALL_ACCESS: u32 = 0x001F_03FF;
 pub const PROCESS_ALL_ACCESS: u32 = 0x001F_0FFF;
 pub const SECTION_ALL_ACCESS: u32 = 0x000F_001F;
@@ -106,6 +112,8 @@ pub const STILL_ACTIVE: u32 = 259;
 pub const EVENTS: usize = 256;
 /// How many semaphores can exist at once.
 pub const SEMAPHORES: usize = 64;
+/// How many mutexes can exist at once.
+pub const MUTEXES: usize = 64;
 /// How many sections can exist at once.
 pub const SECTIONS: usize = 16;
 /// How many thread records exist: the current process's main thread (record 0) and its created
@@ -115,6 +123,9 @@ pub const THREADS: usize = 1 + crate::process::CHILD_THREADS;
 /// How many processes can exist at once: the process pool's records ([`crate::process::pool`]),
 /// one process object each.
 pub const PROCESSES: usize = crate::process::MAX_PROCESSES;
+/// How many object directories exist: `\BaseNamedObjects`, the named objects' (permanent: made
+/// at its first open, it is never deleted).
+pub const DIRECTORIES: usize = 1;
 /// How many names can be bound at once.
 pub const NAMES: usize = 64;
 /// The longest object name: MAX_PATH.
@@ -324,9 +335,11 @@ impl WaitReferences {
 pub struct Directory {
     pub events: Pool<Event, EVENTS>,
     pub semaphores: Pool<Semaphore, SEMAPHORES>,
+    pub mutexes: Pool<Mutex, MUTEXES>,
     pub threads: Pool<Thread, THREADS>,
     pub processes: Pool<ProcessObject, PROCESSES>,
     pub sections: Pool<SectionObject, SECTIONS>,
+    pub directories: Pool<(), DIRECTORIES>,
     names: [NameEntry; NAMES],
     waits: [WaitReferences; THREADS],
 }
@@ -346,9 +359,11 @@ impl Directory {
                 Event::new(EventKind::Notification, false)
             });
             Pool::write_empty(addr_of_mut!((*directory).semaphores), || Semaphore::new(0));
+            Pool::write_empty(addr_of_mut!((*directory).mutexes), Mutex::new);
             Pool::write_empty(addr_of_mut!((*directory).threads), Thread::empty);
             Pool::write_empty(addr_of_mut!((*directory).processes), ProcessObject::new);
             Pool::write_empty(addr_of_mut!((*directory).sections), SectionObject::none);
+            Pool::write_empty(addr_of_mut!((*directory).directories), || ());
             let names = addr_of_mut!((*directory).names) as *mut NameEntry;
             for index in 0..NAMES {
                 names.add(index).write(NameEntry::free());
@@ -364,9 +379,11 @@ impl Directory {
         let headers: &mut [Header] = match id.kind {
             ObjectType::Event => &mut self.events.headers,
             ObjectType::Semaphore => &mut self.semaphores.headers,
+            ObjectType::Mutex => &mut self.mutexes.headers,
             ObjectType::Thread => &mut self.threads.headers,
             ObjectType::Process => &mut self.processes.headers,
             ObjectType::Section => &mut self.sections.headers,
+            ObjectType::Directory => &mut self.directories.headers,
         };
         let header = headers.get_mut(id.index as usize)?;
         (header.live && header.generation == id.generation).then_some(header)
@@ -376,9 +393,11 @@ impl Directory {
         let generation = match kind {
             ObjectType::Event => self.events.headers[index as usize].generation,
             ObjectType::Semaphore => self.semaphores.headers[index as usize].generation,
+            ObjectType::Mutex => self.mutexes.headers[index as usize].generation,
             ObjectType::Thread => self.threads.headers[index as usize].generation,
             ObjectType::Process => self.processes.headers[index as usize].generation,
             ObjectType::Section => self.sections.headers[index as usize].generation,
+            ObjectType::Directory => self.directories.headers[index as usize].generation,
         };
         ObjectId {
             kind,
@@ -421,6 +440,15 @@ impl Directory {
         Some(self.id(ObjectType::Semaphore, index))
     }
 
+    /// A fresh, free mutex.
+    pub fn create_mutex(&mut self) -> Option<ObjectId> {
+        let index = self.mutexes.allocate_in(0..MUTEXES)?;
+        let mutex = self.mutexes.record(index);
+        *mutex = Mutex::new();
+        mutex.init();
+        Some(self.id(ObjectType::Mutex, index))
+    }
+
     /// A thread record for a new thread object, in `range` (record 0 is the main thread's; created
     /// threads take 1 on). The record is returned as it was left — a dead thread's record still
     /// holds what its pages need for release; the caller renews it. Holds the thread's own
@@ -457,6 +485,11 @@ impl Directory {
     pub fn semaphore(&mut self, id: ObjectId) -> Option<&mut Semaphore> {
         (id.kind == ObjectType::Semaphore).then_some(())?;
         self.semaphores.get(id.index, id.generation)
+    }
+
+    pub fn mutex(&mut self, id: ObjectId) -> Option<&mut Mutex> {
+        (id.kind == ObjectType::Mutex).then_some(())?;
+        self.mutexes.get(id.index, id.generation)
     }
 
     pub fn thread(&mut self, id: ObjectId) -> Option<&mut Thread> {
@@ -500,16 +533,17 @@ impl Directory {
         }
     }
 
-    /// The waitable header of a waitable object; none for a section or a dead id.
+    /// The waitable header of a waitable object; none for a section, the directory or a dead id.
     pub fn waitable(&mut self, id: ObjectId) -> Option<*mut Waitable> {
         match id.kind {
             ObjectType::Event => self.event(id).map(Event::waitable),
             ObjectType::Semaphore => self.semaphore(id).map(Semaphore::waitable),
+            ObjectType::Mutex => self.mutex(id).map(Mutex::waitable),
             ObjectType::Thread => self.thread(id).map(Thread::waitable),
             ObjectType::Process => self
                 .process(id)
                 .map(|process| core::ptr::addr_of_mut!(process.waitable)),
-            ObjectType::Section => None,
+            ObjectType::Section | ObjectType::Directory => None,
         }
     }
 
@@ -584,15 +618,17 @@ impl Directory {
     }
 
     /// Delete the object `id` names: its kind's teardown, then the record is dead and its id stale.
-    /// A section leaves its frames to the caller; no other kind here needs more than the record
-    /// going: a waitable's last reference is gone, so nothing waits on it; a thread's record stays
-    /// as it ended (its pages are released when the record is reused); a process's record is free
-    /// for the next process once its object is gone.
+    /// A section leaves its frames to the caller; an owned mutex leaves its owner's list; no other
+    /// kind here needs more than the record going: a waitable's last reference is gone, so nothing
+    /// waits on it; a thread's record stays as it ended (its pages are released when the record is
+    /// reused); a process's record is free for the next process once its object is gone.
     fn delete(&mut self, id: ObjectId, dispatcher: &mut Dispatcher) -> Option<Followup> {
-        // The kinds whose deletion acts on the scheduler (a timer leaving the timer table, an
-        // owned mutex its owner's list) take it from here.
-        let _ = dispatcher;
         let followup = match id.kind {
+            ObjectType::Mutex => {
+                // An owned mutex leaves its owner's list (the owner's end has nothing to abandon).
+                dispatcher.forget_mutex(self.mutexes.record(id.index));
+                None
+            }
             ObjectType::Section => {
                 let section =
                     core::mem::replace(self.sections.record(id.index), SectionObject::none());
@@ -600,9 +636,11 @@ impl Directory {
                     frames: section.frames,
                 })
             }
-            ObjectType::Event | ObjectType::Semaphore | ObjectType::Thread | ObjectType::Process => {
-                None
-            }
+            ObjectType::Event
+            | ObjectType::Semaphore
+            | ObjectType::Thread
+            | ObjectType::Process
+            | ObjectType::Directory => None,
         };
         self.forget_name(id);
         let header = self.header(id).expect("deleting a live object");
@@ -697,11 +735,12 @@ impl Directory {
         dispatcher: &mut Dispatcher,
         mut finish: impl FnMut(Followup),
     ) -> usize {
-        // The processes outlive their own end.
-        let leaked = self.live_objects() - self.processes.live();
+        // The processes outlive their own end, and the permanent directory every process.
+        let leaked = self.live_objects() - self.processes.live() - self.directories.live();
         for kind in [
             ObjectType::Event,
             ObjectType::Semaphore,
+            ObjectType::Mutex,
             ObjectType::Thread,
             ObjectType::Section,
         ] {
@@ -728,9 +767,11 @@ impl Directory {
         match kind {
             ObjectType::Event => EVENTS,
             ObjectType::Semaphore => SEMAPHORES,
+            ObjectType::Mutex => MUTEXES,
             ObjectType::Thread => THREADS,
             ObjectType::Process => PROCESSES,
             ObjectType::Section => SECTIONS,
+            ObjectType::Directory => DIRECTORIES,
         }
     }
 
@@ -738,9 +779,20 @@ impl Directory {
     pub fn live_objects(&self) -> usize {
         self.events.live()
             + self.semaphores.live()
+            + self.mutexes.live()
             + self.threads.live()
             + self.processes.live()
             + self.sections.live()
+            + self.directories.live()
+    }
+
+    /// `\BaseNamedObjects`, the named objects' directory: made at its first open and permanent
+    /// (its creator's reference is never dropped, so no process's end deletes it).
+    pub fn named_objects(&mut self) -> Option<ObjectId> {
+        if !self.directories.headers[0].live {
+            self.directories.allocate_in(0..DIRECTORIES)?;
+        }
+        Some(self.id(ObjectType::Directory, 0))
     }
 }
 
@@ -796,6 +848,12 @@ impl ObRef {
         directory()
             .semaphore(self.id)
             .expect("a referenced semaphore lives")
+    }
+
+    pub fn mutex(&self) -> &'static mut Mutex {
+        directory()
+            .mutex(self.id)
+            .expect("a referenced mutex lives")
     }
 
     pub fn thread(&self) -> &'static mut Thread {

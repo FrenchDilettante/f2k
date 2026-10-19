@@ -58,13 +58,6 @@ if errorlevel 1 (echo build.bat: thread failed & exit /b 1)
 del thread.obj
 cd ..
 
-echo === pingpong
-cd pingpong
-cl /nologo pingpong.c
-if errorlevel 1 (echo build.bat: pingpong failed & exit /b 1)
-del pingpong.obj
-cd ..
-
 echo === sleep
 cd sleep
 cl /nologo sleep.c

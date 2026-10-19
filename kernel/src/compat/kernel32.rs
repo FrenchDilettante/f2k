@@ -54,34 +54,12 @@ fn referenced(handle: u32, kind: crate::ob::ObjectType) -> Option<crate::ob::ObR
     crate::ob::reference_by_handle(handle, Some(kind))
 }
 
-/// The event a handle names, referenced for the caller's scope.
-#[cfg(target_arch = "x86")]
-fn event_of(handle: u32) -> Option<crate::ob::Referenced<crate::sched::event::Event>> {
-    let reference = referenced(handle, crate::ob::ObjectType::Event)?;
-    let record = reference.event();
-    Some(crate::ob::Referenced::new(reference, record))
-}
-
 /// The thread a handle names, referenced for the caller's scope.
 #[cfg(target_arch = "x86")]
 fn thread_of(handle: u32) -> Option<crate::ob::Referenced<crate::sched::thread::Thread>> {
     let reference = referenced(handle, crate::ob::ObjectType::Thread)?;
     let record = reference.thread();
     Some(crate::ob::Referenced::new(reference, record))
-}
-
-/// The waitable a handle names for the wait services, with the object it belongs to (the wait
-/// holds it); none for a console handle, an open file or nothing.
-#[cfg(target_arch = "x86")]
-fn waitable_of(handle: u32) -> Option<(crate::ob::ObjectId, *mut crate::sched::wait::Waitable)> {
-    if is_console_handle(handle) {
-        return None;
-    }
-    let id = crate::process::current()
-        .handles()
-        .lookup(handle)?
-        .object_id()?;
-    Some((id, crate::ob::directory().waitable(id)?))
 }
 
 /// GetEnvironmentStringsW: a pointer to the (empty) wide environment block the process parameters
@@ -145,21 +123,8 @@ fn svc_heap_destroy(frame: &mut crate::user::TrapFrame, args: &[u32]) {
 /// INFINITE: the documented forever timeout.
 const INFINITE: u32 = 0xFFFF_FFFF;
 
-/// WAIT_FAILED: the documented wait failure return.
-const WAIT_FAILED: u32 = 0xFFFF_FFFF;
-
 /// CREATE_SUSPENDED: the creation flag that starts the thread with a suspend count of one.
 const CREATE_SUSPENDED: u32 = 0x0000_0004;
-
-/// The Win32 timeout conversion: INFINITE waits forever; any other value is a relative interval in
-/// milliseconds (100 ns units inside the kernel), zero the immediate test.
-fn format_timeout(milliseconds: u32) -> Option<i64> {
-    if milliseconds == INFINITE {
-        None
-    } else {
-        Some(milliseconds as i64 * 10_000)
-    }
-}
 
 /// The sleep interval conversion: INFINITE is not a wait at all but the longest relative interval
 /// the ABI can name — the delay parks for a due time on the far side of the clock. Every other
@@ -184,103 +149,6 @@ fn thread_priority_increment(value: i32) -> Option<i32> {
         TIME_CRITICAL => Some(SATURATION),
         IDLE => Some(-SATURATION),
         _ => None,
-    }
-}
-
-/// CreateEventA: a fresh event object, published with its handle. The flavor comes from
-/// bManualReset, the initial state from bInitialState; the subset ignores the attributes and
-/// refuses a name.
-fn svc_create_event_a(frame: &mut crate::user::TrapFrame, args: &[u32]) {
-    #[cfg(target_arch = "x86")]
-    {
-        let (_attributes, manual_reset, initial_state, name) = (args[0], args[1], args[2], args[3]);
-        if name != 0 {
-            frame.eax = 0; // the subset has no named objects
-            return;
-        }
-        let process = crate::process::current_mut();
-        // A full table refuses before an object is made.
-        if process.handles().is_full() {
-            frame.eax = 0;
-            return;
-        }
-        let kind = if manual_reset != 0 {
-            crate::sched::event::EventKind::Notification
-        } else {
-            crate::sched::event::EventKind::Synchronization
-        };
-        let Some(id) = crate::ob::directory().create_event(kind, initial_state != 0) else {
-            frame.eax = 0;
-            return;
-        };
-        frame.eax =
-            crate::ob::publish(process, id, crate::ob::EVENT_ALL_ACCESS, false, None).unwrap_or(0);
-    }
-    #[cfg(not(target_arch = "x86"))]
-    {
-        let _ = args;
-        frame.eax = 0;
-    }
-}
-
-/// SetEvent: signal the event the handle names, granting its waiters the event wake boost.
-fn svc_set_event(frame: &mut crate::user::TrapFrame, args: &[u32]) {
-    #[cfg(target_arch = "x86")]
-    {
-        let Some(mut event) = event_of(args[0]) else {
-            frame.eax = 0;
-            return;
-        };
-        event.set(
-            crate::sched::idle::dispatcher(),
-            crate::sched::event::EVENT_WAKE_INCREMENT,
-        );
-        frame.eax = 1;
-    }
-    #[cfg(not(target_arch = "x86"))]
-    {
-        let _ = args;
-        frame.eax = 0;
-    }
-}
-
-/// WaitForSingleObject: wait on the object the handle names, the documented timeout conversion, the
-/// status returned raw (the identity the Win32 ABI documents: 0 is WAIT_OBJECT_0, the timeout
-/// status is WAIT_TIMEOUT). A blocking wait parks the calling thread and switches the processor
-/// away; the wake's status lands in the return. The wait holds its object throughout, replays
-/// included: a handle closed meanwhile leaves it waiting on a live object.
-fn svc_wait_for_single_object(frame: &mut crate::user::TrapFrame, args: &[u32]) {
-    #[cfg(target_arch = "x86")]
-    {
-        // A file handle names no waitable object on this surface: the wait fails like a bad handle.
-        let Some((object, waitable)) = waitable_of(args[0]) else {
-            frame.eax = WAIT_FAILED;
-            return;
-        };
-        // The wait runs through the shared blocking entry: a kernel APC breaks the wait and the
-        // entry replays it after the delivery, the deadline preserved.
-        let timeout = format_timeout(args[1]);
-        let status = crate::ob::waiting(&[object], || {
-            crate::sched::wait::wait_current_with(|dispatcher, thread, stamp, replay| {
-                let timeout =
-                    crate::sched::wait::replay_timeout(thread, replay, timeout, stamp.interrupt_time);
-                dispatcher.wait_single(
-                    thread,
-                    waitable,
-                    crate::sched::wait::WaitReason::UserRequest,
-                    crate::sched::wait::WaitMode::User,
-                    false,
-                    timeout,
-                    stamp,
-                )
-            })
-        });
-        frame.eax = status as u32;
-    }
-    #[cfg(not(target_arch = "x86"))]
-    {
-        let _ = args;
-        frame.eax = WAIT_FAILED;
     }
 }
 
@@ -676,10 +544,10 @@ mod tests {
     fn the_registry_numbers_from_its_base() {
         assert_eq!(
             SERVICES.len(),
-            23,
-            "the kernel's served surface, less kernel32's natives (the last error, the current \
-             process, the console and start-up calls, the locale group and clock, the exception \
-             filter, the virtual memory) and ntdll's RtlUnwind"
+            20,
+            "kernel32's served surface, less its natives (the last error, the current process, \
+             the console and start-up calls, the locale group and clock, the exception filter, \
+             the virtual memory, the events and waits) and ntdll's RtlUnwind"
         );
         assert_eq!(WIN32_SERVICE_BASE, 0x2000);
         assert_eq!(SERVICES[0].0, "ExitProcess");

@@ -34,8 +34,35 @@ pub mod object;
 pub mod process;
 pub mod section;
 #[cfg(target_arch = "x86")]
-mod sync;
+pub mod sync;
 pub mod system;
+pub mod thread;
+
+/// The host builds' synchronization services (see [`unserved`]).
+#[cfg(not(target_arch = "x86"))]
+pub mod sync {
+    use super::call::{Handle, NtCall, NtResult, UserAddr, UserPtr};
+
+    unserved! {
+        open_directory_object(UserPtr<u32>, u32, UserAddr);
+        create_event(UserPtr<u32>, u32, UserAddr, u32, u32);
+        open_event(UserPtr<u32>, u32, UserAddr);
+        set_event(Handle, UserPtr<i32>);
+        reset_event(Handle, UserPtr<i32>);
+        clear_event(Handle);
+        pulse_event(Handle, UserPtr<i32>);
+        create_mutant(UserPtr<u32>, u32, UserAddr, u32);
+        open_mutant(UserPtr<u32>, u32, UserAddr);
+        release_mutant(Handle, UserPtr<i32>);
+        create_semaphore(UserPtr<u32>, u32, UserAddr, i32, i32);
+        open_semaphore(UserPtr<u32>, u32, UserAddr);
+        release_semaphore(Handle, i32, UserPtr<i32>);
+        wait_for_single_object(Handle, u32, UserPtr<u64>);
+        wait_for_multiple_objects(u32, UserAddr, u32, u32, UserPtr<u64>);
+        signal_and_wait_for_single_object(Handle, Handle, u32, UserPtr<u64>);
+        duplicate_object(Handle, Handle, Handle, UserPtr<u32>, u32, u32, u32);
+    }
+}
 
 use crate::user::syscall::ServiceFn;
 

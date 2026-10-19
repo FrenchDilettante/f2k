@@ -1,10 +1,13 @@
-//! The calling thread's system, for user-mode runtime code (ntdll's own): its TEB through FS, and
-//! Windows 2000's system services through the gate ([`system_service`], by their Windows 2000
-//! numbers, `nr`). The raises are here too ([`raise_exception`], [`raise_status`]: the context
-//! captured in user mode, the exception's first chance NtRaiseException's), so the runtime's own
-//! code can raise without naming ntdll's exports.
+//! The calling thread's system, for user-mode runtime code (ntdll's own): its TEB and PEB through
+//! FS, and Windows 2000's system services through the gate ([`system_service`], by their Windows
+//! 2000 numbers, `nr`). The critical sections' events are the NT services' ([`Native`]), and the
+//! PEB lock is the PEB's ([`peb_lock`]). The raises are here too ([`raise_exception`],
+//! [`raise_status`]: the context captured in user mode, the exception's first chance
+//! NtRaiseException's), so the runtime's own code can raise without naming ntdll's exports.
 
 use core::arch::asm;
+
+use crate::critsec::{CriticalSection, System};
 
 // The kernel's ABI constants (`SYSCALL_VECTOR`, the internal `SYS_*`) and Windows 2000's service
 // numbers (`nr`), from the kernel's sources and tools/exportgen's table (see build.rs).
@@ -12,6 +15,20 @@ include!(concat!(env!("OUT_DIR"), "/abi.rs"));
 
 /// The TEB's own linear address (NT_TIB.Self).
 const TEB_SELF: u32 = 0x18;
+/// The TEB's ClientId.UniqueThread.
+const TEB_THREAD_ID: u32 = 0x24;
+/// The TEB's TlsExpansionSlots.
+pub const TEB_TLS_EXPANSION_SLOTS: usize = 0xF94;
+/// The TEB's pointer to the process's PEB, and the PEB's NumberOfProcessors.
+const TEB_PEB: u32 = 0x30;
+const PEB_NUMBER_OF_PROCESSORS: u32 = 0x64;
+/// Where F2K keeps the lock the PEB's FastPebLock points at: past the PEB proper on its page
+/// (Windows 2000 keeps it in ntdll's data). The kernel plants it free with the PEB until ntdll's
+/// process start makes it (B7).
+const PEB_LOCK_STORAGE: usize = 0x860;
+
+/// The calling thread's system.
+pub struct Native;
 /// The TEB's LastErrorValue.
 const TEB_LAST_ERROR_VALUE: u32 = 0x34;
 /// The TEB's LastStatusValue (NT 5.0, x86).
@@ -31,6 +48,19 @@ fn teb_word<const OFFSET: u32>() -> u32 {
 /// The calling thread's TEB, by its linear address.
 pub fn teb() -> usize {
     teb_word::<TEB_SELF>() as usize
+}
+
+/// The calling thread's PEB.
+pub fn peb() -> usize {
+    teb_word::<TEB_PEB>() as usize
+}
+
+/// The PEB lock (FastPebLock): what serializes the process-wide state's changes (the TLS bitmaps,
+/// kernel32's lazy per-process state).
+pub fn peb_lock() -> &'static CriticalSection {
+    // SAFETY: the lock's storage is on the PEB page, mapped for the process's whole life, and a
+    // free critical section from the process's creation on.
+    unsafe { &*((peb() + PEB_LOCK_STORAGE) as *const CriticalSection) }
 }
 
 /// A dword of user memory.
@@ -63,6 +93,10 @@ pub fn set_last_error(code: u32) {
              offset = const TEB_LAST_ERROR_VALUE, options(nostack, preserves_flags));
     }
 }
+
+/// EVENT_ALL_ACCESS, and NtCreateEvent's SynchronizationEvent type.
+const EVENT_ALL_ACCESS: u32 = 0x001F_0003;
+const SYNCHRONIZATION_EVENT: u32 = 1;
 
 /// Raise system service `number` with its arguments (the stub's protocol: EDX the argument block,
 /// EAX the number): its NTSTATUS.
@@ -187,4 +221,53 @@ pub unsafe extern "system" fn raise_status(_status: u32) -> ! {
         vector = const SYSCALL_VECTOR,
         raise_status = sym raise_status,
     )
+}
+
+impl System for Native {
+    fn thread_id(&self) -> u32 {
+        teb_word::<TEB_THREAD_ID>()
+    }
+
+    fn processors(&self) -> u32 {
+        // SAFETY: the PEB is mapped for the process's whole life.
+        unsafe { core::ptr::read_volatile((peb() + PEB_NUMBER_OF_PROCESSORS as usize) as *const u32) }
+    }
+
+    /// NtCreateEvent: an unnamed SynchronizationEvent, nonsignaled (Windows 2000's
+    /// RtlpCreateCriticalSectionSem); 0 when none can be made.
+    fn create_event(&self) -> u32 {
+        let mut handle = 0u32;
+        let args = [
+            &mut handle as *mut u32 as u32,
+            EVENT_ALL_ACCESS,
+            0,
+            SYNCHRONIZATION_EVENT,
+            0,
+        ];
+        match system_service(nr::NtCreateEvent, &args) {
+            0 => handle,
+            _ => 0,
+        }
+    }
+
+    /// NtWaitForSingleObject, forever and non-alertably.
+    fn wait(&self, event: u32) {
+        system_service(nr::NtWaitForSingleObject, &[event, 0, 0]);
+    }
+
+    /// NtSetEvent, the previous state not asked for.
+    fn set(&self, event: u32) {
+        system_service(nr::NtSetEvent, &[event, 0]);
+    }
+
+    /// NtClose.
+    fn close(&self, handle: u32) {
+        system_service(nr::NtClose, &[handle]);
+    }
+
+    fn raise(&self, status: u32) -> ! {
+        // SAFETY: the raise never returns (a noncontinuable exception's continuation ends the
+        // process).
+        unsafe { raise_status(status) }
+    }
 }

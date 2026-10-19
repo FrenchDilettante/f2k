@@ -1,9 +1,10 @@
 //! The helpers kernel32's exports share, as Windows 2000's kernel32 names them: the calling
 //! thread's last error, BaseSetLastNTError (a failed system service's status, mapped through
-//! ntdll's RtlNtStatusToDosError), the PEB and the process parameters as the thread reaches them,
-//! and the standard and console handles' tests.
+//! ntdll's RtlNtStatusToDosError), BaseFormatTimeOut, BaseFormatObjectAttributes and
+//! BaseGetNamedObjectDirectory, the PEB lock's critical regions, the PEB and the process
+//! parameters as the thread reaches them, and the standard and console handles' tests.
 
-use crate::nt;
+use crate::nt::{self, ObjectAttributes, UnicodeString};
 
 /// The calling thread's last error (TEB+0x34).
 pub fn last_error() -> u32 {
@@ -37,6 +38,90 @@ pub fn succeeded(status: u32) -> u32 {
 
 /// The current-process pseudo-handle (NtCurrentProcess).
 pub const CURRENT_PROCESS: u32 = 0xFFFF_FFFF;
+/// The current-thread pseudo-handle (NtCurrentThread).
+pub const CURRENT_THREAD: u32 = 0xFFFF_FFFE;
+
+/// INFINITE: the documented forever timeout.
+pub const INFINITE: u32 = 0xFFFF_FFFF;
+
+/// BaseFormatTimeOut: a Win32 timeout in milliseconds as the services' LARGE_INTEGER, a relative
+/// interval (negative, in 100 ns units) in `out`; none (a null pointer: forever) for INFINITE.
+pub fn format_timeout(milliseconds: u32, out: &mut i64) -> *const i64 {
+    if milliseconds == INFINITE {
+        return core::ptr::null();
+    }
+    *out = -(i64::from(milliseconds) * 10_000);
+    out
+}
+
+/// OBJECT_ATTRIBUTES' Attributes: OBJ_INHERIT, OBJ_CASE_INSENSITIVE, OBJ_OPENIF.
+pub const OBJ_INHERIT: u32 = 0x02;
+const OBJ_CASE_INSENSITIVE: u32 = 0x40;
+const OBJ_OPENIF: u32 = 0x80;
+
+/// The directory access kernel32 opens `\BaseNamedObjects` with: DIRECTORY_ALL_ACCESS less DELETE,
+/// WRITE_DAC and WRITE_OWNER.
+const NAMED_OBJECTS_ACCESS: u32 = 0x000F_000F & !0x000D_0000;
+
+/// kernel32's `\BaseNamedObjects` handle's slot, on the PEB's page (Windows 2000 keeps it in
+/// kernel32's data; F2K's system DLLs keep no writable data).
+const NAMED_OBJECTS: usize = 0x880;
+
+/// A UNICODE_STRING over the first `length` units of `units`.
+pub fn unicode_string(units: &mut [u16], length: usize) -> UnicodeString {
+    UnicodeString {
+        length: (2 * length) as u16,
+        maximum_length: (2 * units.len()) as u16,
+        buffer: units.as_mut_ptr(),
+    }
+}
+
+/// `body` under the PEB lock (RtlAcquirePebLock, RtlReleasePebLock): what serializes kernel32's
+/// lazily made per-process state, as Windows 2000's kernel32 serializes it.
+pub fn under_peb_lock<R>(body: impl FnOnce() -> R) -> R {
+    // SAFETY: ntdll's export; the lock is the PEB's, free from the process's creation on.
+    unsafe { nt::RtlAcquirePebLock() };
+    let result = body();
+    // SAFETY: as above; the caller holds it.
+    unsafe { nt::RtlReleasePebLock() };
+    result
+}
+
+/// BaseGetNamedObjectDirectory: the handle to `\BaseNamedObjects` every named object is made in,
+/// opened at the first need under the PEB lock and kept for the process's life (PEB+0x880); zero
+/// when it cannot be opened (the named calls then fail on their name).
+pub fn named_object_directory() -> u32 {
+    let slot = peb() + NAMED_OBJECTS;
+    let handle = read(slot);
+    if handle != 0 {
+        return handle;
+    }
+    under_peb_lock(|| {
+        if read(slot) == 0 {
+            let mut name = [0u16; 17];
+            for (unit, byte) in name.iter_mut().zip(b"\\BaseNamedObjects") {
+                *unit = u16::from(*byte);
+            }
+            let string = unicode_string(&mut name, 17);
+            let attributes = ObjectAttributes {
+                length: 24,
+                root_directory: 0,
+                object_name: &string,
+                attributes: OBJ_CASE_INSENSITIVE,
+                security_descriptor: core::ptr::null(),
+                security_quality_of_service: core::ptr::null(),
+            };
+            let mut opened = 0;
+            // SAFETY: ntdll's export, over the attributes above.
+            let status =
+                unsafe { nt::NtOpenDirectoryObject(&mut opened, NAMED_OBJECTS_ACCESS, &attributes) };
+            if rtl::status::nt_success(status) {
+                write(slot, opened);
+            }
+        }
+        read(slot)
+    })
+}
 
 /// A SECURITY_ATTRIBUTES, as a create's caller passes it.
 #[repr(C)]
@@ -44,6 +129,49 @@ pub struct SecurityAttributes {
     pub length: u32,
     pub security_descriptor: *const u8,
     pub inherit_handle: u32,
+}
+
+/// BaseFormatObjectAttributes: the OBJECT_ATTRIBUTES a create passes — none when it has neither
+/// security attributes nor a name; otherwise inheritable as the security attributes ask, and a
+/// name is OBJ_OPENIF in `\BaseNamedObjects` (an existing object of the name is opened).
+///
+/// # Safety
+///
+/// `security` is null or points at a SECURITY_ATTRIBUTES; `name` outlives the attributes' use.
+pub unsafe fn format_object_attributes(
+    out: &mut ObjectAttributes,
+    security: *const SecurityAttributes,
+    name: Option<&UnicodeString>,
+) -> *const ObjectAttributes {
+    if security.is_null() && name.is_none() {
+        return core::ptr::null();
+    }
+    // SAFETY: the caller's structure, when given.
+    let (mut attributes, descriptor) = match unsafe { security.as_ref() } {
+        Some(security) => (
+            if security.inherit_handle != 0 {
+                OBJ_INHERIT
+            } else {
+                0
+            },
+            security.security_descriptor,
+        ),
+        None => (0, core::ptr::null()),
+    };
+    let mut root = 0;
+    if name.is_some() {
+        attributes |= OBJ_OPENIF;
+        root = named_object_directory();
+    }
+    *out = ObjectAttributes {
+        length: 24,
+        root_directory: root,
+        object_name: name.map_or(core::ptr::null(), |name| name as *const UnicodeString),
+        attributes,
+        security_descriptor: descriptor,
+        security_quality_of_service: core::ptr::null(),
+    };
+    out
 }
 
 /// Whether a handle is a console handle (Windows 2000's CONSOLE_HANDLE: the low two bits set, bit 28
@@ -91,6 +219,11 @@ pub fn set_parameters_standard_handle(which: usize, handle: u32) {
 /// The calling process's PEB, by its address (the host tests' stand-in page there).
 pub fn peb() -> usize {
     teb::peb()
+}
+
+/// The calling thread's TEB, by its address (the host tests' stand-in page there).
+pub fn teb_address() -> usize {
+    teb::teb()
 }
 
 /// The PEB's ProcessParameters (RTL_USER_PROCESS_PARAMETERS).
@@ -153,6 +286,17 @@ mod teb {
         peb
     }
 
+    /// The TEB (TEB+0x18, NT_TIB.Self).
+    pub fn teb() -> usize {
+        let teb: usize;
+        // SAFETY: FS addresses the calling thread's TEB.
+        unsafe {
+            asm!("mov {teb}, dword ptr fs:[0x18]", teb = out(reg) teb,
+                 options(nostack, readonly, preserves_flags))
+        };
+        teb
+    }
+
     pub fn read_pointer(at: usize) -> usize {
         super::read(at) as usize
     }
@@ -204,6 +348,10 @@ mod teb {
 
     pub fn peb() -> usize {
         crate::nt::threads::process().peb
+    }
+
+    pub fn teb() -> usize {
+        crate::nt::threads::process().teb
     }
 
     pub fn read_pointer(at: usize) -> usize {

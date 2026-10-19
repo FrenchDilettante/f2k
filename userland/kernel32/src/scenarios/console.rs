@@ -6,7 +6,11 @@
 
 use super::last_error;
 use crate::console::*;
-use crate::sync::{close_handle, duplicate_handle};
+use crate::nt::LAST_WAITED;
+use crate::sync::{
+    close_handle, duplicate_handle, signal_object_and_wait, wait_for_multiple_objects,
+    wait_for_single_object,
+};
 
 const STD_INPUT_HANDLE: u32 = -10i32 as u32;
 const STD_OUTPUT_HANDLE: u32 = -11i32 as u32;
@@ -305,10 +309,8 @@ fn close_handle_closes_kernel_handles_through_nt_close() {
     crate::nt::CLOSED.with(|closed| assert_eq!(*closed.borrow(), [0x44, 0x1234]));
 }
 
-/// DuplicateHandle of a kernel handle is NtDuplicateObject's, which comes with the synchronization
-/// services.
+/// DuplicateHandle of a kernel handle is NtDuplicateObject's: the new handle where asked.
 #[test]
-#[ignore = "B5: NtDuplicateObject: DuplicateHandle of a kernel handle fails with ERROR_CALL_NOT_IMPLEMENTED until then"]
 fn duplicate_handle_duplicates_kernel_handles() {
     let mut target = 0;
     // SAFETY: a writable slot.
@@ -327,4 +329,26 @@ fn duplicate_handle_duplicates_kernel_handles() {
         1
     );
     assert_ne!(target, 0);
+}
+
+/// A wait on a console handle naming a console object waits on the console's input-wait event
+/// (made once, unsignaled: F2K's console has no keyboard), a standard handle's pseudo-value through
+/// the parameters' handle; a console handle naming nothing is waited on as itself (the kernel
+/// refuses it), as is every other handle.
+#[test]
+fn waits_on_console_handles_wait_for_input() {
+    use crate::nt::host::HANDLE;
+    let waited = || LAST_WAITED.with(|cell| cell.borrow().clone());
+    wait_for_single_object(STDIN, 0);
+    assert_eq!(waited(), [HANDLE], "the event the stand-in made");
+    wait_for_single_object(STD_OUTPUT_HANDLE, 0);
+    assert_eq!(waited(), [HANDLE]);
+    wait_for_single_object(0x13, 0);
+    assert_eq!(waited(), [0x13]);
+    let handles = [0x40, STDERR, 0xF];
+    // SAFETY: three handles.
+    unsafe { wait_for_multiple_objects(3, handles.as_ptr(), 0, 0) };
+    assert_eq!(waited(), [0x40, HANDLE, 0xF]);
+    signal_object_and_wait(0x40, STDIN, 0, 0);
+    assert_eq!(waited(), [HANDLE]);
 }

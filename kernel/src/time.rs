@@ -114,6 +114,13 @@ pub fn boot_filetime() -> u64 {
     unsafe { BOOT_FILETIME }
 }
 
+/// The system time now, as a FILETIME: the boot's reading advanced by the clock (what an absolute
+/// timeout is measured against).
+#[cfg(target_arch = "x86")]
+pub fn system_filetime() -> u64 {
+    boot_filetime() + crate::interrupt::clock::system_time()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

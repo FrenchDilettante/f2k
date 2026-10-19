@@ -1,12 +1,12 @@
 //! OBJECT_ATTRIBUTES: what every service that names an object reads — the root directory handle,
 //! the name (a UNICODE_STRING) and the attributes — and the named objects' part of the namespace,
-//! `\BaseNamedObjects`, where kernel32 names its sections (and, as they come, its events, mutexes,
-//! semaphores and timers).
+//! `\BaseNamedObjects`, where kernel32 names its events, mutexes, semaphores and sections (and, as
+//! they come, its timers).
 //!
 //! A name is absolute (`\BaseNamedObjects\<name>`, no root), or relative to a root directory
-//! handle naming `\BaseNamedObjects`. The directory object kernel32 opens once on Windows 2000
-//! (BaseGetNamedObjectDirectory) comes with the synchronization services: until then no
-//! handle names it, and kernel32 spells its names absolutely ([`root_of`]).
+//! handle naming `\BaseNamedObjects`: the directory object kernel32 opens once
+//! (BaseGetNamedObjectDirectory, NtOpenDirectoryObject) and names everything relative to, as on
+//! Windows 2000 ([`root_of`]).
 
 use super::call::{Status, UserAddr, STATUS_INVALID_HANDLE, STATUS_INVALID_PARAMETER};
 
@@ -173,9 +173,9 @@ pub enum Root {
     Other,
 }
 
-/// What `handle` names in the calling process, as a root directory; STATUS_INVALID_HANDLE for a
-/// handle naming nothing (a console handle included). No object is a directory yet (the
-/// `\BaseNamedObjects` directory object comes with the synchronization services).
+/// What `handle` names in the calling process, as a root directory: `\BaseNamedObjects` for a
+/// handle to the directory object (NtOpenDirectoryObject's); STATUS_INVALID_HANDLE for a handle
+/// naming nothing (a console handle included).
 #[cfg(target_arch = "x86")]
 pub fn root_of(handle: u32) -> Result<Root, Status> {
     if handle == 0 {
@@ -184,11 +184,14 @@ pub fn root_of(handle: u32) -> Result<Root, Status> {
     if crate::nt::object::is_console_handle(handle) {
         return Err(STATUS_INVALID_HANDLE);
     }
-    super::call::calling_process()
+    let entry = super::call::calling_process()
         .handles()
         .lookup(handle)
         .ok_or(STATUS_INVALID_HANDLE)?;
-    Ok(Root::Other)
+    Ok(match entry.object_id() {
+        Some(id) if id.kind == crate::ob::ObjectType::Directory => Root::NamedObjects,
+        _ => Root::Other,
+    })
 }
 
 /// Host builds have no handle table: any root names `\BaseNamedObjects`.

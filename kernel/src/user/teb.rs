@@ -30,6 +30,10 @@ pub mod teb_offset {
     pub const LAST_ERROR: u32 = 0x34;
     /// DeallocationStack: the base of the thread's stack reservation, its lowest address.
     pub const DEALLOCATION_STACK: u32 = 0xE0C;
+    /// TlsSlots: the first 64 TLS slots (see [`crate::user::tls`]).
+    pub const TLS_SLOTS: u32 = 0xE10;
+    /// TlsExpansionSlots: the block holding the other 1024 (zero until TlsSetValue makes it).
+    pub const TLS_EXPANSION_SLOTS: u32 = 0xF94;
 }
 
 /// PEB field offsets.
@@ -41,6 +45,17 @@ pub mod peb_offset {
     /// ProcessHeap: what GetProcessHeap returns (ntdll's process start writes it; zero until the
     /// heap moves to ntdll).
     pub const PROCESS_HEAP: u32 = 0x18;
+    /// FastPebLock: the PEB lock, the critical section RtlAcquirePebLock takes (its storage at
+    /// [`PEB_LOCK`], past the PEB proper).
+    pub const FAST_PEB_LOCK: u32 = 0x1C;
+    /// TlsBitmap: the RTL_BITMAP over TlsBitmapBits, the TLS indexes 0..64.
+    pub const TLS_BITMAP: u32 = 0x40;
+    /// TlsBitmapBits: two dwords, a bit per index 0..64 (set: allocated).
+    pub const TLS_BITMAP_BITS: u32 = 0x44;
+    /// TlsExpansionBitmap: the RTL_BITMAP over TlsExpansionBitmapBits, the indexes 64..1088.
+    pub const TLS_EXPANSION_BITMAP: u32 = 0x150;
+    /// TlsExpansionBitmapBits: 32 dwords, a bit per index 64..1088.
+    pub const TLS_EXPANSION_BITMAP_BITS: u32 = 0x154;
     /// The system's version, as the kernel's process creation writes it (GetVersion reads it on
     /// the platform): OSMajorVersion, OSMinorVersion, OSBuildNumber (a word) with OSCSDVersion (the
     /// next word: the service pack, its major number in the high byte), OSPlatformId.
@@ -59,10 +74,20 @@ pub mod peb_offset {
     /// its page; kernel32's natives reach it through FS (the system DLLs' assembly reads the value
     /// off this line, see tools/exportgen's `abi`).
     pub const TOP_LEVEL_FILTER: u32 = 0x800;
+    /// The two TLS bitmaps' RTL_BITMAP headers (SizeOfBitMap, Buffer): ntdll's own data on the
+    /// platform, here past the PEB proper on its page (like kernel32's top-level filter slot).
+    pub const TLS_BITMAP_HEADER: u32 = 0x810;
+    pub const TLS_EXPANSION_BITMAP_HEADER: u32 = 0x818;
+    /// The PEB lock's storage, the critical section FastPebLock points at: ntdll's own data on the
+    /// platform, here past the PEB proper on its page.
+    pub const PEB_LOCK: u32 = 0x860;
+    /// The PEB lock's LockCount (RTL_CRITICAL_SECTION+4): -1 while free.
+    pub const PEB_LOCK_COUNT: u32 = PEB_LOCK + 4;
     // Past the PEB proper (0x1E8 bytes), the system DLLs' own data (they keep no writable
-    // sections): kernel32's top-level filter (0x800, above), its narrow command line and startup
-    // information (0x8A0, 0x8A4: pointers, see `user::params`). The page starts zeroed; the kernel
-    // writes none of them.
+    // sections): kernel32's top-level filter (0x800, above), the TLS bitmaps' headers (0x810,
+    // 0x818), the PEB lock (0x860), kernel32's `\BaseNamedObjects` handle (0x880), its narrow
+    // command line and startup information (0x8A0, 0x8A4: pointers, see `user::params`). The page
+    // starts zeroed; the kernel writes only the headers and the PEB lock's free state.
 }
 
 /// The empty SEH chain's terminator: the frame link Windows starts every thread with.
@@ -87,7 +112,8 @@ pub struct TebInit {
     pub peb: u32,
 }
 
-/// A fresh TEB's nonzero words, as (offset, value).
+/// A fresh TEB's nonzero words, as (offset, value). The TLS words stay zero: TlsSetValue makes the
+/// expansion slots on first use.
 pub fn teb_words(init: &TebInit) -> [(u32, u32); 8] {
     [
         (teb_offset::EXCEPTION_LIST, END_OF_CHAIN),
@@ -123,14 +149,24 @@ const OS_CSD_VERSION: u32 = 0x0400;
 /// VER_PLATFORM_WIN32_NT.
 const PLATFORM_WIN32_NT: u32 = 2;
 
-/// A fresh PEB's nonzero words, as (offset, value): the image's base, the process parameters, the
+/// A fresh PEB's nonzero words, as (offset, value), for the PEB at `peb`: the image's base, the
+/// process parameters, the TLS bitmaps' headers (every index free), the PEB lock, free (until
+/// ntdll's process start makes it, Windows 2000's LdrpInitializeProcess initializes it), the
 /// system's version (GetVersion's: 5.0, build 2195, service pack 4, NT), the image's subsystem and
 /// its version, and the service pack's name (on the parameters' pages: none without them).
-pub fn peb_words(init: &PebInit) -> [(u32, u32); 11] {
+pub fn peb_words(peb: u32, init: &PebInit) -> [(u32, u32); 19] {
     use peb_offset::*;
     [
         (IMAGE_BASE_ADDRESS, init.image_base),
         (PROCESS_PARAMETERS, init.parameters),
+        (FAST_PEB_LOCK, peb + PEB_LOCK),
+        (PEB_LOCK_COUNT, u32::MAX),
+        (TLS_BITMAP, peb + TLS_BITMAP_HEADER),
+        (TLS_BITMAP_HEADER, crate::user::tls::TEB_SLOTS),
+        (TLS_BITMAP_HEADER + 4, peb + TLS_BITMAP_BITS),
+        (TLS_EXPANSION_BITMAP, peb + TLS_EXPANSION_BITMAP_HEADER),
+        (TLS_EXPANSION_BITMAP_HEADER, crate::user::tls::EXPANSION_SLOTS),
+        (TLS_EXPANSION_BITMAP_HEADER + 4, peb + TLS_EXPANSION_BITMAP_BITS),
         (OS_MAJOR_VERSION, VERSION & 0xFF),
         (OS_MINOR_VERSION, (VERSION >> 8) & 0xFF),
         (
@@ -188,8 +224,9 @@ pub fn map_teb(space: &mut crate::mem::vm::AddressSpace, init: &TebInit) {
 #[cfg(target_arch = "x86")]
 pub fn map_peb(space: &mut crate::mem::vm::AddressSpace, init: &PebInit) {
     use crate::mem::{paging, vm};
-    let frame = vm::map_zeroed(space, crate::user::PEB_PAGE, vm::PAGE_READWRITE);
-    for (offset, value) in peb_words(init) {
+    let peb = crate::user::PEB_PAGE;
+    let frame = vm::map_zeroed(space, peb, vm::PAGE_READWRITE);
+    for (offset, value) in peb_words(peb, init) {
         paging::write_frame(frame, offset as usize, &value.to_le_bytes());
     }
 }
@@ -213,6 +250,13 @@ mod tests {
         assert_eq!(peb_offset::IMAGE_BASE_ADDRESS, 0x08);
         assert_eq!(peb_offset::PROCESS_PARAMETERS, 0x10);
         assert_eq!(peb_offset::PROCESS_HEAP, 0x18);
+        assert_eq!(peb_offset::FAST_PEB_LOCK, 0x1C);
+        assert_eq!(peb_offset::TLS_BITMAP, 0x40);
+        assert_eq!(peb_offset::TLS_BITMAP_BITS, 0x44);
+        assert_eq!(peb_offset::TLS_EXPANSION_BITMAP, 0x150);
+        assert_eq!(peb_offset::TLS_EXPANSION_BITMAP_BITS, 0x154);
+        assert_eq!(teb_offset::TLS_SLOTS, 0xE10);
+        assert_eq!(teb_offset::TLS_EXPANSION_SLOTS, 0xF94);
     }
 
     /// A fresh TEB: the chain terminated, the self pointer and the ids in place, the last error
@@ -239,6 +283,7 @@ mod tests {
         assert_eq!(value(teb_offset::THREAD_ID), Some(12));
         assert_eq!(value(teb_offset::PEB), Some(0x0033_0000));
         assert_eq!(value(teb_offset::LAST_ERROR), None);
+        assert_eq!(value(teb_offset::TLS_EXPANSION_SLOTS), None, "TlsSetValue's to make");
         for &(offset, _) in &words {
             assert_eq!(offset % 4, 0);
             assert!(offset < 0x1000);
@@ -258,7 +303,7 @@ mod tests {
     /// version, from its optional header.
     #[test]
     fn fresh_peb_version_fields() {
-        let words = peb_words(&CONSOLE_4_0);
+        let words = peb_words(0x0033_0000, &CONSOLE_4_0);
         let value = |offset| words.iter().find(|&&(o, _)| o == offset).map(|&(_, v)| v);
         assert_eq!(value(0xA4), Some(5), "OSMajorVersion");
         assert_eq!(value(0xA8), Some(0), "OSMinorVersion");
@@ -280,7 +325,7 @@ mod tests {
             value(0x1E0),
             Some(0x0032_0000 + crate::user::params::CSD_VERSION_BUFFER)
         );
-        let bare = peb_words(&PebInit {
+        let bare = peb_words(0x0033_0000, &PebInit {
             parameters: 0,
             ..CONSOLE_4_0
         });
@@ -291,18 +336,37 @@ mod tests {
     }
 
     /// A fresh PEB: the image and the parameters; no process heap yet (the kernel's user heap
-    /// stands in until ntdll makes one).
+    /// stands in until ntdll makes one); the two TLS bitmaps' headers (64 and 1024 bits, over the
+    /// PEB's own bit arrays, every index free); the PEB lock free, FastPebLock pointing at it. Past
+    /// the PEB proper only the headers and the lock, clear of kernel32's filter slot.
     #[test]
     fn fresh_peb_words() {
-        let words = peb_words(&CONSOLE_4_0);
+        let peb = 0x0033_0000;
+        let words = peb_words(peb, &CONSOLE_4_0);
         let value = |offset| words.iter().find(|&&(o, _)| o == offset).map(|&(_, v)| v);
         assert_eq!(value(peb_offset::IMAGE_BASE_ADDRESS), Some(0x0040_0000));
         assert_eq!(value(peb_offset::PROCESS_PARAMETERS), Some(0x0032_0000));
         assert_eq!(value(peb_offset::PROCESS_HEAP), None);
+        assert_eq!(value(peb_offset::TLS_BITMAP), Some(peb + 0x810));
+        assert_eq!(value(0x810), Some(64));
+        assert_eq!(value(0x814), Some(peb + 0x44));
+        assert_eq!(value(peb_offset::TLS_EXPANSION_BITMAP), Some(peb + 0x818));
+        assert_eq!(value(0x818), Some(1024));
+        assert_eq!(value(0x81C), Some(peb + 0x154));
+        assert_eq!(value(peb_offset::TLS_BITMAP_BITS), None, "every index free");
+        assert_eq!(value(peb_offset::FAST_PEB_LOCK), Some(peb + 0x860));
+        assert_eq!(value(0x864), Some(u32::MAX), "the lock's LockCount: free");
         for &(offset, _) in &words {
             assert_eq!(offset % 4, 0);
-            assert!(offset < 0x1E8, "inside the PEB proper");
+            assert!(
+                offset < 0x1E8
+                    || (peb_offset::TLS_BITMAP_HEADER..peb_offset::TLS_EXPANSION_BITMAP_HEADER + 8)
+                        .contains(&offset)
+                    || offset == peb_offset::PEB_LOCK_COUNT,
+                "{offset:#x}: inside the PEB proper, or the headers and the lock"
+            );
         }
+        assert!(peb_offset::TLS_BITMAP_HEADER > peb_offset::TOP_LEVEL_FILTER);
     }
 
     /// The version dword splits into the CRT's globals (its own shift/mask recipe, restated

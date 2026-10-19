@@ -7,8 +7,8 @@
 //! kernel32's other calls hand console handles here where Windows 2000's do: WriteFile and ReadFile
 //! (WriteConsoleA, ReadConsoleA), FlushFileBuffers (FlushConsoleInputBuffer), GetFileType
 //! (VerifyConsoleIoHandle), CloseHandle (CloseConsoleHandle) and DuplicateHandle
-//! (DuplicateConsoleHandle); ReadFile's console branch ([`read_console`]) waits for ReadFile's move
-//! to kernel32 (B8), and the waits' (the console's input-wait handle) for the waits' (B5). The host
+//! (DuplicateConsoleHandle), and the waits (the console's input-wait handle, [`wait_handle`]);
+//! ReadFile's console branch ([`read_console`]) waits for ReadFile's move to kernel32 (B8). The host
 //! tests' CsrClientCallServer serves the same rules, the bytes written recorded
 //! ([`console_writes`]).
 
@@ -16,8 +16,8 @@ use rtl::console::api;
 use rtl::status::{nt_success, STATUS_INVALID_HANDLE};
 
 use crate::base::{
-    parameters_standard_handle, set_last_error, set_last_nt_error, set_parameters_standard_handle,
-    standard_slot,
+    is_console_handle, parameters_standard_handle, peb, read, set_last_error, set_last_nt_error,
+    set_parameters_standard_handle, standard_handle, standard_slot, under_peb_lock, write,
 };
 #[cfg(test)]
 pub use crate::nt::host::console_writes;
@@ -25,6 +25,12 @@ use crate::nt::{self, ApiMessage};
 
 const INVALID_HANDLE_VALUE: u32 = 0xFFFF_FFFF;
 const ERROR_INVALID_PARAMETER: u32 = 87;
+
+/// kernel32's console input-wait handle's slot, on the PEB's page.
+const CONSOLE_INPUT_WAIT: usize = 0x8C0;
+/// The input-wait event's access and type: EVENT_ALL_ACCESS, a NotificationEvent.
+const EVENT_ALL_ACCESS: u32 = 0x001F_0003;
+const NOTIFICATION_EVENT: u32 = 0;
 
 /// Send the API's data to the console server (CsrClientCallServer, no capture buffer: F2K's server
 /// reads the client's memory where it is); the status, `data` as the server answered it.
@@ -200,6 +206,53 @@ pub fn flush_console_input_buffer(console: u32) -> u32 {
 pub fn verify_console_io_handle(console: u32) -> bool {
     let mut data = [console as usize, 0];
     nt_success(call_server(api::VERIFY_IO_HANDLE, &mut data)) && data[1] != 0
+}
+
+/// GetConsoleInputWaitHandle: the event a wait on a console handle waits on, signaled while the
+/// console's input buffer holds input. Windows 2000's csrss hands it over when the process connects
+/// to its console; F2K's console has no keyboard, so kernel32 makes it itself at the first need —
+/// a notification event, never signaled — under the PEB lock, and keeps it for the process's life
+/// (zero when it cannot be made: the wait then fails on the console handle itself).
+pub fn input_wait_handle() -> u32 {
+    let slot = peb() + CONSOLE_INPUT_WAIT;
+    let handle = read(slot);
+    if handle != 0 {
+        return handle;
+    }
+    under_peb_lock(|| {
+        if read(slot) == 0 {
+            let mut event = 0;
+            // SAFETY: ntdll's export, unnamed.
+            let status = unsafe {
+                nt::NtCreateEvent(
+                    &mut event,
+                    EVENT_ALL_ACCESS,
+                    core::ptr::null(),
+                    NOTIFICATION_EVENT,
+                    0,
+                )
+            };
+            if nt_success(status) {
+                write(slot, event);
+            }
+        }
+        read(slot)
+    })
+}
+
+/// The handle a wait waits on, as Windows 2000's waits make it: a standard handle's pseudo-value is
+/// the process parameters' handle, and a console handle naming a console object is the console's
+/// input-wait handle; any other handle is itself.
+pub fn wait_handle(handle: u32) -> u32 {
+    let handle = standard_handle(handle);
+    if is_console_handle(handle) && verify_console_io_handle(handle) {
+        match input_wait_handle() {
+            0 => handle,
+            event => event,
+        }
+    } else {
+        handle
+    }
 }
 
 /// CloseConsoleHandle, as Windows 2000's CloseHandle reaches it: the console handle closed;

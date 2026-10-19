@@ -1,8 +1,8 @@
 # kernel32's native exports: functions that run entirely in user mode, as Windows 2000's own
 # kernel32 runs them. They read and write the calling thread's TEB through FS (the NT layout:
-# ClientId at 20h, LastErrorValue at 34h, the PEB at 30h), return the pseudo-handles, run the locked
-# read-modify-write sequences (atomic on any processor, with no kernel transition), or keep the
-# top-level exception filter. Every export is
+# ClientId at 20h, LastErrorValue at 34h, the PEB at 30h, TlsSlots at E10h, TlsExpansionSlots at
+# F94h), return the pseudo-handles, run the locked read-modify-write sequences (atomic on any
+# processor, with no kernel transition), or keep the top-level exception filter. Every export is
 # stdcall: its `ret` pops its argument block.
 .text
 
@@ -91,6 +91,70 @@ _f2k_export_InterlockedCompareExchange:
     mov eax, dword ptr [esp+12]
     lock cmpxchg dword ptr [ecx], edx
     ret 12
+
+# Indexes 0..63 live in the TEB's TlsSlots, 64..1087 in the thread's TlsExpansionSlots (on the
+# process heap, made by the first TlsSetValue of such an index; a get before it reads zero); anything
+# else is ERROR_INVALID_PARAMETER (87). A successful get clears the last error.
+.p2align 4
+.globl _f2k_export_TlsGetValue
+_f2k_export_TlsGetValue:
+    mov ecx, dword ptr [esp+4]
+    cmp ecx, 64
+    jae .Ltls_get_expansion
+    mov eax, dword ptr fs:[ecx*4+0xE10]
+    mov dword ptr fs:[0x34], 0
+    ret 4
+.Ltls_get_expansion:
+    cmp ecx, 1088
+    jae .Ltls_get_invalid
+    mov eax, dword ptr fs:[0xF94]
+    test eax, eax
+    jz .Ltls_get_none
+    mov eax, dword ptr [eax+ecx*4-0x100]
+.Ltls_get_none:
+    mov dword ptr fs:[0x34], 0
+    ret 4
+.Ltls_get_invalid:
+    mov dword ptr fs:[0x34], 87
+    xor eax, eax
+    ret 4
+
+.p2align 4
+.globl _f2k_export_TlsSetValue
+_f2k_export_TlsSetValue:
+    mov ecx, dword ptr [esp+4]
+    mov edx, dword ptr [esp+8]
+    cmp ecx, 64
+    jae .Ltls_set_expansion
+    mov dword ptr fs:[ecx*4+0xE10], edx
+    mov eax, 1
+    ret 8
+.Ltls_set_expansion:
+    cmp ecx, 1088
+    jae .Ltls_set_invalid
+    mov eax, dword ptr fs:[0xF94]
+    test eax, eax
+    jz .Ltls_set_allocate
+.Ltls_set_store:
+    mov dword ptr [eax+ecx*4-0x100], edx
+    mov eax, 1
+    ret 8
+# The thread's first expansion index: its slots come from the process heap (ECX and EDX kept
+# across the cdecl body); with no room, ERROR_NOT_ENOUGH_MEMORY.
+.Ltls_set_allocate:
+    push ecx
+    push edx
+    call _f2k_k32_tls_expansion
+    pop edx
+    pop ecx
+    test eax, eax
+    jnz .Ltls_set_store
+    mov dword ptr fs:[0x34], 8
+    ret 8
+.Ltls_set_invalid:
+    mov dword ptr fs:[0x34], 87
+    xor eax, eax
+    ret 8
 
 # The top-level exception filter lives in the process's PEB page at TOP_LEVEL_FILTER (an offset
 # past the PEB proper). The previous filter is returned.

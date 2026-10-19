@@ -9,7 +9,8 @@
 use rtl::cp1252;
 
 use crate::base::{
-    peb, process_parameters, read, read_pointer, set_last_error, units, write_pointer,
+    peb, process_parameters, read, read_pointer, set_last_error, under_peb_lock, units,
+    write_pointer,
 };
 
 /// kernel32's slots on the PEB's page, past the PEB proper: the buffers of the narrow command
@@ -60,15 +61,20 @@ fn narrow_into(units: &[u16], out: *mut u8, room: usize) {
     unsafe { out.add(length).write(0) };
 }
 
-/// The PEB-page slot's block, made by `make` at the first use. F2K's process has no PEB lock yet
-/// (ntdll's critical sections come later): two threads making the block at once write the same
-/// bytes to the same place, so the race is benign.
+/// The PEB-page slot's block, made by `make` at the first use, under the PEB lock (as Windows
+/// 2000's kernel32 makes its narrow copies once, at its process attach).
 fn made_once(slot: usize, make: impl FnOnce() -> usize) -> usize {
     let slot = peb() + slot;
-    if read_pointer(slot) == 0 {
-        write_pointer(slot, make());
+    let made = read_pointer(slot);
+    if made != 0 {
+        return made;
     }
-    read_pointer(slot)
+    under_peb_lock(|| {
+        if read_pointer(slot) == 0 {
+            write_pointer(slot, make());
+        }
+        read_pointer(slot)
+    })
 }
 
 /// GetCommandLineA: the process parameters' CommandLine, narrowed once: the same block every

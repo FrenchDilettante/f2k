@@ -10,7 +10,7 @@ Multiboot loader with the disk attached (`image="kernel"`) or the disk itself th
 "KERNEL PANIC" fails every case. `cmdline` is the user program's command line: QEMU's `-append`
 on a kernel boot, the Limine entry's `cmdline` on a disk boot; without one the kernel runs exit0.
 
-The program smokes (pingpong, sleep, spin, suspend, respawn, fileio) run the root directory's
+The program smokes (sleep, spin, suspend, respawn, fileio) run the root directory's
 single-path fixtures, selected by the command line, until the sectioned blocks that succeed them
 replace them (tests/test_limine.py names each successor).
 
@@ -242,17 +242,6 @@ CASES = (
         "hello",
         "the console fixture prints \"Hello, world!\" as its own COM1 output and exits 0",
         expects=("Hello, world!",),
-        ordered=True,
-    ),
-    # The blocking-wait smoke: the strict alternation is the point, the turns must appear in order.
-    *program_smoke(
-        "pingpong",
-        "the blocking-wait smoke runs its captured five-turn alternation through two auto-reset events and a child thread, the child-handle wait returns 0, and the process exits cleanly",
-        expects=(
-            *(line for turn in range(5) for line in (f"pong {turn}", f"ping {turn}")),
-            "child handle wait returned 0",
-            "pingpong: ok",
-        ),
         ordered=True,
     ),
     # Timer smoke: the main thread parks in the timer table through Sleep(200) (the idle thread

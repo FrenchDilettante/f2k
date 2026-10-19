@@ -147,6 +147,82 @@ unsafe extern "system" {
         record: *mut rtl::seh::ExceptionRecord,
         return_value: u32,
     );
+    /// The synchronization services: `\BaseNamedObjects`, the events, mutants and semaphores made
+    /// or opened by name, their signals and releases, the waits, and handle duplication.
+    pub fn NtOpenDirectoryObject(
+        handle: *mut u32,
+        access: u32,
+        attributes: *const ObjectAttributes,
+    ) -> u32;
+    pub fn NtCreateEvent(
+        handle: *mut u32,
+        access: u32,
+        attributes: *const ObjectAttributes,
+        event_type: u32,
+        initial_state: u32,
+    ) -> u32;
+    pub fn NtOpenEvent(handle: *mut u32, access: u32, attributes: *const ObjectAttributes) -> u32;
+    pub fn NtSetEvent(handle: u32, previous: *mut i32) -> u32;
+    pub fn NtClearEvent(handle: u32) -> u32;
+    pub fn NtPulseEvent(handle: u32, previous: *mut i32) -> u32;
+    pub fn NtCreateMutant(
+        handle: *mut u32,
+        access: u32,
+        attributes: *const ObjectAttributes,
+        initial_owner: u32,
+    ) -> u32;
+    pub fn NtOpenMutant(handle: *mut u32, access: u32, attributes: *const ObjectAttributes) -> u32;
+    pub fn NtReleaseMutant(handle: u32, previous: *mut i32) -> u32;
+    pub fn NtCreateSemaphore(
+        handle: *mut u32,
+        access: u32,
+        attributes: *const ObjectAttributes,
+        initial: i32,
+        maximum: i32,
+    ) -> u32;
+    pub fn NtOpenSemaphore(
+        handle: *mut u32,
+        access: u32,
+        attributes: *const ObjectAttributes,
+    ) -> u32;
+    pub fn NtReleaseSemaphore(handle: u32, count: i32, previous: *mut i32) -> u32;
+    pub fn NtWaitForSingleObject(handle: u32, alertable: u32, timeout: *const i64) -> u32;
+    pub fn NtWaitForMultipleObjects(
+        count: u32,
+        handles: *const u32,
+        wait_type: u32,
+        alertable: u32,
+        timeout: *const i64,
+    ) -> u32;
+    pub fn NtSignalAndWaitForSingleObject(
+        signal: u32,
+        wait: u32,
+        alertable: u32,
+        timeout: *const i64,
+    ) -> u32;
+    pub fn NtDuplicateObject(
+        source_process: u32,
+        source: u32,
+        target_process: u32,
+        target: *mut u32,
+        access: u32,
+        attributes: u32,
+        options: u32,
+    ) -> u32;
+    /// NtSetInformationThread: the class's value set (F2K answers ThreadZeroTlsCell, class 10).
+    pub fn NtSetInformationThread(
+        thread: u32,
+        class: u32,
+        information: *const u8,
+        length: u32,
+    ) -> u32;
+    /// The PEB lock, taken and released (what serializes the process-wide state).
+    pub fn RtlAcquirePebLock();
+    pub fn RtlReleasePebLock();
+    /// RtlInitializeCriticalSection: the section free, no event until the first contention.
+    pub fn RtlInitializeCriticalSection(section: *mut u8) -> u32;
+    /// RtlRaiseStatus: the status raised as a noncontinuable exception.
+    pub fn RtlRaiseStatus(status: u32) -> !;
 }
 
 #[cfg(test)]
@@ -223,6 +299,184 @@ pub mod host {
     ) {
         // SAFETY: the caller's record.
         UNWOUND.with(|calls| calls.borrow_mut().push((target, unsafe { *record })));
+    }
+
+    std::thread_local! {
+        /// The timeout the last wait stand-in was handed: none for a null pointer.
+        pub static LAST_TIMEOUT: Cell<Option<i64>> = const { Cell::new(None) };
+        /// The handles the last wait stand-in was handed.
+        pub static LAST_WAITED: RefCell<std::vec::Vec<u32>> = const { RefCell::new(std::vec::Vec::new()) };
+        /// The indexes NtSetInformationThread's ThreadZeroTlsCell was handed, in order.
+        pub static ZEROED_TLS: RefCell<std::vec::Vec<u32>> = const { RefCell::new(std::vec::Vec::new()) };
+        /// How deep the stand-in PEB lock is held.
+        pub static PEB_LOCK_DEPTH: Cell<u32> = const { Cell::new(0) };
+    }
+
+    /// The named objects' directory handle the stand-in opens.
+    pub const DIRECTORY: u32 = 0x40;
+
+    fn record_timeout(timeout: *const i64) {
+        // SAFETY: the caller's LARGE_INTEGER, when given.
+        LAST_TIMEOUT.with(|cell| cell.set((!timeout.is_null()).then(|| unsafe { timeout.read() })));
+    }
+
+    pub unsafe extern "system" fn NtOpenDirectoryObject(
+        handle: *mut u32,
+        _access: u32,
+        _attributes: *const super::ObjectAttributes,
+    ) -> u32 {
+        // SAFETY: the caller's handle slot.
+        unsafe { handle.write(DIRECTORY) };
+        0
+    }
+
+    /// The create and open stand-ins: the name recorded, the handle handed out (see [`opened`]).
+    macro_rules! creates {
+        ($($name:ident($($arg:ident: $ty:ty),*);)*) => {$(
+            pub unsafe extern "system" fn $name(
+                handle: *mut u32,
+                _access: u32,
+                attributes: *const super::ObjectAttributes
+                $(, $arg: $ty)*
+            ) -> u32 {
+                $(let _ = $arg;)*
+                // SAFETY: the caller's arguments.
+                unsafe { opened(handle, attributes) }
+            }
+        )*};
+    }
+
+    creates! {
+        NtCreateEvent(event_type: u32, initial_state: u32);
+        NtOpenEvent();
+        NtCreateMutant(initial_owner: u32);
+        NtOpenMutant();
+        NtCreateSemaphore(initial: i32, maximum: i32);
+        NtOpenSemaphore();
+    }
+
+    /// The services whose stand-ins only answer (the arranged status, or success).
+    macro_rules! services {
+        ($($name:ident($($arg:ident: $ty:ty),*);)*) => {$(
+            pub unsafe extern "system" fn $name($($arg: $ty),*) -> u32 {
+                $(let _ = $arg;)*
+                answer()
+            }
+        )*};
+    }
+
+    services! {
+        NtSetEvent(handle: u32, previous: *mut i32);
+        NtClearEvent(handle: u32);
+        NtPulseEvent(handle: u32, previous: *mut i32);
+        NtReleaseMutant(handle: u32, previous: *mut i32);
+        NtReleaseSemaphore(handle: u32, count: i32, previous: *mut i32);
+    }
+
+    pub unsafe extern "system" fn NtWaitForSingleObject(
+        handle: u32,
+        _alertable: u32,
+        timeout: *const i64,
+    ) -> u32 {
+        LAST_WAITED.with(|cell| *cell.borrow_mut() = std::vec![handle]);
+        record_timeout(timeout);
+        answer()
+    }
+
+    pub unsafe extern "system" fn NtWaitForMultipleObjects(
+        count: u32,
+        handles: *const u32,
+        _wait_type: u32,
+        _alertable: u32,
+        timeout: *const i64,
+    ) -> u32 {
+        // SAFETY: the caller's `count` handles.
+        let waited = unsafe { core::slice::from_raw_parts(handles, count as usize) }.to_vec();
+        LAST_WAITED.with(|cell| *cell.borrow_mut() = waited);
+        record_timeout(timeout);
+        answer()
+    }
+
+    pub unsafe extern "system" fn NtSignalAndWaitForSingleObject(
+        _signal: u32,
+        wait: u32,
+        _alertable: u32,
+        timeout: *const i64,
+    ) -> u32 {
+        LAST_WAITED.with(|cell| *cell.borrow_mut() = std::vec![wait]);
+        record_timeout(timeout);
+        answer()
+    }
+
+    pub unsafe extern "system" fn NtDuplicateObject(
+        _source_process: u32,
+        _source: u32,
+        _target_process: u32,
+        target: *mut u32,
+        _access: u32,
+        _attributes: u32,
+        _options: u32,
+    ) -> u32 {
+        let status = answer();
+        if status == 0 && !target.is_null() {
+            // SAFETY: the caller's handle slot.
+            unsafe { target.write(HANDLE) };
+        }
+        status
+    }
+
+    /// NtSetInformationThread: ThreadZeroTlsCell alone, the kernel's checks (the calling thread's
+    /// pseudo-handle, an index below 1088), the index recorded.
+    pub unsafe extern "system" fn NtSetInformationThread(
+        thread: u32,
+        class: u32,
+        information: *const u8,
+        length: u32,
+    ) -> u32 {
+        let status = answer();
+        if status != 0 {
+            return status;
+        }
+        if class != 10 {
+            return rtl::status::STATUS_INVALID_INFO_CLASS;
+        }
+        if length != 4 {
+            return rtl::status::STATUS_INFO_LENGTH_MISMATCH;
+        }
+        // SAFETY: the caller's value.
+        let value = unsafe { (information as *const u32).read_unaligned() };
+        if thread != 0xFFFF_FFFE || value >= 1088 {
+            return 0xC000_000D;
+        }
+        ZEROED_TLS.with(|zeroed| zeroed.borrow_mut().push(value));
+        0
+    }
+
+    pub unsafe extern "system" fn RtlAcquirePebLock() {
+        PEB_LOCK_DEPTH.with(|depth| depth.set(depth.get() + 1));
+    }
+
+    pub unsafe extern "system" fn RtlReleasePebLock() {
+        PEB_LOCK_DEPTH.with(|depth| {
+            assert!(depth.get() > 0, "the PEB lock is released by its holder");
+            depth.set(depth.get() - 1)
+        });
+    }
+
+    /// RtlInitializeCriticalSection: the section's free state (rtl::critsec's, over no system).
+    pub unsafe extern "system" fn RtlInitializeCriticalSection(section: *mut u8) -> u32 {
+        // SAFETY: the caller's 24-byte section.
+        unsafe {
+            let words = section as *mut u32;
+            for (at, value) in [0, u32::MAX, 0, 0, 0, 0].into_iter().enumerate() {
+                words.add(at).write_unaligned(value);
+            }
+        }
+        0
+    }
+
+    pub unsafe extern "system" fn RtlRaiseStatus(status: u32) -> ! {
+        panic!("RtlRaiseStatus({status:#010x})")
     }
 
     /// The performance counter's stand-in values.
@@ -619,8 +873,9 @@ pub mod threads {
 
     impl HostProcess {
         /// The kernel's process at its start (`user::teb::peb_words`, `user::params::header`): the
-        /// image's base, the version fields and the service pack's name; the parameters' standard
-        /// handles, image path, command line and startup values; the TEB's self and PEB pointers.
+        /// image's base, the version fields and the service pack's name, the TLS bitmaps; the
+        /// parameters' standard handles, image path, command line and startup values; the TEB's
+        /// self and PEB pointers.
         fn new() -> HostProcess {
             let (peb, parameters, teb) = (page(0x1000), page(0x2000), page(0x1000));
             put(peb + 0x08, IMAGE_BASE);
@@ -649,6 +904,14 @@ pub mod threads {
             let length = put_units(parameters + 0x1000, COMMAND_LINE);
             put(parameters + 0x40, length | 0x800 << 16);
             pointer(parameters + 0x44, parameters + 0x1000);
+            // The TLS bitmaps' headers, past the PEB proper (`user::teb::peb_words`): 64 and 1024
+            // bits over the PEB's own bit arrays, every index free.
+            pointer(peb + 0x40, peb + 0x810);
+            put(peb + 0x810, 64);
+            pointer(peb + 0x814, peb + 0x44);
+            pointer(peb + 0x150, peb + 0x818);
+            put(peb + 0x818, 1024);
+            pointer(peb + 0x81C, peb + 0x154);
             pointer(teb + 0x18, teb);
             pointer(teb + 0x30, peb);
             HostProcess {

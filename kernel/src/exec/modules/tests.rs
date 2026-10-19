@@ -130,9 +130,10 @@ fn the_system_dlls_serve_the_registry() {
         assert_eq!(found, arg_bytes, "{name}");
     }
     // The natives: kernel32's own code (the trivial ones, the exception filter and the pointer
-    // probes its assembly; the console, start-up, locale, clock, virtual-memory and mapping calls
-    // and RaiseException its Rust). The internal start thunk is not among them.
-    assert_eq!(NATIVE_EXPORTS.len(), 76);
+    // probes its assembly, the TLS slots' reads and writes; the console, start-up, locale, clock,
+    // virtual-memory, mapping, synchronization and TLS-index calls and RaiseException its Rust).
+    // The internal start thunk is not among them.
+    assert_eq!(NATIVE_EXPORTS.len(), 96);
     for &(name, _) in &NATIVE_EXPORTS {
         let address = kernel32_export(name).unwrap_or_else(|| panic!("kernel32 exports no {name}"));
         addresses.push(address);
@@ -194,12 +195,12 @@ fn unimplemented_exports_fail_the_call() {
     // (export, its failure value, its argument block), as the spec declares them.
     for (name, fails, arg_bytes) in [
         ("SetErrorMode", 0u32, 4u16),
-        ("CreateMutexA", 0, 12),
+        ("CreateWaitableTimerA", 0, 12),
         ("FindFirstFileA", 0xFFFF_FFFF, 8),
         ("GetFileAttributesA", 0xFFFF_FFFF, 4),
-        ("WaitForMultipleObjects", 0xFFFF_FFFF, 16),
+        ("SetWaitableTimer", 0, 24),
         ("GetThreadPriority", 0x7FFF_FFFF, 4),
-        ("DeleteCriticalSection", 0, 4),
+        ("QueueUserAPC", 0, 12),
     ] {
         let mut stub = vec![0x64, 0xC7, 0x05, 0x34, 0, 0, 0, 120, 0, 0, 0, 0xB8];
         stub.extend_from_slice(&fails.to_le_bytes());
@@ -227,7 +228,7 @@ fn the_thread_exit_trampoline_keeps_its_protocol() {
 
 /// The corpus binaries (the smokes in the root directory, the sectioned fixtures in \CORPUS): the
 /// import surface kernel32 exports.
-const CORPUS: [(&str, &[u8]); 18] = [
+const CORPUS: [(&str, &[u8]); 17] = [
     ("bare", include_bytes!("../../../../tests/bare/bare.exe")),
     ("files", include_bytes!("../../../../tests/files/files.exe")),
     (
@@ -251,10 +252,6 @@ const CORPUS: [(&str, &[u8]); 18] = [
     ("exit0", include_bytes!("../../../../tests/exit0/exit0.exe")),
     ("ret0", include_bytes!("../../../../tests/ret0/ret0.exe")),
     ("hello", include_bytes!("../../../../tests/hello/hello.exe")),
-    (
-        "pingpong",
-        include_bytes!("../../../../tests/pingpong/pingpong.exe"),
-    ),
     ("sleep", include_bytes!("../../../../tests/sleep/sleep.exe")),
     ("spin", include_bytes!("../../../../tests/spin/spin.exe")),
     (

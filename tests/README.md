@@ -106,12 +106,11 @@ The fixtures:
   and abandonment, `WaitForMultipleObjects`, user APCs, critical
   sections, interlocked operations, handle duplication and closing,
   and `pingpong` kept as a section (plus a `SignalObjectAndWait`
-  variant). Built with `/MT`. Replaces the `pingpong` smoke once its
-  blocks pass.
+  variant). Built with `/MT`. Replaced the `pingpong` smoke.
 - `sched` - sleeps and timed waits in bands, the clocks, waitable
   timers, round-robin, preemption, yielding, the wake boost,
   suspension, and the starvation boost; pinned to one CPU. Built with
-  `/MT`. Replaces the `sleep` and `spin` smokes once their
+  `/MT`. Replaces the `sleep` and `spin` smokes once its
   blocks pass (`suspend` goes with `threads`). Gated. Its `yield` capture line `Sleep(10)
   does: yes` comes from real hardware: the VirtualBox capture VM runs
   at 100% CPU (a normal-priority thread yielding with `Sleep(0)`), so
@@ -252,10 +251,9 @@ in `kernel/test_kernel.py`; `exit0`, `ret0` and `hello` carry a
   window, paints "Hello, world!" once with `TextOut`, then closes
   itself and exits 0; the first test to import user32.dll and
   gdi32.dll.
-- `pingpong`, `sleep`, `spin`, `suspend`, `respawn`, `thread` - the
-  scheduler smokes, one per scheduler stage: the blocking-wait
-  alternation, the timer table, preemption, suspension, thread-slot
-  reuse, and thread creation (`thread` has a capture but no kernel
+- `sleep`, `spin`, `suspend`, `respawn`, `thread` - the scheduler
+  smokes, one per scheduler stage: the timer table, preemption,
+  suspension, thread-slot reuse, and thread creation (`thread` has a capture but no kernel
   case: the disk's root directory is full).
 - `fileio` - opens its own image by its module path and reads its
   signatures across seeks.

@@ -202,6 +202,12 @@ pub struct Thread {
     /// The level the current wait was entered at: a wait above the passive level is not
     /// APC-breakable. F2K's waits are always entered at the passive level; the gate stays armed.
     pub(crate) wait_irql: irql::Irql,
+    /// The mutexes the thread owns (see [`super::mutex`]): its end abandons them.
+    pub(crate) owned_mutexes: List,
+    /// The blocks of a multiple-object wait, one per object. They live in the record, not on the
+    /// waiting thread's stack: a wake may unwind them from any thread's context, and the kernel
+    /// stacks are mapped per process.
+    pub(crate) multi_blocks: [WaitBlock; super::wait::MAXIMUM_WAIT_OBJECTS],
 }
 
 // The machine-state layout contract with the switch's assembly: on the 32-bit target the offsets it
@@ -285,6 +291,8 @@ impl Thread {
             suspend_count: 0,
             freeze_count: 0,
             wait_irql: irql::PASSIVE,
+            owned_mutexes: List::empty(),
+            multi_blocks: [WaitBlock::detached(); super::wait::MAXIMUM_WAIT_OBJECTS],
         }
     }
 
@@ -335,6 +343,7 @@ impl Thread {
         // the semaphore (the suspend itself).
         self.kernel_apcs.init();
         self.user_apcs.init();
+        self.owned_mutexes.init();
         self.suspend_semaphore.init();
         self.suspend_apc.init(
             thread,

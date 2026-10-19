@@ -11,13 +11,11 @@ timeout = 30
 yield = ["SwitchToThread: returned 1, the new thread had run *"]
 
 # The blocks this kernel does not pass yet, each with the increment that enables it.
-# Every block stops in the multithreaded C runtime's start-up first ("R6016 - not enough space for
-# thread data"): it needs TlsAlloc, TlsGetValue and TlsSetValue (B7's), so whichever of B5 and B7
-# lands first brings them.
+# Every block starts with SetProcessAffinityMask.
 [pending]
-clock = "B5: the C runtime's TlsAlloc, TlsGetValue and TlsSetValue (R6016; B7's if it lands first): the clocks themselves are B2's"
-sleep = "B5: synchronization and APCs"
-timer = "B5: synchronization and APCs"
+clock = "B7: SetProcessAffinityMask, the block's first call (the clocks themselves are B2's)"
+sleep = "B5b: timers, sleeps, APCs and SwitchToThread (and B7's SetProcessAffinityMask, its first call)"
+timer = "B5b: timers, sleeps, APCs and SwitchToThread (and B7's SetProcessAffinityMask, its first call)"
 rr = "B7: threads and scheduling"
 preempt = "B7: threads and scheduling"
 boost = "B7: threads and scheduling"

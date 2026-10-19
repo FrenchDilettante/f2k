@@ -66,6 +66,9 @@ pub mod apc;
 /// The semaphore object: a waitable whose signal state is a count.
 pub mod semaphore;
 
+/// The mutex object: a waitable owned recursively, abandoned by an owner's end.
+pub mod mutex;
+
 // --- Constants -----------------------------------------------------------
 
 /// The number of priority levels: one ready list and one summary bit each.

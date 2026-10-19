@@ -19,6 +19,9 @@ pub const STATUS_KERNEL_APC: NtStatus = 0x0000_0100;
 /// (the runtime layer that would receive the APC arrives with the real-DLL pivot); the queue and
 /// this status are armed data, and no code path produces it.
 pub const STATUS_USER_APC: NtStatus = 0x0000_00C0;
+/// A wait took a mutex its previous owner ended holding: the wait succeeded, and the protected
+/// state may be inconsistent. OR'd with the satisfying index (`WAIT_ABANDONED_0 + n`).
+pub const STATUS_ABANDONED: NtStatus = 0x0000_0080;
 /// A parameter is out of range (a block read past the device's end).
 pub const STATUS_INVALID_PARAMETER: NtStatus = 0xC000_000Du32 as NtStatus;
 /// No such device (no usable disk where one was asked for).
@@ -40,9 +43,11 @@ pub const STATUS_IO_DEVICE_ERROR: NtStatus = 0xC000_0185u32 as NtStatus;
 /// The volume holds no file system the kernel recognizes (a refused mount).
 pub const STATUS_UNRECOGNIZED_VOLUME: NtStatus = 0xC000_014Fu32 as NtStatus;
 /// A thread's suspend count is at its documented maximum (127).
-pub const STATUS_SUSPEND_COUNT_EXCEEDED: NtStatus = 0xC000_01BCu32 as NtStatus;
+pub const STATUS_SUSPEND_COUNT_EXCEEDED: NtStatus = 0xC000_004Au32 as NtStatus;
 /// A semaphore release would push the count past its limit.
-pub const STATUS_SEMAPHORE_LIMIT_EXCEEDED: NtStatus = 0xC000_0079u32 as NtStatus;
+pub const STATUS_SEMAPHORE_LIMIT_EXCEEDED: NtStatus = 0xC000_0047u32 as NtStatus;
+/// A mutex release by a thread that does not own it.
+pub const STATUS_MUTANT_NOT_OWNED: NtStatus = 0xC000_0046u32 as NtStatus;
 /// The thread is terminating; operations that would queue work on it are refused.
 pub const STATUS_THREAD_IS_TERMINATING: NtStatus = 0xC000_004Bu32 as NtStatus;
 
@@ -63,8 +68,8 @@ mod tests {
         assert_eq!(STATUS_TIMEOUT as u32, 0x0000_0102);
         assert_eq!(STATUS_KERNEL_APC as u32, 0x0000_0100);
         assert_eq!(STATUS_USER_APC as u32, 0x0000_00C0);
-        assert_eq!(STATUS_SUSPEND_COUNT_EXCEEDED as u32, 0xC000_01BC);
-        assert_eq!(STATUS_SEMAPHORE_LIMIT_EXCEEDED as u32, 0xC000_0079);
+        assert_eq!(STATUS_SUSPEND_COUNT_EXCEEDED as u32, 0xC000_004A);
+        assert_eq!(STATUS_SEMAPHORE_LIMIT_EXCEEDED as u32, 0xC000_0047);
         assert_eq!(STATUS_THREAD_IS_TERMINATING as u32, 0xC000_004B);
         assert_eq!(STATUS_INVALID_PARAMETER as u32, 0xC000_000D);
         assert_eq!(STATUS_NO_SUCH_DEVICE as u32, 0xC000_000E);
