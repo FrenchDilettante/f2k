@@ -22,7 +22,6 @@ pub mod stack;
 pub mod syscall;
 pub mod teb;
 pub mod tls;
-pub mod userheap;
 
 /// The fault-test stub's code page (the corpus programs' preferred base, which the fault-test builds
 /// never map).
@@ -638,8 +637,8 @@ mod tests {
                 assert_ne!(pages[index], pages[other]);
             }
             assert!(pages[index] > PARAMS_PAGE);
-            // 0x0200_0000: the heap region's base, the next mapped user window above the TEB
-            // region.
+            // The region stays below the space the program's own reservations (its heaps
+            // included) start in.
             assert!(pages[index] < 0x0200_0000);
         }
         for &page in &pages {

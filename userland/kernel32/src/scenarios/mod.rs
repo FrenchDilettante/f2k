@@ -9,6 +9,7 @@
 
 mod clocks;
 mod console;
+mod environment;
 mod files;
 mod locale;
 mod modules;

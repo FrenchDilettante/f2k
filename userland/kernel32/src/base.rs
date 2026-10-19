@@ -1,8 +1,9 @@
 //! The helpers kernel32's exports share, as Windows 2000's kernel32 names them: the calling
 //! thread's last error, BaseSetLastNTError (a failed system service's status, mapped through
 //! ntdll's RtlNtStatusToDosError), BaseFormatTimeOut, BaseFormatObjectAttributes and
-//! BaseGetNamedObjectDirectory, the PEB lock's critical regions, the PEB and the process
-//! parameters as the thread reaches them, and the standard and console handles' tests.
+//! BaseGetNamedObjectDirectory, the PEB lock's critical regions, the PEB, the process parameters,
+//! the process heap and the environment block as the thread reaches them, and the standard and
+//! console handles' tests.
 
 use crate::nt::{self, ObjectAttributes, UnicodeString};
 
@@ -231,6 +232,16 @@ pub fn process_parameters() -> usize {
     read_pointer(peb() + 0x10)
 }
 
+/// The process heap (the PEB's ProcessHeap, which ntdll's LdrInitializeThunk makes).
+pub fn process_heap() -> usize {
+    read_pointer(peb() + 0x18)
+}
+
+/// The environment block (the process parameters' Environment: ntdll's to edit and move).
+pub fn environment_block() -> *mut u16 {
+    teb::environment_block()
+}
+
 /// The dword at `at` in the PEB, the TEB or a block they point at.
 pub fn read(at: usize) -> u32 {
     // SAFETY: the callers read the TEB, the PEB and the process parameters, mapped for the
@@ -301,6 +312,10 @@ mod teb {
         super::read(at) as usize
     }
 
+    pub fn environment_block() -> *mut u16 {
+        read_pointer(super::process_parameters() + 0x48) as *mut u16
+    }
+
     pub fn write_pointer(at: usize, value: usize) {
         super::write(at, value as u32)
     }
@@ -352,6 +367,11 @@ mod teb {
 
     pub fn teb() -> usize {
         crate::nt::threads::process().teb
+    }
+
+    /// The stand-in ntdll's environment block (`nt::host::ENVIRONMENT`).
+    pub fn environment_block() -> *mut u16 {
+        crate::nt::host::environment_block()
     }
 
     pub fn read_pointer(at: usize) -> usize {

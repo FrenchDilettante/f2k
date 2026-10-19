@@ -6,17 +6,17 @@
 //! buffers are absolute addresses), its strings after it on the same pages, UTF-16 as the
 //! platform's are. The service pack's name the PEB's CSDVersion points at shares the pages, past
 //! the block's strings. kernel32 makes its narrow command line (GetCommandLineA's) and startup
-//! information (GetStartupInfoA's) from the block, in user mode, as Windows 2000's does; until the
-//! process heap is ntdll's, it keeps them in room the kernel leaves free here
-//! ([`ANSI_COMMAND_LINE_BUFFER`], [`ANSI_STARTUP_INFO_BUFFER`]).
+//! information (GetStartupInfoA's) from the block, in user mode and on the process heap, as Windows
+//! 2000's does.
 //!
 //! The kernel writes only the process's starting values and never reads the block back. The
-//! current directory (empty: no process has one yet) and the live environment are later
-//! increments'; the environment block is the empty one the transitional GetEnvironmentStringsW
-//! hands out ([`ENVIRONMENT_BUFFER`]).
+//! current directory (empty: no process has one yet) comes with the file objects. The environment
+//! block the block's Environment points at is user mode's from the start, as on Windows 2000: the
+//! kernel maps it empty ([`ENVIRONMENT_BLOCK`]), and ntdll's environment functions edit it and move
+//! it to a larger allocation when it outgrows its region.
 
-// The layouts' fields user code reads, whether the kernel writes them or not (kernel32 reads the
-// startup values and its narrow copies' room by these offsets).
+// The layouts' fields user code reads, whether the kernel writes them or not (kernel32 and ntdll
+// read them by these offsets).
 #![allow(dead_code)]
 
 use rtl::cp1252::MB_TO_WC;
@@ -85,17 +85,13 @@ pub const PAGES: u32 = 2;
 /// block's strings on the second page.
 pub const CSD_VERSION_BUFFER: u32 = COMMAND_LINE_BUFFER + COMMAND_LINE_ROOM;
 pub const CSD_VERSION_TEXT: &[u8] = b"Service Pack 4";
-/// kernel32's narrow command line (GetCommandLineA's block, made at its first call) and narrow
-/// startup information (GetStartupInfoA's), which Windows 2000 makes on the process heap: here,
-/// until ntdll's process heap, in room the kernel leaves
-/// zeroed past the service pack's name. The narrow command line has half the wide one's room.
-pub const ANSI_COMMAND_LINE_BUFFER: u32 = 0x1840;
-pub const ANSI_STARTUP_INFO_BUFFER: u32 = ANSI_COMMAND_LINE_BUFFER + COMMAND_LINE_ROOM / 2;
-/// sizeof(STARTUPINFOA).
-pub const STARTUP_INFO_SIZE: u32 = 68;
-/// The environment block the block's Environment points at: empty (two NULs), the one the
-/// transitional GetEnvironmentStringsW hands out until the environment is ntdll's.
-pub const ENVIRONMENT_BUFFER: u32 = 0x1F00;
+/// The environment block's starting region, which the block's Environment points at: an empty
+/// block (two NULs, the region's zeroed pages), user mode's from then on (ntdll's
+/// RtlSetEnvironmentVariable edits it in place, and moves it to a larger allocation when it
+/// outgrows the region, releasing this one).
+pub const ENVIRONMENT_BLOCK: u32 = 0x0035_0000;
+/// The region's size in pages.
+pub const ENVIRONMENT_BLOCK_PAGES: u32 = 5;
 
 /// The standard handles the block carries, per the real-machine trace (`tests/hello/trace.txt`):
 /// the GetFileType probes after each GetStdHandle, and the WriteFile that prints, name stdin 3,
@@ -200,7 +196,8 @@ pub fn module_file_name(module: &[u8], out: &mut [u8; MODULE_ROOM]) -> usize {
 
 /// Map the parameters pages at [`crate::user::PARAMS_PAGE`] into `space` (the current address
 /// space) and write the block: the command line, the image's Win32 path (from its volume path
-/// `module`), the standard handles and the (empty) environment block; and the service pack's name.
+/// `module`), the standard handles and the environment block's address; and the service pack's
+/// name. The environment block's region is mapped too, its zeroed pages an empty block.
 #[cfg(target_arch = "x86")]
 pub fn map(space: &mut crate::mem::vm::AddressSpace, command_line: &[u8], module: &[u8]) {
     use crate::mem::{paging::PAGE_SIZE, vm};
@@ -227,10 +224,13 @@ pub fn map(space: &mut crate::mem::vm::AddressSpace, command_line: &[u8], module
         base,
         command_line: command_line_bytes as u32,
         image_path: image_path_bytes as u32,
-        environment: base + ENVIRONMENT_BUFFER,
+        environment: ENVIRONMENT_BLOCK,
         standard: [STD_INPUT, STD_OUTPUT, STD_ERROR],
     });
     let _ = write_user(base, &block);
+    for page in 0..ENVIRONMENT_BLOCK_PAGES {
+        vm::map_zeroed(space, ENVIRONMENT_BLOCK + page * PAGE_SIZE, vm::PAGE_READWRITE);
+    }
 }
 
 #[cfg(test)]
@@ -260,7 +260,7 @@ mod tests {
             base,
             command_line: 8,
             image_path: 22,
-            environment: base + ENVIRONMENT_BUFFER,
+            environment: ENVIRONMENT_BLOCK,
             standard: [3, 7, 11],
         });
         let word =
@@ -288,7 +288,7 @@ mod tests {
             ),
             (0, PATH_ROOM as u16, base + CURRENT_DIRECTORY_BUFFER)
         );
-        assert_eq!(word(offset::ENVIRONMENT), base + ENVIRONMENT_BUFFER);
+        assert_eq!(word(offset::ENVIRONMENT), ENVIRONMENT_BLOCK);
         assert_eq!(
             (
                 word(offset::STANDARD_INPUT),
@@ -318,19 +318,16 @@ mod tests {
         }
     }
 
-    /// The pages' contents do not overlap: the block and its strings, the service pack's name,
-    /// kernel32's narrow copies and the environment block, all on the two pages.
+    /// The pages' contents do not overlap: the block and its strings and the service pack's name,
+    /// all on the two pages; the environment block's region lies past them.
     #[test]
     fn the_pages_hold_everything_apart() {
         assert!(IMAGE_PATH_BUFFER + PATH_ROOM <= COMMAND_LINE_BUFFER);
         assert!(COMMAND_LINE_BUFFER + COMMAND_LINE_ROOM <= CSD_VERSION_BUFFER);
-        assert!(
-            CSD_VERSION_BUFFER + 2 * CSD_VERSION_TEXT.len() as u32 + 2 <= ANSI_COMMAND_LINE_BUFFER
-        );
-        assert!(ANSI_STARTUP_INFO_BUFFER + STARTUP_INFO_SIZE <= ENVIRONMENT_BUFFER);
-        assert!(ENVIRONMENT_BUFFER + 4 <= PAGES * 0x1000);
-        assert_eq!(ANSI_STARTUP_INFO_BUFFER % 4, 0);
-        // The longest boot command line fits the block's, and its narrow copy, terminated.
+        assert!(CSD_VERSION_BUFFER + 2 * CSD_VERSION_TEXT.len() as u32 + 2 <= PAGES * 0x1000);
+        assert!(crate::user::PARAMS_PAGE + PAGES * 0x1000 <= ENVIRONMENT_BLOCK);
+        assert_eq!(ENVIRONMENT_BLOCK % 0x1_0000, 0, "an allocation-granularity base");
+        // The longest boot command line fits the block's, terminated.
         assert!(crate::boot::cmdline::MAX_LEN < COMMAND_LINE_ROOM as usize / 2);
     }
 

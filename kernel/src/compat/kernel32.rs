@@ -4,15 +4,14 @@
 //! exports are generated service stubs, each raising the gate on its service number with the
 //! caller's arguments; this module holds the services they reach, the registry the gate dispatches
 //! through ([`SERVICES`], generated from the export specs, userland/<dll>/exports.toml), and the
-//! replays they answer from. The heap group answers from a genuine allocator (`userheap`),
-//! never-called imports from safe minimal floors. Each increment moves a group to user mode and
-//! deletes its services here (the console and the start-up calls are kernel32's own code now, over
-//! the console server, `crate::csr`, and the PEB, `user::teb`; the locale group, the clocks and the
-//! system messages too, over `rtl::codepage` and the shared data page, `user::shared`).
+//! replays they answer from. Each increment moves a group to user mode and deletes its services
+//! here (the console and the start-up calls are kernel32's own code now, over the console server,
+//! `crate::csr`, and the PEB, `user::teb`; the locale group, the clocks and the system messages
+//! too, over `rtl::codepage` and the shared data page, `user::shared`; the heaps, Local/Global
+//! memory and the environment are ntdll's and kernel32's user code over the process's own memory).
 
 use crate::fs::file::SeekMethod;
 use crate::user::syscall::{read_user, write_user, ServiceFn};
-use crate::user::PARAMS_PAGE;
 
 // --- Replay data (captured on a real Windows 2000 SP4 machine) ------
 
@@ -60,64 +59,6 @@ fn thread_of(handle: u32) -> Option<crate::ob::Referenced<crate::sched::thread::
     let reference = referenced(handle, crate::ob::ObjectType::Thread)?;
     let record = reference.thread();
     Some(crate::ob::Referenced::new(reference, record))
-}
-
-/// GetEnvironmentStringsW: a pointer to the (empty) wide environment block the process parameters
-/// point at (`user::params::ENVIRONMENT_BUFFER`).
-fn svc_get_environment_strings_w(frame: &mut crate::user::TrapFrame, _args: &[u32]) {
-    frame.eax = PARAMS_PAGE + crate::user::params::ENVIRONMENT_BUFFER;
-}
-
-/// GetEnvironmentStrings (A variant): report failure. The CRT calls the W variant first and never
-/// needs this fallback.
-fn svc_get_environment_strings(frame: &mut crate::user::TrapFrame, _args: &[u32]) {
-    frame.eax = 0;
-}
-
-/// FreeEnvironmentStringsA/W: nothing to free, report success. Quirk: the CRT frees the W block
-/// through the A entry.
-fn svc_free_environment_strings(frame: &mut crate::user::TrapFrame, _args: &[u32]) {
-    frame.eax = 1;
-}
-
-// Heap services: the genuine allocator lives in `userheap`.
-
-/// HeapCreate: reset and report the heap handle. Flags and sizes are recorded by nothing — the CRT
-/// trusts the handle.
-fn svc_heap_create(frame: &mut crate::user::TrapFrame, _args: &[u32]) {
-    frame.eax = crate::user::userheap::create();
-}
-
-/// HeapAlloc: serve (or zero-serve) from the heap region.
-fn svc_heap_alloc(frame: &mut crate::user::TrapFrame, args: &[u32]) {
-    if args[0] != crate::user::userheap::HEAP_HANDLE {
-        frame.eax = 0;
-        return;
-    }
-    frame.eax = crate::user::userheap::alloc(args[1], args[2] as usize);
-}
-
-/// HeapFree: validate and coalesce.
-fn svc_heap_free(frame: &mut crate::user::TrapFrame, args: &[u32]) {
-    if args[0] != crate::user::userheap::HEAP_HANDLE {
-        frame.eax = 0;
-        return;
-    }
-    frame.eax = crate::user::userheap::free(args[2]);
-}
-
-/// HeapReAlloc: grow by allocate-copy-free, zeroing the extension when asked.
-fn svc_heap_realloc(frame: &mut crate::user::TrapFrame, args: &[u32]) {
-    if args[0] != crate::user::userheap::HEAP_HANDLE {
-        frame.eax = 0;
-        return;
-    }
-    frame.eax = crate::user::userheap::realloc(args[2], args[1], args[3] as usize);
-}
-
-/// HeapDestroy: accept the handle, reset the region.
-fn svc_heap_destroy(frame: &mut crate::user::TrapFrame, args: &[u32]) {
-    frame.eax = crate::user::userheap::destroy(args[0]);
 }
 
 /// CREATE_SUSPENDED: the creation flag that starts the thread with a suspend count of one.
@@ -502,10 +443,11 @@ mod tests {
     fn the_registry_numbers_from_its_base() {
         assert_eq!(
             SERVICES.len(),
-            19,
+            10,
             "the served surface, less kernel32's natives (the last error, the current process, \
              the console and start-up calls, the locale group and clock, the exception filter, \
-             the virtual memory, the events and waits, Sleep) and ntdll's RtlUnwind"
+             the virtual memory, the events and waits, Sleep, the heaps and environment) \
+             and ntdll's RtlUnwind"
         );
         assert_eq!(WIN32_SERVICE_BASE, 0x2000);
         assert_eq!(SERVICES[0].0, "ExitProcess");
@@ -626,22 +568,6 @@ mod tests {
         for refused in [3, -3, 7, 14, 16, -16, i32::MAX, i32::MIN] {
             assert_eq!(thread_priority_increment(refused), None, "{refused}");
         }
-    }
-
-    /// The environment's replay pointer is the process parameters' empty block; the A variant
-    /// reports failure; the W/A free pair succeeds.
-    #[test]
-    fn the_environment_replays_the_parameters_block() {
-        let mut frame = zero_frame();
-        svc_get_environment_strings_w(&mut frame, &[]);
-        assert_eq!(
-            frame.eax,
-            PARAMS_PAGE + crate::user::params::ENVIRONMENT_BUFFER
-        );
-        svc_get_environment_strings(&mut frame, &[]);
-        assert_eq!(frame.eax, 0);
-        svc_free_environment_strings(&mut frame, &[0x0032_0040]);
-        assert_eq!(frame.eax, 1);
     }
 
     /// The served shapes no path the corpus takes reaches answer with their decided values, and no

@@ -27,16 +27,17 @@ fn system_messages_format_into_the_buffer() {
     assert_eq!(last_error(), 317);
 }
 
-/// The block an allocating call handed back: its first `length` bytes. (B6 frees it as LocalFree
-/// frees a fixed block, RtlFreeHeap on the process heap.)
+/// The block an allocating call handed back: its first `length` bytes, then freed as LocalFree
+/// frees a fixed block (RtlFreeHeap on the process heap).
 fn take(block: *mut u8, length: usize) -> std::vec::Vec<u8> {
-    unsafe { core::slice::from_raw_parts(block, length) }.to_vec()
+    let bytes = unsafe { core::slice::from_raw_parts(block, length) }.to_vec();
+    unsafe { crate::nt::RtlFreeHeap(crate::base::process_heap(), 0, block) };
+    bytes
 }
 
 /// FORMAT_MESSAGE_ALLOCATE_BUFFER: the buffer argument is where the message's block (LocalFree's
 /// to free) goes, at least `nSize` bytes; a failure leaves a null pointer there.
 #[test]
-#[ignore = "B6: FORMAT_MESSAGE_ALLOCATE_BUFFER needs the process heap (RtlAllocateHeap, LocalAlloc)"]
 fn an_allocated_buffer_holds_the_message() {
     let none = core::ptr::null();
     let mut block: *mut u8 = 0x1234 as *mut u8;
@@ -51,19 +52,6 @@ fn an_allocated_buffer_holds_the_message() {
     assert_eq!(unsafe { format_message_a(flags, none, 0x0123_4567, 0, slot, 0, none) }, 0);
     assert_eq!(last_error(), 317);
     assert!(block.is_null(), "a failed call leaves no block");
-}
-
-/// Until the process heap is ntdll's (B6), FORMAT_MESSAGE_ALLOCATE_BUFFER has no block to hand
-/// out: a null pointer where the buffer argument points, and ERROR_NOT_ENOUGH_MEMORY.
-#[test]
-fn an_allocating_call_fails_without_the_process_heap() {
-    let none = core::ptr::null();
-    let mut block: *mut u8 = 0x1234 as *mut u8;
-    let slot = &mut block as *mut *mut u8 as *mut u8;
-    let flags = FROM_SYSTEM | ALLOCATE_BUFFER;
-    assert_eq!(unsafe { format_message_a(flags, none, 5, 0, slot, 0, none) }, 0);
-    assert_eq!(last_error(), 8);
-    assert!(block.is_null());
 }
 
 /// FORMAT_MESSAGE_MAX_WIDTH_MASK: the message's regular line break is ignored (a blank in its

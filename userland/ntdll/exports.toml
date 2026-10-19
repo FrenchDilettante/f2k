@@ -7,8 +7,10 @@
 # the NTSTATUS its answer), its user-mode exports (RtlNtStatusToDosError, the mapping kernel32
 # reports a failed service through; the exception dispatcher and RtlUnwind, which kernel32 forwards
 # to; the critical sections, which kernel32's Enter, Leave, TryEnter and Delete forward to, and the
-# PEB lock), and the F2K-internal entry point the kernel sends a thread to (`internal = true`: not a
-# Windows 2000 export).
+# PEB lock; the heaps, which kernel32's HeapAlloc, HeapFree, HeapReAlloc, HeapSize and HeapValidate
+# forward to; the environment; LdrInitializeThunk, a fresh thread's first user-mode work), and the
+# F2K-internal entry point the kernel sends a thread to (`internal = true`: not a Windows 2000
+# export).
 
 [[group]]
 key = "nt"
@@ -25,6 +27,18 @@ title = "exceptions"
 [[group]]
 key = "threads"
 title = "critical sections"
+
+[[group]]
+key = "heap"
+title = "heaps"
+
+[[group]]
+key = "paths"
+title = "paths, the current directory and the environment"
+
+[[group]]
+key = "loader"
+title = "the loader"
 
 [[group]]
 key = "internal"
@@ -459,6 +473,90 @@ group = "threads"
 args = []
 impl = { native = "RtlReleasePebLock" }
 pinned_by = ["sync/*"]
+
+# --- heaps (src/heap.s over rtl::heap) -------------------------------------------------------------
+
+[[export]]
+name = "RtlCreateHeap"
+group = "heap"
+args = ["u32 Flags", "ptr HeapBase", "u32 ReserveSize", "u32 CommitSize", "ptr Lock", "ptr Parameters"]
+impl = { native = "RtlCreateHeap" }
+unpinned = "no fixture imports it from ntdll; kernel32's HeapCreate runs the same body (rtl::heap), pinned by memory/heap"
+
+[[export]]
+name = "RtlDestroyHeap"
+group = "heap"
+args = ["u32 HeapHandle"]
+impl = { native = "RtlDestroyHeap" }
+unpinned = "no fixture imports it from ntdll; kernel32's HeapDestroy runs the same body (rtl::heap), pinned by memory/heap"
+
+[[export]]
+name = "RtlAllocateHeap"
+group = "heap"
+args = ["u32 hHeap", "u32 dwFlags", "u32 dwBytes"]
+impl = { native = "RtlAllocateHeap" }
+pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
+
+[[export]]
+name = "RtlFreeHeap"
+group = "heap"
+args = ["u32 hHeap", "u32 dwFlags", "ptr lpMem"]
+impl = { native = "RtlFreeHeap" }
+pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
+
+[[export]]
+name = "RtlReAllocateHeap"
+group = "heap"
+args = ["u32 hHeap", "u32 dwFlags", "ptr lpMem", "u32 dwBytes"]
+impl = { native = "RtlReAllocateHeap" }
+pinned_by = ["memory/heap"]
+
+[[export]]
+name = "RtlSizeHeap"
+group = "heap"
+args = ["u32 hHeap", "u32 dwFlags", "ptr lpMem"]
+impl = { native = "RtlSizeHeap" }
+pinned_by = ["memory/heap"]
+
+[[export]]
+name = "RtlValidateHeap"
+group = "heap"
+args = ["u32 hHeap", "u32 dwFlags", "ptr lpMem"]
+impl = { native = "RtlValidateHeap" }
+pinned_by = ["memory/heap"]
+
+# --- the environment (src/env.rs over rtl::env) ---------------------------------------------------
+
+[[export]]
+name = "RtlQueryEnvironmentVariable_U"
+group = "paths"
+args = ["ptr Environment", "ptr Name", "ptr Value"]
+impl = { native = "RtlQueryEnvironmentVariable_U" }
+pinned_by = ["runtime/env"]
+
+[[export]]
+name = "RtlSetEnvironmentVariable"
+group = "paths"
+args = ["ptr Environment", "ptr Name", "ptr Value"]
+impl = { native = "RtlSetEnvironmentVariable" }
+pinned_by = ["runtime/env"]
+
+[[export]]
+name = "RtlExpandEnvironmentStrings_U"
+group = "paths"
+args = ["ptr Environment", "ptr Source", "ptr Destination", "ptr<u32> ReturnedLength"]
+impl = { native = "RtlExpandEnvironmentStrings_U" }
+pinned_by = ["runtime/env"]
+
+# --- the loader's thread start (src/ldr.s, src/main.rs over rtl::heap) ----------------------------
+
+[[export]]
+name = "LdrInitializeThunk"
+group = "loader"
+args = ["ptr NormalContext", "ptr SystemArgument1", "ptr SystemArgument2"]
+impl = { native = "LdrInitializeThunk" }
+note = "the kernel delivers a fresh thread's initialization here, like a user APC over its initial context: the process heap (the first thread), then NtContinue of the context; the thread's implicit TLS comes with the thread calls"
+pinned_by = ["runtime/*", "memory/heap"]
 
 # --- F2K-internal entry points --------------------------------------------------------------------
 

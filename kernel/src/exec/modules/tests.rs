@@ -131,10 +131,11 @@ fn the_system_dlls_serve_the_registry() {
     }
     // The natives: kernel32's own code (the trivial ones, the exception filter and the pointer
     // probes its assembly, the TLS slots' reads and writes; the console, start-up, locale, clock,
-    // virtual-memory, mapping, synchronization, timer, sleep, APC, affinity and TLS-index calls and
-    // RaiseException its Rust).
+    // virtual-memory, mapping, synchronization, timer, sleep, APC, affinity, TLS-index and
+    // environment calls and RaiseException its Rust, the heap and Local/Global calls its own over
+    // ntdll's heap).
     // The internal start thunk is not among them.
-    assert_eq!(NATIVE_EXPORTS.len(), 105);
+    assert_eq!(NATIVE_EXPORTS.len(), 131);
     for &(name, _) in &NATIVE_EXPORTS {
         let address = kernel32_export(name).unwrap_or_else(|| panic!("kernel32 exports no {name}"));
         addresses.push(address);
@@ -151,10 +152,11 @@ fn the_system_dlls_serve_the_registry() {
 
 /// The entry points the kernel sends user code to keep their protocols: ntdll's exception
 /// dispatcher calls its body with the two pointers the kernel left on top (it never returns: a
-/// `ud2` follows), and its APC dispatcher calls the routine the kernel left on top, then resumes
-/// the context above it; kernel32's start thunk clears EBP and pushes the main thread's entry point
-/// under a zero return address, then jumps to its body. The exception-filter natives address the
-/// top-level filter's slot in the PEB page.
+/// `ud2` follows), its APC dispatcher calls the routine the kernel left on top, then resumes the
+/// context above it, and its LdrInitializeThunk runs its body, then resumes the same; kernel32's
+/// start thunk clears EBP and pushes the main thread's entry point under a zero return address,
+/// then jumps to its body. The exception-filter natives address the top-level filter's slot in the
+/// PEB page.
 #[test]
 fn the_entry_points_keep_their_protocols() {
     let dispatcher = bytes_at(exception_dispatcher());
@@ -179,6 +181,17 @@ fn the_entry_points_keep_their_protocols() {
     assert_eq!(apc[10], 0xE8, "KiUserApcDispatcher: NtContinue's call");
     assert_eq!(apc[15], 0x50, "KiUserApcDispatcher: then the status pushed");
     assert_eq!(crate::user::apc::CALL_WORDS * 4, 0x10);
+    // LdrInitializeThunk keeps the context's address (past the same call frame) in EDI across its
+    // body's call, then NtContinue(context, TRUE).
+    let ldr = bytes_at(ldr_initialize_thunk());
+    assert_eq!(&ldr[..4], &[0x8D, 0x7C, 0x24, 0x10], "LdrInitializeThunk");
+    assert_eq!(ldr[4], 0xE8, "LdrInitializeThunk: its body's call");
+    assert_eq!(&ldr[9..12], &[0x6A, 0x01, 0x57], "LdrInitializeThunk: NtContinue(context, TRUE)");
+    assert_eq!(ldr[12], 0xE8, "LdrInitializeThunk: NtContinue's call");
+    assert_eq!(
+        Some(ldr_initialize_thunk()),
+        resolve("ntdll.dll", "LdrInitializeThunk").ok()
+    );
     let thunk = bytes_at(process_start_thunk());
     assert_eq!(
         &thunk[..5],

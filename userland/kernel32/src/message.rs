@@ -5,12 +5,12 @@
 //! 2000's English wording, each ending in the CR LF the table stores (a regular line break). A code
 //! the table lacks is ERROR_MR_MID_NOT_FOUND, as a missing message is on the platform.
 //! FormatMessageA serves system messages, into the caller's buffer or a block it allocates
-//! (FORMAT_MESSAGE_ALLOCATE_BUFFER; no block until the process heap is ntdll's), its lines as
-//! the width asks (the low byte of the flags); a message from a string or a module, and insert
-//! expansion, are not served.
+//! (FORMAT_MESSAGE_ALLOCATE_BUFFER), its lines as the width asks (the low byte of the flags); a
+//! message from a string or a module, and insert expansion, are not served.
 
 use crate::base::set_last_error;
 use crate::error::{ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_PARAMETER, ERROR_MR_MID_NOT_FOUND, ERROR_NOT_ENOUGH_MEMORY};
+use crate::nt;
 
 /// The messages, by code.
 const MESSAGES: &[(u32, &str)] = &[
@@ -97,11 +97,11 @@ fn format(text: &str, width: u32) -> Formatted {
 }
 
 /// The block FORMAT_MESSAGE_ALLOCATE_BUFFER hands out: a fixed local block of `bytes` on the process
-/// heap (LocalFree frees it), as Windows 2000's LocalAlloc(LMEM_FIXED) makes one. The process heap
-/// is not ntdll's yet (RtlAllocateHeap and LocalAlloc build it), so there is no block to hand out:
-/// null, which the call reports as ERROR_NOT_ENOUGH_MEMORY.
-fn allocate_block(_bytes: usize) -> *mut u8 {
-    core::ptr::null_mut()
+/// heap (LocalFree frees it), as Windows 2000's LocalAlloc(LMEM_FIXED) makes one: ntdll's
+/// RtlAllocateHeap; null when the heap has no room.
+fn allocate_block(bytes: usize) -> *mut u8 {
+    // SAFETY: ntdll's export, on the process heap.
+    unsafe { nt::RtlAllocateHeap(crate::base::process_heap(), 0, bytes) }
 }
 
 /// FormatMessageA: the system message for the code, laid out to the width (see [`format`]), its

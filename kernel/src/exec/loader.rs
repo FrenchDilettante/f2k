@@ -126,7 +126,6 @@ static mut IMAGE_STAGING: crate::mem::paging::Aligned<[u8; STAGING_SIZE]> =
 /// refused, not moved. The main thread's stack is its whole reservation (1 MiB, committed on
 /// demand below its two top pages, see `user::stack`).
 const SYSTEM_REGIONS: [(&str, u32, u32); 9] = {
-    use crate::user::userheap::{HEAP_REGION_BASE, HEAP_REGION_MAX};
     use crate::user::{
         PARAMS_PAGE, PEB_PAGE, TEB_PAGE, THREAD_TEB_REGION, USER_STACK_BASE, USER_STACK_TOP,
     };
@@ -143,14 +142,14 @@ const SYSTEM_REGIONS: [(&str, u32, u32); 9] = {
         ),
         ("process environment block", PEB_PAGE, PEB_PAGE + PAGE),
         (
+            "environment block",
+            crate::user::params::ENVIRONMENT_BLOCK,
+            crate::user::params::ENVIRONMENT_BLOCK + crate::user::params::ENVIRONMENT_BLOCK_PAGES * PAGE,
+        ),
+        (
             "child thread TEBs",
             THREAD_TEB_REGION,
             THREAD_TEB_REGION + CHILDREN * PAGE,
-        ),
-        (
-            "heap region",
-            HEAP_REGION_BASE,
-            HEAP_REGION_BASE + HEAP_REGION_MAX as u32,
         ),
         ("ntdll.dll image", NTDLL_BASE, NTDLL_BASE + NTDLL_SIZE),
         (
@@ -391,10 +390,9 @@ pub fn load_image(file: &[u8], path: &[u8], name: &'static str, command_line: &[
     image.map_into(file, staging);
 
     // The process's own state, all in one place: a fresh address space (kernel half inherited,
-    // active on CR3), the main thread's ring-0 gate stack (mapped supervisor-only with its guard
-    // page; the switch into the thread installs it as the TSS esp0), and fresh heap bookkeeping.
-    // Every mapping below (system DLLs, image, stack, TEB, params) lands in this process's
-    // directory and its services see this process's heap.
+    // active on CR3) and the main thread's ring-0 gate stack (mapped supervisor-only with its guard
+    // page; the switch into the thread installs it as the TSS esp0). Every mapping below (system
+    // DLLs, image, stack, TEB, params) lands in this process's directory.
     let process = crate::process::Process::start(name);
     let (process_id, thread_id) = (process.id(), process.main_thread().thread_id());
     let space = process.vm();
@@ -443,8 +441,9 @@ pub fn load_image(file: &[u8], path: &[u8], name: &'static str, command_line: &[
         },
     );
 
-    // The process parameters (the command line, the image's path, the standard handles), and the
-    // PEB pointing at them: the system's version and the image's subsystem.
+    // The process parameters (the command line, the image's path, the standard handles, the empty
+    // environment block), and the PEB pointing at them: the system's version and the image's
+    // subsystem.
     crate::user::params::map(space, command_line, path);
     crate::user::teb::map_peb(
         space,
@@ -727,13 +726,13 @@ mod tests {
             Some("main thread stack")
         );
         assert_eq!(
-            system_region_overlapping(0x0200_0000, 0x1_0000),
-            Some("heap region")
+            system_region_overlapping(0x0035_2000, 0x1_0000),
+            Some("environment block")
         );
         assert_eq!(
-            system_region_overlapping(0x0210_0000, 0x1_0000),
+            system_region_overlapping(0x0200_0000, 0x1_0000),
             None,
-            "the C runtime's reservations are the program's own (VirtualAlloc)"
+            "the heaps' reservations are the program's own (NtAllocateVirtualMemory)"
         );
     }
 

@@ -3,8 +3,9 @@
 //!
 //! The TLS indexes are the PEB's two bitmaps (TlsBitmap, indexes 0..64; TlsExpansionBitmap,
 //! 64..1088), changed under the PEB lock; a thread's slots are its TEB's TlsSlots and, past 64, its
-//! TlsExpansionSlots (made by TlsSetValue on first use: src/natives.s; on the process heap, which
-//! comes with B6 — until then such a set fails with ERROR_NOT_ENOUGH_MEMORY).
+//! TlsExpansionSlots (made by TlsSetValue on first use, on the process heap: src/natives.s, and
+//! `f2k_k32_tls_expansion` in src/main.rs; a set that finds no room fails with
+//! ERROR_NOT_ENOUGH_MEMORY).
 
 use rtl::status::nt_success;
 

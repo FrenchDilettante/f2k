@@ -1,42 +1,32 @@
-//! The user-mode heap the kernel32 heap services serve.
+//! The heap allocator's core: pure logic over a `&mut [u8]` image of a heap segment's committed
+//! block area (host-tested). Blocks carry an 8-byte header — the block's capacity, and a state word
+//! holding the in-use flag and the slack between the capacity and the size asked for (so HeapSize
+//! answers the exact size) — and are 8-byte aligned; first fit with splitting, free coalesces with
+//! both neighbors, a shrink splits the tail off.
 //!
-//! The heap region: blocks served by HeapAlloc, managed here (the C runtime's own VirtualAlloc
-//! pages are its reservations, through NtAllocateVirtualMemory). Until the heap moves into ntdll,
-//! the region sits at a fixed address clear of the user stack.
-//!
-//! The allocator core is pure logic over a `&mut [u8]` region image (host-testable); the target
-//! glue maps pages on demand. Blocks carry an 8-byte header (size, state), 8-byte aligned;
-//! first-fit with splitting, free coalesces with both neighbors.
-//!
-//! The region is user memory: the program can overwrite any header (an overflow off the end of a
-//! block is enough). Every header the kernel reads is therefore untrusted — sizes are checked
-//! before they move a cursor ([`next_block`]), and a header that does not describe a block inside
-//! the region ends the walk as a failed call, never as a kernel panic or an endless loop.
+//! The segment is the program's own memory: it can overwrite any header (an overflow off the end of
+//! a block is enough). Every header is therefore checked before it moves a cursor ([`next_block`]),
+//! and a header that does not describe a block inside the area ends the walk as a failed call,
+//! never as an endless loop. The heaps ([`crate::heap`]) compose this core over their segments and
+//! big blocks.
 
-/// Heap block header size: one dword of block size (the user bytes, not counting the header), one
+/// Heap block header size: one dword of capacity (the user bytes, not counting the header), one
 /// dword of state.
 pub const HEADER_SIZE: usize = 8;
 
 /// Block alignment: user pointers come back 8-byte aligned.
-const ALIGN: usize = 8;
+pub const ALIGN: usize = 8;
 
-/// Header state: the block is free.
+/// Header state (the state word's low byte): the block is free, or in use. The slack (capacity
+/// minus the size asked for: up to 15 for a block reused without a split, 22 after an unsplit
+/// shrink) rides in the next byte.
 const STATE_FREE: u32 = 0;
-/// Header state: the block is in use.
 const STATE_IN_USE: u32 = 1;
-
-/// The heap region's fixed user address and cap.
-pub const HEAP_REGION_BASE: u32 = 0x0200_0000;
-pub const HEAP_REGION_MAX: usize = 0x0010_0000;
-
-/// HeapAlloc/HeapReAlloc flag: zero the new bytes.
-const HEAP_ZERO_MEMORY: u32 = 0x0000_0008;
-/// HeapReAlloc flag: never move the block.
-const HEAP_REALLOC_IN_PLACE_ONLY: u32 = 0x0000_0010;
+const SLACK_SHIFT: u32 = 8;
 
 /// Round a request up to the block alignment; none when the rounding overflows (a request near
 /// the top of the address space can never be served).
-fn round_up(request: usize) -> Option<usize> {
+pub fn round_up(request: usize) -> Option<usize> {
     request.max(1).checked_next_multiple_of(ALIGN)
 }
 
@@ -45,7 +35,7 @@ fn round_up(request: usize) -> Option<usize> {
 /// walk steps through here, so a corrupted header can neither run a cursor out of the region nor
 /// stall it (each step advances by at least the header).
 fn next_block(offset: usize, size: u32, top: usize) -> Option<usize> {
-    if size as usize % ALIGN != 0 {
+    if !(size as usize).is_multiple_of(ALIGN) {
         return None;
     }
     let next = offset
@@ -54,27 +44,28 @@ fn next_block(offset: usize, size: u32, top: usize) -> Option<usize> {
     (next <= top).then_some(next)
 }
 
-/// Read one block header: (user size, state).
+/// Read one block header: (capacity, state word).
 fn read_header(region: &[u8], offset: usize) -> (u32, u32) {
-    let size = u32::from_le_bytes([
-        region[offset],
-        region[offset + 1],
-        region[offset + 2],
-        region[offset + 3],
-    ]);
-    let state = u32::from_le_bytes([
-        region[offset + 4],
-        region[offset + 5],
-        region[offset + 6],
-        region[offset + 7],
-    ]);
-    (size, state)
+    let word = |at: usize| {
+        u32::from_le_bytes([region[at], region[at + 1], region[at + 2], region[at + 3]])
+    };
+    (word(offset), word(offset + 4))
 }
 
 /// Write one block header.
 fn write_header(region: &mut [u8], offset: usize, size: u32, state: u32) {
     region[offset..offset + 4].copy_from_slice(&size.to_le_bytes());
     region[offset + 4..offset + 8].copy_from_slice(&state.to_le_bytes());
+}
+
+/// The state word's state.
+fn state_of(word: u32) -> u32 {
+    word & 0xFF
+}
+
+/// An in-use state word for a block of `capacity` holding `request` bytes.
+fn in_use(capacity: usize, request: usize) -> u32 {
+    STATE_IN_USE | ((capacity - request.min(capacity)) as u32) << SLACK_SHIFT
 }
 
 /// First-fit allocation. Absorbs adjacent free blocks while walking, splits a fitting block when
@@ -97,11 +88,11 @@ pub fn alloc_block(
         let (mut size, state) = read_header(region, offset);
         // A header that is not a block ends the walk: the heap is corrupt, the call fails.
         let mut next = next_block(offset, size, *top)?;
-        if state == STATE_FREE {
+        if state_of(state) == STATE_FREE {
             // Absorb following free blocks into this candidate.
             while next < *top {
                 let (next_size, next_state) = read_header(region, next);
-                if next_state != STATE_FREE {
+                if state_of(next_state) != STATE_FREE {
                     break;
                 }
                 let after = next_block(next, next_size, *top)?;
@@ -110,16 +101,13 @@ pub fn alloc_block(
                 next = after;
             }
             if size as usize >= need {
-                let remainder = size as usize - need;
-                let block_size = if remainder >= HEADER_SIZE + ALIGN {
-                    // Split: shrink this block, plant a free block in the tail.
-                    let tail = offset + HEADER_SIZE + need;
-                    write_header(region, tail, (remainder - HEADER_SIZE) as u32, STATE_FREE);
-                    need as u32
-                } else {
-                    size
-                };
-                write_header(region, offset, block_size, STATE_IN_USE);
+                let block_size = split(region, offset, size as usize, need);
+                write_header(
+                    region,
+                    offset,
+                    block_size as u32,
+                    in_use(block_size, request),
+                );
                 if zero {
                     region[offset + HEADER_SIZE..offset + HEADER_SIZE + need].fill(0);
                 }
@@ -134,7 +122,7 @@ pub fn alloc_block(
     if total > region.len() - *top {
         return None;
     }
-    write_header(region, *top, need as u32, STATE_IN_USE);
+    write_header(region, *top, need as u32, in_use(need, request));
     if zero {
         region[*top + HEADER_SIZE..*top + total].fill(0);
     }
@@ -143,14 +131,27 @@ pub fn alloc_block(
     Some(user)
 }
 
+/// Cut the block at `offset` of `capacity` down to `need` when the tail is worth keeping, planting
+/// a free block there; the block's capacity after the cut.
+fn split(region: &mut [u8], offset: usize, capacity: usize, need: usize) -> usize {
+    let remainder = capacity - need;
+    if remainder >= HEADER_SIZE + ALIGN {
+        let tail = offset + HEADER_SIZE + need;
+        write_header(region, tail, (remainder - HEADER_SIZE) as u32, STATE_FREE);
+        need
+    } else {
+        capacity
+    }
+}
+
 /// A user offset must name a live block header; returns its offset.
 fn validate(region: &[u8], top: usize, user: usize) -> Option<usize> {
-    if user < HEADER_SIZE || user >= top || user % ALIGN != 0 || top > region.len() {
+    if user < HEADER_SIZE || user >= top || !user.is_multiple_of(ALIGN) || top > region.len() {
         return None;
     }
     let block = user - HEADER_SIZE;
     let (size, state) = read_header(region, block);
-    if state != STATE_IN_USE || size == 0 {
+    if state_of(state) != STATE_IN_USE || size == 0 {
         return None;
     }
     next_block(block, size, top)?;
@@ -170,7 +171,7 @@ pub fn free_block(region: &mut [u8], top: usize, user: usize) -> bool {
     let mut next = block + HEADER_SIZE + size as usize;
     while next < top {
         let (next_size, next_state) = read_header(region, next);
-        if next_state != STATE_FREE {
+        if state_of(next_state) != STATE_FREE {
             break;
         }
         let Some(after) = next_block(next, next_size, top) else {
@@ -190,7 +191,7 @@ pub fn free_block(region: &mut [u8], top: usize, user: usize) -> bool {
             break;
         };
         if after == block {
-            if walk_state == STATE_FREE {
+            if state_of(walk_state) == STATE_FREE {
                 write_header(
                     region,
                     cursor,
@@ -205,13 +206,68 @@ pub fn free_block(region: &mut [u8], top: usize, user: usize) -> bool {
     true
 }
 
-/// The user size of the block owning `user`.
-fn block_size(region: &[u8], top: usize, user: usize) -> Option<usize> {
-    validate(region, top, user).map(|block| read_header(region, block).0 as usize)
+/// The size asked for of the block owning `user` (its capacity less the recorded slack).
+pub fn block_size(region: &[u8], top: usize, user: usize) -> Option<usize> {
+    validate(region, top, user).map(|block| {
+        let (capacity, state) = read_header(region, block);
+        let slack = (state >> SLACK_SHIFT) & 0xFF;
+        (capacity - slack.min(capacity)) as usize
+    })
 }
 
-/// Resize: grow by allocate-copy-free (zeroing the extension when asked), shrink by keeping the
-/// block. The original is untouched on failure.
+/// Resize the block owning `user` without moving it: true when `request` fits its capacity (a
+/// shrink splits the tail off; a growth into the slack zeroes it when asked).
+pub fn resize_in_place(
+    region: &mut [u8],
+    top: usize,
+    user: usize,
+    request: usize,
+    zero: bool,
+) -> bool {
+    let Some(block) = validate(region, top, user) else {
+        return false;
+    };
+    let Some(old) = block_size(region, top, user) else {
+        return false;
+    };
+    let (capacity, _) = read_header(region, block);
+    let Some(need) = round_up(request) else {
+        return false;
+    };
+    if need > capacity as usize {
+        return false;
+    }
+    if zero && request > old {
+        region[user + old..user + request].fill(0);
+    }
+    let kept = split(region, block, capacity as usize, need);
+    write_header(region, block, kept as u32, in_use(kept, request));
+    if kept != capacity as usize {
+        // The split-off tail merges with a free block after it.
+        let tail = block + HEADER_SIZE + kept;
+        let (tail_size, _) = read_header(region, tail);
+        let mut size = tail_size;
+        let mut next = tail + HEADER_SIZE + size as usize;
+        while next < top {
+            let (next_size, next_state) = read_header(region, next);
+            if state_of(next_state) != STATE_FREE {
+                break;
+            }
+            let Some(after) = next_block(next, next_size, top) else {
+                break;
+            };
+            size = (after - tail - HEADER_SIZE) as u32;
+            next = after;
+        }
+        write_header(region, tail, size, STATE_FREE);
+    }
+    true
+}
+
+/// Resize: in place when the request fits the block, else allocate-copy-free (zeroing the
+/// extension when asked). The original is untouched on failure. (The heaps compose the same steps
+/// across their segment and big blocks; this is the core's own statement of them.)
+#[cfg(test)]
 pub fn realloc_block(
     region: &mut [u8],
     top: &mut usize,
@@ -220,236 +276,39 @@ pub fn realloc_block(
     zero: bool,
 ) -> Option<usize> {
     let old = block_size(region, *top, user)?;
-    if request <= old {
-        // Shrinking keeps the block (no split: the tail is not worth the bookkeeping).
+    if resize_in_place(region, *top, user, request, zero) {
         return Some(user);
     }
     let new = alloc_block(region, top, request, false)?;
-    // A plain loop, not slice::copy_within: it lowers to memmove, which the no_std build does not
-    // link. The blocks never overlap.
+    // A plain loop, not slice::copy_within: the blocks never overlap.
     for i in 0..old {
         region[new + i] = region[user + i];
     }
     if zero {
-        // The allocation succeeded, so the rounding did too.
-        let end = new + round_up(request).expect("rounded by the allocation");
-        region[new + old..end].fill(0);
+        region[new + old..new + request].fill(0);
     }
     free_block(region, *top, user);
     Some(new)
 }
 
-// --- Target glue ------------------------------------------------------
-//
-// Runs the pure core over the heap region's committed prefix. User pages are RW and
-// supervisor-accessible, so the kernel slices the region directly. The bookkeeping lives in
-// [`HeapState`], one instance per process (inside the process object) — no kernel static holds heap
-// state.
-
-#[cfg(target_arch = "x86")]
-use crate::mem::paging::PAGE_SIZE;
-#[cfg(target_arch = "x86")]
-use crate::mem::vm::{AddressSpace, CurrentPages, PAGE_READWRITE};
-
-/// Per-process heap bookkeeping: the heap region's committed prefix and bump edge. A fresh process starts from [`HeapState::new`];
-/// nothing survives the process that owns it.
-pub struct HeapState {
-    /// The heap region's committed prefix, in bytes.
-    committed: usize,
-    /// The heap region's bump edge (blocks live below it).
-    top: usize,
-}
-
-impl HeapState {
-    /// Fresh state: nothing committed.
-    pub const fn new() -> Self {
-        Self {
-            committed: 0,
-            top: 0,
-        }
+/// Whether every header below `top` describes a block (HeapValidate's walk).
+pub fn validate_area(region: &[u8], top: usize) -> bool {
+    if top > region.len() {
+        return false;
     }
-
-    /// Reset the heap (HeapCreate). No mapping involved: the handle is a constant and the bump edge
-    /// is state.
-    pub fn create(&mut self) -> u32 {
-        self.top = 0;
-        HEAP_HANDLE
-    }
-}
-
-#[cfg(target_arch = "x86")]
-impl HeapState {
-    /// Commit zeroed user pages in `space`'s heap region so the region image covers `bytes`; fails
-    /// past the region cap or without frames, idempotent.
-    fn commit_heap(&mut self, space: &mut AddressSpace, bytes: usize) -> bool {
-        if bytes <= self.committed {
-            return true;
-        }
-        if bytes > HEAP_REGION_MAX {
+    let mut offset = 0;
+    while offset < top {
+        let (size, state) = read_header(region, offset);
+        if !matches!(state_of(state), STATE_FREE | STATE_IN_USE) {
             return false;
         }
-        let start = (self.committed as u32).div_ceil(PAGE_SIZE);
-        let end = (bytes as u32).div_ceil(PAGE_SIZE);
-        let committed = space.commit(
-            &mut CurrentPages,
-            HEAP_REGION_BASE + start * PAGE_SIZE,
-            (end - start) * PAGE_SIZE,
-            PAGE_READWRITE,
-        );
-        if committed.is_err() {
-            return false;
-        }
-        self.committed = end as usize * PAGE_SIZE as usize;
-        true
-    }
-
-    /// The heap region image (its committed prefix).
-    fn heap_region(&mut self) -> &'static mut [u8] {
-        // SAFETY: the committed prefix is mapped RW in the current process's address space; this
-        // heap's only accessor.
-        unsafe { core::slice::from_raw_parts_mut(HEAP_REGION_BASE as *mut u8, self.committed) }
-    }
-
-    /// HeapAlloc: first-fit, committing more of the region when the bump path needs it; 0 on
-    /// failure.
-    pub fn alloc(&mut self, space: &mut AddressSpace, flags: u32, request: usize) -> u32 {
-        let zero = flags & HEAP_ZERO_MEMORY != 0;
-        loop {
-            let region = self.heap_region();
-            let mut top = self.top;
-            match alloc_block(region, &mut top, request, zero) {
-                Some(user) => {
-                    self.top = top;
-                    return HEAP_REGION_BASE + user as u32;
-                }
-                None => {
-                    // The bump path needs more region. Commit one page beyond the need (so small
-                    // streams do not re-commit per allocation) and retry; past the cap the request
-                    // fails.
-                    let Some(need) = round_up(request)
-                        .and_then(|rounded| top.checked_add(HEADER_SIZE + rounded))
-                    else {
-                        return 0;
-                    };
-                    if need > HEAP_REGION_MAX || !self.commit_heap(space, need + PAGE_SIZE as usize)
-                    {
-                        return 0;
-                    }
-                }
-            }
+        match next_block(offset, size, top) {
+            Some(next) => offset = next,
+            None => return false,
         }
     }
-
-    /// HeapFree: validate and coalesce; TRUE/FALSE.
-    pub fn free(&mut self, ptr: u32) -> u32 {
-        if ptr < HEAP_REGION_BASE {
-            return 0;
-        }
-        let user = (ptr - HEAP_REGION_BASE) as usize;
-        if free_block(self.heap_region(), self.top, user) {
-            1
-        } else {
-            0
-        }
-    }
-
-    /// HeapReAlloc over the region; 0 on failure. HEAP_REALLOC_IN_PLACE_ONLY never moves the
-    /// block: a shrink keeps it, a growth fails.
-    pub fn realloc(&mut self, ptr: u32, flags: u32, request: usize) -> u32 {
-        let zero = flags & HEAP_ZERO_MEMORY != 0;
-        if ptr < HEAP_REGION_BASE {
-            return 0;
-        }
-        let user = (ptr - HEAP_REGION_BASE) as usize;
-        let region = self.heap_region();
-        let mut top = self.top;
-        if flags & HEAP_REALLOC_IN_PLACE_ONLY != 0 {
-            return match block_size(region, top, user) {
-                Some(old) if request <= old => ptr,
-                _ => 0,
-            };
-        }
-        match realloc_block(region, &mut top, user, request, zero) {
-            Some(new) => {
-                self.top = top;
-                HEAP_REGION_BASE + new as u32
-            }
-            None => 0,
-        }
-    }
-
-    /// HeapDestroy: accept the handle, reset.
-    pub fn destroy(&mut self, handle: u32) -> u32 {
-        if handle == HEAP_HANDLE {
-            self.create();
-            1
-        } else {
-            0
-        }
-    }
-
+    true
 }
-
-/// The handle HeapCreate reports (nonzero, address-styled like real handles).
-#[cfg(target_arch = "x86")]
-pub const HEAP_HANDLE: u32 = HEAP_REGION_BASE;
-
-/// The kernel32 heap services, served from the current process's heap state (the process object
-/// owns it; see `process`).
-#[cfg(target_arch = "x86")]
-mod target {
-    pub fn create() -> u32 {
-        crate::process::current_mut().heap_mut().create()
-    }
-    pub fn alloc(flags: u32, request: usize) -> u32 {
-        let parts = crate::process::current_mut().parts_mut();
-        parts.heap.alloc(parts.vm, flags, request)
-    }
-    pub fn free(ptr: u32) -> u32 {
-        crate::process::current_mut().heap_mut().free(ptr)
-    }
-    pub fn realloc(ptr: u32, flags: u32, request: usize) -> u32 {
-        crate::process::current_mut()
-            .heap_mut()
-            .realloc(ptr, flags, request)
-    }
-    pub fn destroy(handle: u32) -> u32 {
-        crate::process::current_mut().heap_mut().destroy(handle)
-    }
-}
-
-#[cfg(target_arch = "x86")]
-pub use target::*;
-
-// Host stubs: the kernel32 registry names these but host builds never dispatch services.
-
-#[cfg(not(target_arch = "x86"))]
-mod host {
-    fn target_only() -> ! {
-        unimplemented!("user heap services run on the target")
-    }
-
-    pub const HEAP_HANDLE: u32 = 0;
-
-    pub fn create() -> u32 {
-        target_only()
-    }
-    pub fn alloc(_flags: u32, _request: usize) -> u32 {
-        target_only()
-    }
-    pub fn free(_ptr: u32) -> u32 {
-        target_only()
-    }
-    pub fn realloc(_ptr: u32, _flags: u32, _request: usize) -> u32 {
-        target_only()
-    }
-    pub fn destroy(_handle: u32) -> u32 {
-        target_only()
-    }
-}
-
-#[cfg(not(target_arch = "x86"))]
-pub use host::*;
 
 #[cfg(test)]
 mod tests {
@@ -705,13 +564,82 @@ mod tests {
         assert_eq!((a_size, a_state), (0x20, STATE_FREE));
     }
 
-    /// The target placement: the region above every mapped area, 64 KiB-aligned, in user space,
-    /// below the system DLLs.
+    // --- Exact sizes and in-place resizing ---------------------------------
+
+    /// A free block reused without a split keeps up to 15 bytes of slack, and the size asked for
+    /// still comes back exactly (MEM-2: the slack was capped at 8, so HeapSize over-reported).
     #[test]
-    fn the_region_is_placed_clear_of_the_user_layout() {
-        assert_eq!(HEAP_REGION_BASE % 0x10000, 0);
-        assert!(HEAP_REGION_BASE + HEAP_REGION_MAX as u32 <= crate::exec::modules::NTDLL_BASE);
-        // The stack (0x300000) and the pages above it stay clear of the region.
-        assert!(HEAP_REGION_BASE > 0x0032_0000);
+    fn an_unsplit_reuse_answers_the_exact_size() {
+        let mut arena = Arena::new();
+        let a = arena.alloc(100, false).unwrap(); // capacity 104
+        let _b = arena.alloc(8, false).unwrap();
+        assert!(arena.free(a));
+        // 92 rounds to 96: the 8-byte remainder is no block of its own, so the 104 stays whole.
+        assert_eq!(arena.alloc(92, false), Some(a));
+        assert_eq!(block_size(&arena.bytes, arena.top, a), Some(92));
+        // The same through an in-place resize that keeps the block whole: 89 needs 96, and the
+        // 8-byte remainder is no block either (slack 15).
+        assert!(resize_in_place(&mut arena.bytes, arena.top, a, 89, false));
+        assert_eq!(block_size(&arena.bytes, arena.top, a), Some(89));
+        assert!(validate_area(&arena.bytes, arena.top));
+    }
+
+    /// The size asked for comes back exactly: the slack rides in the header.
+    #[test]
+    fn sizes_are_exact() {
+        let mut arena = Arena::new();
+        let a = arena.alloc(100, false).unwrap();
+        assert_eq!(block_size(&arena.bytes, arena.top, a), Some(100));
+        let z = arena.alloc(0, false).unwrap();
+        assert_eq!(block_size(&arena.bytes, arena.top, z), Some(0));
+        let b = realloc_block(&mut arena.bytes, &mut arena.top, a, 5000, false).unwrap();
+        assert_eq!(block_size(&arena.bytes, arena.top, b), Some(5000));
+    }
+
+    /// A shrink in place keeps the block, answers the new size, and frees the tail for others.
+    #[test]
+    fn a_shrink_in_place_splits_the_tail() {
+        let mut arena = Arena::new();
+        let a = arena.alloc(0x1000, false).unwrap();
+        let _b = arena.alloc(0x40, false).unwrap();
+        assert!(resize_in_place(&mut arena.bytes, arena.top, a, 50, false));
+        assert_eq!(block_size(&arena.bytes, arena.top, a), Some(50));
+        let c = arena.alloc(0x800, false).unwrap();
+        assert_eq!(c, a + 56 + HEADER_SIZE, "the tail serves");
+        // Growth past the capacity is refused in place; inside the slack it is not.
+        assert!(!resize_in_place(
+            &mut arena.bytes,
+            arena.top,
+            a,
+            0x100,
+            false
+        ));
+        assert!(resize_in_place(&mut arena.bytes, arena.top, a, 54, false));
+        assert_eq!(block_size(&arena.bytes, arena.top, a), Some(54));
+        assert!(validate_area(&arena.bytes, arena.top));
+    }
+
+    /// A growth that moves zeroes from the old size on, when asked.
+    #[test]
+    fn a_moving_growth_zeroes_from_the_old_size() {
+        let mut arena = Arena::new();
+        let a = arena.alloc(10, false).unwrap();
+        arena.block_mut(a, 10).fill(7);
+        let _b = arena.alloc(8, false).unwrap();
+        let grown = realloc_block(&mut arena.bytes, &mut arena.top, a, 40, true).unwrap();
+        assert_ne!(grown, a);
+        assert_eq!(arena.block(grown, 10), &[7; 10]);
+        assert!(arena.block(grown + 10, 30).iter().all(|&b| b == 0));
+    }
+
+    /// The validation walk: a corrupt header fails it.
+    #[test]
+    fn validation_walks_every_header() {
+        let mut arena = Arena::new();
+        let a = arena.alloc(0x20, false).unwrap();
+        let _b = arena.alloc(0x20, false).unwrap();
+        assert!(validate_area(&arena.bytes, arena.top));
+        arena.bytes[a - HEADER_SIZE..a - HEADER_SIZE + 4].copy_from_slice(&0x13u32.to_le_bytes());
+        assert!(!validate_area(&arena.bytes, arena.top));
     }
 }

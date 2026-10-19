@@ -175,11 +175,14 @@ pub fn spawn(
 /// A user thread's system routine: the kernel function the startup stub calls before entering the
 /// thread's user context. A never-run thread has had no delivery window, so a kernel APC queued on
 /// it before its first dispatch — a suspend, or a creation suspended — runs here, before its first
-/// user instruction, and so do the user APCs queued on it before it ran (its test alert); the
-/// stub's tail then carries the thread into its user code.
+/// user instruction; the stub's tail then carries the thread into its user code — through ntdll's
+/// LdrInitializeThunk first, whose NtContinue delivers the user APCs queued before the thread ran
+/// (a process without the system DLLs delivers them here instead).
 unsafe extern "C" fn user_thread_startup(_start: u32, _parameter: u32) {
     crate::sched::idle::dispatcher().deliver_pending_apcs();
-    crate::user::apc::deliver_at_startup();
+    if !crate::user::apc::deliver_initialization() {
+        crate::user::apc::deliver_at_startup();
+    }
 }
 
 /// The thread-exit path: the exit status in hand, end the calling thread — and its process, when

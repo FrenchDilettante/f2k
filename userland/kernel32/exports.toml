@@ -282,7 +282,6 @@ pinned_by = ["runtime/lasterror"]
 scenarios = [
     "system_messages_format_into_the_buffer",
     "an_allocated_buffer_holds_the_message",
-    "an_allocating_call_fails_without_the_process_heap",
     "the_width_drops_the_line_break",
 ]
 
@@ -524,249 +523,244 @@ group = "console"
 args = ["handle hConsoleOutput", "ptr lpBuffer", "u32 nNumberOfCharsToWrite", "ptr<u32> lpNumberOfCharsWritten", "ptr lpReserved"]
 impl = { native = "WriteConsoleA" }
 pinned_by = ["runtime/console", "bare/badptr"]
-
-# --- environment ----------------------------------------------------------------------------------
 note = "the bytes to the console server (CsrClientCallServer); kernel32's WriteFile hands a console handle's bytes here"
 scenarios = ["write_console_a_writes_to_the_console", "write_console_a_count_pointer_and_empty_writes", "write_console_a_refuses_other_handles_and_reserved_arguments", "write_console_a_reports_buffers_it_cannot_read"]
+
+# --- environment ------------------------------------------------------------------------------------
 
 [[export]]
 name = "GetEnvironmentStrings"
 group = "environment"
 args = []
-impl = { legacy = "svc_get_environment_strings" }
+impl = { native = "GetEnvironmentStrings" }
+scenarios = ["a_variable_sets_reads_and_deletes"]
 pinned_by = ["runtime/env"]
 
 [[export]]
 name = "GetEnvironmentStringsW"
 group = "environment"
 args = []
-impl = { legacy = "svc_get_environment_strings_w" }
+impl = { native = "GetEnvironmentStringsW" }
+scenarios = ["a_variable_sets_reads_and_deletes", "the_block_stays_sorted_and_replaces_in_place"]
 pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
 
 [[export]]
 name = "FreeEnvironmentStringsA"
 group = "environment"
 args = ["ptr lpszEnvironmentBlock"]
-impl = { legacy = "svc_free_environment_strings" }
+impl = { native = "FreeEnvironmentStringsA" }
+scenarios = ["a_variable_sets_reads_and_deletes"]
 pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
 
 [[export]]
 name = "FreeEnvironmentStringsW"
 group = "environment"
 args = ["ptr lpszEnvironmentBlock"]
-impl = { legacy = "svc_free_environment_strings" }
+impl = { native = "FreeEnvironmentStringsW" }
+scenarios = ["a_variable_sets_reads_and_deletes"]
 pinned_by = ["runtime/env"]
 
 [[export]]
 name = "GetEnvironmentVariableA"
 group = "environment"
 args = ["strA? lpName", "ptr lpBuffer", "u32 nSize"]
-impl = { unimplemented = "B6: the heap, Local/Global and the environment" }
-fails = "0"
+impl = { native = "GetEnvironmentVariableA" }
+scenarios = ["a_variable_sets_reads_and_deletes", "the_narrow_strings_convert_up_to_32766_characters"]
 pinned_by = ["runtime/env"]
 
 [[export]]
 name = "SetEnvironmentVariableA"
 group = "environment"
 args = ["strA? lpName", "strA? lpValue"]
-impl = { unimplemented = "B6: the heap, Local/Global and the environment" }
-fails = "FALSE"
+impl = { native = "SetEnvironmentVariableA" }
+scenarios = [
+    "names_are_validated_and_the_wide_set_agrees",
+    "the_block_stays_sorted_and_replaces_in_place",
+    "the_narrow_strings_convert_up_to_32766_characters",
+]
 pinned_by = ["runtime/env"]
 
 [[export]]
 name = "ExpandEnvironmentStringsA"
 group = "environment"
 args = ["strA lpSrc", "ptr lpDst", "u32 nSize"]
-impl = { unimplemented = "B6: the heap, Local/Global and the environment" }
-fails = "0"
+impl = { native = "ExpandEnvironmentStringsA" }
+scenarios = [
+    "references_expand_through_the_environment",
+    "an_unset_reference_stays_whole",
+    "the_narrow_strings_convert_up_to_32766_characters",
+]
 pinned_by = ["runtime/env"]
 
 [[export]]
 name = "SetEnvironmentVariableW"
 group = "environment"
 args = ["strW? lpName", "strW?[32768] lpValue"]
-impl = { unimplemented = "B6: the heap, Local/Global and the environment" }
-fails = "FALSE"
+impl = { native = "SetEnvironmentVariableW" }
+scenarios = ["names_are_validated_and_the_wide_set_agrees"]
 
-# --- heap -----------------------------------------------------------------------------------------
+# --- heap -------------------------------------------------------------------------------------------
 
 [[export]]
 name = "HeapAlloc"
 group = "heap"
-args = ["handle hHeap", "u32 dwFlags", "u32 dwBytes"]
-impl = { legacy = "svc_heap_alloc" }
+args = ["u32 hHeap", "u32 dwFlags", "u32 dwBytes"]
+impl = { forward = "NTDLL.RtlAllocateHeap" }
 pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
 
 [[export]]
 name = "HeapCreate"
 group = "heap"
 args = ["u32 flOptions", "u32 dwInitialSize", "u32 dwMaximumSize"]
-impl = { legacy = "svc_heap_create" }
+impl = { native = "HeapCreate" }
 pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
 
 [[export]]
 name = "HeapDestroy"
 group = "heap"
-args = ["handle hHeap"]
-impl = { legacy = "svc_heap_destroy" }
+args = ["u32 hHeap"]
+impl = { native = "HeapDestroy" }
+note = "its block is 4 bytes: ret0's call site (the CRT's heap-initialization failure path) pushes one dword, where the old hand-written stub popped 8"
 pinned_by = ["memory/heap"]
 
 [[export]]
 name = "HeapFree"
 group = "heap"
-args = ["handle hHeap", "u32 dwFlags", "ptr lpMem"]
-impl = { legacy = "svc_heap_free" }
+args = ["u32 hHeap", "u32 dwFlags", "ptr lpMem"]
+impl = { forward = "NTDLL.RtlFreeHeap" }
 pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
 
 [[export]]
 name = "HeapReAlloc"
 group = "heap"
-args = ["handle hHeap", "u32 dwFlags", "ptr lpMem", "u32 dwBytes"]
-impl = { legacy = "svc_heap_realloc" }
+args = ["u32 hHeap", "u32 dwFlags", "ptr lpMem", "u32 dwBytes"]
+impl = { forward = "NTDLL.RtlReAllocateHeap" }
 pinned_by = ["memory/heap"]
 
 [[export]]
 name = "GetProcessHeap"
 group = "heap"
 args = []
-impl = { unimplemented = "B6: the heap, Local/Global and the environment" }
-fails = "NULL"
+impl = { native = "GetProcessHeap" }
 pinned_by = ["memory/heap", "runtime/teb"]
 
 [[export]]
 name = "HeapSize"
 group = "heap"
 args = ["u32 hHeap", "u32 dwFlags", "ptr lpMem"]
-impl = { unimplemented = "B6: the heap, Local/Global and the environment" }
-fails = "-1"
+impl = { forward = "NTDLL.RtlSizeHeap" }
 pinned_by = ["memory/heap"]
 
 [[export]]
 name = "HeapValidate"
 group = "heap"
 args = ["u32 hHeap", "u32 dwFlags", "ptr lpMem"]
-impl = { unimplemented = "B6: the heap, Local/Global and the environment" }
-fails = "FALSE"
+impl = { forward = "NTDLL.RtlValidateHeap" }
 pinned_by = ["memory/heap"]
 
 [[export]]
 name = "LocalAlloc"
 group = "heap"
 args = ["u32 uFlags", "u32 uBytes"]
-impl = { unimplemented = "B6: the heap, Local/Global and the environment" }
-fails = "NULL"
+impl = { native = "LocalAlloc" }
 pinned_by = ["memory/local"]
 
 [[export]]
 name = "LocalFree"
 group = "heap"
 args = ["u32 hMem"]
-impl = { unimplemented = "B6: the heap, Local/Global and the environment" }
-note = "its failure return is the handle passed in, which the stub cannot give: it returns NULL (success) with the last error set"
+impl = { native = "LocalFree" }
 pinned_by = ["memory/local"]
 
 [[export]]
 name = "LocalLock"
 group = "heap"
 args = ["u32 hMem"]
-impl = { unimplemented = "B6: the heap, Local/Global and the environment" }
-fails = "NULL"
+impl = { native = "LocalLock" }
 pinned_by = ["memory/local"]
 
 [[export]]
 name = "LocalUnlock"
 group = "heap"
 args = ["u32 hMem"]
-impl = { unimplemented = "B6: the heap, Local/Global and the environment" }
-fails = "FALSE"
+impl = { native = "LocalUnlock" }
 pinned_by = ["memory/local"]
 
 [[export]]
 name = "LocalHandle"
 group = "heap"
 args = ["ptr pMem"]
-impl = { unimplemented = "B6: the heap, Local/Global and the environment" }
-fails = "NULL"
+impl = { native = "LocalHandle" }
 pinned_by = ["memory/local"]
 
 [[export]]
 name = "LocalSize"
 group = "heap"
 args = ["u32 hMem"]
-impl = { unimplemented = "B6: the heap, Local/Global and the environment" }
-fails = "0"
+impl = { native = "LocalSize" }
 pinned_by = ["memory/local"]
 
 [[export]]
 name = "LocalFlags"
 group = "heap"
 args = ["u32 hMem"]
-impl = { unimplemented = "B6: the heap, Local/Global and the environment" }
-fails = "0x8000"
+impl = { native = "LocalFlags" }
 pinned_by = ["memory/local"]
 
 [[export]]
 name = "LocalReAlloc"
 group = "heap"
 args = ["u32 hMem", "u32 uBytes", "u32 uFlags"]
-impl = { unimplemented = "B6: the heap, Local/Global and the environment" }
-fails = "NULL"
+impl = { native = "LocalReAlloc" }
 pinned_by = ["memory/local"]
 
 [[export]]
 name = "GlobalAlloc"
 group = "heap"
 args = ["u32 uFlags", "u32 dwBytes"]
-impl = { unimplemented = "B6: the heap, Local/Global and the environment" }
-fails = "NULL"
+impl = { native = "GlobalAlloc" }
 pinned_by = ["memory/local"]
 
 [[export]]
 name = "GlobalFree"
 group = "heap"
 args = ["u32 hMem"]
-impl = { unimplemented = "B6: the heap, Local/Global and the environment" }
-note = "its failure return is the handle passed in, which the stub cannot give: it returns NULL (success) with the last error set"
+impl = { native = "GlobalFree" }
 pinned_by = ["memory/local"]
 
 [[export]]
 name = "GlobalLock"
 group = "heap"
 args = ["u32 hMem"]
-impl = { unimplemented = "B6: the heap, Local/Global and the environment" }
-fails = "NULL"
+impl = { native = "GlobalLock" }
 pinned_by = ["memory/local"]
 
 [[export]]
 name = "GlobalUnlock"
 group = "heap"
 args = ["u32 hMem"]
-impl = { unimplemented = "B6: the heap, Local/Global and the environment" }
-fails = "FALSE"
+impl = { native = "GlobalUnlock" }
 pinned_by = ["memory/local"]
 
 [[export]]
 name = "GlobalHandle"
 group = "heap"
 args = ["ptr pMem"]
-impl = { unimplemented = "B6: the heap, Local/Global and the environment" }
-fails = "NULL"
+impl = { native = "GlobalHandle" }
 pinned_by = ["memory/local"]
 
 [[export]]
 name = "GlobalSize"
 group = "heap"
 args = ["u32 hMem"]
-impl = { unimplemented = "B6: the heap, Local/Global and the environment" }
-fails = "0"
+impl = { native = "GlobalSize" }
 pinned_by = ["memory/local"]
 
 [[export]]
 name = "GlobalReAlloc"
 group = "heap"
 args = ["u32 hMem", "u32 dwBytes", "u32 uFlags"]
-impl = { unimplemented = "B6: the heap, Local/Global and the environment" }
-fails = "NULL"
+impl = { native = "GlobalReAlloc" }
 pinned_by = ["memory/local"]
 
 # --- locale / string conversion -------------------------------------------------------------------

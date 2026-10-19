@@ -3,9 +3,12 @@
 //! What every build shares, host-tested: the status mapping ([`status`]: RtlNtStatusToDosError's
 //! table, which kernel32 reports every failed system service through), the code pages and their
 //! conversions ([`codepage`], [`cp1252`]), the time conversions ([`time`]), the critical sections
-//! ([`critsec`]: ntdll's RtlEnterCriticalSection family, over the system it is handed), and the console
-//! server's message format and rules ([`console`]: kernel32's side and the kernel's stand-in for
-//! csrss share them), and structured exception handling's walks ([`seh`]: ntdll's
+//! ([`critsec`]: ntdll's RtlEnterCriticalSection family, over the system it is handed), the heaps
+//! ([`heap`] over the allocator core [`heapcore`]: ntdll's RtlCreateHeap family), Local and Global
+//! memory ([`localmem`]: kernel32's, over ntdll's heap calls), the environment blocks ([`env`]:
+//! ntdll's RtlSetEnvironmentVariable family), the loader's share of a thread's start ([`ldr`]), the
+//! console server's message format and rules ([`console`]: kernel32's side and the kernel's
+//! stand-in for csrss share them), and structured exception handling's walks ([`seh`]: ntdll's
 //! RtlDispatchException and RtlUnwind, with the CONTEXT and record layouts the kernel writes).
 //!
 //! On the DLLs' target (i686 Windows) only: what the compiler expects of an MSVC environment without
@@ -19,6 +22,11 @@ pub mod codepage;
 pub mod console;
 pub mod cp1252;
 pub mod critsec;
+pub mod env;
+pub mod heap;
+pub mod heapcore;
+pub mod ldr;
+pub mod localmem;
 pub mod seh;
 pub mod status;
 mod status_table;

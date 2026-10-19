@@ -1,10 +1,10 @@
 //! The process object: every piece of per-process state in one place.
 //!
-//! A process owns its page directory (created per process, sharing the kernel's kernel half), its
-//! address space's regions ([`crate::mem::vm::AddressSpace`], the only writer of its user entries)
-//! and its user-heap bookkeeping ([`HeapState`]). The image, stack, TEB and parameters pages are
-//! mapped fresh each run into the process's directory, each inside a region the loader seeds first,
-//! so they are per-process by construction.
+//! A process owns its page directory (created per process, sharing the kernel's kernel half) and
+//! its address space's regions ([`crate::mem::vm::AddressSpace`], the only writer of its user
+//! entries); its heaps are its own user memory, ntdll's. The image, stack, TEB and parameters pages
+//! are mapped fresh each run into the process's directory, each inside a region the loader seeds
+//! first, so they are per-process by construction.
 //!
 //! The per-thread state split: the ring-0 gate stack (the thread's kernel stack, what the TSS
 //! `esp0` points into) is per-thread, sub-allocated as slots of the process's window
@@ -58,7 +58,7 @@ pub mod threads;
 #[cfg(target_arch = "x86")]
 use crate::mem::paging;
 
-/// A process: one address space, one gate-stack window, one heap.
+/// A process: one address space, one gate-stack window.
 #[repr(C)]
 pub struct Process {
     /// The scheduling record, leading the process record: the context switch's assembly reads the
@@ -74,8 +74,6 @@ pub struct Process {
     object: crate::ob::ObjectId,
     /// The gate-stack window's slot occupancy (which threads own which slots).
     gate_slots: GateSlots,
-    /// The user-heap bookkeeping (heap region + CRT region).
-    heap: crate::user::userheap::HeapState,
     /// The address space's regions: every user page the process holds lies in one, and every
     /// mapping, commit and release of its pages goes through it.
     vm: crate::mem::vm::AddressSpace,
@@ -104,8 +102,6 @@ pub struct Process {
 pub struct ProcessParts<'a> {
     /// The address space's regions.
     pub vm: &'a mut crate::mem::vm::AddressSpace,
-    /// The user-heap bookkeeping.
-    pub heap: &'a mut crate::user::userheap::HeapState,
     /// The handle table.
     pub handles: &'a mut crate::sched::object::HandleTable,
     /// The open files the table's file entries name.
@@ -184,22 +180,16 @@ impl Process {
         self.sched.dir_phys()
     }
 
-    /// The record's parts, borrowed apart: what a service needs several of at once (the heap and
-    /// the address space its pages are committed in, say) without re-borrowing the whole record.
+    /// The record's parts, borrowed apart: what a service needs several of at once (the handle
+    /// table and the open files its entries name, say) without re-borrowing the whole record.
     pub fn parts_mut(&mut self) -> ProcessParts<'_> {
         ProcessParts {
             vm: &mut self.vm,
-            heap: &mut self.heap,
             handles: &mut self.handles,
             files: &mut self.files,
             gate_slots: &mut self.gate_slots,
             dead_stack: &mut self.dead_stack,
         }
-    }
-
-    /// The user-heap state (the kernel32 heap services are served from here).
-    pub fn heap_mut(&mut self) -> &mut crate::user::userheap::HeapState {
-        &mut self.heap
     }
 
     /// The address space (every user mapping goes through it).
@@ -505,7 +495,6 @@ unsafe fn write_fresh(
         addr_of_mut!((*process).id).write(new_client_id());
         addr_of_mut!((*process).object).write(object);
         addr_of_mut!((*process).gate_slots).write(GateSlots::empty());
-        addr_of_mut!((*process).heap).write(crate::user::userheap::HeapState::new());
         crate::mem::vm::AddressSpace::write_empty(addr_of_mut!((*process).vm));
         crate::sched::object::HandleTable::write_empty(addr_of_mut!((*process).handles));
         addr_of_mut!((*process).files).write(crate::fs::file::OpenFiles::empty());
@@ -764,7 +753,6 @@ mod tests {
     use crate::mem::vm::{encode, PAGE_GUARD, PAGE_NOACCESS, PAGE_READWRITE};
     use crate::sched::process::SchedProcess;
     use crate::sched::thread::{Thread, NO_GATE_SLOT};
-    use crate::user::userheap::HeapState;
 
     // --- The process record (the per-thread state split's shape) --------
 
@@ -781,7 +769,6 @@ mod tests {
                 generation: 0,
             },
             gate_slots: GateSlots::empty(),
-            heap: HeapState::new(),
             vm: crate::mem::vm::AddressSpace::new(),
             handles: crate::sched::object::HandleTable::empty(),
             files: crate::fs::file::OpenFiles::empty(),
@@ -812,24 +799,16 @@ mod tests {
     /// and the ledger is empty — the process owns no gate stack of its own; its threads do.
     #[test]
     fn fresh_process_state_starts_clean() {
-        let mut process = fresh_process();
+        let process = fresh_process();
         assert_eq!(process.name(), "fixture");
         assert_eq!(process.dir_phys(), 0x0090_0000);
         assert_eq!(process.sched.base_priority(), 8);
         assert_eq!(Thread::empty().gate_slot(), NO_GATE_SLOT);
         assert!(process.gate_slots.is_empty());
         assert_eq!(process.handles().live(), 0);
-
-        // The heap state a service would see: creating the heap reports the handle and resets
-        // nothing that exists.
-        assert_eq!(
-            process.heap_mut().create(),
-            crate::user::userheap::HEAP_HANDLE
-        );
     }
 
-    /// The parts borrow apart: the heap and the address space, the handle table and the open
-    /// files, all at once.
+    /// The parts borrow apart: the address space, the handle table and the open files, all at once.
     #[test]
     fn the_parts_borrow_apart() {
         let mut process = fresh_process();
@@ -840,7 +819,6 @@ mod tests {
             access: crate::ob::FILE_GENERIC_READ,
             inherit: false,
         });
-        assert_eq!(parts.heap.create(), crate::user::userheap::HEAP_HANDLE);
         assert!(parts.vm.region_at(0x0040_0000).is_none());
         assert!(parts.gate_slots.is_empty() && parts.dead_stack.take().is_none());
         assert_eq!(process.file_mut(handle).unwrap().file.size, 5);

@@ -1,29 +1,22 @@
 //! What the C runtime's startup asks of kernel32 — the command line, the startup information and
 //! the version — as Windows 2000's kernel32 answers it from the PEB and the process parameters.
-//! Windows 2000 makes the narrow command line at its DLL initialization and the narrow startup
-//! information at the first GetStartupInfoA, both on the
-//! process heap; F2K calls no DllMain and its process heap is not ntdll's yet, so both are made at
-//! their first use into room the kernel leaves zeroed on the process parameters' pages, their
-//! pointers on the PEB's page (kernel32 keeps no writable data).
+//! Windows 2000 makes the narrow command line at its DLL initialization (BaseAnsiCommandLine) and
+//! the narrow startup information at the first GetStartupInfoA (BaseAnsiStartupInfo), both on the
+//! process heap; F2K calls no DllMain, so both are made at their first use, under the PEB lock, on
+//! the process heap, their pointers on the PEB's page (kernel32 keeps no writable data).
 
 use rtl::cp1252;
 
 use crate::base::{
-    peb, process_parameters, read, read_pointer, set_last_error, under_peb_lock, units,
-    write_pointer,
+    peb, process_heap, process_parameters, read, read_pointer, set_last_error, set_last_nt_error,
+    under_peb_lock, units, write_pointer,
 };
+use crate::nt;
 
 /// kernel32's slots on the PEB's page, past the PEB proper: the buffers of the narrow command
 /// line and the narrow startup information.
 const ANSI_COMMAND_LINE: usize = 0x8A0;
 const ANSI_STARTUP_INFO: usize = 0x8A4;
-
-/// Where the narrow copies are made, from the process parameters: the room the kernel leaves for
-/// them on the parameters' second page (`kernel/src/user/params.rs`, ANSI_COMMAND_LINE_BUFFER and
-/// ANSI_STARTUP_INFO_BUFFER), until the process heap is ntdll's.
-const ANSI_COMMAND_LINE_BUFFER: usize = 0x1840;
-const ANSI_COMMAND_LINE_ROOM: usize = 0x400;
-const ANSI_STARTUP_INFO_BUFFER: usize = ANSI_COMMAND_LINE_BUFFER + ANSI_COMMAND_LINE_ROOM;
 
 /// The process parameters' fields kernel32 reads (RTL_USER_PROCESS_PARAMETERS, NT 5.0): the
 /// standard handles, the image's path, the command line, the startup values from StartingX to
@@ -34,6 +27,9 @@ pub(crate) const IMAGE_PATH_NAME: usize = 0x38;
 const COMMAND_LINE: usize = 0x40;
 const STARTING_X: usize = 0x4C;
 const SHOW_WINDOW_FLAGS: usize = 0x6C;
+const WINDOW_TITLE: usize = 0x70;
+const DESKTOP_INFO: usize = 0x78;
+const SHELL_INFO: usize = 0x80;
 const RUNTIME_DATA: usize = 0x88;
 
 /// The PEB's version fields: OSMajorVersion, OSMinorVersion, OSBuildNumber (a word, OSCSDVersion
@@ -48,21 +44,27 @@ const CSD_VERSION: usize = 0x1DC;
 const PLATFORM_WIN32_NT: u32 = 2;
 
 const ERROR_INSUFFICIENT_BUFFER: u32 = 122;
+const STATUS_NO_MEMORY: u32 = 0xC000_0017;
 
-/// The UTF-16 units narrowed through code page 1252 into `out`, NUL-terminated (the units cut to
-/// the room left for the terminator).
-fn narrow_into(units: &[u16], out: *mut u8, room: usize) {
-    let length = units.len().min(room - 1);
-    for (at, &unit) in units[..length].iter().enumerate() {
-        // SAFETY: inside the room.
-        unsafe { out.add(at).write(cp1252::wc_to_mb(unit)) };
+/// The UTF-16 units narrowed through code page 1252 into a new NUL-terminated block on the process
+/// heap (RtlUnicodeStringToAnsiString's allocating form); null when the heap has no room.
+fn narrow_on_heap(units: &[u16]) -> *mut u8 {
+    // SAFETY: ntdll's export, on the process heap.
+    let block = unsafe { nt::RtlAllocateHeap(process_heap(), 0, units.len() + 1) };
+    if !block.is_null() {
+        for (at, &unit) in units.iter().enumerate() {
+            // SAFETY: inside the block.
+            unsafe { block.add(at).write(cp1252::wc_to_mb(unit)) };
+        }
+        // SAFETY: as above.
+        unsafe { block.add(units.len()).write(0) };
     }
-    // SAFETY: as above.
-    unsafe { out.add(length).write(0) };
+    block
 }
 
 /// The PEB-page slot's block, made by `make` at the first use, under the PEB lock (as Windows
-/// 2000's kernel32 makes its narrow copies once, at its process attach).
+/// 2000's kernel32 makes its narrow copies once, at its process attach); zero when it could not be
+/// made (the next call tries again).
 fn made_once(slot: usize, make: impl FnOnce() -> usize) -> usize {
     let slot = peb() + slot;
     let made = read_pointer(slot);
@@ -82,15 +84,8 @@ fn made_once(slot: usize, make: impl FnOnce() -> usize) -> usize {
 #[unsafe(export_name = "f2k_export_GetCommandLineA")]
 pub extern "system" fn get_command_line_a() -> *const u8 {
     made_once(ANSI_COMMAND_LINE, || {
-        let parameters = process_parameters();
-        let block = (parameters + ANSI_COMMAND_LINE_BUFFER) as *mut u8;
-        // SAFETY: the process parameters' own string, into the room kept for its narrow copy.
-        narrow_into(
-            unsafe { units(parameters + COMMAND_LINE) },
-            block,
-            ANSI_COMMAND_LINE_ROOM,
-        );
-        block as usize
+        // SAFETY: the process parameters' own string.
+        narrow_on_heap(unsafe { units(process_parameters() + COMMAND_LINE) }) as usize
     }) as *const u8
 }
 
@@ -102,14 +97,28 @@ pub const STARTUP_INFO_SIZE: usize = 68;
 const STARTF_STANDARD_FIELDS: u32 = 0x0100 | 0x0200 | 0x0400;
 const INVALID_HANDLE_VALUE: u32 = 0xFFFF_FFFF;
 
-/// STARTUPINFOA's dwords for the process parameters at `parameters`: the size, the shell
-/// information, desktop and title (none: F2K's parameters carry none, the capture's null pointers;
-/// narrowing them needs the process heap), the startup values, the show-window value with the
-/// runtime data's length, the runtime data, and the standard handles when the flags make them
-/// meaningful (INVALID_HANDLE_VALUE otherwise).
-fn startup_info(parameters: usize) -> [u32; STARTUP_INFO_SIZE / 4] {
+/// A UNICODE_STRING of the parameters, narrowed onto the process heap: null for one with no buffer
+/// (F2K's parameters carry no title, desktop or shell information: the capture's null pointers);
+/// none when the heap has no room.
+fn narrow_string(at: usize) -> Option<u32> {
+    if read_pointer(at + 4) == 0 {
+        return Some(0);
+    }
+    // SAFETY: the process parameters' own string.
+    let block = narrow_on_heap(unsafe { units(at) });
+    (!block.is_null()).then_some(block as u32)
+}
+
+/// STARTUPINFOA's dwords for the process parameters at `parameters`: the size, the narrowed shell
+/// information, desktop and title, the startup values, the show-window value with the runtime
+/// data's length, the runtime data, and the standard handles when the flags make them meaningful
+/// (INVALID_HANDLE_VALUE otherwise); none when the heap has no room for a string.
+fn startup_info(parameters: usize) -> Option<[u32; STARTUP_INFO_SIZE / 4]> {
     let mut info = [0u32; STARTUP_INFO_SIZE / 4];
     info[0] = STARTUP_INFO_SIZE as u32;
+    info[1] = narrow_string(parameters + SHELL_INFO)?;
+    info[2] = narrow_string(parameters + DESKTOP_INFO)?;
+    info[3] = narrow_string(parameters + WINDOW_TITLE)?;
     for (at, word) in info[4..12].iter_mut().enumerate() {
         *word = read(parameters + STARTING_X + 4 * at);
     }
@@ -124,11 +133,12 @@ fn startup_info(parameters: usize) -> [u32; STARTUP_INFO_SIZE / 4] {
             INVALID_HANDLE_VALUE
         };
     }
-    info
+    Some(info)
 }
 
-/// GetStartupInfoA: the narrow startup information (made from the process parameters at the
-/// first call) copied into the caller's STARTUPINFOA.
+/// GetStartupInfoA: the narrow startup information (BaseAnsiStartupInfo, made from the process
+/// parameters at the first call, on the process heap) copied into the caller's STARTUPINFOA; with
+/// no room for it, the structure is left alone and ERROR_NOT_ENOUGH_MEMORY set.
 ///
 /// # Safety
 ///
@@ -136,15 +146,27 @@ fn startup_info(parameters: usize) -> [u32; STARTUP_INFO_SIZE / 4] {
 #[unsafe(export_name = "f2k_export_GetStartupInfoA")]
 pub unsafe extern "system" fn get_startup_info_a(info: *mut u8) {
     let cached = made_once(ANSI_STARTUP_INFO, || {
-        let parameters = process_parameters();
-        let image = startup_info(parameters);
-        let block = (parameters + ANSI_STARTUP_INFO_BUFFER) as *mut u8;
-        // SAFETY: the room kept for the image on the parameters' pages.
-        unsafe {
-            core::ptr::copy_nonoverlapping(image.as_ptr().cast::<u8>(), block, STARTUP_INFO_SIZE)
+        let Some(image) = startup_info(process_parameters()) else {
+            return 0;
         };
+        // SAFETY: ntdll's export, on the process heap.
+        let block = unsafe { nt::RtlAllocateHeap(process_heap(), 0, STARTUP_INFO_SIZE) };
+        if !block.is_null() {
+            // SAFETY: the block holds the image.
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    image.as_ptr().cast::<u8>(),
+                    block,
+                    STARTUP_INFO_SIZE,
+                )
+            };
+        }
         block as usize
     });
+    if cached == 0 {
+        set_last_nt_error(STATUS_NO_MEMORY);
+        return;
+    }
     // SAFETY: the cached image; the caller's contract.
     unsafe { core::ptr::copy_nonoverlapping(cached as *const u8, info, STARTUP_INFO_SIZE) };
 }

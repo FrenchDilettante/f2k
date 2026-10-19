@@ -175,6 +175,15 @@ pub fn process_start_thunk() -> u32 {
     })
 }
 
+/// ntdll's LdrInitializeThunk: a fresh thread's first user-mode work, delivered over its initial
+/// context like a user APC (see `user::apc::deliver_initialization`).
+pub fn ldr_initialize_thunk() -> u32 {
+    static RESOLVED: AtomicU32 = AtomicU32::new(0);
+    redirect_target(&RESOLVED, || {
+        resolve_in(NTDLL, "LdrInitializeThunk", 0).expect("ntdll exports LdrInitializeThunk")
+    })
+}
+
 /// ntdll's KiUserApcDispatcher: a user APC's delivery enters user mode there (see
 /// [`crate::user::apc`]).
 pub fn apc_dispatcher() -> u32 {

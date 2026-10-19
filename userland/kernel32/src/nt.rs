@@ -256,6 +256,39 @@ unsafe extern "system" {
     pub fn RtlInitializeCriticalSection(section: *mut u8) -> u32;
     /// RtlRaiseStatus: the status raised as a noncontinuable exception.
     pub fn RtlRaiseStatus(status: u32) -> !;
+    /// The heaps (ntdll's RtlCreateHeap family): a heap made and destroyed, a block allocated,
+    /// freed, sized and resized.
+    pub fn RtlCreateHeap(
+        flags: u32,
+        base: usize,
+        reserve: usize,
+        commit: usize,
+        lock: usize,
+        parameters: usize,
+    ) -> usize;
+    pub fn RtlDestroyHeap(heap: usize) -> usize;
+    pub fn RtlAllocateHeap(heap: usize, flags: u32, size: usize) -> *mut u8;
+    pub fn RtlFreeHeap(heap: usize, flags: u32, block: *mut u8) -> u32;
+    pub fn RtlSizeHeap(heap: usize, flags: u32, block: *const u8) -> usize;
+    pub fn RtlReAllocateHeap(heap: usize, flags: u32, block: *mut u8, size: usize) -> *mut u8;
+    /// The environment (the process's for a null block): a variable read, set or deleted, and a
+    /// string's references expanded.
+    pub fn RtlQueryEnvironmentVariable_U(
+        environment: *mut u16,
+        name: *const UnicodeString,
+        value: *mut UnicodeString,
+    ) -> u32;
+    pub fn RtlSetEnvironmentVariable(
+        environment: *mut *mut u16,
+        name: *const UnicodeString,
+        value: *const UnicodeString,
+    ) -> u32;
+    pub fn RtlExpandEnvironmentStrings_U(
+        environment: *mut u16,
+        source: *const UnicodeString,
+        destination: *mut UnicodeString,
+        returned: *mut u32,
+    ) -> u32;
 }
 
 #[cfg(test)]
@@ -552,6 +585,118 @@ pub mod host {
 
     pub unsafe extern "system" fn RtlRaiseStatus(status: u32) -> ! {
         panic!("RtlRaiseStatus({status:#010x})")
+    }
+
+    /// The heap: the host's allocator, a block's size kept before it.
+    pub unsafe extern "system" fn RtlAllocateHeap(_heap: usize, flags: u32, size: usize) -> *mut u8 {
+        let layout = std::alloc::Layout::from_size_align(size + 8, 8).unwrap();
+        // SAFETY: a fresh allocation of `size + 8` bytes.
+        unsafe {
+            let block = if flags & rtl::heap::HEAP_ZERO_MEMORY != 0 {
+                std::alloc::alloc_zeroed(layout)
+            } else {
+                std::alloc::alloc(layout)
+            };
+            (block as *mut usize).write(size);
+            block.add(8)
+        }
+    }
+
+    pub unsafe extern "system" fn RtlFreeHeap(_heap: usize, _flags: u32, block: *mut u8) -> u32 {
+        // SAFETY: a block RtlAllocateHeap made.
+        unsafe {
+            let start = block.sub(8);
+            let size = (start as *const usize).read();
+            std::alloc::dealloc(start, std::alloc::Layout::from_size_align(size + 8, 8).unwrap());
+        }
+        1
+    }
+
+    std::thread_local! {
+        /// The environment block, as ntdll keeps it (an empty one to start; room for the tests).
+        pub static ENVIRONMENT: RefCell<std::vec::Vec<u16>> = RefCell::new(std::vec![0; 4096]);
+    }
+
+    /// The environment block's address.
+    pub fn environment_block() -> *mut u16 {
+        ENVIRONMENT.with(|block| block.borrow_mut().as_mut_ptr())
+    }
+
+    unsafe fn string_units<'a>(string: *const super::UnicodeString) -> &'a [u16] {
+        // SAFETY: the caller's string.
+        let string = unsafe { &*string };
+        if string.length == 0 {
+            return &[];
+        }
+        // SAFETY: as above.
+        unsafe { core::slice::from_raw_parts(string.buffer, string.length as usize / 2) }
+    }
+
+    /// ntdll's environment functions over the stand-in's block (rtl::env, as ntdll runs them).
+    pub unsafe extern "system" fn RtlQueryEnvironmentVariable_U(
+        _environment: *mut u16,
+        name: *const super::UnicodeString,
+        value: *mut super::UnicodeString,
+    ) -> u32 {
+        ENVIRONMENT.with(|block| {
+            let block = block.borrow();
+            // SAFETY: the caller's strings.
+            let Some(found) = rtl::env::query(&block, unsafe { string_units(name) }) else {
+                return rtl::status::STATUS_VARIABLE_NOT_FOUND;
+            };
+            let value = unsafe { &mut *value };
+            value.length = (2 * found.len()) as u16;
+            if 2 * found.len() > value.maximum_length as usize {
+                return rtl::status::STATUS_BUFFER_TOO_SMALL;
+            }
+            // SAFETY: the caller's buffer.
+            unsafe { value.buffer.copy_from_nonoverlapping(found.as_ptr(), found.len()) };
+            0
+        })
+    }
+
+    pub unsafe extern "system" fn RtlSetEnvironmentVariable(
+        _environment: *mut *mut u16,
+        name: *const super::UnicodeString,
+        value: *const super::UnicodeString,
+    ) -> u32 {
+        ENVIRONMENT.with(|block| {
+            // SAFETY: the caller's strings.
+            let (name, value) =
+                unsafe { (string_units(name), (!value.is_null()).then(|| string_units(value))) };
+            match rtl::env::set(&mut block.borrow_mut(), name, value) {
+                Ok(()) => 0,
+                Err(rtl::env::EnvError::InvalidName) => rtl::status::STATUS_INVALID_PARAMETER,
+                Err(rtl::env::EnvError::NeedsRoom(_)) => rtl::status::STATUS_NO_MEMORY,
+            }
+        })
+    }
+
+    pub unsafe extern "system" fn RtlExpandEnvironmentStrings_U(
+        _environment: *mut u16,
+        source: *const super::UnicodeString,
+        destination: *mut super::UnicodeString,
+        returned: *mut u32,
+    ) -> u32 {
+        ENVIRONMENT.with(|block| {
+            let block = block.borrow();
+            let mut out = std::vec::Vec::new();
+            // SAFETY: the caller's strings.
+            rtl::env::expand(&block, unsafe { string_units(source) }, |unit| out.push(unit));
+            let destination = unsafe { &mut *destination };
+            // SAFETY: the caller's count.
+            unsafe { returned.write((2 * (out.len() + 1)) as u32) };
+            if out.len() >= destination.maximum_length as usize / 2 {
+                return rtl::status::STATUS_BUFFER_TOO_SMALL;
+            }
+            // SAFETY: the caller's buffer holds the expansion and its terminator.
+            unsafe {
+                destination.buffer.copy_from_nonoverlapping(out.as_ptr(), out.len());
+                destination.buffer.add(out.len()).write(0);
+            }
+            destination.length = (2 * out.len()) as u16;
+            0
+        })
     }
 
     /// The performance counter's stand-in values.

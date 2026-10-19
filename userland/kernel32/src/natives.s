@@ -33,6 +33,14 @@ _f2k_export_GetCurrentThreadId:
     mov eax, dword ptr fs:[0x24]
     ret
 
+# The process heap (the PEB's ProcessHeap, which ntdll's LdrInitializeThunk makes).
+.p2align 4
+.globl _f2k_export_GetProcessHeap
+_f2k_export_GetProcessHeap:
+    mov eax, dword ptr fs:[0x30]
+    mov eax, dword ptr [eax+0x18]
+    ret
+
 # The current-thread pseudo-handle.
 .p2align 4
 .globl _f2k_export_GetCurrentThread

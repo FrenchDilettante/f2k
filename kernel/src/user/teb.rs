@@ -6,8 +6,8 @@
 //! 2000's, not F2K's choice. A thread's TEB page is built once, when the thread is created; the PEB
 //! page once per process, when its image is loaded. Everything not listed here stays zero.
 
-// The layouts' fields user code reads, whether the kernel writes them or not (kernel32 reads the
-// startup values and its narrow copies' room by these offsets).
+// The layouts' fields user code reads, whether the kernel writes them or not (kernel32 and ntdll
+// read them by these offsets).
 #![allow(dead_code)]
 
 /// TEB field offsets (the NT_TIB head, then the TEB proper).
@@ -42,12 +42,25 @@ pub mod peb_offset {
     pub const IMAGE_BASE_ADDRESS: u32 = 0x08;
     /// ProcessParameters: the RTL_USER_PROCESS_PARAMETERS block (see `user::params`).
     pub const PROCESS_PARAMETERS: u32 = 0x10;
-    /// ProcessHeap: what GetProcessHeap returns (ntdll's process start writes it; zero until the
-    /// heap moves to ntdll).
+    /// ProcessHeap: what GetProcessHeap returns (ntdll's LdrInitializeThunk writes it on the
+    /// process's first thread).
     pub const PROCESS_HEAP: u32 = 0x18;
     /// FastPebLock: the PEB lock, the critical section RtlAcquirePebLock takes (its storage at
     /// [`PEB_LOCK`], past the PEB proper).
     pub const FAST_PEB_LOCK: u32 = 0x1C;
+    /// NumberOfHeaps, MaximumNumberOfHeaps, ProcessHeaps: the process's heaps, the array of their
+    /// handles (ntdll keeps the count and the array; the kernel plants the array's place and size,
+    /// as NT's PEB creation does).
+    pub const NUMBER_OF_HEAPS: u32 = 0x88;
+    pub const MAXIMUM_NUMBER_OF_HEAPS: u32 = 0x8C;
+    pub const PROCESS_HEAPS: u32 = 0x90;
+    /// The heap-handle array: right past Windows 2000's PEB proper (0x1E8 bytes), on its page.
+    pub const PROCESS_HEAPS_ARRAY: u32 = 0x1E8;
+    /// How many heaps the array holds (`rtl::heap::HEAPS`).
+    pub const HEAPS: u32 = 16;
+    /// The lock over the heap list: a critical section, ntdll's own data on the platform, here
+    /// past the PEB proper on its page (made by the process's first thread's LdrInitializeThunk).
+    pub const HEAP_LIST_LOCK: u32 = 0x840;
     /// TlsBitmap: the RTL_BITMAP over TlsBitmapBits, the TLS indexes 0..64.
     pub const TLS_BITMAP: u32 = 0x40;
     /// TlsBitmapBits: two dwords, a bit per index 0..64 (set: allocated).
@@ -84,10 +97,11 @@ pub mod peb_offset {
     /// The PEB lock's LockCount (RTL_CRITICAL_SECTION+4): -1 while free.
     pub const PEB_LOCK_COUNT: u32 = PEB_LOCK + 4;
     // Past the PEB proper (0x1E8 bytes), the system DLLs' own data (they keep no writable
-    // sections): kernel32's top-level filter (0x800, above), the TLS bitmaps' headers (0x810,
-    // 0x818), the PEB lock (0x860), kernel32's `\BaseNamedObjects` handle (0x880), its narrow
-    // command line and startup information (0x8A0, 0x8A4: pointers, see `user::params`). The page
-    // starts zeroed; the kernel writes only the headers and the PEB lock's free state.
+    // sections): the heap-handle array (0x1E8), kernel32's top-level filter (0x800, above), the TLS
+    // bitmaps' headers (0x810, 0x818), the heap list's lock (0x840), the PEB lock (0x860),
+    // kernel32's `\BaseNamedObjects` handle (0x880), its narrow command line and startup
+    // information (0x8A0, 0x8A4: pointers to blocks on the process heap). The page starts zeroed;
+    // the kernel writes only the bitmaps' headers and the PEB lock's free state.
 }
 
 /// The empty SEH chain's terminator: the frame link Windows starts every thread with.
@@ -150,15 +164,19 @@ const OS_CSD_VERSION: u32 = 0x0400;
 const PLATFORM_WIN32_NT: u32 = 2;
 
 /// A fresh PEB's nonzero words, as (offset, value), for the PEB at `peb`: the image's base, the
-/// process parameters, the TLS bitmaps' headers (every index free), the PEB lock, free (until
-/// ntdll's process start makes it, Windows 2000's LdrpInitializeProcess initializes it), the
+/// process parameters, the heap list's room (its array, empty, and its size: ntdll's
+/// LdrInitializeThunk makes the process heap, the list's first entry), the TLS bitmaps' headers
+/// (every index free), the PEB lock, free (until
+/// ntdll's process start makes it, as Windows 2000's LdrpInitializeProcess does), the
 /// system's version (GetVersion's: 5.0, build 2195, service pack 4, NT), the image's subsystem and
 /// its version, and the service pack's name (on the parameters' pages: none without them).
-pub fn peb_words(peb: u32, init: &PebInit) -> [(u32, u32); 19] {
+pub fn peb_words(peb: u32, init: &PebInit) -> [(u32, u32); 21] {
     use peb_offset::*;
     [
         (IMAGE_BASE_ADDRESS, init.image_base),
         (PROCESS_PARAMETERS, init.parameters),
+        (MAXIMUM_NUMBER_OF_HEAPS, HEAPS),
+        (PROCESS_HEAPS, peb + PROCESS_HEAPS_ARRAY),
         (FAST_PEB_LOCK, peb + PEB_LOCK),
         (PEB_LOCK_COUNT, u32::MAX),
         (TLS_BITMAP, peb + TLS_BITMAP_HEADER),
@@ -251,6 +269,11 @@ mod tests {
         assert_eq!(peb_offset::PROCESS_PARAMETERS, 0x10);
         assert_eq!(peb_offset::PROCESS_HEAP, 0x18);
         assert_eq!(peb_offset::FAST_PEB_LOCK, 0x1C);
+        assert_eq!(peb_offset::NUMBER_OF_HEAPS, 0x88);
+        assert_eq!(peb_offset::MAXIMUM_NUMBER_OF_HEAPS, 0x8C);
+        assert_eq!(peb_offset::PROCESS_HEAPS, 0x90);
+        assert_eq!(peb_offset::HEAPS, rtl::heap::HEAPS);
+        assert_eq!(peb_offset::PROCESS_HEAPS_ARRAY + 4 * peb_offset::HEAPS, 0x228);
         assert_eq!(peb_offset::TLS_BITMAP, 0x40);
         assert_eq!(peb_offset::TLS_BITMAP_BITS, 0x44);
         assert_eq!(peb_offset::TLS_EXPANSION_BITMAP, 0x150);
@@ -335,10 +358,11 @@ mod tests {
         );
     }
 
-    /// A fresh PEB: the image and the parameters; no process heap yet (the kernel's user heap
-    /// stands in until ntdll makes one); the two TLS bitmaps' headers (64 and 1024 bits, over the
-    /// PEB's own bit arrays, every index free); the PEB lock free, FastPebLock pointing at it. Past
-    /// the PEB proper only the headers and the lock, clear of kernel32's filter slot.
+    /// A fresh PEB: the image and the parameters; no process heap yet (ntdll's LdrInitializeThunk
+    /// makes it), the heap list empty over its 16-entry array past the PEB proper; the two TLS
+    /// bitmaps' headers (64 and 1024 bits, over the PEB's own bit arrays, every index free); the
+    /// PEB lock free, FastPebLock pointing at it. Past the PEB proper only the headers and the lock,
+    /// clear of kernel32's filter slot.
     #[test]
     fn fresh_peb_words() {
         let peb = 0x0033_0000;
@@ -347,6 +371,10 @@ mod tests {
         assert_eq!(value(peb_offset::IMAGE_BASE_ADDRESS), Some(0x0040_0000));
         assert_eq!(value(peb_offset::PROCESS_PARAMETERS), Some(0x0032_0000));
         assert_eq!(value(peb_offset::PROCESS_HEAP), None);
+        assert_eq!(value(peb_offset::NUMBER_OF_HEAPS), None, "no heap yet");
+        assert_eq!(value(peb_offset::MAXIMUM_NUMBER_OF_HEAPS), Some(16));
+        assert_eq!(value(peb_offset::PROCESS_HEAPS), Some(peb + 0x1E8));
+        assert_eq!(value(peb_offset::HEAP_LIST_LOCK + 4), None, "ntdll's to make");
         assert_eq!(value(peb_offset::TLS_BITMAP), Some(peb + 0x810));
         assert_eq!(value(0x810), Some(64));
         assert_eq!(value(0x814), Some(peb + 0x44));

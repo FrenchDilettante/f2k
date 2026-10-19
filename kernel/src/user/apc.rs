@@ -10,8 +10,8 @@
 //! routine, then resumes the saved context through NtContinue with TestAlert TRUE, which arms the
 //! next delivery when more APCs are queued ([`test_alert`]). So the APCs run one by one, in queue
 //! order, and the wait returns its status last. A thread that never ran yet delivers its queued
-//! APCs before its first instruction, as the platform's thread startup does
-//! ([`deliver_at_startup`]; on Windows 2000, LdrInitializeThunk's NtContinue tests the alert).
+//! APCs before its first instruction, as the platform's thread startup does: after the loader's
+//! initialization ([`deliver_initialization`]), whose NtContinue tests the alert.
 
 use super::seh::CONTEXT_SIZE;
 use super::TrapFrame;
@@ -115,8 +115,8 @@ pub fn test_alert() {
     }
 }
 
-/// A fresh thread's test alert, before its first user instruction (on Windows 2000, the loader's
-/// initialization's NtContinue tests it): user APCs queued on it before it ever ran are delivered
+/// A fresh thread's test alert, before its first user instruction, when no loader initialization
+/// runs (whose NtContinue tests it instead): user APCs queued on it before it ever ran are delivered
 /// into its planted frame.
 #[cfg(target_arch = "x86")]
 pub fn deliver_at_startup() {
@@ -134,6 +134,45 @@ pub fn deliver_at_startup() {
     if enabled {
         state.unmask_interrupts();
     }
+}
+
+/// The loader's thread initialization, before everything else a fresh thread runs in user mode,
+/// as Windows 2000 delivers LdrInitializeThunk (the thread's first user APC): its planted frame —
+/// its first instruction — is saved on its user stack under an APC call frame (all zero: no
+/// routine), and the return lands on ntdll's LdrInitializeThunk, which makes the process heap (the
+/// process's first thread), then resumes the saved context through NtContinue with TestAlert TRUE —
+/// so user APCs queued before the thread ran deliver after it, in queue order, before the first
+/// instruction. False, nothing delivered, for a process without the system DLLs (the fault-test
+/// stubs' raw code page has no loader to run). A user stack the image cannot be written to ends the
+/// process with an access violation.
+#[cfg(target_arch = "x86")]
+pub fn deliver_initialization() -> bool {
+    use crate::mem::vm::Pages;
+    if crate::mem::vm::CurrentPages.entry(crate::exec::modules::NTDLL_BASE) & 1 == 0 {
+        return false;
+    }
+    let state = crate::interrupt::irql::state_mut();
+    let enabled = state.interrupts_enabled();
+    state.mask_interrupts();
+    // SAFETY: the running thread, live; its planted trap frame sits at the top of its kernel stack.
+    let thread = unsafe { &mut *crate::sched::idle::dispatcher().current_thread() };
+    let frame = (thread.initial_stack - core::mem::size_of::<TrapFrame>() as u32) as *mut TrapFrame;
+    // SAFETY: the planted frame, which the startup stub pops next.
+    let frame = unsafe { &mut *frame };
+    let (esp, bytes) = delivery_image(frame, [0; CALL_WORDS]);
+    if super::syscall::write_user(esp, &bytes).is_err() {
+        crate::process::threads::fault_exit(crate::process::exit::Fault {
+            vector: 14,
+            status: super::syscall::STATUS_ACCESS_VIOLATION,
+            in_user_copy: true,
+        });
+    }
+    frame.user_esp = esp;
+    frame.eip = crate::exec::modules::ldr_initialize_thunk();
+    if enabled {
+        state.unmask_interrupts();
+    }
+    true
 }
 
 #[cfg(test)]

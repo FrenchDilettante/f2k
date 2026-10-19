@@ -5,6 +5,13 @@ fn main() {
     build_dll(
         "ntdll",
         0x77F8_0000,
-        &["src/internal.s", "src/except.s", "src/csr.s", "src/critsec.s"],
+        &[
+            "src/internal.s",
+            "src/ldr.s",
+            "src/except.s",
+            "src/csr.s",
+            "src/critsec.s",
+            "src/heap.s",
+        ],
     );
 }

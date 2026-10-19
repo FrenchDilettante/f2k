@@ -1,13 +1,15 @@
 //! The calling thread's system, for user-mode runtime code (ntdll's own): its TEB and PEB through
 //! FS, and Windows 2000's system services through the gate ([`system_service`], by their Windows
-//! 2000 numbers, `nr`). The critical sections' events are the NT services' ([`Native`]), and the
-//! PEB lock is the PEB's ([`peb_lock`]). The raises are here too ([`raise_exception`],
+//! 2000 numbers, `nr`). The critical sections' events and the heaps' pages are the NT services'
+//! ([`Native`]), the PEB lock is the PEB's ([`peb_lock`]), and the process's heaps are its PEB's
+//! list ([`process`], [`process_heap`]). The raises are here too ([`raise_exception`],
 //! [`raise_status`]: the context captured in user mode, the exception's first chance
 //! NtRaiseException's), so the runtime's own code can raise without naming ntdll's exports.
 
 use core::arch::asm;
 
 use crate::critsec::{CriticalSection, System};
+use crate::heap::{Heap, Process, Vm};
 
 // The kernel's ABI constants (`SYSCALL_VECTOR`, the internal `SYS_*`) and Windows 2000's service
 // numbers (`nr`), from the kernel's sources and tools/exportgen's table (see build.rs).
@@ -22,6 +24,15 @@ pub const TEB_TLS_EXPANSION_SLOTS: usize = 0xF94;
 /// The TEB's pointer to the process's PEB, and the PEB's NumberOfProcessors.
 const TEB_PEB: u32 = 0x30;
 const PEB_NUMBER_OF_PROCESSORS: u32 = 0x64;
+/// The PEB's ImageBaseAddress, ProcessParameters and ProcessHeap.
+const PEB_IMAGE_BASE_ADDRESS: usize = 0x08;
+const PEB_PROCESS_PARAMETERS: usize = 0x10;
+const PEB_PROCESS_HEAP: usize = 0x18;
+/// The PEB's heap list (NumberOfHeaps, MaximumNumberOfHeaps, ProcessHeaps: the kernel plants the
+/// maximum and the array's place), and the lock over it (F2K's place for ntdll's own, past the PEB
+/// proper on its page; LdrInitializeThunk makes it on the process's first thread).
+const PEB_HEAP_LIST: usize = 0x88;
+const PEB_HEAP_LIST_LOCK: usize = 0x840;
 /// Where F2K keeps the lock the PEB's FastPebLock points at: past the PEB proper on its page
 /// (Windows 2000 keeps it in ntdll's data). The kernel plants it free with the PEB until ntdll's
 /// process start makes it (B7).
@@ -65,14 +76,51 @@ pub fn peb_lock() -> &'static CriticalSection {
 
 /// A dword of user memory.
 pub fn read(at: usize) -> usize {
-    // SAFETY: the callers read the TEB and the thread's own stack.
+    // SAFETY: the callers read the TEB, the PEB, the process parameters and the thread's own
+    // stack, mapped for the thread's or the process's whole life.
     unsafe { core::ptr::read_volatile(at as *const usize) }
 }
 
 /// Write a dword of user memory.
 pub fn write(at: usize, value: usize) {
-    // SAFETY: the callers write the TEB, the thread's own.
+    // SAFETY: the callers write the TEB and the PEB, the thread's and the process's own.
     unsafe { core::ptr::write_volatile(at as *mut usize, value) }
+}
+
+/// The process image's base.
+pub fn image_base() -> usize {
+    read(peb() + PEB_IMAGE_BASE_ADDRESS)
+}
+
+/// The process parameters (RTL_USER_PROCESS_PARAMETERS), as the PEB points at them.
+pub fn process_parameters() -> usize {
+    read(peb() + PEB_PROCESS_PARAMETERS)
+}
+
+/// The process heap's handle (zero before the process's first thread made it).
+pub fn process_heap_handle() -> usize {
+    read(peb() + PEB_PROCESS_HEAP)
+}
+
+/// Record the process heap's handle in the PEB.
+pub fn set_process_heap(handle: usize) {
+    write(peb() + PEB_PROCESS_HEAP, handle)
+}
+
+/// The process heap.
+pub fn process_heap() -> Heap {
+    // SAFETY: the PEB's ProcessHeap names the process heap from the process's first thread's
+    // initialization on, and nothing destroys it.
+    unsafe { Heap::from_handle(process_heap_handle()) }
+}
+
+/// The process's heaps: its PEB's list and the lock over it.
+pub fn process() -> Process {
+    let peb = peb();
+    Process {
+        list: (peb + PEB_HEAP_LIST) as *mut _,
+        lock: (peb + PEB_HEAP_LIST_LOCK) as *const CriticalSection,
+    }
 }
 
 /// Record `status` as the calling thread's last status (its TEB's LastStatusValue, which
@@ -97,6 +145,65 @@ pub fn set_last_error(code: u32) {
 /// EVENT_ALL_ACCESS, and NtCreateEvent's SynchronizationEvent type.
 const EVENT_ALL_ACCESS: u32 = 0x001F_0003;
 const SYNCHRONIZATION_EVENT: u32 = 1;
+
+/// The current-process pseudo-handle, and the virtual-memory calls' constants.
+const CURRENT_PROCESS: u32 = 0xFFFF_FFFF;
+const MEM_COMMIT: u32 = 0x1000;
+const MEM_RESERVE: u32 = 0x2000;
+const MEM_RELEASE: u32 = 0x8000;
+const PAGE_READWRITE: u32 = 0x04;
+
+/// NtAllocateVirtualMemory on the calling process: the base it settled on, or the status.
+pub fn allocate_virtual_memory(
+    base: usize,
+    size: usize,
+    kind: u32,
+    protect: u32,
+) -> Result<usize, u32> {
+    let (mut base, mut size) = (base as u32, size as u32);
+    let args = [
+        CURRENT_PROCESS,
+        &mut base as *mut u32 as u32,
+        0,
+        &mut size as *mut u32 as u32,
+        kind,
+        protect,
+    ];
+    match system_service(nr::NtAllocateVirtualMemory, &args) {
+        0 => Ok(base as usize),
+        status => Err(status),
+    }
+}
+
+/// NtFreeVirtualMemory on the calling process, releasing the region at `base`.
+pub fn release_virtual_memory(base: usize) -> u32 {
+    let (mut base, mut size) = (base as u32, 0u32);
+    let args = [
+        CURRENT_PROCESS,
+        &mut base as *mut u32 as u32,
+        &mut size as *mut u32 as u32,
+        MEM_RELEASE,
+    ];
+    system_service(nr::NtFreeVirtualMemory, &args)
+}
+
+/// The heaps grow through the virtual-memory system services, as Windows 2000's do; the last error
+/// is untouched (the services never set it).
+impl Vm for Native {
+    fn reserve(&self, size: usize) -> Option<usize> {
+        allocate_virtual_memory(0, size, MEM_RESERVE, PAGE_READWRITE)
+            .ok()
+            .filter(|&base| base != 0)
+    }
+
+    fn commit(&self, base: usize, size: usize) -> bool {
+        allocate_virtual_memory(base, size, MEM_COMMIT, PAGE_READWRITE).is_ok()
+    }
+
+    fn release(&self, base: usize) {
+        release_virtual_memory(base);
+    }
+}
 
 /// Raise system service `number` with its arguments (the stub's protocol: EDX the argument block,
 /// EAX the number): its NTSTATUS.

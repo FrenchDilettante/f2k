@@ -161,3 +161,15 @@ unsafe extern "system" fn rtl_raise_exception(_record: *mut ExceptionRecord) {
 unsafe extern "system" fn rtl_raise_status(_status: u32) -> ! {
     core::arch::naked_asm!("jmp {raise}", raise = sym sys::raise_status)
 }
+
+/// A heap that generates exceptions and cannot serve an allocation of `size` bytes raises
+/// STATUS_NO_MEMORY, the size its one parameter (src/heap.s); continuing it returns null to the
+/// caller, as Windows 2000's RtlAllocateHeap does.
+#[unsafe(no_mangle)]
+extern "C" fn f2k_heap_raise_no_memory(size: u32) {
+    let mut record = ExceptionRecord::status(rtl::heap::STATUS_NO_MEMORY, 0, 0);
+    record.count = 1;
+    record.information[0] = size;
+    // SAFETY: a record on this stack.
+    unsafe { sys::raise_exception(&mut record) }
+}
