@@ -1,5 +1,6 @@
-//! The file API: kernel32's own code over ntdll's file services, as on Windows 2000. The narrow calls convert their names through the ANSI code page into a buffer of MAX_PATH + 1
-//! units (Windows 2000's kernel32 converts into the thread's static Unicode string, of that size: a
+//! The file API: kernel32's own code over ntdll's file services, as on Windows 2000. The narrow
+//! calls convert their names through the ANSI code page into a buffer of MAX_PATH + 1 units
+//! (Windows 2000's kernel32 converts into the thread's static Unicode string, of that size: a
 //! longer name is ERROR_FILENAME_EXCED_RANGE); ntdll makes the NT path of the DOS one
 //! (RtlDosPathNameToNtPathName_U, which fails for a name it cannot make: ERROR_PATH_NOT_FOUND), a
 //! relative path under the current directory coming back relative to its handle; and a failed
@@ -7,13 +8,11 @@
 //! sets its own.
 //!
 //! [`handle`] holds the calls on a file handle (CreateFileA, ReadFile, WriteFile, SetFilePointer and
-//! the rest), [`names`] those on a name (attributes, the full and short names), [`find`] the
-//! directory searches and [`volume`] the volume's. This is the read side: the calls that change
-//! the volume — WriteFile's file half, SetEndOfFile, SetFileTime, SetFileAttributesA, DeleteFileA,
-//! MoveFileA, CopyFileA, CreateDirectoryA, RemoveDirectoryA, CreateFileA's creating and overwriting
-//! dispositions — are the FAT32 write side's: the kernel refuses a create or an overwrite
-//! meanwhile (STATUS_MEDIA_WRITE_PROTECTED, ERROR_WRITE_PROTECT).
+//! the rest), [`names`] those on a name (attributes, deletes, renames, directories, the full and
+//! short names), [`copy`] CopyFileA's loop, [`find`] the directory searches and [`volume`] the
+//! volume's.
 
+pub mod copy;
 pub mod find;
 pub mod handle;
 pub mod names;

@@ -11,6 +11,11 @@
 use super::fat32::dirent::Times;
 use super::fat32::lookup::File;
 
+/// FILE_ATTRIBUTE_ARCHIVE, and the attributes a program may set (read-only, hidden, system,
+/// archive).
+pub const ATTRIBUTE_ARCHIVE: u8 = 0x20;
+pub const SETTABLE_ATTRIBUTES: u8 = 0x27;
+
 /// FILE_ATTRIBUTE_NORMAL: a file with no other attribute.
 pub const FILE_ATTRIBUTE_NORMAL: u32 = 0x80;
 /// The stored attribute bits reported as they are (read-only, hidden, system, directory, archive).
@@ -35,9 +40,7 @@ pub fn file_times(file: &File) -> [u64; 3] {
     ]
 }
 
-/// Times stamped at `filetime`: all three, the creation's hundredths included (the write side's
-/// stamps: a creation's, a write's, SetFileTime's).
-#[cfg_attr(target_arch = "x86", allow(dead_code))]
+/// Times stamped at `filetime`: all three, the creation's hundredths included.
 pub fn times_at(filetime: u64) -> Times {
     let (date, time, hundredths) = crate::time::fat_from_filetime(filetime);
     Times {
@@ -53,7 +56,9 @@ pub fn times_at(filetime: u64) -> Times {
 #[cfg(target_arch = "x86")]
 mod target {
     use super::*;
+    use crate::fs::fat32::dir::is_empty;
     use crate::fs::fat32::volume::{with_boot_volume, Volume};
+    use crate::fs::fat32::write;
     use crate::fs::file::{records, FileObject, OpenError};
     use crate::ob::Referenced;
     use crate::status::{
@@ -61,8 +66,7 @@ mod target {
         STATUS_OBJECT_PATH_NOT_FOUND, STATUS_SHARING_VIOLATION, STATUS_TOO_MANY_OPENED_FILES,
     };
 
-    /// The current time's stamps (the write side's).
-    #[allow(dead_code)]
+    /// The current time's stamps.
     pub fn now() -> Times {
         times_at(crate::time::system_filetime())
     }
@@ -159,16 +163,22 @@ mod target {
         records().get(record).user_mapped > 0
     }
 
-    /// A file object's cleanup (its last handle closed): its directory search goes and its share
-    /// access leaves the record. The last cleanup of a delete-pending file would delete it — a
+    /// A file object's cleanup (its last handle closed): its directory search goes, its share
+    /// access leaves the record, and the last cleanup of a delete-pending file deletes it — a
     /// directory only while empty, a file only while no mapping of it exists (the memory manager
-    /// keeps a mapped file) — but the volume is read-only until the FAT32 write side, so the
-    /// file stays: the record's state (delete-pending, delete-on-close) is kept for the write side to act on.
+    /// keeps a mapped file).
     pub fn cleanup(record: u16, access: u8, share: u8, delete_on_close: bool, search: u16) {
         crate::fs::search::searches().close(search);
-        if let Some(_file) = records().cleanup(record, access, share, delete_on_close) {
-            // The write side: `if !mapped(record)`, delete `_file` on the volume (a directory only while
-            // empty).
+        if let Some(file) = records().cleanup(record, access, share, delete_on_close) {
+            if mapped(record) {
+                return;
+            }
+            let _ = with_volume(|volume| {
+                if file.directory && !is_empty(volume, file.first_cluster)? {
+                    return Ok(());
+                }
+                write::delete(volume, &file)
+            });
         }
     }
 

@@ -95,6 +95,13 @@ impl FatCache {
         }
     }
 
+    /// Keep a cached copy of the sector at `lba` in step with a write of `data` to it.
+    pub fn store(&mut self, lba: u64, data: &[u8; 512]) {
+        if let Some(slot) = self.slots.iter_mut().find(|slot| slot.lba == Some(lba)) {
+            slot.data = *data;
+        }
+    }
+
     /// The sector at `lba` on `device`: from the cache, or read into the least recently used slot.
     /// A failed read caches nothing.
     pub fn sector(&mut self, device: &dyn BlockDevice, lba: u64) -> Result<&[u8; 512], NtStatus> {

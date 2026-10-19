@@ -249,7 +249,7 @@ SERVED_KERNEL32_EXPORTS = 2
 
 # The kernel32 exports the corpus imports that are not built yet (`unimplemented` stubs failing with
 # ERROR_CALL_NOT_IMPLEMENTED, each naming its increment). It only goes down.
-UNIMPLEMENTED_KERNEL32_EXPORTS = 9
+UNIMPLEMENTED_KERNEL32_EXPORTS = 1
 
 
 def test_served_kernel32_exports_only_go_down():

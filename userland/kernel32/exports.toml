@@ -344,7 +344,7 @@ scenarios = [
     "write_file_refuses_other_handles_and_overlapped_requests",
     "write_file_writes_to_the_console",
 ]
-note = "a console handle's bytes go to WriteConsoleA (its OVERLAPPED the reserved argument), as Windows 2000's WriteFile hands them; a file handle's write is NtWriteFile's, ERROR_CALL_NOT_IMPLEMENTED until then"
+note = "a console handle's bytes go to WriteConsoleA (its OVERLAPPED the reserved argument), as Windows 2000's WriteFile hands them; a file handle's is NtWriteFile's"
 
 [[export]]
 name = "CloseHandle"
@@ -382,7 +382,7 @@ args = ["handle hFile"]
 impl = { native = "FlushFileBuffers" }
 pinned_by = ["fswrite/write"]
 scenarios = ["flush_file_buffers_succeeds"]
-note = "a console handle's input buffer is flushed at the console server (FlushConsoleInputBuffer: an output handle is ERROR_INVALID_HANDLE), as Windows 2000's; a file handle's flush succeeds until NtFlushBuffersFile"
+note = "a console handle's input buffer is flushed at the console server (FlushConsoleInputBuffer: an output handle is ERROR_INVALID_HANDLE), as Windows 2000's; a file handle's is NtFlushBuffersFile's"
 
 [[export]]
 name = "GetLastError"
@@ -1512,7 +1512,6 @@ pinned_by = [
     "fswrite/write",
 ]
 scenarios = ["create_file_maps_its_arguments_onto_nt_create_file", "create_file_refuses_as_windows_2000_does", "truncate_existing_cuts_the_file_once_open"]
-note = "the read and open dispositions; CREATE_NEW and OPEN_ALWAYS on an existing file answer as Windows 2000's; making or overwriting a file is the write side's (ERROR_WRITE_PROTECT until then)"
 
 [[export]]
 name = "ReadFile"
@@ -1580,56 +1579,52 @@ pinned_by = ["memory/mapping"]
 name = "CopyFileA"
 group = "files"
 args = ["strA[260] lpExistingFileName", "strA[260] lpNewFileName", "bool bFailIfExists"]
-impl = { unimplemented = "B9: files: the FAT32 write side" }
-fails = "FALSE"
+impl = { native = "CopyFileA" }
 pinned_by = ["fswrite/names"]
 
 [[export]]
 name = "CreateDirectoryA"
 group = "files"
 args = ["strA[260] lpPathName", "ptr lpSecurityAttributes"]
-impl = { unimplemented = "B9: files: the FAT32 write side" }
-fails = "FALSE"
+impl = { native = "CreateDirectoryA" }
 pinned_by = ["fswrite/*"]
 
 [[export]]
 name = "DeleteFileA"
 group = "files"
 args = ["strA[260] lpFileName"]
-impl = { unimplemented = "B9: files: the FAT32 write side" }
-fails = "FALSE"
+impl = { native = "DeleteFileA" }
 pinned_by = ["fswrite/*"]
+scenarios = ["deletes_open_for_delete_then_dispose"]
 
 [[export]]
 name = "MoveFileA"
 group = "files"
 args = ["strA[260] lpExistingFileName", "strA[260] lpNewFileName"]
-impl = { unimplemented = "B9: files: the FAT32 write side" }
-fails = "FALSE"
+impl = { native = "MoveFileA" }
 pinned_by = ["fswrite/names"]
+scenarios = ["move_file_renames_to_the_nt_path"]
 
 [[export]]
 name = "RemoveDirectoryA"
 group = "files"
 args = ["strA[260] lpPathName"]
-impl = { unimplemented = "B9: files: the FAT32 write side" }
-fails = "FALSE"
+impl = { native = "RemoveDirectoryA" }
 pinned_by = ["fswrite/*"]
+scenarios = ["deletes_open_for_delete_then_dispose"]
 
 [[export]]
 name = "SetFileAttributesA"
 group = "files"
 args = ["strA[260] lpFileName", "u32 dwFileAttributes"]
-impl = { unimplemented = "B9: files: the FAT32 write side" }
-fails = "FALSE"
+impl = { native = "SetFileAttributesA" }
 pinned_by = ["fswrite/*"]
 
 [[export]]
 name = "SetFileTime"
 group = "files"
 args = ["handle hFile", "ptr lpCreationTime", "ptr lpLastAccessTime", "ptr lpLastWriteTime"]
-impl = { unimplemented = "B9: files: the FAT32 write side" }
-fails = "FALSE"
+impl = { native = "SetFileTime" }
 pinned_by = ["fswrite/times"]
 
 [[export]]
@@ -1753,8 +1748,7 @@ scenarios = ["the_current_directory_moves_and_reads_back", "a_directory_that_can
 name = "SetEndOfFile"
 group = "files"
 args = ["handle hFile"]
-impl = { unimplemented = "B9: files: the FAT32 write side" }
-fails = "FALSE"
+impl = { native = "SetEndOfFile" }
 pinned_by = ["fswrite/write"]
 
 [[export]]

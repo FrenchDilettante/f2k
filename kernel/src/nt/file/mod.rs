@@ -1,8 +1,7 @@
-//! The file services' read side: NtCreateFile and NtOpenFile, NtReadFile,
-//! NtQueryInformationFile and NtSetInformationFile (its position), NtQueryDirectoryFile,
+//! The file services: NtCreateFile and NtOpenFile, NtReadFile and NtWriteFile,
+//! NtFlushBuffersFile, NtQueryInformationFile and NtSetInformationFile, NtQueryDirectoryFile,
 //! NtQueryAttributesFile and NtQueryFullAttributesFile, and NtQueryVolumeInformationFile — FastFat's
-//! answers over the boot volume (`fs`), in NTSTATUS. NtWriteFile, NtFlushBuffersFile, the changing
-//! classes of NtSetInformationFile and the creating dispositions come with the FAT32 write side. kernel32's Win32 file calls are user-mode code
+//! answers over the boot volume (`fs`), in NTSTATUS. kernel32's Win32 file calls are user-mode code
 //! over these, as on Windows 2000: a Win32 error is the status's mapping, or one of kernel32's own
 //! special cases.
 //!
@@ -33,7 +32,7 @@ pub use create::{create_file, open_file};
 #[cfg(target_arch = "x86")]
 pub use directory::query_directory_file;
 #[cfg(target_arch = "x86")]
-pub use io::read_file;
+pub use io::{flush_buffers_file, read_file, write_file};
 #[cfg(target_arch = "x86")]
 pub use query::{query_attributes_file, query_full_attributes_file, query_information_file, set_information_file};
 #[cfg(target_arch = "x86")]
@@ -50,10 +49,12 @@ pub const STATUS_END_OF_FILE: Status = Status(0xC000_0011);
 pub const STATUS_ACCESS_DENIED: Status = Status(0xC000_0022);
 pub const STATUS_OBJECT_NAME_COLLISION: Status = Status(0xC000_0035);
 pub const STATUS_DELETE_PENDING: Status = Status(0xC000_0056);
+pub const STATUS_DISK_FULL: Status = Status(0xC000_007F);
 pub const STATUS_INSUFFICIENT_RESOURCES: Status = Status(0xC000_009A);
 pub const STATUS_FILE_IS_A_DIRECTORY: Status = Status(0xC000_00BA);
 pub const STATUS_DIRECTORY_NOT_EMPTY: Status = Status(0xC000_0101);
 pub const STATUS_NOT_A_DIRECTORY: Status = Status(0xC000_0103);
+pub const STATUS_CANNOT_DELETE: Status = Status(0xC000_0121);
 pub const STATUS_USER_MAPPED_FILE: Status = Status(0xC000_0243);
 /// The warnings a listing or a query answers with.
 pub const STATUS_BUFFER_OVERFLOW: u32 = 0x8000_0005;
@@ -160,8 +161,6 @@ mod common {
     /// made in.
     pub enum Found {
         Existing(File),
-        /// The directory a creation would make the name in (the write side's).
-        #[allow(dead_code)]
         Missing { parent: File },
     }
 
@@ -230,6 +229,8 @@ mod host {
         create_file(UserPtr<u32>, u32, UserAddr, UserAddr, UserPtr<u64>, u32, u32, u32, u32, UserAddr, u32);
         open_file(UserPtr<u32>, u32, UserAddr, UserAddr, u32, u32);
         read_file(Handle, Handle, UserAddr, UserAddr, UserAddr, UserAddr, u32, UserPtr<u64>, UserPtr<u32>);
+        write_file(Handle, Handle, UserAddr, UserAddr, UserAddr, UserAddr, u32, UserPtr<u64>, UserPtr<u32>);
+        flush_buffers_file(Handle, UserAddr);
         query_information_file(Handle, UserAddr, UserAddr, u32, u32);
         set_information_file(Handle, UserAddr, UserAddr, u32, u32);
         query_directory_file(Handle, Handle, UserAddr, UserAddr, UserAddr, UserAddr, u32, u32, u32, UserAddr, u32);

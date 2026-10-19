@@ -1,11 +1,22 @@
-//! A mounted FAT32 volume: the mount over a block device, its layout, and the FAT entry lookup —
-//! and the kernel's boot volume, mounted from the first registered partition.
+//! A mounted FAT32 volume: the mount over a block device, its layout, the FAT entry lookup and
+//! update, sector writes, and the volume's dirty mark — and the kernel's boot volume, mounted from
+//! the first registered partition.
+//!
+//! Every change goes through [`Volume::set_fat_entry`] or [`Volume::write_sector`], and the first
+//! one after the mount (or after [`Volume::mark_clean`]) is preceded by the dirty mark: FAT[1]'s
+//! [`CLEAN_SHUTDOWN`] bit cleared in every FAT copy, as FastFat marks a volume it is changing.
 
 use super::boot_sector::{validate, Refusal};
-use super::fat::{decode_entry, entry_position, FatCache, FatEntry};
+use super::fat::{decode_entry, entry_position, FatCache, FatEntry, ENTRY_MASK};
 use super::layout::Layout;
 use crate::block::BlockDevice;
 use crate::status::{nt_success, NtStatus, STATUS_UNRECOGNIZED_VOLUME};
+
+/// FAT[1]'s clean-shutdown bit: set while the volume on disk is consistent, clear (dirty) from a
+/// writer's first change until it marks the volume clean again — a volume found dirty gets a check
+/// at its next mount on Windows. Its neighbour, 0x0400_0000, is the hard-error bit (set: no error),
+/// which writes leave alone.
+pub const CLEAN_SHUTDOWN: u32 = 0x0800_0000;
 
 /// Why a device did not mount.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -33,6 +44,10 @@ pub struct Volume {
     device: &'static dyn BlockDevice,
     layout: Layout,
     cache: FatCache,
+    /// Where the next free-cluster search starts (an allocation's hint).
+    next_free: u32,
+    /// Whether this mount has marked the volume dirty since it was mounted or last marked clean.
+    dirty: bool,
 }
 
 impl Volume {
@@ -53,6 +68,8 @@ impl Volume {
             device,
             layout,
             cache: FatCache::new(),
+            next_free: 2,
+            dirty: false,
         })
     }
 
@@ -86,6 +103,93 @@ impl Volume {
             data[offset + 3],
         ]);
         Ok(decode_entry(raw, self.layout.max_cluster()))
+    }
+
+    /// How many FAT copies the volume keeps (every one is written).
+    pub fn fat_copies(&self) -> u32 {
+        ((self.layout.data_start - self.layout.fat_start) / self.layout.sectors_per_fat as u64) as u32
+    }
+
+    /// Set `cluster`'s FAT entry to `value` (its low 28 bits; the reserved high bits stay), in every
+    /// FAT copy and the cache.
+    pub fn set_fat_entry(&mut self, cluster: u32, value: u32) -> Result<(), NtStatus> {
+        assert!(
+            self.layout.is_data_cluster(cluster),
+            "cluster {} is not a data cluster of the volume",
+            cluster
+        );
+        self.changing()?;
+        let (sector, offset) = entry_position(cluster);
+        self.patch_fat(sector, offset, |old| old & !ENTRY_MASK | value & ENTRY_MASK)
+    }
+
+    /// Rewrite the raw 32-bit FAT entry at `offset` of FAT sector `sector` through `update`, in
+    /// every FAT copy and the cache (nothing is written when it stays the same).
+    fn patch_fat(
+        &mut self,
+        sector: u64,
+        offset: usize,
+        update: impl FnOnce(u32) -> u32,
+    ) -> Result<(), NtStatus> {
+        let lba = self.layout.fat_start + sector;
+        let mut data = *self.cache.sector(self.device, lba)?;
+        let old = u32::from_le_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]]);
+        let raw = update(old);
+        if raw == old {
+            return Ok(());
+        }
+        data[offset..offset + 4].copy_from_slice(&raw.to_le_bytes());
+        for copy in 0..self.fat_copies() as u64 {
+            self.write_raw(lba + copy * self.layout.sectors_per_fat as u64, &data)?;
+        }
+        self.cache.store(lba, &data);
+        Ok(())
+    }
+
+    /// Before a change: the dirty mark, when this mount has not made it yet.
+    fn changing(&mut self) -> Result<(), NtStatus> {
+        if !self.dirty {
+            self.patch_fat(0, 4, |old| old & !CLEAN_SHUTDOWN)?;
+            self.dirty = true;
+        }
+        Ok(())
+    }
+
+    /// Mark the volume clean (FAT[1]'s [`CLEAN_SHUTDOWN`] bit set again), once its changes are all
+    /// on disk; the next change marks it dirty first. Nothing calls it yet: F2K has no unmount or
+    /// flush of its own, so a volume it changed stays marked dirty.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn mark_clean(&mut self) -> Result<(), NtStatus> {
+        if self.dirty {
+            self.patch_fat(0, 4, |old| old | CLEAN_SHUTDOWN)?;
+            self.dirty = false;
+        }
+        Ok(())
+    }
+
+    /// Read one sector of the volume.
+    pub fn read_sector(&self, lba: u64, data: &mut [u8; 512]) -> Result<(), NtStatus> {
+        let status = self.device.read(lba, data);
+        if nt_success(status) { Ok(()) } else { Err(status) }
+    }
+
+    /// Write one sector of the volume (a change: the dirty mark goes first).
+    pub fn write_sector(&mut self, lba: u64, data: &[u8; 512]) -> Result<(), NtStatus> {
+        self.changing()?;
+        self.write_raw(lba, data)
+    }
+
+    fn write_raw(&self, lba: u64, data: &[u8; 512]) -> Result<(), NtStatus> {
+        let status = self.device.write(lba, data);
+        if nt_success(status) { Ok(()) } else { Err(status) }
+    }
+
+    /// Where the next free-cluster search starts, and its update.
+    pub fn next_free(&self) -> u32 {
+        self.next_free
+    }
+    pub fn set_next_free(&mut self, cluster: u32) {
+        self.next_free = cluster;
     }
 }
 
@@ -147,7 +251,7 @@ pub use target::{boot_mount, mount_boot_volume, with_boot_volume};
 
 #[cfg(test)]
 mod tests {
-    use super::super::fixtures::{built_layout, built_volume, Counting, BUILT};
+    use super::super::fixtures::{built_layout, built_volume, Counting, Crafted, Crashing, BUILT};
     use super::*;
     use crate::block::memory::MemoryDisk;
     use crate::status::STATUS_IO_DEVICE_ERROR;
@@ -241,6 +345,42 @@ mod tests {
         assert_eq!(volume.fat_entry(3), Err(STATUS_IO_DEVICE_ERROR));
         device.fail(false);
         assert_eq!(volume.fat_entry(3), Ok(FatEntry::Next(4)));
+    }
+
+    /// FAT[1]'s clean-shutdown bit. The volume is marked dirty before its first change
+    /// after the mount — a crash after one write leaves the mark, not the change — and once: later
+    /// changes are their own writes alone, and a FAT change in FAT[1]'s own sector keeps the mark.
+    /// Marking it clean sets the bit back, and the next change clears it again. The hard-error bit
+    /// stays set (no error) throughout.
+    #[test]
+    fn a_change_marks_the_volume_dirty_first() {
+        let crashing = Crashing::over(Crafted::new(1, 8).writable());
+        let mut volume = Volume::mount(crashing).unwrap();
+        let fat1 = || {
+            let image = crashing.image().image();
+            u32::from_le_bytes([image[516], image[517], image[518], image[519]])
+        };
+        let clean = |raw: u32| raw & CLEAN_SHUTDOWN != 0;
+        assert!(clean(fat1()), "mounted clean");
+        let data = volume.layout().cluster_lba(3);
+        crashing.crash_after(1);
+        volume.write_sector(data, &[0xAB; 512]).unwrap();
+        assert!(!clean(fat1()), "the mark came first");
+        assert_eq!(crashing.image().image()[data as usize * 512], 0, "and the change after it");
+
+        crashing.crash_after(u32::MAX);
+        let before = crashing.written();
+        volume.write_sector(data, &[0xAB; 512]).unwrap();
+        volume.set_fat_entry(3, 0x0FFF_FFFF).unwrap();
+        assert_eq!(crashing.written() - before, 2, "no second mark");
+        assert!(!clean(fat1()));
+        assert_eq!(volume.fat_entry(3), Ok(FatEntry::EndOfChain));
+
+        volume.mark_clean().unwrap();
+        assert!(clean(fat1()));
+        volume.set_fat_entry(4, 0x0FFF_FFFF).unwrap();
+        assert!(!clean(fat1()), "dirty again");
+        assert_eq!(fat1() & 0x0400_0000, 0x0400_0000, "no hard error");
     }
 
     #[test]

@@ -47,9 +47,7 @@ impl FileName {
         self.path().split(|&byte| byte == SEPARATOR as u8).filter(|component| !component.is_empty())
     }
 
-    /// The last component (empty for where the name starts): a creation's or a rename's name (the
-    /// write side's).
-    #[allow(dead_code)]
+    /// The last component (empty for where the name starts).
     pub fn last(&self) -> &[u8] {
         let path = self.path();
         path.iter().rposition(|&byte| byte == SEPARATOR as u8).map_or(path, |at| &path[at + 1..])

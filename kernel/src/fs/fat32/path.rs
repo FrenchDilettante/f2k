@@ -52,6 +52,15 @@ pub fn oem_upper(byte: u8) -> Option<u8> {
     encode_unit(CodePage::Oem, unit, true).filter(|&oem| decode_byte(CodePage::Oem, oem) == unit)
 }
 
+/// A code page 1252 byte's upper case in code page 437 the way an alias takes it: exactly, or by
+/// best fit (a Latin letter's base letter); none when 437 has nothing for it.
+pub fn oem_upper_fit(byte: u8) -> Option<u8> {
+    if byte.is_ascii() {
+        return Some(byte.to_ascii_uppercase());
+    }
+    encode_unit(CodePage::Oem, map_case(MB_TO_WC[byte as usize], true), true)
+}
+
 /// A stored code page 437 byte in code page 1252: exactly, by best fit, or `?`.
 pub fn oem_to_ansi(byte: u8) -> u8 {
     if byte.is_ascii() {

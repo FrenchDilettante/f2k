@@ -42,6 +42,7 @@ mod target {
     use crate::hw::ide::identify::{self, Identity};
     use crate::hw::ide::latch::Completion;
     use crate::hw::ide::read;
+    use crate::hw::ide::write;
     use crate::hw::ide::regs::{PRIMARY_BASE, PRIMARY_CONTROL, PRIMARY_VECTOR, SECTOR_SIZE};
     use crate::hw::portio::Ports;
     use crate::interrupt::dpc::{self, Dpc};
@@ -224,6 +225,29 @@ mod target {
         status
     }
 
+    /// Write `buffer.len() / 512` contiguous sectors starting at `lba` from `buffer`, blocking until
+    /// the transfer completes (the read's statuses).
+    #[must_use]
+    pub fn write(lba: u32, buffer: &[u8]) -> NtStatus {
+        assert!(
+            !IN_FLIGHT.swap(true, Ordering::SeqCst),
+            "overlapping disk requests: the driver has one request slot"
+        );
+        // SAFETY: as the read's.
+        let status = unsafe {
+            write::write(
+                &mut *addr_of_mut!(CHANNEL),
+                &LATCH,
+                &mut EventWait,
+                *addr_of_mut!(CAPACITY),
+                lba,
+                buffer,
+            )
+        };
+        IN_FLIGHT.store(false, Ordering::SeqCst);
+        status
+    }
+
     /// The disk's identity, if bring-up found a usable disk.
     pub fn identity() -> Option<Identity> {
         // SAFETY: written once at bring-up.
@@ -259,6 +283,13 @@ mod target {
             }
             // The run is on the disk, whose LBA28 capacity fits in 32 bits.
             self.lock.with(|| read(lba as u32, buffer))
+        }
+
+        fn write(&self, lba: u64, buffer: &[u8]) -> NtStatus {
+            if let Err(status) = check_request(&self.info(), lba, buffer) {
+                return status;
+            }
+            self.lock.with(|| write(lba as u32, buffer))
         }
     }
 

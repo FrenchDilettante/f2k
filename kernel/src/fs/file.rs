@@ -364,8 +364,7 @@ impl FileRecords {
     }
 
     /// The entry `old` named changed into `new` (a change made by path, or a rename): an open
-    /// record of it follows. The write side will add one.
-    #[cfg_attr(target_arch = "x86", allow(dead_code))]
+    /// record of it follows.
     pub fn refresh(&mut self, old: &File, new: &File) {
         if let Some(index) = self.find(old) {
             self.get_mut(index).file = *new;
@@ -373,9 +372,7 @@ impl FileRecords {
     }
 
     /// Set or clear the pending delete of the open file at `index` (FileDispositionInformation):
-    /// it goes with its last open's cleanup. The write side will own it (its disposition and its
-    /// deletion at the last cleanup).
-    #[cfg_attr(target_arch = "x86", allow(dead_code))]
+    /// it goes with its last open's cleanup.
     pub fn set_delete_pending(&mut self, index: u16, pending: bool) {
         self.get_mut(index).delete_pending = pending;
     }
@@ -486,6 +483,20 @@ mod tests {
         assert_eq!(records.open(entry(1), ACCESS_READ, 0), Err(OpenError::Sharing), "exclusive");
         assert_eq!(records.open(entry(1), ACCESS_WRITE, SHARE_ALL), Err(OpenError::Sharing), "not shared");
         assert!(records.open(entry(9), ACCESS_READ, 0).is_ok(), "another entry");
+    }
+
+    /// CopyFileA onto the source's own entry under another spelling. The target's open (for
+    /// writing and delete, sharing nothing) finds the source's record — the same entry, however
+    /// its lookup filled the rest — and is refused by the source's open (reading, sharing reads)
+    /// before the overwrite can cut the file: ERROR_SHARING_VIOLATION.
+    #[test]
+    fn a_copy_onto_its_own_source_is_a_sharing_violation() {
+        let mut records = FileRecords::empty();
+        let source = records.open(entry(1), ACCESS_READ, ACCESS_READ).unwrap();
+        let mut spelled = entry(1);
+        spelled.size = 0;
+        assert_eq!(records.find(&spelled), Some(source), "the same entry");
+        assert_eq!(records.open(spelled, ACCESS_WRITE | ACCESS_DELETE, 0), Err(OpenError::Sharing));
     }
 
     /// An open asking no data access (attributes only) neither checks nor counts, whichever

@@ -1,12 +1,18 @@
 //! A simulated IDE channel with one master disk, for the host tests: the command-block register
-//! file, the INTRQ line, and the PIO data-in state machine as the hardware contract describes them.
+//! file, the INTRQ line, and the PIO data-in and data-out state machines as the hardware contract
+//! describes them.
 //!
 //! INTRQ: a command write deasserts it, a status-register read acknowledges it, an alternate-status
 //! read leaves it alone, and `nIEN` keeps a completion from asserting it. A data-in command
 //! asserts it when each sector's data is ready; draining a sector's last word starts the next
-//! sector, and the final drain asserts nothing. A data-port read with DRQ clear returns 0. While
-//! BUSY or DRQ is set, register and command writes are ignored. The shared test helpers (a channel
-//! over the simulator, the expected sector contents, the access-log views) are at the end.
+//! sector, and the final drain asserts nothing. A data-out command asks for its first sector with
+//! DRQ and no interrupt; filling a sector's last word makes the device busy writing it, and it
+//! asserts INTRQ when the sector is taken (DRQ set again while sectors remain). A data-port read
+//! with DRQ clear returns 0, a data-port write is dropped. While BUSY or DRQ is set, register and
+//! command writes are ignored. A real device may take up to 400 ns after a command write to show
+//! BUSY: `command_latency` models it as status reads that still return the status from before the
+//! command. The shared test helpers (a channel over the simulator, the expected sector contents,
+//! the access-log views) are at the end.
 
 use super::channel::Channel;
 use super::latch::{Completion, Latch};
@@ -35,8 +41,12 @@ pub struct SimChannel {
     pub intrq: bool,
     /// How many times a completion asserted INTRQ.
     pub raised: u32,
-    /// Alternate-status reads a sector's data stays BUSY before it is ready; 0 is immediate.
+    /// Alternate-status reads a sector's data stays BUSY before it is ready (or, writing, before
+    /// the sector is taken); 0 is immediate.
     pub busy_reads: u32,
+    /// Status reads after a command write that still return the status from before it (the up to
+    /// 400 ns a device takes to post BUSY); 0 is immediate.
+    pub command_latency: u32,
     /// Assert INTRQ after the final sector's drain as well (a device that interrupts at
     /// completion): the driver must still end with the line acknowledged.
     pub interrupt_after_last: bool,
@@ -46,7 +56,13 @@ pub struct SimChannel {
     next_lba: u64,
     remaining: u32,
     busy_left: u32,
+    /// Whether the command in progress is a data-out one (its BUSY phases end in a sector taken).
+    data_out: bool,
+    /// The status reads still in the command latency, and the status they return.
+    latency_left: u32,
+    stale: u8,
 }
+
 
 impl SimChannel {
     /// A channel whose master is a disk of `sectors` sectors, sector `n` filled with the byte
@@ -77,6 +93,7 @@ impl SimChannel {
             intrq: false,
             raised: 0,
             busy_reads: 0,
+            command_latency: 0,
             interrupt_after_last: false,
             log: Vec::new(),
             buffer: Vec::new(),
@@ -84,6 +101,9 @@ impl SimChannel {
             next_lba: 0,
             remaining: 0,
             busy_left: 0,
+            data_out: false,
+            latency_left: 0,
+            stale: 0,
         }
     }
 
@@ -98,12 +118,20 @@ impl SimChannel {
         self.intrq && self.control & CONTROL_NIEN == 0
     }
 
-    /// Let a pending BUSY phase finish at once (the passage of time the host has no clock for).
+    /// Let a pending command latency and BUSY phase finish at once (the passage of time the host
+    /// has no clock for).
     pub fn settle_busy(&mut self) {
+        self.latency_left = 0;
         if self.status & BUSY != 0 {
             self.busy_left = 0;
-            self.data_ready();
+            self.end_busy();
         }
+    }
+
+    /// The disk's sectors `lba..lba + sectors`.
+    pub fn sectors_at(&self, lba: u32, sectors: u32) -> &[u8] {
+        let start = lba as usize * SECTOR_SIZE;
+        &self.disk.as_ref().unwrap()[start..start + sectors as usize * SECTOR_SIZE]
     }
 
     /// The command writes in the log, in order.
@@ -125,6 +153,9 @@ impl SimChannel {
     fn execute(&mut self, command: u8) {
         self.intrq = false;
         self.error = 0;
+        self.stale = self.status;
+        self.latency_left = self.command_latency;
+        self.data_out = command == WRITE_SECTORS;
         match command {
             IDENTIFY_DEVICE => {
                 self.buffer = identify_block(self.sectors() as u32).to_vec();
@@ -133,7 +164,7 @@ impl SimChannel {
                 self.status = DRDY | SEEK | DRQ;
                 self.raise();
             }
-            READ_SECTORS if self.device & 0x40 != 0 => {
+            READ_SECTORS | WRITE_SECTORS if self.device & 0x40 != 0 => {
                 let lba = (self.lba[0] as u64)
                     | (self.lba[1] as u64) << 8
                     | (self.lba[2] as u64) << 16
@@ -145,9 +176,51 @@ impl SimChannel {
                 }
                 self.next_lba = lba;
                 self.remaining = count;
-                self.start_sector();
+                if command == READ_SECTORS {
+                    self.start_sector();
+                } else {
+                    self.request_sector();
+                }
             }
             _ => self.abort(),
+        }
+    }
+
+    /// Ask for the next data-out sector.
+    fn request_sector(&mut self) {
+        self.buffer.clear();
+        self.position = 0;
+        self.status = DRDY | SEEK | DRQ;
+    }
+
+    /// A data-out sector's last word: BUSY writing it for the configured reads, then taken.
+    fn filled(&mut self) {
+        self.status = DRDY | SEEK | BUSY;
+        self.busy_left = self.busy_reads;
+        if self.busy_left == 0 {
+            self.end_busy();
+        }
+    }
+
+    fn sector_taken(&mut self) {
+        let start = self.next_lba as usize * SECTOR_SIZE;
+        let sector = core::mem::take(&mut self.buffer);
+        self.disk.as_mut().unwrap()[start..start + SECTOR_SIZE].copy_from_slice(&sector);
+        self.next_lba += 1;
+        self.remaining -= 1;
+        if self.remaining > 0 {
+            self.request_sector();
+        } else {
+            self.status = DRDY | SEEK;
+        }
+        self.raise();
+    }
+
+    fn end_busy(&mut self) {
+        if self.data_out {
+            self.sector_taken();
+        } else {
+            self.data_ready();
         }
     }
 
@@ -213,12 +286,15 @@ impl Io for SimChannel {
     fn read(&mut self, port: u16) -> u8 {
         let value = if self.disk.is_none() {
             0
+        } else if self.latency_left > 0 && (port == PRIMARY_CONTROL || port == PRIMARY_BASE + STATUS) {
+            self.latency_left -= 1;
+            self.stale
         } else if port == PRIMARY_CONTROL {
             if self.busy_left > 0 {
                 self.busy_left -= 1;
                 let status = self.status;
                 if self.busy_left == 0 {
-                    self.data_ready();
+                    self.end_busy();
                 }
                 status
             } else {
@@ -241,7 +317,7 @@ impl Io for SimChannel {
 
     fn read_word(&mut self, port: u16) -> u16 {
         self.log.push(Access::Word(port));
-        if port != PRIMARY_BASE + DATA || self.status & DRQ == 0 {
+        if port != PRIMARY_BASE + DATA || self.status & DRQ == 0 || self.data_out {
             return 0;
         }
         let word = u16::from_le_bytes([self.buffer[self.position], self.buffer[self.position + 1]]);
@@ -250,6 +326,17 @@ impl Io for SimChannel {
             self.drained();
         }
         word
+    }
+
+    fn out_word(&mut self, port: u16, word: u16) {
+        self.log.push(Access::Word(port));
+        if port != PRIMARY_BASE + DATA || self.status & DRQ == 0 || !self.data_out {
+            return;
+        }
+        self.buffer.extend_from_slice(&word.to_le_bytes());
+        if self.buffer.len() == SECTOR_SIZE {
+            self.filled();
+        }
     }
 }
 

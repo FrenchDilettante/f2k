@@ -1,7 +1,8 @@
-//! The calls on a file's name: its attributes (NtQueryAttributesFile, NtQueryFullAttributesFile),
-//! and the full and short forms of a path — as Windows 2000's kernel32 makes them. Setting the
-//! attributes, a delete, a directory's removal or creation and a rename change the volume: they come
-//! with the write side.
+//! The calls on a file's name: its attributes (NtQueryAttributesFile, NtQueryFullAttributesFile,
+//! FileBasicInformation), its delete and a directory's removal (an open for DELETE, then
+//! FileDispositionInformation: the file goes with the open's close), a rename
+//! (FileRenameInformation), a new directory (NtCreateFile), and the full and short forms of a path —
+//! as Windows 2000's kernel32 makes them.
 
 use rtl::status::nt_success;
 
@@ -9,6 +10,10 @@ use super::find::{find_close, find_first_w, FindDataW};
 use super::*;
 use crate::base::set_last_nt_error;
 
+/// The attributes SetFileAttributes may set (FILE_ATTRIBUTE_VALID_SET_FLAGS), and the one it adds
+/// so that none still names a change.
+const FILE_ATTRIBUTE_VALID_SET_FLAGS: u32 = 0x31A7;
+const FILE_ATTRIBUTE_NORMAL: u32 = 0x80;
 const INVALID_FILE_ATTRIBUTES: u32 = 0xFFFF_FFFF;
 
 /// A name's NT path; none with ERROR_PATH_NOT_FOUND when ntdll cannot make it.
@@ -18,6 +23,16 @@ fn nt_path(name: &Wide) -> Option<NtPath> {
         set_last_error(ERROR_PATH_NOT_FOUND);
     }
     path
+}
+
+/// A call that answers TRUE, or FALSE with the status's error.
+fn succeeded(status: u32) -> u32 {
+    if nt_success(status) {
+        1
+    } else {
+        set_last_nt_error(status);
+        0
+    }
 }
 
 /// GetFileAttributesA: the file's or directory's attributes (NtQueryAttributesFile);
@@ -75,6 +90,152 @@ pub unsafe extern "system" fn get_file_attributes_ex_a(name: *const u8, level: u
     // SAFETY: the caller's structure.
     unsafe { info.copy_from_nonoverlapping(data.as_ptr(), data.len()) };
     1
+}
+
+/// SetFileAttributesA: an open for FILE_WRITE_ATTRIBUTES, then the attributes (the settable ones,
+/// with FILE_ATTRIBUTE_NORMAL so that none still sets) in FileBasicInformation, its times zero
+/// (left as they are).
+///
+/// # Safety
+///
+/// `name` is a NUL-terminated string.
+#[unsafe(export_name = "f2k_export_SetFileAttributesA")]
+pub unsafe extern "system" fn set_file_attributes_a(name: *const u8, attributes: u32) -> u32 {
+    // SAFETY: the caller's string.
+    let Some(path) = (unsafe { widen(name) }).as_ref().and_then(nt_path) else {
+        return 0;
+    };
+    let options = FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_FOR_BACKUP_INTENT | FILE_OPEN_REPARSE_POINT;
+    let handle = match open(&path, FILE_WRITE_ATTRIBUTES | SYNCHRONIZE, FILE_SHARE_ALL, options) {
+        Ok(handle) => handle,
+        Err(status) => return succeeded(status),
+    };
+    let mut basic = [0u8; 40];
+    basic[32..36].copy_from_slice(&((attributes & FILE_ATTRIBUTE_VALID_SET_FLAGS) | FILE_ATTRIBUTE_NORMAL).to_le_bytes());
+    let status = set(handle, FILE_BASIC_INFORMATION, &basic);
+    close(handle);
+    succeeded(status)
+}
+
+/// The delete DeleteFileA and RemoveDirectoryA share: the open for DELETE (sharing everything),
+/// then FileDispositionInformation; the open's close deletes the file, or leaves it to the last
+/// open's when others hold it.
+fn delete(name: *const u8, access: u32, options: u32) -> u32 {
+    // SAFETY: the caller's string.
+    let Some(path) = (unsafe { widen(name) }).as_ref().and_then(nt_path) else {
+        return 0;
+    };
+    let handle = match open(&path, access, FILE_SHARE_ALL, options | FILE_OPEN_FOR_BACKUP_INTENT | FILE_OPEN_REPARSE_POINT) {
+        Ok(handle) => handle,
+        Err(status) => return succeeded(status),
+    };
+    let status = set(handle, FILE_DISPOSITION_INFORMATION, &[1]);
+    close(handle);
+    succeeded(status)
+}
+
+/// DeleteFileA: a file's delete (a directory refuses the open, STATUS_FILE_IS_A_DIRECTORY; a
+/// read-only file the disposition, STATUS_CANNOT_DELETE).
+///
+/// # Safety
+///
+/// `name` is a NUL-terminated string.
+#[unsafe(export_name = "f2k_export_DeleteFileA")]
+pub unsafe extern "system" fn delete_file_a(name: *const u8) -> u32 {
+    delete(name, DELETE, FILE_NON_DIRECTORY_FILE)
+}
+
+/// RemoveDirectoryA: a directory's delete (a file refuses the open, STATUS_NOT_A_DIRECTORY; a
+/// directory with entries the disposition, STATUS_DIRECTORY_NOT_EMPTY).
+///
+/// # Safety
+///
+/// `name` is a NUL-terminated string.
+#[unsafe(export_name = "f2k_export_RemoveDirectoryA")]
+pub unsafe extern "system" fn remove_directory_a(name: *const u8) -> u32 {
+    delete(name, DELETE | SYNCHRONIZE, FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT)
+}
+
+/// MoveFileA: the source's open for DELETE (sharing reads and writes), then its rename to the new
+/// name's NT path (FileRenameInformation, an existing name not replaced:
+/// STATUS_OBJECT_NAME_COLLISION).
+///
+/// # Safety
+///
+/// Both names are NUL-terminated strings.
+#[unsafe(export_name = "f2k_export_MoveFileA")]
+pub unsafe extern "system" fn move_file_a(from: *const u8, to: *const u8) -> u32 {
+    // SAFETY: the caller's strings.
+    let (Some(from), Some(to)) = (unsafe { widen(from) }, unsafe { widen(to) }) else {
+        return 0;
+    };
+    let Some(source) = nt_path(&from) else {
+        return 0;
+    };
+    let options = FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_FOR_BACKUP_INTENT | FILE_OPEN_REPARSE_POINT;
+    let handle = match open(&source, DELETE | SYNCHRONIZE, FILE_SHARE_READ | FILE_SHARE_WRITE, options) {
+        Ok(handle) => handle,
+        Err(status) => return succeeded(status),
+    };
+    let Some(target) = nt_path(&to) else {
+        close(handle);
+        return 0;
+    };
+    let units = target.units();
+    let mut rename = [0u8; 12 + 2 * (MAX_PATH + 8)];
+    rename[8..12].copy_from_slice(&((2 * units.len()) as u32).to_le_bytes());
+    for (at, &unit) in units.iter().enumerate() {
+        rename[12 + 2 * at..14 + 2 * at].copy_from_slice(&unit.to_le_bytes());
+    }
+    let status = set(handle, FILE_RENAME_INFORMATION, &rename[..12 + 2 * units.len()]);
+    close(handle);
+    succeeded(status)
+}
+
+/// CreateDirectoryA: a new directory (NtCreateFile, FILE_CREATE): an existing name is
+/// STATUS_OBJECT_NAME_COLLISION (ERROR_ALREADY_EXISTS). A directory whose full path leaves no room
+/// for an 8.3 name inside MAX_PATH is ERROR_FILENAME_EXCED_RANGE (so `del *.*` can always empty
+/// it, as Windows 2000's reason runs); the security attributes are not consulted.
+///
+/// # Safety
+///
+/// `name` is a NUL-terminated string; `security` is null or a SECURITY_ATTRIBUTES.
+#[unsafe(export_name = "f2k_export_CreateDirectoryA")]
+pub unsafe extern "system" fn create_directory_a(name: *const u8, security: *const SecurityAttributes) -> u32 {
+    // SAFETY: the caller's string.
+    let Some(path) = (unsafe { widen(name) }).as_ref().and_then(nt_path) else {
+        return 0;
+    };
+    // The full DOS path is the NT one less its `\??\`; it and an 8.3 name must fit MAX_PATH.
+    let full = path.units().len().saturating_sub(4);
+    if full + 1 + 12 > MAX_PATH {
+        set_last_error(ERROR_FILENAME_EXCED_RANGE);
+        return 0;
+    }
+    // SAFETY: the caller's structure, when given.
+    let attributes = path.attributes(unsafe { inherits(security) });
+    let mut handle = 0;
+    let mut io_status = IoStatus::default();
+    // SAFETY: ntdll's export, over the attributes above.
+    let status = unsafe {
+        nt::NtCreateFile(
+            &mut handle,
+            FILE_LIST_DIRECTORY | SYNCHRONIZE,
+            &attributes,
+            &mut io_status,
+            core::ptr::null(),
+            FILE_ATTRIBUTE_NORMAL,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            FILE_CREATE,
+            FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_FOR_BACKUP_INTENT,
+            core::ptr::null(),
+            0,
+        )
+    };
+    if nt_success(status) {
+        close(handle);
+    }
+    succeeded(status)
 }
 
 /// GetFullPathNameA: the path made absolute and folded (RtlGetFullPathName_U; no lookup), its

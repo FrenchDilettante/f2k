@@ -1,11 +1,6 @@
 //! NtCreateFile and NtOpenFile: the I/O manager's checks of the arguments, then FastFat's create —
-//! the walk, the disposition's decision against what the name names, and the open (its share
-//! check).
-//!
-//! The volume is read-only until the FAT32 write side: a disposition that would make a missing
-//! name or overwrite an existing file is refused with STATUS_MEDIA_WRITE_PROTECTED (the platform's
-//! answer for a volume that takes no writes, ERROR_WRITE_PROTECT); every disposition that only
-//! opens is served.
+//! the walk, the disposition's decision against what the name names, a new file or directory made,
+//! the open (its share check), and an overwrite's truncation.
 
 use super::super::call::{NtCall, NtResult, Status, UserAddr, UserPtr, STATUS_INVALID_PARAMETER, STATUS_SUCCESS};
 use super::common::{complete, deliver, probe, target, walk, Found, Target};
@@ -17,10 +12,11 @@ use crate::fs::fat32::dir::is_empty;
 use crate::fs::fat32::dirent::{ATTR_HIDDEN, ATTR_READ_ONLY, ATTR_SYSTEM};
 use crate::fs::fat32::lookup::File;
 use crate::fs::fat32::volume::Volume;
+use crate::fs::fat32::write;
 use crate::fs::file::{records, rights};
-use crate::fs::io;
+use crate::fs::io::{self, ATTRIBUTE_ARCHIVE, SETTABLE_ATTRIBUTES};
 use crate::nt::attributes::{STATUS_OBJECT_NAME_INVALID, STATUS_OBJECT_NAME_NOT_FOUND};
-use crate::status::{NtStatus, STATUS_MEDIA_WRITE_PROTECTED};
+use crate::status::NtStatus;
 
 /// The dispositions.
 const FILE_SUPERSEDE: u32 = 0;
@@ -30,8 +26,11 @@ const FILE_OPEN_IF: u32 = 3;
 const FILE_OVERWRITE: u32 = 4;
 const FILE_OVERWRITE_IF: u32 = 5;
 
-/// The IO_STATUS_BLOCK's Information an open answers with (the read side's opens only open).
+/// The IO_STATUS_BLOCK's Information an open answers with.
+const FILE_SUPERSEDED: u32 = 0;
 const FILE_OPENED: u32 = 1;
+const FILE_CREATED: u32 = 2;
+const FILE_OVERWRITTEN: u32 = 3;
 
 /// The create options F2K reads, and every one the platform defines.
 const FILE_DIRECTORY_FILE: u32 = 0x1;
@@ -54,7 +53,6 @@ struct Request {
     granted: u32,
     disposition: u32,
     options: u32,
-    /// The attributes asked for (an overwrite's; a creation's, the write side's).
     attributes: u32,
 }
 
@@ -130,33 +128,47 @@ fn existing(volume: &mut Volume, target: &Target, file: File, request: &Request)
     if !keeps(ATTR_HIDDEN) || !keeps(ATTR_SYSTEM) {
         return Err(STATUS_ACCESS_DENIED.0 as NtStatus);
     }
-    // The overwrite's Information (FILE_SUPERSEDED or FILE_OVERWRITTEN) is the write side's: it never succeeds
-    // here (see `overwrite`).
-    Ok((file, FILE_OPENED, true, granted))
+    let information = if request.disposition == FILE_SUPERSEDE { FILE_SUPERSEDED } else { FILE_OVERWRITTEN };
+    Ok((file, information, true, granted))
 }
 
-/// Overwrite the open file at `record`: a mapped file is not cut (STATUS_USER_MAPPED_FILE); any
-/// other is, with the FAT32 write side — until then the volume takes no writes
-/// (STATUS_MEDIA_WRITE_PROTECTED).
-fn overwrite(record: u16) -> NtStatus {
-    if io::mapped(record) && records().get(record).file.size > 0 {
-        return STATUS_USER_MAPPED_FILE.0 as NtStatus;
-    }
-    STATUS_MEDIA_WRITE_PROTECTED
-}
-
-/// The decision on a missing name: an opening disposition finds nothing
-/// (STATUS_OBJECT_NAME_NOT_FOUND); a creating one (FILE_CREATE, FILE_OPEN_IF, FILE_OVERWRITE_IF,
-/// FILE_SUPERSEDE) would make the file or directory, and the volume is read-only until the write side
-/// (STATUS_MEDIA_WRITE_PROTECTED; a file named with a trailing separator is no name first).
-fn missing(target: &Target, request: &Request) -> NtStatus {
+/// The decision on a missing name: made (a directory when asked, else a file with the attributes
+/// asked for and the archive bit, stamped now) when the disposition creates.
+fn missing(volume: &mut Volume, target: &Target, parent: File, request: &Request) -> Result<File, NtStatus> {
     if !matches!(request.disposition, FILE_CREATE | FILE_OPEN_IF | FILE_OVERWRITE_IF | FILE_SUPERSEDE) {
-        return STATUS_OBJECT_NAME_NOT_FOUND.0 as NtStatus;
+        return Err(STATUS_OBJECT_NAME_NOT_FOUND.0 as NtStatus);
     }
-    if request.options & FILE_DIRECTORY_FILE == 0 && target.name.trailing {
-        return STATUS_OBJECT_NAME_INVALID.0 as NtStatus;
+    let name = target.name.last();
+    if request.options & FILE_DIRECTORY_FILE != 0 {
+        return write::make_directory(volume, parent.first_cluster, name, io::now());
     }
-    STATUS_MEDIA_WRITE_PROTECTED
+    if target.name.trailing {
+        return Err(STATUS_OBJECT_NAME_INVALID.0 as NtStatus);
+    }
+    let mut file = File::plain(0, 0, false);
+    file.attributes = request.attributes as u8 & SETTABLE_ATTRIBUTES | ATTRIBUTE_ARCHIVE;
+    file.times = io::now();
+    write::create_entry(volume, parent.first_cluster, name, &mut file)?;
+    Ok(file)
+}
+
+/// Overwrite the open file at `record`: cut to nothing, the attributes asked for (and the archive
+/// bit) in place of its own, its last write now. A mapped file is not cut
+/// (STATUS_USER_MAPPED_FILE).
+fn overwrite(record: u16, attributes: u32) -> Result<(), NtStatus> {
+    if io::mapped(record) && records().get(record).file.size > 0 {
+        return Err(STATUS_USER_MAPPED_FILE.0 as NtStatus);
+    }
+    io::with_volume(|volume| {
+        let mut file = records().get(record).file;
+        file.attributes = attributes as u8 & SETTABLE_ATTRIBUTES | ATTRIBUTE_ARCHIVE;
+        let stamp = io::now();
+        file.times.write_date = stamp.write_date;
+        file.times.write_time = stamp.write_time;
+        write::set_size(volume, &mut file, 0)?;
+        records().get_mut(record).file = file;
+        Ok(())
+    })
 }
 
 /// The create both services share.
@@ -176,8 +188,8 @@ fn create(
     probe(slot.addr(), 4)?;
     probe(io_status, 8)?;
     let request = Request { access, granted: rights::mapped(access), disposition, options, attributes: file_attributes };
-    // The walk and the decision are one locked section (with the write side, the create joins them:
-    // no other create can take the name between the look and the entry).
+    // The walk, the decision and a create are one locked section: no other create can take the name
+    // between the look and the entry.
     let (file, information, overwrites, granted) = io::with_volume(|volume| {
         if target.name.volume {
             let root = crate::fs::fat32::lookup::root(volume);
@@ -185,7 +197,9 @@ fn create(
         }
         match walk(volume, target.start, &target.name)? {
             Found::Existing(file) => existing(volume, &target, file, &request),
-            Found::Missing { .. } => Err(missing(&target, &request)),
+            Found::Missing { parent } => {
+                missing(volume, &target, parent, &request).map(|file| (file, FILE_CREATED, false, request.granted))
+            }
         }
     })
     .map_err(status)?;
@@ -199,19 +213,20 @@ fn create(
     let handle = io::open(file, &open).map_err(status)?;
     if overwrites {
         let record = io::object_of(handle).expect("just opened").record;
-        let failure = overwrite(record);
-        crate::user::args::calling_process().close_handle(handle);
-        return Err(status(failure));
+        if let Err(failure) = overwrite(record, file_attributes) {
+            crate::user::args::calling_process().close_handle(handle);
+            return Err(status(failure));
+        }
     }
     deliver(slot, handle)?;
     complete(io_status, STATUS_SUCCESS, information);
     Ok(STATUS_SUCCESS)
 }
 
-/// NtCreateFile: open the file or directory the name names as the disposition says (FILE_SUPERSEDE,
-/// FILE_OPEN, FILE_CREATE, FILE_OPEN_IF, FILE_OVERWRITE, FILE_OVERWRITE_IF), its handle written back
-/// with the rights asked for and the I/O status's Information what happened (FILE_OPENED; making or
-/// overwriting a file is the write side's: STATUS_MEDIA_WRITE_PROTECTED). A name already taken is
+/// NtCreateFile: open the file or directory the name names, or make it, as the disposition says
+/// (FILE_SUPERSEDE, FILE_OPEN, FILE_CREATE, FILE_OPEN_IF, FILE_OVERWRITE, FILE_OVERWRITE_IF), its
+/// handle written back with the rights asked for and the I/O status's Information what happened
+/// (FILE_OPENED, FILE_CREATED, FILE_OVERWRITTEN, FILE_SUPERSEDED). A name already taken is
 /// STATUS_OBJECT_NAME_COLLISION for FILE_CREATE; a missing one STATUS_OBJECT_NAME_NOT_FOUND for the
 /// opening dispositions (STATUS_OBJECT_PATH_NOT_FOUND when its directory is missing).
 /// FILE_DIRECTORY_FILE asks a directory (STATUS_NOT_A_DIRECTORY for a file), FILE_NON_DIRECTORY_FILE

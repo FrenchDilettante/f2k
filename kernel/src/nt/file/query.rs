@@ -5,23 +5,27 @@
 //! STATUS_INFO_LENGTH_MISMATCH), the buffer's probe, then the handle and the rights the class needs
 //! (the basic times and attributes FILE_READ_ATTRIBUTES to read, FILE_WRITE_ATTRIBUTES to write; a
 //! rename or a delete DELETE; the size FILE_WRITE_DATA; the rest none). The file system acts on the
-//! file as its record holds it. The read side sets the position alone: the classes that change the
-//! file's entry (its times and attributes, its name, its pending delete, its size) are the FAT32
-//! write side's, refused meanwhile as a volume that takes no writes
-//! (STATUS_MEDIA_WRITE_PROTECTED) once their checks pass — a mapped file's cut first
-//! (STATUS_USER_MAPPED_FILE).
+//! file as its record holds it, every change written to its entry inside the volume's locked
+//! section.
 
-use super::super::attributes::{STATUS_OBJECT_NAME_INVALID, STATUS_OBJECT_NAME_NOT_FOUND};
+use super::super::attributes::{STATUS_OBJECT_NAME_INVALID, STATUS_OBJECT_NAME_NOT_FOUND, MAX_NAME};
 use super::super::call::{
     Handle, NtCall, NtResult, Status, UserAddr, STATUS_INVALID_HANDLE, STATUS_INVALID_PARAMETER, STATUS_SUCCESS,
 };
 use super::common::{check_access, cluster_bytes, complete, file_object, probe, target, walk, Found};
 use super::info::{self, Open};
-use super::{status, STATUS_DELETE_PENDING, STATUS_INFO_LENGTH_MISMATCH, STATUS_INVALID_INFO_CLASS, STATUS_USER_MAPPED_FILE};
+use super::name::{self, FileName};
+use super::{
+    status, STATUS_ACCESS_DENIED, STATUS_CANNOT_DELETE, STATUS_DELETE_PENDING, STATUS_DIRECTORY_NOT_EMPTY,
+    STATUS_DISK_FULL, STATUS_INFO_LENGTH_MISMATCH, STATUS_INVALID_INFO_CLASS, STATUS_OBJECT_NAME_COLLISION,
+    STATUS_USER_MAPPED_FILE,
+};
+use crate::fs::fat32::dir::is_empty;
+use crate::fs::fat32::dirent::{Times, ATTR_DIRECTORY, ATTR_READ_ONLY};
 use crate::fs::fat32::lookup::File;
-use crate::fs::file::{records, rights};
-use crate::fs::io;
-use crate::status::STATUS_MEDIA_WRITE_PROTECTED;
+use crate::fs::fat32::write;
+use crate::fs::file::{records, rights, same_entry};
+use crate::fs::io::{self, times_at, SETTABLE_ATTRIBUTES};
 
 /// FileModeInformation's synchronous-I/O mode.
 const FILE_SYNCHRONOUS_IO_NONALERT: u32 = 0x20;
@@ -84,29 +88,124 @@ fn query_information_file_held(
     Ok(STATUS_SUCCESS)
 }
 
+/// The times a basic set names (zero: leave it), applied to `file`.
+fn set_times(file: &mut File, created: u64, accessed: u64, written: u64) {
+    let stamp = |time: u64| (time != 0).then(|| times_at(time));
+    if let Some(Times { create_date, create_time, create_hundredths, .. }) = stamp(created) {
+        (file.times.create_date, file.times.create_time, file.times.create_hundredths) = (create_date, create_time, create_hundredths);
+    }
+    if let Some(Times { access_date, .. }) = stamp(accessed) {
+        file.times.access_date = access_date;
+    }
+    if let Some(Times { write_date, write_time, .. }) = stamp(written) {
+        (file.times.write_date, file.times.write_time) = (write_date, write_time);
+    }
+}
+
+/// Where a rename's target name starts.
+enum Start {
+    /// A directory's (its root directory's file object), or the volume's root (an absolute path).
+    At(Option<File>),
+    /// The file's own directory (a bare name).
+    Own,
+}
+
+/// A rename's target name (FILE_RENAME_INFORMATION's): relative to its root directory's file
+/// object, an absolute NT path, or a bare name in the file's own directory.
+fn rename_target(bytes: &[u8], length: u32, information: UserAddr) -> Result<(FileName, Start), Status> {
+    let word = |at: usize| u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]);
+    let (root, name_length) = (word(4), word(8) as usize / 2);
+    if name_length == 0 || name_length > MAX_NAME || 12 + 2 * name_length > length as usize {
+        return Err(STATUS_INVALID_PARAMETER);
+    }
+    let mut raw = [0u8; 2 * MAX_NAME];
+    information.offset(12).read(&mut raw[..2 * name_length])?;
+    let mut units = [0u16; MAX_NAME];
+    for (unit, pair) in units.iter_mut().zip(raw.chunks_exact(2)) {
+        *unit = u16::from_le_bytes([pair[0], pair[1]]);
+    }
+    let units = &units[..name_length];
+    if root != 0 {
+        let directory = file_object(root)?;
+        let directory = io::file_of(&directory);
+        if !directory.directory {
+            return Err(STATUS_INVALID_PARAMETER);
+        }
+        return Ok((name::relative(units)?, Start::At(Some(directory))));
+    }
+    if units.contains(&u16::from(b'\\')) {
+        return Ok((name::absolute(units)?, Start::At(None)));
+    }
+    Ok((name::relative(units)?, Start::Own))
+}
+
+/// FileRenameInformation's work: the file's entry moved to the target's name (an existing one
+/// replaced only when asked, and only a file no one holds open: STATUS_ACCESS_DENIED otherwise;
+/// STATUS_OBJECT_NAME_COLLISION when not asked), its record following it.
+fn rename(record: u16, replace: bool, target: (FileName, Start)) -> Result<(), crate::status::NtStatus> {
+    let (name, start) = target;
+    io::with_volume(|volume| {
+        let file = records().get(record).file;
+        if file.parent_cluster == 0 {
+            return Err(STATUS_ACCESS_DENIED.0 as i32);
+        }
+        if name.trailing && !file.directory {
+            return Err(STATUS_OBJECT_NAME_INVALID.0 as i32);
+        }
+        let start = match start {
+            Start::At(start) => start,
+            Start::Own => Some(File::plain(file.parent_cluster, 0, true)),
+        };
+        let parent = match walk(volume, start, &name)? {
+            // A case-only rename names the file itself (refused as a collision).
+            Found::Existing(existing) if !replace || same_entry(&existing, &file) => {
+                return Err(STATUS_OBJECT_NAME_COLLISION.0 as i32)
+            }
+            Found::Existing(existing) => {
+                if existing.directory || existing.attributes & ATTR_READ_ONLY != 0 || records().find(&existing).is_some() {
+                    return Err(STATUS_ACCESS_DENIED.0 as i32);
+                }
+                write::delete(volume, &existing)?;
+                File::plain(existing.parent_cluster, 0, true)
+            }
+            Found::Missing { parent } => parent,
+        };
+        let moved = write::rename(volume, &file, parent.first_cluster, name.last())?;
+        records().refresh(&file, &moved);
+        Ok(())
+    })
+}
+
 /// A size change (FileEndOfFileInformation, or FileAllocationInformation when it cuts the file):
-/// a directory has none to change (STATUS_INVALID_HANDLE, an assumption, unverified); a mapped file
-/// is not cut (STATUS_USER_MAPPED_FILE); a change of size is the write side's (past 4 GiB
-/// STATUS_DISK_FULL), refused meanwhile (STATUS_MEDIA_WRITE_PROTECTED).
+/// a directory has none to change (STATUS_INVALID_HANDLE, an assumption, unverified); past 4 GiB
+/// is STATUS_DISK_FULL; a mapped file is not cut (STATUS_USER_MAPPED_FILE).
 fn resize(record: u16, size: u64, allocation_only: bool) -> Result<(), Status> {
     let file = records().get(record).file;
     if file.directory {
         return Err(STATUS_INVALID_HANDLE);
     }
-    if allocation_only && size >= file.size as u64 || size == file.size as u64 {
+    let size = u32::try_from(size).map_err(|_| STATUS_DISK_FULL)?;
+    if allocation_only && size >= file.size {
         return Ok(());
     }
-    if io::mapped(record) && size < file.size as u64 {
+    if io::mapped(record) && size < file.size {
         return Err(STATUS_USER_MAPPED_FILE);
     }
-    Err(status(STATUS_MEDIA_WRITE_PROTECTED))
+    io::with_volume(|volume| {
+        let mut file = records().get(record).file;
+        write::set_size(volume, &mut file, size)?;
+        records().get_mut(record).file = file;
+        Ok(())
+    })
+    .map_err(status)
 }
 
-/// NtSetInformationFile: the position; the allocation and the end of file when they leave the size
-/// as it is (a mapped file's cut is STATUS_USER_MAPPED_FILE). The basic times and attributes, a
-/// rename, the pending delete and a change of size are the write side's (see the module notes),
-/// refused once the class's rights are checked.
-pub fn set_information_file(
+/// NtSetInformationFile: the basic times and attributes (zero leaves one as it is; the directory
+/// bit stays the entry's), a rename, the pending delete (a read-only file, a mapped one or the root
+/// is STATUS_CANNOT_DELETE, a directory with entries STATUS_DIRECTORY_NOT_EMPTY: it goes with the
+/// last open's cleanup), the position, the allocation (cutting the file when smaller) and the end
+/// of file.
+fn set_information_file_held(
     _call: &mut NtCall,
     handle: Handle,
     io_status: UserAddr,
@@ -122,7 +221,48 @@ pub fn set_information_file(
     check_access(&object, set_rights(class))?;
     let record = object.record;
     let quad = |at: usize| u64::from_le_bytes(bytes[at..at + 8].try_into().expect("eight bytes"));
+    let word = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().expect("four bytes"));
     match class {
+        info::FILE_BASIC_INFORMATION => {
+            let (created, accessed, written, attributes) = (quad(0), quad(8), quad(16), word(32));
+            let file = records().get(record).file;
+            if file.parent_cluster == 0 {
+                return Err(STATUS_ACCESS_DENIED);
+            }
+            if attributes & ATTR_DIRECTORY as u32 != 0 && !file.directory {
+                return Err(STATUS_INVALID_PARAMETER);
+            }
+            io::with_volume(|volume| {
+                let mut file = records().get(record).file;
+                set_times(&mut file, created, accessed, written);
+                if attributes != 0 {
+                    file.attributes = file.attributes & ATTR_DIRECTORY | attributes as u8 & SETTABLE_ATTRIBUTES;
+                }
+                write::update_entry(volume, &file)?;
+                records().get_mut(record).file = file;
+                Ok(())
+            })
+            .map_err(status)?;
+        }
+        info::FILE_RENAME_INFORMATION => {
+            let mut header = [0u8; 12];
+            information.read(&mut header)?;
+            let target = rename_target(&header, length, information)?;
+            rename(record, header[0] != 0, target).map_err(status)?;
+        }
+        info::FILE_DISPOSITION_INFORMATION => {
+            let delete = bytes[0] != 0;
+            if delete {
+                let file = records().get(record).file;
+                if file.parent_cluster == 0 || file.attributes & ATTR_READ_ONLY != 0 || io::mapped(record) {
+                    return Err(STATUS_CANNOT_DELETE);
+                }
+                if file.directory && !io::with_volume(|volume| is_empty(volume, file.first_cluster)).map_err(status)? {
+                    return Err(STATUS_DIRECTORY_NOT_EMPTY);
+                }
+            }
+            records().set_delete_pending(record, delete);
+        }
         info::FILE_POSITION_INFORMATION => {
             let position = quad(0);
             if (position as i64) < 0 {
@@ -132,13 +272,6 @@ pub fn set_information_file(
         }
         info::FILE_ALLOCATION_INFORMATION => resize(record, quad(0), true)?,
         info::FILE_END_OF_FILE_INFORMATION => resize(record, quad(0), false)?,
-        // The write side: FILE_BASIC_INFORMATION (the times, the settable attributes), FILE_RENAME_INFORMATION
-        // (the move, its record re-keyed) and FILE_DISPOSITION_INFORMATION (the record's
-        // delete-pending: `records().set_delete_pending`, refused for a read-only, mapped or root
-        // entry and a non-empty directory).
-        info::FILE_BASIC_INFORMATION | info::FILE_RENAME_INFORMATION | info::FILE_DISPOSITION_INFORMATION => {
-            return Err(status(STATUS_MEDIA_WRITE_PROTECTED));
-        }
         _ => return Err(STATUS_INVALID_INFO_CLASS),
     }
     complete(io_status, STATUS_SUCCESS, 0);
@@ -191,4 +324,11 @@ pub fn query_information_file(call: &mut NtCall, handle: Handle, io_status: User
     // inside one of its own, so a termination requested meanwhile ends the thread only once the
     // reference has gone (an inner region's end would end it with the reference still held).
     crate::process::threads::critical_region(|| query_information_file_held(call, handle, io_status, information, length, class))
+}
+
+/// NtSetInformationFile (see [`set_information_file_held`]), as one critical region: like the
+/// query, it holds its file object across the volume's critical regions.
+#[allow(clippy::too_many_arguments)]
+pub fn set_information_file(call: &mut NtCall, handle: Handle, io_status: UserAddr, information: UserAddr, length: u32, class: u32) -> NtResult {
+    crate::process::threads::critical_region(|| set_information_file_held(call, handle, io_status, information, length, class))
 }

@@ -1,9 +1,7 @@
-//! The calls on a file handle: CreateFileA (CreateFileW's work over NtCreateFile), ReadFile
-//! (NtReadFile; a console handle's read is the console's), WriteFile (a console handle's bytes go to
-//! the console; a file's are NtWriteFile's, with the write side), SetFilePointer,
-//! FlushFileBuffers, GetFileType, and the size, times and identity of an open file — as Windows
-//! 2000's kernel32 makes them of the information classes. SetFileTime and SetEndOfFile come with
-//! the write side.
+//! The calls on a file handle: CreateFileA (CreateFileW's work over NtCreateFile), ReadFile and
+//! WriteFile (NtReadFile, NtWriteFile; a console handle's bytes go to the console), SetFilePointer,
+//! FlushFileBuffers, GetFileType, the size, times and identity of an open file, SetFileTime and
+//! SetEndOfFile — as Windows 2000's kernel32 makes them of the information classes.
 
 use rtl::status::nt_success;
 
@@ -27,8 +25,6 @@ const FILE_FLAG_SEQUENTIAL_SCAN: u32 = 0x0800_0000;
 const FILE_FLAG_DELETE_ON_CLOSE: u32 = 0x0400_0000;
 const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
 const FILE_FLAG_POSIX_SEMANTICS: u32 = 0x0100_0000;
-/// ERROR_CALL_NOT_IMPLEMENTED: WriteFile's file half until the write side.
-const ERROR_CALL_NOT_IMPLEMENTED: u32 = 120;
 /// The attribute bits a create carries (FILE_ATTRIBUTE_VALID_FLAGS), the directory bit aside.
 const FILE_ATTRIBUTE_VALID_FLAGS: u32 = 0x7FB7;
 const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
@@ -264,11 +260,10 @@ pub unsafe extern "system" fn read_file(file: u32, buffer: *mut u8, count: u32, 
     unsafe { transferred(status, &io_status, read) }
 }
 
-/// WriteFile: `count` bytes of the caller's, the count written stored (zeroed first, so a failure
-/// reports none, unverified). A console handle's bytes go to the console (WriteConsoleA, the OVERLAPPED
-/// its reserved argument), as Windows 2000's WriteFile hands them. A file handle's write is the
-/// FAT32 write side's (NtWriteFile, at the file's position or an OVERLAPPED's offset): until
-/// then it fails with ERROR_CALL_NOT_IMPLEMENTED.
+/// WriteFile: `count` bytes of the caller's at the file's position (or an OVERLAPPED's offset), the
+/// count written stored (zeroed first, so a failure reports none, unverified). A console handle's bytes go
+/// to the console (WriteConsoleA, the OVERLAPPED its reserved argument), as Windows 2000's WriteFile
+/// hands them.
 ///
 /// # Safety
 ///
@@ -283,8 +278,20 @@ pub unsafe extern "system" fn write_file(file: u32, buffer: *const u8, count: u3
         // SAFETY: the caller's arguments.
         return unsafe { console::write_console_a(file, buffer, count, written, overlapped as *const u8) };
     }
-    set_last_error(ERROR_CALL_NOT_IMPLEMENTED);
-    0
+    if !overlapped.is_null() {
+        // SAFETY: the caller's OVERLAPPED and buffer; ntdll's export.
+        return unsafe {
+            overlapped_transfer(overlapped, written, |event, context, io_status, offset| {
+                nt::NtWriteFile(file, event, 0, context, io_status, buffer, count, offset, core::ptr::null())
+            })
+        };
+    }
+    let mut io_status = IoStatus::default();
+    // SAFETY: ntdll's export, from the caller's buffer.
+    let status =
+        unsafe { nt::NtWriteFile(file, 0, 0, 0, &mut io_status, buffer, count, core::ptr::null(), core::ptr::null()) };
+    // SAFETY: the caller's slot.
+    unsafe { transferred(status, &io_status, written) }
 }
 
 /// SetFilePointer, Windows 2000's: the distance (the 64-bit pair with a high dword, the
@@ -361,17 +368,24 @@ pub unsafe extern "system" fn set_file_pointer(file: u32, low: u32, high: *mut i
     target as u32
 }
 
-/// FlushFileBuffers: a console handle's input buffer emptied (FlushConsoleInputBuffer, as Windows
-/// 2000's hands it — an output handle is ERROR_INVALID_HANDLE there: the console's writes are
-/// never buffered). A file's writes reach the volume as they are made (F2K writes no file yet:
-/// NtFlushBuffersFile comes with the write side), so a file handle's flush succeeds.
+/// FlushFileBuffers: the file's writes to the volume (NtFlushBuffersFile); a console handle's
+/// input buffer emptied (FlushConsoleInputBuffer, as Windows 2000's hands it — an output handle is
+/// ERROR_INVALID_HANDLE there: the console's writes are never buffered).
 #[unsafe(export_name = "f2k_export_FlushFileBuffers")]
 pub extern "system" fn flush_file_buffers(file: u32) -> u32 {
     let file = standard_handle(file);
     if is_console_handle(file) {
         return console::flush_console_input_buffer(file);
     }
-    1
+    let mut io_status = IoStatus::default();
+    // SAFETY: ntdll's export.
+    let status = unsafe { nt::NtFlushBuffersFile(file, &mut io_status) };
+    if nt_success(status) {
+        1
+    } else {
+        set_last_nt_error(status);
+        0
+    }
 }
 
 /// GetFileType: a console handle naming a console object is a character device (VerifyConsoleIoHandle,
@@ -463,6 +477,29 @@ pub unsafe extern "system" fn get_file_time(file: u32, created: *mut u64, access
     1
 }
 
+/// SetFileTime: the times given (FileBasicInformation, zero for the others and the attributes:
+/// left as they are).
+///
+/// # Safety
+///
+/// Each pointer is null or points at a FILETIME.
+#[unsafe(export_name = "f2k_export_SetFileTime")]
+pub unsafe extern "system" fn set_file_time(file: u32, created: *const u64, accessed: *const u64, written: *const u64) -> u32 {
+    let mut basic = [0u8; 40];
+    for (at, time) in [(0, created), (8, accessed), (16, written)] {
+        if !time.is_null() {
+            // SAFETY: the caller's FILETIME.
+            basic[at..at + 8].copy_from_slice(&unsafe { time.read_unaligned() }.to_le_bytes());
+        }
+    }
+    let status = set(file, FILE_BASIC_INFORMATION, &basic);
+    if !nt_success(status) {
+        set_last_nt_error(status);
+        return 0;
+    }
+    1
+}
+
 /// GetFileInformationByHandle: the volume's serial number (FileFsVolumeInformation), then
 /// FileAllInformation's attributes, times, size, links and index; a console handle is
 /// ERROR_INVALID_HANDLE.
@@ -505,5 +542,28 @@ pub unsafe extern "system" fn get_file_information_by_handle(file: u32, info: *m
     out[48..52].copy_from_slice(&all[64..68]);
     // SAFETY: the caller's structure.
     unsafe { info.copy_from_nonoverlapping(out.as_ptr(), out.len()) };
+    1
+}
+
+/// SetEndOfFile: the file ends at its position (FilePositionInformation): its end of file, then its
+/// allocation, set there; a console handle is ERROR_INVALID_HANDLE.
+#[unsafe(export_name = "f2k_export_SetEndOfFile")]
+pub extern "system" fn set_end_of_file(file: u32) -> u32 {
+    if is_console_handle(file) {
+        set_last_nt_error(STATUS_INVALID_HANDLE);
+        return 0;
+    }
+    let mut position = [0u8; 8];
+    let mut status = query(file, FILE_POSITION_INFORMATION, &mut position);
+    if nt_success(status) {
+        status = set(file, FILE_END_OF_FILE_INFORMATION, &position);
+    }
+    if nt_success(status) {
+        status = set(file, FILE_ALLOCATION_INFORMATION, &position);
+    }
+    if !nt_success(status) {
+        set_last_nt_error(status);
+        return 0;
+    }
     1
 }

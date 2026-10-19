@@ -1,8 +1,8 @@
-//! The file API's read side: kernel32's calls over ntdll's file services, against the stand-in file
+//! The file API: kernel32's calls over ntdll's file services, against the stand-in file
 //! ([`crate::nt::files`]: one file named by its handle, the calls recorded) and the stand-in
-//! console. The files fixture is the contract on the machine; these pin what kernel32 itself
-//! decides — the services it asks and how, the errors it sets on its own, the console's routing.
-//! WriteFile's file half waits for the write side.
+//! console. The files and fswrite fixtures are the contract on the machine; these pin what kernel32
+//! itself decides — the services it asks and how, the errors it sets on its own, the console's
+//! routing.
 
 use super::last_error;
 use crate::files::handle::*;
@@ -155,12 +155,16 @@ fn write_file_count_pointer_and_empty_writes() {
     assert_eq!(unsafe { write_file(STDERR, HELLO.as_ptr(), 0, &mut written, core::ptr::null_mut()) }, 1);
     assert_eq!(written, 0);
     assert_eq!(console_writes(), [(STDOUT, HELLO.to_vec())]);
+    file_at(0, 0);
+    written = 0xCCCC_CCCC;
+    assert_eq!(unsafe { write_file(HANDLE, HELLO.as_ptr(), 5, &mut written, core::ptr::null_mut()) }, 1);
+    assert_eq!(written, 5);
+    assert_eq!(calls(), [Call::Write { handle: HANDLE, bytes: HELLO[..5].to_vec(), offset: None }]);
 }
 
 /// WriteFile refuses stdin and the console's overlapped requests (WriteConsoleA's rules:
-/// ERROR_INVALID_HANDLE, ERROR_INVALID_PARAMETER), the count zeroed first as Windows 2000's
-/// WriteFile zeroes it (unverified); a file handle's write waits for the write side (
-/// ERROR_CALL_NOT_IMPLEMENTED, no service asked).
+/// ERROR_INVALID_HANDLE, ERROR_INVALID_PARAMETER) and any handle naming no file (NtWriteFile's
+/// STATUS_INVALID_HANDLE), the count zeroed first as Windows 2000's WriteFile zeroes it (unverified).
 #[test]
 fn write_file_refuses_other_handles_and_overlapped_requests() {
     console_writes();
@@ -170,9 +174,9 @@ fn write_file_refuses_other_handles_and_overlapped_requests() {
     for (handle, overlapped, error) in [
         (STDIN, core::ptr::null_mut(), 6),
         (0xF, core::ptr::null_mut(), 6),
-        (INVALID_HANDLE_VALUE, core::ptr::null_mut(), 120),
-        (HANDLE, core::ptr::null_mut(), 120),
-        (0, core::ptr::null_mut(), 120),
+        (INVALID_HANDLE_VALUE, core::ptr::null_mut(), 6),
+        (4, core::ptr::null_mut(), 6),
+        (0, core::ptr::null_mut(), 6),
         (STDOUT, overlapped.as_mut_ptr() as *mut Overlapped, 87),
     ] {
         let mut written = 0xCCCC_CCCCu32;
@@ -180,13 +184,11 @@ fn write_file_refuses_other_handles_and_overlapped_requests() {
         assert_eq!((written, last_error()), (0, error), "{handle:#x}");
     }
     assert!(console_writes().is_empty());
-    assert!(calls().is_empty());
 }
 
 /// FlushFileBuffers: a console handle's input buffer flushed at the console server
 /// (FlushConsoleInputBuffer, as Windows 2000's: stdin TRUE, an output handle or one naming nothing
-/// ERROR_INVALID_HANDLE); a file's writes are already on the volume (NtFlushBuffersFile comes with
-/// the write side), no file service asked.
+/// ERROR_INVALID_HANDLE), no file service asked; a file's through NtFlushBuffersFile.
 #[test]
 fn flush_file_buffers_succeeds() {
     file_at(0, 0);
@@ -197,8 +199,11 @@ fn flush_file_buffers_succeeds() {
         assert_eq!(flush_file_buffers(handle), 0, "{handle:#x}");
         assert_eq!(last_error(), 6, "{handle:#x}");
     }
-    assert_eq!(flush_file_buffers(HANDLE), 1);
     assert!(calls().is_empty());
+    assert_eq!(flush_file_buffers(HANDLE), 1);
+    assert_eq!(calls(), [Call::Flush { handle: HANDLE }]);
+    assert_eq!(flush_file_buffers(0x40), 0);
+    assert_eq!(last_error(), 6);
 }
 
 /// GetFileType: a console handle naming a console object is a character device (FILE_TYPE_CHAR:
@@ -252,6 +257,35 @@ fn set_file_pointer_moves_from_each_base() {
     let mut high = 0i32;
     assert_eq!(unsafe { set_file_pointer(HANDLE, 0xFFFF_FFFF, &mut high, 0) }, INVALID_SET_FILE_POINTER);
     assert_eq!((high, last_error()), (0, 0), "a success reading as the failure value");
+}
+
+/// DeleteFileA opens the file for DELETE alone (sharing everything, no directory) and marks it
+/// for deletion; RemoveDirectoryA the same of a directory; the open's failure is the call's.
+#[test]
+fn deletes_open_for_delete_then_dispose() {
+    file_at(0, 0);
+    assert_eq!(unsafe { delete_file_a(b"C:\\F.TXT\0".as_ptr()) }, 1);
+    let recorded = calls();
+    assert!(matches!(&recorded[0], Call::Open { access: 0x0001_0000, share: 7, options, .. } if options & 0x41 == 0x40));
+    assert_eq!(recorded[1], Call::Set { handle: HANDLE, class: 13, bytes: vec![1] });
+    assert_eq!(unsafe { remove_directory_a(b"C:\\D\0".as_ptr()) }, 1);
+    assert!(matches!(&calls()[0], Call::Open { options, .. } if options & 0x41 == 0x1));
+    fail_next(0xC000_00BA);
+    assert_eq!(unsafe { delete_file_a(b"C:\\D\0".as_ptr()) }, 0);
+    assert_eq!(last_error(), 5, "STATUS_FILE_IS_A_DIRECTORY");
+}
+
+/// MoveFileA renames to the new name's whole NT path (no replace, no root).
+#[test]
+fn move_file_renames_to_the_nt_path() {
+    file_at(0, 0);
+    assert_eq!(unsafe { move_file_a(b"C:\\A.TXT\0".as_ptr(), b"C:\\SUB\\B.TXT\0".as_ptr()) }, 1);
+    let recorded = calls();
+    assert!(matches!(&recorded[0], Call::Open { access, share: 3, .. } if access & 0x0001_0000 != 0));
+    let Call::Set { class: 10, bytes, .. } = &recorded[1] else { panic!("{recorded:?}") };
+    assert_eq!(&bytes[..12], &[0, 0, 0, 0, 0, 0, 0, 0, 32, 0, 0, 0]);
+    let name: Vec<u16> = bytes[12..].chunks(2).map(|pair| u16::from_le_bytes([pair[0], pair[1]])).collect();
+    assert_eq!(String::from_utf16(&name).unwrap(), "\\??\\C:\\SUB\\B.TXT");
 }
 
 /// GetFullPathNameA: the length and the file part when it fits, else the size needed; an empty

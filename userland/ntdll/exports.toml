@@ -171,15 +171,15 @@ impl = { syscall = "crate::nt::section::unmap_view_of_section" }
 note = "of the calling process only (NtCurrentProcess)"
 pinned_by = ["files/mapping", "memory/mapping"]
 
-# --- the file services (kernel/src/nt/file: the read side; the write side is not served yet) -------
+# --- the file services (kernel/src/nt/file) ------------------------------------------------------
 
 [[export]]
 name = "NtCreateFile"
 group = "nt"
 args = ["ptr<u32> FileHandle", "u32 DesiredAccess", "ptr ObjectAttributes", "ptr IoStatusBlock", "ptr<u64> AllocationSize", "u32 FileAttributes", "u32 ShareAccess", "u32 CreateDisposition", "u32 CreateOptions", "ptr EaBuffer", "u32 EaLength"]
 impl = { syscall = "crate::nt::file::create_file" }
-note = "an absolute name (\\??\\C:\\...) or one relative to a directory's file object; the opening dispositions (making or overwriting a file is STATUS_MEDIA_WRITE_PROTECTED until the write side); the allocation size and extended attributes are not consulted"
-pinned_by = ["files/*"]
+note = "an absolute name (\\??\\C:\\...) or one relative to a directory's file object; the allocation size and extended attributes are not consulted"
+pinned_by = ["files/*", "fswrite/*"]
 
 [[export]]
 name = "NtOpenFile"
@@ -187,7 +187,7 @@ group = "nt"
 args = ["ptr<u32> FileHandle", "u32 DesiredAccess", "ptr ObjectAttributes", "ptr IoStatusBlock", "u32 ShareAccess", "u32 OpenOptions"]
 impl = { syscall = "crate::nt::file::open_file" }
 note = "an absolute name (\\??\\C:\\...) or one relative to a directory's file object"
-pinned_by = ["files/open", "files/find"]
+pinned_by = ["files/open", "files/find", "fswrite/share", "fswrite/names", "fswrite/dirs"]
 
 [[export]]
 name = "NtReadFile"
@@ -195,7 +195,22 @@ group = "nt"
 args = ["handle FileHandle", "handle Event", "ptr ApcRoutine", "ptr ApcContext", "ptr IoStatusBlock", "ptr Buffer", "u32 Length", "ptr<u64> ByteOffset", "ptr<u32> Key"]
 impl = { syscall = "crate::nt::file::read_file" }
 note = "completes at once; an APC routine is STATUS_NOT_IMPLEMENTED"
-pinned_by = ["files/read", "files/seek", "files/handles", "files/concurrent"]
+pinned_by = ["files/read", "files/seek", "files/handles", "files/concurrent", "fswrite/write"]
+
+[[export]]
+name = "NtWriteFile"
+group = "nt"
+args = ["handle FileHandle", "handle Event", "ptr ApcRoutine", "ptr ApcContext", "ptr IoStatusBlock", "ptr Buffer", "u32 Length", "ptr<u64> ByteOffset", "ptr<u32> Key"]
+impl = { syscall = "crate::nt::file::write_file" }
+note = "completes at once; an APC routine is STATUS_NOT_IMPLEMENTED"
+pinned_by = ["fswrite/write", "fswrite/create", "fswrite/crt"]
+
+[[export]]
+name = "NtFlushBuffersFile"
+group = "nt"
+args = ["handle FileHandle", "ptr IoStatusBlock"]
+impl = { syscall = "crate::nt::file::flush_buffers_file" }
+pinned_by = ["fswrite/write"]
 
 [[export]]
 name = "NtQueryInformationFile"
@@ -210,8 +225,8 @@ name = "NtSetInformationFile"
 group = "nt"
 args = ["handle FileHandle", "ptr IoStatusBlock", "ptr FileInformation", "u32 Length", "u32 FileInformationClass"]
 impl = { syscall = "crate::nt::file::set_information_file" }
-note = "the position class; the basic, rename, disposition and size classes are the write side's (STATUS_MEDIA_WRITE_PROTECTED until then, a mapped file's cut STATUS_USER_MAPPED_FILE)"
-pinned_by = ["files/seek"]
+note = "the basic, rename, disposition, position, allocation and end-of-file classes"
+pinned_by = ["files/seek", "fswrite/write", "fswrite/names", "fswrite/dirs", "fswrite/times", "fswrite/create"]
 
 [[export]]
 name = "NtQueryDirectoryFile"

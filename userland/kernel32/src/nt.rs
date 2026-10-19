@@ -341,6 +341,18 @@ unsafe extern "system" {
         offset: *const u64,
         key: *const u32,
     ) -> u32;
+    pub fn NtWriteFile(
+        handle: u32,
+        event: u32,
+        routine: usize,
+        context: usize,
+        io_status: *mut IoStatus,
+        buffer: *const u8,
+        length: u32,
+        offset: *const u64,
+        key: *const u32,
+    ) -> u32;
+    pub fn NtFlushBuffersFile(handle: u32, io_status: *mut IoStatus) -> u32;
     pub fn NtQueryInformationFile(
         handle: u32,
         io_status: *mut IoStatus,
@@ -1144,6 +1156,14 @@ pub mod files {
             length: u32,
             offset: Option<u64>,
         },
+        Write {
+            handle: u32,
+            bytes: Vec<u8>,
+            offset: Option<u64>,
+        },
+        Flush {
+            handle: u32,
+        },
         Query {
             handle: u32,
             class: u32,
@@ -1339,6 +1359,50 @@ pub mod files {
             file.position = start + moved as u64;
             0
         })
+    }
+
+    pub unsafe extern "system" fn NtWriteFile(
+        handle: u32,
+        _event: u32,
+        _routine: usize,
+        _context: usize,
+        io_status: *mut IoStatus,
+        buffer: *const u8,
+        length: u32,
+        offset: *const u64,
+        _key: *const u32,
+    ) -> u32 {
+        // SAFETY: the caller's buffer.
+        let bytes = unsafe { std::slice::from_raw_parts(buffer, length as usize) }.to_vec();
+        // SAFETY: the caller's offset.
+        let at = unsafe { offset_of(offset) };
+        record(Call::Write {
+            handle,
+            bytes,
+            offset: at,
+        });
+        if let Err(status) = checked(handle) {
+            return status;
+        }
+        FILE.with(|file| {
+            let mut file = file.borrow_mut();
+            let start = at.unwrap_or(file.position);
+            file.position = start + length as u64;
+            file.size = file.size.max(file.position);
+        });
+        // SAFETY: the caller's status block.
+        unsafe {
+            io_status.write(IoStatus {
+                status: 0,
+                information: length,
+            })
+        };
+        0
+    }
+
+    pub unsafe extern "system" fn NtFlushBuffersFile(handle: u32, _io_status: *mut IoStatus) -> u32 {
+        record(Call::Flush { handle });
+        checked(handle).err().unwrap_or(0)
     }
 
     pub unsafe extern "system" fn NtQueryInformationFile(

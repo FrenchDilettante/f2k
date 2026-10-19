@@ -126,10 +126,10 @@ fn the_system_dlls_serve_the_registry() {
     // The natives: kernel32's own code (the trivial ones, the exception filter and the pointer
     // probes its assembly, the TLS slots' reads and writes; the console, start-up, locale, clock,
     // virtual-memory, mapping, synchronization, timer, sleep, APC, affinity, TLS-index,
-    // environment, file and current-directory calls and RaiseException its Rust, the heap and Local/Global calls its own over
-    // ntdll's heap).
+    // environment, file (the write side's included) and current-directory calls and RaiseException
+    // its Rust, the heap and Local/Global calls its own over ntdll's heap).
     // The internal start thunks are not among them.
-    assert_eq!(NATIVE_EXPORTS.len(), 163);
+    assert_eq!(NATIVE_EXPORTS.len(), 171);
     for &(name, _) in &NATIVE_EXPORTS {
         let address = kernel32_export(name).unwrap_or_else(|| panic!("kernel32 exports no {name}"));
         addresses.push(address);
@@ -226,9 +226,7 @@ fn the_entry_points_keep_their_protocols() {
 fn unimplemented_exports_fail_the_call() {
     // (export, its failure value, its argument block), as the spec declares them.
     for (name, fails, arg_bytes) in [
-        ("SetFileAttributesA", 0u32, 8u16),
-        ("DeleteFileA", 0, 4),
-        ("CopyFileA", 0, 12),
+        ("FreeLibrary", 0u32, 4u16),
     ] {
         let mut stub = vec![0x64, 0xC7, 0x05, 0x34, 0, 0, 0, 120, 0, 0, 0, 0xB8];
         stub.extend_from_slice(&fails.to_le_bytes());

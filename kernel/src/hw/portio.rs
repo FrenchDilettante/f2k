@@ -13,6 +13,12 @@ pub trait Io {
     /// Read one 16-bit word from a port in a single access (a data port that drains words must
     /// not be read as two bytes).
     fn read_word(&mut self, port: u16) -> u16;
+    /// Write one 16-bit word to a port in a single access (a disk data port filled with words).
+    /// Only the IDE simulation among the simulated port spaces runs a data-out command.
+    fn out_word(&mut self, port: u16, word: u16) {
+        let _ = (port, word);
+        unimplemented!("this port space takes no word writes");
+    }
 }
 
 /// The real I/O port space, reached with `in`/`out` instructions.
@@ -64,6 +70,18 @@ impl Io for Ports {
             );
         }
         word
+    }
+
+    fn out_word(&mut self, port: u16, word: u16) {
+        // SAFETY: as above.
+        unsafe {
+            core::arch::asm!(
+                "out dx, ax",
+                in("dx") port,
+                in("ax") word,
+                options(nomem, nostack, preserves_flags)
+            );
+        }
     }
 }
 
