@@ -442,9 +442,16 @@ pub fn load_image(file: &[u8], path: &[u8], name: &'static str, command_line: &[
     );
 
     // The process parameters (the command line, the image's path, the standard handles, the empty
-    // environment block), and the PEB pointing at them: the system's version and the image's
-    // subsystem.
-    crate::user::params::map(space, command_line, path);
+    // environment block) and the loader's module lists (the image, then the system DLLs), and the
+    // PEB pointing at them: the system's version and the image's subsystem.
+    let module = crate::user::ldr::Module {
+        base: image.image_base,
+        entry_point: image.entry_va(),
+        size: image.size_of_image,
+        time_date_stamp: image.time_date_stamp,
+        dll: false,
+    };
+    crate::user::params::map(space, command_line, path, module);
     crate::user::teb::map_peb(
         space,
         &crate::user::teb::PebInit {

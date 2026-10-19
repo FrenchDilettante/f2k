@@ -15,12 +15,13 @@
 //! taken as `.dll`), export names exactly. A lookup by ordinal finds nothing: the DLLs' ordinals
 //! are sequential placeholders, not the real system's.
 //!
-//! The kernel's loader snaps the image's imports through this table (`exec::loader`), the kernel
-//! finds here the entry points it sends user code to (kernel32's BaseProcessStartThunk for a main
-//! thread, ntdll's LdrInitializeThunk for every thread's start, KiUserExceptionDispatcher for an
-//! exception and KiUserApcDispatcher for a user APC), and kernel32's served GetProcAddress and
-//! LoadLibraryA look the system DLLs up here.
-//! No other DLL loads.
+//! The kernel's loader snaps the image's imports through this table (`exec::loader`), and the
+//! kernel finds here the entry points it sends user code to (kernel32's BaseProcessStartThunk for a
+//! main thread, ntdll's LdrInitializeThunk for every thread's start, KiUserExceptionDispatcher for
+//! an exception and KiUserApcDispatcher for a user APC). The Win32 module calls are kernel32's and
+//! ntdll's own code (GetModuleHandleA and the rest over LdrGetDllHandle and the rest), over the
+//! PEB's module lists the kernel builds at the process's creation (`user::ldr`). No other DLL
+//! loads.
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
@@ -34,13 +35,20 @@ pub const NTDLL_BASE: u32 = 0x77F8_0000;
 /// kernel32's base and module handle.
 pub const KERNEL32_BASE: u32 = 0x7C4E_0000;
 
+/// kernel32's full path, as its module list entry (and GetModuleFileNameA) gives it.
+pub const KERNEL32_PATH: &[u8] = b"C:\\WINNT\\system32\\KERNEL32.DLL";
+
+/// ntdll's full path, as its module list entry (and GetModuleFileNameA) gives it.
+pub const NTDLL_PATH: &[u8] = b"C:\\WINNT\\system32\\ntdll.dll";
+
 /// The embedded system DLL files (see `kernel/build.rs`).
 const NTDLL_FILE: &[u8] = include_bytes!(concat!(env!("F2K_SYSTEM_DLLS"), "/ntdll.dll"));
 const KERNEL32_FILE: &[u8] = include_bytes!(concat!(env!("F2K_SYSTEM_DLLS"), "/kernel32.dll"));
 
-/// A system DLL: its file name, its base, and its embedded file.
+/// A system DLL: its file name, its full path, its base, and its embedded file.
 pub struct SystemDll {
     pub file_name: &'static str,
+    pub path: &'static [u8],
     pub base: u32,
     pub file: &'static [u8],
 }
@@ -49,11 +57,13 @@ pub struct SystemDll {
 pub static SYSTEM_DLLS: [SystemDll; 2] = [
     SystemDll {
         file_name: "ntdll.dll",
+        path: NTDLL_PATH,
         base: NTDLL_BASE,
         file: NTDLL_FILE,
     },
     SystemDll {
         file_name: "kernel32.dll",
+        path: KERNEL32_PATH,
         base: KERNEL32_BASE,
         file: KERNEL32_FILE,
     },
@@ -84,7 +94,7 @@ impl SystemDll {
 
     /// The export named `name`, as the DLL's export directory holds it. Read from the headers
     /// alone, not through a parsed [`Image`]: the lookup runs on system services' small gate
-    /// stacks (GetProcAddress, a thread's creation).
+    /// stacks (a thread's creation).
     fn export(&self, name: &str) -> Option<Export<'static>> {
         Exports::in_headers(self.file)?.by_name(self.file, name)
     }
@@ -119,8 +129,8 @@ pub(crate) fn resolve_in(index: usize, name: &str, depth: u32) -> Result<u32, Un
     }
 }
 
-/// The module table's import resolution: the address an IAT slot (or GetProcAddress) receives for
-/// `name` in `module`, as an import descriptor or a forwarder spells the module.
+/// The module table's import resolution: the address an IAT slot receives for `name` in `module`,
+/// as an import descriptor or a forwarder spells the module.
 pub fn resolve(module: &str, name: &str) -> Result<u32, Unresolved> {
     resolve_in(system_dll(module).ok_or(Unresolved::NoModule)?, name, 0)
 }
@@ -190,92 +200,6 @@ pub fn exception_dispatcher() -> u32 {
         resolve_in(NTDLL, "KiUserExceptionDispatcher", 0)
             .expect("ntdll exports KiUserExceptionDispatcher")
     })
-}
-
-/// The system DLL a module name names: a path or a bare file name, in any case, the extension
-/// `.dll` when it has none (`KERNEL32`, `C:\WINNT\system32\ntdll.dll`).
-pub fn module_named(name: &[u8]) -> Option<usize> {
-    let file = &name[name
-        .iter()
-        .rposition(|&b| b == b'\\' || b == b'/')
-        .map_or(0, |i| i + 1)..];
-    let has_extension = file.contains(&b'.');
-    SYSTEM_DLLS.iter().position(|dll| {
-        let candidate = dll.file_name.as_bytes();
-        if has_extension {
-            file.eq_ignore_ascii_case(candidate)
-        } else {
-            candidate.len() == file.len() + 4
-                && candidate[..file.len()].eq_ignore_ascii_case(file)
-                && candidate[file.len()..].eq_ignore_ascii_case(b".dll")
-        }
-    })
-}
-
-/// The system DLL a module handle is (its base).
-pub fn module_of(handle: u32) -> Option<usize> {
-    SYSTEM_DLLS.iter().position(|dll| dll.base == handle)
-}
-
-// --- kernel32's served module exports (the export spec's `legacy` handlers) ----------------------
-
-/// The longest module or procedure name the services read, terminator excluded (MAX_PATH less
-/// its NUL).
-const NAME_ROOM: usize = 259;
-
-/// A NUL-terminated name in user memory, into `out`: its length, or none when it is unreadable or
-/// longer than the room.
-fn user_name(pointer: u32, out: &mut [u8; NAME_ROOM]) -> Option<usize> {
-    for (length, slot) in out.iter_mut().enumerate() {
-        let mut byte = [0u8];
-        crate::user::syscall::read_user(pointer.checked_add(length as u32)?, &mut byte).ok()?;
-        if byte[0] == 0 {
-            return Some(length);
-        }
-        *slot = byte[0];
-    }
-    let mut byte = [0u8];
-    crate::user::syscall::read_user(pointer.checked_add(NAME_ROOM as u32)?, &mut byte).ok()?;
-    (byte[0] == 0).then_some(NAME_ROOM)
-}
-
-/// GetProcAddress: a system DLL's export, by its exact name, forwarders followed; NULL for a name
-/// the DLL does not export, an ordinal (the DLLs' ordinals are not Windows 2000's yet), and a
-/// handle naming no system DLL (the image exports nothing; no other module loads). The last error
-/// is not set: the surface keeps none yet.
-pub fn svc_get_proc_address(frame: &mut crate::user::TrapFrame, args: &[u32]) {
-    let (module, name) = (args[0], args[1]);
-    frame.eax = 0;
-    let Some(index) = module_of(module) else {
-        return;
-    };
-    if name < 0x1_0000 {
-        return;
-    }
-    let mut bytes = [0u8; NAME_ROOM];
-    let Some(length) = user_name(name, &mut bytes) else {
-        return;
-    };
-    if let Some(address) = core::str::from_utf8(&bytes[..length])
-        .ok()
-        .and_then(|name| resolve_in(index, name, 0).ok())
-    {
-        frame.eax = address;
-    }
-}
-
-/// LoadLibraryA: a system DLL is already loaded, so loading it hands back its handle; NULL for a
-/// NULL name and any other name (no other DLL loads; the image's own name is not looked at). The
-/// last error is not set: the surface keeps none yet.
-pub fn svc_load_library_a(frame: &mut crate::user::TrapFrame, args: &[u32]) {
-    if args[0] == 0 {
-        frame.eax = 0;
-        return;
-    }
-    let mut bytes = [0u8; NAME_ROOM];
-    frame.eax = user_name(args[0], &mut bytes)
-        .and_then(|length| module_named(&bytes[..length]))
-        .map_or(0, |index| SYSTEM_DLLS[index].base);
 }
 
 #[cfg(test)]

@@ -10,7 +10,9 @@
 //! too, over `rtl::codepage` and the shared data page, `user::shared`; the heaps, Local/Global
 //! memory and the environment are ntdll's and kernel32's user code over the process's own memory;
 //! the threads and the process's end kernel32's code over ntdll's thread and process services; the
-//! files' read side kernel32's over the NT file services, `nt::file`).
+//! files' read side kernel32's over the NT file services, `nt::file`; the modules kernel32's over
+//! ntdll's loader and the PEB's module lists, `user::ldr`). No export is served any more: the
+//! registry is empty, its deletion to follow.
 
 use crate::user::syscall::ServiceFn;
 
@@ -60,11 +62,11 @@ mod tests {
     fn the_registry_numbers_from_its_base() {
         assert_eq!(
             SERVICES.len(),
-            2,
+            0,
             "the served surface, less kernel32's natives (the last error, the current process, \
              the console and start-up calls, the locale group and clock, the exception filter, \
              the virtual memory, the events and waits, Sleep, the heaps and environment, \
-             the threads and the process's end, the files) and ntdll's RtlUnwind"
+             the threads and the process's end, the files, the modules) and ntdll's RtlUnwind"
         );
         assert_eq!(WIN32_SERVICE_BASE, 0x2000);
         for (i, &(name, arg_bytes, _)) in SERVICES.iter().enumerate() {
@@ -96,8 +98,6 @@ mod tests {
         let mut sorted = names.clone();
         sorted.sort();
         assert_eq!(names, sorted);
-        let arg_bytes = |name: &str| SERVICES.iter().find(|&&(n, ..)| n == name).unwrap().1;
-        assert_eq!(arg_bytes("GetProcAddress"), 8);
     }
 
     /// The served shapes no path the corpus takes reaches answer with their decided values, and no

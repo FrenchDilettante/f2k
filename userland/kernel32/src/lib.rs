@@ -9,7 +9,7 @@
 //!
 //! The shared helpers are [`base`]'s (the last error, a failed service's status mapped to it, the
 //! PEB, the process parameters, the process heap and the environment block). The groups: the
-//! console ([`console`], to the console server), the start-up calls ([`startup`]), the image's name
+//! console ([`console`], to the console server), the start-up calls ([`startup`]), the modules
 //! ([`module`]), the synchronization objects, the waits and the handle calls ([`sync`]), the files'
 //! read side ([`files`], over ntdll's file services) and the current directory ([`curdir`]),
 //! the environment ([`env`], over ntdll's), the TLS indexes ([`thread`]), the process's end

@@ -40,6 +40,8 @@ pub mod teb_offset {
 pub mod peb_offset {
     /// ImageBaseAddress: the process image's base, what GetModuleHandle(NULL) returns.
     pub const IMAGE_BASE_ADDRESS: u32 = 0x08;
+    /// Ldr: the loader's PEB_LDR_DATA, the heads of the module lists (see `user::ldr`).
+    pub const LDR: u32 = 0x0C;
     /// ProcessParameters: the RTL_USER_PROCESS_PARAMETERS block (see `user::params`).
     pub const PROCESS_PARAMETERS: u32 = 0x10;
     /// ProcessHeap: what GetProcessHeap returns (ntdll's LdrInitializeThunk writes it on the
@@ -171,8 +173,9 @@ const PLATFORM_WIN32_NT: u32 = 2;
 /// LdrInitializeThunk makes the process heap, the list's first entry), the TLS bitmaps' headers
 /// (every index free), the
 /// system's version (GetVersion's: 5.0, build 2195, service pack 4, NT), the image's subsystem and
-/// its version, and the service pack's name (on the parameters' pages: none without them).
-pub fn peb_words(peb: u32, init: &PebInit) -> [(u32, u32); 19] {
+/// its version, and the service pack's name and the loader's module lists (on the parameters'
+/// pages: none without them).
+pub fn peb_words(peb: u32, init: &PebInit) -> [(u32, u32); 20] {
     use peb_offset::*;
     [
         (IMAGE_BASE_ADDRESS, init.image_base),
@@ -215,6 +218,14 @@ pub fn peb_words(peb: u32, init: &PebInit) -> [(u32, u32); 19] {
                 0
             } else {
                 init.parameters + crate::user::params::CSD_VERSION_BUFFER
+            },
+        ),
+        (
+            LDR,
+            if init.parameters == 0 {
+                0
+            } else {
+                init.parameters + crate::user::ldr::LOADER_DATA
             },
         ),
     ]
@@ -266,6 +277,8 @@ mod tests {
         assert_eq!(teb_offset::LAST_ERROR, 0x34);
         assert_eq!(teb_offset::DEALLOCATION_STACK, 0xE0C);
         assert_eq!(peb_offset::IMAGE_BASE_ADDRESS, 0x08);
+        assert_eq!(peb_offset::LDR, rtl::modules::peb::LDR);
+        assert_eq!(peb_offset::LOADER_LOCK, rtl::modules::peb::LOADER_LOCK);
         assert_eq!(peb_offset::PROCESS_PARAMETERS, 0x10);
         assert_eq!(peb_offset::PROCESS_HEAP, 0x18);
         assert_eq!(peb_offset::FAST_PEB_LOCK, 0x1C);
@@ -358,7 +371,7 @@ mod tests {
         );
     }
 
-    /// A fresh PEB: the image and the parameters; no process heap yet (ntdll's LdrInitializeThunk
+    /// A fresh PEB: the image, the parameters and the loader's module lists; no process heap yet (ntdll's LdrInitializeThunk
     /// makes it), the heap list empty over its 16-entry array past the PEB proper; the two TLS
     /// bitmaps' headers (64 and 1024 bits, over the PEB's own bit arrays, every index free); no PEB
     /// lock or loader lock yet (ntdll's LdrInitializeThunk makes them). Past the PEB proper only the
@@ -370,6 +383,10 @@ mod tests {
         let value = |offset| words.iter().find(|&&(o, _)| o == offset).map(|&(_, v)| v);
         assert_eq!(value(peb_offset::IMAGE_BASE_ADDRESS), Some(0x0040_0000));
         assert_eq!(value(peb_offset::PROCESS_PARAMETERS), Some(0x0032_0000));
+        assert_eq!(
+            value(peb_offset::LDR),
+            Some(0x0032_0000 + crate::user::ldr::LOADER_DATA)
+        );
         assert_eq!(value(peb_offset::PROCESS_HEAP), None);
         assert_eq!(value(peb_offset::NUMBER_OF_HEAPS), None, "no heap yet");
         assert_eq!(value(peb_offset::MAXIMUM_NUMBER_OF_HEAPS), Some(16));

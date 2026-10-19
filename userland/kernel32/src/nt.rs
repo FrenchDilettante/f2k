@@ -15,6 +15,14 @@ pub struct UnicodeString {
     pub buffer: *mut u16,
 }
 
+/// An ANSI_STRING: its length and room in bytes, and its buffer.
+#[repr(C)]
+pub struct AnsiString {
+    pub length: u16,
+    pub maximum_length: u16,
+    pub buffer: *const u8,
+}
+
 /// An OBJECT_ATTRIBUTES: what names an object to the system services.
 #[repr(C)]
 pub struct ObjectAttributes {
@@ -444,12 +452,34 @@ unsafe extern "system" {
         destination: *mut UnicodeString,
         returned: *mut u32,
     ) -> u32;
+    /// The loader's: a module by its name, loaded (counted) or not, freed, and an export of it.
+    pub fn LdrGetDllHandle(
+        path: *const u16,
+        characteristics: *const u32,
+        name: *const UnicodeString,
+        handle: *mut u32,
+    ) -> u32;
+    pub fn LdrLoadDll(
+        path: *const u16,
+        characteristics: *const u32,
+        name: *const UnicodeString,
+        handle: *mut u32,
+    ) -> u32;
+    pub fn LdrUnloadDll(module: u32) -> u32;
+    pub fn LdrGetProcedureAddress(
+        module: u32,
+        name: *const AnsiString,
+        ordinal: u32,
+        address: *mut u32,
+    ) -> u32;
 }
 
 #[cfg(test)]
 pub use files::*;
 #[cfg(test)]
 pub use host::*;
+#[cfg(test)]
+pub use modules::*;
 #[cfg(test)]
 pub use threads::*;
 
@@ -1815,6 +1845,7 @@ pub mod threads {
             pointer(peb + 0x81C, peb + 0x154);
             pointer(teb + 0x18, teb);
             pointer(teb + 0x30, peb);
+            super::modules::plant(peb);
             HostProcess {
                 peb,
                 parameters,
@@ -2134,5 +2165,159 @@ pub mod threads {
             _ => return STATUS_INVALID_PARAMETER,
         }
         0
+    }
+}
+
+/// The host tests' loader: the PEB's module lists as the kernel lays them out (the image, ntdll,
+/// kernel32, in load order), and ntdll's loader exports over a table of the same modules (the
+/// lookups themselves are `rtl::modules`', tested there and against the real DLLs in the kernel).
+#[cfg(test)]
+#[allow(non_snake_case)]
+pub mod modules {
+    use std::cell::RefCell;
+
+    use super::host::failure;
+    use super::threads::{IMAGE_BASE, IMAGE_PATH};
+    use super::{AnsiString, UnicodeString};
+
+    /// The system DLLs' bases.
+    pub const NTDLL: u32 = 0x77F8_0000;
+    pub const KERNEL32: u32 = 0x7C4E_0000;
+    /// GetTickCount's stand-in address in kernel32.
+    pub const GET_TICK_COUNT: u32 = KERNEL32 + 0x1000;
+
+    /// The modules' full paths, in load order (the image's the parameters' ImagePathName).
+    pub const MODULE_PATHS: [(u32, &str); 3] = [
+        (IMAGE_BASE, IMAGE_PATH),
+        (NTDLL, "C:\\WINNT\\system32\\ntdll.dll"),
+        (KERNEL32, "C:\\WINNT\\system32\\KERNEL32.DLL"),
+    ];
+
+    const STATUS_DLL_NOT_FOUND: u32 = 0xC000_0135;
+    const STATUS_ORDINAL_NOT_FOUND: u32 = 0xC000_0138;
+    const STATUS_ENTRYPOINT_NOT_FOUND: u32 = 0xC000_0139;
+
+    std::thread_local! {
+        /// The names the loader was asked for, as kernel32 converted them.
+        pub static ASKED: RefCell<std::vec::Vec<std::string::String>> = const { RefCell::new(std::vec::Vec::new()) };
+    }
+
+    fn put(at: usize, value: u32) {
+        // SAFETY: inside a leaked stand-in page.
+        unsafe { (at as *mut u32).write(value) }
+    }
+
+    /// The PEB's Ldr (its load-order list) and LoaderLock, as the kernel and ntdll set them.
+    pub fn plant(peb: usize) {
+        let pointer = crate::base::write_pointer;
+        let page = std::boxed::Box::leak(std::vec![0u32; 0x400].into_boxed_slice()).as_mut_ptr()
+            as usize;
+        pointer(peb + 0x0C, page);
+        pointer(peb + 0xA0, peb + 0x900);
+        let head = page + 0x0C;
+        let entry = |index: usize| page + 0x40 + 0x48 * index;
+        let mut strings = entry(MODULE_PATHS.len());
+        for (index, (base, path)) in MODULE_PATHS.iter().enumerate() {
+            let at = entry(index);
+            pointer(
+                at,
+                if index + 1 < MODULE_PATHS.len() {
+                    entry(index + 1)
+                } else {
+                    head
+                },
+            );
+            pointer(at + 0x18, *base as usize);
+            let units: std::vec::Vec<u16> = path.encode_utf16().collect();
+            // SAFETY: inside the leaked page.
+            unsafe {
+                core::ptr::copy_nonoverlapping(units.as_ptr(), strings as *mut u16, units.len())
+            };
+            let length = 2 * units.len() as u32;
+            put(at + 0x24, length | (length + 2) << 16);
+            pointer(at + 0x28, strings);
+            strings += length as usize + 2;
+        }
+        pointer(head, entry(0));
+    }
+
+    /// The module a name names: its file part, without regard to case, `.dll` when it has no
+    /// extension.
+    fn named(name: *const UnicodeString) -> Option<u32> {
+        // SAFETY: the caller's string.
+        let name = unsafe { &*name };
+        // SAFETY: as above.
+        let units = unsafe { core::slice::from_raw_parts(name.buffer, name.length as usize / 2) };
+        let text = std::string::String::from_utf16_lossy(units);
+        ASKED.with(|asked| asked.borrow_mut().push(text.clone()));
+        let file = text.rsplit('\\').next().unwrap_or("").to_ascii_lowercase();
+        let file = if file.contains('.') { file } else { file + ".dll" };
+        MODULE_PATHS
+            .iter()
+            .find(|(_, path)| path.rsplit('\\').next().unwrap().eq_ignore_ascii_case(&file))
+            .map(|&(base, _)| base)
+    }
+
+    pub unsafe extern "system" fn LdrGetDllHandle(
+        _path: *const u16,
+        _characteristics: *const u32,
+        name: *const UnicodeString,
+        handle: *mut u32,
+    ) -> u32 {
+        if let Some(status) = failure() {
+            return status;
+        }
+        let found = named(name);
+        // SAFETY: the caller's handle.
+        unsafe { handle.write(found.unwrap_or(0)) };
+        found.map_or(STATUS_DLL_NOT_FOUND, |_| 0)
+    }
+
+    pub unsafe extern "system" fn LdrLoadDll(
+        path: *const u16,
+        characteristics: *const u32,
+        name: *const UnicodeString,
+        handle: *mut u32,
+    ) -> u32 {
+        // SAFETY: as LdrGetDllHandle.
+        unsafe { LdrGetDllHandle(path, characteristics, name, handle) }
+    }
+
+    pub unsafe extern "system" fn LdrUnloadDll(module: u32) -> u32 {
+        if let Some(status) = failure() {
+            return status;
+        }
+        if MODULE_PATHS.iter().any(|&(base, _)| base == module) {
+            0
+        } else {
+            STATUS_DLL_NOT_FOUND
+        }
+    }
+
+    /// kernel32's GetTickCount alone is an export (by its exact name).
+    pub unsafe extern "system" fn LdrGetProcedureAddress(
+        module: u32,
+        name: *const AnsiString,
+        _ordinal: u32,
+        address: *mut u32,
+    ) -> u32 {
+        if let Some(status) = failure() {
+            return status;
+        }
+        if !MODULE_PATHS.iter().any(|&(base, _)| base == module) {
+            return STATUS_DLL_NOT_FOUND;
+        }
+        // SAFETY: the caller's string, when given.
+        let Some(name) = (unsafe { name.as_ref() }) else {
+            return STATUS_ORDINAL_NOT_FOUND;
+        };
+        // SAFETY: as above.
+        let name = unsafe { core::slice::from_raw_parts(name.buffer, usize::from(name.length)) };
+        if module == KERNEL32 && name == b"GetTickCount" {
+            // SAFETY: the caller's address.
+            unsafe { address.write(GET_TICK_COUNT) };
+            return 0;
+        }
+        STATUS_ENTRYPOINT_NOT_FOUND
     }
 }

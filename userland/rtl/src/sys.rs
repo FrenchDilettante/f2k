@@ -43,7 +43,7 @@ const PEB_FAST_PEB_UNLOCK_ROUTINE: usize = 0x24;
 const PEB_LOCK_STORAGE: usize = 0x860;
 /// The PEB's LoaderLock, and where F2K keeps the lock it points at: past the PEB proper on its page
 /// (Windows 2000 keeps LdrpLoaderLock in ntdll's data).
-const PEB_LOADER_LOCK: usize = 0xA0;
+const PEB_LOADER_LOCK: usize = crate::modules::peb::LOADER_LOCK as usize;
 const LOADER_LOCK_STORAGE: usize = 0x900;
 
 /// The calling thread's system.

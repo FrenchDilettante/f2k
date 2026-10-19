@@ -202,6 +202,8 @@ pub struct Image {
     pub subsystem_version: (u16, u16),
     /// The file header's characteristics (the DLL flag among them).
     pub characteristics: u16,
+    /// The file header's TimeDateStamp (the loader's module lists record it).
+    pub time_date_stamp: u32,
     directories: [DataDirectory; MAX_DIRECTORIES],
     num_directories: usize,
     sections: [Section; MAX_SECTIONS],
@@ -341,6 +343,16 @@ impl Exports {
         (rva != 0).then(|| Exports::read(mapped, rva, size))
     }
 
+    /// Every exported name, in the name table's order.
+    #[cfg(test)]
+    pub fn names<'a>(&self, mapped: &'a [u8]) -> impl Iterator<Item = &'a str> + 'a {
+        let names_rva = self.names_rva as usize;
+        (0..self.num_names as usize).map(move |index| {
+            let name_rva = read_u32(mapped, names_rva + index * 4, "export name");
+            read_cstr(mapped, name_rva as usize, "export name")
+        })
+    }
+
     /// The export with this name. Names compare exactly (export names are case-sensitive); the name
     /// table is walked in full, so its sort order is not relied on.
     pub fn by_name<'a>(&self, mapped: &'a [u8], name: &str) -> Option<Export<'a>> {
@@ -470,6 +482,7 @@ impl Image {
         let num_sections = read_u16(file, nt + 6, "section count") as usize;
         let size_optional = read_u16(file, nt + 20, "SizeOfOptionalHeader") as usize;
         let characteristics = read_u16(file, nt + 22, "Characteristics");
+        let time_date_stamp = read_u32(file, nt + 8, "TimeDateStamp");
         let opt = nt + SIZE_NT_SIGNATURE + SIZE_FILE_HEADER;
 
         if machine != MACHINE_I386 {
@@ -659,6 +672,7 @@ impl Image {
             subsystem,
             subsystem_version,
             characteristics,
+            time_date_stamp,
             directories,
             num_directories,
             sections,

@@ -242,14 +242,15 @@ def kernel32_exports() -> list[dict]:
     return tomllib.loads((f2kboot.REPO_ROOT / "userland" / "kernel32" / "exports.toml").read_text())["export"]
 
 
-# The kernel32 exports the kernel still serves (the kernel's transitional Win32 services: `legacy`
-# handlers and `floor` answers, generated int 2Eh stubs). Each increment moves its group to
-# kernel32's own code over ntdll and lowers this; C1 retires the last.
-SERVED_KERNEL32_EXPORTS = 2
+# The kernel32 exports the kernel still serves (the kernel's transitional Win32 services:
+# `legacy` handlers and `floor` answers, generated int 2Eh stubs). Each increment moved its
+# group to kernel32's own code over ntdll and lowered this; the modules moved the last, and
+# the service layer's deletion follows.
+SERVED_KERNEL32_EXPORTS = 0
 
 # The kernel32 exports the corpus imports that are not built yet (`unimplemented` stubs failing with
 # ERROR_CALL_NOT_IMPLEMENTED, each naming its increment). It only goes down.
-UNIMPLEMENTED_KERNEL32_EXPORTS = 1
+UNIMPLEMENTED_KERNEL32_EXPORTS = 0
 
 
 def test_served_kernel32_exports_only_go_down():
@@ -369,10 +370,6 @@ def test_kernel32_imports_nothing_but_ntdll(builder):
     assert modules <= {"ntdll.dll"}, modules
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="C1: kernel32's served exports are int 2Eh stubs until their groups move over ntdll",
-)
 def test_kernel32_enters_the_kernel_only_through_ntdll(builder):
     """Windows 2000's kernel32 holds no `int 2Eh`: only ntdll's stubs enter the kernel, every
     kernel32 export being user-mode code over ntdll."""

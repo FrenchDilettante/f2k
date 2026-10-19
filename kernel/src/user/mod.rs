@@ -15,6 +15,7 @@
 
 pub mod apc;
 pub mod args;
+pub mod ldr;
 pub mod params;
 pub mod seh;
 pub mod shared;

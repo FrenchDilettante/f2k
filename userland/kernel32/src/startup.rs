@@ -19,11 +19,9 @@ const ANSI_COMMAND_LINE: usize = 0x8A0;
 const ANSI_STARTUP_INFO: usize = 0x8A4;
 
 /// The process parameters' fields kernel32 reads (RTL_USER_PROCESS_PARAMETERS, NT 5.0): the
-/// standard handles, the image's path, the command line, the startup values from StartingX to
-/// WindowFlags, then ShowWindowFlags, and the strings (WindowTitle, DesktopInfo, ShellInfo,
-/// RuntimeData).
+/// standard handles, the command line, the startup values from StartingX to WindowFlags, then
+/// ShowWindowFlags, and the strings (WindowTitle, DesktopInfo, ShellInfo, RuntimeData).
 const STANDARD_INPUT: usize = 0x18;
-pub(crate) const IMAGE_PATH_NAME: usize = 0x38;
 const COMMAND_LINE: usize = 0x40;
 const STARTING_X: usize = 0x4C;
 const SHOW_WINDOW_FLAGS: usize = 0x6C;

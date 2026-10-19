@@ -7,6 +7,7 @@
 //! ([`heap`] over the allocator core [`heapcore`]: ntdll's RtlCreateHeap family), Local and Global
 //! memory ([`localmem`]: kernel32's, over ntdll's heap calls), the environment blocks ([`env`]:
 //! ntdll's RtlSetEnvironmentVariable family), the loader's share of a thread's start ([`ldr`]), the
+//! loader's module lists and export lookups ([`modules`]: ntdll's LdrGetDllHandle family), the
 //! console server's message format and rules ([`console`]: kernel32's side and the kernel's
 //! stand-in for csrss share them), and structured exception handling's walks ([`seh`]: ntdll's
 //! RtlDispatchException and RtlUnwind, with the CONTEXT and record layouts the kernel writes).
@@ -27,6 +28,7 @@ pub mod heap;
 pub mod heapcore;
 pub mod ldr;
 pub mod localmem;
+pub mod modules;
 pub mod path;
 pub mod seh;
 pub mod status;

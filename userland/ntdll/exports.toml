@@ -704,6 +704,40 @@ args = ["ptr Environment", "ptr Source", "ptr Destination", "ptr<u32> ReturnedLe
 impl = { native = "RtlExpandEnvironmentStrings_U" }
 pinned_by = ["runtime/env"]
 
+# --- the loader's module lists (src/loader.rs over rtl::modules) ----------------------------------
+
+[[export]]
+name = "LdrGetDllHandle"
+group = "loader"
+args = ["ptr DllPath", "ptr DllCharacteristics", "ptr DllName", "ptr<u32> DllHandle"]
+impl = { native = "LdrGetDllHandle" }
+note = "over the PEB's module lists, which the kernel builds at the process's creation; a name with a path is matched against the full paths"
+pinned_by = ["runtime/module", "memory/image"]
+
+[[export]]
+name = "LdrLoadDll"
+group = "loader"
+args = ["ptr DllPath", "ptr DllCharacteristics", "ptr DllName", "ptr<u32> DllHandle"]
+impl = { native = "LdrLoadDll" }
+note = "finds a module the process already has (nothing loads from disk yet: STATUS_DLL_NOT_FOUND), its load count raised"
+pinned_by = ["runtime/module"]
+
+[[export]]
+name = "LdrUnloadDll"
+group = "loader"
+args = ["u32 DllHandle"]
+impl = { native = "LdrUnloadDll" }
+note = "a module's load count lowered; nothing is ever unmapped"
+pinned_by = ["runtime/module"]
+
+[[export]]
+name = "LdrGetProcedureAddress"
+group = "loader"
+args = ["u32 DllHandle", "ptr ProcedureName", "u32 ProcedureNumber", "ptr<u32> ProcedureAddress"]
+impl = { native = "LdrGetProcedureAddress" }
+note = "the export directory as mapped, forwarders followed; an ordinal finds nothing (STATUS_ORDINAL_NOT_FOUND) until the DLLs' ordinals are Windows 2000's"
+pinned_by = ["runtime/module"]
+
 # --- the loader's thread start and end (src/ldr.s, src/main.rs over rtl::heap and rtl::ldr) ---------
 
 [[export]]

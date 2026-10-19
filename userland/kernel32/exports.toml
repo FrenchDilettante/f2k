@@ -159,14 +159,16 @@ note = "every image's main thread starts here (EAX its entry point): BaseProcess
 name = "GetProcAddress"
 group = "termination"
 args = ["handle hModule", "ptr lpProcName"]
-impl = { legacy = "crate::exec::modules::svc_get_proc_address" }
+impl = { native = "GetProcAddress" }
 pinned_by = ["runtime/module"]
+scenarios = ["long_export_names_are_not_found", "procedures_come_from_the_loader"]
 
 [[export]]
 name = "LoadLibraryA"
 group = "termination"
-args = ["strA lpFileName"]
-impl = { legacy = "crate::exec::modules::svc_load_library_a" }
+args = ["strA?[261] lpFileName"]
+impl = { native = "LoadLibraryA" }
+scenarios = ["module_names_past_max_path_are_refused", "module_handles_come_from_the_loader"]
 pinned_by = ["runtime/module"]
 
 [[export]]
@@ -218,18 +220,17 @@ pinned_by = ["runtime/unhandled"]
 name = "FreeLibrary"
 group = "termination"
 args = ["handle hLibModule"]
-impl = { unimplemented = "B10: modules" }
-fails = "FALSE"
+impl = { native = "FreeLibrary" }
 pinned_by = ["runtime/module"]
+scenarios = ["free_library_answers_for_modules"]
 
 [[export]]
 name = "GetModuleHandleA"
 group = "termination"
 args = ["strA?[261] lpModuleName"]
 impl = { native = "GetModuleHandleA" }
-note = "the image's handle for a null name (the PEB's ImageBaseAddress); a name waits for the module lists, ERROR_CALL_NOT_IMPLEMENTED until then"
+scenarios = ["module_names_past_max_path_are_refused", "module_handles_come_from_the_loader"]
 pinned_by = ["memory/image", "runtime/module", "runtime/teb"]
-scenarios = ["get_module_handle_of_null_is_the_image", "get_module_handle_finds_kernel32_by_name"]
 
 # --- command line / startup info ------------------------------------------------------------------
 

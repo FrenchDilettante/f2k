@@ -13,11 +13,13 @@
 //! `src/heap.s` over `rtl::heap`); the environment (RtlSetEnvironmentVariable,
 //! RtlQueryEnvironmentVariable_U, RtlExpandEnvironmentStrings_U: `src/env.rs` over `rtl::env`);
 //! the current directory and the DOS paths (RtlSetCurrentDirectory_U, RtlGetCurrentDirectory_U,
-//! RtlGetFullPathName_U, RtlDosPathNameToNtPathName_U: `src/curdir.rs` over `rtl::path`); and the
-//! loader's share of a thread's start and end: LdrInitializeThunk, which the kernel
-//! delivers before a fresh thread's first instruction (`src/ldr.s`: the process heap, the PEB lock
-//! and the loader lock, the thread's implicit TLS), and LdrShutdownThread and LdrShutdownProcess,
-//! kernel32's ExitThread's and ExitProcess's. The kernel finds LdrInitializeThunk and the two
+//! RtlGetFullPathName_U, RtlDosPathNameToNtPathName_U: `src/curdir.rs` over `rtl::path`); the
+//! loader's exports over the process's module lists (LdrGetDllHandle, LdrLoadDll, LdrUnloadDll,
+//! LdrGetProcedureAddress: `src/loader.rs` over `rtl::modules`); and the loader's share of a
+//! thread's start and end: LdrInitializeThunk, which the kernel delivers before a fresh thread's
+//! first instruction (`src/ldr.s`: the process heap, the PEB lock and the loader lock, the thread's
+//! implicit TLS), and LdrShutdownThread and LdrShutdownProcess, kernel32's ExitThread's and
+//! ExitProcess's. The kernel finds LdrInitializeThunk and the two
 //! dispatchers by their export names.
 
 #![no_std]
@@ -28,6 +30,7 @@ extern crate rtl;
 mod curdir;
 mod env;
 mod except;
+mod loader;
 mod status;
 
 core::arch::global_asm!(

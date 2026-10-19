@@ -114,22 +114,13 @@ fn the_system_dlls_serve_the_registry() {
         );
         addresses.push(address);
     }
-    // The corpus's argument-block shapes, looked up by name so a renumbering cannot silently skew
-    // the pins.
-    for (name, arg_bytes) in [("GetProcAddress", 8), ("LoadLibraryA", 4)] {
-        let &(_, found, _) = SERVICES
-            .iter()
-            .find(|&&(export, ..)| export == name)
-            .unwrap();
-        assert_eq!(found, arg_bytes, "{name}");
-    }
     // The natives: kernel32's own code (the trivial ones, the exception filter and the pointer
     // probes its assembly, the TLS slots' reads and writes; the console, start-up, locale, clock,
     // virtual-memory, mapping, synchronization, timer, sleep, APC, affinity, TLS-index,
-    // environment, file (the write side's included) and current-directory calls and RaiseException
-    // its Rust, the heap and Local/Global calls its own over ntdll's heap).
+    // environment, file (the write side's included), current-directory and module calls and
+    // RaiseException its Rust, the heap and Local/Global calls its own over ntdll's heap).
     // The internal start thunks are not among them.
-    assert_eq!(NATIVE_EXPORTS.len(), 171);
+    assert_eq!(NATIVE_EXPORTS.len(), 174);
     for &(name, _) in &NATIVE_EXPORTS {
         let address = kernel32_export(name).unwrap_or_else(|| panic!("kernel32 exports no {name}"));
         addresses.push(address);
@@ -216,28 +207,6 @@ fn the_entry_points_keep_their_protocols() {
     for name in ["SetUnhandledExceptionFilter", "UnhandledExceptionFilter"] {
         let body = bytes_at(kernel32_export(name).unwrap());
         assert!(body[..32].windows(4).any(|w| w == slot), "{name}");
-    }
-}
-
-/// Every unimplemented export has its own generated body: the last error set to
-/// ERROR_CALL_NOT_IMPLEMENTED through FS (mov dword ptr fs:[34h], 120), the spec's failure value
-/// in EAX, then the stdcall return popping its argument block.
-#[test]
-fn unimplemented_exports_fail_the_call() {
-    // (export, its failure value, its argument block), as the spec declares them.
-    for (name, fails, arg_bytes) in [
-        ("FreeLibrary", 0u32, 4u16),
-    ] {
-        let mut stub = vec![0x64, 0xC7, 0x05, 0x34, 0, 0, 0, 120, 0, 0, 0, 0xB8];
-        stub.extend_from_slice(&fails.to_le_bytes());
-        stub.push(0xC2);
-        stub.extend_from_slice(&arg_bytes.to_le_bytes());
-        let found = bytes_at(kernel32_export(name).unwrap_or_else(|| panic!("no {name}")));
-        assert!(
-            found.starts_with(&stub),
-            "{name}: {:02x?}",
-            &found[..stub.len()]
-        );
     }
 }
 
@@ -328,96 +297,6 @@ fn the_corpus_snaps_fully_against_the_module_table() {
         image.map_into(file, &mut mapped);
         let result = image.snap_imports(file, &mut mapped, crate::exec::loader::resolve_import);
         assert_eq!(result.thunks, thunks, "{fixture}");
-    }
-}
-
-/// Module names: each system DLL by any case, with or without `.dll`, through a path; nothing else.
-/// Module handles: the DLLs' bases.
-#[test]
-fn modules_answer_to_their_names_and_handles() {
-    for name in [
-        &b"kernel32.dll"[..],
-        b"KERNEL32",
-        b"Kernel32.Dll",
-        b"C:\\WINNT\\system32\\kernel32.dll",
-        b"system32/KERNEL32.DLL",
-    ] {
-        assert_eq!(
-            module_named(name),
-            Some(KERNEL32),
-            "{:?}",
-            core::str::from_utf8(name)
-        );
-    }
-    for name in [
-        &b"ntdll.dll"[..],
-        b"NTDLL",
-        b"C:\\WINNT\\system32\\NTDLL.DLL",
-    ] {
-        assert_eq!(
-            module_named(name),
-            Some(NTDLL),
-            "{:?}",
-            core::str::from_utf8(name)
-        );
-    }
-    for name in [
-        &b"nosuch.dll"[..],
-        b"kernel32.exe",
-        b"kernel32.",
-        b"",
-        b"C:\\",
-    ] {
-        assert_eq!(module_named(name), None, "{:?}", core::str::from_utf8(name));
-    }
-    assert_eq!(module_of(KERNEL32_BASE), Some(KERNEL32));
-    assert_eq!(module_of(NTDLL_BASE), Some(NTDLL));
-    for handle in [0, 0x0040_0000, KERNEL32_BASE + 0x1000, 0x1234_0000] {
-        assert_eq!(module_of(handle), None, "{handle:#x}");
-    }
-}
-
-fn zero_frame() -> crate::user::TrapFrame {
-    crate::user::TrapFrame {
-        edi: 0,
-        esi: 0,
-        ebp: 0,
-        esp: 0,
-        ebx: 0,
-        edx: 0,
-        ecx: 0,
-        eax: 0xDEAD,
-        vector: 0,
-        error_code: 0,
-        eip: 0,
-        cs: 0,
-        eflags: 0,
-        user_esp: 0,
-        user_ss: 0,
-    }
-}
-
-/// GetProcAddress and LoadLibraryA refuse (NULL) before they read the caller's name: a handle
-/// naming no system DLL (the image exports nothing), an ordinal, a NULL name; an unreadable name
-/// (here past the probe limit) is refused too. Their lookups are the module table's, pinned above.
-#[test]
-fn the_module_services_refuse_what_names_no_module() {
-    let kernel_name = crate::user::syscall::USER_PROBE_LIMIT;
-    for args in [
-        [0x0040_0000, kernel_name],
-        [0, kernel_name],
-        [KERNEL32_BASE, 0],
-        [KERNEL32_BASE, 0xFFFF],
-        [NTDLL_BASE, kernel_name],
-    ] {
-        let mut frame = zero_frame();
-        svc_get_proc_address(&mut frame, &args);
-        assert_eq!(frame.eax, 0, "{args:x?}");
-    }
-    for name in [0, kernel_name] {
-        let mut frame = zero_frame();
-        svc_load_library_a(&mut frame, &[name]);
-        assert_eq!(frame.eax, 0, "{name:#x}");
     }
 }
 
