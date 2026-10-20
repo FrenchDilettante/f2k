@@ -105,8 +105,7 @@ the last error from the NTSTATUS through `RtlNtStatusToDosError`. The kernel has
 The host scenarios (`userland/kernel32/src/scenarios/`, all `#[cfg(test)]`) call kernel32's
 exports as a program does, against host stand-ins for ntdll. A known gap is an expected-failure
 test: a scenario marked `#[ignore = "<gap id>: <why>"]`, or a strict pending block in its
-fixture's `fixture.toml`; gaps no test can capture are listed in [docs/status.md](docs/status.md),
-with the branch's status.
+fixture's `fixture.toml`.
 
 The ledger report derives each export's status from its evidence (complete, host-only, partial,
 unpinned, forward, internal). `--check` checks the specs against the captures and the scenarios;
@@ -213,7 +212,6 @@ f2k/
 ├── tools/exportgen/  # The export specs' reader and generator (a host crate, outside the workspace)
 ├── userland/         # The system DLLs (own workspace and target): rtl, ntdll, kernel32, each
 │                     # DLL's export spec in userland/<dll>/exports.toml
-├── docs/status.md    # Work done, decisions, known gaps and issues, assumptions to verify
 │
 └── kernel/           # F2K Kernel
     ├── Cargo.toml        # Kernel package
