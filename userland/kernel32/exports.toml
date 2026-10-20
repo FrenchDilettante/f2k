@@ -148,7 +148,7 @@ name = "GetProcAddress"
 group = "termination"
 args = ["handle hModule", "ptr lpProcName"]
 impl = { native = "GetProcAddress" }
-pinned_by = ["runtime/module"]
+pinned_by = ["runtime/module", "dll/proc"]
 scenarios = ["long_export_names_are_not_found", "procedures_come_from_the_loader"]
 
 [[export]]

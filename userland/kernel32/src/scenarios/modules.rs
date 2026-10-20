@@ -10,6 +10,7 @@ use crate::nt::{ASKED, GET_TICK_COUNT, GET_TICK_COUNT_ORDINAL, IMAGE_BASE as IMA
 const ERROR_INVALID_PARAMETER: u32 = 87;
 const ERROR_MOD_NOT_FOUND: u32 = 126;
 const ERROR_PROC_NOT_FOUND: u32 = 127;
+const ERROR_INVALID_ORDINAL: u32 = 182;
 const ERROR_FILENAME_EXCED_RANGE: u32 = 206;
 
 /// A NUL-terminated copy of `text`.
@@ -121,8 +122,9 @@ fn free_library_answers_for_modules() {
 }
 
 /// GetProcAddress: a null handle is the image's; an ordinal (a value below 0x10000) is looked up as
-/// one, never read as a name (one the module does not export is ERROR_PROC_NOT_FOUND); a handle
-/// naming no module is ERROR_MOD_NOT_FOUND; names are exact.
+/// one, never read as a name (one the module does not export is ERROR_INVALID_ORDINAL, a null name
+/// ordinal 0, ERROR_INVALID_PARAMETER); a handle naming no module is ERROR_MOD_NOT_FOUND; names
+/// are exact.
 #[test]
 fn procedures_come_from_the_loader() {
     assert_eq!(unsafe { get_proc_address(KERNEL32, c(b"gettickcount").as_ptr()) }, 0);
@@ -131,7 +133,9 @@ fn procedures_come_from_the_loader() {
     assert_eq!(last_error(), ERROR_PROC_NOT_FOUND);
     assert_eq!(unsafe { get_proc_address(KERNEL32, GET_TICK_COUNT_ORDINAL as usize as *const u8) }, GET_TICK_COUNT);
     assert_eq!(unsafe { get_proc_address(KERNEL32, UNREAD as *const u8) }, 0);
-    assert_eq!(last_error(), ERROR_PROC_NOT_FOUND);
+    assert_eq!(last_error(), ERROR_INVALID_ORDINAL);
+    assert_eq!(unsafe { get_proc_address(KERNEL32, core::ptr::null()) }, 0);
+    assert_eq!(last_error(), ERROR_INVALID_PARAMETER);
     assert_eq!(unsafe { get_proc_address(0x1234_0000, c(b"GetTickCount").as_ptr()) }, 0);
     assert_eq!(last_error(), ERROR_MOD_NOT_FOUND);
 }

@@ -24,7 +24,9 @@
 
 use core::cmp::Ordering;
 
-use crate::status::{STATUS_DLL_NOT_FOUND, STATUS_ENTRYPOINT_NOT_FOUND, STATUS_PROCEDURE_NOT_FOUND};
+use crate::status::{
+    STATUS_DLL_NOT_FOUND, STATUS_ENTRYPOINT_NOT_FOUND, STATUS_ORDINAL_NOT_FOUND, STATUS_PROCEDURE_NOT_FOUND,
+};
 
 /// The memory the lists and the images are read from, by user address.
 pub trait Memory {
@@ -305,11 +307,12 @@ pub fn export_by_name<M: Memory>(memory: &M, base: u32, name: &[u8]) -> Result<E
 
 /// The export with ordinal `ordinal` of the image mapped at `base`: biased by the directory's
 /// ordinal base, through its address table. STATUS_PROCEDURE_NOT_FOUND for an image without
-/// exports, STATUS_ENTRYPOINT_NOT_FOUND for an ordinal outside the table or an empty slot.
+/// exports, STATUS_ORDINAL_NOT_FOUND for an ordinal outside the table or an empty slot (Windows
+/// 2000's: GetProcAddress of an ordinal a DLL does not export is ERROR_INVALID_ORDINAL).
 pub fn export_by_ordinal<M: Memory>(memory: &M, base: u32, ordinal: u32) -> Result<Export, u32> {
     let directory = Directory::of(memory, base)?;
-    let slot = ordinal.checked_sub(directory.ordinal_base).ok_or(STATUS_ENTRYPOINT_NOT_FOUND)?;
-    directory.slot(memory, base, slot)
+    let slot = ordinal.checked_sub(directory.ordinal_base).ok_or(STATUS_ORDINAL_NOT_FOUND)?;
+    directory.slot(memory, base, slot).map_err(|_| STATUS_ORDINAL_NOT_FOUND)
 }
 
 /// The base of the module a forwarder's module part names (`NTDLL`: a name without an extension, so
@@ -886,7 +889,7 @@ mod tests {
         assert_eq!(address(KERNEL32, "Hole"), Err(STATUS_ENTRYPOINT_NOT_FOUND), "an empty slot");
         assert_eq!(address(KERNEL32, "Missing"), Err(STATUS_ENTRYPOINT_NOT_FOUND));
         assert_eq!(address(KERNEL32, "ByOrdinal"), Ok(NTDLL + 0x1230), "a forwarder to an ordinal");
-        assert_eq!(address(KERNEL32, "PastTheTable"), Err(STATUS_ENTRYPOINT_NOT_FOUND));
+        assert_eq!(address(KERNEL32, "PastTheTable"), Err(STATUS_ORDINAL_NOT_FOUND), "an ordinal ntdll lacks");
         assert_eq!(address(KERNEL32, "NotAnOrdinal"), Err(STATUS_ENTRYPOINT_NOT_FOUND));
         assert_eq!(address(KERNEL32, "Dotted"), Ok(NTDLL + 0x1300), "the first dot splits");
         assert_eq!(address(KERNEL32, "Elsewhere"), Err(STATUS_DLL_NOT_FOUND));
@@ -907,7 +910,7 @@ mod tests {
 
     /// Ordinals: biased by the directory's base, through the address table (not the name order);
     /// forwarders followed; outside the table, an empty slot, or the base's own bias undone, no
-    /// entry point.
+    /// such ordinal.
     #[test]
     fn exports_resolve_by_ordinal() {
         let space = process();
@@ -917,13 +920,13 @@ mod tests {
         assert_eq!(by_ordinal(KERNEL32, ordinal_of(&space, KERNEL32, "RtlUnwind")), Ok(NTDLL + 0x1230));
         assert_eq!(by_ordinal(KERNEL32, ordinal_of(&space, KERNEL32, "ByOrdinal")), Ok(NTDLL + 0x1230));
         assert_eq!(by_ordinal(NTDLL, 1), Ok(NTDLL + 0x1230), "the model's last name takes the first slot");
-        assert_eq!(by_ordinal(NTDLL, 0), Err(STATUS_ENTRYPOINT_NOT_FOUND), "below the base");
-        assert_eq!(by_ordinal(NTDLL, 4), Err(STATUS_ENTRYPOINT_NOT_FOUND), "past the table");
-        assert_eq!(by_ordinal(NTDLL, 0xFFFF), Err(STATUS_ENTRYPOINT_NOT_FOUND));
+        assert_eq!(by_ordinal(NTDLL, 0), Err(STATUS_ORDINAL_NOT_FOUND), "below the base");
+        assert_eq!(by_ordinal(NTDLL, 4), Err(STATUS_ORDINAL_NOT_FOUND), "past the table");
+        assert_eq!(by_ordinal(NTDLL, 0xFFFF), Err(STATUS_ORDINAL_NOT_FOUND));
         // A two-slot image: "A" in slot 1 (ordinal 2), the empty slot 0 (ordinal 1).
         let holed = Space(std::vec![(0x1000_0000, image(&[("A", Ok(0x10)), ("Hole", Ok(0))]))]);
         assert_eq!(export_by_ordinal(&holed, 0x1000_0000, 2), Ok(Export::Address(0x1000_0010)));
-        assert_eq!(export_by_ordinal(&holed, 0x1000_0000, 1), Err(STATUS_ENTRYPOINT_NOT_FOUND), "an empty slot");
+        assert_eq!(export_by_ordinal(&holed, 0x1000_0000, 1), Err(STATUS_ORDINAL_NOT_FOUND), "an empty slot");
         assert_eq!(by_ordinal(IMAGE, 1), Err(STATUS_PROCEDURE_NOT_FOUND), "the image exports nothing");
     }
 
@@ -1111,7 +1114,7 @@ mod tests {
         };
         assert_eq!(resolved(&descriptors[0]), [Ok(KERNEL32 + 0x2010), Ok(NTDLL + 0x1230), Ok(KERNEL32 + 0x2000)]);
         assert_eq!(resolved(&descriptors[1]), [Ok(NTDLL + 0x1100)]);
-        assert_eq!(resolved(&descriptors[2]), [Err(STATUS_ENTRYPOINT_NOT_FOUND), Err(STATUS_ENTRYPOINT_NOT_FOUND)]);
+        assert_eq!(resolved(&descriptors[2]), [Err(STATUS_ENTRYPOINT_NOT_FOUND), Err(STATUS_ORDINAL_NOT_FOUND)]);
         assert_eq!(import_descriptors(&space, NTDLL).count(), 0, "no import directory");
         assert_eq!(import_descriptors(&space, IMAGE).count(), 0, "no directories at all");
     }

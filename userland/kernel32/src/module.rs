@@ -113,10 +113,11 @@ const MAX_EXPORT_NAME: usize = 0xFFFE;
 
 /// GetProcAddress: the address of the module's export (the image's for a null handle) named
 /// `name`, exactly (LdrGetProcedureAddress, forwarders followed), or of the ordinal a value below
-/// 0x10000 in its place is (the system DLLs' ordinals are their export specs' numbering).
-/// ERROR_PROC_NOT_FOUND for a name or an ordinal the module does not export, ERROR_MOD_NOT_FOUND
-/// for a handle naming no module; an export at the module's own base is no export (Windows 2000's
-/// check).
+/// 0x10000 in its place is (the system DLLs' ordinals are their export specs' numbering; a null
+/// name is ordinal 0). ERROR_PROC_NOT_FOUND for a name the module does not export,
+/// ERROR_INVALID_ORDINAL for an ordinal it does not, ERROR_INVALID_PARAMETER for ordinal 0,
+/// ERROR_MOD_NOT_FOUND for a handle naming no module; an export at the module's own base is no
+/// export (Windows 2000's check).
 ///
 /// # Safety
 ///

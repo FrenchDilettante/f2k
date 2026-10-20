@@ -5,7 +5,3 @@
 description = "dll - a program and its companion DLL: LoadLibraryA of the DLL from the program's directory, GetProcAddress by name and by ordinal, a call into it, and FreeLibrary."
 kind = "sectioned"
 gate = true
-
-# The blocks this kernel does not pass yet, each with the increment that enables it.
-[pending]
-proc = "A5: the ordinal lookup's failure statuses (an ordinal it does not export is 182, the null name with ordinal zero 87; both come out 127 today)"

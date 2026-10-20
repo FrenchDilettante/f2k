@@ -22,7 +22,7 @@
 
 use rtl::modules::{self, entry, Descriptor, Memory, MemoryMut, STATIC_LOAD_COUNT};
 use rtl::path::{nt_path, MAX_PATH};
-use rtl::status::{STATUS_DLL_NOT_FOUND, STATUS_NO_MEMORY, STATUS_SUCCESS};
+use rtl::status::{STATUS_DLL_NOT_FOUND, STATUS_INVALID_PARAMETER, STATUS_NO_MEMORY, STATUS_SUCCESS};
 use rtl::sys::{self, nr, system_service, Native};
 
 use crate::curdir::{self, UnicodeString};
@@ -401,7 +401,9 @@ pub extern "system" fn ldr_unload_dll(module: u32) -> u32 {
 
 /// LdrGetProcedureAddress: the address of the export `name` (or, with no name, of the ordinal
 /// `ordinal`) of the module whose handle is `module`, forwarders followed, into `address` (see
-/// `rtl::modules::procedure_address` and `procedure_by_ordinal` for the statuses).
+/// `rtl::modules::procedure_address` and `procedure_by_ordinal` for the statuses). No name and
+/// ordinal 0 is STATUS_INVALID_PARAMETER, before any lookup (Windows 2000's: GetProcAddress of a
+/// null name is ERROR_INVALID_PARAMETER).
 ///
 /// # Safety
 ///
@@ -422,6 +424,9 @@ pub unsafe extern "system" fn ldr_get_procedure_address(
             unsafe { core::slice::from_raw_parts(name.buffer, usize::from(name.length)) }
         }
     });
+    if name.is_none() && ordinal == 0 {
+        return STATUS_INVALID_PARAMETER;
+    }
     let found = locked(|| match name {
         Some(name) => modules::procedure_address(&Mapped, ldr(), module, name),
         None => modules::procedure_by_ordinal(&Mapped, ldr(), module, ordinal),

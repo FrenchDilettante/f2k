@@ -737,7 +737,7 @@ group = "loader"
 args = ["u32 DllHandle", "ptr ProcedureName", "u32 ProcedureNumber", "ptr<u32> ProcedureAddress"]
 impl = { native = "LdrGetProcedureAddress" }
 note = "the export directory as mapped, by name or by ordinal, forwarders followed (split at the first dot); the system DLLs' ordinals are their specs' numbering, not Windows 2000's"
-pinned_by = ["runtime/module"]
+pinned_by = ["runtime/module", "dll/proc"]
 
 # --- the loader's thread start and end (src/ldr.s, src/main.rs over rtl::heap and rtl::ldr) ---------
 

@@ -2195,7 +2195,9 @@ pub mod modules {
         (KERNEL32, "C:\\WINNT\\system32\\KERNEL32.DLL"),
     ];
 
+    const STATUS_INVALID_PARAMETER: u32 = 0xC000_000D;
     const STATUS_DLL_NOT_FOUND: u32 = 0xC000_0135;
+    const STATUS_ORDINAL_NOT_FOUND: u32 = 0xC000_0138;
     const STATUS_ENTRYPOINT_NOT_FOUND: u32 = 0xC000_0139;
 
     std::thread_local! {
@@ -2295,7 +2297,8 @@ pub mod modules {
         }
     }
 
-    /// kernel32's GetTickCount alone is an export (by its exact name, or by its ordinal).
+    /// kernel32's GetTickCount alone is an export (by its exact name, or by its ordinal); no name
+    /// and ordinal 0 is refused first, as ntdll's loader refuses it.
     pub unsafe extern "system" fn LdrGetProcedureAddress(
         module: u32,
         name: *const AnsiString,
@@ -2304,6 +2307,9 @@ pub mod modules {
     ) -> u32 {
         if let Some(status) = failure() {
             return status;
+        }
+        if name.is_null() && ordinal == 0 {
+            return STATUS_INVALID_PARAMETER;
         }
         if !MODULE_PATHS.iter().any(|&(base, _)| base == module) {
             return STATUS_DLL_NOT_FOUND;
@@ -2315,7 +2321,7 @@ pub mod modules {
                 unsafe { address.write(GET_TICK_COUNT) };
                 return 0;
             }
-            return STATUS_ENTRYPOINT_NOT_FOUND;
+            return STATUS_ORDINAL_NOT_FOUND;
         };
         // SAFETY: as above.
         let name = unsafe { core::slice::from_raw_parts(name.buffer, usize::from(name.length)) };
