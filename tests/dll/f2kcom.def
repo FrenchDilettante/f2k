@@ -1,0 +1,5 @@
+LIBRARY f2kcom
+EXPORTS
+    f2k_sum   @1
+    f2k_greet  @2
+    f2k_next   @3

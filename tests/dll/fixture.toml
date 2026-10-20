@@ -1,7 +1,11 @@
 # dll: one test per block of the real-machine capture (output.txt); see tests/README.md. Its
-# companion DLL (tests/dll/*.dll) goes beside dll.exe in \CORPUS, as it sits beside the program on
-# the real machine. Declared ahead of its real-machine build: until dll.exe, dll.c and output.txt
-# are checked in, the fixture is one skipped test.
+# companion DLL (f2kcom.dll, built beside dll.exe from f2kcom.c and f2kcom.def, with no C runtime
+# and no entry point: nothing runs at load time) goes beside dll.exe in \CORPUS, as it sits beside
+# the program on the real machine.
 description = "dll - a program and its companion DLL: LoadLibraryA of the DLL from the program's directory, GetProcAddress by name and by ordinal, a call into it, and FreeLibrary."
 kind = "sectioned"
 gate = true
+
+# The blocks this kernel does not pass yet, each with the increment that enables it.
+[pending]
+proc = "A5: the ordinal lookup's failure statuses (an ordinal it does not export is 182, the null name with ordinal zero 87; both come out 127 today)"

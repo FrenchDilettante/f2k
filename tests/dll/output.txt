@@ -1,0 +1,53 @@
+# F2K capture of dll (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-AC9F3E6, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Tue 10/20/2026  8:43:04.77
+dll F2KT-SOURCE-CRC=0x4E99B155
+>>> dll.exe load
+== load
+LoadLibraryA(f2kcom.dll): loaded yes err=-
+LoadLibraryA(f2kcom.dll), again: same module yes err=-
+LoadLibraryA(F2KCOM.DLL), another case: same module yes err=-
+GetModuleHandleA(f2kcom.dll): same module yes err=-
+GetModuleFileNameA(f2kcom): F2KCOM.DLL err=-
+FreeLibrary, of three loads: ret=1 err=-
+GetModuleHandleA, after one FreeLibrary: same module yes err=-
+FreeLibrary, of two: ret=1 err=-
+GetModuleHandleA, after two: same module yes err=-
+FreeLibrary, the last: ret=1 err=-
+GetModuleHandleA, after the last FreeLibrary: ret null yes err=126
+LoadLibraryA(nosuch.dll): ret null yes err=126
+LoadLibraryA(f2kcom), no extension: loaded yes err=-
+FreeLibrary, the extensionless load: ret=1 err=-
+dll: done
+<<< exit code=0
+>>> dll.exe proc
+== proc
+LoadLibraryA(f2kcom.dll): loaded yes err=-
+GetProcAddress(f2k_sum): found yes err=-
+GetProcAddress(f2k_greet): found yes err=-
+GetProcAddress(f2k_next): found yes err=-
+GetProcAddress(f2k_nosuch): ret null yes err=127
+GetProcAddress(ordinal 1) is f2k_sum: yes err=-
+GetProcAddress(ordinal 3): found yes err=-
+GetProcAddress(ordinal 99): ret null yes err=182
+GetProcAddress(NULL): ret null yes err=87
+FreeLibrary: ret=1 err=-
+dll: done
+<<< exit code=0
+>>> dll.exe call
+== call
+LoadLibraryA(f2kcom.dll): loaded yes err=-
+f2k_sum(2, 3) = 5
+f2k_sum(-40, 42) = 2
+f2k_greet() = hello from f2kcom.dll
+f2k_next() = 1
+f2k_next() = 2
+f2k_next() = 3
+FreeLibrary: ret=1 err=-
+LoadLibraryA(f2kcom.dll), reloaded: loaded yes err=-
+f2k_next(), after the reload: 1
+FreeLibrary: ret=1 err=-
+dll: done
+<<< exit code=0

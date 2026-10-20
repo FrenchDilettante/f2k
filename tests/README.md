@@ -13,7 +13,8 @@ One directory per test, named after the test:
 tests/<name>/
 ├── <name>.c        # the source, built on the real Windows 2000 machine
 ├── <name>.exe      # the compiled fixture (committed; it is the point)
-├── *.dll           # companion DLLs the program loads, if any (built beside it, committed)
+├── *.dll           # companion DLLs the program loads, if any (committed, built beside it
+│                   # from their checked-in source and .def)
 ├── fixture.toml    # the declaration: its kind, and how its capture compares (served fixtures)
 ├── output.txt      # the real-machine capture, where there is one
 ├── overrides.txt   # blocks the capture script cannot take (an interactive console...), if any
@@ -124,11 +125,14 @@ The fixtures:
   F2K's boot volume is (run `files/setup.bat` once on the real machine:
   attributes git cannot carry). Gated.
   Replaced the `fileio` smoke.
-- `dll` - a program and its companion DLL (`tests/dll/*.dll`, beside
-  it): LoadLibraryA from the program's directory, GetProcAddress by
-  name and by ordinal, a call into the DLL, FreeLibrary. Declared
-  ahead of its real-machine build: until its program, source and
-  capture are checked in, it is one skipped test. Gated.
+- `dll` - a program and its companion DLL (`f2kcom.dll`, built
+  beside it from `f2kcom.c` and `f2kcom.def`, with no C runtime and
+  no entry point: a loaded DLL's entry point is never called, so
+  nothing is observed from load time): the program-driven dynamic
+  linking - LoadLibraryA from the program's directory, the load
+  reference count, GetProcAddress by name and by ordinal (its .def
+  pins them), a call into the DLL, the counter reset by the unload
+  and reload, FreeLibrary down to the unload. Gated.
 - `fswrite` - the write side (create dispositions, writes, truncation,
   share modes, rename/copy/delete, directories, file times, CRT
   writes) in a scratch directory, captured on a local FAT32 volume.
@@ -149,7 +153,9 @@ blocks of `>>> <command line>`, the output, and `<<< exit code=N`
 machine, the date, and the binary's source stamp). The fixtures built on
 `common/f2kt.h` list their own sections (`<fixture>.exe --list`), so
 the script captures whatever the binary declares; `bare`'s modes are
-listed in the script.
+listed in the script. Both scripts take a fixture's name
+(`build.bat dll`, `capture.bat dll`) to rebuild or recapture only that
+one.
 
 `build.bat` stamps each of those binaries with the CRC-32 of its source
 and `f2kt.h` (`common/srcsum.c` computes it; `<fixture>.exe --source`

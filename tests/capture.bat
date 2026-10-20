@@ -20,6 +20,8 @@ rem (runtime console), whose output needs a console: capture those by hand
 rem into the fixture's overrides.txt. Run after build.bat: the binaries it
 rem builds list their sections; older ones do not.
 rem
+rem A fixture's name (capture.bat dll) recaptures only that one.
+rem
 rem This file keeps CRLF line endings: cmd's label search misreads
 rem LF-only batch files. Every redirection leads its command: cmd reads
 rem a digit after "=" and before ">>" as a handle number, so a trailing
@@ -28,26 +30,59 @@ rem "exit code=0>> output.txt" would lose the line.
 setlocal
 cd /d "%~dp0"
 
+if not "%~1"=="" goto one
+
 call files\setup.bat > nul
 
+call :cap_bare
+call :cap_runtime
+for %%F in (memory threads sync sched files fswrite dll) do call :listed %%F
+
+echo Captured. Run "runtime\runtime.exe console" in an interactive console by hand,
+echo into runtime\overrides.txt.
+exit /b 0
+
+rem One fixture (capture.bat dll): recapture only it. The files fixture
+rem needs its data tree's attributes first (files\setup.bat).
+:one
+set F2KT_ONE=
+for %%F in (bare runtime memory threads sync sched files fswrite dll) do if /I "%%F"=="%~1" set F2KT_ONE=yes
+if not defined F2KT_ONE (
+    echo capture.bat: no such fixture %~1
+    exit /b 1
+)
+if /I "%~1"=="files" call files\setup.bat > nul
+if /I "%~1"=="bare" (
+    call :cap_bare
+    goto done
+)
+if /I "%~1"=="runtime" (
+    call :cap_runtime
+    goto done
+)
+call :listed %~1
+:done
+echo Captured %~1.
+exit /b 0
+
+rem Capture bare: no section table, so the script lists its modes.
+:cap_bare
 call :fixture bare nostamp
 call :cap bare.exe
 call :cap bare.exe
 for %%M in (ret exit-code badptr data-exec null-write null-read null-call rdata-write code-write kernel-read kernel-write div-zero ud2 int3 hlt cli io-in into stack-overflow) do call :cap bare.exe %%M
 cd ..
+goto :eof
 
+rem Capture runtime: its args block takes its own arguments, the rest their list.
+:cap_runtime
 call :fixture runtime
 >> output.txt echo ^>^>^> runtime.exe args one "two words" back\slash "tail\\" x
 >> output.txt 2>&1 runtime.exe args one "two words" back\slash "tail\\" x
 >> output.txt echo ^<^<^< exit code=%ERRORLEVEL%
 call :sections runtime.exe args
 cd ..
-
-for %%F in (memory threads sync sched files fswrite) do call :listed %%F
-
-echo Captured. Run "runtime\runtime.exe console" in an interactive console by hand,
-echo into runtime\overrides.txt.
-exit /b 0
+goto :eof
 
 rem Enter a fixture's directory and start its output.txt afresh, with the
 rem provenance header ("nostamp" as %2: the binary has no source stamp).
