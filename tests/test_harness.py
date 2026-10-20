@@ -216,3 +216,77 @@ def test_a_build_of_another_profile_is_refused(tmp_path):
     assert f2kboot.build_mismatch(build, [], profile="dev-opt") is None
     why = f2kboot.build_mismatch(build, [], profile="dev")
     assert why is not None and "dev-opt" in why
+
+
+# --- The text screen's read ---------------------------------------------------------------------
+
+XP_DUMP = """00000000000b8000: 0x48 0x07 0x69 0x07 0x20 0x1e 0x00 0x00
+00000000000b8008: 0xdb 0x70
+"""
+
+
+def test_an_xp_dump_drops_its_addresses_and_decodes_the_bytes():
+    assert f2kboot.parse_xp(XP_DUMP) == bytes([0x48, 0x07, 0x69, 0x07, 0x20, 0x1E, 0, 0, 0xDB, 0x70])
+    with pytest.raises(ValueError):
+        f2kboot.parse_xp("0x48 0x07\n")
+
+
+def test_a_text_page_dump_is_characters_then_attributes():
+    screen = f2kboot.text_screen_of(f2kboot.parse_xp(XP_DUMP))
+    assert screen.cells == [(0x48, 0x07), (0x69, 0x07), (0x20, 0x1E), (0, 0), (0xDB, 0x70)]
+    assert screen.text(0) == "Hi \x00\xdb"
+    with pytest.raises(ValueError):
+        f2kboot.text_screen_of(b"\x48")
+
+
+def png_of(rows: list[bytes], filters: list[int], path) -> None:
+    """Write 8-bit RGB `rows` as a PNG, each row under its filter (0-4)."""
+    import struct
+    import zlib
+
+    width = len(rows[0]) // 3
+
+    def chunk(kind: bytes, body: bytes) -> bytes:
+        return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body))
+
+    raw, previous = bytearray(), bytes(len(rows[0]))
+    for row, kind in zip(rows, filters):
+        encoded = bytearray()
+        for x, value in enumerate(row):
+            left = row[x - 3] if x >= 3 else 0
+            up = previous[x]
+            corner = previous[x - 3] if x >= 3 else 0
+            guess = left + up - corner
+            paeth = min((abs(guess - left), 0, left), (abs(guess - up), 1, up),
+                        (abs(guess - corner), 2, corner))[2]
+            predicted = (0, left, up, (left + up) // 2, paeth)[kind]
+            encoded.append((value - predicted) & 0xFF)
+        raw += bytes([kind]) + encoded
+        previous = row
+    header = struct.pack(">IIBBBBB", width, len(rows), 8, 2, 0, 0, 0)
+    path.write_bytes(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header)
+                     + chunk(b"IDAT", zlib.compress(bytes(raw))) + chunk(b"IEND", b""))
+
+
+def test_a_png_decodes_under_every_row_filter(tmp_path):
+    rows = [bytes((x * 37 + y * 11 + (x * y) % 7) & 0xFF for x in range(3 * 20)) for y in range(5)]
+    path = tmp_path / "filters.png"
+    png_of(rows, [0, 1, 2, 3, 4], path)
+    image = f2kboot.read_png(path)
+    assert (image.width, image.height, image.rows) == (20, 5, rows)
+
+
+def test_differing_cells_name_the_text_cells_a_change_touches(tmp_path):
+    width, height = 2 * f2kboot.CELL_WIDTH, 2 * f2kboot.CELL_HEIGHT
+    blank = [bytes(3 * width) for _ in range(height)]
+    marked = [bytearray(row) for row in blank]
+    # One pixel in cell (1, 0), one in cell (0, 1).
+    marked[f2kboot.CELL_HEIGHT + 3][3 * 2] = 0xA8
+    marked[5][3 * (f2kboot.CELL_WIDTH + 8) + 1] = 0xA8
+    paths = tmp_path / "blank.png", tmp_path / "marked.png"
+    png_of(blank, [0] * height, paths[0])
+    png_of([bytes(row) for row in marked], [4] * height, paths[1])
+    a, b = (f2kboot.read_png(path) for path in paths)
+    assert f2kboot.differing_cells(a, a) == set()
+    assert f2kboot.differing_cells(a, b) == {(1, 0), (0, 1)}
+    assert f2kboot.lit_pixels(b, (1, 0)) == 1 and f2kboot.lit_pixels(a, (1, 0)) == 0

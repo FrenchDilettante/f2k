@@ -166,6 +166,7 @@ RAW_ACCESS_ALLOWED = {
     "kernel/src/cpu/gdt.rs": "the kernel's own descriptor table",
     "kernel/src/cpu/idt.rs": "the kernel's own interrupt table",
     "kernel/src/hw/pit.rs": "the programmed divisor, a kernel static",
+    "kernel/src/hw/vga.rs": "the text screen's cells, device memory through the kernel window",
     "kernel/src/interrupt/mod.rs": "the interrupt counters, kernel statics",
     "kernel/src/mem/bootmem.rs": "the boot memory map and the frame database, before any process",
     "kernel/src/mem/paging.rs": "the page tables and frames, through the kernel's own windows",

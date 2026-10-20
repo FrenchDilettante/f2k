@@ -496,6 +496,8 @@ pub mod host {
         pub static CLOSED: RefCell<std::vec::Vec<u32>> = const { RefCell::new(std::vec::Vec::new()) };
         /// The console server's handles for the test's process (a fresh process's to start).
         pub static CONSOLE_HANDLES: Cell<rtl::console::Handles> = const { Cell::new(rtl::console::Handles::standard()) };
+        /// The console the test's process is attached to (a fresh one's to start).
+        pub static CONSOLE_STATE: RefCell<rtl::console::Console> = const { RefCell::new(rtl::console::Console::new()) };
         /// The bytes each console write showed, with its handle.
         pub static CONSOLE: RefCell<std::vec::Vec<(u32, std::vec::Vec<u8>)>> = const { RefCell::new(std::vec::Vec::new()) };
     }
@@ -1102,23 +1104,51 @@ pub mod host {
         CONSOLE.with(|console| std::mem::take(&mut *console.borrow_mut()))
     }
 
-    /// The host's screen: what a write shows is recorded with its handle; an address at or above
-    /// 0x8000_0000 is refused as the kernel's probe refuses it, 0x10 as an unmapped page.
-    struct Screen(u32);
+    /// The host's client: what a write shows is recorded with its handle and rendered; an address
+    /// at or above 0x8000_0000 is refused as the kernel's probe refuses it, 0x10 as an unmapped
+    /// page.
+    struct Client(u32);
 
-    impl rtl::console::Screen for Screen {
-        fn write(&mut self, buffer: usize, count: usize) -> Result<(), u32> {
+    impl Client {
+        fn check(buffer: usize) -> Result<(), u32> {
             match buffer {
                 0x8000_0000..=0xFFFF_FFFF => Err(rtl::status::STATUS_ACCESS_VIOLATION),
                 0x10 => Err(0xC000_00E8),
-                _ => {
-                    // SAFETY: the test's buffer of `count` bytes.
-                    let bytes =
-                        unsafe { core::slice::from_raw_parts(buffer as *const u8, count) }.to_vec();
-                    CONSOLE.with(|console| console.borrow_mut().push((self.0, bytes)));
-                    Ok(())
-                }
+                _ => Ok(()),
             }
+        }
+    }
+
+    impl rtl::console::Client for Client {
+        fn show(
+            &mut self,
+            screen: &mut rtl::console::screen::ScreenBuffer,
+            buffer: usize,
+            count: usize,
+        ) -> Result<(), u32> {
+            Self::check(buffer)?;
+            // SAFETY: the test's buffer of `count` bytes.
+            let bytes = unsafe { core::slice::from_raw_parts(buffer as *const u8, count) };
+            screen.render(bytes);
+            CONSOLE.with(|console| console.borrow_mut().push((self.0, bytes.to_vec())));
+            Ok(())
+        }
+
+        fn read(&mut self, buffer: usize, into: &mut [u8]) -> Result<(), u32> {
+            Self::check(buffer)?;
+            // SAFETY: the test's buffer of `into.len()` bytes.
+            let bytes = unsafe { core::slice::from_raw_parts(buffer as *const u8, into.len()) };
+            into.copy_from_slice(bytes);
+            Ok(())
+        }
+
+        fn write(&mut self, buffer: usize, bytes: &[u8]) -> Result<(), u32> {
+            Self::check(buffer)?;
+            // SAFETY: the test's buffer of `bytes.len()` bytes.
+            unsafe {
+                core::ptr::copy_nonoverlapping(bytes.as_ptr(), buffer as *mut u8, bytes.len())
+            };
+            Ok(())
         }
     }
 
@@ -1134,12 +1164,15 @@ pub mod host {
         let message = unsafe { &mut *message };
         let words = length as usize / core::mem::size_of::<usize>();
         let mut handles = CONSOLE_HANDLES.with(Cell::get);
-        let status = rtl::console::serve(
-            &mut handles,
-            &mut Screen(message.data[0] as u32),
-            api,
-            &mut message.data[..words],
-        );
+        let status = CONSOLE_STATE.with(|console| {
+            rtl::console::serve(
+                &mut console.borrow_mut(),
+                &mut handles,
+                &mut Client(message.data[0] as u32),
+                api,
+                &mut message.data[..words],
+            )
+        });
         CONSOLE_HANDLES.with(|cell| cell.set(handles));
         message.capture_buffer = capture_buffer as usize;
         message.api_number = api;

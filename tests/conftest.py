@@ -34,6 +34,12 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         help="seconds per boot, overriding the cases' own (kernel cases default 10, corpus default 20)",
     )
     group.addoption(
+        "--update-screens",
+        action="store_true",
+        help="record the screen smokes' reference images (tests/screens/) from this run's screens"
+        " instead of comparing against them",
+    )
+    group.addoption(
         "--perf-trace",
         action="store_true",
         help="build with the kernel's perf-trace feature and write each boot's profile to"

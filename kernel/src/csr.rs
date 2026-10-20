@@ -6,11 +6,19 @@
 //! service [`SYS_CSR_CALL`](crate::user::syscall::SYS_CSR_CALL) instead, and this module serves
 //! the message — its header, the console API's data after it — with the
 //! rules `rtl::console` holds (shared with kernel32's host tests), over the calling process's
-//! console handles. The console's screen is the serial line (COM1), as the kernel's console has
-//! always been. Console handles stay outside the kernel's handle table, as on Windows 2000.
+//! console handles and the one console every process shares ([`Console`]: its modes, its screen
+//! buffer, its title). Console handles stay outside the kernel's handle table, as on Windows 2000.
+//!
+//! What a client writes reaches two places, in order: each byte goes to the serial line (COM1)
+//! unchanged, as the kernel's console always has (the suite reads program output there), then
+//! through the screen buffer's renderer. After each call the rows it changed are copied to the
+//! VGA text screen and the hardware cursor follows the buffer's.
 
-use rtl::console::{header, Handles, Screen, DATA_WORDS, MESSAGE_BYTES};
+use rtl::console::screen::ScreenBuffer;
+use rtl::console::{header, Client, Console, Handles, DATA_WORDS, MESSAGE_BYTES};
 
+use crate::hw::portio::Io;
+use crate::hw::vga::{CellMemory, TextScreen};
 use crate::nt::call::{NtResult, Status, UserAddr, STATUS_INVALID_PARAMETER};
 use crate::user::syscall::ServiceFn;
 
@@ -20,21 +28,67 @@ const STATUS_INVALID_USER_BUFFER: u32 = 0xC000_00E8;
 /// The service the dispatcher raises SYS_CSR_CALL into: its four dword arguments, and its body.
 pub const SERVICE: (u32, ServiceFn) = (16, service);
 
+/// The console: one, shared by every process.
+#[cfg(target_arch = "x86")]
+static mut CONSOLE: Console = Console::new();
+
+/// The console's state, borrowed for one service call or the boot's first look.
+///
+/// # Safety
+///
+/// A single CPU, interrupts off across the system service: the borrow is the console's only one.
+#[cfg(target_arch = "x86")]
+unsafe fn console() -> &'static mut Console {
+    // SAFETY: the caller's.
+    unsafe { &mut *core::ptr::addr_of_mut!(CONSOLE) }
+}
+
+/// The boot's step: the text screen shows the fresh console's screen buffer (whatever the firmware
+/// and loader left there cleared), the hardware cursor at its cursor.
+#[cfg(target_arch = "x86")]
+pub fn init() {
+    // SAFETY: the boot context, before any process runs.
+    let screen = &mut unsafe { console() }.screen;
+    let mut vga = crate::hw::vga::screen();
+    vga.clear(rtl::console::screen::DEFAULT_ATTRIBUTE);
+    vga.put_grid(screen.cells());
+    let (row, column) = screen.cursor();
+    vga.set_cursor(row, column);
+    screen.take_damage();
+}
+
 /// SYS_CSR_CALL's service: CsrClientCallServer(message, capture buffer, API number, data length),
 /// answered for the calling process.
 #[cfg(target_arch = "x86")]
 fn service(frame: &mut crate::user::TrapFrame, args: &[u32]) {
     let mut call = crate::nt::call::NtCall::new(frame);
     let handles = call.process().console_mut();
+    // SAFETY: a system service: one CPU, interrupts off.
+    let console = unsafe { console() };
     let result = client_call_server(
+        console,
         handles,
-        &mut Serial,
+        &mut Dual,
         UserAddr(args[0]),
         UserAddr(args[1]),
         args[2],
         args[3],
     );
+    present(&mut console.screen, &mut crate::hw::vga::screen());
     call.finish(result);
+}
+
+/// Copy what the screen buffer changed since the last look to the text screen: the rows it
+/// touched, then the hardware cursor.
+fn present<M: CellMemory, P: Io>(screen: &mut ScreenBuffer, vga: &mut TextScreen<M, P>) {
+    let Some(rows) = screen.take_damage() else {
+        return;
+    };
+    for row in rows {
+        vga.put_row(row, &screen.cells()[row]);
+    }
+    let (row, column) = screen.cursor();
+    vga.set_cursor(row, column);
 }
 
 /// Host builds compile the dispatch but never raise it.
@@ -50,8 +104,9 @@ fn service(_frame: &mut crate::user::TrapFrame, _args: &[u32]) {
 /// status is the answer too. Data longer than the largest API's, or not whole dwords, is
 /// STATUS_INVALID_PARAMETER; a message the caller cannot name STATUS_ACCESS_VIOLATION.
 pub fn client_call_server(
+    console: &mut Console,
     handles: &mut Handles,
-    screen: &mut impl Screen,
+    client: &mut impl Client,
     message: UserAddr,
     capture: UserAddr,
     api: u32,
@@ -71,7 +126,7 @@ pub fn client_call_server(
     {
         *word = u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]) as usize;
     }
-    let status = rtl::console::serve(handles, screen, api, &mut data[..length / 4]);
+    let status = rtl::console::serve(console, handles, client, api, &mut data[..length / 4]);
     let mut put = |at: usize, value: u32| bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
     put(header::CAPTURE_BUFFER, capture.raw());
     put(header::API_NUMBER, api);
@@ -89,15 +144,16 @@ pub fn client_call_server(
     }
 }
 
-/// The console's screen: the serial line, the client's bytes read through a kernel chunk.
-struct Serial;
+/// The calling client: its bytes read through a kernel chunk, each chunk to the serial line, then
+/// to the screen buffer.
+struct Dual;
 
-impl Screen for Serial {
+impl Client for Dual {
     /// A buffer the caller cannot name is refused before a byte reaches the screen
     /// (STATUS_ACCESS_VIOLATION, ERROR_NOACCESS to the caller); one that passed the probe but cannot
     /// be read is an invalid user buffer (ERROR_INVALID_USER_BUFFER), what was read before it shown
     /// — the two answers the bare/badptr fixture's console writes capture.
-    fn write(&mut self, buffer: usize, count: usize) -> Result<(), u32> {
+    fn show(&mut self, screen: &mut ScreenBuffer, buffer: usize, count: usize) -> Result<(), u32> {
         let (buffer, count) = (buffer as u32, count as u32);
         crate::user::syscall::probe_user_range(buffer, count)?;
         let mut chunk = [0u8; 256];
@@ -108,23 +164,39 @@ impl Screen for Serial {
                 .read(&mut chunk[..take])
                 .map_err(|_| STATUS_INVALID_USER_BUFFER)?;
             for &byte in &chunk[..take] {
-                screen_byte(byte);
+                serial_byte(byte);
             }
+            screen.render(&chunk[..take]);
             done += take as u32;
         }
         Ok(())
     }
+
+    /// The caller's memory, refused as the services refuse it: STATUS_ACCESS_VIOLATION.
+    fn read(&mut self, buffer: usize, into: &mut [u8]) -> Result<(), u32> {
+        crate::user::syscall::probe_user_range(buffer as u32, into.len() as u32)?;
+        UserAddr(buffer as u32)
+            .read(into)
+            .map_err(|fault| Status::from(fault).0)
+    }
+
+    fn write(&mut self, buffer: usize, bytes: &[u8]) -> Result<(), u32> {
+        crate::user::syscall::probe_user_range(buffer as u32, bytes.len() as u32)?;
+        UserAddr(buffer as u32)
+            .write(bytes)
+            .map_err(|fault| Status::from(fault).0)
+    }
 }
 
-/// One byte to the screen: COM1.
+/// One byte to the serial line: COM1.
 #[cfg(target_arch = "x86")]
-fn screen_byte(byte: u8) {
+fn serial_byte(byte: u8) {
     crate::hw::serial::write_byte_blocking(byte);
 }
 
 /// Host builds have no serial line.
 #[cfg(not(target_arch = "x86"))]
-fn screen_byte(_byte: u8) {}
+fn serial_byte(_byte: u8) {}
 
 #[cfg(test)]
 mod tests {
@@ -137,10 +209,12 @@ mod tests {
     #[test]
     fn the_message_must_be_readable_and_its_data_whole_dwords() {
         let mut handles = Handles::standard();
-        let call = |handles: &mut Handles, length| {
+        let mut console = Console::new();
+        let mut call = |handles: &mut Handles, length| {
             client_call_server(
+                &mut console,
                 handles,
-                &mut Serial,
+                &mut Dual,
                 UserAddr(0x40_0000),
                 UserAddr(0),
                 api::CLOSE_HANDLE,
@@ -164,6 +238,76 @@ mod tests {
         assert_eq!(
             [STD_INPUT, STD_OUTPUT, STD_ERROR],
             rtl::console::STANDARD_HANDLES
+        );
+    }
+
+    /// After a call, the text screen gets the rows the screen buffer changed and its cursor;
+    /// nothing at all when nothing changed.
+    #[test]
+    fn the_text_screen_gets_the_changed_rows_and_the_cursor() {
+        use std::vec::Vec;
+
+        use rtl::console::screen::{Cell, HEIGHT, WIDTH};
+
+        struct Memory(Vec<u16>);
+        impl CellMemory for Memory {
+            fn store(&mut self, index: usize, word: u16) {
+                self.0[index] = word;
+            }
+        }
+        #[derive(Default)]
+        struct Ports(Vec<(u16, u8)>);
+        impl Io for Ports {
+            fn out(&mut self, port: u16, byte: u8) {
+                self.0.push((port, byte));
+            }
+            fn read(&mut self, _port: u16) -> u8 {
+                0
+            }
+            fn read_word(&mut self, _port: u16) -> u16 {
+                0
+            }
+        }
+
+        use crate::hw::vga::{COLUMNS, ROWS};
+        let mut vga = TextScreen::new(Memory(std::vec![0; COLUMNS * ROWS]), Ports::default());
+        let mut screen = ScreenBuffer::new();
+        screen.take_damage();
+        present(&mut screen, &mut vga);
+        let (memory, ports) = vga.parts();
+        assert!(
+            memory.0.iter().all(|&word| word == 0) && ports.0.is_empty(),
+            "nothing changed"
+        );
+        screen.set_cursor(2, 0);
+        screen.write_bytes(b"ok");
+        present(&mut screen, &mut vga);
+        let (memory, ports) = vga.parts();
+        let row = |row: usize| &memory.0[row * COLUMNS..row * COLUMNS + WIDTH.min(COLUMNS)];
+        assert_eq!(row(2)[..3], [0x076F, 0x076B, 0x0720]);
+        assert!(
+            row(0)
+                .iter()
+                .chain(row(HEIGHT.min(ROWS) - 1))
+                .all(|&word| word == 0),
+            "only row 2"
+        );
+        let location = 2 * COLUMNS as u16 + 2;
+        assert_eq!(
+            ports.0,
+            [
+                (0x3D4, 0x0E),
+                (0x3D5, (location >> 8) as u8),
+                (0x3D4, 0x0F),
+                (0x3D5, location as u8)
+            ]
+        );
+        assert_eq!(
+            screen.cell(2, 0),
+            Cell {
+                character: b'o',
+                attribute: 0x07
+            }
         );
     }
 }

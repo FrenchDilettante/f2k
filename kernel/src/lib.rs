@@ -222,6 +222,10 @@ pub extern "C" fn kmain(magic: u32, multiboot_info: u32) -> ! {
     // (nothing is schedulable yet; its loop is the kernel's resting state once no thread remains).
     crate::sched::idle::boot();
 
+    // The console's text screen: the fresh console's blank screen buffer over whatever the firmware
+    // and loader left on it (silently: the serial line carries the boot's report).
+    csr::init();
+
     // The interrupt subsystem: the remapped controller behind the claim seam, the interval timer at
     // the captured platform rate, the interval clock connected to its vector — and interrupts fly
     // from here on (the idle path and ring 3 both run with them enabled; the gates mask on entry).

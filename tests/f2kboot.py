@@ -9,18 +9,26 @@ Three pieces the test modules share:
   side), stopped as soon as the caller's check has its answer;
 - checks: the kernel cases' expected-string rules (`Expectation`), and the corpus's capture blocks
   compared against the program output a boot carries (`Block`, `blocks`); a sectioned fixture's
-  tests come from its declaration, tests/<fixture>/fixture.toml (`corpus_test`).
+  tests come from its declaration, tests/<fixture>/fixture.toml (`corpus_test`);
+- the text screen: a boot that asks for it carries a QMP socket, and the machine's VGA text page is
+  read through it while QEMU still runs (`read_text_screen`, `TextScreen`), or drawn as QEMU shows
+  it (`screendump`, a PNG; `read_png`, `differing_cells`).
 """
 from __future__ import annotations
 
 import fcntl
 import functools
+import json
 import os
 import re
 import shutil
+import socket
+import struct
 import subprocess
+import tempfile
 import time
 import tomllib
+import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -253,13 +261,16 @@ def boot(
     done: Callable[[str], bool],
     cmdline: str | None = None,
     memory: str = "64M",
+    observe: Callable[[Path], None] | None = None,
 ) -> tuple[str, str]:
     """Boot `build` (`image` "kernel": the ELF through QEMU's Multiboot loader, the disk attached;
     "disk": the disk itself through Limine) and log COM1 to `log_path` until `done(log)` holds, QEMU
     exits, or `timeout` seconds pass. `cmdline` is the user program's command line, passed after
     the kernel command line's "--": by QEMU's -append on a kernel boot, by the Limine entry's
     `cmdline` on a disk boot (a copy of the disk with its configuration rewritten, removed after the
-    boot). Returns the log and why the boot stopped ("done", "exited", "timeout")."""
+    boot). With `observe`, QEMU also carries a QMP socket, and once `done(log)` holds `observe` is
+    called with the socket's path while QEMU still runs (the machine's state, read before it is
+    stopped). Returns the log and why the boot stopped ("done", "exited", "timeout")."""
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_path.unlink(missing_ok=True)
     disk = build.disk
@@ -277,6 +288,11 @@ def boot(
         # -no-reboot turns a triple fault into a QEMU exit, so crashes fail fast.
         "-no-reboot", "-serial", f"file:{log_path}",
     ]
+    # A unix socket's path is short (104 bytes on macOS): the socket lives in its own temporary
+    # directory rather than beside the log.
+    qmp_directory = Path(tempfile.mkdtemp(prefix="f2k-qmp-")) if observe is not None else None
+    if qmp_directory is not None:
+        args += ["-qmp", f"unix:{qmp_directory / 'qmp.sock'},server,nowait"]
     args += exit_with_parent()
     qemu = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     deadline = time.monotonic() + timeout
@@ -285,6 +301,8 @@ def boot(
         while time.monotonic() < deadline:
             if done(read_log(log_path)):
                 reason = "done"
+                if observe is not None:
+                    observe(qmp_directory / "qmp.sock")
                 break
             if qemu.poll() is not None:
                 reason = "exited"
@@ -295,6 +313,8 @@ def boot(
         _, stderr = qemu.communicate()
         if variant is not None:
             variant.unlink(missing_ok=True)
+        if qmp_directory is not None:
+            shutil.rmtree(qmp_directory, ignore_errors=True)
     log = read_log(log_path)
     if reason != "done" and done(log):
         reason = "done"  # QEMU wrote the answer just before it stopped
@@ -318,6 +338,203 @@ def exit_with_parent() -> list[str]:
     except (OSError, subprocess.TimeoutExpired):
         return []
     return ["-run-with", "exit-with-parent=on"] if "exit-with-parent" in listing.stdout + listing.stderr else []
+
+
+# --- The text screen ---------------------------------------------------------------------------
+#
+# Mode 3's text page: COLUMNS x ROWS cells from physical 0xB8000, each a character byte then an
+# attribute byte (the kernel's hw::vga). QEMU's monitor reads guest-physical memory with `xp`; the
+# hardware cursor lives in the CRT controller's registers, which this read cannot reach.
+
+TEXT_SCREEN = 0xB8000
+COLUMNS = 80
+ROWS = 25
+
+
+@dataclass(frozen=True)
+class TextScreen:
+    """Cells read from the text page, from its first: each a (character, attribute) pair."""
+
+    cells: list[tuple[int, int]]
+
+    def row(self, row: int) -> list[tuple[int, int]]:
+        return self.cells[row * COLUMNS:(row + 1) * COLUMNS]
+
+    def text(self, row: int) -> str:
+        """A row's characters, as code page 437's bytes read as Latin-1."""
+        return bytes(character for character, _ in self.row(row)).decode("latin-1")
+
+
+def parse_xp(output: str) -> bytes:
+    """The bytes an `xp /<n>bx` dump shows: each line's leading address token (ending with ":")
+    dropped, every value after it hex-decoded."""
+    data = bytearray()
+    for line in output.splitlines():
+        tokens = line.split()
+        if not tokens:
+            continue
+        if not tokens[0].endswith(":"):
+            raise ValueError(f"an xp line without its address: {line!r}")
+        data.extend(int(token, 16) for token in tokens[1:])
+    return bytes(data)
+
+
+def text_screen_of(data: bytes) -> TextScreen:
+    """The cells a dump of the text page holds: even offsets characters, odd ones attributes."""
+    if len(data) % 2:
+        raise ValueError("a text page dump is whole cells")
+    return TextScreen([(data[i], data[i + 1]) for i in range(0, len(data), 2)])
+
+
+class QmpError(Exception):
+    """QEMU's QMP answered with an error, or not at all."""
+
+
+def qmp_command(path: Path, commands: list[dict], timeout: float = 10.0) -> list:
+    """Connect to QEMU's QMP socket at `path`, leave capabilities negotiation, run `commands` in
+    order, and return each one's "return" value (events in between are skipped)."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            connection.settimeout(timeout)
+            connection.connect(str(path))
+            break
+        except (FileNotFoundError, ConnectionRefusedError):
+            connection.close()
+            if time.monotonic() > deadline:
+                raise QmpError(f"no QMP socket at {path}") from None
+            time.sleep(0.05)
+    with connection, connection.makefile("rwb") as stream:
+
+        def receive() -> dict:
+            while True:
+                line = stream.readline()
+                if not line:
+                    raise QmpError("QMP closed the connection")
+                message = json.loads(line)
+                if "event" not in message:
+                    return message
+
+        def execute(command: dict):
+            stream.write(json.dumps(command).encode() + b"\n")
+            stream.flush()
+            answer = receive()
+            if "error" in answer:
+                raise QmpError(f"{command['execute']}: {answer['error']}")
+            return answer["return"]
+
+        if "QMP" not in receive():
+            raise QmpError("no QMP greeting")
+        execute({"execute": "qmp_capabilities"})
+        return [execute(command) for command in commands]
+
+
+def read_text_screen(path: Path, cells: int = COLUMNS * ROWS) -> TextScreen:
+    """The text page's first `cells` cells, read through the QMP socket at `path`."""
+    command = f"xp /{2 * cells}bx {TEXT_SCREEN:#x}"
+    (output,) = qmp_command(path, [{"execute": "human-monitor-command",
+                                    "arguments": {"command-line": command}}])
+    data = parse_xp(output)
+    if len(data) != 2 * cells:
+        raise QmpError(f"{command}: {len(data)} bytes, expected {2 * cells}")
+    return text_screen_of(data)
+
+
+# QEMU draws mode 3 as 720 x 400 pixels: each cell 9 pixels wide and 16 high (the ninth column the
+# character generator's gap). The hardware cursor blinks: a dump draws it or not by when it lands.
+CELL_WIDTH = 9
+CELL_HEIGHT = 16
+
+
+def screendump(path: Path, png: Path) -> None:
+    """The screen as QEMU displays it, written as a PNG to `png`, through the QMP socket at
+    `path`."""
+    qmp_command(path, [{"execute": "screendump",
+                        "arguments": {"filename": str(png), "format": "png"}}])
+
+
+@dataclass(frozen=True)
+class Image:
+    """A decoded image: its rows of RGB pixels, three bytes each."""
+
+    width: int
+    height: int
+    rows: list[bytes]
+
+    def pixel(self, x: int, y: int) -> bytes:
+        return self.rows[y][3 * x:3 * x + 3]
+
+
+def read_png(path: Path) -> Image:
+    """A PNG as QEMU's screendump writes it (8-bit RGB, not interlaced), decoded: its chunks
+    read, its image data inflated and each row's filter undone."""
+    data = path.read_bytes()
+    if data[:8] != b"\x89PNG\r\n\x1a\n":
+        raise ValueError(f"{path}: not a PNG")
+    at, compressed, header = 8, bytearray(), None
+    while at < len(data):
+        length, kind = struct.unpack(">I4s", data[at:at + 8])
+        body = data[at + 8:at + 8 + length]
+        at += 12 + length
+        if kind == b"IHDR":
+            header = struct.unpack(">IIBBBBB", body)
+        elif kind == b"IDAT":
+            compressed += body
+    if header is None:
+        raise ValueError(f"{path}: no header")
+    width, height, depth, colour, _, _, interlace = header
+    if (depth, colour, interlace) != (8, 2, 0):
+        raise ValueError(f"{path}: not 8-bit RGB without interlacing: {header}")
+    raw = zlib.decompress(bytes(compressed))
+    stride = 3 * width
+    rows, previous = [], bytearray(stride)
+    for y in range(height):
+        start = y * (stride + 1)
+        kind, row = raw[start], bytearray(raw[start + 1:start + 1 + stride])
+        for x in range(stride):
+            left = row[x - 3] if x >= 3 else 0
+            up = previous[x]
+            corner = previous[x - 3] if x >= 3 else 0
+            if kind == 1:
+                row[x] = (row[x] + left) & 0xFF
+            elif kind == 2:
+                row[x] = (row[x] + up) & 0xFF
+            elif kind == 3:
+                row[x] = (row[x] + (left + up) // 2) & 0xFF
+            elif kind == 4:
+                guess = left + up - corner
+                near = min((abs(guess - left), 0, left), (abs(guess - up), 1, up),
+                           (abs(guess - corner), 2, corner))
+                row[x] = (row[x] + near[2]) & 0xFF
+            elif kind != 0:
+                raise ValueError(f"{path}: row {y}: filter {kind}")
+        rows.append(bytes(row))
+        previous = row
+    return Image(width, height, rows)
+
+
+def differing_cells(a: Image, b: Image) -> set[tuple[int, int]]:
+    """The text cells (row, column) holding a pixel that differs between two dumps of the text
+    screen."""
+    if (a.width, a.height) != (b.width, b.height):
+        raise ValueError(f"dumps of different sizes: {a.width}x{a.height}, {b.width}x{b.height}")
+    cells = set()
+    for y, (first, second) in enumerate(zip(a.rows, b.rows)):
+        if first == second:
+            continue
+        for x in range(a.width):
+            if first[3 * x:3 * x + 3] != second[3 * x:3 * x + 3]:
+                cells.add((y // CELL_HEIGHT, x // CELL_WIDTH))
+    return cells
+
+
+def lit_pixels(image: Image, cell: tuple[int, int]) -> int:
+    """How many of a cell's pixels are not black."""
+    row, column = cell
+    return sum(image.pixel(x, y) != b"\0\0\0"
+               for y in range(row * CELL_HEIGHT, (row + 1) * CELL_HEIGHT)
+               for x in range(column * CELL_WIDTH, (column + 1) * CELL_WIDTH))
 
 
 # The disk's FAT32 partition, as mtools addresses it (the Makefile's disk target puts it at 1 MiB).
