@@ -232,8 +232,9 @@ extern "C" fn f2k_rtl_validate_heap(handle: usize, flags: u32, pointer: usize) -
 
 /// A fresh thread's initialization, before anything else it runs in user mode: the process's first
 /// thread makes the heap list's lock and the process heap (PEB+0x18), the PEB lock and the loader
-/// lock, and opens the starting current directory's handle; every thread its implicit-TLS block, when the image has a TLS directory. What finds no
-/// room is left undone (the program meets a null process heap or TLS pointer).
+/// lock, and opens the starting current directory's handle; every thread its implicit-TLS block,
+/// when the image has a TLS directory. What finds no room is left undone (the program meets a null
+/// process heap or TLS pointer).
 #[unsafe(no_mangle)]
 extern "C" fn f2k_ldr_initialize() {
     if sys::process_heap_handle() == 0 {

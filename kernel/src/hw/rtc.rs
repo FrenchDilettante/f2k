@@ -150,10 +150,12 @@ mod tests {
             assert_eq!(port, INDEX);
             self.index = byte;
         }
+
         fn read(&mut self, port: u16) -> u8 {
             assert_eq!(port, DATA);
             self.registers[self.index as usize]
         }
+
         fn read_word(&mut self, _port: u16) -> u16 {
             unreachable!()
         }
@@ -165,7 +167,10 @@ mod tests {
         for (index, value) in values {
             registers[index as usize] = value;
         }
-        Cmos { registers, index: 0 }
+        Cmos {
+            registers,
+            index: 0,
+        }
     }
 
     /// The firmware default: BCD, 24-hour, the century register set.
@@ -224,7 +229,18 @@ mod tests {
     /// Garbage in the registers is no reading.
     #[test]
     fn an_invalid_reading_is_refused() {
-        let mut io = cmos(HOURS_24 | BINARY, [(MONTH, 13), (DAY, 1), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0)]);
+        let mut io = cmos(
+            HOURS_24 | BINARY,
+            [
+                (MONTH, 13),
+                (DAY, 1),
+                (0, 0),
+                (0, 0),
+                (0, 0),
+                (0, 0),
+                (0, 0),
+            ],
+        );
         assert_eq!(read(&mut io), None);
     }
 }

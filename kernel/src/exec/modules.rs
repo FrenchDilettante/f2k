@@ -28,7 +28,13 @@
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use crate::exec::pe::{
-    same_module, split_forwarder, Export, Exports, ForwardTarget, Image, Unresolved,
+    same_module,
+    split_forwarder,
+    Export,
+    Exports,
+    ForwardTarget,
+    Image,
+    Unresolved,
 };
 
 /// ntdll's base and module handle.
@@ -180,10 +186,10 @@ fn redirect_target(slot: &AtomicU32, resolve: impl FnOnce() -> u32) -> u32 {
     }
 }
 
-/// kernel32's BaseProcessStartThunk (userland/kernel32/src/start.s), where every image's main thread
-/// starts (EAX its entry point; see `user::main_thread_start`). An F2K-internal export: Windows
-/// 2000's kernel32 exports none of its start thunks, its CreateProcess finding them in its own code
-/// — F2K's kernel creates the process, and finds it by name.
+/// kernel32's BaseProcessStartThunk (userland/kernel32/src/start.s), where every image's main
+/// thread starts (EAX its entry point; see `user::main_thread_start`). An F2K-internal export:
+/// Windows 2000's kernel32 exports none of its start thunks, its CreateProcess finding them in its
+/// own code — F2K's kernel creates the process, and finds it by name.
 pub fn process_start_thunk() -> u32 {
     static RESOLVED: AtomicU32 = AtomicU32::new(0);
     redirect_target(&RESOLVED, || {

@@ -1,10 +1,11 @@
 //! The information classes the file services answer and take, as their structures lay them out
 //! (ntifs.h, NT 5.0, x86): the per-file ones (NtQueryInformationFile, NtSetInformationFile,
 //! NtQueryAttributesFile, NtQueryFullAttributesFile), the directory listings'
-//! (NtQueryDirectoryFile) and the volume's (NtQueryVolumeInformationFile). Times are FILETIMEs (the
-//! FAT stamps are local time, UTC here); FAT keeps no change time (zero); a file's allocation is its
-//! size in whole clusters; its index number names its entry (its directory's first cluster, then its
-//! record there), as GetFileInformationByHandle's file index reads it.
+//! (NtQueryDirectoryFile) and the volume's (NtQueryVolumeInformationFile).
+//! Times are FILETIMEs (the FAT stamps are local time, UTC here); FAT keeps no change time (zero);
+//! a file's allocation is its size in whole clusters; its index number names its entry (its
+//! directory's first cluster, then its record there), as GetFileInformationByHandle's file index
+//! reads it.
 
 use crate::fs::fat32::lookup::File;
 use crate::fs::io::{attributes, file_times};
@@ -162,7 +163,10 @@ pub fn query_size(class: u32) -> Option<usize> {
         FILE_BASIC_INFORMATION => BASIC_SIZE,
         FILE_STANDARD_INFORMATION => STANDARD_SIZE,
         FILE_INTERNAL_INFORMATION | FILE_POSITION_INFORMATION => 8,
-        FILE_EA_INFORMATION | FILE_ACCESS_INFORMATION | FILE_MODE_INFORMATION | FILE_ALIGNMENT_INFORMATION => 4,
+        FILE_EA_INFORMATION
+        | FILE_ACCESS_INFORMATION
+        | FILE_MODE_INFORMATION
+        | FILE_ALIGNMENT_INFORMATION => 4,
         FILE_ALL_INFORMATION => ALL_SIZE,
         FILE_NETWORK_OPEN_INFORMATION => NETWORK_OPEN_SIZE,
         _ => return None,
@@ -180,7 +184,7 @@ pub fn set_size(class: u32) -> Option<usize> {
     })
 }
 
-// --- Directory listings ---------------------------------------------------------------------------
+// --- Directory listings --------------------------------------------------------------------------
 
 /// One entry a listing reports.
 pub struct Entry<'a> {
@@ -241,7 +245,7 @@ pub fn directory_entry(class: u32, entry: &Entry, out: &mut [u8]) -> Result<usiz
     }
 }
 
-// --- The volume -----------------------------------------------------------------------------------
+// --- The volume ----------------------------------------------------------------------------------
 
 /// The volume's facts the volume classes report.
 #[derive(Clone, Copy)]
@@ -260,7 +264,11 @@ impl Volume {
         if &self.label == b"NO NAME    " {
             return &[];
         }
-        &self.label[..self.label.iter().rposition(|&byte| byte != b' ').map_or(0, |at| at + 1)]
+        &self.label[..self
+            .label
+            .iter()
+            .rposition(|&byte| byte != b' ')
+            .map_or(0, |at| at + 1)]
     }
 }
 
@@ -278,7 +286,13 @@ pub fn volume_query_size(class: u32) -> Option<usize> {
 
 /// A name's units into a structure at `at`, its length in bytes at `length_at`: the structure's
 /// length, or Err with it when the name did not fit (as much as fits written).
-fn put_name(out: &mut [u8], at: usize, length_at: usize, name: impl Iterator<Item = u16>, count: usize) -> Result<usize, usize> {
+fn put_name(
+    out: &mut [u8],
+    at: usize,
+    length_at: usize,
+    name: impl Iterator<Item = u16>,
+    count: usize,
+) -> Result<usize, usize> {
     put32(out, length_at, 2 * count as u32);
     let room = (out.len() - at) / 2;
     for (index, unit) in name.take(room).enumerate() {
@@ -300,7 +314,9 @@ pub fn volume_query(class: u32, volume: &Volume, out: &mut [u8]) -> Result<usize
             out[..18].fill(0);
             put32(out, 8, volume.serial);
             let label = volume.label();
-            let units = label.iter().map(|&byte| rtl::cp1252::MB_TO_WC[byte as usize]);
+            let units = label
+                .iter()
+                .map(|&byte| rtl::cp1252::MB_TO_WC[byte as usize]);
             put_name(out, 18, 12, units, label.len()).map(|length| length.max(FS_VOLUME_SIZE))
         }
         FILE_FS_SIZE_INFORMATION | FILE_FS_FULL_SIZE_INFORMATION => {
@@ -337,7 +353,11 @@ mod tests {
     fn file() -> File {
         let mut file = File::plain(9, 1000, false);
         file.attributes = 0x21;
-        file.times = Times { write_date: (21 << 9) | (2 << 5) | 3, write_time: (4 << 11) | (5 << 5) | 3, ..Times::default() };
+        file.times = Times {
+            write_date: (21 << 9) | (2 << 5) | 3,
+            write_time: (4 << 11) | (5 << 5) | 3,
+            ..Times::default()
+        };
         file.parent_cluster = 5;
         file.index = 7;
         file
@@ -355,26 +375,62 @@ mod tests {
     #[test]
     fn the_per_file_structures() {
         let file = file();
-        let open = Open { allocation: allocation(&file, 4096), delete_pending: true, position: 77, granted: 0x12_0089, mode: 0x20 };
+        let open = Open {
+            allocation: allocation(&file, 4096),
+            delete_pending: true,
+            position: 77,
+            granted: 0x12_0089,
+            mode: 0x20,
+        };
         assert_eq!(open.allocation, 4096);
         let basic = basic(&file);
         assert_eq!(u64_at(&basic, 16), file_times(&file)[2], "the last write");
         assert_eq!(u32_at(&basic, 32), 0x21);
         let standard = standard(&file, &open);
-        assert_eq!((u64_at(&standard, 0), u64_at(&standard, 8), u32_at(&standard, 16)), (4096, 1000, 1));
+        assert_eq!(
+            (
+                u64_at(&standard, 0),
+                u64_at(&standard, 8),
+                u32_at(&standard, 16)
+            ),
+            (4096, 1000, 1)
+        );
         assert_eq!((standard[20], standard[21]), (1, 0));
         let all = all(&file, &open);
         assert_eq!(u64_at(&all, 48), 1000, "standard's end of file");
         assert_eq!(u64_at(&all, 64), (5 << 32) | 7, "the index number");
-        assert_eq!((u32_at(&all, 76), u64_at(&all, 80), u32_at(&all, 88)), (0x12_0089, 77, 0x20));
+        assert_eq!(
+            (u32_at(&all, 76), u64_at(&all, 80), u32_at(&all, 88)),
+            (0x12_0089, 77, 0x20)
+        );
         assert_eq!(u32_at(&all, 96), 0, "no name");
         let network = network_open(&file, open.allocation);
-        assert_eq!((u64_at(&network, 32), u64_at(&network, 40), u32_at(&network, 48)), (4096, 1000, 0x21));
+        assert_eq!(
+            (
+                u64_at(&network, 32),
+                u64_at(&network, 40),
+                u32_at(&network, 48)
+            ),
+            (4096, 1000, 0x21)
+        );
         let mut out = [0u8; 8];
-        assert_eq!(query(FILE_POSITION_INFORMATION, &file, &open, &mut out), Some(8));
+        assert_eq!(
+            query(FILE_POSITION_INFORMATION, &file, &open, &mut out),
+            Some(8)
+        );
         assert_eq!(u64::from_le_bytes(out), 77);
-        assert_eq!(query(9, &file, &open, &mut out), None, "the name is not kept");
-        assert_eq!((query_size(FILE_ALL_INFORMATION), set_size(FILE_DISPOSITION_INFORMATION)), (Some(ALL_SIZE), Some(1)));
+        assert_eq!(
+            query(9, &file, &open, &mut out),
+            None,
+            "the name is not kept"
+        );
+        assert_eq!(
+            (
+                query_size(FILE_ALL_INFORMATION),
+                set_size(FILE_DISPOSITION_INFORMATION)
+            ),
+            (Some(ALL_SIZE), Some(1))
+        );
         assert_eq!(allocation(&File::plain(9, 0, true), 4096), 0);
     }
 
@@ -384,37 +440,90 @@ mod tests {
     fn the_listing_records() {
         let name: std::vec::Vec<u16> = "Long File Name.txt".encode_utf16().collect();
         let short: std::vec::Vec<u16> = "LONGFI~1.TXT".encode_utf16().collect();
-        let entry = Entry { index: 3, file: file(), allocation: 4096, name: &name, short: &short };
+        let entry = Entry {
+            index: 3,
+            file: file(),
+            allocation: 4096,
+            name: &name,
+            short: &short,
+        };
         let mut out = [0xCCu8; 200];
         let length = directory_entry(FILE_BOTH_DIRECTORY_INFORMATION, &entry, &mut out).unwrap();
         assert_eq!(length, 94 + 36);
         assert_eq!((u32_at(&out, 0), u32_at(&out, 4)), (0, 3));
-        assert_eq!((u64_at(&out, 40), u32_at(&out, 56), u32_at(&out, 60)), (1000, 0x21, 36));
+        assert_eq!(
+            (u64_at(&out, 40), u32_at(&out, 56), u32_at(&out, 60)),
+            (1000, 0x21, 36)
+        );
         assert_eq!(out[68], 24);
         assert_eq!(&out[70..72], &[b'L', 0]);
         assert_eq!(&out[94..96], &[b'L', 0]);
-        assert_eq!(directory_entry(FILE_BOTH_DIRECTORY_INFORMATION, &entry, &mut out[..100]), Err(100));
-        assert_eq!(directory_entry(FILE_NAMES_INFORMATION, &entry, &mut out).unwrap(), 12 + 36);
+        assert_eq!(
+            directory_entry(FILE_BOTH_DIRECTORY_INFORMATION, &entry, &mut out[..100]),
+            Err(100)
+        );
+        assert_eq!(
+            directory_entry(FILE_NAMES_INFORMATION, &entry, &mut out).unwrap(),
+            12 + 36
+        );
         assert_eq!(entry_name_offset(FILE_FULL_DIRECTORY_INFORMATION), Some(68));
     }
 
     /// The volume classes, the label trimmed and a name that does not fit cut.
     #[test]
     fn the_volume_structures() {
-        let volume = Volume { serial: 0x1234_5678, label: *b"F2K        ", sectors_per_cluster: 8, clusters: 1000, free_clusters: 600 };
+        let volume = Volume {
+            serial: 0x1234_5678,
+            label: *b"F2K        ",
+            sectors_per_cluster: 8,
+            clusters: 1000,
+            free_clusters: 600,
+        };
         let mut out = [0u8; 64];
-        assert_eq!(volume_query(FILE_FS_VOLUME_INFORMATION, &volume, &mut out), Ok(24));
+        assert_eq!(
+            volume_query(FILE_FS_VOLUME_INFORMATION, &volume, &mut out),
+            Ok(24)
+        );
         assert_eq!((u32_at(&out, 8), u32_at(&out, 12)), (0x1234_5678, 6));
-        assert_eq!(volume_query(FILE_FS_SIZE_INFORMATION, &volume, &mut out), Ok(24));
-        assert_eq!((u64_at(&out, 0), u64_at(&out, 8), u32_at(&out, 16), u32_at(&out, 20)), (1000, 600, 8, 512));
-        assert_eq!(volume_query(FILE_FS_FULL_SIZE_INFORMATION, &volume, &mut out), Ok(32));
+        assert_eq!(
+            volume_query(FILE_FS_SIZE_INFORMATION, &volume, &mut out),
+            Ok(24)
+        );
+        assert_eq!(
+            (
+                u64_at(&out, 0),
+                u64_at(&out, 8),
+                u32_at(&out, 16),
+                u32_at(&out, 20)
+            ),
+            (1000, 600, 8, 512)
+        );
+        assert_eq!(
+            volume_query(FILE_FS_FULL_SIZE_INFORMATION, &volume, &mut out),
+            Ok(32)
+        );
         assert_eq!((u32_at(&out, 24), u32_at(&out, 28)), (8, 512));
-        assert_eq!(volume_query(FILE_FS_DEVICE_INFORMATION, &volume, &mut out), Ok(8));
+        assert_eq!(
+            volume_query(FILE_FS_DEVICE_INFORMATION, &volume, &mut out),
+            Ok(8)
+        );
         assert_eq!(u32_at(&out, 0), FILE_DEVICE_DISK);
-        assert_eq!(volume_query(FILE_FS_ATTRIBUTE_INFORMATION, &volume, &mut out), Ok(22));
-        assert_eq!((u32_at(&out, 0), u32_at(&out, 4), u32_at(&out, 8)), (6, 255, 10));
-        assert_eq!(volume_query(FILE_FS_ATTRIBUTE_INFORMATION, &volume, &mut out[..16]), Err(16));
-        let unnamed = Volume { label: *b"NO NAME    ", ..volume };
+        assert_eq!(
+            volume_query(FILE_FS_ATTRIBUTE_INFORMATION, &volume, &mut out),
+            Ok(22)
+        );
+        assert_eq!(
+            (u32_at(&out, 0), u32_at(&out, 4), u32_at(&out, 8)),
+            (6, 255, 10)
+        );
+        assert_eq!(
+            volume_query(FILE_FS_ATTRIBUTE_INFORMATION, &volume, &mut out[..16]),
+            Err(16)
+        );
+        let unnamed = Volume {
+            label: *b"NO NAME    ",
+            ..volume
+        };
         assert_eq!(unnamed.label(), b"");
     }
 }

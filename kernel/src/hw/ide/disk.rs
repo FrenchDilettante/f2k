@@ -42,8 +42,8 @@ mod target {
     use crate::hw::ide::identify::{self, Identity};
     use crate::hw::ide::latch::Completion;
     use crate::hw::ide::read;
-    use crate::hw::ide::write;
     use crate::hw::ide::regs::{PRIMARY_BASE, PRIMARY_CONTROL, PRIMARY_VECTOR, SECTOR_SIZE};
+    use crate::hw::ide::write;
     use crate::hw::portio::Ports;
     use crate::interrupt::dpc::{self, Dpc};
     use crate::interrupt::irql;
@@ -225,8 +225,8 @@ mod target {
         status
     }
 
-    /// Write `buffer.len() / 512` contiguous sectors starting at `lba` from `buffer`, blocking until
-    /// the transfer completes (the read's statuses).
+    /// Write `buffer.len() / 512` contiguous sectors starting at `lba` from `buffer`, blocking
+    /// until the transfer completes (the read's statuses).
     #[must_use]
     pub fn write(lba: u32, buffer: &[u8]) -> NtStatus {
         assert!(
@@ -306,7 +306,11 @@ pub use target::{block_device, identity, init, read};
 #[cfg(test)]
 mod tests {
     use super::super::regs::{
-        COMMAND, IDENTIFY_DEVICE, PRIMARY_BASE, PRIMARY_CONTROL, PRIMARY_VECTOR,
+        COMMAND,
+        IDENTIFY_DEVICE,
+        PRIMARY_BASE,
+        PRIMARY_CONTROL,
+        PRIMARY_VECTOR,
     };
     use super::super::sim::{SimChannel, DISK};
     use super::*;
@@ -322,7 +326,13 @@ mod tests {
         use crate::interrupt::dpc::{Dpc, DpcQueue};
         use crate::interrupt::irql::{Irql, IrqlState, DISPATCH, IDE, PASSIVE};
         use crate::interrupt::{
-            initialize, service_interrupt, Claim, Controller, InterruptObject, Outcome, VectorTable,
+            initialize,
+            service_interrupt,
+            Claim,
+            Controller,
+            InterruptObject,
+            Outcome,
+            VectorTable,
         };
         use crate::sched::dispatcher::Dispatcher;
         use crate::sched::event::{Event, EventKind};
@@ -344,18 +354,23 @@ mod tests {
                     Claim::Spurious
                 }
             }
+
             fn end(&mut self, previous: Irql, _vector: u8) {
                 self.irql.lower(previous);
                 self.in_service = false;
                 self.ended += 1;
             }
+
             fn enable(&mut self, _vector: u8) -> bool {
                 true
             }
+
             fn disable(&mut self, _vector: u8) {}
+
             fn is_enabled(&mut self, _vector: u8) -> bool {
                 true
             }
+
             fn in_service_clear(&mut self) -> bool {
                 !self.in_service
             }

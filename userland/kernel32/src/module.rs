@@ -10,7 +10,15 @@
 use rtl::cp1252;
 use rtl::status::nt_success;
 
-use crate::base::{peb, read, read_pointer, set_last_error, set_last_nt_error, unicode_string, units};
+use crate::base::{
+    peb,
+    read,
+    read_pointer,
+    set_last_error,
+    set_last_nt_error,
+    unicode_string,
+    units,
+};
 use crate::files::widen;
 use crate::nt::{self, AnsiString};
 
@@ -37,14 +45,20 @@ fn image_base() -> u32 {
 }
 
 /// A loader call over the module name `name` (ANSI), converted to Unicode first; its handle, or 0
-/// with the last error set (ERROR_FILENAME_EXCED_RANGE past MAX_PATH, the status's error otherwise).
+/// with the last error set (ERROR_FILENAME_EXCED_RANGE past MAX_PATH, the status's error
+/// otherwise).
 ///
 /// # Safety
 ///
 /// `name` is a NUL-terminated string.
 unsafe fn by_name(
     name: *const u8,
-    call: unsafe extern "system" fn(*const u16, *const u32, *const nt::UnicodeString, *mut u32) -> u32,
+    call: unsafe extern "system" fn(
+        *const u16,
+        *const u32,
+        *const nt::UnicodeString,
+        *mut u32,
+    ) -> u32,
 ) -> u32 {
     // SAFETY: the caller's string.
     let Some(mut wide) = (unsafe { widen(name) }) else {
@@ -133,7 +147,11 @@ pub unsafe extern "system" fn get_proc_address(module: u32, name: *const u8) -> 
         let length = (0..=MAX_EXPORT_NAME).find(|&at| unsafe { name.add(at).read() } == 0);
         match length {
             Some(length) => {
-                let string = AnsiString { length: length as u16, maximum_length: length as u16 + 1, buffer: name };
+                let string = AnsiString {
+                    length: length as u16,
+                    maximum_length: length as u16 + 1,
+                    buffer: name,
+                };
                 // SAFETY: ntdll's export, over the string above.
                 unsafe { nt::LdrGetProcedureAddress(module, &string, 0, &mut address) }
             }
@@ -144,7 +162,13 @@ pub unsafe extern "system" fn get_proc_address(module: u32, name: *const u8) -> 
         unsafe { nt::LdrGetProcedureAddress(module, core::ptr::null(), name as u32, &mut address) }
     };
     let status = match status {
-        0 if address == module => if by_name { STATUS_ENTRYPOINT_NOT_FOUND } else { STATUS_ORDINAL_NOT_FOUND },
+        0 if address == module => {
+            if by_name {
+                STATUS_ENTRYPOINT_NOT_FOUND
+            } else {
+                STATUS_ORDINAL_NOT_FOUND
+            }
+        }
         status => status,
     };
     if !nt_success(status) {
@@ -180,7 +204,11 @@ fn entry_of(module: u32) -> Option<usize> {
 ///
 /// `buffer` holds `size` bytes (a bad pointer faults the caller).
 #[unsafe(export_name = "f2k_export_GetModuleFileNameA")]
-pub unsafe extern "system" fn get_module_file_name_a(module: u32, buffer: *mut u8, size: u32) -> u32 {
+pub unsafe extern "system" fn get_module_file_name_a(
+    module: u32,
+    buffer: *mut u8,
+    size: u32,
+) -> u32 {
     let module = if module == 0 { image_base() } else { module };
     let lock = read_pointer(peb() + PEB_LOADER_LOCK) as *mut u8;
     // SAFETY: ntdll's export, on the PEB's loader lock.

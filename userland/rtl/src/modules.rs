@@ -25,7 +25,10 @@
 use core::cmp::Ordering;
 
 use crate::status::{
-    STATUS_DLL_NOT_FOUND, STATUS_ENTRYPOINT_NOT_FOUND, STATUS_ORDINAL_NOT_FOUND, STATUS_PROCEDURE_NOT_FOUND,
+    STATUS_DLL_NOT_FOUND,
+    STATUS_ENTRYPOINT_NOT_FOUND,
+    STATUS_ORDINAL_NOT_FOUND,
+    STATUS_PROCEDURE_NOT_FOUND,
 };
 
 /// The memory the lists and the images are read from, by user address.
@@ -142,7 +145,10 @@ pub fn has_path(name: &[u16]) -> bool {
 /// `.DLL`, and one ending in a dot (a name without an extension, as the documentation spells it)
 /// loses the dot. Its length; none when it does not fit.
 pub fn module_name(name: &[u16], out: &mut [u16]) -> Option<usize> {
-    let file = &name[name.iter().rposition(|&unit| unit == BACKSLASH || unit == SLASH).map_or(0, |at| at + 1)..];
+    let file = &name[name
+        .iter()
+        .rposition(|&unit| unit == BACKSLASH || unit == SLASH)
+        .map_or(0, |at| at + 1)..];
     let (kept, extension): (usize, &[u16]) = if file.last() == Some(&DOT) {
         (name.len() - 1, &[])
     } else if file.contains(&DOT) {
@@ -164,16 +170,19 @@ fn string_is<M: Memory>(memory: &M, at: u32, name: &[u16]) -> bool {
     let length = usize::from(memory.half(at)) / 2;
     let buffer = memory.word(at + 4);
     length == name.len()
-        && name
-            .iter()
-            .enumerate()
-            .all(|(index, &unit)| crate::path::upcase(memory.half(buffer + 2 * index as u32)) == crate::path::upcase(unit))
+        && name.iter().enumerate().all(|(index, &unit)| {
+            crate::path::upcase(memory.half(buffer + 2 * index as u32)) == crate::path::upcase(unit)
+        })
 }
 
 /// The entry of the module `name` names (as [`module_name`] forms it): its BaseDllName without
 /// regard to case, or its FullDllName for a name with a path (the caller made it absolute).
 pub fn by_name<M: Memory>(memory: &M, ldr: u32, name: &[u16]) -> Option<u32> {
-    let field = if has_path(name) { entry::FULL_DLL_NAME } else { entry::BASE_DLL_NAME };
+    let field = if has_path(name) {
+        entry::FULL_DLL_NAME
+    } else {
+        entry::BASE_DLL_NAME
+    };
     load_order(memory, ldr).find(|&entry| string_is(memory, entry + field, name))
 }
 
@@ -280,7 +289,11 @@ impl Directory {
         }
         let forwarder = function >= self.rva && function - self.rva < self.size;
         let address = base.wrapping_add(function);
-        Ok(if forwarder { Export::Forwarder(address) } else { Export::Address(address) })
+        Ok(if forwarder {
+            Export::Forwarder(address)
+        } else {
+            Export::Address(address)
+        })
     }
 }
 
@@ -311,8 +324,12 @@ pub fn export_by_name<M: Memory>(memory: &M, base: u32, name: &[u8]) -> Result<E
 /// 2000's: GetProcAddress of an ordinal a DLL does not export is ERROR_INVALID_ORDINAL).
 pub fn export_by_ordinal<M: Memory>(memory: &M, base: u32, ordinal: u32) -> Result<Export, u32> {
     let directory = Directory::of(memory, base)?;
-    let slot = ordinal.checked_sub(directory.ordinal_base).ok_or(STATUS_ORDINAL_NOT_FOUND)?;
-    directory.slot(memory, base, slot).map_err(|_| STATUS_ORDINAL_NOT_FOUND)
+    let slot = ordinal
+        .checked_sub(directory.ordinal_base)
+        .ok_or(STATUS_ORDINAL_NOT_FOUND)?;
+    directory
+        .slot(memory, base, slot)
+        .map_err(|_| STATUS_ORDINAL_NOT_FOUND)
 }
 
 /// The base of the module a forwarder's module part names (`NTDLL`: a name without an extension, so
@@ -324,7 +341,9 @@ fn forwarded_module<M: Memory>(memory: &M, ldr: u32, module: &[u8]) -> Result<u3
     }
     let mut name = [0u16; FORWARDER_ROOM + DEFAULT_EXTENSION.len()];
     let length = module_name(&wide[..module.len()], &mut name).ok_or(STATUS_DLL_NOT_FOUND)?;
-    by_name(memory, ldr, &name[..length]).map(|entry| memory.word(entry + entry::DLL_BASE)).ok_or(STATUS_DLL_NOT_FOUND)
+    by_name(memory, ldr, &name[..length])
+        .map(|entry| memory.word(entry + entry::DLL_BASE))
+        .ok_or(STATUS_DLL_NOT_FOUND)
 }
 
 /// A forwarder's target entry (what follows its module part's dot): by name, or by ordinal for a
@@ -350,7 +369,9 @@ pub fn split_forwarder(text: &[u8]) -> Option<(&[u8], Target<'_>)> {
     if digits.is_empty() || digits.len() > 9 || !digits.iter().all(u8::is_ascii_digit) {
         return None;
     }
-    let ordinal = digits.iter().fold(0u32, |value, &digit| 10 * value + u32::from(digit - b'0'));
+    let ordinal = digits
+        .iter()
+        .fold(0u32, |value, &digit| 10 * value + u32::from(digit - b'0'));
     Some((module, Target::Ordinal(ordinal)))
 }
 
@@ -369,7 +390,8 @@ fn followed<M: Memory>(memory: &M, ldr: u32, mut export: Export) -> Result<u32, 
                 text[index] == 0
             })
             .ok_or(STATUS_ENTRYPOINT_NOT_FOUND)?;
-        let (module, target) = split_forwarder(&text[..length]).ok_or(STATUS_ENTRYPOINT_NOT_FOUND)?;
+        let (module, target) =
+            split_forwarder(&text[..length]).ok_or(STATUS_ENTRYPOINT_NOT_FOUND)?;
         let base = forwarded_module(memory, ldr, module)?;
         export = match target {
             Target::Name(name) => export_by_name(memory, base, name)?,
@@ -386,7 +408,12 @@ fn followed<M: Memory>(memory: &M, ldr: u32, mut export: Export) -> Result<u32, 
 /// `module`, its forwarders followed. STATUS_DLL_NOT_FOUND for a handle naming no module of the
 /// lists (or a forwarder naming a module the process has not loaded); [`export_by_name`]'s
 /// statuses for a name the module does not export.
-pub fn procedure_address<M: Memory>(memory: &M, ldr: u32, module: u32, name: &[u8]) -> Result<u32, u32> {
+pub fn procedure_address<M: Memory>(
+    memory: &M,
+    ldr: u32,
+    module: u32,
+    name: &[u8],
+) -> Result<u32, u32> {
     by_base(memory, ldr, module).ok_or(STATUS_DLL_NOT_FOUND)?;
     followed(memory, ldr, export_by_name(memory, module, name)?)
 }
@@ -395,7 +422,12 @@ pub fn procedure_address<M: Memory>(memory: &M, ldr: u32, module: u32, name: &[u
 /// of the module whose handle is `module`, its forwarders followed. STATUS_DLL_NOT_FOUND for a
 /// handle naming no module of the lists; [`export_by_ordinal`]'s statuses for an ordinal the module
 /// does not export.
-pub fn procedure_by_ordinal<M: Memory>(memory: &M, ldr: u32, module: u32, ordinal: u32) -> Result<u32, u32> {
+pub fn procedure_by_ordinal<M: Memory>(
+    memory: &M,
+    ldr: u32,
+    module: u32,
+    ordinal: u32,
+) -> Result<u32, u32> {
     by_base(memory, ldr, module).ok_or(STATUS_DLL_NOT_FOUND)?;
     followed(memory, ldr, export_by_ordinal(memory, module, ordinal)?)
 }
@@ -428,12 +460,14 @@ pub fn search_place(name: &[u16], current: &[u16], index: usize, out: &mut [u16]
             if root[..length] == first[..first_length] {
                 return None;
             }
-            out.get_mut(..length + 1)?.copy_from_slice(&root[..length + 1]);
+            out.get_mut(..length + 1)?
+                .copy_from_slice(&root[..length + 1]);
             return Some(length);
         }
         _ => return None,
     };
-    out.get_mut(..place.len() + 1)?.copy_from_slice(&first[..place.len() + 1]);
+    out.get_mut(..place.len() + 1)?
+        .copy_from_slice(&first[..place.len() + 1]);
     Some(place.len())
 }
 
@@ -460,7 +494,11 @@ pub fn loaded<M: Memory>(memory: &M, base: u32, size: u32) -> Loaded {
     let entry_rva = memory.word(nt + 0x18 + 0x10);
     Loaded {
         base,
-        entry_point: if entry_rva == 0 { 0 } else { base.wrapping_add(entry_rva) },
+        entry_point: if entry_rva == 0 {
+            0
+        } else {
+            base.wrapping_add(entry_rva)
+        },
         size,
         time_date_stamp: memory.word(nt + 8),
         dll: memory.half(nt + 22) & 0x2000 != 0,
@@ -474,17 +512,30 @@ pub fn loaded<M: Memory>(memory: &M, base: u32, size: u32) -> Loaded {
 /// the list links left for [`insert`]. Its flags say a DLL's image (LDRP_IMAGE_DLL) and an entry
 /// processed: no entry point is ever called (LDRP_PROCESS_ATTACH_CALLED stays clear, so a DllMain
 /// that runs later can tell which entries it has not seen).
-pub fn loaded_entry(at: u32, module: &Loaded, buffer: u32, path: &[u16]) -> [u8; entry::SIZE as usize] {
+pub fn loaded_entry(
+    at: u32,
+    module: &Loaded,
+    buffer: u32,
+    path: &[u16],
+) -> [u8; entry::SIZE as usize] {
     let mut bytes = [0u8; entry::SIZE as usize];
-    let mut put = |offset: u32, value: u32| bytes[offset as usize..offset as usize + 4].copy_from_slice(&value.to_le_bytes());
+    let mut put = |offset: u32, value: u32| {
+        bytes[offset as usize..offset as usize + 4].copy_from_slice(&value.to_le_bytes())
+    };
     put(entry::DLL_BASE, module.base);
     put(entry::ENTRY_POINT, module.entry_point);
     put(entry::SIZE_OF_IMAGE, module.size);
     let length = 2 * path.len() as u32;
     put(entry::FULL_DLL_NAME, length | (length + 2) << 16);
     put(entry::FULL_DLL_NAME + 4, buffer);
-    let file = 2 * path.iter().rposition(|&unit| unit == BACKSLASH).map_or(0, |at| at + 1) as u32;
-    put(entry::BASE_DLL_NAME, (length - file) | (length + 2 - file) << 16);
+    let file = 2 * path
+        .iter()
+        .rposition(|&unit| unit == BACKSLASH)
+        .map_or(0, |at| at + 1) as u32;
+    put(
+        entry::BASE_DLL_NAME,
+        (length - file) | (length + 2 - file) << 16,
+    );
     put(entry::BASE_DLL_NAME + 4, buffer + file);
     let kind = if module.dll { flags::IMAGE_DLL } else { 0 };
     put(entry::FLAGS, kind | flags::ENTRY_PROCESSED);
@@ -514,8 +565,14 @@ fn unlink<M: MemoryMut>(memory: &mut M, node: u32) {
 /// The three lists' heads and an entry's links in them: load, memory and initialization order.
 const ORDERS: [(u32, u32); 3] = [
     (data::IN_LOAD_ORDER_MODULE_LIST, entry::IN_LOAD_ORDER_LINKS),
-    (data::IN_MEMORY_ORDER_MODULE_LIST, entry::IN_MEMORY_ORDER_LINKS),
-    (data::IN_INITIALIZATION_ORDER_MODULE_LIST, entry::IN_INITIALIZATION_ORDER_LINKS),
+    (
+        data::IN_MEMORY_ORDER_MODULE_LIST,
+        entry::IN_MEMORY_ORDER_LINKS,
+    ),
+    (
+        data::IN_INITIALIZATION_ORDER_MODULE_LIST,
+        entry::IN_INITIALIZATION_ORDER_LINKS,
+    ),
 ];
 
 /// The entry at `entry` joins the lists of the PEB_LDR_DATA at `ldr`: after their last entries,
@@ -548,10 +605,17 @@ const MAX_THUNKS: usize = 0x4000;
 
 /// The import descriptors of the image mapped at `base`, to the all-zero one (none for an image
 /// without an import directory).
-pub fn import_descriptors<M: Memory>(memory: &M, base: u32) -> impl Iterator<Item = Descriptor> + '_ {
+pub fn import_descriptors<M: Memory>(
+    memory: &M,
+    base: u32,
+) -> impl Iterator<Item = Descriptor> + '_ {
     let nt = base.wrapping_add(memory.word(base + 0x3C));
     let optional = nt + 0x18;
-    let rva = if memory.word(optional + 0x5C) > 1 { memory.word(optional + 0x68) } else { 0 };
+    let rva = if memory.word(optional + 0x5C) > 1 {
+        memory.word(optional + 0x68)
+    } else {
+        0
+    };
     let mut at = base.wrapping_add(rva);
     let mut left = if rva == 0 { 0 } else { MAX_DESCRIPTORS };
     core::iter::from_fn(move || {
@@ -566,7 +630,11 @@ pub fn import_descriptors<M: Memory>(memory: &M, base: u32) -> impl Iterator<Ite
         }
         at += 20;
         let lookup = if original == 0 { first } else { original };
-        Some(Descriptor { name: base.wrapping_add(name), lookup: base.wrapping_add(lookup), iat: base.wrapping_add(first) })
+        Some(Descriptor {
+            name: base.wrapping_add(name),
+            lookup: base.wrapping_add(lookup),
+            iat: base.wrapping_add(first),
+        })
     })
 }
 
@@ -580,13 +648,16 @@ pub enum Import {
 
 /// The imports of the lookup table at `lookup` of the image at `base`, to its zero thunk.
 pub fn imports<M: Memory>(memory: &M, base: u32, lookup: u32) -> impl Iterator<Item = Import> + '_ {
-    (0..MAX_THUNKS as u32).map(move |index| memory.word(lookup + 4 * index)).take_while(|&thunk| thunk != 0).map(move |thunk| {
-        if thunk & 0x8000_0000 != 0 {
-            Import::Ordinal(thunk & 0xFFFF)
-        } else {
-            Import::Name(base.wrapping_add(thunk) + 2)
-        }
-    })
+    (0..MAX_THUNKS as u32)
+        .map(move |index| memory.word(lookup + 4 * index))
+        .take_while(|&thunk| thunk != 0)
+        .map(move |thunk| {
+            if thunk & 0x8000_0000 != 0 {
+                Import::Ordinal(thunk & 0xFFFF)
+            } else {
+                Import::Name(base.wrapping_add(thunk) + 2)
+            }
+        })
 }
 
 /// The longest import name a snap reads.
@@ -595,7 +666,12 @@ const MAX_IMPORT_NAME: usize = 256;
 /// The address an IAT slot receives for `import` of the module whose handle is `module`: its
 /// export by name or by ordinal, forwarders followed ([`procedure_address`],
 /// [`procedure_by_ordinal`]).
-pub fn import_address<M: Memory>(memory: &M, ldr: u32, module: u32, import: Import) -> Result<u32, u32> {
+pub fn import_address<M: Memory>(
+    memory: &M,
+    ldr: u32,
+    module: u32,
+    import: Import,
+) -> Result<u32, u32> {
     match import {
         Import::Ordinal(ordinal) => procedure_by_ordinal(memory, ldr, module, ordinal),
         Import::Name(at) => {
@@ -659,8 +735,13 @@ pub mod model {
     /// `image` (one [`image`] builds) importing `imports` (module, then each import: a name, or an
     /// ordinal), its descriptors at RVA 0x800, the lookup tables at 0x900, the IATs at 0xA00 and
     /// the names from 0xB00.
-    pub fn with_imports(mut image: std::vec::Vec<u8>, imports: &[(&str, &[Result<&str, u32>])]) -> std::vec::Vec<u8> {
-        let put = |image: &mut std::vec::Vec<u8>, at: usize, value: u32| image[at..at + 4].copy_from_slice(&value.to_le_bytes());
+    pub fn with_imports(
+        mut image: std::vec::Vec<u8>,
+        imports: &[(&str, &[Result<&str, u32>])],
+    ) -> std::vec::Vec<u8> {
+        let put = |image: &mut std::vec::Vec<u8>, at: usize, value: u32| {
+            image[at..at + 4].copy_from_slice(&value.to_le_bytes())
+        };
         let (mut lookup, mut iat, mut strings) = (0x900, 0xA00, 0xB00);
         for (index, (module, entries)) in imports.iter().enumerate() {
             let descriptor = 0x800 + 20 * index;
@@ -673,7 +754,8 @@ pub mod model {
                 let thunk = match entry {
                     Ok(name) => {
                         let at = strings as u32;
-                        image[strings + 2..strings + 2 + name.len()].copy_from_slice(name.as_bytes());
+                        image[strings + 2..strings + 2 + name.len()]
+                            .copy_from_slice(name.as_bytes());
                         strings += name.len() + 3;
                         at
                     }
@@ -695,7 +777,9 @@ pub mod model {
     /// `exports` (name, then its function RVA or its forwarder string), its names sorted.
     pub fn image(exports: &[(&str, Result<u32, &str>)]) -> std::vec::Vec<u8> {
         let mut image = std::vec![0u8; 0x1000];
-        let put = |image: &mut std::vec::Vec<u8>, at: usize, value: u32| image[at..at + 4].copy_from_slice(&value.to_le_bytes());
+        let put = |image: &mut std::vec::Vec<u8>, at: usize, value: u32| {
+            image[at..at + 4].copy_from_slice(&value.to_le_bytes())
+        };
         image[0..2].copy_from_slice(b"MZ");
         put(&mut image, 0x3C, 0x40);
         put(&mut image, 0x40, 0x4550);
@@ -718,7 +802,8 @@ pub mod model {
         for (index, (name, target)) in sorted.iter().enumerate() {
             // The ordinals run backwards, so a name's index is not its ordinal.
             let ordinal = count - 1 - index;
-            image[ordinals + 2 * index..ordinals + 2 * index + 2].copy_from_slice(&(ordinal as u16).to_le_bytes());
+            image[ordinals + 2 * index..ordinals + 2 * index + 2]
+                .copy_from_slice(&(ordinal as u16).to_le_bytes());
             put(&mut image, names + 4 * index, strings as u32);
             image[strings..strings + name.len()].copy_from_slice(name.as_bytes());
             strings += name.len() + 1;
@@ -766,24 +851,48 @@ pub mod model {
                 let place = (strings + 2 * offset as u32) as usize;
                 bytes[place..place + 2].copy_from_slice(&unit.to_le_bytes());
             }
-            let file = units.iter().rposition(|&unit| unit == u16::from(b'\\')).map_or(0, |at| at + 1);
+            let file = units
+                .iter()
+                .rposition(|&unit| unit == u16::from(b'\\'))
+                .map_or(0, |at| at + 1);
             let length = 2 * units.len() as u32;
-            put(&mut bytes, entry + entry::FULL_DLL_NAME, length | (length + 2) << 16);
+            put(
+                &mut bytes,
+                entry + entry::FULL_DLL_NAME,
+                length | (length + 2) << 16,
+            );
             put(&mut bytes, entry + entry::FULL_DLL_NAME + 4, at + strings);
             let base_length = length - 2 * file as u32;
-            put(&mut bytes, entry + entry::BASE_DLL_NAME, base_length | (base_length + 2) << 16);
-            put(&mut bytes, entry + entry::BASE_DLL_NAME + 4, at + strings + 2 * file as u32);
+            put(
+                &mut bytes,
+                entry + entry::BASE_DLL_NAME,
+                base_length | (base_length + 2) << 16,
+            );
+            put(
+                &mut bytes,
+                entry + entry::BASE_DLL_NAME + 4,
+                at + strings + 2 * file as u32,
+            );
             strings += length + 2;
         }
         // Each order's links: the load and memory orders every module, the initialization order all
         // but the image.
         for (head, links) in ORDERS {
-            let first = if head == data::IN_INITIALIZATION_ORDER_MODULE_LIST { 1 } else { 0 };
-            let nodes: std::vec::Vec<u32> =
-                core::iter::once(head).chain((first..modules.len()).map(|index| entry_at(index) + links)).collect();
+            let first = if head == data::IN_INITIALIZATION_ORDER_MODULE_LIST {
+                1
+            } else {
+                0
+            };
+            let nodes: std::vec::Vec<u32> = core::iter::once(head)
+                .chain((first..modules.len()).map(|index| entry_at(index) + links))
+                .collect();
             for (index, &node) in nodes.iter().enumerate() {
                 put(&mut bytes, node, at + nodes[(index + 1) % nodes.len()]);
-                put(&mut bytes, node + 4, at + nodes[(index + nodes.len() - 1) % nodes.len()]);
+                put(
+                    &mut bytes,
+                    node + 4,
+                    at + nodes[(index + nodes.len() - 1) % nodes.len()],
+                );
             }
         }
         bytes
@@ -810,7 +919,11 @@ mod tests {
     fn process() -> Space {
         let mut executable = image(&[]);
         executable[0x58 + 0x5C..0x58 + 0x60].copy_from_slice(&0u32.to_le_bytes()); // no directories
-        let ntdll = image(&[("RtlUnwind", Ok(0x1230)), ("NtClose", Ok(0x1100)), ("Odd.Name", Ok(0x1300))]);
+        let ntdll = image(&[
+            ("RtlUnwind", Ok(0x1230)),
+            ("NtClose", Ok(0x1100)),
+            ("Odd.Name", Ok(0x1300)),
+        ]);
         let kernel32 = image(&[
             ("GetTickCount", Ok(0x2000)),
             ("ExitProcess", Ok(0x2010)),
@@ -824,11 +937,28 @@ mod tests {
             ("Hole", Ok(0)),
         ]);
         let modules = [
-            Module { base: IMAGE, path: "C:\\RUNTIME.EXE", load_count: STATIC_LOAD_COUNT },
-            Module { base: NTDLL, path: "C:\\WINNT\\system32\\ntdll.dll", load_count: STATIC_LOAD_COUNT },
-            Module { base: KERNEL32, path: "C:\\WINNT\\system32\\KERNEL32.DLL", load_count: STATIC_LOAD_COUNT },
+            Module {
+                base: IMAGE,
+                path: "C:\\RUNTIME.EXE",
+                load_count: STATIC_LOAD_COUNT,
+            },
+            Module {
+                base: NTDLL,
+                path: "C:\\WINNT\\system32\\ntdll.dll",
+                load_count: STATIC_LOAD_COUNT,
+            },
+            Module {
+                base: KERNEL32,
+                path: "C:\\WINNT\\system32\\KERNEL32.DLL",
+                load_count: STATIC_LOAD_COUNT,
+            },
         ];
-        Space(std::vec![(LDR, lists(LDR, &modules)), (IMAGE, executable), (NTDLL, ntdll), (KERNEL32, kernel32)])
+        Space(std::vec![
+            (LDR, lists(LDR, &modules)),
+            (IMAGE, executable),
+            (NTDLL, ntdll),
+            (KERNEL32, kernel32)
+        ])
     }
 
     fn found(space: &Space, name: &str) -> Option<u32> {
@@ -841,20 +971,28 @@ mod tests {
     #[test]
     fn the_lists_walk_in_load_order() {
         let space = process();
-        let bases: std::vec::Vec<u32> = load_order(&space, LDR).map(|entry| space.word(entry + entry::DLL_BASE)).collect();
+        let bases: std::vec::Vec<u32> = load_order(&space, LDR)
+            .map(|entry| space.word(entry + entry::DLL_BASE))
+            .collect();
         assert_eq!(bases, [IMAGE, NTDLL, KERNEL32]);
         assert!(by_base(&space, LDR, KERNEL32).is_some());
         assert_eq!(by_base(&space, LDR, 0x1234_0000), None);
         assert_eq!(by_base(&space, LDR, 0), None);
     }
 
-    /// Module names: any case, with or without the `.dll` the lookups add, a trailing dot meaning no
-    /// extension; a path is matched against the full path, as Windows 2000 matches it (the caller
-    /// makes it absolute, its separators backslashes).
+    /// Module names: any case, with or without the `.dll` the lookups add, a trailing dot meaning
+    /// no extension; a path is matched against the full path, as Windows 2000 matches it (the
+    /// caller makes it absolute, its separators backslashes).
     #[test]
     fn modules_answer_to_their_names() {
         let space = process();
-        for name in ["kernel32.dll", "KERNEL32", "Kernel32.Dll", "C:\\WINNT\\SYSTEM32\\kernel32.dll", "c:\\winnt\\system32\\KERNEL32"] {
+        for name in [
+            "kernel32.dll",
+            "KERNEL32",
+            "Kernel32.Dll",
+            "C:\\WINNT\\SYSTEM32\\kernel32.dll",
+            "c:\\winnt\\system32\\KERNEL32",
+        ] {
             assert_eq!(found(&space, name), Some(KERNEL32), "{name}");
         }
         for name in ["ntdll.dll", "NTDLL", "C:\\WINNT\\system32\\NTDLL.DLL"] {
@@ -862,14 +1000,34 @@ mod tests {
         }
         assert_eq!(found(&space, "runtime.exe"), Some(IMAGE));
         assert_eq!(found(&space, "C:\\runtime.exe"), Some(IMAGE));
-        for name in ["nosuch.dll", "kernel32.exe", "runtime", "kernel32.", "D:\\kernel32.dll", "C:\\kernel32.dll", ""] {
+        for name in [
+            "nosuch.dll",
+            "kernel32.exe",
+            "runtime",
+            "kernel32.",
+            "D:\\kernel32.dll",
+            "C:\\kernel32.dll",
+            "",
+        ] {
             assert_eq!(found(&space, name), None, "{name}");
         }
         let mut out = [0u16; 16];
-        assert_eq!(module_name(&wide("a."), &mut out), Some(1), "the trailing dot goes");
+        assert_eq!(
+            module_name(&wide("a."), &mut out),
+            Some(1),
+            "the trailing dot goes"
+        );
         let length = module_name(&wide("dir.x\\a"), &mut out).unwrap();
-        assert_eq!(&out[..length], &wide("dir.x\\a.DLL")[..], "the file part's extension counts");
-        assert_eq!(module_name(&wide("abcdef"), &mut [0u16; 8]), None, "no room for the extension");
+        assert_eq!(
+            &out[..length],
+            &wide("dir.x\\a.DLL")[..],
+            "the file part's extension counts"
+        );
+        assert_eq!(
+            module_name(&wide("abcdef"), &mut [0u16; 8]),
+            None,
+            "no room for the extension"
+        );
     }
 
     /// Exports: by exact name, through the sorted name table; forwarders followed into the module
@@ -880,32 +1038,84 @@ mod tests {
         let address = |module, name: &str| procedure_address(&space, LDR, module, name.as_bytes());
         assert_eq!(address(KERNEL32, "GetTickCount"), Ok(KERNEL32 + 0x2000));
         assert_eq!(address(KERNEL32, "ExitProcess"), Ok(KERNEL32 + 0x2010));
-        assert_eq!(address(KERNEL32, "RtlUnwind"), Ok(NTDLL + 0x1230), "the forwarder lands in ntdll");
+        assert_eq!(
+            address(KERNEL32, "RtlUnwind"),
+            Ok(NTDLL + 0x1230),
+            "the forwarder lands in ntdll"
+        );
         assert_eq!(address(NTDLL, "RtlUnwind"), Ok(NTDLL + 0x1230));
-        assert_eq!(address(KERNEL32, "gettickcount"), Err(STATUS_ENTRYPOINT_NOT_FOUND), "case counts");
-        assert_eq!(address(KERNEL32, "GetTickCountx"), Err(STATUS_ENTRYPOINT_NOT_FOUND));
-        assert_eq!(address(KERNEL32, "GetTick"), Err(STATUS_ENTRYPOINT_NOT_FOUND));
+        assert_eq!(
+            address(KERNEL32, "gettickcount"),
+            Err(STATUS_ENTRYPOINT_NOT_FOUND),
+            "case counts"
+        );
+        assert_eq!(
+            address(KERNEL32, "GetTickCountx"),
+            Err(STATUS_ENTRYPOINT_NOT_FOUND)
+        );
+        assert_eq!(
+            address(KERNEL32, "GetTick"),
+            Err(STATUS_ENTRYPOINT_NOT_FOUND)
+        );
         assert_eq!(address(KERNEL32, ""), Err(STATUS_ENTRYPOINT_NOT_FOUND));
-        assert_eq!(address(KERNEL32, "Hole"), Err(STATUS_ENTRYPOINT_NOT_FOUND), "an empty slot");
-        assert_eq!(address(KERNEL32, "Missing"), Err(STATUS_ENTRYPOINT_NOT_FOUND));
-        assert_eq!(address(KERNEL32, "ByOrdinal"), Ok(NTDLL + 0x1230), "a forwarder to an ordinal");
-        assert_eq!(address(KERNEL32, "PastTheTable"), Err(STATUS_ORDINAL_NOT_FOUND), "an ordinal ntdll lacks");
-        assert_eq!(address(KERNEL32, "NotAnOrdinal"), Err(STATUS_ENTRYPOINT_NOT_FOUND));
-        assert_eq!(address(KERNEL32, "Dotted"), Ok(NTDLL + 0x1300), "the first dot splits");
+        assert_eq!(
+            address(KERNEL32, "Hole"),
+            Err(STATUS_ENTRYPOINT_NOT_FOUND),
+            "an empty slot"
+        );
+        assert_eq!(
+            address(KERNEL32, "Missing"),
+            Err(STATUS_ENTRYPOINT_NOT_FOUND)
+        );
+        assert_eq!(
+            address(KERNEL32, "ByOrdinal"),
+            Ok(NTDLL + 0x1230),
+            "a forwarder to an ordinal"
+        );
+        assert_eq!(
+            address(KERNEL32, "PastTheTable"),
+            Err(STATUS_ORDINAL_NOT_FOUND),
+            "an ordinal ntdll lacks"
+        );
+        assert_eq!(
+            address(KERNEL32, "NotAnOrdinal"),
+            Err(STATUS_ENTRYPOINT_NOT_FOUND)
+        );
+        assert_eq!(
+            address(KERNEL32, "Dotted"),
+            Ok(NTDLL + 0x1300),
+            "the first dot splits"
+        );
         assert_eq!(address(KERNEL32, "Elsewhere"), Err(STATUS_DLL_NOT_FOUND));
-        assert_eq!(address(IMAGE, "main"), Err(STATUS_PROCEDURE_NOT_FOUND), "the image exports nothing");
-        assert_eq!(address(0x1234_0000, "GetTickCount"), Err(STATUS_DLL_NOT_FOUND), "no such module");
+        assert_eq!(
+            address(IMAGE, "main"),
+            Err(STATUS_PROCEDURE_NOT_FOUND),
+            "the image exports nothing"
+        );
+        assert_eq!(
+            address(0x1234_0000, "GetTickCount"),
+            Err(STATUS_DLL_NOT_FOUND),
+            "no such module"
+        );
         let mut long = std::vec![b'x'; 300];
         long[..12].copy_from_slice(b"GetTickCount");
-        assert_eq!(procedure_address(&space, LDR, KERNEL32, &long), Err(STATUS_ENTRYPOINT_NOT_FOUND));
-        assert_eq!(procedure_by_ordinal(&space, LDR, 0x1234_0000, 1), Err(STATUS_DLL_NOT_FOUND));
+        assert_eq!(
+            procedure_address(&space, LDR, KERNEL32, &long),
+            Err(STATUS_ENTRYPOINT_NOT_FOUND)
+        );
+        assert_eq!(
+            procedure_by_ordinal(&space, LDR, 0x1234_0000, 1),
+            Err(STATUS_DLL_NOT_FOUND)
+        );
     }
 
     /// The ordinal `name` exports under in the image at `base` (the model numbers its slots apart
     /// from its name order).
     fn ordinal_of(space: &Space, base: u32, name: &str) -> u32 {
         let wanted = export_by_name(space, base, name.as_bytes()).unwrap();
-        (1..64).find(|&ordinal| export_by_ordinal(space, base, ordinal) == Ok(wanted)).unwrap()
+        (1..64)
+            .find(|&ordinal| export_by_ordinal(space, base, ordinal) == Ok(wanted))
+            .unwrap()
     }
 
     /// Ordinals: biased by the directory's base, through the address table (not the name order);
@@ -917,28 +1127,81 @@ mod tests {
         let by_ordinal = |module, ordinal| procedure_by_ordinal(&space, LDR, module, ordinal);
         let tick = ordinal_of(&space, KERNEL32, "GetTickCount");
         assert_eq!(by_ordinal(KERNEL32, tick), Ok(KERNEL32 + 0x2000));
-        assert_eq!(by_ordinal(KERNEL32, ordinal_of(&space, KERNEL32, "RtlUnwind")), Ok(NTDLL + 0x1230));
-        assert_eq!(by_ordinal(KERNEL32, ordinal_of(&space, KERNEL32, "ByOrdinal")), Ok(NTDLL + 0x1230));
-        assert_eq!(by_ordinal(NTDLL, 1), Ok(NTDLL + 0x1230), "the model's last name takes the first slot");
-        assert_eq!(by_ordinal(NTDLL, 0), Err(STATUS_ORDINAL_NOT_FOUND), "below the base");
-        assert_eq!(by_ordinal(NTDLL, 4), Err(STATUS_ORDINAL_NOT_FOUND), "past the table");
+        assert_eq!(
+            by_ordinal(KERNEL32, ordinal_of(&space, KERNEL32, "RtlUnwind")),
+            Ok(NTDLL + 0x1230)
+        );
+        assert_eq!(
+            by_ordinal(KERNEL32, ordinal_of(&space, KERNEL32, "ByOrdinal")),
+            Ok(NTDLL + 0x1230)
+        );
+        assert_eq!(
+            by_ordinal(NTDLL, 1),
+            Ok(NTDLL + 0x1230),
+            "the model's last name takes the first slot"
+        );
+        assert_eq!(
+            by_ordinal(NTDLL, 0),
+            Err(STATUS_ORDINAL_NOT_FOUND),
+            "below the base"
+        );
+        assert_eq!(
+            by_ordinal(NTDLL, 4),
+            Err(STATUS_ORDINAL_NOT_FOUND),
+            "past the table"
+        );
         assert_eq!(by_ordinal(NTDLL, 0xFFFF), Err(STATUS_ORDINAL_NOT_FOUND));
         // A two-slot image: "A" in slot 1 (ordinal 2), the empty slot 0 (ordinal 1).
-        let holed = Space(std::vec![(0x1000_0000, image(&[("A", Ok(0x10)), ("Hole", Ok(0))]))]);
-        assert_eq!(export_by_ordinal(&holed, 0x1000_0000, 2), Ok(Export::Address(0x1000_0010)));
-        assert_eq!(export_by_ordinal(&holed, 0x1000_0000, 1), Err(STATUS_ORDINAL_NOT_FOUND), "an empty slot");
-        assert_eq!(by_ordinal(IMAGE, 1), Err(STATUS_PROCEDURE_NOT_FOUND), "the image exports nothing");
+        let holed = Space(std::vec![(
+            0x1000_0000,
+            image(&[("A", Ok(0x10)), ("Hole", Ok(0))])
+        )]);
+        assert_eq!(
+            export_by_ordinal(&holed, 0x1000_0000, 2),
+            Ok(Export::Address(0x1000_0010))
+        );
+        assert_eq!(
+            export_by_ordinal(&holed, 0x1000_0000, 1),
+            Err(STATUS_ORDINAL_NOT_FOUND),
+            "an empty slot"
+        );
+        assert_eq!(
+            by_ordinal(IMAGE, 1),
+            Err(STATUS_PROCEDURE_NOT_FOUND),
+            "the image exports nothing"
+        );
     }
 
     /// Forwarder strings split at their first dot: the module part before it, the entry (dots and
     /// all) after; `#` and digits an ordinal.
     #[test]
     fn forwarders_split_at_the_first_dot() {
-        assert_eq!(split_forwarder(b"NTDLL.RtlUnwind"), Some((&b"NTDLL"[..], Target::Name(b"RtlUnwind"))));
-        assert_eq!(split_forwarder(b"API.MS.Entry"), Some((&b"API"[..], Target::Name(b"MS.Entry"))));
-        assert_eq!(split_forwarder(b"NTDLL.#12"), Some((&b"NTDLL"[..], Target::Ordinal(12))));
-        for bad in [&b"NTDLL"[..], b".Entry", b"NTDLL.", b"NTDLL.#", b"NTDLL.#1x", b"NTDLL.#1234567890"] {
-            assert_eq!(split_forwarder(bad), None, "{:?}", core::str::from_utf8(bad));
+        assert_eq!(
+            split_forwarder(b"NTDLL.RtlUnwind"),
+            Some((&b"NTDLL"[..], Target::Name(b"RtlUnwind")))
+        );
+        assert_eq!(
+            split_forwarder(b"API.MS.Entry"),
+            Some((&b"API"[..], Target::Name(b"MS.Entry")))
+        );
+        assert_eq!(
+            split_forwarder(b"NTDLL.#12"),
+            Some((&b"NTDLL"[..], Target::Ordinal(12)))
+        );
+        for bad in [
+            &b"NTDLL"[..],
+            b".Entry",
+            b"NTDLL.",
+            b"NTDLL.#",
+            b"NTDLL.#1x",
+            b"NTDLL.#1234567890",
+        ] {
+            assert_eq!(
+                split_forwarder(bad),
+                None,
+                "{:?}",
+                core::str::from_utf8(bad)
+            );
         }
     }
 
@@ -995,16 +1258,45 @@ mod tests {
                 })
                 .collect()
         };
-        assert_eq!(places("Companion", "C:\\CORPUS\\"), ["C:\\CORPUS\\Companion.DLL", "C:\\Companion.DLL"]);
-        assert_eq!(places("comp.dll", "C:\\CORPUS\\"), ["C:\\CORPUS\\comp.dll", "C:\\comp.dll"]);
-        assert_eq!(places("comp.", "C:\\CORPUS\\"), ["C:\\CORPUS\\comp", "C:\\comp"], "a trailing dot: no extension");
+        assert_eq!(
+            places("Companion", "C:\\CORPUS\\"),
+            ["C:\\CORPUS\\Companion.DLL", "C:\\Companion.DLL"]
+        );
+        assert_eq!(
+            places("comp.dll", "C:\\CORPUS\\"),
+            ["C:\\CORPUS\\comp.dll", "C:\\comp.dll"]
+        );
+        assert_eq!(
+            places("comp.", "C:\\CORPUS\\"),
+            ["C:\\CORPUS\\comp", "C:\\comp"],
+            "a trailing dot: no extension"
+        );
         assert_eq!(places("comp", "C:\\"), ["C:\\comp.DLL"], "the root once");
-        assert_eq!(places("sub\\comp", "C:\\CORPUS\\"), ["C:\\CORPUS\\sub\\comp.DLL"], "a relative path: one place");
+        assert_eq!(
+            places("sub\\comp", "C:\\CORPUS\\"),
+            ["C:\\CORPUS\\sub\\comp.DLL"],
+            "a relative path: one place"
+        );
         assert_eq!(places("..\\comp.dll", "C:\\CORPUS\\"), ["C:\\comp.dll"]);
-        assert_eq!(places("C:\\elsewhere\\COMP.DLL", "C:\\CORPUS\\"), ["C:\\elsewhere\\COMP.DLL"]);
-        assert_eq!(places("/elsewhere/comp", "C:\\CORPUS\\"), ["C:\\elsewhere\\comp.DLL"]);
+        assert_eq!(
+            places("C:\\elsewhere\\COMP.DLL", "C:\\CORPUS\\"),
+            ["C:\\elsewhere\\COMP.DLL"]
+        );
+        assert_eq!(
+            places("/elsewhere/comp", "C:\\CORPUS\\"),
+            ["C:\\elsewhere\\comp.DLL"]
+        );
         let long = "x".repeat(300);
-        assert_eq!(search_place(&wide(&long), &wide("C:\\"), 0, &mut [0u16; MAX_SEARCH_PATH + 1]), None, "past MAX_PATH");
+        assert_eq!(
+            search_place(
+                &wide(&long),
+                &wide("C:\\"),
+                0,
+                &mut [0u16; MAX_SEARCH_PATH + 1]
+            ),
+            None,
+            "past MAX_PATH"
+        );
     }
 
     /// A loaded module's entry: its base, entry point, size and stamp; its full path as opened and
@@ -1012,7 +1304,13 @@ mod tests {
     /// one, no TLS index, empty hash links; a DLL's flags, its entry point never called.
     #[test]
     fn a_loaded_module_has_its_entry() {
-        let module = Loaded { base: 0x1000_0000, entry_point: 0x1000_1234, size: 0x5000, time_date_stamp: 0x3A2B_1C0D, dll: true };
+        let module = Loaded {
+            base: 0x1000_0000,
+            entry_point: 0x1000_1234,
+            size: 0x5000,
+            time_date_stamp: 0x3A2B_1C0D,
+            dll: true,
+        };
         let path = wide("C:\\CORPUS\\Companion.DLL");
         let at = 0x0050_0000;
         let bytes = loaded_entry(at, &module, at + entry::SIZE, &path);
@@ -1024,18 +1322,40 @@ mod tests {
         assert_eq!(word(entry::TIME_DATE_STAMP), 0x3A2B_1C0D);
         assert_eq!(word(entry::FULL_DLL_NAME), 2 * 23 | (2 * 23 + 2) << 16);
         assert_eq!(word(entry::FULL_DLL_NAME + 4), at + entry::SIZE);
-        assert_eq!(word(entry::BASE_DLL_NAME), 2 * 13 | (2 * 13 + 2) << 16, "Companion.DLL");
+        assert_eq!(
+            word(entry::BASE_DLL_NAME),
+            2 * 13 | (2 * 13 + 2) << 16,
+            "Companion.DLL"
+        );
         assert_eq!(word(entry::BASE_DLL_NAME + 4), at + entry::SIZE + 2 * 10);
-        assert_eq!(word(entry::FLAGS), flags::IMAGE_DLL | flags::ENTRY_PROCESSED);
+        assert_eq!(
+            word(entry::FLAGS),
+            flags::IMAGE_DLL | flags::ENTRY_PROCESSED
+        );
         assert_eq!(space.half(at + entry::LOAD_COUNT), 1);
         assert_eq!(space.half(at + entry::TLS_INDEX), 0);
-        assert_eq!((word(entry::HASH_LINKS), word(entry::HASH_LINKS + 4)), (at + entry::HASH_LINKS, at + entry::HASH_LINKS));
-        let program = Loaded { dll: false, entry_point: 0, ..module };
+        assert_eq!(
+            (word(entry::HASH_LINKS), word(entry::HASH_LINKS + 4)),
+            (at + entry::HASH_LINKS, at + entry::HASH_LINKS)
+        );
+        let program = Loaded {
+            dll: false,
+            entry_point: 0,
+            ..module
+        };
         let bytes = loaded_entry(at, &program, at + entry::SIZE, &wide("C:\\x.exe"));
         space.0[0].1 = bytes.to_vec();
-        assert_eq!(space.word(at + entry::FLAGS), flags::ENTRY_PROCESSED, "a program's image: no DLL flag");
+        assert_eq!(
+            space.word(at + entry::FLAGS),
+            flags::ENTRY_PROCESSED,
+            "a program's image: no DLL flag"
+        );
         assert_eq!(space.word(at + entry::ENTRY_POINT), 0);
-        assert_eq!(space.word(at + entry::BASE_DLL_NAME), 2 * 5 | (2 * 8 + 2 - 2 * 3) << 16, "x.exe");
+        assert_eq!(
+            space.word(at + entry::BASE_DLL_NAME),
+            2 * 5 | (2 * 8 + 2 - 2 * 3) << 16,
+            "x.exe"
+        );
     }
 
     /// A loaded module joins every order after the last module, the initialization order's after
@@ -1046,7 +1366,13 @@ mod tests {
         const COMPANION: u32 = 0x1000_0000;
         let at = 0x0060_0000;
         let path = wide("C:\\CORPUS\\Companion.DLL");
-        let module = Loaded { base: COMPANION, entry_point: 0, size: 0x1000, time_date_stamp: 0, dll: true };
+        let module = Loaded {
+            base: COMPANION,
+            entry_point: 0,
+            size: 0x1000,
+            time_date_stamp: 0,
+            dll: true,
+        };
         let mut bytes = loaded_entry(at, &module, at + entry::SIZE, &path).to_vec();
         for unit in path.iter().chain([&0]) {
             bytes.extend_from_slice(&unit.to_le_bytes());
@@ -1056,13 +1382,24 @@ mod tests {
         let orders = |space: &Space| ORDERS.map(|(head, links)| order(space, LDR + head, links));
         assert_eq!(
             orders(&space),
-            [std::vec![IMAGE, NTDLL, KERNEL32, COMPANION], std::vec![IMAGE, NTDLL, KERNEL32, COMPANION], std::vec![NTDLL, KERNEL32, COMPANION]]
+            [
+                std::vec![IMAGE, NTDLL, KERNEL32, COMPANION],
+                std::vec![IMAGE, NTDLL, KERNEL32, COMPANION],
+                std::vec![NTDLL, KERNEL32, COMPANION]
+            ]
         );
         assert_eq!(found(&space, "companion"), Some(COMPANION));
         assert_eq!(found(&space, "C:\\CORPUS\\COMPANION.DLL"), Some(COMPANION));
         assert_eq!(by_base(&space, LDR, COMPANION), Some(at));
         remove(&mut space, at);
-        assert_eq!(orders(&space), [std::vec![IMAGE, NTDLL, KERNEL32], std::vec![IMAGE, NTDLL, KERNEL32], std::vec![NTDLL, KERNEL32]]);
+        assert_eq!(
+            orders(&space),
+            [
+                std::vec![IMAGE, NTDLL, KERNEL32],
+                std::vec![IMAGE, NTDLL, KERNEL32],
+                std::vec![NTDLL, KERNEL32]
+            ]
+        );
         assert_eq!(found(&space, "companion"), None);
     }
 
@@ -1077,7 +1414,13 @@ mod tests {
         let space = Space(std::vec![(0x1000_0000, dll)]);
         assert_eq!(
             loaded(&space, 0x1000_0000, 0x4000),
-            Loaded { base: 0x1000_0000, entry_point: 0x1000_1010, size: 0x4000, time_date_stamp: 0x3A2B_1C0D, dll: true }
+            Loaded {
+                base: 0x1000_0000,
+                entry_point: 0x1000_1010,
+                size: 0x4000,
+                time_date_stamp: 0x3A2B_1C0D,
+                dll: true
+            }
         );
         let space = Space(std::vec![(0x1000_0000, image(&[]))]);
         let facts = loaded(&space, 0x1000_0000, 0x1000);
@@ -1096,7 +1439,14 @@ mod tests {
         };
         let companion = with_imports(
             image(&[("Answer", Ok(0x1100))]),
-            &[("KERNEL32.dll", &[Ok("ExitProcess"), Ok("RtlUnwind"), Err(tick)]), ("ntdll", &[Ok("NtClose")]), ("KERNEL32.dll", &[Ok("NoSuchName"), Err(999)])],
+            &[
+                (
+                    "KERNEL32.dll",
+                    &[Ok("ExitProcess"), Ok("RtlUnwind"), Err(tick)],
+                ),
+                ("ntdll", &[Ok("NtClose")]),
+                ("KERNEL32.dll", &[Ok("NoSuchName"), Err(999)]),
+            ],
         );
         let mut space = process();
         space.0.push((COMPANION, companion));
@@ -1104,18 +1454,47 @@ mod tests {
         assert_eq!(descriptors.len(), 3);
         let mut name = [0u16; 32];
         let length = import_module_name(&space, descriptors[1].name, &mut name).unwrap();
-        assert_eq!(&name[..length], &wide("ntdll.DLL")[..], "the extension supplied");
+        assert_eq!(
+            &name[..length],
+            &wide("ntdll.DLL")[..],
+            "the extension supplied"
+        );
         assert_eq!(descriptors[0].iat, COMPANION + 0xA00);
         let resolved = |descriptor: &Descriptor| -> std::vec::Vec<Result<u32, u32>> {
             let mut name = [0u16; 32];
             let length = import_module_name(&space, descriptor.name, &mut name).unwrap();
-            let module = by_name(&space, LDR, &name[..length]).map(|entry| space.word(entry + entry::DLL_BASE)).unwrap();
-            imports(&space, COMPANION, descriptor.lookup).map(|import| import_address(&space, LDR, module, import)).collect()
+            let module = by_name(&space, LDR, &name[..length])
+                .map(|entry| space.word(entry + entry::DLL_BASE))
+                .unwrap();
+            imports(&space, COMPANION, descriptor.lookup)
+                .map(|import| import_address(&space, LDR, module, import))
+                .collect()
         };
-        assert_eq!(resolved(&descriptors[0]), [Ok(KERNEL32 + 0x2010), Ok(NTDLL + 0x1230), Ok(KERNEL32 + 0x2000)]);
+        assert_eq!(
+            resolved(&descriptors[0]),
+            [
+                Ok(KERNEL32 + 0x2010),
+                Ok(NTDLL + 0x1230),
+                Ok(KERNEL32 + 0x2000)
+            ]
+        );
         assert_eq!(resolved(&descriptors[1]), [Ok(NTDLL + 0x1100)]);
-        assert_eq!(resolved(&descriptors[2]), [Err(STATUS_ENTRYPOINT_NOT_FOUND), Err(STATUS_ORDINAL_NOT_FOUND)]);
-        assert_eq!(import_descriptors(&space, NTDLL).count(), 0, "no import directory");
-        assert_eq!(import_descriptors(&space, IMAGE).count(), 0, "no directories at all");
+        assert_eq!(
+            resolved(&descriptors[2]),
+            [
+                Err(STATUS_ENTRYPOINT_NOT_FOUND),
+                Err(STATUS_ORDINAL_NOT_FOUND)
+            ]
+        );
+        assert_eq!(
+            import_descriptors(&space, NTDLL).count(),
+            0,
+            "no import directory"
+        );
+        assert_eq!(
+            import_descriptors(&space, IMAGE).count(),
+            0,
+            "no directories at all"
+        );
     }
 }

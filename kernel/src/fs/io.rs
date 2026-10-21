@@ -62,8 +62,13 @@ mod target {
     use crate::fs::file::{records, FileObject, OpenError};
     use crate::ob::Referenced;
     use crate::status::{
-        NtStatus, STATUS_DELETE_PENDING, STATUS_INSUFFICIENT_RESOURCES, STATUS_IO_DEVICE_ERROR,
-        STATUS_OBJECT_PATH_NOT_FOUND, STATUS_SHARING_VIOLATION, STATUS_TOO_MANY_OPENED_FILES,
+        NtStatus,
+        STATUS_DELETE_PENDING,
+        STATUS_INSUFFICIENT_RESOURCES,
+        STATUS_IO_DEVICE_ERROR,
+        STATUS_OBJECT_PATH_NOT_FOUND,
+        STATUS_SHARING_VIOLATION,
+        STATUS_TOO_MANY_OPENED_FILES,
     };
 
     /// The current time's stamps.
@@ -72,7 +77,9 @@ mod target {
     }
 
     /// Run `body` on the boot volume: one locked section. A boot without a volume has no path.
-    pub fn with_volume<R>(body: impl FnOnce(&mut Volume) -> Result<R, NtStatus>) -> Result<R, NtStatus> {
+    pub fn with_volume<R>(
+        body: impl FnOnce(&mut Volume) -> Result<R, NtStatus>,
+    ) -> Result<R, NtStatus> {
         with_boot_volume(body).ok_or(STATUS_OBJECT_PATH_NOT_FOUND)?
     }
 
@@ -92,7 +99,9 @@ mod target {
             return None;
         }
         let reference = crate::ob::reference_by_handle(handle, Some(crate::ob::ObjectType::File))?;
-        let object = crate::ob::directory().file(reference.id()).expect("a referenced file object lives");
+        let object = crate::ob::directory()
+            .file(reference.id())
+            .expect("a referenced file object lives");
         Some(Referenced::new(reference, object))
     }
 
@@ -144,8 +153,11 @@ mod target {
             return Err(STATUS_INSUFFICIENT_RESOURCES);
         }
         let access = crate::fs::file::rights::share_access(open.granted);
-        let record = records().open(file, access, open.share).map_err(open_status)?;
-        let Some(id) = crate::ob::directory().create_file(record, access, open.granted, open.share) else {
+        let record = records()
+            .open(file, access, open.share)
+            .map_err(open_status)?;
+        let Some(id) = crate::ob::directory().create_file(record, access, open.granted, open.share)
+        else {
             let _ = records().cleanup(record, access, open.share, false);
             records().close(record);
             return Err(STATUS_TOO_MANY_OPENED_FILES);
@@ -154,7 +166,8 @@ mod target {
         object.synchronous = open.synchronous;
         object.delete_on_close = open.delete_on_close;
         // The table had room: the publication cannot fail.
-        crate::ob::publish(process, id, open.granted, open.inherit, None).ok_or(STATUS_INSUFFICIENT_RESOURCES)
+        crate::ob::publish(process, id, open.granted, open.inherit, None)
+            .ok_or(STATUS_INSUFFICIENT_RESOURCES)
     }
 
     /// Whether the open file at `record` is mapped (a section holds it): it cannot be cut short nor
@@ -204,7 +217,8 @@ mod target {
     /// Read `out.len()` bytes of `file` from `offset` off the boot volume (a mapping's pages); none
     /// when the read fails or comes up short (the size said the bytes were there).
     pub fn read_file_at(file: &File, offset: u32, out: &mut [u8]) -> Option<usize> {
-        let read = with_boot_volume(|volume| crate::fs::fat32::read::read_at(volume, file, offset, out))?;
+        let read =
+            with_boot_volume(|volume| crate::fs::fat32::read::read_at(volume, file, offset, out))?;
         read.ok().filter(|&got| got == out.len())
     }
 }
@@ -223,7 +237,11 @@ mod tests {
         assert_eq!(attributes(0x21), 0x21);
         assert_eq!(attributes(0x10), 0x10);
         assert_eq!(attributes(0), 0x80);
-        assert_eq!(attributes(0x08), 0x80, "a volume label's bit is not reported");
+        assert_eq!(
+            attributes(0x08),
+            0x80,
+            "a volume label's bit is not reported"
+        );
     }
 
     /// A stamp's times read back as the FILETIME they were stamped at (to the FAT encoding's
@@ -234,7 +252,10 @@ mod tests {
         let mut file = File::plain(3, 1, false);
         file.times = times_at(at);
         let [created, accessed, written] = file_times(&file);
-        assert_eq!(created, at, "the hundredths carry the odd second and the rest");
+        assert_eq!(
+            created, at,
+            "the hundredths carry the odd second and the rest"
+        );
         assert_eq!(written, at - 10_000_000 - 2_500_000, "two-second units");
         assert_eq!(accessed, crate::time::FALLBACK_BOOT, "the date alone");
     }

@@ -10,8 +10,15 @@
 //! (STATUS_INFO_LENGTH_MISMATCH).
 
 use super::call::{
-    Handle, NtCall, NtResult, Status, UserAddr, UserPtr, STATUS_INVALID_HANDLE,
-    STATUS_INVALID_PARAMETER, STATUS_SUCCESS,
+    Handle,
+    NtCall,
+    NtResult,
+    Status,
+    UserAddr,
+    UserPtr,
+    STATUS_INVALID_HANDLE,
+    STATUS_INVALID_PARAMETER,
+    STATUS_SUCCESS,
 };
 use super::memory::{with_space, STATUS_INFO_LENGTH_MISMATCH, STATUS_INVALID_INFO_CLASS};
 
@@ -257,7 +264,8 @@ mod tests {
     }
 
     /// The affinity: the class's exact length, the calling process alone, and a non-empty subset of
-    /// the one processor (SetProcessAffinityMask's ERROR_INVALID_PARAMETER and ERROR_INVALID_HANDLE).
+    /// the one processor (SetProcessAffinityMask's ERROR_INVALID_PARAMETER and
+    /// ERROR_INVALID_HANDLE).
     #[test]
     fn the_affinity_is_the_one_processor() {
         use std::cell::RefCell;
@@ -271,6 +279,7 @@ mod tests {
                 bytes.copy_from_slice(self.0.get(at..at + bytes.len()).ok_or(0xC000_0005u32)?);
                 Ok(())
             }
+
             fn write(&mut self, _: u32, _: &[u8]) -> Result<(), u32> {
                 Err(0xC000_0005)
             }

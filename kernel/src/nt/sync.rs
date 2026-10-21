@@ -11,15 +11,32 @@
 //! interval in 100 ns units, positive an absolute system time, none (a null pointer) forever.
 
 use super::attributes::{
-    self, Resolved, MAX_NAME, OBJ_OPENIF, STATUS_OBJECT_NAME_INVALID, STATUS_OBJECT_NAME_NOT_FOUND,
+    self,
+    Resolved,
+    MAX_NAME,
+    OBJ_OPENIF,
+    STATUS_OBJECT_NAME_INVALID,
+    STATUS_OBJECT_NAME_NOT_FOUND,
     STATUS_OBJECT_TYPE_MISMATCH,
 };
 use super::call::{
-    calling_process, Handle, NtCall, NtResult, Status, UserAddr, UserPtr, STATUS_ACCESS_VIOLATION,
-    STATUS_INVALID_HANDLE, STATUS_INVALID_PARAMETER, STATUS_SUCCESS,
+    calling_process,
+    Handle,
+    NtCall,
+    NtResult,
+    Status,
+    UserAddr,
+    UserPtr,
+    STATUS_ACCESS_VIOLATION,
+    STATUS_INVALID_HANDLE,
+    STATUS_INVALID_PARAMETER,
+    STATUS_SUCCESS,
 };
 use crate::nt::object::{
-    is_console_handle, names_current_process, CURRENT_PROCESS, CURRENT_THREAD,
+    is_console_handle,
+    names_current_process,
+    CURRENT_PROCESS,
+    CURRENT_THREAD,
 };
 use crate::ob::{self, ObjectId, ObjectType};
 use crate::sched::event::{EventKind, EVENT_WAKE_INCREMENT};
@@ -53,7 +70,7 @@ pub(super) fn probe(at: u32, size: u32) -> Result<(), Status> {
     crate::user::syscall::probe_user_range(at, size).map_err(|_| STATUS_ACCESS_VIOLATION)
 }
 
-// --- Naming ---------------------------------------------------------------------------------------
+// --- Naming --------------------------------------------------------------------------------------
 
 /// What an OBJECT_ATTRIBUTES asks of a create or an open: the name in `\BaseNamedObjects` (its
 /// bytes' length; none for an unnamed object), whether it names the directory itself, and the
@@ -232,7 +249,7 @@ pub fn open_directory_object(
     }
 }
 
-// --- Events ---------------------------------------------------------------------------------------
+// --- Events --------------------------------------------------------------------------------------
 
 /// NtCreateEvent: a NotificationEvent (0, manual-reset) or a SynchronizationEvent (1, auto-reset),
 /// signaled when asked; or the named one already bound (see [`create`]).
@@ -306,7 +323,7 @@ pub fn pulse_event(_call: &mut NtCall, event: Handle, previous: UserPtr<i32>) ->
     })
 }
 
-// --- Mutants and semaphores -----------------------------------------------------------------------
+// --- Mutants and semaphores ----------------------------------------------------------------------
 
 /// NtCreateMutant: a fresh mutant, owned by the caller when asked, or the named one already bound
 /// (whose ownership the call then leaves alone; see [`create`]).
@@ -403,7 +420,7 @@ pub fn release_semaphore(
     Ok(STATUS_SUCCESS)
 }
 
-// --- Timers ---------------------------------------------------------------------------------------
+// --- Timers --------------------------------------------------------------------------------------
 
 /// NtCreateTimer: a NotificationTimer (0, manual-reset) or a SynchronizationTimer (1, auto-reset),
 /// unarmed, or the named one already bound (see [`create`]).
@@ -743,7 +760,7 @@ pub fn yield_execution(_call: &mut NtCall) -> NtResult {
     Ok(status as u32)
 }
 
-// --- Handles and APCs -----------------------------------------------------------------------------
+// --- Handles and APCs ----------------------------------------------------------------------------
 
 /// NtDuplicateObject, within the calling process: a new handle naming the same object (the
 /// current-thread and current-process pseudo-handles duplicate to real handles to their objects),

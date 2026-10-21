@@ -22,20 +22,41 @@ const LCTYPE_FLAGS: u32 = 0x8000_0000 | 0x4000_0000 | LOCALE_RETURN_NUMBER;
 
 /// Whether an LCID names this surface's locale.
 pub fn names_locale(lcid: u32) -> bool {
-    matches!(lcid & 0xFFFF, 0 | LOCALE_USER_DEFAULT | LOCALE_SYSTEM_DEFAULT | LCID_EN_US)
-        && lcid >> 16 == 0
+    matches!(
+        lcid & 0xFFFF,
+        0 | LOCALE_USER_DEFAULT | LOCALE_SYSTEM_DEFAULT | LCID_EN_US
+    ) && lcid >> 16 == 0
 }
 
 /// The locale's value for an LCTYPE (its flags ignored); none for a type it does not have.
 pub fn info(lctype: u32) -> Option<&'static str> {
-    const DAYS: [&str; 7] = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+    const DAYS: [&str; 7] = [
+        "Monday",
+        "Tuesday",
+        "Wednesday",
+        "Thursday",
+        "Friday",
+        "Saturday",
+        "Sunday",
+    ];
     const ABBREV_DAYS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
     const MONTHS: [&str; 12] = [
-        "January", "February", "March", "April", "May", "June", "July", "August", "September",
-        "October", "November", "December",
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
     ];
-    const ABBREV_MONTHS: [&str; 12] =
-        ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const ABBREV_MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
     let lctype = lctype & !LCTYPE_FLAGS;
     Some(match lctype {
         0x01 => "0409",                    // LOCALE_ILANGUAGE
@@ -83,34 +104,34 @@ pub fn info(lctype: u32) -> Option<&'static str> {
         0x31..=0x37 => ABBREV_DAYS[(lctype - 0x31) as usize],
         0x38..=0x43 => MONTHS[(lctype - 0x38) as usize],
         0x44..=0x4F => ABBREV_MONTHS[(lctype - 0x44) as usize],
-        0x50 => "",                        // LOCALE_SPOSITIVESIGN
-        0x51 => "-",                       // LOCALE_SNEGATIVESIGN
-        0x52 => "3",                       // LOCALE_IPOSSIGNPOSN
-        0x53 => "0",                       // LOCALE_INEGSIGNPOSN
-        0x54 => "1",                       // LOCALE_IPOSSYMPRECEDES
-        0x55 => "0",                       // LOCALE_IPOSSEPBYSPACE
-        0x56 => "1",                       // LOCALE_INEGSYMPRECEDES
-        0x57 => "0",                       // LOCALE_INEGSEPBYSPACE
-        0x59 => "en",                      // LOCALE_SISO639LANGNAME
-        0x5A => "US",                      // LOCALE_SISO3166CTRYNAME
-        0x1001 => "English",               // LOCALE_SENGLANGUAGE
-        0x1002 => "United States",         // LOCALE_SENGCOUNTRY
-        0x1003 => "h:mm:ss tt",            // LOCALE_STIMEFORMAT
-        0x1004 => "1252",                  // LOCALE_IDEFAULTANSICODEPAGE
-        0x1005 => "0",                     // LOCALE_ITIMEMARKPOSN
-        0x1006 => "MMMM, yyyy",            // LOCALE_SYEARMONTH
-        0x1007 => "US Dollar",             // LOCALE_SENGCURRNAME
-        0x1008 => "US Dollar",             // LOCALE_SNATIVECURRNAME
-        0x1009 => "1",                     // LOCALE_ICALENDARTYPE
-        0x100A => "1",                     // LOCALE_IPAPERSIZE (letter)
-        0x100B => "0",                     // LOCALE_IOPTIONALCALENDAR
-        0x100C => "6",                     // LOCALE_IFIRSTDAYOFWEEK
-        0x100D => "0",                     // LOCALE_IFIRSTWEEKOFYEAR
-        0x100E => "",                      // LOCALE_SMONTHNAME13
-        0x100F => "",                      // LOCALE_SABBREVMONTHNAME13
-        0x1010 => "1",                     // LOCALE_INEGNUMBER
-        0x1011 => "10000",                 // LOCALE_IDEFAULTMACCODEPAGE
-        0x1014 => "1",                     // LOCALE_IDIGITSUBSTITUTION
+        0x50 => "",                // LOCALE_SPOSITIVESIGN
+        0x51 => "-",               // LOCALE_SNEGATIVESIGN
+        0x52 => "3",               // LOCALE_IPOSSIGNPOSN
+        0x53 => "0",               // LOCALE_INEGSIGNPOSN
+        0x54 => "1",               // LOCALE_IPOSSYMPRECEDES
+        0x55 => "0",               // LOCALE_IPOSSEPBYSPACE
+        0x56 => "1",               // LOCALE_INEGSYMPRECEDES
+        0x57 => "0",               // LOCALE_INEGSEPBYSPACE
+        0x59 => "en",              // LOCALE_SISO639LANGNAME
+        0x5A => "US",              // LOCALE_SISO3166CTRYNAME
+        0x1001 => "English",       // LOCALE_SENGLANGUAGE
+        0x1002 => "United States", // LOCALE_SENGCOUNTRY
+        0x1003 => "h:mm:ss tt",    // LOCALE_STIMEFORMAT
+        0x1004 => "1252",          // LOCALE_IDEFAULTANSICODEPAGE
+        0x1005 => "0",             // LOCALE_ITIMEMARKPOSN
+        0x1006 => "MMMM, yyyy",    // LOCALE_SYEARMONTH
+        0x1007 => "US Dollar",     // LOCALE_SENGCURRNAME
+        0x1008 => "US Dollar",     // LOCALE_SNATIVECURRNAME
+        0x1009 => "1",             // LOCALE_ICALENDARTYPE
+        0x100A => "1",             // LOCALE_IPAPERSIZE (letter)
+        0x100B => "0",             // LOCALE_IOPTIONALCALENDAR
+        0x100C => "6",             // LOCALE_IFIRSTDAYOFWEEK
+        0x100D => "0",             // LOCALE_IFIRSTWEEKOFYEAR
+        0x100E => "",              // LOCALE_SMONTHNAME13
+        0x100F => "",              // LOCALE_SABBREVMONTHNAME13
+        0x1010 => "1",             // LOCALE_INEGNUMBER
+        0x1011 => "10000",         // LOCALE_IDEFAULTMACCODEPAGE
+        0x1014 => "1",             // LOCALE_IDIGITSUBSTITUTION
         _ => return None,
     })
 }
@@ -120,8 +141,21 @@ pub fn info(lctype: u32) -> Option<&'static str> {
 fn radix(lctype: u32) -> Option<u32> {
     match lctype & !LCTYPE_FLAGS {
         0x01 | 0x09 => Some(16), // LOCALE_ILANGUAGE, LOCALE_IDEFAULTLANGUAGE
-        0x05 | 0x0A | 0x0B | 0x0D | 0x11 | 0x12 | 0x19..=0x1C | 0x21..=0x27 | 0x52..=0x57 | 0x1004 | 0x1005
-        | 0x1009..=0x100D | 0x1010 | 0x1011 | 0x1014 => Some(10),
+        0x05
+        | 0x0A
+        | 0x0B
+        | 0x0D
+        | 0x11
+        | 0x12
+        | 0x19..=0x1C
+        | 0x21..=0x27
+        | 0x52..=0x57
+        | 0x1004
+        | 0x1005
+        | 0x1009..=0x100D
+        | 0x1010
+        | 0x1011
+        | 0x1014 => Some(10),
         _ => None,
     }
 }
@@ -130,7 +164,9 @@ fn radix(lctype: u32) -> Option<u32> {
 /// whose value is not a number (or one the locale lacks).
 pub fn number(lctype: u32) -> Option<u32> {
     let radix = radix(lctype)?;
-    info(lctype)?.chars().try_fold(0, |value: u32, digit| Some(value * radix + digit.to_digit(radix)?))
+    info(lctype)?.chars().try_fold(0, |value: u32, digit| {
+        Some(value * radix + digit.to_digit(radix)?)
+    })
 }
 
 #[cfg(test)]
@@ -148,7 +184,9 @@ mod tests {
         assert_eq!(info(0x4F), Some("Dec"));
         assert_eq!(info(0x8000_0000 | 0x0E), Some("."), "flags ignored");
         assert_eq!(info(0x7777), None);
-        assert!(names_locale(LOCALE_USER_DEFAULT) && names_locale(LCID_EN_US) && !names_locale(0x0407));
+        assert!(
+            names_locale(LOCALE_USER_DEFAULT) && names_locale(LCID_EN_US) && !names_locale(0x0407)
+        );
     }
 
     /// Every numeric type's value is a number in its radix; the string types have none.
@@ -161,6 +199,9 @@ mod tests {
         }
         assert_eq!(number(0x01), Some(0x409));
         assert_eq!(number(LOCALE_RETURN_NUMBER | 0x1004), Some(1252));
-        assert_eq!((number(0x0E), number(0x10), number(0x1001)), (None, None, None));
+        assert_eq!(
+            (number(0x0E), number(0x10), number(0x1001)),
+            (None, None, None)
+        );
     }
 }

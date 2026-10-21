@@ -5,8 +5,8 @@
 //!
 //! A heap is a segment — a reservation whose base is the heap's handle, committed on demand from
 //! its start — and, for a growable heap, its big blocks: a request past [`BIG_THRESHOLD`] gets a
-//! reservation of its own (NT's virtual-alloc blocks), linked from the heap's header. A heap created
-//! with a maximum size is that one segment and nothing more: it refuses what does not fit.
+//! reservation of its own (NT's virtual-alloc blocks), linked from the heap's header. A heap
+//! created with a maximum size is that one segment and nothing more: it refuses what does not fit.
 //!
 //! The segment starts with the heap's header ([`Header`]): NT's signature, flags and force flags at
 //! their offsets (programs read the process heap's flags), the segment's reservation, committed
@@ -23,7 +23,13 @@ use core::ptr::{addr_of, addr_of_mut};
 
 use crate::critsec::{CriticalSection, System};
 use crate::heapcore::{
-    alloc_block, block_size, free_block, resize_in_place, round_up, validate_area, HEADER_SIZE,
+    alloc_block,
+    block_size,
+    free_block,
+    resize_in_place,
+    round_up,
+    validate_area,
+    HEADER_SIZE,
 };
 
 /// The heap flags (public constants).
@@ -387,8 +393,9 @@ impl Heap {
 
     /// HeapReAlloc's work: the block resized — in place when it fits (always for
     /// HEAP_REALLOC_IN_PLACE_ONLY, which otherwise refuses), else moved, its contents kept and an
-    /// extension zeroed for HEAP_ZERO_MEMORY. A segment block that grows past the big-block threshold
-    /// of a growable heap moves even when it would fit. The original is untouched on failure.
+    /// extension zeroed for HEAP_ZERO_MEMORY. A segment block that grows past the big-block
+    /// threshold of a growable heap moves even when it would fit. The original is untouched on
+    /// failure.
     pub fn realloc(
         self,
         system: &(impl System + Vm),
@@ -648,17 +655,23 @@ pub(crate) mod tests {
         fn thread_id(&self) -> u32 {
             1
         }
+
         fn processors(&self) -> u32 {
             1
         }
+
         fn create_event(&self) -> u32 {
             4
         }
+
         fn wait(&self, _event: u32) {
             panic!("one thread never waits");
         }
+
         fn set(&self, _event: u32) {}
+
         fn close(&self, _handle: u32) {}
+
         fn raise(&self, status: u32) -> ! {
             panic!("raised {status:#x}");
         }
@@ -814,8 +827,15 @@ pub(crate) mod tests {
         // Overrun `a` into the next block's size word: a misaligned size, no block.
         bytes(a, 0x24)[0x20..0x24].copy_from_slice(&0x13u32.to_le_bytes());
         let committed = heap.committed();
-        assert_eq!(heap.alloc(&host, 0, 0x40), None, "the walk stops at the corrupt header");
-        assert!(heap.committed() <= committed + 2 * PAGE, "no endless growth");
+        assert_eq!(
+            heap.alloc(&host, 0, 0x40),
+            None,
+            "the walk stops at the corrupt header"
+        );
+        assert!(
+            heap.committed() <= committed + 2 * PAGE,
+            "no endless growth"
+        );
         assert!(!heap.validate(&host, 0, 0));
         heap.destroy(&host);
     }

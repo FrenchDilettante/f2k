@@ -4,17 +4,32 @@
 //! VirtualProtect and VirtualQuery are Win32 code over these, as on Windows 2000.
 //!
 //! Only the calling process's own space is served: its pseudo-handle (NtCurrentProcess, -1) or a
-//! handle to its object (there is no other process to name). The address and size arguments are in/out,
-//! as on Windows 2000: probed for writing before the call acts, and the base and the size the call
-//! settled on written back. The rules are functions over an [`AddressSpace`] and its [`Pages`]
-//! (host-tested); the services move their arguments through user memory.
+//! handle to its object (there is no other process to name). The address and size arguments are
+//! in/out, as on Windows 2000: probed for writing before the call acts, and the base and the size
+//! the call settled on written back. The rules are functions over an [`AddressSpace`] and its
+//! [`Pages`] (host-tested); the services move their arguments through user memory.
 
 use super::call::{
-    Handle, NtCall, NtResult, Status, UserAddr, UserPtr, STATUS_INVALID_HANDLE,
-    STATUS_INVALID_PARAMETER, STATUS_SUCCESS,
+    Handle,
+    NtCall,
+    NtResult,
+    Status,
+    UserAddr,
+    UserPtr,
+    STATUS_INVALID_HANDLE,
+    STATUS_INVALID_PARAMETER,
+    STATUS_SUCCESS,
 };
 use crate::mem::vm::{
-    self, AddressSpace, Kind, Pages, VmError, MEM_COMMIT, MEM_RESERVE, PAGE, USER_HIGH,
+    self,
+    AddressSpace,
+    Kind,
+    Pages,
+    VmError,
+    MEM_COMMIT,
+    MEM_RESERVE,
+    PAGE,
+    USER_HIGH,
 };
 
 pub const STATUS_INVALID_INFO_CLASS: Status = Status(0xC000_0003);
@@ -232,19 +247,27 @@ impl Pages for NoPages {
     fn entry(&self, _va: u32) -> u32 {
         0
     }
+
     fn set_entry(&mut self, _va: u32, _entry: u32) {}
+
     fn zeroed_frame(&mut self) -> Option<u32> {
         None
     }
+
     fn free_frame(&mut self, _frame: u32) {}
+
     fn share_frame(&mut self, _frame: u32) {}
+
     fn frame_shared(&self, _frame: u32) -> bool {
         false
     }
+
     fn copy_frame(&mut self, _from: u32, _to: u32) {}
+
     fn frame_word(&self, _frame: u32, _index: u32) -> u32 {
         0
     }
+
     fn set_frame_word(&mut self, _frame: u32, _index: u32, _value: u32) {}
 }
 
@@ -348,22 +371,30 @@ mod tests {
         fn entry(&self, va: u32) -> u32 {
             self.entries.get(&va).copied().unwrap_or(0)
         }
+
         fn set_entry(&mut self, va: u32, entry: u32) {
             self.entries.insert(va, entry);
         }
+
         fn zeroed_frame(&mut self) -> Option<u32> {
             self.next += 1;
             Some(0x10_0000 + self.next * PAGE)
         }
+
         fn free_frame(&mut self, _frame: u32) {}
+
         fn share_frame(&mut self, _frame: u32) {}
+
         fn frame_shared(&self, _frame: u32) -> bool {
             false
         }
+
         fn copy_frame(&mut self, _from: u32, _to: u32) {}
+
         fn frame_word(&self, _frame: u32, _index: u32) -> u32 {
             0
         }
+
         fn set_frame_word(&mut self, _frame: u32, _index: u32, _value: u32) {}
     }
 

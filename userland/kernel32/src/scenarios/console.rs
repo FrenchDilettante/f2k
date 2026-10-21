@@ -8,7 +8,10 @@ use super::last_error;
 use crate::console::*;
 use crate::nt::LAST_WAITED;
 use crate::sync::{
-    close_handle, duplicate_handle, signal_object_and_wait, wait_for_multiple_objects,
+    close_handle,
+    duplicate_handle,
+    signal_object_and_wait,
+    wait_for_multiple_objects,
     wait_for_single_object,
 };
 
@@ -168,8 +171,8 @@ fn write_console_a_count_pointer_and_empty_writes() {
     assert_eq!(console_writes(), [(STDOUT, HELLO.to_vec())]);
 }
 
-/// WriteConsoleA refuses — FALSE, the count pointer untouched — stdin and every handle that names no
-/// open output handle (ERROR_INVALID_HANDLE), and a reserved argument (WriteFile's OVERLAPPED:
+/// WriteConsoleA refuses — FALSE, the count pointer untouched — stdin and every handle that names
+/// no open output handle (ERROR_INVALID_HANDLE), and a reserved argument (WriteFile's OVERLAPPED:
 /// ERROR_INVALID_PARAMETER).
 #[test]
 fn write_console_a_refuses_other_handles_and_reserved_arguments() {

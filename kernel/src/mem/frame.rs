@@ -108,19 +108,19 @@ impl FrameState {
 pub struct FrameFlags(u16);
 
 impl FrameFlags {
-    /// Page contents were modified while in use.
-    pub const MODIFIED: Self = Self(1 << 0);
-    /// A read is in flight for this frame.
-    pub const READ_IN_PROGRESS: Self = Self(1 << 1);
-    /// A write is in flight for this frame.
-    pub const WRITE_IN_PROGRESS: Self = Self(1 << 2);
-    /// The frame backs a prototype PTE (shared transition accounting).
-    pub const PROTOTYPE_PTE: Self = Self(1 << 3);
     /// The frame contents are invalid after an I/O error.
     pub const IN_PAGE_ERROR: Self = Self(1 << 4);
+    /// Page contents were modified while in use.
+    pub const MODIFIED: Self = Self(1 << 0);
+    /// The frame backs a prototype PTE (shared transition accounting).
+    pub const PROTOTYPE_PTE: Self = Self(1 << 3);
+    /// A read is in flight for this frame.
+    pub const READ_IN_PROGRESS: Self = Self(1 << 1);
     /// The frame is scheduled for removal: divert it to the Bad list instead of any available list
     /// on release.
     pub const REMOVAL_REQUESTED: Self = Self(1 << 5);
+    /// A write is in flight for this frame.
+    pub const WRITE_IN_PROGRESS: Self = Self(1 << 2);
 
     pub const fn empty() -> Self {
         Self(0)
@@ -159,8 +159,8 @@ pub struct FrameEntry {
     /// Outstanding references (I/O or mapping).
     pub refcount: u16,
     /// The in-use frame's holders beyond its first ([`FrameDb::share`]): the views of a section
-    /// mapping its frame, besides the section. Zero for a frame with one holder, and for every frame
-    /// on a list.
+    /// mapping its frame, besides the section. Zero for a frame with one holder, and for every
+    /// frame on a list.
     pub share_count: u32,
 }
 
@@ -1143,21 +1143,27 @@ mod tests {
         fn zero_frame(&mut self, frame: FrameId) {
             self.zeroed.push(frame);
         }
+
         fn stamp_zeroed(&mut self, frame: FrameId) {
             self.stamped.push(frame);
         }
+
         fn restore_transition(&mut self, frame: FrameId) {
             self.restored.push(frame);
         }
+
         fn reclaim_frames(&mut self) {
             self.reclaim += 1;
         }
+
         fn available_low(&mut self) {
             self.low += 1;
         }
+
         fn available_high(&mut self) {
             self.high += 1;
         }
+
         fn zeroing_needed(&mut self) {
             self.zeroing += 1;
         }

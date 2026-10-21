@@ -190,7 +190,10 @@ fn image_plan(protect: u32, file: Option<Backing>) -> Result<Plan, Status> {
     if file.size == 0 {
         return Err(STATUS_MAPPED_FILE_SIZE_ZERO);
     }
-    Ok(Plan { size: file.size, writable: false })
+    Ok(Plan {
+        size: file.size,
+        writable: false,
+    })
 }
 
 /// The bytes an image section reads first: the file's first page, which holds its headers.
@@ -210,7 +213,14 @@ pub fn image_layout(headers: &[u8], file_size: u32) -> Result<(u32, u32), Status
 
 /// An image section's view rules: the whole image (no offset, no size short of it) at its
 /// preferred base (zero: there), through a handle that may map it for reading or executing.
-pub fn image_view(access: u32, base: u32, offset: u64, bytes: u32, image_base: u32, size: u32) -> Result<(), Status> {
+pub fn image_view(
+    access: u32,
+    base: u32,
+    offset: u64,
+    bytes: u32,
+    image_base: u32,
+    size: u32,
+) -> Result<(), Status> {
     if section_access(access) & (SECTION_MAP_READ | SECTION_MAP_EXECUTE) == 0 {
         return Err(STATUS_ACCESS_DENIED);
     }
@@ -304,9 +314,20 @@ pub use target::*;
 mod target {
     use super::*;
     use crate::mem::vm::{CurrentPages, Kind, PAGE};
-    use crate::nt::call::{calling_process, Handle, NtCall, NtResult, UserAddr, UserPtr, STATUS_SUCCESS};
+    use crate::nt::call::{
+        calling_process,
+        Handle,
+        NtCall,
+        NtResult,
+        UserAddr,
+        UserPtr,
+        STATUS_SUCCESS,
+    };
     use crate::nt::memory::{
-        capture, with_space, STATUS_CONFLICTING_ADDRESSES, STATUS_INVALID_PARAMETER_2,
+        capture,
+        with_space,
+        STATUS_CONFLICTING_ADDRESSES,
+        STATUS_INVALID_PARAMETER_2,
         STATUS_NO_MEMORY,
     };
     use crate::nt::object::is_console_handle;
@@ -344,11 +365,11 @@ mod target {
         Ok((id, file, backing))
     }
 
-    /// NtCreateSection (see [`plan`]): a section of the file the handle names, or of the paging file
-    /// (no handle), named or not (see `sync`'s create). A file's section holds its file object, and
-    /// the file counts it as mapped: the file stays open while the section lives, and cannot be
-    /// truncated nor deleted meanwhile. The section's deletion gives both back. Its frames are made
-    /// as views need them.
+    /// NtCreateSection (see [`plan`]): a section of the file the handle names, or of the paging
+    /// file (no handle), named or not (see `sync`'s create). A file's section holds its file
+    /// object, and the file counts it as mapped: the file stays open while the section lives,
+    /// and cannot be truncated nor deleted meanwhile. The section's deletion gives both back.
+    /// Its frames are made as views need them.
     #[allow(clippy::too_many_arguments)]
     pub fn create_section(
         _call: &mut NtCall,
@@ -370,7 +391,12 @@ mod target {
         } else {
             Some(file_of(file.raw())?)
         };
-        let plan = plan(maximum, protect, allocation, backing.map(|(_, _, backing)| backing))?;
+        let plan = plan(
+            maximum,
+            protect,
+            allocation,
+            backing.map(|(_, _, backing)| backing),
+        )?;
         let section = match backing {
             None => ob::SectionObject {
                 size: plan.size,
@@ -442,15 +468,18 @@ mod target {
         if id.kind != ObjectType::Section {
             return Err(crate::nt::attributes::STATUS_OBJECT_TYPE_MISMATCH);
         }
-        Ok((ob::reference(id).ok_or(STATUS_INVALID_HANDLE)?, entry.access))
+        Ok((
+            ob::reference(id).ok_or(STATUS_INVALID_HANDLE)?,
+            entry.access,
+        ))
     }
 
     /// NtMapViewOfSection (see [`view`]): a view of the section in the calling process, at the base
     /// asked for or anywhere, its pages the section's frames (made now when no view needed them
     /// yet: a file's bytes, zeros past its end, or the paging file's zeros) — read-write for
     /// PAGE_READWRITE, copy-on-write for PAGE_WRITECOPY, read-only or
-    /// no-access otherwise. The base, the offset and the view's size (whole pages) written back. The
-    /// commit size is not used (a view's pages are all committed).
+    /// no-access otherwise. The base, the offset and the view's size (whole pages) written back.
+    /// The commit size is not used (a view's pages are all committed).
     #[allow(clippy::too_many_arguments)]
     fn map_view_of_section_held(
         call: &mut NtCall,
@@ -478,7 +507,14 @@ mod target {
         let (object, access) = section_of(section.raw())?;
         let record = *object.section();
         if record.image_base != 0 {
-            image_view(access, requested, at, length, record.image_base, record.size)?;
+            image_view(
+                access,
+                requested,
+                at,
+                length,
+                record.image_base,
+                record.size,
+            )?;
             let mapped = with_space(call, process, |space, pages| {
                 map_image(space, pages, object.id())
             })?;
@@ -496,7 +532,15 @@ mod target {
             length,
         )?;
         let mapped = with_space(call, process, |space, pages| {
-            map_view(space, pages, object.id(), requested, at as u32, bytes, protect)
+            map_view(
+                space,
+                pages,
+                object.id(),
+                requested,
+                at as u32,
+                bytes,
+                protect,
+            )
         })?;
         base.write(mapped)?;
         size.write(bytes.next_multiple_of(PAGE))?;
@@ -522,8 +566,17 @@ mod target {
     ) -> NtResult {
         crate::process::threads::critical_region(|| {
             map_view_of_section_held(
-                call, section, process, base, zero_bits, commit_size, offset, size, inherit,
-                allocation, protect,
+                call,
+                section,
+                process,
+                base,
+                zero_bits,
+                commit_size,
+                offset,
+                size,
+                inherit,
+                allocation,
+                protect,
             )
         })
     }
@@ -546,7 +599,9 @@ mod target {
         // A file's pages are made from the file as its record holds it now (the section keeps it
         // open).
         let file = {
-            let section = *directory.section(object).expect("the caller holds the section");
+            let section = *directory
+                .section(object)
+                .expect("the caller holds the section");
             match section
                 .file_object
                 .and_then(|file_object| directory.file(file_object).map(|object| object.record))
@@ -627,7 +682,9 @@ mod target {
         }
         let directory = ob::directory();
         let file = {
-            let section = *directory.section(object).expect("the caller holds the section");
+            let section = *directory
+                .section(object)
+                .expect("the caller holds the section");
             match section
                 .file_object
                 .and_then(|file_object| directory.file(file_object).map(|object| object.record))
@@ -654,9 +711,8 @@ mod target {
                 Kind::Image,
             )
             .map_err(|error| match error {
-                crate::mem::vm::VmError::InvalidAddress | crate::mem::vm::VmError::InvalidParameter => {
-                    STATUS_CONFLICTING_ADDRESSES
-                }
+                crate::mem::vm::VmError::InvalidAddress
+                | crate::mem::vm::VmError::InvalidParameter => STATUS_CONFLICTING_ADDRESSES,
                 crate::mem::vm::VmError::NoMemory => STATUS_NO_MEMORY,
             })?;
         for page in 0..image.size_of_image.div_ceil(PAGE) {
@@ -696,7 +752,11 @@ mod target {
     /// NtUnmapViewOfSection: unmap the view holding the address — any address inside it names it,
     /// as on Windows 2000 — (a section nothing names any more goes with its last view);
     /// STATUS_NOT_MAPPED_VIEW for an address no view holds.
-    pub fn unmap_view_of_section(call: &mut NtCall, process: Handle, address: UserAddr) -> NtResult {
+    pub fn unmap_view_of_section(
+        call: &mut NtCall,
+        process: Handle,
+        address: UserAddr,
+    ) -> NtResult {
         let object = with_space(call, process, |space, pages| {
             // A data view, or an image section's (the image and the system DLLs, mapped by the
             // kernel itself, are no views).
@@ -776,7 +836,12 @@ mod tests {
             "no allocation attribute"
         );
         assert_eq!(
-            error(plan(Some(0x1000), PAGE_READONLY, SEC_RESERVE | SEC_COMMIT, None)),
+            error(plan(
+                Some(0x1000),
+                PAGE_READONLY,
+                SEC_RESERVE | SEC_COMMIT,
+                None
+            )),
             87
         );
         assert_eq!(error(plan(Some(1 << 32), PAGE_READWRITE, commit, None)), 87);
@@ -786,7 +851,12 @@ mod tests {
             "an image section needs its file"
         );
         assert_eq!(
-            error(plan(Some(crate::mem::vm::SECTION_MAX + 1), PAGE_READWRITE, commit, None)),
+            error(plan(
+                Some(crate::mem::vm::SECTION_MAX + 1),
+                PAGE_READWRITE,
+                commit,
+                None
+            )),
             8
         );
     }
@@ -799,47 +869,85 @@ mod tests {
     };
 
     /// A file's sections (files/mapping's): the file's size when none is asked, no larger than the
-    /// file, never of an empty file, of a directory or of an open that may not read; read-write only
-    /// over an open that may write.
+    /// file, never of an empty file, of a directory or of an open that may not read; read-write
+    /// only over an open that may write.
     #[test]
     fn the_file_section_rules() {
         let commit = SEC_COMMIT;
         assert_eq!(
             plan(None, PAGE_READONLY, commit, Some(FILE)),
-            Ok(Plan { size: 0x2_0000, writable: false })
+            Ok(Plan {
+                size: 0x2_0000,
+                writable: false
+            })
         );
         assert_eq!(
             plan(Some(0x1000), PAGE_READONLY, commit, Some(FILE)),
-            Ok(Plan { size: 0x1000, writable: false })
+            Ok(Plan {
+                size: 0x1000,
+                writable: false
+            })
         );
         assert_eq!(
-            error(plan(Some(0x2_0000 + 100_000), PAGE_READONLY, commit, Some(FILE))),
+            error(plan(
+                Some(0x2_0000 + 100_000),
+                PAGE_READONLY,
+                commit,
+                Some(FILE)
+            )),
             8,
             "larger than the file"
         );
         let empty = Backing { size: 0, ..FILE };
-        assert_eq!(error(plan(None, PAGE_READONLY, commit, Some(empty))), 1006, "an empty file");
+        assert_eq!(
+            error(plan(None, PAGE_READONLY, commit, Some(empty))),
+            1006,
+            "an empty file"
+        );
         assert_eq!(
             error(plan(None, PAGE_READWRITE, commit, Some(FILE))),
             5,
             "a read-write section of a read-only open"
         );
-        let writable = Backing { write: true, ..FILE };
+        let writable = Backing {
+            write: true,
+            ..FILE
+        };
         assert_eq!(
             plan(None, PAGE_READWRITE, commit, Some(writable)),
-            Ok(Plan { size: 0x2_0000, writable: true })
+            Ok(Plan {
+                size: 0x2_0000,
+                writable: true
+            })
         );
         assert_eq!(
             error(plan(Some(0x3_0000), PAGE_READWRITE, commit, Some(writable))),
             19,
             "a read-write section past the file would extend it"
         );
-        let unreadable = Backing { read: false, ..FILE };
-        assert_eq!(error(plan(None, PAGE_READONLY, commit, Some(unreadable))), 5);
-        let directory = Backing { directory: true, ..FILE };
+        let unreadable = Backing {
+            read: false,
+            ..FILE
+        };
+        assert_eq!(
+            error(plan(None, PAGE_READONLY, commit, Some(unreadable))),
+            5
+        );
+        let directory = Backing {
+            directory: true,
+            ..FILE
+        };
         assert_eq!(error(plan(None, PAGE_READONLY, commit, Some(directory))), 6);
-        assert_eq!(error(plan(None, 0x10, commit, Some(FILE))), 87, "PAGE_EXECUTE");
-        assert_eq!(error(plan(None, PAGE_READONLY, 0, Some(FILE))), 87, "no allocation attribute");
+        assert_eq!(
+            error(plan(None, 0x10, commit, Some(FILE))),
+            87,
+            "PAGE_EXECUTE"
+        );
+        assert_eq!(
+            error(plan(None, PAGE_READONLY, 0, Some(FILE))),
+            87,
+            "no allocation attribute"
+        );
     }
 
     /// Image sections (LdrLoadDll's): of a file opened for reading, not empty, not a directory,
@@ -849,17 +957,44 @@ mod tests {
         let image = SEC_IMAGE;
         assert_eq!(
             plan(None, PAGE_EXECUTE, image, Some(FILE)),
-            Ok(Plan { size: FILE.size, writable: false })
+            Ok(Plan {
+                size: FILE.size,
+                writable: false
+            })
         );
-        assert_eq!(plan(None, PAGE_READWRITE, image, Some(FILE)).map(|plan| plan.writable), Ok(false));
-        assert_eq!(plan(None, PAGE_EXECUTE, image, None), Err(STATUS_INVALID_FILE_FOR_SECTION));
-        assert_eq!(plan(None, PAGE_NOACCESS, image, Some(FILE)), Err(STATUS_INVALID_PAGE_PROTECTION));
-        let directory = Backing { directory: true, ..FILE };
-        assert_eq!(plan(None, PAGE_EXECUTE, image, Some(directory)), Err(STATUS_INVALID_HANDLE));
-        let unreadable = Backing { read: false, ..FILE };
-        assert_eq!(plan(None, PAGE_EXECUTE, image, Some(unreadable)), Err(STATUS_ACCESS_DENIED));
+        assert_eq!(
+            plan(None, PAGE_READWRITE, image, Some(FILE)).map(|plan| plan.writable),
+            Ok(false)
+        );
+        assert_eq!(
+            plan(None, PAGE_EXECUTE, image, None),
+            Err(STATUS_INVALID_FILE_FOR_SECTION)
+        );
+        assert_eq!(
+            plan(None, PAGE_NOACCESS, image, Some(FILE)),
+            Err(STATUS_INVALID_PAGE_PROTECTION)
+        );
+        let directory = Backing {
+            directory: true,
+            ..FILE
+        };
+        assert_eq!(
+            plan(None, PAGE_EXECUTE, image, Some(directory)),
+            Err(STATUS_INVALID_HANDLE)
+        );
+        let unreadable = Backing {
+            read: false,
+            ..FILE
+        };
+        assert_eq!(
+            plan(None, PAGE_EXECUTE, image, Some(unreadable)),
+            Err(STATUS_ACCESS_DENIED)
+        );
         let empty = Backing { size: 0, ..FILE };
-        assert_eq!(plan(None, PAGE_EXECUTE, image, Some(empty)), Err(STATUS_MAPPED_FILE_SIZE_ZERO));
+        assert_eq!(
+            plan(None, PAGE_EXECUTE, image, Some(empty)),
+            Err(STATUS_MAPPED_FILE_SIZE_ZERO)
+        );
     }
 
     const EXIT0: &[u8] = include_bytes!("../../../tests/exit0/exit0.exe");
@@ -869,14 +1004,29 @@ mod tests {
     #[test]
     fn image_layouts_come_from_the_headers() {
         let size = EXIT0.len() as u32;
-        assert_eq!(image_layout(&EXIT0[..IMAGE_HEADERS], size), Ok((0x0040_0000, 0x3000)));
-        assert_eq!(image_layout(b"plain text, not an image", 24), Err(STATUS_INVALID_IMAGE_FORMAT));
-        assert_eq!(image_layout(&EXIT0[..0x40], 0x40), Err(STATUS_INVALID_IMAGE_FORMAT));
-        assert_eq!(image_layout(&EXIT0[..IMAGE_HEADERS], size - 1), Err(STATUS_INVALID_IMAGE_FORMAT));
+        assert_eq!(
+            image_layout(&EXIT0[..IMAGE_HEADERS], size),
+            Ok((0x0040_0000, 0x3000))
+        );
+        assert_eq!(
+            image_layout(b"plain text, not an image", 24),
+            Err(STATUS_INVALID_IMAGE_FORMAT)
+        );
+        assert_eq!(
+            image_layout(&EXIT0[..0x40], 0x40),
+            Err(STATUS_INVALID_IMAGE_FORMAT)
+        );
+        assert_eq!(
+            image_layout(&EXIT0[..IMAGE_HEADERS], size - 1),
+            Err(STATUS_INVALID_IMAGE_FORMAT)
+        );
         let mut foreign = EXIT0[..IMAGE_HEADERS].to_vec();
         let machine = u32::from_le_bytes(foreign[0x3C..0x40].try_into().unwrap()) as usize + 4;
         foreign[machine..machine + 2].copy_from_slice(&0x8664u16.to_le_bytes());
-        assert_eq!(image_layout(&foreign, size), Err(STATUS_INVALID_IMAGE_FORMAT));
+        assert_eq!(
+            image_layout(&foreign, size),
+            Err(STATUS_INVALID_IMAGE_FORMAT)
+        );
     }
 
     /// An image section's view is the whole image at its preferred base: no offset, no size short
@@ -888,14 +1038,26 @@ mod tests {
         let map = SECTION_QUERY | SECTION_MAP_READ;
         assert_eq!(image_view(map, 0, 0, 0, base, size), Ok(()));
         assert_eq!(image_view(map, base, 0, size, base, size), Ok(()));
-        assert_eq!(image_view(SECTION_QUERY | SECTION_MAP_EXECUTE, 0, 0, 0, base, size), Ok(()));
-        assert_eq!(image_view(SECTION_QUERY, 0, 0, 0, base, size), Err(STATUS_ACCESS_DENIED));
+        assert_eq!(
+            image_view(SECTION_QUERY | SECTION_MAP_EXECUTE, 0, 0, 0, base, size),
+            Ok(())
+        );
+        assert_eq!(
+            image_view(SECTION_QUERY, 0, 0, 0, base, size),
+            Err(STATUS_ACCESS_DENIED)
+        );
         assert_eq!(
             image_view(map, 0x2000_0000, 0, 0, base, size),
             Err(crate::nt::memory::STATUS_CONFLICTING_ADDRESSES)
         );
-        assert_eq!(image_view(map, 0, 0x1_0000, 0, base, size), Err(STATUS_INVALID_VIEW_SIZE));
-        assert_eq!(image_view(map, 0, 0, 0x1000, base, size), Err(STATUS_INVALID_VIEW_SIZE));
+        assert_eq!(
+            image_view(map, 0, 0x1_0000, 0, base, size),
+            Err(STATUS_INVALID_VIEW_SIZE)
+        );
+        assert_eq!(
+            image_view(map, 0, 0, 0x1000, base, size),
+            Err(STATUS_INVALID_VIEW_SIZE)
+        );
     }
 
     /// The views' refusals: a read-write view needs SECTION_MAP_WRITE (ERROR_ACCESS_DENIED) and a
@@ -905,7 +1067,15 @@ mod tests {
     fn the_view_rules() {
         let read_only_handle = 0x000F_0005;
         assert_eq!(
-            error(view(read_only_handle, PAGE_READWRITE, 0x2_0000, false, 0, 0, 0)),
+            error(view(
+                read_only_handle,
+                PAGE_READWRITE,
+                0x2_0000,
+                false,
+                0,
+                0,
+                0
+            )),
             5
         );
         assert_eq!(
@@ -913,11 +1083,27 @@ mod tests {
             Ok(0x2_0000)
         );
         assert_eq!(
-            view(read_only_handle, PAGE_READONLY, 0x2_0000, false, 0, 0x1_0000, 1000),
+            view(
+                read_only_handle,
+                PAGE_READONLY,
+                0x2_0000,
+                false,
+                0,
+                0x1_0000,
+                1000
+            ),
             Ok(1000)
         );
         assert_eq!(
-            error(view(read_only_handle, PAGE_READONLY, 0x2_0000, false, 0, 0x1000, 1000)),
+            error(view(
+                read_only_handle,
+                PAGE_READONLY,
+                0x2_0000,
+                false,
+                0,
+                0x1000,
+                1000
+            )),
             1132
         );
         assert_eq!(
@@ -933,12 +1119,28 @@ mod tests {
             87
         );
         assert_eq!(
-            error(view(read_only_handle, PAGE_READONLY, 0x2_0000, false, 0, 0x2_0000, 0)),
+            error(view(
+                read_only_handle,
+                PAGE_READONLY,
+                0x2_0000,
+                false,
+                0,
+                0x2_0000,
+                0
+            )),
             5,
             "past the end"
         );
         assert_eq!(
-            error(view(read_only_handle, PAGE_READONLY, 0x2_0000, false, 0, 0x1_0000, 0x1_0001)),
+            error(view(
+                read_only_handle,
+                PAGE_READONLY,
+                0x2_0000,
+                false,
+                0,
+                0x1_0000,
+                0x1_0001
+            )),
             5
         );
         assert_eq!(
@@ -951,13 +1153,24 @@ mod tests {
             5
         );
         assert_eq!(
-            view(SECTION_QUERY | SECTION_MAP_READ, PAGE_WRITECOPY, 0x1000, true, 0, 0, 0),
+            view(
+                SECTION_QUERY | SECTION_MAP_READ,
+                PAGE_WRITECOPY,
+                0x1000,
+                true,
+                0,
+                0,
+                0
+            ),
             Ok(0x1000),
             "a copy-on-write view reads the section"
         );
         assert_eq!(error(view_arguments(0, 0, PAGE_READONLY)), 87);
         assert_eq!(error(view_arguments(VIEW_SHARE, 0x1000, PAGE_READONLY)), 87);
         assert_eq!(error(view_arguments(VIEW_SHARE, 0, 0x40)), 87);
-        assert_eq!(view_arguments(VIEW_UNMAP, MEM_TOP_DOWN, PAGE_NOACCESS), Ok(()));
+        assert_eq!(
+            view_arguments(VIEW_UNMAP, MEM_TOP_DOWN, PAGE_NOACCESS),
+            Ok(())
+        );
     }
 }

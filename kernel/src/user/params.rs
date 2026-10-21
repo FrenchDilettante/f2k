@@ -13,10 +13,10 @@
 //! The kernel writes only the process's starting values and never reads the block back. The
 //! current directory starts as the image's own directory, its DOS path alone: ntdll's process
 //! start opens its handle, and it is ntdll's to change from then on (RtlSetCurrentDirectory_U) and
-//! to resolve relative paths against (its handle the root of the NT names it makes). The environment
-//! block the block's Environment points at is user mode's from the start, as on Windows 2000: the
-//! kernel maps it empty ([`ENVIRONMENT_BLOCK`]), and ntdll's environment functions edit it and move
-//! it to a larger allocation when it outgrows its region.
+//! to resolve relative paths against (its handle the root of the NT names it makes). The
+//! environment block the block's Environment points at is user mode's from the start, as on Windows
+//! 2000: the kernel maps it empty ([`ENVIRONMENT_BLOCK`]), and ntdll's environment functions edit
+//! it and move it to a larger allocation when it outgrows its region.
 
 // The layouts' fields user code reads, whether the kernel writes them or not (kernel32 and ntdll
 // read them by these offsets).
@@ -217,8 +217,8 @@ pub fn starting_directory(image_path: &[u8], out: &mut [u8; MODULE_ROOM]) -> usi
 /// Map the parameters pages at [`crate::user::PARAMS_PAGE`] into `space` (the current address
 /// space) and write the block: the command line, the image's Win32 path (from its volume path
 /// `module`), the current directory (the image's own), the standard handles and the environment
-/// block's address; the service pack's name; and the loader's module lists (`image`, then the system
-/// DLLs: see `user::ldr`), the image's entry over the block's ImagePathName. The environment
+/// block's address; the service pack's name; and the loader's module lists (`image`, then the
+/// system DLLs: see `user::ldr`), the image's entry over the block's ImagePathName. The environment
 /// block's region is mapped too, its zeroed pages an empty block.
 #[cfg(target_arch = "x86")]
 pub fn map(
@@ -247,8 +247,10 @@ pub fn map(
     let _ = write_user(base + IMAGE_PATH_BUFFER, &wide[..image_path_bytes]);
     let mut directory = [0u8; MODULE_ROOM];
     let directory_length = starting_directory(&name[..name_length], &mut directory);
-    let current_directory_bytes =
-        widen(&directory[..directory_length], &mut wide[..PATH_ROOM as usize - 2]);
+    let current_directory_bytes = widen(
+        &directory[..directory_length],
+        &mut wide[..PATH_ROOM as usize - 2],
+    );
     let _ = write_user(
         base + CURRENT_DIRECTORY_BUFFER,
         &wide[..current_directory_bytes],
@@ -266,7 +268,11 @@ pub fn map(
     let _ = write_user(base, &block);
     crate::user::ldr::map(image, &name[..name_length]);
     for page in 0..ENVIRONMENT_BLOCK_PAGES {
-        vm::map_zeroed(space, ENVIRONMENT_BLOCK + page * PAGE_SIZE, vm::PAGE_READWRITE);
+        vm::map_zeroed(
+            space,
+            ENVIRONMENT_BLOCK + page * PAGE_SIZE,
+            vm::PAGE_READWRITE,
+        );
     }
 }
 
@@ -374,7 +380,11 @@ mod tests {
         assert!(COMMAND_LINE_BUFFER + COMMAND_LINE_ROOM <= CSD_VERSION_BUFFER);
         assert!(CSD_VERSION_BUFFER + 2 * CSD_VERSION_TEXT.len() as u32 + 2 <= PAGES * 0x1000);
         assert!(crate::user::PARAMS_PAGE + PAGES * 0x1000 <= ENVIRONMENT_BLOCK);
-        assert_eq!(ENVIRONMENT_BLOCK % 0x1_0000, 0, "an allocation-granularity base");
+        assert_eq!(
+            ENVIRONMENT_BLOCK % 0x1_0000,
+            0,
+            "an allocation-granularity base"
+        );
         // The longest boot command line fits the block's, terminated.
         assert!(crate::boot::cmdline::MAX_LEN < COMMAND_LINE_ROOM as usize / 2);
     }

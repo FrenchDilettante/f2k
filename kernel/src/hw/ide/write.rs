@@ -7,7 +7,11 @@ use super::regs::{MAX_SECTORS_PER_COMMAND, SECTOR_SIZE, WRITE_SECTORS};
 use super::taskfile::pack_lba28;
 use crate::hw::portio::Io;
 use crate::status::{
-    nt_success, NtStatus, STATUS_INVALID_PARAMETER, STATUS_NO_SUCH_DEVICE, STATUS_SUCCESS,
+    nt_success,
+    NtStatus,
+    STATUS_INVALID_PARAMETER,
+    STATUS_NO_SUCH_DEVICE,
+    STATUS_SUCCESS,
 };
 
 /// Write `buffer.len() / 512` contiguous sectors starting at `lba` to a disk of `capacity` sectors
@@ -35,7 +39,13 @@ pub fn write<IoT: Io, C: Completion<IoT>>(
     let mut next = lba;
     for run in buffer.chunks(MAX_SECTORS_PER_COMMAND as usize * SECTOR_SIZE) {
         let count = (run.len() / SECTOR_SIZE) as u32;
-        let status = channel.pio_out(latch, completion, pack_lba28(next, count), WRITE_SECTORS, run);
+        let status = channel.pio_out(
+            latch,
+            completion,
+            pack_lba28(next, count),
+            WRITE_SECTORS,
+            run,
+        );
         if !nt_success(status) {
             return status;
         }
@@ -66,7 +76,10 @@ mod tests {
         let latch = Latch::new();
         let mut deliver = Deliver { delivered: 0 };
         let buffer = data(300);
-        assert_eq!(write(&mut channel, &latch, &mut deliver, DISK, 11, &buffer), STATUS_SUCCESS);
+        assert_eq!(
+            write(&mut channel, &latch, &mut deliver, DISK, 11, &buffer),
+            STATUS_SUCCESS
+        );
         assert_eq!(channel.io().sectors_at(11, 300), &buffer[..]);
         assert_eq!(channel.io().commands(), [WRITE_SECTORS, WRITE_SECTORS]);
         assert_eq!(deliver.delivered, 300, "one interrupt per sector taken");
@@ -84,7 +97,14 @@ mod tests {
         channel.io().busy_reads = 30;
         let latch = Latch::new();
         let buffer = data(3);
-        let status = write(&mut channel, &latch, &mut Deliver { delivered: 0 }, DISK, 40, &buffer);
+        let status = write(
+            &mut channel,
+            &latch,
+            &mut Deliver { delivered: 0 },
+            DISK,
+            40,
+            &buffer,
+        );
         assert_eq!(status, STATUS_SUCCESS);
         assert_eq!(channel.io().sectors_at(40, 3), &buffer[..]);
     }
@@ -97,7 +117,14 @@ mod tests {
         let latch = Latch::new();
         let buffer = data(2);
         assert_eq!(
-            write(&mut channel, &latch, &mut Deliver { delivered: 0 }, DISK, DISK - 1, &buffer),
+            write(
+                &mut channel,
+                &latch,
+                &mut Deliver { delivered: 0 },
+                DISK,
+                DISK - 1,
+                &buffer
+            ),
             STATUS_INVALID_PARAMETER
         );
         assert!(channel.io().commands().is_empty());

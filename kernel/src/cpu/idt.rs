@@ -4,8 +4,8 @@
 //! it to a Rust handler. A fault in the kernel's fault-tolerant user copy resumes at the copy's
 //! fixup, the copy failing; a fault raised by user code goes to the thread's own exception handlers
 //! (`user::seh`); anything else gets a diagnostic dump on COM1 (silent triple-fault resets become
-//! actionable output) and ends the user process, or halts the kernel. Exceptions fire regardless of IF, so nothing here needs the
-//! PIC or `sti`; hardware IRQs come later.
+//! actionable output) and ends the user process, or halts the kernel. Exceptions fire regardless of
+//! IF, so nothing here needs the PIC or `sti`; hardware IRQs come later.
 
 use crate::cpu::gdt::KERNEL_CODE_SELECTOR;
 
@@ -108,7 +108,6 @@ impl Gate {
     /// Gates that user code must be able to raise use DPL 3 instead ([`Gate::new_user`]): the
     /// syscall gate and the software exceptions (int3, into).
     const INTERRUPT_ATTR: u8 = 0x8E;
-
     /// 0xEE = present, ring 3, 32-bit interrupt gate: ring-3 code may raise the vector with `int`;
     /// entry clears IF as usual.
     const USER_INTERRUPT_ATTR: u8 = 0xEE;
@@ -500,9 +499,9 @@ extern "C" fn exception_handler(frame: &mut ExceptionFrame) {
     crate::halt();
 }
 
-/// The exception code a ring-3 fault raises: the one the page-fault resolution `raised` (the stack's
-/// overflow, a guard violation), else the trap's own code, a protection fault telling a privileged
-/// instruction apart by the faulting instruction's bytes.
+/// The exception code a ring-3 fault raises: the one the page-fault resolution `raised` (the
+/// stack's overflow, a guard violation), else the trap's own code, a protection fault telling a
+/// privileged instruction apart by the faulting instruction's bytes.
 #[cfg(target_arch = "x86")]
 fn user_fault_status(frame: &ExceptionFrame, raised: Option<u32>) -> u32 {
     if let Some(status) = raised {

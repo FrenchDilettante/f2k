@@ -146,7 +146,8 @@ unsafe extern "system" {
         allocation: u32,
         file: u32,
     ) -> u32;
-    pub fn NtOpenSection(handle: *mut u32, access: u32, attributes: *const ObjectAttributes) -> u32;
+    pub fn NtOpenSection(handle: *mut u32, access: u32, attributes: *const ObjectAttributes)
+        -> u32;
     pub fn NtMapViewOfSection(
         section: u32,
         process: u32,
@@ -707,7 +708,11 @@ pub mod host {
     }
 
     /// The heap: the host's allocator, a block's size kept before it.
-    pub unsafe extern "system" fn RtlAllocateHeap(_heap: usize, flags: u32, size: usize) -> *mut u8 {
+    pub unsafe extern "system" fn RtlAllocateHeap(
+        _heap: usize,
+        flags: u32,
+        size: usize,
+    ) -> *mut u8 {
         let layout = std::alloc::Layout::from_size_align(size + 8, 8).unwrap();
         // SAFETY: a fresh allocation of `size + 8` bytes.
         unsafe {
@@ -726,7 +731,10 @@ pub mod host {
         unsafe {
             let start = block.sub(8);
             let size = (start as *const usize).read();
-            std::alloc::dealloc(start, std::alloc::Layout::from_size_align(size + 8, 8).unwrap());
+            std::alloc::dealloc(
+                start,
+                std::alloc::Layout::from_size_align(size + 8, 8).unwrap(),
+            );
         }
         1
     }
@@ -769,7 +777,11 @@ pub mod host {
                 return rtl::status::STATUS_BUFFER_TOO_SMALL;
             }
             // SAFETY: the caller's buffer.
-            unsafe { value.buffer.copy_from_nonoverlapping(found.as_ptr(), found.len()) };
+            unsafe {
+                value
+                    .buffer
+                    .copy_from_nonoverlapping(found.as_ptr(), found.len())
+            };
             0
         })
     }
@@ -781,8 +793,12 @@ pub mod host {
     ) -> u32 {
         ENVIRONMENT.with(|block| {
             // SAFETY: the caller's strings.
-            let (name, value) =
-                unsafe { (string_units(name), (!value.is_null()).then(|| string_units(value))) };
+            let (name, value) = unsafe {
+                (
+                    string_units(name),
+                    (!value.is_null()).then(|| string_units(value)),
+                )
+            };
             match rtl::env::set(&mut block.borrow_mut(), name, value) {
                 Ok(()) => 0,
                 Err(rtl::env::EnvError::InvalidName) => rtl::status::STATUS_INVALID_PARAMETER,
@@ -801,7 +817,9 @@ pub mod host {
             let block = block.borrow();
             let mut out = std::vec::Vec::new();
             // SAFETY: the caller's strings.
-            rtl::env::expand(&block, unsafe { string_units(source) }, |unit| out.push(unit));
+            rtl::env::expand(&block, unsafe { string_units(source) }, |unit| {
+                out.push(unit)
+            });
             let destination = unsafe { &mut *destination };
             // SAFETY: the caller's count.
             unsafe { returned.write((2 * (out.len() + 1)) as u32) };
@@ -810,7 +828,9 @@ pub mod host {
             }
             // SAFETY: the caller's buffer holds the expansion and its terminator.
             unsafe {
-                destination.buffer.copy_from_nonoverlapping(out.as_ptr(), out.len());
+                destination
+                    .buffer
+                    .copy_from_nonoverlapping(out.as_ptr(), out.len());
                 destination.buffer.add(out.len()).write(0);
             }
             destination.length = (2 * out.len()) as u16;
@@ -919,7 +939,11 @@ pub mod host {
         // SAFETY: the caller's in/out values.
         unsafe {
             LAST_VM.with(|cell| cell.set(Some((base.read(), size.read(), kind))));
-            VM_CALLS.with(|calls| calls.borrow_mut().push(("allocate", base.read(), size.read(), kind)));
+            VM_CALLS.with(|calls| {
+                calls
+                    .borrow_mut()
+                    .push(("allocate", base.read(), size.read(), kind))
+            });
             let status = answer();
             if status != 0 {
                 return status;
@@ -937,7 +961,11 @@ pub mod host {
     ) -> u32 {
         // SAFETY: the caller's in/out values.
         LAST_VM.with(|cell| cell.set(Some(unsafe { (base.read(), size.read(), kind) })));
-        VM_CALLS.with(|calls| calls.borrow_mut().push(("free", unsafe { base.read() }, unsafe { size.read() }, kind)));
+        VM_CALLS.with(|calls| {
+            calls
+                .borrow_mut()
+                .push(("free", unsafe { base.read() }, unsafe { size.read() }, kind))
+        });
         answer()
     }
 
@@ -950,7 +978,14 @@ pub mod host {
     ) -> u32 {
         // SAFETY: the caller's in/out values.
         LAST_VM.with(|cell| cell.set(Some(unsafe { (base.read(), size.read(), protect) })));
-        VM_CALLS.with(|calls| calls.borrow_mut().push(("protect", unsafe { base.read() }, unsafe { size.read() }, protect)));
+        VM_CALLS.with(|calls| {
+            calls.borrow_mut().push((
+                "protect",
+                unsafe { base.read() },
+                unsafe { size.read() },
+                protect,
+            ))
+        });
         let status = answer();
         if status != 0 {
             return status;
@@ -1065,7 +1100,11 @@ pub mod host {
         protect: u32,
     ) -> u32 {
         // SAFETY: the caller's in/out values.
-        LAST_VM.with(|cell| cell.set(Some(unsafe { (offset.read() as usize, size.read(), protect) })));
+        LAST_VM.with(|cell| {
+            cell.set(Some(unsafe {
+                (offset.read() as usize, size.read(), protect)
+            }))
+        });
         let status = answer();
         if status != 0 {
             return status;
@@ -1203,8 +1242,9 @@ pub mod files {
     /// A file service call, as the stand-in took it.
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum Call {
-        /// NtCreateFile or NtOpenFile (or an attributes query): the access, the root, the name, the
-        /// share, the disposition (FILE_OPEN for NtOpenFile), the options and the attributes.
+        /// NtCreateFile or NtOpenFile (or an attributes query): the access, the root, the name,
+        /// the share, the disposition (FILE_OPEN for NtOpenFile), the options and the
+        /// attributes.
         Open {
             access: u32,
             root: u32,
@@ -1301,8 +1341,12 @@ pub mod files {
         file_attributes: u32,
     ) -> u32 {
         // SAFETY: the caller's attributes and their name.
-        let (root, name) =
-            unsafe { ((*attributes).root_directory, text((*attributes).object_name)) };
+        let (root, name) = unsafe {
+            (
+                (*attributes).root_directory,
+                text((*attributes).object_name),
+            )
+        };
         record(Call::Open {
             access,
             root,
@@ -1463,7 +1507,10 @@ pub mod files {
         0
     }
 
-    pub unsafe extern "system" fn NtFlushBuffersFile(handle: u32, _io_status: *mut IoStatus) -> u32 {
+    pub unsafe extern "system" fn NtFlushBuffersFile(
+        handle: u32,
+        _io_status: *mut IoStatus,
+    ) -> u32 {
         record(Call::Flush { handle });
         checked(handle).err().unwrap_or(0)
     }
@@ -1544,8 +1591,12 @@ pub mod files {
         information: *mut u8,
     ) -> u32 {
         // SAFETY: the caller's attributes.
-        let (root, name) =
-            unsafe { ((*attributes).root_directory, text((*attributes).object_name)) };
+        let (root, name) = unsafe {
+            (
+                (*attributes).root_directory,
+                text((*attributes).object_name),
+            )
+        };
         record(Call::Open {
             access: 0,
             root,
@@ -1574,8 +1625,12 @@ pub mod files {
         information: *mut u8,
     ) -> u32 {
         // SAFETY: the caller's attributes.
-        let (root, name) =
-            unsafe { ((*attributes).root_directory, text((*attributes).object_name)) };
+        let (root, name) = unsafe {
+            (
+                (*attributes).root_directory,
+                text((*attributes).object_name),
+            )
+        };
         record(Call::Open {
             access: 0,
             root,
@@ -1662,7 +1717,9 @@ pub mod files {
                 buffer: base,
             };
             if !file_part.is_null() {
-                *file_part = name.file_part.map_or(std::ptr::null_mut(), |at| base.add(at));
+                *file_part = name
+                    .file_part
+                    .map_or(std::ptr::null_mut(), |at| base.add(at));
             }
             if !relative.is_null() {
                 *relative = match name.relative {
@@ -1908,7 +1965,14 @@ pub mod threads {
         pub ended: bool,
     }
 
-    const LIVE: HostThread = HostThread { exit_status: 259, priority: 8, base: 0, disable_boost: false, suspend_count: 0, ended: false };
+    const LIVE: HostThread = HostThread {
+        exit_status: 259,
+        priority: 8,
+        base: 0,
+        disable_boost: false,
+        suspend_count: 0,
+        ended: false,
+    };
 
     std::thread_local! {
         /// The threads, by handle: the current one, another, and one that ended with 7.
@@ -1928,7 +1992,10 @@ pub mod threads {
     fn with_thread<R>(handle: u32, change: impl FnOnce(&mut HostThread) -> R) -> Result<R, u32> {
         THREADS.with(|threads| {
             let mut threads = threads.borrow_mut();
-            let thread = threads.iter_mut().find(|(h, _)| *h == handle).ok_or(STATUS_INVALID_HANDLE)?;
+            let thread = threads
+                .iter_mut()
+                .find(|(h, _)| *h == handle)
+                .ok_or(STATUS_INVALID_HANDLE)?;
             Ok(change(&mut thread.1))
         })
     }
@@ -1976,21 +2043,40 @@ pub mod threads {
         initial_teb: *const crate::thread::InitialTeb,
         create_suspended: u32,
     ) -> u32 {
-        if let Some(status) = failure().or(Some(CREATE_FAILS.with(|fails| fails.replace(0))).filter(|&status| status != 0)) {
+        if let Some(status) = failure()
+            .or(Some(CREATE_FAILS.with(|fails| fails.replace(0))).filter(|&status| status != 0))
+        {
             return status;
         }
         // SAFETY: the caller's structures.
         let (inherit, context, stack) = unsafe {
             (
-                attributes.as_ref().is_some_and(|attributes| attributes.attributes & 2 != 0),
+                attributes
+                    .as_ref()
+                    .is_some_and(|attributes| attributes.attributes & 2 != 0),
                 std::slice::from_raw_parts(context, crate::thread::CONTEXT_WORDS).to_vec(),
                 *initial_teb,
             )
         };
         let suspended = create_suspended != 0;
-        CREATED.with(|created| created.borrow_mut().push(Created { access, inherit, process, context, stack, suspended }));
+        CREATED.with(|created| {
+            created.borrow_mut().push(Created {
+                access,
+                inherit,
+                process,
+                context,
+                stack,
+                suspended,
+            })
+        });
         THREADS.with(|threads| {
-            threads.borrow_mut().push((CREATED_THREAD, HostThread { suspend_count: u32::from(suspended), ..LIVE }))
+            threads.borrow_mut().push((
+                CREATED_THREAD,
+                HostThread {
+                    suspend_count: u32::from(suspended),
+                    ..LIVE
+                },
+            ))
         });
         // SAFETY: the caller's out values.
         unsafe {
@@ -2008,15 +2094,17 @@ pub mod threads {
         if thread == 0 {
             return 0;
         }
-        answer(with_thread(thread, |thread| {
-            if thread.ended {
-                return Err(STATUS_INVALID_PARAMETER);
-            }
-            thread.ended = true;
-            thread.exit_status = status;
-            Ok(())
-        })
-        .and_then(|result| result))
+        answer(
+            with_thread(thread, |thread| {
+                if thread.ended {
+                    return Err(STATUS_INVALID_PARAMETER);
+                }
+                thread.ended = true;
+                thread.exit_status = status;
+                Ok(())
+            })
+            .and_then(|result| result),
+        )
     }
 
     /// NtTerminateProcess: recorded; only the current process (or a null handle) is reachable.
@@ -2041,19 +2129,25 @@ pub mod threads {
         if let Some(status) = failure() {
             return status;
         }
-        answer(with_thread(thread, |thread| {
-            if thread.ended {
-                return Err(STATUS_THREAD_IS_TERMINATING);
-            }
-            if thread.suspend_count == 127 {
-                return Err(STATUS_SUSPEND_COUNT_EXCEEDED);
-            }
-            // SAFETY: the caller's count, when given.
-            unsafe { previous.as_mut().map(|previous| *previous = thread.suspend_count) };
-            thread.suspend_count += 1;
-            Ok(())
-        })
-        .and_then(|result| result))
+        answer(
+            with_thread(thread, |thread| {
+                if thread.ended {
+                    return Err(STATUS_THREAD_IS_TERMINATING);
+                }
+                if thread.suspend_count == 127 {
+                    return Err(STATUS_SUSPEND_COUNT_EXCEEDED);
+                }
+                // SAFETY: the caller's count, when given.
+                unsafe {
+                    previous
+                        .as_mut()
+                        .map(|previous| *previous = thread.suspend_count)
+                };
+                thread.suspend_count += 1;
+                Ok(())
+            })
+            .and_then(|result| result),
+        )
     }
 
     pub unsafe extern "system" fn NtResumeThread(thread: u32, previous: *mut u32) -> u32 {
@@ -2062,7 +2156,11 @@ pub mod threads {
         }
         answer(with_thread(thread, |thread| {
             // SAFETY: the caller's count, when given.
-            unsafe { previous.as_mut().map(|previous| *previous = thread.suspend_count) };
+            unsafe {
+                previous
+                    .as_mut()
+                    .map(|previous| *previous = thread.suspend_count)
+            };
             thread.suspend_count = thread.suspend_count.saturating_sub(1);
         }))
     }
@@ -2087,7 +2185,15 @@ pub mod threads {
         }
         answer(with_thread(thread, |thread| {
             let words: &[u32] = if class == 0 {
-                &[thread.exit_status, process().teb as u32, 8, 12, 1, thread.priority as u32, thread.base as u32]
+                &[
+                    thread.exit_status,
+                    process().teb as u32,
+                    8,
+                    12,
+                    1,
+                    thread.priority as u32,
+                    thread.base as u32,
+                ]
             } else {
                 &[u32::from(thread.disable_boost)]
             };
@@ -2098,7 +2204,12 @@ pub mod threads {
         }))
     }
 
-    pub unsafe extern "system" fn NtSetInformationThread(thread: u32, class: u32, information: *const u8, length: u32) -> u32 {
+    pub unsafe extern "system" fn NtSetInformationThread(
+        thread: u32,
+        class: u32,
+        information: *const u8,
+        length: u32,
+    ) -> u32 {
         if let Some(status) = failure() {
             return status;
         }
@@ -2134,7 +2245,9 @@ pub mod threads {
                 crate::base::write(slot, 0);
                 0
             }
-            14 => answer(with_thread(thread, |thread| thread.disable_boost = value != 0)),
+            14 => answer(with_thread(thread, |thread| {
+                thread.disable_boost = value != 0
+            })),
             _ => answer(with_thread(thread, |_| ())),
         }
     }
@@ -2161,7 +2274,11 @@ pub mod threads {
             (12, 4) => std::vec![HARD_ERROR_MODE.with(Cell::get)],
             (18, 2) => {
                 // SAFETY: the caller's PROCESS_PRIORITY_CLASS.
-                unsafe { information.cast::<[u8; 2]>().write([0, PRIORITY_CLASS.with(Cell::get)]) };
+                unsafe {
+                    information
+                        .cast::<[u8; 2]>()
+                        .write([0, PRIORITY_CLASS.with(Cell::get)])
+                };
                 return 0;
             }
             (3 | 12 | 18, _) => return STATUS_INFO_LENGTH_MISMATCH,
@@ -2174,7 +2291,12 @@ pub mod threads {
         0
     }
 
-    pub unsafe extern "system" fn NtSetInformationProcess(process: u32, class: u32, information: *const u8, length: u32) -> u32 {
+    pub unsafe extern "system" fn NtSetInformationProcess(
+        process: u32,
+        class: u32,
+        information: *const u8,
+        length: u32,
+    ) -> u32 {
         if let Some(status) = failure() {
             return status;
         }
@@ -2192,7 +2314,9 @@ pub mod threads {
         // SAFETY: the caller's value, `length` bytes.
         let bytes = unsafe { core::slice::from_raw_parts(information, length as usize) };
         match class {
-            12 => HARD_ERROR_MODE.with(|mode| mode.set(u32::from_le_bytes(bytes.try_into().unwrap()))),
+            12 => {
+                HARD_ERROR_MODE.with(|mode| mode.set(u32::from_le_bytes(bytes.try_into().unwrap())))
+            }
             18 if (1..=6).contains(&bytes[1]) => PRIORITY_CLASS.with(|class| class.set(bytes[1])),
             21 if bytes == [1, 0, 0, 0] => {}
             _ => return STATUS_INVALID_PARAMETER,
@@ -2246,8 +2370,8 @@ pub mod modules {
     /// The PEB's Ldr (its load-order list) and LoaderLock, as the kernel and ntdll set them.
     pub fn plant(peb: usize) {
         let pointer = crate::base::write_pointer;
-        let page = std::boxed::Box::leak(std::vec![0u32; 0x400].into_boxed_slice()).as_mut_ptr()
-            as usize;
+        let page =
+            std::boxed::Box::leak(std::vec![0u32; 0x400].into_boxed_slice()).as_mut_ptr() as usize;
         pointer(peb + 0x0C, page);
         pointer(peb + 0xA0, peb + 0x900);
         let head = page + 0x0C;
@@ -2287,10 +2411,19 @@ pub mod modules {
         let text = std::string::String::from_utf16_lossy(units);
         ASKED.with(|asked| asked.borrow_mut().push(text.clone()));
         let file = text.rsplit('\\').next().unwrap_or("").to_ascii_lowercase();
-        let file = if file.contains('.') { file } else { file + ".dll" };
+        let file = if file.contains('.') {
+            file
+        } else {
+            file + ".dll"
+        };
         MODULE_PATHS
             .iter()
-            .find(|(_, path)| path.rsplit('\\').next().unwrap().eq_ignore_ascii_case(&file))
+            .find(|(_, path)| {
+                path.rsplit('\\')
+                    .next()
+                    .unwrap()
+                    .eq_ignore_ascii_case(&file)
+            })
             .map(|&(base, _)| base)
     }
 

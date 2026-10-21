@@ -1,9 +1,9 @@
 //! The file services: NtCreateFile and NtOpenFile, NtReadFile and NtWriteFile,
 //! NtFlushBuffersFile, NtQueryInformationFile and NtSetInformationFile, NtQueryDirectoryFile,
-//! NtQueryAttributesFile and NtQueryFullAttributesFile, and NtQueryVolumeInformationFile — FastFat's
-//! answers over the boot volume (`fs`), in NTSTATUS. kernel32's Win32 file calls are user-mode code
-//! over these, as on Windows 2000: a Win32 error is the status's mapping, or one of kernel32's own
-//! special cases.
+//! NtQueryAttributesFile and NtQueryFullAttributesFile, and NtQueryVolumeInformationFile —
+//! FastFat's answers over the boot volume (`fs`), in NTSTATUS. kernel32's Win32 file calls are
+//! user-mode code over these, as on Windows 2000: a Win32 error is the status's mapping, or one of
+//! kernel32's own special cases.
 //!
 //! Names are NT paths (see [`name`]), absolute or relative to a directory's file object. A file
 //! object keeps the rights its open was granted (the generic ones mapped to the file rights); each
@@ -34,7 +34,12 @@ pub use directory::query_directory_file;
 #[cfg(target_arch = "x86")]
 pub use io::{flush_buffers_file, read_file, write_file};
 #[cfg(target_arch = "x86")]
-pub use query::{query_attributes_file, query_full_attributes_file, query_information_file, set_information_file};
+pub use query::{
+    query_attributes_file,
+    query_full_attributes_file,
+    query_information_file,
+    set_information_file,
+};
 #[cfg(target_arch = "x86")]
 pub use volume::query_volume_information_file;
 
@@ -69,8 +74,21 @@ pub fn status(status: crate::status::NtStatus) -> Status {
 /// walk, and the completion.
 #[cfg(target_arch = "x86")]
 mod common {
-    use super::super::attributes::{self, Root, MAX_NAME, STATUS_OBJECT_NAME_INVALID, STATUS_OBJECT_TYPE_MISMATCH};
-    use super::super::call::{Status, UserAddr, UserPtr, STATUS_ACCESS_VIOLATION, STATUS_INVALID_HANDLE, STATUS_INVALID_PARAMETER};
+    use super::super::attributes::{
+        self,
+        Root,
+        MAX_NAME,
+        STATUS_OBJECT_NAME_INVALID,
+        STATUS_OBJECT_TYPE_MISMATCH,
+    };
+    use super::super::call::{
+        Status,
+        UserAddr,
+        UserPtr,
+        STATUS_ACCESS_VIOLATION,
+        STATUS_INVALID_HANDLE,
+        STATUS_INVALID_PARAMETER,
+    };
     use super::name::{self, FileName};
     use crate::fs::fat32::lookup::{find, root, File, LookupError};
     use crate::fs::fat32::volume::Volume;
@@ -83,7 +101,9 @@ mod common {
     /// kind of object.
     pub fn file_object(handle: u32) -> Result<Referenced<FileObject>, Status> {
         let reference = super::super::sync::object_of(handle, ObjectType::File)?;
-        let object = crate::ob::directory().file(reference.id()).expect("a referenced file object lives");
+        let object = crate::ob::directory()
+            .file(reference.id())
+            .expect("a referenced file object lives");
         Ok(Referenced::new(reference, object))
     }
 
@@ -145,7 +165,10 @@ mod common {
             Root::None => (name::absolute(units)?, None),
             Root::File(id) => {
                 let reference = crate::ob::reference(id).ok_or(STATUS_INVALID_HANDLE)?;
-                let record = crate::ob::directory().file(reference.id()).expect("held").record;
+                let record = crate::ob::directory()
+                    .file(reference.id())
+                    .expect("held")
+                    .record;
                 let directory = records().get(record).file;
                 if !directory.directory {
                     return Err(STATUS_INVALID_PARAMETER);
@@ -154,7 +177,11 @@ mod common {
             }
             Root::NamedObjects | Root::Other => return Err(STATUS_OBJECT_TYPE_MISMATCH),
         };
-        Ok(Target { name, start, inherit: read.inherit() })
+        Ok(Target {
+            name,
+            start,
+            inherit: read.inherit(),
+        })
     }
 
     /// What a walk found: the entry the name names, or the directory its last component would be
@@ -177,7 +204,11 @@ mod common {
     /// Walk `name` from `start` (none: the volume's root) on a volume the caller holds: a directory
     /// on the way that is missing, or a file, is STATUS_OBJECT_PATH_NOT_FOUND. An open file's entry
     /// is its record's (the current copy).
-    pub fn walk(volume: &mut Volume, start: Option<File>, name: &FileName) -> Result<Found, NtStatus> {
+    pub fn walk(
+        volume: &mut Volume,
+        start: Option<File>,
+        name: &FileName,
+    ) -> Result<Found, NtStatus> {
         let mut directory = start.unwrap_or_else(|| root(volume));
         let mut components = name.components().peekable();
         while let Some(component) = components.next() {
@@ -192,12 +223,19 @@ mod common {
                 None => return Err(STATUS_OBJECT_PATH_NOT_FOUND),
             }
         }
-        Ok(Found::Existing(records().find(&directory).map_or(directory, |index| records().get(index).file)))
+        Ok(Found::Existing(
+            records()
+                .find(&directory)
+                .map_or(directory, |index| records().get(index).file),
+        ))
     }
 
     /// The boot volume's cluster size in bytes (a file's allocation unit).
     pub fn cluster_bytes() -> u32 {
-        crate::fs::fat32::volume::with_boot_volume(|volume| volume.layout().sectors_per_cluster * 512).unwrap_or(512)
+        crate::fs::fat32::volume::with_boot_volume(|volume| {
+            volume.layout().sectors_per_cluster * 512
+        })
+        .unwrap_or(512)
     }
 
     /// The event a read, write or listing signals once it completes, reset now; none for a null

@@ -23,15 +23,24 @@ fn volume_facts() -> Result<Volume, Status> {
         label.copy_from_slice(&sector[71..82]);
         let info_sector = u16::from_le_bytes([sector[48], sector[49]]) as u64;
         let mut free = None;
-        if info_sector != 0 && info_sector != 0xFFFF && nt_success(volume.device().read(info_sector, &mut sector)) {
-            let word = |at: usize| u32::from_le_bytes([sector[at], sector[at + 1], sector[at + 2], sector[at + 3]]);
-            if word(0) == 0x4161_5252 && word(484) == 0x6141_7272 && word(488) <= layout.cluster_count {
+        if info_sector != 0
+            && info_sector != 0xFFFF
+            && nt_success(volume.device().read(info_sector, &mut sector))
+        {
+            let word = |at: usize| {
+                u32::from_le_bytes([sector[at], sector[at + 1], sector[at + 2], sector[at + 3]])
+            };
+            if word(0) == 0x4161_5252
+                && word(484) == 0x6141_7272
+                && word(488) <= layout.cluster_count
+            {
                 free = Some(word(488));
             }
         }
         let free = free.unwrap_or_else(|| {
-            (2..layout.cluster_count + 2).filter(|&cluster| matches!(volume.fat_entry(cluster), Ok(FatEntry::Free))).count()
-                as u32
+            (2..layout.cluster_count + 2)
+                .filter(|&cluster| matches!(volume.fat_entry(cluster), Ok(FatEntry::Free)))
+                .count() as u32
         });
         Ok(Volume {
             serial,
@@ -63,7 +72,13 @@ pub fn query_volume_information_file(
     probe(information, length)?;
     file_object(handle.raw())?;
     let facts = if class == info::FILE_FS_DEVICE_INFORMATION {
-        Volume { serial: 0, label: [b' '; 11], sectors_per_cluster: 0, clusters: 0, free_clusters: 0 }
+        Volume {
+            serial: 0,
+            label: [b' '; 11],
+            sectors_per_cluster: 0,
+            clusters: 0,
+            free_clusters: 0,
+        }
     } else {
         volume_facts()?
     };

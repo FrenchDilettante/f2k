@@ -150,9 +150,9 @@ struct Dual;
 
 impl Client for Dual {
     /// A buffer the caller cannot name is refused before a byte reaches the screen
-    /// (STATUS_ACCESS_VIOLATION, ERROR_NOACCESS to the caller); one that passed the probe but cannot
-    /// be read is an invalid user buffer (ERROR_INVALID_USER_BUFFER), what was read before it shown
-    /// — the two answers the bare/badptr fixture's console writes capture.
+    /// (STATUS_ACCESS_VIOLATION, ERROR_NOACCESS to the caller); one that passed the probe but
+    /// cannot be read is an invalid user buffer (ERROR_INVALID_USER_BUFFER), what was read
+    /// before it shown — the two answers the bare/badptr fixture's console writes capture.
     fn show(&mut self, screen: &mut ScreenBuffer, buffer: usize, count: usize) -> Result<(), u32> {
         let (buffer, count) = (buffer as u32, count as u32);
         crate::user::syscall::probe_user_range(buffer, count)?;
@@ -261,9 +261,11 @@ mod tests {
             fn out(&mut self, port: u16, byte: u8) {
                 self.0.push((port, byte));
             }
+
             fn read(&mut self, _port: u16) -> u8 {
                 0
             }
+
             fn read_word(&mut self, _port: u16) -> u16 {
                 0
             }

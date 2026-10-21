@@ -12,10 +12,10 @@
 //! stand-in for csrss share them), and structured exception handling's walks ([`seh`]: ntdll's
 //! RtlDispatchException and RtlUnwind, with the CONTEXT and record layouts the kernel writes).
 //!
-//! On the DLLs' target (i686 Windows) only: what the compiler expects of an MSVC environment without
-//! its CRT (the 64-bit division helpers LLVM calls on i686-*-windows-msvc, `_aulldiv`, `_aullrem`,
-//! `_alldiv`, `_allrem`, and the `_fltused` marker; their cores are host-tested), the panic
-//! handler, and [`sys`], the calling thread's TEB, the gate and the raises.
+//! On the DLLs' target (i686 Windows) only: what the compiler expects of an MSVC environment
+//! without its CRT (the 64-bit division helpers LLVM calls on i686-*-windows-msvc, `_aulldiv`,
+//! `_aullrem`, `_alldiv`, `_allrem`, and the `_fltused` marker; their cores are host-tested), the
+//! panic handler, and [`sys`], the calling thread's TEB, the gate and the raises.
 
 #![cfg_attr(not(test), no_std)]
 

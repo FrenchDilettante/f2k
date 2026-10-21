@@ -157,7 +157,8 @@ impl<H: HeapCalls> Memory<'_, H> {
     pub fn alloc(&self, flags: u32, size: usize) -> Outcome {
         let zero = flags & ZEROINIT != 0;
         let made = if flags & MOVEABLE == 0 {
-            self.heap.alloc(if zero { HEAP_ZERO_MEMORY } else { 0 }, size)
+            self.heap
+                .alloc(if zero { HEAP_ZERO_MEMORY } else { 0 }, size)
         } else {
             self.heap.alloc(0, ENTRY).and_then(|block| {
                 let handle = block + WORD;
@@ -232,8 +233,7 @@ impl<H: HeapCalls> Memory<'_, H> {
     pub fn size(&self, handle: usize) -> Outcome {
         let size = match self.entry(handle) {
             Some((_, 0)) => Some(0),
-            Some((_, data)) => self.heap.size(0, data - PREFIX)
-                .map(|s| s - PREFIX),
+            Some((_, data)) => self.heap.size(0, data - PREFIX).map(|s| s - PREFIX),
             None => self.heap.size(0, handle),
         };
         match size {
@@ -328,7 +328,10 @@ mod tests {
     fn local_memory_follows_the_capture() {
         let host = Host::new();
         let heap = create(&host, 0, 0, 0).unwrap();
-        let on_heap = OnHeap { heap, system: &host };
+        let on_heap = OnHeap {
+            heap,
+            system: &host,
+        };
         let memory = Memory { heap: &on_heap };
 
         let fixed = memory.alloc(ZEROINIT, 100);
@@ -368,7 +371,10 @@ mod tests {
     fn a_zero_byte_moveable_block_is_discarded() {
         let host = Host::new();
         let heap = create(&host, 0, 0, 0).unwrap();
-        let on_heap = OnHeap { heap, system: &host };
+        let on_heap = OnHeap {
+            heap,
+            system: &host,
+        };
         let memory = Memory { heap: &on_heap };
         let handle = memory.alloc(MOVEABLE, 0).value;
         assert_eq!(memory.size(handle), ok(0));
@@ -385,7 +391,10 @@ mod tests {
     fn unknown_handles_are_refused() {
         let host = Host::new();
         let heap = create(&host, 0, 0, 0).unwrap();
-        let on_heap = OnHeap { heap, system: &host };
+        let on_heap = OnHeap {
+            heap,
+            system: &host,
+        };
         let memory = Memory { heap: &on_heap };
         let stray = heap.handle() + 0x800;
         assert_eq!(memory.flags(stray), INVALID_HANDLE);

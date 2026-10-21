@@ -102,6 +102,7 @@ mod tests {
             bytes.copy_from_slice(self.0.get(at..at + bytes.len()).ok_or(0xC000_0005u32)?);
             Ok(())
         }
+
         fn write(&mut self, _: u32, _: &[u8]) -> Result<(), u32> {
             Err(0xC000_0005)
         }

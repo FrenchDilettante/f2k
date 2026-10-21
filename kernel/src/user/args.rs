@@ -169,6 +169,7 @@ mod tests {
             bytes.copy_from_slice(slice);
             Ok(())
         }
+
         fn write(&mut self, pointer: u32, bytes: &[u8]) -> Result<(), u32> {
             let start = pointer.checked_sub(self.base).ok_or(1u32)? as usize;
             let slice = self.bytes.get_mut(start..start + bytes.len()).ok_or(1u32)?;

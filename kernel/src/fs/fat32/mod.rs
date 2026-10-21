@@ -6,9 +6,9 @@
 //! boot sector and its gates are [`boot_sector`], the mount state and cluster math [`layout`],
 //! the entry decode and the FAT sector cache [`fat`], the mount and the boot volume [`volume`],
 //! directory records [`dirent`], path components [`path`], the directory walk with its long names
-//! [`dir`], path lookup [`lookup`], the chain read [`read`], the writes (allocation, data, sizes and
-//! directory entries) [`write`], and the host tests' shared volumes, devices, and captured sectors
-//! [`fixtures`].
+//! [`dir`], path lookup [`lookup`], the chain read [`read`], the writes (allocation, data, sizes
+//! and directory entries) [`write`], and the host tests' shared volumes, devices, and captured
+//! sectors [`fixtures`].
 
 pub mod boot_sector;
 pub mod dir;

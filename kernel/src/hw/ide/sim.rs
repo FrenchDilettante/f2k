@@ -63,7 +63,6 @@ pub struct SimChannel {
     stale: u8,
 }
 
-
 impl SimChannel {
     /// A channel whose master is a disk of `sectors` sectors, sector `n` filled with the byte
     /// pattern `pattern(n, offset)`.
@@ -286,7 +285,9 @@ impl Io for SimChannel {
     fn read(&mut self, port: u16) -> u8 {
         let value = if self.disk.is_none() {
             0
-        } else if self.latency_left > 0 && (port == PRIMARY_CONTROL || port == PRIMARY_BASE + STATUS) {
+        } else if self.latency_left > 0
+            && (port == PRIMARY_CONTROL || port == PRIMARY_BASE + STATUS)
+        {
             self.latency_left -= 1;
             self.stale
         } else if port == PRIMARY_CONTROL {

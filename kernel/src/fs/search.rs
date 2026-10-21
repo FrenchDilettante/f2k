@@ -71,7 +71,13 @@ pub struct Search {
 }
 
 impl Search {
-    const FREE: Search = Search { used: false, expression: [0; MAX_EXPRESSION], length: 0, next: 0, answered: false };
+    const FREE: Search = Search {
+        used: false,
+        expression: [0; MAX_EXPRESSION],
+        length: 0,
+        next: 0,
+        answered: false,
+    };
 
     /// The expression, folded.
     pub fn expression(&self) -> &[u16] {
@@ -94,7 +100,9 @@ impl Searches {
     /// None open (the tests build the pool by value; the kernel writes it in place).
     #[cfg(test)]
     pub const fn empty() -> Self {
-        Searches { slots: [Search::FREE; SEARCHES] }
+        Searches {
+            slots: [Search::FREE; SEARCHES],
+        }
     }
 
     /// Open a search of `expression` (none: every name), folded: its number (from 1); none when the
@@ -175,7 +183,10 @@ mod tests {
         if pattern == "*.*" {
             return units("*");
         }
-        let mut out: Vec<u16> = pattern.trim_end_matches(['.', ' ']).encode_utf16().collect();
+        let mut out: Vec<u16> = pattern
+            .trim_end_matches(['.', ' '])
+            .encode_utf16()
+            .collect();
         for index in 0..out.len() {
             if index > 0 && out[index] == DOT && out[index - 1] == STAR {
                 out[index - 1] = DOS_STAR;
@@ -202,11 +213,29 @@ mod tests {
     /// The files capture's patterns over its directory.
     #[test]
     fn the_captured_patterns() {
-        let names = [".", "..", "BIG.BIN", "EMPTY.DAT", "HIDDEN.TXT", "Long File Name.txt", "SMALL.TXT", "SUB"];
-        let listed = |pattern: &str| -> Vec<&str> { names.iter().copied().filter(|name| found(pattern, name)).collect() };
+        let names = [
+            ".",
+            "..",
+            "BIG.BIN",
+            "EMPTY.DAT",
+            "HIDDEN.TXT",
+            "Long File Name.txt",
+            "SMALL.TXT",
+            "SUB",
+        ];
+        let listed = |pattern: &str| -> Vec<&str> {
+            names
+                .iter()
+                .copied()
+                .filter(|name| found(pattern, name))
+                .collect()
+        };
         assert_eq!(listed("*"), names);
         assert_eq!(listed("*.*"), names);
-        assert_eq!(listed("*.TXT"), ["HIDDEN.TXT", "Long File Name.txt", "SMALL.TXT"]);
+        assert_eq!(
+            listed("*.TXT"),
+            ["HIDDEN.TXT", "Long File Name.txt", "SMALL.TXT"]
+        );
         assert_eq!(listed("S*"), ["SMALL.TXT", "SUB"]);
         assert_eq!(listed("?????.TXT"), ["SMALL.TXT"]);
         assert_eq!(listed("Long*"), ["Long File Name.txt"]);

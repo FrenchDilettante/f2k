@@ -6,9 +6,9 @@
 //! their accents, then their case (lower before upper), and last — in the default word sort — the
 //! hyphen and the apostrophe, which the word sort leaves out of the first three levels so that
 //! "co-op" sorts beside "coop" (after it, being otherwise equal); at that last level they compare
-//! by position, then by their own weight (the apostrophe before the hyphen). SORT_STRINGSORT treats those two
-//! as ordinary symbols instead. The flags drop levels: NORM_IGNORECASE the case, NORM_IGNORENONSPACE
-//! the accents, NORM_IGNORESYMBOLS the symbols altogether.
+//! by position, then by their own weight (the apostrophe before the hyphen). SORT_STRINGSORT treats
+//! those two as ordinary symbols instead. The flags drop levels: NORM_IGNORECASE the case,
+//! NORM_IGNORENONSPACE the accents, NORM_IGNORESYMBOLS the symbols altogether.
 //!
 //! The model: Latin-1 letters fold onto their base letter at the primary level and keep their own
 //! code as the accent weight; symbols order by code point among themselves; characters past the
@@ -177,7 +177,8 @@ pub fn compare_with(
     }
 }
 
-/// The weights of a string, computed on the fly (kernel32's code takes no allocation for a sort key).
+/// The weights of a string, computed on the fly (kernel32's code takes no allocation for a sort
+/// key).
 mod alloc_free {
     use super::{weights, Weights};
 
@@ -199,7 +200,10 @@ mod alloc_free {
         /// The characters the word sort leaves out, as the last level compares them: (position,
         /// weight) each.
         pub fn left_out(&self) -> impl Iterator<Item = (usize, u32)> + '_ {
-            self.iter().enumerate().filter(|(_, w)| w.primary.is_none()).map(|(i, w)| (i, w.special))
+            self.iter()
+                .enumerate()
+                .filter(|(_, w)| w.primary.is_none())
+                .map(|(i, w)| (i, w.special))
         }
     }
 }
@@ -233,7 +237,11 @@ mod tests {
         assert_eq!(cmp("ab", "abc", 0), CSTR_LESS_THAN);
         assert_eq!(cmp("", "", 0), CSTR_EQUAL);
         assert_eq!(cmp("e", "\u{e9}", 0), CSTR_LESS_THAN);
-        assert_eq!(cmp("\u{e9}", "f", 0), CSTR_LESS_THAN, "an accent is not a primary difference");
+        assert_eq!(
+            cmp("\u{e9}", "f", 0),
+            CSTR_LESS_THAN,
+            "an accent is not a primary difference"
+        );
         assert_eq!(cmp("e", "\u{e9}", NORM_IGNORENONSPACE), CSTR_EQUAL);
         assert_eq!(cmp("\u{c9}", "\u{e9}", NORM_IGNORECASE), CSTR_EQUAL);
         assert_eq!(cmp("a b", "ab", NORM_IGNORESYMBOLS), CSTR_EQUAL);
@@ -247,8 +255,16 @@ mod tests {
         assert_eq!(cmp("co-op", "co'op", 0), CSTR_GREATER);
         assert_eq!(cmp("'o", "-o", 0), CSTR_LESS_THAN);
         assert_eq!(cmp("co-op", "co-op", 0), CSTR_EQUAL);
-        assert_eq!(cmp("co-op", "coo-p", 0), CSTR_LESS_THAN, "the earlier position first");
+        assert_eq!(
+            cmp("co-op", "coo-p", 0),
+            CSTR_LESS_THAN,
+            "the earlier position first"
+        );
         assert_eq!(cmp("co-op", "co-o-p", 0), CSTR_LESS_THAN);
-        assert_eq!(cmp("co'op", "co-op", SORT_STRINGSORT), CSTR_LESS_THAN, "ordinary symbols");
+        assert_eq!(
+            cmp("co'op", "co-op", SORT_STRINGSORT),
+            CSTR_LESS_THAN,
+            "ordinary symbols"
+        );
     }
 }

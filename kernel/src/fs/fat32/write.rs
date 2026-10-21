@@ -13,17 +13,30 @@
 //! other name gets long-name records and a generated 8.3 alias — the name upper-cased, spaces and
 //! extra dots dropped, invalid bytes as `_`, the base cut to six bytes and `~N` appended, the
 //! extension cut to three, with the lowest N no other entry of the directory uses. Both are stored
-//! in code page 437 (see [`super::path`]): a name is a valid 8.3 one only when 437 holds each of its
-//! characters, and an alias takes a character's best fit, or `_` when 437 has none.
+//! in code page 437 (see [`super::path`]): a name is a valid 8.3 one only when 437 holds each of
+//! its characters, and an alias takes a character's best fit, or `_` when 437 has none.
+
+use rtl::cp1252::{map_case, MB_TO_WC};
 
 use super::dir::{decode_byte, walk};
-use super::dirent::{checksum, Times, ATTR_LONG_NAME, CASE_LOWER_BASE, CASE_LOWER_EXTENSION, ENTRY_SIZE};
+use super::dirent::{
+    checksum,
+    Times,
+    ATTR_LONG_NAME,
+    CASE_LOWER_BASE,
+    CASE_LOWER_EXTENSION,
+    ENTRY_SIZE,
+};
 use super::fat::FatEntry;
 use super::lookup::{File, LookupError};
 use super::path::{oem_upper_fit, short_form};
-use rtl::cp1252::{map_case, MB_TO_WC};
 use super::volume::Volume;
-use crate::status::{NtStatus, STATUS_DISK_FULL, STATUS_FILE_CORRUPT_ERROR, STATUS_OBJECT_NAME_INVALID};
+use crate::status::{
+    NtStatus,
+    STATUS_DISK_FULL,
+    STATUS_FILE_CORRUPT_ERROR,
+    STATUS_OBJECT_NAME_INVALID,
+};
 
 /// The value that ends a chain.
 const END_OF_CHAIN: u32 = 0x0FFF_FFFF;
@@ -216,11 +229,18 @@ fn grow(volume: &mut Volume, file: &mut File, size: u32) -> Result<(), NtStatus>
 
 /// Write `data` at byte `offset` of `file` (a file), growing it as the write needs (a gap before
 /// the offset reads as zeros), and record its entry.
-pub fn write_at(volume: &mut Volume, file: &mut File, offset: u32, data: &[u8]) -> Result<(), NtStatus> {
+pub fn write_at(
+    volume: &mut Volume,
+    file: &mut File,
+    offset: u32,
+    data: &[u8],
+) -> Result<(), NtStatus> {
     if data.is_empty() {
         return Ok(());
     }
-    let end = offset.checked_add(data.len() as u32).ok_or(STATUS_DISK_FULL)?;
+    let end = offset
+        .checked_add(data.len() as u32)
+        .ok_or(STATUS_DISK_FULL)?;
     if end > file.size {
         grow(volume, file, end)?;
     }
@@ -241,7 +261,11 @@ pub fn set_size(volume: &mut Volume, file: &mut File, size: u32) -> Result<(), N
     let needed = size.div_ceil(cluster_bytes(volume));
     let first = file.first_cluster;
     // The tail is found before anything changes: a broken chain fails the call untouched.
-    let tail = if needed == 0 { None } else { Some(nth(volume, first, needed - 1)?) };
+    let tail = if needed == 0 {
+        None
+    } else {
+        Some(nth(volume, first, needed - 1)?)
+    };
     file.size = size;
     if tail.is_none() {
         file.first_cluster = 0;
@@ -266,7 +290,10 @@ fn record_at(volume: &mut Volume, first: u32, index: u32) -> Result<(u64, usize)
     let per_cluster = cluster_bytes(volume) / ENTRY_SIZE as u32;
     let cluster = nth(volume, first, index / per_cluster)?;
     let byte = (index % per_cluster) * ENTRY_SIZE as u32;
-    Ok((volume.layout().cluster_lba(cluster) + (byte / 512) as u64, (byte % 512) as usize))
+    Ok((
+        volume.layout().cluster_lba(cluster) + (byte / 512) as u64,
+        (byte % 512) as usize,
+    ))
 }
 
 fn read_record(volume: &mut Volume, first: u32, index: u32) -> Result<[u8; 32], NtStatus> {
@@ -278,7 +305,12 @@ fn read_record(volume: &mut Volume, first: u32, index: u32) -> Result<[u8; 32], 
     Ok(record)
 }
 
-fn write_record(volume: &mut Volume, first: u32, index: u32, record: &[u8; 32]) -> Result<(), NtStatus> {
+fn write_record(
+    volume: &mut Volume,
+    first: u32,
+    index: u32,
+    record: &[u8; 32],
+) -> Result<(), NtStatus> {
     let (lba, at) = record_at(volume, first, index)?;
     let mut sector = [0u8; 512];
     volume.read_sector(lba, &mut sector)?;
@@ -392,7 +424,9 @@ fn case_bits(name: &[u8]) -> Option<u8> {
             return None;
         }
         let lower = part.iter().any(u8::is_ascii_lowercase);
-        let upper = part.iter().any(|&b| b.is_ascii_uppercase() || cased(b, false));
+        let upper = part
+            .iter()
+            .any(|&b| b.is_ascii_uppercase() || cased(b, false));
         match (lower, upper) {
             (true, true) => None,
             (true, false) => Some(lower_bit),
@@ -483,7 +517,12 @@ fn short_record(name: &[u8; 11], case: u8, file: &File) -> [u8; 32] {
 /// Make a new entry named `name` in the directory starting at `parent` for `file` (its first
 /// cluster, size, attributes and times); the entry's identity is filled in. The caller has checked
 /// that no entry answers to the name.
-pub fn create_entry(volume: &mut Volume, parent: u32, name: &[u8], file: &mut File) -> Result<(), NtStatus> {
+pub fn create_entry(
+    volume: &mut Volume,
+    parent: u32,
+    name: &[u8],
+    file: &mut File,
+) -> Result<(), NtStatus> {
     if name.is_empty() || name.len() > MAX_LONG {
         return Err(STATUS_OBJECT_NAME_INVALID);
     }
@@ -494,7 +533,11 @@ pub fn create_entry(volume: &mut Volume, parent: u32, name: &[u8], file: &mut Fi
         },
         None => (alias(volume, parent, name)?, 0, true),
     };
-    let parts = if long { name.len().div_ceil(PART_UNITS) } else { 0 };
+    let parts = if long {
+        name.len().div_ceil(PART_UNITS)
+    } else {
+        0
+    };
     let start = free_run(volume, parent, parts as u32 + 1)?;
     if long {
         let mut units = [0xFFFFu16; 20 * PART_UNITS];
@@ -505,7 +548,10 @@ pub fn create_entry(volume: &mut Volume, parent: u32, name: &[u8], file: &mut Fi
             units[name.len()] = 0;
         }
         let sum = checksum(&stored);
-        let offsets = (1..11).step_by(2).chain((14..26).step_by(2)).chain((28..32).step_by(2));
+        let offsets = (1..11)
+            .step_by(2)
+            .chain((14..26).step_by(2))
+            .chain((28..32).step_by(2));
         let offsets: [usize; 13] = {
             let mut all = [0usize; 13];
             for (slot, offset) in all.iter_mut().zip(offsets) {
@@ -527,7 +573,12 @@ pub fn create_entry(volume: &mut Volume, parent: u32, name: &[u8], file: &mut Fi
     }
     file.parent_cluster = parent;
     file.index = start + parts as u32;
-    write_record(volume, parent, file.index, &short_record(&stored, case, file))
+    write_record(
+        volume,
+        parent,
+        file.index,
+        &short_record(&stored, case, file),
+    )
 }
 
 /// Remove `file`'s entry: its 8.3 record and the long-name records before it marked deleted. Its
@@ -571,13 +622,22 @@ pub fn delete(volume: &mut Volume, file: &File) -> Result<(), NtStatus> {
 /// Give `file` the name `name` in the directory starting at `parent` (its own or another): a new
 /// entry for the same clusters, the old one removed — a directory moved elsewhere has its `..`
 /// record follow. Returns the entry's new identity.
-pub fn rename(volume: &mut Volume, file: &File, parent: u32, name: &[u8]) -> Result<File, NtStatus> {
+pub fn rename(
+    volume: &mut Volume,
+    file: &File,
+    parent: u32,
+    name: &[u8],
+) -> Result<File, NtStatus> {
     let mut moved = *file;
     create_entry(volume, parent, name, &mut moved)?;
     remove_entry(volume, file)?;
     if file.directory && parent != file.parent_cluster && file.first_cluster != 0 {
         let mut dotdot = read_record(volume, file.first_cluster, 1)?;
-        let target = if parent == volume.layout().root_cluster { 0 } else { parent };
+        let target = if parent == volume.layout().root_cluster {
+            0
+        } else {
+            parent
+        };
         dotdot[20..22].copy_from_slice(&((target >> 16) as u16).to_le_bytes());
         dotdot[26..28].copy_from_slice(&(target as u16).to_le_bytes());
         write_record(volume, file.first_cluster, 1, &dotdot)?;
@@ -587,16 +647,37 @@ pub fn rename(volume: &mut Volume, file: &File, parent: u32, name: &[u8]) -> Res
 
 /// Make a directory named `name` in the directory starting at `parent`, with `times`: a fresh
 /// cluster holding its `.` and `..` records.
-pub fn make_directory(volume: &mut Volume, parent: u32, name: &[u8], times: Times) -> Result<File, NtStatus> {
+pub fn make_directory(
+    volume: &mut Volume,
+    parent: u32,
+    name: &[u8],
+    times: Times,
+) -> Result<File, NtStatus> {
     let cluster = allocate(volume, None)?;
     let mut directory = File::plain(cluster, 0, true);
     directory.times = times;
-    let up = if parent == volume.layout().root_cluster { 0 } else { parent };
+    let up = if parent == volume.layout().root_cluster {
+        0
+    } else {
+        parent
+    };
     let mut up_file = File::plain(up, 0, true);
     up_file.times = times;
-    let made = write_record(volume, cluster, 0, &short_record(b".          ", 0, &directory))
-        .and_then(|()| write_record(volume, cluster, 1, &short_record(b"..         ", 0, &up_file)))
-        .and_then(|()| create_entry(volume, parent, name, &mut directory));
+    let made = write_record(
+        volume,
+        cluster,
+        0,
+        &short_record(b".          ", 0, &directory),
+    )
+    .and_then(|()| {
+        write_record(
+            volume,
+            cluster,
+            1,
+            &short_record(b"..         ", 0, &up_file),
+        )
+    })
+    .and_then(|()| create_entry(volume, parent, name, &mut directory));
     if let Err(status) = made {
         free_chain(volume, cluster)?;
         return Err(status);
@@ -678,27 +759,43 @@ mod tests {
 
     fn free_clusters(volume: &mut Volume) -> u32 {
         let max = volume.layout().max_cluster();
-        (2..=max).filter(|&cluster| volume.fat_entry(cluster) == Ok(FatEntry::Free)).count() as u32
+        (2..=max)
+            .filter(|&cluster| volume.fat_entry(cluster) == Ok(FatEntry::Free))
+            .count() as u32
     }
 
     /// Disk full: a write needing more clusters than the volume has free fails with nothing
-    /// allocated, whether they would have been a new file's first or a growing file's next (otherwise the first
-    /// ones would leak). What fits is still written.
+    /// allocated, whether they would have been a new file's first or a growing file's next
+    /// (otherwise the first ones would leak). What fits is still written.
     #[test]
     fn a_write_that_does_not_fit_allocates_nothing() {
         let mut v = Volume::mount(Crafted::full(6).writable()).unwrap();
         assert_eq!(free_clusters(&mut v), 5);
         let mut file = new_file(&mut v, b"NEW.BIN");
-        assert_eq!(write_at(&mut v, &mut file, 0, &[1; 6 * 512]), Err(STATUS_DISK_FULL));
+        assert_eq!(
+            write_at(&mut v, &mut file, 0, &[1; 6 * 512]),
+            Err(STATUS_DISK_FULL)
+        );
         assert_eq!((file.first_cluster, file.size), (0, 0));
-        assert_eq!(free_clusters(&mut v), 5, "the new file's clusters were given back");
+        assert_eq!(
+            free_clusters(&mut v),
+            5,
+            "the new file's clusters were given back"
+        );
         let entry = lookup(&mut v, b"NEW.BIN").unwrap();
         assert_eq!((entry.first_cluster, entry.size), (0, 0));
 
         write_at(&mut v, &mut file, 0, &[1; 1024]).unwrap();
         assert_eq!(free_clusters(&mut v), 3);
-        assert_eq!(write_at(&mut v, &mut file, 1024, &[2; 4 * 512]), Err(STATUS_DISK_FULL));
-        assert_eq!(free_clusters(&mut v), 3, "the growth's clusters were given back");
+        assert_eq!(
+            write_at(&mut v, &mut file, 1024, &[2; 4 * 512]),
+            Err(STATUS_DISK_FULL)
+        );
+        assert_eq!(
+            free_clusters(&mut v),
+            3,
+            "the growth's clusters were given back"
+        );
         assert_eq!(last(&mut v, file.first_cluster).unwrap().1, 2);
         assert_eq!(contents(&mut v, b"NEW.BIN"), [1; 1024]);
 
@@ -708,8 +805,8 @@ mod tests {
     }
 
     /// A shrink records the smaller size before it frees the clusters past it: a crash after any
-    /// of its writes leaves an entry whose size its chain covers (otherwise the chain would be trimmed
-    /// first, leaving a size past the chain's end).
+    /// of its writes leaves an entry whose size its chain covers (otherwise the chain would be
+    /// trimmed first, leaving a size past the chain's end).
     #[test]
     fn a_shrink_records_the_size_before_trimming() {
         for budget in 0.. {
@@ -723,7 +820,10 @@ mod tests {
             let entry = lookup(&mut after, b"SHRINK.BIN").unwrap();
             let (_, chain) = last(&mut after, entry.first_cluster).unwrap();
             let size = entry.size;
-            assert!(size <= chain * 512, "after {budget} writes: size {size} over {chain} clusters");
+            assert!(
+                size <= chain * 512,
+                "after {budget} writes: size {size} over {chain} clusters"
+            );
             if crashing.dropped() == 0 {
                 assert_eq!((entry.size, chain), (512, 1));
                 break;
@@ -738,7 +838,10 @@ mod tests {
     fn creating_in_a_corrupt_directory_is_corruption() {
         for bad in [0, 1, 70_002, 0x0123_4567] {
             let mut crafted = Crafted::new(1, 8);
-            crafted.directory(2, &[super::super::fixtures::record(b"SUB        ", 0x10, bad, 0)]);
+            crafted.directory(
+                2,
+                &[super::super::fixtures::record(b"SUB        ", 0x10, bad, 0)],
+            );
             let mut v = Volume::mount(crafted.writable()).unwrap();
             let sub = lookup(&mut v, b"SUB").unwrap();
             let mut file = File::plain(0, 0, false);
@@ -748,7 +851,13 @@ mod tests {
                 "cluster {bad:#x}"
             );
             assert_eq!(
-                make_directory(&mut v, sub.first_cluster, b"A Long Directory", Times::default()).err(),
+                make_directory(
+                    &mut v,
+                    sub.first_cluster,
+                    b"A Long Directory",
+                    Times::default()
+                )
+                .err(),
                 Some(STATUS_FILE_CORRUPT_ERROR)
             );
             assert_eq!(v.fat_entry(3), Ok(FatEntry::Free));
@@ -779,7 +888,14 @@ mod tests {
             true
         })
         .unwrap();
-        assert_eq!(seen, ["A Long Created Name.txt", "A Long Created Other.txt", "crt.txt"]);
+        assert_eq!(
+            seen,
+            [
+                "A Long Created Name.txt",
+                "A Long Created Other.txt",
+                "crt.txt"
+            ]
+        );
     }
 
     /// The names a listing shows for the root's entries: the long (or case-applied) name and the
@@ -823,7 +939,11 @@ mod tests {
             ]
         );
         for name in [&b"README.TXT"[..], b"readme.txt", b"notes.txt", b"mixed"] {
-            assert!(lookup(&mut v, name).is_ok(), "{:?}", core::str::from_utf8(name));
+            assert!(
+                lookup(&mut v, name).is_ok(),
+                "{:?}",
+                core::str::from_utf8(name)
+            );
         }
     }
 
@@ -834,13 +954,22 @@ mod tests {
     #[test]
     fn short_names_are_stored_in_code_page_437() {
         let mut v = volume(20);
-        for name in [&b"CAF\xC9.TXT"[..], b"caf\xE9s.txt", b"\x80uro.txt", b"\xE4rger file.txt"] {
+        for name in [
+            &b"CAF\xC9.TXT"[..],
+            b"caf\xE9s.txt",
+            b"\x80uro.txt",
+            b"\xE4rger file.txt",
+        ] {
             new_file(&mut v, name);
         }
         let mut stored = Vec::new();
         let root_cluster = root(&v).first_cluster;
         walk(&mut v, root_cluster, |listed| {
-            stored.push((listed.entry.name, listed.entry.case, listed.long_name().is_some()));
+            stored.push((
+                listed.entry.name,
+                listed.entry.case,
+                listed.long_name().is_some(),
+            ));
             true
         })
         .unwrap();
@@ -853,7 +982,10 @@ mod tests {
                 (*b"\x8ERGERF~1TXT", 0, true),
             ]
         );
-        assert_eq!(lookup(&mut v, b"caf\xE9.txt").unwrap().index, stored_index(&mut v, b"CAF\xC9.TXT"));
+        assert_eq!(
+            lookup(&mut v, b"caf\xE9.txt").unwrap().index,
+            stored_index(&mut v, b"CAF\xC9.TXT")
+        );
     }
 
     fn stored_index(volume: &mut Volume, name: &[u8]) -> u32 {
@@ -870,7 +1002,10 @@ mod tests {
         let dir = make_directory(&mut v, root_cluster, b"SUB", Times::default()).unwrap();
         assert!(is_empty(&mut v, dir.first_cluster).unwrap());
         let moved = rename(&mut v, &file, dir.first_cluster, b"MOVED.TXT").unwrap();
-        assert_eq!(lookup(&mut v, b"A Long Created Name.txt"), Err(LookupError::NotFound));
+        assert_eq!(
+            lookup(&mut v, b"A Long Created Name.txt"),
+            Err(LookupError::NotFound)
+        );
         assert_eq!(contents(&mut v, b"SUB\\MOVED.TXT"), b"long");
         assert!(!is_empty(&mut v, dir.first_cluster).unwrap());
         delete(&mut v, &moved).unwrap();
@@ -878,7 +1013,11 @@ mod tests {
         let inner = make_directory(&mut v, dir.first_cluster, b"INNER", Times::default()).unwrap();
         let inner = rename(&mut v, &inner, root_cluster, b"OUTER").unwrap();
         assert!(lookup(&mut v, b"OUTER\\..\\SUB").is_ok());
-        assert_eq!(read_record(&mut v, inner.first_cluster, 1).unwrap()[26], 0, "`..` names the root");
+        assert_eq!(
+            read_record(&mut v, inner.first_cluster, 1).unwrap()[26],
+            0,
+            "`..` names the root"
+        );
     }
 
     /// A directory grows by a cluster when its records run out.

@@ -7,16 +7,25 @@
 //! kernel32's other calls hand console handles here where Windows 2000's do: WriteFile and ReadFile
 //! (WriteConsoleA, ReadConsoleA), FlushFileBuffers (FlushConsoleInputBuffer), GetFileType
 //! (VerifyConsoleIoHandle), CloseHandle (CloseConsoleHandle) and DuplicateHandle
-//! (DuplicateConsoleHandle), and the waits (the console's input-wait handle, [`wait_handle`]). The host
-//! tests' CsrClientCallServer serves the same rules, the bytes written recorded
+//! (DuplicateConsoleHandle), and the waits (the console's input-wait handle, [`wait_handle`]). The
+//! host tests' CsrClientCallServer serves the same rules, the bytes written recorded
 //! ([`console_writes`]).
 
 use rtl::console::api;
 use rtl::status::{nt_success, STATUS_INVALID_HANDLE};
 
 use crate::base::{
-    is_console_handle, parameters_standard_handle, peb, read, set_last_error, set_last_nt_error,
-    set_parameters_standard_handle, standard_handle, standard_slot, under_peb_lock, write,
+    is_console_handle,
+    parameters_standard_handle,
+    peb,
+    read,
+    set_last_error,
+    set_last_nt_error,
+    set_parameters_standard_handle,
+    standard_handle,
+    standard_slot,
+    under_peb_lock,
+    write,
 };
 #[cfg(test)]
 pub use crate::nt::host::console_writes;
@@ -60,11 +69,11 @@ fn succeeded(status: u32) -> u32 {
     }
 }
 
-// --- The standard handles --------------------------------------------------------------------------
+// --- The standard handles ------------------------------------------------------------------------
 
 /// GetStdHandle: the process parameters' StandardInput, StandardOutput or StandardError; any other
-/// type is INVALID_HANDLE_VALUE with ERROR_INVALID_HANDLE (BaseSetLastNTError(STATUS_INVALID_HANDLE)),
-/// as Windows 2000's.
+/// type is INVALID_HANDLE_VALUE with ERROR_INVALID_HANDLE
+/// (BaseSetLastNTError(STATUS_INVALID_HANDLE)), as Windows 2000's.
 #[unsafe(export_name = "f2k_export_GetStdHandle")]
 pub extern "system" fn get_std_handle(which: u32) -> u32 {
     match standard_slot(which) {
@@ -99,7 +108,7 @@ pub extern "system" fn set_handle_count(count: u32) -> u32 {
     count
 }
 
-// --- The console's own calls -----------------------------------------------------------------------
+// --- The console's own calls ---------------------------------------------------------------------
 
 /// The console's input or output code page from its server; zero with the status's error.
 fn console_cp(output: bool) -> u32 {

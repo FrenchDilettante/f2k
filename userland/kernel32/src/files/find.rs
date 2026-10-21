@@ -1,5 +1,5 @@
-//! The directory searches: FindFirstFileA, FindNextFileA and FindClose over NtQueryDirectoryFile, as
-//! Windows 2000's kernel32 makes them. A find handle is kernel32's own structure on the process
+//! The directory searches: FindFirstFileA, FindNextFileA and FindClose over NtQueryDirectoryFile,
+//! as Windows 2000's kernel32 makes them. A find handle is kernel32's own structure on the process
 //! heap (FINDFILE_HANDLE: the directory's handle, a listing buffer and the lock over them), not a
 //! kernel handle.
 //!
@@ -42,11 +42,18 @@ pub struct FindDataW {
 
 impl FindDataW {
     pub fn zeroed() -> FindDataW {
-        FindDataW { head: [0; 44], name: [0; MAX_PATH], alternate: [0; 14] }
+        FindDataW {
+            head: [0; 44],
+            name: [0; MAX_PATH],
+            alternate: [0; 14],
+        }
     }
 
     fn until_nul(units: &[u16]) -> &[u16] {
-        &units[..units.iter().position(|&unit| unit == 0).unwrap_or(units.len())]
+        &units[..units
+            .iter()
+            .position(|&unit| unit == 0)
+            .unwrap_or(units.len())]
     }
 
     /// The name.
@@ -75,7 +82,11 @@ impl FindDataW {
             out[count] = 0;
         };
         units(NAME, field(NAME_LENGTH) as usize, &mut self.name);
-        units(SHORT_NAME, record[SHORT_NAME_LENGTH] as usize, &mut self.alternate);
+        units(
+            SHORT_NAME,
+            record[SHORT_NAME_LENGTH] as usize,
+            &mut self.alternate,
+        );
     }
 
     /// Its WIN32_FIND_DATAA form into `out` (the names through the ANSI code page).
@@ -149,22 +160,34 @@ pub fn find_first_w(pattern: &Wide, data: &mut FindDataW) -> u32 {
     };
     let full = path.units();
     let base = path.full.buffer as usize;
-    let file_start = if path.file_part.is_null() { full.len() } else { (path.file_part as usize - base) / 2 };
+    let file_start = if path.file_part.is_null() {
+        full.len()
+    } else {
+        (path.file_part as usize - base) / 2
+    };
     // The directory's name: the relative name up to the file part, when ntdll made one that starts
     // before it, else the whole path up to it.
-    let relative_start = (path.root != 0).then(|| (path.name.buffer as usize - base) / 2).filter(|&start| start < file_start);
+    let relative_start = (path.root != 0)
+        .then(|| (path.name.buffer as usize - base) / 2)
+        .filter(|&start| start < file_start);
     let (root, start) = match relative_start {
         Some(start) => (path.root, start),
         None => (0, 0),
     };
     let mut directory = &full[start..file_start];
     let backslash = u16::from(b'\\');
-    let stripped = directory.len() >= 2 && directory[directory.len() - 2] != u16::from(b':') && directory.last() == Some(&backslash);
+    let stripped = directory.len() >= 2
+        && directory[directory.len() - 2] != u16::from(b':')
+        && directory.last() == Some(&backslash);
     if stripped {
         directory = &directory[..directory.len() - 1];
     }
     let open_directory = |units: &[u16]| {
-        let name = UnicodeString { length: (2 * units.len()) as u16, maximum_length: (2 * units.len()) as u16, buffer: units.as_ptr() as *mut u16 };
+        let name = UnicodeString {
+            length: (2 * units.len()) as u16,
+            maximum_length: (2 * units.len()) as u16,
+            buffer: units.as_ptr() as *mut u16,
+        };
         let attributes = ObjectAttributes {
             length: 24,
             root_directory: root,
@@ -209,7 +232,11 @@ pub fn find_first_w(pattern: &Wide, data: &mut FindDataW) -> u32 {
     expression[..count].copy_from_slice(&full[file_start..]);
     let count = transform(&mut expression[..count], ends_in_dot);
     drop(path);
-    let name = UnicodeString { length: (2 * count) as u16, maximum_length: (2 * count) as u16, buffer: expression.as_mut_ptr() };
+    let name = UnicodeString {
+        length: (2 * count) as u16,
+        maximum_length: (2 * count) as u16,
+        buffer: expression.as_mut_ptr(),
+    };
     let mut record = [0u8; NAME + 2 * MAX_PATH + 8];
     let mut io_status = IoStatus::default();
     // SAFETY: ntdll's export, into the buffer above.
@@ -235,7 +262,8 @@ pub fn find_first_w(pattern: &Wide, data: &mut FindDataW) -> u32 {
     }
     data.fill(&record);
     // SAFETY: ntdll's export: a block of the handle's size.
-    let find = unsafe { nt::RtlAllocateHeap(process_heap(), 0, core::mem::size_of::<FindHandle>()) } as *mut FindHandle;
+    let find = unsafe { nt::RtlAllocateHeap(process_heap(), 0, core::mem::size_of::<FindHandle>()) }
+        as *mut FindHandle;
     if find.is_null() {
         close(handle);
         set_last_error(ERROR_NOT_ENOUGH_MEMORY);
@@ -243,7 +271,12 @@ pub fn find_first_w(pattern: &Wide, data: &mut FindDataW) -> u32 {
     }
     // SAFETY: the fresh block; its lock initialized in place.
     unsafe {
-        find.write(FindHandle { directory: handle, buffer: core::ptr::null_mut(), next: core::ptr::null_mut(), lock: [0; 24] });
+        find.write(FindHandle {
+            directory: handle,
+            buffer: core::ptr::null_mut(),
+            next: core::ptr::null_mut(),
+            lock: [0; 24],
+        });
         nt::RtlInitializeCriticalSection((*find).lock.as_mut_ptr());
     }
     find as u32
@@ -296,11 +329,20 @@ pub fn find_next_w(find: u32, data: &mut FindDataW) -> u32 {
             find.next = find.buffer;
         }
         // SAFETY: a record inside the buffer the listing filled.
-        let record = unsafe { core::slice::from_raw_parts(find.next, FIND_BUFFER_SIZE - (find.next as usize - find.buffer as usize)) };
+        let record = unsafe {
+            core::slice::from_raw_parts(
+                find.next,
+                FIND_BUFFER_SIZE - (find.next as usize - find.buffer as usize),
+            )
+        };
         data.fill(record);
         let next = word(record, NEXT_ENTRY) as usize;
         // SAFETY: the next record, inside the buffer.
-        find.next = if next == 0 { core::ptr::null_mut() } else { unsafe { find.next.add(next) } };
+        find.next = if next == 0 {
+            core::ptr::null_mut()
+        } else {
+            unsafe { find.next.add(next) }
+        };
         1
     })();
     // SAFETY: as above.

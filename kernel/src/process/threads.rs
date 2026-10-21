@@ -11,8 +11,8 @@
 //! The exit path, in its order: the process-ending service's or a fault's terminations of the
 //! process's other threads first (both end the whole process); then the per-thread teardown (the
 //! gate stack is parked for release from another stack, and an earlier exit's parked stack is
-//! released); then the thread object signals and its waiters wake, and the thread leaves the process
-//! list and is Terminated;
+//! released); then the thread object signals and its waiters wake, and the thread leaves the
+//! process list and is Terminated;
 //! then the last-thread check routes either to the thread's end or the process's — the last
 //! thread's exit is the process's exit, which the idle thread tears down.
 //!
@@ -47,9 +47,9 @@ fn free_thread(
     Some((id, thread, ordinal))
 }
 
-/// Release the user pages a terminated thread at `ordinal` left mapped — its TEB page, and its stack
-/// reservation at `stack_base` — through the address space (the record is about to be reused): a
-/// TEB the program made inaccessible gives its frame back too.
+/// Release the user pages a terminated thread at `ordinal` left mapped — its TEB page, and its
+/// stack reservation at `stack_base` — through the address space (the record is about to be
+/// reused): a TEB the program made inaccessible gives its frame back too.
 fn release_thread_pages(space: &mut crate::mem::vm::AddressSpace, ordinal: u32, stack_base: u32) {
     use crate::mem::vm::CurrentPages;
     let _ = space.decommit(
@@ -345,9 +345,9 @@ pub enum TerminateError {
 }
 
 /// TerminateThread on another thread of the current process: it ends with `status`, without
-/// running again — at once, or, inside a critical region, as it leaves the region (holding nothing).
-/// Its handle signals and its waiters wake; the process lives on (the caller is alive). The calling
-/// thread ends through [`exit_thread`] instead. `process` is the caller's.
+/// running again — at once, or, inside a critical region, as it leaves the region (holding
+/// nothing). Its handle signals and its waiters wake; the process lives on (the caller is alive).
+/// The calling thread ends through [`exit_thread`] instead. `process` is the caller's.
 pub fn terminate_thread(
     process: &mut Process,
     target: &mut Thread,
@@ -399,8 +399,8 @@ fn release_gate_stack(process: &mut Process, (slot, frames): crate::process::Gat
 }
 
 /// Make the current process's main thread schedulable in its initial context `user` (see
-/// [`crate::user::main_thread_start`]): plant its startup ladder (the same frame shape a child gets)
-/// and ready it. The next switch away from the idle thread enters it.
+/// [`crate::user::main_thread_start`]): plant its startup ladder (the same frame shape a child
+/// gets) and ready it. The next switch away from the idle thread enters it.
 pub fn start_main_thread(user: crate::sched::startup::UserStart) {
     // The main thread's gate slot, TEB page and stack top were taken at process start; only the
     // ladder is missing.

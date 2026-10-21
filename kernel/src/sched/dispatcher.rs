@@ -16,8 +16,17 @@ use super::process::SchedProcess;
 use super::thread::{Thread, ThreadState};
 use super::timer::TimerTable;
 use super::{
-    unlink, Links, List, HIGHEST_PRIORITY, PRIORITY_LEVELS, QUANTUM_RESET, QUANTUM_TICK,
-    QUANTUM_WAIT_CHARGE, REALTIME_BASE, ROUND_TRIP_LIMIT, TIME_CRITICAL_CEILING,
+    unlink,
+    Links,
+    List,
+    HIGHEST_PRIORITY,
+    PRIORITY_LEVELS,
+    QUANTUM_RESET,
+    QUANTUM_TICK,
+    QUANTUM_WAIT_CHARGE,
+    REALTIME_BASE,
+    ROUND_TRIP_LIMIT,
+    TIME_CRITICAL_CEILING,
 };
 
 /// How a requested termination of another thread went (see [`Dispatcher::request_termination`]).
@@ -757,7 +766,10 @@ impl Dispatcher {
                 let sentinel = queue.sentinel();
                 // SAFETY: the queue is initialized and non-empty; its entries are ready threads.
                 let mut entry = unsafe { queue.first() };
-                while !eq(entry, sentinel) && examined < THREAD_SCAN_LIMIT && boosted < THREAD_READY_LIMIT {
+                while !eq(entry, sentinel)
+                    && examined < THREAD_SCAN_LIMIT
+                    && boosted < THREAD_READY_LIMIT
+                {
                     // SAFETY: as above; the next entry is read before this one may be unlinked.
                     let next = unsafe { (*entry).next };
                     let thread = entry_to_thread(entry);
@@ -800,12 +812,13 @@ impl Dispatcher {
         self.select_next()
     }
 
-    /// Terminate `thread`, another thread off the processor: at once ([`Dispatcher::terminate_other`])
-    /// — or, while it is inside a critical region, where it may hold what others need (the volume
-    /// and its drive mid-command), once it leaves the region, by its own exit. A deferred thread
-    /// keeps its state and its wait runs on to completion; from the request on it accepts no APCs
-    /// and its queued ones are discarded, as a terminated thread's are. A thread whose termination
-    /// is already pending is not terminated again.
+    /// Terminate `thread`, another thread off the processor: at once
+    /// ([`Dispatcher::terminate_other`]) — or, while it is inside a critical region, where it
+    /// may hold what others need (the volume and its drive mid-command), once it leaves the
+    /// region, by its own exit. A deferred thread keeps its state and its wait runs on to
+    /// completion; from the request on it accepts no APCs and its queued ones are discarded, as
+    /// a terminated thread's are. A thread whose termination is already pending is not
+    /// terminated again.
     pub fn request_termination(&mut self, thread: &mut Thread) -> Termination {
         assert!(
             !thread.terminate_pending,
@@ -2051,7 +2064,11 @@ mod tests {
         d.note_tick(1000 + READY_WITHOUT_RUNNING);
         assert_eq!(d.scan_ready_queues(), 1);
         assert_eq!(starved.priority(), REALTIME_BASE - 1);
-        assert_eq!(d.next_thread(), as_ptr(starved), "the boost preempts the spinner");
+        assert_eq!(
+            d.next_thread(),
+            as_ptr(starved),
+            "the boost preempts the spinner"
+        );
     }
 
     /// The yield: nothing ready, no yield; a ready lower-priority thread takes the processor, and
@@ -2072,7 +2089,11 @@ mod tests {
         low.base_priority = 4;
         d.make_ready(low);
         assert!(d.yield_execution(running));
-        assert_eq!(d.next_thread(), as_ptr(low), "the lower-priority thread is selected");
+        assert_eq!(
+            d.next_thread(),
+            as_ptr(low),
+            "the lower-priority thread is selected"
+        );
         assert_eq!(running.state(), ThreadState::Ready);
         assert_eq!(running.priority(), 9, "decayed one step");
         assert_eq!(d.find_ready(0), as_ptr(running));

@@ -229,7 +229,12 @@ impl Crafted {
         crafted
     }
 
-    fn build(sectors_per_cluster: u8, clusters: usize, fat_sectors: usize, claimed: u32) -> Crafted {
+    fn build(
+        sectors_per_cluster: u8,
+        clusters: usize,
+        fat_sectors: usize,
+        claimed: u32,
+    ) -> Crafted {
         let spc = sectors_per_cluster as usize;
         let mut image = vec![0u8; (1 + fat_sectors + clusters * spc) * 512];
         image[..512].copy_from_slice(BUILT);
@@ -237,7 +242,8 @@ impl Crafted {
         image[14..16].copy_from_slice(&1u16.to_le_bytes());
         image[16] = 1;
         image[36..40].copy_from_slice(&(fat_sectors as u32).to_le_bytes());
-        image[32..36].copy_from_slice(&(1 + fat_sectors as u32 + claimed * spc as u32).to_le_bytes());
+        image[32..36]
+            .copy_from_slice(&(1 + fat_sectors as u32 + claimed * spc as u32).to_le_bytes());
         let mut crafted = Crafted {
             image,
             sectors_per_cluster: spc,
@@ -252,7 +258,10 @@ impl Crafted {
 
     /// Set cluster `cluster`'s FAT entry.
     pub fn fat(&mut self, cluster: u32, value: u32) -> &mut Crafted {
-        assert!((cluster as usize) < 128 * self.fat_sectors, "past the crafted FAT");
+        assert!(
+            (cluster as usize) < 128 * self.fat_sectors,
+            "past the crafted FAT"
+        );
         let at = 512 + cluster as usize * 4;
         self.image[at..at + 4].copy_from_slice(&value.to_le_bytes());
         self
@@ -283,7 +292,9 @@ impl Crafted {
 
     /// The volume as a device that takes writes.
     pub fn writable(&self) -> &'static crate::block::memory::RamDisk {
-        Box::leak(Box::new(crate::block::memory::RamDisk::new(self.image.clone())))
+        Box::leak(Box::new(crate::block::memory::RamDisk::new(
+            self.image.clone(),
+        )))
     }
 
     /// The volume as a device.

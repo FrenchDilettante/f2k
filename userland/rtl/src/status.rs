@@ -1,10 +1,10 @@
 //! NTSTATUS values and their Win32 errors: RtlNtStatusToDosError's mapping, which kernel32 reports
 //! every failed Nt* call through (BaseSetLastNTError), as Windows 2000's does.
 //!
-//! The mapping, as ntdll's: a success status (zero) and a customer status (bit 29 set) are their own
-//! answer; a 0xD... status is the 0xC... one; the Win32-facility statuses (0xC001xxxx, 0x8007xxxx,
-//! 0xC007xxxx) carry the Win32 error in their low word; anything else is looked up in the
-//! [`table`](crate::status_table), ERROR_MR_MID_NOT_FOUND (317) when it has no entry.
+//! The mapping, as ntdll's: a success status (zero) and a customer status (bit 29 set) are their
+//! own answer; a 0xD... status is the 0xC... one; the Win32-facility statuses (0xC001xxxx,
+//! 0x8007xxxx, 0xC007xxxx) carry the Win32 error in their low word; anything else is looked up in
+//! the [`table`](crate::status_table), ERROR_MR_MID_NOT_FOUND (317) when it has no entry.
 
 use crate::status_table::{ERRORS, RANGES};
 
@@ -166,7 +166,8 @@ mod tests {
             (STATUS_ACCESS_DENIED, 5),       // write access to a read-only file
             (STATUS_DELETE_PENDING, 5),
             (STATUS_SHARING_VIOLATION, 32),
-            (STATUS_OBJECT_NAME_COLLISION, 183), /* CreateDirectoryA, MoveFileA onto an existing name */
+            (STATUS_OBJECT_NAME_COLLISION, 183), /* CreateDirectoryA, MoveFileA onto an existing
+                                                  * name */
             (STATUS_DIRECTORY_NOT_EMPTY, 145),
             (STATUS_NOT_A_DIRECTORY, 267), // RemoveDirectoryA of a file
             (STATUS_NO_MORE_FILES, 18),

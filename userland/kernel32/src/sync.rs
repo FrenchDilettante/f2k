@@ -13,9 +13,18 @@ use rtl::cp1252;
 use rtl::status::nt_success;
 
 use crate::base::{
-    format_object_attributes, format_timeout, is_console_handle, named_object_directory,
-    set_last_error, set_last_nt_error, standard_handle, succeeded, unicode_string,
-    SecurityAttributes, CURRENT_PROCESS, OBJ_INHERIT,
+    format_object_attributes,
+    format_timeout,
+    is_console_handle,
+    named_object_directory,
+    set_last_error,
+    set_last_nt_error,
+    standard_handle,
+    succeeded,
+    unicode_string,
+    SecurityAttributes,
+    CURRENT_PROCESS,
+    OBJ_INHERIT,
 };
 use crate::console;
 use crate::nt::{self, ObjectAttributes, UnicodeString};
@@ -85,9 +94,9 @@ fn boolean(value: u32) -> u32 {
 
 /// The create every named kind shares (CreateEventA, CreateMutexA, CreateSemaphoreA,
 /// CreateWaitableTimerA, CreateFileMappingA): the name converted, the attributes formatted,
-/// `service` raised with them. On success the handle, the last error ERROR_ALREADY_EXISTS when the name bound an
-/// existing object and cleared otherwise (Windows clears it on every successful create); on
-/// failure null with the status's error.
+/// `service` raised with them. On success the handle, the last error ERROR_ALREADY_EXISTS when the
+/// name bound an existing object and cleared otherwise (Windows clears it on every successful
+/// create); on failure null with the status's error.
 ///
 /// # Safety
 ///
@@ -139,8 +148,8 @@ pub(crate) unsafe fn create(
 
 /// The open every named kind shares (OpenEventA, OpenMutexA, OpenSemaphoreA, OpenWaitableTimerA,
 /// OpenFileMappingA): the named object in `\BaseNamedObjects`, with the access asked
-/// for and inheritable when asked. ERROR_INVALID_PARAMETER without a name; the status's error when it
-/// cannot be opened. The last error is left alone on success.
+/// for and inheritable when asked. ERROR_INVALID_PARAMETER without a name; the status's error when
+/// it cannot be opened. The last error is left alone on success.
 ///
 /// # Safety
 ///
@@ -183,7 +192,7 @@ pub(crate) unsafe fn open(
     handle
 }
 
-// --- Events ---------------------------------------------------------------------------------------
+// --- Events --------------------------------------------------------------------------------------
 
 /// CreateEventA: a manual-reset (notification) or auto-reset (synchronization) event, signaled
 /// when asked, or the named one already bound (its initial state then ignored).
@@ -253,7 +262,7 @@ pub extern "system" fn pulse_event(event: u32) -> u32 {
     succeeded(unsafe { nt::NtPulseEvent(event, core::ptr::null_mut()) })
 }
 
-// --- Mutexes and semaphores -----------------------------------------------------------------------
+// --- Mutexes and semaphores ----------------------------------------------------------------------
 
 /// CreateMutexA: a mutex, owned by the caller when asked, or the named one already bound (whose
 /// ownership the call leaves alone).
@@ -354,7 +363,7 @@ pub unsafe extern "system" fn release_semaphore(
     succeeded(unsafe { nt::NtReleaseSemaphore(semaphore, count, previous) })
 }
 
-// --- Waitable timers ------------------------------------------------------------------------------
+// --- Waitable timers -----------------------------------------------------------------------------
 
 /// CreateWaitableTimerA: an unarmed manual-reset (notification) or auto-reset (synchronization)
 /// timer, or the named one already bound.
@@ -445,7 +454,7 @@ pub extern "system" fn cancel_waitable_timer(timer: u32) -> u32 {
     succeeded(unsafe { nt::NtCancelTimer(timer, core::ptr::null_mut()) })
 }
 
-// --- Waits and sleeps -----------------------------------------------------------------------------
+// --- Waits and sleeps ----------------------------------------------------------------------------
 
 /// A wait's answer: its status (WAIT_OBJECT_0 + n, WAIT_ABANDONED_0 + n, WAIT_TIMEOUT,
 /// WAIT_IO_COMPLETION), or WAIT_FAILED with the status's error. An alerted alertable wait waits
@@ -575,7 +584,7 @@ pub extern "system" fn switch_to_thread() -> u32 {
     u32::from(unsafe { nt::NtYieldExecution() } != STATUS_NO_YIELD_PERFORMED)
 }
 
-// --- Handles and APCs -----------------------------------------------------------------------------
+// --- Handles and APCs ----------------------------------------------------------------------------
 
 /// CloseHandle: the handle closed (NtClose; a standard handle's pseudo-value the process
 /// parameters' handle, and a console handle closed by its server, CloseConsoleHandle, as Windows
@@ -787,6 +796,9 @@ mod tests {
         assert_eq!(last_error(), ERROR_NOT_SUPPORTED);
         // An unnamed timer passes no attributes at all.
         // SAFETY: no name, no security attributes.
-        assert_eq!(unsafe { create_waitable_timer_a(core::ptr::null(), 0, core::ptr::null()) }, HANDLE);
+        assert_eq!(
+            unsafe { create_waitable_timer_a(core::ptr::null(), 0, core::ptr::null()) },
+            HANDLE
+        );
     }
 }

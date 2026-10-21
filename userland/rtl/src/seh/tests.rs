@@ -332,7 +332,7 @@ fn seen(fake: &Fake, record: u32) -> (u32, u32) {
     (fake.read(record), fake.flags(record))
 }
 
-// --- the flat cases (runtime/seh) -----------------------------------------------------------------
+// --- the flat cases (runtime/seh) ----------------------------------------------------------------
 
 /// The unwind order the runtime fixture pins: the search runs the filters innermost first, the
 /// unwind the finally blocks between the raise and the frame that takes the exception, then its
@@ -412,7 +412,7 @@ fn an_unhandled_exception_ends_the_process() {
     );
 }
 
-// --- what a handler sees of the dispatcher (seh/chain) --------------------------------------------
+// --- what a handler sees of the dispatcher (seh/chain) -------------------------------------------
 
 /// While a handler runs, `fs:[0]` is the dispatcher's own registration: below the handler's,
 /// linked to it, its handler the dispatcher's; the DispatcherContext lies between the two. The
@@ -451,7 +451,7 @@ fn a_handler_runs_under_the_dispatchers_registration() {
     });
 }
 
-// --- nested exceptions (seh/nested) ---------------------------------------------------------------
+// --- nested exceptions (seh/nested) --------------------------------------------------------------
 
 /// A filter raising and handling an exception of its own, then searching on: its own exception
 /// never reaches the outer frames, and the outer handler sees the first exception, unflagged.
@@ -573,7 +573,7 @@ fn a_handler_raising() {
     assert_eq!(outer.get(), (0xE000_0015, 0));
 }
 
-// --- unwinds meeting exceptions (seh/finally, seh/collide) ----------------------------------------
+// --- unwinds meeting exceptions (seh/finally, seh/collide) ---------------------------------------
 
 /// A finally block that raises and handles an exception of its own while the unwind of another
 /// runs it: its own exception stays inside it, and the unwind goes on.
@@ -718,7 +718,7 @@ fn the_dispatchers_own_handlers() {
     }
 }
 
-// --- the walks' own exceptions --------------------------------------------------------------------
+// --- the walks' own exceptions -------------------------------------------------------------------
 
 /// A filter continuing a noncontinuable exception raises STATUS_NONCONTINUABLE_EXCEPTION (itself
 /// noncontinuable), the original chained to it; the outer handler takes that one.
@@ -845,7 +845,7 @@ fn a_broken_chain_stops_the_search() {
     }
 }
 
-// --- RtlUnwind ------------------------------------------------------------------------------------
+// --- RtlUnwind -----------------------------------------------------------------------------------
 
 /// An unwind without a record of its own carries STATUS_UNWIND marked unwinding; each handler down
 /// to the target sees it, and leaves the chain; the target stays the head.

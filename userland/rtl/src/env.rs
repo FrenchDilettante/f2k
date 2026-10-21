@@ -1,7 +1,7 @@
 //! Environment blocks, as ntdll's environment functions edit and read them
-//! (RtlSetEnvironmentVariable, RtlQueryEnvironmentVariable_U, RtlExpandEnvironmentStrings_U): UTF-16
-//! `NAME=value` entries, each NUL-terminated, a final NUL after the last (an empty block is two
-//! NULs).
+//! (RtlSetEnvironmentVariable, RtlQueryEnvironmentVariable_U, RtlExpandEnvironmentStrings_U):
+//! UTF-16 `NAME=value` entries, each NUL-terminated, a final NUL after the last (an empty block is
+//! two NULs).
 //!
 //! Names compare without regard to case (upper-cased through code page 1252's case map, as the
 //! platform upcases them) and keep the spelling they were set with. A name ends at its first `=`
@@ -27,7 +27,10 @@ pub enum EnvError {
 pub fn block_length(block: &[u16]) -> usize {
     let mut at = 0;
     loop {
-        let end = block[at..].iter().position(|&unit| unit == 0).map_or(block.len(), |i| at + i);
+        let end = block[at..]
+            .iter()
+            .position(|&unit| unit == 0)
+            .map_or(block.len(), |i| at + i);
         if end == at {
             // The final NUL; an empty block's first entry is empty too.
             return (at + 1).max(2).min(block.len());
@@ -55,7 +58,11 @@ fn entries(block: &[u16]) -> impl Iterator<Item = (usize, usize)> + '_ {
 
 /// An entry's name: up to its first `=` past the first unit.
 fn name_of(entry: &[u16]) -> &[u16] {
-    let split = entry.iter().skip(1).position(|&unit| unit == EQUALS).map_or(entry.len(), |i| i + 1);
+    let split = entry
+        .iter()
+        .skip(1)
+        .position(|&unit| unit == EQUALS)
+        .map_or(entry.len(), |i| i + 1);
     &entry[..split]
 }
 
@@ -78,19 +85,21 @@ pub fn query<'b>(block: &'b [u16], name: &[u16]) -> Option<&'b [u16]> {
     entries(block).find_map(|(start, end)| {
         let entry = &block[start..end];
         let entry_name = name_of(entry);
-        (entry_name.len() < entry.len() && compare(entry_name, name).is_eq()).then(|| &entry[entry_name.len() + 1..])
+        (entry_name.len() < entry.len() && compare(entry_name, name).is_eq())
+            .then(|| &entry[entry_name.len() + 1..])
     })
 }
 
-/// Set `name` to `value` in `block` (its room: `block.len()` units), or delete it for none (deleting
-/// an unset name succeeds). The block is edited in place; NeedsRoom when it does not fit, the block
-/// unchanged.
+/// Set `name` to `value` in `block` (its room: `block.len()` units), or delete it for none
+/// (deleting an unset name succeeds). The block is edited in place; NeedsRoom when it does not fit,
+/// the block unchanged.
 pub fn set(block: &mut [u16], name: &[u16], value: Option<&[u16]>) -> Result<(), EnvError> {
     if !valid_name(name) {
         return Err(EnvError::InvalidName);
     }
     let used = block_length(block);
-    let found = entries(block).find(|&(start, end)| compare(name_of(&block[start..end]), name).is_eq());
+    let found =
+        entries(block).find(|&(start, end)| compare(name_of(&block[start..end]), name).is_eq());
     // Where the entry goes (an existing one's place, else its sorted place), and what it frees.
     let (at, removed) = match found {
         Some((start, end)) => (start, end + 1 - start),
@@ -115,7 +124,11 @@ pub fn set(block: &mut [u16], name: &[u16], value: Option<&[u16]>) -> Result<(),
     let added = name.len() + 1 + value.len() + 1;
     // An empty block's first NUL is its (empty) first entry's: the new entry takes its place.
     let empty = found.is_none() && used == 2 && block[0] == 0;
-    let needed = if empty { added + 1 } else { used - removed + added };
+    let needed = if empty {
+        added + 1
+    } else {
+        used - removed + added
+    };
     if needed > block.len() {
         return Err(EnvError::NeedsRoom(needed));
     }
@@ -144,7 +157,11 @@ pub fn expand(block: &[u16], source: &[u16], mut out: impl FnMut(u16)) {
             at += 1;
             continue;
         }
-        let Some(close) = source[at + 1..].iter().position(|&u| u == PERCENT).map(|i| at + 1 + i) else {
+        let Some(close) = source[at + 1..]
+            .iter()
+            .position(|&u| u == PERCENT)
+            .map(|i| at + 1 + i)
+        else {
             source[at..].iter().for_each(|&u| out(u));
             return;
         };
@@ -167,9 +184,10 @@ pub fn expand(block: &[u16], source: &[u16], mut out: impl FnMut(u16)) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::string::String;
     use std::vec::Vec;
+
+    use super::*;
 
     fn wide(text: &str) -> Vec<u16> {
         text.encode_utf16().collect()
@@ -191,7 +209,9 @@ mod tests {
     }
 
     fn listed(block: &[u16]) -> Vec<String> {
-        entries(block).map(|(s, e)| String::from_utf16(&block[s..e]).unwrap()).collect()
+        entries(block)
+            .map(|(s, e)| String::from_utf16(&block[s..e]).unwrap())
+            .collect()
     }
 
     /// The runtime capture's sequence: set, read back by either case, replace, delete.
@@ -203,7 +223,11 @@ mod tests {
         assert_eq!(query(&env, &wide("f2ktest")), Some(&wide("first")[..]));
         set(&mut env, &wide("OTHER"), Some(&wide("x"))).unwrap();
         set(&mut env, &wide("F2KTEST"), Some(&wide("second value"))).unwrap();
-        assert_eq!(listed(&env), ["F2KTEST=second value", "OTHER=x"], "replaced in place, sorted");
+        assert_eq!(
+            listed(&env),
+            ["F2KTEST=second value", "OTHER=x"],
+            "replaced in place, sorted"
+        );
         set(&mut env, &wide("A"), Some(&wide("1"))).unwrap();
         assert_eq!(listed(&env), ["A=1", "F2KTEST=second value", "OTHER=x"]);
         set(&mut env, &wide("F2KTEST"), None).unwrap();
@@ -224,12 +248,21 @@ mod tests {
     #[test]
     fn names_are_validated_and_room_is_asked() {
         let mut env = block(&[], 16);
-        assert_eq!(set(&mut env, &wide(""), Some(&wide("v"))), Err(EnvError::InvalidName));
-        assert_eq!(set(&mut env, &wide("A=B"), Some(&wide("v"))), Err(EnvError::InvalidName));
+        assert_eq!(
+            set(&mut env, &wide(""), Some(&wide("v"))),
+            Err(EnvError::InvalidName)
+        );
+        assert_eq!(
+            set(&mut env, &wide("A=B"), Some(&wide("v"))),
+            Err(EnvError::InvalidName)
+        );
         set(&mut env, &wide("=C:"), Some(&wide("C:\\"))).unwrap();
         assert_eq!(query(&env, &wide("=c:")), Some(&wide("C:\\")[..]));
         let before = env.clone();
-        assert_eq!(set(&mut env, &wide("LONG"), Some(&wide("0123456789"))), Err(EnvError::NeedsRoom(25)));
+        assert_eq!(
+            set(&mut env, &wide("LONG"), Some(&wide("0123456789"))),
+            Err(EnvError::NeedsRoom(25))
+        );
         assert_eq!(env, before);
     }
 
@@ -243,13 +276,20 @@ mod tests {
     /// The capture's expansion, and the literal cases.
     #[test]
     fn references_expand_or_stay() {
-        assert_eq!(expanded("[%F2KCRT%] [%F2KNOSUCH%]"), "[crt value] [%F2KNOSUCH%]");
+        assert_eq!(
+            expanded("[%F2KCRT%] [%F2KNOSUCH%]"),
+            "[crt value] [%F2KNOSUCH%]"
+        );
         assert_eq!(expanded("[%F2KCRT%] [%F2KNOSUCH%]").len() + 1, 26);
         assert_eq!(expanded("100%"), "100%");
         assert_eq!(expanded("%%"), "%%");
         assert_eq!(expanded("%f2kcrt%"), "crt value");
         assert_eq!(expanded("a %f2kcrt"), "a %f2kcrt", "a reference left open");
         assert_eq!(expanded("%f2kcrt%%f2kcrt%"), "crt valuecrt value");
-        assert_eq!(expanded("%x%f2kcrt%"), "%x%f2kcrt%", "an unset reference's closing % stays its own");
+        assert_eq!(
+            expanded("%x%f2kcrt%"),
+            "%x%f2kcrt%",
+            "an unset reference's closing % stays its own"
+        );
     }
 }

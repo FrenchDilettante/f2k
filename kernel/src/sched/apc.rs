@@ -2,15 +2,15 @@
 //!
 //! An APC is a request to run code on a particular thread — the kernel's way to make a thread do
 //! something at a point it did not choose. Each thread owns two queues, kernel-mode and user-mode;
-//! the kernel queue is delivered here, the user queue on the thread's way back to user mode, through
-//! ntdll's KiUserApcDispatcher (see [`crate::user::apc`]).
+//! the kernel queue is delivered here, the user queue on the thread's way back to user mode,
+//! through ntdll's KiUserApcDispatcher (see [`crate::user::apc`]).
 //!
 //! The queue discipline keeps specials ahead of normals: a special (no normal routine) lands after
 //! the queued specials, a normal at the tail — so delivery order is specials first, then normals in
 //! the order queued. Delivery runs on the owning thread: every special runs its kernel routine to
-//! completion; every normal runs its kernel routine, then — unless gated — its normal routine at the
-//! passive level, one at a time. The one consumer is the builtin suspend APC: its normal routine
-//! blocks on the thread's suspend semaphore, which is what suspending a thread is.
+//! completion; every normal runs its kernel routine, then — unless gated — its normal routine at
+//! the passive level, one at a time. The one consumer is the builtin suspend APC: its normal
+//! routine blocks on the thread's suspend semaphore, which is what suspending a thread is.
 //!
 //! Delivery happens wherever a thread resumes execution or stands at a window: the interrupt exit
 //! and the service boundary (both through [`Dispatcher::deliver_pending`], after the dispatch
@@ -30,7 +30,10 @@ use super::wait::{WaitMode, WaitReason};
 use super::{link_before, unlink, Links, List};
 use crate::interrupt::irql;
 use crate::status::{
-    NtStatus, STATUS_KERNEL_APC, STATUS_SUSPEND_COUNT_EXCEEDED, STATUS_THREAD_IS_TERMINATING,
+    NtStatus,
+    STATUS_KERNEL_APC,
+    STATUS_SUSPEND_COUNT_EXCEEDED,
+    STATUS_THREAD_IS_TERMINATING,
     STATUS_USER_APC,
 };
 
@@ -128,9 +131,9 @@ impl Apc {
         }
     }
 
-    /// Bind `self` to `thread`: the routines, the mode, and the context. A null normal routine makes
-    /// the APC special and forces the mode to kernel and the context to zero — a special has no
-    /// normal half to receive them.
+    /// Bind `self` to `thread`: the routines, the mode, and the context. A null normal routine
+    /// makes the APC special and forces the mode to kernel and the context to zero — a special
+    /// has no normal half to receive them.
     pub fn init(
         &mut self,
         thread: *mut Thread,
@@ -600,7 +603,10 @@ mod tests {
     }
 
     fn stamp(interrupt_time: u64, tick: u64) -> ClockStamp {
-        ClockStamp { interrupt_time, tick }
+        ClockStamp {
+            interrupt_time,
+            tick,
+        }
     }
 
     /// Block `t` on `object` in a kernel-mode wait, asserting the wait parked it.
@@ -1281,8 +1287,8 @@ mod tests {
         assert!(queued(t).len() == 1);
     }
 
-    /// D6: the kernel delivery leaves the user queue alone — a user APC queued with its pending flag
-    /// set delivers nothing here (its delivery is in user mode), its queue untouched.
+    /// D6: the kernel delivery leaves the user queue alone — a user APC queued with its pending
+    /// flag set delivers nothing here (its delivery is in user mode), its queue untouched.
     #[test]
     fn nothing_delivers_a_user_apc() {
         let d = dispatcher();

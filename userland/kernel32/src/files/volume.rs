@@ -39,7 +39,15 @@ unsafe fn root_path(root: *const u8) -> Option<Wide> {
 fn query_volume(handle: u32, class: u32, out: &mut [u8]) -> u32 {
     let mut io_status = IoStatus::default();
     // SAFETY: ntdll's export, into the buffer of its length.
-    unsafe { nt::NtQueryVolumeInformationFile(handle, &mut io_status, out.as_mut_ptr(), out.len() as u32, class) }
+    unsafe {
+        nt::NtQueryVolumeInformationFile(
+            handle,
+            &mut io_status,
+            out.as_mut_ptr(),
+            out.len() as u32,
+            class,
+        )
+    }
 }
 
 /// GetDriveTypeA: `X:` is taken as its root; the root path's NT form (which must name a root: end
@@ -57,7 +65,11 @@ pub unsafe extern "system" fn get_drive_type_a(root: *const u8) -> u32 {
         return DRIVE_NO_ROOT_DIR;
     };
     let text = path.text();
-    if text.len() == 2 && text[1] == u16::from(b':') && (text[0] as u8).is_ascii_alphabetic() && text[0] < 0x80 {
+    if text.len() == 2
+        && text[1] == u16::from(b':')
+        && (text[0] as u8).is_ascii_alphabetic()
+        && text[0] < 0x80
+    {
         path.units[2] = u16::from(b'\\');
         path.units[3] = 0;
         path.length = 3;
@@ -70,7 +82,11 @@ pub unsafe extern "system" fn get_drive_type_a(root: *const u8) -> u32 {
         return DRIVE_NO_ROOT_DIR;
     }
     let volume = &units[..units.len() - 1];
-    let name = UnicodeString { length: (2 * volume.len()) as u16, maximum_length: (2 * volume.len()) as u16, buffer: volume.as_ptr() as *mut u16 };
+    let name = UnicodeString {
+        length: (2 * volume.len()) as u16,
+        maximum_length: (2 * volume.len()) as u16,
+        buffer: volume.as_ptr() as *mut u16,
+    };
     let attributes = ObjectAttributes {
         length: 24,
         root_directory: 0,
@@ -139,8 +155,14 @@ pub unsafe extern "system" fn get_disk_free_space_a(
         set_last_error(ERROR_PATH_NOT_FOUND);
         return 0;
     };
-    let options = FILE_SYNCHRONOUS_IO_NONALERT | FILE_DIRECTORY_FILE | FILE_OPEN_FOR_FREE_SPACE_QUERY;
-    let handle = match open(&path, FILE_LIST_DIRECTORY | SYNCHRONIZE, FILE_SHARE_READ | FILE_SHARE_WRITE, options) {
+    let options =
+        FILE_SYNCHRONOUS_IO_NONALERT | FILE_DIRECTORY_FILE | FILE_OPEN_FOR_FREE_SPACE_QUERY;
+    let handle = match open(
+        &path,
+        FILE_LIST_DIRECTORY | SYNCHRONIZE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        options,
+    ) {
         Ok(handle) => handle,
         Err(status) => {
             set_last_nt_error(status);
@@ -157,7 +179,13 @@ pub unsafe extern "system" fn get_disk_free_space_a(
         set_last_nt_error(status);
         return 0;
     }
-    let count = |at: usize| if word(&size, at + 4) != 0 { 0xFFFF_FFFF } else { word(&size, at) };
+    let count = |at: usize| {
+        if word(&size, at + 4) != 0 {
+            0xFFFF_FFFF
+        } else {
+            word(&size, at)
+        }
+    };
     // SAFETY: the caller's slots.
     unsafe {
         put(sectors_per_cluster, word(&size, 16));
@@ -206,7 +234,12 @@ pub unsafe extern "system" fn get_volume_information_a(
         set_last_error(ERROR_INVALID_NAME);
         return 0;
     }
-    let handle = match open(&path, SYNCHRONIZE, FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_SYNCHRONOUS_IO_NONALERT) {
+    let handle = match open(
+        &path,
+        SYNCHRONIZE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        FILE_SYNCHRONOUS_IO_NONALERT,
+    ) {
         Ok(handle) => handle,
         Err(status) => {
             set_last_nt_error(status);
@@ -260,7 +293,11 @@ pub unsafe extern "system" fn get_volume_information_a(
     unsafe { put(serial, word(&volume, 8)) };
     if !fs_name.is_null() {
         let length = (word(&attribute, 8) as usize / 2).min(MAX_PATH);
-        if !put_name(fs_name, fs_size, &units(&attribute, 12, 2 * length)[..length]) {
+        if !put_name(
+            fs_name,
+            fs_size,
+            &units(&attribute, 12, 2 * length)[..length],
+        ) {
             set_last_error(ERROR_BAD_LENGTH);
             return 0;
         }

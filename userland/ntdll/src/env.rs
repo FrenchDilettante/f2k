@@ -6,7 +6,10 @@
 
 use rtl::env::{self, EnvError};
 use rtl::status::{
-    STATUS_BUFFER_TOO_SMALL, STATUS_INVALID_PARAMETER, STATUS_NO_MEMORY, STATUS_SUCCESS,
+    STATUS_BUFFER_TOO_SMALL,
+    STATUS_INVALID_PARAMETER,
+    STATUS_NO_MEMORY,
+    STATUS_SUCCESS,
     STATUS_VARIABLE_NOT_FOUND,
 };
 use rtl::sys::{self, nr, system_service};
@@ -53,7 +56,10 @@ unsafe fn block_at(block: *mut u16) -> (&'static mut [u16], usize) {
     };
     let room = (base + size - block as usize) / 2;
     // SAFETY: the caller's block, inside its committed region.
-    (unsafe { core::slice::from_raw_parts_mut(block, room) }, allocation)
+    (
+        unsafe { core::slice::from_raw_parts_mut(block, room) },
+        allocation,
+    )
 }
 
 /// A UNICODE_STRING's units.
@@ -71,7 +77,8 @@ unsafe fn units<'a>(string: *const UnicodeString) -> &'a [u16] {
     unsafe { core::slice::from_raw_parts(string.buffer, string.length as usize / 2) }
 }
 
-/// Run `body` over the environment `environment` names: the process's (under the PEB lock) for null.
+/// Run `body` over the environment `environment` names: the process's (under the PEB lock) for
+/// null.
 fn with_environment<R>(environment: *mut u16, body: impl FnOnce(*mut u16) -> R) -> R {
     if !environment.is_null() {
         return body(environment);
@@ -113,7 +120,9 @@ pub unsafe extern "system" fn rtl_query_environment_variable_u(
         // SAFETY: the caller's buffer, which holds the value (and its terminator when there is
         // room).
         unsafe {
-            value.buffer.copy_from_nonoverlapping(found.as_ptr(), found.len());
+            value
+                .buffer
+                .copy_from_nonoverlapping(found.as_ptr(), found.len());
             if bytes + 2 <= value.maximum_length as usize {
                 value.buffer.add(found.len()).write(0);
             }
@@ -123,8 +132,8 @@ pub unsafe extern "system" fn rtl_query_environment_variable_u(
 }
 
 /// RtlSetEnvironmentVariable: set `name` to `value` in the environment `*environment` names (the
-/// process's for a null pointer), or delete it for a null value. STATUS_INVALID_PARAMETER for a name
-/// that is not one; STATUS_NO_MEMORY when the block cannot grow.
+/// process's for a null pointer), or delete it for a null value. STATUS_INVALID_PARAMETER for a
+/// name that is not one; STATUS_NO_MEMORY when the block cannot grow.
 ///
 /// # Safety
 ///
@@ -166,7 +175,9 @@ unsafe fn set_in(slot: *mut *mut u16, name: &[u16], value: Option<&[u16]>) -> u3
         Err(EnvError::InvalidName) => STATUS_INVALID_PARAMETER,
         Err(EnvError::NeedsRoom(needed)) => {
             let size = (2 * needed).next_multiple_of(GRANULARITY);
-            let Ok(base) = sys::allocate_virtual_memory(0, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE) else {
+            let Ok(base) =
+                sys::allocate_virtual_memory(0, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE)
+            else {
                 return STATUS_NO_MEMORY;
             };
             // SAFETY: a fresh allocation of `size` bytes; the old block's used units copied in.
@@ -225,6 +236,10 @@ pub unsafe extern "system" fn rtl_expand_environment_strings_u(
             // SAFETY: the caller's count.
             unsafe { returned.write((2 * (produced + 1)) as u32) };
         }
-        if fits { STATUS_SUCCESS } else { STATUS_BUFFER_TOO_SMALL }
+        if fits {
+            STATUS_SUCCESS
+        } else {
+            STATUS_BUFFER_TOO_SMALL
+        }
     })
 }

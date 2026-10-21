@@ -1,6 +1,6 @@
 //! Structured exception handling's user-mode half, as Windows 2000's ntdll runs it: the search of a
-//! thread's handlers for an exception (RtlDispatchException) and the unwind a handler that takes one
-//! asks for (RtlUnwind), with x86 NT's semantics.
+//! thread's handlers for an exception (RtlDispatchException) and the unwind a handler that takes
+//! one asks for (RtlUnwind), with x86 NT's semantics.
 //!
 //! A thread's handlers form a chain of registration records on its stack, `{next, handler}`, its
 //! head in the TEB's first word (`fs:[0]`) and its end the all-ones marker. The kernel hands every
@@ -27,9 +27,9 @@
 //! its call. RtlUnwind ignores its TargetIp on x86: it returns to its caller. A second unwind that
 //! starts while a handler runs for the first reaches the first's own registration: its handler
 //! answers ExceptionCollidedUnwind with the frame being unwound, and the second unwind goes on past
-//! that frame. A target below the head (already passed) raises STATUS_INVALID_UNWIND_TARGET, a frame
-//! outside the stack STATUS_BAD_STACK. With no target (an exit unwind) the walk runs to the chain's
-//! end and the exception then takes its second chance.
+//! that frame. A target below the head (already passed) raises STATUS_INVALID_UNWIND_TARGET, a
+//! frame outside the stack STATUS_BAD_STACK. With no target (an exit unwind) the walk runs to the
+//! chain's end and the exception then takes its second chance.
 //!
 //! Everything here is over [`Frames`]: ntdll's implementation is the calling thread's memory and
 //! TEB, the host tests' a fake stack whose handlers are closures that raise and unwind as C code

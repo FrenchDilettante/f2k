@@ -17,8 +17,8 @@ use crate::hw::rtc::CivilTime;
 /// The performance counter's frequency: the 8254's input clock.
 pub const PERFORMANCE_FREQUENCY: u64 = 1_193_182;
 
-use rtl::time::UNITS_PER_SECOND;
 pub use rtl::time::system_time_from_filetime;
+use rtl::time::UNITS_PER_SECOND;
 #[cfg(test)]
 use rtl::time::{filetime_from_system_time, SystemTime};
 
@@ -124,7 +124,12 @@ pub fn performance_counter() -> u64 {
     let pending = crate::interrupt::clock_requested();
     // SAFETY: the reader's one user, serialized with interrupts masked.
     let value = unsafe {
-        (*core::ptr::addr_of_mut!(PERFORMANCE_COUNTER)).read(base, count, pending, crate::hw::pit::programmed_divisor())
+        (*core::ptr::addr_of_mut!(PERFORMANCE_COUNTER)).read(
+            base,
+            count,
+            pending,
+            crate::hw::pit::programmed_divisor(),
+        )
     };
     if enabled {
         state.unmask_interrupts();
@@ -165,15 +170,44 @@ mod tests {
     /// The fixture's time survives the round trip through a SYSTEMTIME and the FAT encoding.
     #[test]
     fn fat_round_trip() {
-        let st = SystemTime { year: 2001, month: 2, day_of_week: 0, day: 3, hour: 4, minute: 5, second: 6, milliseconds: 0 };
+        let st = SystemTime {
+            year: 2001,
+            month: 2,
+            day_of_week: 0,
+            day: 3,
+            hour: 4,
+            minute: 5,
+            second: 6,
+            milliseconds: 0,
+        };
         let ft = filetime_from_system_time(st).unwrap();
         let (date, time, hundredths) = fat_from_filetime(ft);
         assert_eq!(fat_filetime(date, time, 0), ft);
         assert_eq!(hundredths, 0);
         let back = system_time_from_filetime(fat_filetime(date, time, 0));
-        assert_eq!((back.year, back.month, back.day, back.hour, back.minute, back.second), (2001, 2, 3, 4, 5, 6));
-        assert_eq!(filetime_from_system_time(SystemTime { month: 13, ..st }), None);
-        assert_eq!(filetime_from_system_time(SystemTime { day: 29, month: 2, ..st }), None);
+        assert_eq!(
+            (
+                back.year,
+                back.month,
+                back.day,
+                back.hour,
+                back.minute,
+                back.second
+            ),
+            (2001, 2, 3, 4, 5, 6)
+        );
+        assert_eq!(
+            filetime_from_system_time(SystemTime { month: 13, ..st }),
+            None
+        );
+        assert_eq!(
+            filetime_from_system_time(SystemTime {
+                day: 29,
+                month: 2,
+                ..st
+            }),
+            None
+        );
     }
 
     fn civil(year: u16, month: u8, day: u8, hour: u8, minute: u8, second: u8) -> CivilTime {
@@ -191,8 +225,14 @@ mod tests {
     #[test]
     fn the_epochs_convert() {
         assert_eq!(filetime_from_civil(civil(1601, 1, 1, 0, 0, 0)), 0);
-        assert_eq!(filetime_from_civil(civil(1970, 1, 1, 0, 0, 0)), 116_444_736_000_000_000);
-        assert_eq!(filetime_from_civil(civil(2000, 1, 1, 0, 0, 0)), FALLBACK_BOOT);
+        assert_eq!(
+            filetime_from_civil(civil(1970, 1, 1, 0, 0, 0)),
+            116_444_736_000_000_000
+        );
+        assert_eq!(
+            filetime_from_civil(civil(2000, 1, 1, 0, 0, 0)),
+            FALLBACK_BOOT
+        );
     }
 
     /// FAT timestamps: 2026-10-16 18:42:30 plus 57 hundredths, and the no-time zero date.
@@ -219,7 +259,10 @@ mod tests {
         assert_eq!(counter.read(base, N, false, N), base);
         // A tenth of the way through, then half.
         assert_eq!(counter.read(base, N - 1_195, false, N), base + 1_195);
-        assert_eq!(counter.read(base, N / 2, false, N), base + (N - N / 2) as u64);
+        assert_eq!(
+            counter.read(base, N / 2, false, N),
+            base + (N - N / 2) as u64
+        );
         // The timer reloaded and raised its line, the interrupt not taken yet (the gate masks
         // it): the interval it finished counts.
         assert_eq!(counter.read(base, N - 40, true, N), base + N as u64 + 40);
@@ -240,6 +283,9 @@ mod tests {
         assert_eq!(performance_count(UNITS_PER_SECOND), PERFORMANCE_FREQUENCY);
         assert_eq!(performance_count(2_000_000), 238_636);
         let year = 365 * rtl::time::UNITS_PER_DAY;
-        assert_eq!(performance_count(year), 365 * 86_400 * PERFORMANCE_FREQUENCY);
+        assert_eq!(
+            performance_count(year),
+            365 * 86_400 * PERFORMANCE_FREQUENCY
+        );
     }
 }

@@ -1,8 +1,8 @@
 //! The calls on a file's name: its attributes (NtQueryAttributesFile, NtQueryFullAttributesFile,
 //! FileBasicInformation), its delete and a directory's removal (an open for DELETE, then
 //! FileDispositionInformation: the file goes with the open's close), a rename
-//! (FileRenameInformation), a new directory (NtCreateFile), and the full and short forms of a path —
-//! as Windows 2000's kernel32 makes them.
+//! (FileRenameInformation), a new directory (NtCreateFile), and the full and short forms of a path
+//! — as Windows 2000's kernel32 makes them.
 
 use rtl::status::nt_success;
 
@@ -65,7 +65,11 @@ pub unsafe extern "system" fn get_file_attributes_a(name: *const u8) -> u32 {
 ///
 /// `name` is a NUL-terminated string; `info` points at a WIN32_FILE_ATTRIBUTE_DATA.
 #[unsafe(export_name = "f2k_export_GetFileAttributesExA")]
-pub unsafe extern "system" fn get_file_attributes_ex_a(name: *const u8, level: u32, info: *mut u8) -> u32 {
+pub unsafe extern "system" fn get_file_attributes_ex_a(
+    name: *const u8,
+    level: u32,
+    info: *mut u8,
+) -> u32 {
     if level != 0 {
         set_last_error(ERROR_INVALID_PARAMETER);
         return 0;
@@ -105,13 +109,21 @@ pub unsafe extern "system" fn set_file_attributes_a(name: *const u8, attributes:
     let Some(path) = (unsafe { widen(name) }).as_ref().and_then(nt_path) else {
         return 0;
     };
-    let options = FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_FOR_BACKUP_INTENT | FILE_OPEN_REPARSE_POINT;
-    let handle = match open(&path, FILE_WRITE_ATTRIBUTES | SYNCHRONIZE, FILE_SHARE_ALL, options) {
+    let options =
+        FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_FOR_BACKUP_INTENT | FILE_OPEN_REPARSE_POINT;
+    let handle = match open(
+        &path,
+        FILE_WRITE_ATTRIBUTES | SYNCHRONIZE,
+        FILE_SHARE_ALL,
+        options,
+    ) {
         Ok(handle) => handle,
         Err(status) => return succeeded(status),
     };
     let mut basic = [0u8; 40];
-    basic[32..36].copy_from_slice(&((attributes & FILE_ATTRIBUTE_VALID_SET_FLAGS) | FILE_ATTRIBUTE_NORMAL).to_le_bytes());
+    basic[32..36].copy_from_slice(
+        &((attributes & FILE_ATTRIBUTE_VALID_SET_FLAGS) | FILE_ATTRIBUTE_NORMAL).to_le_bytes(),
+    );
     let status = set(handle, FILE_BASIC_INFORMATION, &basic);
     close(handle);
     succeeded(status)
@@ -125,7 +137,12 @@ fn delete(name: *const u8, access: u32, options: u32) -> u32 {
     let Some(path) = (unsafe { widen(name) }).as_ref().and_then(nt_path) else {
         return 0;
     };
-    let handle = match open(&path, access, FILE_SHARE_ALL, options | FILE_OPEN_FOR_BACKUP_INTENT | FILE_OPEN_REPARSE_POINT) {
+    let handle = match open(
+        &path,
+        access,
+        FILE_SHARE_ALL,
+        options | FILE_OPEN_FOR_BACKUP_INTENT | FILE_OPEN_REPARSE_POINT,
+    ) {
         Ok(handle) => handle,
         Err(status) => return succeeded(status),
     };
@@ -153,7 +170,11 @@ pub unsafe extern "system" fn delete_file_a(name: *const u8) -> u32 {
 /// `name` is a NUL-terminated string.
 #[unsafe(export_name = "f2k_export_RemoveDirectoryA")]
 pub unsafe extern "system" fn remove_directory_a(name: *const u8) -> u32 {
-    delete(name, DELETE | SYNCHRONIZE, FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT)
+    delete(
+        name,
+        DELETE | SYNCHRONIZE,
+        FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT,
+    )
 }
 
 /// MoveFileA: the source's open for DELETE (sharing reads and writes), then its rename to the new
@@ -172,8 +193,14 @@ pub unsafe extern "system" fn move_file_a(from: *const u8, to: *const u8) -> u32
     let Some(source) = nt_path(&from) else {
         return 0;
     };
-    let options = FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_FOR_BACKUP_INTENT | FILE_OPEN_REPARSE_POINT;
-    let handle = match open(&source, DELETE | SYNCHRONIZE, FILE_SHARE_READ | FILE_SHARE_WRITE, options) {
+    let options =
+        FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_FOR_BACKUP_INTENT | FILE_OPEN_REPARSE_POINT;
+    let handle = match open(
+        &source,
+        DELETE | SYNCHRONIZE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        options,
+    ) {
         Ok(handle) => handle,
         Err(status) => return succeeded(status),
     };
@@ -187,7 +214,11 @@ pub unsafe extern "system" fn move_file_a(from: *const u8, to: *const u8) -> u32
     for (at, &unit) in units.iter().enumerate() {
         rename[12 + 2 * at..14 + 2 * at].copy_from_slice(&unit.to_le_bytes());
     }
-    let status = set(handle, FILE_RENAME_INFORMATION, &rename[..12 + 2 * units.len()]);
+    let status = set(
+        handle,
+        FILE_RENAME_INFORMATION,
+        &rename[..12 + 2 * units.len()],
+    );
     close(handle);
     succeeded(status)
 }
@@ -201,7 +232,10 @@ pub unsafe extern "system" fn move_file_a(from: *const u8, to: *const u8) -> u32
 ///
 /// `name` is a NUL-terminated string; `security` is null or a SECURITY_ATTRIBUTES.
 #[unsafe(export_name = "f2k_export_CreateDirectoryA")]
-pub unsafe extern "system" fn create_directory_a(name: *const u8, security: *const SecurityAttributes) -> u32 {
+pub unsafe extern "system" fn create_directory_a(
+    name: *const u8,
+    security: *const SecurityAttributes,
+) -> u32 {
     // SAFETY: the caller's string.
     let Some(path) = (unsafe { widen(name) }).as_ref().and_then(nt_path) else {
         return 0;
@@ -249,7 +283,12 @@ pub unsafe extern "system" fn create_directory_a(name: *const u8, security: *con
 /// `name` is a NUL-terminated string; `buffer` holds `size` bytes; `file_part` is null or points at
 /// a pointer.
 #[unsafe(export_name = "f2k_export_GetFullPathNameA")]
-pub unsafe extern "system" fn get_full_path_name_a(name: *const u8, size: u32, buffer: *mut u8, file_part: *mut *mut u8) -> u32 {
+pub unsafe extern "system" fn get_full_path_name_a(
+    name: *const u8,
+    size: u32,
+    buffer: *mut u8,
+    file_part: *mut *mut u8,
+) -> u32 {
     // SAFETY: the caller's string.
     let Some(name) = (unsafe { widen(name) }) else {
         return 0;
@@ -257,7 +296,14 @@ pub unsafe extern "system" fn get_full_path_name_a(name: *const u8, size: u32, b
     let mut full = [0u16; MAX_PATH + 1];
     let mut part = core::ptr::null_mut();
     // SAFETY: ntdll's export, into the buffer above.
-    let bytes = unsafe { nt::RtlGetFullPathName_U(name.terminated().as_ptr(), 2 * full.len() as u32, full.as_mut_ptr(), &mut part) } as usize;
+    let bytes = unsafe {
+        nt::RtlGetFullPathName_U(
+            name.terminated().as_ptr(),
+            2 * full.len() as u32,
+            full.as_mut_ptr(),
+            &mut part,
+        )
+    } as usize;
     if bytes == 0 {
         set_last_error(ERROR_PATH_NOT_FOUND);
         return 0;
@@ -288,14 +334,17 @@ pub fn is_short_name(component: &[u16]) -> bool {
     if component == [dot] || component == [dot, dot] {
         return true;
     }
-    let valid = |unit: u16| unit > 0x20 && unit < 0x80 && !b"\"*+,/:;<=>?[\\]|".contains(&(unit as u8));
+    let valid =
+        |unit: u16| unit > 0x20 && unit < 0x80 && !b"\"*+,/:;<=>?[\\]|".contains(&(unit as u8));
     let (base, extension) = match component.iter().position(|&unit| unit == dot) {
         Some(at) => (&component[..at], Some(&component[at + 1..])),
         None => (component, None),
     };
     (1..=8).contains(&base.len())
         && base.iter().all(|&unit| valid(unit))
-        && extension.is_none_or(|extension| extension.len() <= 3 && extension.iter().all(|&unit| unit != dot && valid(unit)))
+        && extension.is_none_or(|extension| {
+            extension.len() <= 3 && extension.iter().all(|&unit| unit != dot && valid(unit))
+        })
 }
 
 /// GetShortPathNameA, Windows 2000's walk: the path must name something (its attributes'
@@ -308,7 +357,11 @@ pub fn is_short_name(component: &[u16]) -> bool {
 ///
 /// `name` is a NUL-terminated string; `buffer` holds `size` bytes.
 #[unsafe(export_name = "f2k_export_GetShortPathNameA")]
-pub unsafe extern "system" fn get_short_path_name_a(name: *const u8, buffer: *mut u8, size: u32) -> u32 {
+pub unsafe extern "system" fn get_short_path_name_a(
+    name: *const u8,
+    buffer: *mut u8,
+    size: u32,
+) -> u32 {
     if name.is_null() {
         set_last_error(ERROR_INVALID_PARAMETER);
         return 0;
@@ -326,10 +379,13 @@ pub unsafe extern "system" fn get_short_path_name_a(name: *const u8, buffer: *mu
     // The prefix: `\\server\share\`, `X:` and its separator, or a root separator.
     let prefix = if units.len() >= 2 && separator(units[0]) && separator(units[1]) {
         let mut seen = 0;
-        units.iter().position(|&unit| {
-            seen += usize::from(separator(unit));
-            seen == 4
-        }).map_or(units.len(), |at| at + 1)
+        units
+            .iter()
+            .position(|&unit| {
+                seen += usize::from(separator(unit));
+                seen == 4
+            })
+            .map_or(units.len(), |at| at + 1)
     } else if units.len() >= 2 && units[1] == u16::from(b':') {
         2 + usize::from(units.get(2).is_some_and(|&unit| separator(unit)))
     } else {
@@ -340,7 +396,10 @@ pub unsafe extern "system" fn get_short_path_name_a(name: *const u8, buffer: *mu
     let mut length = prefix;
     let mut rest = &units[prefix..];
     while !rest.is_empty() {
-        let end = rest.iter().position(|&unit| separator(unit)).unwrap_or(rest.len());
+        let end = rest
+            .iter()
+            .position(|&unit| separator(unit))
+            .unwrap_or(rest.len());
         let component = &rest[..end];
         let mut replacement: FindDataW;
         let short: &[u16] = if component.is_empty() || is_short_name(component) {
@@ -351,7 +410,10 @@ pub unsafe extern "system" fn get_short_path_name_a(name: *const u8, buffer: *mu
                 set_last_error(ERROR_FILENAME_EXCED_RANGE);
                 return 0;
             }
-            let mut wide = Wide { units: [0; MAX_PATH + 1], length: length + component.len() };
+            let mut wide = Wide {
+                units: [0; MAX_PATH + 1],
+                length: length + component.len(),
+            };
             wide.units[..length].copy_from_slice(&out[..length]);
             wide.units[length..wide.length].copy_from_slice(component);
             replacement = FindDataW::zeroed();
@@ -360,7 +422,11 @@ pub unsafe extern "system" fn get_short_path_name_a(name: *const u8, buffer: *mu
                 return 0;
             }
             find_close(handle);
-            if replacement.alternate().is_empty() { replacement.name() } else { replacement.alternate() }
+            if replacement.alternate().is_empty() {
+                replacement.name()
+            } else {
+                replacement.alternate()
+            }
         };
         if length + short.len() + 1 >= out.len() {
             set_last_error(ERROR_FILENAME_EXCED_RANGE);
@@ -395,10 +461,26 @@ mod tests {
     /// The components GetShortPathName keeps as written.
     #[test]
     fn short_names_are_eight_dot_three() {
-        for short in ["SMALL.TXT", "small.txt", "SUB", "LONGFI~1.TXT", ".", "..", "A.B"] {
+        for short in [
+            "SMALL.TXT",
+            "small.txt",
+            "SUB",
+            "LONGFI~1.TXT",
+            ".",
+            "..",
+            "A.B",
+        ] {
             assert!(is_short_name(&wide(short)), "{short}");
         }
-        for long in ["Long File Name.txt", "ABCDEFGHI.TXT", "A.TEXT", "A.B.C", ".X", "A+B", ""] {
+        for long in [
+            "Long File Name.txt",
+            "ABCDEFGHI.TXT",
+            "A.TEXT",
+            "A.B.C",
+            ".X",
+            "A+B",
+            "",
+        ] {
             assert!(!is_short_name(&wide(long)), "{long}");
         }
     }

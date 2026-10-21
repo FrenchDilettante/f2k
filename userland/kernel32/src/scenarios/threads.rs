@@ -6,7 +6,10 @@
 use crate::base::last_error;
 use crate::nt::threads::{process, HostThread, ENDED_THREAD, THREAD, THREADS, ZEROED_TLS};
 use crate::process::{
-    get_priority_class, set_error_mode, set_priority_class, set_process_affinity_mask,
+    get_priority_class,
+    set_error_mode,
+    set_priority_class,
+    set_process_affinity_mask,
     terminate_process,
 };
 use crate::thread::*;

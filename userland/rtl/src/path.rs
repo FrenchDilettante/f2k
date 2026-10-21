@@ -89,7 +89,9 @@ impl Builder<'_> {
             }
             if component == [dot, dot] {
                 // Back to the previous separator, never below the root.
-                let at = self.out[self.root..self.len].iter().rposition(|&unit| unit == BACKSLASH);
+                let at = self.out[self.root..self.len]
+                    .iter()
+                    .rposition(|&unit| unit == BACKSLASH);
                 self.len = at.map_or(self.root, |at| self.root + at);
                 continue;
             }
@@ -106,11 +108,19 @@ impl Builder<'_> {
 /// DOS path, its trailing separator included, `C:\DIR\`) and folded, into `out` (terminated); its
 /// length in units. A trailing separator is kept. The file part (its last component) starts where
 /// the second value says, when it has one.
-pub fn full_path_name(path: &[u16], current: &[u16], out: &mut [u16]) -> Result<(usize, Option<usize>), PathError> {
+pub fn full_path_name(
+    path: &[u16],
+    current: &[u16],
+    out: &mut [u16],
+) -> Result<(usize, Option<usize>), PathError> {
     if path.is_empty() {
         return Err(PathError::Empty);
     }
-    let mut built = Builder { out, len: 0, root: 0 };
+    let mut built = Builder {
+        out,
+        len: 0,
+        root: 0,
+    };
     let current_drive = drive_of(current).unwrap_or(u16::from(b'C'));
     // The current directory's components, after its `C:\`.
     let current_rest = current.get(3..).unwrap_or(&[]);
@@ -152,8 +162,12 @@ pub fn full_path_name(path: &[u16], current: &[u16], out: &mut [u16]) -> Result<
     }
     let len = built.len;
     let ends_in_separator = built.out[len - 1] == BACKSLASH;
-    let file_part = (!ends_in_separator)
-        .then(|| built.out[..len].iter().rposition(|&unit| unit == BACKSLASH).map_or(0, |at| at + 1));
+    let file_part = (!ends_in_separator).then(|| {
+        built.out[..len]
+            .iter()
+            .rposition(|&unit| unit == BACKSLASH)
+            .map_or(0, |at| at + 1)
+    });
     built.out[len] = 0;
     Ok((len, file_part))
 }
@@ -182,7 +196,12 @@ pub fn path_type(path: &[u16]) -> PathType {
     let dot = u16::from(b'.');
     let question = u16::from(b'?');
     match path {
-        [a, b, c, d, ..] if is_separator(*a) && is_separator(*b) && (*c == dot || *c == question) && is_separator(*d) => {
+        [a, b, c, d, ..]
+            if is_separator(*a)
+                && is_separator(*b)
+                && (*c == dot || *c == question)
+                && is_separator(*d) =>
+        {
             if *c == dot {
                 PathType::LocalDevice
             } else {
@@ -191,7 +210,9 @@ pub fn path_type(path: &[u16]) -> PathType {
         }
         [a, b, ..] if is_separator(*a) && is_separator(*b) => PathType::UncAbsolute,
         [a, ..] if is_separator(*a) => PathType::Rooted,
-        [_, COLON, c, ..] if drive_of(path).is_some() && is_separator(*c) => PathType::DriveAbsolute,
+        [_, COLON, c, ..] if drive_of(path).is_some() && is_separator(*c) => {
+            PathType::DriveAbsolute
+        }
         [_, COLON, ..] if drive_of(path).is_some() => PathType::DriveRelative,
         _ => PathType::Relative,
     }
@@ -225,7 +246,12 @@ pub struct NtName {
 /// `\\?\` path passes untouched (its `\\?\` becomes `\??\`); a `\\.\` one keeps its device prefix,
 /// its rest folded. The full path must fit [`MAX_PATH`] units with its terminator, as the
 /// platform's buffer is that long.
-pub fn dos_path_to_nt(path: &[u16], current: &[u16], current_open: bool, out: &mut [u16]) -> Result<NtName, PathError> {
+pub fn dos_path_to_nt(
+    path: &[u16],
+    current: &[u16],
+    current_open: bool,
+    out: &mut [u16],
+) -> Result<NtName, PathError> {
     if path.is_empty() {
         return Err(PathError::Empty);
     }
@@ -233,7 +259,11 @@ pub fn dos_path_to_nt(path: &[u16], current: &[u16], current_open: bool, out: &m
     let prefix = [BACKSLASH, u16::from(b'?'), u16::from(b'?'), BACKSLASH];
     if matches!(kind, PathType::RootLocalDevice | PathType::LocalDevice) {
         let rest = &path[4..];
-        let mut built = Builder { out, len: 0, root: 0 };
+        let mut built = Builder {
+            out,
+            len: 0,
+            root: 0,
+        };
         built.push_all(&prefix)?;
         built.root = built.len;
         if kind == PathType::RootLocalDevice {
@@ -246,9 +276,17 @@ pub fn dos_path_to_nt(path: &[u16], current: &[u16], current_open: bool, out: &m
         }
         let len = built.len;
         built.out[len] = 0;
-        let file_part = (built.out[len - 1] != BACKSLASH)
-            .then(|| built.out[..len].iter().rposition(|&unit| unit == BACKSLASH).map_or(0, |at| at + 1));
-        return Ok(NtName { length: len, file_part, relative: None });
+        let file_part = (built.out[len - 1] != BACKSLASH).then(|| {
+            built.out[..len]
+                .iter()
+                .rposition(|&unit| unit == BACKSLASH)
+                .map_or(0, |at| at + 1)
+        });
+        return Ok(NtName {
+            length: len,
+            file_part,
+            relative: None,
+        });
     }
     let mut full = [0u16; MAX_PATH];
     let (full_length, file_part) = full_path_name(path, current, &mut full)?;
@@ -259,15 +297,26 @@ pub fn dos_path_to_nt(path: &[u16], current: &[u16], current_open: bool, out: &m
     let relative = (kind == PathType::Relative
         && current_open
         && current.len() <= full.len()
-        && current.iter().zip(full).all(|(&a, &b)| upcase(a) == upcase(b)))
+        && current
+            .iter()
+            .zip(full)
+            .all(|(&a, &b)| upcase(a) == upcase(b)))
     .then_some(4 + current.len());
-    Ok(NtName { length, file_part: file_part.map(|at| at + shift), relative })
+    Ok(NtName {
+        length,
+        file_part: file_part.map(|at| at + shift),
+        relative,
+    })
 }
 
 /// RtlDosPathNameToNtPathName_U's form of a full DOS path: `\??\` and the path (a UNC path's
 /// `\\server` as `\??\UNC\server`), into `out`: its length in units.
 pub fn nt_path(full: &[u16], out: &mut [u16]) -> Result<usize, PathError> {
-    let mut built = Builder { out, len: 0, root: 0 };
+    let mut built = Builder {
+        out,
+        len: 0,
+        root: 0,
+    };
     built.push_all(&[BACKSLASH, u16::from(b'?'), u16::from(b'?'), BACKSLASH])?;
     if full.len() >= 2 && full[0] == BACKSLASH && full[1] == BACKSLASH {
         built.push_all(&[u16::from(b'U'), u16::from(b'N'), u16::from(b'C')])?;
@@ -299,18 +348,38 @@ mod tests {
     #[test]
     fn paths_are_made_absolute_and_folded() {
         let current = "C:\\CORPUS\\";
-        assert_eq!(full("C:\\A\\B.TXT", current).unwrap(), ("C:\\A\\B.TXT".into(), Some(5)));
-        assert_eq!(full("DATA\\SUB", current).unwrap().0, "C:\\CORPUS\\DATA\\SUB");
-        assert_eq!(full(".\\DATA\\.\\SUB\\", current).unwrap().0, "C:\\CORPUS\\DATA\\SUB\\");
-        assert_eq!(full("..\\..\\..\\X", current).unwrap().0, "C:\\X", "`..` stops at the root");
+        assert_eq!(
+            full("C:\\A\\B.TXT", current).unwrap(),
+            ("C:\\A\\B.TXT".into(), Some(5))
+        );
+        assert_eq!(
+            full("DATA\\SUB", current).unwrap().0,
+            "C:\\CORPUS\\DATA\\SUB"
+        );
+        assert_eq!(
+            full(".\\DATA\\.\\SUB\\", current).unwrap().0,
+            "C:\\CORPUS\\DATA\\SUB\\"
+        );
+        assert_eq!(
+            full("..\\..\\..\\X", current).unwrap().0,
+            "C:\\X",
+            "`..` stops at the root"
+        );
         assert_eq!(full("\\WINNT", current).unwrap().0, "C:\\WINNT");
         assert_eq!(full("c:name", current).unwrap().0, "C:\\CORPUS\\name");
         assert_eq!(full("D:name", current).unwrap().0, "D:\\name");
         assert_eq!(full("C:", current).unwrap(), ("C:\\CORPUS".into(), Some(3)));
         assert_eq!(full("C:\\", current).unwrap(), ("C:\\".into(), None));
         assert_eq!(full("a/b//c", current).unwrap().0, "C:\\CORPUS\\a\\b\\c");
-        assert_eq!(full("name. . ", current).unwrap().0, "C:\\CORPUS\\name", "trailing dots and spaces go");
-        assert_eq!(full("\\\\srv\\share\\dir\\..\\f", current).unwrap().0, "\\\\srv\\share\\f");
+        assert_eq!(
+            full("name. . ", current).unwrap().0,
+            "C:\\CORPUS\\name",
+            "trailing dots and spaces go"
+        );
+        assert_eq!(
+            full("\\\\srv\\share\\dir\\..\\f", current).unwrap().0,
+            "\\\\srv\\share\\f"
+        );
         assert_eq!(full("", current), Err(PathError::Empty));
         let long = "x".repeat(300);
         assert_eq!(full(&long, current), Err(PathError::TooLong));
@@ -321,9 +390,15 @@ mod tests {
     fn nt_paths_lead_with_the_dos_devices() {
         let mut out = [0u16; MAX_PATH + 8];
         let len = nt_path(&wide("C:\\CORPUS\\"), &mut out).unwrap();
-        assert_eq!(String::from_utf16(&out[..len]).unwrap(), "\\??\\C:\\CORPUS\\");
+        assert_eq!(
+            String::from_utf16(&out[..len]).unwrap(),
+            "\\??\\C:\\CORPUS\\"
+        );
         let len = nt_path(&wide("\\\\srv\\share"), &mut out).unwrap();
-        assert_eq!(String::from_utf16(&out[..len]).unwrap(), "\\??\\UNC\\srv\\share");
+        assert_eq!(
+            String::from_utf16(&out[..len]).unwrap(),
+            "\\??\\UNC\\srv\\share"
+        );
     }
 
     type Nt = (String, Option<String>, Option<String>);
@@ -363,24 +438,65 @@ mod tests {
         let current = "C:\\CORPUS\\";
         assert_eq!(
             nt("DATA\\SMALL.TXT", current, true).unwrap(),
-            ("\\??\\C:\\CORPUS\\DATA\\SMALL.TXT".into(), Some("SMALL.TXT".into()), Some("DATA\\SMALL.TXT".into()))
+            (
+                "\\??\\C:\\CORPUS\\DATA\\SMALL.TXT".into(),
+                Some("SMALL.TXT".into()),
+                Some("DATA\\SMALL.TXT".into())
+            )
         );
-        assert_eq!(nt(".\\DATA\\SUB\\", current, true).unwrap().2, Some("DATA\\SUB\\".into()));
-        assert_eq!(nt("data\\x", "C:\\Corpus\\", true).unwrap().2, Some("data\\x".into()), "any case");
-        assert_eq!(nt("DATA\\SMALL.TXT", current, false).unwrap().2, None, "no handle");
-        assert_eq!(nt("..\\X", "C:\\CORPUS\\DATA\\", true).unwrap().2, None, "not under it");
-        assert_eq!(nt("C:\\CORPUS\\X", current, true).unwrap().2, None, "an absolute path");
-        assert_eq!(nt("\\CORPUS\\X", current, true).unwrap().2, None, "a rooted path");
-        assert_eq!(nt("C:\\", current, true).unwrap(), ("\\??\\C:\\".into(), None, None));
+        assert_eq!(
+            nt(".\\DATA\\SUB\\", current, true).unwrap().2,
+            Some("DATA\\SUB\\".into())
+        );
+        assert_eq!(
+            nt("data\\x", "C:\\Corpus\\", true).unwrap().2,
+            Some("data\\x".into()),
+            "any case"
+        );
+        assert_eq!(
+            nt("DATA\\SMALL.TXT", current, false).unwrap().2,
+            None,
+            "no handle"
+        );
+        assert_eq!(
+            nt("..\\X", "C:\\CORPUS\\DATA\\", true).unwrap().2,
+            None,
+            "not under it"
+        );
+        assert_eq!(
+            nt("C:\\CORPUS\\X", current, true).unwrap().2,
+            None,
+            "an absolute path"
+        );
+        assert_eq!(
+            nt("\\CORPUS\\X", current, true).unwrap().2,
+            None,
+            "a rooted path"
+        );
+        assert_eq!(
+            nt("C:\\", current, true).unwrap(),
+            ("\\??\\C:\\".into(), None, None)
+        );
         assert_eq!(
             nt("\\\\srv\\share\\f", current, true).unwrap(),
             ("\\??\\UNC\\srv\\share\\f".into(), Some("f".into()), None)
         );
-        assert_eq!(nt("\\\\?\\C:\\a\\..\\b", current, true).unwrap().0, "\\??\\C:\\a\\..\\b", "untouched");
-        assert_eq!(nt("\\\\.\\C:", current, true).unwrap(), ("\\??\\C:".into(), Some("C:".into()), None));
+        assert_eq!(
+            nt("\\\\?\\C:\\a\\..\\b", current, true).unwrap().0,
+            "\\??\\C:\\a\\..\\b",
+            "untouched"
+        );
+        assert_eq!(
+            nt("\\\\.\\C:", current, true).unwrap(),
+            ("\\??\\C:".into(), Some("C:".into()), None)
+        );
         assert_eq!(nt("", current, true), Err(PathError::Empty));
         let long = "x".repeat(250);
-        assert_eq!(nt(&long, current, true).err(), Some(PathError::TooLong), "past MAX_PATH once made absolute");
+        assert_eq!(
+            nt(&long, current, true).err(),
+            Some(PathError::TooLong),
+            "past MAX_PATH once made absolute"
+        );
         assert_eq!(upcase(u16::from(b'a')), u16::from(b'A'));
         assert_eq!(upcase(0xE9), 0xC9);
         assert_eq!(upcase(0xF7), 0xF7, "the division sign");

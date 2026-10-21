@@ -20,7 +20,10 @@ fn dispatcher() -> &'static mut Dispatcher {
 }
 
 fn thread() -> &'static mut Thread {
-    let process = Box::leak(Box::new(crate::sched::process::SchedProcess::new(0x0090_0000, 8)));
+    let process = Box::leak(Box::new(crate::sched::process::SchedProcess::new(
+        0x0090_0000,
+        8,
+    )));
     process.init();
     let thread = Box::leak(Box::new(Thread::empty()));
     // SAFETY: both are leaked at their final addresses.
@@ -206,15 +209,30 @@ fn a_wait_holds_a_timer_through_its_last_handle() {
 
     directory.hold_wait(waiter.index, &[timer]);
     assert_eq!(directory.counts(timer), Some((2, 1)));
-    assert_eq!(closed(directory, timer, dispatcher), vec![], "the program closes its handle");
+    assert_eq!(
+        closed(directory, timer, dispatcher),
+        vec![],
+        "the program closes its handle"
+    );
     assert!(directory.is_live(timer), "the wait holds it");
-    assert!(directory.timer(timer).unwrap().armed(), "still armed for its waiter");
+    assert!(
+        directory.timer(timer).unwrap().armed(),
+        "still armed for its waiter"
+    );
 
     let mut followups = Vec::new();
-    directory.release_wait(waiter.index, dispatcher, |followup| followups.push(followup));
+    directory.release_wait(waiter.index, dispatcher, |followup| {
+        followups.push(followup)
+    });
     assert!(followups.is_empty());
-    assert!(!directory.is_live(timer), "the wait's return released the last reference");
-    assert!(!directory.timers.record(timer.index).armed(), "deletion cancelled it");
+    assert!(
+        !directory.is_live(timer),
+        "the wait's return released the last reference"
+    );
+    assert!(
+        !directory.timers.record(timer.index).armed(),
+        "deletion cancelled it"
+    );
 }
 
 /// A timer the process's end sweeps (a leaked reference) leaves the timer table with it.
@@ -225,7 +243,10 @@ fn the_process_end_disarms_a_leaked_timer() {
     let leaked = directory.create_timer(true).unwrap();
     dispatcher.set_waitable_timer(directory.timer(leaked).unwrap(), 1_000_000, 0, 0, false, 0);
     assert_eq!(directory.process_ended(dispatcher, |_| {}), 1);
-    assert!(!directory.timers.record(leaked.index).armed(), "the leaked timer left the table");
+    assert!(
+        !directory.timers.record(leaked.index).armed(),
+        "the leaked timer left the table"
+    );
 }
 
 /// A wait's references keep its objects from being recycled while the waiter is away (a
@@ -478,7 +499,10 @@ fn entries_name_objects() {
         index: 2,
         generation: 0,
     };
-    assert_eq!(Entry::object(file, 0x0012_0089, false).object_id(), Some(file));
+    assert_eq!(
+        Entry::object(file, 0x0012_0089, false).object_id(),
+        Some(file)
+    );
 }
 
 /// A section is no waitable; its deletion hands its frames (and a file's section its file object)
@@ -527,13 +551,26 @@ fn a_file_object_cleans_up_then_closes() {
     let directory = directory();
     let dispatcher = dispatcher();
     let id = directory
-        .create_file(4, crate::fs::file::ACCESS_READ, 0x8000_0000, crate::fs::file::SHARE_ALL)
+        .create_file(
+            4,
+            crate::fs::file::ACCESS_READ,
+            0x8000_0000,
+            crate::fs::file::SHARE_ALL,
+        )
         .unwrap();
-    assert_eq!(directory.waitable(id), None, "a file object is not waitable");
+    assert_eq!(
+        directory.waitable(id),
+        None,
+        "a file object is not waitable"
+    );
     directory.file(id).unwrap().delete_on_close = true;
     published(directory, id, dispatcher);
     assert!(directory.handle_opened(id), "a duplicate");
-    assert_eq!(closed(directory, id, dispatcher), vec![], "another handle remains");
+    assert_eq!(
+        closed(directory, id, dispatcher),
+        vec![],
+        "another handle remains"
+    );
     assert!(directory.reference(id), "a section's");
     assert_eq!(
         closed(directory, id, dispatcher),
@@ -545,7 +582,10 @@ fn a_file_object_cleans_up_then_closes() {
             search: 0
         }]
     );
-    assert_eq!(directory.dereference(id, dispatcher), Some(Followup::FileClose { record: 4 }));
+    assert_eq!(
+        directory.dereference(id, dispatcher),
+        Some(Followup::FileClose { record: 4 })
+    );
     // Both at once when nothing else holds it.
     let id = directory.create_file(5, 0, 0x80, 0).unwrap();
     published(directory, id, dispatcher);

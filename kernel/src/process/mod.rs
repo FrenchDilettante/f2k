@@ -69,8 +69,8 @@ pub struct Process {
     /// The process's client id (what GetCurrentProcessId reports, through the TEB).
     id: u32,
     /// The process's object: what a handle to the process names and a wait on it waits for. It
-    /// holds the process's own reference until the teardown's end, and its index is the record's in
-    /// the pool.
+    /// holds the process's own reference until the teardown's end, and its index is the record's
+    /// in the pool.
     object: crate::ob::ObjectId,
     /// The priority class (PROCESS_PRIORITY_CLASS_*, ProcessPriorityClass's value).
     priority_class: u8,
@@ -239,8 +239,8 @@ impl Process {
     }
 
     /// Close a handle: the table's claim ends — the object's handle, with its reference (the last
-    /// handle cleans a file object up, the last reference deletes the object). False when the handle
-    /// names nothing.
+    /// handle cleans a file object up, the last reference deletes the object). False when the
+    /// handle names nothing.
     pub fn close_handle(&mut self, handle: u32) -> bool {
         let Some(entry) = self.handles.close(handle) else {
             return false;
@@ -269,7 +269,10 @@ impl Process {
     pub fn finish(&mut self, followup: crate::ob::Followup) {
         use crate::ob::Followup;
         match followup {
-            Followup::Section { frames, file_object } => {
+            Followup::Section {
+                frames,
+                file_object,
+            } => {
                 crate::nt::section::release_frames(frames);
                 #[cfg(target_arch = "x86")]
                 if let Some(file_object) = file_object {
@@ -549,15 +552,19 @@ unsafe fn write_fresh(
 /// Walk the process directory at `dir_phys` and release everything it owns exclusively: every
 /// committed PTE's data frame in the user windows — present, or committed but inaccessible (a
 /// no-access or guard page still names its frame) — and their page tables, plus the gate
-/// window's table. The gate slots' data frames are the threads' (released per thread, before this walk);
-/// the shared kernel half is never touched, and the directory frame is the caller's, last.
+/// window's table. The gate slots' data frames are the threads' (released per thread, before this
+/// walk); the shared kernel half is never touched, and the directory frame is the caller's, last.
 pub fn release_address_space(
     dir_phys: u32,
     read_entry: impl Fn(u32, usize) -> u32,
     mut release: impl FnMut(u32),
 ) {
     use crate::mem::paging::{
-        GATE_STACK_WINDOW, KERNEL_HALF_START, PAGE_ADDR_MASK, PAGE_PRESENT, PT_ENTRIES,
+        GATE_STACK_WINDOW,
+        KERNEL_HALF_START,
+        PAGE_ADDR_MASK,
+        PAGE_PRESENT,
+        PT_ENTRIES,
     };
     for window in 0..KERNEL_HALF_START {
         let pde = read_entry(dir_phys, window);
@@ -790,8 +797,15 @@ mod tests {
 
     use super::*;
     use crate::mem::paging::{
-        gate_slot_base, gate_slot_top, GATE_SLOT_CAPACITY, GATE_SLOT_STRIDE, GATE_STACK_TOP,
-        GATE_STACK_WINDOW, KERNEL_HALF_START, PAGE_PRESENT, PT_ENTRIES,
+        gate_slot_base,
+        gate_slot_top,
+        GATE_SLOT_CAPACITY,
+        GATE_SLOT_STRIDE,
+        GATE_STACK_TOP,
+        GATE_STACK_WINDOW,
+        KERNEL_HALF_START,
+        PAGE_PRESENT,
+        PT_ENTRIES,
     };
     use crate::mem::vm::{encode, PAGE_GUARD, PAGE_NOACCESS, PAGE_READWRITE};
     use crate::sched::process::SchedProcess;
@@ -887,7 +901,11 @@ mod tests {
         assert_eq!(process.handles.live(), 0);
         assert!(process.handles().lookup(handle).is_none());
         assert!(!process.close_handle(handle), "closed already");
-        assert_eq!(process.handles.insert(event_entry()), 4, "the table starts over");
+        assert_eq!(
+            process.handles.insert(event_entry()),
+            4,
+            "the table starts over"
+        );
     }
 
     // --- The dead-stack handoff (slot reuse after a thread exit) -----------
@@ -1126,9 +1144,10 @@ mod tests {
 
     /// Teardown after every thread has exited releases exactly the process's own frames, each
     /// exactly once: the last exit's parked stack, the walked user data frames (committed pages the
-    /// program may not touch included) and tables, the gate window's table, and the directory — nothing from the shared kernel half. An earlier
-    /// exit's stack is not teardown's: the next exit released it. A thread's TEB page is released
-    /// once, by the walk (the thread records never hold user-half frames).
+    /// program may not touch included) and tables, the gate window's table, and the directory —
+    /// nothing from the shared kernel half. An earlier exit's stack is not teardown's: the next
+    /// exit released it. A thread's TEB page is released once, by the walk (the thread records
+    /// never hold user-half frames).
     #[test]
     fn teardown_releases_exactly_the_process_frames() {
         let dir = 0x0090_0000;
@@ -1177,7 +1196,11 @@ mod tests {
 
         mem.release(process);
         let released = &mem.released;
-        assert_eq!(&released[..MAIN_STACK.len()], &MAIN_STACK, "the parked stack first");
+        assert_eq!(
+            &released[..MAIN_STACK.len()],
+            &MAIN_STACK,
+            "the parked stack first"
+        );
         assert_eq!(released.last(), Some(&dir), "the directory last");
         assert_eq!(released.len(), MAIN_STACK.len() + 5 + 1);
     }

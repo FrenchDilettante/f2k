@@ -73,7 +73,11 @@ pub unsafe extern "system" fn create_file_mapping_a(
             0
         };
     let maximum = (i64::from(size_high) << 32) | i64::from(size_low);
-    let file = if file == INVALID_HANDLE_VALUE { 0 } else { file };
+    let file = if file == INVALID_HANDLE_VALUE {
+        0
+    } else {
+        file
+    };
     // SAFETY: the caller's arguments; ntdll's export.
     unsafe {
         sync::create(security, name, |handle, object_attributes| {
@@ -340,7 +344,10 @@ mod tests {
             Some(PAGE_READONLY)
         );
         fail_next(0xC000_0220);
-        assert_eq!(map_view_of_file(HANDLE, FILE_MAP_READ, 0, 0x1000, 0x1000), 0);
+        assert_eq!(
+            map_view_of_file(HANDLE, FILE_MAP_READ, 0, 0x1000, 0x1000),
+            0
+        );
         assert_eq!(last_error(), 1132, "STATUS_MAPPED_ALIGNMENT");
         fail_next(0xC000_0022);
         assert_eq!(map_view_of_file(HANDLE, FILE_MAP_WRITE, 0, 0, 0), 0);

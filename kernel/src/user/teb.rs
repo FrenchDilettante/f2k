@@ -86,9 +86,9 @@ pub mod peb_offset {
     /// CSDVersion: the service pack's name, a UNICODE_STRING (GetVersionExA's szCSDVersion; its
     /// buffer on the process parameters' pages, `user::params::CSD_VERSION_BUFFER`).
     pub const CSD_VERSION: u32 = 0x1DC;
-    /// kernel32's top-level exception filter (SetUnhandledExceptionFilter's): past the PEB proper on
-    /// its page; kernel32's natives reach it through FS (the system DLLs' assembly reads the value
-    /// off this line, see tools/exportgen's `abi`).
+    /// kernel32's top-level exception filter (SetUnhandledExceptionFilter's): past the PEB proper
+    /// on its page; kernel32's natives reach it through FS (the system DLLs' assembly reads the
+    /// value off this line, see tools/exportgen's `abi`).
     pub const TOP_LEVEL_FILTER: u32 = 0x800;
     /// The two TLS bitmaps' RTL_BITMAP headers (SizeOfBitMap, Buffer): ntdll's own data on the
     /// platform, here past the PEB proper on its page (like kernel32's top-level filter slot).
@@ -186,8 +186,14 @@ pub fn peb_words(peb: u32, init: &PebInit) -> [(u32, u32); 20] {
         (TLS_BITMAP_HEADER, crate::user::tls::TEB_SLOTS),
         (TLS_BITMAP_HEADER + 4, peb + TLS_BITMAP_BITS),
         (TLS_EXPANSION_BITMAP, peb + TLS_EXPANSION_BITMAP_HEADER),
-        (TLS_EXPANSION_BITMAP_HEADER, crate::user::tls::EXPANSION_SLOTS),
-        (TLS_EXPANSION_BITMAP_HEADER + 4, peb + TLS_EXPANSION_BITMAP_BITS),
+        (
+            TLS_EXPANSION_BITMAP_HEADER,
+            crate::user::tls::EXPANSION_SLOTS,
+        ),
+        (
+            TLS_EXPANSION_BITMAP_HEADER + 4,
+            peb + TLS_EXPANSION_BITMAP_BITS,
+        ),
         (OS_MAJOR_VERSION, VERSION & 0xFF),
         (OS_MINOR_VERSION, (VERSION >> 8) & 0xFF),
         (
@@ -286,7 +292,10 @@ mod tests {
         assert_eq!(peb_offset::MAXIMUM_NUMBER_OF_HEAPS, 0x8C);
         assert_eq!(peb_offset::PROCESS_HEAPS, 0x90);
         assert_eq!(peb_offset::HEAPS, rtl::heap::HEAPS);
-        assert_eq!(peb_offset::PROCESS_HEAPS_ARRAY + 4 * peb_offset::HEAPS, 0x228);
+        assert_eq!(
+            peb_offset::PROCESS_HEAPS_ARRAY + 4 * peb_offset::HEAPS,
+            0x228
+        );
         assert_eq!(peb_offset::TLS_BITMAP, 0x40);
         assert_eq!(peb_offset::TLS_BITMAP_BITS, 0x44);
         assert_eq!(peb_offset::TLS_EXPANSION_BITMAP, 0x150);
@@ -319,7 +328,11 @@ mod tests {
         assert_eq!(value(teb_offset::THREAD_ID), Some(12));
         assert_eq!(value(teb_offset::PEB), Some(0x0033_0000));
         assert_eq!(value(teb_offset::LAST_ERROR), None);
-        assert_eq!(value(teb_offset::TLS_EXPANSION_SLOTS), None, "TlsSetValue's to make");
+        assert_eq!(
+            value(teb_offset::TLS_EXPANSION_SLOTS),
+            None,
+            "TlsSetValue's to make"
+        );
         for &(offset, _) in &words {
             assert_eq!(offset % 4, 0);
             assert!(offset < 0x1000);
@@ -361,21 +374,24 @@ mod tests {
             value(0x1E0),
             Some(0x0032_0000 + crate::user::params::CSD_VERSION_BUFFER)
         );
-        let bare = peb_words(0x0033_0000, &PebInit {
-            parameters: 0,
-            ..CONSOLE_4_0
-        });
+        let bare = peb_words(
+            0x0033_0000,
+            &PebInit {
+                parameters: 0,
+                ..CONSOLE_4_0
+            },
+        );
         assert!(
             bare.contains(&(0x1DC, 0)) && bare.contains(&(0x1E0, 0)),
             "no parameters, no name"
         );
     }
 
-    /// A fresh PEB: the image, the parameters and the loader's module lists; no process heap yet (ntdll's LdrInitializeThunk
-    /// makes it), the heap list empty over its 16-entry array past the PEB proper; the two TLS
-    /// bitmaps' headers (64 and 1024 bits, over the PEB's own bit arrays, every index free); no PEB
-    /// lock or loader lock yet (ntdll's LdrInitializeThunk makes them). Past the PEB proper only the
-    /// headers, clear of kernel32's filter slot.
+    /// A fresh PEB: the image, the parameters and the loader's module lists; no process heap yet
+    /// (ntdll's LdrInitializeThunk makes it), the heap list empty over its 16-entry array past
+    /// the PEB proper; the two TLS bitmaps' headers (64 and 1024 bits, over the PEB's own bit
+    /// arrays, every index free); no PEB lock or loader lock yet (ntdll's LdrInitializeThunk
+    /// makes them). Past the PEB proper only the headers, clear of kernel32's filter slot.
     #[test]
     fn fresh_peb_words() {
         let peb = 0x0033_0000;
@@ -391,7 +407,11 @@ mod tests {
         assert_eq!(value(peb_offset::NUMBER_OF_HEAPS), None, "no heap yet");
         assert_eq!(value(peb_offset::MAXIMUM_NUMBER_OF_HEAPS), Some(16));
         assert_eq!(value(peb_offset::PROCESS_HEAPS), Some(peb + 0x1E8));
-        assert_eq!(value(peb_offset::HEAP_LIST_LOCK + 4), None, "ntdll's to make");
+        assert_eq!(
+            value(peb_offset::HEAP_LIST_LOCK + 4),
+            None,
+            "ntdll's to make"
+        );
         assert_eq!(value(peb_offset::TLS_BITMAP), Some(peb + 0x810));
         assert_eq!(value(0x810), Some(64));
         assert_eq!(value(0x814), Some(peb + 0x44));

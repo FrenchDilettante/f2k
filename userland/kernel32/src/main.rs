@@ -83,7 +83,8 @@ struct ProcessHeap(usize);
 impl HeapCalls for ProcessHeap {
     fn alloc(&self, flags: u32, size: usize) -> Option<usize> {
         // SAFETY: ntdll's export, on the process heap (which raises no failures).
-        Some(unsafe { nt::RtlAllocateHeap(self.0, flags, size) } as usize).filter(|&block| block != 0)
+        Some(unsafe { nt::RtlAllocateHeap(self.0, flags, size) } as usize)
+            .filter(|&block| block != 0)
     }
 
     fn free(&self, flags: u32, pointer: usize) -> bool {
@@ -93,12 +94,14 @@ impl HeapCalls for ProcessHeap {
 
     fn size(&self, flags: u32, pointer: usize) -> Option<usize> {
         // SAFETY: as above; -1 for what is not a block.
-        Some(unsafe { nt::RtlSizeHeap(self.0, flags, pointer as *const u8) }).filter(|&size| size != usize::MAX)
+        Some(unsafe { nt::RtlSizeHeap(self.0, flags, pointer as *const u8) })
+            .filter(|&size| size != usize::MAX)
     }
 
     fn realloc(&self, flags: u32, pointer: usize, size: usize) -> Option<usize> {
         // SAFETY: as above.
-        Some(unsafe { nt::RtlReAllocateHeap(self.0, flags, pointer as *mut u8, size) } as usize).filter(|&block| block != 0)
+        Some(unsafe { nt::RtlReAllocateHeap(self.0, flags, pointer as *mut u8, size) } as usize)
+            .filter(|&block| block != 0)
     }
 }
 
@@ -170,7 +173,11 @@ extern "C" fn f2k_k32_local_realloc(handle: usize, size: usize, flags: u32) -> u
 extern "C" fn f2k_k32_tls_expansion() -> usize {
     // SAFETY: ntdll's export, over the process heap.
     let slots = unsafe {
-        nt::RtlAllocateHeap(sys::process_heap_handle(), rtl::heap::HEAP_ZERO_MEMORY, rtl::ldr::EXPANSION_BYTES)
+        nt::RtlAllocateHeap(
+            sys::process_heap_handle(),
+            rtl::heap::HEAP_ZERO_MEMORY,
+            rtl::ldr::EXPANSION_BYTES,
+        )
     } as usize;
     if slots == 0 {
         return 0;

@@ -50,7 +50,8 @@ fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
     let era = year.div_euclid(400);
     let year_of_era = year - era * 400;
     let month = month as i64;
-    let day_of_year = (153 * (if month > 2 { month - 3 } else { month + 9 }) + 2) / 5 + day as i64 - 1;
+    let day_of_year =
+        (153 * (if month > 2 { month - 3 } else { month + 9 }) + 2) / 5 + day as i64 - 1;
     let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
     era * 146_097 + day_of_era - 719_468
 }
@@ -60,7 +61,8 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let days = days + 719_468;
     let era = days.div_euclid(146_097);
     let day_of_era = days - era * 146_097;
-    let year_of_era = (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let year_of_era =
+        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
     let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
     let mp = (5 * day_of_year + 2) / 153;
     let day = (day_of_year - (153 * mp + 2) / 5 + 1) as u32;
@@ -70,7 +72,14 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 }
 
 /// The FILETIME of a civil date and time of day (no range checks: the fields are taken as given).
-pub fn filetime_from_fields(year: u16, month: u16, day: u16, hour: u16, minute: u16, second: u16) -> u64 {
+pub fn filetime_from_fields(
+    year: u16,
+    month: u16,
+    day: u16,
+    hour: u16,
+    minute: u16,
+    second: u16,
+) -> u64 {
     let days = days_from_civil(year as i64, month as u32, day as u32) + DAYS_1601_TO_1970;
     let seconds = hour as u64 * 3600 + minute as u64 * 60 + second as u64;
     days as u64 * UNITS_PER_DAY + seconds * UNITS_PER_SECOND
@@ -114,7 +123,14 @@ pub fn filetime_from_system_time(time: SystemTime) -> Option<u64> {
     {
         return None;
     }
-    let base = filetime_from_fields(time.year, time.month, time.day, time.hour, time.minute, time.second);
+    let base = filetime_from_fields(
+        time.year,
+        time.month,
+        time.day,
+        time.hour,
+        time.minute,
+        time.second,
+    );
     Some(base + time.milliseconds as u64 * 10_000)
 }
 
@@ -143,8 +159,14 @@ mod tests {
     #[test]
     fn the_epochs_convert() {
         assert_eq!(filetime_from_fields(1601, 1, 1, 0, 0, 0), 0);
-        assert_eq!(filetime_from_fields(1970, 1, 1, 0, 0, 0), 116_444_736_000_000_000);
-        assert_eq!(filetime_from_fields(2000, 1, 1, 0, 0, 0), 125_911_584_000_000_000);
+        assert_eq!(
+            filetime_from_fields(1970, 1, 1, 0, 0, 0),
+            116_444_736_000_000_000
+        );
+        assert_eq!(
+            filetime_from_fields(2000, 1, 1, 0, 0, 0),
+            125_911_584_000_000_000
+        );
     }
 
     /// A FILETIME round-trips through the civil fields, with the day of the week and milliseconds.
@@ -165,7 +187,11 @@ mod tests {
                 milliseconds: 234,
             }
         );
-        assert_eq!(system_time_from_filetime(0).day_of_week, 1, "1601-01-01 was a Monday");
+        assert_eq!(
+            system_time_from_filetime(0).day_of_week,
+            1,
+            "1601-01-01 was a Monday"
+        );
         assert_eq!(filetime_from_system_time(st), Some(base + 1_234_0000));
         assert_eq!(SystemTime::from_bytes(&st.to_bytes()), st);
     }
@@ -173,11 +199,39 @@ mod tests {
     /// SystemTimeToFileTime refuses a field out of its range (not the day of the week).
     #[test]
     fn out_of_range_fields_are_refused() {
-        let st = SystemTime { year: 2001, month: 2, day_of_week: 9, day: 3, hour: 4, minute: 5, second: 6, milliseconds: 0 };
+        let st = SystemTime {
+            year: 2001,
+            month: 2,
+            day_of_week: 9,
+            day: 3,
+            hour: 4,
+            minute: 5,
+            second: 6,
+            milliseconds: 0,
+        };
         assert!(filetime_from_system_time(st).is_some());
-        assert_eq!(filetime_from_system_time(SystemTime { month: 13, ..st }), None);
-        assert_eq!(filetime_from_system_time(SystemTime { day: 29, month: 2, ..st }), None);
-        assert_eq!(filetime_from_system_time(SystemTime { year: 1600, ..st }), None);
-        assert_eq!(filetime_from_system_time(SystemTime { milliseconds: 1000, ..st }), None);
+        assert_eq!(
+            filetime_from_system_time(SystemTime { month: 13, ..st }),
+            None
+        );
+        assert_eq!(
+            filetime_from_system_time(SystemTime {
+                day: 29,
+                month: 2,
+                ..st
+            }),
+            None
+        );
+        assert_eq!(
+            filetime_from_system_time(SystemTime { year: 1600, ..st }),
+            None
+        );
+        assert_eq!(
+            filetime_from_system_time(SystemTime {
+                milliseconds: 1000,
+                ..st
+            }),
+            None
+        );
     }
 }

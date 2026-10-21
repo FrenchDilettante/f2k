@@ -50,7 +50,9 @@ pub struct Path<'a> {
 /// ImagePathName), then `dlls` (ntdll, kernel32) with their full paths, written in the room.
 pub fn lists(at: u32, image: (Module, Path), dlls: [(Module, &[u8]); 2]) -> [u8; ROOM] {
     let mut bytes = [0u8; ROOM];
-    let mut put = |offset: u32, value: u32| bytes[offset as usize..offset as usize + 4].copy_from_slice(&value.to_le_bytes());
+    let mut put = |offset: u32, value: u32| {
+        bytes[offset as usize..offset as usize + 4].copy_from_slice(&value.to_le_bytes())
+    };
     put(data::LENGTH, data::SIZE);
     put(data::INITIALIZED, 1);
     // The system DLLs' paths, in UTF-16, each terminated.
@@ -58,11 +60,22 @@ pub fn lists(at: u32, image: (Module, Path), dlls: [(Module, &[u8]); 2]) -> [u8;
     let mut paths = [image.1; 2];
     for (index, &(_, text)) in dlls.iter().enumerate() {
         let units = 2 * text.len() as u32;
-        paths[index] = Path { buffer: at + strings, room: units + 2, text };
+        paths[index] = Path {
+            buffer: at + strings,
+            room: units + 2,
+            text,
+        };
         strings += units + 2;
     }
-    assert!(strings as usize <= ROOM, "the system DLLs' paths fit the lists' room");
-    let modules = [(image.0, image.1), (dlls[0].0, paths[0]), (dlls[1].0, paths[1])];
+    assert!(
+        strings as usize <= ROOM,
+        "the system DLLs' paths fit the lists' room"
+    );
+    let modules = [
+        (image.0, image.1),
+        (dlls[0].0, paths[0]),
+        (dlls[1].0, paths[1]),
+    ];
     let entry_at = |index: usize| ENTRIES + index as u32 * entry::SIZE;
     for (index, (module, path)) in modules.iter().enumerate() {
         let at_entry = entry_at(index);
@@ -72,21 +85,46 @@ pub fn lists(at: u32, image: (Module, Path), dlls: [(Module, &[u8]); 2]) -> [u8;
         let length = 2 * path.text.len() as u32;
         put(at_entry + entry::FULL_DLL_NAME, length | path.room << 16);
         put(at_entry + entry::FULL_DLL_NAME + 4, path.buffer);
-        let file = 2 * path.text.iter().rposition(|&byte| byte == b'\\').map_or(0, |at| at + 1) as u32;
-        put(at_entry + entry::BASE_DLL_NAME, (length - file) | (path.room - file) << 16);
+        let file = 2 * path
+            .text
+            .iter()
+            .rposition(|&byte| byte == b'\\')
+            .map_or(0, |at| at + 1) as u32;
+        put(
+            at_entry + entry::BASE_DLL_NAME,
+            (length - file) | (path.room - file) << 16,
+        );
         put(at_entry + entry::BASE_DLL_NAME + 4, path.buffer + file);
         let kind = if module.dll { flags::IMAGE_DLL } else { 0 };
         put(at_entry + entry::FLAGS, kind | flags::ENTRY_PROCESSED);
         put(at_entry + entry::LOAD_COUNT, u32::from(STATIC_LOAD_COUNT));
-        put(at_entry + entry::HASH_LINKS, at + at_entry + entry::HASH_LINKS);
-        put(at_entry + entry::HASH_LINKS + 4, at + at_entry + entry::HASH_LINKS);
+        put(
+            at_entry + entry::HASH_LINKS,
+            at + at_entry + entry::HASH_LINKS,
+        );
+        put(
+            at_entry + entry::HASH_LINKS + 4,
+            at + at_entry + entry::HASH_LINKS,
+        );
         put(at_entry + entry::TIME_DATE_STAMP, module.time_date_stamp);
     }
     // Each list from its head, round to it again: Flink forward, Blink back.
     let lists: [(u32, u32, &[usize]); 3] = [
-        (data::IN_LOAD_ORDER_MODULE_LIST, entry::IN_LOAD_ORDER_LINKS, &[0, 1, 2]),
-        (data::IN_MEMORY_ORDER_MODULE_LIST, entry::IN_MEMORY_ORDER_LINKS, &[0, 1, 2]),
-        (data::IN_INITIALIZATION_ORDER_MODULE_LIST, entry::IN_INITIALIZATION_ORDER_LINKS, &[1, 2]),
+        (
+            data::IN_LOAD_ORDER_MODULE_LIST,
+            entry::IN_LOAD_ORDER_LINKS,
+            &[0, 1, 2],
+        ),
+        (
+            data::IN_MEMORY_ORDER_MODULE_LIST,
+            entry::IN_MEMORY_ORDER_LINKS,
+            &[0, 1, 2],
+        ),
+        (
+            data::IN_INITIALIZATION_ORDER_MODULE_LIST,
+            entry::IN_INITIALIZATION_ORDER_LINKS,
+            &[1, 2],
+        ),
     ];
     for (head, links, order) in lists {
         let mut nodes = [head; 4];
@@ -96,7 +134,10 @@ pub fn lists(at: u32, image: (Module, Path), dlls: [(Module, &[u8]); 2]) -> [u8;
         let nodes = &nodes[..order.len() + 1];
         for (index, &node) in nodes.iter().enumerate() {
             put(node, at + nodes[(index + 1) % nodes.len()]);
-            put(node + 4, at + nodes[(index + nodes.len() - 1) % nodes.len()]);
+            put(
+                node + 4,
+                at + nodes[(index + nodes.len() - 1) % nodes.len()],
+            );
         }
     }
     for (index, (_, text)) in dlls.iter().enumerate() {
@@ -112,7 +153,11 @@ pub fn system_dlls() -> [(Module, &'static [u8]); 2] {
     [NTDLL, KERNEL32].map(|index| {
         let dll = &SYSTEM_DLLS[index];
         let image = dll.image();
-        let entry_point = if image.entry_rva == 0 { 0 } else { image.entry_va() };
+        let entry_point = if image.entry_rva == 0 {
+            0
+        } else {
+            image.entry_va()
+        };
         let module = Module {
             base: dll.base,
             entry_point,
@@ -130,15 +175,20 @@ pub fn system_dlls() -> [(Module, &'static [u8]); 2] {
 pub fn map(image: Module, image_name: &[u8]) {
     use crate::user::{params, PARAMS_PAGE};
     let at = PARAMS_PAGE + LOADER_DATA;
-    let path = Path { buffer: PARAMS_PAGE + params::IMAGE_PATH_BUFFER, room: params::PATH_ROOM, text: image_name };
+    let path = Path {
+        buffer: PARAMS_PAGE + params::IMAGE_PATH_BUFFER,
+        room: params::PATH_ROOM,
+        text: image_name,
+    };
     let bytes = lists(at, (image, path), system_dlls());
     let _ = crate::user::syscall::write_user(at, &bytes);
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use rtl::modules::{by_base, by_name, load_order, module_name, procedure_address, Memory};
+
+    use super::*;
 
     const PARAMS: u32 = 0x0032_0000;
 
@@ -169,10 +219,24 @@ mod tests {
         let name = b"C:\\RUNTIME.EXE";
         let start = params::IMAGE_PATH_BUFFER as usize;
         params::widen(name, &mut page[start..start + 2 * name.len()]);
-        let image = Module { base: 0x0040_0000, entry_point: 0x0040_1234, size: 0x6000, time_date_stamp: 0x3A00_0000, dll: false };
-        let path = Path { buffer: PARAMS + params::IMAGE_PATH_BUFFER, room: params::PATH_ROOM, text: name };
+        let image = Module {
+            base: 0x0040_0000,
+            entry_point: 0x0040_1234,
+            size: 0x6000,
+            time_date_stamp: 0x3A00_0000,
+            dll: false,
+        };
+        let path = Path {
+            buffer: PARAMS + params::IMAGE_PATH_BUFFER,
+            room: params::PATH_ROOM,
+            text: name,
+        };
         let at = LOADER_DATA as usize;
-        page[at..at + ROOM].copy_from_slice(&lists(PARAMS + LOADER_DATA, (image, path), system_dlls()));
+        page[at..at + ROOM].copy_from_slice(&lists(
+            PARAMS + LOADER_DATA,
+            (image, path),
+            system_dlls(),
+        ));
         let dlls = crate::exec::modules::SYSTEM_DLLS
             .iter()
             .map(|dll| {
@@ -207,17 +271,42 @@ mod tests {
             let mut bases = std::vec::Vec::new();
             let mut node = memory.word(LDR + head);
             while node != LDR + head {
-                assert_eq!(memory.word(memory.word(node) + 4), node, "the next node's Blink");
+                assert_eq!(
+                    memory.word(memory.word(node) + 4),
+                    node,
+                    "the next node's Blink"
+                );
                 bases.push(memory.word(node - links + entry::DLL_BASE));
                 node = memory.word(node);
             }
             bases
         };
         use crate::exec::modules::{KERNEL32_BASE, NTDLL_BASE};
-        assert_eq!(walk(data::IN_LOAD_ORDER_MODULE_LIST, entry::IN_LOAD_ORDER_LINKS), [0x0040_0000, NTDLL_BASE, KERNEL32_BASE]);
-        assert_eq!(walk(data::IN_MEMORY_ORDER_MODULE_LIST, entry::IN_MEMORY_ORDER_LINKS), [0x0040_0000, NTDLL_BASE, KERNEL32_BASE]);
-        assert_eq!(walk(data::IN_INITIALIZATION_ORDER_MODULE_LIST, entry::IN_INITIALIZATION_ORDER_LINKS), [NTDLL_BASE, KERNEL32_BASE]);
-        assert_eq!((memory.word(LDR + data::LENGTH), memory.word(LDR + data::INITIALIZED)), (0x24, 1));
+        assert_eq!(
+            walk(data::IN_LOAD_ORDER_MODULE_LIST, entry::IN_LOAD_ORDER_LINKS),
+            [0x0040_0000, NTDLL_BASE, KERNEL32_BASE]
+        );
+        assert_eq!(
+            walk(
+                data::IN_MEMORY_ORDER_MODULE_LIST,
+                entry::IN_MEMORY_ORDER_LINKS
+            ),
+            [0x0040_0000, NTDLL_BASE, KERNEL32_BASE]
+        );
+        assert_eq!(
+            walk(
+                data::IN_INITIALIZATION_ORDER_MODULE_LIST,
+                entry::IN_INITIALIZATION_ORDER_LINKS
+            ),
+            [NTDLL_BASE, KERNEL32_BASE]
+        );
+        assert_eq!(
+            (
+                memory.word(LDR + data::LENGTH),
+                memory.word(LDR + data::INITIALIZED)
+            ),
+            (0x24, 1)
+        );
         assert_eq!(load_order(&memory, LDR).count(), 3);
     }
 
@@ -230,27 +319,54 @@ mod tests {
         let text = |at: u32| -> std::string::String {
             let length = memory.half(at) as u32 / 2;
             let buffer = memory.word(at + 4);
-            char::decode_utf16((0..length).map(|index| memory.half(buffer + 2 * index))).map(|c| c.unwrap()).collect()
+            char::decode_utf16((0..length).map(|index| memory.half(buffer + 2 * index)))
+                .map(|c| c.unwrap())
+                .collect()
         };
         let image = by_base(&memory, LDR, 0x0040_0000).unwrap();
         assert_eq!(text(image + entry::FULL_DLL_NAME), "C:\\RUNTIME.EXE");
         assert_eq!(text(image + entry::BASE_DLL_NAME), "RUNTIME.EXE");
-        assert_eq!(memory.word(image + entry::FULL_DLL_NAME + 4), PARAMS + crate::user::params::IMAGE_PATH_BUFFER);
+        assert_eq!(
+            memory.word(image + entry::FULL_DLL_NAME + 4),
+            PARAMS + crate::user::params::IMAGE_PATH_BUFFER
+        );
         assert_eq!(memory.word(image + entry::ENTRY_POINT), 0x0040_1234);
         assert_eq!(memory.word(image + entry::FLAGS), flags::ENTRY_PROCESSED);
         assert_eq!(memory.word(image + entry::TIME_DATE_STAMP), 0x3A00_0000);
         assert_eq!(memory.half(image + entry::LOAD_COUNT), 0xFFFF);
-        assert_eq!(memory.word(image + entry::IN_INITIALIZATION_ORDER_LINKS), 0, "not in the initialization order");
+        assert_eq!(
+            memory.word(image + entry::IN_INITIALIZATION_ORDER_LINKS),
+            0,
+            "not in the initialization order"
+        );
         let kernel32 = by_base(&memory, LDR, KERNEL32_BASE).unwrap();
-        assert_eq!(text(kernel32 + entry::FULL_DLL_NAME), "C:\\WINNT\\system32\\KERNEL32.DLL");
+        assert_eq!(
+            text(kernel32 + entry::FULL_DLL_NAME),
+            "C:\\WINNT\\system32\\KERNEL32.DLL"
+        );
         assert_eq!(text(kernel32 + entry::BASE_DLL_NAME), "KERNEL32.DLL");
-        assert_eq!(memory.half(kernel32 + entry::FULL_DLL_NAME + 2), 2 * 30 + 2, "room for the terminator");
-        assert_eq!(memory.half(memory.word(kernel32 + entry::FULL_DLL_NAME + 4) + 60), 0, "terminated");
+        assert_eq!(
+            memory.half(kernel32 + entry::FULL_DLL_NAME + 2),
+            2 * 30 + 2,
+            "room for the terminator"
+        );
+        assert_eq!(
+            memory.half(memory.word(kernel32 + entry::FULL_DLL_NAME + 4) + 60),
+            0,
+            "terminated"
+        );
         assert_eq!(memory.word(kernel32 + entry::SIZE_OF_IMAGE), KERNEL32_SIZE);
         assert_eq!(memory.word(kernel32 + entry::ENTRY_POINT), 0, "no DllMain");
-        assert_eq!(memory.word(kernel32 + entry::FLAGS), flags::IMAGE_DLL | flags::ENTRY_PROCESSED);
+        assert_eq!(
+            memory.word(kernel32 + entry::FLAGS),
+            flags::IMAGE_DLL | flags::ENTRY_PROCESSED
+        );
         assert_eq!(memory.half(kernel32 + entry::LOAD_COUNT), 0xFFFF);
-        assert_eq!(memory.word(kernel32 + entry::HASH_LINKS), kernel32 + entry::HASH_LINKS, "an empty ring");
+        assert_eq!(
+            memory.word(kernel32 + entry::HASH_LINKS),
+            kernel32 + entry::HASH_LINKS,
+            "an empty ring"
+        );
         let ntdll = load_order(&memory, LDR).nth(1).unwrap();
         assert_eq!(text(ntdll + entry::FULL_DLL_NAME).as_bytes(), NTDLL_PATH);
         assert_eq!(text(ntdll + entry::BASE_DLL_NAME), "ntdll.dll");
@@ -269,12 +385,21 @@ mod tests {
             let mut count = 0;
             for name in exports.names(dll.file) {
                 let expected = resolve(dll.file_name, name).unwrap();
-                assert_eq!(procedure_address(&memory, LDR, dll.base, name.as_bytes()), Ok(expected), "{}!{name}", dll.file_name);
+                assert_eq!(
+                    procedure_address(&memory, LDR, dll.base, name.as_bytes()),
+                    Ok(expected),
+                    "{}!{name}",
+                    dll.file_name
+                );
                 count += 1;
             }
             assert!(count > 10, "{}: {count} exports", dll.file_name);
         }
-        for (name, base) in [("kernel32", 0x7C4E_0000), ("NTDLL.DLL", 0x77F8_0000), ("runtime.exe", 0x0040_0000)] {
+        for (name, base) in [
+            ("kernel32", 0x7C4E_0000),
+            ("NTDLL.DLL", 0x77F8_0000),
+            ("runtime.exe", 0x0040_0000),
+        ] {
             let units: std::vec::Vec<u16> = name.encode_utf16().collect();
             let mut formed = [0u16; 32];
             let length = module_name(&units, &mut formed).unwrap();

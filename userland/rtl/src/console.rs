@@ -1,10 +1,10 @@
 //! The console server, as kernel32 reaches it through ntdll's CsrClientCallServer: the message
 //! format both sides share, and the server's rules over a process's console handles.
 //!
-//! Windows 2000's kernel32 sends its console work to the client-server runtime (csrss, whose console
-//! server owns the console and its handle tables) over an LPC port. F2K has no csrss: ntdll's
-//! CsrClientCallServer raises one internal system service, and the kernel's stand-in serves the
-//! message with these rules over the console's state ([`Console`]: its input buffer's mode, its
+//! Windows 2000's kernel32 sends its console work to the client-server runtime (csrss, whose
+//! console server owns the console and its handle tables) over an LPC port. F2K has no csrss:
+//! ntdll's CsrClientCallServer raises one internal system service, and the kernel's stand-in serves
+//! the message with these rules over the console's state ([`Console`]: its input buffer's mode, its
 //! screen buffer, [`screen`], and its title). Console handles stay
 //! outside the kernel's handle table, as on Windows 2000: they are the console server's own, per
 //! process — (index << 2) | 3, the low two bits kernel32's CONSOLE_HANDLE test, the standard
@@ -26,7 +26,10 @@ pub mod screen;
 use screen::{Cell, Fill, ScreenBuffer, HEIGHT, OUTPUT_MODE_MASK, WIDTH};
 
 use crate::status::{
-    STATUS_INVALID_HANDLE, STATUS_INVALID_PARAMETER, STATUS_NO_MEMORY, STATUS_SUCCESS,
+    STATUS_INVALID_HANDLE,
+    STATUS_INVALID_PARAMETER,
+    STATUS_NO_MEMORY,
+    STATUS_SUCCESS,
 };
 
 /// The message header's fields, by offset into the message: Windows 2000's layout.

@@ -3,7 +3,13 @@
 //! the calling process.
 
 use super::call::{
-    Fault, Handle, NtCall, NtResult, Status, STATUS_INVALID_HANDLE, STATUS_INVALID_PARAMETER,
+    Fault,
+    Handle,
+    NtCall,
+    NtResult,
+    Status,
+    STATUS_INVALID_HANDLE,
+    STATUS_INVALID_PARAMETER,
     STATUS_SUCCESS,
 };
 use crate::ob::Entry;

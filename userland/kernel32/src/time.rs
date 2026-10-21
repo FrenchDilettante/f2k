@@ -146,10 +146,17 @@ pub unsafe extern "system" fn query_performance_frequency(frequency: *mut u64) -
 ///
 /// `system_time` points at a SYSTEMTIME, `file_time` at a writable FILETIME.
 #[unsafe(export_name = "f2k_export_SystemTimeToFileTime")]
-pub unsafe extern "system" fn system_time_to_file_time(system_time: *const u8, file_time: *mut u64) -> u32 {
+pub unsafe extern "system" fn system_time_to_file_time(
+    system_time: *const u8,
+    file_time: *mut u64,
+) -> u32 {
     let mut bytes = [0u8; 16];
     // SAFETY: the caller's SYSTEMTIME.
-    unsafe { bytes.as_mut_ptr().copy_from_nonoverlapping(system_time, bytes.len()) };
+    unsafe {
+        bytes
+            .as_mut_ptr()
+            .copy_from_nonoverlapping(system_time, bytes.len())
+    };
     match filetime_from_system_time(SystemTime::from_bytes(&bytes)) {
         Some(time) => {
             // SAFETY: the caller's FILETIME.
@@ -170,7 +177,10 @@ pub unsafe extern "system" fn system_time_to_file_time(system_time: *const u8, f
 ///
 /// `file_time` points at a FILETIME, `system_time` at a writable SYSTEMTIME.
 #[unsafe(export_name = "f2k_export_FileTimeToSystemTime")]
-pub unsafe extern "system" fn file_time_to_system_time(file_time: *const u64, system_time: *mut u8) -> u32 {
+pub unsafe extern "system" fn file_time_to_system_time(
+    file_time: *const u64,
+    system_time: *mut u8,
+) -> u32 {
     // SAFETY: the caller's FILETIME.
     let time = unsafe { file_time.read_unaligned() };
     if time >= 1 << 63 {
@@ -188,8 +198,17 @@ pub unsafe extern "system" fn file_time_to_system_time(file_time: *const u64, sy
 ///
 /// `file_time` points at a FILETIME, `local` at a writable one.
 #[unsafe(export_name = "f2k_export_FileTimeToLocalFileTime")]
-pub unsafe extern "system" fn file_time_to_local_file_time(file_time: *const u64, local: *mut u64) -> u32 {
+pub unsafe extern "system" fn file_time_to_local_file_time(
+    file_time: *const u64,
+    local: *mut u64,
+) -> u32 {
     // SAFETY: the caller's FILETIMEs.
-    unsafe { local.write_unaligned(file_time.read_unaligned().wrapping_sub(shared::time(shared::TIME_ZONE_BIAS))) };
+    unsafe {
+        local.write_unaligned(
+            file_time
+                .read_unaligned()
+                .wrapping_sub(shared::time(shared::TIME_ZONE_BIAS)),
+        )
+    };
     1
 }

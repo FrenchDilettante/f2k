@@ -8,10 +8,34 @@
 //! (STATUS_BUFFER_OVERFLOW), the search past it. Entries match by their long name, then their 8.3
 //! name; a listing reports the 8.3 name beside a long one only.
 
-use super::super::call::{Handle, NtCall, NtResult, Status, UserAddr, STATUS_INVALID_PARAMETER, STATUS_SUCCESS};
-use super::common::{check_access, cluster_bytes, complete, completion_event, file_object, probe, signal};
+use super::super::call::{
+    Handle,
+    NtCall,
+    NtResult,
+    Status,
+    UserAddr,
+    STATUS_INVALID_PARAMETER,
+    STATUS_SUCCESS,
+};
+use super::common::{
+    check_access,
+    cluster_bytes,
+    complete,
+    completion_event,
+    file_object,
+    probe,
+    signal,
+};
 use super::info::{self, Entry};
-use super::{STATUS_BUFFER_OVERFLOW, STATUS_INFO_LENGTH_MISMATCH, STATUS_INSUFFICIENT_RESOURCES, STATUS_INVALID_INFO_CLASS, STATUS_NOT_IMPLEMENTED, STATUS_NO_MORE_FILES, STATUS_NO_SUCH_FILE};
+use super::{
+    STATUS_BUFFER_OVERFLOW,
+    STATUS_INFO_LENGTH_MISMATCH,
+    STATUS_INSUFFICIENT_RESOURCES,
+    STATUS_INVALID_INFO_CLASS,
+    STATUS_NOT_IMPLEMENTED,
+    STATUS_NO_MORE_FILES,
+    STATUS_NO_SUCH_FILE,
+};
 use crate::fs::fat32::dir::{decode_byte, fold_unit, walk, Listed};
 use crate::fs::fat32::lookup::File;
 use crate::fs::fat32::path::MAX_NAME;
@@ -49,7 +73,9 @@ fn short_units(listed: &Listed, out: &mut [u16; 12]) -> usize {
 fn entry_matches(listed: &Listed, expression: &[u16]) -> bool {
     let mut units = [0u16; MAX_NAME];
     let length = name_units(listed, &mut units);
-    units[..length].iter_mut().for_each(|unit| *unit = fold_unit(*unit));
+    units[..length]
+        .iter_mut()
+        .for_each(|unit| *unit = fold_unit(*unit));
     if matches(expression, &units[..length]) {
         return true;
     }
@@ -58,7 +84,9 @@ fn entry_matches(listed: &Listed, expression: &[u16]) -> bool {
     }
     let mut short = [0u16; 12];
     let length = short_units(listed, &mut short);
-    short[..length].iter_mut().for_each(|unit| *unit = fold_unit(*unit));
+    short[..length]
+        .iter_mut()
+        .for_each(|unit| *unit = fold_unit(*unit));
     matches(expression, &short[..length])
 }
 
@@ -104,7 +132,9 @@ fn query_directory_file_held(
             let mut header = [0u8; 8];
             file_name.read(&mut header)?;
             let count = u16::from_le_bytes([header[0], header[1]]) as usize / 2;
-            let buffer = UserAddr(u32::from_le_bytes([header[4], header[5], header[6], header[7]]));
+            let buffer = UserAddr(u32::from_le_bytes([
+                header[4], header[5], header[6], header[7],
+            ]));
             if count > MAX_EXPRESSION {
                 return Err(super::super::attributes::STATUS_OBJECT_NAME_INVALID);
             }
@@ -115,7 +145,9 @@ fn query_directory_file_held(
             }
             expression = (count > 0).then_some(&units[..count]);
         }
-        object.search = searches().open(expression).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
+        object.search = searches()
+            .open(expression)
+            .ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
     } else if restart as u8 != 0 {
         searches().get(object.search).restart();
     }
@@ -142,7 +174,11 @@ fn query_directory_file_held(
             let mut name = [0u16; MAX_NAME];
             let name_length = name_units(listed, &mut name);
             let mut short = [0u16; 12];
-            let short_length = if listed.long_name().is_some() { short_units(listed, &mut short) } else { 0 };
+            let short_length = if listed.long_name().is_some() {
+                short_units(listed, &mut short)
+            } else {
+                0
+            };
             let file = File::of(listed, directory.first_cluster);
             let entry = Entry {
                 index: listed.index,
@@ -182,7 +218,11 @@ fn query_directory_file_held(
                 None => Err(STATUS_NO_SUCH_FILE),
                 Some(_) => {
                     information.write(&buffer[..used])?;
-                    Ok(if cut { STATUS_BUFFER_OVERFLOW } else { STATUS_SUCCESS })
+                    Ok(if cut {
+                        STATUS_BUFFER_OVERFLOW
+                    } else {
+                        STATUS_SUCCESS
+                    })
                 }
             }
         }
@@ -203,9 +243,37 @@ fn query_directory_file_held(
 
 /// NtQueryDirectoryFile (see [`query_directory_file_held`]), as one critical region.
 #[allow(clippy::too_many_arguments)]
-pub fn query_directory_file(call: &mut NtCall, handle: Handle, event: Handle, routine: UserAddr, context: UserAddr, io_status: UserAddr, information: UserAddr, length: u32, class: u32, single: u32, file_name: UserAddr, restart: u32) -> NtResult {
+pub fn query_directory_file(
+    call: &mut NtCall,
+    handle: Handle,
+    event: Handle,
+    routine: UserAddr,
+    context: UserAddr,
+    io_status: UserAddr,
+    information: UserAddr,
+    length: u32,
+    class: u32,
+    single: u32,
+    file_name: UserAddr,
+    restart: u32,
+) -> NtResult {
     // The call holds its file object (a reference) across the volume's critical regions: run it
     // inside one of its own, so a termination requested meanwhile ends the thread only once the
     // reference has gone (an inner region's end would end it with the reference still held).
-    crate::process::threads::critical_region(|| query_directory_file_held(call, handle, event, routine, context, io_status, information, length, class, single, file_name, restart))
+    crate::process::threads::critical_region(|| {
+        query_directory_file_held(
+            call,
+            handle,
+            event,
+            routine,
+            context,
+            io_status,
+            information,
+            length,
+            class,
+            single,
+            file_name,
+            restart,
+        )
+    })
 }

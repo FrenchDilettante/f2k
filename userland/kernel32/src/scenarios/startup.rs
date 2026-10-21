@@ -15,15 +15,38 @@ const MAX_WIDTH_MASK: u32 = 0x00FF;
 fn system_messages_format_into_the_buffer() {
     let mut buffer = [0xCCu8; 64];
     let none = core::ptr::null();
-    let length = unsafe { format_message_a(FROM_SYSTEM, none, 2, 0, buffer.as_mut_ptr(), 64, none) };
+    let length =
+        unsafe { format_message_a(FROM_SYSTEM, none, 2, 0, buffer.as_mut_ptr(), 64, none) };
     assert_eq!(length, 44);
-    assert_eq!(&buffer[..45], b"The system cannot find the file specified.\r\n\0");
-    assert_eq!(unsafe { format_message_a(FROM_SYSTEM, none, 2, 0, buffer.as_mut_ptr(), 44, none) }, 0);
+    assert_eq!(
+        &buffer[..45],
+        b"The system cannot find the file specified.\r\n\0"
+    );
+    assert_eq!(
+        unsafe { format_message_a(FROM_SYSTEM, none, 2, 0, buffer.as_mut_ptr(), 44, none) },
+        0
+    );
     assert_eq!(last_error(), 122);
     let flags = FROM_SYSTEM | FROM_STRING;
-    assert_eq!(unsafe { format_message_a(flags, none, 2, 0, buffer.as_mut_ptr(), 64, none) }, 0);
+    assert_eq!(
+        unsafe { format_message_a(flags, none, 2, 0, buffer.as_mut_ptr(), 64, none) },
+        0
+    );
     assert_eq!(last_error(), 87);
-    assert_eq!(unsafe { format_message_a(FROM_SYSTEM, none, 0x0123_4567, 0, buffer.as_mut_ptr(), 64, none) }, 0);
+    assert_eq!(
+        unsafe {
+            format_message_a(
+                FROM_SYSTEM,
+                none,
+                0x0123_4567,
+                0,
+                buffer.as_mut_ptr(),
+                64,
+                none,
+            )
+        },
+        0
+    );
     assert_eq!(last_error(), 317);
 }
 
@@ -43,13 +66,22 @@ fn an_allocated_buffer_holds_the_message() {
     let mut block: *mut u8 = 0x1234 as *mut u8;
     let slot = &mut block as *mut *mut u8 as *mut u8;
     let flags = FROM_SYSTEM | ALLOCATE_BUFFER;
-    assert_eq!(unsafe { format_message_a(flags, none, 5, 0, slot, 0, none) }, 19);
+    assert_eq!(
+        unsafe { format_message_a(flags, none, 5, 0, slot, 0, none) },
+        19
+    );
     assert_eq!(take(block, 20), b"Access is denied.\r\n\0");
     // nSize is the least the block holds.
-    assert_eq!(unsafe { format_message_a(flags, none, 5, 0, slot, 200, none) }, 19);
+    assert_eq!(
+        unsafe { format_message_a(flags, none, 5, 0, slot, 200, none) },
+        19
+    );
     assert_eq!(take(block, 200)[..20], b"Access is denied.\r\n\0"[..]);
     block = 0x1234 as *mut u8;
-    assert_eq!(unsafe { format_message_a(flags, none, 0x0123_4567, 0, slot, 0, none) }, 0);
+    assert_eq!(
+        unsafe { format_message_a(flags, none, 0x0123_4567, 0, slot, 0, none) },
+        0
+    );
     assert_eq!(last_error(), 317);
     assert!(block.is_null(), "a failed call leaves no block");
 }
@@ -61,13 +93,34 @@ fn an_allocated_buffer_holds_the_message() {
 fn the_width_drops_the_line_break() {
     let mut buffer = [0xCCu8; 64];
     let none = core::ptr::null();
-    let length = unsafe { format_message_a(FROM_SYSTEM | MAX_WIDTH_MASK, none, 2, 0, buffer.as_mut_ptr(), 64, none) };
+    let length = unsafe {
+        format_message_a(
+            FROM_SYSTEM | MAX_WIDTH_MASK,
+            none,
+            2,
+            0,
+            buffer.as_mut_ptr(),
+            64,
+            none,
+        )
+    };
     assert_eq!(length, 43);
-    assert_eq!(&buffer[..44], b"The system cannot find the file specified. \0");
-    let length = unsafe { format_message_a(FROM_SYSTEM | 20, none, 2, 0, buffer.as_mut_ptr(), 64, none) };
-    assert_eq!(&buffer[..length as usize + 1], b"The system cannot\r\nfind the file\r\nspecified. \0");
-    let length = unsafe { format_message_a(FROM_SYSTEM | 5, none, 5, 0, buffer.as_mut_ptr(), 64, none) };
-    assert_eq!(&buffer[..length as usize + 1], b"Access\r\nis\r\ndenied. \0");
+    assert_eq!(
+        &buffer[..44],
+        b"The system cannot find the file specified. \0"
+    );
+    let length =
+        unsafe { format_message_a(FROM_SYSTEM | 20, none, 2, 0, buffer.as_mut_ptr(), 64, none) };
+    assert_eq!(
+        &buffer[..length as usize + 1],
+        b"The system cannot\r\nfind the file\r\nspecified. \0"
+    );
+    let length =
+        unsafe { format_message_a(FROM_SYSTEM | 5, none, 5, 0, buffer.as_mut_ptr(), 64, none) };
+    assert_eq!(
+        &buffer[..length as usize + 1],
+        b"Access\r\nis\r\ndenied. \0"
+    );
 }
 
 /// GetVersion: 5.0, build 2195, the NT platform bit clear — the dword the CRT splits into its

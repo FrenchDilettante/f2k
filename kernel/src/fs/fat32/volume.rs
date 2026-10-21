@@ -107,11 +107,12 @@ impl Volume {
 
     /// How many FAT copies the volume keeps (every one is written).
     pub fn fat_copies(&self) -> u32 {
-        ((self.layout.data_start - self.layout.fat_start) / self.layout.sectors_per_fat as u64) as u32
+        ((self.layout.data_start - self.layout.fat_start) / self.layout.sectors_per_fat as u64)
+            as u32
     }
 
-    /// Set `cluster`'s FAT entry to `value` (its low 28 bits; the reserved high bits stay), in every
-    /// FAT copy and the cache.
+    /// Set `cluster`'s FAT entry to `value` (its low 28 bits; the reserved high bits stay), in
+    /// every FAT copy and the cache.
     pub fn set_fat_entry(&mut self, cluster: u32, value: u32) -> Result<(), NtStatus> {
         assert!(
             self.layout.is_data_cluster(cluster),
@@ -133,7 +134,12 @@ impl Volume {
     ) -> Result<(), NtStatus> {
         let lba = self.layout.fat_start + sector;
         let mut data = *self.cache.sector(self.device, lba)?;
-        let old = u32::from_le_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]]);
+        let old = u32::from_le_bytes([
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            data[offset + 3],
+        ]);
         let raw = update(old);
         if raw == old {
             return Ok(());
@@ -170,7 +176,11 @@ impl Volume {
     /// Read one sector of the volume.
     pub fn read_sector(&self, lba: u64, data: &mut [u8; 512]) -> Result<(), NtStatus> {
         let status = self.device.read(lba, data);
-        if nt_success(status) { Ok(()) } else { Err(status) }
+        if nt_success(status) {
+            Ok(())
+        } else {
+            Err(status)
+        }
     }
 
     /// Write one sector of the volume (a change: the dirty mark goes first).
@@ -181,13 +191,18 @@ impl Volume {
 
     fn write_raw(&self, lba: u64, data: &[u8; 512]) -> Result<(), NtStatus> {
         let status = self.device.write(lba, data);
-        if nt_success(status) { Ok(()) } else { Err(status) }
+        if nt_success(status) {
+            Ok(())
+        } else {
+            Err(status)
+        }
     }
 
     /// Where the next free-cluster search starts, and its update.
     pub fn next_free(&self) -> u32 {
         self.next_free
     }
+
     pub fn set_next_free(&mut self, cluster: u32) {
         self.next_free = cluster;
     }
@@ -324,6 +339,7 @@ mod tests {
                     ..self.0.info()
                 }
             }
+
             fn read(&self, lba: u64, buffer: &mut [u8]) -> NtStatus {
                 self.0.read(lba, buffer)
             }
@@ -366,7 +382,11 @@ mod tests {
         crashing.crash_after(1);
         volume.write_sector(data, &[0xAB; 512]).unwrap();
         assert!(!clean(fat1()), "the mark came first");
-        assert_eq!(crashing.image().image()[data as usize * 512], 0, "and the change after it");
+        assert_eq!(
+            crashing.image().image()[data as usize * 512],
+            0,
+            "and the change after it"
+        );
 
         crashing.crash_after(u32::MAX);
         let before = crashing.written();

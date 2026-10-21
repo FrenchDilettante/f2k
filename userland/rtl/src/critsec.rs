@@ -52,7 +52,8 @@ pub const STATUS_SUCCESS: u32 = 0;
 /// What an initialization asked to preallocate the event answers when none can be made.
 pub const STATUS_NO_MEMORY: u32 = 0xC000_0017;
 /// What a contended enter or leave raises when no event can be made for the section: Windows
-/// 2000's EnterCriticalSection raises in low memory (its documentation names STATUS_INVALID_HANDLE).
+/// 2000's EnterCriticalSection raises in low memory (its documentation names
+/// STATUS_INVALID_HANDLE).
 pub const STATUS_INVALID_HANDLE: u32 = 0xC000_0008;
 
 /// The spin count's high bit, at initialization: make the event now, so a later contention cannot
@@ -247,9 +248,11 @@ mod tests {
         fn thread_id(&self) -> u32 {
             self.thread.get()
         }
+
         fn processors(&self) -> u32 {
             self.processors
         }
+
         fn create_event(&self) -> u32 {
             let step = self.while_creating.borrow_mut().pop();
             if let Some(step) = step {
@@ -263,6 +266,7 @@ mod tests {
             self.calls.borrow_mut().push(Call::Create(handle));
             handle
         }
+
         fn wait(&self, event: u32) {
             self.calls.borrow_mut().push(Call::Wait(event));
             let step = self.while_waiting.borrow_mut().pop();
@@ -276,13 +280,16 @@ mod tests {
                 .expect("the wait would block forever");
             signaled.remove(at);
         }
+
         fn set(&self, event: u32) {
             self.calls.borrow_mut().push(Call::Set(event));
             self.signaled.borrow_mut().push(event);
         }
+
         fn close(&self, handle: u32) {
             self.calls.borrow_mut().push(Call::Close(handle));
         }
+
         fn raise(&self, status: u32) -> ! {
             panic!("raised {status:#010x}")
         }
@@ -458,7 +465,8 @@ mod tests {
             .push(Box::new(move |system: &Scripted| {
                 system.as_thread(8, || section.leave(system));
                 system.as_thread(16, || assert!(!section.try_enter(system), "the try fails"));
-                // 16's enter is counted and waits; 12, signaled, takes the section and later leaves.
+                // 16's enter is counted and waits; 12, signaled, takes the section and later
+                // leaves.
                 system
                     .while_waiting
                     .borrow_mut()
@@ -564,12 +572,15 @@ mod tests {
             fn thread_id(&self) -> u32 {
                 ID.with(Cell::get)
             }
+
             fn processors(&self) -> u32 {
                 4
             }
+
             fn create_event(&self) -> u32 {
                 self.next.fetch_add(4, SeqCst)
             }
+
             fn wait(&self, event: u32) {
                 let mut signaled = self.signaled.lock().unwrap();
                 loop {
@@ -580,11 +591,14 @@ mod tests {
                     signaled = self.ready.wait(signaled).unwrap();
                 }
             }
+
             fn set(&self, event: u32) {
                 self.signaled.lock().unwrap().push(event);
                 self.ready.notify_all();
             }
+
             fn close(&self, _: u32) {}
+
             fn raise(&self, status: u32) -> ! {
                 panic!("raised {status:#010x}")
             }

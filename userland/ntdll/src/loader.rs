@@ -5,8 +5,8 @@
 //! LoadLibraryA, FreeLibrary and GetProcAddress are over them.
 //!
 //! A module name with a path is made absolute against the current directory and matched against
-//! the modules' full paths, as Windows 2000 matches it (without opening the file to compare a module
-//! reached through another path).
+//! the modules' full paths, as Windows 2000 matches it (without opening the file to compare a
+//! module reached through another path).
 //!
 //! LdrLoadDll loads a module the lists do not hold from the volume: it looks for the file in the
 //! current directory, then in the volume's root (a name with a path: there alone; see
@@ -22,7 +22,12 @@
 
 use rtl::modules::{self, entry, Descriptor, Memory, MemoryMut, STATIC_LOAD_COUNT};
 use rtl::path::{nt_path, MAX_PATH};
-use rtl::status::{STATUS_DLL_NOT_FOUND, STATUS_INVALID_PARAMETER, STATUS_NO_MEMORY, STATUS_SUCCESS};
+use rtl::status::{
+    STATUS_DLL_NOT_FOUND,
+    STATUS_INVALID_PARAMETER,
+    STATUS_NO_MEMORY,
+    STATUS_SUCCESS,
+};
 use rtl::sys::{self, nr, system_service, Native};
 
 use crate::curdir::{self, UnicodeString};
@@ -92,7 +97,12 @@ fn find(name: &[u16]) -> Option<u32> {
     let mut full = [0u16; MAX_PATH + 1];
     // SAFETY: the formed name is terminated; the buffer holds MAX_PATH + 1 units.
     let bytes = unsafe {
-        curdir::rtl_get_full_path_name_u(formed.as_ptr(), 2 * full.len() as u32, full.as_mut_ptr(), core::ptr::null_mut())
+        curdir::rtl_get_full_path_name_u(
+            formed.as_ptr(),
+            2 * full.len() as u32,
+            full.as_mut_ptr(),
+            core::ptr::null_mut(),
+        )
     } as usize;
     if bytes == 0 || bytes >= 2 * full.len() {
         return None; // no full path, or none that fits: no module has it
@@ -141,8 +151,19 @@ const VIEW_SHARE: u32 = 1;
 fn open_file(full: &[u16]) -> Result<u32, u32> {
     let mut name = [0u16; NAME_ROOM];
     let length = nt_path(full, &mut name).map_err(|_| STATUS_DLL_NOT_FOUND)?;
-    let string = UnicodeString { length: (2 * length) as u16, maximum_length: (2 * length) as u16, buffer: name.as_mut_ptr() };
-    let attributes: [u32; 6] = [24, 0, &string as *const UnicodeString as u32, OBJ_CASE_INSENSITIVE, 0, 0];
+    let string = UnicodeString {
+        length: (2 * length) as u16,
+        maximum_length: (2 * length) as u16,
+        buffer: name.as_mut_ptr(),
+    };
+    let attributes: [u32; 6] = [
+        24,
+        0,
+        &string as *const UnicodeString as u32,
+        OBJ_CASE_INSENSITIVE,
+        0,
+        0,
+    ];
     let mut io_status = [0u32; 2];
     let mut handle = 0u32;
     let args = [
@@ -167,7 +188,15 @@ fn close(handle: u32) {
 /// Map the image file `file` names as an image section's view: its base and its size.
 fn map_image(file: u32) -> Result<(u32, u32), u32> {
     let mut section = 0u32;
-    let args = [&mut section as *mut u32 as u32, SECTION_QUERY | SECTION_MAP_READ | SECTION_MAP_EXECUTE, 0, 0, PAGE_EXECUTE, SEC_IMAGE, file];
+    let args = [
+        &mut section as *mut u32 as u32,
+        SECTION_QUERY | SECTION_MAP_READ | SECTION_MAP_EXECUTE,
+        0,
+        0,
+        PAGE_EXECUTE,
+        SEC_IMAGE,
+        file,
+    ];
     match system_service(nr::NtCreateSection, &args) {
         STATUS_SUCCESS => {}
         status => return Err(status),
@@ -241,7 +270,9 @@ fn load(name: &[u16]) -> Result<u32, u32> {
     let mut full = [0u16; modules::MAX_SEARCH_PATH + 1];
     let mut opened = None;
     let mut index = 0;
-    while let Some(length) = modules::search_place(name, &current[..current_length], index, &mut full) {
+    while let Some(length) =
+        modules::search_place(name, &current[..current_length], index, &mut full)
+    {
         if let Ok(file) = open_file(&full[..length]) {
             opened = Some((file, length));
             break;
@@ -270,7 +301,8 @@ fn load(name: &[u16]) -> Result<u32, u32> {
 fn snap(base: u32) -> Result<(), (u32, usize)> {
     for (index, descriptor) in modules::import_descriptors(&Mapped, base).enumerate() {
         let mut name = [0u16; NAME_ROOM];
-        let length = modules::import_module_name(&Mapped, descriptor.name, &mut name).ok_or((STATUS_DLL_NOT_FOUND, index))?;
+        let length = modules::import_module_name(&Mapped, descriptor.name, &mut name)
+            .ok_or((STATUS_DLL_NOT_FOUND, index))?;
         let module = match find(&name[..length]) {
             Some(entry) => {
                 set_load_count(entry, modules::referenced(load_count(entry)));
@@ -324,7 +356,9 @@ fn discard(entry: u32, referenced: usize) {
     modules::remove(&mut Mapped, entry);
     for descriptor in modules::import_descriptors(&Mapped, base).take(referenced) {
         let mut name = [0u16; NAME_ROOM];
-        if let Some(found) = modules::import_module_name(&Mapped, descriptor.name, &mut name).and_then(|length| find(&name[..length])) {
+        if let Some(found) = modules::import_module_name(&Mapped, descriptor.name, &mut name)
+            .and_then(|length| find(&name[..length]))
+        {
             dereference(found);
         }
     }
@@ -376,7 +410,8 @@ pub unsafe extern "system" fn ldr_load_dll(
             return Ok(base_of(entry));
         }
         let mut formed = [0u16; NAME_ROOM];
-        let length = modules::module_name(name, &mut formed[..NAME_ROOM - 1]).ok_or(STATUS_DLL_NOT_FOUND)?;
+        let length =
+            modules::module_name(name, &mut formed[..NAME_ROOM - 1]).ok_or(STATUS_DLL_NOT_FOUND)?;
         load(&formed[..length]).map(base_of)
     });
     // SAFETY: the caller's handle.

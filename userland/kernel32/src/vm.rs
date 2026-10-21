@@ -36,10 +36,17 @@ const PROCESSOR_INTEL_PENTIUM: u32 = 586;
 /// granularity's for a reservation, the first page's for a commit), or null with the status's
 /// error.
 #[unsafe(export_name = "f2k_export_VirtualAlloc")]
-pub extern "system" fn virtual_alloc(address: usize, size: usize, kind: u32, protect: u32) -> usize {
+pub extern "system" fn virtual_alloc(
+    address: usize,
+    size: usize,
+    kind: u32,
+    protect: u32,
+) -> usize {
     let (mut base, mut size) = (address, size);
     // SAFETY: ntdll's export, over the in/out values above.
-    let status = unsafe { nt::NtAllocateVirtualMemory(CURRENT_PROCESS, &mut base, 0, &mut size, kind, protect) };
+    let status = unsafe {
+        nt::NtAllocateVirtualMemory(CURRENT_PROCESS, &mut base, 0, &mut size, kind, protect)
+    };
     if !nt_success(status) {
         set_last_nt_error(status);
         return 0;
@@ -67,10 +74,17 @@ pub extern "system" fn virtual_free(address: usize, size: usize, kind: u32) -> u
 ///
 /// `old` is the caller's (the service reaches it through the user-memory copy).
 #[unsafe(export_name = "f2k_export_VirtualProtect")]
-pub unsafe extern "system" fn virtual_protect(address: usize, size: usize, protect: u32, old: *mut u32) -> u32 {
+pub unsafe extern "system" fn virtual_protect(
+    address: usize,
+    size: usize,
+    protect: u32,
+    old: *mut u32,
+) -> u32 {
     let (mut base, mut size) = (address, size);
     // SAFETY: ntdll's export, over the in/out values above.
-    succeeded(unsafe { nt::NtProtectVirtualMemory(CURRENT_PROCESS, &mut base, &mut size, protect, old) })
+    succeeded(unsafe {
+        nt::NtProtectVirtualMemory(CURRENT_PROCESS, &mut base, &mut size, protect, old)
+    })
 }
 
 /// VirtualQuery: the MEMORY_BASIC_INFORMATION of the pages from `address` into `buffer`; the
@@ -80,7 +94,11 @@ pub unsafe extern "system" fn virtual_protect(address: usize, size: usize, prote
 ///
 /// `buffer` is the caller's (the service reaches it through the user-memory copy).
 #[unsafe(export_name = "f2k_export_VirtualQuery")]
-pub unsafe extern "system" fn virtual_query(address: usize, buffer: *mut u8, length: usize) -> usize {
+pub unsafe extern "system" fn virtual_query(
+    address: usize,
+    buffer: *mut u8,
+    length: usize,
+) -> usize {
     let mut returned = 0;
     // SAFETY: ntdll's export.
     let status = unsafe {
@@ -98,7 +116,12 @@ fn query<const N: usize>(class: u32) -> Option<[u32; N]> {
     let mut words = [0u32; N];
     // SAFETY: ntdll's export, into the buffer above.
     let status = unsafe {
-        nt::NtQuerySystemInformation(class, words.as_mut_ptr().cast(), (4 * N) as u32, core::ptr::null_mut())
+        nt::NtQuerySystemInformation(
+            class,
+            words.as_mut_ptr().cast(),
+            (4 * N) as u32,
+            core::ptr::null_mut(),
+        )
     };
     nt_success(status).then_some(words)
 }
@@ -128,9 +151,10 @@ pub struct SystemInfo {
 /// `info` points at a writable SYSTEM_INFO (a bad pointer faults the caller, as on the platform).
 #[unsafe(export_name = "f2k_export_GetSystemInfo")]
 pub unsafe extern "system" fn get_system_info(info: *mut SystemInfo) {
-    let (Some(basic), Some(processor)) =
-        (query::<{ BASIC_SIZE / 4 }>(SYSTEM_BASIC_INFORMATION), query::<{ PROCESSOR_SIZE / 4 }>(SYSTEM_PROCESSOR_INFORMATION))
-    else {
+    let (Some(basic), Some(processor)) = (
+        query::<{ BASIC_SIZE / 4 }>(SYSTEM_BASIC_INFORMATION),
+        query::<{ PROCESSOR_SIZE / 4 }>(SYSTEM_PROCESSOR_INFORMATION),
+    ) else {
         return;
     };
     let architecture = processor[0] as u16;
@@ -213,7 +237,11 @@ pub unsafe extern "system" fn global_memory_status(buffer: *mut MemoryStatus) {
         let bytes = |pages: u32| (u64::from(pages) * page).min(u64::from(u32::MAX)) as u32;
         let (pages, available) = (basic[3], performance[0x2C / 4]);
         let (committed, limit) = (performance[0x30 / 4], performance[0x34 / 4]);
-        status.memory_load = if pages == 0 { 0 } else { 100 - (u64::from(available) * 100 / u64::from(pages)) as u32 };
+        status.memory_load = if pages == 0 {
+            0
+        } else {
+            100 - (u64::from(available) * 100 / u64::from(pages)) as u32
+        };
         status.total_phys = bytes(pages);
         status.avail_phys = bytes(available);
         status.total_page_file = bytes(limit);
@@ -278,8 +306,14 @@ mod tests {
         assert_eq!(last_error(), 487, "STATUS_NOT_COMMITTED");
         let mut info = [0u8; 28];
         // SAFETY: a 28-byte buffer.
-        assert_eq!(unsafe { virtual_query(BASE + 0x10, info.as_mut_ptr(), 28) }, 28);
-        assert_eq!(u32::from_le_bytes(info[..4].try_into().unwrap()), BASE as u32);
+        assert_eq!(
+            unsafe { virtual_query(BASE + 0x10, info.as_mut_ptr(), 28) },
+            28
+        );
+        assert_eq!(
+            u32::from_le_bytes(info[..4].try_into().unwrap()),
+            BASE as u32
+        );
         // SAFETY: a short buffer.
         assert_eq!(unsafe { virtual_query(BASE, info.as_mut_ptr(), 27) }, 0);
         assert_eq!(last_error(), 24, "ERROR_BAD_LENGTH");
@@ -293,10 +327,33 @@ mod tests {
         let mut info: SystemInfo = unsafe { core::mem::zeroed() };
         // SAFETY: a writable SYSTEM_INFO.
         unsafe { get_system_info(&mut info) };
-        assert_eq!((info.page_size, info.allocation_granularity), (0x1000, 0x1_0000));
-        assert_eq!((info.minimum_application_address, info.maximum_application_address), (0x1_0000, 0x7FFE_FFFF));
-        assert_eq!((info.processor_architecture, info.number_of_processors, info.active_processor_mask), (0, 1, 1));
-        assert_eq!((info.processor_type, info.processor_level, info.processor_revision), (586, 6, 0));
+        assert_eq!(
+            (info.page_size, info.allocation_granularity),
+            (0x1000, 0x1_0000)
+        );
+        assert_eq!(
+            (
+                info.minimum_application_address,
+                info.maximum_application_address
+            ),
+            (0x1_0000, 0x7FFE_FFFF)
+        );
+        assert_eq!(
+            (
+                info.processor_architecture,
+                info.number_of_processors,
+                info.active_processor_mask
+            ),
+            (0, 1, 1)
+        );
+        assert_eq!(
+            (
+                info.processor_type,
+                info.processor_level,
+                info.processor_revision
+            ),
+            (586, 6, 0)
+        );
         assert_eq!(core::mem::size_of::<SystemInfo>(), 36);
 
         // SAFETY: a zeroed MEMORYSTATUS is a valid one.
@@ -304,8 +361,14 @@ mod tests {
         // SAFETY: a writable MEMORYSTATUS.
         unsafe { global_memory_status(&mut status) };
         assert_eq!((status.length, status.total_virtual), (32, 0x7FFE_0000));
-        assert_eq!((status.total_phys, status.avail_phys), (PAGES * 0x1000, AVAILABLE * 0x1000));
-        assert_eq!((status.total_page_file, status.avail_page_file), (PAGES * 0x1000, AVAILABLE * 0x1000));
+        assert_eq!(
+            (status.total_phys, status.avail_phys),
+            (PAGES * 0x1000, AVAILABLE * 0x1000)
+        );
+        assert_eq!(
+            (status.total_page_file, status.avail_page_file),
+            (PAGES * 0x1000, AVAILABLE * 0x1000)
+        );
         assert_eq!(status.memory_load, 75);
         assert_eq!(status.avail_virtual, 0x7FFE_0000 - VIRTUAL_SIZE);
     }

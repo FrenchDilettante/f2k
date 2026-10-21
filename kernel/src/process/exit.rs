@@ -141,8 +141,8 @@ pub struct ExitPlan {
 
 /// Route a thread's end, given how many other threads of its process are still attached. A
 /// thread's return ends only its thread while others live on, and the process — with that status
-/// as its code — from the last thread; NtTerminateProcess and a fault end the process whatever lives
-/// on, terminating the others first.
+/// as its code — from the last thread; NtTerminateProcess and a fault end the process whatever
+/// lives on, terminating the others first.
 pub fn plan(end: ThreadEnd, others: u16) -> ExitPlan {
     match end {
         ThreadEnd::Exit(status) => ExitPlan {

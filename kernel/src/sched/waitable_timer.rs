@@ -158,7 +158,12 @@ mod tests {
         }
     }
 
-    fn wait(d: &mut Dispatcher, t: &mut Thread, object: *mut Waitable, now: u64) -> WaitDisposition {
+    fn wait(
+        d: &mut Dispatcher,
+        t: &mut Thread,
+        object: *mut Waitable,
+        now: u64,
+    ) -> WaitDisposition {
         d.wait_single(
             t,
             object,
@@ -186,14 +191,27 @@ mod tests {
         let m = timer(true);
         assert!(!d.set_waitable_timer(m, 10 * INCREMENT, 0, 0, false, SIGNALED_AT));
         assert!(m.armed());
-        assert_eq!(wait(d, t, m.waitable(), 0), WaitDisposition::Complete(STATUS_TIMEOUT));
+        assert_eq!(
+            wait(d, t, m.waitable(), 0),
+            WaitDisposition::Complete(STATUS_TIMEOUT)
+        );
         expire_at(d, 10);
         assert!(!m.armed());
         let now = 10 * INCREMENT;
         assert_eq!(wait(d, t, m.waitable(), now), WaitDisposition::Complete(0));
-        assert_eq!(wait(d, t, m.waitable(), now), WaitDisposition::Complete(0), "still signaled");
-        assert!(d.set_waitable_timer(m, now + 5 * INCREMENT, now, 0, false, SIGNALED_AT), "was signaled");
-        assert_eq!(wait(d, t, m.waitable(), now), WaitDisposition::Complete(STATUS_TIMEOUT));
+        assert_eq!(
+            wait(d, t, m.waitable(), now),
+            WaitDisposition::Complete(0),
+            "still signaled"
+        );
+        assert!(
+            d.set_waitable_timer(m, now + 5 * INCREMENT, now, 0, false, SIGNALED_AT),
+            "was signaled"
+        );
+        assert_eq!(
+            wait(d, t, m.waitable(), now),
+            WaitDisposition::Complete(STATUS_TIMEOUT)
+        );
     }
 
     /// An auto-reset periodic timer: each expiry signals once, the wait consumes it, and the timer
@@ -220,7 +238,10 @@ mod tests {
         assert!(!d.cancel_waitable_timer(a));
         assert!(!a.armed());
         expire_at(d, 20);
-        assert_eq!(a.timer.waitable.signal_state, 0, "a cancelled timer never fires");
+        assert_eq!(
+            a.timer.waitable.signal_state, 0,
+            "a cancelled timer never fires"
+        );
     }
 
     /// A due time already past expires the timer at the set: signaled, its waiters satisfied.
@@ -263,7 +284,13 @@ mod tests {
 
         // The setter sleeps alertably; the expiry's APC wakes it with the user-APC status.
         assert_eq!(
-            d.delay(setter, WaitMode::User, true, (100 * INCREMENT) as i64, stamp(0)),
+            d.delay(
+                setter,
+                WaitMode::User,
+                true,
+                (100 * INCREMENT) as i64,
+                stamp(0)
+            ),
             WaitDisposition::Yield
         );
         d.expire_timers(5 * INCREMENT, 5, 0, SIGNALED_AT);

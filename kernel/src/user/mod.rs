@@ -2,11 +2,11 @@
 //!
 //! The kernel maps the image, stack, TEB and parameters pages — each inside a region of the
 //! process's address space (`mem::vm`), the one writer of its page-table entries — and enters the
-//! process as its main thread: the scheduler's first switch into the thread leaves its startup ladder for ring 3,
-//! at kernel32's BaseProcessStartThunk ([`main_thread_start`]), whose frame calls the image's entry
-//! point under kernel32's exception registration and hands its return value to ExitThread.
-//! The fault-test features substitute a hand-assembled stub ([`RING3_STUB`]) so the kernel's own
-//! paths can be verified without a PE fixture.
+//! process as its main thread: the scheduler's first switch into the thread leaves its startup
+//! ladder for ring 3, at kernel32's BaseProcessStartThunk ([`main_thread_start`]), whose frame
+//! calls the image's entry point under kernel32's exception registration and hands its return value
+//! to ExitThread. The fault-test features substitute a hand-assembled stub ([`RING3_STUB`]) so the
+//! kernel's own paths can be verified without a PE fixture.
 //!
 //! Every user context is a thread: a thread's return ends the thread (the last thread's end is the
 //! process's), NtTerminateProcess ends the process and all its threads, and faults raised by user
@@ -24,8 +24,8 @@ pub mod syscall;
 pub mod teb;
 pub mod tls;
 
-/// The fault-test stub's code page (the corpus programs' preferred base, which the fault-test builds
-/// never map).
+/// The fault-test stub's code page (the corpus programs' preferred base, which the fault-test
+/// builds never map).
 #[cfg(any(
     feature = "fault-test-badargs",
     feature = "fault-test-segments",
@@ -558,10 +558,18 @@ mod tests {
     fn exit_during_read_stub_raises_windows_2000_services() {
         let stub = &EXIT_DURING_READ_STUB;
         let gates: Vec<u32> = (1..stub.len() - 6)
-            .filter(|&at| stub[at - 1] == 0xB8 && stub[at + 4..at + 6] == [0xCD, SYSCALL_VECTOR as u8])
+            .filter(|&at| {
+                stub[at - 1] == 0xB8 && stub[at + 4..at + 6] == [0xCD, SYSCALL_VECTOR as u8]
+            })
             .map(|at| u32::from_le_bytes(stub[at..at + 4].try_into().unwrap()))
             .collect();
-        let nt = |name: &str| crate::nt::NT_SERVICES.iter().find(|entry| entry.1 == name).unwrap().0;
+        let nt = |name: &str| {
+            crate::nt::NT_SERVICES
+                .iter()
+                .find(|entry| entry.1 == name)
+                .unwrap()
+                .0
+        };
         let expected: Vec<u32> = [
             "NtOpenFile",
             "NtAllocateVirtualMemory",
@@ -575,24 +583,58 @@ mod tests {
         .collect();
         assert_eq!(gates, expected);
         // The priority is ThreadBasePriority's saturation value, pushed before the arguments.
-        assert_eq!(&stub[0xA1..0xAA], &[0x6A, 0x10, 0x89, 0xE1, 0x6A, 0x04, 0x51, 0x6A, 0x03]);
+        assert_eq!(
+            &stub[0xA1..0xAA],
+            &[0x6A, 0x10, 0x89, 0xE1, 0x6A, 0x04, 0x51, 0x6A, 0x03]
+        );
         let word = |at: usize| u32::from_le_bytes(stub[at..at + 4].try_into().unwrap());
         // The child's CONTEXT: control and integer registers, EBX the file handle, EIP the child,
         // ESP the top of the two stack pages above the context's page.
         assert_eq!((word(0x56), word(0x5A)), (CHILD_STACK, 0x0001_0003));
         assert_eq!(&stub[0x5E..0x60], &[0x89, 0x1D], "mov [CONTEXT.Ebx], ebx");
         assert_eq!(word(0x60), CHILD_STACK + 0xA4);
-        assert_eq!((word(0x66), word(0x6A)), (CHILD_STACK + 0xB8, USER_CODE_PAGE + 0xC6), "the child");
-        assert_eq!((word(0x70), word(0x74)), (CHILD_STACK + 0xC4, CHILD_STACK + 0x3000));
-        assert_eq!(&stub[0xC6..0xCC], &[0x81, 0xEC, 0x00, 0x02, 0x00, 0x00], "the child's first instruction");
+        assert_eq!(
+            (word(0x66), word(0x6A)),
+            (CHILD_STACK + 0xB8, USER_CODE_PAGE + 0xC6),
+            "the child"
+        );
+        assert_eq!(
+            (word(0x70), word(0x74)),
+            (CHILD_STACK + 0xC4, CHILD_STACK + 0x3000)
+        );
+        assert_eq!(
+            &stub[0xC6..0xCC],
+            &[0x81, 0xEC, 0x00, 0x02, 0x00, 0x00],
+            "the child's first instruction"
+        );
         // The INITIAL_TEB: no old stack; the two stack pages, the reservation from the context's.
         assert_eq!(word(0x7F), USER_CODE_PAGE + 0x104, "the initial TEB");
         let teb: Vec<u32> = (0..5).map(|i| word(0x104 + 4 * i)).collect();
-        assert_eq!(teb, [0, 0, CHILD_STACK + 0x3000, CHILD_STACK + 0x1000, CHILD_STACK]);
+        assert_eq!(
+            teb,
+            [
+                0,
+                0,
+                CHILD_STACK + 0x3000,
+                CHILD_STACK + 0x1000,
+                CHILD_STACK
+            ]
+        );
         assert_eq!(word(0x0F), USER_CODE_PAGE + 0x118, "the attributes");
-        assert_eq!(word(0x118 + 8), USER_CODE_PAGE + 0x130, "the attributes name the string");
-        assert_eq!(word(0x130 + 4), USER_CODE_PAGE + 0x138, "the string names its units");
-        let name: Vec<u16> = stub[0x138..].chunks(2).map(|pair| u16::from_le_bytes([pair[0], pair[1]])).collect();
+        assert_eq!(
+            word(0x118 + 8),
+            USER_CODE_PAGE + 0x130,
+            "the attributes name the string"
+        );
+        assert_eq!(
+            word(0x130 + 4),
+            USER_CODE_PAGE + 0x138,
+            "the string names its units"
+        );
+        let name: Vec<u16> = stub[0x138..]
+            .chunks(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .collect();
         assert_eq!(String::from_utf16(&name).unwrap(), "\\??\\C:\\HELLO.EXE");
         // The loop's back jump lands on its first instruction.
         assert_eq!(0x104 + (stub[0x103] as i8 as i32), 0xE2);

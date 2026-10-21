@@ -283,8 +283,8 @@ pub fn run() {
         crc32(&file_buffer[..hello.size as usize])
     );
 
-    // 4. The first file's first sector, read through the partition (reported at its disk LBA),
-    //    then an 8-sector run from the same place (one interrupt per sector).
+    // 4. The first file's first sector, read through the partition (reported at its disk LBA), then
+    //    an 8-sector run from the same place (one interrupt per sector).
     let file_sector = bpb.cluster_lba(0, FIRST_FILE_CLUSTER) as u64;
     let file_lba = entry.start + file_sector;
     read(volume, file_sector, &mut sector);

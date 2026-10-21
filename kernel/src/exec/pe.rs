@@ -295,8 +295,8 @@ pub struct Exports {
 }
 
 impl Exports {
-    /// The export directory at `rva` (`size` bytes) of the mapped image `mapped`, its arrays checked
-    /// to lie inside the image.
+    /// The export directory at `rva` (`size` bytes) of the mapped image `mapped`, its arrays
+    /// checked to lie inside the image.
     fn read(mapped: &[u8], rva: u32, size: u32) -> Exports {
         let at = rva as usize;
         need(mapped, at, SIZE_EXPORT_DIRECTORY, "export directory");
@@ -458,7 +458,8 @@ fn read_cstr<'a>(bytes: &'a [u8], off: usize, what: &str) -> &'a str {
         .unwrap_or_else(|_| panic!("{what} is not valid UTF-8"))
 }
 
-/// Whether `[off, off + len)` lies inside `bytes`: a header range that does not is a truncated image.
+/// Whether `[off, off + len)` lies inside `bytes`: a header range that does not is a truncated
+/// image.
 fn fits(bytes: &[u8], off: usize, len: usize) -> Result<(), Reject> {
     match off.checked_add(len) {
         Some(end) if end <= bytes.len() => Ok(()),
@@ -810,10 +811,11 @@ impl Image {
         }
     }
 
-    /// One page of the in-memory image as [`Image::map_into`] builds it — the headers verbatim, each
-    /// section's raw bytes, zeros elsewhere — the page at `page_rva` into `out` (one page), its
-    /// bytes read from the file by `read` (a file offset and the bytes to fill there). False when a
-    /// read fails. For a mapping made page by page, without the file or the image in memory.
+    /// One page of the in-memory image as [`Image::map_into`] builds it — the headers verbatim,
+    /// each section's raw bytes, zeros elsewhere — the page at `page_rva` into `out` (one
+    /// page), its bytes read from the file by `read` (a file offset and the bytes to fill
+    /// there). False when a read fails. For a mapping made page by page, without the file or
+    /// the image in memory.
     pub fn map_page(
         &self,
         page_rva: u32,
@@ -825,7 +827,11 @@ impl Image {
         // (RVA, bytes copied, file offset) for the headers, then each section.
         let pieces = core::iter::once((0, self.size_of_headers, 0)).chain(
             self.sections[..self.num_sections].iter().map(|s| {
-                (s.virtual_address, s.copy_len(self.section_alignment), s.raw_offset)
+                (
+                    s.virtual_address,
+                    s.copy_len(self.section_alignment),
+                    s.raw_offset,
+                )
             }),
         );
         for (rva, len, offset) in pieces {
@@ -834,7 +840,8 @@ impl Image {
             if start >= end {
                 continue;
             }
-            let into = &mut out[(start - page_rva as u64) as usize..(end - page_rva as u64) as usize];
+            let into =
+                &mut out[(start - page_rva as u64) as usize..(end - page_rva as u64) as usize];
             if !read(offset + (start - rva as u64) as u32, into) {
                 return false;
             }
@@ -867,8 +874,9 @@ impl Image {
     }
 
     /// Read one import's name out of the file bytes. The name must live in file-backed bytes: the
-    /// zero tail cannot hold names. The hint is read but never authoritative. Ordinal imports are not
-    /// served: the resolver is name-keyed (the system DLLs' ordinals are not Windows 2000's yet).
+    /// zero tail cannot hold names. The hint is read but never authoritative. Ordinal imports are
+    /// not served: the resolver is name-keyed (the system DLLs' ordinals are not Windows 2000's
+    /// yet).
     fn import_name<'a>(&self, file: &'a [u8], thunk: u32) -> &'a str {
         if thunk & ORDINAL_FLAG != 0 {
             panic!(
@@ -903,12 +911,13 @@ impl Image {
         read_cstr(file, off, what)
     }
 
-    /// Resolve the import directory: `resolve` maps a (module, entry point) pair — the module as the
-    /// descriptor spells it — to the address the IAT slot receives. Each IAT slot is written; the
-    /// original thunk array is left untouched, and whatever the IAT held before (lookup values, or
-    /// addresses a bind step wrote against some other build of the module) is never trusted.
-    /// Descriptor and thunk reads come from the mapped image (what the loader actually walks);
-    /// module and entry-point names come from the file bytes (they must be file-backed).
+    /// Resolve the import directory: `resolve` maps a (module, entry point) pair — the module as
+    /// the descriptor spells it — to the address the IAT slot receives. Each IAT slot is
+    /// written; the original thunk array is left untouched, and whatever the IAT held before
+    /// (lookup values, or addresses a bind step wrote against some other build of the module)
+    /// is never trusted. Descriptor and thunk reads come from the mapped image (what the loader
+    /// actually walks); module and entry-point names come from the file bytes (they must be
+    /// file-backed).
     pub fn snap_imports(
         &self,
         file: &[u8],
@@ -1504,7 +1513,10 @@ mod tests {
                 assert!(image.map_page((index * PAGE) as u32, &mut page, read));
                 assert_eq!(&page[..], expected, "page {index}");
             }
-            assert!(!image.map_page(0, &mut page, |_, _| false), "a failed read fails the page");
+            assert!(
+                !image.map_page(0, &mut page, |_, _| false),
+                "a failed read fails the page"
+            );
         }
     }
 
@@ -1513,11 +1525,20 @@ mod tests {
     #[test]
     fn the_headers_parse_alone() {
         for src in [EXIT0, RET0] {
-            assert_eq!(Image::parse_headers(&src[..0x1000], src.len()), Image::parse(src));
-            assert_eq!(Image::parse_headers(&src[..0x1000], 0xFFF), Err(Reject::Truncated));
+            assert_eq!(
+                Image::parse_headers(&src[..0x1000], src.len()),
+                Image::parse(src)
+            );
+            assert_eq!(
+                Image::parse_headers(&src[..0x1000], 0xFFF),
+                Err(Reject::Truncated)
+            );
         }
         // exit0's last section's raw data ends the file.
-        assert_eq!(Image::parse_headers(&EXIT0[..0x1000], EXIT0.len() - 1), Err(Reject::Truncated));
+        assert_eq!(
+            Image::parse_headers(&EXIT0[..0x1000], EXIT0.len() - 1),
+            Err(Reject::Truncated)
+        );
     }
 
     #[test]
@@ -2163,7 +2184,10 @@ mod tests {
 
     #[test]
     fn file_missing_last_raw_byte_is_truncated() {
-        assert_eq!(Image::parse(&EXIT0[..EXIT0.len() - 1]), Err(Reject::Truncated));
+        assert_eq!(
+            Image::parse(&EXIT0[..EXIT0.len() - 1]),
+            Err(Reject::Truncated)
+        );
     }
 
     #[test]

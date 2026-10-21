@@ -66,7 +66,8 @@ pub fn oem_to_ansi(byte: u8) -> u8 {
     if byte.is_ascii() {
         return byte;
     }
-    encode_unit(CodePage::Ansi, decode_byte(CodePage::Oem, byte), true).unwrap_or(rtl::cp1252::DEFAULT_CHAR)
+    encode_unit(CodePage::Ansi, decode_byte(CodePage::Oem, byte), true)
+        .unwrap_or(rtl::cp1252::DEFAULT_CHAR)
 }
 
 /// The 8.3 stored form of a name, or none when it is not a plain 8.3 name: 1-8 name bytes, then
@@ -100,7 +101,12 @@ fn component(part: &[u8]) -> Option<Component<'_>> {
         b"." => Some(Component::Current),
         b".." => Some(Component::Parent),
         _ if part.is_empty() || part.len() > MAX_NAME => None,
-        _ if part.iter().any(|&byte| byte < b' ' || FORBIDDEN_LONG.contains(&byte)) => None,
+        _ if part
+            .iter()
+            .any(|&byte| byte < b' ' || FORBIDDEN_LONG.contains(&byte)) =>
+        {
+            None
+        }
         _ => Some(Component::Name(part)),
     }
 }
@@ -144,9 +150,21 @@ mod tests {
     /// has no short form (it takes a long name and an alias).
     #[test]
     fn short_forms_are_in_code_page_437() {
-        assert_eq!(short_form(b"caf\xE9.txt"), Some(*b"CAF\x90    TXT"), "\u{e9} is \u{c9}, 0x90");
-        assert_eq!(short_form(b"\xE5NAME.TXT"), Some(*b"\x8FNAME   TXT"), "\u{e5} is \u{c5}, 0x8F");
-        assert_eq!(short_form(b"\xC4.\xFC"), Some(*b"\x8E       \x9A  "), "\u{c4} 0x8E, \u{dc} 0x9A");
+        assert_eq!(
+            short_form(b"caf\xE9.txt"),
+            Some(*b"CAF\x90    TXT"),
+            "\u{e9} is \u{c9}, 0x90"
+        );
+        assert_eq!(
+            short_form(b"\xE5NAME.TXT"),
+            Some(*b"\x8FNAME   TXT"),
+            "\u{e5} is \u{c5}, 0x8F"
+        );
+        assert_eq!(
+            short_form(b"\xC4.\xFC"),
+            Some(*b"\x8E       \x9A  "),
+            "\u{c4} 0x8E, \u{dc} 0x9A"
+        );
         assert_eq!(short_form(b"\x80URO.TXT"), None, "the euro sign");
         assert_eq!(short_form(b"\xD7.TXT"), None, "the multiplication sign");
     }

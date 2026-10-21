@@ -6,7 +6,14 @@ use super::apc::{nop_kernel_routine, suspend_apc_normal, Apc, ApcMode};
 use super::process::SchedProcess;
 use super::semaphore::Semaphore;
 use super::wait::{
-    Timer, WaitBlock, WaitKind, WaitMode, WaitReason, Waitable, STATUS_TIMEOUT, TIMER_BLOCK,
+    Timer,
+    WaitBlock,
+    WaitKind,
+    WaitMode,
+    WaitReason,
+    Waitable,
+    STATUS_TIMEOUT,
+    TIMER_BLOCK,
     WAIT_BLOCKS,
 };
 use super::Links;
@@ -119,8 +126,8 @@ pub struct Thread {
     /// The thread's TEB page: the base the switch writes into the TEB segment descriptor. Zero for
     /// kernel and idle threads.
     pub(crate) teb_va: u32,
-    /// The thread's client id (what GetCurrentThreadId reports, through its TEB): handed out when a
-    /// user thread is created; zero for kernel threads.
+    /// The thread's client id (what GetCurrentThreadId reports, through its TEB): handed out when
+    /// a user thread is created; zero for kernel threads.
     pub(crate) thread_id: u32,
     /// The base of the thread's user-stack reservation, released with the record (zero for kernel
     /// threads, and for the main thread, whose stack is a system region). How far the stack has
@@ -202,8 +209,8 @@ pub struct Thread {
     pub(crate) user_apcs: List,
     /// Whether a kernel APC is queued: the delivery windows' question, armed by the insert.
     pub(crate) kernel_apc_pending: bool,
-    /// Whether a user APC's delivery is armed: an alertable wait completed for one, or NtContinue's
-    /// test alert found more queued.
+    /// Whether a user APC's delivery is armed: an alertable wait completed for one, or
+    /// NtContinue's test alert found more queued.
     pub(crate) user_apc_pending: bool,
     /// Whether a normal kernel APC's normal half is running — the gate that makes a blocking
     /// normal routine safe (the suspend APC parks inside one).
@@ -214,8 +221,9 @@ pub struct Thread {
     pub(crate) kernel_apc_disable: i8,
     /// Whether APCs may be queued on this thread. On from attach, off from the exit path on.
     pub(crate) apc_queueable: bool,
-    /// Whether a termination waits for this thread to leave its critical region: set by the request
-    /// (see [`Dispatcher::request_termination`]), acted on by the thread itself as it leaves.
+    /// Whether a termination waits for this thread to leave its critical region: set by the
+    /// request (see [`Dispatcher::request_termination`]), acted on by the thread itself as it
+    /// leaves.
     ///
     /// [`Dispatcher::request_termination`]: super::dispatcher::Dispatcher::request_termination
     pub(crate) terminate_pending: bool,

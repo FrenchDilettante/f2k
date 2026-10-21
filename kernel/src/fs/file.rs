@@ -59,10 +59,16 @@ pub mod rights {
     pub const GENERIC_WRITE: u32 = 0x4000_0000;
     pub const GENERIC_READ: u32 = 0x8000_0000;
     pub const FILE_ALL_ACCESS: u32 = 0x001F_01FF;
-    pub const FILE_GENERIC_READ: u32 = READ_CONTROL | FILE_READ_DATA | FILE_READ_ATTRIBUTES | FILE_READ_EA | SYNCHRONIZE;
-    pub const FILE_GENERIC_WRITE: u32 =
-        READ_CONTROL | FILE_WRITE_DATA | FILE_WRITE_ATTRIBUTES | FILE_WRITE_EA | FILE_APPEND_DATA | SYNCHRONIZE;
-    pub const FILE_GENERIC_EXECUTE: u32 = READ_CONTROL | FILE_READ_ATTRIBUTES | FILE_EXECUTE | SYNCHRONIZE;
+    pub const FILE_GENERIC_READ: u32 =
+        READ_CONTROL | FILE_READ_DATA | FILE_READ_ATTRIBUTES | FILE_READ_EA | SYNCHRONIZE;
+    pub const FILE_GENERIC_WRITE: u32 = READ_CONTROL
+        | FILE_WRITE_DATA
+        | FILE_WRITE_ATTRIBUTES
+        | FILE_WRITE_EA
+        | FILE_APPEND_DATA
+        | SYNCHRONIZE;
+    pub const FILE_GENERIC_EXECUTE: u32 =
+        READ_CONTROL | FILE_READ_ATTRIBUTES | FILE_EXECUTE | SYNCHRONIZE;
 
     /// The specific rights an access mask asks for: the generic rights mapped (the file object's
     /// GENERIC_MAPPING), MAXIMUM_ALLOWED as every right (no security descriptors are kept).
@@ -128,7 +134,13 @@ impl OpenFile {
     /// A file opened at its start for reading, shared every way.
     #[cfg(test)]
     pub fn new(file: File) -> OpenFile {
-        OpenFile { file, position: 0, access: ACCESS_READ, share: SHARE_ALL, delete_on_close: false }
+        OpenFile {
+            file,
+            position: 0,
+            access: ACCESS_READ,
+            share: SHARE_ALL,
+            delete_on_close: false,
+        }
     }
 
     /// How many bytes a read of `count` at the position moves (see [`available`]).
@@ -153,8 +165,8 @@ pub struct FileObject {
     pub share: u8,
     /// Whether the file goes with this open's cleanup (FILE_DELETE_ON_CLOSE).
     pub delete_on_close: bool,
-    /// Whether the object keeps a position (opened for synchronous I/O): a read or write without an
-    /// offset uses and moves it.
+    /// Whether the object keeps a position (opened for synchronous I/O): a read or write without
+    /// an offset uses and moves it.
     pub synchronous: bool,
     /// The directory search the object's queries continue (its number in [`super::search`]; zero
     /// for none yet).
@@ -204,13 +216,19 @@ impl ShareAccess {
     /// Whether an open asking `access` and allowing `share` is compatible with the opens in place
     /// (IoCheckShareAccess). An open asking none of the three neither checks nor counts.
     pub fn allows(&self, access: u8, share: u8) -> bool {
-        let (read, write, delete) =
-            (access & ACCESS_READ != 0, access & ACCESS_WRITE != 0, access & ACCESS_DELETE != 0);
+        let (read, write, delete) = (
+            access & ACCESS_READ != 0,
+            access & ACCESS_WRITE != 0,
+            access & ACCESS_DELETE != 0,
+        );
         if !(read || write || delete) {
             return true;
         }
-        let (shares_read, shares_write, shares_delete) =
-            (share & ACCESS_READ != 0, share & ACCESS_WRITE != 0, share & ACCESS_DELETE != 0);
+        let (shares_read, shares_write, shares_delete) = (
+            share & ACCESS_READ != 0,
+            share & ACCESS_WRITE != 0,
+            share & ACCESS_DELETE != 0,
+        );
         !((read && self.shared_read < self.opens)
             || (write && self.shared_write < self.opens)
             || (delete && self.shared_delete < self.opens)
@@ -291,7 +309,9 @@ impl FileRecords {
     /// No file open (the tests build records by value; the kernel writes them in place).
     #[cfg(test)]
     pub const fn empty() -> Self {
-        FileRecords { records: [None; FILE_RECORDS] }
+        FileRecords {
+            records: [None; FILE_RECORDS],
+        }
     }
 
     /// Write the empty set at `records`, record by record (by value it would pass the caller's
@@ -334,7 +354,11 @@ impl FileRecords {
                 index
             }
             None => {
-                let index = self.records.iter().position(Option::is_none).ok_or(OpenError::Full)? as u16;
+                let index = self
+                    .records
+                    .iter()
+                    .position(Option::is_none)
+                    .ok_or(OpenError::Full)? as u16;
                 self.records[index as usize] = Some(FileRecord {
                     file,
                     share: ShareAccess::default(),
@@ -355,12 +379,16 @@ impl FileRecords {
 
     /// The record at `index` (a live object names it).
     pub fn get(&self, index: u16) -> &FileRecord {
-        self.records[index as usize].as_ref().expect("an open names a live record")
+        self.records[index as usize]
+            .as_ref()
+            .expect("an open names a live record")
     }
 
     /// The record at `index`, mutably.
     pub fn get_mut(&mut self, index: u16) -> &mut FileRecord {
-        self.records[index as usize].as_mut().expect("an open names a live record")
+        self.records[index as usize]
+            .as_mut()
+            .expect("an open names a live record")
     }
 
     /// The entry `old` named changed into `new` (a change made by path, or a rename): an open
@@ -385,7 +413,13 @@ impl FileRecords {
     /// An open's last handle closed (its cleanup): its share access goes, its delete-on-close marks
     /// the file delete-pending. Returns the file to delete now: the last cleanup of a
     /// delete-pending file.
-    pub fn cleanup(&mut self, index: u16, access: u8, share: u8, delete_on_close: bool) -> Option<File> {
+    pub fn cleanup(
+        &mut self,
+        index: u16,
+        access: u8,
+        share: u8,
+        delete_on_close: bool,
+    ) -> Option<File> {
         let record = self.get_mut(index);
         record.share.remove(access, share);
         record.cleanups -= 1;
@@ -414,7 +448,10 @@ impl FileRecords {
 
     /// How many records are taken.
     pub fn live(&self) -> usize {
-        self.records.iter().filter(|record| record.is_some()).count()
+        self.records
+            .iter()
+            .filter(|record| record.is_some())
+            .count()
     }
 }
 
@@ -475,14 +512,32 @@ mod tests {
     fn opens_respect_each_others_sharing() {
         let mut records = FileRecords::empty();
         let first = records.open(entry(1), ACCESS_READ, 0).unwrap();
-        assert_eq!(records.open(entry(1), ACCESS_READ, SHARE_ALL), Err(OpenError::Sharing));
+        assert_eq!(
+            records.open(entry(1), ACCESS_READ, SHARE_ALL),
+            Err(OpenError::Sharing)
+        );
         assert!(records.cleanup(first, ACCESS_READ, 0, false).is_none());
         records.close(first);
         let reader = records.open(entry(1), ACCESS_READ, ACCESS_READ).unwrap();
-        assert_eq!(records.open(entry(1), ACCESS_READ, ACCESS_READ), Ok(reader), "one record");
-        assert_eq!(records.open(entry(1), ACCESS_READ, 0), Err(OpenError::Sharing), "exclusive");
-        assert_eq!(records.open(entry(1), ACCESS_WRITE, SHARE_ALL), Err(OpenError::Sharing), "not shared");
-        assert!(records.open(entry(9), ACCESS_READ, 0).is_ok(), "another entry");
+        assert_eq!(
+            records.open(entry(1), ACCESS_READ, ACCESS_READ),
+            Ok(reader),
+            "one record"
+        );
+        assert_eq!(
+            records.open(entry(1), ACCESS_READ, 0),
+            Err(OpenError::Sharing),
+            "exclusive"
+        );
+        assert_eq!(
+            records.open(entry(1), ACCESS_WRITE, SHARE_ALL),
+            Err(OpenError::Sharing),
+            "not shared"
+        );
+        assert!(
+            records.open(entry(9), ACCESS_READ, 0).is_ok(),
+            "another entry"
+        );
     }
 
     /// CopyFileA onto the source's own entry under another spelling. The target's open (for
@@ -496,7 +551,10 @@ mod tests {
         let mut spelled = entry(1);
         spelled.size = 0;
         assert_eq!(records.find(&spelled), Some(source), "the same entry");
-        assert_eq!(records.open(spelled, ACCESS_WRITE | ACCESS_DELETE, 0), Err(OpenError::Sharing));
+        assert_eq!(
+            records.open(spelled, ACCESS_WRITE | ACCESS_DELETE, 0),
+            Err(OpenError::Sharing)
+        );
     }
 
     /// An open asking no data access (attributes only) neither checks nor counts, whichever
@@ -505,10 +563,17 @@ mod tests {
     fn opens_without_data_access_take_no_part() {
         let mut records = FileRecords::empty();
         let reader = records.open(entry(1), ACCESS_READ, 0).unwrap();
-        assert_eq!(records.open(entry(1), 0, 0), Ok(reader), "an attributes open beside an exclusive one");
+        assert_eq!(
+            records.open(entry(1), 0, 0),
+            Ok(reader),
+            "an attributes open beside an exclusive one"
+        );
         let mut other = FileRecords::empty();
         other.open(entry(1), 0, 0).unwrap();
-        assert!(other.open(entry(1), ACCESS_READ | ACCESS_WRITE, 0).is_ok(), "and before one");
+        assert!(
+            other.open(entry(1), ACCESS_READ | ACCESS_WRITE, 0).is_ok(),
+            "and before one"
+        );
     }
 
     /// IoCheckShareAccess both ways: a new open must share what existing opens use, and must use
@@ -517,11 +582,23 @@ mod tests {
     fn the_share_check_runs_both_ways() {
         let mut access = ShareAccess::default();
         access.add(ACCESS_READ, ACCESS_READ | ACCESS_WRITE);
-        assert!(access.allows(ACCESS_WRITE, ACCESS_READ), "a writer sharing the reader's read");
-        assert!(!access.allows(ACCESS_WRITE, ACCESS_WRITE), "but not sharing read");
-        assert!(!access.allows(ACCESS_DELETE, SHARE_ALL), "delete is not shared");
+        assert!(
+            access.allows(ACCESS_WRITE, ACCESS_READ),
+            "a writer sharing the reader's read"
+        );
+        assert!(
+            !access.allows(ACCESS_WRITE, ACCESS_WRITE),
+            "but not sharing read"
+        );
+        assert!(
+            !access.allows(ACCESS_DELETE, SHARE_ALL),
+            "delete is not shared"
+        );
         access.add(ACCESS_WRITE, ACCESS_READ);
-        assert!(!access.allows(ACCESS_WRITE, SHARE_ALL), "the writer does not share writes");
+        assert!(
+            !access.allows(ACCESS_WRITE, SHARE_ALL),
+            "the writer does not share writes"
+        );
         access.remove(ACCESS_WRITE, ACCESS_READ);
         assert!(access.allows(ACCESS_WRITE, SHARE_ALL));
         access.remove(ACCESS_READ, ACCESS_READ | ACCESS_WRITE);
@@ -533,13 +610,26 @@ mod tests {
     #[test]
     fn delete_on_close_waits_for_the_last_cleanup() {
         let mut records = FileRecords::empty();
-        let flagged = records.open(entry(1), ACCESS_READ | ACCESS_DELETE, SHARE_ALL).unwrap();
+        let flagged = records
+            .open(entry(1), ACCESS_READ | ACCESS_DELETE, SHARE_ALL)
+            .unwrap();
         let other = records.open(entry(1), ACCESS_READ, SHARE_ALL).unwrap();
         assert_eq!(flagged, other);
-        assert_eq!(records.cleanup(flagged, ACCESS_READ | ACCESS_DELETE, SHARE_ALL, true), None, "another open remains");
-        assert_eq!(records.open(entry(1), ACCESS_READ, SHARE_ALL), Err(OpenError::DeletePending));
+        assert_eq!(
+            records.cleanup(flagged, ACCESS_READ | ACCESS_DELETE, SHARE_ALL, true),
+            None,
+            "another open remains"
+        );
+        assert_eq!(
+            records.open(entry(1), ACCESS_READ, SHARE_ALL),
+            Err(OpenError::DeletePending)
+        );
         assert!(records.delete_pending(flagged));
-        assert_eq!(records.cleanup(other, ACCESS_READ, SHARE_ALL, false), Some(entry(1)), "the last cleanup deletes");
+        assert_eq!(
+            records.cleanup(other, ACCESS_READ, SHARE_ALL, false),
+            Some(entry(1)),
+            "the last cleanup deletes"
+        );
         records.close(flagged);
         records.close(other);
         assert_eq!(records.live(), 0);
@@ -554,9 +644,17 @@ mod tests {
         let other = records.open(entry(1), ACCESS_READ, SHARE_ALL).unwrap();
         records.set_delete_pending(open, true);
         records.set_delete_pending(open, false);
-        assert_eq!(records.cleanup(open, ACCESS_DELETE, SHARE_ALL, false), None, "taken back");
+        assert_eq!(
+            records.cleanup(open, ACCESS_DELETE, SHARE_ALL, false),
+            None,
+            "taken back"
+        );
         records.set_delete_pending(other, true);
-        assert_eq!(records.cleanup(other, ACCESS_READ, SHARE_ALL, false), Some(entry(1)), "the last cleanup deletes");
+        assert_eq!(
+            records.cleanup(other, ACCESS_READ, SHARE_ALL, false),
+            Some(entry(1)),
+            "the last cleanup deletes"
+        );
     }
 
     /// The record is the one copy of the file every open sees: a write through one open shows
@@ -568,7 +666,10 @@ mod tests {
         let b = records.open(entry(1), ACCESS_WRITE, SHARE_ALL).unwrap();
         records.get_mut(a).file.size = 4096;
         records.get_mut(a).file.first_cluster = 9;
-        assert_eq!((records.get(b).file.size, records.get(b).file.first_cluster), (4096, 9));
+        assert_eq!(
+            (records.get(b).file.size, records.get(b).file.first_cluster),
+            (4096, 9)
+        );
         let mut moved = records.get(a).file;
         moved.parent_cluster = 7;
         moved.index = 4;
@@ -585,7 +686,10 @@ mod tests {
         let index = records.open(entry(1), ACCESS_READ, SHARE_ALL).unwrap();
         assert_eq!(records.cleanup(index, ACCESS_READ, SHARE_ALL, false), None);
         assert_eq!(records.live(), 1, "an object still references it");
-        assert!(records.open(entry(1), ACCESS_WRITE, 0).is_ok(), "its share access went with the cleanup");
+        assert!(
+            records.open(entry(1), ACCESS_WRITE, 0).is_ok(),
+            "its share access went with the cleanup"
+        );
         records.close(index);
         records.close(index);
         assert_eq!(records.live(), 0);
@@ -603,9 +707,16 @@ mod tests {
         assert_eq!(mapped(DELETE | SYNCHRONIZE), DELETE | SYNCHRONIZE);
         assert_eq!(share_access(mapped(GENERIC_READ)), ACCESS_READ);
         assert_eq!(share_access(mapped(GENERIC_WRITE)), ACCESS_WRITE);
-        assert_eq!(share_access(FILE_EXECUTE | SYNCHRONIZE), ACCESS_READ, "a current directory's traverse");
+        assert_eq!(
+            share_access(FILE_EXECUTE | SYNCHRONIZE),
+            ACCESS_READ,
+            "a current directory's traverse"
+        );
         assert_eq!(share_access(DELETE), ACCESS_DELETE);
-        assert_eq!(share_access(FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES | SYNCHRONIZE), 0);
+        assert_eq!(
+            share_access(FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES | SYNCHRONIZE),
+            0
+        );
     }
 
     /// The records exhaust at their capacity.
@@ -613,9 +724,14 @@ mod tests {
     fn the_records_exhaust() {
         let mut records = FileRecords::empty();
         for index in 0..FILE_RECORDS as u32 {
-            records.open(entry(index + 1), ACCESS_READ, SHARE_ALL).unwrap();
+            records
+                .open(entry(index + 1), ACCESS_READ, SHARE_ALL)
+                .unwrap();
         }
-        assert_eq!(records.open(entry(1000), ACCESS_READ, SHARE_ALL), Err(OpenError::Full));
+        assert_eq!(
+            records.open(entry(1000), ACCESS_READ, SHARE_ALL),
+            Err(OpenError::Full)
+        );
         assert_eq!(records.clear(), FILE_RECORDS);
     }
 }

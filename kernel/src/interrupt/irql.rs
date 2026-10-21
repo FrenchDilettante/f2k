@@ -149,8 +149,9 @@ impl IrqlState {
 
     /// Open a one-instruction interrupt window from masked code and close it again: an interrupt
     /// held pending meanwhile (a tick that fell inside a long service) is taken here, with every
-    /// consequence an interrupt exit has — a quantum it ends may switch the processor away and back.
-    /// The NOP is the window: STI's shadow would hold the interrupt across a CLI right behind it.
+    /// consequence an interrupt exit has — a quantum it ends may switch the processor away and
+    /// back. The NOP is the window: STI's shadow would hold the interrupt across a CLI right
+    /// behind it.
     pub fn interrupt_window(&mut self) {
         self.interrupts = true;
         // SAFETY: the window runs the interrupt exit's own paths, which the caller's state must

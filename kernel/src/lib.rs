@@ -260,8 +260,9 @@ pub extern "C" fn kmain(magic: u32, multiboot_info: u32) -> ! {
     crate::hw::ide::smoke::run();
 
     // The user process (the program the kernel command line names, else exit0, through the PE
-    // loader; the fault-test features and the process suite substitute their own), entered as its main thread: this boot context becomes the idle thread. The
-    // image ends through its exit import, which reports the exit code on COM1; the idle thread
-    // then tears the process down and rests.
+    // loader; the fault-test features and the process suite substitute their own), entered as its
+    // main thread: this boot context becomes the idle thread. The image ends through its exit
+    // import, which reports the exit code on COM1; the idle thread then tears the process down
+    // and rests.
     user::run_user_process()
 }

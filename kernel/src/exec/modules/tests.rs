@@ -4,8 +4,8 @@
 
 use super::*;
 
-// `NATIVE_EXPORTS`: kernel32's native exports (its user-mode code), (export, argument bytes), as the
-// spec declares them.
+// `NATIVE_EXPORTS`: kernel32's native exports (its user-mode code), (export, argument bytes), as
+// the spec declares them.
 include!(concat!(env!("OUT_DIR"), "/kernel32_natives.rs"));
 
 // `DLL_EXPORTS`: every export kernel32's table carries, from its export spec.
@@ -103,7 +103,8 @@ fn every_export_has_its_own_code() {
         addresses.push(address);
     }
     for thunk in ["BaseProcessStartThunk", "BaseThreadStartThunk"] {
-        addresses.push(kernel32_export(thunk).unwrap_or_else(|| panic!("kernel32 exports no {thunk}")));
+        addresses
+            .push(kernel32_export(thunk).unwrap_or_else(|| panic!("kernel32 exports no {thunk}")));
     }
     addresses.sort_unstable();
     addresses.dedup();
@@ -119,8 +120,8 @@ fn every_export_has_its_own_code() {
 /// `ud2` follows), its APC dispatcher calls the routine the kernel left on top, then resumes the
 /// context above it, and its LdrInitializeThunk runs its body, then resumes the same; kernel32's
 /// start thunks clear EBP and push their registers (the main thread's entry point; a child's
-/// parameter, then its start address) under a zero return address, then jump to their bodies. The exception-filter natives address the top-level filter's slot in the
-/// PEB page.
+/// parameter, then its start address) under a zero return address, then jump to their bodies. The
+/// exception-filter natives address the top-level filter's slot in the PEB page.
 #[test]
 fn the_entry_points_keep_their_protocols() {
     let dispatcher = bytes_at(exception_dispatcher());
@@ -150,7 +151,11 @@ fn the_entry_points_keep_their_protocols() {
     let ldr = bytes_at(ldr_initialize_thunk());
     assert_eq!(&ldr[..4], &[0x8D, 0x7C, 0x24, 0x10], "LdrInitializeThunk");
     assert_eq!(ldr[4], 0xE8, "LdrInitializeThunk: its body's call");
-    assert_eq!(&ldr[9..12], &[0x6A, 0x01, 0x57], "LdrInitializeThunk: NtContinue(context, TRUE)");
+    assert_eq!(
+        &ldr[9..12],
+        &[0x6A, 0x01, 0x57],
+        "LdrInitializeThunk: NtContinue(context, TRUE)"
+    );
     assert_eq!(ldr[12], 0xE8, "LdrInitializeThunk: NtContinue's call");
     assert_eq!(
         Some(ldr_initialize_thunk()),
@@ -305,7 +310,11 @@ fn ordinals_resolve_through_the_export_directory() {
         Err(Unresolved::NoEntry)
     );
     assert_eq!(
-        resolve_target(KERNEL32, ForwardTarget::Ordinal(exports.ordinal_base.wrapping_sub(1)), 0),
+        resolve_target(
+            KERNEL32,
+            ForwardTarget::Ordinal(exports.ordinal_base.wrapping_sub(1)),
+            0
+        ),
         Err(Unresolved::NoEntry)
     );
 }

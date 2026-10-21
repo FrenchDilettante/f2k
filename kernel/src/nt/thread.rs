@@ -259,10 +259,10 @@ pub fn create_thread(
             let suspended = dispatcher.suspend_thread(unsafe { &mut *thread });
             assert_eq!(suspended, Ok(0), "a fresh thread suspends");
         }
-        // A clock tick that fell inside the create (the gate masks interrupts, and a create maps and
-        // zeroes pages) is taken before the new thread is schedulable — on Windows the tick lands
-        // while the creator is still inside the create — so a quantum it ends passes the processor
-        // on without the new thread jumping ahead of its creator.
+        // A clock tick that fell inside the create (the gate masks interrupts, and a create maps
+        // and zeroes pages) is taken before the new thread is schedulable — on Windows the
+        // tick lands while the creator is still inside the create — so a quantum it ends
+        // passes the processor on without the new thread jumping ahead of its creator.
         crate::interrupt::irql::state_mut().interrupt_window();
         // The handle exists; the thread becomes schedulable now.
         // SAFETY: the created thread, live and exclusive here.
@@ -366,8 +366,8 @@ pub fn resume_thread(_call: &mut NtCall, thread: Handle, previous: UserPtr<u32>)
 /// NtQueryInformationThread: ThreadBasicInformation (the exit status, the TEB, the client id, the
 /// affinity, the current priority and the base priority's increment), ThreadAmILastThread (whether
 /// the caller is its process's only thread: kernel32's ExitThread asks it) and ThreadPriorityBoost
-/// (whether the dynamic boosts are disabled). STATUS_INVALID_INFO_CLASS for the classes F2K does not
-/// answer.
+/// (whether the dynamic boosts are disabled). STATUS_INVALID_INFO_CLASS for the classes F2K does
+/// not answer.
 pub fn query_information_thread(
     _call: &mut NtCall,
     thread: Handle,
@@ -465,8 +465,9 @@ pub fn set_information_thread(
                 }
                 for (_, teb) in call.process().thread_tebs() {
                     if let Some(slot) = crate::user::tls::thread_slot(teb, value) {
-                        // Each thread's slot, where it has one (its expansion slots are its own heap
-                        // block); a slot the program made unwritable keeps what it had.
+                        // Each thread's slot, where it has one (its expansion slots are its own
+                        // heap block); a slot the program made unwritable
+                        // keeps what it had.
                         let _ = UserPtr::<u32>::at(slot).write(0);
                     }
                 }

@@ -114,7 +114,8 @@ impl Clock {
         self.interrupt_count
     }
 
-    /// The wait discipline's reading: interrupt time, the clock every due is on, and the tick count.
+    /// The wait discipline's reading: interrupt time, the clock every due is on, and the tick
+    /// count.
     pub fn stamp(&self) -> crate::sched::wait::ClockStamp {
         crate::sched::wait::ClockStamp {
             interrupt_time: self.interrupt_time,
@@ -168,8 +169,13 @@ fn timer_routine(_dpc: &Dpc, _context: usize, argument1: usize, _argument2: usiz
     // The readings in one masked read: the routine runs with interrupts enabled, from the retire
     // pass at the dispatch level — the dispatcher's entries run serialized there. The system time
     // is the pass's signal time, what the expired timers' APCs are given.
-    let (now, tick, system_time) =
-        read_clock(|clock| (clock.interrupt_time(), clock.tick_count() as u32, clock.system_time()));
+    let (now, tick, system_time) = read_clock(|clock| {
+        (
+            clock.interrupt_time(),
+            clock.tick_count() as u32,
+            clock.system_time(),
+        )
+    });
     let signal_time = crate::time::boot_filetime() + system_time;
     crate::sched::idle::dispatcher().expire_timers(now, tick, argument1 as u32, signal_time);
 }

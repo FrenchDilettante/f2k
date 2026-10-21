@@ -7,7 +7,11 @@ use super::regs::{MAX_SECTORS_PER_COMMAND, READ_SECTORS, SECTOR_SIZE};
 use super::taskfile::pack_lba28;
 use crate::hw::portio::Io;
 use crate::status::{
-    nt_success, NtStatus, STATUS_INVALID_PARAMETER, STATUS_NO_SUCH_DEVICE, STATUS_SUCCESS,
+    nt_success,
+    NtStatus,
+    STATUS_INVALID_PARAMETER,
+    STATUS_NO_SUCH_DEVICE,
+    STATUS_SUCCESS,
 };
 
 /// Read `buffer.len() / 512` contiguous sectors starting at `lba` from a disk of `capacity`
@@ -54,7 +58,13 @@ pub fn read<IoT: Io, C: Completion<IoT>>(
 #[cfg(test)]
 mod tests {
     use super::super::regs::{
-        COMMAND, DEVICE, LBA_HIGH, LBA_LOW, LBA_MID, PRIMARY_BASE, SECTOR_COUNT,
+        COMMAND,
+        DEVICE,
+        LBA_HIGH,
+        LBA_LOW,
+        LBA_MID,
+        PRIMARY_BASE,
+        SECTOR_COUNT,
     };
     use super::super::sim::{expected, ready, writes, Deliver, DISK};
     use super::*;

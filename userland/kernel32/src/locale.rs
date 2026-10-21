@@ -76,7 +76,10 @@ pub extern "system" fn is_valid_code_page(page: u32) -> u32 {
 /// # Safety
 ///
 /// For -1, `src` points at a NUL-terminated string.
-unsafe fn convert_length<U: Copy + Default + PartialEq>(src: *const U, count: i32) -> Result<usize, u32> {
+unsafe fn convert_length<U: Copy + Default + PartialEq>(
+    src: *const U,
+    count: i32,
+) -> Result<usize, u32> {
     if src.is_null() || count == 0 || count < -1 {
         return Err(ERROR_INVALID_PARAMETER);
     }
@@ -97,7 +100,11 @@ struct Out<U> {
 
 impl<U> Out<U> {
     fn new(dst: *mut U, capacity: i32) -> Self {
-        Out { dst, capacity: capacity as usize, produced: 0 }
+        Out {
+            dst,
+            capacity: capacity as usize,
+            produced: 0,
+        }
     }
 
     /// One more unit.
@@ -163,7 +170,9 @@ pub unsafe extern "system" fn multi_byte_to_wide_char(
     let bytes = unsafe { core::slice::from_raw_parts(src, count) };
     let mut out = Out::new(dst, capacity);
     // SAFETY: the caller's destination of `capacity` units.
-    codepage::to_wide(page, bytes, flags & MB_USEGLYPHCHARS != 0, |unit| unsafe { out.put(unit) });
+    codepage::to_wide(page, bytes, flags & MB_USEGLYPHCHARS != 0, |unit| unsafe {
+        out.put(unit)
+    });
     match out.finish() {
         Ok(count) => count as i32,
         Err(code) => fail(code, 0),
@@ -212,7 +221,11 @@ pub unsafe extern "system" fn wide_char_to_multi_byte(
         return fail(ERROR_INVALID_PARAMETER, 0);
     }
     // SAFETY: the caller's default character, when given.
-    let default = if default_char.is_null() { b'?' } else { unsafe { default_char.read() } };
+    let default = if default_char.is_null() {
+        b'?'
+    } else {
+        unsafe { default_char.read() }
+    };
     // SAFETY: the caller's source of `count` units.
     let units = unsafe { core::slice::from_raw_parts(src, count) };
     let mut out = Out::new(dst, capacity);
@@ -270,8 +283,8 @@ unsafe fn wide_count(src: *const u16, count: i32) -> Result<usize, u32> {
 /// LCMapStringA: case mapping of code page 1252 bytes, through Unicode (a byte whose mapped
 /// character the page lacks stays itself). A size query (no destination size) returns the count;
 /// ERROR_INSUFFICIENT_BUFFER for a destination too small; ERROR_INVALID_FLAGS for anything but the
-/// two case mappings. Quirk, as captured: a mapping into the buffer leaves ERROR_INSUFFICIENT_BUFFER
-/// as the last error even though it succeeds.
+/// two case mappings. Quirk, as captured: a mapping into the buffer leaves
+/// ERROR_INSUFFICIENT_BUFFER as the last error even though it succeeds.
 ///
 /// # Safety
 ///
@@ -306,7 +319,11 @@ pub unsafe extern "system" fn lc_map_string_a(
         let byte = unsafe { src.add(at).read() };
         let mapped = map_case(MB_TO_WC[byte as usize], flags == LCMAP_UPPERCASE);
         let back = wc_to_mb(mapped);
-        let out = if MB_TO_WC[back as usize] == mapped { back } else { byte };
+        let out = if MB_TO_WC[back as usize] == mapped {
+            back
+        } else {
+            byte
+        };
         // SAFETY: as above.
         unsafe { dst.add(at).write(out) };
     }
@@ -353,7 +370,10 @@ pub unsafe extern "system" fn lc_map_string_w(
     }
     for at in 0..count {
         // SAFETY: inside the caller's source and destination.
-        unsafe { dst.add(at).write_unaligned(cp1252::map_case(src.add(at).read_unaligned(), upper)) };
+        unsafe {
+            dst.add(at)
+                .write_unaligned(cp1252::map_case(src.add(at).read_unaligned(), upper))
+        };
     }
     count as i32
 }
@@ -384,7 +404,8 @@ pub unsafe extern "system" fn get_string_type_a(
         // SAFETY: inside the caller's source and output.
         unsafe {
             let byte = src.add(at).read();
-            out.add(at).write_unaligned(cp1252::c1_flags(cp1252::MB_TO_WC[byte as usize]));
+            out.add(at)
+                .write_unaligned(cp1252::c1_flags(cp1252::MB_TO_WC[byte as usize]));
         }
     }
     1
@@ -399,7 +420,12 @@ pub unsafe extern "system" fn get_string_type_a(
 ///
 /// As GetStringTypeA's, in units.
 #[unsafe(export_name = "f2k_export_GetStringTypeW")]
-pub unsafe extern "system" fn get_string_type_w(info: u32, src: *const u16, count: i32, out: *mut u16) -> u32 {
+pub unsafe extern "system" fn get_string_type_w(
+    info: u32,
+    src: *const u16,
+    count: i32,
+    out: *mut u16,
+) -> u32 {
     if info != CT_CTYPE1 {
         return fail(ERROR_INVALID_FLAGS, 0);
     }
@@ -413,7 +439,10 @@ pub unsafe extern "system" fn get_string_type_w(info: u32, src: *const u16, coun
     };
     for at in 0..count {
         // SAFETY: inside the caller's source and output.
-        unsafe { out.add(at).write_unaligned(cp1252::c1_flags(src.add(at).read_unaligned())) };
+        unsafe {
+            out.add(at)
+                .write_unaligned(cp1252::c1_flags(src.add(at).read_unaligned()))
+        };
     }
     1
 }
@@ -424,7 +453,10 @@ pub unsafe extern "system" fn get_string_type_w(info: u32, src: *const u16, coun
 /// # Safety
 ///
 /// For -1, `string` points at a NUL-terminated string.
-unsafe fn compare_length<U: Copy + Default + PartialEq>(string: *const U, count: i32) -> Result<usize, u32> {
+unsafe fn compare_length<U: Copy + Default + PartialEq>(
+    string: *const U,
+    count: i32,
+) -> Result<usize, u32> {
     if string.is_null() || count < -1 {
         return Err(ERROR_INVALID_PARAMETER);
     }
@@ -436,8 +468,8 @@ unsafe fn compare_length<U: Copy + Default + PartialEq>(string: *const U, count:
 }
 
 /// The comparison CompareStringA and CompareStringW share, over strings of units read in place
-/// through `decode` (see [`crate::collate`]). The locale is not consulted: every locale compares the
-/// same. ERROR_INVALID_FLAGS for an unknown flag.
+/// through `decode` (see [`crate::collate`]). The locale is not consulted: every locale compares
+/// the same. ERROR_INVALID_FLAGS for an unknown flag.
 ///
 /// # Safety
 ///
@@ -452,13 +484,16 @@ unsafe fn compare_strings<U: Copy + Default + PartialEq>(
         return fail(ERROR_INVALID_FLAGS, 0);
     }
     // SAFETY: the caller's contract.
-    let lengths = unsafe { compare_length(a, a_count).and_then(|a_len| Ok((a_len, compare_length(b, b_count)?))) };
+    let lengths = unsafe {
+        compare_length(a, a_count).and_then(|a_len| Ok((a_len, compare_length(b, b_count)?)))
+    };
     let (a_len, b_len) = match lengths {
         Ok(lengths) => lengths,
         Err(code) => return fail(code, 0),
     };
     // SAFETY: the comparison reads below each string's length.
-    let read = |base: *const U| move |index: usize| decode(unsafe { base.add(index).read_unaligned() });
+    let read =
+        |base: *const U| move |index: usize| decode(unsafe { base.add(index).read_unaligned() });
     crate::collate::compare_with(&read(a), a_len, &read(b), b_len, flags) as i32
 }
 
@@ -477,7 +512,11 @@ pub unsafe extern "system" fn compare_string_a(
     b_count: i32,
 ) -> i32 {
     // SAFETY: the caller's contract.
-    unsafe { compare_strings(flags, (a, a_count), (b, b_count), |byte| u32::from(cp1252::MB_TO_WC[byte as usize])) }
+    unsafe {
+        compare_strings(flags, (a, a_count), (b, b_count), |byte| {
+            u32::from(cp1252::MB_TO_WC[byte as usize])
+        })
+    }
 }
 
 /// CompareStringW: the comparison over UTF-16 code units.
@@ -570,7 +609,12 @@ unsafe fn get_locale_info<U: From<u8>>(lcid: u32, lctype: u32, buffer: *mut U, s
 ///
 /// The buffer holds `size` bytes.
 #[unsafe(export_name = "f2k_export_GetLocaleInfoA")]
-pub unsafe extern "system" fn get_locale_info_a(lcid: u32, lctype: u32, buffer: *mut u8, size: i32) -> i32 {
+pub unsafe extern "system" fn get_locale_info_a(
+    lcid: u32,
+    lctype: u32,
+    buffer: *mut u8,
+    size: i32,
+) -> i32 {
     // SAFETY: the caller's contract.
     unsafe { get_locale_info(lcid, lctype, buffer, size) }
 }
@@ -581,7 +625,12 @@ pub unsafe extern "system" fn get_locale_info_a(lcid: u32, lctype: u32, buffer: 
 ///
 /// The buffer holds `size` units.
 #[unsafe(export_name = "f2k_export_GetLocaleInfoW")]
-pub unsafe extern "system" fn get_locale_info_w(lcid: u32, lctype: u32, buffer: *mut u16, size: i32) -> i32 {
+pub unsafe extern "system" fn get_locale_info_w(
+    lcid: u32,
+    lctype: u32,
+    buffer: *mut u16,
+    size: i32,
+) -> i32 {
     // SAFETY: the caller's contract.
     unsafe { get_locale_info(lcid, lctype, buffer, size) }
 }

@@ -107,7 +107,10 @@ fn exact_byte(page: CodePage, unit: u16) -> Option<u8> {
             if unit < 0x80 {
                 return Some(unit as u8);
             }
-            CP437_HIGH.iter().position(|&u| u == unit).map(|i| 0x80 + i as u8)
+            CP437_HIGH
+                .iter()
+                .position(|&u| u == unit)
+                .map(|i| 0x80 + i as u8)
         }
         _ => {
             let byte = crate::cp1252::wc_to_mb(unit);
@@ -182,7 +185,9 @@ pub fn utf8_encode(units: &[u16], mut out: impl FnMut(u8)) {
     while i < units.len() {
         let unit = units[i] as u32;
         let value = if (0xD800..0xDC00).contains(&unit)
-            && units.get(i + 1).is_some_and(|&n| (0xDC00..0xE000).contains(&n))
+            && units
+                .get(i + 1)
+                .is_some_and(|&n| (0xDC00..0xE000).contains(&n))
         {
             i += 1;
             0x1_0000 + ((unit - 0xD800) << 10) + (units[i] as u32 - 0xDC00)
@@ -216,14 +221,22 @@ pub fn utf8_encode(units: &[u16], mut out: impl FnMut(u8)) {
 pub fn to_wide(page: CodePage, bytes: &[u8], glyphs: bool, mut out: impl FnMut(u16)) {
     match page {
         CodePage::Utf8 => utf8_decode(bytes, out),
-        _ => bytes.iter().for_each(|&b| out(decode_glyph(page, b, glyphs))),
+        _ => bytes
+            .iter()
+            .for_each(|&b| out(decode_glyph(page, b, glyphs))),
     }
 }
 
 /// Wide to narrow: the bytes `units` encode to in `page`, a single-byte page substituting
 /// `default` where it holds nothing that fits (nothing but an exact match when `fit` is false:
 /// WC_NO_BEST_FIT_CHARS). Returns whether the default was used.
-pub fn to_narrow(page: CodePage, units: &[u16], default: u8, fit: bool, mut out: impl FnMut(u8)) -> bool {
+pub fn to_narrow(
+    page: CodePage,
+    units: &[u16],
+    default: u8,
+    fit: bool,
+    mut out: impl FnMut(u8),
+) -> bool {
     match page {
         CodePage::Utf8 => {
             utf8_encode(units, out);
@@ -261,12 +274,24 @@ mod tests {
     /// The runtime capture's conversions.
     #[test]
     fn the_captured_conversions() {
-        assert_eq!(wide(CodePage::Utf8, b"\xC3\xA9\xE2\x82\xAC\0"), [0x00E9, 0x20AC, 0]);
+        assert_eq!(
+            wide(CodePage::Utf8, b"\xC3\xA9\xE2\x82\xAC\0"),
+            [0x00E9, 0x20AC, 0]
+        );
         assert_eq!(wide(CodePage::Utf8, b"a\xC3(b\0"), [0x61, 0x28, 0x62, 0]);
         let w = [0x20AC, 0x0100, 0x4E2D, b'A' as u16, 0];
-        assert_eq!(narrow(CodePage::Ansi, &w, b'?'), (vec![0x80, 0x41, 0x3F, 0x41, 0], true));
-        assert_eq!(narrow(CodePage::Ansi, &w, b'#'), (vec![0x80, 0x41, 0x23, 0x41, 0], true));
-        assert_eq!(narrow(CodePage::Oem, &w, b'?').0, [0x3F, 0x41, 0x3F, 0x41, 0]);
+        assert_eq!(
+            narrow(CodePage::Ansi, &w, b'?'),
+            (vec![0x80, 0x41, 0x3F, 0x41, 0], true)
+        );
+        assert_eq!(
+            narrow(CodePage::Ansi, &w, b'#'),
+            (vec![0x80, 0x41, 0x23, 0x41, 0], true)
+        );
+        assert_eq!(
+            narrow(CodePage::Oem, &w, b'?').0,
+            [0x3F, 0x41, 0x3F, 0x41, 0]
+        );
         assert_eq!(
             narrow(CodePage::Utf8, &w, b'?').0,
             [0xE2, 0x82, 0xAC, 0xC4, 0x80, 0xE4, 0xB8, 0xAD, 0x41, 0]
@@ -292,7 +317,10 @@ mod tests {
     #[test]
     fn utf8_surrogates_and_strays() {
         assert_eq!(wide(CodePage::Utf8, b"\xF0\x9F\x98\x80"), [0xD83D, 0xDE00]);
-        assert_eq!(narrow(CodePage::Utf8, &[0xD83D, 0xDE00], b'?').0, b"\xF0\x9F\x98\x80");
+        assert_eq!(
+            narrow(CodePage::Utf8, &[0xD83D, 0xDE00], b'?').0,
+            b"\xF0\x9F\x98\x80"
+        );
         assert_eq!(wide(CodePage::Utf8, b"\x80a\xBF"), [0x61]);
     }
 
@@ -303,12 +331,20 @@ mod tests {
         assert_eq!(decode_glyph(CodePage::Oem, 0x01, true), 0x263A);
         assert_eq!(decode_glyph(CodePage::Oem, 0x7F, true), 0x2302);
         assert_eq!(decode_glyph(CodePage::Oem, 0x41, true), 0x41);
-        assert_eq!(decode_glyph(CodePage::Ansi, 0x01, true), 0x01, "the ANSI page has no glyphs");
+        assert_eq!(
+            decode_glyph(CodePage::Ansi, 0x01, true),
+            0x01,
+            "the ANSI page has no glyphs"
+        );
         for glyph in CP437_GLYPHS[1..].iter().chain(&[CP437_GLYPH_7F]) {
             assert!(!CP437_HIGH.contains(glyph), "{glyph:#06x}");
         }
         assert_eq!(encode_unit(CodePage::Ansi, 0x0100, true), Some(b'A'));
-        assert_eq!(encode_unit(CodePage::Ansi, 0x0100, false), None, "no best fit");
+        assert_eq!(
+            encode_unit(CodePage::Ansi, 0x0100, false),
+            None,
+            "no best fit"
+        );
         assert_eq!(encode_unit(CodePage::Ansi, 0x00E9, false), Some(0xE9));
     }
 }

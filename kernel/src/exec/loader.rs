@@ -88,9 +88,9 @@ pub fn read_image_file(
 }
 
 /// Load the program at `path` on the boot volume as the new current process (see [`load_image`]),
-/// with `command_line` as what its GetCommandLineA reports, and return its entry point. A file that cannot be read is reported on COM1 and halts, as a
-/// rejected image does. The read blocks on the disk: the boot context halts between interrupts
-/// until it completes.
+/// with `command_line` as what its GetCommandLineA reports, and return its entry point. A file that
+/// cannot be read is reported on COM1 and halts, as a rejected image does. The read blocks on the
+/// disk: the boot context halts between interrupts until it completes.
 #[cfg(target_arch = "x86")]
 pub fn load_path(path: &'static [u8], name: &'static str, command_line: &[u8]) -> u32 {
     // SAFETY: single-threaded boot (or the idle thread's reap step), the only staging user.
@@ -128,7 +128,12 @@ static mut IMAGE_STAGING: crate::mem::paging::Aligned<[u8; STAGING_SIZE]> =
 /// demand below its two top pages, see `user::stack`).
 const SYSTEM_REGIONS: [(&str, u32, u32); 9] = {
     use crate::user::{
-        PARAMS_PAGE, PEB_PAGE, TEB_PAGE, THREAD_TEB_REGION, USER_STACK_BASE, USER_STACK_TOP,
+        PARAMS_PAGE,
+        PEB_PAGE,
+        TEB_PAGE,
+        THREAD_TEB_REGION,
+        USER_STACK_BASE,
+        USER_STACK_TOP,
     };
     const PAGE: u32 = crate::mem::paging::PAGE_SIZE;
     const CHILDREN: u32 = crate::process::CHILD_THREADS as u32;
@@ -145,7 +150,8 @@ const SYSTEM_REGIONS: [(&str, u32, u32); 9] = {
         (
             "environment block",
             crate::user::params::ENVIRONMENT_BLOCK,
-            crate::user::params::ENVIRONMENT_BLOCK + crate::user::params::ENVIRONMENT_BLOCK_PAGES * PAGE,
+            crate::user::params::ENVIRONMENT_BLOCK
+                + crate::user::params::ENVIRONMENT_BLOCK_PAGES * PAGE,
         ),
         (
             "child thread TEBs",
@@ -192,7 +198,11 @@ pub fn resolve_import(module: &str, name: &str) -> Result<u32, Unresolved> {
 /// them); uncovered pages (the header page) are read-only.
 pub(crate) fn page_protect(image: &Image, page_rva: u32) -> u32 {
     use crate::mem::vm::{
-        PAGE_EXECUTE, PAGE_EXECUTE_READ, PAGE_EXECUTE_WRITECOPY, PAGE_READONLY, PAGE_WRITECOPY,
+        PAGE_EXECUTE,
+        PAGE_EXECUTE_READ,
+        PAGE_EXECUTE_WRITECOPY,
+        PAGE_READONLY,
+        PAGE_WRITECOPY,
     };
     let end = page_rva + crate::mem::paging::PAGE_SIZE;
     let (mut read, mut write, mut execute) = (false, false, false);
@@ -350,7 +360,11 @@ pub fn load_image(file: &[u8], path: &[u8], name: &'static str, command_line: &[
     use crate::mem::paging::{self, PAGE_SIZE};
     use crate::mem::vm;
     use crate::user::{
-        TEB_PAGE, USER_STACK_BASE, USER_STACK_LOW_PAGE, USER_STACK_PAGE, USER_STACK_TOP,
+        TEB_PAGE,
+        USER_STACK_BASE,
+        USER_STACK_LOW_PAGE,
+        USER_STACK_PAGE,
+        USER_STACK_TOP,
     };
 
     // Identity questions: bytes this loader does not accept, an image it cannot stage, and a
@@ -582,19 +596,27 @@ mod tests {
         fn entry(&self, _va: u32) -> u32 {
             0
         }
+
         fn set_entry(&mut self, _va: u32, _entry: u32) {}
+
         fn zeroed_frame(&mut self) -> Option<u32> {
             None
         }
+
         fn free_frame(&mut self, _frame: u32) {}
+
         fn share_frame(&mut self, _frame: u32) {}
+
         fn frame_shared(&self, _frame: u32) -> bool {
             false
         }
+
         fn copy_frame(&mut self, _from: u32, _to: u32) {}
+
         fn frame_word(&self, _frame: u32, _index: u32) -> u32 {
             0
         }
+
         fn set_frame_word(&mut self, _frame: u32, _index: u32, _value: u32) {}
     }
 
@@ -685,8 +707,8 @@ mod tests {
         }
     }
 
-    /// An image covering any page of a region is refused, edges included; one ending exactly where a
-    /// region starts is not.
+    /// An image covering any page of a region is refused, edges included; one ending exactly where
+    /// a region starts is not.
     #[test]
     fn images_covering_a_system_region_are_refused() {
         use crate::exec::modules::{KERNEL32_BASE, KERNEL32_SIZE, NTDLL_BASE};

@@ -2,8 +2,8 @@
 //! the kernel — the shape Windows 2000 gives it.
 //!
 //! A user APC runs only when its thread asks for it: an alertable wait finds one queued (or one
-//! arrives and breaks the wait), the wait completes with the user-APC status, and the delivery arms.
-//! On the thread's way back to user mode the delivery takes the head of its user queue and
+//! arrives and breaks the wait), the wait completes with the user-APC status, and the delivery
+//! arms. On the thread's way back to user mode the delivery takes the head of its user queue and
 //! redirects the return: the interrupted user context (the trap frame's registers, as a CONTEXT)
 //! is saved on the user stack under a four-word call frame — the routine, its context, the two
 //! system arguments — and the return lands on ntdll's KiUserApcDispatcher instead. It calls the
@@ -65,7 +65,11 @@ pub fn delivery_image(frame: &TrapFrame, call: [u32; CALL_WORDS]) -> (u32, [u8; 
     for (i, word) in call.iter().enumerate() {
         image[i * 4..i * 4 + 4].copy_from_slice(&word.to_le_bytes());
     }
-    image[CALL_WORDS * 4..].copy_from_slice(&super::seh::context_image(frame, frame.eip, frame.user_esp));
+    image[CALL_WORDS * 4..].copy_from_slice(&super::seh::context_image(
+        frame,
+        frame.eip,
+        frame.user_esp,
+    ));
     let esp = (frame.user_esp & !3) - DELIVERY_BYTES as u32;
     (esp, image)
 }
@@ -116,8 +120,8 @@ pub fn test_alert() {
 }
 
 /// A fresh thread's test alert, before its first user instruction, when no loader initialization
-/// runs (whose NtContinue tests it instead): user APCs queued on it before it ever ran are delivered
-/// into its planted frame.
+/// runs (whose NtContinue tests it instead): user APCs queued on it before it ever ran are
+/// delivered into its planted frame.
 #[cfg(target_arch = "x86")]
 pub fn deliver_at_startup() {
     let state = crate::interrupt::irql::state_mut();
@@ -127,7 +131,8 @@ pub fn deliver_at_startup() {
     let thread = unsafe { &mut *crate::sched::idle::dispatcher().current_thread() };
     if !thread.user_apcs.is_empty() {
         thread.user_apc_pending = true;
-        let frame = (thread.initial_stack - core::mem::size_of::<TrapFrame>() as u32) as *mut TrapFrame;
+        let frame =
+            (thread.initial_stack - core::mem::size_of::<TrapFrame>() as u32) as *mut TrapFrame;
         // SAFETY: the planted frame, which the startup stub pops next.
         deliver(unsafe { &mut *frame });
     }
@@ -208,7 +213,9 @@ mod tests {
         let original = frame();
         let (esp, image) = delivery_image(&original, [0x0040_5000, 7, 0x89AB_CDEF, 0x01C0_8D9A]);
         assert_eq!(esp, 0x0030_0F00 - 16 - CONTEXT_SIZE as u32);
-        let call: Vec<u32> = (0..CALL_WORDS).map(|i| super::super::seh::word(&image, i * 4)).collect();
+        let call: Vec<u32> = (0..CALL_WORDS)
+            .map(|i| super::super::seh::word(&image, i * 4))
+            .collect();
         assert_eq!(call, [0x0040_5000, 7, 0x89AB_CDEF, 0x01C0_8D9A]);
 
         let mut redirected = frame();
@@ -221,7 +228,14 @@ mod tests {
         assert_eq!(redirected.user_esp, original.user_esp);
         assert_eq!(redirected.eax, 0xC0, "the wait's status rides back");
         assert_eq!(
-            (redirected.edi, redirected.esi, redirected.ebp, redirected.ebx, redirected.edx, redirected.ecx),
+            (
+                redirected.edi,
+                redirected.esi,
+                redirected.ebp,
+                redirected.ebx,
+                redirected.edx,
+                redirected.ecx
+            ),
             (1, 2, 3, 4, 5, 6)
         );
         assert_eq!(redirected.eflags, original.eflags);

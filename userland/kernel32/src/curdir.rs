@@ -46,7 +46,8 @@ unsafe fn widen(path: *const u8, out: &mut [u16; MAX_PATH]) -> Option<usize> {
 pub unsafe extern "system" fn get_current_directory_a(size: u32, buffer: *mut u8) -> u32 {
     let mut wide = [0u16; MAX_PATH + 1];
     // SAFETY: ntdll's export, into a buffer of the length given.
-    let bytes = unsafe { nt::RtlGetCurrentDirectory_U((2 * wide.len()) as u32, wide.as_mut_ptr()) } as usize;
+    let bytes = unsafe { nt::RtlGetCurrentDirectory_U((2 * wide.len()) as u32, wide.as_mut_ptr()) }
+        as usize;
     if bytes >= 2 * wide.len() {
         set_last_error(ERROR_FILENAME_EXCED_RANGE);
         return 0;

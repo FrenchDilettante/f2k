@@ -242,7 +242,13 @@ impl Dispatcher {
     /// tick names through the current one — and expire each in due order through the wait
     /// discipline's expiry entry. `tick_low` is the current tick's low word; `signal_time` is the
     /// wall clock's reading for the pass (a FILETIME), what the expired timers' APCs are given.
-    pub(crate) fn expire_timers(&mut self, now: u64, tick_low: u32, argument: u32, signal_time: u64) {
+    pub(crate) fn expire_timers(
+        &mut self,
+        now: u64,
+        tick_low: u32,
+        argument: u32,
+        signal_time: u64,
+    ) {
         // The collection list: timers unlinked from their buckets await their expiry here, in due
         // order.
         let mut expired = List::empty();
@@ -311,7 +317,12 @@ mod tests {
     use crate::sched::process::SchedProcess;
     use crate::sched::thread::{Thread, ThreadState};
     use crate::sched::wait::{
-        ClockStamp, WaitDisposition, WaitMode, WaitReason, STATUS_SUCCESS, STATUS_TIMEOUT,
+        ClockStamp,
+        WaitDisposition,
+        WaitMode,
+        WaitReason,
+        STATUS_SUCCESS,
+        STATUS_TIMEOUT,
         TIMER_BLOCK,
     };
 

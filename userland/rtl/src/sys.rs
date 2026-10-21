@@ -256,8 +256,9 @@ pub fn system_service(number: u32, args: &[u32]) -> u32 {
 
 /// The CONTEXT capture RtlRaiseException and RtlRaiseStatus share: inside a frame made by
 /// `push ebp; mov ebp, esp; pushfd; sub esp, …` with the CONTEXT at ESP, the caller's registers as
-/// they were at the call (the integer ones untouched so far), its EBP, its EFLAGS (saved first), its
-/// segments, EIP its return address and ESP past the call's single stdcall argument; CONTEXT_FULL.
+/// they were at the call (the integer ones untouched so far), its EBP, its EFLAGS (saved first),
+/// its segments, EIP its return address and ESP past the call's single stdcall argument;
+/// CONTEXT_FULL.
 macro_rules! capture_context {
     () => {
         concat!(
@@ -372,7 +373,9 @@ impl System for Native {
 
     fn processors(&self) -> u32 {
         // SAFETY: the PEB is mapped for the process's whole life.
-        unsafe { core::ptr::read_volatile((peb() + PEB_NUMBER_OF_PROCESSORS as usize) as *const u32) }
+        unsafe {
+            core::ptr::read_volatile((peb() + PEB_NUMBER_OF_PROCESSORS as usize) as *const u32)
+        }
     }
 
     /// NtCreateEvent: an unnamed SynchronizationEvent, nonsignaled (Windows 2000's

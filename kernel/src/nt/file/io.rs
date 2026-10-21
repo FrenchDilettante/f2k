@@ -5,9 +5,24 @@
 //! section and copies it out once the volume is released, a write the reverse. A chunk the caller's
 //! memory refuses ends the call with STATUS_ACCESS_VIOLATION, what moved before it counted.
 
-use super::super::call::{Handle, NtCall, NtResult, Status, UserAddr, UserPtr, STATUS_INVALID_PARAMETER, STATUS_SUCCESS};
+use super::super::call::{
+    Handle,
+    NtCall,
+    NtResult,
+    Status,
+    UserAddr,
+    UserPtr,
+    STATUS_INVALID_PARAMETER,
+    STATUS_SUCCESS,
+};
 use super::common::{check_access, complete, completion_event, file_object, probe, signal};
-use super::{status, STATUS_DISK_FULL, STATUS_END_OF_FILE, STATUS_INVALID_DEVICE_REQUEST, STATUS_NOT_IMPLEMENTED};
+use super::{
+    status,
+    STATUS_DISK_FULL,
+    STATUS_END_OF_FILE,
+    STATUS_INVALID_DEVICE_REQUEST,
+    STATUS_NOT_IMPLEMENTED,
+};
 use crate::fs::fat32::write;
 use crate::fs::file::{records, rights, FileObject};
 use crate::fs::io;
@@ -31,7 +46,14 @@ struct Transfer {
 /// The checks a read and a write share, in the I/O manager's order: the handle and its rights, the
 /// I/O status block, an APC routine (not supported), the event, a directory (no data:
 /// STATUS_INVALID_DEVICE_REQUEST), and the offset (an object without a position needs one).
-fn transfer(handle: Handle, event: Handle, routine: UserAddr, io_status: UserAddr, offset: UserPtr<u64>, needs: u32) -> Result<Transfer, Status> {
+fn transfer(
+    handle: Handle,
+    event: Handle,
+    routine: UserAddr,
+    io_status: UserAddr,
+    offset: UserPtr<u64>,
+    needs: u32,
+) -> Result<Transfer, Status> {
     let object = file_object(handle.raw())?;
     check_access(&object, needs)?;
     probe(io_status, 8)?;
@@ -41,13 +63,21 @@ fn transfer(handle: Handle, event: Handle, routine: UserAddr, io_status: UserAdd
     if io::file_of(&object).directory {
         return Err(STATUS_INVALID_DEVICE_REQUEST);
     }
-    let offset = if offset.is_null() { None } else { Some(offset.read()?) };
+    let offset = if offset.is_null() {
+        None
+    } else {
+        Some(offset.read()?)
+    };
     let offset = offset.filter(|&at| at != FILE_USE_FILE_POINTER_POSITION);
     if offset.is_none() && !object.synchronous {
         return Err(STATUS_INVALID_PARAMETER);
     }
     let event = completion_event(event.raw())?;
-    Ok(Transfer { object, event, offset })
+    Ok(Transfer {
+        object,
+        event,
+        offset,
+    })
 }
 
 /// Finish a transfer: its I/O status, its event, and its answer.
@@ -79,7 +109,14 @@ fn read_file_held(
     offset: UserPtr<u64>,
     _key: UserPtr<u32>,
 ) -> NtResult {
-    let mut transfer = transfer(handle, event, routine, io_status, offset, rights::FILE_READ_DATA)?;
+    let mut transfer = transfer(
+        handle,
+        event,
+        routine,
+        io_status,
+        offset,
+        rights::FILE_READ_DATA,
+    )?;
     let at = transfer.offset;
     let result = io::serialized(&mut transfer.object, |object| {
         let start = at.unwrap_or(object.position);
@@ -97,7 +134,9 @@ fn read_file_held(
             let take = (wanted - moved).min(CHUNK as u32) as usize;
             let mut chunk = [0u8; CHUNK];
             // `wanted` is nonzero only below the end, so the offset is within the 32-bit file.
-            if let Err(error) = io::read_record(object.record, start as u32 + moved, &mut chunk[..take]) {
+            if let Err(error) =
+                io::read_record(object.record, start as u32 + moved, &mut chunk[..take])
+            {
                 failure = Some(status(error));
                 break;
             }
@@ -118,11 +157,26 @@ fn read_file_held(
 
 /// NtReadFile (see [`read_file_held`]), as one critical region.
 #[allow(clippy::too_many_arguments)]
-pub fn read_file(call: &mut NtCall, handle: Handle, event: Handle, routine: UserAddr, context: UserAddr, io_status: UserAddr, buffer: UserAddr, length: u32, offset: UserPtr<u64>, key: UserPtr<u32>) -> NtResult {
+pub fn read_file(
+    call: &mut NtCall,
+    handle: Handle,
+    event: Handle,
+    routine: UserAddr,
+    context: UserAddr,
+    io_status: UserAddr,
+    buffer: UserAddr,
+    length: u32,
+    offset: UserPtr<u64>,
+    key: UserPtr<u32>,
+) -> NtResult {
     // The call holds its file object (a reference) across the volume's critical regions: run it
     // inside one of its own, so a termination requested meanwhile ends the thread only once the
     // reference has gone (an inner region's end would end it with the reference still held).
-    crate::process::threads::critical_region(|| read_file_held(call, handle, event, routine, context, io_status, buffer, length, offset, key))
+    crate::process::threads::critical_region(|| {
+        read_file_held(
+            call, handle, event, routine, context, io_status, buffer, length, offset, key,
+        )
+    })
 }
 
 /// NtWriteFile: `length` bytes of the caller's at the offset (the object's position when none is
@@ -196,9 +250,24 @@ fn write_file_held(
 
 /// NtWriteFile (see [`write_file_held`]), as one critical region.
 #[allow(clippy::too_many_arguments)]
-pub fn write_file(call: &mut NtCall, handle: Handle, event: Handle, routine: UserAddr, context: UserAddr, io_status: UserAddr, buffer: UserAddr, length: u32, offset: UserPtr<u64>, key: UserPtr<u32>) -> NtResult {
+pub fn write_file(
+    call: &mut NtCall,
+    handle: Handle,
+    event: Handle,
+    routine: UserAddr,
+    context: UserAddr,
+    io_status: UserAddr,
+    buffer: UserAddr,
+    length: u32,
+    offset: UserPtr<u64>,
+    key: UserPtr<u32>,
+) -> NtResult {
     // As NtReadFile's: the call holds its file object across the volume's critical regions.
-    crate::process::threads::critical_region(|| write_file_held(call, handle, event, routine, context, io_status, buffer, length, offset, key))
+    crate::process::threads::critical_region(|| {
+        write_file_held(
+            call, handle, event, routine, context, io_status, buffer, length, offset, key,
+        )
+    })
 }
 
 /// NtFlushBuffersFile: every write is already on the volume (F2K's writes go through); a handle

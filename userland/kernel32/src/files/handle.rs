@@ -52,7 +52,14 @@ const INVALID_SET_FILE_POINTER: u32 = 0xFFFF_FFFF;
 /// # Safety
 ///
 /// `security` is null or points at a SECURITY_ATTRIBUTES.
-pub unsafe fn create_file_w(name: &Wide, access: u32, share: u32, security: *const SecurityAttributes, disposition: u32, flags: u32) -> u32 {
+pub unsafe fn create_file_w(
+    name: &Wide,
+    access: u32,
+    share: u32,
+    security: *const SecurityAttributes,
+    disposition: u32,
+    flags: u32,
+) -> u32 {
     let create = match disposition {
         CREATE_NEW => FILE_CREATE,
         CREATE_ALWAYS => FILE_OVERWRITE_IF,
@@ -193,20 +200,33 @@ unsafe fn transferred(status: u32, io_status: &IoStatus, count: *mut u32) -> u32
     0
 }
 
-/// An overlapped read or write's answer, Windows 2000's: started at the OVERLAPPED's offset with its
-/// event, its I/O status there; TRUE with the count once complete (every F2K file completes at once),
-/// FALSE with the status's error otherwise (end of file: a count of zero).
+/// An overlapped read or write's answer, Windows 2000's: started at the OVERLAPPED's offset with
+/// its event, its I/O status there; TRUE with the count once complete (every F2K file completes at
+/// once), FALSE with the status's error otherwise (end of file: a count of zero).
 ///
 /// # Safety
 ///
 /// `overlapped` points at an OVERLAPPED; `count` is null or points at a dword.
-unsafe fn overlapped_transfer(overlapped: *mut Overlapped, count: *mut u32, start: impl FnOnce(u32, usize, *mut IoStatus, *const u64) -> u32) -> u32 {
+unsafe fn overlapped_transfer(
+    overlapped: *mut Overlapped,
+    count: *mut u32,
+    start: impl FnOnce(u32, usize, *mut IoStatus, *const u64) -> u32,
+) -> u32 {
     // SAFETY: the caller's OVERLAPPED.
     let overlapped = unsafe { &mut *overlapped };
     overlapped.internal = STATUS_PENDING;
     let offset = u64::from(overlapped.offset) | u64::from(overlapped.offset_high) << 32;
-    let context = if overlapped.event & 1 != 0 { 0 } else { overlapped as *mut Overlapped as usize };
-    let status = start(overlapped.event, context, &mut overlapped.internal as *mut u32 as *mut IoStatus, &offset);
+    let context = if overlapped.event & 1 != 0 {
+        0
+    } else {
+        overlapped as *mut Overlapped as usize
+    };
+    let status = start(
+        overlapped.event,
+        context,
+        &mut overlapped.internal as *mut u32 as *mut IoStatus,
+        &offset,
+    );
     if nt_success(status) && status != STATUS_PENDING {
         // SAFETY: the caller's slot.
         unsafe { put(count, overlapped.internal_high) };
@@ -228,10 +248,16 @@ unsafe fn overlapped_transfer(overlapped: *mut Overlapped, count: *mut u32, star
 ///
 /// # Safety
 ///
-/// `buffer` holds `count` bytes; `read` is null or points at a dword; `overlapped` is null or points
-/// at an OVERLAPPED.
+/// `buffer` holds `count` bytes; `read` is null or points at a dword; `overlapped` is null or
+/// points at an OVERLAPPED.
 #[unsafe(export_name = "f2k_export_ReadFile")]
-pub unsafe extern "system" fn read_file(file: u32, buffer: *mut u8, count: u32, read: *mut u32, overlapped: *mut Overlapped) -> u32 {
+pub unsafe extern "system" fn read_file(
+    file: u32,
+    buffer: *mut u8,
+    count: u32,
+    read: *mut u32,
+    overlapped: *mut Overlapped,
+) -> u32 {
     // SAFETY: the caller's slot.
     unsafe { put(read, 0) };
     let file = standard_handle(file);
@@ -243,14 +269,35 @@ pub unsafe extern "system" fn read_file(file: u32, buffer: *mut u8, count: u32, 
         // SAFETY: the caller's OVERLAPPED and buffer; ntdll's export.
         return unsafe {
             overlapped_transfer(overlapped, read, |event, context, io_status, offset| {
-                nt::NtReadFile(file, event, 0, context, io_status, buffer, count, offset, core::ptr::null())
+                nt::NtReadFile(
+                    file,
+                    event,
+                    0,
+                    context,
+                    io_status,
+                    buffer,
+                    count,
+                    offset,
+                    core::ptr::null(),
+                )
             })
         };
     }
     let mut io_status = IoStatus::default();
     // SAFETY: ntdll's export, into the caller's buffer.
-    let status =
-        unsafe { nt::NtReadFile(file, 0, 0, 0, &mut io_status, buffer, count, core::ptr::null(), core::ptr::null()) };
+    let status = unsafe {
+        nt::NtReadFile(
+            file,
+            0,
+            0,
+            0,
+            &mut io_status,
+            buffer,
+            count,
+            core::ptr::null(),
+            core::ptr::null(),
+        )
+    };
     if status == STATUS_END_OF_FILE {
         // SAFETY: the caller's slot.
         unsafe { put(read, 0) };
@@ -261,35 +308,64 @@ pub unsafe extern "system" fn read_file(file: u32, buffer: *mut u8, count: u32, 
 }
 
 /// WriteFile: `count` bytes of the caller's at the file's position (or an OVERLAPPED's offset), the
-/// count written stored (zeroed first, so a failure reports none, unverified). A console handle's bytes go
-/// to the console (WriteConsoleA, the OVERLAPPED its reserved argument), as Windows 2000's WriteFile
-/// hands them.
+/// count written stored (zeroed first, so a failure reports none, unverified). A console handle's
+/// bytes go to the console (WriteConsoleA, the OVERLAPPED its reserved argument), as Windows 2000's
+/// WriteFile hands them.
 ///
 /// # Safety
 ///
 /// `buffer` holds `count` bytes; `written` is null or points at a dword; `overlapped` is null or
 /// points at an OVERLAPPED.
 #[unsafe(export_name = "f2k_export_WriteFile")]
-pub unsafe extern "system" fn write_file(file: u32, buffer: *const u8, count: u32, written: *mut u32, overlapped: *mut Overlapped) -> u32 {
+pub unsafe extern "system" fn write_file(
+    file: u32,
+    buffer: *const u8,
+    count: u32,
+    written: *mut u32,
+    overlapped: *mut Overlapped,
+) -> u32 {
     // SAFETY: the caller's slot.
     unsafe { put(written, 0) };
     let file = standard_handle(file);
     if is_console_handle(file) {
         // SAFETY: the caller's arguments.
-        return unsafe { console::write_console_a(file, buffer, count, written, overlapped as *const u8) };
+        return unsafe {
+            console::write_console_a(file, buffer, count, written, overlapped as *const u8)
+        };
     }
     if !overlapped.is_null() {
         // SAFETY: the caller's OVERLAPPED and buffer; ntdll's export.
         return unsafe {
             overlapped_transfer(overlapped, written, |event, context, io_status, offset| {
-                nt::NtWriteFile(file, event, 0, context, io_status, buffer, count, offset, core::ptr::null())
+                nt::NtWriteFile(
+                    file,
+                    event,
+                    0,
+                    context,
+                    io_status,
+                    buffer,
+                    count,
+                    offset,
+                    core::ptr::null(),
+                )
             })
         };
     }
     let mut io_status = IoStatus::default();
     // SAFETY: ntdll's export, from the caller's buffer.
-    let status =
-        unsafe { nt::NtWriteFile(file, 0, 0, 0, &mut io_status, buffer, count, core::ptr::null(), core::ptr::null()) };
+    let status = unsafe {
+        nt::NtWriteFile(
+            file,
+            0,
+            0,
+            0,
+            &mut io_status,
+            buffer,
+            count,
+            core::ptr::null(),
+            core::ptr::null(),
+        )
+    };
     // SAFETY: the caller's slot.
     unsafe { transferred(status, &io_status, written) }
 }
@@ -298,14 +374,20 @@ pub unsafe extern "system" fn write_file(file: u32, buffer: *const u8, count: u3
 /// sign-extended low dword without) from the start, the position (FilePositionInformation) or the
 /// end (FileStandardInformation's), then set (FilePositionInformation): the new position's low
 /// dword, its high one stored. A bad move method is ERROR_INVALID_PARAMETER, a target before the
-/// start ERROR_NEGATIVE_SEEK, one past 4 GiB without a high dword ERROR_INVALID_PARAMETER, a console
-/// handle ERROR_INVALID_HANDLE; a success reading as INVALID_SET_FILE_POINTER clears the last error.
+/// start ERROR_NEGATIVE_SEEK, one past 4 GiB without a high dword ERROR_INVALID_PARAMETER, a
+/// console handle ERROR_INVALID_HANDLE; a success reading as INVALID_SET_FILE_POINTER clears the
+/// last error.
 ///
 /// # Safety
 ///
 /// `high` is null or points at a dword.
 #[unsafe(export_name = "f2k_export_SetFilePointer")]
-pub unsafe extern "system" fn set_file_pointer(file: u32, low: u32, high: *mut i32, method: u32) -> u32 {
+pub unsafe extern "system" fn set_file_pointer(
+    file: u32,
+    low: u32,
+    high: *mut i32,
+    method: u32,
+) -> u32 {
     if is_console_handle(file) {
         set_last_nt_error(STATUS_INVALID_HANDLE);
         return INVALID_SET_FILE_POINTER;
@@ -349,7 +431,11 @@ pub unsafe extern "system" fn set_file_pointer(file: u32, low: u32, high: *mut i
         set_last_error(ERROR_INVALID_PARAMETER);
         return INVALID_SET_FILE_POINTER;
     }
-    let status = set(file, FILE_POSITION_INFORMATION, &(target as u64).to_le_bytes());
+    let status = set(
+        file,
+        FILE_POSITION_INFORMATION,
+        &(target as u64).to_le_bytes(),
+    );
     if !nt_success(status) {
         set_last_nt_error(status);
         if !high.is_null() {
@@ -388,9 +474,9 @@ pub extern "system" fn flush_file_buffers(file: u32) -> u32 {
     }
 }
 
-/// GetFileType: a console handle naming a console object is a character device (VerifyConsoleIoHandle,
-/// as Windows 2000's asks the console; one naming none is FILE_TYPE_UNKNOWN with
-/// ERROR_INVALID_HANDLE); any other handle's device type (FileFsDeviceInformation) decides — a
+/// GetFileType: a console handle naming a console object is a character device
+/// (VerifyConsoleIoHandle, as Windows 2000's asks the console; one naming none is FILE_TYPE_UNKNOWN
+/// with ERROR_INVALID_HANDLE); any other handle's device type (FileFsDeviceInformation) decides — a
 /// disk's file FILE_TYPE_DISK. A null handle, and one the device query fails for, is
 /// FILE_TYPE_UNKNOWN with the error.
 #[unsafe(export_name = "f2k_export_GetFileType")]
@@ -411,7 +497,13 @@ pub extern "system" fn get_file_type(file: u32) -> u32 {
     let mut io_status = IoStatus::default();
     // SAFETY: ntdll's export, into the structure above.
     let status = unsafe {
-        nt::NtQueryVolumeInformationFile(file, &mut io_status, device.as_mut_ptr(), 8, FILE_FS_DEVICE_INFORMATION)
+        nt::NtQueryVolumeInformationFile(
+            file,
+            &mut io_status,
+            device.as_mut_ptr(),
+            8,
+            FILE_FS_DEVICE_INFORMATION,
+        )
     };
     if !nt_success(status) {
         set_last_nt_error(status);
@@ -461,7 +553,12 @@ pub unsafe extern "system" fn get_file_size(file: u32, high: *mut u32) -> u32 {
 ///
 /// Each pointer is null or points at a FILETIME.
 #[unsafe(export_name = "f2k_export_GetFileTime")]
-pub unsafe extern "system" fn get_file_time(file: u32, created: *mut u64, accessed: *mut u64, written: *mut u64) -> u32 {
+pub unsafe extern "system" fn get_file_time(
+    file: u32,
+    created: *mut u64,
+    accessed: *mut u64,
+    written: *mut u64,
+) -> u32 {
     let mut basic = [0u8; 40];
     let status = query(file, FILE_BASIC_INFORMATION, &mut basic);
     if !nt_success(status) {
@@ -484,7 +581,12 @@ pub unsafe extern "system" fn get_file_time(file: u32, created: *mut u64, access
 ///
 /// Each pointer is null or points at a FILETIME.
 #[unsafe(export_name = "f2k_export_SetFileTime")]
-pub unsafe extern "system" fn set_file_time(file: u32, created: *const u64, accessed: *const u64, written: *const u64) -> u32 {
+pub unsafe extern "system" fn set_file_time(
+    file: u32,
+    created: *const u64,
+    accessed: *const u64,
+    written: *const u64,
+) -> u32 {
     let mut basic = [0u8; 40];
     for (at, time) in [(0, created), (8, accessed), (16, written)] {
         if !time.is_null() {
@@ -519,7 +621,13 @@ pub unsafe extern "system" fn get_file_information_by_handle(file: u32, info: *m
     let mut io_status = IoStatus::default();
     // SAFETY: ntdll's export, into the structure above.
     let status = unsafe {
-        nt::NtQueryVolumeInformationFile(file, &mut io_status, volume.as_mut_ptr(), 24, FILE_FS_VOLUME_INFORMATION)
+        nt::NtQueryVolumeInformationFile(
+            file,
+            &mut io_status,
+            volume.as_mut_ptr(),
+            24,
+            FILE_FS_VOLUME_INFORMATION,
+        )
     };
     if failed(status) {
         set_last_nt_error(status);

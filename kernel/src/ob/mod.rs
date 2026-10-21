@@ -7,13 +7,13 @@
 //! object resolves to nothing instead of to whatever reused the record.
 //!
 //! Each object carries two counts. The pointer count is every
-//! reference: the creator's while it builds the object, each handle's, each wait's (a waiting thread
-//! holds its objects for the wait's whole life, replays after an APC included), a thread's own while
-//! it runs, a process's own until its teardown ends. The handle count is the handles alone. The last
-//! handle's close drops the object's name (NT's temporary objects); the last reference deletes the
-//! object — an owned mutex leaves its owner's list — and its record is free for reuse. Nothing scans
-//! handle tables to decide whether an object lives. `\BaseNamedObjects` itself is a directory
-//! object, permanent: made at its first open, never deleted.
+//! reference: the creator's while it builds the object, each handle's, each wait's (a waiting
+//! thread holds its objects for the wait's whole life, replays after an APC included), a thread's
+//! own while it runs, a process's own until its teardown ends. The handle count is the handles
+//! alone. The last handle's close drops the object's name (NT's temporary objects); the last
+//! reference deletes the object — an owned mutex leaves its owner's list — and its record is free
+//! for reuse. Nothing scans handle tables to decide whether an object lives. `\BaseNamedObjects`
+//! itself is a directory object, permanent: made at its first open, never deleted.
 //!
 //! Names live in one namespace for all kinds (the `\BaseNamedObjects` directory): a name binds one
 //! live object, compares exactly (Win32 object names are case-sensitive), and goes with the bound
@@ -288,9 +288,9 @@ pub enum Followup {
         frames: crate::mem::vm::SectionFrames,
         file_object: Option<ObjectId>,
     },
-    /// A file object's last handle closed (its cleanup): its share access leaves the file's record,
-    /// its delete-on-close marks the file delete-pending, and the last cleanup of a delete-pending
-    /// file deletes it; its directory search (if any) goes back to the pool.
+    /// A file object's last handle closed (its cleanup): its share access leaves the file's
+    /// record, its delete-on-close marks the file delete-pending, and the last cleanup of a
+    /// delete-pending file deletes it; its directory search (if any) goes back to the pool.
     FileCleanup {
         record: u16,
         access: u8,
@@ -388,7 +388,9 @@ impl Directory {
             });
             Pool::write_empty(addr_of_mut!((*directory).semaphores), || Semaphore::new(0));
             Pool::write_empty(addr_of_mut!((*directory).mutexes), Mutex::new);
-            Pool::write_empty(addr_of_mut!((*directory).timers), || WaitableTimer::new(true));
+            Pool::write_empty(addr_of_mut!((*directory).timers), || {
+                WaitableTimer::new(true)
+            });
             Pool::write_empty(addr_of_mut!((*directory).threads), Thread::empty);
             Pool::write_empty(addr_of_mut!((*directory).processes), ProcessObject::new);
             Pool::write_empty(addr_of_mut!((*directory).sections), SectionObject::none);
@@ -969,7 +971,9 @@ impl ObRef {
     }
 
     pub fn timer(&self) -> &'static mut WaitableTimer {
-        directory().timer(self.id).expect("a referenced timer lives")
+        directory()
+            .timer(self.id)
+            .expect("a referenced timer lives")
     }
 
     pub fn thread(&self) -> &'static mut Thread {
@@ -1019,6 +1023,7 @@ impl<T: 'static> Referenced<T> {
 #[cfg(target_arch = "x86")]
 impl<T: 'static> core::ops::Deref for Referenced<T> {
     type Target = T;
+
     fn deref(&self) -> &T {
         // SAFETY: the record is a pool record, static, and its object is held for the value's life.
         unsafe { &*self.record }
@@ -1062,8 +1067,8 @@ pub fn release(id: ObjectId) {
 }
 
 /// Publish a new object: a handle to it in `process` (the current one) with `access` and
-/// `inheritance`, its name bound, and its creator's reference dropped — the handle holds it from now
-/// on. A failure takes the object back with it (none: the table or the names are full).
+/// `inheritance`, its name bound, and its creator's reference dropped — the handle holds it from
+/// now on. A failure takes the object back with it (none: the table or the names are full).
 #[cfg(target_arch = "x86")]
 pub fn publish(
     process: &mut crate::process::Process,
@@ -1126,11 +1131,9 @@ pub fn waiting<R>(objects: &[ObjectId], wait: impl FnOnce() -> R) -> R {
 
 #[cfg(target_arch = "x86")]
 fn release_wait(index: u16) {
-    directory().release_wait(
-        index,
-        crate::sched::idle::dispatcher(),
-        |followup| crate::user::args::calling_process().finish(followup),
-    );
+    directory().release_wait(index, crate::sched::idle::dispatcher(), |followup| {
+        crate::user::args::calling_process().finish(followup)
+    });
 }
 
 /// A thread has ended (its record is Terminated): its wait's references, if it ended inside one,

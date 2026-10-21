@@ -12,7 +12,8 @@ use crate::nt;
 /// RaiseException: an exception of `code`, the noncontinuable flag its only flag, with at most
 /// fifteen of the arguments (none without an array), raised through RtlRaiseException — the
 /// record's address is therefore inside kernel32, as on Windows 2000. A continued exception returns
-/// here, and to the caller. A bad argument array faults here, the caller's fault, as on Windows 2000.
+/// here, and to the caller. A bad argument array faults here, the caller's fault, as on Windows
+/// 2000.
 ///
 /// # Safety
 ///

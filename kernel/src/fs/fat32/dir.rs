@@ -14,7 +14,14 @@
 //! one is the 8.3 name as stored — both in code page 1252.
 
 use super::dirent::{
-    checksum, decode, DirEntry, LongPart, Record, CASE_LOWER_BASE, CASE_LOWER_EXTENSION, ENTRY_SIZE,
+    checksum,
+    decode,
+    DirEntry,
+    LongPart,
+    Record,
+    CASE_LOWER_BASE,
+    CASE_LOWER_EXTENSION,
+    ENTRY_SIZE,
 };
 use super::fat::FatEntry;
 use super::lookup::LookupError;
@@ -112,7 +119,11 @@ pub fn format_short(name: &[u8; 11], case: u8, out: &mut [u8]) -> usize {
     let (base_len, extension_len) = (trimmed(base), trimmed(extension));
     let mut len = 0;
     for &byte in &base[..base_len] {
-        let byte = if case & CASE_LOWER_BASE != 0 { byte.to_ascii_lowercase() } else { byte };
+        let byte = if case & CASE_LOWER_BASE != 0 {
+            byte.to_ascii_lowercase()
+        } else {
+            byte
+        };
         out[len] = oem_to_ansi(byte);
         len += 1;
     }
@@ -120,7 +131,11 @@ pub fn format_short(name: &[u8; 11], case: u8, out: &mut [u8]) -> usize {
         out[len] = b'.';
         len += 1;
         for &byte in &extension[..extension_len] {
-            let byte = if case & CASE_LOWER_EXTENSION != 0 { byte.to_ascii_lowercase() } else { byte };
+            let byte = if case & CASE_LOWER_EXTENSION != 0 {
+                byte.to_ascii_lowercase()
+            } else {
+                byte
+            };
             out[len] = oem_to_ansi(byte);
             len += 1;
         }
@@ -171,17 +186,22 @@ impl Run {
         self.expected = part.order - 1;
     }
 
-    /// The run's name for the 8.3 entry `entry`, when the run is complete and belongs to it; the run
-    /// is consumed either way.
+    /// The run's name for the 8.3 entry `entry`, when the run is complete and belongs to it; the
+    /// run is consumed either way.
     fn finish(&mut self, entry: &DirEntry, out: &mut [u16; MAX_NAME]) -> usize {
-        let complete = self.parts != 0 && self.expected == 0 && self.checksum == checksum(&entry.name);
+        let complete =
+            self.parts != 0 && self.expected == 0 && self.checksum == checksum(&entry.name);
         let parts = self.parts as usize;
         self.reset();
         if !complete {
             return 0;
         }
         let units = &self.units[..parts * PART_UNITS];
-        let len = units.iter().position(|&u| u == 0).unwrap_or(units.len()).min(MAX_NAME);
+        let len = units
+            .iter()
+            .position(|&u| u == 0)
+            .unwrap_or(units.len())
+            .min(MAX_NAME);
         out[..len].copy_from_slice(&units[..len]);
         len
     }
@@ -291,7 +311,11 @@ pub(crate) mod tests {
         }
         units.resize(parts * PART_UNITS, 0xFFFF);
         let sum = checksum(short);
-        let offsets: Vec<usize> = (1..11).step_by(2).chain((14..26).step_by(2)).chain((28..32).step_by(2)).collect();
+        let offsets: Vec<usize> = (1..11)
+            .step_by(2)
+            .chain((14..26).step_by(2))
+            .chain((28..32).step_by(2))
+            .collect();
         (1..=parts)
             .rev()
             .map(|order| {
@@ -384,7 +408,10 @@ pub(crate) mod tests {
         let mut crafted = Crafted::new(1, 8);
         crafted.directory(2, &records);
         let mut volume = Volume::mount(crafted.device()).unwrap();
-        assert_eq!(names(&mut volume, 2), vec![("NAME~1.TXT".into(), "NAME~1.TXT".into())]);
+        assert_eq!(
+            names(&mut volume, 2),
+            vec![("NAME~1.TXT".into(), "NAME~1.TXT".into())]
+        );
     }
 
     /// A stored 8.3 name is code page 437: a listing shows it in code page 1252, and a name
@@ -395,7 +422,10 @@ pub(crate) mod tests {
         let mut crafted = Crafted::new(1, 8);
         crafted.directory(
             2,
-            &[record(b"CAF\x90    TXT", 0x20, 4, 1), record(b"\x8E       \x9A  ", 0x20, 5, 1)],
+            &[
+                record(b"CAF\x90    TXT", 0x20, 4, 1),
+                record(b"\x8E       \x9A  ", 0x20, 5, 1),
+            ],
         );
         let mut volume = Volume::mount(crafted.device()).unwrap();
         let mut seen = Vec::new();
@@ -423,8 +453,21 @@ pub(crate) mod tests {
         let mut deleted = record(b"GONE    TXT", 0x20, 5, 1);
         deleted[0] = 0xE5;
         let mut crafted = Crafted::new(1, 8);
-        crafted.directory(2, &[record(b".          ", 0x10, 2, 0), record(b"..         ", 0x10, 0, 0), deleted]);
-        crafted.directory(3, &[record(b".          ", 0x10, 3, 0), record(b"SUB        ", 0x10, 4, 0)]);
+        crafted.directory(
+            2,
+            &[
+                record(b".          ", 0x10, 2, 0),
+                record(b"..         ", 0x10, 0, 0),
+                deleted,
+            ],
+        );
+        crafted.directory(
+            3,
+            &[
+                record(b".          ", 0x10, 3, 0),
+                record(b"SUB        ", 0x10, 4, 0),
+            ],
+        );
         crafted.fat(3, 0x0FFF_FFFF);
         let mut volume = Volume::mount(crafted.device()).unwrap();
         assert_eq!(is_empty(&mut volume, 2), Ok(true));
@@ -447,10 +490,20 @@ pub(crate) mod tests {
         .unwrap();
         let listed = found.unwrap();
         assert_eq!(listed.index, 2, "after its two long-name records");
-        for name in [&b"Long File Name.txt"[..], b"LONG FILE NAME.TXT", b"long file name.txt", b"LONGFI~1.TXT", b"longfi~1.txt"] {
+        for name in [
+            &b"Long File Name.txt"[..],
+            b"LONG FILE NAME.TXT",
+            b"long file name.txt",
+            b"LONGFI~1.TXT",
+            b"longfi~1.txt",
+        ] {
             assert!(listed.matches(name), "{:?}", core::str::from_utf8(name));
         }
-        for name in [&b"Long File Name"[..], b"LONGFI~1", b"Long File Name.txt.bak"] {
+        for name in [
+            &b"Long File Name"[..],
+            b"LONGFI~1",
+            b"Long File Name.txt.bak",
+        ] {
             assert!(!listed.matches(name), "{:?}", core::str::from_utf8(name));
         }
     }

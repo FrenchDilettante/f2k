@@ -186,7 +186,11 @@ impl<IoT: Io> Pic<IoT> {
     /// bit in the request register of the chip that serves it. (Every in-service probe selects its
     /// own register, so this read leaves nothing selected that they rely on.)
     pub fn requested(&mut self, vector: u8) -> bool {
-        let cmd = if vector >= self.slave_base { SLAVE_CMD } else { MASTER_CMD };
+        let cmd = if vector >= self.slave_base {
+            SLAVE_CMD
+        } else {
+            MASTER_CMD
+        };
         self.io.out(cmd, OCW3_READ_REQUEST);
         self.io.read(cmd) & (1 << (vector & 7)) != 0
     }
@@ -518,7 +522,11 @@ mod tests {
         pic.io().master.irr = 0x01;
         assert!(pic.requested(MASTER_VECTOR_BASE));
         assert!(!pic.requested(MASTER_VECTOR_BASE + 1));
-        assert_eq!(pic.claim(MASTER_VECTOR_BASE), Verdict::SpuriousNoEoi, "nothing in service yet");
+        assert_eq!(
+            pic.claim(MASTER_VECTOR_BASE),
+            Verdict::SpuriousNoEoi,
+            "nothing in service yet"
+        );
         pic.io().acknowledge(MASTER_VECTOR_BASE);
         assert_eq!(pic.claim(MASTER_VECTOR_BASE), Verdict::Real);
     }

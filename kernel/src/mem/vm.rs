@@ -1,5 +1,6 @@
 //! The user address space: reservations, committed pages and their protections — what VirtualAlloc,
-//! VirtualFree, VirtualProtect and VirtualQuery see — and the one writer of user page-table entries.
+//! VirtualFree, VirtualProtect and VirtualQuery see — and the one writer of user page-table
+//! entries.
 //!
 //! A process's address space is a table of regions — each a reservation `[base, base + size)` with
 //! the protection it was allocated with and a kind (private memory, a mapped view, an image) — and
@@ -12,28 +13,28 @@
 //! guard flag apart) in the same bits. An uncommitted page has no entry.
 //!
 //! Every user page lies in a region: the loader seeds the image and the system areas before it maps
-//! anything, and every mapping, commit, guard and release goes through [`AddressSpace`], so a query,
-//! a release and the teardown all see every page. `paging` keeps only the raw entry access, reached
-//! through the [`Pages`] seam ([`CurrentPages`] on target, an in-memory fake in the tests).
+//! anything, and every mapping, commit, guard and release goes through [`AddressSpace`], so a
+//! query, a release and the teardown all see every page. `paging` keeps only the raw entry access,
+//! reached through the [`Pages`] seam ([`CurrentPages`] on target, an in-memory fake in the tests).
 //!
 //! Reservations start on the 64 KiB allocation granularity and cover whole pages; a reservation
 //! without an address takes the lowest free range that fits. Commits zero their pages; committing a
 //! committed page keeps its contents and takes the new protection. A query reports the page's
-//! region and the run of pages after it in the same state and protection, within the region; outside
-//! every region it reports free memory up to the next region.
+//! region and the run of pages after it in the same state and protection, within the region;
+//! outside every region it reports free memory up to the next region.
 //!
 //! Region kinds are metadata (what a query reports as the type); the services (`nt::memory`,
 //! `nt::section`) decide what each kind refuses.
 //!
-//! A frame may have several holders: a section owns its frames ([`SectionFrames`]), and each view of
-//! it maps them too; a system DLL's pages are the kernel's, each process mapping them. The frame
+//! A frame may have several holders: a section owns its frames ([`SectionFrames`]), and each view
+//! of it maps them too; a system DLL's pages are the kernel's, each process mapping them. The frame
 //! database counts the holders; a page's release drops its own hold, and the frame goes back only
 //! with the last. Copy-on-write pages (PAGE_WRITECOPY, an image's writable sections and
 //! FILE_MAP_COPY views) are read-only to the hardware: the first write makes the page private — a
-//! copy of a frame other holders still map, or the frame itself when it is the page's alone — and the
-//! page turns read-write, as the platform reports it ([`copy_on_write`]). A writable protection given
-//! to a page whose frame others hold, outside a view, is copy-on-write in fact: the system DLLs'
-//! pages, and the shared data page, stay the kernel's.
+//! copy of a frame other holders still map, or the frame itself when it is the page's alone — and
+//! the page turns read-write, as the platform reports it ([`copy_on_write`]). A writable protection
+//! given to a page whose frame others hold, outside a view, is copy-on-write in fact: the system
+//! DLLs' pages, and the shared data page, stay the kernel's.
 
 /// The page size and the allocation granularity.
 pub const PAGE: u32 = 0x1000;
@@ -391,7 +392,11 @@ impl AddressSpace {
 
     /// The bytes every region reserves together (VM_COUNTERS' VirtualSize).
     pub fn reserved_size(&self) -> u32 {
-        self.regions.iter().flatten().map(|region| region.size).sum()
+        self.regions
+            .iter()
+            .flatten()
+            .map(|region| region.size)
+            .sum()
     }
 
     /// Write the empty space at `space`, region by region (by value it would pass the caller's
@@ -466,8 +471,8 @@ impl AddressSpace {
         Ok(())
     }
 
-    /// Reserve `size` bytes at `address` (rounded down to the granularity, the end up to a page) or,
-    /// without one, at the lowest free range. Returns the region's base.
+    /// Reserve `size` bytes at `address` (rounded down to the granularity, the end up to a page)
+    /// or, without one, at the lowest free range. Returns the region's base.
     pub fn reserve(
         &mut self,
         address: Option<u32>,
@@ -657,9 +662,9 @@ impl AddressSpace {
         decode(pages.entry(page_down(va))).map(|(frame, _)| frame)
     }
 
-    /// Plant a guard page at the page holding `va`: a zeroed frame committed read-write and guarded,
-    /// so the first touch fires it. Nothing is planted — false — outside every region, over a page
-    /// that already holds a frame, or without a frame to spare.
+    /// Plant a guard page at the page holding `va`: a zeroed frame committed read-write and
+    /// guarded, so the first touch fires it. Nothing is planted — false — outside every region,
+    /// over a page that already holds a frame, or without a frame to spare.
     pub fn plant_guard(&mut self, pages: &mut impl Pages, va: u32) -> bool {
         let page = page_down(va);
         if self.region_at(page).is_none() || decode(pages.entry(page)).is_some() {
@@ -720,8 +725,8 @@ impl AddressSpace {
 
 /// The protection a committed page of a `kind` region holding `frame` takes when given `protect`:
 /// outside a view, a writable protection over a frame others hold (a system DLL's page, the shared
-/// data page, a section's frame a copy-on-write view mapped) is copy-on-write, so the write stays the
-/// process's; a view's writable pages write its section.
+/// data page, a section's frame a copy-on-write view mapped) is copy-on-write, so the write stays
+/// the process's; a view's writable pages write its section.
 fn settle(kind: Kind, pages: &impl Pages, frame: u32, protect: u32) -> u32 {
     match copy_on_write_of(protect) {
         Some(copy) if kind != Kind::Mapped && pages.frame_shared(frame) => copy,
@@ -829,9 +834,11 @@ impl Pages for CurrentPages {
     fn entry(&self, va: u32) -> u32 {
         crate::mem::paging::user_pte(va)
     }
+
     fn set_entry(&mut self, va: u32, entry: u32) {
         crate::mem::paging::set_user_pte(va, entry);
     }
+
     fn zeroed_frame(&mut self) -> Option<u32> {
         // A reserve stays with the kernel: a program that exhausts memory gets an error, never the
         // kernel a panic.
@@ -843,6 +850,7 @@ impl Pages for CurrentPages {
         crate::mem::paging::init_frame(phys, 0, &[]);
         Some(phys)
     }
+
     fn free_frame(&mut self, frame: u32) {
         crate::mem::bootmem::with_frame_db(|db| {
             if db.unshare(frame / PAGE) {
@@ -850,18 +858,23 @@ impl Pages for CurrentPages {
             }
         });
     }
+
     fn share_frame(&mut self, frame: u32) {
         crate::mem::bootmem::with_frame_db(|db| db.share(frame / PAGE));
     }
+
     fn frame_shared(&self, frame: u32) -> bool {
         crate::mem::bootmem::with_frame_db(|db| db.entry(frame / PAGE).share_count > 0)
     }
+
     fn copy_frame(&mut self, from: u32, to: u32) {
         crate::mem::paging::copy_frame(from, to);
     }
+
     fn frame_word(&self, frame: u32, index: u32) -> u32 {
         crate::mem::paging::read_frame_word(frame, index as usize)
     }
+
     fn set_frame_word(&mut self, frame: u32, index: u32, value: u32) {
         crate::mem::paging::write_frame(frame, index as usize * 4, &value.to_le_bytes());
     }
@@ -888,32 +901,40 @@ mod tests {
         fn entry(&self, va: u32) -> u32 {
             *self.entries.get(&va).unwrap_or(&0)
         }
+
         fn set_entry(&mut self, va: u32, entry: u32) {
             self.entries.insert(va, entry);
         }
+
         fn zeroed_frame(&mut self) -> Option<u32> {
             self.next += 1;
             Some(0x0010_0000 + self.next * PAGE)
         }
+
         fn free_frame(&mut self, frame: u32) {
             match self.holders.get_mut(&frame) {
                 Some(extra) if *extra > 0 => *extra -= 1,
                 _ => self.freed.push(frame),
             }
         }
+
         fn share_frame(&mut self, frame: u32) {
             *self.holders.entry(frame).or_default() += 1;
         }
+
         fn frame_shared(&self, frame: u32) -> bool {
             self.holders.get(&frame).is_some_and(|&extra| extra > 0)
         }
+
         fn copy_frame(&mut self, from: u32, to: u32) {
             let word = self.frame_word(from, 0);
             self.set_frame_word(to, 0, word);
         }
+
         fn frame_word(&self, frame: u32, index: u32) -> u32 {
             *self.words.get(&(frame, index)).unwrap_or(&0)
         }
+
         fn set_frame_word(&mut self, frame: u32, index: u32, value: u32) {
             self.words.insert((frame, index), value);
         }
@@ -943,7 +964,10 @@ mod tests {
             assert!(space.add_view(0x40_0000 + index as u32 * 0x1_0000, section(3)));
         }
         assert!(!space.has_view_room());
-        assert!(!space.add_view(0x7000_0000, section(4)), "the table is full");
+        assert!(
+            !space.add_view(0x7000_0000, section(4)),
+            "the table is full"
+        );
         let mut released = Vec::new();
         space.drop_views(|section| released.push(section.index));
         assert_eq!(released.len(), VIEWS);
@@ -983,10 +1007,16 @@ mod tests {
         assert_eq!(filled, 1);
         assert_eq!(section.made(&pages, 0), Some(first));
         assert_eq!(section.made(&pages, 1), None);
-        let one = vm.reserve(None, PAGE, PAGE_READWRITE, Kind::Mapped).unwrap();
-        let two = vm.reserve(None, PAGE, PAGE_READWRITE, Kind::Mapped).unwrap();
-        vm.map_shared(&mut pages, one, first, PAGE_READWRITE).unwrap();
-        vm.map_shared(&mut pages, two, first, PAGE_READONLY).unwrap();
+        let one = vm
+            .reserve(None, PAGE, PAGE_READWRITE, Kind::Mapped)
+            .unwrap();
+        let two = vm
+            .reserve(None, PAGE, PAGE_READWRITE, Kind::Mapped)
+            .unwrap();
+        vm.map_shared(&mut pages, one, first, PAGE_READWRITE)
+            .unwrap();
+        vm.map_shared(&mut pages, two, first, PAGE_READONLY)
+            .unwrap();
         assert_eq!(vm.query(&pages, one).mem_type, MEM_MAPPED);
         vm.release(&mut pages, one).unwrap();
         assert!(
@@ -994,7 +1024,10 @@ mod tests {
             "the section and the other view still hold it"
         );
         section.release(&mut pages);
-        assert!(!pages.freed.contains(&first), "the other view still maps it");
+        assert!(
+            !pages.freed.contains(&first),
+            "the other view still maps it"
+        );
         assert_eq!(pages.freed.len(), 1, "the section's table went with it");
         vm.release(&mut pages, two).unwrap();
         assert!(pages.freed.contains(&first), "its last holder gave it back");
@@ -1032,8 +1065,11 @@ mod tests {
         let mut section = SectionFrames::empty();
         let frame = section.frame(&mut pages, 0, |_| ()).unwrap();
         pages.set_frame_word(frame, 0, 77);
-        let view = vm.reserve(None, PAGE, PAGE_READWRITE, Kind::Mapped).unwrap();
-        vm.map_shared(&mut pages, view, frame, PAGE_WRITECOPY).unwrap();
+        let view = vm
+            .reserve(None, PAGE, PAGE_READWRITE, Kind::Mapped)
+            .unwrap();
+        vm.map_shared(&mut pages, view, frame, PAGE_WRITECOPY)
+            .unwrap();
         assert!(copy_on_write(&mut pages, view));
         let (copy, protect) = decode(pages.entry(view)).unwrap();
         assert_ne!(copy, frame);
@@ -1071,7 +1107,9 @@ mod tests {
         vm.protect(&mut pages, dll, PAGE, PAGE_READWRITE).unwrap();
         assert_eq!(vm.query(&pages, dll).protect, PAGE_READWRITE);
 
-        let view = vm.reserve(None, PAGE, PAGE_READWRITE, Kind::Mapped).unwrap();
+        let view = vm
+            .reserve(None, PAGE, PAGE_READWRITE, Kind::Mapped)
+            .unwrap();
         pages.holders.insert(0x0061_0000, 0);
         vm.map_shared(&mut pages, view, 0x0061_0000, PAGE_READONLY)
             .unwrap();

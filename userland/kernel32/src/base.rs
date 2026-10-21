@@ -114,8 +114,9 @@ pub fn named_object_directory() -> u32 {
             };
             let mut opened = 0;
             // SAFETY: ntdll's export, over the attributes above.
-            let status =
-                unsafe { nt::NtOpenDirectoryObject(&mut opened, NAMED_OBJECTS_ACCESS, &attributes) };
+            let status = unsafe {
+                nt::NtOpenDirectoryObject(&mut opened, NAMED_OBJECTS_ACCESS, &attributes)
+            };
             if rtl::status::nt_success(status) {
                 write(slot, opened);
             }
@@ -175,8 +176,8 @@ pub unsafe fn format_object_attributes(
     out
 }
 
-/// Whether a handle is a console handle (Windows 2000's CONSOLE_HANDLE: the low two bits set, bit 28
-/// clear, so INVALID_HANDLE_VALUE is not one). Console handles are not kernel handles: kernel32
+/// Whether a handle is a console handle (Windows 2000's CONSOLE_HANDLE: the low two bits set, bit
+/// 28 clear, so INVALID_HANDLE_VALUE is not one). Console handles are not kernel handles: kernel32
 /// routes them to the console server (see [`crate::console`]).
 pub fn is_console_handle(handle: u32) -> bool {
     handle & 0x1000_0003 == 0x3
@@ -199,7 +200,8 @@ pub fn standard_slot(which: u32) -> Option<usize> {
 }
 
 /// A handle as the file calls take it: a standard handle's pseudo-value is the process parameters'
-/// StandardInput, StandardOutput or StandardError, as Windows 2000's ReadFile and WriteFile read it.
+/// StandardInput, StandardOutput or StandardError, as Windows 2000's ReadFile and WriteFile read
+/// it.
 pub fn standard_handle(handle: u32) -> u32 {
     standard_slot(handle).map_or(handle, parameters_standard_handle)
 }
@@ -255,8 +257,8 @@ pub fn write(at: usize, value: u32) {
     unsafe { (at as *mut u32).write_volatile(value) }
 }
 
-/// The pointer at `at` in the PEB, the TEB or a block they point at (a dword on the target; the host
-/// tests keep their 64-bit pointers beside the stand-in pages).
+/// The pointer at `at` in the PEB, the TEB or a block they point at (a dword on the target; the
+/// host tests keep their 64-bit pointers beside the stand-in pages).
 pub fn read_pointer(at: usize) -> usize {
     teb::read_pointer(at)
 }

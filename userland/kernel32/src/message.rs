@@ -9,7 +9,12 @@
 //! message from a string or a module, and insert expansion, are not served.
 
 use crate::base::set_last_error;
-use crate::error::{ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_PARAMETER, ERROR_MR_MID_NOT_FOUND, ERROR_NOT_ENOUGH_MEMORY};
+use crate::error::{
+    ERROR_INSUFFICIENT_BUFFER,
+    ERROR_INVALID_PARAMETER,
+    ERROR_MR_MID_NOT_FOUND,
+    ERROR_NOT_ENOUGH_MEMORY,
+};
 use crate::nt;
 
 /// The messages, by code.
@@ -21,19 +26,28 @@ const MESSAGES: &[(u32, &str)] = &[
     (4, "The system cannot open the file."),
     (5, "Access is denied."),
     (6, "The handle is invalid."),
-    (8, "Not enough storage is available to process this command."),
+    (
+        8,
+        "Not enough storage is available to process this command.",
+    ),
     (87, "The parameter is incorrect."),
     (122, "The data area passed to a system call is too small."),
     (126, "The specified module could not be found."),
     (127, "The specified procedure could not be found."),
     (183, "Cannot create a file when that file already exists."),
-    (203, "The system could not find the environment option that was entered."),
+    (
+        203,
+        "The system could not find the environment option that was entered.",
+    ),
     (998, "Invalid access to memory location."),
 ];
 
 /// The message for `code`, without its CR LF.
 pub fn message(code: u32) -> Option<&'static str> {
-    MESSAGES.iter().find(|&&(c, _)| c == code).map(|&(_, text)| text)
+    MESSAGES
+        .iter()
+        .find(|&&(c, _)| c == code)
+        .map(|&(_, text)| text)
 }
 
 /// FORMAT_MESSAGE_ALLOCATE_BUFFER, FORMAT_MESSAGE_FROM_STRING, FORMAT_MESSAGE_FROM_HMODULE,
@@ -72,7 +86,10 @@ impl Formatted {
 /// its last blank, the blank replaced by CR LF, and lets a single word longer than the width run
 /// past it rather than split it.
 fn format(text: &str, width: u32) -> Formatted {
-    let mut out = Formatted { bytes: [0; FORMATTED_ROOM], length: 0 };
+    let mut out = Formatted {
+        bytes: [0; FORMATTED_ROOM],
+        length: 0,
+    };
     if width == 0 {
         text.bytes().chain(*b"\r\n").for_each(|byte| out.push(byte));
         return out;
@@ -96,8 +113,8 @@ fn format(text: &str, width: u32) -> Formatted {
     out
 }
 
-/// The block FORMAT_MESSAGE_ALLOCATE_BUFFER hands out: a fixed local block of `bytes` on the process
-/// heap (LocalFree frees it), as Windows 2000's LocalAlloc(LMEM_FIXED) makes one: ntdll's
+/// The block FORMAT_MESSAGE_ALLOCATE_BUFFER hands out: a fixed local block of `bytes` on the
+/// process heap (LocalFree frees it), as Windows 2000's LocalAlloc(LMEM_FIXED) makes one: ntdll's
 /// RtlAllocateHeap; null when the heap has no room.
 fn allocate_block(bytes: usize) -> *mut u8 {
     // SAFETY: ntdll's export, on the process heap.
@@ -182,7 +199,11 @@ mod tests {
         for &(code, text) in MESSAGES {
             let blanks = text.bytes().filter(|&byte| byte == b' ').count();
             assert!(text.len() + blanks + 2 < FORMATTED_ROOM, "{code}");
-            assert_eq!(format(text, 1).length, text.len() + blanks + 1, "{code}: a break per blank, a trailing blank");
+            assert_eq!(
+                format(text, 1).length,
+                text.len() + blanks + 1,
+                "{code}: a break per blank, a trailing blank"
+            );
         }
     }
 }

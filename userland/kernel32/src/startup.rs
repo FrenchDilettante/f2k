@@ -8,8 +8,16 @@
 use rtl::cp1252;
 
 use crate::base::{
-    peb, process_heap, process_parameters, read, read_pointer, set_last_error, set_last_nt_error,
-    under_peb_lock, units, write_pointer,
+    peb,
+    process_heap,
+    process_parameters,
+    read,
+    read_pointer,
+    set_last_error,
+    set_last_nt_error,
+    under_peb_lock,
+    units,
+    write_pointer,
 };
 use crate::nt;
 

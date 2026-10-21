@@ -11,8 +11,9 @@
 //! violation. The reservation's lowest page is never committed: a guard firing with only that page
 //! left below it cannot plant another, and that is the stack overflow (STATUS_STACK_OVERFLOW).
 //!
-//! The rule reads the thread's TEB — user memory, through the fault-tolerant copy — as the platform's
-//! does: a TEB the program made unreadable or rewrote decides only where its own stack grows.
+//! The rule reads the thread's TEB — user memory, through the fault-tolerant copy — as the
+//! platform's does: a TEB the program made unreadable or rewrote decides only where its own stack
+//! grows.
 
 use crate::mem::paging::PAGE_SIZE;
 

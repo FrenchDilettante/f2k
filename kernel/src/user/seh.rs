@@ -37,8 +37,8 @@ pub const CONTEXT_INTEGER: u32 = 0x0001_0002;
 pub const TRAP_FLAG: u32 = 0x100;
 pub const DIRECTION_FLAG: u32 = 0x400;
 
-/// The EFLAGS bits a CONTEXT may set for user mode: the arithmetic flags, the direction flag and the
-/// trap flag (a context may single-step its thread, as Windows 2000's NtContinue lets it). The
+/// The EFLAGS bits a CONTEXT may set for user mode: the arithmetic flags, the direction flag and
+/// the trap flag (a context may single-step its thread, as Windows 2000's NtContinue lets it). The
 /// restore forces the interrupt flag and the reserved bit; the I/O privilege level and the rest are
 /// the kernel's.
 pub const CONTEXT_EFLAGS_MASK: u32 = 0x0CD5 | TRAP_FLAG;
@@ -178,7 +178,7 @@ pub fn exception_layout(esp: u32, record_bytes: usize) -> Option<(u32, u32, u32)
     Some((context, record, arguments))
 }
 
-// --- On target -------------------------------------------------------------------------------------
+// --- On target -----------------------------------------------------------------------------------
 
 #[cfg(target_arch = "x86")]
 mod target {

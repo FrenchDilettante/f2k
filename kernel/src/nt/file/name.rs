@@ -12,7 +12,10 @@
 //! unverified); an empty component is no name either (STATUS_OBJECT_NAME_INVALID).
 
 use super::super::attributes::{
-    MAX_NAME, STATUS_OBJECT_NAME_INVALID, STATUS_OBJECT_NAME_NOT_FOUND, STATUS_OBJECT_PATH_NOT_FOUND,
+    MAX_NAME,
+    STATUS_OBJECT_NAME_INVALID,
+    STATUS_OBJECT_NAME_NOT_FOUND,
+    STATUS_OBJECT_PATH_NOT_FOUND,
     STATUS_OBJECT_PATH_SYNTAX_BAD,
 };
 use super::super::call::Status;
@@ -44,13 +47,17 @@ impl FileName {
 
     /// The components, in order.
     pub fn components(&self) -> impl Iterator<Item = &[u8]> {
-        self.path().split(|&byte| byte == SEPARATOR as u8).filter(|component| !component.is_empty())
+        self.path()
+            .split(|&byte| byte == SEPARATOR as u8)
+            .filter(|component| !component.is_empty())
     }
 
     /// The last component (empty for where the name starts).
     pub fn last(&self) -> &[u8] {
         let path = self.path();
-        path.iter().rposition(|&byte| byte == SEPARATOR as u8).map_or(path, |at| &path[at + 1..])
+        path.iter()
+            .rposition(|&byte| byte == SEPARATOR as u8)
+            .map_or(path, |at| &path[at + 1..])
     }
 
     /// Whether the name is where it starts (no component).
@@ -60,19 +67,28 @@ impl FileName {
     }
 
     fn empty() -> FileName {
-        FileName { bytes: [0; MAX_NAME], length: 0, trailing: false, volume: false }
+        FileName {
+            bytes: [0; MAX_NAME],
+            length: 0,
+            trailing: false,
+            volume: false,
+        }
     }
 }
 
 /// Whether `units` begin with `prefix` (ASCII, case-insensitively).
 fn starts_with(units: &[u16], prefix: &[u8]) -> bool {
     units.len() >= prefix.len()
-        && units.iter().zip(prefix).all(|(&unit, &byte)| unit < 0x80 && (unit as u8).eq_ignore_ascii_case(&byte))
+        && units
+            .iter()
+            .zip(prefix)
+            .all(|(&unit, &byte)| unit < 0x80 && (unit as u8).eq_ignore_ascii_case(&byte))
 }
 
 /// Whether a unit may be in a component.
 fn valid_unit(unit: u16) -> bool {
-    unit >= 0x20 && !matches!(unit as u8, b'"' | b'*' | b'/' | b':' | b'<' | b'>' | b'?' | b'\\' | b'|' if unit < 0x80)
+    unit >= 0x20
+        && !matches!(unit as u8, b'"' | b'*' | b'/' | b':' | b'<' | b'>' | b'?' | b'\\' | b'|' if unit < 0x80)
 }
 
 /// The components of `units` (no leading separator) into `name`, validated.
@@ -121,10 +137,20 @@ pub fn absolute(units: &[u16]) -> Result<FileName, Status> {
         .find_map(|prefix| starts_with(units, prefix).then(|| &units[prefix.len()..]))
         .ok_or(STATUS_OBJECT_PATH_NOT_FOUND)?;
     // The DOS device: a drive letter and its colon, or any other name the DOS devices do not hold.
-    let device_end = rest.iter().position(|&unit| unit == SEPARATOR).unwrap_or(rest.len());
-    let missing = if device_end == rest.len() { STATUS_OBJECT_NAME_NOT_FOUND } else { STATUS_OBJECT_PATH_NOT_FOUND };
+    let device_end = rest
+        .iter()
+        .position(|&unit| unit == SEPARATOR)
+        .unwrap_or(rest.len());
+    let missing = if device_end == rest.len() {
+        STATUS_OBJECT_NAME_NOT_FOUND
+    } else {
+        STATUS_OBJECT_PATH_NOT_FOUND
+    };
     match rest[..device_end] {
-        [letter, colon] if colon == u16::from(b':') && letter < 0x80 && (letter as u8).eq_ignore_ascii_case(&DRIVE) => {}
+        [letter, colon]
+            if colon == u16::from(b':')
+                && letter < 0x80
+                && (letter as u8).eq_ignore_ascii_case(&DRIVE) => {}
         [] => return Err(STATUS_OBJECT_NAME_INVALID),
         _ => return Err(missing),
     }
@@ -157,47 +183,105 @@ mod tests {
     }
 
     fn path(name: Result<FileName, Status>) -> Result<(std::string::String, bool, bool), Status> {
-        name.map(|name| (std::string::String::from_utf8(name.path().to_vec()).unwrap(), name.trailing, name.volume))
+        name.map(|name| {
+            (
+                std::string::String::from_utf8(name.path().to_vec()).unwrap(),
+                name.trailing,
+                name.volume,
+            )
+        })
     }
 
     /// The volume's paths, the volume itself, and the names outside it.
     #[test]
     fn absolute_names_walk_the_boot_volume() {
-        assert_eq!(path(absolute(&wide("\\??\\C:\\CORPUS\\DATA\\SMALL.TXT"))), Ok(("CORPUS\\DATA\\SMALL.TXT".into(), false, false)));
-        assert_eq!(path(absolute(&wide("\\??\\c:\\CORPUS\\"))), Ok(("CORPUS".into(), true, false)));
-        assert_eq!(path(absolute(&wide("\\DosDevices\\C:\\"))), Ok(("".into(), false, false)));
-        assert_eq!(path(absolute(&wide("\\??\\C:"))), Ok(("".into(), false, true)));
-        assert_eq!(path(absolute(&wide("\\??\\D:"))).err(), Some(STATUS_OBJECT_NAME_NOT_FOUND));
-        assert_eq!(path(absolute(&wide("\\??\\D:\\X"))).err(), Some(STATUS_OBJECT_PATH_NOT_FOUND));
-        assert_eq!(path(absolute(&wide("\\??\\UNC\\srv\\share"))).err(), Some(STATUS_OBJECT_PATH_NOT_FOUND));
-        assert_eq!(path(absolute(&wide("\\Device\\Harddisk0"))).err(), Some(STATUS_OBJECT_PATH_NOT_FOUND));
-        assert_eq!(path(absolute(&wide("C:\\X"))).err(), Some(STATUS_OBJECT_PATH_SYNTAX_BAD));
+        assert_eq!(
+            path(absolute(&wide("\\??\\C:\\CORPUS\\DATA\\SMALL.TXT"))),
+            Ok(("CORPUS\\DATA\\SMALL.TXT".into(), false, false))
+        );
+        assert_eq!(
+            path(absolute(&wide("\\??\\c:\\CORPUS\\"))),
+            Ok(("CORPUS".into(), true, false))
+        );
+        assert_eq!(
+            path(absolute(&wide("\\DosDevices\\C:\\"))),
+            Ok(("".into(), false, false))
+        );
+        assert_eq!(
+            path(absolute(&wide("\\??\\C:"))),
+            Ok(("".into(), false, true))
+        );
+        assert_eq!(
+            path(absolute(&wide("\\??\\D:"))).err(),
+            Some(STATUS_OBJECT_NAME_NOT_FOUND)
+        );
+        assert_eq!(
+            path(absolute(&wide("\\??\\D:\\X"))).err(),
+            Some(STATUS_OBJECT_PATH_NOT_FOUND)
+        );
+        assert_eq!(
+            path(absolute(&wide("\\??\\UNC\\srv\\share"))).err(),
+            Some(STATUS_OBJECT_PATH_NOT_FOUND)
+        );
+        assert_eq!(
+            path(absolute(&wide("\\Device\\Harddisk0"))).err(),
+            Some(STATUS_OBJECT_PATH_NOT_FOUND)
+        );
+        assert_eq!(
+            path(absolute(&wide("C:\\X"))).err(),
+            Some(STATUS_OBJECT_PATH_SYNTAX_BAD)
+        );
         let name = absolute(&wide("\\??\\C:\\A\\B\\C.TXT")).unwrap();
-        assert_eq!(name.components().collect::<std::vec::Vec<_>>(), [&b"A"[..], b"B", b"C.TXT"]);
+        assert_eq!(
+            name.components().collect::<std::vec::Vec<_>>(),
+            [&b"A"[..], b"B", b"C.TXT"]
+        );
         assert_eq!(name.last(), b"C.TXT");
     }
 
     /// What no component may be.
     #[test]
     fn components_are_fat_long_names() {
-        for bad in ["SMA*.TXT", "A?B", "A<B", "A\"B", "A|B", "A\u{9}B", "A\\\\B", ".", "..", "\u{4E2D}"] {
+        for bad in [
+            "SMA*.TXT", "A?B", "A<B", "A\"B", "A|B", "A\u{9}B", "A\\\\B", ".", "..", "\u{4E2D}",
+        ] {
             let text = std::format!("\\??\\C:\\DATA\\{bad}");
-            assert_eq!(path(absolute(&wide(&text))).err(), Some(STATUS_OBJECT_NAME_INVALID), "{bad}");
+            assert_eq!(
+                path(absolute(&wide(&text))).err(),
+                Some(STATUS_OBJECT_NAME_INVALID),
+                "{bad}"
+            );
         }
         let long = "x".repeat(MAX_COMPONENT);
         assert!(absolute(&wide(&std::format!("\\??\\C:\\{long}"))).is_ok());
-        assert_eq!(path(absolute(&wide(&std::format!("\\??\\C:\\{long}x")))).err(), Some(STATUS_OBJECT_NAME_INVALID));
+        assert_eq!(
+            path(absolute(&wide(&std::format!("\\??\\C:\\{long}x")))).err(),
+            Some(STATUS_OBJECT_NAME_INVALID)
+        );
         let name = absolute(&wide("\\??\\C:\\caf\u{E9}.txt")).unwrap();
-        assert_eq!(name.path(), b"caf\xE9.txt", "the code page 1252 bytes, as the volume keeps names");
+        assert_eq!(
+            name.path(),
+            b"caf\xE9.txt",
+            "the code page 1252 bytes, as the volume keeps names"
+        );
     }
 
     /// A name relative to a directory: its components, the directory itself for none.
     #[test]
     fn relative_names_start_at_their_directory() {
-        assert_eq!(path(relative(&wide("DATA\\SMALL.TXT"))), Ok(("DATA\\SMALL.TXT".into(), false, false)));
+        assert_eq!(
+            path(relative(&wide("DATA\\SMALL.TXT"))),
+            Ok(("DATA\\SMALL.TXT".into(), false, false))
+        );
         assert_eq!(path(relative(&wide(""))), Ok(("".into(), false, false)));
-        assert_eq!(path(relative(&wide("SUB\\"))), Ok(("SUB".into(), true, false)));
-        assert_eq!(path(relative(&wide("\\X"))).err(), Some(STATUS_OBJECT_NAME_INVALID));
+        assert_eq!(
+            path(relative(&wide("SUB\\"))),
+            Ok(("SUB".into(), true, false))
+        );
+        assert_eq!(
+            path(relative(&wide("\\X"))).err(),
+            Some(STATUS_OBJECT_NAME_INVALID)
+        );
         assert!(relative(&wide("")).unwrap().is_empty());
     }
 }

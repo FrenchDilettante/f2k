@@ -29,8 +29,8 @@ use super::dispatcher::Dispatcher;
 use super::thread::{Thread, ThreadState};
 use super::{unlink, Links, List, REALTIME_BASE, TIME_CRITICAL_CEILING};
 use crate::status::STATUS_KERNEL_APC;
-/// The wait statuses: what a completed wait reports. The timeout value is the ABI the Win32 wait
-/// returns raw (WAIT_TIMEOUT).
+/// The wait statuses: what a completed wait reports. The timeout value is the ABI the Win32
+/// wait returns raw (WAIT_TIMEOUT).
 pub use crate::status::{STATUS_SUCCESS, STATUS_TIMEOUT};
 
 /// The low three bits of a waitable kind: the selector that decides whether a satisfied wait
@@ -270,9 +270,9 @@ pub enum WaitDisposition {
     Yield,
 }
 
-/// The alert test every wait entry runs before it would block: an alertable user-mode wait with user
-/// APCs queued does not block — it arms their delivery (the service boundary runs them on the way
-/// out) and completes with the user-APC status.
+/// The alert test every wait entry runs before it would block: an alertable user-mode wait with
+/// user APCs queued does not block — it arms their delivery (the service boundary runs them on the
+/// way out) and completes with the user-APC status.
 fn test_alert(thread: &mut Thread, mode: WaitMode, alertable: bool) -> Option<i32> {
     if alertable && mode == WaitMode::User && !thread.user_apcs.is_empty() {
         thread.user_apc_pending = true;
@@ -293,7 +293,10 @@ pub(crate) fn entry_to_block(entry: *mut Links) -> *mut WaitBlock {
 pub(crate) unsafe fn signaled_for(object: *mut Waitable, thread: *const Thread) -> bool {
     unsafe {
         if (*object).kind == WaitKind::Mutant {
-            return super::mutex::available_to(&*super::mutex::Mutex::from_waitable(object), thread);
+            return super::mutex::available_to(
+                &*super::mutex::Mutex::from_waitable(object),
+                thread,
+            );
         }
         (*object).signal_state > 0
     }
@@ -457,7 +460,10 @@ impl Dispatcher {
         let me = thread as *mut Thread;
         // SAFETY: every object is a live, initialized waitable.
         if wait_all {
-            if objects.iter().all(|&object| unsafe { signaled_for(object, me) }) {
+            if objects
+                .iter()
+                .all(|&object| unsafe { signaled_for(object, me) })
+            {
                 let mut status = STATUS_SUCCESS;
                 for &object in objects {
                     // SAFETY: as above; each is signaled for the thread, and none repeats.
@@ -498,7 +504,11 @@ impl Dispatcher {
                     thread: me,
                     object,
                     next_block: blocks.add((index + 1) % count),
-                    key: if wait_all { STATUS_SUCCESS } else { index as i32 },
+                    key: if wait_all {
+                        STATUS_SUCCESS
+                    } else {
+                        index as i32
+                    },
                     wait_all,
                 });
             }
@@ -832,7 +842,8 @@ impl Dispatcher {
     /// left — the completion its parked caller is about to read.
     pub(crate) fn preserving_wait_status(&mut self, deliver: impl FnOnce(&mut Dispatcher)) {
         let thread = self.current_thread();
-        // SAFETY: the running thread, live; the delivery runs on its own timeline and returns to it.
+        // SAFETY: the running thread, live; the delivery runs on its own timeline and returns to
+        // it.
         let status = unsafe { (*thread).wait_status };
         deliver(self);
         // SAFETY: as above — the same thread, read through the pointer rather than the dispatcher
@@ -917,8 +928,8 @@ pub(crate) fn replay_timeout(
 }
 
 /// The blocking core every wait shares: run `start` — it either satisfies the wait at once or parks
-/// the thread — and after a park, read the wake's status, replaying the wait when a kernel APC broke
-/// it. The APC delivery itself has already run by the time the park returns (the resume tail
+/// the thread — and after a park, read the wake's status, replaying the wait when a kernel APC
+/// broke it. The APC delivery itself has already run by the time the park returns (the resume tail
 /// delivers), so the replay re-enters `start` with the delivery's work done. Returns the wait's
 /// completion status.
 pub(crate) fn wait_with_replay(
@@ -1133,7 +1144,10 @@ mod tests {
     }
 
     fn stamp(interrupt_time: u64, tick: u64) -> ClockStamp {
-        ClockStamp { interrupt_time, tick }
+        ClockStamp {
+            interrupt_time,
+            tick,
+        }
     }
 
     /// A timer's due time on the one clock: a relative one from interrupt time; an absolute

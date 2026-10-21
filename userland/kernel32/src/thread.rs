@@ -1,7 +1,7 @@
 //! Threads: creation, exit and termination, suspension, the exit code, the priorities and boosts,
 //! and the TLS indexes — kernel32's own code over ntdll's thread services, as on Windows 2000
-//! (ARCH-6 group 6). A failed service's status sets the last error through BaseSetLastNTError; a bad
-//! handle is the kernel's to refuse (STATUS_INVALID_HANDLE or STATUS_OBJECT_TYPE_MISMATCH:
+//! (ARCH-6 group 6). A failed service's status sets the last error through BaseSetLastNTError; a
+//! bad handle is the kernel's to refuse (STATUS_INVALID_HANDLE or STATUS_OBJECT_TYPE_MISMATCH:
 //! ERROR_INVALID_HANDLE both).
 //!
 //! CreateThread is Windows 2000's: BaseCreateStack reserves the thread's stack and commits its top
@@ -21,8 +21,17 @@
 use rtl::status::nt_success;
 
 use crate::base::{
-    peb, read, read_pointer, set_last_error, set_last_nt_error, teb_address, under_peb_lock, write,
-    SecurityAttributes, CURRENT_PROCESS, CURRENT_THREAD,
+    peb,
+    read,
+    read_pointer,
+    set_last_error,
+    set_last_nt_error,
+    teb_address,
+    under_peb_lock,
+    write,
+    SecurityAttributes,
+    CURRENT_PROCESS,
+    CURRENT_THREAD,
 };
 use crate::nt;
 
@@ -143,8 +152,9 @@ pub fn stack_reservation(size: u32, flags: u32) -> u32 {
     }
 }
 
-/// INITIAL_TEB: the stack NtCreateThread gives the thread — no old (fiber) stack; its base (one past
-/// its top), its limit (the lowest committed byte, above the guard page) and its reservation's base.
+/// INITIAL_TEB: the stack NtCreateThread gives the thread — no old (fiber) stack; its base (one
+/// past its top), its limit (the lowest committed byte, above the guard page) and its reservation's
+/// base.
 #[repr(C)]
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub struct InitialTeb {
@@ -295,13 +305,13 @@ fn thread_start_thunk() -> u32 {
     }
 }
 
-/// CreateThread: a thread of the calling process, as Windows 2000's CreateRemoteThread makes one for
-/// NtCurrentProcess — its stack (BaseCreateStack, sized by [`stack_reservation`]), its context
+/// CreateThread: a thread of the calling process, as Windows 2000's CreateRemoteThread makes one
+/// for NtCurrentProcess — its stack (BaseCreateStack, sized by [`stack_reservation`]), its context
 /// (BaseInitializeContext at BaseThreadStartThunk), then NtCreateThread with the attributes'
 /// inheritance, suspended; the identifier written where asked (a bad pointer faults the caller, the
 /// thread already made, as on Windows 2000), and the thread resumed unless CREATE_SUSPENDED. Any
-/// other creation flag is ignored. A refusal gives the stack back and returns NULL with the status's
-/// error.
+/// other creation flag is ignored. A refusal gives the stack back and returns NULL with the
+/// status's error.
 ///
 /// # Safety
 ///
@@ -370,8 +380,8 @@ pub unsafe extern "system" fn create_thread(
 
 /// ExitThread: the process's last thread ends the process (ExitProcess with the code, as Windows
 /// 2000 asks ThreadAmILastThread); any other gives its TLS back (LdrShutdownThread) and ends
-/// through NtTerminateThread with no handle — which, should the others have ended meanwhile, refuses
-/// the last thread, and the process ends instead.
+/// through NtTerminateThread with no handle — which, should the others have ended meanwhile,
+/// refuses the last thread, and the process ends instead.
 #[unsafe(export_name = "f2k_export_ExitThread")]
 pub extern "system" fn exit_thread(code: u32) -> ! {
     let mut last = 0u32;
@@ -494,8 +504,8 @@ pub fn thread_priority(base_priority: i32) -> i32 {
     }
 }
 
-/// SetThreadPriority: NtSetInformationThread's ThreadBasePriority (a raise that makes a Ready thread
-/// the higher takes the processor before the call returns).
+/// SetThreadPriority: NtSetInformationThread's ThreadBasePriority (a raise that makes a Ready
+/// thread the higher takes the processor before the call returns).
 #[unsafe(export_name = "f2k_export_SetThreadPriority")]
 pub extern "system" fn set_thread_priority(thread: u32, priority: i32) -> u32 {
     set_information(thread, THREAD_BASE_PRIORITY, base_priority(priority) as u32)

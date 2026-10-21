@@ -2,11 +2,24 @@
 //! the walk, the disposition's decision against what the name names, a new file or directory made,
 //! the open (its share check), and an overwrite's truncation.
 
-use super::super::call::{NtCall, NtResult, Status, UserAddr, UserPtr, STATUS_INVALID_PARAMETER, STATUS_SUCCESS};
+use super::super::call::{
+    NtCall,
+    NtResult,
+    Status,
+    UserAddr,
+    UserPtr,
+    STATUS_INVALID_PARAMETER,
+    STATUS_SUCCESS,
+};
 use super::common::{complete, deliver, probe, target, walk, Found, Target};
 use super::{
-    status, STATUS_ACCESS_DENIED, STATUS_DIRECTORY_NOT_EMPTY, STATUS_FILE_IS_A_DIRECTORY, STATUS_NOT_A_DIRECTORY,
-    STATUS_OBJECT_NAME_COLLISION, STATUS_USER_MAPPED_FILE,
+    status,
+    STATUS_ACCESS_DENIED,
+    STATUS_DIRECTORY_NOT_EMPTY,
+    STATUS_FILE_IS_A_DIRECTORY,
+    STATUS_NOT_A_DIRECTORY,
+    STATUS_OBJECT_NAME_COLLISION,
+    STATUS_USER_MAPPED_FILE,
 };
 use crate::fs::fat32::dir::is_empty;
 use crate::fs::fat32::dirent::{ATTR_HIDDEN, ATTR_READ_ONLY, ATTR_SYSTEM};
@@ -60,7 +73,13 @@ struct Request {
 /// attribute or share bit the platform does not define, both synchronous modes, a synchronous mode
 /// without SYNCHRONIZE, delete-on-close without DELETE, a directory asked for and refused at once
 /// or with a disposition that cannot make one — each STATUS_INVALID_PARAMETER.
-fn check_arguments(access: u32, attributes: u32, share: u32, disposition: u32, options: u32) -> Result<(), Status> {
+fn check_arguments(
+    access: u32,
+    attributes: u32,
+    share: u32,
+    disposition: u32,
+    options: u32,
+) -> Result<(), Status> {
     let synchronous = options & (FILE_SYNCHRONOUS_IO_ALERT | FILE_SYNCHRONOUS_IO_NONALERT);
     let invalid = disposition > FILE_OVERWRITE_IF
         || options & !FILE_VALID_OPTION_FLAGS != 0
@@ -81,7 +100,12 @@ fn check_arguments(access: u32, attributes: u32, share: u32, disposition: u32, o
 /// The decision on an existing entry: the file (the open goes ahead), its I/O status information,
 /// whether it is overwritten once open, and the rights granted (MAXIMUM_ALLOWED leaves a read-only
 /// file's write rights out).
-fn existing(volume: &mut Volume, target: &Target, file: File, request: &Request) -> Result<(File, u32, bool, u32), NtStatus> {
+fn existing(
+    volume: &mut Volume,
+    target: &Target,
+    file: File,
+    request: &Request,
+) -> Result<(File, u32, bool, u32), NtStatus> {
     let mut granted = request.granted;
     if request.disposition == FILE_CREATE {
         return Err(STATUS_OBJECT_NAME_COLLISION.0 as NtStatus);
@@ -110,7 +134,10 @@ fn existing(volume: &mut Volume, target: &Target, file: File, request: &Request)
     if target.name.trailing {
         return Err(STATUS_OBJECT_NAME_INVALID.0 as NtStatus);
     }
-    let overwrite = matches!(request.disposition, FILE_SUPERSEDE | FILE_OVERWRITE | FILE_OVERWRITE_IF);
+    let overwrite = matches!(
+        request.disposition,
+        FILE_SUPERSEDE | FILE_OVERWRITE | FILE_OVERWRITE_IF
+    );
     if file.attributes & ATTR_READ_ONLY != 0 {
         if request.access & rights::MAXIMUM_ALLOWED != 0 {
             granted &= !CHANGES;
@@ -128,14 +155,26 @@ fn existing(volume: &mut Volume, target: &Target, file: File, request: &Request)
     if !keeps(ATTR_HIDDEN) || !keeps(ATTR_SYSTEM) {
         return Err(STATUS_ACCESS_DENIED.0 as NtStatus);
     }
-    let information = if request.disposition == FILE_SUPERSEDE { FILE_SUPERSEDED } else { FILE_OVERWRITTEN };
+    let information = if request.disposition == FILE_SUPERSEDE {
+        FILE_SUPERSEDED
+    } else {
+        FILE_OVERWRITTEN
+    };
     Ok((file, information, true, granted))
 }
 
 /// The decision on a missing name: made (a directory when asked, else a file with the attributes
 /// asked for and the archive bit, stamped now) when the disposition creates.
-fn missing(volume: &mut Volume, target: &Target, parent: File, request: &Request) -> Result<File, NtStatus> {
-    if !matches!(request.disposition, FILE_CREATE | FILE_OPEN_IF | FILE_OVERWRITE_IF | FILE_SUPERSEDE) {
+fn missing(
+    volume: &mut Volume,
+    target: &Target,
+    parent: File,
+    request: &Request,
+) -> Result<File, NtStatus> {
+    if !matches!(
+        request.disposition,
+        FILE_CREATE | FILE_OPEN_IF | FILE_OVERWRITE_IF | FILE_SUPERSEDE
+    ) {
         return Err(STATUS_OBJECT_NAME_NOT_FOUND.0 as NtStatus);
     }
     let name = target.name.last();
@@ -187,7 +226,13 @@ fn create(
     let target = target(attributes)?;
     probe(slot.addr(), 4)?;
     probe(io_status, 8)?;
-    let request = Request { access, granted: rights::mapped(access), disposition, options, attributes: file_attributes };
+    let request = Request {
+        access,
+        granted: rights::mapped(access),
+        disposition,
+        options,
+        attributes: file_attributes,
+    };
     // The walk, the decision and a create are one locked section: no other create can take the name
     // between the look and the entry.
     let (file, information, overwrites, granted) = io::with_volume(|volume| {
@@ -197,9 +242,8 @@ fn create(
         }
         match walk(volume, target.start, &target.name)? {
             Found::Existing(file) => existing(volume, &target, file, &request),
-            Found::Missing { parent } => {
-                missing(volume, &target, parent, &request).map(|file| (file, FILE_CREATED, false, request.granted))
-            }
+            Found::Missing { parent } => missing(volume, &target, parent, &request)
+                .map(|file| (file, FILE_CREATED, false, request.granted)),
         }
     })
     .map_err(status)?;
@@ -229,10 +273,10 @@ fn create(
 /// (FILE_OPENED, FILE_CREATED, FILE_OVERWRITTEN, FILE_SUPERSEDED). A name already taken is
 /// STATUS_OBJECT_NAME_COLLISION for FILE_CREATE; a missing one STATUS_OBJECT_NAME_NOT_FOUND for the
 /// opening dispositions (STATUS_OBJECT_PATH_NOT_FOUND when its directory is missing).
-/// FILE_DIRECTORY_FILE asks a directory (STATUS_NOT_A_DIRECTORY for a file), FILE_NON_DIRECTORY_FILE
-/// a file (STATUS_FILE_IS_A_DIRECTORY for a directory); a read-only file refuses write and delete
-/// rights and an overwrite (STATUS_ACCESS_DENIED). The allocation size and the extended attributes
-/// are not consulted.
+/// FILE_DIRECTORY_FILE asks a directory (STATUS_NOT_A_DIRECTORY for a file),
+/// FILE_NON_DIRECTORY_FILE a file (STATUS_FILE_IS_A_DIRECTORY for a directory); a read-only file
+/// refuses write and delete rights and an overwrite (STATUS_ACCESS_DENIED). The allocation size and
+/// the extended attributes are not consulted.
 #[allow(clippy::too_many_arguments)]
 pub fn create_file(
     _call: &mut NtCall,
@@ -248,7 +292,16 @@ pub fn create_file(
     _ea: UserAddr,
     _ea_length: u32,
 ) -> NtResult {
-    create(slot, access, attributes, io_status, file_attributes, share, disposition, options)
+    create(
+        slot,
+        access,
+        attributes,
+        io_status,
+        file_attributes,
+        share,
+        disposition,
+        options,
+    )
 }
 
 /// NtOpenFile: NtCreateFile's FILE_OPEN of an existing file or directory.
@@ -261,5 +314,7 @@ pub fn open_file(
     share: u32,
     options: u32,
 ) -> NtResult {
-    create(slot, access, attributes, io_status, 0, share, FILE_OPEN, options)
+    create(
+        slot, access, attributes, io_status, 0, share, FILE_OPEN, options,
+    )
 }

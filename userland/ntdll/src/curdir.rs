@@ -65,7 +65,14 @@ fn open_directory(name: &[u16]) -> Result<u32, u32> {
         maximum_length: (2 * name.len()) as u16,
         buffer: name.as_ptr() as *mut u16,
     };
-    let attributes: [u32; 6] = [24, 0, &string as *const UnicodeString as u32, OBJ_CASE_INSENSITIVE | OBJ_INHERIT, 0, 0];
+    let attributes: [u32; 6] = [
+        24,
+        0,
+        &string as *const UnicodeString as u32,
+        OBJ_CASE_INSENSITIVE | OBJ_INHERIT,
+        0,
+        0,
+    ];
     let mut io_status = [0u32; 2];
     let mut handle = 0u32;
     let args = [
@@ -134,7 +141,9 @@ fn set_current_directory(path: &[u16]) -> u32 {
     }
     // SAFETY: the DOS path's own room, checked above to hold the path and its terminator.
     unsafe {
-        current.buffer.copy_from_nonoverlapping(full.as_ptr(), length);
+        current
+            .buffer
+            .copy_from_nonoverlapping(full.as_ptr(), length);
         current.buffer.add(length).write(0);
     }
     current.length = (2 * length) as u16;
@@ -151,7 +160,10 @@ fn set_current_directory(path: &[u16]) -> u32 {
 ///
 /// `buffer` holds `buffer_length` bytes.
 #[unsafe(export_name = "f2k_export_RtlGetCurrentDirectory_U")]
-pub unsafe extern "system" fn rtl_get_current_directory_u(buffer_length: u32, buffer: *mut u16) -> u32 {
+pub unsafe extern "system" fn rtl_get_current_directory_u(
+    buffer_length: u32,
+    buffer: *mut u16,
+) -> u32 {
     let lock = sys::peb_lock();
     lock.enter(&sys::Native);
     let current = dos_path();
@@ -266,9 +278,15 @@ pub unsafe extern "system" fn rtl_dos_path_name_to_nt_path_name_u(
     let base = buffer as *mut u16;
     // SAFETY: the caller's structures; the pointers stay inside the block.
     unsafe {
-        *nt = UnicodeString { length: (2 * name.length) as u16, maximum_length: (2 * NT_ROOM) as u16, buffer: base };
+        *nt = UnicodeString {
+            length: (2 * name.length) as u16,
+            maximum_length: (2 * NT_ROOM) as u16,
+            buffer: base,
+        };
         if !file_part.is_null() {
-            *file_part = name.file_part.map_or(core::ptr::null_mut(), |at| base.add(at));
+            *file_part = name
+                .file_part
+                .map_or(core::ptr::null_mut(), |at| base.add(at));
         }
         if !relative.is_null() {
             *relative = match name.relative {
@@ -281,7 +299,11 @@ pub unsafe extern "system" fn rtl_dos_path_name_to_nt_path_name_u(
                     containing_directory: handle,
                 },
                 None => RelativeName {
-                    name: UnicodeString { length: 0, maximum_length: 0, buffer: core::ptr::null_mut() },
+                    name: UnicodeString {
+                        length: 0,
+                        maximum_length: 0,
+                        buffer: core::ptr::null_mut(),
+                    },
                     containing_directory: 0,
                 },
             };

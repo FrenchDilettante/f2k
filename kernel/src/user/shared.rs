@@ -48,7 +48,8 @@ pub const fn tick_count_ms(tick_count_low: u32, multiplier: u32) -> u32 {
 /// the product (a workstation, NtProductWinNt) and the version (5.0), no time zone (a zero bias,
 /// TIME_ZONE_ID_UNKNOWN).
 pub fn constant_fields(out: &mut [u8; 0x1000]) {
-    let mut put = |at: u32, bytes: &[u8]| out[at as usize..at as usize + bytes.len()].copy_from_slice(bytes);
+    let mut put =
+        |at: u32, bytes: &[u8]| out[at as usize..at as usize + bytes.len()].copy_from_slice(bytes);
     put(
         offset::TICK_COUNT_MULTIPLIER,
         &tick_count_multiplier(crate::interrupt::clock::INTERVAL_100NS).to_le_bytes(),
@@ -56,7 +57,10 @@ pub fn constant_fields(out: &mut [u8; 0x1000]) {
     put(offset::IMAGE_NUMBER_LOW, &0x014Cu16.to_le_bytes());
     put(offset::IMAGE_NUMBER_HIGH, &0x014Cu16.to_le_bytes());
     for (index, &byte) in b"C:\\WINNT".iter().enumerate() {
-        put(offset::NT_SYSTEM_ROOT + 2 * index as u32, &u16::from(byte).to_le_bytes());
+        put(
+            offset::NT_SYSTEM_ROOT + 2 * index as u32,
+            &u16::from(byte).to_le_bytes(),
+        );
     }
     put(offset::NT_PRODUCT_TYPE, &1u32.to_le_bytes());
     put(offset::PRODUCT_TYPE_IS_VALID, &[1]);
@@ -103,9 +107,15 @@ fn write_time(at: u32, value: u64) {
 pub fn update(interrupt_time: u64, full_tick: Option<(u64, u64)>) {
     write_time(offset::INTERRUPT_TIME, interrupt_time);
     if let Some((system_time, tick_count)) = full_tick {
-        write_time(offset::SYSTEM_TIME, crate::time::boot_filetime() + system_time);
+        write_time(
+            offset::SYSTEM_TIME,
+            crate::time::boot_filetime() + system_time,
+        );
         // SAFETY: as `write_time`.
-        unsafe { ((KERNEL_ADDRESS + offset::TICK_COUNT_LOW) as *mut u32).write_volatile(tick_count as u32) };
+        unsafe {
+            ((KERNEL_ADDRESS + offset::TICK_COUNT_LOW) as *mut u32)
+                .write_volatile(tick_count as u32)
+        };
     }
 }
 
@@ -150,7 +160,12 @@ mod tests {
     /// clock runs a hair ahead of the round number (a tick is 10.0144 ms), never behind.
     #[test]
     fn tick_counts_floor_to_milliseconds() {
-        let ms = |ticks| tick_count_ms(ticks, tick_count_multiplier(crate::interrupt::clock::INTERVAL_100NS));
+        let ms = |ticks| {
+            tick_count_ms(
+                ticks,
+                tick_count_multiplier(crate::interrupt::clock::INTERVAL_100NS),
+            )
+        };
         assert_eq!(ms(0), 0);
         assert_eq!(ms(1), 10);
         assert_eq!(ms(10), 100);

@@ -10,7 +10,11 @@ use super::fat::FatEntry;
 use super::lookup::File;
 use super::volume::Volume;
 use crate::status::{
-    nt_success, NtStatus, STATUS_BUFFER_TOO_SMALL, STATUS_FILE_CORRUPT_ERROR, STATUS_SUCCESS,
+    nt_success,
+    NtStatus,
+    STATUS_BUFFER_TOO_SMALL,
+    STATUS_FILE_CORRUPT_ERROR,
+    STATUS_SUCCESS,
 };
 
 /// Read `file` (a file, not a directory) into the start of `buffer`, which must hold its size.

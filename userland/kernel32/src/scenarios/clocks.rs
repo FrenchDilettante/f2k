@@ -41,7 +41,10 @@ fn the_system_and_local_times_read_the_shared_page() {
     unsafe { get_local_time(local.as_mut_ptr()) };
     assert_eq!(fields(&local), [2001, 2, 6, 3, 3, 5, 6, 789]);
     let mut local_file_time = 0u64;
-    assert_eq!(unsafe { file_time_to_local_file_time(&FEB_3_2001, &mut local_file_time) }, 1);
+    assert_eq!(
+        unsafe { file_time_to_local_file_time(&FEB_3_2001, &mut local_file_time) },
+        1
+    );
     assert_eq!(local_file_time, FEB_3_2001 - 3600 * 10_000_000);
 }
 
@@ -54,7 +57,10 @@ fn the_time_zone_comes_from_the_system() {
     assert_eq!(unsafe { get_time_zone_information(zone.as_mut_ptr()) }, 0);
     assert_eq!(zone, [0; 172]);
     FAIL_NEXT.with(|next| next.set(0xC000_0005));
-    assert_eq!(unsafe { get_time_zone_information(zone.as_mut_ptr()) }, 0xFFFF_FFFF);
+    assert_eq!(
+        unsafe { get_time_zone_information(zone.as_mut_ptr()) },
+        0xFFFF_FFFF
+    );
     assert_eq!(last_error(), 998);
 }
 
@@ -77,14 +83,26 @@ fn the_performance_counter_comes_from_the_system() {
 #[test]
 fn the_conversions_round_trip_and_refuse_out_of_range_values() {
     let mut system = [0u8; 16];
-    assert_eq!(unsafe { file_time_to_system_time(&FEB_3_2001, system.as_mut_ptr()) }, 1);
+    assert_eq!(
+        unsafe { file_time_to_system_time(&FEB_3_2001, system.as_mut_ptr()) },
+        1
+    );
     assert_eq!(fields(&system), [2001, 2, 6, 3, 4, 5, 6, 789]);
     let mut back = 0u64;
-    assert_eq!(unsafe { system_time_to_file_time(system.as_ptr(), &mut back) }, 1);
+    assert_eq!(
+        unsafe { system_time_to_file_time(system.as_ptr(), &mut back) },
+        1
+    );
     assert_eq!(back, FEB_3_2001);
     system[2] = 13; // month 13
-    assert_eq!(unsafe { system_time_to_file_time(system.as_ptr(), &mut back) }, 0);
+    assert_eq!(
+        unsafe { system_time_to_file_time(system.as_ptr(), &mut back) },
+        0
+    );
     assert_eq!(last_error(), 87);
-    assert_eq!(unsafe { file_time_to_system_time(&(1 << 63), system.as_mut_ptr()) }, 0);
+    assert_eq!(
+        unsafe { file_time_to_system_time(&(1 << 63), system.as_mut_ptr()) },
+        0
+    );
     assert_eq!(last_error(), 87);
 }

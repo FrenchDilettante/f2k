@@ -11,7 +11,10 @@ use super::dirent::{Times, ATTR_DIRECTORY};
 use super::path::{components, is_valid, Component};
 use super::volume::Volume;
 use crate::status::{
-    NtStatus, STATUS_FILE_CORRUPT_ERROR, STATUS_NOT_A_DIRECTORY, STATUS_NO_SUCH_FILE,
+    NtStatus,
+    STATUS_FILE_CORRUPT_ERROR,
+    STATUS_NOT_A_DIRECTORY,
+    STATUS_NO_SUCH_FILE,
     STATUS_OBJECT_NAME_INVALID,
 };
 
@@ -188,9 +191,16 @@ mod tests {
     #[test]
     fn the_real_root_directory() {
         let mut volume = Volume::mount(built_volume_with_root()).unwrap();
-        let shape = |file: Result<File, LookupError>| file.map(|f| (f.first_cluster, f.size, f.directory));
-        assert_eq!(shape(lookup(&mut volume, b"HELLO.EXE")), Ok((3, 28_672, false)));
-        assert_eq!(shape(lookup(&mut volume, b"hello.exe")), Ok((3, 28_672, false)));
+        let shape =
+            |file: Result<File, LookupError>| file.map(|f| (f.first_cluster, f.size, f.directory));
+        assert_eq!(
+            shape(lookup(&mut volume, b"HELLO.EXE")),
+            Ok((3, 28_672, false))
+        );
+        assert_eq!(
+            shape(lookup(&mut volume, b"hello.exe")),
+            Ok((3, 28_672, false))
+        );
         assert_eq!(shape(lookup(&mut volume, b"boot")), Ok((59, 0, true)));
         assert!(matches!(lookup(&mut volume, b"F2K-KE~1"), Ok(file) if file.first_cluster == 61));
         assert_eq!(
@@ -379,7 +389,10 @@ mod tests {
         ] {
             assert_eq!(lookup(&mut volume, bad), Err(LookupError::Invalid));
         }
-        assert_eq!(lookup(&mut volume, b"long-name.txt"), Err(LookupError::NotFound));
+        assert_eq!(
+            lookup(&mut volume, b"long-name.txt"),
+            Err(LookupError::NotFound)
+        );
         assert_eq!(lookup(&mut volume, b"NOPE.TXT"), Err(LookupError::NotFound));
         assert_eq!(
             lookup(&mut volume, b"NOPE\\INNER.TXT"),

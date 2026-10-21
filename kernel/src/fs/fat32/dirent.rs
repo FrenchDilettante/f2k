@@ -106,7 +106,10 @@ pub fn decode(bytes: &[u8]) -> Record {
     // A long-name record's attributes include the label bit, so it is told apart first.
     if attributes == ATTR_LONG_NAME {
         let mut units = [0u16; 13];
-        let offsets = (1..11).step_by(2).chain((14..26).step_by(2)).chain((28..32).step_by(2));
+        let offsets = (1..11)
+            .step_by(2)
+            .chain((14..26).step_by(2))
+            .chain((28..32).step_by(2));
         for (unit, offset) in units.iter_mut().zip(offsets) {
             *unit = u16_at(offset);
         }
@@ -210,8 +213,13 @@ mod tests {
             decode(&record(b"F2K        ", 0x08, 0, 0)),
             Record::VolumeLabel
         );
-        assert!(matches!(decode(&record(b".          ", 0x10, 9, 0)), Record::Dot(e) if e.first_cluster == 9));
-        assert!(matches!(decode(&record(b"..         ", 0x10, 0, 0)), Record::Dot(_)));
+        assert!(
+            matches!(decode(&record(b".          ", 0x10, 9, 0)), Record::Dot(e) if e.first_cluster == 9)
+        );
+        assert!(matches!(
+            decode(&record(b"..         ", 0x10, 0, 0)),
+            Record::Dot(_)
+        ));
         match decode(&record(b"BOOT       ", 0x10, 59, 0)) {
             Record::Entry(entry) => assert!(entry.is_directory()),
             other => panic!("{other:?}"),

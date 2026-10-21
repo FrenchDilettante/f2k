@@ -72,7 +72,14 @@ pub fn bring_up<IoT: Io, C: Completion<IoT>>(
 #[cfg(test)]
 mod tests {
     use super::super::regs::{
-        COMMAND, DEVICE, LBA_HIGH, LBA_LOW, LBA_MID, PRIMARY_BASE, PRIMARY_CONTROL, SECTOR_COUNT,
+        COMMAND,
+        DEVICE,
+        LBA_HIGH,
+        LBA_LOW,
+        LBA_MID,
+        PRIMARY_BASE,
+        PRIMARY_CONTROL,
+        SECTOR_COUNT,
     };
     use super::super::sim::{identify_block, sim_channel, writes, Deliver, SimChannel, DISK};
     use super::*;

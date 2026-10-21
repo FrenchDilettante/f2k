@@ -4,12 +4,12 @@
 //! longer name is ERROR_FILENAME_EXCED_RANGE); ntdll makes the NT path of the DOS one
 //! (RtlDosPathNameToNtPathName_U, which fails for a name it cannot make: ERROR_PATH_NOT_FOUND), a
 //! relative path under the current directory coming back relative to its handle; and a failed
-//! service's status sets the last error through BaseSetLastNTError, but where Windows 2000's kernel32
-//! sets its own.
+//! service's status sets the last error through BaseSetLastNTError, but where Windows 2000's
+//! kernel32 sets its own.
 //!
-//! [`handle`] holds the calls on a file handle (CreateFileA, ReadFile, WriteFile, SetFilePointer and
-//! the rest), [`names`] those on a name (attributes, deletes, renames, directories, the full and
-//! short names), [`copy`] CopyFileA's loop, [`find`] the directory searches and [`volume`] the
+//! [`handle`] holds the calls on a file handle (CreateFileA, ReadFile, WriteFile, SetFilePointer
+//! and the rest), [`names`] those on a name (attributes, deletes, renames, directories, the full
+//! and short names), [`copy`] CopyFileA's loop, [`find`] the directory searches and [`volume`] the
 //! volume's.
 
 pub mod copy;
@@ -129,7 +129,10 @@ impl Wide {
         if units.len() > MAX_PATH {
             return None;
         }
-        let mut wide = Wide { units: [0; MAX_PATH + 1], length: units.len() };
+        let mut wide = Wide {
+            units: [0; MAX_PATH + 1],
+            length: units.len(),
+        };
         wide.units[..units.len()].copy_from_slice(units);
         Some(wide)
     }
@@ -141,7 +144,10 @@ impl Wide {
 ///
 /// `name` points at a NUL-terminated string (a bad pointer faults the caller, as on the platform).
 pub unsafe fn widen(name: *const u8) -> Option<Wide> {
-    let mut wide = Wide { units: [0; MAX_PATH + 1], length: 0 };
+    let mut wide = Wide {
+        units: [0; MAX_PATH + 1],
+        length: 0,
+    };
     loop {
         // SAFETY: the caller's string, read to its terminator.
         let byte = unsafe { name.add(wide.length).read() };
@@ -190,21 +196,42 @@ impl NtPath {
     /// The NT path of a NUL-terminated DOS path (RtlDosPathNameToNtPathName_U); none when ntdll
     /// cannot make it.
     pub fn of(dos: &[u16]) -> Option<NtPath> {
-        let empty = || UnicodeString { length: 0, maximum_length: 0, buffer: core::ptr::null_mut() };
+        let empty = || UnicodeString {
+            length: 0,
+            maximum_length: 0,
+            buffer: core::ptr::null_mut(),
+        };
         let mut full = empty();
         let mut file_part = core::ptr::null_mut();
-        let mut relative = RelativeName { name: empty(), containing_directory: 0 };
+        let mut relative = RelativeName {
+            name: empty(),
+            containing_directory: 0,
+        };
         // SAFETY: ntdll's export, over a terminated string and the structures above.
-        let made = unsafe { nt::RtlDosPathNameToNtPathName_U(dos.as_ptr(), &mut full, &mut file_part, &mut relative) };
+        let made = unsafe {
+            nt::RtlDosPathNameToNtPathName_U(dos.as_ptr(), &mut full, &mut file_part, &mut relative)
+        };
         if made as u8 == 0 {
             return None;
         }
         let (name, root) = if relative.name.length != 0 {
             (relative.name, relative.containing_directory)
         } else {
-            (UnicodeString { length: full.length, maximum_length: full.maximum_length, buffer: full.buffer }, 0)
+            (
+                UnicodeString {
+                    length: full.length,
+                    maximum_length: full.maximum_length,
+                    buffer: full.buffer,
+                },
+                0,
+            )
         };
-        Some(NtPath { full, name, root, file_part })
+        Some(NtPath {
+            full,
+            name,
+            root,
+            file_part,
+        })
     }
 
     /// The OBJECT_ATTRIBUTES naming it, case-insensitively, inheritable when asked.
@@ -249,7 +276,16 @@ pub fn open(path: &NtPath, access: u32, share: u32, options: u32) -> Result<u32,
     let mut handle = 0;
     let mut io_status = IoStatus::default();
     // SAFETY: ntdll's export, over the attributes above.
-    let status = unsafe { nt::NtOpenFile(&mut handle, access, &attributes, &mut io_status, share, options) };
+    let status = unsafe {
+        nt::NtOpenFile(
+            &mut handle,
+            access,
+            &attributes,
+            &mut io_status,
+            share,
+            options,
+        )
+    };
     if rtl::status::nt_success(status) {
         Ok(handle)
     } else {
@@ -261,14 +297,30 @@ pub fn open(path: &NtPath, access: u32, share: u32, options: u32) -> Result<u32,
 pub fn query(handle: u32, class: u32, out: &mut [u8]) -> u32 {
     let mut io_status = IoStatus::default();
     // SAFETY: ntdll's export, into the buffer of its length.
-    unsafe { nt::NtQueryInformationFile(handle, &mut io_status, out.as_mut_ptr(), out.len() as u32, class) }
+    unsafe {
+        nt::NtQueryInformationFile(
+            handle,
+            &mut io_status,
+            out.as_mut_ptr(),
+            out.len() as u32,
+            class,
+        )
+    }
 }
 
 /// Set `class` of an open file from `information` (NtSetInformationFile): the status.
 pub fn set(handle: u32, class: u32, information: &[u8]) -> u32 {
     let mut io_status = IoStatus::default();
     // SAFETY: ntdll's export, from the buffer of its length.
-    unsafe { nt::NtSetInformationFile(handle, &mut io_status, information.as_ptr(), information.len() as u32, class) }
+    unsafe {
+        nt::NtSetInformationFile(
+            handle,
+            &mut io_status,
+            information.as_ptr(),
+            information.len() as u32,
+            class,
+        )
+    }
 }
 
 /// Close a handle the call opened for itself.

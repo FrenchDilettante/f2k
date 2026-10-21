@@ -6,8 +6,21 @@
 
 use super::latch::{Completion, Latch};
 use super::regs::{
-    BUSY, COMMAND, DATA, DEVICE, DEVICE_LBA_MASTER, DRQ, ERR, ERROR, LBA_HIGH, LBA_LOW, LBA_MID,
-    POLL_BOUND, SECTOR_COUNT, SECTOR_SIZE, STATUS,
+    BUSY,
+    COMMAND,
+    DATA,
+    DEVICE,
+    DEVICE_LBA_MASTER,
+    DRQ,
+    ERR,
+    ERROR,
+    LBA_HIGH,
+    LBA_LOW,
+    LBA_MID,
+    POLL_BOUND,
+    SECTOR_COUNT,
+    SECTOR_SIZE,
+    STATUS,
 };
 use super::taskfile::TaskFile;
 use crate::hw::portio::Io;
@@ -181,7 +194,8 @@ impl<IoT: Io> Channel<IoT> {
     /// Fill one sector into the data port, 256 words.
     fn fill(&mut self, sector: &[u8]) {
         for pair in sector.chunks_exact(2) {
-            self.io.out_word(self.base + DATA, u16::from_le_bytes([pair[0], pair[1]]));
+            self.io
+                .out_word(self.base + DATA, u16::from_le_bytes([pair[0], pair[1]]));
         }
     }
 
@@ -233,7 +247,13 @@ mod tests {
     use super::super::read::read;
     use super::super::regs::{ABRT, IDENTIFY_DEVICE, PRIMARY_BASE, READ_SECTORS};
     use super::super::sim::{
-        channel_with_nien, expected, ready, status_reads, Access, Deliver, DISK,
+        channel_with_nien,
+        expected,
+        ready,
+        status_reads,
+        Access,
+        Deliver,
+        DISK,
     };
     use super::super::taskfile::pack_lba28;
     use super::*;
