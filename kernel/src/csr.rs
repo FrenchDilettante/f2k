@@ -13,6 +13,10 @@
 //! unchanged, as the kernel's console always has (the suite reads program output there), then
 //! through the screen buffer's renderer. After each call the rows it changed are copied to the
 //! VGA text screen and the hardware cursor follows the buffer's.
+//!
+//! The keyboard's bytes reach the same console from the keyboard driver's DPC ([`key_byte`]): the
+//! console's producer turns them into key event records, appended to its input buffer for the
+//! input APIs to serve.
 
 use rtl::console::screen::ScreenBuffer;
 use rtl::console::{header, Client, Console, Handles, DATA_WORDS, MESSAGE_BYTES};
@@ -32,11 +36,16 @@ pub const SERVICE: (u32, ServiceFn) = (16, service);
 #[cfg(target_arch = "x86")]
 static mut CONSOLE: Console = Console::new();
 
-/// The console's state, borrowed for one service call or the boot's first look.
+/// The console's state, borrowed for one service call, one keyboard byte, or the boot's first
+/// look.
 ///
 /// # Safety
 ///
 /// A single CPU, interrupts off across the system service: the borrow is the console's only one.
+/// The keyboard's DPC borrows it too, at the dispatch level: DPCs drain only on an interrupt's
+/// exit and in the idle loop, neither of which can run inside the service, and no thread is
+/// switched to while a DPC runs, so no service starts inside one. The DPC queue runs one routine
+/// at a time.
 #[cfg(target_arch = "x86")]
 unsafe fn console() -> &'static mut Console {
     // SAFETY: the caller's.
@@ -76,6 +85,41 @@ fn service(frame: &mut crate::user::TrapFrame, args: &[u32]) {
     );
     present(&mut console.screen, &mut crate::hw::vga::screen());
     call.finish(result);
+}
+
+/// The keyboard DPC's step: one key byte into the console's producer, each record it completes
+/// appended to the input buffer, the lights a toggle changes shown through `lights`. A record the
+/// full buffer cannot take is reported on COM1; the `kbd-smoke` diagnostic boot reports every
+/// record as the buffer holds it.
+#[cfg(target_arch = "x86")]
+pub fn key_byte(byte: u8, lights: &mut impl rtl::console::input::Lights) {
+    use rtl::console::input::Append;
+    // SAFETY: the keyboard's DPC, at the dispatch level (see `console`): SYS_CSR_CALL's service
+    // runs with interrupts masked from its gate to its return, so no DPC drains inside it.
+    let console = unsafe { console() };
+    console.key_byte(byte, lights, &mut |outcome, record| {
+        if outcome == Append::Dropped {
+            crate::serial_println!("F2K: kbd: input buffer full: a key event dropped");
+        }
+        #[cfg(feature = "kbd-smoke")]
+        crate::serial_println!(
+            "F2K: kbd: record {} vk={:#04x} scan={:#04x} char={:#06x} state={:#06x} repeat={}{}",
+            if record.key_down != 0 { "down" } else { "up" },
+            record.virtual_key_code,
+            record.virtual_scan_code,
+            record.char,
+            record.control_key_state,
+            record.repeat_count,
+            match outcome {
+                Append::Stored => "",
+                Append::Coalesced => " (coalesced)",
+                Append::Filtered => " (filtered)",
+                Append::Dropped => " (dropped)",
+            }
+        );
+        #[cfg(not(feature = "kbd-smoke"))]
+        let _ = record;
+    });
 }
 
 /// Copy what the screen buffer changed since the last look to the text screen: the rows it

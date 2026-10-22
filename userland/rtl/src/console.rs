@@ -4,8 +4,9 @@
 //! Windows 2000's kernel32 sends its console work to the client-server runtime (csrss, whose
 //! console server owns the console and its handle tables) over an LPC port. F2K has no csrss:
 //! ntdll's CsrClientCallServer raises one internal system service, and the kernel's stand-in serves
-//! the message with these rules over the console's state ([`Console`]: its input buffer's mode, its
-//! screen buffer, [`screen`], and its title). Console handles stay
+//! the message with these rules over the console's state ([`Console`]: its input buffer — the
+//! records the keyboard's producer appends, [`input`] — and its mode, its screen buffer,
+//! [`screen`], and its title). Console handles stay
 //! outside the kernel's handle table, as on Windows 2000: they are the console server's own, per
 //! process — (index << 2) | 3, the low two bits kernel32's CONSOLE_HANDLE test, the standard
 //! handles a fresh process starts with indexes 0 to 2 (stdin 3, stdout 7, stderr 0xB).
@@ -21,8 +22,11 @@
 //! are the public ABI's ([`Coord`], [`SmallRect`], [`ConsoleScreenBufferInfo`]): the server
 //! answers them as their bytes, in dwords.
 
+pub mod input;
+pub mod layout;
 pub mod screen;
 
+use input::{Append, InputBuffer, KeyEventRecord, Lights, Producer, INPUT_RECORD_BYTES};
 use screen::{Cell, Fill, ScreenBuffer, HEIGHT, OUTPUT_MODE_MASK, WIDTH};
 
 use crate::status::{
@@ -107,6 +111,14 @@ pub mod api {
     pub const SET_TITLE: u32 = number(15);
     /// ConsolepSetMode: [handle, mode] — the mode of the buffer the handle names.
     pub const SET_MODE: u32 = number(16);
+    /// ConsolepGetNumberOfInputEvents: [handle, out count] — the records the input buffer holds.
+    pub const GET_INPUT_COUNT: u32 = number(17);
+    /// ConsolepPeekInput: [handle, buffer, count, out copied] — up to `count` records, oldest
+    /// first, copied to the buffer as INPUT_RECORDs and left in the input buffer.
+    pub const PEEK_INPUT: u32 = number(18);
+    /// ConsolepReadInput: [handle, buffer, count, out copied] — as PEEK_INPUT, the records copied
+    /// removed from the input buffer. It never waits: an empty input buffer copies none.
+    pub const READ_INPUT: u32 = number(19);
 
     /// Each API's data length in dwords.
     pub const fn words(api: u32) -> Option<usize> {
@@ -121,6 +133,8 @@ pub mod api {
             SCROLL_REGION => 8,
             GET_TITLE => 3,
             SET_TITLE | SET_MODE => 2,
+            GET_INPUT_COUNT => 2,
+            PEEK_INPUT | READ_INPUT => 4,
             _ => return None,
         })
     }
@@ -128,6 +142,9 @@ pub mod api {
 
 /// The console's code pages (input and output): the OEM one, 437, as a US Windows 2000 console's.
 pub const CONSOLE_CP: u32 = 437;
+
+/// The keyboard layout the console's producer walks: the one switch for a compiled-in change.
+pub const LAYOUT: &layout::Layout = &layout::US;
 
 /// The modes a fresh console has: processed, line-buffered, echoed input with mouse events
 /// (ENABLE_PROCESSED_INPUT | ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_MOUSE_INPUT); processed
@@ -253,22 +270,28 @@ impl ConsoleScreenBufferInfo {
     }
 }
 
-/// The console: its input buffer's mode, its screen buffer and its title. Each mode is its
-/// buffer's, shared by every handle on that buffer.
+/// The console: its input buffer, the producer that fills it, the input buffer's mode, its screen
+/// buffer and its title. Each mode is its buffer's, shared by every handle on that buffer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Console {
     pub screen: ScreenBuffer,
+    pub input: InputBuffer,
+    /// The keyboard's key-event producer, over [`LAYOUT`].
+    pub producer: Producer,
     input_mode: u32,
     title: [u8; TITLE_BYTES],
     title_length: usize,
 }
 
 impl Console {
-    /// A fresh console: the default modes, a blank screen buffer and an empty title.
+    /// A fresh console: the default modes, a blank screen buffer, an empty input buffer and an
+    /// empty title.
     // TODO: the startup modes and the default title a fresh console reports, captured from one.
     pub const fn new() -> Self {
         Console {
             screen: ScreenBuffer::new(),
+            input: InputBuffer::new(),
+            producer: Producer::new(LAYOUT),
             input_mode: INPUT_MODE,
             title: [0; TITLE_BYTES],
             title_length: 0,
@@ -278,6 +301,28 @@ impl Console {
     /// The input buffer's mode.
     pub fn input_mode(&self) -> u32 {
         self.input_mode
+    }
+
+    /// Take one keyboard byte: each record the producer completes is appended to the input buffer,
+    /// and `appended` hears what became of it with the record as it now stands (a kept record as
+    /// the input buffer holds it, its repeat count included; any other as the producer made it).
+    pub fn key_byte(
+        &mut self,
+        byte: u8,
+        lights: &mut impl Lights,
+        appended: &mut impl FnMut(Append, KeyEventRecord),
+    ) {
+        let Console {
+            input, producer, ..
+        } = self;
+        producer.event(byte, lights, &mut |key| {
+            let outcome = input.append(key);
+            let record = match (outcome, input.last()) {
+                (Append::Stored | Append::Coalesced, Some(last)) => last.key,
+                _ => key,
+            };
+            appended(outcome, record);
+        });
     }
 
     /// The title's bytes.
@@ -472,6 +517,10 @@ fn answer(
         Some(Kind::Output) => Ok(()),
         _ => Err(STATUS_INVALID_HANDLE),
     };
+    let input = || match kind {
+        Some(Kind::Input) => Ok(()),
+        _ => Err(STATUS_INVALID_HANDLE),
+    };
     match api {
         api::WRITE_CONSOLE => {
             output()?;
@@ -517,10 +566,29 @@ fn answer(
         api::GET_CP => data[1] = CONSOLE_CP as usize,
         api::VERIFY_IO_HANDLE => data[1] = usize::from(kind.is_some()),
         api::FLUSH_INPUT_BUFFER => {
-            // Nothing is ever buffered: the input buffer is empty.
-            if kind != Some(Kind::Input) {
-                return Err(STATUS_INVALID_HANDLE);
+            input()?;
+            console.input.flush();
+        }
+        api::GET_INPUT_COUNT => {
+            input()?;
+            data[1] = console.input.count();
+        }
+        api::PEEK_INPUT | api::READ_INPUT => {
+            input()?;
+            // Every record is copied before any is removed: a buffer that refuses one leaves the
+            // input buffer as it was.
+            let copied = data[2].min(console.input.count());
+            for index in 0..copied {
+                let Some(record) = console.input.get(index) else {
+                    break;
+                };
+                let at = data[1].wrapping_add(index * INPUT_RECORD_BYTES);
+                client.write(at, &record.bytes())?;
             }
+            if api == api::READ_INPUT {
+                console.input.remove(copied);
+            }
+            data[3] = copied;
         }
         api::CLOSE_HANDLE => handles.close(handle)?,
         api::DUP_HANDLE => {
@@ -1224,6 +1292,149 @@ mod tests {
         server.poke(0, b"a\nb");
         server.call(api::WRITE_CONSOLE, &[7, BASE, 3, 0]);
         assert_eq!(&server.console.screen.row_text(0)[..3], b"a\nb");
+    }
+
+    impl Server {
+        /// Feed keyboard bytes to the console; what became of each record they completed.
+        fn keys(&mut self, bytes: &[u8]) -> Vec<Append> {
+            let mut outcomes = Vec::new();
+            for &byte in bytes {
+                self.console
+                    .key_byte(byte, &mut (), &mut |outcome, _| outcomes.push(outcome));
+            }
+            outcomes
+        }
+
+        /// The INPUT_RECORDs at BASE + `at`, `count` of them.
+        fn records(&self, at: usize, count: usize) -> Vec<[u8; INPUT_RECORD_BYTES]> {
+            self.client.memory[at..at + count * INPUT_RECORD_BYTES]
+                .chunks_exact(INPUT_RECORD_BYTES)
+                .map(|chunk| chunk.try_into().unwrap())
+                .collect()
+        }
+    }
+
+    /// The keyboard's records reach the input buffer, a held key's repeats folded into one.
+    #[test]
+    fn key_bytes_fill_the_input_buffer() {
+        let mut server = Server::new();
+        assert_eq!(
+            server.keys(&[0x1E, 0x1E, 0x9E, 0xE0, 0x2A]),
+            [Append::Stored, Append::Coalesced, Append::Stored]
+        );
+        let mut reported = Vec::new();
+        server
+            .console
+            .key_byte(0x1E, &mut (), &mut |outcome, record| {
+                reported.push((outcome, record.repeat_count))
+            });
+        server
+            .console
+            .key_byte(0x1E, &mut (), &mut |outcome, record| {
+                reported.push((outcome, record.repeat_count))
+            });
+        assert_eq!(
+            reported,
+            [(Append::Stored, 1), (Append::Coalesced, 2)],
+            "the record as the buffer holds it"
+        );
+        assert_eq!(server.console.input.count(), 3);
+    }
+
+    /// The count, a peek that leaves the records, a read that takes them, and a flush — on the
+    /// input buffer's handles only.
+    #[test]
+    fn the_input_apis_serve_the_input_buffer() {
+        let mut server = Server::new();
+        assert_eq!(
+            server.call(api::GET_INPUT_COUNT, &[3, 0xCC]),
+            (0, [3, 0, 0, 0, 0, 0, 0, 0])
+        );
+        assert_eq!(
+            server.call(api::READ_INPUT, &[3, BASE, 4, 0xCC]).1[3],
+            0,
+            "an empty buffer: none, and success"
+        );
+        // a, b, c: down and up each.
+        server.keys(&[0x1E, 0x9E, 0x30, 0xB0, 0x2E, 0xAE]);
+        assert_eq!(server.call(api::GET_INPUT_COUNT, &[3, 0]).1[1], 6);
+        let (status, data) = server.call(api::PEEK_INPUT, &[3, BASE, 2, 0]);
+        assert_eq!((status, data[3]), (0, 2));
+        let first = server.console.input.get(0).unwrap().bytes();
+        assert_eq!(server.records(0, 2)[0], first);
+        assert_eq!(
+            &first[..16],
+            &[1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0x41, 0, 0x1E, 0, b'a', 0]
+        );
+        assert_eq!(
+            server.call(api::GET_INPUT_COUNT, &[3, 0]).1[1],
+            6,
+            "a peek takes none"
+        );
+        let (status, data) = server.call(api::READ_INPUT, &[3, BASE + 0x100, 3, 0]);
+        assert_eq!((status, data[3]), (0, 3));
+        assert_eq!(server.records(0x100, 1)[0], first);
+        assert_eq!(server.call(api::GET_INPUT_COUNT, &[3, 0]).1[1], 3);
+        assert_eq!(
+            server.console.input.get(0).unwrap().key.virtual_key_code,
+            u16::from(b'B'),
+            "b's keyup is next"
+        );
+        assert_eq!(
+            server.call(api::READ_INPUT, &[3, BASE, 10, 0]).1[3],
+            3,
+            "what is there"
+        );
+        assert_eq!(server.call(api::GET_INPUT_COUNT, &[3, 0]).1[1], 0);
+        server.keys(&[0x1E, 0x9E]);
+        assert_eq!(server.status(api::FLUSH_INPUT_BUFFER, &[3]), 0);
+        assert_eq!(
+            server.call(api::GET_INPUT_COUNT, &[3, 0]).1[1],
+            0,
+            "flushed"
+        );
+        for api in [
+            api::GET_INPUT_COUNT,
+            api::PEEK_INPUT,
+            api::READ_INPUT,
+            api::FLUSH_INPUT_BUFFER,
+        ] {
+            for handle in [7, 0xB, 0xF] {
+                assert_eq!(
+                    server.status(api, &[handle, BASE, 1, 0]),
+                    STATUS_INVALID_HANDLE,
+                    "{api:#x} {handle:#x}"
+                );
+            }
+        }
+    }
+
+    /// A buffer the client cannot name or write fails the call and leaves every record waiting.
+    #[test]
+    fn a_refused_buffer_takes_nothing() {
+        let mut server = Server::new();
+        server.keys(&[0x1E, 0x9E]);
+        assert_eq!(
+            server.status(api::READ_INPUT, &[3, 0x8000_0000, 2, 0]),
+            0xC000_0005
+        );
+        assert_eq!(
+            server.status(api::READ_INPUT, &[3, 0x1000, 2, 0]),
+            0xC000_00E8
+        );
+        assert_eq!(
+            server.status(
+                api::READ_INPUT,
+                &[3, BASE + MEMORY - INPUT_RECORD_BYTES, 2, 0]
+            ),
+            0xC000_0005,
+            "the second record falls outside"
+        );
+        assert_eq!(server.console.input.count(), 2);
+        assert_eq!(
+            server.call(api::READ_INPUT, &[3, 0x8000_0000, 0, 0]).1[3],
+            0
+        );
     }
 
     /// A handle's duplicate shares its buffer's mode.

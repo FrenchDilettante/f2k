@@ -68,6 +68,15 @@ irq-smoke = []
 # lines. Disk path only (the image is the IDE primary master); the
 # tests/kernel case pins the COM1 shapes.
 disk-smoke = []
+# The keyboard diagnostic boot: the keyboard driver's DPC reports on COM1
+# each byte it takes from the controller (the keyboard's replies to the
+# driver's own commands marked) and each record the console's producer
+# appends to the input buffer, as the buffer holds it (down or up, the
+# virtual key, the scan code, the character, the control-key state, the
+# repeat count). The driver itself is default-on kernel machinery; the
+# feature gates only the diagnostic lines. tests/test_input.py drives keys
+# through QEMU's monitor and pins them.
+kbd-smoke = []
 # The opt-in performance trace: the interval clock's interrupt samples the
 # interrupted context and its frame-pointer call stack into a static ring
 # buffer, and the boot's end dumps it on COM1 before the line the harness

@@ -244,6 +244,10 @@ pub extern "C" fn kmain(magic: u32, multiboot_info: u32) -> ! {
     // the interrupt core (its reads complete through IRQ 14); the first user process comes after.
     crate::hw::ide::disk::init();
 
+    // The PS/2 keyboard: reset it, connect IRQ 1, and feed its bytes to the console's input
+    // buffer. Its bring-up waits read the tick, so it comes after the interrupt core too.
+    crate::hw::kbd::init();
+
     // The block devices: the disk, if there is one, and a view per primary partition on it.
     if let Some(disk) = crate::hw::ide::disk::block_device() {
         crate::block::registry::scan_disk(disk);
