@@ -29,7 +29,8 @@ lto = true               # Link-time optimization
 # exposes undefined behaviour the dev build tolerates (its intrusive lists are rewritten through raw
 # pointers while `&mut` borrows of their owners are live, which `noalias` lets LLVM cache across,
 # hanging the timer table's expiry walk). Everything under it is optimized: core, alloc,
-# compiler_builtins (memcpy, memset) and rtl. The debug checks stay on throughout.
+# compiler_builtins and rtl. memcpy, memset and memmove are the kernel's own string-instruction
+# routines (kernel/src/c_lib.rs) under every profile. The debug checks stay on throughout.
 [profile.dev-opt]
 inherits = "dev"
 debug-assertions = true
