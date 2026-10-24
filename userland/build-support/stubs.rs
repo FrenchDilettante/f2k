@@ -8,7 +8,8 @@
 //   and its `Zw` name.
 // - `_f2k_export_<Export>`: a hand-written export in the crate's assembly sources (a `.globl` line
 //   names it) or its Rust sources (an `export_name = "f2k_export_<Export>"` stdcall function); they
-//   must be exactly the spec's natives.
+//   must be exactly the spec's natives. A stubbed export's body is generated (`exports.rs`, which
+//   the crate includes: exportgen's `dll_rust`) under the same symbol.
 // An export the spec forwards (`impl = { forward = "NTDLL.X" }`) becomes a forwarder.
 
 use std::path::{Path, PathBuf};
@@ -53,8 +54,9 @@ fn rust_sources(dir: &Path) -> Vec<PathBuf> {
 }
 
 /// Generate `dll`'s build inputs into OUT_DIR and link it: `consts.s` (the kernel ABI constants as
-/// `.set`s), `stubs.s` (its system services' stubs), and the .def (the hand-written exports of
-/// `asm_sources` and the Rust sources, those stubs, and its forwarders).
+/// `.set`s), `stubs.s` (its system services' stubs), `exports.rs` (its exports' descriptions and
+/// its stubbed exports' bodies), and the .def (the hand-written exports of `asm_sources` and the
+/// Rust sources, the stubbed exports, the system services' stubs, and its forwarders).
 fn build_dll(dll: &str, base: u32, asm_sources: &[&str]) {
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
@@ -83,6 +85,8 @@ fn build_dll(dll: &str, base: u32, asm_sources: &[&str]) {
     let constants = exportgen::abi::kernel_constants(&repo).unwrap_or_else(|e| panic!("{e}"));
     std::fs::write(out.join("consts.s"), exportgen::abi::consts_s(&constants)).unwrap();
     std::fs::write(out.join("stubs.s"), exportgen::emit::dll_stubs(&specs, dll)).unwrap();
+    let source = format!("userland/{dll}/exports.toml");
+    std::fs::write(out.join("exports.rs"), exportgen::emit::dll_rust(&specs, dll, &source)).unwrap();
 
     let mut hand = Vec::new();
     for source in asm_sources {

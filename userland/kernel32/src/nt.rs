@@ -477,6 +477,14 @@ unsafe extern "system" {
     ) -> u32;
 }
 
+// ntdll's cdecl imports.
+#[cfg(all(target_arch = "x86", not(test)))]
+#[link(name = "ntdll", kind = "raw-dylib", import_name_type = "undecorated")]
+unsafe extern "C" {
+    /// DbgPrint: the text the format makes, to the debugger (F2K: COM1, as `F2K: debug:` lines).
+    pub fn DbgPrint(format: *const u8, ...) -> u32;
+}
+
 #[cfg(test)]
 pub use files::*;
 #[cfg(test)]
@@ -522,6 +530,30 @@ pub mod host {
 
     pub unsafe extern "system" fn RtlNtStatusToDosError(status: u32) -> u32 {
         rtl::status::dos_error(status)
+    }
+
+    std::thread_local! {
+        /// The text each DbgPrint printed, in order.
+        pub static DEBUG_PRINTS: RefCell<std::vec::Vec<std::string::String>> = const { RefCell::new(std::vec::Vec::new()) };
+    }
+
+    /// DbgPrint, as kernel32 calls it: `"%s"` and the text (the stand-in serves that format
+    /// alone), kept.
+    pub unsafe extern "C" fn DbgPrint(format: *const u8, text: *const u8) -> u32 {
+        // SAFETY: the caller's NUL-terminated format and text.
+        let (format, text) = unsafe {
+            (
+                core::ffi::CStr::from_ptr(format.cast()).to_bytes(),
+                core::ffi::CStr::from_ptr(text.cast()),
+            )
+        };
+        assert_eq!(format, b"%s", "the stand-in serves \"%s\" alone");
+        DEBUG_PRINTS.with(|prints| {
+            prints
+                .borrow_mut()
+                .push(text.to_string_lossy().into_owned())
+        });
+        0
     }
 
     std::thread_local! {

@@ -9,6 +9,8 @@ scenario's `/// Pins:` doc lines (userland/kernel32/src/scenarios). An export's 
 its pinning tests' last results:
 
   unimplemented  its spec gives it no implementation                                    grey
+  stubbed        its spec stubs it (impl.stub: it loads, and fails, logged), whatever   grey, a teal
+                 its tests: not implemented yet, but in the works                       tint
   passing        implemented; a pinning test passed and none failed                     green
   failing        implemented; a pinning test failed                                     red
   uncovered      implemented; no pinning test passed: none pins it, or every one that   yellow
@@ -25,7 +27,9 @@ writes). A report over a partial run says so.
 Options:
   --check   check the pins against the repository: every pin names an export of a spec, every
             fixture's pinned section has a captured block, every scenario pins something, every
-            ignore and pending reason leads with a gap id
+            ignore and pending reason leads with a gap id; and the layering: every import of a DLL
+            F2K builds is one Windows 2000's DLL makes too, from the same module (its import table,
+            userland/<dll>/imports-<version>.txt, dumped by scripts/dump_exports.py)
   --run     run every host scenario, ignored ones included, and keep the results: fails if an
             enabled one fails or an ignored one passes (its gap is fixed: remove the marker)
   --report  write the HTML report (target/compat/report.html)
@@ -52,8 +56,11 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 TESTS = REPO_ROOT / "tests"
 sys.path.insert(0, str(TESTS))
 import f2kboot  # noqa: E402  (the corpus's declarations and captures, read as the suite reads them)
+import dump_exports  # noqa: E402  (the PE reader: the built DLLs' import tables)
 
 SPECS = sorted((REPO_ROOT / "userland").glob("*/exports.toml"))
+# The DLLs F2K builds (`make userland`), whose import tables --check holds against the real DLLs'.
+BUILT_DLLS = REPO_ROOT / "target" / "userland" / "i686-f2k-pe" / "release"
 RESULTS = REPO_ROOT / "target" / "test-results"
 PYTEST_RESULTS = RESULTS / "pytest.json"
 SCENARIO_RESULTS = RESULTS / "scenarios.json"
@@ -72,7 +79,7 @@ SCENARIO = re.compile(r"((?:[ \t]*///.*\n)*)#\[test\]\n((?:#\[[^\]]*\]\n)*)(?:pu
 # A gap id: a finding's id (FS-1, K32-4), a recorded gap (GAP-OB-3), or the increment that
 # closes a gap (B2, A4b).
 GAP_ID = re.compile(r"^((?:GAP-)?[A-Z0-9]+-\d+[a-z]?|[A-C]\d+[ab]?):")
-STATUSES = ("passing", "failing", "uncovered", "unimplemented")
+STATUSES = ("passing", "failing", "uncovered", "stubbed", "unimplemented")
 
 
 @dataclass
@@ -90,7 +97,13 @@ class Export:
         return f"{self.dll}.{self.name}"
 
     @property
+    def stubbed(self) -> bool:
+        return "stub" in self.spec.get("impl", {})
+
+    @property
     def status(self) -> str:
+        if self.stubbed:
+            return "stubbed"
         if not self.implemented:
             return "unimplemented"
         outcomes = [outcome for _, outcome in self.evidence]
@@ -120,7 +133,8 @@ def load_specs():
         for spec in doc.get("export", []):
             if spec.get("internal"):
                 continue
-            exports[spec["name"]] = Export(dll, spec["name"], spec.get("group"), "impl" in spec, spec)
+            implemented = "impl" in spec and "stub" not in spec["impl"]
+            exports[spec["name"]] = Export(dll, spec["name"], spec.get("group"), implemented, spec)
             # A system service's Zw alias: the same export under its second name (gather() gives it
             # the service's tests).
             if "zw_ordinal" in spec:
@@ -193,7 +207,7 @@ def check(specs, fixtures, scenarios):
                 problems.append(f"{where}: pending {section!r}: the reason leads with the gap id, not {reason!r}")
     for dll, (_, exports) in specs.items():
         for export in exports.values():
-            if export.implemented and "ordinal" not in export.spec:
+            if "impl" in export.spec and "ordinal" not in export.spec:
                 problems.append(f"{export.pin}: implemented with no ordinal: every export is one of "
                                 f"Windows 2000's (scripts/catalogue_exports.py), or internal")
     for scenario in scenarios.values():
@@ -206,6 +220,51 @@ def check(specs, fixtures, scenarios):
         if scenario.ignored is not None and not gap_of(scenario.ignored):
             problems.append(f"{where}: an ignore reason leads with the gap id (\"K32-4: ...\"), "
                             f"not {scenario.ignored!r}")
+    return problems
+
+
+def real_imports(dll):
+    """Windows 2000's DLL's import table, from its dump: {module (lower case, no .dll): {import}};
+    None without a dump."""
+    dumps = sorted((REPO_ROOT / "userland" / dll).glob("imports-*.txt"))
+    if not dumps:
+        return None
+    modules, module = {}, None
+    for line in dumps[-1].read_text().splitlines():
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("["):
+            module = modules.setdefault(module_key(line[1:].split("]")[0]), set())
+        else:
+            module.add(line)
+    return modules
+
+
+def module_key(name):
+    """A module's name as the loader compares it: without regard to case, `.dll` implied."""
+    return name.lower().removesuffix(".dll")
+
+
+def layering(specs):
+    """Every import of a DLL F2K builds, against Windows 2000's DLL's import table: an import the
+    real DLL does not make (from that module) is code in the wrong place. The problems found."""
+    problems = []
+    for dll in specs:
+        built = BUILT_DLLS / f"{dll}.dll"
+        real = real_imports(dll)
+        if not built.is_file() or real is None:
+            if built.is_file():
+                problems.append(f"{dll}.dll: no import table to hold it against (scripts/dump_exports.py)")
+            continue
+        for module, delayed, names in dump_exports.imports(dump_exports.Image(built.read_bytes())):
+            theirs = real.get(module_key(module))
+            if theirs is None:
+                problems.append(f"{dll}.dll imports from {module}, which Windows 2000's {dll}.dll never does")
+                continue
+            for name in names:
+                if name not in theirs:
+                    problems.append(f"{dll}.dll imports {module}!{name}, which Windows 2000's {dll}.dll "
+                                    f"does not: the call belongs elsewhere")
     return problems
 
 
@@ -365,6 +424,7 @@ LABELS = {
     "passing": "Implemented, tested",
     "failing": "Implemented, a test fails",
     "uncovered": "Implemented, no passing test",
+    "stubbed": "Stubbed (in the works)",
     "unimplemented": "Not implemented",
 }
 OUTCOME_WORDS = {"passed": "passed", "failed": "FAILED", "xfailed": "pending", "skipped": "skipped",
@@ -374,13 +434,14 @@ STYLE = """
 :root {
   --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514c; --ink-3: #7a7970; --rule: #e1e0d9;
   --passing: #0ca30c; --failing: #d03b3b; --uncovered: #fab219; --unimplemented: #d9d8d0;
+  --stubbed: #cfe3df;
   --mark-on-failing: #ffffff; --mark-on-uncovered: #0b0b0b; --tip: #ffffff;
   --ring: rgba(11,11,11,0.10);
 }
 @media (prefers-color-scheme: dark) {
   :root {
     --surface: #1a1a19; --ink: #f2f2ef; --ink-2: #b9b8b0; --ink-3: #8c8b83; --rule: #2c2c2a;
-    --unimplemented: #3a3a37; --tip: #242422; --ring: rgba(255,255,255,0.10);
+    --unimplemented: #3a3a37; --stubbed: #33504b; --tip: #242422; --ring: rgba(255,255,255,0.10);
   }
 }
 * { box-sizing: border-box; }
@@ -406,13 +467,14 @@ section.dll { margin: 0 0 36px; }
 .bar span { border-radius: 2px; min-width: 2px; }
 .grid { display: flex; flex-wrap: wrap; gap: 2px; }
 .sq { width: 14px; height: 14px; border-radius: 3px; display: inline-flex; align-items: center;
-  justify-content: center; font: 700 10px/1 system-ui, sans-serif; cursor: default;
+  justify-content: center; font: 700 10px/1 system-ui, sans-serif; cursor: pointer;
   box-shadow: inset 0 0 0 1px var(--ring); }
 .sq:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
 .passing { background: var(--passing); }
 .failing { background: var(--failing); color: var(--mark-on-failing); }
 .uncovered { background: var(--uncovered); color: var(--mark-on-uncovered); }
 .unimplemented { background: var(--unimplemented); }
+.stubbed { background: var(--stubbed); }
 .sq.dim { opacity: 0.15; }
 .sq.hidden { display: none; }
 details { margin-top: 12px; color: var(--ink-2); }
@@ -429,9 +491,9 @@ details td, details th { text-align: left; padding: 3px 12px 3px 0; border-botto
 
 SCRIPT = """
 const tip = document.getElementById('tip');
+const esc = s => String(s).replace(/[&<>]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;'}[c]));
 function show(sq, x, y) {
   const d = JSON.parse(sq.dataset.info);
-  const esc = s => String(s).replace(/[&<>]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;'}[c]));
   let h = '<b>' + esc(d.pin) + '</b><span class="st">' + esc(d.label) + '</span>';
   const facts = [d.ordinal && 'ordinal ' + d.ordinal, d.data && 'data', d.group && 'group: ' + d.group,
                  d.impl && 'impl: ' + d.impl, d.version && 'since NT ' + d.version].filter(Boolean);
@@ -448,7 +510,32 @@ function show(sq, x, y) {
   tip.style.left = Math.min(x + 14, innerWidth - r.width - 8) + 'px';
   tip.style.top = (y + 14 + r.height > innerHeight ? y - r.height - 10 : y + 14) + 'px';
 }
-document.querySelectorAll('.sq').forEach(sq => {
+// A square's export name to the clipboard (a file: page may lack the async clipboard: the
+// selection's copy then), confirmed in its tooltip.
+function copy(sq) {
+  const name = JSON.parse(sq.dataset.info).name;
+  const done = () => { tip.innerHTML = '<b>' + esc(name) + '</b><span class="st">copied</span>'; };
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(name).then(done, () => fallback(name) && done());
+  } else if (fallback(name)) {
+    done();
+  }
+}
+function fallback(text) {
+  const area = document.createElement('textarea');
+  area.value = text;
+  area.style.position = 'fixed';
+  area.style.opacity = '0';
+  document.body.appendChild(area);
+  area.select();
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch (e) {}
+  area.remove();
+  return ok;
+}
+document.querySelectorAll('.grid .sq').forEach(sq => {
+  sq.addEventListener('click', () => copy(sq));
+  sq.addEventListener('keydown', e => { if (e.key === 'Enter') copy(sq); });
   sq.addEventListener('mousemove', e => show(sq, e.clientX, e.clientY));
   sq.addEventListener('mouseleave', () => tip.style.display = 'none');
   sq.addEventListener('focus', () => { const r = sq.getBoundingClientRect(); show(sq, r.right, r.bottom); });
@@ -458,7 +545,7 @@ const search = document.getElementById('search');
 const shown = () => new Set([...document.querySelectorAll('.legend input:checked')].map(i => i.value));
 function filter() {
   const q = search.value.trim().toLowerCase(), on = shown();
-  document.querySelectorAll('.sq').forEach(sq => {
+  document.querySelectorAll('.grid .sq').forEach(sq => {
     sq.classList.toggle('hidden', !on.has(sq.dataset.status));
     sq.classList.toggle('dim', q !== '' && !sq.dataset.name.includes(q));
   });
@@ -496,7 +583,7 @@ def render(specs, missing, pytest_run, scenario_run):
         f"<title>F2K DLL compatibility</title><style>{STYLE}</style></head><body><main>",
         "<h1>F2K DLL compatibility</h1>",
         f"<p class=meta>Results: {'; '.join(r for r in runs if r) or 'none'}. "
-        "Hover a square for its tests.</p>",
+        "Hover a square for its tests; click it to copy its name.</p>",
         *(f"<p class=banner>{note}</p>" for note in notes),
         '<div class=controls><input type=search id=search placeholder="Find an export" '
         'aria-label="Find an export"><span class=legend>',
@@ -518,7 +605,8 @@ def render(specs, missing, pytest_run, scenario_run):
         for export in ordered:
             impl = export.spec.get("impl", {})
             info = {
-                "pin": export.pin, "label": LABELS[export.status], "group": export.group,
+                "pin": export.pin, "name": export.name, "label": LABELS[export.status],
+                "group": export.group,
                 "impl": next((f"{k} {v}" for k, v in impl.items()), None),
                 "ordinal": export.spec.get("ordinal"), "data": export.spec.get("data"),
                 "version": export.spec.get("version"), "note": export.spec.get("note"),
@@ -571,11 +659,12 @@ def main():
     fixtures = corpus_fixtures()
     scenarios = scan_scenarios()
     if args.check:
-        problems = check(specs, fixtures, scenarios)
+        problems = check(specs, fixtures, scenarios) + layering(specs)
         if problems:
             print("Compatibility check failed:", *problems, sep="\n  ", file=sys.stderr)
             sys.exit(1)
-        print("Compatibility check: ok (every pin names an export, every pinned block is captured)\n")
+        print("Compatibility check: ok (every pin names an export, every pinned block is captured,"
+              " every built DLL imports only what Windows 2000's does)\n")
     failures = run_scenarios(scenarios) if args.run else []
     pytest_run, scenario_run = read_results(PYTEST_RESULTS), read_results(SCENARIO_RESULTS)
     missing = gather(specs, fixtures, scenarios, pytest_run, scenario_run)

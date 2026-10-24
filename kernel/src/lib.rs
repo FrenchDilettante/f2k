@@ -41,6 +41,9 @@ mod nt;
 // ntdll's CsrClientCallServer
 mod csr;
 
+// The debugger's print channel: ntdll's DbgPrint, written to COM1
+mod dbgprint;
+
 // The process object and the suite runner: per-process directory, gate stack, user heap
 mod process;
 

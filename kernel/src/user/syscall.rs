@@ -7,6 +7,7 @@
 //!   numbers (ntdll's `Nt*` stubs; `nt`), the NTSTATUS in EAX; a number in that range F2K does not
 //!   serve is STATUS_NOT_IMPLEMENTED;
 //! - [`SYS_CSR_CALL`]: the F2K-internal client-server call, ntdll's CsrClientCallServer (`csr`).
+//! - [`SYS_DEBUG_PRINT`]: the F2K-internal debugger print, ntdll's DbgPrint (`dbgprint`).
 //!
 //! Anything else is STATUS_INVALID_SYSTEM_SERVICE. Windows 2000 masks the number (its table index
 //! in bits 12-13, the service in the low 12 bits); F2K compares it whole. The gate is a 32-bit
@@ -36,6 +37,11 @@ pub const USER_PROBE_LIMIT: u32 = crate::mem::paging::KERNEL_BASE;
 /// API number and the API data's length — which the kernel's console server answers
 /// ([`crate::csr`]), the message's ReturnValue in EAX.
 pub const SYS_CSR_CALL: u32 = 0x8000_0010;
+
+/// The internal debugger print (ntdll's DbgPrint, F2K's stand-in for Windows 2000's `int 2Dh` print
+/// service): EDX points at its two arguments — the text and its length in bytes — which the kernel
+/// writes to COM1 ([`crate::dbgprint`]), STATUS_SUCCESS in EAX.
+pub const SYS_DEBUG_PRINT: u32 = 0x8000_0011;
 
 /// Documented NTSTATUS values (public ABI constants).
 pub const STATUS_ACCESS_VIOLATION: u32 = 0xC000_0005;
@@ -270,11 +276,13 @@ extern "C" fn syscall_dispatch(frame: &mut TrapFrame) {
     // would mean the frame has no ring-3 tail and the machine is already off the rails.
     assert_eq!(frame.cs & 3, 3, "syscall gate raised from ring 0");
 
-    // A Windows 2000 system service, or the client-server call.
+    // A Windows 2000 system service, the client-server call, or the debugger print.
     let found = if frame.eax < crate::nt::NT_SERVICE_LIMIT {
         crate::nt::lookup(frame.eax).ok_or(STATUS_NOT_IMPLEMENTED)
     } else if frame.eax == SYS_CSR_CALL {
         Ok(crate::csr::SERVICE)
+    } else if frame.eax == SYS_DEBUG_PRINT {
+        Ok(crate::dbgprint::SERVICE)
     } else {
         Err(STATUS_INVALID_SYSTEM_SERVICE)
     };
@@ -459,10 +467,15 @@ mod tests {
         assert!(SYSCALL_VECTOR > 31);
     }
 
-    /// The ranges do not meet: Windows 2000's services, F2K's internal client-server call.
+    /// The ranges do not meet: Windows 2000's services, F2K's internal client-server call and
+    /// debugger print.
     #[test]
     fn the_service_ranges_do_not_meet() {
-        assert!(crate::nt::NT_SERVICE_LIMIT < SYS_CSR_CALL & 0xFFFF_0000);
+        for internal in [SYS_CSR_CALL, SYS_DEBUG_PRINT] {
+            assert!(crate::nt::NT_SERVICE_LIMIT < internal & 0xFFFF_0000);
+        }
+        assert_ne!(SYS_CSR_CALL, SYS_DEBUG_PRINT);
         assert!((crate::csr::SERVICE.0 as usize) <= MAX_ARG_BYTES);
+        assert!((crate::dbgprint::SERVICE.0 as usize) <= MAX_ARG_BYTES);
     }
 }

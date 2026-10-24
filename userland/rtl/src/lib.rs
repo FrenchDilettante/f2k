@@ -10,7 +10,9 @@
 //! loader's module lists and export lookups ([`modules`]: ntdll's LdrGetDllHandle family), the
 //! console server's message format and rules ([`console`]: kernel32's side and the kernel's
 //! stand-in for csrss share them), and structured exception handling's walks ([`seh`]: ntdll's
-//! RtlDispatchException and RtlUnwind, with the CONTEXT and record layouts the kernel writes).
+//! RtlDispatchException and RtlUnwind, with the CONTEXT and record layouts the kernel writes), the
+//! stubs' log line ([`stub`]: the system DLLs' exports not written yet, and the paths their code
+//! does not handle) and DbgPrint's formatting ([`printf`]).
 //!
 //! On the DLLs' target (i686 Windows) only: what the compiler expects of an MSVC environment
 //! without its CRT (the 64-bit division helpers LLVM calls on i686-*-windows-msvc, `_aulldiv`,
@@ -30,9 +32,11 @@ pub mod ldr;
 pub mod localmem;
 pub mod modules;
 pub mod path;
+pub mod printf;
 pub mod seh;
 pub mod status;
 mod status_table;
+pub mod stub;
 #[cfg(all(target_arch = "x86", target_os = "windows", not(test)))]
 pub mod sys;
 pub mod time;

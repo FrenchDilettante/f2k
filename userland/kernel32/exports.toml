@@ -23,6 +23,7 @@
 #                  ptr          a pointer into caller memory                         UserAddr
 #                  ptr<T>       a pointer to one T (u8, u16, u32, i32, u64)          UserPtr<T>
 #                  u64          a quadword by value (two dwords, low first)          u64
+#                  ...          a cdecl export's variable arguments (last, unnamed: "...")
 #                  strA, strW   a NUL-terminated string the call reads (not a system service's);
 #                               strA? allows NULL, strA[260] gives the platform's limit on its
 #                               length in units, the NUL included
@@ -35,6 +36,15 @@
 #                                             on Windows 2000's number (see userland/ntdll/exports.toml)
 #                  { forward = "MODULE.Export" }  forwarded to another module's export (the same
 #                                             prototype)
+#                  { stub = "<reason>" }      not written yet: a generated body logs the call (every
+#                                             argument, by its kind) and the reason through
+#                                             ntdll's DbgPrint, then fails as the export fails
+#                                             (its `fails`, the last error
+#                                             ERROR_CALL_NOT_IMPLEMENTED; `never`: it raises
+#                                             STATUS_NOT_IMPLEMENTED). The reason leads with the
+#                                             milestone or gap that writes it ("M2: child
+#                                             processes"). A native's code takes the same path on
+#                                             what it does not handle: crate::stub::stubbed
 #                no export enters the kernel but ntdll's system services: kernel32 is user code
 #   ordinal      the export ordinal, from Windows 2000's own table (an F2K-internal export has
 #                none: it takes a free one)
@@ -42,7 +52,7 @@
 #   fails        optional: its failure return value: an integer (0, -1, 0x...), FALSE, NULL,
 #                INVALID_HANDLE_VALUE, WAIT_FAILED, INVALID_FILE_SIZE, INVALID_SET_FILE_POINTER,
 #                INVALID_FILE_ATTRIBUTES, TLS_OUT_OF_INDEXES, or void / never (it returns nothing /
-#                cannot fail)
+#                cannot fail); a stub's is required
 #   note         optional: a fact worth keeping beside the export
 #   internal     optional: true for an F2K-internal entry point, not a Windows 2000 export
 #
@@ -98,6 +108,10 @@ title = "file handles"
 [[group]]
 key = "virtual-memory"
 title = "virtual memory"
+
+[[group]]
+key = "processes"
+title = "processes"
 
 # --- termination ----------------------------------------------------------------------------------
 
@@ -1723,6 +1737,16 @@ args = ["ptr lpsz", "u32 ucchMax"]
 impl = { native = "IsBadStringPtrW" }
 ordinal = 471
 
+# --- processes ------------------------------------------------------------------------------------
+
+[[export]]
+name = "CreateProcessW"
+group = "processes"
+args = ["strW? lpApplicationName", "strW? lpCommandLine", "ptr lpProcessAttributes", "ptr lpThreadAttributes", "bool bInheritHandles", "u32 dwCreationFlags", "ptr lpEnvironment", "strW? lpCurrentDirectory", "ptr lpStartupInfo", "ptr lpProcessInformation"]
+impl = { stub = "M2: child processes" }
+ordinal = 77
+fails = "FALSE"
+
 # --- not implemented yet: the rest of KERNEL32.dll 5.0.2195.6688's export table, by ordinal ------
 
 [[export]]
@@ -1970,10 +1994,6 @@ ordinal = 75
 [[export]]
 name = "CreateProcessInternalWSecure"
 ordinal = 76
-
-[[export]]
-name = "CreateProcessW"
-ordinal = 77
 
 [[export]]
 name = "CreateRemoteThread"

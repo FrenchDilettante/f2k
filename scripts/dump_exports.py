@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Dump a real DLL's export table: the facts its userland/<dll>/exports.toml is catalogued from.
+Dump a real DLL's export and import tables: the facts its userland/<dll>/exports.toml is catalogued
+from, and the modules it calls into.
 
 Each DLL given (copied off a real machine: the binaries themselves never enter the repository)
 writes userland/<dll>/exports-<file version>.txt, one line per export, in ordinal order:
@@ -10,14 +11,23 @@ writes userland/<dll>/exports-<file version>.txt, one line per export, in ordina
   <ordinal> <name> -> <target>     forwarded to another module's export (MODULE.Export)
   <ordinal> -                      exported by ordinal only
 
-after a provenance header: the file version (its version resource), the image's link timestamp and
-the file's SHA-256. The dumps are a step on the way, not a record: once folded into the spec, they
-go.
+and userland/<dll>/imports-<file version>.txt, its import table: each module it imports from, in
+the table's order and spelled as the image spells it, then that module's imports, one per line:
+
+  [<module>]                       a module the loader binds at load time
+  [<module>] delay                 a delay-loaded module (bound on its first call)
+  <name>                           an import by name
+  #<ordinal>                       an import by ordinal
+
+Each file starts with a provenance header: the file version (its version resource), the image's
+link timestamp and the file's SHA-256. The export dumps are a step on the way, not a record: once
+folded into the spec, they go.
 
 The parser reads PE32 with the standard library only (no pefile).
 
 Usage:
-  dump_exports.py <dll>... [--out DIR]   (DIR/<dll>/exports-<version>.txt; DIR defaults to userland)
+  dump_exports.py <dll>... [--out DIR]   (DIR/<dll>/{exports,imports}-<version>.txt; DIR defaults to
+                                         userland)
 """
 import argparse
 import hashlib
@@ -47,6 +57,7 @@ class Image:
         optional = pe + 24
         if struct.unpack_from("<H", data, optional)[0] != 0x10B:
             raise ValueError("not PE32")
+        self.base = struct.unpack_from("<I", data, optional + 28)[0]
         self.directories = [struct.unpack_from("<II", data, optional + 96 + 8 * i) for i in range(16)]
         self.sections = []
         for i in range(sections):
@@ -66,6 +77,9 @@ class Image:
     def string(self, rva: int) -> str:
         start = self.offset(rva)
         return self.data[start:self.data.index(b"\0", start)].decode("ascii")
+
+    def word(self, rva: int) -> int:
+        return struct.unpack_from("<I", self.data, self.offset(rva))[0]
 
 
 def exports(image: Image):
@@ -91,6 +105,50 @@ def exports(image: Image):
         data = forward is None and section is not None and not section[3] & CODE
         entries.append((base + index, named.get(index), forward, data))
     return image.string(name), entries
+
+
+def thunks(image: Image, rva: int, shift: int = 0) -> list[str]:
+    """The names a zero-terminated thunk array imports: `name`, or `#ordinal` for an import by
+    ordinal (the top bit set). A name's thunk is its IMAGE_IMPORT_BY_NAME's RVA, `shift` more for
+    an address (an old-form delay-load table's)."""
+    names = []
+    while (thunk := image.word(rva)) != 0:
+        # IMAGE_IMPORT_BY_NAME: a hint (a halfword), then the name.
+        names.append(f"#{thunk & 0xFFFF}" if thunk & 0x8000_0000 else image.string(thunk - shift + 2))
+        rva += 4
+    return names
+
+
+def imports(image: Image):
+    """The import tables: [(module, delay-loaded, [import])], the load-time table's modules first,
+    then the delay-load table's, each in its table's order."""
+    modules = []
+    rva, _ = image.directories[1]
+    while rva:
+        # IMAGE_IMPORT_DESCRIPTOR: the names' thunks (OriginalFirstThunk), the bind timestamp, the
+        # forwarder chain, the module's name, the IAT (FirstThunk); a zero one ends the table.
+        names, bound, _, name, iat = struct.unpack_from("<IIIII", image.data, image.offset(rva))
+        if not name:
+            break
+        if not names and bound:
+            # An image without the names' array has only its IAT, which binding overwrote with
+            # addresses: the names are gone.
+            raise ValueError(f"{image.string(name)}: bound, with no import names to read")
+        modules.append((image.string(name), False, thunks(image, names or iat)))
+        rva += 20
+    rva, _ = image.directories[13]
+    while rva:
+        # ImgDelayDescr: its attributes, the module's name, its HMODULE's place, the IAT, the names'
+        # thunks, the bound IAT, the unload IAT, the timestamp; a zero one ends the table. Without
+        # dlattrRva (bit 0, the old form, as Visual C++ 6 links it) the fields are addresses, not
+        # RVAs.
+        attributes, name, _, _, names = struct.unpack_from("<IIIII", image.data, image.offset(rva))
+        if not name:
+            break
+        shift = 0 if attributes & 1 else image.base
+        modules.append((image.string(name - shift), True, thunks(image, names - shift, shift)))
+        rva += 32
+    return modules
 
 
 def file_version(image: Image) -> str | None:
@@ -124,17 +182,20 @@ def file_version(image: Image) -> str | None:
     return f"{ms >> 16}.{ms & 0xFFFF}.{ls >> 16}.{ls & 0xFFFF}"
 
 
-def dump(path: Path, out: Path | None) -> Path:
+def dump(path: Path, out: Path | None) -> list[Path]:
     data = path.read_bytes()
     image = Image(data)
     name, entries = exports(image)
     version = file_version(image) or "unversioned"
     dll = name.lower().removesuffix(".dll")
-    target = (out or REPO_ROOT / "userland") / dll / f"exports-{version}.txt"
+    directory = (out or REPO_ROOT / "userland") / dll
+    provenance = (
+        f"# linked {time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(image.timestamp))} UTC, "
+        f"sha256 {hashlib.sha256(data).hexdigest()}"
+    )
     lines = [
         f"# {name} {version}: its export table, dumped by scripts/dump_exports.py",
-        f"# linked {time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(image.timestamp))} UTC, "
-        f"sha256 {hashlib.sha256(data).hexdigest()}",
+        provenance,
         f"# {len(entries)} exports: <ordinal> <name> [data | -> forward]",
     ]
     for ordinal, export, forward, is_data in entries:
@@ -144,19 +205,34 @@ def dump(path: Path, out: Path | None) -> Path:
         elif is_data:
             line += " data"
         lines.append(line)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text("\n".join(lines) + "\n")
-    return target
+    modules = imports(image)
+    import_lines = [
+        f"# {name} {version}: its import table, dumped by scripts/dump_exports.py",
+        provenance,
+        f"# {len(modules)} modules, {sum(len(names) for _, _, names in modules)} imports:"
+        " [<module>] [delay], then <name> | #<ordinal>",
+    ]
+    for module, delayed, names in modules:
+        import_lines.append(f"[{module}]" + (" delay" if delayed else ""))
+        import_lines.extend(names)
+    directory.mkdir(parents=True, exist_ok=True)
+    written = []
+    for kind, text in (("exports", lines), ("imports", import_lines)):
+        target = directory / f"{kind}-{version}.txt"
+        target.write_text("\n".join(text) + "\n")
+        written.append(target)
+    return written
 
 
 def main():
-    parser = argparse.ArgumentParser(description="dump real DLLs' export tables")
+    parser = argparse.ArgumentParser(description="dump real DLLs' export and import tables")
     parser.add_argument("dlls", nargs="+", type=Path)
     parser.add_argument("--out", type=Path, help="the directory to write <dll>/ into (default userland/)")
     args = parser.parse_args()
     for path in args.dlls:
         try:
-            print(dump(path, args.out))
+            for target in dump(path, args.out):
+                print(target)
         except (ValueError, OSError, struct.error) as error:
             sys.exit(f"{path}: {error}")
 

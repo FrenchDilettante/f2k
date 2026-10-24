@@ -1,0 +1,3 @@
+# ntdll.dll 5.0.2195.6685: its import table, dumped by scripts/dump_exports.py
+# linked 2003-06-20 02:43:40 UTC, sha256 c70fee47564496a5b17c48457bb542d8a3ea39856c2585d94ec7b1c21fa72801
+# 0 modules, 0 imports: [<module>] [delay], then <name> | #<ordinal>

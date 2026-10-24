@@ -11,6 +11,7 @@ fn main() {
             "src/csr.s",
             "src/critsec.s",
             "src/heap.s",
+            "src/dbgprint.s",
         ],
     );
 }

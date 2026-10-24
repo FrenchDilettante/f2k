@@ -1,5 +1,6 @@
 //! What the specs generate: Rust tables for the kernel (the NT service table, the DLLs' declared
-//! exports), and each system DLL's system-service stubs and module-definition (`.def`) file.
+//! exports), and each system DLL's system-service stubs, its exports' descriptions and stubbed
+//! exports' bodies (Rust), and its module-definition (`.def`) file.
 
 use std::fmt::Write;
 
@@ -107,8 +108,11 @@ fn decode_args(export: &Export) -> Vec<String> {
             ArgKind::Ptr => format!("UserAddr({})", at(0)),
             ArgKind::PtrTo(pointee) => format!("UserPtr::<{}>::at({})", pointee.rust(), at(0)),
             ArgKind::U64 => format!("u64::from({}) | (u64::from({}) << 32)", at(0), at(1)),
-            ArgKind::Str { .. } => {
-                unreachable!("{}: a system service takes no strA or strW", export.name)
+            ArgKind::Str { .. } | ArgKind::Varargs => {
+                unreachable!(
+                    "{}: a system service takes no strings or variable arguments",
+                    export.name
+                )
             }
         });
         word += (arg.kind.bytes() / 4) as usize;
@@ -144,13 +148,19 @@ pub fn kernel_natives(spec: &Spec, source: &str) -> String {
     out
 }
 
-/// Every export the DLL's table carries, whatever implements it: `DLL_EXPORTS`, `(export,
-/// argument bytes)` in file order (internal entry points left out): the DLL's surface, its
+/// Every export the DLL's table carries that F2K implements: `DLL_EXPORTS`, `(export, argument
+/// bytes)` in file order (internal entry points and stubs left out): the DLL's surface, its
 /// forwarders into the other DLL included.
 pub fn dll_exports(spec: &Spec, source: &str) -> String {
-    let exports: Vec<_> = spec.exports.iter().filter(|e| !e.internal).collect();
+    let exports: Vec<_> = spec
+        .exports
+        .iter()
+        .filter(|e| !e.internal && !matches!(e.implementation, Implementation::Stub(_)))
+        .collect();
     let mut out = banner(source);
-    out.push_str("/// Every export the spec declares: (export, argument bytes), in spec order.\n");
+    out.push_str(
+        "/// Every export the spec implements: (export, argument bytes), in spec order.\n",
+    );
     writeln!(
         out,
         "pub const DLL_EXPORTS: [(&str, u32); {}] = [",
@@ -168,6 +178,129 @@ pub fn dll_exports(spec: &Spec, source: &str) -> String {
     }
     out.push_str("];\n");
     out
+}
+
+/// The stubbed exports the DLL's table carries: `STUB_EXPORTS`, `(export, argument bytes)` in file
+/// order: exports programs load against, whose generated bodies fail.
+pub fn stub_exports(spec: &Spec, source: &str) -> String {
+    let stubs = spec.stubs();
+    let mut out = banner(source);
+    out.push_str("/// The stubbed exports: (export, argument bytes), in spec order.\n");
+    writeln!(
+        out,
+        "pub const STUB_EXPORTS: [(&str, u32); {}] = [",
+        stubs.len()
+    )
+    .unwrap();
+    for export in stubs {
+        writeln!(
+            out,
+            "    ({}, {}),",
+            quote(&export.name),
+            export.arg_bytes()
+        )
+        .unwrap();
+    }
+    out.push_str("];\n");
+    out
+}
+
+/// `dll`'s generated Rust, included by its crate:
+///
+/// - `spec`: an `rtl::stub::Entry` for each export its own code implements or stubs (the natives
+///   and the stubs: name, arguments' kinds and names, failure return), named as the export. The
+///   stubs' bodies use theirs; a native's code hands its own to the DLL's stub routine on a path it
+///   does not handle;
+/// - each stubbed export's body: `f2k_export_<Export>`, stdcall (cdecl when it takes variable
+///   arguments), taking the arguments as its callers push them and handing them, with the spec's
+///   reason, to the DLL's stub routine: `crate::stub::stubbed(&Entry, reason, &[u64]) -> u32`.
+pub fn dll_rust(specs: &[(&str, &Spec)], dll: &str, source: &str) -> String {
+    let own = own_spec(specs, dll);
+    let mut out = banner(source);
+    out.push_str(
+        "/// The exports the DLL's own code implements or stubs, as the stubs' log line describes \
+         them.\n#[allow(non_upper_case_globals, dead_code)]\npub mod spec {\n    use rtl::stub::{Entry, Fails, Kind};\n\n",
+    );
+    for export in own.exports.iter().filter(|e| {
+        matches!(
+            e.implementation,
+            Implementation::Native(_) | Implementation::Stub(_)
+        )
+    }) {
+        let args: Vec<String> = export
+            .args
+            .iter()
+            .map(|arg| format!("(Kind::{}, {})", stub_kind(arg.kind), quote(&arg.name)))
+            .collect();
+        let fails = match export.fails.as_deref() {
+            Some("void") => "Fails::Void".to_string(),
+            Some("never") | None => "Fails::Never".to_string(),
+            Some(_) => format!("Fails::Value({:#x})", export.fail_value().unwrap()),
+        };
+        writeln!(
+            out,
+            "    pub static {name}: Entry = Entry {{\n        dll: {dll},\n        name: {quoted},\n        args: &[{args}],\n        fails: {fails},\n    }};",
+            name = export.name,
+            dll = quote(dll),
+            quoted = quote(&export.name),
+            args = args.join(", "),
+        )
+        .unwrap();
+    }
+    out.push_str("}\n");
+    for export in own.stubs() {
+        let Implementation::Stub(reason) = &export.implementation else {
+            unreachable!()
+        };
+        let variadic = export.args.iter().any(|a| a.kind == ArgKind::Varargs);
+        let fixed: Vec<_> = export
+            .args
+            .iter()
+            .filter(|a| a.kind != ArgKind::Varargs)
+            .collect();
+        let params: Vec<String> = fixed
+            .iter()
+            .enumerate()
+            .map(|(i, arg)| {
+                format!(
+                    "a{i}: {}",
+                    if arg.kind == ArgKind::U64 {
+                        "u64"
+                    } else {
+                        "usize"
+                    }
+                )
+            })
+            .collect();
+        let values: Vec<String> = (0..fixed.len()).map(|i| format!("a{i} as u64")).collect();
+        writeln!(
+            out,
+            "\n/// {name}: stubbed ({reason}).\n#[allow(non_snake_case, clippy::too_many_arguments)]\n#[unsafe(export_name = \"f2k_export_{name}\")]\npub unsafe extern \"{abi}\" fn f2k_stub_{name}({params}) -> u32 {{\n    // SAFETY: the arguments are the caller's, read as its export's kinds say.\n    unsafe {{ crate::stub::stubbed(&spec::{name}, {reason_text}, &[{values}]) }}\n}}",
+            name = export.name,
+            reason = reason,
+            abi = if variadic { "C" } else { "system" },
+            params = params.join(", "),
+            reason_text = quote(reason),
+            values = values.join(", "),
+        )
+        .unwrap();
+    }
+    out
+}
+
+/// The `rtl::stub::Kind` an argument kind shows as.
+fn stub_kind(kind: ArgKind) -> &'static str {
+    match kind {
+        ArgKind::U32 => "U32",
+        ArgKind::I32 => "I32",
+        ArgKind::Bool => "Bool",
+        ArgKind::Handle => "Handle",
+        ArgKind::Ptr | ArgKind::PtrTo(_) => "Ptr",
+        ArgKind::U64 => "U64",
+        ArgKind::Str { wide: false, .. } => "StrA",
+        ArgKind::Str { wide: true, .. } => "StrW",
+        ArgKind::Varargs => "Varargs",
+    }
 }
 
 /// The system-call gate's vector.
@@ -246,10 +379,12 @@ pub fn dll_stubs(specs: &[(&str, &Spec)], dll: &str) -> String {
 }
 
 /// `dll`'s module-definition file: its hand-written exports (to their code, in `hand_exports`
-/// order: the order of the `.globl` lines of its assembly sources), then its system services (each
-/// under its `Nt` and its `Zw` name, to its stub, in number order), then its forwarders
-/// (`Name=MODULE.Export`, in spec order). An export's ordinal is its spec's when it has one (a
-/// system service's Zw alias's, its `zw_ordinal`), otherwise the next free one. `hand_exports` must be exactly the spec's natives.
+/// order: the order of the `.globl` lines of its assembly sources), then its stubbed exports (to
+/// their generated bodies, in spec order), then its system services (each under its `Nt` and its
+/// `Zw` name, to its stub, in number order), then its forwarders (`Name=MODULE.Export`, in spec
+/// order). An export's ordinal is its spec's when it has one (a
+/// system service's Zw alias's, its `zw_ordinal`), otherwise the next free one. `hand_exports` must
+/// be exactly the spec's natives.
 pub fn dll_def(
     specs: &[(&str, &Spec)],
     dll: &str,
@@ -269,6 +404,12 @@ pub fn dll_def(
     let mut lines: Vec<(Option<u16>, String)> = Vec::new();
     for name in hand_exports {
         let export = own.export(name).expect("checked against the natives above");
+        lines.push((
+            export.ordinal,
+            format!("{}={}", export.name, &hand_symbol(&export.name)[1..]),
+        ));
+    }
+    for export in own.stubs() {
         lines.push((
             export.ordinal,
             format!("{}={}", export.name, &hand_symbol(&export.name)[1..]),
@@ -499,5 +640,66 @@ impl = { syscall = "crate::nt::object::close" }
              NtOpenFile=f2k_nt_NtOpenFile @3\n  ZwOpenFile=f2k_nt_NtOpenFile @4\n"
         );
         assert!(!nt_services(&ntdll, "t").contains("NtYieldExecution"));
+    }
+
+    /// A stubbed export: its generated body (stdcall, its arguments as the caller pushes them, a
+    /// quadword's as one; cdecl with variable arguments) hands them on with the spec's reason;
+    /// `spec` describes every native and stub; the `.def` exports the body; the kernel's tables
+    /// keep the stubs apart from the implemented surface.
+    #[test]
+    fn stubs_get_generated_bodies() {
+        let text = SPEC.to_string()
+            + "\n[[export]]\nname = \"CreateProcessW\"\ngroup = \"termination\"\n\
+               args = [\"strW? lpCommandLine\", \"u64 Offset\", \"ptr<u32> Out\"]\n\
+               impl = { stub = \"M2: child processes\" }\nordinal = 77\nfails = \"FALSE\"\n\
+               \n[[export]]\nname = \"Trace\"\ngroup = \"termination\"\nargs = [\"strA Format\", \"...\"]\n\
+               impl = { stub = \"M9: tracing\" }\nfails = \"never\"\n";
+        let kernel32 = parse_spec(&text).unwrap();
+        let ntdll = parse_spec(NTDLL).unwrap();
+        let specs = [("kernel32", &kernel32), ("ntdll", &ntdll)];
+        let rust = dll_rust(&specs, "kernel32", "t");
+        assert!(
+            rust.contains(
+                "    pub static CreateProcessW: Entry = Entry {\n        dll: \"kernel32\",\n        \
+                 name: \"CreateProcessW\",\n        args: &[(Kind::StrW, \"lpCommandLine\"), \
+                 (Kind::U64, \"Offset\"), (Kind::Ptr, \"Out\")],\n        fails: Fails::Value(0x0),\n    };"
+            ),
+            "{rust}"
+        );
+        assert!(
+            rust.contains("    pub static GetVersion: Entry"),
+            "natives are described"
+        );
+        assert!(rust.contains("args: &[(Kind::StrA, \"Format\"), (Kind::Varargs, \"\")],\n        fails: Fails::Never,"), "{rust}");
+        assert!(
+            rust.contains(
+                "#[unsafe(export_name = \"f2k_export_CreateProcessW\")]\npub unsafe extern \"system\" fn \
+                 f2k_stub_CreateProcessW(a0: usize, a1: u64, a2: usize) -> u32 {\n    \
+                 // SAFETY: the arguments are the caller's, read as its export's kinds say.\n    \
+                 unsafe { crate::stub::stubbed(&spec::CreateProcessW, \"M2: child processes\", \
+                 &[a0 as u64, a1 as u64, a2 as u64]) }\n}"
+            ),
+            "{rust}"
+        );
+        assert!(
+            rust.contains("pub unsafe extern \"C\" fn f2k_stub_Trace(a0: usize) -> u32"),
+            "{rust}"
+        );
+        assert!(
+            !rust.contains("HeapAlloc"),
+            "a forwarder has no description"
+        );
+        let def = dll_def(&specs, "kernel32", &natives()).unwrap();
+        assert!(
+            def.contains("  CreateProcessW=f2k_export_CreateProcessW @77\n"),
+            "{def}"
+        );
+        assert!(!dll_exports(&kernel32, "t").contains("CreateProcessW"));
+        let stubs = stub_exports(&kernel32, "t");
+        assert!(
+            stubs.contains("[(&str, u32); 2]")
+                && stubs.contains("    (\"CreateProcessW\", 16),\n    (\"Trace\", 4),"),
+            "{stubs}"
+        );
     }
 }

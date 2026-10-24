@@ -15,6 +15,7 @@ mod environment;
 mod files;
 mod locale;
 mod modules;
+mod processes;
 mod startup;
 mod threads;
 

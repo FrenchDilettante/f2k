@@ -1,0 +1,1907 @@
+# RPCRT4.dll's exports: the one source every list of them derives from (the format is
+# kernel32's, documented in userland/kernel32/exports.toml).
+#
+# None is implemented yet: each record is catalogued from RPCRT4.dll 5.0.2195.6701's export table
+# (scripts/catalogue_exports.py): its name and ordinal. Implementing one gives it its group,
+# prototype and implementation.
+
+# --- not implemented yet: the rest of RPCRT4.dll 5.0.2195.6701's export table, by ordinal --------
+
+[[export]]
+name = "CreateProxyFromTypeInfo"
+ordinal = 1
+
+[[export]]
+name = "CreateStubFromTypeInfo"
+ordinal = 2
+
+[[export]]
+name = "I_RpcConnectionInqSockBuffSize2"
+ordinal = 3
+
+[[export]]
+name = "I_RpcltDebugSetPDUFilter"
+ordinal = 4
+
+[[export]]
+name = "PerformRpcInitialization"
+ordinal = 5
+
+[[export]]
+name = "CStdStubBuffer_AddRef"
+ordinal = 6
+
+[[export]]
+name = "CStdStubBuffer_Connect"
+ordinal = 7
+
+[[export]]
+name = "CStdStubBuffer_CountRefs"
+ordinal = 8
+
+[[export]]
+name = "CStdStubBuffer_DebugServerQueryInterface"
+ordinal = 9
+
+[[export]]
+name = "CStdStubBuffer_DebugServerRelease"
+ordinal = 10
+
+[[export]]
+name = "CStdStubBuffer_Disconnect"
+ordinal = 11
+
+[[export]]
+name = "CStdStubBuffer_Invoke"
+ordinal = 12
+
+[[export]]
+name = "CStdStubBuffer_IsIIDSupported"
+ordinal = 13
+
+[[export]]
+name = "CStdStubBuffer_QueryInterface"
+ordinal = 14
+
+[[export]]
+name = "CheckVerificationTrailer"
+ordinal = 15
+
+[[export]]
+name = "DceErrorInqTextA"
+ordinal = 16
+
+[[export]]
+name = "DceErrorInqTextW"
+ordinal = 17
+
+[[export]]
+name = "DllGetClassObject"
+ordinal = 18
+
+[[export]]
+name = "DllRegisterServer"
+ordinal = 19
+
+[[export]]
+name = "GlobalMutexClearExternal"
+ordinal = 20
+
+[[export]]
+name = "GlobalMutexRequestExternal"
+ordinal = 21
+
+[[export]]
+name = "IUnknown_AddRef_Proxy"
+ordinal = 22
+
+[[export]]
+name = "IUnknown_QueryInterface_Proxy"
+ordinal = 23
+
+[[export]]
+name = "IUnknown_Release_Proxy"
+ordinal = 24
+
+[[export]]
+name = "I_RpcAbortAsyncCall"
+ordinal = 25
+note = "forwarded to RPCRT4.I_RpcAsyncAbortCall"
+
+[[export]]
+name = "I_RpcAllocate"
+ordinal = 26
+
+[[export]]
+name = "I_RpcAsyncAbortCall"
+ordinal = 27
+
+[[export]]
+name = "I_RpcAsyncSetHandle"
+ordinal = 28
+
+[[export]]
+name = "I_RpcBCacheAllocate"
+ordinal = 29
+
+[[export]]
+name = "I_RpcBCacheFree"
+ordinal = 30
+
+[[export]]
+name = "I_RpcBindingCopy"
+ordinal = 31
+
+[[export]]
+name = "I_RpcBindingInqConnId"
+ordinal = 32
+
+[[export]]
+name = "I_RpcBindingInqDynamicEndpoint"
+ordinal = 33
+note = "forwarded to RPCRT4.I_RpcBindingInqDynamicEndpointW"
+
+[[export]]
+name = "I_RpcBindingInqDynamicEndpointA"
+ordinal = 34
+
+[[export]]
+name = "I_RpcBindingInqDynamicEndpointW"
+ordinal = 35
+
+[[export]]
+name = "I_RpcBindingInqSecurityContext"
+ordinal = 36
+
+[[export]]
+name = "I_RpcBindingInqTransportType"
+ordinal = 37
+
+[[export]]
+name = "I_RpcBindingInqWireIdForSnego"
+ordinal = 38
+
+[[export]]
+name = "I_RpcBindingIsClientLocal"
+ordinal = 39
+
+[[export]]
+name = "I_RpcBindingToStaticStringBindingW"
+ordinal = 40
+
+[[export]]
+name = "I_RpcClearMutex"
+ordinal = 41
+
+[[export]]
+name = "I_RpcConnectionInqSockBuffSize"
+ordinal = 42
+
+[[export]]
+name = "I_RpcConnectionSetSockBuffSize"
+ordinal = 43
+
+[[export]]
+name = "I_RpcDeleteMutex"
+ordinal = 44
+
+[[export]]
+name = "I_RpcFree"
+ordinal = 45
+
+[[export]]
+name = "I_RpcFreeBuffer"
+ordinal = 46
+
+[[export]]
+name = "I_RpcFreePipeBuffer"
+ordinal = 47
+
+[[export]]
+name = "I_RpcGetAssociationContext"
+ordinal = 48
+
+[[export]]
+name = "I_RpcGetBuffer"
+ordinal = 49
+
+[[export]]
+name = "I_RpcGetBufferWithObject"
+ordinal = 50
+
+[[export]]
+name = "I_RpcGetCurrentCallHandle"
+ordinal = 51
+
+[[export]]
+name = "I_RpcGetExtendedError"
+ordinal = 52
+
+[[export]]
+name = "I_RpcGetServerContextList"
+ordinal = 53
+
+[[export]]
+name = "I_RpcIfInqTransferSyntaxes"
+ordinal = 54
+
+[[export]]
+name = "I_RpcLogEvent"
+ordinal = 55
+
+[[export]]
+name = "I_RpcMapWin32Status"
+ordinal = 56
+
+[[export]]
+name = "I_RpcMonitorAssociation"
+ordinal = 57
+
+[[export]]
+name = "I_RpcNsBindingSetEntryName"
+ordinal = 58
+note = "forwarded to RPCRT4.I_RpcNsBindingSetEntryNameW"
+
+[[export]]
+name = "I_RpcNsBindingSetEntryNameA"
+ordinal = 59
+
+[[export]]
+name = "I_RpcNsBindingSetEntryNameW"
+ordinal = 60
+
+[[export]]
+name = "I_RpcNsInterfaceExported"
+ordinal = 61
+
+[[export]]
+name = "I_RpcNsInterfaceUnexported"
+ordinal = 62
+
+[[export]]
+name = "I_RpcParseSecurity"
+ordinal = 63
+
+[[export]]
+name = "I_RpcPauseExecution"
+ordinal = 64
+
+[[export]]
+name = "I_RpcReallocPipeBuffer"
+ordinal = 65
+
+[[export]]
+name = "I_RpcReceive"
+ordinal = 66
+
+[[export]]
+name = "I_RpcRequestMutex"
+ordinal = 67
+
+[[export]]
+name = "I_RpcSend"
+ordinal = 68
+
+[[export]]
+name = "I_RpcSendReceive"
+ordinal = 69
+
+[[export]]
+name = "I_RpcServerAllocateIpPort"
+ordinal = 70
+
+[[export]]
+name = "I_RpcServerInqAddressChangeFn"
+ordinal = 71
+
+[[export]]
+name = "I_RpcServerInqTransportType"
+ordinal = 72
+
+[[export]]
+name = "I_RpcServerRegisterForwardFunction"
+ordinal = 73
+
+[[export]]
+name = "I_RpcServerSetAddressChangeFn"
+ordinal = 74
+
+[[export]]
+name = "I_RpcServerUseProtseq2A"
+ordinal = 75
+
+[[export]]
+name = "I_RpcServerUseProtseq2W"
+ordinal = 76
+
+[[export]]
+name = "I_RpcServerUseProtseqEp2A"
+ordinal = 77
+
+[[export]]
+name = "I_RpcServerUseProtseqEp2W"
+ordinal = 78
+
+[[export]]
+name = "I_RpcSetAsyncHandle"
+ordinal = 79
+note = "forwarded to RPCRT4.I_RpcAsyncSetHandle"
+
+[[export]]
+name = "I_RpcSetServerContextList"
+ordinal = 80
+
+[[export]]
+name = "I_RpcSsDontSerializeContext"
+ordinal = 81
+
+[[export]]
+name = "I_RpcStopMonitorAssociation"
+ordinal = 82
+
+[[export]]
+name = "I_RpcTransConnectionAllocatePacket"
+ordinal = 83
+
+[[export]]
+name = "I_RpcTransConnectionFreePacket"
+ordinal = 84
+
+[[export]]
+name = "I_RpcTransConnectionReallocPacket"
+ordinal = 85
+
+[[export]]
+name = "I_RpcTransDatagramAllocate2"
+ordinal = 86
+
+[[export]]
+name = "I_RpcTransDatagramAllocate"
+ordinal = 87
+
+[[export]]
+name = "I_RpcTransDatagramFree"
+ordinal = 88
+
+[[export]]
+name = "I_RpcTransGetAddressList"
+ordinal = 89
+
+[[export]]
+name = "I_RpcTransGetThreadEvent"
+ordinal = 90
+
+[[export]]
+name = "I_RpcTransIoCancelled"
+ordinal = 91
+
+[[export]]
+name = "I_RpcTransServerNewConnection"
+ordinal = 92
+
+[[export]]
+name = "I_UuidCreate"
+ordinal = 93
+
+[[export]]
+name = "MIDL_wchar_strcpy"
+ordinal = 94
+
+[[export]]
+name = "MIDL_wchar_strlen"
+ordinal = 95
+
+[[export]]
+name = "MesBufferHandleReset"
+ordinal = 96
+
+[[export]]
+name = "MesDecodeBufferHandleCreate"
+ordinal = 97
+
+[[export]]
+name = "MesDecodeIncrementalHandleCreate"
+ordinal = 98
+
+[[export]]
+name = "MesEncodeDynBufferHandleCreate"
+ordinal = 99
+
+[[export]]
+name = "MesEncodeFixedBufferHandleCreate"
+ordinal = 100
+
+[[export]]
+name = "MesEncodeIncrementalHandleCreate"
+ordinal = 101
+
+[[export]]
+name = "MesHandleFree"
+ordinal = 102
+
+[[export]]
+name = "MesIncrementalHandleReset"
+ordinal = 103
+
+[[export]]
+name = "MesInqProcEncodingId"
+ordinal = 104
+
+[[export]]
+name = "NDRCContextBinding"
+ordinal = 105
+
+[[export]]
+name = "NDRCContextMarshall"
+ordinal = 106
+
+[[export]]
+name = "NDRCContextUnmarshall"
+ordinal = 107
+
+[[export]]
+name = "NDRSContextMarshall2"
+ordinal = 108
+
+[[export]]
+name = "NDRSContextMarshall"
+ordinal = 109
+
+[[export]]
+name = "NDRSContextMarshallEx"
+ordinal = 110
+
+[[export]]
+name = "NDRSContextUnmarshall2"
+ordinal = 111
+
+[[export]]
+name = "NDRSContextUnmarshall"
+ordinal = 112
+
+[[export]]
+name = "NDRSContextUnmarshallEx"
+ordinal = 113
+
+[[export]]
+name = "NDRcopy"
+ordinal = 114
+
+[[export]]
+name = "NdrAllocate"
+ordinal = 115
+
+[[export]]
+name = "NdrAsyncClientCall"
+ordinal = 116
+
+[[export]]
+name = "NdrAsyncServerCall"
+ordinal = 117
+
+[[export]]
+name = "NdrByteCountPointerBufferSize"
+ordinal = 118
+
+[[export]]
+name = "NdrByteCountPointerFree"
+ordinal = 119
+
+[[export]]
+name = "NdrByteCountPointerMarshall"
+ordinal = 120
+
+[[export]]
+name = "NdrByteCountPointerUnmarshall"
+ordinal = 121
+
+[[export]]
+name = "NdrCStdStubBuffer2_Release"
+ordinal = 122
+
+[[export]]
+name = "NdrCStdStubBuffer_Release"
+ordinal = 123
+
+[[export]]
+name = "NdrClearOutParameters"
+ordinal = 124
+
+[[export]]
+name = "NdrClientCall"
+ordinal = 125
+
+[[export]]
+name = "NdrClientCall2"
+ordinal = 126
+
+[[export]]
+name = "NdrClientContextMarshall"
+ordinal = 127
+
+[[export]]
+name = "NdrClientContextUnmarshall"
+ordinal = 128
+
+[[export]]
+name = "NdrClientInitialize"
+ordinal = 129
+
+[[export]]
+name = "NdrClientInitializeNew"
+ordinal = 130
+
+[[export]]
+name = "NdrComplexArrayBufferSize"
+ordinal = 131
+
+[[export]]
+name = "NdrComplexArrayFree"
+ordinal = 132
+
+[[export]]
+name = "NdrComplexArrayMarshall"
+ordinal = 133
+
+[[export]]
+name = "NdrComplexArrayMemorySize"
+ordinal = 134
+
+[[export]]
+name = "NdrComplexArrayUnmarshall"
+ordinal = 135
+
+[[export]]
+name = "NdrComplexStructBufferSize"
+ordinal = 136
+
+[[export]]
+name = "NdrComplexStructFree"
+ordinal = 137
+
+[[export]]
+name = "NdrComplexStructMarshall"
+ordinal = 138
+
+[[export]]
+name = "NdrComplexStructMemorySize"
+ordinal = 139
+
+[[export]]
+name = "NdrComplexStructUnmarshall"
+ordinal = 140
+
+[[export]]
+name = "NdrConformantArrayBufferSize"
+ordinal = 141
+
+[[export]]
+name = "NdrConformantArrayFree"
+ordinal = 142
+
+[[export]]
+name = "NdrConformantArrayMarshall"
+ordinal = 143
+
+[[export]]
+name = "NdrConformantArrayMemorySize"
+ordinal = 144
+
+[[export]]
+name = "NdrConformantArrayUnmarshall"
+ordinal = 145
+
+[[export]]
+name = "NdrConformantStringBufferSize"
+ordinal = 146
+
+[[export]]
+name = "NdrConformantStringMarshall"
+ordinal = 147
+
+[[export]]
+name = "NdrConformantStringMemorySize"
+ordinal = 148
+
+[[export]]
+name = "NdrConformantStringUnmarshall"
+ordinal = 149
+
+[[export]]
+name = "NdrConformantStructBufferSize"
+ordinal = 150
+
+[[export]]
+name = "NdrConformantStructFree"
+ordinal = 151
+
+[[export]]
+name = "NdrConformantStructMarshall"
+ordinal = 152
+
+[[export]]
+name = "NdrConformantStructMemorySize"
+ordinal = 153
+
+[[export]]
+name = "NdrConformantStructUnmarshall"
+ordinal = 154
+
+[[export]]
+name = "NdrConformantVaryingArrayBufferSize"
+ordinal = 155
+
+[[export]]
+name = "NdrConformantVaryingArrayFree"
+ordinal = 156
+
+[[export]]
+name = "NdrConformantVaryingArrayMarshall"
+ordinal = 157
+
+[[export]]
+name = "NdrConformantVaryingArrayMemorySize"
+ordinal = 158
+
+[[export]]
+name = "NdrConformantVaryingArrayUnmarshall"
+ordinal = 159
+
+[[export]]
+name = "NdrConformantVaryingStructBufferSize"
+ordinal = 160
+
+[[export]]
+name = "NdrConformantVaryingStructFree"
+ordinal = 161
+
+[[export]]
+name = "NdrConformantVaryingStructMarshall"
+ordinal = 162
+
+[[export]]
+name = "NdrConformantVaryingStructMemorySize"
+ordinal = 163
+
+[[export]]
+name = "NdrConformantVaryingStructUnmarshall"
+ordinal = 164
+
+[[export]]
+name = "NdrContextHandleInitialize"
+ordinal = 165
+
+[[export]]
+name = "NdrContextHandleSize"
+ordinal = 166
+
+[[export]]
+name = "NdrConvert2"
+ordinal = 167
+
+[[export]]
+name = "NdrConvert"
+ordinal = 168
+
+[[export]]
+name = "NdrCorrelationFree"
+ordinal = 169
+
+[[export]]
+name = "NdrCorrelationInitialize"
+ordinal = 170
+
+[[export]]
+name = "NdrCorrelationPass"
+ordinal = 171
+
+[[export]]
+name = "NdrDcomAsyncClientCall"
+ordinal = 172
+
+[[export]]
+name = "NdrDcomAsyncStubCall"
+ordinal = 173
+
+[[export]]
+name = "NdrDllCanUnloadNow"
+ordinal = 174
+
+[[export]]
+name = "NdrDllGetClassObject"
+ordinal = 175
+
+[[export]]
+name = "NdrDllRegisterProxy"
+ordinal = 176
+
+[[export]]
+name = "NdrDllUnregisterProxy"
+ordinal = 177
+
+[[export]]
+name = "NdrEncapsulatedUnionBufferSize"
+ordinal = 178
+
+[[export]]
+name = "NdrEncapsulatedUnionFree"
+ordinal = 179
+
+[[export]]
+name = "NdrEncapsulatedUnionMarshall"
+ordinal = 180
+
+[[export]]
+name = "NdrEncapsulatedUnionMemorySize"
+ordinal = 181
+
+[[export]]
+name = "NdrEncapsulatedUnionUnmarshall"
+ordinal = 182
+
+[[export]]
+name = "NdrFixedArrayBufferSize"
+ordinal = 183
+
+[[export]]
+name = "NdrFixedArrayFree"
+ordinal = 184
+
+[[export]]
+name = "NdrFixedArrayMarshall"
+ordinal = 185
+
+[[export]]
+name = "NdrFixedArrayMemorySize"
+ordinal = 186
+
+[[export]]
+name = "NdrFixedArrayUnmarshall"
+ordinal = 187
+
+[[export]]
+name = "NdrFreeBuffer"
+ordinal = 188
+
+[[export]]
+name = "NdrFullPointerFree"
+ordinal = 189
+
+[[export]]
+name = "NdrFullPointerInsertRefId"
+ordinal = 190
+
+[[export]]
+name = "NdrFullPointerQueryPointer"
+ordinal = 191
+
+[[export]]
+name = "NdrFullPointerQueryRefId"
+ordinal = 192
+
+[[export]]
+name = "NdrFullPointerXlatFree"
+ordinal = 193
+
+[[export]]
+name = "NdrFullPointerXlatInit"
+ordinal = 194
+
+[[export]]
+name = "NdrGetBuffer"
+ordinal = 195
+
+[[export]]
+name = "NdrGetDcomProtocolVersion"
+ordinal = 196
+
+[[export]]
+name = "NdrGetPartialBuffer"
+ordinal = 197
+
+[[export]]
+name = "NdrGetPipeBuffer"
+ordinal = 198
+
+[[export]]
+name = "NdrGetUserMarshalInfo"
+ordinal = 199
+
+[[export]]
+name = "NdrInterfacePointerBufferSize"
+ordinal = 200
+
+[[export]]
+name = "NdrInterfacePointerFree"
+ordinal = 201
+
+[[export]]
+name = "NdrInterfacePointerMarshall"
+ordinal = 202
+
+[[export]]
+name = "NdrInterfacePointerMemorySize"
+ordinal = 203
+
+[[export]]
+name = "NdrInterfacePointerUnmarshall"
+ordinal = 204
+
+[[export]]
+name = "NdrIsAppDoneWithPipes"
+ordinal = 205
+
+[[export]]
+name = "NdrMapCommAndFaultStatus"
+ordinal = 206
+
+[[export]]
+name = "NdrMarkNextActivePipe"
+ordinal = 207
+
+[[export]]
+name = "NdrMesProcEncodeDecode"
+ordinal = 208
+
+[[export]]
+name = "NdrMesProcEncodeDecode2"
+ordinal = 209
+
+[[export]]
+name = "NdrMesSimpleTypeAlignSize"
+ordinal = 210
+
+[[export]]
+name = "NdrMesSimpleTypeDecode"
+ordinal = 211
+
+[[export]]
+name = "NdrMesSimpleTypeEncode"
+ordinal = 212
+
+[[export]]
+name = "NdrMesTypeAlignSize2"
+ordinal = 213
+
+[[export]]
+name = "NdrMesTypeAlignSize"
+ordinal = 214
+
+[[export]]
+name = "NdrMesTypeDecode2"
+ordinal = 215
+
+[[export]]
+name = "NdrMesTypeDecode"
+ordinal = 216
+
+[[export]]
+name = "NdrMesTypeEncode2"
+ordinal = 217
+
+[[export]]
+name = "NdrMesTypeEncode"
+ordinal = 218
+
+[[export]]
+name = "NdrMesTypeFree2"
+ordinal = 219
+
+[[export]]
+name = "NdrNonConformantStringBufferSize"
+ordinal = 220
+
+[[export]]
+name = "NdrNonConformantStringMarshall"
+ordinal = 221
+
+[[export]]
+name = "NdrNonConformantStringMemorySize"
+ordinal = 222
+
+[[export]]
+name = "NdrNonConformantStringUnmarshall"
+ordinal = 223
+
+[[export]]
+name = "NdrNonEncapsulatedUnionBufferSize"
+ordinal = 224
+
+[[export]]
+name = "NdrNonEncapsulatedUnionFree"
+ordinal = 225
+
+[[export]]
+name = "NdrNonEncapsulatedUnionMarshall"
+ordinal = 226
+
+[[export]]
+name = "NdrNonEncapsulatedUnionMemorySize"
+ordinal = 227
+
+[[export]]
+name = "NdrNonEncapsulatedUnionUnmarshall"
+ordinal = 228
+
+[[export]]
+name = "NdrNsGetBuffer"
+ordinal = 229
+
+[[export]]
+name = "NdrNsSendReceive"
+ordinal = 230
+
+[[export]]
+name = "NdrOleAllocate"
+ordinal = 231
+
+[[export]]
+name = "NdrOleFree"
+ordinal = 232
+
+[[export]]
+name = "NdrPipePull"
+ordinal = 233
+
+[[export]]
+name = "NdrPipePush"
+ordinal = 234
+
+[[export]]
+name = "NdrPipeSendReceive"
+ordinal = 235
+
+[[export]]
+name = "NdrPipesDone"
+ordinal = 236
+
+[[export]]
+name = "NdrPipesInitialize"
+ordinal = 237
+
+[[export]]
+name = "NdrPointerBufferSize"
+ordinal = 238
+
+[[export]]
+name = "NdrPointerFree"
+ordinal = 239
+
+[[export]]
+name = "NdrPointerMarshall"
+ordinal = 240
+
+[[export]]
+name = "NdrPointerMemorySize"
+ordinal = 241
+
+[[export]]
+name = "NdrPointerUnmarshall"
+ordinal = 242
+
+[[export]]
+name = "NdrProxyErrorHandler"
+ordinal = 243
+
+[[export]]
+name = "NdrProxyFreeBuffer"
+ordinal = 244
+
+[[export]]
+name = "NdrProxyGetBuffer"
+ordinal = 245
+
+[[export]]
+name = "NdrProxyInitialize"
+ordinal = 246
+
+[[export]]
+name = "NdrProxySendReceive"
+ordinal = 247
+
+[[export]]
+name = "NdrRangeUnmarshall"
+ordinal = 248
+
+[[export]]
+name = "NdrRpcSmClientAllocate"
+ordinal = 249
+
+[[export]]
+name = "NdrRpcSmClientFree"
+ordinal = 250
+
+[[export]]
+name = "NdrRpcSmSetClientToOsf"
+ordinal = 251
+
+[[export]]
+name = "NdrRpcSsDefaultAllocate"
+ordinal = 252
+
+[[export]]
+name = "NdrRpcSsDefaultFree"
+ordinal = 253
+
+[[export]]
+name = "NdrRpcSsDisableAllocate"
+ordinal = 254
+
+[[export]]
+name = "NdrRpcSsEnableAllocate"
+ordinal = 255
+
+[[export]]
+name = "NdrSendReceive"
+ordinal = 256
+
+[[export]]
+name = "NdrServerCall2"
+ordinal = 257
+
+[[export]]
+name = "NdrServerCall"
+ordinal = 258
+
+[[export]]
+name = "NdrServerContextMarshall"
+ordinal = 259
+
+[[export]]
+name = "NdrServerContextNewMarshall"
+ordinal = 260
+
+[[export]]
+name = "NdrServerContextNewUnmarshall"
+ordinal = 261
+
+[[export]]
+name = "NdrServerContextUnmarshall"
+ordinal = 262
+
+[[export]]
+name = "NdrServerInitialize"
+ordinal = 263
+
+[[export]]
+name = "NdrServerInitializeMarshall"
+ordinal = 264
+
+[[export]]
+name = "NdrServerInitializeNew"
+ordinal = 265
+
+[[export]]
+name = "NdrServerInitializePartial"
+ordinal = 266
+
+[[export]]
+name = "NdrServerInitializeUnmarshall"
+ordinal = 267
+
+[[export]]
+name = "NdrServerMarshall"
+ordinal = 268
+
+[[export]]
+name = "NdrServerUnmarshall"
+ordinal = 269
+
+[[export]]
+name = "NdrSimpleStructBufferSize"
+ordinal = 270
+
+[[export]]
+name = "NdrSimpleStructFree"
+ordinal = 271
+
+[[export]]
+name = "NdrSimpleStructMarshall"
+ordinal = 272
+
+[[export]]
+name = "NdrSimpleStructMemorySize"
+ordinal = 273
+
+[[export]]
+name = "NdrSimpleStructUnmarshall"
+ordinal = 274
+
+[[export]]
+name = "NdrSimpleTypeMarshall"
+ordinal = 275
+
+[[export]]
+name = "NdrSimpleTypeUnmarshall"
+ordinal = 276
+
+[[export]]
+name = "NdrStubCall2"
+ordinal = 277
+
+[[export]]
+name = "NdrStubCall"
+ordinal = 278
+
+[[export]]
+name = "NdrStubForwardingFunction"
+ordinal = 279
+
+[[export]]
+name = "NdrStubGetBuffer"
+ordinal = 280
+
+[[export]]
+name = "NdrStubInitialize"
+ordinal = 281
+
+[[export]]
+name = "NdrStubInitializeMarshall"
+ordinal = 282
+
+[[export]]
+name = "NdrUserMarshalBufferSize"
+ordinal = 283
+
+[[export]]
+name = "NdrUserMarshalFree"
+ordinal = 284
+
+[[export]]
+name = "NdrUserMarshalMarshall"
+ordinal = 285
+
+[[export]]
+name = "NdrUserMarshalMemorySize"
+ordinal = 286
+
+[[export]]
+name = "NdrUserMarshalSimpleTypeConvert"
+ordinal = 287
+
+[[export]]
+name = "NdrUserMarshalUnmarshall"
+ordinal = 288
+
+[[export]]
+name = "NdrVaryingArrayBufferSize"
+ordinal = 289
+
+[[export]]
+name = "NdrVaryingArrayFree"
+ordinal = 290
+
+[[export]]
+name = "NdrVaryingArrayMarshall"
+ordinal = 291
+
+[[export]]
+name = "NdrVaryingArrayMemorySize"
+ordinal = 292
+
+[[export]]
+name = "NdrVaryingArrayUnmarshall"
+ordinal = 293
+
+[[export]]
+name = "NdrXmitOrRepAsBufferSize"
+ordinal = 294
+
+[[export]]
+name = "NdrXmitOrRepAsFree"
+ordinal = 295
+
+[[export]]
+name = "NdrXmitOrRepAsMarshall"
+ordinal = 296
+
+[[export]]
+name = "NdrXmitOrRepAsMemorySize"
+ordinal = 297
+
+[[export]]
+name = "NdrXmitOrRepAsUnmarshall"
+ordinal = 298
+
+[[export]]
+name = "NdrpSetRpcSsDefaults"
+ordinal = 299
+
+[[export]]
+name = "RpcAbortAsyncCall"
+ordinal = 300
+note = "forwarded to RPCRT4.RpcAsyncAbortCall"
+
+[[export]]
+name = "RpcAsyncAbortCall"
+ordinal = 301
+
+[[export]]
+name = "RpcAsyncCancelCall"
+ordinal = 302
+
+[[export]]
+name = "RpcAsyncCompleteCall"
+ordinal = 303
+
+[[export]]
+name = "RpcAsyncGetCallStatus"
+ordinal = 304
+
+[[export]]
+name = "RpcAsyncInitializeHandle"
+ordinal = 305
+
+[[export]]
+name = "RpcAsyncRegisterInfo"
+ordinal = 306
+
+[[export]]
+name = "RpcBindingCopy"
+ordinal = 307
+
+[[export]]
+name = "RpcBindingFree"
+ordinal = 308
+
+[[export]]
+name = "RpcBindingFromStringBindingA"
+ordinal = 309
+
+[[export]]
+name = "RpcBindingFromStringBindingW"
+ordinal = 310
+
+[[export]]
+name = "RpcBindingInqAuthClientA"
+ordinal = 311
+
+[[export]]
+name = "RpcBindingInqAuthClientExA"
+ordinal = 312
+
+[[export]]
+name = "RpcBindingInqAuthClientExW"
+ordinal = 313
+
+[[export]]
+name = "RpcBindingInqAuthClientW"
+ordinal = 314
+
+[[export]]
+name = "RpcBindingInqAuthInfoA"
+ordinal = 315
+
+[[export]]
+name = "RpcBindingInqAuthInfoExA"
+ordinal = 316
+
+[[export]]
+name = "RpcBindingInqAuthInfoExW"
+ordinal = 317
+
+[[export]]
+name = "RpcBindingInqAuthInfoW"
+ordinal = 318
+
+[[export]]
+name = "RpcBindingInqObject"
+ordinal = 319
+
+[[export]]
+name = "RpcBindingInqOption"
+ordinal = 320
+
+[[export]]
+name = "RpcBindingReset"
+ordinal = 321
+
+[[export]]
+name = "RpcBindingServerFromClient"
+ordinal = 322
+
+[[export]]
+name = "RpcBindingSetAuthInfoA"
+ordinal = 323
+
+[[export]]
+name = "RpcBindingSetAuthInfoExA"
+ordinal = 324
+
+[[export]]
+name = "RpcBindingSetAuthInfoExW"
+ordinal = 325
+
+[[export]]
+name = "RpcBindingSetAuthInfoW"
+ordinal = 326
+
+[[export]]
+name = "RpcBindingSetObject"
+ordinal = 327
+
+[[export]]
+name = "RpcBindingSetOption"
+ordinal = 328
+
+[[export]]
+name = "RpcBindingToStringBindingA"
+ordinal = 329
+
+[[export]]
+name = "RpcBindingToStringBindingW"
+ordinal = 330
+
+[[export]]
+name = "RpcBindingVectorFree"
+ordinal = 331
+
+[[export]]
+name = "RpcCancelAsyncCall"
+ordinal = 332
+note = "forwarded to RPCRT4.RpcAsyncCancelCall"
+
+[[export]]
+name = "RpcCancelThread"
+ordinal = 333
+
+[[export]]
+name = "RpcCancelThreadEx"
+ordinal = 334
+
+[[export]]
+name = "RpcCertGeneratePrincipalNameA"
+ordinal = 335
+
+[[export]]
+name = "RpcCertGeneratePrincipalNameW"
+ordinal = 336
+
+[[export]]
+name = "RpcCompleteAsyncCall"
+ordinal = 337
+note = "forwarded to RPCRT4.RpcAsyncCompleteCall"
+
+[[export]]
+name = "RpcEpRegisterA"
+ordinal = 338
+
+[[export]]
+name = "RpcEpRegisterNoReplaceA"
+ordinal = 339
+
+[[export]]
+name = "RpcEpRegisterNoReplaceW"
+ordinal = 340
+
+[[export]]
+name = "RpcEpRegisterW"
+ordinal = 341
+
+[[export]]
+name = "RpcEpResolveBinding"
+ordinal = 342
+
+[[export]]
+name = "RpcEpUnregister"
+ordinal = 343
+
+[[export]]
+name = "RpcGetAsyncCallStatus"
+ordinal = 344
+note = "forwarded to RPCRT4.RpcAsyncGetCallStatus"
+
+[[export]]
+name = "RpcIfIdVectorFree"
+ordinal = 345
+
+[[export]]
+name = "RpcIfInqId"
+ordinal = 346
+
+[[export]]
+name = "RpcImpersonateClient"
+ordinal = 347
+
+[[export]]
+name = "RpcInitializeAsyncHandle"
+ordinal = 348
+note = "forwarded to RPCRT4.RpcAsyncInitializeHandle"
+
+[[export]]
+name = "RpcMgmtEnableIdleCleanup"
+ordinal = 349
+
+[[export]]
+name = "RpcMgmtEpEltInqBegin"
+ordinal = 350
+
+[[export]]
+name = "RpcMgmtEpEltInqDone"
+ordinal = 351
+
+[[export]]
+name = "RpcMgmtEpEltInqNextA"
+ordinal = 352
+
+[[export]]
+name = "RpcMgmtEpEltInqNextW"
+ordinal = 353
+
+[[export]]
+name = "RpcMgmtEpUnregister"
+ordinal = 354
+
+[[export]]
+name = "RpcMgmtInqComTimeout"
+ordinal = 355
+
+[[export]]
+name = "RpcMgmtInqDefaultProtectLevel"
+ordinal = 356
+
+[[export]]
+name = "RpcMgmtInqIfIds"
+ordinal = 357
+
+[[export]]
+name = "RpcMgmtInqServerPrincNameA"
+ordinal = 358
+
+[[export]]
+name = "RpcMgmtInqServerPrincNameW"
+ordinal = 359
+
+[[export]]
+name = "RpcMgmtInqStats"
+ordinal = 360
+
+[[export]]
+name = "RpcMgmtIsServerListening"
+ordinal = 361
+
+[[export]]
+name = "RpcMgmtSetAuthorizationFn"
+ordinal = 362
+
+[[export]]
+name = "RpcMgmtSetCancelTimeout"
+ordinal = 363
+
+[[export]]
+name = "RpcMgmtSetComTimeout"
+ordinal = 364
+
+[[export]]
+name = "RpcMgmtSetServerStackSize"
+ordinal = 365
+
+[[export]]
+name = "RpcMgmtStatsVectorFree"
+ordinal = 366
+
+[[export]]
+name = "RpcMgmtStopServerListening"
+ordinal = 367
+
+[[export]]
+name = "RpcMgmtWaitServerListen"
+ordinal = 368
+
+[[export]]
+name = "RpcNetworkInqProtseqsA"
+ordinal = 369
+
+[[export]]
+name = "RpcNetworkInqProtseqsW"
+ordinal = 370
+
+[[export]]
+name = "RpcNetworkIsProtseqValidA"
+ordinal = 371
+
+[[export]]
+name = "RpcNetworkIsProtseqValidW"
+ordinal = 372
+
+[[export]]
+name = "RpcNsBindingInqEntryNameA"
+ordinal = 373
+
+[[export]]
+name = "RpcNsBindingInqEntryNameW"
+ordinal = 374
+
+[[export]]
+name = "RpcObjectInqType"
+ordinal = 375
+
+[[export]]
+name = "RpcObjectSetInqFn"
+ordinal = 376
+
+[[export]]
+name = "RpcObjectSetType"
+ordinal = 377
+
+[[export]]
+name = "RpcProtseqVectorFreeA"
+ordinal = 378
+
+[[export]]
+name = "RpcProtseqVectorFreeW"
+ordinal = 379
+
+[[export]]
+name = "RpcRaiseException"
+ordinal = 380
+
+[[export]]
+name = "RpcRegisterAsyncInfo"
+ordinal = 381
+note = "forwarded to RPCRT4.RpcAsyncRegisterInfo"
+
+[[export]]
+name = "RpcRevertToSelf"
+ordinal = 382
+
+[[export]]
+name = "RpcRevertToSelfEx"
+ordinal = 383
+
+[[export]]
+name = "RpcServerInqBindings"
+ordinal = 384
+
+[[export]]
+name = "RpcServerInqDefaultPrincNameA"
+ordinal = 385
+
+[[export]]
+name = "RpcServerInqDefaultPrincNameW"
+ordinal = 386
+
+[[export]]
+name = "RpcServerInqIf"
+ordinal = 387
+
+[[export]]
+name = "RpcServerListen"
+ordinal = 388
+
+[[export]]
+name = "RpcServerRegisterAuthInfoA"
+ordinal = 389
+
+[[export]]
+name = "RpcServerRegisterAuthInfoW"
+ordinal = 390
+
+[[export]]
+name = "RpcServerRegisterIf2"
+ordinal = 391
+
+[[export]]
+name = "RpcServerRegisterIf"
+ordinal = 392
+
+[[export]]
+name = "RpcServerRegisterIfEx"
+ordinal = 393
+
+[[export]]
+name = "RpcServerTestCancel"
+ordinal = 394
+
+[[export]]
+name = "RpcServerUnregisterIf"
+ordinal = 395
+
+[[export]]
+name = "RpcServerUseAllProtseqs"
+ordinal = 396
+
+[[export]]
+name = "RpcServerUseAllProtseqsEx"
+ordinal = 397
+
+[[export]]
+name = "RpcServerUseAllProtseqsIf"
+ordinal = 398
+
+[[export]]
+name = "RpcServerUseAllProtseqsIfEx"
+ordinal = 399
+
+[[export]]
+name = "RpcServerUseProtseqA"
+ordinal = 400
+
+[[export]]
+name = "RpcServerUseProtseqEpA"
+ordinal = 401
+
+[[export]]
+name = "RpcServerUseProtseqEpExA"
+ordinal = 402
+
+[[export]]
+name = "RpcServerUseProtseqEpExW"
+ordinal = 403
+
+[[export]]
+name = "RpcServerUseProtseqEpW"
+ordinal = 404
+
+[[export]]
+name = "RpcServerUseProtseqExA"
+ordinal = 405
+
+[[export]]
+name = "RpcServerUseProtseqExW"
+ordinal = 406
+
+[[export]]
+name = "RpcServerUseProtseqIfA"
+ordinal = 407
+
+[[export]]
+name = "RpcServerUseProtseqIfExA"
+ordinal = 408
+
+[[export]]
+name = "RpcServerUseProtseqIfExW"
+ordinal = 409
+
+[[export]]
+name = "RpcServerUseProtseqIfW"
+ordinal = 410
+
+[[export]]
+name = "RpcServerUseProtseqW"
+ordinal = 411
+
+[[export]]
+name = "RpcServerYield"
+ordinal = 412
+
+[[export]]
+name = "RpcSmAllocate"
+ordinal = 413
+
+[[export]]
+name = "RpcSmClientFree"
+ordinal = 414
+
+[[export]]
+name = "RpcSmDestroyClientContext"
+ordinal = 415
+
+[[export]]
+name = "RpcSmDisableAllocate"
+ordinal = 416
+
+[[export]]
+name = "RpcSmEnableAllocate"
+ordinal = 417
+
+[[export]]
+name = "RpcSmFree"
+ordinal = 418
+
+[[export]]
+name = "RpcSmGetThreadHandle"
+ordinal = 419
+
+[[export]]
+name = "RpcSmSetClientAllocFree"
+ordinal = 420
+
+[[export]]
+name = "RpcSmSetThreadHandle"
+ordinal = 421
+
+[[export]]
+name = "RpcSmSwapClientAllocFree"
+ordinal = 422
+
+[[export]]
+name = "RpcSsAllocate"
+ordinal = 423
+
+[[export]]
+name = "RpcSsDestroyClientContext"
+ordinal = 424
+
+[[export]]
+name = "RpcSsDisableAllocate"
+ordinal = 425
+
+[[export]]
+name = "RpcSsDontSerializeContext"
+ordinal = 426
+note = "forwarded to RPCRT4.I_RpcSsDontSerializeContext"
+
+[[export]]
+name = "RpcSsEnableAllocate"
+ordinal = 427
+
+[[export]]
+name = "RpcSsFree"
+ordinal = 428
+
+[[export]]
+name = "RpcSsGetContextBinding"
+ordinal = 429
+
+[[export]]
+name = "RpcSsGetThreadHandle"
+ordinal = 430
+
+[[export]]
+name = "RpcSsSetClientAllocFree"
+ordinal = 431
+
+[[export]]
+name = "RpcSsSetThreadHandle"
+ordinal = 432
+
+[[export]]
+name = "RpcSsSwapClientAllocFree"
+ordinal = 433
+
+[[export]]
+name = "RpcStringBindingComposeA"
+ordinal = 434
+
+[[export]]
+name = "RpcStringBindingComposeW"
+ordinal = 435
+
+[[export]]
+name = "RpcStringBindingParseA"
+ordinal = 436
+
+[[export]]
+name = "RpcStringBindingParseW"
+ordinal = 437
+
+[[export]]
+name = "RpcStringFreeA"
+ordinal = 438
+
+[[export]]
+name = "RpcStringFreeW"
+ordinal = 439
+
+[[export]]
+name = "RpcTestCancel"
+ordinal = 440
+
+[[export]]
+name = "TowerConstruct"
+ordinal = 441
+
+[[export]]
+name = "TowerExplode"
+ordinal = 442
+
+[[export]]
+name = "UuidCompare"
+ordinal = 443
+
+[[export]]
+name = "UuidCreate"
+ordinal = 444
+
+[[export]]
+name = "UuidCreateNil"
+ordinal = 445
+
+[[export]]
+name = "UuidCreateSequential"
+ordinal = 446
+
+[[export]]
+name = "UuidEqual"
+ordinal = 447
+
+[[export]]
+name = "UuidFromStringA"
+ordinal = 448
+
+[[export]]
+name = "UuidFromStringW"
+ordinal = 449
+
+[[export]]
+name = "UuidHash"
+ordinal = 450
+
+[[export]]
+name = "UuidIsNil"
+ordinal = 451
+
+[[export]]
+name = "UuidToStringA"
+ordinal = 452
+
+[[export]]
+name = "UuidToStringW"
+ordinal = 453
+
+[[export]]
+name = "char_array_from_ndr"
+ordinal = 454
+
+[[export]]
+name = "char_from_ndr"
+ordinal = 455
+
+[[export]]
+name = "data_from_ndr"
+ordinal = 456
+
+[[export]]
+name = "data_into_ndr"
+ordinal = 457
+
+[[export]]
+name = "data_size_ndr"
+ordinal = 458
+
+[[export]]
+name = "double_array_from_ndr"
+ordinal = 459
+
+[[export]]
+name = "double_from_ndr"
+ordinal = 460
+
+[[export]]
+name = "enum_from_ndr"
+ordinal = 461
+
+[[export]]
+name = "float_array_from_ndr"
+ordinal = 462
+
+[[export]]
+name = "float_from_ndr"
+ordinal = 463
+
+[[export]]
+name = "long_array_from_ndr"
+ordinal = 464
+
+[[export]]
+name = "long_from_ndr"
+ordinal = 465
+
+[[export]]
+name = "long_from_ndr_temp"
+ordinal = 466
+
+[[export]]
+name = "short_array_from_ndr"
+ordinal = 467
+
+[[export]]
+name = "short_from_ndr"
+ordinal = 468
+
+[[export]]
+name = "short_from_ndr_temp"
+ordinal = 469
+
+[[export]]
+name = "tree_into_ndr"
+ordinal = 470
+
+[[export]]
+name = "tree_peek_ndr"
+ordinal = 471
+
+[[export]]
+name = "tree_size_ndr"
+ordinal = 472

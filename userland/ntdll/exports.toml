@@ -42,6 +42,10 @@ key = "loader"
 title = "the loader"
 
 [[group]]
+key = "debug"
+title = "the debugger's print"
+
+[[group]]
 key = "internal"
 title = "F2K-internal entry points"
 
@@ -592,6 +596,17 @@ impl = { native = "RtlUnwind" }
 ordinal = 666
 note = "x86 NT's semantics: TargetIp ignored, the caller resumed through NtContinue; collided unwinds, INVALID_UNWIND_TARGET and BAD_STACK; a NULL target is an exit unwind, then the second chance"
 
+# --- the debugger's print (src/dbgprint.s, src/dbgprint.rs over rtl::printf) ---------------------
+
+[[export]]
+name = "DbgPrint"
+group = "debug"
+args = ["strA Format", "..."]
+impl = { native = "DbgPrint" }
+ordinal = 21
+fails = "0xC0000002"
+note = "cdecl; the text goes to COM1 (the kernel has no debugger); a conversion rtl::printf does not serve takes the stub path (STATUS_NOT_IMPLEMENTED)"
+
 # --- critical sections and the PEB lock (src/critsec.s over rtl::critsec) ----------------------
 
 [[export]]
@@ -905,10 +920,6 @@ ordinal = 19
 [[export]]
 name = "DbgBreakPoint"
 ordinal = 20
-
-[[export]]
-name = "DbgPrint"
-ordinal = 21
 
 [[export]]
 name = "DbgPrintReturnControlC"

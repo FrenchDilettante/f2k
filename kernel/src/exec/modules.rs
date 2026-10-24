@@ -238,8 +238,13 @@ mod tests {
     // as the spec declares them.
     include!(concat!(env!("OUT_DIR"), "/kernel32_natives.rs"));
 
-    // `DLL_EXPORTS`: every export kernel32's table carries, from its export spec.
+    // `DLL_EXPORTS`: every export kernel32's table carries that it implements, from its export
+    // spec.
     include!(concat!(env!("OUT_DIR"), "/kernel32_exports.rs"));
+
+    // `STUB_EXPORTS`: the exports kernel32's table carries whose generated bodies fail (programs
+    // load against them).
+    include!(concat!(env!("OUT_DIR"), "/kernel32_stubs.rs"));
 
     /// The embedded system DLLs: i386 DLL images at their bases, clear of each other and of kernel
     /// space, with file offsets equal to RVAs (the export reads rely on it: the file is the mapped
@@ -339,11 +344,17 @@ mod tests {
                 kernel32_export(thunk).unwrap_or_else(|| panic!("kernel32 exports no {thunk}")),
             );
         }
+        // The stubs' generated bodies: each its own, handing its own export's description on.
+        for &(name, _) in &STUB_EXPORTS {
+            addresses.push(
+                kernel32_export(name).unwrap_or_else(|| panic!("kernel32 exports no {name}")),
+            );
+        }
         addresses.sort_unstable();
         addresses.dedup();
         assert_eq!(
             addresses.len(),
-            NATIVE_EXPORTS.len() + 2,
+            NATIVE_EXPORTS.len() + 2 + STUB_EXPORTS.len(),
             "every export has its own code"
         );
     }
@@ -465,9 +476,9 @@ mod tests {
         imports
     }
 
-    /// kernel32 exports exactly what the corpus binaries import: every import of every corpus
-    /// binary resolves, and every export is imported by some corpus binary. The export names
-    /// are unique.
+    /// kernel32 implements exactly what the corpus binaries import: every import of every corpus
+    /// binary resolves, and every export it implements is imported by some corpus binary (its
+    /// stubs are for programs outside the corpus). The export names are unique.
     #[test]
     fn the_surface_is_the_corpus_import_surface() {
         let names: Vec<&str> = DLL_EXPORTS.iter().map(|&(name, _)| name).collect();

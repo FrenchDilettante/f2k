@@ -110,12 +110,18 @@ The tests declare which exports they pin, as `dll.Export`: a corpus fixture in i
 `fixture.toml`'s `[pins]` (per section; `"*"` for every block), a host scenario in its doc
 comment's `/// Pins:` lines. `scripts/compat.py` derives each export's status from its pinning
 tests' last results: unimplemented (grey), implemented and passing (green), implemented with a
-failing test (red), or implemented with no passing test (yellow: none pins it, or every test that
-does is pending, skipped or did not run). Every `make test` keeps its results
+failing test (red), implemented with no passing test (yellow: none pins it, or every test that
+does is pending, skipped or did not run), or stubbed (grey with a teal tint). Every
+`make test` keeps its results
 (`target/test-results/pytest.json`); `make compat-report` runs the host scenarios and draws the
 report from both, `target/compat/report.html`: one square per export, per DLL. `--check` checks the
 pins against the specs and the captures; `--run` runs every scenario, ignored ones included, and
 fails once a gap's test passes (the marker goes with the fix).
+
+A stub (`impl = { stub = "<reason>" }` in the spec) is an export that exists but does nothing
+yet: when called, it writes a line to COM1 with its arguments and the reason, then fails the way
+the real function fails. Code that hits a case it doesn't handle yet can do the same, through
+`stub::stubbed`.
 ```bash
 uv run scripts/compat.py --check
 uv run scripts/compat.py --run
@@ -124,12 +130,15 @@ make compat-report   # the report, after a `make test`
 ```
 
 Each spec lists every export of Windows 2000's own DLL (SP4's: ntdll, kernel32, advapi32, user32,
-gdi32, msvcrt, ole32, oleaut32, psapi and version): an export F2K does not implement yet is a catalogued record (its name and
+gdi32, msvcrt, ole32, oleaut32, rpcrt4, psapi and version): an export F2K does not implement yet is a catalogued record (its name and
 ordinal, no implementation; nothing is generated for it), and every implemented export carries
 its Windows 2000 ordinal. `scripts/dump_exports.py` reads a real DLL's export table (ordinals,
-names, forwarders, data exports) into `userland/<dll>/exports-<file version>.txt`, and
-`scripts/catalogue_exports.py` folds it into the spec (checking the spec's exports and forwarders
-against it first); the dumps go once folded, and the DLLs themselves never enter the repository.
+names, forwarders, data exports) into `userland/<dll>/exports-<file version>.txt`, and its import
+table (each module it imports from, delay-loaded ones marked) into
+`userland/<dll>/imports-<file version>.txt`; `scripts/catalogue_exports.py` folds the export dump
+into the spec (checking the spec's exports and forwarders against it first); the export dumps go
+once folded, and the DLLs themselves never enter the repository. The import tables stay:
+`compat.py --check` fails if one of our DLLs imports something the real one doesn't.
 
 ### Everything
 `make check-all` runs the test systems in turn, fastest first,
@@ -219,7 +228,7 @@ f2k/
 │   ├── gen-files-data.py  # The files fixture's data tree (tests/files/DATA)
 │   ├── gen-nt-tables.py   # Windows 2000's service numbers and the status table, regenerated
 │   ├── compat.py          # The DLL compatibility: the pins checked, the scenarios run, the report
-│   ├── dump_exports.py    # A real DLL's export table, dumped
+│   ├── dump_exports.py    # A real DLL's export and import tables, dumped
 │   └── catalogue_exports.py  # A dumped export table folded into its DLL's spec
 │
 ├── pyproject.toml    # The Python tooling (uv): pytest for the on-target tests

@@ -40,6 +40,11 @@ fn main() {
         "kernel32_exports.rs",
         exportgen::emit::dll_exports(&kernel32, source),
     );
+    write(
+        &out,
+        "kernel32_stubs.rs",
+        exportgen::emit::stub_exports(&kernel32, source),
+    );
 
     let dlls = manifest.join("../target/userland/i686-f2k-pe/release");
     for dll in ["ntdll.dll", "kernel32.dll"] {

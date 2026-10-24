@@ -19,7 +19,9 @@
 //! thread's start and end: LdrInitializeThunk, which the kernel delivers before a fresh thread's
 //! first instruction (`src/ldr.s`: the process heap, the PEB lock and the loader lock, the thread's
 //! implicit TLS), and LdrShutdownThread and LdrShutdownProcess, kernel32's ExitThread's and
-//! ExitProcess's. The kernel finds LdrInitializeThunk and the two
+//! ExitProcess's; DbgPrint (`src/dbgprint.s`, `src/dbgprint.rs` over `rtl::printf`: the text to the
+//! kernel's debugger channel, COM1); and the stub routine its stubbed exports' generated bodies go
+//! to (`src/stub.rs`). The kernel finds LdrInitializeThunk and the two
 //! dispatchers by their export names.
 
 #![no_std]
@@ -28,10 +30,16 @@
 extern crate rtl;
 
 mod curdir;
+mod dbgprint;
 mod env;
 mod except;
 mod loader;
 mod status;
+mod stub;
+
+// The exports' descriptions (`spec`) and the stubbed exports' bodies, generated from exports.toml
+// (tools/exportgen; see `stub`).
+include!(concat!(env!("OUT_DIR"), "/exports.rs"));
 
 core::arch::global_asm!(
     include_str!(concat!(env!("OUT_DIR"), "/consts.s")),
@@ -41,6 +49,7 @@ core::arch::global_asm!(
     include_str!("csr.s"),
     include_str!("critsec.s"),
     include_str!("heap.s"),
+    include_str!("dbgprint.s"),
 );
 
 use rtl::critsec::{CriticalSection, STATUS_SUCCESS};

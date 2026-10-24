@@ -112,6 +112,9 @@ pub enum ArgKind {
         optional: bool,
         limit: Option<u32>,
     },
+    /// A cdecl export's variable arguments (`...`, the last argument, without a name): the caller
+    /// pushes them and pops them; the block counts none of them.
+    Varargs,
 }
 
 /// What a typed pointer points to.
@@ -157,6 +160,7 @@ impl ArgKind {
     pub fn bytes(self) -> u32 {
         match self {
             ArgKind::U64 => 8,
+            ArgKind::Varargs => 0,
             _ => 4,
         }
     }
@@ -213,6 +217,7 @@ impl ArgKind {
             ArgKind::Ptr => "ptr".into(),
             ArgKind::PtrTo(pointee) => format!("ptr<{}>", pointee.word()),
             ArgKind::U64 => "u64".into(),
+            ArgKind::Varargs => "...".into(),
             ArgKind::Str {
                 wide,
                 optional,
@@ -239,6 +244,11 @@ pub enum Implementation {
     Native(String),
     /// Forwarded to another module's export (`NTDLL.RtlUnwind`).
     Forward(String),
+    /// Not written yet: a generated body logs the call, every argument, and the reason (leading
+    /// with the milestone or gap that writes it: `M2: child processes`), then fails as the export
+    /// fails (its `fails` value, the last error ERROR_CALL_NOT_IMPLEMENTED), or raises for an
+    /// export that cannot fail (`never`).
+    Stub(String),
 }
 
 impl Implementation {
@@ -341,6 +351,14 @@ impl Spec {
             .collect()
     }
 
+    /// The stubbed exports, in file order.
+    pub fn stubs(&self) -> Vec<&Export> {
+        self.exports
+            .iter()
+            .filter(|e| matches!(e.implementation, Implementation::Stub(_)))
+            .collect()
+    }
+
     /// The export named `name`.
     pub fn export(&self, name: &str) -> Option<&Export> {
         self.exports.iter().find(|e| e.name == name)
@@ -436,8 +454,9 @@ fn read_catalogued(table: &Table, index: usize) -> Result<Catalogued, String> {
         Some(Value::String(name)) => format!("export {name:?}"),
         _ => format!("export #{}", index + 1),
     };
-    allow(table, &["name", "ordinal", "data", "note"], &context)
-        .map_err(|e| format!("{e} (an export without an impl is catalogued: name, ordinal, data, note)"))?;
+    allow(table, &["name", "ordinal", "data", "note"], &context).map_err(|e| {
+        format!("{e} (an export without an impl is catalogued: name, ordinal, data, note)")
+    })?;
     let name = string(table, "name", &context)?;
     if !is_identifier(&name) {
         return Err(format!("{context}: the name must be an identifier"));
@@ -449,7 +468,10 @@ fn read_catalogued(table: &Table, index: usize) -> Result<Catalogued, String> {
             None => false,
             Some(Value::Boolean(flag)) => *flag,
             Some(other) => {
-                return Err(format!("{context}: data must be a boolean, not {}", other.kind()))
+                return Err(format!(
+                    "{context}: data must be a boolean, not {}",
+                    other.kind()
+                ))
             }
         },
         note: optional_string(table, "note", &context)?,
@@ -500,6 +522,12 @@ fn read_export(table: &Table, index: usize, groups: &[Group]) -> Result<Export, 
     let args = strings(table, "args", &context)?
         .into_iter()
         .map(|text| {
+            if text == "..." {
+                return Ok(Arg {
+                    kind: ArgKind::Varargs,
+                    name: String::new(),
+                });
+            }
             let (kind, arg) = text
                 .split_once(' ')
                 .ok_or_else(|| format!("{context}: argument {text:?} is not \"<kind> <name>\""))?;
@@ -520,6 +548,13 @@ fn read_export(table: &Table, index: usize, groups: &[Group]) -> Result<Export, 
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
+    if let Some(at) = args.iter().position(|a| a.kind == ArgKind::Varargs) {
+        if at + 1 != args.len() {
+            return Err(format!(
+                "{context}: the variable arguments (\"...\") come last"
+            ));
+        }
+    }
     let implementation = match table.get("impl") {
         Some(Value::Table(spec)) if spec.entries.len() == 1 => {
             let (kind, value) = &spec.entries[0];
@@ -537,6 +572,14 @@ fn read_export(table: &Table, index: usize, groups: &[Group]) -> Result<Export, 
                     Implementation::Syscall(value.clone())
                 }
                 "native" => Implementation::Native(value.clone()),
+                "stub" => {
+                    if value.trim().is_empty() {
+                        return Err(format!(
+                            "{context}: a stub gives its reason (\"M2: child processes\")"
+                        ));
+                    }
+                    Implementation::Stub(value.clone())
+                }
                 "forward" => {
                     let valid = value.split_once('.').is_some_and(|(module, export)| {
                         is_identifier(module) && (is_identifier(export) || export.starts_with('#'))
@@ -550,7 +593,7 @@ fn read_export(table: &Table, index: usize, groups: &[Group]) -> Result<Export, 
                 }
                 _ => {
                     return Err(format!(
-                        "{context}: impl kind {kind:?} (syscall, native, forward)"
+                        "{context}: impl kind {kind:?} (syscall, native, forward, stub)"
                     ))
                 }
             }
@@ -578,6 +621,15 @@ fn read_export(table: &Table, index: usize, groups: &[Group]) -> Result<Export, 
         return Err(format!(
             "{context}: a syscall returns its NTSTATUS: it declares no failure return (fails)"
         ));
+    }
+    if matches!(implementation, Implementation::Stub(_)) && fails.is_none() {
+        return Err(format!(
+            "{context}: a stub fails as the export fails: it declares its failure return (fails; \
+             void or never when it has none)"
+        ));
+    }
+    if implementation.is_syscall() && args.iter().any(|a| a.kind == ArgKind::Varargs) {
+        return Err(format!("{context}: a syscall takes no variable arguments"));
     }
     if implementation.is_syscall() && args.iter().any(|a| matches!(a.kind, ArgKind::Str { .. })) {
         return Err(format!(
@@ -690,6 +742,9 @@ pub(crate) fn optional_strings(
 
 impl std::fmt::Display for Arg {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.kind == ArgKind::Varargs {
+            return f.write_str("...");
+        }
         write!(f, "{} {}", self.kind.word(), self.name)
     }
 }
@@ -895,7 +950,10 @@ ordinal = 0x10
         // are the spec's like any other's; a system service's Zw alias is not catalogued apart.
         for (record, message) in [
             ("name = \"AddAtomA\"", "platform ordinal"),
-            ("name = \"AddAtomA\"\nordinal = 1\ngroup = \"termination\"", "unknown key"),
+            (
+                "name = \"AddAtomA\"\nordinal = 1\ngroup = \"termination\"",
+                "unknown key",
+            ),
             ("name = \"AddAtomA\"\nordinal = 0x10", "share ordinal 16"),
             ("name = \"GetVersion\"\nordinal = 2", "declared twice"),
         ] {
@@ -905,16 +963,58 @@ ordinal = 0x10
         }
         let zw = "[[group]]\nkey = \"nt\"\ntitle = \"nt\"\n\n[[export]]\nname = \"NtClose\"\ngroup = \"nt\"\n\
                   args = [\"handle Handle\"]\nimpl = { syscall = \"x\" }\nzw_ordinal = 3\n";
-        assert_eq!(parse_spec(zw).unwrap().export("NtClose").unwrap().zw_ordinal, Some(3));
+        assert_eq!(
+            parse_spec(zw)
+                .unwrap()
+                .export("NtClose")
+                .unwrap()
+                .zw_ordinal,
+            Some(3)
+        );
         let apart = format!("{zw}\n[[export]]\nname = \"ZwClose\"\nordinal = 4\n");
         assert!(parse_spec(&apart).unwrap_err().contains("alias"));
         let clash = format!("{zw}\n[[export]]\nname = \"NtYieldExecution\"\nordinal = 3\n");
         assert!(parse_spec(&clash).unwrap_err().contains("share ordinal 3"));
         let not_a_service = SPEC.replacen("ordinal = 0x10", "ordinal = 0x10\nzw_ordinal = 3", 1);
-        assert!(parse_spec(&not_a_service).unwrap_err().contains("zw_ordinal"));
+        assert!(parse_spec(&not_a_service)
+            .unwrap_err()
+            .contains("zw_ordinal"));
         let twice = format!(
             "{SPEC}\n[[export]]\nname = \"GetVersion\"\ngroup = \"termination\"\nargs = []\nimpl = {{ native = \"x\" }}\n"
         );
         assert!(parse_spec(&twice).unwrap_err().contains("declared twice"));
+        // A stub gives its reason and its failure return; the variable arguments come last.
+        for (record, message) in [
+            (
+                "args = []\nimpl = { stub = \"\" }\nfails = \"FALSE\"",
+                "its reason",
+            ),
+            ("args = []\nimpl = { stub = \"M2: x\" }", "failure return"),
+            (
+                "args = [\"...\", \"u32 x\"]\nimpl = { native = \"x\" }",
+                "come last",
+            ),
+        ] {
+            let text = format!(
+                "{SPEC}\n[[export]]\nname = \"Stubbed\"\ngroup = \"termination\"\n{record}\n"
+            );
+            let error = parse_spec(&text).unwrap_err();
+            assert!(error.contains(message), "{record}: {error}");
+        }
+        let syscall = "[[group]]\nkey = \"nt\"\ntitle = \"nt\"\n\n[[export]]\nname = \"NtClose\"\n\
+                       group = \"nt\"\nargs = [\"handle x\", \"...\"]\nimpl = { syscall = \"x\" }\n";
+        assert!(parse_spec(syscall)
+            .unwrap_err()
+            .contains("variable arguments"));
+        let stub = format!(
+            "{SPEC}\n[[export]]\nname = \"Stubbed\"\ngroup = \"termination\"\nargs = [\"strA f\", \"...\"]\n\
+             impl = {{ stub = \"M2: x\" }}\nfails = \"void\"\n"
+        );
+        let spec = parse_spec(&stub).unwrap();
+        let stubbed = spec.export("Stubbed").unwrap();
+        assert_eq!(stubbed.implementation, Implementation::Stub("M2: x".into()));
+        assert_eq!(stubbed.arg_bytes(), 4);
+        assert_eq!(stubbed.args[1].to_string(), "...");
+        assert_eq!(spec.stubs().len(), 1);
     }
 }

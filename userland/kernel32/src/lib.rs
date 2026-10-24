@@ -41,6 +41,7 @@ pub mod nt;
 pub mod process;
 pub mod shared;
 pub mod startup;
+pub mod stub;
 pub mod sync;
 pub mod thread;
 pub mod time;
@@ -48,3 +49,7 @@ pub mod vm;
 
 #[cfg(test)]
 mod scenarios;
+
+// The exports' descriptions (`spec`) and the stubbed exports' bodies, generated from exports.toml
+// (tools/exportgen; see `stub`).
+include!(concat!(env!("OUT_DIR"), "/exports.rs"));
