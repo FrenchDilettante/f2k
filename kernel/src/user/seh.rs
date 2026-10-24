@@ -289,7 +289,7 @@ mod tests {
             eip: 0x0040_1234,
             cs: 0x1B,
             eflags: 0x0000_0246,
-            user_esp: 0x0030_0F00,
+            user_esp: 0x0012_FF00,
             user_ss: 0x23,
         }
     }
@@ -299,10 +299,10 @@ mod tests {
     #[test]
     fn the_context_round_trips() {
         let original = frame();
-        let image = context_image(&original, 0x0040_9999, 0x0030_0E00);
+        let image = context_image(&original, 0x0040_9999, 0x0012_FE00);
         assert_eq!(word(&image, 0), CONTEXT_FULL);
         assert_eq!(word(&image, 0xB8), 0x0040_9999, "Eip");
-        assert_eq!(word(&image, 0xC4), 0x0030_0E00, "Esp");
+        assert_eq!(word(&image, 0xC4), 0x0012_FE00, "Esp");
         assert_eq!(word(&image, 0xB0), 7, "Eax");
         assert_eq!(word(&image, 0x9C), 1, "Edi");
         assert_eq!(word(&image, 0xBC), 0x1B, "SegCs");
@@ -316,7 +316,7 @@ mod tests {
         restore_context(&mut restored, &image);
         assert_eq!(
             (restored.eip, restored.user_esp),
-            (0x0040_9999, 0x0030_0E00)
+            (0x0040_9999, 0x0012_FE00)
         );
         assert_eq!(
             (
@@ -334,7 +334,7 @@ mod tests {
     /// The restore takes only the register sets the context's flags name.
     #[test]
     fn the_restore_follows_the_context_flags() {
-        let mut image = context_image(&frame(), 0x0040_9999, 0x0030_0E00);
+        let mut image = context_image(&frame(), 0x0040_9999, 0x0012_FE00);
         image[..4].copy_from_slice(&CONTEXT_INTEGER.to_le_bytes());
         let mut restored = TrapFrame {
             eip: 0x1111,
@@ -377,7 +377,7 @@ mod tests {
     /// the trap flag (a single step) and the arithmetic and direction flags are the context's.
     #[test]
     fn the_restore_sanitizes_eflags() {
-        let mut image = context_image(&frame(), 0x0040_9999, 0x0030_0E00);
+        let mut image = context_image(&frame(), 0x0040_9999, 0x0012_FE00);
         image[at::EFLAGS..at::EFLAGS + 4]
             .copy_from_slice(&(0x0000_3000 | TRAP_FLAG | DIRECTION_FLAG | 1).to_le_bytes());
         let mut restored = frame();
@@ -432,8 +432,8 @@ mod tests {
             (record_length(0), record_length(2), record_length(99)),
             (20, 28, 80)
         );
-        let (context, record, arguments) = exception_layout(0x0030_0F02, record_length(2)).unwrap();
-        assert_eq!(context, 0x0030_0F00 - CONTEXT_SIZE as u32);
+        let (context, record, arguments) = exception_layout(0x0012_FF02, record_length(2)).unwrap();
+        assert_eq!(context, 0x0012_FF00 - CONTEXT_SIZE as u32);
         assert_eq!(record, context - 28);
         assert_eq!(arguments, record - 8);
     }

@@ -200,7 +200,7 @@ mod tests {
             eip: 0x0040_1234,
             cs: 0x1B,
             eflags: 0x0000_0246,
-            user_esp: 0x0030_0F00,
+            user_esp: 0x0012_FF00,
             user_ss: 0x23,
         }
     }
@@ -212,7 +212,7 @@ mod tests {
     fn the_delivery_image_round_trips_the_context() {
         let original = frame();
         let (esp, image) = delivery_image(&original, [0x0040_5000, 7, 0x89AB_CDEF, 0x01C0_8D9A]);
-        assert_eq!(esp, 0x0030_0F00 - 16 - CONTEXT_SIZE as u32);
+        assert_eq!(esp, 0x0012_FF00 - 16 - CONTEXT_SIZE as u32);
         let call: Vec<u32> = (0..CALL_WORDS)
             .map(|i| super::super::seh::word(&image, i * 4))
             .collect();

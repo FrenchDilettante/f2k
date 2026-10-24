@@ -952,10 +952,10 @@ mod tests {
         frame.cs = 0x08; // ring 0: reconstructed from the stub's stack
         assert_eq!(interrupted_esp(&frame, 0), 0x8013_A000 + 5 * 4);
         frame.cs = 0x1B; // ring 3: the pushed user ESP wins
-        assert_eq!(interrupted_esp(&frame, 0x0030_1000), 0x0030_1000);
-        assert_ne!(interrupted_esp(&frame, 0x0030_1000), 0x8013_A000 + 5 * 4);
+        assert_eq!(interrupted_esp(&frame, 0x0013_0000), 0x0013_0000);
+        assert_ne!(interrupted_esp(&frame, 0x0013_0000), 0x8013_A000 + 5 * 4);
         frame.cs = 0x07; // only the low two bits decide
-        assert_eq!(interrupted_esp(&frame, 0x0030_1000), 0x0030_1000);
+        assert_eq!(interrupted_esp(&frame, 0x0013_0000), 0x0013_0000);
     }
 
     /// The IDTR limit is the offset of the last valid byte: table size minus one. This checks the

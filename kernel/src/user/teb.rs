@@ -314,24 +314,24 @@ mod tests {
     #[test]
     fn fresh_teb_words() {
         let init = TebInit {
-            teb: 0x0031_0000,
-            stack_base: 0x0030_1000,
-            stack_limit: 0x002F_F000,
-            deallocation_stack: 0x002F_F000,
+            teb: 0x7FFD_E000,
+            stack_base: 0x0013_0000,
+            stack_limit: 0x0012_E000,
+            deallocation_stack: 0x0003_0000,
             process_id: 8,
             thread_id: 12,
-            peb: 0x0033_0000,
+            peb: 0x7FFD_F000,
         };
         let words = teb_words(&init);
         let value = |offset| words.iter().find(|&&(o, _)| o == offset).map(|&(_, v)| v);
         assert_eq!(value(teb_offset::EXCEPTION_LIST), Some(END_OF_CHAIN));
-        assert_eq!(value(teb_offset::SELF), Some(0x0031_0000));
-        assert_eq!(value(teb_offset::STACK_BASE), Some(0x0030_1000));
-        assert_eq!(value(teb_offset::STACK_LIMIT), Some(0x002F_F000));
-        assert_eq!(value(teb_offset::DEALLOCATION_STACK), Some(0x002F_F000));
+        assert_eq!(value(teb_offset::SELF), Some(0x7FFD_E000));
+        assert_eq!(value(teb_offset::STACK_BASE), Some(0x0013_0000));
+        assert_eq!(value(teb_offset::STACK_LIMIT), Some(0x0012_E000));
+        assert_eq!(value(teb_offset::DEALLOCATION_STACK), Some(0x0003_0000));
         assert_eq!(value(teb_offset::PROCESS_ID), Some(8));
         assert_eq!(value(teb_offset::THREAD_ID), Some(12));
-        assert_eq!(value(teb_offset::PEB), Some(0x0033_0000));
+        assert_eq!(value(teb_offset::PEB), Some(0x7FFD_F000));
         assert_eq!(value(teb_offset::CURRENT_LOCALE), Some(0x0409));
         assert_eq!(value(teb_offset::LAST_ERROR), None);
         assert_eq!(
@@ -348,7 +348,7 @@ mod tests {
     /// A console image linked for subsystem 4.0, as MSVC 6 links one.
     const CONSOLE_4_0: PebInit = PebInit {
         image_base: 0x0040_0000,
-        parameters: 0x0032_0000,
+        parameters: 0x0002_0000,
         subsystem: 3,
         subsystem_version: (4, 0),
     };
@@ -358,7 +358,7 @@ mod tests {
     /// version, from its optional header.
     #[test]
     fn fresh_peb_version_fields() {
-        let words = peb_words(0x0033_0000, &CONSOLE_4_0);
+        let words = peb_words(0x7FFD_F000, &CONSOLE_4_0);
         let value = |offset| words.iter().find(|&&(o, _)| o == offset).map(|&(_, v)| v);
         assert_eq!(value(0xA4), Some(5), "OSMajorVersion");
         assert_eq!(value(0xA8), Some(0), "OSMinorVersion");
@@ -378,10 +378,10 @@ mod tests {
         );
         assert_eq!(
             value(0x1E0),
-            Some(0x0032_0000 + crate::user::params::CSD_VERSION_BUFFER)
+            Some(0x0002_0000 + crate::user::params::CSD_VERSION_BUFFER)
         );
         let bare = peb_words(
-            0x0033_0000,
+            0x7FFD_F000,
             &PebInit {
                 parameters: 0,
                 ..CONSOLE_4_0
@@ -400,11 +400,11 @@ mod tests {
     /// makes them). Past the PEB proper only the headers, clear of kernel32's filter slot.
     #[test]
     fn fresh_peb_words() {
-        let peb = 0x0033_0000;
+        let peb = 0x7FFD_F000;
         let words = peb_words(peb, &CONSOLE_4_0);
         let value = |offset| words.iter().find(|&&(o, _)| o == offset).map(|&(_, v)| v);
         assert_eq!(value(peb_offset::IMAGE_BASE_ADDRESS), Some(0x0040_0000));
-        assert_eq!(value(peb_offset::PROCESS_PARAMETERS), Some(0x0032_0000));
+        assert_eq!(value(peb_offset::PROCESS_PARAMETERS), Some(0x0002_0000));
         assert_eq!(value(peb_offset::LDR), None, "ntdll's to make");
         assert_eq!(value(peb_offset::PROCESS_HEAP), None);
         assert_eq!(value(peb_offset::NUMBER_OF_HEAPS), None, "no heap yet");

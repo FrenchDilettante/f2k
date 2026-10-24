@@ -108,7 +108,7 @@ pub fn grow_on_guard(address: u32) -> Growth {
 mod tests {
     use super::*;
 
-    const TOP: u32 = 0x0030_1000;
+    const TOP: u32 = 0x0013_0000;
     const BOTTOM: u32 = TOP - 0x10_0000;
 
     /// A guard firing inside the reservation is the stack's: its page becomes the limit and the

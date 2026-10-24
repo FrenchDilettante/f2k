@@ -239,7 +239,7 @@ mod tests {
             top,
             &params(Some(UserStart {
                 eip: 0x0040_1234,
-                esp: 0x0030_8000,
+                esp: 0x0012_8000,
                 ..Default::default()
             })),
             STARTUP,
@@ -276,7 +276,7 @@ mod tests {
             top,
             &params(Some(UserStart {
                 eip: 0x0040_1234,
-                esp: 0x0030_8000,
+                esp: 0x0012_8000,
                 ..Default::default()
             })),
             STARTUP,
@@ -303,11 +303,11 @@ mod tests {
     fn planted_trap_frame_contents() {
         let frame = user_trap_frame(&UserStart {
             eip: 0x0040_1234,
-            esp: 0x0030_8000,
+            esp: 0x0012_8000,
             ..Default::default()
         });
         assert_eq!(frame.eip, 0x0040_1234);
-        assert_eq!(frame.user_esp, 0x0030_8000);
+        assert_eq!(frame.user_esp, 0x0012_8000);
         assert_eq!(frame.cs, 0x1B);
         assert_eq!(frame.user_ss, 0x23);
         assert_eq!(frame.cs & 3, 3);
@@ -324,14 +324,14 @@ mod tests {
         // A start with registers (a CONTEXT's) carries them into the frame.
         let frame = user_trap_frame(&UserStart {
             eip: 0x7C4E_1000,
-            esp: 0x0030_0FFC,
+            esp: 0x0012_FFFC,
             eax: 0x0040_1000,
             ebx: 0x1234,
             ..Default::default()
         });
         assert_eq!(
             (frame.eip, frame.user_esp, frame.eax, frame.ebx),
-            (0x7C4E_1000, 0x0030_0FFC, 0x0040_1000, 0x1234)
+            (0x7C4E_1000, 0x0012_FFFC, 0x0040_1000, 0x1234)
         );
         assert_eq!(
             (frame.ecx, frame.edx, frame.esi, frame.edi, frame.ebp, frame.esp),
@@ -350,7 +350,7 @@ mod tests {
             top,
             &params(Some(UserStart {
                 eip: 0x0040_1234,
-                esp: 0x0030_8000,
+                esp: 0x0012_8000,
                 ..Default::default()
             })),
             STARTUP,
@@ -397,7 +397,7 @@ mod tests {
             gate_slot_top(0),
             &params(Some(UserStart {
                 eip: 0x0040_1234,
-                esp: 0x0030_8000,
+                esp: 0x0012_8000,
                 ..Default::default()
             })),
             STARTUP,
@@ -427,7 +427,7 @@ mod tests {
                 top,
                 &params(Some(UserStart {
                     eip: 0x0040_1234,
-                    esp: 0x0030_8000,
+                    esp: 0x0012_8000,
                     ..Default::default()
                 })),
                 STARTUP,

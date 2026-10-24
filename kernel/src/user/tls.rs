@@ -54,7 +54,7 @@ mod tests {
     /// The slots: the TEB's first, then the expansion slots' (none before they exist).
     #[test]
     fn slots_address_the_teb_then_the_expansion_slots() {
-        let (teb, expansion) = (0x0031_0000, 0x0014_2000);
+        let (teb, expansion) = (0x7FFD_E000, 0x0014_2000);
         assert_eq!(slot_address(teb, expansion, 0), Some(teb + 0xE10));
         assert_eq!(slot_address(teb, expansion, 63), Some(teb + 0xE10 + 63 * 4));
         assert_eq!(slot_address(teb, expansion, 64), Some(expansion));

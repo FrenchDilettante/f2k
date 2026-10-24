@@ -11,9 +11,12 @@ timeout = 60
 
 [masks]
 # The command line's buffer follows the process parameters' strings before it (the current
-# directory, the program's path), whose lengths depend on where the fixture sits.
+# directory, the program's path), whose lengths depend on where the fixture sits. A second thread's
+# stack lands wherever the address space has room for its reservation when the thread is made,
+# which follows what the program and its DLLs reserved before it.
 layout = [
     "parent: environment 0x00010000, command line buffer *",
+    "second thread: stack base *, limit *",
     "child: environment 0x00010000, command line buffer *",
 ]
 

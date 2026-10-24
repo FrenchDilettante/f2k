@@ -519,7 +519,7 @@ mod tests {
     fn the_basic_information_is_the_nt_layout() {
         let bytes = basic_information(&BasicInformation {
             exit_status: 259,
-            teb: 0x0031_0000,
+            teb: 0x7FFD_E000,
             process_id: 8,
             thread_id: 12,
             priority: 9,
@@ -528,7 +528,7 @@ mod tests {
         let word = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
         assert_eq!(
             (word(0), word(4), word(8), word(12)),
-            (259, 0x0031_0000, 8, 12)
+            (259, 0x7FFD_E000, 8, 12)
         );
         assert_eq!((word(16), word(20), word(24) as i32), (1, 9, -16));
     }

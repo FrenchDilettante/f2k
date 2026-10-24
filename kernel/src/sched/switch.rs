@@ -408,7 +408,7 @@ mod tests {
         assert_eq!(TEB_BASE_MID_OFF, TEB_SELECTOR as u32 + 4);
         assert_eq!(TEB_BASE_HI_OFF, TEB_SELECTOR as u32 + 7);
 
-        for base in [0u32, 0x0031_0000, 0x0080_1000, 0x009F_F000] {
+        for base in [0u32, 0x7FFD_E000, 0x7FFD_D000, 0x7FF9_E000] {
             let entry = make_entry(crate::user::TEB_PAGE, 0xFFF, 0xF3, 0x4);
             let edited = teb_entry_after_edit(entry, base);
             assert_eq!(edited, make_entry(base, 0xFFF, 0xF3, 0x4), "base {base:#x}");

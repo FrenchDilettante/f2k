@@ -34,13 +34,22 @@ pub mod tls;
     test
 ))]
 pub const USER_CODE_PAGE: u32 = 0x0040_0000;
-/// The user stack's top page, in its own 4 MiB window (window 0, whose boot identity mapping was
-/// removed). The stack spans two pages growing down — the CRT's startup passes need the room.
-pub const USER_STACK_PAGE: u32 = 0x0030_0000;
+// Every process's fixed pieces sit where Windows 2000 puts them (it has no address randomization,
+// so the real machine's addresses are the contract): the environment block at 0x00010000, the
+// process parameters at 0x00020000, the main thread's 1 MiB stack reservation below 0x00130000,
+// the image at its own base, the PEB at 0x7FFDF000 and the first thread's TEB in the page below
+// it, later threads' TEBs downwards from there, just under KUSER_SHARED_DATA (0x7FFE0000). The
+// process heap is ntdll's to reserve: on Windows 2000, its first reservation, right above the
+// stack (0x00130000); ntdll's single-segment heap reserves more than fits below the image, so it
+// lands past it.
+
+/// One past the top of the main thread's stack: the TEB's StackBase.
+pub const USER_STACK_TOP: u32 = 0x0013_0000;
+/// The stack's top page. The stack starts with two committed pages growing down (the TEB's
+/// StackLimit the lower one's base) — the CRT's startup passes need the room.
+pub const USER_STACK_PAGE: u32 = USER_STACK_TOP - 4096;
 /// The stack's second page, one below the top.
 pub const USER_STACK_LOW_PAGE: u32 = USER_STACK_PAGE - 4096;
-/// One past the stack's top page: the stack's base (the TEB's StackBase).
-pub const USER_STACK_TOP: u32 = USER_STACK_PAGE + 4096;
 /// The main thread's stack reservation: 1 MiB, the MSVC linker's default, of which the two pages
 /// above are committed at start and the rest on demand (see [`stack`]).
 pub const USER_STACK_RESERVE: u32 = 0x10_0000;
@@ -52,23 +61,24 @@ pub const USER_STACK_BASE: u32 = USER_STACK_TOP - USER_STACK_RESERVE;
 pub const USER_INITIAL_ESP: u32 = USER_STACK_TOP - 4;
 /// The main thread's TEB page, reached through the FS-based TEB segment (the CRT installs its
 /// exception frames at fs:[0] first thing); the loader maps it with the fresh TEB's words
-/// ([`teb`]).
-pub const TEB_PAGE: u32 = 0x0031_0000;
+/// ([`teb`]). The page right below the PEB's.
+pub const TEB_PAGE: u32 = 0x7FFD_E000;
 /// The EFLAGS every planted user context carries: bit 1 (architecturally one) plus the interrupt
 /// flag — user code runs enabled, IOPL 0 (port I/O stays privileged).
 pub const USER_EFLAGS: u32 = 0x0000_0202;
 
 /// The process parameters pages: RTL_USER_PROCESS_PARAMETERS and its strings ([`params`], two
 /// pages from here).
-pub const PARAMS_PAGE: u32 = 0x0032_0000;
+pub const PARAMS_PAGE: u32 = 0x0002_0000;
 
 /// The PEB page: the process environment block ([`teb`]), and past the PEB proper the system DLLs'
-/// own per-process slots.
-pub const PEB_PAGE: u32 = 0x0033_0000;
+/// own per-process slots. The last page below KUSER_SHARED_DATA.
+pub const PEB_PAGE: u32 = 0x7FFD_F000;
 
-/// The region per-thread TEB pages allocate from (user window 2, mapped by no run path today). A
-/// process's first thread keeps the fixed TEB page below; later threads take one page from here.
-pub const THREAD_TEB_REGION: u32 = 0x0080_0000;
+/// The region later threads' TEB pages come from: one page per child thread, downwards from the
+/// first thread's TEB page (the second thread's right below it, at 0x7FFDD000), this its lowest
+/// address. A process's first thread keeps the fixed TEB page above.
+pub const THREAD_TEB_REGION: u32 = TEB_PAGE - crate::process::CHILD_THREADS as u32 * 4096;
 
 /// The main thread's initial context for an image whose entry point is `entry`, as Windows 2000's
 /// CreateProcess builds it (BaseInitializeContext): EIP kernel32's BaseProcessStartThunk, EAX the
@@ -84,13 +94,9 @@ pub fn main_thread_start(entry: u32) -> crate::sched::startup::UserStart {
     }
 }
 
-/// Thread `index`'s TEB page.
+/// Thread `index`'s TEB page: the first thread's fixed page, then one page lower per index.
 pub const fn thread_teb_va(index: u32) -> u32 {
-    if index == 0 {
-        TEB_PAGE
-    } else {
-        THREAD_TEB_REGION + (index - 1) * 4096
-    }
+    TEB_PAGE - index * 4096
 }
 
 /// An unmapped user address the bad-args stub passes as the syscall argument pointer: below the
@@ -659,30 +665,34 @@ mod tests {
     }
 
     /// Per-thread TEB pages: the first thread keeps the loader's fixed page; later threads take
-    /// their own page from the region, so threads of one process never share a TEB.
+    /// their own page downwards from it, so threads of one process never share a TEB.
     #[test]
     fn per_thread_teb_pages_are_distinct() {
         assert_eq!(thread_teb_va(0), TEB_PAGE);
         let pages = [thread_teb_va(0), thread_teb_va(1), thread_teb_va(2)];
-        assert_eq!(pages[1], THREAD_TEB_REGION);
-        assert_eq!(pages[2], THREAD_TEB_REGION + 4096);
+        assert_eq!(pages[1], 0x7FFD_D000, "Windows 2000's second thread's TEB");
+        assert_eq!(pages[2], TEB_PAGE - 2 * 4096);
         for index in 1..pages.len() {
             for other in 0..index {
                 assert_ne!(pages[index], pages[other]);
             }
-            assert!(pages[index] > PARAMS_PAGE);
-            // The region stays below the space the program's own reservations (its heaps
-            // included) start in.
-            assert!(pages[index] < 0x0200_0000);
         }
+        // The last child's page is the region's lowest, far above the program's own reservations
+        // (they take the lowest free ranges).
+        assert_eq!(
+            thread_teb_va(crate::process::CHILD_THREADS as u32),
+            THREAD_TEB_REGION
+        );
+        assert!(THREAD_TEB_REGION > 0x7000_0000);
         for &page in &pages {
             assert_eq!(page % 4096, 0);
-            assert!(page < KERNEL_BASE);
+            assert!(page < PEB_PAGE);
         }
     }
 
-    /// The user pages: below the kernel window, page-aligned, the stack top one past its top page,
-    /// the image window clear of window 0.
+    /// The user pages: Windows 2000's addresses, page-aligned, below the kernel window; the stack
+    /// top one past its top page, its reservation between the parameters and the image, the TEB
+    /// and PEB pages the last two below the shared data page.
     #[test]
     fn user_layout_is_consistent() {
         for page in [
@@ -696,12 +706,19 @@ mod tests {
             assert_eq!(page % 4096, 0);
             assert!(page < KERNEL_BASE);
         }
-        assert_ne!(USER_CODE_PAGE >> 22, USER_STACK_PAGE >> 22);
+        assert_eq!(
+            (TEB_PAGE, PEB_PAGE, PARAMS_PAGE),
+            (0x7FFD_E000, 0x7FFD_F000, 0x0002_0000)
+        );
+        assert_eq!(
+            (USER_STACK_TOP, USER_STACK_LOW_PAGE, USER_STACK_BASE),
+            (0x0013_0000, 0x0012_E000, 0x0003_0000)
+        );
         assert_eq!(USER_STACK_LOW_PAGE, USER_STACK_PAGE - 4096);
         assert_eq!(USER_STACK_TOP, USER_STACK_PAGE + 4096);
-        assert!(TEB_PAGE > USER_STACK_TOP);
-        assert!(PARAMS_PAGE > TEB_PAGE);
-        assert!(PARAMS_PAGE + params::PAGES * 4096 <= PEB_PAGE);
-        assert!(PEB_PAGE + 4096 <= USER_CODE_PAGE);
+        assert!(PARAMS_PAGE + params::PAGES * 4096 <= USER_STACK_BASE);
+        assert!(USER_STACK_TOP <= USER_CODE_PAGE);
+        assert_eq!(TEB_PAGE + 4096, PEB_PAGE);
+        assert_eq!(PEB_PAGE + 4096, shared::USER_ADDRESS);
     }
 }

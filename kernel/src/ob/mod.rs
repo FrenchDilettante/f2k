@@ -1702,7 +1702,7 @@ mod tests {
             .unwrap();
         directory.bind_name(b"left", leaked).unwrap();
         let main = directory.create_thread_in(0..1).unwrap();
-        directory.threads.record(main.index).teb_va = 0x0031_0000;
+        directory.threads.record(main.index).teb_va = 0x7FFD_E000;
         assert_eq!(directory.process_ended(dispatcher, |_| {}), 2);
         assert_eq!(directory.live_objects(), 0);
         assert!(!directory.is_live(leaked));

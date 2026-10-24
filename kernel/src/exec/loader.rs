@@ -122,10 +122,10 @@ const STAGING_SIZE: usize = 0x8_0000;
 static mut IMAGE_STAGING: crate::mem::paging::Aligned<[u8; STAGING_SIZE]> =
     crate::mem::paging::Aligned([0; STAGING_SIZE]);
 
-/// The system's fixed user regions, as (name, start, end): an image may cover none of them. Images
-/// map at their preferred base (nothing is relocated), so one that would land on a region is
-/// refused, not moved. The main thread's stack is its whole reservation (1 MiB, committed on
-/// demand below its two top pages, see `user::stack`).
+/// The system's fixed user regions, in address order, as (name, start, end): an image may cover
+/// none of them. Images map at their preferred base (nothing is relocated), so one that would land
+/// on a region is refused, not moved. The main thread's stack is its whole reservation (1 MiB,
+/// committed on demand below its two top pages, see `user::stack`).
 const SYSTEM_REGIONS: [(&str, u32, u32); 8] = {
     use crate::user::{
         PARAMS_PAGE,
@@ -139,14 +139,6 @@ const SYSTEM_REGIONS: [(&str, u32, u32); 8] = {
     const CHILDREN: u32 = crate::process::CHILD_THREADS as u32;
     use crate::exec::modules::{NTDLL_BASE, NTDLL_SIZE};
     [
-        ("main thread stack", USER_STACK_BASE, USER_STACK_TOP),
-        ("main thread TEB", TEB_PAGE, TEB_PAGE + PAGE),
-        (
-            "process parameters",
-            PARAMS_PAGE,
-            PARAMS_PAGE + crate::user::params::PAGES * PAGE,
-        ),
-        ("process environment block", PEB_PAGE, PEB_PAGE + PAGE),
         (
             "environment block",
             crate::user::params::ENVIRONMENT_BLOCK,
@@ -154,11 +146,19 @@ const SYSTEM_REGIONS: [(&str, u32, u32); 8] = {
                 + crate::user::params::ENVIRONMENT_BLOCK_PAGES * PAGE,
         ),
         (
+            "process parameters",
+            PARAMS_PAGE,
+            PARAMS_PAGE + crate::user::params::PAGES * PAGE,
+        ),
+        ("main thread stack", USER_STACK_BASE, USER_STACK_TOP),
+        ("ntdll.dll image", NTDLL_BASE, NTDLL_BASE + NTDLL_SIZE),
+        (
             "child thread TEBs",
             THREAD_TEB_REGION,
             THREAD_TEB_REGION + CHILDREN * PAGE,
         ),
-        ("ntdll.dll image", NTDLL_BASE, NTDLL_BASE + NTDLL_SIZE),
+        ("main thread TEB", TEB_PAGE, TEB_PAGE + PAGE),
+        ("process environment block", PEB_PAGE, PEB_PAGE + PAGE),
         (
             SHARED_DATA_REGION,
             crate::user::shared::USER_ADDRESS,
@@ -751,19 +751,37 @@ mod tests {
             system_region_overlapping(NTDLL_BASE - 0x1_0000, 0x1_1000),
             REGION
         );
-        // A 16 MiB image at the corpus base reaches the child-thread regions.
+        // A 16 MiB image at the corpus base covers none of them.
         assert_eq!(
             system_region_overlapping(0x0040_0000, crate::exec::pe::MAX_IMAGE_SIZE),
-            Some("child thread TEBs")
+            None
         );
-        // The low window holds the main thread's pages.
+        // Low memory holds the environment, the parameters and the main thread's stack; the top
+        // of the user space the thread blocks and the PEB.
         assert_eq!(
-            system_region_overlapping(0x0001_0000, 0x0030_0000),
+            system_region_overlapping(0x0001_2000, 0x1000),
+            Some("environment block")
+        );
+        assert_eq!(
+            system_region_overlapping(0x0002_1000, 0x1000),
+            Some("process parameters")
+        );
+        assert_eq!(
+            system_region_overlapping(0x0012_0000, 0x1_0000),
             Some("main thread stack")
         );
         assert_eq!(
-            system_region_overlapping(0x0035_2000, 0x1_0000),
-            Some("environment block")
+            system_region_overlapping(0x0013_0000, 0x1_0000),
+            None,
+            "the process heap's place, right above the stack"
+        );
+        assert_eq!(
+            system_region_overlapping(crate::user::THREAD_TEB_REGION, 0x1000),
+            Some("child thread TEBs")
+        );
+        assert_eq!(
+            system_region_overlapping(0x7FFD_F000, 0x1000),
+            Some("process environment block")
         );
         assert_eq!(
             system_region_overlapping(0x0200_0000, 0x1_0000),

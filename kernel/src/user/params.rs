@@ -93,8 +93,9 @@ pub const CSD_VERSION_TEXT: &[u8] = b"Service Pack 4";
 /// The environment block's starting region, which the block's Environment points at: the
 /// starting variables ([`ENVIRONMENT`]) at its start, user mode's from then on (ntdll's
 /// RtlSetEnvironmentVariable edits it in place, and moves it to a larger allocation when it
-/// outgrows the region, releasing this one).
-pub const ENVIRONMENT_BLOCK: u32 = 0x0035_0000;
+/// outgrows the region, releasing this one). Windows 2000's address: the lowest a process can
+/// allocate, below the parameters pages.
+pub const ENVIRONMENT_BLOCK: u32 = 0x0001_0000;
 /// The region's size in pages.
 pub const ENVIRONMENT_BLOCK_PAGES: u32 = 5;
 
@@ -330,7 +331,7 @@ mod tests {
     /// bytes, the environment's address and the standard handles, the capture's startup values.
     #[test]
     fn the_block_points_at_its_strings() {
-        let base = 0x0032_0000;
+        let base = 0x0002_0000;
         let block = header(&Header {
             base,
             command_line: 8,
@@ -405,13 +406,14 @@ mod tests {
     }
 
     /// The pages' contents do not overlap: the block and its strings and the service pack's name,
-    /// all on the two pages; the environment block's region lies past them.
+    /// all on the two pages; the environment block's region lies below them, both at
+    /// allocation-granularity bases (Windows 2000's 0x00010000 and 0x00020000).
     #[test]
     fn the_pages_hold_everything_apart() {
         assert!(IMAGE_PATH_BUFFER + PATH_ROOM <= COMMAND_LINE_BUFFER);
         assert!(COMMAND_LINE_BUFFER + COMMAND_LINE_ROOM <= CSD_VERSION_BUFFER);
         assert!(CSD_VERSION_BUFFER + 2 * CSD_VERSION_TEXT.len() as u32 + 2 <= PAGES * 0x1000);
-        assert!(crate::user::PARAMS_PAGE + PAGES * 0x1000 <= ENVIRONMENT_BLOCK);
+        assert!(ENVIRONMENT_BLOCK + ENVIRONMENT_BLOCK_PAGES * 0x1000 <= crate::user::PARAMS_PAGE);
         assert_eq!(
             ENVIRONMENT_BLOCK % 0x1_0000,
             0,

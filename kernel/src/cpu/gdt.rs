@@ -311,12 +311,12 @@ mod tests {
         assert_eq!(entry(4), 0x00CF_F300_0000_FFFF); // user data, accessed
         assert_eq!(entry(5), 0); // TSS descriptor: built at runtime
 
-        // TEB segment, hand-decoded: base 0x00310000 (bytes 7:0 split across the layout), limit
+        // TEB segment, hand-decoded: base 0x7FFDE000 (bytes 7:0 split across the layout), limit
         // 0xFFF byte-granular, access 0xF3, flags nibble 0x4 (D=1, G=0).
         let teb = entry(6);
-        assert_eq!((teb >> 56) & 0xFF, 0x00); // base 31:24
-        assert_eq!((teb >> 32) & 0xFF, 0x31); // base 23:16
-        assert_eq!((teb >> 16) & 0xFFFF, 0x0000); // base 15:0
+        assert_eq!((teb >> 56) & 0xFF, 0x7F); // base 31:24
+        assert_eq!((teb >> 32) & 0xFF, 0xFD); // base 23:16
+        assert_eq!((teb >> 16) & 0xFFFF, 0xE000); // base 15:0
         assert_eq!(teb & 0xFFFF, 0x0FFF); // limit
         assert_eq!((teb >> 40) & 0xFF, 0xF3); // access byte
         assert_eq!((teb >> 52) & 0xF, 0x4); // flags nibble
