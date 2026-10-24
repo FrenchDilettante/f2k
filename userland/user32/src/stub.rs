@@ -45,11 +45,12 @@ pub unsafe fn stubbed(entry: &Entry, reason: &str, args: &[u64]) -> u32 {
 mod tests {
     use crate::imports::host::{DEBUG_PRINTS, LAST_ERROR};
 
-    /// A stubbed export's generated body logs its arguments and answers its failure value.
+    /// The stub routine logs the call's arguments and answers the export's failure value.
     #[test]
     fn a_stub_logs_its_call_and_fails() {
-        // SAFETY: the generated body (stdcall).
-        let result = unsafe { crate::f2k_stub_MessageBeep(0x40) };
+        // SAFETY: the arguments as MessageBeep's kinds read them.
+        let result =
+            unsafe { super::stubbed(&crate::spec::MessageBeep, "not yet implemented", &[0x40]) };
         assert_eq!(result, 0);
         assert_eq!(LAST_ERROR.with(|error| error.get()), 120);
         let printed = DEBUG_PRINTS.with(|prints| prints.borrow().clone());

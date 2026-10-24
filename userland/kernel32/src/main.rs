@@ -4,9 +4,9 @@
 //! DLL beside the assembly natives (src/natives.s), the critical sections' initialization
 //! (src/critsec.s, over ntdll's), the heap and Local/Global functions (src/memory.s, over ntdll's
 //! heap and handle-table exports, their bodies here), the thread start thunks (src/start.s), the
-//! pointer probes (src/probe.s), the generated stubs file (empty for kernel32: only ntdll's system
-//! services have generated bodies), and the system messages' table (its resource, which the build
-//! links in). RtlUnwind, the critical sections' Enter, Leave, TryEnter and Delete, and HeapAlloc,
+//! pointer probes (src/probe.s), the generated stubs file (empty for kernel32: only ntdll's,
+//! user32's and gdi32's system services have generated stubs), and the system messages' table (its
+//! resource, which the build links in). RtlUnwind, the critical sections' Enter, Leave, TryEnter and Delete, and HeapAlloc,
 //! HeapFree, HeapReAlloc and HeapSize are forwarders: they live in ntdll, as on Windows 2000.
 
 #![no_std]

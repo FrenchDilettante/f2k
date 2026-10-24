@@ -1,17 +1,25 @@
 //! System-call gate (vector 0x2E) and service dispatch.
 //!
 //! The ABI: EAX carries the service number, EDX a pointer to the arguments in user memory, the
-//! result returns in EAX. Two kinds of number:
+//! result returns in EAX. The number is read as Windows 2000's dispatcher reads it: its service
+//! table in bits 12-13, the service's index in that table in its low 12 bits, the other bits
+//! ignored ([`find_service`]):
 //!
-//! - below `nt::NT_SERVICE_LIMIT` (0xF8): Windows 2000's system services, by Windows 2000's own
-//!   numbers (ntdll's `Nt*` stubs; `nt`), the NTSTATUS in EAX; a number in that range F2K does not
-//!   serve is STATUS_NOT_IMPLEMENTED;
-//! - [`SYS_CSR_CALL`]: the F2K-internal client-server call, ntdll's CsrClientCallServer (`csr`).
-//! - [`SYS_DEBUG_PRINT`]: the F2K-internal debugger print, ntdll's DbgPrint (`dbgprint`).
+//! - table 0, below `nt::NT_SERVICE_LIMIT` (0xF8): ntoskrnl's system services, by Windows 2000's
+//!   own numbers (ntdll's `Nt*` stubs; `nt`), the NTSTATUS in EAX;
+//! - table 1, below `win32k::WIN32K_SERVICE_LIMIT` (numbers from 0x1000 to 0x127F): win32k's
+//!   services, by Windows 2000's own numbers (user32's own `NtUser*` stubs; `win32k`), the NTSTATUS
+//!   in EAX; the calling process connects to its window station and desktop at its first one, as
+//!   Windows 2000's first win32k call makes a thread a GUI thread.
 //!
-//! Anything else is STATUS_INVALID_SYSTEM_SERVICE. Windows 2000 masks the number (its table index
-//! in bits 12-13, the service in the low 12 bits); F2K compares it whole. The gate is a 32-bit
-//! interrupt gate at DPL 3 (so entry clears IF).
+//! A service of either table F2K does not serve is STATUS_NOT_IMPLEMENTED; an index past its
+//! table's limit, or tables 2 and 3, STATUS_INVALID_SYSTEM_SERVICE. Two F2K-internal numbers are
+//! matched whole, before the tables:
+//!
+//! - [`SYS_CSR_CALL`]: the client-server call, ntdll's CsrClientCallServer (`csr`);
+//! - [`SYS_DEBUG_PRINT`]: the debugger print, ntdll's DbgPrint (`dbgprint`).
+//!
+//! The gate is a 32-bit interrupt gate at DPL 3 (so entry clears IF).
 //!
 //! Entry choreography: the CPU switches to the TSS ring-0 stack and pushes the ring-3 tail; the
 //! stub completes a frame shared with the exception stubs; the dispatcher validates the number
@@ -55,6 +63,42 @@ pub const MAX_ARG_BYTES: usize = 44;
 
 /// A service: places its result in the frame's EAX slot.
 pub type ServiceFn = fn(&mut TrapFrame, &[u32]);
+
+/// Where a service number's table bits sit (bits 12-13), as Windows 2000's dispatcher reads them.
+pub const SERVICE_TABLE_SHIFT: u32 = 12;
+pub const SERVICE_TABLE_MASK: u32 = 3;
+/// The service's index in its table: the number's low 12 bits.
+pub const SERVICE_INDEX_MASK: u32 = 0xFFF;
+/// ntoskrnl's table (`nt`) and win32k's (`win32k`).
+pub const NT_TABLE: u32 = 0;
+pub const WIN32K_TABLE: u32 = 1;
+
+/// The table a service number names (its bits 12-13).
+pub fn service_table(number: u32) -> u32 {
+    (number >> SERVICE_TABLE_SHIFT) & SERVICE_TABLE_MASK
+}
+
+/// The service a number names (see the module notes): its argument block's size and its handler;
+/// STATUS_NOT_IMPLEMENTED for a service F2K does not serve, STATUS_INVALID_SYSTEM_SERVICE for a
+/// number no table holds.
+pub fn find_service(number: u32) -> Result<(u32, ServiceFn), u32> {
+    if number == SYS_CSR_CALL {
+        return Ok(crate::csr::SERVICE);
+    }
+    if number == SYS_DEBUG_PRINT {
+        return Ok(crate::dbgprint::SERVICE);
+    }
+    let index = number & SERVICE_INDEX_MASK;
+    match service_table(number) {
+        NT_TABLE if index < crate::nt::NT_SERVICE_LIMIT => {
+            crate::nt::lookup(index).ok_or(STATUS_NOT_IMPLEMENTED)
+        }
+        WIN32K_TABLE if index < crate::win32k::WIN32K_SERVICE_LIMIT => {
+            crate::win32k::lookup(index).ok_or(STATUS_NOT_IMPLEMENTED)
+        }
+        _ => Err(STATUS_INVALID_SYSTEM_SERVICE),
+    }
+}
 
 /// Probe a user range: zero length passes; otherwise it must lie below [`USER_PROBE_LIMIT`] without
 /// wrapping. Violations report [`STATUS_ACCESS_VIOLATION`]; the range is never read.
@@ -276,23 +320,27 @@ extern "C" fn syscall_dispatch(frame: &mut TrapFrame) {
     // would mean the frame has no ring-3 tail and the machine is already off the rails.
     assert_eq!(frame.cs & 3, 3, "syscall gate raised from ring 0");
 
-    // A Windows 2000 system service, the client-server call, or the debugger print.
-    let found = if frame.eax < crate::nt::NT_SERVICE_LIMIT {
-        crate::nt::lookup(frame.eax).ok_or(STATUS_NOT_IMPLEMENTED)
-    } else if frame.eax == SYS_CSR_CALL {
-        Ok(crate::csr::SERVICE)
-    } else if frame.eax == SYS_DEBUG_PRINT {
-        Ok(crate::dbgprint::SERVICE)
-    } else {
-        Err(STATUS_INVALID_SYSTEM_SERVICE)
-    };
-    let (arg_bytes, service) = match found {
+    // A Windows 2000 system service of either table, the client-server call, or the debugger
+    // print.
+    let (arg_bytes, service) = match find_service(frame.eax) {
         Ok(found) => found,
         Err(status) => {
             frame.eax = status;
             return;
         }
     };
+
+    // A win32k service first connects the calling process to its window station and desktop, as
+    // Windows 2000's first win32k call makes a thread a GUI thread (the internal numbers' table
+    // bits are 0).
+    if service_table(frame.eax) == WIN32K_TABLE {
+        if let Err(crate::nt::call::Status(status)) =
+            crate::win32k::winsta::connect(crate::user::args::calling_process())
+        {
+            frame.eax = status;
+            return;
+        }
+    }
 
     if let Err(status) = probe_user_range(frame.edx, arg_bytes) {
         frame.eax = status;
@@ -444,7 +492,11 @@ mod tests {
     fn argument_budget_covers_the_registry() {
         assert_eq!(MAX_ARG_BYTES, 44);
         assert_eq!(MAX_ARG_BYTES % 4, 0);
-        for arg_bytes in crate::nt::NT_SERVICES.iter().map(|&(_, _, bytes, _)| bytes) {
+        for arg_bytes in crate::nt::NT_SERVICES
+            .iter()
+            .chain(crate::win32k::WIN32K_SERVICES.iter())
+            .map(|&(_, _, bytes, _)| bytes)
+        {
             assert!(
                 arg_bytes as usize <= MAX_ARG_BYTES,
                 "service arg block {arg_bytes} exceeds the budget"
@@ -465,6 +517,46 @@ mod tests {
     fn vector_is_the_syscall_vector() {
         assert_eq!(SYSCALL_VECTOR, 0x2E);
         assert!(SYSCALL_VECTOR > 31);
+    }
+
+    /// A number is read as Windows 2000's dispatcher reads it: the table in bits 12-13, the index
+    /// in the low 12 bits, the other bits ignored; the internal numbers whole, first.
+    #[test]
+    fn the_number_names_its_table_and_its_service() {
+        let bytes = |number| find_service(number).map(|(bytes, _)| bytes);
+        assert_eq!(bytes(0x18), Ok(4), "NtClose");
+        assert_eq!(
+            bytes(0x0001_0018),
+            Ok(4),
+            "the bits past the table's are ignored"
+        );
+        assert_eq!(bytes(0x119C), Ok(20), "NtUserGetObjectInformation");
+        assert_eq!(bytes(0x11A2), Ok(8), "NtUserGetThreadDesktop");
+        assert_eq!(
+            bytes(0x00),
+            Err(STATUS_NOT_IMPLEMENTED),
+            "NtAcceptConnectPort"
+        );
+        assert_eq!(bytes(0x1000), Err(STATUS_NOT_IMPLEMENTED), "NtGdiAbortDoc");
+        assert_eq!(
+            bytes(0xF8),
+            Err(STATUS_INVALID_SYSTEM_SERVICE),
+            "past ntoskrnl's"
+        );
+        assert_eq!(
+            bytes(0x1280),
+            Err(STATUS_INVALID_SYSTEM_SERVICE),
+            "past win32k's"
+        );
+        assert_eq!(bytes(0x2000), Err(STATUS_INVALID_SYSTEM_SERVICE), "table 2");
+        assert_eq!(bytes(0x3018), Err(STATUS_INVALID_SYSTEM_SERVICE), "table 3");
+        assert_eq!(bytes(SYS_CSR_CALL), Ok(crate::csr::SERVICE.0));
+        assert_eq!(bytes(SYS_DEBUG_PRINT), Ok(crate::dbgprint::SERVICE.0));
+        assert_eq!(service_table(0x119C), WIN32K_TABLE);
+        assert_eq!(service_table(0x18), NT_TABLE);
+        for internal in [SYS_CSR_CALL, SYS_DEBUG_PRINT] {
+            assert_eq!(service_table(internal), NT_TABLE, "no win32k connection");
+        }
     }
 
     /// The ranges do not meet: Windows 2000's services, F2K's internal client-server call and

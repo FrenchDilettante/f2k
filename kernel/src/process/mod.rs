@@ -89,6 +89,9 @@ pub struct Process {
     /// The process's console handles: the console server's own, outside the handle table, as
     /// Windows 2000's csrss keeps them (see `crate::csr`).
     console: rtl::console::Handles,
+    /// The process's connection to win32k: its window station's and desktop's handles, made at its
+    /// first win32k service (see `crate::win32k::winsta`); none until then.
+    win32k: Option<crate::win32k::winsta::Connection>,
     /// An exited thread's gate stack, not yet released (see [`DeadStack`]).
     dead_stack: DeadStack,
     /// The user-APC records (the objects themselves are the object manager's).
@@ -180,6 +183,16 @@ impl Process {
     /// The console handles (the console server serves them).
     pub fn console_mut(&mut self) -> &mut rtl::console::Handles {
         &mut self.console
+    }
+
+    /// The process's connection to win32k, once its first win32k service made it.
+    pub fn win32k(&self) -> Option<crate::win32k::winsta::Connection> {
+        self.win32k
+    }
+
+    /// Record the process's connection to win32k.
+    pub fn set_win32k(&mut self, connection: crate::win32k::winsta::Connection) {
+        self.win32k = Some(connection);
     }
 
     /// The process's priority class (PROCESS_PRIORITY_CLASS_*).
@@ -533,6 +546,7 @@ unsafe fn write_fresh(
         crate::mem::vm::AddressSpace::write_empty(addr_of_mut!((*process).vm));
         crate::sched::object::HandleTable::write_empty(addr_of_mut!((*process).handles));
         addr_of_mut!((*process).console).write(rtl::console::Handles::standard());
+        addr_of_mut!((*process).win32k).write(None);
         addr_of_mut!((*process).dead_stack).write(DeadStack::empty());
         objects::SyncObjects::write_empty(addr_of_mut!((*process).objects));
         addr_of_mut!((*process).end).write(None);
@@ -816,6 +830,7 @@ mod tests {
             vm: crate::mem::vm::AddressSpace::new(),
             handles: crate::sched::object::HandleTable::empty(),
             console: rtl::console::Handles::standard(),
+            win32k: None,
             dead_stack: DeadStack::empty(),
             objects: objects::SyncObjects::empty(),
             end: None,

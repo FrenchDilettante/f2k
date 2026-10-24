@@ -52,6 +52,12 @@ pub enum ObjectType {
     File,
     /// An object directory: `\BaseNamedObjects`, the one there is (permanent).
     Directory,
+    /// A window station: win32k's, WinSta0 the one there is (permanent: made at boot; see
+    /// [`crate::win32k`]).
+    WindowStation,
+    /// A desktop of a window station: WinSta0's Default, the one there is (permanent: made at
+    /// boot).
+    Desktop,
 }
 
 /// An object's identity: its kind, its record in that kind's pool, and the record's generation.
@@ -128,6 +134,10 @@ pub const PROCESSES: usize = crate::process::MAX_PROCESSES;
 /// How many object directories exist: `\BaseNamedObjects`, the named objects' (permanent: made
 /// at its first open, it is never deleted).
 pub const DIRECTORIES: usize = 1;
+/// How many window stations exist: WinSta0, the interactive one (permanent: made at boot).
+pub const WINDOW_STATIONS: usize = 1;
+/// How many desktops exist: WinSta0's Default (permanent: made at boot).
+pub const DESKTOPS: usize = 1;
 /// How many names can be bound at once.
 pub const NAMES: usize = 64;
 /// The longest object name: MAX_PATH.
@@ -278,6 +288,37 @@ impl SectionObject {
     }
 }
 
+/// A window station's body: its name (the window station's own, as GetUserObjectInformation's
+/// UOI_NAME reports it; not bound in the namespace) and its flags (UOI_FLAGS' dwFlags:
+/// WSF_VISIBLE for the interactive one).
+#[derive(Clone, Copy)]
+pub struct WindowStationObject {
+    pub name: &'static str,
+    pub flags: u32,
+}
+
+impl WindowStationObject {
+    /// A record holding no window station (a pool's fresh record).
+    pub const fn none() -> Self {
+        WindowStationObject { name: "", flags: 0 }
+    }
+}
+
+/// A desktop's body: its name (as UOI_NAME reports it) and its flags (UOI_FLAGS' dwFlags:
+/// DF_ALLOWOTHERACCOUNTHOOK or none). There is one window station, so a desktop's is WinSta0.
+#[derive(Clone, Copy)]
+pub struct DesktopObject {
+    pub name: &'static str,
+    pub flags: u32,
+}
+
+impl DesktopObject {
+    /// A record holding no desktop (a pool's fresh record).
+    pub const fn none() -> Self {
+        DesktopObject { name: "", flags: 0 }
+    }
+}
+
 /// What a caller must finish once an object's last handle or last reference went: the work outside
 /// the object manager's reach, which the process finishes ([`crate::process::Process::finish`]).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -368,6 +409,8 @@ pub struct Directory {
     pub sections: Pool<SectionObject, SECTIONS>,
     pub files: Pool<crate::fs::file::FileObject, FILES>,
     pub directories: Pool<(), DIRECTORIES>,
+    pub window_stations: Pool<WindowStationObject, WINDOW_STATIONS>,
+    pub desktops: Pool<DesktopObject, DESKTOPS>,
     names: [NameEntry; NAMES],
     waits: [WaitReferences; THREADS],
 }
@@ -398,6 +441,11 @@ impl Directory {
                 crate::fs::file::FileObject::new(0, 0, 0, 0)
             });
             Pool::write_empty(addr_of_mut!((*directory).directories), || ());
+            Pool::write_empty(
+                addr_of_mut!((*directory).window_stations),
+                WindowStationObject::none,
+            );
+            Pool::write_empty(addr_of_mut!((*directory).desktops), DesktopObject::none);
             let names = addr_of_mut!((*directory).names) as *mut NameEntry;
             for index in 0..NAMES {
                 names.add(index).write(NameEntry::free());
@@ -420,6 +468,8 @@ impl Directory {
             ObjectType::Section => &mut self.sections.headers,
             ObjectType::File => &mut self.files.headers,
             ObjectType::Directory => &mut self.directories.headers,
+            ObjectType::WindowStation => &mut self.window_stations.headers,
+            ObjectType::Desktop => &mut self.desktops.headers,
         };
         let header = headers.get_mut(id.index as usize)?;
         (header.live && header.generation == id.generation).then_some(header)
@@ -436,6 +486,8 @@ impl Directory {
             ObjectType::Section => self.sections.headers[index as usize].generation,
             ObjectType::File => self.files.headers[index as usize].generation,
             ObjectType::Directory => self.directories.headers[index as usize].generation,
+            ObjectType::WindowStation => self.window_stations.headers[index as usize].generation,
+            ObjectType::Desktop => self.desktops.headers[index as usize].generation,
         };
         ObjectId {
             kind,
@@ -538,6 +590,22 @@ impl Directory {
         Some(self.id(ObjectType::File, index))
     }
 
+    /// A window station named `name` with `flags`; none when the pool is exhausted. Its creator's
+    /// reference is the caller's: the boot's WinSta0 keeps it, so the window station is permanent.
+    pub fn create_window_station(&mut self, name: &'static str, flags: u32) -> Option<ObjectId> {
+        let index = self.window_stations.allocate_in(0..WINDOW_STATIONS)?;
+        *self.window_stations.record(index) = WindowStationObject { name, flags };
+        Some(self.id(ObjectType::WindowStation, index))
+    }
+
+    /// A desktop named `name` with `flags`; none when the pool is exhausted. Its creator's
+    /// reference is the caller's, as a window station's.
+    pub fn create_desktop(&mut self, name: &'static str, flags: u32) -> Option<ObjectId> {
+        let index = self.desktops.allocate_in(0..DESKTOPS)?;
+        *self.desktops.record(index) = DesktopObject { name, flags };
+        Some(self.id(ObjectType::Desktop, index))
+    }
+
     // --- Typed access ------------------------------------------------------------------------
 
     pub fn event(&mut self, id: ObjectId) -> Option<&mut Event> {
@@ -580,6 +648,16 @@ impl Directory {
         self.files.get(id.index, id.generation)
     }
 
+    pub fn window_station(&mut self, id: ObjectId) -> Option<&mut WindowStationObject> {
+        (id.kind == ObjectType::WindowStation).then_some(())?;
+        self.window_stations.get(id.index, id.generation)
+    }
+
+    pub fn desktop(&mut self, id: ObjectId) -> Option<&mut DesktopObject> {
+        (id.kind == ObjectType::Desktop).then_some(())?;
+        self.desktops.get(id.index, id.generation)
+    }
+
     /// The live process object at process pool `index`, if any.
     pub fn processes_live(&mut self, index: u16) -> Option<ObjectId> {
         let id = self.id(ObjectType::Process, index);
@@ -607,7 +685,8 @@ impl Directory {
     }
 
     /// The waitable header of a waitable object; none for a section, a file object (its I/O
-    /// completes at once: nothing waits on it), the directory or a dead id.
+    /// completes at once: nothing waits on it), the directory, a window station, a desktop or a
+    /// dead id.
     pub fn waitable(&mut self, id: ObjectId) -> Option<*mut Waitable> {
         match id.kind {
             ObjectType::Event => self.event(id).map(Event::waitable),
@@ -618,7 +697,11 @@ impl Directory {
             ObjectType::Process => self
                 .process(id)
                 .map(|process| core::ptr::addr_of_mut!(process.waitable)),
-            ObjectType::Section | ObjectType::File | ObjectType::Directory => None,
+            ObjectType::Section
+            | ObjectType::File
+            | ObjectType::Directory
+            | ObjectType::WindowStation
+            | ObjectType::Desktop => None,
         }
     }
 
@@ -628,6 +711,22 @@ impl Directory {
         let index = self.threads.index_of(thread)?;
         let id = self.id(ObjectType::Thread, index);
         self.is_live(id).then_some(id)
+    }
+
+    /// The thread object whose client id is `thread_id`, among the threads that have not ended (one
+    /// process at a time: the current process's); none when no such thread has it.
+    pub fn thread_by_client_id(&mut self, thread_id: u32) -> Option<ObjectId> {
+        for index in 0..THREADS as u16 {
+            let id = self.id(ObjectType::Thread, index);
+            let found = self.thread(id).is_some_and(|thread| {
+                thread.thread_id() == thread_id
+                    && thread.state() != crate::sched::thread::ThreadState::Terminated
+            });
+            if found {
+                return Some(id);
+            }
+        }
+        None
     }
 
     // --- Counts --------------------------------------------------------------------------------
@@ -736,7 +835,9 @@ impl Directory {
             | ObjectType::Semaphore
             | ObjectType::Thread
             | ObjectType::Process
-            | ObjectType::Directory => None,
+            | ObjectType::Directory
+            | ObjectType::WindowStation
+            | ObjectType::Desktop => None,
         };
         self.forget_name(id);
         let header = self.header(id).expect("deleting a live object");
@@ -843,8 +944,13 @@ impl Directory {
         dispatcher: &mut Dispatcher,
         mut finish: impl FnMut(Followup),
     ) -> usize {
-        // The processes outlive their own end, and the permanent directory every process.
-        let leaked = self.live_objects() - self.processes.live() - self.directories.live();
+        // The processes outlive their own end, and the permanent directory, window station and
+        // desktop every process.
+        let leaked = self.live_objects()
+            - self.processes.live()
+            - self.directories.live()
+            - self.window_stations.live()
+            - self.desktops.live();
         for kind in [
             ObjectType::Event,
             ObjectType::Semaphore,
@@ -884,6 +990,8 @@ impl Directory {
             ObjectType::Section => SECTIONS,
             ObjectType::File => FILES,
             ObjectType::Directory => DIRECTORIES,
+            ObjectType::WindowStation => WINDOW_STATIONS,
+            ObjectType::Desktop => DESKTOPS,
         }
     }
 
@@ -898,6 +1006,8 @@ impl Directory {
             + self.sections.live()
             + self.files.live()
             + self.directories.live()
+            + self.window_stations.live()
+            + self.desktops.live()
     }
 
     /// `\BaseNamedObjects`, the named objects' directory: made at its first open and permanent
@@ -1527,6 +1637,33 @@ mod tests {
         assert_eq!(directory.process_ended(dispatcher, |_| {}), 0);
         assert!(directory.is_live(id), "it outlives every process");
         assert_eq!(directory.named_objects(), Some(id));
+    }
+
+    /// A window station and its desktop, as the boot makes WinSta0 and Default: typed, never
+    /// waited on, and permanent through their creator's reference: a process's handles come and
+    /// go, and no process's end deletes them or counts them as leaks.
+    #[test]
+    fn window_stations_and_desktops_are_permanent() {
+        let directory = directory();
+        let dispatcher = dispatcher();
+        let station = directory.create_window_station("WinSta0", 1).unwrap();
+        let desktop = directory.create_desktop("Default", 0).unwrap();
+        assert_eq!(directory.window_station(station).unwrap().name, "WinSta0");
+        assert_eq!(directory.window_station(station).unwrap().flags, 1);
+        let record = directory.desktop(desktop).unwrap();
+        assert_eq!((record.name, record.flags), ("Default", 0));
+        assert!(directory.window_station(desktop).is_none(), "typed");
+        assert!(directory.desktop(station).is_none(), "typed");
+        assert_eq!(directory.waitable(station), None);
+        assert_eq!(directory.waitable(desktop), None);
+        assert_eq!(directory.create_window_station("Other", 0), None, "one");
+        for id in [station, desktop] {
+            assert!(directory.handle_opened(id));
+            assert_eq!(closed(directory, id, dispatcher), vec![]);
+            assert_eq!(directory.counts(id), Some((1, 0)));
+        }
+        assert_eq!(directory.process_ended(dispatcher, |_| {}), 0);
+        assert!(directory.is_live(station) && directory.is_live(desktop));
     }
 
     /// The process's end deletes whatever outlived it (a reference leak, reported) and starts every

@@ -1,6 +1,7 @@
 //! Generates the tables that derive from the system DLLs' export specs
-//! (`userland/<dll>/exports.toml`, read through `tools/exportgen`): the kernel's NT service table
-//! (`nt`'s `NT_SERVICES`, ntdll's system services by Windows 2000's numbers), and, for the tests
+//! (`userland/<dll>/exports.toml`, read through `tools/exportgen`): the kernel's two service tables
+//! (`nt`'s `NT_SERVICES`, ntdll's system services, and `win32k`'s `WIN32K_SERVICES`, user32's
+//! internal NtUser* calls, both by Windows 2000's numbers), and, for the tests
 //! that check the built DLLs against the specs, kernel32's native exports' and every DLL's exports'
 //! declared argument blocks, stubs and variables. The generated files land in OUT_DIR, included
 //! where the tables live.
@@ -38,6 +39,11 @@ fn main() {
         &out,
         "nt_services.rs",
         exportgen::emit::nt_services(ntdll, &source("ntdll")),
+    );
+    write(
+        &out,
+        "win32k_services.rs",
+        exportgen::emit::win32k_services(&specs, &source("user32")),
     );
     for &(dll, spec) in &specs[1..] {
         let source = source(dll);

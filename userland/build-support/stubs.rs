@@ -3,9 +3,10 @@
 // tools/exportgen), then link it as a DLL at its base.
 //
 // Symbol conventions the .def maps to export names (exportgen's `nt_stub_symbol` / `hand_symbol`):
-// - `_f2k_nt_<Export>`: a system service's generated stub in ntdll (mov eax,N; lea edx,[esp+4];
-//   int 2Eh; ret <argument bytes>), N its Windows 2000 number; the .def exports it under its `Nt`
-//   and its `Zw` name.
+// - `_f2k_nt_<Export>`: a system service's generated stub (mov eax,N; lea edx,[esp+4]; int 2Eh;
+//   ret <argument bytes>), N its Windows 2000 number: in ntdll, one of ntoskrnl's, which the .def
+//   exports under its `Nt` and its `Zw` name; in user32 (and gdi32), one of win32k's, which the
+//   DLL's own code calls and the .def leaves out (the crate assembles `stubs.s` itself).
 // - `_f2k_export_<Export>`: a hand-written export in the crate's assembly sources (a `.globl` line
 //   names it) or its Rust sources (an `export_name = "f2k_export_<Export>"` stdcall function); they
 //   must be exactly the spec's natives. A stubbed export's body is generated (`exports.rs`, which

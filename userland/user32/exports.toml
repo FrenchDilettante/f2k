@@ -6,6 +6,14 @@
 # them, and stubs for what is not written yet. The rest of the records are catalogued from
 # USER32.dll 5.0.2195.6688's export table (scripts/catalogue_exports.py): their name and ordinal.
 # Implementing one gives it its group, prototype and implementation.
+#
+# user32 also enters the kernel itself, as Windows 2000's does: through win32k's services, the
+# second service table (`impl = { syscall = "<the kernel's typed handler>" }`, `internal = true`:
+# its own calls, never exported). Each has a stub, mov eax,<number> / lea edx,[esp+4] / int 2Eh /
+# ret, on its Windows 2000 number from w2k-services.txt (win32k's table: numbers from 0x1000);
+# user32's code calls the stub, and the kernel's handler, `fn(&mut NtCall, <arguments>) ->
+# NtResult`, answers with an NTSTATUS. Their argument lists are F2K's own (Windows 2000 documents
+# none; only user32 calls them).
 
 [[group]]
 key = "winsta"
@@ -21,7 +29,7 @@ title = "sounds"
 name = "GetProcessWindowStation"
 group = "winsta"
 args = []
-impl = { stub = "not yet implemented" }
+impl = { native = "GetProcessWindowStation" }
 ordinal = 316
 fails = "NULL"
 
@@ -29,7 +37,7 @@ fails = "NULL"
 name = "GetThreadDesktop"
 group = "winsta"
 args = ["u32 dwThreadId"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetThreadDesktop" }
 ordinal = 334
 fails = "NULL"
 
@@ -37,17 +45,42 @@ fails = "NULL"
 name = "GetUserObjectInformationA"
 group = "winsta"
 args = ["handle hObj", "i32 nIndex", "ptr pvInfo", "u32 nLength", "ptr<u32> lpnLengthNeeded"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetUserObjectInformationA" }
 ordinal = 339
 fails = "FALSE"
+note = "the name and the type converted from GetUserObjectInformationW's, asked into a buffer twice the length: a short buffer reports the Unicode length"
 
 [[export]]
 name = "GetUserObjectInformationW"
 group = "winsta"
 args = ["handle hObj", "i32 nIndex", "ptr pvInfo", "u32 nLength", "ptr<u32> lpnLengthNeeded"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetUserObjectInformationW" }
 ordinal = 340
 fails = "FALSE"
+note = "UOI_FLAGS, UOI_NAME and UOI_TYPE; UOI_USER_SID is a stub: there is no security"
+
+# win32k's services behind them: user32's internal calls.
+
+[[export]]
+name = "NtUserGetProcessWindowStation"
+group = "winsta"
+args = ["ptr<u32> WindowStation"]
+impl = { syscall = "crate::win32k::winsta::get_process_window_station" }
+internal = true
+
+[[export]]
+name = "NtUserGetThreadDesktop"
+group = "winsta"
+args = ["u32 ThreadId", "ptr<u32> Desktop"]
+impl = { syscall = "crate::win32k::winsta::get_thread_desktop" }
+internal = true
+
+[[export]]
+name = "NtUserGetObjectInformation"
+group = "winsta"
+args = ["handle Object", "u32 Index", "ptr Information", "u32 Length", "ptr<u32> LengthNeeded"]
+impl = { syscall = "crate::win32k::winsta::get_object_information" }
+internal = true
 
 # --- sounds ---------------------------------------------------------------------------------------
 
@@ -55,9 +88,10 @@ fails = "FALSE"
 name = "MessageBeep"
 group = "sound"
 args = ["u32 uType"]
-impl = { stub = "not yet implemented" }
+impl = { native = "MessageBeep" }
 ordinal = 451
 fails = "FALSE"
+note = "there is no sound device: it succeeds and nothing sounds"
 
 # --- not implemented yet: the rest of USER32.dll 5.0.2195.6688's export table, by ordinal --------
 

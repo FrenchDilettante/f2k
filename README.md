@@ -94,17 +94,22 @@ make run-tests
 ### The export specs and the compatibility report
 Each system DLL's exports are declared once, in `userland/<dll>/exports.toml` (the file's header
 documents its records): name, API group, prototype and implementation. `tools/exportgen` reads the
-specs and generates what derives from them: the kernel's NT service table (ntdll's `Nt*` system
-services, by Windows 2000's own numbers, `userland/ntdll/w2k-services.txt`) and the tables its
-tests check the built DLLs against (through the kernel's build script), and, for the DLL builds,
-the `.def` file and ntdll's `Nt*`/`Zw*` stubs (`userland/build-support/stubs.rs`).
+specs and generates what derives from them: the kernel's two service tables (ntdll's `Nt*` system
+services, by Windows 2000's own numbers, `userland/ntdll/w2k-services.txt`, and user32's
+`NtUser*` calls into win32k, by Windows 2000's numbers from 0x1000,
+`userland/user32/w2k-services.txt`) and the tables its tests check the built DLLs against (through
+the kernel's build script), and, for the DLL builds, the `.def` file and the system-service stubs
+(ntdll's `Nt*`/`Zw*` exports, user32's internal `NtUser*` calls; `userland/build-support/stubs.rs`).
 
-Only ntdll's system services enter the kernel, as on Windows 2000: an `impl = { syscall = "..." }`
-export's stub raises the gate on Windows 2000's own service number, and the kernel's typed handler
-(`kernel/src/nt/`) takes its arguments by the kinds the spec gives them (`handle`, `ptr`,
-`ptr<u32>`..., see the spec's header) and answers an NTSTATUS. Every kernel32 export is kernel32's
-own user-mode code over ntdll (`impl = { native = "..." }`, or a forwarder into ntdll), which sets
-the last error from the NTSTATUS through `RtlNtStatusToDosError`. The kernel has no Win32 layer.
+Three DLLs enter the kernel, as on Windows 2000: ntdll, through its `Nt*` system services, and
+user32 and gdi32, through win32k's services (gdi32 has none yet). Every other DLL is user-mode code
+over them. An `impl = { syscall = "..." }` record's stub raises the gate on Windows 2000's own
+service number, its table in the number's bits 12-13, and the kernel's typed handler
+(`kernel/src/nt/`, `kernel/src/win32k/`) takes its arguments by the kinds the spec gives them
+(`handle`, `ptr`, `ptr<u32>`..., see the spec's header) and answers an NTSTATUS. Every kernel32
+export is kernel32's own user-mode code over ntdll (`impl = { native = "..." }`, or a forwarder
+into ntdll), which sets the last error from the NTSTATUS through `RtlNtStatusToDosError`; user32's
+window station calls do the same over its own win32k calls. The kernel has no Win32 layer.
 
 The host scenarios (`userland/kernel32/src/scenarios/`, all `#[cfg(test)]`) call kernel32's
 exports as a program does, against host stand-ins for ntdll. A known gap is an expected-failure
@@ -128,8 +133,9 @@ fails once a gap's test passes (the marker goes with the fix).
 A stub (`impl = { stub = "<reason>" }` in the spec) is an export that exists but does nothing
 yet: when called, it writes a line to COM1 with its arguments and the reason, then fails the way
 the real function fails (one that returns nothing just returns). Code that hits a case it doesn't
-handle yet can do the same, through `stub::stubbed`. msvcrt, advapi32 and user32 are stubs for
-now, all but msvcrt's three variables (`_iob`, `_fmode`, `_adjust_fdiv`), which are real, zeroed
+handle yet can do the same, through `stub::stubbed`. msvcrt and advapi32 are stubs for now
+(user32's window station and desktop calls and MessageBeep are written), all but msvcrt's three
+variables (`_iob`, `_fmode`, `_adjust_fdiv`), which are real, zeroed
 storage. The stubs log through ntdll's `DbgPrint`, which Windows 2000's msvcrt and user32 do not
 import: `--check` allows that one import (`STUB_LOG_IMPORT` in `scripts/compat.py`).
 ```bash
@@ -269,7 +275,7 @@ f2k/
 │
 └── kernel/           # F2K Kernel
     ├── Cargo.toml        # Kernel package
-    ├── build.rs          # The NT service table from the export specs; the embedded ntdll
+    ├── build.rs          # The service tables from the export specs; the embedded ntdll
     └── src/
         ├── block/        # Block devices, partitions, and the device registry
         ├── boot/         # Boot-related code
@@ -284,6 +290,7 @@ f2k/
         ├── process/      # Process lifetime
         ├── sched/        # The scheduler
         ├── user/         # Ring 3: the user-mode boundary
+        ├── win32k/       # Window stations and desktops: win32k's services, user32's calls
         ├── c_lib.rs      # C library stubs (linker support)
         ├── lib.rs        # Kernel library: kmain and all modules (unit-testable)
         └── main.rs       # Kernel binary: links the ELF; panic handler

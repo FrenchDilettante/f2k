@@ -18,8 +18,8 @@
 #   name         the export name (case-sensitive, as GetProcAddress matches it)
 #   group        its API group's key
 #   args         the prototype's arguments, first first: "<kind> <name>". The kind says what the
-#                caller pushes and, for a system service (ntdll's), what its kernel handler
-#                receives:
+#                caller pushes and, for a system service (ntdll's, user32's), what its kernel
+#                handler receives:
 #                  u32          a dword value (counts, flags, code addresses)        u32
 #                  i32          a signed dword (a count where -1 means "to the NUL")  i32
 #                  bool         a Win32 BOOL (nonzero is true)                       bool
@@ -36,8 +36,13 @@
 #   impl         how it is implemented, an inline table with one key:
 #                  { native = "<body>" }      it runs in user mode: the DLL's own code, an
 #                                             `f2k_export_<Name>` body in its Rust or assembly
-#                  { syscall = "<path>" }     ntdll's system services only: the stub raises the gate
-#                                             on Windows 2000's number (see userland/ntdll/exports.toml)
+#                  { syscall = "<path>" }     a Windows 2000 system service: the DLL's stub raises
+#                                             the gate on Windows 2000's number, and the kernel's
+#                                             handler at <path> serves it. ntoskrnl's are ntdll's
+#                                             exports (see userland/ntdll/exports.toml); win32k's
+#                                             are user32's and gdi32's internal calls, `internal
+#                                             = true` and without an ordinal (see
+#                                             userland/user32/exports.toml)
 #                  { forward = "MODULE.Export" }  forwarded to another module's export (the same
 #                                             prototype)
 #                  { stub = "<reason>" }      not written yet: a generated body logs the call (every
@@ -50,7 +55,8 @@
 #                                             missing ("not yet implemented"). A native's code
 #                                             takes the same path on what it does not handle:
 #                                             crate::stub::stubbed
-#                no export enters the kernel but ntdll's system services: kernel32 is user code
+#                only ntdll, user32 and gdi32 enter the kernel, as on Windows 2000: kernel32 is
+#                user code over ntdll
 #   ordinal      the export ordinal, from Windows 2000's own table (an F2K-internal export has
 #                none: it takes a free one)
 #   zw_ordinal   a system service's only (ntdll's): its Zw alias's ordinal
@@ -59,7 +65,9 @@
 #                INVALID_FILE_ATTRIBUTES, TLS_OUT_OF_INDEXES, or void / never (it returns nothing /
 #                cannot fail); a stub's is required
 #   note         optional: a fact worth keeping beside the export
-#   internal     optional: true for an F2K-internal entry point, not a Windows 2000 export
+#   internal     optional: true for what is not a Windows 2000 export: an F2K-internal entry point
+#                (exported, at a free ordinal), or one of win32k's services (not exported at all:
+#                the DLL's own code calls its stub)
 #   data         optional: true for a variable, not a function: the DLL's own storage, a native
 #                (an `f2k_export_<Name>` static in its Rust), exported as DATA; no args, no fails
 #

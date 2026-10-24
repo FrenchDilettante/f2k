@@ -1,4 +1,4 @@
-//! What the specs generate: Rust tables for the kernel (the NT service table, the DLLs' declared
+//! What the specs generate: Rust tables for the kernel (its two service tables, the DLLs' declared
 //! exports), and each system DLL's system-service stubs, its exports' descriptions and stubbed
 //! exports' bodies (Rust), and its module-definition (`.def`) file.
 
@@ -17,22 +17,10 @@ fn quote(text: &str) -> String {
 
 /// The kernel's NT service table over ntdll's spec: `NT_SERVICE_LIMIT` (Windows 2000's
 /// KiServiceLimit) and `NT_SERVICES`, one `(number, service, argument bytes, handler)` entry per
-/// system service the spec declares, in number order, each handler a generated wrapper (below):
-/// decode the argument block by the spec's kinds, call the typed handler with the call's context
-/// first, and put its NTSTATUS in EAX ([`NtCall::finish`] in `nt::call`). `ServiceFn` resolves in
-/// the including module's scope.
+/// ntoskrnl service the spec declares, in number order, each handler a generated wrapper (see
+/// [`service_table`]). `ServiceFn` resolves in the including module's scope.
 pub fn nt_services(spec: &Spec, source: &str) -> String {
-    let mut services: Vec<(&Export, u32, &str)> = spec
-        .exports
-        .iter()
-        .filter_map(|export| match &export.implementation {
-            Implementation::Syscall(path) => {
-                Some((export, export.syscall_number()?, path.as_str()))
-            }
-            _ => None,
-        })
-        .collect();
-    services.sort_by_key(|&(_, number, _)| number);
+    let services: Vec<&Export> = spec.exports.iter().filter(|e| e.is_nt_service()).collect();
     let mut out = banner(source);
     writeln!(
         out,
@@ -46,16 +34,55 @@ pub fn nt_services(spec: &Spec, source: &str) -> String {
          /// the numbers Windows 2000's. A number below the limit absent from here is a service F2K does\n\
          /// not have.\n",
     );
+    service_table(&mut out, "NT_SERVICES", services);
+    out
+}
+
+/// The kernel's second service table, win32k's, over the specs of the DLLs that enter it (user32's
+/// and gdi32's internal `NtUser*` and `NtGdi*` calls): `WIN32K_SERVICE_LIMIT` (Windows 2000's
+/// W32pServiceLimit: how many services the table holds) and `WIN32K_SERVICES`, entries as
+/// [`nt_services`]' with the services' whole numbers (from 0x1000), wrappers alike.
+pub fn win32k_services(specs: &[(&str, &Spec)], source: &str) -> String {
+    let services: Vec<&Export> = specs
+        .iter()
+        .flat_map(|(_, spec)| spec.exports.iter())
+        .filter(|e| e.is_win32k_service())
+        .collect();
+    let mut out = banner(source);
     writeln!(
         out,
-        "pub const NT_SERVICES: [(u32, &str, u32, ServiceFn); {}] = [",
+        "/// Windows 2000's W32pServiceLimit: how many services win32k's table holds (an index at or\n\
+         /// past it, the number's low 12 bits, names none).\n\
+         pub const WIN32K_SERVICE_LIMIT: u32 = {};\n",
+        w2k::win32k_service_limit()
+    )
+    .unwrap();
+    out.push_str(
+        "/// win32k's services F2K serves: (number, service, argument bytes, handler), in number order,\n\
+         /// the numbers Windows 2000's (from 0x1000). A number in the table absent from here is a\n\
+         /// service F2K does not have.\n",
+    );
+    service_table(&mut out, "WIN32K_SERVICES", services);
+    out
+}
+
+/// A service table named `name`: one `(number, service, argument bytes, handler)` entry per
+/// service, in number order, then each handler, a generated wrapper: decode the argument block by
+/// the spec's kinds, call the typed handler with the call's context first, and put its NTSTATUS in
+/// EAX ([`NtCall::finish`] in `nt::call`).
+fn service_table(out: &mut String, name: &str, mut services: Vec<&Export>) {
+    services.sort_by_key(|export| export.syscall_number());
+    writeln!(
+        out,
+        "pub const {name}: [(u32, &str, u32, ServiceFn); {}] = [",
         services.len()
     )
     .unwrap();
-    for (export, number, _) in &services {
+    for export in &services {
         writeln!(
             out,
-            "    ({number:#05x}, {}, {}, {}),",
+            "    ({:#05x}, {}, {}, {}),",
+            export.syscall_number().expect("a service has its number"),
             quote(&export.name),
             export.arg_bytes(),
             export.nt_wrapper()
@@ -63,7 +90,10 @@ pub fn nt_services(spec: &Spec, source: &str) -> String {
         .unwrap();
     }
     out.push_str("];\n");
-    for (export, _, path) in &services {
+    for export in &services {
+        let Implementation::Syscall(path) = &export.implementation else {
+            unreachable!("a service table holds system services")
+        };
         out.push('\n');
         writeln!(
             out,
@@ -89,7 +119,6 @@ pub fn nt_services(spec: &Spec, source: &str) -> String {
         writeln!(out, "    call.finish(result);").unwrap();
         out.push_str("}\n");
     }
-    out
 }
 
 /// The expressions a wrapper decodes `export`'s argument block (`args`, dwords) into, by the spec's
@@ -225,8 +254,8 @@ pub fn data_exports(spec: &Spec, source: &str) -> String {
 ///   and the stubs, its variables left out: name, arguments' kinds and names, failure return),
 ///   named as the export. The stubs' bodies use theirs; a native's code hands its own to the DLL's
 ///   stub routine on a path it does not handle;
-/// - each stubbed export's body: `f2k_export_<Export>`, in the DLL's convention (stdcall unless
-///   its spec says cdecl; cdecl whenever it takes variable arguments), taking the arguments as its
+/// - each stubbed export's body: `f2k_export_<Export>`, in the DLL's convention (stdcall unless its
+///   spec says cdecl; cdecl whenever it takes variable arguments), taking the arguments as its
 ///   callers push them and handing them, with the spec's reason, to the DLL's stub routine:
 ///   `crate::stub::stubbed(&Entry, reason, &[u64]) -> u32`.
 pub fn dll_rust(specs: &[(&str, &Spec)], dll: &str, source: &str) -> String {
@@ -324,14 +353,16 @@ fn stub_kind(kind: ArgKind) -> &'static str {
 /// The system-call gate's vector.
 pub const SYSCALL_VECTOR: u8 = 0x2E;
 
-/// The symbol a system service's stub carries in ntdll (the `.def` maps its `Nt` and `Zw` names to
-/// it).
+/// The symbol a system service's stub carries in its DLL: in ntdll, the `.def` maps its `Nt` and
+/// `Zw` names to it; in user32 and gdi32, the DLL's own code calls it (win32k's services are not
+/// exported).
 pub fn nt_stub_symbol(export: &str) -> String {
     format!("_f2k_nt_{export}")
 }
 
-/// A system service's stub, as Windows 2000's ntdll spells it: `mov eax, number`, `lea edx,
-/// [esp+4]` (EDX = the caller's arguments), `int 2Eh`, `ret arg_bytes`.
+/// A system service's stub, as Windows 2000's ntdll (and its user32 and gdi32, for win32k's
+/// services) spells it: `mov eax, number`, `lea edx, [esp+4]` (EDX = the caller's arguments),
+/// `int 2Eh`, `ret arg_bytes`.
 pub fn nt_stub_bytes(number: u32, arg_bytes: u32) -> [u8; 14] {
     let mut bytes = [
         0xB8,
@@ -379,8 +410,9 @@ pub fn hand_symbol(export: &str) -> String {
 }
 
 /// `dll`'s generated bodies as Intel-syntax assembly: one global [`nt_stub_symbol`] per system
-/// service its spec declares, in number order. The gate vector is the `SYSCALL_VECTOR` constant the
-/// DLL's constants file sets (see `abi`).
+/// service its spec declares (ntoskrnl's for ntdll, win32k's for user32 and gdi32), in number
+/// order. The gate vector is the `SYSCALL_VECTOR` constant the DLL's constants file sets (see
+/// `abi`).
 pub fn dll_stubs(specs: &[(&str, &Spec)], dll: &str) -> String {
     let own = own_spec(specs, dll);
     let mut out = String::from(".text\n");
@@ -399,9 +431,9 @@ pub fn dll_stubs(specs: &[(&str, &Spec)], dll: &str) -> String {
 /// `dll`'s module-definition file: its hand-written exports (to their code or, for a variable, its
 /// storage, marked DATA; in `hand_exports` order: the order of the `.globl` lines of its assembly
 /// sources, then of its Rust sources' exports), then its stubbed exports (to
-/// their generated bodies, in spec order), then its system services (each under its `Nt` and its
-/// `Zw` name, to its stub, in number order), then its forwarders (`Name=MODULE.Export`, in spec
-/// order). An export's ordinal is its spec's when it has one (a
+/// their generated bodies, in spec order), then its ntoskrnl services (each under its `Nt` and its
+/// `Zw` name, to its stub, in number order; win32k's are not exported), then its forwarders
+/// (`Name=MODULE.Export`, in spec order). An export's ordinal is its spec's when it has one (a
 /// system service's Zw alias's, its `zw_ordinal`), otherwise the next free one. `hand_exports` must
 /// be exactly the spec's natives.
 pub fn dll_def(
@@ -436,7 +468,10 @@ pub fn dll_def(
             false,
         ));
     }
-    for (export, _) in syscalls(own) {
+    for (export, _) in syscalls(own)
+        .into_iter()
+        .filter(|(export, _)| export.is_nt_service())
+    {
         let nt = &export.name;
         let zw = w2k::zw_alias(nt);
         let symbol = &nt_stub_symbol(nt)[1..];
@@ -614,6 +649,54 @@ impl = { syscall = "crate::nt::object::close" }
         );
     }
 
+    /// win32k's services: the kernel's second table, by their whole numbers; user32's stubs on
+    /// those numbers; nothing in the `.def` (they are user32's own calls).
+    #[test]
+    fn win32k_services_are_the_second_table_and_unexported() {
+        let user32 = parse_spec(
+            "[[group]]\nkey = \"winsta\"\ntitle = \"winsta\"\n\n[[export]]\n\
+             name = \"NtUserGetThreadDesktop\"\ngroup = \"winsta\"\n\
+             args = [\"u32 ThreadId\", \"ptr<u32> Desktop\"]\n\
+             impl = { syscall = \"crate::win32k::winsta::get_thread_desktop\" }\ninternal = true\n",
+        )
+        .unwrap();
+        let ntdll = parse_spec(SYSCALLS).unwrap();
+        let specs = [("ntdll", &ntdll), ("user32", &user32)];
+        let table = win32k_services(&specs, "t");
+        assert!(
+            table.contains("pub const WIN32K_SERVICE_LIMIT: u32 = 640;"),
+            "{table}"
+        );
+        assert!(
+            table.contains(
+                "pub const WIN32K_SERVICES: [(u32, &str, u32, ServiceFn); 1] = [\n    \
+                 (0x11a2, \"NtUserGetThreadDesktop\", 8, nt_NtUserGetThreadDesktop),\n];"
+            ),
+            "{table}"
+        );
+        assert!(
+            table.contains(
+                "crate::win32k::winsta::get_thread_desktop(&mut call, args[0], \
+                 UserPtr::<u32>::at(args[1]))"
+            ),
+            "{table}"
+        );
+        assert!(!nt_services(&ntdll, "t").contains("NtUser"));
+        assert!(
+            !nt_services(&user32, "t").contains("NtUser"),
+            "ntoskrnl's alone"
+        );
+        assert!(dll_stubs(&specs, "user32").contains(
+            "_f2k_nt_NtUserGetThreadDesktop:\n    mov eax, 0x11a2\n    lea edx, [esp+4]\n    \
+             int SYSCALL_VECTOR\n    ret 8\n"
+        ));
+        assert_eq!(
+            dll_def(&specs, "user32", &[]).unwrap(),
+            "LIBRARY user32.dll\nEXPORTS\n"
+        );
+        assert!(!dll_exports(&user32, "t").contains("NtUser"));
+    }
+
     /// kernel32 generates no bodies: its exports are its own code and its forwarders. The `.def`
     /// maps the hand-written exports in their sources' order, then the forwarders.
     #[test]
@@ -753,7 +836,10 @@ impl = { syscall = "crate::nt::object::close" }
         hand.push("_iob".into());
         let def = dll_def(&specs, "kernel32", &hand).unwrap();
         assert!(def.contains("  _iob=f2k_export__iob @32 DATA\n"), "{def}");
-        assert!(def.contains("  GetVersion=f2k_export_GetVersion @2\n"), "{def}");
+        assert!(
+            def.contains("  GetVersion=f2k_export_GetVersion @2\n"),
+            "{def}"
+        );
         let data = data_exports(&kernel32, "t");
         assert!(
             data.contains("pub const DATA_EXPORTS: [&str; 1] = [\n    \"_iob\",\n];"),

@@ -271,7 +271,8 @@ def test_no_export_is_a_kernel_served_win32_service():
     """Every kernel32 export is kernel32's own code over ntdll: the kernel serves no Win32 service
     and has no Win32 layer (kernel/src/compat), and the specs' transitional kinds (impl service,
     legacy and floor, served from 0x2000, and the unimplemented stubs) are gone: exportgen no longer
-    reads them. Only ntdll's system services (impl syscall) enter the kernel."""
+    reads them. Only Windows 2000's system services (impl syscall) enter the kernel: ntdll's, and
+    user32's and gdi32's win32k calls."""
     transitional = [
         f"{spec.parent.name}/{export['name']}"
         for spec in sorted((f2kboot.REPO_ROOT / "userland").glob("*/exports.toml"))
@@ -374,9 +375,35 @@ def test_kernel32_imports_nothing_but_ntdll(builder):
     assert modules <= {"ntdll.dll"}, modules
 
 
+# The DLLs that enter the kernel through win32k's services, as Windows 2000's do: their own stubs,
+# on win32k's numbers (table 1: 0x1000 to 0x1FFF).
+WIN32K_CLIENTS = {"user32", "gdi32"}
+
+
+def win32k_stubs(path: Path) -> int:
+    """How many win32k service stubs a DLL's executable sections hold: `mov eax, <0x1000-0x1FFF>`,
+    `lea edx, [esp+4]`, `int 2Eh`."""
+    data = path.read_bytes()
+    _, _, _, table = pe_rva_reader(data)
+    stub = re.compile(rb"\xb8[\x00-\xff][\x10-\x1f]\x00\x00\x8d\x54\x24\x04\xcd\x2e", re.S)
+    return sum(
+        len(stub.findall(data[raw:raw + size]))
+        for _, _, raw, characteristics, size in table
+        if characteristics & 0x2000_0000  # IMAGE_SCN_MEM_EXECUTE
+    )
+
+
 @pytest.mark.parametrize("dll", [dll for dll in BUILT_DLLS if dll != "ntdll"])
-def test_the_dlls_enter_the_kernel_only_through_ntdll(builder, dll: str):
-    """Windows 2000's DLLs above ntdll hold no `int 2Eh`: only ntdll's stubs enter the kernel, every
-    other DLL's export being user-mode code over ntdll."""
-    gates = int2eh_pairs(built_dll(builder, dll))
-    assert gates == 0, f"{gates} int 2Eh byte pairs in {dll}'s code"
+def test_the_dlls_enter_the_kernel_as_windows_2000s_do(builder, dll: str):
+    """Windows 2000's DLLs above ntdll enter the kernel only as theirs do: user32 and gdi32 through
+    win32k's services alone (every `int 2Eh` in their code is one of their stubs on a win32k
+    number), every other DLL never (no `int 2Eh`: its exports are user-mode code over ntdll)."""
+    path = built_dll(builder, dll)
+    gates = int2eh_pairs(path)
+    if dll in WIN32K_CLIENTS:
+        stubs = win32k_stubs(path)
+        assert gates == stubs, (
+            f"{gates - stubs} of {dll}'s {gates} int 2Eh byte pairs are no win32k stub's"
+        )
+    else:
+        assert gates == 0, f"{gates} int 2Eh byte pairs in {dll}'s code"

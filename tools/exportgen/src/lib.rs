@@ -4,15 +4,18 @@
 //! header documents its records). This crate reads a spec ([`load`]), checks it, and emits what
 //! derives from it ([`emit`]):
 //!
-//! - for the kernel (through its build script): the NT service table, and the native exports' and
-//!   the DLL's exports' argument blocks (the kernel's tests check the built DLLs against them);
+//! - for the kernel (through its build script): its two service tables (ntoskrnl's NT services and
+//!   win32k's), and the native exports' and the DLL's exports' argument blocks (the kernel's tests
+//!   check the built DLLs against them);
 //! - for the system DLL builds (userland/build-support/stubs.rs): each DLL's system-service stubs,
 //!   its module-definition (`.def`) file, and the kernel ABI constants its assembly uses ([`abi`]).
 //!
-//! Only ntdll's `Nt*` system services (`impl = { syscall = ... }`) enter the kernel, as on Windows
-//! 2000, by Windows 2000's own numbers ([`w2k`], below [`w2k::service_limit`]): the kernel's NT
-//! service table and ntdll's stubs both come from here, so the two sides agree by construction.
-//! Every other export is user-mode code: a native body, or a forwarder to another DLL's export.
+//! Three DLLs enter the kernel, as on Windows 2000, each through its own stubs and by Windows
+//! 2000's own numbers ([`w2k`]): ntdll, through ntoskrnl's `Nt*` services (exported, under their
+//! `Zw` names too), and user32 and gdi32, through win32k's `NtUser*` and `NtGdi*` services (their
+//! internal calls, exported by neither). Both are `impl = { syscall = ... }` records; the kernel's
+//! tables and the DLLs' stubs both come from here, so the two sides agree by construction. Every
+//! other export is user-mode code: a native body, or a forwarder to another DLL's export.
 //!
 //! The specs are TOML read through [`toml`], a strict reader for the subset they are written in.
 
@@ -87,11 +90,12 @@ pub struct Export {
     pub fails: Option<String>,
     /// A fact worth keeping beside the export.
     pub note: Option<String>,
-    /// An F2K-internal entry point (the kernel's own calls into user mode), not a Windows 2000
-    /// export: the compatibility report leaves it out.
+    /// Not a Windows 2000 export, so the compatibility report leaves it out: an F2K-internal entry
+    /// point (the kernel's own calls into user mode), or one of win32k's services, which the DLL's
+    /// own code calls through its stub and the `.def` does not export.
     pub internal: bool,
-    /// A variable, not a function: the DLL's own storage (a native, `f2k_export_<Name>`), which the
-    /// `.def` exports as DATA (an importer reaches it through its import address table).
+    /// A variable, not a function: the DLL's own storage (a native, `f2k_export_<Name>`), which
+    /// the `.def` exports as DATA (an importer reaches it through its import address table).
     pub data: bool,
 }
 
@@ -252,19 +256,21 @@ impl ArgKind {
 /// How an export is implemented.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Implementation {
-    /// A Windows 2000 system service (ntdll's `Nt*`): the stub raises the gate on its Windows 2000
-    /// number ([`w2k`]), and the kernel's NT service table serves it through a typed handler (its
+    /// A Windows 2000 system service: the DLL's stub raises the gate on its Windows 2000 number
+    /// ([`w2k`]), and the kernel's service table for it serves it through a typed handler (its
     /// path from the crate root), `fn(&mut NtCall, <the arguments by kind>) -> NtResult`, the
-    /// NTSTATUS in EAX. ntdll exports it under its `Zw` name too, at the same stub.
+    /// NTSTATUS in EAX. One of ntoskrnl's (ntdll's `Nt*`) is exported under its `Zw` name too,
+    /// at the same stub; one of win32k's (user32's `NtUser*`, gdi32's `NtGdi*`) is `internal`:
+    /// the DLL's own code calls its stub, and nothing exports it.
     Syscall(String),
     /// Runs in user mode: the body's name.
     Native(String),
     /// Forwarded to another module's export (`NTDLL.RtlUnwind`).
     Forward(String),
     /// Not written yet: a generated body logs the call, every argument, and the reason (what is
-    /// missing: `not yet implemented`), then fails as the export fails (its `fails` value, the last
-    /// error ERROR_CALL_NOT_IMPLEMENTED); one that returns nothing (`void`) returns, having no
-    /// failure to report, and one that cannot fail (`never`) raises.
+    /// missing: `not yet implemented`), then fails as the export fails (its `fails` value, the
+    /// last error ERROR_CALL_NOT_IMPLEMENTED); one that returns nothing (`void`) returns,
+    /// having no failure to report, and one that cannot fail (`never`) raises.
     Stub(String),
 }
 
@@ -291,17 +297,31 @@ impl Export {
         }
     }
 
-    /// A system service's generated wrapper: the NT service table's entry for it.
+    /// A system service's generated wrapper: its service table's entry for it.
     pub fn nt_wrapper(&self) -> String {
         format!("nt_{}", self.name)
     }
 
-    /// A system service's Windows 2000 number.
+    /// A system service's Windows 2000 number, in whichever table holds it (ntoskrnl's from 0,
+    /// win32k's from 0x1000).
     pub fn syscall_number(&self) -> Option<u32> {
         self.implementation
             .is_syscall()
-            .then(|| w2k::service_number(&self.name))
+            .then(|| {
+                w2k::service_number(&self.name).or_else(|| w2k::win32k_service_number(&self.name))
+            })
             .flatten()
+    }
+
+    /// Whether it is one of ntoskrnl's services (ntdll's `Nt*`, exported with its `Zw` alias).
+    pub fn is_nt_service(&self) -> bool {
+        self.implementation.is_syscall() && w2k::service_number(&self.name).is_some()
+    }
+
+    /// Whether it is one of win32k's services (user32's `NtUser*`, gdi32's `NtGdi*`: their own
+    /// code's calls, not exported).
+    pub fn is_win32k_service(&self) -> bool {
+        self.implementation.is_syscall() && w2k::win32k_service_number(&self.name).is_some()
     }
 
     /// The value it returns on failure (`fails`), as a dword.
@@ -335,11 +355,29 @@ pub fn fail_value(text: &str) -> Option<u32> {
     })
 }
 
+/// The DLLs whose own code enters win32k's services, as on Windows 2000.
+pub const WIN32K_CLIENTS: [&str; 2] = ["user32", "gdi32"];
+
 /// The system DLLs' specs, checked together: `(dll, spec)` pairs, the DLL named as its module
-/// (`kernel32`, `ntdll`). A forward names an export of a listed DLL with the same prototype.
+/// (`kernel32`, `ntdll`). A forward names an export of a listed DLL with the same prototype (not
+/// one of win32k's services, which no DLL exports); ntoskrnl's services are ntdll's, and win32k's
+/// user32's or gdi32's ([`WIN32K_CLIENTS`]).
 pub fn check_together(specs: &[(&str, &Spec)]) -> Result<(), String> {
     for (dll, spec) in specs {
         for export in &spec.exports {
+            // Which DLL enters which table: ntdll ntoskrnl's, user32 and gdi32 win32k's.
+            if export.is_nt_service() && *dll != "ntdll" {
+                return Err(format!(
+                    "{dll}/{}: one of ntoskrnl's services is ntdll's alone",
+                    export.name
+                ));
+            }
+            if export.is_win32k_service() && !WIN32K_CLIENTS.contains(dll) {
+                return Err(format!(
+                    "{dll}/{}: one of win32k's services is user32's or gdi32's alone",
+                    export.name
+                ));
+            }
             if let Implementation::Forward(target) = &export.implementation {
                 let (module, name) = target
                     .split_once('.')
@@ -351,7 +389,10 @@ pub fn check_together(specs: &[(&str, &Spec)]) -> Result<(), String> {
                         export.name
                     ));
                 };
-                let Some(found) = owner.export(name) else {
+                let Some(found) = owner
+                    .export(name)
+                    .filter(|found| !found.is_win32k_service())
+                else {
                     return Err(format!(
                         "{dll}/{}: forwards to {target}, which {module} does not export",
                         export.name
@@ -424,12 +465,7 @@ pub fn parse_spec(text: &str) -> Result<Spec, String> {
                 "convention is \"stdcall\" or \"cdecl\", not {word:?}"
             ))
         }
-        Some(other) => {
-            return Err(format!(
-                "convention must be a string, not {}",
-                other.kind()
-            ))
-        }
+        Some(other) => return Err(format!("convention must be a string, not {}", other.kind())),
     };
     let mut groups: Vec<Group> = Vec::new();
     for (index, table) in tables(&root, "group")?.into_iter().enumerate() {
@@ -484,7 +520,7 @@ pub fn parse_spec(text: &str) -> Result<Spec, String> {
         }
     }
     // A system service's Zw alias is the service's own export: not catalogued apart.
-    for export in exports.iter().filter(|e| e.implementation.is_syscall()) {
+    for export in exports.iter().filter(|e| e.is_nt_service()) {
         let zw = w2k::zw_alias(&export.name);
         if catalogued.iter().any(|c| c.name == zw) {
             return Err(format!(
@@ -626,10 +662,12 @@ fn read_export(table: &Table, index: usize, groups: &[Group]) -> Result<Export, 
             };
             match kind.as_str() {
                 "syscall" => {
-                    if w2k::service_number(&name).is_none() {
+                    if w2k::service_number(&name).is_none()
+                        && w2k::win32k_service_number(&name).is_none()
+                    {
                         return Err(format!(
-                            "{context}: a syscall is a Windows 2000 system service (Nt*), and {name} \
-                             is not one"
+                            "{context}: a syscall is a Windows 2000 system service (ntoskrnl's Nt* \
+                             or win32k's NtUser* and NtGdi*), and {name} is not one"
                         ));
                     }
                     Implementation::Syscall(value.clone())
@@ -666,9 +704,23 @@ fn read_export(table: &Table, index: usize, groups: &[Group]) -> Result<Export, 
     };
     let ordinal = ordinal_field(table, "ordinal", &context)?;
     let zw_ordinal = ordinal_field(table, "zw_ordinal", &context)?;
-    if zw_ordinal.is_some() && !implementation.is_syscall() {
+    let internal = boolean(table, "internal", &context)?;
+    let win32k = implementation.is_syscall() && w2k::win32k_service_number(&name).is_some();
+    if zw_ordinal.is_some() && (!implementation.is_syscall() || win32k) {
         return Err(format!(
-            "{context}: only a system service has a Zw alias (zw_ordinal)"
+            "{context}: only one of ntoskrnl's system services has a Zw alias (zw_ordinal)"
+        ));
+    }
+    // win32k's services are the DLL's own calls, as on Windows 2000: never exported.
+    if win32k && (!internal || ordinal.is_some()) {
+        return Err(format!(
+            "{context}: one of win32k's services is the DLL's internal call: internal = true, no \
+             ordinal (Windows 2000's user32 and gdi32 export none)"
+        ));
+    }
+    if implementation.is_syscall() && !win32k && internal {
+        return Err(format!(
+            "{context}: one of ntoskrnl's system services is ntdll's export, not internal"
         ));
     }
     let fails = optional_string(table, "fails", &context)?;
@@ -721,7 +773,7 @@ fn read_export(table: &Table, index: usize, groups: &[Group]) -> Result<Export, 
         zw_ordinal,
         fails,
         note: optional_string(table, "note", &context)?,
-        internal: boolean(table, "internal", &context)?,
+        internal,
         data,
     })
 }
@@ -928,8 +980,9 @@ ordinal = 0x10
         }
     }
 
-    /// The Win32 service kinds are gone: no export enters the kernel but ntdll's system services,
-    /// and every export the spec lists is built (an unknown kind is refused, not misread).
+    /// The Win32 service kinds are gone: nothing enters the kernel but Windows 2000's system
+    /// services, and every export the spec lists is built (an unknown kind is refused, not
+    /// misread).
     #[test]
     fn the_win32_service_kinds_are_gone() {
         for kind in ["service", "legacy", "floor", "unimplemented", "native2"] {
@@ -968,7 +1021,10 @@ ordinal = 0x10
         let cdecl = parse_spec(&format!("convention = \"cdecl\"\n{SPEC}")).unwrap();
         assert_eq!(cdecl.convention, Convention::Cdecl);
         assert_eq!(
-            cdecl.export("ExitProcess").unwrap().convention(cdecl.convention),
+            cdecl
+                .export("ExitProcess")
+                .unwrap()
+                .convention(cdecl.convention),
             Convention::Cdecl
         );
         let variadic = parse_spec(&SPEC.replacen(
@@ -978,7 +1034,10 @@ ordinal = 0x10
         ))
         .unwrap();
         assert_eq!(
-            variadic.export("ExitProcess").unwrap().convention(Convention::Stdcall),
+            variadic
+                .export("ExitProcess")
+                .unwrap()
+                .convention(Convention::Stdcall),
             Convention::Cdecl
         );
         for (head, message) in [
@@ -989,7 +1048,8 @@ ordinal = 0x10
             let error = parse_spec(&format!("{head}{SPEC}")).unwrap_err();
             assert!(error.contains(message), "{head}: {error}");
         }
-        let service = "convention = \"cdecl\"\n[[group]]\nkey = \"nt\"\ntitle = \"nt\"\n\n[[export]]\n\
+        let service =
+            "convention = \"cdecl\"\n[[group]]\nkey = \"nt\"\ntitle = \"nt\"\n\n[[export]]\n\
                        name = \"NtClose\"\ngroup = \"nt\"\nargs = [\"handle Handle\"]\n\
                        impl = { syscall = \"x\" }\n";
         assert!(parse_spec(service).unwrap_err().contains("stdcall"));
@@ -1010,7 +1070,11 @@ ordinal = 0x10
         assert!(!spec.export("ExitProcess").unwrap().data);
         for (from, to, message) in [
             ("native = \"_iob\"", "forward = \"NTDLL.x\"", "own storage"),
-            ("data = true", "data = true\nargs = [\"u32 x\"]", "no arguments"),
+            (
+                "data = true",
+                "data = true\nargs = [\"u32 x\"]",
+                "no arguments",
+            ),
             ("data = true", "data = true\nfails = \"0\"", "no arguments"),
             ("data = true", "data = 1", "must be a boolean"),
         ] {
@@ -1056,6 +1120,57 @@ ordinal = 0x10
         let text = "[[group]]\nkey = \"nt\"\ntitle = \"nt\"\n\n[[export]]\nname = \"NtClose\"\n\
                     group = \"nt\"\nargs = [\"strA x\"]\nimpl = { syscall = \"x\" }\n";
         assert!(parse_spec(text).unwrap_err().contains("UNICODE_STRING"));
+        let text = "[[group]]\nkey = \"nt\"\ntitle = \"nt\"\n\n[[export]]\nname = \"NtClose\"\n\
+                    group = \"nt\"\nargs = []\nimpl = { syscall = \"x\" }\ninternal = true\n";
+        assert!(parse_spec(text).unwrap_err().contains("not internal"));
+    }
+
+    /// One of win32k's services: its number from the second table, internal, without an ordinal
+    /// or a Zw alias; user32's or gdi32's alone, and no forward's target.
+    #[test]
+    fn win32k_services_are_internal_calls() {
+        let record = "[[group]]\nkey = \"winsta\"\ntitle = \"winsta\"\n\n[[export]]\n\
+                      name = \"NtUserGetThreadDesktop\"\ngroup = \"winsta\"\n\
+                      args = [\"u32 ThreadId\", \"ptr<u32> Desktop\"]\n\
+                      impl = { syscall = \"crate::win32k::x\" }\ninternal = true\n";
+        let spec = parse_spec(record).unwrap();
+        let service = spec.export("NtUserGetThreadDesktop").unwrap();
+        assert_eq!(service.syscall_number(), Some(0x11A2));
+        assert!(service.is_win32k_service() && !service.is_nt_service());
+        for (from, to, message) in [
+            ("internal = true\n", "", "internal = true"),
+            (
+                "internal = true\n",
+                "internal = true\nordinal = 5\n",
+                "no ordinal",
+            ),
+            (
+                "internal = true\n",
+                "internal = true\nzw_ordinal = 5\n",
+                "Zw alias",
+            ),
+            ("NtUserGetThreadDesktop", "NtUserNoSuch", "not one"),
+        ] {
+            let changed = record.replacen(from, to, 1);
+            assert_ne!(changed, record, "the change applies: {from:?}");
+            let error = parse_spec(&changed).unwrap_err();
+            assert!(error.contains(message), "{to}: {error}");
+        }
+        check_together(&[("user32", &spec)]).unwrap();
+        check_together(&[("gdi32", &spec)]).unwrap();
+        let error = check_together(&[("ntdll", &spec)]).unwrap_err();
+        assert!(error.contains("user32's or gdi32's"), "{error}");
+        let nt = "[[group]]\nkey = \"nt\"\ntitle = \"nt\"\n\n[[export]]\nname = \"NtClose\"\n\
+                  group = \"nt\"\nargs = [\"handle Handle\"]\nimpl = { syscall = \"x\" }\n";
+        let error = check_together(&[("user32", &parse_spec(nt).unwrap())]).unwrap_err();
+        assert!(error.contains("ntdll's alone"), "{error}");
+        let forward = "[[group]]\nkey = \"winsta\"\ntitle = \"winsta\"\n\n[[export]]\n\
+                       name = \"GetThreadDesktop\"\ngroup = \"winsta\"\n\
+                       args = [\"u32 ThreadId\", \"ptr<u32> Desktop\"]\n\
+                       impl = { forward = \"USER32.NtUserGetThreadDesktop\" }\n";
+        let forward = parse_spec(forward).unwrap();
+        let error = check_together(&[("kernel32", &forward), ("user32", &spec)]).unwrap_err();
+        assert!(error.contains("does not export"), "{error}");
     }
 
     #[test]
@@ -1115,7 +1230,8 @@ ordinal = 0x10
                 .zw_ordinal,
             Some(3)
         );
-        let decorated = format!("{SPEC}\n[[export]]\nname = \"??0exception@@QAE@XZ\"\nordinal = 2\n");
+        let decorated =
+            format!("{SPEC}\n[[export]]\nname = \"??0exception@@QAE@XZ\"\nordinal = 2\n");
         assert_eq!(parse_spec(&decorated).unwrap().catalogued.len(), 1);
         let apart = format!("{zw}\n[[export]]\nname = \"ZwClose\"\nordinal = 4\n");
         assert!(parse_spec(&apart).unwrap_err().contains("alias"));
@@ -1135,7 +1251,10 @@ ordinal = 0x10
                 "args = []\nimpl = { stub = \"\" }\nfails = \"FALSE\"",
                 "its reason",
             ),
-            ("args = []\nimpl = { stub = \"not yet implemented\" }", "failure return"),
+            (
+                "args = []\nimpl = { stub = \"not yet implemented\" }",
+                "failure return",
+            ),
             (
                 "args = [\"...\", \"u32 x\"]\nimpl = { native = \"x\" }",
                 "come last",
@@ -1158,7 +1277,10 @@ ordinal = 0x10
         );
         let spec = parse_spec(&stub).unwrap();
         let stubbed = spec.export("Stubbed").unwrap();
-        assert_eq!(stubbed.implementation, Implementation::Stub("not yet implemented".into()));
+        assert_eq!(
+            stubbed.implementation,
+            Implementation::Stub("not yet implemented".into())
+        );
         assert_eq!(stubbed.arg_bytes(), 4);
         assert_eq!(stubbed.args[1].to_string(), "...");
         assert_eq!(spec.stubs().len(), 1);

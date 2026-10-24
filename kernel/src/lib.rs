@@ -37,6 +37,10 @@ mod user;
 // manager
 mod nt;
 
+// win32k: window stations and desktops, and the second service table (user32's own NtUser* calls,
+// by Windows 2000's numbers from 0x1000)
+mod win32k;
+
 // The console server: the kernel's stand-in for csrss, which kernel32's console calls reach through
 // ntdll's CsrClientCallServer
 mod csr;
@@ -228,6 +232,10 @@ pub extern "C" fn kmain(magic: u32, multiboot_info: u32) -> ! {
     // The console's text screen: the fresh console's blank screen buffer over whatever the firmware
     // and loader left on it (silently: the serial line carries the boot's report).
     csr::init();
+
+    // The interactive window station, WinSta0, and its Default desktop: win32k's objects, which
+    // every process connects to at its first win32k service.
+    win32k::winsta::init();
 
     // The interrupt subsystem: the remapped controller behind the claim seam, the interval timer at
     // the captured platform rate, the interval clock connected to its vector — and interrupts fly
