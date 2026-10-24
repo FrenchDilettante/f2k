@@ -2,8 +2,9 @@
 # kernel32's, documented in userland/kernel32/exports.toml).
 #
 # Every export is cdecl, as the C runtime's functions are (the convention below). F2K's msvcrt
-# exports what the corpus fixtures (tests/crt) and cmd.exe import: its own code (src/lib.rs) over
-# kernel32, as Windows 2000's msvcrt imports kernel32 alone, and stubs for what is not written yet.
+# exports what the corpus fixtures (tests/crt) and cmd.exe import: its own code (src/lib.rs, and
+# src/seh.s for the exception handling and setjmp exports) over kernel32, as Windows 2000's msvcrt
+# imports kernel32 alone, and stubs for what is not written yet (pipes and console input).
 # Its variables (`data = true`) are its own storage (src/data.rs). The rest of the records are
 # catalogued from MSVCRT.dll 6.1.9844.0's export table (scripts/catalogue_exports.py): their name
 # and ordinal. Implementing one gives it its group, prototype and implementation.
@@ -48,7 +49,7 @@ title = "sorting / random numbers / time / locale"
 name = "__set_app_type"
 group = "startup"
 args = ["i32 at"]
-impl = { stub = "not yet implemented" }
+impl = { native = "__set_app_type" }
 ordinal = 132
 fails = "void"
 
@@ -56,7 +57,7 @@ fails = "void"
 name = "__p__fmode"
 group = "startup"
 args = []
-impl = { stub = "not yet implemented" }
+impl = { native = "__p__fmode" }
 ordinal = 114
 fails = "never"
 
@@ -64,7 +65,7 @@ fails = "never"
 name = "__p__commode"
 group = "startup"
 args = []
-impl = { stub = "not yet implemented" }
+impl = { native = "__p__commode" }
 ordinal = 109
 fails = "never"
 
@@ -72,7 +73,7 @@ fails = "never"
 name = "__p___initenv"
 group = "startup"
 args = []
-impl = { stub = "not yet implemented" }
+impl = { native = "__p___initenv" }
 ordinal = 103
 fails = "never"
 
@@ -80,7 +81,7 @@ fails = "never"
 name = "__p__environ"
 group = "startup"
 args = []
-impl = { stub = "not yet implemented" }
+impl = { native = "__p__environ" }
 ordinal = 112
 fails = "never"
 
@@ -88,7 +89,7 @@ fails = "never"
 name = "__p___argc"
 group = "startup"
 args = []
-impl = { stub = "not yet implemented" }
+impl = { native = "__p___argc" }
 ordinal = 101
 fails = "never"
 
@@ -96,7 +97,7 @@ fails = "never"
 name = "__p___argv"
 group = "startup"
 args = []
-impl = { stub = "not yet implemented" }
+impl = { native = "__p___argv" }
 ordinal = 102
 fails = "never"
 
@@ -104,7 +105,7 @@ fails = "never"
 name = "_controlfp"
 group = "startup"
 args = ["u32 new", "u32 mask"]
-impl = { stub = "not yet implemented" }
+impl = { native = "_controlfp" }
 ordinal = 186
 fails = "never"
 
@@ -112,7 +113,7 @@ fails = "never"
 name = "_initterm"
 group = "startup"
 args = ["ptr pfbegin", "ptr pfend"]
-impl = { stub = "not yet implemented" }
+impl = { native = "_initterm" }
 ordinal = 282
 fails = "void"
 
@@ -120,7 +121,7 @@ fails = "void"
 name = "__getmainargs"
 group = "startup"
 args = ["ptr<i32> argc", "ptr argv", "ptr envp", "i32 dowildcard", "ptr startinfo"]
-impl = { stub = "not yet implemented" }
+impl = { native = "__getmainargs" }
 ordinal = 91
 fails = "-1"
 
@@ -128,7 +129,7 @@ fails = "-1"
 name = "__setusermatherr"
 group = "startup"
 args = ["ptr pf"]
-impl = { stub = "not yet implemented" }
+impl = { native = "__setusermatherr" }
 ordinal = 134
 fails = "void"
 
@@ -136,7 +137,7 @@ fails = "void"
 name = "_onexit"
 group = "startup"
 args = ["ptr func"]
-impl = { stub = "not yet implemented" }
+impl = { native = "_onexit" }
 ordinal = 403
 fails = "NULL"
 
@@ -144,7 +145,7 @@ fails = "NULL"
 name = "__dllonexit"
 group = "startup"
 args = ["ptr func", "ptr pbegin", "ptr pend"]
-impl = { stub = "not yet implemented" }
+impl = { native = "__dllonexit" }
 ordinal = 88
 fails = "NULL"
 
@@ -152,7 +153,7 @@ fails = "NULL"
 name = "exit"
 group = "startup"
 args = ["i32 status"]
-impl = { stub = "not yet implemented" }
+impl = { native = "exit" }
 ordinal = 607
 fails = "never"
 
@@ -160,7 +161,7 @@ fails = "never"
 name = "_exit"
 group = "startup"
 args = ["i32 status"]
-impl = { stub = "not yet implemented" }
+impl = { native = "_exit" }
 ordinal = 215
 fails = "never"
 
@@ -168,7 +169,7 @@ fails = "never"
 name = "_XcptFilter"
 group = "startup"
 args = ["u32 xcptnum", "ptr pxcptinfoptrs"]
-impl = { stub = "not yet implemented" }
+impl = { native = "_XcptFilter" }
 ordinal = 75
 fails = "0"
 note = "the start-up code's exception filter: failing, it answers EXCEPTION_CONTINUE_SEARCH"
@@ -193,7 +194,7 @@ ordinal = 160
 name = "_except_handler3"
 group = "exceptions"
 args = ["ptr ExceptionRecord", "ptr EstablisherFrame", "ptr ContextRecord", "ptr DispatcherContext"]
-impl = { stub = "not yet implemented" }
+impl = { native = "_except_handler3" }
 ordinal = 206
 fails = "1"
 note = "the frame handler of every __try the compiler emits: failing, it answers ExceptionContinueSearch"
@@ -202,7 +203,7 @@ note = "the frame handler of every __try the compiler emits: failing, it answers
 name = "_local_unwind2"
 group = "exceptions"
 args = ["ptr xr", "i32 stop"]
-impl = { stub = "not yet implemented" }
+impl = { native = "_local_unwind2" }
 ordinal = 327
 fails = "void"
 
@@ -210,7 +211,7 @@ fails = "void"
 name = "_abnormal_termination"
 group = "exceptions"
 args = []
-impl = { stub = "not yet implemented" }
+impl = { native = "_abnormal_termination" }
 ordinal = 144
 fails = "never"
 
@@ -218,7 +219,7 @@ fails = "never"
 name = "_setjmp3"
 group = "exceptions"
 args = ["ptr env", "u32 count", "..."]
-impl = { stub = "not yet implemented" }
+impl = { native = "_setjmp3" }
 ordinal = 438
 fails = "never"
 
@@ -226,7 +227,7 @@ fails = "never"
 name = "longjmp"
 group = "exceptions"
 args = ["ptr env", "i32 value"]
-impl = { stub = "not yet implemented" }
+impl = { native = "longjmp" }
 ordinal = 678
 fails = "never"
 
@@ -234,7 +235,7 @@ fails = "never"
 name = "_seh_longjmp_unwind"
 group = "exceptions"
 args = ["ptr jmpbuf"]
-impl = { stub = "not yet implemented" }
+impl = { native = "_seh_longjmp_unwind" }
 ordinal = 433
 fails = "void"
 note = "_setjmp3 records it in the jump buffer (UnwindFunc) and msvcrt's own longjmp calls it: programs only pass its address"
@@ -245,7 +246,7 @@ note = "_setjmp3 records it in the jump buffer (UnwindFunc) and msvcrt's own lon
 name = "_close"
 group = "lowio"
 args = ["i32 fd"]
-impl = { stub = "not yet implemented" }
+impl = { native = "_close" }
 ordinal = 182
 fails = "-1"
 
@@ -253,7 +254,7 @@ fails = "-1"
 name = "_dup"
 group = "lowio"
 args = ["i32 fd"]
-impl = { stub = "not yet implemented" }
+impl = { native = "_dup" }
 ordinal = 197
 fails = "-1"
 
@@ -261,7 +262,7 @@ fails = "-1"
 name = "_dup2"
 group = "lowio"
 args = ["i32 fd1", "i32 fd2"]
-impl = { stub = "not yet implemented" }
+impl = { native = "_dup2" }
 ordinal = 198
 fails = "-1"
 
@@ -269,7 +270,7 @@ fails = "-1"
 name = "_get_osfhandle"
 group = "lowio"
 args = ["i32 fd"]
-impl = { stub = "not yet implemented" }
+impl = { native = "_get_osfhandle" }
 ordinal = 255
 fails = "-1"
 
@@ -277,7 +278,7 @@ fails = "-1"
 name = "_open_osfhandle"
 group = "lowio"
 args = ["handle osfhandle", "i32 flags"]
-impl = { stub = "not yet implemented" }
+impl = { native = "_open_osfhandle" }
 ordinal = 405
 fails = "-1"
 
@@ -285,7 +286,7 @@ fails = "-1"
 name = "_setmode"
 group = "lowio"
 args = ["i32 fd", "i32 mode"]
-impl = { stub = "not yet implemented" }
+impl = { native = "_setmode" }
 ordinal = 441
 fails = "-1"
 
@@ -293,7 +294,7 @@ fails = "-1"
 name = "_tell"
 group = "lowio"
 args = ["i32 fd"]
-impl = { stub = "not yet implemented" }
+impl = { native = "_tell" }
 ordinal = 478
 fails = "-1"
 
@@ -301,7 +302,7 @@ fails = "-1"
 name = "_write"
 group = "lowio"
 args = ["i32 fd", "ptr buffer", "u32 count"]
-impl = { stub = "not yet implemented" }
+impl = { native = "_write" }
 ordinal = 555
 fails = "-1"
 
@@ -309,7 +310,7 @@ fails = "-1"
 name = "_errno"
 group = "lowio"
 args = []
-impl = { stub = "not yet implemented" }
+impl = { native = "_errno" }
 ordinal = 204
 fails = "never"
 
@@ -350,7 +351,7 @@ ordinal = 286
 name = "printf"
 group = "stdio"
 args = ["strA format", "..."]
-impl = { stub = "not yet implemented" }
+impl = { native = "printf" }
 ordinal = 692
 fails = "-1"
 
@@ -358,7 +359,7 @@ fails = "-1"
 name = "fprintf"
 group = "stdio"
 args = ["ptr stream", "strA format", "..."]
-impl = { stub = "not yet implemented" }
+impl = { native = "fprintf" }
 ordinal = 622
 fails = "-1"
 
@@ -366,7 +367,7 @@ fails = "-1"
 name = "sprintf"
 group = "stdio"
 args = ["ptr buffer", "strA format", "..."]
-impl = { stub = "not yet implemented" }
+impl = { native = "sprintf" }
 ordinal = 712
 fails = "-1"
 
@@ -374,7 +375,7 @@ fails = "-1"
 name = "_vsnprintf"
 group = "stdio"
 args = ["ptr buffer", "u32 count", "strA format", "ptr argptr"]
-impl = { stub = "not yet implemented" }
+impl = { native = "_vsnprintf" }
 ordinal = 498
 fails = "-1"
 
@@ -382,7 +383,7 @@ fails = "-1"
 name = "swprintf"
 group = "stdio"
 args = ["ptr buffer", "strW format", "..."]
-impl = { stub = "not yet implemented" }
+impl = { native = "swprintf" }
 ordinal = 737
 fails = "-1"
 note = "MSVC 6's: no count"
@@ -391,7 +392,7 @@ note = "MSVC 6's: no count"
 name = "_snwprintf"
 group = "stdio"
 args = ["ptr buffer", "u32 count", "strW format", "..."]
-impl = { stub = "not yet implemented" }
+impl = { native = "_snwprintf" }
 ordinal = 445
 fails = "-1"
 
@@ -399,7 +400,7 @@ fails = "-1"
 name = "_vsnwprintf"
 group = "stdio"
 args = ["ptr buffer", "u32 count", "strW format", "ptr argptr"]
-impl = { stub = "not yet implemented" }
+impl = { native = "_vsnwprintf" }
 ordinal = 499
 fails = "-1"
 
@@ -407,7 +408,7 @@ fails = "-1"
 name = "swscanf"
 group = "stdio"
 args = ["strW buffer", "strW format", "..."]
-impl = { stub = "not yet implemented" }
+impl = { native = "swscanf" }
 ordinal = 738
 fails = "-1"
 
@@ -415,7 +416,7 @@ fails = "-1"
 name = "fflush"
 group = "stdio"
 args = ["ptr stream"]
-impl = { stub = "not yet implemented" }
+impl = { native = "fflush" }
 ordinal = 613
 fails = "-1"
 
@@ -423,7 +424,7 @@ fails = "-1"
 name = "fgets"
 group = "stdio"
 args = ["ptr str", "i32 n", "ptr stream"]
-impl = { stub = "not yet implemented" }
+impl = { native = "fgets" }
 ordinal = 616
 fails = "NULL"
 
@@ -431,7 +432,7 @@ fails = "NULL"
 name = "fclose"
 group = "stdio"
 args = ["ptr stream"]
-impl = { stub = "not yet implemented" }
+impl = { native = "fclose" }
 ordinal = 610
 fails = "-1"
 
@@ -439,7 +440,7 @@ fails = "-1"
 name = "setvbuf"
 group = "stdio"
 args = ["ptr stream", "ptr buffer", "i32 mode", "u32 size"]
-impl = { stub = "not yet implemented" }
+impl = { native = "setvbuf" }
 ordinal = 708
 fails = "-1"
 
@@ -447,7 +448,7 @@ fails = "-1"
 name = "_fdopen"
 group = "stdio"
 args = ["i32 fd", "strA mode"]
-impl = { stub = "not yet implemented" }
+impl = { native = "_fdopen" }
 ordinal = 219
 fails = "NULL"
 
@@ -473,7 +474,7 @@ fails = "-1"
 name = "strcmp"
 group = "strings"
 args = ["strA string1", "strA string2"]
-impl = { stub = "not yet implemented" }
+impl = { native = "strcmp" }
 ordinal = 718
 fails = "never"
 
@@ -481,7 +482,7 @@ fails = "never"
 name = "_stricmp"
 group = "strings"
 args = ["strA string1", "strA string2"]
-impl = { stub = "not yet implemented" }
+impl = { native = "_stricmp" }
 ordinal = 464
 fails = "0x7FFFFFFF"
 note = "_NLSCMPERROR"
@@ -490,7 +491,7 @@ note = "_NLSCMPERROR"
 name = "wcslen"
 group = "strings"
 args = ["strW str"]
-impl = { stub = "not yet implemented" }
+impl = { native = "wcslen" }
 ordinal = 764
 fails = "never"
 
@@ -498,7 +499,7 @@ fails = "never"
 name = "wcscmp"
 group = "strings"
 args = ["strW string1", "strW string2"]
-impl = { stub = "not yet implemented" }
+impl = { native = "wcscmp" }
 ordinal = 759
 fails = "never"
 
@@ -506,7 +507,7 @@ fails = "never"
 name = "wcsncmp"
 group = "strings"
 args = ["strW string1", "strW string2", "u32 count"]
-impl = { stub = "not yet implemented" }
+impl = { native = "wcsncmp" }
 ordinal = 766
 fails = "never"
 
@@ -514,7 +515,7 @@ fails = "never"
 name = "_wcsicmp"
 group = "strings"
 args = ["strW string1", "strW string2"]
-impl = { stub = "not yet implemented" }
+impl = { native = "_wcsicmp" }
 ordinal = 507
 fails = "0x7FFFFFFF"
 note = "_NLSCMPERROR"
@@ -523,7 +524,7 @@ note = "_NLSCMPERROR"
 name = "_wcsnicmp"
 group = "strings"
 args = ["strW string1", "strW string2", "u32 count"]
-impl = { stub = "not yet implemented" }
+impl = { native = "_wcsnicmp" }
 ordinal = 511
 fails = "0x7FFFFFFF"
 note = "_NLSCMPERROR"
@@ -532,7 +533,7 @@ note = "_NLSCMPERROR"
 name = "wcscpy"
 group = "strings"
 args = ["ptr strDestination", "strW strSource"]
-impl = { stub = "not yet implemented" }
+impl = { native = "wcscpy" }
 ordinal = 761
 fails = "never"
 
@@ -540,7 +541,7 @@ fails = "never"
 name = "wcsncpy"
 group = "strings"
 args = ["ptr strDest", "strW strSource", "u32 count"]
-impl = { stub = "not yet implemented" }
+impl = { native = "wcsncpy" }
 ordinal = 767
 fails = "never"
 
@@ -548,7 +549,7 @@ fails = "never"
 name = "wcscat"
 group = "strings"
 args = ["strW strDestination", "strW strSource"]
-impl = { stub = "not yet implemented" }
+impl = { native = "wcscat" }
 ordinal = 757
 fails = "never"
 
@@ -556,7 +557,7 @@ fails = "never"
 name = "wcschr"
 group = "strings"
 args = ["strW str", "u32 c"]
-impl = { stub = "not yet implemented" }
+impl = { native = "wcschr" }
 ordinal = 758
 fails = "never"
 
@@ -564,7 +565,7 @@ fails = "never"
 name = "wcsrchr"
 group = "strings"
 args = ["strW str", "u32 c"]
-impl = { stub = "not yet implemented" }
+impl = { native = "wcsrchr" }
 ordinal = 769
 fails = "never"
 
@@ -572,7 +573,7 @@ fails = "never"
 name = "wcsstr"
 group = "strings"
 args = ["strW str", "strW strSearch"]
-impl = { stub = "not yet implemented" }
+impl = { native = "wcsstr" }
 ordinal = 771
 fails = "never"
 
@@ -580,7 +581,7 @@ fails = "never"
 name = "wcsspn"
 group = "strings"
 args = ["strW string", "strW strCharSet"]
-impl = { stub = "not yet implemented" }
+impl = { native = "wcsspn" }
 ordinal = 770
 fails = "never"
 
@@ -588,7 +589,7 @@ fails = "never"
 name = "_wcslwr"
 group = "strings"
 args = ["strW string"]
-impl = { stub = "not yet implemented" }
+impl = { native = "_wcslwr" }
 ordinal = 509
 fails = "never"
 
@@ -596,7 +597,7 @@ fails = "never"
 name = "_wcsupr"
 group = "strings"
 args = ["strW string"]
-impl = { stub = "not yet implemented" }
+impl = { native = "_wcsupr" }
 ordinal = 516
 fails = "never"
 
@@ -604,7 +605,7 @@ fails = "never"
 name = "wcstol"
 group = "strings"
 args = ["strW nptr", "ptr endptr", "i32 base"]
-impl = { stub = "not yet implemented" }
+impl = { native = "wcstol" }
 ordinal = 774
 fails = "never"
 
@@ -612,7 +613,7 @@ fails = "never"
 name = "wcstoul"
 group = "strings"
 args = ["strW nptr", "ptr endptr", "i32 base"]
-impl = { stub = "not yet implemented" }
+impl = { native = "wcstoul" }
 ordinal = 776
 fails = "never"
 
@@ -620,7 +621,7 @@ fails = "never"
 name = "_wtol"
 group = "strings"
 args = ["strW str"]
-impl = { stub = "not yet implemented" }
+impl = { native = "_wtol" }
 ordinal = 579
 fails = "never"
 
@@ -628,7 +629,7 @@ fails = "never"
 name = "_ultoa"
 group = "strings"
 args = ["u32 value", "ptr str", "i32 radix"]
-impl = { stub = "not yet implemented" }
+impl = { native = "_ultoa" }
 ordinal = 489
 fails = "never"
 
@@ -638,7 +639,7 @@ fails = "never"
 name = "iswalpha"
 group = "characters"
 args = ["u32 c"]
-impl = { stub = "not yet implemented" }
+impl = { native = "iswalpha" }
 ordinal = 658
 fails = "never"
 
@@ -646,7 +647,7 @@ fails = "never"
 name = "iswdigit"
 group = "characters"
 args = ["u32 c"]
-impl = { stub = "not yet implemented" }
+impl = { native = "iswdigit" }
 ordinal = 662
 fails = "never"
 
@@ -654,7 +655,7 @@ fails = "never"
 name = "iswspace"
 group = "characters"
 args = ["u32 c"]
-impl = { stub = "not yet implemented" }
+impl = { native = "iswspace" }
 ordinal = 667
 fails = "never"
 
@@ -662,7 +663,7 @@ fails = "never"
 name = "iswxdigit"
 group = "characters"
 args = ["u32 c"]
-impl = { stub = "not yet implemented" }
+impl = { native = "iswxdigit" }
 ordinal = 669
 fails = "never"
 
@@ -670,7 +671,7 @@ fails = "never"
 name = "towlower"
 group = "characters"
 args = ["u32 c"]
-impl = { stub = "not yet implemented" }
+impl = { native = "towlower" }
 ordinal = 747
 fails = "never"
 
@@ -678,7 +679,7 @@ fails = "never"
 name = "towupper"
 group = "characters"
 args = ["u32 c"]
-impl = { stub = "not yet implemented" }
+impl = { native = "towupper" }
 ordinal = 748
 fails = "never"
 
@@ -688,7 +689,7 @@ fails = "never"
 name = "malloc"
 group = "memory"
 args = ["u32 size"]
-impl = { stub = "not yet implemented" }
+impl = { native = "malloc" }
 ordinal = 679
 fails = "NULL"
 
@@ -696,7 +697,7 @@ fails = "NULL"
 name = "calloc"
 group = "memory"
 args = ["u32 num", "u32 size"]
-impl = { stub = "not yet implemented" }
+impl = { native = "calloc" }
 ordinal = 598
 fails = "NULL"
 
@@ -704,7 +705,7 @@ fails = "NULL"
 name = "realloc"
 group = "memory"
 args = ["ptr memblock", "u32 size"]
-impl = { stub = "not yet implemented" }
+impl = { native = "realloc" }
 ordinal = 701
 fails = "NULL"
 
@@ -712,7 +713,7 @@ fails = "NULL"
 name = "free"
 group = "memory"
 args = ["ptr memblock"]
-impl = { stub = "not yet implemented" }
+impl = { native = "free" }
 ordinal = 628
 fails = "void"
 
@@ -720,7 +721,7 @@ fails = "void"
 name = "memmove"
 group = "memory"
 args = ["ptr dest", "ptr src", "u32 count"]
-impl = { stub = "not yet implemented" }
+impl = { native = "memmove" }
 ordinal = 686
 fails = "never"
 
@@ -730,7 +731,7 @@ fails = "never"
 name = "qsort"
 group = "utility"
 args = ["ptr base", "u32 num", "u32 width", "ptr compare"]
-impl = { stub = "not yet implemented" }
+impl = { native = "qsort" }
 ordinal = 698
 fails = "void"
 
@@ -738,7 +739,7 @@ fails = "void"
 name = "rand"
 group = "utility"
 args = []
-impl = { stub = "not yet implemented" }
+impl = { native = "rand" }
 ordinal = 700
 fails = "never"
 
@@ -746,7 +747,7 @@ fails = "never"
 name = "srand"
 group = "utility"
 args = ["u32 seed"]
-impl = { stub = "not yet implemented" }
+impl = { native = "srand" }
 ordinal = 714
 fails = "void"
 
@@ -754,7 +755,7 @@ fails = "void"
 name = "time"
 group = "utility"
 args = ["ptr<u32> timer"]
-impl = { stub = "not yet implemented" }
+impl = { native = "time" }
 ordinal = 742
 fails = "-1"
 
@@ -762,7 +763,7 @@ fails = "-1"
 name = "setlocale"
 group = "utility"
 args = ["i32 category", "strA? locale"]
-impl = { stub = "not yet implemented" }
+impl = { native = "setlocale" }
 ordinal = 707
 fails = "NULL"
 

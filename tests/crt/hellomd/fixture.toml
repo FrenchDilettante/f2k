@@ -2,9 +2,9 @@
 # tests/core/hello/hello.c built with /MD (hellomd.c includes it whole), so it imports the C runtime
 # from msvcrt.dll as cmd.exe does: the smallest proof of msvcrt's startup protocol plus printf. One
 # block, `>>> hellomd.exe`, and no source stamp (like bare's capture: no f2kt.h).
-# Declared ahead of its real-machine build and capture (no hellomd.exe, no output.txt yet).
 description = "hellomd - hello.c built with /MD: msvcrt.dll's startup protocol (__set_app_type, __getmainargs, _initterm, exit) and printf to the standard output."
 kind = "sectioned"
+gate = true
 
 [pins]
 # The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup

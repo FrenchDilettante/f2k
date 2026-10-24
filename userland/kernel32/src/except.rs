@@ -9,8 +9,12 @@ use rtl::seh::{ExceptionRecord, EXCEPTION_MAXIMUM_PARAMETERS, EXCEPTION_NONCONTI
 
 use crate::nt;
 
-/// RaiseException: an exception of `code`, the noncontinuable flag its only flag, with at most
-/// fifteen of the arguments (none without an array), raised through RtlRaiseException — the
+/// An exception code's bit 28, reserved for the system: RaiseException clears it.
+const RESERVED_BIT: u32 = 0x1000_0000;
+
+/// RaiseException: an exception of `code` (its reserved bit 28 cleared, as MSDN documents and seh's
+/// capture shows), the noncontinuable flag its only flag, with at most fifteen of the arguments
+/// (none without an array), raised through RtlRaiseException — the
 /// record's address is therefore inside kernel32, as on Windows 2000. A continued exception returns
 /// here, and to the caller. A bad argument array faults here, the caller's fault, as on Windows
 /// 2000.
@@ -25,7 +29,8 @@ pub unsafe extern "system" fn raise_exception(
     count: u32,
     arguments: *const u32,
 ) {
-    let mut record = ExceptionRecord::status(code, flags & EXCEPTION_NONCONTINUABLE, 0);
+    let mut record =
+        ExceptionRecord::status(code & !RESERVED_BIT, flags & EXCEPTION_NONCONTINUABLE, 0);
     record.address = raise_exception as *const () as u32;
     if !arguments.is_null() {
         let count = (count as usize).min(EXCEPTION_MAXIMUM_PARAMETERS);
@@ -113,6 +118,16 @@ mod tests {
         debug_break();
         assert_eq!(nt::BREAKPOINTS.with(|count| count.get()), before + 1);
         nt::RAISED.with(|raised| assert!(raised.borrow().is_empty()));
+    }
+
+    /// The code's reserved bit 28 is cleared; the customer bit and the others stay (seh's raise
+    /// block: 0xF0000027 is raised as 0xE0000027, 0x00000028 as itself).
+    #[test]
+    fn raise_exception_clears_the_reserved_bit() {
+        let record = raised(|| unsafe { raise_exception(0xF000_0027, 0, 0, core::ptr::null()) });
+        assert_eq!(record.code, 0xE000_0027);
+        let record = raised(|| unsafe { raise_exception(0x0000_0028, 0, 0, core::ptr::null()) });
+        assert_eq!(record.code, 0x0000_0028);
     }
 
     /// The probes' unwind: to their own frame, with the exception's record.

@@ -1,0 +1,368 @@
+//! Number conversions: _ultoa, _wtol, wcstol and wcstoul, as wide's capture pins them.
+//!
+//! - wcstol and wcstoul skip blanks, take a sign, then base 0's prefixes (`0x` hex, `0` octal) or
+//!   base 16's `0x`, and the ASCII digits below the base. With no digit (`0x` alone counts as none)
+//!   they answer 0 and the end pointer is the string itself; a base that is not 0 or 2 to 36 is the
+//!   same. Overflow answers LONG_MAX or LONG_MIN (wcstol), ULONG_MAX (wcstoul, then negated like
+//!   any value with a `-`: `-4294967296` is 1), errno ERANGE, the digits all consumed.
+//! - _wtol takes blanks, a sign and decimal digits, and wraps around without errno.
+//! - _ultoa writes the digits in any radix from 2 to 36, letters in lower case.
+
+use crate::ctype;
+use crate::scan::digit_value;
+use crate::thread::{set_errno, ERANGE};
+
+/// A wide string's unit at `index`.
+///
+/// # Safety
+///
+/// `index` is at or before the string's NUL.
+unsafe fn at(string: *const u16, index: usize) -> u16 {
+    // SAFETY: the caller's contract.
+    unsafe { string.add(index).read_unaligned() }
+}
+
+/// The blanks, the sign and the prefix: where the digits start, the sign, the base.
+///
+/// # Safety
+///
+/// `string` is NUL-terminated.
+unsafe fn lead(string: *const u16, base: i32) -> (usize, bool, u32) {
+    let mut i = 0;
+    // SAFETY: the caller's string, read up to its NUL.
+    unsafe {
+        while at(string, i) != 0 && ctype::wide_class(at(string, i), ctype::SPACE) != 0 {
+            i += 1;
+        }
+        let negative = at(string, i) == b'-' as u16;
+        if negative || at(string, i) == b'+' as u16 {
+            i += 1;
+        }
+        let mut base = base as u32;
+        let hex_prefix = at(string, i) == b'0' as u16
+            && (at(string, i + 1) == b'x' as u16 || at(string, i + 1) == b'X' as u16);
+        if base == 0 {
+            base = if hex_prefix {
+                16
+            } else if at(string, i) == b'0' as u16 {
+                8
+            } else {
+                10
+            };
+        }
+        if base == 16 && hex_prefix {
+            i += 2;
+        }
+        (i, negative, base)
+    }
+}
+
+/// The conversion wcstol and wcstoul share: the magnitude (ULONG_MAX past it), the sign, whether it
+/// overflowed, the end's index (0 without a digit).
+///
+/// # Safety
+///
+/// `string` is NUL-terminated.
+unsafe fn parse(string: *const u16, base: i32) -> (u32, bool, bool, usize) {
+    if base != 0 && !(2..=36).contains(&base) {
+        return (0, false, false, 0);
+    }
+    // SAFETY: the caller's string.
+    let (mut i, negative, base) = unsafe { lead(string, base) };
+    let (mut value, mut overflow, mut digits) = (0u32, false, 0);
+    // SAFETY: as above.
+    while let Some(digit) = digit_value(unsafe { at(string, i) }).filter(|&d| d < base) {
+        match value.checked_mul(base).and_then(|v| v.checked_add(digit)) {
+            Some(next) => value = next,
+            None => overflow = true,
+        }
+        digits += 1;
+        i += 1;
+    }
+    if digits == 0 {
+        return (0, false, false, 0);
+    }
+    (
+        if overflow { u32::MAX } else { value },
+        negative,
+        overflow,
+        i,
+    )
+}
+
+/// The end pointer stored, when asked.
+///
+/// # Safety
+///
+/// `end` is null or a pointer's storage.
+unsafe fn set_end(end: *mut *const u16, string: *const u16, index: usize) {
+    if !end.is_null() {
+        // SAFETY: the caller's contract.
+        unsafe { end.write_unaligned(string.add(index)) };
+    }
+}
+
+/// wcstol: the string's long, the end of its digits stored in `end`.
+///
+/// # Safety
+///
+/// `string` is NUL-terminated; `end` is null or a pointer's storage.
+#[unsafe(export_name = "f2k_export_wcstol")]
+pub unsafe extern "C" fn wcstol(string: *const u16, end: *mut *const u16, base: i32) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe {
+        let (magnitude, negative, overflow, index) = parse(string, base);
+        set_end(end, string, index);
+        let limit = if negative { 0x8000_0000 } else { 0x7FFF_FFFF };
+        if overflow || magnitude > limit {
+            set_errno(ERANGE);
+            return if negative { i32::MIN } else { i32::MAX };
+        }
+        if negative {
+            (magnitude as i32).wrapping_neg()
+        } else {
+            magnitude as i32
+        }
+    }
+}
+
+/// wcstoul: the string's unsigned long (negated, modulo 2^32, after a `-`).
+///
+/// # Safety
+///
+/// As wcstol's.
+#[unsafe(export_name = "f2k_export_wcstoul")]
+pub unsafe extern "C" fn wcstoul(string: *const u16, end: *mut *const u16, base: i32) -> u32 {
+    // SAFETY: the caller's contract.
+    unsafe {
+        let (magnitude, negative, overflow, index) = parse(string, base);
+        set_end(end, string, index);
+        if overflow {
+            set_errno(ERANGE);
+        }
+        if negative {
+            magnitude.wrapping_neg()
+        } else {
+            magnitude
+        }
+    }
+}
+
+/// _wtol: the string's long, decimal, wrapping around.
+///
+/// # Safety
+///
+/// `string` is NUL-terminated.
+#[unsafe(export_name = "f2k_export__wtol")]
+pub unsafe extern "C" fn wtol(string: *const u16) -> i32 {
+    // SAFETY: the caller's string, read up to its NUL.
+    unsafe {
+        let (mut i, negative, _) = lead(string, 10);
+        let mut value = 0u32;
+        while let Some(digit) = digit_value(at(string, i)).filter(|&d| d < 10) {
+            value = value.wrapping_mul(10).wrapping_add(digit);
+            i += 1;
+        }
+        let value = value as i32;
+        if negative {
+            value.wrapping_neg()
+        } else {
+            value
+        }
+    }
+}
+
+/// _ultoa: `value`'s digits in `radix` into `buffer`, NUL-terminated; answers `buffer` (a radix
+/// outside 2 to 36 writes the empty string).
+///
+/// # Safety
+///
+/// `buffer` has room for the digits and the NUL (33 bytes at most).
+#[unsafe(export_name = "f2k_export__ultoa")]
+pub unsafe extern "C" fn ultoa(value: u32, buffer: *mut u8, radix: i32) -> *mut u8 {
+    let mut digits = [0u8; 33];
+    let mut count = 0;
+    if (2..=36).contains(&radix) {
+        let mut rest = value;
+        loop {
+            let digit = (rest % radix as u32) as u8;
+            digits[count] = if digit < 10 {
+                b'0' + digit
+            } else {
+                b'a' + digit - 10
+            };
+            count += 1;
+            rest /= radix as u32;
+            if rest == 0 {
+                break;
+            }
+        }
+    }
+    // SAFETY: the caller's buffer.
+    unsafe {
+        for i in 0..count {
+            buffer.add(i).write(digits[count - 1 - i]);
+        }
+        buffer.add(count).write(0);
+    }
+    buffer
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::format::tests::wide;
+    use crate::thread::errno_address;
+
+    fn errno() -> i32 {
+        // SAFETY: the thread's own errno.
+        unsafe { *errno_address() }
+    }
+
+    /// wide's numbers block: each wcstol and wcstoul line, the value, errno and the end.
+    #[test]
+    fn wcstol_and_wcstoul_as_captured() {
+        for (text, base, value, error, end) in [
+            ("0x1A", 0, 26, 0, 4),
+            ("0X1a", 0, 26, 0, 4),
+            ("  -077", 0, -63, 0, 6),
+            ("0", 0, 0, 0, 1),
+            ("08", 0, 0, 0, 1),
+            ("12abc", 0, 12, 0, 2),
+            ("+42", 10, 42, 0, 3),
+            ("-0x10", 0, -16, 0, 5),
+            ("0x", 0, 0, 0, 0),
+            ("0x", 16, 0, 0, 0),
+            ("0x1A", 16, 26, 0, 4),
+            ("0x1A", 10, 0, 0, 1),
+            ("zz", 36, 1295, 0, 2),
+            ("ZZ", 36, 1295, 0, 2),
+            ("1010", 2, 10, 0, 4),
+            ("2147483647", 10, i32::MAX, 0, 10),
+            ("2147483648", 10, i32::MAX, 34, 10),
+            ("-2147483648", 10, i32::MIN, 0, 11),
+            ("-2147483649", 10, i32::MIN, 34, 11),
+            ("99999999999999999999x", 10, i32::MAX, 34, 20),
+            ("   ", 10, 0, 0, 0),
+            ("", 10, 0, 0, 0),
+            ("abc", 10, 0, 0, 0),
+            ("- 5", 10, 0, 0, 0),
+            ("12", 37, 0, 0, 0),
+            ("\u{661}\u{662}", 10, 0, 0, 0),
+            ("\u{FF11}\u{FF12}", 10, 0, 0, 0),
+        ] {
+            let s = wide(text);
+            let mut e = core::ptr::null();
+            set_errno(0);
+            // SAFETY: a NUL-terminated string.
+            let v = unsafe { wcstol(s.as_ptr(), &mut e, base) };
+            // SAFETY: the end points into the string.
+            let offset = unsafe { e.offset_from(s.as_ptr()) };
+            assert_eq!(
+                (v, errno(), offset),
+                (value, error, end),
+                "wcstol({text:?}, {base})"
+            );
+        }
+        for (text, base, value, error, end) in [
+            ("4294967295", 10, u32::MAX, 0, 10),
+            ("4294967296", 10, u32::MAX, 34, 10),
+            ("-1", 10, u32::MAX, 0, 2),
+            ("-4294967296", 10, 1, 34, 11),
+            ("0xFFFFFFFF", 16, u32::MAX, 0, 10),
+            ("0x100000000", 0, u32::MAX, 34, 11),
+            ("  +12", 0, 12, 0, 5),
+            ("-0x10", 0, 4294967280, 0, 5),
+            ("017", 0, 15, 0, 3),
+            ("0", 0, 0, 0, 1),
+            ("", 0, 0, 0, 0),
+            ("x", 0, 0, 0, 0),
+        ] {
+            let s = wide(text);
+            let mut e = core::ptr::null();
+            set_errno(0);
+            // SAFETY: as above.
+            let v = unsafe { wcstoul(s.as_ptr(), &mut e, base) };
+            // SAFETY: as above.
+            let offset = unsafe { e.offset_from(s.as_ptr()) };
+            assert_eq!(
+                (v, errno(), offset),
+                (value, error, end),
+                "wcstoul({text:?}, {base})"
+            );
+        }
+    }
+
+    #[test]
+    fn wtol_as_captured() {
+        for (text, value) in [
+            ("123", 123),
+            ("  -123abc", -123),
+            ("+7", 7),
+            ("\t\n 42", 42),
+            ("", 0),
+            ("abc", 0),
+            ("0x1A", 0),
+            ("2147483647", i32::MAX),
+            ("2147483648", i32::MIN),
+            ("-2147483649", i32::MAX),
+            ("\u{661}\u{662}", 0),
+        ] {
+            let s = wide(text);
+            set_errno(0);
+            // SAFETY: a NUL-terminated string.
+            assert_eq!(unsafe { wtol(s.as_ptr()) }, value, "{text:?}");
+            assert_eq!(errno(), 0);
+        }
+    }
+
+    #[test]
+    fn ultoa_as_captured() {
+        let mut buffer = [0u8; 40];
+        let show = |buffer: &[u8]| {
+            String::from_utf8(buffer[..buffer.iter().position(|&b| b == 0).unwrap()].to_vec())
+                .unwrap()
+        };
+        for (value, expected) in [
+            (0u32, ["0", "0", "0", "0", "0"]),
+            (255, ["11111111", "377", "255", "ff", "73"]),
+            (
+                123456789,
+                [
+                    "111010110111100110100010101",
+                    "726746425",
+                    "123456789",
+                    "75bcd15",
+                    "21i3v9",
+                ],
+            ),
+            (
+                2147483648,
+                [
+                    "10000000000000000000000000000000",
+                    "20000000000",
+                    "2147483648",
+                    "80000000",
+                    "zik0zk",
+                ],
+            ),
+            (
+                u32::MAX,
+                [
+                    "11111111111111111111111111111111",
+                    "37777777777",
+                    "4294967295",
+                    "ffffffff",
+                    "1z141z3",
+                ],
+            ),
+        ] {
+            for (radix, expected) in [2, 8, 10, 16, 36].into_iter().zip(expected) {
+                // SAFETY: a buffer of 40 bytes.
+                let r = unsafe { ultoa(value, buffer.as_mut_ptr(), radix) };
+                assert_eq!(r, buffer.as_mut_ptr());
+                assert_eq!(show(&buffer), expected);
+            }
+        }
+    }
+}

@@ -133,11 +133,14 @@ fails once a gap's test passes (the marker goes with the fix).
 A stub (`impl = { stub = "<reason>" }` in the spec) is an export that exists but does nothing
 yet: when called, it writes a line to COM1 with its arguments and the reason, then fails the way
 the real function fails (one that returns nothing just returns). Code that hits a case it doesn't
-handle yet can do the same, through `stub::stubbed`. msvcrt and advapi32 are stubs for now
-(user32's window station and desktop calls and MessageBeep are written, and so are advapi32's
-registry calls, over the kernel's registry), all but msvcrt's three variables (`_iob`, `_fmode`,
-`_adjust_fdiv`), which are real, zeroed storage. The stubs log through ntdll's `DbgPrint`, which Windows 2000's msvcrt and user32 do not
-import: `--check` allows that one import (`STUB_LOG_IMPORT` in `scripts/compat.py`).
+handle yet can do the same, through `stub::stubbed`. msvcrt is F2K's own C runtime over
+kernel32: program start-up and exit, structured exception handling and `setjmp`, file descriptors
+and stdio streams, `printf` and `swscanf`, wide strings, the locale, the allocator, `qsort`, `rand`
+and `time`; its pipes (`_pipe`, `_popen`, `_pclose`) and console input (`_getch`, `_kbhit`) are
+stubs. advapi32's registry calls run over the kernel's registry (`GetSecurityInfoExW` is a stub),
+and user32's window station and desktop calls and MessageBeep are written. The stubs log through
+ntdll's `DbgPrint`, which Windows 2000's msvcrt and user32 do not import: `--check` allows that one
+import (`STUB_LOG_IMPORT` in `scripts/compat.py`).
 ```bash
 uv run scripts/compat.py --check
 uv run scripts/compat.py --run

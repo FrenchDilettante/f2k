@@ -73,7 +73,8 @@ pub const C1_ALPHA: u16 = 0x0100;
 /// Latin-1 and the code page's other characters (pinned by the runtime capture's tables): digits
 /// are hex digits too; of the controls only the tab and the space are blank; the no-break space is
 /// a blank space; Latin-1's symbols are punctuation — its superscript digits digits as well, its
-/// ordinal indicators no letters; ƒ is a lower-case letter that is punctuation too.
+/// ordinal indicators no letters; ƒ is a lower-case letter that is punctuation too. Beyond the code
+/// page, [`beyond_flags`] classifies the scripts the C runtime's capture covers.
 pub fn c1_flags(wide: u16) -> u16 {
     match wide {
         0x00..=0x08 | 0x0E..=0x1F | 0x7F => C1_CNTRL,
@@ -113,6 +114,55 @@ pub fn c1_flags(wide: u16) -> u16 {
         0x192 => C1_LOWER | C1_ALPHA | C1_PUNCT,
         // Latin-1 control range.
         0x80..=0x9F => C1_CNTRL,
+        _ => beyond_flags(wide),
+    }
+}
+
+/// The CT_CTYPE1 flags of a character beyond the code page's: Latin Extended-A's, Greek's and
+/// Cyrillic's letters with their case ([`beyond_case`] pairs them), the ideographs, kana and Hangul
+/// syllables as letters without case, the other scripts' decimal digits (digits, not hex digits),
+/// the Unicode spaces (the line and paragraph separators are none: msvcrt's capture), and the
+/// fullwidth forms of ASCII's digits, letters (both hex digits where ASCII's are) and punctuation.
+fn beyond_flags(wide: u16) -> u16 {
+    const UPPER: u16 = C1_UPPER | C1_ALPHA;
+    const LOWER: u16 = C1_LOWER | C1_ALPHA;
+    match wide {
+        0x0100..=0x017F => match beyond_case(wide, false) {
+            lower if lower != wide => UPPER,
+            _ if beyond_case(wide, true) != wide => LOWER,
+            // ĸ, ŉ and ſ have no other case.
+            _ => LOWER,
+        },
+        0x0386 | 0x0388..=0x038A | 0x038C | 0x038E..=0x038F | 0x0391..=0x03A1 | 0x03A3..=0x03AB => {
+            UPPER
+        }
+        0x0390 | 0x03AC..=0x03CE => LOWER,
+        0x0400..=0x042F => UPPER,
+        0x0430..=0x045F => LOWER,
+        0x0660..=0x0669
+        | 0x06F0..=0x06F9
+        | 0x0966..=0x096F
+        | 0x09E6..=0x09EF
+        | 0x0A66..=0x0A6F
+        | 0x0AE6..=0x0AEF
+        | 0x0B66..=0x0B6F
+        | 0x0BE7..=0x0BEF
+        | 0x0C66..=0x0C6F
+        | 0x0CE6..=0x0CEF
+        | 0x0D66..=0x0D6F
+        | 0x0E50..=0x0E59
+        | 0x0ED0..=0x0ED9
+        | 0x0F20..=0x0F29 => C1_DIGIT,
+        0x2000..=0x200B | 0x3000 | 0xFEFF => C1_SPACE | C1_BLANK,
+        0x3041..=0x3094 | 0x30A1..=0x30FA | 0x4E00..=0x9FA5 | 0xAC00..=0xD7A3 | 0xF900..=0xFA2D => {
+            C1_ALPHA
+        }
+        0xFF10..=0xFF19 => C1_DIGIT | C1_XDIGIT,
+        0xFF21..=0xFF26 => UPPER | C1_XDIGIT,
+        0xFF27..=0xFF3A => UPPER,
+        0xFF41..=0xFF46 => LOWER | C1_XDIGIT,
+        0xFF47..=0xFF5A => LOWER,
+        0xFF01..=0xFF0F | 0xFF1A..=0xFF20 | 0xFF3B..=0xFF40 | 0xFF5B..=0xFF5E => C1_PUNCT,
         _ => 0,
     }
 }
@@ -133,9 +183,50 @@ pub fn map_case(wide: u16, upper: bool) -> u16 {
         0x160 if !upper => 0x161,
         0x17E if upper => 0x17D, // ž -> Ž
         0x17D if !upper => 0x17E,
-        _ => wide,
+        _ => beyond_case(wide, upper),
     };
     mapped
+}
+
+/// The case mapping of a letter beyond the code page's (see [`beyond_flags`]): Latin Extended-A's
+/// pairs (İ lowers to i, ı uppers to I; ĸ, ŉ and ſ stay), Greek's (final sigma uppers to Σ; the
+/// accented capitals pair with their small letters), Cyrillic's, and the fullwidth Latin letters.
+fn beyond_case(wide: u16, upper: bool) -> u16 {
+    // Latin Extended-A alternates capital and small letter, the capital on an even code point but
+    // for 0x139..=0x148 and 0x179..=0x17E.
+    let alternating = |odd_capital: bool| {
+        let capital = (wide & 1 == 1) == odd_capital;
+        match (capital, upper) {
+            (true, false) => wide + 1,
+            (false, true) => wide - 1,
+            _ => wide,
+        }
+    };
+    match wide {
+        0x130 if !upper => 0x69,
+        0x131 if upper => 0x49,
+        0x130 | 0x131 | 0x138 | 0x149 | 0x17F => wide,
+        0x100..=0x137 | 0x14A..=0x177 => alternating(false),
+        0x139..=0x148 | 0x179..=0x17E => alternating(true),
+        0x386 if !upper => 0x3AC,
+        0x3AC if upper => 0x386,
+        0x388..=0x38A if !upper => wide + 0x25,
+        0x3AD..=0x3AF if upper => wide - 0x25,
+        0x38C if !upper => 0x3CC,
+        0x3CC if upper => 0x38C,
+        0x38E..=0x38F if !upper => wide + 0x3F,
+        0x3CD..=0x3CE if upper => wide - 0x3F,
+        0x3C2 if upper => 0x3A3,
+        0x391..=0x3A1 | 0x3A3..=0x3AB if !upper => wide + 0x20,
+        0x3B1..=0x3C1 | 0x3C3..=0x3CB if upper => wide - 0x20,
+        0x400..=0x40F if !upper => wide + 0x50,
+        0x450..=0x45F if upper => wide - 0x50,
+        0x410..=0x42F if !upper => wide + 0x20,
+        0x430..=0x44F if upper => wide - 0x20,
+        0xFF21..=0xFF3A if !upper => wide + 0x20,
+        0xFF41..=0xFF5A if upper => wide - 0x20,
+        _ => wide,
+    }
 }
 
 #[cfg(test)]
@@ -241,6 +332,53 @@ mod tests {
         assert_eq!(map_case(0x0178, false), 0x00FF);
         assert_eq!(map_case(0x0153, true), 0x0152);
         assert_eq!(map_case(0x20AC, true), 0x20AC);
+    }
+
+    /// Beyond the code page, msvcrt's capture of iswalpha, iswdigit, iswspace, iswxdigit, towlower
+    /// and towupper over code points past U+00FF (GetStringTypeW and LCMapStringW behind them).
+    #[test]
+    fn the_scripts_beyond_the_code_page() {
+        for (unit, flags, lower, upper) in [
+            (0x0100, 0x101, 0x0101, 0x0100),
+            (0x0101, 0x102, 0x0101, 0x0100),
+            (0x0178, 0x101, 0x00FF, 0x0178),
+            (0x0391, 0x101, 0x03B1, 0x0391),
+            (0x03B1, 0x102, 0x03B1, 0x0391),
+            (0x0416, 0x101, 0x0436, 0x0416),
+            (0x0436, 0x102, 0x0436, 0x0416),
+            (0x0660, 0x004, 0x0660, 0x0660),
+            (0x0669, 0x004, 0x0669, 0x0669),
+            (0x2000, 0x048, 0x2000, 0x2000),
+            (0x2028, 0x000, 0x2028, 0x2028),
+            (0x3000, 0x048, 0x3000, 0x3000),
+            (0x4E00, 0x100, 0x4E00, 0x4E00),
+            (0xFEFF, 0x048, 0xFEFF, 0xFEFF),
+            (0xFF10, 0x084, 0xFF10, 0xFF10),
+            (0xFF21, 0x181, 0xFF41, 0xFF21),
+            (0xFF41, 0x182, 0xFF41, 0xFF21),
+        ] {
+            assert_eq!(c1_flags(unit), flags, "U+{unit:04X}");
+            assert_eq!(map_case(unit, false), lower, "U+{unit:04X} lower");
+            assert_eq!(map_case(unit, true), upper, "U+{unit:04X} upper");
+        }
+        // Latin Extended-A's pairs both ways, and its letters without a pair.
+        assert_eq!(
+            (map_case(0x139, false), map_case(0x13A, true)),
+            (0x13A, 0x139)
+        );
+        assert_eq!(
+            (map_case(0x17D, false), map_case(0x17E, true)),
+            (0x17E, 0x17D)
+        );
+        assert_eq!(
+            (map_case(0x130, false), map_case(0x131, true)),
+            (0x69, 0x49)
+        );
+        assert_eq!((c1_flags(0x138), map_case(0x138, true)), (0x102, 0x138));
+        assert_eq!(
+            (map_case(0x3C2, true), map_case(0x386, false)),
+            (0x3A3, 0x3AC)
+        );
     }
 
     /// The runtime capture's CT_CTYPE1 tables: GetStringTypeA over every code page 1252 byte (each
