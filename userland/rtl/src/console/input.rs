@@ -73,7 +73,8 @@ pub struct KeyEventRecord {
 const _: () = assert!(core::mem::size_of::<KeyEventRecord>() == 16);
 
 /// INPUT_RECORD: an event's type, then the event (20 bytes: the union is 16, after a padded
-/// word). Only key events exist: no mouse, window, menu or focus event has a producer.
+/// word). Only key events have a producer here; another type a client writes (WriteConsoleInput)
+/// keeps its event's 16 bytes in the key event's fields, as they lie in the union.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct InputRecord {
@@ -107,6 +108,30 @@ impl InputRecord {
         bytes[14..16].copy_from_slice(&key.char.to_le_bytes());
         bytes[16..20].copy_from_slice(&key.control_key_state.to_le_bytes());
         bytes
+    }
+
+    /// The record a client's INPUT_RECORD holds (the padding ignored).
+    pub fn from_bytes(bytes: &[u8; INPUT_RECORD_BYTES]) -> Self {
+        let half = |at: usize| u16::from_le_bytes([bytes[at], bytes[at + 1]]);
+        let word = |at: usize| {
+            u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
+        };
+        InputRecord {
+            event_type: half(0),
+            key: KeyEventRecord {
+                key_down: word(4),
+                repeat_count: half(8),
+                virtual_key_code: half(10),
+                virtual_scan_code: half(12),
+                char: half(14),
+                control_key_state: word(16),
+            },
+        }
+    }
+
+    /// Whether the record is a key's going down.
+    pub fn is_key_down(&self) -> bool {
+        self.event_type == KEY_EVENT && self.key.key_down != 0
     }
 }
 
@@ -385,6 +410,24 @@ impl InputBuffer {
         self.records[(self.first + self.count) % INPUT_BUFFER_RECORDS] = InputRecord::key(key);
         self.count += 1;
         Append::Stored
+    }
+
+    /// Add a record a client wrote (WriteConsoleInput) as it is: no filter, no folding into the
+    /// last record; false (nothing added) when the buffer is full.
+    pub fn push(&mut self, record: InputRecord) -> bool {
+        if self.count == INPUT_BUFFER_RECORDS {
+            return false;
+        }
+        self.records[(self.first + self.count) % INPUT_BUFFER_RECORDS] = record;
+        self.count += 1;
+        true
+    }
+
+    /// Take the oldest record out of the buffer; none when it is empty.
+    pub fn pop(&mut self) -> Option<InputRecord> {
+        let record = *self.get(0)?;
+        self.remove(1);
+        Some(record)
     }
 
     /// The last waiting record, as the latest append left it.

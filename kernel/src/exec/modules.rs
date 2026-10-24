@@ -393,10 +393,7 @@ mod tests {
             resolve("KERNEL32.dll", "exitprocess"),
             Err(Unresolved::NoEntry)
         );
-        assert_eq!(
-            resolve("GDI32.dll", "TextOutA"),
-            Err(Unresolved::NoModule)
-        );
+        assert_eq!(resolve("GDI32.dll", "TextOutA"), Err(Unresolved::NoModule));
         let unwind = resolve("KERNEL32.dll", "RtlUnwind").unwrap();
         assert_eq!(resolve("ntdll.dll", "RtlUnwind"), Ok(unwind));
         assert!(
@@ -437,7 +434,7 @@ mod tests {
         // TLS-index, environment, file (the write side's included), current-directory and
         // module calls and RaiseException its Rust, the heap and Local/Global calls its own
         // over ntdll's heap). The internal start thunks are not among them.
-        assert_eq!(NATIVE_EXPORTS.len(), 235);
+        assert_eq!(NATIVE_EXPORTS.len(), 252);
         for &(name, _) in &NATIVE_EXPORTS {
             let address =
                 kernel32_export(name).unwrap_or_else(|| panic!("kernel32 exports no {name}"));
@@ -544,8 +541,12 @@ mod tests {
 
     /// The corpus binaries (the smokes in the root directory, the sectioned fixtures in \CORPUS):
     /// the import surface kernel32 exports.
-    const CORPUS: [(&str, &[u8]); 12] = [
+    const CORPUS: [(&str, &[u8]); 13] = [
         ("bare", include_bytes!("../../../tests/core/bare/bare.exe")),
+        (
+            "console",
+            include_bytes!("../../../tests/kernel32/console/console.exe"),
+        ),
         (
             "dllmain",
             include_bytes!("../../../tests/kernel32/dllmain/dllmain.exe"),
@@ -594,6 +595,16 @@ mod tests {
     /// [`CORPUS`] and these leave.
     const AWAITED: [&str; 0] = [];
 
+    /// The exports kernel32 implements for the system DLLs rather than for a corpus binary:
+    /// msvcrt's _kbhit and _getch read the console's key events through the A forms (Windows
+    /// 2000's msvcrt imports them), the W forms their twins.
+    const FOR_SYSTEM_DLLS: [&str; 4] = [
+        "PeekConsoleInputA",
+        "PeekConsoleInputW",
+        "ReadConsoleInputA",
+        "ReadConsoleInputW",
+    ];
+
     /// The corpus's own companion DLLs that a corpus binary imports (dllmain's): built beside it on
     /// the real machine and loaded from \CORPUS, not system DLLs, so the checks of kernel32's
     /// surface leave their imports aside.
@@ -601,7 +612,9 @@ mod tests {
 
     /// Whether `module` is one of the corpus's companion DLLs.
     fn companion(module: &str) -> bool {
-        COMPANIONS.iter().any(|dll| dll.eq_ignore_ascii_case(module))
+        COMPANIONS
+            .iter()
+            .any(|dll| dll.eq_ignore_ascii_case(module))
     }
 
     /// A binary's imports, as (module, name), read through the PE parser's import walk.
@@ -619,12 +632,12 @@ mod tests {
 
     /// kernel32 implements exactly what the corpus binaries import: every import of every corpus
     /// binary resolves, and every export it implements is imported by some corpus binary (its
-    /// stubs are for programs outside the corpus; the awaited fixtures' exports wait for theirs).
-    /// The export names are unique.
+    /// stubs are for programs outside the corpus; the awaited fixtures' exports wait for theirs,
+    /// and a few serve the system DLLs). The export names are unique.
     #[test]
     fn the_surface_is_the_corpus_import_surface() {
         let names: Vec<&str> = DLL_EXPORTS.iter().map(|&(name, _)| name).collect();
-        assert_eq!(names.len(), 244, "the corpus's import surface");
+        assert_eq!(names.len(), 261, "the corpus's import surface");
         for (i, name) in names.iter().enumerate() {
             assert!(!names[i + 1..].contains(name), "{name} listed twice");
             assert!(
@@ -651,7 +664,9 @@ mod tests {
         }
         for name in names {
             assert!(
-                imported.iter().any(|import| import == name) || AWAITED.contains(&name),
+                imported.iter().any(|import| import == name)
+                    || AWAITED.contains(&name)
+                    || FOR_SYSTEM_DLLS.contains(&name),
                 "{name} is exported but no corpus binary imports it"
             );
         }
@@ -886,7 +901,9 @@ mod tests {
         for pair in extents.windows(2) {
             assert!(pair[0].1 <= pair[1].0, "{pair:x?} overlap");
         }
-        assert!(extents.iter().all(|&(_, end)| end <= crate::mem::paging::KERNEL_BASE));
+        assert!(extents
+            .iter()
+            .all(|&(_, end)| end <= crate::mem::paging::KERNEL_BASE));
         for Loaded { dll, .. } in loaded_dlls() {
             let image = dll.image();
             assert!(image.is_dll(), "{}", dll.file_name);
@@ -894,7 +911,11 @@ mod tests {
             let entry = image.entry_va() - dll.base;
             let code = section_holding(&image, entry)
                 .unwrap_or_else(|| panic!("{}: the entry point lies in no section", dll.file_name));
-            assert!(entry != 0 && image.section(code).protection().2, "{}", dll.file_name);
+            assert!(
+                entry != 0 && image.section(code).protection().2,
+                "{}",
+                dll.file_name
+            );
             for (module, name) in imports_of(dll.file) {
                 assert!(
                     ["kernel32.dll", "ntdll.dll"]
@@ -928,8 +949,15 @@ mod tests {
             }
             addresses.sort_unstable();
             addresses.dedup();
-            assert_eq!(addresses.len(), exports.len() + stubs.len(), "{}", dll.file_name);
-            assert!(data.iter().all(|name| exports.iter().any(|&(e, _)| e == *name)));
+            assert_eq!(
+                addresses.len(),
+                exports.len() + stubs.len(),
+                "{}",
+                dll.file_name
+            );
+            assert!(data
+                .iter()
+                .all(|name| exports.iter().any(|&(e, _)| e == *name)));
         }
         assert_eq!(msvcrt::DATA_EXPORTS, ["_fmode", "_adjust_fdiv", "_iob"]);
         assert!(advapi32::DATA_EXPORTS.is_empty() && user32::DATA_EXPORTS.is_empty());

@@ -14,7 +14,8 @@ Three pieces the test modules share:
   the log (`boot_batch`, `Batch`);
 - the text screen: a boot that asks for it carries a QMP socket, and the machine's VGA text page is
   read through it while QEMU still runs (`read_text_screen`, `TextScreen`), or drawn as QEMU shows
-  it (`screendump`, a PNG; `read_png`, `differing_cells`).
+  it (`screendump`, a PNG; `read_png`, `differing_cells`); a fixture declaring `screenshots` has
+  each block's screen saved as its process ends (`ScreenTaker`).
 """
 from __future__ import annotations
 
@@ -265,15 +266,19 @@ def boot(
     cmdline: str | None = None,
     memory: str = "64M",
     observe: Callable[[Path], None] | None = None,
+    kernel_options: str = "",
+    during: Callable[[Path, str], None] | None = None,
 ) -> tuple[str, str]:
     """Boot `build` (`image` "kernel": the ELF through QEMU's Multiboot loader, the disk attached;
     "disk": the disk itself through Limine) and log COM1 to `log_path` until `done(log)` holds, QEMU
     exits, or `timeout` seconds pass. `cmdline` is the user program's command line, passed after
-    the kernel command line's "--": by QEMU's -append on a kernel boot, by the Limine entry's
-    `cmdline` on a disk boot (a copy of the disk with its configuration rewritten, removed after the
-    boot). With `observe`, QEMU also carries a QMP socket, and once `done(log)` holds `observe` is
-    called with the socket's path while QEMU still runs (the machine's state, read before it is
-    stopped). Returns the log and why the boot stopped ("done", "exited", "timeout")."""
+    the kernel command line's "--" (`kernel_options`, the kernel's own, before it): by QEMU's
+    -append on a kernel boot, by the Limine entry's `cmdline` on a disk boot (a copy of the disk
+    with its configuration rewritten, removed after the boot). With `observe` or `during`, QEMU
+    also carries a QMP socket: `during` is called with the socket's path and the log at each look
+    while the boot runs, and once `done(log)` holds `observe` is called with the socket's path
+    while QEMU still runs (the machine's state, read before it is stopped). Returns the log and why
+    the boot stopped ("done", "exited", "timeout")."""
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_path.unlink(missing_ok=True)
     disk = build.disk
@@ -281,10 +286,11 @@ def boot(
     args = [QEMU]
     if image == "kernel":
         args += ["-kernel", str(build.kernel)]
-        if cmdline:
-            args += ["-append", f"-- {cmdline}"]
-    elif cmdline:
-        variant = disk = limine_disk(build, cmdline, WORK / "variants" / f"{log_path.stem}.img")
+        if cmdline or kernel_options:
+            args += ["-append", f"{kernel_options} -- {cmdline or ''}".strip()]
+    elif cmdline or kernel_options:
+        variant = disk = limine_disk(build, cmdline or "", WORK / "variants" / f"{log_path.stem}.img",
+                                     kernel_options)
     args += [
         "-drive", f"file={disk},format=raw,if=ide,snapshot=on",
         "-m", memory, "-display", "none", "-monitor", "none", "-net", "none",
@@ -293,7 +299,8 @@ def boot(
     ]
     # A unix socket's path is short (104 bytes on macOS): the socket lives in its own temporary
     # directory rather than beside the log.
-    qmp_directory = Path(tempfile.mkdtemp(prefix="f2k-qmp-")) if observe is not None else None
+    qmp = observe is not None or during is not None
+    qmp_directory = Path(tempfile.mkdtemp(prefix="f2k-qmp-")) if qmp else None
     if qmp_directory is not None:
         args += ["-qmp", f"unix:{qmp_directory / 'qmp.sock'},server,nowait"]
     args += exit_with_parent()
@@ -302,7 +309,10 @@ def boot(
     reason = "timeout"
     try:
         while time.monotonic() < deadline:
-            if done(read_log(log_path)):
+            log = read_log(log_path)
+            if during is not None:
+                during(qmp_directory / "qmp.sock", log)
+            if done(log):
                 reason = "done"
                 if observe is not None:
                     observe(qmp_directory / "qmp.sock")
@@ -457,6 +467,48 @@ def screendump(path: Path, png: Path) -> None:
                         "arguments": {"filename": str(png), "format": "png"}}])
 
 
+# Where the screenshots of the fixtures declaring `screenshots` go: <fixture>/<block>.png.
+SCREENS = WORK / "screens"
+# The kernel option that pauses a boot at each process's end for its screenshot, the line the
+# pause announces, and the CMOS byte (index port 0x70, data port 0x71) whose write lets it go on
+# (kernel/src/process/runner.rs, kernel/src/hw/rtc.rs SCREEN_MAILBOX).
+SCREENS_OPTION = "screens"
+SCREEN_PAUSE = re.compile(r"^F2K: screen: process (\d+) ended$")
+SCREEN_MAILBOX = 0x7F
+
+
+def screen_file_name(block: Block) -> str:
+    """A block's screenshot's file name: its section, made a file name."""
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", block.section).strip("_") + ".png"
+
+
+class ScreenTaker:
+    """A screenshot boot's `during` step: at each pause the kernel announces (a process ended,
+    the boot held before its next step), the screen as QEMU shows it saved to `directory` as the
+    ended block's PNG (`screen_file_name`), then the boot let go on (the CMOS mailbox written
+    through the monitor). Recording only: nothing compares them."""
+
+    def __init__(self, blocks: list[Block], directory: Path):
+        self.blocks = blocks
+        self.directory = directory
+        self.taken = 0
+        directory.mkdir(parents=True, exist_ok=True)
+        for block in blocks:
+            (directory / screen_file_name(block)).unlink(missing_ok=True)
+
+    def __call__(self, socket: Path, log: str) -> None:
+        pauses = [int(match.group(1)) for match in map(SCREEN_PAUSE.match, lines_of(log)) if match]
+        for index in pauses[self.taken:]:
+            if 1 <= index <= len(self.blocks):
+                screendump(socket, self.directory / screen_file_name(self.blocks[index - 1]))
+            qmp_command(socket, [
+                {"execute": "human-monitor-command",
+                 "arguments": {"command-line": f"o /b 0x70 {SCREEN_MAILBOX:#x}"}},
+                {"execute": "human-monitor-command", "arguments": {"command-line": "o /b 0x71 1"}},
+            ])
+            self.taken += 1
+
+
 @dataclass(frozen=True)
 class Image:
     """A decoded image: its rows of RGB pixels, three bytes each."""
@@ -545,10 +597,10 @@ PARTITION = "@@1M"
 LIMINE_CONF = REPO_ROOT / "boot" / "limine.conf"
 
 
-def limine_disk(build: Build, cmdline: str, path: Path) -> Path:
+def limine_disk(build: Build, cmdline: str, path: Path, kernel_options: str = "") -> Path:
     """A copy of `build`'s disk at `path` whose Limine entry hands the kernel `cmdline` as the user
-    program's command line (after the kernel command line's "--")."""
-    if "\n" in cmdline:
+    program's command line (after the kernel command line's "--", `kernel_options` before it)."""
+    if "\n" in cmdline + kernel_options:
         raise ValueError("a Limine command line is one line")
     entry = LIMINE_CONF.read_text()
     marker = "    path: boot():/f2k-kernel\n"
@@ -556,7 +608,8 @@ def limine_disk(build: Build, cmdline: str, path: Path) -> Path:
         raise ValueError(f"{LIMINE_CONF} has no kernel path line to add the command line after")
     path.parent.mkdir(parents=True, exist_ok=True)
     conf = path.with_suffix(".conf")
-    conf.write_text(entry.replace(marker, f"{marker}    cmdline: -- {cmdline}\n"))
+    line = f"{kernel_options} -- {cmdline}".strip()
+    conf.write_text(entry.replace(marker, f"{marker}    cmdline: {line}\n"))
     shutil.copyfile(build.disk, path)
     try:
         subprocess.run(
@@ -1135,9 +1188,10 @@ class Batch:
 
 
 def boot_batch(build: Build, blocks: list[Block], *, image: str, log_path: Path,
-               timeouts: list[float]) -> Batch:
+               timeouts: list[float], screens: Path | None = None) -> Batch:
     """Run `blocks` in one boot of `build` (`image` as `boot` takes it), each its own process, in
-    order; `timeouts` are each block's seconds (the boot's start counts against the first)."""
+    order; `timeouts` are each block's seconds (the boot's start counts against the first). With
+    `screens`, each block's screen as its process ends is saved there (`ScreenTaker`)."""
     watch = BatchWatch(timeouts)
     commands = [block.command for block in blocks]
     cmdline = batch_command_line(commands)
@@ -1154,6 +1208,8 @@ def boot_batch(build: Build, blocks: list[Block], *, image: str, log_path: Path,
         log_path=log_path,
         timeout=sum(timeouts),
         done=watch,
+        kernel_options=SCREENS_OPTION if screens is not None else "",
+        during=ScreenTaker(blocks, screens) if screens is not None else None,
     )
     if watch.overran is not None:
         stopped = "timeout"

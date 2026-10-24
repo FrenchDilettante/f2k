@@ -227,12 +227,15 @@ def run_block(request, builder, boot_timeout, profile_writer) -> Callable[[f2kbo
         if batch is None:
             build = builder([])
             selected = [item.callspec.params["captured"] for item in items]
+            # A fixture declaring `screenshots` has each block's screen saved as its process ends.
+            screenshots = f2kboot.declaration(captured.fixture).get("screenshots", False)
             batch = f2kboot.boot_batch(
                 build,
                 [each.block for each in selected],
                 image=image,
                 log_path=f2kboot.log_path_for(name),
                 timeouts=[boot_timeout(each.timeout) for each in selected],
+                screens=f2kboot.SCREENS / captured.fixture if screenshots else None,
             )
             BATCHES[name] = batch
             profile_writer(batch.log, build, f2kboot.profile_path_for(name))

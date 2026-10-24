@@ -188,7 +188,11 @@ The fixtures:
 - `console` - the console through `CONOUT$` and `CONIN$`, so the
   capture script takes it: the screen buffer's size and attributes,
   the input and output modes, `ReadConsoleW`/`ReadConsoleA` over input
-  the program queues itself, the title, and control handlers.
+  the program queues itself, the title, and control handlers. Gated;
+  its screens are saved (`screenshots`). What a program writes through
+  `CONOUT$` shows on the screen only, not on COM1: as on the real
+  machine, where the capture redirects standard output to a file and
+  `CONOUT$` stays on the console.
 - `winsta` (user32) - the window station and desktop: their handles,
   names, types and flags (`GetUserObjectInformation`), and
   `MessageBeep`.
@@ -286,8 +290,14 @@ machine-specific values (per section, `"virtual" = ["... region *
 that section's block), `[pins]` for the exports each section pins
 (`event = ["kernel32.CreateEventA", "ntdll.NtCreateEvent"]`, `"*"` for
 every block: what the C runtime's startup calls; `scripts/compat.py`
-reports each export's coverage from them), a `timeout`, and `retake`
-for a capture to be retaken (its blocks skipped). A `[pending]`, `[masks]` or `[pins]`
+reports each export's coverage from them), a `timeout`, `retake`
+for a capture to be retaken (its blocks skipped), and `screenshots =
+true` for a fixture whose blocks deal with the screen: its boot pauses
+as each block's process ends (the kernel option `screens`), the
+harness saves the screen as QEMU shows it to
+`target/qemu/screens/<fixture>/<section>.png` and lets the boot go on
+(through a CMOS byte it writes with QEMU's monitor). The screenshots are
+recorded only, never compared. A `[pending]`, `[masks]` or `[pins]`
 section with no captured block is an error, as is a mask that matches none of its
 block's lines. The fixture's `test_<name>.py` only binds
 `f2kboot.corpus_test("<name>")`. A sectioned fixture may be declared

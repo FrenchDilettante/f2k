@@ -7,7 +7,9 @@
 //! Windows shell hands one to CreateProcess, or several separated by ` ;; ` (`-- CORPUS\files.exe
 //! read ;; CORPUS\files.exe seek`, see [`programs`]). Each one's first token names the image on the
 //! boot volume; its whole text is what that process's GetCommandLineA reports. Without a separator
-//! the boot runs exit0.
+//! the boot runs exit0. Before the separator stand the kernel's own options ([`kernel_option`]):
+//! `screens` pauses the boot after each program for the test harness's screenshot
+//! (`process::runner`).
 //!
 //! The string is copied out first thing in the boot: it lives in loader memory the frame allocator
 //! is about to reclaim, inside the identity window that is torn down soon after.
@@ -69,6 +71,16 @@ pub fn kernel_command_line() -> &'static [u8] {
 pub fn user_command_line(kernel: &[u8]) -> Option<&[u8]> {
     let start = find_word(kernel, SEPARATOR)? + SEPARATOR.len();
     trimmed(&kernel[start..])
+}
+
+/// Whether the kernel's own part of the command line (the text before the separator, all of it
+/// without one) names `option` as a word of its own.
+pub fn kernel_option(kernel: &[u8], option: &[u8]) -> bool {
+    let own = match find_word(kernel, SEPARATOR) {
+        Some(at) => &kernel[..at],
+        None => kernel,
+    };
+    find_word(own, option).is_some()
 }
 
 /// The programs' command lines a user command line lists, in order: the text between the ` ;; `
@@ -184,6 +196,24 @@ mod tests {
         assert_eq!(listed(b";;"), [] as [&[u8]; 0]);
         // A `;;` glued to other text is an argument, not the separator.
         assert_eq!(listed(b"a;; b ;;c"), [&b"a;; b ;;c"[..]]);
+    }
+
+    /// The kernel's options stand before the separator; the same word after it is the programs'.
+    #[test]
+    fn kernel_options_precede_the_separator() {
+        assert!(kernel_option(
+            b"/path/f2k-kernel screens -- A.EXE",
+            b"screens"
+        ));
+        assert!(kernel_option(b"screens", b"screens"));
+        assert!(!kernel_option(
+            b"/path/f2k-kernel -- A.EXE screens",
+            b"screens"
+        ));
+        assert!(!kernel_option(
+            b"/path/f2k-kernel screens2 -- A.EXE",
+            b"screens"
+        ));
     }
 
     #[test]

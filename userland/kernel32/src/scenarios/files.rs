@@ -216,8 +216,8 @@ fn truncate_existing_cuts_the_file_once_open() {
 }
 
 /// ReadFile zeroes the count first; a read at the end succeeds with nothing (STATUS_END_OF_FILE);
-/// a console handle's read is the console's (ReadConsoleA): stdin's input ends at once (TRUE,
-/// nothing read: F2K's console has no keyboard), an output handle is ERROR_INVALID_HANDLE.
+/// a console handle's read is the console's (ReadConsoleA): stdin's line, as typed (here queued
+/// with WriteConsoleInputA), an output handle is ERROR_INVALID_HANDLE.
 ///
 /// Pins: kernel32.ReadFile
 #[test]
@@ -257,6 +257,21 @@ fn read_file_counts_what_moved() {
         (0, 0xDEAD),
         "at the end: TRUE, nothing, the last error kept"
     );
+    // x and Enter, each a keydown and a keyup.
+    let mut typed = [[0u8; 20]; 4];
+    for (record, (down, character)) in
+        typed
+            .iter_mut()
+            .zip([(1, b'x'), (0, b'x'), (1, b'\r'), (0, b'\r')])
+    {
+        record[0] = 1;
+        record[4] = down;
+        record[8] = 1;
+        record[14] = character;
+    }
+    let mut queued = 0;
+    // SAFETY: four records, a dword.
+    unsafe { crate::console::write_console_input_a(STDIN, typed.as_ptr().cast(), 4, &mut queued) };
     read = 7;
     crate::base::set_last_error(0xDEAD);
     assert_eq!(
@@ -271,7 +286,7 @@ fn read_file_counts_what_moved() {
         },
         1
     );
-    assert_eq!((read, last_error()), (0, 0xDEAD));
+    assert_eq!((read, buffer[0], last_error()), (1, b'x', 0xDEAD));
     read = 7;
     assert_eq!(
         unsafe {

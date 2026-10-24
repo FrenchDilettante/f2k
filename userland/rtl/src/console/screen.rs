@@ -8,6 +8,11 @@
 //! it the cursor's column does not move past the row's end: the run of cells starts over from the
 //! column it began at. A line feed past the last row scrolls the grid up one row.
 //!
+//! The grid is Windows 2000's default console buffer, [`WIDTH`] x [`HEIGHT`] (80 x 300), behind a
+//! window of [`WINDOW_HEIGHT`] rows (80 x 25), the part the screen shows. The window follows the
+//! cursor: a write or a move that leaves the cursor below the window's last row brings that row
+//! down to the cursor's, one above its first row brings the first row up to it.
+//!
 //! The buffer records which rows each change touched ([`ScreenBuffer::take_damage`]), so the
 //! device behind it copies only what changed.
 
@@ -18,8 +23,10 @@ use crate::codepage::{self, CodePage};
 
 /// The grid's columns.
 pub const WIDTH: usize = 80;
-/// The grid's rows.
-pub const HEIGHT: usize = 25;
+/// The grid's rows: Windows 2000's default screen buffer's.
+pub const HEIGHT: usize = 300;
+/// The window's rows, the ones the screen shows (its columns are the grid's).
+pub const WINDOW_HEIGHT: usize = 25;
 
 /// A fresh buffer's attribute: light grey on black.
 pub const DEFAULT_ATTRIBUTE: u8 = 0x07;
@@ -68,6 +75,8 @@ pub struct ScreenBuffer {
     /// The cursor: its row and column.
     row: usize,
     column: usize,
+    /// The window's first row.
+    window_top: usize,
     /// The attribute written cells take.
     attribute: u8,
     /// The output mode (ENABLE_PROCESSED_OUTPUT, ENABLE_WRAP_AT_EOL_OUTPUT).
@@ -89,6 +98,7 @@ impl ScreenBuffer {
             cells: [[Cell::blank(DEFAULT_ATTRIBUTE); WIDTH]; HEIGHT],
             row: 0,
             column: 0,
+            window_top: 0,
             attribute: DEFAULT_ATTRIBUTE,
             mode: super::OUTPUT_MODE,
             limit_backspace: false,
@@ -117,14 +127,48 @@ impl ScreenBuffer {
         (self.row, self.column)
     }
 
-    /// Move the cursor; false (nothing moved) for a position outside the grid.
+    /// Move the cursor, the window following it; false (nothing moved) for a position outside the
+    /// grid.
     pub fn set_cursor(&mut self, row: usize, column: usize) -> bool {
         if row >= HEIGHT || column >= WIDTH {
             return false;
         }
         (self.row, self.column) = (row, column);
         self.touch(0..0);
+        self.follow_cursor();
         true
+    }
+
+    /// The window's rows of the grid.
+    pub fn window(&self) -> Range<usize> {
+        self.window_top..self.window_top + WINDOW_HEIGHT
+    }
+
+    /// The window's cells, its first row first.
+    pub fn window_cells(&self) -> &[[Cell; WIDTH]] {
+        &self.cells[self.window()]
+    }
+
+    /// The cursor's place in the window: its row there and its column; none while it lies outside
+    /// the window.
+    pub fn window_cursor(&self) -> Option<(usize, usize)> {
+        self.window()
+            .contains(&self.row)
+            .then(|| (self.row - self.window_top, self.column))
+    }
+
+    /// Bring the window over the cursor when it lies outside, moving it the fewest rows. A move
+    /// changes every row the screen shows.
+    fn follow_cursor(&mut self) {
+        let top = if self.row < self.window_top {
+            self.row
+        } else if self.row >= self.window_top + WINDOW_HEIGHT {
+            self.row + 1 - WINDOW_HEIGHT
+        } else {
+            return;
+        };
+        self.window_top = top;
+        self.touch(self.window());
     }
 
     /// The attribute written cells take.
@@ -172,6 +216,7 @@ impl ScreenBuffer {
     pub fn write_bytes(&mut self, bytes: &[u8]) {
         self.begin_write();
         self.render(bytes);
+        self.end_write();
     }
 
     /// One whole write of UTF-16 units: a control character's CP437 glyph shown as its glyph
@@ -187,6 +232,7 @@ impl ScreenBuffer {
                 }
             }
         }
+        self.end_write();
     }
 
     /// Start a write: its run of cells begins at the cursor. A write the caller hands over in
@@ -196,7 +242,13 @@ impl ScreenBuffer {
         self.touch(0..0);
     }
 
-    /// Render `bytes` at the cursor, continuing the write [`ScreenBuffer::begin_write`] started.
+    /// End a write: the window follows the cursor wherever the write left it.
+    pub fn end_write(&mut self) {
+        self.follow_cursor();
+    }
+
+    /// Render `bytes` at the cursor, continuing the write [`ScreenBuffer::begin_write`] started
+    /// ([`ScreenBuffer::end_write`] ends it).
     pub fn render(&mut self, bytes: &[u8]) {
         if self.mode & ENABLE_PROCESSED_OUTPUT == 0 {
             bytes.iter().for_each(|&byte| self.put(byte));
@@ -853,5 +905,39 @@ mod tests {
         let before = screen.clone();
         screen.scroll(rect(0, 0, 2, 3), Some(rect(-9, -9, -1, -1)), 0, 1, fill);
         assert_eq!(screen, before);
+    }
+
+    /// The window shows the buffer's first rows until the cursor passes its last, then follows it
+    /// down, every row it shows redrawn; a move above it brings it up; past the buffer's last row
+    /// the grid scrolls under a window kept at the bottom.
+    #[test]
+    fn the_window_follows_the_cursor() {
+        let mut screen = ScreenBuffer::new();
+        assert_eq!(
+            (screen.window(), screen.window_cursor()),
+            (0..WINDOW_HEIGHT, Some((0, 0)))
+        );
+        screen.write_bytes(&[b'\n'; WINDOW_HEIGHT - 1]);
+        assert_eq!(screen.window(), 0..WINDOW_HEIGHT);
+        screen.take_damage();
+        screen.write_bytes(b"\nlast");
+        assert_eq!(screen.window(), 1..WINDOW_HEIGHT + 1);
+        assert_eq!(screen.window_cursor(), Some((WINDOW_HEIGHT - 1, 4)));
+        assert_eq!(screen.take_damage(), Some(1..WINDOW_HEIGHT + 1));
+        assert_eq!(
+            &screen.window_cells()[WINDOW_HEIGHT - 1][..4],
+            &screen.cells()[WINDOW_HEIGHT][..4]
+        );
+        assert!(screen.set_cursor(0, 0));
+        assert_eq!(screen.window(), 0..WINDOW_HEIGHT, "up to the cursor");
+        assert!(screen.set_cursor(HEIGHT - 1, 0));
+        assert_eq!(screen.window(), HEIGHT - WINDOW_HEIGHT..HEIGHT);
+        screen.write_bytes(b"\nend");
+        assert_eq!(
+            screen.window(),
+            HEIGHT - WINDOW_HEIGHT..HEIGHT,
+            "the grid scrolls instead"
+        );
+        assert_eq!(screen.cursor(), (HEIGHT - 1, 3));
     }
 }

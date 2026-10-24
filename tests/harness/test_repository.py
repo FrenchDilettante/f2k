@@ -36,7 +36,8 @@ LISTED = [name for name in SECTIONED
 # Set once tests/build.bat has rebuilt every fixture: a binary without its source stamp then fails
 # instead of skipping, and the binaries' --list (their section tables) is the checked-in source's.
 REQUIRE_SOURCE_STAMPS = False
-DECLARATION_KEYS = {"description", "kind", "gate", "timeout", "masks", "retake", "pending", "pins"}
+DECLARATION_KEYS = {"description", "kind", "gate", "timeout", "masks", "retake", "pending", "pins",
+                    "screenshots"}
 
 
 def declared_sections(fixture: str) -> set[str]:

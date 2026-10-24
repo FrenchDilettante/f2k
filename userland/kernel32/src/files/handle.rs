@@ -41,7 +41,9 @@ const FILE_CURRENT: u32 = 1;
 const FILE_END: u32 = 2;
 const INVALID_SET_FILE_POINTER: u32 = 0xFFFF_FFFF;
 
-/// CreateFileW's work, the W form every create shares (CreateFileA, CopyFileA): the disposition
+/// CreateFileW's work, the W form every create shares (CreateFileA, CopyFileA): a console name
+/// (CONIN$, CONOUT$, CON) opened at the console server ([`console::open_console`], as Windows
+/// 2000's CreateFile hands it to OpenConsoleW); otherwise the disposition
 /// mapped (TRUNCATE_EXISTING asks GENERIC_WRITE), the path made an NT one, the flags mapped to
 /// create options (no backup semantics: no directory; delete-on-close: DELETE access too), and
 /// NtCreateFile asked for the access with SYNCHRONIZE and FILE_READ_ATTRIBUTES. On success the
@@ -60,6 +62,11 @@ pub unsafe fn create_file_w(
     disposition: u32,
     flags: u32,
 ) -> u32 {
+    if let Some(output) = console::console_name(name.text(), access) {
+        // SAFETY: the caller's structure, when given.
+        let inherit = unsafe { inherits(security) };
+        return console::open_console(output, access, inherit, share);
+    }
     let create = match disposition {
         CREATE_NEW => FILE_CREATE,
         CREATE_ALWAYS => FILE_OVERWRITE_IF,

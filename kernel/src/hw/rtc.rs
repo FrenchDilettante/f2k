@@ -8,6 +8,9 @@
 //! agree.
 //!
 //! The platform keeps the clock in local time; with no time zone configured, local time is UTC.
+//!
+//! One NVRAM byte beside the clock serves the test harness ([`await_mailbox`]): a boot that pauses
+//! for the harness to take a screenshot waits until the harness writes it, through QEMU's monitor.
 
 use super::portio::Io;
 
@@ -98,6 +101,25 @@ pub fn read<IoT: Io>(io: &mut IoT) -> Option<CivilTime> {
     decode(raw, register(io, STATUS_B))
 }
 
+/// The NVRAM byte the test harness writes to let a paused boot go on: one the platform's firmware
+/// leaves alone.
+pub const SCREEN_MAILBOX: u8 = 0x7F;
+
+/// Clear the NVRAM byte at `index`, `announce` the wait, then read the byte until it is nonzero,
+/// `reads` times at most: whether it was answered. Interrupts may stay masked: nothing but the
+/// reads is waited on.
+pub fn await_mailbox<IoT: Io>(
+    io: &mut IoT,
+    index: u8,
+    reads: u32,
+    announce: impl FnOnce(),
+) -> bool {
+    io.out(INDEX, index & 0x7F);
+    io.out(DATA, 0);
+    announce();
+    (0..reads).any(|_| register(io, index) != 0)
+}
+
 fn decode(raw: Raw, status_b: u8) -> Option<CivilTime> {
     let binary = status_b & BINARY != 0;
     let value = |v: u8| if binary { v } else { from_bcd(v) };
@@ -147,8 +169,12 @@ mod tests {
 
     impl Io for Cmos {
         fn out(&mut self, port: u16, byte: u8) {
-            assert_eq!(port, INDEX);
-            self.index = byte;
+            if port == INDEX {
+                self.index = byte;
+            } else {
+                assert_eq!(port, DATA);
+                self.registers[self.index as usize] = byte;
+            }
         }
 
         fn read(&mut self, port: u16) -> u8 {
@@ -242,5 +268,40 @@ mod tests {
             ],
         );
         assert_eq!(read(&mut io), None);
+    }
+
+    /// The mailbox is cleared before the wait is announced, then read until the harness's write
+    /// lands; unanswered, the wait gives up after its reads.
+    #[test]
+    fn the_mailbox_waits_for_its_answer() {
+        let mut io = cmos(HOURS_24, [(0, 0); 7]);
+        io.registers[SCREEN_MAILBOX as usize] = 9;
+        let mut announced = false;
+        assert!(!await_mailbox(&mut io, SCREEN_MAILBOX, 1000, || {
+            announced = true
+        }));
+        assert!(announced);
+        assert_eq!(io.registers[SCREEN_MAILBOX as usize], 0, "cleared first");
+        let mut io = cmos(HOURS_24, [(0, 0); 7]);
+        let answered = await_mailbox(&mut io, SCREEN_MAILBOX, 1000, || {});
+        assert!(!answered);
+        // The answer written between the clear and the reads: the harness's.
+        struct Answering(Cmos);
+        impl Io for Answering {
+            fn out(&mut self, port: u16, byte: u8) {
+                self.0.out(port, byte);
+            }
+
+            fn read(&mut self, port: u16) -> u8 {
+                self.0.registers[SCREEN_MAILBOX as usize] = 1;
+                self.0.read(port)
+            }
+
+            fn read_word(&mut self, _port: u16) -> u16 {
+                unreachable!()
+            }
+        }
+        let mut io = Answering(cmos(HOURS_24, [(0, 0); 7]));
+        assert!(await_mailbox(&mut io, SCREEN_MAILBOX, 1000, || {}));
     }
 }

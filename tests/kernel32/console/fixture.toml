@@ -1,8 +1,10 @@
 # console: one test per block of the real-machine capture (output.txt); see tests/README.md. Every
-# section works through CONIN$ and CONOUT$ opened by name, so capture.bat takes every block.
-# Declared ahead of its real-machine build and capture (no console.exe, no output.txt yet).
+# section works through CONIN$ and CONOUT$ opened by name, so capture.bat takes every block. Each
+# block's screen is saved as its process ends (screenshots), for the record.
 description = "console - the console calls cmd.exe makes at startup, through CONIN$ and CONOUT$: GetConsoleScreenBufferInfo and the cursor's move, Get/SetConsoleMode, ReadConsole in line and raw mode over input queued with WriteConsoleInput, FlushConsoleInputBuffer, Get/SetConsoleTitle, and SetConsoleCtrlHandler registration."
 kind = "sectioned"
+gate = true
+screenshots = true
 
 [pins]
 # The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup

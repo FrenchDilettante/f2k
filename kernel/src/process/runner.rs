@@ -21,6 +21,12 @@
 //! thread's exit reports and switches to the idle thread, whose reap step tears the process down on
 //! the boot stack and address space and hands the outcome here: the audit line, then the next
 //! process, or the summary.
+//!
+//! With the kernel option `screens` (`F2K: ... screens -- CORPUS\console.exe info ;; ...`), each
+//! process's end pauses the boot before its audit line, for the test harness to take a screenshot
+//! of what the process left on the screen: the runner announces `F2K: screen: process N ended`
+//! and waits, interrupts masked, until the harness writes the CMOS mailbox byte through QEMU's
+//! monitor ([`crate::hw::rtc::await_mailbox`]), or a few seconds' worth of reads pass.
 
 use crate::process::exit::{self, AfterLeg, AuditReport, ProcessEnd, SuiteTally};
 
@@ -60,6 +66,7 @@ pub fn current_leg() -> Option<exit::Leg> {
 pub fn process_reaped(end: ProcessEnd) {
     let audit = crate::process::audit_allocators();
     let legs = leg_count();
+    pause_for_screen();
     if legs <= 1 {
         // Before the audit line: the harness stops the boot on it, so the dump must land first.
         #[cfg(feature = "perf-trace")]
@@ -88,6 +95,31 @@ pub fn process_reaped(end: ProcessEnd) {
             crate::perf::report();
             crate::serial_println!("{}", tally);
         }
+    }
+}
+
+/// How many reads of the mailbox a pause makes before the boot goes on unanswered: seconds' worth.
+const SCREEN_PAUSE_READS: u32 = 20_000_000;
+
+/// With the `screens` option, hold the boot at a process's end until the harness has taken its
+/// screenshot (see the module's documentation).
+fn pause_for_screen() {
+    use crate::boot::cmdline::{kernel_command_line, kernel_option};
+    use crate::hw::rtc::{await_mailbox, SCREEN_MAILBOX};
+    if !kernel_option(kernel_command_line(), b"screens") {
+        return;
+    }
+    let index = current_index();
+    let answered = await_mailbox(
+        &mut crate::hw::portio::Ports,
+        SCREEN_MAILBOX,
+        SCREEN_PAUSE_READS,
+        || {
+            crate::serial_println!("F2K: screen: process {} ended", index);
+        },
+    );
+    if !answered {
+        crate::serial_println!("F2K: screen: no answer, going on");
     }
 }
 

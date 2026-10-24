@@ -1612,6 +1612,7 @@ pub mod host {
             screen: &mut rtl::console::screen::ScreenBuffer,
             buffer: usize,
             count: usize,
+            _logged: bool,
         ) -> Result<(), u32> {
             Self::check(buffer)?;
             // SAFETY: the test's buffer of `count` bytes.
@@ -1621,7 +1622,12 @@ pub mod host {
             Ok(())
         }
 
-        fn print(&mut self, screen: &mut rtl::console::screen::ScreenBuffer, bytes: &[u8]) {
+        fn print(
+            &mut self,
+            screen: &mut rtl::console::screen::ScreenBuffer,
+            bytes: &[u8],
+            _logged: bool,
+        ) {
             screen.render(bytes);
             CONSOLE.with(|console| console.borrow_mut().push((self.0, bytes.to_vec())));
         }
@@ -1641,6 +1647,11 @@ pub mod host {
                 core::ptr::copy_nonoverlapping(bytes.as_ptr(), buffer as *mut u8, bytes.len())
             };
             Ok(())
+        }
+
+        /// The stand-in's one handle stands for the input-wait event.
+        fn input_wait_handle(&mut self) -> Result<u32, u32> {
+            Ok(HANDLE)
         }
     }
 

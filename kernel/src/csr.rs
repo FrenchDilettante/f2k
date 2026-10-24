@@ -11,12 +11,20 @@
 //!
 //! What a client writes reaches two places, in order: each byte goes to the serial line (COM1)
 //! unchanged, as the kernel's console always has (the suite reads program output there), then
-//! through the screen buffer's renderer. After each call the rows it changed are copied to the
-//! VGA text screen and the hardware cursor follows the buffer's.
+//! through the screen buffer's renderer. Only the standard handles' writes reach the serial line
+//! (`rtl::console::Handles`): it stands for the file a capture redirects standard output to, and a
+//! screen buffer opened by name (CONOUT$) writes to the screen alone. After each call the window's
+//! rows it changed are copied to the VGA text screen and the hardware cursor follows the buffer's.
 //!
 //! The keyboard's bytes reach the same console from the keyboard driver's DPC ([`key_byte`]): the
 //! console's producer turns them into key event records, appended to its input buffer for the
 //! input APIs to serve.
+//!
+//! The console's input-wait event is a notification event the server makes for the process that
+//! first asks for it (kernel32, the first time it must wait on the console) and hands to it as a
+//! handle; the process's handle keeps it, and it goes with the process. After each call and each
+//! keyboard byte it shows whether the input buffer holds records: a read the server answered
+//! STATUS_PENDING waits on it.
 
 use rtl::console::screen::ScreenBuffer;
 use rtl::console::{header, Client, Console, Handles, DATA_WORDS, MESSAGE_BYTES};
@@ -24,6 +32,8 @@ use rtl::console::{header, Client, Console, Handles, DATA_WORDS, MESSAGE_BYTES};
 use crate::hw::portio::Io;
 use crate::hw::vga::{CellMemory, TextScreen};
 use crate::nt::call::{NtResult, Status, UserAddr, STATUS_INVALID_PARAMETER};
+#[cfg(target_arch = "x86")]
+use crate::ob::ObjectId;
 use crate::user::syscall::ServiceFn;
 
 /// STATUS_INVALID_USER_BUFFER: a buffer that passed the probe but could not be read.
@@ -52,17 +62,23 @@ unsafe fn console() -> &'static mut Console {
     unsafe { &mut *core::ptr::addr_of_mut!(CONSOLE) }
 }
 
-/// The boot's step: the text screen shows the fresh console's screen buffer (whatever the firmware
-/// and loader left there cleared), the hardware cursor at its cursor.
+/// The console's input-wait event, once a process asked for it: the object, which names nothing
+/// once its process is gone.
+#[cfg(target_arch = "x86")]
+static mut INPUT_EVENT: Option<ObjectId> = None;
+
+/// The boot's step: the text screen shows the fresh console's window (whatever the firmware and
+/// loader left there cleared), the hardware cursor at its cursor.
 #[cfg(target_arch = "x86")]
 pub fn init() {
     // SAFETY: the boot context, before any process runs.
     let screen = &mut unsafe { console() }.screen;
     let mut vga = crate::hw::vga::screen();
     vga.clear(rtl::console::screen::DEFAULT_ATTRIBUTE);
-    vga.put_grid(screen.cells());
-    let (row, column) = screen.cursor();
-    vga.set_cursor(row, column);
+    vga.put_grid(screen.window_cells());
+    if let Some((row, column)) = screen.window_cursor() {
+        vga.set_cursor(row, column);
+    }
     screen.take_damage();
 }
 
@@ -84,7 +100,57 @@ fn service(frame: &mut crate::user::TrapFrame, args: &[u32]) {
         args[3],
     );
     present(&mut console.screen, &mut crate::hw::vga::screen());
+    show_input(console);
     call.finish(result);
+}
+
+/// The input-wait event, when one lives, set to show whether the console's input buffer holds
+/// records.
+#[cfg(target_arch = "x86")]
+fn show_input(console: &Console) {
+    // SAFETY: the console's own state, touched under the console's borrow (see `console`).
+    let Some(id) = (unsafe { *core::ptr::addr_of!(INPUT_EVENT) }) else {
+        return;
+    };
+    let Some(event) = crate::ob::directory().event(id) else {
+        return;
+    };
+    if !console.input_waiting() {
+        event.reset();
+    } else if !event.signaled() {
+        event.set(
+            crate::sched::idle::dispatcher(),
+            crate::sched::event::EVENT_WAKE_INCREMENT,
+        );
+    }
+}
+
+/// The calling process's handle to the input-wait event: a new handle on the live one, or a fresh
+/// event published with it; STATUS_INSUFFICIENT_RESOURCES when neither can be had.
+#[cfg(target_arch = "x86")]
+fn input_wait_handle() -> Result<u32, u32> {
+    use crate::ob::{self, EVENT_ALL_ACCESS};
+    use crate::sched::event::EventKind;
+    const STATUS_INSUFFICIENT_RESOURCES: u32 = 0xC000_009A;
+    let process = crate::user::args::calling_process();
+    // SAFETY: the console's own state, touched in its service (see `console`).
+    let slot = unsafe { &mut *core::ptr::addr_of_mut!(INPUT_EVENT) };
+    let handle = match *slot {
+        Some(id) if ob::directory().is_live(id) => ob::open(process, id, EVENT_ALL_ACCESS, false),
+        _ => {
+            let id = ob::directory()
+                .create_event(EventKind::Notification, false)
+                .ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
+            let handle = ob::publish(process, id, EVENT_ALL_ACCESS, false, None)
+                .ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
+            *slot = Some(id);
+            handle
+        }
+    };
+    match handle {
+        0 => Err(STATUS_INSUFFICIENT_RESOURCES),
+        handle => Ok(handle),
+    }
 }
 
 /// The keyboard DPC's step: one key byte into the console's producer, each record it completes
@@ -120,19 +186,24 @@ pub fn key_byte(byte: u8, lights: &mut impl rtl::console::input::Lights) {
         #[cfg(not(feature = "kbd-smoke"))]
         let _ = record;
     });
+    // The object directory is safe here too: everything else that touches it runs with
+    // interrupts masked (the services, the teardown), so no DPC lands inside it.
+    show_input(console);
 }
 
-/// Copy what the screen buffer changed since the last look to the text screen: the rows it
-/// touched, then the hardware cursor.
+/// Copy what the screen buffer changed since the last look to the text screen: the window's rows
+/// it touched, then the hardware cursor.
 fn present<M: CellMemory, P: Io>(screen: &mut ScreenBuffer, vga: &mut TextScreen<M, P>) {
     let Some(rows) = screen.take_damage() else {
         return;
     };
-    for row in rows {
-        vga.put_row(row, &screen.cells()[row]);
+    let window = screen.window();
+    for row in rows.start.max(window.start)..rows.end.min(window.end) {
+        vga.put_row(row - window.start, &screen.cells()[row]);
     }
-    let (row, column) = screen.cursor();
-    vga.set_cursor(row, column);
+    if let Some((row, column)) = screen.window_cursor() {
+        vga.set_cursor(row, column);
+    }
 }
 
 /// Host builds compile the dispatch but never raise it.
@@ -197,7 +268,13 @@ impl Client for Dual {
     /// (STATUS_ACCESS_VIOLATION, ERROR_NOACCESS to the caller); one that passed the probe but
     /// cannot be read is an invalid user buffer (ERROR_INVALID_USER_BUFFER), what was read
     /// before it shown — the two answers the bare/badptr fixture's console writes capture.
-    fn show(&mut self, screen: &mut ScreenBuffer, buffer: usize, count: usize) -> Result<(), u32> {
+    fn show(
+        &mut self,
+        screen: &mut ScreenBuffer,
+        buffer: usize,
+        count: usize,
+        logged: bool,
+    ) -> Result<(), u32> {
         let (buffer, count) = (buffer as u32, count as u32);
         crate::user::syscall::probe_user_range(buffer, count)?;
         let mut chunk = [0u8; 256];
@@ -207,8 +284,10 @@ impl Client for Dual {
             UserAddr(buffer.wrapping_add(done))
                 .read(&mut chunk[..take])
                 .map_err(|_| STATUS_INVALID_USER_BUFFER)?;
-            for &byte in &chunk[..take] {
-                serial_byte(byte);
+            if logged {
+                for &byte in &chunk[..take] {
+                    serial_byte(byte);
+                }
             }
             screen.render(&chunk[..take]);
             done += take as u32;
@@ -217,9 +296,11 @@ impl Client for Dual {
     }
 
     /// The server's bytes (a Unicode write's), to the serial line, then to the screen buffer.
-    fn print(&mut self, screen: &mut ScreenBuffer, bytes: &[u8]) {
-        for &byte in bytes {
-            serial_byte(byte);
+    fn print(&mut self, screen: &mut ScreenBuffer, bytes: &[u8], logged: bool) {
+        if logged {
+            for &byte in bytes {
+                serial_byte(byte);
+            }
         }
         screen.render(bytes);
     }
@@ -237,6 +318,13 @@ impl Client for Dual {
         UserAddr(buffer as u32)
             .write(bytes)
             .map_err(|fault| Status::from(fault).0)
+    }
+
+    fn input_wait_handle(&mut self) -> Result<u32, u32> {
+        #[cfg(target_arch = "x86")]
+        return input_wait_handle();
+        #[cfg(not(target_arch = "x86"))]
+        unreachable!("the gate is the target's");
     }
 }
 

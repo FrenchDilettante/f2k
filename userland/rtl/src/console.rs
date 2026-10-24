@@ -5,11 +5,11 @@
 //! console server owns the console and its handle tables) over an LPC port. F2K has no csrss:
 //! ntdll's CsrClientCallServer raises one internal system service, and the kernel's stand-in serves
 //! the message with these rules over the console's state ([`Console`]: its input buffer — the
-//! records the keyboard's producer appends, [`input`] — and its mode, its screen buffer,
-//! [`screen`], and its title). Console handles stay
-//! outside the kernel's handle table, as on Windows 2000: they are the console server's own, per
-//! process — (index << 2) | 3, the low two bits kernel32's CONSOLE_HANDLE test, the standard
-//! handles a fresh process starts with indexes 0 to 2 (stdin 3, stdout 7, stderr 0xB).
+//! records the keyboard's producer appends and the ones clients write, [`input`] — and its mode,
+//! the line a line-mode read is building, its screen buffer, [`screen`], and its title). Console
+//! handles stay outside the kernel's handle table, as on Windows 2000: they are the console
+//! server's own, per process — (index << 2) | 3, the low two bits kernel32's CONSOLE_HANDLE test,
+//! the standard handles a fresh process starts with indexes 0 to 2 (stdin 3, stdout 7, stderr 0xB).
 //!
 //! What mirrors Windows 2000: CsrClientCallServer's signature and answer (the message, an optional
 //! capture buffer, the API number, the API data's length; the message's ReturnValue), and the
@@ -21,18 +21,35 @@
 //! never captured: the capture buffer is carried, not used. The structures a console call fills
 //! are the public ABI's ([`Coord`], [`SmallRect`], [`ConsoleScreenBufferInfo`]): the server
 //! answers them as their bytes, in dwords.
+//!
+//! The server never blocks. Windows 2000's csrss holds a read's reply until its input arrives; a
+//! read F2K's server cannot complete yet (a line without its Enter, an empty input buffer) answers
+//! STATUS_PENDING instead, having kept what it took (a line's characters stay in the line being
+//! built), and kernel32 waits on the console's input-wait handle — signaled while the input buffer
+//! holds records — then asks again.
 
 pub mod input;
 pub mod layout;
 pub mod screen;
 
-use input::{Append, InputBuffer, KeyEventRecord, Lights, Producer, INPUT_RECORD_BYTES};
-use screen::{Cell, Fill, ScreenBuffer, HEIGHT, OUTPUT_MODE_MASK, WIDTH};
+use input::{
+    Append,
+    InputBuffer,
+    InputRecord,
+    KeyEventRecord,
+    Lights,
+    Producer,
+    INPUT_RECORD_BYTES,
+    KEY_EVENT,
+};
+use screen::{Cell, Fill, ScreenBuffer, HEIGHT, OUTPUT_MODE_MASK, WIDTH, WINDOW_HEIGHT};
 
+use crate::codepage::{self, CodePage};
 use crate::status::{
     STATUS_INVALID_HANDLE,
     STATUS_INVALID_PARAMETER,
     STATUS_NO_MEMORY,
+    STATUS_PENDING,
     STATUS_SUCCESS,
 };
 
@@ -64,8 +81,9 @@ pub const STATUS_ILLEGAL_FUNCTION: u32 = 0xC000_00AF;
 pub const CONSOLE_SERVER: u32 = 2;
 
 /// The console server's APIs: the server's index in the high word, the API's in the low one, F2K's
-/// indexes. Each
-/// names its data as dwords after the header, in order; `out` marks what the server writes.
+/// indexes. Each names its data as dwords after the header, in order; `out` marks what the server
+/// writes. A `unicode` word is nonzero for a W call's UTF-16 text, zero for an A call's text in the
+/// console's code page (the server converts, as Windows 2000's does).
 pub mod api {
     use super::CONSOLE_SERVER;
 
@@ -77,7 +95,8 @@ pub mod api {
     /// screen, or, with `unicode` nonzero, `count` UTF-16 units (WriteConsoleW's), each shown as
     /// the console's code page holds it.
     pub const WRITE_CONSOLE: u32 = number(0);
-    /// ConsolepReadConsole: [handle, buffer, count, out read].
+    /// ConsolepReadConsole: [handle, buffer, count, out read, unicode] — up to `count` characters
+    /// of input, as the input mode reads them; STATUS_PENDING while none can be answered yet.
     pub const READ_CONSOLE: u32 = number(1);
     /// ConsolepGetMode: [handle, out mode].
     pub const GET_MODE: u32 = number(2);
@@ -107,26 +126,35 @@ pub mod api {
     /// destination (a COORD), fill (a CHAR_INFO: character | attributes << 16), clipped (nonzero:
     /// the clip rectangle follows), clip left | top << 16, clip right | bottom << 16].
     pub const SCROLL_REGION: u32 = number(13);
-    /// ConsolepGetTitle: [buffer, size, out copied] — the title's bytes, no terminator added.
+    /// ConsolepGetTitle: [buffer, size, out returned, unicode] — the title into a buffer of `size`
+    /// characters, as GetConsoleTitleA and GetConsoleTitleW answer.
     pub const GET_TITLE: u32 = number(14);
-    /// ConsolepSetTitle: [buffer, length] — the title's bytes.
+    /// ConsolepSetTitle: [buffer, length, unicode] — the title's `length` characters.
     pub const SET_TITLE: u32 = number(15);
     /// ConsolepSetMode: [handle, mode] — the mode of the buffer the handle names.
     pub const SET_MODE: u32 = number(16);
     /// ConsolepGetNumberOfInputEvents: [handle, out count] — the records the input buffer holds.
     pub const GET_INPUT_COUNT: u32 = number(17);
-    /// ConsolepPeekInput: [handle, buffer, count, out copied] — up to `count` records, oldest
-    /// first, copied to the buffer as INPUT_RECORDs and left in the input buffer.
+    /// ConsolepPeekInput: [handle, buffer, count, out copied, unicode] — up to `count` records,
+    /// oldest first, copied to the buffer as INPUT_RECORDs and left in the input buffer.
     pub const PEEK_INPUT: u32 = number(18);
-    /// ConsolepReadInput: [handle, buffer, count, out copied] — as PEEK_INPUT, the records copied
-    /// removed from the input buffer. It never waits: an empty input buffer copies none.
+    /// ConsolepReadInput: [handle, buffer, count, out copied, unicode] — as PEEK_INPUT, the
+    /// records copied removed from the input buffer; STATUS_PENDING while it is empty.
     pub const READ_INPUT: u32 = number(19);
+    /// ConsolepWriteInput: [handle, buffer, count, out written, unicode] — `count` INPUT_RECORDs
+    /// appended to the input buffer as they are, as many as it has room for.
+    pub const WRITE_INPUT: u32 = number(20);
+    /// ConsolepOpenConsole: [output (nonzero: the screen buffer, CONOUT$; zero: the input buffer,
+    /// CONIN$), access, inherit, share, out handle] — a new handle in the lowest free slot.
+    pub const OPEN_CONSOLE: u32 = number(21);
+    /// ConsolepGetInputWaitHandle: [out handle] — the calling process's handle to the console's
+    /// input-wait event, signaled while the input buffer holds records.
+    pub const GET_INPUT_WAIT_HANDLE: u32 = number(22);
 
     /// Each API's data length in dwords.
     pub const fn words(api: u32) -> Option<usize> {
         Some(match api {
-            WRITE_CONSOLE => 5,
-            READ_CONSOLE => 4,
+            WRITE_CONSOLE | READ_CONSOLE => 5,
             GET_MODE | GET_CP | VERIFY_IO_HANDLE => 2,
             FLUSH_INPUT_BUFFER | CLOSE_HANDLE => 1,
             DUP_HANDLE => 5,
@@ -134,10 +162,13 @@ pub mod api {
             GET_SCREEN_BUFFER_INFO => 7,
             FILL_OUTPUT => 6,
             SCROLL_REGION => 8,
-            GET_TITLE => 3,
-            SET_TITLE | SET_MODE => 2,
+            GET_TITLE => 4,
+            SET_TITLE => 3,
+            SET_MODE => 2,
             GET_INPUT_COUNT => 2,
-            PEEK_INPUT | READ_INPUT => 4,
+            PEEK_INPUT | READ_INPUT | WRITE_INPUT => 5,
+            OPEN_CONSOLE => 5,
+            GET_INPUT_WAIT_HANDLE => 1,
             _ => return None,
         })
     }
@@ -149,23 +180,37 @@ pub const CONSOLE_CP: u32 = 437;
 /// The keyboard layout the console's producer walks: the one switch for a compiled-in change.
 pub const LAYOUT: &layout::Layout = &layout::US;
 
-/// The modes a fresh console has: processed, line-buffered, echoed input with mouse events
-/// (ENABLE_PROCESSED_INPUT | ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_MOUSE_INPUT); processed
-/// output that wraps at the line's end (ENABLE_PROCESSED_OUTPUT | ENABLE_WRAP_AT_EOL_OUTPUT).
-pub const INPUT_MODE: u32 = 0x1 | 0x2 | 0x4 | 0x10;
-pub const OUTPUT_MODE: u32 = 0x1 | 0x2;
-
-/// The input mode's bits SetConsoleMode checks: line input, its echo, every bit an input buffer
-/// holds (processed, line, echo, window and mouse input).
+/// The input mode's bits: processed, line-buffered and echoed input, window and mouse events, and
+/// the three later systems name ENABLE_INSERT_MODE, ENABLE_QUICK_EDIT_MODE and
+/// ENABLE_EXTENDED_FLAGS.
 const ENABLE_LINE_INPUT: u32 = 0x2;
 const ENABLE_ECHO_INPUT: u32 = 0x4;
-const INPUT_MODE_MASK: u32 = 0x1F;
+const INSERT_AND_QUICK_EDIT: u32 = 0x20 | 0x40;
+const EXTENDED_FLAGS: u32 = 0x80;
+/// Every input mode bit SetConsoleMode takes.
+const INPUT_MODE_MASK: u32 = 0xFF;
+
+/// The modes a fresh console has, as Windows 2000's console capture reports them: processed,
+/// line-buffered, echoed input with the insert, quick-edit and extended-flags bits (0xE7);
+/// processed output that wraps at the line's end (ENABLE_PROCESSED_OUTPUT |
+/// ENABLE_WRAP_AT_EOL_OUTPUT).
+pub const INPUT_MODE: u32 = 0xE7;
+pub const OUTPUT_MODE: u32 = 0x1 | 0x2;
 
 /// The attribute bits a cell holds: the foreground and background colours.
 const COLOR_MASK: u32 = 0xFF;
 
-/// The most title bytes the console keeps (a longer title keeps its first ones).
-pub const TITLE_BYTES: usize = 1024;
+/// The most title characters the console keeps (a longer title keeps its first ones).
+pub const TITLE_UNITS: usize = 1024;
+
+/// The most characters a line-mode read's line holds, its CR LF included: the keys typed past
+/// room for them are dropped.
+pub const LINE_UNITS: usize = 1024;
+
+/// The characters a line ends with, and the ones an Enter key and a backspace stand for.
+const CR: u16 = 0x0D;
+const LF: u16 = 0x0A;
+const BACKSPACE: u16 = 0x08;
 
 /// COORD: a cell's column (X) and row (Y). As a dword, X is the low word.
 #[repr(C)]
@@ -273,8 +318,41 @@ impl ConsoleScreenBufferInfo {
     }
 }
 
-/// The console: its input buffer, the producer that fills it, the input buffer's mode, its screen
-/// buffer and its title. Each mode is its buffer's, shared by every handle on that buffer.
+/// The line a line-mode read builds: the characters typed so far and, once its Enter arrived, the
+/// whole line with its CR LF, handed to readers a buffer at a time until all of it is taken.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Line {
+    units: [u16; LINE_UNITS],
+    length: usize,
+    /// How much of a complete line readers have taken.
+    taken: usize,
+    complete: bool,
+}
+
+impl Line {
+    const fn new() -> Self {
+        Line {
+            units: [0; LINE_UNITS],
+            length: 0,
+            taken: 0,
+            complete: false,
+        }
+    }
+
+    /// The characters typed so far, or the complete line's part no reader took yet.
+    pub fn pending(&self) -> &[u16] {
+        &self.units[self.taken..self.length]
+    }
+
+    /// Whether the line's Enter arrived.
+    pub fn is_complete(&self) -> bool {
+        self.complete
+    }
+}
+
+/// The console: its input buffer, the producer that fills it, the input buffer's mode, the line a
+/// line-mode read builds, its screen buffer and its title. Each mode is its buffer's, shared by
+/// every handle on that buffer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Console {
     pub screen: ScreenBuffer,
@@ -282,28 +360,47 @@ pub struct Console {
     /// The keyboard's key-event producer, over [`LAYOUT`].
     pub producer: Producer,
     input_mode: u32,
-    title: [u8; TITLE_BYTES],
+    line: Line,
+    title: [u16; TITLE_UNITS],
     title_length: usize,
 }
 
 impl Console {
     /// A fresh console: the default modes, a blank screen buffer, an empty input buffer and an
     /// empty title.
-    // TODO: the startup modes and the default title a fresh console reports, captured from one.
+    // TODO: the default title a fresh console reports, captured from one.
     pub const fn new() -> Self {
         Console {
             screen: ScreenBuffer::new(),
             input: InputBuffer::new(),
             producer: Producer::new(LAYOUT),
             input_mode: INPUT_MODE,
-            title: [0; TITLE_BYTES],
+            line: Line::new(),
+            title: [0; TITLE_UNITS],
             title_length: 0,
         }
     }
 
-    /// The input buffer's mode.
+    /// The input buffer's mode, as GetConsoleMode reads it: a mode holding the insert or the
+    /// quick-edit bit reads with the extended-flags bit too (Windows 2000's capture: 0x20 set reads
+    /// back 0xA0).
     pub fn input_mode(&self) -> u32 {
-        self.input_mode
+        let mode = self.input_mode;
+        if mode & INSERT_AND_QUICK_EDIT != 0 {
+            mode | EXTENDED_FLAGS
+        } else {
+            mode
+        }
+    }
+
+    /// The line a line-mode read is building.
+    pub fn line(&self) -> &Line {
+        &self.line
+    }
+
+    /// Whether input waits for a reader: what the console's input-wait event shows.
+    pub fn input_waiting(&self) -> bool {
+        self.input.count() != 0
     }
 
     /// Take one keyboard byte: each record the producer completes is appended to the input buffer,
@@ -328,23 +425,22 @@ impl Console {
         });
     }
 
-    /// The title's bytes.
-    pub fn title(&self) -> &[u8] {
+    /// The title's characters.
+    pub fn title(&self) -> &[u16] {
         &self.title[..self.title_length]
     }
 
-    /// What GetConsoleScreenBufferInfo reports: the buffer and its window the same size, the
-    /// largest window the buffer's size.
-    // TODO: the buffer size, window and maximum window a fresh console reports, captured from
-    // one.
+    /// What GetConsoleScreenBufferInfo reports: the buffer's size, the cursor, the attribute
+    /// written cells take, the window onto the buffer, and the largest window: the buffer's width
+    /// by the rows the screen shows.
     pub fn screen_buffer_info(&self) -> ConsoleScreenBufferInfo {
-        let size = Coord {
-            x: WIDTH as i16,
-            y: HEIGHT as i16,
-        };
         let (row, column) = self.screen.cursor();
+        let window = self.screen.window();
         ConsoleScreenBufferInfo {
-            size,
+            size: Coord {
+                x: WIDTH as i16,
+                y: HEIGHT as i16,
+            },
             cursor_position: Coord {
                 x: column as i16,
                 y: row as i16,
@@ -352,11 +448,14 @@ impl Console {
             attributes: self.screen.attribute().into(),
             window: SmallRect {
                 left: 0,
-                top: 0,
+                top: window.start as i16,
                 right: WIDTH as i16 - 1,
-                bottom: HEIGHT as i16 - 1,
+                bottom: window.end as i16 - 1,
             },
-            maximum_window_size: size,
+            maximum_window_size: Coord {
+                x: WIDTH as i16,
+                y: WINDOW_HEIGHT as i16,
+            },
         }
     }
 }
@@ -384,18 +483,30 @@ pub enum Kind {
 pub const STANDARD_HANDLES: [u32; 3] = [3, 7, 0xB];
 
 /// A process's console handles: 32 slots, handle (index << 2) | 3 for slot `index`.
+///
+/// The handles a process starts with, and their duplicates, are its standard output: what they
+/// write reaches the serial line too ([`Client::show`]'s `logged`), the stand-in for the file the
+/// real machine's capture redirects standard output to. A screen buffer opened by name (CONOUT$)
+/// shows on the screen alone, as on the real machine, where the capture leaves CONOUT$ on the
+/// console.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Handles {
     /// The open slots.
     open: u32,
     /// Of those, the ones naming the screen buffer (the rest name the input buffer).
     output: u32,
+    /// Of those, the standard ones: the process's first handles and their duplicates.
+    logged: u32,
 }
 
 impl Handles {
     /// No handle open.
     pub const fn empty() -> Self {
-        Handles { open: 0, output: 0 }
+        Handles {
+            open: 0,
+            output: 0,
+            logged: 0,
+        }
     }
 
     /// A fresh process's: stdin on the input buffer, stdout and stderr on the screen buffer, opened
@@ -411,6 +522,7 @@ impl Handles {
             }
             index += 1;
         }
+        handles.logged = handles.open;
         handles
     }
 
@@ -446,12 +558,18 @@ impl Handles {
         }
     }
 
+    /// Whether an open handle is one of the standard ones, whose writes the serial line carries.
+    pub fn logged(&self, handle: u32) -> bool {
+        self.kind(handle).is_some() && self.logged & (1 << (handle >> 2)) != 0
+    }
+
     /// Close an open handle: STATUS_INVALID_HANDLE for any other value.
     pub fn close(&mut self, handle: u32) -> Result<(), u32> {
         self.kind(handle).ok_or(STATUS_INVALID_HANDLE)?;
         let bit = 1 << (handle >> 2);
         self.open &= !bit;
         self.output &= !bit;
+        self.logged &= !bit;
         Ok(())
     }
 
@@ -465,6 +583,9 @@ impl Handles {
             return Err(STATUS_INVALID_PARAMETER);
         }
         let duplicate = self.open(kind)?;
+        if self.logged(handle) {
+            self.logged |= 1 << (duplicate >> 2);
+        }
         if options & DUPLICATE_CLOSE_SOURCE != 0 {
             self.close(handle)?;
         }
@@ -475,18 +596,28 @@ impl Handles {
 /// The calling client, as the server reaches it: the bytes it shows, and its memory.
 pub trait Client {
     /// Show `count` bytes of the client's memory at `buffer` on `screen`, each piece read handed to
-    /// [`ScreenBuffer::render`] in order; the status that refuses them (an address the client
+    /// [`ScreenBuffer::render`] in order, and, `logged`, to the serial line before it (a standard
+    /// handle's write: see [`Handles`]); the status that refuses them (an address the client
     /// cannot name, a buffer that cannot be read: what was read before it shown).
-    fn show(&mut self, screen: &mut ScreenBuffer, buffer: usize, count: usize) -> Result<(), u32>;
-    /// Show `bytes` the server made (a Unicode write's, in the console's code page) on `screen`, as
-    /// [`Client::show`] shows the client's own.
-    fn print(&mut self, screen: &mut ScreenBuffer, bytes: &[u8]) {
+    fn show(
+        &mut self,
+        screen: &mut ScreenBuffer,
+        buffer: usize,
+        count: usize,
+        logged: bool,
+    ) -> Result<(), u32>;
+    /// Show `bytes` the server made (a Unicode write's, a read's echo, in the console's code page)
+    /// on `screen`, as [`Client::show`] shows the client's own.
+    fn print(&mut self, screen: &mut ScreenBuffer, bytes: &[u8], _logged: bool) {
         screen.render(bytes);
     }
     /// Read the client's memory at `buffer` into `into`; the status that refuses it.
     fn read(&mut self, buffer: usize, into: &mut [u8]) -> Result<(), u32>;
     /// Write `bytes` to the client's memory at `buffer`; the status that refuses it.
     fn write(&mut self, buffer: usize, bytes: &[u8]) -> Result<(), u32>;
+    /// The client process's handle to the console's input-wait event (made or opened for it); the
+    /// status that refuses one.
+    fn input_wait_handle(&mut self) -> Result<u32, u32>;
 }
 
 /// Serve one API call over the console and a process's handles: its data (the dwords after the
@@ -511,14 +642,20 @@ pub fn serve(
     }
 }
 
+/// A character as the console's code page holds it: its OEM byte, best fit, else `?`.
+fn oem_byte(unit: u16) -> u8 {
+    codepage::encode_unit(CodePage::Oem, unit, true).unwrap_or(b'?')
+}
+
 /// A Unicode write: `count` UTF-16 units of the client's memory at `buffer`, read a piece at a
-/// time, each unit shown as the console's code page holds it (best fit, else `?`); the status that
-/// refuses the client's memory, what was read before it shown.
+/// time, each unit shown as the console's code page holds it; the status that refuses the client's
+/// memory, what was read before it shown.
 fn show_unicode(
     console: &mut Console,
     client: &mut impl Client,
     buffer: usize,
     count: usize,
+    logged: bool,
 ) -> Result<(), u32> {
     const PIECE: usize = 128;
     let mut done = 0;
@@ -528,14 +665,204 @@ fn show_unicode(
         client.read(buffer.wrapping_add(2 * done), &mut units[..2 * take])?;
         let mut bytes = [0u8; PIECE];
         for (at, byte) in bytes[..take].iter_mut().enumerate() {
-            let unit = u16::from_le_bytes([units[2 * at], units[2 * at + 1]]);
-            *byte = crate::codepage::encode_unit(crate::codepage::CodePage::Oem, unit, true)
-                .unwrap_or(b'?');
+            *byte = oem_byte(u16::from_le_bytes([units[2 * at], units[2 * at + 1]]));
         }
-        client.print(&mut console.screen, &bytes[..take]);
+        client.print(&mut console.screen, &bytes[..take], logged);
         done += take;
     }
     Ok(())
+}
+
+/// Characters to the client's buffer at `buffer`: UTF-16 units, or (not `unicode`) each one's
+/// byte in the console's code page; written a piece at a time.
+fn put_text(
+    client: &mut impl Client,
+    buffer: usize,
+    text: &[u16],
+    unicode: bool,
+) -> Result<(), u32> {
+    const PIECE: usize = 128;
+    let width = if unicode { 2 } else { 1 };
+    for (index, piece) in text.chunks(PIECE).enumerate() {
+        let mut bytes = [0u8; 2 * PIECE];
+        for (at, &unit) in piece.iter().enumerate() {
+            if unicode {
+                bytes[2 * at..2 * at + 2].copy_from_slice(&unit.to_le_bytes());
+            } else {
+                bytes[at] = oem_byte(unit);
+            }
+        }
+        client.write(
+            buffer.wrapping_add(index * PIECE * width),
+            &bytes[..piece.len() * width],
+        )?;
+    }
+    Ok(())
+}
+
+/// Characters from the client's buffer at `buffer`, `count` of them (UTF-16 units, or bytes in the
+/// console's code page), into `into`: at most its room, the rest not read.
+fn get_text(
+    client: &mut impl Client,
+    buffer: usize,
+    count: usize,
+    unicode: bool,
+    into: &mut [u16],
+) -> Result<usize, u32> {
+    const PIECE: usize = 128;
+    let count = count.min(into.len());
+    let width = if unicode { 2 } else { 1 };
+    let mut done = 0;
+    while done < count {
+        let take = (count - done).min(PIECE);
+        let mut bytes = [0u8; 2 * PIECE];
+        client.read(
+            buffer.wrapping_add(done * width),
+            &mut bytes[..take * width],
+        )?;
+        for (at, unit) in into[done..done + take].iter_mut().enumerate() {
+            *unit = if unicode {
+                u16::from_le_bytes([bytes[2 * at], bytes[2 * at + 1]])
+            } else {
+                codepage::decode_byte(CodePage::Oem, bytes[at])
+            };
+        }
+        done += take;
+    }
+    Ok(count)
+}
+
+/// Echo characters a line-mode read took on the screen (and the serial line: what was typed shows
+/// in the boot's log), as one write: each in the console's code page, an Enter as CR LF, a
+/// backspace erasing the character before the cursor.
+fn echo(console: &mut Console, client: &mut impl Client, units: &[u16]) {
+    console.screen.begin_write();
+    for &unit in units {
+        match unit {
+            CR => client.print(&mut console.screen, b"\r\n", true),
+            BACKSPACE => client.print(&mut console.screen, b"\x08 \x08", true),
+            other => client.print(&mut console.screen, &[oem_byte(other)], true),
+        }
+    }
+    console.screen.end_write();
+}
+
+/// A line-mode read's work: the line built from the input buffer's key records — each keydown's
+/// character, as many times as it repeats; a backspace takes back the last one; the records
+/// without a character are dropped — up to and including the Enter's keydown, which ends the line
+/// with CR LF (the records after it stay). Echoed when the mode asks. Then up to `count`
+/// characters of the line to the client, the rest kept for the next read; STATUS_PENDING while
+/// the line has no Enter yet (what was typed kept in the line).
+fn read_line(
+    console: &mut Console,
+    client: &mut impl Client,
+    buffer: usize,
+    count: usize,
+    unicode: bool,
+) -> Result<usize, u32> {
+    let echoing = console.input_mode & ENABLE_ECHO_INPUT != 0;
+    while !console.line.complete {
+        let Some(record) = console.input.pop() else {
+            return Err(STATUS_PENDING);
+        };
+        if !record.is_key_down() || record.key.char == 0 {
+            continue;
+        }
+        let character = record.key.char;
+        for _ in 0..record.key.repeat_count.max(1) {
+            let line = &mut console.line;
+            match character {
+                CR => {
+                    line.units[line.length] = CR;
+                    line.units[line.length + 1] = LF;
+                    line.length += 2;
+                    line.complete = true;
+                }
+                BACKSPACE if line.length == 0 => continue,
+                BACKSPACE => line.length -= 1,
+                // Room is kept for the CR LF.
+                _ if line.length + 2 >= LINE_UNITS => continue,
+                other => {
+                    line.units[line.length] = other;
+                    line.length += 1;
+                }
+            }
+            if echoing {
+                echo(console, client, &[character]);
+            }
+            if console.line.complete {
+                break;
+            }
+        }
+    }
+    let line = &mut console.line;
+    let taken = (line.length - line.taken).min(count);
+    put_text(
+        client,
+        buffer,
+        &line.units[line.taken..line.taken + taken],
+        unicode,
+    )?;
+    line.taken += taken;
+    if line.taken == line.length {
+        *line = Line::new();
+    }
+    Ok(taken)
+}
+
+/// The most characters a raw read answers at once.
+const RAW_UNITS: usize = 128;
+
+/// A raw read's work (no line input): the first keydown carrying a character, the records before
+/// it dropped; STATUS_PENDING (every record dropped) when there is none. With room for more, the
+/// characters of the keydowns after it, the records between dropped, until the input buffer is
+/// empty or the room is used. What Windows 2000's console answers, as its capture shows (xyz and
+/// Enter queued: 4 characters, x, a NUL, y, z): the first character, a NUL, then the following
+/// ones, the count the first and the following ones — the last following one past the count.
+fn read_raw(
+    console: &mut Console,
+    client: &mut impl Client,
+    buffer: usize,
+    count: usize,
+    unicode: bool,
+) -> Result<usize, u32> {
+    let mut first = None;
+    let mut repeats = 0;
+    while first.is_none() {
+        let record = console.input.pop().ok_or(STATUS_PENDING)?;
+        if record.is_key_down() && record.key.char != 0 {
+            first = Some(record.key.char);
+            repeats = record.key.repeat_count.max(1) - 1;
+        }
+    }
+    let first = first.unwrap_or_default();
+    // The first character, the NUL after it, then the following ones.
+    let mut text = [0u16; RAW_UNITS + 1];
+    text[0] = first;
+    let room = (count - 1).min(RAW_UNITS - 1);
+    let mut following = 0;
+    for _ in 0..repeats {
+        if following < room {
+            text[2 + following] = first;
+            following += 1;
+        }
+    }
+    while following < room {
+        let Some(record) = console.input.pop() else {
+            break;
+        };
+        if record.is_key_down() && record.key.char != 0 {
+            for _ in 0..record.key.repeat_count.max(1) {
+                if following < room {
+                    text[2 + following] = record.key.char;
+                    following += 1;
+                }
+            }
+        }
+    }
+    let answered = 1 + following;
+    put_text(client, buffer, &text[..answered], unicode)?;
+    Ok(answered)
 }
 
 /// The API's work: `data` holds at least its words.
@@ -561,25 +888,31 @@ fn answer(
             output()?;
             if data[2] != 0 {
                 console.screen.begin_write();
-                if data[4] != 0 {
-                    show_unicode(console, client, data[1], data[2])?;
+                let logged = handles.logged(handle);
+                let shown = if data[4] != 0 {
+                    show_unicode(console, client, data[1], data[2], logged)
                 } else {
-                    client.show(&mut console.screen, data[1], data[2])?;
-                }
+                    client.show(&mut console.screen, data[1], data[2], logged)
+                };
+                console.screen.end_write();
+                shown?;
             }
             data[3] = data[2];
         }
         api::READ_CONSOLE => {
-            if kind != Some(Kind::Input) {
-                return Err(STATUS_INVALID_HANDLE);
-            }
-            // F2K's console has no keyboard: its input ends at once, as an end-of-file key at a
-            // line's start ends a Windows 2000 console's read with nothing.
-            data[3] = 0;
+            input()?;
+            let (buffer, count, unicode) = (data[1], data[2], data[4] != 0);
+            data[3] = if count == 0 {
+                0
+            } else if console.input_mode & ENABLE_LINE_INPUT != 0 {
+                read_line(console, client, buffer, count, unicode)?
+            } else {
+                read_raw(console, client, buffer, count, unicode)?
+            };
         }
         api::GET_MODE => {
             data[1] = match kind.ok_or(STATUS_INVALID_HANDLE)? {
-                Kind::Input => console.input_mode,
+                Kind::Input => console.input_mode(),
                 Kind::Output => console.screen.mode(),
             } as usize;
         }
@@ -614,6 +947,11 @@ fn answer(
         }
         api::PEEK_INPUT | api::READ_INPUT => {
             input()?;
+            let unicode = data[4] != 0;
+            if api == api::READ_INPUT && data[2] != 0 && console.input.count() == 0 {
+                data[3] = 0;
+                return Err(STATUS_PENDING);
+            }
             // Every record is copied before any is removed: a buffer that refuses one leaves the
             // input buffer as it was.
             let copied = data[2].min(console.input.count());
@@ -621,14 +959,50 @@ fn answer(
                 let Some(record) = console.input.get(index) else {
                     break;
                 };
+                let mut bytes = record.bytes();
+                if !unicode && record.event_type == KEY_EVENT {
+                    // An A call's AsciiChar: the character in the console's code page.
+                    bytes[14..16].copy_from_slice(&[oem_byte(record.key.char), 0]);
+                }
                 let at = data[1].wrapping_add(index * INPUT_RECORD_BYTES);
-                client.write(at, &record.bytes())?;
+                client.write(at, &bytes)?;
             }
             if api == api::READ_INPUT {
                 console.input.remove(copied);
             }
             data[3] = copied;
         }
+        api::WRITE_INPUT => {
+            input()?;
+            let unicode = data[4] != 0;
+            let mut written = 0;
+            while written < data[2] {
+                let mut bytes = [0u8; INPUT_RECORD_BYTES];
+                client.read(
+                    data[1].wrapping_add(written * INPUT_RECORD_BYTES),
+                    &mut bytes,
+                )?;
+                let mut record = InputRecord::from_bytes(&bytes);
+                if !unicode && record.event_type == KEY_EVENT {
+                    // An A call's AsciiChar, in the console's code page.
+                    record.key.char = codepage::decode_byte(CodePage::Oem, bytes[14]);
+                }
+                if !console.input.push(record) {
+                    break;
+                }
+                written += 1;
+            }
+            data[3] = written;
+        }
+        api::OPEN_CONSOLE => {
+            let kind = if data[0] != 0 {
+                Kind::Output
+            } else {
+                Kind::Input
+            };
+            data[4] = handles.open(kind)? as usize;
+        }
+        api::GET_INPUT_WAIT_HANDLE => data[0] = client.input_wait_handle()? as usize,
         api::CLOSE_HANDLE => handles.close(handle)?,
         api::DUP_HANDLE => {
             data[4] = handles.duplicate(handle, data[1] as u32, data[3] as u32)? as usize
@@ -689,20 +1063,36 @@ fn answer(
                 .scroll(source, clip, to.x.into(), to.y.into(), fill);
         }
         api::GET_TITLE => {
-            let title = console.title();
-            let copied = title.len().min(data[1]);
-            if copied != 0 {
-                client.write(data[0], &title[..copied])?;
+            // GetConsoleTitleW: as much of the title as fits with its terminator, the characters
+            // copied the answer; GetConsoleTitleA: the whole title and its terminator, or nothing
+            // at all (0) when they do not fit. An empty title, or a buffer of no characters, is
+            // 0 with nothing written — Windows 2000's console capture.
+            let (buffer, size, unicode) = (data[0], data[1], data[3] != 0);
+            let title = &console.title[..console.title_length];
+            let length = if title.is_empty() || size == 0 {
+                0
+            } else if unicode {
+                title.len().min(size - 1)
+            } else if title.len() < size {
+                title.len()
+            } else {
+                0
+            };
+            if length != 0 {
+                put_text(client, buffer, &title[..length], unicode)?;
+                put_text(
+                    client,
+                    buffer.wrapping_add(length * if unicode { 2 } else { 1 }),
+                    &[0],
+                    unicode,
+                )?;
             }
-            data[2] = copied;
+            data[2] = length;
         }
         api::SET_TITLE => {
             // The title is replaced only once the new one is read whole.
-            let length = data[1].min(TITLE_BYTES);
-            let mut title = [0u8; TITLE_BYTES];
-            if length != 0 {
-                client.read(data[0], &mut title[..length])?;
-            }
+            let mut title = [0u16; TITLE_UNITS];
+            let length = get_text(client, data[0], data[1], data[2] != 0, &mut title)?;
             console.title = title;
             console.title_length = length;
         }
@@ -760,6 +1150,7 @@ mod tests {
             screen: &mut ScreenBuffer,
             buffer: usize,
             count: usize,
+            _logged: bool,
         ) -> Result<(), u32> {
             let range = self.range(buffer, count)?;
             self.shown.push((buffer, count));
@@ -778,7 +1169,14 @@ mod tests {
             self.memory[range].copy_from_slice(bytes);
             Ok(())
         }
+
+        fn input_wait_handle(&mut self) -> Result<u32, u32> {
+            Ok(WAIT_HANDLE)
+        }
     }
+
+    /// The handle the test client hands out for the input-wait event.
+    const WAIT_HANDLE: u32 = 0x44;
 
     /// The server's state and a client.
     struct Server {
@@ -829,7 +1227,14 @@ mod tests {
             [Ok(3), Ok(7), Ok(0xB)],
             "allocated in the lowest free slots"
         );
-        assert_eq!(opened, handles);
+        for handle in [3, 7, 0xB] {
+            assert_eq!(opened.kind(handle), handles.kind(handle), "{handle:#x}");
+        }
+        assert!([3, 7, 0xB].iter().all(|&handle| handles.logged(handle)));
+        assert!(
+            !opened.logged(7),
+            "a handle opened later is not a standard one"
+        );
         assert_eq!(handles.kind(3), Some(Kind::Input));
         assert_eq!(handles.kind(7), Some(Kind::Output));
         assert_eq!(handles.kind(0xB), Some(Kind::Output));
@@ -893,17 +1298,25 @@ mod tests {
     #[test]
     fn modes_code_pages_and_reads() {
         let mut server = Server::new();
-        assert_eq!(server.call(api::GET_MODE, &[3]).1[1], 0x17);
+        assert_eq!(server.call(api::GET_MODE, &[3]).1[1], 0xE7);
         assert_eq!(server.call(api::GET_MODE, &[7]).1[1], 0x3);
         assert_eq!(server.call(api::GET_MODE, &[0xF]).0, STATUS_INVALID_HANDLE);
         assert_eq!(server.call(api::GET_CP, &[0]).1[1], 437);
         assert_eq!(server.call(api::GET_CP, &[1]).1[1], 437);
         assert_eq!(
-            server.call(api::READ_CONSOLE, &[3, 0x40_0000, 8, 0xCC]),
-            (0, [3, 0x40_0000, 8, 0, 0, 0, 0, 0])
+            server
+                .call(api::READ_CONSOLE, &[3, 0x40_0000, 8, 0xCC, 1])
+                .0,
+            STATUS_PENDING,
+            "nothing typed: the read waits"
         );
         assert_eq!(
-            server.call(api::READ_CONSOLE, &[7, 0x40_0000, 8, 0]).0,
+            server.call(api::READ_CONSOLE, &[3, 0x40_0000, 0, 0xCC, 1]),
+            (0, [3, 0x40_0000, 0, 0, 1, 0, 0, 0]),
+            "no room: nothing, at once"
+        );
+        assert_eq!(
+            server.call(api::READ_CONSOLE, &[7, 0x40_0000, 8, 0, 1]).0,
             STATUS_INVALID_HANDLE
         );
         assert_eq!(server.call(api::FLUSH_INPUT_BUFFER, &[3]).0, 0);
@@ -1067,15 +1480,25 @@ mod tests {
                     left: 0,
                     top: 0,
                     right: W - 1,
-                    bottom: H - 1
+                    bottom: WINDOW_HEIGHT as i16 - 1
                 },
-                maximum_window_size: Coord { x: W, y: H },
+                maximum_window_size: Coord {
+                    x: W,
+                    y: WINDOW_HEIGHT as i16
+                },
             }
         );
+        assert_eq!((W, H), (80, 300), "Windows 2000's default buffer");
         assert_eq!(
             server.status(api::GET_SCREEN_BUFFER_INFO, &[3]),
             STATUS_INVALID_HANDLE
         );
+        // The window follows the cursor down the buffer.
+        server.console.screen.set_cursor(100, 0);
+        let (_, data) = server.call(api::GET_SCREEN_BUFFER_INFO, &[7]);
+        let words = [1, 2, 3, 4, 5, 6].map(|index| data[index] as u32);
+        let info = ConsoleScreenBufferInfo::from_words(words);
+        assert_eq!((info.window.top, info.window.bottom), (76, 100));
     }
 
     /// The dwords are the structure's bytes: a client copying them over the structure reads the
@@ -1265,41 +1688,97 @@ mod tests {
         );
     }
 
+    /// The UTF-16 units of `text`.
+    fn wide(text: &str) -> Vec<u16> {
+        text.encode_utf16().collect()
+    }
+
+    impl Server {
+        /// Put `text` in the client's memory at BASE + `at` as UTF-16 units.
+        fn poke_wide(&mut self, at: usize, text: &str) {
+            let bytes: Vec<u8> = wide(text)
+                .iter()
+                .flat_map(|unit| unit.to_le_bytes())
+                .collect();
+            self.poke(at, &bytes);
+        }
+
+        /// GET_TITLE into a buffer of `size` characters at BASE + 0x800 filled with '#' first: the
+        /// answer, and the buffer's first `size` + 2 characters' bytes.
+        fn title(&mut self, size: usize, unicode: bool) -> (usize, Vec<u8>) {
+            let width = if unicode { 2 } else { 1 };
+            self.poke(0x800, &std::vec![b'#'; (size + 2) * width]);
+            let (status, data) = self.call(
+                api::GET_TITLE,
+                &[BASE + 0x800, size, 0xCC, usize::from(unicode)],
+            );
+            assert_eq!(status, 0);
+            (
+                data[2],
+                self.client.memory[0x800..0x800 + (size + 2) * width].to_vec(),
+            )
+        }
+    }
+
+    /// The title, set and read back as Windows 2000's console capture shows: GetConsoleTitleW
+    /// truncates to the buffer with its terminator; GetConsoleTitleA answers the whole title or
+    /// nothing; an empty title, or a buffer of no characters, is 0 with nothing written.
     #[test]
     fn the_title_round_trips() {
         let mut server = Server::new();
-        assert_eq!(
-            server.call(api::GET_TITLE, &[BASE, 64, 0xCC]).1[2],
-            0,
-            "empty to start"
-        );
-        server.poke(0, b"First title");
-        assert_eq!(server.status(api::SET_TITLE, &[BASE, 11]), 0);
-        server.poke(0x100, b"Short");
-        assert_eq!(server.status(api::SET_TITLE, &[BASE + 0x100, 5]), 0);
-        assert_eq!(server.console.title(), b"Short", "a set replaces the title");
-        let (status, data) = server.call(api::GET_TITLE, &[BASE + 0x200, 64, 0]);
-        assert_eq!((status, data[2]), (0, 5));
-        assert_eq!(&server.client.memory[0x200..0x206], b"Short\0");
-        assert_eq!(
-            server.call(api::GET_TITLE, &[BASE + 0x300, 3, 0]).1[2],
-            3,
-            "the caller's size"
-        );
-        assert_eq!(&server.client.memory[0x300..0x304], b"Sho\0");
+        assert_eq!(server.title(64, true).0, 0, "empty to start");
+        server.poke_wide(0, "F2K title");
+        assert_eq!(server.status(api::SET_TITLE, &[BASE, 9, 1]), 0);
+        assert_eq!(server.console.title(), wide("F2K title"));
+        // A unit the fill left reads as two '#' bytes.
+        let units = |text: &str| -> Vec<u8> {
+            wide(text)
+                .iter()
+                .map(|&unit| {
+                    if unit == u16::from(b'#') {
+                        0x2323
+                    } else {
+                        unit
+                    }
+                })
+                .flat_map(|unit| unit.to_le_bytes())
+                .collect()
+        };
+        assert_eq!(server.title(10, true), (9, units("F2K title\0##")));
+        assert_eq!(server.title(9, true), (8, units("F2K titl\0##")));
+        assert_eq!(server.title(4, true), (3, units("F2K\0##")));
+        assert_eq!(server.title(0, true), (0, units("##")));
+        assert_eq!(server.title(10, false), (9, b"F2K title\0##".to_vec()));
+        assert_eq!(server.title(9, false), (0, b"###########".to_vec()));
+        assert_eq!(server.title(0, false), (0, b"##".to_vec()));
+        // An A title is the console's code page's: 0x82 is e acute.
+        server.poke(0x100, b"Caf\x82");
+        assert_eq!(server.status(api::SET_TITLE, &[BASE + 0x100, 4, 0]), 0);
+        assert_eq!(server.console.title(), wide("Caf\u{e9}"));
+        assert_eq!(server.title(5, false), (4, b"Caf\x82\0##".to_vec()));
+        // An empty title: nothing written either way.
+        assert_eq!(server.status(api::SET_TITLE, &[BASE, 0, 1]), 0);
+        assert_eq!(server.title(4, true), (0, units("######")));
+        assert_eq!(server.title(4, false), (0, b"######".to_vec()));
         // A buffer that cannot be read leaves the title; one that cannot be written fails.
+        server.poke_wide(0, "Short");
+        assert_eq!(server.status(api::SET_TITLE, &[BASE, 5, 1]), 0);
         assert_eq!(
-            server.status(api::SET_TITLE, &[0x8000_0000, 4]),
+            server.status(api::SET_TITLE, &[0x8000_0000, 4, 1]),
             0xC000_0005
         );
-        assert_eq!(server.console.title(), b"Short");
-        assert_eq!(server.status(api::GET_TITLE, &[0x1000, 8, 0]), 0xC000_00E8);
-        // A title past the console's room keeps its first bytes.
+        assert_eq!(server.console.title(), wide("Short"));
+        assert_eq!(
+            server.status(api::GET_TITLE, &[0x1000, 8, 0, 1]),
+            0xC000_00E8
+        );
+        // A title past the console's room keeps its first characters.
         server.poke(0, &[b'x'; MEMORY]);
-        assert_eq!(server.status(api::SET_TITLE, &[BASE, TITLE_BYTES + 100]), 0);
-        assert_eq!(server.console.title(), &[b'x'; TITLE_BYTES][..]);
-        assert_eq!(server.status(api::SET_TITLE, &[BASE, 0]), 0);
-        assert_eq!(server.console.title(), b"");
+        assert_eq!(
+            server.status(api::SET_TITLE, &[BASE, TITLE_UNITS + 100, 0]),
+            0
+        );
+        assert_eq!(server.console.title(), &[u16::from(b'x'); TITLE_UNITS][..]);
     }
 
     #[test]
@@ -1312,11 +1791,23 @@ mod tests {
             0x1,
             "every handle on the screen buffer"
         );
-        assert_eq!(mode(&mut server, 3), 0x17, "the input buffer's own");
+        assert_eq!(mode(&mut server, 3), 0xE7, "the input buffer's own");
         assert_eq!(server.status(api::SET_MODE, &[3, 0x3]), 0);
         assert_eq!(mode(&mut server, 3), 0x3);
+        // The insert and quick-edit bits read back with the extended flags (the capture's 0xA0).
+        assert_eq!(server.status(api::SET_MODE, &[3, 0x20]), 0);
+        assert_eq!(mode(&mut server, 3), 0xA0);
+        assert_eq!(server.status(api::SET_MODE, &[3, 0x41]), 0);
+        assert_eq!(mode(&mut server, 3), 0xC1);
         assert_eq!(server.status(api::SET_MODE, &[3, 0x1F]), 0);
-        for (handle, bad) in [(7, 0x4), (7, 0x8000_0003), (3, 0x20), (3, 0x4), (3, 0x5)] {
+        for (handle, bad) in [
+            (7, 0x4),
+            (7, 0x8000_0003),
+            (3, 0x8000),
+            (3, 0x100),
+            (3, 0x4),
+            (3, 0x5),
+        ] {
             assert_eq!(
                 server.status(api::SET_MODE, &[handle, bad]),
                 STATUS_INVALID_PARAMETER,
@@ -1392,9 +1883,14 @@ mod tests {
             (0, [3, 0, 0, 0, 0, 0, 0, 0])
         );
         assert_eq!(
-            server.call(api::READ_INPUT, &[3, BASE, 4, 0xCC]).1[3],
-            0,
-            "an empty buffer: none, and success"
+            server.call(api::READ_INPUT, &[3, BASE, 4, 0xCC]),
+            (STATUS_PENDING, [3, BASE, 4, 0, 0, 0, 0, 0]),
+            "an empty buffer: none, and the read waits"
+        );
+        assert_eq!(
+            server.call(api::PEEK_INPUT, &[3, BASE, 4, 0xCC]),
+            (0, [3, BASE, 4, 0, 0, 0, 0, 0]),
+            "a peek never waits"
         );
         // a, b, c: down and up each.
         server.keys(&[0x1E, 0x9E, 0x30, 0xB0, 0x2E, 0xAE]);
@@ -1485,5 +1981,261 @@ mod tests {
         let (_, data) = server.call(api::DUP_HANDLE, &[7, 0, 0, DUPLICATE_SAME_ACCESS as usize]);
         assert_eq!(server.status(api::SET_MODE, &[data[4], 0x2]), 0);
         assert_eq!(server.call(api::GET_MODE, &[7, 0]).1[1], 0x2);
+    }
+
+    /// Set 1 scan codes of the letters, as the console fixture queues them.
+    const SCAN_LETTERS: [u16; 26] = [
+        0x1E, 0x30, 0x2E, 0x20, 0x12, 0x21, 0x22, 0x23, 0x17, 0x24, 0x25, 0x26, 0x32, 0x31, 0x18,
+        0x19, 0x10, 0x13, 0x1F, 0x14, 0x16, 0x2F, 0x11, 0x2D, 0x15, 0x2C,
+    ];
+
+    impl Server {
+        /// Queue `text` as typed through WRITE_INPUT (W, or A with `unicode` false): a keydown and
+        /// a keyup per character, as the console fixture's queue makes them; the count
+        /// written.
+        fn queue(&mut self, text: &str, unicode: bool) -> usize {
+            let mut bytes = Vec::new();
+            for character in text.bytes() {
+                let (vk, scan) = match character {
+                    b'a'..=b'z' => (
+                        u16::from(character - 32),
+                        SCAN_LETTERS[usize::from(character - b'a')],
+                    ),
+                    b' ' => (0x20, 0x39),
+                    _ => (0x0D, 0x1C),
+                };
+                for down in [1u32, 0] {
+                    let record = InputRecord::key(KeyEventRecord {
+                        key_down: down,
+                        repeat_count: 1,
+                        virtual_key_code: vk,
+                        virtual_scan_code: scan,
+                        char: u16::from(character),
+                        control_key_state: 0,
+                    });
+                    bytes.extend(record.bytes());
+                }
+            }
+            self.poke(0x400, &bytes);
+            let count = bytes.len() / INPUT_RECORD_BYTES;
+            let (status, data) = self.call(
+                api::WRITE_INPUT,
+                &[3, BASE + 0x400, count, 0xCC, usize::from(unicode)],
+            );
+            assert_eq!(status, 0);
+            data[3]
+        }
+
+        /// READ_CONSOLE of `count` characters into BASE + 0xC00: the status, and the text read.
+        fn read(&mut self, count: usize, unicode: bool) -> (u32, Vec<u16>) {
+            let (status, data) = self.call(
+                api::READ_CONSOLE,
+                &[3, BASE + 0xC00, count, 0xCC, usize::from(unicode)],
+            );
+            if status != 0 {
+                return (status, Vec::new());
+            }
+            let read = data[3];
+            let memory = &self.client.memory[0xC00..];
+            let text = if unicode {
+                (0..read)
+                    .map(|at| u16::from_le_bytes([memory[2 * at], memory[2 * at + 1]]))
+                    .collect()
+            } else {
+                memory[..read].iter().map(|&byte| u16::from(byte)).collect()
+            };
+            (status, text)
+        }
+
+        fn events(&mut self) -> usize {
+            self.call(api::GET_INPUT_COUNT, &[3, 0]).1[1]
+        }
+    }
+
+    /// A key's keydown and keyup records carrying `char`.
+    fn press(vk: u16, scan: u16, char: u16) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        for down in [1u32, 0] {
+            let record = InputRecord::key(KeyEventRecord {
+                key_down: down,
+                repeat_count: 1,
+                virtual_key_code: vk,
+                virtual_scan_code: scan,
+                char,
+                control_key_state: 0,
+            });
+            bytes.extend(record.bytes());
+        }
+        bytes
+    }
+
+    /// Line-mode reads over queued input, echo off, as Windows 2000's console capture shows them:
+    /// a line and its CR LF, the Enter's keyup left; a buffer shorter than the line, the rest on
+    /// the next read before any new input.
+    #[test]
+    fn a_line_mode_read_takes_a_line() {
+        for unicode in [true, false] {
+            let mut server = Server::new();
+            assert_eq!(server.status(api::SET_MODE, &[3, 0x3]), 0);
+            assert_eq!(server.queue("dir abc\r", unicode), 16);
+            assert_eq!(server.events(), 16);
+            assert_eq!(server.read(64, unicode), (0, wide("dir abc\r\n")));
+            assert_eq!(server.events(), 1, "the Enter's keyup");
+            assert_eq!(server.status(api::FLUSH_INPUT_BUFFER, &[3]), 0);
+            assert_eq!(server.queue("abcdefgh\r", unicode), 18);
+            assert_eq!(server.read(4, unicode), (0, wide("abcd")));
+            assert_eq!(server.queue("zz\r", unicode), 6);
+            assert_eq!(server.read(64, unicode), (0, wide("efgh\r\n")));
+            assert_eq!(server.events(), 7);
+            assert_eq!(server.read(64, unicode), (0, wide("zz\r\n")));
+            assert_eq!(server.console.screen.cursor(), (0, 0), "nothing echoed");
+        }
+    }
+
+    /// A line without its Enter waits, what was typed kept; a backspace takes back a character;
+    /// with echo on, the keys show on the screen as they are taken.
+    #[test]
+    fn a_line_waits_for_its_enter_and_echoes() {
+        let mut server = Server::new();
+        assert_eq!(server.queue("ab", true), 4);
+        assert_eq!(server.read(64, true).0, STATUS_PENDING);
+        assert_eq!(server.events(), 0);
+        assert_eq!(server.console.line().pending(), &wide("ab")[..]);
+        assert!(!server.console.line().is_complete());
+        assert_eq!(
+            &server.console.screen.row_text(0)[..3],
+            b"ab ",
+            "echoed (a fresh console echoes)"
+        );
+        server.poke(0x400, &press(0x08, 0x0E, 0x08));
+        assert_eq!(
+            server.call(api::WRITE_INPUT, &[3, BASE + 0x400, 2, 0, 1]).1[3],
+            2
+        );
+        server.queue("c\r", true);
+        assert_eq!(server.read(64, true), (0, wide("ac\r\n")));
+        assert_eq!(&server.console.screen.row_text(0)[..3], b"ac ");
+        assert_eq!(
+            server.console.screen.cursor(),
+            (1, 0),
+            "the Enter echoed as CR LF"
+        );
+    }
+
+    /// A raw read, as Windows 2000's console capture shows it: the first character, a NUL, then
+    /// the following ones, counted without the last; a one-character read leaves the rest.
+    #[test]
+    fn a_raw_read_takes_what_was_typed() {
+        for unicode in [true, false] {
+            let mut server = Server::new();
+            assert_eq!(server.status(api::SET_MODE, &[3, 0x1]), 0);
+            assert_eq!(server.read(64, unicode).0, STATUS_PENDING, "nothing typed");
+            assert_eq!(server.queue("xyz\r", unicode), 8);
+            assert_eq!(
+                server.read(64, unicode),
+                (0, std::vec![0x78, 0, 0x79, 0x7A])
+            );
+            assert_eq!(server.events(), 0);
+            server.queue("pq", unicode);
+            assert_eq!(server.read(1, unicode), (0, wide("p")));
+            assert_eq!(server.events(), 3);
+            assert_eq!(
+                server.read(2, unicode),
+                (0, wide("q")),
+                "q, its NUL: one counted"
+            );
+            assert_eq!(server.events(), 0, "q's keyup taken, the room unused");
+        }
+    }
+
+    /// WRITE_INPUT keeps the records as written (an A call's character converted from the
+    /// console's code page), as many as fit; an A peek converts back.
+    #[test]
+    fn written_input_records_are_kept_as_written() {
+        let mut server = Server::new();
+        let record = InputRecord::key(KeyEventRecord {
+            key_down: 1,
+            repeat_count: 1,
+            virtual_key_code: 0x45,
+            virtual_scan_code: 0x12,
+            char: 0x82,
+            control_key_state: 0x10,
+        });
+        server.poke(0, &record.bytes());
+        server.poke(INPUT_RECORD_BYTES, &record.bytes());
+        assert_eq!(server.call(api::WRITE_INPUT, &[3, BASE, 2, 0, 0]).1[3], 2);
+        assert_eq!(
+            server.console.input.get(0).unwrap().key.char,
+            0xE9,
+            "e acute"
+        );
+        assert_eq!(
+            server.console.input.get(1),
+            server.console.input.get(0),
+            "no folding"
+        );
+        assert_eq!(
+            server.call(api::PEEK_INPUT, &[3, BASE + 0x100, 1, 0, 0]).1[3],
+            1
+        );
+        assert_eq!(&server.client.memory[0x100 + 14..0x100 + 16], &[0x82, 0]);
+        assert_eq!(
+            server.call(api::PEEK_INPUT, &[3, BASE + 0x100, 1, 0, 1]).1[3],
+            1
+        );
+        assert_eq!(&server.client.memory[0x100 + 14..0x100 + 16], &[0xE9, 0]);
+        // A full buffer takes what fits.
+        for _ in 0..200 {
+            server.call(api::WRITE_INPUT, &[3, BASE, 1, 0, 1]);
+        }
+        assert_eq!(server.events(), input::INPUT_BUFFER_RECORDS);
+        assert_eq!(
+            server.call(api::WRITE_INPUT, &[3, BASE, 1, 0xCC, 1]),
+            (0, [3, BASE, 1, 0, 1, 0, 0, 0])
+        );
+        assert_eq!(
+            server.status(api::WRITE_INPUT, &[7, BASE, 1, 0, 1]),
+            STATUS_INVALID_HANDLE
+        );
+        assert_eq!(server.status(api::FLUSH_INPUT_BUFFER, &[3]), 0);
+        assert_eq!(
+            server.status(api::WRITE_INPUT, &[3, 0x8000_0000, 1, 0, 1]),
+            0xC000_0005
+        );
+    }
+
+    /// CONIN$ and CONOUT$ open new handles on the input and screen buffers; the input-wait handle
+    /// is the client's.
+    #[test]
+    fn the_console_opens_by_name_and_hands_its_wait_handle() {
+        let mut server = Server::new();
+        let (status, data) = server.call(api::OPEN_CONSOLE, &[0, 0xC000_0000, 0, 3, 0]);
+        assert_eq!((status, data[4]), (0, 0xF));
+        assert_eq!(server.handles.kind(0xF), Some(Kind::Input));
+        assert_eq!(
+            server.call(api::OPEN_CONSOLE, &[1, 0xC000_0000, 0, 3, 0]).1[4],
+            0x13
+        );
+        assert_eq!(server.handles.kind(0x13), Some(Kind::Output));
+        // Only the standard handles, and their duplicates, write to the serial line too.
+        assert!(!server.handles.logged(0x13));
+        assert!(server.handles.logged(7) && server.handles.logged(0xB));
+        let duplicate = server
+            .handles
+            .duplicate(7, 0, DUPLICATE_SAME_ACCESS)
+            .unwrap();
+        assert!(server.handles.logged(duplicate));
+        let duplicate = server
+            .handles
+            .duplicate(0x13, 0, DUPLICATE_SAME_ACCESS)
+            .unwrap();
+        assert!(!server.handles.logged(duplicate));
+        assert_eq!(
+            server.call(api::GET_INPUT_WAIT_HANDLE, &[0]),
+            (0, [WAIT_HANDLE as usize, 0, 0, 0, 0, 0, 0, 0])
+        );
+        assert!(!server.console.input_waiting());
+        server.queue("a", true);
+        assert!(server.console.input_waiting());
     }
 }

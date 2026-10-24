@@ -449,104 +449,162 @@ ordinal = 786
 name = "FlushConsoleInputBuffer"
 group = "console"
 args = ["handle hConsoleInput"]
-impl = { stub = "not yet implemented" }
+impl = { native = "FlushConsoleInputBuffer" }
 ordinal = 189
-fails = "FALSE"
 
 [[export]]
 name = "GetConsoleScreenBufferInfo"
 group = "console"
 args = ["handle hConsoleOutput", "ptr lpConsoleScreenBufferInfo"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetConsoleScreenBufferInfo" }
 ordinal = 261
-fails = "FALSE"
 
 [[export]]
 name = "GetConsoleTitleA"
 group = "console"
 args = ["ptr lpConsoleTitle", "u32 nSize"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetConsoleTitleA" }
 ordinal = 262
-fails = "0"
 
 [[export]]
 name = "GetConsoleTitleW"
 group = "console"
 args = ["ptr lpConsoleTitle", "u32 nSize"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetConsoleTitleW" }
 ordinal = 263
-fails = "0"
 
 [[export]]
 name = "GetNumberOfConsoleInputEvents"
 group = "console"
 args = ["handle hConsoleInput", "ptr<u32> lpNumberOfEvents"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetNumberOfConsoleInputEvents" }
 ordinal = 329
-fails = "FALSE"
 
 [[export]]
 name = "ReadConsoleA"
 group = "console"
 args = ["handle hConsoleInput", "ptr lpBuffer", "u32 nNumberOfCharsToRead", "ptr<u32> lpNumberOfCharsRead", "ptr lpReserved"]
-impl = { stub = "not yet implemented" }
+impl = { native = "ReadConsoleA" }
 ordinal = 566
-fails = "FALSE"
 
 [[export]]
 name = "ReadConsoleW"
 group = "console"
 args = ["handle hConsoleInput", "ptr lpBuffer", "u32 nNumberOfCharsToRead", "ptr<u32> lpNumberOfCharsRead", "ptr lpReserved"]
-impl = { stub = "not yet implemented" }
+impl = { native = "ReadConsoleW" }
 ordinal = 576
-fails = "FALSE"
 
 [[export]]
 name = "SetConsoleCtrlHandler"
 group = "console"
 args = ["u32 HandlerRoutine", "bool Add"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SetConsoleCtrlHandler" }
 ordinal = 625
-fails = "FALSE"
 
 [[export]]
 name = "SetConsoleMode"
 group = "console"
 args = ["handle hConsoleHandle", "u32 dwMode"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SetConsoleMode" }
 ordinal = 640
-fails = "FALSE"
 
 [[export]]
 name = "SetConsoleTitleA"
 group = "console"
 args = ["strA lpConsoleTitle"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SetConsoleTitleA" }
 ordinal = 649
-fails = "FALSE"
 
 [[export]]
 name = "SetConsoleTitleW"
 group = "console"
 args = ["strW lpConsoleTitle"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SetConsoleTitleW" }
 ordinal = 650
-fails = "FALSE"
 
 [[export]]
 name = "WriteConsoleInputA"
 group = "console"
 args = ["handle hConsoleInput", "ptr lpBuffer", "u32 nLength", "ptr<u32> lpNumberOfEventsWritten"]
-impl = { stub = "not yet implemented" }
+impl = { native = "WriteConsoleInputA" }
 ordinal = 777
-fails = "FALSE"
 
 [[export]]
 name = "WriteConsoleInputW"
 group = "console"
 args = ["handle hConsoleInput", "ptr lpBuffer", "u32 nLength", "ptr<u32> lpNumberOfEventsWritten"]
-impl = { stub = "not yet implemented" }
+impl = { native = "WriteConsoleInputW" }
 ordinal = 780
+
+[[export]]
+name = "PeekConsoleInputA"
+group = "console"
+args = ["handle hConsoleInput", "ptr lpBuffer", "u32 nLength", "ptr<u32> lpNumberOfEventsRead"]
+impl = { native = "PeekConsoleInputA" }
+ordinal = 543
+note = "msvcrt's _kbhit reads the waiting key events through it"
+
+[[export]]
+name = "PeekConsoleInputW"
+group = "console"
+args = ["handle hConsoleInput", "ptr lpBuffer", "u32 nLength", "ptr<u32> lpNumberOfEventsRead"]
+impl = { native = "PeekConsoleInputW" }
+ordinal = 544
+
+[[export]]
+name = "ReadConsoleInputA"
+group = "console"
+args = ["handle hConsoleInput", "ptr lpBuffer", "u32 nLength", "ptr<u32> lpNumberOfEventsRead"]
+impl = { native = "ReadConsoleInputA" }
+ordinal = 567
+note = "msvcrt's _getch takes its key events through it; it waits while the input buffer is empty"
+
+[[export]]
+name = "ReadConsoleInputW"
+group = "console"
+args = ["handle hConsoleInput", "ptr lpBuffer", "u32 nLength", "ptr<u32> lpNumberOfEventsRead"]
+impl = { native = "ReadConsoleInputW" }
+ordinal = 570
+note = "it waits while the input buffer is empty"
+
+[[export]]
+name = "SetConsoleCursorPosition"
+group = "console"
+args = ["handle hConsoleOutput", "u32 dwCursorPosition"]
+impl = { stub = "not yet implemented" }
+ordinal = 629
+fails = "FALSE"
+
+[[export]]
+name = "SetConsoleTextAttribute"
+group = "console"
+args = ["handle hConsoleOutput", "u32 wAttributes"]
+impl = { stub = "not yet implemented" }
+ordinal = 648
+fails = "FALSE"
+
+[[export]]
+name = "FillConsoleOutputAttribute"
+group = "console"
+args = ["handle hConsoleOutput", "u32 wAttribute", "u32 nLength", "u32 dwWriteCoord", "ptr<u32> lpNumberOfAttrsWritten"]
+impl = { stub = "not yet implemented" }
+ordinal = 159
+fails = "FALSE"
+
+[[export]]
+name = "FillConsoleOutputCharacterW"
+group = "console"
+args = ["handle hConsoleOutput", "u32 cCharacter", "u32 nLength", "u32 dwWriteCoord", "ptr<u32> lpNumberOfCharsWritten"]
+impl = { stub = "not yet implemented" }
+ordinal = 161
+fails = "FALSE"
+
+[[export]]
+name = "ScrollConsoleScreenBufferW"
+group = "console"
+args = ["handle hConsoleOutput", "ptr lpScrollRectangle", "ptr lpClipRectangle", "u32 dwDestinationOrigin", "ptr lpFill"]
+impl = { stub = "not yet implemented" }
+ordinal = 607
 fails = "FALSE"
 
 # --- environment ------------------------------------------------------------------------------------
@@ -1528,7 +1586,7 @@ group = "files"
 args = ["handle hFile", "ptr lpBuffer", "u32 nNumberOfBytesToRead", "ptr lpNumberOfBytesRead", "ptr lpOverlapped"]
 impl = { native = "ReadFile" }
 ordinal = 578
-note = "a console handle's read is the console server's (ReadConsoleA): the input handle reads nothing and succeeds (F2K's console has no keyboard)"
+note = "a console handle's read is the console server's (ReadConsoleA): a line in line mode, as the console's input mode reads it"
 
 [[export]]
 name = "CreateFileMappingA"
@@ -2553,16 +2611,8 @@ name = "FileTimeToDosDateTime"
 ordinal = 156
 
 [[export]]
-name = "FillConsoleOutputAttribute"
-ordinal = 159
-
-[[export]]
 name = "FillConsoleOutputCharacterA"
 ordinal = 160
-
-[[export]]
-name = "FillConsoleOutputCharacterW"
-ordinal = 161
 
 [[export]]
 name = "FindAtomA"
@@ -3518,14 +3568,6 @@ name = "OutputDebugStringW"
 ordinal = 542
 
 [[export]]
-name = "PeekConsoleInputA"
-ordinal = 543
-
-[[export]]
-name = "PeekConsoleInputW"
-ordinal = 544
-
-[[export]]
 name = "PeekNamedPipe"
 ordinal = 545
 
@@ -3590,20 +3632,12 @@ name = "QueueUserWorkItem"
 ordinal = 564
 
 [[export]]
-name = "ReadConsoleInputA"
-ordinal = 567
-
-[[export]]
 name = "ReadConsoleInputExA"
 ordinal = 568
 
 [[export]]
 name = "ReadConsoleInputExW"
 ordinal = 569
-
-[[export]]
-name = "ReadConsoleInputW"
-ordinal = 570
 
 [[export]]
 name = "ReadConsoleOutputA"
@@ -3714,10 +3748,6 @@ name = "ScrollConsoleScreenBufferA"
 ordinal = 606
 
 [[export]]
-name = "ScrollConsoleScreenBufferW"
-ordinal = 607
-
-[[export]]
 name = "SetCPGlobal"
 ordinal = 610
 
@@ -3790,10 +3820,6 @@ name = "SetConsoleCursorMode"
 ordinal = 628
 
 [[export]]
-name = "SetConsoleCursorPosition"
-ordinal = 629
-
-[[export]]
 name = "SetConsoleDisplayMode"
 ordinal = 630
 
@@ -3860,10 +3886,6 @@ ordinal = 646
 [[export]]
 name = "SetConsoleScreenBufferSize"
 ordinal = 647
-
-[[export]]
-name = "SetConsoleTextAttribute"
-ordinal = 648
 
 [[export]]
 name = "SetConsoleWindowInfo"

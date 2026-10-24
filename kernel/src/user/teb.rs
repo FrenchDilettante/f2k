@@ -108,7 +108,9 @@ pub mod peb_offset {
     // sections): the heap-handle array (0x1E8), kernel32's top-level filter (0x800, above), the TLS
     // bitmaps' headers (0x810, 0x818), the heap list's lock (0x840), the PEB lock (0x860),
     // kernel32's `\BaseNamedObjects` handle (0x880), its narrow command line and startup
-    // information (0x8A0, 0x8A4: pointers to blocks on the process heap), its handle table for the
+    // information (0x8A0, 0x8A4: pointers to blocks on the process heap), its console's
+    // input-wait handle (0x8C0) and control handlers (0x8C4, 0x8C8, 0x8CC: a block on the process
+    // heap, the handlers it holds, its room), its handle table for the
     // movable Local and Global blocks (0x8E0, an RTL_HANDLE_TABLE), the loader lock (0x900),
     // the loader's own state (0x920, 0x924: the DLLs owed calls, the initialization under way).
     // The page starts zeroed; the kernel writes only the bitmaps' headers (ntdll makes the locks).
