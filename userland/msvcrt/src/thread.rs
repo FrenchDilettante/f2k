@@ -24,8 +24,17 @@ pub struct ThreadData {
 }
 
 /// The TLS slot holding each thread's [`ThreadData`] (TLS_OUT_OF_INDEXES before the DLL's
-/// initialization).
-static SLOT: Global<u32> = Global::new(u32::MAX);
+/// initialization). Host tests never run the DLL's attach and run on many threads at once: they
+/// start with the slot the host TlsAlloc stand-in hands out, so each test thread has its own data,
+/// as each thread does on target (the shared [`FALLBACK`] would let one test's errno leak into
+/// another's).
+static SLOT: Global<u32> = Global::new(if cfg!(test) { HOST_SLOT } else { u32::MAX });
+
+/// The slot the host TlsAlloc stand-in answers (`imports`' host stand-ins).
+#[cfg(test)]
+const HOST_SLOT: u32 = 1;
+#[cfg(not(test))]
+const HOST_SLOT: u32 = u32::MAX;
 
 /// A thread's data while the slot or the heap fails it: errno and the seed still have a home.
 static FALLBACK: Global<ThreadData> = Global::new(ThreadData {
