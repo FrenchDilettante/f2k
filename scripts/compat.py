@@ -9,12 +9,15 @@ scenario's `/// Pins:` doc lines (userland/kernel32/src/scenarios). An export's 
 its pinning tests' last results:
 
   unimplemented  its spec gives it no implementation                                    grey
-  stubbed        its spec stubs it (impl.stub: it loads, and fails, logged), whatever   grey, a teal
-                 its tests: not implemented yet, but in the works                       tint
+  stubbed        its spec stubs it (impl.stub: it loads, and fails, logged), whatever   darker grey, !
+                 its tests: not implemented yet, but in the works
   passing        implemented; a pinning test passed and none failed                     green
-  failing        implemented; a pinning test failed                                     red
-  uncovered      implemented; no pinning test passed: none pins it, or every one that   yellow
-                 does is pending (an expected failure), skipped, or did not run
+  failing        implemented; a pinning test failed                                     red, ×
+  uncovered      implemented; no pinning test passed or failed: none pins it, or every  yellow
+                 one that does is pending, skipped, or did not run
+
+Whatever its status, an export a corpus test pins while pytest does not exercise it (the test is
+pending, an expected failure, or skipped) is in progress: its square has a border.
 
 A forwarder (impl.forward) counts its target's pinning tests as its own: its target's code is what
 runs. F2K-internal entry points (`internal = true`) are not Windows exports: the report leaves them
@@ -82,6 +85,8 @@ SCENARIO = re.compile(r"((?:[ \t]*///.*\n)*)#\[test\]\n((?:#\[[^\]]*\]\n)*)(?:pu
 # closes a gap (B2, A4b).
 GAP_ID = re.compile(r"^((?:GAP-)?[A-Z0-9]+-\d+[a-z]?|[A-C]\d+[ab]?):")
 STATUSES = ("passing", "failing", "uncovered", "stubbed", "unimplemented")
+# The corpus outcomes of a test pytest does not exercise: an expected failure (pending) or a skip.
+IN_PROGRESS = ("xfailed", "skipped")
 
 
 @dataclass
@@ -91,7 +96,8 @@ class Export:
     group: str | None
     implemented: bool
     spec: dict
-    # The tests pinning it: (label, outcome), outcome None when the test has no result.
+    # The tests pinning it: (label, outcome, whether it is a corpus block), outcome None when the
+    # test has no result.
     evidence: list = field(default_factory=list)
 
     @property
@@ -108,12 +114,17 @@ class Export:
             return "stubbed"
         if not self.implemented:
             return "unimplemented"
-        outcomes = [outcome for _, outcome in self.evidence]
+        outcomes = [outcome for _, outcome, _ in self.evidence]
         if "failed" in outcomes:
             return "failing"
         if "passed" in outcomes:
             return "passing"
         return "uncovered"
+
+    @property
+    def in_progress(self) -> bool:
+        """A corpus test pins it that pytest does not exercise (pending or skipped)."""
+        return any(corpus and outcome in IN_PROGRESS for _, outcome, corpus in self.evidence)
 
 
 @dataclass
@@ -349,11 +360,11 @@ def gather(specs, fixtures, scenarios, pytest_run, scenario_run):
     scenario_outcomes = (scenario_run or {}).get("tests", {})
     missing = {"blocks": [], "scenarios": []}
 
-    def attach(pin, label, outcome):
+    def attach(pin, label, outcome, corpus):
         dll, _, name = pin.partition(".")
         export = specs.get(dll, ({}, {}))[1].get(name)
         if export is not None:
-            export.evidence.append((label, outcome))
+            export.evidence.append((label, outcome, corpus))
 
     for fixture, (declared, blocks) in fixtures.items():
         if blocks is None:
@@ -366,13 +377,13 @@ def gather(specs, fixtures, scenarios, pytest_run, scenario_run):
             for name in names if section == "*" else [section]:
                 outcome = worst(by_block.get(f"{fixture}/{name}", []))
                 for pin in pins:
-                    attach(pin, f"{fixture} {name}", outcome)
+                    attach(pin, f"{fixture} {name}", outcome, True)
     for scenario in scenarios.values():
         outcome = scenario_outcomes.get(scenario.name)
         if outcome is None:
             missing["scenarios"].append(scenario.name)
         for pin in scenario.pins:
-            attach(pin, f"scenario {scenario.name}", outcome)
+            attach(pin, f"scenario {scenario.name}", outcome, False)
     # A system service's Zw alias runs the service's stub: the service's tests pin it too.
     for _, exports in specs.values():
         for export in exports.values():
@@ -387,8 +398,8 @@ def gather(specs, fixtures, scenarios, pytest_run, scenario_run):
             module, _, name = target.partition(".")
             forwarded = specs.get(module.lower(), ({}, {}))[1].get(name)
             if forwarded is not None:
-                export.evidence += [(f"{label} (via {forwarded.pin})", outcome)
-                                    for label, outcome in forwarded.evidence]
+                export.evidence += [(f"{label} (via {forwarded.pin})", outcome, corpus)
+                                    for label, outcome, corpus in forwarded.evidence]
     return missing
 
 
@@ -419,7 +430,7 @@ def summary(specs, missing, pytest_run, scenario_run):
         if failing:
             print(f"\nFailing ({len(failing)}):")
             for export in failing:
-                tests = [label for label, outcome in export.evidence if outcome == "failed"]
+                tests = [label for label, outcome, _ in export.evidence if outcome == "failed"]
                 print(f"  {export.name}: {', '.join(tests)}")
         print()
     for what, run, gaps in (("on-target suite", pytest_run, missing["blocks"]),
@@ -446,16 +457,17 @@ STYLE = """
 :root {
   --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514c; --ink-3: #7a7970; --rule: #e1e0d9;
   --tile: #f0efea;
-  --passing: #0ca30c; --failing: #d03b3b; --uncovered: #fab219; --unimplemented: #d9d8d0;
-  --stubbed: #cfe3df;
-  --mark-on-failing: #ffffff; --mark-on-uncovered: #0b0b0b; --tip: #ffffff;
+  --passing: #0ca30c; --failing: #d03b3b; --uncovered: #fab219;
+  --unimplemented: #d9d8d0; --stubbed: #bdbcb3;
+  --mark-on-failing: #ffffff; --mark-on-stubbed: #0b0b0b; --tip: #ffffff;
   --ring: rgba(11,11,11,0.10);
 }
 @media (prefers-color-scheme: dark) {
   :root {
     --surface: #1a1a19; --ink: #f2f2ef; --ink-2: #b9b8b0; --ink-3: #8c8b83; --rule: #2c2c2a;
     --tile: #222220;
-    --unimplemented: #3a3a37; --stubbed: #33504b; --tip: #242422; --ring: rgba(255,255,255,0.10);
+    --unimplemented: #3a3a37; --stubbed: #55544f; --mark-on-stubbed: #f2f2ef; --tip: #242422;
+    --ring: rgba(255,255,255,0.10);
   }
 }
 * { box-sizing: border-box; }
@@ -480,8 +492,8 @@ input[type=search] { font: inherit; padding: 4px 8px; min-width: 220px;
   justify-content: center; font: 700 10px/1 system-ui, sans-serif; box-shadow: inset 0 0 0 1px var(--ring); }
 .key.passing { background: var(--passing); }
 .key.failing { background: var(--failing); color: var(--mark-on-failing); }
-.key.uncovered { background: var(--uncovered); color: var(--mark-on-uncovered); }
-.key.stubbed { background: var(--unimplemented); box-shadow: inset 0 0 0 1.5px var(--ink-2); }
+.key.uncovered { background: var(--uncovered); }
+.key.stubbed { background: var(--stubbed); color: var(--mark-on-stubbed); }
 .key.unimplemented { background: var(--unimplemented); }
 #map { display: block; width: 100%; height: 100%; }
 #map .tile { fill: var(--tile); stroke: var(--unimplemented); stroke-width: 2; }
@@ -491,12 +503,13 @@ input[type=search] { font: inherit; padding: 4px 8px; min-width: 220px;
 #map .passing { fill: var(--passing); }
 #map .failing { fill: var(--failing); }
 #map .uncovered { fill: var(--uncovered); }
-#map .stubbed { fill: var(--unimplemented); stroke: var(--ink-2); stroke-width: var(--stub-stroke, 1.5); }
+#map .stubbed { fill: var(--stubbed); }
 #map .unimplemented { fill: var(--unimplemented); }
+#map rect.in-progress { stroke: var(--ink-2); stroke-width: var(--border-stroke, 1.5); }
 #map .glyph { font-weight: 700; font-family: system-ui, sans-serif; text-anchor: middle; dominant-baseline: central;
   pointer-events: none; }
 #map .glyph.failing { fill: var(--mark-on-failing); }
-#map .glyph.uncovered { fill: var(--mark-on-uncovered); }
+#map .glyph.stubbed { fill: var(--mark-on-stubbed); }
 #map .dim { opacity: 0.15; }
 .scroll { overflow-x: auto; }
 table.summary { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
@@ -624,7 +637,7 @@ function draw() {
   const {rects, pitch, size, columns} = fit(items, W, H);
   map.replaceChildren();
   map.setAttribute('viewBox', `0 0 ${W} ${H}`);
-  map.style.setProperty('--stub-stroke', size >= 8 ? 1.5 : 1);
+  map.style.setProperty('--border-stroke', size >= 8 ? 1.5 : 1);
   items.forEach((item, k) => {
     const r = rects[k], dll = item.dll, across = columns(r);
     node('rect', {class: 'tile', x: r.x, y: r.y, width: r.w, height: r.h}, map);
@@ -636,7 +649,7 @@ function draw() {
     node('title', {}, label).textContent = dll.summary;
     dll.exports.forEach((x, n) => {
       const cx = r.x + PAD + (n % across) * pitch, cy = r.y + PAD + LABEL + Math.floor(n / across) * pitch;
-      x.el = node('rect', {class: 'sq ' + x.s, x: cx, y: cy, width: size, height: size,
+      x.el = node('rect', {class: 'sq ' + x.s + (x.w ? ' in-progress' : ''), x: cx, y: cy, width: size, height: size,
                            rx: Math.min(2, size / 4), 'data-index': x.index}, map);
       const glyph = DATA.marks[x.s];
       x.glyph = null;
@@ -652,7 +665,8 @@ function draw() {
 
 function show(x, cx, cy) {
   const d = x.i;
-  let h = '<b>' + esc(d.pin) + '</b><span class="st">' + esc(LABELS[x.s]) + '</span>';
+  let h = '<b>' + esc(d.pin) + '</b><span class="st">' + esc(LABELS[x.s])
+    + (x.w ? ' · in progress' : '') + '</span>';
   const facts = [d.ordinal && 'ordinal ' + d.ordinal, d.data && 'data', d.group && 'group: ' + d.group,
                  d.impl && 'impl: ' + d.impl, d.version && 'since NT ' + d.version].filter(Boolean);
   if (facts.length) h += '<div class="st">' + esc(facts.join(' · ')) + '</div>';
@@ -753,8 +767,11 @@ def render(specs, missing, pytest_run, scenario_run):
                 "version": export.spec.get("version"), "note": export.spec.get("note"),
                 "implemented": export.implemented, "tests": tally(export.evidence),
             }
-            entries.append({"n": export.name, "s": export.status, "index": index,
-                            "i": {k: v for k, v in info.items() if v}})
+            entry = {"n": export.name, "s": export.status, "index": index,
+                     "i": {k: v for k, v in info.items() if v}}
+            if export.in_progress:
+                entry["w"] = 1
+            entries.append(entry)
             index += 1
         summary = f"{dll}.dll: {len(ordered)} exports · " + " · ".join(
             f"{counts[s]} {LABELS[s].lower()}" for s in STATUSES if counts[s])
@@ -766,7 +783,7 @@ def render(specs, missing, pytest_run, scenario_run):
             attention.append(f"<details><summary>{e(dll)}.dll: {len(failing)} failing or uncovered</summary>"
                              "<table><tr><th>Export</th><th>Status</th><th>Pinning tests</th></tr>")
             for export in failing:
-                tests = ", ".join(f"{label} ({OUTCOME_WORDS[outcome]})" for label, outcome in export.evidence)
+                tests = ", ".join(f"{label} ({OUTCOME_WORDS[outcome]})" for label, outcome, _ in export.evidence)
                 attention.append(f"<tr><td>{e(export.name)}</td><td>{LABELS[export.status]}</td>"
                                  f"<td>{e(tests) or 'none'}</td></tr>")
             attention.append("</table></details>")
@@ -804,7 +821,7 @@ def tally(evidence):
     if not evidence:
         return None
     counts = {}
-    for _, outcome in evidence:
+    for _, outcome, _ in evidence:
         counts[OUTCOME_WORDS[outcome]] = counts.get(OUTCOME_WORDS[outcome], 0) + 1
     order = ["FAILED", "passed", "pending", "skipped", "not run"]
     words = ", ".join(f"{counts[word]} {word}" for word in order if word in counts)
@@ -812,8 +829,8 @@ def tally(evidence):
 
 
 def mark(status):
-    """The glyph a square carries beside its colour (the problem states only)."""
-    return {"failing": "×", "uncovered": "!"}.get(status, "")
+    """The glyph a square carries beside its colour: a failure, or a stub."""
+    return {"failing": "×", "stubbed": "!"}.get(status, "")
 
 
 def main():

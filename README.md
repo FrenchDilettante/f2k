@@ -114,9 +114,11 @@ fixture's `fixture.toml`.
 The tests declare which exports they pin, as `dll.Export`: a corpus fixture in its
 `fixture.toml`'s `[pins]` (per section; `"*"` for every block), a host scenario in its doc
 comment's `/// Pins:` lines. `scripts/compat.py` derives each export's status from its pinning
-tests' last results: unimplemented (grey), implemented and passing (green), implemented with a
-failing test (red), implemented with no passing test (yellow: none pins it, or every test that
-does is pending, skipped or did not run), or stubbed (grey with a teal tint). Every
+tests' last results: unimplemented (grey), stubbed (darker grey, marked !), implemented and
+passing (green), implemented with a failing test (red, marked ×), or implemented with no passing
+or failing test (yellow: none pins it, or every test that does is pending, skipped or did not
+run). A corpus test
+that is pending or skipped puts a border on every export it pins: work in progress. Every
 `make test` keeps its results
 (`target/test-results/pytest.json`); `make compat-report` runs the host scenarios and draws the
 report from both, `target/compat/report.html`: a treemap of every DLL, one square per export. `--check` checks the
