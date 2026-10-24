@@ -3,6 +3,8 @@
 //! `rtl::env`, the process's under the PEB lock. A set that outgrows the block moves it: a larger
 //! allocation (NtAllocateVirtualMemory), the block copied, the old one released
 //! (NtFreeVirtualMemory) and the pointer updated, as Windows 2000's RtlSetEnvironmentVariable does.
+//! RtlCreateEnvironment makes a block of its own (a copy of the process's, or an empty one), which
+//! RtlDestroyEnvironment releases.
 
 use rtl::env::{self, EnvError};
 use rtl::status::{
@@ -255,4 +257,56 @@ pub unsafe extern "system" fn rtl_expand_environment_strings_u(
             STATUS_BUFFER_TOO_SMALL
         }
     })
+}
+
+/// RtlCreateEnvironment: a new environment block in `*environment`, in virtual memory of its own
+/// (NtAllocateVirtualMemory): a copy of the process's environment when `inherit` (a BOOLEAN, in the
+/// argument's low byte) is set, empty (two NULs) otherwise. STATUS_INVALID_PARAMETER without a
+/// place for it; the allocation's status when it fails.
+///
+/// # Safety
+///
+/// `environment` is null or writable.
+#[unsafe(export_name = "f2k_export_RtlCreateEnvironment")]
+pub unsafe extern "system" fn rtl_create_environment(inherit: u32, environment: *mut usize) -> u32 {
+    // SAFETY: the caller's slot.
+    let Some(out) = (unsafe { environment.as_mut() }) else {
+        return STATUS_INVALID_PARAMETER;
+    };
+    if inherit as u8 == 0 {
+        // A fresh allocation is zeroed: an empty block.
+        return match sys::allocate_virtual_memory(0, 4, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE) {
+            Ok(base) => {
+                *out = base;
+                STATUS_SUCCESS
+            }
+            Err(status) => status,
+        };
+    }
+    with_environment(core::ptr::null_mut(), |block| {
+        // SAFETY: the process's environment block.
+        let (block, _) = unsafe { block_at(block) };
+        let used = env::block_length(block);
+        let base = match sys::allocate_virtual_memory(
+            0,
+            2 * used,
+            MEM_RESERVE | MEM_COMMIT,
+            PAGE_READWRITE,
+        ) {
+            Ok(base) => base,
+            Err(status) => return status,
+        };
+        // SAFETY: a fresh allocation of `used` units, the calling process's alone.
+        let copy = unsafe { core::slice::from_raw_parts_mut(base as *mut u16, used) };
+        copy.copy_from_slice(&block[..used]);
+        *out = base;
+        STATUS_SUCCESS
+    })
+}
+
+/// RtlDestroyEnvironment: a block RtlCreateEnvironment made, released (NtFreeVirtualMemory); the
+/// release's status.
+#[unsafe(export_name = "f2k_export_RtlDestroyEnvironment")]
+pub extern "system" fn rtl_destroy_environment(environment: usize) -> u32 {
+    sys::release_virtual_memory(environment)
 }

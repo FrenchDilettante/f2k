@@ -431,10 +431,10 @@ mod tests {
         // The natives: kernel32's own code (the trivial ones, the exception filter and the pointer
         // probes its assembly, the TLS slots' reads and writes; the console, start-up, locale,
         // clock, virtual-memory, mapping, synchronization, timer, sleep, APC, affinity,
-        // TLS-index, environment, file (the write side's included), current-directory and
-        // module calls and RaiseException its Rust, the heap and Local/Global calls its own
-        // over ntdll's heap). The internal start thunks are not among them.
-        assert_eq!(NATIVE_EXPORTS.len(), 252);
+        // TLS-index, environment, file (the write side's included), current-directory,
+        // binary-type and module calls and RaiseException its Rust, the heap and Local/Global
+        // calls its own over ntdll's heap). The internal start thunks are not among them.
+        assert_eq!(NATIVE_EXPORTS.len(), 254);
         for &(name, _) in &NATIVE_EXPORTS {
             let address =
                 kernel32_export(name).unwrap_or_else(|| panic!("kernel32 exports no {name}"));
@@ -631,13 +631,14 @@ mod tests {
     }
 
     /// kernel32 implements exactly what the corpus binaries import: every import of every corpus
-    /// binary resolves, and every export it implements is imported by some corpus binary (its
-    /// stubs are for programs outside the corpus; the awaited fixtures' exports wait for theirs,
-    /// and a few serve the system DLLs). The export names are unique.
+    /// binary resolves, and every export it implements is imported by some corpus binary, the
+    /// binaries loading the other system DLLs ([`LOADED_CORPUS`]) included (its stubs are for
+    /// programs outside the corpus; the awaited fixtures' exports wait for theirs, and a few serve
+    /// the system DLLs). The export names are unique.
     #[test]
     fn the_surface_is_the_corpus_import_surface() {
         let names: Vec<&str> = DLL_EXPORTS.iter().map(|&(name, _)| name).collect();
-        assert_eq!(names.len(), 261, "the corpus's import surface");
+        assert_eq!(names.len(), 263, "the corpus's import surface");
         for (i, name) in names.iter().enumerate() {
             assert!(!names[i + 1..].contains(name), "{name} listed twice");
             assert!(
@@ -661,6 +662,14 @@ mod tests {
                 );
                 imported.push(name);
             }
+        }
+        for (_, file) in LOADED_CORPUS {
+            imported.extend(
+                imports_of(file)
+                    .into_iter()
+                    .filter(|(module, _)| module.eq_ignore_ascii_case(KERNEL32_NAME))
+                    .map(|(_, name)| name),
+            );
         }
         for name in names {
             assert!(
@@ -999,7 +1008,7 @@ mod tests {
 
     /// The corpus binaries that import msvcrt, advapi32 or user32 (hellogui aside: it draws through
     /// gdi32, which F2K does not have).
-    const LOADED_CORPUS: [(&str, &[u8]); 7] = [
+    const LOADED_CORPUS: [(&str, &[u8]); 8] = [
         (
             "hellomd",
             include_bytes!("../../../tests/crt/hellomd/hellomd.exe"),
@@ -1015,6 +1024,10 @@ mod tests {
         (
             "winsta",
             include_bytes!("../../../tests/user32/winsta/winsta.exe"),
+        ),
+        (
+            "spawn",
+            include_bytes!("../../../tests/kernel32/spawn/spawn.exe"),
         ),
     ];
 

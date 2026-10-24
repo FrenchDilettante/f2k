@@ -1,5 +1,6 @@
 //! The allocator: malloc, calloc, realloc and free over a heap of the C runtime's own (HeapCreate,
-//! when the DLL is loaded), and memmove.
+//! when the DLL is loaded), and memmove, memset and memcmp (which answers -1, 0 or 1, as strcmp
+//! does).
 //!
 //! As wide's capture shows: malloc(0) and calloc(0, n) hand out a block; realloc(p, 0) frees `p`
 //! and answers NULL; realloc(NULL, n) is malloc; a request the heap cannot serve answers NULL with
@@ -131,6 +132,46 @@ pub unsafe extern "C" fn memmove(destination: *mut u8, source: *const u8, count:
     destination
 }
 
+/// memset: `count` bytes at `destination` set to `c` (as an unsigned char); answers `destination`.
+///
+/// # Safety
+///
+/// `destination` holds `count` bytes.
+#[unsafe(export_name = "f2k_export_memset")]
+pub unsafe extern "C" fn memset(destination: *mut u8, c: i32, count: usize) -> *mut u8 {
+    // SAFETY: the caller's range.
+    unsafe { core::ptr::write_bytes(destination, c as u8, count) };
+    destination
+}
+
+/// The order of two byte ranges, as -1, 0 or 1: the first bytes that differ, as unsigned chars.
+fn order(a: &[u8], b: &[u8]) -> i32 {
+    a.iter()
+        .zip(b)
+        .find(|(x, y)| x != y)
+        .map_or(0, |(x, y)| x.cmp(y) as i32)
+}
+
+/// memcmp: the first `count` bytes' order, as -1, 0 or 1.
+///
+/// # Safety
+///
+/// Both ranges hold `count` bytes.
+#[unsafe(export_name = "f2k_export_memcmp")]
+pub unsafe extern "C" fn memcmp(a: *const u8, b: *const u8, count: usize) -> i32 {
+    if count == 0 {
+        return 0;
+    }
+    // SAFETY: the caller's ranges.
+    let (a, b) = unsafe {
+        (
+            core::slice::from_raw_parts(a, count),
+            core::slice::from_raw_parts(b, count),
+        )
+    };
+    order(a, b)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -173,6 +214,34 @@ mod tests {
             let b = buf.as_mut_ptr();
             memmove(b, b.add(2), 5);
             assert_eq!(&buf, b"2345656789");
+        }
+    }
+
+    /// memset fills with the value's low byte; memcmp orders by the first differing bytes as
+    /// unsigned chars, and compares nothing for a zero count.
+    #[test]
+    fn memset_and_memcmp() {
+        // SAFETY: buffers of the lengths used.
+        unsafe {
+            let mut buf = *b"0123456789";
+            let b = buf.as_mut_ptr();
+            assert_eq!(memset(b.add(2), 0x141, 3), b.add(2));
+            assert_eq!(&buf, b"01AAA56789");
+            memset(b, 0, 0);
+            assert_eq!(&buf, b"01AAA56789");
+            let cmp = |x: &[u8], y: &[u8], n| memcmp(x.as_ptr(), y.as_ptr(), n);
+            assert_eq!(
+                [
+                    cmp(b"PE\0\0", b"PE\0\0", 4),
+                    cmp(b"abc", b"abd", 3),
+                    cmp(b"abd", b"abc", 3),
+                    cmp(b"abc", b"abd", 2),
+                    cmp(b"\x80", b"\x7F", 1),
+                    cmp(b"x", b"y", 0)
+                ],
+                [0, -1, 1, 0, 1, 0]
+            );
+            assert_eq!(memcmp(core::ptr::null(), core::ptr::null(), 0), 0);
         }
     }
 }

@@ -1,4 +1,9 @@
-//! The string functions: strcmp and _stricmp, and the wide ones cmd.exe calls.
+//! The string functions: strcmp and _stricmp, the narrow ones spawn's programs call (strlen,
+//! strcpy, strcat, strcspn, strrchr, _strnicmp), and the wide ones cmd.exe calls.
+//!
+//! The narrow ones as the C runtime reference documents them: strrchr finds the terminator for 0;
+//! _strnicmp compares at most `count` characters, each lowered in the LC_CTYPE locale, answering
+//! the difference of the first that differ as _stricmp does.
 //!
 //! As wide's capture pins them: wcscmp and strcmp answer -1, 0 or 1; wcsncmp, _wcsicmp and
 //! _wcsnicmp the difference of the first units that differ (each lowered first, in the LC_CTYPE
@@ -337,6 +342,134 @@ pub unsafe extern "C" fn wcsupr(string: *mut u16) -> *mut u16 {
     unsafe { map_in_place(string, ctype::wide_upper) }
 }
 
+/// A narrow string's bytes, its NUL left out.
+///
+/// # Safety
+///
+/// `string` is NUL-terminated, and stays unchanged while the bytes are in use.
+pub(crate) unsafe fn narrow<'a>(string: *const u8) -> &'a [u8] {
+    // SAFETY: the caller's contract.
+    unsafe { core::ffi::CStr::from_ptr(string.cast()) }.to_bytes()
+}
+
+/// A narrow string's bytes up to `count` of them, its NUL included when it comes first.
+///
+/// # Safety
+///
+/// `string` is NUL-terminated or holds `count` bytes.
+unsafe fn bounded<'a>(string: *const u8, count: usize) -> &'a [u8] {
+    if count == 0 {
+        return &[];
+    }
+    let mut length = 0;
+    // SAFETY: the caller's string, read up to its NUL or `count` bytes.
+    while length < count && unsafe { string.add(length).read() } != 0 {
+        length += 1;
+    }
+    // SAFETY: as above: the bytes read, and the NUL when it was reached.
+    unsafe { core::slice::from_raw_parts(string, (length + 1).min(count)) }
+}
+
+/// strlen.
+///
+/// # Safety
+///
+/// `string` is NUL-terminated.
+#[unsafe(export_name = "f2k_export_strlen")]
+pub unsafe extern "C" fn strlen(string: *const u8) -> usize {
+    // SAFETY: the caller's contract.
+    unsafe { narrow(string) }.len()
+}
+
+/// strcpy: `source` and its NUL copied to `destination`; answers `destination`.
+///
+/// # Safety
+///
+/// `source` is NUL-terminated; `destination` has room for it.
+#[unsafe(export_name = "f2k_export_strcpy")]
+pub unsafe extern "C" fn strcpy(destination: *mut u8, source: *const u8) -> *mut u8 {
+    // SAFETY: the caller's string and room (ranges that overlap, the caller's error in C, are
+    // copied as memmove copies).
+    unsafe {
+        let source = core::ffi::CStr::from_ptr(source.cast()).to_bytes_with_nul();
+        core::ptr::copy(source.as_ptr(), destination, source.len());
+    }
+    destination
+}
+
+/// strcat: `source` appended to `destination`; answers `destination`.
+///
+/// # Safety
+///
+/// Both strings are NUL-terminated; `destination` has room for both.
+#[unsafe(export_name = "f2k_export_strcat")]
+pub unsafe extern "C" fn strcat(destination: *mut u8, source: *const u8) -> *mut u8 {
+    // SAFETY: the caller's strings and room.
+    unsafe { strcpy(destination.add(narrow(destination).len()), source) };
+    destination
+}
+
+/// The length of `string`'s first run of bytes that are not in `set`.
+fn complement_span(string: &[u8], set: &[u8]) -> usize {
+    string
+        .iter()
+        .position(|byte| set.contains(byte))
+        .unwrap_or(string.len())
+}
+
+/// strcspn: the length of `string`'s first run of characters not in `set`.
+///
+/// # Safety
+///
+/// Both strings are NUL-terminated.
+#[unsafe(export_name = "f2k_export_strcspn")]
+pub unsafe extern "C" fn strcspn(string: *const u8, set: *const u8) -> usize {
+    // SAFETY: the caller's strings.
+    let (string, set) = unsafe { (narrow(string), narrow(set)) };
+    complement_span(string, set)
+}
+
+/// strrchr: the last `c` (as a char) in `string`, its NUL for 0, or NULL.
+///
+/// # Safety
+///
+/// `string` is NUL-terminated.
+#[unsafe(export_name = "f2k_export_strrchr")]
+pub unsafe extern "C" fn strrchr(string: *const u8, c: i32) -> *const u8 {
+    // SAFETY: the caller's string.
+    let bytes = unsafe { core::ffi::CStr::from_ptr(string.cast()) }.to_bytes_with_nul();
+    match bytes.iter().rposition(|&byte| byte == c as u8) {
+        // SAFETY: inside the string.
+        Some(at) => unsafe { string.add(at) },
+        None => core::ptr::null(),
+    }
+}
+
+/// The comparison _strnicmp makes of its strings' bytes (each its NUL included when reached first):
+/// each byte lowered in the LC_CTYPE locale, the difference of the first that differ, 0 at a common
+/// NUL or past the bytes.
+fn compare_folded(a: &[u8], b: &[u8]) -> i32 {
+    for (&x, &y) in a.iter().zip(b) {
+        let (x, y) = (ctype::byte_lower(x), ctype::byte_lower(y));
+        if x != y || x == 0 {
+            return x as i32 - y as i32;
+        }
+    }
+    0
+}
+
+/// _strnicmp: the first `count` characters' order without regard to case.
+///
+/// # Safety
+///
+/// Both strings are NUL-terminated or hold `count` bytes.
+#[unsafe(export_name = "f2k_export__strnicmp")]
+pub unsafe extern "C" fn strnicmp(a: *const u8, b: *const u8, count: usize) -> i32 {
+    // SAFETY: the caller's strings.
+    let (a, b) = unsafe { (bounded(a, count), bounded(b, count)) };
+    compare_folded(a, b)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -457,6 +590,96 @@ mod tests {
                 [4, 0, 0, 0, 3]
             );
         }
+    }
+
+    /// strlen, strcpy and strcat: the copies carry the NUL and nothing past it; the answers are the
+    /// destination.
+    #[test]
+    fn narrow_strings_copy_and_append() {
+        // SAFETY: NUL-terminated strings, buffers large enough.
+        unsafe {
+            assert_eq!(
+                (strlen(b"\0".as_ptr()), strlen(b"spawn\0".as_ptr())),
+                (0, 5)
+            );
+            let mut buf = [b'#'; 16];
+            assert_eq!(
+                strcpy(buf.as_mut_ptr(), b"home\0".as_ptr()),
+                buf.as_mut_ptr()
+            );
+            assert_eq!(&buf[..7], b"home\0##");
+            assert_eq!(
+                strcat(buf.as_mut_ptr(), b"\\kid\0".as_ptr()),
+                buf.as_mut_ptr()
+            );
+            strcat(buf.as_mut_ptr(), b"\0".as_ptr());
+            assert_eq!(&buf[..11], b"home\\kid\0##");
+            strcpy(buf.as_mut_ptr(), b"\0".as_ptr());
+            assert_eq!(&buf[..2], b"\0o");
+        }
+    }
+
+    /// strcspn and strrchr.
+    #[test]
+    fn narrow_strings_are_searched() {
+        // SAFETY: NUL-terminated strings.
+        unsafe {
+            let cspn = |a: &[u8], b: &[u8]| strcspn(a.as_ptr(), b.as_ptr());
+            assert_eq!(
+                [
+                    cspn(b"line\r\n\0", b"\r\n\0"),
+                    cspn(b"line\0", b"\r\n\0"),
+                    cspn(b"\0", b"x\0"),
+                    cspn(b"abc\0", b"\0"),
+                    cspn(b"\nx\0", b"\r\n\0")
+                ],
+                [4, 4, 0, 3, 0]
+            );
+            let path = b"C:\\CORPUS\\spawn.exe\0";
+            let at = |c: i32| {
+                let p = strrchr(path.as_ptr(), c);
+                if p.is_null() {
+                    -1
+                } else {
+                    p.offset_from(path.as_ptr())
+                }
+            };
+            assert_eq!(
+                [at(b'\\' as i32), at(b'.' as i32), at(b'z' as i32), at(0)],
+                [9, 15, -1, 19]
+            );
+            assert_eq!(at(0x15C), 9, "c taken as a char");
+        }
+    }
+
+    /// _strnicmp: at most `count` characters, lowered, the difference of the first that differ.
+    #[test]
+    fn strnicmp_compares_a_prefix_without_regard_to_case() {
+        let _locale = crate::ctype::tests::LOCALE.lock().unwrap();
+        // SAFETY: setlocale over a NUL-terminated name.
+        unsafe { crate::ctype::setlocale(0, b"C\0".as_ptr()) };
+        // SAFETY: NUL-terminated strings.
+        let nicmp = |a: &[u8], b: &[u8], n| unsafe { strnicmp(a.as_ptr(), b.as_ptr(), n) };
+        assert_eq!(
+            [
+                nicmp(b"C:\\CORPUS\\x\0", b"c:\\corpus\0", 9),
+                nicmp(b"C:\\CORPUS\\x\0", b"c:\\corpus\0", 10),
+                nicmp(b"abc\0", b"ABD\0", 3),
+                nicmp(b"abc\0", b"ABD\0", 2),
+                nicmp(b"ab\0", b"AB\0", 10),
+                nicmp(b"a\0", b"AB\0", 5),
+                nicmp(b"[\0", b"a\0", 1),
+                nicmp(b"x\0", b"y\0", 0)
+            ],
+            [0, b'\\' as i32, -1, 0, 0, -98, -6, 0]
+        );
+        // A string shorter than the count but unterminated past it is not read past the count.
+        let unterminated = [b'A', b'B'];
+        // SAFETY: two bytes, the count.
+        assert_eq!(
+            unsafe { strnicmp(unterminated.as_ptr(), b"ab\0".as_ptr(), 2) },
+            0
+        );
     }
 
     /// wide's case block, in both locales.

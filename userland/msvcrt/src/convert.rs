@@ -1,77 +1,64 @@
-//! Number conversions: _ultoa, _wtol, wcstol and wcstoul, as wide's capture pins them.
+//! Number conversions: _ultoa, _wtol, wcstol, wcstoul and strtoul, as wide's capture pins them.
 //!
 //! - wcstol and wcstoul skip blanks, take a sign, then base 0's prefixes (`0x` hex, `0` octal) or
 //!   base 16's `0x`, and the ASCII digits below the base. With no digit (`0x` alone counts as none)
 //!   they answer 0 and the end pointer is the string itself; a base that is not 0 or 2 to 36 is the
 //!   same. Overflow answers LONG_MAX or LONG_MIN (wcstol), ULONG_MAX (wcstoul, then negated like
 //!   any value with a `-`: `-4294967296` is 1), errno ERANGE, the digits all consumed.
+//! - strtoul is wcstoul over a narrow string, its blanks the LC_CTYPE locale's spaces.
 //! - _wtol takes blanks, a sign and decimal digits, and wraps around without errno.
 //! - _ultoa writes the digits in any radix from 2 to 36, letters in lower case.
+//!
+//! The conversions read a string through `at`, its unit at an index (0 past its end): a wide
+//! string's units, or a narrow string's bytes, each the unit of its value (a byte's class is its
+//! wide value's below U+0100).
 
 use crate::ctype;
 use crate::scan::digit_value;
+use crate::string::{narrow, wide_length};
 use crate::thread::{set_errno, ERANGE};
 
-/// A wide string's unit at `index`.
-///
-/// # Safety
-///
-/// `index` is at or before the string's NUL.
-unsafe fn at(string: *const u16, index: usize) -> u16 {
-    // SAFETY: the caller's contract.
-    unsafe { string.add(index).read_unaligned() }
+/// A narrow string's byte at `index` as a unit, 0 past its end.
+fn unit_of(string: &[u8], index: usize) -> u16 {
+    string.get(index).map_or(0, |&byte| byte.into())
 }
 
 /// The blanks, the sign and the prefix: where the digits start, the sign, the base.
-///
-/// # Safety
-///
-/// `string` is NUL-terminated.
-unsafe fn lead(string: *const u16, base: i32) -> (usize, bool, u32) {
+fn lead(at: impl Fn(usize) -> u16, base: i32) -> (usize, bool, u32) {
     let mut i = 0;
-    // SAFETY: the caller's string, read up to its NUL.
-    unsafe {
-        while at(string, i) != 0 && ctype::wide_class(at(string, i), ctype::SPACE) != 0 {
-            i += 1;
-        }
-        let negative = at(string, i) == b'-' as u16;
-        if negative || at(string, i) == b'+' as u16 {
-            i += 1;
-        }
-        let mut base = base as u32;
-        let hex_prefix = at(string, i) == b'0' as u16
-            && (at(string, i + 1) == b'x' as u16 || at(string, i + 1) == b'X' as u16);
-        if base == 0 {
-            base = if hex_prefix {
-                16
-            } else if at(string, i) == b'0' as u16 {
-                8
-            } else {
-                10
-            };
-        }
-        if base == 16 && hex_prefix {
-            i += 2;
-        }
-        (i, negative, base)
+    while at(i) != 0 && ctype::wide_class(at(i), ctype::SPACE) != 0 {
+        i += 1;
     }
+    let negative = at(i) == b'-' as u16;
+    if negative || at(i) == b'+' as u16 {
+        i += 1;
+    }
+    let mut base = base as u32;
+    let hex_prefix = at(i) == b'0' as u16 && (at(i + 1) == b'x' as u16 || at(i + 1) == b'X' as u16);
+    if base == 0 {
+        base = if hex_prefix {
+            16
+        } else if at(i) == b'0' as u16 {
+            8
+        } else {
+            10
+        };
+    }
+    if base == 16 && hex_prefix {
+        i += 2;
+    }
+    (i, negative, base)
 }
 
-/// The conversion wcstol and wcstoul share: the magnitude (ULONG_MAX past it), the sign, whether it
-/// overflowed, the end's index (0 without a digit).
-///
-/// # Safety
-///
-/// `string` is NUL-terminated.
-unsafe fn parse(string: *const u16, base: i32) -> (u32, bool, bool, usize) {
+/// The conversion wcstol, wcstoul and strtoul share: the magnitude (ULONG_MAX past it), the sign,
+/// whether it overflowed, the end's index (0 without a digit).
+fn parse(at: impl Fn(usize) -> u16, base: i32) -> (u32, bool, bool, usize) {
     if base != 0 && !(2..=36).contains(&base) {
         return (0, false, false, 0);
     }
-    // SAFETY: the caller's string.
-    let (mut i, negative, base) = unsafe { lead(string, base) };
+    let (mut i, negative, base) = lead(&at, base);
     let (mut value, mut overflow, mut digits) = (0u32, false, 0);
-    // SAFETY: as above.
-    while let Some(digit) = digit_value(unsafe { at(string, i) }).filter(|&d| d < base) {
+    while let Some(digit) = digit_value(at(i)).filter(|&d| d < base) {
         match value.checked_mul(base).and_then(|v| v.checked_add(digit)) {
             Some(next) => value = next,
             None => overflow = true,
@@ -90,15 +77,49 @@ unsafe fn parse(string: *const u16, base: i32) -> (u32, bool, bool, usize) {
     )
 }
 
+/// The unsigned conversion's answer (negated, modulo 2^32, after a `-`; errno ERANGE on overflow)
+/// and the end's index.
+fn unsigned(at: impl Fn(usize) -> u16, base: i32) -> (u32, usize) {
+    let (magnitude, negative, overflow, index) = parse(at, base);
+    if overflow {
+        set_errno(ERANGE);
+    }
+    let value = if negative {
+        magnitude.wrapping_neg()
+    } else {
+        magnitude
+    };
+    (value, index)
+}
+
 /// The end pointer stored, when asked.
 ///
 /// # Safety
 ///
-/// `end` is null or a pointer's storage.
-unsafe fn set_end(end: *mut *const u16, string: *const u16, index: usize) {
+/// `end` is null or a pointer's storage; `index` is inside `string`'s units or at its NUL.
+unsafe fn set_end<T>(end: *mut *const T, string: *const T, index: usize) {
     if !end.is_null() {
         // SAFETY: the caller's contract.
         unsafe { end.write_unaligned(string.add(index)) };
+    }
+}
+
+/// A wide string's reader for the conversions: its unit at an index, 0 past its end (each read
+/// unaligned, as a caller's string may be).
+///
+/// # Safety
+///
+/// `string` is NUL-terminated, and stays unchanged while the reader is in use.
+unsafe fn wide(string: *const u16) -> impl Fn(usize) -> u16 + Copy {
+    // SAFETY: the caller's contract.
+    let length = unsafe { wide_length(string) };
+    move |i| {
+        if i < length {
+            // SAFETY: inside the caller's string, before its NUL.
+            unsafe { string.add(i).read_unaligned() }
+        } else {
+            0
+        }
     }
 }
 
@@ -109,20 +130,20 @@ unsafe fn set_end(end: *mut *const u16, string: *const u16, index: usize) {
 /// `string` is NUL-terminated; `end` is null or a pointer's storage.
 #[unsafe(export_name = "f2k_export_wcstol")]
 pub unsafe extern "C" fn wcstol(string: *const u16, end: *mut *const u16, base: i32) -> i32 {
-    // SAFETY: the caller's contract.
-    unsafe {
-        let (magnitude, negative, overflow, index) = parse(string, base);
-        set_end(end, string, index);
-        let limit = if negative { 0x8000_0000 } else { 0x7FFF_FFFF };
-        if overflow || magnitude > limit {
-            set_errno(ERANGE);
-            return if negative { i32::MIN } else { i32::MAX };
-        }
-        if negative {
-            (magnitude as i32).wrapping_neg()
-        } else {
-            magnitude as i32
-        }
+    // SAFETY: the caller's string.
+    let at = unsafe { wide(string) };
+    let (magnitude, negative, overflow, index) = parse(at, base);
+    // SAFETY: the caller's end pointer; the index is inside the string.
+    unsafe { set_end(end, string, index) };
+    let limit = if negative { 0x8000_0000 } else { 0x7FFF_FFFF };
+    if overflow || magnitude > limit {
+        set_errno(ERANGE);
+        return if negative { i32::MIN } else { i32::MAX };
+    }
+    if negative {
+        (magnitude as i32).wrapping_neg()
+    } else {
+        magnitude as i32
     }
 }
 
@@ -133,19 +154,27 @@ pub unsafe extern "C" fn wcstol(string: *const u16, end: *mut *const u16, base: 
 /// As wcstol's.
 #[unsafe(export_name = "f2k_export_wcstoul")]
 pub unsafe extern "C" fn wcstoul(string: *const u16, end: *mut *const u16, base: i32) -> u32 {
-    // SAFETY: the caller's contract.
-    unsafe {
-        let (magnitude, negative, overflow, index) = parse(string, base);
-        set_end(end, string, index);
-        if overflow {
-            set_errno(ERANGE);
-        }
-        if negative {
-            magnitude.wrapping_neg()
-        } else {
-            magnitude
-        }
-    }
+    // SAFETY: the caller's string.
+    let at = unsafe { wide(string) };
+    let (value, index) = unsigned(at, base);
+    // SAFETY: the caller's end pointer; the index is inside the string.
+    unsafe { set_end(end, string, index) };
+    value
+}
+
+/// strtoul: the narrow string's unsigned long, as wcstoul reads a wide one.
+///
+/// # Safety
+///
+/// `string` is NUL-terminated; `end` is null or a pointer's storage.
+#[unsafe(export_name = "f2k_export_strtoul")]
+pub unsafe extern "C" fn strtoul(string: *const u8, end: *mut *const u8, base: i32) -> u32 {
+    // SAFETY: the caller's string.
+    let bytes = unsafe { narrow(string) };
+    let (value, index) = unsigned(|i| unit_of(bytes, i), base);
+    // SAFETY: the caller's end pointer; the index is inside the string.
+    unsafe { set_end(end, string, index) };
+    value
 }
 
 /// _wtol: the string's long, decimal, wrapping around.
@@ -155,20 +184,19 @@ pub unsafe extern "C" fn wcstoul(string: *const u16, end: *mut *const u16, base:
 /// `string` is NUL-terminated.
 #[unsafe(export_name = "f2k_export__wtol")]
 pub unsafe extern "C" fn wtol(string: *const u16) -> i32 {
-    // SAFETY: the caller's string, read up to its NUL.
-    unsafe {
-        let (mut i, negative, _) = lead(string, 10);
-        let mut value = 0u32;
-        while let Some(digit) = digit_value(at(string, i)).filter(|&d| d < 10) {
-            value = value.wrapping_mul(10).wrapping_add(digit);
-            i += 1;
-        }
-        let value = value as i32;
-        if negative {
-            value.wrapping_neg()
-        } else {
-            value
-        }
+    // SAFETY: the caller's string.
+    let at = unsafe { wide(string) };
+    let (mut i, negative, _) = lead(at, 10);
+    let mut value = 0u32;
+    while let Some(digit) = digit_value(at(i)).filter(|&d| d < 10) {
+        value = value.wrapping_mul(10).wrapping_add(digit);
+        i += 1;
+    }
+    let value = value as i32;
+    if negative {
+        value.wrapping_neg()
+    } else {
+        value
     }
 }
 
@@ -291,6 +319,43 @@ mod tests {
                 "wcstoul({text:?}, {base})"
             );
         }
+    }
+
+    /// strtoul reads a narrow string as wcstoul a wide one: spawnkid's handles in hex and its
+    /// counts in decimal (base 0), the end, ERANGE past ULONG_MAX.
+    #[test]
+    fn strtoul_reads_as_wcstoul() {
+        for (text, base, value, error, end) in [
+            ("0x7C", 0, 0x7C, 0, 4),
+            ("259", 0, 259, 0, 3),
+            ("  \t-1", 0, u32::MAX, 0, 5),
+            ("017", 0, 15, 0, 3),
+            ("4294967296", 10, u32::MAX, 34, 10),
+            ("ff", 16, 255, 0, 2),
+            ("12z", 36, 1403, 0, 3),
+            ("x", 0, 0, 0, 0),
+            ("", 0, 0, 0, 0),
+            ("5", 1, 0, 0, 0),
+        ] {
+            let s: Vec<u8> = text.bytes().chain([0]).collect();
+            let mut e = core::ptr::null();
+            set_errno(0);
+            // SAFETY: a NUL-terminated string.
+            let v = unsafe { strtoul(s.as_ptr(), &mut e, base) };
+            // SAFETY: the end points into the string.
+            let offset = unsafe { e.offset_from(s.as_ptr()) };
+            assert_eq!(
+                (v, errno(), offset),
+                (value, error, end),
+                "strtoul({text:?}, {base})"
+            );
+        }
+        // No end asked for.
+        // SAFETY: as above.
+        assert_eq!(
+            unsafe { strtoul(b"42\0".as_ptr(), core::ptr::null_mut(), 0) },
+            42
+        );
     }
 
     #[test]

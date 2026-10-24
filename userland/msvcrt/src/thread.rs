@@ -143,6 +143,14 @@ pub extern "C" fn errno_address() -> *mut i32 {
     unsafe { core::ptr::addr_of_mut!((*data()).errno) }
 }
 
+/// __doserrno: the address of the calling thread's _doserrno (stdlib.h's `_doserrno` is
+/// `(*__doserrno())`).
+#[unsafe(export_name = "f2k_export___doserrno")]
+pub extern "C" fn doserrno_address() -> *mut u32 {
+    // SAFETY: the thread's own data.
+    unsafe { core::ptr::addr_of_mut!((*data()).doserrno) }
+}
+
 /// The C runtime's lock, held for the guard's life (it is recursive: a thread may take it again).
 pub struct Locked(());
 
@@ -158,5 +166,30 @@ impl Drop for Locked {
     fn drop(&mut self) {
         // SAFETY: as above; the guard took it.
         unsafe { imports::LeaveCriticalSection(LOCK.get().cast()) };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// __doserrno and _errno address the calling thread's data: _doserrno beside errno, where
+    /// set_dos_error writes it.
+    #[test]
+    fn doserrno_is_beside_errno() {
+        let data = data();
+        // SAFETY: the thread's own data.
+        unsafe {
+            assert_eq!(errno_address(), core::ptr::addr_of_mut!((*data).errno));
+            assert_eq!(
+                doserrno_address(),
+                core::ptr::addr_of_mut!((*data).doserrno)
+            );
+        }
+        assert_eq!(
+            doserrno_address() as usize - errno_address() as usize,
+            4,
+            "the second dword"
+        );
     }
 }

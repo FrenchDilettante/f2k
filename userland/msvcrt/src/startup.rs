@@ -13,7 +13,9 @@
 //!   them before a quote are n and the quote groups, 2n+1 are n and a literal quote); argv[0] ends
 //!   at its closing quote or first blank, backslashes literal. `__argc` is 0 until then.
 //! - envp, `_environ` and `__initenv` are one array: the environment block's entries, in order,
-//!   less those starting with `=` (cmd.exe's per-drive current directories).
+//!   less those starting with `=` (cmd.exe's per-drive current directories). `_putenv` (as MSDN
+//!   documents it) changes both `_environ`, a new array each time (envp stays as `main` got it),
+//!   and the process environment.
 //! - `_fmode` and `_commode` are 0; the start-up's `_controlfp(_PC_53, _MCW_PC)` leaves 0x9001F.
 //! - exit runs the `_onexit`/`atexit` functions, last registered first, then flushes the streams,
 //!   then ends the process; `_exit` ends it at once (nothing run, nothing flushed).
@@ -394,6 +396,135 @@ pub fn initialize_environment() -> bool {
     }
 }
 
+/// A copy of `bytes` with a NUL after them, from the C runtime's heap (null when it has no room).
+fn terminated_copy(bytes: &[u8]) -> *mut u8 {
+    let copy = crate::heap::allocate(bytes.len() + 1, true);
+    if !copy.is_null() {
+        // SAFETY: a fresh, zeroed block of the bytes' length and a NUL.
+        unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), copy, bytes.len()) };
+    }
+    copy
+}
+
+/// Whether the environment entry `entry` sets the variable `name`: its name, up to its `=`, the
+/// same without regard to case (each byte lowered in the LC_CTYPE locale).
+fn sets(entry: &[u8], name: &[u8]) -> bool {
+    entry.len() > name.len()
+        && entry[name.len()] == b'='
+        && entry
+            .iter()
+            .zip(name)
+            .all(|(&a, &b)| crate::ctype::byte_lower(a) == crate::ctype::byte_lower(b))
+}
+
+/// `_environ` with `name`'s entry replaced by `entry` (a fresh `NAME=value` of the C runtime's
+/// heap), added at its end when the name has none, or removed for none: a new array, the old one
+/// freed unless it is `__initenv`'s (main's envp keeps it). A replaced entry's string is kept (a
+/// pointer getenv handed out stays readable). False when the heap has no room.
+///
+/// The caller holds the C runtime's lock.
+fn edit_environ(name: &[u8], entry: Option<*mut u8>) -> bool {
+    // SAFETY: the C runtime's own variables, under its lock.
+    let (current, initial) = unsafe { (*ENVIRON.get(), *INITENV.get()) };
+    let entries: &[*mut u8] = if current.is_null() {
+        &[]
+    } else {
+        // SAFETY: `_environ` is the C runtime's array of NUL-terminated entries, ended by NULL.
+        unsafe {
+            let count = (0..).take_while(|&i| !(*current.add(i)).is_null()).count();
+            core::slice::from_raw_parts(current, count)
+        }
+    };
+    // SAFETY: as above: each entry is NUL-terminated.
+    let found = entries
+        .iter()
+        .position(|&each| sets(unsafe { crate::string::narrow(each) }, name));
+    let added = entry.filter(|_| found.is_none());
+    let count = entries.len() + usize::from(added.is_some())
+        - usize::from(found.is_some() && entry.is_none());
+    let array: *mut *mut u8 =
+        crate::heap::allocate((count + 1) * core::mem::size_of::<usize>(), true).cast();
+    if array.is_null() {
+        return false;
+    }
+    // SAFETY: the fresh, zeroed array: room for `count` entries and the NULL after them.
+    let slots = unsafe { core::slice::from_raw_parts_mut(array, count + 1) };
+    let kept =
+        entries
+            .iter()
+            .enumerate()
+            .filter_map(|(i, &each)| if Some(i) == found { entry } else { Some(each) });
+    for (slot, each) in slots.iter_mut().zip(kept.chain(added)) {
+        *slot = each;
+    }
+    if !current.is_null() && current != initial {
+        // SAFETY: an array a previous edit made, of the C runtime's heap, no longer `_environ`.
+        unsafe { crate::heap::release(current.cast()) };
+    }
+    // SAFETY: as above.
+    unsafe { *ENVIRON.get() = array };
+    true
+}
+
+/// _putenv: `NAME=value` set in the C runtime's environment (`_environ`, a copy of the string) and
+/// the process's (SetEnvironmentVariableA, which the children CreateProcess makes inherit); an
+/// empty value (`NAME=`) removes the variable from both. 0, or -1 for a string that names no
+/// variable (no `=`, or nothing before it) or when either update fails.
+///
+/// # Safety
+///
+/// `string` is null or NUL-terminated.
+#[unsafe(export_name = "f2k_export__putenv")]
+pub unsafe extern "C" fn putenv(string: *const u8) -> i32 {
+    if string.is_null() {
+        return -1;
+    }
+    // SAFETY: the caller's string.
+    let string = unsafe { crate::string::narrow(string) };
+    let Some(split) = string
+        .iter()
+        .position(|&byte| byte == b'=')
+        .filter(|&at| at > 0)
+    else {
+        return -1;
+    };
+    let (name, value) = (&string[..split], &string[split + 1..]);
+    let _lock = Locked::take();
+    let entry = if value.is_empty() {
+        None
+    } else {
+        let copy = terminated_copy(string);
+        if copy.is_null() {
+            return -1;
+        }
+        Some(copy)
+    };
+    if !edit_environ(name, entry) {
+        if let Some(copy) = entry {
+            // SAFETY: the copy made above, used nowhere.
+            unsafe { crate::heap::release(copy) };
+        }
+        return -1;
+    }
+    let name = terminated_copy(name);
+    if name.is_null() {
+        return -1;
+    }
+    let value = entry.map_or(core::ptr::null(), |copy| {
+        // SAFETY: inside the entry's copy: its value, NUL-terminated.
+        unsafe { copy.add(split + 1).cast_const() }
+    });
+    // SAFETY: kernel32's export, over the NUL-terminated name and value (or NULL).
+    let set = unsafe { imports::SetEnvironmentVariableA(name, value) };
+    // SAFETY: the name's copy, used no more.
+    unsafe { crate::heap::release(name) };
+    if set == 0 {
+        -1
+    } else {
+        0
+    }
+}
+
 /// A function appended to a table that grows in the C runtime's heap: its array and its count.
 ///
 /// # Safety
@@ -599,6 +730,97 @@ mod tests {
             controlfp(0, EM_DENORMAL),
             initial,
             "the denormal mask stays"
+        );
+    }
+
+    /// The entries of a NULL-terminated environment array.
+    fn entries_of(array: *mut *mut u8) -> Vec<String> {
+        // SAFETY: an array of NUL-terminated entries, ended by NULL.
+        unsafe {
+            (0..)
+                .map(|i| *array.add(i))
+                .take_while(|entry| !entry.is_null())
+                .map(|entry| {
+                    core::ffi::CStr::from_ptr(entry.cast())
+                        .to_string_lossy()
+                        .into_owned()
+                })
+                .collect()
+        }
+    }
+
+    /// _putenv adds, replaces (in place, whatever the name's case) and removes `_environ`'s
+    /// entries, copying the string, and sets the process environment the same; main's envp stays
+    /// as it was; a string naming no variable is -1, nothing changed.
+    #[test]
+    fn putenv_sets_both_environments() {
+        use crate::imports::ENVIRONMENT_SETS;
+        let initial = [&b"F2KHOME=C:\\CORPUS"[..], b"PATH=C:\\WINNT"];
+        let array = array_block(initial.len(), 64);
+        // SAFETY: the array's block: its pointers, then room for the entries' text.
+        unsafe {
+            let mut text = array.add(initial.len() + 1).cast::<u8>();
+            for (i, entry) in initial.iter().enumerate() {
+                *array.add(i) = text;
+                core::ptr::copy_nonoverlapping(entry.as_ptr(), text, entry.len());
+                text = text.add(entry.len() + 1);
+            }
+            *ENVIRON.get() = array;
+            *INITENV.get() = array;
+        }
+        // SAFETY: the C runtime's own variable, which only this test sets.
+        let environ = || entries_of(unsafe { *ENVIRON.get() });
+        let sets = || ENVIRONMENT_SETS.with(|sets| std::mem::take(&mut *sets.borrow_mut()));
+        let put = |text: &[u8]| {
+            let mut owned = text.to_vec();
+            owned.push(0);
+            // SAFETY: a NUL-terminated string.
+            let answer = unsafe { putenv(owned.as_ptr()) };
+            owned.fill(b'#');
+            answer
+        };
+        let some = |name: &str, value: &str| (name.to_string(), Some(value.to_string()));
+
+        assert_eq!(put(b"F2KSPAWN=through _putenv"), 0);
+        assert_eq!(
+            environ(),
+            [
+                "F2KHOME=C:\\CORPUS",
+                "PATH=C:\\WINNT",
+                "F2KSPAWN=through _putenv"
+            ]
+        );
+        assert_eq!(sets(), [some("F2KSPAWN", "through _putenv")]);
+        assert_eq!(put(b"path=C:\\CORPUS"), 0);
+        assert_eq!(
+            environ(),
+            [
+                "F2KHOME=C:\\CORPUS",
+                "path=C:\\CORPUS",
+                "F2KSPAWN=through _putenv"
+            ]
+        );
+        assert_eq!(sets(), [some("path", "C:\\CORPUS")]);
+        assert_eq!(put(b"F2KHOME="), 0);
+        assert_eq!(put(b"F2KNONE="), 0);
+        assert_eq!(environ(), ["path=C:\\CORPUS", "F2KSPAWN=through _putenv"]);
+        assert_eq!(
+            sets(),
+            [("F2KHOME".to_string(), None), ("F2KNONE".to_string(), None)]
+        );
+        assert_eq!(put(b"X=a=b"), 0);
+        assert_eq!(sets(), [some("X", "a=b")]);
+        for refused in [&b"F2KNOEQUALS"[..], b"=C:=C:\\", b""] {
+            assert_eq!(put(refused), -1, "{:?}", String::from_utf8_lossy(refused));
+        }
+        // SAFETY: a null string.
+        assert_eq!(unsafe { putenv(core::ptr::null()) }, -1);
+        assert!(sets().is_empty());
+        assert_eq!(environ().len(), 3);
+        // SAFETY: main's envp, as the start-up left it.
+        assert_eq!(
+            entries_of(unsafe { *INITENV.get() }),
+            ["F2KHOME=C:\\CORPUS", "PATH=C:\\WINNT"]
         );
     }
 }

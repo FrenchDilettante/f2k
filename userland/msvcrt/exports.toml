@@ -196,7 +196,7 @@ ordinal = 160
 name = "_putenv"
 group = "startup"
 args = ["strA envstring"]
-impl = { stub = "not yet implemented" }
+impl = { native = "_putenv" }
 ordinal = 418
 fails = "-1"
 
@@ -330,7 +330,7 @@ fails = "never"
 name = "__doserrno"
 group = "lowio"
 args = []
-impl = { stub = "not yet implemented" }
+impl = { native = "__doserrno" }
 ordinal = 89
 fails = "never"
 
@@ -657,7 +657,7 @@ fails = "never"
 name = "strcat"
 group = "strings"
 args = ["ptr dest", "strA src"]
-impl = { stub = "not yet implemented" }
+impl = { native = "strcat" }
 ordinal = 716
 fails = "never"
 
@@ -665,7 +665,7 @@ fails = "never"
 name = "strcpy"
 group = "strings"
 args = ["ptr dest", "strA src"]
-impl = { stub = "not yet implemented" }
+impl = { native = "strcpy" }
 ordinal = 720
 fails = "never"
 
@@ -673,7 +673,7 @@ fails = "never"
 name = "strcspn"
 group = "strings"
 args = ["strA string", "strA charset"]
-impl = { stub = "not yet implemented" }
+impl = { native = "strcspn" }
 ordinal = 721
 fails = "never"
 
@@ -681,7 +681,7 @@ fails = "never"
 name = "strlen"
 group = "strings"
 args = ["strA string"]
-impl = { stub = "not yet implemented" }
+impl = { native = "strlen" }
 ordinal = 724
 fails = "never"
 
@@ -689,7 +689,7 @@ fails = "never"
 name = "strrchr"
 group = "strings"
 args = ["strA string", "i32 c"]
-impl = { stub = "not yet implemented" }
+impl = { native = "strrchr" }
 ordinal = 729
 fails = "never"
 
@@ -697,7 +697,7 @@ fails = "never"
 name = "_strnicmp"
 group = "strings"
 args = ["strA string1", "strA string2", "u32 count"]
-impl = { stub = "not yet implemented" }
+impl = { native = "_strnicmp" }
 ordinal = 468
 fails = "0x7FFFFFFF"
 
@@ -705,7 +705,7 @@ fails = "0x7FFFFFFF"
 name = "strtoul"
 group = "strings"
 args = ["strA nptr", "ptr endptr", "i32 base"]
-impl = { stub = "not yet implemented" }
+impl = { native = "strtoul" }
 ordinal = 735
 fails = "never"
 
@@ -763,7 +763,7 @@ fails = "never"
 name = "toupper"
 group = "characters"
 args = ["i32 c"]
-impl = { stub = "not yet implemented" }
+impl = { native = "toupper" }
 ordinal = 746
 fails = "never"
 
@@ -813,7 +813,7 @@ fails = "never"
 name = "memcmp"
 group = "memory"
 args = ["ptr buf1", "ptr buf2", "u32 count"]
-impl = { stub = "not yet implemented" }
+impl = { native = "memcmp" }
 ordinal = 684
 fails = "never"
 
@@ -821,7 +821,7 @@ fails = "never"
 name = "memset"
 group = "memory"
 args = ["ptr dest", "i32 c", "u32 count"]
-impl = { stub = "not yet implemented" }
+impl = { native = "memset" }
 ordinal = 687
 fails = "never"
 

@@ -95,6 +95,8 @@ unsafe extern "system" {
     pub fn GetCommandLineA() -> *const u8;
     pub fn GetEnvironmentStrings() -> *mut u8;
     pub fn FreeEnvironmentStringsA(block: *mut u8) -> u32;
+    /// A process environment variable set to `value`, or deleted for NULL (_putenv's).
+    pub fn SetEnvironmentVariableA(name: *const u8, value: *const u8) -> u32;
 
     /// The locale services setlocale and the character functions stand on.
     pub fn GetUserDefaultLCID() -> u32;
@@ -403,6 +405,26 @@ pub mod host {
 
     pub unsafe extern "system" fn FreeEnvironmentStringsA(_: *mut u8) -> u32 {
         unreachable("FreeEnvironmentStringsA")
+    }
+
+    std::thread_local! {
+        /// SetEnvironmentVariableA's calls: the name, and the value (none: a delete).
+        pub static ENVIRONMENT_SETS: RefCell<Vec<(String, Option<String>)>> =
+            const { RefCell::new(Vec::new()) };
+    }
+
+    /// SetEnvironmentVariableA: the call kept; it succeeds.
+    pub unsafe extern "system" fn SetEnvironmentVariableA(
+        name: *const u8,
+        value: *const u8,
+    ) -> u32 {
+        // SAFETY: the caller's NUL-terminated strings.
+        let text = |at: *const u8| unsafe {
+            String::from_utf8_lossy(core::ffi::CStr::from_ptr(at.cast()).to_bytes()).into_owned()
+        };
+        let set = (text(name), (!value.is_null()).then(|| text(value)));
+        ENVIRONMENT_SETS.with(|sets| sets.borrow_mut().push(set));
+        1
     }
 
     pub unsafe extern "system" fn GetUserDefaultLCID() -> u32 {

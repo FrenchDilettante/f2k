@@ -10,10 +10,12 @@
 # reports a failed service through; the exception dispatcher and RtlUnwind, which kernel32 forwards
 # to; the critical sections, which kernel32's Enter, Leave, TryEnter and Delete forward to, and the
 # PEB lock; the heaps, which kernel32's HeapAlloc, HeapFree, HeapReAlloc, HeapSize and HeapValidate
-# forward to; the environment; the counted strings, the time conversions and the bitmaps kernel32's
+# forward to; the environment; the process parameters and the environment a new process starts
+# with; the counted strings, the time conversions and the bitmaps kernel32's
 # narrow calls, file times and TLS slots go through; the handle tables, the resources and the
 # message calls kernel32's Local and Global memory and FormatMessage go through; RtlOpenCurrentUser,
-# advapi32's HKEY_CURRENT_USER; LdrInitializeThunk, a fresh thread's first user-mode work), and the F2K-internal entry point the
+# advapi32's HKEY_CURRENT_USER; an image's NT headers and execution options; LdrInitializeThunk, a
+# fresh thread's first user-mode work), and the F2K-internal entry point the
 # kernel sends a thread to (`internal = true`: not a Windows 2000 export).
 
 [[group]]
@@ -39,6 +41,10 @@ title = "heaps"
 [[group]]
 key = "paths"
 title = "paths, the current directory and the environment"
+
+[[group]]
+key = "processes"
+title = "process parameters"
 
 [[group]]
 key = "strings"
@@ -949,6 +955,38 @@ args = ["ptr Environment", "ptr Source", "ptr Destination", "ptr<u32> ReturnedLe
 impl = { native = "RtlExpandEnvironmentStrings_U" }
 ordinal = 452
 
+[[export]]
+name = "RtlCreateEnvironment"
+group = "paths"
+args = ["u32 Inherit", "ptr<u32> Environment"]
+impl = { native = "RtlCreateEnvironment" }
+ordinal = 384
+note = "Inherit is a BOOLEAN (its low byte): a copy of the process's environment, else an empty block; in virtual memory of its own"
+
+[[export]]
+name = "RtlDestroyEnvironment"
+group = "paths"
+args = ["ptr Environment"]
+impl = { native = "RtlDestroyEnvironment" }
+ordinal = 423
+
+# --- the process parameters (src/params.rs over rtl::params) --------------------------------------
+
+[[export]]
+name = "RtlCreateProcessParameters"
+group = "processes"
+args = ["ptr<u32> ProcessParameters", "ptr ImagePathName", "ptr DllPath", "ptr CurrentDirectory", "ptr CommandLine", "ptr Environment", "ptr WindowTitle", "ptr DesktopInfo", "ptr ShellInfo", "ptr RuntimeData"]
+impl = { native = "RtlCreateProcessParameters" }
+ordinal = 387
+note = "one allocation, denormalized (the strings' buffers offsets from the block); a null DLL path, current directory or environment is the calling process's, a null command line the image's path"
+
+[[export]]
+name = "RtlDestroyProcessParameters"
+group = "processes"
+args = ["ptr ProcessParameters"]
+impl = { native = "RtlDestroyProcessParameters" }
+ordinal = 426
+
 # --- counted strings and the ANSI code page (src/strings.rs over rtl::string) ----------------------
 
 [[export]]
@@ -1017,6 +1055,14 @@ args = ["u32 DesiredAccess", "ptr<u32> CurrentUserKey"]
 impl = { native = "RtlOpenCurrentUser" }
 ordinal = 572
 note = "opens \\Registry\\User\\jeb, F2K's one user's hive (Windows names it after the user's SID)"
+
+[[export]]
+name = "LdrQueryImageFileExecutionOptions"
+group = "registry"
+args = ["ptr SubKey", "ptr ValueName", "u32 Type", "ptr Buffer", "u32 BufferSize", "ptr<u32> ReturnedLength"]
+impl = { native = "LdrQueryImageFileExecutionOptions" }
+ordinal = 48
+note = "the value under Image File Execution Options\\<the image's file name>; F2K's registry holds no such key (STATUS_OBJECT_NAME_NOT_FOUND)"
 
 # --- time conversions (src/time.rs over rtl::time) ------------------------------------------------
 
@@ -1184,6 +1230,16 @@ impl = { native = "LdrGetProcedureAddress" }
 ordinal = 43
 note = "the export directory as mapped, by name or by ordinal, forwarders followed (split at the first dot); the system DLLs' ordinals are their specs' numbering, not Windows 2000's"
 
+# --- image headers (src/image.rs over rtl::image) -------------------------------------------------
+
+[[export]]
+name = "RtlImageNtHeader"
+group = "loader"
+args = ["ptr Base"]
+impl = { native = "RtlImageNtHeader" }
+ordinal = 505
+fails = "NULL"
+
 # --- the loader's thread start and end (src/ldr.s, src/main.rs over rtl::heap and rtl::ldr) ---------
 
 [[export]]
@@ -1347,10 +1403,6 @@ ordinal = 45
 [[export]]
 name = "LdrProcessRelocationBlock"
 ordinal = 47
-
-[[export]]
-name = "LdrQueryImageFileExecutionOptions"
-ordinal = 48
 
 [[export]]
 name = "LdrQueryProcessModuleInformation"
@@ -2388,16 +2440,8 @@ name = "RtlCreateAtomTable"
 ordinal = 383
 
 [[export]]
-name = "RtlCreateEnvironment"
-ordinal = 384
-
-[[export]]
 name = "RtlCreateLpcServer"
 ordinal = 386
-
-[[export]]
-name = "RtlCreateProcessParameters"
-ordinal = 387
 
 [[export]]
 name = "RtlCreateQueryDebugBuffer"
@@ -2536,16 +2580,8 @@ name = "RtlDestroyAtomTable"
 ordinal = 422
 
 [[export]]
-name = "RtlDestroyEnvironment"
-ordinal = 423
-
-[[export]]
 name = "RtlDestroyHandleTable"
 ordinal = 424
-
-[[export]]
-name = "RtlDestroyProcessParameters"
-ordinal = 426
 
 [[export]]
 name = "RtlDestroyQueryDebugBuffer"
@@ -2806,10 +2842,6 @@ ordinal = 503
 [[export]]
 name = "RtlImageDirectoryEntryToData"
 ordinal = 504
-
-[[export]]
-name = "RtlImageNtHeader"
-ordinal = 505
 
 [[export]]
 name = "RtlImageRvaToSection"

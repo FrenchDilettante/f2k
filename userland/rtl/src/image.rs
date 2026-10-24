@@ -1,6 +1,7 @@
 //! A mapped PE32 image's headers, as Windows defines them (IMAGE_DOS_HEADER, IMAGE_NT_HEADERS32),
 //! read from the image's first page ([`nt_headers`]), and what the process's start takes from them:
-//! the process heap's first segment ([`process_heap_sizes`]).
+//! the process heap's first segment ([`process_heap_sizes`]); where RtlImageNtHeader finds them
+//! ([`nt_headers_offset`]).
 
 use core::mem::size_of;
 
@@ -94,8 +95,8 @@ const _: () = {
 };
 
 /// "MZ", "PE\0\0", and the PE32 optional header's magic.
-const DOS_MAGIC: u16 = 0x5A4D;
-const NT_SIGNATURE: u32 = 0x0000_4550;
+pub const DOS_MAGIC: u16 = 0x5A4D;
+pub const NT_SIGNATURE: u32 = 0x0000_4550;
 const PE32_MAGIC: u16 = 0x010B;
 
 /// The page an image's headers sit in: the loader maps it whole, and the headers are read inside
@@ -114,16 +115,22 @@ fn header_copy<T: Copy>(base: usize, offset: usize) -> T {
 /// The NT headers of the image mapped at `base` (its first page mapped), copied out: none when its
 /// headers are not a PE32 image's, or do not sit in its first page.
 pub fn nt_headers(base: usize) -> Option<ImageNtHeaders32> {
-    let dos: ImageDosHeader = header_copy(base, 0);
-    if dos.e_magic != DOS_MAGIC {
-        return None;
-    }
-    let offset = usize::try_from(dos.e_lfanew).ok()?;
+    let offset = nt_headers_offset(&header_copy(base, 0))?;
     if offset.checked_add(size_of::<ImageNtHeaders32>())? > HEADER_PAGE {
         return None;
     }
     let nt: ImageNtHeaders32 = header_copy(base, offset);
     (nt.signature == NT_SIGNATURE && nt.optional_header.magic == PE32_MAGIC).then_some(nt)
+}
+
+/// Where the NT headers of the image whose DOS header is `dos` start, from the image's base
+/// (e_lfanew), as RtlImageNtHeader finds them: none without the MZ signature or for a negative
+/// offset. The caller checks the signature found there ([`NT_SIGNATURE`]).
+pub fn nt_headers_offset(dos: &ImageDosHeader) -> Option<usize> {
+    if dos.e_magic != DOS_MAGIC {
+        return None;
+    }
+    usize::try_from(dos.e_lfanew).ok()
 }
 
 /// The process heap's first segment, as the process's image asks for it: its header's
@@ -180,5 +187,20 @@ mod tests {
             nt_headers(far.as_ptr() as usize).is_none(),
             "a negative offset"
         );
+    }
+
+    /// RtlImageNtHeader's offset: e_lfanew behind the MZ signature, none without it or when
+    /// negative.
+    #[test]
+    fn the_nt_headers_offset_is_e_lfanew() {
+        let dos = |magic: u16, lfanew: i32| ImageDosHeader {
+            e_magic: magic,
+            e_dos: [0; 29],
+            e_lfanew: lfanew,
+        };
+        assert_eq!(nt_headers_offset(&dos(DOS_MAGIC, 0xE8)), Some(0xE8));
+        assert_eq!(nt_headers_offset(&dos(DOS_MAGIC, 0x2_0000)), Some(0x2_0000));
+        assert_eq!(nt_headers_offset(&dos(0x4D5A, 0xE8)), None, "ZM");
+        assert_eq!(nt_headers_offset(&dos(DOS_MAGIC, -8)), None);
     }
 }

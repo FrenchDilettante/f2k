@@ -2149,15 +2149,16 @@ fails = "FALSE"
 name = "GetBinaryTypeW"
 group = "processes"
 args = ["strW lpApplicationName", "ptr<u32> lpBinaryType"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetBinaryTypeW" }
 ordinal = 211
 fails = "FALSE"
+note = "the headers read through the file services (Windows 2000 asks an image section, NtQuerySection); a file that is not an image is a DOS program when named .exe or .com"
 
 [[export]]
 name = "GetBinaryTypeA"
 group = "processes"
 args = ["strA lpApplicationName", "ptr<u32> lpBinaryType"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetBinaryTypeA" }
 ordinal = 210
 fails = "FALSE"
 

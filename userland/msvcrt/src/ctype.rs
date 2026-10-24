@@ -1,5 +1,6 @@
-//! The locale and the character functions: setlocale, the `isw*` classes and `tow*` mappings, and
-//! the conversions between a narrow character and a wide one the formatter and the scanner use.
+//! The locale and the character functions: setlocale, the `isw*` classes, the `tow*` mappings and
+//! toupper, and the conversions between a narrow character and a wide one the formatter and the
+//! scanner use.
 //!
 //! As wide's capture shows them:
 //!
@@ -227,6 +228,11 @@ pub fn wide_upper(c: u16) -> u16 {
 /// A narrow character lowered, in the LC_CTYPE locale.
 pub fn byte_lower(byte: u8) -> u8 {
     state().lower[byte as usize]
+}
+
+/// A narrow character raised, in the LC_CTYPE locale.
+pub fn byte_upper(byte: u8) -> u8 {
+    state().upper[byte as usize]
 }
 
 /// A narrow character as a wide one (mbtowc), in the LC_CTYPE locale.
@@ -558,6 +564,16 @@ pub extern "C" fn towupper(c: u32) -> u32 {
     wide_upper(c as u16) as u32
 }
 
+/// toupper: `c`'s capital letter, in the LC_CTYPE locale (the "C" locale's ASCII letters alone);
+/// a value that is not an unsigned char's (EOF among them) unchanged.
+#[unsafe(export_name = "f2k_export_toupper")]
+pub extern "C" fn toupper(c: i32) -> i32 {
+    match u8::try_from(c) {
+        Ok(byte) => byte_upper(byte) as i32,
+        Err(_) => c,
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -676,6 +692,23 @@ pub(crate) mod tests {
         check(c_locale);
         set(LC_ALL, b"");
         check(user_locale);
+        set(LC_ALL, b"C");
+    }
+
+    /// toupper raises the "C" locale's ASCII letters alone, the user locale's code page 1252
+    /// letters too; a value outside an unsigned char's passes unchanged.
+    #[test]
+    fn toupper_raises_in_the_locale() {
+        let _locale = LOCALE.lock().unwrap();
+        set(LC_ALL, b"C");
+        assert_eq!(
+            [b'a', b'z', b'A', b'1', b'{', 0xE9].map(|c| toupper(c as i32)),
+            [b'A', b'Z', b'A', b'1', b'{', 0xE9].map(i32::from)
+        );
+        assert_eq!([-1, 0x161, -23].map(|c| toupper(c)), [-1, 0x161, -23]);
+        set(LC_ALL, b"");
+        assert_eq!(toupper(0xE9), 0xC9);
+        assert_eq!(toupper(b'q' as i32), b'Q' as i32);
         set(LC_ALL, b"C");
     }
 }

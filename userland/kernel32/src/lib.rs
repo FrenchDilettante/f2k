@@ -13,7 +13,7 @@
 //! ([`module`]), the synchronization objects, the waits and the handle calls ([`sync`]), the files'
 //! read side ([`files`], over ntdll's file services) and the current directory ([`curdir`]),
 //! the environment ([`env`], over ntdll's), the TLS indexes ([`thread`]), the process's end
-//! ([`process`]), exceptions ([`except`]: RaiseException, the pointer probes' unwind), the locale
+//! ([`process`]), a file's binary type ([`binary_type`]), exceptions ([`except`]: RaiseException, the pointer probes' unwind), the locale
 //! group ([`locale`] over `rtl::codepage`, with [`collate`] and [`localeinfo`]), the clocks
 //! ([`time`], over the shared data page, [`shared`]), the system messages ([`message`], over
 //! ntdll's message calls and kernel32's own message table), virtual memory and the system's memory
@@ -27,6 +27,7 @@
 #![cfg_attr(not(test), no_std)]
 
 pub mod base;
+pub mod binary_type;
 pub mod collate;
 pub mod console;
 pub mod curdir;

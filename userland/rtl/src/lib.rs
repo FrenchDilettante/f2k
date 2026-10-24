@@ -12,8 +12,11 @@
 //! ([`handles`]: ntdll's RtlAllocateHandle family), the resources and the message tables
 //! ([`resource`]: ntdll's LdrFindResource_U family and RtlFindMessage), the message formatter
 //! ([`message`]: ntdll's RtlFormatMessage), the environment blocks ([`env`]:
-//! ntdll's RtlSetEnvironmentVariable family), the loader's share of a thread's start ([`ldr`]) and
-//! the image headers it reads ([`image`]), the loader's module lists and export lookups
+//! ntdll's RtlSetEnvironmentVariable family), the process parameters block ([`params`]: the
+//! kernel's first block and ntdll's RtlCreateProcessParameters share its layout), an image's
+//! execution options ([`execution_options`]: ntdll's LdrQueryImageFileExecutionOptions), the
+//! loader's share of a thread's start ([`ldr`]) and the image headers it reads ([`image`]: ntdll's
+//! RtlImageNtHeader too), the loader's module lists and export lookups
 //! ([`modules`]: ntdll's LdrGetDllHandle family), the console server's message format and rules
 //! ([`console`]: kernel32's side and the kernel's stand-in for csrss share them), and structured
 //! exception handling's walks ([`seh`]: ntdll's RtlDispatchException and RtlUnwind, with the
@@ -36,6 +39,7 @@ pub mod console;
 pub mod cp1252;
 pub mod critsec;
 pub mod env;
+pub mod execution_options;
 pub mod handles;
 pub mod heap;
 pub mod heapcore;
@@ -44,6 +48,7 @@ pub mod ldr;
 pub mod localmem;
 pub mod message;
 pub mod modules;
+pub mod params;
 pub mod path;
 pub mod printf;
 #[cfg(all(target_arch = "x86", target_os = "windows", not(test)))]

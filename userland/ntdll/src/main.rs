@@ -13,16 +13,20 @@
 //! `src/heap.s` over `rtl::heap`; RtlLockHeap and RtlUnlockHeap); the handle tables kernel32 keeps
 //! its movable Local and Global blocks' handles in (RtlInitializeHandleTable, RtlAllocateHandle,
 //! RtlFreeHandle, RtlIsValidHandle: `src/handles.rs` over `rtl::handles`); the environment
-//! (RtlSetEnvironmentVariable, RtlQueryEnvironmentVariable_U, RtlExpandEnvironmentStrings_U:
-//! `src/env.rs` over `rtl::env`); the current directory and the DOS paths
+//! (RtlSetEnvironmentVariable, RtlQueryEnvironmentVariable_U, RtlExpandEnvironmentStrings_U,
+//! RtlCreateEnvironment, RtlDestroyEnvironment: `src/env.rs` over `rtl::env`); the process
+//! parameters a new process starts with (RtlCreateProcessParameters, RtlDestroyProcessParameters:
+//! `src/params.rs` over `rtl::params`); the current directory and the DOS paths
 //! (RtlSetCurrentDirectory_U, RtlGetCurrentDirectory_U, RtlGetFullPathName_U,
 //! RtlDosPathNameToNtPathName_U, RtlDoesFileExists_U, RtlDetermineDosPathNameType_U:
 //! `src/curdir.rs` over `rtl::path`); the counted strings and the ANSI code page, which kernel32's
 //! narrow calls convert through
 //! (RtlInitAnsiString, RtlAnsiStringToUnicodeString, RtlUnicodeStringToAnsiString,
 //! RtlFreeUnicodeString, RtlUnicodeToMultiByteN, RtlMultiByteToUnicodeN, RtlUnicodeToMultiByteSize:
-//! `src/strings.rs` over `rtl::string`); the current user's registry hive, as advapi32 opens it
-//! (RtlOpenCurrentUser: `src/registry.rs`); the time conversions (RtlTimeToTimeFields,
+//! `src/strings.rs` over `rtl::string`); the current user's registry hive, as advapi32 opens it,
+//! and an image's execution options (RtlOpenCurrentUser, LdrQueryImageFileExecutionOptions:
+//! `src/registry.rs`, the options over `rtl::execution_options`); an image's NT headers
+//! (RtlImageNtHeader: `src/image.rs` over `rtl::image`); the time conversions (RtlTimeToTimeFields,
 //! RtlTimeFieldsToTime: `src/time.rs` over `rtl::time`); the bitmaps kernel32 keeps the TLS slots
 //! in (RtlFindClearBitsAndSet, RtlClearBits, RtlAreBitsSet: `src/bitmap.rs` over `rtl::bitmap`);
 //! the resources and the messages kernel32's FormatMessage finds and lays out (LdrFindResource_U,
@@ -53,7 +57,9 @@ mod dbgprint;
 mod env;
 mod except;
 mod handles;
+mod image;
 mod loader;
+mod params;
 mod registry;
 mod resource;
 mod status;

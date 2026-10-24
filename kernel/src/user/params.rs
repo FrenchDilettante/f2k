@@ -26,40 +26,48 @@ use rtl::cp1252::MB_TO_WC;
 
 use crate::user::shared::NT_SYSTEM_ROOT;
 
-/// The block's size: RTL_USER_PROCESS_PARAMETERS on NT 5.0, x86.
-pub const SIZE: u32 = 0x290;
+/// The block's layout: RTL_USER_PROCESS_PARAMETERS on NT 5.0, x86, the type ntdll builds a new
+/// process's block with (`rtl::params`), its pointers 32-bit.
+pub type Layout = rtl::params::ProcessParameters<u32>;
 
-/// The block's field offsets.
+/// The block's size.
+pub const SIZE: u32 = core::mem::size_of::<Layout>() as u32;
+
+/// The block's field offsets, from its layout.
 pub mod offset {
-    pub const MAXIMUM_LENGTH: u32 = 0x00;
-    pub const LENGTH: u32 = 0x04;
-    pub const FLAGS: u32 = 0x08;
-    pub const STANDARD_INPUT: u32 = 0x18;
-    pub const STANDARD_OUTPUT: u32 = 0x1C;
-    pub const STANDARD_ERROR: u32 = 0x20;
+    use core::mem::offset_of;
+
+    use super::Layout;
+
+    pub const MAXIMUM_LENGTH: u32 = offset_of!(Layout, maximum_length) as u32;
+    pub const LENGTH: u32 = offset_of!(Layout, length) as u32;
+    pub const FLAGS: u32 = offset_of!(Layout, flags) as u32;
+    pub const STANDARD_INPUT: u32 = offset_of!(Layout, standard_input) as u32;
+    pub const STANDARD_OUTPUT: u32 = offset_of!(Layout, standard_output) as u32;
+    pub const STANDARD_ERROR: u32 = offset_of!(Layout, standard_error) as u32;
     /// CurrentDirectory: a CURDIR, its DosPath (a UNICODE_STRING) then its Handle.
-    pub const CURRENT_DIRECTORY: u32 = 0x24;
-    pub const DLL_PATH: u32 = 0x30;
-    pub const IMAGE_PATH_NAME: u32 = 0x38;
-    pub const COMMAND_LINE: u32 = 0x40;
-    pub const ENVIRONMENT: u32 = 0x48;
+    pub const CURRENT_DIRECTORY: u32 = offset_of!(Layout, current_directory) as u32;
+    pub const DLL_PATH: u32 = offset_of!(Layout, dll_path) as u32;
+    pub const IMAGE_PATH_NAME: u32 = offset_of!(Layout, image_path_name) as u32;
+    pub const COMMAND_LINE: u32 = offset_of!(Layout, command_line) as u32;
+    pub const ENVIRONMENT: u32 = offset_of!(Layout, environment) as u32;
     /// The window's starting place and size, the console's character counts and fill, and the
     /// STARTF_* flags and SW_* value: what kernel32's GetStartupInfoA reports.
-    pub const STARTING_X: u32 = 0x4C;
-    pub const STARTING_Y: u32 = 0x50;
-    pub const COUNT_X: u32 = 0x54;
-    pub const COUNT_Y: u32 = 0x58;
-    pub const COUNT_CHARS_X: u32 = 0x5C;
-    pub const COUNT_CHARS_Y: u32 = 0x60;
-    pub const FILL_ATTRIBUTE: u32 = 0x64;
-    pub const WINDOW_FLAGS: u32 = 0x68;
-    pub const SHOW_WINDOW_FLAGS: u32 = 0x6C;
+    pub const STARTING_X: u32 = offset_of!(Layout, starting_x) as u32;
+    pub const STARTING_Y: u32 = offset_of!(Layout, starting_y) as u32;
+    pub const COUNT_X: u32 = offset_of!(Layout, count_x) as u32;
+    pub const COUNT_Y: u32 = offset_of!(Layout, count_y) as u32;
+    pub const COUNT_CHARS_X: u32 = offset_of!(Layout, count_chars_x) as u32;
+    pub const COUNT_CHARS_Y: u32 = offset_of!(Layout, count_chars_y) as u32;
+    pub const FILL_ATTRIBUTE: u32 = offset_of!(Layout, fill_attribute) as u32;
+    pub const WINDOW_FLAGS: u32 = offset_of!(Layout, window_flags) as u32;
+    pub const SHOW_WINDOW_FLAGS: u32 = offset_of!(Layout, show_window_flags) as u32;
     /// WindowTitle, DesktopInfo, ShellInfo and RuntimeData: UNICODE_STRINGs (RuntimeData the C
     /// runtime's inherited-handle block, cbReserved2/lpReserved2).
-    pub const WINDOW_TITLE: u32 = 0x70;
-    pub const DESKTOP_INFO: u32 = 0x78;
-    pub const SHELL_INFO: u32 = 0x80;
-    pub const RUNTIME_DATA: u32 = 0x88;
+    pub const WINDOW_TITLE: u32 = offset_of!(Layout, window_title) as u32;
+    pub const DESKTOP_INFO: u32 = offset_of!(Layout, desktop_info) as u32;
+    pub const SHELL_INFO: u32 = offset_of!(Layout, shell_info) as u32;
+    pub const RUNTIME_DATA: u32 = offset_of!(Layout, runtime_data) as u32;
 }
 
 /// The startup values the block carries (the capture's STARTUPINFOA, as GetStartupInfoA copies it
@@ -73,7 +81,7 @@ pub const STARTUP: [(u32, u32); 4] = [
 ];
 
 /// RTL_USER_PROC_PARAMS_NORMALIZED: the strings' buffers are addresses, not offsets.
-pub const NORMALIZED: u32 = 1;
+pub const NORMALIZED: u32 = rtl::params::NORMALIZED;
 
 /// The room of a path string: MAX_PATH characters.
 pub const PATH_ROOM: u32 = 2 * 260;

@@ -9,7 +9,7 @@ Five of Windows 2000's system DLLs are F2K's own code:
 
 - **ntdll**: the system calls into the kernel, the program loader, and the runtime library the other DLLs build on.
 - **kernel32**: processes and threads, synchronization, memory, files, the console, the environment, code pages and locale, messages.
-- **msvcrt**: the C runtime for programs built against msvcrt.dll: start-up and exit, exception handling and `setjmp`, files and stdio, `printf` and `scanf`, wide strings, the allocator.
+- **msvcrt**: the C runtime for programs built against msvcrt.dll: start-up and exit, exception handling and `setjmp`, files and stdio, `printf` and `scanf`, narrow and wide strings, `_putenv`, the allocator.
 - **advapi32**: the registry calls, over a registry the kernel keeps in memory.
 - **user32**: window stations, desktops and `MessageBeep`; no windows yet.
 
