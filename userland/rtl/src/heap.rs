@@ -149,15 +149,22 @@ const _: () = {
 
 // --- The heaps' memory: the audited accesses
 // ------------------------------------------------------
+//
+// The heaps keep their bookkeeping inside the memory they manage, at addresses read from their own
+// links, so these three turn an address into a reference. They are `unsafe`: each call states why
+// its address is one of a live heap's, which is the invariant a [`Heap`] value carries (made by
+// [`create_sized`] or [`Heap::from_handle`], whose callers vouch for it).
 
-/// Put `value` at `at`, a fresh place: the start of a reservation's committed first page, aligned
-/// for any of the heaps' types, that no live heap uses yet (a new heap's header, a new segment's
-/// bookkeeping, a new big block's header). The value, in place.
-fn place<T>(at: usize, value: T) -> &'static T {
+/// Put `value` at `at`, a fresh place. The value, in place.
+///
+/// # Safety
+///
+/// `at` is the base of a reservation the caller just committed (page-aligned, read-write, at least
+/// a page long: every placed type is smaller), that no live heap's link names yet: a new heap's
+/// header, a new segment's bookkeeping, a new big block's header.
+unsafe fn place<T>(at: usize, value: T) -> &'static T {
     let slot = at as *mut T;
-    // SAFETY: the callers pass the base of a reservation they just committed: page-aligned,
-    // read-write, at least a page long (every placed type is smaller), and theirs alone until the
-    // heap's handle or link to it is published.
+    // SAFETY: the caller's promise: a committed, aligned place that is ours alone.
     unsafe {
         slot.write(value);
         &*slot
@@ -166,20 +173,27 @@ fn place<T>(at: usize, value: T) -> &'static T {
 
 /// The bookkeeping [`place`] put at `at`, as long as its heap lives (its changing words are cells,
 /// so shared views of it never alias a mutable one).
-fn view<T>(at: usize) -> &'static T {
-    // SAFETY: the callers pass a live heap's handle (listed in the process's heap list), or a
-    // segment's or big block's base read from that heap's links: places [`place`] wrote, committed
-    // until the heap's destroy or the block's free gives them back. The program can overwrite them
-    // (they are its memory); the heaps then fail or fault the program alone.
+///
+/// # Safety
+///
+/// `at` is a live heap's handle, or a segment's or big block's base read from that heap's links:
+/// a place [`place`] wrote a `T` at, committed until the heap's destroy or the block's free gives
+/// it back. (The program can overwrite it, being its memory: the heap then fails or faults the
+/// program alone.)
+unsafe fn view<T>(at: usize) -> &'static T {
+    // SAFETY: the caller's promise: a `T` placed at `at`, still committed.
     unsafe { &*(at as *const T) }
 }
 
-/// The `len` bytes at `at`: a segment's block area or a block's user bytes.
-fn bytes(at: usize, len: usize) -> &'static mut [u8] {
-    // SAFETY: the callers pass committed ranges of a live heap past its bookkeeping (a segment's
-    // committed area, a big block's user bytes, or a live block's `len` bytes), which no other
-    // view covers for the call: the heap's lock (or the caller's HEAP_NO_SERIALIZE promise) keeps
-    // them ours.
+/// The `len` bytes at `at`.
+///
+/// # Safety
+///
+/// `at..at + len` is committed memory of a live heap past its bookkeeping (a segment's committed
+/// area, a big block's user bytes, or a live block's bytes), and no other reference to it lives
+/// for the slice's use: the heap's lock (or the caller's HEAP_NO_SERIALIZE promise) keeps it ours.
+unsafe fn bytes(at: usize, len: usize) -> &'static mut [u8] {
+    // SAFETY: the caller's promise: committed, and ours alone while the slice is used.
     unsafe { core::slice::from_raw_parts_mut(at as *mut u8, len) }
 }
 
@@ -197,18 +211,26 @@ struct Seg {
 
 impl Seg {
     /// The further segment at `base`.
-    fn further(base: usize) -> Seg {
+    ///
+    /// # Safety
+    ///
+    /// `base` is a further segment's base, read from a live heap's segment links.
+    unsafe fn further(base: usize) -> Seg {
         Seg {
             base,
-            info: view(base),
+            // SAFETY: the caller's promise: [`Heap::add_segment`] placed its bookkeeping there.
+            info: unsafe { view(base) },
             start: SEGMENT_AREA,
         }
     }
 
-    /// The committed block area.
+    /// The committed block area. A `Seg` is only ever one of a live heap's segments (made by
+    /// [`Heap::first`], [`Heap::add_segment`] or [`Seg::further`]), and the heap's lock is held
+    /// while its segments are used, so the area is ours for the call.
     fn area(self) -> &'static mut [u8] {
         let len = self.info.committed.get().saturating_sub(self.start);
-        bytes(self.base + self.start, len)
+        // SAFETY: a live heap's segment, its committed area past the bookkeeping, under its lock.
+        unsafe { bytes(self.base + self.start, len) }
     }
 
     /// The area offset of the block at `pointer`, when it lies in this segment's committed area.
@@ -299,7 +321,8 @@ impl Iterator for Segments {
         let segment = self.0?;
         self.0 = match segment.info.next.get() {
             0 => None,
-            next => Some(Seg::further(next)),
+            // SAFETY: a link of the live heap the first segment belongs to.
+            next => Some(unsafe { Seg::further(next) }),
         };
         Some(segment)
     }
@@ -362,30 +385,33 @@ pub fn create_sized(
         system.release(base);
         return None;
     }
-    let header = place(
-        base,
-        Header {
-            entry: [0; 2],
-            signature: SIGNATURE,
-            flags: flags & KEPT_FLAGS | if growable { HEAP_GROWABLE } else { 0 },
-            force_flags: 0,
-            segment: Segment {
-                reserve,
-                committed: Cell::new(commit),
-                top: Cell::new(0),
-                next: Cell::new(0),
+    // SAFETY: the reservation just committed, its handle not yet published.
+    let header = unsafe {
+        place(
+            base,
+            Header {
+                entry: [0; 2],
+                signature: SIGNATURE,
+                flags: flags & KEPT_FLAGS | if growable { HEAP_GROWABLE } else { 0 },
+                force_flags: 0,
+                segment: Segment {
+                    reserve,
+                    committed: Cell::new(commit),
+                    top: Cell::new(0),
+                    next: Cell::new(0),
+                },
+                big: Cell::new(0),
+                lock: CriticalSection {
+                    debug_info: AtomicU32::new(0),
+                    lock_count: AtomicI32::new(0),
+                    recursion_count: AtomicI32::new(0),
+                    owning_thread: AtomicU32::new(0),
+                    lock_semaphore: AtomicU32::new(0),
+                    spin_count: AtomicU32::new(0),
+                },
             },
-            big: Cell::new(0),
-            lock: CriticalSection {
-                debug_info: AtomicU32::new(0),
-                lock_count: AtomicI32::new(0),
-                recursion_count: AtomicI32::new(0),
-                owning_thread: AtomicU32::new(0),
-                lock_semaphore: AtomicU32::new(0),
-                spin_count: AtomicU32::new(0),
-            },
-        },
-    );
+        )
+    };
     // Spin count 0 and no preallocated event: the initialization cannot fail.
     let _ = header.lock.initialize(system, 0);
     Some(Heap(base))
@@ -407,7 +433,8 @@ impl Heap {
     }
 
     fn header(self) -> &'static Header {
-        view(self.0)
+        // SAFETY: a `Heap` names a live heap (its constructors' promise): its handle is its header.
+        unsafe { view(self.0) }
     }
 
     /// The heap's flags (its kept creation flags, HEAP_GROWABLE for a growable one).
@@ -480,15 +507,18 @@ impl Heap {
             system.release(base);
             return None;
         }
-        let info = place(
-            base,
-            Segment {
-                reserve,
-                committed: Cell::new(PAGE),
-                top: Cell::new(0),
-                next: Cell::new(0),
-            },
-        );
+        // SAFETY: the reservation just committed, not yet linked.
+        let info = unsafe {
+            place(
+                base,
+                Segment {
+                    reserve,
+                    committed: Cell::new(PAGE),
+                    top: Cell::new(0),
+                    next: Cell::new(0),
+                },
+            )
+        };
         last.info.next.set(base);
         Some(Seg {
             base,
@@ -508,15 +538,18 @@ impl Heap {
             return None;
         }
         let list = &self.header().big;
-        place(
-            base,
-            Big {
-                next: Cell::new(list.get()),
-                size: Cell::new(request),
-                reserved,
-                _pad: 0,
-            },
-        );
+        // SAFETY: the reservation just committed, not yet linked.
+        unsafe {
+            place(
+                base,
+                Big {
+                    next: Cell::new(list.get()),
+                    size: Cell::new(request),
+                    reserved,
+                    _pad: 0,
+                },
+            )
+        };
         list.set(base);
         Some(base + BIG_HEADER)
     }
@@ -525,7 +558,8 @@ impl Heap {
     fn big_at(self, pointer: usize) -> Option<(&'static Cell<usize>, &'static Big)> {
         let mut link = &self.header().big;
         while link.get() != 0 {
-            let big: &'static Big = view(link.get());
+            // SAFETY: a big block's base, read from this live heap's big-block links.
+            let big: &'static Big = unsafe { view(link.get()) };
             if link.get().wrapping_add(BIG_HEADER) == pointer {
                 return Some((link, big));
             }
@@ -583,7 +617,9 @@ impl Heap {
             }
             let old = big.size.get();
             if zero && request > old {
-                bytes(pointer + old, request - old).fill(0);
+                // SAFETY: the big block's committed user bytes past its size, under the heap's
+                // lock.
+                unsafe { bytes(pointer + old, request - old) }.fill(0);
             }
             big.size.set(request);
             return true;
@@ -636,9 +672,14 @@ impl Heap {
             let new = self.alloc_inner(system, request, false)?;
             // Two distinct live blocks, the new one at least `request` bytes long.
             let kept = old.min(request);
-            bytes(new, kept).copy_from_slice(bytes(pointer, kept));
+            // SAFETY: two live blocks of this heap, distinct (the new one was just allocated while
+            // the old one lives), each at least `kept` bytes long, under the heap's lock.
+            unsafe {
+                core::ptr::copy_nonoverlapping(pointer as *const u8, new as *mut u8, kept);
+            }
             if zero && request > kept {
-                bytes(new + kept, request - kept).fill(0);
+                // SAFETY: the new block's bytes past those kept, under the heap's lock.
+                unsafe { bytes(new + kept, request - kept) }.fill(0);
             }
             self.free_inner(system, pointer);
             Some(new)
@@ -661,14 +702,16 @@ impl Heap {
         let header = self.header();
         let mut next = header.big.get();
         while next != 0 {
-            let big: &Big = view(next);
+            // SAFETY: a big block's base, read from this live heap's links before it is released.
+            let big: &Big = unsafe { view(next) };
             let base = next;
             next = big.next.get();
             system.release(base);
         }
         let mut next = header.segment.next.get();
         while next != 0 {
-            let segment = Seg::further(next);
+            // SAFETY: a segment's base, read from this live heap's links before it is released.
+            let segment = unsafe { Seg::further(next) };
             next = segment.info.next.get();
             system.release(segment.base);
         }
@@ -811,6 +854,13 @@ impl Process {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    /// The `len` bytes of a block a test just got from a live heap (or past it, within the same
+    /// committed range, as the zeroing checks read).
+    fn block_bytes(at: usize, len: usize) -> &'static mut [u8] {
+        // SAFETY: the tests pass blocks (and ranges of them) their heap handed out and still holds.
+        unsafe { super::bytes(at, len) }
+    }
+
     use std::cell::RefCell;
     use std::sync::atomic::{AtomicI32, AtomicU32};
 
@@ -1019,9 +1069,9 @@ pub(crate) mod tests {
         assert_eq!(a % 8, 0);
         assert_eq!(a, heap.handle() + AREA + HEADER_SIZE);
         assert_eq!(heap.size(&host, 0, a), Some(100));
-        bytes(a, 100).fill(0x5A);
+        block_bytes(a, 100).fill(0x5A);
         let z = heap.alloc(&host, HEAP_ZERO_MEMORY, 64).unwrap();
-        assert!(bytes(z, 64).iter().all(|&b| b == 0));
+        assert!(block_bytes(z, 64).iter().all(|&b| b == 0));
         assert!(heap.free(&host, 0, a));
         assert!(!heap.free(&host, 0, a), "a double free is refused");
         assert_eq!(heap.size(&host, 0, a), None);
@@ -1042,7 +1092,7 @@ pub(crate) mod tests {
         let blocks: Vec<usize> = (0..600)
             .map(|i| {
                 let block = heap.alloc(&host, 0, 0x1000).unwrap();
-                bytes(block, 0x1000).fill(i as u8);
+                block_bytes(block, 0x1000).fill(i as u8);
                 block
             })
             .collect();
@@ -1069,7 +1119,7 @@ pub(crate) mod tests {
         for (i, &block) in blocks.iter().enumerate() {
             assert_eq!(heap.size(&host, 0, block), Some(0x1000));
             assert!(
-                bytes(block, 0x1000).iter().all(|&b| b == i as u8),
+                block_bytes(block, 0x1000).iter().all(|&b| b == i as u8),
                 "block {i} intact"
             );
         }
@@ -1087,13 +1137,13 @@ pub(crate) mod tests {
         assert_eq!(heap.size(&host, 0, blocks[401]), None);
         assert_eq!(heap.alloc(&host, 0, 0x1000), Some(blocks[1]));
         // A growth that does not fit in place moves, to wherever there is room.
-        bytes(blocks[400], 0x1000).fill(0x77);
+        block_bytes(blocks[400], 0x1000).fill(0x77);
         let moved = heap
             .realloc(&host, HEAP_ZERO_MEMORY, blocks[400], 0x3000)
             .unwrap();
         assert_ne!(moved, blocks[400]);
-        assert!(bytes(moved, 0x1000).iter().all(|&b| b == 0x77));
-        assert!(bytes(moved + 0x1000, 0x2000).iter().all(|&b| b == 0));
+        assert!(block_bytes(moved, 0x1000).iter().all(|&b| b == 0x77));
+        assert!(block_bytes(moved + 0x1000, 0x2000).iter().all(|&b| b == 0));
         assert_eq!(
             heap.size(&host, 0, blocks[400]),
             None,
@@ -1136,7 +1186,7 @@ pub(crate) mod tests {
             "a big block is a reservation of its own"
         );
         assert_eq!(heap.size(&host, 0, big), Some(8 << 20));
-        bytes(big, 8 << 20)[(8 << 20) - 1] = 1;
+        block_bytes(big, 8 << 20)[(8 << 20) - 1] = 1;
         let second = heap.alloc(&host, 0, BIG_THRESHOLD + 1).unwrap();
         assert!(heap.free(&host, 0, big));
         assert_eq!(
@@ -1200,7 +1250,7 @@ pub(crate) mod tests {
         let a = heap.alloc(&host, 0, 0x20).unwrap();
         let _b = heap.alloc(&host, 0, 0x20).unwrap();
         // Overrun `a` into the next block's size word: a misaligned size, no block.
-        bytes(a, 0x24)[0x20..0x24].copy_from_slice(&0x13u32.to_le_bytes());
+        block_bytes(a, 0x24)[0x20..0x24].copy_from_slice(&0x13u32.to_le_bytes());
         let committed = segments(heap)[0].2;
         assert_eq!(
             heap.alloc(&host, 0, 0x40),
@@ -1225,7 +1275,7 @@ pub(crate) mod tests {
         let heap = create(&host, 0, 0, 0).unwrap();
         let a = heap.alloc(&host, 0, 100).unwrap();
         let _neighbor = heap.alloc(&host, 0, 8).unwrap();
-        bytes(a, 100).fill(7);
+        block_bytes(a, 100).fill(7);
         assert_eq!(heap.realloc(&host, 0, a, 50), Some(a));
         assert_eq!(heap.size(&host, 0, a), Some(50));
         assert_eq!(
@@ -1234,10 +1284,10 @@ pub(crate) mod tests {
         );
         let moved = heap.realloc(&host, HEAP_ZERO_MEMORY, a, 1000).unwrap();
         assert_ne!(moved, a);
-        assert_eq!(bytes(moved, 50), &[7; 50]);
-        assert!(bytes(moved + 50, 950).iter().all(|&b| b == 0));
+        assert_eq!(block_bytes(moved, 50), &[7; 50]);
+        assert!(block_bytes(moved + 50, 950).iter().all(|&b| b == 0));
         let big = heap.realloc(&host, 0, moved, 1 << 20).unwrap();
-        assert_eq!(bytes(big, 50), &[7; 50]);
+        assert_eq!(block_bytes(big, 50), &[7; 50]);
         assert_eq!(
             heap.realloc(&host, 0, big, 1 << 19),
             Some(big),
