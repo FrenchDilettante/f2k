@@ -89,6 +89,97 @@ def test_a_boot_that_stops_fails_its_block_and_leaves_the_rest_not_run():
     assert early.verdict(1, [], f2kboot.Block("t.exe b", ["B"], 0)) == "not run: the boot stopped in t.exe a (timeout)"
 
 
+# --- Children: a process another started ends with its own line, inside its parent's part ------
+
+# Today's end lines, every form the kernel prints (kernel/src/process/exit.rs, EndReport).
+TODAYS_ENDS = [
+    "F2K: user process exited normally (exit code=0)",
+    "F2K: user process ended by fault (bad user argument pointer, exit code=3221225477); halting",
+    "F2K: user process ended by fault (raised exception, exit code=3221225477); halting",
+    "F2K: user process ended by fault (vector 14, exit code=3221225477); halting",
+    "F2K: process 3 (bare) exited normally (exit code=0)",
+    "F2K: process 3 (bare) ended by fault (vector 14, exit code=3221225477)",
+]
+CHILD_EXITED = "F2K: child process 136 (child) exited normally (exit code=7)"
+CHILD_FAULTED = "F2K: child process 140 (child) ended by fault (vector 14, exit code=3221225477)"
+# A parent's run with two children: their output interleaved with its own, one child's fault dump.
+WITH_CHILDREN = [
+    "F2K: entering ring 3",
+    "parent: starting the children",
+    "child: hello",
+    "parent: waiting",
+    CHILD_EXITED,
+    "parent: first child's exit code 7",
+    "CPU EXCEPTION: vector 14",
+    "  error code 0x00000006",
+    CHILD_FAULTED,
+    "parent: second child's exit code 0xc0000005",
+]
+PARENT_OUTPUT = [
+    "parent: starting the children",
+    "child: hello",
+    "parent: waiting",
+    "parent: first child's exit code 7",
+    "parent: second child's exit code 0xc0000005",
+]
+
+
+def test_a_childs_end_line_has_its_own_form():
+    for line in TODAYS_ENDS:
+        assert f2kboot.END.match(line) and not f2kboot.CHILD_END.match(line), line
+    for line, pid, verdict in ((CHILD_EXITED, "136", "exited normally"), (CHILD_FAULTED, "140", "ended by fault")):
+        match = f2kboot.CHILD_END.match(line)
+        assert match and match.groups() == (pid, "child", verdict)
+        for pattern in (f2kboot.END, f2kboot.TEARDOWN, f2kboot.OBJECT_LEAK, f2kboot.START, f2kboot.SCREEN_PAUSE):
+            assert not pattern.match(line), (pattern.pattern, line)
+
+
+def test_a_childs_end_does_not_end_its_parent():
+    log = "\n".join(WITH_CHILDREN)
+    assert not f2kboot.process_ended(log)
+    assert not f2kboot.teardown_audited(log)
+    assert f2kboot.program_output(log) == (PARENT_OUTPUT, None)
+    # A kernel case's expectation of the parent's end is not met by a child's.
+    expectation = f2kboot.Expectation(expects=["F2K: user process exited normally (exit code=0)"])
+    assert expectation.check(log)[0] == "pending"
+
+
+def test_a_childs_output_is_its_parents():
+    lines = WITH_CHILDREN + [ENDED[-1], CLEAN]
+    assert f2kboot.program_output("\n".join(lines)) == (PARENT_OUTPUT, 0)
+    assert f2kboot.teardown_problem(lines) is None
+    assert f2kboot.teardown_problem(WITH_CHILDREN + [ENDED[-1]]) == (
+        "the process ended, but its teardown audit never arrived")
+    log = "\n".join([*f2kboot.BOOT_CHECKS, *lines])
+    assert f2kboot.compare_block(f2kboot.Block("parent", PARENT_OUTPUT, 0), log, []) is None
+
+
+def test_a_batch_keeps_a_childs_lines_in_its_parents_part():
+    first = leg(1, "t.exe a", "A")
+    first[3:3] = WITH_CHILDREN[1:]
+    lines = BATCH_BOOT + first + leg(2, "t.exe b", "B") + leg(3, "t.exe c", "C")
+    batch = batch_of(lines + ["F2K: process suite complete: 3 run, 0 faulted, 0 leaks"])
+    assert [command for command, _ in batch.programs] == ["CORPUS\\t.exe a", "CORPUS\\t.exe b", "CORPUS\\t.exe c"]
+    assert CHILD_EXITED in batch.programs[0][1] and CHILD_FAULTED in batch.programs[0][1]
+    assert batch.verdict(0, [], f2kboot.Block("t.exe a", ["A", *PARENT_OUTPUT], 0)) is None
+    assert batch.verdict(1, [], f2kboot.Block("t.exe b", ["B"], 0)) is None
+    # The batch's stop check counts the legs' audits alone: a child's end is none.
+    watch = f2kboot.BatchWatch([60.0] * 3)
+    assert not watch("\n".join(BATCH_BOOT + first[:-2]))
+    assert not watch("\n".join(lines))
+    assert watch("\n".join(lines + ["F2K: process suite complete: 3 run, 0 faulted, 0 leaks"]))
+    alone = f2kboot.BatchWatch([60.0])
+    assert not alone("\n".join(WITH_CHILDREN))
+    assert alone("\n".join(WITH_CHILDREN + [ENDED[-1], CLEAN]))
+
+
+def test_a_childs_end_takes_no_screenshot(tmp_path):
+    # No pause announced: the taker reaches for no monitor (there is none at this socket's path).
+    taker = f2kboot.ScreenTaker([f2kboot.Block("t.exe a")], tmp_path)
+    taker(tmp_path / "no.sock", "\n".join(WITH_CHILDREN))
+    assert taker.taken == 0
+
+
 # --- --no-build: the build on disk must be the one the test needs------------------------------
 
 

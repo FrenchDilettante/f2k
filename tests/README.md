@@ -198,4 +198,7 @@ A command line's first token is the image's root-relative volume path (`.exe` ad
 Without a command line the kernel runs `exit0`.
 The multi-process case lists `exit0`, `ret0`, `bare`, `bare`, `bare null-write`, `exit0`: the second `bare` catches frames reused without re-zeroing, `bare null-write` a fault that must end its process (through kernel32's start frame, with the access violation's code) before the last `exit0` runs.
 Each process's start is announced on COM1 (`F2K: process 1 of 6: exit0`); its end prints the observed exit code and then the teardown audit (`F2K: teardown audit: frame database ok, kernel heap ok`; with several programs, each line names the process's index, and a summary line follows the last).
+A child, a process another process starts, ends with its own line, `F2K: child process <pid> (<name>) exited normally (exit code=N)` or `F2K: child process <pid> (<name>) ended by fault (vector V, exit code=X)` (`<name>` its image's file name without the extension, as a listed program's), and no teardown audit line follows it.
+The harness never takes that line as a program's end, and takes the child's own output, which the real machine's capture shows inside its parent's block, as its parent's output.
+A kernel case can pass the kernel its own options, the text before `--` (`screens`), through its `kernel_options`.
 Host unit tests still read the checked-in `.exe` files directly (`include_bytes!`, test builds only).

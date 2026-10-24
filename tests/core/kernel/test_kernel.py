@@ -9,6 +9,8 @@ Multiboot loader with the disk attached (`image="kernel"`) or the disk itself th
 `contiguous` strings must match consecutive lines, `forbids` strings fail the case on sight, and
 "KERNEL PANIC" fails every case. `cmdline` is the user program's command line: QEMU's `-append`
 on a kernel boot, the Limine entry's `cmdline` on a disk boot; without one the kernel runs exit0.
+`kernel_options` are the kernel's own options, the text before the command line's "--" (the
+kernel's option `screens`, for instance), on either path.
 
 The program smokes (ret0, hello) run the root directory's single-path fixtures, selected by the
 command line (tests/core/test_limine.py names the sectioned blocks that succeeded the retired ones).
@@ -109,6 +111,8 @@ class Case:
     forbids: tuple[str, ...] = ()
     # A COM1 line on which the harness presses a key (QEMU's monitor `sendkey`), once.
     press_on: str | None = None
+    # The kernel's own options, before the kernel command line's "--" (none: the defaults).
+    kernel_options: str = ""
 
     def __post_init__(self) -> None:
         assert self.image in ("kernel", "disk"), f"{self.name}: image is kernel or disk"
@@ -369,6 +373,7 @@ def test_kernel(case, builder, log_path, boot_timeout, write_profile):
         build,
         image=case.image,
         cmdline=case.cmdline,
+        kernel_options=case.kernel_options,
         log_path=log_path,
         timeout=boot_timeout(DEFAULT_TIMEOUT),
         done=lambda log: expectation.check(log)[0] != "pending",

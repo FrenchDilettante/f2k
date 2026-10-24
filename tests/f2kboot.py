@@ -712,6 +712,14 @@ BOOT_CHECKS = ("F2K Booted Successfully", "F2K: frame database audit: ok", "F2K:
 # A process's end: a one-process boot's form, or a batch's, which names the process's index and
 # name ("F2K: process 3 (bare) exited normally ...").
 END = re.compile(r"^F2K: (?:user process|process \d+ \(.*\)) (exited normally|ended by fault)")
+# A child's end: a process another process started, not one the command line lists. Its form names
+# its process id and its image's name (the file name without its extension, as a batch's names
+# it) and stays outside END's, so it never ends a block: "F2K: child process 136 (spawn) exited
+# normally (exit code=0)", or "F2K: child process 136 (spawn) ended by fault (vector 14, exit
+# code=3221225477)". No teardown audit line follows it. The child's own output is its parent's:
+# the real machine's capture has it inside the parent's block, and the parent's part of the log
+# carries it.
+CHILD_END = re.compile(r"^F2K: child process (\d+) \((.*)\) (exited normally|ended by fault)")
 EXIT_CODE = re.compile(r"exit code=(\d+)")
 # Kernel output inside the program's span: its own report lines and the fault dump.
 KERNEL_PREFIXES = ("F2K:", "CPU EXCEPTION:")
@@ -799,7 +807,8 @@ def process_ended(log: str) -> bool:
 
 
 def program_output(log: str) -> tuple[list[str], int | None]:
-    """The program's lines in a boot's log and its exit code (None when it did not end)."""
+    """The program's lines in a boot's log and its exit code (None when it did not end). Its
+    children's output lines are its own; their end lines are kernel lines, left out."""
     lines = lines_of(log)
     start = next((i + 1 for i, line in enumerate(lines) if line.startswith(ENTER)), None)
     if start is None:
@@ -872,7 +881,8 @@ def compare_block(block: Block, log: str, masks: list[re.Pattern[str]]) -> str |
 
 # The teardown audit line that follows every process's end: the allocators back at the post-boot
 # baseline ("... teardown audit: frame database ok, kernel heap ok"), or what is off ("... teardown
-# audit FAILED: ..."). A suite leg's line names the leg ("F2K: process 3 teardown audit ...").
+# audit FAILED: ..."). A suite leg's line names the leg ("F2K: process 3 teardown audit ..."). A
+# child's end has none (CHILD_END).
 TEARDOWN = re.compile(r"^F2K: (?:process \d+ )?teardown audit")
 
 # The object audit's line, printed only when objects outlived their process (a reference leak),
