@@ -60,6 +60,12 @@ They follow one set of conventions, from `common/f2kt.h`:
 - **One line, one `WriteFile`.** Output never interleaves across
   threads and does not depend on CRT stdio buffering, so a redirected
   capture matches the console.
+- **The A and W forms both run.** A section observing an A function
+  calls its W twin on the same inputs right after and prints the result
+  the same way: the W line carries the W function's name, or a ` (W)`
+  tag on its label. A wide string prints through `ws()`/`wsn()`, which
+  call no API (a unit below 0x100 as its byte, any other as
+  `<U+XXXX>`), so the last error stays as the call left it.
 - **Critical paths are covered even where F2K has nothing yet**
   (structured exception handling, thread-local storage, growable
   heaps, waitable timers, file writes...): a fixture importing an

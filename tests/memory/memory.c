@@ -37,6 +37,11 @@
  *            child thread with a requested stack size, a child that
  *            overflows and catches it
  *
+ * The named mappings run twice: through the A calls, then through their
+ * W twins on the same names (the W lines carry the W names, or "(W)");
+ * image also finds its base through GetModuleHandleW, and protect probes
+ * a wide literal with IsBadStringPtrW (its limit in characters).
+ *
  * Build (real Windows 2000 machine, MSVC 6):
  *   cl /nologo memory.c
  */
@@ -656,6 +661,7 @@ static int probe(BYTE *p, int write)
 }
 
 static const char rdata_text[] = "read-only";
+static const WCHAR rdata_wtext[] = L"read-only";
 
 static int code_probe(void)
 {
@@ -715,6 +721,7 @@ static void sec_protect(void)
     line("IsBadWritePtr(.rdata) %d", IsBadWritePtr((void *)rdata_text, 1));
     line("IsBadCodePtr(function) %d", IsBadCodePtr((FARPROC)code_probe));
     line("IsBadStringPtrA(literal) %d", IsBadStringPtrA(rdata_text, 64));
+    line("IsBadStringPtrW(literal) %d", IsBadStringPtrW(rdata_wtext, 64));
     line("IsBadReadPtr(0x80000000) %d", IsBadReadPtr((void *)0x80000000, 1));
 }
 
@@ -732,6 +739,7 @@ static void sec_image(void)
     query("headers", base);
     VirtualQuery(base, &mbi, sizeof mbi);
     line("headers: allocation base is the image %s", yesno(mbi.AllocationBase == base));
+    line("GetModuleHandleW(NULL): the same base %s", yesno((BYTE *)GetModuleHandleW(NULL) == base));
     for (i = 0; i < nt->FileHeader.NumberOfSections; i++) {
         memcpy(name, sec[i].Name, 8);
         name[8] = 0;
@@ -744,9 +752,52 @@ static void sec_image(void)
 
 /* --- mapping ------------------------------------------------------- */
 
+/* The named mappings, through the A calls or (wide) their W twins. */
+static void named_mappings(int wide)
+{
+    const char *aw = wide ? "W" : "A";
+    const char *tag = wide ? " (W)" : "";
+    HANDLE m2, m3, o;
+    BYTE *v4;
+
+    arm();
+    m2 = wide ? CreateFileMappingW(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, 0x10000, L"F2K.memory.map")
+              : CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, 0x10000, "F2K.memory.map");
+    line("named mapping%s: non-null %s err=%s", tag, yesno(m2 != NULL), le());
+    arm();
+    m3 = wide ? CreateFileMappingW(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, 0x10000, L"F2K.memory.map")
+              : CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, 0x10000, "F2K.memory.map");
+    line("named mapping again%s: non-null %s err=%s", tag, yesno(m3 != NULL), le());
+    if (m3 != NULL) {
+        CloseHandle(m3);
+    }
+    o = wide ? OpenFileMappingW(FILE_MAP_READ, FALSE, L"F2K.memory.map")
+             : OpenFileMappingA(FILE_MAP_READ, FALSE, "F2K.memory.map");
+    if (m2 != NULL && o != NULL) {
+        v4 = (BYTE *)MapViewOfFile(m2, FILE_MAP_WRITE, 0, 0, 0);
+        v4[100] = 0xA5;
+        UnmapViewOfFile(v4);
+        v4 = (BYTE *)MapViewOfFile(o, FILE_MAP_READ, 0, 0, 0);
+        line("OpenFileMapping%s sees the named mapping's data: %s", aw, yesno(v4 != NULL && v4[100] == 0xA5));
+        UnmapViewOfFile(v4);
+    }
+    arm();
+    m3 = wide ? OpenFileMappingW(FILE_MAP_READ, FALSE, L"F2K.memory.nosuch")
+              : OpenFileMappingA(FILE_MAP_READ, FALSE, "F2K.memory.nosuch");
+    line("OpenFileMapping%s(missing): null %s err=%s", aw, yesno(m3 == NULL), le());
+    if (m3 != NULL) {
+        CloseHandle(m3);
+    }
+    /* Close every handle, so the W pass creates the name afresh. */
+    if (o != NULL) {
+        CloseHandle(o);
+    }
+    CloseHandle(m2);
+}
+
 static void sec_mapping(void)
 {
-    HANDLE m, m2, m3;
+    HANDLE m;
     BYTE *v1, *v2, *v3, *v4;
     MEMORY_BASIC_INFORMATION mbi;
     BOOL r;
@@ -775,28 +826,8 @@ static void sec_mapping(void)
     v4 = (BYTE *)MapViewOfFile(m, FILE_MAP_READ, 0, 0x1000, 0x1000);
     line("view at offset 4 KiB: null %s err=%s", yesno(v4 == NULL), le());
 
-    arm();
-    m2 = CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, 0x10000, "F2K.memory.map");
-    line("named mapping: non-null %s err=%s", yesno(m2 != NULL), le());
-    arm();
-    m3 = CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, 0x10000, "F2K.memory.map");
-    line("named mapping again: non-null %s err=%s", yesno(m3 != NULL), le());
-    if (m3 != NULL) {
-        CloseHandle(m3);
-    }
-    m3 = OpenFileMappingA(FILE_MAP_READ, FALSE, "F2K.memory.map");
-    if (m2 != NULL && m3 != NULL) {
-        v4 = (BYTE *)MapViewOfFile(m2, FILE_MAP_WRITE, 0, 0, 0);
-        v4[100] = 0xA5;
-        UnmapViewOfFile(v4);
-        v4 = (BYTE *)MapViewOfFile(m3, FILE_MAP_READ, 0, 0, 0);
-        line("OpenFileMappingA sees the named mapping's data: %s", yesno(v4 != NULL && v4[100] == 0xA5));
-        UnmapViewOfFile(v4);
-    }
-    arm();
-    m3 = OpenFileMappingA(FILE_MAP_READ, FALSE, "F2K.memory.nosuch");
-    line("OpenFileMappingA(missing): null %s err=%s", yesno(m3 == NULL), le());
-    CloseHandle(m2);
+    named_mappings(0);
+    named_mappings(1);
 
     arm();
     r = CloseHandle(m);

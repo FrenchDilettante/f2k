@@ -1,7 +1,8 @@
 //! Synchronization objects, waits, sleeps, handles and user APCs: kernel32's own code over ntdll's
-//! system services, as on Windows 2000. The narrow names convert through the ANSI code
-//! page (Windows 2000 converts into the thread's static Unicode string, MAX_PATH + 1 units: a
-//! longer name is ERROR_FILENAME_EXCED_RANGE); named objects are made in `\BaseNamedObjects`,
+//! system services, as on Windows 2000. The W calls take their names as given; the A calls convert
+//! theirs through the ANSI code page and call the W ones (Windows 2000 converts into the thread's
+//! static Unicode string, MAX_PATH + 1 units: a longer name is ERROR_FILENAME_EXCED_RANGE, which
+//! the W call does not refuse); named objects are made in `\BaseNamedObjects`,
 //! OBJ_OPENIF ([`crate::base::format_object_attributes`]); a failed service's status sets the
 //! last error through BaseSetLastNTError.
 //!
@@ -21,13 +22,13 @@ use crate::base::{
     set_last_nt_error,
     standard_handle,
     succeeded,
-    unicode_string,
+    wide_string,
     SecurityAttributes,
     CURRENT_PROCESS,
     OBJ_INHERIT,
 };
 use crate::console;
-use crate::nt::{self, ObjectAttributes, UnicodeString};
+use crate::nt::{self, ObjectAttributes};
 
 /// DuplicateConsoleHandle's failure.
 const INVALID_HANDLE_VALUE: u32 = 0xFFFF_FFFF;
@@ -65,19 +66,20 @@ const MAXIMUM_WAIT_OBJECTS: usize = 64;
 /// The ANSI path limit: an object name's longest, in characters.
 const MAX_PATH: usize = 260;
 
-/// An ANSI object name into UTF-16 in `out`: its length in units; ERROR_FILENAME_EXCED_RANGE past
+/// An ANSI object name into UTF-16 in `out`, NUL-terminated: ERROR_FILENAME_EXCED_RANGE past
 /// MAX_PATH characters.
 ///
 /// # Safety
 ///
 /// `name` points at a NUL-terminated string (a bad pointer faults the caller, as on the platform).
-unsafe fn widen(name: *const u8, out: &mut [u16; MAX_PATH + 1]) -> Result<usize, u32> {
+unsafe fn widen(name: *const u8, out: &mut [u16; MAX_PATH + 1]) -> Result<(), u32> {
     let mut length = 0;
     loop {
         // SAFETY: the caller's string, read to its terminator.
         let byte = unsafe { name.add(length).read() };
         if byte == 0 {
-            return Ok(length);
+            out[length] = 0;
+            return Ok(());
         }
         if length == MAX_PATH {
             return Err(ERROR_FILENAME_EXCED_RANGE);
@@ -87,50 +89,53 @@ unsafe fn widen(name: *const u8, out: &mut [u16; MAX_PATH + 1]) -> Result<usize,
     }
 }
 
+/// An A call's name handed to its W call: `wide` with the name converted (null stays null), or
+/// null with the conversion's error.
+///
+/// # Safety
+///
+/// `name` is null or a NUL-terminated string.
+pub(crate) unsafe fn narrow(name: *const u8, wide: impl FnOnce(*const u16) -> u32) -> u32 {
+    if name.is_null() {
+        return wide(core::ptr::null());
+    }
+    let mut units = [0u16; MAX_PATH + 1];
+    // SAFETY: the caller's string.
+    match unsafe { widen(name, &mut units) } {
+        Ok(()) => wide(units.as_ptr()),
+        Err(error) => {
+            set_last_error(error);
+            0
+        }
+    }
+}
+
 /// A Win32 BOOL argument as a BOOLEAN.
 fn boolean(value: u32) -> u32 {
     u32::from(value != 0)
 }
 
-/// The create every named kind shares (CreateEventA, CreateMutexA, CreateSemaphoreA,
-/// CreateWaitableTimerA, CreateFileMappingA): the name converted, the attributes formatted,
-/// `service` raised with them. On success the handle, the last error ERROR_ALREADY_EXISTS when the
-/// name bound an existing object and cleared otherwise (Windows clears it on every successful
-/// create); on failure null with the status's error.
+/// The create every named kind shares (CreateEventW, CreateMutexW, CreateSemaphoreW,
+/// CreateWaitableTimerW, CreateFileMappingW): the attributes formatted, `service` raised with them.
+/// On success the handle, the last error ERROR_ALREADY_EXISTS when the name bound an existing
+/// object and cleared otherwise (Windows clears it on every successful create); on failure null
+/// with the status's error.
 ///
 /// # Safety
 ///
-/// `name` is null or a NUL-terminated string; `security` null or a SECURITY_ATTRIBUTES.
-pub(crate) unsafe fn create(
+/// `name` is null or a NUL-terminated UTF-16 string; `security` null or a SECURITY_ATTRIBUTES.
+pub(crate) unsafe fn create_w(
     security: *const SecurityAttributes,
-    name: *const u8,
+    name: *const u16,
     service: impl FnOnce(*mut u32, *const ObjectAttributes) -> u32,
 ) -> u32 {
-    let mut units = [0u16; MAX_PATH + 1];
-    let mut string = UnicodeString {
-        length: 0,
-        maximum_length: 0,
-        buffer: core::ptr::null_mut(),
-    };
     let named = !name.is_null();
-    if named {
-        // SAFETY: the caller's string.
-        match unsafe { widen(name, &mut units) } {
-            Ok(length) => string = unicode_string(&mut units, length),
-            Err(error) => {
-                set_last_error(error);
-                return 0;
-            }
-        }
-    }
+    // SAFETY: the caller's string, when given.
+    let string = named.then(|| unsafe { wide_string(name) });
     let mut attributes = core::mem::MaybeUninit::<ObjectAttributes>::uninit();
     // SAFETY: the caller's security attributes; the name outlives the call.
     let attributes = unsafe {
-        format_object_attributes(
-            &mut *attributes.as_mut_ptr(),
-            security,
-            named.then_some(&string),
-        )
+        format_object_attributes(&mut *attributes.as_mut_ptr(), security, string.as_ref())
     };
     let mut handle = 0;
     let status = service(&mut handle, attributes);
@@ -146,35 +151,28 @@ pub(crate) unsafe fn create(
     handle
 }
 
-/// The open every named kind shares (OpenEventA, OpenMutexA, OpenSemaphoreA, OpenWaitableTimerA,
-/// OpenFileMappingA): the named object in `\BaseNamedObjects`, with the access asked
-/// for and inheritable when asked. ERROR_INVALID_PARAMETER without a name; the status's error when
-/// it cannot be opened. The last error is left alone on success.
+/// The open every named kind shares (OpenEventW, OpenMutexW, OpenSemaphoreW, OpenWaitableTimerW,
+/// OpenFileMappingW): the named object in `\BaseNamedObjects`, with the access asked for and
+/// inheritable when asked. ERROR_INVALID_PARAMETER without a name; the status's error when it
+/// cannot be opened. The last error is left alone on success.
 ///
 /// # Safety
 ///
-/// `name` is null or a NUL-terminated string.
-pub(crate) unsafe fn open(
+/// `name` is null or a NUL-terminated UTF-16 string.
+pub(crate) unsafe fn open_w(
     access: u32,
     inherit: u32,
-    name: *const u8,
+    name: *const u16,
     service: impl FnOnce(*mut u32, u32, *const ObjectAttributes) -> u32,
 ) -> u32 {
-    let mut units = [0u16; MAX_PATH + 1];
+    // An empty name names nothing (an assumption: F2K's answer, unverified).
     // SAFETY: the caller's string, when given.
-    let length = match (!name.is_null()).then(|| unsafe { widen(name, &mut units) }) {
-        // An empty name names nothing (an assumption: F2K's answer, unverified).
-        None | Some(Ok(0)) => {
-            set_last_error(ERROR_INVALID_PARAMETER);
-            return 0;
-        }
-        Some(Err(error)) => {
-            set_last_error(error);
-            return 0;
-        }
-        Some(Ok(length)) => length,
-    };
-    let string = unicode_string(&mut units, length);
+    if name.is_null() || unsafe { name.read() } == 0 {
+        set_last_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+    // SAFETY: as above.
+    let string = unsafe { wide_string(name) };
     let attributes = ObjectAttributes {
         length: 24,
         root_directory: named_object_directory(),
@@ -194,18 +192,18 @@ pub(crate) unsafe fn open(
 
 // --- Events --------------------------------------------------------------------------------------
 
-/// CreateEventA: a manual-reset (notification) or auto-reset (synchronization) event, signaled
+/// CreateEventW: a manual-reset (notification) or auto-reset (synchronization) event, signaled
 /// when asked, or the named one already bound (its initial state then ignored).
 ///
 /// # Safety
 ///
-/// `security` is null or a SECURITY_ATTRIBUTES; `name` null or a NUL-terminated string.
-#[unsafe(export_name = "f2k_export_CreateEventA")]
-pub unsafe extern "system" fn create_event_a(
+/// `security` is null or a SECURITY_ATTRIBUTES; `name` null or a NUL-terminated UTF-16 string.
+#[unsafe(export_name = "f2k_export_CreateEventW")]
+pub unsafe extern "system" fn create_event_w(
     security: *const SecurityAttributes,
     manual_reset: u32,
     initial_state: u32,
-    name: *const u8,
+    name: *const u16,
 ) -> u32 {
     let event_type = if manual_reset != 0 {
         NOTIFICATION
@@ -214,7 +212,7 @@ pub unsafe extern "system" fn create_event_a(
     };
     // SAFETY: the caller's arguments; ntdll's export.
     unsafe {
-        create(security, name, |handle, attributes| {
+        create_w(security, name, |handle, attributes| {
             nt::NtCreateEvent(
                 handle,
                 EVENT_ALL_ACCESS,
@@ -226,19 +224,50 @@ pub unsafe extern "system" fn create_event_a(
     }
 }
 
-/// OpenEventA (see [`open`]).
+/// CreateEventA: [`create_event_w`], the name converted (see [`narrow`]).
+///
+/// # Safety
+///
+/// `security` is null or a SECURITY_ATTRIBUTES; `name` null or a NUL-terminated string.
+#[unsafe(export_name = "f2k_export_CreateEventA")]
+pub unsafe extern "system" fn create_event_a(
+    security: *const SecurityAttributes,
+    manual_reset: u32,
+    initial_state: u32,
+    name: *const u8,
+) -> u32 {
+    // SAFETY: the caller's arguments.
+    unsafe {
+        narrow(name, |wide| {
+            create_event_w(security, manual_reset, initial_state, wide)
+        })
+    }
+}
+
+/// OpenEventW (see [`open_w`]).
+///
+/// # Safety
+///
+/// `name` is null or a NUL-terminated UTF-16 string.
+#[unsafe(export_name = "f2k_export_OpenEventW")]
+pub unsafe extern "system" fn open_event_w(access: u32, inherit: u32, name: *const u16) -> u32 {
+    // SAFETY: the caller's string; ntdll's export.
+    unsafe {
+        open_w(access, inherit, name, |handle, access, attributes| {
+            nt::NtOpenEvent(handle, access, attributes)
+        })
+    }
+}
+
+/// OpenEventA: [`open_event_w`], the name converted (see [`narrow`]).
 ///
 /// # Safety
 ///
 /// `name` is null or a NUL-terminated string.
 #[unsafe(export_name = "f2k_export_OpenEventA")]
 pub unsafe extern "system" fn open_event_a(access: u32, inherit: u32, name: *const u8) -> u32 {
-    // SAFETY: the caller's string; ntdll's export.
-    unsafe {
-        open(access, inherit, name, |handle, access, attributes| {
-            nt::NtOpenEvent(handle, access, attributes)
-        })
-    }
+    // SAFETY: the caller's string.
+    unsafe { narrow(name, |wide| open_event_w(access, inherit, wide)) }
 }
 
 /// SetEvent: signal the event.
@@ -264,21 +293,21 @@ pub extern "system" fn pulse_event(event: u32) -> u32 {
 
 // --- Mutexes and semaphores ----------------------------------------------------------------------
 
-/// CreateMutexA: a mutex, owned by the caller when asked, or the named one already bound (whose
+/// CreateMutexW: a mutex, owned by the caller when asked, or the named one already bound (whose
 /// ownership the call leaves alone).
 ///
 /// # Safety
 ///
-/// `security` is null or a SECURITY_ATTRIBUTES; `name` null or a NUL-terminated string.
-#[unsafe(export_name = "f2k_export_CreateMutexA")]
-pub unsafe extern "system" fn create_mutex_a(
+/// `security` is null or a SECURITY_ATTRIBUTES; `name` null or a NUL-terminated UTF-16 string.
+#[unsafe(export_name = "f2k_export_CreateMutexW")]
+pub unsafe extern "system" fn create_mutex_w(
     security: *const SecurityAttributes,
     initial_owner: u32,
-    name: *const u8,
+    name: *const u16,
 ) -> u32 {
     // SAFETY: the caller's arguments; ntdll's export.
     unsafe {
-        create(security, name, |handle, attributes| {
+        create_w(security, name, |handle, attributes| {
             nt::NtCreateMutant(
                 handle,
                 MUTANT_ALL_ACCESS,
@@ -289,19 +318,45 @@ pub unsafe extern "system" fn create_mutex_a(
     }
 }
 
-/// OpenMutexA (see [`open`]).
+/// CreateMutexA: [`create_mutex_w`], the name converted (see [`narrow`]).
+///
+/// # Safety
+///
+/// `security` is null or a SECURITY_ATTRIBUTES; `name` null or a NUL-terminated string.
+#[unsafe(export_name = "f2k_export_CreateMutexA")]
+pub unsafe extern "system" fn create_mutex_a(
+    security: *const SecurityAttributes,
+    initial_owner: u32,
+    name: *const u8,
+) -> u32 {
+    // SAFETY: the caller's arguments.
+    unsafe { narrow(name, |wide| create_mutex_w(security, initial_owner, wide)) }
+}
+
+/// OpenMutexW (see [`open_w`]).
+///
+/// # Safety
+///
+/// `name` is null or a NUL-terminated UTF-16 string.
+#[unsafe(export_name = "f2k_export_OpenMutexW")]
+pub unsafe extern "system" fn open_mutex_w(access: u32, inherit: u32, name: *const u16) -> u32 {
+    // SAFETY: the caller's string; ntdll's export.
+    unsafe {
+        open_w(access, inherit, name, |handle, access, attributes| {
+            nt::NtOpenMutant(handle, access, attributes)
+        })
+    }
+}
+
+/// OpenMutexA: [`open_mutex_w`], the name converted (see [`narrow`]).
 ///
 /// # Safety
 ///
 /// `name` is null or a NUL-terminated string.
 #[unsafe(export_name = "f2k_export_OpenMutexA")]
 pub unsafe extern "system" fn open_mutex_a(access: u32, inherit: u32, name: *const u8) -> u32 {
-    // SAFETY: the caller's string; ntdll's export.
-    unsafe {
-        open(access, inherit, name, |handle, access, attributes| {
-            nt::NtOpenMutant(handle, access, attributes)
-        })
-    }
+    // SAFETY: the caller's string.
+    unsafe { narrow(name, |wide| open_mutex_w(access, inherit, wide)) }
 }
 
 /// ReleaseMutex: give up one unit of the caller's ownership (ERROR_NOT_OWNER unless it owns it).
@@ -311,8 +366,28 @@ pub extern "system" fn release_mutex(mutex: u32) -> u32 {
     succeeded(unsafe { nt::NtReleaseMutant(mutex, core::ptr::null_mut()) })
 }
 
-/// CreateSemaphoreA: a semaphore at the initial count with the given maximum, or the named one
+/// CreateSemaphoreW: a semaphore at the initial count with the given maximum, or the named one
 /// already bound (ERROR_INVALID_PARAMETER unless 0 <= initial <= maximum, the maximum positive).
+///
+/// # Safety
+///
+/// `security` is null or a SECURITY_ATTRIBUTES; `name` null or a NUL-terminated UTF-16 string.
+#[unsafe(export_name = "f2k_export_CreateSemaphoreW")]
+pub unsafe extern "system" fn create_semaphore_w(
+    security: *const SecurityAttributes,
+    initial: i32,
+    maximum: i32,
+    name: *const u16,
+) -> u32 {
+    // SAFETY: the caller's arguments; ntdll's export.
+    unsafe {
+        create_w(security, name, |handle, attributes| {
+            nt::NtCreateSemaphore(handle, SEMAPHORE_ALL_ACCESS, attributes, initial, maximum)
+        })
+    }
+}
+
+/// CreateSemaphoreA: [`create_semaphore_w`], the name converted (see [`narrow`]).
 ///
 /// # Safety
 ///
@@ -324,27 +399,38 @@ pub unsafe extern "system" fn create_semaphore_a(
     maximum: i32,
     name: *const u8,
 ) -> u32 {
-    // SAFETY: the caller's arguments; ntdll's export.
+    // SAFETY: the caller's arguments.
     unsafe {
-        create(security, name, |handle, attributes| {
-            nt::NtCreateSemaphore(handle, SEMAPHORE_ALL_ACCESS, attributes, initial, maximum)
+        narrow(name, |wide| {
+            create_semaphore_w(security, initial, maximum, wide)
         })
     }
 }
 
-/// OpenSemaphoreA (see [`open`]).
+/// OpenSemaphoreW (see [`open_w`]).
+///
+/// # Safety
+///
+/// `name` is null or a NUL-terminated UTF-16 string.
+#[unsafe(export_name = "f2k_export_OpenSemaphoreW")]
+pub unsafe extern "system" fn open_semaphore_w(access: u32, inherit: u32, name: *const u16) -> u32 {
+    // SAFETY: the caller's string; ntdll's export.
+    unsafe {
+        open_w(access, inherit, name, |handle, access, attributes| {
+            nt::NtOpenSemaphore(handle, access, attributes)
+        })
+    }
+}
+
+/// OpenSemaphoreA: [`open_semaphore_w`], the name converted (see [`narrow`]).
 ///
 /// # Safety
 ///
 /// `name` is null or a NUL-terminated string.
 #[unsafe(export_name = "f2k_export_OpenSemaphoreA")]
 pub unsafe extern "system" fn open_semaphore_a(access: u32, inherit: u32, name: *const u8) -> u32 {
-    // SAFETY: the caller's string; ntdll's export.
-    unsafe {
-        open(access, inherit, name, |handle, access, attributes| {
-            nt::NtOpenSemaphore(handle, access, attributes)
-        })
-    }
+    // SAFETY: the caller's string.
+    unsafe { narrow(name, |wide| open_semaphore_w(access, inherit, wide)) }
 }
 
 /// ReleaseSemaphore: add the count, the previous count into `previous` when given
@@ -365,8 +451,32 @@ pub unsafe extern "system" fn release_semaphore(
 
 // --- Waitable timers -----------------------------------------------------------------------------
 
-/// CreateWaitableTimerA: an unarmed manual-reset (notification) or auto-reset (synchronization)
+/// CreateWaitableTimerW: an unarmed manual-reset (notification) or auto-reset (synchronization)
 /// timer, or the named one already bound.
+///
+/// # Safety
+///
+/// `security` is null or a SECURITY_ATTRIBUTES; `name` null or a NUL-terminated UTF-16 string.
+#[unsafe(export_name = "f2k_export_CreateWaitableTimerW")]
+pub unsafe extern "system" fn create_waitable_timer_w(
+    security: *const SecurityAttributes,
+    manual_reset: u32,
+    name: *const u16,
+) -> u32 {
+    let timer_type = if manual_reset != 0 {
+        NOTIFICATION
+    } else {
+        SYNCHRONIZATION
+    };
+    // SAFETY: the caller's arguments; ntdll's export.
+    unsafe {
+        create_w(security, name, |handle, attributes| {
+            nt::NtCreateTimer(handle, TIMER_ALL_ACCESS, attributes, timer_type)
+        })
+    }
+}
+
+/// CreateWaitableTimerA: [`create_waitable_timer_w`], the name converted (see [`narrow`]).
 ///
 /// # Safety
 ///
@@ -377,20 +487,34 @@ pub unsafe extern "system" fn create_waitable_timer_a(
     manual_reset: u32,
     name: *const u8,
 ) -> u32 {
-    let timer_type = if manual_reset != 0 {
-        NOTIFICATION
-    } else {
-        SYNCHRONIZATION
-    };
-    // SAFETY: the caller's arguments; ntdll's export.
+    // SAFETY: the caller's arguments.
     unsafe {
-        create(security, name, |handle, attributes| {
-            nt::NtCreateTimer(handle, TIMER_ALL_ACCESS, attributes, timer_type)
+        narrow(name, |wide| {
+            create_waitable_timer_w(security, manual_reset, wide)
         })
     }
 }
 
-/// OpenWaitableTimerA (see [`open`]).
+/// OpenWaitableTimerW (see [`open_w`]).
+///
+/// # Safety
+///
+/// `name` is null or a NUL-terminated UTF-16 string.
+#[unsafe(export_name = "f2k_export_OpenWaitableTimerW")]
+pub unsafe extern "system" fn open_waitable_timer_w(
+    access: u32,
+    inherit: u32,
+    name: *const u16,
+) -> u32 {
+    // SAFETY: the caller's string; ntdll's export.
+    unsafe {
+        open_w(access, inherit, name, |handle, access, attributes| {
+            nt::NtOpenTimer(handle, access, attributes)
+        })
+    }
+}
+
+/// OpenWaitableTimerA: [`open_waitable_timer_w`], the name converted (see [`narrow`]).
 ///
 /// # Safety
 ///
@@ -401,12 +525,8 @@ pub unsafe extern "system" fn open_waitable_timer_a(
     inherit: u32,
     name: *const u8,
 ) -> u32 {
-    // SAFETY: the caller's string; ntdll's export.
-    unsafe {
-        open(access, inherit, name, |handle, access, attributes| {
-            nt::NtOpenTimer(handle, access, attributes)
-        })
-    }
+    // SAFETY: the caller's string.
+    unsafe { narrow(name, |wide| open_waitable_timer_w(access, inherit, wide)) }
 }
 
 /// SetWaitableTimer: arm the timer — the due time a FILETIME when positive, relative 100 ns units

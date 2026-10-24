@@ -40,24 +40,24 @@ const FILE_MAP_READ: u32 = 0x0004;
 /// NtMapViewOfSection's ViewShare disposition.
 const VIEW_SHARE: u32 = 1;
 
-/// CreateFileMappingA: a section of the file (the size asked for, or the file's when none is) or of
+/// CreateFileMappingW: a section of the file (the size asked for, or the file's when none is) or of
 /// the paging file (INVALID_HANDLE_VALUE, which needs a size), read-only, read-write or
 /// copy-on-write (another protection is ERROR_INVALID_PARAMETER); or the named one already bound
-/// (ERROR_ALREADY_EXISTS). The last error is cleared on success (see [`sync::create`]). The file's
-/// rules are the section service's (an empty file ERROR_FILE_INVALID, one smaller than the size
-/// asked ERROR_NOT_ENOUGH_MEMORY).
+/// (ERROR_ALREADY_EXISTS). The last error is cleared on success (see [`sync::create_w`]). The
+/// file's rules are the section service's (an empty file ERROR_FILE_INVALID, one smaller than the
+/// size asked ERROR_NOT_ENOUGH_MEMORY).
 ///
 /// # Safety
 ///
-/// `security` is null or a SECURITY_ATTRIBUTES; `name` null or a NUL-terminated string.
-#[unsafe(export_name = "f2k_export_CreateFileMappingA")]
-pub unsafe extern "system" fn create_file_mapping_a(
+/// `security` is null or a SECURITY_ATTRIBUTES; `name` null or a NUL-terminated UTF-16 string.
+#[unsafe(export_name = "f2k_export_CreateFileMappingW")]
+pub unsafe extern "system" fn create_file_mapping_w(
     file: u32,
     security: *const SecurityAttributes,
     protect: u32,
     size_high: u32,
     size_low: u32,
-    name: *const u8,
+    name: *const u16,
 ) -> u32 {
     let attributes = protect & (SEC_FILE | SEC_IMAGE | SEC_RESERVE | SEC_COMMIT | SEC_NOCACHE);
     let protect = protect ^ attributes;
@@ -80,7 +80,7 @@ pub unsafe extern "system" fn create_file_mapping_a(
     };
     // SAFETY: the caller's arguments; ntdll's export.
     unsafe {
-        sync::create(security, name, |handle, object_attributes| {
+        sync::create_w(security, name, |handle, object_attributes| {
             if !matches!(protect, PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY)
                 || file == 0 && maximum == 0
             {
@@ -104,8 +104,54 @@ pub unsafe extern "system" fn create_file_mapping_a(
     }
 }
 
-/// OpenFileMappingA: the named mapping in `\BaseNamedObjects`, with the access asked for
-/// (FILE_MAP_COPY asks to read) and inheritable when asked (see [`sync::open`]).
+/// CreateFileMappingA: [`create_file_mapping_w`], the name converted (see [`sync::narrow`]).
+///
+/// # Safety
+///
+/// `security` is null or a SECURITY_ATTRIBUTES; `name` null or a NUL-terminated string.
+#[unsafe(export_name = "f2k_export_CreateFileMappingA")]
+pub unsafe extern "system" fn create_file_mapping_a(
+    file: u32,
+    security: *const SecurityAttributes,
+    protect: u32,
+    size_high: u32,
+    size_low: u32,
+    name: *const u8,
+) -> u32 {
+    // SAFETY: the caller's arguments.
+    unsafe {
+        sync::narrow(name, |wide| {
+            create_file_mapping_w(file, security, protect, size_high, size_low, wide)
+        })
+    }
+}
+
+/// OpenFileMappingW: the named mapping in `\BaseNamedObjects`, with the access asked for
+/// (FILE_MAP_COPY asks to read) and inheritable when asked (see [`sync::open_w`]).
+///
+/// # Safety
+///
+/// `name` is null or a NUL-terminated UTF-16 string.
+#[unsafe(export_name = "f2k_export_OpenFileMappingW")]
+pub unsafe extern "system" fn open_file_mapping_w(
+    access: u32,
+    inherit: u32,
+    name: *const u16,
+) -> u32 {
+    let access = if access == FILE_MAP_COPY {
+        FILE_MAP_READ
+    } else {
+        access
+    };
+    // SAFETY: the caller's string; ntdll's export.
+    unsafe {
+        sync::open_w(access, inherit, name, |handle, access, attributes| {
+            nt::NtOpenSection(handle, access, attributes)
+        })
+    }
+}
+
+/// OpenFileMappingA: [`open_file_mapping_w`], the name converted (see [`sync::narrow`]).
 ///
 /// # Safety
 ///
@@ -116,17 +162,8 @@ pub unsafe extern "system" fn open_file_mapping_a(
     inherit: u32,
     name: *const u8,
 ) -> u32 {
-    let access = if access == FILE_MAP_COPY {
-        FILE_MAP_READ
-    } else {
-        access
-    };
-    // SAFETY: the caller's string; ntdll's export.
-    unsafe {
-        sync::open(access, inherit, name, |handle, access, attributes| {
-            nt::NtOpenSection(handle, access, attributes)
-        })
-    }
+    // SAFETY: the caller's string.
+    unsafe { sync::narrow(name, |wide| open_file_mapping_w(access, inherit, wide)) }
 }
 
 /// MapViewOfFile: a view of `bytes` of the mapping (zero: to its end) from the offset, anywhere in

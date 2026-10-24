@@ -1,14 +1,14 @@
-//! System messages: FormatMessageA, kernel32's own code as on Windows 2000, and its text for a
-//! Win32 error code.
+//! System messages: FormatMessageA and FormatMessageW, kernel32's own code as on Windows 2000, and
+//! their text for a Win32 error code.
 //!
 //! kernel32 carries the system message table's entries for the common error codes, in Windows
 //! 2000's English wording, each ending in the CR LF the table stores (a regular line break). A code
 //! the table lacks is ERROR_MR_MID_NOT_FOUND, as a missing message is on the platform.
-//! FormatMessageA serves system messages, into the caller's buffer or a block it allocates
+//! FormatMessage serves system messages, into the caller's buffer or a block it allocates
 //! (FORMAT_MESSAGE_ALLOCATE_BUFFER), its lines as the width asks (the low byte of the flags); a
 //! message from a string or a module, and insert expansion, are not served.
 
-use crate::base::set_last_error;
+use crate::base::{set_last_error, Text};
 use crate::error::{
     ERROR_INSUFFICIENT_BUFFER,
     ERROR_INVALID_PARAMETER,
@@ -60,7 +60,7 @@ const FROM_SYSTEM: u32 = 0x1000;
 const MAX_WIDTH_MASK: u32 = 0x00FF;
 
 /// The room a formatted system message takes: the longest message, its line breaks multiplied
-/// (a break in every blank at the narrowest width), and the trailing break.
+/// (a break after every character at the narrowest width), and the trailing break.
 const FORMATTED_ROOM: usize = 256;
 
 /// A message formatted for the output: its bytes, terminator excluded.
@@ -83,8 +83,8 @@ impl Formatted {
 /// `text` as the width (the flags' low byte) lays its lines out. Zero keeps the message's regular
 /// line break (CR LF). Any other width ignores it — a blank in its place — and generates none
 /// for FORMAT_MESSAGE_MAX_WIDTH_MASK; a width of 1 to 254 breaks a line that would run past it at
-/// its last blank, the blank replaced by CR LF, and lets a single word longer than the width run
-/// past it rather than split it.
+/// its last blank, the blank replaced by CR LF, and splits a word longer than the width at the
+/// width (the runtime capture: width 5 makes `Acces` and `s is` of "Access is").
 fn format(text: &str, width: u32) -> Formatted {
     let mut out = Formatted {
         bytes: [0; FORMATTED_ROOM],
@@ -103,6 +103,11 @@ fn format(text: &str, width: u32) -> Formatted {
                 out.bytes[at..at + 2].copy_from_slice(b"\r\n");
                 out.length += 1;
                 line = at + 2;
+            } else {
+                // No blank on the line: the word breaks at the width.
+                out.push(b'\r');
+                out.push(b'\n');
+                line = out.length;
             }
         }
         if byte == b' ' {
@@ -121,28 +126,19 @@ fn allocate_block(bytes: usize) -> *mut u8 {
     unsafe { nt::RtlAllocateHeap(crate::base::process_heap(), 0, bytes) }
 }
 
-/// FormatMessageA: the system message for the code, laid out to the width (see [`format`]), its
-/// length without the terminator. Into the caller's buffer of `size` bytes, or, for
-/// FORMAT_MESSAGE_ALLOCATE_BUFFER, into a block of at least `size` bytes on the process heap (a
-/// fixed local block: LocalFree frees it) whose address goes where `buffer` points — null there
-/// when the call fails. ERROR_MR_MID_NOT_FOUND for a code without a message,
-/// ERROR_INSUFFICIENT_BUFFER for a buffer too small, ERROR_NOT_ENOUGH_MEMORY for a block the heap
-/// cannot hold, ERROR_INVALID_PARAMETER for a source kernel32 does not serve.
+/// FormatMessageW's work: the system message for the code, laid out to the width (see [`format`]),
+/// its length without the terminator, as characters (`wide`) or bytes. Into the caller's buffer of
+/// `size` characters, or, for FORMAT_MESSAGE_ALLOCATE_BUFFER, into a block of the message's size on
+/// the process heap (a fixed local block: LocalFree frees it; `size` is not its least, as the
+/// runtime capture shows) whose address goes where `buffer` points — null there when the call
+/// fails. ERROR_MR_MID_NOT_FOUND for a code
+/// without a message, ERROR_INSUFFICIENT_BUFFER for a buffer too small, ERROR_NOT_ENOUGH_MEMORY for
+/// a block the heap cannot hold, ERROR_INVALID_PARAMETER for a source kernel32 does not serve.
 ///
 /// # Safety
 ///
-/// The buffer holds `size` bytes; for FORMAT_MESSAGE_ALLOCATE_BUFFER it is a pointer's place.
-#[allow(clippy::too_many_arguments)]
-#[unsafe(export_name = "f2k_export_FormatMessageA")]
-pub unsafe extern "system" fn format_message_a(
-    flags: u32,
-    _source: *const u8,
-    code: u32,
-    _language: u32,
-    buffer: *mut u8,
-    size: u32,
-    _arguments: *const u8,
-) -> u32 {
+/// The buffer holds `size` characters; for FORMAT_MESSAGE_ALLOCATE_BUFFER it is a pointer's place.
+unsafe fn format_message(flags: u32, code: u32, buffer: *mut u8, size: u32, wide: bool) -> u32 {
     let allocate = flags & ALLOCATE_BUFFER != 0;
     if allocate {
         // SAFETY: the caller's pointer place.
@@ -158,8 +154,9 @@ pub unsafe extern "system" fn format_message_a(
     };
     let formatted = format(text, flags & MAX_WIDTH_MASK);
     let length = formatted.length;
+    let unit = if wide { 2 } else { 1 };
     let out = if allocate {
-        let block = allocate_block((size as usize).max(length + 1));
+        let block = allocate_block(unit * (length + 1));
         if block.is_null() {
             set_last_error(ERROR_NOT_ENOUGH_MEMORY);
             return 0;
@@ -174,11 +171,57 @@ pub unsafe extern "system" fn format_message_a(
         }
         buffer
     };
+    let out = if wide {
+        Text::Wide(out as *mut u16)
+    } else {
+        Text::Ansi(out)
+    };
     for (at, &byte) in formatted.as_bytes().iter().chain(&[0]).enumerate() {
-        // SAFETY: inside the buffer or the block (the message and its terminator fit).
-        unsafe { out.add(at).write(byte) };
+        // SAFETY: inside the buffer or the block (the message and its terminator fit); the
+        // messages are ASCII, the same in either form.
+        unsafe { out.put_unit(at, u16::from(byte)) };
     }
     length as u32
+}
+
+/// FormatMessageA (see [`format_message`]): the size and the length in bytes.
+///
+/// # Safety
+///
+/// The buffer holds `size` bytes; for FORMAT_MESSAGE_ALLOCATE_BUFFER it is a pointer's place.
+#[allow(clippy::too_many_arguments)]
+#[unsafe(export_name = "f2k_export_FormatMessageA")]
+pub unsafe extern "system" fn format_message_a(
+    flags: u32,
+    _source: *const u8,
+    code: u32,
+    _language: u32,
+    buffer: *mut u8,
+    size: u32,
+    _arguments: *const u8,
+) -> u32 {
+    // SAFETY: the caller's buffer.
+    unsafe { format_message(flags, code, buffer, size, false) }
+}
+
+/// FormatMessageW (see [`format_message`]): the size and the length in characters.
+///
+/// # Safety
+///
+/// The buffer holds `size` characters; for FORMAT_MESSAGE_ALLOCATE_BUFFER it is a pointer's place.
+#[allow(clippy::too_many_arguments)]
+#[unsafe(export_name = "f2k_export_FormatMessageW")]
+pub unsafe extern "system" fn format_message_w(
+    flags: u32,
+    _source: *const u8,
+    code: u32,
+    _language: u32,
+    buffer: *mut u16,
+    size: u32,
+    _arguments: *const u8,
+) -> u32 {
+    // SAFETY: the caller's buffer.
+    unsafe { format_message(flags, code, buffer as *mut u8, size, true) }
 }
 
 #[cfg(test)]
@@ -193,17 +236,27 @@ mod tests {
         assert_eq!(message(0x0123_4567), None);
     }
 
-    /// Every message fits the formatting room at the narrowest width, where every blank breaks.
+    /// Every message fits the formatting room at the narrowest width, where every character
+    /// breaks.
     #[test]
     fn every_message_fits_the_room() {
         for &(code, text) in MESSAGES {
-            let blanks = text.bytes().filter(|&byte| byte == b' ').count();
-            assert!(text.len() + blanks + 2 < FORMATTED_ROOM, "{code}");
-            assert_eq!(
-                format(text, 1).length,
-                text.len() + blanks + 1,
-                "{code}: a break per blank, a trailing blank"
-            );
+            assert!(format(text, 1).length < FORMATTED_ROOM, "{code}");
         }
+    }
+
+    /// The runtime capture's widths: a word longer than the width breaks at it.
+    #[test]
+    fn the_captured_widths() {
+        let laid = |code, width| {
+            let formatted = format(message(code).unwrap(), width);
+            std::string::String::from_utf8(formatted.as_bytes().to_vec()).unwrap()
+        };
+        assert_eq!(laid(5, 5), "Acces\r\ns is\r\ndenie\r\nd. ");
+        assert_eq!(
+            laid(2, 20),
+            "The system cannot\r\nfind the file\r\nspecified. "
+        );
+        assert_eq!(laid(2, 255), "The system cannot find the file specified. ");
     }
 }

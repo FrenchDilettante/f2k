@@ -28,6 +28,9 @@
  *            spinner still runs within a few seconds (the balance-set
  *            boost); takes about six seconds
  *
+ * The named timers run twice: through the A calls, then through their W
+ * twins on the same name (the W lines carry the W names, or "(W)").
+ *
  * Build (real Windows 2000 machine, MSVC 6), the multithreaded CRT:
  *   cl /nologo /MT sched.c
  */
@@ -196,9 +199,35 @@ static VOID CALLBACK timer_apc(LPVOID arg, DWORD low, DWORD high)
     timer_apc_count++;
 }
 
+/* The named timers, through the A calls or (wide) their W twins. */
+static void named_timers(int wide)
+{
+    const char *aw = wide ? "W" : "A";
+    const char *tag = wide ? " (W)" : "";
+    HANDLE n1, n2;
+    LARGE_INTEGER due;
+
+    n1 = wide ? CreateWaitableTimerW(NULL, TRUE, L"F2K.sched.timer")
+              : CreateWaitableTimerA(NULL, TRUE, "F2K.sched.timer");
+    SetLastError(F2KT_UNTOUCHED);
+    n2 = wide ? CreateWaitableTimerW(NULL, TRUE, L"F2K.sched.timer")
+              : CreateWaitableTimerA(NULL, TRUE, "F2K.sched.timer");
+    line("named timer again%s: created %s err=%s", tag, yesno(n2 != NULL), le());
+    due.QuadPart = -10 * 10000;
+    SetWaitableTimer(n1, &due, 0, NULL, NULL, FALSE);
+    line("set through one handle, waited through the other%s: %s", tag,
+         wr(WaitForSingleObject(n2, WAIT_MS)));
+    CloseHandle(n2);
+    n2 = wide ? OpenWaitableTimerW(TIMER_ALL_ACCESS, FALSE, L"F2K.sched.timer")
+              : OpenWaitableTimerA(TIMER_ALL_ACCESS, FALSE, "F2K.sched.timer");
+    line("OpenWaitableTimer%s: opened %s, signaled %s", aw, yesno(n2 != NULL), wr(WaitForSingleObject(n2, 0)));
+    CloseHandle(n2);
+    CloseHandle(n1);
+}
+
 static void sec_timer(void)
 {
-    HANDLE t, a, n1, n2;
+    HANDLE t, a;
     LARGE_INTEGER due;
     FILETIME now;
     DWORD t0, t1, r;
@@ -253,18 +282,8 @@ static void sec_timer(void)
     CloseHandle(a);
     CloseHandle(t);
 
-    n1 = CreateWaitableTimerA(NULL, TRUE, "F2K.sched.timer");
-    SetLastError(F2KT_UNTOUCHED);
-    n2 = CreateWaitableTimerA(NULL, TRUE, "F2K.sched.timer");
-    line("named timer again: created %s err=%s", yesno(n2 != NULL), le());
-    due.QuadPart = -10 * 10000;
-    SetWaitableTimer(n1, &due, 0, NULL, NULL, FALSE);
-    line("set through one handle, waited through the other: %s", wr(WaitForSingleObject(n2, WAIT_MS)));
-    CloseHandle(n2);
-    n2 = OpenWaitableTimerA(TIMER_ALL_ACCESS, FALSE, "F2K.sched.timer");
-    line("OpenWaitableTimerA: opened %s, signaled %s", yesno(n2 != NULL), wr(WaitForSingleObject(n2, 0)));
-    CloseHandle(n2);
-    CloseHandle(n1);
+    named_timers(0);
+    named_timers(1);
 }
 
 /* --- rr, preempt --------------------------------------------------- */

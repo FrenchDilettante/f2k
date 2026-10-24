@@ -118,8 +118,8 @@ fn entries() -> std::vec::Vec<std::string::String> {
 }
 
 /// The block stays sorted (K32-8b): a new variable goes in at its place by upper-cased name, and a
-/// replaced one keeps its place (spelled as the last set spelled it), as RtlSetEnvironmentVariable
-/// keeps the block on Windows 2000.
+/// replaced one keeps its place and its first spelling (the runtime capture's block order), as
+/// RtlSetEnvironmentVariable keeps the block on Windows 2000.
 ///
 /// Pins: kernel32.GetEnvironmentStringsW, kernel32.SetEnvironmentVariableA
 #[test]
@@ -139,20 +139,20 @@ fn the_block_stays_sorted_and_replaces_in_place() {
         unsafe { set_environment_variable_a(b"ALPHA\0".as_ptr(), b"a longer value\0".as_ptr()) },
         1
     );
-    assert_eq!(entries(), ["ALPHA=a longer value", "Mid=3", "ZED=1"]);
+    assert_eq!(entries(), ["alpha=a longer value", "Mid=3", "ZED=1"]);
     assert_eq!(
         unsafe { set_environment_variable_a(b"MID\0".as_ptr(), core::ptr::null()) },
         1
     );
-    assert_eq!(entries(), ["ALPHA=a longer value", "ZED=1"]);
+    assert_eq!(entries(), ["alpha=a longer value", "ZED=1"]);
 }
 
-/// An unset reference keeps its closing `%` (K32-8c): it stays as written, and the scan goes on
-/// after it.
+/// An unset reference stays as written up to its closing `%` (K32-8c), where the scan resumes:
+/// that `%` may open the next reference (the runtime capture's `%F2KNOSUCH%F2KCRT%`).
 ///
 /// Pins: kernel32.ExpandEnvironmentStringsA
 #[test]
-fn an_unset_reference_stays_whole() {
+fn an_unset_reference_reopens_at_its_closing_percent() {
     assert_eq!(
         unsafe { set_environment_variable_a(b"F2KCRT\0".as_ptr(), b"crt value\0".as_ptr()) },
         1
@@ -162,6 +162,10 @@ fn an_unset_reference_stays_whole() {
     let length =
         unsafe { expand_environment_strings_a(source.as_ptr(), buffer.as_mut_ptr(), 64) } as usize;
     assert_eq!(&buffer[..length], b"%F2KNOSUCH% crt value 100% %%\0");
+    let source = b"[%F2KNOSUCH%F2KCRT%] [%%] [100%]\0";
+    let length =
+        unsafe { expand_environment_strings_a(source.as_ptr(), buffer.as_mut_ptr(), 64) } as usize;
+    assert_eq!(&buffer[..length], b"[%F2KNOSUCHcrt value] [%%] [100%]\0");
 }
 
 /// The narrow forms' strings convert as Windows 2000's RtlAnsiStringToUnicodeString converts them

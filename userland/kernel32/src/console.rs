@@ -149,11 +149,45 @@ pub unsafe extern "system" fn get_console_mode(console: u32, mode: *mut u32) -> 
     1
 }
 
-/// WriteConsoleA: `count` bytes of `buffer` to the console's screen, the count written stored where
-/// asked — the full count: the CRT's writer sums it. The reserved argument (WriteFile's OVERLAPPED)
-/// must be null (ERROR_INVALID_PARAMETER); a handle that is not an open output handle is
-/// ERROR_INVALID_HANDLE, a buffer the caller cannot name ERROR_NOACCESS, one that cannot be read
-/// ERROR_INVALID_USER_BUFFER (the server's statuses).
+/// WriteConsoleW's work: `count` characters of `buffer` (bytes, or UTF-16 units for `unicode`) to
+/// the console's screen, the count written stored where asked — the full count: the CRT's writer
+/// sums it. The reserved argument (WriteFile's OVERLAPPED) must be null (ERROR_INVALID_PARAMETER);
+/// a handle that is not an open output handle is ERROR_INVALID_HANDLE, a buffer the caller cannot
+/// name ERROR_NOACCESS, one that cannot be read ERROR_INVALID_USER_BUFFER (the server's statuses).
+///
+/// # Safety
+///
+/// `written` is null or points at a dword.
+unsafe fn write_console(
+    console: u32,
+    buffer: usize,
+    count: u32,
+    written: *mut u32,
+    reserved: *const u8,
+    unicode: bool,
+) -> u32 {
+    if !reserved.is_null() {
+        set_last_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+    let mut data = [
+        console as usize,
+        buffer,
+        count as usize,
+        0,
+        usize::from(unicode),
+    ];
+    if succeeded(call_server(api::WRITE_CONSOLE, &mut data)) == 0 {
+        return 0;
+    }
+    if !written.is_null() {
+        // SAFETY: the caller's dword.
+        unsafe { written.write_unaligned(data[3] as u32) };
+    }
+    1
+}
+
+/// WriteConsoleA: `count` bytes (see [`write_console`]).
 ///
 /// # Safety
 ///
@@ -166,19 +200,25 @@ pub unsafe extern "system" fn write_console_a(
     written: *mut u32,
     reserved: *const u8,
 ) -> u32 {
-    if !reserved.is_null() {
-        set_last_error(ERROR_INVALID_PARAMETER);
-        return 0;
-    }
-    let mut data = [console as usize, buffer as usize, count as usize, 0];
-    if succeeded(call_server(api::WRITE_CONSOLE, &mut data)) == 0 {
-        return 0;
-    }
-    if !written.is_null() {
-        // SAFETY: the caller's dword.
-        unsafe { written.write_unaligned(data[3] as u32) };
-    }
-    1
+    // SAFETY: the caller's dword.
+    unsafe { write_console(console, buffer as usize, count, written, reserved, false) }
+}
+
+/// WriteConsoleW: `count` UTF-16 units, shown in the console's code page (see [`write_console`]).
+///
+/// # Safety
+///
+/// `written` is null or points at a dword.
+#[unsafe(export_name = "f2k_export_WriteConsoleW")]
+pub unsafe extern "system" fn write_console_w(
+    console: u32,
+    buffer: *const u16,
+    count: u32,
+    written: *mut u32,
+    reserved: *const u8,
+) -> u32 {
+    // SAFETY: the caller's dword.
+    unsafe { write_console(console, buffer as usize, count, written, reserved, true) }
 }
 
 /// ReadConsoleA, as Windows 2000's ReadFile reaches it (not an export here): up to `count` bytes of

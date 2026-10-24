@@ -1,7 +1,9 @@
-//! The file API: kernel32's own code over ntdll's file services, as on Windows 2000. The narrow
-//! calls convert their names through the ANSI code page into a buffer of MAX_PATH + 1 units
-//! (Windows 2000's kernel32 converts into the thread's static Unicode string, of that size: a
-//! longer name is ERROR_FILENAME_EXCED_RANGE); ntdll makes the NT path of the DOS one
+//! The file API: kernel32's own code over ntdll's file services, as on Windows 2000. Each call's
+//! work is its W form's; the narrow calls convert their names through the ANSI code page into a
+//! buffer of MAX_PATH + 1 units (Windows 2000's kernel32 converts into the thread's static Unicode
+//! string, of that size: a longer name is ERROR_FILENAME_EXCED_RANGE), the W calls copy theirs
+//! into the same ([`wide`]), and the names a call hands back go to either kind of buffer
+//! ([`crate::base::Text`]); ntdll makes the NT path of the DOS one
 //! (RtlDosPathNameToNtPathName_U, which fails for a name it cannot make: ERROR_PATH_NOT_FOUND), a
 //! relative path under the current directory coming back relative to its handle; and a failed
 //! service's status sets the last error through BaseSetLastNTError, but where Windows 2000's
@@ -161,6 +163,24 @@ pub unsafe fn widen(name: *const u8) -> Option<Wide> {
         wide.units[wide.length] = cp1252::MB_TO_WC[byte as usize];
         wide.length += 1;
     }
+}
+
+/// A W call's name, copied into the buffer an A call's conversion fills. A W call does not convert:
+/// a name past MAX_PATH reaches ntdll, whose DOS path conversion refuses it — none here, with
+/// ERROR_PATH_NOT_FOUND set (the files capture: CreateFileW of a 300-character path), where an A
+/// call's conversion refuses it with ERROR_FILENAME_EXCED_RANGE.
+///
+/// # Safety
+///
+/// `name` points at a NUL-terminated UTF-16 string (a bad pointer faults the caller).
+pub unsafe fn wide(name: *const u16) -> Option<Wide> {
+    // SAFETY: the caller's string.
+    let units = unsafe { crate::base::wide_units(name) };
+    let copied = Wide::of(units);
+    if copied.is_none() {
+        set_last_error(ERROR_PATH_NOT_FOUND);
+    }
+    copied
 }
 
 /// UTF-16 units into an ANSI buffer of `size` bytes with its terminator, as the narrow calls hand

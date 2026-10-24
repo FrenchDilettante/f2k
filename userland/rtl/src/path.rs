@@ -4,9 +4,10 @@
 //!
 //! The rules are the Win32 naming rules, applied here in user mode before any system service sees
 //! the name (the kernel takes NT paths only): forward slashes are separators; empty components
-//! (doubled separators) vanish; `.` and `..` fold lexically (`..` at the root stays there); each
-//! component loses its trailing dots and spaces (F2K's rule until a capture settles it: Windows
-//! 2000 may trim the last component alone). A drive-relative path (`C:name`) on the current
+//! (doubled separators) vanish; `.` and `..` fold lexically (`..` at the root stays there); the
+//! last component loses its trailing dots and spaces, the others keep theirs but for a component of
+//! three dots or more, written `..` and not folded (the files capture: `DATA. \SUB\...\X. .` is
+//! `DATA. \SUB\..\X`; the file system decides what an inner `DATA.`, `DATA ` or `..` names). A drive-relative path (`C:name`) on the current
 //! directory's drive is relative to it, on another drive relative to that drive's root (no
 //! per-drive directories are kept: the `=C:` environment variables are not consulted). A UNC path
 //! keeps its `\\server\share` prefix.
@@ -79,11 +80,22 @@ impl Builder<'_> {
         units.iter().try_for_each(|&unit| self.push(unit))
     }
 
-    /// Append the components of `path` (relative to what is built), folding `.` and `..`.
+    /// Append the components of `path` (relative to what is built), folding `.` and `..`; the last
+    /// one loses its trailing dots and spaces ([`trim`]).
     fn components(&mut self, path: &[u16]) -> Result<(), PathError> {
         let dot = u16::from(b'.');
-        for component in path.split(|&unit| is_separator(unit)) {
-            let component = trim(component);
+        let mut components = path.split(|&unit| is_separator(unit)).peekable();
+        while let Some(component) = components.next() {
+            let last = components.peek().is_none();
+            if !last && component.len() > 2 && component.iter().all(|&unit| unit == dot) {
+                // Three dots or more: written as `..`, not folded.
+                if self.len > self.root {
+                    self.push(BACKSLASH)?;
+                }
+                self.push_all(&[dot, dot])?;
+                continue;
+            }
+            let component = if last { trim(component) } else { component };
             if component.is_empty() || component == [dot] {
                 continue;
             }
@@ -375,6 +387,11 @@ mod tests {
             full("name. . ", current).unwrap().0,
             "C:\\CORPUS\\name",
             "trailing dots and spaces go"
+        );
+        assert_eq!(
+            full("DATA. \\SUB\\...\\X. .", current).unwrap().0,
+            "C:\\CORPUS\\DATA. \\SUB\\..\\X",
+            "the files capture: inner components keep theirs, three dots are `..`"
         );
         assert_eq!(
             full("\\\\srv\\share\\dir\\..\\f", current).unwrap().0,

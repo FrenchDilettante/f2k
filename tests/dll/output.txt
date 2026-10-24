@@ -2,8 +2,8 @@
 
 Microsoft Windows 2000 [Version 5.00.2195]
 # machine: CLANKER-AC9F3E6, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Tue 10/20/2026  8:43:04.77
-dll F2KT-SOURCE-CRC=0x4E99B155
+# date: Sat 10/24/2026  9:15:30.30
+dll F2KT-SOURCE-CRC=0x7BF9156A
 >>> dll.exe load
 == load
 LoadLibraryA(f2kcom.dll): loaded yes err=-

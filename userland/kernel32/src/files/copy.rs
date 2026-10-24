@@ -1,5 +1,5 @@
-//! CopyFileA: kernel32's own loop, as Windows 2000's BaseCopyStream is — the source opened for
-//! reading (sharing reads), the target made (CREATE_NEW when it must not exist, else
+//! CopyFileA and CopyFileW: kernel32's own loop, as Windows 2000's BaseCopyStream is — the source
+//! opened for reading (sharing reads), the target made (CREATE_NEW when it must not exist, else
 //! CREATE_ALWAYS) for writing and delete with the source's attributes and sharing nothing, the
 //! bytes moved through a buffer, the source's last-write time set on the target. A copy that fails
 //! once the target exists takes the target back (its delete). A target that is the source, under
@@ -74,9 +74,7 @@ fn copy_stream(source: u32, target: u32, buffer: &mut [u8], last_write: u64) -> 
     }
 }
 
-/// CopyFileA (see the module's): TRUE with the last error cleared; FALSE with the error — a target
-/// that exists under fail-if-exists ERROR_FILE_EXISTS, a read-only one or a directory
-/// ERROR_ACCESS_DENIED.
+/// CopyFileA: both names converted first, then the copy ([`copy_file`]).
 ///
 /// # Safety
 ///
@@ -88,13 +86,38 @@ pub unsafe extern "system" fn copy_file_a(
     fail_if_exists: u32,
 ) -> u32 {
     // SAFETY: the caller's strings.
-    let (Some(from), Some(to)) = (unsafe { widen(from) }, unsafe { widen(to) }) else {
-        return 0;
-    };
+    match (unsafe { widen(from) }, unsafe { widen(to) }) {
+        (Some(from), Some(to)) => copy_file(&from, &to, fail_if_exists),
+        _ => 0,
+    }
+}
+
+/// CopyFileW (as [`copy_file_a`]).
+///
+/// # Safety
+///
+/// Both names are NUL-terminated UTF-16 strings.
+#[unsafe(export_name = "f2k_export_CopyFileW")]
+pub unsafe extern "system" fn copy_file_w(
+    from: *const u16,
+    to: *const u16,
+    fail_if_exists: u32,
+) -> u32 {
+    // SAFETY: the caller's strings.
+    match (unsafe { wide(from) }, unsafe { wide(to) }) {
+        (Some(from), Some(to)) => copy_file(&from, &to, fail_if_exists),
+        _ => 0,
+    }
+}
+
+/// The copy (see the module's): TRUE with the last error cleared; FALSE with the error — a target
+/// that exists under fail-if-exists ERROR_FILE_EXISTS, a read-only one or a directory
+/// ERROR_ACCESS_DENIED.
+fn copy_file(from: &Wide, to: &Wide, fail_if_exists: u32) -> u32 {
     // SAFETY: no security attributes.
     let source = unsafe {
         create_file_w(
-            &from,
+            from,
             GENERIC_READ,
             FILE_SHARE_READ,
             core::ptr::null(),
@@ -120,7 +143,7 @@ pub unsafe extern "system" fn copy_file_a(
     // SAFETY: as above.
     let target = unsafe {
         create_file_w(
-            &to,
+            to,
             GENERIC_WRITE | DELETE,
             0,
             core::ptr::null(),

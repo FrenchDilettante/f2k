@@ -414,7 +414,7 @@ pub unsafe extern "system" fn get_string_type_a(
 /// GetStringTypeW: classify each wide char (CT_CTYPE1 only), writing the flag words, with the NLS
 /// calls' conventions (those GetStringTypeA follows): a NUL-terminated source for a negative count,
 /// the terminator classified too; ERROR_INVALID_FLAGS for another information type. A zero count
-/// classifies nothing and succeeds.
+/// is ERROR_INVALID_PARAMETER, the output untouched (the runtime capture), as GetStringTypeA's is.
 ///
 /// # Safety
 ///
@@ -430,7 +430,7 @@ pub unsafe extern "system" fn get_string_type_w(
         return fail(ERROR_INVALID_FLAGS, 0);
     }
     if count == 0 {
-        return 1; // nothing to classify
+        return fail(ERROR_INVALID_PARAMETER, 0);
     }
     // SAFETY: the caller's contract.
     let count = match unsafe { wide_count(src, count) } {
@@ -635,8 +635,18 @@ pub unsafe extern "system" fn get_locale_info_w(
     unsafe { get_locale_info(lcid, lctype, buffer, size) }
 }
 
-/// The one locale's name, as EnumSystemLocalesA hands it to the callback.
+/// The one locale's name, as EnumSystemLocalesA hands it to the callback, and as
+/// EnumSystemLocalesW does.
 const LOCALE_NAME: &[u8; 9] = b"00000409\0";
+const LOCALE_NAME_W: [u16; 9] = {
+    let mut units = [0u16; 9];
+    let mut at = 0;
+    while at < 9 {
+        units[at] = LOCALE_NAME[at] as u16;
+        at += 1;
+    }
+    units
+};
 
 /// EnumSystemLocalesA: the one locale, to the caller's callback (stdcall, its argument the locale's
 /// name); ERROR_INVALID_PARAMETER for no callback.
@@ -654,5 +664,23 @@ pub unsafe extern "system" fn enum_system_locales_a(
     };
     // SAFETY: the caller's callback, given the locale's name.
     unsafe { callback(LOCALE_NAME.as_ptr()) };
+    1
+}
+
+/// EnumSystemLocalesW: as [`enum_system_locales_a`], the name wide.
+///
+/// # Safety
+///
+/// `callback` is a LOCALE_ENUMPROCW.
+#[unsafe(export_name = "f2k_export_EnumSystemLocalesW")]
+pub unsafe extern "system" fn enum_system_locales_w(
+    callback: Option<unsafe extern "system" fn(*const u16) -> u32>,
+    _flags: u32,
+) -> u32 {
+    let Some(callback) = callback else {
+        return fail(ERROR_INVALID_PARAMETER, 0);
+    };
+    // SAFETY: the caller's callback, given the locale's name.
+    unsafe { callback(LOCALE_NAME_W.as_ptr()) };
     1
 }

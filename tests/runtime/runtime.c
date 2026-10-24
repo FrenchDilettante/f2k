@@ -40,6 +40,17 @@
  *              violation and the process exits with its code
  *   exit       atexit handlers run in reverse order, then exit(7)
  *
+ * The A calls' observations run twice: through the A calls, then through
+ * their W twins on the same inputs, each W line right after its A line
+ * (the W lines carry the W names, or "(W)"): the command line and module
+ * file name (args, beside one line for GetStartupInfoW against
+ * GetStartupInfoA), GetVersionExW (version, with the EX sizes of both),
+ * the module calls (module, teb), FormatMessageW (lasterror),
+ * GetEnvironmentVariableW and ExpandEnvironmentStringsW (env, beside
+ * GetEnvironmentStringsA by its own name) and WriteConsoleW (console).
+ * The locale section enumerates the system locales through both
+ * EnumSystemLocalesA and EnumSystemLocalesW.
+ *
  * Build (real Windows 2000 machine, MSVC 6):
  *   cl /nologo runtime.c
  */
@@ -58,9 +69,39 @@
 #ifndef LOCALE_RETURN_NUMBER
 #define LOCALE_RETURN_NUMBER 0x20000000
 #endif
+#ifndef LCID_SUPPORTED
+#define LCID_SUPPORTED 0x00000002
+#endif
 #ifndef WC_NO_BEST_FIT_CHARS
 #define WC_NO_BEST_FIT_CHARS 0x00000400
 #endif
+
+/* GetEnvironmentStringsA by its own name: windows.h maps the name onto
+   GetEnvironmentStrings, the same function's unsuffixed export. */
+#ifdef GetEnvironmentStringsA
+#undef GetEnvironmentStringsA
+#endif
+WINBASEAPI LPSTR WINAPI GetEnvironmentStringsA(VOID);
+
+/* OSVERSIONINFOEXA and OSVERSIONINFOEXW as Windows 2000 lays them out
+   (156 and 284 bytes), which MSVC 6's headers may lack. */
+typedef struct {
+    OSVERSIONINFOA base;
+    WORD wServicePackMajor;
+    WORD wServicePackMinor;
+    WORD wSuiteMask;
+    BYTE wProductType;
+    BYTE wReserved;
+} f2k_osviexa;
+
+typedef struct {
+    OSVERSIONINFOW base;
+    WORD wServicePackMajor;
+    WORD wServicePackMinor;
+    WORD wSuiteMask;
+    BYTE wProductType;
+    BYTE wReserved;
+} f2k_osviexw;
 
 static int g_argc;
 static char **g_argv;
@@ -99,6 +140,79 @@ static const char *skip_program(const char *p)
         p++;
     }
     return p;
+}
+
+/* The same, of GetCommandLineW's. */
+static const WCHAR *skip_program_w(const WCHAR *p)
+{
+    if (*p == L'"') {
+        p++;
+        while (*p != 0 && *p != L'"') {
+            p++;
+        }
+        if (*p == L'"') {
+            p++;
+        }
+    } else {
+        while (*p != 0 && *p != L' ' && *p != L'\t') {
+            p++;
+        }
+    }
+    while (*p == L' ' || *p == L'\t') {
+        p++;
+    }
+    return p;
+}
+
+/* A wide string's units below 0x100 as their bytes (any other as '?'),
+   into `out`: a wide path for basename_upper and is_absolute. */
+static const char *narrow_w(const WCHAR *w, char *out, int size)
+{
+    int n = 0;
+
+    while (*w != 0 && n < size - 1) {
+        out[n++] = *w < 0x100 ? (char)*w : '?';
+        w++;
+    }
+    out[n] = 0;
+    return out;
+}
+
+/* Whether a narrow and a wide string hold the same text, unit by unit
+   (both NULL agree). */
+/* The STARTUPINFO fields that differ between the A and W forms, by name, into `out`
+ * ("none" when they agree): which ones, not their values, which are the machine's. */
+static void startup_differences(const STARTUPINFOA *a, const STARTUPINFOW *w, char *out)
+{
+    out[0] = '\0';
+    if (w->cb != a->cb) strcat(out, " cb");
+    if (w->dwX != a->dwX) strcat(out, " dwX");
+    if (w->dwY != a->dwY) strcat(out, " dwY");
+    if (w->dwXSize != a->dwXSize) strcat(out, " dwXSize");
+    if (w->dwYSize != a->dwYSize) strcat(out, " dwYSize");
+    if (w->dwXCountChars != a->dwXCountChars) strcat(out, " dwXCountChars");
+    if (w->dwYCountChars != a->dwYCountChars) strcat(out, " dwYCountChars");
+    if (w->dwFillAttribute != a->dwFillAttribute) strcat(out, " dwFillAttribute");
+    if (w->dwFlags != a->dwFlags) strcat(out, " dwFlags");
+    if (w->wShowWindow != a->wShowWindow) strcat(out, " wShowWindow");
+    if (w->cbReserved2 != a->cbReserved2) strcat(out, " cbReserved2");
+    if (w->lpReserved2 != a->lpReserved2) strcat(out, " lpReserved2");
+    if (w->hStdInput != a->hStdInput) strcat(out, " hStdInput");
+    if (w->hStdOutput != a->hStdOutput) strcat(out, " hStdOutput");
+    if (w->hStdError != a->hStdError) strcat(out, " hStdError");
+    if (out[0] == '\0') strcpy(out, " none");
+}
+
+static int same_text(const char *a, const WCHAR *w)
+{
+    int i;
+
+    if (a == NULL || w == NULL) {
+        return a == NULL && w == NULL;
+    }
+    for (i = 0; a[i] != 0 && (WCHAR)(unsigned char)a[i] == w[i]; i++) {
+    }
+    return a[i] == 0 && w[i] == 0;
 }
 
 /* The upper-cased final path component of `path`, into `out`. */
@@ -158,6 +272,12 @@ static void sec_args(void)
     char path[MAX_PATH];
     char small[8];
     char base[MAX_PATH];
+    char narrow[MAX_PATH];
+    WCHAR wpath[MAX_PATH];
+    WCHAR wsmall[8];
+    STARTUPINFOA sa;
+    STARTUPINFOW sw;
+    const char *p1;
     DWORD n;
     int i;
 
@@ -172,11 +292,19 @@ static void sec_args(void)
     line("argv[argc] is NULL: %s", yesno(g_argv[g_argc] == NULL));
     line("__argc matches: %s", yesno(__argc == g_argc));
     line("command line tail: [%s]", skip_program(GetCommandLineA()));
+    line("command line tail (W): [%s]", ws(skip_program_w(GetCommandLineW())));
 
     arm();
     n = GetModuleFileNameA(NULL, path, sizeof path);
     line("GetModuleFileNameA: name %s, length matches: %s, absolute: %s, err=%s",
          basename_upper(path, base, sizeof base), yesno(n == strlen(path)), yesno(is_absolute(path)), le());
+    wpath[0] = 0;
+    arm();
+    n = GetModuleFileNameW(NULL, wpath, sizeof wpath / sizeof wpath[0]);
+    p1 = le();
+    narrow_w(wpath, narrow, sizeof narrow);
+    line("GetModuleFileNameW: name %s, length matches: %s, absolute: %s, err=%s",
+         basename_upper(narrow, base, sizeof base), yesno(n == wcslen(wpath)), yesno(is_absolute(narrow)), p1);
     line("_pgmptr matches: %s", yesno(_pgmptr != NULL && strcmp(_pgmptr, path) == 0));
 
     memset(small, 'x', sizeof small);
@@ -184,6 +312,29 @@ static void sec_args(void)
     n = GetModuleFileNameA(NULL, small, 4);
     line("GetModuleFileNameA into 4 bytes: ret=%lu terminated at 3: %s err=%s",
          n, yesno(small[3] == 0), le());
+    for (i = 0; i < 8; i++) {
+        wsmall[i] = L'x';
+    }
+    arm();
+    n = GetModuleFileNameW(NULL, wsmall, 4);
+    line("GetModuleFileNameW into 4 characters: ret=%lu terminated at 3: %s err=%s",
+         n, yesno(wsmall[3] == 0), le());
+
+    memset(&sa, 0xCC, sizeof sa);
+    memset(&sw, 0xCC, sizeof sw);
+    GetStartupInfoA(&sa);
+    GetStartupInfoW(&sw);
+    line("GetStartupInfoW: cb %lu, fields as GetStartupInfoA's: %s, title and desktop as GetStartupInfoA's: %s",
+         sw.cb,
+         yesno(sw.cb == sa.cb && sw.dwX == sa.dwX && sw.dwY == sa.dwY && sw.dwXSize == sa.dwXSize &&
+               sw.dwYSize == sa.dwYSize && sw.dwXCountChars == sa.dwXCountChars &&
+               sw.dwYCountChars == sa.dwYCountChars && sw.dwFillAttribute == sa.dwFillAttribute &&
+               sw.dwFlags == sa.dwFlags && sw.wShowWindow == sa.wShowWindow && sw.cbReserved2 == sa.cbReserved2 &&
+               sw.lpReserved2 == sa.lpReserved2 && sw.hStdInput == sa.hStdInput &&
+               sw.hStdOutput == sa.hStdOutput && sw.hStdError == sa.hStdError),
+         yesno(same_text(sa.lpTitle, sw.lpTitle) && same_text(sa.lpDesktop, sw.lpDesktop)));
+    startup_differences(&sa, &sw, narrow);
+    line("GetStartupInfoW: the fields that differ:%s", narrow);
 }
 
 /* --- version ------------------------------------------------------- */
@@ -191,6 +342,10 @@ static void sec_args(void)
 static void sec_version(void)
 {
     OSVERSIONINFOA vi;
+    OSVERSIONINFOW wi;
+    f2k_osviexa xa;
+    f2k_osviexw xw;
+    const char *p1;
     DWORD v;
     BOOL r;
 
@@ -204,11 +359,39 @@ static void sec_version(void)
     line("GetVersionExA: ret=%d %lu.%lu build %lu platform %lu csd [%s] err=%s",
          r, vi.dwMajorVersion, vi.dwMinorVersion, vi.dwBuildNumber, vi.dwPlatformId,
          vi.szCSDVersion, le());
+    memset(&wi, 0, sizeof wi);
+    wi.dwOSVersionInfoSize = sizeof wi;
+    arm();
+    r = GetVersionExW(&wi);
+    p1 = le();
+    line("GetVersionExW: ret=%d %lu.%lu build %lu platform %lu csd [%s] err=%s",
+         r, wi.dwMajorVersion, wi.dwMinorVersion, wi.dwBuildNumber, wi.dwPlatformId,
+         ws(wi.szCSDVersion), p1);
 
     vi.dwOSVersionInfoSize = 10;
     arm();
     r = GetVersionExA(&vi);
     line("GetVersionExA with a bad size: ret=%d err=%s", r, le());
+    wi.dwOSVersionInfoSize = 10;
+    arm();
+    r = GetVersionExW(&wi);
+    line("GetVersionExW with a bad size: ret=%d err=%s", r, le());
+
+    memset(&xa, 0, sizeof xa);
+    xa.base.dwOSVersionInfoSize = sizeof xa;
+    arm();
+    r = GetVersionExA(&xa.base);
+    line("GetVersionExA, the EX size: ret=%d %lu.%lu build %lu platform %lu csd [%s] service pack %u.%u err=%s",
+         r, xa.base.dwMajorVersion, xa.base.dwMinorVersion, xa.base.dwBuildNumber, xa.base.dwPlatformId,
+         xa.base.szCSDVersion, (unsigned)xa.wServicePackMajor, (unsigned)xa.wServicePackMinor, le());
+    memset(&xw, 0, sizeof xw);
+    xw.base.dwOSVersionInfoSize = sizeof xw;
+    arm();
+    r = GetVersionExW(&xw.base);
+    p1 = le();
+    line("GetVersionExW, the EX size: ret=%d %lu.%lu build %lu platform %lu csd [%s] service pack %u.%u err=%s",
+         r, xw.base.dwMajorVersion, xw.base.dwMinorVersion, xw.base.dwBuildNumber, xw.base.dwPlatformId,
+         ws(xw.base.szCSDVersion), (unsigned)xw.wServicePackMajor, (unsigned)xw.wServicePackMinor, p1);
 
     line("CRT: _osver 0x%X _winmajor %u _winminor %u _winver 0x%X",
          _osver, _winmajor, _winminor, _winver);
@@ -226,6 +409,19 @@ static const char *kernel32_path(int length)
     return name;
 }
 
+/* The same, wide. */
+static const WCHAR *kernel32_path_w(int length)
+{
+    static WCHAR name[400];
+    int i;
+
+    for (i = 0; i < length - 13; i++) {
+        name[i] = L'd';
+    }
+    wcscpy(name + length - 13, L"\\kernel32.dll");
+    return name;
+}
+
 /* Module and export names around MAX_PATH. */
 static void module_lengths(HMODULE k32)
 {
@@ -237,11 +433,23 @@ static void module_lengths(HMODULE k32)
     h = GetModuleHandleA(kernel32_path(260));
     line("GetModuleHandleA, a 260-character path: ret null %s err=%s", yesno(h == NULL), le());
     arm();
+    h = GetModuleHandleW(kernel32_path_w(260));
+    line("GetModuleHandleW, a 260-character path: ret null %s err=%s", yesno(h == NULL), le());
+    arm();
     h = GetModuleHandleA(kernel32_path(261));
     line("GetModuleHandleA, a 261-character path: ret null %s err=%s", yesno(h == NULL), le());
     arm();
+    h = GetModuleHandleW(kernel32_path_w(261));
+    line("GetModuleHandleW, a 261-character path: ret null %s err=%s", yesno(h == NULL), le());
+    arm();
     h = LoadLibraryA(kernel32_path(261));
     line("LoadLibraryA, a 261-character path: ret null %s err=%s", yesno(h == NULL), le());
+    arm();
+    h = LoadLibraryW(kernel32_path_w(261));
+    line("LoadLibraryW, a 261-character path: ret null %s err=%s", yesno(h == NULL), le());
+    if (h != NULL) {
+        FreeLibrary(h);
+    }
     memset(export_name, 'x', 300);
     memcpy(export_name, "GetTickCount", 12);
     arm();
@@ -257,13 +465,17 @@ static void sec_module(void)
     FARPROC fp;
     char path[MAX_PATH];
     char base[MAX_PATH];
+    char narrow[MAX_PATH];
+    WCHAR wpath[MAX_PATH];
     IMAGE_DOS_HEADER *dos;
     IMAGE_NT_HEADERS *nt;
+    const char *p1;
     DWORD t0, t1;
     BOOL r;
 
     self = GetModuleHandleA(NULL);
     line("GetModuleHandleA(NULL): 0x%08lX", (DWORD)self);
+    line("GetModuleHandleW(NULL): 0x%08lX", (DWORD)GetModuleHandleW(NULL));
 
     dos = (IMAGE_DOS_HEADER *)self;
     nt = (IMAGE_NT_HEADERS *)((BYTE *)self + dos->e_lfanew);
@@ -274,15 +486,27 @@ static void sec_module(void)
 
     k32 = GetModuleHandleA("kernel32.dll");
     line("GetModuleHandleA(kernel32.dll): found %s", yesno(k32 != NULL));
+    h = GetModuleHandleW(L"kernel32.dll");
+    line("GetModuleHandleW(kernel32.dll): found %s", yesno(h != NULL));
     line("GetModuleHandleA(KERNEL32) same module: %s", yesno(GetModuleHandleA("KERNEL32") == k32));
+    line("GetModuleHandleW(KERNEL32) same module: %s", yesno(GetModuleHandleW(L"KERNEL32") == k32));
     arm();
     h = GetModuleHandleA("nosuch.dll");
     line("GetModuleHandleA(nosuch.dll): ret null %s err=%s", yesno(h == NULL), le());
+    arm();
+    h = GetModuleHandleW(L"nosuch.dll");
+    line("GetModuleHandleW(nosuch.dll): ret null %s err=%s", yesno(h == NULL), le());
 
     arm();
     path[0] = 0;
     GetModuleFileNameA(k32, path, sizeof path);
     line("GetModuleFileNameA(kernel32): %s err=%s", basename_upper(path, base, sizeof base), le());
+    arm();
+    wpath[0] = 0;
+    GetModuleFileNameW(k32, wpath, sizeof wpath / sizeof wpath[0]);
+    p1 = le();
+    line("GetModuleFileNameW(kernel32): %s err=%s", basename_upper(narrow_w(wpath, narrow, sizeof narrow), base,
+         sizeof base), p1);
 
     if (k32 != NULL) {
         dos = (IMAGE_DOS_HEADER *)k32;
@@ -311,8 +535,17 @@ static void sec_module(void)
     r = FreeLibrary(h);
     line("FreeLibrary: ret=%d err=%s", r, le());
     arm();
+    h = LoadLibraryW(L"kernel32.dll");
+    line("LoadLibraryW(kernel32.dll): same module %s err=%s", yesno(h == k32), le());
+    arm();
+    r = FreeLibrary(h);
+    line("FreeLibrary (W): ret=%d err=%s", r, le());
+    arm();
     h = LoadLibraryA("nosuch.dll");
     line("LoadLibraryA(nosuch.dll): ret null %s err=%s", yesno(h == NULL), le());
+    arm();
+    h = LoadLibraryW(L"nosuch.dll");
+    line("LoadLibraryW(nosuch.dll): ret null %s err=%s", yesno(h == NULL), le());
 
     module_lengths(k32);
 }
@@ -347,6 +580,8 @@ static void sec_teb(void)
         line("PEB BeingDebugged: %u", (unsigned)*(BYTE *)(peb + 0x02));
         line("PEB ImageBaseAddress matches: %s",
              yesno(*(DWORD *)(peb + 0x08) == (DWORD)GetModuleHandleA(NULL)));
+        line("PEB ImageBaseAddress matches (W): %s",
+             yesno(*(DWORD *)(peb + 0x08) == (DWORD)GetModuleHandleW(NULL)));
         line("PEB ProcessHeap matches: %s", yesno(*(DWORD *)(peb + 0x18) == (DWORD)GetProcessHeap()));
         line("PEB OS version: %lu.%lu build %u CSD 0x%04X platform %lu", *(DWORD *)(peb + 0xA4),
              *(DWORD *)(peb + 0xA8), (unsigned)*(WORD *)(peb + 0xAC), (unsigned)*(WORD *)(peb + 0xAE),
@@ -358,17 +593,36 @@ static void sec_teb(void)
 
 /* --- lasterror ----------------------------------------------------- */
 
-static void message(DWORD code)
+/* A system message into the caller's buffer, through FormatMessageA or (wide) FormatMessageW. */
+static void message(DWORD code, int wide)
 {
+    const char *aw = wide ? "W" : "A";
     char buf[256];
+    WCHAR wbuf[256];
     DWORD n;
     char *p;
+    WCHAR *q;
 
     arm();
-    n = FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, NULL, code,
-                       MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), buf, sizeof buf, NULL);
+    if (wide) {
+        n = FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, NULL, code,
+                           MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), wbuf, sizeof wbuf / sizeof wbuf[0], NULL);
+    } else {
+        n = FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, NULL, code,
+                           MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), buf, sizeof buf, NULL);
+    }
     if (n == 0) {
-        line("FormatMessageA(%lu): ret=0 err=%s", code, le());
+        line("FormatMessage%s(%lu): ret=0 err=%s", aw, code, le());
+        return;
+    }
+    if (wide) {
+        for (q = wbuf; *q != 0; q++) {
+            if (*q == L'\r' || *q == L'\n') {
+                *q = 0;
+                break;
+            }
+        }
+        line("FormatMessageW(%lu): ret=%lu [%s]", code, n, ws(wbuf));
         return;
     }
     for (p = buf; *p != 0; p++) {
@@ -398,6 +652,24 @@ static const char *shown(const char *text)
     return out;
 }
 
+/* The same, of a wide message (printed as ws() prints). */
+static const char *shown_w(const WCHAR *text)
+{
+    static WCHAR out[512];
+    WCHAR *o = out;
+
+    for (; *text != 0 && o < out + sizeof out / sizeof out[0] - 3; text++) {
+        if (*text == L'\r' || *text == L'\n') {
+            *o++ = L'\\';
+            *o++ = *text == L'\r' ? L'r' : L'n';
+        } else {
+            *o++ = *text;
+        }
+    }
+    *o = 0;
+    return ws(out);
+}
+
 /* FORMAT_MESSAGE_ALLOCATE_BUFFER: the block and its least size (nSize). */
 static void message_allocated(DWORD code, DWORD least)
 {
@@ -417,6 +689,27 @@ static void message_allocated(DWORD code, DWORD least)
     line("LocalFree of the block: %s", yesno(LocalFree(block) == NULL));
 }
 
+/* The same through FormatMessageW: nSize and the count are characters. */
+static void message_allocated_w(DWORD code, DWORD least)
+{
+    WCHAR *block = (WCHAR *)0x1234;
+    const char *p1;
+    DWORD n;
+
+    arm();
+    n = FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+                       NULL, code, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), (LPWSTR)&block, least, NULL);
+    p1 = le();
+    if (n == 0) {
+        line("FormatMessageW(%lu) allocated, at least %lu: ret=0 block null %s err=%s", code, least,
+             yesno(block == NULL), p1);
+        return;
+    }
+    line("FormatMessageW(%lu) allocated, at least %lu: ret=%lu [%s] LocalSize at least %s err=%s", code, least, n,
+         shown_w(block), yesno(LocalSize(block) >= (least > n + 1 ? least : n + 1) * sizeof(WCHAR)), p1);
+    line("LocalFree of the block (W): %s", yesno(LocalFree(block) == NULL));
+}
+
 /* The width byte: FORMAT_MESSAGE_MAX_WIDTH_MASK or a line width. */
 static void message_width(DWORD code, DWORD width)
 {
@@ -427,6 +720,20 @@ static void message_width(DWORD code, DWORD width)
     n = FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS | width, NULL, code,
                        MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), buf, sizeof buf, NULL);
     line("FormatMessageA(%lu) width %lu: ret=%lu [%s] err=%s", code, width, n, n != 0 ? shown(buf) : "", le());
+}
+
+/* The same through FormatMessageW. */
+static void message_width_w(DWORD code, DWORD width)
+{
+    WCHAR buf[256];
+    const char *p1;
+    DWORD n;
+
+    arm();
+    n = FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS | width, NULL, code,
+                       MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), buf, sizeof buf / sizeof buf[0], NULL);
+    p1 = le();
+    line("FormatMessageW(%lu) width %lu: ret=%lu [%s] err=%s", code, width, n, n != 0 ? shown_w(buf) : "", p1);
 }
 
 static void sec_lasterror(void)
@@ -451,15 +758,24 @@ static void sec_lasterror(void)
     h = GetStdHandle(42);
     line("GetStdHandle(42): ret INVALID_HANDLE_VALUE %s err=%s", yesno(h == INVALID_HANDLE_VALUE), le());
 
-    message(2);
-    message(5);
-    message(0x01234567);
+    message(2, 0);
+    message(2, 1);
+    message(5, 0);
+    message(5, 1);
+    message(0x01234567, 0);
+    message(0x01234567, 1);
     message_allocated(5, 0);
+    message_allocated_w(5, 0);
     message_allocated(5, 200);
+    message_allocated_w(5, 200);
     message_allocated(0x01234567, 0);
+    message_allocated_w(0x01234567, 0);
     message_width(2, FORMAT_MESSAGE_MAX_WIDTH_MASK);
+    message_width_w(2, FORMAT_MESSAGE_MAX_WIDTH_MASK);
     message_width(2, 20);
+    message_width_w(2, 20);
     message_width(5, 5);
+    message_width_w(5, 5);
 }
 
 /* --- env ----------------------------------------------------------- */
@@ -532,11 +848,13 @@ static int block_sorted_w(const WCHAR *block)
 /* The narrow forms' string lengths: values and names around the counted string's 32767
    characters, a name past MAX_PATH. */
 static char big[32769];
+static WCHAR wbig[301];
 
 static void env_lengths(void)
 {
     DWORD n;
     BOOL r;
+    int i;
 
     memset(big, 'v', 32767);
     big[32767] = 0;
@@ -550,27 +868,40 @@ static void env_lengths(void)
     arm();
     n = GetEnvironmentVariableA("F2KLONG", NULL, 0);
     line("its size query: ret=%lu err=%s", n, le());
+    arm();
+    n = GetEnvironmentVariableW(L"F2KLONG", NULL, 0);
+    line("its size query (W): ret=%lu err=%s", n, le());
     SetEnvironmentVariableA("F2KLONG", NULL);
 
     big[300] = 0;
+    for (i = 0; i < 300; i++) {
+        wbig[i] = L'v';
+    }
+    wbig[300] = 0;
     arm();
     r = SetEnvironmentVariableA(big, "long name");
     line("SetEnvironmentVariableA, a 300-character name: ret=%d err=%s", r, le());
     arm();
     n = GetEnvironmentVariableA(big, NULL, 0);
     line("its size query: ret=%lu err=%s", n, le());
+    arm();
+    n = GetEnvironmentVariableW(wbig, NULL, 0);
+    line("its size query (W): ret=%lu err=%s", n, le());
     SetEnvironmentVariableA(big, NULL);
 }
 
 static void sec_env(void)
 {
     char buf[128];
+    WCHAR wbuf[128];
     char *block;
     WCHAR *wblock;
     const char *g;
+    const char *p1;
     DWORD n;
     BOOL r;
 
+    wbuf[0] = 0;
     arm();
     r = SetEnvironmentVariableA("F2KTEST", "first");
     line("SetEnvironmentVariableA: ret=%d err=%s", r, le());
@@ -578,16 +909,30 @@ static void sec_env(void)
     n = GetEnvironmentVariableA("F2KTEST", NULL, 0);
     line("size query: ret=%lu err=%s", n, le());
     arm();
+    n = GetEnvironmentVariableW(L"F2KTEST", NULL, 0);
+    line("size query (W): ret=%lu err=%s", n, le());
+    arm();
     n = GetEnvironmentVariableA("F2KTEST", buf, sizeof buf);
     line("get: ret=%lu [%s] err=%s", n, buf, le());
     arm();
+    n = GetEnvironmentVariableW(L"F2KTEST", wbuf, sizeof wbuf / sizeof wbuf[0]);
+    p1 = le();
+    line("get (W): ret=%lu [%s] err=%s", n, ws(wbuf), p1);
+    arm();
     n = GetEnvironmentVariableA("F2KTEST", buf, 3);
     line("get into 3 bytes: ret=%lu err=%s", n, le());
+    arm();
+    n = GetEnvironmentVariableW(L"F2KTEST", wbuf, 3);
+    line("get into 3 characters (W): ret=%lu err=%s", n, le());
 
     SetEnvironmentVariableA("F2KTEST", "second value");
     arm();
     n = GetEnvironmentVariableA("f2ktest", buf, sizeof buf);
     line("get by lower-case name: ret=%lu [%s] err=%s", n, buf, le());
+    arm();
+    n = GetEnvironmentVariableW(L"f2ktest", wbuf, sizeof wbuf / sizeof wbuf[0]);
+    p1 = le();
+    line("get by lower-case name (W): ret=%lu [%s] err=%s", n, ws(wbuf), p1);
 
     block = GetEnvironmentStrings();
     line("GetEnvironmentStrings: has the entry %s", yesno(block != NULL && block_has(block, "F2KTEST=second value")));
@@ -595,6 +940,14 @@ static void sec_env(void)
         arm();
         r = FreeEnvironmentStringsA(block);
         line("FreeEnvironmentStringsA: ret=%d err=%s", r, le());
+    }
+    block = GetEnvironmentStringsA();
+    line("GetEnvironmentStringsA: has the entry %s",
+         yesno(block != NULL && block_has(block, "F2KTEST=second value")));
+    if (block != NULL) {
+        arm();
+        r = FreeEnvironmentStringsA(block);
+        line("FreeEnvironmentStringsA (GetEnvironmentStringsA's block): ret=%d err=%s", r, le());
     }
     wblock = GetEnvironmentStringsW();
     line("GetEnvironmentStringsW: has the entry %s",
@@ -609,6 +962,9 @@ static void sec_env(void)
     arm();
     n = GetEnvironmentVariableA("F2KTEST", buf, sizeof buf);
     line("get after delete: ret=%lu err=%s", n, le());
+    arm();
+    n = GetEnvironmentVariableW(L"F2KTEST", wbuf, sizeof wbuf / sizeof wbuf[0]);
+    line("get after delete (W): ret=%lu err=%s", n, le());
 
     g = getenv("F2KTEST");
     line("CRT getenv sees the OS-level variable: %s", yesno(g != NULL));
@@ -617,13 +973,23 @@ static void sec_env(void)
     line("CRT getenv after _putenv: [%s]", g != NULL ? g : "(null)");
     n = GetEnvironmentVariableA("F2KCRT", buf, sizeof buf);
     line("OS sees the _putenv variable: ret=%lu [%s]", n, n != 0 ? buf : "");
+    n = GetEnvironmentVariableW(L"F2KCRT", wbuf, sizeof wbuf / sizeof wbuf[0]);
+    line("OS sees the _putenv variable (W): ret=%lu [%s]", n, n != 0 ? ws(wbuf) : "");
 
     arm();
     n = ExpandEnvironmentStringsA("[%F2KCRT%] [%F2KNOSUCH%]", buf, sizeof buf);
     line("ExpandEnvironmentStringsA: ret=%lu [%s] err=%s", n, buf, le());
     arm();
+    n = ExpandEnvironmentStringsW(L"[%F2KCRT%] [%F2KNOSUCH%]", wbuf, sizeof wbuf / sizeof wbuf[0]);
+    p1 = le();
+    line("ExpandEnvironmentStringsW: ret=%lu [%s] err=%s", n, ws(wbuf), p1);
+    arm();
     n = ExpandEnvironmentStringsA("[%F2KNOSUCH%F2KCRT%] [%%] [100%]", buf, sizeof buf);
     line("ExpandEnvironmentStringsA, an unset reference before a set one: ret=%lu [%s] err=%s", n, buf, le());
+    arm();
+    n = ExpandEnvironmentStringsW(L"[%F2KNOSUCH%F2KCRT%] [%%] [100%]", wbuf, sizeof wbuf / sizeof wbuf[0]);
+    p1 = le();
+    line("ExpandEnvironmentStringsW, an unset reference before a set one: ret=%lu [%s] err=%s", n, ws(wbuf), p1);
 
     SetEnvironmentVariableA("F2KORDERB", "b");
     SetEnvironmentVariableA("F2KORDERA", "a");
@@ -675,6 +1041,26 @@ static void mb_table(UINT cp, const char *label)
     }
 }
 
+/* EnumSystemLocales: whether US English (00000409) is among the locales
+   enumerated; never a count, which is the machine's. */
+static int saw_0409;
+
+static BOOL CALLBACK locale_seen_a(LPSTR name)
+{
+    if (strcmp(name, "00000409") == 0) {
+        saw_0409 = 1;
+    }
+    return TRUE;
+}
+
+static BOOL CALLBACK locale_seen_w(LPWSTR name)
+{
+    if (wcscmp(name, L"00000409") == 0) {
+        saw_0409 = 1;
+    }
+    return TRUE;
+}
+
 static void sec_locale(void)
 {
     BYTE in[256];
@@ -683,6 +1069,7 @@ static void sec_locale(void)
     WORD types[256];
     char buf[128];
     char *loc;
+    const char *p1;
     BOOL used;
     DWORD number;
     int i, n;
@@ -850,6 +1237,16 @@ static void sec_locale(void)
 
     line("GetUserDefaultLCID: 0x%04lX", GetUserDefaultLCID());
     line("GetSystemDefaultLCID: 0x%04lX", GetSystemDefaultLCID());
+    saw_0409 = 0;
+    arm();
+    r = EnumSystemLocalesA(locale_seen_a, LCID_SUPPORTED);
+    p1 = le();
+    line("EnumSystemLocalesA(LCID_SUPPORTED): ret=%d err=%s, 00000409 among them: %s", r, p1, yesno(saw_0409));
+    saw_0409 = 0;
+    arm();
+    r = EnumSystemLocalesW(locale_seen_w, LCID_SUPPORTED);
+    p1 = le();
+    line("EnumSystemLocalesW(LCID_SUPPORTED): ret=%d err=%s, 00000409 among them: %s", r, p1, yesno(saw_0409));
     n = GetLocaleInfoA(LOCALE_USER_DEFAULT, LOCALE_SENGLANGUAGE, buf, sizeof buf);
     line("LOCALE_SENGLANGUAGE: ret=%d [%s]", n, n ? buf : "");
     n = GetLocaleInfoA(LOCALE_USER_DEFAULT, LOCALE_IDEFAULTANSICODEPAGE, buf, sizeof buf);
@@ -1198,6 +1595,9 @@ static void sec_console(void)
     arm();
     r = WriteConsoleA(out, "console: WriteConsoleA\r\n", 24, &written, NULL);
     line("WriteConsoleA: ret=%d written=%lu err=%s", r, written, le());
+    arm();
+    r = WriteConsoleW(out, L"console: WriteConsoleW\r\n", 24, &written, NULL);
+    line("WriteConsoleW: ret=%d written=%lu err=%s", r, written, le());
     arm();
     r = WriteFile(err, "console: WriteFile to stderr\r\n", 30, &written, NULL);
     line("WriteFile(stderr): ret=%d written=%lu err=%s", r, written, le());

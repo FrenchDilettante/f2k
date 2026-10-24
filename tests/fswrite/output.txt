@@ -1,3 +1,9 @@
+# F2K capture of fswrite (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-AC9F3E6, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Sat 10/24/2026  9:38:08.35
+fswrite F2KT-SOURCE-CRC=0x2348447F
 >>> fswrite.exe create
 == create
 CREATE_NEW, new: opened err=0, size now 0
@@ -12,6 +18,18 @@ TRUNCATE_EXISTING, missing: INVALID_HANDLE_VALUE err=2, size now -1
 OPEN_EXISTING, missing: INVALID_HANDLE_VALUE err=2, size now -1
 CREATE_NEW in a missing directory: INVALID_HANDLE_VALUE err=3, size now -1
 a bad disposition: INVALID_HANDLE_VALUE err=87, size now -1
+CREATE_NEW, new (W): opened err=0, size now 0
+CREATE_NEW, existing (W): INVALID_HANDLE_VALUE err=80, size now 0
+CREATE_ALWAYS, existing (W): opened err=183, size now 0
+CREATE_ALWAYS, new (W): opened err=0, size now 0
+OPEN_ALWAYS, existing (W): opened err=183, size now 12
+OPEN_ALWAYS, new (W): opened err=0, size now 0
+TRUNCATE_EXISTING (W): opened err=0, size now 0
+TRUNCATE_EXISTING without write access (W): INVALID_HANDLE_VALUE err=87, size now 0
+TRUNCATE_EXISTING, missing (W): INVALID_HANDLE_VALUE err=2, size now -1
+OPEN_EXISTING, missing (W): INVALID_HANDLE_VALUE err=2, size now -1
+CREATE_NEW in a missing directory (W): INVALID_HANDLE_VALUE err=3, size now -1
+a bad disposition (W): INVALID_HANDLE_VALUE err=87, size now -1
 fswrite: done
 <<< exit code=0
 >>> fswrite.exe write
@@ -19,6 +37,7 @@ fswrite: done
 100000 bytes in 3000-byte writes: ok, position 100000
 FlushFileBuffers: ret=1 err=-
 size after close: 100000
+size after close (W): 100000
 read back: 100000 bytes, match yes
 write through a read-only handle: ret=0 err=5
 append: size 100004
@@ -39,6 +58,14 @@ DeleteFileA of an open file: ret=0 err=32
 DeleteFileA after closing: ret=1 err=-
 FILE_FLAG_DELETE_ON_CLOSE: created yes err=0, exists while open yes
 after close: attributes 0xFFFFFFFF err=2
+writer sharing read, then a second writer (W): INVALID_HANDLE_VALUE err=32
+writer sharing read, then a reader (W): opened err=0
+reader sharing read, then a reader not sharing write (W): opened err=0
+reader sharing read and write, then a writer (W): opened err=0
+DeleteFileW of an open file: ret=0 err=32
+DeleteFileW after closing: ret=1 err=-
+FILE_FLAG_DELETE_ON_CLOSE (W): created yes err=0, exists while open yes
+after close (W): attributes 0xFFFFFFFF err=2
 fswrite: done
 <<< exit code=0
 >>> fswrite.exe names
@@ -57,6 +84,30 @@ DeleteFileA(read-only): ret=0 err=5
 after clearing it: ret=1 err=-
 created a long name: size 4, short name [ALONGC~1.TXT] err=-
 opened by its short name: size 4
+created [Readme.txt]: short name [Readme.txt], listed [Readme.txt] alternate [README.TXT]
+created [NOTES.Txt]: short name [NOTES.Txt], listed [NOTES.Txt] alternate [NOTES.TXT]
+created [Readme file.txt]: short name [README~1.TXT], listed [Readme file.txt] alternate [README~1.TXT]
+created [café.txt]: short name [CAFÉ.TXT], listed [café.txt] alternate [CAFÉ.TXT]
+created [€uro.txt]: short name [URO~1.TXT], listed [€uro.txt] alternate [URO~1.TXT]
+MoveFileW rename: ret=1 err=-, old gone yes, new size 7
+MoveFileW onto an existing file: ret=0 err=183
+MoveFileW into a subdirectory: ret=1 err=-
+MoveFileW of a missing file: ret=0 err=2
+CopyFileW: ret=1 err=0, size 5
+CopyFileW onto an existing file, failing if it exists: ret=0 err=80
+CopyFileW overwriting: ret=1 err=0, size 7
+DeleteFileW(missing): ret=0 err=2
+DeleteFileW(a directory): ret=0 err=5
+read-only attribute set (W): 0x00000001
+DeleteFileW(read-only): ret=0 err=5
+after clearing it (W): ret=1 err=-
+created a long name (W): size 4, short name [ALONGC~1.TXT] err=-
+opened by its short name (W): size 4
+created [Readme.txt] (W): short name [Readme.txt], listed [Readme.txt] alternate [README.TXT]
+created [NOTES.Txt] (W): short name [NOTES.Txt], listed [NOTES.Txt] alternate [NOTES.TXT]
+created [Readme file.txt] (W): short name [README~1.TXT], listed [Readme file.txt] alternate [README~1.TXT]
+created [café.txt] (W): short name [CAFÉ.TXT], listed [café.txt] alternate [CAFÉ.TXT]
+created [<U+20AC>uro.txt] (W): short name [URO~1.TXT], listed [<U+20AC>uro.txt] alternate [URO~1.TXT]
 fswrite: done
 <<< exit code=0
 >>> fswrite.exe dirs
@@ -68,7 +119,15 @@ RemoveDirectoryA(not empty): ret=0 err=145
 RemoveDirectoryA(empty): ret=1 err=-
 RemoveDirectoryA(missing): ret=0 err=2
 RemoveDirectoryA(a file): ret=0 err=267
+CreateDirectoryW: ret=1 err=-, attributes 0x00000010
+CreateDirectoryW again: ret=0 err=183
+CreateDirectoryW under a missing parent: ret=0 err=3
+RemoveDirectoryW(not empty): ret=0 err=145
+RemoveDirectoryW(empty): ret=1 err=-
+RemoveDirectoryW(missing): ret=0 err=2
+RemoveDirectoryW(a file): ret=0 err=267
 100 files in one directory: all written yes, listed 100
+100 files in one directory (W): all written yes, listed 100
 emptied and removed: 1
 fswrite: done
 <<< exit code=0
@@ -81,10 +140,14 @@ fswrite: done
 >>> fswrite.exe crt
 == crt
 text-mode write of two lines: 20 bytes on disk
+text-mode write of two lines (W): 20 bytes on disk
 append: 23 bytes
+append (W): 23 bytes
 r+ overwrite in place, read back: [line ONE]
 binary fwrite of 4: 4 written, 4 on disk
+binary fwrite of 4 (W): 4 on disk
 rename: 0, size under the new name 4
+rename (W): size under the new name 4
 remove: 0
 remove again: -1 errno 2
 fswrite: done

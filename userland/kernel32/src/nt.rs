@@ -1175,6 +1175,11 @@ pub mod host {
             Ok(())
         }
 
+        fn print(&mut self, screen: &mut rtl::console::screen::ScreenBuffer, bytes: &[u8]) {
+            screen.render(bytes);
+            CONSOLE.with(|console| console.borrow_mut().push((self.0, bytes.to_vec())));
+        }
+
         fn read(&mut self, buffer: usize, into: &mut [u8]) -> Result<(), u32> {
             Self::check(buffer)?;
             // SAFETY: the test's buffer of `into.len()` bytes.

@@ -77,6 +77,108 @@ pub fn unicode_string(units: &mut [u16], length: usize) -> UnicodeString {
     }
 }
 
+/// A UNICODE_STRING over a caller's NUL-terminated string, as RtlInitUnicodeString makes one: its
+/// length to the terminator, its room the terminator's too (a string past the UNICODE_STRING's
+/// limit stops at it: an assumption, unverified on the platform).
+///
+/// # Safety
+///
+/// `string` points at a NUL-terminated UTF-16 string.
+pub unsafe fn wide_string(string: *const u16) -> UnicodeString {
+    let mut units = 0usize;
+    // SAFETY: the caller's string, read to its terminator.
+    while units < 0x7FFE && unsafe { string.add(units).read() } != 0 {
+        units += 1;
+    }
+    UnicodeString {
+        length: (2 * units) as u16,
+        maximum_length: (2 * units + 2) as u16,
+        buffer: string as *mut u16,
+    }
+}
+
+/// A caller's NUL-terminated UTF-16 string, its terminator left out.
+///
+/// # Safety
+///
+/// `string` points at a NUL-terminated UTF-16 string (a bad pointer faults the caller, as on the
+/// platform).
+pub unsafe fn wide_units<'a>(string: *const u16) -> &'a [u16] {
+    let mut length = 0;
+    // SAFETY: the caller's string, read to its terminator.
+    while unsafe { string.add(length).read_unaligned() } != 0 {
+        length += 1;
+    }
+    // SAFETY: as above.
+    unsafe { core::slice::from_raw_parts(string, length) }
+}
+
+/// A caller's buffer for a string a call hands back: an A call's bytes (each unit narrowed through
+/// the ANSI code page) or a W call's UTF-16 units as they are. Code page 1252 is one byte a
+/// character, so both count the same characters.
+#[derive(Clone, Copy)]
+pub enum Text {
+    Ansi(*mut u8),
+    Wide(*mut u16),
+}
+
+impl Text {
+    pub fn is_null(self) -> bool {
+        match self {
+            Text::Ansi(buffer) => buffer.is_null(),
+            Text::Wide(buffer) => buffer.is_null(),
+        }
+    }
+
+    /// Write `units` from the buffer's start.
+    ///
+    /// # Safety
+    ///
+    /// The buffer holds them.
+    pub unsafe fn put(self, units: &[u16]) {
+        for (at, &unit) in units.iter().enumerate() {
+            // SAFETY: the caller's contract.
+            unsafe { self.put_unit(at, unit) };
+        }
+    }
+
+    /// Write `units` from the buffer's start, then the terminator.
+    ///
+    /// # Safety
+    ///
+    /// The buffer holds them and the terminator.
+    pub unsafe fn put_terminated(self, units: &[u16]) {
+        // SAFETY: the caller's contract.
+        unsafe {
+            self.put(units);
+            self.put_unit(units.len(), 0);
+        }
+    }
+
+    /// Write one unit at character `at`.
+    ///
+    /// # Safety
+    ///
+    /// The buffer holds `at + 1` characters.
+    pub unsafe fn put_unit(self, at: usize, unit: u16) {
+        // SAFETY: the caller's contract.
+        unsafe {
+            match self {
+                Text::Ansi(buffer) => buffer.add(at).write(rtl::cp1252::wc_to_mb(unit)),
+                Text::Wide(buffer) => buffer.add(at).write_unaligned(unit),
+            }
+        }
+    }
+
+    /// The address of the buffer's character `at` (a file part's place in it).
+    pub fn address(self, at: usize) -> usize {
+        match self {
+            Text::Ansi(buffer) => buffer as usize + at,
+            Text::Wide(buffer) => buffer as usize + 2 * at,
+        }
+    }
+}
+
 /// `body` under the PEB lock (RtlAcquirePebLock, RtlReleasePebLock): what serializes kernel32's
 /// lazily made per-process state, as Windows 2000's kernel32 serializes it.
 pub fn under_peb_lock<R>(body: impl FnOnce() -> R) -> R {

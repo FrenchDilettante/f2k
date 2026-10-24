@@ -1,3 +1,9 @@
+# F2K capture of threads (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-AC9F3E6, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Sat 10/24/2026  9:14:45.13
+threads F2KT-SOURCE-CRC=0x7C6EAB7B
 >>> threads.exe create
 == create
 child returned its parameter doubled: exit code 42
@@ -95,7 +101,7 @@ threads: done
 _beginthreadex(suspended): handle yes, id nonzero yes
 resumed (returned 1), _endthreadex(55): exit code 55
 _beginthread: handle yes
-its routine ran: WAIT_OBJECT_0, parameter 0
+its routine ran: WAIT_OBJECT_0, parameter 9
 threads: done
 <<< exit code=0
 >>> threads.exe mainexit

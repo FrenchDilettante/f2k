@@ -1,3 +1,9 @@
+# F2K capture of memory (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-AC9F3E6, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Sat 10/24/2026  9:14:45.02
+memory F2KT-SOURCE-CRC=0x1BBEA797
 >>> memory.exe sysinfo
 == sysinfo
 page size 0x1000 granularity 0x10000
@@ -122,6 +128,7 @@ IsBadReadPtr(NULL) 1
 IsBadWritePtr(.rdata) 1
 IsBadCodePtr(function) 0
 IsBadStringPtrA(literal) 0
+IsBadStringPtrW(literal) 0
 IsBadReadPtr(0x80000000) 1
 memory: done
 <<< exit code=0
@@ -129,10 +136,11 @@ memory: done
 == image
 headers: state 0x1000 protect 0x2 type 0x1000000 region 0x1000 allocprotect 0x80
 headers: allocation base is the image yes
+GetModuleHandleW(NULL): the same base yes
 section .text: protect 0x20 type 0x1000000 same allocation yes
 section .rdata: protect 0x2 type 0x1000000 same allocation yes
 section .data: protect 0x8 type 0x1000000 same allocation yes
-past the image end: state 0x10000 protect 0x1 type 0x0 region 0xC000 allocprotect 0x0
+past the image end: state 0x10000 protect 0x1 type 0x0 region 0xB000 allocprotect 0x0
 memory: done
 <<< exit code=0
 >>> memory.exe mapping
@@ -147,6 +155,10 @@ named mapping: non-null yes err=0
 named mapping again: non-null yes err=183
 OpenFileMappingA sees the named mapping's data: yes
 OpenFileMappingA(missing): null yes err=2
+named mapping (W): non-null yes err=0
+named mapping again (W): non-null yes err=183
+OpenFileMappingW sees the named mapping's data: yes
+OpenFileMappingW(missing): null yes err=2
 close the mapping handle with views mapped: ret=1 err=-
 views still valid: yes
 UnmapViewOfFile: ret=1 err=-

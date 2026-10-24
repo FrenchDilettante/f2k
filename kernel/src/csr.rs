@@ -216,6 +216,14 @@ impl Client for Dual {
         Ok(())
     }
 
+    /// The server's bytes (a Unicode write's), to the serial line, then to the screen buffer.
+    fn print(&mut self, screen: &mut ScreenBuffer, bytes: &[u8]) {
+        for &byte in bytes {
+            serial_byte(byte);
+        }
+        screen.render(bytes);
+    }
+
     /// The caller's memory, refused as the services refuse it: STATUS_ACCESS_VIOLATION.
     fn read(&mut self, buffer: usize, into: &mut [u8]) -> Result<(), u32> {
         crate::user::syscall::probe_user_range(buffer as u32, into.len() as u32)?;

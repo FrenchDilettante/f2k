@@ -1,11 +1,12 @@
 //! The environment group, kernel32's own code over ntdll's (RtlQueryEnvironmentVariable_U,
 //! RtlSetEnvironmentVariable, RtlExpandEnvironmentStrings_U), as on Windows 2000: the narrow forms
-//! convert through the ANSI code page into buffers on the process heap; GetEnvironmentStringsW
-//! hands out the live block, GetEnvironmentStrings an ANSI copy on the process heap.
+//! convert through the ANSI code page into buffers on the process heap and share the W forms' work;
+//! GetEnvironmentStringsW hands out the live block, GetEnvironmentStrings (and
+//! GetEnvironmentStringsA, the same function) an ANSI copy on the process heap.
 
 use rtl::cp1252;
 
-use crate::base::{set_last_error, set_last_nt_error};
+use crate::base::{set_last_error, set_last_nt_error, Text};
 use crate::error::ERROR_NOT_ENOUGH_MEMORY;
 use crate::nt::{self, UnicodeString};
 
@@ -127,6 +128,13 @@ pub extern "system" fn free_environment_strings_w(_block: *mut u16) -> u32 {
     1
 }
 
+/// GetEnvironmentStringsA: the same function as GetEnvironmentStrings, under its A name (Windows
+/// 2000 exports both).
+#[unsafe(export_name = "f2k_export_GetEnvironmentStringsA")]
+pub extern "system" fn get_environment_strings_a() -> *mut u8 {
+    get_environment_strings()
+}
+
 /// GetEnvironmentStrings: an ANSI copy of the environment block on the process heap (taken under
 /// the PEB lock); null with ERROR_NOT_ENOUGH_MEMORY when the heap has no room.
 #[unsafe(export_name = "f2k_export_GetEnvironmentStrings")]
@@ -183,10 +191,53 @@ pub unsafe extern "system" fn free_environment_strings_a(block: *mut u8) -> u32 
     )
 }
 
-/// GetEnvironmentVariableA: the variable's value into the buffer — its length, terminator excluded,
-/// when it fits; the size it needs, terminator included, when it does not (nothing written).
-/// ERROR_ENVVAR_NOT_FOUND (and 0) for an unset variable, ERROR_INVALID_PARAMETER for a name that
-/// does not convert ([`widen`]).
+/// GetEnvironmentVariableW's work: the variable's value into the buffer — its length, terminator
+/// excluded, when it fits; the size it needs, terminator included, when it does not (nothing
+/// written). ERROR_ENVVAR_NOT_FOUND (and 0) for an unset variable.
+///
+/// # Safety
+///
+/// `buffer` holds `size` characters.
+unsafe fn variable(name_string: &UnicodeString, buffer: Text, size: u32) -> u32 {
+    // The value's length first (an empty buffer), then the value itself.
+    let mut probe = UnicodeString {
+        length: 0,
+        maximum_length: 0,
+        buffer: core::ptr::null_mut(),
+    };
+    // SAFETY: ntdll's export, over the strings above.
+    let status = unsafe {
+        nt::RtlQueryEnvironmentVariable_U(core::ptr::null_mut(), name_string, &mut probe)
+    };
+    if status != STATUS_BUFFER_TOO_SMALL && status != 0 {
+        set_last_nt_error(status);
+        return 0;
+    }
+    let value_length = probe.length as usize / 2;
+    if (size as usize) <= value_length {
+        return value_length as u32 + 1;
+    }
+    let Some(value) = Wide::new(value_length + 1) else {
+        set_last_error(ERROR_NOT_ENOUGH_MEMORY);
+        return 0;
+    };
+    let mut value_string = value.string(0);
+    // SAFETY: as above.
+    let status = unsafe {
+        nt::RtlQueryEnvironmentVariable_U(core::ptr::null_mut(), name_string, &mut value_string)
+    };
+    if status != 0 {
+        set_last_nt_error(status);
+        return 0;
+    }
+    let units = value.units(value_string.length as usize / 2);
+    // SAFETY: the caller's buffer holds the value and its terminator.
+    unsafe { buffer.put_terminated(units) };
+    units.len() as u32
+}
+
+/// GetEnvironmentVariableA (see [`variable`]): ERROR_INVALID_PARAMETER for a name that does not
+/// convert ([`widen`]).
 ///
 /// # Safety
 ///
@@ -205,46 +256,23 @@ pub unsafe extern "system" fn get_environment_variable_a(
             return 0;
         }
     };
-    let name_string = wide_name.string(name_length);
-    // The value's length first (an empty buffer), then the value itself.
-    let mut probe = UnicodeString {
-        length: 0,
-        maximum_length: 0,
-        buffer: core::ptr::null_mut(),
-    };
-    // SAFETY: ntdll's export, over the strings above.
-    let status = unsafe {
-        nt::RtlQueryEnvironmentVariable_U(core::ptr::null_mut(), &name_string, &mut probe)
-    };
-    if status != STATUS_BUFFER_TOO_SMALL && status != 0 {
-        set_last_nt_error(status);
-        return 0;
-    }
-    let value_length = probe.length as usize / 2;
-    if (size as usize) <= value_length {
-        return value_length as u32 + 1;
-    }
-    let Some(value) = Wide::new(value_length + 1) else {
-        set_last_error(ERROR_NOT_ENOUGH_MEMORY);
-        return 0;
-    };
-    let mut value_string = value.string(0);
-    // SAFETY: as above.
-    let status = unsafe {
-        nt::RtlQueryEnvironmentVariable_U(core::ptr::null_mut(), &name_string, &mut value_string)
-    };
-    if status != 0 {
-        set_last_nt_error(status);
-        return 0;
-    }
-    let units = value.units(value_string.length as usize / 2);
-    for (at, &unit) in units.iter().enumerate() {
-        // SAFETY: inside the caller's buffer (it holds the value and its terminator).
-        unsafe { buffer.add(at).write(cp1252::wc_to_mb(unit)) };
-    }
-    // SAFETY: as above.
-    unsafe { buffer.add(units.len()).write(0) };
-    units.len() as u32
+    // SAFETY: the caller's buffer.
+    unsafe { variable(&wide_name.string(name_length), Text::Ansi(buffer), size) }
+}
+
+/// GetEnvironmentVariableW (see [`variable`]).
+///
+/// # Safety
+///
+/// `name` points at a NUL-terminated UTF-16 string, `buffer` holds `size` characters.
+#[unsafe(export_name = "f2k_export_GetEnvironmentVariableW")]
+pub unsafe extern "system" fn get_environment_variable_w(
+    name: *const u16,
+    buffer: *mut u16,
+    size: u32,
+) -> u32 {
+    // SAFETY: the caller's name and buffer.
+    unsafe { variable(&counted(name), Text::Wide(buffer), size) }
 }
 
 /// SetEnvironmentVariableA: set the variable to the value, or delete it for a null value; FALSE
@@ -322,28 +350,13 @@ pub unsafe extern "system" fn set_environment_variable_w(
     1
 }
 
-/// ExpandEnvironmentStringsA: the expansion and its terminator into the caller's buffer when it
-/// fits; the size it needs (terminator included) either way. ERROR_INVALID_PARAMETER (and 0) for a
-/// source that does not convert ([`widen`]).
+/// ExpandEnvironmentStringsW's work: the expansion and its terminator into the caller's buffer
+/// when it fits; the size it needs (terminator included) either way.
 ///
 /// # Safety
 ///
-/// `source` points at a NUL-terminated string, `buffer` holds `size` bytes.
-#[unsafe(export_name = "f2k_export_ExpandEnvironmentStringsA")]
-pub unsafe extern "system" fn expand_environment_strings_a(
-    source: *const u8,
-    buffer: *mut u8,
-    size: u32,
-) -> u32 {
-    // SAFETY: the caller's source.
-    let (wide_source, source_length) = match unsafe { widen(source) } {
-        Ok(wide) => wide,
-        Err(status) => {
-            set_last_nt_error(status);
-            return 0;
-        }
-    };
-    let source_string = wide_source.string(source_length);
+/// `buffer` holds `size` characters.
+unsafe fn expand(source_string: &UnicodeString, buffer: Text, size: u32) -> u32 {
     let mut needed = 0u32;
     let mut probe = UnicodeString {
         length: 0,
@@ -354,7 +367,7 @@ pub unsafe extern "system" fn expand_environment_strings_a(
     let status = unsafe {
         nt::RtlExpandEnvironmentStrings_U(
             core::ptr::null_mut(),
-            &source_string,
+            source_string,
             &mut probe,
             &mut needed,
         )
@@ -376,7 +389,7 @@ pub unsafe extern "system" fn expand_environment_strings_a(
     let status = unsafe {
         nt::RtlExpandEnvironmentStrings_U(
             core::ptr::null_mut(),
-            &source_string,
+            source_string,
             &mut out_string,
             &mut needed,
         )
@@ -385,9 +398,46 @@ pub unsafe extern "system" fn expand_environment_strings_a(
         set_last_nt_error(status);
         return 0;
     }
-    for (at, &unit) in out.units(units).iter().enumerate() {
-        // SAFETY: inside the caller's buffer (it holds the expansion and its terminator).
-        unsafe { buffer.add(at).write(cp1252::wc_to_mb(unit)) };
-    }
+    // SAFETY: the caller's buffer holds the expansion and its terminator.
+    unsafe { buffer.put(out.units(units)) };
     units as u32
+}
+
+/// ExpandEnvironmentStringsA (see [`expand`]): ERROR_INVALID_PARAMETER (and 0) for a source that
+/// does not convert ([`widen`]).
+///
+/// # Safety
+///
+/// `source` points at a NUL-terminated string, `buffer` holds `size` bytes.
+#[unsafe(export_name = "f2k_export_ExpandEnvironmentStringsA")]
+pub unsafe extern "system" fn expand_environment_strings_a(
+    source: *const u8,
+    buffer: *mut u8,
+    size: u32,
+) -> u32 {
+    // SAFETY: the caller's source.
+    let (wide_source, source_length) = match unsafe { widen(source) } {
+        Ok(wide) => wide,
+        Err(status) => {
+            set_last_nt_error(status);
+            return 0;
+        }
+    };
+    // SAFETY: the caller's buffer.
+    unsafe { expand(&wide_source.string(source_length), Text::Ansi(buffer), size) }
+}
+
+/// ExpandEnvironmentStringsW (see [`expand`]).
+///
+/// # Safety
+///
+/// `source` points at a NUL-terminated UTF-16 string, `buffer` holds `size` characters.
+#[unsafe(export_name = "f2k_export_ExpandEnvironmentStringsW")]
+pub unsafe extern "system" fn expand_environment_strings_w(
+    source: *const u16,
+    buffer: *mut u16,
+    size: u32,
+) -> u32 {
+    // SAFETY: the caller's source and buffer.
+    unsafe { expand(&counted(source), Text::Wide(buffer), size) }
 }

@@ -157,6 +157,39 @@ static const char *yesno(int v)
     return v ? "yes" : "no";
 }
 
+/* A wide string as printed, its first `count` units (to its terminator for
+ * a negative count): a unit below 0x100 as its byte (but for 0x80-0x9F,
+ * which code page 1252 does not map one to one), any other as <U+XXXX>;
+ * "(null)" for NULL. It calls no API, so the last error stays as the call
+ * under observation left it. Rotates through a few buffers, as le() does. */
+static const char *wsn(const WCHAR *s, int count)
+{
+    static char bufs[4][1024];
+    static int next;
+    char *b = bufs[next++ & 3];
+    int n = 0;
+    int i;
+
+    if (s == NULL) {
+        return "(null)";
+    }
+    for (i = 0; (count < 0 ? s[i] != 0 : i < count) && n < (int)sizeof bufs[0] - 9; i++) {
+        if (s[i] < 0x100 && (s[i] < 0x80 || s[i] > 0x9F)) {
+            b[n++] = (char)s[i];
+        } else {
+            n += sprintf(b + n, "<U+%04X>", (unsigned)s[i]);
+        }
+    }
+    b[n] = '\0';
+    return b;
+}
+
+/* The same, to the terminator. */
+static const char *ws(const WCHAR *s)
+{
+    return wsn(s, -1);
+}
+
 /* A wait result by name where it has one, the number otherwise. */
 static const char *wr(DWORD r)
 {

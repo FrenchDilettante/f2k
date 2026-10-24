@@ -2,13 +2,14 @@
 //! FileBasicInformation), its delete and a directory's removal (an open for DELETE, then
 //! FileDispositionInformation: the file goes with the open's close), a rename
 //! (FileRenameInformation), a new directory (NtCreateFile), and the full and short forms of a path
-//! — as Windows 2000's kernel32 makes them.
+//! — as Windows 2000's kernel32 makes them, each in its W form's work with the A and W exports
+//! over it.
 
 use rtl::status::nt_success;
 
 use super::find::{find_close, find_first_w, FindDataW};
 use super::*;
-use crate::base::set_last_nt_error;
+use crate::base::{set_last_nt_error, Text};
 
 /// The attributes SetFileAttributes may set (FILE_ATTRIBUTE_VALID_SET_FLAGS), and the one it adds
 /// so that none still names a change.
@@ -35,16 +36,10 @@ fn succeeded(status: u32) -> u32 {
     }
 }
 
-/// GetFileAttributesA: the file's or directory's attributes (NtQueryAttributesFile);
+/// GetFileAttributesW's work: the file's or directory's attributes (NtQueryAttributesFile);
 /// INVALID_FILE_ATTRIBUTES with the error.
-///
-/// # Safety
-///
-/// `name` is a NUL-terminated string.
-#[unsafe(export_name = "f2k_export_GetFileAttributesA")]
-pub unsafe extern "system" fn get_file_attributes_a(name: *const u8) -> u32 {
-    // SAFETY: the caller's string.
-    let Some(path) = (unsafe { widen(name) }).as_ref().and_then(nt_path) else {
+fn file_attributes(name: &Wide) -> u32 {
+    let Some(path) = nt_path(name) else {
         return INVALID_FILE_ATTRIBUTES;
     };
     let attributes = path.attributes(false);
@@ -58,24 +53,36 @@ pub unsafe extern "system" fn get_file_attributes_a(name: *const u8) -> u32 {
     word(&basic, 32)
 }
 
-/// GetFileAttributesExA: GetFileExInfoStandard alone (ERROR_INVALID_PARAMETER for another level):
-/// the attributes, the three times and the size (NtQueryFullAttributesFile).
+/// GetFileAttributesA (see [`file_attributes`]).
 ///
 /// # Safety
 ///
-/// `name` is a NUL-terminated string; `info` points at a WIN32_FILE_ATTRIBUTE_DATA.
-#[unsafe(export_name = "f2k_export_GetFileAttributesExA")]
-pub unsafe extern "system" fn get_file_attributes_ex_a(
-    name: *const u8,
-    level: u32,
-    info: *mut u8,
-) -> u32 {
-    if level != 0 {
-        set_last_error(ERROR_INVALID_PARAMETER);
-        return 0;
-    }
+/// `name` is a NUL-terminated string.
+#[unsafe(export_name = "f2k_export_GetFileAttributesA")]
+pub unsafe extern "system" fn get_file_attributes_a(name: *const u8) -> u32 {
     // SAFETY: the caller's string.
-    let Some(path) = (unsafe { widen(name) }).as_ref().and_then(nt_path) else {
+    unsafe { widen(name) }.map_or(INVALID_FILE_ATTRIBUTES, |name| file_attributes(&name))
+}
+
+/// GetFileAttributesW (see [`file_attributes`]).
+///
+/// # Safety
+///
+/// `name` is a NUL-terminated UTF-16 string.
+#[unsafe(export_name = "f2k_export_GetFileAttributesW")]
+pub unsafe extern "system" fn get_file_attributes_w(name: *const u16) -> u32 {
+    // SAFETY: the caller's string.
+    unsafe { wide(name) }.map_or(INVALID_FILE_ATTRIBUTES, |name| file_attributes(&name))
+}
+
+/// GetFileAttributesExW's work for GetFileExInfoStandard: the attributes, the three times and the
+/// size (NtQueryFullAttributesFile) into the caller's WIN32_FILE_ATTRIBUTE_DATA.
+///
+/// # Safety
+///
+/// `info` points at a WIN32_FILE_ATTRIBUTE_DATA.
+unsafe fn file_attributes_ex(name: &Wide, info: *mut u8) -> u32 {
+    let Some(path) = nt_path(name) else {
         return 0;
     };
     let attributes = path.attributes(false);
@@ -96,17 +103,50 @@ pub unsafe extern "system" fn get_file_attributes_ex_a(
     1
 }
 
-/// SetFileAttributesA: an open for FILE_WRITE_ATTRIBUTES, then the attributes (the settable ones,
-/// with FILE_ATTRIBUTE_NORMAL so that none still sets) in FileBasicInformation, its times zero
-/// (left as they are).
+/// GetFileAttributesExA: GetFileExInfoStandard alone (ERROR_INVALID_PARAMETER for another level,
+/// before the name is read; see [`file_attributes_ex`]).
 ///
 /// # Safety
 ///
-/// `name` is a NUL-terminated string.
-#[unsafe(export_name = "f2k_export_SetFileAttributesA")]
-pub unsafe extern "system" fn set_file_attributes_a(name: *const u8, attributes: u32) -> u32 {
-    // SAFETY: the caller's string.
-    let Some(path) = (unsafe { widen(name) }).as_ref().and_then(nt_path) else {
+/// `name` is a NUL-terminated string; `info` points at a WIN32_FILE_ATTRIBUTE_DATA.
+#[unsafe(export_name = "f2k_export_GetFileAttributesExA")]
+pub unsafe extern "system" fn get_file_attributes_ex_a(
+    name: *const u8,
+    level: u32,
+    info: *mut u8,
+) -> u32 {
+    if level != 0 {
+        set_last_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+    // SAFETY: the caller's string and structure.
+    unsafe { widen(name) }.map_or(0, |name| unsafe { file_attributes_ex(&name, info) })
+}
+
+/// GetFileAttributesExW (as [`get_file_attributes_ex_a`]).
+///
+/// # Safety
+///
+/// `name` is a NUL-terminated UTF-16 string; `info` points at a WIN32_FILE_ATTRIBUTE_DATA.
+#[unsafe(export_name = "f2k_export_GetFileAttributesExW")]
+pub unsafe extern "system" fn get_file_attributes_ex_w(
+    name: *const u16,
+    level: u32,
+    info: *mut u8,
+) -> u32 {
+    if level != 0 {
+        set_last_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+    // SAFETY: the caller's string and structure.
+    unsafe { wide(name) }.map_or(0, |name| unsafe { file_attributes_ex(&name, info) })
+}
+
+/// SetFileAttributesW's work: an open for FILE_WRITE_ATTRIBUTES, then the attributes (the settable
+/// ones, with FILE_ATTRIBUTE_NORMAL so that none still sets) in FileBasicInformation, its times
+/// zero (left as they are).
+fn set_attributes(name: &Wide, attributes: u32) -> u32 {
+    let Some(path) = nt_path(name) else {
         return 0;
     };
     let options =
@@ -129,12 +169,33 @@ pub unsafe extern "system" fn set_file_attributes_a(name: *const u8, attributes:
     succeeded(status)
 }
 
-/// The delete DeleteFileA and RemoveDirectoryA share: the open for DELETE (sharing everything),
-/// then FileDispositionInformation; the open's close deletes the file, or leaves it to the last
-/// open's when others hold it.
-fn delete(name: *const u8, access: u32, options: u32) -> u32 {
+/// SetFileAttributesA (see [`set_attributes`]).
+///
+/// # Safety
+///
+/// `name` is a NUL-terminated string.
+#[unsafe(export_name = "f2k_export_SetFileAttributesA")]
+pub unsafe extern "system" fn set_file_attributes_a(name: *const u8, attributes: u32) -> u32 {
     // SAFETY: the caller's string.
-    let Some(path) = (unsafe { widen(name) }).as_ref().and_then(nt_path) else {
+    unsafe { widen(name) }.map_or(0, |name| set_attributes(&name, attributes))
+}
+
+/// SetFileAttributesW (see [`set_attributes`]).
+///
+/// # Safety
+///
+/// `name` is a NUL-terminated UTF-16 string.
+#[unsafe(export_name = "f2k_export_SetFileAttributesW")]
+pub unsafe extern "system" fn set_file_attributes_w(name: *const u16, attributes: u32) -> u32 {
+    // SAFETY: the caller's string.
+    unsafe { wide(name) }.map_or(0, |name| set_attributes(&name, attributes))
+}
+
+/// The delete DeleteFile and RemoveDirectory share: the open for DELETE (sharing everything), then
+/// FileDispositionInformation; the open's close deletes the file, or leaves it to the last open's
+/// when others hold it.
+fn delete(name: &Wide, access: u32, options: u32) -> u32 {
+    let Some(path) = nt_path(name) else {
         return 0;
     };
     let handle = match open(
@@ -151,25 +212,15 @@ fn delete(name: *const u8, access: u32, options: u32) -> u32 {
     succeeded(status)
 }
 
-/// DeleteFileA: a file's delete (a directory refuses the open, STATUS_FILE_IS_A_DIRECTORY; a
-/// read-only file the disposition, STATUS_CANNOT_DELETE).
-///
-/// # Safety
-///
-/// `name` is a NUL-terminated string.
-#[unsafe(export_name = "f2k_export_DeleteFileA")]
-pub unsafe extern "system" fn delete_file_a(name: *const u8) -> u32 {
+/// A file's delete (a directory refuses the open, STATUS_FILE_IS_A_DIRECTORY; a read-only file the
+/// disposition, STATUS_CANNOT_DELETE).
+fn delete_file(name: &Wide) -> u32 {
     delete(name, DELETE, FILE_NON_DIRECTORY_FILE)
 }
 
-/// RemoveDirectoryA: a directory's delete (a file refuses the open, STATUS_NOT_A_DIRECTORY; a
-/// directory with entries the disposition, STATUS_DIRECTORY_NOT_EMPTY).
-///
-/// # Safety
-///
-/// `name` is a NUL-terminated string.
-#[unsafe(export_name = "f2k_export_RemoveDirectoryA")]
-pub unsafe extern "system" fn remove_directory_a(name: *const u8) -> u32 {
+/// A directory's delete (a file refuses the open, STATUS_NOT_A_DIRECTORY; a directory with entries
+/// the disposition, STATUS_DIRECTORY_NOT_EMPTY).
+fn remove_directory(name: &Wide) -> u32 {
     delete(
         name,
         DELETE | SYNCHRONIZE,
@@ -177,20 +228,55 @@ pub unsafe extern "system" fn remove_directory_a(name: *const u8) -> u32 {
     )
 }
 
-/// MoveFileA: the source's open for DELETE (sharing reads and writes), then its rename to the new
-/// name's NT path (FileRenameInformation, an existing name not replaced:
-/// STATUS_OBJECT_NAME_COLLISION).
+/// DeleteFileA (see [`delete_file`]).
 ///
 /// # Safety
 ///
-/// Both names are NUL-terminated strings.
-#[unsafe(export_name = "f2k_export_MoveFileA")]
-pub unsafe extern "system" fn move_file_a(from: *const u8, to: *const u8) -> u32 {
-    // SAFETY: the caller's strings.
-    let (Some(from), Some(to)) = (unsafe { widen(from) }, unsafe { widen(to) }) else {
-        return 0;
-    };
-    let Some(source) = nt_path(&from) else {
+/// `name` is a NUL-terminated string.
+#[unsafe(export_name = "f2k_export_DeleteFileA")]
+pub unsafe extern "system" fn delete_file_a(name: *const u8) -> u32 {
+    // SAFETY: the caller's string.
+    unsafe { widen(name) }.map_or(0, |name| delete_file(&name))
+}
+
+/// DeleteFileW (see [`delete_file`]).
+///
+/// # Safety
+///
+/// `name` is a NUL-terminated UTF-16 string.
+#[unsafe(export_name = "f2k_export_DeleteFileW")]
+pub unsafe extern "system" fn delete_file_w(name: *const u16) -> u32 {
+    // SAFETY: the caller's string.
+    unsafe { wide(name) }.map_or(0, |name| delete_file(&name))
+}
+
+/// RemoveDirectoryA (see [`remove_directory`]).
+///
+/// # Safety
+///
+/// `name` is a NUL-terminated string.
+#[unsafe(export_name = "f2k_export_RemoveDirectoryA")]
+pub unsafe extern "system" fn remove_directory_a(name: *const u8) -> u32 {
+    // SAFETY: the caller's string.
+    unsafe { widen(name) }.map_or(0, |name| remove_directory(&name))
+}
+
+/// RemoveDirectoryW (see [`remove_directory`]).
+///
+/// # Safety
+///
+/// `name` is a NUL-terminated UTF-16 string.
+#[unsafe(export_name = "f2k_export_RemoveDirectoryW")]
+pub unsafe extern "system" fn remove_directory_w(name: *const u16) -> u32 {
+    // SAFETY: the caller's string.
+    unsafe { wide(name) }.map_or(0, |name| remove_directory(&name))
+}
+
+/// MoveFileW's work: the source's open for DELETE (sharing reads and writes), then its rename to
+/// the new name's NT path (FileRenameInformation, an existing name not replaced:
+/// STATUS_OBJECT_NAME_COLLISION).
+fn move_file(from: &Wide, to: &Wide) -> u32 {
+    let Some(source) = nt_path(from) else {
         return 0;
     };
     let options =
@@ -204,7 +290,7 @@ pub unsafe extern "system" fn move_file_a(from: *const u8, to: *const u8) -> u32
         Ok(handle) => handle,
         Err(status) => return succeeded(status),
     };
-    let Some(target) = nt_path(&to) else {
+    let Some(target) = nt_path(to) else {
         close(handle);
         return 0;
     };
@@ -223,21 +309,44 @@ pub unsafe extern "system" fn move_file_a(from: *const u8, to: *const u8) -> u32
     succeeded(status)
 }
 
-/// CreateDirectoryA: a new directory (NtCreateFile, FILE_CREATE): an existing name is
+/// MoveFileA (see [`move_file`]): both names converted first.
+///
+/// # Safety
+///
+/// Both names are NUL-terminated strings.
+#[unsafe(export_name = "f2k_export_MoveFileA")]
+pub unsafe extern "system" fn move_file_a(from: *const u8, to: *const u8) -> u32 {
+    // SAFETY: the caller's strings.
+    match (unsafe { widen(from) }, unsafe { widen(to) }) {
+        (Some(from), Some(to)) => move_file(&from, &to),
+        _ => 0,
+    }
+}
+
+/// MoveFileW (as [`move_file_a`]).
+///
+/// # Safety
+///
+/// Both names are NUL-terminated UTF-16 strings.
+#[unsafe(export_name = "f2k_export_MoveFileW")]
+pub unsafe extern "system" fn move_file_w(from: *const u16, to: *const u16) -> u32 {
+    // SAFETY: the caller's strings.
+    match (unsafe { wide(from) }, unsafe { wide(to) }) {
+        (Some(from), Some(to)) => move_file(&from, &to),
+        _ => 0,
+    }
+}
+
+/// CreateDirectoryW's work: a new directory (NtCreateFile, FILE_CREATE): an existing name is
 /// STATUS_OBJECT_NAME_COLLISION (ERROR_ALREADY_EXISTS). A directory whose full path leaves no room
 /// for an 8.3 name inside MAX_PATH is ERROR_FILENAME_EXCED_RANGE (so `del *.*` can always empty
 /// it, as Windows 2000's reason runs); the security attributes are not consulted.
 ///
 /// # Safety
 ///
-/// `name` is a NUL-terminated string; `security` is null or a SECURITY_ATTRIBUTES.
-#[unsafe(export_name = "f2k_export_CreateDirectoryA")]
-pub unsafe extern "system" fn create_directory_a(
-    name: *const u8,
-    security: *const SecurityAttributes,
-) -> u32 {
-    // SAFETY: the caller's string.
-    let Some(path) = (unsafe { widen(name) }).as_ref().and_then(nt_path) else {
+/// `security` is null or a SECURITY_ATTRIBUTES.
+unsafe fn create_directory(name: &Wide, security: *const SecurityAttributes) -> u32 {
+    let Some(path) = nt_path(name) else {
         return 0;
     };
     // The full DOS path is the NT one less its `\??\`; it and an 8.3 name must fit MAX_PATH.
@@ -272,27 +381,44 @@ pub unsafe extern "system" fn create_directory_a(
     succeeded(status)
 }
 
-/// GetFullPathNameA: the path made absolute and folded (RtlGetFullPathName_U; no lookup), its
-/// trailing separator kept, into the caller's buffer: its length when it fits with its terminator,
-/// the file part pointing at its last component (null when it ends in a separator); otherwise the
-/// size it needs, terminator included. An empty path is ERROR_PATH_NOT_FOUND, a full one past
-/// MAX_PATH ERROR_FILENAME_EXCED_RANGE (assumptions, unverified against Windows 2000).
+/// CreateDirectoryA (see [`create_directory`]).
 ///
 /// # Safety
 ///
-/// `name` is a NUL-terminated string; `buffer` holds `size` bytes; `file_part` is null or points at
-/// a pointer.
-#[unsafe(export_name = "f2k_export_GetFullPathNameA")]
-pub unsafe extern "system" fn get_full_path_name_a(
+/// `name` is a NUL-terminated string; `security` is null or a SECURITY_ATTRIBUTES.
+#[unsafe(export_name = "f2k_export_CreateDirectoryA")]
+pub unsafe extern "system" fn create_directory_a(
     name: *const u8,
-    size: u32,
-    buffer: *mut u8,
-    file_part: *mut *mut u8,
+    security: *const SecurityAttributes,
 ) -> u32 {
-    // SAFETY: the caller's string.
-    let Some(name) = (unsafe { widen(name) }) else {
-        return 0;
-    };
+    // SAFETY: the caller's string and structure.
+    unsafe { widen(name) }.map_or(0, |name| unsafe { create_directory(&name, security) })
+}
+
+/// CreateDirectoryW (see [`create_directory`]).
+///
+/// # Safety
+///
+/// `name` is a NUL-terminated UTF-16 string; `security` is null or a SECURITY_ATTRIBUTES.
+#[unsafe(export_name = "f2k_export_CreateDirectoryW")]
+pub unsafe extern "system" fn create_directory_w(
+    name: *const u16,
+    security: *const SecurityAttributes,
+) -> u32 {
+    // SAFETY: the caller's string and structure.
+    unsafe { wide(name) }.map_or(0, |name| unsafe { create_directory(&name, security) })
+}
+
+/// GetFullPathNameW's work: the path made absolute and folded (RtlGetFullPathName_U; no lookup),
+/// its trailing separator kept, into the caller's buffer: its length when it fits with its
+/// terminator, the file part pointing at its last component (null when it ends in a separator);
+/// otherwise the size it needs, terminator included. An empty path is ERROR_PATH_NOT_FOUND, a full
+/// one past MAX_PATH ERROR_FILENAME_EXCED_RANGE (assumptions, unverified against Windows 2000).
+///
+/// # Safety
+///
+/// `buffer` holds `size` characters; `file_part` is null or points at a pointer.
+unsafe fn full_path(name: &Wide, size: u32, buffer: Text, file_part: *mut usize) -> u32 {
     let mut full = [0u16; MAX_PATH + 1];
     let mut part = core::ptr::null_mut();
     // SAFETY: ntdll's export, into the buffer above.
@@ -317,13 +443,53 @@ pub unsafe extern "system" fn get_full_path_name_a(
         return length as u32 + 1;
     }
     // SAFETY: the caller's buffer holds the path and its terminator.
-    unsafe { narrow_into(&full[..length], buffer) };
+    unsafe { buffer.put_terminated(&full[..length]) };
     if !file_part.is_null() {
         let at = (!part.is_null()).then(|| (part as usize - full.as_ptr() as usize) / 2);
         // SAFETY: the caller's slot; the part lies in the caller's buffer.
-        unsafe { *file_part = at.map_or(core::ptr::null_mut(), |at| buffer.add(at)) };
+        unsafe { file_part.write_unaligned(at.map_or(0, |at| buffer.address(at))) };
     }
     length as u32
+}
+
+/// GetFullPathNameA (see [`full_path`]).
+///
+/// # Safety
+///
+/// `name` is a NUL-terminated string; `buffer` holds `size` bytes; `file_part` is null or points at
+/// a pointer.
+#[unsafe(export_name = "f2k_export_GetFullPathNameA")]
+pub unsafe extern "system" fn get_full_path_name_a(
+    name: *const u8,
+    size: u32,
+    buffer: *mut u8,
+    file_part: *mut *mut u8,
+) -> u32 {
+    let file_part = file_part as *mut usize;
+    // SAFETY: the caller's string, buffer and slot.
+    unsafe { widen(name) }.map_or(0, |name| unsafe {
+        full_path(&name, size, Text::Ansi(buffer), file_part)
+    })
+}
+
+/// GetFullPathNameW (see [`full_path`]).
+///
+/// # Safety
+///
+/// `name` is a NUL-terminated UTF-16 string; `buffer` holds `size` characters; `file_part` is null
+/// or points at a pointer.
+#[unsafe(export_name = "f2k_export_GetFullPathNameW")]
+pub unsafe extern "system" fn get_full_path_name_w(
+    name: *const u16,
+    size: u32,
+    buffer: *mut u16,
+    file_part: *mut *mut u16,
+) -> u32 {
+    let file_part = file_part as *mut usize;
+    // SAFETY: the caller's string, buffer and slot.
+    unsafe { wide(name) }.map_or(0, |name| unsafe {
+        full_path(&name, size, Text::Wide(buffer), file_part)
+    })
 }
 
 /// Whether a component is an 8.3 name GetShortPathName leaves as it is (IsShortName_U's test):
@@ -347,7 +513,7 @@ pub fn is_short_name(component: &[u16]) -> bool {
         })
 }
 
-/// GetShortPathNameA, Windows 2000's walk: the path must name something (its attributes'
+/// GetShortPathNameW's work, Windows 2000's walk: the path must name something (its attributes'
 /// failure is the call's); its prefix (a drive, a root, a UNC share) is kept, and each component an
 /// 8.3 name already stays as written, every other one replaced by its 8.3 name as a search of it
 /// reports it. The result into the caller's buffer of `size` characters: its length when it fits
@@ -355,25 +521,11 @@ pub fn is_short_name(component: &[u16]) -> bool {
 ///
 /// # Safety
 ///
-/// `name` is a NUL-terminated string; `buffer` holds `size` bytes.
-#[unsafe(export_name = "f2k_export_GetShortPathNameA")]
-pub unsafe extern "system" fn get_short_path_name_a(
-    name: *const u8,
-    buffer: *mut u8,
-    size: u32,
-) -> u32 {
-    if name.is_null() {
-        set_last_error(ERROR_INVALID_PARAMETER);
+/// `buffer` holds `size` characters.
+unsafe fn short_path(long: &Wide, buffer: Text, size: u32) -> u32 {
+    if file_attributes(long) == INVALID_FILE_ATTRIBUTES {
         return 0;
     }
-    // SAFETY: the caller's string.
-    if unsafe { get_file_attributes_a(name) } == INVALID_FILE_ATTRIBUTES {
-        return 0;
-    }
-    // SAFETY: as above (it converted once).
-    let Some(long) = (unsafe { widen(name) }) else {
-        return 0;
-    };
     let units = long.text();
     let separator = |unit: u16| unit == u16::from(b'\\') || unit == u16::from(b'/');
     // The prefix: `\\server\share\`, `X:` and its separator, or a root separator.
@@ -446,8 +598,50 @@ pub unsafe extern "system" fn get_short_path_name_a(
         return length as u32 + 1;
     }
     // SAFETY: the caller's buffer holds the path and its terminator.
-    unsafe { narrow_into(&out[..length], buffer) };
+    unsafe { buffer.put_terminated(&out[..length]) };
     length as u32
+}
+
+/// GetShortPathNameA (see [`short_path`]); a null name is ERROR_INVALID_PARAMETER.
+///
+/// # Safety
+///
+/// `name` is null or a NUL-terminated string; `buffer` holds `size` bytes.
+#[unsafe(export_name = "f2k_export_GetShortPathNameA")]
+pub unsafe extern "system" fn get_short_path_name_a(
+    name: *const u8,
+    buffer: *mut u8,
+    size: u32,
+) -> u32 {
+    if name.is_null() {
+        set_last_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+    // SAFETY: the caller's string and buffer.
+    unsafe { widen(name) }.map_or(0, |long| unsafe {
+        short_path(&long, Text::Ansi(buffer), size)
+    })
+}
+
+/// GetShortPathNameW (as [`get_short_path_name_a`]).
+///
+/// # Safety
+///
+/// `name` is null or a NUL-terminated UTF-16 string; `buffer` holds `size` characters.
+#[unsafe(export_name = "f2k_export_GetShortPathNameW")]
+pub unsafe extern "system" fn get_short_path_name_w(
+    name: *const u16,
+    buffer: *mut u16,
+    size: u32,
+) -> u32 {
+    if name.is_null() {
+        set_last_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+    // SAFETY: the caller's string and buffer.
+    unsafe { wide(name) }.map_or(0, |long| unsafe {
+        short_path(&long, Text::Wide(buffer), size)
+    })
 }
 
 #[cfg(test)]

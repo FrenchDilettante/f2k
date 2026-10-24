@@ -153,3 +153,39 @@ _f2k_export_IsBadStringPtrA:
     mov esp, ebp
     pop ebp
     ret 8
+
+# IsBadStringPtrW(lpsz, ucchMax): as IsBadStringPtrA, over UTF-16 units: TRUE when a unit up to the
+# terminator, or the limit's last, cannot be read; a zero limit is good untouched.
+.p2align 4
+.globl _f2k_export_IsBadStringPtrW
+_f2k_export_IsBadStringPtrW:
+    push ebp
+    mov ebp, esp
+    mov eax, offset .Lwide_out
+    push eax
+    mov eax, offset _f2k_k32_probe_handler
+    push eax
+    push dword ptr fs:[0]
+    mov dword ptr fs:[0], esp
+    mov ecx, dword ptr [ebp+8]
+    mov edx, dword ptr [ebp+12]
+    xor eax, eax
+    test edx, edx
+    jz .Lwide_out
+    lea edx, [ecx+2*edx-2]
+.Lwide_unit:
+    mov ax, word ptr [ecx]
+    test ax, ax
+    jz .Lwide_good
+    cmp ecx, edx
+    je .Lwide_good
+    add ecx, 2
+    jmp .Lwide_unit
+.Lwide_good:
+    xor eax, eax
+.Lwide_out:
+    mov ecx, dword ptr [esp]
+    mov dword ptr fs:[0], ecx
+    mov esp, ebp
+    pop ebp
+    ret 8

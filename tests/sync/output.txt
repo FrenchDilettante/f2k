@@ -1,3 +1,9 @@
+# F2K capture of sync (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-AC9F3E6, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Sat 10/24/2026  9:15:09.05
+sync F2KT-SOURCE-CRC=0x73E737EC
 >>> sync.exe event
 == event
 manual, initially set: WAIT_OBJECT_0, still WAIT_OBJECT_0
@@ -17,6 +23,13 @@ OpenEventA: opened yes err=-
 reset through the opened handle: WAIT_TIMEOUT
 OpenEventA(missing): null yes err=2
 CreateMutexA on the event's name: null yes err=6
+named event (W): created yes err=0
+named event again (W): created yes err=183, initial state ignored: WAIT_TIMEOUT
+set through the second handle, seen through the first (W): WAIT_OBJECT_0
+OpenEventW: opened yes err=-
+reset through the opened handle (W): WAIT_TIMEOUT
+OpenEventW(missing): null yes err=2
+CreateMutexW on the event's name: null yes err=6
 SetEvent(bogus): ret=0 err=6
 SetEvent(thread handle): ret=0 err=6
 sync: done
@@ -35,6 +48,9 @@ negative initial: null yes err=87
 named semaphore again: created yes err=183
 release through the second handle: previous 1 (the first creation's counts hold)
 OpenSemaphoreA: opened yes, wait WAIT_OBJECT_0
+named semaphore again (W): created yes err=183
+release through the second handle (W): previous 1 (the first creation's counts hold)
+OpenSemaphoreW: opened yes, wait WAIT_OBJECT_0
 sync: done
 <<< exit code=0
 >>> sync.exe mutex
@@ -51,6 +67,9 @@ then a normal wait: WAIT_OBJECT_0
 named mutex again: created yes err=183
 OpenMutexA: opened yes err=-
 releases through the opened then the second handle (owned once): 1 0
+named mutex again (W): created yes err=183
+OpenMutexW: opened yes err=-
+releases through the opened then the second handle (owned once) (W): 1 0
 sync: done
 <<< exit code=0
 >>> sync.exe waitmulti

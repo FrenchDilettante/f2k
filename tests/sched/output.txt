@@ -1,3 +1,9 @@
+# F2K capture of sched (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-AC9F3E6, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Sat 10/24/2026  9:15:16.69
+sched F2KT-SOURCE-CRC=0xACF07BD0
 >>> sched.exe sleep
 == sleep
 Sleep(200) in [190, 300] ms: yes
@@ -36,6 +42,9 @@ completion routine: SleepEx returned WAIT_IO_COMPLETION, ran 1 time(s) with argu
 named timer again: created yes err=183
 set through one handle, waited through the other: WAIT_OBJECT_0
 OpenWaitableTimerA: opened yes, signaled WAIT_OBJECT_0
+named timer again (W): created yes err=183
+set through one handle, waited through the other (W): WAIT_OBJECT_0
+OpenWaitableTimerW: opened yes, signaled WAIT_OBJECT_0
 sched: done
 <<< exit code=0
 >>> sched.exe rr

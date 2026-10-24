@@ -436,13 +436,15 @@ fn case_bits(name: &[u8]) -> Option<u8> {
     Some(part(base, CASE_LOWER_BASE)? | part(extension, CASE_LOWER_EXTENSION)?)
 }
 
-/// The basis of a generated 8.3 alias: the base (up to 8 bytes) and the extension (up to 3).
+/// The basis of a generated 8.3 alias: the base (up to 8 bytes) and the extension (up to 3). A
+/// character code page 437 cannot hold, even by best fit, is left out (the fswrite capture:
+/// `\x80uro.txt` is `URO~1.TXT`).
 fn alias_basis(name: &[u8]) -> ([u8; 8], usize, [u8; 3], usize) {
     let fold = |byte: u8| -> Option<u8> {
         match byte {
             b' ' | b'.' => None,
             b'+' | b',' | b';' | b'=' | b'[' | b']' => Some(b'_'),
-            _ => Some(oem_upper_fit(byte).unwrap_or(b'_')),
+            _ => oem_upper_fit(byte),
         }
     };
     let trimmed = {
@@ -950,7 +952,8 @@ mod tests {
     /// Short names go to disk in code page 437. A valid 8.3 name with a 1252 letter is
     /// stored upper-cased in 437: alone when it is in upper case, beside a long name holding the
     /// case when a letter outside ASCII is in lower case (the NT case bits restore ASCII letters
-    /// only). An alias folds through Unicode too, a character 437 lacks becoming `_`.
+    /// only). An alias folds through Unicode too, a character 437 lacks left out (the fswrite
+    /// capture).
     #[test]
     fn short_names_are_stored_in_code_page_437() {
         let mut v = volume(20);
@@ -978,7 +981,7 @@ mod tests {
             [
                 (*b"CAF\x90    TXT", 0, false),
                 (*b"CAF\x90S   TXT", 0, true),
-                (*b"_URO~1  TXT", 0, true),
+                (*b"URO~1   TXT", 0, true),
                 (*b"\x8ERGERF~1TXT", 0, true),
             ]
         );

@@ -1,13 +1,12 @@
-//! The volume's calls: GetDriveTypeA, GetDiskFreeSpaceA and GetVolumeInformationA, each an open of
-//! the root path named (the current drive's for none) and NtQueryVolumeInformationFile, as Windows
-//! 2000's kernel32 makes them. GetDriveType does not consult the kernel's drive-letter map
+//! The volume's calls: GetDriveType, GetDiskFreeSpace and GetVolumeInformation (A and W), each an
+//! open of the root path named (the current drive's for none) and NtQueryVolumeInformationFile, as
+//! Windows 2000's kernel32 makes them. GetDriveType does not consult the kernel's drive-letter map
 //! (NtQueryInformationProcess's ProcessDeviceMap, not served): it always takes the open's way.
 
-use rtl::cp1252;
 use rtl::status::nt_success;
 
 use super::*;
-use crate::base::set_last_nt_error;
+use crate::base::{set_last_nt_error, Text};
 
 /// GetDriveType's answers.
 const DRIVE_UNKNOWN: u32 = 0;
@@ -35,6 +34,19 @@ unsafe fn root_path(root: *const u8) -> Option<Wide> {
     unsafe { widen(root) }
 }
 
+/// The same, for a W call's root path.
+///
+/// # Safety
+///
+/// `root` is null or a NUL-terminated UTF-16 string.
+unsafe fn root_path_w(root: *const u16) -> Option<Wide> {
+    if root.is_null() {
+        return Wide::of(&[u16::from(b'\\')]);
+    }
+    // SAFETY: the caller's string.
+    unsafe { wide(root) }
+}
+
 /// Query `class` of the open volume `handle` into `out`: the status.
 fn query_volume(handle: u32, class: u32, out: &mut [u8]) -> u32 {
     let mut io_status = IoStatus::default();
@@ -50,18 +62,12 @@ fn query_volume(handle: u32, class: u32, out: &mut [u8]) -> u32 {
     }
 }
 
-/// GetDriveTypeA: `X:` is taken as its root; the root path's NT form (which must name a root: end
-/// in a separator) less its separator — the volume itself — opened for its attributes, and its
-/// device (FileFsDeviceInformation) decides: a fixed disk DRIVE_FIXED. A root that is none, or that
-/// does not open, is DRIVE_NO_ROOT_DIR.
-///
-/// # Safety
-///
-/// `root` is null or a NUL-terminated string.
-#[unsafe(export_name = "f2k_export_GetDriveTypeA")]
-pub unsafe extern "system" fn get_drive_type_a(root: *const u8) -> u32 {
-    // SAFETY: the caller's string.
-    let Some(mut path) = (unsafe { root_path(root) }) else {
+/// GetDriveTypeW's work: `X:` is taken as its root; the root path's NT form (which must name a
+/// root: end in a separator) less its separator — the volume itself — opened for its attributes,
+/// and its device (FileFsDeviceInformation) decides: a fixed disk DRIVE_FIXED. A root that is none,
+/// or that does not open, is DRIVE_NO_ROOT_DIR.
+fn drive_type(path: Option<Wide>) -> u32 {
+    let Some(mut path) = path else {
         return DRIVE_NO_ROOT_DIR;
     };
     let text = path.text();
@@ -132,23 +138,43 @@ pub unsafe extern "system" fn get_drive_type_a(root: *const u8) -> u32 {
     }
 }
 
-/// GetDiskFreeSpaceA: the root path's directory opened for listing (a missing one
+/// GetDriveTypeA (see [`drive_type`]).
+///
+/// # Safety
+///
+/// `root` is null or a NUL-terminated string.
+#[unsafe(export_name = "f2k_export_GetDriveTypeA")]
+pub unsafe extern "system" fn get_drive_type_a(root: *const u8) -> u32 {
+    // SAFETY: the caller's string.
+    drive_type(unsafe { root_path(root) })
+}
+
+/// GetDriveTypeW (see [`drive_type`]).
+///
+/// # Safety
+///
+/// `root` is null or a NUL-terminated UTF-16 string.
+#[unsafe(export_name = "f2k_export_GetDriveTypeW")]
+pub unsafe extern "system" fn get_drive_type_w(root: *const u16) -> u32 {
+    // SAFETY: the caller's string.
+    drive_type(unsafe { root_path_w(root) })
+}
+
+/// GetDiskFreeSpaceW's work: the root path's directory opened for listing (a missing one
 /// ERROR_PATH_NOT_FOUND), the volume's size (FileFsSizeInformation): sectors per cluster, bytes
 /// per sector, free and total clusters, each where asked (a count past 32 bits reads as all ones).
 ///
 /// # Safety
 ///
-/// `root` is null or a NUL-terminated string; each out pointer is null or points at a dword.
-#[unsafe(export_name = "f2k_export_GetDiskFreeSpaceA")]
-pub unsafe extern "system" fn get_disk_free_space_a(
-    root: *const u8,
+/// Each out pointer is null or points at a dword.
+unsafe fn disk_free_space(
+    path: Option<Wide>,
     sectors_per_cluster: *mut u32,
     bytes_per_sector: *mut u32,
     free_clusters: *mut u32,
     clusters: *mut u32,
 ) -> u32 {
-    // SAFETY: the caller's string.
-    let Some(path) = (unsafe { root_path(root) }) else {
+    let Some(path) = path else {
         return 0;
     };
     let Some(path) = NtPath::of(path.terminated()) else {
@@ -196,29 +222,77 @@ pub unsafe extern "system" fn get_disk_free_space_a(
     1
 }
 
-/// GetVolumeInformationA: the root path (it must end in a separator and name a root:
+/// GetDiskFreeSpaceA (see [`disk_free_space`]).
+///
+/// # Safety
+///
+/// `root` is null or a NUL-terminated string; each out pointer is null or points at a dword.
+#[unsafe(export_name = "f2k_export_GetDiskFreeSpaceA")]
+pub unsafe extern "system" fn get_disk_free_space_a(
+    root: *const u8,
+    sectors_per_cluster: *mut u32,
+    bytes_per_sector: *mut u32,
+    free_clusters: *mut u32,
+    clusters: *mut u32,
+) -> u32 {
+    // SAFETY: the caller's string and slots.
+    unsafe {
+        disk_free_space(
+            root_path(root),
+            sectors_per_cluster,
+            bytes_per_sector,
+            free_clusters,
+            clusters,
+        )
+    }
+}
+
+/// GetDiskFreeSpaceW (see [`disk_free_space`]).
+///
+/// # Safety
+///
+/// `root` is null or a NUL-terminated UTF-16 string; each out pointer is null or points at a dword.
+#[unsafe(export_name = "f2k_export_GetDiskFreeSpaceW")]
+pub unsafe extern "system" fn get_disk_free_space_w(
+    root: *const u16,
+    sectors_per_cluster: *mut u32,
+    bytes_per_sector: *mut u32,
+    free_clusters: *mut u32,
+    clusters: *mut u32,
+) -> u32 {
+    // SAFETY: the caller's string and slots.
+    unsafe {
+        disk_free_space(
+            root_path_w(root),
+            sectors_per_cluster,
+            bytes_per_sector,
+            free_clusters,
+            clusters,
+        )
+    }
+}
+
+/// GetVolumeInformationW's work: the root path (it must end in a separator and name a root:
 /// ERROR_INVALID_NAME otherwise) opened, then the label and serial number
 /// (FileFsVolumeInformation) and the file system's flags, longest component and name
 /// (FileFsAttributeInformation), each where asked; a name buffer too small is ERROR_BAD_LENGTH.
 ///
 /// # Safety
 ///
-/// `root` is null or a NUL-terminated string; the buffers hold their sizes; each other out pointer
-/// is null or points at a dword.
-#[unsafe(export_name = "f2k_export_GetVolumeInformationA")]
+/// The buffers hold their sizes in characters; each other out pointer is null or points at a
+/// dword.
 #[allow(clippy::too_many_arguments)]
-pub unsafe extern "system" fn get_volume_information_a(
-    root: *const u8,
-    name: *mut u8,
+unsafe fn volume_information(
+    path: Option<Wide>,
+    name: Text,
     name_size: u32,
     serial: *mut u32,
     max_component: *mut u32,
     flags: *mut u32,
-    fs_name: *mut u8,
+    fs_name: Text,
     fs_size: u32,
 ) -> u32 {
-    // SAFETY: the caller's string.
-    let Some(path) = (unsafe { root_path(root) }) else {
+    let Some(path) = path else {
         return 0;
     };
     let backslash = u16::from(b'\\');
@@ -270,16 +344,12 @@ pub unsafe extern "system" fn get_volume_information_a(
         out
     };
     // A name into a caller's buffer of `size` characters, with its terminator.
-    let put_name = |out: *mut u8, size: u32, name: &[u16]| -> bool {
+    let put_name = |out: Text, size: u32, name: &[u16]| -> bool {
         if name.len() >= size as usize {
             return false;
         }
-        for (at, &unit) in name.iter().enumerate() {
-            // SAFETY: the caller's buffer holds the name and its terminator.
-            unsafe { out.add(at).write(cp1252::wc_to_mb(unit)) };
-        }
-        // SAFETY: as above.
-        unsafe { out.add(name.len()).write(0) };
+        // SAFETY: the caller's buffer holds the name and its terminator.
+        unsafe { out.put_terminated(name) };
         true
     };
     if !name.is_null() {
@@ -308,4 +378,70 @@ pub unsafe extern "system" fn get_volume_information_a(
         put(flags, word(&attribute, 0));
     }
     1
+}
+
+/// GetVolumeInformationA (see [`volume_information`]).
+///
+/// # Safety
+///
+/// `root` is null or a NUL-terminated string; the buffers hold their sizes; each other out pointer
+/// is null or points at a dword.
+#[unsafe(export_name = "f2k_export_GetVolumeInformationA")]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "system" fn get_volume_information_a(
+    root: *const u8,
+    name: *mut u8,
+    name_size: u32,
+    serial: *mut u32,
+    max_component: *mut u32,
+    flags: *mut u32,
+    fs_name: *mut u8,
+    fs_size: u32,
+) -> u32 {
+    // SAFETY: the caller's string, buffers and slots.
+    unsafe {
+        volume_information(
+            root_path(root),
+            Text::Ansi(name),
+            name_size,
+            serial,
+            max_component,
+            flags,
+            Text::Ansi(fs_name),
+            fs_size,
+        )
+    }
+}
+
+/// GetVolumeInformationW (see [`volume_information`]).
+///
+/// # Safety
+///
+/// `root` is null or a NUL-terminated UTF-16 string; the buffers hold their sizes in characters;
+/// each other out pointer is null or points at a dword.
+#[unsafe(export_name = "f2k_export_GetVolumeInformationW")]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "system" fn get_volume_information_w(
+    root: *const u16,
+    name: *mut u16,
+    name_size: u32,
+    serial: *mut u32,
+    max_component: *mut u32,
+    flags: *mut u32,
+    fs_name: *mut u16,
+    fs_size: u32,
+) -> u32 {
+    // SAFETY: the caller's string, buffers and slots.
+    unsafe {
+        volume_information(
+            root_path_w(root),
+            Text::Wide(name),
+            name_size,
+            serial,
+            max_component,
+            flags,
+            Text::Wide(fs_name),
+            fs_size,
+        )
+    }
 }

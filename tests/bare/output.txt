@@ -1,3 +1,8 @@
+# F2K capture of bare (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-AC9F3E6, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Sat 10/24/2026  9:14:44.91
 >>> bare.exe
 bss: 64 KiB zero: ok
 data: initializers: ok

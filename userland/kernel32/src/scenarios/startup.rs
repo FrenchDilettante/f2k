@@ -61,7 +61,8 @@ fn take(block: *mut u8, length: usize) -> std::vec::Vec<u8> {
 }
 
 /// FORMAT_MESSAGE_ALLOCATE_BUFFER: the buffer argument is where the message's block (LocalFree's
-/// to free) goes, at least `nSize` bytes; a failure leaves a null pointer there.
+/// to free) goes, the message's size (nSize is not its least: the runtime capture); a failure
+/// leaves a null pointer there.
 ///
 /// Pins: kernel32.FormatMessageA
 #[test]
@@ -75,12 +76,12 @@ fn an_allocated_buffer_holds_the_message() {
         19
     );
     assert_eq!(take(block, 20), b"Access is denied.\r\n\0");
-    // nSize is the least the block holds.
+    // nSize does not grow the block.
     assert_eq!(
         unsafe { format_message_a(flags, none, 5, 0, slot, 200, none) },
         19
     );
-    assert_eq!(take(block, 200)[..20], b"Access is denied.\r\n\0"[..]);
+    assert_eq!(take(block, 20), b"Access is denied.\r\n\0");
     block = 0x1234 as *mut u8;
     assert_eq!(
         unsafe { format_message_a(flags, none, 0x0123_4567, 0, slot, 0, none) },
@@ -125,8 +126,35 @@ fn the_width_drops_the_line_break() {
         unsafe { format_message_a(FROM_SYSTEM | 5, none, 5, 0, buffer.as_mut_ptr(), 64, none) };
     assert_eq!(
         &buffer[..length as usize + 1],
-        b"Access\r\nis\r\ndenied. \0"
+        b"Acces\r\ns is\r\ndenie\r\nd. \0",
+        "a word longer than the width breaks at it (the runtime capture)"
     );
+}
+
+/// GetStartupInfoW: the A form's image but for the standard handles, which are the process
+/// parameters' whatever the flags (the runtime capture: hStdInput, hStdOutput and hStdError are
+/// the fields that differ from GetStartupInfoA's).
+///
+/// Pins: kernel32.GetStartupInfoW
+#[test]
+fn get_startup_info_w_hands_the_parameters_handles() {
+    let mut narrow = [0u8; 68];
+    let mut wide = [0xCCu8; 72];
+    // SAFETY: room for either structure.
+    unsafe {
+        crate::startup::get_startup_info_a(narrow.as_mut_ptr());
+        crate::startup::get_startup_info_w(wide.as_mut_ptr());
+    }
+    assert_eq!(wide[..56], narrow[..56], "the fields but the handles");
+    for which in 0..3 {
+        let at = 56 + 4 * which;
+        assert_eq!(
+            wide[at..at + 4],
+            crate::base::parameters_standard_handle(which).to_le_bytes(),
+            "handle {which}"
+        );
+    }
+    assert_eq!(wide[68..], [0xCC; 4], "the structure's 68 bytes alone");
 }
 
 /// GetVersion: 5.0, build 2195, the NT platform bit clear — the dword the CRT splits into its

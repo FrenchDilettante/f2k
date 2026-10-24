@@ -41,6 +41,7 @@ image = ["past the image end: state 0x10000 protect 0x1 type 0x0 region * allocp
 ]
 image = [
     "kernel32.GetModuleHandleA",
+    "kernel32.GetModuleHandleW",
     "kernel32.GetLastError",
     "kernel32.SetLastError",
     "kernel32.VirtualQuery",
@@ -52,7 +53,9 @@ mapping = [
     "kernel32.GetLastError",
     "kernel32.SetLastError",
     "kernel32.CreateFileMappingA",
+    "kernel32.CreateFileMappingW",
     "kernel32.OpenFileMappingA",
+    "kernel32.OpenFileMappingW",
     "kernel32.MapViewOfFile",
     "kernel32.UnmapViewOfFile",
     "kernel32.VirtualQuery",
@@ -94,6 +97,7 @@ protect = [
     "kernel32.IsBadWritePtr",
     "kernel32.IsBadCodePtr",
     "kernel32.IsBadStringPtrA",
+    "kernel32.IsBadStringPtrW",
     "ntdll.NtQueryVirtualMemory",
     "ntdll.NtProtectVirtualMemory",
 ]

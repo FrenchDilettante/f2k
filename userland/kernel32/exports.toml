@@ -154,6 +154,13 @@ impl = { native = "LoadLibraryA" }
 ordinal = 484
 
 [[export]]
+name = "LoadLibraryW"
+group = "termination"
+args = ["strW?[261] lpFileName"]
+impl = { native = "LoadLibraryW" }
+ordinal = 487
+
+[[export]]
 name = "RtlUnwind"
 group = "termination"
 args = ["ptr TargetFrame", "u32 TargetIp", "ptr ExceptionRecord", "u32 ReturnValue"]
@@ -195,6 +202,13 @@ args = ["strA?[261] lpModuleName"]
 impl = { native = "GetModuleHandleA" }
 ordinal = 319
 
+[[export]]
+name = "GetModuleHandleW"
+group = "termination"
+args = ["strW?[261] lpModuleName"]
+impl = { native = "GetModuleHandleW" }
+ordinal = 320
+
 # --- command line / startup info ------------------------------------------------------------------
 
 [[export]]
@@ -205,6 +219,13 @@ impl = { native = "GetCommandLineA" }
 ordinal = 223
 
 [[export]]
+name = "GetCommandLineW"
+group = "startup"
+args = []
+impl = { native = "GetCommandLineW" }
+ordinal = 224
+
+[[export]]
 name = "GetStartupInfoA"
 group = "startup"
 args = ["ptr lpStartupInfo"]
@@ -212,11 +233,25 @@ impl = { native = "GetStartupInfoA" }
 ordinal = 363
 
 [[export]]
+name = "GetStartupInfoW"
+group = "startup"
+args = ["ptr lpStartupInfo"]
+impl = { native = "GetStartupInfoW" }
+ordinal = 364
+
+[[export]]
 name = "GetModuleFileNameA"
 group = "startup"
 args = ["handle hModule", "ptr lpFilename", "u32 nSize"]
 impl = { native = "GetModuleFileNameA" }
 ordinal = 317
+
+[[export]]
+name = "GetModuleFileNameW"
+group = "startup"
+args = ["handle hModule", "ptr lpFilename", "u32 nSize"]
+impl = { native = "GetModuleFileNameW" }
+ordinal = 318
 
 [[export]]
 name = "GetVersion"
@@ -233,11 +268,25 @@ impl = { native = "GetVersionExA" }
 ordinal = 404
 
 [[export]]
+name = "GetVersionExW"
+group = "startup"
+args = ["ptr lpVersionInformation"]
+impl = { native = "GetVersionExW" }
+ordinal = 405
+
+[[export]]
 name = "FormatMessageA"
 group = "startup"
 args = ["u32 dwFlags", "ptr lpSource", "u32 dwMessageId", "u32 dwLanguageId", "ptr lpBuffer", "u32 nSize", "ptr Arguments"]
 impl = { native = "FormatMessageA" }
 ordinal = 195
+
+[[export]]
+name = "FormatMessageW"
+group = "startup"
+args = ["u32 dwFlags", "ptr lpSource", "u32 dwMessageId", "u32 dwLanguageId", "ptr lpBuffer", "u32 nSize", "ptr Arguments"]
+impl = { native = "FormatMessageW" }
+ordinal = 196
 
 # --- console handles ------------------------------------------------------------------------------
 
@@ -343,6 +392,13 @@ impl = { native = "WriteConsoleA" }
 ordinal = 776
 note = "the bytes to the console server (CsrClientCallServer); kernel32's WriteFile hands a console handle's bytes here"
 
+[[export]]
+name = "WriteConsoleW"
+group = "console"
+args = ["handle hConsoleOutput", "ptr lpBuffer", "u32 nNumberOfCharsToWrite", "ptr<u32> lpNumberOfCharsWritten", "ptr lpReserved"]
+impl = { native = "WriteConsoleW" }
+ordinal = 786
+
 # --- environment ------------------------------------------------------------------------------------
 
 [[export]]
@@ -351,6 +407,13 @@ group = "environment"
 args = []
 impl = { native = "GetEnvironmentStrings" }
 ordinal = 286
+
+[[export]]
+name = "GetEnvironmentStringsA"
+group = "environment"
+args = []
+impl = { native = "GetEnvironmentStringsA" }
+ordinal = 287
 
 [[export]]
 name = "GetEnvironmentStringsW"
@@ -381,6 +444,13 @@ impl = { native = "GetEnvironmentVariableA" }
 ordinal = 289
 
 [[export]]
+name = "GetEnvironmentVariableW"
+group = "environment"
+args = ["strW? lpName", "ptr lpBuffer", "u32 nSize"]
+impl = { native = "GetEnvironmentVariableW" }
+ordinal = 290
+
+[[export]]
 name = "SetEnvironmentVariableA"
 group = "environment"
 args = ["strA? lpName", "strA? lpValue"]
@@ -393,6 +463,13 @@ group = "environment"
 args = ["strA lpSrc", "ptr lpDst", "u32 nSize"]
 impl = { native = "ExpandEnvironmentStringsA" }
 ordinal = 148
+
+[[export]]
+name = "ExpandEnvironmentStringsW"
+group = "environment"
+args = ["strW lpSrc", "ptr lpDst", "u32 nSize"]
+impl = { native = "ExpandEnvironmentStringsW" }
+ordinal = 149
 
 [[export]]
 name = "SetEnvironmentVariableW"
@@ -698,6 +775,13 @@ impl = { native = "EnumSystemLocalesA" }
 ordinal = 137
 note = "no test pins it: imported by the C runtime's setlocale; no fixture block is known to reach it"
 
+[[export]]
+name = "EnumSystemLocalesW"
+group = "locale"
+args = ["ptr lpLocaleEnumProc", "u32 dwFlags"]
+impl = { native = "EnumSystemLocalesW" }
+ordinal = 138
+
 # --- threads / sync -------------------------------------------------------------------------------
 
 [[export]]
@@ -721,6 +805,13 @@ group = "threads"
 args = ["ptr lpEventAttributes", "bool bManualReset", "bool bInitialState", "strA? lpName"]
 impl = { native = "CreateEventA" }
 ordinal = 53
+
+[[export]]
+name = "CreateEventW"
+group = "threads"
+args = ["ptr lpEventAttributes", "bool bManualReset", "bool bInitialState", "strW? lpName"]
+impl = { native = "CreateEventW" }
+ordinal = 54
 
 [[export]]
 name = "SetEvent"
@@ -962,11 +1053,25 @@ impl = { native = "CreateMutexA" }
 ordinal = 68
 
 [[export]]
+name = "CreateMutexW"
+group = "threads"
+args = ["ptr lpMutexAttributes", "bool bInitialOwner", "strW? lpName"]
+impl = { native = "CreateMutexW" }
+ordinal = 69
+
+[[export]]
 name = "CreateSemaphoreA"
 group = "threads"
 args = ["ptr lpSemaphoreAttributes", "i32 lInitialCount", "i32 lMaximumCount", "strA? lpName"]
 impl = { native = "CreateSemaphoreA" }
 ordinal = 79
+
+[[export]]
+name = "CreateSemaphoreW"
+group = "threads"
+args = ["ptr lpSemaphoreAttributes", "i32 lInitialCount", "i32 lMaximumCount", "strW? lpName"]
+impl = { native = "CreateSemaphoreW" }
+ordinal = 80
 
 [[export]]
 name = "OpenEventA"
@@ -976,6 +1081,13 @@ impl = { native = "OpenEventA" }
 ordinal = 525
 
 [[export]]
+name = "OpenEventW"
+group = "threads"
+args = ["u32 dwDesiredAccess", "bool bInheritHandle", "strW? lpName"]
+impl = { native = "OpenEventW" }
+ordinal = 526
+
+[[export]]
 name = "OpenMutexA"
 group = "threads"
 args = ["u32 dwDesiredAccess", "bool bInheritHandle", "strA? lpName"]
@@ -983,11 +1095,25 @@ impl = { native = "OpenMutexA" }
 ordinal = 532
 
 [[export]]
+name = "OpenMutexW"
+group = "threads"
+args = ["u32 dwDesiredAccess", "bool bInheritHandle", "strW? lpName"]
+impl = { native = "OpenMutexW" }
+ordinal = 533
+
+[[export]]
 name = "OpenSemaphoreA"
 group = "threads"
 args = ["u32 dwDesiredAccess", "bool bInheritHandle", "strA? lpName"]
 impl = { native = "OpenSemaphoreA" }
 ordinal = 536
+
+[[export]]
+name = "OpenSemaphoreW"
+group = "threads"
+args = ["u32 dwDesiredAccess", "bool bInheritHandle", "strW? lpName"]
+impl = { native = "OpenSemaphoreW" }
+ordinal = 537
 
 [[export]]
 name = "PulseEvent"
@@ -1067,6 +1193,13 @@ impl = { native = "CreateWaitableTimerA" }
 ordinal = 87
 
 [[export]]
+name = "CreateWaitableTimerW"
+group = "threads"
+args = ["ptr lpTimerAttributes", "bool bManualReset", "strW? lpTimerName"]
+impl = { native = "CreateWaitableTimerW" }
+ordinal = 88
+
+[[export]]
 name = "GetLocalTime"
 group = "threads"
 args = ["ptr lpSystemTime"]
@@ -1100,6 +1233,13 @@ group = "threads"
 args = ["u32 dwDesiredAccess", "bool bInheritHandle", "strA? lpTimerName"]
 impl = { native = "OpenWaitableTimerA" }
 ordinal = 539
+
+[[export]]
+name = "OpenWaitableTimerW"
+group = "threads"
+args = ["u32 dwDesiredAccess", "bool bInheritHandle", "strW? lpTimerName"]
+impl = { native = "OpenWaitableTimerW" }
+ordinal = 540
 
 [[export]]
 name = "QueryPerformanceCounter"
@@ -1146,6 +1286,13 @@ impl = { native = "CreateFileA" }
 ordinal = 57
 
 [[export]]
+name = "CreateFileW"
+group = "files"
+args = ["strW lpFileName", "u32 dwDesiredAccess", "u32 dwShareMode", "ptr lpSecurityAttributes", "u32 dwCreationDisposition", "u32 dwFlagsAndAttributes", "handle hTemplateFile"]
+impl = { native = "CreateFileW" }
+ordinal = 60
+
+[[export]]
 name = "ReadFile"
 group = "files"
 args = ["handle hFile", "ptr lpBuffer", "u32 nNumberOfBytesToRead", "ptr lpNumberOfBytesRead", "ptr lpOverlapped"]
@@ -1159,6 +1306,13 @@ group = "files"
 args = ["handle hFile", "ptr lpAttributes", "u32 flProtect", "u32 dwMaximumSizeHigh", "u32 dwMaximumSizeLow", "strA?[260] lpName"]
 impl = { native = "CreateFileMappingA" }
 ordinal = 58
+
+[[export]]
+name = "CreateFileMappingW"
+group = "files"
+args = ["handle hFile", "ptr lpAttributes", "u32 flProtect", "u32 dwMaximumSizeHigh", "u32 dwMaximumSizeLow", "strW?[260] lpName"]
+impl = { native = "CreateFileMappingW" }
+ordinal = 59
 
 [[export]]
 name = "FileTimeToLocalFileTime"
@@ -1189,11 +1343,25 @@ impl = { native = "FindFirstFileA" }
 ordinal = 168
 
 [[export]]
+name = "FindFirstFileW"
+group = "files"
+args = ["strW[260] lpFileName", "ptr lpFindFileData"]
+impl = { native = "FindFirstFileW" }
+ordinal = 171
+
+[[export]]
 name = "OpenFileMappingA"
 group = "files"
 args = ["u32 dwDesiredAccess", "bool bInheritHandle", "strA?[260] lpName"]
 impl = { native = "OpenFileMappingA" }
 ordinal = 528
+
+[[export]]
+name = "OpenFileMappingW"
+group = "files"
+args = ["u32 dwDesiredAccess", "bool bInheritHandle", "strW?[260] lpName"]
+impl = { native = "OpenFileMappingW" }
+ordinal = 529
 
 [[export]]
 name = "CopyFileA"
@@ -1203,11 +1371,25 @@ impl = { native = "CopyFileA" }
 ordinal = 44
 
 [[export]]
+name = "CopyFileW"
+group = "files"
+args = ["strW[260] lpExistingFileName", "strW[260] lpNewFileName", "bool bFailIfExists"]
+impl = { native = "CopyFileW" }
+ordinal = 47
+
+[[export]]
 name = "CreateDirectoryA"
 group = "files"
 args = ["strA[260] lpPathName", "ptr lpSecurityAttributes"]
 impl = { native = "CreateDirectoryA" }
 ordinal = 49
+
+[[export]]
+name = "CreateDirectoryW"
+group = "files"
+args = ["strW[260] lpPathName", "ptr lpSecurityAttributes"]
+impl = { native = "CreateDirectoryW" }
+ordinal = 52
 
 [[export]]
 name = "DeleteFileA"
@@ -1217,11 +1399,25 @@ impl = { native = "DeleteFileA" }
 ordinal = 97
 
 [[export]]
+name = "DeleteFileW"
+group = "files"
+args = ["strW[260] lpFileName"]
+impl = { native = "DeleteFileW" }
+ordinal = 98
+
+[[export]]
 name = "MoveFileA"
 group = "files"
 args = ["strA[260] lpExistingFileName", "strA[260] lpNewFileName"]
 impl = { native = "MoveFileA" }
 ordinal = 512
+
+[[export]]
+name = "MoveFileW"
+group = "files"
+args = ["strW[260] lpExistingFileName", "strW[260] lpNewFileName"]
+impl = { native = "MoveFileW" }
+ordinal = 515
 
 [[export]]
 name = "RemoveDirectoryA"
@@ -1231,11 +1427,25 @@ impl = { native = "RemoveDirectoryA" }
 ordinal = 592
 
 [[export]]
+name = "RemoveDirectoryW"
+group = "files"
+args = ["strW[260] lpPathName"]
+impl = { native = "RemoveDirectoryW" }
+ordinal = 593
+
+[[export]]
 name = "SetFileAttributesA"
 group = "files"
 args = ["strA[260] lpFileName", "u32 dwFileAttributes"]
 impl = { native = "SetFileAttributesA" }
 ordinal = 664
+
+[[export]]
+name = "SetFileAttributesW"
+group = "files"
+args = ["strW[260] lpFileName", "u32 dwFileAttributes"]
+impl = { native = "SetFileAttributesW" }
+ordinal = 665
 
 [[export]]
 name = "SetFileTime"
@@ -1259,11 +1469,25 @@ impl = { native = "FindNextFileA" }
 ordinal = 177
 
 [[export]]
+name = "FindNextFileW"
+group = "files"
+args = ["handle hFindFile", "ptr lpFindFileData"]
+impl = { native = "FindNextFileW" }
+ordinal = 178
+
+[[export]]
 name = "GetCurrentDirectoryA"
 group = "files"
 args = ["u32 nBufferLength", "ptr lpBuffer"]
 impl = { native = "GetCurrentDirectoryA" }
 ordinal = 268
+
+[[export]]
+name = "GetCurrentDirectoryW"
+group = "files"
+args = ["u32 nBufferLength", "ptr lpBuffer"]
+impl = { native = "GetCurrentDirectoryW" }
+ordinal = 269
 
 [[export]]
 name = "GetDiskFreeSpaceA"
@@ -1273,11 +1497,25 @@ impl = { native = "GetDiskFreeSpaceA" }
 ordinal = 280
 
 [[export]]
+name = "GetDiskFreeSpaceW"
+group = "files"
+args = ["strW?[260] lpRootPathName", "ptr<u32> lpSectorsPerCluster", "ptr<u32> lpBytesPerSector", "ptr<u32> lpNumberOfFreeClusters", "ptr<u32> lpTotalNumberOfClusters"]
+impl = { native = "GetDiskFreeSpaceW" }
+ordinal = 283
+
+[[export]]
 name = "GetDriveTypeA"
 group = "files"
 args = ["strA?[260] lpRootPathName"]
 impl = { native = "GetDriveTypeA" }
 ordinal = 284
+
+[[export]]
+name = "GetDriveTypeW"
+group = "files"
+args = ["strW?[260] lpRootPathName"]
+impl = { native = "GetDriveTypeW" }
+ordinal = 285
 
 [[export]]
 name = "GetFileAttributesA"
@@ -1287,11 +1525,25 @@ impl = { native = "GetFileAttributesA" }
 ordinal = 293
 
 [[export]]
+name = "GetFileAttributesW"
+group = "files"
+args = ["strW[260] lpFileName"]
+impl = { native = "GetFileAttributesW" }
+ordinal = 296
+
+[[export]]
 name = "GetFileAttributesExA"
 group = "files"
 args = ["strA[260] lpFileName", "u32 fInfoLevelId", "ptr lpFileInformation"]
 impl = { native = "GetFileAttributesExA" }
 ordinal = 294
+
+[[export]]
+name = "GetFileAttributesExW"
+group = "files"
+args = ["strW[260] lpFileName", "u32 fInfoLevelId", "ptr lpFileInformation"]
+impl = { native = "GetFileAttributesExW" }
+ordinal = 295
 
 [[export]]
 name = "GetFileInformationByHandle"
@@ -1322,6 +1574,13 @@ impl = { native = "GetFullPathNameA" }
 ordinal = 302
 
 [[export]]
+name = "GetFullPathNameW"
+group = "files"
+args = ["strW[260] lpFileName", "u32 nBufferLength", "ptr lpBuffer", "ptr<u32> lpFilePart"]
+impl = { native = "GetFullPathNameW" }
+ordinal = 303
+
+[[export]]
 name = "GetShortPathNameA"
 group = "files"
 args = ["strA[260] lpszLongPath", "ptr lpszShortPath", "u32 cchBuffer"]
@@ -1329,11 +1588,25 @@ impl = { native = "GetShortPathNameA" }
 ordinal = 361
 
 [[export]]
+name = "GetShortPathNameW"
+group = "files"
+args = ["strW[260] lpszLongPath", "ptr lpszShortPath", "u32 cchBuffer"]
+impl = { native = "GetShortPathNameW" }
+ordinal = 362
+
+[[export]]
 name = "GetVolumeInformationA"
 group = "files"
 args = ["strA?[260] lpRootPathName", "ptr lpVolumeNameBuffer", "u32 nVolumeNameSize", "ptr<u32> lpVolumeSerialNumber", "ptr<u32> lpMaximumComponentLength", "ptr<u32> lpFileSystemFlags", "ptr lpFileSystemNameBuffer", "u32 nFileSystemNameSize"]
 impl = { native = "GetVolumeInformationA" }
 ordinal = 406
+
+[[export]]
+name = "GetVolumeInformationW"
+group = "files"
+args = ["strW?[260] lpRootPathName", "ptr lpVolumeNameBuffer", "u32 nVolumeNameSize", "ptr<u32> lpVolumeSerialNumber", "ptr<u32> lpMaximumComponentLength", "ptr<u32> lpFileSystemFlags", "ptr lpFileSystemNameBuffer", "u32 nFileSystemNameSize"]
+impl = { native = "GetVolumeInformationW" }
+ordinal = 407
 
 [[export]]
 name = "MapViewOfFile"
@@ -1348,6 +1621,13 @@ group = "files"
 args = ["strA[260] lpPathName"]
 impl = { native = "SetCurrentDirectoryA" }
 ordinal = 653
+
+[[export]]
+name = "SetCurrentDirectoryW"
+group = "files"
+args = ["strW[260] lpPathName"]
+impl = { native = "SetCurrentDirectoryW" }
+ordinal = 654
 
 [[export]]
 name = "SetEndOfFile"
@@ -1435,6 +1715,13 @@ group = "virtual-memory"
 args = ["ptr lpsz", "u32 ucchMax"]
 impl = { native = "IsBadStringPtrA" }
 ordinal = 470
+
+[[export]]
+name = "IsBadStringPtrW"
+group = "virtual-memory"
+args = ["ptr lpsz", "u32 ucchMax"]
+impl = { native = "IsBadStringPtrW" }
+ordinal = 471
 
 # --- not implemented yet: the rest of KERNEL32.dll 5.0.2195.6688's export table, by ordinal ------
 
@@ -1602,9 +1889,6 @@ ordinal = 45
 name = "CopyFileExW"
 ordinal = 46
 
-[[export]]
-name = "CopyFileW"
-ordinal = 47
 
 [[export]]
 name = "CreateConsoleScreenBuffer"
@@ -1618,13 +1902,7 @@ ordinal = 50
 name = "CreateDirectoryExW"
 ordinal = 51
 
-[[export]]
-name = "CreateDirectoryW"
-ordinal = 52
 
-[[export]]
-name = "CreateEventW"
-ordinal = 54
 
 [[export]]
 name = "CreateFiber"
@@ -1634,13 +1912,7 @@ ordinal = 55
 name = "CreateFiberEx"
 ordinal = 56
 
-[[export]]
-name = "CreateFileMappingW"
-ordinal = 59
 
-[[export]]
-name = "CreateFileW"
-ordinal = 60
 
 [[export]]
 name = "CreateHardLinkA"
@@ -1670,9 +1942,6 @@ ordinal = 66
 name = "CreateMailslotW"
 ordinal = 67
 
-[[export]]
-name = "CreateMutexW"
-ordinal = 69
 
 [[export]]
 name = "CreateNamedPipeA"
@@ -1710,9 +1979,6 @@ ordinal = 77
 name = "CreateRemoteThread"
 ordinal = 78
 
-[[export]]
-name = "CreateSemaphoreW"
-ordinal = 80
 
 [[export]]
 name = "CreateTapePartition"
@@ -1734,9 +2000,6 @@ ordinal = 85
 name = "CreateVirtualBuffer"
 ordinal = 86
 
-[[export]]
-name = "CreateWaitableTimerW"
-ordinal = 88
 
 [[export]]
 name = "DebugActiveProcess"
@@ -1766,9 +2029,6 @@ ordinal = 94
 name = "DeleteFiber"
 ordinal = 96
 
-[[export]]
-name = "DeleteFileW"
-ordinal = 98
 
 [[export]]
 name = "DeleteTimerQueue"
@@ -1914,9 +2174,6 @@ ordinal = 135
 name = "EnumSystemLanguageGroupsW"
 ordinal = 136
 
-[[export]]
-name = "EnumSystemLocalesW"
-ordinal = 138
 
 [[export]]
 name = "EnumTimeFormatsA"
@@ -1946,9 +2203,6 @@ ordinal = 144
 name = "ExitVDM"
 ordinal = 147
 
-[[export]]
-name = "ExpandEnvironmentStringsW"
-ordinal = 149
 
 [[export]]
 name = "ExpungeConsoleCommandHistoryA"
@@ -2018,9 +2272,6 @@ ordinal = 169
 name = "FindFirstFileExW"
 ordinal = 170
 
-[[export]]
-name = "FindFirstFileW"
-ordinal = 171
 
 [[export]]
 name = "FindFirstVolumeA"
@@ -2042,9 +2293,6 @@ ordinal = 175
 name = "FindNextChangeNotification"
 ordinal = 176
 
-[[export]]
-name = "FindNextFileW"
-ordinal = 178
 
 [[export]]
 name = "FindNextVolumeA"
@@ -2106,9 +2354,6 @@ ordinal = 193
 name = "FoldStringW"
 ordinal = 194
 
-[[export]]
-name = "FormatMessageW"
-ordinal = 196
 
 [[export]]
 name = "FreeConsole"
@@ -2194,9 +2439,6 @@ ordinal = 221
 name = "GetCommTimeouts"
 ordinal = 222
 
-[[export]]
-name = "GetCommandLineW"
-ordinal = 224
 
 [[export]]
 name = "GetCompressedFileSizeA"
@@ -2358,9 +2600,6 @@ ordinal = 266
 name = "GetCurrentConsoleFont"
 ordinal = 267
 
-[[export]]
-name = "GetCurrentDirectoryW"
-ordinal = 269
 
 [[export]]
 name = "GetDateFormatA"
@@ -2394,41 +2633,20 @@ ordinal = 281
 name = "GetDiskFreeSpaceExW"
 ordinal = 282
 
-[[export]]
-name = "GetDiskFreeSpaceW"
-ordinal = 283
 
-[[export]]
-name = "GetDriveTypeW"
-ordinal = 285
 
-[[export]]
-name = "GetEnvironmentStringsA"
-ordinal = 287
 
-[[export]]
-name = "GetEnvironmentVariableW"
-ordinal = 290
 
 [[export]]
 name = "GetExitCodeProcess"
 ordinal = 291
 
-[[export]]
-name = "GetFileAttributesExW"
-ordinal = 295
 
-[[export]]
-name = "GetFileAttributesW"
-ordinal = 296
 
 [[export]]
 name = "GetFileSizeEx"
 ordinal = 299
 
-[[export]]
-name = "GetFullPathNameW"
-ordinal = 303
 
 [[export]]
 name = "GetHandleInformation"
@@ -2466,13 +2684,7 @@ ordinal = 315
 name = "GetMailslotInfo"
 ordinal = 316
 
-[[export]]
-name = "GetModuleFileNameW"
-ordinal = 318
 
-[[export]]
-name = "GetModuleHandleW"
-ordinal = 320
 
 [[export]]
 name = "GetNamedPipeHandleStateA"
@@ -2618,13 +2830,7 @@ ordinal = 359
 name = "GetQueuedCompletionStatus"
 ordinal = 360
 
-[[export]]
-name = "GetShortPathNameW"
-ordinal = 362
 
-[[export]]
-name = "GetStartupInfoW"
-ordinal = 364
 
 [[export]]
 name = "GetStringTypeExA"
@@ -2730,13 +2936,7 @@ ordinal = 401
 name = "GetVDMCurrentDirectories"
 ordinal = 402
 
-[[export]]
-name = "GetVersionExW"
-ordinal = 405
 
-[[export]]
-name = "GetVolumeInformationW"
-ordinal = 407
 
 [[export]]
 name = "GetVolumeNameForVolumeMountPointA"
@@ -2894,9 +3094,6 @@ ordinal = 467
 name = "IsBadHugeWritePtr"
 ordinal = 468
 
-[[export]]
-name = "IsBadStringPtrW"
-ordinal = 471
 
 [[export]]
 name = "IsDBCSLeadByte"
@@ -2930,9 +3127,6 @@ ordinal = 485
 name = "LoadLibraryExW"
 ordinal = 486
 
-[[export]]
-name = "LoadLibraryW"
-ordinal = 487
 
 [[export]]
 name = "LoadModule"
@@ -3002,9 +3196,6 @@ ordinal = 513
 name = "MoveFileExW"
 ordinal = 514
 
-[[export]]
-name = "MoveFileW"
-ordinal = 515
 
 [[export]]
 name = "MoveFileWithProgressA"
@@ -3038,17 +3229,11 @@ ordinal = 523
 name = "OpenDataFile"
 ordinal = 524
 
-[[export]]
-name = "OpenEventW"
-ordinal = 526
 
 [[export]]
 name = "OpenFile"
 ordinal = 527
 
-[[export]]
-name = "OpenFileMappingW"
-ordinal = 529
 
 [[export]]
 name = "OpenJobObjectA"
@@ -3058,9 +3243,6 @@ ordinal = 530
 name = "OpenJobObjectW"
 ordinal = 531
 
-[[export]]
-name = "OpenMutexW"
-ordinal = 533
 
 [[export]]
 name = "OpenProcess"
@@ -3070,17 +3252,11 @@ ordinal = 534
 name = "OpenProfileUserMapping"
 ordinal = 535
 
-[[export]]
-name = "OpenSemaphoreW"
-ordinal = 537
 
 [[export]]
 name = "OpenThread"
 ordinal = 538
 
-[[export]]
-name = "OpenWaitableTimerW"
-ordinal = 540
 
 [[export]]
 name = "OutputDebugStringA"
@@ -3254,9 +3430,6 @@ ordinal = 588
 name = "RegisterWowExec"
 ordinal = 589
 
-[[export]]
-name = "RemoveDirectoryW"
-ordinal = 593
 
 [[export]]
 name = "ReplaceFile"
@@ -3486,9 +3659,6 @@ name = "SetCriticalSectionSpinCount"
 ordinal = 652
 note = "forwarded to NTDLL.RtlSetCriticalSectionSpinCount"
 
-[[export]]
-name = "SetCurrentDirectoryW"
-ordinal = 654
 
 [[export]]
 name = "SetDefaultCommConfigA"
@@ -3506,9 +3676,6 @@ ordinal = 662
 name = "SetFileApisToOEM"
 ordinal = 663
 
-[[export]]
-name = "SetFileAttributesW"
-ordinal = 665
 
 [[export]]
 name = "SetFilePointerEx"
@@ -3851,9 +4018,6 @@ ordinal = 784
 name = "WriteConsoleOutputW"
 ordinal = 785
 
-[[export]]
-name = "WriteConsoleW"
-ordinal = 786
 
 [[export]]
 name = "WriteFileEx"

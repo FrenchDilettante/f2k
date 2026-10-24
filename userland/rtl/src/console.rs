@@ -73,7 +73,9 @@ pub mod api {
         (CONSOLE_SERVER << 16) | index
     }
 
-    /// ConsolepWriteConsole: [handle, buffer, count, out written] — the bytes to the screen.
+    /// ConsolepWriteConsole: [handle, buffer, count, out written, unicode] — the bytes to the
+    /// screen, or, with `unicode` nonzero, `count` UTF-16 units (WriteConsoleW's), each shown as
+    /// the console's code page holds it.
     pub const WRITE_CONSOLE: u32 = number(0);
     /// ConsolepReadConsole: [handle, buffer, count, out read].
     pub const READ_CONSOLE: u32 = number(1);
@@ -123,7 +125,8 @@ pub mod api {
     /// Each API's data length in dwords.
     pub const fn words(api: u32) -> Option<usize> {
         Some(match api {
-            WRITE_CONSOLE | READ_CONSOLE => 4,
+            WRITE_CONSOLE => 5,
+            READ_CONSOLE => 4,
             GET_MODE | GET_CP | VERIFY_IO_HANDLE => 2,
             FLUSH_INPUT_BUFFER | CLOSE_HANDLE => 1,
             DUP_HANDLE => 5,
@@ -475,6 +478,11 @@ pub trait Client {
     /// [`ScreenBuffer::render`] in order; the status that refuses them (an address the client
     /// cannot name, a buffer that cannot be read: what was read before it shown).
     fn show(&mut self, screen: &mut ScreenBuffer, buffer: usize, count: usize) -> Result<(), u32>;
+    /// Show `bytes` the server made (a Unicode write's, in the console's code page) on `screen`, as
+    /// [`Client::show`] shows the client's own.
+    fn print(&mut self, screen: &mut ScreenBuffer, bytes: &[u8]) {
+        screen.render(bytes);
+    }
     /// Read the client's memory at `buffer` into `into`; the status that refuses it.
     fn read(&mut self, buffer: usize, into: &mut [u8]) -> Result<(), u32>;
     /// Write `bytes` to the client's memory at `buffer`; the status that refuses it.
@@ -503,6 +511,33 @@ pub fn serve(
     }
 }
 
+/// A Unicode write: `count` UTF-16 units of the client's memory at `buffer`, read a piece at a
+/// time, each unit shown as the console's code page holds it (best fit, else `?`); the status that
+/// refuses the client's memory, what was read before it shown.
+fn show_unicode(
+    console: &mut Console,
+    client: &mut impl Client,
+    buffer: usize,
+    count: usize,
+) -> Result<(), u32> {
+    const PIECE: usize = 128;
+    let mut done = 0;
+    while done < count {
+        let take = (count - done).min(PIECE);
+        let mut units = [0u8; 2 * PIECE];
+        client.read(buffer.wrapping_add(2 * done), &mut units[..2 * take])?;
+        let mut bytes = [0u8; PIECE];
+        for (at, byte) in bytes[..take].iter_mut().enumerate() {
+            let unit = u16::from_le_bytes([units[2 * at], units[2 * at + 1]]);
+            *byte = crate::codepage::encode_unit(crate::codepage::CodePage::Oem, unit, true)
+                .unwrap_or(b'?');
+        }
+        client.print(&mut console.screen, &bytes[..take]);
+        done += take;
+    }
+    Ok(())
+}
+
 /// The API's work: `data` holds at least its words.
 fn answer(
     console: &mut Console,
@@ -526,7 +561,11 @@ fn answer(
             output()?;
             if data[2] != 0 {
                 console.screen.begin_write();
-                client.show(&mut console.screen, data[1], data[2])?;
+                if data[4] != 0 {
+                    show_unicode(console, client, data[1], data[2])?;
+                } else {
+                    client.show(&mut console.screen, data[1], data[2])?;
+                }
             }
             data[3] = data[2];
         }
@@ -807,19 +846,19 @@ mod tests {
     fn writes_go_to_the_screen_on_output_handles_only() {
         let mut server = Server::new();
         assert_eq!(
-            server.call(api::WRITE_CONSOLE, &[7, 0x40_0000, 15, 0xCC]),
+            server.call(api::WRITE_CONSOLE, &[7, 0x40_0000, 15, 0xCC, 0]),
             (0, [7, 0x40_0000, 15, 15, 0, 0, 0, 0])
         );
         assert_eq!(
             server
-                .call(api::WRITE_CONSOLE, &[0xB, 0x40_0000, 0, 0xCC])
+                .call(api::WRITE_CONSOLE, &[0xB, 0x40_0000, 0, 0xCC, 0])
                 .1[3],
             0
         );
         for handle in [3, 0xF, 4, 0] {
             assert_eq!(
                 server
-                    .call(api::WRITE_CONSOLE, &[handle, 0x40_0000, 1, 0])
+                    .call(api::WRITE_CONSOLE, &[handle, 0x40_0000, 1, 0, 0])
                     .0,
                 STATUS_INVALID_HANDLE
             );
@@ -830,11 +869,13 @@ mod tests {
             "an empty write shows nothing"
         );
         assert_eq!(
-            server.call(api::WRITE_CONSOLE, &[7, 0x8000_0000, 4, 0]).0,
+            server
+                .call(api::WRITE_CONSOLE, &[7, 0x8000_0000, 4, 0, 0])
+                .0,
             0xC000_0005
         );
         assert_eq!(
-            server.call(api::WRITE_CONSOLE, &[7, 0x1000, 4, 0]).0,
+            server.call(api::WRITE_CONSOLE, &[7, 0x1000, 4, 0, 0]).0,
             0xC000_00E8
         );
         assert_eq!(
@@ -904,7 +945,7 @@ mod tests {
             STATUS_INVALID_HANDLE
         );
         assert_eq!(
-            server.call(api::WRITE_CONSOLE, &[7, 0x40_0000, 1, 0]).0,
+            server.call(api::WRITE_CONSOLE, &[7, 0x40_0000, 1, 0, 0]).0,
             STATUS_INVALID_HANDLE
         );
         // The freed slot is the next one taken; the source goes when asked.
@@ -962,7 +1003,7 @@ mod tests {
         let mut server = Server::new();
         server.poke(0, b"Hello\r\nworld");
         assert_eq!(
-            server.call(api::WRITE_CONSOLE, &[7, BASE, 12, 0]),
+            server.call(api::WRITE_CONSOLE, &[7, BASE, 12, 0, 0]),
             (0, [7, BASE, 12, 12, 0, 0, 0, 0])
         );
         assert_eq!(&server.console.screen.row_text(0)[..6], b"Hello ");
@@ -970,7 +1011,7 @@ mod tests {
         assert_eq!(server.console.screen.cursor(), (1, 5));
         // A refused buffer shows nothing.
         assert_eq!(
-            server.status(api::WRITE_CONSOLE, &[0xB, 0x8000_0000, 4, 0]),
+            server.status(api::WRITE_CONSOLE, &[0xB, 0x8000_0000, 4, 0, 0]),
             0xC000_0005
         );
         assert_eq!(server.console.screen.cursor(), (1, 5));
@@ -1089,7 +1130,7 @@ mod tests {
             STATUS_INVALID_HANDLE
         );
         server.poke(0, b"x");
-        server.call(api::WRITE_CONSOLE, &[7, BASE, 1, 0]);
+        server.call(api::WRITE_CONSOLE, &[7, BASE, 1, 0, 0]);
         assert_eq!(server.console.screen.cell(0, 0).attribute, 0x1E);
     }
 
@@ -1180,7 +1221,7 @@ mod tests {
             )
         };
         server.poke(0, b"top\nmid\nend");
-        server.call(api::WRITE_CONSOLE, &[7, BASE, 11, 0]);
+        server.call(api::WRITE_CONSOLE, &[7, BASE, 11, 0, 0]);
         server.console.screen.set_attribute(0x2A);
         // Rows 1-2 up one; a zero fill is a space in the current attribute.
         let (from, to) = words(0, 1, W - 1, 2);
@@ -1290,7 +1331,7 @@ mod tests {
         // The stored mode is the one the renderer follows.
         assert_eq!(server.status(api::SET_MODE, &[7, 0]), 0);
         server.poke(0, b"a\nb");
-        server.call(api::WRITE_CONSOLE, &[7, BASE, 3, 0]);
+        server.call(api::WRITE_CONSOLE, &[7, BASE, 3, 0, 0]);
         assert_eq!(&server.console.screen.row_text(0)[..3], b"a\nb");
     }
 

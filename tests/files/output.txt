@@ -1,3 +1,9 @@
+# F2K capture of files (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-AC9F3E6, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Sat 10/24/2026  9:38:03.71
+files F2KT-SOURCE-CRC=0xFA27B3C6
 >>> files.exe open
 == open
 DATA\SMALL.TXT: opened err=0
@@ -29,6 +35,12 @@ an empty path: INVALID_HANDLE_VALUE err=3
 a 300-character path: INVALID_HANDLE_VALUE err=206
 CREATE_NEW on an existing file: INVALID_HANDLE_VALUE err=80
 write access to a read-only file: INVALID_HANDLE_VALUE err=5
+a trailing dot on a directory: opened err=0
+a trailing dot on a directory: first byte 46 (1 read)
+a trailing space on a directory: INVALID_HANDLE_VALUE err=3
+trailing dots and spaces on the file: opened err=0
+trailing dots and spaces on the file: first byte 46 (1 read)
+a ... component: INVALID_HANDLE_VALUE err=3
 SetCurrentDirectoryA(image directory): ret=1 err=-
 GetCurrentDirectoryA matches: yes
 GetCurrentDirectoryA into 2 bytes: returns the size needed yes err=-
@@ -40,8 +52,58 @@ SetCurrentDirectoryA(DATA\SUB): ret=1 err=-
 ..\SMALL.TXT from DATA\SUB: opened err=0
 ..\SMALL.TXT from DATA\SUB: first byte 46 (1 read)
 SetCurrentDirectoryA(missing): ret=0 err=2
+GetFullPathNameA(DATA. \SUB\...\X. .) under the image directory: [DATA. \SUB\..\X]
 GetFullPathNameA: length matches yes, under the image directory yes, file part [SMALL.TXT] err=-
 GetShortPathNameA(long name): final component [LONGFI~1.TXT] err=-
+DATA\SMALL.TXT (W): opened err=0
+DATA\SMALL.TXT (W): first byte 46 (1 read)
+lower case (W): opened err=0
+lower case (W): first byte 46 (1 read)
+forward slash (W): opened err=0
+forward slash (W): first byte 46 (1 read)
+dot components (W): opened err=0
+dot components (W): first byte 46 (1 read)
+long name (W): opened err=0
+long name (W): first byte 6C (1 read)
+long name, other case (W): opened err=0
+long name, other case (W): first byte 6C (1 read)
+short name (W): opened err=0
+short name (W): first byte 6C (1 read)
+subdirectories (W): opened err=0
+subdirectories (W): first byte 6C (1 read)
+OPEN_ALWAYS on an existing file (W): opened err=183
+OPEN_ALWAYS on an existing file (W): first byte 46 (1 read)
+missing file (W): INVALID_HANDLE_VALUE err=2
+missing directory (W): INVALID_HANDLE_VALUE err=3
+a directory (W): INVALID_HANDLE_VALUE err=5
+a directory, backup semantics (W): opened err=0
+a wildcard (W): INVALID_HANDLE_VALUE err=123
+a trailing backslash (W): INVALID_HANDLE_VALUE err=123
+a file used as a directory (W): INVALID_HANDLE_VALUE err=3
+an empty path (W): INVALID_HANDLE_VALUE err=3
+a 300-character path (W): INVALID_HANDLE_VALUE err=3
+CREATE_NEW on an existing file (W): INVALID_HANDLE_VALUE err=80
+write access to a read-only file (W): INVALID_HANDLE_VALUE err=5
+a trailing dot on a directory (W): opened err=0
+a trailing dot on a directory (W): first byte 46 (1 read)
+a trailing space on a directory (W): INVALID_HANDLE_VALUE err=3
+trailing dots and spaces on the file (W): opened err=0
+trailing dots and spaces on the file (W): first byte 46 (1 read)
+a ... component (W): INVALID_HANDLE_VALUE err=3
+SetCurrentDirectoryW(image directory): ret=1 err=-
+GetCurrentDirectoryW matches: yes
+GetCurrentDirectoryW into 2 characters: returns the size needed yes err=-
+relative to the current directory (W): opened err=0
+relative to the current directory (W): first byte 46 (1 read)
+relative with a leading .\ (W): opened err=0
+relative with a leading .\ (W): first byte 6C (1 read)
+SetCurrentDirectoryW(DATA\SUB): ret=1 err=-
+..\SMALL.TXT from DATA\SUB (W): opened err=0
+..\SMALL.TXT from DATA\SUB (W): first byte 46 (1 read)
+SetCurrentDirectoryW(missing): ret=0 err=2
+GetFullPathNameW(DATA. \SUB\...\X. .) under the image directory: [DATA. \SUB\..\X]
+GetFullPathNameW: length matches yes, under the image directory yes, file part [SMALL.TXT] err=-
+GetShortPathNameW(long name): final component [LONGFI~1.TXT] err=-
 files: done
 <<< exit code=0
 >>> files.exe read
@@ -91,20 +153,33 @@ GetFileType(file): 1
 GetFileInformationByHandle: ret=1 attributes 0x20 size 150000 high 0 links 1 err=-
 GetFileTime: ret=1 write time set yes
 GetFileSize(EMPTY.DAT): 0
+GetFileSize(BIG.BIN) (W): 150000 high 0
 GetFileSize(bogus): 0xFFFFFFFF err=6
 GetFileAttributesA(DATA\SMALL.TXT): 0x00000020 err=-
+GetFileAttributesW(DATA\SMALL.TXT): 0x00000020 err=-
 GetFileAttributesA(DATA\RDONLY.TXT): 0x00000021 err=-
+GetFileAttributesW(DATA\RDONLY.TXT): 0x00000021 err=-
 GetFileAttributesA(DATA\HIDDEN.TXT): 0x00000022 err=-
+GetFileAttributesW(DATA\HIDDEN.TXT): 0x00000022 err=-
 GetFileAttributesA(DATA): 0x00000010 err=-
+GetFileAttributesW(DATA): 0x00000010 err=-
 GetFileAttributesA(DATA\SUB\DEEP): 0x00000010 err=-
+GetFileAttributesW(DATA\SUB\DEEP): 0x00000010 err=-
 GetFileAttributesA(DATA\Long File Name.txt): 0x00000020 err=-
+GetFileAttributesW(DATA\Long File Name.txt): 0x00000020 err=-
 GetFileAttributesA(DATA\NOSUCH.TXT): 0xFFFFFFFF err=2
+GetFileAttributesW(DATA\NOSUCH.TXT): 0xFFFFFFFF err=2
 GetFileAttributesA(NODIR\NOSUCH.TXT): 0xFFFFFFFF err=3
+GetFileAttributesW(NODIR\NOSUCH.TXT): 0xFFFFFFFF err=3
 GetFileAttributesExA(SMALL.TXT): ret=1 attributes 0x20 size 31 err=-
+GetFileAttributesExW(SMALL.TXT): ret=1 attributes 0x20 size 31 err=-
 image directory has a drive letter: yes
 GetDriveTypeA(its root): 3
+GetDriveTypeW(its root): 3
 GetDiskFreeSpaceA: ret=1 bytes per sector 512 err=-
+GetDiskFreeSpaceW: ret=1 bytes per sector 512 err=-
 GetVolumeInformationA: ret=1 max component 255 file system [FAT32] err=-
+GetVolumeInformationW: ret=1 max component 255 file system [FAT32] err=-
 files: done
 <<< exit code=0
 >>> files.exe find
@@ -161,15 +236,70 @@ find DATA: 1 entries, ended with err=18
   FindClose: ret=1 err=-
 find DATA\*.XYZ: INVALID_HANDLE_VALUE err=2
 find NODIR\*: INVALID_HANDLE_VALUE err=3
+find DATA\* (W): 11 entries, ended with err=18
+  [.] short [] attributes 0x10 size 0
+  [..] short [] attributes 0x10 size 0
+  [BIG.BIN] short [] attributes 0x20 size 150000
+  [EMPTY.DAT] short [] attributes 0x20 size 0
+  [EXACT4K.BIN] short [] attributes 0x20 size 4096
+  [EXACT512.BIN] short [] attributes 0x20 size 512
+  [HIDDEN.TXT] short [] attributes 0x22 size 8
+  [Long File Name.txt] short [LONGFI~1.TXT] attributes 0x20 size 11
+  [RDONLY.TXT] short [] attributes 0x21 size 11
+  [SMALL.TXT] short [] attributes 0x20 size 31
+  [SUB] short [] attributes 0x10 size 0
+  FindClose (W): ret=1 err=-
+find DATA\*.* (W): 11 entries, ended with err=18
+  [.] short [] attributes 0x10 size 0
+  [..] short [] attributes 0x10 size 0
+  [BIG.BIN] short [] attributes 0x20 size 150000
+  [EMPTY.DAT] short [] attributes 0x20 size 0
+  [EXACT4K.BIN] short [] attributes 0x20 size 4096
+  [EXACT512.BIN] short [] attributes 0x20 size 512
+  [HIDDEN.TXT] short [] attributes 0x22 size 8
+  [Long File Name.txt] short [LONGFI~1.TXT] attributes 0x20 size 11
+  [RDONLY.TXT] short [] attributes 0x21 size 11
+  [SMALL.TXT] short [] attributes 0x20 size 31
+  [SUB] short [] attributes 0x10 size 0
+  FindClose (W): ret=1 err=-
+find DATA\*.TXT (W): 4 entries, ended with err=18
+  [HIDDEN.TXT] short [] attributes 0x22 size 8
+  [Long File Name.txt] short [LONGFI~1.TXT] attributes 0x20 size 11
+  [RDONLY.TXT] short [] attributes 0x21 size 11
+  [SMALL.TXT] short [] attributes 0x20 size 31
+  FindClose (W): ret=1 err=-
+find DATA\S* (W): 2 entries, ended with err=18
+  [SMALL.TXT] short [] attributes 0x20 size 31
+  [SUB] short [] attributes 0x10 size 0
+  FindClose (W): ret=1 err=-
+find DATA\?????.TXT (W): 1 entries, ended with err=18
+  [SMALL.TXT] short [] attributes 0x20 size 31
+  FindClose (W): ret=1 err=-
+find DATA\Long* (W): 1 entries, ended with err=18
+  [Long File Name.txt] short [LONGFI~1.TXT] attributes 0x20 size 11
+  FindClose (W): ret=1 err=-
+find DATA\SUB\* (W): 3 entries, ended with err=18
+  [.] short [] attributes 0x10 size 0
+  [..] short [] attributes 0x10 size 0
+  [DEEP] short [] attributes 0x10 size 0
+  FindClose (W): ret=1 err=-
+find DATA (W): 1 entries, ended with err=18
+  [DATA] short [] attributes 0x10 size 0
+  FindClose (W): ret=1 err=-
+find DATA\*.XYZ (W): INVALID_HANDLE_VALUE err=2
+find NODIR\* (W): INVALID_HANDLE_VALUE err=3
 files: done
 <<< exit code=0
 >>> files.exe handles
 == handles
 64 handles to one file: opened 64
+64 handles to one file (W): opened 64
 two opens keep independent positions: 2 and 1
 a duplicated handle shares its position: original now at 3, byte yes
 second open of a file opened without sharing: INVALID_HANDLE_VALUE err=32
+second open of a file opened without sharing (W): INVALID_HANDLE_VALUE err=32
 exclusive open of a file already open: INVALID_HANDLE_VALUE err=32
+exclusive open of a file already open (W): INVALID_HANDLE_VALUE err=32
 close: ret=1 err=-
 close again: ret=0 err=6
 read from the closed handle: ret=0 err=6
@@ -205,6 +335,14 @@ a writable view of a read-only mapping: null yes err=5
 a write through the read-only view: faulted with 0xC0000005
 read-only mapping larger than the file: created no err=8
 mapping an empty file: created no err=1006
+CreateFileMappingW(BIG.BIN, read-only, whole file): created yes err=0
+whole-file view (W): mapped yes, contents yes
+view at offset 64 KiB (W): contents yes
+view at offset 4 KiB (W): null yes err=1132
+a writable view of a read-only mapping (W): null yes err=5
+a write through the read-only view (W): faulted with 0xC0000005
+read-only mapping larger than the file (W): created no err=8
+mapping an empty file (W): created no err=1006
 files: done
 <<< exit code=0
 >>> files.exe concurrent

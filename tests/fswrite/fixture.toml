@@ -47,7 +47,9 @@ create = [
     "kernel32.GetLastError",
     "kernel32.SetLastError",
     "kernel32.CreateFileA",
+    "kernel32.CreateFileW",
     "kernel32.GetFileAttributesExA",
+    "kernel32.GetFileAttributesExW",
     "ntdll.NtWriteFile",
     "ntdll.NtSetInformationFile",
 ]
@@ -57,7 +59,13 @@ dirs = [
     "kernel32.SetLastError",
     "kernel32.CreateFileA",
     "kernel32.GetFileAttributesA",
+    "kernel32.GetFileAttributesW",
     "kernel32.GetFileAttributesExA",
+    "kernel32.GetFileAttributesExW",
+    "kernel32.CreateDirectoryW",
+    "kernel32.RemoveDirectoryW",
+    "kernel32.FindFirstFileW",
+    "kernel32.FindNextFileW",
     "ntdll.NtOpenFile",
     "ntdll.NtSetInformationFile",
 ]
@@ -67,10 +75,18 @@ names = [
     "kernel32.SetLastError",
     "kernel32.CreateFileA",
     "kernel32.CopyFileA",
+    "kernel32.CopyFileW",
     "kernel32.MoveFileA",
+    "kernel32.MoveFileW",
     "kernel32.GetFileAttributesA",
+    "kernel32.GetFileAttributesW",
     "kernel32.GetFileAttributesExA",
+    "kernel32.GetFileAttributesExW",
     "kernel32.GetShortPathNameA",
+    "kernel32.GetShortPathNameW",
+    "kernel32.DeleteFileW",
+    "kernel32.SetFileAttributesW",
+    "kernel32.FindFirstFileW",
     "ntdll.NtOpenFile",
     "ntdll.NtSetInformationFile",
 ]
@@ -79,7 +95,10 @@ share = [
     "kernel32.GetLastError",
     "kernel32.SetLastError",
     "kernel32.CreateFileA",
+    "kernel32.CreateFileW",
     "kernel32.GetFileAttributesA",
+    "kernel32.GetFileAttributesW",
+    "kernel32.DeleteFileW",
     "ntdll.NtOpenFile",
 ]
 times = [
@@ -102,6 +121,7 @@ write = [
     "kernel32.CreateFileA",
     "kernel32.ReadFile",
     "kernel32.GetFileAttributesExA",
+    "kernel32.GetFileAttributesExW",
     "kernel32.GetFileSize",
     "kernel32.SetEndOfFile",
     "ntdll.NtReadFile",
@@ -109,4 +129,4 @@ write = [
     "ntdll.NtFlushBuffersFile",
     "ntdll.NtSetInformationFile",
 ]
-crt = ["kernel32.GetFileAttributesExA", "ntdll.NtWriteFile"]
+crt = ["kernel32.GetFileAttributesExA", "kernel32.GetFileAttributesExW", "ntdll.NtWriteFile"]

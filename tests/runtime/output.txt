@@ -1,3 +1,9 @@
+# F2K capture of runtime (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-AC9F3E6, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Sat 10/24/2026  9:32:42.24
+runtime F2KT-SOURCE-CRC=0x527B9C65
 >>> runtime.exe args one "two words" back\slash "tail\\" x
 == args
 argc: 7
@@ -11,27 +17,41 @@ argv[6]: [x]
 argv[argc] is NULL: yes
 __argc matches: yes
 command line tail: [args one "two words" back\slash "tail\\" x]
+command line tail (W): [args one "two words" back\slash "tail\\" x]
 GetModuleFileNameA: name RUNTIME.EXE, length matches: yes, absolute: yes, err=-
+GetModuleFileNameW: name RUNTIME.EXE, length matches: yes, absolute: yes, err=-
 _pgmptr matches: yes
 GetModuleFileNameA into 4 bytes: ret=4 terminated at 3: no err=-
+GetModuleFileNameW into 4 characters: ret=4 terminated at 3: no err=-
+GetStartupInfoW: cb 68, fields as GetStartupInfoA's: no, title and desktop as GetStartupInfoA's: yes
+GetStartupInfoW: the fields that differ: hStdInput hStdOutput hStdError
 runtime: done
 <<< exit code=0
 >>> runtime.exe version
 == version
 GetVersion: 0x08930005 (major 5, minor 0, build 2195, nt yes)
 GetVersionExA: ret=1 5.0 build 2195 platform 2 csd [Service Pack 4] err=-
+GetVersionExW: ret=1 5.0 build 2195 platform 2 csd [Service Pack 4] err=-
 GetVersionExA with a bad size: ret=0 err=122
+GetVersionExW with a bad size: ret=0 err=122
+GetVersionExA, the EX size: ret=1 5.0 build 2195 platform 2 csd [Service Pack 4] service pack 4.0 err=-
+GetVersionExW, the EX size: ret=1 5.0 build 2195 platform 2 csd [Service Pack 4] service pack 4.0 err=-
 CRT: _osver 0x893 _winmajor 5 _winminor 0 _winver 0x500
 runtime: done
 <<< exit code=0
 >>> runtime.exe module
 == module
 GetModuleHandleA(NULL): 0x00400000
+GetModuleHandleW(NULL): 0x00400000
 own headers: MZ yes, PE yes, ImageBase matches yes, entry point inside image yes
 GetModuleHandleA(kernel32.dll): found yes
+GetModuleHandleW(kernel32.dll): found yes
 GetModuleHandleA(KERNEL32) same module: yes
+GetModuleHandleW(KERNEL32) same module: yes
 GetModuleHandleA(nosuch.dll): ret null yes err=126
+GetModuleHandleW(nosuch.dll): ret null yes err=126
 GetModuleFileNameA(kernel32): KERNEL32.DLL err=-
+GetModuleFileNameW(kernel32): KERNEL32.DLL err=-
 kernel32 headers: MZ yes
 GetProcAddress(GetTickCount): found yes err=-
 GetTickCount through the pointer agrees: yes
@@ -39,7 +59,17 @@ GetProcAddress(NoSuchExport): ret null yes err=127
 GetProcAddress is case-sensitive: yes err=127
 LoadLibraryA(kernel32.dll): same module yes err=-
 FreeLibrary: ret=1 err=-
+LoadLibraryW(kernel32.dll): same module yes err=-
+FreeLibrary (W): ret=1 err=-
 LoadLibraryA(nosuch.dll): ret null yes err=126
+LoadLibraryW(nosuch.dll): ret null yes err=126
+GetModuleHandleA, a 260-character path: ret null yes err=126
+GetModuleHandleW, a 260-character path: ret null yes err=126
+GetModuleHandleA, a 261-character path: ret null yes err=206
+GetModuleHandleW, a 261-character path: ret null yes err=126
+LoadLibraryA, a 261-character path: ret null yes err=206
+LoadLibraryW, a 261-character path: ret null yes err=126
+GetProcAddress, a 300-character name: ret null yes err=127
 runtime: done
 <<< exit code=0
 >>> runtime.exe teb
@@ -53,7 +83,10 @@ fs:[0] SEH chain has a frame: yes
 fs:[30h] PEB present: yes
 PEB BeingDebugged: 0
 PEB ImageBaseAddress matches: yes
+PEB ImageBaseAddress matches (W): yes
 PEB ProcessHeap matches: yes
+PEB OS version: 5.0 build 2195 CSD 0x0400 platform 2
+PEB image subsystem: 3 version 4.0
 runtime: done
 <<< exit code=0
 >>> runtime.exe lasterror
@@ -63,28 +96,67 @@ kept across a successful GetTickCount: 1234
 cleared: 0
 CloseHandle(bogus): ret=0 err=6
 CloseHandle(NULL): ret=0 err=6
+GetStdHandle(42): ret INVALID_HANDLE_VALUE yes err=6
 FormatMessageA(2): ret=44 [The system cannot find the file specified.]
+FormatMessageW(2): ret=44 [The system cannot find the file specified.]
 FormatMessageA(5): ret=19 [Access is denied.]
+FormatMessageW(5): ret=19 [Access is denied.]
 FormatMessageA(19088743): ret=0 err=317
+FormatMessageW(19088743): ret=0 err=317
+FormatMessageA(5) allocated, at least 0: ret=19 [Access is denied.\r\n] LocalSize at least yes err=-
+LocalFree of the block: yes
+FormatMessageW(5) allocated, at least 0: ret=19 [Access is denied.\r\n] LocalSize at least yes err=-
+LocalFree of the block (W): yes
+FormatMessageA(5) allocated, at least 200: ret=19 [Access is denied.\r\n] LocalSize at least no err=-
+LocalFree of the block: yes
+FormatMessageW(5) allocated, at least 200: ret=19 [Access is denied.\r\n] LocalSize at least no err=-
+LocalFree of the block (W): yes
+FormatMessageA(19088743) allocated, at least 0: ret=0 block null yes err=317
+FormatMessageW(19088743) allocated, at least 0: ret=0 block null yes err=317
+FormatMessageA(2) width 255: ret=43 [The system cannot find the file specified. ] err=-
+FormatMessageW(2) width 255: ret=43 [The system cannot find the file specified. ] err=-
+FormatMessageA(2) width 20: ret=45 [The system cannot\r\nfind the file\r\nspecified. ] err=-
+FormatMessageW(2) width 20: ret=45 [The system cannot\r\nfind the file\r\nspecified. ] err=-
+FormatMessageA(5) width 5: ret=23 [Acces\r\ns is\r\ndenie\r\nd. ] err=-
+FormatMessageW(5) width 5: ret=23 [Acces\r\ns is\r\ndenie\r\nd. ] err=-
 runtime: done
 <<< exit code=0
 >>> runtime.exe env
 == env
 SetEnvironmentVariableA: ret=1 err=-
 size query: ret=6 err=-
+size query (W): ret=6 err=-
 get: ret=5 [first] err=-
+get (W): ret=5 [first] err=-
 get into 3 bytes: ret=6 err=-
+get into 3 characters (W): ret=6 err=-
 get by lower-case name: ret=12 [second value] err=-
+get by lower-case name (W): ret=12 [second value] err=-
 GetEnvironmentStrings: has the entry yes
 FreeEnvironmentStringsA: ret=1 err=-
+GetEnvironmentStringsA: has the entry yes
+FreeEnvironmentStringsA (GetEnvironmentStringsA's block): ret=1 err=-
 GetEnvironmentStringsW: has the entry yes
 delete: ret=1 err=-
 get after delete: ret=0 err=203
+get after delete (W): ret=0 err=203
 CRT getenv sees the OS-level variable: no
 CRT _putenv: 0
 CRT getenv after _putenv: [crt value]
 OS sees the _putenv variable: ret=9 [crt value]
+OS sees the _putenv variable (W): ret=9 [crt value]
 ExpandEnvironmentStringsA: ret=26 [[crt value] [%F2KNOSUCH%]] err=-
+ExpandEnvironmentStringsW: ret=26 [[crt value] [%F2KNOSUCH%]] err=-
+ExpandEnvironmentStringsA, an unset reference before a set one: ret=34 [[%F2KNOSUCHcrt value] [%%] [100%]] err=-
+ExpandEnvironmentStringsW, an unset reference before a set one: ret=34 [[%F2KNOSUCHcrt value] [%%] [100%]] err=-
+block order: F2KORDERA before the replaced B no, B spelled as the last set no, the block sorted yes
+SetEnvironmentVariableA, a 32767-character value: ret=0 err=87
+SetEnvironmentVariableA, a 32766-character value: ret=1 err=-
+its size query: ret=32767 err=-
+its size query (W): ret=32767 err=-
+SetEnvironmentVariableA, a 300-character name: ret=1 err=-
+its size query: ret=10 err=-
+its size query (W): ret=10 err=-
 runtime: done
 <<< exit code=0
 >>> runtime.exe locale
@@ -129,6 +201,11 @@ W->437: ret=5 3F 41 3F 41 err=-
 W->UTF-8: ret=10 E2 82 AC C4 80 E4 B8 AD 41 00 err=-
 W->1252 size query: ret=5 err=-
 W->1252 into 2: ret=0 err=122
+W->1252 with WC_NO_BEST_FIT_CHARS: ret=5 80 3F 3F 41 used=1 err=-
+W->1252 into -1: ret=0 err=87
+W->UTF-8 with WC_NO_BEST_FIT_CHARS: ret=0 err=1004
+437->W with MB_USEGLYPHCHARS: ret=4 263A 266A 25BC 2302 err=-
+1252->W with MB_USEGLYPHCHARS: ret=4 0001 000D 001F 007F err=-
 LCMapStringA upper: ret=224 err=122
 upper 20: 20 21 22 23 24 25 26 27 28 29 2A 2B 2C 2D 2E 2F
 upper 30: 30 31 32 33 34 35 36 37 38 39 3A 3B 3C 3D 3E 3F
@@ -190,16 +267,28 @@ ctype1W C0: 0101 0101 0101 0101 0101 0101 0101 0101 0101 0101 0101 0101 0101 010
 ctype1W D0: 0101 0101 0101 0101 0101 0101 0101 0010 0101 0101 0101 0101 0101 0101 0101 0102
 ctype1W E0: 0102 0102 0102 0102 0102 0102 0102 0102 0102 0102 0102 0102 0102 0102 0102 0102
 ctype1W F0: 0102 0102 0102 0102 0102 0102 0102 0010 0102 0102 0102 0102 0102 0102 0102 0102
+GetStringTypeW, a zero count: ret=0 untouched yes err=87
+GetStringTypeA, a zero count: ret=0 err=87
 CompareStringA apple/Banana: 1
 CompareStringA abc/ABC ignore case: 2
 CompareStringA abc/ABC: 1
 CompareStringA co-op/coop: 3
 CompareStringA co-op/coop string sort: 1
+CompareStringA co-op/co'op: 3
+CompareStringA co-op/coo-p: 1
+CompareStringA co-op/co-o-p: 1
 GetUserDefaultLCID: 0x0409
 GetSystemDefaultLCID: 0x0409
+EnumSystemLocalesA(LCID_SUPPORTED): ret=1 err=-, 00000409 among them: yes
+EnumSystemLocalesW(LCID_SUPPORTED): ret=1 err=-, 00000409 among them: yes
 LOCALE_SENGLANGUAGE: ret=8 [English]
 LOCALE_IDEFAULTANSICODEPAGE: ret=5 [1252]
 LOCALE_SDECIMAL: ret=2 [.]
+LOCALE_IDEFAULTANSICODEPAGE as a number (W): ret=2 1252 err=-
+LOCALE_ILANGUAGE as a number (A): ret=4 0x409 err=-
+LOCALE_ILANGUAGE as a number, size query (A): ret=4 err=-
+LOCALE_IDEFAULTANSICODEPAGE as a number into 1 (W): ret=0 err=122
+LOCALE_SDECIMAL as a number (W): ret=0 err=1004
 C locale: toupper(E9) E9 isalpha(E9) 0
 setlocale(LC_ALL, ""): [English_United States.1252]
 user locale: toupper(E9) C9 isalpha(E9) 1
@@ -241,7 +330,7 @@ runtime: done
 write to NULL: handled yes code 0xC0000005 flags 0 params 2 info 1 0
 read from 0x10: handled yes code 0xC0000005 flags 0 params 2 info 0 10
 integer divide by zero: handled yes code 0xC0000094 flags 0 params 0 info 0 0
-int 3: handled yes code 0x80000003 flags 0 params 3 info 0 12FF44
+int 3: handled yes code 0x80000003 flags 0 params 3 info 0 12FF40
 ud2: handled yes code 0xC000001D flags 0 params 0 info 0 0
 hlt: handled yes code 0xC0000096 flags 0 params 0 info 0 0
 RaiseException with two arguments: handled yes code 0xE0F2F2F2 flags 0 params 2 info B 16

@@ -18,6 +18,7 @@ use crate::base::{
     under_peb_lock,
     units,
     write_pointer,
+    Text,
 };
 use crate::nt;
 
@@ -95,7 +96,13 @@ pub extern "system" fn get_command_line_a() -> *const u8 {
     }) as *const u8
 }
 
-/// sizeof(STARTUPINFOA).
+/// GetCommandLineW: the process parameters' CommandLine itself.
+#[unsafe(export_name = "f2k_export_GetCommandLineW")]
+pub extern "system" fn get_command_line_w() -> *const u16 {
+    read_pointer(process_parameters() + COMMAND_LINE + 4) as *const u16
+}
+
+/// sizeof(STARTUPINFOA), and of STARTUPINFOW (the same: its strings are pointers).
 pub const STARTUP_INFO_SIZE: usize = 68;
 
 /// STARTF_USESTDHANDLES, STARTF_USEHOTKEY and STARTF_HASSHELLDATA: the flags that make the standard
@@ -115,16 +122,25 @@ fn narrow_string(at: usize) -> Option<u32> {
     (!block.is_null()).then_some(block as u32)
 }
 
-/// STARTUPINFOA's dwords for the process parameters at `parameters`: the size, the narrowed shell
-/// information, desktop and title, the startup values, the show-window value with the runtime
-/// data's length, the runtime data, and the standard handles when the flags make them meaningful
-/// (INVALID_HANDLE_VALUE otherwise); none when the heap has no room for a string.
-fn startup_info(parameters: usize) -> Option<[u32; STARTUP_INFO_SIZE / 4]> {
+/// A UNICODE_STRING of the parameters as STARTUPINFOW points at it: its buffer, null for none.
+fn wide_string(at: usize) -> Option<u32> {
+    Some(read_pointer(at + 4) as u32)
+}
+
+/// STARTUPINFO's dwords for the process parameters at `parameters`: the size, the shell
+/// information, desktop and title (each as `string` makes it: narrowed, or the parameters' own),
+/// the startup values, the show-window value with the runtime data's length, the runtime data, and
+/// the standard handles when the flags make them meaningful (INVALID_HANDLE_VALUE otherwise); none
+/// when a string cannot be made (the heap has no room).
+fn startup_info(
+    parameters: usize,
+    string: impl Fn(usize) -> Option<u32>,
+) -> Option<[u32; STARTUP_INFO_SIZE / 4]> {
     let mut info = [0u32; STARTUP_INFO_SIZE / 4];
     info[0] = STARTUP_INFO_SIZE as u32;
-    info[1] = narrow_string(parameters + SHELL_INFO)?;
-    info[2] = narrow_string(parameters + DESKTOP_INFO)?;
-    info[3] = narrow_string(parameters + WINDOW_TITLE)?;
+    info[1] = string(parameters + SHELL_INFO)?;
+    info[2] = string(parameters + DESKTOP_INFO)?;
+    info[3] = string(parameters + WINDOW_TITLE)?;
     for (at, word) in info[4..12].iter_mut().enumerate() {
         *word = read(parameters + STARTING_X + 4 * at);
     }
@@ -152,7 +168,7 @@ fn startup_info(parameters: usize) -> Option<[u32; STARTUP_INFO_SIZE / 4]> {
 #[unsafe(export_name = "f2k_export_GetStartupInfoA")]
 pub unsafe extern "system" fn get_startup_info_a(info: *mut u8) {
     let cached = made_once(ANSI_STARTUP_INFO, || {
-        let Some(image) = startup_info(process_parameters()) else {
+        let Some(image) = startup_info(process_parameters(), narrow_string) else {
             return 0;
         };
         // SAFETY: ntdll's export, on the process heap.
@@ -177,6 +193,25 @@ pub unsafe extern "system" fn get_startup_info_a(info: *mut u8) {
     unsafe { core::ptr::copy_nonoverlapping(cached as *const u8, info, STARTUP_INFO_SIZE) };
 }
 
+/// GetStartupInfoW: the process parameters' startup information, its strings the parameters' own,
+/// into the caller's STARTUPINFOW. Its standard handles are the parameters' whatever the flags say:
+/// where GetStartupInfoA hands INVALID_HANDLE_VALUE without STARTF_USESTDHANDLES (its captured
+/// image), the runtime capture finds the W form's three handles differing from the A form's.
+///
+/// # Safety
+///
+/// `info` addresses a writable STARTUPINFOW (a bad pointer faults the caller).
+#[unsafe(export_name = "f2k_export_GetStartupInfoW")]
+pub unsafe extern "system" fn get_startup_info_w(info: *mut u8) {
+    let parameters = process_parameters();
+    let mut image = startup_info(parameters, wide_string).expect("no string to make");
+    for (at, word) in image[14..].iter_mut().enumerate() {
+        *word = read(parameters + STANDARD_INPUT + 4 * at);
+    }
+    // SAFETY: the caller's contract.
+    unsafe { core::ptr::copy_nonoverlapping(image.as_ptr().cast::<u8>(), info, STARTUP_INFO_SIZE) };
+}
+
 /// GetVersion: the PEB's version — the build number, the minor and the major version, the top two
 /// bits the platform's (clear for NT): 0x08930005 for Windows 2000 build 2195.
 #[unsafe(export_name = "f2k_export_GetVersion")]
@@ -188,25 +223,32 @@ pub extern "system" fn get_version() -> u32 {
         | read(peb + OS_MAJOR_VERSION)
 }
 
-/// sizeof(OSVERSIONINFOA) and sizeof(OSVERSIONINFOEXA); the CSD name's room in either.
+/// sizeof(OSVERSIONINFOA) and sizeof(OSVERSIONINFOEXA), of their W forms, and the CSD name's room
+/// in either, in characters.
 const OSVERSIONINFOA_SIZE: u32 = 148;
 const OSVERSIONINFOEXA_SIZE: u32 = 156;
+const OSVERSIONINFOW_SIZE: u32 = 276;
+const OSVERSIONINFOEXW_SIZE: u32 = 284;
 const CSD_ROOM: usize = 128;
 
-/// GetVersionExA: the PEB's version — major, minor, build, platform — and its service pack's name
-/// (narrowed, the rest of szCSDVersion cleared), and in the extended structure the service pack's
+/// GetVersionExW's work: the PEB's version — major, minor, build, platform — and its service pack's
+/// name (the rest of szCSDVersion cleared), and in the extended structure the service pack's
 /// numbers (OSCSDVersion's bytes), the suite mask and the product type (the shared data page's).
-/// ERROR_INSUFFICIENT_BUFFER for a structure size that is neither form's.
+/// ERROR_INSUFFICIENT_BUFFER for a structure size that is neither form's (OSVERSIONINFOW's sizes
+/// for `wide`, OSVERSIONINFOA's otherwise).
 ///
 /// # Safety
 ///
-/// `info` addresses an OSVERSIONINFOA or OSVERSIONINFOEXA as its size says (a bad pointer faults
-/// the caller).
-#[unsafe(export_name = "f2k_export_GetVersionExA")]
-pub unsafe extern "system" fn get_version_ex_a(info: *mut u8) -> u32 {
+/// `info` addresses the structure its size says (a bad pointer faults the caller).
+unsafe fn version_ex(info: *mut u8, wide: bool) -> u32 {
+    let (plain, extended) = if wide {
+        (OSVERSIONINFOW_SIZE, OSVERSIONINFOEXW_SIZE)
+    } else {
+        (OSVERSIONINFOA_SIZE, OSVERSIONINFOEXA_SIZE)
+    };
     // SAFETY: the caller's contract, here and below.
     let size = unsafe { (info as *const u32).read_unaligned() };
-    if size != OSVERSIONINFOA_SIZE && size != OSVERSIONINFOEXA_SIZE {
+    if size != plain && size != extended {
         set_last_error(ERROR_INSUFFICIENT_BUFFER);
         return 0;
     }
@@ -221,17 +263,22 @@ pub unsafe extern "system" fn get_version_ex_a(info: *mut u8) -> u32 {
         // SAFETY: the caller's structure.
         unsafe { (info.add(4 + 4 * at) as *mut u32).write_unaligned(*field) };
     }
-    let mut csd = [0u8; CSD_ROOM];
+    let mut csd = [0u16; CSD_ROOM];
     // SAFETY: the PEB's own string.
-    for (byte, &unit) in csd[..CSD_ROOM - 1]
+    for (slot, &unit) in csd[..CSD_ROOM - 1]
         .iter_mut()
         .zip(unsafe { units(peb + CSD_VERSION) })
     {
-        *byte = cp1252::wc_to_mb(unit);
+        *slot = unit;
     }
-    // SAFETY: the caller's structure.
-    unsafe { core::ptr::copy_nonoverlapping(csd.as_ptr(), info.add(20), CSD_ROOM) };
-    if size == OSVERSIONINFOEXA_SIZE {
+    let text = if wide {
+        Text::Wide(info.wrapping_add(20) as *mut u16)
+    } else {
+        Text::Ansi(info.wrapping_add(20))
+    };
+    // SAFETY: the caller's structure: szCSDVersion's room.
+    unsafe { text.put(&csd) };
+    if size == extended {
         let service_pack = read(peb + OS_BUILD_NUMBER) >> 16;
         let tail = [
             (service_pack >> 8) as u16,
@@ -241,8 +288,32 @@ pub unsafe extern "system" fn get_version_ex_a(info: *mut u8) -> u32 {
         ];
         for (at, field) in tail.iter().enumerate() {
             // SAFETY: the caller's extended structure.
-            unsafe { (info.add(148 + 2 * at) as *mut u16).write_unaligned(*field) };
+            unsafe { (info.add(plain as usize + 2 * at) as *mut u16).write_unaligned(*field) };
         }
     }
     1
+}
+
+/// GetVersionExA (see [`version_ex`]): the service pack's name narrowed.
+///
+/// # Safety
+///
+/// `info` addresses an OSVERSIONINFOA or OSVERSIONINFOEXA as its size says (a bad pointer faults
+/// the caller).
+#[unsafe(export_name = "f2k_export_GetVersionExA")]
+pub unsafe extern "system" fn get_version_ex_a(info: *mut u8) -> u32 {
+    // SAFETY: the caller's contract.
+    unsafe { version_ex(info, false) }
+}
+
+/// GetVersionExW (see [`version_ex`]).
+///
+/// # Safety
+///
+/// `info` addresses an OSVERSIONINFOW or OSVERSIONINFOEXW as its size says (a bad pointer faults
+/// the caller).
+#[unsafe(export_name = "f2k_export_GetVersionExW")]
+pub unsafe extern "system" fn get_version_ex_w(info: *mut u8) -> u32 {
+    // SAFETY: the caller's contract.
+    unsafe { version_ex(info, true) }
 }

@@ -71,8 +71,9 @@ pub fn oem_to_ansi(byte: u8) -> u8 {
 }
 
 /// The 8.3 stored form of a name, or none when it is not a plain 8.3 name: 1-8 name bytes, then
-/// optionally a dot and 1-3 extension bytes, each one code page 437 holds. The bytes are stored
-/// upper-cased in 437 ([`oem_upper`]).
+/// optionally a dot and up to 3 extension bytes, each one code page 437 holds — a trailing dot is
+/// an empty extension (the files capture: an inner `DATA.` names `DATA`, where `DATA ` and `...`
+/// name nothing). The bytes are stored upper-cased in 437 ([`oem_upper`]).
 pub fn short_form(component: &[u8]) -> Option<[u8; 11]> {
     let (base, extension) = match component.iter().position(|&byte| byte == b'.') {
         Some(dot) => (&component[..dot], &component[dot + 1..]),
@@ -81,7 +82,7 @@ pub fn short_form(component: &[u8]) -> Option<[u8; 11]> {
     let has_dot = base.len() < component.len();
     let base_ok = (1..=8).contains(&base.len()) && base.iter().all(|&byte| is_name_byte(byte));
     let extension_ok = if has_dot {
-        (1..=3).contains(&extension.len()) && extension.iter().all(|&byte| is_name_byte(byte))
+        extension.len() <= 3 && extension.iter().all(|&byte| is_name_byte(byte))
     } else {
         true
     };
@@ -142,6 +143,11 @@ mod tests {
         assert_eq!(short_form(b"boot"), Some(*b"BOOT       "));
         assert_eq!(short_form(b"F2K-KE~1"), Some(*b"F2K-KE~1   "));
         assert_eq!(short_form(b"A.B"), Some(*b"A       B  "));
+        assert_eq!(
+            short_form(b"DATA."),
+            Some(*b"DATA       "),
+            "a trailing dot is an empty extension (the files capture)"
+        );
         assert_eq!(short_form(b"12345678.123"), Some(*b"12345678123"));
     }
 
@@ -169,8 +175,8 @@ mod tests {
         assert_eq!(short_form(b"\xD7.TXT"), None, "the multiplication sign");
     }
 
-    /// Not plain 8.3: too long a name or extension, an empty name or extension, two dots, a
-    /// space, forbidden bytes, controls.
+    /// Not plain 8.3: too long a name or extension, an empty name, two dots, a space, forbidden
+    /// bytes, controls.
     #[test]
     fn non_8_3_names_have_no_short_form() {
         for bad in [
@@ -179,7 +185,6 @@ mod tests {
             b"123456789",
             b"NAME.LONG",
             b".EXE",
-            b"NAME.",
             b"A.B.C",
             b"...",
             b"MY FILE",

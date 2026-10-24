@@ -259,7 +259,12 @@ fn get_string_type_w_refusals_and_empty_counts() {
     );
     assert_eq!(
         unsafe { get_string_type_w(CT_CTYPE1, unread(), 0, out.as_mut_ptr()) },
-        1
+        0
+    );
+    assert_eq!(
+        last_error(),
+        87,
+        "a zero count is refused, as GetStringTypeA's is"
     );
     assert_eq!(out, [0xCCCC; 4]);
 }

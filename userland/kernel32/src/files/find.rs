@@ -1,7 +1,7 @@
-//! The directory searches: FindFirstFileA, FindNextFileA and FindClose over NtQueryDirectoryFile,
-//! as Windows 2000's kernel32 makes them. A find handle is kernel32's own structure on the process
-//! heap (FINDFILE_HANDLE: the directory's handle, a listing buffer and the lock over them), not a
-//! kernel handle.
+//! The directory searches: FindFirstFile, FindNextFile (A and W) and FindClose over
+//! NtQueryDirectoryFile, as Windows 2000's kernel32 makes them. A find handle is kernel32's own
+//! structure on the process heap (FINDFILE_HANDLE: the directory's handle, a listing buffer and the
+//! lock over them), not a kernel handle.
 //!
 //! FindFirstFile opens the pattern's directory for listing and asks for its first match, the
 //! pattern given as the expression after FindFirstFileExW's transformations: `*.*` alone is `*`; a
@@ -391,6 +391,27 @@ pub unsafe extern "system" fn find_first_file_a(pattern: *const u8, data: *mut u
     find
 }
 
+/// FindFirstFileW: the pattern copied ([`wide`]), the search opened ([`find_first_w`]), its first
+/// match in the caller's WIN32_FIND_DATAW.
+///
+/// # Safety
+///
+/// `pattern` is a NUL-terminated UTF-16 string; `data` points at a WIN32_FIND_DATAW.
+#[unsafe(export_name = "f2k_export_FindFirstFileW")]
+pub unsafe extern "system" fn find_first_file_w(pattern: *const u16, data: *mut FindDataW) -> u32 {
+    // SAFETY: the caller's string.
+    let Some(pattern) = (unsafe { wide(pattern) }) else {
+        return INVALID_HANDLE_VALUE;
+    };
+    let mut found = FindDataW::zeroed();
+    let find = find_first_w(&pattern, &mut found);
+    if find != INVALID_HANDLE_VALUE {
+        // SAFETY: the caller's structure.
+        unsafe { data.write_unaligned(found) };
+    }
+    find
+}
+
 /// FindNextFileA: the search's next match ([`find_next_w`]); ERROR_NO_MORE_FILES when it has none.
 ///
 /// # Safety
@@ -404,6 +425,22 @@ pub unsafe extern "system" fn find_next_file_a(find: u32, data: *mut u8) -> u32 
     }
     // SAFETY: the caller's structure.
     unsafe { found.narrow_into(data) };
+    1
+}
+
+/// FindNextFileW: the search's next match ([`find_next_w`]) in the caller's WIN32_FIND_DATAW.
+///
+/// # Safety
+///
+/// `find` is a find handle; `data` points at a WIN32_FIND_DATAW.
+#[unsafe(export_name = "f2k_export_FindNextFileW")]
+pub unsafe extern "system" fn find_next_file_w(find: u32, data: *mut FindDataW) -> u32 {
+    let mut found = FindDataW::zeroed();
+    if find_next_w(find, &mut found) == 0 {
+        return 0;
+    }
+    // SAFETY: the caller's structure.
+    unsafe { data.write_unaligned(found) };
     1
 }
 

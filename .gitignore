@@ -28,6 +28,8 @@ scripts/__pycache__
 *.elf
 *.obj
 *.img
+# The source-stamp tool tests/build.bat builds on the real machine (common/srcsum.c)
+tests/common/srcsum.exe
 *.vdi
 *.iso
 

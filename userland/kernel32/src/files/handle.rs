@@ -169,6 +169,30 @@ pub unsafe extern "system" fn create_file_a(
     unsafe { create_file_w(&name, access, share, security, disposition, flags) }
 }
 
+/// CreateFileW: the name copied ([`wide`]), then its work ([`create_file_w`]); the template file is
+/// not consulted.
+///
+/// # Safety
+///
+/// `name` is a NUL-terminated UTF-16 string; `security` null or a SECURITY_ATTRIBUTES.
+#[unsafe(export_name = "f2k_export_CreateFileW")]
+pub unsafe extern "system" fn create_file_w_export(
+    name: *const u16,
+    access: u32,
+    share: u32,
+    security: *const SecurityAttributes,
+    disposition: u32,
+    flags: u32,
+    _template: u32,
+) -> u32 {
+    // SAFETY: the caller's string.
+    let Some(name) = (unsafe { wide(name) }) else {
+        return INVALID_HANDLE_VALUE;
+    };
+    // SAFETY: the caller's structure.
+    unsafe { create_file_w(&name, access, share, security, disposition, flags) }
+}
+
 /// An OVERLAPPED, as the caller passes it: its I/O status (Internal, InternalHigh), its offset and
 /// its event.
 #[repr(C)]

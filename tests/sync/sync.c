@@ -30,6 +30,9 @@
  *                strictly through two auto-reset events, then the same
  *                again through SignalObjectAndWait
  *
+ * The named objects run twice: through the A calls, then through their
+ * W twins on the same names (the W lines carry the W names, or "(W)").
+ *
  * Build (real Windows 2000 machine, MSVC 6), the multithreaded CRT:
  *   cl /nologo /MT sync.c
  */
@@ -112,9 +115,51 @@ static void pulse_case(const char *what, BOOL manual, int waiters)
     CloseHandle(shared_event);
 }
 
+/* The named events, through the A calls or (wide) their W twins. */
+static void named_events(int wide)
+{
+    const char *aw = wide ? "W" : "A";
+    const char *tag = wide ? " (W)" : "";
+    HANDLE n1, n2, o, t;
+    const char *p1;
+
+    arm();
+    n1 = wide ? CreateEventW(NULL, TRUE, FALSE, L"F2K.sync.event")
+              : CreateEventA(NULL, TRUE, FALSE, "F2K.sync.event");
+    line("named event%s: created %s err=%s", tag, yesno(n1 != NULL), le());
+    arm();
+    n2 = wide ? CreateEventW(NULL, FALSE, TRUE, L"F2K.sync.event")
+              : CreateEventA(NULL, FALSE, TRUE, "F2K.sync.event");
+    p1 = le();
+    line("named event again%s: created %s err=%s, initial state ignored: %s", tag, yesno(n2 != NULL), p1,
+         poll(n1));
+    SetEvent(n2);
+    line("set through the second handle, seen through the first%s: %s", tag,
+         wr(WaitForSingleObject(n1, 0)));
+    arm();
+    o = wide ? OpenEventW(EVENT_ALL_ACCESS, FALSE, L"F2K.sync.event")
+             : OpenEventA(EVENT_ALL_ACCESS, FALSE, "F2K.sync.event");
+    line("OpenEvent%s: opened %s err=%s", aw, yesno(o != NULL), le());
+    ResetEvent(o);
+    line("reset through the opened handle%s: %s", tag, wr(WaitForSingleObject(n1, 0)));
+    arm();
+    t = wide ? OpenEventW(EVENT_ALL_ACCESS, FALSE, L"F2K.sync.nosuch")
+             : OpenEventA(EVENT_ALL_ACCESS, FALSE, "F2K.sync.nosuch");
+    line("OpenEvent%s(missing): null %s err=%s", aw, yesno(t == NULL), le());
+    arm();
+    t = wide ? CreateMutexW(NULL, FALSE, L"F2K.sync.event") : CreateMutexA(NULL, FALSE, "F2K.sync.event");
+    line("CreateMutex%s on the event's name: null %s err=%s", aw, yesno(t == NULL), le());
+    if (t != NULL) {
+        CloseHandle(t);
+    }
+    CloseHandle(o);
+    CloseHandle(n2);
+    CloseHandle(n1);
+}
+
 static void sec_event(void)
 {
-    HANDLE m, a, n1, n2, o, t;
+    HANDLE m, a, t;
     const char *p1, *p2;
     BOOL r;
 
@@ -164,32 +209,8 @@ static void sec_event(void)
     }
     CloseHandle(shared_event);
 
-    arm();
-    n1 = CreateEventA(NULL, TRUE, FALSE, "F2K.sync.event");
-    line("named event: created %s err=%s", yesno(n1 != NULL), le());
-    arm();
-    n2 = CreateEventA(NULL, FALSE, TRUE, "F2K.sync.event");
-    p1 = le();
-    line("named event again: created %s err=%s, initial state ignored: %s", yesno(n2 != NULL), p1, poll(n1));
-    SetEvent(n2);
-    line("set through the second handle, seen through the first: %s", wr(WaitForSingleObject(n1, 0)));
-    arm();
-    o = OpenEventA(EVENT_ALL_ACCESS, FALSE, "F2K.sync.event");
-    line("OpenEventA: opened %s err=%s", yesno(o != NULL), le());
-    ResetEvent(o);
-    line("reset through the opened handle: %s", wr(WaitForSingleObject(n1, 0)));
-    arm();
-    t = OpenEventA(EVENT_ALL_ACCESS, FALSE, "F2K.sync.nosuch");
-    line("OpenEventA(missing): null %s err=%s", yesno(t == NULL), le());
-    arm();
-    t = CreateMutexA(NULL, FALSE, "F2K.sync.event");
-    line("CreateMutexA on the event's name: null %s err=%s", yesno(t == NULL), le());
-    if (t != NULL) {
-        CloseHandle(t);
-    }
-    CloseHandle(o);
-    CloseHandle(n2);
-    CloseHandle(n1);
+    named_events(0);
+    named_events(1);
 
     arm();
     r = SetEvent((HANDLE)0x1234);
@@ -206,9 +227,34 @@ static void sec_event(void)
 
 /* --- semaphore ----------------------------------------------------- */
 
+/* The named semaphores, through the A calls or (wide) their W twins. */
+static void named_semaphores(int wide)
+{
+    const char *aw = wide ? "W" : "A";
+    const char *tag = wide ? " (W)" : "";
+    HANDLE n1, n2;
+    LONG prev;
+
+    n1 = wide ? CreateSemaphoreW(NULL, 1, 5, L"F2K.sync.semaphore")
+              : CreateSemaphoreA(NULL, 1, 5, "F2K.sync.semaphore");
+    arm();
+    n2 = wide ? CreateSemaphoreW(NULL, 0, 1, L"F2K.sync.semaphore")
+              : CreateSemaphoreA(NULL, 0, 1, "F2K.sync.semaphore");
+    line("named semaphore again%s: created %s err=%s", tag, yesno(n2 != NULL), le());
+    prev = -1;
+    ReleaseSemaphore(n2, 2, &prev);
+    line("release through the second handle%s: previous %ld (the first creation's counts hold)", tag, prev);
+    CloseHandle(n2);
+    n2 = wide ? OpenSemaphoreW(SEMAPHORE_ALL_ACCESS, FALSE, L"F2K.sync.semaphore")
+              : OpenSemaphoreA(SEMAPHORE_ALL_ACCESS, FALSE, "F2K.sync.semaphore");
+    line("OpenSemaphore%s: opened %s, wait %s", aw, yesno(n2 != NULL), wr(WaitForSingleObject(n2, 0)));
+    CloseHandle(n2);
+    CloseHandle(n1);
+}
+
 static void sec_semaphore(void)
 {
-    HANDLE s, n1, n2;
+    HANDLE s;
     const char *p1, *p2, *p3;
     LONG prev;
     BOOL r;
@@ -247,18 +293,8 @@ static void sec_semaphore(void)
     s = CreateSemaphore(NULL, -1, 3, NULL);
     line("negative initial: null %s err=%s", yesno(s == NULL), le());
 
-    n1 = CreateSemaphoreA(NULL, 1, 5, "F2K.sync.semaphore");
-    arm();
-    n2 = CreateSemaphoreA(NULL, 0, 1, "F2K.sync.semaphore");
-    line("named semaphore again: created %s err=%s", yesno(n2 != NULL), le());
-    prev = -1;
-    ReleaseSemaphore(n2, 2, &prev);
-    line("release through the second handle: previous %ld (the first creation's counts hold)", prev);
-    CloseHandle(n2);
-    n2 = OpenSemaphoreA(SEMAPHORE_ALL_ACCESS, FALSE, "F2K.sync.semaphore");
-    line("OpenSemaphoreA: opened %s, wait %s", yesno(n2 != NULL), wr(WaitForSingleObject(n2, 0)));
-    CloseHandle(n2);
-    CloseHandle(n1);
+    named_semaphores(0);
+    named_semaphores(1);
 }
 
 /* --- mutex --------------------------------------------------------- */
@@ -285,9 +321,32 @@ static DWORD WINAPI mutex_abandoner(LPVOID param)
     return 0;
 }
 
+/* The named mutexes, through the A calls or (wide) their W twins. */
+static void named_mutexes(int wide)
+{
+    const char *aw = wide ? "W" : "A";
+    const char *tag = wide ? " (W)" : "";
+    HANDLE n1, n2, o;
+    BOOL r1, r2;
+
+    n1 = wide ? CreateMutexW(NULL, TRUE, L"F2K.sync.mutex") : CreateMutexA(NULL, TRUE, "F2K.sync.mutex");
+    arm();
+    n2 = wide ? CreateMutexW(NULL, TRUE, L"F2K.sync.mutex") : CreateMutexA(NULL, TRUE, "F2K.sync.mutex");
+    line("named mutex again%s: created %s err=%s", tag, yesno(n2 != NULL), le());
+    arm();
+    o = wide ? OpenMutexW(MUTEX_ALL_ACCESS, FALSE, L"F2K.sync.mutex")
+             : OpenMutexA(MUTEX_ALL_ACCESS, FALSE, "F2K.sync.mutex");
+    line("OpenMutex%s: opened %s err=%s", aw, yesno(o != NULL), le());
+    r1 = ReleaseMutex(o);
+    r2 = ReleaseMutex(n2);
+    line("releases through the opened then the second handle (owned once)%s: %d %d", tag, r1, r2);
+    CloseHandle(o);
+    CloseHandle(n2);
+    CloseHandle(n1);
+}
+
 static void sec_mutex(void)
 {
-    HANDLE n1, n2, o;
     const char *p1, *p2;
     BOOL r, r1, r2, r3;
     DWORD w;
@@ -322,19 +381,8 @@ static void sec_mutex(void)
     ReleaseMutex(shared_mutex);
     CloseHandle(shared_mutex);
 
-    n1 = CreateMutexA(NULL, TRUE, "F2K.sync.mutex");
-    arm();
-    n2 = CreateMutexA(NULL, TRUE, "F2K.sync.mutex");
-    line("named mutex again: created %s err=%s", yesno(n2 != NULL), le());
-    arm();
-    o = OpenMutexA(MUTEX_ALL_ACCESS, FALSE, "F2K.sync.mutex");
-    line("OpenMutexA: opened %s err=%s", yesno(o != NULL), le());
-    r1 = ReleaseMutex(o);
-    r2 = ReleaseMutex(n2);
-    line("releases through the opened then the second handle (owned once): %d %d", r1, r2);
-    CloseHandle(o);
-    CloseHandle(n2);
-    CloseHandle(n1);
+    named_mutexes(0);
+    named_mutexes(1);
 }
 
 /* --- waitmulti ----------------------------------------------------- */

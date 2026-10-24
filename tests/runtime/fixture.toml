@@ -48,11 +48,14 @@ unhandled = [
 module = [
     "kernel32.GetProcAddress",
     "kernel32.LoadLibraryA",
+    "kernel32.LoadLibraryW",
     "kernel32.FreeLibrary",
     "kernel32.GetModuleHandleA",
+    "kernel32.GetModuleHandleW",
     "kernel32.GetLastError",
     "kernel32.SetLastError",
     "kernel32.GetTickCount",
+    "kernel32.GetModuleFileNameW",
     "ntdll.LdrGetDllHandle",
     "ntdll.LdrLoadDll",
     "ntdll.LdrUnloadDll",
@@ -68,20 +71,28 @@ seh = [
 ]
 teb = [
     "kernel32.GetModuleHandleA",
+    "kernel32.GetModuleHandleW",
     "kernel32.SetLastError",
     "kernel32.GetProcessHeap",
     "kernel32.GetCurrentThreadId",
     "kernel32.GetCurrentProcessId",
 ]
-version = ["kernel32.GetVersionExA", "kernel32.GetLastError", "kernel32.SetLastError"]
+version = ["kernel32.GetVersionExA", "kernel32.GetVersionExW", "kernel32.GetLastError", "kernel32.SetLastError"]
 lasterror = [
     "kernel32.FormatMessageA",
+    "kernel32.FormatMessageW",
     "kernel32.CloseHandle",
     "kernel32.GetLastError",
     "kernel32.SetLastError",
     "kernel32.GetTickCount",
 ]
-args = ["kernel32.GetLastError", "kernel32.SetLastError"]
+args = [
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+    "kernel32.GetCommandLineW",
+    "kernel32.GetModuleFileNameW",
+    "kernel32.GetStartupInfoW",
+]
 console = [
     "kernel32.GetLastError",
     "kernel32.SetLastError",
@@ -89,16 +100,20 @@ console = [
     "kernel32.GetConsoleOutputCP",
     "kernel32.GetConsoleMode",
     "kernel32.WriteConsoleA",
+    "kernel32.WriteConsoleW",
     "ntdll.CsrClientCallServer",
 ]
 env = [
     "kernel32.GetLastError",
     "kernel32.SetLastError",
     "kernel32.GetEnvironmentStrings",
+    "kernel32.GetEnvironmentStringsA",
     "kernel32.FreeEnvironmentStringsW",
     "kernel32.GetEnvironmentVariableA",
+    "kernel32.GetEnvironmentVariableW",
     "kernel32.SetEnvironmentVariableA",
     "kernel32.ExpandEnvironmentStringsA",
+    "kernel32.ExpandEnvironmentStringsW",
     "ntdll.RtlQueryEnvironmentVariable_U",
     "ntdll.RtlSetEnvironmentVariable",
     "ntdll.RtlExpandEnvironmentStrings_U",
@@ -113,6 +128,8 @@ locale = [
     "kernel32.GetLocaleInfoA",
     "kernel32.GetUserDefaultLCID",
     "kernel32.GetSystemDefaultLCID",
+    "kernel32.EnumSystemLocalesA",
+    "kernel32.EnumSystemLocalesW",
     "kernel32.IsValidCodePage",
 ]
 exit = ["ntdll.NtTerminateProcess", "ntdll.LdrShutdownProcess"]

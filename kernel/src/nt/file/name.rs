@@ -91,7 +91,11 @@ fn valid_unit(unit: u16) -> bool {
         && !matches!(unit as u8, b'"' | b'*' | b'/' | b':' | b'<' | b'>' | b'?' | b'\\' | b'|' if unit < 0x80)
 }
 
-/// The components of `units` (no leading separator) into `name`, validated.
+/// The components of `units` (no leading separator) into `name`, validated. A `.` or `..` is no
+/// folding here (ntdll folded the DOS path's): inside the path it is a name the volume's directories
+/// never answer to (their dot entries match no name), so the walk finds the path missing, as
+/// Windows 2000's does (the files capture: `DATA\...\SMALL.TXT`, which ntdll makes
+/// `DATA\..\SMALL.TXT`, is ERROR_PATH_NOT_FOUND); as the last component it is invalid.
 fn components(units: &[u16], name: &mut FileName) -> Result<(), Status> {
     if units.is_empty() {
         return Ok(());
@@ -100,12 +104,13 @@ fn components(units: &[u16], name: &mut FileName) -> Result<(), Status> {
         Some((&SEPARATOR, body)) => (body, true),
         _ => (units, false),
     };
+    let count = body.split(|&unit| unit == SEPARATOR).count();
     for (index, component) in body.split(|&unit| unit == SEPARATOR).enumerate() {
         let dot = u16::from(b'.');
+        let is_dot = component == [dot] || component == [dot, dot];
         if component.is_empty()
             || component.len() > MAX_COMPONENT
-            || component == [dot]
-            || component == [dot, dot]
+            || (is_dot && index + 1 == count)
             || !component.iter().all(|&unit| valid_unit(unit))
         {
             return Err(STATUS_OBJECT_NAME_INVALID);
@@ -257,6 +262,12 @@ mod tests {
         assert_eq!(
             path(absolute(&wide(&std::format!("\\??\\C:\\{long}x")))).err(),
             Some(STATUS_OBJECT_NAME_INVALID)
+        );
+        // Inside the path, `.` and `..` are names the walk will not find (the files capture).
+        let name = absolute(&wide("\\??\\C:\\DATA\\..\\SMALL.TXT")).unwrap();
+        assert_eq!(
+            name.components().collect::<std::vec::Vec<_>>(),
+            [&b"DATA"[..], b"..", b"SMALL.TXT"]
         );
         let name = absolute(&wide("\\??\\C:\\caf\u{E9}.txt")).unwrap();
         assert_eq!(

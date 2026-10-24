@@ -4,10 +4,11 @@
 //! two NULs).
 //!
 //! Names compare without regard to case (upper-cased through code page 1252's case map, as the
-//! platform upcases them) and keep the spelling they were set with. A name ends at its first `=`
-//! past its first character (a leading `=` is part of the name, as in the drive-directory entries).
-//! A new variable goes in at its sorted place, by its upper-cased name, as Windows 2000 keeps the
-//! block sorted; a replaced one stays where it was.
+//! platform upcases them) and keep the spelling they were first set with: a replaced variable keeps
+//! its name as it stands, only its value changes (the runtime capture's block order). A name ends
+//! at its first `=` past its first character (a leading `=` is part of the name, as in the
+//! drive-directory entries). A new variable goes in at its sorted place, by its upper-cased name,
+//! as Windows 2000 keeps the block sorted; a replaced one stays where it was.
 
 use crate::cp1252::map_case;
 
@@ -137,7 +138,10 @@ pub fn set(block: &mut [u16], name: &[u16], value: Option<&[u16]>) -> Result<(),
     let tail_len = used - tail;
     let new_tail = at + added;
     block.copy_within(tail..tail + tail_len, new_tail);
-    block[at..at + name.len()].copy_from_slice(name);
+    // A replaced entry keeps its name's spelling (the same length: the names match but for case).
+    if found.is_none() {
+        block[at..at + name.len()].copy_from_slice(name);
+    }
     block[at + name.len()] = EQUALS;
     let value_at = at + name.len() + 1;
     block[value_at..value_at + value.len()].copy_from_slice(value);
@@ -145,9 +149,10 @@ pub fn set(block: &mut [u16], name: &[u16], value: Option<&[u16]>) -> Result<(),
     Ok(())
 }
 
-/// Expand `%NAME%` references in `source` through `block`: a set name becomes its value, any other
-/// reference (and a `%` with no closing one) stays as written. The expansion goes to `out`, a unit
-/// at a time.
+/// Expand `%NAME%` references in `source` through `block`: a set name becomes its value. Any other
+/// reference stays as written up to its closing `%`, where the scan resumes — that `%` may open the
+/// next reference (the runtime capture: `%F2KNOSUCH%F2KCRT%` is `%F2KNOSUCH` and F2KCRT's value);
+/// a `%` with no closing one stays as written. The expansion goes to `out`, a unit at a time.
 pub fn expand(block: &[u16], source: &[u16], mut out: impl FnMut(u16)) {
     let mut at = 0;
     while at < source.len() {
@@ -172,11 +177,10 @@ pub fn expand(block: &[u16], source: &[u16], mut out: impl FnMut(u16)) {
                 at = close + 1;
             }
             None => {
-                // The reference stays as written, its closing `%` with it.
+                // The `%` and the name stay as written; the closing `%` is scanned again.
                 out(PERCENT);
                 name.iter().for_each(|&u| out(u));
-                out(PERCENT);
-                at = close + 1;
+                at = close;
             }
         }
     }
@@ -230,6 +234,13 @@ mod tests {
         );
         set(&mut env, &wide("A"), Some(&wide("1"))).unwrap();
         assert_eq!(listed(&env), ["A=1", "F2KTEST=second value", "OTHER=x"]);
+        set(&mut env, &wide("f2ktest"), Some(&wide("third"))).unwrap();
+        assert_eq!(
+            listed(&env),
+            ["A=1", "F2KTEST=third", "OTHER=x"],
+            "a replaced name keeps its spelling"
+        );
+        set(&mut env, &wide("F2KTEST"), Some(&wide("second value"))).unwrap();
         set(&mut env, &wide("F2KTEST"), None).unwrap();
         assert_eq!(listed(&env), ["A=1", "OTHER=x"]);
         set(&mut env, &wide("NOSUCH"), None).unwrap();
@@ -288,8 +299,13 @@ mod tests {
         assert_eq!(expanded("%f2kcrt%%f2kcrt%"), "crt valuecrt value");
         assert_eq!(
             expanded("%x%f2kcrt%"),
-            "%x%f2kcrt%",
-            "an unset reference's closing % stays its own"
+            "%xcrt value",
+            "an unset reference's closing % opens the next"
+        );
+        assert_eq!(
+            expanded("[%F2KNOSUCH%F2KCRT%] [%%] [100%]"),
+            "[%F2KNOSUCHcrt value] [%%] [100%]",
+            "the capture's"
         );
     }
 }
