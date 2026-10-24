@@ -59,7 +59,7 @@ pub mod ordinals;
 
 pub use pool::MAX_PROCESSES;
 #[cfg(target_arch = "x86")]
-pub use pool::{current, current_mut, reap_pending};
+pub use pool::{current, current_mut, detach, reap_pending};
 
 /// The smoke-subset thread surface: child-thread creation, the thread records, the thread-exit
 /// path.

@@ -278,7 +278,13 @@ fn end_thread(end: ThreadEnd) -> ! {
             0,
             "the process ends with its last thread"
         );
-        crate::serial_println!("{}", exit::EndReport { end, leg: leg() });
+        crate::serial_println!(
+            "{}",
+            exit::EndReport {
+                end,
+                leg: leg(process)
+            }
+        );
         process.set_end(end);
     }
 
@@ -372,9 +378,10 @@ pub fn terminate_thread(
     Ok(())
 }
 
-/// The leg the current process runs as, for its report; none on a boot of one program.
-fn leg() -> Option<exit::Leg> {
-    crate::process::runner::current_leg()
+/// The leg `process` runs as, for its report; none on a boot of one program. The ending thread's
+/// process, passed in: past the switch-away bookkeeping the running thread is another one.
+fn leg(process: &Process) -> Option<exit::Leg> {
+    crate::process::runner::current_leg(process)
 }
 
 /// Release an exited thread's gate stack: unmap the slot's pages from the (current) process
@@ -395,13 +402,16 @@ fn release_gate_stack(process: &mut Process, (slot, frames): crate::process::Gat
     }
 }
 
-/// Make the current process's main thread schedulable in its initial context `user` (see
+/// Give `process`'s main thread its initial context `user` (see
 /// [`crate::user::main_thread_start`]): plant its startup ladder (the same frame shape a child
-/// gets) and ready it. The next switch away from the idle thread enters it.
-pub fn start_main_thread(user: crate::sched::startup::UserStart) {
+/// gets), without readying it ([`ready_main_thread`] does). Part of the process's load: the ladder
+/// goes onto the thread's gate stack, which only the process's own directory maps, so that
+/// directory must be the live one — as it is from the process's creation until another address
+/// space is loaded.
+pub fn start_main_thread(process: &mut Process, user: crate::sched::startup::UserStart) {
     // The main thread's gate slot, TEB page and stack top were taken at process start; only the
     // ladder is missing.
-    let thread = crate::process::current().main_thread();
+    let thread = process.main_thread();
     let params = crate::sched::startup::StartParams {
         system_routine: user_thread_startup as u32,
         start_routine: user.eip,
@@ -409,16 +419,24 @@ pub fn start_main_thread(user: crate::sched::startup::UserStart) {
         user: Some(user),
     };
     // SAFETY: the thread's `initial_stack` names its mapped, empty kernel-stack slot (nothing has
-    // entered a gate on it yet).
+    // entered a gate on it yet), in the live directory (the caller's contract above).
     unsafe { crate::sched::startup::plant(thread, &params) };
-
-    let dispatcher: &'static mut Dispatcher = crate::sched::idle::dispatcher();
-    dispatcher.make_ready(thread);
 }
 
-/// The boot's ring-3 entry, the only one: start the current process's main thread and enter the
-/// idle loop — the first switch away from idle is into this thread. Never returns.
-pub fn enter_as_main_thread(user: crate::sched::startup::UserStart) -> ! {
-    start_main_thread(user);
+/// Make `process`'s main thread, its ladder planted ([`start_main_thread`]), schedulable: the next
+/// switch away from the idle thread can enter it, whatever address space is live now (the switch
+/// loads the process's own).
+pub fn ready_main_thread(process: &mut Process) {
+    let dispatcher: &'static mut Dispatcher = crate::sched::idle::dispatcher();
+    dispatcher.make_ready(process.main_thread());
+}
+
+/// The fault-test boots' ring-3 entry: end `process`'s load, start its main thread in `user` and
+/// ready it, then enter the idle loop — the first switch away from idle is into this thread. Never
+/// returns.
+pub fn enter_as_main_thread(process: &mut Process, user: crate::sched::startup::UserStart) -> ! {
+    start_main_thread(process, user);
+    crate::process::detach();
+    ready_main_thread(process);
     crate::sched::idle::idle_loop()
 }

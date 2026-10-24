@@ -87,12 +87,16 @@ pub fn read_image_file(
     Ok(file.size as usize)
 }
 
-/// Load the program at `path` on the boot volume as the new current process (see [`load_image`]),
-/// with `command_line` as what its GetCommandLineA reports, and return its entry point. A file that
-/// cannot be read is reported on COM1 and halts, as a rejected image does. The read blocks on the
-/// disk: the boot context halts between interrupts until it completes.
+/// Load the program at `path` on the boot volume as a new process (see [`load_image`]), with
+/// `command_line` as what its GetCommandLineA reports, and return the process and its entry point.
+/// A file that cannot be read is reported on COM1 and halts, as a rejected image does. The read
+/// blocks on the disk: the boot context halts between interrupts until it completes.
 #[cfg(target_arch = "x86")]
-pub fn load_path(path: &[u8], name: &'static str, command_line: &[u8]) -> u32 {
+pub fn load_path(
+    path: &[u8],
+    name: &'static str,
+    command_line: &[u8],
+) -> (&'static mut crate::process::Process, u32) {
     // SAFETY: single-threaded boot (or the idle thread's reap step), the only staging user.
     let staging = unsafe { &mut (*core::ptr::addr_of_mut!(FILE_STAGING)).0 };
     let shown = core::str::from_utf8(path).unwrap_or("(not ASCII)");
@@ -374,13 +378,20 @@ fn page_writable(image: &Image, page_rva: u32) -> bool {
     })
 }
 
-/// Load `file` as the new current process — parse, stage, create the process, map ntdll, the image,
-/// stack, TEB, parameters and PEB pages — and return its entry point for the main thread's ladder
-/// (its imports are ntdll's to load and snap, in user mode). `name` names the process;
-/// `command_line` is the process parameters' command line, and `path`, the file's volume path,
-/// their image path (in its Win32 form, `C:\...`).
+/// Load `file` as a new process — parse, stage, create the process, map ntdll, the image, stack,
+/// TEB, parameters and PEB pages — and return the process and its entry point for the main
+/// thread's ladder (its imports are ntdll's to load and snap, in user mode). The process's load
+/// scope is still open, and its address space the live one, for the caller to plant the ladder in
+/// (see [`crate::process::threads::start_main_thread`]). `name` names the process; `command_line`
+/// is the process parameters' command line, and `path`, the file's volume path, their image path
+/// (in its Win32 form, `C:\...`).
 #[cfg(target_arch = "x86")]
-pub fn load_image(file: &[u8], path: &[u8], name: &'static str, command_line: &[u8]) -> u32 {
+pub fn load_image(
+    file: &[u8],
+    path: &[u8],
+    name: &'static str,
+    command_line: &[u8],
+) -> (&'static mut crate::process::Process, u32) {
     use crate::mem::paging::{self, PAGE_SIZE};
     use crate::mem::vm;
     use crate::user::{
@@ -503,7 +514,7 @@ pub fn load_image(file: &[u8], path: &[u8], name: &'static str, command_line: &[
         image.entry_va(),
         USER_STACK_TOP
     );
-    image.entry_va()
+    (process, image.entry_va())
 }
 
 #[cfg(test)]

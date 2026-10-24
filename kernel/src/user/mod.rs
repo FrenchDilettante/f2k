@@ -452,7 +452,8 @@ pub fn run_fault_stub() -> ! {
     use crate::mem::{paging, vm};
 
     // The stub's one code page stands where an image would, with the system areas around it.
-    let space = crate::process::Process::start("stub").vm();
+    let process = crate::process::Process::start("stub");
+    let space = process.vm();
     crate::exec::loader::seed_regions(space, USER_CODE_PAGE, paging::PAGE_SIZE);
 
     let code_frame = paging::allocate_frame_phys();
@@ -466,11 +467,14 @@ pub fn run_fault_stub() -> ! {
         USER_CODE_PAGE,
         USER_STACK_TOP
     );
-    crate::process::threads::enter_as_main_thread(crate::sched::startup::UserStart {
-        eip: USER_CODE_PAGE,
-        esp: USER_STACK_TOP,
-        ..Default::default()
-    })
+    crate::process::threads::enter_as_main_thread(
+        process,
+        crate::sched::startup::UserStart {
+            eip: USER_CODE_PAGE,
+            esp: USER_STACK_TOP,
+            ..Default::default()
+        },
+    )
 }
 
 /// The exit-during-read boot's check, on the idle thread after the process's teardown: the volume

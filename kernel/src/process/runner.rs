@@ -76,10 +76,10 @@ pub fn run() -> ! {
     crate::sched::idle::idle_loop()
 }
 
-/// The running process's leg, for its end report: its index and fixture name; none on a boot of
-/// one program (or one the runner does not drive).
-pub fn current_leg() -> Option<exit::Leg> {
-    (leg_count() > 1).then(|| (current_index(), crate::process::current().name()))
+/// The leg `process` (the one running) runs as, for its end report: its index and fixture name;
+/// none on a boot of one program (or one the runner does not drive).
+pub fn current_leg(process: &crate::process::Process) -> Option<exit::Leg> {
+    (leg_count() > 1).then(|| (current_index(), process.name()))
 }
 
 /// The reap step's landing point, on the idle thread after a process's teardown: audit the
@@ -170,9 +170,18 @@ fn programs() -> impl Iterator<Item = &'static [u8]> {
     programs(listed)
 }
 
-/// Announce leg `index`, create its process — its program read off the boot volume — and ready its
-/// main thread; the idle loop's next pass switches to it.
+/// Start leg `index`: load it, then ready its main thread; the idle loop's next pass switches to
+/// it.
 fn start_leg(index: u32) {
+    let process = load_leg(index);
+    crate::process::threads::ready_main_thread(process);
+}
+
+/// Announce leg `index` and load it: create its process — its program read off the boot volume —
+/// and plant its main thread's start while the process's address space is the live one, then end
+/// the load. The thread is not readied: nothing runs until the caller readies it, so another leg
+/// could be loaded first.
+fn load_leg(index: u32) -> &'static mut crate::process::Process {
     // SAFETY: runner state; single CPU, written only here.
     unsafe { core::ptr::write_volatile(core::ptr::addr_of_mut!(CURRENT), index) };
     let command_line = programs()
@@ -186,8 +195,10 @@ fn start_leg(index: u32) {
     );
     let mut path = [0u8; crate::user::MAX_PATH];
     let (length, name) = crate::user::program_image(command_line, &mut path);
-    let entry = crate::exec::loader::load_path(&path[..length], name, command_line);
-    crate::process::threads::start_main_thread(crate::user::main_thread_start(entry));
+    let (process, entry) = crate::exec::loader::load_path(&path[..length], name, command_line);
+    crate::process::threads::start_main_thread(process, crate::user::main_thread_start(entry));
+    crate::process::detach();
+    process
 }
 
 /// How many programs the boot runs (0 before the runner starts).
