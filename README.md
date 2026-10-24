@@ -134,9 +134,9 @@ A stub (`impl = { stub = "<reason>" }` in the spec) is an export that exists but
 yet: when called, it writes a line to COM1 with its arguments and the reason, then fails the way
 the real function fails (one that returns nothing just returns). Code that hits a case it doesn't
 handle yet can do the same, through `stub::stubbed`. msvcrt and advapi32 are stubs for now
-(user32's window station and desktop calls and MessageBeep are written), all but msvcrt's three
-variables (`_iob`, `_fmode`, `_adjust_fdiv`), which are real, zeroed
-storage. The stubs log through ntdll's `DbgPrint`, which Windows 2000's msvcrt and user32 do not
+(user32's window station and desktop calls and MessageBeep are written, and so are advapi32's
+registry calls, over the kernel's registry), all but msvcrt's three variables (`_iob`, `_fmode`,
+`_adjust_fdiv`), which are real, zeroed storage. The stubs log through ntdll's `DbgPrint`, which Windows 2000's msvcrt and user32 do not
 import: `--check` allows that one import (`STUB_LOG_IMPORT` in `scripts/compat.py`).
 ```bash
 uv run scripts/compat.py --check
@@ -279,6 +279,7 @@ f2k/
     └── src/
         ├── block/        # Block devices, partitions, and the device registry
         ├── boot/         # Boot-related code
+        ├── cm/           # The configuration manager: the registry, in kernel memory
         ├── cpu/          # The CPU tables
         ├── exec/         # Executable loading, and ntdll, the DLL every process maps
         ├── fs/           # FAT32 over the block devices, and the open files

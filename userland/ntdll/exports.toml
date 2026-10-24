@@ -12,8 +12,8 @@
 # PEB lock; the heaps, which kernel32's HeapAlloc, HeapFree, HeapReAlloc, HeapSize and HeapValidate
 # forward to; the environment; the counted strings, the time conversions and the bitmaps kernel32's
 # narrow calls, file times and TLS slots go through; the handle tables, the resources and the
-# message calls kernel32's Local and Global memory and FormatMessage go through;
-# LdrInitializeThunk, a fresh thread's first user-mode work), and the F2K-internal entry point the
+# message calls kernel32's Local and Global memory and FormatMessage go through; RtlOpenCurrentUser,
+# advapi32's HKEY_CURRENT_USER; LdrInitializeThunk, a fresh thread's first user-mode work), and the F2K-internal entry point the
 # kernel sends a thread to (`internal = true`: not a Windows 2000 export).
 
 [[group]]
@@ -43,6 +43,10 @@ title = "paths, the current directory and the environment"
 [[group]]
 key = "strings"
 title = "counted strings and the ANSI code page"
+
+[[group]]
+key = "registry"
+title = "the registry"
 
 [[group]]
 key = "time"
@@ -568,6 +572,94 @@ ordinal = 197
 zw_ordinal = 842
 note = "answers ThreadBasicInformation (0), ThreadAmILastThread (12) and ThreadPriorityBoost (14), the other classes unserved"
 
+# --- the key services (kernel/src/nt/key.rs, over the registry, kernel/src/cm) -----------------
+
+[[export]]
+name = "NtCreateKey"
+group = "nt"
+args = ["ptr<u32> KeyHandle", "u32 DesiredAccess", "ptr ObjectAttributes", "u32 TitleIndex", "ptr Class", "u32 CreateOptions", "ptr<u32> Disposition"]
+impl = { syscall = "crate::nt::key::create_key" }
+ordinal = 95
+zw_ordinal = 741
+note = "makes the path's last key alone (the ones above it must exist); the title index and the options are not consulted"
+
+[[export]]
+name = "NtOpenKey"
+group = "nt"
+args = ["ptr<u32> KeyHandle", "u32 DesiredAccess", "ptr ObjectAttributes"]
+impl = { syscall = "crate::nt::key::open_key" }
+ordinal = 166
+zw_ordinal = 811
+
+[[export]]
+name = "NtDeleteKey"
+group = "nt"
+args = ["handle KeyHandle"]
+impl = { syscall = "crate::nt::key::delete_key" }
+ordinal = 114
+zw_ordinal = 759
+
+[[export]]
+name = "NtFlushKey"
+group = "nt"
+args = ["handle KeyHandle"]
+impl = { syscall = "crate::nt::key::flush_key" }
+ordinal = 128
+zw_ordinal = 773
+note = "the registry lives in memory: nothing to write"
+
+[[export]]
+name = "NtQueryKey"
+group = "nt"
+args = ["handle KeyHandle", "u32 KeyInformationClass", "ptr KeyInformation", "u32 Length", "ptr<u32> ResultLength"]
+impl = { syscall = "crate::nt::key::query_key" }
+ordinal = 202
+zw_ordinal = 847
+note = "KeyBasicInformation (0), KeyNodeInformation (1) and KeyFullInformation (2)"
+
+[[export]]
+name = "NtEnumerateKey"
+group = "nt"
+args = ["handle KeyHandle", "u32 Index", "u32 KeyInformationClass", "ptr KeyInformation", "u32 Length", "ptr<u32> ResultLength"]
+impl = { syscall = "crate::nt::key::enumerate_key" }
+ordinal = 121
+zw_ordinal = 766
+note = "the subkeys in their names' order, case-insensitively"
+
+[[export]]
+name = "NtQueryValueKey"
+group = "nt"
+args = ["handle KeyHandle", "ptr ValueName", "u32 KeyValueInformationClass", "ptr KeyValueInformation", "u32 Length", "ptr<u32> ResultLength"]
+impl = { syscall = "crate::nt::key::query_value_key" }
+ordinal = 218
+zw_ordinal = 863
+note = "KeyValueBasicInformation (0), KeyValueFullInformation (1) and KeyValuePartialInformation (2)"
+
+[[export]]
+name = "NtEnumerateValueKey"
+group = "nt"
+args = ["handle KeyHandle", "u32 Index", "u32 KeyValueInformationClass", "ptr KeyValueInformation", "u32 Length", "ptr<u32> ResultLength"]
+impl = { syscall = "crate::nt::key::enumerate_value_key" }
+ordinal = 122
+zw_ordinal = 767
+note = "the values in the order they were first set"
+
+[[export]]
+name = "NtSetValueKey"
+group = "nt"
+args = ["handle KeyHandle", "ptr ValueName", "u32 TitleIndex", "u32 Type", "ptr Data", "u32 DataSize"]
+impl = { syscall = "crate::nt::key::set_value_key" }
+ordinal = 281
+zw_ordinal = 926
+
+[[export]]
+name = "NtDeleteValueKey"
+group = "nt"
+args = ["handle KeyHandle", "ptr ValueName"]
+impl = { syscall = "crate::nt::key::delete_value_key" }
+ordinal = 116
+zw_ordinal = 761
+
 # --- the client-server runtime (src/csr.s) --------------------------------------------------------
 
 [[export]]
@@ -901,12 +993,30 @@ ordinal = 661
 note = "code page 1252"
 
 [[export]]
+name = "RtlMultiByteToUnicodeN"
+group = "strings"
+args = ["ptr UnicodeString", "u32 MaxBytesInUnicodeString", "ptr<u32> BytesInUnicodeString", "ptr MultiByteString", "u32 BytesInMultiByteString"]
+impl = { native = "RtlMultiByteToUnicodeN" }
+ordinal = 558
+note = "code page 1252"
+
+[[export]]
 name = "RtlUnicodeToMultiByteSize"
 group = "strings"
 args = ["ptr<u32> BytesInMultiByteString", "ptr UnicodeString", "u32 BytesInUnicodeString"]
 impl = { native = "RtlUnicodeToMultiByteSize" }
 ordinal = 662
 note = "code page 1252: a byte per unit"
+
+# --- the registry (src/registry.rs) ----------------------------------------------------------------
+
+[[export]]
+name = "RtlOpenCurrentUser"
+group = "registry"
+args = ["u32 DesiredAccess", "ptr<u32> CurrentUserKey"]
+impl = { native = "RtlOpenCurrentUser" }
+ordinal = 572
+note = "opens \\Registry\\User\\jeb, F2K's one user's hive (Windows names it after the user's SID)"
 
 # --- time conversions (src/time.rs over rtl::time) ------------------------------------------------
 
@@ -1390,10 +1500,6 @@ name = "NtCreateJobObject"
 ordinal = 94
 
 [[export]]
-name = "NtCreateKey"
-ordinal = 95
-
-[[export]]
 name = "NtCreateMailslotFile"
 ordinal = 96
 
@@ -1442,16 +1548,8 @@ name = "NtDeleteFile"
 ordinal = 113
 
 [[export]]
-name = "NtDeleteKey"
-ordinal = 114
-
-[[export]]
 name = "NtDeleteObjectAuditAlarm"
 ordinal = 115
-
-[[export]]
-name = "NtDeleteValueKey"
-ordinal = 116
 
 [[export]]
 name = "NtDeviceIoControlFile"
@@ -1464,14 +1562,6 @@ ordinal = 118
 [[export]]
 name = "NtDuplicateToken"
 ordinal = 120
-
-[[export]]
-name = "NtEnumerateKey"
-ordinal = 121
-
-[[export]]
-name = "NtEnumerateValueKey"
-ordinal = 122
 
 [[export]]
 name = "NtExtendSection"
@@ -1488,10 +1578,6 @@ ordinal = 125
 [[export]]
 name = "NtFlushInstructionCache"
 ordinal = 127
-
-[[export]]
-name = "NtFlushKey"
-ordinal = 128
 
 [[export]]
 name = "NtFlushVirtualMemory"
@@ -1622,10 +1708,6 @@ name = "NtOpenJobObject"
 ordinal = 165
 
 [[export]]
-name = "NtOpenKey"
-ordinal = 166
-
-[[export]]
 name = "NtOpenObjectAuditAlarm"
 ordinal = 168
 
@@ -1718,10 +1800,6 @@ name = "NtQueryIoCompletion"
 ordinal = 201
 
 [[export]]
-name = "NtQueryKey"
-ordinal = 202
-
-[[export]]
 name = "NtQueryMultipleValueKey"
 ordinal = 203
 
@@ -1772,10 +1850,6 @@ ordinal = 216
 [[export]]
 name = "NtQueryTimerResolution"
 ordinal = 217
-
-[[export]]
-name = "NtQueryValueKey"
-ordinal = 218
 
 [[export]]
 name = "NtRaiseHardError"
@@ -1964,10 +2038,6 @@ ordinal = 279
 [[export]]
 name = "NtSetUuidSeed"
 ordinal = 280
-
-[[export]]
-name = "NtSetValueKey"
-ordinal = 281
 
 [[export]]
 name = "NtSetVolumeInformationFile"
@@ -2922,10 +2992,6 @@ name = "RtlMoveMemory"
 ordinal = 557
 
 [[export]]
-name = "RtlMultiByteToUnicodeN"
-ordinal = 558
-
-[[export]]
 name = "RtlMultiByteToUnicodeSize"
 ordinal = 559
 
@@ -2972,10 +3038,6 @@ ordinal = 570
 [[export]]
 name = "RtlOemToUnicodeN"
 ordinal = 571
-
-[[export]]
-name = "RtlOpenCurrentUser"
-ordinal = 572
 
 [[export]]
 name = "RtlPcToFileHeader"
@@ -3550,10 +3612,6 @@ name = "ZwCreateJobObject"
 ordinal = 740
 
 [[export]]
-name = "ZwCreateKey"
-ordinal = 741
-
-[[export]]
 name = "ZwCreateMailslotFile"
 ordinal = 742
 
@@ -3598,16 +3656,8 @@ name = "ZwDeleteFile"
 ordinal = 758
 
 [[export]]
-name = "ZwDeleteKey"
-ordinal = 759
-
-[[export]]
 name = "ZwDeleteObjectAuditAlarm"
 ordinal = 760
-
-[[export]]
-name = "ZwDeleteValueKey"
-ordinal = 761
 
 [[export]]
 name = "ZwDeviceIoControlFile"
@@ -3620,14 +3670,6 @@ ordinal = 763
 [[export]]
 name = "ZwDuplicateToken"
 ordinal = 765
-
-[[export]]
-name = "ZwEnumerateKey"
-ordinal = 766
-
-[[export]]
-name = "ZwEnumerateValueKey"
-ordinal = 767
 
 [[export]]
 name = "ZwExtendSection"
@@ -3644,10 +3686,6 @@ ordinal = 770
 [[export]]
 name = "ZwFlushInstructionCache"
 ordinal = 772
-
-[[export]]
-name = "ZwFlushKey"
-ordinal = 773
 
 [[export]]
 name = "ZwFlushVirtualMemory"
@@ -3778,10 +3816,6 @@ name = "ZwOpenJobObject"
 ordinal = 810
 
 [[export]]
-name = "ZwOpenKey"
-ordinal = 811
-
-[[export]]
 name = "ZwOpenObjectAuditAlarm"
 ordinal = 813
 
@@ -3874,10 +3908,6 @@ name = "ZwQueryIoCompletion"
 ordinal = 846
 
 [[export]]
-name = "ZwQueryKey"
-ordinal = 847
-
-[[export]]
 name = "ZwQueryMultipleValueKey"
 ordinal = 848
 
@@ -3928,10 +3958,6 @@ ordinal = 861
 [[export]]
 name = "ZwQueryTimerResolution"
 ordinal = 862
-
-[[export]]
-name = "ZwQueryValueKey"
-ordinal = 863
 
 [[export]]
 name = "ZwRaiseHardError"
@@ -4120,10 +4146,6 @@ ordinal = 924
 [[export]]
 name = "ZwSetUuidSeed"
 ordinal = 925
-
-[[export]]
-name = "ZwSetValueKey"
-ordinal = 926
 
 [[export]]
 name = "ZwSetVolumeInformationFile"

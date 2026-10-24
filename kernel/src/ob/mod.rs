@@ -58,6 +58,8 @@ pub enum ObjectType {
     /// A desktop of a window station: WinSta0's Default, the one there is (permanent: made at
     /// boot).
     Desktop,
+    /// A key object: one open of a registry key (see [`crate::cm`]).
+    Key,
 }
 
 /// An object's identity: its kind, its record in that kind's pool, and the record's generation.
@@ -138,6 +140,8 @@ pub const DIRECTORIES: usize = 1;
 pub const WINDOW_STATIONS: usize = 1;
 /// How many desktops exist: WinSta0's Default (permanent: made at boot).
 pub const DESKTOPS: usize = 1;
+/// How many key objects (opens of registry keys) can exist at once.
+pub const KEY_OBJECTS: usize = 256;
 /// How many names can be bound at once.
 pub const NAMES: usize = 64;
 /// The longest object name: MAX_PATH.
@@ -411,6 +415,7 @@ pub struct Directory {
     pub directories: Pool<(), DIRECTORIES>,
     pub window_stations: Pool<WindowStationObject, WINDOW_STATIONS>,
     pub desktops: Pool<DesktopObject, DESKTOPS>,
+    pub keys: Pool<crate::cm::KeyBody, KEY_OBJECTS>,
     names: [NameEntry; NAMES],
     waits: [WaitReferences; THREADS],
 }
@@ -446,6 +451,7 @@ impl Directory {
                 WindowStationObject::none,
             );
             Pool::write_empty(addr_of_mut!((*directory).desktops), DesktopObject::none);
+            Pool::write_empty(addr_of_mut!((*directory).keys), crate::cm::KeyBody::none);
             let names = addr_of_mut!((*directory).names) as *mut NameEntry;
             for index in 0..NAMES {
                 names.add(index).write(NameEntry::free());
@@ -470,6 +476,7 @@ impl Directory {
             ObjectType::Directory => &mut self.directories.headers,
             ObjectType::WindowStation => &mut self.window_stations.headers,
             ObjectType::Desktop => &mut self.desktops.headers,
+            ObjectType::Key => &mut self.keys.headers,
         };
         let header = headers.get_mut(id.index as usize)?;
         (header.live && header.generation == id.generation).then_some(header)
@@ -488,6 +495,7 @@ impl Directory {
             ObjectType::Directory => self.directories.headers[index as usize].generation,
             ObjectType::WindowStation => self.window_stations.headers[index as usize].generation,
             ObjectType::Desktop => self.desktops.headers[index as usize].generation,
+            ObjectType::Key => self.keys.headers[index as usize].generation,
         };
         ObjectId {
             kind,
@@ -606,6 +614,13 @@ impl Directory {
         Some(self.id(ObjectType::Desktop, index))
     }
 
+    /// A key object naming `body`'s key.
+    pub fn create_key(&mut self, body: crate::cm::KeyBody) -> Option<ObjectId> {
+        let index = self.keys.allocate_in(0..KEY_OBJECTS)?;
+        *self.keys.record(index) = body;
+        Some(self.id(ObjectType::Key, index))
+    }
+
     // --- Typed access ------------------------------------------------------------------------
 
     pub fn event(&mut self, id: ObjectId) -> Option<&mut Event> {
@@ -658,6 +673,11 @@ impl Directory {
         self.desktops.get(id.index, id.generation)
     }
 
+    pub fn key(&mut self, id: ObjectId) -> Option<&mut crate::cm::KeyBody> {
+        (id.kind == ObjectType::Key).then_some(())?;
+        self.keys.get(id.index, id.generation)
+    }
+
     /// The live process object at process pool `index`, if any.
     pub fn processes_live(&mut self, index: u16) -> Option<ObjectId> {
         let id = self.id(ObjectType::Process, index);
@@ -685,8 +705,8 @@ impl Directory {
     }
 
     /// The waitable header of a waitable object; none for a section, a file object (its I/O
-    /// completes at once: nothing waits on it), the directory, a window station, a desktop or a
-    /// dead id.
+    /// completes at once: nothing waits on it), the directory, a window station, a desktop, a
+    /// key or a dead id.
     pub fn waitable(&mut self, id: ObjectId) -> Option<*mut Waitable> {
         match id.kind {
             ObjectType::Event => self.event(id).map(Event::waitable),
@@ -701,7 +721,8 @@ impl Directory {
             | ObjectType::File
             | ObjectType::Directory
             | ObjectType::WindowStation
-            | ObjectType::Desktop => None,
+            | ObjectType::Desktop
+            | ObjectType::Key => None,
         }
     }
 
@@ -837,7 +858,8 @@ impl Directory {
             | ObjectType::Process
             | ObjectType::Directory
             | ObjectType::WindowStation
-            | ObjectType::Desktop => None,
+            | ObjectType::Desktop
+            | ObjectType::Key => None,
         };
         self.forget_name(id);
         let header = self.header(id).expect("deleting a live object");
@@ -959,6 +981,7 @@ impl Directory {
             ObjectType::Thread,
             ObjectType::Section,
             ObjectType::File,
+            ObjectType::Key,
         ] {
             for index in 0..self.capacity(kind) {
                 let id = self.id(kind, index as u16);
@@ -992,6 +1015,7 @@ impl Directory {
             ObjectType::Directory => DIRECTORIES,
             ObjectType::WindowStation => WINDOW_STATIONS,
             ObjectType::Desktop => DESKTOPS,
+            ObjectType::Key => KEY_OBJECTS,
         }
     }
 
@@ -1008,6 +1032,7 @@ impl Directory {
             + self.directories.live()
             + self.window_stations.live()
             + self.desktops.live()
+            + self.keys.live()
     }
 
     /// `\BaseNamedObjects`, the named objects' directory: made at its first open and permanent

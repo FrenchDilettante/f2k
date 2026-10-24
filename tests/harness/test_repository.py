@@ -167,6 +167,8 @@ def test_check_all_runs_the_test_systems():
 # any program runs; a new file needs its reason here (or the copy instead).
 RAW_ACCESS_ALLOWED = {
     "kernel/src/boot/cmdline.rs": "the Multiboot command line, read at boot before any process",
+    "kernel/src/cm/mod.rs": "the registry's arena, a kernel static: its names, classes and value"
+    " data",
     "kernel/src/cpu/gdt.rs": "the kernel's own descriptor table",
     "kernel/src/cpu/idt.rs": "the kernel's own interrupt table",
     "kernel/src/hw/pit.rs": "the programmed divisor, a kernel static",

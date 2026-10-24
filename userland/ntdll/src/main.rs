@@ -20,15 +20,17 @@
 //! `src/curdir.rs` over `rtl::path`); the counted strings and the ANSI code page, which kernel32's
 //! narrow calls convert through
 //! (RtlInitAnsiString, RtlAnsiStringToUnicodeString, RtlUnicodeStringToAnsiString,
-//! RtlFreeUnicodeString, RtlUnicodeToMultiByteN, RtlUnicodeToMultiByteSize: `src/strings.rs` over
-//! `rtl::string`); the time conversions (RtlTimeToTimeFields, RtlTimeFieldsToTime: `src/time.rs`
-//! over `rtl::time`); the bitmaps kernel32 keeps the TLS slots in (RtlFindClearBitsAndSet,
-//! RtlClearBits, RtlAreBitsSet: `src/bitmap.rs` over `rtl::bitmap`); the resources and the messages
-//! kernel32's FormatMessage finds and lays out (LdrFindResource_U, LdrFindResourceDirectory_U,
-//! LdrAccessResource, RtlFindMessage, RtlFormatMessage: `src/resource.rs` over `rtl::resource` and
-//! `rtl::message`); the loader, which loads every DLL of the process but ntdll from the volume,
-//! kernel32 included, and calls their entry points (`src/loader.rs` over `rtl::modules`: the
-//! process's module lists, LdrGetDllHandle, LdrLoadDll, LdrUnloadDll, LdrGetProcedureAddress,
+//! RtlFreeUnicodeString, RtlUnicodeToMultiByteN, RtlMultiByteToUnicodeN, RtlUnicodeToMultiByteSize:
+//! `src/strings.rs` over `rtl::string`); the current user's registry hive, as advapi32 opens it
+//! (RtlOpenCurrentUser: `src/registry.rs`); the time conversions (RtlTimeToTimeFields,
+//! RtlTimeFieldsToTime: `src/time.rs` over `rtl::time`); the bitmaps kernel32 keeps the TLS slots
+//! in (RtlFindClearBitsAndSet, RtlClearBits, RtlAreBitsSet: `src/bitmap.rs` over `rtl::bitmap`); the
+//! resources and the messages kernel32's FormatMessage finds and lays out (LdrFindResource_U,
+//! LdrFindResourceDirectory_U, LdrAccessResource, RtlFindMessage, RtlFormatMessage:
+//! `src/resource.rs` over `rtl::resource` and `rtl::message`); the loader, which loads every DLL of
+//! the process but ntdll from the volume, kernel32 included, and calls their entry points
+//! (`src/loader.rs` over `rtl::modules`: the process's module lists, LdrGetDllHandle, LdrLoadDll,
+//! LdrUnloadDll, LdrGetProcedureAddress,
 //! LdrDisableThreadCalloutsForDll); and the loader's share of a thread's start and end:
 //! LdrInitializeThunk, which the kernel delivers before a fresh thread's first instruction
 //! (`src/ldr.s`: the process heap, the PEB lock and the loader lock and the image's DLLs on the
@@ -52,6 +54,7 @@ mod env;
 mod except;
 mod handles;
 mod loader;
+mod registry;
 mod resource;
 mod status;
 mod strings;

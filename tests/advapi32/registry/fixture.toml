@@ -1,9 +1,8 @@
 # registry: one test per block of the real-machine capture (output.txt); see tests/README.md. It
 # works under HKEY_CURRENT_USER\Software\F2K alone, deleting that tree at each pass's start and end.
-# Declared ahead of its real-machine build and capture (no registry.exe, no output.txt yet); on
-# the work list until F2K has advapi32 and a registry.
 description = "registry - the registry calls cmd.exe imports, W and A: RegCreateKeyEx and its dispositions, RegOpenKeyEx and RegOpenKey, RegCloseKey, RegSetValueEx and RegQueryValueEx over the value types and buffer sizes, RegSetValue and RegQueryValue's default values, RegEnumKey's order and buffers, RegDeleteKey and a deleted key's open handle, under HKCU\\Software\\F2K."
 kind = "sectioned"
+gate = true
 
 [masks]
 # A missing value's query leaves whatever advapi32 had at hand in the type: stack contents, not an
@@ -25,7 +24,7 @@ delete = [
 # The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
 # calls); scripts/compat.py derives each export's coverage from them. Every block deletes the F2K
 # tree (RegOpenKeyExW, RegEnumKeyW, RegDeleteKeyW, RegCloseKey) and makes its keys
-# (RegCreateKeyExW).
+# (RegCreateKeyExW); HKEY_CURRENT_USER's first use in a block opens it (RtlOpenCurrentUser).
 create = [
     "advapi32.RegCreateKeyExW",
     "advapi32.RegCreateKeyExA",
@@ -35,6 +34,7 @@ create = [
     "advapi32.RegDeleteKeyW",
     "advapi32.RegCloseKey",
     "ntdll.NtCreateKey",
+    "ntdll.RtlOpenCurrentUser",
 ]
 open = [
     "advapi32.RegOpenKeyExW",
@@ -72,6 +72,7 @@ setvalue = [
     "advapi32.RegCloseKey",
     "ntdll.NtSetValueKey",
     "ntdll.NtQueryValueKey",
+    "ntdll.RtlMultiByteToUnicodeN",
 ]
 queryvalue = [
     "advapi32.RegQueryValueExW",

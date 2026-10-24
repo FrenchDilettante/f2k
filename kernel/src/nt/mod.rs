@@ -30,6 +30,7 @@ pub mod attributes;
 pub mod call;
 pub mod exception;
 pub mod file;
+pub mod key;
 pub mod memory;
 pub mod object;
 pub mod process;

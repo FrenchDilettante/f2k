@@ -21,153 +21,134 @@ title = "security"
 name = "RegCloseKey"
 group = "registry"
 args = ["handle hKey"]
-impl = { stub = "not yet implemented" }
+impl = { native = "RegCloseKey" }
 ordinal = 396
-fails = "120"
 
 [[export]]
 name = "RegCreateKeyExA"
 group = "registry"
 args = ["handle hKey", "strA lpSubKey", "u32 Reserved", "strA? lpClass", "u32 dwOptions", "u32 samDesired", "ptr lpSecurityAttributes", "ptr<u32> phkResult", "ptr<u32> lpdwDisposition"]
-impl = { stub = "not yet implemented" }
+impl = { native = "RegCreateKeyExA" }
 ordinal = 400
-fails = "120"
 
 [[export]]
 name = "RegCreateKeyExW"
 group = "registry"
 args = ["handle hKey", "strW lpSubKey", "u32 Reserved", "strW? lpClass", "u32 dwOptions", "u32 samDesired", "ptr lpSecurityAttributes", "ptr<u32> phkResult", "ptr<u32> lpdwDisposition"]
-impl = { stub = "not yet implemented" }
+impl = { native = "RegCreateKeyExW" }
 ordinal = 401
-fails = "120"
 
 [[export]]
 name = "RegOpenKeyA"
 group = "registry"
 args = ["handle hKey", "strA? lpSubKey", "ptr<u32> phkResult"]
-impl = { stub = "not yet implemented" }
+impl = { native = "RegOpenKeyA" }
 ordinal = 420
-fails = "120"
 
 [[export]]
 name = "RegOpenKeyW"
 group = "registry"
 args = ["handle hKey", "strW? lpSubKey", "ptr<u32> phkResult"]
-impl = { stub = "not yet implemented" }
+impl = { native = "RegOpenKeyW" }
 ordinal = 423
-fails = "120"
 
 [[export]]
 name = "RegOpenKeyExA"
 group = "registry"
 args = ["handle hKey", "strA? lpSubKey", "u32 ulOptions", "u32 samDesired", "ptr<u32> phkResult"]
-impl = { stub = "not yet implemented" }
+impl = { native = "RegOpenKeyExA" }
 ordinal = 421
-fails = "120"
 
 [[export]]
 name = "RegOpenKeyExW"
 group = "registry"
 args = ["handle hKey", "strW? lpSubKey", "u32 ulOptions", "u32 samDesired", "ptr<u32> phkResult"]
-impl = { stub = "not yet implemented" }
+impl = { native = "RegOpenKeyExW" }
 ordinal = 422
-fails = "120"
 
 [[export]]
 name = "RegDeleteKeyA"
 group = "registry"
 args = ["handle hKey", "strA lpSubKey"]
-impl = { stub = "not yet implemented" }
+impl = { native = "RegDeleteKeyA" }
 ordinal = 403
-fails = "120"
 
 [[export]]
 name = "RegDeleteKeyW"
 group = "registry"
 args = ["handle hKey", "strW lpSubKey"]
-impl = { stub = "not yet implemented" }
+impl = { native = "RegDeleteKeyW" }
 ordinal = 404
-fails = "120"
 
 [[export]]
 name = "RegEnumKeyA"
 group = "registry"
 args = ["handle hKey", "u32 dwIndex", "ptr lpName", "u32 cchName"]
-impl = { stub = "not yet implemented" }
+impl = { native = "RegEnumKeyA" }
 ordinal = 408
-fails = "120"
 
 [[export]]
 name = "RegEnumKeyW"
 group = "registry"
 args = ["handle hKey", "u32 dwIndex", "ptr lpName", "u32 cchName"]
-impl = { stub = "not yet implemented" }
+impl = { native = "RegEnumKeyW" }
 ordinal = 411
-fails = "120"
 
 [[export]]
 name = "RegQueryValueA"
 group = "registry"
 args = ["handle hKey", "strA? lpSubKey", "ptr lpValue", "ptr<i32> lpcbValue"]
-impl = { stub = "not yet implemented" }
+impl = { native = "RegQueryValueA" }
 ordinal = 430
-fails = "120"
 
 [[export]]
 name = "RegQueryValueW"
 group = "registry"
 args = ["handle hKey", "strW? lpSubKey", "ptr lpValue", "ptr<i32> lpcbValue"]
-impl = { stub = "not yet implemented" }
+impl = { native = "RegQueryValueW" }
 ordinal = 433
-fails = "120"
 
 [[export]]
 name = "RegQueryValueExA"
 group = "registry"
 args = ["handle hKey", "strA? lpValueName", "ptr<u32> lpReserved", "ptr<u32> lpType", "ptr lpData", "ptr<u32> lpcbData"]
-impl = { stub = "not yet implemented" }
+impl = { native = "RegQueryValueExA" }
 ordinal = 431
-fails = "120"
 
 [[export]]
 name = "RegQueryValueExW"
 group = "registry"
 args = ["handle hKey", "strW? lpValueName", "ptr<u32> lpReserved", "ptr<u32> lpType", "ptr lpData", "ptr<u32> lpcbData"]
-impl = { stub = "not yet implemented" }
+impl = { native = "RegQueryValueExW" }
 ordinal = 432
-fails = "120"
 
 [[export]]
 name = "RegSetValueA"
 group = "registry"
 args = ["handle hKey", "strA? lpSubKey", "u32 dwType", "strA lpData", "u32 cbData"]
-impl = { stub = "not yet implemented" }
+impl = { native = "RegSetValueA" }
 ordinal = 441
-fails = "120"
 
 [[export]]
 name = "RegSetValueW"
 group = "registry"
 args = ["handle hKey", "strW? lpSubKey", "u32 dwType", "strW lpData", "u32 cbData"]
-impl = { stub = "not yet implemented" }
+impl = { native = "RegSetValueW" }
 ordinal = 444
-fails = "120"
 
 [[export]]
 name = "RegSetValueExA"
 group = "registry"
 args = ["handle hKey", "strA? lpValueName", "u32 Reserved", "u32 dwType", "ptr lpData", "u32 cbData"]
-impl = { stub = "not yet implemented" }
+impl = { native = "RegSetValueExA" }
 ordinal = 442
-fails = "120"
 
 [[export]]
 name = "RegSetValueExW"
 group = "registry"
 args = ["handle hKey", "strW? lpValueName", "u32 Reserved", "u32 dwType", "ptr lpData", "u32 cbData"]
-impl = { stub = "not yet implemented" }
+impl = { native = "RegSetValueExW" }
 ordinal = 443
-fails = "120"
 
 # --- security -------------------------------------------------------------------------------------
 

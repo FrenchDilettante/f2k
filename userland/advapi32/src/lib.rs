@@ -12,6 +12,7 @@
 #![cfg_attr(not(test), no_std)]
 
 pub mod imports;
+pub mod registry;
 pub mod stub;
 
 // The exports' descriptions (`spec`) and the stubbed exports' bodies, generated from exports.toml

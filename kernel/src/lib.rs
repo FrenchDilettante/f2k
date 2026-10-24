@@ -68,6 +68,9 @@ mod sched;
 // The object manager: the typed object pools, object ids, pointer and handle counts, names
 mod ob;
 
+// The configuration manager: the registry's keys and values, in kernel memory
+mod cm;
+
 // Wall-clock time and the performance counter: the boot's real-time clock reading, the FILETIME
 // the system services and the shared data page report
 mod time;

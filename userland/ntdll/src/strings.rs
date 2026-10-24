@@ -115,6 +115,35 @@ pub unsafe extern "system" fn rtl_unicode_to_multi_byte_n(
     STATUS_SUCCESS
 }
 
+/// RtlMultiByteToUnicodeN: as many of the ANSI bytes as the UTF-16 buffer holds, converted; the
+/// bytes written (when asked). STATUS_SUCCESS.
+///
+/// # Safety
+///
+/// `unicode` holds `max_bytes` bytes, `multi_byte` holds `multi_byte_bytes` bytes; `bytes_written`
+/// is null or writable.
+#[unsafe(export_name = "f2k_export_RtlMultiByteToUnicodeN")]
+pub unsafe extern "system" fn rtl_multi_byte_to_unicode_n(
+    unicode: *mut u16,
+    max_bytes: u32,
+    bytes_written: *mut u32,
+    multi_byte: *const u8,
+    multi_byte_bytes: u32,
+) -> u32 {
+    // SAFETY: the caller's buffers, of the sizes given.
+    let written = unsafe {
+        string::multi_byte_to_unicode(
+            slice_mut(unicode, max_bytes as usize / 2),
+            slice(multi_byte, multi_byte_bytes as usize),
+        )
+    };
+    if !bytes_written.is_null() {
+        // SAFETY: the caller's count.
+        unsafe { bytes_written.write(2 * written as u32) };
+    }
+    STATUS_SUCCESS
+}
+
 /// RtlUnicodeToMultiByteSize: the bytes the UTF-16 bytes take in the ANSI code page.
 /// STATUS_SUCCESS.
 ///
