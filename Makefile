@@ -42,6 +42,11 @@ BOOT_DIR ?= boot
 KERNEL_DIR ?= kernel
 BUILD_DIR ?= target
 SCRIPTS_DIR ?= scripts
+# make vbox-image: the files to add to the VirtualBox disk (at their paths in the volume), the VDI,
+# and the program its boot runs (empty: the kernel's default), e.g. CMDLINE='WINNT\system32\cmd.exe'.
+VBOX_EXTRAS ?= vbox-image
+VBOX_VDI ?= $(BUILD_DIR)/f2k.vdi
+CMDLINE ?=
 EXPORTGEN_DIR ?= tools/exportgen
 USERLAND_DIR ?= userland
 
@@ -114,6 +119,8 @@ help:
 	@echo "  iso          - Create bootable ISO with limine"
 	@echo "  qemu_iso     - Create ISO and run in QEMU"
 	@echo "  run          - Build and run in QEMU (raw disk)"
+	@echo "  vbox-image   - The disk as a VirtualBox VDI, with vbox-image/'s files added"
+	@echo "                 (CMDLINE='<program> [arguments]': what the boot runs)"
 	@echo "  clean        - Clean build artifacts"
 	@echo "  clobber      - Remove all build artifacts"
 	@echo ""
@@ -208,6 +215,10 @@ disk: kernel limine
 run: disk
 	@echo "Booting $(DISK_IMG) in QEMU. Exit with Ctrl-A X."
 	$(QEMU) $(QEMU_FLAGS) -drive file=$(DISK_IMG),format=raw,if=ide
+
+.PHONY: vbox-image
+vbox-image: disk
+	python3 $(SCRIPTS_DIR)/vbox_image.py $(DISK_IMG) $(VBOX_EXTRAS) $(VBOX_VDI) --cmdline '$(CMDLINE)'
 
 .PHONY: release
 release: userland

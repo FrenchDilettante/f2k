@@ -80,11 +80,21 @@ make qemu        # Exit with Ctrl-A X
 make run         # Builds target/x86-f2k/debug/f2k-disk.img and boots it in QEMU
 ```
 
-To run the same image in VirtualBox:
+### VirtualBox
+`make vbox-image` writes the disk as a VirtualBox disk, `target/f2k.vdi` (with
+`qemu-img`). Every file under `vbox-image/` is added to the volume at the same path, directories
+merged with the disk's own (`vbox-image/WINNT/system32/cmd.exe` lands beside the system DLLs);
+nothing there is committed. `CMDLINE` sets what the boot runs, the program's path on the volume
+and its arguments; without it the boot runs `exit0`:
 ```bash
-VBoxManage createvm --name F2K --ostype Linux24 --register
-VBoxManage storagectl F2K --name 'SATA' --add sata --bootable on
-VBoxManage storageattach F2K --storagectl SATA --port 0 --device 0 --type hdd --medium target/x86-f2k/debug/f2k-disk.img
+make vbox-image CMDLINE='WINNT\system32\cmd.exe'
+```
+The VDI keeps the same UUID across rebuilds, so a VM keeps it attached: rebuild with the VM powered
+off. F2K's disk driver is IDE, so the VM's disk goes on an IDE controller:
+```bash
+VBoxManage createvm --name F2K --ostype Other --register
+VBoxManage storagectl F2K --name IDE --add ide --controller PIIX4 --bootable on
+VBoxManage storageattach F2K --storagectl IDE --port 0 --device 0 --type hdd --medium target/f2k.vdi
 VBoxManage modifyvm F2K --memory 256
 VBoxManage startvm F2K
 ```

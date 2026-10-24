@@ -40,6 +40,10 @@ tests/common/srcsum.exe
 tests/kernel32/fswrite/SCRATCH/
 tests/crt/fd/SCRATCH/
 
+# The files make vbox-image adds to the VirtualBox disk: the owner's own, never committed
+/vbox-image/*
+!/vbox-image/.gitkeep
+
 # Logs
 *.log
 
