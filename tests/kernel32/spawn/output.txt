@@ -1,0 +1,664 @@
+# F2K capture of spawn (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-AC9F3E6, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Sat 10/24/2026 21:39:31.53
+spawn F2KT-SOURCE-CRC=0x03300E13
+>>> spawn.exe layout
+== layout
+parent: TEB 0x7FFDE000, PEB 0x7FFDF000, image base 0x00400000
+parent: process parameters 0x00020000 (flags 0x00000001), process heap 0x00130000
+parent: environment 0x00010000, command line buffer 0x00020774
+parent: stack base 0x00130000, limit 0x0012E000
+parent: the TEB's PEB pointer the PEB: yes
+second thread: TEB 0x7FFDD000, its PEB pointer the PEB: yes
+second thread: stack base 0x00520000, limit 0x0051F000
+NtQueryInformationProcess(ProcessBasicInformation): status 0x00000000, length 24
+  ExitStatus 0x00000103, UniqueProcessId the child's id: yes, InheritedFromUniqueProcessId the parent's: yes
+NtQueryInformationProcess, a buffer 4 bytes short: status 0xC0000004
+NtQueryInformationThread(ThreadBasicInformation): status 0x00000000, length 28
+  ExitStatus 0x00000103, its client id the child's process and thread: yes
+child: TEB 0x7FFDE000, PEB 0x7FFDF000, image base 0x00400000
+child: process parameters 0x00020000 (flags 0x00000001), process heap 0x00130000
+child: environment 0x00010000, command line buffer 0x0002077C
+child: stack base 0x00130000, limit 0x0012E000
+child: reads failed: 0
+child: exit code 0
+a second child: the same addresses: yes
+spawn: done
+<<< exit code=0
+>>> spawn.exe create
+== create
+CreateProcessA(the application name, absolute, and a command line):
+kid: command line [spawnkid args one "two words"]
+kid: argc 4
+kid: argv[0] [spawnkid]
+kid: argv[1] [args]
+kid: argv[2] [one]
+kid: argv[3] [two words]
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessA(the application name alone, relative):
+kid: command line ["spawnkid.exe"]
+kid: argc 1
+kid: argv[0] [spawnkid.exe]
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessA(the application name without .exe):
+  ret=0 err=2
+CreateProcessA(a command line alone):
+kid: command line [spawnkid.exe args x]
+kid: argc 3
+kid: argv[0] [spawnkid.exe]
+kid: argv[1] [args]
+kid: argv[2] [x]
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessA(a command line alone, .exe left out):
+kid: command line [spawnkid args x]
+kid: argc 3
+kid: argv[0] [spawnkid]
+kid: argv[1] [args]
+kid: argv[2] [x]
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessA(a command line alone, the absolute path quoted):
+kid: command line ["<home>\spawnkid.exe" args absolute]
+kid: argc 3
+kid: argv[0] [<home>\spawnkid.exe]
+kid: argv[1] [args]
+kid: argv[2] [absolute]
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessA(arguments with quotes and backslashes):
+kid: command line [spawnkid args "a b" c\"d "" e\\"f g"]
+kid: argc 6
+kid: argv[0] [spawnkid]
+kid: argv[1] [args]
+kid: argv[2] [a b]
+kid: argv[3] [c"d]
+kid: argv[4] []
+kid: argv[5] [e\f g]
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessA(spawnkid, another in the current directory):
+kid: image SPAWNKID.EXE
+kid: current directory SCRATCH\SUB
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessA(kidcopy, in the current directory):
+kid: image SCRATCH\SUB\KIDCOPY.EXE
+kid: current directory SCRATCH\SUB
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessA(kidcopy, in the current directory and on PATH):
+kid: image SCRATCH\SUB\KIDCOPY.EXE
+kid: current directory SCRATCH\SUB
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessA(kidcopy, on PATH only):
+kid: image SCRATCH\OTHER\KIDCOPY.EXE
+kid: current directory SCRATCH
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessA(sub\kidcopy, under the current directory):
+kid: image SCRATCH\SUB\KIDCOPY.EXE
+kid: current directory SCRATCH
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessA(SCRATCH\sub\kidcopy, under the program's directory only):
+kid: image SCRATCH\SUB\KIDCOPY.EXE
+kid: current directory SCRATCH\OTHER
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessA(kernel32.dll, in the system directory):
+  ret=0 err=193
+CreateProcessA(kernel32, .exe added):
+  ret=0 err=2
+CreateProcessA(a name found nowhere):
+  ret=0 err=2
+CreateProcessA(a missing application name):
+  ret=0 err=2
+CreateProcessA(an application name in a missing directory):
+  ret=0 err=3
+CreateProcessA(a directory as the command line):
+  ret=0 err=2
+CreateProcessA(a directory as the application name):
+  ret=0 err=5
+CreateProcessA(a text file as the application name):
+  ret=0 err=193
+CreateProcessA(a text file as the command line):
+  ret=0 err=193
+CreateProcessA(an empty file as the application name):
+  ret=0 err=193
+CreateProcessA(a DLL as the application name, kernel32.dll):
+  ret=0 err=193
+CreateProcessA(a quoted path with spaces):
+kid: command line ["SCRATCH\with space\kid copy.exe" args a]
+kid: argc 3
+kid: argv[0] [SCRATCH\with space\kid copy.exe]
+kid: argv[1] [args]
+kid: argv[2] [a]
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessA(the same path as the application name, unquoted):
+kid: command line [kid args b]
+kid: argc 3
+kid: argv[0] [kid]
+kid: argv[1] [args]
+kid: argv[2] [b]
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessA(the same path unquoted in the command line):
+kid: command line ["SCRATCH\with space\kid copy.exe"]
+kid: argc 1
+kid: argv[0] [SCRATCH\with space\kid copy.exe]
+  ret=1 err=2; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessA(the same, with SCRATCH\with.exe there):
+kid: unknown mode [space\kid]
+kid: image SCRATCH\WITH.EXE
+kid: current directory .
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 100
+CreateProcessA(an empty command line):
+  ret=0 err=2
+CreateProcessA(NULL for both):
+  faulted: 0xC0000005
+CreateProcessW(the application name, absolute, and a command line):
+kid: command line [spawnkid args one "two words"]
+kid: argc 4
+kid: argv[0] [spawnkid]
+kid: argv[1] [args]
+kid: argv[2] [one]
+kid: argv[3] [two words]
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessW(the application name alone, relative):
+kid: command line ["spawnkid.exe"]
+kid: argc 1
+kid: argv[0] [spawnkid.exe]
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessW(the application name without .exe):
+  ret=0 err=2
+CreateProcessW(a command line alone):
+kid: command line [spawnkid.exe args x]
+kid: argc 3
+kid: argv[0] [spawnkid.exe]
+kid: argv[1] [args]
+kid: argv[2] [x]
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessW(a command line alone, .exe left out):
+kid: command line [spawnkid args x]
+kid: argc 3
+kid: argv[0] [spawnkid]
+kid: argv[1] [args]
+kid: argv[2] [x]
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessW(a command line alone, the absolute path quoted):
+kid: command line ["<home>\spawnkid.exe" args absolute]
+kid: argc 3
+kid: argv[0] [<home>\spawnkid.exe]
+kid: argv[1] [args]
+kid: argv[2] [absolute]
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessW(arguments with quotes and backslashes):
+kid: command line [spawnkid args "a b" c\"d "" e\\"f g"]
+kid: argc 6
+kid: argv[0] [spawnkid]
+kid: argv[1] [args]
+kid: argv[2] [a b]
+kid: argv[3] [c"d]
+kid: argv[4] []
+kid: argv[5] [e\f g]
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessW(spawnkid, another in the current directory):
+kid: image SPAWNKID.EXE
+kid: current directory SCRATCH\SUB
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessW(kidcopy, in the current directory):
+kid: image SCRATCH\SUB\KIDCOPY.EXE
+kid: current directory SCRATCH\SUB
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessW(kidcopy, in the current directory and on PATH):
+kid: image SCRATCH\SUB\KIDCOPY.EXE
+kid: current directory SCRATCH\SUB
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessW(kidcopy, on PATH only):
+kid: image SCRATCH\OTHER\KIDCOPY.EXE
+kid: current directory SCRATCH
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessW(sub\kidcopy, under the current directory):
+kid: image SCRATCH\SUB\KIDCOPY.EXE
+kid: current directory SCRATCH
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessW(SCRATCH\sub\kidcopy, under the program's directory only):
+kid: image SCRATCH\SUB\KIDCOPY.EXE
+kid: current directory SCRATCH\OTHER
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessW(kernel32.dll, in the system directory):
+  ret=0 err=193
+CreateProcessW(kernel32, .exe added):
+  ret=0 err=2
+CreateProcessW(a name found nowhere):
+  ret=0 err=2
+CreateProcessW(a missing application name):
+  ret=0 err=2
+CreateProcessW(an application name in a missing directory):
+  ret=0 err=3
+CreateProcessW(a directory as the command line):
+  ret=0 err=2
+CreateProcessW(a directory as the application name):
+  ret=0 err=5
+CreateProcessW(a text file as the application name):
+  ret=0 err=193
+CreateProcessW(a text file as the command line):
+  ret=0 err=193
+CreateProcessW(an empty file as the application name):
+  ret=0 err=193
+CreateProcessW(a DLL as the application name, kernel32.dll):
+  ret=0 err=193
+CreateProcessW(a quoted path with spaces):
+kid: command line ["SCRATCH\with space\kid copy.exe" args a]
+kid: argc 3
+kid: argv[0] [SCRATCH\with space\kid copy.exe]
+kid: argv[1] [args]
+kid: argv[2] [a]
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessW(the same path as the application name, unquoted):
+kid: command line [kid args b]
+kid: argc 3
+kid: argv[0] [kid]
+kid: argv[1] [args]
+kid: argv[2] [b]
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessW(the same path unquoted in the command line):
+kid: command line ["SCRATCH\with space\kid copy.exe"]
+kid: argc 1
+kid: argv[0] [SCRATCH\with space\kid copy.exe]
+  ret=1 err=2; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessW(the same, with SCRATCH\with.exe there):
+kid: unknown mode [space\kid]
+kid: image SCRATCH\WITH.EXE
+kid: current directory .
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 100
+CreateProcessW(an empty command line):
+  ret=0 err=2
+CreateProcessW(NULL for both):
+  faulted: 0xC0000005
+spawn: done
+<<< exit code=0
+>>> spawn.exe wait
+== wait
+a child waiting on an event:
+  WaitForSingleObject(process, 0): WAIT_TIMEOUT err=-
+  GetExitCodeProcess, running: ret=1 code=259 err=-
+  GetExitCodeThread, running: ret=1 code=259 err=-
+  WaitForSingleObject(process), the event set: WAIT_OBJECT_0 err=-
+  GetExitCodeProcess, ended: ret=1 code=0 err=-
+  WaitForSingleObject(process, 0) again: WAIT_OBJECT_0 err=-
+  WaitForSingleObject(thread): WAIT_OBJECT_0 err=-
+spawnkid exit 0: its end WAIT_OBJECT_0, GetExitCodeProcess 0
+spawnkid exit 1: its end WAIT_OBJECT_0, GetExitCodeProcess 1
+spawnkid exit 255: its end WAIT_OBJECT_0, GetExitCodeProcess 255
+spawnkid exit 256: its end WAIT_OBJECT_0, GetExitCodeProcess 256
+spawnkid exit 259: its end WAIT_OBJECT_0, GetExitCodeProcess 259
+spawnkid exit 0x12345678: its end WAIT_OBJECT_0, GetExitCodeProcess 305419896
+spawnkid exit 0x7FFFFFFF: its end WAIT_OBJECT_0, GetExitCodeProcess 2147483647
+spawnkid exit 0xFFFFFFFF: its end WAIT_OBJECT_0, GetExitCodeProcess 0xFFFFFFFF
+spawnkid crash: its end WAIT_OBJECT_0, GetExitCodeProcess 0xC0000005
+WaitForMultipleObjects, a waiting child and spawnkid exit 2:
+  any: WAIT_OBJECT_0+1 err=-
+  all, at once: WAIT_TIMEOUT err=-
+  all, the event set: WAIT_OBJECT_0 err=-
+  exit codes: 0 and 2
+spawn: done
+<<< exit code=0
+>>> spawn.exe handles
+== handles
+CreateProcessA: process and thread handles nonzero: yes, distinct: yes
+CreateProcessA: process and thread ids nonzero: yes, distinct: yes, the process's not the parent's: yes
+spawnkid exit 7: its end WAIT_OBJECT_0
+GetExitCodeProcess: ret=1 code=7 err=-
+GetExitCodeThread, its thread: ret=1 code=7 err=-
+a waiting child, opened by its id:
+  OpenProcess(PROCESS_QUERY_INFORMATION | SYNCHRONIZE): opened yes, a new handle yes err=-
+  GetExitCodeProcess through it: ret=1 code=259 err=-
+  TerminateProcess(41), a handle without PROCESS_TERMINATE: ret=0 err=5
+  OpenProcess(PROCESS_TERMINATE): opened yes err=-
+  TerminateProcess(42) through it: ret=1 err=-
+  WaitForSingleObject, the first opened handle: WAIT_OBJECT_0 err=-
+  GetExitCodeProcess: ret=1 code=42 err=-
+  GetExitCodeThread, its thread: ret=1 code=42 err=-
+  TerminateProcess(43), the process ended: ret=0 err=5
+  GetExitCodeProcess after it: 42
+OpenProcess, id 0: ret null yes err=87
+CreateProcessA(CREATE_SUSPENDED), spawnkid args resumed:
+  WaitForSingleObject(process, 0): WAIT_TIMEOUT err=-
+  GetExitCodeProcess: ret=1 code=259 err=-
+  SuspendThread: ret=1 err=-
+  ResumeThread: ret=2 err=-
+kid: command line [spawnkid args resumed]
+kid: argc 3
+kid: argv[0] [spawnkid]
+kid: argv[1] [args]
+kid: argv[2] [resumed]
+  ResumeThread, the last: ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessA(CREATE_SUSPENDED), spawnkid args never, then TerminateProcess(44):
+  TerminateProcess: ret=1 err=-
+  the child's end: WAIT_OBJECT_0, its thread's exit code 0xC000004B, the process's 0
+DuplicateHandle of an event into a suspended child, spawnkid usedup:
+  into the child: ret=1 err=-, a value: yes
+  back from the child: ret=1 err=-
+  the same event: yes
+kid: SetEvent on the duplicated handle: ret=1 err=-
+  the child's end: WAIT_OBJECT_0, exit code 0; the event set by the child: yes
+spawn: done
+<<< exit code=0
+>>> spawn.exe inherit
+== inherit
+CreateProcessA(STARTF_USESTDHANDLES, files for all three, spawnkid out):
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+  out.txt: [kid: to the standard output]
+  err.txt: [kid: to the standard error]
+CreateProcessA(STARTF_USESTDHANDLES, files for all three, spawnkid read):
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+  out.txt: [kid: read: ret=1 err=- [a line from in.txt]]
+CreateProcessA(STARTF_USESTDHANDLES, files for all three, spawnkid handles):
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+  report.txt: [kid: STARTF_USESTDHANDLES: yes]
+  report.txt: [kid: standard input: type 1 err=-]
+  report.txt: [kid: standard output: type 1 err=-]
+  report.txt: [kid: standard error: type 1 err=-]
+CreateProcessA(the same, bInheritHandles FALSE):
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+  report.txt: [kid: STARTF_USESTDHANDLES: yes]
+  report.txt: [kid: standard input: type 0 err=6]
+  report.txt: [kid: standard output: type 0 err=6]
+  report.txt: [kid: standard error: type 0 err=6]
+CreateProcessA(spawnkid probe, an inheritable handle (11 bytes) and one not (13 bytes)):
+kid: handle 1: type 1 err=- size 11
+kid: handle 2: type 0 err=6
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+SetHandleInformation(HANDLE_FLAG_INHERIT), the second: ret=1 err=-
+CreateProcessA(spawnkid probe, the second, now inheritable):
+kid: handle 1: type 1 err=- size 13
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessW(STARTF_USESTDHANDLES, files for all three, spawnkid out):
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+  out.txt: [kid: to the standard output]
+  err.txt: [kid: to the standard error]
+CreateProcessW(STARTF_USESTDHANDLES, files for all three, spawnkid read):
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+  out.txt: [kid: read: ret=1 err=- [a line from in.txt]]
+CreateProcessW(STARTF_USESTDHANDLES, files for all three, spawnkid handles):
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+  report.txt: [kid: STARTF_USESTDHANDLES: yes]
+  report.txt: [kid: standard input: type 1 err=-]
+  report.txt: [kid: standard output: type 1 err=-]
+  report.txt: [kid: standard error: type 1 err=-]
+CreateProcessW(the same, bInheritHandles FALSE):
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+  report.txt: [kid: STARTF_USESTDHANDLES: yes]
+  report.txt: [kid: standard input: type 0 err=6]
+  report.txt: [kid: standard output: type 0 err=6]
+  report.txt: [kid: standard error: type 0 err=6]
+CreateProcessW(spawnkid probe, an inheritable handle (11 bytes) and one not (13 bytes)):
+kid: handle 1: type 1 err=- size 11
+kid: handle 2: type 0 err=6
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+SetHandleInformation(HANDLE_FLAG_INHERIT), the second: ret=1 err=-
+CreateProcessW(spawnkid probe, the second, now inheritable):
+kid: handle 1: type 1 err=- size 13
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+spawn: done
+<<< exit code=0
+>>> spawn.exe environment
+== environment
+SetEnvironmentVariableA(F2KINHERIT): ret=1 err=-
+SetEnvironmentVariableA(F2KGONE, NULL), the variable set: ret=1 err=-
+SetEnvironmentVariableW(F2KWIDE): ret=1 err=-
+CreateProcessA(an ANSI block):
+kid: environment: 2 entries
+kid: [F2KA=one]
+kid: [F2KB=two words]
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessA(an unsorted ANSI block):
+kid: environment: 2 entries
+kid: [ZED=last letter, first]
+kid: [ALPHA=first letter, last]
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessA(a Unicode block, CREATE_UNICODE_ENVIRONMENT):
+kid: environment: 2 entries
+kid: [F2KW=wide]
+kid: [F2KX=also wide]
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessA(an empty block):
+kid: environment: 0 entries
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessA(NULL, the parent's environment):
+kid: F2KINHERIT=[from the parent]
+kid: F2KGONE unset
+kid: F2KWIDE=[set wide]
+kid: F2KA unset
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessW(an ANSI block):
+kid: environment: 2 entries
+kid: [F2KA=one]
+kid: [F2KB=two words]
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessW(an unsorted ANSI block):
+kid: environment: 2 entries
+kid: [ZED=last letter, first]
+kid: [ALPHA=first letter, last]
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessW(a Unicode block, CREATE_UNICODE_ENVIRONMENT):
+kid: environment: 2 entries
+kid: [F2KW=wide]
+kid: [F2KX=also wide]
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessW(an empty block):
+kid: environment: 0 entries
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessW(NULL, the parent's environment):
+kid: F2KINHERIT=[from the parent]
+kid: F2KGONE unset
+kid: F2KWIDE=[set wide]
+kid: F2KA unset
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+spawn: done
+<<< exit code=0
+>>> spawn.exe curdir
+== curdir
+CreateProcessA(lpCurrentDirectory NULL):
+kid: image SPAWNKID.EXE
+kid: current directory .
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessA(lpCurrentDirectory SCRATCH\sub, absolute):
+kid: image SPAWNKID.EXE
+kid: current directory SCRATCH\SUB
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessA(lpCurrentDirectory SCRATCH\sub\, absolute):
+kid: image SPAWNKID.EXE
+kid: current directory SCRATCH\SUB
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessA(lpCurrentDirectory SCRATCH\sub, relative):
+kid: image SPAWNKID.EXE
+kid: current directory SCRATCH\SUB
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessA(lpCurrentDirectory a missing directory):
+  ret=0 err=267
+CreateProcessA(lpCurrentDirectory a file):
+  ret=0 err=267
+CreateProcessA(lpCurrentDirectory SCRATCH\sub, the only one holding kidcopy):
+  ret=0 err=2
+CreateProcessA(lpCurrentDirectory NULL, the parent's current directory SCRATCH):
+kid: image SPAWNKID.EXE
+kid: current directory SCRATCH
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessW(lpCurrentDirectory NULL):
+kid: image SPAWNKID.EXE
+kid: current directory .
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessW(lpCurrentDirectory SCRATCH\sub, absolute):
+kid: image SPAWNKID.EXE
+kid: current directory SCRATCH\SUB
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessW(lpCurrentDirectory SCRATCH\sub\, absolute):
+kid: image SPAWNKID.EXE
+kid: current directory SCRATCH\SUB
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessW(lpCurrentDirectory SCRATCH\sub, relative):
+kid: image SPAWNKID.EXE
+kid: current directory SCRATCH\SUB
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessW(lpCurrentDirectory a missing directory):
+  ret=0 err=267
+CreateProcessW(lpCurrentDirectory a file):
+  ret=0 err=267
+CreateProcessW(lpCurrentDirectory SCRATCH\sub, the only one holding kidcopy):
+  ret=0 err=2
+CreateProcessW(lpCurrentDirectory NULL, the parent's current directory SCRATCH):
+kid: image SPAWNKID.EXE
+kid: current directory SCRATCH
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+spawn: done
+<<< exit code=0
+>>> spawn.exe memory
+== memory
+a suspended child, spawnkid mark:
+ReadProcessMemory, the PEB's image base: ret=1 n=4 err=-
+ReadProcessMemory, the image's first page: ret=1 n=4096 err=-
+  MZ: yes
+  PE signature: yes, the image base its header's ImageBase: yes
+  its first 512 bytes the file's: yes
+ReadProcessMemory, 16 bytes across the image's end: ret=0 n=0 err=299
+ReadProcessMemory, address 0: ret=0 n=0 err=299
+ReadProcessMemory, address 0x80000000: ret=0 n=62194 err=998
+ReadProcessMemory, 0 bytes: ret=1 n=0 err=-
+ReadProcessMemory, no count: ret=1 err=-
+ReadProcessMemory, a NULL handle: ret=0 n=0 err=6
+ReadProcessMemory, a handle without PROCESS_VM_READ: ret=0 n=0 err=5
+ReadProcessMemory, the parent's own memory: ret=1 n=4 err=-, the value: yes
+WriteProcessMemory, a dword at the header's e_res2: ret=0 n=62194 err=998
+  read back: ret=1 err=-, the dword written: no
+WriteProcessMemory, address 0: ret=0 n=62194 err=487
+WriteProcessMemory, 4 bytes across the image's end: ret=0 n=62194 err=487
+WriteProcessMemory, a handle without PROCESS_VM_WRITE: ret=0 n=62194 err=5
+the child resumed:
+kid: header mark 0x00000000
+  its end: WAIT_OBJECT_0, exit code 0
+CreateProcessA(a second child, not written to):
+kid: header mark 0x00000000
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+spawn: done
+<<< exit code=0
+>>> spawn.exe binarytype
+== binarytype
+GetBinaryTypeA(the program itself): ret=1 type=0 err=-
+GetBinaryTypeW(the program itself): ret=1 type=0 err=-
+GetBinaryTypeA(spawnkid.exe): ret=1 type=0 err=-
+GetBinaryTypeW(spawnkid.exe): ret=1 type=0 err=-
+GetBinaryTypeA(spawnkid, no extension): ret=0 type=untouched err=2
+GetBinaryTypeW(spawnkid, no extension): ret=0 type=untouched err=2
+GetBinaryTypeA(kernel32.dll in the system directory): ret=0 type=untouched err=193
+GetBinaryTypeW(kernel32.dll in the system directory): ret=0 type=untouched err=193
+GetBinaryTypeA(a text file, .txt): ret=0 type=untouched err=193
+GetBinaryTypeW(a text file, .txt): ret=0 type=untouched err=193
+GetBinaryTypeA(a text file named .exe): ret=1 type=1 err=-
+GetBinaryTypeW(a text file named .exe): ret=1 type=1 err=-
+GetBinaryTypeA(an empty file): ret=0 type=untouched err=193
+GetBinaryTypeW(an empty file): ret=0 type=untouched err=193
+GetBinaryTypeA(a directory): ret=0 type=untouched err=5
+GetBinaryTypeW(a directory): ret=0 type=untouched err=5
+GetBinaryTypeA(a missing file): ret=0 type=untouched err=2
+GetBinaryTypeW(a missing file): ret=0 type=untouched err=2
+GetBinaryTypeA(a file in a missing directory): ret=0 type=untouched err=3
+GetBinaryTypeW(a file in a missing directory): ret=0 type=untouched err=3
+spawn: done
+<<< exit code=0
+>>> spawn.exe spawn
+== spawn
+_putenv(F2KSPAWN): ret=0
+_spawnl(_P_WAIT), spawnkid exit 5:
+  ret=5 errno=0 _doserrno=0
+_spawnl(_P_WAIT), spawnkid args with "a b" and c:
+kid: command line [spawnkid args a b c]
+kid: argc 5
+kid: argv[0] [spawnkid]
+kid: argv[1] [args]
+kid: argv[2] [a]
+kid: argv[3] [b]
+kid: argv[4] [c]
+  ret=0 errno=0 _doserrno=0
+_spawnl(_P_WAIT), spawnkid (relative, no extension) exit 6:
+  ret=6 errno=0 _doserrno=0
+_spawnv(_P_WAIT), spawnkid args x "y z":
+kid: command line [spawnkid args x y z]
+kid: argc 5
+kid: argv[0] [spawnkid]
+kid: argv[1] [args]
+kid: argv[2] [x]
+kid: argv[3] [y]
+kid: argv[4] [z]
+  ret=0 errno=0 _doserrno=0
+_spawnlp(_P_WAIT), spawnkid where, PATH the program's directory:
+kid: image SPAWNKID.EXE
+kid: current directory SCRATCH
+  ret=0 errno=0 _doserrno=0
+_spawnvp(_P_WAIT), kidcopy where, PATH SCRATCH\other:
+kid: image SCRATCH\OTHER\KIDCOPY.EXE
+kid: current directory SCRATCH
+  ret=0 errno=0 _doserrno=0
+_spawnl(_P_WAIT), kidcopy where, PATH SCRATCH\other:
+  ret=-1 errno=2 _doserrno=2
+_spawnlp(_P_WAIT), a name found nowhere:
+  ret=-1 errno=2 _doserrno=2
+_spawnle(_P_WAIT), spawnkid envall, F2KE and F2KF:
+kid: environment: 2 entries
+kid: [F2KE=one]
+kid: [F2KF=two words]
+  ret=0 errno=0 _doserrno=0
+_spawnve(_P_WAIT), spawnkid env F2KE F2KSPAWN, F2KE and F2KF:
+kid: F2KE=[one]
+kid: F2KSPAWN unset
+  ret=0 errno=0 _doserrno=0
+_spawnve(_P_WAIT), spawnkid env F2KE F2KSPAWN, NULL: the parent's environment:
+kid: F2KE unset
+kid: F2KSPAWN=[through _putenv]
+  ret=0 errno=0 _doserrno=0
+_spawnl(_P_NOWAIT), spawnkid exit 9: ret a handle errno=0
+  _cwait: ret the handle yes, status 9 errno=0
+  _cwait again, the same handle: ret -1, status 0xFFFFFFFF errno=10
+_spawnv(_P_NOWAIT), spawnkid args nowait, then _cwait:
+kid: command line [spawnkid args nowait]
+kid: argc 3
+kid: argv[0] [spawnkid]
+kid: argv[1] [args]
+kid: argv[2] [nowait]
+  _spawnv: ret a handle; _cwait: ret the handle yes, status 0 errno=0
+_spawnl(_P_NOWAIT), spawnkid crash: ret a handle; _cwait: ret the handle yes, status 0xC0000005 errno=0
+_spawnl(_P_NOWAIT), spawnkid exit 2: ret a handle; _cwait, no status: ret the handle yes errno=0
+_spawnl(_P_WAIT), a missing program:
+  ret=-1 errno=2 _doserrno=2
+_spawnl(_P_WAIT), a text file:
+  ret=-1 errno=8 _doserrno=193
+_spawnl, mode 99, spawnkid exit 1: ret -1 errno=22 _doserrno=0
+spawn: done
+<<< exit code=0
+>>> spawn.exe system
+== system
+system(NULL), a command processor: ret=1 errno=0
+system("echo system: through the command processor"):
+system: through the command processor
+  ret=0 errno=0
+system("exit 3"): ret=3 errno=0
+system("spawnkid exit 4"): ret=4 errno=0
+spawn: done
+<<< exit code=0
+>>> spawn.exe detach
+== detach
+CreateProcessA(DETACHED_PROCESS, spawnkid exit 12):
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 12
+CreateProcessW(DETACHED_PROCESS, spawnkid exit 12):
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 12
+CreateProcessA(CREATE_NEW_CONSOLE, spawnkid exit 13):
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 13
+CreateProcessW(CREATE_NEW_CONSOLE, spawnkid exit 13):
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 13
+_spawnl(_P_DETACH), spawnkid signal: ret 0 errno=0
+  the detached child set the event: yes
+spawn: done
+<<< exit code=0
+>>> spawn.exe overlay
+== overlay
+_spawnl(_P_OVERLAY), spawnkid args overlaid: the program ends, its replacement prints next
+kid: command line [spawnkid args overlaid]
+kid: argc 3
+kid: argv[0] [spawnkid]
+kid: argv[1] [args]
+kid: argv[2] [overlaid]
+<<< exit code=0
