@@ -451,8 +451,10 @@ pub fn volume_path(token: &[u8]) -> &[u8] {
 pub fn run_fault_stub() -> ! {
     use crate::mem::{paging, vm};
 
-    // The stub's one code page stands where an image would, with the system areas around it.
-    let process = crate::process::Process::start("stub");
+    // The stub's one code page stands where an image would, with the system areas around it. The
+    // stub is the boot's one program, leg 1, though no runner drives it: it reports as a
+    // one-process boot's.
+    let process = crate::process::Process::start("stub", Some(1));
     let space = process.vm();
     crate::exec::loader::seed_regions(space, USER_CODE_PAGE, paging::PAGE_SIZE);
 

@@ -278,13 +278,8 @@ fn end_thread(end: ThreadEnd) -> ! {
             0,
             "the process ends with its last thread"
         );
-        crate::serial_println!(
-            "{}",
-            exit::EndReport {
-                end,
-                leg: leg(process)
-            }
-        );
+        let identity = crate::process::runner::identity(process);
+        crate::serial_println!("{}", exit::EndReport { end, identity });
         process.set_end(end);
     }
 
@@ -376,12 +371,6 @@ pub fn terminate_thread(
         crate::ob::end_thread_references(target);
     }
     Ok(())
-}
-
-/// The leg `process` runs as, for its report; none on a boot of one program. The ending thread's
-/// process, passed in: past the switch-away bookkeeping the running thread is another one.
-fn leg(process: &Process) -> Option<exit::Leg> {
-    crate::process::runner::current_leg(process)
 }
 
 /// Release an exited thread's gate stack: unmap the slot's pages from the (current) process

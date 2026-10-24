@@ -88,14 +88,16 @@ pub fn read_image_file(
 }
 
 /// Load the program at `path` on the boot volume as a new process (see [`load_image`]), with
-/// `command_line` as what its GetCommandLineA reports, and return the process and its entry point.
-/// A file that cannot be read is reported on COM1 and halts, as a rejected image does. The read
-/// blocks on the disk: the boot context halts between interrupts until it completes.
+/// `command_line` as what its GetCommandLineA reports and `leg` the boot's program it runs as (none
+/// for a child), and return the process and its entry point. A file that cannot be read is reported
+/// on COM1 and halts, as a rejected image does. The read blocks on the disk: the boot context halts
+/// between interrupts until it completes.
 #[cfg(target_arch = "x86")]
 pub fn load_path(
     path: &[u8],
     name: &'static str,
     command_line: &[u8],
+    leg: Option<u32>,
 ) -> (&'static mut crate::process::Process, u32) {
     // SAFETY: single-threaded boot (or the idle thread's reap step), the only staging user.
     let staging = unsafe { &mut (*core::ptr::addr_of_mut!(FILE_STAGING)).0 };
@@ -114,7 +116,7 @@ pub fn load_path(
             crate::halt()
         }
     };
-    load_image(&staging[..length], path, name, command_line)
+    load_image(&staging[..length], path, name, command_line, leg)
 }
 
 /// The image staging size: the largest in-memory image the loader accepts. Sized like the file
@@ -382,15 +384,16 @@ fn page_writable(image: &Image, page_rva: u32) -> bool {
 /// TEB, parameters and PEB pages — and return the process and its entry point for the main
 /// thread's ladder (its imports are ntdll's to load and snap, in user mode). The process's load
 /// scope is still open, and its address space the live one, for the caller to plant the ladder in
-/// (see [`crate::process::threads::start_main_thread`]). `name` names the process; `command_line`
-/// is the process parameters' command line, and `path`, the file's volume path, their image path
-/// (in its Win32 form, `C:\...`).
+/// (see [`crate::process::threads::start_main_thread`]). `name` names the process, and `leg` is the
+/// boot's program it runs as (none for a child); `command_line` is the process parameters' command
+/// line, and `path`, the file's volume path, their image path (in its Win32 form, `C:\...`).
 #[cfg(target_arch = "x86")]
 pub fn load_image(
     file: &[u8],
     path: &[u8],
     name: &'static str,
     command_line: &[u8],
+    leg: Option<u32>,
 ) -> (&'static mut crate::process::Process, u32) {
     use crate::mem::paging::{self, PAGE_SIZE};
     use crate::mem::vm;
@@ -443,7 +446,7 @@ pub fn load_image(
     // active on CR3) and the main thread's ring-0 gate stack (mapped supervisor-only with its guard
     // page; the switch into the thread installs it as the TSS esp0). Every mapping below (ntdll,
     // image, stack, TEB, params) lands in this process's directory.
-    let process = crate::process::Process::start(name);
+    let process = crate::process::Process::start(name, leg);
     let (process_id, thread_id) = (process.id(), process.main_thread().thread_id());
     let space = process.vm();
     // The regions first: every user page the kernel maps lies in one.

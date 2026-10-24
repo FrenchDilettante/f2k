@@ -79,6 +79,9 @@ pub struct Process {
     name: &'static str,
     /// The process's client id (what GetCurrentProcessId reports, through the TEB).
     id: u32,
+    /// The boot's program the process runs as, its 1-based index in the boot's list (see
+    /// [`runner`]); none for a process another process started. Its end reports by it.
+    leg: Option<u32>,
     /// The process's object: what a handle to the process names and a wait on it waits for. It
     /// holds the process's own reference until the teardown's end, and its index is the record's
     /// in the pool.
@@ -187,6 +190,11 @@ impl Process {
     /// The process's client id.
     pub fn id(&self) -> u32 {
         self.id
+    }
+
+    /// The boot's program the process runs as (its 1-based index); none for a child.
+    pub fn leg(&self) -> Option<u32> {
+        self.leg
     }
 
     /// The process's object.
@@ -382,16 +390,16 @@ impl Process {
     /// Create the process and make it current: a fresh address space with the record built at its
     /// final address in the pool, then its main thread taking the window's lowest free gate-stack
     /// slot, the fixed TEB page, and the process's scheduling data. Every later user mapping lands
-    /// in this process's directory, inside one of its regions. Returns the record for the caller's
-    /// setup (the loader's), which threads it through rather than reaching for the current process
-    /// again.
+    /// in this process's directory, inside one of its regions. `leg` is the boot's program the
+    /// process runs as (none for a child). Returns the record for the caller's setup (the
+    /// loader's), which threads it through rather than reaching for the current process again.
     // The record is the pool's, not borrowed from `name` (see `pool::create`).
     #[allow(clippy::mut_from_ref)]
-    pub fn start(name: &'static str) -> &'static mut Process {
+    pub fn start(name: &'static str, leg: Option<u32>) -> &'static mut Process {
         let dir_phys = paging::create_address_space();
         paging::activate_address_space(dir_phys);
 
-        let process = pool::create(dir_phys, name);
+        let process = pool::create(dir_phys, name, leg);
 
         // The scheduling record's thread-list sentinel closes now that the record is at its final
         // address.
@@ -529,8 +537,8 @@ pub fn new_client_id() -> u32 {
 }
 
 /// Build a fresh process record at `process`: the address space at `dir_phys`, named `name`,
-/// standing for process object `object`, field by field (by value the record would pass the
-/// caller's stack).
+/// running as leg `leg` (none for a child), standing for process object `object`, field by field
+/// (by value the record would pass the caller's stack).
 ///
 /// # Safety
 ///
@@ -541,6 +549,7 @@ unsafe fn write_fresh(
     process: *mut Process,
     dir_phys: u32,
     name: &'static str,
+    leg: Option<u32>,
     object: crate::ob::ObjectId,
 ) {
     use core::ptr::addr_of_mut;
@@ -552,6 +561,7 @@ unsafe fn write_fresh(
         ));
         addr_of_mut!((*process).name).write(name);
         addr_of_mut!((*process).id).write(new_client_id());
+        addr_of_mut!((*process).leg).write(leg);
         addr_of_mut!((*process).object).write(object);
         addr_of_mut!((*process).priority_class).write(NORMAL_PRIORITY_CLASS);
         addr_of_mut!((*process).hard_error_mode).write(DEFAULT_HARD_ERROR_MODE);
@@ -652,17 +662,18 @@ pub fn release_process(
 }
 
 /// The idle thread's reap step: tear the ended process down, then let the runner decide what
-/// follows — the teardown audit, and on a boot of several programs the next one (or the summary);
-/// the idle thread rests after the last. Whether the reap is quiescent — no other process remains
-/// that has not been torn down — is decided once, before the teardown: it decides whether the
-/// system-wide checks run now.
+/// follows by the process's own leg — the teardown audit, and on a boot of several programs the
+/// next one (or the summary); the idle thread rests after the last. Whether the reap is quiescent —
+/// no other process remains that has not been torn down — is decided once, before the teardown: it
+/// decides whether the system-wide checks run now.
 #[cfg(target_arch = "x86")]
 pub fn reap() {
     let process = pool::ended().expect("reap with no ended process");
     let end = process.end.expect("an ended process recorded its end");
+    let leg = process.leg;
     let quiescent = pool::quiescent_after(process);
     teardown(process, quiescent);
-    runner::process_reaped(end, quiescent);
+    runner::process_reaped(leg, end, quiescent);
     #[cfg(feature = "fault-test-exitio")]
     crate::user::check_volume_after_teardown();
 }
@@ -841,6 +852,7 @@ mod tests {
             sched: SchedProcess::new(dir, 8),
             name: "fixture",
             id: FIRST_CLIENT_ID,
+            leg: None,
             object: crate::ob::ObjectId {
                 kind: crate::ob::ObjectType::Process,
                 index: 0,

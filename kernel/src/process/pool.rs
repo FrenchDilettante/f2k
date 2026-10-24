@@ -96,13 +96,13 @@ fn index_of(owner: *const crate::sched::process::SchedProcess) -> Option<u16> {
 
 /// Create a process: its object (none free is the caller's failure, a panic today: one process runs
 /// at a time) and its record at the same index, built in place over the address space at
-/// `dir_phys`, named `name`. Its load scope begins: the kernel is attached to it until the loader
-/// is done with it ([`detach`]).
+/// `dir_phys`, named `name`, running as leg `leg` (none for a child). Its load scope begins: the
+/// kernel is attached to it until the loader is done with it ([`detach`]).
 #[cfg(target_arch = "x86")]
 // The record is the pool's, not borrowed from `name`: the lint reads the name's reference as the
 // input the returned one comes from.
 #[allow(clippy::mut_from_ref)]
-pub(super) fn create(dir_phys: u32, name: &'static str) -> &'static mut Process {
+pub(super) fn create(dir_phys: u32, name: &'static str, leg: Option<u32>) -> &'static mut Process {
     let object = crate::ob::directory()
         .create_process()
         .expect("a process record is free (one process runs at a time)");
@@ -110,7 +110,7 @@ pub(super) fn create(dir_phys: u32, name: &'static str) -> &'static mut Process 
     // SAFETY: single CPU, interrupts disabled; the record is free (its object was not live), and
     // every field is written before the record is read.
     let process = unsafe {
-        super::write_fresh(process, dir_phys, name, object);
+        super::write_fresh(process, dir_phys, name, leg, object);
         &mut *process
     };
     attach(object.index);

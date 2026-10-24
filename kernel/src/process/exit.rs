@@ -181,46 +181,78 @@ pub fn hand_over(plan: ExitPlan, deferred: u16) -> (ExitPlan, Option<ProcessEnd>
     )
 }
 
-/// The suite leg a process runs as: its 1-based index and fixture name. A one-process boot (one
-/// program) has none.
-pub type Leg = (u32, &'static str);
+/// Who a process's end reports as: the boot's one program, a leg of a suite, or a child.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Identity {
+    /// The one program of a one-process boot (or of a boot no runner drives: the fault tests').
+    Lone,
+    /// A suite's leg: its 1-based index and its image's name.
+    Leg(u32, &'static str),
+    /// A process another process started, not one the boot's command line lists: its process id
+    /// and its image's name.
+    Child(u32, &'static str),
+}
 
-/// The process-end report line: the one-process boot's form, or the suite's with the leg's index
-/// and name.
+/// The identity a process reports its end under: `leg` its leg of the boot's `legs` programs
+/// (none for a child), `id` its process id, `name` its image's name. A leg of a boot of one
+/// program — or of none, a boot the runner does not drive — is the lone program.
+pub fn identity(leg: Option<u32>, legs: u32, id: u32, name: &'static str) -> Identity {
+    match leg {
+        None => Identity::Child(id, name),
+        Some(index) if legs > 1 => Identity::Leg(index, name),
+        Some(_) => Identity::Lone,
+    }
+}
+
+/// The process-end report line: the one-process boot's form, the suite's with the leg's index and
+/// name, or a child's with its process id and name.
 pub struct EndReport {
     pub end: ProcessEnd,
-    pub leg: Option<Leg>,
+    pub identity: Identity,
 }
 
 impl fmt::Display for EndReport {
     fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match (self.leg, self.end) {
-            (None, ProcessEnd::Exited(code)) => {
+        let (prefix, number, name) = match self.identity {
+            Identity::Lone => return self.fmt_lone(out),
+            Identity::Leg(index, name) => ("process", index, name),
+            Identity::Child(id, name) => ("child process", id, name),
+        };
+        match self.end {
+            ProcessEnd::Exited(code) => write!(
+                out,
+                "F2K: {prefix} {number} ({name}) exited normally (exit code={code})"
+            ),
+            ProcessEnd::Faulted(fault) => write!(
+                out,
+                "F2K: {prefix} {number} ({name}) ended by fault (vector {}, exit code={})",
+                fault.vector, fault.status
+            ),
+        }
+    }
+}
+
+impl EndReport {
+    /// The one-process boot's form, which names the kind of fault and that the boot halts.
+    fn fmt_lone(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.end {
+            ProcessEnd::Exited(code) => {
                 write!(out, "F2K: user process exited normally (exit code={code})")
             }
-            (None, ProcessEnd::Faulted(fault)) if fault.in_user_copy => write!(
+            ProcessEnd::Faulted(fault) if fault.in_user_copy => write!(
                 out,
                 "F2K: user process ended by fault (bad user argument pointer, exit code={}); \
                  halting",
                 fault.status
             ),
-            (None, ProcessEnd::Faulted(fault)) if fault.vector == RAISED_VECTOR => write!(
+            ProcessEnd::Faulted(fault) if fault.vector == RAISED_VECTOR => write!(
                 out,
                 "F2K: user process ended by fault (raised exception, exit code={}); halting",
                 fault.status
             ),
-            (None, ProcessEnd::Faulted(fault)) => write!(
+            ProcessEnd::Faulted(fault) => write!(
                 out,
                 "F2K: user process ended by fault (vector {}, exit code={}); halting",
-                fault.vector, fault.status
-            ),
-            (Some((index, name)), ProcessEnd::Exited(code)) => write!(
-                out,
-                "F2K: process {index} ({name}) exited normally (exit code={code})"
-            ),
-            (Some((index, name)), ProcessEnd::Faulted(fault)) => write!(
-                out,
-                "F2K: process {index} ({name}) ended by fault (vector {}, exit code={})",
                 fault.vector, fault.status
             ),
         }
@@ -296,8 +328,8 @@ pub struct Reaped {
 /// reaches quiescence at every reap, and reports each process's line there, as it always did.
 ///
 /// The ledger holds as many audits as there can be processes: a boot's legs start one after
-/// another, each once the last is reaped, or all at once (children of a process report no audit
-/// line).
+/// another, each at the quiescent point after the last's reap, or all at once (children of a
+/// process report no audit line).
 #[cfg(any(test, target_arch = "x86"))]
 pub struct DeferredAudits {
     reaped: [Option<Reaped>; crate::process::MAX_PROCESSES],
@@ -416,6 +448,130 @@ impl fmt::Display for SuiteTally {
             "F2K: process suite complete: {} run, {} faulted, {} leaks",
             self.run, self.faulted, self.leaks
         )
+    }
+}
+
+/// What follows a quiescent point (see [`Suite::settle`]).
+#[cfg(any(test, target_arch = "x86"))]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AtQuiescence {
+    /// Start this leg (1-based): the one after the last leg reaped.
+    Start(u32),
+    /// Every leg of the suite is reaped and its audit line printed: print this summary, then rest.
+    Summary(SuiteTally),
+    /// Nothing follows: a one-process boot's program has ended.
+    Rest,
+}
+
+/// The runner's account of the boot's programs, kept by the reaped process's own leg — never by
+/// which leg was started last, since legs may overlap. A leg's reap defers its audit line and names
+/// the leg that follows it (unless that one has started already); at the next quiescent point the
+/// deferred lines are reported, each leg counted in the tally, and the next leg starts — or, once
+/// every leg is reaped, the summary prints. A child (a process with no leg) counts for nothing: no
+/// audit line, no tally entry, no next leg; its reap may still be the quiescent point that settles
+/// its parent's line.
+///
+/// Starting the next leg at the quiescent point rather than at its predecessor's reap keeps each
+/// leg's lines — its children's ends, its audit line — before the next leg's start line, where the
+/// test harness splits the log. A boot that runs one process at a time reaches quiescence at every
+/// reap, so the next leg starts at the reap, as it always did.
+#[cfg(any(test, target_arch = "x86"))]
+pub struct Suite {
+    /// How many programs the boot runs: 0 until the runner starts (a boot it does not drive).
+    legs: u32,
+    /// The highest leg started: a leg already running is never named to start again.
+    started: u32,
+    /// How many legs have been reaped.
+    reaped: u32,
+    /// The leg to start at the next quiescent point.
+    next: Option<u32>,
+    /// The legs whose audit lines have been printed, counted.
+    tally: SuiteTally,
+    /// The audit lines waiting for the next quiescent point.
+    audits: DeferredAudits,
+}
+
+#[cfg(any(test, target_arch = "x86"))]
+impl Suite {
+    /// No programs yet.
+    pub const fn new() -> Self {
+        Suite {
+            legs: 0,
+            started: 0,
+            reaped: 0,
+            next: None,
+            tally: SuiteTally::new(),
+            audits: DeferredAudits::new(),
+        }
+    }
+
+    /// The boot runs `legs` programs.
+    pub fn begin(&mut self, legs: u32) {
+        self.legs = legs;
+    }
+
+    /// Leg `index` has started.
+    pub fn started(&mut self, index: u32) {
+        self.started = self.started.max(index);
+    }
+
+    /// A process torn down: `leg` its leg (none for a child), `end` how it ended, and the
+    /// allocators' structure audits taken at its reap. A leg's audit line is deferred to the next
+    /// quiescent point, and on a suite the leg after it is named to start there (see
+    /// [`after_leg`]) unless it has started already (legs started together).
+    pub fn reaped(
+        &mut self,
+        leg: Option<u32>,
+        end: ProcessEnd,
+        frames_audit_ok: bool,
+        heap_audit_ok: bool,
+    ) {
+        let Some(index) = leg else {
+            return;
+        };
+        self.reaped += 1;
+        let suite = self.legs > 1;
+        self.audits.defer(Reaped {
+            index: suite.then_some(index),
+            end,
+            frames_audit_ok,
+            heap_audit_ok,
+        });
+        if suite {
+            match after_leg(index, self.legs) {
+                AfterLeg::Next(next) if next > self.started => self.next = Some(next),
+                _ => {}
+            }
+        }
+    }
+
+    /// The quiescent point: with `available` free frames against the post-boot `baseline`, hand
+    /// each deferred audit line to `report`, in reap order, counting each leg in the tally on a
+    /// suite; then say what follows.
+    pub fn settle(
+        &mut self,
+        available: u32,
+        baseline: u32,
+        mut report: impl FnMut(AuditReport),
+    ) -> AtQuiescence {
+        let suite = self.legs > 1;
+        let tally = &mut self.tally;
+        self.audits.settle(available, baseline, |reaped, audit| {
+            report(AuditReport {
+                index: reaped.index,
+                audit,
+            });
+            if suite {
+                tally.record(reaped.end, audit.is_ok());
+            }
+        });
+        if let Some(next) = self.next.take() {
+            AtQuiescence::Start(next)
+        } else if suite && self.reaped == self.legs {
+            AtQuiescence::Summary(self.tally)
+        } else {
+            AtQuiescence::Rest
+        }
     }
 }
 
@@ -562,7 +718,13 @@ mod tests {
     /// user-copy fault.
     #[test]
     fn the_one_process_report_lines() {
-        let line = |end| EndReport { end, leg: None }.to_string();
+        let line = |end| {
+            EndReport {
+                end,
+                identity: Identity::Lone,
+            }
+            .to_string()
+        };
         assert_eq!(
             line(ProcessEnd::Exited(0)),
             "F2K: user process exited normally (exit code=0)"
@@ -586,10 +748,10 @@ mod tests {
     /// user-copy fault reports its vector like any other.
     #[test]
     fn the_suite_report_lines() {
-        let line = |end, leg| {
+        let line = |end, (index, name)| {
             EndReport {
                 end,
-                leg: Some(leg),
+                identity: Identity::Leg(index, name),
             }
             .to_string()
         };
@@ -833,5 +995,212 @@ mod tests {
             assert_eq!(handed, planned.process_end);
             assert!(handed.is_some());
         }
+    }
+
+    /// Who reports: a leg of a suite by its index, the one program of a one-process boot (or of a
+    /// boot no runner drives) as the lone program, and a process with no leg as a child.
+    #[test]
+    fn a_process_reports_by_its_own_leg() {
+        assert_eq!(identity(Some(2), 6, 136, "bare"), Identity::Leg(2, "bare"));
+        assert_eq!(identity(Some(1), 1, 136, "exit0"), Identity::Lone);
+        assert_eq!(identity(Some(1), 0, 136, "stub"), Identity::Lone);
+        for legs in [0, 1, 6] {
+            assert_eq!(
+                identity(None, legs, 136, "spawn"),
+                Identity::Child(136, "spawn")
+            );
+        }
+    }
+
+    /// A child's end lines, byte for byte: its process id in decimal and its image's name, in a
+    /// form the harness's batch pattern does not read as a leg's end; every fault names its vector,
+    /// as a leg's does.
+    #[test]
+    fn the_child_report_lines() {
+        let line = |end| {
+            EndReport {
+                end,
+                identity: Identity::Child(136, "spawn"),
+            }
+            .to_string()
+        };
+        assert_eq!(
+            line(ProcessEnd::Exited(0)),
+            "F2K: child process 136 (spawn) exited normally (exit code=0)"
+        );
+        assert_eq!(
+            line(ProcessEnd::Exited(3_221_225_500)),
+            "F2K: child process 136 (spawn) exited normally (exit code=3221225500)"
+        );
+        assert_eq!(
+            line(ProcessEnd::Faulted(PAGE_FAULT)),
+            "F2K: child process 136 (spawn) ended by fault (vector 14, exit code=3221225477)"
+        );
+        assert_eq!(
+            line(ProcessEnd::Faulted(COPY_FAULT)),
+            "F2K: child process 136 (spawn) ended by fault (vector 14, exit code=3221225477)"
+        );
+    }
+
+    /// One quiescent point of a suite: the audit lines it reports, and what follows.
+    fn settle(suite: &mut Suite, available: u32) -> (Vec<String>, AtQuiescence) {
+        let mut lines = Vec::new();
+        let after = suite.settle(available, 1240, |report| lines.push(report.to_string()));
+        (lines, after)
+    }
+
+    /// The suite a process at a time, every reap quiescent: each leg's audit line at its own reap,
+    /// then the next leg, and after the last the summary — today's sequence, line for line.
+    #[test]
+    fn a_suite_one_leg_at_a_time() {
+        let mut suite = Suite::new();
+        suite.begin(3);
+        suite.started(1);
+        for index in 1..=3 {
+            let end = if index == 2 {
+                ProcessEnd::Faulted(PAGE_FAULT)
+            } else {
+                ProcessEnd::Exited(0)
+            };
+            suite.reaped(Some(index), end, true, true);
+            let (lines, after) = settle(&mut suite, 1240);
+            assert_eq!(
+                lines,
+                [format!(
+                    "F2K: process {index} teardown audit: frame database ok, kernel heap ok"
+                )]
+            );
+            let expected = if index < 3 {
+                AtQuiescence::Start(index + 1)
+            } else {
+                AtQuiescence::Summary(SuiteTally {
+                    run: 3,
+                    faulted: 1,
+                    leaks: 0,
+                })
+            };
+            assert_eq!(after, expected);
+            if let AtQuiescence::Start(next) = after {
+                suite.started(next);
+            }
+        }
+    }
+
+    /// A one-process boot: its line names no leg, nothing is counted, and the boot rests. A boot
+    /// the runner does not drive (no legs) reports its one program the same way.
+    #[test]
+    fn a_lone_program_reports_and_rests() {
+        for legs in [0, 1] {
+            let mut suite = Suite::new();
+            suite.begin(legs);
+            if legs == 1 {
+                suite.started(1);
+            }
+            suite.reaped(Some(1), ProcessEnd::Faulted(PAGE_FAULT), true, true);
+            assert_eq!(
+                settle(&mut suite, 1238),
+                (
+                    vec![
+                        "F2K: teardown audit FAILED: 1238 frames available, 1240 before the \
+                         process (frame database ok, kernel heap ok)"
+                            .to_string()
+                    ],
+                    AtQuiescence::Rest
+                )
+            );
+            assert_eq!(suite.tally, SuiteTally::new());
+        }
+    }
+
+    /// Legs started together, reaped out of order: each line carries its own leg's index, in reap
+    /// order, at the one quiescent point; the tally counts both, no leg starts twice, and the
+    /// summary follows once every leg is reaped.
+    #[test]
+    fn overlapping_legs_report_by_their_own_index() {
+        let mut suite = Suite::new();
+        suite.begin(2);
+        suite.started(1);
+        suite.started(2);
+        suite.reaped(Some(2), ProcessEnd::Faulted(PAGE_FAULT), true, true);
+        suite.reaped(Some(1), ProcessEnd::Exited(0), true, false);
+        let (lines, after) = settle(&mut suite, 1240);
+        assert_eq!(
+            lines,
+            [
+                "F2K: process 2 teardown audit: frame database ok, kernel heap ok",
+                "F2K: process 1 teardown audit FAILED: 1240 frames available, 1240 before the \
+                 process (frame database ok, kernel heap corrupt)",
+            ]
+        );
+        let tally = SuiteTally {
+            run: 2,
+            faulted: 1,
+            leaks: 1,
+        };
+        assert_eq!(suite.tally, tally);
+        assert_eq!(after, AtQuiescence::Summary(tally));
+    }
+
+    /// A child counts for nothing: no audit line, no tally entry, no next leg. When it outlives
+    /// its parent's leg, its reap is the quiescent point: the leg's line prints there, and the next
+    /// leg starts only then — after the child's end, inside the leg's part of the log.
+    #[test]
+    fn a_child_reports_nothing_but_may_settle_its_parent() {
+        let mut suite = Suite::new();
+        suite.begin(3);
+        suite.started(1);
+
+        // A child ended inside its parent's leg: the parent's reap settles one line.
+        suite.reaped(None, ProcessEnd::Exited(0), true, true);
+        suite.reaped(Some(1), ProcessEnd::Exited(0), true, true);
+        assert_eq!(
+            settle(&mut suite, 1240),
+            (
+                vec![
+                    "F2K: process 1 teardown audit: frame database ok, kernel heap ok".to_string()
+                ],
+                AtQuiescence::Start(2)
+            )
+        );
+        suite.started(2);
+
+        // A child outliving its parent: the leg's reap is not quiescent; the child's is, and only
+        // then the leg's line and the next leg's start.
+        suite.reaped(Some(2), ProcessEnd::Exited(0), true, true);
+        suite.reaped(None, ProcessEnd::Faulted(PAGE_FAULT), true, true);
+        assert_eq!(
+            settle(&mut suite, 1240),
+            (
+                vec![
+                    "F2K: process 2 teardown audit: frame database ok, kernel heap ok".to_string()
+                ],
+                AtQuiescence::Start(3)
+            )
+        );
+        suite.started(3);
+
+        // The same past the last leg: the summary waits for the child's reap.
+        suite.reaped(Some(3), ProcessEnd::Exited(0), true, true);
+        suite.reaped(None, ProcessEnd::Exited(0), true, true);
+        assert_eq!(
+            settle(&mut suite, 1240),
+            (
+                vec![
+                    "F2K: process 3 teardown audit: frame database ok, kernel heap ok".to_string()
+                ],
+                AtQuiescence::Summary(SuiteTally {
+                    run: 3,
+                    faulted: 0,
+                    leaks: 0
+                })
+            )
+        );
+
+        // A child alone at a quiescent point, its parent's line already printed: nothing.
+        let mut lone = Suite::new();
+        lone.begin(1);
+        lone.started(1);
+        lone.reaped(None, ProcessEnd::Exited(0), true, true);
+        assert_eq!(settle(&mut lone, 1240), (vec![], AtQuiescence::Rest));
     }
 }

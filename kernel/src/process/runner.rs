@@ -21,9 +21,15 @@
 //! thread's exit reports and switches to the idle thread, whose reap step tears the process down on
 //! the boot stack and address space and hands the outcome here: the audit line, then the next
 //! process, or the summary. An audit line waits for quiescence, when no process remains that has
-//! not been torn down (only then can the free frames be held to the post-boot baseline); a process
-//! starts only once the last is reaped, so each line follows its own process's end. The perf trace
+//! not been torn down (only then can the free frames be held to the post-boot baseline); the next
+//! process starts at that point too, so each line follows its own process's end. The perf trace
 //! dump (the `perf-trace` feature) lands at the last quiescent point, before the boot's last line.
+//!
+//! Each process carries its leg, its index in the list, and everything it reports goes by that leg
+//! — its end line, its audit line, its screenshot pause, its count in the summary — never by which
+//! leg started last. A process with no leg, one another process started, reports its end as a
+//! child (`F2K: child process 136 (spawn) exited normally (exit code=0)`, by its process id and its
+//! image's name), with no audit line, no pause and no count of its own.
 //!
 //! With the kernel option `screens` (`F2K: ... screens -- CORPUS\console.exe info ;; ...`), each
 //! process's end pauses the boot before its audit line, for the test harness to take a screenshot
@@ -31,36 +37,24 @@
 //! and waits, interrupts masked, until the harness writes the CMOS mailbox byte through QEMU's
 //! monitor ([`crate::hw::rtc::await_mailbox`]), or a few seconds' worth of reads pass.
 
-use crate::process::exit::{
-    self,
-    AfterLeg,
-    AuditReport,
-    DeferredAudits,
-    ProcessEnd,
-    Reaped,
-    SuiteTally,
-};
+use crate::process::exit::{self, AtQuiescence, Identity, ProcessEnd, Suite};
+use crate::process::Process;
 
 /// The program a boot without a user command line runs.
 const DEFAULT_PROGRAM: &[u8] = b"exit0";
 
 /// How many programs the boot runs; 0 until the runner starts (the fault-test boots never start
-/// it).
+/// it). Read by an ending process's report, outside the runner's account.
 static mut LEGS: u32 = 0;
-/// The index of the process running or just finished (1-based).
-static mut CURRENT: u32 = 0;
-/// The outcomes so far.
-static mut OUTCOMES: Outcomes = Outcomes {
-    tally: SuiteTally::new(),
-    audits: DeferredAudits::new(),
-};
+/// The runner's account of the boot's programs: the legs started and reaped, their outcomes, and
+/// what waits to be reported.
+static mut SUITE: Suite = Suite::new();
 
-/// What the reaps have reported, and what waits to be.
-struct Outcomes {
-    /// The legs counted so far (their audit lines printed).
-    tally: SuiteTally,
-    /// The audit lines waiting for the next quiescent point.
-    audits: DeferredAudits,
+/// The runner's account (see [`SUITE`]).
+fn suite() -> &'static mut Suite {
+    // SAFETY: runner state; single CPU, touched only by the boot's start and the idle thread's
+    // reap step, one call's borrow at a time.
+    unsafe { &mut *core::ptr::addr_of_mut!(SUITE) }
 }
 
 /// Run the boot's programs: record the allocator baseline, ready the first program's main thread,
@@ -69,6 +63,7 @@ pub fn run() -> ! {
     let legs = programs().count() as u32;
     // SAFETY: runner state; single-threaded boot, written only here.
     unsafe { core::ptr::write_volatile(core::ptr::addr_of_mut!(LEGS), legs) };
+    suite().begin(legs);
     // The baseline for the per-process teardown audits: recorded once the boot's permanent
     // allocations are done, before the first process takes any frame.
     crate::process::record_allocator_baseline();
@@ -76,78 +71,60 @@ pub fn run() -> ! {
     crate::sched::idle::idle_loop()
 }
 
-/// The leg `process` (the one running) runs as, for its end report: its index and fixture name;
-/// none on a boot of one program (or one the runner does not drive).
-pub fn current_leg(process: &crate::process::Process) -> Option<exit::Leg> {
-    (leg_count() > 1).then(|| (current_index(), process.name()))
+/// Who `process`'s end reports as, by its own leg: a suite's leg by its index and name, the lone
+/// program of a boot of one (or of a boot the runner does not drive), or a child by its process id
+/// and name.
+pub fn identity(process: &Process) -> Identity {
+    exit::identity(process.leg(), leg_count(), process.id(), process.name())
 }
 
 /// The reap step's landing point, on the idle thread after a process's teardown: audit the
-/// allocators' structures and defer the process's audit line. At a `quiescent` reap, compare the
-/// free frames with the post-boot baseline and report every deferred line (see
-/// [`DeferredAudits`]); on a boot of several programs, count the outcomes, then ready the next
-/// process — or print the summary, after which the idle thread rests.
-pub fn process_reaped(end: ProcessEnd, quiescent: bool) {
+/// allocators' structures and, for a leg (`leg`, none for a child), pause for its screenshot and
+/// defer its audit line. At a `quiescent` reap, compare the free frames with the post-boot
+/// baseline and report every deferred line, counting each leg on a boot of several programs (see
+/// [`Suite`]); then ready the next leg — or print the summary, after which the idle thread rests.
+pub fn process_reaped(leg: Option<u32>, end: ProcessEnd, quiescent: bool) {
     let (frames_audit_ok, heap_audit_ok) = crate::process::audit_structures();
     let frames = quiescent.then(crate::process::frames_against_baseline);
-    let legs = leg_count();
-    pause_for_screen();
-    // SAFETY: runner state; single CPU, touched only from the idle thread's reap step.
-    let Outcomes { tally, audits } = unsafe { &mut *core::ptr::addr_of_mut!(OUTCOMES) };
-    audits.defer(Reaped {
-        index: (legs > 1).then(current_index),
-        end,
-        frames_audit_ok,
-        heap_audit_ok,
-    });
+    if let Some(index) = leg {
+        pause_for_screen(index);
+    }
+    suite().reaped(leg, end, frames_audit_ok, heap_audit_ok);
     let Some((available, baseline)) = frames else {
         return;
     };
     // On a boot of one program, before the audit line: the harness stops the boot on it, so the
     // dump must land first.
     #[cfg(feature = "perf-trace")]
-    if legs <= 1 {
+    if leg_count() <= 1 {
         crate::perf::report();
     }
-    audits.settle(available, baseline, |reaped, audit| {
-        crate::serial_println!(
-            "{}",
-            AuditReport {
-                index: reaped.index,
-                audit
-            }
-        );
-        if legs > 1 {
-            tally.record(reaped.end, audit.is_ok());
-        }
+    let after = suite().settle(available, baseline, |report| {
+        crate::serial_println!("{}", report);
     });
-    if legs <= 1 {
-        return;
-    }
-
-    match exit::after_leg(current_index(), legs) {
-        AfterLeg::Next(next) => start_leg(next),
-        AfterLeg::Summary => {
+    match after {
+        AtQuiescence::Start(next) => start_leg(next),
+        AtQuiescence::Summary(tally) => {
             // Before the summary line: the harness stops the boot on it.
             #[cfg(feature = "perf-trace")]
             crate::perf::report();
             crate::serial_println!("{}", tally);
         }
+        AtQuiescence::Rest => {}
     }
 }
 
 /// How many reads of the mailbox a pause makes before the boot goes on unanswered: seconds' worth.
 const SCREEN_PAUSE_READS: u32 = 20_000_000;
 
-/// With the `screens` option, hold the boot at a process's end until the harness has taken its
+/// With the `screens` option, hold the boot at leg `index`'s end until the harness has taken its
 /// screenshot (see the module's documentation).
-fn pause_for_screen() {
+fn pause_for_screen(index: u32) {
     use crate::boot::cmdline::{kernel_command_line, kernel_option};
     use crate::hw::rtc::{await_mailbox, SCREEN_MAILBOX};
     if !kernel_option(kernel_command_line(), b"screens") {
         return;
     }
-    let index = current_index();
     let answered = await_mailbox(
         &mut crate::hw::portio::Ports,
         SCREEN_MAILBOX,
@@ -177,13 +154,12 @@ fn start_leg(index: u32) {
     crate::process::threads::ready_main_thread(process);
 }
 
-/// Announce leg `index` and load it: create its process — its program read off the boot volume —
-/// and plant its main thread's start while the process's address space is the live one, then end
-/// the load. The thread is not readied: nothing runs until the caller readies it, so another leg
-/// could be loaded first.
+/// Announce leg `index` and load it: create its process — its program read off the boot volume, the
+/// leg its own — and plant its main thread's start while the process's address space is the live
+/// one, then end the load. The thread is not readied: nothing runs until the caller readies it, so
+/// another leg could be loaded first.
 fn load_leg(index: u32) -> &'static mut crate::process::Process {
-    // SAFETY: runner state; single CPU, written only here.
-    unsafe { core::ptr::write_volatile(core::ptr::addr_of_mut!(CURRENT), index) };
+    suite().started(index);
     let command_line = programs()
         .nth(index as usize - 1)
         .expect("a leg the list holds");
@@ -195,7 +171,8 @@ fn load_leg(index: u32) -> &'static mut crate::process::Process {
     );
     let mut path = [0u8; crate::user::MAX_PATH];
     let (length, name) = crate::user::program_image(command_line, &mut path);
-    let (process, entry) = crate::exec::loader::load_path(&path[..length], name, command_line);
+    let (process, entry) =
+        crate::exec::loader::load_path(&path[..length], name, command_line, Some(index));
     crate::process::threads::start_main_thread(process, crate::user::main_thread_start(entry));
     crate::process::detach();
     process
@@ -205,10 +182,4 @@ fn load_leg(index: u32) -> &'static mut crate::process::Process {
 fn leg_count() -> u32 {
     // SAFETY: runner state; single CPU, read-only here.
     unsafe { core::ptr::read_volatile(core::ptr::addr_of!(LEGS)) }
-}
-
-/// The index of the process running (or just finished).
-fn current_index() -> u32 {
-    // SAFETY: runner state; single CPU, read-only here.
-    unsafe { core::ptr::read_volatile(core::ptr::addr_of!(CURRENT)) }
 }
