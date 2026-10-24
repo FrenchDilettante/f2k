@@ -888,16 +888,13 @@ impl Image {
     }
 
     /// Read one import's name out of the file bytes. The name must live in file-backed bytes: the
-    /// zero tail cannot hold names. The hint is read but never authoritative. Ordinal imports are
-    /// not served: the resolver is name-keyed (the system DLLs' ordinals are not Windows 2000's
-    /// yet).
+    /// zero tail cannot hold names. The hint is read but never authoritative. An import by
+    /// ordinal is named `#<ordinal>`, as the import dumps write it (a corpus program's own
+    /// companion DLL may export by ordinal only; a system DLL's imports are by name).
     #[cfg(test)]
-    fn import_name<'a>(&self, file: &'a [u8], thunk: u32) -> &'a str {
+    fn import_name<'a>(&self, file: &'a [u8], thunk: u32) -> std::borrow::Cow<'a, str> {
         if thunk & ORDINAL_FLAG != 0 {
-            panic!(
-                "ordinal import 0x{:04x} against the kernel export table",
-                thunk & 0xFFFF
-            );
+            return format!("#{}", thunk & 0xFFFF).into();
         }
         assert!(
             thunk < self.size_of_image,
@@ -909,7 +906,7 @@ impl Image {
         });
         need(file, off, 2, "hint/name entry");
         let _hint = read_u16(file, off, "hint/name entry");
-        read_cstr(file, off + 2, "import name")
+        read_cstr(file, off + 2, "import name").into()
     }
 
     /// A NUL-terminated string at `rva`, read out of the file bytes: it must lie inside the image
@@ -982,7 +979,7 @@ impl Image {
                     break;
                 }
                 let name = self.import_name(file, thunk);
-                let address = match resolve(module, name) {
+                let address = match resolve(module, &name) {
                     Ok(address) => address,
                     Err(Unresolved::NoModule) => panic!("import module '{module}' is not loaded"),
                     Err(Unresolved::NoEntry) => {
@@ -1814,9 +1811,11 @@ mod tests {
         let _ = snap_default(&bad);
     }
 
+    /// An import by ordinal reaches the resolver as `#<ordinal>` (here no export of the stand-in
+    /// table, so the snap refuses it by that name).
     #[test]
-    #[should_panic(expected = "ordinal import 0x2038")]
-    fn ordinal_import_panics() {
+    #[should_panic(expected = "entry point '#8248' not found")]
+    fn ordinal_imports_reach_the_resolver_by_number() {
         let bad = patched(EXIT0, |b| w32(b, 0x2030, 0x8000_2038));
         let _ = snap_default(&bad);
     }

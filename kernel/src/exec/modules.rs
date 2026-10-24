@@ -523,8 +523,12 @@ mod tests {
 
     /// The corpus binaries (the smokes in the root directory, the sectioned fixtures in \CORPUS):
     /// the import surface kernel32 exports.
-    const CORPUS: [(&str, &[u8]); 11] = [
+    const CORPUS: [(&str, &[u8]); 12] = [
         ("bare", include_bytes!("../../../tests/core/bare/bare.exe")),
+        (
+            "dllmain",
+            include_bytes!("../../../tests/kernel32/dllmain/dllmain.exe"),
+        ),
         (
             "files",
             include_bytes!("../../../tests/kernel32/files/files.exe"),
@@ -565,9 +569,19 @@ mod tests {
     ];
 
     /// The exports kernel32 implements ahead of the corpus binary that imports them: a fixture
-    /// declared before its real-machine build (tests/kernel32/dllmain, awaited). Once its program
-    /// is checked in, it joins [`CORPUS`] (its companion DLLs' imports aside) and these leave.
-    const AWAITED: [&str; 1] = ["DisableThreadLibraryCalls"];
+    /// declared before its real-machine build (awaited). Once its program is checked in, it joins
+    /// [`CORPUS`] and these leave.
+    const AWAITED: [&str; 0] = [];
+
+    /// The corpus's own companion DLLs that a corpus binary imports (dllmain's): built beside it on
+    /// the real machine and loaded from \CORPUS, not system DLLs, so the checks of kernel32's
+    /// surface leave their imports aside.
+    const COMPANIONS: [&str; 2] = ["f2kbase.dll", "f2kmid.dll"];
+
+    /// Whether `module` is one of the corpus's companion DLLs.
+    fn companion(module: &str) -> bool {
+        COMPANIONS.iter().any(|dll| dll.eq_ignore_ascii_case(module))
+    }
 
     /// A binary's imports, as (module, name), read through the PE parser's import walk.
     fn imports_of(file: &[u8]) -> Vec<(String, String)> {
@@ -600,6 +614,9 @@ mod tests {
         let mut imported: Vec<String> = Vec::new();
         for (fixture, file) in CORPUS {
             for (module, name) in imports_of(file) {
+                if companion(&module) {
+                    continue;
+                }
                 assert!(
                     module.eq_ignore_ascii_case(KERNEL32_NAME),
                     "{fixture} imports {module}"
@@ -717,7 +734,7 @@ mod tests {
         assert_eq!(names("ntdll"), NTDLL_BASE);
         for (fixture, file) in CORPUS {
             let imports = imports_of(file);
-            for (module, name) in &imports {
+            for (module, name) in imports.iter().filter(|(module, _)| !companion(module)) {
                 assert_eq!(
                     ldr::procedure_address(&process, HEAP, names(module), name.as_bytes()),
                     resolve(module, name).map_err(|_| 0),

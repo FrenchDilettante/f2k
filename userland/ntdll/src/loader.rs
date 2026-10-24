@@ -912,8 +912,9 @@ pub extern "system" fn ldr_unload_dll(module: u32) -> u32 {
 }
 
 /// LdrDisableThreadCalloutsForDll: the DLL whose handle is `module` gets no DLL_THREAD_ATTACH and
-/// DLL_THREAD_DETACH from now on (LDRP_DONT_CALL_FOR_THREADS). STATUS_DLL_NOT_FOUND for a handle
-/// naming no module.
+/// DLL_THREAD_DETACH from now on (LDRP_DONT_CALL_FOR_THREADS). A handle naming no module changes
+/// nothing and succeeds (the dllmain capture: DisableThreadLibraryCalls answers TRUE for one, the
+/// last error untouched).
 #[unsafe(export_name = "f2k_export_LdrDisableThreadCalloutsForDll")]
 pub extern "system" fn ldr_disable_thread_callouts_for_dll(module: u32) -> u32 {
     locked(|| match modules::by_base(&Mapped, ldr(), module) {
@@ -921,7 +922,7 @@ pub extern "system" fn ldr_disable_thread_callouts_for_dll(module: u32) -> u32 {
             set_flags(entry, flags_of(entry) | flags::DONT_CALL_FOR_THREADS);
             STATUS_SUCCESS
         }
-        None => STATUS_DLL_NOT_FOUND,
+        None => STATUS_SUCCESS,
     })
 }
 

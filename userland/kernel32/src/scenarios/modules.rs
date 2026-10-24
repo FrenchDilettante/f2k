@@ -191,8 +191,8 @@ fn free_library_answers_for_modules() {
 }
 
 /// DisableThreadLibraryCalls: the loader turns the module's thread notifications off (TRUE, the
-/// last error untouched); a handle naming no module is FALSE with ERROR_MOD_NOT_FOUND, as Windows
-/// 2000 maps LdrDisableThreadCalloutsForDll's STATUS_DLL_NOT_FOUND.
+/// last error untouched); a handle naming no module is TRUE as well, nothing turned off (the
+/// dllmain capture).
 ///
 /// Pins: kernel32.DisableThreadLibraryCalls
 #[test]
@@ -201,8 +201,8 @@ fn thread_library_calls_are_turned_off_by_the_loader() {
     set_last_error(0x0F2F_2F2F);
     assert_eq!(disable_thread_library_calls(KERNEL32), 1);
     assert_eq!(last_error(), 0x0F2F_2F2F, "untouched");
-    assert_eq!(disable_thread_library_calls(0x1234_0000), 0);
-    assert_eq!(last_error(), ERROR_MOD_NOT_FOUND);
+    assert_eq!(disable_thread_library_calls(0x1234_0000), 1);
+    assert_eq!(last_error(), 0x0F2F_2F2F, "untouched");
     assert_eq!(
         NO_THREAD_CALLS.with(|modules| modules.borrow().clone()),
         [KERNEL32]

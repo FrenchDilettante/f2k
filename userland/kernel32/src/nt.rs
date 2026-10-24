@@ -2881,17 +2881,15 @@ pub mod modules {
     }
 
     /// A module of the lists has its thread notifications turned off (recorded); any other handle
-    /// is STATUS_DLL_NOT_FOUND.
+    /// changes nothing and succeeds, as ntdll's does.
     pub unsafe extern "system" fn LdrDisableThreadCalloutsForDll(module: u32) -> u32 {
         if let Some(status) = failure() {
             return status;
         }
         if MODULE_PATHS.iter().any(|&(base, _)| base == module) {
             NO_THREAD_CALLS.with(|modules| modules.borrow_mut().push(module));
-            0
-        } else {
-            STATUS_DLL_NOT_FOUND
         }
+        0
     }
 
     /// kernel32's GetTickCount alone is an export (by its exact name, or by its ordinal); no name
