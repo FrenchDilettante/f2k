@@ -114,7 +114,7 @@ failing test (red), implemented with no passing test (yellow: none pins it, or e
 does is pending, skipped or did not run), or stubbed (grey with a teal tint). Every
 `make test` keeps its results
 (`target/test-results/pytest.json`); `make compat-report` runs the host scenarios and draws the
-report from both, `target/compat/report.html`: one square per export, per DLL. `--check` checks the
+report from both, `target/compat/report.html`: a treemap of every DLL, one square per export. `--check` checks the
 pins against the specs and the captures; `--run` runs every scenario, ignored ones included, and
 fails once a gap's test passes (the marker goes with the fix).
 

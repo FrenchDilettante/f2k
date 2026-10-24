@@ -433,6 +433,7 @@ OUTCOME_WORDS = {"passed": "passed", "failed": "FAILED", "xfailed": "pending", "
 STYLE = """
 :root {
   --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514c; --ink-3: #7a7970; --rule: #e1e0d9;
+  --tile: #f0efea;
   --passing: #0ca30c; --failing: #d03b3b; --uncovered: #fab219; --unimplemented: #d9d8d0;
   --stubbed: #cfe3df;
   --mark-on-failing: #ffffff; --mark-on-uncovered: #0b0b0b; --tip: #ffffff;
@@ -441,42 +442,55 @@ STYLE = """
 @media (prefers-color-scheme: dark) {
   :root {
     --surface: #1a1a19; --ink: #f2f2ef; --ink-2: #b9b8b0; --ink-3: #8c8b83; --rule: #2c2c2a;
+    --tile: #222220;
     --unimplemented: #3a3a37; --stubbed: #33504b; --tip: #242422; --ring: rgba(255,255,255,0.10);
   }
 }
 * { box-sizing: border-box; }
-body { margin: 0; padding: 24px 16px 48px; background: var(--surface); color: var(--ink);
+body { margin: 0; padding: 0; background: var(--surface); color: var(--ink);
   font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
-main { max-width: 1100px; margin: 0 auto; }
+header { display: grid; grid-template-columns: 1fr auto; padding-bottom: 0 !important; }
+main { margin: 0 auto; }
+.container { padding: 16px; }
 h1 { font-size: 20px; margin: 0 0 4px; }
-h2 { font-size: 16px; margin: 0; }
-.meta { color: var(--ink-2); margin: 0 0 16px; }
+h2 { font-size: 16px; margin: 32px 0 8px; }
+.meta { color: var(--ink-2); margin: 0; grid-column: span 2; }
 .banner { border: 1px solid var(--uncovered); border-left-width: 4px; padding: 8px 12px;
   margin: 0 0 16px; border-radius: 4px; }
-.controls { display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: center; margin: 0 0 24px;
+.controls { display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: center; margin: 0 0 16px;
   padding: 12px 0; border-bottom: 1px solid var(--rule); position: sticky; top: 0;
   background: var(--surface); z-index: 2; }
-.controls input[type=search] { font: inherit; padding: 4px 8px; min-width: 220px;
+input[type=search] { font: inherit; padding: 4px 8px; min-width: 220px;
   border: 1px solid var(--rule); border-radius: 4px; background: var(--surface); color: var(--ink); }
-.legend label { display: inline-flex; align-items: center; gap: 6px; margin-right: 14px;
-  color: var(--ink-2); cursor: pointer; white-space: nowrap; }
-section.dll { margin: 0 0 36px; }
-.dll-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 16px; margin: 0 0 10px; }
-.counts { color: var(--ink-2); font-variant-numeric: tabular-nums; }
-.bar { display: flex; height: 6px; gap: 2px; margin: 0 0 12px; }
-.bar span { border-radius: 2px; min-width: 2px; }
-.grid { display: flex; flex-wrap: wrap; gap: 2px; }
-.sq { width: 14px; height: 14px; border-radius: 3px; display: inline-flex; align-items: center;
-  justify-content: center; font: 700 10px/1 system-ui, sans-serif; cursor: pointer;
-  box-shadow: inset 0 0 0 1px var(--ring); }
-.sq:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
-.passing { background: var(--passing); }
-.failing { background: var(--failing); color: var(--mark-on-failing); }
-.uncovered { background: var(--uncovered); color: var(--mark-on-uncovered); }
-.unimplemented { background: var(--unimplemented); }
-.stubbed { background: var(--stubbed); }
-.sq.dim { opacity: 0.15; }
-.sq.hidden { display: none; }
+.full-screen { display: flex; flex-direction: column; width: 100vw; height: 100vh; }
+.flex-1 { flex: 1; min-height: 0; }
+.key { width: 14px; height: 14px; border-radius: 3px; display: inline-flex; align-items: center;
+  justify-content: center; font: 700 10px/1 system-ui, sans-serif; box-shadow: inset 0 0 0 1px var(--ring); }
+.key.passing { background: var(--passing); }
+.key.failing { background: var(--failing); color: var(--mark-on-failing); }
+.key.uncovered { background: var(--uncovered); color: var(--mark-on-uncovered); }
+.key.stubbed { background: var(--unimplemented); box-shadow: inset 0 0 0 1.5px var(--ink-2); }
+.key.unimplemented { background: var(--unimplemented); }
+#map { display: block; width: 100%; height: 100%; }
+#map .tile { fill: var(--tile); stroke: var(--unimplemented); stroke-width: 2; }
+#map .dll { font: 600 12px/1 system-ui, sans-serif; fill: var(--ink); }
+#map .dll-count { font: 12px/1 system-ui, sans-serif; fill: var(--ink-2); font-variant-numeric: tabular-nums; }
+#map rect.sq { cursor: pointer; }
+#map .passing { fill: var(--passing); }
+#map .failing { fill: var(--failing); }
+#map .uncovered { fill: var(--uncovered); }
+#map .stubbed { fill: var(--unimplemented); stroke: var(--ink-2); stroke-width: var(--stub-stroke, 1.5); }
+#map .unimplemented { fill: var(--unimplemented); }
+#map .glyph { font-weight: 700; font-family: system-ui, sans-serif; text-anchor: middle; dominant-baseline: central;
+  pointer-events: none; }
+#map .glyph.failing { fill: var(--mark-on-failing); }
+#map .glyph.uncovered { fill: var(--mark-on-uncovered); }
+#map .dim { opacity: 0.15; }
+.scroll { overflow-x: auto; }
+table.summary { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+table.summary td, table.summary th { padding: 4px 12px 4px 0; border-bottom: 1px solid var(--rule);
+  text-align: right; }
+table.summary td:first-child, table.summary th:first-child { text-align: left; }
 details { margin-top: 12px; color: var(--ink-2); }
 details table { border-collapse: collapse; margin-top: 8px; width: 100%; }
 details td, details th { text-align: left; padding: 3px 12px 3px 0; border-bottom: 1px solid var(--rule);
@@ -486,15 +500,147 @@ details td, details th { text-align: left; padding: 3px 12px 3px 0; border-botto
   0 0 0 1px var(--ring); display: none; }
 #tip b { display: block; margin-bottom: 2px; }
 #tip .st { color: var(--ink-2); }
-@media (forced-colors: active) { .sq { border: 1px solid CanvasText; } }
+@media (forced-colors: active) { .key { border: 1px solid CanvasText; } }
 """
 
+# The treemap, drawn in the page from the report's data (the `data` script element): one rectangle
+# per DLL, its area its export count, squarified to fill the map's place on screen, the DLLs
+# touching; one square per export inside it, in name order, inside the rectangle's padding. Every
+# square is the same size, the largest at which they all fit; it is redrawn when the size changes.
 SCRIPT = """
+const DATA = JSON.parse(document.getElementById('data').textContent);
+const STATUSES = DATA.statuses, LABELS = DATA.labels;
+const PAD = 4, LABEL = 18;
+const SVG = 'http://www.w3.org/2000/svg';
+const map = document.getElementById('map');
 const tip = document.getElementById('tip');
 const esc = s => String(s).replace(/[&<>]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;'}[c]));
-function show(sq, x, y) {
-  const d = JSON.parse(sq.dataset.info);
-  let h = '<b>' + esc(d.pin) + '</b><span class="st">' + esc(d.label) + '</span>';
+const exports = [];
+for (const dll of DATA.dlls) for (const x of dll.exports) exports.push(x);
+
+// The DLLs' rectangles: a squarified treemap of the map's whole area (each DLL's area its export
+// count; rows of rectangles laid along the shorter side, each row taking DLLs, largest first, while
+// its worst aspect ratio improves), the edges snapped to whole pixels so the rectangles touch.
+function squarify(values, W, H) {
+  const total = values.reduce((a, v) => a + v, 0);
+  const areas = values.map(v => v * W * H / total);
+  const worst = (row, side) => {
+    const sum = row.reduce((a, v) => a + v, 0), max = Math.max(...row), min = Math.min(...row);
+    return Math.max(side * side * max / (sum * sum), sum * sum / (side * side * min));
+  };
+  const out = [];
+  let x = 0, y = 0, w = W, h = H, i = 0;
+  while (i < areas.length) {
+    const side = Math.min(w, h);
+    const row = [areas[i]];
+    let j = i + 1;
+    while (j < areas.length && worst([...row, areas[j]], side) <= worst(row, side)) row.push(areas[j++]);
+    const sum = row.reduce((a, v) => a + v, 0);
+    if (w >= h) {
+      const across = sum / h;
+      let at = y;
+      for (const a of row) { out.push({x, y: at, w: across, h: a / across}); at += a / across; }
+      x += across; w -= across;
+    } else {
+      const across = sum / w;
+      let at = x;
+      for (const a of row) { out.push({x: at, y, w: a / across, h: across}); at += a / across; }
+      y += across; h -= across;
+    }
+    i = j;
+  }
+  return out.map(r => {
+    const x0 = Math.round(r.x), y0 = Math.round(r.y);
+    return {x: x0, y: y0, w: Math.round(r.x + r.w) - x0, h: Math.round(r.y + r.h) - y0};
+  });
+}
+
+// The squares' pitch: the largest (to a fraction of a pixel, by bisection) at which every DLL's
+// squares fit its rectangle, inside its padding and under its label. At each pitch tried, each
+// DLL's area starts as what it needs there (its squares as a near-square block, its padding, its
+// label), then a few rounds of reweighting give a DLL short of rows more area and a roomy one less,
+// so the rectangles' leftover space evens out across the DLLs.
+const gapOf = pitch => pitch >= 8 ? 2 : pitch >= 3 ? 1 : 0;
+const columnsOf = (r, pitch) => Math.floor((r.w - 2 * PAD + gapOf(pitch)) / pitch);
+const rowsOf = (r, pitch) => Math.floor((r.h - 2 * PAD - LABEL + gapOf(pitch)) / pitch);
+function layoutAt(items, W, H, pitch) {
+  let weights = items.map(item => {
+    const side = (Math.sqrt(item.n) + 1) * pitch;
+    return (side + 2 * PAD) * (side + 2 * PAD + LABEL);
+  });
+  for (let round = 0; round < 8; round++) {
+    const rects = squarify(weights, W, H);
+    const room = rects.map((r, k) => Math.max(0, columnsOf(r, pitch)) * Math.max(0, rowsOf(r, pitch)) >= items[k].n);
+    if (room.every(Boolean)) return rects;
+    weights = rects.map((r, k) => {
+      const columns = Math.max(1, columnsOf(r, pitch));
+      const needed = Math.ceil(items[k].n / columns) * pitch + 2 * PAD + LABEL;
+      return weights[k] * Math.max(0.5, Math.min(2, needed / Math.max(1, r.h)));
+    });
+  }
+  return null;
+}
+function fit(items, W, H) {
+  const total = items.reduce((a, item) => a + item.n, 0);
+  let low = 0.5, high = Math.sqrt(W * H / total), rects = null;
+  for (let step = 0; step < 24; step++) {
+    const pitch = (low + high) / 2, found = layoutAt(items, W, H, pitch);
+    if (found) { low = pitch; rects = found; } else { high = pitch; }
+  }
+  // A screen too small for any: the smallest pitch tried, squares overflowing their rectangles.
+  rects = rects || squarify(items.map(item => item.n), W, H);
+  const pitch = low;
+  return {rects, pitch, size: pitch - gapOf(pitch), columns: r => Math.max(1, columnsOf(r, pitch))};
+}
+
+function node(name, attrs, parent) {
+  const el = document.createElementNS(SVG, name);
+  for (const k in attrs) el.setAttribute(k, attrs[k]);
+  parent.appendChild(el);
+  return el;
+}
+
+// Draw the map to fill its place on screen, exactly.
+let drawnSize = '';
+function draw() {
+  const box = map.getBoundingClientRect();
+  const W = Math.floor(box.width), H = Math.floor(box.height);
+  if (W < 1 || H < 1 || `${W}x${H}` === drawnSize) return;
+  drawnSize = `${W}x${H}`;
+  const items = DATA.dlls.map(d => ({dll: d, n: d.exports.length})).filter(item => item.n > 0)
+    .sort((a, b) => b.n - a.n);
+  const {rects, pitch, size, columns} = fit(items, W, H);
+  map.replaceChildren();
+  map.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  map.style.setProperty('--stub-stroke', size >= 8 ? 1.5 : 1);
+  items.forEach((item, k) => {
+    const r = rects[k], dll = item.dll, across = columns(r);
+    node('rect', {class: 'tile', x: r.x, y: r.y, width: r.w, height: r.h}, map);
+    const clip = node('clipPath', {id: 'clip-' + k}, map);
+    node('rect', {x: r.x, y: r.y, width: r.w, height: r.h}, clip);
+    const label = node('text', {class: 'dll', x: r.x + PAD, y: r.y + PAD + 12, 'clip-path': `url(#clip-${k})`}, map);
+    label.textContent = dll.dll;
+    node('tspan', {class: 'dll-count', dx: 6}, label).textContent = dll.exports.length;
+    node('title', {}, label).textContent = dll.summary;
+    dll.exports.forEach((x, n) => {
+      const cx = r.x + PAD + (n % across) * pitch, cy = r.y + PAD + LABEL + Math.floor(n / across) * pitch;
+      x.el = node('rect', {class: 'sq ' + x.s, x: cx, y: cy, width: size, height: size,
+                           rx: Math.min(2, size / 4), 'data-index': x.index}, map);
+      const glyph = DATA.marks[x.s];
+      x.glyph = null;
+      if (glyph && size >= 8) {
+        x.glyph = node('text', {class: 'glyph ' + x.s, x: cx + size / 2, y: cy + size / 2,
+                                'font-size': Math.round(size * 0.9)}, map);
+        x.glyph.textContent = glyph;
+      }
+    });
+  });
+  filter();
+}
+
+function show(x, cx, cy) {
+  const d = x.i;
+  let h = '<b>' + esc(d.pin) + '</b><span class="st">' + esc(LABELS[x.s]) + '</span>';
   const facts = [d.ordinal && 'ordinal ' + d.ordinal, d.data && 'data', d.group && 'group: ' + d.group,
                  d.impl && 'impl: ' + d.impl, d.version && 'since NT ' + d.version].filter(Boolean);
   if (facts.length) h += '<div class="st">' + esc(facts.join(' · ')) + '</div>';
@@ -507,13 +653,13 @@ function show(sq, x, y) {
   tip.innerHTML = h;
   tip.style.display = 'block';
   const r = tip.getBoundingClientRect();
-  tip.style.left = Math.min(x + 14, innerWidth - r.width - 8) + 'px';
-  tip.style.top = (y + 14 + r.height > innerHeight ? y - r.height - 10 : y + 14) + 'px';
+  tip.style.left = Math.min(cx + 14, innerWidth - r.width - 8) + 'px';
+  tip.style.top = (cy + 14 + r.height > innerHeight ? cy - r.height - 10 : cy + 14) + 'px';
 }
-// A square's export name to the clipboard (a file: page may lack the async clipboard: the
-// selection's copy then), confirmed in its tooltip.
-function copy(sq) {
-  const name = JSON.parse(sq.dataset.info).name;
+// An export's name to the clipboard (a file: page may lack the async clipboard: the selection's
+// copy then), confirmed in its tooltip.
+function copy(x) {
+  const name = x.n;
   const done = () => { tip.innerHTML = '<b>' + esc(name) + '</b><span class="st">copied</span>'; };
   if (navigator.clipboard && window.isSecureContext) {
     navigator.clipboard.writeText(name).then(done, () => fallback(name) && done());
@@ -533,30 +679,31 @@ function fallback(text) {
   area.remove();
   return ok;
 }
-document.querySelectorAll('.grid .sq').forEach(sq => {
-  sq.addEventListener('click', () => copy(sq));
-  sq.addEventListener('keydown', e => { if (e.key === 'Enter') copy(sq); });
-  sq.addEventListener('mousemove', e => show(sq, e.clientX, e.clientY));
-  sq.addEventListener('mouseleave', () => tip.style.display = 'none');
-  sq.addEventListener('focus', () => { const r = sq.getBoundingClientRect(); show(sq, r.right, r.bottom); });
-  sq.addEventListener('blur', () => tip.style.display = 'none');
-});
+const under = e => e.target.dataset && e.target.dataset.index !== undefined ? exports[e.target.dataset.index] : null;
+map.addEventListener('mousemove', e => { const x = under(e); if (x) show(x, e.clientX, e.clientY); else tip.style.display = 'none'; });
+map.addEventListener('mouseleave', () => tip.style.display = 'none');
+map.addEventListener('click', e => { const x = under(e); if (x) copy(x); });
+
+// The search dims the exports whose names don't match: the squares keep their places.
 const search = document.getElementById('search');
-const shown = () => new Set([...document.querySelectorAll('.legend input:checked')].map(i => i.value));
 function filter() {
-  const q = search.value.trim().toLowerCase(), on = shown();
-  document.querySelectorAll('.grid .sq').forEach(sq => {
-    sq.classList.toggle('hidden', !on.has(sq.dataset.status));
-    sq.classList.toggle('dim', q !== '' && !sq.dataset.name.includes(q));
-  });
+  const q = search.value.trim().toLowerCase();
+  for (const x of exports) {
+    const dim = q !== '' && !x.n.toLowerCase().includes(q);
+    x.el.classList.toggle('dim', dim);
+    if (x.glyph) x.glyph.classList.toggle('dim', dim);
+  }
 }
 search.addEventListener('input', filter);
-document.querySelectorAll('.legend input').forEach(i => i.addEventListener('change', filter));
+let pending = 0;
+addEventListener('resize', () => { cancelAnimationFrame(pending); pending = requestAnimationFrame(draw); });
+draw();
 """
 
 
 def render(specs, missing, pytest_run, scenario_run):
-    """The report: per DLL, one square per export in name order, coloured by status."""
+    """The report: every export of every DLL in one treemap (the page draws it from the data written
+    here), a summary table per DLL, and each DLL's failing and uncovered exports as a table."""
     e = html.escape
     notes = []
     for what, run, gaps, how in (("on-target suite", pytest_run, missing["blocks"], "make test"),
@@ -577,56 +724,65 @@ def render(specs, missing, pytest_run, scenario_run):
     when = lambda run: e(run["finished"][:16].replace("T", " "))  # noqa: E731
     runs = [f"on-target suite {when(pytest_run)}" if pytest_run else None,
             f"host scenarios {when(scenario_run)}" if scenario_run else None]
-    parts = [
-        "<!doctype html><html lang=en><head><meta charset=utf-8>",
-        '<meta name=viewport content="width=device-width, initial-scale=1">',
-        f"<title>F2K DLL compatibility</title><style>{STYLE}</style></head><body><main>",
-        "<h1>F2K DLL compatibility</h1>",
-        f"<p class=meta>Results: {'; '.join(r for r in runs if r) or 'none'}. "
-        "Hover a square for its tests; click it to copy its name.</p>",
-        *(f"<p class=banner>{note}</p>" for note in notes),
-        '<div class=controls><input type=search id=search placeholder="Find an export" '
-        'aria-label="Find an export"><span class=legend>',
-        *(f'<label><input type=checkbox value={s} checked><span class="sq {s}">{mark(s)}</span>'
-          f"{LABELS[s]}</label>" for s in STATUSES),
-        "</span></div>",
-    ]
+    data = {"statuses": STATUSES, "labels": LABELS, "marks": {s: mark(s) for s in STATUSES if mark(s)},
+            "dlls": []}
+    index = 0
+    rows, attention = [], []
     for dll, (_, exports) in specs.items():
         ordered = sorted(exports.values(), key=lambda x: x.name.lower())
         counts = {s: sum(x.status == s for x in ordered) for s in STATUSES}
-        total = len(ordered) or 1
-        parts.append(f"<section class=dll><div class=dll-head><h2>{e(dll)}.dll</h2><span class=counts>"
-                     f"{len(ordered)} exports · "
-                     + " · ".join(f"{counts[s]} {LABELS[s].lower()}" for s in STATUSES if counts[s])
-                     + "</span></div><div class=bar>"
-                     + "".join(f'<span class={s} style="flex:{counts[s] / total}"></span>'
-                               for s in STATUSES if counts[s])
-                     + "</div><div class=grid>")
+        entries = []
         for export in ordered:
             impl = export.spec.get("impl", {})
             info = {
-                "pin": export.pin, "name": export.name, "label": LABELS[export.status],
-                "group": export.group,
+                "pin": export.pin, "group": export.group,
                 "impl": next((f"{k} {v}" for k, v in impl.items()), None),
                 "ordinal": export.spec.get("ordinal"), "data": export.spec.get("data"),
                 "version": export.spec.get("version"), "note": export.spec.get("note"),
                 "implemented": export.implemented, "tests": tally(export.evidence),
             }
-            parts.append(f'<span class="sq {export.status}" tabindex=0 data-status={export.status} '
-                         f'data-name="{e(export.name.lower())}" data-info="{e(json.dumps(info))}" '
-                         f'aria-label="{e(export.name)}: {LABELS[export.status]}">{mark(export.status)}</span>')
-        parts.append("</div>")
-        attention = [x for x in ordered if x.status in ("failing", "uncovered")]
-        if attention:
-            parts.append(f"<details><summary>{len(attention)} failing or uncovered, as a table</summary>"
-                         "<table><tr><th>Export</th><th>Status</th><th>Pinning tests</th></tr>")
-            for export in attention:
+            entries.append({"n": export.name, "s": export.status, "index": index,
+                            "i": {k: v for k, v in info.items() if v}})
+            index += 1
+        summary = f"{dll}.dll: {len(ordered)} exports · " + " · ".join(
+            f"{counts[s]} {LABELS[s].lower()}" for s in STATUSES if counts[s])
+        data["dlls"].append({"dll": dll, "summary": summary, "exports": entries})
+        rows.append(f"<tr><td>{e(dll)}.dll</td><td>{len(ordered)}</td>"
+                    + "".join(f"<td>{counts[s] or ''}</td>" for s in STATUSES) + "</tr>")
+        failing = [x for x in ordered if x.status in ("failing", "uncovered")]
+        if failing:
+            attention.append(f"<details><summary>{e(dll)}.dll: {len(failing)} failing or uncovered</summary>"
+                             "<table><tr><th>Export</th><th>Status</th><th>Pinning tests</th></tr>")
+            for export in failing:
                 tests = ", ".join(f"{label} ({OUTCOME_WORDS[outcome]})" for label, outcome in export.evidence)
-                parts.append(f"<tr><td>{e(export.name)}</td><td>{LABELS[export.status]}</td>"
-                             f"<td>{e(tests) or 'none'}</td></tr>")
-            parts.append("</table></details>")
-        parts.append("</section>")
-    parts.append(f"</main><div id=tip role=tooltip></div><script>{SCRIPT}</script></body></html>")
+                attention.append(f"<tr><td>{e(export.name)}</td><td>{LABELS[export.status]}</td>"
+                                 f"<td>{e(tests) or 'none'}</td></tr>")
+            attention.append("</table></details>")
+    payload = json.dumps(data, separators=(",", ":")).replace("</", "<\\/")
+    parts = [
+        "<!doctype html><html lang=en><head><meta charset=utf-8>",
+        '<meta name=viewport content="width=device-width, initial-scale=1">',
+        f"<title>F2K DLL compatibility</title><style>{STYLE}</style></head><body>",
+        "<main>",
+        '<div class="full-screen">',
+        '<header class="container">'
+        "<h1>F2K DLL compatibility</h1>",
+        '<input type="search" id="search" placeholder="Find an export" aria-label="Find an export">',
+        f"<p class=meta>Results: {'; '.join(r for r in runs if r) or 'none'}.</p>",
+        *(f"<p class=banner>{note}</p>" for note in notes),
+        "</header>",
+        '<div class="flex-1 container"><svg id=map role=img aria-label="Every export of every DLL, by status"></svg></div>',
+        '</div>',
+        '<div class="container">',
+        "<h2>By DLL</h2><div class=scroll><table class=summary><tr><th>DLL</th><th>Exports</th>"
+        + "".join(f"<th>{LABELS[s]}</th>" for s in STATUSES) + "</tr>",
+        *rows,
+        "</table></div>",
+        *attention,
+        '</div>',
+        f"</main><div id=tip role=tooltip></div><script type=application/json id=data>{payload}</script>",
+        f"<script>{SCRIPT}</script></body></html>",
+    ]
     REPORT.parent.mkdir(parents=True, exist_ok=True)
     REPORT.write_text("".join(parts) + "\n")
 
