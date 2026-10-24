@@ -436,8 +436,8 @@ impl FileRecords {
         }
     }
 
-    /// Forget every record (the process's end, after every open was closed), returning how many
-    /// were still taken.
+    /// Forget every record (at quiescence, once every process's opens were closed), returning how
+    /// many were still taken.
     pub fn clear(&mut self) -> usize {
         let live = self.live();
         for record in self.records.iter_mut() {

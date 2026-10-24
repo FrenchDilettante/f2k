@@ -20,7 +20,10 @@
 //! thread — the ladder every boot uses — and runs on the scheduler to its exit or fault. Its last
 //! thread's exit reports and switches to the idle thread, whose reap step tears the process down on
 //! the boot stack and address space and hands the outcome here: the audit line, then the next
-//! process, or the summary.
+//! process, or the summary. An audit line waits for quiescence, when no process remains that has
+//! not been torn down (only then can the free frames be held to the post-boot baseline); a process
+//! starts only once the last is reaped, so each line follows its own process's end. The perf trace
+//! dump (the `perf-trace` feature) lands at the last quiescent point, before the boot's last line.
 //!
 //! With the kernel option `screens` (`F2K: ... screens -- CORPUS\console.exe info ;; ...`), each
 //! process's end pauses the boot before its audit line, for the test harness to take a screenshot
@@ -28,7 +31,15 @@
 //! and waits, interrupts masked, until the harness writes the CMOS mailbox byte through QEMU's
 //! monitor ([`crate::hw::rtc::await_mailbox`]), or a few seconds' worth of reads pass.
 
-use crate::process::exit::{self, AfterLeg, AuditReport, ProcessEnd, SuiteTally};
+use crate::process::exit::{
+    self,
+    AfterLeg,
+    AuditReport,
+    DeferredAudits,
+    ProcessEnd,
+    Reaped,
+    SuiteTally,
+};
 
 /// The program a boot without a user command line runs.
 const DEFAULT_PROGRAM: &[u8] = b"exit0";
@@ -39,7 +50,18 @@ static mut LEGS: u32 = 0;
 /// The index of the process running or just finished (1-based).
 static mut CURRENT: u32 = 0;
 /// The outcomes so far.
-static mut TALLY: SuiteTally = SuiteTally::new();
+static mut OUTCOMES: Outcomes = Outcomes {
+    tally: SuiteTally::new(),
+    audits: DeferredAudits::new(),
+};
+
+/// What the reaps have reported, and what waits to be.
+struct Outcomes {
+    /// The legs counted so far (their audit lines printed).
+    tally: SuiteTally,
+    /// The audit lines waiting for the next quiescent point.
+    audits: DeferredAudits,
+}
 
 /// Run the boot's programs: record the allocator baseline, ready the first program's main thread,
 /// and enter the idle loop. Never returns.
@@ -61,33 +83,49 @@ pub fn current_leg() -> Option<exit::Leg> {
 }
 
 /// The reap step's landing point, on the idle thread after a process's teardown: audit the
-/// allocators against the post-boot baseline and report. On a boot of several programs, count the
-/// outcome, then ready the next process — or print the summary, after which the idle thread rests.
-pub fn process_reaped(end: ProcessEnd) {
-    let audit = crate::process::audit_allocators();
+/// allocators' structures and defer the process's audit line. At a `quiescent` reap, compare the
+/// free frames with the post-boot baseline and report every deferred line (see
+/// [`DeferredAudits`]); on a boot of several programs, count the outcomes, then ready the next
+/// process — or print the summary, after which the idle thread rests.
+pub fn process_reaped(end: ProcessEnd, quiescent: bool) {
+    let (frames_audit_ok, heap_audit_ok) = crate::process::audit_structures();
+    let frames = quiescent.then(crate::process::frames_against_baseline);
     let legs = leg_count();
     pause_for_screen();
+    // SAFETY: runner state; single CPU, touched only from the idle thread's reap step.
+    let Outcomes { tally, audits } = unsafe { &mut *core::ptr::addr_of_mut!(OUTCOMES) };
+    audits.defer(Reaped {
+        index: (legs > 1).then(current_index),
+        end,
+        frames_audit_ok,
+        heap_audit_ok,
+    });
+    let Some((available, baseline)) = frames else {
+        return;
+    };
+    // On a boot of one program, before the audit line: the harness stops the boot on it, so the
+    // dump must land first.
+    #[cfg(feature = "perf-trace")]
     if legs <= 1 {
-        // Before the audit line: the harness stops the boot on it, so the dump must land first.
-        #[cfg(feature = "perf-trace")]
         crate::perf::report();
-        crate::serial_println!("{}", AuditReport { index: None, audit });
+    }
+    audits.settle(available, baseline, |reaped, audit| {
+        crate::serial_println!(
+            "{}",
+            AuditReport {
+                index: reaped.index,
+                audit
+            }
+        );
+        if legs > 1 {
+            tally.record(reaped.end, audit.is_ok());
+        }
+    });
+    if legs <= 1 {
         return;
     }
 
-    let index = current_index();
-    crate::serial_println!(
-        "{}",
-        AuditReport {
-            index: Some(index),
-            audit
-        }
-    );
-    // SAFETY: runner state; single CPU, touched only from the idle thread's reap step.
-    let tally = unsafe { &mut *core::ptr::addr_of_mut!(TALLY) };
-    tally.record(end, audit.is_ok());
-
-    match exit::after_leg(index, legs) {
+    match exit::after_leg(current_index(), legs) {
         AfterLeg::Next(next) => start_leg(next),
         AfterLeg::Summary => {
             // Before the summary line: the harness stops the boot on it.

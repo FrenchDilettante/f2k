@@ -133,6 +133,22 @@ pub fn ended() -> Option<&'static mut Process> {
     })
 }
 
+/// Whether reaping `reaped` leaves the system quiescent: no other process remains that has not
+/// been torn down — none running, none ended and waiting for its own reap. A torn-down process
+/// whose object a handle still holds counts as gone.
+#[cfg(target_arch = "x86")]
+pub fn quiescent_after(reaped: &Process) -> bool {
+    !(0..MAX_PROCESSES as u16).any(|index| {
+        crate::ob::directory()
+            .processes_live(index)
+            .is_some_and(|id| {
+                // SAFETY: as in `ended`.
+                let process = unsafe { &*record(index) };
+                process.object == id && id != reaped.object && !process.torn_down
+            })
+    })
+}
+
 /// Whether the idle thread has a process to reap (see [`ended`]).
 #[cfg(target_arch = "x86")]
 pub fn reap_pending() -> bool {

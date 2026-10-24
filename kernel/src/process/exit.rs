@@ -273,6 +273,87 @@ impl fmt::Display for AuditReport {
     }
 }
 
+/// A torn-down process whose teardown audit line waits for the next quiescent point: its leg's
+/// index (none on a one-process boot), how it ended, and the allocators' structure audits taken at
+/// its reap (they hold at any time; the comparison with the post-boot baseline does not).
+#[cfg(any(test, target_arch = "x86"))]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Reaped {
+    pub index: Option<u32>,
+    pub end: ProcessEnd,
+    /// Whether the frame database's structure audit held at the reap.
+    pub frames_audit_ok: bool,
+    /// Whether the kernel heap's structure audit held at the reap.
+    pub heap_audit_ok: bool,
+}
+
+/// The teardown audits deferred to the next quiescent point, in reap order.
+///
+/// The frame database stands at the post-boot baseline only when no process holds a frame, so the
+/// comparison is made at quiescence — once no process remains that has not been torn down — and
+/// every process torn down since the last quiescent point shares its verdict: while processes
+/// overlap, no frame count tells whose a missing frame was. A boot that runs one process at a time
+/// reaches quiescence at every reap, and reports each process's line there, as it always did.
+///
+/// The ledger holds as many audits as there can be processes: a boot's legs start one after
+/// another, each once the last is reaped, or all at once (children of a process report no audit
+/// line).
+#[cfg(any(test, target_arch = "x86"))]
+pub struct DeferredAudits {
+    reaped: [Option<Reaped>; crate::process::MAX_PROCESSES],
+}
+
+#[cfg(any(test, target_arch = "x86"))]
+impl DeferredAudits {
+    /// None deferred.
+    pub const fn new() -> Self {
+        DeferredAudits {
+            reaped: [None; crate::process::MAX_PROCESSES],
+        }
+    }
+
+    /// Defer `reaped`'s audit to the next quiescent point.
+    ///
+    /// # Panics
+    ///
+    /// More audits wait than there can be processes (see the type's notes).
+    pub fn defer(&mut self, reaped: Reaped) {
+        let free = self
+            .reaped
+            .iter_mut()
+            .find(|slot| slot.is_none())
+            .expect("a deferred audit per process");
+        *free = Some(reaped);
+    }
+
+    /// The quiescent point: with `available` free frames against the post-boot `baseline`, hand
+    /// each deferred audit and its verdict to `report`, in reap order, and forget them.
+    pub fn settle(
+        &mut self,
+        available: u32,
+        baseline: u32,
+        mut report: impl FnMut(Reaped, Result<(), Leak>),
+    ) {
+        for slot in self.reaped.iter_mut() {
+            let Some(reaped) = slot.take() else {
+                break;
+            };
+            let verdict = if reaped.frames_audit_ok && reaped.heap_audit_ok && available == baseline
+            {
+                Ok(())
+            } else {
+                Err(Leak {
+                    available,
+                    baseline,
+                    frames_audit_ok: reaped.frames_audit_ok,
+                    heap_audit_ok: reaped.heap_audit_ok,
+                })
+            };
+            report(reaped, verdict);
+        }
+    }
+}
+
 /// What follows a suite leg's teardown.
 #[cfg(any(test, target_arch = "x86"))]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -568,6 +649,107 @@ mod tests {
             "F2K: teardown audit FAILED: 1234 frames available, 1240 before the process \
              (frame database corrupt, kernel heap corrupt)"
         );
+    }
+
+    /// A reaped process as the deferred-audit tests build it.
+    fn reaped(index: u32, end: ProcessEnd) -> Reaped {
+        Reaped {
+            index: Some(index),
+            end,
+            frames_audit_ok: true,
+            heap_audit_ok: true,
+        }
+    }
+
+    /// The deferred audits settled at quiescence: each in reap order with its own structure
+    /// audits, all sharing the baseline comparison; settled, the ledger is empty.
+    #[test]
+    fn deferred_audits_settle_at_quiescence() {
+        let mut audits = DeferredAudits::new();
+        let first = Reaped {
+            heap_audit_ok: false,
+            ..reaped(1, ProcessEnd::Exited(0))
+        };
+        audits.defer(first);
+        audits.defer(reaped(2, ProcessEnd::Faulted(PAGE_FAULT)));
+        let mut lines = Vec::new();
+        audits.settle(1240, 1240, |reaped, audit| lines.push((reaped, audit)));
+        assert_eq!(
+            lines,
+            vec![
+                (
+                    first,
+                    Err(Leak {
+                        available: 1240,
+                        baseline: 1240,
+                        frames_audit_ok: true,
+                        heap_audit_ok: false,
+                    })
+                ),
+                (reaped(2, ProcessEnd::Faulted(PAGE_FAULT)), Ok(())),
+            ],
+            "the structure audits stay each process's own"
+        );
+        let mut more = 0;
+        audits.settle(1240, 1240, |_, _| more += 1);
+        assert_eq!(more, 0, "settled once");
+
+        // Frames missing at quiescence: every process since the last quiescent point reports it.
+        audits.defer(reaped(3, ProcessEnd::Exited(0)));
+        audits.defer(reaped(4, ProcessEnd::Exited(0)));
+        let mut lines = Vec::new();
+        audits.settle(1238, 1240, |reaped, audit| {
+            lines.push(
+                AuditReport {
+                    index: reaped.index,
+                    audit,
+                }
+                .to_string(),
+            )
+        });
+        assert_eq!(
+            lines,
+            [3, 4].map(|index| format!(
+                "F2K: process {index} teardown audit FAILED: 1238 frames available, 1240 before \
+                 the process (frame database ok, kernel heap ok)"
+            ))
+        );
+    }
+
+    /// A process at a time: every reap is quiescent, and the one deferred line is today's.
+    #[test]
+    fn a_lone_process_settles_at_its_own_reap() {
+        let mut audits = DeferredAudits::new();
+        for _ in 0..crate::process::MAX_PROCESSES * 2 {
+            audits.defer(Reaped {
+                index: None,
+                ..reaped(0, ProcessEnd::Exited(0))
+            });
+            let mut lines = Vec::new();
+            audits.settle(1240, 1240, |reaped, audit| {
+                lines.push(
+                    AuditReport {
+                        index: reaped.index,
+                        audit,
+                    }
+                    .to_string(),
+                )
+            });
+            assert_eq!(
+                lines,
+                ["F2K: teardown audit: frame database ok, kernel heap ok"]
+            );
+        }
+    }
+
+    /// More audits waiting than there can be processes is a bug, not a lost line.
+    #[test]
+    #[should_panic(expected = "a deferred audit per process")]
+    fn deferred_audits_refuse_past_the_process_pool() {
+        let mut audits = DeferredAudits::new();
+        for index in 0..=crate::process::MAX_PROCESSES as u32 {
+            audits.defer(reaped(index + 1, ProcessEnd::Exited(0)));
+        }
     }
 
     /// After a leg's teardown: the suite walks its legs in order and ends with the summary.

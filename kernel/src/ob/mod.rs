@@ -1,7 +1,8 @@
 //! The object manager: every kernel object a handle can name, with its lifetime.
 //!
-//! Objects live in typed pools of fixed capacity, global to the kernel rather than to a process
-//! (one process runs at a time today; the pools are where a second one would find them). An object
+//! Objects live in typed pools of fixed capacity, global to the kernel rather than to a process:
+//! every process's objects share them, and a process's end deletes only what its own references
+//! held (the leak sweep waits for quiescence, when no process is left to hold one). An object
 //! is named by an [`ObjectId`] — its kind, its pool index and the generation of that record — never
 //! by a raw pointer: the generation moves on when the object is deleted, so an id that outlived its
 //! object resolves to nothing instead of to whatever reused the record.
@@ -955,13 +956,30 @@ impl Directory {
         }
     }
 
-    /// The process is gone (one process at a time: every object was its own): every object still
-    /// live is deleted — none should be, once its handles closed and its threads ended — and every
-    /// thread record starts over (its pages went with the address space). Returns how many objects
-    /// outlived their process; what a deleted one leaves (a leaked section's hold on its frames) is
-    /// handed to `finish`. Process objects are not swept: a process's own goes with its own
-    /// reference, at its teardown's end.
-    pub fn process_ended(
+    /// The process whose scheduling record is `owner` is gone: the records its threads left start
+    /// over (their pages went with its address space). Nothing else here is the process's alone:
+    /// its handles are closed and its threads have ended by now, so every object only it held went
+    /// with its last reference, and one still live is another process's too — or a leak, which
+    /// only the sweep at quiescence can tell ([`Directory::sweep`]). A thread record whose object
+    /// still lives (another process holds a handle to the thread) stays as it ended: its object is
+    /// still waitable and its exit code still readable.
+    pub fn process_ended(&mut self, owner: *const crate::sched::process::SchedProcess) {
+        for index in 0..THREADS {
+            let left = !self.threads.headers[index].live
+                && core::ptr::eq(self.threads.records[index].process, owner);
+            if left {
+                self.threads.records[index] = Thread::empty();
+            }
+        }
+    }
+
+    /// The sweep at quiescence, once no process remains that has not been torn down: every
+    /// reference a process held went with its end, so every object still live is a leak. Each is
+    /// deleted, every thread record starts over, and every name is freed. Returns how many objects
+    /// outlived their processes; what a deleted one leaves (a leaked section's hold on its frames)
+    /// is handed to `finish`. Process objects are not swept: the reaped process's own goes with its
+    /// own reference, at its teardown's end.
+    pub fn sweep(
         &mut self,
         dispatcher: &mut Dispatcher,
         mut finish: impl FnMut(Followup),
@@ -1525,14 +1543,14 @@ mod tests {
         );
     }
 
-    /// A timer the process's end sweeps (a leaked reference) leaves the timer table with it.
+    /// A timer the sweep at quiescence deletes (a leaked reference) leaves the timer table with it.
     #[test]
-    fn the_process_end_disarms_a_leaked_timer() {
+    fn the_sweep_disarms_a_leaked_timer() {
         let directory = directory();
         let dispatcher = dispatcher();
         let leaked = directory.create_timer(true).unwrap();
         dispatcher.set_waitable_timer(directory.timer(leaked).unwrap(), 1_000_000, 0, 0, false, 0);
-        assert_eq!(directory.process_ended(dispatcher, |_| {}), 1);
+        assert_eq!(directory.sweep(dispatcher, |_| {}), 1);
         assert!(
             !directory.timers.record(leaked.index).armed(),
             "the leaked timer left the table"
@@ -1646,7 +1664,7 @@ mod tests {
         dispatcher.abandon_mutexes(owner);
     }
 
-    /// `\BaseNamedObjects` is made once, at its first need, and is permanent: no process's end
+    /// `\BaseNamedObjects` is made once, at its first need, and is permanent: no sweep
     /// deletes it, nor counts it as a leak; no wait can name it.
     #[test]
     fn the_named_objects_directory_is_permanent() {
@@ -1659,14 +1677,14 @@ mod tests {
         assert!(directory.handle_opened(id));
         assert_eq!(closed(directory, id, dispatcher), vec![]);
         assert_eq!(directory.counts(id), Some((1, 0)));
-        assert_eq!(directory.process_ended(dispatcher, |_| {}), 0);
+        assert_eq!(directory.sweep(dispatcher, |_| {}), 0);
         assert!(directory.is_live(id), "it outlives every process");
         assert_eq!(directory.named_objects(), Some(id));
     }
 
     /// A window station and its desktop, as the boot makes WinSta0 and Default: typed, never
     /// waited on, and permanent through their creator's reference: a process's handles come and
-    /// go, and no process's end deletes them or counts them as leaks.
+    /// go, and no sweep deletes them or counts them as leaks.
     #[test]
     fn window_stations_and_desktops_are_permanent() {
         let directory = directory();
@@ -1687,14 +1705,14 @@ mod tests {
             assert_eq!(closed(directory, id, dispatcher), vec![]);
             assert_eq!(directory.counts(id), Some((1, 0)));
         }
-        assert_eq!(directory.process_ended(dispatcher, |_| {}), 0);
+        assert_eq!(directory.sweep(dispatcher, |_| {}), 0);
         assert!(directory.is_live(station) && directory.is_live(desktop));
     }
 
-    /// The process's end deletes whatever outlived it (a reference leak, reported) and starts every
-    /// thread record and name over.
+    /// The sweep at quiescence deletes whatever outlived its process (a reference leak, reported)
+    /// and starts every thread record and name over.
     #[test]
-    fn the_process_end_sweeps_the_directory() {
+    fn the_sweep_clears_the_directory() {
         let directory = directory();
         let dispatcher = dispatcher();
         let leaked = directory
@@ -1703,7 +1721,7 @@ mod tests {
         directory.bind_name(b"left", leaked).unwrap();
         let main = directory.create_thread_in(0..1).unwrap();
         directory.threads.record(main.index).teb_va = 0x7FFD_E000;
-        assert_eq!(directory.process_ended(dispatcher, |_| {}), 2);
+        assert_eq!(directory.sweep(dispatcher, |_| {}), 2);
         assert_eq!(directory.live_objects(), 0);
         assert!(!directory.is_live(leaked));
         assert_eq!(directory.lookup_name(b"left"), None);
@@ -1712,6 +1730,125 @@ mod tests {
             0,
             "records start over"
         );
+    }
+
+    /// A process for the two-process tests: its scheduling record at its final address.
+    fn sched_process(dir: u32) -> &'static mut crate::sched::process::SchedProcess {
+        let process = Box::leak(Box::new(crate::sched::process::SchedProcess::new(dir, 8)));
+        process.init();
+        process
+    }
+
+    /// A thread of `process` on a pooled record in `range`, with its TEB at `teb`.
+    fn pooled_thread(
+        directory: &mut Directory,
+        range: core::ops::Range<usize>,
+        process: &mut crate::sched::process::SchedProcess,
+        teb: u32,
+    ) -> ObjectId {
+        let id = directory.create_thread_in(range).unwrap();
+        let record = directory.threads.record(id.index);
+        *record = Thread::empty();
+        // SAFETY: the record is the leaked directory's, the process leaked: both final.
+        unsafe { record.attach_to(process) };
+        record.teb_va = teb;
+        id
+    }
+
+    /// Two processes' objects share the pools: the first one's end — its handles closed, its
+    /// threads' own references gone, then its records reset — takes only what it alone held. The
+    /// other's objects, its name and its running thread stay whole, an object both held included;
+    /// once the second ends too, nothing is left for the sweep.
+    #[test]
+    fn a_process_end_takes_only_its_own() {
+        let directory = directory();
+        let dispatcher = dispatcher();
+        let (a, b) = (sched_process(0x0090_0000), sched_process(0x00A0_0000));
+        let a_main = pooled_thread(directory, 0..1, a, 0x7FFD_E000);
+        let a_child = pooled_thread(directory, 1..THREADS, a, 0x7FFD_D000);
+        let b_thread = pooled_thread(directory, 1..THREADS, b, 0x7FFD_C000);
+        let a_event = directory
+            .create_event(EventKind::Notification, false)
+            .unwrap();
+        published(directory, a_event, dispatcher);
+        directory.bind_name(b"F2K.a", a_event).unwrap();
+        let b_semaphore = directory.create_semaphore(0, 1).unwrap();
+        published(directory, b_semaphore, dispatcher);
+        directory.bind_name(b"F2K.b", b_semaphore).unwrap();
+        // The first process opens the second's semaphore by its name.
+        assert!(directory.handle_opened(b_semaphore));
+
+        // The first process ends.
+        for id in [a_event, b_semaphore] {
+            assert_eq!(closed(directory, id, dispatcher), vec![]);
+        }
+        for id in [a_main, a_child] {
+            assert_eq!(directory.dereference(id, dispatcher), None);
+        }
+        directory.process_ended(a);
+        assert!(!directory.is_live(a_event), "its own went with its handle");
+        assert_eq!(directory.lookup_name(b"F2K.a"), None);
+        for id in [a_main, a_child] {
+            let record = directory.threads.record(id.index);
+            assert!(record.process.is_null() && record.teb_va() == 0, "reset");
+        }
+        assert_eq!(directory.counts(b_semaphore), Some((1, 1)), "the other's");
+        assert_eq!(directory.lookup_name(b"F2K.b"), Some(b_semaphore));
+        assert!(directory.is_live(b_thread));
+        let record = directory.threads.record(b_thread.index);
+        assert!(core::ptr::eq(record.process, b) && record.teb_va() == 0x7FFD_C000);
+
+        // The second ends: quiescence, and nothing leaked.
+        assert_eq!(closed(directory, b_semaphore, dispatcher), vec![]);
+        assert_eq!(directory.dereference(b_thread, dispatcher), None);
+        directory.process_ended(b);
+        assert_eq!(directory.threads.record(b_thread.index).teb_va(), 0);
+        assert_eq!(directory.sweep(dispatcher, |_| {}), 0);
+        assert_eq!(directory.live_objects(), 0);
+    }
+
+    /// A process's end cannot tell a leaked reference from another process's: the object stays
+    /// live, and so does a thread record whose object something still holds. The sweep at
+    /// quiescence catches the leak, deletes it and reports it.
+    #[test]
+    fn the_sweep_at_quiescence_catches_a_leak() {
+        let directory = directory();
+        let dispatcher = dispatcher();
+        let (a, b) = (sched_process(0x0090_0000), sched_process(0x00A0_0000));
+        let a_main = pooled_thread(directory, 0..1, a, 0x7FFD_E000);
+        let b_thread = pooled_thread(directory, 1..THREADS, b, 0x7FFD_C000);
+        let leaked = directory
+            .create_event(EventKind::Notification, false)
+            .unwrap();
+        published(directory, leaked, dispatcher);
+        // A reference the first process takes and never releases (a kernel bug), and one on its
+        // own thread object.
+        assert!(directory.reference(leaked));
+        assert!(directory.reference(a_main));
+
+        assert_eq!(closed(directory, leaked, dispatcher), vec![]);
+        assert_eq!(directory.dereference(a_main, dispatcher), None);
+        directory.process_ended(a);
+        assert!(
+            directory.is_live(leaked),
+            "not the first process's end to judge"
+        );
+        assert!(directory.is_live(a_main));
+        assert_eq!(
+            directory.threads.record(a_main.index).teb_va(),
+            0x7FFD_E000,
+            "a held thread's record stays as it ended"
+        );
+
+        assert_eq!(directory.dereference(b_thread, dispatcher), None);
+        directory.process_ended(b);
+        assert_eq!(
+            directory.sweep(dispatcher, |_| {}),
+            2,
+            "the event and the thread"
+        );
+        assert_eq!(directory.live_objects(), 0);
+        assert_eq!(directory.threads.record(a_main.index).teb_va(), 0);
     }
 
     /// One namespace for every kind and both session prefixes: `Global\` and `Local\` name the same
@@ -1745,7 +1882,7 @@ mod tests {
     }
 
     /// A process object: waitable, still active and unsignaled until its end, signaled with its
-    /// exit code at the end; the process-end sweep leaves it to its own reference, whose
+    /// exit code at the end; the sweep leaves it to its own reference, whose
     /// release frees the record for the next process; the pool's capacity is the process
     /// pool's.
     #[test]
@@ -1764,7 +1901,7 @@ mod tests {
         // A handle to it and the process's own reference.
         assert!(directory.handle_opened(id));
         assert_eq!(
-            directory.process_ended(dispatcher, |_| {}),
+            directory.sweep(dispatcher, |_| {}),
             0,
             "a process object is no leak"
         );

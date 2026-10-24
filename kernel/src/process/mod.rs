@@ -13,8 +13,13 @@
 //! a pinned offset, so a thread's owner pointer resolves the directory base the context switch
 //! loads.
 //!
-//! One process at a time: each runs on its threads until its last thread ends, and the idle
-//! thread tears it down before the next is created.
+//! A process runs on its threads until its last thread ends, and the idle thread tears it down.
+//! The teardown touches only what the process owns — its handles, its views, its address space,
+//! its threads' records — so another process may live on through it. The checks over the whole
+//! system (the leak sweep over every object pool and the open-file records, the free frames against
+//! the post-boot baseline) wait for quiescence: the reap after which no process remains that has
+//! not been torn down. The boot's runner starts each program once the last is reaped, so every
+//! reap is quiescent today.
 //!
 //! The end of a process, in the platform's order:
 //!
@@ -26,11 +31,13 @@
 //! 5. the record is freed with the object's last reference.
 //!
 //! Steps 1 and 2 run on the last thread, in [`threads`]; 3 to 5 on the idle thread's reap, in
-//! [`reap`], with the object audit between 3 and 4 and the teardown audit line after 5.
+//! [`reap`], with the object audit between 3 and 4 and the teardown audit after 5; their checks
+//! over the whole system, and the audit lines, wait for quiescence.
 //!
 //! The records live in the process pool ([`pool`]), which also answers which process is current:
 //! kernel state (like CR3 and the TSS), not per-process state. Everything per-process lives inside
-//! the [`Process`] record; no other kernel static holds per-process user state.
+//! the [`Process`] record, or in the object manager's pools every process shares: its objects,
+//! reached through its handles, and its threads' records, through its thread list.
 
 /// The end of a thread and of its process, as decisions: the exit routing, the report lines,
 /// the suite's leg order and tally.
@@ -637,14 +644,17 @@ pub fn release_process(
 }
 
 /// The idle thread's reap step: tear the ended process down, then let the runner decide what
-/// follows — the teardown audit line, and on a boot of several programs the next one (or the
-/// summary); the idle thread rests after the last.
+/// follows — the teardown audit, and on a boot of several programs the next one (or the summary);
+/// the idle thread rests after the last. Whether the reap is quiescent — no other process remains
+/// that has not been torn down — is decided once, before the teardown: it decides whether the
+/// system-wide checks run now.
 #[cfg(target_arch = "x86")]
 pub fn reap() {
     let process = pool::ended().expect("reap with no ended process");
     let end = process.end.expect("an ended process recorded its end");
-    teardown(process);
-    runner::process_reaped(end);
+    let quiescent = pool::quiescent_after(process);
+    teardown(process, quiescent);
+    runner::process_reaped(end, quiescent);
     #[cfg(feature = "fault-test-exitio")]
     crate::user::check_volume_after_teardown();
 }
@@ -652,16 +662,16 @@ pub fn reap() {
 /// Tear the ended `process` down, steps 3 to 5 of its end (see the module notes): its address
 /// space goes, its object signals, and its own reference on the object goes (the record is free for
 /// the next process once nothing else references the object). Between the address space and the
-/// signal, the object audit: with every handle closed and every thread ended, no object of the
-/// process may be left.
+/// signal, the object audit: its threads' records start over, and at a `quiescent` reap the leak
+/// sweep runs.
 ///
 /// Must run on the boot address space — the walk reads the dead directory through the scratch
 /// window, never through a mapping.
 #[cfg(target_arch = "x86")]
-fn teardown(process: &'static mut Process) {
+fn teardown(process: &'static mut Process, quiescent: bool) {
     let end = process.end.expect("a torn-down process has ended");
     release_address_space_of(process);
-    audit_objects(process);
+    audit_objects(process, quiescent);
     signal_end(process, end);
     release_record(process);
 }
@@ -701,18 +711,24 @@ fn release_address_space_of(process: &mut Process) {
     );
 }
 
-/// The object audit: every object was the process's (one process runs at a time), and with its
-/// handles closed, its waits returned and its threads ended, none is left — nor any open-file
-/// record. One that is would be a reference leak: it is reported, and swept all the same (a leaked
+/// The object audit. With its handles closed, its waits returned and its threads ended, the
+/// process holds no object any more: what only it held is gone, and its threads' records start
+/// over. An object still live may be another process's too, so the leak sweep waits for a
+/// `quiescent` reap: with no process left, no object is left either — nor any open-file record.
+/// One that is would be a reference leak: it is reported, and swept all the same (a leaked
 /// section's frames given back; the file records are forgotten whole).
 #[cfg(target_arch = "x86")]
-fn audit_objects(_process: &mut Process) {
-    let leaked =
-        crate::ob::directory().process_ended(crate::sched::idle::dispatcher(), |followup| {
-            if let crate::ob::Followup::Section { frames, .. } = followup {
-                crate::nt::section::release_frames(frames);
-            }
-        }) + crate::fs::file::records().clear();
+fn audit_objects(process: &mut Process, quiescent: bool) {
+    let directory = crate::ob::directory();
+    directory.process_ended(&process.sched);
+    if !quiescent {
+        return;
+    }
+    let leaked = directory.sweep(crate::sched::idle::dispatcher(), |followup| {
+        if let crate::ob::Followup::Section { frames, .. } = followup {
+            crate::nt::section::release_frames(frames);
+        }
+    }) + crate::fs::file::records().clear();
     if leaked != 0 {
         crate::serial_println!(
             "F2K: object audit FAILED: {} objects or file records outlived their process",
@@ -750,8 +766,9 @@ fn unmap_file(file_object: crate::ob::ObjectId) -> Option<crate::ob::Followup> {
     directory.dereference(file_object, crate::sched::idle::dispatcher())
 }
 
-/// The post-boot free-frame count: the baseline the per-process teardown audits compare against.
-/// Recorded once the boot's own permanent allocations are done, before the first process starts.
+/// The post-boot free-frame count: the baseline the teardown audits compare against at
+/// quiescence. Recorded once the boot's own permanent allocations are done, before the first
+/// process starts.
 #[cfg(target_arch = "x86")]
 static mut BASELINE_FRAMES: u32 = 0;
 
@@ -768,26 +785,23 @@ pub fn record_allocator_baseline() {
     }
 }
 
-/// The zero-leak audit after a teardown: the frame database must audit clean and stand exactly at
-/// the post-boot baseline, and the kernel heap must still audit clean (nothing per-process is
-/// allocated from it). The error carries what is off.
+/// The allocators' structure audits, valid at any time and run at every reap: whether the frame
+/// database's holds, and whether the kernel heap's does (nothing per-process is allocated from it).
 #[cfg(target_arch = "x86")]
-pub fn audit_allocators() -> Result<(), exit::Leak> {
+pub fn audit_structures() -> (bool, bool) {
+    let frames_audit_ok = crate::mem::bootmem::with_frame_db(|db| db.audit().is_ok());
+    let heap_audit_ok = crate::mem::bootmem::with_heap(|heap| heap.audit().is_ok());
+    (frames_audit_ok, heap_audit_ok)
+}
+
+/// The free frames now and at the post-boot baseline: equal at quiescence, when no process holds a
+/// frame (see [`exit::DeferredAudits`]).
+#[cfg(target_arch = "x86")]
+pub fn frames_against_baseline() -> (u32, u32) {
     // SAFETY: recorded before the first process; read-only here.
     let baseline = unsafe { core::ptr::read_volatile(core::ptr::addr_of!(BASELINE_FRAMES)) };
-    let (frames_audit_ok, available) =
-        crate::mem::bootmem::with_frame_db(|db| (db.audit().is_ok(), db.available()));
-    let heap_audit_ok = crate::mem::bootmem::with_heap(|heap| heap.audit().is_ok());
-    if frames_audit_ok && heap_audit_ok && available == baseline {
-        Ok(())
-    } else {
-        Err(exit::Leak {
-            available,
-            baseline,
-            frames_audit_ok,
-            heap_audit_ok,
-        })
-    }
+    let available = crate::mem::bootmem::with_frame_db(|db| db.available());
+    (available, baseline)
 }
 
 #[cfg(test)]
