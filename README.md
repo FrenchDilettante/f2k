@@ -86,10 +86,9 @@ VBoxManage startvm F2K
 make run-tests
 ```
 
-### The export specs and the ledger
+### The export specs and the compatibility report
 Each system DLL's exports are declared once, in `userland/<dll>/exports.toml` (the file's header
-documents its records): name, API group, prototype, implementation, and the evidence pinning it,
-the fixture blocks (`pinned_by`) and the host scenarios (`scenarios`). `tools/exportgen` reads the
+documents its records): name, API group, prototype and implementation. `tools/exportgen` reads the
 specs and generates what derives from them: the kernel's NT service table (ntdll's `Nt*` system
 services, by Windows 2000's own numbers, `userland/ntdll/w2k-services.txt`) and the tables its
 tests check the built DLLs against (through the kernel's build script), and, for the DLL builds,
@@ -107,20 +106,35 @@ exports as a program does, against host stand-ins for ntdll. A known gap is an e
 test: a scenario marked `#[ignore = "<gap id>: <why>"]`, or a strict pending block in its
 fixture's `fixture.toml`.
 
-The ledger report derives each export's status from its evidence (complete, host-only, partial,
-unpinned, forward, internal). `--check` checks the specs against the captures and the scenarios;
-`--run` runs every scenario, ignored ones included, and fails once a gap's test passes (the marker
-goes with the fix).
+The tests declare which exports they pin, as `dll.Export`: a corpus fixture in its
+`fixture.toml`'s `[pins]` (per section; `"*"` for every block), a host scenario in its doc
+comment's `/// Pins:` lines. `scripts/compat.py` derives each export's status from its pinning
+tests' last results: unimplemented (grey), implemented and passing (green), implemented with a
+failing test (red), or implemented with no passing test (yellow: none pins it, or every test that
+does is pending, skipped or did not run). Every `make test` keeps its results
+(`target/test-results/pytest.json`); `make compat-report` runs the host scenarios and draws the
+report from both, `target/compat/report.html`: one square per export, per DLL. `--check` checks the
+pins against the specs and the captures; `--run` runs every scenario, ignored ones included, and
+fails once a gap's test passes (the marker goes with the fix).
 ```bash
-uv run scripts/ledger.py --check
-uv run scripts/ledger.py --run
-make ledger      # both
+uv run scripts/compat.py --check
+uv run scripts/compat.py --run
+make compat          # both
+make compat-report   # the report, after a `make test`
 ```
+
+Each spec lists every export of Windows 2000's own DLL (SP4's: ntdll, kernel32, advapi32, user32,
+gdi32, msvcrt, ole32, oleaut32, psapi and version): an export F2K does not implement yet is a catalogued record (its name and
+ordinal, no implementation; nothing is generated for it), and every implemented export carries
+its Windows 2000 ordinal. `scripts/dump_exports.py` reads a real DLL's export table (ordinals,
+names, forwarders, data exports) into `userland/<dll>/exports-<file version>.txt`, and
+`scripts/catalogue_exports.py` folds it into the spec (checking the spec's exports and forwarders
+against it first); the dumps go once folded, and the DLLs themselves never enter the repository.
 
 ### Everything
 `make check-all` runs the test systems in turn, fastest first,
 stopping at the first failure: the host unit tests (`make run-tests`),
-the ledger (`make ledger`) and the on-target suite (`make test`;
+the pins and the host scenarios (`make compat`) and the on-target suite (`make test`;
 `PYTEST_FLAGS` passes through).
 ```bash
 make check-all PYTEST_FLAGS="-n 2"
@@ -204,14 +218,17 @@ f2k/
 │   ├── create_partition_table.py  # MBR partition table for the disk image
 │   ├── gen-files-data.py  # The files fixture's data tree (tests/files/DATA)
 │   ├── gen-nt-tables.py   # Windows 2000's service numbers and the status table, regenerated
-│   └── ledger.py          # The export ledger report over the specs (host-side)
+│   ├── compat.py          # The DLL compatibility: the pins checked, the scenarios run, the report
+│   ├── dump_exports.py    # A real DLL's export table, dumped
+│   └── catalogue_exports.py  # A dumped export table folded into its DLL's spec
 │
 ├── pyproject.toml    # The Python tooling (uv): pytest for the on-target tests
 ├── tests/            # Windows 2000 test corpus and the pytest suite (see tests/README.md)
 │
 ├── tools/exportgen/  # The export specs' reader and generator (a host crate, outside the workspace)
 ├── userland/         # The system DLLs (own workspace and target): rtl, ntdll, kernel32, each
-│                     # DLL's export spec in userland/<dll>/exports.toml
+│                     # DLL's export spec in userland/<dll>/exports.toml (the DLLs F2K
+│                     # does not build yet: their specs alone, catalogued)
 │
 └── kernel/           # F2K Kernel
     ├── Cargo.toml        # Kernel package
@@ -244,8 +261,9 @@ f2k/
 | `make qemu` | Build the disk and boot the kernel directly in QEMU, the disk attached |
 | `make test` | Run every on-target QEMU test (pytest: the kernel boots and the corpus) |
 | `make run-tests` | Run host unit tests |
-| `make ledger` | Check the export ledger and run its host scenarios |
-| `make check-all` | `run-tests`, `ledger` and `test`, in that order |
+| `make compat` | Check the tests' pins and run the host scenarios |
+| `make compat-report` | The DLL compatibility report (`target/compat/report.html`) from the last results |
+| `make check-all` | `run-tests`, `compat` and `test`, in that order |
 | `make check` | `cargo check` + clippy (the kernel and the userland crates) |
 | `make fmt` | Format all Rust sources |
 | `make fmt-check` | Fail if any Rust source is unformatted |

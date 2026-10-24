@@ -673,6 +673,11 @@ class Block:
     def section(self) -> str:
         return self.command.split(" ", 1)[1] if " " in self.command else "(default)"
 
+    @property
+    def name(self) -> str:
+        """The section's name: its first argument (a fixture's `[pins]` key)."""
+        return self.section.split(" ", 1)[0]
+
 
 class CaptureError(Exception):
     """A capture file that is not a well-formed sequence of blocks."""
@@ -854,6 +859,9 @@ def teardown_problem(lines: list[str]) -> str | None:
 CORPUS_DIRECTORY = "CORPUS"
 CORPUS_TIMEOUT = 20.0
 
+# A pinned export, as a fixture's `[pins]` names it: `dll.Export` (kernel32.CreateFileA).
+PIN = re.compile(r"[a-z0-9_]+\.[A-Za-z_][A-Za-z0-9_]*")
+
 
 @dataclass(frozen=True)
 class Captured:
@@ -871,6 +879,7 @@ def blocks(
     gate: bool = False,
     pending: dict[str, str] | None = None,
     masks: dict[str, tuple[str, ...]] | None = None,
+    pins: dict[str, list[str]] | None = None,
     timeout: float = CORPUS_TIMEOUT,
     retake: str | None = None,
 ) -> list:
@@ -887,6 +896,9 @@ def blocks(
       same mask; each "*" stands for one value (a run of non-blank characters).
 
     A `pending` or `masks` section the capture has no block for is an error.
+    - `pins`: per section name (a block's first argument), the exports its block pins, as
+      `dll.Export`; `"*"` for every block. scripts/compat.py reads them (and checks that each names
+      an export); a section the capture has no block for is an error here.
     - `timeout`: seconds per boot.
     - `retake`: the capture must be retaken before it counts (the reason): the blocks are skipped.
     """
@@ -903,6 +915,13 @@ def blocks(
         unknown = sorted(set(keyed) - sections)
         if unknown:
             raise ValueError(f"{fixture}: {field_name} names sections with no captured block: {unknown}")
+    unknown = sorted(set(pins or {}) - {block.name for block in captured} - {"*"})
+    if unknown:
+        raise ValueError(f"{fixture}: pins names sections with no captured block: {unknown}")
+    for section, exports in (pins or {}).items():
+        malformed = [pin for pin in exports if not PIN.fullmatch(pin)]
+        if malformed:
+            raise ValueError(f"{fixture}: pins {section!r}: not dll.Export: {malformed}")
     patterns = {section: tuple(mask_pattern(mask) for mask in section_masks)
                 for section, section_masks in (masks or {}).items()}
     params = []
@@ -959,6 +978,7 @@ def corpus_params(fixture: str) -> list:
         gate=declared.get("gate", False),
         pending=declared.get("pending"),
         masks={section: tuple(lines) for section, lines in declared.get("masks", {}).items()},
+        pins=declared.get("pins"),
         timeout=float(declared.get("timeout", CORPUS_TIMEOUT)),
         retake=declared.get("retake"),
     )

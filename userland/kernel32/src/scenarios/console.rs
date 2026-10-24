@@ -29,6 +29,8 @@ const DUPLICATE_SAME_ACCESS: u32 = 2;
 const HELLO: &[u8] = b"Hello, world!\r\n";
 
 /// GetStdHandle: the process parameters' handles — the capture's stdin 3, stdout 7, stderr 0xB.
+///
+/// Pins: kernel32.GetStdHandle
 #[test]
 fn get_std_handle_replays_the_captured_handles() {
     for (which, handle) in [
@@ -42,6 +44,8 @@ fn get_std_handle_replays_the_captured_handles() {
 
 /// GetStdHandle refuses any other type: INVALID_HANDLE_VALUE with ERROR_INVALID_HANDLE (Windows
 /// 2000's BaseSetLastNTError(STATUS_INVALID_HANDLE); the runtime fixture's GetStdHandle(42)).
+///
+/// Pins: kernel32.GetStdHandle
 #[test]
 fn get_std_handle_refuses_an_unknown_type_with_invalid_handle() {
     for which in [0, 42, -13i32 as u32, -9i32 as u32] {
@@ -53,6 +57,8 @@ fn get_std_handle_refuses_an_unknown_type_with_invalid_handle() {
 
 /// SetStdHandle replaces the parameters' handle, which GetStdHandle and the file calls'
 /// pseudo-values then name; any other type is FALSE with ERROR_INVALID_HANDLE.
+///
+/// Pins: kernel32.SetStdHandle
 #[test]
 fn set_std_handle_replaces_the_parameters_handle() {
     assert_eq!(set_std_handle(STD_OUTPUT_HANDLE, STDERR), 1);
@@ -78,6 +84,8 @@ fn set_std_handle_replaces_the_parameters_handle() {
 }
 
 /// SetHandleCount reports the count it was given (the CRT's 0x20).
+///
+/// Pins: kernel32.SetHandleCount
 #[test]
 fn set_handle_count_reports_its_argument() {
     assert_eq!(set_handle_count(0x20), 0x20);
@@ -86,6 +94,8 @@ fn set_handle_count_reports_its_argument() {
 
 /// GetConsoleCP and GetConsoleOutputCP: the console's code pages, the OEM one (the runtime
 /// fixture's 437 437).
+///
+/// Pins: kernel32.GetConsoleCP, kernel32.GetConsoleOutputCP
 #[test]
 fn the_console_code_pages_are_the_oem_one() {
     assert_eq!((get_console_cp(), get_console_output_cp()), (437, 437));
@@ -94,6 +104,8 @@ fn the_console_code_pages_are_the_oem_one() {
 /// GetConsoleMode: a fresh console's modes — the input handle's processed, line, echo and mouse
 /// input, the output handles' processed output wrapping at the line's end; a handle naming no
 /// console object is FALSE with ERROR_INVALID_HANDLE, the mode untouched.
+///
+/// Pins: kernel32.GetConsoleMode
 #[test]
 fn get_console_mode_answers_per_handle() {
     let mut mode = 0;
@@ -117,6 +129,8 @@ fn get_console_mode_answers_per_handle() {
 
 /// WriteConsoleA on stdout or stderr hands the bytes to the console, stores the full count, and
 /// returns TRUE.
+///
+/// Pins: kernel32.WriteConsoleA
 #[test]
 fn write_console_a_writes_to_the_console() {
     console_writes();
@@ -145,6 +159,8 @@ fn write_console_a_writes_to_the_console() {
 
 /// WriteConsoleA without a count pointer still writes; a zero-length write succeeds, shows
 /// nothing, and stores zero.
+///
+/// Pins: kernel32.WriteConsoleA
 #[test]
 fn write_console_a_count_pointer_and_empty_writes() {
     console_writes();
@@ -174,6 +190,8 @@ fn write_console_a_count_pointer_and_empty_writes() {
 /// WriteConsoleA refuses — FALSE, the count pointer untouched — stdin and every handle that names
 /// no open output handle (ERROR_INVALID_HANDLE), and a reserved argument (WriteFile's OVERLAPPED:
 /// ERROR_INVALID_PARAMETER).
+///
+/// Pins: kernel32.WriteConsoleA
 #[test]
 fn write_console_a_refuses_other_handles_and_reserved_arguments() {
     console_writes();
@@ -203,6 +221,8 @@ fn write_console_a_refuses_other_handles_and_reserved_arguments() {
 /// it, is ERROR_INVALID_HANDLE), a standard handle's pseudo-value closing the parameters' handle;
 /// DuplicateHandle makes a new one on the same console object in the calling process (the next
 /// free one, 0xF first) and refuses another process (ERROR_INVALID_PARAMETER).
+///
+/// Pins: kernel32.CloseHandle, kernel32.DuplicateHandle
 #[test]
 fn console_handles_close_and_duplicate_at_their_server() {
     let mut target = 0;
@@ -275,6 +295,8 @@ fn console_handles_close_and_duplicate_at_their_server() {
 /// WriteConsoleA's buffer the console server cannot read: an address the caller cannot name
 /// (the kernel's) is ERROR_NOACCESS, one that passed the probe but names no page
 /// ERROR_INVALID_USER_BUFFER — the bare/badptr fixture's two answers — the count untouched.
+///
+/// Pins: kernel32.WriteConsoleA
 #[test]
 fn write_console_a_reports_buffers_it_cannot_read() {
     console_writes();
@@ -301,6 +323,8 @@ fn write_console_a_reports_buffers_it_cannot_read() {
 
 /// CloseHandle of a kernel handle is NtClose's: TRUE, or FALSE with the status's error
 /// (ERROR_INVALID_HANDLE for a handle naming nothing: the runtime fixture's CloseHandle(bogus)).
+///
+/// Pins: kernel32.CloseHandle
 #[test]
 fn close_handle_closes_kernel_handles_through_nt_close() {
     crate::nt::CLOSED.with(|closed| closed.borrow_mut().clear());
@@ -313,6 +337,8 @@ fn close_handle_closes_kernel_handles_through_nt_close() {
 }
 
 /// DuplicateHandle of a kernel handle is NtDuplicateObject's: the new handle where asked.
+///
+/// Pins: kernel32.DuplicateHandle
 #[test]
 fn duplicate_handle_duplicates_kernel_handles() {
     let mut target = 0;
@@ -338,6 +364,9 @@ fn duplicate_handle_duplicates_kernel_handles() {
 /// (made once, unsignaled: F2K's console has no keyboard), a standard handle's pseudo-value through
 /// the parameters' handle; a console handle naming nothing is waited on as itself (the kernel
 /// refuses it), as is every other handle.
+///
+/// Pins: kernel32.WaitForSingleObject, kernel32.SignalObjectAndWait
+/// Pins: kernel32.WaitForMultipleObjects
 #[test]
 fn waits_on_console_handles_wait_for_input() {
     use crate::nt::host::HANDLE;

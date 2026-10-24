@@ -1,0 +1,2180 @@
+# GDI32.dll's exports: the one source every list of them derives from (the format is
+# kernel32's, documented in userland/kernel32/exports.toml).
+#
+# None is implemented yet: each record is catalogued from GDI32.dll 5.0.2195.6660's export table
+# (scripts/catalogue_exports.py): its name and ordinal. Implementing one gives it its group,
+# prototype and implementation.
+
+# --- not implemented yet: the rest of GDI32.dll 5.0.2195.6660's export table, by ordinal ---------
+
+[[export]]
+name = "AbortDoc"
+ordinal = 1
+
+[[export]]
+name = "AbortPath"
+ordinal = 2
+
+[[export]]
+name = "AddFontMemResourceEx"
+ordinal = 3
+
+[[export]]
+name = "AddFontResourceA"
+ordinal = 4
+
+[[export]]
+name = "AddFontResourceExA"
+ordinal = 5
+
+[[export]]
+name = "AddFontResourceExW"
+ordinal = 6
+
+[[export]]
+name = "AddFontResourceTracking"
+ordinal = 7
+
+[[export]]
+name = "AddFontResourceW"
+ordinal = 8
+
+[[export]]
+name = "AngleArc"
+ordinal = 9
+
+[[export]]
+name = "AnimatePalette"
+ordinal = 10
+
+[[export]]
+name = "AnyLinkedFonts"
+ordinal = 11
+
+[[export]]
+name = "Arc"
+ordinal = 12
+
+[[export]]
+name = "ArcTo"
+ordinal = 13
+
+[[export]]
+name = "BRUSHOBJ_hGetColorTransform"
+ordinal = 14
+
+[[export]]
+name = "BRUSHOBJ_pvAllocRbrush"
+ordinal = 15
+
+[[export]]
+name = "BRUSHOBJ_pvGetRbrush"
+ordinal = 16
+
+[[export]]
+name = "BRUSHOBJ_ulGetBrushColor"
+ordinal = 17
+
+[[export]]
+name = "BeginPath"
+ordinal = 18
+
+[[export]]
+name = "BitBlt"
+ordinal = 19
+
+[[export]]
+name = "CLIPOBJ_bEnum"
+ordinal = 20
+
+[[export]]
+name = "CLIPOBJ_cEnumStart"
+ordinal = 21
+
+[[export]]
+name = "CLIPOBJ_ppoGetPath"
+ordinal = 22
+
+[[export]]
+name = "CancelDC"
+ordinal = 23
+
+[[export]]
+name = "CheckColorsInGamut"
+ordinal = 24
+
+[[export]]
+name = "ChoosePixelFormat"
+ordinal = 25
+
+[[export]]
+name = "Chord"
+ordinal = 26
+
+[[export]]
+name = "CloseEnhMetaFile"
+ordinal = 27
+
+[[export]]
+name = "CloseFigure"
+ordinal = 28
+
+[[export]]
+name = "CloseMetaFile"
+ordinal = 29
+
+[[export]]
+name = "ColorCorrectPalette"
+ordinal = 30
+
+[[export]]
+name = "ColorMatchToTarget"
+ordinal = 31
+
+[[export]]
+name = "CombineRgn"
+ordinal = 32
+
+[[export]]
+name = "CombineTransform"
+ordinal = 33
+
+[[export]]
+name = "CopyEnhMetaFileA"
+ordinal = 34
+
+[[export]]
+name = "CopyEnhMetaFileW"
+ordinal = 35
+
+[[export]]
+name = "CopyMetaFileA"
+ordinal = 36
+
+[[export]]
+name = "CopyMetaFileW"
+ordinal = 37
+
+[[export]]
+name = "CreateBitmap"
+ordinal = 38
+
+[[export]]
+name = "CreateBitmapIndirect"
+ordinal = 39
+
+[[export]]
+name = "CreateBrushIndirect"
+ordinal = 40
+
+[[export]]
+name = "CreateColorSpaceA"
+ordinal = 41
+
+[[export]]
+name = "CreateColorSpaceW"
+ordinal = 42
+
+[[export]]
+name = "CreateCompatibleBitmap"
+ordinal = 43
+
+[[export]]
+name = "CreateCompatibleDC"
+ordinal = 44
+
+[[export]]
+name = "CreateDCA"
+ordinal = 45
+
+[[export]]
+name = "CreateDCW"
+ordinal = 46
+
+[[export]]
+name = "CreateDIBPatternBrush"
+ordinal = 47
+
+[[export]]
+name = "CreateDIBPatternBrushPt"
+ordinal = 48
+
+[[export]]
+name = "CreateDIBSection"
+ordinal = 49
+
+[[export]]
+name = "CreateDIBitmap"
+ordinal = 50
+
+[[export]]
+name = "CreateDiscardableBitmap"
+ordinal = 51
+
+[[export]]
+name = "CreateEllipticRgn"
+ordinal = 52
+
+[[export]]
+name = "CreateEllipticRgnIndirect"
+ordinal = 53
+
+[[export]]
+name = "CreateEnhMetaFileA"
+ordinal = 54
+
+[[export]]
+name = "CreateEnhMetaFileW"
+ordinal = 55
+
+[[export]]
+name = "CreateFontA"
+ordinal = 56
+
+[[export]]
+name = "CreateFontIndirectA"
+ordinal = 57
+
+[[export]]
+name = "CreateFontIndirectExA"
+ordinal = 58
+
+[[export]]
+name = "CreateFontIndirectExW"
+ordinal = 59
+
+[[export]]
+name = "CreateFontIndirectW"
+ordinal = 60
+
+[[export]]
+name = "CreateFontW"
+ordinal = 61
+
+[[export]]
+name = "CreateHalftonePalette"
+ordinal = 62
+
+[[export]]
+name = "CreateHatchBrush"
+ordinal = 63
+
+[[export]]
+name = "CreateICA"
+ordinal = 64
+
+[[export]]
+name = "CreateICW"
+ordinal = 65
+
+[[export]]
+name = "CreateMetaFileA"
+ordinal = 66
+
+[[export]]
+name = "CreateMetaFileW"
+ordinal = 67
+
+[[export]]
+name = "CreatePalette"
+ordinal = 68
+
+[[export]]
+name = "CreatePatternBrush"
+ordinal = 69
+
+[[export]]
+name = "CreatePen"
+ordinal = 70
+
+[[export]]
+name = "CreatePenIndirect"
+ordinal = 71
+
+[[export]]
+name = "CreatePolyPolygonRgn"
+ordinal = 72
+
+[[export]]
+name = "CreatePolygonRgn"
+ordinal = 73
+
+[[export]]
+name = "CreateRectRgn"
+ordinal = 74
+
+[[export]]
+name = "CreateRectRgnIndirect"
+ordinal = 75
+
+[[export]]
+name = "CreateRoundRectRgn"
+ordinal = 76
+
+[[export]]
+name = "CreateScalableFontResourceA"
+ordinal = 77
+
+[[export]]
+name = "CreateScalableFontResourceW"
+ordinal = 78
+
+[[export]]
+name = "CreateSolidBrush"
+ordinal = 79
+
+[[export]]
+name = "DPtoLP"
+ordinal = 80
+
+[[export]]
+name = "DeleteColorSpace"
+ordinal = 81
+
+[[export]]
+name = "DeleteDC"
+ordinal = 82
+
+[[export]]
+name = "DeleteEnhMetaFile"
+ordinal = 83
+
+[[export]]
+name = "DeleteMetaFile"
+ordinal = 84
+
+[[export]]
+name = "DeleteObject"
+ordinal = 85
+
+[[export]]
+name = "DescribePixelFormat"
+ordinal = 86
+
+[[export]]
+name = "DeviceCapabilitiesExA"
+ordinal = 87
+
+[[export]]
+name = "DeviceCapabilitiesExW"
+ordinal = 88
+
+[[export]]
+name = "DrawEscape"
+ordinal = 89
+
+[[export]]
+name = "Ellipse"
+ordinal = 90
+
+[[export]]
+name = "EnableEUDC"
+ordinal = 91
+
+[[export]]
+name = "EndDoc"
+ordinal = 92
+
+[[export]]
+name = "EndFormPage"
+ordinal = 93
+
+[[export]]
+name = "EndPage"
+ordinal = 94
+
+[[export]]
+name = "EndPath"
+ordinal = 95
+
+[[export]]
+name = "EngAcquireSemaphore"
+ordinal = 96
+
+[[export]]
+name = "EngAlphaBlend"
+ordinal = 97
+
+[[export]]
+name = "EngAssociateSurface"
+ordinal = 98
+
+[[export]]
+name = "EngBitBlt"
+ordinal = 99
+
+[[export]]
+name = "EngCheckAbort"
+ordinal = 100
+
+[[export]]
+name = "EngComputeGlyphSet"
+ordinal = 101
+
+[[export]]
+name = "EngCopyBits"
+ordinal = 102
+
+[[export]]
+name = "EngCreateBitmap"
+ordinal = 103
+
+[[export]]
+name = "EngCreateClip"
+ordinal = 104
+
+[[export]]
+name = "EngCreateDeviceBitmap"
+ordinal = 105
+
+[[export]]
+name = "EngCreateDeviceSurface"
+ordinal = 106
+
+[[export]]
+name = "EngCreatePalette"
+ordinal = 107
+
+[[export]]
+name = "EngCreateSemaphore"
+ordinal = 108
+
+[[export]]
+name = "EngDeleteClip"
+ordinal = 109
+
+[[export]]
+name = "EngDeletePalette"
+ordinal = 110
+
+[[export]]
+name = "EngDeletePath"
+ordinal = 111
+
+[[export]]
+name = "EngDeleteSemaphore"
+ordinal = 112
+
+[[export]]
+name = "EngDeleteSurface"
+ordinal = 113
+
+[[export]]
+name = "EngEraseSurface"
+ordinal = 114
+
+[[export]]
+name = "EngFillPath"
+ordinal = 115
+
+[[export]]
+name = "EngFindResource"
+ordinal = 116
+
+[[export]]
+name = "EngFreeModule"
+ordinal = 117
+
+[[export]]
+name = "EngGetCurrentCodePage"
+ordinal = 118
+
+[[export]]
+name = "EngGetDriverName"
+ordinal = 119
+
+[[export]]
+name = "EngGetPrinterDataFileName"
+ordinal = 120
+
+[[export]]
+name = "EngGradientFill"
+ordinal = 121
+
+[[export]]
+name = "EngLineTo"
+ordinal = 122
+
+[[export]]
+name = "EngLoadModule"
+ordinal = 123
+
+[[export]]
+name = "EngLockSurface"
+ordinal = 124
+
+[[export]]
+name = "EngMarkBandingSurface"
+ordinal = 125
+
+[[export]]
+name = "EngMultiByteToUnicodeN"
+ordinal = 126
+
+[[export]]
+name = "EngMultiByteToWideChar"
+ordinal = 127
+
+[[export]]
+name = "EngPaint"
+ordinal = 128
+
+[[export]]
+name = "EngPlgBlt"
+ordinal = 129
+
+[[export]]
+name = "EngQueryEMFInfo"
+ordinal = 130
+
+[[export]]
+name = "EngQueryLocalTime"
+ordinal = 131
+
+[[export]]
+name = "EngReleaseSemaphore"
+ordinal = 132
+
+[[export]]
+name = "EngStretchBlt"
+ordinal = 133
+
+[[export]]
+name = "EngStretchBltROP"
+ordinal = 134
+
+[[export]]
+name = "EngStrokeAndFillPath"
+ordinal = 135
+
+[[export]]
+name = "EngStrokePath"
+ordinal = 136
+
+[[export]]
+name = "EngTextOut"
+ordinal = 137
+
+[[export]]
+name = "EngTransparentBlt"
+ordinal = 138
+
+[[export]]
+name = "EngUnicodeToMultiByteN"
+ordinal = 139
+
+[[export]]
+name = "EngUnlockSurface"
+ordinal = 140
+
+[[export]]
+name = "EngWideCharToMultiByte"
+ordinal = 141
+
+[[export]]
+name = "EnumEnhMetaFile"
+ordinal = 142
+
+[[export]]
+name = "EnumFontFamiliesA"
+ordinal = 143
+
+[[export]]
+name = "EnumFontFamiliesExA"
+ordinal = 144
+
+[[export]]
+name = "EnumFontFamiliesExW"
+ordinal = 145
+
+[[export]]
+name = "EnumFontFamiliesW"
+ordinal = 146
+
+[[export]]
+name = "EnumFontsA"
+ordinal = 147
+
+[[export]]
+name = "EnumFontsW"
+ordinal = 148
+
+[[export]]
+name = "EnumICMProfilesA"
+ordinal = 149
+
+[[export]]
+name = "EnumICMProfilesW"
+ordinal = 150
+
+[[export]]
+name = "EnumMetaFile"
+ordinal = 151
+
+[[export]]
+name = "EnumObjects"
+ordinal = 152
+
+[[export]]
+name = "EqualRgn"
+ordinal = 153
+
+[[export]]
+name = "Escape"
+ordinal = 154
+
+[[export]]
+name = "EudcLoadLinkW"
+ordinal = 155
+
+[[export]]
+name = "EudcUnloadLinkW"
+ordinal = 156
+
+[[export]]
+name = "ExcludeClipRect"
+ordinal = 157
+
+[[export]]
+name = "ExtCreatePen"
+ordinal = 158
+
+[[export]]
+name = "ExtCreateRegion"
+ordinal = 159
+
+[[export]]
+name = "ExtEscape"
+ordinal = 160
+
+[[export]]
+name = "ExtFloodFill"
+ordinal = 161
+
+[[export]]
+name = "ExtSelectClipRgn"
+ordinal = 162
+
+[[export]]
+name = "ExtTextOutA"
+ordinal = 163
+
+[[export]]
+name = "ExtTextOutW"
+ordinal = 164
+
+[[export]]
+name = "FONTOBJ_cGetAllGlyphHandles"
+ordinal = 165
+
+[[export]]
+name = "FONTOBJ_cGetGlyphs"
+ordinal = 166
+
+[[export]]
+name = "FONTOBJ_pQueryGlyphAttrs"
+ordinal = 167
+
+[[export]]
+name = "FONTOBJ_pfdg"
+ordinal = 168
+
+[[export]]
+name = "FONTOBJ_pifi"
+ordinal = 169
+
+[[export]]
+name = "FONTOBJ_pvTrueTypeFontFile"
+ordinal = 170
+
+[[export]]
+name = "FONTOBJ_pxoGetXform"
+ordinal = 171
+
+[[export]]
+name = "FONTOBJ_vGetInfo"
+ordinal = 172
+
+[[export]]
+name = "FillPath"
+ordinal = 173
+
+[[export]]
+name = "FillRgn"
+ordinal = 174
+
+[[export]]
+name = "FixBrushOrgEx"
+ordinal = 175
+
+[[export]]
+name = "FlattenPath"
+ordinal = 176
+
+[[export]]
+name = "FloodFill"
+ordinal = 177
+
+[[export]]
+name = "FontIsLinked"
+ordinal = 178
+
+[[export]]
+name = "FrameRgn"
+ordinal = 179
+
+[[export]]
+name = "GdiAddFontResourceW"
+ordinal = 180
+
+[[export]]
+name = "GdiAddGlsBounds"
+ordinal = 181
+
+[[export]]
+name = "GdiAddGlsRecord"
+ordinal = 182
+
+[[export]]
+name = "GdiAlphaBlend"
+ordinal = 183
+
+[[export]]
+name = "GdiArtificialDecrementDriver"
+ordinal = 184
+
+[[export]]
+name = "GdiCleanCacheDC"
+ordinal = 185
+
+[[export]]
+name = "GdiComment"
+ordinal = 186
+
+[[export]]
+name = "GdiConsoleTextOut"
+ordinal = 187
+
+[[export]]
+name = "GdiConvertAndCheckDC"
+ordinal = 188
+
+[[export]]
+name = "GdiConvertBitmap"
+ordinal = 189
+
+[[export]]
+name = "GdiConvertBitmapV5"
+ordinal = 190
+
+[[export]]
+name = "GdiConvertBrush"
+ordinal = 191
+
+[[export]]
+name = "GdiConvertDC"
+ordinal = 192
+
+[[export]]
+name = "GdiConvertEnhMetaFile"
+ordinal = 193
+
+[[export]]
+name = "GdiConvertFont"
+ordinal = 194
+
+[[export]]
+name = "GdiConvertMetaFilePict"
+ordinal = 195
+
+[[export]]
+name = "GdiConvertPalette"
+ordinal = 196
+
+[[export]]
+name = "GdiConvertRegion"
+ordinal = 197
+
+[[export]]
+name = "GdiConvertToDevmodeW"
+ordinal = 198
+
+[[export]]
+name = "GdiCreateLocalEnhMetaFile"
+ordinal = 199
+
+[[export]]
+name = "GdiCreateLocalMetaFilePict"
+ordinal = 200
+
+[[export]]
+name = "GdiDeleteLocalDC"
+ordinal = 201
+
+[[export]]
+name = "GdiDeleteSpoolFileHandle"
+ordinal = 202
+
+[[export]]
+name = "GdiDescribePixelFormat"
+ordinal = 203
+
+[[export]]
+name = "GdiDllInitialize"
+ordinal = 204
+
+[[export]]
+name = "GdiEndDocEMF"
+ordinal = 205
+
+[[export]]
+name = "GdiEndPageEMF"
+ordinal = 206
+
+[[export]]
+name = "GdiEntry10"
+ordinal = 207
+
+[[export]]
+name = "GdiEntry11"
+ordinal = 208
+
+[[export]]
+name = "GdiEntry12"
+ordinal = 209
+
+[[export]]
+name = "GdiEntry13"
+ordinal = 210
+
+[[export]]
+name = "GdiEntry14"
+ordinal = 211
+
+[[export]]
+name = "GdiEntry15"
+ordinal = 212
+
+[[export]]
+name = "GdiEntry16"
+ordinal = 213
+
+[[export]]
+name = "GdiEntry1"
+ordinal = 214
+
+[[export]]
+name = "GdiEntry2"
+ordinal = 215
+
+[[export]]
+name = "GdiEntry3"
+ordinal = 216
+
+[[export]]
+name = "GdiEntry4"
+ordinal = 217
+
+[[export]]
+name = "GdiEntry5"
+ordinal = 218
+
+[[export]]
+name = "GdiEntry6"
+ordinal = 219
+
+[[export]]
+name = "GdiEntry7"
+ordinal = 220
+
+[[export]]
+name = "GdiEntry8"
+ordinal = 221
+
+[[export]]
+name = "GdiEntry9"
+ordinal = 222
+
+[[export]]
+name = "GdiFixUpHandle"
+ordinal = 223
+
+[[export]]
+name = "GdiFlush"
+ordinal = 224
+
+[[export]]
+name = "GdiFullscreenControl"
+ordinal = 225
+
+[[export]]
+name = "GdiGetBatchLimit"
+ordinal = 226
+
+[[export]]
+name = "GdiGetCharDimensions"
+ordinal = 227
+
+[[export]]
+name = "GdiGetCodePage"
+ordinal = 228
+
+[[export]]
+name = "GdiGetDC"
+ordinal = 229
+
+[[export]]
+name = "GdiGetDevmodeForPage"
+ordinal = 230
+
+[[export]]
+name = "GdiGetLocalBrush"
+ordinal = 231
+
+[[export]]
+name = "GdiGetLocalDC"
+ordinal = 232
+
+[[export]]
+name = "GdiGetLocalFont"
+ordinal = 233
+
+[[export]]
+name = "GdiGetPageCount"
+ordinal = 234
+
+[[export]]
+name = "GdiGetPageHandle"
+ordinal = 235
+
+[[export]]
+name = "GdiGetSpoolFileHandle"
+ordinal = 236
+
+[[export]]
+name = "GdiGetSpoolMessage"
+ordinal = 237
+
+[[export]]
+name = "GdiGradientFill"
+ordinal = 238
+
+[[export]]
+name = "GdiInitSpool"
+ordinal = 239
+
+[[export]]
+name = "GdiInitializeLanguagePack"
+ordinal = 240
+
+[[export]]
+name = "GdiIsMetaFileDC"
+ordinal = 241
+
+[[export]]
+name = "GdiIsMetaPrintDC"
+ordinal = 242
+
+[[export]]
+name = "GdiIsPlayMetafileDC"
+ordinal = 243
+
+[[export]]
+name = "GdiPlayDCScript"
+ordinal = 244
+
+[[export]]
+name = "GdiPlayEMF"
+ordinal = 245
+
+[[export]]
+name = "GdiPlayJournal"
+ordinal = 246
+
+[[export]]
+name = "GdiPlayPageEMF"
+ordinal = 247
+
+[[export]]
+name = "GdiPlayPrivatePageEMF"
+ordinal = 248
+
+[[export]]
+name = "GdiPlayScript"
+ordinal = 249
+
+[[export]]
+name = "GdiPrinterThunk"
+ordinal = 250
+
+[[export]]
+name = "GdiProcessSetup"
+ordinal = 251
+
+[[export]]
+name = "GdiQueryFonts"
+ordinal = 252
+
+[[export]]
+name = "GdiQueryTable"
+ordinal = 253
+
+[[export]]
+name = "GdiRealizationInfo"
+ordinal = 254
+
+[[export]]
+name = "GdiReleaseDC"
+ordinal = 255
+
+[[export]]
+name = "GdiReleaseLocalDC"
+ordinal = 256
+
+[[export]]
+name = "GdiResetDCEMF"
+ordinal = 257
+
+[[export]]
+name = "GdiSetAttrs"
+ordinal = 258
+
+[[export]]
+name = "GdiSetBatchLimit"
+ordinal = 259
+
+[[export]]
+name = "GdiSetLastError"
+ordinal = 260
+
+[[export]]
+name = "GdiSetPixelFormat"
+ordinal = 261
+
+[[export]]
+name = "GdiSetServerAttr"
+ordinal = 262
+
+[[export]]
+name = "GdiStartDocEMF"
+ordinal = 263
+
+[[export]]
+name = "GdiStartPageEMF"
+ordinal = 264
+
+[[export]]
+name = "GdiSwapBuffers"
+ordinal = 265
+
+[[export]]
+name = "GdiTransparentBlt"
+ordinal = 266
+
+[[export]]
+name = "GdiValidateHandle"
+ordinal = 267
+
+[[export]]
+name = "GetArcDirection"
+ordinal = 268
+
+[[export]]
+name = "GetAspectRatioFilterEx"
+ordinal = 269
+
+[[export]]
+name = "GetBitmapBits"
+ordinal = 270
+
+[[export]]
+name = "GetBitmapDimensionEx"
+ordinal = 271
+
+[[export]]
+name = "GetBkColor"
+ordinal = 272
+
+[[export]]
+name = "GetBkMode"
+ordinal = 273
+
+[[export]]
+name = "GetBoundsRect"
+ordinal = 274
+
+[[export]]
+name = "GetBrushOrgEx"
+ordinal = 275
+
+[[export]]
+name = "GetCharABCWidthsA"
+ordinal = 276
+
+[[export]]
+name = "GetCharABCWidthsFloatA"
+ordinal = 277
+
+[[export]]
+name = "GetCharABCWidthsFloatW"
+ordinal = 278
+
+[[export]]
+name = "GetCharABCWidthsI"
+ordinal = 279
+
+[[export]]
+name = "GetCharABCWidthsW"
+ordinal = 280
+
+[[export]]
+name = "GetCharWidth32A"
+ordinal = 281
+
+[[export]]
+name = "GetCharWidth32W"
+ordinal = 282
+
+[[export]]
+name = "GetCharWidthA"
+ordinal = 283
+
+[[export]]
+name = "GetCharWidthFloatA"
+ordinal = 284
+
+[[export]]
+name = "GetCharWidthFloatW"
+ordinal = 285
+
+[[export]]
+name = "GetCharWidthI"
+ordinal = 286
+
+[[export]]
+name = "GetCharWidthInfo"
+ordinal = 287
+
+[[export]]
+name = "GetCharWidthW"
+ordinal = 288
+
+[[export]]
+name = "GetCharacterPlacementA"
+ordinal = 289
+
+[[export]]
+name = "GetCharacterPlacementW"
+ordinal = 290
+
+[[export]]
+name = "GetClipBox"
+ordinal = 291
+
+[[export]]
+name = "GetClipRgn"
+ordinal = 292
+
+[[export]]
+name = "GetColorAdjustment"
+ordinal = 293
+
+[[export]]
+name = "GetColorSpace"
+ordinal = 294
+
+[[export]]
+name = "GetCurrentObject"
+ordinal = 295
+
+[[export]]
+name = "GetCurrentPositionEx"
+ordinal = 296
+
+[[export]]
+name = "GetDCBrushColor"
+ordinal = 297
+
+[[export]]
+name = "GetDCOrgEx"
+ordinal = 298
+
+[[export]]
+name = "GetDCPenColor"
+ordinal = 299
+
+[[export]]
+name = "GetDIBColorTable"
+ordinal = 300
+
+[[export]]
+name = "GetDIBits"
+ordinal = 301
+
+[[export]]
+name = "GetDeviceCaps"
+ordinal = 302
+
+[[export]]
+name = "GetDeviceGammaRamp"
+ordinal = 303
+
+[[export]]
+name = "GetETM"
+ordinal = 304
+
+[[export]]
+name = "GetEUDCTimeStamp"
+ordinal = 305
+
+[[export]]
+name = "GetEUDCTimeStampExW"
+ordinal = 306
+
+[[export]]
+name = "GetEnhMetaFileA"
+ordinal = 307
+
+[[export]]
+name = "GetEnhMetaFileBits"
+ordinal = 308
+
+[[export]]
+name = "GetEnhMetaFileDescriptionA"
+ordinal = 309
+
+[[export]]
+name = "GetEnhMetaFileDescriptionW"
+ordinal = 310
+
+[[export]]
+name = "GetEnhMetaFileHeader"
+ordinal = 311
+
+[[export]]
+name = "GetEnhMetaFilePaletteEntries"
+ordinal = 312
+
+[[export]]
+name = "GetEnhMetaFilePixelFormat"
+ordinal = 313
+
+[[export]]
+name = "GetEnhMetaFileW"
+ordinal = 314
+
+[[export]]
+name = "GetFontAssocStatus"
+ordinal = 315
+
+[[export]]
+name = "GetFontData"
+ordinal = 316
+
+[[export]]
+name = "GetFontLanguageInfo"
+ordinal = 317
+
+[[export]]
+name = "GetFontResourceInfoW"
+ordinal = 318
+
+[[export]]
+name = "GetFontUnicodeRanges"
+ordinal = 319
+
+[[export]]
+name = "GetGlyphIndicesA"
+ordinal = 320
+
+[[export]]
+name = "GetGlyphIndicesW"
+ordinal = 321
+
+[[export]]
+name = "GetGlyphOutline"
+ordinal = 322
+
+[[export]]
+name = "GetGlyphOutlineA"
+ordinal = 323
+
+[[export]]
+name = "GetGlyphOutlineW"
+ordinal = 324
+
+[[export]]
+name = "GetGlyphOutlineWow"
+ordinal = 325
+
+[[export]]
+name = "GetGraphicsMode"
+ordinal = 326
+
+[[export]]
+name = "GetHFONT"
+ordinal = 327
+
+[[export]]
+name = "GetICMProfileA"
+ordinal = 328
+
+[[export]]
+name = "GetICMProfileW"
+ordinal = 329
+
+[[export]]
+name = "GetKerningPairs"
+ordinal = 330
+
+[[export]]
+name = "GetKerningPairsA"
+ordinal = 331
+
+[[export]]
+name = "GetKerningPairsW"
+ordinal = 332
+
+[[export]]
+name = "GetLayout"
+ordinal = 333
+
+[[export]]
+name = "GetLogColorSpaceA"
+ordinal = 334
+
+[[export]]
+name = "GetLogColorSpaceW"
+ordinal = 335
+
+[[export]]
+name = "GetMapMode"
+ordinal = 336
+
+[[export]]
+name = "GetMetaFileA"
+ordinal = 337
+
+[[export]]
+name = "GetMetaFileBitsEx"
+ordinal = 338
+
+[[export]]
+name = "GetMetaFileW"
+ordinal = 339
+
+[[export]]
+name = "GetMetaRgn"
+ordinal = 340
+
+[[export]]
+name = "GetMiterLimit"
+ordinal = 341
+
+[[export]]
+name = "GetNearestColor"
+ordinal = 342
+
+[[export]]
+name = "GetNearestPaletteIndex"
+ordinal = 343
+
+[[export]]
+name = "GetObjectA"
+ordinal = 344
+
+[[export]]
+name = "GetObjectType"
+ordinal = 345
+
+[[export]]
+name = "GetObjectW"
+ordinal = 346
+
+[[export]]
+name = "GetOutlineTextMetricsA"
+ordinal = 347
+
+[[export]]
+name = "GetOutlineTextMetricsW"
+ordinal = 348
+
+[[export]]
+name = "GetPaletteEntries"
+ordinal = 349
+
+[[export]]
+name = "GetPath"
+ordinal = 350
+
+[[export]]
+name = "GetPixel"
+ordinal = 351
+
+[[export]]
+name = "GetPixelFormat"
+ordinal = 352
+
+[[export]]
+name = "GetPolyFillMode"
+ordinal = 353
+
+[[export]]
+name = "GetROP2"
+ordinal = 354
+
+[[export]]
+name = "GetRandomRgn"
+ordinal = 355
+
+[[export]]
+name = "GetRasterizerCaps"
+ordinal = 356
+
+[[export]]
+name = "GetRegionData"
+ordinal = 357
+
+[[export]]
+name = "GetRelAbs"
+ordinal = 358
+
+[[export]]
+name = "GetRgnBox"
+ordinal = 359
+
+[[export]]
+name = "GetStockObject"
+ordinal = 360
+
+[[export]]
+name = "GetStretchBltMode"
+ordinal = 361
+
+[[export]]
+name = "GetStringBitmapA"
+ordinal = 362
+
+[[export]]
+name = "GetStringBitmapW"
+ordinal = 363
+
+[[export]]
+name = "GetSystemPaletteEntries"
+ordinal = 364
+
+[[export]]
+name = "GetSystemPaletteUse"
+ordinal = 365
+
+[[export]]
+name = "GetTextAlign"
+ordinal = 366
+
+[[export]]
+name = "GetTextCharacterExtra"
+ordinal = 367
+
+[[export]]
+name = "GetTextCharset"
+ordinal = 368
+
+[[export]]
+name = "GetTextCharsetInfo"
+ordinal = 369
+
+[[export]]
+name = "GetTextColor"
+ordinal = 370
+
+[[export]]
+name = "GetTextExtentExPointA"
+ordinal = 371
+
+[[export]]
+name = "GetTextExtentExPointI"
+ordinal = 372
+
+[[export]]
+name = "GetTextExtentExPointW"
+ordinal = 373
+
+[[export]]
+name = "GetTextExtentExPointWPri"
+ordinal = 374
+
+[[export]]
+name = "GetTextExtentPoint32A"
+ordinal = 375
+
+[[export]]
+name = "GetTextExtentPoint32W"
+ordinal = 376
+
+[[export]]
+name = "GetTextExtentPointA"
+ordinal = 377
+
+[[export]]
+name = "GetTextExtentPointI"
+ordinal = 378
+
+[[export]]
+name = "GetTextExtentPointW"
+ordinal = 379
+
+[[export]]
+name = "GetTextFaceA"
+ordinal = 380
+
+[[export]]
+name = "GetTextFaceAliasW"
+ordinal = 381
+
+[[export]]
+name = "GetTextFaceW"
+ordinal = 382
+
+[[export]]
+name = "GetTextMetricsA"
+ordinal = 383
+
+[[export]]
+name = "GetTextMetricsW"
+ordinal = 384
+
+[[export]]
+name = "GetTransform"
+ordinal = 385
+
+[[export]]
+name = "GetViewportExtEx"
+ordinal = 386
+
+[[export]]
+name = "GetViewportOrgEx"
+ordinal = 387
+
+[[export]]
+name = "GetWinMetaFileBits"
+ordinal = 388
+
+[[export]]
+name = "GetWindowExtEx"
+ordinal = 389
+
+[[export]]
+name = "GetWindowOrgEx"
+ordinal = 390
+
+[[export]]
+name = "GetWorldTransform"
+ordinal = 391
+
+[[export]]
+name = "HT_Get8BPPFormatPalette"
+ordinal = 392
+
+[[export]]
+name = "HT_Get8BPPMaskPalette"
+ordinal = 393
+
+[[export]]
+name = "IntersectClipRect"
+ordinal = 394
+
+[[export]]
+name = "InvertRgn"
+ordinal = 395
+
+[[export]]
+name = "LPtoDP"
+ordinal = 396
+
+[[export]]
+name = "LineDDA"
+ordinal = 397
+
+[[export]]
+name = "LineTo"
+ordinal = 398
+
+[[export]]
+name = "MaskBlt"
+ordinal = 399
+
+[[export]]
+name = "MirrorRgn"
+ordinal = 400
+
+[[export]]
+name = "ModifyWorldTransform"
+ordinal = 401
+
+[[export]]
+name = "MoveToEx"
+ordinal = 402
+
+[[export]]
+name = "NamedEscape"
+ordinal = 403
+
+[[export]]
+name = "OffsetClipRgn"
+ordinal = 404
+
+[[export]]
+name = "OffsetRgn"
+ordinal = 405
+
+[[export]]
+name = "OffsetViewportOrgEx"
+ordinal = 406
+
+[[export]]
+name = "OffsetWindowOrgEx"
+ordinal = 407
+
+[[export]]
+name = "PATHOBJ_bEnum"
+ordinal = 408
+
+[[export]]
+name = "PATHOBJ_bEnumClipLines"
+ordinal = 409
+
+[[export]]
+name = "PATHOBJ_vEnumStart"
+ordinal = 410
+
+[[export]]
+name = "PATHOBJ_vEnumStartClipLines"
+ordinal = 411
+
+[[export]]
+name = "PATHOBJ_vGetBounds"
+ordinal = 412
+
+[[export]]
+name = "PaintRgn"
+ordinal = 413
+
+[[export]]
+name = "PatBlt"
+ordinal = 414
+
+[[export]]
+name = "PathToRegion"
+ordinal = 415
+
+[[export]]
+name = "Pie"
+ordinal = 416
+
+[[export]]
+name = "PlayEnhMetaFile"
+ordinal = 417
+
+[[export]]
+name = "PlayEnhMetaFileRecord"
+ordinal = 418
+
+[[export]]
+name = "PlayMetaFile"
+ordinal = 419
+
+[[export]]
+name = "PlayMetaFileRecord"
+ordinal = 420
+
+[[export]]
+name = "PlgBlt"
+ordinal = 421
+
+[[export]]
+name = "PolyBezier"
+ordinal = 422
+
+[[export]]
+name = "PolyBezierTo"
+ordinal = 423
+
+[[export]]
+name = "PolyDraw"
+ordinal = 424
+
+[[export]]
+name = "PolyPatBlt"
+ordinal = 425
+
+[[export]]
+name = "PolyPolygon"
+ordinal = 426
+
+[[export]]
+name = "PolyPolyline"
+ordinal = 427
+
+[[export]]
+name = "PolyTextOutA"
+ordinal = 428
+
+[[export]]
+name = "PolyTextOutW"
+ordinal = 429
+
+[[export]]
+name = "Polygon"
+ordinal = 430
+
+[[export]]
+name = "Polyline"
+ordinal = 431
+
+[[export]]
+name = "PolylineTo"
+ordinal = 432
+
+[[export]]
+name = "PtInRegion"
+ordinal = 433
+
+[[export]]
+name = "PtVisible"
+ordinal = 434
+
+[[export]]
+name = "QueryFontAssocStatus"
+ordinal = 435
+
+[[export]]
+name = "RealizePalette"
+ordinal = 436
+
+[[export]]
+name = "RectInRegion"
+ordinal = 437
+
+[[export]]
+name = "RectVisible"
+ordinal = 438
+
+[[export]]
+name = "Rectangle"
+ordinal = 439
+
+[[export]]
+name = "RemoveFontMemResourceEx"
+ordinal = 440
+
+[[export]]
+name = "RemoveFontResourceA"
+ordinal = 441
+
+[[export]]
+name = "RemoveFontResourceExA"
+ordinal = 442
+
+[[export]]
+name = "RemoveFontResourceExW"
+ordinal = 443
+
+[[export]]
+name = "RemoveFontResourceTracking"
+ordinal = 444
+
+[[export]]
+name = "RemoveFontResourceW"
+ordinal = 445
+
+[[export]]
+name = "ResetDCA"
+ordinal = 446
+
+[[export]]
+name = "ResetDCW"
+ordinal = 447
+
+[[export]]
+name = "ResizePalette"
+ordinal = 448
+
+[[export]]
+name = "RestoreDC"
+ordinal = 449
+
+[[export]]
+name = "RoundRect"
+ordinal = 450
+
+[[export]]
+name = "STROBJ_bEnum"
+ordinal = 451
+
+[[export]]
+name = "STROBJ_bEnumPositionsOnly"
+ordinal = 452
+
+[[export]]
+name = "STROBJ_bGetAdvanceWidths"
+ordinal = 453
+
+[[export]]
+name = "STROBJ_dwGetCodePage"
+ordinal = 454
+
+[[export]]
+name = "STROBJ_vEnumStart"
+ordinal = 455
+
+[[export]]
+name = "SaveDC"
+ordinal = 456
+
+[[export]]
+name = "ScaleViewportExtEx"
+ordinal = 457
+
+[[export]]
+name = "ScaleWindowExtEx"
+ordinal = 458
+
+[[export]]
+name = "SelectBrushLocal"
+ordinal = 459
+
+[[export]]
+name = "SelectClipPath"
+ordinal = 460
+
+[[export]]
+name = "SelectClipRgn"
+ordinal = 461
+
+[[export]]
+name = "SelectFontLocal"
+ordinal = 462
+
+[[export]]
+name = "SelectObject"
+ordinal = 463
+
+[[export]]
+name = "SelectPalette"
+ordinal = 464
+
+[[export]]
+name = "SetAbortProc"
+ordinal = 465
+
+[[export]]
+name = "SetArcDirection"
+ordinal = 466
+
+[[export]]
+name = "SetBitmapBits"
+ordinal = 467
+
+[[export]]
+name = "SetBitmapDimensionEx"
+ordinal = 468
+
+[[export]]
+name = "SetBkColor"
+ordinal = 469
+
+[[export]]
+name = "SetBkMode"
+ordinal = 470
+
+[[export]]
+name = "SetBoundsRect"
+ordinal = 471
+
+[[export]]
+name = "SetBrushOrgEx"
+ordinal = 472
+
+[[export]]
+name = "SetColorAdjustment"
+ordinal = 473
+
+[[export]]
+name = "SetColorSpace"
+ordinal = 474
+
+[[export]]
+name = "SetDCBrushColor"
+ordinal = 475
+
+[[export]]
+name = "SetDCPenColor"
+ordinal = 476
+
+[[export]]
+name = "SetDIBColorTable"
+ordinal = 477
+
+[[export]]
+name = "SetDIBits"
+ordinal = 478
+
+[[export]]
+name = "SetDIBitsToDevice"
+ordinal = 479
+
+[[export]]
+name = "SetDeviceGammaRamp"
+ordinal = 480
+
+[[export]]
+name = "SetEnhMetaFileBits"
+ordinal = 481
+
+[[export]]
+name = "SetFontEnumeration"
+ordinal = 482
+
+[[export]]
+name = "SetGraphicsMode"
+ordinal = 483
+
+[[export]]
+name = "SetICMMode"
+ordinal = 484
+
+[[export]]
+name = "SetICMProfileA"
+ordinal = 485
+
+[[export]]
+name = "SetICMProfileW"
+ordinal = 486
+
+[[export]]
+name = "SetLayout"
+ordinal = 487
+
+[[export]]
+name = "SetLayoutWidth"
+ordinal = 488
+
+[[export]]
+name = "SetMagicColors"
+ordinal = 489
+
+[[export]]
+name = "SetMapMode"
+ordinal = 490
+
+[[export]]
+name = "SetMapperFlags"
+ordinal = 491
+
+[[export]]
+name = "SetMetaFileBitsEx"
+ordinal = 492
+
+[[export]]
+name = "SetMetaRgn"
+ordinal = 493
+
+[[export]]
+name = "SetMiterLimit"
+ordinal = 494
+
+[[export]]
+name = "SetPaletteEntries"
+ordinal = 495
+
+[[export]]
+name = "SetPixel"
+ordinal = 496
+
+[[export]]
+name = "SetPixelFormat"
+ordinal = 497
+
+[[export]]
+name = "SetPixelV"
+ordinal = 498
+
+[[export]]
+name = "SetPolyFillMode"
+ordinal = 499
+
+[[export]]
+name = "SetROP2"
+ordinal = 500
+
+[[export]]
+name = "SetRectRgn"
+ordinal = 501
+
+[[export]]
+name = "SetRelAbs"
+ordinal = 502
+
+[[export]]
+name = "SetStretchBltMode"
+ordinal = 503
+
+[[export]]
+name = "SetSystemPaletteUse"
+ordinal = 504
+
+[[export]]
+name = "SetTextAlign"
+ordinal = 505
+
+[[export]]
+name = "SetTextCharacterExtra"
+ordinal = 506
+
+[[export]]
+name = "SetTextColor"
+ordinal = 507
+
+[[export]]
+name = "SetTextJustification"
+ordinal = 508
+
+[[export]]
+name = "SetViewportExtEx"
+ordinal = 509
+
+[[export]]
+name = "SetViewportOrgEx"
+ordinal = 510
+
+[[export]]
+name = "SetVirtualResolution"
+ordinal = 511
+
+[[export]]
+name = "SetWinMetaFileBits"
+ordinal = 512
+
+[[export]]
+name = "SetWindowExtEx"
+ordinal = 513
+
+[[export]]
+name = "SetWindowOrgEx"
+ordinal = 514
+
+[[export]]
+name = "SetWorldTransform"
+ordinal = 515
+
+[[export]]
+name = "StartDocA"
+ordinal = 516
+
+[[export]]
+name = "StartDocW"
+ordinal = 517
+
+[[export]]
+name = "StartFormPage"
+ordinal = 518
+
+[[export]]
+name = "StartPage"
+ordinal = 519
+
+[[export]]
+name = "StretchBlt"
+ordinal = 520
+
+[[export]]
+name = "StretchDIBits"
+ordinal = 521
+
+[[export]]
+name = "StrokeAndFillPath"
+ordinal = 522
+
+[[export]]
+name = "StrokePath"
+ordinal = 523
+
+[[export]]
+name = "SwapBuffers"
+ordinal = 524
+
+[[export]]
+name = "TextOutA"
+ordinal = 525
+
+[[export]]
+name = "TextOutW"
+ordinal = 526
+
+[[export]]
+name = "TranslateCharsetInfo"
+ordinal = 527
+
+[[export]]
+name = "UnloadNetworkFonts"
+ordinal = 528
+
+[[export]]
+name = "UnrealizeObject"
+ordinal = 529
+
+[[export]]
+name = "UpdateColors"
+ordinal = 530
+
+[[export]]
+name = "UpdateICMRegKeyA"
+ordinal = 531
+
+[[export]]
+name = "UpdateICMRegKeyW"
+ordinal = 532
+
+[[export]]
+name = "WidenPath"
+ordinal = 533
+
+[[export]]
+name = "XFORMOBJ_bApplyXform"
+ordinal = 534
+
+[[export]]
+name = "XFORMOBJ_iGetXform"
+ordinal = 535
+
+[[export]]
+name = "XLATEOBJ_cGetPalette"
+ordinal = 536
+
+[[export]]
+name = "XLATEOBJ_hGetColorTransform"
+ordinal = 537
+
+[[export]]
+name = "XLATEOBJ_iXlate"
+ordinal = 538
+
+[[export]]
+name = "XLATEOBJ_piVector"
+ordinal = 539
+
+[[export]]
+name = "bInitSystemAndFontsDirectoriesW"
+ordinal = 540
+
+[[export]]
+name = "bMakePathNameW"
+ordinal = 541
+
+[[export]]
+name = "cGetTTFFromFOT"
+ordinal = 542
+
+[[export]]
+name = "gdiPlaySpoolStream"
+ordinal = 543

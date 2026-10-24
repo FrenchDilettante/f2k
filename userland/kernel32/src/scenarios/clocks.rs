@@ -16,6 +16,8 @@ fn fields(bytes: &[u8; 16]) -> [u16; 8] {
 }
 
 /// GetTickCount is the page's tick count scaled by its multiplier (8.24 milliseconds per tick).
+///
+/// Pins: kernel32.GetTickCount
 #[test]
 fn the_tick_count_scales_the_shared_ticks() {
     host::set(shared::TICK_COUNT_LOW, 100);
@@ -27,6 +29,9 @@ fn the_tick_count_scales_the_shared_ticks() {
 }
 
 /// The system time is the page's; the local time less its bias; the SYSTEMTIMEs their fields.
+///
+/// Pins: kernel32.GetLocalTime, kernel32.GetSystemTime, kernel32.GetSystemTimeAsFileTime
+/// Pins: kernel32.FileTimeToLocalFileTime
 #[test]
 fn the_system_and_local_times_read_the_shared_page() {
     host::set_time(shared::SYSTEM_TIME, FEB_3_2001);
@@ -50,6 +55,8 @@ fn the_system_and_local_times_read_the_shared_page() {
 
 /// GetTimeZoneInformation copies the system's zone and answers the page's id; a failed query is
 /// TIME_ZONE_ID_INVALID with the status's error.
+///
+/// Pins: kernel32.GetTimeZoneInformation
 #[test]
 fn the_time_zone_comes_from_the_system() {
     host::set(shared::TIME_ZONE_ID, 0);
@@ -66,6 +73,8 @@ fn the_time_zone_comes_from_the_system() {
 
 /// The performance counter and its frequency come from NtQueryPerformanceCounter; a failed query
 /// is FALSE with the status's error.
+///
+/// Pins: kernel32.QueryPerformanceCounter, kernel32.QueryPerformanceFrequency
 #[test]
 fn the_performance_counter_comes_from_the_system() {
     let mut value = 0u64;
@@ -80,6 +89,8 @@ fn the_performance_counter_comes_from_the_system() {
 
 /// SystemTimeToFileTime and FileTimeToSystemTime round-trip; a field out of range, or a FILETIME
 /// past the signed range, is ERROR_INVALID_PARAMETER.
+///
+/// Pins: kernel32.FileTimeToSystemTime, kernel32.SystemTimeToFileTime
 #[test]
 fn the_conversions_round_trip_and_refuse_out_of_range_values() {
     let mut system = [0u8; 16];

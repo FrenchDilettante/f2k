@@ -11,6 +11,8 @@ const FROM_STRING: u32 = 0x0400;
 const MAX_WIDTH_MASK: u32 = 0x00FF;
 
 /// FormatMessageA writes the message, its CR LF and terminator; refuses what it does not serve.
+///
+/// Pins: kernel32.FormatMessageA
 #[test]
 fn system_messages_format_into_the_buffer() {
     let mut buffer = [0xCCu8; 64];
@@ -60,6 +62,8 @@ fn take(block: *mut u8, length: usize) -> std::vec::Vec<u8> {
 
 /// FORMAT_MESSAGE_ALLOCATE_BUFFER: the buffer argument is where the message's block (LocalFree's
 /// to free) goes, at least `nSize` bytes; a failure leaves a null pointer there.
+///
+/// Pins: kernel32.FormatMessageA
 #[test]
 fn an_allocated_buffer_holds_the_message() {
     let none = core::ptr::null();
@@ -89,6 +93,8 @@ fn an_allocated_buffer_holds_the_message() {
 /// FORMAT_MESSAGE_MAX_WIDTH_MASK: the message's regular line break is ignored (a blank in its
 /// place) and none is generated. A width of 1 to 254 breaks the lines at blanks, CR LF in a
 /// blank's place, a line running past the width only where one word does.
+///
+/// Pins: kernel32.FormatMessageA
 #[test]
 fn the_width_drops_the_line_break() {
     let mut buffer = [0xCCu8; 64];
@@ -125,6 +131,8 @@ fn the_width_drops_the_line_break() {
 
 /// GetVersion: 5.0, build 2195, the NT platform bit clear — the dword the CRT splits into its
 /// version globals, from the PEB's version fields.
+///
+/// Pins: kernel32.GetVersion
 #[test]
 fn get_version_reports_5_0_build_2195() {
     let version = crate::startup::get_version();
@@ -140,6 +148,8 @@ fn get_version_reports_5_0_build_2195() {
 /// data page's suite mask and product type); a size that is neither structure's is
 /// ERROR_INSUFFICIENT_BUFFER (the runtime fixture's "bad size" line), the structure untouched past
 /// its size.
+///
+/// Pins: kernel32.GetVersionExA
 #[test]
 fn get_version_ex_reports_service_pack_4() {
     crate::shared::host::set(crate::shared::NT_PRODUCT_TYPE, 1);
@@ -179,6 +189,8 @@ fn get_version_ex_reports_service_pack_4() {
 
 /// GetCommandLineA hands out the same block every call (the CRT parses it in place): the process
 /// parameters' CommandLine narrowed through code page 1252, made once.
+///
+/// Pins: kernel32.GetCommandLineA
 #[test]
 fn get_command_line_is_the_same_pointer_every_call() {
     let first = crate::startup::get_command_line_a();
@@ -194,6 +206,8 @@ fn get_command_line_is_the_same_pointer_every_call() {
 /// SW_SHOWNORMAL, no reserved CRT block (cbReserved2 / lpReserved2 zero — the CRT then skips
 /// inheriting stdio), and INVALID_HANDLE_VALUE for the three std handles (no STARTF_USESTDHANDLES).
 /// Every other field is zero, and every call copies the same image.
+///
+/// Pins: kernel32.GetStartupInfoA
 #[test]
 fn get_startup_info_fills_the_replayed_image() {
     let mut expected = [0u8; 68];

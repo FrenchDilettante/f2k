@@ -32,9 +32,25 @@ pub struct Spec {
     pub groups: Vec<Group>,
     /// The exports, in file order.
     pub exports: Vec<Export>,
+    /// The platform's exports F2K does not implement yet (the records without an `impl`), in file
+    /// order: nothing is generated for them.
+    pub catalogued: Vec<Catalogued>,
 }
 
-/// An API group: the unit the ledger reports by.
+/// One of the platform's exports F2K does not implement yet: catalogued from the platform's own
+/// export table.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Catalogued {
+    pub name: String,
+    /// The export ordinal, from the platform's own table.
+    pub ordinal: u16,
+    /// A variable, not a function (an export in a section without code).
+    pub data: bool,
+    /// A fact worth keeping beside the export.
+    pub note: Option<String>,
+}
+
+/// An API group: the unit the compatibility report groups by.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Group {
     pub key: String,
@@ -49,21 +65,16 @@ pub struct Export {
     /// The prototype's arguments, first (lowest address) first.
     pub args: Vec<Arg>,
     pub implementation: Implementation,
-    /// The export ordinal, once known from the platform's own table.
+    /// The export ordinal, from the platform's own table (none for an F2K-internal entry point).
     pub ordinal: Option<u16>,
+    /// A system service's `Zw` alias's ordinal, from the platform's own table.
+    pub zw_ordinal: Option<u16>,
     /// The failure return value (`0`, `FALSE`, `INVALID_HANDLE_VALUE`, `-1`).
     pub fails: Option<String>,
     /// A fact worth keeping beside the export.
     pub note: Option<String>,
-    /// The fixture blocks pinning the export's behavior: `<fixture>/<section>`, or `<fixture>/*`
-    /// for every block of the fixture.
-    pub pinned_by: Vec<String>,
-    /// The host scenarios pinning it (test function names).
-    pub scenarios: Vec<String>,
-    /// Why an implemented export has no evidence yet (the report lists it as unpinned).
-    pub unpinned: Option<String>,
     /// An F2K-internal entry point (the kernel's own calls into user mode), not a Windows 2000
-    /// export: the ledger leaves it out of the platform's counts.
+    /// export: the compatibility report leaves it out.
     pub internal: bool,
 }
 
@@ -364,22 +375,98 @@ pub fn parse_spec(text: &str) -> Result<Spec, String> {
         });
     }
     let mut exports: Vec<Export> = Vec::new();
+    let mut catalogued: Vec<Catalogued> = Vec::new();
+    // Every name and ordinal the records claim (a system service's Zw alias's among them).
+    let mut names: Vec<String> = Vec::new();
+    let mut ordinals: Vec<(u16, String)> = Vec::new();
     for (index, table) in tables(&root, "export")?.into_iter().enumerate() {
-        let export = read_export(table, index, &groups)?;
-        if exports.iter().any(|e| e.name == export.name) {
-            return Err(format!("export {:?} declared twice", export.name));
+        let (name, claimed) = if table.get("impl").is_some() {
+            let export = read_export(table, index, &groups)?;
+            let mut claimed: Vec<(u16, String)> = export
+                .ordinal
+                .map(|o| (o, export.name.clone()))
+                .into_iter()
+                .collect();
+            if let Some(zw) = export.zw_ordinal {
+                claimed.push((zw, w2k::zw_alias(&export.name)));
+            }
+            let name = export.name.clone();
+            exports.push(export);
+            (name, claimed)
+        } else {
+            let record = read_catalogued(table, index)?;
+            let claimed = vec![(record.ordinal, record.name.clone())];
+            let name = record.name.clone();
+            catalogued.push(record);
+            (name, claimed)
+        };
+        if names.contains(&name) {
+            return Err(format!("export {name:?} declared twice"));
         }
-        if let Some(ordinal) = export.ordinal {
-            if let Some(other) = exports.iter().find(|e| e.ordinal == Some(ordinal)) {
+        names.push(name);
+        for (ordinal, name) in claimed {
+            if let Some((_, other)) = ordinals.iter().find(|(o, _)| *o == ordinal) {
                 return Err(format!(
-                    "exports {:?} and {:?} share ordinal {ordinal}",
-                    other.name, export.name
+                    "exports {other:?} and {name:?} share ordinal {ordinal}"
                 ));
             }
+            ordinals.push((ordinal, name));
         }
-        exports.push(export);
     }
-    Ok(Spec { groups, exports })
+    // A system service's Zw alias is the service's own export: not catalogued apart.
+    for export in exports.iter().filter(|e| e.implementation.is_syscall()) {
+        let zw = w2k::zw_alias(&export.name);
+        if catalogued.iter().any(|c| c.name == zw) {
+            return Err(format!(
+                "{zw} is {}'s alias: drop its record, its ordinal is {}'s zw_ordinal",
+                export.name, export.name
+            ));
+        }
+    }
+    Ok(Spec {
+        groups,
+        exports,
+        catalogued,
+    })
+}
+
+/// A record without an `impl`: one of the platform's exports F2K does not implement yet.
+fn read_catalogued(table: &Table, index: usize) -> Result<Catalogued, String> {
+    let context = match table.get("name") {
+        Some(Value::String(name)) => format!("export {name:?}"),
+        _ => format!("export #{}", index + 1),
+    };
+    allow(table, &["name", "ordinal", "data", "note"], &context)
+        .map_err(|e| format!("{e} (an export without an impl is catalogued: name, ordinal, data, note)"))?;
+    let name = string(table, "name", &context)?;
+    if !is_identifier(&name) {
+        return Err(format!("{context}: the name must be an identifier"));
+    }
+    Ok(Catalogued {
+        ordinal: ordinal_field(table, "ordinal", &context)?
+            .ok_or_else(|| format!("{context}: a catalogued export has its platform ordinal"))?,
+        data: match table.get("data") {
+            None => false,
+            Some(Value::Boolean(flag)) => *flag,
+            Some(other) => {
+                return Err(format!("{context}: data must be a boolean, not {}", other.kind()))
+            }
+        },
+        note: optional_string(table, "note", &context)?,
+        name,
+    })
+}
+
+/// An optional ordinal field: an integer in 1..=65535.
+fn ordinal_field(table: &Table, key: &str, context: &str) -> Result<Option<u16>, String> {
+    match table.get(key) {
+        None => Ok(None),
+        Some(Value::Integer(n)) if (1..=0xFFFF).contains(n) => Ok(Some(*n as u16)),
+        Some(other) => Err(format!(
+            "{context}: {key} must be an integer in 1..=65535, not {}",
+            other.kind()
+        )),
+    }
 }
 
 fn read_export(table: &Table, index: usize, groups: &[Group]) -> Result<Export, String> {
@@ -395,11 +482,9 @@ fn read_export(table: &Table, index: usize, groups: &[Group]) -> Result<Export, 
             "args",
             "impl",
             "ordinal",
+            "zw_ordinal",
             "fails",
             "note",
-            "pinned_by",
-            "scenarios",
-            "unpinned",
             "internal",
         ],
         &context,
@@ -473,31 +558,11 @@ fn read_export(table: &Table, index: usize, groups: &[Group]) -> Result<Export, 
         Some(_) => return Err(format!("{context}: impl is an inline table with one key")),
         None => return Err(format!("{context}: missing impl")),
     };
-    let ordinal = match table.get("ordinal") {
-        None => None,
-        Some(Value::Integer(n)) if (1..=0xFFFF).contains(n) => Some(*n as u16),
-        Some(other) => {
-            return Err(format!(
-                "{context}: ordinal must be an integer in 1..=65535, not {}",
-                other.kind()
-            ))
-        }
-    };
-    let pinned_by = optional_strings(table, "pinned_by", &context)?;
-    for block in &pinned_by {
-        let valid = block.split_once('/').is_some_and(|(fixture, section)| {
-            is_identifier(fixture) && !section.is_empty() && !section.contains(char::is_whitespace)
-        });
-        if !valid {
-            return Err(format!(
-                "{context}: pinned_by entry {block:?} is not <fixture>/<section>"
-            ));
-        }
-    }
-    let scenarios = optional_strings(table, "scenarios", &context)?;
-    if let Some(bad) = scenarios.iter().find(|s| !is_identifier(s)) {
+    let ordinal = ordinal_field(table, "ordinal", &context)?;
+    let zw_ordinal = ordinal_field(table, "zw_ordinal", &context)?;
+    if zw_ordinal.is_some() && !implementation.is_syscall() {
         return Err(format!(
-            "{context}: scenario {bad:?} is not a test function name"
+            "{context}: only a system service has a Zw alias (zw_ordinal)"
         ));
     }
     let fails = optional_string(table, "fails", &context)?;
@@ -526,11 +591,9 @@ fn read_export(table: &Table, index: usize, groups: &[Group]) -> Result<Export, 
         args,
         implementation,
         ordinal,
+        zw_ordinal,
         fails,
         note: optional_string(table, "note", &context)?,
-        pinned_by,
-        scenarios,
-        unpinned: optional_string(table, "unpinned", &context)?,
         internal: match table.get("internal") {
             None => false,
             Some(Value::Boolean(flag)) => *flag,
@@ -651,7 +714,6 @@ name = "ExitProcess"
 group = "termination"
 args = ["u32 uExitCode"]
 impl = { native = "ExitProcess" }
-pinned_by = ["bare/*"]
 
 [[export]]
 name = "GetLastError"
@@ -753,7 +815,6 @@ ordinal = 0x10
         assert_eq!(spec.exports.len(), 5);
         let exit = spec.export("ExitProcess").unwrap();
         assert_eq!(exit.arg_bytes(), 4);
-        assert_eq!(exit.pinned_by, ["bare/*"]);
         assert_eq!(spec.export("HeapAlloc").unwrap().ordinal, Some(16));
         assert_eq!(
             spec.export("HeapAlloc").unwrap().implementation,
@@ -814,9 +875,9 @@ ordinal = 0x10
                 "unknown group",
             ),
             (
-                "pinned_by = [\"bare/*\"]",
-                "pinned_by = [\"bare\"]",
-                "pinned_by",
+                "impl = { native = \"ExitProcess\" }",
+                "impl = { native = \"ExitProcess\" }\npinned_by = [\"bare/*\"]",
+                "unknown key",
             ),
             ("ordinal = 0x10", "ordinal = 0x10\nextra = 1", "unknown key"),
             (
@@ -830,6 +891,27 @@ ordinal = 0x10
             let error = parse_spec(&text).unwrap_err();
             assert!(error.contains(message), "{error}");
         }
+        // The catalogued records: name, ordinal, data and note only; their names and ordinals
+        // are the spec's like any other's; a system service's Zw alias is not catalogued apart.
+        for (record, message) in [
+            ("name = \"AddAtomA\"", "platform ordinal"),
+            ("name = \"AddAtomA\"\nordinal = 1\ngroup = \"termination\"", "unknown key"),
+            ("name = \"AddAtomA\"\nordinal = 0x10", "share ordinal 16"),
+            ("name = \"GetVersion\"\nordinal = 2", "declared twice"),
+        ] {
+            let text = format!("{SPEC}\n[[export]]\n{record}\n");
+            let error = parse_spec(&text).unwrap_err();
+            assert!(error.contains(message), "{record}: {error}");
+        }
+        let zw = "[[group]]\nkey = \"nt\"\ntitle = \"nt\"\n\n[[export]]\nname = \"NtClose\"\ngroup = \"nt\"\n\
+                  args = [\"handle Handle\"]\nimpl = { syscall = \"x\" }\nzw_ordinal = 3\n";
+        assert_eq!(parse_spec(zw).unwrap().export("NtClose").unwrap().zw_ordinal, Some(3));
+        let apart = format!("{zw}\n[[export]]\nname = \"ZwClose\"\nordinal = 4\n");
+        assert!(parse_spec(&apart).unwrap_err().contains("alias"));
+        let clash = format!("{zw}\n[[export]]\nname = \"NtYieldExecution\"\nordinal = 3\n");
+        assert!(parse_spec(&clash).unwrap_err().contains("share ordinal 3"));
+        let not_a_service = SPEC.replacen("ordinal = 0x10", "ordinal = 0x10\nzw_ordinal = 3", 1);
+        assert!(parse_spec(&not_a_service).unwrap_err().contains("zw_ordinal"));
         let twice = format!(
             "{SPEC}\n[[export]]\nname = \"GetVersion\"\ngroup = \"termination\"\nargs = []\nimpl = {{ native = \"x\" }}\n"
         );

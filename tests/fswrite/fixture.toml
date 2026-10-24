@@ -5,3 +5,108 @@ kind = "sectioned"
 gate = true
 timeout = 40
 
+[pins]
+# The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
+# calls); scripts/compat.py derives each export's coverage from them.
+"*" = [
+    "kernel32.ExitProcess",
+    "kernel32.GetCommandLineA",
+    "kernel32.GetStartupInfoA",
+    "kernel32.GetModuleFileNameA",
+    "kernel32.GetVersion",
+    "kernel32.GetStdHandle",
+    "kernel32.GetFileType",
+    "kernel32.SetHandleCount",
+    "kernel32.WriteFile",
+    "kernel32.GetEnvironmentStringsW",
+    "kernel32.FreeEnvironmentStringsA",
+    "kernel32.HeapAlloc",
+    "kernel32.HeapCreate",
+    "kernel32.HeapFree",
+    "kernel32.GetACP",
+    "kernel32.GetCPInfo",
+    "kernel32.MultiByteToWideChar",
+    "kernel32.WideCharToMultiByte",
+    "kernel32.LCMapStringW",
+    "kernel32.GetStringTypeW",
+    "kernel32.FindClose",
+    "kernel32.FindFirstFileA",
+    "kernel32.CreateDirectoryA",
+    "kernel32.DeleteFileA",
+    "kernel32.RemoveDirectoryA",
+    "kernel32.SetFileAttributesA",
+    "kernel32.FindNextFileA",
+    "kernel32.VirtualAlloc",
+    "ntdll.NtAllocateVirtualMemory",
+    "ntdll.NtCreateFile",
+    "ntdll.RtlAllocateHeap",
+    "ntdll.RtlFreeHeap",
+]
+create = [
+    "kernel32.CloseHandle",
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+    "kernel32.CreateFileA",
+    "kernel32.GetFileAttributesExA",
+    "ntdll.NtWriteFile",
+    "ntdll.NtSetInformationFile",
+]
+dirs = [
+    "kernel32.CloseHandle",
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+    "kernel32.CreateFileA",
+    "kernel32.GetFileAttributesA",
+    "kernel32.GetFileAttributesExA",
+    "ntdll.NtOpenFile",
+    "ntdll.NtSetInformationFile",
+]
+names = [
+    "kernel32.CloseHandle",
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+    "kernel32.CreateFileA",
+    "kernel32.CopyFileA",
+    "kernel32.MoveFileA",
+    "kernel32.GetFileAttributesA",
+    "kernel32.GetFileAttributesExA",
+    "kernel32.GetShortPathNameA",
+    "ntdll.NtOpenFile",
+    "ntdll.NtSetInformationFile",
+]
+share = [
+    "kernel32.CloseHandle",
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+    "kernel32.CreateFileA",
+    "kernel32.GetFileAttributesA",
+    "ntdll.NtOpenFile",
+]
+times = [
+    "kernel32.CloseHandle",
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+    "kernel32.CreateFileA",
+    "kernel32.FileTimeToSystemTime",
+    "kernel32.SetFileTime",
+    "kernel32.SystemTimeToFileTime",
+    "kernel32.GetFileTime",
+    "ntdll.NtSetInformationFile",
+]
+write = [
+    "kernel32.CloseHandle",
+    "kernel32.FlushFileBuffers",
+    "kernel32.GetLastError",
+    "kernel32.SetFilePointer",
+    "kernel32.SetLastError",
+    "kernel32.CreateFileA",
+    "kernel32.ReadFile",
+    "kernel32.GetFileAttributesExA",
+    "kernel32.GetFileSize",
+    "kernel32.SetEndOfFile",
+    "ntdll.NtReadFile",
+    "ntdll.NtWriteFile",
+    "ntdll.NtFlushBuffersFile",
+    "ntdll.NtSetInformationFile",
+]
+crt = ["kernel32.GetFileAttributesExA", "ntdll.NtWriteFile"]

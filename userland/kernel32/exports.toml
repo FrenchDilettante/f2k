@@ -2,12 +2,12 @@
 #
 # tools/exportgen reads this file and generates the kernel's tables of the DLL's exports and native
 # exports (the kernel's build script; the kernel's tests check the built DLL against them), and, for
-# the DLL build, the module-definition file (userland/build-support/stubs.rs). scripts/ledger.py
+# the DLL build, the module-definition file (userland/build-support/stubs.rs). scripts/compat.py
 # reports over it. Never copy an export's facts elsewhere: derive them from here.
 #
 # The file is TOML in the subset tools/exportgen/src/toml.rs reads (it refuses anything else).
 #
-# [[group]]      an API group, the unit the ledger reports by:
+# [[group]]      an API group, the unit the compatibility report groups by:
 #   key          its key (exports name it), title  its heading
 #
 # [[export]]     one export, in its group's section:
@@ -36,29 +36,32 @@
 #                  { forward = "MODULE.Export" }  forwarded to another module's export (the same
 #                                             prototype)
 #                no export enters the kernel but ntdll's system services: kernel32 is user code
-#   ordinal      optional: the export ordinal, from the platform's own table (none yet: the
-#                ordinals are sequential placeholders)
+#   ordinal      the export ordinal, from Windows 2000's own table (an F2K-internal export has
+#                none: it takes a free one)
+#   zw_ordinal   a system service's only (ntdll's): its Zw alias's ordinal
 #   fails        optional: its failure return value: an integer (0, -1, 0x...), FALSE, NULL,
 #                INVALID_HANDLE_VALUE, WAIT_FAILED, INVALID_FILE_SIZE, INVALID_SET_FILE_POINTER,
 #                INVALID_FILE_ATTRIBUTES, TLS_OUT_OF_INDEXES, or void / never (it returns nothing /
 #                cannot fail)
 #   note         optional: a fact worth keeping beside the export
-#   pinned_by    the fixture blocks pinning its behavior: "<fixture>/<section>" (a block of
-#                tests/<fixture>/output.txt; "(default)" is the block run with no section), or
-#                "<fixture>/*" for every block of the fixture (what the C runtime's startup calls)
-#   scenarios    the host scenarios pinning it (test function names under
-#                userland/kernel32/src/scenarios)
-#   unpinned     why an implemented export has no evidence yet (scripts/ledger.py lists it)
 #   internal     optional: true for an F2K-internal entry point, not a Windows 2000 export
 #
-# A gap is an expected-failure test, not a field here: a pending block in the fixture's
-# fixture.toml, or an #[ignore = "<gap id>: ..."] scenario; the ledger derives the status from them.
+# A record without an impl is one of the DLL's exports F2K does not implement yet, catalogued from
+# the real DLL's export table (scripts/catalogue_exports.py, over the dumps of
+# scripts/dump_exports.py; the closing section's heading names the DLL and version it came from):
+# its name and ordinal only, `data = true` for a variable, and a note where the DLL forwards it.
+# They close the file, in ordinal order; nothing is generated for them. Implementing one moves its
+# record to its group's section, with its group, args and impl.
+#
+# What pins an export is declared by the tests, not here: a fixture block's `[pins]` in
+# tests/<fixture>/fixture.toml, a host scenario's `/// Pins:` doc line (kernel32.<Name>).
+# scripts/compat.py derives each export's coverage from them and from the tests' results.
 #
 # kernel32 exports every function the corpus fixtures import, all of it user-mode code: its own
 # (src/lib.rs, the assembly natives) over ntdll's system services, and forwarders into ntdll where
-# Windows 2000 has them (RtlUnwind, the critical sections, the heap calls). Two F2K-internal
-# exports: BaseProcessStartThunk and BaseThreadStartThunk, where the kernel starts a main thread
-# and a child thread.
+# Windows 2000 has them (RtlUnwind, the critical sections, the heap allocation calls). Two
+# F2K-internal exports: BaseProcessStartThunk and BaseThreadStartThunk, where the kernel starts a
+# main thread and a child thread.
 
 [[group]]
 key = "termination"
@@ -103,37 +106,30 @@ name = "ExitProcess"
 group = "termination"
 args = ["u32 uExitCode"]
 impl = { native = "ExitProcess" }
-pinned_by = ["bare/*", "files/*", "fswrite/*", "memory/*", "runtime/*", "threads/procexit"]
+ordinal = 145
 
 [[export]]
 name = "TerminateProcess"
 group = "termination"
 args = ["handle hProcess", "u32 uExitCode"]
 impl = { native = "TerminateProcess" }
+ordinal = 720
 note = "the C runtime's fatal paths (abort, a /GS failure) call it; no fixture block reaches them"
-scenarios = ["terminations_reach_what_their_handles_name"]
 
 [[export]]
 name = "GetCurrentProcess"
 group = "termination"
 args = []
 impl = { native = "GetCurrentProcess" }
-pinned_by = [
-    "files/handles",
-    "sched/*",
-    "sync/handles",
-    "sync/waitmulti",
-    "threads/create",
-    "threads/priority",
-]
+ordinal = 270
 
 [[export]]
 name = "UnhandledExceptionFilter"
 group = "termination"
 args = ["ptr ExceptionInfo"]
 impl = { native = "UnhandledExceptionFilter" }
+ordinal = 736
 note = "the top-level filter's verdict when it gives one other than continue search, else execute the handler (no debugger, the fault dialog suppressed): the process ends with the code"
-pinned_by = ["runtime/unhandled", "bare/null-write"]
 
 [[export]]
 name = "BaseProcessStartThunk"
@@ -148,77 +144,56 @@ name = "GetProcAddress"
 group = "termination"
 args = ["handle hModule", "ptr lpProcName"]
 impl = { native = "GetProcAddress" }
-pinned_by = ["runtime/module", "dll/proc"]
-scenarios = ["long_export_names_are_not_found", "procedures_come_from_the_loader"]
+ordinal = 344
 
 [[export]]
 name = "LoadLibraryA"
 group = "termination"
 args = ["strA?[261] lpFileName"]
 impl = { native = "LoadLibraryA" }
-scenarios = ["module_names_past_max_path_are_refused", "module_handles_come_from_the_loader"]
-pinned_by = ["runtime/module"]
+ordinal = 484
 
 [[export]]
 name = "RtlUnwind"
 group = "termination"
 args = ["ptr TargetFrame", "u32 TargetIp", "ptr ExceptionRecord", "u32 ReturnValue"]
 impl = { forward = "NTDLL.RtlUnwind" }
+ordinal = 604
 
 [[export]]
 name = "SetErrorMode"
 group = "termination"
 args = ["u32 uMode"]
 impl = { native = "SetErrorMode" }
-pinned_by = [
-    "bare/cli",
-    "bare/code-write",
-    "bare/div-zero",
-    "bare/hlt",
-    "bare/int3",
-    "bare/into",
-    "bare/io-in",
-    "bare/kernel-read",
-    "bare/kernel-write",
-    "bare/null-call",
-    "bare/null-read",
-    "bare/null-write",
-    "bare/rdata-write",
-    "bare/stack-overflow",
-    "bare/ud2",
-    "runtime/unhandled",
-]
-scenarios = ["error_modes_round_trip"]
+ordinal = 660
 
 [[export]]
 name = "RaiseException"
 group = "termination"
 args = ["u32 dwExceptionCode", "u32 dwExceptionFlags", "u32 nNumberOfArguments", "ptr lpArguments"]
 impl = { native = "RaiseException" }
-pinned_by = ["runtime/seh"]
+ordinal = 565
 
 [[export]]
 name = "SetUnhandledExceptionFilter"
 group = "termination"
 args = ["ptr lpTopLevelExceptionFilter"]
 impl = { native = "SetUnhandledExceptionFilter" }
-pinned_by = ["runtime/unhandled"]
+ordinal = 701
 
 [[export]]
 name = "FreeLibrary"
 group = "termination"
 args = ["handle hLibModule"]
 impl = { native = "FreeLibrary" }
-pinned_by = ["runtime/module"]
-scenarios = ["free_library_answers_for_modules"]
+ordinal = 200
 
 [[export]]
 name = "GetModuleHandleA"
 group = "termination"
 args = ["strA?[261] lpModuleName"]
 impl = { native = "GetModuleHandleA" }
-scenarios = ["module_names_past_max_path_are_refused", "module_handles_come_from_the_loader"]
-pinned_by = ["memory/image", "runtime/module", "runtime/teb"]
+ordinal = 319
 
 # --- command line / startup info ------------------------------------------------------------------
 
@@ -227,52 +202,42 @@ name = "GetCommandLineA"
 group = "startup"
 args = []
 impl = { native = "GetCommandLineA" }
-pinned_by = ["bare/*", "files/*", "fswrite/*", "memory/*", "runtime/*"]
-scenarios = ["get_command_line_is_the_same_pointer_every_call"]
+ordinal = 223
 
 [[export]]
 name = "GetStartupInfoA"
 group = "startup"
 args = ["ptr lpStartupInfo"]
 impl = { native = "GetStartupInfoA" }
-pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
-scenarios = ["get_startup_info_fills_the_replayed_image"]
+ordinal = 363
 
 [[export]]
 name = "GetModuleFileNameA"
 group = "startup"
 args = ["handle hModule", "ptr lpFilename", "u32 nSize"]
 impl = { native = "GetModuleFileNameA" }
-pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
-scenarios = ["get_module_file_name_refuses_module_handles_and_empty_buffers", "get_module_file_name_copies_the_full_path"]
+ordinal = 317
 
 [[export]]
 name = "GetVersion"
 group = "startup"
 args = []
 impl = { native = "GetVersion" }
-pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
-scenarios = ["get_version_reports_5_0_build_2195"]
+ordinal = 403
 
 [[export]]
 name = "GetVersionExA"
 group = "startup"
 args = ["ptr lpVersionInformation"]
 impl = { native = "GetVersionExA" }
-pinned_by = ["runtime/version"]
-scenarios = ["get_version_ex_reports_service_pack_4"]
+ordinal = 404
 
 [[export]]
 name = "FormatMessageA"
 group = "startup"
 args = ["u32 dwFlags", "ptr lpSource", "u32 dwMessageId", "u32 dwLanguageId", "ptr lpBuffer", "u32 nSize", "ptr Arguments"]
 impl = { native = "FormatMessageA" }
-pinned_by = ["runtime/lasterror"]
-scenarios = [
-    "system_messages_format_into_the_buffer",
-    "an_allocated_buffer_holds_the_message",
-    "the_width_drops_the_line_break",
-]
+ordinal = 195
 
 # --- console handles ------------------------------------------------------------------------------
 
@@ -281,28 +246,14 @@ name = "GetStdHandle"
 group = "console"
 args = ["u32 nStdHandle"]
 impl = { native = "GetStdHandle" }
-pinned_by = [
-    "bare/*",
-    "files/*",
-    "fswrite/*",
-    "memory/*",
-    "runtime/*",
-    "sched/*",
-    "sync/*",
-    "threads/*",
-]
-scenarios = [
-    "get_std_handle_replays_the_captured_handles",
-    "get_std_handle_refuses_an_unknown_type_with_invalid_handle",
-]
+ordinal = 365
 
 [[export]]
 name = "GetFileType"
 group = "console"
 args = ["handle hFile"]
 impl = { native = "GetFileType" }
-pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
-scenarios = ["get_file_type_answers_the_device_type"]
+ordinal = 301
 note = "a console handle naming a console object is FILE_TYPE_CHAR (VerifyConsoleIoHandle at the console server); any other the device type NtQueryVolumeInformationFile reports"
 
 [[export]]
@@ -310,29 +261,14 @@ name = "SetHandleCount"
 group = "console"
 args = ["u32 uNumber"]
 impl = { native = "SetHandleCount" }
-pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
-scenarios = ["set_handle_count_reports_its_argument"]
+ordinal = 669
 
 [[export]]
 name = "WriteFile"
 group = "console"
 args = ["handle hFile", "ptr lpBuffer", "u32 nNumberOfBytesToWrite", "ptr lpNumberOfBytesWritten", "ptr lpOverlapped"]
 impl = { native = "WriteFile" }
-pinned_by = [
-    "bare/*",
-    "files/*",
-    "fswrite/*",
-    "memory/*",
-    "runtime/*",
-    "sched/*",
-    "sync/*",
-    "threads/*",
-]
-scenarios = [
-    "write_file_count_pointer_and_empty_writes",
-    "write_file_refuses_other_handles_and_overlapped_requests",
-    "write_file_writes_to_the_console",
-]
+ordinal = 787
 note = "a console handle's bytes go to WriteConsoleA (its OVERLAPPED the reserved argument), as Windows 2000's WriteFile hands them; a file handle's is NtWriteFile's"
 
 [[export]]
@@ -340,37 +276,14 @@ name = "CloseHandle"
 group = "console"
 args = ["handle hObject"]
 impl = { native = "CloseHandle" }
-pinned_by = [
-    "files/*",
-    "fswrite/create",
-    "fswrite/dirs",
-    "fswrite/names",
-    "fswrite/share",
-    "fswrite/times",
-    "fswrite/write",
-    "memory/mapping",
-    "memory/stack",
-    "runtime/lasterror",
-    "sched/boost",
-    "sched/freeze",
-    "sched/preempt",
-    "sched/rr",
-    "sched/sleep",
-    "sched/starve",
-    "sched/timer",
-    "sched/yield",
-    "sync/*",
-    "threads/*",
-]
-scenarios = ["console_handles_close_and_duplicate_at_their_server", "close_handle_closes_kernel_handles_through_nt_close"]
+ordinal = 31
 
 [[export]]
 name = "FlushFileBuffers"
 group = "console"
 args = ["handle hFile"]
 impl = { native = "FlushFileBuffers" }
-pinned_by = ["fswrite/write"]
-scenarios = ["flush_file_buffers_succeeds"]
+ordinal = 190
 note = "a console handle's input buffer is flushed at the console server (FlushConsoleInputBuffer: an output handle is ERROR_INVALID_HANDLE), as Windows 2000's; a file handle's is NtFlushBuffersFile's"
 
 [[export]]
@@ -378,142 +291,57 @@ name = "GetLastError"
 group = "console"
 args = []
 impl = { native = "GetLastError" }
-pinned_by = [
-    "bare/*",
-    "files/find",
-    "files/handles",
-    "files/mapping",
-    "files/meta",
-    "files/open",
-    "files/read",
-    "files/seek",
-    "fswrite/create",
-    "fswrite/dirs",
-    "fswrite/names",
-    "fswrite/share",
-    "fswrite/times",
-    "fswrite/write",
-    "memory/heap",
-    "memory/image",
-    "memory/mapping",
-    "memory/protect",
-    "memory/stack",
-    "memory/virtual",
-    "runtime/args",
-    "runtime/console",
-    "runtime/env",
-    "runtime/lasterror",
-    "runtime/locale",
-    "runtime/module",
-    "runtime/version",
-    "sched/*",
-    "sync/*",
-    "threads/create",
-    "threads/exit",
-    "threads/mainexit",
-    "threads/perthread",
-    "threads/priority",
-    "threads/procexit",
-    "threads/scale",
-    "threads/suspend",
-    "threads/tls",
-]
+ordinal = 306
 
 [[export]]
 name = "SetFilePointer"
 group = "console"
 args = ["handle hFile", "i32 lDistanceToMove", "ptr lpDistanceToMoveHigh", "u32 dwMoveMethod"]
 impl = { native = "SetFilePointer" }
-pinned_by = ["files/handles", "files/read", "files/seek", "fswrite/write"]
-scenarios = ["set_file_pointer_refuses_non_file_handles", "set_file_pointer_moves_from_each_base"]
+ordinal = 666
 
 [[export]]
 name = "SetStdHandle"
 group = "console"
 args = ["u32 nStdHandle", "handle hHandle"]
 impl = { native = "SetStdHandle" }
-scenarios = ["set_std_handle_replaces_the_parameters_handle"]
+ordinal = 685
 
 [[export]]
 name = "SetLastError"
 group = "console"
 args = ["u32 dwErrCode"]
 impl = { native = "SetLastError" }
-pinned_by = [
-    "bare/*",
-    "files/find",
-    "files/handles",
-    "files/mapping",
-    "files/meta",
-    "files/open",
-    "files/read",
-    "files/seek",
-    "fswrite/create",
-    "fswrite/dirs",
-    "fswrite/names",
-    "fswrite/share",
-    "fswrite/times",
-    "fswrite/write",
-    "memory/heap",
-    "memory/image",
-    "memory/mapping",
-    "memory/protect",
-    "memory/virtual",
-    "runtime/args",
-    "runtime/console",
-    "runtime/env",
-    "runtime/lasterror",
-    "runtime/locale",
-    "runtime/module",
-    "runtime/teb",
-    "runtime/version",
-    "sched/timer",
-    "sync/apc",
-    "sync/event",
-    "sync/handles",
-    "sync/mutex",
-    "sync/semaphore",
-    "sync/waitmulti",
-    "threads/create",
-    "threads/exit",
-    "threads/perthread",
-    "threads/priority",
-    "threads/suspend",
-    "threads/tls",
-]
+ordinal = 673
 
 [[export]]
 name = "GetConsoleCP"
 group = "console"
 args = []
 impl = { native = "GetConsoleCP" }
-pinned_by = ["runtime/console"]
-scenarios = ["the_console_code_pages_are_the_oem_one"]
+ordinal = 241
 
 [[export]]
 name = "GetConsoleOutputCP"
 group = "console"
 args = []
 impl = { native = "GetConsoleOutputCP" }
-pinned_by = ["runtime/console"]
-scenarios = ["the_console_code_pages_are_the_oem_one"]
+ordinal = 260
 
 [[export]]
 name = "GetConsoleMode"
 group = "console"
 args = ["handle hConsoleHandle", "ptr<u32> lpMode"]
 impl = { native = "GetConsoleMode" }
-pinned_by = ["runtime/console"]
-scenarios = ["get_console_mode_answers_per_handle"]
+ordinal = 258
 
 [[export]]
 name = "WriteConsoleA"
 group = "console"
 args = ["handle hConsoleOutput", "ptr lpBuffer", "u32 nNumberOfCharsToWrite", "ptr<u32> lpNumberOfCharsWritten", "ptr lpReserved"]
 impl = { native = "WriteConsoleA" }
-pinned_by = ["runtime/console", "bare/badptr"]
+ordinal = 776
 note = "the bytes to the console server (CsrClientCallServer); kernel32's WriteFile hands a console handle's bytes here"
-scenarios = ["write_console_a_writes_to_the_console", "write_console_a_count_pointer_and_empty_writes", "write_console_a_refuses_other_handles_and_reserved_arguments", "write_console_a_reports_buffers_it_cannot_read"]
 
 # --- environment ------------------------------------------------------------------------------------
 
@@ -522,71 +350,56 @@ name = "GetEnvironmentStrings"
 group = "environment"
 args = []
 impl = { native = "GetEnvironmentStrings" }
-scenarios = ["a_variable_sets_reads_and_deletes"]
-pinned_by = ["runtime/env"]
+ordinal = 286
 
 [[export]]
 name = "GetEnvironmentStringsW"
 group = "environment"
 args = []
 impl = { native = "GetEnvironmentStringsW" }
-scenarios = ["a_variable_sets_reads_and_deletes", "the_block_stays_sorted_and_replaces_in_place"]
-pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
+ordinal = 288
 
 [[export]]
 name = "FreeEnvironmentStringsA"
 group = "environment"
 args = ["ptr lpszEnvironmentBlock"]
 impl = { native = "FreeEnvironmentStringsA" }
-scenarios = ["a_variable_sets_reads_and_deletes"]
-pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
+ordinal = 198
 
 [[export]]
 name = "FreeEnvironmentStringsW"
 group = "environment"
 args = ["ptr lpszEnvironmentBlock"]
 impl = { native = "FreeEnvironmentStringsW" }
-scenarios = ["a_variable_sets_reads_and_deletes"]
-pinned_by = ["runtime/env"]
+ordinal = 199
 
 [[export]]
 name = "GetEnvironmentVariableA"
 group = "environment"
 args = ["strA? lpName", "ptr lpBuffer", "u32 nSize"]
 impl = { native = "GetEnvironmentVariableA" }
-scenarios = ["a_variable_sets_reads_and_deletes", "the_narrow_strings_convert_up_to_32766_characters"]
-pinned_by = ["runtime/env"]
+ordinal = 289
 
 [[export]]
 name = "SetEnvironmentVariableA"
 group = "environment"
 args = ["strA? lpName", "strA? lpValue"]
 impl = { native = "SetEnvironmentVariableA" }
-scenarios = [
-    "names_are_validated_and_the_wide_set_agrees",
-    "the_block_stays_sorted_and_replaces_in_place",
-    "the_narrow_strings_convert_up_to_32766_characters",
-]
-pinned_by = ["runtime/env"]
+ordinal = 658
 
 [[export]]
 name = "ExpandEnvironmentStringsA"
 group = "environment"
 args = ["strA lpSrc", "ptr lpDst", "u32 nSize"]
 impl = { native = "ExpandEnvironmentStringsA" }
-scenarios = [
-    "references_expand_through_the_environment",
-    "an_unset_reference_stays_whole",
-    "the_narrow_strings_convert_up_to_32766_characters",
-]
-pinned_by = ["runtime/env"]
+ordinal = 148
 
 [[export]]
 name = "SetEnvironmentVariableW"
 group = "environment"
 args = ["strW? lpName", "strW?[32768] lpValue"]
 impl = { native = "SetEnvironmentVariableW" }
-scenarios = ["names_are_validated_and_the_wide_set_agrees"]
+ordinal = 659
 
 # --- heap -------------------------------------------------------------------------------------------
 
@@ -595,162 +408,162 @@ name = "HeapAlloc"
 group = "heap"
 args = ["u32 hHeap", "u32 dwFlags", "u32 dwBytes"]
 impl = { forward = "NTDLL.RtlAllocateHeap" }
-pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
+ordinal = 441
 
 [[export]]
 name = "HeapCreate"
 group = "heap"
 args = ["u32 flOptions", "u32 dwInitialSize", "u32 dwMaximumSize"]
 impl = { native = "HeapCreate" }
-pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
+ordinal = 443
 
 [[export]]
 name = "HeapDestroy"
 group = "heap"
 args = ["u32 hHeap"]
 impl = { native = "HeapDestroy" }
+ordinal = 445
 note = "its block is 4 bytes: ret0's call site (the CRT's heap-initialization failure path) pushes one dword, where the old hand-written stub popped 8"
-pinned_by = ["memory/heap"]
 
 [[export]]
 name = "HeapFree"
 group = "heap"
 args = ["u32 hHeap", "u32 dwFlags", "ptr lpMem"]
 impl = { forward = "NTDLL.RtlFreeHeap" }
-pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
+ordinal = 447
 
 [[export]]
 name = "HeapReAlloc"
 group = "heap"
 args = ["u32 hHeap", "u32 dwFlags", "ptr lpMem", "u32 dwBytes"]
 impl = { forward = "NTDLL.RtlReAllocateHeap" }
-pinned_by = ["memory/heap"]
+ordinal = 450
 
 [[export]]
 name = "GetProcessHeap"
 group = "heap"
 args = []
 impl = { native = "GetProcessHeap" }
-pinned_by = ["memory/heap", "runtime/teb"]
+ordinal = 346
 
 [[export]]
 name = "HeapSize"
 group = "heap"
 args = ["u32 hHeap", "u32 dwFlags", "ptr lpMem"]
 impl = { forward = "NTDLL.RtlSizeHeap" }
-pinned_by = ["memory/heap"]
+ordinal = 451
 
 [[export]]
 name = "HeapValidate"
 group = "heap"
 args = ["u32 hHeap", "u32 dwFlags", "ptr lpMem"]
-impl = { forward = "NTDLL.RtlValidateHeap" }
-pinned_by = ["memory/heap"]
+impl = { native = "HeapValidate" }
+ordinal = 455
 
 [[export]]
 name = "LocalAlloc"
 group = "heap"
 args = ["u32 uFlags", "u32 uBytes"]
 impl = { native = "LocalAlloc" }
-pinned_by = ["memory/local"]
+ordinal = 490
 
 [[export]]
 name = "LocalFree"
 group = "heap"
 args = ["u32 hMem"]
 impl = { native = "LocalFree" }
-pinned_by = ["memory/local"]
+ordinal = 494
 
 [[export]]
 name = "LocalLock"
 group = "heap"
 args = ["u32 hMem"]
 impl = { native = "LocalLock" }
-pinned_by = ["memory/local"]
+ordinal = 496
 
 [[export]]
 name = "LocalUnlock"
 group = "heap"
 args = ["u32 hMem"]
 impl = { native = "LocalUnlock" }
-pinned_by = ["memory/local"]
+ordinal = 500
 
 [[export]]
 name = "LocalHandle"
 group = "heap"
 args = ["ptr pMem"]
 impl = { native = "LocalHandle" }
-pinned_by = ["memory/local"]
+ordinal = 495
 
 [[export]]
 name = "LocalSize"
 group = "heap"
 args = ["u32 hMem"]
 impl = { native = "LocalSize" }
-pinned_by = ["memory/local"]
+ordinal = 499
 
 [[export]]
 name = "LocalFlags"
 group = "heap"
 args = ["u32 hMem"]
 impl = { native = "LocalFlags" }
-pinned_by = ["memory/local"]
+ordinal = 493
 
 [[export]]
 name = "LocalReAlloc"
 group = "heap"
 args = ["u32 hMem", "u32 uBytes", "u32 uFlags"]
 impl = { native = "LocalReAlloc" }
-pinned_by = ["memory/local"]
+ordinal = 497
 
 [[export]]
 name = "GlobalAlloc"
 group = "heap"
 args = ["u32 uFlags", "u32 dwBytes"]
 impl = { native = "GlobalAlloc" }
-pinned_by = ["memory/local"]
+ordinal = 417
 
 [[export]]
 name = "GlobalFree"
 group = "heap"
 args = ["u32 hMem"]
 impl = { native = "GlobalFree" }
-pinned_by = ["memory/local"]
+ordinal = 424
 
 [[export]]
 name = "GlobalLock"
 group = "heap"
 args = ["u32 hMem"]
 impl = { native = "GlobalLock" }
-pinned_by = ["memory/local"]
+ordinal = 428
 
 [[export]]
 name = "GlobalUnlock"
 group = "heap"
 args = ["u32 hMem"]
 impl = { native = "GlobalUnlock" }
-pinned_by = ["memory/local"]
+ordinal = 435
 
 [[export]]
 name = "GlobalHandle"
 group = "heap"
 args = ["ptr pMem"]
 impl = { native = "GlobalHandle" }
-pinned_by = ["memory/local"]
+ordinal = 427
 
 [[export]]
 name = "GlobalSize"
 group = "heap"
 args = ["u32 hMem"]
 impl = { native = "GlobalSize" }
-pinned_by = ["memory/local"]
+ordinal = 432
 
 [[export]]
 name = "GlobalReAlloc"
 group = "heap"
 args = ["u32 hMem", "u32 dwBytes", "u32 uFlags"]
 impl = { native = "GlobalReAlloc" }
-pinned_by = ["memory/local"]
+ordinal = 431
 
 # --- locale / string conversion -------------------------------------------------------------------
 
@@ -759,163 +572,131 @@ name = "GetACP"
 group = "locale"
 args = []
 impl = { native = "GetACP" }
-pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
-scenarios = ["get_acp_reports_1252"]
+ordinal = 206
 
 [[export]]
 name = "GetOEMCP"
 group = "locale"
 args = []
 impl = { native = "GetOEMCP" }
-pinned_by = ["runtime/locale"]
-scenarios = ["get_oemcp_reports_437"]
+ordinal = 331
 
 [[export]]
 name = "GetCPInfo"
 group = "locale"
 args = ["u32 CodePage", "ptr lpCPInfo"]
 impl = { native = "GetCPInfo" }
+ordinal = 212
 note = "the installed code pages are 437, 850, 1252 and UTF-8 (CP_ACP and CP_OEMCP name 1252 and 437); 850 has no conversion table"
-pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
-scenarios = [
-    "get_cp_info_fills_the_single_byte_image",
-    "get_cp_info_reports_utf_8_and_refuses_an_unknown_code_page",
-]
 
 [[export]]
 name = "MultiByteToWideChar"
 group = "locale"
 args = ["u32 CodePage", "u32 dwFlags", "ptr lpMultiByteStr", "i32 cbMultiByte", "ptr lpWideCharStr", "i32 cchWideChar"]
 impl = { native = "MultiByteToWideChar" }
-pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
-scenarios = [
-    "multi_byte_to_wide_char_converts_through_the_table",
-    "multi_byte_to_wide_char_refusals",
-    "multi_byte_to_wide_char_size_queries_and_short_destinations",
-    "multi_byte_to_wide_char_uses_glyph_chars",
-    "the_converters_take_strings_past_64k",
-]
+ordinal = 519
 
 [[export]]
 name = "WideCharToMultiByte"
 group = "locale"
 args = ["u32 CodePage", "u32 dwFlags", "ptr lpWideCharStr", "i32 cchWideChar", "ptr lpMultiByteStr", "i32 cbMultiByte", "ptr lpDefaultChar", "ptr lpUsedDefaultChar"]
 impl = { native = "WideCharToMultiByte" }
+ordinal = 774
 note = "a single-byte page best-fits Latin Extended-A to the base letter (unless WC_NO_BEST_FIT_CHARS) before substituting the default character; UTF-8 refuses a default or its report (ERROR_INVALID_PARAMETER)"
-pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
-scenarios = [
-    "wide_char_to_multi_byte_converts_through_the_table",
-    "wide_char_to_multi_byte_refusals_and_size_queries",
-    "wide_char_to_multi_byte_takes_no_best_fit",
-    "the_converters_take_strings_past_64k",
-]
 
 [[export]]
 name = "LCMapStringA"
 group = "locale"
 args = ["u32 Locale", "u32 dwMapFlags", "ptr lpSrcStr", "i32 cchSrc", "ptr lpDestStr", "i32 cchDest"]
 impl = { native = "LCMapStringA" }
-pinned_by = ["runtime/locale"]
-scenarios = ["the_narrow_nls_calls_take_long_sources"]
+ordinal = 481
 
 [[export]]
 name = "LCMapStringW"
 group = "locale"
 args = ["u32 Locale", "u32 dwMapFlags", "ptr lpSrcStr", "i32 cchSrc", "ptr lpDestStr", "i32 cchDest"]
 impl = { native = "LCMapStringW" }
-pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
-scenarios = [
-    "lc_map_string_w_maps_case",
-    "lc_map_string_w_refusals_and_size_queries",
-    "lc_map_string_w_takes_a_terminated_source",
-    "lc_map_string_w_follows_the_nls_conventions",
-]
+ordinal = 482
 
 [[export]]
 name = "GetStringTypeA"
 group = "locale"
 args = ["u32 Locale", "u32 dwInfoType", "ptr lpSrcStr", "i32 cchSrc", "ptr lpCharType"]
 impl = { native = "GetStringTypeA" }
-pinned_by = ["runtime/locale"]
-scenarios = ["the_narrow_nls_calls_take_long_sources"]
+ordinal = 366
 
 [[export]]
 name = "GetStringTypeW"
 group = "locale"
 args = ["u32 dwInfoType", "ptr lpSrcStr", "i32 cchSrc", "ptr lpCharType"]
 impl = { native = "GetStringTypeW" }
-pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
-scenarios = [
-    "get_string_type_w_classifies_ctype1",
-    "get_string_type_w_refusals_and_empty_counts",
-    "get_string_type_w_takes_a_terminated_source",
-    "get_string_type_w_takes_any_negative_count_as_terminated",
-]
+ordinal = 369
 
 [[export]]
 name = "CompareStringA"
 group = "locale"
 args = ["u32 Locale", "u32 dwCmpFlags", "ptr lpString1", "i32 cchCount1", "ptr lpString2", "i32 cchCount2"]
 impl = { native = "CompareStringA" }
-pinned_by = ["runtime/locale"]
-scenarios = ["the_narrow_nls_calls_take_long_sources"]
+ordinal = 37
 
 [[export]]
 name = "CompareStringW"
 group = "locale"
 args = ["u32 Locale", "u32 dwCmpFlags", "ptr lpString1", "i32 cchCount1", "ptr lpString2", "i32 cchCount2"]
 impl = { native = "CompareStringW" }
-unpinned = "imported by the C runtime's string collation; no fixture block is known to reach it"
+ordinal = 38
+note = "no test pins it: imported by the C runtime's string collation; no fixture block is known to reach it"
 
 [[export]]
 name = "GetLocaleInfoA"
 group = "locale"
 args = ["u32 Locale", "u32 LCType", "ptr lpLCData", "i32 cchData"]
 impl = { native = "GetLocaleInfoA" }
-pinned_by = ["runtime/locale"]
-scenarios = ["the_locale_answers_its_values", "a_number_comes_back_as_a_dword"]
+ordinal = 309
 
 [[export]]
 name = "GetLocaleInfoW"
 group = "locale"
 args = ["u32 Locale", "u32 LCType", "ptr lpLCData", "i32 cchData"]
 impl = { native = "GetLocaleInfoW" }
-scenarios = ["the_locale_answers_its_values", "a_number_comes_back_as_a_dword"]
+ordinal = 310
 
 [[export]]
 name = "GetUserDefaultLCID"
 group = "locale"
 args = []
 impl = { native = "GetUserDefaultLCID" }
-pinned_by = ["runtime/locale"]
+ordinal = 399
 
 [[export]]
 name = "GetSystemDefaultLCID"
 group = "locale"
 args = []
 impl = { native = "GetSystemDefaultLCID" }
-pinned_by = ["runtime/locale"]
+ordinal = 370
 
 [[export]]
 name = "IsValidLocale"
 group = "locale"
 args = ["u32 Locale", "u32 dwFlags"]
 impl = { native = "IsValidLocale" }
-unpinned = "imported by the C runtime's setlocale; no fixture block is known to reach it"
+ordinal = 480
+note = "no test pins it: imported by the C runtime's setlocale; no fixture block is known to reach it"
 
 [[export]]
 name = "IsValidCodePage"
 group = "locale"
 args = ["u32 CodePage"]
 impl = { native = "IsValidCodePage" }
-pinned_by = ["runtime/locale"]
+ordinal = 478
 
 [[export]]
 name = "EnumSystemLocalesA"
 group = "locale"
 args = ["ptr lpLocaleEnumProc", "u32 dwFlags"]
 impl = { native = "EnumSystemLocalesA" }
-unpinned = "imported by the C runtime's setlocale; no fixture block is known to reach it"
+ordinal = 137
+note = "no test pins it: imported by the C runtime's setlocale; no fixture block is known to reach it"
 
 # --- threads / sync -------------------------------------------------------------------------------
 
@@ -924,34 +705,7 @@ name = "CreateThread"
 group = "threads"
 args = ["ptr lpThreadAttributes", "u32 dwStackSize", "u32 lpStartAddress", "u32 lpParameter", "u32 dwCreationFlags", "ptr<u32> lpThreadId"]
 impl = { native = "CreateThread" }
-pinned_by = [
-    "files/concurrent",
-    "memory/stack",
-    "sched/boost",
-    "sched/freeze",
-    "sched/preempt",
-    "sched/rr",
-    "sched/starve",
-    "sched/yield",
-    "sync/apc",
-    "sync/critsec",
-    "sync/event",
-    "sync/handles",
-    "sync/interlocked",
-    "sync/mutex",
-    "sync/pingpong",
-    "sync/waitmulti",
-    "threads/create",
-    "threads/exit",
-    "threads/mainexit",
-    "threads/perthread",
-    "threads/priority",
-    "threads/procexit",
-    "threads/scale",
-    "threads/suspend",
-    "threads/tls",
-]
-scenarios = ["create_thread_builds_the_stack_and_the_context", "create_thread_honours_its_flags", "create_thread_refusals_give_the_stack_back"]
+ordinal = 82
 
 [[export]]
 name = "BaseThreadStartThunk"
@@ -966,517 +720,421 @@ name = "CreateEventA"
 group = "threads"
 args = ["ptr lpEventAttributes", "bool bManualReset", "bool bInitialState", "strA? lpName"]
 impl = { native = "CreateEventA" }
-pinned_by = [
-    "sched/boost",
-    "sched/sleep",
-    "sync/apc",
-    "sync/event",
-    "sync/handles",
-    "sync/pingpong",
-    "sync/waitmulti",
-    "threads/create",
-    "threads/crt",
-    "threads/exit",
-    "threads/scale",
-    "threads/suspend",
-]
+ordinal = 53
 
 [[export]]
 name = "SetEvent"
 group = "threads"
 args = ["handle hEvent"]
 impl = { native = "SetEvent" }
-pinned_by = [
-    "sched/boost",
-    "sync/apc",
-    "sync/event",
-    "sync/handles",
-    "sync/pingpong",
-    "sync/waitmulti",
-    "threads/create",
-    "threads/crt",
-    "threads/exit",
-    "threads/scale",
-    "threads/suspend",
-]
+ordinal = 661
 
 [[export]]
 name = "Sleep"
 group = "threads"
 args = ["u32 dwMilliseconds"]
 impl = { native = "Sleep" }
-pinned_by = [
-    "sched/clock",
-    "sched/freeze",
-    "sched/preempt",
-    "sched/rr",
-    "sched/sleep",
-    "sched/starve",
-    "sched/yield",
-    "sync/apc",
-    "sync/event",
-    "sync/handles",
-    "threads/exit",
-    "threads/mainexit",
-    "threads/procexit",
-    "threads/scale",
-    "threads/suspend",
-]
+ordinal = 712
 
 [[export]]
 name = "WaitForSingleObject"
 group = "threads"
 args = ["handle hHandle", "u32 dwMilliseconds"]
 impl = { native = "WaitForSingleObject" }
-pinned_by = [
-    "files/*",
-    "memory/stack",
-    "sched/boost",
-    "sched/freeze",
-    "sched/preempt",
-    "sched/rr",
-    "sched/sleep",
-    "sched/starve",
-    "sched/timer",
-    "sched/yield",
-    "sync/*",
-    "threads/*",
-]
-scenarios = ["waits_on_console_handles_wait_for_input"]
+ordinal = 770
 
 [[export]]
 name = "GetTickCount"
 group = "threads"
 args = []
 impl = { native = "GetTickCount" }
-pinned_by = [
-    "runtime/lasterror",
-    "runtime/module",
-    "sched/clock",
-    "sched/freeze",
-    "sched/preempt",
-    "sched/rr",
-    "sched/sleep",
-    "sched/starve",
-    "sched/timer",
-    "threads/scale",
-]
-scenarios = ["the_tick_count_scales_the_shared_ticks"]
+ordinal = 395
 
 [[export]]
 name = "SetThreadPriority"
 group = "threads"
 args = ["handle hThread", "i32 nPriority"]
 impl = { native = "SetThreadPriority" }
-pinned_by = ["sched/*", "threads/priority"]
-scenarios = ["priorities_round_trip"]
+ordinal = 697
 
 [[export]]
 name = "SuspendThread"
 group = "threads"
 args = ["handle hThread"]
 impl = { native = "SuspendThread" }
-pinned_by = ["sched/freeze", "threads/suspend"]
-scenarios = ["suspend_counts_and_refusals"]
+ordinal = 714
 
 [[export]]
 name = "ResumeThread"
 group = "threads"
 args = ["handle hThread"]
 impl = { native = "ResumeThread" }
-pinned_by = ["sched/freeze", "sched/preempt", "threads/*"]
-scenarios = ["suspend_counts_and_refusals"]
+ordinal = 601
 
 [[export]]
 name = "GetCurrentThreadId"
 group = "threads"
 args = []
 impl = { native = "GetCurrentThreadId" }
-pinned_by = ["runtime/teb", "sync/critsec", "threads/create", "threads/priority", "threads/scale"]
+ordinal = 273
 
 [[export]]
 name = "GetCurrentProcessId"
 group = "threads"
 args = []
 impl = { native = "GetCurrentProcessId" }
-pinned_by = ["runtime/teb"]
+ordinal = 271
 
 [[export]]
 name = "GetCurrentThread"
 group = "threads"
 args = []
 impl = { native = "GetCurrentThread" }
-pinned_by = [
-    "sched/*",
-    "sync/apc",
-    "sync/handles",
-    "sync/waitmulti",
-    "threads/create",
-    "threads/priority",
-    "threads/suspend",
-]
+ordinal = 272
 
 [[export]]
 name = "InterlockedIncrement"
 group = "threads"
 args = ["ptr lpAddend"]
 impl = { native = "InterlockedIncrement" }
-pinned_by = ["sync/event", "sync/interlocked", "sync/waitmulti", "threads/scale"]
+ordinal = 464
 
 [[export]]
 name = "InterlockedDecrement"
 group = "threads"
 args = ["ptr lpAddend"]
 impl = { native = "InterlockedDecrement" }
-pinned_by = ["sync/interlocked"]
+ordinal = 461
 
 [[export]]
 name = "InterlockedExchange"
 group = "threads"
 args = ["ptr Target", "u32 Value"]
 impl = { native = "InterlockedExchange" }
-pinned_by = ["sync/interlocked"]
+ordinal = 462
 
 [[export]]
 name = "InterlockedExchangeAdd"
 group = "threads"
 args = ["ptr Addend", "u32 Value"]
 impl = { native = "InterlockedExchangeAdd" }
-pinned_by = ["sync/interlocked"]
+ordinal = 463
 
 [[export]]
 name = "InterlockedCompareExchange"
 group = "threads"
 args = ["ptr Destination", "u32 Exchange", "u32 Comperand"]
 impl = { native = "InterlockedCompareExchange" }
-pinned_by = ["sync/interlocked"]
+ordinal = 460
 
 [[export]]
 name = "DuplicateHandle"
 group = "threads"
 args = ["handle hSourceProcessHandle", "handle hSourceHandle", "handle hTargetProcessHandle", "ptr<u32> lpTargetHandle", "u32 dwDesiredAccess", "bool bInheritHandle", "u32 dwOptions"]
 impl = { native = "DuplicateHandle" }
-pinned_by = ["files/handles", "sync/handles", "threads/create"]
+ordinal = 113
 note = "a console handle is its server's to duplicate (DuplicateConsoleHandle); any other handle is NtDuplicateObject's, within the calling process — a file handle's duplicate shares its file object and its position"
-scenarios = ["console_handles_close_and_duplicate_at_their_server", "duplicate_handle_duplicates_kernel_handles"]
 
 [[export]]
 name = "ExitThread"
 group = "threads"
 args = ["u32 dwExitCode"]
 impl = { native = "ExitThread" }
-pinned_by = ["threads/exit", "threads/mainexit"]
+ordinal = 146
 
 [[export]]
 name = "GetExitCodeThread"
 group = "threads"
 args = ["handle hThread", "ptr<u32> lpExitCode"]
 impl = { native = "GetExitCodeThread" }
-pinned_by = ["threads/*"]
-scenarios = ["exit_codes_come_from_the_basic_information"]
+ordinal = 292
 
 [[export]]
 name = "GetPriorityClass"
 group = "threads"
 args = ["handle hProcess"]
 impl = { native = "GetPriorityClass" }
-pinned_by = ["threads/priority"]
-scenarios = ["priority_classes_round_trip"]
+ordinal = 333
 
 [[export]]
 name = "GetThreadPriority"
 group = "threads"
 args = ["handle hThread"]
 impl = { native = "GetThreadPriority" }
-pinned_by = ["threads/priority"]
-scenarios = ["priorities_round_trip"]
+ordinal = 391
 
 [[export]]
 name = "GetThreadPriorityBoost"
 group = "threads"
 args = ["handle hThread", "ptr<u32> pDisablePriorityBoost"]
 impl = { native = "GetThreadPriorityBoost" }
-pinned_by = ["threads/priority"]
-scenarios = ["boosts_disable_and_enable"]
+ordinal = 392
 
 [[export]]
 name = "SetPriorityClass"
 group = "threads"
 args = ["handle hProcess", "u32 dwPriorityClass"]
 impl = { native = "SetPriorityClass" }
-pinned_by = ["threads/priority"]
-scenarios = ["priority_classes_round_trip"]
+ordinal = 680
 
 [[export]]
 name = "SetThreadPriorityBoost"
 group = "threads"
 args = ["handle hThread", "bool DisablePriorityBoost"]
 impl = { native = "SetThreadPriorityBoost" }
-pinned_by = ["threads/priority"]
-scenarios = ["boosts_disable_and_enable"]
+ordinal = 698
 
 [[export]]
 name = "TerminateThread"
 group = "threads"
 args = ["handle hThread", "u32 dwExitCode"]
 impl = { native = "TerminateThread" }
-pinned_by = ["threads/exit"]
-scenarios = ["terminations_reach_what_their_handles_name"]
+ordinal = 721
 
 [[export]]
 name = "TlsAlloc"
 group = "threads"
 args = []
 impl = { native = "TlsAlloc" }
-pinned_by = ["threads/tls"]
-scenarios = ["tls_indexes_allocate_and_free"]
+ordinal = 725
 
 [[export]]
 name = "TlsFree"
 group = "threads"
 args = ["u32 dwTlsIndex"]
 impl = { native = "TlsFree" }
-pinned_by = ["threads/tls"]
-scenarios = ["tls_indexes_allocate_and_free"]
+ordinal = 726
 
 [[export]]
 name = "TlsGetValue"
 group = "threads"
 args = ["u32 dwTlsIndex"]
 impl = { native = "TlsGetValue" }
-pinned_by = ["threads/tls"]
+ordinal = 727
 
 [[export]]
 name = "TlsSetValue"
 group = "threads"
 args = ["u32 dwTlsIndex", "ptr lpTlsValue"]
 impl = { native = "TlsSetValue" }
-pinned_by = ["threads/tls"]
+ordinal = 728
 
 [[export]]
 name = "DeleteCriticalSection"
 group = "threads"
 args = ["ptr lpCriticalSection"]
 impl = { forward = "NTDLL.RtlDeleteCriticalSection" }
-pinned_by = ["sync/critsec"]
+ordinal = 95
 
 [[export]]
 name = "EnterCriticalSection"
 group = "threads"
 args = ["ptr lpCriticalSection"]
 impl = { forward = "NTDLL.RtlEnterCriticalSection" }
-pinned_by = ["sync/critsec"]
+ordinal = 116
 
 [[export]]
 name = "InitializeCriticalSection"
 group = "threads"
 args = ["ptr lpCriticalSection"]
 impl = { native = "InitializeCriticalSection" }
-pinned_by = ["sync/critsec"]
+ordinal = 458
 
 [[export]]
 name = "LeaveCriticalSection"
 group = "threads"
 args = ["ptr lpCriticalSection"]
 impl = { forward = "NTDLL.RtlLeaveCriticalSection" }
-pinned_by = ["sync/critsec"]
+ordinal = 483
 
 [[export]]
 name = "TryEnterCriticalSection"
 group = "threads"
 args = ["ptr lpCriticalSection"]
 impl = { forward = "NTDLL.RtlTryEnterCriticalSection" }
-pinned_by = ["sync/critsec"]
+ordinal = 733
 
 [[export]]
 name = "CreateMutexA"
 group = "threads"
 args = ["ptr lpMutexAttributes", "bool bInitialOwner", "strA? lpName"]
 impl = { native = "CreateMutexA" }
-pinned_by = ["sync/event", "sync/mutex", "sync/waitmulti"]
+ordinal = 68
 
 [[export]]
 name = "CreateSemaphoreA"
 group = "threads"
 args = ["ptr lpSemaphoreAttributes", "i32 lInitialCount", "i32 lMaximumCount", "strA? lpName"]
 impl = { native = "CreateSemaphoreA" }
-pinned_by = ["sync/semaphore", "sync/waitmulti"]
+ordinal = 79
 
 [[export]]
 name = "OpenEventA"
 group = "threads"
 args = ["u32 dwDesiredAccess", "bool bInheritHandle", "strA? lpName"]
 impl = { native = "OpenEventA" }
-pinned_by = ["sync/event"]
+ordinal = 525
 
 [[export]]
 name = "OpenMutexA"
 group = "threads"
 args = ["u32 dwDesiredAccess", "bool bInheritHandle", "strA? lpName"]
 impl = { native = "OpenMutexA" }
-pinned_by = ["sync/mutex"]
+ordinal = 532
 
 [[export]]
 name = "OpenSemaphoreA"
 group = "threads"
 args = ["u32 dwDesiredAccess", "bool bInheritHandle", "strA? lpName"]
 impl = { native = "OpenSemaphoreA" }
-pinned_by = ["sync/semaphore"]
+ordinal = 536
 
 [[export]]
 name = "PulseEvent"
 group = "threads"
 args = ["handle hEvent"]
 impl = { native = "PulseEvent" }
-pinned_by = ["sync/event"]
+ordinal = 555
 
 [[export]]
 name = "QueueUserAPC"
 group = "threads"
 args = ["ptr pfnAPC", "handle hThread", "u32 dwData"]
 impl = { native = "QueueUserAPC" }
-pinned_by = ["sync/apc"]
+ordinal = 563
 
 [[export]]
 name = "ReleaseMutex"
 group = "threads"
 args = ["handle hMutex"]
 impl = { native = "ReleaseMutex" }
-pinned_by = ["sync/mutex", "sync/waitmulti"]
+ordinal = 590
 
 [[export]]
 name = "ReleaseSemaphore"
 group = "threads"
 args = ["handle hSemaphore", "i32 lReleaseCount", "ptr<i32> lpPreviousCount"]
 impl = { native = "ReleaseSemaphore" }
-pinned_by = ["sync/semaphore"]
+ordinal = 591
 
 [[export]]
 name = "ResetEvent"
 group = "threads"
 args = ["handle hEvent"]
 impl = { native = "ResetEvent" }
-pinned_by = ["sync/event", "sync/pingpong"]
+ordinal = 599
 
 [[export]]
 name = "SignalObjectAndWait"
 group = "threads"
 args = ["handle hObjectToSignal", "handle hObjectToWaitOn", "u32 dwMilliseconds", "bool bAlertable"]
 impl = { native = "SignalObjectAndWait" }
-pinned_by = ["sync/pingpong"]
-scenarios = ["waits_on_console_handles_wait_for_input"]
+ordinal = 710
 
 [[export]]
 name = "SleepEx"
 group = "threads"
 args = ["u32 dwMilliseconds", "bool bAlertable"]
 impl = { native = "SleepEx" }
-pinned_by = ["sched/sleep", "sched/timer", "sync/apc"]
+ordinal = 713
 
 [[export]]
 name = "WaitForMultipleObjects"
 group = "threads"
 args = ["u32 nCount", "ptr lpHandles", "bool bWaitAll", "u32 dwMilliseconds"]
 impl = { native = "WaitForMultipleObjects" }
-pinned_by = ["sync/waitmulti"]
-scenarios = ["waits_on_console_handles_wait_for_input"]
+ordinal = 768
 
 [[export]]
 name = "WaitForSingleObjectEx"
 group = "threads"
 args = ["handle hHandle", "u32 dwMilliseconds", "bool bAlertable"]
 impl = { native = "WaitForSingleObjectEx" }
-pinned_by = ["sync/apc"]
+ordinal = 771
 
 [[export]]
 name = "CancelWaitableTimer"
 group = "threads"
 args = ["handle hTimer"]
 impl = { native = "CancelWaitableTimer" }
-pinned_by = ["sched/timer"]
+ordinal = 26
 
 [[export]]
 name = "CreateWaitableTimerA"
 group = "threads"
 args = ["ptr lpTimerAttributes", "bool bManualReset", "strA? lpTimerName"]
 impl = { native = "CreateWaitableTimerA" }
-pinned_by = ["sched/timer"]
+ordinal = 87
 
 [[export]]
 name = "GetLocalTime"
 group = "threads"
 args = ["ptr lpSystemTime"]
 impl = { native = "GetLocalTime" }
-pinned_by = ["sched/clock"]
-scenarios = ["the_system_and_local_times_read_the_shared_page"]
+ordinal = 308
 
 [[export]]
 name = "GetSystemTime"
 group = "threads"
 args = ["ptr lpSystemTime"]
 impl = { native = "GetSystemTime" }
-pinned_by = ["sched/clock"]
-scenarios = ["the_system_and_local_times_read_the_shared_page"]
+ordinal = 377
 
 [[export]]
 name = "GetSystemTimeAsFileTime"
 group = "threads"
 args = ["ptr lpSystemTimeAsFileTime"]
 impl = { native = "GetSystemTimeAsFileTime" }
-pinned_by = ["sched/clock", "sched/timer"]
-scenarios = ["the_system_and_local_times_read_the_shared_page"]
+ordinal = 379
 
 [[export]]
 name = "GetTimeZoneInformation"
 group = "threads"
 args = ["ptr lpTimeZoneInformation"]
 impl = { native = "GetTimeZoneInformation" }
-scenarios = ["the_time_zone_comes_from_the_system"]
+ordinal = 398
 
 [[export]]
 name = "OpenWaitableTimerA"
 group = "threads"
 args = ["u32 dwDesiredAccess", "bool bInheritHandle", "strA? lpTimerName"]
 impl = { native = "OpenWaitableTimerA" }
-pinned_by = ["sched/timer"]
+ordinal = 539
 
 [[export]]
 name = "QueryPerformanceCounter"
 group = "threads"
 args = ["ptr<u64> lpPerformanceCount"]
 impl = { native = "QueryPerformanceCounter" }
-pinned_by = ["sched/clock"]
-scenarios = ["the_performance_counter_comes_from_the_system"]
+ordinal = 560
 
 [[export]]
 name = "QueryPerformanceFrequency"
 group = "threads"
 args = ["ptr<u64> lpFrequency"]
 impl = { native = "QueryPerformanceFrequency" }
-pinned_by = ["sched/clock"]
-scenarios = ["the_performance_counter_comes_from_the_system"]
+ordinal = 561
 
 [[export]]
 name = "SetProcessAffinityMask"
 group = "threads"
 args = ["handle hProcess", "u32 dwProcessAffinityMask"]
 impl = { native = "SetProcessAffinityMask" }
-pinned_by = ["sched/*"]
-scenarios = ["affinity_is_the_one_processor"]
+ordinal = 681
 
 [[export]]
 name = "SetWaitableTimer"
 group = "threads"
 args = ["handle hTimer", "ptr<u64> pDueTime", "i32 lPeriod", "ptr pfnCompletionRoutine", "ptr lpArgToCompletionRoutine", "bool fResume"]
 impl = { native = "SetWaitableTimer" }
-pinned_by = ["sched/timer"]
+ordinal = 707
 
 [[export]]
 name = "SwitchToThread"
 group = "threads"
 args = []
 impl = { native = "SwitchToThread" }
-pinned_by = ["sched/yield"]
+ordinal = 716
 
 # --- file handles ---------------------------------------------------------------------------------
 
@@ -1485,39 +1143,14 @@ name = "CreateFileA"
 group = "files"
 args = ["strA lpFileName", "u32 dwDesiredAccess", "u32 dwShareMode", "ptr lpSecurityAttributes", "u32 dwCreationDisposition", "u32 dwFlagsAndAttributes", "handle hTemplateFile"]
 impl = { native = "CreateFileA" }
-pinned_by = [
-    "files/concurrent",
-    "files/handles",
-    "files/mapping",
-    "files/meta",
-    "files/open",
-    "files/read",
-    "files/seek",
-    "fswrite/create",
-    "fswrite/dirs",
-    "fswrite/names",
-    "fswrite/share",
-    "fswrite/times",
-    "fswrite/write",
-]
-scenarios = ["create_file_maps_its_arguments_onto_nt_create_file", "create_file_refuses_as_windows_2000_does", "truncate_existing_cuts_the_file_once_open"]
+ordinal = 57
 
 [[export]]
 name = "ReadFile"
 group = "files"
 args = ["handle hFile", "ptr lpBuffer", "u32 nNumberOfBytesToRead", "ptr lpNumberOfBytesRead", "ptr lpOverlapped"]
 impl = { native = "ReadFile" }
-pinned_by = [
-    "files/concurrent",
-    "files/crt",
-    "files/find",
-    "files/handles",
-    "files/open",
-    "files/read",
-    "files/seek",
-    "fswrite/write",
-]
-scenarios = ["read_file_counts_what_moved"]
+ordinal = 578
 note = "a console handle's read is the console server's (ReadConsoleA): the input handle reads nothing and succeeds (F2K's console has no keyboard)"
 
 [[export]]
@@ -1525,227 +1158,210 @@ name = "CreateFileMappingA"
 group = "files"
 args = ["handle hFile", "ptr lpAttributes", "u32 flProtect", "u32 dwMaximumSizeHigh", "u32 dwMaximumSizeLow", "strA?[260] lpName"]
 impl = { native = "CreateFileMappingA" }
-pinned_by = ["files/mapping", "memory/mapping"]
+ordinal = 58
 
 [[export]]
 name = "FileTimeToLocalFileTime"
 group = "files"
 args = ["ptr lpFileTime", "ptr lpLocalFileTime"]
 impl = { native = "FileTimeToLocalFileTime" }
-scenarios = ["the_system_and_local_times_read_the_shared_page"]
+ordinal = 157
 
 [[export]]
 name = "FileTimeToSystemTime"
 group = "files"
 args = ["ptr lpFileTime", "ptr lpSystemTime"]
 impl = { native = "FileTimeToSystemTime" }
-pinned_by = ["fswrite/times"]
-scenarios = ["the_conversions_round_trip_and_refuse_out_of_range_values"]
+ordinal = 158
 
 [[export]]
 name = "FindClose"
 group = "files"
 args = ["handle hFindFile"]
 impl = { native = "FindClose" }
-pinned_by = ["files/find", "fswrite/*"]
-scenarios = ["find_handles_refuse_the_invalid_value"]
+ordinal = 164
 
 [[export]]
 name = "FindFirstFileA"
 group = "files"
 args = ["strA[260] lpFileName", "ptr lpFindFileData"]
 impl = { native = "FindFirstFileA" }
-pinned_by = ["files/find", "fswrite/*"]
+ordinal = 168
 
 [[export]]
 name = "OpenFileMappingA"
 group = "files"
 args = ["u32 dwDesiredAccess", "bool bInheritHandle", "strA?[260] lpName"]
 impl = { native = "OpenFileMappingA" }
-pinned_by = ["memory/mapping"]
+ordinal = 528
 
 [[export]]
 name = "CopyFileA"
 group = "files"
 args = ["strA[260] lpExistingFileName", "strA[260] lpNewFileName", "bool bFailIfExists"]
 impl = { native = "CopyFileA" }
-pinned_by = ["fswrite/names"]
+ordinal = 44
 
 [[export]]
 name = "CreateDirectoryA"
 group = "files"
 args = ["strA[260] lpPathName", "ptr lpSecurityAttributes"]
 impl = { native = "CreateDirectoryA" }
-pinned_by = ["fswrite/*"]
+ordinal = 49
 
 [[export]]
 name = "DeleteFileA"
 group = "files"
 args = ["strA[260] lpFileName"]
 impl = { native = "DeleteFileA" }
-pinned_by = ["fswrite/*"]
-scenarios = ["deletes_open_for_delete_then_dispose"]
+ordinal = 97
 
 [[export]]
 name = "MoveFileA"
 group = "files"
 args = ["strA[260] lpExistingFileName", "strA[260] lpNewFileName"]
 impl = { native = "MoveFileA" }
-pinned_by = ["fswrite/names"]
-scenarios = ["move_file_renames_to_the_nt_path"]
+ordinal = 512
 
 [[export]]
 name = "RemoveDirectoryA"
 group = "files"
 args = ["strA[260] lpPathName"]
 impl = { native = "RemoveDirectoryA" }
-pinned_by = ["fswrite/*"]
-scenarios = ["deletes_open_for_delete_then_dispose"]
+ordinal = 592
 
 [[export]]
 name = "SetFileAttributesA"
 group = "files"
 args = ["strA[260] lpFileName", "u32 dwFileAttributes"]
 impl = { native = "SetFileAttributesA" }
-pinned_by = ["fswrite/*"]
+ordinal = 664
 
 [[export]]
 name = "SetFileTime"
 group = "files"
 args = ["handle hFile", "ptr lpCreationTime", "ptr lpLastAccessTime", "ptr lpLastWriteTime"]
 impl = { native = "SetFileTime" }
-pinned_by = ["fswrite/times"]
+ordinal = 668
 
 [[export]]
 name = "SystemTimeToFileTime"
 group = "files"
 args = ["ptr lpSystemTime", "ptr lpFileTime"]
 impl = { native = "SystemTimeToFileTime" }
-pinned_by = ["fswrite/times"]
-scenarios = ["the_conversions_round_trip_and_refuse_out_of_range_values"]
+ordinal = 717
 
 [[export]]
 name = "FindNextFileA"
 group = "files"
 args = ["handle hFindFile", "ptr lpFindFileData"]
 impl = { native = "FindNextFileA" }
-pinned_by = ["files/find", "fswrite/*"]
-scenarios = ["find_handles_refuse_the_invalid_value"]
+ordinal = 177
 
 [[export]]
 name = "GetCurrentDirectoryA"
 group = "files"
 args = ["u32 nBufferLength", "ptr lpBuffer"]
 impl = { native = "GetCurrentDirectoryA" }
-pinned_by = ["files/open"]
-scenarios = ["the_current_directory_moves_and_reads_back"]
+ordinal = 268
 
 [[export]]
 name = "GetDiskFreeSpaceA"
 group = "files"
 args = ["strA?[260] lpRootPathName", "ptr<u32> lpSectorsPerCluster", "ptr<u32> lpBytesPerSector", "ptr<u32> lpNumberOfFreeClusters", "ptr<u32> lpTotalNumberOfClusters"]
 impl = { native = "GetDiskFreeSpaceA" }
-pinned_by = ["files/meta"]
+ordinal = 280
 
 [[export]]
 name = "GetDriveTypeA"
 group = "files"
 args = ["strA?[260] lpRootPathName"]
 impl = { native = "GetDriveTypeA" }
-pinned_by = ["files/meta"]
+ordinal = 284
 
 [[export]]
 name = "GetFileAttributesA"
 group = "files"
 args = ["strA[260] lpFileName"]
 impl = { native = "GetFileAttributesA" }
-pinned_by = ["files/find", "files/meta", "fswrite/dirs", "fswrite/names", "fswrite/share"]
+ordinal = 293
 
 [[export]]
 name = "GetFileAttributesExA"
 group = "files"
 args = ["strA[260] lpFileName", "u32 fInfoLevelId", "ptr lpFileInformation"]
 impl = { native = "GetFileAttributesExA" }
-pinned_by = [
-    "files/meta",
-    "fswrite/create",
-    "fswrite/crt",
-    "fswrite/dirs",
-    "fswrite/names",
-    "fswrite/write",
-]
+ordinal = 294
 
 [[export]]
 name = "GetFileInformationByHandle"
 group = "files"
 args = ["handle hFile", "ptr lpFileInformation"]
 impl = { native = "GetFileInformationByHandle" }
-pinned_by = ["files/meta"]
+ordinal = 297
 
 [[export]]
 name = "GetFileSize"
 group = "files"
 args = ["handle hFile", "ptr<u32> lpFileSizeHigh"]
 impl = { native = "GetFileSize" }
-pinned_by = ["files/meta", "fswrite/write"]
+ordinal = 298
 
 [[export]]
 name = "GetFileTime"
 group = "files"
 args = ["handle hFile", "ptr lpCreationTime", "ptr lpLastAccessTime", "ptr lpLastWriteTime"]
 impl = { native = "GetFileTime" }
-pinned_by = ["files/meta", "fswrite/times"]
+ordinal = 300
 
 [[export]]
 name = "GetFullPathNameA"
 group = "files"
 args = ["strA[260] lpFileName", "u32 nBufferLength", "ptr lpBuffer", "ptr<u32> lpFilePart"]
 impl = { native = "GetFullPathNameA" }
-pinned_by = ["files/open"]
-scenarios = ["get_full_path_name_folds_against_the_current_directory"]
+ordinal = 302
 
 [[export]]
 name = "GetShortPathNameA"
 group = "files"
 args = ["strA[260] lpszLongPath", "ptr lpszShortPath", "u32 cchBuffer"]
 impl = { native = "GetShortPathNameA" }
-pinned_by = ["files/open", "fswrite/names"]
+ordinal = 361
 
 [[export]]
 name = "GetVolumeInformationA"
 group = "files"
 args = ["strA?[260] lpRootPathName", "ptr lpVolumeNameBuffer", "u32 nVolumeNameSize", "ptr<u32> lpVolumeSerialNumber", "ptr<u32> lpMaximumComponentLength", "ptr<u32> lpFileSystemFlags", "ptr lpFileSystemNameBuffer", "u32 nFileSystemNameSize"]
 impl = { native = "GetVolumeInformationA" }
-pinned_by = ["files/meta"]
+ordinal = 406
 
 [[export]]
 name = "MapViewOfFile"
 group = "files"
 args = ["handle hFileMappingObject", "u32 dwDesiredAccess", "u32 dwFileOffsetHigh", "u32 dwFileOffsetLow", "u32 dwNumberOfBytesToMap"]
 impl = { native = "MapViewOfFile" }
-pinned_by = ["files/mapping", "memory/mapping"]
+ordinal = 506
 
 [[export]]
 name = "SetCurrentDirectoryA"
 group = "files"
 args = ["strA[260] lpPathName"]
 impl = { native = "SetCurrentDirectoryA" }
-pinned_by = ["files/open"]
-scenarios = ["the_current_directory_moves_and_reads_back", "a_directory_that_cannot_be_opened_is_refused"]
+ordinal = 653
 
 [[export]]
 name = "SetEndOfFile"
 group = "files"
 args = ["handle hFile"]
 impl = { native = "SetEndOfFile" }
-pinned_by = ["fswrite/write"]
+ordinal = 657
 
 [[export]]
 name = "UnmapViewOfFile"
 group = "files"
 args = ["ptr lpBaseAddress"]
 impl = { native = "UnmapViewOfFile" }
-pinned_by = ["files/mapping", "memory/mapping"]
+ordinal = 739
 
 # --- virtual memory -------------------------------------------------------------------------------
 
@@ -1754,68 +1370,2647 @@ name = "VirtualAlloc"
 group = "virtual-memory"
 args = ["u32 lpAddress", "u32 dwSize", "u32 flAllocationType", "u32 flProtect"]
 impl = { native = "VirtualAlloc" }
-pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
+ordinal = 755
 
 [[export]]
 name = "VirtualFree"
 group = "virtual-memory"
 args = ["u32 lpAddress", "u32 dwSize", "u32 dwFreeType"]
 impl = { native = "VirtualFree" }
-pinned_by = ["files/read", "memory/protect", "memory/virtual"]
+ordinal = 758
 
 [[export]]
 name = "VirtualQuery"
 group = "virtual-memory"
 args = ["ptr lpAddress", "ptr lpBuffer", "u32 dwLength"]
 impl = { native = "VirtualQuery" }
-pinned_by = ["memory/image", "memory/mapping", "memory/protect", "memory/stack", "memory/virtual"]
+ordinal = 763
 
 [[export]]
 name = "VirtualProtect"
 group = "virtual-memory"
 args = ["ptr lpAddress", "u32 dwSize", "u32 flNewProtect", "ptr<u32> lpflOldProtect"]
 impl = { native = "VirtualProtect" }
-pinned_by = ["memory/protect"]
+ordinal = 761
 
 [[export]]
 name = "GetSystemInfo"
 group = "virtual-memory"
 args = ["ptr lpSystemInfo"]
 impl = { native = "GetSystemInfo" }
-pinned_by = ["memory/sysinfo"]
+ordinal = 375
 
 [[export]]
 name = "GlobalMemoryStatus"
 group = "virtual-memory"
 args = ["ptr lpBuffer"]
 impl = { native = "GlobalMemoryStatus" }
-pinned_by = ["memory/sysinfo"]
+ordinal = 429
 
 [[export]]
 name = "IsBadReadPtr"
 group = "virtual-memory"
 args = ["ptr lp", "u32 ucb"]
 impl = { native = "IsBadReadPtr" }
+ordinal = 469
 note = "a probe under its own exception frame (src/probe.s), as Windows 2000's __try probe: a fault answers TRUE"
-pinned_by = ["memory/protect"]
 
 [[export]]
 name = "IsBadWritePtr"
 group = "virtual-memory"
 args = ["ptr lp", "u32 ucb"]
 impl = { native = "IsBadWritePtr" }
-pinned_by = ["memory/protect"]
+ordinal = 472
 
 [[export]]
 name = "IsBadCodePtr"
 group = "virtual-memory"
 args = ["ptr lpfn"]
 impl = { native = "IsBadCodePtr" }
-pinned_by = ["memory/protect"]
+ordinal = 466
 
 [[export]]
 name = "IsBadStringPtrA"
 group = "virtual-memory"
 args = ["ptr lpsz", "u32 ucchMax"]
 impl = { native = "IsBadStringPtrA" }
-pinned_by = ["memory/protect"]
+ordinal = 470
+
+# --- not implemented yet: the rest of KERNEL32.dll 5.0.2195.6688's export table, by ordinal ------
+
+[[export]]
+name = "AddAtomA"
+ordinal = 1
+
+[[export]]
+name = "AddAtomW"
+ordinal = 2
+
+[[export]]
+name = "AddConsoleAliasA"
+ordinal = 3
+
+[[export]]
+name = "AddConsoleAliasW"
+ordinal = 4
+
+[[export]]
+name = "AllocConsole"
+ordinal = 5
+
+[[export]]
+name = "AllocateUserPhysicalPages"
+ordinal = 6
+
+[[export]]
+name = "AreFileApisANSI"
+ordinal = 7
+
+[[export]]
+name = "AssignProcessToJobObject"
+ordinal = 8
+
+[[export]]
+name = "BackupRead"
+ordinal = 9
+
+[[export]]
+name = "BackupSeek"
+ordinal = 10
+
+[[export]]
+name = "BackupWrite"
+ordinal = 11
+
+[[export]]
+name = "BaseAttachCompleteThunk"
+ordinal = 12
+
+[[export]]
+name = "Beep"
+ordinal = 13
+
+[[export]]
+name = "BeginUpdateResourceA"
+ordinal = 14
+
+[[export]]
+name = "BeginUpdateResourceW"
+ordinal = 15
+
+[[export]]
+name = "BindIoCompletionCallback"
+ordinal = 16
+
+[[export]]
+name = "BuildCommDCBA"
+ordinal = 17
+
+[[export]]
+name = "BuildCommDCBAndTimeoutsA"
+ordinal = 18
+
+[[export]]
+name = "BuildCommDCBAndTimeoutsW"
+ordinal = 19
+
+[[export]]
+name = "BuildCommDCBW"
+ordinal = 20
+
+[[export]]
+name = "CallNamedPipeA"
+ordinal = 21
+
+[[export]]
+name = "CallNamedPipeW"
+ordinal = 22
+
+[[export]]
+name = "CancelDeviceWakeupRequest"
+ordinal = 23
+
+[[export]]
+name = "CancelIo"
+ordinal = 24
+
+[[export]]
+name = "CancelTimerQueueTimer"
+ordinal = 25
+
+[[export]]
+name = "ChangeTimerQueueTimer"
+ordinal = 27
+
+[[export]]
+name = "ClearCommBreak"
+ordinal = 28
+
+[[export]]
+name = "ClearCommError"
+ordinal = 29
+
+[[export]]
+name = "CloseConsoleHandle"
+ordinal = 30
+
+[[export]]
+name = "CloseProfileUserMapping"
+ordinal = 32
+
+[[export]]
+name = "CmdBatNotification"
+ordinal = 33
+
+[[export]]
+name = "CommConfigDialogA"
+ordinal = 34
+
+[[export]]
+name = "CommConfigDialogW"
+ordinal = 35
+
+[[export]]
+name = "CompareFileTime"
+ordinal = 36
+
+[[export]]
+name = "ConnectNamedPipe"
+ordinal = 39
+
+[[export]]
+name = "ConsoleMenuControl"
+ordinal = 40
+
+[[export]]
+name = "ContinueDebugEvent"
+ordinal = 41
+
+[[export]]
+name = "ConvertDefaultLocale"
+ordinal = 42
+
+[[export]]
+name = "ConvertThreadToFiber"
+ordinal = 43
+
+[[export]]
+name = "CopyFileExA"
+ordinal = 45
+
+[[export]]
+name = "CopyFileExW"
+ordinal = 46
+
+[[export]]
+name = "CopyFileW"
+ordinal = 47
+
+[[export]]
+name = "CreateConsoleScreenBuffer"
+ordinal = 48
+
+[[export]]
+name = "CreateDirectoryExA"
+ordinal = 50
+
+[[export]]
+name = "CreateDirectoryExW"
+ordinal = 51
+
+[[export]]
+name = "CreateDirectoryW"
+ordinal = 52
+
+[[export]]
+name = "CreateEventW"
+ordinal = 54
+
+[[export]]
+name = "CreateFiber"
+ordinal = 55
+
+[[export]]
+name = "CreateFiberEx"
+ordinal = 56
+
+[[export]]
+name = "CreateFileMappingW"
+ordinal = 59
+
+[[export]]
+name = "CreateFileW"
+ordinal = 60
+
+[[export]]
+name = "CreateHardLinkA"
+ordinal = 61
+
+[[export]]
+name = "CreateHardLinkW"
+ordinal = 62
+
+[[export]]
+name = "CreateIoCompletionPort"
+ordinal = 63
+
+[[export]]
+name = "CreateJobObjectA"
+ordinal = 64
+
+[[export]]
+name = "CreateJobObjectW"
+ordinal = 65
+
+[[export]]
+name = "CreateMailslotA"
+ordinal = 66
+
+[[export]]
+name = "CreateMailslotW"
+ordinal = 67
+
+[[export]]
+name = "CreateMutexW"
+ordinal = 69
+
+[[export]]
+name = "CreateNamedPipeA"
+ordinal = 70
+
+[[export]]
+name = "CreateNamedPipeW"
+ordinal = 71
+
+[[export]]
+name = "CreatePipe"
+ordinal = 72
+
+[[export]]
+name = "CreateProcessA"
+ordinal = 73
+
+[[export]]
+name = "CreateProcessInternalA"
+ordinal = 74
+
+[[export]]
+name = "CreateProcessInternalW"
+ordinal = 75
+
+[[export]]
+name = "CreateProcessInternalWSecure"
+ordinal = 76
+
+[[export]]
+name = "CreateProcessW"
+ordinal = 77
+
+[[export]]
+name = "CreateRemoteThread"
+ordinal = 78
+
+[[export]]
+name = "CreateSemaphoreW"
+ordinal = 80
+
+[[export]]
+name = "CreateTapePartition"
+ordinal = 81
+
+[[export]]
+name = "CreateTimerQueue"
+ordinal = 83
+
+[[export]]
+name = "CreateTimerQueueTimer"
+ordinal = 84
+
+[[export]]
+name = "CreateToolhelp32Snapshot"
+ordinal = 85
+
+[[export]]
+name = "CreateVirtualBuffer"
+ordinal = 86
+
+[[export]]
+name = "CreateWaitableTimerW"
+ordinal = 88
+
+[[export]]
+name = "DebugActiveProcess"
+ordinal = 89
+
+[[export]]
+name = "DebugBreak"
+ordinal = 90
+
+[[export]]
+name = "DefineDosDeviceA"
+ordinal = 91
+
+[[export]]
+name = "DefineDosDeviceW"
+ordinal = 92
+
+[[export]]
+name = "DelayLoadFailureHook"
+ordinal = 93
+
+[[export]]
+name = "DeleteAtom"
+ordinal = 94
+
+[[export]]
+name = "DeleteFiber"
+ordinal = 96
+
+[[export]]
+name = "DeleteFileW"
+ordinal = 98
+
+[[export]]
+name = "DeleteTimerQueue"
+ordinal = 99
+
+[[export]]
+name = "DeleteTimerQueueEx"
+ordinal = 100
+
+[[export]]
+name = "DeleteTimerQueueTimer"
+ordinal = 101
+
+[[export]]
+name = "DeleteVolumeMountPointA"
+ordinal = 102
+
+[[export]]
+name = "DeleteVolumeMountPointW"
+ordinal = 103
+
+[[export]]
+name = "DeviceIoControl"
+ordinal = 104
+
+[[export]]
+name = "DisableThreadLibraryCalls"
+ordinal = 105
+
+[[export]]
+name = "DisconnectNamedPipe"
+ordinal = 106
+
+[[export]]
+name = "DnsHostnameToComputerNameA"
+ordinal = 107
+
+[[export]]
+name = "DnsHostnameToComputerNameW"
+ordinal = 108
+
+[[export]]
+name = "DosDateTimeToFileTime"
+ordinal = 109
+
+[[export]]
+name = "DosPathToSessionPathA"
+ordinal = 110
+
+[[export]]
+name = "DosPathToSessionPathW"
+ordinal = 111
+
+[[export]]
+name = "DuplicateConsoleHandle"
+ordinal = 112
+
+[[export]]
+name = "EndUpdateResourceA"
+ordinal = 114
+
+[[export]]
+name = "EndUpdateResourceW"
+ordinal = 115
+
+[[export]]
+name = "EnumCalendarInfoA"
+ordinal = 117
+
+[[export]]
+name = "EnumCalendarInfoExA"
+ordinal = 118
+
+[[export]]
+name = "EnumCalendarInfoExW"
+ordinal = 119
+
+[[export]]
+name = "EnumCalendarInfoW"
+ordinal = 120
+
+[[export]]
+name = "EnumDateFormatsA"
+ordinal = 121
+
+[[export]]
+name = "EnumDateFormatsExA"
+ordinal = 122
+
+[[export]]
+name = "EnumDateFormatsExW"
+ordinal = 123
+
+[[export]]
+name = "EnumDateFormatsW"
+ordinal = 124
+
+[[export]]
+name = "EnumLanguageGroupLocalesA"
+ordinal = 125
+
+[[export]]
+name = "EnumLanguageGroupLocalesW"
+ordinal = 126
+
+[[export]]
+name = "EnumResourceLanguagesA"
+ordinal = 127
+
+[[export]]
+name = "EnumResourceLanguagesW"
+ordinal = 128
+
+[[export]]
+name = "EnumResourceNamesA"
+ordinal = 129
+
+[[export]]
+name = "EnumResourceNamesW"
+ordinal = 130
+
+[[export]]
+name = "EnumResourceTypesA"
+ordinal = 131
+
+[[export]]
+name = "EnumResourceTypesW"
+ordinal = 132
+
+[[export]]
+name = "EnumSystemCodePagesA"
+ordinal = 133
+
+[[export]]
+name = "EnumSystemCodePagesW"
+ordinal = 134
+
+[[export]]
+name = "EnumSystemLanguageGroupsA"
+ordinal = 135
+
+[[export]]
+name = "EnumSystemLanguageGroupsW"
+ordinal = 136
+
+[[export]]
+name = "EnumSystemLocalesW"
+ordinal = 138
+
+[[export]]
+name = "EnumTimeFormatsA"
+ordinal = 139
+
+[[export]]
+name = "EnumTimeFormatsW"
+ordinal = 140
+
+[[export]]
+name = "EnumUILanguagesA"
+ordinal = 141
+
+[[export]]
+name = "EnumUILanguagesW"
+ordinal = 142
+
+[[export]]
+name = "EraseTape"
+ordinal = 143
+
+[[export]]
+name = "EscapeCommFunction"
+ordinal = 144
+
+[[export]]
+name = "ExitVDM"
+ordinal = 147
+
+[[export]]
+name = "ExpandEnvironmentStringsW"
+ordinal = 149
+
+[[export]]
+name = "ExpungeConsoleCommandHistoryA"
+ordinal = 150
+
+[[export]]
+name = "ExpungeConsoleCommandHistoryW"
+ordinal = 151
+
+[[export]]
+name = "ExtendVirtualBuffer"
+ordinal = 152
+
+[[export]]
+name = "FatalAppExitA"
+ordinal = 153
+
+[[export]]
+name = "FatalAppExitW"
+ordinal = 154
+
+[[export]]
+name = "FatalExit"
+ordinal = 155
+
+[[export]]
+name = "FileTimeToDosDateTime"
+ordinal = 156
+
+[[export]]
+name = "FillConsoleOutputAttribute"
+ordinal = 159
+
+[[export]]
+name = "FillConsoleOutputCharacterA"
+ordinal = 160
+
+[[export]]
+name = "FillConsoleOutputCharacterW"
+ordinal = 161
+
+[[export]]
+name = "FindAtomA"
+ordinal = 162
+
+[[export]]
+name = "FindAtomW"
+ordinal = 163
+
+[[export]]
+name = "FindCloseChangeNotification"
+ordinal = 165
+
+[[export]]
+name = "FindFirstChangeNotificationA"
+ordinal = 166
+
+[[export]]
+name = "FindFirstChangeNotificationW"
+ordinal = 167
+
+[[export]]
+name = "FindFirstFileExA"
+ordinal = 169
+
+[[export]]
+name = "FindFirstFileExW"
+ordinal = 170
+
+[[export]]
+name = "FindFirstFileW"
+ordinal = 171
+
+[[export]]
+name = "FindFirstVolumeA"
+ordinal = 172
+
+[[export]]
+name = "FindFirstVolumeMountPointA"
+ordinal = 173
+
+[[export]]
+name = "FindFirstVolumeMountPointW"
+ordinal = 174
+
+[[export]]
+name = "FindFirstVolumeW"
+ordinal = 175
+
+[[export]]
+name = "FindNextChangeNotification"
+ordinal = 176
+
+[[export]]
+name = "FindNextFileW"
+ordinal = 178
+
+[[export]]
+name = "FindNextVolumeA"
+ordinal = 179
+
+[[export]]
+name = "FindNextVolumeMountPointA"
+ordinal = 180
+
+[[export]]
+name = "FindNextVolumeMountPointW"
+ordinal = 181
+
+[[export]]
+name = "FindNextVolumeW"
+ordinal = 182
+
+[[export]]
+name = "FindResourceA"
+ordinal = 183
+
+[[export]]
+name = "FindResourceExA"
+ordinal = 184
+
+[[export]]
+name = "FindResourceExW"
+ordinal = 185
+
+[[export]]
+name = "FindResourceW"
+ordinal = 186
+
+[[export]]
+name = "FindVolumeClose"
+ordinal = 187
+
+[[export]]
+name = "FindVolumeMountPointClose"
+ordinal = 188
+
+[[export]]
+name = "FlushConsoleInputBuffer"
+ordinal = 189
+
+[[export]]
+name = "FlushInstructionCache"
+ordinal = 191
+
+[[export]]
+name = "FlushViewOfFile"
+ordinal = 192
+
+[[export]]
+name = "FoldStringA"
+ordinal = 193
+
+[[export]]
+name = "FoldStringW"
+ordinal = 194
+
+[[export]]
+name = "FormatMessageW"
+ordinal = 196
+
+[[export]]
+name = "FreeConsole"
+ordinal = 197
+
+[[export]]
+name = "FreeLibraryAndExitThread"
+ordinal = 201
+
+[[export]]
+name = "FreeResource"
+ordinal = 202
+
+[[export]]
+name = "FreeUserPhysicalPages"
+ordinal = 203
+
+[[export]]
+name = "FreeVirtualBuffer"
+ordinal = 204
+
+[[export]]
+name = "GenerateConsoleCtrlEvent"
+ordinal = 205
+
+[[export]]
+name = "GetAtomNameA"
+ordinal = 207
+
+[[export]]
+name = "GetAtomNameW"
+ordinal = 208
+
+[[export]]
+name = "GetBinaryType"
+ordinal = 209
+
+[[export]]
+name = "GetBinaryTypeA"
+ordinal = 210
+
+[[export]]
+name = "GetBinaryTypeW"
+ordinal = 211
+
+[[export]]
+name = "GetCPInfoExA"
+ordinal = 213
+
+[[export]]
+name = "GetCPInfoExW"
+ordinal = 214
+
+[[export]]
+name = "GetCalendarInfoA"
+ordinal = 215
+
+[[export]]
+name = "GetCalendarInfoW"
+ordinal = 216
+
+[[export]]
+name = "GetCommConfig"
+ordinal = 217
+
+[[export]]
+name = "GetCommMask"
+ordinal = 218
+
+[[export]]
+name = "GetCommModemStatus"
+ordinal = 219
+
+[[export]]
+name = "GetCommProperties"
+ordinal = 220
+
+[[export]]
+name = "GetCommState"
+ordinal = 221
+
+[[export]]
+name = "GetCommTimeouts"
+ordinal = 222
+
+[[export]]
+name = "GetCommandLineW"
+ordinal = 224
+
+[[export]]
+name = "GetCompressedFileSizeA"
+ordinal = 225
+
+[[export]]
+name = "GetCompressedFileSizeW"
+ordinal = 226
+
+[[export]]
+name = "GetComputerNameA"
+ordinal = 227
+
+[[export]]
+name = "GetComputerNameExA"
+ordinal = 228
+
+[[export]]
+name = "GetComputerNameExW"
+ordinal = 229
+
+[[export]]
+name = "GetComputerNameW"
+ordinal = 230
+
+[[export]]
+name = "GetConsoleAliasA"
+ordinal = 231
+
+[[export]]
+name = "GetConsoleAliasExesA"
+ordinal = 232
+
+[[export]]
+name = "GetConsoleAliasExesLengthA"
+ordinal = 233
+
+[[export]]
+name = "GetConsoleAliasExesLengthW"
+ordinal = 234
+
+[[export]]
+name = "GetConsoleAliasExesW"
+ordinal = 235
+
+[[export]]
+name = "GetConsoleAliasW"
+ordinal = 236
+
+[[export]]
+name = "GetConsoleAliasesA"
+ordinal = 237
+
+[[export]]
+name = "GetConsoleAliasesLengthA"
+ordinal = 238
+
+[[export]]
+name = "GetConsoleAliasesLengthW"
+ordinal = 239
+
+[[export]]
+name = "GetConsoleAliasesW"
+ordinal = 240
+
+[[export]]
+name = "GetConsoleCharType"
+ordinal = 242
+
+[[export]]
+name = "GetConsoleCommandHistoryA"
+ordinal = 243
+
+[[export]]
+name = "GetConsoleCommandHistoryLengthA"
+ordinal = 244
+
+[[export]]
+name = "GetConsoleCommandHistoryLengthW"
+ordinal = 245
+
+[[export]]
+name = "GetConsoleCommandHistoryW"
+ordinal = 246
+
+[[export]]
+name = "GetConsoleCursorInfo"
+ordinal = 247
+
+[[export]]
+name = "GetConsoleCursorMode"
+ordinal = 248
+
+[[export]]
+name = "GetConsoleDisplayMode"
+ordinal = 249
+
+[[export]]
+name = "GetConsoleFontInfo"
+ordinal = 250
+
+[[export]]
+name = "GetConsoleFontSize"
+ordinal = 251
+
+[[export]]
+name = "GetConsoleHardwareState"
+ordinal = 252
+
+[[export]]
+name = "GetConsoleInputExeNameA"
+ordinal = 253
+
+[[export]]
+name = "GetConsoleInputExeNameW"
+ordinal = 254
+
+[[export]]
+name = "GetConsoleInputWaitHandle"
+ordinal = 255
+
+[[export]]
+name = "GetConsoleKeyboardLayoutNameA"
+ordinal = 256
+
+[[export]]
+name = "GetConsoleKeyboardLayoutNameW"
+ordinal = 257
+
+[[export]]
+name = "GetConsoleNlsMode"
+ordinal = 259
+
+[[export]]
+name = "GetConsoleScreenBufferInfo"
+ordinal = 261
+
+[[export]]
+name = "GetConsoleTitleA"
+ordinal = 262
+
+[[export]]
+name = "GetConsoleTitleW"
+ordinal = 263
+
+[[export]]
+name = "GetConsoleWindow"
+ordinal = 264
+
+[[export]]
+name = "GetCurrencyFormatA"
+ordinal = 265
+
+[[export]]
+name = "GetCurrencyFormatW"
+ordinal = 266
+
+[[export]]
+name = "GetCurrentConsoleFont"
+ordinal = 267
+
+[[export]]
+name = "GetCurrentDirectoryW"
+ordinal = 269
+
+[[export]]
+name = "GetDateFormatA"
+ordinal = 274
+
+[[export]]
+name = "GetDateFormatW"
+ordinal = 275
+
+[[export]]
+name = "GetDefaultCommConfigA"
+ordinal = 276
+
+[[export]]
+name = "GetDefaultCommConfigW"
+ordinal = 277
+
+[[export]]
+name = "GetDefaultSortkeySize"
+ordinal = 278
+
+[[export]]
+name = "GetDevicePowerState"
+ordinal = 279
+
+[[export]]
+name = "GetDiskFreeSpaceExA"
+ordinal = 281
+
+[[export]]
+name = "GetDiskFreeSpaceExW"
+ordinal = 282
+
+[[export]]
+name = "GetDiskFreeSpaceW"
+ordinal = 283
+
+[[export]]
+name = "GetDriveTypeW"
+ordinal = 285
+
+[[export]]
+name = "GetEnvironmentStringsA"
+ordinal = 287
+
+[[export]]
+name = "GetEnvironmentVariableW"
+ordinal = 290
+
+[[export]]
+name = "GetExitCodeProcess"
+ordinal = 291
+
+[[export]]
+name = "GetFileAttributesExW"
+ordinal = 295
+
+[[export]]
+name = "GetFileAttributesW"
+ordinal = 296
+
+[[export]]
+name = "GetFileSizeEx"
+ordinal = 299
+
+[[export]]
+name = "GetFullPathNameW"
+ordinal = 303
+
+[[export]]
+name = "GetHandleInformation"
+ordinal = 304
+
+[[export]]
+name = "GetLargestConsoleWindowSize"
+ordinal = 305
+
+[[export]]
+name = "GetLinguistLangSize"
+ordinal = 307
+
+[[export]]
+name = "GetLogicalDriveStringsA"
+ordinal = 311
+
+[[export]]
+name = "GetLogicalDriveStringsW"
+ordinal = 312
+
+[[export]]
+name = "GetLogicalDrives"
+ordinal = 313
+
+[[export]]
+name = "GetLongPathNameA"
+ordinal = 314
+
+[[export]]
+name = "GetLongPathNameW"
+ordinal = 315
+
+[[export]]
+name = "GetMailslotInfo"
+ordinal = 316
+
+[[export]]
+name = "GetModuleFileNameW"
+ordinal = 318
+
+[[export]]
+name = "GetModuleHandleW"
+ordinal = 320
+
+[[export]]
+name = "GetNamedPipeHandleStateA"
+ordinal = 321
+
+[[export]]
+name = "GetNamedPipeHandleStateW"
+ordinal = 322
+
+[[export]]
+name = "GetNamedPipeInfo"
+ordinal = 323
+
+[[export]]
+name = "GetNextVDMCommand"
+ordinal = 324
+
+[[export]]
+name = "GetNlsSectionName"
+ordinal = 325
+
+[[export]]
+name = "GetNumberFormatA"
+ordinal = 326
+
+[[export]]
+name = "GetNumberFormatW"
+ordinal = 327
+
+[[export]]
+name = "GetNumberOfConsoleFonts"
+ordinal = 328
+
+[[export]]
+name = "GetNumberOfConsoleInputEvents"
+ordinal = 329
+
+[[export]]
+name = "GetNumberOfConsoleMouseButtons"
+ordinal = 330
+
+[[export]]
+name = "GetOverlappedResult"
+ordinal = 332
+
+[[export]]
+name = "GetPrivateProfileIntA"
+ordinal = 334
+
+[[export]]
+name = "GetPrivateProfileIntW"
+ordinal = 335
+
+[[export]]
+name = "GetPrivateProfileSectionA"
+ordinal = 336
+
+[[export]]
+name = "GetPrivateProfileSectionNamesA"
+ordinal = 337
+
+[[export]]
+name = "GetPrivateProfileSectionNamesW"
+ordinal = 338
+
+[[export]]
+name = "GetPrivateProfileSectionW"
+ordinal = 339
+
+[[export]]
+name = "GetPrivateProfileStringA"
+ordinal = 340
+
+[[export]]
+name = "GetPrivateProfileStringW"
+ordinal = 341
+
+[[export]]
+name = "GetPrivateProfileStructA"
+ordinal = 342
+
+[[export]]
+name = "GetPrivateProfileStructW"
+ordinal = 343
+
+[[export]]
+name = "GetProcessAffinityMask"
+ordinal = 345
+
+[[export]]
+name = "GetProcessHeaps"
+ordinal = 347
+
+[[export]]
+name = "GetProcessIoCounters"
+ordinal = 348
+
+[[export]]
+name = "GetProcessPriorityBoost"
+ordinal = 349
+
+[[export]]
+name = "GetProcessShutdownParameters"
+ordinal = 350
+
+[[export]]
+name = "GetProcessTimes"
+ordinal = 351
+
+[[export]]
+name = "GetProcessVersion"
+ordinal = 352
+
+[[export]]
+name = "GetProcessWorkingSetSize"
+ordinal = 353
+
+[[export]]
+name = "GetProfileIntA"
+ordinal = 354
+
+[[export]]
+name = "GetProfileIntW"
+ordinal = 355
+
+[[export]]
+name = "GetProfileSectionA"
+ordinal = 356
+
+[[export]]
+name = "GetProfileSectionW"
+ordinal = 357
+
+[[export]]
+name = "GetProfileStringA"
+ordinal = 358
+
+[[export]]
+name = "GetProfileStringW"
+ordinal = 359
+
+[[export]]
+name = "GetQueuedCompletionStatus"
+ordinal = 360
+
+[[export]]
+name = "GetShortPathNameW"
+ordinal = 362
+
+[[export]]
+name = "GetStartupInfoW"
+ordinal = 364
+
+[[export]]
+name = "GetStringTypeExA"
+ordinal = 367
+
+[[export]]
+name = "GetStringTypeExW"
+ordinal = 368
+
+[[export]]
+name = "GetSystemDefaultLangID"
+ordinal = 371
+
+[[export]]
+name = "GetSystemDefaultUILanguage"
+ordinal = 372
+
+[[export]]
+name = "GetSystemDirectoryA"
+ordinal = 373
+
+[[export]]
+name = "GetSystemDirectoryW"
+ordinal = 374
+
+[[export]]
+name = "GetSystemPowerStatus"
+ordinal = 376
+
+[[export]]
+name = "GetSystemTimeAdjustment"
+ordinal = 378
+
+[[export]]
+name = "GetSystemWindowsDirectoryA"
+ordinal = 380
+
+[[export]]
+name = "GetSystemWindowsDirectoryW"
+ordinal = 381
+
+[[export]]
+name = "GetTapeParameters"
+ordinal = 382
+
+[[export]]
+name = "GetTapePosition"
+ordinal = 383
+
+[[export]]
+name = "GetTapeStatus"
+ordinal = 384
+
+[[export]]
+name = "GetTempFileNameA"
+ordinal = 385
+
+[[export]]
+name = "GetTempFileNameW"
+ordinal = 386
+
+[[export]]
+name = "GetTempPathA"
+ordinal = 387
+
+[[export]]
+name = "GetTempPathW"
+ordinal = 388
+
+[[export]]
+name = "GetThreadContext"
+ordinal = 389
+
+[[export]]
+name = "GetThreadLocale"
+ordinal = 390
+
+[[export]]
+name = "GetThreadSelectorEntry"
+ordinal = 393
+
+[[export]]
+name = "GetThreadTimes"
+ordinal = 394
+
+[[export]]
+name = "GetTimeFormatA"
+ordinal = 396
+
+[[export]]
+name = "GetTimeFormatW"
+ordinal = 397
+
+[[export]]
+name = "GetUserDefaultLangID"
+ordinal = 400
+
+[[export]]
+name = "GetUserDefaultUILanguage"
+ordinal = 401
+
+[[export]]
+name = "GetVDMCurrentDirectories"
+ordinal = 402
+
+[[export]]
+name = "GetVersionExW"
+ordinal = 405
+
+[[export]]
+name = "GetVolumeInformationW"
+ordinal = 407
+
+[[export]]
+name = "GetVolumeNameForVolumeMountPointA"
+ordinal = 408
+
+[[export]]
+name = "GetVolumeNameForVolumeMountPointW"
+ordinal = 409
+
+[[export]]
+name = "GetVolumePathNameA"
+ordinal = 410
+
+[[export]]
+name = "GetVolumePathNameW"
+ordinal = 411
+
+[[export]]
+name = "GetWindowsDirectoryA"
+ordinal = 412
+
+[[export]]
+name = "GetWindowsDirectoryW"
+ordinal = 413
+
+[[export]]
+name = "GetWriteWatch"
+ordinal = 414
+
+[[export]]
+name = "GlobalAddAtomA"
+ordinal = 415
+
+[[export]]
+name = "GlobalAddAtomW"
+ordinal = 416
+
+[[export]]
+name = "GlobalCompact"
+ordinal = 418
+
+[[export]]
+name = "GlobalDeleteAtom"
+ordinal = 419
+
+[[export]]
+name = "GlobalFindAtomA"
+ordinal = 420
+
+[[export]]
+name = "GlobalFindAtomW"
+ordinal = 421
+
+[[export]]
+name = "GlobalFix"
+ordinal = 422
+
+[[export]]
+name = "GlobalFlags"
+ordinal = 423
+
+[[export]]
+name = "GlobalGetAtomNameA"
+ordinal = 425
+
+[[export]]
+name = "GlobalGetAtomNameW"
+ordinal = 426
+
+[[export]]
+name = "GlobalMemoryStatusEx"
+ordinal = 430
+
+[[export]]
+name = "GlobalUnWire"
+ordinal = 433
+
+[[export]]
+name = "GlobalUnfix"
+ordinal = 434
+
+[[export]]
+name = "GlobalWire"
+ordinal = 436
+
+[[export]]
+name = "Heap32First"
+ordinal = 437
+
+[[export]]
+name = "Heap32ListFirst"
+ordinal = 438
+
+[[export]]
+name = "Heap32ListNext"
+ordinal = 439
+
+[[export]]
+name = "Heap32Next"
+ordinal = 440
+
+[[export]]
+name = "HeapCompact"
+ordinal = 442
+
+[[export]]
+name = "HeapCreateTagsW"
+ordinal = 444
+
+[[export]]
+name = "HeapExtend"
+ordinal = 446
+
+[[export]]
+name = "HeapLock"
+ordinal = 448
+
+[[export]]
+name = "HeapQueryTagW"
+ordinal = 449
+
+[[export]]
+name = "HeapSummary"
+ordinal = 452
+
+[[export]]
+name = "HeapUnlock"
+ordinal = 453
+
+[[export]]
+name = "HeapUsage"
+ordinal = 454
+
+[[export]]
+name = "HeapWalk"
+ordinal = 456
+
+[[export]]
+name = "InitAtomTable"
+ordinal = 457
+
+[[export]]
+name = "InitializeCriticalSectionAndSpinCount"
+ordinal = 459
+
+[[export]]
+name = "InvalidateConsoleDIBits"
+ordinal = 465
+
+[[export]]
+name = "IsBadHugeReadPtr"
+ordinal = 467
+
+[[export]]
+name = "IsBadHugeWritePtr"
+ordinal = 468
+
+[[export]]
+name = "IsBadStringPtrW"
+ordinal = 471
+
+[[export]]
+name = "IsDBCSLeadByte"
+ordinal = 473
+
+[[export]]
+name = "IsDBCSLeadByteEx"
+ordinal = 474
+
+[[export]]
+name = "IsDebuggerPresent"
+ordinal = 475
+
+[[export]]
+name = "IsProcessorFeaturePresent"
+ordinal = 476
+
+[[export]]
+name = "IsSystemResumeAutomatic"
+ordinal = 477
+
+[[export]]
+name = "IsValidLanguageGroup"
+ordinal = 479
+
+[[export]]
+name = "LoadLibraryExA"
+ordinal = 485
+
+[[export]]
+name = "LoadLibraryExW"
+ordinal = 486
+
+[[export]]
+name = "LoadLibraryW"
+ordinal = 487
+
+[[export]]
+name = "LoadModule"
+ordinal = 488
+
+[[export]]
+name = "LoadResource"
+ordinal = 489
+
+[[export]]
+name = "LocalCompact"
+ordinal = 491
+
+[[export]]
+name = "LocalFileTimeToFileTime"
+ordinal = 492
+
+[[export]]
+name = "LocalShrink"
+ordinal = 498
+
+[[export]]
+name = "LockFile"
+ordinal = 501
+
+[[export]]
+name = "LockFileEx"
+ordinal = 502
+
+[[export]]
+name = "LockResource"
+ordinal = 503
+
+[[export]]
+name = "MapUserPhysicalPages"
+ordinal = 504
+
+[[export]]
+name = "MapUserPhysicalPagesScatter"
+ordinal = 505
+
+[[export]]
+name = "MapViewOfFileEx"
+ordinal = 507
+
+[[export]]
+name = "Module32First"
+ordinal = 508
+
+[[export]]
+name = "Module32FirstW"
+ordinal = 509
+
+[[export]]
+name = "Module32Next"
+ordinal = 510
+
+[[export]]
+name = "Module32NextW"
+ordinal = 511
+
+[[export]]
+name = "MoveFileExA"
+ordinal = 513
+
+[[export]]
+name = "MoveFileExW"
+ordinal = 514
+
+[[export]]
+name = "MoveFileW"
+ordinal = 515
+
+[[export]]
+name = "MoveFileWithProgressA"
+ordinal = 516
+
+[[export]]
+name = "MoveFileWithProgressW"
+ordinal = 517
+
+[[export]]
+name = "MulDiv"
+ordinal = 518
+
+[[export]]
+name = "NlsConvertIntegerToString"
+ordinal = 520
+
+[[export]]
+name = "NlsGetCacheUpdateCount"
+ordinal = 521
+
+[[export]]
+name = "NlsResetProcessLocale"
+ordinal = 522
+
+[[export]]
+name = "OpenConsoleW"
+ordinal = 523
+
+[[export]]
+name = "OpenDataFile"
+ordinal = 524
+
+[[export]]
+name = "OpenEventW"
+ordinal = 526
+
+[[export]]
+name = "OpenFile"
+ordinal = 527
+
+[[export]]
+name = "OpenFileMappingW"
+ordinal = 529
+
+[[export]]
+name = "OpenJobObjectA"
+ordinal = 530
+
+[[export]]
+name = "OpenJobObjectW"
+ordinal = 531
+
+[[export]]
+name = "OpenMutexW"
+ordinal = 533
+
+[[export]]
+name = "OpenProcess"
+ordinal = 534
+
+[[export]]
+name = "OpenProfileUserMapping"
+ordinal = 535
+
+[[export]]
+name = "OpenSemaphoreW"
+ordinal = 537
+
+[[export]]
+name = "OpenThread"
+ordinal = 538
+
+[[export]]
+name = "OpenWaitableTimerW"
+ordinal = 540
+
+[[export]]
+name = "OutputDebugStringA"
+ordinal = 541
+
+[[export]]
+name = "OutputDebugStringW"
+ordinal = 542
+
+[[export]]
+name = "PeekConsoleInputA"
+ordinal = 543
+
+[[export]]
+name = "PeekConsoleInputW"
+ordinal = 544
+
+[[export]]
+name = "PeekNamedPipe"
+ordinal = 545
+
+[[export]]
+name = "PostQueuedCompletionStatus"
+ordinal = 546
+
+[[export]]
+name = "PrepareTape"
+ordinal = 547
+
+[[export]]
+name = "PrivCopyFileExW"
+ordinal = 548
+
+[[export]]
+name = "PrivMoveFileIdentityW"
+ordinal = 549
+
+[[export]]
+name = "Process32First"
+ordinal = 550
+
+[[export]]
+name = "Process32FirstW"
+ordinal = 551
+
+[[export]]
+name = "Process32Next"
+ordinal = 552
+
+[[export]]
+name = "Process32NextW"
+ordinal = 553
+
+[[export]]
+name = "ProcessIdToSessionId"
+ordinal = 554
+
+[[export]]
+name = "PurgeComm"
+ordinal = 556
+
+[[export]]
+name = "QueryDosDeviceA"
+ordinal = 557
+
+[[export]]
+name = "QueryDosDeviceW"
+ordinal = 558
+
+[[export]]
+name = "QueryInformationJobObject"
+ordinal = 559
+
+[[export]]
+name = "QueryWin31IniFilesMappedToRegistry"
+ordinal = 562
+
+[[export]]
+name = "QueueUserWorkItem"
+ordinal = 564
+
+[[export]]
+name = "ReadConsoleA"
+ordinal = 566
+
+[[export]]
+name = "ReadConsoleInputA"
+ordinal = 567
+
+[[export]]
+name = "ReadConsoleInputExA"
+ordinal = 568
+
+[[export]]
+name = "ReadConsoleInputExW"
+ordinal = 569
+
+[[export]]
+name = "ReadConsoleInputW"
+ordinal = 570
+
+[[export]]
+name = "ReadConsoleOutputA"
+ordinal = 571
+
+[[export]]
+name = "ReadConsoleOutputAttribute"
+ordinal = 572
+
+[[export]]
+name = "ReadConsoleOutputCharacterA"
+ordinal = 573
+
+[[export]]
+name = "ReadConsoleOutputCharacterW"
+ordinal = 574
+
+[[export]]
+name = "ReadConsoleOutputW"
+ordinal = 575
+
+[[export]]
+name = "ReadConsoleW"
+ordinal = 576
+
+[[export]]
+name = "ReadDirectoryChangesW"
+ordinal = 577
+
+[[export]]
+name = "ReadFileEx"
+ordinal = 579
+
+[[export]]
+name = "ReadFileScatter"
+ordinal = 580
+
+[[export]]
+name = "ReadProcessMemory"
+ordinal = 581
+
+[[export]]
+name = "RegisterConsoleIME"
+ordinal = 582
+
+[[export]]
+name = "RegisterConsoleOS2"
+ordinal = 583
+
+[[export]]
+name = "RegisterConsoleVDM"
+ordinal = 584
+
+[[export]]
+name = "RegisterWaitForInputIdle"
+ordinal = 585
+
+[[export]]
+name = "RegisterWaitForSingleObject"
+ordinal = 586
+
+[[export]]
+name = "RegisterWaitForSingleObjectEx"
+ordinal = 587
+
+[[export]]
+name = "RegisterWowBaseHandlers"
+ordinal = 588
+
+[[export]]
+name = "RegisterWowExec"
+ordinal = 589
+
+[[export]]
+name = "RemoveDirectoryW"
+ordinal = 593
+
+[[export]]
+name = "ReplaceFile"
+ordinal = 594
+
+[[export]]
+name = "ReplaceFileA"
+ordinal = 595
+
+[[export]]
+name = "ReplaceFileW"
+ordinal = 596
+
+[[export]]
+name = "RequestDeviceWakeup"
+ordinal = 597
+
+[[export]]
+name = "RequestWakeupLatency"
+ordinal = 598
+
+[[export]]
+name = "ResetWriteWatch"
+ordinal = 600
+
+[[export]]
+name = "RtlFillMemory"
+ordinal = 602
+note = "forwarded to NTDLL.RtlFillMemory"
+
+[[export]]
+name = "RtlMoveMemory"
+ordinal = 603
+note = "forwarded to NTDLL.RtlMoveMemory"
+
+[[export]]
+name = "RtlZeroMemory"
+ordinal = 605
+note = "forwarded to NTDLL.RtlZeroMemory"
+
+[[export]]
+name = "ScrollConsoleScreenBufferA"
+ordinal = 606
+
+[[export]]
+name = "ScrollConsoleScreenBufferW"
+ordinal = 607
+
+[[export]]
+name = "SearchPathA"
+ordinal = 608
+
+[[export]]
+name = "SearchPathW"
+ordinal = 609
+
+[[export]]
+name = "SetCPGlobal"
+ordinal = 610
+
+[[export]]
+name = "SetCalendarInfoA"
+ordinal = 611
+
+[[export]]
+name = "SetCalendarInfoW"
+ordinal = 612
+
+[[export]]
+name = "SetCommBreak"
+ordinal = 613
+
+[[export]]
+name = "SetCommConfig"
+ordinal = 614
+
+[[export]]
+name = "SetCommMask"
+ordinal = 615
+
+[[export]]
+name = "SetCommState"
+ordinal = 616
+
+[[export]]
+name = "SetCommTimeouts"
+ordinal = 617
+
+[[export]]
+name = "SetComputerNameA"
+ordinal = 618
+
+[[export]]
+name = "SetComputerNameExA"
+ordinal = 619
+
+[[export]]
+name = "SetComputerNameExW"
+ordinal = 620
+
+[[export]]
+name = "SetComputerNameW"
+ordinal = 621
+
+[[export]]
+name = "SetConsoleActiveScreenBuffer"
+ordinal = 622
+
+[[export]]
+name = "SetConsoleCP"
+ordinal = 623
+
+[[export]]
+name = "SetConsoleCommandHistoryMode"
+ordinal = 624
+
+[[export]]
+name = "SetConsoleCtrlHandler"
+ordinal = 625
+
+[[export]]
+name = "SetConsoleCursor"
+ordinal = 626
+
+[[export]]
+name = "SetConsoleCursorInfo"
+ordinal = 627
+
+[[export]]
+name = "SetConsoleCursorMode"
+ordinal = 628
+
+[[export]]
+name = "SetConsoleCursorPosition"
+ordinal = 629
+
+[[export]]
+name = "SetConsoleDisplayMode"
+ordinal = 630
+
+[[export]]
+name = "SetConsoleFont"
+ordinal = 631
+
+[[export]]
+name = "SetConsoleHardwareState"
+ordinal = 632
+
+[[export]]
+name = "SetConsoleIcon"
+ordinal = 633
+
+[[export]]
+name = "SetConsoleInputExeNameA"
+ordinal = 634
+
+[[export]]
+name = "SetConsoleInputExeNameW"
+ordinal = 635
+
+[[export]]
+name = "SetConsoleKeyShortcuts"
+ordinal = 636
+
+[[export]]
+name = "SetConsoleLocalEUDC"
+ordinal = 637
+
+[[export]]
+name = "SetConsoleMaximumWindowSize"
+ordinal = 638
+
+[[export]]
+name = "SetConsoleMenuClose"
+ordinal = 639
+
+[[export]]
+name = "SetConsoleMode"
+ordinal = 640
+
+[[export]]
+name = "SetConsoleNlsMode"
+ordinal = 641
+
+[[export]]
+name = "SetConsoleNumberOfCommandsA"
+ordinal = 642
+
+[[export]]
+name = "SetConsoleNumberOfCommandsW"
+ordinal = 643
+
+[[export]]
+name = "SetConsoleOS2OemFormat"
+ordinal = 644
+
+[[export]]
+name = "SetConsoleOutputCP"
+ordinal = 645
+
+[[export]]
+name = "SetConsolePalette"
+ordinal = 646
+
+[[export]]
+name = "SetConsoleScreenBufferSize"
+ordinal = 647
+
+[[export]]
+name = "SetConsoleTextAttribute"
+ordinal = 648
+
+[[export]]
+name = "SetConsoleTitleA"
+ordinal = 649
+
+[[export]]
+name = "SetConsoleTitleW"
+ordinal = 650
+
+[[export]]
+name = "SetConsoleWindowInfo"
+ordinal = 651
+
+[[export]]
+name = "SetCriticalSectionSpinCount"
+ordinal = 652
+note = "forwarded to NTDLL.RtlSetCriticalSectionSpinCount"
+
+[[export]]
+name = "SetCurrentDirectoryW"
+ordinal = 654
+
+[[export]]
+name = "SetDefaultCommConfigA"
+ordinal = 655
+
+[[export]]
+name = "SetDefaultCommConfigW"
+ordinal = 656
+
+[[export]]
+name = "SetFileApisToANSI"
+ordinal = 662
+
+[[export]]
+name = "SetFileApisToOEM"
+ordinal = 663
+
+[[export]]
+name = "SetFileAttributesW"
+ordinal = 665
+
+[[export]]
+name = "SetFilePointerEx"
+ordinal = 667
+
+[[export]]
+name = "SetHandleInformation"
+ordinal = 670
+
+[[export]]
+name = "SetInformationJobObject"
+ordinal = 671
+
+[[export]]
+name = "SetLastConsoleEventActive"
+ordinal = 672
+
+[[export]]
+name = "SetLocalTime"
+ordinal = 674
+
+[[export]]
+name = "SetLocaleInfoA"
+ordinal = 675
+
+[[export]]
+name = "SetLocaleInfoW"
+ordinal = 676
+
+[[export]]
+name = "SetMailslotInfo"
+ordinal = 677
+
+[[export]]
+name = "SetMessageWaitingIndicator"
+ordinal = 678
+
+[[export]]
+name = "SetNamedPipeHandleState"
+ordinal = 679
+
+[[export]]
+name = "SetProcessPriorityBoost"
+ordinal = 682
+
+[[export]]
+name = "SetProcessShutdownParameters"
+ordinal = 683
+
+[[export]]
+name = "SetProcessWorkingSetSize"
+ordinal = 684
+
+[[export]]
+name = "SetSystemPowerState"
+ordinal = 686
+
+[[export]]
+name = "SetSystemTime"
+ordinal = 687
+
+[[export]]
+name = "SetSystemTimeAdjustment"
+ordinal = 688
+
+[[export]]
+name = "SetTapeParameters"
+ordinal = 689
+
+[[export]]
+name = "SetTapePosition"
+ordinal = 690
+
+[[export]]
+name = "SetTermsrvAppInstallMode"
+ordinal = 691
+
+[[export]]
+name = "SetThreadAffinityMask"
+ordinal = 692
+
+[[export]]
+name = "SetThreadContext"
+ordinal = 693
+
+[[export]]
+name = "SetThreadExecutionState"
+ordinal = 694
+
+[[export]]
+name = "SetThreadIdealProcessor"
+ordinal = 695
+
+[[export]]
+name = "SetThreadLocale"
+ordinal = 696
+
+[[export]]
+name = "SetTimeZoneInformation"
+ordinal = 699
+
+[[export]]
+name = "SetTimerQueueTimer"
+ordinal = 700
+
+[[export]]
+name = "SetVDMCurrentDirectories"
+ordinal = 702
+
+[[export]]
+name = "SetVolumeLabelA"
+ordinal = 703
+
+[[export]]
+name = "SetVolumeLabelW"
+ordinal = 704
+
+[[export]]
+name = "SetVolumeMountPointA"
+ordinal = 705
+
+[[export]]
+name = "SetVolumeMountPointW"
+ordinal = 706
+
+[[export]]
+name = "SetupComm"
+ordinal = 708
+
+[[export]]
+name = "ShowConsoleCursor"
+ordinal = 709
+
+[[export]]
+name = "SizeofResource"
+ordinal = 711
+
+[[export]]
+name = "SwitchToFiber"
+ordinal = 715
+
+[[export]]
+name = "SystemTimeToTzSpecificLocalTime"
+ordinal = 718
+
+[[export]]
+name = "TerminateJobObject"
+ordinal = 719
+
+[[export]]
+name = "TermsrvAppInstallMode"
+ordinal = 722
+
+[[export]]
+name = "Thread32First"
+ordinal = 723
+
+[[export]]
+name = "Thread32Next"
+ordinal = 724
+
+[[export]]
+name = "Toolhelp32ReadProcessMemory"
+ordinal = 729
+
+[[export]]
+name = "TransactNamedPipe"
+ordinal = 730
+
+[[export]]
+name = "TransmitCommChar"
+ordinal = 731
+
+[[export]]
+name = "TrimVirtualBuffer"
+ordinal = 732
+
+[[export]]
+name = "UTRegister"
+ordinal = 734
+
+[[export]]
+name = "UTUnRegister"
+ordinal = 735
+
+[[export]]
+name = "UnlockFile"
+ordinal = 737
+
+[[export]]
+name = "UnlockFileEx"
+ordinal = 738
+
+[[export]]
+name = "UnregisterConsoleIME"
+ordinal = 740
+
+[[export]]
+name = "UnregisterWait"
+ordinal = 741
+
+[[export]]
+name = "UnregisterWaitEx"
+ordinal = 742
+
+[[export]]
+name = "UpdateResourceA"
+ordinal = 743
+
+[[export]]
+name = "UpdateResourceW"
+ordinal = 744
+
+[[export]]
+name = "VDMConsoleOperation"
+ordinal = 745
+
+[[export]]
+name = "VDMOperationStarted"
+ordinal = 746
+
+[[export]]
+name = "ValidateLCType"
+ordinal = 747
+
+[[export]]
+name = "ValidateLocale"
+ordinal = 748
+
+[[export]]
+name = "VerLanguageNameA"
+ordinal = 749
+
+[[export]]
+name = "VerLanguageNameW"
+ordinal = 750
+
+[[export]]
+name = "VerSetConditionMask"
+ordinal = 751
+note = "forwarded to NTDLL.VerSetConditionMask"
+
+[[export]]
+name = "VerifyConsoleIoHandle"
+ordinal = 752
+
+[[export]]
+name = "VerifyVersionInfoA"
+ordinal = 753
+
+[[export]]
+name = "VerifyVersionInfoW"
+ordinal = 754
+
+[[export]]
+name = "VirtualAllocEx"
+ordinal = 756
+
+[[export]]
+name = "VirtualBufferExceptionHandler"
+ordinal = 757
+
+[[export]]
+name = "VirtualFreeEx"
+ordinal = 759
+
+[[export]]
+name = "VirtualLock"
+ordinal = 760
+
+[[export]]
+name = "VirtualProtectEx"
+ordinal = 762
+
+[[export]]
+name = "VirtualQueryEx"
+ordinal = 764
+
+[[export]]
+name = "VirtualUnlock"
+ordinal = 765
+
+[[export]]
+name = "WaitCommEvent"
+ordinal = 766
+
+[[export]]
+name = "WaitForDebugEvent"
+ordinal = 767
+
+[[export]]
+name = "WaitForMultipleObjectsEx"
+ordinal = 769
+
+[[export]]
+name = "WaitNamedPipeA"
+ordinal = 772
+
+[[export]]
+name = "WaitNamedPipeW"
+ordinal = 773
+
+[[export]]
+name = "WinExec"
+ordinal = 775
+
+[[export]]
+name = "WriteConsoleInputA"
+ordinal = 777
+
+[[export]]
+name = "WriteConsoleInputVDMA"
+ordinal = 778
+
+[[export]]
+name = "WriteConsoleInputVDMW"
+ordinal = 779
+
+[[export]]
+name = "WriteConsoleInputW"
+ordinal = 780
+
+[[export]]
+name = "WriteConsoleOutputA"
+ordinal = 781
+
+[[export]]
+name = "WriteConsoleOutputAttribute"
+ordinal = 782
+
+[[export]]
+name = "WriteConsoleOutputCharacterA"
+ordinal = 783
+
+[[export]]
+name = "WriteConsoleOutputCharacterW"
+ordinal = 784
+
+[[export]]
+name = "WriteConsoleOutputW"
+ordinal = 785
+
+[[export]]
+name = "WriteConsoleW"
+ordinal = 786
+
+[[export]]
+name = "WriteFileEx"
+ordinal = 788
+
+[[export]]
+name = "WriteFileGather"
+ordinal = 789
+
+[[export]]
+name = "WritePrivateProfileSectionA"
+ordinal = 790
+
+[[export]]
+name = "WritePrivateProfileSectionW"
+ordinal = 791
+
+[[export]]
+name = "WritePrivateProfileStringA"
+ordinal = 792
+
+[[export]]
+name = "WritePrivateProfileStringW"
+ordinal = 793
+
+[[export]]
+name = "WritePrivateProfileStructA"
+ordinal = 794
+
+[[export]]
+name = "WritePrivateProfileStructW"
+ordinal = 795
+
+[[export]]
+name = "WriteProcessMemory"
+ordinal = 796
+
+[[export]]
+name = "WriteProfileSectionA"
+ordinal = 797
+
+[[export]]
+name = "WriteProfileSectionW"
+ordinal = 798
+
+[[export]]
+name = "WriteProfileStringA"
+ordinal = 799
+
+[[export]]
+name = "WriteProfileStringW"
+ordinal = 800
+
+[[export]]
+name = "WriteTapemark"
+ordinal = 801
+
+[[export]]
+name = "_hread"
+ordinal = 802
+
+[[export]]
+name = "_hwrite"
+ordinal = 803
+
+[[export]]
+name = "_lclose"
+ordinal = 804
+
+[[export]]
+name = "_lcreat"
+ordinal = 805
+
+[[export]]
+name = "_llseek"
+ordinal = 806
+
+[[export]]
+name = "_lopen"
+ordinal = 807
+
+[[export]]
+name = "_lread"
+ordinal = 808
+
+[[export]]
+name = "_lwrite"
+ordinal = 809
+
+[[export]]
+name = "lstrcat"
+ordinal = 810
+
+[[export]]
+name = "lstrcatA"
+ordinal = 811
+
+[[export]]
+name = "lstrcatW"
+ordinal = 812
+
+[[export]]
+name = "lstrcmp"
+ordinal = 813
+
+[[export]]
+name = "lstrcmpA"
+ordinal = 814
+
+[[export]]
+name = "lstrcmpW"
+ordinal = 815
+
+[[export]]
+name = "lstrcmpi"
+ordinal = 816
+
+[[export]]
+name = "lstrcmpiA"
+ordinal = 817
+
+[[export]]
+name = "lstrcmpiW"
+ordinal = 818
+
+[[export]]
+name = "lstrcpy"
+ordinal = 819
+
+[[export]]
+name = "lstrcpyA"
+ordinal = 820
+
+[[export]]
+name = "lstrcpyW"
+ordinal = 821
+
+[[export]]
+name = "lstrcpyn"
+ordinal = 822
+
+[[export]]
+name = "lstrcpynA"
+ordinal = 823
+
+[[export]]
+name = "lstrcpynW"
+ordinal = 824
+
+[[export]]
+name = "lstrlen"
+ordinal = 825
+
+[[export]]
+name = "lstrlenA"
+ordinal = 826
+
+[[export]]
+name = "lstrlenW"
+ordinal = 827

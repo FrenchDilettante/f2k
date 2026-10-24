@@ -12,6 +12,10 @@ fn get(name: &[u8], size: u32) -> (u32, std::vec::Vec<u8>) {
 
 /// The runtime capture's sequence: set, a size query, a short buffer, a read by the lower-case
 /// name, the whole block (ANSI and wide), a delete, a read after it.
+///
+/// Pins: kernel32.GetEnvironmentStrings, kernel32.GetEnvironmentStringsW
+/// Pins: kernel32.FreeEnvironmentStringsA, kernel32.FreeEnvironmentStringsW
+/// Pins: kernel32.GetEnvironmentVariableA
 #[test]
 fn a_variable_sets_reads_and_deletes() {
     assert_eq!(
@@ -48,6 +52,8 @@ fn a_variable_sets_reads_and_deletes() {
 
 /// A name that is not one is refused through the status's error; the wide set sets what the narrow
 /// get reads.
+///
+/// Pins: kernel32.SetEnvironmentVariableA, kernel32.SetEnvironmentVariableW
 #[test]
 fn names_are_validated_and_the_wide_set_agrees() {
     assert_eq!(
@@ -71,6 +77,8 @@ fn names_are_validated_and_the_wide_set_agrees() {
 
 /// The capture's expansion: a set reference expands, an unset one stays; the count includes the
 /// terminator, and a short buffer asks the size.
+///
+/// Pins: kernel32.ExpandEnvironmentStringsA
 #[test]
 fn references_expand_through_the_environment() {
     assert_eq!(
@@ -112,6 +120,8 @@ fn entries() -> std::vec::Vec<std::string::String> {
 /// The block stays sorted (K32-8b): a new variable goes in at its place by upper-cased name, and a
 /// replaced one keeps its place (spelled as the last set spelled it), as RtlSetEnvironmentVariable
 /// keeps the block on Windows 2000.
+///
+/// Pins: kernel32.GetEnvironmentStringsW, kernel32.SetEnvironmentVariableA
 #[test]
 fn the_block_stays_sorted_and_replaces_in_place() {
     for (name, value) in [
@@ -139,6 +149,8 @@ fn the_block_stays_sorted_and_replaces_in_place() {
 
 /// An unset reference keeps its closing `%` (K32-8c): it stays as written, and the scan goes on
 /// after it.
+///
+/// Pins: kernel32.ExpandEnvironmentStringsA
 #[test]
 fn an_unset_reference_stays_whole() {
     assert_eq!(
@@ -156,6 +168,9 @@ fn an_unset_reference_stays_whole() {
 /// (ARCH-4 s3's limits): a counted Unicode string holds at most 32766 characters and its
 /// terminator, so a longer name or value is ERROR_INVALID_PARAMETER (STATUS_INVALID_PARAMETER_2),
 /// before ntdll sees it; a name has no other cap (no MAX_PATH).
+///
+/// Pins: kernel32.GetEnvironmentVariableA, kernel32.SetEnvironmentVariableA
+/// Pins: kernel32.ExpandEnvironmentStringsA
 #[test]
 fn the_narrow_strings_convert_up_to_32766_characters() {
     let string = |length: usize| {

@@ -5,3 +5,128 @@ description = "files - the read side of the file API over files/DATA (files.c): 
 kind = "sectioned"
 gate = true
 timeout = 40
+
+[pins]
+# The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
+# calls); scripts/compat.py derives each export's coverage from them.
+"*" = [
+    "kernel32.ExitProcess",
+    "kernel32.GetCommandLineA",
+    "kernel32.GetStartupInfoA",
+    "kernel32.GetModuleFileNameA",
+    "kernel32.GetVersion",
+    "kernel32.GetStdHandle",
+    "kernel32.GetFileType",
+    "kernel32.SetHandleCount",
+    "kernel32.WriteFile",
+    "kernel32.CloseHandle",
+    "kernel32.GetEnvironmentStringsW",
+    "kernel32.FreeEnvironmentStringsA",
+    "kernel32.HeapAlloc",
+    "kernel32.HeapCreate",
+    "kernel32.HeapFree",
+    "kernel32.GetACP",
+    "kernel32.GetCPInfo",
+    "kernel32.MultiByteToWideChar",
+    "kernel32.WideCharToMultiByte",
+    "kernel32.LCMapStringW",
+    "kernel32.GetStringTypeW",
+    "kernel32.WaitForSingleObject",
+    "kernel32.VirtualAlloc",
+    "ntdll.NtAllocateVirtualMemory",
+    "ntdll.NtCreateFile",
+    "ntdll.RtlAllocateHeap",
+    "ntdll.RtlFreeHeap",
+    "ntdll.RtlDosPathNameToNtPathName_U",
+]
+handles = [
+    "kernel32.GetCurrentProcess",
+    "kernel32.GetLastError",
+    "kernel32.SetFilePointer",
+    "kernel32.SetLastError",
+    "kernel32.DuplicateHandle",
+    "kernel32.CreateFileA",
+    "kernel32.ReadFile",
+    "ntdll.NtReadFile",
+]
+find = [
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+    "kernel32.ReadFile",
+    "kernel32.FindClose",
+    "kernel32.FindFirstFileA",
+    "kernel32.FindNextFileA",
+    "kernel32.GetFileAttributesA",
+    "ntdll.NtOpenFile",
+    "ntdll.NtQueryDirectoryFile",
+]
+mapping = [
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+    "kernel32.CreateFileA",
+    "kernel32.CreateFileMappingA",
+    "kernel32.MapViewOfFile",
+    "kernel32.UnmapViewOfFile",
+    "ntdll.NtCreateSection",
+    "ntdll.NtMapViewOfSection",
+    "ntdll.NtUnmapViewOfSection",
+]
+meta = [
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+    "kernel32.CreateFileA",
+    "kernel32.GetDiskFreeSpaceA",
+    "kernel32.GetDriveTypeA",
+    "kernel32.GetFileAttributesA",
+    "kernel32.GetFileAttributesExA",
+    "kernel32.GetFileInformationByHandle",
+    "kernel32.GetFileSize",
+    "kernel32.GetFileTime",
+    "kernel32.GetVolumeInformationA",
+    "ntdll.NtQueryInformationFile",
+    "ntdll.NtQueryAttributesFile",
+    "ntdll.NtQueryFullAttributesFile",
+    "ntdll.NtQueryVolumeInformationFile",
+]
+open = [
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+    "kernel32.CreateFileA",
+    "kernel32.ReadFile",
+    "kernel32.GetCurrentDirectoryA",
+    "kernel32.GetFullPathNameA",
+    "kernel32.GetShortPathNameA",
+    "kernel32.SetCurrentDirectoryA",
+    "ntdll.NtClose",
+    "ntdll.NtOpenFile",
+    "ntdll.RtlNtStatusToDosError",
+    "ntdll.RtlGetCurrentDirectory_U",
+    "ntdll.RtlSetCurrentDirectory_U",
+    "ntdll.RtlGetFullPathName_U",
+]
+read = [
+    "kernel32.GetLastError",
+    "kernel32.SetFilePointer",
+    "kernel32.SetLastError",
+    "kernel32.CreateFileA",
+    "kernel32.ReadFile",
+    "kernel32.VirtualFree",
+    "ntdll.NtReadFile",
+]
+seek = [
+    "kernel32.GetLastError",
+    "kernel32.SetFilePointer",
+    "kernel32.SetLastError",
+    "kernel32.CreateFileA",
+    "kernel32.ReadFile",
+    "ntdll.NtReadFile",
+    "ntdll.NtQueryInformationFile",
+    "ntdll.NtSetInformationFile",
+]
+concurrent = [
+    "kernel32.CreateThread",
+    "kernel32.CreateFileA",
+    "kernel32.ReadFile",
+    "ntdll.NtReadFile",
+]
+crt = ["kernel32.ReadFile", "ntdll.NtQueryDirectoryFile", "ntdll.RtlGetFullPathName_U"]

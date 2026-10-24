@@ -435,6 +435,8 @@ unsafe extern "system" {
     pub fn RtlFreeHeap(heap: usize, flags: u32, block: *mut u8) -> u32;
     pub fn RtlSizeHeap(heap: usize, flags: u32, block: *const u8) -> usize;
     pub fn RtlReAllocateHeap(heap: usize, flags: u32, block: *mut u8, size: usize) -> *mut u8;
+    /// RtlValidateHeap: a BOOLEAN, the heap's headers (a null block) or one block checked.
+    pub fn RtlValidateHeap(heap: usize, flags: u32, block: *const u8) -> u8;
     /// The environment (the process's for a null block): a variable read, set or deleted, and a
     /// string's references expanded.
     pub fn RtlQueryEnvironmentVariable_U(

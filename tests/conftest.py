@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -52,6 +53,63 @@ def pytest_sessionstart(session: pytest.Session) -> None:
     variants). Once per run, on the controller (xdist workers carry `workerinput`)."""
     if not hasattr(session.config, "workerinput"):
         f2kboot.prune()
+
+
+# --- The run's results, kept on disk -------------------------------------------------------------
+
+# Every run's outcomes, test by test, for the reports read after it (scripts/compat.py: the
+# compatibility report). Rewritten by each run, a partial one included (the report says so).
+RESULTS = f2kboot.REPO_ROOT / "target" / "test-results" / "pytest.json"
+# The outcomes by test id: kept on the controller only (xdist relays the workers' reports to it).
+OUTCOMES: dict[str, dict] | None = None
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    global OUTCOMES
+    if not hasattr(config, "workerinput"):
+        OUTCOMES = {}
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Tag each corpus block's test with its block (`<fixture>/<section name>`, the key its
+    fixture's `[pins]` use): the results carry it, and it travels from xdist workers in the
+    reports."""
+    for item in items:
+        captured = getattr(item, "callspec", None) and item.callspec.params.get("captured")
+        if isinstance(captured, f2kboot.Captured):
+            item.user_properties.append(("block", f"{captured.fixture}/{captured.block.name}"))
+
+
+def pytest_runtest_logreport(report: pytest.TestReport) -> None:
+    """Fold one phase's report into its test's outcome: passed, failed (any phase failing),
+    xfailed (an expected failure: a pending block, an ungated fixture) or skipped."""
+    if OUTCOMES is None:
+        return
+    if report.failed:
+        outcome = "failed"
+    elif report.skipped:
+        outcome = "xfailed" if hasattr(report, "wasxfail") else "skipped"
+    elif report.when == "call":
+        outcome = "passed"
+    else:
+        return
+    entry = OUTCOMES.setdefault(report.nodeid, dict(report.user_properties))
+    if entry.get("outcome") != "failed":
+        entry["outcome"] = outcome
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    """Write the run's outcomes (RESULTS), on the controller; a run that ran nothing (a collection
+    only) leaves the last one's."""
+    if not OUTCOMES:
+        return
+    RESULTS.parent.mkdir(parents=True, exist_ok=True)
+    RESULTS.write_text(json.dumps({
+        "finished": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "arguments": list(session.config.invocation_params.args),
+        "exitstatus": int(exitstatus),
+        "tests": OUTCOMES,
+    }, indent=1) + "\n")
 
 
 @pytest.fixture(scope="session")

@@ -39,6 +39,8 @@ fn thread(handle: u32) -> HostThread {
 /// SuspendThread and ResumeThread return the previous count; an ended thread refuses a suspend
 /// (ERROR_ACCESS_DENIED) and resumes as never suspended (0, the last error untouched); a bad handle
 /// is (DWORD)-1 with ERROR_INVALID_HANDLE — the threads fixture's suspend block.
+///
+/// Pins: kernel32.SuspendThread, kernel32.ResumeThread
 #[test]
 fn suspend_counts_and_refusals() {
     assert_eq!((suspend_thread(THREAD), suspend_thread(THREAD)), (0, 1));
@@ -62,6 +64,8 @@ fn suspend_counts_and_refusals() {
 
 /// GetExitCodeThread: STILL_ACTIVE for a live thread, the status an ended one ended with; FALSE
 /// with ERROR_INVALID_HANDLE for a bad handle, the code untouched.
+///
+/// Pins: kernel32.GetExitCodeThread
 #[test]
 fn exit_codes_come_from_the_basic_information() {
     let mut code = 0;
@@ -80,6 +84,8 @@ fn exit_codes_come_from_the_basic_information() {
 /// The threads fixture's priority block: every documented level round-trips, TIME_CRITICAL and IDLE
 /// as the saturation values; 3, -3 and 7 are ERROR_INVALID_PARAMETER and change nothing; 16 and -16
 /// pass as given. A bad handle is THREAD_PRIORITY_ERROR_RETURN.
+///
+/// Pins: kernel32.SetThreadPriority, kernel32.GetThreadPriority
 #[test]
 fn priorities_round_trip() {
     for level in [-15, -2, -1, 0, 1, 2, 15] {
@@ -108,6 +114,8 @@ fn priorities_round_trip() {
 
 /// The boosts: enabled at the start, disabled and re-enabled; a bad handle fails, the value
 /// untouched.
+///
+/// Pins: kernel32.GetThreadPriorityBoost, kernel32.SetThreadPriorityBoost
 #[test]
 fn boosts_disable_and_enable() {
     let mut disabled = 7;
@@ -136,6 +144,8 @@ fn boosts_disable_and_enable() {
 /// The priority class: normal at the start, high once set, the first class flag of a bogus value
 /// (0x12345 carries IDLE's), ERROR_INVALID_PARAMETER for a value naming none; another process's
 /// handle is ERROR_INVALID_HANDLE.
+///
+/// Pins: kernel32.GetPriorityClass, kernel32.SetPriorityClass
 #[test]
 fn priority_classes_round_trip() {
     assert_eq!(get_priority_class(CURRENT_PROCESS), 0x20);
@@ -157,6 +167,8 @@ fn priority_classes_round_trip() {
 
 /// SetProcessAffinityMask: the one processor's mask; an empty mask or one naming a processor the
 /// system lacks is ERROR_INVALID_PARAMETER, another handle ERROR_INVALID_HANDLE.
+///
+/// Pins: kernel32.SetProcessAffinityMask
 #[test]
 fn affinity_is_the_one_processor() {
     assert_eq!(set_process_affinity_mask(CURRENT_PROCESS, 1), 1);
@@ -176,6 +188,8 @@ fn affinity_is_the_one_processor() {
 /// SetErrorMode returns the previous mode: zero at the start (the process's hard-error mode 1,
 /// SEM_FAILCRITICALERRORS inverted), then what was set — the process stores it with that bit
 /// inverted, as Windows 2000's does.
+///
+/// Pins: kernel32.SetErrorMode
 #[test]
 fn error_modes_round_trip() {
     use crate::nt::threads::HARD_ERROR_MODE;
@@ -189,6 +203,8 @@ fn error_modes_round_trip() {
 /// TLS_OUT_OF_INDEXES with ERROR_NOT_ENOUGH_MEMORY; a free clears the index's slot in every thread
 /// (ThreadZeroTlsCell) and gives it back; an index not allocated is ERROR_INVALID_PARAMETER. Each
 /// call holds the PEB lock, and releases it.
+///
+/// Pins: kernel32.TlsAlloc, kernel32.TlsFree
 #[test]
 fn tls_indexes_allocate_and_free() {
     let teb = process().teb;
@@ -232,6 +248,8 @@ fn tls_indexes_allocate_and_free() {
 /// with a guard page below them; the CONTEXT starting at BaseThreadStartThunk with EAX the start
 /// address, EBX the parameter and ESP one dword below the stack's base; NtCreateThread suspended,
 /// on the INITIAL_TEB of that stack, then resumed; the thread id written back.
+///
+/// Pins: kernel32.CreateThread
 #[test]
 fn create_thread_builds_the_stack_and_the_context() {
     use crate::nt::host::{vm_calls, BASE};
@@ -290,6 +308,8 @@ fn create_thread_builds_the_stack_and_the_context() {
 /// CREATE_SUSPENDED leaves the thread suspended; an inheritable SECURITY_ATTRIBUTES makes an
 /// inheritable handle; a null identifier pointer is not written; the stack size sizes the
 /// reservation.
+///
+/// Pins: kernel32.CreateThread
 #[test]
 fn create_thread_honours_its_flags() {
     use crate::nt::host::vm_calls;
@@ -330,6 +350,8 @@ fn create_thread_honours_its_flags() {
 /// A refused create gives the stack back and returns NULL with the status's error: no room for the
 /// stack (ERROR_NOT_ENOUGH_MEMORY), or NtCreateThread's refusal (a full handle table's
 /// STATUS_INSUFFICIENT_RESOURCES).
+///
+/// Pins: kernel32.CreateThread
 #[test]
 fn create_thread_refusals_give_the_stack_back() {
     use crate::nt::host::{vm_calls, BASE, FAIL_NEXT};
@@ -372,6 +394,8 @@ fn create_thread_refusals_give_the_stack_back() {
 /// TerminateThread: TRUE for a live thread; an ended one is ERROR_INVALID_PARAMETER (the threads
 /// fixture's exit block), a handle naming nothing ERROR_INVALID_HANDLE, and a null handle names no
 /// thread (never the caller). TerminateProcess reaches only the calling process.
+///
+/// Pins: kernel32.TerminateProcess, kernel32.TerminateThread
 #[test]
 fn terminations_reach_what_their_handles_name() {
     use crate::nt::threads::TERMINATED;

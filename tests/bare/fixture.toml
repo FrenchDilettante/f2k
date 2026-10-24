@@ -3,3 +3,36 @@ description = "bare - the image and process contract without a C runtime (bare.c
 kind = "sectioned"
 gate = true
 
+[pins]
+# The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
+# calls); scripts/compat.py derives each export's coverage from them.
+"*" = [
+    "kernel32.ExitProcess",
+    "kernel32.GetCommandLineA",
+    "kernel32.GetStdHandle",
+    "kernel32.WriteFile",
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+    "ntdll.NtTerminateProcess",
+]
+null-write = [
+    "kernel32.UnhandledExceptionFilter",
+    "kernel32.SetErrorMode",
+    "ntdll.KiUserExceptionDispatcher",
+    "ntdll.RtlUnwind",
+]
+cli = ["kernel32.SetErrorMode"]
+code-write = ["kernel32.SetErrorMode"]
+div-zero = ["kernel32.SetErrorMode"]
+hlt = ["kernel32.SetErrorMode"]
+int3 = ["kernel32.SetErrorMode"]
+into = ["kernel32.SetErrorMode"]
+io-in = ["kernel32.SetErrorMode"]
+kernel-read = ["kernel32.SetErrorMode"]
+kernel-write = ["kernel32.SetErrorMode"]
+null-call = ["kernel32.SetErrorMode"]
+null-read = ["kernel32.SetErrorMode"]
+rdata-write = ["kernel32.SetErrorMode"]
+stack-overflow = ["kernel32.SetErrorMode"]
+ud2 = ["kernel32.SetErrorMode"]
+badptr = ["kernel32.WriteConsoleA", "ntdll.CsrClientCallServer"]

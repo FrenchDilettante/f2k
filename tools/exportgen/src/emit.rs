@@ -248,8 +248,8 @@ pub fn dll_stubs(specs: &[(&str, &Spec)], dll: &str) -> String {
 /// `dll`'s module-definition file: its hand-written exports (to their code, in `hand_exports`
 /// order: the order of the `.globl` lines of its assembly sources), then its system services (each
 /// under its `Nt` and its `Zw` name, to its stub, in number order), then its forwarders
-/// (`Name=MODULE.Export`, in spec order). An export's ordinal is its spec's when it has one,
-/// otherwise the next free one. `hand_exports` must be exactly the spec's natives.
+/// (`Name=MODULE.Export`, in spec order). An export's ordinal is its spec's when it has one (a
+/// system service's Zw alias's, its `zw_ordinal`), otherwise the next free one. `hand_exports` must be exactly the spec's natives.
 pub fn dll_def(
     specs: &[(&str, &Spec)],
     dll: &str,
@@ -265,33 +265,39 @@ pub fn dll_def(
             "{dll}: the assembly sources export {written:?}, the spec's natives are {natives:?}"
         ));
     }
-    let mut lines: Vec<(&str, String)> = Vec::new();
+    // Each line with its ordinal, when the spec gives one.
+    let mut lines: Vec<(Option<u16>, String)> = Vec::new();
     for name in hand_exports {
         let export = own.export(name).expect("checked against the natives above");
         lines.push((
-            &export.name,
+            export.ordinal,
             format!("{}={}", export.name, &hand_symbol(&export.name)[1..]),
         ));
     }
-    let aliases: Vec<(String, String)> = syscalls(own)
-        .into_iter()
-        .map(|(export, _)| (w2k::zw_alias(&export.name), export.name.clone()))
-        .collect();
-    for (zw, nt) in &aliases {
+    for (export, _) in syscalls(own) {
+        let nt = &export.name;
+        let zw = w2k::zw_alias(nt);
         let symbol = &nt_stub_symbol(nt)[1..];
-        lines.push((nt, format!("{nt}={symbol}")));
-        lines.push((zw, format!("{zw}={symbol}")));
+        lines.push((export.ordinal, format!("{nt}={symbol}")));
+        lines.push((export.zw_ordinal, format!("{zw}={symbol}")));
     }
     for export in &own.exports {
         if let Implementation::Forward(target) = &export.implementation {
-            lines.push((&export.name, format!("{}={target}", export.name)));
+            lines.push((export.ordinal, format!("{}={target}", export.name)));
         }
     }
-    let taken: Vec<u16> = own.exports.iter().filter_map(|e| e.ordinal).collect();
+    // The next free ordinal skips every one the platform's table holds, catalogued ones included.
+    let taken: Vec<u16> = own
+        .exports
+        .iter()
+        .flat_map(|e| [e.ordinal, e.zw_ordinal])
+        .flatten()
+        .chain(own.catalogued.iter().map(|c| c.ordinal))
+        .collect();
     let mut next = 1u16;
     let mut out = format!("LIBRARY {dll}.dll\nEXPORTS\n");
-    for (name, line) in lines {
-        let ordinal = match own.export(name).and_then(|e| e.ordinal) {
+    for (ordinal, line) in lines {
+        let ordinal = match ordinal {
             Some(ordinal) => ordinal,
             None => {
                 while taken.contains(&next) {
@@ -470,5 +476,28 @@ impl = { syscall = "crate::nt::object::close" }
         assert!(dll_def(&specs, "kernel32", &[])
             .unwrap_err()
             .contains("natives"));
+    }
+
+    /// The platform's ordinals: a system service's and its Zw alias's from the spec, and an export
+    /// without one takes the next ordinal no record holds (a catalogued export's included); a
+    /// catalogued export is in no generated file.
+    #[test]
+    fn the_def_keeps_the_platforms_ordinals() {
+        let text = SYSCALLS.replacen(
+            "impl = { syscall = \"crate::nt::object::close\" }",
+            "impl = { syscall = \"crate::nt::object::close\" }\nordinal = 7\nzw_ordinal = 9",
+            1,
+        ) + "\n[[export]]\nname = \"NtYieldExecution\"\nordinal = 1\n\n[[export]]\nname = \"NlsAnsiCodePage\"\nordinal = 2\ndata = true\n";
+        let ntdll = parse_spec(&text).unwrap();
+        assert_eq!(ntdll.catalogued.len(), 2);
+        assert!(ntdll.catalogued[1].data);
+        let kernel32 = parse_spec(SPEC).unwrap();
+        let specs = [("kernel32", &kernel32), ("ntdll", &ntdll)];
+        assert_eq!(
+            dll_def(&specs, "ntdll", &[]).unwrap(),
+            "LIBRARY ntdll.dll\nEXPORTS\n  NtClose=f2k_nt_NtClose @7\n  ZwClose=f2k_nt_NtClose @9\n  \
+             NtOpenFile=f2k_nt_NtOpenFile @3\n  ZwOpenFile=f2k_nt_NtOpenFile @4\n"
+        );
+        assert!(!nt_services(&ntdll, "t").contains("NtYieldExecution"));
     }
 }

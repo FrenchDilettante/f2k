@@ -33,7 +33,7 @@ LISTED = [name for name in SECTIONED if '"../common/f2kt.h"' in (TESTS / name / 
 # Set once tests/build.bat has rebuilt every fixture: a binary without its source stamp then fails
 # instead of skipping, and the binaries' --list (their section tables) is the checked-in source's.
 REQUIRE_SOURCE_STAMPS = False
-DECLARATION_KEYS = {"description", "kind", "gate", "timeout", "masks", "retake", "pending"}
+DECLARATION_KEYS = {"description", "kind", "gate", "timeout", "masks", "retake", "pending", "pins"}
 
 
 def declared_sections(fixture: str) -> set[str]:
@@ -128,14 +128,14 @@ def test_binaries_are_built_from_the_checked_in_source(fixture: str):
     )
 
 
-def test_the_ledger_checks_out():
-    """The export specs agree with the captures and the scenarios (scripts/ledger.py --check):
-    every pinned_by block exists in its fixture's capture, every scenario exists and is named,
-    every implemented export has evidence, every gap's reason leads with its id."""
+def test_the_pins_check_out():
+    """The tests' pins agree with the export specs and the captures (scripts/compat.py --check):
+    every pin names an export of a spec, every pinned section has a captured block, every
+    scenario pins something, every gap's reason leads with its id."""
     import sys
 
     result = subprocess.run(
-        [sys.executable, str(f2kboot.REPO_ROOT / "scripts" / "ledger.py"), "--check"],
+        [sys.executable, str(f2kboot.REPO_ROOT / "scripts" / "compat.py"), "--check"],
         capture_output=True,
         text=True,
     )
@@ -144,10 +144,10 @@ def test_the_ledger_checks_out():
 
 def test_check_all_runs_the_test_systems():
     """`make check-all` is the one command a change is verified with: the host unit tests, the
-    export ledger's check and scenarios, and the on-target suite, in that order (fastest first)."""
+    pins' check and the host scenarios, and the on-target suite, in that order (fastest first)."""
     plan = subprocess.run(["make", "-n", "check-all"], cwd=f2kboot.REPO_ROOT, capture_output=True,
                           text=True, check=True).stdout
-    steps = ["cargo test --lib", "scripts/ledger.py --check --run", "pytest tests"]
+    steps = ["cargo test --lib", "scripts/compat.py --check --run", "pytest tests"]
     at = [plan.find(step) for step in steps]
     assert all(index >= 0 for index in at), dict(zip(steps, at))
     assert at == sorted(at), "the steps run fastest first"
@@ -251,7 +251,9 @@ import tomllib
 
 
 def kernel32_exports() -> list[dict]:
-    return tomllib.loads((f2kboot.REPO_ROOT / "userland" / "kernel32" / "exports.toml").read_text())["export"]
+    """kernel32's implemented exports (its spec's catalogued records, without an impl, left out)."""
+    spec = tomllib.loads((f2kboot.REPO_ROOT / "userland" / "kernel32" / "exports.toml").read_text())
+    return [export for export in spec["export"] if "impl" in export]
 
 
 def test_no_export_is_a_kernel_served_win32_service():
@@ -263,7 +265,7 @@ def test_no_export_is_a_kernel_served_win32_service():
         f"{spec.parent.name}/{export['name']}"
         for spec in sorted((f2kboot.REPO_ROOT / "userland").glob("*/exports.toml"))
         for export in tomllib.loads(spec.read_text())["export"]
-        if {"service", "legacy", "floor", "unimplemented"} & set(export["impl"])
+        if {"service", "legacy", "floor", "unimplemented"} & set(export.get("impl", {}))
     ]
     assert not transitional, (
         f"exports served by the kernel as Win32 services, or stubs: {transitional}: write them in "
@@ -275,7 +277,7 @@ def test_no_export_is_a_kernel_served_win32_service():
 
 
 def test_the_spec_lists_every_fixture_import():
-    """kernel32's spec lists every kernel32 function the corpus fixtures import, so every fixture
+    """kernel32 implements every kernel32 function the corpus fixtures import, so every fixture
     loads: the loader stops at the first missing import.
     hellogui imports user32 and gdi32, which F2K does not have."""
     exported = {e["name"] for e in kernel32_exports()}

@@ -6,8 +6,8 @@
 //! heap exports, their bodies here), the thread start thunks (src/start.s), the pointer probes
 //! (src/probe.s), and the generated stubs file (empty for kernel32: only ntdll's system services
 //! have generated bodies). RtlUnwind, the
-//! critical sections' Enter, Leave, TryEnter and Delete, and HeapAlloc, HeapFree, HeapReAlloc,
-//! HeapSize and HeapValidate are forwarders: they live in ntdll, as on Windows 2000.
+//! critical sections' Enter, Leave, TryEnter and Delete, and HeapAlloc, HeapFree, HeapReAlloc and
+//! HeapSize are forwarders: they live in ntdll, as on Windows 2000.
 
 #![no_std]
 #![no_main]
@@ -74,6 +74,14 @@ extern "C" fn f2k_k32_heap_destroy(handle: usize) -> u32 {
     }
     sys::set_last_error(ERROR_INVALID_HANDLE);
     0
+}
+
+/// HeapValidate: ntdll's RtlValidateHeap, its BOOLEAN widened to a BOOL. Windows 2000's kernel32
+/// exports it as its own code, not as a forwarder.
+#[unsafe(no_mangle)]
+extern "C" fn f2k_k32_heap_validate(handle: usize, flags: u32, block: usize) -> u32 {
+    // SAFETY: ntdll's export; a pointer that is no block of the heap is refused, not followed.
+    u32::from(unsafe { nt::RtlValidateHeap(handle, flags, block as *const u8) })
 }
 
 /// The process heap, through ntdll's RtlAllocateHeap family (as Windows 2000's kernel32 reaches

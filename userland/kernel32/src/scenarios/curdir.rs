@@ -14,6 +14,8 @@ fn current(size: u32) -> (u32, std::vec::Vec<u8>) {
 
 /// SetCurrentDirectoryA makes the directory current, relative paths against the current one;
 /// GetCurrentDirectoryA reports it without its trailing separator, or the size it needs.
+///
+/// Pins: kernel32.GetCurrentDirectoryA, kernel32.SetCurrentDirectoryA
 #[test]
 fn the_current_directory_moves_and_reads_back() {
     assert_eq!(
@@ -42,6 +44,8 @@ fn the_current_directory_moves_and_reads_back() {
 
 /// A directory ntdll cannot open is FALSE with the status's error; a path past MAX_PATH is
 /// ERROR_FILENAME_EXCED_RANGE without asking ntdll.
+///
+/// Pins: kernel32.SetCurrentDirectoryA
 #[test]
 fn a_directory_that_cannot_be_opened_is_refused() {
     FAIL_NEXT.with(|next| next.set(0xC000_0034)); // STATUS_OBJECT_NAME_NOT_FOUND

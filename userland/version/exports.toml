@@ -1,0 +1,66 @@
+# VERSION.dll's exports: the one source every list of them derives from (the format is
+# kernel32's, documented in userland/kernel32/exports.toml).
+#
+# None is implemented yet: each record is catalogued from VERSION.dll 5.0.2195.6623's export table
+# (scripts/catalogue_exports.py): its name and ordinal. Implementing one gives it its group,
+# prototype and implementation.
+
+# --- not implemented yet: the rest of VERSION.dll 5.0.2195.6623's export table, by ordinal -------
+
+[[export]]
+name = "GetFileVersionInfoA"
+ordinal = 1
+
+[[export]]
+name = "GetFileVersionInfoSizeA"
+ordinal = 2
+
+[[export]]
+name = "GetFileVersionInfoSizeW"
+ordinal = 3
+
+[[export]]
+name = "GetFileVersionInfoW"
+ordinal = 4
+
+[[export]]
+name = "VerFindFileA"
+ordinal = 5
+
+[[export]]
+name = "VerFindFileW"
+ordinal = 6
+
+[[export]]
+name = "VerInstallFileA"
+ordinal = 7
+
+[[export]]
+name = "VerInstallFileW"
+ordinal = 8
+
+[[export]]
+name = "VerLanguageNameA"
+ordinal = 9
+note = "forwarded to KERNEL32.VerLanguageNameA"
+
+[[export]]
+name = "VerLanguageNameW"
+ordinal = 10
+note = "forwarded to KERNEL32.VerLanguageNameW"
+
+[[export]]
+name = "VerQueryValueA"
+ordinal = 11
+
+[[export]]
+name = "VerQueryValueIndexA"
+ordinal = 12
+
+[[export]]
+name = "VerQueryValueIndexW"
+ordinal = 13
+
+[[export]]
+name = "VerQueryValueW"
+ordinal = 14

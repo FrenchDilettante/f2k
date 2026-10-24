@@ -52,125 +52,141 @@ name = "NtClose"
 group = "nt"
 args = ["handle Handle"]
 impl = { syscall = "crate::nt::object::close" }
-pinned_by = ["files/open"]
+ordinal = 83
+zw_ordinal = 729
 
 [[export]]
 name = "NtTerminateProcess"
 group = "nt"
 args = ["handle ProcessHandle", "u32 ExitStatus"]
 impl = { syscall = "crate::nt::process::terminate_process" }
+ordinal = 290
+zw_ordinal = 935
 note = "no handle terminates the caller's other threads; the calling process's handle ends it (no other process is reachable)"
-pinned_by = ["bare/*", "runtime/exit", "threads/procexit", "threads/mainexit"]
 
 [[export]]
 name = "NtContinue"
 group = "nt"
 args = ["ptr Context", "u32 TestAlert"]
 impl = { syscall = "crate::nt::exception::continue_context" }
+ordinal = 87
+zw_ordinal = 733
 note = "resumes the CONTEXT's control and integer registers (TF honoured, privileged flags masked); TestAlert arms the next queued user APC. The debug and floating-point registers are not restored"
-pinned_by = ["runtime/seh", "runtime/unhandled", "sync/apc"]
 
 [[export]]
 name = "NtRaiseException"
 group = "nt"
 args = ["ptr ExceptionRecord", "ptr Context", "u32 FirstChance"]
 impl = { syscall = "crate::nt::exception::raise_exception" }
+ordinal = 222
+zw_ordinal = 867
 note = "first chance: the records copied below the context's stack pointer and KiUserExceptionDispatcher entered (no debugger); second chance: the process ends with the code (no debugger, no exception port)"
-pinned_by = ["runtime/seh"]
 
 [[export]]
 name = "NtQuerySystemInformation"
 group = "nt"
 args = ["u32 SystemInformationClass", "ptr SystemInformation", "u32 SystemInformationLength", "ptr<u32> ReturnLength"]
 impl = { syscall = "crate::nt::system::query_system_information" }
+ordinal = 214
+zw_ordinal = 859
 note = "answers SystemBasicInformation (0), SystemProcessorInformation (1), SystemPerformanceInformation (2) and SystemCurrentTimeZoneInformation (44); the other classes are STATUS_INVALID_INFO_CLASS"
-pinned_by = ["memory/sysinfo"]
 
 [[export]]
 name = "NtQueryPerformanceCounter"
 group = "nt"
 args = ["ptr<u64> PerformanceCounter", "ptr<u64> PerformanceFrequency"]
 impl = { syscall = "crate::nt::system::query_performance_counter" }
-pinned_by = ["sched/clock"]
+ordinal = 207
+zw_ordinal = 852
 
 [[export]]
 name = "NtQueryInformationProcess"
 group = "nt"
 args = ["handle ProcessHandle", "u32 ProcessInformationClass", "ptr ProcessInformation", "u32 ProcessInformationLength", "ptr<u32> ReturnLength"]
 impl = { syscall = "crate::nt::process::query_information_process" }
+ordinal = 196
+zw_ordinal = 841
 note = "answers ProcessBasicInformation (0), ProcessVmCounters (3), ProcessDefaultHardErrorMode (12) and ProcessPriorityClass (18), of the calling process only"
-pinned_by = ["memory/sysinfo", "threads/priority"]
 
 [[export]]
 name = "NtSetInformationProcess"
 group = "nt"
 args = ["handle ProcessHandle", "u32 ProcessInformationClass", "ptr ProcessInformation", "u32 ProcessInformationLength"]
 impl = { syscall = "crate::nt::process::set_information_process" }
+ordinal = 263
+zw_ordinal = 908
 note = "answers ProcessDefaultHardErrorMode (12), ProcessPriorityClass (18) and ProcessAffinityMask (21), of the calling process only"
-pinned_by = ["sched/*", "threads/priority"]
 
 [[export]]
 name = "NtAllocateVirtualMemory"
 group = "nt"
 args = ["handle ProcessHandle", "ptr<u32> BaseAddress", "u32 ZeroBits", "ptr<u32> RegionSize", "u32 AllocationType", "u32 Protect"]
 impl = { syscall = "crate::nt::memory::allocate_virtual_memory" }
+ordinal = 75
+zw_ordinal = 721
 note = "the calling process only (NtCurrentProcess)"
-pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
 
 [[export]]
 name = "NtFreeVirtualMemory"
 group = "nt"
 args = ["handle ProcessHandle", "ptr<u32> BaseAddress", "ptr<u32> RegionSize", "u32 FreeType"]
 impl = { syscall = "crate::nt::memory::free_virtual_memory" }
+ordinal = 132
+zw_ordinal = 777
 note = "the calling process only (NtCurrentProcess)"
-pinned_by = ["memory/virtual"]
 
 [[export]]
 name = "NtQueryVirtualMemory"
 group = "nt"
 args = ["handle ProcessHandle", "u32 BaseAddress", "u32 MemoryInformationClass", "ptr MemoryInformation", "u32 MemoryInformationLength", "ptr<u32> ReturnLength"]
 impl = { syscall = "crate::nt::memory::query_virtual_memory" }
+ordinal = 219
+zw_ordinal = 864
 note = "MemoryBasicInformation, of the calling process only (NtCurrentProcess)"
-pinned_by = ["memory/image", "memory/mapping", "memory/protect", "memory/stack", "memory/virtual"]
 
 [[export]]
 name = "NtProtectVirtualMemory"
 group = "nt"
 args = ["handle ProcessHandle", "ptr<u32> BaseAddress", "ptr<u32> NumberOfBytesToProtect", "u32 NewAccessProtection", "ptr<u32> OldAccessProtection"]
 impl = { syscall = "crate::nt::memory::protect_virtual_memory" }
+ordinal = 182
+zw_ordinal = 827
 note = "the calling process only (NtCurrentProcess)"
-pinned_by = ["memory/protect"]
 
 [[export]]
 name = "NtCreateSection"
 group = "nt"
 args = ["ptr<u32> SectionHandle", "u32 DesiredAccess", "ptr ObjectAttributes", "ptr<u64> MaximumSize", "u32 SectionPageProtection", "u32 AllocationAttributes", "handle FileHandle"]
 impl = { syscall = "crate::nt::section::create_section" }
+ordinal = 103
+zw_ordinal = 749
 note = "data sections of a file or of the paging file, named in \\BaseNamedObjects; SEC_IMAGE is STATUS_NOT_IMPLEMENTED"
-pinned_by = ["files/mapping", "memory/mapping"]
 
 [[export]]
 name = "NtOpenSection"
 group = "nt"
 args = ["ptr<u32> SectionHandle", "u32 DesiredAccess", "ptr ObjectAttributes"]
 impl = { syscall = "crate::nt::section::open_section" }
-pinned_by = ["memory/mapping"]
+ordinal = 171
+zw_ordinal = 816
 
 [[export]]
 name = "NtMapViewOfSection"
 group = "nt"
 args = ["handle SectionHandle", "handle ProcessHandle", "ptr<u32> BaseAddress", "u32 ZeroBits", "u32 CommitSize", "ptr<u64> SectionOffset", "ptr<u32> ViewSize", "u32 InheritDisposition", "u32 AllocationType", "u32 Win32Protect"]
 impl = { syscall = "crate::nt::section::map_view_of_section" }
+ordinal = 155
+zw_ordinal = 800
 note = "into the calling process only (NtCurrentProcess)"
-pinned_by = ["files/mapping", "memory/mapping"]
 
 [[export]]
 name = "NtUnmapViewOfSection"
 group = "nt"
 args = ["handle ProcessHandle", "ptr BaseAddress"]
 impl = { syscall = "crate::nt::section::unmap_view_of_section" }
+ordinal = 297
+zw_ordinal = 942
 note = "of the calling process only (NtCurrentProcess)"
-pinned_by = ["files/mapping", "memory/mapping"]
 
 # --- the file services (kernel/src/nt/file) ------------------------------------------------------
 
@@ -179,301 +195,342 @@ name = "NtCreateFile"
 group = "nt"
 args = ["ptr<u32> FileHandle", "u32 DesiredAccess", "ptr ObjectAttributes", "ptr IoStatusBlock", "ptr<u64> AllocationSize", "u32 FileAttributes", "u32 ShareAccess", "u32 CreateDisposition", "u32 CreateOptions", "ptr EaBuffer", "u32 EaLength"]
 impl = { syscall = "crate::nt::file::create_file" }
+ordinal = 92
+zw_ordinal = 738
 note = "an absolute name (\\??\\C:\\...) or one relative to a directory's file object; the allocation size and extended attributes are not consulted"
-pinned_by = ["files/*", "fswrite/*"]
 
 [[export]]
 name = "NtOpenFile"
 group = "nt"
 args = ["ptr<u32> FileHandle", "u32 DesiredAccess", "ptr ObjectAttributes", "ptr IoStatusBlock", "u32 ShareAccess", "u32 OpenOptions"]
 impl = { syscall = "crate::nt::file::open_file" }
+ordinal = 163
+zw_ordinal = 808
 note = "an absolute name (\\??\\C:\\...) or one relative to a directory's file object"
-pinned_by = ["files/open", "files/find", "fswrite/share", "fswrite/names", "fswrite/dirs"]
 
 [[export]]
 name = "NtReadFile"
 group = "nt"
 args = ["handle FileHandle", "handle Event", "ptr ApcRoutine", "ptr ApcContext", "ptr IoStatusBlock", "ptr Buffer", "u32 Length", "ptr<u64> ByteOffset", "ptr<u32> Key"]
 impl = { syscall = "crate::nt::file::read_file" }
+ordinal = 224
+zw_ordinal = 869
 note = "completes at once; an APC routine is STATUS_NOT_IMPLEMENTED"
-pinned_by = ["files/read", "files/seek", "files/handles", "files/concurrent", "fswrite/write"]
 
 [[export]]
 name = "NtWriteFile"
 group = "nt"
 args = ["handle FileHandle", "handle Event", "ptr ApcRoutine", "ptr ApcContext", "ptr IoStatusBlock", "ptr Buffer", "u32 Length", "ptr<u64> ByteOffset", "ptr<u32> Key"]
 impl = { syscall = "crate::nt::file::write_file" }
+ordinal = 303
+zw_ordinal = 948
 note = "completes at once; an APC routine is STATUS_NOT_IMPLEMENTED"
-pinned_by = ["fswrite/write", "fswrite/create", "fswrite/crt"]
 
 [[export]]
 name = "NtFlushBuffersFile"
 group = "nt"
 args = ["handle FileHandle", "ptr IoStatusBlock"]
 impl = { syscall = "crate::nt::file::flush_buffers_file" }
-pinned_by = ["fswrite/write"]
+ordinal = 126
+zw_ordinal = 771
 
 [[export]]
 name = "NtQueryInformationFile"
 group = "nt"
 args = ["handle FileHandle", "ptr IoStatusBlock", "ptr FileInformation", "u32 Length", "u32 FileInformationClass"]
 impl = { syscall = "crate::nt::file::query_information_file" }
+ordinal = 193
+zw_ordinal = 838
 note = "the basic, standard, internal, EA, access, position, mode, alignment, all (no name) and network-open classes"
-pinned_by = ["files/meta", "files/seek"]
 
 [[export]]
 name = "NtSetInformationFile"
 group = "nt"
 args = ["handle FileHandle", "ptr IoStatusBlock", "ptr FileInformation", "u32 Length", "u32 FileInformationClass"]
 impl = { syscall = "crate::nt::file::set_information_file" }
+ordinal = 259
+zw_ordinal = 904
 note = "the basic, rename, disposition, position, allocation and end-of-file classes"
-pinned_by = ["files/seek", "fswrite/write", "fswrite/names", "fswrite/dirs", "fswrite/times", "fswrite/create"]
 
 [[export]]
 name = "NtQueryDirectoryFile"
 group = "nt"
 args = ["handle FileHandle", "handle Event", "ptr ApcRoutine", "ptr ApcContext", "ptr IoStatusBlock", "ptr FileInformation", "u32 Length", "u32 FileInformationClass", "u32 ReturnSingleEntry", "ptr FileName", "u32 RestartScan"]
 impl = { syscall = "crate::nt::file::query_directory_file" }
+ordinal = 187
+zw_ordinal = 832
 note = "the directory, full-directory, both-directory and names classes"
-pinned_by = ["files/find", "files/crt"]
 
 [[export]]
 name = "NtQueryAttributesFile"
 group = "nt"
 args = ["ptr ObjectAttributes", "ptr FileInformation"]
 impl = { syscall = "crate::nt::file::query_attributes_file" }
-pinned_by = ["files/meta"]
+ordinal = 184
+zw_ordinal = 829
 
 [[export]]
 name = "NtQueryFullAttributesFile"
 group = "nt"
 args = ["ptr ObjectAttributes", "ptr FileInformation"]
 impl = { syscall = "crate::nt::file::query_full_attributes_file" }
-pinned_by = ["files/meta"]
+ordinal = 191
+zw_ordinal = 836
 
 [[export]]
 name = "NtQueryVolumeInformationFile"
 group = "nt"
 args = ["handle FileHandle", "ptr IoStatusBlock", "ptr FsInformation", "u32 Length", "u32 FsInformationClass"]
 impl = { syscall = "crate::nt::file::query_volume_information_file" }
+ordinal = 220
+zw_ordinal = 865
 note = "the volume, size, device, attribute and full-size classes"
-pinned_by = ["files/meta"]
 
 [[export]]
 name = "NtOpenDirectoryObject"
 group = "nt"
 args = ["ptr<u32> DirectoryHandle", "u32 DesiredAccess", "ptr ObjectAttributes"]
 impl = { syscall = "crate::nt::sync::open_directory_object" }
+ordinal = 160
+zw_ordinal = 805
 note = "\\BaseNamedObjects alone, the one directory (kernel32's named objects are made in it)"
-pinned_by = ["sync/event"]
 
 [[export]]
 name = "NtCreateEvent"
 group = "nt"
 args = ["ptr<u32> EventHandle", "u32 DesiredAccess", "ptr ObjectAttributes", "u32 EventType", "u32 InitialState"]
 impl = { syscall = "crate::nt::sync::create_event" }
-pinned_by = ["sync/event", "sync/waitmulti", "sync/critsec"]
+ordinal = 90
+zw_ordinal = 736
 
 [[export]]
 name = "NtOpenEvent"
 group = "nt"
 args = ["ptr<u32> EventHandle", "u32 DesiredAccess", "ptr ObjectAttributes"]
 impl = { syscall = "crate::nt::sync::open_event" }
-pinned_by = ["sync/event"]
+ordinal = 161
+zw_ordinal = 806
 
 [[export]]
 name = "NtSetEvent"
 group = "nt"
 args = ["handle EventHandle", "ptr<i32> PreviousState"]
 impl = { syscall = "crate::nt::sync::set_event" }
-pinned_by = ["sync/event", "sync/critsec"]
+ordinal = 256
+zw_ordinal = 901
 
 [[export]]
 name = "NtResetEvent"
 group = "nt"
 args = ["handle EventHandle", "ptr<i32> PreviousState"]
 impl = { syscall = "crate::nt::sync::reset_event" }
-pinned_by = ["sync/event"]
+ordinal = 242
+zw_ordinal = 887
 
 [[export]]
 name = "NtClearEvent"
 group = "nt"
 args = ["handle EventHandle"]
 impl = { syscall = "crate::nt::sync::clear_event" }
-pinned_by = ["sync/event", "sync/pingpong"]
+ordinal = 82
+zw_ordinal = 728
 
 [[export]]
 name = "NtPulseEvent"
 group = "nt"
 args = ["handle EventHandle", "ptr<i32> PreviousState"]
 impl = { syscall = "crate::nt::sync::pulse_event" }
-pinned_by = ["sync/event"]
+ordinal = 183
+zw_ordinal = 828
 
 [[export]]
 name = "NtCreateMutant"
 group = "nt"
 args = ["ptr<u32> MutantHandle", "u32 DesiredAccess", "ptr ObjectAttributes", "u32 InitialOwner"]
 impl = { syscall = "crate::nt::sync::create_mutant" }
-pinned_by = ["sync/mutex"]
+ordinal = 97
+zw_ordinal = 743
 
 [[export]]
 name = "NtOpenMutant"
 group = "nt"
 args = ["ptr<u32> MutantHandle", "u32 DesiredAccess", "ptr ObjectAttributes"]
 impl = { syscall = "crate::nt::sync::open_mutant" }
-pinned_by = ["sync/mutex"]
+ordinal = 167
+zw_ordinal = 812
 
 [[export]]
 name = "NtReleaseMutant"
 group = "nt"
 args = ["handle MutantHandle", "ptr<i32> PreviousCount"]
 impl = { syscall = "crate::nt::sync::release_mutant" }
-pinned_by = ["sync/mutex"]
+ordinal = 229
+zw_ordinal = 874
 
 [[export]]
 name = "NtCreateSemaphore"
 group = "nt"
 args = ["ptr<u32> SemaphoreHandle", "u32 DesiredAccess", "ptr ObjectAttributes", "i32 InitialCount", "i32 MaximumCount"]
 impl = { syscall = "crate::nt::sync::create_semaphore" }
-pinned_by = ["sync/semaphore"]
+ordinal = 104
+zw_ordinal = 750
 
 [[export]]
 name = "NtOpenSemaphore"
 group = "nt"
 args = ["ptr<u32> SemaphoreHandle", "u32 DesiredAccess", "ptr ObjectAttributes"]
 impl = { syscall = "crate::nt::sync::open_semaphore" }
-pinned_by = ["sync/semaphore"]
+ordinal = 172
+zw_ordinal = 817
 
 [[export]]
 name = "NtReleaseSemaphore"
 group = "nt"
 args = ["handle SemaphoreHandle", "i32 ReleaseCount", "ptr<i32> PreviousCount"]
 impl = { syscall = "crate::nt::sync::release_semaphore" }
-pinned_by = ["sync/semaphore"]
+ordinal = 230
+zw_ordinal = 875
 
 [[export]]
 name = "NtCreateTimer"
 group = "nt"
 args = ["ptr<u32> TimerHandle", "u32 DesiredAccess", "ptr ObjectAttributes", "u32 TimerType"]
 impl = { syscall = "crate::nt::sync::create_timer" }
-pinned_by = ["sched/timer"]
+ordinal = 107
+zw_ordinal = 753
 
 [[export]]
 name = "NtOpenTimer"
 group = "nt"
 args = ["ptr<u32> TimerHandle", "u32 DesiredAccess", "ptr ObjectAttributes"]
 impl = { syscall = "crate::nt::sync::open_timer" }
-pinned_by = ["sched/timer"]
+ordinal = 176
+zw_ordinal = 821
 
 [[export]]
 name = "NtSetTimer"
 group = "nt"
 args = ["handle TimerHandle", "ptr<u64> DueTime", "ptr TimerApcRoutine", "ptr TimerContext", "u32 ResumeTimer", "i32 Period", "ptr PreviousState"]
 impl = { syscall = "crate::nt::sync::set_timer" }
-pinned_by = ["sched/timer"]
+ordinal = 278
+zw_ordinal = 923
 
 [[export]]
 name = "NtCancelTimer"
 group = "nt"
 args = ["handle TimerHandle", "ptr CurrentState"]
 impl = { syscall = "crate::nt::sync::cancel_timer" }
-pinned_by = ["sched/timer"]
+ordinal = 81
+zw_ordinal = 727
 
 [[export]]
 name = "NtWaitForSingleObject"
 group = "nt"
 args = ["handle Handle", "u32 Alertable", "ptr<u64> Timeout"]
 impl = { syscall = "crate::nt::sync::wait_for_single_object" }
-pinned_by = ["sync/*"]
+ordinal = 300
+zw_ordinal = 945
 
 [[export]]
 name = "NtWaitForMultipleObjects"
 group = "nt"
 args = ["u32 Count", "ptr Handles", "u32 WaitType", "u32 Alertable", "ptr<u64> Timeout"]
 impl = { syscall = "crate::nt::sync::wait_for_multiple_objects" }
-pinned_by = ["sync/waitmulti"]
+ordinal = 299
+zw_ordinal = 944
 
 [[export]]
 name = "NtSignalAndWaitForSingleObject"
 group = "nt"
 args = ["handle SignalHandle", "handle WaitHandle", "u32 Alertable", "ptr<u64> Timeout"]
 impl = { syscall = "crate::nt::sync::signal_and_wait_for_single_object" }
-pinned_by = ["sync/pingpong"]
+ordinal = 284
+zw_ordinal = 929
 
 [[export]]
 name = "NtDelayExecution"
 group = "nt"
 args = ["u32 Alertable", "ptr<u64> DelayInterval"]
 impl = { syscall = "crate::nt::sync::delay_execution" }
-pinned_by = ["sched/sleep", "sync/apc"]
+ordinal = 111
+zw_ordinal = 756
 
 [[export]]
 name = "NtYieldExecution"
 group = "nt"
 args = []
 impl = { syscall = "crate::nt::sync::yield_execution" }
-pinned_by = ["sched/yield"]
+ordinal = 307
+zw_ordinal = 952
 
 [[export]]
 name = "NtDuplicateObject"
 group = "nt"
 args = ["handle SourceProcessHandle", "handle SourceHandle", "handle TargetProcessHandle", "ptr<u32> TargetHandle", "u32 DesiredAccess", "u32 HandleAttributes", "u32 Options"]
 impl = { syscall = "crate::nt::sync::duplicate_object" }
+ordinal = 119
+zw_ordinal = 764
 note = "within the calling process only"
-pinned_by = ["sync/handles"]
 
 [[export]]
 name = "NtQueueApcThread"
 group = "nt"
 args = ["handle ThreadHandle", "ptr ApcRoutine", "ptr ApcArgument1", "ptr ApcArgument2", "ptr ApcArgument3"]
 impl = { syscall = "crate::nt::sync::queue_apc_thread" }
-pinned_by = ["sync/apc"]
+ordinal = 221
+zw_ordinal = 866
 
 [[export]]
 name = "NtSetInformationThread"
 group = "nt"
 args = ["handle ThreadHandle", "u32 ThreadInformationClass", "ptr ThreadInformation", "u32 ThreadInformationLength"]
 impl = { syscall = "crate::nt::thread::set_information_thread" }
+ordinal = 264
+zw_ordinal = 909
 note = "answers ThreadPriority (2), ThreadBasePriority (3), ThreadAffinityMask (4), ThreadZeroTlsCell (10) and ThreadPriorityBoost (14), the other classes unserved"
-pinned_by = ["sched/*", "threads/priority", "threads/tls"]
 
 [[export]]
 name = "NtCreateThread"
 group = "nt"
 args = ["ptr<u32> ThreadHandle", "u32 DesiredAccess", "ptr ObjectAttributes", "handle ProcessHandle", "ptr ClientId", "ptr ThreadContext", "ptr InitialTeb", "u32 CreateSuspended"]
 impl = { syscall = "crate::nt::thread::create_thread" }
+ordinal = 106
+zw_ordinal = 752
 note = "in the calling process only, on the stack the INITIAL_TEB describes and starting in the CONTEXT (its segments and EFLAGS every user thread's)"
-pinned_by = ["threads/*", "sched/*", "memory/stack"]
 
 [[export]]
 name = "NtTerminateThread"
 group = "nt"
 args = ["handle ThreadHandle", "u32 ExitStatus"]
 impl = { syscall = "crate::nt::thread::terminate_thread" }
+ordinal = 291
+zw_ordinal = 936
 note = "no handle is the caller, refused as its process's last thread (STATUS_CANT_TERMINATE_SELF); an ended thread is STATUS_INVALID_PARAMETER"
-pinned_by = ["threads/exit", "threads/mainexit"]
 
 [[export]]
 name = "NtSuspendThread"
 group = "nt"
 args = ["handle ThreadHandle", "ptr<u32> PreviousSuspendCount"]
 impl = { syscall = "crate::nt::thread::suspend_thread" }
-pinned_by = ["sched/freeze", "threads/suspend"]
+ordinal = 287
+zw_ordinal = 932
 
 [[export]]
 name = "NtResumeThread"
 group = "nt"
 args = ["handle ThreadHandle", "ptr<u32> PreviousSuspendCount"]
 impl = { syscall = "crate::nt::thread::resume_thread" }
-pinned_by = ["sched/freeze", "sched/preempt", "threads/*"]
+ordinal = 245
+zw_ordinal = 890
 
 [[export]]
 name = "NtQueryInformationThread"
 group = "nt"
 args = ["handle ThreadHandle", "u32 ThreadInformationClass", "ptr ThreadInformation", "u32 ThreadInformationLength", "ptr<u32> ReturnLength"]
 impl = { syscall = "crate::nt::thread::query_information_thread" }
+ordinal = 197
+zw_ordinal = 842
 note = "answers ThreadBasicInformation (0), ThreadAmILastThread (12) and ThreadPriorityBoost (14), the other classes unserved"
-pinned_by = ["threads/*"]
 
 # --- the client-server runtime (src/csr.s) --------------------------------------------------------
 
@@ -482,8 +539,8 @@ name = "CsrClientCallServer"
 group = "csr"
 args = ["ptr ApiMessage", "ptr CaptureBuffer", "u32 ApiNumber", "u32 ArgLength"]
 impl = { native = "CsrClientCallServer" }
+ordinal = 12
 note = "one internal service (SYS_CSR_CALL) to the kernel's console server, F2K's stand-in for csrss"
-pinned_by = ["runtime/console", "bare/badptr"]
 
 # --- the status mapping (src/status.rs, over rtl::status) ------------------------------------------
 
@@ -492,7 +549,7 @@ name = "RtlNtStatusToDosError"
 group = "nt"
 args = ["u32 Status"]
 impl = { native = "RtlNtStatusToDosError" }
-pinned_by = ["files/open"]
+ordinal = 565
 
 # --- exceptions -----------------------------------------------------------------------------------
 
@@ -501,38 +558,39 @@ name = "KiUserExceptionDispatcher"
 group = "exceptions"
 args = ["ptr ExceptionRecord", "ptr Context"]
 impl = { native = "KiUserExceptionDispatcher" }
+ordinal = 33
 note = "the kernel enters user mode here with an exception's records on the stack: the search (RtlDispatchException), then NtContinue or the second chance"
-pinned_by = ["runtime/seh", "runtime/unhandled", "bare/null-write"]
 
 [[export]]
 name = "KiUserApcDispatcher"
 group = "exceptions"
 args = ["ptr NormalRoutine", "ptr NormalContext", "ptr SystemArgument1", "ptr SystemArgument2"]
 impl = { native = "KiUserApcDispatcher" }
+ordinal = 31
 note = "the kernel delivers a user APC here: the routine called, then NtContinue of the interrupted context, TestAlert TRUE"
-pinned_by = ["sync/apc"]
 
 [[export]]
 name = "RtlRaiseException"
 group = "exceptions"
 args = ["ptr ExceptionRecord"]
 impl = { native = "RtlRaiseException" }
-pinned_by = ["runtime/seh"]
+ordinal = 590
 
 [[export]]
 name = "RtlRaiseStatus"
 group = "exceptions"
 args = ["u32 Status"]
 impl = { native = "RtlRaiseStatus" }
-unpinned = "the dispatcher raises through it only when NtContinue or NtRaiseException fails, which no fixture block reaches"
+ordinal = 591
+note = "no test pins it: the dispatcher raises through it only when NtContinue or NtRaiseException fails, which no fixture block reaches"
 
 [[export]]
 name = "RtlUnwind"
 group = "exceptions"
 args = ["ptr TargetFrame", "u32 TargetIp", "ptr ExceptionRecord", "u32 ReturnValue"]
 impl = { native = "RtlUnwind" }
+ordinal = 666
 note = "x86 NT's semantics: TargetIp ignored, the caller resumed through NtContinue; collided unwinds, INVALID_UNWIND_TARGET and BAD_STACK; a NULL target is an exit unwind, then the second chance"
-pinned_by = ["runtime/seh", "runtime/unhandled", "bare/null-write"]
 
 # --- critical sections and the PEB lock (src/critsec.s over rtl::critsec) ----------------------
 
@@ -541,64 +599,67 @@ name = "RtlInitializeCriticalSection"
 group = "threads"
 args = ["ptr lpCriticalSection"]
 impl = { native = "RtlInitializeCriticalSection" }
-unpinned = "no fixture imports it from ntdll; kernel32's InitializeCriticalSection runs the same body (rtl::critsec), pinned by sync/critsec"
+ordinal = 518
+note = "no test pins it: no fixture imports it from ntdll; kernel32's InitializeCriticalSection runs the same body (rtl::critsec), pinned by sync/critsec"
 
 [[export]]
 name = "RtlInitializeCriticalSectionAndSpinCount"
 group = "threads"
 args = ["ptr lpCriticalSection", "u32 dwSpinCount"]
 impl = { native = "RtlInitializeCriticalSectionAndSpinCount" }
-unpinned = "no fixture imports it from ntdll (kernel32's InitializeCriticalSectionAndSpinCount waits for a corpus binary importing it); its body (rtl::critsec) is host-tested with the spin count and the preallocated event"
+ordinal = 519
+note = "no test pins it: no fixture imports it from ntdll (kernel32's InitializeCriticalSectionAndSpinCount waits for a corpus binary importing it); its body (rtl::critsec) is host-tested with the spin count and the preallocated event"
 
 [[export]]
 name = "RtlEnterCriticalSection"
 group = "threads"
 args = ["ptr lpCriticalSection"]
 impl = { native = "RtlEnterCriticalSection" }
-pinned_by = ["sync/critsec"]
+ordinal = 440
 
 [[export]]
 name = "RtlTryEnterCriticalSection"
 group = "threads"
 args = ["ptr lpCriticalSection"]
 impl = { native = "RtlTryEnterCriticalSection" }
-pinned_by = ["sync/critsec"]
+ordinal = 653
 
 [[export]]
 name = "RtlLeaveCriticalSection"
 group = "threads"
 args = ["ptr lpCriticalSection"]
 impl = { native = "RtlLeaveCriticalSection" }
-pinned_by = ["sync/critsec"]
+ordinal = 546
 
 [[export]]
 name = "RtlDeleteCriticalSection"
 group = "threads"
 args = ["ptr lpCriticalSection"]
 impl = { native = "RtlDeleteCriticalSection" }
-pinned_by = ["sync/critsec"]
+ordinal = 409
 
 [[export]]
 name = "RtlSetCriticalSectionSpinCount"
 group = "threads"
 args = ["ptr lpCriticalSection", "u32 dwSpinCount"]
 impl = { native = "RtlSetCriticalSectionSpinCount" }
-unpinned = "no fixture imports it from ntdll (kernel32's SetCriticalSectionSpinCount, which forwards here on Windows 2000, waits for a corpus binary importing it); its body (rtl::critsec) is host-tested"
+ordinal = 611
+note = "no test pins it: no fixture imports it from ntdll (kernel32's SetCriticalSectionSpinCount, which forwards here on Windows 2000, waits for a corpus binary importing it); its body (rtl::critsec) is host-tested"
 
 [[export]]
 name = "RtlAcquirePebLock"
 group = "threads"
 args = []
 impl = { native = "RtlAcquirePebLock" }
+ordinal = 315
 note = "the PEB lock (PEB+0x1C, its storage at PEB+0x860), made by LdrInitializeThunk on the process's first thread"
-pinned_by = ["sync/*"]
 
 [[export]]
 name = "RtlReleasePebLock"
 group = "threads"
 args = []
 impl = { native = "RtlReleasePebLock" }
-pinned_by = ["sync/*"]
+ordinal = 597
 
 # --- heaps (src/heap.s over rtl::heap) -------------------------------------------------------------
 
@@ -607,49 +668,51 @@ name = "RtlCreateHeap"
 group = "heap"
 args = ["u32 Flags", "ptr HeapBase", "u32 ReserveSize", "u32 CommitSize", "ptr Lock", "ptr Parameters"]
 impl = { native = "RtlCreateHeap" }
-unpinned = "no fixture imports it from ntdll; kernel32's HeapCreate runs the same body (rtl::heap), pinned by memory/heap"
+ordinal = 385
+note = "no test pins it: no fixture imports it from ntdll; kernel32's HeapCreate runs the same body (rtl::heap), pinned by memory/heap"
 
 [[export]]
 name = "RtlDestroyHeap"
 group = "heap"
 args = ["u32 HeapHandle"]
 impl = { native = "RtlDestroyHeap" }
-unpinned = "no fixture imports it from ntdll; kernel32's HeapDestroy runs the same body (rtl::heap), pinned by memory/heap"
+ordinal = 425
+note = "no test pins it: no fixture imports it from ntdll; kernel32's HeapDestroy runs the same body (rtl::heap), pinned by memory/heap"
 
 [[export]]
 name = "RtlAllocateHeap"
 group = "heap"
 args = ["u32 hHeap", "u32 dwFlags", "u32 dwBytes"]
 impl = { native = "RtlAllocateHeap" }
-pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
+ordinal = 336
 
 [[export]]
 name = "RtlFreeHeap"
 group = "heap"
 args = ["u32 hHeap", "u32 dwFlags", "ptr lpMem"]
 impl = { native = "RtlFreeHeap" }
-pinned_by = ["files/*", "fswrite/*", "memory/*", "runtime/*"]
+ordinal = 475
 
 [[export]]
 name = "RtlReAllocateHeap"
 group = "heap"
 args = ["u32 hHeap", "u32 dwFlags", "ptr lpMem", "u32 dwBytes"]
 impl = { native = "RtlReAllocateHeap" }
-pinned_by = ["memory/heap"]
+ordinal = 593
 
 [[export]]
 name = "RtlSizeHeap"
 group = "heap"
 args = ["u32 hHeap", "u32 dwFlags", "ptr lpMem"]
 impl = { native = "RtlSizeHeap" }
-pinned_by = ["memory/heap"]
+ordinal = 631
 
 [[export]]
 name = "RtlValidateHeap"
 group = "heap"
 args = ["u32 hHeap", "u32 dwFlags", "ptr lpMem"]
 impl = { native = "RtlValidateHeap" }
-pinned_by = ["memory/heap"]
+ordinal = 683
 
 # --- the current directory (src/curdir.rs over rtl::path) -----------------------------------------
 
@@ -658,29 +721,29 @@ name = "RtlGetCurrentDirectory_U"
 group = "paths"
 args = ["u32 BufferLength", "ptr Buffer"]
 impl = { native = "RtlGetCurrentDirectory_U" }
-pinned_by = ["files/open"]
+ordinal = 487
 
 [[export]]
 name = "RtlSetCurrentDirectory_U"
 group = "paths"
 args = ["ptr PathName"]
 impl = { native = "RtlSetCurrentDirectory_U" }
-pinned_by = ["files/open"]
+ordinal = 612
 
 [[export]]
 name = "RtlGetFullPathName_U"
 group = "paths"
 args = ["ptr FileName", "u32 BufferLength", "ptr Buffer", "ptr<u32> FilePart"]
 impl = { native = "RtlGetFullPathName_U" }
-pinned_by = ["files/open", "files/crt"]
+ordinal = 491
 
 [[export]]
 name = "RtlDosPathNameToNtPathName_U"
 group = "paths"
 args = ["ptr DosFileName", "ptr NtFileName", "ptr<u32> FilePart", "ptr RelativeName"]
 impl = { native = "RtlDosPathNameToNtPathName_U" }
+ordinal = 431
 note = "a relative path under the current directory comes back relative to its handle (RTL_RELATIVE_NAME)"
-pinned_by = ["files/*"]
 
 # --- the environment (src/env.rs over rtl::env) ---------------------------------------------------
 
@@ -689,21 +752,21 @@ name = "RtlQueryEnvironmentVariable_U"
 group = "paths"
 args = ["ptr Environment", "ptr Name", "ptr Value"]
 impl = { native = "RtlQueryEnvironmentVariable_U" }
-pinned_by = ["runtime/env"]
+ordinal = 579
 
 [[export]]
 name = "RtlSetEnvironmentVariable"
 group = "paths"
 args = ["ptr Environment", "ptr Name", "ptr Value"]
 impl = { native = "RtlSetEnvironmentVariable" }
-pinned_by = ["runtime/env"]
+ordinal = 615
 
 [[export]]
 name = "RtlExpandEnvironmentStrings_U"
 group = "paths"
 args = ["ptr Environment", "ptr Source", "ptr Destination", "ptr<u32> ReturnedLength"]
 impl = { native = "RtlExpandEnvironmentStrings_U" }
-pinned_by = ["runtime/env"]
+ordinal = 452
 
 # --- the loader's module lists (src/loader.rs over rtl::modules) ----------------------------------
 
@@ -712,32 +775,32 @@ name = "LdrGetDllHandle"
 group = "loader"
 args = ["ptr DllPath", "ptr DllCharacteristics", "ptr DllName", "ptr<u32> DllHandle"]
 impl = { native = "LdrGetDllHandle" }
+ordinal = 42
 note = "over the PEB's module lists, which the kernel builds at the process's creation; a name with a path is matched against the full paths"
-pinned_by = ["runtime/module", "memory/image"]
 
 [[export]]
 name = "LdrLoadDll"
 group = "loader"
 args = ["ptr DllPath", "ptr DllCharacteristics", "ptr DllName", "ptr<u32> DllHandle"]
 impl = { native = "LdrLoadDll" }
+ordinal = 46
 note = "a module the lists hold, its load count raised, or one loaded from the volume (the current directory, then the root): an image section mapped at its preferred base, never relocated, its imports snapped in user mode; no DllMain runs"
-pinned_by = ["runtime/module"]
 
 [[export]]
 name = "LdrUnloadDll"
 group = "loader"
 args = ["u32 DllHandle"]
 impl = { native = "LdrUnloadDll" }
+ordinal = 53
 note = "a module's load count lowered: a loaded module's last reference unmaps it and releases its imports; the modules the process starts with stay"
-pinned_by = ["runtime/module"]
 
 [[export]]
 name = "LdrGetProcedureAddress"
 group = "loader"
 args = ["u32 DllHandle", "ptr ProcedureName", "u32 ProcedureNumber", "ptr<u32> ProcedureAddress"]
 impl = { native = "LdrGetProcedureAddress" }
+ordinal = 43
 note = "the export directory as mapped, by name or by ordinal, forwarders followed (split at the first dot); the system DLLs' ordinals are their specs' numbering, not Windows 2000's"
-pinned_by = ["runtime/module", "dll/proc"]
 
 # --- the loader's thread start and end (src/ldr.s, src/main.rs over rtl::heap and rtl::ldr) ---------
 
@@ -746,21 +809,4171 @@ name = "LdrInitializeThunk"
 group = "loader"
 args = ["ptr NormalContext", "ptr SystemArgument1", "ptr SystemArgument2"]
 impl = { native = "LdrInitializeThunk" }
+ordinal = 44
 note = "the kernel delivers a fresh thread's initialization here, like a user APC over its initial context: the process heap, the PEB lock and the loader lock (the first thread), the thread's TLS, then NtContinue of the context"
-pinned_by = ["threads/tls", "runtime/*", "memory/heap"]
 
 [[export]]
 name = "LdrShutdownThread"
 group = "loader"
 args = []
 impl = { native = "LdrShutdownThread" }
+ordinal = 51
 note = "the thread's implicit-TLS block and TLS expansion slots back to the process heap (no DLL_THREAD_DETACH: DllMain is not called)"
-pinned_by = ["threads/exit", "threads/tls"]
 
 [[export]]
 name = "LdrShutdownProcess"
 group = "loader"
 args = []
 impl = { native = "LdrShutdownProcess" }
+ordinal = 50
 note = "nothing to run: no DLL_PROCESS_DETACH (DllMain is not called) and no TLS callbacks"
-pinned_by = ["runtime/exit"]
+
+# --- not implemented yet: the rest of ntdll.dll 5.0.2195.6685's export table, by ordinal ---------
+
+[[export]]
+name = "PropertyLengthAsVariant"
+ordinal = 1
+
+[[export]]
+name = "RtlConvertPropertyToVariant"
+ordinal = 2
+
+[[export]]
+name = "RtlConvertVariantToProperty"
+ordinal = 3
+
+[[export]]
+name = "RtlUlongByteSwap"
+ordinal = 4
+
+[[export]]
+name = "RtlUlonglongByteSwap"
+ordinal = 5
+
+[[export]]
+name = "RtlUshortByteSwap"
+ordinal = 6
+
+[[export]]
+name = "CsrAllocateCaptureBuffer"
+ordinal = 7
+
+[[export]]
+name = "CsrAllocateMessagePointer"
+ordinal = 8
+
+[[export]]
+name = "CsrCaptureMessageBuffer"
+ordinal = 9
+
+[[export]]
+name = "CsrCaptureMessageString"
+ordinal = 10
+
+[[export]]
+name = "CsrCaptureTimeout"
+ordinal = 11
+
+[[export]]
+name = "CsrClientConnectToServer"
+ordinal = 13
+
+[[export]]
+name = "CsrFreeCaptureBuffer"
+ordinal = 14
+
+[[export]]
+name = "CsrIdentifyAlertableThread"
+ordinal = 15
+
+[[export]]
+name = "CsrNewThread"
+ordinal = 16
+
+[[export]]
+name = "CsrProbeForRead"
+ordinal = 17
+
+[[export]]
+name = "CsrProbeForWrite"
+ordinal = 18
+
+[[export]]
+name = "CsrSetPriorityClass"
+ordinal = 19
+
+[[export]]
+name = "DbgBreakPoint"
+ordinal = 20
+
+[[export]]
+name = "DbgPrint"
+ordinal = 21
+
+[[export]]
+name = "DbgPrintReturnControlC"
+ordinal = 22
+
+[[export]]
+name = "DbgPrompt"
+ordinal = 23
+
+[[export]]
+name = "DbgSsHandleKmApiMsg"
+ordinal = 24
+
+[[export]]
+name = "DbgSsInitialize"
+ordinal = 25
+
+[[export]]
+name = "DbgUiConnectToDbg"
+ordinal = 26
+
+[[export]]
+name = "DbgUiContinue"
+ordinal = 27
+
+[[export]]
+name = "DbgUiWaitStateChange"
+ordinal = 28
+
+[[export]]
+name = "DbgUserBreakPoint"
+ordinal = 29
+
+[[export]]
+name = "KiRaiseUserExceptionDispatcher"
+ordinal = 30
+
+[[export]]
+name = "KiUserCallbackDispatcher"
+ordinal = 32
+
+[[export]]
+name = "LdrAccessResource"
+ordinal = 34
+
+[[export]]
+name = "LdrAlternateResourcesEnabled"
+ordinal = 35
+
+[[export]]
+name = "LdrDisableThreadCalloutsForDll"
+ordinal = 36
+
+[[export]]
+name = "LdrEnumResources"
+ordinal = 37
+
+[[export]]
+name = "LdrFindEntryForAddress"
+ordinal = 38
+
+[[export]]
+name = "LdrFindResourceDirectory_U"
+ordinal = 39
+
+[[export]]
+name = "LdrFindResource_U"
+ordinal = 40
+
+[[export]]
+name = "LdrFlushAlternateResourceModules"
+ordinal = 41
+
+[[export]]
+name = "LdrLoadAlternateResourceModule"
+ordinal = 45
+
+[[export]]
+name = "LdrProcessRelocationBlock"
+ordinal = 47
+
+[[export]]
+name = "LdrQueryImageFileExecutionOptions"
+ordinal = 48
+
+[[export]]
+name = "LdrQueryProcessModuleInformation"
+ordinal = 49
+
+[[export]]
+name = "LdrUnloadAlternateResourceModule"
+ordinal = 52
+
+[[export]]
+name = "LdrVerifyImageMatchesChecksum"
+ordinal = 54
+
+[[export]]
+name = "NPXEMULATORTABLE"
+ordinal = 55
+
+[[export]]
+name = "NlsAnsiCodePage"
+ordinal = 56
+data = true
+
+[[export]]
+name = "NlsMbCodePageTag"
+ordinal = 57
+data = true
+
+[[export]]
+name = "NlsMbOemCodePageTag"
+ordinal = 58
+data = true
+
+[[export]]
+name = "NtAcceptConnectPort"
+ordinal = 59
+
+[[export]]
+name = "NtAccessCheck"
+ordinal = 60
+
+[[export]]
+name = "NtAccessCheckAndAuditAlarm"
+ordinal = 61
+
+[[export]]
+name = "NtAccessCheckByType"
+ordinal = 62
+
+[[export]]
+name = "NtAccessCheckByTypeAndAuditAlarm"
+ordinal = 63
+
+[[export]]
+name = "NtAccessCheckByTypeResultList"
+ordinal = 64
+
+[[export]]
+name = "NtAccessCheckByTypeResultListAndAuditAlarm"
+ordinal = 65
+
+[[export]]
+name = "NtAccessCheckByTypeResultListAndAuditAlarmByHandle"
+ordinal = 66
+
+[[export]]
+name = "NtAddAtom"
+ordinal = 67
+
+[[export]]
+name = "NtAdjustGroupsToken"
+ordinal = 68
+
+[[export]]
+name = "NtAdjustPrivilegesToken"
+ordinal = 69
+
+[[export]]
+name = "NtAlertResumeThread"
+ordinal = 70
+
+[[export]]
+name = "NtAlertThread"
+ordinal = 71
+
+[[export]]
+name = "NtAllocateLocallyUniqueId"
+ordinal = 72
+
+[[export]]
+name = "NtAllocateUserPhysicalPages"
+ordinal = 73
+
+[[export]]
+name = "NtAllocateUuids"
+ordinal = 74
+
+[[export]]
+name = "NtAreMappedFilesTheSame"
+ordinal = 76
+
+[[export]]
+name = "NtAssignProcessToJobObject"
+ordinal = 77
+
+[[export]]
+name = "NtCallbackReturn"
+ordinal = 78
+
+[[export]]
+name = "NtCancelDeviceWakeupRequest"
+ordinal = 79
+
+[[export]]
+name = "NtCancelIoFile"
+ordinal = 80
+
+[[export]]
+name = "NtCloseObjectAuditAlarm"
+ordinal = 84
+
+[[export]]
+name = "NtCompleteConnectPort"
+ordinal = 85
+
+[[export]]
+name = "NtConnectPort"
+ordinal = 86
+
+[[export]]
+name = "NtCreateChannel"
+ordinal = 88
+
+[[export]]
+name = "NtCreateDirectoryObject"
+ordinal = 89
+
+[[export]]
+name = "NtCreateEventPair"
+ordinal = 91
+
+[[export]]
+name = "NtCreateIoCompletion"
+ordinal = 93
+
+[[export]]
+name = "NtCreateJobObject"
+ordinal = 94
+
+[[export]]
+name = "NtCreateKey"
+ordinal = 95
+
+[[export]]
+name = "NtCreateMailslotFile"
+ordinal = 96
+
+[[export]]
+name = "NtCreateNamedPipeFile"
+ordinal = 98
+
+[[export]]
+name = "NtCreatePagingFile"
+ordinal = 99
+
+[[export]]
+name = "NtCreatePort"
+ordinal = 100
+
+[[export]]
+name = "NtCreateProcess"
+ordinal = 101
+
+[[export]]
+name = "NtCreateProfile"
+ordinal = 102
+
+[[export]]
+name = "NtCreateSymbolicLinkObject"
+ordinal = 105
+
+[[export]]
+name = "NtCreateToken"
+ordinal = 108
+
+[[export]]
+name = "NtCreateWaitablePort"
+ordinal = 109
+
+[[export]]
+name = "NtCurrentTeb"
+ordinal = 110
+
+[[export]]
+name = "NtDeleteAtom"
+ordinal = 112
+
+[[export]]
+name = "NtDeleteFile"
+ordinal = 113
+
+[[export]]
+name = "NtDeleteKey"
+ordinal = 114
+
+[[export]]
+name = "NtDeleteObjectAuditAlarm"
+ordinal = 115
+
+[[export]]
+name = "NtDeleteValueKey"
+ordinal = 116
+
+[[export]]
+name = "NtDeviceIoControlFile"
+ordinal = 117
+
+[[export]]
+name = "NtDisplayString"
+ordinal = 118
+
+[[export]]
+name = "NtDuplicateToken"
+ordinal = 120
+
+[[export]]
+name = "NtEnumerateKey"
+ordinal = 121
+
+[[export]]
+name = "NtEnumerateValueKey"
+ordinal = 122
+
+[[export]]
+name = "NtExtendSection"
+ordinal = 123
+
+[[export]]
+name = "NtFilterToken"
+ordinal = 124
+
+[[export]]
+name = "NtFindAtom"
+ordinal = 125
+
+[[export]]
+name = "NtFlushInstructionCache"
+ordinal = 127
+
+[[export]]
+name = "NtFlushKey"
+ordinal = 128
+
+[[export]]
+name = "NtFlushVirtualMemory"
+ordinal = 129
+
+[[export]]
+name = "NtFlushWriteBuffer"
+ordinal = 130
+
+[[export]]
+name = "NtFreeUserPhysicalPages"
+ordinal = 131
+
+[[export]]
+name = "NtFsControlFile"
+ordinal = 133
+
+[[export]]
+name = "NtGetContextThread"
+ordinal = 134
+
+[[export]]
+name = "NtGetDevicePowerState"
+ordinal = 135
+
+[[export]]
+name = "NtGetPlugPlayEvent"
+ordinal = 136
+
+[[export]]
+name = "NtGetTickCount"
+ordinal = 137
+
+[[export]]
+name = "NtGetWriteWatch"
+ordinal = 138
+
+[[export]]
+name = "NtImpersonateAnonymousToken"
+ordinal = 139
+
+[[export]]
+name = "NtImpersonateClientOfPort"
+ordinal = 140
+
+[[export]]
+name = "NtImpersonateThread"
+ordinal = 141
+
+[[export]]
+name = "NtInitializeRegistry"
+ordinal = 142
+
+[[export]]
+name = "NtInitiatePowerAction"
+ordinal = 143
+
+[[export]]
+name = "NtIsSystemResumeAutomatic"
+ordinal = 144
+
+[[export]]
+name = "NtListenChannel"
+ordinal = 145
+
+[[export]]
+name = "NtListenPort"
+ordinal = 146
+
+[[export]]
+name = "NtLoadDriver"
+ordinal = 147
+
+[[export]]
+name = "NtLoadKey2"
+ordinal = 148
+
+[[export]]
+name = "NtLoadKey"
+ordinal = 149
+
+[[export]]
+name = "NtLockFile"
+ordinal = 150
+
+[[export]]
+name = "NtLockVirtualMemory"
+ordinal = 151
+
+[[export]]
+name = "NtMakeTemporaryObject"
+ordinal = 152
+
+[[export]]
+name = "NtMapUserPhysicalPages"
+ordinal = 153
+
+[[export]]
+name = "NtMapUserPhysicalPagesScatter"
+ordinal = 154
+
+[[export]]
+name = "NtNotifyChangeDirectoryFile"
+ordinal = 156
+
+[[export]]
+name = "NtNotifyChangeKey"
+ordinal = 157
+
+[[export]]
+name = "NtNotifyChangeMultipleKeys"
+ordinal = 158
+
+[[export]]
+name = "NtOpenChannel"
+ordinal = 159
+
+[[export]]
+name = "NtOpenEventPair"
+ordinal = 162
+
+[[export]]
+name = "NtOpenIoCompletion"
+ordinal = 164
+
+[[export]]
+name = "NtOpenJobObject"
+ordinal = 165
+
+[[export]]
+name = "NtOpenKey"
+ordinal = 166
+
+[[export]]
+name = "NtOpenObjectAuditAlarm"
+ordinal = 168
+
+[[export]]
+name = "NtOpenProcess"
+ordinal = 169
+
+[[export]]
+name = "NtOpenProcessToken"
+ordinal = 170
+
+[[export]]
+name = "NtOpenSymbolicLinkObject"
+ordinal = 173
+
+[[export]]
+name = "NtOpenThread"
+ordinal = 174
+
+[[export]]
+name = "NtOpenThreadToken"
+ordinal = 175
+
+[[export]]
+name = "NtPlugPlayControl"
+ordinal = 177
+
+[[export]]
+name = "NtPowerInformation"
+ordinal = 178
+
+[[export]]
+name = "NtPrivilegeCheck"
+ordinal = 179
+
+[[export]]
+name = "NtPrivilegeObjectAuditAlarm"
+ordinal = 180
+
+[[export]]
+name = "NtPrivilegedServiceAuditAlarm"
+ordinal = 181
+
+[[export]]
+name = "NtQueryDefaultLocale"
+ordinal = 185
+
+[[export]]
+name = "NtQueryDefaultUILanguage"
+ordinal = 186
+
+[[export]]
+name = "NtQueryDirectoryObject"
+ordinal = 188
+
+[[export]]
+name = "NtQueryEaFile"
+ordinal = 189
+
+[[export]]
+name = "NtQueryEvent"
+ordinal = 190
+
+[[export]]
+name = "NtQueryInformationAtom"
+ordinal = 192
+
+[[export]]
+name = "NtQueryInformationJobObject"
+ordinal = 194
+
+[[export]]
+name = "NtQueryInformationPort"
+ordinal = 195
+
+[[export]]
+name = "NtQueryInformationToken"
+ordinal = 198
+
+[[export]]
+name = "NtQueryInstallUILanguage"
+ordinal = 199
+
+[[export]]
+name = "NtQueryIntervalProfile"
+ordinal = 200
+
+[[export]]
+name = "NtQueryIoCompletion"
+ordinal = 201
+
+[[export]]
+name = "NtQueryKey"
+ordinal = 202
+
+[[export]]
+name = "NtQueryMultipleValueKey"
+ordinal = 203
+
+[[export]]
+name = "NtQueryMutant"
+ordinal = 204
+
+[[export]]
+name = "NtQueryObject"
+ordinal = 205
+
+[[export]]
+name = "NtQueryOpenSubKeys"
+ordinal = 206
+
+[[export]]
+name = "NtQueryQuotaInformationFile"
+ordinal = 208
+
+[[export]]
+name = "NtQuerySection"
+ordinal = 209
+
+[[export]]
+name = "NtQuerySecurityObject"
+ordinal = 210
+
+[[export]]
+name = "NtQuerySemaphore"
+ordinal = 211
+
+[[export]]
+name = "NtQuerySymbolicLinkObject"
+ordinal = 212
+
+[[export]]
+name = "NtQuerySystemEnvironmentValue"
+ordinal = 213
+
+[[export]]
+name = "NtQuerySystemTime"
+ordinal = 215
+
+[[export]]
+name = "NtQueryTimer"
+ordinal = 216
+
+[[export]]
+name = "NtQueryTimerResolution"
+ordinal = 217
+
+[[export]]
+name = "NtQueryValueKey"
+ordinal = 218
+
+[[export]]
+name = "NtRaiseHardError"
+ordinal = 223
+
+[[export]]
+name = "NtReadFileScatter"
+ordinal = 225
+
+[[export]]
+name = "NtReadRequestData"
+ordinal = 226
+
+[[export]]
+name = "NtReadVirtualMemory"
+ordinal = 227
+
+[[export]]
+name = "NtRegisterThreadTerminatePort"
+ordinal = 228
+
+[[export]]
+name = "NtRemoveIoCompletion"
+ordinal = 231
+
+[[export]]
+name = "NtReplaceKey"
+ordinal = 232
+
+[[export]]
+name = "NtReplyPort"
+ordinal = 233
+
+[[export]]
+name = "NtReplyWaitReceivePort"
+ordinal = 234
+
+[[export]]
+name = "NtReplyWaitReceivePortEx"
+ordinal = 235
+
+[[export]]
+name = "NtReplyWaitReplyPort"
+ordinal = 236
+
+[[export]]
+name = "NtReplyWaitSendChannel"
+ordinal = 237
+
+[[export]]
+name = "NtRequestDeviceWakeup"
+ordinal = 238
+
+[[export]]
+name = "NtRequestPort"
+ordinal = 239
+
+[[export]]
+name = "NtRequestWaitReplyPort"
+ordinal = 240
+
+[[export]]
+name = "NtRequestWakeupLatency"
+ordinal = 241
+
+[[export]]
+name = "NtResetWriteWatch"
+ordinal = 243
+
+[[export]]
+name = "NtRestoreKey"
+ordinal = 244
+
+[[export]]
+name = "NtSaveKey"
+ordinal = 246
+
+[[export]]
+name = "NtSaveMergedKeys"
+ordinal = 247
+
+[[export]]
+name = "NtSecureConnectPort"
+ordinal = 248
+
+[[export]]
+name = "NtSendWaitReplyChannel"
+ordinal = 249
+
+[[export]]
+name = "NtSetContextChannel"
+ordinal = 250
+
+[[export]]
+name = "NtSetContextThread"
+ordinal = 251
+
+[[export]]
+name = "NtSetDefaultHardErrorPort"
+ordinal = 252
+
+[[export]]
+name = "NtSetDefaultLocale"
+ordinal = 253
+
+[[export]]
+name = "NtSetDefaultUILanguage"
+ordinal = 254
+
+[[export]]
+name = "NtSetEaFile"
+ordinal = 255
+
+[[export]]
+name = "NtSetHighEventPair"
+ordinal = 257
+
+[[export]]
+name = "NtSetHighWaitLowEventPair"
+ordinal = 258
+
+[[export]]
+name = "NtSetInformationJobObject"
+ordinal = 260
+
+[[export]]
+name = "NtSetInformationKey"
+ordinal = 261
+
+[[export]]
+name = "NtSetInformationObject"
+ordinal = 262
+
+[[export]]
+name = "NtSetInformationToken"
+ordinal = 265
+
+[[export]]
+name = "NtSetIntervalProfile"
+ordinal = 266
+
+[[export]]
+name = "NtSetIoCompletion"
+ordinal = 267
+
+[[export]]
+name = "NtSetLdtEntries"
+ordinal = 268
+
+[[export]]
+name = "NtSetLowEventPair"
+ordinal = 269
+
+[[export]]
+name = "NtSetLowWaitHighEventPair"
+ordinal = 270
+
+[[export]]
+name = "NtSetQuotaInformationFile"
+ordinal = 271
+
+[[export]]
+name = "NtSetSecurityObject"
+ordinal = 272
+
+[[export]]
+name = "NtSetSystemEnvironmentValue"
+ordinal = 273
+
+[[export]]
+name = "NtSetSystemInformation"
+ordinal = 274
+
+[[export]]
+name = "NtSetSystemPowerState"
+ordinal = 275
+
+[[export]]
+name = "NtSetSystemTime"
+ordinal = 276
+
+[[export]]
+name = "NtSetThreadExecutionState"
+ordinal = 277
+
+[[export]]
+name = "NtSetTimerResolution"
+ordinal = 279
+
+[[export]]
+name = "NtSetUuidSeed"
+ordinal = 280
+
+[[export]]
+name = "NtSetValueKey"
+ordinal = 281
+
+[[export]]
+name = "NtSetVolumeInformationFile"
+ordinal = 282
+
+[[export]]
+name = "NtShutdownSystem"
+ordinal = 283
+
+[[export]]
+name = "NtStartProfile"
+ordinal = 285
+
+[[export]]
+name = "NtStopProfile"
+ordinal = 286
+
+[[export]]
+name = "NtSystemDebugControl"
+ordinal = 288
+
+[[export]]
+name = "NtTerminateJobObject"
+ordinal = 289
+
+[[export]]
+name = "NtTestAlert"
+ordinal = 292
+
+[[export]]
+name = "NtUnloadDriver"
+ordinal = 293
+
+[[export]]
+name = "NtUnloadKey"
+ordinal = 294
+
+[[export]]
+name = "NtUnlockFile"
+ordinal = 295
+
+[[export]]
+name = "NtUnlockVirtualMemory"
+ordinal = 296
+
+[[export]]
+name = "NtVdmControl"
+ordinal = 298
+
+[[export]]
+name = "NtWaitHighEventPair"
+ordinal = 301
+
+[[export]]
+name = "NtWaitLowEventPair"
+ordinal = 302
+
+[[export]]
+name = "NtWriteFileGather"
+ordinal = 304
+
+[[export]]
+name = "NtWriteRequestData"
+ordinal = 305
+
+[[export]]
+name = "NtWriteVirtualMemory"
+ordinal = 306
+
+[[export]]
+name = "PfxFindPrefix"
+ordinal = 308
+
+[[export]]
+name = "PfxInitialize"
+ordinal = 309
+
+[[export]]
+name = "PfxInsertPrefix"
+ordinal = 310
+
+[[export]]
+name = "PfxRemovePrefix"
+ordinal = 311
+
+[[export]]
+name = "RestoreEm87Context"
+ordinal = 312
+
+[[export]]
+name = "RtlAbortRXact"
+ordinal = 313
+
+[[export]]
+name = "RtlAbsoluteToSelfRelativeSD"
+ordinal = 314
+
+[[export]]
+name = "RtlAcquireResourceExclusive"
+ordinal = 316
+
+[[export]]
+name = "RtlAcquireResourceShared"
+ordinal = 317
+
+[[export]]
+name = "RtlAddAccessAllowedAce"
+ordinal = 318
+
+[[export]]
+name = "RtlAddAccessAllowedAceEx"
+ordinal = 319
+
+[[export]]
+name = "RtlAddAccessAllowedObjectAce"
+ordinal = 320
+
+[[export]]
+name = "RtlAddAccessDeniedAce"
+ordinal = 321
+
+[[export]]
+name = "RtlAddAccessDeniedAceEx"
+ordinal = 322
+
+[[export]]
+name = "RtlAddAccessDeniedObjectAce"
+ordinal = 323
+
+[[export]]
+name = "RtlAddAce"
+ordinal = 324
+
+[[export]]
+name = "RtlAddActionToRXact"
+ordinal = 325
+
+[[export]]
+name = "RtlAddAtomToAtomTable"
+ordinal = 326
+
+[[export]]
+name = "RtlAddAttributeActionToRXact"
+ordinal = 327
+
+[[export]]
+name = "RtlAddAuditAccessAce"
+ordinal = 328
+
+[[export]]
+name = "RtlAddAuditAccessAceEx"
+ordinal = 329
+
+[[export]]
+name = "RtlAddAuditAccessObjectAce"
+ordinal = 330
+
+[[export]]
+name = "RtlAddCompoundAce"
+ordinal = 331
+
+[[export]]
+name = "RtlAddRange"
+ordinal = 332
+
+[[export]]
+name = "RtlAdjustPrivilege"
+ordinal = 333
+
+[[export]]
+name = "RtlAllocateAndInitializeSid"
+ordinal = 334
+
+[[export]]
+name = "RtlAllocateHandle"
+ordinal = 335
+
+[[export]]
+name = "RtlAnsiCharToUnicodeChar"
+ordinal = 337
+
+[[export]]
+name = "RtlAnsiStringToUnicodeSize"
+ordinal = 338
+
+[[export]]
+name = "RtlAnsiStringToUnicodeString"
+ordinal = 339
+
+[[export]]
+name = "RtlAppendAsciizToString"
+ordinal = 340
+
+[[export]]
+name = "RtlAppendStringToString"
+ordinal = 341
+
+[[export]]
+name = "RtlAppendUnicodeStringToString"
+ordinal = 342
+
+[[export]]
+name = "RtlAppendUnicodeToString"
+ordinal = 343
+
+[[export]]
+name = "RtlApplyRXact"
+ordinal = 344
+
+[[export]]
+name = "RtlApplyRXactNoFlush"
+ordinal = 345
+
+[[export]]
+name = "RtlAreAllAccessesGranted"
+ordinal = 346
+
+[[export]]
+name = "RtlAreAnyAccessesGranted"
+ordinal = 347
+
+[[export]]
+name = "RtlAreBitsClear"
+ordinal = 348
+
+[[export]]
+name = "RtlAreBitsSet"
+ordinal = 349
+
+[[export]]
+name = "RtlAssert"
+ordinal = 350
+
+[[export]]
+name = "RtlCallbackLpcClient"
+ordinal = 351
+
+[[export]]
+name = "RtlCancelTimer"
+ordinal = 352
+
+[[export]]
+name = "RtlCaptureStackBackTrace"
+ordinal = 353
+
+[[export]]
+name = "RtlCharToInteger"
+ordinal = 354
+
+[[export]]
+name = "RtlCheckForOrphanedCriticalSections"
+ordinal = 355
+
+[[export]]
+name = "RtlCheckRegistryKey"
+ordinal = 356
+
+[[export]]
+name = "RtlClearAllBits"
+ordinal = 357
+
+[[export]]
+name = "RtlClearBits"
+ordinal = 358
+
+[[export]]
+name = "RtlCompactHeap"
+ordinal = 359
+
+[[export]]
+name = "RtlCompareMemory"
+ordinal = 360
+
+[[export]]
+name = "RtlCompareMemoryUlong"
+ordinal = 361
+
+[[export]]
+name = "RtlCompareString"
+ordinal = 362
+
+[[export]]
+name = "RtlCompareUnicodeString"
+ordinal = 363
+
+[[export]]
+name = "RtlCompressBuffer"
+ordinal = 364
+
+[[export]]
+name = "RtlConsoleMultiByteToUnicodeN"
+ordinal = 365
+
+[[export]]
+name = "RtlConvertExclusiveToShared"
+ordinal = 366
+
+[[export]]
+name = "RtlConvertLongToLargeInteger"
+ordinal = 367
+
+[[export]]
+name = "RtlConvertSharedToExclusive"
+ordinal = 368
+
+[[export]]
+name = "RtlConvertSidToUnicodeString"
+ordinal = 369
+
+[[export]]
+name = "RtlConvertToAutoInheritSecurityObject"
+ordinal = 370
+
+[[export]]
+name = "RtlConvertUiListToApiList"
+ordinal = 371
+
+[[export]]
+name = "RtlConvertUlongToLargeInteger"
+ordinal = 372
+
+[[export]]
+name = "RtlCopyLuid"
+ordinal = 373
+
+[[export]]
+name = "RtlCopyLuidAndAttributesArray"
+ordinal = 374
+
+[[export]]
+name = "RtlCopyRangeList"
+ordinal = 375
+
+[[export]]
+name = "RtlCopySecurityDescriptor"
+ordinal = 376
+
+[[export]]
+name = "RtlCopySid"
+ordinal = 377
+
+[[export]]
+name = "RtlCopySidAndAttributesArray"
+ordinal = 378
+
+[[export]]
+name = "RtlCopyString"
+ordinal = 379
+
+[[export]]
+name = "RtlCopyUnicodeString"
+ordinal = 380
+
+[[export]]
+name = "RtlCreateAcl"
+ordinal = 381
+
+[[export]]
+name = "RtlCreateAndSetSD"
+ordinal = 382
+
+[[export]]
+name = "RtlCreateAtomTable"
+ordinal = 383
+
+[[export]]
+name = "RtlCreateEnvironment"
+ordinal = 384
+
+[[export]]
+name = "RtlCreateLpcServer"
+ordinal = 386
+
+[[export]]
+name = "RtlCreateProcessParameters"
+ordinal = 387
+
+[[export]]
+name = "RtlCreateQueryDebugBuffer"
+ordinal = 388
+
+[[export]]
+name = "RtlCreateRegistryKey"
+ordinal = 389
+
+[[export]]
+name = "RtlCreateSecurityDescriptor"
+ordinal = 390
+
+[[export]]
+name = "RtlCreateTagHeap"
+ordinal = 391
+
+[[export]]
+name = "RtlCreateTimer"
+ordinal = 392
+
+[[export]]
+name = "RtlCreateTimerQueue"
+ordinal = 393
+
+[[export]]
+name = "RtlCreateUnicodeString"
+ordinal = 394
+
+[[export]]
+name = "RtlCreateUnicodeStringFromAsciiz"
+ordinal = 395
+
+[[export]]
+name = "RtlCreateUserProcess"
+ordinal = 396
+
+[[export]]
+name = "RtlCreateUserSecurityObject"
+ordinal = 397
+
+[[export]]
+name = "RtlCreateUserThread"
+ordinal = 398
+
+[[export]]
+name = "RtlCustomCPToUnicodeN"
+ordinal = 399
+
+[[export]]
+name = "RtlCutoverTimeToSystemTime"
+ordinal = 400
+
+[[export]]
+name = "RtlDeNormalizeProcessParams"
+ordinal = 401
+
+[[export]]
+name = "RtlDebugPrintTimes"
+ordinal = 402
+
+[[export]]
+name = "RtlDecompressBuffer"
+ordinal = 403
+
+[[export]]
+name = "RtlDecompressFragment"
+ordinal = 404
+
+[[export]]
+name = "RtlDefaultNpAcl"
+ordinal = 405
+
+[[export]]
+name = "RtlDelete"
+ordinal = 406
+
+[[export]]
+name = "RtlDeleteAce"
+ordinal = 407
+
+[[export]]
+name = "RtlDeleteAtomFromAtomTable"
+ordinal = 408
+
+[[export]]
+name = "RtlDeleteElementGenericTable"
+ordinal = 410
+
+[[export]]
+name = "RtlDeleteNoSplay"
+ordinal = 411
+
+[[export]]
+name = "RtlDeleteOwnersRanges"
+ordinal = 412
+
+[[export]]
+name = "RtlDeleteRange"
+ordinal = 413
+
+[[export]]
+name = "RtlDeleteRegistryValue"
+ordinal = 414
+
+[[export]]
+name = "RtlDeleteResource"
+ordinal = 415
+
+[[export]]
+name = "RtlDeleteSecurityObject"
+ordinal = 416
+
+[[export]]
+name = "RtlDeleteTimer"
+ordinal = 417
+
+[[export]]
+name = "RtlDeleteTimerQueue"
+ordinal = 418
+
+[[export]]
+name = "RtlDeleteTimerQueueEx"
+ordinal = 419
+
+[[export]]
+name = "RtlDeregisterWait"
+ordinal = 420
+
+[[export]]
+name = "RtlDeregisterWaitEx"
+ordinal = 421
+
+[[export]]
+name = "RtlDestroyAtomTable"
+ordinal = 422
+
+[[export]]
+name = "RtlDestroyEnvironment"
+ordinal = 423
+
+[[export]]
+name = "RtlDestroyHandleTable"
+ordinal = 424
+
+[[export]]
+name = "RtlDestroyProcessParameters"
+ordinal = 426
+
+[[export]]
+name = "RtlDestroyQueryDebugBuffer"
+ordinal = 427
+
+[[export]]
+name = "RtlDetermineDosPathNameType_U"
+ordinal = 428
+
+[[export]]
+name = "RtlDnsHostNameToComputerName"
+ordinal = 429
+
+[[export]]
+name = "RtlDoesFileExists_U"
+ordinal = 430
+
+[[export]]
+name = "RtlDosSearchPath_U"
+ordinal = 432
+
+[[export]]
+name = "RtlDowncaseUnicodeString"
+ordinal = 433
+
+[[export]]
+name = "RtlDumpResource"
+ordinal = 434
+
+[[export]]
+name = "RtlEmptyAtomTable"
+ordinal = 435
+
+[[export]]
+name = "RtlEnableEarlyCriticalSectionEventCreation"
+ordinal = 436
+
+[[export]]
+name = "RtlEnlargedIntegerMultiply"
+ordinal = 437
+
+[[export]]
+name = "RtlEnlargedUnsignedDivide"
+ordinal = 438
+
+[[export]]
+name = "RtlEnlargedUnsignedMultiply"
+ordinal = 439
+
+[[export]]
+name = "RtlEnumProcessHeaps"
+ordinal = 441
+
+[[export]]
+name = "RtlEnumerateGenericTable"
+ordinal = 442
+
+[[export]]
+name = "RtlEnumerateGenericTableWithoutSplaying"
+ordinal = 443
+
+[[export]]
+name = "RtlEqualComputerName"
+ordinal = 444
+
+[[export]]
+name = "RtlEqualDomainName"
+ordinal = 445
+
+[[export]]
+name = "RtlEqualLuid"
+ordinal = 446
+
+[[export]]
+name = "RtlEqualPrefixSid"
+ordinal = 447
+
+[[export]]
+name = "RtlEqualSid"
+ordinal = 448
+
+[[export]]
+name = "RtlEqualString"
+ordinal = 449
+
+[[export]]
+name = "RtlEqualUnicodeString"
+ordinal = 450
+
+[[export]]
+name = "RtlEraseUnicodeString"
+ordinal = 451
+
+[[export]]
+name = "RtlExtendHeap"
+ordinal = 453
+
+[[export]]
+name = "RtlExtendedIntegerMultiply"
+ordinal = 454
+
+[[export]]
+name = "RtlExtendedLargeIntegerDivide"
+ordinal = 455
+
+[[export]]
+name = "RtlExtendedMagicDivide"
+ordinal = 456
+
+[[export]]
+name = "RtlFillMemory"
+ordinal = 457
+
+[[export]]
+name = "RtlFillMemoryUlong"
+ordinal = 458
+
+[[export]]
+name = "RtlFindClearBits"
+ordinal = 459
+
+[[export]]
+name = "RtlFindClearBitsAndSet"
+ordinal = 460
+
+[[export]]
+name = "RtlFindLastBackwardRunClear"
+ordinal = 461
+
+[[export]]
+name = "RtlFindLeastSignificantBit"
+ordinal = 462
+
+[[export]]
+name = "RtlFindLongestRunClear"
+ordinal = 463
+
+[[export]]
+name = "RtlFindMessage"
+ordinal = 464
+
+[[export]]
+name = "RtlFindMostSignificantBit"
+ordinal = 465
+
+[[export]]
+name = "RtlFindNextForwardRunClear"
+ordinal = 466
+
+[[export]]
+name = "RtlFindRange"
+ordinal = 467
+
+[[export]]
+name = "RtlFindSetBits"
+ordinal = 468
+
+[[export]]
+name = "RtlFindSetBitsAndClear"
+ordinal = 469
+
+[[export]]
+name = "RtlFirstFreeAce"
+ordinal = 470
+
+[[export]]
+name = "RtlFormatCurrentUserKeyPath"
+ordinal = 471
+
+[[export]]
+name = "RtlFormatMessage"
+ordinal = 472
+
+[[export]]
+name = "RtlFreeAnsiString"
+ordinal = 473
+
+[[export]]
+name = "RtlFreeHandle"
+ordinal = 474
+
+[[export]]
+name = "RtlFreeOemString"
+ordinal = 476
+
+[[export]]
+name = "RtlFreeRangeList"
+ordinal = 477
+
+[[export]]
+name = "RtlFreeSid"
+ordinal = 478
+
+[[export]]
+name = "RtlFreeUnicodeString"
+ordinal = 479
+
+[[export]]
+name = "RtlFreeUserThreadStack"
+ordinal = 480
+
+[[export]]
+name = "RtlGUIDFromString"
+ordinal = 481
+
+[[export]]
+name = "RtlGenerate8dot3Name"
+ordinal = 482
+
+[[export]]
+name = "RtlGetAce"
+ordinal = 483
+
+[[export]]
+name = "RtlGetCallersAddress"
+ordinal = 484
+
+[[export]]
+name = "RtlGetCompressionWorkSpaceSize"
+ordinal = 485
+
+[[export]]
+name = "RtlGetControlSecurityDescriptor"
+ordinal = 486
+
+[[export]]
+name = "RtlGetDaclSecurityDescriptor"
+ordinal = 488
+
+[[export]]
+name = "RtlGetElementGenericTable"
+ordinal = 489
+
+[[export]]
+name = "RtlGetFirstRange"
+ordinal = 490
+
+[[export]]
+name = "RtlGetGroupSecurityDescriptor"
+ordinal = 492
+
+[[export]]
+name = "RtlGetLongestNtPathLength"
+ordinal = 493
+
+[[export]]
+name = "RtlGetNextRange"
+ordinal = 494
+
+[[export]]
+name = "RtlGetNtGlobalFlags"
+ordinal = 495
+
+[[export]]
+name = "RtlGetNtProductType"
+ordinal = 496
+
+[[export]]
+name = "RtlGetOwnerSecurityDescriptor"
+ordinal = 497
+
+[[export]]
+name = "RtlGetProcessHeaps"
+ordinal = 498
+
+[[export]]
+name = "RtlGetSaclSecurityDescriptor"
+ordinal = 499
+
+[[export]]
+name = "RtlGetSecurityDescriptorRMControl"
+ordinal = 500
+
+[[export]]
+name = "RtlGetUserInfoHeap"
+ordinal = 501
+
+[[export]]
+name = "RtlGetVersion"
+ordinal = 502
+
+[[export]]
+name = "RtlIdentifierAuthoritySid"
+ordinal = 503
+
+[[export]]
+name = "RtlImageDirectoryEntryToData"
+ordinal = 504
+
+[[export]]
+name = "RtlImageNtHeader"
+ordinal = 505
+
+[[export]]
+name = "RtlImageRvaToSection"
+ordinal = 506
+
+[[export]]
+name = "RtlImageRvaToVa"
+ordinal = 507
+
+[[export]]
+name = "RtlImpersonateLpcClient"
+ordinal = 508
+
+[[export]]
+name = "RtlImpersonateSelf"
+ordinal = 509
+
+[[export]]
+name = "RtlInitAnsiString"
+ordinal = 510
+
+[[export]]
+name = "RtlInitCodePageTable"
+ordinal = 511
+
+[[export]]
+name = "RtlInitNlsTables"
+ordinal = 512
+
+[[export]]
+name = "RtlInitString"
+ordinal = 513
+
+[[export]]
+name = "RtlInitUnicodeString"
+ordinal = 514
+
+[[export]]
+name = "RtlInitializeAtomPackage"
+ordinal = 515
+
+[[export]]
+name = "RtlInitializeBitMap"
+ordinal = 516
+
+[[export]]
+name = "RtlInitializeContext"
+ordinal = 517
+
+[[export]]
+name = "RtlInitializeGenericTable"
+ordinal = 520
+
+[[export]]
+name = "RtlInitializeHandleTable"
+ordinal = 521
+
+[[export]]
+name = "RtlInitializeRXact"
+ordinal = 522
+
+[[export]]
+name = "RtlInitializeRangeList"
+ordinal = 523
+
+[[export]]
+name = "RtlInitializeResource"
+ordinal = 524
+
+[[export]]
+name = "RtlInitializeSid"
+ordinal = 525
+
+[[export]]
+name = "RtlInsertElementGenericTable"
+ordinal = 526
+
+[[export]]
+name = "RtlInt64ToUnicodeString"
+ordinal = 527
+
+[[export]]
+name = "RtlIntegerToChar"
+ordinal = 528
+
+[[export]]
+name = "RtlIntegerToUnicodeString"
+ordinal = 529
+
+[[export]]
+name = "RtlInvertRangeList"
+ordinal = 530
+
+[[export]]
+name = "RtlIsDosDeviceName_U"
+ordinal = 531
+
+[[export]]
+name = "RtlIsGenericTableEmpty"
+ordinal = 532
+
+[[export]]
+name = "RtlIsNameLegalDOS8Dot3"
+ordinal = 533
+
+[[export]]
+name = "RtlIsRangeAvailable"
+ordinal = 534
+
+[[export]]
+name = "RtlIsTextUnicode"
+ordinal = 535
+
+[[export]]
+name = "RtlIsValidHandle"
+ordinal = 536
+
+[[export]]
+name = "RtlIsValidIndexHandle"
+ordinal = 537
+
+[[export]]
+name = "RtlLargeIntegerAdd"
+ordinal = 538
+
+[[export]]
+name = "RtlLargeIntegerArithmeticShift"
+ordinal = 539
+
+[[export]]
+name = "RtlLargeIntegerDivide"
+ordinal = 540
+
+[[export]]
+name = "RtlLargeIntegerNegate"
+ordinal = 541
+
+[[export]]
+name = "RtlLargeIntegerShiftLeft"
+ordinal = 542
+
+[[export]]
+name = "RtlLargeIntegerShiftRight"
+ordinal = 543
+
+[[export]]
+name = "RtlLargeIntegerSubtract"
+ordinal = 544
+
+[[export]]
+name = "RtlLargeIntegerToChar"
+ordinal = 545
+
+[[export]]
+name = "RtlLengthRequiredSid"
+ordinal = 547
+
+[[export]]
+name = "RtlLengthSecurityDescriptor"
+ordinal = 548
+
+[[export]]
+name = "RtlLengthSid"
+ordinal = 549
+
+[[export]]
+name = "RtlLocalTimeToSystemTime"
+ordinal = 550
+
+[[export]]
+name = "RtlLockHeap"
+ordinal = 551
+
+[[export]]
+name = "RtlLookupAtomInAtomTable"
+ordinal = 552
+
+[[export]]
+name = "RtlLookupElementGenericTable"
+ordinal = 553
+
+[[export]]
+name = "RtlMakeSelfRelativeSD"
+ordinal = 554
+
+[[export]]
+name = "RtlMapGenericMask"
+ordinal = 555
+
+[[export]]
+name = "RtlMergeRangeLists"
+ordinal = 556
+
+[[export]]
+name = "RtlMoveMemory"
+ordinal = 557
+
+[[export]]
+name = "RtlMultiByteToUnicodeN"
+ordinal = 558
+
+[[export]]
+name = "RtlMultiByteToUnicodeSize"
+ordinal = 559
+
+[[export]]
+name = "RtlNewInstanceSecurityObject"
+ordinal = 560
+
+[[export]]
+name = "RtlNewSecurityGrantedAccess"
+ordinal = 561
+
+[[export]]
+name = "RtlNewSecurityObject"
+ordinal = 562
+
+[[export]]
+name = "RtlNewSecurityObjectEx"
+ordinal = 563
+
+[[export]]
+name = "RtlNormalizeProcessParams"
+ordinal = 564
+
+[[export]]
+name = "RtlNumberGenericTableElements"
+ordinal = 566
+
+[[export]]
+name = "RtlNumberOfClearBits"
+ordinal = 567
+
+[[export]]
+name = "RtlNumberOfSetBits"
+ordinal = 568
+
+[[export]]
+name = "RtlOemStringToUnicodeSize"
+ordinal = 569
+
+[[export]]
+name = "RtlOemStringToUnicodeString"
+ordinal = 570
+
+[[export]]
+name = "RtlOemToUnicodeN"
+ordinal = 571
+
+[[export]]
+name = "RtlOpenCurrentUser"
+ordinal = 572
+
+[[export]]
+name = "RtlPcToFileHeader"
+ordinal = 573
+
+[[export]]
+name = "RtlPinAtomInAtomTable"
+ordinal = 574
+
+[[export]]
+name = "RtlPrefixString"
+ordinal = 575
+
+[[export]]
+name = "RtlPrefixUnicodeString"
+ordinal = 576
+
+[[export]]
+name = "RtlProtectHeap"
+ordinal = 577
+
+[[export]]
+name = "RtlQueryAtomInAtomTable"
+ordinal = 578
+
+[[export]]
+name = "RtlQueryInformationAcl"
+ordinal = 580
+
+[[export]]
+name = "RtlQueryProcessBackTraceInformation"
+ordinal = 581
+
+[[export]]
+name = "RtlQueryProcessDebugInformation"
+ordinal = 582
+
+[[export]]
+name = "RtlQueryProcessHeapInformation"
+ordinal = 583
+
+[[export]]
+name = "RtlQueryProcessLockInformation"
+ordinal = 584
+
+[[export]]
+name = "RtlQueryRegistryValues"
+ordinal = 585
+
+[[export]]
+name = "RtlQuerySecurityObject"
+ordinal = 586
+
+[[export]]
+name = "RtlQueryTagHeap"
+ordinal = 587
+
+[[export]]
+name = "RtlQueryTimeZoneInformation"
+ordinal = 588
+
+[[export]]
+name = "RtlQueueWorkItem"
+ordinal = 589
+
+[[export]]
+name = "RtlRandom"
+ordinal = 592
+
+[[export]]
+name = "RtlRealPredecessor"
+ordinal = 594
+
+[[export]]
+name = "RtlRealSuccessor"
+ordinal = 595
+
+[[export]]
+name = "RtlRegisterWait"
+ordinal = 596
+
+[[export]]
+name = "RtlReleaseResource"
+ordinal = 598
+
+[[export]]
+name = "RtlRemoteCall"
+ordinal = 599
+
+[[export]]
+name = "RtlResetRtlTranslations"
+ordinal = 600
+
+[[export]]
+name = "RtlRunDecodeUnicodeString"
+ordinal = 601
+
+[[export]]
+name = "RtlRunEncodeUnicodeString"
+ordinal = 602
+
+[[export]]
+name = "RtlSecondsSince1970ToTime"
+ordinal = 603
+
+[[export]]
+name = "RtlSecondsSince1980ToTime"
+ordinal = 604
+
+[[export]]
+name = "RtlSelfRelativeToAbsoluteSD2"
+ordinal = 605
+
+[[export]]
+name = "RtlSelfRelativeToAbsoluteSD"
+ordinal = 606
+
+[[export]]
+name = "RtlSetAllBits"
+ordinal = 607
+
+[[export]]
+name = "RtlSetAttributesSecurityDescriptor"
+ordinal = 608
+
+[[export]]
+name = "RtlSetBits"
+ordinal = 609
+
+[[export]]
+name = "RtlSetControlSecurityDescriptor"
+ordinal = 610
+
+[[export]]
+name = "RtlSetCurrentEnvironment"
+ordinal = 613
+
+[[export]]
+name = "RtlSetDaclSecurityDescriptor"
+ordinal = 614
+
+[[export]]
+name = "RtlSetGroupSecurityDescriptor"
+ordinal = 616
+
+[[export]]
+name = "RtlSetInformationAcl"
+ordinal = 617
+
+[[export]]
+name = "RtlSetIoCompletionCallback"
+ordinal = 618
+
+[[export]]
+name = "RtlSetOwnerSecurityDescriptor"
+ordinal = 619
+
+[[export]]
+name = "RtlSetSaclSecurityDescriptor"
+ordinal = 620
+
+[[export]]
+name = "RtlSetSecurityDescriptorRMControl"
+ordinal = 621
+
+[[export]]
+name = "RtlSetSecurityObject"
+ordinal = 622
+
+[[export]]
+name = "RtlSetSecurityObjectEx"
+ordinal = 623
+
+[[export]]
+name = "RtlSetThreadPoolStartFunc"
+ordinal = 624
+
+[[export]]
+name = "RtlSetTimeZoneInformation"
+ordinal = 625
+
+[[export]]
+name = "RtlSetTimer"
+ordinal = 626
+
+[[export]]
+name = "RtlSetUnicodeCallouts"
+ordinal = 627
+
+[[export]]
+name = "RtlSetUserFlagsHeap"
+ordinal = 628
+
+[[export]]
+name = "RtlSetUserValueHeap"
+ordinal = 629
+
+[[export]]
+name = "RtlShutdownLpcServer"
+ordinal = 630
+
+[[export]]
+name = "RtlSplay"
+ordinal = 632
+
+[[export]]
+name = "RtlStartRXact"
+ordinal = 633
+
+[[export]]
+name = "RtlStringFromGUID"
+ordinal = 634
+
+[[export]]
+name = "RtlSubAuthorityCountSid"
+ordinal = 635
+
+[[export]]
+name = "RtlSubAuthoritySid"
+ordinal = 636
+
+[[export]]
+name = "RtlSubtreePredecessor"
+ordinal = 637
+
+[[export]]
+name = "RtlSubtreeSuccessor"
+ordinal = 638
+
+[[export]]
+name = "RtlSystemTimeToLocalTime"
+ordinal = 639
+
+[[export]]
+name = "RtlTimeFieldsToTime"
+ordinal = 640
+
+[[export]]
+name = "RtlTimeToElapsedTimeFields"
+ordinal = 641
+
+[[export]]
+name = "RtlTimeToSecondsSince1970"
+ordinal = 642
+
+[[export]]
+name = "RtlTimeToSecondsSince1980"
+ordinal = 643
+
+[[export]]
+name = "RtlTimeToTimeFields"
+ordinal = 644
+
+[[export]]
+name = "RtlTraceDatabaseAdd"
+ordinal = 645
+
+[[export]]
+name = "RtlTraceDatabaseCreate"
+ordinal = 646
+
+[[export]]
+name = "RtlTraceDatabaseDestroy"
+ordinal = 647
+
+[[export]]
+name = "RtlTraceDatabaseEnumerate"
+ordinal = 648
+
+[[export]]
+name = "RtlTraceDatabaseFind"
+ordinal = 649
+
+[[export]]
+name = "RtlTraceDatabaseLock"
+ordinal = 650
+
+[[export]]
+name = "RtlTraceDatabaseUnlock"
+ordinal = 651
+
+[[export]]
+name = "RtlTraceDatabaseValidate"
+ordinal = 652
+
+[[export]]
+name = "RtlUnicodeStringToAnsiSize"
+ordinal = 654
+
+[[export]]
+name = "RtlUnicodeStringToAnsiString"
+ordinal = 655
+
+[[export]]
+name = "RtlUnicodeStringToCountedOemString"
+ordinal = 656
+
+[[export]]
+name = "RtlUnicodeStringToInteger"
+ordinal = 657
+
+[[export]]
+name = "RtlUnicodeStringToOemSize"
+ordinal = 658
+
+[[export]]
+name = "RtlUnicodeStringToOemString"
+ordinal = 659
+
+[[export]]
+name = "RtlUnicodeToCustomCPN"
+ordinal = 660
+
+[[export]]
+name = "RtlUnicodeToMultiByteN"
+ordinal = 661
+
+[[export]]
+name = "RtlUnicodeToMultiByteSize"
+ordinal = 662
+
+[[export]]
+name = "RtlUnicodeToOemN"
+ordinal = 663
+
+[[export]]
+name = "RtlUniform"
+ordinal = 664
+
+[[export]]
+name = "RtlUnlockHeap"
+ordinal = 665
+
+[[export]]
+name = "RtlUpcaseUnicodeChar"
+ordinal = 667
+
+[[export]]
+name = "RtlUpcaseUnicodeString"
+ordinal = 668
+
+[[export]]
+name = "RtlUpcaseUnicodeStringToAnsiString"
+ordinal = 669
+
+[[export]]
+name = "RtlUpcaseUnicodeStringToCountedOemString"
+ordinal = 670
+
+[[export]]
+name = "RtlUpcaseUnicodeStringToOemString"
+ordinal = 671
+
+[[export]]
+name = "RtlUpcaseUnicodeToCustomCPN"
+ordinal = 672
+
+[[export]]
+name = "RtlUpcaseUnicodeToMultiByteN"
+ordinal = 673
+
+[[export]]
+name = "RtlUpcaseUnicodeToOemN"
+ordinal = 674
+
+[[export]]
+name = "RtlUpdateTimer"
+ordinal = 675
+
+[[export]]
+name = "RtlUpperChar"
+ordinal = 676
+
+[[export]]
+name = "RtlUpperString"
+ordinal = 677
+
+[[export]]
+name = "RtlUsageHeap"
+ordinal = 678
+
+[[export]]
+name = "RtlValidAcl"
+ordinal = 679
+
+[[export]]
+name = "RtlValidRelativeSecurityDescriptor"
+ordinal = 680
+
+[[export]]
+name = "RtlValidSecurityDescriptor"
+ordinal = 681
+
+[[export]]
+name = "RtlValidSid"
+ordinal = 682
+
+[[export]]
+name = "RtlValidateProcessHeaps"
+ordinal = 684
+
+[[export]]
+name = "RtlVerifyVersionInfo"
+ordinal = 685
+
+[[export]]
+name = "RtlWalkFrameChain"
+ordinal = 686
+
+[[export]]
+name = "RtlWalkHeap"
+ordinal = 687
+
+[[export]]
+name = "RtlWriteRegistryValue"
+ordinal = 688
+
+[[export]]
+name = "RtlZeroHeap"
+ordinal = 689
+
+[[export]]
+name = "RtlZeroMemory"
+ordinal = 690
+
+[[export]]
+name = "RtlpNtCreateKey"
+ordinal = 691
+
+[[export]]
+name = "RtlpNtEnumerateSubKey"
+ordinal = 692
+
+[[export]]
+name = "RtlpNtMakeTemporaryKey"
+ordinal = 693
+
+[[export]]
+name = "RtlpNtOpenKey"
+ordinal = 694
+
+[[export]]
+name = "RtlpNtQueryValueKey"
+ordinal = 695
+
+[[export]]
+name = "RtlpNtSetValueKey"
+ordinal = 696
+
+[[export]]
+name = "RtlpUnWaitCriticalSection"
+ordinal = 697
+
+[[export]]
+name = "RtlpWaitForCriticalSection"
+ordinal = 698
+
+[[export]]
+name = "RtlxAnsiStringToUnicodeSize"
+ordinal = 699
+
+[[export]]
+name = "RtlxOemStringToUnicodeSize"
+ordinal = 700
+
+[[export]]
+name = "RtlxUnicodeStringToAnsiSize"
+ordinal = 701
+
+[[export]]
+name = "RtlxUnicodeStringToOemSize"
+ordinal = 702
+
+[[export]]
+name = "SaveEm87Context"
+ordinal = 703
+
+[[export]]
+name = "VerSetConditionMask"
+ordinal = 704
+
+[[export]]
+name = "ZwAcceptConnectPort"
+ordinal = 705
+
+[[export]]
+name = "ZwAccessCheck"
+ordinal = 706
+
+[[export]]
+name = "ZwAccessCheckAndAuditAlarm"
+ordinal = 707
+
+[[export]]
+name = "ZwAccessCheckByType"
+ordinal = 708
+
+[[export]]
+name = "ZwAccessCheckByTypeAndAuditAlarm"
+ordinal = 709
+
+[[export]]
+name = "ZwAccessCheckByTypeResultList"
+ordinal = 710
+
+[[export]]
+name = "ZwAccessCheckByTypeResultListAndAuditAlarm"
+ordinal = 711
+
+[[export]]
+name = "ZwAccessCheckByTypeResultListAndAuditAlarmByHandle"
+ordinal = 712
+
+[[export]]
+name = "ZwAddAtom"
+ordinal = 713
+
+[[export]]
+name = "ZwAdjustGroupsToken"
+ordinal = 714
+
+[[export]]
+name = "ZwAdjustPrivilegesToken"
+ordinal = 715
+
+[[export]]
+name = "ZwAlertResumeThread"
+ordinal = 716
+
+[[export]]
+name = "ZwAlertThread"
+ordinal = 717
+
+[[export]]
+name = "ZwAllocateLocallyUniqueId"
+ordinal = 718
+
+[[export]]
+name = "ZwAllocateUserPhysicalPages"
+ordinal = 719
+
+[[export]]
+name = "ZwAllocateUuids"
+ordinal = 720
+
+[[export]]
+name = "ZwAreMappedFilesTheSame"
+ordinal = 722
+
+[[export]]
+name = "ZwAssignProcessToJobObject"
+ordinal = 723
+
+[[export]]
+name = "ZwCallbackReturn"
+ordinal = 724
+
+[[export]]
+name = "ZwCancelDeviceWakeupRequest"
+ordinal = 725
+
+[[export]]
+name = "ZwCancelIoFile"
+ordinal = 726
+
+[[export]]
+name = "ZwCloseObjectAuditAlarm"
+ordinal = 730
+
+[[export]]
+name = "ZwCompleteConnectPort"
+ordinal = 731
+
+[[export]]
+name = "ZwConnectPort"
+ordinal = 732
+
+[[export]]
+name = "ZwCreateChannel"
+ordinal = 734
+
+[[export]]
+name = "ZwCreateDirectoryObject"
+ordinal = 735
+
+[[export]]
+name = "ZwCreateEventPair"
+ordinal = 737
+
+[[export]]
+name = "ZwCreateIoCompletion"
+ordinal = 739
+
+[[export]]
+name = "ZwCreateJobObject"
+ordinal = 740
+
+[[export]]
+name = "ZwCreateKey"
+ordinal = 741
+
+[[export]]
+name = "ZwCreateMailslotFile"
+ordinal = 742
+
+[[export]]
+name = "ZwCreateNamedPipeFile"
+ordinal = 744
+
+[[export]]
+name = "ZwCreatePagingFile"
+ordinal = 745
+
+[[export]]
+name = "ZwCreatePort"
+ordinal = 746
+
+[[export]]
+name = "ZwCreateProcess"
+ordinal = 747
+
+[[export]]
+name = "ZwCreateProfile"
+ordinal = 748
+
+[[export]]
+name = "ZwCreateSymbolicLinkObject"
+ordinal = 751
+
+[[export]]
+name = "ZwCreateToken"
+ordinal = 754
+
+[[export]]
+name = "ZwCreateWaitablePort"
+ordinal = 755
+
+[[export]]
+name = "ZwDeleteAtom"
+ordinal = 757
+
+[[export]]
+name = "ZwDeleteFile"
+ordinal = 758
+
+[[export]]
+name = "ZwDeleteKey"
+ordinal = 759
+
+[[export]]
+name = "ZwDeleteObjectAuditAlarm"
+ordinal = 760
+
+[[export]]
+name = "ZwDeleteValueKey"
+ordinal = 761
+
+[[export]]
+name = "ZwDeviceIoControlFile"
+ordinal = 762
+
+[[export]]
+name = "ZwDisplayString"
+ordinal = 763
+
+[[export]]
+name = "ZwDuplicateToken"
+ordinal = 765
+
+[[export]]
+name = "ZwEnumerateKey"
+ordinal = 766
+
+[[export]]
+name = "ZwEnumerateValueKey"
+ordinal = 767
+
+[[export]]
+name = "ZwExtendSection"
+ordinal = 768
+
+[[export]]
+name = "ZwFilterToken"
+ordinal = 769
+
+[[export]]
+name = "ZwFindAtom"
+ordinal = 770
+
+[[export]]
+name = "ZwFlushInstructionCache"
+ordinal = 772
+
+[[export]]
+name = "ZwFlushKey"
+ordinal = 773
+
+[[export]]
+name = "ZwFlushVirtualMemory"
+ordinal = 774
+
+[[export]]
+name = "ZwFlushWriteBuffer"
+ordinal = 775
+
+[[export]]
+name = "ZwFreeUserPhysicalPages"
+ordinal = 776
+
+[[export]]
+name = "ZwFsControlFile"
+ordinal = 778
+
+[[export]]
+name = "ZwGetContextThread"
+ordinal = 779
+
+[[export]]
+name = "ZwGetDevicePowerState"
+ordinal = 780
+
+[[export]]
+name = "ZwGetPlugPlayEvent"
+ordinal = 781
+
+[[export]]
+name = "ZwGetTickCount"
+ordinal = 782
+
+[[export]]
+name = "ZwGetWriteWatch"
+ordinal = 783
+
+[[export]]
+name = "ZwImpersonateAnonymousToken"
+ordinal = 784
+
+[[export]]
+name = "ZwImpersonateClientOfPort"
+ordinal = 785
+
+[[export]]
+name = "ZwImpersonateThread"
+ordinal = 786
+
+[[export]]
+name = "ZwInitializeRegistry"
+ordinal = 787
+
+[[export]]
+name = "ZwInitiatePowerAction"
+ordinal = 788
+
+[[export]]
+name = "ZwIsSystemResumeAutomatic"
+ordinal = 789
+
+[[export]]
+name = "ZwListenChannel"
+ordinal = 790
+
+[[export]]
+name = "ZwListenPort"
+ordinal = 791
+
+[[export]]
+name = "ZwLoadDriver"
+ordinal = 792
+
+[[export]]
+name = "ZwLoadKey2"
+ordinal = 793
+
+[[export]]
+name = "ZwLoadKey"
+ordinal = 794
+
+[[export]]
+name = "ZwLockFile"
+ordinal = 795
+
+[[export]]
+name = "ZwLockVirtualMemory"
+ordinal = 796
+
+[[export]]
+name = "ZwMakeTemporaryObject"
+ordinal = 797
+
+[[export]]
+name = "ZwMapUserPhysicalPages"
+ordinal = 798
+
+[[export]]
+name = "ZwMapUserPhysicalPagesScatter"
+ordinal = 799
+
+[[export]]
+name = "ZwNotifyChangeDirectoryFile"
+ordinal = 801
+
+[[export]]
+name = "ZwNotifyChangeKey"
+ordinal = 802
+
+[[export]]
+name = "ZwNotifyChangeMultipleKeys"
+ordinal = 803
+
+[[export]]
+name = "ZwOpenChannel"
+ordinal = 804
+
+[[export]]
+name = "ZwOpenEventPair"
+ordinal = 807
+
+[[export]]
+name = "ZwOpenIoCompletion"
+ordinal = 809
+
+[[export]]
+name = "ZwOpenJobObject"
+ordinal = 810
+
+[[export]]
+name = "ZwOpenKey"
+ordinal = 811
+
+[[export]]
+name = "ZwOpenObjectAuditAlarm"
+ordinal = 813
+
+[[export]]
+name = "ZwOpenProcess"
+ordinal = 814
+
+[[export]]
+name = "ZwOpenProcessToken"
+ordinal = 815
+
+[[export]]
+name = "ZwOpenSymbolicLinkObject"
+ordinal = 818
+
+[[export]]
+name = "ZwOpenThread"
+ordinal = 819
+
+[[export]]
+name = "ZwOpenThreadToken"
+ordinal = 820
+
+[[export]]
+name = "ZwPlugPlayControl"
+ordinal = 822
+
+[[export]]
+name = "ZwPowerInformation"
+ordinal = 823
+
+[[export]]
+name = "ZwPrivilegeCheck"
+ordinal = 824
+
+[[export]]
+name = "ZwPrivilegeObjectAuditAlarm"
+ordinal = 825
+
+[[export]]
+name = "ZwPrivilegedServiceAuditAlarm"
+ordinal = 826
+
+[[export]]
+name = "ZwQueryDefaultLocale"
+ordinal = 830
+
+[[export]]
+name = "ZwQueryDefaultUILanguage"
+ordinal = 831
+
+[[export]]
+name = "ZwQueryDirectoryObject"
+ordinal = 833
+
+[[export]]
+name = "ZwQueryEaFile"
+ordinal = 834
+
+[[export]]
+name = "ZwQueryEvent"
+ordinal = 835
+
+[[export]]
+name = "ZwQueryInformationAtom"
+ordinal = 837
+
+[[export]]
+name = "ZwQueryInformationJobObject"
+ordinal = 839
+
+[[export]]
+name = "ZwQueryInformationPort"
+ordinal = 840
+
+[[export]]
+name = "ZwQueryInformationToken"
+ordinal = 843
+
+[[export]]
+name = "ZwQueryInstallUILanguage"
+ordinal = 844
+
+[[export]]
+name = "ZwQueryIntervalProfile"
+ordinal = 845
+
+[[export]]
+name = "ZwQueryIoCompletion"
+ordinal = 846
+
+[[export]]
+name = "ZwQueryKey"
+ordinal = 847
+
+[[export]]
+name = "ZwQueryMultipleValueKey"
+ordinal = 848
+
+[[export]]
+name = "ZwQueryMutant"
+ordinal = 849
+
+[[export]]
+name = "ZwQueryObject"
+ordinal = 850
+
+[[export]]
+name = "ZwQueryOpenSubKeys"
+ordinal = 851
+
+[[export]]
+name = "ZwQueryQuotaInformationFile"
+ordinal = 853
+
+[[export]]
+name = "ZwQuerySection"
+ordinal = 854
+
+[[export]]
+name = "ZwQuerySecurityObject"
+ordinal = 855
+
+[[export]]
+name = "ZwQuerySemaphore"
+ordinal = 856
+
+[[export]]
+name = "ZwQuerySymbolicLinkObject"
+ordinal = 857
+
+[[export]]
+name = "ZwQuerySystemEnvironmentValue"
+ordinal = 858
+
+[[export]]
+name = "ZwQuerySystemTime"
+ordinal = 860
+
+[[export]]
+name = "ZwQueryTimer"
+ordinal = 861
+
+[[export]]
+name = "ZwQueryTimerResolution"
+ordinal = 862
+
+[[export]]
+name = "ZwQueryValueKey"
+ordinal = 863
+
+[[export]]
+name = "ZwRaiseHardError"
+ordinal = 868
+
+[[export]]
+name = "ZwReadFileScatter"
+ordinal = 870
+
+[[export]]
+name = "ZwReadRequestData"
+ordinal = 871
+
+[[export]]
+name = "ZwReadVirtualMemory"
+ordinal = 872
+
+[[export]]
+name = "ZwRegisterThreadTerminatePort"
+ordinal = 873
+
+[[export]]
+name = "ZwRemoveIoCompletion"
+ordinal = 876
+
+[[export]]
+name = "ZwReplaceKey"
+ordinal = 877
+
+[[export]]
+name = "ZwReplyPort"
+ordinal = 878
+
+[[export]]
+name = "ZwReplyWaitReceivePort"
+ordinal = 879
+
+[[export]]
+name = "ZwReplyWaitReceivePortEx"
+ordinal = 880
+
+[[export]]
+name = "ZwReplyWaitReplyPort"
+ordinal = 881
+
+[[export]]
+name = "ZwReplyWaitSendChannel"
+ordinal = 882
+
+[[export]]
+name = "ZwRequestDeviceWakeup"
+ordinal = 883
+
+[[export]]
+name = "ZwRequestPort"
+ordinal = 884
+
+[[export]]
+name = "ZwRequestWaitReplyPort"
+ordinal = 885
+
+[[export]]
+name = "ZwRequestWakeupLatency"
+ordinal = 886
+
+[[export]]
+name = "ZwResetWriteWatch"
+ordinal = 888
+
+[[export]]
+name = "ZwRestoreKey"
+ordinal = 889
+
+[[export]]
+name = "ZwSaveKey"
+ordinal = 891
+
+[[export]]
+name = "ZwSaveMergedKeys"
+ordinal = 892
+
+[[export]]
+name = "ZwSecureConnectPort"
+ordinal = 893
+
+[[export]]
+name = "ZwSendWaitReplyChannel"
+ordinal = 894
+
+[[export]]
+name = "ZwSetContextChannel"
+ordinal = 895
+
+[[export]]
+name = "ZwSetContextThread"
+ordinal = 896
+
+[[export]]
+name = "ZwSetDefaultHardErrorPort"
+ordinal = 897
+
+[[export]]
+name = "ZwSetDefaultLocale"
+ordinal = 898
+
+[[export]]
+name = "ZwSetDefaultUILanguage"
+ordinal = 899
+
+[[export]]
+name = "ZwSetEaFile"
+ordinal = 900
+
+[[export]]
+name = "ZwSetHighEventPair"
+ordinal = 902
+
+[[export]]
+name = "ZwSetHighWaitLowEventPair"
+ordinal = 903
+
+[[export]]
+name = "ZwSetInformationJobObject"
+ordinal = 905
+
+[[export]]
+name = "ZwSetInformationKey"
+ordinal = 906
+
+[[export]]
+name = "ZwSetInformationObject"
+ordinal = 907
+
+[[export]]
+name = "ZwSetInformationToken"
+ordinal = 910
+
+[[export]]
+name = "ZwSetIntervalProfile"
+ordinal = 911
+
+[[export]]
+name = "ZwSetIoCompletion"
+ordinal = 912
+
+[[export]]
+name = "ZwSetLdtEntries"
+ordinal = 913
+
+[[export]]
+name = "ZwSetLowEventPair"
+ordinal = 914
+
+[[export]]
+name = "ZwSetLowWaitHighEventPair"
+ordinal = 915
+
+[[export]]
+name = "ZwSetQuotaInformationFile"
+ordinal = 916
+
+[[export]]
+name = "ZwSetSecurityObject"
+ordinal = 917
+
+[[export]]
+name = "ZwSetSystemEnvironmentValue"
+ordinal = 918
+
+[[export]]
+name = "ZwSetSystemInformation"
+ordinal = 919
+
+[[export]]
+name = "ZwSetSystemPowerState"
+ordinal = 920
+
+[[export]]
+name = "ZwSetSystemTime"
+ordinal = 921
+
+[[export]]
+name = "ZwSetThreadExecutionState"
+ordinal = 922
+
+[[export]]
+name = "ZwSetTimerResolution"
+ordinal = 924
+
+[[export]]
+name = "ZwSetUuidSeed"
+ordinal = 925
+
+[[export]]
+name = "ZwSetValueKey"
+ordinal = 926
+
+[[export]]
+name = "ZwSetVolumeInformationFile"
+ordinal = 927
+
+[[export]]
+name = "ZwShutdownSystem"
+ordinal = 928
+
+[[export]]
+name = "ZwStartProfile"
+ordinal = 930
+
+[[export]]
+name = "ZwStopProfile"
+ordinal = 931
+
+[[export]]
+name = "ZwSystemDebugControl"
+ordinal = 933
+
+[[export]]
+name = "ZwTerminateJobObject"
+ordinal = 934
+
+[[export]]
+name = "ZwTestAlert"
+ordinal = 937
+
+[[export]]
+name = "ZwUnloadDriver"
+ordinal = 938
+
+[[export]]
+name = "ZwUnloadKey"
+ordinal = 939
+
+[[export]]
+name = "ZwUnlockFile"
+ordinal = 940
+
+[[export]]
+name = "ZwUnlockVirtualMemory"
+ordinal = 941
+
+[[export]]
+name = "ZwVdmControl"
+ordinal = 943
+
+[[export]]
+name = "ZwWaitHighEventPair"
+ordinal = 946
+
+[[export]]
+name = "ZwWaitLowEventPair"
+ordinal = 947
+
+[[export]]
+name = "ZwWriteFileGather"
+ordinal = 949
+
+[[export]]
+name = "ZwWriteRequestData"
+ordinal = 950
+
+[[export]]
+name = "ZwWriteVirtualMemory"
+ordinal = 951
+
+[[export]]
+name = "_CIpow"
+ordinal = 953
+
+[[export]]
+name = "__eCommonExceptions"
+ordinal = 954
+
+[[export]]
+name = "__eEmulatorInit"
+ordinal = 955
+
+[[export]]
+name = "__eF2XM1"
+ordinal = 956
+
+[[export]]
+name = "__eFABS"
+ordinal = 957
+
+[[export]]
+name = "__eFADD32"
+ordinal = 958
+
+[[export]]
+name = "__eFADD64"
+ordinal = 959
+
+[[export]]
+name = "__eFADDPreg"
+ordinal = 960
+
+[[export]]
+name = "__eFADDreg"
+ordinal = 961
+
+[[export]]
+name = "__eFADDtop"
+ordinal = 962
+
+[[export]]
+name = "__eFCHS"
+ordinal = 963
+
+[[export]]
+name = "__eFCOM"
+ordinal = 964
+
+[[export]]
+name = "__eFCOM32"
+ordinal = 965
+
+[[export]]
+name = "__eFCOM64"
+ordinal = 966
+
+[[export]]
+name = "__eFCOMP"
+ordinal = 967
+
+[[export]]
+name = "__eFCOMP32"
+ordinal = 968
+
+[[export]]
+name = "__eFCOMP64"
+ordinal = 969
+
+[[export]]
+name = "__eFCOMPP"
+ordinal = 970
+
+[[export]]
+name = "__eFCOS"
+ordinal = 971
+
+[[export]]
+name = "__eFDECSTP"
+ordinal = 972
+
+[[export]]
+name = "__eFDIV32"
+ordinal = 973
+
+[[export]]
+name = "__eFDIV64"
+ordinal = 974
+
+[[export]]
+name = "__eFDIVPreg"
+ordinal = 975
+
+[[export]]
+name = "__eFDIVR32"
+ordinal = 976
+
+[[export]]
+name = "__eFDIVR64"
+ordinal = 977
+
+[[export]]
+name = "__eFDIVRPreg"
+ordinal = 978
+
+[[export]]
+name = "__eFDIVRreg"
+ordinal = 979
+
+[[export]]
+name = "__eFDIVRtop"
+ordinal = 980
+
+[[export]]
+name = "__eFDIVreg"
+ordinal = 981
+
+[[export]]
+name = "__eFDIVtop"
+ordinal = 982
+
+[[export]]
+name = "__eFFREE"
+ordinal = 983
+
+[[export]]
+name = "__eFIADD16"
+ordinal = 984
+
+[[export]]
+name = "__eFIADD32"
+ordinal = 985
+
+[[export]]
+name = "__eFICOM16"
+ordinal = 986
+
+[[export]]
+name = "__eFICOM32"
+ordinal = 987
+
+[[export]]
+name = "__eFICOMP16"
+ordinal = 988
+
+[[export]]
+name = "__eFICOMP32"
+ordinal = 989
+
+[[export]]
+name = "__eFIDIV16"
+ordinal = 990
+
+[[export]]
+name = "__eFIDIV32"
+ordinal = 991
+
+[[export]]
+name = "__eFIDIVR16"
+ordinal = 992
+
+[[export]]
+name = "__eFIDIVR32"
+ordinal = 993
+
+[[export]]
+name = "__eFILD16"
+ordinal = 994
+
+[[export]]
+name = "__eFILD32"
+ordinal = 995
+
+[[export]]
+name = "__eFILD64"
+ordinal = 996
+
+[[export]]
+name = "__eFIMUL16"
+ordinal = 997
+
+[[export]]
+name = "__eFIMUL32"
+ordinal = 998
+
+[[export]]
+name = "__eFINCSTP"
+ordinal = 999
+
+[[export]]
+name = "__eFINIT"
+ordinal = 1000
+
+[[export]]
+name = "__eFIST16"
+ordinal = 1001
+
+[[export]]
+name = "__eFIST32"
+ordinal = 1002
+
+[[export]]
+name = "__eFISTP16"
+ordinal = 1003
+
+[[export]]
+name = "__eFISTP32"
+ordinal = 1004
+
+[[export]]
+name = "__eFISTP64"
+ordinal = 1005
+
+[[export]]
+name = "__eFISUB16"
+ordinal = 1006
+
+[[export]]
+name = "__eFISUB32"
+ordinal = 1007
+
+[[export]]
+name = "__eFISUBR16"
+ordinal = 1008
+
+[[export]]
+name = "__eFISUBR32"
+ordinal = 1009
+
+[[export]]
+name = "__eFLD1"
+ordinal = 1010
+
+[[export]]
+name = "__eFLD32"
+ordinal = 1011
+
+[[export]]
+name = "__eFLD64"
+ordinal = 1012
+
+[[export]]
+name = "__eFLD80"
+ordinal = 1013
+
+[[export]]
+name = "__eFLDCW"
+ordinal = 1014
+
+[[export]]
+name = "__eFLDENV"
+ordinal = 1015
+
+[[export]]
+name = "__eFLDL2E"
+ordinal = 1016
+
+[[export]]
+name = "__eFLDLN2"
+ordinal = 1017
+
+[[export]]
+name = "__eFLDPI"
+ordinal = 1018
+
+[[export]]
+name = "__eFLDZ"
+ordinal = 1019
+
+[[export]]
+name = "__eFMUL32"
+ordinal = 1020
+
+[[export]]
+name = "__eFMUL64"
+ordinal = 1021
+
+[[export]]
+name = "__eFMULPreg"
+ordinal = 1022
+
+[[export]]
+name = "__eFMULreg"
+ordinal = 1023
+
+[[export]]
+name = "__eFMULtop"
+ordinal = 1024
+
+[[export]]
+name = "__eFPATAN"
+ordinal = 1025
+
+[[export]]
+name = "__eFPREM"
+ordinal = 1026
+
+[[export]]
+name = "__eFPREM1"
+ordinal = 1027
+
+[[export]]
+name = "__eFPTAN"
+ordinal = 1028
+
+[[export]]
+name = "__eFRNDINT"
+ordinal = 1029
+
+[[export]]
+name = "__eFRSTOR"
+ordinal = 1030
+
+[[export]]
+name = "__eFSAVE"
+ordinal = 1031
+
+[[export]]
+name = "__eFSCALE"
+ordinal = 1032
+
+[[export]]
+name = "__eFSIN"
+ordinal = 1033
+
+[[export]]
+name = "__eFSQRT"
+ordinal = 1034
+
+[[export]]
+name = "__eFST"
+ordinal = 1035
+
+[[export]]
+name = "__eFST32"
+ordinal = 1036
+
+[[export]]
+name = "__eFST64"
+ordinal = 1037
+
+[[export]]
+name = "__eFSTCW"
+ordinal = 1038
+
+[[export]]
+name = "__eFSTENV"
+ordinal = 1039
+
+[[export]]
+name = "__eFSTP"
+ordinal = 1040
+
+[[export]]
+name = "__eFSTP32"
+ordinal = 1041
+
+[[export]]
+name = "__eFSTP64"
+ordinal = 1042
+
+[[export]]
+name = "__eFSTP80"
+ordinal = 1043
+
+[[export]]
+name = "__eFSTSW"
+ordinal = 1044
+
+[[export]]
+name = "__eFSUB32"
+ordinal = 1045
+
+[[export]]
+name = "__eFSUB64"
+ordinal = 1046
+
+[[export]]
+name = "__eFSUBPreg"
+ordinal = 1047
+
+[[export]]
+name = "__eFSUBR32"
+ordinal = 1048
+
+[[export]]
+name = "__eFSUBR64"
+ordinal = 1049
+
+[[export]]
+name = "__eFSUBRPreg"
+ordinal = 1050
+
+[[export]]
+name = "__eFSUBRreg"
+ordinal = 1051
+
+[[export]]
+name = "__eFSUBRtop"
+ordinal = 1052
+
+[[export]]
+name = "__eFSUBreg"
+ordinal = 1053
+
+[[export]]
+name = "__eFSUBtop"
+ordinal = 1054
+
+[[export]]
+name = "__eFTST"
+ordinal = 1055
+
+[[export]]
+name = "__eFUCOM"
+ordinal = 1056
+
+[[export]]
+name = "__eFUCOMP"
+ordinal = 1057
+
+[[export]]
+name = "__eFUCOMPP"
+ordinal = 1058
+
+[[export]]
+name = "__eFXAM"
+ordinal = 1059
+
+[[export]]
+name = "__eFXCH"
+ordinal = 1060
+
+[[export]]
+name = "__eFXTRACT"
+ordinal = 1061
+
+[[export]]
+name = "__eFYL2X"
+ordinal = 1062
+
+[[export]]
+name = "__eFYL2XP1"
+ordinal = 1063
+
+[[export]]
+name = "__eGetStatusWord"
+ordinal = 1064
+
+[[export]]
+name = "__isascii"
+ordinal = 1065
+
+[[export]]
+name = "__iscsym"
+ordinal = 1066
+
+[[export]]
+name = "__iscsymf"
+ordinal = 1067
+
+[[export]]
+name = "__toascii"
+ordinal = 1068
+
+[[export]]
+name = "_alldiv"
+ordinal = 1069
+
+[[export]]
+name = "_allmul"
+ordinal = 1070
+
+[[export]]
+name = "_alloca_probe"
+ordinal = 1071
+
+[[export]]
+name = "_allrem"
+ordinal = 1072
+
+[[export]]
+name = "_allshl"
+ordinal = 1073
+
+[[export]]
+name = "_allshr"
+ordinal = 1074
+
+[[export]]
+name = "_atoi64"
+ordinal = 1075
+
+[[export]]
+name = "_aulldiv"
+ordinal = 1076
+
+[[export]]
+name = "_aullrem"
+ordinal = 1077
+
+[[export]]
+name = "_aullshr"
+ordinal = 1078
+
+[[export]]
+name = "_chkstk"
+ordinal = 1079
+
+[[export]]
+name = "_fltused"
+ordinal = 1080
+data = true
+
+[[export]]
+name = "_ftol"
+ordinal = 1081
+
+[[export]]
+name = "_i64toa"
+ordinal = 1082
+
+[[export]]
+name = "_i64tow"
+ordinal = 1083
+
+[[export]]
+name = "_itoa"
+ordinal = 1084
+
+[[export]]
+name = "_itow"
+ordinal = 1085
+
+[[export]]
+name = "_ltoa"
+ordinal = 1086
+
+[[export]]
+name = "_ltow"
+ordinal = 1087
+
+[[export]]
+name = "_memccpy"
+ordinal = 1088
+
+[[export]]
+name = "_memicmp"
+ordinal = 1089
+
+[[export]]
+name = "_snprintf"
+ordinal = 1090
+
+[[export]]
+name = "_snwprintf"
+ordinal = 1091
+
+[[export]]
+name = "_splitpath"
+ordinal = 1092
+
+[[export]]
+name = "_strcmpi"
+ordinal = 1093
+
+[[export]]
+name = "_stricmp"
+ordinal = 1094
+
+[[export]]
+name = "_strlwr"
+ordinal = 1095
+
+[[export]]
+name = "_strnicmp"
+ordinal = 1096
+
+[[export]]
+name = "_strupr"
+ordinal = 1097
+
+[[export]]
+name = "_tolower"
+ordinal = 1098
+
+[[export]]
+name = "_toupper"
+ordinal = 1099
+
+[[export]]
+name = "_ui64toa"
+ordinal = 1100
+
+[[export]]
+name = "_ultoa"
+ordinal = 1101
+
+[[export]]
+name = "_ultow"
+ordinal = 1102
+
+[[export]]
+name = "_vsnprintf"
+ordinal = 1103
+
+[[export]]
+name = "_wcsicmp"
+ordinal = 1104
+
+[[export]]
+name = "_wcslwr"
+ordinal = 1105
+
+[[export]]
+name = "_wcsnicmp"
+ordinal = 1106
+
+[[export]]
+name = "_wcsupr"
+ordinal = 1107
+
+[[export]]
+name = "_wtoi"
+ordinal = 1108
+
+[[export]]
+name = "_wtoi64"
+ordinal = 1109
+
+[[export]]
+name = "_wtol"
+ordinal = 1110
+
+[[export]]
+name = "abs"
+ordinal = 1111
+
+[[export]]
+name = "atan"
+ordinal = 1112
+
+[[export]]
+name = "atoi"
+ordinal = 1113
+
+[[export]]
+name = "atol"
+ordinal = 1114
+
+[[export]]
+name = "ceil"
+ordinal = 1115
+
+[[export]]
+name = "cos"
+ordinal = 1116
+
+[[export]]
+name = "fabs"
+ordinal = 1117
+
+[[export]]
+name = "floor"
+ordinal = 1118
+
+[[export]]
+name = "isalnum"
+ordinal = 1119
+
+[[export]]
+name = "isalpha"
+ordinal = 1120
+
+[[export]]
+name = "iscntrl"
+ordinal = 1121
+
+[[export]]
+name = "isdigit"
+ordinal = 1122
+
+[[export]]
+name = "isgraph"
+ordinal = 1123
+
+[[export]]
+name = "islower"
+ordinal = 1124
+
+[[export]]
+name = "isprint"
+ordinal = 1125
+
+[[export]]
+name = "ispunct"
+ordinal = 1126
+
+[[export]]
+name = "isspace"
+ordinal = 1127
+
+[[export]]
+name = "isupper"
+ordinal = 1128
+
+[[export]]
+name = "iswalpha"
+ordinal = 1129
+
+[[export]]
+name = "iswctype"
+ordinal = 1130
+
+[[export]]
+name = "iswdigit"
+ordinal = 1131
+
+[[export]]
+name = "iswlower"
+ordinal = 1132
+
+[[export]]
+name = "iswspace"
+ordinal = 1133
+
+[[export]]
+name = "iswxdigit"
+ordinal = 1134
+
+[[export]]
+name = "isxdigit"
+ordinal = 1135
+
+[[export]]
+name = "labs"
+ordinal = 1136
+
+[[export]]
+name = "log"
+ordinal = 1137
+
+[[export]]
+name = "mbstowcs"
+ordinal = 1138
+
+[[export]]
+name = "memchr"
+ordinal = 1139
+
+[[export]]
+name = "memcmp"
+ordinal = 1140
+
+[[export]]
+name = "memcpy"
+ordinal = 1141
+
+[[export]]
+name = "memmove"
+ordinal = 1142
+
+[[export]]
+name = "memset"
+ordinal = 1143
+
+[[export]]
+name = "pow"
+ordinal = 1144
+
+[[export]]
+name = "qsort"
+ordinal = 1145
+
+[[export]]
+name = "sin"
+ordinal = 1146
+
+[[export]]
+name = "sprintf"
+ordinal = 1147
+
+[[export]]
+name = "sqrt"
+ordinal = 1148
+
+[[export]]
+name = "sscanf"
+ordinal = 1149
+
+[[export]]
+name = "strcat"
+ordinal = 1150
+
+[[export]]
+name = "strchr"
+ordinal = 1151
+
+[[export]]
+name = "strcmp"
+ordinal = 1152
+
+[[export]]
+name = "strcpy"
+ordinal = 1153
+
+[[export]]
+name = "strcspn"
+ordinal = 1154
+
+[[export]]
+name = "strlen"
+ordinal = 1155
+
+[[export]]
+name = "strncat"
+ordinal = 1156
+
+[[export]]
+name = "strncmp"
+ordinal = 1157
+
+[[export]]
+name = "strncpy"
+ordinal = 1158
+
+[[export]]
+name = "strpbrk"
+ordinal = 1159
+
+[[export]]
+name = "strrchr"
+ordinal = 1160
+
+[[export]]
+name = "strspn"
+ordinal = 1161
+
+[[export]]
+name = "strstr"
+ordinal = 1162
+
+[[export]]
+name = "strtol"
+ordinal = 1163
+
+[[export]]
+name = "strtoul"
+ordinal = 1164
+
+[[export]]
+name = "swprintf"
+ordinal = 1165
+
+[[export]]
+name = "tan"
+ordinal = 1166
+
+[[export]]
+name = "tolower"
+ordinal = 1167
+
+[[export]]
+name = "toupper"
+ordinal = 1168
+
+[[export]]
+name = "towlower"
+ordinal = 1169
+
+[[export]]
+name = "towupper"
+ordinal = 1170
+
+[[export]]
+name = "vsprintf"
+ordinal = 1171
+
+[[export]]
+name = "wcscat"
+ordinal = 1172
+
+[[export]]
+name = "wcschr"
+ordinal = 1173
+
+[[export]]
+name = "wcscmp"
+ordinal = 1174
+
+[[export]]
+name = "wcscpy"
+ordinal = 1175
+
+[[export]]
+name = "wcscspn"
+ordinal = 1176
+
+[[export]]
+name = "wcslen"
+ordinal = 1177
+
+[[export]]
+name = "wcsncat"
+ordinal = 1178
+
+[[export]]
+name = "wcsncmp"
+ordinal = 1179
+
+[[export]]
+name = "wcsncpy"
+ordinal = 1180
+
+[[export]]
+name = "wcspbrk"
+ordinal = 1181
+
+[[export]]
+name = "wcsrchr"
+ordinal = 1182
+
+[[export]]
+name = "wcsspn"
+ordinal = 1183
+
+[[export]]
+name = "wcsstr"
+ordinal = 1184
+
+[[export]]
+name = "wcstol"
+ordinal = 1185
+
+[[export]]
+name = "wcstombs"
+ordinal = 1186
+
+[[export]]
+name = "wcstoul"
+ordinal = 1187

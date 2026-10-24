@@ -24,6 +24,16 @@ _f2k_export_HeapDestroy:
     ret 4
 
 .p2align 4
+.globl _f2k_export_HeapValidate
+_f2k_export_HeapValidate:
+    push dword ptr [esp+12]
+    push dword ptr [esp+12]
+    push dword ptr [esp+12]
+    call _f2k_k32_heap_validate
+    add esp, 12
+    ret 12
+
+.p2align 4
 .globl _f2k_export_LocalAlloc
 _f2k_export_LocalAlloc:
     push dword ptr [esp+8]

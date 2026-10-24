@@ -1,0 +1,1448 @@
+# OLEAUT32.dll's exports: the one source every list of them derives from (the format is
+# kernel32's, documented in userland/kernel32/exports.toml).
+#
+# None is implemented yet: each record is catalogued from OLEAUT32.dll 2.40.4522.0's export table
+# (scripts/catalogue_exports.py): its name and ordinal. Implementing one gives it its group,
+# prototype and implementation.
+
+# --- not implemented yet: the rest of OLEAUT32.dll 2.40.4522.0's export table, by ordinal --------
+
+[[export]]
+name = "DllGetClassObject"
+ordinal = 1
+
+[[export]]
+name = "SysAllocString"
+ordinal = 2
+
+[[export]]
+name = "SysReAllocString"
+ordinal = 3
+
+[[export]]
+name = "SysAllocStringLen"
+ordinal = 4
+
+[[export]]
+name = "SysReAllocStringLen"
+ordinal = 5
+
+[[export]]
+name = "SysFreeString"
+ordinal = 6
+
+[[export]]
+name = "SysStringLen"
+ordinal = 7
+
+[[export]]
+name = "VariantInit"
+ordinal = 8
+
+[[export]]
+name = "VariantClear"
+ordinal = 9
+
+[[export]]
+name = "VariantCopy"
+ordinal = 10
+
+[[export]]
+name = "VariantCopyInd"
+ordinal = 11
+
+[[export]]
+name = "VariantChangeType"
+ordinal = 12
+
+[[export]]
+name = "VariantTimeToDosDateTime"
+ordinal = 13
+
+[[export]]
+name = "DosDateTimeToVariantTime"
+ordinal = 14
+
+[[export]]
+name = "SafeArrayCreate"
+ordinal = 15
+
+[[export]]
+name = "SafeArrayDestroy"
+ordinal = 16
+
+[[export]]
+name = "SafeArrayGetDim"
+ordinal = 17
+
+[[export]]
+name = "SafeArrayGetElemsize"
+ordinal = 18
+
+[[export]]
+name = "SafeArrayGetUBound"
+ordinal = 19
+
+[[export]]
+name = "SafeArrayGetLBound"
+ordinal = 20
+
+[[export]]
+name = "SafeArrayLock"
+ordinal = 21
+
+[[export]]
+name = "SafeArrayUnlock"
+ordinal = 22
+
+[[export]]
+name = "SafeArrayAccessData"
+ordinal = 23
+
+[[export]]
+name = "SafeArrayUnaccessData"
+ordinal = 24
+
+[[export]]
+name = "SafeArrayGetElement"
+ordinal = 25
+
+[[export]]
+name = "SafeArrayPutElement"
+ordinal = 26
+
+[[export]]
+name = "SafeArrayCopy"
+ordinal = 27
+
+[[export]]
+name = "DispGetParam"
+ordinal = 28
+
+[[export]]
+name = "DispGetIDsOfNames"
+ordinal = 29
+
+[[export]]
+name = "DispInvoke"
+ordinal = 30
+
+[[export]]
+name = "CreateDispTypeInfo"
+ordinal = 31
+
+[[export]]
+name = "CreateStdDispatch"
+ordinal = 32
+
+[[export]]
+name = "RegisterActiveObject"
+ordinal = 33
+
+[[export]]
+name = "RevokeActiveObject"
+ordinal = 34
+
+[[export]]
+name = "GetActiveObject"
+ordinal = 35
+
+[[export]]
+name = "SafeArrayAllocDescriptor"
+ordinal = 36
+
+[[export]]
+name = "SafeArrayAllocData"
+ordinal = 37
+
+[[export]]
+name = "SafeArrayDestroyDescriptor"
+ordinal = 38
+
+[[export]]
+name = "SafeArrayDestroyData"
+ordinal = 39
+
+[[export]]
+name = "SafeArrayRedim"
+ordinal = 40
+
+[[export]]
+name = "SafeArrayAllocDescriptorEx"
+ordinal = 41
+
+[[export]]
+name = "SafeArrayCreateEx"
+ordinal = 42
+
+[[export]]
+name = "SafeArrayCreateVectorEx"
+ordinal = 43
+
+[[export]]
+name = "SafeArraySetRecordInfo"
+ordinal = 44
+
+[[export]]
+name = "SafeArrayGetRecordInfo"
+ordinal = 45
+
+[[export]]
+name = "VarParseNumFromStr"
+ordinal = 46
+
+[[export]]
+name = "VarNumFromParseNum"
+ordinal = 47
+
+[[export]]
+name = "VarI2FromUI1"
+ordinal = 48
+
+[[export]]
+name = "VarI2FromI4"
+ordinal = 49
+
+[[export]]
+name = "VarI2FromR4"
+ordinal = 50
+
+[[export]]
+name = "VarI2FromR8"
+ordinal = 51
+
+[[export]]
+name = "VarI2FromCy"
+ordinal = 52
+
+[[export]]
+name = "VarI2FromDate"
+ordinal = 53
+
+[[export]]
+name = "VarI2FromStr"
+ordinal = 54
+
+[[export]]
+name = "VarI2FromDisp"
+ordinal = 55
+
+[[export]]
+name = "VarI2FromBool"
+ordinal = 56
+
+[[export]]
+name = "SafeArraySetIID"
+ordinal = 57
+
+[[export]]
+name = "VarI4FromUI1"
+ordinal = 58
+
+[[export]]
+name = "VarI4FromI2"
+ordinal = 59
+
+[[export]]
+name = "VarI4FromR4"
+ordinal = 60
+
+[[export]]
+name = "VarI4FromR8"
+ordinal = 61
+
+[[export]]
+name = "VarI4FromCy"
+ordinal = 62
+
+[[export]]
+name = "VarI4FromDate"
+ordinal = 63
+
+[[export]]
+name = "VarI4FromStr"
+ordinal = 64
+
+[[export]]
+name = "VarI4FromDisp"
+ordinal = 65
+
+[[export]]
+name = "VarI4FromBool"
+ordinal = 66
+
+[[export]]
+name = "SafeArrayGetIID"
+ordinal = 67
+
+[[export]]
+name = "VarR4FromUI1"
+ordinal = 68
+
+[[export]]
+name = "VarR4FromI2"
+ordinal = 69
+
+[[export]]
+name = "VarR4FromI4"
+ordinal = 70
+
+[[export]]
+name = "VarR4FromR8"
+ordinal = 71
+
+[[export]]
+name = "VarR4FromCy"
+ordinal = 72
+
+[[export]]
+name = "VarR4FromDate"
+ordinal = 73
+
+[[export]]
+name = "VarR4FromStr"
+ordinal = 74
+
+[[export]]
+name = "VarR4FromDisp"
+ordinal = 75
+
+[[export]]
+name = "VarR4FromBool"
+ordinal = 76
+
+[[export]]
+name = "SafeArrayGetVartype"
+ordinal = 77
+
+[[export]]
+name = "VarR8FromUI1"
+ordinal = 78
+
+[[export]]
+name = "VarR8FromI2"
+ordinal = 79
+
+[[export]]
+name = "VarR8FromI4"
+ordinal = 80
+
+[[export]]
+name = "VarR8FromR4"
+ordinal = 81
+
+[[export]]
+name = "VarR8FromCy"
+ordinal = 82
+
+[[export]]
+name = "VarR8FromDate"
+ordinal = 83
+
+[[export]]
+name = "VarR8FromStr"
+ordinal = 84
+
+[[export]]
+name = "VarR8FromDisp"
+ordinal = 85
+
+[[export]]
+name = "VarR8FromBool"
+ordinal = 86
+
+[[export]]
+name = "VarFormat"
+ordinal = 87
+
+[[export]]
+name = "VarDateFromUI1"
+ordinal = 88
+
+[[export]]
+name = "VarDateFromI2"
+ordinal = 89
+
+[[export]]
+name = "VarDateFromI4"
+ordinal = 90
+
+[[export]]
+name = "VarDateFromR4"
+ordinal = 91
+
+[[export]]
+name = "VarDateFromR8"
+ordinal = 92
+
+[[export]]
+name = "VarDateFromCy"
+ordinal = 93
+
+[[export]]
+name = "VarDateFromStr"
+ordinal = 94
+
+[[export]]
+name = "VarDateFromDisp"
+ordinal = 95
+
+[[export]]
+name = "VarDateFromBool"
+ordinal = 96
+
+[[export]]
+name = "VarFormatDateTime"
+ordinal = 97
+
+[[export]]
+name = "VarCyFromUI1"
+ordinal = 98
+
+[[export]]
+name = "VarCyFromI2"
+ordinal = 99
+
+[[export]]
+name = "VarCyFromI4"
+ordinal = 100
+
+[[export]]
+name = "VarCyFromR4"
+ordinal = 101
+
+[[export]]
+name = "VarCyFromR8"
+ordinal = 102
+
+[[export]]
+name = "VarCyFromDate"
+ordinal = 103
+
+[[export]]
+name = "VarCyFromStr"
+ordinal = 104
+
+[[export]]
+name = "VarCyFromDisp"
+ordinal = 105
+
+[[export]]
+name = "VarCyFromBool"
+ordinal = 106
+
+[[export]]
+name = "VarFormatNumber"
+ordinal = 107
+
+[[export]]
+name = "VarBstrFromUI1"
+ordinal = 108
+
+[[export]]
+name = "VarBstrFromI2"
+ordinal = 109
+
+[[export]]
+name = "VarBstrFromI4"
+ordinal = 110
+
+[[export]]
+name = "VarBstrFromR4"
+ordinal = 111
+
+[[export]]
+name = "VarBstrFromR8"
+ordinal = 112
+
+[[export]]
+name = "VarBstrFromCy"
+ordinal = 113
+
+[[export]]
+name = "VarBstrFromDate"
+ordinal = 114
+
+[[export]]
+name = "VarBstrFromDisp"
+ordinal = 115
+
+[[export]]
+name = "VarBstrFromBool"
+ordinal = 116
+
+[[export]]
+name = "VarFormatPercent"
+ordinal = 117
+
+[[export]]
+name = "VarBoolFromUI1"
+ordinal = 118
+
+[[export]]
+name = "VarBoolFromI2"
+ordinal = 119
+
+[[export]]
+name = "VarBoolFromI4"
+ordinal = 120
+
+[[export]]
+name = "VarBoolFromR4"
+ordinal = 121
+
+[[export]]
+name = "VarBoolFromR8"
+ordinal = 122
+
+[[export]]
+name = "VarBoolFromDate"
+ordinal = 123
+
+[[export]]
+name = "VarBoolFromCy"
+ordinal = 124
+
+[[export]]
+name = "VarBoolFromStr"
+ordinal = 125
+
+[[export]]
+name = "VarBoolFromDisp"
+ordinal = 126
+
+[[export]]
+name = "VarFormatCurrency"
+ordinal = 127
+
+[[export]]
+name = "VarWeekdayName"
+ordinal = 128
+
+[[export]]
+name = "VarMonthName"
+ordinal = 129
+
+[[export]]
+name = "VarUI1FromI2"
+ordinal = 130
+
+[[export]]
+name = "VarUI1FromI4"
+ordinal = 131
+
+[[export]]
+name = "VarUI1FromR4"
+ordinal = 132
+
+[[export]]
+name = "VarUI1FromR8"
+ordinal = 133
+
+[[export]]
+name = "VarUI1FromCy"
+ordinal = 134
+
+[[export]]
+name = "VarUI1FromDate"
+ordinal = 135
+
+[[export]]
+name = "VarUI1FromStr"
+ordinal = 136
+
+[[export]]
+name = "VarUI1FromDisp"
+ordinal = 137
+
+[[export]]
+name = "VarUI1FromBool"
+ordinal = 138
+
+[[export]]
+name = "VarFormatFromTokens"
+ordinal = 139
+
+[[export]]
+name = "VarTokenizeFormatString"
+ordinal = 140
+
+[[export]]
+name = "VarAdd"
+ordinal = 141
+
+[[export]]
+name = "VarAnd"
+ordinal = 142
+
+[[export]]
+name = "VarDiv"
+ordinal = 143
+
+[[export]]
+name = "OACreateTypeLib2"
+ordinal = 144
+
+[[export]]
+name = "DispCallFunc"
+ordinal = 146
+
+[[export]]
+name = "VariantChangeTypeEx"
+ordinal = 147
+
+[[export]]
+name = "SafeArrayPtrOfIndex"
+ordinal = 148
+
+[[export]]
+name = "SysStringByteLen"
+ordinal = 149
+
+[[export]]
+name = "SysAllocStringByteLen"
+ordinal = 150
+
+[[export]]
+name = "VarEqv"
+ordinal = 152
+
+[[export]]
+name = "VarIdiv"
+ordinal = 153
+
+[[export]]
+name = "VarImp"
+ordinal = 154
+
+[[export]]
+name = "VarMod"
+ordinal = 155
+
+[[export]]
+name = "VarMul"
+ordinal = 156
+
+[[export]]
+name = "VarOr"
+ordinal = 157
+
+[[export]]
+name = "VarPow"
+ordinal = 158
+
+[[export]]
+name = "VarSub"
+ordinal = 159
+
+[[export]]
+name = "CreateTypeLib"
+ordinal = 160
+
+[[export]]
+name = "LoadTypeLib"
+ordinal = 161
+
+[[export]]
+name = "LoadRegTypeLib"
+ordinal = 162
+
+[[export]]
+name = "RegisterTypeLib"
+ordinal = 163
+
+[[export]]
+name = "QueryPathOfRegTypeLib"
+ordinal = 164
+
+[[export]]
+name = "LHashValOfNameSys"
+ordinal = 165
+
+[[export]]
+name = "LHashValOfNameSysA"
+ordinal = 166
+
+[[export]]
+name = "VarXor"
+ordinal = 167
+
+[[export]]
+name = "VarAbs"
+ordinal = 168
+
+[[export]]
+name = "VarFix"
+ordinal = 169
+
+[[export]]
+name = "OaBuildVersion"
+ordinal = 170
+
+[[export]]
+name = "ClearCustData"
+ordinal = 171
+
+[[export]]
+name = "VarInt"
+ordinal = 172
+
+[[export]]
+name = "VarNeg"
+ordinal = 173
+
+[[export]]
+name = "VarNot"
+ordinal = 174
+
+[[export]]
+name = "VarRound"
+ordinal = 175
+
+[[export]]
+name = "VarCmp"
+ordinal = 176
+
+[[export]]
+name = "VarDecAdd"
+ordinal = 177
+
+[[export]]
+name = "VarDecDiv"
+ordinal = 178
+
+[[export]]
+name = "VarDecMul"
+ordinal = 179
+
+[[export]]
+name = "CreateTypeLib2"
+ordinal = 180
+
+[[export]]
+name = "VarDecSub"
+ordinal = 181
+
+[[export]]
+name = "VarDecAbs"
+ordinal = 182
+
+[[export]]
+name = "LoadTypeLibEx"
+ordinal = 183
+
+[[export]]
+name = "SystemTimeToVariantTime"
+ordinal = 184
+
+[[export]]
+name = "VariantTimeToSystemTime"
+ordinal = 185
+
+[[export]]
+name = "UnRegisterTypeLib"
+ordinal = 186
+
+[[export]]
+name = "VarDecFix"
+ordinal = 187
+
+[[export]]
+name = "VarDecInt"
+ordinal = 188
+
+[[export]]
+name = "VarDecNeg"
+ordinal = 189
+
+[[export]]
+name = "VarDecFromUI1"
+ordinal = 190
+
+[[export]]
+name = "VarDecFromI2"
+ordinal = 191
+
+[[export]]
+name = "VarDecFromI4"
+ordinal = 192
+
+[[export]]
+name = "VarDecFromR4"
+ordinal = 193
+
+[[export]]
+name = "VarDecFromR8"
+ordinal = 194
+
+[[export]]
+name = "VarDecFromDate"
+ordinal = 195
+
+[[export]]
+name = "VarDecFromCy"
+ordinal = 196
+
+[[export]]
+name = "VarDecFromStr"
+ordinal = 197
+
+[[export]]
+name = "VarDecFromDisp"
+ordinal = 198
+
+[[export]]
+name = "VarDecFromBool"
+ordinal = 199
+
+[[export]]
+name = "GetErrorInfo"
+ordinal = 200
+
+[[export]]
+name = "SetErrorInfo"
+ordinal = 201
+
+[[export]]
+name = "CreateErrorInfo"
+ordinal = 202
+
+[[export]]
+name = "VarDecRound"
+ordinal = 203
+
+[[export]]
+name = "VarDecCmp"
+ordinal = 204
+
+[[export]]
+name = "VarI2FromI1"
+ordinal = 205
+
+[[export]]
+name = "VarI2FromUI2"
+ordinal = 206
+
+[[export]]
+name = "VarI2FromUI4"
+ordinal = 207
+
+[[export]]
+name = "VarI2FromDec"
+ordinal = 208
+
+[[export]]
+name = "VarI4FromI1"
+ordinal = 209
+
+[[export]]
+name = "VarI4FromUI2"
+ordinal = 210
+
+[[export]]
+name = "VarI4FromUI4"
+ordinal = 211
+
+[[export]]
+name = "VarI4FromDec"
+ordinal = 212
+
+[[export]]
+name = "VarR4FromI1"
+ordinal = 213
+
+[[export]]
+name = "VarR4FromUI2"
+ordinal = 214
+
+[[export]]
+name = "VarR4FromUI4"
+ordinal = 215
+
+[[export]]
+name = "VarR4FromDec"
+ordinal = 216
+
+[[export]]
+name = "VarR8FromI1"
+ordinal = 217
+
+[[export]]
+name = "VarR8FromUI2"
+ordinal = 218
+
+[[export]]
+name = "VarR8FromUI4"
+ordinal = 219
+
+[[export]]
+name = "VarR8FromDec"
+ordinal = 220
+
+[[export]]
+name = "VarDateFromI1"
+ordinal = 221
+
+[[export]]
+name = "VarDateFromUI2"
+ordinal = 222
+
+[[export]]
+name = "VarDateFromUI4"
+ordinal = 223
+
+[[export]]
+name = "VarDateFromDec"
+ordinal = 224
+
+[[export]]
+name = "VarCyFromI1"
+ordinal = 225
+
+[[export]]
+name = "VarCyFromUI2"
+ordinal = 226
+
+[[export]]
+name = "VarCyFromUI4"
+ordinal = 227
+
+[[export]]
+name = "VarCyFromDec"
+ordinal = 228
+
+[[export]]
+name = "VarBstrFromI1"
+ordinal = 229
+
+[[export]]
+name = "VarBstrFromUI2"
+ordinal = 230
+
+[[export]]
+name = "VarBstrFromUI4"
+ordinal = 231
+
+[[export]]
+name = "VarBstrFromDec"
+ordinal = 232
+
+[[export]]
+name = "VarBoolFromI1"
+ordinal = 233
+
+[[export]]
+name = "VarBoolFromUI2"
+ordinal = 234
+
+[[export]]
+name = "VarBoolFromUI4"
+ordinal = 235
+
+[[export]]
+name = "VarBoolFromDec"
+ordinal = 236
+
+[[export]]
+name = "VarUI1FromI1"
+ordinal = 237
+
+[[export]]
+name = "VarUI1FromUI2"
+ordinal = 238
+
+[[export]]
+name = "VarUI1FromUI4"
+ordinal = 239
+
+[[export]]
+name = "VarUI1FromDec"
+ordinal = 240
+
+[[export]]
+name = "VarDecFromI1"
+ordinal = 241
+
+[[export]]
+name = "VarDecFromUI2"
+ordinal = 242
+
+[[export]]
+name = "VarDecFromUI4"
+ordinal = 243
+
+[[export]]
+name = "VarI1FromUI1"
+ordinal = 244
+
+[[export]]
+name = "VarI1FromI2"
+ordinal = 245
+
+[[export]]
+name = "VarI1FromI4"
+ordinal = 246
+
+[[export]]
+name = "VarI1FromR4"
+ordinal = 247
+
+[[export]]
+name = "VarI1FromR8"
+ordinal = 248
+
+[[export]]
+name = "VarI1FromDate"
+ordinal = 249
+
+[[export]]
+name = "VarI1FromCy"
+ordinal = 250
+
+[[export]]
+name = "VarI1FromStr"
+ordinal = 251
+
+[[export]]
+name = "VarI1FromDisp"
+ordinal = 252
+
+[[export]]
+name = "VarI1FromBool"
+ordinal = 253
+
+[[export]]
+name = "VarI1FromUI2"
+ordinal = 254
+
+[[export]]
+name = "VarI1FromUI4"
+ordinal = 255
+
+[[export]]
+name = "VarI1FromDec"
+ordinal = 256
+
+[[export]]
+name = "VarUI2FromUI1"
+ordinal = 257
+
+[[export]]
+name = "VarUI2FromI2"
+ordinal = 258
+
+[[export]]
+name = "VarUI2FromI4"
+ordinal = 259
+
+[[export]]
+name = "VarUI2FromR4"
+ordinal = 260
+
+[[export]]
+name = "VarUI2FromR8"
+ordinal = 261
+
+[[export]]
+name = "VarUI2FromDate"
+ordinal = 262
+
+[[export]]
+name = "VarUI2FromCy"
+ordinal = 263
+
+[[export]]
+name = "VarUI2FromStr"
+ordinal = 264
+
+[[export]]
+name = "VarUI2FromDisp"
+ordinal = 265
+
+[[export]]
+name = "VarUI2FromBool"
+ordinal = 266
+
+[[export]]
+name = "VarUI2FromI1"
+ordinal = 267
+
+[[export]]
+name = "VarUI2FromUI4"
+ordinal = 268
+
+[[export]]
+name = "VarUI2FromDec"
+ordinal = 269
+
+[[export]]
+name = "VarUI4FromUI1"
+ordinal = 270
+
+[[export]]
+name = "VarUI4FromI2"
+ordinal = 271
+
+[[export]]
+name = "VarUI4FromI4"
+ordinal = 272
+
+[[export]]
+name = "VarUI4FromR4"
+ordinal = 273
+
+[[export]]
+name = "VarUI4FromR8"
+ordinal = 274
+
+[[export]]
+name = "VarUI4FromDate"
+ordinal = 275
+
+[[export]]
+name = "VarUI4FromCy"
+ordinal = 276
+
+[[export]]
+name = "VarUI4FromStr"
+ordinal = 277
+
+[[export]]
+name = "VarUI4FromDisp"
+ordinal = 278
+
+[[export]]
+name = "VarUI4FromBool"
+ordinal = 279
+
+[[export]]
+name = "VarUI4FromI1"
+ordinal = 280
+
+[[export]]
+name = "VarUI4FromUI2"
+ordinal = 281
+
+[[export]]
+name = "VarUI4FromDec"
+ordinal = 282
+
+[[export]]
+name = "BSTR_UserSize"
+ordinal = 283
+
+[[export]]
+name = "BSTR_UserMarshal"
+ordinal = 284
+
+[[export]]
+name = "BSTR_UserUnmarshal"
+ordinal = 285
+
+[[export]]
+name = "BSTR_UserFree"
+ordinal = 286
+
+[[export]]
+name = "VARIANT_UserSize"
+ordinal = 287
+
+[[export]]
+name = "VARIANT_UserMarshal"
+ordinal = 288
+
+[[export]]
+name = "VARIANT_UserUnmarshal"
+ordinal = 289
+
+[[export]]
+name = "VARIANT_UserFree"
+ordinal = 290
+
+[[export]]
+name = "LPSAFEARRAY_UserSize"
+ordinal = 291
+
+[[export]]
+name = "LPSAFEARRAY_UserMarshal"
+ordinal = 292
+
+[[export]]
+name = "LPSAFEARRAY_UserUnmarshal"
+ordinal = 293
+
+[[export]]
+name = "LPSAFEARRAY_UserFree"
+ordinal = 294
+
+[[export]]
+name = "LPSAFEARRAY_Size"
+ordinal = 295
+
+[[export]]
+name = "LPSAFEARRAY_Marshal"
+ordinal = 296
+
+[[export]]
+name = "LPSAFEARRAY_Unmarshal"
+ordinal = 297
+
+[[export]]
+name = "VarDecCmpR8"
+ordinal = 298
+
+[[export]]
+name = "VarCyAdd"
+ordinal = 299
+
+[[export]]
+name = "VarCyMul"
+ordinal = 303
+
+[[export]]
+name = "VarCyMulI4"
+ordinal = 304
+
+[[export]]
+name = "VarCySub"
+ordinal = 305
+
+[[export]]
+name = "VarCyAbs"
+ordinal = 306
+
+[[export]]
+name = "VarCyFix"
+ordinal = 307
+
+[[export]]
+name = "VarCyInt"
+ordinal = 308
+
+[[export]]
+name = "VarCyNeg"
+ordinal = 309
+
+[[export]]
+name = "VarCyRound"
+ordinal = 310
+
+[[export]]
+name = "VarCyCmp"
+ordinal = 311
+
+[[export]]
+name = "VarCyCmpR8"
+ordinal = 312
+
+[[export]]
+name = "VarBstrCat"
+ordinal = 313
+
+[[export]]
+name = "VarBstrCmp"
+ordinal = 314
+
+[[export]]
+name = "VarR8Pow"
+ordinal = 315
+
+[[export]]
+name = "VarR4CmpR8"
+ordinal = 316
+
+[[export]]
+name = "VarR8Round"
+ordinal = 317
+
+[[export]]
+name = "VarCat"
+ordinal = 318
+
+[[export]]
+name = "VarDateFromUdateEx"
+ordinal = 319
+
+[[export]]
+name = "DllRegisterServer"
+ordinal = 320
+
+[[export]]
+name = "DllUnregisterServer"
+ordinal = 321
+
+[[export]]
+name = "GetRecordInfoFromGuids"
+ordinal = 322
+
+[[export]]
+name = "GetRecordInfoFromTypeInfo"
+ordinal = 323
+
+[[export]]
+name = "SetVarConversionLocaleSetting"
+ordinal = 325
+
+[[export]]
+name = "GetVarConversionLocaleSetting"
+ordinal = 326
+
+[[export]]
+name = "VarDateFromUdate"
+ordinal = 330
+
+[[export]]
+name = "VarUdateFromDate"
+ordinal = 331
+
+[[export]]
+name = "GetAltMonthNames"
+ordinal = 332
+
+[[export]]
+name = "UserHWND_from_local"
+ordinal = 380
+
+[[export]]
+name = "UserHWND_to_local"
+ordinal = 381
+
+[[export]]
+name = "UserHWND_free_inst"
+ordinal = 382
+
+[[export]]
+name = "UserHWND_free_local"
+ordinal = 383
+
+[[export]]
+name = "UserBSTR_from_local"
+ordinal = 384
+
+[[export]]
+name = "UserBSTR_to_local"
+ordinal = 385
+
+[[export]]
+name = "UserBSTR_free_inst"
+ordinal = 386
+
+[[export]]
+name = "UserBSTR_free_local"
+ordinal = 387
+
+[[export]]
+name = "UserVARIANT_from_local"
+ordinal = 388
+
+[[export]]
+name = "UserVARIANT_to_local"
+ordinal = 389
+
+[[export]]
+name = "UserVARIANT_free_inst"
+ordinal = 390
+
+[[export]]
+name = "UserVARIANT_free_local"
+ordinal = 391
+
+[[export]]
+name = "UserEXCEPINFO_from_local"
+ordinal = 392
+
+[[export]]
+name = "UserEXCEPINFO_to_local"
+ordinal = 393
+
+[[export]]
+name = "UserEXCEPINFO_free_inst"
+ordinal = 394
+
+[[export]]
+name = "UserEXCEPINFO_free_local"
+ordinal = 395
+
+[[export]]
+name = "UserMSG_from_local"
+ordinal = 396
+
+[[export]]
+name = "UserMSG_to_local"
+ordinal = 397
+
+[[export]]
+name = "UserMSG_free_inst"
+ordinal = 398
+
+[[export]]
+name = "UserMSG_free_local"
+ordinal = 399
+
+[[export]]
+name = "OleLoadPictureEx"
+ordinal = 401
+
+[[export]]
+name = "OleLoadPictureFileEx"
+ordinal = 402
+
+[[export]]
+name = "DllCanUnloadNow"
+ordinal = 410
+
+[[export]]
+name = "SafeArrayCreateVector"
+ordinal = 411
+
+[[export]]
+name = "SafeArrayCopyData"
+ordinal = 412
+
+[[export]]
+name = "VectorFromBstr"
+ordinal = 413
+
+[[export]]
+name = "BstrFromVector"
+ordinal = 414
+
+[[export]]
+name = "OleIconToCursor"
+ordinal = 415
+
+[[export]]
+name = "OleCreatePropertyFrameIndirect"
+ordinal = 416
+
+[[export]]
+name = "OleCreatePropertyFrame"
+ordinal = 417
+
+[[export]]
+name = "OleLoadPicture"
+ordinal = 418
+
+[[export]]
+name = "OleCreatePictureIndirect"
+ordinal = 419
+
+[[export]]
+name = "OleCreateFontIndirect"
+ordinal = 420
+
+[[export]]
+name = "OleTranslateColor"
+ordinal = 421
+
+[[export]]
+name = "OleLoadPictureFile"
+ordinal = 422
+
+[[export]]
+name = "OleSavePictureFile"
+ordinal = 423
+
+[[export]]
+name = "OleLoadPicturePath"
+ordinal = 424

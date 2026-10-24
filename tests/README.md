@@ -191,9 +191,12 @@ the marker goes with the fix; `--runxfail` shows each failure's first
 differing line), `[masks]` for the few capture lines that carry
 machine-specific values (per section, `"virtual" = ["... region *
 ..."]`: each `*` one value, a run of non-blank characters, and only in
-that section's block), a `timeout`, and `retake` for a capture to be
-retaken (its blocks skipped). A `[pending]` or `[masks]` section with
-no captured block is an error, as is a mask that matches none of its
+that section's block), `[pins]` for the exports each section pins
+(`event = ["kernel32.CreateEventA", "ntdll.NtCreateEvent"]`, `"*"` for
+every block: what the C runtime's startup calls; `scripts/compat.py`
+reports each export's coverage from them), a `timeout`, and `retake`
+for a capture to be retaken (its blocks skipped). A `[pending]`, `[masks]` or `[pins]`
+section with no captured block is an error, as is a mask that matches none of its
 block's lines. The fixture's `test_<name>.py` only binds
 `f2kboot.corpus_test("<name>")`. A sectioned fixture may be declared
 ahead of its real-machine files (`<name>.exe`, `<name>.c` and

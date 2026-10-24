@@ -45,6 +45,8 @@ fn kernel32_path(length: usize) -> std::vec::Vec<u8> {
 /// 260 characters are looked up (the loader gets them all), a longer name is
 /// ERROR_FILENAME_EXCED_RANGE before the loader sees it — never cut down to 260 (which made a name
 /// with a tail past MAX_PATH find kernel32).
+///
+/// Pins: kernel32.LoadLibraryA, kernel32.GetModuleHandleA
 #[test]
 fn module_names_past_max_path_are_refused() {
     ASKED.with(|asked| asked.borrow_mut().clear());
@@ -71,6 +73,8 @@ fn module_names_past_max_path_are_refused() {
 
 /// An export name has no length cap of its own: one longer than any export is ERROR_PROC_NOT_FOUND
 /// (the loader finds no such name), never a shorter name's export.
+///
+/// Pins: kernel32.GetProcAddress
 #[test]
 fn long_export_names_are_not_found() {
     let mut name = b"GetTickCount".to_vec();
@@ -87,6 +91,8 @@ fn long_export_names_are_not_found() {
 /// GetModuleFileNameA refuses before touching anything: a handle naming no module (the image,
 /// ntdll and kernel32 are the modules) is ERROR_MOD_NOT_FOUND, and an empty buffer takes nothing;
 /// both return 0 and leave the buffer as it was.
+///
+/// Pins: kernel32.GetModuleFileNameA
 #[test]
 fn get_module_file_name_refuses_module_handles_and_empty_buffers() {
     let mut buffer = [0xCCu8; 16];
@@ -108,6 +114,8 @@ fn get_module_file_name_refuses_module_handles_and_empty_buffers() {
 /// GetModuleFileNameA: a module's full path from the lists (the image's for a null handle),
 /// terminated; a buffer too small takes exactly its size, unterminated, and that size comes back,
 /// the last error untouched.
+///
+/// Pins: kernel32.GetModuleFileNameA
 #[test]
 fn get_module_file_name_copies_the_full_path() {
     let mut buffer = [0xCCu8; 64];
@@ -141,6 +149,8 @@ fn get_module_file_name_copies_the_full_path() {
 /// GetModuleHandleA: the image for a null name (the PEB's ImageBaseAddress), never asking the
 /// loader; a name the loader does not find is ERROR_MOD_NOT_FOUND. LoadLibraryA finds what it
 /// finds; a null name is ERROR_INVALID_PARAMETER.
+///
+/// Pins: kernel32.LoadLibraryA, kernel32.GetModuleHandleA
 #[test]
 fn module_handles_come_from_the_loader() {
     ASKED.with(|asked| asked.borrow_mut().clear());
@@ -169,6 +179,8 @@ fn module_handles_come_from_the_loader() {
 
 /// FreeLibrary: a module's handle succeeds; one naming no module is ERROR_MOD_NOT_FOUND
 /// (LdrUnloadDll's STATUS_DLL_NOT_FOUND, as Windows 2000 maps it).
+///
+/// Pins: kernel32.FreeLibrary
 #[test]
 fn free_library_answers_for_modules() {
     assert_eq!(free_library(KERNEL32), 1);
@@ -180,6 +192,8 @@ fn free_library_answers_for_modules() {
 /// one, never read as a name (one the module does not export is ERROR_INVALID_ORDINAL, a null name
 /// ordinal 0, ERROR_INVALID_PARAMETER); a handle naming no module is ERROR_MOD_NOT_FOUND; names
 /// are exact.
+///
+/// Pins: kernel32.GetProcAddress
 #[test]
 fn procedures_come_from_the_loader() {
     assert_eq!(

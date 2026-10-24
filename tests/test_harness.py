@@ -175,6 +175,15 @@ def test_a_mask_or_pending_block_naming_no_section_is_refused():
         f2kboot.blocks("memory", gate=True, pending={"nosuch": "GAP-X: y"})
 
 
+def test_pins_name_sections_and_exports():
+    """A fixture's pins are keyed by section name ("*" for every block) and name dll.Export."""
+    assert f2kboot.blocks("memory", gate=True, pins={"*": ["kernel32.HeapAlloc"], "heap": ["ntdll.RtlSizeHeap"]})
+    with pytest.raises(ValueError, match="nosuch"):
+        f2kboot.blocks("memory", gate=True, pins={"nosuch": ["kernel32.HeapAlloc"]})
+    with pytest.raises(ValueError, match="not dll.Export"):
+        f2kboot.blocks("memory", gate=True, pins={"heap": ["HeapAlloc"]})
+
+
 # --- Stale build directories and logs are pruned-----------------------------------------------
 
 

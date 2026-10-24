@@ -1,0 +1,2272 @@
+# ADVAPI32.dll's exports: the one source every list of them derives from (the format is
+# kernel32's, documented in userland/kernel32/exports.toml).
+#
+# None is implemented yet: each record is catalogued from ADVAPI32.dll 5.0.2195.6710's export table
+# (scripts/catalogue_exports.py): its name and ordinal. Implementing one gives it its group,
+# prototype and implementation.
+
+# --- not implemented yet: the rest of ADVAPI32.dll 5.0.2195.6710's export table, by ordinal ------
+
+[[export]]
+name = "I_ScGetCurrentGroupStateW"
+ordinal = 1
+
+[[export]]
+name = "I_ScIsSecurityProcess"
+ordinal = 2
+
+[[export]]
+name = "IsInSandbox"
+ordinal = 3
+
+[[export]]
+name = "AbortSystemShutdownA"
+ordinal = 4
+
+[[export]]
+name = "AbortSystemShutdownW"
+ordinal = 5
+
+[[export]]
+name = "AccessCheck"
+ordinal = 6
+
+[[export]]
+name = "AccessCheckAndAuditAlarmA"
+ordinal = 7
+
+[[export]]
+name = "AccessCheckAndAuditAlarmW"
+ordinal = 8
+
+[[export]]
+name = "AccessCheckByType"
+ordinal = 9
+
+[[export]]
+name = "AccessCheckByTypeAndAuditAlarmA"
+ordinal = 10
+
+[[export]]
+name = "AccessCheckByTypeAndAuditAlarmW"
+ordinal = 11
+
+[[export]]
+name = "AccessCheckByTypeResultList"
+ordinal = 12
+
+[[export]]
+name = "AccessCheckByTypeResultListAndAuditAlarmA"
+ordinal = 13
+
+[[export]]
+name = "AccessCheckByTypeResultListAndAuditAlarmByHandleA"
+ordinal = 14
+
+[[export]]
+name = "AccessCheckByTypeResultListAndAuditAlarmByHandleW"
+ordinal = 15
+
+[[export]]
+name = "AccessCheckByTypeResultListAndAuditAlarmW"
+ordinal = 16
+
+[[export]]
+name = "AddAccessAllowedAce"
+ordinal = 17
+
+[[export]]
+name = "AddAccessAllowedAceEx"
+ordinal = 18
+
+[[export]]
+name = "AddAccessAllowedObjectAce"
+ordinal = 19
+
+[[export]]
+name = "AddAccessDeniedAce"
+ordinal = 20
+
+[[export]]
+name = "AddAccessDeniedAceEx"
+ordinal = 21
+
+[[export]]
+name = "AddAccessDeniedObjectAce"
+ordinal = 22
+
+[[export]]
+name = "AddAce"
+ordinal = 23
+
+[[export]]
+name = "AddAuditAccessAce"
+ordinal = 24
+
+[[export]]
+name = "AddAuditAccessAceEx"
+ordinal = 25
+
+[[export]]
+name = "AddAuditAccessObjectAce"
+ordinal = 26
+
+[[export]]
+name = "AddUsersToEncryptedFile"
+ordinal = 27
+
+[[export]]
+name = "AdjustTokenGroups"
+ordinal = 28
+
+[[export]]
+name = "AdjustTokenPrivileges"
+ordinal = 29
+
+[[export]]
+name = "AllocateAndInitializeSid"
+ordinal = 30
+
+[[export]]
+name = "AllocateLocallyUniqueId"
+ordinal = 31
+
+[[export]]
+name = "AreAllAccessesGranted"
+ordinal = 32
+
+[[export]]
+name = "AreAnyAccessesGranted"
+ordinal = 33
+
+[[export]]
+name = "BackupEventLogA"
+ordinal = 34
+
+[[export]]
+name = "BackupEventLogW"
+ordinal = 35
+
+[[export]]
+name = "BuildExplicitAccessWithNameA"
+ordinal = 36
+
+[[export]]
+name = "BuildExplicitAccessWithNameW"
+ordinal = 37
+
+[[export]]
+name = "BuildImpersonateExplicitAccessWithNameA"
+ordinal = 38
+
+[[export]]
+name = "BuildImpersonateExplicitAccessWithNameW"
+ordinal = 39
+
+[[export]]
+name = "BuildImpersonateTrusteeA"
+ordinal = 40
+
+[[export]]
+name = "BuildImpersonateTrusteeW"
+ordinal = 41
+
+[[export]]
+name = "BuildSecurityDescriptorA"
+ordinal = 42
+
+[[export]]
+name = "BuildSecurityDescriptorW"
+ordinal = 43
+
+[[export]]
+name = "BuildTrusteeWithNameA"
+ordinal = 44
+
+[[export]]
+name = "BuildTrusteeWithNameW"
+ordinal = 45
+
+[[export]]
+name = "BuildTrusteeWithObjectsAndNameA"
+ordinal = 46
+
+[[export]]
+name = "BuildTrusteeWithObjectsAndNameW"
+ordinal = 47
+
+[[export]]
+name = "BuildTrusteeWithObjectsAndSidA"
+ordinal = 48
+
+[[export]]
+name = "BuildTrusteeWithObjectsAndSidW"
+ordinal = 49
+
+[[export]]
+name = "BuildTrusteeWithSidA"
+ordinal = 50
+
+[[export]]
+name = "BuildTrusteeWithSidW"
+ordinal = 51
+
+[[export]]
+name = "CancelOverlappedAccess"
+ordinal = 52
+
+[[export]]
+name = "ChangeServiceConfig2A"
+ordinal = 53
+
+[[export]]
+name = "ChangeServiceConfig2W"
+ordinal = 54
+
+[[export]]
+name = "ChangeServiceConfigA"
+ordinal = 55
+
+[[export]]
+name = "ChangeServiceConfigW"
+ordinal = 56
+
+[[export]]
+name = "CheckTokenMembership"
+ordinal = 57
+
+[[export]]
+name = "ClearEventLogA"
+ordinal = 58
+
+[[export]]
+name = "ClearEventLogW"
+ordinal = 59
+
+[[export]]
+name = "CloseEncryptedFileRaw"
+ordinal = 60
+
+[[export]]
+name = "CloseEventLog"
+ordinal = 61
+
+[[export]]
+name = "CloseServiceHandle"
+ordinal = 62
+
+[[export]]
+name = "CloseTrace"
+ordinal = 63
+
+[[export]]
+name = "CommandLineFromMsiDescriptor"
+ordinal = 64
+
+[[export]]
+name = "ControlService"
+ordinal = 65
+
+[[export]]
+name = "ControlTraceA"
+ordinal = 66
+
+[[export]]
+name = "ControlTraceW"
+ordinal = 67
+
+[[export]]
+name = "ConvertAccessToSecurityDescriptorA"
+ordinal = 68
+
+[[export]]
+name = "ConvertAccessToSecurityDescriptorW"
+ordinal = 69
+
+[[export]]
+name = "ConvertSDToStringSDRootDomainA"
+ordinal = 70
+
+[[export]]
+name = "ConvertSDToStringSDRootDomainW"
+ordinal = 71
+
+[[export]]
+name = "ConvertSecurityDescriptorToAccessA"
+ordinal = 72
+
+[[export]]
+name = "ConvertSecurityDescriptorToAccessNamedA"
+ordinal = 73
+
+[[export]]
+name = "ConvertSecurityDescriptorToAccessNamedW"
+ordinal = 74
+
+[[export]]
+name = "ConvertSecurityDescriptorToAccessW"
+ordinal = 75
+
+[[export]]
+name = "ConvertSecurityDescriptorToStringSecurityDescriptorA"
+ordinal = 76
+
+[[export]]
+name = "ConvertSecurityDescriptorToStringSecurityDescriptorW"
+ordinal = 77
+
+[[export]]
+name = "ConvertSidToStringSidA"
+ordinal = 78
+
+[[export]]
+name = "ConvertSidToStringSidW"
+ordinal = 79
+
+[[export]]
+name = "ConvertStringSDToSDRootDomainA"
+ordinal = 80
+
+[[export]]
+name = "ConvertStringSDToSDRootDomainW"
+ordinal = 81
+
+[[export]]
+name = "ConvertStringSecurityDescriptorToSecurityDescriptorA"
+ordinal = 82
+
+[[export]]
+name = "ConvertStringSecurityDescriptorToSecurityDescriptorW"
+ordinal = 83
+
+[[export]]
+name = "ConvertStringSidToSidA"
+ordinal = 84
+
+[[export]]
+name = "ConvertStringSidToSidW"
+ordinal = 85
+
+[[export]]
+name = "ConvertToAutoInheritPrivateObjectSecurity"
+ordinal = 86
+
+[[export]]
+name = "CopySid"
+ordinal = 87
+
+[[export]]
+name = "CreatePrivateObjectSecurity"
+ordinal = 88
+
+[[export]]
+name = "CreatePrivateObjectSecurityEx"
+ordinal = 89
+
+[[export]]
+name = "CreateProcessAsUserA"
+ordinal = 90
+
+[[export]]
+name = "CreateProcessAsUserSecure"
+ordinal = 91
+
+[[export]]
+name = "CreateProcessAsUserW"
+ordinal = 92
+
+[[export]]
+name = "CreateProcessWithLogonW"
+ordinal = 93
+
+[[export]]
+name = "CreateRestrictedToken"
+ordinal = 94
+
+[[export]]
+name = "CreateServiceA"
+ordinal = 95
+
+[[export]]
+name = "CreateServiceW"
+ordinal = 96
+
+[[export]]
+name = "CreateTraceInstanceId"
+ordinal = 97
+
+[[export]]
+name = "CreateWellKnownSid"
+ordinal = 98
+
+[[export]]
+name = "CryptAcquireContextA"
+ordinal = 99
+
+[[export]]
+name = "CryptAcquireContextW"
+ordinal = 100
+
+[[export]]
+name = "CryptContextAddRef"
+ordinal = 101
+
+[[export]]
+name = "CryptCreateHash"
+ordinal = 102
+
+[[export]]
+name = "CryptDecrypt"
+ordinal = 103
+
+[[export]]
+name = "CryptDeriveKey"
+ordinal = 104
+
+[[export]]
+name = "CryptDestroyHash"
+ordinal = 105
+
+[[export]]
+name = "CryptDestroyKey"
+ordinal = 106
+
+[[export]]
+name = "CryptDuplicateHash"
+ordinal = 107
+
+[[export]]
+name = "CryptDuplicateKey"
+ordinal = 108
+
+[[export]]
+name = "CryptEncrypt"
+ordinal = 109
+
+[[export]]
+name = "CryptEnumProviderTypesA"
+ordinal = 110
+
+[[export]]
+name = "CryptEnumProviderTypesW"
+ordinal = 111
+
+[[export]]
+name = "CryptEnumProvidersA"
+ordinal = 112
+
+[[export]]
+name = "CryptEnumProvidersW"
+ordinal = 113
+
+[[export]]
+name = "CryptExportKey"
+ordinal = 114
+
+[[export]]
+name = "CryptGenKey"
+ordinal = 115
+
+[[export]]
+name = "CryptGenRandom"
+ordinal = 116
+
+[[export]]
+name = "CryptGetDefaultProviderA"
+ordinal = 117
+
+[[export]]
+name = "CryptGetDefaultProviderW"
+ordinal = 118
+
+[[export]]
+name = "CryptGetHashParam"
+ordinal = 119
+
+[[export]]
+name = "CryptGetKeyParam"
+ordinal = 120
+
+[[export]]
+name = "CryptGetProvParam"
+ordinal = 121
+
+[[export]]
+name = "CryptGetUserKey"
+ordinal = 122
+
+[[export]]
+name = "CryptHashData"
+ordinal = 123
+
+[[export]]
+name = "CryptHashSessionKey"
+ordinal = 124
+
+[[export]]
+name = "CryptImportKey"
+ordinal = 125
+
+[[export]]
+name = "CryptReleaseContext"
+ordinal = 126
+
+[[export]]
+name = "CryptSetHashParam"
+ordinal = 127
+
+[[export]]
+name = "CryptSetKeyParam"
+ordinal = 128
+
+[[export]]
+name = "CryptSetProvParam"
+ordinal = 129
+
+[[export]]
+name = "CryptSetProviderA"
+ordinal = 130
+
+[[export]]
+name = "CryptSetProviderExA"
+ordinal = 131
+
+[[export]]
+name = "CryptSetProviderExW"
+ordinal = 132
+
+[[export]]
+name = "CryptSetProviderW"
+ordinal = 133
+
+[[export]]
+name = "CryptSignHashA"
+ordinal = 134
+
+[[export]]
+name = "CryptSignHashW"
+ordinal = 135
+
+[[export]]
+name = "CryptVerifySignatureA"
+ordinal = 136
+
+[[export]]
+name = "CryptVerifySignatureW"
+ordinal = 137
+
+[[export]]
+name = "DecryptFileA"
+ordinal = 138
+
+[[export]]
+name = "DecryptFileW"
+ordinal = 139
+
+[[export]]
+name = "DeleteAce"
+ordinal = 140
+
+[[export]]
+name = "DeleteService"
+ordinal = 141
+
+[[export]]
+name = "DeregisterEventSource"
+ordinal = 142
+
+[[export]]
+name = "DestroyPrivateObjectSecurity"
+ordinal = 143
+
+[[export]]
+name = "DuplicateEncryptionInfoFile"
+ordinal = 144
+
+[[export]]
+name = "DuplicateToken"
+ordinal = 145
+
+[[export]]
+name = "DuplicateTokenEx"
+ordinal = 146
+
+[[export]]
+name = "ElfBackupEventLogFileA"
+ordinal = 147
+
+[[export]]
+name = "ElfBackupEventLogFileW"
+ordinal = 148
+
+[[export]]
+name = "ElfChangeNotify"
+ordinal = 149
+
+[[export]]
+name = "ElfClearEventLogFileA"
+ordinal = 150
+
+[[export]]
+name = "ElfClearEventLogFileW"
+ordinal = 151
+
+[[export]]
+name = "ElfCloseEventLog"
+ordinal = 152
+
+[[export]]
+name = "ElfDeregisterEventSource"
+ordinal = 153
+
+[[export]]
+name = "ElfFlushEventLog"
+ordinal = 154
+
+[[export]]
+name = "ElfNumberOfRecords"
+ordinal = 155
+
+[[export]]
+name = "ElfOldestRecord"
+ordinal = 156
+
+[[export]]
+name = "ElfOpenBackupEventLogA"
+ordinal = 157
+
+[[export]]
+name = "ElfOpenBackupEventLogW"
+ordinal = 158
+
+[[export]]
+name = "ElfOpenEventLogA"
+ordinal = 159
+
+[[export]]
+name = "ElfOpenEventLogW"
+ordinal = 160
+
+[[export]]
+name = "ElfReadEventLogA"
+ordinal = 161
+
+[[export]]
+name = "ElfReadEventLogW"
+ordinal = 162
+
+[[export]]
+name = "ElfRegisterEventSourceA"
+ordinal = 163
+
+[[export]]
+name = "ElfRegisterEventSourceW"
+ordinal = 164
+
+[[export]]
+name = "ElfReportEventA"
+ordinal = 165
+
+[[export]]
+name = "ElfReportEventW"
+ordinal = 166
+
+[[export]]
+name = "EnableTrace"
+ordinal = 167
+
+[[export]]
+name = "EncryptFileA"
+ordinal = 168
+
+[[export]]
+name = "EncryptFileW"
+ordinal = 169
+
+[[export]]
+name = "EncryptionDisable"
+ordinal = 170
+
+[[export]]
+name = "EnumDependentServicesA"
+ordinal = 171
+
+[[export]]
+name = "EnumDependentServicesW"
+ordinal = 172
+
+[[export]]
+name = "EnumServiceGroupW"
+ordinal = 173
+
+[[export]]
+name = "EnumServicesStatusA"
+ordinal = 174
+
+[[export]]
+name = "EnumServicesStatusExA"
+ordinal = 175
+
+[[export]]
+name = "EnumServicesStatusExW"
+ordinal = 176
+
+[[export]]
+name = "EnumServicesStatusW"
+ordinal = 177
+
+[[export]]
+name = "EqualDomainSid"
+ordinal = 178
+
+[[export]]
+name = "EqualPrefixSid"
+ordinal = 179
+
+[[export]]
+name = "EqualSid"
+ordinal = 180
+
+[[export]]
+name = "FileEncryptionStatusA"
+ordinal = 181
+
+[[export]]
+name = "FileEncryptionStatusW"
+ordinal = 182
+
+[[export]]
+name = "FindFirstFreeAce"
+ordinal = 183
+
+[[export]]
+name = "FreeEncryptionCertificateHashList"
+ordinal = 184
+
+[[export]]
+name = "FreeSid"
+ordinal = 185
+
+[[export]]
+name = "GetAccessPermissionsForObjectA"
+ordinal = 186
+
+[[export]]
+name = "GetAccessPermissionsForObjectW"
+ordinal = 187
+
+[[export]]
+name = "GetAce"
+ordinal = 188
+
+[[export]]
+name = "GetAclInformation"
+ordinal = 189
+
+[[export]]
+name = "GetAuditedPermissionsFromAclA"
+ordinal = 190
+
+[[export]]
+name = "GetAuditedPermissionsFromAclW"
+ordinal = 191
+
+[[export]]
+name = "GetCurrentHwProfileA"
+ordinal = 192
+
+[[export]]
+name = "GetCurrentHwProfileW"
+ordinal = 193
+
+[[export]]
+name = "GetEffectiveRightsFromAclA"
+ordinal = 194
+
+[[export]]
+name = "GetEffectiveRightsFromAclW"
+ordinal = 195
+
+[[export]]
+name = "GetEventLogInformation"
+ordinal = 196
+
+[[export]]
+name = "GetExplicitEntriesFromAclA"
+ordinal = 197
+
+[[export]]
+name = "GetExplicitEntriesFromAclW"
+ordinal = 198
+
+[[export]]
+name = "GetFileSecurityA"
+ordinal = 199
+
+[[export]]
+name = "GetFileSecurityW"
+ordinal = 200
+
+[[export]]
+name = "GetKernelObjectSecurity"
+ordinal = 201
+
+[[export]]
+name = "GetLengthSid"
+ordinal = 202
+
+[[export]]
+name = "GetLocalManagedApplications"
+ordinal = 203
+
+[[export]]
+name = "GetManagedApplications"
+ordinal = 204
+
+[[export]]
+name = "GetMangledSiteSid"
+ordinal = 205
+
+[[export]]
+name = "GetMultipleTrusteeA"
+ordinal = 206
+
+[[export]]
+name = "GetMultipleTrusteeOperationA"
+ordinal = 207
+
+[[export]]
+name = "GetMultipleTrusteeOperationW"
+ordinal = 208
+
+[[export]]
+name = "GetMultipleTrusteeW"
+ordinal = 209
+
+[[export]]
+name = "GetNamedSecurityInfoA"
+ordinal = 210
+
+[[export]]
+name = "GetNamedSecurityInfoExA"
+ordinal = 211
+
+[[export]]
+name = "GetNamedSecurityInfoExW"
+ordinal = 212
+
+[[export]]
+name = "GetNamedSecurityInfoW"
+ordinal = 213
+
+[[export]]
+name = "GetNumberOfEventLogRecords"
+ordinal = 214
+
+[[export]]
+name = "GetOldestEventLogRecord"
+ordinal = 215
+
+[[export]]
+name = "GetOverlappedAccessResults"
+ordinal = 216
+
+[[export]]
+name = "GetPrivateObjectSecurity"
+ordinal = 217
+
+[[export]]
+name = "GetSecurityDescriptorControl"
+ordinal = 218
+
+[[export]]
+name = "GetSecurityDescriptorDacl"
+ordinal = 219
+
+[[export]]
+name = "GetSecurityDescriptorGroup"
+ordinal = 220
+
+[[export]]
+name = "GetSecurityDescriptorLength"
+ordinal = 221
+
+[[export]]
+name = "GetSecurityDescriptorOwner"
+ordinal = 222
+
+[[export]]
+name = "GetSecurityDescriptorRMControl"
+ordinal = 223
+
+[[export]]
+name = "GetSecurityDescriptorSacl"
+ordinal = 224
+
+[[export]]
+name = "GetSecurityInfo"
+ordinal = 225
+
+[[export]]
+name = "GetSecurityInfoExA"
+ordinal = 226
+
+[[export]]
+name = "GetSecurityInfoExW"
+ordinal = 227
+
+[[export]]
+name = "GetServiceDisplayNameA"
+ordinal = 228
+
+[[export]]
+name = "GetServiceDisplayNameW"
+ordinal = 229
+
+[[export]]
+name = "GetServiceKeyNameA"
+ordinal = 230
+
+[[export]]
+name = "GetServiceKeyNameW"
+ordinal = 231
+
+[[export]]
+name = "GetSidIdentifierAuthority"
+ordinal = 232
+
+[[export]]
+name = "GetSidLengthRequired"
+ordinal = 233
+
+[[export]]
+name = "GetSidSubAuthority"
+ordinal = 234
+
+[[export]]
+name = "GetSidSubAuthorityCount"
+ordinal = 235
+
+[[export]]
+name = "GetSiteDirectoryA"
+ordinal = 236
+
+[[export]]
+name = "GetSiteDirectoryW"
+ordinal = 237
+
+[[export]]
+name = "GetSiteNameFromSid"
+ordinal = 238
+
+[[export]]
+name = "GetSiteSidFromToken"
+ordinal = 239
+
+[[export]]
+name = "GetSiteSidFromUrl"
+ordinal = 240
+
+[[export]]
+name = "GetTokenInformation"
+ordinal = 241
+
+[[export]]
+name = "GetTraceEnableFlags"
+ordinal = 242
+
+[[export]]
+name = "GetTraceEnableLevel"
+ordinal = 243
+
+[[export]]
+name = "GetTraceLoggerHandle"
+ordinal = 244
+
+[[export]]
+name = "GetTrusteeFormA"
+ordinal = 245
+
+[[export]]
+name = "GetTrusteeFormW"
+ordinal = 246
+
+[[export]]
+name = "GetTrusteeNameA"
+ordinal = 247
+
+[[export]]
+name = "GetTrusteeNameW"
+ordinal = 248
+
+[[export]]
+name = "GetTrusteeTypeA"
+ordinal = 249
+
+[[export]]
+name = "GetTrusteeTypeW"
+ordinal = 250
+
+[[export]]
+name = "GetUserNameA"
+ordinal = 251
+
+[[export]]
+name = "GetUserNameW"
+ordinal = 252
+
+[[export]]
+name = "GetWindowsAccountDomainSid"
+ordinal = 253
+
+[[export]]
+name = "I_ScPnPGetServiceName"
+ordinal = 254
+
+[[export]]
+name = "I_ScSetServiceBitsA"
+ordinal = 255
+
+[[export]]
+name = "I_ScSetServiceBitsW"
+ordinal = 256
+
+[[export]]
+name = "ImpersonateAnonymousToken"
+ordinal = 257
+
+[[export]]
+name = "ImpersonateLoggedOnUser"
+ordinal = 258
+
+[[export]]
+name = "ImpersonateNamedPipeClient"
+ordinal = 259
+
+[[export]]
+name = "ImpersonateSelf"
+ordinal = 260
+
+[[export]]
+name = "InitializeAcl"
+ordinal = 261
+
+[[export]]
+name = "InitializeSecurityDescriptor"
+ordinal = 262
+
+[[export]]
+name = "InitializeSid"
+ordinal = 263
+
+[[export]]
+name = "InitiateSystemShutdownA"
+ordinal = 264
+
+[[export]]
+name = "InitiateSystemShutdownExA"
+ordinal = 265
+
+[[export]]
+name = "InitiateSystemShutdownExW"
+ordinal = 266
+
+[[export]]
+name = "InitiateSystemShutdownW"
+ordinal = 267
+
+[[export]]
+name = "InstallApplication"
+ordinal = 268
+
+[[export]]
+name = "IsProcessRestricted"
+ordinal = 269
+
+[[export]]
+name = "IsTextUnicode"
+ordinal = 270
+
+[[export]]
+name = "IsTokenRestricted"
+ordinal = 271
+
+[[export]]
+name = "IsValidAcl"
+ordinal = 272
+
+[[export]]
+name = "IsValidSecurityDescriptor"
+ordinal = 273
+
+[[export]]
+name = "IsValidSid"
+ordinal = 274
+
+[[export]]
+name = "IsWellKnownSid"
+ordinal = 275
+
+[[export]]
+name = "LockServiceDatabase"
+ordinal = 276
+
+[[export]]
+name = "LogonUserA"
+ordinal = 277
+
+[[export]]
+name = "LogonUserW"
+ordinal = 278
+
+[[export]]
+name = "LookupAccountNameA"
+ordinal = 279
+
+[[export]]
+name = "LookupAccountNameW"
+ordinal = 280
+
+[[export]]
+name = "LookupAccountSidA"
+ordinal = 281
+
+[[export]]
+name = "LookupAccountSidW"
+ordinal = 282
+
+[[export]]
+name = "LookupPrivilegeDisplayNameA"
+ordinal = 283
+
+[[export]]
+name = "LookupPrivilegeDisplayNameW"
+ordinal = 284
+
+[[export]]
+name = "LookupPrivilegeNameA"
+ordinal = 285
+
+[[export]]
+name = "LookupPrivilegeNameW"
+ordinal = 286
+
+[[export]]
+name = "LookupPrivilegeValueA"
+ordinal = 287
+
+[[export]]
+name = "LookupPrivilegeValueW"
+ordinal = 288
+
+[[export]]
+name = "LookupSecurityDescriptorPartsA"
+ordinal = 289
+
+[[export]]
+name = "LookupSecurityDescriptorPartsW"
+ordinal = 290
+
+[[export]]
+name = "LsaAddAccountRights"
+ordinal = 291
+
+[[export]]
+name = "LsaAddPrivilegesToAccount"
+ordinal = 292
+
+[[export]]
+name = "LsaClearAuditLog"
+ordinal = 293
+
+[[export]]
+name = "LsaClose"
+ordinal = 294
+
+[[export]]
+name = "LsaCreateAccount"
+ordinal = 295
+
+[[export]]
+name = "LsaCreateSecret"
+ordinal = 296
+
+[[export]]
+name = "LsaCreateTrustedDomain"
+ordinal = 297
+
+[[export]]
+name = "LsaCreateTrustedDomainEx"
+ordinal = 298
+
+[[export]]
+name = "LsaDelete"
+ordinal = 299
+
+[[export]]
+name = "LsaDeleteTrustedDomain"
+ordinal = 300
+
+[[export]]
+name = "LsaEnumerateAccountRights"
+ordinal = 301
+
+[[export]]
+name = "LsaEnumerateAccounts"
+ordinal = 302
+
+[[export]]
+name = "LsaEnumerateAccountsWithUserRight"
+ordinal = 303
+
+[[export]]
+name = "LsaEnumeratePrivileges"
+ordinal = 304
+
+[[export]]
+name = "LsaEnumeratePrivilegesOfAccount"
+ordinal = 305
+
+[[export]]
+name = "LsaEnumerateTrustedDomains"
+ordinal = 306
+
+[[export]]
+name = "LsaEnumerateTrustedDomainsEx"
+ordinal = 307
+
+[[export]]
+name = "LsaFreeMemory"
+ordinal = 308
+
+[[export]]
+name = "LsaGetQuotasForAccount"
+ordinal = 309
+
+[[export]]
+name = "LsaGetRemoteUserName"
+ordinal = 310
+
+[[export]]
+name = "LsaGetSystemAccessAccount"
+ordinal = 311
+
+[[export]]
+name = "LsaGetUserName"
+ordinal = 312
+
+[[export]]
+name = "LsaICLookupNames"
+ordinal = 313
+
+[[export]]
+name = "LsaICLookupSids"
+ordinal = 314
+
+[[export]]
+name = "LsaLookupNames"
+ordinal = 315
+
+[[export]]
+name = "LsaLookupPrivilegeDisplayName"
+ordinal = 316
+
+[[export]]
+name = "LsaLookupPrivilegeName"
+ordinal = 317
+
+[[export]]
+name = "LsaLookupPrivilegeValue"
+ordinal = 318
+
+[[export]]
+name = "LsaLookupSids"
+ordinal = 319
+
+[[export]]
+name = "LsaNtStatusToWinError"
+ordinal = 320
+
+[[export]]
+name = "LsaOpenAccount"
+ordinal = 321
+
+[[export]]
+name = "LsaOpenPolicy"
+ordinal = 322
+
+[[export]]
+name = "LsaOpenPolicySce"
+ordinal = 323
+
+[[export]]
+name = "LsaOpenSecret"
+ordinal = 324
+
+[[export]]
+name = "LsaOpenTrustedDomain"
+ordinal = 325
+
+[[export]]
+name = "LsaOpenTrustedDomainByName"
+ordinal = 326
+
+[[export]]
+name = "LsaQueryDomainInformationPolicy"
+ordinal = 327
+
+[[export]]
+name = "LsaQueryInfoTrustedDomain"
+ordinal = 328
+
+[[export]]
+name = "LsaQueryInformationPolicy"
+ordinal = 329
+
+[[export]]
+name = "LsaQuerySecret"
+ordinal = 330
+
+[[export]]
+name = "LsaQuerySecurityObject"
+ordinal = 331
+
+[[export]]
+name = "LsaQueryTrustedDomainInfo"
+ordinal = 332
+
+[[export]]
+name = "LsaQueryTrustedDomainInfoByName"
+ordinal = 333
+
+[[export]]
+name = "LsaRemoveAccountRights"
+ordinal = 334
+
+[[export]]
+name = "LsaRemovePrivilegesFromAccount"
+ordinal = 335
+
+[[export]]
+name = "LsaRetrievePrivateData"
+ordinal = 336
+
+[[export]]
+name = "LsaSetDomainInformationPolicy"
+ordinal = 337
+
+[[export]]
+name = "LsaSetInformationPolicy"
+ordinal = 338
+
+[[export]]
+name = "LsaSetInformationTrustedDomain"
+ordinal = 339
+
+[[export]]
+name = "LsaSetQuotasForAccount"
+ordinal = 340
+
+[[export]]
+name = "LsaSetSecret"
+ordinal = 341
+
+[[export]]
+name = "LsaSetSecurityObject"
+ordinal = 342
+
+[[export]]
+name = "LsaSetSystemAccessAccount"
+ordinal = 343
+
+[[export]]
+name = "LsaSetTrustedDomainInfoByName"
+ordinal = 344
+
+[[export]]
+name = "LsaSetTrustedDomainInformation"
+ordinal = 345
+
+[[export]]
+name = "LsaStorePrivateData"
+ordinal = 346
+
+[[export]]
+name = "MakeAbsoluteSD2"
+ordinal = 347
+
+[[export]]
+name = "MakeAbsoluteSD"
+ordinal = 348
+
+[[export]]
+name = "MakeSelfRelativeSD"
+ordinal = 349
+
+[[export]]
+name = "MapGenericMask"
+ordinal = 350
+
+[[export]]
+name = "NotifyBootConfigStatus"
+ordinal = 351
+
+[[export]]
+name = "NotifyChangeEventLog"
+ordinal = 352
+
+[[export]]
+name = "ObjectCloseAuditAlarmA"
+ordinal = 353
+
+[[export]]
+name = "ObjectCloseAuditAlarmW"
+ordinal = 354
+
+[[export]]
+name = "ObjectDeleteAuditAlarmA"
+ordinal = 355
+
+[[export]]
+name = "ObjectDeleteAuditAlarmW"
+ordinal = 356
+
+[[export]]
+name = "ObjectOpenAuditAlarmA"
+ordinal = 357
+
+[[export]]
+name = "ObjectOpenAuditAlarmW"
+ordinal = 358
+
+[[export]]
+name = "ObjectPrivilegeAuditAlarmA"
+ordinal = 359
+
+[[export]]
+name = "ObjectPrivilegeAuditAlarmW"
+ordinal = 360
+
+[[export]]
+name = "OpenBackupEventLogA"
+ordinal = 361
+
+[[export]]
+name = "OpenBackupEventLogW"
+ordinal = 362
+
+[[export]]
+name = "OpenEncryptedFileRawA"
+ordinal = 363
+
+[[export]]
+name = "OpenEncryptedFileRawW"
+ordinal = 364
+
+[[export]]
+name = "OpenEventLogA"
+ordinal = 365
+
+[[export]]
+name = "OpenEventLogW"
+ordinal = 366
+
+[[export]]
+name = "OpenProcessToken"
+ordinal = 367
+
+[[export]]
+name = "OpenSCManagerA"
+ordinal = 368
+
+[[export]]
+name = "OpenSCManagerW"
+ordinal = 369
+
+[[export]]
+name = "OpenServiceA"
+ordinal = 370
+
+[[export]]
+name = "OpenServiceW"
+ordinal = 371
+
+[[export]]
+name = "OpenThreadToken"
+ordinal = 372
+
+[[export]]
+name = "OpenTraceA"
+ordinal = 373
+
+[[export]]
+name = "OpenTraceW"
+ordinal = 374
+
+[[export]]
+name = "PrivilegeCheck"
+ordinal = 375
+
+[[export]]
+name = "PrivilegedServiceAuditAlarmA"
+ordinal = 376
+
+[[export]]
+name = "PrivilegedServiceAuditAlarmW"
+ordinal = 377
+
+[[export]]
+name = "ProcessTrace"
+ordinal = 378
+
+[[export]]
+name = "QueryAllTracesA"
+ordinal = 379
+
+[[export]]
+name = "QueryAllTracesW"
+ordinal = 380
+
+[[export]]
+name = "QueryRecoveryAgentsOnEncryptedFile"
+ordinal = 381
+
+[[export]]
+name = "QueryServiceConfig2A"
+ordinal = 382
+
+[[export]]
+name = "QueryServiceConfig2W"
+ordinal = 383
+
+[[export]]
+name = "QueryServiceConfigA"
+ordinal = 384
+
+[[export]]
+name = "QueryServiceConfigW"
+ordinal = 385
+
+[[export]]
+name = "QueryServiceLockStatusA"
+ordinal = 386
+
+[[export]]
+name = "QueryServiceLockStatusW"
+ordinal = 387
+
+[[export]]
+name = "QueryServiceObjectSecurity"
+ordinal = 388
+
+[[export]]
+name = "QueryServiceStatus"
+ordinal = 389
+
+[[export]]
+name = "QueryServiceStatusEx"
+ordinal = 390
+
+[[export]]
+name = "QueryUsersOnEncryptedFile"
+ordinal = 391
+
+[[export]]
+name = "QueryWindows31FilesMigration"
+ordinal = 392
+
+[[export]]
+name = "ReadEncryptedFileRaw"
+ordinal = 393
+
+[[export]]
+name = "ReadEventLogA"
+ordinal = 394
+
+[[export]]
+name = "ReadEventLogW"
+ordinal = 395
+
+[[export]]
+name = "RegCloseKey"
+ordinal = 396
+
+[[export]]
+name = "RegConnectRegistryA"
+ordinal = 397
+
+[[export]]
+name = "RegConnectRegistryW"
+ordinal = 398
+
+[[export]]
+name = "RegCreateKeyA"
+ordinal = 399
+
+[[export]]
+name = "RegCreateKeyExA"
+ordinal = 400
+
+[[export]]
+name = "RegCreateKeyExW"
+ordinal = 401
+
+[[export]]
+name = "RegCreateKeyW"
+ordinal = 402
+
+[[export]]
+name = "RegDeleteKeyA"
+ordinal = 403
+
+[[export]]
+name = "RegDeleteKeyW"
+ordinal = 404
+
+[[export]]
+name = "RegDeleteValueA"
+ordinal = 405
+
+[[export]]
+name = "RegDeleteValueW"
+ordinal = 406
+
+[[export]]
+name = "RegDisablePredefinedCache"
+ordinal = 407
+
+[[export]]
+name = "RegEnumKeyA"
+ordinal = 408
+
+[[export]]
+name = "RegEnumKeyExA"
+ordinal = 409
+
+[[export]]
+name = "RegEnumKeyExW"
+ordinal = 410
+
+[[export]]
+name = "RegEnumKeyW"
+ordinal = 411
+
+[[export]]
+name = "RegEnumValueA"
+ordinal = 412
+
+[[export]]
+name = "RegEnumValueW"
+ordinal = 413
+
+[[export]]
+name = "RegFlushKey"
+ordinal = 414
+
+[[export]]
+name = "RegGetKeySecurity"
+ordinal = 415
+
+[[export]]
+name = "RegLoadKeyA"
+ordinal = 416
+
+[[export]]
+name = "RegLoadKeyW"
+ordinal = 417
+
+[[export]]
+name = "RegNotifyChangeKeyValue"
+ordinal = 418
+
+[[export]]
+name = "RegOpenCurrentUser"
+ordinal = 419
+
+[[export]]
+name = "RegOpenKeyA"
+ordinal = 420
+
+[[export]]
+name = "RegOpenKeyExA"
+ordinal = 421
+
+[[export]]
+name = "RegOpenKeyExW"
+ordinal = 422
+
+[[export]]
+name = "RegOpenKeyW"
+ordinal = 423
+
+[[export]]
+name = "RegOpenUserClassesRoot"
+ordinal = 424
+
+[[export]]
+name = "RegOverridePredefKey"
+ordinal = 425
+
+[[export]]
+name = "RegQueryInfoKeyA"
+ordinal = 426
+
+[[export]]
+name = "RegQueryInfoKeyW"
+ordinal = 427
+
+[[export]]
+name = "RegQueryMultipleValuesA"
+ordinal = 428
+
+[[export]]
+name = "RegQueryMultipleValuesW"
+ordinal = 429
+
+[[export]]
+name = "RegQueryValueA"
+ordinal = 430
+
+[[export]]
+name = "RegQueryValueExA"
+ordinal = 431
+
+[[export]]
+name = "RegQueryValueExW"
+ordinal = 432
+
+[[export]]
+name = "RegQueryValueW"
+ordinal = 433
+
+[[export]]
+name = "RegReplaceKeyA"
+ordinal = 434
+
+[[export]]
+name = "RegReplaceKeyW"
+ordinal = 435
+
+[[export]]
+name = "RegRestoreKeyA"
+ordinal = 436
+
+[[export]]
+name = "RegRestoreKeyW"
+ordinal = 437
+
+[[export]]
+name = "RegSaveKeyA"
+ordinal = 438
+
+[[export]]
+name = "RegSaveKeyW"
+ordinal = 439
+
+[[export]]
+name = "RegSetKeySecurity"
+ordinal = 440
+
+[[export]]
+name = "RegSetValueA"
+ordinal = 441
+
+[[export]]
+name = "RegSetValueExA"
+ordinal = 442
+
+[[export]]
+name = "RegSetValueExW"
+ordinal = 443
+
+[[export]]
+name = "RegSetValueW"
+ordinal = 444
+
+[[export]]
+name = "RegUnLoadKeyA"
+ordinal = 445
+
+[[export]]
+name = "RegUnLoadKeyW"
+ordinal = 446
+
+[[export]]
+name = "RegisterEventSourceA"
+ordinal = 447
+
+[[export]]
+name = "RegisterEventSourceW"
+ordinal = 448
+
+[[export]]
+name = "RegisterServiceCtrlHandlerA"
+ordinal = 449
+
+[[export]]
+name = "RegisterServiceCtrlHandlerExA"
+ordinal = 450
+
+[[export]]
+name = "RegisterServiceCtrlHandlerExW"
+ordinal = 451
+
+[[export]]
+name = "RegisterServiceCtrlHandlerW"
+ordinal = 452
+
+[[export]]
+name = "RegisterTraceGuidsA"
+ordinal = 453
+
+[[export]]
+name = "RegisterTraceGuidsW"
+ordinal = 454
+
+[[export]]
+name = "RemoveTraceCallback"
+ordinal = 455
+
+[[export]]
+name = "RemoveUsersFromEncryptedFile"
+ordinal = 456
+
+[[export]]
+name = "ReportEventA"
+ordinal = 457
+
+[[export]]
+name = "ReportEventW"
+ordinal = 458
+
+[[export]]
+name = "RevertToSelf"
+ordinal = 459
+
+[[export]]
+name = "SetAclInformation"
+ordinal = 460
+
+[[export]]
+name = "SetEntriesInAccessListA"
+ordinal = 461
+
+[[export]]
+name = "SetEntriesInAccessListW"
+ordinal = 462
+
+[[export]]
+name = "SetEntriesInAclA"
+ordinal = 463
+
+[[export]]
+name = "SetEntriesInAclW"
+ordinal = 464
+
+[[export]]
+name = "SetEntriesInAuditListA"
+ordinal = 465
+
+[[export]]
+name = "SetEntriesInAuditListW"
+ordinal = 466
+
+[[export]]
+name = "SetFileSecurityA"
+ordinal = 467
+
+[[export]]
+name = "SetFileSecurityW"
+ordinal = 468
+
+[[export]]
+name = "SetKernelObjectSecurity"
+ordinal = 469
+
+[[export]]
+name = "SetNamedSecurityInfoA"
+ordinal = 470
+
+[[export]]
+name = "SetNamedSecurityInfoExA"
+ordinal = 471
+
+[[export]]
+name = "SetNamedSecurityInfoExW"
+ordinal = 472
+
+[[export]]
+name = "SetNamedSecurityInfoW"
+ordinal = 473
+
+[[export]]
+name = "SetPrivateObjectSecurity"
+ordinal = 474
+
+[[export]]
+name = "SetPrivateObjectSecurityEx"
+ordinal = 475
+
+[[export]]
+name = "SetSecurityDescriptorControl"
+ordinal = 476
+
+[[export]]
+name = "SetSecurityDescriptorDacl"
+ordinal = 477
+
+[[export]]
+name = "SetSecurityDescriptorGroup"
+ordinal = 478
+
+[[export]]
+name = "SetSecurityDescriptorOwner"
+ordinal = 479
+
+[[export]]
+name = "SetSecurityDescriptorRMControl"
+ordinal = 480
+
+[[export]]
+name = "SetSecurityDescriptorSacl"
+ordinal = 481
+
+[[export]]
+name = "SetSecurityInfo"
+ordinal = 482
+
+[[export]]
+name = "SetSecurityInfoExA"
+ordinal = 483
+
+[[export]]
+name = "SetSecurityInfoExW"
+ordinal = 484
+
+[[export]]
+name = "SetServiceBits"
+ordinal = 485
+
+[[export]]
+name = "SetServiceObjectSecurity"
+ordinal = 486
+
+[[export]]
+name = "SetServiceStatus"
+ordinal = 487
+
+[[export]]
+name = "SetThreadToken"
+ordinal = 488
+
+[[export]]
+name = "SetTokenInformation"
+ordinal = 489
+
+[[export]]
+name = "SetTraceCallback"
+ordinal = 490
+
+[[export]]
+name = "SetUserFileEncryptionKey"
+ordinal = 491
+
+[[export]]
+name = "StartServiceA"
+ordinal = 492
+
+[[export]]
+name = "StartServiceCtrlDispatcherA"
+ordinal = 493
+
+[[export]]
+name = "StartServiceCtrlDispatcherW"
+ordinal = 494
+
+[[export]]
+name = "StartServiceW"
+ordinal = 495
+
+[[export]]
+name = "StartTraceA"
+ordinal = 496
+
+[[export]]
+name = "StartTraceW"
+ordinal = 497
+
+[[export]]
+name = "SynchronizeWindows31FilesAndWindowsNTRegistry"
+ordinal = 498
+
+[[export]]
+name = "SystemFunction001"
+ordinal = 499
+
+[[export]]
+name = "SystemFunction002"
+ordinal = 500
+
+[[export]]
+name = "SystemFunction003"
+ordinal = 501
+
+[[export]]
+name = "SystemFunction004"
+ordinal = 502
+
+[[export]]
+name = "SystemFunction005"
+ordinal = 503
+
+[[export]]
+name = "SystemFunction006"
+ordinal = 504
+
+[[export]]
+name = "SystemFunction007"
+ordinal = 505
+
+[[export]]
+name = "SystemFunction008"
+ordinal = 506
+
+[[export]]
+name = "SystemFunction009"
+ordinal = 507
+
+[[export]]
+name = "SystemFunction010"
+ordinal = 508
+
+[[export]]
+name = "SystemFunction011"
+ordinal = 509
+
+[[export]]
+name = "SystemFunction012"
+ordinal = 510
+
+[[export]]
+name = "SystemFunction013"
+ordinal = 511
+
+[[export]]
+name = "SystemFunction014"
+ordinal = 512
+
+[[export]]
+name = "SystemFunction015"
+ordinal = 513
+
+[[export]]
+name = "SystemFunction016"
+ordinal = 514
+
+[[export]]
+name = "SystemFunction017"
+ordinal = 515
+
+[[export]]
+name = "SystemFunction018"
+ordinal = 516
+
+[[export]]
+name = "SystemFunction019"
+ordinal = 517
+
+[[export]]
+name = "SystemFunction020"
+ordinal = 518
+
+[[export]]
+name = "SystemFunction021"
+ordinal = 519
+
+[[export]]
+name = "SystemFunction022"
+ordinal = 520
+
+[[export]]
+name = "SystemFunction023"
+ordinal = 521
+
+[[export]]
+name = "SystemFunction024"
+ordinal = 522
+
+[[export]]
+name = "SystemFunction025"
+ordinal = 523
+
+[[export]]
+name = "SystemFunction026"
+ordinal = 524
+
+[[export]]
+name = "SystemFunction027"
+ordinal = 525
+
+[[export]]
+name = "SystemFunction028"
+ordinal = 526
+
+[[export]]
+name = "SystemFunction029"
+ordinal = 527
+
+[[export]]
+name = "SystemFunction030"
+ordinal = 528
+
+[[export]]
+name = "SystemFunction031"
+ordinal = 529
+
+[[export]]
+name = "SystemFunction032"
+ordinal = 530
+
+[[export]]
+name = "SystemFunction033"
+ordinal = 531
+
+[[export]]
+name = "SystemFunction034"
+ordinal = 532
+
+[[export]]
+name = "SystemFunction035"
+ordinal = 533
+
+[[export]]
+name = "SystemFunction040"
+ordinal = 534
+
+[[export]]
+name = "SystemFunction041"
+ordinal = 535
+
+[[export]]
+name = "TraceEvent"
+ordinal = 536
+
+[[export]]
+name = "TraceEventInstance"
+ordinal = 537
+
+[[export]]
+name = "TrusteeAccessToObjectA"
+ordinal = 538
+
+[[export]]
+name = "TrusteeAccessToObjectW"
+ordinal = 539
+
+[[export]]
+name = "UninstallApplication"
+ordinal = 540
+
+[[export]]
+name = "UnlockServiceDatabase"
+ordinal = 541
+
+[[export]]
+name = "UnregisterTraceGuids"
+ordinal = 542
+
+[[export]]
+name = "WmiCloseBlock"
+ordinal = 543
+
+[[export]]
+name = "WmiDevInstToInstanceNameA"
+ordinal = 544
+
+[[export]]
+name = "WmiDevInstToInstanceNameW"
+ordinal = 545
+
+[[export]]
+name = "WmiEnumerateGuids"
+ordinal = 546
+
+[[export]]
+name = "WmiExecuteMethodA"
+ordinal = 547
+
+[[export]]
+name = "WmiExecuteMethodW"
+ordinal = 548
+
+[[export]]
+name = "WmiFileHandleToInstanceNameA"
+ordinal = 549
+
+[[export]]
+name = "WmiFileHandleToInstanceNameW"
+ordinal = 550
+
+[[export]]
+name = "WmiFreeBuffer"
+ordinal = 551
+
+[[export]]
+name = "WmiMofEnumerateResourcesA"
+ordinal = 552
+
+[[export]]
+name = "WmiMofEnumerateResourcesW"
+ordinal = 553
+
+[[export]]
+name = "WmiNotificationRegistrationA"
+ordinal = 554
+
+[[export]]
+name = "WmiNotificationRegistrationW"
+ordinal = 555
+
+[[export]]
+name = "WmiOpenBlock"
+ordinal = 556
+
+[[export]]
+name = "WmiQueryAllDataA"
+ordinal = 557
+
+[[export]]
+name = "WmiQueryAllDataW"
+ordinal = 558
+
+[[export]]
+name = "WmiQueryGuidInformation"
+ordinal = 559
+
+[[export]]
+name = "WmiQuerySingleInstanceA"
+ordinal = 560
+
+[[export]]
+name = "WmiQuerySingleInstanceW"
+ordinal = 561
+
+[[export]]
+name = "WmiSetSingleInstanceA"
+ordinal = 562
+
+[[export]]
+name = "WmiSetSingleInstanceW"
+ordinal = 563
+
+[[export]]
+name = "WmiSetSingleItemA"
+ordinal = 564
+
+[[export]]
+name = "WmiSetSingleItemW"
+ordinal = 565
+
+[[export]]
+name = "WriteEncryptedFileRaw"
+ordinal = 566

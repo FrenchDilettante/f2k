@@ -6,3 +6,113 @@ gate = true
 [masks]
 # The breakpoint record's second parameter is a stack address.
 seh = ["int 3: handled yes code 0x80000003 flags 0 params 3 info 0 *"]
+
+[pins]
+# The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
+# calls); scripts/compat.py derives each export's coverage from them.
+"*" = [
+    "kernel32.ExitProcess",
+    "kernel32.GetCommandLineA",
+    "kernel32.GetStartupInfoA",
+    "kernel32.GetModuleFileNameA",
+    "kernel32.GetVersion",
+    "kernel32.GetStdHandle",
+    "kernel32.GetFileType",
+    "kernel32.SetHandleCount",
+    "kernel32.WriteFile",
+    "kernel32.GetEnvironmentStringsW",
+    "kernel32.FreeEnvironmentStringsA",
+    "kernel32.HeapAlloc",
+    "kernel32.HeapCreate",
+    "kernel32.HeapFree",
+    "kernel32.GetACP",
+    "kernel32.GetCPInfo",
+    "kernel32.MultiByteToWideChar",
+    "kernel32.WideCharToMultiByte",
+    "kernel32.LCMapStringW",
+    "kernel32.GetStringTypeW",
+    "kernel32.VirtualAlloc",
+    "ntdll.NtAllocateVirtualMemory",
+    "ntdll.RtlAllocateHeap",
+    "ntdll.RtlFreeHeap",
+    "ntdll.LdrInitializeThunk",
+]
+unhandled = [
+    "kernel32.UnhandledExceptionFilter",
+    "kernel32.SetErrorMode",
+    "kernel32.SetUnhandledExceptionFilter",
+    "ntdll.NtContinue",
+    "ntdll.KiUserExceptionDispatcher",
+    "ntdll.RtlUnwind",
+]
+module = [
+    "kernel32.GetProcAddress",
+    "kernel32.LoadLibraryA",
+    "kernel32.FreeLibrary",
+    "kernel32.GetModuleHandleA",
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+    "kernel32.GetTickCount",
+    "ntdll.LdrGetDllHandle",
+    "ntdll.LdrLoadDll",
+    "ntdll.LdrUnloadDll",
+    "ntdll.LdrGetProcedureAddress",
+]
+seh = [
+    "kernel32.RaiseException",
+    "ntdll.NtContinue",
+    "ntdll.NtRaiseException",
+    "ntdll.KiUserExceptionDispatcher",
+    "ntdll.RtlRaiseException",
+    "ntdll.RtlUnwind",
+]
+teb = [
+    "kernel32.GetModuleHandleA",
+    "kernel32.SetLastError",
+    "kernel32.GetProcessHeap",
+    "kernel32.GetCurrentThreadId",
+    "kernel32.GetCurrentProcessId",
+]
+version = ["kernel32.GetVersionExA", "kernel32.GetLastError", "kernel32.SetLastError"]
+lasterror = [
+    "kernel32.FormatMessageA",
+    "kernel32.CloseHandle",
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+    "kernel32.GetTickCount",
+]
+args = ["kernel32.GetLastError", "kernel32.SetLastError"]
+console = [
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+    "kernel32.GetConsoleCP",
+    "kernel32.GetConsoleOutputCP",
+    "kernel32.GetConsoleMode",
+    "kernel32.WriteConsoleA",
+    "ntdll.CsrClientCallServer",
+]
+env = [
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+    "kernel32.GetEnvironmentStrings",
+    "kernel32.FreeEnvironmentStringsW",
+    "kernel32.GetEnvironmentVariableA",
+    "kernel32.SetEnvironmentVariableA",
+    "kernel32.ExpandEnvironmentStringsA",
+    "ntdll.RtlQueryEnvironmentVariable_U",
+    "ntdll.RtlSetEnvironmentVariable",
+    "ntdll.RtlExpandEnvironmentStrings_U",
+]
+locale = [
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+    "kernel32.GetOEMCP",
+    "kernel32.LCMapStringA",
+    "kernel32.GetStringTypeA",
+    "kernel32.CompareStringA",
+    "kernel32.GetLocaleInfoA",
+    "kernel32.GetUserDefaultLCID",
+    "kernel32.GetSystemDefaultLCID",
+    "kernel32.IsValidCodePage",
+]
+exit = ["ntdll.NtTerminateProcess", "ntdll.LdrShutdownProcess"]

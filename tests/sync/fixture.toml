@@ -2,3 +2,128 @@
 description = "sync - synchronization objects and waits (sync.c, /MT): events, semaphores, mutexes, multi-object waits, user APCs, critical sections, interlocked operations, handle duplication and closing, and the original pingpong."
 kind = "sectioned"
 gate = true
+
+[pins]
+# The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
+# calls); scripts/compat.py derives each export's coverage from them.
+"*" = [
+    "kernel32.GetStdHandle",
+    "kernel32.WriteFile",
+    "kernel32.CloseHandle",
+    "kernel32.GetLastError",
+    "kernel32.WaitForSingleObject",
+    "ntdll.NtWaitForSingleObject",
+    "ntdll.RtlAcquirePebLock",
+    "ntdll.RtlReleasePebLock",
+]
+handles = [
+    "kernel32.GetCurrentProcess",
+    "kernel32.SetLastError",
+    "kernel32.CreateThread",
+    "kernel32.CreateEventA",
+    "kernel32.SetEvent",
+    "kernel32.Sleep",
+    "kernel32.GetCurrentThread",
+    "kernel32.DuplicateHandle",
+    "ntdll.NtDuplicateObject",
+]
+waitmulti = [
+    "kernel32.GetCurrentProcess",
+    "kernel32.SetLastError",
+    "kernel32.CreateThread",
+    "kernel32.CreateEventA",
+    "kernel32.SetEvent",
+    "kernel32.GetCurrentThread",
+    "kernel32.InterlockedIncrement",
+    "kernel32.CreateMutexA",
+    "kernel32.CreateSemaphoreA",
+    "kernel32.ReleaseMutex",
+    "kernel32.WaitForMultipleObjects",
+    "ntdll.NtCreateEvent",
+    "ntdll.NtWaitForMultipleObjects",
+]
+apc = [
+    "kernel32.SetLastError",
+    "kernel32.CreateThread",
+    "kernel32.CreateEventA",
+    "kernel32.SetEvent",
+    "kernel32.Sleep",
+    "kernel32.GetCurrentThread",
+    "kernel32.QueueUserAPC",
+    "kernel32.SleepEx",
+    "kernel32.WaitForSingleObjectEx",
+    "ntdll.NtContinue",
+    "ntdll.NtDelayExecution",
+    "ntdll.NtQueueApcThread",
+    "ntdll.KiUserApcDispatcher",
+]
+event = [
+    "kernel32.SetLastError",
+    "kernel32.CreateThread",
+    "kernel32.CreateEventA",
+    "kernel32.SetEvent",
+    "kernel32.Sleep",
+    "kernel32.InterlockedIncrement",
+    "kernel32.CreateMutexA",
+    "kernel32.OpenEventA",
+    "kernel32.PulseEvent",
+    "kernel32.ResetEvent",
+    "ntdll.NtOpenDirectoryObject",
+    "ntdll.NtCreateEvent",
+    "ntdll.NtOpenEvent",
+    "ntdll.NtSetEvent",
+    "ntdll.NtResetEvent",
+    "ntdll.NtClearEvent",
+    "ntdll.NtPulseEvent",
+]
+mutex = [
+    "kernel32.SetLastError",
+    "kernel32.CreateThread",
+    "kernel32.CreateMutexA",
+    "kernel32.OpenMutexA",
+    "kernel32.ReleaseMutex",
+    "ntdll.NtCreateMutant",
+    "ntdll.NtOpenMutant",
+    "ntdll.NtReleaseMutant",
+]
+semaphore = [
+    "kernel32.SetLastError",
+    "kernel32.CreateSemaphoreA",
+    "kernel32.OpenSemaphoreA",
+    "kernel32.ReleaseSemaphore",
+    "ntdll.NtCreateSemaphore",
+    "ntdll.NtOpenSemaphore",
+    "ntdll.NtReleaseSemaphore",
+]
+critsec = [
+    "kernel32.CreateThread",
+    "kernel32.GetCurrentThreadId",
+    "kernel32.DeleteCriticalSection",
+    "kernel32.EnterCriticalSection",
+    "kernel32.InitializeCriticalSection",
+    "kernel32.LeaveCriticalSection",
+    "kernel32.TryEnterCriticalSection",
+    "ntdll.NtCreateEvent",
+    "ntdll.NtSetEvent",
+    "ntdll.RtlEnterCriticalSection",
+    "ntdll.RtlTryEnterCriticalSection",
+    "ntdll.RtlLeaveCriticalSection",
+    "ntdll.RtlDeleteCriticalSection",
+]
+interlocked = [
+    "kernel32.CreateThread",
+    "kernel32.InterlockedIncrement",
+    "kernel32.InterlockedDecrement",
+    "kernel32.InterlockedExchange",
+    "kernel32.InterlockedExchangeAdd",
+    "kernel32.InterlockedCompareExchange",
+]
+pingpong = [
+    "kernel32.CreateThread",
+    "kernel32.CreateEventA",
+    "kernel32.SetEvent",
+    "kernel32.ResetEvent",
+    "kernel32.SignalObjectAndWait",
+    "ntdll.NtClearEvent",
+    "ntdll.NtSignalAndWaitForSingleObject",
+]

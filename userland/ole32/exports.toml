@@ -1,0 +1,1224 @@
+# ole32.dll's exports: the one source every list of them derives from (the format is
+# kernel32's, documented in userland/kernel32/exports.toml).
+#
+# None is implemented yet: each record is catalogued from ole32.dll 5.0.2195.6692's export table
+# (scripts/catalogue_exports.py): its name and ordinal. Implementing one gives it its group,
+# prototype and implementation.
+
+# --- not implemented yet: the rest of ole32.dll 5.0.2195.6692's export table, by ordinal ---------
+
+[[export]]
+name = "PropVariantChangeType"
+ordinal = 1
+
+[[export]]
+name = "StgConvertPropertyToVariant"
+ordinal = 2
+
+[[export]]
+name = "StgConvertVariantToProperty"
+ordinal = 3
+
+[[export]]
+name = "StgPropertyLengthAsVariant"
+ordinal = 4
+
+[[export]]
+name = "WdtpInterfacePointer_UserFree"
+ordinal = 5
+
+[[export]]
+name = "WdtpInterfacePointer_UserMarshal"
+ordinal = 6
+
+[[export]]
+name = "WdtpInterfacePointer_UserSize"
+ordinal = 7
+
+[[export]]
+name = "WdtpInterfacePointer_UserUnmarshal"
+ordinal = 8
+
+[[export]]
+name = "BindMoniker"
+ordinal = 9
+
+[[export]]
+name = "CLIPFORMAT_UserFree"
+ordinal = 10
+
+[[export]]
+name = "CLIPFORMAT_UserMarshal"
+ordinal = 11
+
+[[export]]
+name = "CLIPFORMAT_UserSize"
+ordinal = 12
+
+[[export]]
+name = "CLIPFORMAT_UserUnmarshal"
+ordinal = 13
+
+[[export]]
+name = "CLSIDFromOle1Class"
+ordinal = 14
+
+[[export]]
+name = "CLSIDFromProgID"
+ordinal = 15
+
+[[export]]
+name = "CLSIDFromProgIDEx"
+ordinal = 16
+
+[[export]]
+name = "CLSIDFromString"
+ordinal = 17
+
+[[export]]
+name = "CoAddRefServerProcess"
+ordinal = 18
+
+[[export]]
+name = "CoAllowSetForegroundWindow"
+ordinal = 19
+
+[[export]]
+name = "CoBuildVersion"
+ordinal = 20
+
+[[export]]
+name = "CoCancelCall"
+ordinal = 21
+
+[[export]]
+name = "CoCopyProxy"
+ordinal = 22
+
+[[export]]
+name = "CoCreateFreeThreadedMarshaler"
+ordinal = 23
+
+[[export]]
+name = "CoCreateGuid"
+ordinal = 24
+
+[[export]]
+name = "CoCreateInstance"
+ordinal = 25
+
+[[export]]
+name = "CoCreateInstanceEx"
+ordinal = 26
+
+[[export]]
+name = "CoCreateObjectInContext"
+ordinal = 27
+
+[[export]]
+name = "CoDeactivateObject"
+ordinal = 28
+
+[[export]]
+name = "CoDisableCallCancellation"
+ordinal = 29
+
+[[export]]
+name = "CoDisconnectObject"
+ordinal = 30
+
+[[export]]
+name = "CoDosDateTimeToFileTime"
+ordinal = 31
+
+[[export]]
+name = "CoEnableCallCancellation"
+ordinal = 32
+
+[[export]]
+name = "CoFileTimeNow"
+ordinal = 33
+
+[[export]]
+name = "CoFileTimeToDosDateTime"
+ordinal = 34
+
+[[export]]
+name = "CoFreeAllLibraries"
+ordinal = 35
+
+[[export]]
+name = "CoFreeLibrary"
+ordinal = 36
+
+[[export]]
+name = "CoFreeUnusedLibraries"
+ordinal = 37
+
+[[export]]
+name = "CoGetApartmentID"
+ordinal = 38
+
+[[export]]
+name = "CoGetCallContext"
+ordinal = 39
+
+[[export]]
+name = "CoGetCallerTID"
+ordinal = 40
+
+[[export]]
+name = "CoGetCancelObject"
+ordinal = 41
+
+[[export]]
+name = "CoGetClassObject"
+ordinal = 42
+
+[[export]]
+name = "CoGetClassVersion"
+ordinal = 43
+
+[[export]]
+name = "CoGetContextToken"
+ordinal = 44
+
+[[export]]
+name = "CoGetCurrentLogicalThreadId"
+ordinal = 45
+
+[[export]]
+name = "CoGetCurrentProcess"
+ordinal = 46
+
+[[export]]
+name = "CoGetInstanceFromFile"
+ordinal = 47
+
+[[export]]
+name = "CoGetInstanceFromIStorage"
+ordinal = 48
+
+[[export]]
+name = "CoGetInterfaceAndReleaseStream"
+ordinal = 49
+
+[[export]]
+name = "CoGetMalloc"
+ordinal = 50
+
+[[export]]
+name = "CoGetMarshalSizeMax"
+ordinal = 51
+
+[[export]]
+name = "CoGetObject"
+ordinal = 52
+
+[[export]]
+name = "CoGetObjectContext"
+ordinal = 53
+
+[[export]]
+name = "CoGetPSClsid"
+ordinal = 54
+
+[[export]]
+name = "CoGetStandardMarshal"
+ordinal = 55
+
+[[export]]
+name = "CoGetState"
+ordinal = 56
+
+[[export]]
+name = "CoGetStdMarshalEx"
+ordinal = 57
+
+[[export]]
+name = "CoGetTreatAsClass"
+ordinal = 58
+
+[[export]]
+name = "CoImpersonateClient"
+ordinal = 59
+
+[[export]]
+name = "CoInitialize"
+ordinal = 60
+
+[[export]]
+name = "CoInitializeEx"
+ordinal = 61
+
+[[export]]
+name = "CoInitializeSecurity"
+ordinal = 62
+
+[[export]]
+name = "CoInitializeWOW"
+ordinal = 63
+
+[[export]]
+name = "CoInstall"
+ordinal = 64
+
+[[export]]
+name = "CoIsHandlerConnected"
+ordinal = 65
+
+[[export]]
+name = "CoIsOle1Class"
+ordinal = 66
+
+[[export]]
+name = "CoLoadLibrary"
+ordinal = 67
+
+[[export]]
+name = "CoLockObjectExternal"
+ordinal = 68
+
+[[export]]
+name = "CoMarshalHresult"
+ordinal = 69
+
+[[export]]
+name = "CoMarshalInterThreadInterfaceInStream"
+ordinal = 70
+
+[[export]]
+name = "CoMarshalInterface"
+ordinal = 71
+
+[[export]]
+name = "CoQueryAuthenticationServices"
+ordinal = 72
+
+[[export]]
+name = "CoQueryClientBlanket"
+ordinal = 73
+
+[[export]]
+name = "CoQueryProxyBlanket"
+ordinal = 74
+
+[[export]]
+name = "CoQueryReleaseObject"
+ordinal = 75
+
+[[export]]
+name = "CoReactivateObject"
+ordinal = 76
+
+[[export]]
+name = "CoRegisterChannelHook"
+ordinal = 77
+
+[[export]]
+name = "CoRegisterClassObject"
+ordinal = 78
+
+[[export]]
+name = "CoRegisterMallocSpy"
+ordinal = 79
+
+[[export]]
+name = "CoRegisterMessageFilter"
+ordinal = 80
+
+[[export]]
+name = "CoRegisterPSClsid"
+ordinal = 81
+
+[[export]]
+name = "CoRegisterSurrogate"
+ordinal = 82
+
+[[export]]
+name = "CoRegisterSurrogateEx"
+ordinal = 83
+
+[[export]]
+name = "CoReleaseMarshalData"
+ordinal = 84
+
+[[export]]
+name = "CoReleaseServerProcess"
+ordinal = 85
+
+[[export]]
+name = "CoResumeClassObjects"
+ordinal = 86
+
+[[export]]
+name = "CoRevertToSelf"
+ordinal = 87
+
+[[export]]
+name = "CoRevokeClassObject"
+ordinal = 88
+
+[[export]]
+name = "CoRevokeMallocSpy"
+ordinal = 89
+
+[[export]]
+name = "CoSetCancelObject"
+ordinal = 90
+
+[[export]]
+name = "CoSetProxyBlanket"
+ordinal = 91
+
+[[export]]
+name = "CoSetState"
+ordinal = 92
+
+[[export]]
+name = "CoSuspendClassObjects"
+ordinal = 93
+
+[[export]]
+name = "CoSwitchCallContext"
+ordinal = 94
+
+[[export]]
+name = "CoTaskMemAlloc"
+ordinal = 95
+
+[[export]]
+name = "CoTaskMemFree"
+ordinal = 96
+
+[[export]]
+name = "CoTaskMemRealloc"
+ordinal = 97
+
+[[export]]
+name = "CoTestCancel"
+ordinal = 98
+
+[[export]]
+name = "CoTreatAsClass"
+ordinal = 99
+
+[[export]]
+name = "CoUninitialize"
+ordinal = 100
+
+[[export]]
+name = "CoUnloadingWOW"
+ordinal = 101
+
+[[export]]
+name = "CoUnmarshalHresult"
+ordinal = 102
+
+[[export]]
+name = "CoUnmarshalInterface"
+ordinal = 103
+
+[[export]]
+name = "CoWaitForMultipleHandles"
+ordinal = 104
+
+[[export]]
+name = "CreateAntiMoniker"
+ordinal = 105
+
+[[export]]
+name = "CreateBindCtx"
+ordinal = 106
+
+[[export]]
+name = "CreateClassMoniker"
+ordinal = 107
+
+[[export]]
+name = "CreateDataAdviseHolder"
+ordinal = 108
+
+[[export]]
+name = "CreateDataCache"
+ordinal = 109
+
+[[export]]
+name = "CreateErrorInfo"
+ordinal = 110
+
+[[export]]
+name = "CreateFileMoniker"
+ordinal = 111
+
+[[export]]
+name = "CreateGenericComposite"
+ordinal = 112
+
+[[export]]
+name = "CreateILockBytesOnHGlobal"
+ordinal = 113
+
+[[export]]
+name = "CreateItemMoniker"
+ordinal = 114
+
+[[export]]
+name = "CreateObjrefMoniker"
+ordinal = 115
+
+[[export]]
+name = "CreateOleAdviseHolder"
+ordinal = 116
+
+[[export]]
+name = "CreatePointerMoniker"
+ordinal = 117
+
+[[export]]
+name = "CreateStdProgressIndicator"
+ordinal = 118
+
+[[export]]
+name = "CreateStreamOnHGlobal"
+ordinal = 119
+
+[[export]]
+name = "DcomChannelSetHResult"
+ordinal = 120
+
+[[export]]
+name = "DllDebugObjectRPCHook"
+ordinal = 121
+
+[[export]]
+name = "DllGetClassObject"
+ordinal = 122
+
+[[export]]
+name = "DllGetClassObjectWOW"
+ordinal = 123
+
+[[export]]
+name = "DllRegisterServer"
+ordinal = 124
+
+[[export]]
+name = "DoDragDrop"
+ordinal = 125
+
+[[export]]
+name = "EnableHookObject"
+ordinal = 126
+
+[[export]]
+name = "FmtIdToPropStgName"
+ordinal = 127
+
+[[export]]
+name = "FreePropVariantArray"
+ordinal = 128
+
+[[export]]
+name = "GetClassFile"
+ordinal = 129
+
+[[export]]
+name = "GetConvertStg"
+ordinal = 130
+
+[[export]]
+name = "GetDocumentBitStg"
+ordinal = 131
+
+[[export]]
+name = "GetErrorInfo"
+ordinal = 132
+
+[[export]]
+name = "GetHGlobalFromILockBytes"
+ordinal = 133
+
+[[export]]
+name = "GetHGlobalFromStream"
+ordinal = 134
+
+[[export]]
+name = "GetHookInterface"
+ordinal = 135
+
+[[export]]
+name = "GetRunningObjectTable"
+ordinal = 136
+
+[[export]]
+name = "HACCEL_UserFree"
+ordinal = 137
+
+[[export]]
+name = "HACCEL_UserMarshal"
+ordinal = 138
+
+[[export]]
+name = "HACCEL_UserSize"
+ordinal = 139
+
+[[export]]
+name = "HACCEL_UserUnmarshal"
+ordinal = 140
+
+[[export]]
+name = "HBITMAP_UserFree"
+ordinal = 141
+
+[[export]]
+name = "HBITMAP_UserMarshal"
+ordinal = 142
+
+[[export]]
+name = "HBITMAP_UserSize"
+ordinal = 143
+
+[[export]]
+name = "HBITMAP_UserUnmarshal"
+ordinal = 144
+
+[[export]]
+name = "HBRUSH_UserFree"
+ordinal = 145
+
+[[export]]
+name = "HBRUSH_UserMarshal"
+ordinal = 146
+
+[[export]]
+name = "HBRUSH_UserSize"
+ordinal = 147
+
+[[export]]
+name = "HBRUSH_UserUnmarshal"
+ordinal = 148
+
+[[export]]
+name = "HDC_UserFree"
+ordinal = 149
+
+[[export]]
+name = "HDC_UserMarshal"
+ordinal = 150
+
+[[export]]
+name = "HDC_UserSize"
+ordinal = 151
+
+[[export]]
+name = "HDC_UserUnmarshal"
+ordinal = 152
+
+[[export]]
+name = "HENHMETAFILE_UserFree"
+ordinal = 153
+
+[[export]]
+name = "HENHMETAFILE_UserMarshal"
+ordinal = 154
+
+[[export]]
+name = "HENHMETAFILE_UserSize"
+ordinal = 155
+
+[[export]]
+name = "HENHMETAFILE_UserUnmarshal"
+ordinal = 156
+
+[[export]]
+name = "HGLOBAL_UserFree"
+ordinal = 157
+
+[[export]]
+name = "HGLOBAL_UserMarshal"
+ordinal = 158
+
+[[export]]
+name = "HGLOBAL_UserSize"
+ordinal = 159
+
+[[export]]
+name = "HGLOBAL_UserUnmarshal"
+ordinal = 160
+
+[[export]]
+name = "HICON_UserFree"
+ordinal = 161
+
+[[export]]
+name = "HICON_UserMarshal"
+ordinal = 162
+
+[[export]]
+name = "HICON_UserSize"
+ordinal = 163
+
+[[export]]
+name = "HICON_UserUnmarshal"
+ordinal = 164
+
+[[export]]
+name = "HMENU_UserFree"
+ordinal = 165
+
+[[export]]
+name = "HMENU_UserMarshal"
+ordinal = 166
+
+[[export]]
+name = "HMENU_UserSize"
+ordinal = 167
+
+[[export]]
+name = "HMENU_UserUnmarshal"
+ordinal = 168
+
+[[export]]
+name = "HMETAFILEPICT_UserFree"
+ordinal = 169
+
+[[export]]
+name = "HMETAFILEPICT_UserMarshal"
+ordinal = 170
+
+[[export]]
+name = "HMETAFILEPICT_UserSize"
+ordinal = 171
+
+[[export]]
+name = "HMETAFILEPICT_UserUnmarshal"
+ordinal = 172
+
+[[export]]
+name = "HMETAFILE_UserFree"
+ordinal = 173
+
+[[export]]
+name = "HMETAFILE_UserMarshal"
+ordinal = 174
+
+[[export]]
+name = "HMETAFILE_UserSize"
+ordinal = 175
+
+[[export]]
+name = "HMETAFILE_UserUnmarshal"
+ordinal = 176
+
+[[export]]
+name = "HPALETTE_UserFree"
+ordinal = 177
+
+[[export]]
+name = "HPALETTE_UserMarshal"
+ordinal = 178
+
+[[export]]
+name = "HPALETTE_UserSize"
+ordinal = 179
+
+[[export]]
+name = "HPALETTE_UserUnmarshal"
+ordinal = 180
+
+[[export]]
+name = "HWND_UserFree"
+ordinal = 181
+
+[[export]]
+name = "HWND_UserMarshal"
+ordinal = 182
+
+[[export]]
+name = "HWND_UserSize"
+ordinal = 183
+
+[[export]]
+name = "HWND_UserUnmarshal"
+ordinal = 184
+
+[[export]]
+name = "HkOleRegisterObject"
+ordinal = 185
+
+[[export]]
+name = "IIDFromString"
+ordinal = 186
+
+[[export]]
+name = "IsAccelerator"
+ordinal = 187
+
+[[export]]
+name = "IsEqualGUID"
+ordinal = 188
+
+[[export]]
+name = "IsValidIid"
+ordinal = 189
+
+[[export]]
+name = "IsValidInterface"
+ordinal = 190
+
+[[export]]
+name = "IsValidPtrIn"
+ordinal = 191
+
+[[export]]
+name = "IsValidPtrOut"
+ordinal = 192
+
+[[export]]
+name = "MkParseDisplayName"
+ordinal = 193
+
+[[export]]
+name = "MonikerCommonPrefixWith"
+ordinal = 194
+
+[[export]]
+name = "MonikerRelativePathTo"
+ordinal = 195
+
+[[export]]
+name = "OleBuildVersion"
+ordinal = 196
+
+[[export]]
+name = "OleConvertIStorageToOLESTREAM"
+ordinal = 197
+
+[[export]]
+name = "OleConvertIStorageToOLESTREAMEx"
+ordinal = 198
+
+[[export]]
+name = "OleConvertOLESTREAMToIStorage"
+ordinal = 199
+
+[[export]]
+name = "OleConvertOLESTREAMToIStorageEx"
+ordinal = 200
+
+[[export]]
+name = "OleCreate"
+ordinal = 201
+
+[[export]]
+name = "OleCreateDefaultHandler"
+ordinal = 202
+
+[[export]]
+name = "OleCreateEmbeddingHelper"
+ordinal = 203
+
+[[export]]
+name = "OleCreateEx"
+ordinal = 204
+
+[[export]]
+name = "OleCreateFromData"
+ordinal = 205
+
+[[export]]
+name = "OleCreateFromDataEx"
+ordinal = 206
+
+[[export]]
+name = "OleCreateFromFile"
+ordinal = 207
+
+[[export]]
+name = "OleCreateFromFileEx"
+ordinal = 208
+
+[[export]]
+name = "OleCreateLink"
+ordinal = 209
+
+[[export]]
+name = "OleCreateLinkEx"
+ordinal = 210
+
+[[export]]
+name = "OleCreateLinkFromData"
+ordinal = 211
+
+[[export]]
+name = "OleCreateLinkFromDataEx"
+ordinal = 212
+
+[[export]]
+name = "OleCreateLinkToFile"
+ordinal = 213
+
+[[export]]
+name = "OleCreateLinkToFileEx"
+ordinal = 214
+
+[[export]]
+name = "OleCreateMenuDescriptor"
+ordinal = 215
+
+[[export]]
+name = "OleCreateStaticFromData"
+ordinal = 216
+
+[[export]]
+name = "OleDestroyMenuDescriptor"
+ordinal = 217
+
+[[export]]
+name = "OleDoAutoConvert"
+ordinal = 218
+
+[[export]]
+name = "OleDraw"
+ordinal = 219
+
+[[export]]
+name = "OleDuplicateData"
+ordinal = 220
+
+[[export]]
+name = "OleFlushClipboard"
+ordinal = 221
+
+[[export]]
+name = "OleGetAutoConvert"
+ordinal = 222
+
+[[export]]
+name = "OleGetClipboard"
+ordinal = 223
+
+[[export]]
+name = "OleGetIconOfClass"
+ordinal = 224
+
+[[export]]
+name = "OleGetIconOfFile"
+ordinal = 225
+
+[[export]]
+name = "OleInitialize"
+ordinal = 226
+
+[[export]]
+name = "OleInitializeWOW"
+ordinal = 227
+
+[[export]]
+name = "OleIsCurrentClipboard"
+ordinal = 228
+
+[[export]]
+name = "OleIsRunning"
+ordinal = 229
+
+[[export]]
+name = "OleLoad"
+ordinal = 230
+
+[[export]]
+name = "OleLoadFromStream"
+ordinal = 231
+
+[[export]]
+name = "OleLockRunning"
+ordinal = 232
+
+[[export]]
+name = "OleMetafilePictFromIconAndLabel"
+ordinal = 233
+
+[[export]]
+name = "OleNoteObjectVisible"
+ordinal = 234
+
+[[export]]
+name = "OleQueryCreateFromData"
+ordinal = 235
+
+[[export]]
+name = "OleQueryLinkFromData"
+ordinal = 236
+
+[[export]]
+name = "OleRegEnumFormatEtc"
+ordinal = 237
+
+[[export]]
+name = "OleRegEnumVerbs"
+ordinal = 238
+
+[[export]]
+name = "OleRegGetMiscStatus"
+ordinal = 239
+
+[[export]]
+name = "OleRegGetUserType"
+ordinal = 240
+
+[[export]]
+name = "OleRun"
+ordinal = 241
+
+[[export]]
+name = "OleSave"
+ordinal = 242
+
+[[export]]
+name = "OleSaveToStream"
+ordinal = 243
+
+[[export]]
+name = "OleSetAutoConvert"
+ordinal = 244
+
+[[export]]
+name = "OleSetClipboard"
+ordinal = 245
+
+[[export]]
+name = "OleSetContainedObject"
+ordinal = 246
+
+[[export]]
+name = "OleSetMenuDescriptor"
+ordinal = 247
+
+[[export]]
+name = "OleTranslateAccelerator"
+ordinal = 248
+
+[[export]]
+name = "OleUninitialize"
+ordinal = 249
+
+[[export]]
+name = "OpenOrCreateStream"
+ordinal = 250
+
+[[export]]
+name = "ProgIDFromCLSID"
+ordinal = 251
+
+[[export]]
+name = "PropStgNameToFmtId"
+ordinal = 252
+
+[[export]]
+name = "PropSysAllocString"
+ordinal = 253
+
+[[export]]
+name = "PropSysFreeString"
+ordinal = 254
+
+[[export]]
+name = "PropVariantClear"
+ordinal = 255
+
+[[export]]
+name = "PropVariantCopy"
+ordinal = 256
+
+[[export]]
+name = "ReadClassStg"
+ordinal = 257
+
+[[export]]
+name = "ReadClassStm"
+ordinal = 258
+
+[[export]]
+name = "ReadFmtUserTypeStg"
+ordinal = 259
+
+[[export]]
+name = "ReadOleStg"
+ordinal = 260
+
+[[export]]
+name = "ReadStringStream"
+ordinal = 261
+
+[[export]]
+name = "RegisterDragDrop"
+ordinal = 262
+
+[[export]]
+name = "ReleaseStgMedium"
+ordinal = 263
+
+[[export]]
+name = "RevokeDragDrop"
+ordinal = 264
+
+[[export]]
+name = "SNB_UserFree"
+ordinal = 265
+
+[[export]]
+name = "SNB_UserMarshal"
+ordinal = 266
+
+[[export]]
+name = "SNB_UserSize"
+ordinal = 267
+
+[[export]]
+name = "SNB_UserUnmarshal"
+ordinal = 268
+
+[[export]]
+name = "STGMEDIUM_UserFree"
+ordinal = 269
+
+[[export]]
+name = "STGMEDIUM_UserMarshal"
+ordinal = 270
+
+[[export]]
+name = "STGMEDIUM_UserSize"
+ordinal = 271
+
+[[export]]
+name = "STGMEDIUM_UserUnmarshal"
+ordinal = 272
+
+[[export]]
+name = "SetConvertStg"
+ordinal = 273
+
+[[export]]
+name = "SetDocumentBitStg"
+ordinal = 274
+
+[[export]]
+name = "SetErrorInfo"
+ordinal = 275
+
+[[export]]
+name = "StgCreateDocfile"
+ordinal = 276
+
+[[export]]
+name = "StgCreateDocfileOnILockBytes"
+ordinal = 277
+
+[[export]]
+name = "StgCreatePropSetStg"
+ordinal = 278
+
+[[export]]
+name = "StgCreatePropStg"
+ordinal = 279
+
+[[export]]
+name = "StgCreateStorageEx"
+ordinal = 280
+
+[[export]]
+name = "StgGetIFillLockBytesOnFile"
+ordinal = 281
+
+[[export]]
+name = "StgGetIFillLockBytesOnILockBytes"
+ordinal = 282
+
+[[export]]
+name = "StgIsStorageFile"
+ordinal = 283
+
+[[export]]
+name = "StgIsStorageILockBytes"
+ordinal = 284
+
+[[export]]
+name = "StgOpenAsyncDocfileOnIFillLockBytes"
+ordinal = 285
+
+[[export]]
+name = "StgOpenPropStg"
+ordinal = 286
+
+[[export]]
+name = "StgOpenStorage"
+ordinal = 287
+
+[[export]]
+name = "StgOpenStorageEx"
+ordinal = 288
+
+[[export]]
+name = "StgOpenStorageOnHandle"
+ordinal = 289
+
+[[export]]
+name = "StgOpenStorageOnILockBytes"
+ordinal = 290
+
+[[export]]
+name = "StgSetTimes"
+ordinal = 291
+
+[[export]]
+name = "StringFromCLSID"
+ordinal = 292
+
+[[export]]
+name = "StringFromGUID2"
+ordinal = 293
+
+[[export]]
+name = "StringFromIID"
+ordinal = 294
+
+[[export]]
+name = "UpdateDCOMSettings"
+ordinal = 295
+
+[[export]]
+name = "UtConvertDvtd16toDvtd32"
+ordinal = 296
+
+[[export]]
+name = "UtConvertDvtd32toDvtd16"
+ordinal = 297
+
+[[export]]
+name = "UtGetDvtd16Info"
+ordinal = 298
+
+[[export]]
+name = "UtGetDvtd32Info"
+ordinal = 299
+
+[[export]]
+name = "WriteClassStg"
+ordinal = 300
+
+[[export]]
+name = "WriteClassStm"
+ordinal = 301
+
+[[export]]
+name = "WriteFmtUserTypeStg"
+ordinal = 302
+
+[[export]]
+name = "WriteOleStg"
+ordinal = 303
+
+[[export]]
+name = "WriteStringStream"
+ordinal = 304

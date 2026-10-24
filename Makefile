@@ -91,8 +91,9 @@ help:
 	@echo "  qemu         - Build the disk and boot the kernel directly in QEMU (Multiboot, disk attached)"
 	@echo "  test         - Run every on-target QEMU test (kernel boots and the corpus)"
 	@echo "  run-tests    - Run host unit tests (cargo test --lib)"
-	@echo "  ledger       - The export ledger: the specs checked, the host scenarios run, the report"
-	@echo "  check-all    - run-tests, then ledger, then test"
+	@echo "  compat       - The tests' pins checked against the export specs, the host scenarios run"
+	@echo "  compat-report - The DLL compatibility report from the last test results (target/compat/)"
+	@echo "  check-all    - run-tests, then compat, then test"
 	@echo "  check        - cargo check + clippy"
 	@echo "  fmt          - Format all Rust sources (rustfmt)"
 	@echo "  fmt-check    - Fail if any Rust source is not formatted"
@@ -222,20 +223,27 @@ test:
 	F2K_KERNEL_PROFILE=$(KERNEL_PROFILE) $(PYTEST) tests $(PYTEST_FLAGS)
 
 # Everything a change is verified with, fastest first, stopping at the first failure: the host unit
-# tests, the export ledger (the specs against the captures and the scenarios, every scenario run),
-# and the on-target suite (PYTEST_FLAGS passes through, e.g. "-n 2").
+# tests, the pins and the host scenarios (every scenario run), and the on-target suite
+# (PYTEST_FLAGS passes through, e.g. "-n 2").
 .PHONY: check-all
 check-all:
 	$(MAKE) run-tests
-	$(MAKE) ledger
+	$(MAKE) compat
 	$(MAKE) test
 
-# The system DLLs' export ledger (scripts/ledger.py): every export's status, computed from its
-# evidence. --check holds the specs against the captures and the scenarios; --run runs every host
-# scenario, ignored ones included, and fails once a known gap's scenario passes.
-.PHONY: ledger
-ledger: userland
-	$(UV) run scripts/ledger.py --check --run
+# The system DLLs' compatibility (scripts/compat.py): --check holds the tests' pins against the
+# export specs and the captures; --run runs every host scenario, ignored ones included (keeping the
+# results under target/test-results/), and fails once a known gap's scenario passes.
+.PHONY: compat
+compat: userland
+	$(UV) run scripts/compat.py --check --run
+
+# The compatibility report, target/compat/report.html: every export of every spec as a square,
+# coloured by its pinning tests' results: the host scenarios (run here) and the on-target suite's
+# last run (target/test-results/pytest.json, which every `make test` keeps).
+.PHONY: compat-report
+compat-report: userland
+	$(UV) run scripts/compat.py --run --report
 
 .PHONY: run-tests
 run-tests: userland

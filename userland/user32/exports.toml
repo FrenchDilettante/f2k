@@ -1,0 +1,2788 @@
+# USER32.dll's exports: the one source every list of them derives from (the format is
+# kernel32's, documented in userland/kernel32/exports.toml).
+#
+# None is implemented yet: each record is catalogued from USER32.dll 5.0.2195.6688's export table
+# (scripts/catalogue_exports.py): its name and ordinal. Implementing one gives it its group,
+# prototype and implementation.
+
+# --- not implemented yet: the rest of USER32.dll 5.0.2195.6688's export table, by ordinal --------
+
+[[export]]
+name = "ActivateKeyboardLayout"
+ordinal = 1
+
+[[export]]
+name = "AdjustWindowRect"
+ordinal = 2
+
+[[export]]
+name = "AdjustWindowRectEx"
+ordinal = 3
+
+[[export]]
+name = "AlignRects"
+ordinal = 4
+
+[[export]]
+name = "AllowSetForegroundWindow"
+ordinal = 5
+
+[[export]]
+name = "AnimateWindow"
+ordinal = 6
+
+[[export]]
+name = "AnyPopup"
+ordinal = 7
+
+[[export]]
+name = "AppendMenuA"
+ordinal = 8
+
+[[export]]
+name = "AppendMenuW"
+ordinal = 9
+
+[[export]]
+name = "ArrangeIconicWindows"
+ordinal = 10
+
+[[export]]
+name = "AttachThreadInput"
+ordinal = 11
+
+[[export]]
+name = "BeginDeferWindowPos"
+ordinal = 12
+
+[[export]]
+name = "BeginPaint"
+ordinal = 13
+
+[[export]]
+name = "BlockInput"
+ordinal = 14
+
+[[export]]
+name = "BringWindowToTop"
+ordinal = 15
+
+[[export]]
+name = "BroadcastSystemMessage"
+ordinal = 16
+
+[[export]]
+name = "BroadcastSystemMessageA"
+ordinal = 17
+
+[[export]]
+name = "BroadcastSystemMessageW"
+ordinal = 18
+
+[[export]]
+name = "CallMsgFilter"
+ordinal = 19
+
+[[export]]
+name = "CallMsgFilterA"
+ordinal = 20
+
+[[export]]
+name = "CallMsgFilterW"
+ordinal = 21
+
+[[export]]
+name = "CallNextHookEx"
+ordinal = 22
+
+[[export]]
+name = "CallWindowProcA"
+ordinal = 23
+
+[[export]]
+name = "CallWindowProcW"
+ordinal = 24
+
+[[export]]
+name = "CascadeChildWindows"
+ordinal = 25
+
+[[export]]
+name = "CascadeWindows"
+ordinal = 26
+
+[[export]]
+name = "ChangeClipboardChain"
+ordinal = 27
+
+[[export]]
+name = "ChangeDisplaySettingsA"
+ordinal = 28
+
+[[export]]
+name = "ChangeDisplaySettingsExA"
+ordinal = 29
+
+[[export]]
+name = "ChangeDisplaySettingsExW"
+ordinal = 30
+
+[[export]]
+name = "ChangeDisplaySettingsW"
+ordinal = 31
+
+[[export]]
+name = "ChangeMenuA"
+ordinal = 32
+
+[[export]]
+name = "ChangeMenuW"
+ordinal = 33
+
+[[export]]
+name = "CharLowerA"
+ordinal = 34
+
+[[export]]
+name = "CharLowerBuffA"
+ordinal = 35
+
+[[export]]
+name = "CharLowerBuffW"
+ordinal = 36
+
+[[export]]
+name = "CharLowerW"
+ordinal = 37
+
+[[export]]
+name = "CharNextA"
+ordinal = 38
+
+[[export]]
+name = "CharNextExA"
+ordinal = 39
+
+[[export]]
+name = "CharNextW"
+ordinal = 40
+
+[[export]]
+name = "CharPrevA"
+ordinal = 41
+
+[[export]]
+name = "CharPrevExA"
+ordinal = 42
+
+[[export]]
+name = "CharPrevW"
+ordinal = 43
+
+[[export]]
+name = "CharToOemA"
+ordinal = 44
+
+[[export]]
+name = "CharToOemBuffA"
+ordinal = 45
+
+[[export]]
+name = "CharToOemBuffW"
+ordinal = 46
+
+[[export]]
+name = "CharToOemW"
+ordinal = 47
+
+[[export]]
+name = "CharUpperA"
+ordinal = 48
+
+[[export]]
+name = "CharUpperBuffA"
+ordinal = 49
+
+[[export]]
+name = "CharUpperBuffW"
+ordinal = 50
+
+[[export]]
+name = "CharUpperW"
+ordinal = 51
+
+[[export]]
+name = "CheckDlgButton"
+ordinal = 52
+
+[[export]]
+name = "CheckMenuItem"
+ordinal = 53
+
+[[export]]
+name = "CheckMenuRadioItem"
+ordinal = 54
+
+[[export]]
+name = "CheckRadioButton"
+ordinal = 55
+
+[[export]]
+name = "ChildWindowFromPoint"
+ordinal = 56
+
+[[export]]
+name = "ChildWindowFromPointEx"
+ordinal = 57
+
+[[export]]
+name = "CliImmSetHotKey"
+ordinal = 58
+
+[[export]]
+name = "ClientThreadSetup"
+ordinal = 59
+
+[[export]]
+name = "ClientToScreen"
+ordinal = 60
+
+[[export]]
+name = "ClipCursor"
+ordinal = 61
+
+[[export]]
+name = "CloseClipboard"
+ordinal = 62
+
+[[export]]
+name = "CloseDesktop"
+ordinal = 63
+
+[[export]]
+name = "CloseWindow"
+ordinal = 64
+
+[[export]]
+name = "CloseWindowStation"
+ordinal = 65
+
+[[export]]
+name = "CopyAcceleratorTableA"
+ordinal = 66
+
+[[export]]
+name = "CopyAcceleratorTableW"
+ordinal = 67
+
+[[export]]
+name = "CopyIcon"
+ordinal = 68
+
+[[export]]
+name = "CopyImage"
+ordinal = 69
+
+[[export]]
+name = "CopyRect"
+ordinal = 70
+
+[[export]]
+name = "CountClipboardFormats"
+ordinal = 71
+
+[[export]]
+name = "CreateAcceleratorTableA"
+ordinal = 72
+
+[[export]]
+name = "CreateAcceleratorTableW"
+ordinal = 73
+
+[[export]]
+name = "CreateCaret"
+ordinal = 74
+
+[[export]]
+name = "CreateCursor"
+ordinal = 75
+
+[[export]]
+name = "CreateDesktopA"
+ordinal = 76
+
+[[export]]
+name = "CreateDesktopW"
+ordinal = 77
+
+[[export]]
+name = "CreateDialogIndirectParamA"
+ordinal = 78
+
+[[export]]
+name = "CreateDialogIndirectParamAorW"
+ordinal = 79
+
+[[export]]
+name = "CreateDialogIndirectParamW"
+ordinal = 80
+
+[[export]]
+name = "CreateDialogParamA"
+ordinal = 81
+
+[[export]]
+name = "CreateDialogParamW"
+ordinal = 82
+
+[[export]]
+name = "CreateIcon"
+ordinal = 83
+
+[[export]]
+name = "CreateIconFromResource"
+ordinal = 84
+
+[[export]]
+name = "CreateIconFromResourceEx"
+ordinal = 85
+
+[[export]]
+name = "CreateIconIndirect"
+ordinal = 86
+
+[[export]]
+name = "CreateMDIWindowA"
+ordinal = 87
+
+[[export]]
+name = "CreateMDIWindowW"
+ordinal = 88
+
+[[export]]
+name = "CreateMenu"
+ordinal = 89
+
+[[export]]
+name = "CreatePopupMenu"
+ordinal = 90
+
+[[export]]
+name = "CreateWindowExA"
+ordinal = 91
+
+[[export]]
+name = "CreateWindowExW"
+ordinal = 92
+
+[[export]]
+name = "CreateWindowStationA"
+ordinal = 93
+
+[[export]]
+name = "CreateWindowStationW"
+ordinal = 94
+
+[[export]]
+name = "CtxInitUser32"
+ordinal = 95
+
+[[export]]
+name = "DdeAbandonTransaction"
+ordinal = 96
+
+[[export]]
+name = "DdeAccessData"
+ordinal = 97
+
+[[export]]
+name = "DdeAddData"
+ordinal = 98
+
+[[export]]
+name = "DdeClientTransaction"
+ordinal = 99
+
+[[export]]
+name = "DdeCmpStringHandles"
+ordinal = 100
+
+[[export]]
+name = "DdeConnect"
+ordinal = 101
+
+[[export]]
+name = "DdeConnectList"
+ordinal = 102
+
+[[export]]
+name = "DdeCreateDataHandle"
+ordinal = 103
+
+[[export]]
+name = "DdeCreateStringHandleA"
+ordinal = 104
+
+[[export]]
+name = "DdeCreateStringHandleW"
+ordinal = 105
+
+[[export]]
+name = "DdeDisconnect"
+ordinal = 106
+
+[[export]]
+name = "DdeDisconnectList"
+ordinal = 107
+
+[[export]]
+name = "DdeEnableCallback"
+ordinal = 108
+
+[[export]]
+name = "DdeFreeDataHandle"
+ordinal = 109
+
+[[export]]
+name = "DdeFreeStringHandle"
+ordinal = 110
+
+[[export]]
+name = "DdeGetData"
+ordinal = 111
+
+[[export]]
+name = "DdeGetLastError"
+ordinal = 112
+
+[[export]]
+name = "DdeGetQualityOfService"
+ordinal = 113
+
+[[export]]
+name = "DdeImpersonateClient"
+ordinal = 114
+
+[[export]]
+name = "DdeInitializeA"
+ordinal = 115
+
+[[export]]
+name = "DdeInitializeW"
+ordinal = 116
+
+[[export]]
+name = "DdeKeepStringHandle"
+ordinal = 117
+
+[[export]]
+name = "DdeNameService"
+ordinal = 118
+
+[[export]]
+name = "DdePostAdvise"
+ordinal = 119
+
+[[export]]
+name = "DdeQueryConvInfo"
+ordinal = 120
+
+[[export]]
+name = "DdeQueryNextServer"
+ordinal = 121
+
+[[export]]
+name = "DdeQueryStringA"
+ordinal = 122
+
+[[export]]
+name = "DdeQueryStringW"
+ordinal = 123
+
+[[export]]
+name = "DdeReconnect"
+ordinal = 124
+
+[[export]]
+name = "DdeSetQualityOfService"
+ordinal = 125
+
+[[export]]
+name = "DdeSetUserHandle"
+ordinal = 126
+
+[[export]]
+name = "DdeUnaccessData"
+ordinal = 127
+
+[[export]]
+name = "DdeUninitialize"
+ordinal = 128
+
+[[export]]
+name = "DefDlgProcA"
+ordinal = 129
+
+[[export]]
+name = "DefDlgProcW"
+ordinal = 130
+
+[[export]]
+name = "DefFrameProcA"
+ordinal = 131
+
+[[export]]
+name = "DefFrameProcW"
+ordinal = 132
+
+[[export]]
+name = "DefMDIChildProcA"
+ordinal = 133
+
+[[export]]
+name = "DefMDIChildProcW"
+ordinal = 134
+
+[[export]]
+name = "DefWindowProcA"
+ordinal = 135
+
+[[export]]
+name = "DefWindowProcW"
+ordinal = 136
+
+[[export]]
+name = "DeferWindowPos"
+ordinal = 137
+
+[[export]]
+name = "DeleteMenu"
+ordinal = 138
+
+[[export]]
+name = "DeregisterShellHookWindow"
+ordinal = 139
+
+[[export]]
+name = "DestroyAcceleratorTable"
+ordinal = 140
+
+[[export]]
+name = "DestroyCaret"
+ordinal = 141
+
+[[export]]
+name = "DestroyCursor"
+ordinal = 142
+
+[[export]]
+name = "DestroyIcon"
+ordinal = 143
+
+[[export]]
+name = "DestroyMenu"
+ordinal = 144
+
+[[export]]
+name = "DestroyWindow"
+ordinal = 145
+
+[[export]]
+name = "DeviceEventWorker"
+ordinal = 146
+
+[[export]]
+name = "DialogBoxIndirectParamA"
+ordinal = 147
+
+[[export]]
+name = "DialogBoxIndirectParamAorW"
+ordinal = 148
+
+[[export]]
+name = "DialogBoxIndirectParamW"
+ordinal = 149
+
+[[export]]
+name = "DialogBoxParamA"
+ordinal = 150
+
+[[export]]
+name = "DialogBoxParamW"
+ordinal = 151
+
+[[export]]
+name = "DispatchMessageA"
+ordinal = 152
+
+[[export]]
+name = "DispatchMessageW"
+ordinal = 153
+
+[[export]]
+name = "DlgDirListA"
+ordinal = 154
+
+[[export]]
+name = "DlgDirListComboBoxA"
+ordinal = 155
+
+[[export]]
+name = "DlgDirListComboBoxW"
+ordinal = 156
+
+[[export]]
+name = "DlgDirListW"
+ordinal = 157
+
+[[export]]
+name = "DlgDirSelectComboBoxExA"
+ordinal = 158
+
+[[export]]
+name = "DlgDirSelectComboBoxExW"
+ordinal = 159
+
+[[export]]
+name = "DlgDirSelectExA"
+ordinal = 160
+
+[[export]]
+name = "DlgDirSelectExW"
+ordinal = 161
+
+[[export]]
+name = "DragDetect"
+ordinal = 162
+
+[[export]]
+name = "DragObject"
+ordinal = 163
+
+[[export]]
+name = "DrawAnimatedRects"
+ordinal = 164
+
+[[export]]
+name = "DrawCaption"
+ordinal = 165
+
+[[export]]
+name = "DrawCaptionTempA"
+ordinal = 166
+
+[[export]]
+name = "DrawCaptionTempW"
+ordinal = 167
+
+[[export]]
+name = "DrawEdge"
+ordinal = 168
+
+[[export]]
+name = "DrawFocusRect"
+ordinal = 169
+
+[[export]]
+name = "DrawFrame"
+ordinal = 170
+
+[[export]]
+name = "DrawFrameControl"
+ordinal = 171
+
+[[export]]
+name = "DrawIcon"
+ordinal = 172
+
+[[export]]
+name = "DrawIconEx"
+ordinal = 173
+
+[[export]]
+name = "DrawMenuBar"
+ordinal = 174
+
+[[export]]
+name = "DrawMenuBarTemp"
+ordinal = 175
+
+[[export]]
+name = "DrawStateA"
+ordinal = 176
+
+[[export]]
+name = "DrawStateW"
+ordinal = 177
+
+[[export]]
+name = "DrawTextA"
+ordinal = 178
+
+[[export]]
+name = "DrawTextExA"
+ordinal = 179
+
+[[export]]
+name = "DrawTextExW"
+ordinal = 180
+
+[[export]]
+name = "DrawTextW"
+ordinal = 181
+
+[[export]]
+name = "EditWndProc"
+ordinal = 182
+
+[[export]]
+name = "EmptyClipboard"
+ordinal = 183
+
+[[export]]
+name = "EnableMenuItem"
+ordinal = 184
+
+[[export]]
+name = "EnableScrollBar"
+ordinal = 185
+
+[[export]]
+name = "EnableWindow"
+ordinal = 186
+
+[[export]]
+name = "EndDeferWindowPos"
+ordinal = 187
+
+[[export]]
+name = "EndDialog"
+ordinal = 188
+
+[[export]]
+name = "EndMenu"
+ordinal = 189
+
+[[export]]
+name = "EndPaint"
+ordinal = 190
+
+[[export]]
+name = "EndTask"
+ordinal = 191
+
+[[export]]
+name = "EnumChildWindows"
+ordinal = 192
+
+[[export]]
+name = "EnumClipboardFormats"
+ordinal = 193
+
+[[export]]
+name = "EnumDesktopWindows"
+ordinal = 194
+
+[[export]]
+name = "EnumDesktopsA"
+ordinal = 195
+
+[[export]]
+name = "EnumDesktopsW"
+ordinal = 196
+
+[[export]]
+name = "EnumDisplayDevicesA"
+ordinal = 197
+
+[[export]]
+name = "EnumDisplayDevicesW"
+ordinal = 198
+
+[[export]]
+name = "EnumDisplayMonitors"
+ordinal = 199
+
+[[export]]
+name = "EnumDisplaySettingsA"
+ordinal = 200
+
+[[export]]
+name = "EnumDisplaySettingsExA"
+ordinal = 201
+
+[[export]]
+name = "EnumDisplaySettingsExW"
+ordinal = 202
+
+[[export]]
+name = "EnumDisplaySettingsW"
+ordinal = 203
+
+[[export]]
+name = "EnumPropsA"
+ordinal = 204
+
+[[export]]
+name = "EnumPropsExA"
+ordinal = 205
+
+[[export]]
+name = "EnumPropsExW"
+ordinal = 206
+
+[[export]]
+name = "EnumPropsW"
+ordinal = 207
+
+[[export]]
+name = "EnumThreadWindows"
+ordinal = 208
+
+[[export]]
+name = "EnumWindowStationsA"
+ordinal = 209
+
+[[export]]
+name = "EnumWindowStationsW"
+ordinal = 210
+
+[[export]]
+name = "EnumWindows"
+ordinal = 211
+
+[[export]]
+name = "EqualRect"
+ordinal = 212
+
+[[export]]
+name = "ExcludeUpdateRgn"
+ordinal = 213
+
+[[export]]
+name = "ExitWindowsEx"
+ordinal = 214
+
+[[export]]
+name = "FillRect"
+ordinal = 215
+
+[[export]]
+name = "FindWindowA"
+ordinal = 216
+
+[[export]]
+name = "FindWindowExA"
+ordinal = 217
+
+[[export]]
+name = "FindWindowExW"
+ordinal = 218
+
+[[export]]
+name = "FindWindowW"
+ordinal = 219
+
+[[export]]
+name = "FlashWindow"
+ordinal = 220
+
+[[export]]
+name = "FlashWindowEx"
+ordinal = 221
+
+[[export]]
+name = "FrameRect"
+ordinal = 222
+
+[[export]]
+name = "FreeDDElParam"
+ordinal = 223
+
+[[export]]
+name = "GetActiveWindow"
+ordinal = 224
+
+[[export]]
+name = "GetAltTabInfo"
+ordinal = 225
+
+[[export]]
+name = "GetAltTabInfoA"
+ordinal = 226
+
+[[export]]
+name = "GetAltTabInfoW"
+ordinal = 227
+
+[[export]]
+name = "GetAncestor"
+ordinal = 228
+
+[[export]]
+name = "GetAppCompatFlags2"
+ordinal = 229
+
+[[export]]
+name = "GetAppCompatFlags"
+ordinal = 230
+
+[[export]]
+name = "GetAsyncKeyState"
+ordinal = 231
+
+[[export]]
+name = "GetCapture"
+ordinal = 232
+
+[[export]]
+name = "GetCaretBlinkTime"
+ordinal = 233
+
+[[export]]
+name = "GetCaretPos"
+ordinal = 234
+
+[[export]]
+name = "GetClassInfoA"
+ordinal = 235
+
+[[export]]
+name = "GetClassInfoExA"
+ordinal = 236
+
+[[export]]
+name = "GetClassInfoExW"
+ordinal = 237
+
+[[export]]
+name = "GetClassInfoW"
+ordinal = 238
+
+[[export]]
+name = "GetClassLongA"
+ordinal = 239
+
+[[export]]
+name = "GetClassLongW"
+ordinal = 240
+
+[[export]]
+name = "GetClassNameA"
+ordinal = 241
+
+[[export]]
+name = "GetClassNameW"
+ordinal = 242
+
+[[export]]
+name = "GetClassWord"
+ordinal = 243
+
+[[export]]
+name = "GetClientRect"
+ordinal = 244
+
+[[export]]
+name = "GetClipCursor"
+ordinal = 245
+
+[[export]]
+name = "GetClipboardData"
+ordinal = 246
+
+[[export]]
+name = "GetClipboardFormatNameA"
+ordinal = 247
+
+[[export]]
+name = "GetClipboardFormatNameW"
+ordinal = 248
+
+[[export]]
+name = "GetClipboardOwner"
+ordinal = 249
+
+[[export]]
+name = "GetClipboardSequenceNumber"
+ordinal = 250
+
+[[export]]
+name = "GetClipboardViewer"
+ordinal = 251
+
+[[export]]
+name = "GetComboBoxInfo"
+ordinal = 252
+
+[[export]]
+name = "GetCursor"
+ordinal = 253
+
+[[export]]
+name = "GetCursorFrameInfo"
+ordinal = 254
+
+[[export]]
+name = "GetCursorInfo"
+ordinal = 255
+
+[[export]]
+name = "GetCursorPos"
+ordinal = 256
+
+[[export]]
+name = "GetDC"
+ordinal = 257
+
+[[export]]
+name = "GetDCEx"
+ordinal = 258
+
+[[export]]
+name = "GetDesktopWindow"
+ordinal = 259
+
+[[export]]
+name = "GetDialogBaseUnits"
+ordinal = 260
+
+[[export]]
+name = "GetDlgCtrlID"
+ordinal = 261
+
+[[export]]
+name = "GetDlgItem"
+ordinal = 262
+
+[[export]]
+name = "GetDlgItemInt"
+ordinal = 263
+
+[[export]]
+name = "GetDlgItemTextA"
+ordinal = 264
+
+[[export]]
+name = "GetDlgItemTextW"
+ordinal = 265
+
+[[export]]
+name = "GetDoubleClickTime"
+ordinal = 266
+
+[[export]]
+name = "GetFocus"
+ordinal = 267
+
+[[export]]
+name = "GetForegroundWindow"
+ordinal = 268
+
+[[export]]
+name = "GetGUIThreadInfo"
+ordinal = 269
+
+[[export]]
+name = "GetGuiResources"
+ordinal = 270
+
+[[export]]
+name = "GetIconInfo"
+ordinal = 271
+
+[[export]]
+name = "GetInputDesktop"
+ordinal = 272
+
+[[export]]
+name = "GetInputState"
+ordinal = 273
+
+[[export]]
+name = "GetInternalWindowPos"
+ordinal = 274
+
+[[export]]
+name = "GetKBCodePage"
+ordinal = 275
+
+[[export]]
+name = "GetKeyNameTextA"
+ordinal = 276
+
+[[export]]
+name = "GetKeyNameTextW"
+ordinal = 277
+
+[[export]]
+name = "GetKeyState"
+ordinal = 278
+
+[[export]]
+name = "GetKeyboardLayout"
+ordinal = 279
+
+[[export]]
+name = "GetKeyboardLayoutList"
+ordinal = 280
+
+[[export]]
+name = "GetKeyboardLayoutNameA"
+ordinal = 281
+
+[[export]]
+name = "GetKeyboardLayoutNameW"
+ordinal = 282
+
+[[export]]
+name = "GetKeyboardState"
+ordinal = 283
+
+[[export]]
+name = "GetKeyboardType"
+ordinal = 284
+
+[[export]]
+name = "GetLastActivePopup"
+ordinal = 285
+
+[[export]]
+name = "GetLastInputInfo"
+ordinal = 286
+
+[[export]]
+name = "GetListBoxInfo"
+ordinal = 287
+
+[[export]]
+name = "GetMenu"
+ordinal = 288
+
+[[export]]
+name = "GetMenuBarInfo"
+ordinal = 289
+
+[[export]]
+name = "GetMenuCheckMarkDimensions"
+ordinal = 290
+
+[[export]]
+name = "GetMenuContextHelpId"
+ordinal = 291
+
+[[export]]
+name = "GetMenuDefaultItem"
+ordinal = 292
+
+[[export]]
+name = "GetMenuInfo"
+ordinal = 293
+
+[[export]]
+name = "GetMenuItemCount"
+ordinal = 294
+
+[[export]]
+name = "GetMenuItemID"
+ordinal = 295
+
+[[export]]
+name = "GetMenuItemInfoA"
+ordinal = 296
+
+[[export]]
+name = "GetMenuItemInfoW"
+ordinal = 297
+
+[[export]]
+name = "GetMenuItemRect"
+ordinal = 298
+
+[[export]]
+name = "GetMenuState"
+ordinal = 299
+
+[[export]]
+name = "GetMenuStringA"
+ordinal = 300
+
+[[export]]
+name = "GetMenuStringW"
+ordinal = 301
+
+[[export]]
+name = "GetMessageA"
+ordinal = 302
+
+[[export]]
+name = "GetMessageExtraInfo"
+ordinal = 303
+
+[[export]]
+name = "GetMessagePos"
+ordinal = 304
+
+[[export]]
+name = "GetMessageTime"
+ordinal = 305
+
+[[export]]
+name = "GetMessageW"
+ordinal = 306
+
+[[export]]
+name = "GetMonitorInfoA"
+ordinal = 307
+
+[[export]]
+name = "GetMonitorInfoW"
+ordinal = 308
+
+[[export]]
+name = "GetMouseMovePointsEx"
+ordinal = 309
+
+[[export]]
+name = "GetNextDlgGroupItem"
+ordinal = 310
+
+[[export]]
+name = "GetNextDlgTabItem"
+ordinal = 311
+
+[[export]]
+name = "GetOpenClipboardWindow"
+ordinal = 312
+
+[[export]]
+name = "GetParent"
+ordinal = 313
+
+[[export]]
+name = "GetPriorityClipboardFormat"
+ordinal = 314
+
+[[export]]
+name = "GetProcessDefaultLayout"
+ordinal = 315
+
+[[export]]
+name = "GetProcessWindowStation"
+ordinal = 316
+
+[[export]]
+name = "GetProgmanWindow"
+ordinal = 317
+
+[[export]]
+name = "GetPropA"
+ordinal = 318
+
+[[export]]
+name = "GetPropW"
+ordinal = 319
+
+[[export]]
+name = "GetQueueStatus"
+ordinal = 320
+
+[[export]]
+name = "GetScrollBarInfo"
+ordinal = 321
+
+[[export]]
+name = "GetScrollInfo"
+ordinal = 322
+
+[[export]]
+name = "GetScrollPos"
+ordinal = 323
+
+[[export]]
+name = "GetScrollRange"
+ordinal = 324
+
+[[export]]
+name = "GetShellWindow"
+ordinal = 325
+
+[[export]]
+name = "GetSubMenu"
+ordinal = 326
+
+[[export]]
+name = "GetSysColor"
+ordinal = 327
+
+[[export]]
+name = "GetSysColorBrush"
+ordinal = 328
+
+[[export]]
+name = "GetSystemMenu"
+ordinal = 329
+
+[[export]]
+name = "GetSystemMetrics"
+ordinal = 330
+
+[[export]]
+name = "GetTabbedTextExtentA"
+ordinal = 331
+
+[[export]]
+name = "GetTabbedTextExtentW"
+ordinal = 332
+
+[[export]]
+name = "GetTaskmanWindow"
+ordinal = 333
+
+[[export]]
+name = "GetThreadDesktop"
+ordinal = 334
+
+[[export]]
+name = "GetTitleBarInfo"
+ordinal = 335
+
+[[export]]
+name = "GetTopWindow"
+ordinal = 336
+
+[[export]]
+name = "GetUpdateRect"
+ordinal = 337
+
+[[export]]
+name = "GetUpdateRgn"
+ordinal = 338
+
+[[export]]
+name = "GetUserObjectInformationA"
+ordinal = 339
+
+[[export]]
+name = "GetUserObjectInformationW"
+ordinal = 340
+
+[[export]]
+name = "GetUserObjectSecurity"
+ordinal = 341
+
+[[export]]
+name = "GetWinStationInfo"
+ordinal = 342
+
+[[export]]
+name = "GetWindow"
+ordinal = 343
+
+[[export]]
+name = "GetWindowContextHelpId"
+ordinal = 344
+
+[[export]]
+name = "GetWindowDC"
+ordinal = 345
+
+[[export]]
+name = "GetWindowInfo"
+ordinal = 346
+
+[[export]]
+name = "GetWindowLongA"
+ordinal = 347
+
+[[export]]
+name = "GetWindowLongW"
+ordinal = 348
+
+[[export]]
+name = "GetWindowModuleFileName"
+ordinal = 349
+
+[[export]]
+name = "GetWindowModuleFileNameA"
+ordinal = 350
+
+[[export]]
+name = "GetWindowModuleFileNameW"
+ordinal = 351
+
+[[export]]
+name = "GetWindowPlacement"
+ordinal = 352
+
+[[export]]
+name = "GetWindowRect"
+ordinal = 353
+
+[[export]]
+name = "GetWindowRgn"
+ordinal = 354
+
+[[export]]
+name = "GetWindowTextA"
+ordinal = 355
+
+[[export]]
+name = "GetWindowTextLengthA"
+ordinal = 356
+
+[[export]]
+name = "GetWindowTextLengthW"
+ordinal = 357
+
+[[export]]
+name = "GetWindowTextW"
+ordinal = 358
+
+[[export]]
+name = "GetWindowThreadProcessId"
+ordinal = 359
+
+[[export]]
+name = "GetWindowWord"
+ordinal = 360
+
+[[export]]
+name = "GrayStringA"
+ordinal = 361
+
+[[export]]
+name = "GrayStringW"
+ordinal = 362
+
+[[export]]
+name = "HideCaret"
+ordinal = 363
+
+[[export]]
+name = "HiliteMenuItem"
+ordinal = 364
+
+[[export]]
+name = "IMPGetIMEA"
+ordinal = 365
+
+[[export]]
+name = "IMPGetIMEW"
+ordinal = 366
+
+[[export]]
+name = "IMPQueryIMEA"
+ordinal = 367
+
+[[export]]
+name = "IMPQueryIMEW"
+ordinal = 368
+
+[[export]]
+name = "IMPSetIMEA"
+ordinal = 369
+
+[[export]]
+name = "IMPSetIMEW"
+ordinal = 370
+
+[[export]]
+name = "ImpersonateDdeClientWindow"
+ordinal = 371
+
+[[export]]
+name = "InSendMessage"
+ordinal = 372
+
+[[export]]
+name = "InSendMessageEx"
+ordinal = 373
+
+[[export]]
+name = "InflateRect"
+ordinal = 374
+
+[[export]]
+name = "InitializeLpkHooks"
+ordinal = 375
+
+[[export]]
+name = "InitializeWin32EntryTable"
+ordinal = 376
+
+[[export]]
+name = "InsertMenuA"
+ordinal = 377
+
+[[export]]
+name = "InsertMenuItemA"
+ordinal = 378
+
+[[export]]
+name = "InsertMenuItemW"
+ordinal = 379
+
+[[export]]
+name = "InsertMenuW"
+ordinal = 380
+
+[[export]]
+name = "InternalGetWindowText"
+ordinal = 381
+
+[[export]]
+name = "IntersectRect"
+ordinal = 382
+
+[[export]]
+name = "InvalidateRect"
+ordinal = 383
+
+[[export]]
+name = "InvalidateRgn"
+ordinal = 384
+
+[[export]]
+name = "InvertRect"
+ordinal = 385
+
+[[export]]
+name = "IsCharAlphaA"
+ordinal = 386
+
+[[export]]
+name = "IsCharAlphaNumericA"
+ordinal = 387
+
+[[export]]
+name = "IsCharAlphaNumericW"
+ordinal = 388
+
+[[export]]
+name = "IsCharAlphaW"
+ordinal = 389
+
+[[export]]
+name = "IsCharLowerA"
+ordinal = 390
+
+[[export]]
+name = "IsCharLowerW"
+ordinal = 391
+
+[[export]]
+name = "IsCharUpperA"
+ordinal = 392
+
+[[export]]
+name = "IsCharUpperW"
+ordinal = 393
+
+[[export]]
+name = "IsChild"
+ordinal = 394
+
+[[export]]
+name = "IsClipboardFormatAvailable"
+ordinal = 395
+
+[[export]]
+name = "IsDialogMessage"
+ordinal = 396
+
+[[export]]
+name = "IsDialogMessageA"
+ordinal = 397
+
+[[export]]
+name = "IsDialogMessageW"
+ordinal = 398
+
+[[export]]
+name = "IsDlgButtonChecked"
+ordinal = 399
+
+[[export]]
+name = "IsHungAppWindow"
+ordinal = 400
+
+[[export]]
+name = "IsIconic"
+ordinal = 401
+
+[[export]]
+name = "IsMenu"
+ordinal = 402
+
+[[export]]
+name = "IsRectEmpty"
+ordinal = 403
+
+[[export]]
+name = "IsWindow"
+ordinal = 404
+
+[[export]]
+name = "IsWindowEnabled"
+ordinal = 405
+
+[[export]]
+name = "IsWindowUnicode"
+ordinal = 406
+
+[[export]]
+name = "IsWindowVisible"
+ordinal = 407
+
+[[export]]
+name = "IsZoomed"
+ordinal = 408
+
+[[export]]
+name = "KillSystemTimer"
+ordinal = 409
+
+[[export]]
+name = "KillTimer"
+ordinal = 410
+
+[[export]]
+name = "LoadAcceleratorsA"
+ordinal = 411
+
+[[export]]
+name = "LoadAcceleratorsW"
+ordinal = 412
+
+[[export]]
+name = "LoadBitmapA"
+ordinal = 413
+
+[[export]]
+name = "LoadBitmapW"
+ordinal = 414
+
+[[export]]
+name = "LoadCursorA"
+ordinal = 415
+
+[[export]]
+name = "LoadCursorFromFileA"
+ordinal = 416
+
+[[export]]
+name = "LoadCursorFromFileW"
+ordinal = 417
+
+[[export]]
+name = "LoadCursorW"
+ordinal = 418
+
+[[export]]
+name = "LoadIconA"
+ordinal = 419
+
+[[export]]
+name = "LoadIconW"
+ordinal = 420
+
+[[export]]
+name = "LoadImageA"
+ordinal = 421
+
+[[export]]
+name = "LoadImageW"
+ordinal = 422
+
+[[export]]
+name = "LoadKeyboardLayoutA"
+ordinal = 423
+
+[[export]]
+name = "LoadKeyboardLayoutEx"
+ordinal = 424
+
+[[export]]
+name = "LoadKeyboardLayoutW"
+ordinal = 425
+
+[[export]]
+name = "LoadLocalFonts"
+ordinal = 426
+
+[[export]]
+name = "LoadMenuA"
+ordinal = 427
+
+[[export]]
+name = "LoadMenuIndirectA"
+ordinal = 428
+
+[[export]]
+name = "LoadMenuIndirectW"
+ordinal = 429
+
+[[export]]
+name = "LoadMenuW"
+ordinal = 430
+
+[[export]]
+name = "LoadRemoteFonts"
+ordinal = 431
+
+[[export]]
+name = "LoadStringA"
+ordinal = 432
+
+[[export]]
+name = "LoadStringW"
+ordinal = 433
+
+[[export]]
+name = "LockSetForegroundWindow"
+ordinal = 434
+
+[[export]]
+name = "LockWindowStation"
+ordinal = 435
+
+[[export]]
+name = "LockWindowUpdate"
+ordinal = 436
+
+[[export]]
+name = "LockWorkStation"
+ordinal = 437
+
+[[export]]
+name = "LookupIconIdFromDirectory"
+ordinal = 438
+
+[[export]]
+name = "LookupIconIdFromDirectoryEx"
+ordinal = 439
+
+[[export]]
+name = "MBToWCSEx"
+ordinal = 440
+
+[[export]]
+name = "MB_GetString"
+ordinal = 441
+
+[[export]]
+name = "MapDialogRect"
+ordinal = 442
+
+[[export]]
+name = "MapVirtualKeyA"
+ordinal = 443
+
+[[export]]
+name = "MapVirtualKeyExA"
+ordinal = 444
+
+[[export]]
+name = "MapVirtualKeyExW"
+ordinal = 445
+
+[[export]]
+name = "MapVirtualKeyW"
+ordinal = 446
+
+[[export]]
+name = "MapWindowPoints"
+ordinal = 447
+
+[[export]]
+name = "MenuItemFromPoint"
+ordinal = 448
+
+[[export]]
+name = "MenuWindowProcA"
+ordinal = 449
+
+[[export]]
+name = "MenuWindowProcW"
+ordinal = 450
+
+[[export]]
+name = "MessageBeep"
+ordinal = 451
+
+[[export]]
+name = "MessageBoxA"
+ordinal = 452
+
+[[export]]
+name = "MessageBoxExA"
+ordinal = 453
+
+[[export]]
+name = "MessageBoxExW"
+ordinal = 454
+
+[[export]]
+name = "MessageBoxIndirectA"
+ordinal = 455
+
+[[export]]
+name = "MessageBoxIndirectW"
+ordinal = 456
+
+[[export]]
+name = "MessageBoxW"
+ordinal = 457
+
+[[export]]
+name = "ModifyMenuA"
+ordinal = 458
+
+[[export]]
+name = "ModifyMenuW"
+ordinal = 459
+
+[[export]]
+name = "MonitorFromPoint"
+ordinal = 460
+
+[[export]]
+name = "MonitorFromRect"
+ordinal = 461
+
+[[export]]
+name = "MonitorFromWindow"
+ordinal = 462
+
+[[export]]
+name = "MoveWindow"
+ordinal = 463
+
+[[export]]
+name = "MsgWaitForMultipleObjects"
+ordinal = 464
+
+[[export]]
+name = "MsgWaitForMultipleObjectsEx"
+ordinal = 465
+
+[[export]]
+name = "NotifyWinEvent"
+ordinal = 466
+
+[[export]]
+name = "OemKeyScan"
+ordinal = 467
+
+[[export]]
+name = "OemToCharA"
+ordinal = 468
+
+[[export]]
+name = "OemToCharBuffA"
+ordinal = 469
+
+[[export]]
+name = "OemToCharBuffW"
+ordinal = 470
+
+[[export]]
+name = "OemToCharW"
+ordinal = 471
+
+[[export]]
+name = "OffsetRect"
+ordinal = 472
+
+[[export]]
+name = "OpenClipboard"
+ordinal = 473
+
+[[export]]
+name = "OpenDesktopA"
+ordinal = 474
+
+[[export]]
+name = "OpenDesktopW"
+ordinal = 475
+
+[[export]]
+name = "OpenIcon"
+ordinal = 476
+
+[[export]]
+name = "OpenInputDesktop"
+ordinal = 477
+
+[[export]]
+name = "OpenWindowStationA"
+ordinal = 478
+
+[[export]]
+name = "OpenWindowStationW"
+ordinal = 479
+
+[[export]]
+name = "PackDDElParam"
+ordinal = 480
+
+[[export]]
+name = "PaintDesktop"
+ordinal = 481
+
+[[export]]
+name = "PeekMessageA"
+ordinal = 482
+
+[[export]]
+name = "PeekMessageW"
+ordinal = 483
+
+[[export]]
+name = "PostMessageA"
+ordinal = 484
+
+[[export]]
+name = "PostMessageW"
+ordinal = 485
+
+[[export]]
+name = "PostQuitMessage"
+ordinal = 486
+
+[[export]]
+name = "PostThreadMessageA"
+ordinal = 487
+
+[[export]]
+name = "PostThreadMessageW"
+ordinal = 488
+
+[[export]]
+name = "PrivateExtractIconExA"
+ordinal = 489
+
+[[export]]
+name = "PrivateExtractIconExW"
+ordinal = 490
+
+[[export]]
+name = "PrivateExtractIconsA"
+ordinal = 491
+
+[[export]]
+name = "PrivateExtractIconsW"
+ordinal = 492
+
+[[export]]
+name = "PrivateSetDbgTag"
+ordinal = 493
+
+[[export]]
+name = "PrivateSetRipFlags"
+ordinal = 494
+
+[[export]]
+name = "PtInRect"
+ordinal = 495
+
+[[export]]
+name = "QuerySendMessage"
+ordinal = 496
+
+[[export]]
+name = "QueryUserCounters"
+ordinal = 497
+
+[[export]]
+name = "RealChildWindowFromPoint"
+ordinal = 498
+
+[[export]]
+name = "RealGetWindowClass"
+ordinal = 499
+
+[[export]]
+name = "RealGetWindowClassA"
+ordinal = 500
+
+[[export]]
+name = "RealGetWindowClassW"
+ordinal = 501
+
+[[export]]
+name = "RedrawWindow"
+ordinal = 502
+
+[[export]]
+name = "RegisterClassA"
+ordinal = 503
+
+[[export]]
+name = "RegisterClassExA"
+ordinal = 504
+
+[[export]]
+name = "RegisterClassExW"
+ordinal = 505
+
+[[export]]
+name = "RegisterClassW"
+ordinal = 506
+
+[[export]]
+name = "RegisterClipboardFormatA"
+ordinal = 507
+
+[[export]]
+name = "RegisterClipboardFormatW"
+ordinal = 508
+
+[[export]]
+name = "RegisterDeviceNotificationA"
+ordinal = 509
+
+[[export]]
+name = "RegisterDeviceNotificationW"
+ordinal = 510
+
+[[export]]
+name = "RegisterHotKey"
+ordinal = 511
+
+[[export]]
+name = "RegisterLogonProcess"
+ordinal = 512
+
+[[export]]
+name = "RegisterServicesProcess"
+ordinal = 513
+
+[[export]]
+name = "RegisterShellHookWindow"
+ordinal = 514
+
+[[export]]
+name = "RegisterSystemThread"
+ordinal = 515
+
+[[export]]
+name = "RegisterTasklist"
+ordinal = 516
+
+[[export]]
+name = "RegisterWindowMessageA"
+ordinal = 517
+
+[[export]]
+name = "RegisterWindowMessageW"
+ordinal = 518
+
+[[export]]
+name = "ReleaseCapture"
+ordinal = 519
+
+[[export]]
+name = "ReleaseDC"
+ordinal = 520
+
+[[export]]
+name = "RemoveMenu"
+ordinal = 521
+
+[[export]]
+name = "RemovePropA"
+ordinal = 522
+
+[[export]]
+name = "RemovePropW"
+ordinal = 523
+
+[[export]]
+name = "ReplyMessage"
+ordinal = 524
+
+[[export]]
+name = "ResolveDesktopForWOW"
+ordinal = 525
+
+[[export]]
+name = "ReuseDDElParam"
+ordinal = 526
+
+[[export]]
+name = "ScreenToClient"
+ordinal = 527
+
+[[export]]
+name = "ScrollChildren"
+ordinal = 528
+
+[[export]]
+name = "ScrollDC"
+ordinal = 529
+
+[[export]]
+name = "ScrollWindow"
+ordinal = 530
+
+[[export]]
+name = "ScrollWindowEx"
+ordinal = 531
+
+[[export]]
+name = "SendDlgItemMessageA"
+ordinal = 532
+
+[[export]]
+name = "SendDlgItemMessageW"
+ordinal = 533
+
+[[export]]
+name = "SendIMEMessageExA"
+ordinal = 534
+
+[[export]]
+name = "SendIMEMessageExW"
+ordinal = 535
+
+[[export]]
+name = "SendInput"
+ordinal = 536
+
+[[export]]
+name = "SendMessageA"
+ordinal = 537
+
+[[export]]
+name = "SendMessageCallbackA"
+ordinal = 538
+
+[[export]]
+name = "SendMessageCallbackW"
+ordinal = 539
+
+[[export]]
+name = "SendMessageTimeoutA"
+ordinal = 540
+
+[[export]]
+name = "SendMessageTimeoutW"
+ordinal = 541
+
+[[export]]
+name = "SendMessageW"
+ordinal = 542
+
+[[export]]
+name = "SendNotifyMessageA"
+ordinal = 543
+
+[[export]]
+name = "SendNotifyMessageW"
+ordinal = 544
+
+[[export]]
+name = "SetActiveWindow"
+ordinal = 545
+
+[[export]]
+name = "SetCapture"
+ordinal = 546
+
+[[export]]
+name = "SetCaretBlinkTime"
+ordinal = 547
+
+[[export]]
+name = "SetCaretPos"
+ordinal = 548
+
+[[export]]
+name = "SetClassLongA"
+ordinal = 549
+
+[[export]]
+name = "SetClassLongW"
+ordinal = 550
+
+[[export]]
+name = "SetClassWord"
+ordinal = 551
+
+[[export]]
+name = "SetClipboardData"
+ordinal = 552
+
+[[export]]
+name = "SetClipboardViewer"
+ordinal = 553
+
+[[export]]
+name = "SetConsoleReserveKeys"
+ordinal = 554
+
+[[export]]
+name = "SetCursor"
+ordinal = 555
+
+[[export]]
+name = "SetCursorContents"
+ordinal = 556
+
+[[export]]
+name = "SetCursorPos"
+ordinal = 557
+
+[[export]]
+name = "SetDebugErrorLevel"
+ordinal = 558
+
+[[export]]
+name = "SetDeskWallpaper"
+ordinal = 559
+
+[[export]]
+name = "SetDlgItemInt"
+ordinal = 560
+
+[[export]]
+name = "SetDlgItemTextA"
+ordinal = 561
+
+[[export]]
+name = "SetDlgItemTextW"
+ordinal = 562
+
+[[export]]
+name = "SetDoubleClickTime"
+ordinal = 563
+
+[[export]]
+name = "SetFocus"
+ordinal = 564
+
+[[export]]
+name = "SetForegroundWindow"
+ordinal = 565
+
+[[export]]
+name = "SetInternalWindowPos"
+ordinal = 566
+
+[[export]]
+name = "SetKeyboardState"
+ordinal = 567
+
+[[export]]
+name = "SetLastErrorEx"
+ordinal = 568
+
+[[export]]
+name = "SetLayeredWindowAttributes"
+ordinal = 569
+
+[[export]]
+name = "SetLogonNotifyWindow"
+ordinal = 570
+
+[[export]]
+name = "SetMenu"
+ordinal = 571
+
+[[export]]
+name = "SetMenuContextHelpId"
+ordinal = 572
+
+[[export]]
+name = "SetMenuDefaultItem"
+ordinal = 573
+
+[[export]]
+name = "SetMenuInfo"
+ordinal = 574
+
+[[export]]
+name = "SetMenuItemBitmaps"
+ordinal = 575
+
+[[export]]
+name = "SetMenuItemInfoA"
+ordinal = 576
+
+[[export]]
+name = "SetMenuItemInfoW"
+ordinal = 577
+
+[[export]]
+name = "SetMessageExtraInfo"
+ordinal = 578
+
+[[export]]
+name = "SetMessageQueue"
+ordinal = 579
+
+[[export]]
+name = "SetParent"
+ordinal = 580
+
+[[export]]
+name = "SetProcessDefaultLayout"
+ordinal = 581
+
+[[export]]
+name = "SetProcessWindowStation"
+ordinal = 582
+
+[[export]]
+name = "SetProgmanWindow"
+ordinal = 583
+
+[[export]]
+name = "SetPropA"
+ordinal = 584
+
+[[export]]
+name = "SetPropW"
+ordinal = 585
+
+[[export]]
+name = "SetRect"
+ordinal = 586
+
+[[export]]
+name = "SetRectEmpty"
+ordinal = 587
+
+[[export]]
+name = "SetScrollInfo"
+ordinal = 588
+
+[[export]]
+name = "SetScrollPos"
+ordinal = 589
+
+[[export]]
+name = "SetScrollRange"
+ordinal = 590
+
+[[export]]
+name = "SetShellWindow"
+ordinal = 591
+
+[[export]]
+name = "SetShellWindowEx"
+ordinal = 592
+
+[[export]]
+name = "SetSysColors"
+ordinal = 593
+
+[[export]]
+name = "SetSysColorsTemp"
+ordinal = 594
+
+[[export]]
+name = "SetSystemCursor"
+ordinal = 595
+
+[[export]]
+name = "SetSystemMenu"
+ordinal = 596
+
+[[export]]
+name = "SetSystemTimer"
+ordinal = 597
+
+[[export]]
+name = "SetTaskmanWindow"
+ordinal = 598
+
+[[export]]
+name = "SetThreadDesktop"
+ordinal = 599
+
+[[export]]
+name = "SetTimer"
+ordinal = 600
+
+[[export]]
+name = "SetUserObjectInformationA"
+ordinal = 601
+
+[[export]]
+name = "SetUserObjectInformationW"
+ordinal = 602
+
+[[export]]
+name = "SetUserObjectSecurity"
+ordinal = 603
+
+[[export]]
+name = "SetWinEventHook"
+ordinal = 604
+
+[[export]]
+name = "SetWindowContextHelpId"
+ordinal = 605
+
+[[export]]
+name = "SetWindowLongA"
+ordinal = 606
+
+[[export]]
+name = "SetWindowLongW"
+ordinal = 607
+
+[[export]]
+name = "SetWindowPlacement"
+ordinal = 608
+
+[[export]]
+name = "SetWindowPos"
+ordinal = 609
+
+[[export]]
+name = "SetWindowRgn"
+ordinal = 610
+
+[[export]]
+name = "SetWindowStationUser"
+ordinal = 611
+
+[[export]]
+name = "SetWindowTextA"
+ordinal = 612
+
+[[export]]
+name = "SetWindowTextW"
+ordinal = 613
+
+[[export]]
+name = "SetWindowWord"
+ordinal = 614
+
+[[export]]
+name = "SetWindowsHookA"
+ordinal = 615
+
+[[export]]
+name = "SetWindowsHookExA"
+ordinal = 616
+
+[[export]]
+name = "SetWindowsHookExW"
+ordinal = 617
+
+[[export]]
+name = "SetWindowsHookW"
+ordinal = 618
+
+[[export]]
+name = "ShowCaret"
+ordinal = 619
+
+[[export]]
+name = "ShowCursor"
+ordinal = 620
+
+[[export]]
+name = "ShowOwnedPopups"
+ordinal = 621
+
+[[export]]
+name = "ShowScrollBar"
+ordinal = 622
+
+[[export]]
+name = "ShowStartGlass"
+ordinal = 623
+
+[[export]]
+name = "ShowWindow"
+ordinal = 624
+
+[[export]]
+name = "ShowWindowAsync"
+ordinal = 625
+
+[[export]]
+name = "SoftModalMessageBox"
+ordinal = 626
+
+[[export]]
+name = "SubtractRect"
+ordinal = 627
+
+[[export]]
+name = "SwapMouseButton"
+ordinal = 628
+
+[[export]]
+name = "SwitchDesktop"
+ordinal = 629
+
+[[export]]
+name = "SwitchToThisWindow"
+ordinal = 630
+
+[[export]]
+name = "SystemParametersInfoA"
+ordinal = 631
+
+[[export]]
+name = "SystemParametersInfoW"
+ordinal = 632
+
+[[export]]
+name = "TabbedTextOutA"
+ordinal = 633
+
+[[export]]
+name = "TabbedTextOutW"
+ordinal = 634
+
+[[export]]
+name = "TileChildWindows"
+ordinal = 635
+
+[[export]]
+name = "TileWindows"
+ordinal = 636
+
+[[export]]
+name = "ToAscii"
+ordinal = 637
+
+[[export]]
+name = "ToAsciiEx"
+ordinal = 638
+
+[[export]]
+name = "ToUnicode"
+ordinal = 639
+
+[[export]]
+name = "ToUnicodeEx"
+ordinal = 640
+
+[[export]]
+name = "TrackMouseEvent"
+ordinal = 641
+
+[[export]]
+name = "TrackPopupMenu"
+ordinal = 642
+
+[[export]]
+name = "TrackPopupMenuEx"
+ordinal = 643
+
+[[export]]
+name = "TranslateAccelerator"
+ordinal = 644
+
+[[export]]
+name = "TranslateAcceleratorA"
+ordinal = 645
+
+[[export]]
+name = "TranslateAcceleratorW"
+ordinal = 646
+
+[[export]]
+name = "TranslateMDISysAccel"
+ordinal = 647
+
+[[export]]
+name = "TranslateMessage"
+ordinal = 648
+
+[[export]]
+name = "TranslateMessageEx"
+ordinal = 649
+
+[[export]]
+name = "UnhookWinEvent"
+ordinal = 650
+
+[[export]]
+name = "UnhookWindowsHook"
+ordinal = 651
+
+[[export]]
+name = "UnhookWindowsHookEx"
+ordinal = 652
+
+[[export]]
+name = "UnionRect"
+ordinal = 653
+
+[[export]]
+name = "UnloadKeyboardLayout"
+ordinal = 654
+
+[[export]]
+name = "UnlockWindowStation"
+ordinal = 655
+
+[[export]]
+name = "UnpackDDElParam"
+ordinal = 656
+
+[[export]]
+name = "UnregisterClassA"
+ordinal = 657
+
+[[export]]
+name = "UnregisterClassW"
+ordinal = 658
+
+[[export]]
+name = "UnregisterDeviceNotification"
+ordinal = 659
+
+[[export]]
+name = "UnregisterHotKey"
+ordinal = 660
+
+[[export]]
+name = "UpdateLayeredWindow"
+ordinal = 661
+
+[[export]]
+name = "UpdatePerUserSystemParameters"
+ordinal = 662
+
+[[export]]
+name = "UpdateWindow"
+ordinal = 663
+
+[[export]]
+name = "User32InitializeImmEntryTable"
+ordinal = 664
+
+[[export]]
+name = "UserClientDllInitialize"
+ordinal = 665
+
+[[export]]
+name = "UserHandleGrantAccess"
+ordinal = 666
+
+[[export]]
+name = "UserLpkPSMTextOut"
+ordinal = 667
+
+[[export]]
+name = "UserLpkTabbedTextOut"
+ordinal = 668
+
+[[export]]
+name = "UserRealizePalette"
+ordinal = 669
+
+[[export]]
+name = "UserRegisterWowHandlers"
+ordinal = 670
+
+[[export]]
+name = "VRipOutput"
+ordinal = 671
+
+[[export]]
+name = "VTagOutput"
+ordinal = 672
+
+[[export]]
+name = "ValidateRect"
+ordinal = 673
+
+[[export]]
+name = "ValidateRgn"
+ordinal = 674
+
+[[export]]
+name = "VkKeyScanA"
+ordinal = 675
+
+[[export]]
+name = "VkKeyScanExA"
+ordinal = 676
+
+[[export]]
+name = "VkKeyScanExW"
+ordinal = 677
+
+[[export]]
+name = "VkKeyScanW"
+ordinal = 678
+
+[[export]]
+name = "WCSToMBEx"
+ordinal = 679
+
+[[export]]
+name = "WINNLSEnableIME"
+ordinal = 680
+
+[[export]]
+name = "WINNLSGetEnableStatus"
+ordinal = 681
+
+[[export]]
+name = "WINNLSGetIMEHotkey"
+ordinal = 682
+
+[[export]]
+name = "WaitForInputIdle"
+ordinal = 683
+
+[[export]]
+name = "WaitMessage"
+ordinal = 684
+
+[[export]]
+name = "Win32PoolAllocationStats"
+ordinal = 685
+
+[[export]]
+name = "WinHelpA"
+ordinal = 686
+
+[[export]]
+name = "WinHelpW"
+ordinal = 687
+
+[[export]]
+name = "WindowFromDC"
+ordinal = 688
+
+[[export]]
+name = "WindowFromPoint"
+ordinal = 689
+
+[[export]]
+name = "keybd_event"
+ordinal = 690
+
+[[export]]
+name = "mouse_event"
+ordinal = 691
+
+[[export]]
+name = "wsprintfA"
+ordinal = 692
+
+[[export]]
+name = "wsprintfW"
+ordinal = 693
+
+[[export]]
+name = "wvsprintfA"
+ordinal = 694
+
+[[export]]
+name = "wvsprintfW"
+ordinal = 695

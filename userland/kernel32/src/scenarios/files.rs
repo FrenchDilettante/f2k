@@ -58,6 +58,8 @@ fn open_call() -> (u32, u32, String, u32, u32, u32) {
 /// disposition mapped, synchronous I/O and no directory without backup semantics, a relative name
 /// against the current directory's handle; OPEN_ALWAYS finding the file is ERROR_ALREADY_EXISTS,
 /// a created one clears the last error.
+///
+/// Pins: kernel32.CreateFileA
 #[test]
 fn create_file_maps_its_arguments_onto_nt_create_file() {
     CURRENT_DIRECTORY
@@ -123,6 +125,8 @@ fn create_file_maps_its_arguments_onto_nt_create_file() {
 /// GENERIC_WRITE are ERROR_INVALID_PARAMETER before any service; an empty path
 /// ERROR_PATH_NOT_FOUND; a name past MAX_PATH ERROR_FILENAME_EXCED_RANGE; CREATE_NEW's collision
 /// ERROR_FILE_EXISTS where the status maps to ERROR_ALREADY_EXISTS.
+///
+/// Pins: kernel32.CreateFileA
 #[test]
 fn create_file_refuses_as_windows_2000_does() {
     file_at(0, 0);
@@ -180,6 +184,8 @@ fn create_file_refuses_as_windows_2000_does() {
 }
 
 /// TRUNCATE_EXISTING opens the file and cuts it (its allocation set to zero).
+///
+/// Pins: kernel32.CreateFileA
 #[test]
 fn truncate_existing_cuts_the_file_once_open() {
     file_at(12, 0);
@@ -212,6 +218,8 @@ fn truncate_existing_cuts_the_file_once_open() {
 /// ReadFile zeroes the count first; a read at the end succeeds with nothing (STATUS_END_OF_FILE);
 /// a console handle's read is the console's (ReadConsoleA): stdin's input ends at once (TRUE,
 /// nothing read: F2K's console has no keyboard), an output handle is ERROR_INVALID_HANDLE.
+///
+/// Pins: kernel32.ReadFile
 #[test]
 fn read_file_counts_what_moved() {
     file_at(10, 6);
@@ -296,6 +304,8 @@ fn read_file_counts_what_moved() {
 
 /// WriteFile on stdout or stderr (or their pseudo-handles) hands the bytes to the console and
 /// stores the count.
+///
+/// Pins: kernel32.WriteFile
 #[test]
 fn write_file_writes_to_the_console() {
     console_writes();
@@ -324,6 +334,8 @@ fn write_file_writes_to_the_console() {
 }
 
 /// WriteFile without a count pointer still writes; a zero-length write succeeds and stores zero.
+///
+/// Pins: kernel32.WriteFile
 #[test]
 fn write_file_count_pointer_and_empty_writes() {
     console_writes();
@@ -383,6 +395,8 @@ fn write_file_count_pointer_and_empty_writes() {
 /// ERROR_INVALID_HANDLE, ERROR_INVALID_PARAMETER) and any handle naming no file (NtWriteFile's
 /// STATUS_INVALID_HANDLE), the count zeroed first as Windows 2000's WriteFile zeroes it
 /// (unverified).
+///
+/// Pins: kernel32.WriteFile
 #[test]
 fn write_file_refuses_other_handles_and_overlapped_requests() {
     console_writes();
@@ -411,6 +425,8 @@ fn write_file_refuses_other_handles_and_overlapped_requests() {
 /// FlushFileBuffers: a console handle's input buffer flushed at the console server
 /// (FlushConsoleInputBuffer, as Windows 2000's: stdin TRUE, an output handle or one naming nothing
 /// ERROR_INVALID_HANDLE), no file service asked; a file's through NtFlushBuffersFile.
+///
+/// Pins: kernel32.FlushFileBuffers
 #[test]
 fn flush_file_buffers_succeeds() {
     file_at(0, 0);
@@ -431,6 +447,8 @@ fn flush_file_buffers_succeeds() {
 /// GetFileType: a console handle naming a console object is a character device (FILE_TYPE_CHAR:
 /// VerifyConsoleIoHandle); a file's device decides (a disk: FILE_TYPE_DISK); a handle naming
 /// nothing — a console handle too — is FILE_TYPE_UNKNOWN with ERROR_INVALID_HANDLE.
+///
+/// Pins: kernel32.GetFileType
 #[test]
 fn get_file_type_answers_the_device_type() {
     for handle in [STDIN, STDOUT, STDERR, -10i32 as u32] {
@@ -447,6 +465,8 @@ fn get_file_type_answers_the_device_type() {
 /// SetFilePointer on a handle that names no open file — a console handle, a closed or foreign
 /// value — is INVALID_SET_FILE_POINTER with ERROR_INVALID_HANDLE; a bad move method
 /// ERROR_INVALID_PARAMETER before the handle is looked at.
+///
+/// Pins: kernel32.SetFilePointer
 #[test]
 fn set_file_pointer_refuses_non_file_handles() {
     for handle in [STDIN, STDOUT, 0x40, INVALID_HANDLE_VALUE, 0] {
@@ -469,6 +489,8 @@ fn set_file_pointer_refuses_non_file_handles() {
 /// sign-extended low dword without a high one, the 64-bit pair with; a target before the start
 /// ERROR_NEGATIVE_SEEK and one past 4 GiB without a high dword ERROR_INVALID_PARAMETER, the
 /// position kept; a success reading as INVALID_SET_FILE_POINTER clears the last error.
+///
+/// Pins: kernel32.SetFilePointer
 #[test]
 fn set_file_pointer_moves_from_each_base() {
     file_at(150_000, 100);
@@ -509,6 +531,8 @@ fn set_file_pointer_moves_from_each_base() {
 
 /// DeleteFileA opens the file for DELETE alone (sharing everything, no directory) and marks it
 /// for deletion; RemoveDirectoryA the same of a directory; the open's failure is the call's.
+///
+/// Pins: kernel32.DeleteFileA, kernel32.RemoveDirectoryA
 #[test]
 fn deletes_open_for_delete_then_dispose() {
     file_at(0, 0);
@@ -533,6 +557,8 @@ fn deletes_open_for_delete_then_dispose() {
 }
 
 /// MoveFileA renames to the new name's whole NT path (no replace, no root).
+///
+/// Pins: kernel32.MoveFileA
 #[test]
 fn move_file_renames_to_the_nt_path() {
     file_at(0, 0);
@@ -560,6 +586,8 @@ fn move_file_renames_to_the_nt_path() {
 
 /// GetFullPathNameA: the length and the file part when it fits, else the size needed; an empty
 /// path ERROR_PATH_NOT_FOUND.
+///
+/// Pins: kernel32.GetFullPathNameA
 #[test]
 fn get_full_path_name_folds_against_the_current_directory() {
     CURRENT_DIRECTORY
@@ -600,6 +628,8 @@ fn get_full_path_name_folds_against_the_current_directory() {
 
 /// FindClose of INVALID_HANDLE_VALUE or null is ERROR_INVALID_HANDLE, and so is FindNextFile of
 /// INVALID_HANDLE_VALUE.
+///
+/// Pins: kernel32.FindClose, kernel32.FindNextFileA
 #[test]
 fn find_handles_refuse_the_invalid_value() {
     for handle in [INVALID_HANDLE_VALUE, 0] {

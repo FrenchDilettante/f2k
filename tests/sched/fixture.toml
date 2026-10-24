@@ -9,3 +9,103 @@ timeout = 30
 # SwitchToThread hands the processor to any ready thread on it, another process's included:
 # whether ours ran first varies between runs on the real machine.
 yield = ["SwitchToThread: returned 1, the new thread had run *"]
+
+[pins]
+# The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
+# calls); scripts/compat.py derives each export's coverage from them.
+"*" = [
+    "kernel32.GetCurrentProcess",
+    "kernel32.GetStdHandle",
+    "kernel32.WriteFile",
+    "kernel32.GetLastError",
+    "kernel32.SetThreadPriority",
+    "kernel32.GetCurrentThread",
+    "kernel32.SetProcessAffinityMask",
+    "ntdll.NtSetInformationProcess",
+    "ntdll.NtSetInformationThread",
+    "ntdll.NtCreateThread",
+]
+boost = [
+    "kernel32.CloseHandle",
+    "kernel32.CreateThread",
+    "kernel32.CreateEventA",
+    "kernel32.SetEvent",
+    "kernel32.WaitForSingleObject",
+]
+freeze = [
+    "kernel32.CloseHandle",
+    "kernel32.CreateThread",
+    "kernel32.Sleep",
+    "kernel32.WaitForSingleObject",
+    "kernel32.GetTickCount",
+    "kernel32.SuspendThread",
+    "kernel32.ResumeThread",
+    "ntdll.NtSuspendThread",
+    "ntdll.NtResumeThread",
+]
+preempt = [
+    "kernel32.CloseHandle",
+    "kernel32.CreateThread",
+    "kernel32.Sleep",
+    "kernel32.WaitForSingleObject",
+    "kernel32.GetTickCount",
+    "kernel32.ResumeThread",
+    "ntdll.NtResumeThread",
+]
+rr = [
+    "kernel32.CloseHandle",
+    "kernel32.CreateThread",
+    "kernel32.Sleep",
+    "kernel32.WaitForSingleObject",
+    "kernel32.GetTickCount",
+]
+sleep = [
+    "kernel32.CloseHandle",
+    "kernel32.CreateEventA",
+    "kernel32.Sleep",
+    "kernel32.WaitForSingleObject",
+    "kernel32.GetTickCount",
+    "kernel32.SleepEx",
+    "ntdll.NtDelayExecution",
+]
+starve = [
+    "kernel32.CloseHandle",
+    "kernel32.CreateThread",
+    "kernel32.Sleep",
+    "kernel32.WaitForSingleObject",
+    "kernel32.GetTickCount",
+]
+timer = [
+    "kernel32.CloseHandle",
+    "kernel32.SetLastError",
+    "kernel32.WaitForSingleObject",
+    "kernel32.GetTickCount",
+    "kernel32.SleepEx",
+    "kernel32.CancelWaitableTimer",
+    "kernel32.CreateWaitableTimerA",
+    "kernel32.GetSystemTimeAsFileTime",
+    "kernel32.OpenWaitableTimerA",
+    "kernel32.SetWaitableTimer",
+    "ntdll.NtCreateTimer",
+    "ntdll.NtOpenTimer",
+    "ntdll.NtSetTimer",
+    "ntdll.NtCancelTimer",
+]
+yield = [
+    "kernel32.CloseHandle",
+    "kernel32.CreateThread",
+    "kernel32.Sleep",
+    "kernel32.WaitForSingleObject",
+    "kernel32.SwitchToThread",
+    "ntdll.NtYieldExecution",
+]
+clock = [
+    "kernel32.Sleep",
+    "kernel32.GetTickCount",
+    "kernel32.GetLocalTime",
+    "kernel32.GetSystemTime",
+    "kernel32.GetSystemTimeAsFileTime",
+    "kernel32.QueryPerformanceCounter",
+    "kernel32.QueryPerformanceFrequency",
+    "ntdll.NtQueryPerformanceCounter",
+]

@@ -1,0 +1,3174 @@
+# MSVCRT.dll's exports: the one source every list of them derives from (the format is
+# kernel32's, documented in userland/kernel32/exports.toml).
+#
+# None is implemented yet: each record is catalogued from MSVCRT.dll 6.1.9844.0's export table
+# (scripts/catalogue_exports.py): its name and ordinal. Implementing one gives it its group,
+# prototype and implementation.
+
+# --- not implemented yet: the rest of MSVCRT.dll 6.1.9844.0's export table, by ordinal -----------
+
+[[export]]
+name = "??0__non_rtti_object@@QAE@ABV0@@Z"
+ordinal = 1
+
+[[export]]
+name = "??0__non_rtti_object@@QAE@PBD@Z"
+ordinal = 2
+
+[[export]]
+name = "??0bad_cast@@QAE@ABQBD@Z"
+ordinal = 3
+
+[[export]]
+name = "??0bad_cast@@QAE@ABV0@@Z"
+ordinal = 4
+
+[[export]]
+name = "??0bad_typeid@@QAE@ABV0@@Z"
+ordinal = 5
+
+[[export]]
+name = "??0bad_typeid@@QAE@PBD@Z"
+ordinal = 6
+
+[[export]]
+name = "??0exception@@QAE@ABQBD@Z"
+ordinal = 7
+
+[[export]]
+name = "??0exception@@QAE@ABV0@@Z"
+ordinal = 8
+
+[[export]]
+name = "??0exception@@QAE@XZ"
+ordinal = 9
+
+[[export]]
+name = "??1__non_rtti_object@@UAE@XZ"
+ordinal = 10
+
+[[export]]
+name = "??1bad_cast@@UAE@XZ"
+ordinal = 11
+
+[[export]]
+name = "??1bad_typeid@@UAE@XZ"
+ordinal = 12
+
+[[export]]
+name = "??1exception@@UAE@XZ"
+ordinal = 13
+
+[[export]]
+name = "??1type_info@@UAE@XZ"
+ordinal = 14
+
+[[export]]
+name = "??2@YAPAXI@Z"
+ordinal = 15
+
+[[export]]
+name = "??3@YAXPAX@Z"
+ordinal = 16
+
+[[export]]
+name = "??4__non_rtti_object@@QAEAAV0@ABV0@@Z"
+ordinal = 17
+
+[[export]]
+name = "??4bad_cast@@QAEAAV0@ABV0@@Z"
+ordinal = 18
+
+[[export]]
+name = "??4bad_typeid@@QAEAAV0@ABV0@@Z"
+ordinal = 19
+
+[[export]]
+name = "??4exception@@QAEAAV0@ABV0@@Z"
+ordinal = 20
+
+[[export]]
+name = "??8type_info@@QBEHABV0@@Z"
+ordinal = 21
+
+[[export]]
+name = "??9type_info@@QBEHABV0@@Z"
+ordinal = 22
+
+[[export]]
+name = "??_7__non_rtti_object@@6B@"
+ordinal = 23
+data = true
+
+[[export]]
+name = "??_7bad_cast@@6B@"
+ordinal = 24
+data = true
+
+[[export]]
+name = "??_7bad_typeid@@6B@"
+ordinal = 25
+data = true
+
+[[export]]
+name = "??_7exception@@6B@"
+ordinal = 26
+data = true
+
+[[export]]
+name = "??_E__non_rtti_object@@UAEPAXI@Z"
+ordinal = 27
+
+[[export]]
+name = "??_Ebad_cast@@UAEPAXI@Z"
+ordinal = 28
+
+[[export]]
+name = "??_Ebad_typeid@@UAEPAXI@Z"
+ordinal = 29
+
+[[export]]
+name = "??_Eexception@@UAEPAXI@Z"
+ordinal = 30
+
+[[export]]
+name = "??_G__non_rtti_object@@UAEPAXI@Z"
+ordinal = 31
+
+[[export]]
+name = "??_Gbad_cast@@UAEPAXI@Z"
+ordinal = 32
+
+[[export]]
+name = "??_Gbad_typeid@@UAEPAXI@Z"
+ordinal = 33
+
+[[export]]
+name = "??_Gexception@@UAEPAXI@Z"
+ordinal = 34
+
+[[export]]
+name = "??_U@YAPAXI@Z"
+ordinal = 35
+
+[[export]]
+name = "??_V@YAXPAX@Z"
+ordinal = 36
+
+[[export]]
+name = "?_query_new_handler@@YAP6AHI@ZXZ"
+ordinal = 37
+
+[[export]]
+name = "?_query_new_mode@@YAHXZ"
+ordinal = 38
+
+[[export]]
+name = "?_set_new_handler@@YAP6AHI@ZP6AHI@Z@Z"
+ordinal = 39
+
+[[export]]
+name = "?_set_new_mode@@YAHH@Z"
+ordinal = 40
+
+[[export]]
+name = "?_set_se_translator@@YAP6AXIPAU_EXCEPTION_POINTERS@@@ZP6AXI0@Z@Z"
+ordinal = 41
+
+[[export]]
+name = "?before@type_info@@QBEHABV1@@Z"
+ordinal = 42
+
+[[export]]
+name = "?name@type_info@@QBEPBDXZ"
+ordinal = 43
+
+[[export]]
+name = "?raw_name@type_info@@QBEPBDXZ"
+ordinal = 44
+
+[[export]]
+name = "?set_new_handler@@YAP6AXXZP6AXXZ@Z"
+ordinal = 45
+
+[[export]]
+name = "?set_terminate@@YAP6AXXZP6AXXZ@Z"
+ordinal = 46
+
+[[export]]
+name = "?set_unexpected@@YAP6AXXZP6AXXZ@Z"
+ordinal = 47
+
+[[export]]
+name = "?terminate@@YAXXZ"
+ordinal = 48
+
+[[export]]
+name = "?unexpected@@YAXXZ"
+ordinal = 49
+
+[[export]]
+name = "?what@exception@@UBEPBDXZ"
+ordinal = 50
+
+[[export]]
+name = "$I10_OUTPUT"
+ordinal = 51
+
+[[export]]
+name = "_CIacos"
+ordinal = 52
+
+[[export]]
+name = "_CIasin"
+ordinal = 53
+
+[[export]]
+name = "_CIatan"
+ordinal = 54
+
+[[export]]
+name = "_CIatan2"
+ordinal = 55
+
+[[export]]
+name = "_CIcos"
+ordinal = 56
+
+[[export]]
+name = "_CIcosh"
+ordinal = 57
+
+[[export]]
+name = "_CIexp"
+ordinal = 58
+
+[[export]]
+name = "_CIfmod"
+ordinal = 59
+
+[[export]]
+name = "_CIlog"
+ordinal = 60
+
+[[export]]
+name = "_CIlog10"
+ordinal = 61
+
+[[export]]
+name = "_CIpow"
+ordinal = 62
+
+[[export]]
+name = "_CIsin"
+ordinal = 63
+
+[[export]]
+name = "_CIsinh"
+ordinal = 64
+
+[[export]]
+name = "_CIsqrt"
+ordinal = 65
+
+[[export]]
+name = "_CItan"
+ordinal = 66
+
+[[export]]
+name = "_CItanh"
+ordinal = 67
+
+[[export]]
+name = "_CxxThrowException"
+ordinal = 68
+
+[[export]]
+name = "_EH_prolog"
+ordinal = 69
+
+[[export]]
+name = "_Getdays"
+ordinal = 70
+
+[[export]]
+name = "_Getmonths"
+ordinal = 71
+
+[[export]]
+name = "_Gettnames"
+ordinal = 72
+
+[[export]]
+name = "_HUGE"
+ordinal = 73
+data = true
+
+[[export]]
+name = "_Strftime"
+ordinal = 74
+
+[[export]]
+name = "_XcptFilter"
+ordinal = 75
+
+[[export]]
+name = "__CxxFrameHandler"
+ordinal = 76
+
+[[export]]
+name = "__CxxLongjmpUnwind"
+ordinal = 77
+
+[[export]]
+name = "__RTCastToVoid"
+ordinal = 78
+
+[[export]]
+name = "__RTDynamicCast"
+ordinal = 79
+
+[[export]]
+name = "__RTtypeid"
+ordinal = 80
+
+[[export]]
+name = "__STRINGTOLD"
+ordinal = 81
+
+[[export]]
+name = "__argc"
+ordinal = 82
+data = true
+
+[[export]]
+name = "__argv"
+ordinal = 83
+data = true
+
+[[export]]
+name = "__badioinfo"
+ordinal = 84
+data = true
+
+[[export]]
+name = "__crtCompareStringA"
+ordinal = 85
+
+[[export]]
+name = "__crtGetLocaleInfoW"
+ordinal = 86
+
+[[export]]
+name = "__crtLCMapStringA"
+ordinal = 87
+
+[[export]]
+name = "__dllonexit"
+ordinal = 88
+
+[[export]]
+name = "__doserrno"
+ordinal = 89
+
+[[export]]
+name = "__fpecode"
+ordinal = 90
+
+[[export]]
+name = "__getmainargs"
+ordinal = 91
+
+[[export]]
+name = "__initenv"
+ordinal = 92
+data = true
+
+[[export]]
+name = "__isascii"
+ordinal = 93
+
+[[export]]
+name = "__iscsym"
+ordinal = 94
+
+[[export]]
+name = "__iscsymf"
+ordinal = 95
+
+[[export]]
+name = "__lc_codepage"
+ordinal = 96
+data = true
+
+[[export]]
+name = "__lc_collate_cp"
+ordinal = 97
+data = true
+
+[[export]]
+name = "__lc_handle"
+ordinal = 98
+data = true
+
+[[export]]
+name = "__lconv_init"
+ordinal = 99
+
+[[export]]
+name = "__mb_cur_max"
+ordinal = 100
+data = true
+
+[[export]]
+name = "__p___argc"
+ordinal = 101
+
+[[export]]
+name = "__p___argv"
+ordinal = 102
+
+[[export]]
+name = "__p___initenv"
+ordinal = 103
+
+[[export]]
+name = "__p___mb_cur_max"
+ordinal = 104
+
+[[export]]
+name = "__p___wargv"
+ordinal = 105
+
+[[export]]
+name = "__p___winitenv"
+ordinal = 106
+
+[[export]]
+name = "__p__acmdln"
+ordinal = 107
+
+[[export]]
+name = "__p__amblksiz"
+ordinal = 108
+
+[[export]]
+name = "__p__commode"
+ordinal = 109
+
+[[export]]
+name = "__p__daylight"
+ordinal = 110
+
+[[export]]
+name = "__p__dstbias"
+ordinal = 111
+
+[[export]]
+name = "__p__environ"
+ordinal = 112
+
+[[export]]
+name = "__p__fileinfo"
+ordinal = 113
+
+[[export]]
+name = "__p__fmode"
+ordinal = 114
+
+[[export]]
+name = "__p__iob"
+ordinal = 115
+
+[[export]]
+name = "__p__mbcasemap"
+ordinal = 116
+
+[[export]]
+name = "__p__mbctype"
+ordinal = 117
+
+[[export]]
+name = "__p__osver"
+ordinal = 118
+
+[[export]]
+name = "__p__pctype"
+ordinal = 119
+
+[[export]]
+name = "__p__pgmptr"
+ordinal = 120
+
+[[export]]
+name = "__p__pwctype"
+ordinal = 121
+
+[[export]]
+name = "__p__timezone"
+ordinal = 122
+
+[[export]]
+name = "__p__tzname"
+ordinal = 123
+
+[[export]]
+name = "__p__wcmdln"
+ordinal = 124
+
+[[export]]
+name = "__p__wenviron"
+ordinal = 125
+
+[[export]]
+name = "__p__winmajor"
+ordinal = 126
+
+[[export]]
+name = "__p__winminor"
+ordinal = 127
+
+[[export]]
+name = "__p__winver"
+ordinal = 128
+
+[[export]]
+name = "__p__wpgmptr"
+ordinal = 129
+
+[[export]]
+name = "__pioinfo"
+ordinal = 130
+data = true
+
+[[export]]
+name = "__pxcptinfoptrs"
+ordinal = 131
+
+[[export]]
+name = "__set_app_type"
+ordinal = 132
+
+[[export]]
+name = "__setlc_active"
+ordinal = 133
+data = true
+
+[[export]]
+name = "__setusermatherr"
+ordinal = 134
+
+[[export]]
+name = "__threadhandle"
+ordinal = 135
+
+[[export]]
+name = "__threadid"
+ordinal = 136
+
+[[export]]
+name = "__toascii"
+ordinal = 137
+
+[[export]]
+name = "__unDName"
+ordinal = 138
+
+[[export]]
+name = "__unDNameEx"
+ordinal = 139
+
+[[export]]
+name = "__unguarded_readlc_active"
+ordinal = 140
+data = true
+
+[[export]]
+name = "__wargv"
+ordinal = 141
+data = true
+
+[[export]]
+name = "__wgetmainargs"
+ordinal = 142
+
+[[export]]
+name = "__winitenv"
+ordinal = 143
+data = true
+
+[[export]]
+name = "_abnormal_termination"
+ordinal = 144
+
+[[export]]
+name = "_access"
+ordinal = 145
+
+[[export]]
+name = "_acmdln"
+ordinal = 146
+data = true
+
+[[export]]
+name = "_adj_fdiv_m16i"
+ordinal = 147
+
+[[export]]
+name = "_adj_fdiv_m32"
+ordinal = 148
+
+[[export]]
+name = "_adj_fdiv_m32i"
+ordinal = 149
+
+[[export]]
+name = "_adj_fdiv_m64"
+ordinal = 150
+
+[[export]]
+name = "_adj_fdiv_r"
+ordinal = 151
+
+[[export]]
+name = "_adj_fdivr_m16i"
+ordinal = 152
+
+[[export]]
+name = "_adj_fdivr_m32"
+ordinal = 153
+
+[[export]]
+name = "_adj_fdivr_m32i"
+ordinal = 154
+
+[[export]]
+name = "_adj_fdivr_m64"
+ordinal = 155
+
+[[export]]
+name = "_adj_fpatan"
+ordinal = 156
+
+[[export]]
+name = "_adj_fprem"
+ordinal = 157
+
+[[export]]
+name = "_adj_fprem1"
+ordinal = 158
+
+[[export]]
+name = "_adj_fptan"
+ordinal = 159
+
+[[export]]
+name = "_adjust_fdiv"
+ordinal = 160
+data = true
+
+[[export]]
+name = "_aexit_rtn"
+ordinal = 161
+data = true
+
+[[export]]
+name = "_amsg_exit"
+ordinal = 162
+
+[[export]]
+name = "_assert"
+ordinal = 163
+
+[[export]]
+name = "_atodbl"
+ordinal = 164
+
+[[export]]
+name = "_atoi64"
+ordinal = 165
+
+[[export]]
+name = "_atoldbl"
+ordinal = 166
+
+[[export]]
+name = "_beep"
+ordinal = 167
+
+[[export]]
+name = "_beginthread"
+ordinal = 168
+
+[[export]]
+name = "_beginthreadex"
+ordinal = 169
+
+[[export]]
+name = "_c_exit"
+ordinal = 170
+
+[[export]]
+name = "_cabs"
+ordinal = 171
+
+[[export]]
+name = "_callnewh"
+ordinal = 172
+
+[[export]]
+name = "_cexit"
+ordinal = 173
+
+[[export]]
+name = "_cgets"
+ordinal = 174
+
+[[export]]
+name = "_chdir"
+ordinal = 175
+
+[[export]]
+name = "_chdrive"
+ordinal = 176
+
+[[export]]
+name = "_chgsign"
+ordinal = 177
+
+[[export]]
+name = "_chkesp"
+ordinal = 178
+
+[[export]]
+name = "_chmod"
+ordinal = 179
+
+[[export]]
+name = "_chsize"
+ordinal = 180
+
+[[export]]
+name = "_clearfp"
+ordinal = 181
+
+[[export]]
+name = "_close"
+ordinal = 182
+
+[[export]]
+name = "_commit"
+ordinal = 183
+
+[[export]]
+name = "_commode"
+ordinal = 184
+data = true
+
+[[export]]
+name = "_control87"
+ordinal = 185
+
+[[export]]
+name = "_controlfp"
+ordinal = 186
+
+[[export]]
+name = "_copysign"
+ordinal = 187
+
+[[export]]
+name = "_cprintf"
+ordinal = 188
+
+[[export]]
+name = "_cputs"
+ordinal = 189
+
+[[export]]
+name = "_creat"
+ordinal = 190
+
+[[export]]
+name = "_cscanf"
+ordinal = 191
+
+[[export]]
+name = "_ctime64"
+ordinal = 192
+
+[[export]]
+name = "_ctype"
+ordinal = 193
+data = true
+
+[[export]]
+name = "_cwait"
+ordinal = 194
+
+[[export]]
+name = "_daylight"
+ordinal = 195
+data = true
+
+[[export]]
+name = "_dstbias"
+ordinal = 196
+data = true
+
+[[export]]
+name = "_dup"
+ordinal = 197
+
+[[export]]
+name = "_dup2"
+ordinal = 198
+
+[[export]]
+name = "_ecvt"
+ordinal = 199
+
+[[export]]
+name = "_endthread"
+ordinal = 200
+
+[[export]]
+name = "_endthreadex"
+ordinal = 201
+
+[[export]]
+name = "_environ"
+ordinal = 202
+data = true
+
+[[export]]
+name = "_eof"
+ordinal = 203
+
+[[export]]
+name = "_errno"
+ordinal = 204
+
+[[export]]
+name = "_except_handler2"
+ordinal = 205
+
+[[export]]
+name = "_except_handler3"
+ordinal = 206
+
+[[export]]
+name = "_execl"
+ordinal = 207
+
+[[export]]
+name = "_execle"
+ordinal = 208
+
+[[export]]
+name = "_execlp"
+ordinal = 209
+
+[[export]]
+name = "_execlpe"
+ordinal = 210
+
+[[export]]
+name = "_execv"
+ordinal = 211
+
+[[export]]
+name = "_execve"
+ordinal = 212
+
+[[export]]
+name = "_execvp"
+ordinal = 213
+
+[[export]]
+name = "_execvpe"
+ordinal = 214
+
+[[export]]
+name = "_exit"
+ordinal = 215
+
+[[export]]
+name = "_expand"
+ordinal = 216
+
+[[export]]
+name = "_fcloseall"
+ordinal = 217
+
+[[export]]
+name = "_fcvt"
+ordinal = 218
+
+[[export]]
+name = "_fdopen"
+ordinal = 219
+
+[[export]]
+name = "_fgetchar"
+ordinal = 220
+
+[[export]]
+name = "_fgetwchar"
+ordinal = 221
+
+[[export]]
+name = "_filbuf"
+ordinal = 222
+
+[[export]]
+name = "_fileinfo"
+ordinal = 223
+data = true
+
+[[export]]
+name = "_filelength"
+ordinal = 224
+
+[[export]]
+name = "_filelengthi64"
+ordinal = 225
+
+[[export]]
+name = "_fileno"
+ordinal = 226
+
+[[export]]
+name = "_findclose"
+ordinal = 227
+
+[[export]]
+name = "_findfirst"
+ordinal = 228
+
+[[export]]
+name = "_findfirst64"
+ordinal = 229
+
+[[export]]
+name = "_findfirsti64"
+ordinal = 230
+
+[[export]]
+name = "_findnext"
+ordinal = 231
+
+[[export]]
+name = "_findnext64"
+ordinal = 232
+
+[[export]]
+name = "_findnexti64"
+ordinal = 233
+
+[[export]]
+name = "_finite"
+ordinal = 234
+
+[[export]]
+name = "_flsbuf"
+ordinal = 235
+
+[[export]]
+name = "_flushall"
+ordinal = 236
+
+[[export]]
+name = "_fmode"
+ordinal = 237
+data = true
+
+[[export]]
+name = "_fpclass"
+ordinal = 238
+
+[[export]]
+name = "_fpieee_flt"
+ordinal = 239
+
+[[export]]
+name = "_fpreset"
+ordinal = 240
+
+[[export]]
+name = "_fputchar"
+ordinal = 241
+
+[[export]]
+name = "_fputwchar"
+ordinal = 242
+
+[[export]]
+name = "_fsopen"
+ordinal = 243
+
+[[export]]
+name = "_fstat"
+ordinal = 244
+
+[[export]]
+name = "_fstat64"
+ordinal = 245
+
+[[export]]
+name = "_fstati64"
+ordinal = 246
+
+[[export]]
+name = "_ftime"
+ordinal = 247
+
+[[export]]
+name = "_ftime64"
+ordinal = 248
+
+[[export]]
+name = "_ftol"
+ordinal = 249
+
+[[export]]
+name = "_fullpath"
+ordinal = 250
+
+[[export]]
+name = "_futime"
+ordinal = 251
+
+[[export]]
+name = "_futime64"
+ordinal = 252
+
+[[export]]
+name = "_gcvt"
+ordinal = 253
+
+[[export]]
+name = "_get_heap_handle"
+ordinal = 254
+
+[[export]]
+name = "_get_osfhandle"
+ordinal = 255
+
+[[export]]
+name = "_get_sbh_threshold"
+ordinal = 256
+
+[[export]]
+name = "_getch"
+ordinal = 257
+
+[[export]]
+name = "_getche"
+ordinal = 258
+
+[[export]]
+name = "_getcwd"
+ordinal = 259
+
+[[export]]
+name = "_getdcwd"
+ordinal = 260
+
+[[export]]
+name = "_getdiskfree"
+ordinal = 261
+
+[[export]]
+name = "_getdllprocaddr"
+ordinal = 262
+
+[[export]]
+name = "_getdrive"
+ordinal = 263
+
+[[export]]
+name = "_getdrives"
+ordinal = 264
+
+[[export]]
+name = "_getmaxstdio"
+ordinal = 265
+
+[[export]]
+name = "_getmbcp"
+ordinal = 266
+
+[[export]]
+name = "_getpid"
+ordinal = 267
+
+[[export]]
+name = "_getsystime"
+ordinal = 268
+
+[[export]]
+name = "_getw"
+ordinal = 269
+
+[[export]]
+name = "_getws"
+ordinal = 270
+
+[[export]]
+name = "_global_unwind2"
+ordinal = 271
+
+[[export]]
+name = "_gmtime64"
+ordinal = 272
+
+[[export]]
+name = "_heapadd"
+ordinal = 273
+
+[[export]]
+name = "_heapchk"
+ordinal = 274
+
+[[export]]
+name = "_heapmin"
+ordinal = 275
+
+[[export]]
+name = "_heapset"
+ordinal = 276
+
+[[export]]
+name = "_heapused"
+ordinal = 277
+
+[[export]]
+name = "_heapwalk"
+ordinal = 278
+
+[[export]]
+name = "_hypot"
+ordinal = 279
+
+[[export]]
+name = "_i64toa"
+ordinal = 280
+
+[[export]]
+name = "_i64tow"
+ordinal = 281
+
+[[export]]
+name = "_initterm"
+ordinal = 282
+
+[[export]]
+name = "_inp"
+ordinal = 283
+
+[[export]]
+name = "_inpd"
+ordinal = 284
+
+[[export]]
+name = "_inpw"
+ordinal = 285
+
+[[export]]
+name = "_iob"
+ordinal = 286
+data = true
+
+[[export]]
+name = "_isatty"
+ordinal = 287
+
+[[export]]
+name = "_isctype"
+ordinal = 288
+
+[[export]]
+name = "_ismbbalnum"
+ordinal = 289
+
+[[export]]
+name = "_ismbbalpha"
+ordinal = 290
+
+[[export]]
+name = "_ismbbgraph"
+ordinal = 291
+
+[[export]]
+name = "_ismbbkalnum"
+ordinal = 292
+
+[[export]]
+name = "_ismbbkana"
+ordinal = 293
+
+[[export]]
+name = "_ismbbkprint"
+ordinal = 294
+
+[[export]]
+name = "_ismbbkpunct"
+ordinal = 295
+
+[[export]]
+name = "_ismbblead"
+ordinal = 296
+
+[[export]]
+name = "_ismbbprint"
+ordinal = 297
+
+[[export]]
+name = "_ismbbpunct"
+ordinal = 298
+
+[[export]]
+name = "_ismbbtrail"
+ordinal = 299
+
+[[export]]
+name = "_ismbcalnum"
+ordinal = 300
+
+[[export]]
+name = "_ismbcalpha"
+ordinal = 301
+
+[[export]]
+name = "_ismbcdigit"
+ordinal = 302
+
+[[export]]
+name = "_ismbcgraph"
+ordinal = 303
+
+[[export]]
+name = "_ismbchira"
+ordinal = 304
+
+[[export]]
+name = "_ismbckata"
+ordinal = 305
+
+[[export]]
+name = "_ismbcl0"
+ordinal = 306
+
+[[export]]
+name = "_ismbcl1"
+ordinal = 307
+
+[[export]]
+name = "_ismbcl2"
+ordinal = 308
+
+[[export]]
+name = "_ismbclegal"
+ordinal = 309
+
+[[export]]
+name = "_ismbclower"
+ordinal = 310
+
+[[export]]
+name = "_ismbcprint"
+ordinal = 311
+
+[[export]]
+name = "_ismbcpunct"
+ordinal = 312
+
+[[export]]
+name = "_ismbcspace"
+ordinal = 313
+
+[[export]]
+name = "_ismbcsymbol"
+ordinal = 314
+
+[[export]]
+name = "_ismbcupper"
+ordinal = 315
+
+[[export]]
+name = "_ismbslead"
+ordinal = 316
+
+[[export]]
+name = "_ismbstrail"
+ordinal = 317
+
+[[export]]
+name = "_isnan"
+ordinal = 318
+
+[[export]]
+name = "_itoa"
+ordinal = 319
+
+[[export]]
+name = "_itow"
+ordinal = 320
+
+[[export]]
+name = "_j0"
+ordinal = 321
+
+[[export]]
+name = "_j1"
+ordinal = 322
+
+[[export]]
+name = "_jn"
+ordinal = 323
+
+[[export]]
+name = "_kbhit"
+ordinal = 324
+
+[[export]]
+name = "_lfind"
+ordinal = 325
+
+[[export]]
+name = "_loaddll"
+ordinal = 326
+
+[[export]]
+name = "_local_unwind2"
+ordinal = 327
+
+[[export]]
+name = "_localtime64"
+ordinal = 328
+
+[[export]]
+name = "_lock"
+ordinal = 329
+
+[[export]]
+name = "_locking"
+ordinal = 330
+
+[[export]]
+name = "_logb"
+ordinal = 331
+
+[[export]]
+name = "_longjmpex"
+ordinal = 332
+
+[[export]]
+name = "_lrotl"
+ordinal = 333
+
+[[export]]
+name = "_lrotr"
+ordinal = 334
+
+[[export]]
+name = "_lsearch"
+ordinal = 335
+
+[[export]]
+name = "_lseek"
+ordinal = 336
+
+[[export]]
+name = "_lseeki64"
+ordinal = 337
+
+[[export]]
+name = "_ltoa"
+ordinal = 338
+
+[[export]]
+name = "_ltow"
+ordinal = 339
+
+[[export]]
+name = "_makepath"
+ordinal = 340
+
+[[export]]
+name = "_mbbtombc"
+ordinal = 341
+
+[[export]]
+name = "_mbbtype"
+ordinal = 342
+
+[[export]]
+name = "_mbcasemap"
+ordinal = 343
+data = true
+
+[[export]]
+name = "_mbccpy"
+ordinal = 344
+
+[[export]]
+name = "_mbcjistojms"
+ordinal = 345
+
+[[export]]
+name = "_mbcjmstojis"
+ordinal = 346
+
+[[export]]
+name = "_mbclen"
+ordinal = 347
+
+[[export]]
+name = "_mbctohira"
+ordinal = 348
+
+[[export]]
+name = "_mbctokata"
+ordinal = 349
+
+[[export]]
+name = "_mbctolower"
+ordinal = 350
+
+[[export]]
+name = "_mbctombb"
+ordinal = 351
+
+[[export]]
+name = "_mbctoupper"
+ordinal = 352
+
+[[export]]
+name = "_mbctype"
+ordinal = 353
+data = true
+
+[[export]]
+name = "_mbsbtype"
+ordinal = 354
+
+[[export]]
+name = "_mbscat"
+ordinal = 355
+
+[[export]]
+name = "_mbschr"
+ordinal = 356
+
+[[export]]
+name = "_mbscmp"
+ordinal = 357
+
+[[export]]
+name = "_mbscoll"
+ordinal = 358
+
+[[export]]
+name = "_mbscpy"
+ordinal = 359
+
+[[export]]
+name = "_mbscspn"
+ordinal = 360
+
+[[export]]
+name = "_mbsdec"
+ordinal = 361
+
+[[export]]
+name = "_mbsdup"
+ordinal = 362
+
+[[export]]
+name = "_mbsicmp"
+ordinal = 363
+
+[[export]]
+name = "_mbsicoll"
+ordinal = 364
+
+[[export]]
+name = "_mbsinc"
+ordinal = 365
+
+[[export]]
+name = "_mbslen"
+ordinal = 366
+
+[[export]]
+name = "_mbslwr"
+ordinal = 367
+
+[[export]]
+name = "_mbsnbcat"
+ordinal = 368
+
+[[export]]
+name = "_mbsnbcmp"
+ordinal = 369
+
+[[export]]
+name = "_mbsnbcnt"
+ordinal = 370
+
+[[export]]
+name = "_mbsnbcoll"
+ordinal = 371
+
+[[export]]
+name = "_mbsnbcpy"
+ordinal = 372
+
+[[export]]
+name = "_mbsnbicmp"
+ordinal = 373
+
+[[export]]
+name = "_mbsnbicoll"
+ordinal = 374
+
+[[export]]
+name = "_mbsnbset"
+ordinal = 375
+
+[[export]]
+name = "_mbsncat"
+ordinal = 376
+
+[[export]]
+name = "_mbsnccnt"
+ordinal = 377
+
+[[export]]
+name = "_mbsncmp"
+ordinal = 378
+
+[[export]]
+name = "_mbsncoll"
+ordinal = 379
+
+[[export]]
+name = "_mbsncpy"
+ordinal = 380
+
+[[export]]
+name = "_mbsnextc"
+ordinal = 381
+
+[[export]]
+name = "_mbsnicmp"
+ordinal = 382
+
+[[export]]
+name = "_mbsnicoll"
+ordinal = 383
+
+[[export]]
+name = "_mbsninc"
+ordinal = 384
+
+[[export]]
+name = "_mbsnset"
+ordinal = 385
+
+[[export]]
+name = "_mbspbrk"
+ordinal = 386
+
+[[export]]
+name = "_mbsrchr"
+ordinal = 387
+
+[[export]]
+name = "_mbsrev"
+ordinal = 388
+
+[[export]]
+name = "_mbsset"
+ordinal = 389
+
+[[export]]
+name = "_mbsspn"
+ordinal = 390
+
+[[export]]
+name = "_mbsspnp"
+ordinal = 391
+
+[[export]]
+name = "_mbsstr"
+ordinal = 392
+
+[[export]]
+name = "_mbstok"
+ordinal = 393
+
+[[export]]
+name = "_mbstrlen"
+ordinal = 394
+
+[[export]]
+name = "_mbsupr"
+ordinal = 395
+
+[[export]]
+name = "_memccpy"
+ordinal = 396
+
+[[export]]
+name = "_memicmp"
+ordinal = 397
+
+[[export]]
+name = "_mkdir"
+ordinal = 398
+
+[[export]]
+name = "_mktemp"
+ordinal = 399
+
+[[export]]
+name = "_mktime64"
+ordinal = 400
+
+[[export]]
+name = "_msize"
+ordinal = 401
+
+[[export]]
+name = "_nextafter"
+ordinal = 402
+
+[[export]]
+name = "_onexit"
+ordinal = 403
+
+[[export]]
+name = "_open"
+ordinal = 404
+
+[[export]]
+name = "_open_osfhandle"
+ordinal = 405
+
+[[export]]
+name = "_osplatform"
+ordinal = 406
+data = true
+
+[[export]]
+name = "_osver"
+ordinal = 407
+data = true
+
+[[export]]
+name = "_outp"
+ordinal = 408
+
+[[export]]
+name = "_outpd"
+ordinal = 409
+
+[[export]]
+name = "_outpw"
+ordinal = 410
+
+[[export]]
+name = "_pclose"
+ordinal = 411
+
+[[export]]
+name = "_pctype"
+ordinal = 412
+data = true
+
+[[export]]
+name = "_pgmptr"
+ordinal = 413
+data = true
+
+[[export]]
+name = "_pipe"
+ordinal = 414
+
+[[export]]
+name = "_popen"
+ordinal = 415
+
+[[export]]
+name = "_purecall"
+ordinal = 416
+
+[[export]]
+name = "_putch"
+ordinal = 417
+
+[[export]]
+name = "_putenv"
+ordinal = 418
+
+[[export]]
+name = "_putw"
+ordinal = 419
+
+[[export]]
+name = "_putws"
+ordinal = 420
+
+[[export]]
+name = "_pwctype"
+ordinal = 421
+data = true
+
+[[export]]
+name = "_read"
+ordinal = 422
+
+[[export]]
+name = "_rmdir"
+ordinal = 423
+
+[[export]]
+name = "_rmtmp"
+ordinal = 424
+
+[[export]]
+name = "_rotl"
+ordinal = 425
+
+[[export]]
+name = "_rotr"
+ordinal = 426
+
+[[export]]
+name = "_safe_fdiv"
+ordinal = 427
+
+[[export]]
+name = "_safe_fdivr"
+ordinal = 428
+
+[[export]]
+name = "_safe_fprem"
+ordinal = 429
+
+[[export]]
+name = "_safe_fprem1"
+ordinal = 430
+
+[[export]]
+name = "_scalb"
+ordinal = 431
+
+[[export]]
+name = "_searchenv"
+ordinal = 432
+
+[[export]]
+name = "_seh_longjmp_unwind"
+ordinal = 433
+
+[[export]]
+name = "_set_error_mode"
+ordinal = 434
+
+[[export]]
+name = "_set_sbh_threshold"
+ordinal = 435
+
+[[export]]
+name = "_seterrormode"
+ordinal = 436
+
+[[export]]
+name = "_setjmp"
+ordinal = 437
+
+[[export]]
+name = "_setjmp3"
+ordinal = 438
+
+[[export]]
+name = "_setmaxstdio"
+ordinal = 439
+
+[[export]]
+name = "_setmbcp"
+ordinal = 440
+
+[[export]]
+name = "_setmode"
+ordinal = 441
+
+[[export]]
+name = "_setsystime"
+ordinal = 442
+
+[[export]]
+name = "_sleep"
+ordinal = 443
+
+[[export]]
+name = "_snprintf"
+ordinal = 444
+
+[[export]]
+name = "_snwprintf"
+ordinal = 445
+
+[[export]]
+name = "_sopen"
+ordinal = 446
+
+[[export]]
+name = "_spawnl"
+ordinal = 447
+
+[[export]]
+name = "_spawnle"
+ordinal = 448
+
+[[export]]
+name = "_spawnlp"
+ordinal = 449
+
+[[export]]
+name = "_spawnlpe"
+ordinal = 450
+
+[[export]]
+name = "_spawnv"
+ordinal = 451
+
+[[export]]
+name = "_spawnve"
+ordinal = 452
+
+[[export]]
+name = "_spawnvp"
+ordinal = 453
+
+[[export]]
+name = "_spawnvpe"
+ordinal = 454
+
+[[export]]
+name = "_splitpath"
+ordinal = 455
+
+[[export]]
+name = "_stat"
+ordinal = 456
+
+[[export]]
+name = "_stat64"
+ordinal = 457
+
+[[export]]
+name = "_stati64"
+ordinal = 458
+
+[[export]]
+name = "_statusfp"
+ordinal = 459
+
+[[export]]
+name = "_strcmpi"
+ordinal = 460
+
+[[export]]
+name = "_strdate"
+ordinal = 461
+
+[[export]]
+name = "_strdup"
+ordinal = 462
+
+[[export]]
+name = "_strerror"
+ordinal = 463
+
+[[export]]
+name = "_stricmp"
+ordinal = 464
+
+[[export]]
+name = "_stricoll"
+ordinal = 465
+
+[[export]]
+name = "_strlwr"
+ordinal = 466
+
+[[export]]
+name = "_strncoll"
+ordinal = 467
+
+[[export]]
+name = "_strnicmp"
+ordinal = 468
+
+[[export]]
+name = "_strnicoll"
+ordinal = 469
+
+[[export]]
+name = "_strnset"
+ordinal = 470
+
+[[export]]
+name = "_strrev"
+ordinal = 471
+
+[[export]]
+name = "_strset"
+ordinal = 472
+
+[[export]]
+name = "_strtime"
+ordinal = 473
+
+[[export]]
+name = "_strupr"
+ordinal = 474
+
+[[export]]
+name = "_swab"
+ordinal = 475
+
+[[export]]
+name = "_sys_errlist"
+ordinal = 476
+data = true
+
+[[export]]
+name = "_sys_nerr"
+ordinal = 477
+data = true
+
+[[export]]
+name = "_tell"
+ordinal = 478
+
+[[export]]
+name = "_telli64"
+ordinal = 479
+
+[[export]]
+name = "_tempnam"
+ordinal = 480
+
+[[export]]
+name = "_time64"
+ordinal = 481
+
+[[export]]
+name = "_timezone"
+ordinal = 482
+data = true
+
+[[export]]
+name = "_tolower"
+ordinal = 483
+
+[[export]]
+name = "_toupper"
+ordinal = 484
+
+[[export]]
+name = "_tzname"
+ordinal = 485
+data = true
+
+[[export]]
+name = "_tzset"
+ordinal = 486
+
+[[export]]
+name = "_ui64toa"
+ordinal = 487
+
+[[export]]
+name = "_ui64tow"
+ordinal = 488
+
+[[export]]
+name = "_ultoa"
+ordinal = 489
+
+[[export]]
+name = "_ultow"
+ordinal = 490
+
+[[export]]
+name = "_umask"
+ordinal = 491
+
+[[export]]
+name = "_ungetch"
+ordinal = 492
+
+[[export]]
+name = "_unlink"
+ordinal = 493
+
+[[export]]
+name = "_unloaddll"
+ordinal = 494
+
+[[export]]
+name = "_unlock"
+ordinal = 495
+
+[[export]]
+name = "_utime"
+ordinal = 496
+
+[[export]]
+name = "_utime64"
+ordinal = 497
+
+[[export]]
+name = "_vsnprintf"
+ordinal = 498
+
+[[export]]
+name = "_vsnwprintf"
+ordinal = 499
+
+[[export]]
+name = "_waccess"
+ordinal = 500
+
+[[export]]
+name = "_wasctime"
+ordinal = 501
+
+[[export]]
+name = "_wchdir"
+ordinal = 502
+
+[[export]]
+name = "_wchmod"
+ordinal = 503
+
+[[export]]
+name = "_wcmdln"
+ordinal = 504
+data = true
+
+[[export]]
+name = "_wcreat"
+ordinal = 505
+
+[[export]]
+name = "_wcsdup"
+ordinal = 506
+
+[[export]]
+name = "_wcsicmp"
+ordinal = 507
+
+[[export]]
+name = "_wcsicoll"
+ordinal = 508
+
+[[export]]
+name = "_wcslwr"
+ordinal = 509
+
+[[export]]
+name = "_wcsncoll"
+ordinal = 510
+
+[[export]]
+name = "_wcsnicmp"
+ordinal = 511
+
+[[export]]
+name = "_wcsnicoll"
+ordinal = 512
+
+[[export]]
+name = "_wcsnset"
+ordinal = 513
+
+[[export]]
+name = "_wcsrev"
+ordinal = 514
+
+[[export]]
+name = "_wcsset"
+ordinal = 515
+
+[[export]]
+name = "_wcsupr"
+ordinal = 516
+
+[[export]]
+name = "_wctime"
+ordinal = 517
+
+[[export]]
+name = "_wctime64"
+ordinal = 518
+
+[[export]]
+name = "_wenviron"
+ordinal = 519
+data = true
+
+[[export]]
+name = "_wexecl"
+ordinal = 520
+
+[[export]]
+name = "_wexecle"
+ordinal = 521
+
+[[export]]
+name = "_wexeclp"
+ordinal = 522
+
+[[export]]
+name = "_wexeclpe"
+ordinal = 523
+
+[[export]]
+name = "_wexecv"
+ordinal = 524
+
+[[export]]
+name = "_wexecve"
+ordinal = 525
+
+[[export]]
+name = "_wexecvp"
+ordinal = 526
+
+[[export]]
+name = "_wexecvpe"
+ordinal = 527
+
+[[export]]
+name = "_wfdopen"
+ordinal = 528
+
+[[export]]
+name = "_wfindfirst"
+ordinal = 529
+
+[[export]]
+name = "_wfindfirst64"
+ordinal = 530
+
+[[export]]
+name = "_wfindfirsti64"
+ordinal = 531
+
+[[export]]
+name = "_wfindnext"
+ordinal = 532
+
+[[export]]
+name = "_wfindnext64"
+ordinal = 533
+
+[[export]]
+name = "_wfindnexti64"
+ordinal = 534
+
+[[export]]
+name = "_wfopen"
+ordinal = 535
+
+[[export]]
+name = "_wfreopen"
+ordinal = 536
+
+[[export]]
+name = "_wfsopen"
+ordinal = 537
+
+[[export]]
+name = "_wfullpath"
+ordinal = 538
+
+[[export]]
+name = "_wgetcwd"
+ordinal = 539
+
+[[export]]
+name = "_wgetdcwd"
+ordinal = 540
+
+[[export]]
+name = "_wgetenv"
+ordinal = 541
+
+[[export]]
+name = "_winmajor"
+ordinal = 542
+data = true
+
+[[export]]
+name = "_winminor"
+ordinal = 543
+data = true
+
+[[export]]
+name = "_winver"
+ordinal = 544
+data = true
+
+[[export]]
+name = "_wmakepath"
+ordinal = 545
+
+[[export]]
+name = "_wmkdir"
+ordinal = 546
+
+[[export]]
+name = "_wmktemp"
+ordinal = 547
+
+[[export]]
+name = "_wopen"
+ordinal = 548
+
+[[export]]
+name = "_wperror"
+ordinal = 549
+
+[[export]]
+name = "_wpgmptr"
+ordinal = 550
+data = true
+
+[[export]]
+name = "_wpopen"
+ordinal = 551
+
+[[export]]
+name = "_wputenv"
+ordinal = 552
+
+[[export]]
+name = "_wremove"
+ordinal = 553
+
+[[export]]
+name = "_wrename"
+ordinal = 554
+
+[[export]]
+name = "_write"
+ordinal = 555
+
+[[export]]
+name = "_wrmdir"
+ordinal = 556
+
+[[export]]
+name = "_wsearchenv"
+ordinal = 557
+
+[[export]]
+name = "_wsetlocale"
+ordinal = 558
+
+[[export]]
+name = "_wsopen"
+ordinal = 559
+
+[[export]]
+name = "_wspawnl"
+ordinal = 560
+
+[[export]]
+name = "_wspawnle"
+ordinal = 561
+
+[[export]]
+name = "_wspawnlp"
+ordinal = 562
+
+[[export]]
+name = "_wspawnlpe"
+ordinal = 563
+
+[[export]]
+name = "_wspawnv"
+ordinal = 564
+
+[[export]]
+name = "_wspawnve"
+ordinal = 565
+
+[[export]]
+name = "_wspawnvp"
+ordinal = 566
+
+[[export]]
+name = "_wspawnvpe"
+ordinal = 567
+
+[[export]]
+name = "_wsplitpath"
+ordinal = 568
+
+[[export]]
+name = "_wstat"
+ordinal = 569
+
+[[export]]
+name = "_wstat64"
+ordinal = 570
+
+[[export]]
+name = "_wstati64"
+ordinal = 571
+
+[[export]]
+name = "_wstrdate"
+ordinal = 572
+
+[[export]]
+name = "_wstrtime"
+ordinal = 573
+
+[[export]]
+name = "_wsystem"
+ordinal = 574
+
+[[export]]
+name = "_wtempnam"
+ordinal = 575
+
+[[export]]
+name = "_wtmpnam"
+ordinal = 576
+
+[[export]]
+name = "_wtoi"
+ordinal = 577
+
+[[export]]
+name = "_wtoi64"
+ordinal = 578
+
+[[export]]
+name = "_wtol"
+ordinal = 579
+
+[[export]]
+name = "_wunlink"
+ordinal = 580
+
+[[export]]
+name = "_wutime"
+ordinal = 581
+
+[[export]]
+name = "_wutime64"
+ordinal = 582
+
+[[export]]
+name = "_y0"
+ordinal = 583
+
+[[export]]
+name = "_y1"
+ordinal = 584
+
+[[export]]
+name = "_yn"
+ordinal = 585
+
+[[export]]
+name = "abort"
+ordinal = 586
+
+[[export]]
+name = "abs"
+ordinal = 587
+
+[[export]]
+name = "acos"
+ordinal = 588
+
+[[export]]
+name = "asctime"
+ordinal = 589
+
+[[export]]
+name = "asin"
+ordinal = 590
+
+[[export]]
+name = "atan"
+ordinal = 591
+
+[[export]]
+name = "atan2"
+ordinal = 592
+
+[[export]]
+name = "atexit"
+ordinal = 593
+
+[[export]]
+name = "atof"
+ordinal = 594
+
+[[export]]
+name = "atoi"
+ordinal = 595
+
+[[export]]
+name = "atol"
+ordinal = 596
+
+[[export]]
+name = "bsearch"
+ordinal = 597
+
+[[export]]
+name = "calloc"
+ordinal = 598
+
+[[export]]
+name = "ceil"
+ordinal = 599
+
+[[export]]
+name = "clearerr"
+ordinal = 600
+
+[[export]]
+name = "clock"
+ordinal = 601
+
+[[export]]
+name = "cos"
+ordinal = 602
+
+[[export]]
+name = "cosh"
+ordinal = 603
+
+[[export]]
+name = "ctime"
+ordinal = 604
+
+[[export]]
+name = "difftime"
+ordinal = 605
+
+[[export]]
+name = "div"
+ordinal = 606
+
+[[export]]
+name = "exit"
+ordinal = 607
+
+[[export]]
+name = "exp"
+ordinal = 608
+
+[[export]]
+name = "fabs"
+ordinal = 609
+
+[[export]]
+name = "fclose"
+ordinal = 610
+
+[[export]]
+name = "feof"
+ordinal = 611
+
+[[export]]
+name = "ferror"
+ordinal = 612
+
+[[export]]
+name = "fflush"
+ordinal = 613
+
+[[export]]
+name = "fgetc"
+ordinal = 614
+
+[[export]]
+name = "fgetpos"
+ordinal = 615
+
+[[export]]
+name = "fgets"
+ordinal = 616
+
+[[export]]
+name = "fgetwc"
+ordinal = 617
+
+[[export]]
+name = "fgetws"
+ordinal = 618
+
+[[export]]
+name = "floor"
+ordinal = 619
+
+[[export]]
+name = "fmod"
+ordinal = 620
+
+[[export]]
+name = "fopen"
+ordinal = 621
+
+[[export]]
+name = "fprintf"
+ordinal = 622
+
+[[export]]
+name = "fputc"
+ordinal = 623
+
+[[export]]
+name = "fputs"
+ordinal = 624
+
+[[export]]
+name = "fputwc"
+ordinal = 625
+
+[[export]]
+name = "fputws"
+ordinal = 626
+
+[[export]]
+name = "fread"
+ordinal = 627
+
+[[export]]
+name = "free"
+ordinal = 628
+
+[[export]]
+name = "freopen"
+ordinal = 629
+
+[[export]]
+name = "frexp"
+ordinal = 630
+
+[[export]]
+name = "fscanf"
+ordinal = 631
+
+[[export]]
+name = "fseek"
+ordinal = 632
+
+[[export]]
+name = "fsetpos"
+ordinal = 633
+
+[[export]]
+name = "ftell"
+ordinal = 634
+
+[[export]]
+name = "fwprintf"
+ordinal = 635
+
+[[export]]
+name = "fwrite"
+ordinal = 636
+
+[[export]]
+name = "fwscanf"
+ordinal = 637
+
+[[export]]
+name = "getc"
+ordinal = 638
+
+[[export]]
+name = "getchar"
+ordinal = 639
+
+[[export]]
+name = "getenv"
+ordinal = 640
+
+[[export]]
+name = "gets"
+ordinal = 641
+
+[[export]]
+name = "getwc"
+ordinal = 642
+
+[[export]]
+name = "getwchar"
+ordinal = 643
+
+[[export]]
+name = "gmtime"
+ordinal = 644
+
+[[export]]
+name = "is_wctype"
+ordinal = 645
+
+[[export]]
+name = "isalnum"
+ordinal = 646
+
+[[export]]
+name = "isalpha"
+ordinal = 647
+
+[[export]]
+name = "iscntrl"
+ordinal = 648
+
+[[export]]
+name = "isdigit"
+ordinal = 649
+
+[[export]]
+name = "isgraph"
+ordinal = 650
+
+[[export]]
+name = "isleadbyte"
+ordinal = 651
+
+[[export]]
+name = "islower"
+ordinal = 652
+
+[[export]]
+name = "isprint"
+ordinal = 653
+
+[[export]]
+name = "ispunct"
+ordinal = 654
+
+[[export]]
+name = "isspace"
+ordinal = 655
+
+[[export]]
+name = "isupper"
+ordinal = 656
+
+[[export]]
+name = "iswalnum"
+ordinal = 657
+
+[[export]]
+name = "iswalpha"
+ordinal = 658
+
+[[export]]
+name = "iswascii"
+ordinal = 659
+
+[[export]]
+name = "iswcntrl"
+ordinal = 660
+
+[[export]]
+name = "iswctype"
+ordinal = 661
+
+[[export]]
+name = "iswdigit"
+ordinal = 662
+
+[[export]]
+name = "iswgraph"
+ordinal = 663
+
+[[export]]
+name = "iswlower"
+ordinal = 664
+
+[[export]]
+name = "iswprint"
+ordinal = 665
+
+[[export]]
+name = "iswpunct"
+ordinal = 666
+
+[[export]]
+name = "iswspace"
+ordinal = 667
+
+[[export]]
+name = "iswupper"
+ordinal = 668
+
+[[export]]
+name = "iswxdigit"
+ordinal = 669
+
+[[export]]
+name = "isxdigit"
+ordinal = 670
+
+[[export]]
+name = "labs"
+ordinal = 671
+
+[[export]]
+name = "ldexp"
+ordinal = 672
+
+[[export]]
+name = "ldiv"
+ordinal = 673
+
+[[export]]
+name = "localeconv"
+ordinal = 674
+
+[[export]]
+name = "localtime"
+ordinal = 675
+
+[[export]]
+name = "log"
+ordinal = 676
+
+[[export]]
+name = "log10"
+ordinal = 677
+
+[[export]]
+name = "longjmp"
+ordinal = 678
+
+[[export]]
+name = "malloc"
+ordinal = 679
+
+[[export]]
+name = "mblen"
+ordinal = 680
+
+[[export]]
+name = "mbstowcs"
+ordinal = 681
+
+[[export]]
+name = "mbtowc"
+ordinal = 682
+
+[[export]]
+name = "memchr"
+ordinal = 683
+
+[[export]]
+name = "memcmp"
+ordinal = 684
+
+[[export]]
+name = "memcpy"
+ordinal = 685
+
+[[export]]
+name = "memmove"
+ordinal = 686
+
+[[export]]
+name = "memset"
+ordinal = 687
+
+[[export]]
+name = "mktime"
+ordinal = 688
+
+[[export]]
+name = "modf"
+ordinal = 689
+
+[[export]]
+name = "perror"
+ordinal = 690
+
+[[export]]
+name = "pow"
+ordinal = 691
+
+[[export]]
+name = "printf"
+ordinal = 692
+
+[[export]]
+name = "putc"
+ordinal = 693
+
+[[export]]
+name = "putchar"
+ordinal = 694
+
+[[export]]
+name = "puts"
+ordinal = 695
+
+[[export]]
+name = "putwc"
+ordinal = 696
+
+[[export]]
+name = "putwchar"
+ordinal = 697
+
+[[export]]
+name = "qsort"
+ordinal = 698
+
+[[export]]
+name = "raise"
+ordinal = 699
+
+[[export]]
+name = "rand"
+ordinal = 700
+
+[[export]]
+name = "realloc"
+ordinal = 701
+
+[[export]]
+name = "remove"
+ordinal = 702
+
+[[export]]
+name = "rename"
+ordinal = 703
+
+[[export]]
+name = "rewind"
+ordinal = 704
+
+[[export]]
+name = "scanf"
+ordinal = 705
+
+[[export]]
+name = "setbuf"
+ordinal = 706
+
+[[export]]
+name = "setlocale"
+ordinal = 707
+
+[[export]]
+name = "setvbuf"
+ordinal = 708
+
+[[export]]
+name = "signal"
+ordinal = 709
+
+[[export]]
+name = "sin"
+ordinal = 710
+
+[[export]]
+name = "sinh"
+ordinal = 711
+
+[[export]]
+name = "sprintf"
+ordinal = 712
+
+[[export]]
+name = "sqrt"
+ordinal = 713
+
+[[export]]
+name = "srand"
+ordinal = 714
+
+[[export]]
+name = "sscanf"
+ordinal = 715
+
+[[export]]
+name = "strcat"
+ordinal = 716
+
+[[export]]
+name = "strchr"
+ordinal = 717
+
+[[export]]
+name = "strcmp"
+ordinal = 718
+
+[[export]]
+name = "strcoll"
+ordinal = 719
+
+[[export]]
+name = "strcpy"
+ordinal = 720
+
+[[export]]
+name = "strcspn"
+ordinal = 721
+
+[[export]]
+name = "strerror"
+ordinal = 722
+
+[[export]]
+name = "strftime"
+ordinal = 723
+
+[[export]]
+name = "strlen"
+ordinal = 724
+
+[[export]]
+name = "strncat"
+ordinal = 725
+
+[[export]]
+name = "strncmp"
+ordinal = 726
+
+[[export]]
+name = "strncpy"
+ordinal = 727
+
+[[export]]
+name = "strpbrk"
+ordinal = 728
+
+[[export]]
+name = "strrchr"
+ordinal = 729
+
+[[export]]
+name = "strspn"
+ordinal = 730
+
+[[export]]
+name = "strstr"
+ordinal = 731
+
+[[export]]
+name = "strtod"
+ordinal = 732
+
+[[export]]
+name = "strtok"
+ordinal = 733
+
+[[export]]
+name = "strtol"
+ordinal = 734
+
+[[export]]
+name = "strtoul"
+ordinal = 735
+
+[[export]]
+name = "strxfrm"
+ordinal = 736
+
+[[export]]
+name = "swprintf"
+ordinal = 737
+
+[[export]]
+name = "swscanf"
+ordinal = 738
+
+[[export]]
+name = "system"
+ordinal = 739
+
+[[export]]
+name = "tan"
+ordinal = 740
+
+[[export]]
+name = "tanh"
+ordinal = 741
+
+[[export]]
+name = "time"
+ordinal = 742
+
+[[export]]
+name = "tmpfile"
+ordinal = 743
+
+[[export]]
+name = "tmpnam"
+ordinal = 744
+
+[[export]]
+name = "tolower"
+ordinal = 745
+
+[[export]]
+name = "toupper"
+ordinal = 746
+
+[[export]]
+name = "towlower"
+ordinal = 747
+
+[[export]]
+name = "towupper"
+ordinal = 748
+
+[[export]]
+name = "ungetc"
+ordinal = 749
+
+[[export]]
+name = "ungetwc"
+ordinal = 750
+
+[[export]]
+name = "vfprintf"
+ordinal = 751
+
+[[export]]
+name = "vfwprintf"
+ordinal = 752
+
+[[export]]
+name = "vprintf"
+ordinal = 753
+
+[[export]]
+name = "vsprintf"
+ordinal = 754
+
+[[export]]
+name = "vswprintf"
+ordinal = 755
+
+[[export]]
+name = "vwprintf"
+ordinal = 756
+
+[[export]]
+name = "wcscat"
+ordinal = 757
+
+[[export]]
+name = "wcschr"
+ordinal = 758
+
+[[export]]
+name = "wcscmp"
+ordinal = 759
+
+[[export]]
+name = "wcscoll"
+ordinal = 760
+
+[[export]]
+name = "wcscpy"
+ordinal = 761
+
+[[export]]
+name = "wcscspn"
+ordinal = 762
+
+[[export]]
+name = "wcsftime"
+ordinal = 763
+
+[[export]]
+name = "wcslen"
+ordinal = 764
+
+[[export]]
+name = "wcsncat"
+ordinal = 765
+
+[[export]]
+name = "wcsncmp"
+ordinal = 766
+
+[[export]]
+name = "wcsncpy"
+ordinal = 767
+
+[[export]]
+name = "wcspbrk"
+ordinal = 768
+
+[[export]]
+name = "wcsrchr"
+ordinal = 769
+
+[[export]]
+name = "wcsspn"
+ordinal = 770
+
+[[export]]
+name = "wcsstr"
+ordinal = 771
+
+[[export]]
+name = "wcstod"
+ordinal = 772
+
+[[export]]
+name = "wcstok"
+ordinal = 773
+
+[[export]]
+name = "wcstol"
+ordinal = 774
+
+[[export]]
+name = "wcstombs"
+ordinal = 775
+
+[[export]]
+name = "wcstoul"
+ordinal = 776
+
+[[export]]
+name = "wcsxfrm"
+ordinal = 777
+
+[[export]]
+name = "wctomb"
+ordinal = 778
+
+[[export]]
+name = "wprintf"
+ordinal = 779
+
+[[export]]
+name = "wscanf"
+ordinal = 780

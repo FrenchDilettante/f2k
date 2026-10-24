@@ -7,3 +7,108 @@ gate = true
 # order): 9 or 0 by timing. The source waits first now; drop the mask once threads.exe is
 # rebuilt and recaptured.
 crt = ["its routine ran: WAIT_OBJECT_0, parameter *"]
+
+[pins]
+# The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
+# calls); scripts/compat.py derives each export's coverage from them.
+"*" = [
+    "kernel32.GetStdHandle",
+    "kernel32.WriteFile",
+    "kernel32.CloseHandle",
+    "kernel32.WaitForSingleObject",
+    "kernel32.ResumeThread",
+    "kernel32.GetExitCodeThread",
+    "ntdll.NtCreateThread",
+    "ntdll.NtResumeThread",
+    "ntdll.NtQueryInformationThread",
+]
+procexit = [
+    "kernel32.ExitProcess",
+    "kernel32.GetLastError",
+    "kernel32.CreateThread",
+    "kernel32.Sleep",
+    "ntdll.NtTerminateProcess",
+]
+create = [
+    "kernel32.GetCurrentProcess",
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+    "kernel32.CreateThread",
+    "kernel32.CreateEventA",
+    "kernel32.SetEvent",
+    "kernel32.GetCurrentThreadId",
+    "kernel32.GetCurrentThread",
+    "kernel32.DuplicateHandle",
+]
+priority = [
+    "kernel32.GetCurrentProcess",
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+    "kernel32.CreateThread",
+    "kernel32.SetThreadPriority",
+    "kernel32.GetCurrentThreadId",
+    "kernel32.GetCurrentThread",
+    "kernel32.GetPriorityClass",
+    "kernel32.GetThreadPriority",
+    "kernel32.GetThreadPriorityBoost",
+    "kernel32.SetPriorityClass",
+    "kernel32.SetThreadPriorityBoost",
+    "ntdll.NtQueryInformationProcess",
+    "ntdll.NtSetInformationProcess",
+    "ntdll.NtSetInformationThread",
+]
+exit = [
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+    "kernel32.CreateThread",
+    "kernel32.CreateEventA",
+    "kernel32.SetEvent",
+    "kernel32.Sleep",
+    "kernel32.ExitThread",
+    "kernel32.TerminateThread",
+    "ntdll.NtTerminateThread",
+    "ntdll.LdrShutdownThread",
+]
+mainexit = [
+    "kernel32.GetLastError",
+    "kernel32.CreateThread",
+    "kernel32.Sleep",
+    "kernel32.ExitThread",
+    "ntdll.NtTerminateProcess",
+    "ntdll.NtTerminateThread",
+]
+perthread = ["kernel32.GetLastError", "kernel32.SetLastError", "kernel32.CreateThread"]
+scale = [
+    "kernel32.GetLastError",
+    "kernel32.CreateThread",
+    "kernel32.CreateEventA",
+    "kernel32.SetEvent",
+    "kernel32.Sleep",
+    "kernel32.GetTickCount",
+    "kernel32.GetCurrentThreadId",
+    "kernel32.InterlockedIncrement",
+]
+suspend = [
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+    "kernel32.CreateThread",
+    "kernel32.CreateEventA",
+    "kernel32.SetEvent",
+    "kernel32.Sleep",
+    "kernel32.SuspendThread",
+    "kernel32.GetCurrentThread",
+    "ntdll.NtSuspendThread",
+]
+tls = [
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+    "kernel32.CreateThread",
+    "kernel32.TlsAlloc",
+    "kernel32.TlsFree",
+    "kernel32.TlsGetValue",
+    "kernel32.TlsSetValue",
+    "ntdll.NtSetInformationThread",
+    "ntdll.LdrInitializeThunk",
+    "ntdll.LdrShutdownThread",
+]
+crt = ["kernel32.CreateEventA", "kernel32.SetEvent"]

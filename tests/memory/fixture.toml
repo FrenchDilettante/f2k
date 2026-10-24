@@ -9,3 +9,122 @@ image = ["past the image end: state 0x10000 protect 0x1 type 0x0 region * allocp
 
 # The blocks this kernel does not pass yet, each with the increment that enables it.
 [pending]
+
+[pins]
+# The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
+# calls); scripts/compat.py derives each export's coverage from them.
+"*" = [
+    "kernel32.ExitProcess",
+    "kernel32.GetCommandLineA",
+    "kernel32.GetStartupInfoA",
+    "kernel32.GetModuleFileNameA",
+    "kernel32.GetVersion",
+    "kernel32.GetStdHandle",
+    "kernel32.GetFileType",
+    "kernel32.SetHandleCount",
+    "kernel32.WriteFile",
+    "kernel32.GetEnvironmentStringsW",
+    "kernel32.FreeEnvironmentStringsA",
+    "kernel32.HeapAlloc",
+    "kernel32.HeapCreate",
+    "kernel32.HeapFree",
+    "kernel32.GetACP",
+    "kernel32.GetCPInfo",
+    "kernel32.MultiByteToWideChar",
+    "kernel32.WideCharToMultiByte",
+    "kernel32.LCMapStringW",
+    "kernel32.GetStringTypeW",
+    "kernel32.VirtualAlloc",
+    "ntdll.NtAllocateVirtualMemory",
+    "ntdll.RtlAllocateHeap",
+    "ntdll.RtlFreeHeap",
+]
+image = [
+    "kernel32.GetModuleHandleA",
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+    "kernel32.VirtualQuery",
+    "ntdll.NtQueryVirtualMemory",
+    "ntdll.LdrGetDllHandle",
+]
+mapping = [
+    "kernel32.CloseHandle",
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+    "kernel32.CreateFileMappingA",
+    "kernel32.OpenFileMappingA",
+    "kernel32.MapViewOfFile",
+    "kernel32.UnmapViewOfFile",
+    "kernel32.VirtualQuery",
+    "ntdll.NtQueryVirtualMemory",
+    "ntdll.NtCreateSection",
+    "ntdll.NtOpenSection",
+    "ntdll.NtMapViewOfSection",
+    "ntdll.NtUnmapViewOfSection",
+]
+stack = [
+    "kernel32.CloseHandle",
+    "kernel32.GetLastError",
+    "kernel32.CreateThread",
+    "kernel32.WaitForSingleObject",
+    "kernel32.VirtualQuery",
+    "ntdll.NtQueryVirtualMemory",
+    "ntdll.NtCreateThread",
+]
+heap = [
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+    "kernel32.HeapDestroy",
+    "kernel32.HeapReAlloc",
+    "kernel32.GetProcessHeap",
+    "kernel32.HeapSize",
+    "kernel32.HeapValidate",
+    "ntdll.RtlReAllocateHeap",
+    "ntdll.RtlSizeHeap",
+    "ntdll.RtlValidateHeap",
+    "ntdll.LdrInitializeThunk",
+]
+protect = [
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+    "kernel32.VirtualFree",
+    "kernel32.VirtualQuery",
+    "kernel32.VirtualProtect",
+    "kernel32.IsBadReadPtr",
+    "kernel32.IsBadWritePtr",
+    "kernel32.IsBadCodePtr",
+    "kernel32.IsBadStringPtrA",
+    "ntdll.NtQueryVirtualMemory",
+    "ntdll.NtProtectVirtualMemory",
+]
+virtual = [
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+    "kernel32.VirtualFree",
+    "kernel32.VirtualQuery",
+    "ntdll.NtFreeVirtualMemory",
+    "ntdll.NtQueryVirtualMemory",
+]
+local = [
+    "kernel32.LocalAlloc",
+    "kernel32.LocalFree",
+    "kernel32.LocalLock",
+    "kernel32.LocalUnlock",
+    "kernel32.LocalHandle",
+    "kernel32.LocalSize",
+    "kernel32.LocalFlags",
+    "kernel32.LocalReAlloc",
+    "kernel32.GlobalAlloc",
+    "kernel32.GlobalFree",
+    "kernel32.GlobalLock",
+    "kernel32.GlobalUnlock",
+    "kernel32.GlobalHandle",
+    "kernel32.GlobalSize",
+    "kernel32.GlobalReAlloc",
+]
+sysinfo = [
+    "kernel32.GetSystemInfo",
+    "kernel32.GlobalMemoryStatus",
+    "ntdll.NtQuerySystemInformation",
+    "ntdll.NtQueryInformationProcess",
+]

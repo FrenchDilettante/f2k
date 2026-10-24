@@ -5,3 +5,8 @@
 description = "dll - a program and its companion DLL: LoadLibraryA of the DLL from the program's directory, GetProcAddress by name and by ordinal, a call into it, and FreeLibrary."
 kind = "sectioned"
 gate = true
+
+[pins]
+# The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
+# calls); scripts/compat.py derives each export's coverage from them.
+proc = ["kernel32.GetProcAddress", "ntdll.LdrGetProcedureAddress"]

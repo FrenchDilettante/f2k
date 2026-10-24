@@ -1,0 +1,84 @@
+# PSAPI.DLL's exports: the one source every list of them derives from (the format is
+# kernel32's, documented in userland/kernel32/exports.toml).
+#
+# None is implemented yet: each record is catalogued from PSAPI.DLL 5.0.2134.1's export table
+# (scripts/catalogue_exports.py): its name and ordinal. Implementing one gives it its group,
+# prototype and implementation.
+
+# --- not implemented yet: the rest of PSAPI.DLL 5.0.2134.1's export table, by ordinal ------------
+
+[[export]]
+name = "EmptyWorkingSet"
+ordinal = 1
+
+[[export]]
+name = "EnumDeviceDrivers"
+ordinal = 2
+
+[[export]]
+name = "EnumProcessModules"
+ordinal = 3
+
+[[export]]
+name = "EnumProcesses"
+ordinal = 4
+
+[[export]]
+name = "GetDeviceDriverBaseNameA"
+ordinal = 5
+
+[[export]]
+name = "GetDeviceDriverBaseNameW"
+ordinal = 6
+
+[[export]]
+name = "GetDeviceDriverFileNameA"
+ordinal = 7
+
+[[export]]
+name = "GetDeviceDriverFileNameW"
+ordinal = 8
+
+[[export]]
+name = "GetMappedFileNameA"
+ordinal = 9
+
+[[export]]
+name = "GetMappedFileNameW"
+ordinal = 10
+
+[[export]]
+name = "GetModuleBaseNameA"
+ordinal = 11
+
+[[export]]
+name = "GetModuleBaseNameW"
+ordinal = 12
+
+[[export]]
+name = "GetModuleFileNameExA"
+ordinal = 13
+
+[[export]]
+name = "GetModuleFileNameExW"
+ordinal = 14
+
+[[export]]
+name = "GetModuleInformation"
+ordinal = 15
+
+[[export]]
+name = "GetProcessMemoryInfo"
+ordinal = 16
+
+[[export]]
+name = "GetWsChanges"
+ordinal = 17
+
+[[export]]
+name = "InitializeProcessForWsWatch"
+ordinal = 18
+
+[[export]]
+name = "QueryWorkingSet"
+ordinal = 19
