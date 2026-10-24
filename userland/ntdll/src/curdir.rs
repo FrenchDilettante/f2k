@@ -9,7 +9,15 @@
 //! relative to its handle, which the caller opens through the handle (OBJECT_ATTRIBUTES'
 //! RootDirectory), as on Windows 2000.
 
-use rtl::path::{dos_path_to_nt, full_path_name, nt_path, PathError, MAX_PATH};
+use rtl::path::{
+    dos_path_to_nt,
+    full_path_name,
+    nt_path,
+    path_type,
+    PathError,
+    PathType,
+    MAX_PATH,
+};
 use rtl::status::{STATUS_NAME_TOO_LONG, STATUS_OBJECT_NAME_INVALID, STATUS_SUCCESS};
 use rtl::sys::{self, nr, system_service};
 
@@ -310,6 +318,64 @@ pub unsafe extern "system" fn rtl_dos_path_name_to_nt_path_name_u(
         }
     }
     1
+}
+
+/// RtlDoesFileExists_U: whether a DOS path names a file or a directory: its whole NT path (as
+/// RtlDosPathNameToNtPathName_U makes it) queried by NtQueryAttributesFile, which must succeed.
+/// FALSE for a path no NT path can be made of. kernel32's SearchPath tries its candidates through
+/// it.
+///
+/// # Safety
+///
+/// `path` is a NUL-terminated string.
+#[unsafe(export_name = "f2k_export_RtlDoesFileExists_U")]
+pub unsafe extern "system" fn rtl_does_file_exists_u(path: *const u16) -> u32 {
+    // SAFETY: the caller's string.
+    let path = unsafe { terminated(path) };
+    let mut current = [0u16; MAX_PATH + 1];
+    let (current_length, _) = current_directory(&mut current);
+    let mut name = [0u16; NT_ROOM];
+    let Ok(made) = dos_path_to_nt(path, &current[..current_length], false, &mut name) else {
+        return 0;
+    };
+    let string = UnicodeString {
+        length: (2 * made.length) as u16,
+        maximum_length: (2 * made.length) as u16,
+        buffer: name.as_mut_ptr(),
+    };
+    let attributes: [u32; 6] = [
+        24,
+        0,
+        &string as *const UnicodeString as u32,
+        OBJ_CASE_INSENSITIVE,
+        0,
+        0,
+    ];
+    // FILE_BASIC_INFORMATION: the four times and the attributes.
+    let mut basic = [0u32; 10];
+    let args = [attributes.as_ptr() as u32, basic.as_mut_ptr() as u32];
+    u32::from(system_service(nr::NtQueryAttributesFile, &args) == STATUS_SUCCESS)
+}
+
+/// RtlDetermineDosPathNameType_U: what a DOS path is ([`rtl::path::path_type`]), as RTL_PATH_TYPE
+/// numbers it: 1 `\\server\share`, 2 `C:\name`, 3 `C:name`, 4 `\name`, 5 `name`, 6 `\\.\device`,
+/// 7 `\\?\name`.
+///
+/// # Safety
+///
+/// `path` is a NUL-terminated string.
+#[unsafe(export_name = "f2k_export_RtlDetermineDosPathNameType_U")]
+pub unsafe extern "system" fn rtl_determine_dos_path_name_type_u(path: *const u16) -> u32 {
+    // SAFETY: the caller's string.
+    match path_type(unsafe { terminated(path) }) {
+        PathType::UncAbsolute => 1,
+        PathType::DriveAbsolute => 2,
+        PathType::DriveRelative => 3,
+        PathType::Rooted => 4,
+        PathType::Relative => 5,
+        PathType::LocalDevice => 6,
+        PathType::RootLocalDevice => 7,
+    }
 }
 
 /// RtlGetFullPathName_U: a DOS path made absolute against the current directory and folded (see

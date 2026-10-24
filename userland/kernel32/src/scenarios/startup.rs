@@ -7,10 +7,9 @@ use crate::message::format_message_a;
 
 const FROM_SYSTEM: u32 = 0x1000;
 const ALLOCATE_BUFFER: u32 = 0x0100;
-const FROM_STRING: u32 = 0x0400;
 const MAX_WIDTH_MASK: u32 = 0x00FF;
 
-/// FormatMessageA writes the message, its CR LF and terminator; refuses what it does not serve.
+/// FormatMessageA writes the message, its CR LF and terminator; refuses a call naming no source.
 ///
 /// Pins: kernel32.FormatMessageA
 #[test]
@@ -29,9 +28,9 @@ fn system_messages_format_into_the_buffer() {
         0
     );
     assert_eq!(last_error(), 122);
-    let flags = FROM_SYSTEM | FROM_STRING;
+    // No source named: neither a string, a module nor the system.
     assert_eq!(
-        unsafe { format_message_a(flags, none, 2, 0, buffer.as_mut_ptr(), 64, none) },
+        unsafe { format_message_a(0, none, 2, 0, buffer.as_mut_ptr(), 64, none) },
         0
     );
     assert_eq!(last_error(), 87);

@@ -127,6 +127,15 @@ ordinal = 207
 zw_ordinal = 852
 
 [[export]]
+name = "NtSetSystemTime"
+group = "nt"
+args = ["ptr<u64> SystemTime", "ptr<u64> PreviousTime"]
+impl = { syscall = "crate::nt::system::set_system_time" }
+ordinal = 276
+zw_ordinal = 921
+note = "the system time set (a NULL SystemTime only reads the previous one); no privilege is checked: F2K has no tokens"
+
+[[export]]
 name = "NtQueryInformationProcess"
 group = "nt"
 args = ["handle ProcessHandle", "u32 ProcessInformationClass", "ptr ProcessInformation", "u32 ProcessInformationLength", "ptr<u32> ReturnLength"]
@@ -630,6 +639,15 @@ ordinal = 21
 fails = "0xC0000002"
 note = "cdecl; the text goes to COM1 (the kernel has no debugger); a conversion rtl::printf does not serve takes the stub path (STATUS_NOT_IMPLEMENTED)"
 
+[[export]]
+name = "DbgBreakPoint"
+group = "debug"
+args = []
+impl = { native = "DbgBreakPoint" }
+ordinal = 20
+fails = "void"
+note = "an int3 and a return: the breakpoint exception is raised inside ntdll, as the runtime capture's DebugBreak shows"
+
 # --- critical sections and the PEB lock (src/critsec.s over rtl::critsec) ----------------------
 
 [[export]]
@@ -799,6 +817,22 @@ args = ["ptr DosFileName", "ptr NtFileName", "ptr<u32> FilePart", "ptr RelativeN
 impl = { native = "RtlDosPathNameToNtPathName_U" }
 ordinal = 431
 note = "a relative path under the current directory comes back relative to its handle (RTL_RELATIVE_NAME)"
+
+[[export]]
+name = "RtlDoesFileExists_U"
+group = "paths"
+args = ["ptr FileName"]
+impl = { native = "RtlDoesFileExists_U" }
+ordinal = 430
+note = "a BOOLEAN: whether NtQueryAttributesFile finds the path, a file or a directory"
+
+[[export]]
+name = "RtlDetermineDosPathNameType_U"
+group = "paths"
+args = ["ptr Path"]
+impl = { native = "RtlDetermineDosPathNameType_U" }
+ordinal = 428
+note = "RTL_PATH_TYPE: 1 UNC, 2 drive-absolute, 3 drive-relative, 4 rooted, 5 relative, 6 local device, 7 root local device"
 
 # --- the environment (src/env.rs over rtl::env) ---------------------------------------------------
 
@@ -1139,10 +1173,6 @@ ordinal = 18
 [[export]]
 name = "CsrSetPriorityClass"
 ordinal = 19
-
-[[export]]
-name = "DbgBreakPoint"
-ordinal = 20
 
 [[export]]
 name = "DbgPrintReturnControlC"
@@ -1924,10 +1954,6 @@ name = "NtSetSystemPowerState"
 ordinal = 275
 
 [[export]]
-name = "NtSetSystemTime"
-ordinal = 276
-
-[[export]]
 name = "NtSetThreadExecutionState"
 ordinal = 277
 
@@ -2456,16 +2482,8 @@ name = "RtlDestroyQueryDebugBuffer"
 ordinal = 427
 
 [[export]]
-name = "RtlDetermineDosPathNameType_U"
-ordinal = 428
-
-[[export]]
 name = "RtlDnsHostNameToComputerName"
 ordinal = 429
-
-[[export]]
-name = "RtlDoesFileExists_U"
-ordinal = 430
 
 [[export]]
 name = "RtlDosSearchPath_U"
@@ -4090,10 +4108,6 @@ ordinal = 919
 [[export]]
 name = "ZwSetSystemPowerState"
 ordinal = 920
-
-[[export]]
-name = "ZwSetSystemTime"
-ordinal = 921
 
 [[export]]
 name = "ZwSetThreadExecutionState"

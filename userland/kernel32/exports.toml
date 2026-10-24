@@ -214,7 +214,7 @@ ordinal = 565
 name = "DebugBreak"
 group = "termination"
 args = []
-impl = { stub = "not yet implemented" }
+impl = { native = "DebugBreak" }
 ordinal = 90
 fails = "void"
 
@@ -632,7 +632,7 @@ ordinal = 659
 name = "GetSystemDirectoryA"
 group = "environment"
 args = ["ptr lpBuffer", "u32 uSize"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetSystemDirectoryA" }
 ordinal = 373
 fails = "0"
 
@@ -640,7 +640,7 @@ fails = "0"
 name = "GetWindowsDirectoryA"
 group = "environment"
 args = ["ptr lpBuffer", "u32 uSize"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetWindowsDirectoryA" }
 ordinal = 412
 fails = "0"
 
@@ -648,7 +648,7 @@ fails = "0"
 name = "GetWindowsDirectoryW"
 group = "environment"
 args = ["ptr lpBuffer", "u32 uSize"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetWindowsDirectoryW" }
 ordinal = 413
 fails = "0"
 
@@ -923,7 +923,7 @@ ordinal = 399
 name = "lstrcmpA"
 group = "locale"
 args = ["strA? lpString1", "strA? lpString2"]
-impl = { stub = "not yet implemented" }
+impl = { native = "lstrcmpA" }
 ordinal = 814
 fails = "never"
 
@@ -931,7 +931,7 @@ fails = "never"
 name = "lstrcmpW"
 group = "locale"
 args = ["strW? lpString1", "strW? lpString2"]
-impl = { stub = "not yet implemented" }
+impl = { native = "lstrcmpW" }
 ordinal = 815
 fails = "never"
 
@@ -939,7 +939,7 @@ fails = "never"
 name = "lstrcmpiA"
 group = "locale"
 args = ["strA? lpString1", "strA? lpString2"]
-impl = { stub = "not yet implemented" }
+impl = { native = "lstrcmpiA" }
 ordinal = 817
 fails = "never"
 
@@ -947,7 +947,7 @@ fails = "never"
 name = "lstrcmpiW"
 group = "locale"
 args = ["strW? lpString1", "strW? lpString2"]
-impl = { stub = "not yet implemented" }
+impl = { native = "lstrcmpiW" }
 ordinal = 818
 fails = "never"
 
@@ -955,7 +955,7 @@ fails = "never"
 name = "GetThreadLocale"
 group = "locale"
 args = []
-impl = { stub = "not yet implemented" }
+impl = { native = "GetThreadLocale" }
 ordinal = 390
 fails = "never"
 
@@ -963,7 +963,7 @@ fails = "never"
 name = "SetThreadLocale"
 group = "locale"
 args = ["u32 Locale"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SetThreadLocale" }
 ordinal = 696
 fails = "FALSE"
 
@@ -1432,7 +1432,7 @@ ordinal = 308
 name = "SetLocalTime"
 group = "threads"
 args = ["ptr lpSystemTime"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SetLocalTime" }
 ordinal = 674
 fails = "FALSE"
 
@@ -1562,7 +1562,7 @@ ordinal = 158
 name = "CompareFileTime"
 group = "files"
 args = ["ptr lpFileTime1", "ptr lpFileTime2"]
-impl = { stub = "not yet implemented" }
+impl = { native = "CompareFileTime" }
 ordinal = 36
 fails = "never"
 
@@ -1661,17 +1661,19 @@ ordinal = 515
 name = "MoveFileExA"
 group = "files"
 args = ["strA lpExistingFileName", "strA? lpNewFileName", "u32 dwFlags"]
-impl = { stub = "not yet implemented" }
+impl = { native = "MoveFileExA" }
 ordinal = 513
 fails = "FALSE"
+note = "MOVEFILE_DELAY_UNTIL_REBOOT takes the stub path: F2K keeps no list of moves for the next boot"
 
 [[export]]
 name = "MoveFileExW"
 group = "files"
 args = ["strW lpExistingFileName", "strW? lpNewFileName", "u32 dwFlags"]
-impl = { stub = "not yet implemented" }
+impl = { native = "MoveFileExW" }
 ordinal = 514
 fails = "FALSE"
+note = "MOVEFILE_DELAY_UNTIL_REBOOT takes the stub path: F2K keeps no list of moves for the next boot"
 
 [[export]]
 name = "RemoveDirectoryA"
@@ -1761,7 +1763,7 @@ ordinal = 283
 name = "GetDiskFreeSpaceExA"
 group = "files"
 args = ["strA? lpDirectoryName", "ptr<u64> lpFreeBytesAvailableToCaller", "ptr<u64> lpTotalNumberOfBytes", "ptr<u64> lpTotalNumberOfFreeBytes"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetDiskFreeSpaceExA" }
 ordinal = 281
 fails = "FALSE"
 
@@ -1769,7 +1771,7 @@ fails = "FALSE"
 name = "GetDiskFreeSpaceExW"
 group = "files"
 args = ["strW? lpDirectoryName", "ptr<u64> lpFreeBytesAvailableToCaller", "ptr<u64> lpTotalNumberOfBytes", "ptr<u64> lpTotalNumberOfFreeBytes"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetDiskFreeSpaceExW" }
 ordinal = 282
 fails = "FALSE"
 
@@ -1854,7 +1856,7 @@ ordinal = 303
 name = "SearchPathA"
 group = "files"
 args = ["strA? lpPath", "strA lpFileName", "strA? lpExtension", "u32 nBufferLength", "ptr lpBuffer", "ptr lpFilePart"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SearchPathA" }
 ordinal = 608
 fails = "0"
 
@@ -1862,7 +1864,7 @@ fails = "0"
 name = "SearchPathW"
 group = "files"
 args = ["strW? lpPath", "strW lpFileName", "strW? lpExtension", "u32 nBufferLength", "ptr lpBuffer", "ptr lpFilePart"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SearchPathW" }
 ordinal = 609
 fails = "0"
 
@@ -2036,6 +2038,30 @@ impl = { stub = "not yet implemented" }
 ordinal = 402
 fails = "0"
 note = "NTVDM's current directories, for cmd.exe; with no DOS subsystem there are none (0 characters)"
+
+[[export]]
+name = "GetExitCodeProcess"
+group = "processes"
+args = ["handle hProcess", "ptr<u32> lpExitCode"]
+impl = { stub = "not yet implemented" }
+ordinal = 291
+fails = "FALSE"
+
+[[export]]
+name = "ReadProcessMemory"
+group = "processes"
+args = ["handle hProcess", "ptr lpBaseAddress", "ptr lpBuffer", "u32 nSize", "ptr<u32> lpNumberOfBytesRead"]
+impl = { stub = "not yet implemented" }
+ordinal = 581
+fails = "FALSE"
+
+[[export]]
+name = "GetBinaryTypeW"
+group = "processes"
+args = ["strW lpApplicationName", "ptr<u32> lpBinaryType"]
+impl = { stub = "not yet implemented" }
+ordinal = 211
+fails = "FALSE"
 
 # --- not implemented yet: the rest of KERNEL32.dll 5.0.2195.6688's export table, by ordinal ------
 
@@ -2686,10 +2712,6 @@ name = "GetBinaryTypeA"
 ordinal = 210
 
 [[export]]
-name = "GetBinaryTypeW"
-ordinal = 211
-
-[[export]]
 name = "GetCPInfoExA"
 ordinal = 213
 
@@ -2902,10 +2924,6 @@ ordinal = 278
 [[export]]
 name = "GetDevicePowerState"
 ordinal = 279
-
-[[export]]
-name = "GetExitCodeProcess"
-ordinal = 291
 
 
 
@@ -3618,10 +3636,6 @@ ordinal = 579
 [[export]]
 name = "ReadFileScatter"
 ordinal = 580
-
-[[export]]
-name = "ReadProcessMemory"
-ordinal = 581
 
 [[export]]
 name = "RegisterConsoleIME"

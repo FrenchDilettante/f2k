@@ -1,9 +1,18 @@
 //! The system queries: NtQuerySystemInformation (the classes F2K answers) and the performance
-//! counter. kernel32's GetSystemInfo and GlobalMemoryStatus are Win32 code over the first (with
-//! the process's counters, `nt::process`), GetTimeZoneInformation and
-//! QueryPerformanceCounter/Frequency over the others, as on Windows 2000.
+//! counter, and the system time's setting (NtSetSystemTime). kernel32's GetSystemInfo and
+//! GlobalMemoryStatus are Win32 code over the first (with the process's counters, `nt::process`),
+//! GetTimeZoneInformation and QueryPerformanceCounter/Frequency over the others, SetLocalTime over
+//! the last, as on Windows 2000.
 
-use super::call::{NtCall, NtResult, Status, UserAddr, UserPtr, STATUS_SUCCESS};
+use super::call::{
+    NtCall,
+    NtResult,
+    Status,
+    UserAddr,
+    UserPtr,
+    STATUS_INVALID_PARAMETER,
+    STATUS_SUCCESS,
+};
 use crate::mem::vm::{GRANULARITY, PAGE, USER_HIGH, USER_LOW};
 
 /// STATUS_INVALID_INFO_CLASS: a class the service does not answer.
@@ -171,6 +180,31 @@ pub fn query_performance_counter(
     let value = 0u64;
     counter.write(value)?;
     frequency.write_optional(crate::time::PERFORMANCE_FREQUENCY)?;
+    Ok(STATUS_SUCCESS)
+}
+
+/// NtSetSystemTime: the system time (a FILETIME, UTC) set to `time`'s, the time it replaces written
+/// to `previous` when asked; a NULL `time` only reads it. A time past the signed range is
+/// STATUS_INVALID_PARAMETER. No privilege is checked: F2K has no tokens (Windows 2000 asks for
+/// SeSystemtimePrivilege, which kernel32's SetLocalTime and SetSystemTime enable first).
+pub fn set_system_time(_call: &mut NtCall, time: UserPtr<u64>, previous: UserPtr<u64>) -> NtResult {
+    let new = if time.is_null() {
+        None
+    } else {
+        Some(time.read()?)
+    };
+    if new.is_some_and(|new| new >> 63 != 0) {
+        return Err(STATUS_INVALID_PARAMETER);
+    }
+    #[cfg(target_arch = "x86")]
+    let now = crate::time::system_filetime();
+    #[cfg(not(target_arch = "x86"))]
+    let now = 0u64;
+    previous.write_optional(now)?;
+    #[cfg(target_arch = "x86")]
+    if let Some(new) = new {
+        crate::time::set_system_filetime(new);
+    }
     Ok(STATUS_SUCCESS)
 }
 

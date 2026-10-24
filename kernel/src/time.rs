@@ -137,7 +137,8 @@ pub fn performance_counter() -> u64 {
     value
 }
 
-/// The boot's wall-clock reading, a FILETIME; set once at boot.
+/// The boot's wall-clock reading, a FILETIME: set at boot, and moved when the system time is set
+/// ([`set_system_filetime`]).
 #[cfg(target_arch = "x86")]
 static mut BOOT_FILETIME: u64 = FALLBACK_BOOT;
 
@@ -153,7 +154,8 @@ pub fn init<IoT: crate::hw::portio::Io>(io: &mut IoT) {
 /// The boot's wall-clock reading.
 #[cfg(target_arch = "x86")]
 pub fn boot_filetime() -> u64 {
-    // SAFETY: written once at boot; read-only afterwards.
+    // SAFETY: a single processor; the writer ([`set_system_filetime`]) masks interrupts across its
+    // write, so a reader never sees half of it.
     unsafe { BOOT_FILETIME }
 }
 
@@ -161,6 +163,24 @@ pub fn boot_filetime() -> u64 {
 #[cfg(target_arch = "x86")]
 pub fn system_filetime() -> u64 {
     boot_filetime() + crate::interrupt::clock::system_time()
+}
+
+/// Set the wall-clock time (NtSetSystemTime's work): the boot's reading moved so that the current
+/// time reads `now`, and the shared data page's system time written at once rather than at the
+/// next full tick. The kernel's clock and its timers keep their own count (a relative wait is not
+/// moved), and the real-time clock is not written: the machine's next boot reads its own again.
+#[cfg(target_arch = "x86")]
+pub fn set_system_filetime(now: u64) {
+    let state = crate::interrupt::irql::state_mut();
+    let enabled = state.interrupts_enabled();
+    state.mask_interrupts();
+    let boot = now.wrapping_sub(crate::interrupt::clock::system_time());
+    // SAFETY: a single processor, interrupts masked: no reader runs across the write.
+    unsafe { BOOT_FILETIME = boot };
+    crate::user::shared::set_system_time(now);
+    if enabled {
+        state.unmask_interrupts();
+    }
 }
 
 #[cfg(test)]

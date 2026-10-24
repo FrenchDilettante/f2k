@@ -28,6 +28,8 @@ pub mod teb_offset {
     pub const PEB: u32 = 0x30;
     /// LastErrorValue: what GetLastError reads and SetLastError writes.
     pub const LAST_ERROR: u32 = 0x34;
+    /// CurrentLocale: the thread's locale, what GetThreadLocale reads and SetThreadLocale writes.
+    pub const CURRENT_LOCALE: u32 = 0xC4;
     /// DeallocationStack: the base of the thread's stack reservation, its lowest address.
     pub const DEALLOCATION_STACK: u32 = 0xE0C;
     /// TlsSlots: the first 64 TLS slots (see [`crate::user::tls`]).
@@ -134,9 +136,13 @@ pub struct TebInit {
     pub peb: u32,
 }
 
+/// The locale a thread starts in: the system's default, English (United States), as Windows 2000
+/// starts every thread in its default thread locale.
+pub const DEFAULT_LOCALE: u32 = 0x0409;
+
 /// A fresh TEB's nonzero words, as (offset, value). The TLS words stay zero: TlsSetValue makes the
 /// expansion slots on first use.
-pub fn teb_words(init: &TebInit) -> [(u32, u32); 8] {
+pub fn teb_words(init: &TebInit) -> [(u32, u32); 9] {
     [
         (teb_offset::EXCEPTION_LIST, END_OF_CHAIN),
         (teb_offset::STACK_BASE, init.stack_base),
@@ -146,6 +152,7 @@ pub fn teb_words(init: &TebInit) -> [(u32, u32); 8] {
         (teb_offset::PROCESS_ID, init.process_id),
         (teb_offset::THREAD_ID, init.thread_id),
         (teb_offset::PEB, init.peb),
+        (teb_offset::CURRENT_LOCALE, DEFAULT_LOCALE),
     ]
 }
 
@@ -276,6 +283,7 @@ mod tests {
         assert_eq!(teb_offset::THREAD_ID, 0x24);
         assert_eq!(teb_offset::PEB, 0x30);
         assert_eq!(teb_offset::LAST_ERROR, 0x34);
+        assert_eq!(teb_offset::CURRENT_LOCALE, 0xC4);
         assert_eq!(teb_offset::DEALLOCATION_STACK, 0xE0C);
         assert_eq!(peb_offset::IMAGE_BASE_ADDRESS, 0x08);
         assert_eq!(peb_offset::LDR, rtl::modules::peb::LDR);
@@ -299,8 +307,8 @@ mod tests {
         assert_eq!(teb_offset::TLS_EXPANSION_SLOTS, 0xF94);
     }
 
-    /// A fresh TEB: the chain terminated, the self pointer and the ids in place, the last error
-    /// left zero (no word written for it).
+    /// A fresh TEB: the chain terminated, the self pointer and the ids in place, the locale the
+    /// default, the last error left zero (no word written for it).
     #[test]
     fn fresh_teb_words() {
         let init = TebInit {
@@ -322,6 +330,7 @@ mod tests {
         assert_eq!(value(teb_offset::PROCESS_ID), Some(8));
         assert_eq!(value(teb_offset::THREAD_ID), Some(12));
         assert_eq!(value(teb_offset::PEB), Some(0x0033_0000));
+        assert_eq!(value(teb_offset::CURRENT_LOCALE), Some(0x0409));
         assert_eq!(value(teb_offset::LAST_ERROR), None);
         assert_eq!(
             value(teb_offset::TLS_EXPANSION_SLOTS),

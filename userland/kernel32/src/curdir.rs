@@ -2,7 +2,8 @@
 //! RtlSetCurrentDirectory_U), as on Windows 2000, each call's work its W form's: the narrow forms
 //! convert through the ANSI code page (ntdll's RtlAnsiStringToUnicodeString), in a buffer of
 //! MAX_PATH units (Windows 2000's kernel32 converts into the thread's static Unicode string, of
-//! that size), and hand theirs back narrowed ([`Text`]).
+//! that size), and hand theirs back narrowed ([`Text`]). The Windows and system directories, which
+//! never change, are here too.
 
 use crate::base::{ansi_into, set_last_error, set_last_nt_error, wide_units, Text};
 use crate::nt::{self, UnicodeString};
@@ -111,4 +112,67 @@ pub unsafe extern "system" fn set_current_directory_w(path: *const u16) -> u32 {
     let mut wide = [0u16; MAX_PATH];
     wide[..units.len()].copy_from_slice(units);
     set_current_directory(&mut wide, units.len())
+}
+
+/// The system directory under the system root.
+const SYSTEM32: &[u8] = b"\\system32";
+
+/// The Windows directory — the system root, KUSER_SHARED_DATA's NtSystemRoot, where Windows 2000's
+/// kernel32 takes it from — or, for `system`, the system directory under it, into the caller's
+/// buffer of `size` characters: its length when it fits with its terminator; otherwise the size it
+/// needs, terminator included, nothing written and the last error untouched (the runtime capture).
+///
+/// # Safety
+///
+/// `buffer` holds `size` characters.
+unsafe fn windows_directory(system: bool, size: u32, buffer: Text) -> u32 {
+    let mut root = [0u16; MAX_PATH];
+    let mut length = crate::shared::system_root(&mut root);
+    let mut directory = [0u16; MAX_PATH + SYSTEM32.len()];
+    directory[..length].copy_from_slice(&root[..length]);
+    if system {
+        for &byte in SYSTEM32 {
+            directory[length] = u16::from(byte);
+            length += 1;
+        }
+    }
+    if (size as usize) <= length {
+        return length as u32 + 1;
+    }
+    // SAFETY: the caller's buffer holds the directory and its terminator.
+    unsafe { buffer.put_terminated(&directory[..length]) };
+    length as u32
+}
+
+/// GetWindowsDirectoryA (see [`windows_directory`]).
+///
+/// # Safety
+///
+/// `buffer` holds `size` bytes.
+#[unsafe(export_name = "f2k_export_GetWindowsDirectoryA")]
+pub unsafe extern "system" fn get_windows_directory_a(buffer: *mut u8, size: u32) -> u32 {
+    // SAFETY: the caller's buffer.
+    unsafe { windows_directory(false, size, Text::Ansi(buffer)) }
+}
+
+/// GetWindowsDirectoryW (see [`windows_directory`]).
+///
+/// # Safety
+///
+/// `buffer` holds `size` characters.
+#[unsafe(export_name = "f2k_export_GetWindowsDirectoryW")]
+pub unsafe extern "system" fn get_windows_directory_w(buffer: *mut u16, size: u32) -> u32 {
+    // SAFETY: the caller's buffer.
+    unsafe { windows_directory(false, size, Text::Wide(buffer)) }
+}
+
+/// GetSystemDirectoryA (see [`windows_directory`]): `<system root>\system32`.
+///
+/// # Safety
+///
+/// `buffer` holds `size` bytes.
+#[unsafe(export_name = "f2k_export_GetSystemDirectoryA")]
+pub unsafe extern "system" fn get_system_directory_a(buffer: *mut u8, size: u32) -> u32 {
+    // SAFETY: the caller's buffer.
+    unsafe { windows_directory(true, size, Text::Ansi(buffer)) }
 }

@@ -12,13 +12,14 @@
 //!
 //! [`handle`] holds the calls on a file handle (CreateFileA, ReadFile, WriteFile, SetFilePointer
 //! and the rest), [`names`] those on a name (attributes, deletes, renames, directories, the full
-//! and short names), [`copy`] CopyFileA's loop, [`find`] the directory searches and [`volume`] the
-//! volume's.
+//! and short names), [`copy`] CopyFileA's loop, [`find`] the directory searches, [`search`]
+//! SearchPath's look through a list of directories, and [`volume`] the volume's.
 
 pub mod copy;
 pub mod find;
 pub mod handle;
 pub mod names;
+pub mod search;
 pub mod volume;
 
 use crate::base::{process_heap, set_last_error, SecurityAttributes, OBJ_INHERIT};
@@ -103,6 +104,7 @@ pub const FILE_FS_VOLUME_INFORMATION: u32 = 1;
 pub const FILE_FS_SIZE_INFORMATION: u32 = 3;
 pub const FILE_FS_DEVICE_INFORMATION: u32 = 4;
 pub const FILE_FS_ATTRIBUTE_INFORMATION: u32 = 5;
+pub const FILE_FS_FULL_SIZE_INFORMATION: u32 = 7;
 
 /// OBJECT_ATTRIBUTES' OBJ_CASE_INSENSITIVE.
 pub const OBJ_CASE_INSENSITIVE: u32 = 0x40;

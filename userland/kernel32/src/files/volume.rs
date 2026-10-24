@@ -1,7 +1,8 @@
-//! The volume's calls: GetDriveType, GetDiskFreeSpace and GetVolumeInformation (A and W), each an
-//! open of the root path named (the current drive's for none) and NtQueryVolumeInformationFile, as
-//! Windows 2000's kernel32 makes them. GetDriveType does not consult the kernel's drive-letter map
-//! (NtQueryInformationProcess's ProcessDeviceMap, not served): it always takes the open's way.
+//! The volume's calls: GetDriveType, GetDiskFreeSpace, GetDiskFreeSpaceEx and GetVolumeInformation
+//! (A and W), each an open of the root path named (the current drive's for none; any directory for
+//! GetDiskFreeSpaceEx) and NtQueryVolumeInformationFile, as Windows 2000's kernel32 makes them.
+//! GetDriveType does not consult the kernel's drive-letter map (NtQueryInformationProcess's
+//! ProcessDeviceMap, not served): it always takes the open's way.
 
 use rtl::status::nt_success;
 
@@ -270,6 +271,99 @@ pub unsafe extern "system" fn get_disk_free_space_w(
             clusters,
         )
     }
+}
+
+/// GetDiskFreeSpaceExW's work: the directory named (the current drive's root for none: any
+/// directory of the volume, not only its root) opened for listing — a file is ERROR_DIRECTORY
+/// (STATUS_NOT_A_DIRECTORY), a missing directory or volume ERROR_PATH_NOT_FOUND, an empty name too
+/// (no NT path is made of it) — then its volume's sizes (FileFsFullSizeInformation) in bytes: the
+/// free bytes the caller may use, the total, and the total free, each where asked.
+///
+/// # Safety
+///
+/// Each out pointer is null or points at a quadword.
+unsafe fn disk_free_space_ex(
+    path: Option<Wide>,
+    caller_free: *mut u64,
+    total: *mut u64,
+    total_free: *mut u64,
+) -> u32 {
+    let Some(path) = path else {
+        return 0;
+    };
+    let Some(path) = NtPath::of(path.terminated()) else {
+        set_last_error(ERROR_PATH_NOT_FOUND);
+        return 0;
+    };
+    let options =
+        FILE_SYNCHRONOUS_IO_NONALERT | FILE_DIRECTORY_FILE | FILE_OPEN_FOR_FREE_SPACE_QUERY;
+    let handle = match open(
+        &path,
+        FILE_LIST_DIRECTORY | SYNCHRONIZE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        options,
+    ) {
+        Ok(handle) => handle,
+        Err(status) => {
+            set_last_nt_error(status);
+            if crate::base::last_error() == ERROR_FILE_NOT_FOUND {
+                set_last_error(ERROR_PATH_NOT_FOUND);
+            }
+            return 0;
+        }
+    };
+    let mut size = [0u8; 32];
+    let status = query_volume(handle, FILE_FS_FULL_SIZE_INFORMATION, &mut size);
+    close(handle);
+    if !nt_success(status) {
+        set_last_nt_error(status);
+        return 0;
+    }
+    let unit = u64::from(word(&size, 24)) * u64::from(word(&size, 28));
+    let put = |at: *mut u64, units: u64| {
+        if !at.is_null() {
+            // SAFETY: the caller's slot.
+            unsafe { at.write_unaligned(units.wrapping_mul(unit)) };
+        }
+    };
+    put(caller_free, quad(&size, 8));
+    put(total, quad(&size, 0));
+    put(total_free, quad(&size, 16));
+    1
+}
+
+/// GetDiskFreeSpaceExA (see [`disk_free_space_ex`]).
+///
+/// # Safety
+///
+/// `directory` is null or a NUL-terminated string; each out pointer is null or points at a
+/// quadword.
+#[unsafe(export_name = "f2k_export_GetDiskFreeSpaceExA")]
+pub unsafe extern "system" fn get_disk_free_space_ex_a(
+    directory: *const u8,
+    caller_free: *mut u64,
+    total: *mut u64,
+    total_free: *mut u64,
+) -> u32 {
+    // SAFETY: the caller's string and slots.
+    unsafe { disk_free_space_ex(root_path(directory), caller_free, total, total_free) }
+}
+
+/// GetDiskFreeSpaceExW (see [`disk_free_space_ex`]).
+///
+/// # Safety
+///
+/// `directory` is null or a NUL-terminated UTF-16 string; each out pointer is null or points at a
+/// quadword.
+#[unsafe(export_name = "f2k_export_GetDiskFreeSpaceExW")]
+pub unsafe extern "system" fn get_disk_free_space_ex_w(
+    directory: *const u16,
+    caller_free: *mut u64,
+    total: *mut u64,
+    total_free: *mut u64,
+) -> u32 {
+    // SAFETY: the caller's string and slots.
+    unsafe { disk_free_space_ex(root_path_w(directory), caller_free, total, total_free) }
 }
 
 /// GetVolumeInformationW's work: the root path (it must end in a separator and name a root:

@@ -584,6 +584,114 @@ fn move_file_renames_to_the_nt_path() {
     assert_eq!(String::from_utf16(&name).unwrap(), "\\??\\C:\\SUB\\B.TXT");
 }
 
+/// MoveFileExA: MOVEFILE_REPLACE_EXISTING is the rename's ReplaceIfExists; a NULL new name is
+/// ERROR_PATH_NOT_FOUND once the source opened; a move until the reboot is the stub's.
+///
+/// Pins: kernel32.MoveFileExA
+#[test]
+fn move_file_ex_replaces_when_asked() {
+    file_at(0, 0);
+    let (from, to) = (b"C:\\A.TXT\0".as_ptr(), b"C:\\B.TXT\0".as_ptr());
+    assert_eq!(unsafe { move_file_ex_a(from, to, 0x1 | 0x2 | 0x8) }, 1);
+    let recorded = calls();
+    let Call::Set {
+        class: 10, bytes, ..
+    } = &recorded[1]
+    else {
+        panic!("{recorded:?}")
+    };
+    assert_eq!(bytes[0], 1, "ReplaceIfExists");
+    assert_eq!(unsafe { move_file_ex_a(from, core::ptr::null(), 0) }, 0);
+    assert_eq!(last_error(), 3);
+    assert_eq!(calls().len(), 1, "the source opened, nothing renamed");
+    assert_eq!(unsafe { move_file_ex_a(from, core::ptr::null(), 0x4) }, 0);
+    assert_eq!(last_error(), 120);
+    assert!(calls().is_empty());
+}
+
+/// SearchPathA: each directory of the list in turn (a missing one passed over), the extension added
+/// to a name without one, the path found made full with its file part; the size needed when the
+/// buffer cannot hold it; an empty name ERROR_INVALID_PARAMETER, one found nowhere
+/// ERROR_FILE_NOT_FOUND; a name with a path of its own tried alone.
+///
+/// Pins: kernel32.SearchPathA
+#[test]
+fn search_path_tries_each_directory() {
+    use crate::files::search::search_path_a;
+    use crate::nt::files::{EXISTENCE_ASKED, EXISTING_PATHS};
+    CURRENT_DIRECTORY
+        .with(|current| *current.borrow_mut() = "C:\\CORPUS\\".encode_utf16().collect());
+    EXISTING_PATHS
+        .with(|existing| *existing.borrow_mut() = vec!["C:\\CORPUS\\DATA\\SMALL.TXT".into()]);
+    EXISTENCE_ASKED.with(|asked| asked.borrow_mut().clear());
+    let mut buffer = [0xCCu8; 64];
+    let mut part = core::ptr::null_mut();
+    let list = b"C:\\NODIR;;DATA\\\0".as_ptr();
+    let length = unsafe {
+        search_path_a(
+            list,
+            b"SMALL\0".as_ptr(),
+            b".TXT\0".as_ptr(),
+            64,
+            buffer.as_mut_ptr(),
+            &mut part,
+        )
+    };
+    assert_eq!(length, 24);
+    assert_eq!(&buffer[..25], b"C:\\CORPUS\\DATA\\SMALL.TXT\0");
+    assert_eq!(part as usize, buffer.as_ptr() as usize + 15);
+    EXISTENCE_ASKED
+        .with(|asked| assert_eq!(*asked.borrow(), ["C:\\NODIR\\SMALL.TXT", "DATA\\SMALL.TXT"]));
+    let name = b"SMALL.TXT\0".as_ptr();
+    let null = core::ptr::null_mut();
+    let needed = unsafe {
+        search_path_a(
+            list,
+            name,
+            b".BIN\0".as_ptr(),
+            24,
+            buffer.as_mut_ptr(),
+            null,
+        )
+    };
+    assert_eq!(needed, 25, "the size needed, the extension not added");
+    assert_eq!(
+        unsafe {
+            search_path_a(
+                list,
+                b"\0".as_ptr(),
+                null.cast(),
+                64,
+                buffer.as_mut_ptr(),
+                null,
+            )
+        },
+        0
+    );
+    assert_eq!(last_error(), 87);
+    assert_eq!(
+        unsafe {
+            search_path_a(
+                list,
+                b"NONE.TXT\0".as_ptr(),
+                null.cast(),
+                64,
+                buffer.as_mut_ptr(),
+                null,
+            )
+        },
+        0
+    );
+    assert_eq!(last_error(), 2);
+    EXISTENCE_ASKED.with(|asked| asked.borrow_mut().clear());
+    let absolute = b"C:\\CORPUS\\DATA\\SMALL.TXT\0".as_ptr();
+    assert_eq!(
+        unsafe { search_path_a(list, absolute, null.cast(), 64, buffer.as_mut_ptr(), null) },
+        24
+    );
+    EXISTENCE_ASKED.with(|asked| assert_eq!(*asked.borrow(), ["C:\\CORPUS\\DATA\\SMALL.TXT"]));
+}
+
 /// GetFullPathNameA: the length and the file part when it fits, else the size needed; an empty
 /// path ERROR_PATH_NOT_FOUND.
 ///

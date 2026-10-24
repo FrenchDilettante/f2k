@@ -97,13 +97,20 @@ pub fn init(boot_filetime: u64) {
 #[cfg(target_arch = "x86")]
 fn write_time(at: u32, value: u64) {
     let field = (KERNEL_ADDRESS + at) as *mut u32;
-    // SAFETY: the kernel's own mapping of the page (made at boot, never unmapped); the clock
-    // interrupt is the only writer after boot.
+    // SAFETY: the kernel's own mapping of the page (made at boot, never unmapped); after boot the
+    // clock interrupt writes it, and NtSetSystemTime with interrupts masked.
     unsafe {
         field.add(2).write_volatile((value >> 32) as u32);
         field.write_volatile(value as u32);
         field.add(1).write_volatile((value >> 32) as u32);
     }
+}
+
+/// The system time written now (NtSetSystemTime's, `crate::time::set_system_filetime`), with
+/// interrupts masked: the clock interrupt is the page's other writer.
+#[cfg(target_arch = "x86")]
+pub fn set_system_time(value: u64) {
+    write_time(offset::SYSTEM_TIME, value);
 }
 
 /// The clock interrupt's update: the interrupt time on every interrupt; the system time (the boot's

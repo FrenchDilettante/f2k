@@ -16,25 +16,27 @@
 //! (RtlSetEnvironmentVariable, RtlQueryEnvironmentVariable_U, RtlExpandEnvironmentStrings_U:
 //! `src/env.rs` over `rtl::env`); the current directory and the DOS paths
 //! (RtlSetCurrentDirectory_U, RtlGetCurrentDirectory_U, RtlGetFullPathName_U,
-//! RtlDosPathNameToNtPathName_U: `src/curdir.rs` over `rtl::path`); the counted strings and the
-//! ANSI code page, which kernel32's narrow calls convert through (RtlInitAnsiString,
-//! RtlAnsiStringToUnicodeString, RtlUnicodeStringToAnsiString, RtlFreeUnicodeString,
-//! RtlUnicodeToMultiByteN, RtlUnicodeToMultiByteSize: `src/strings.rs` over `rtl::string`); the
-//! time conversions (RtlTimeToTimeFields, RtlTimeFieldsToTime: `src/time.rs` over `rtl::time`); the
-//! bitmaps kernel32 keeps the TLS slots in (RtlFindClearBitsAndSet, RtlClearBits, RtlAreBitsSet:
-//! `src/bitmap.rs` over `rtl::bitmap`); the resources and the messages kernel32's FormatMessage
-//! finds and lays out (LdrFindResource_U, LdrFindResourceDirectory_U, LdrAccessResource,
-//! RtlFindMessage, RtlFormatMessage: `src/resource.rs` over `rtl::resource` and `rtl::message`);
-//! the loader, which loads every DLL of the process but ntdll from the volume, kernel32 included,
-//! and calls their entry points (`src/loader.rs` over `rtl::modules`: the process's module lists,
-//! LdrGetDllHandle, LdrLoadDll, LdrUnloadDll, LdrGetProcedureAddress,
+//! RtlDosPathNameToNtPathName_U, RtlDoesFileExists_U, RtlDetermineDosPathNameType_U:
+//! `src/curdir.rs` over `rtl::path`); the counted strings and the ANSI code page, which kernel32's
+//! narrow calls convert through
+//! (RtlInitAnsiString, RtlAnsiStringToUnicodeString, RtlUnicodeStringToAnsiString,
+//! RtlFreeUnicodeString, RtlUnicodeToMultiByteN, RtlUnicodeToMultiByteSize: `src/strings.rs` over
+//! `rtl::string`); the time conversions (RtlTimeToTimeFields, RtlTimeFieldsToTime: `src/time.rs`
+//! over `rtl::time`); the bitmaps kernel32 keeps the TLS slots in (RtlFindClearBitsAndSet,
+//! RtlClearBits, RtlAreBitsSet: `src/bitmap.rs` over `rtl::bitmap`); the resources and the messages
+//! kernel32's FormatMessage finds and lays out (LdrFindResource_U, LdrFindResourceDirectory_U,
+//! LdrAccessResource, RtlFindMessage, RtlFormatMessage: `src/resource.rs` over `rtl::resource` and
+//! `rtl::message`); the loader, which loads every DLL of the process but ntdll from the volume,
+//! kernel32 included, and calls their entry points (`src/loader.rs` over `rtl::modules`: the
+//! process's module lists, LdrGetDllHandle, LdrLoadDll, LdrUnloadDll, LdrGetProcedureAddress,
 //! LdrDisableThreadCalloutsForDll); and the loader's share of a thread's start and end:
 //! LdrInitializeThunk, which the kernel delivers before a fresh thread's first instruction
 //! (`src/ldr.s`: the process heap, the PEB lock and the loader lock and the image's DLLs on the
 //! first thread, the thread's implicit TLS, the DLLs' DLL_PROCESS_ATTACH or DLL_THREAD_ATTACH), and
 //! LdrShutdownThread and LdrShutdownProcess, kernel32's ExitThread's and ExitProcess's;
 //! DbgPrint (`src/dbgprint.s`, `src/dbgprint.rs` over `rtl::printf`: the text to the
-//! kernel's debugger channel, COM1); and the stub routine its stubbed exports' generated bodies go
+//! kernel's debugger channel, COM1) and DbgBreakPoint (`src/dbgprint.s`: a breakpoint, raised
+//! inside ntdll); and the stub routine its stubbed exports' generated bodies go
 //! to (`src/stub.rs`). The kernel finds LdrInitializeThunk and the two
 //! dispatchers by their export names.
 

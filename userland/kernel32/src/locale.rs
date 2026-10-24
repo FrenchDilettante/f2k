@@ -537,6 +537,101 @@ pub unsafe extern "system" fn compare_string_w(
     unsafe { compare_strings(flags, (a, a_count), (b, b_count), u32::from) }
 }
 
+/// NORM_IGNORECASE: lstrcmpi's comparison.
+const NORM_IGNORECASE: u32 = 0x1;
+
+/// lstrcmp's answer from CompareString's over the two strings (each to its terminator, in the
+/// thread's locale): its order less two, -1, 0 or 1. A NULL string, which CompareString refuses
+/// (ERROR_INVALID_PARAMETER, left set), sorts before any other, and two NULLs are equal: the
+/// runtime capture's answers.
+fn lstrcmp_answer(compared: i32, first_null: bool, second_null: bool) -> i32 {
+    if compared != 0 {
+        return compared - 2;
+    }
+    i32::from(second_null && !first_null) - i32::from(first_null && !second_null)
+}
+
+/// lstrcmpA: the ANSI strings compared as CompareStringA compares them, word sort, case counting
+/// (see [`lstrcmp_answer`]).
+///
+/// # Safety
+///
+/// Each string is NULL or NUL-terminated.
+#[unsafe(export_name = "f2k_export_lstrcmpA")]
+pub unsafe extern "system" fn lstrcmp_a(first: *const u8, second: *const u8) -> i32 {
+    // SAFETY: the caller's strings.
+    let compared = unsafe { compare_string_a(get_thread_locale(), 0, first, -1, second, -1) };
+    lstrcmp_answer(compared, first.is_null(), second.is_null())
+}
+
+/// lstrcmpW (as [`lstrcmp_a`], over UTF-16 strings).
+///
+/// # Safety
+///
+/// Each string is NULL or NUL-terminated.
+#[unsafe(export_name = "f2k_export_lstrcmpW")]
+pub unsafe extern "system" fn lstrcmp_w(first: *const u16, second: *const u16) -> i32 {
+    // SAFETY: the caller's strings.
+    let compared = unsafe { compare_string_w(get_thread_locale(), 0, first, -1, second, -1) };
+    lstrcmp_answer(compared, first.is_null(), second.is_null())
+}
+
+/// lstrcmpiA (as [`lstrcmp_a`], case ignored: NORM_IGNORECASE).
+///
+/// # Safety
+///
+/// Each string is NULL or NUL-terminated.
+#[unsafe(export_name = "f2k_export_lstrcmpiA")]
+pub unsafe extern "system" fn lstrcmpi_a(first: *const u8, second: *const u8) -> i32 {
+    // SAFETY: the caller's strings.
+    let compared =
+        unsafe { compare_string_a(get_thread_locale(), NORM_IGNORECASE, first, -1, second, -1) };
+    lstrcmp_answer(compared, first.is_null(), second.is_null())
+}
+
+/// lstrcmpiW (as [`lstrcmpi_a`], over UTF-16 strings).
+///
+/// # Safety
+///
+/// Each string is NULL or NUL-terminated.
+#[unsafe(export_name = "f2k_export_lstrcmpiW")]
+pub unsafe extern "system" fn lstrcmpi_w(first: *const u16, second: *const u16) -> i32 {
+    // SAFETY: the caller's strings.
+    let compared =
+        unsafe { compare_string_w(get_thread_locale(), NORM_IGNORECASE, first, -1, second, -1) };
+    lstrcmp_answer(compared, first.is_null(), second.is_null())
+}
+
+/// The TEB's CurrentLocale: the thread's locale (the kernel starts every thread in the default).
+const TEB_CURRENT_LOCALE: usize = 0xC4;
+
+/// GetThreadLocale: the calling thread's locale, from its TEB.
+#[unsafe(export_name = "f2k_export_GetThreadLocale")]
+pub extern "system" fn get_thread_locale() -> u32 {
+    crate::base::read(crate::base::teb_address() + TEB_CURRENT_LOCALE)
+}
+
+/// SetThreadLocale: the calling thread's locale, in its TEB. The neutral locale (0) and the default
+/// pseudo-locales (LOCALE_USER_DEFAULT, LOCALE_SYSTEM_DEFAULT) stand for the user's default; any
+/// other must be a well-formed LCID — the default sort, no reserved bits, a primary language and a
+/// sublanguage — or the call is ERROR_INVALID_PARAMETER, the locale kept. The locale's tables are
+/// not consulted: a thread may name a locale this surface has no facts for (the runtime capture
+/// sets French).
+#[unsafe(export_name = "f2k_export_SetThreadLocale")]
+pub extern "system" fn set_thread_locale(locale: u32) -> u32 {
+    use crate::localeinfo::{LCID_EN_US, LOCALE_SYSTEM_DEFAULT, LOCALE_USER_DEFAULT};
+    let locale = match locale {
+        0 | LOCALE_USER_DEFAULT | LOCALE_SYSTEM_DEFAULT => LCID_EN_US,
+        locale => locale,
+    };
+    let (primary, sublanguage) = (locale & 0x3FF, (locale >> 10) & 0x3F);
+    if locale >> 16 != 0 || primary == 0 || sublanguage == 0 {
+        return fail(ERROR_INVALID_PARAMETER, 0);
+    }
+    crate::base::write(crate::base::teb_address() + TEB_CURRENT_LOCALE, locale);
+    1
+}
+
 /// GetUserDefaultLCID: the one locale.
 #[unsafe(export_name = "f2k_export_GetUserDefaultLCID")]
 pub extern "system" fn get_user_default_lcid() -> u32 {

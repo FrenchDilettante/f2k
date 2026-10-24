@@ -194,8 +194,9 @@ fn rename_target(
 }
 
 /// FileRenameInformation's work: the file's entry moved to the target's name (an existing one
-/// replaced only when asked, and only a file no one holds open: STATUS_ACCESS_DENIED otherwise;
-/// STATUS_OBJECT_NAME_COLLISION when not asked), its record following it.
+/// replaced only when asked, and only a file that is not read-only, nor a directory:
+/// STATUS_OBJECT_NAME_COLLISION otherwise, as when not asked; and only one no one holds open:
+/// STATUS_ACCESS_DENIED), its record following it.
 fn rename(
     record: u16,
     replace: bool,
@@ -220,10 +221,12 @@ fn rename(
                 return Err(STATUS_OBJECT_NAME_COLLISION.0 as i32)
             }
             Found::Existing(existing) => {
-                if existing.directory
-                    || existing.attributes & ATTR_READ_ONLY != 0
-                    || records().find(&existing).is_some()
-                {
+                // A directory or a read-only file is never replaced: the name stays taken (the
+                // fswrite capture's MoveFileEx answers ERROR_ALREADY_EXISTS for both).
+                if existing.directory || existing.attributes & ATTR_READ_ONLY != 0 {
+                    return Err(STATUS_OBJECT_NAME_COLLISION.0 as i32);
+                }
+                if records().find(&existing).is_some() {
                     return Err(STATUS_ACCESS_DENIED.0 as i32);
                 }
                 write::delete(volume, &existing)?;

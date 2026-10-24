@@ -94,6 +94,8 @@ unsafe extern "system" {
     ) -> u32;
     /// NtQueryPerformanceCounter: the counter and, when asked, its frequency.
     pub fn NtQueryPerformanceCounter(counter: *mut u64, frequency: *mut u64) -> u32;
+    /// NtSetSystemTime: the system time (UTC) set, the one it replaces written where asked.
+    pub fn NtSetSystemTime(time: *const u64, previous: *mut u64) -> u32;
     /// NtQueryInformationProcess: the class's structure (F2K answers the VM counters, class 3).
     pub fn NtQueryInformationProcess(
         process: u32,
@@ -407,11 +409,17 @@ unsafe extern "system" {
         buffer: *mut u16,
         file_part: *mut *mut u16,
     ) -> u32;
+    /// RtlDoesFileExists_U: whether a DOS path names a file or a directory (a BOOLEAN).
+    pub fn RtlDoesFileExists_U(path: *const u16) -> u8;
+    /// RtlDetermineDosPathNameType_U: what a DOS path is (RTL_PATH_TYPE: 5 a relative name).
+    pub fn RtlDetermineDosPathNameType_U(path: *const u16) -> u32;
     /// The current directory: its DOS path read, and changed (the new one opened).
     pub fn RtlGetCurrentDirectory_U(buffer_length: u32, buffer: *mut u16) -> u32;
     pub fn RtlSetCurrentDirectory_U(path: *const UnicodeString) -> u32;
     /// RtlRaiseStatus: the status raised as a noncontinuable exception.
     pub fn RtlRaiseStatus(status: u32) -> !;
+    /// DbgBreakPoint: a breakpoint exception, raised inside ntdll.
+    pub fn DbgBreakPoint();
     /// The heaps (ntdll's RtlCreateHeap family): a heap made and destroyed, a block allocated,
     /// freed, sized and resized.
     pub fn RtlCreateHeap(
@@ -622,6 +630,16 @@ pub mod host {
         pub static RAISED: RefCell<std::vec::Vec<rtl::seh::ExceptionRecord>> = const { RefCell::new(std::vec::Vec::new()) };
         /// RtlUnwind's calls: the target frame and the record.
         pub static UNWOUND: RefCell<std::vec::Vec<(u32, rtl::seh::ExceptionRecord)>> = const { RefCell::new(std::vec::Vec::new()) };
+    }
+
+    std::thread_local! {
+        /// How many breakpoints DbgBreakPoint raised.
+        pub static BREAKPOINTS: Cell<u32> = const { Cell::new(0) };
+    }
+
+    /// DbgBreakPoint: the breakpoint counted (no handler: it returns, as a continued one does).
+    pub unsafe extern "system" fn DbgBreakPoint() {
+        BREAKPOINTS.with(|count| count.set(count.get() + 1));
     }
 
     /// RtlRaiseException: the record kept (no handler: the raise returns, as a continued one does).
@@ -1545,6 +1563,29 @@ pub mod host {
         0
     }
 
+    std::thread_local! {
+        /// The system times NtSetSystemTime set, in order.
+        pub static TIMES_SET: RefCell<std::vec::Vec<u64>> = const { RefCell::new(std::vec::Vec::new()) };
+    }
+
+    /// NtSetSystemTime: the time kept (an arranged failure refuses it).
+    pub unsafe extern "system" fn NtSetSystemTime(time: *const u64, previous: *mut u64) -> u32 {
+        let status = answer();
+        if status != 0 {
+            return status;
+        }
+        // SAFETY: the caller's time and, when given, previous time.
+        unsafe {
+            if !previous.is_null() {
+                previous.write(0);
+            }
+            if !time.is_null() {
+                TIMES_SET.with(|times| times.borrow_mut().push(time.read()));
+            }
+        }
+        0
+    }
+
     /// The writes the console showed since the last look.
     pub fn console_writes() -> std::vec::Vec<(u32, std::vec::Vec<u8>)> {
         CONSOLE.with(|console| std::mem::take(&mut *console.borrow_mut()))
@@ -2182,6 +2223,48 @@ pub mod files {
             }
         }
         (2 * length) as u32
+    }
+
+    std::thread_local! {
+        /// The full paths that exist, for RtlDoesFileExists_U (compared without regard to case).
+        pub static EXISTING_PATHS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+        /// The paths RtlDoesFileExists_U was asked about, in order.
+        pub static EXISTENCE_ASKED: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    }
+
+    /// RtlDoesFileExists_U: whether the path, made full over the stand-in's current directory, is
+    /// one of [`EXISTING_PATHS`]; the path asked kept in [`EXISTENCE_ASKED`].
+    pub unsafe extern "system" fn RtlDoesFileExists_U(path: *const u16) -> u8 {
+        // SAFETY: the caller's string.
+        let path = unsafe { terminated(path) };
+        let current = CURRENT_DIRECTORY.with(|current| current.borrow().clone());
+        let mut full = [0u16; 1040];
+        let Ok((length, _)) = rtl::path::full_path_name(path, &current, &mut full) else {
+            return 0;
+        };
+        let full = String::from_utf16(&full[..length]).unwrap();
+        EXISTENCE_ASKED.with(|asked| asked.borrow_mut().push(String::from_utf16(path).unwrap()));
+        u8::from(EXISTING_PATHS.with(|existing| {
+            existing
+                .borrow()
+                .iter()
+                .any(|name| name.eq_ignore_ascii_case(&full))
+        }))
+    }
+
+    /// RtlDetermineDosPathNameType_U (rtl::path, as ntdll runs it).
+    pub unsafe extern "system" fn RtlDetermineDosPathNameType_U(path: *const u16) -> u32 {
+        use rtl::path::PathType;
+        // SAFETY: the caller's string.
+        match rtl::path::path_type(unsafe { terminated(path) }) {
+            PathType::UncAbsolute => 1,
+            PathType::DriveAbsolute => 2,
+            PathType::DriveRelative => 3,
+            PathType::Rooted => 4,
+            PathType::Relative => 5,
+            PathType::LocalDevice => 6,
+            PathType::RootLocalDevice => 7,
+        }
     }
 
     /// RtlGetCurrentDirectory_U, over the stand-in's current directory.

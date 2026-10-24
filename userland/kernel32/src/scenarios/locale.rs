@@ -872,3 +872,47 @@ fn multi_byte_to_wide_char_uses_glyph_chars() {
         [0x0000, 0x0001, 0x000D, 0x001F, 0x0041, 0x007F, 0x20AC]
     );
 }
+
+/// lstrcmp and lstrcmpi: CompareString's word sort, -1, 0 or 1; a NULL string sorts first,
+/// ERROR_INVALID_PARAMETER left set (the runtime capture's lstrcmp block).
+///
+/// Pins: kernel32.lstrcmpA, kernel32.lstrcmpW, kernel32.lstrcmpiA, kernel32.lstrcmpiW
+#[test]
+fn lstrcmp_answers_minus_one_zero_or_one() {
+    let wide = |text: &str| -> std::vec::Vec<u16> { text.encode_utf16().chain([0]).collect() };
+    let (coop, co_op) = (wide("coop"), wide("co-op"));
+    unsafe {
+        assert_eq!(lstrcmp_a(b"a\0".as_ptr(), b"A\0".as_ptr()), -1);
+        assert_eq!(lstrcmpi_a(b"a\0".as_ptr(), b"A\0".as_ptr()), 0);
+        assert_eq!(lstrcmp_w(co_op.as_ptr(), coop.as_ptr()), 1);
+        assert_eq!(lstrcmpi_w(coop.as_ptr(), co_op.as_ptr()), -1);
+        crate::base::set_last_error(0);
+        assert_eq!(lstrcmp_a(core::ptr::null(), b"a\0".as_ptr()), -1);
+        assert_eq!(last_error(), 87);
+        assert_eq!(lstrcmpi_w(coop.as_ptr(), core::ptr::null()), 1);
+        assert_eq!(lstrcmp_w(core::ptr::null(), core::ptr::null()), 0);
+    }
+}
+
+/// SetThreadLocale: the defaults stand for US English; a well-formed LCID is taken as it is; a
+/// malformed one is ERROR_INVALID_PARAMETER, the locale kept. GetThreadLocale reads it back.
+///
+/// Pins: kernel32.GetThreadLocale, kernel32.SetThreadLocale
+#[test]
+fn the_thread_locale_is_set_and_read() {
+    assert_eq!(set_thread_locale(0x040C), 1);
+    assert_eq!(get_thread_locale(), 0x040C);
+    crate::base::set_last_error(0);
+    assert_eq!(set_thread_locale(0x1234_5678), 0);
+    assert_eq!((last_error(), get_thread_locale()), (87, 0x040C));
+    for default in [0, 0x0400, 0x0800] {
+        assert_eq!(set_thread_locale(0x040C), 1);
+        assert_eq!(set_thread_locale(default), 1);
+        assert_eq!(get_thread_locale(), LOCALE_US);
+    }
+    assert_eq!(
+        set_thread_locale(0x0009),
+        0,
+        "a language alone is no locale"
+    );
+}

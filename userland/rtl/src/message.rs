@@ -1,6 +1,6 @@
 //! Message formatting: RtlFormatMessage's work, which FormatMessage hands a message's text to, as
 //! Windows 2000's kernel32 does — the escapes, the inserts and the line width the FormatMessage
-//! documentation describes.
+//! documentation describes, as the msgtable capture shows them.
 //!
 //! The text runs to its NUL. In it:
 //!
@@ -12,13 +12,20 @@
 //! - `%1` to `%99` are inserts: the argument of that number, laid out by the printf format between
 //!   exclamation marks that may follow (`%1!d!`), `!s!` when none does. A format's `*` takes the
 //!   width or the precision from the argument, the value from the next (the FormatMessage
-//!   documentation's `%1!*.*s!` takes the first three). With inserts ignored, an insert is copied
-//!   as it is written, format and all.
+//!   documentation's `%1!*.*s!` takes the first three).
+//!
+//! With inserts ignored, an insert is copied as it is written, format and all, but for a format of
+//! `s` alone, which is the default and is dropped (`%1!s!` copies as `%1`); `%0`, `%n`, `%r` and
+//! `%t` still do their work, and every other escape is copied as written (`%%` stays `%%`): the
+//! capture's ignore block.
 //!
 //! The width (MaximumWidth) lays the lines out: zero keeps the text's line breaks;
-//! [`NO_LINE_BREAKS`] makes them blanks and generates none; any other width also breaks a line that
-//! would run past it at its last blank (CR LF in the blank's place), and a word longer than the
-//! width at the width (the runtime capture: width 5 makes `Acces` and `s is` of "Access is").
+//! [`NO_LINE_BREAKS`] makes them blanks and generates none; any other width breaks the line once a
+//! unit fills it to the width: a blank filling it becomes the break (CR LF in its place); otherwise
+//! the line's last blank does, the line's tail moving to the next line; a line with no blank
+//! breaks right after the unit (a word longer than the width breaks at the width: the runtime
+//! capture's width 5 makes `Acces` and `s is` of "Access is"; the msgtable capture's width 1 puts
+//! every unit on its own line, and a blank alone on a line becomes an empty line).
 //!
 //! The arguments are pointer-sized slots, in order (an array, or the va_list's stack). A string
 //! insert's `s` is the call's own form (ANSI for an A call's arguments, UTF-16 for a W call's) and
@@ -93,28 +100,33 @@ impl Out<'_> {
         }
     }
 
-    /// One unit of the message, its line broken first when it would run past the width (a blank
-    /// never breaks one).
+    /// One unit of the message, its line broken when the unit fills it to the width: a blank
+    /// filling it is the break, else the line's last blank, else a break right after the unit.
     fn unit(&mut self, unit: u16) -> Result<(), u32> {
+        if unit == BLANK {
+            self.blank = Some(self.length);
+        }
+        self.raw(unit)?;
         let wraps = self.width != 0 && self.width != NO_LINE_BREAKS;
-        if wraps && unit != BLANK && self.length - self.line >= self.width as usize {
-            if let Some(at) = self.blank.take() {
+        if !wraps || self.length - self.line < self.width as usize {
+            return Ok(());
+        }
+        match self.blank.take() {
+            Some(at) => {
                 // The blank becomes the break: the line's tail moves up one unit past it.
                 self.raw(0)?;
                 self.buffer.copy_within(at + 1..self.length - 1, at + 2);
                 self.buffer[at..at + 2].copy_from_slice(&[CR, LF]);
                 self.line = at + 2;
-            } else {
-                // No blank on the line: the word breaks at the width.
+            }
+            None => {
+                // No blank on the line: it breaks after the unit.
                 self.raw(CR)?;
                 self.raw(LF)?;
                 self.line = self.length;
             }
         }
-        if unit == BLANK {
-            self.blank = Some(self.length);
-        }
-        self.raw(unit)
+        Ok(())
     }
 
     fn units(&mut self, units: &[u16]) -> Result<(), u32> {
@@ -180,7 +192,13 @@ pub fn format(
                             None
                         };
                         if ignore_inserts {
-                            out.units(&text[start..at])?;
+                            // The default format, `!s!`, is dropped; any other is kept.
+                            let end = if spec == Some(&[u16::from(b's')][..]) {
+                                at - 3
+                            } else {
+                                at
+                            };
+                            out.units(&text[start..end])?;
                         } else {
                             let arguments = arguments.ok_or(STATUS_INVALID_PARAMETER)?;
                             insert(&mut out, number - 1, spec, arguments)?;
@@ -194,6 +212,8 @@ pub fn format(
                         out.blank = None;
                     }
                     0x74 => out.unit(TAB)?, // %t
+                    // With inserts ignored, the other escapes are copied as written.
+                    other if ignore_inserts => out.units(&[PERCENT, other])?,
                     other => out.unit(other)?,
                 }
             }
@@ -461,12 +481,21 @@ mod tests {
         text.encode_utf16().chain([0]).collect()
     }
 
-    /// `text` formatted to `width` (inserts ignored), as a string; the status on failure.
-    fn laid(text: &str, width: u32) -> Result<std::string::String, u32> {
-        let mut out = [0u16; 256];
-        let length = format(&wide(text), width, true, None, &mut out)?;
+    /// `text` formatted to `width` (inserts expanded, though it has none, or ignored), as a string;
+    /// the status on failure.
+    fn formatted(text: &str, width: u32, ignore: bool) -> Result<std::string::String, u32> {
+        let mut out = [0u16; 512];
+        let length = format(&wide(text), width, ignore, None, &mut out)?;
         assert_eq!(out[length], 0, "terminated");
         Ok(std::string::String::from_utf16(&out[..length]).unwrap())
+    }
+
+    fn laid(text: &str, width: u32) -> Result<std::string::String, u32> {
+        formatted(text, width, false)
+    }
+
+    fn ignored(text: &str, width: u32) -> Result<std::string::String, u32> {
+        formatted(text, width, true)
     }
 
     /// `text` formatted with `slots` as the arguments (ANSI strings or not).
@@ -509,16 +538,86 @@ mod tests {
         assert_eq!(laid("one%ntwo\r\n", NO_LINE_BREAKS).unwrap(), "one\r\ntwo ");
         assert_eq!(laid("a%rb%tc", 0).unwrap(), "a\rb\tc");
         assert_eq!(laid("100%% %. %! % x%", 0).unwrap(), "100% . !  x%");
+        assert_eq!(ignored("100%% %. %! % x%", 0).unwrap(), "100%% %. %! % x%");
         assert_eq!(laid("a\nb\rc", 0).unwrap(), "a\r\nb\r\nc");
         assert_eq!(laid("a\nb\rc", 7).unwrap(), "a b c");
     }
 
-    /// Ignored inserts are copied as written, their formats too.
+    /// Ignored inserts are copied as written, their formats too but for the default `!s!`; the
+    /// escapes but %0, %n, %r and %t are copied as written (the msgtable capture's ignore block).
     #[test]
     fn ignored_inserts_are_copied() {
         assert_eq!(
-            laid("Copy %1 to %2!d! (%12).", 0).unwrap(),
+            ignored("Copy %1 to %2!d! (%12).", 0).unwrap(),
             "Copy %1 to %2!d! (%12)."
+        );
+        assert_eq!(
+            ignored(
+                "Strings: %1!s! (the call's width), %2!S! (the other).\r\n",
+                0
+            )
+            .unwrap(),
+            "Strings: %1 (the call's width), %2!S! (the other).\r\n"
+        );
+        assert_eq!(
+            ignored(
+                "100%% sure.%nA hard break before this, and a%rcarriage return.\r\n%.\r\n\
+                 A lone period above; %! is an exclamation mark, then%ta tab, a forced% space.\r\n",
+                0
+            )
+            .unwrap(),
+            "100%% sure.\r\nA hard break before this, and a\rcarriage return.\r\n%.\r\n\
+             A lone period above; %! is an exclamation mark, then\ta tab, a forced% space.\r\n"
+        );
+        assert_eq!(
+            ignored("Are you sure about %1 (Y/N)? %0\r\n", 0).unwrap(),
+            "Are you sure about %1 (Y/N)? "
+        );
+        assert_eq!(ignored("%0\r\n", 0).unwrap(), "");
+    }
+
+    /// The msgtable capture's widths: the regular breaks blanks, the hard ones kept, a word longer
+    /// than the width broken at it, a blank filling a line its break, a carriage return starting
+    /// the line again.
+    #[test]
+    fn the_msgtable_widths() {
+        let long = "A long line of words to wrap at a small width, with \
+                    supercalifragilisticexpialidocious, a word longer than some widths, inside \
+                    it.\r\nA second line after a regular break,%nand one after a hard break.\r\n";
+        assert_eq!(
+            laid(long, 20).unwrap(),
+            "A long line of\r\nwords to wrap at a\r\nsmall width, with\r\n\
+             supercalifragilistic\r\nexpialidocious, a\r\nword longer than\r\nsome widths, \
+             inside\r\nit. A second line\r\nafter a regular\r\nbreak,\r\nand one after a\r\n\
+             hard break. "
+        );
+        assert_eq!(
+            laid(long, 40).unwrap(),
+            "A long line of words to wrap at a small\r\nwidth, with\r\n\
+             supercalifragilisticexpialidocious, a\r\nword longer than some widths, inside\r\n\
+             it. A second line after a regular\r\nbreak,\r\nand one after a hard break. "
+        );
+        assert_eq!(
+            laid("Short message.\r\n", 1).unwrap(),
+            "S\r\nh\r\no\r\nr\r\nt\r\n\r\nm\r\ne\r\ns\r\ns\r\na\r\ng\r\ne\r\n.\r\n\r\n"
+        );
+        let escapes = "100%% sure.%nA hard break before this, and a%rcarriage return.\r\n%.\r\n\
+                       A lone period above; %! is an exclamation mark, then%ta tab, a forced% \
+                       space.\r\n";
+        assert_eq!(
+            laid(escapes, 20).unwrap(),
+            "100% sure.\r\nA hard break before\r\nthis, and a\rcarriage return. .\r\n\
+             A lone period\r\nabove; ! is an\r\nexclamation mark,\r\nthen\ta tab, a\r\n\
+             forced space. "
+        );
+        let blank = "This line ends in a blank: \r\nand this one does not.\r\n";
+        assert_eq!(
+            laid(blank, 20).unwrap(),
+            "This line ends in a\r\nblank:  and this\r\none does not. "
+        );
+        assert_eq!(
+            laid(blank, NO_LINE_BREAKS).unwrap(),
+            "This line ends in a blank:  and this one does not. "
         );
     }
 

@@ -184,6 +184,7 @@ The fixtures:
   compiler into a resource) and over strings: lookup by id and
   language, inserts through a `va_list` and an argument array, the
   escapes, line widths, the caller's buffer and an allocated one.
+  Gated.
 - `console` - the console through `CONOUT$` and `CONIN$`, so the
   capture script takes it: the screen buffer's size and attributes,
   the input and output modes, `ReadConsoleW`/`ReadConsoleA` over input

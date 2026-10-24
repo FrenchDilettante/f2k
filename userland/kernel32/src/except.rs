@@ -1,9 +1,9 @@
 //! Exceptions in kernel32's own code, as Windows 2000's: RaiseException builds the record and hands
 //! it to ntdll's RtlRaiseException (which captures the context and starts the dispatch through
-//! NtRaiseException), and the pointer probes (IsBadReadPtr and its kin, src/probe.s) touch the
-//! memory under an exception frame of their own, as Windows 2000's `__try` probes do: whatever the
-//! touch raises is theirs, the chain unwound to their frame ([`f2k_k32_probe_unwind`]) before they
-//! answer TRUE.
+//! NtRaiseException), DebugBreak is ntdll's DbgBreakPoint, and the pointer probes (IsBadReadPtr and
+//! its kin, src/probe.s) touch the memory under an exception frame of their own, as Windows 2000's
+//! `__try` probes do: whatever the touch raises is theirs, the chain unwound to their frame
+//! ([`f2k_k32_probe_unwind`]) before they answer TRUE.
 
 use rtl::seh::{ExceptionRecord, EXCEPTION_MAXIMUM_PARAMETERS, EXCEPTION_NONCONTINUABLE};
 
@@ -37,6 +37,15 @@ pub unsafe extern "system" fn raise_exception(
     }
     // SAFETY: ntdll's export, over the record on this stack.
     unsafe { nt::RtlRaiseException(&mut record) }
+}
+
+/// DebugBreak: a breakpoint exception (STATUS_BREAKPOINT) in the calling thread, through ntdll's
+/// DbgBreakPoint as on Windows 2000 — its address is therefore inside ntdll (the runtime capture).
+/// With no debugger, the thread's own handlers take it; one that continues it returns here.
+#[unsafe(export_name = "f2k_export_DebugBreak")]
+pub extern "system" fn debug_break() {
+    // SAFETY: ntdll's export.
+    unsafe { nt::DbgBreakPoint() }
 }
 
 /// The probes' handler taking an exception (src/probe.s, cdecl): the chain unwound to the probe's
@@ -94,6 +103,16 @@ mod tests {
         assert_eq!(record.information[14], 15);
         let record = raised(|| unsafe { raise_exception(0xE000_0002, 0, 3, core::ptr::null()) });
         assert_eq!((record.count, record.flags), (0, 0));
+    }
+
+    /// DebugBreak is ntdll's breakpoint, raised there and not by RaiseException.
+    #[test]
+    fn debug_break_is_ntdll_s_breakpoint() {
+        let before = nt::BREAKPOINTS.with(|count| count.get());
+        nt::RAISED.with(|raised| raised.borrow_mut().clear());
+        debug_break();
+        assert_eq!(nt::BREAKPOINTS.with(|count| count.get()), before + 1);
+        nt::RAISED.with(|raised| assert!(raised.borrow().is_empty()));
     }
 
     /// The probes' unwind: to their own frame, with the exception's record.

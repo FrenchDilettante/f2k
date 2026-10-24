@@ -62,3 +62,43 @@ fn a_directory_that_cannot_be_opened_is_refused() {
     assert_eq!(unsafe { set_current_directory_a(long.as_ptr()) }, 0);
     assert_eq!(last_error(), 206);
 }
+
+/// The Windows directory is the shared data page's system root, the system directory its
+/// `system32`; a buffer too small for one and its terminator gets the size it needs, untouched
+/// (the runtime capture's windir block).
+///
+/// Pins: kernel32.GetWindowsDirectoryA, kernel32.GetWindowsDirectoryW,
+/// kernel32.GetSystemDirectoryA
+#[test]
+fn the_windows_directory_is_the_system_root() {
+    let root = b"C:\\WINNT\0\0";
+    for (at, pair) in root.chunks(2).enumerate() {
+        crate::shared::host::set(
+            crate::shared::NT_SYSTEM_ROOT + 4 * at,
+            u32::from(pair[0]) | u32::from(pair[1]) << 16,
+        );
+    }
+    let mut buffer = [0xCCu8; 32];
+    assert_eq!(
+        unsafe { get_windows_directory_a(buffer.as_mut_ptr(), 9) },
+        8
+    );
+    assert_eq!(&buffer[..9], b"C:\\WINNT\0");
+    let mut untouched = [0xCCu8; 8];
+    assert_eq!(
+        unsafe { get_windows_directory_a(untouched.as_mut_ptr(), 8) },
+        9
+    );
+    assert_eq!(untouched, [0xCC; 8]);
+    assert_eq!(
+        unsafe { get_system_directory_a(buffer.as_mut_ptr(), 32) },
+        17
+    );
+    assert_eq!(&buffer[..18], b"C:\\WINNT\\system32\0");
+    let mut wide = [0u16; 32];
+    assert_eq!(
+        unsafe { get_system_directory_a(core::ptr::null_mut(), 0) },
+        18
+    );
+    assert_eq!(unsafe { get_windows_directory_w(wide.as_mut_ptr(), 32) }, 8);
+}

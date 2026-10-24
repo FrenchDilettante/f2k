@@ -1,6 +1,7 @@
 //! KUSER_SHARED_DATA, as kernel32 reads it: the page the kernel maps read-only at 0x7FFE0000 in
-//! every process and keeps current (the tick count, the system time, the time-zone bias), and the
-//! product type and suite mask GetVersionExA reports. The host
+//! every process and keeps current (the tick count, the system time, the time-zone bias), the
+//! system root the Windows and system directories are made of, and the product type and suite
+//! mask GetVersionExA reports. The host
 //! tests read a page of their own instead.
 
 /// The fields kernel32 reads, at their NT 5.0 offsets.
@@ -23,6 +24,24 @@ pub fn read(offset: usize) -> u32 {
     // SAFETY: the shared data page is mapped read-only in every process for its whole life (the
     // host tests' stand-in for theirs).
     unsafe { page().add(offset / 4).read_volatile() }
+}
+
+/// NtSystemRoot: the system root (`C:\WINNT`), NUL-terminated UTF-16 of at most MAX_PATH units.
+pub const NT_SYSTEM_ROOT: usize = 0x030;
+
+/// The system root into `out`: its length in units, the terminator left out.
+pub fn system_root(out: &mut [u16; 260]) -> usize {
+    let mut length = 0;
+    while length < out.len() {
+        let at = NT_SYSTEM_ROOT + 2 * length;
+        let unit = (read(at & !3) >> (8 * (at & 3))) as u16;
+        if unit == 0 {
+            break;
+        }
+        out[length] = unit;
+        length += 1;
+    }
+    length
 }
 
 /// The KSYSTEM_TIME at `offset`, consistently: High1Time, LowPart, High2Time, again while the

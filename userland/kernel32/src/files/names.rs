@@ -272,10 +272,12 @@ pub unsafe extern "system" fn remove_directory_w(name: *const u16) -> u32 {
     unsafe { wide(name) }.map_or(0, |name| remove_directory(&name))
 }
 
-/// MoveFileW's work: the source's open for DELETE (sharing reads and writes), then its rename to
-/// the new name's NT path (FileRenameInformation, an existing name not replaced:
-/// STATUS_OBJECT_NAME_COLLISION).
-fn move_file(from: &Wide, to: &Wide) -> u32 {
+/// MoveFileW's and MoveFileExW's work: the source's open for DELETE (sharing reads and writes),
+/// then its rename to the new name's NT path (FileRenameInformation: an existing name replaced
+/// when asked, `replace`, and only a file no one holds open, not read-only nor a directory;
+/// STATUS_OBJECT_NAME_COLLISION otherwise, ERROR_ALREADY_EXISTS). An empty new name is
+/// ERROR_PATH_NOT_FOUND, once the source opened.
+fn move_file(from: &Wide, to: &Wide, replace: bool) -> u32 {
     let Some(source) = nt_path(from) else {
         return 0;
     };
@@ -296,6 +298,7 @@ fn move_file(from: &Wide, to: &Wide) -> u32 {
     };
     let units = target.units();
     let mut rename = [0u8; 12 + 2 * (MAX_PATH + 8)];
+    rename[0] = u8::from(replace);
     rename[8..12].copy_from_slice(&((2 * units.len()) as u32).to_le_bytes());
     for (at, &unit) in units.iter().enumerate() {
         rename[12 + 2 * at..14 + 2 * at].copy_from_slice(&unit.to_le_bytes());
@@ -318,7 +321,7 @@ fn move_file(from: &Wide, to: &Wide) -> u32 {
 pub unsafe extern "system" fn move_file_a(from: *const u8, to: *const u8) -> u32 {
     // SAFETY: the caller's strings.
     match (unsafe { widen(from) }, unsafe { widen(to) }) {
-        (Some(from), Some(to)) => move_file(&from, &to),
+        (Some(from), Some(to)) => move_file(&from, &to, false),
         _ => 0,
     }
 }
@@ -332,7 +335,68 @@ pub unsafe extern "system" fn move_file_a(from: *const u8, to: *const u8) -> u32
 pub unsafe extern "system" fn move_file_w(from: *const u16, to: *const u16) -> u32 {
     // SAFETY: the caller's strings.
     match (unsafe { wide(from) }, unsafe { wide(to) }) {
-        (Some(from), Some(to)) => move_file(&from, &to),
+        (Some(from), Some(to)) => move_file(&from, &to, false),
+        _ => 0,
+    }
+}
+
+/// MOVEFILE_REPLACE_EXISTING and MOVEFILE_DELAY_UNTIL_REBOOT; MOVEFILE_COPY_ALLOWED and
+/// MOVEFILE_WRITE_THROUGH change nothing here: a move never leaves the one volume (the copy is
+/// for one that does), and every rename is written through.
+const MOVEFILE_REPLACE_EXISTING: u32 = 0x1;
+const MOVEFILE_DELAY_UNTIL_REBOOT: u32 = 0x4;
+
+/// MoveFileExW's work: [`move_file`], the existing name replaced with MOVEFILE_REPLACE_EXISTING
+/// (the fswrite capture: not a directory nor a read-only file, ERROR_ALREADY_EXISTS both). A move
+/// delayed until the reboot takes the stub path: F2K keeps no list of moves for the next boot.
+/// A NULL new name (a delayed delete's) is the empty one: ERROR_PATH_NOT_FOUND.
+fn move_file_ex(from: &Wide, to: &Wide, flags: u32) -> u32 {
+    move_file(from, to, flags & MOVEFILE_REPLACE_EXISTING != 0)
+}
+
+/// MoveFileExA (see [`move_file_ex`]): both names converted first.
+///
+/// # Safety
+///
+/// `from` is a NUL-terminated string; `to` is null or one.
+#[unsafe(export_name = "f2k_export_MoveFileExA")]
+pub unsafe extern "system" fn move_file_ex_a(from: *const u8, to: *const u8, flags: u32) -> u32 {
+    if flags & MOVEFILE_DELAY_UNTIL_REBOOT != 0 {
+        let args = [from as u64, to as u64, u64::from(flags)];
+        // SAFETY: the caller's arguments, as the export's kinds read them.
+        return unsafe {
+            crate::stub::stubbed(&crate::spec::MoveFileExA, "not yet implemented", &args)
+        };
+    }
+    // SAFETY: the caller's strings.
+    match (unsafe { widen(from) }, unsafe { widen(to) }) {
+        (Some(from), Some(to)) => move_file_ex(&from, &to, flags),
+        _ => 0,
+    }
+}
+
+/// MoveFileExW (as [`move_file_ex_a`]).
+///
+/// # Safety
+///
+/// `from` is a NUL-terminated UTF-16 string; `to` is null or one.
+#[unsafe(export_name = "f2k_export_MoveFileExW")]
+pub unsafe extern "system" fn move_file_ex_w(from: *const u16, to: *const u16, flags: u32) -> u32 {
+    if flags & MOVEFILE_DELAY_UNTIL_REBOOT != 0 {
+        let args = [from as u64, to as u64, u64::from(flags)];
+        // SAFETY: the caller's arguments, as the export's kinds read them.
+        return unsafe {
+            crate::stub::stubbed(&crate::spec::MoveFileExW, "not yet implemented", &args)
+        };
+    }
+    // SAFETY: the caller's strings.
+    let to = if to.is_null() {
+        Wide::of(&[])
+    } else {
+        unsafe { wide(to) }
+    };
+    match (unsafe { wide(from) }, to) {
+        (Some(from), Some(to)) => move_file_ex(&from, &to, flags),
         _ => 0,
     }
 }

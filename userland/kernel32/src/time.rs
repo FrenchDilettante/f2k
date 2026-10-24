@@ -1,7 +1,8 @@
 //! The clocks and the time conversions, kernel32's own code as on Windows 2000: the tick count, the
 //! system time and the time-zone bias from KUSER_SHARED_DATA ([`crate::shared`]), the time zone and
 //! the performance counter from ntdll's system services, the FILETIME/SYSTEMTIME conversions
-//! through ntdll's (RtlTimeToTimeFields, RtlTimeFieldsToTime).
+//! through ntdll's (RtlTimeToTimeFields, RtlTimeFieldsToTime), the FILETIME comparison, and the
+//! local time's setting (NtSetSystemTime).
 
 use rtl::time::{SystemTime, TimeFields};
 
@@ -247,4 +248,100 @@ pub unsafe extern "system" fn file_time_to_local_file_time(
         )
     };
     1
+}
+
+/// CompareFileTime: -1, 0 or 1 as the first FILETIME is earlier than, the same as or later than the
+/// second, each compared as the unsigned 64-bit count it is (the high dword first, then the low,
+/// neither signed: the runtime capture).
+///
+/// # Safety
+///
+/// Both point at FILETIMEs.
+#[unsafe(export_name = "f2k_export_CompareFileTime")]
+pub unsafe extern "system" fn compare_file_time(first: *const u64, second: *const u64) -> i32 {
+    // SAFETY: the caller's FILETIMEs.
+    let (first, second) = unsafe { (first.read_unaligned(), second.read_unaligned()) };
+    first.cmp(&second) as i32
+}
+
+/// SetLocalTime: the local time a SYSTEMTIME gives (judged by ntdll's RtlTimeFieldsToTime: a field
+/// out of its range is ERROR_INVALID_PARAMETER, the day of the week not consulted) made the system
+/// time, the time-zone bias added back, through NtSetSystemTime as Windows 2000's does; its failure
+/// is the last error. Windows 2000 enables the caller's system-time privilege first; F2K has no
+/// privileges to enable.
+///
+/// # Safety
+///
+/// `local` points at a SYSTEMTIME.
+#[unsafe(export_name = "f2k_export_SetLocalTime")]
+pub unsafe extern "system" fn set_local_time(local: *const u8) -> u32 {
+    let mut bytes = [0u8; 16];
+    // SAFETY: the caller's SYSTEMTIME.
+    unsafe {
+        bytes
+            .as_mut_ptr()
+            .copy_from_nonoverlapping(local, bytes.len())
+    };
+    let Some(local) = time_of(SystemTime::from_bytes(&bytes)) else {
+        set_last_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    };
+    let system = local.wrapping_add(shared::time(shared::TIME_ZONE_BIAS));
+    // SAFETY: ntdll's export, over the time above.
+    let status = unsafe { nt::NtSetSystemTime(&system, core::ptr::null_mut()) };
+    if !rtl::status::nt_success(status) {
+        set_last_nt_error(status);
+        return 0;
+    }
+    1
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn compare(first: u64, second: u64) -> i32 {
+        // SAFETY: the FILETIMEs above.
+        unsafe { compare_file_time(&first, &second) }
+    }
+
+    /// The comparison is unsigned over the whole count: the high dword decides, a top bit set is
+    /// the larger.
+    #[test]
+    fn file_times_compare_unsigned() {
+        assert_eq!(compare(0x1_0000_0005, 0x1_0000_0005), 0);
+        assert_eq!(compare(0x1_0000_0004, 0x1_0000_0005), -1);
+        assert_eq!(compare(0x1_FFFF_FFFF, 0x2_0000_0000), -1);
+        assert_eq!(compare(0x1_8000_0000, 0x1_7FFF_FFFF), 1);
+        assert_eq!(compare(0x8000_0000_0000_0000, 0x7FFF_FFFF_0000_0000), 1);
+        assert_eq!(compare(0, u64::MAX), -1);
+    }
+
+    /// SetLocalTime sets the system time through ntdll, the day of the week ignored; a field out of
+    /// range is ERROR_INVALID_PARAMETER, nothing set.
+    #[test]
+    fn set_local_time_sets_the_system_time() {
+        let time = |month: u16, day: u16, weekday: u16| {
+            SystemTime {
+                year: 2026,
+                month,
+                day_of_week: weekday,
+                day,
+                hour: 15,
+                minute: 28,
+                second: 15,
+                milliseconds: 260,
+            }
+            .to_bytes()
+        };
+        nt::TIMES_SET.with(|times| times.borrow_mut().clear());
+        assert_eq!(unsafe { set_local_time(time(10, 24, 9).as_ptr()) }, 1);
+        let local = time_of(SystemTime::from_bytes(&time(10, 24, 6))).unwrap();
+        let expected = local.wrapping_add(shared::time(shared::TIME_ZONE_BIAS));
+        nt::TIMES_SET.with(|times| assert_eq!(*times.borrow(), [expected]));
+        crate::base::set_last_error(0);
+        assert_eq!(unsafe { set_local_time(time(2, 30, 0).as_ptr()) }, 0);
+        assert_eq!(crate::base::last_error(), ERROR_INVALID_PARAMETER);
+        nt::TIMES_SET.with(|times| assert_eq!(times.borrow().len(), 1));
+    }
 }
