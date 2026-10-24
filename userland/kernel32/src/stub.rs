@@ -11,8 +11,9 @@
 //! Either way the call is logged through ntdll's DbgPrint (the kernel writes it to COM1: `F2K:
 //! debug: stub kernel32.<Export>(<every argument>): <reason>`, see `rtl::stub`), then fails as the
 //! export fails: its failure value, the last error ERROR_CALL_NOT_IMPLEMENTED, as Windows 95's
-//! kernel32 answered the NT-only calls it exported. An export that cannot fail (`never`) raises
-//! STATUS_NOT_IMPLEMENTED instead.
+//! kernel32 answered the NT-only calls it exported. An export that returns nothing (`void`) has no
+//! failure to report: it returns, its last error untouched. An export that cannot fail (`never`)
+//! raises STATUS_NOT_IMPLEMENTED instead.
 
 use rtl::stub::{describe, Entry, Fails, Line, Memory};
 
@@ -68,10 +69,7 @@ pub unsafe fn stubbed(entry: &Entry, reason: &str, args: &[u64]) -> u32 {
             set_last_error(ERROR_CALL_NOT_IMPLEMENTED);
             value
         }
-        Fails::Void => {
-            set_last_error(ERROR_CALL_NOT_IMPLEMENTED);
-            0
-        }
+        Fails::Void => 0,
         // SAFETY: ntdll's export: it does not return.
         Fails::Never => unsafe { nt::RtlRaiseStatus(STATUS_NOT_IMPLEMENTED) },
     }

@@ -1,9 +1,770 @@
 # MSVCRT.dll's exports: the one source every list of them derives from (the format is
 # kernel32's, documented in userland/kernel32/exports.toml).
 #
-# None is implemented yet: each record is catalogued from MSVCRT.dll 6.1.9844.0's export table
-# (scripts/catalogue_exports.py): its name and ordinal. Implementing one gives it its group,
-# prototype and implementation.
+# Every export is cdecl, as the C runtime's functions are (the convention below). F2K's msvcrt
+# exports what the corpus fixtures (tests/crt) and cmd.exe import: its own code (src/lib.rs) over
+# kernel32, as Windows 2000's msvcrt imports kernel32 alone, and stubs for what is not written yet.
+# Its variables (`data = true`) are its own storage (src/data.rs). The rest of the records are
+# catalogued from MSVCRT.dll 6.1.9844.0's export table (scripts/catalogue_exports.py): their name
+# and ordinal. Implementing one gives it its group, prototype and implementation.
+
+convention = "cdecl"
+
+[[group]]
+key = "startup"
+title = "program start-up and exit"
+
+[[group]]
+key = "exceptions"
+title = "exception handling / setjmp"
+
+[[group]]
+key = "lowio"
+title = "file descriptors / console input"
+
+[[group]]
+key = "stdio"
+title = "stdio streams / formatted output"
+
+[[group]]
+key = "strings"
+title = "strings / conversions"
+
+[[group]]
+key = "characters"
+title = "wide characters"
+
+[[group]]
+key = "memory"
+title = "memory"
+
+[[group]]
+key = "utility"
+title = "sorting / random numbers / time / locale"
+
+# --- program start-up and exit --------------------------------------------------------------------
+
+[[export]]
+name = "__set_app_type"
+group = "startup"
+args = ["i32 at"]
+impl = { stub = "not yet implemented" }
+ordinal = 132
+fails = "void"
+
+[[export]]
+name = "__p__fmode"
+group = "startup"
+args = []
+impl = { stub = "not yet implemented" }
+ordinal = 114
+fails = "never"
+
+[[export]]
+name = "__p__commode"
+group = "startup"
+args = []
+impl = { stub = "not yet implemented" }
+ordinal = 109
+fails = "never"
+
+[[export]]
+name = "__p___initenv"
+group = "startup"
+args = []
+impl = { stub = "not yet implemented" }
+ordinal = 103
+fails = "never"
+
+[[export]]
+name = "__p__environ"
+group = "startup"
+args = []
+impl = { stub = "not yet implemented" }
+ordinal = 112
+fails = "never"
+
+[[export]]
+name = "__p___argc"
+group = "startup"
+args = []
+impl = { stub = "not yet implemented" }
+ordinal = 101
+fails = "never"
+
+[[export]]
+name = "__p___argv"
+group = "startup"
+args = []
+impl = { stub = "not yet implemented" }
+ordinal = 102
+fails = "never"
+
+[[export]]
+name = "_controlfp"
+group = "startup"
+args = ["u32 new", "u32 mask"]
+impl = { stub = "not yet implemented" }
+ordinal = 186
+fails = "never"
+
+[[export]]
+name = "_initterm"
+group = "startup"
+args = ["ptr pfbegin", "ptr pfend"]
+impl = { stub = "not yet implemented" }
+ordinal = 282
+fails = "void"
+
+[[export]]
+name = "__getmainargs"
+group = "startup"
+args = ["ptr<i32> argc", "ptr argv", "ptr envp", "i32 dowildcard", "ptr startinfo"]
+impl = { stub = "not yet implemented" }
+ordinal = 91
+fails = "-1"
+
+[[export]]
+name = "__setusermatherr"
+group = "startup"
+args = ["ptr pf"]
+impl = { stub = "not yet implemented" }
+ordinal = 134
+fails = "void"
+
+[[export]]
+name = "_onexit"
+group = "startup"
+args = ["ptr func"]
+impl = { stub = "not yet implemented" }
+ordinal = 403
+fails = "NULL"
+
+[[export]]
+name = "__dllonexit"
+group = "startup"
+args = ["ptr func", "ptr pbegin", "ptr pend"]
+impl = { stub = "not yet implemented" }
+ordinal = 88
+fails = "NULL"
+
+[[export]]
+name = "exit"
+group = "startup"
+args = ["i32 status"]
+impl = { stub = "not yet implemented" }
+ordinal = 607
+fails = "never"
+
+[[export]]
+name = "_exit"
+group = "startup"
+args = ["i32 status"]
+impl = { stub = "not yet implemented" }
+ordinal = 215
+fails = "never"
+
+[[export]]
+name = "_XcptFilter"
+group = "startup"
+args = ["u32 xcptnum", "ptr pxcptinfoptrs"]
+impl = { stub = "not yet implemented" }
+ordinal = 75
+fails = "0"
+note = "the start-up code's exception filter: failing, it answers EXCEPTION_CONTINUE_SEARCH"
+
+[[export]]
+name = "_fmode"
+group = "startup"
+data = true
+impl = { native = "_fmode" }
+ordinal = 237
+
+[[export]]
+name = "_adjust_fdiv"
+group = "startup"
+data = true
+impl = { native = "_adjust_fdiv" }
+ordinal = 160
+
+# --- exception handling / setjmp ------------------------------------------------------------------
+
+[[export]]
+name = "_except_handler3"
+group = "exceptions"
+args = ["ptr ExceptionRecord", "ptr EstablisherFrame", "ptr ContextRecord", "ptr DispatcherContext"]
+impl = { stub = "not yet implemented" }
+ordinal = 206
+fails = "1"
+note = "the frame handler of every __try the compiler emits: failing, it answers ExceptionContinueSearch"
+
+[[export]]
+name = "_local_unwind2"
+group = "exceptions"
+args = ["ptr xr", "i32 stop"]
+impl = { stub = "not yet implemented" }
+ordinal = 327
+fails = "void"
+
+[[export]]
+name = "_abnormal_termination"
+group = "exceptions"
+args = []
+impl = { stub = "not yet implemented" }
+ordinal = 144
+fails = "never"
+
+[[export]]
+name = "_setjmp3"
+group = "exceptions"
+args = ["ptr env", "u32 count", "..."]
+impl = { stub = "not yet implemented" }
+ordinal = 438
+fails = "never"
+
+[[export]]
+name = "longjmp"
+group = "exceptions"
+args = ["ptr env", "i32 value"]
+impl = { stub = "not yet implemented" }
+ordinal = 678
+fails = "never"
+
+[[export]]
+name = "_seh_longjmp_unwind"
+group = "exceptions"
+args = ["ptr jmpbuf"]
+impl = { stub = "not yet implemented" }
+ordinal = 433
+fails = "void"
+note = "_setjmp3 records it in the jump buffer (UnwindFunc) and msvcrt's own longjmp calls it: programs only pass its address"
+
+# --- file descriptors / console input -------------------------------------------------------------
+
+[[export]]
+name = "_close"
+group = "lowio"
+args = ["i32 fd"]
+impl = { stub = "not yet implemented" }
+ordinal = 182
+fails = "-1"
+
+[[export]]
+name = "_dup"
+group = "lowio"
+args = ["i32 fd"]
+impl = { stub = "not yet implemented" }
+ordinal = 197
+fails = "-1"
+
+[[export]]
+name = "_dup2"
+group = "lowio"
+args = ["i32 fd1", "i32 fd2"]
+impl = { stub = "not yet implemented" }
+ordinal = 198
+fails = "-1"
+
+[[export]]
+name = "_get_osfhandle"
+group = "lowio"
+args = ["i32 fd"]
+impl = { stub = "not yet implemented" }
+ordinal = 255
+fails = "-1"
+
+[[export]]
+name = "_open_osfhandle"
+group = "lowio"
+args = ["handle osfhandle", "i32 flags"]
+impl = { stub = "not yet implemented" }
+ordinal = 405
+fails = "-1"
+
+[[export]]
+name = "_setmode"
+group = "lowio"
+args = ["i32 fd", "i32 mode"]
+impl = { stub = "not yet implemented" }
+ordinal = 441
+fails = "-1"
+
+[[export]]
+name = "_tell"
+group = "lowio"
+args = ["i32 fd"]
+impl = { stub = "not yet implemented" }
+ordinal = 478
+fails = "-1"
+
+[[export]]
+name = "_write"
+group = "lowio"
+args = ["i32 fd", "ptr buffer", "u32 count"]
+impl = { stub = "not yet implemented" }
+ordinal = 555
+fails = "-1"
+
+[[export]]
+name = "_errno"
+group = "lowio"
+args = []
+impl = { stub = "not yet implemented" }
+ordinal = 204
+fails = "never"
+
+[[export]]
+name = "_pipe"
+group = "lowio"
+args = ["ptr<i32> pfds", "u32 psize", "i32 textmode"]
+impl = { stub = "not yet implemented" }
+ordinal = 414
+fails = "-1"
+
+[[export]]
+name = "_getch"
+group = "lowio"
+args = []
+impl = { stub = "not yet implemented" }
+ordinal = 257
+fails = "never"
+
+[[export]]
+name = "_kbhit"
+group = "lowio"
+args = []
+impl = { stub = "not yet implemented" }
+ordinal = 324
+fails = "never"
+
+# --- stdio streams / formatted output -------------------------------------------------------------
+
+[[export]]
+name = "_iob"
+group = "stdio"
+data = true
+impl = { native = "_iob" }
+ordinal = 286
+
+[[export]]
+name = "printf"
+group = "stdio"
+args = ["strA format", "..."]
+impl = { stub = "not yet implemented" }
+ordinal = 692
+fails = "-1"
+
+[[export]]
+name = "fprintf"
+group = "stdio"
+args = ["ptr stream", "strA format", "..."]
+impl = { stub = "not yet implemented" }
+ordinal = 622
+fails = "-1"
+
+[[export]]
+name = "sprintf"
+group = "stdio"
+args = ["ptr buffer", "strA format", "..."]
+impl = { stub = "not yet implemented" }
+ordinal = 712
+fails = "-1"
+
+[[export]]
+name = "_vsnprintf"
+group = "stdio"
+args = ["ptr buffer", "u32 count", "strA format", "ptr argptr"]
+impl = { stub = "not yet implemented" }
+ordinal = 498
+fails = "-1"
+
+[[export]]
+name = "swprintf"
+group = "stdio"
+args = ["ptr buffer", "strW format", "..."]
+impl = { stub = "not yet implemented" }
+ordinal = 737
+fails = "-1"
+note = "MSVC 6's: no count"
+
+[[export]]
+name = "_snwprintf"
+group = "stdio"
+args = ["ptr buffer", "u32 count", "strW format", "..."]
+impl = { stub = "not yet implemented" }
+ordinal = 445
+fails = "-1"
+
+[[export]]
+name = "_vsnwprintf"
+group = "stdio"
+args = ["ptr buffer", "u32 count", "strW format", "ptr argptr"]
+impl = { stub = "not yet implemented" }
+ordinal = 499
+fails = "-1"
+
+[[export]]
+name = "swscanf"
+group = "stdio"
+args = ["strW buffer", "strW format", "..."]
+impl = { stub = "not yet implemented" }
+ordinal = 738
+fails = "-1"
+
+[[export]]
+name = "fflush"
+group = "stdio"
+args = ["ptr stream"]
+impl = { stub = "not yet implemented" }
+ordinal = 613
+fails = "-1"
+
+[[export]]
+name = "fgets"
+group = "stdio"
+args = ["ptr str", "i32 n", "ptr stream"]
+impl = { stub = "not yet implemented" }
+ordinal = 616
+fails = "NULL"
+
+[[export]]
+name = "fclose"
+group = "stdio"
+args = ["ptr stream"]
+impl = { stub = "not yet implemented" }
+ordinal = 610
+fails = "-1"
+
+[[export]]
+name = "setvbuf"
+group = "stdio"
+args = ["ptr stream", "ptr buffer", "i32 mode", "u32 size"]
+impl = { stub = "not yet implemented" }
+ordinal = 708
+fails = "-1"
+
+[[export]]
+name = "_fdopen"
+group = "stdio"
+args = ["i32 fd", "strA mode"]
+impl = { stub = "not yet implemented" }
+ordinal = 219
+fails = "NULL"
+
+[[export]]
+name = "_popen"
+group = "stdio"
+args = ["strA command", "strA mode"]
+impl = { stub = "not yet implemented" }
+ordinal = 415
+fails = "NULL"
+
+[[export]]
+name = "_pclose"
+group = "stdio"
+args = ["ptr stream"]
+impl = { stub = "not yet implemented" }
+ordinal = 411
+fails = "-1"
+
+# --- strings / conversions ------------------------------------------------------------------------
+
+[[export]]
+name = "strcmp"
+group = "strings"
+args = ["strA string1", "strA string2"]
+impl = { stub = "not yet implemented" }
+ordinal = 718
+fails = "never"
+
+[[export]]
+name = "_stricmp"
+group = "strings"
+args = ["strA string1", "strA string2"]
+impl = { stub = "not yet implemented" }
+ordinal = 464
+fails = "0x7FFFFFFF"
+note = "_NLSCMPERROR"
+
+[[export]]
+name = "wcslen"
+group = "strings"
+args = ["strW str"]
+impl = { stub = "not yet implemented" }
+ordinal = 764
+fails = "never"
+
+[[export]]
+name = "wcscmp"
+group = "strings"
+args = ["strW string1", "strW string2"]
+impl = { stub = "not yet implemented" }
+ordinal = 759
+fails = "never"
+
+[[export]]
+name = "wcsncmp"
+group = "strings"
+args = ["strW string1", "strW string2", "u32 count"]
+impl = { stub = "not yet implemented" }
+ordinal = 766
+fails = "never"
+
+[[export]]
+name = "_wcsicmp"
+group = "strings"
+args = ["strW string1", "strW string2"]
+impl = { stub = "not yet implemented" }
+ordinal = 507
+fails = "0x7FFFFFFF"
+note = "_NLSCMPERROR"
+
+[[export]]
+name = "_wcsnicmp"
+group = "strings"
+args = ["strW string1", "strW string2", "u32 count"]
+impl = { stub = "not yet implemented" }
+ordinal = 511
+fails = "0x7FFFFFFF"
+note = "_NLSCMPERROR"
+
+[[export]]
+name = "wcscpy"
+group = "strings"
+args = ["ptr strDestination", "strW strSource"]
+impl = { stub = "not yet implemented" }
+ordinal = 761
+fails = "never"
+
+[[export]]
+name = "wcsncpy"
+group = "strings"
+args = ["ptr strDest", "strW strSource", "u32 count"]
+impl = { stub = "not yet implemented" }
+ordinal = 767
+fails = "never"
+
+[[export]]
+name = "wcscat"
+group = "strings"
+args = ["strW strDestination", "strW strSource"]
+impl = { stub = "not yet implemented" }
+ordinal = 757
+fails = "never"
+
+[[export]]
+name = "wcschr"
+group = "strings"
+args = ["strW str", "u32 c"]
+impl = { stub = "not yet implemented" }
+ordinal = 758
+fails = "never"
+
+[[export]]
+name = "wcsrchr"
+group = "strings"
+args = ["strW str", "u32 c"]
+impl = { stub = "not yet implemented" }
+ordinal = 769
+fails = "never"
+
+[[export]]
+name = "wcsstr"
+group = "strings"
+args = ["strW str", "strW strSearch"]
+impl = { stub = "not yet implemented" }
+ordinal = 771
+fails = "never"
+
+[[export]]
+name = "wcsspn"
+group = "strings"
+args = ["strW string", "strW strCharSet"]
+impl = { stub = "not yet implemented" }
+ordinal = 770
+fails = "never"
+
+[[export]]
+name = "_wcslwr"
+group = "strings"
+args = ["strW string"]
+impl = { stub = "not yet implemented" }
+ordinal = 509
+fails = "never"
+
+[[export]]
+name = "_wcsupr"
+group = "strings"
+args = ["strW string"]
+impl = { stub = "not yet implemented" }
+ordinal = 516
+fails = "never"
+
+[[export]]
+name = "wcstol"
+group = "strings"
+args = ["strW nptr", "ptr endptr", "i32 base"]
+impl = { stub = "not yet implemented" }
+ordinal = 774
+fails = "never"
+
+[[export]]
+name = "wcstoul"
+group = "strings"
+args = ["strW nptr", "ptr endptr", "i32 base"]
+impl = { stub = "not yet implemented" }
+ordinal = 776
+fails = "never"
+
+[[export]]
+name = "_wtol"
+group = "strings"
+args = ["strW str"]
+impl = { stub = "not yet implemented" }
+ordinal = 579
+fails = "never"
+
+[[export]]
+name = "_ultoa"
+group = "strings"
+args = ["u32 value", "ptr str", "i32 radix"]
+impl = { stub = "not yet implemented" }
+ordinal = 489
+fails = "never"
+
+# --- wide characters ------------------------------------------------------------------------------
+
+[[export]]
+name = "iswalpha"
+group = "characters"
+args = ["u32 c"]
+impl = { stub = "not yet implemented" }
+ordinal = 658
+fails = "never"
+
+[[export]]
+name = "iswdigit"
+group = "characters"
+args = ["u32 c"]
+impl = { stub = "not yet implemented" }
+ordinal = 662
+fails = "never"
+
+[[export]]
+name = "iswspace"
+group = "characters"
+args = ["u32 c"]
+impl = { stub = "not yet implemented" }
+ordinal = 667
+fails = "never"
+
+[[export]]
+name = "iswxdigit"
+group = "characters"
+args = ["u32 c"]
+impl = { stub = "not yet implemented" }
+ordinal = 669
+fails = "never"
+
+[[export]]
+name = "towlower"
+group = "characters"
+args = ["u32 c"]
+impl = { stub = "not yet implemented" }
+ordinal = 747
+fails = "never"
+
+[[export]]
+name = "towupper"
+group = "characters"
+args = ["u32 c"]
+impl = { stub = "not yet implemented" }
+ordinal = 748
+fails = "never"
+
+# --- memory ---------------------------------------------------------------------------------------
+
+[[export]]
+name = "malloc"
+group = "memory"
+args = ["u32 size"]
+impl = { stub = "not yet implemented" }
+ordinal = 679
+fails = "NULL"
+
+[[export]]
+name = "calloc"
+group = "memory"
+args = ["u32 num", "u32 size"]
+impl = { stub = "not yet implemented" }
+ordinal = 598
+fails = "NULL"
+
+[[export]]
+name = "realloc"
+group = "memory"
+args = ["ptr memblock", "u32 size"]
+impl = { stub = "not yet implemented" }
+ordinal = 701
+fails = "NULL"
+
+[[export]]
+name = "free"
+group = "memory"
+args = ["ptr memblock"]
+impl = { stub = "not yet implemented" }
+ordinal = 628
+fails = "void"
+
+[[export]]
+name = "memmove"
+group = "memory"
+args = ["ptr dest", "ptr src", "u32 count"]
+impl = { stub = "not yet implemented" }
+ordinal = 686
+fails = "never"
+
+# --- sorting / random numbers / time / locale -----------------------------------------------------
+
+[[export]]
+name = "qsort"
+group = "utility"
+args = ["ptr base", "u32 num", "u32 width", "ptr compare"]
+impl = { stub = "not yet implemented" }
+ordinal = 698
+fails = "void"
+
+[[export]]
+name = "rand"
+group = "utility"
+args = []
+impl = { stub = "not yet implemented" }
+ordinal = 700
+fails = "never"
+
+[[export]]
+name = "srand"
+group = "utility"
+args = ["u32 seed"]
+impl = { stub = "not yet implemented" }
+ordinal = 714
+fails = "void"
+
+[[export]]
+name = "time"
+group = "utility"
+args = ["ptr<u32> timer"]
+impl = { stub = "not yet implemented" }
+ordinal = 742
+fails = "-1"
+
+[[export]]
+name = "setlocale"
+group = "utility"
+args = ["i32 category", "strA? locale"]
+impl = { stub = "not yet implemented" }
+ordinal = 707
+fails = "NULL"
 
 # --- not implemented yet: the rest of MSVCRT.dll 6.1.9844.0's export table, by ordinal -----------
 
@@ -309,10 +1070,6 @@ name = "_Strftime"
 ordinal = 74
 
 [[export]]
-name = "_XcptFilter"
-ordinal = 75
-
-[[export]]
 name = "__CxxFrameHandler"
 ordinal = 76
 
@@ -364,20 +1121,12 @@ name = "__crtLCMapStringA"
 ordinal = 87
 
 [[export]]
-name = "__dllonexit"
-ordinal = 88
-
-[[export]]
 name = "__doserrno"
 ordinal = 89
 
 [[export]]
 name = "__fpecode"
 ordinal = 90
-
-[[export]]
-name = "__getmainargs"
-ordinal = 91
 
 [[export]]
 name = "__initenv"
@@ -421,18 +1170,6 @@ ordinal = 100
 data = true
 
 [[export]]
-name = "__p___argc"
-ordinal = 101
-
-[[export]]
-name = "__p___argv"
-ordinal = 102
-
-[[export]]
-name = "__p___initenv"
-ordinal = 103
-
-[[export]]
 name = "__p___mb_cur_max"
 ordinal = 104
 
@@ -453,10 +1190,6 @@ name = "__p__amblksiz"
 ordinal = 108
 
 [[export]]
-name = "__p__commode"
-ordinal = 109
-
-[[export]]
 name = "__p__daylight"
 ordinal = 110
 
@@ -465,16 +1198,8 @@ name = "__p__dstbias"
 ordinal = 111
 
 [[export]]
-name = "__p__environ"
-ordinal = 112
-
-[[export]]
 name = "__p__fileinfo"
 ordinal = 113
-
-[[export]]
-name = "__p__fmode"
-ordinal = 114
 
 [[export]]
 name = "__p__iob"
@@ -546,17 +1271,9 @@ name = "__pxcptinfoptrs"
 ordinal = 131
 
 [[export]]
-name = "__set_app_type"
-ordinal = 132
-
-[[export]]
 name = "__setlc_active"
 ordinal = 133
 data = true
-
-[[export]]
-name = "__setusermatherr"
-ordinal = 134
 
 [[export]]
 name = "__threadhandle"
@@ -596,10 +1313,6 @@ ordinal = 142
 name = "__winitenv"
 ordinal = 143
 data = true
-
-[[export]]
-name = "_abnormal_termination"
-ordinal = 144
 
 [[export]]
 name = "_access"
@@ -661,11 +1374,6 @@ ordinal = 158
 [[export]]
 name = "_adj_fptan"
 ordinal = 159
-
-[[export]]
-name = "_adjust_fdiv"
-ordinal = 160
-data = true
 
 [[export]]
 name = "_aexit_rtn"
@@ -753,10 +1461,6 @@ name = "_clearfp"
 ordinal = 181
 
 [[export]]
-name = "_close"
-ordinal = 182
-
-[[export]]
 name = "_commit"
 ordinal = 183
 
@@ -768,10 +1472,6 @@ data = true
 [[export]]
 name = "_control87"
 ordinal = 185
-
-[[export]]
-name = "_controlfp"
-ordinal = 186
 
 [[export]]
 name = "_copysign"
@@ -817,14 +1517,6 @@ ordinal = 196
 data = true
 
 [[export]]
-name = "_dup"
-ordinal = 197
-
-[[export]]
-name = "_dup2"
-ordinal = 198
-
-[[export]]
 name = "_ecvt"
 ordinal = 199
 
@@ -846,16 +1538,8 @@ name = "_eof"
 ordinal = 203
 
 [[export]]
-name = "_errno"
-ordinal = 204
-
-[[export]]
 name = "_except_handler2"
 ordinal = 205
-
-[[export]]
-name = "_except_handler3"
-ordinal = 206
 
 [[export]]
 name = "_execl"
@@ -890,10 +1574,6 @@ name = "_execvpe"
 ordinal = 214
 
 [[export]]
-name = "_exit"
-ordinal = 215
-
-[[export]]
 name = "_expand"
 ordinal = 216
 
@@ -904,10 +1584,6 @@ ordinal = 217
 [[export]]
 name = "_fcvt"
 ordinal = 218
-
-[[export]]
-name = "_fdopen"
-ordinal = 219
 
 [[export]]
 name = "_fgetchar"
@@ -979,11 +1655,6 @@ name = "_flushall"
 ordinal = 236
 
 [[export]]
-name = "_fmode"
-ordinal = 237
-data = true
-
-[[export]]
 name = "_fpclass"
 ordinal = 238
 
@@ -1052,16 +1723,8 @@ name = "_get_heap_handle"
 ordinal = 254
 
 [[export]]
-name = "_get_osfhandle"
-ordinal = 255
-
-[[export]]
 name = "_get_sbh_threshold"
 ordinal = 256
-
-[[export]]
-name = "_getch"
-ordinal = 257
 
 [[export]]
 name = "_getche"
@@ -1160,10 +1823,6 @@ name = "_i64tow"
 ordinal = 281
 
 [[export]]
-name = "_initterm"
-ordinal = 282
-
-[[export]]
 name = "_inp"
 ordinal = 283
 
@@ -1174,11 +1833,6 @@ ordinal = 284
 [[export]]
 name = "_inpw"
 ordinal = 285
-
-[[export]]
-name = "_iob"
-ordinal = 286
-data = true
 
 [[export]]
 name = "_isatty"
@@ -1329,20 +1983,12 @@ name = "_jn"
 ordinal = 323
 
 [[export]]
-name = "_kbhit"
-ordinal = 324
-
-[[export]]
 name = "_lfind"
 ordinal = 325
 
 [[export]]
 name = "_loaddll"
 ordinal = 326
-
-[[export]]
-name = "_local_unwind2"
-ordinal = 327
 
 [[export]]
 name = "_localtime64"
@@ -1647,16 +2293,8 @@ name = "_nextafter"
 ordinal = 402
 
 [[export]]
-name = "_onexit"
-ordinal = 403
-
-[[export]]
 name = "_open"
 ordinal = 404
-
-[[export]]
-name = "_open_osfhandle"
-ordinal = 405
 
 [[export]]
 name = "_osplatform"
@@ -1681,10 +2319,6 @@ name = "_outpw"
 ordinal = 410
 
 [[export]]
-name = "_pclose"
-ordinal = 411
-
-[[export]]
 name = "_pctype"
 ordinal = 412
 data = true
@@ -1693,14 +2327,6 @@ data = true
 name = "_pgmptr"
 ordinal = 413
 data = true
-
-[[export]]
-name = "_pipe"
-ordinal = 414
-
-[[export]]
-name = "_popen"
-ordinal = 415
 
 [[export]]
 name = "_purecall"
@@ -1772,10 +2398,6 @@ name = "_searchenv"
 ordinal = 432
 
 [[export]]
-name = "_seh_longjmp_unwind"
-ordinal = 433
-
-[[export]]
 name = "_set_error_mode"
 ordinal = 434
 
@@ -1792,20 +2414,12 @@ name = "_setjmp"
 ordinal = 437
 
 [[export]]
-name = "_setjmp3"
-ordinal = 438
-
-[[export]]
 name = "_setmaxstdio"
 ordinal = 439
 
 [[export]]
 name = "_setmbcp"
 ordinal = 440
-
-[[export]]
-name = "_setmode"
-ordinal = 441
 
 [[export]]
 name = "_setsystime"
@@ -1818,10 +2432,6 @@ ordinal = 443
 [[export]]
 name = "_snprintf"
 ordinal = 444
-
-[[export]]
-name = "_snwprintf"
-ordinal = 445
 
 [[export]]
 name = "_sopen"
@@ -1896,10 +2506,6 @@ name = "_strerror"
 ordinal = 463
 
 [[export]]
-name = "_stricmp"
-ordinal = 464
-
-[[export]]
 name = "_stricoll"
 ordinal = 465
 
@@ -1954,10 +2560,6 @@ ordinal = 477
 data = true
 
 [[export]]
-name = "_tell"
-ordinal = 478
-
-[[export]]
 name = "_telli64"
 ordinal = 479
 
@@ -2000,10 +2602,6 @@ name = "_ui64tow"
 ordinal = 488
 
 [[export]]
-name = "_ultoa"
-ordinal = 489
-
-[[export]]
 name = "_ultow"
 ordinal = 490
 
@@ -2036,14 +2634,6 @@ name = "_utime64"
 ordinal = 497
 
 [[export]]
-name = "_vsnprintf"
-ordinal = 498
-
-[[export]]
-name = "_vsnwprintf"
-ordinal = 499
-
-[[export]]
 name = "_waccess"
 ordinal = 500
 
@@ -2073,24 +2663,12 @@ name = "_wcsdup"
 ordinal = 506
 
 [[export]]
-name = "_wcsicmp"
-ordinal = 507
-
-[[export]]
 name = "_wcsicoll"
 ordinal = 508
 
 [[export]]
-name = "_wcslwr"
-ordinal = 509
-
-[[export]]
 name = "_wcsncoll"
 ordinal = 510
-
-[[export]]
-name = "_wcsnicmp"
-ordinal = 511
 
 [[export]]
 name = "_wcsnicoll"
@@ -2107,10 +2685,6 @@ ordinal = 514
 [[export]]
 name = "_wcsset"
 ordinal = 515
-
-[[export]]
-name = "_wcsupr"
-ordinal = 516
 
 [[export]]
 name = "_wctime"
@@ -2270,10 +2844,6 @@ name = "_wrename"
 ordinal = 554
 
 [[export]]
-name = "_write"
-ordinal = 555
-
-[[export]]
 name = "_wrmdir"
 ordinal = 556
 
@@ -2366,10 +2936,6 @@ name = "_wtoi64"
 ordinal = 578
 
 [[export]]
-name = "_wtol"
-ordinal = 579
-
-[[export]]
 name = "_wunlink"
 ordinal = 580
 
@@ -2442,10 +3008,6 @@ name = "bsearch"
 ordinal = 597
 
 [[export]]
-name = "calloc"
-ordinal = 598
-
-[[export]]
 name = "ceil"
 ordinal = 599
 
@@ -2478,20 +3040,12 @@ name = "div"
 ordinal = 606
 
 [[export]]
-name = "exit"
-ordinal = 607
-
-[[export]]
 name = "exp"
 ordinal = 608
 
 [[export]]
 name = "fabs"
 ordinal = 609
-
-[[export]]
-name = "fclose"
-ordinal = 610
 
 [[export]]
 name = "feof"
@@ -2502,20 +3056,12 @@ name = "ferror"
 ordinal = 612
 
 [[export]]
-name = "fflush"
-ordinal = 613
-
-[[export]]
 name = "fgetc"
 ordinal = 614
 
 [[export]]
 name = "fgetpos"
 ordinal = 615
-
-[[export]]
-name = "fgets"
-ordinal = 616
 
 [[export]]
 name = "fgetwc"
@@ -2538,10 +3084,6 @@ name = "fopen"
 ordinal = 621
 
 [[export]]
-name = "fprintf"
-ordinal = 622
-
-[[export]]
 name = "fputc"
 ordinal = 623
 
@@ -2560,10 +3102,6 @@ ordinal = 626
 [[export]]
 name = "fread"
 ordinal = 627
-
-[[export]]
-name = "free"
-ordinal = 628
 
 [[export]]
 name = "freopen"
@@ -2682,10 +3220,6 @@ name = "iswalnum"
 ordinal = 657
 
 [[export]]
-name = "iswalpha"
-ordinal = 658
-
-[[export]]
 name = "iswascii"
 ordinal = 659
 
@@ -2696,10 +3230,6 @@ ordinal = 660
 [[export]]
 name = "iswctype"
 ordinal = 661
-
-[[export]]
-name = "iswdigit"
-ordinal = 662
 
 [[export]]
 name = "iswgraph"
@@ -2718,16 +3248,8 @@ name = "iswpunct"
 ordinal = 666
 
 [[export]]
-name = "iswspace"
-ordinal = 667
-
-[[export]]
 name = "iswupper"
 ordinal = 668
-
-[[export]]
-name = "iswxdigit"
-ordinal = 669
 
 [[export]]
 name = "isxdigit"
@@ -2762,14 +3284,6 @@ name = "log10"
 ordinal = 677
 
 [[export]]
-name = "longjmp"
-ordinal = 678
-
-[[export]]
-name = "malloc"
-ordinal = 679
-
-[[export]]
 name = "mblen"
 ordinal = 680
 
@@ -2794,10 +3308,6 @@ name = "memcpy"
 ordinal = 685
 
 [[export]]
-name = "memmove"
-ordinal = 686
-
-[[export]]
 name = "memset"
 ordinal = 687
 
@@ -2816,10 +3326,6 @@ ordinal = 690
 [[export]]
 name = "pow"
 ordinal = 691
-
-[[export]]
-name = "printf"
-ordinal = 692
 
 [[export]]
 name = "putc"
@@ -2842,20 +3348,8 @@ name = "putwchar"
 ordinal = 697
 
 [[export]]
-name = "qsort"
-ordinal = 698
-
-[[export]]
 name = "raise"
 ordinal = 699
-
-[[export]]
-name = "rand"
-ordinal = 700
-
-[[export]]
-name = "realloc"
-ordinal = 701
 
 [[export]]
 name = "remove"
@@ -2878,14 +3372,6 @@ name = "setbuf"
 ordinal = 706
 
 [[export]]
-name = "setlocale"
-ordinal = 707
-
-[[export]]
-name = "setvbuf"
-ordinal = 708
-
-[[export]]
 name = "signal"
 ordinal = 709
 
@@ -2898,16 +3384,8 @@ name = "sinh"
 ordinal = 711
 
 [[export]]
-name = "sprintf"
-ordinal = 712
-
-[[export]]
 name = "sqrt"
 ordinal = 713
-
-[[export]]
-name = "srand"
-ordinal = 714
 
 [[export]]
 name = "sscanf"
@@ -2920,10 +3398,6 @@ ordinal = 716
 [[export]]
 name = "strchr"
 ordinal = 717
-
-[[export]]
-name = "strcmp"
-ordinal = 718
 
 [[export]]
 name = "strcoll"
@@ -2998,14 +3472,6 @@ name = "strxfrm"
 ordinal = 736
 
 [[export]]
-name = "swprintf"
-ordinal = 737
-
-[[export]]
-name = "swscanf"
-ordinal = 738
-
-[[export]]
 name = "system"
 ordinal = 739
 
@@ -3016,10 +3482,6 @@ ordinal = 740
 [[export]]
 name = "tanh"
 ordinal = 741
-
-[[export]]
-name = "time"
-ordinal = 742
 
 [[export]]
 name = "tmpfile"
@@ -3036,14 +3498,6 @@ ordinal = 745
 [[export]]
 name = "toupper"
 ordinal = 746
-
-[[export]]
-name = "towlower"
-ordinal = 747
-
-[[export]]
-name = "towupper"
-ordinal = 748
 
 [[export]]
 name = "ungetc"
@@ -3078,24 +3532,8 @@ name = "vwprintf"
 ordinal = 756
 
 [[export]]
-name = "wcscat"
-ordinal = 757
-
-[[export]]
-name = "wcschr"
-ordinal = 758
-
-[[export]]
-name = "wcscmp"
-ordinal = 759
-
-[[export]]
 name = "wcscoll"
 ordinal = 760
-
-[[export]]
-name = "wcscpy"
-ordinal = 761
 
 [[export]]
 name = "wcscspn"
@@ -3106,36 +3544,12 @@ name = "wcsftime"
 ordinal = 763
 
 [[export]]
-name = "wcslen"
-ordinal = 764
-
-[[export]]
 name = "wcsncat"
 ordinal = 765
 
 [[export]]
-name = "wcsncmp"
-ordinal = 766
-
-[[export]]
-name = "wcsncpy"
-ordinal = 767
-
-[[export]]
 name = "wcspbrk"
 ordinal = 768
-
-[[export]]
-name = "wcsrchr"
-ordinal = 769
-
-[[export]]
-name = "wcsspn"
-ordinal = 770
-
-[[export]]
-name = "wcsstr"
-ordinal = 771
 
 [[export]]
 name = "wcstod"
@@ -3146,16 +3560,8 @@ name = "wcstok"
 ordinal = 773
 
 [[export]]
-name = "wcstol"
-ordinal = 774
-
-[[export]]
 name = "wcstombs"
 ordinal = 775
-
-[[export]]
-name = "wcstoul"
-ordinal = 776
 
 [[export]]
 name = "wcsxfrm"

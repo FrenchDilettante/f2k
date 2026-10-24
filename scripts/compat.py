@@ -30,7 +30,8 @@ Options:
             ignore reason leads with a gap id and every pending block gives its reason; and the
             layering: every import of a DLL
             F2K builds is one Windows 2000's DLL makes too, from the same module (its import table,
-            userland/<dll>/imports-<version>.txt, dumped by scripts/dump_exports.py)
+            userland/<dll>/imports-<version>.txt, dumped by scripts/dump_exports.py), but for the
+            stubs' log line, ntdll's DbgPrint (STUB_LOG_IMPORT)
   --run     run every host scenario, ignored ones included, and keep the results: fails if an
             enabled one fails or an ignored one passes (its gap is fixed: remove the marker)
   --report  write the HTML report (target/compat/report.html)
@@ -245,9 +246,18 @@ def module_key(name):
     return name.lower().removesuffix(".dll")
 
 
+# The layering's one exemption: the stub machinery's log line. Every
+# DLL F2K builds logs its stubs' calls (their generated bodies, and the paths its code does not
+# handle yet) through ntdll's DbgPrint, which Windows 2000's msvcrt and user32 never import (msvcrt
+# imports kernel32 alone). Tolerated for every built DLL, that import alone; remove it to hold them
+# to the real tables in full.
+STUB_LOG_IMPORT = ("ntdll", "DbgPrint")
+
+
 def layering(specs):
     """Every import of a DLL F2K builds, against Windows 2000's DLL's import table: an import the
-    real DLL does not make (from that module) is code in the wrong place. The problems found."""
+    real DLL does not make (from that module) is code in the wrong place, the stub machinery's log
+    line aside (STUB_LOG_IMPORT). The problems found."""
     problems = []
     for dll in specs:
         built = BUILT_DLLS / f"{dll}.dll"
@@ -257,9 +267,11 @@ def layering(specs):
                 problems.append(f"{dll}.dll: no import table to hold it against (scripts/dump_exports.py)")
             continue
         for module, delayed, names in dump_exports.imports(dump_exports.Image(built.read_bytes())):
+            names = [name for name in names if (module_key(module), name) != STUB_LOG_IMPORT]
             theirs = real.get(module_key(module))
             if theirs is None:
-                problems.append(f"{dll}.dll imports from {module}, which Windows 2000's {dll}.dll never does")
+                if names:
+                    problems.append(f"{dll}.dll imports from {module}, which Windows 2000's {dll}.dll never does")
                 continue
             for name in names:
                 if name not in theirs:

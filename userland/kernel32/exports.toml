@@ -7,6 +7,10 @@
 #
 # The file is TOML in the subset tools/exportgen/src/toml.rs reads (it refuses anything else).
 #
+# convention     optional, before the records: the calling convention of every export the DLL
+#                implements, "stdcall" (the default: the body pops the arguments) or "cdecl" (the
+#                caller pops them: msvcrt's); an export with variable arguments is cdecl in either
+#
 # [[group]]      an API group, the unit the compatibility report groups by:
 #   key          its key (exports name it), title  its heading
 #
@@ -27,8 +31,8 @@
 #                  strA, strW   a NUL-terminated string the call reads (not a system service's);
 #                               strA? allows NULL, strA[260] gives the platform's limit on its
 #                               length in units, the NUL included
-#                the argument block its callers push and its body pops (stdcall) is 4 bytes per
-#                argument, 8 per u64
+#                the argument block its callers push (and its body pops, stdcall) is 4 bytes per
+#                argument, 8 per u64; a variable (data = true) leaves them out
 #   impl         how it is implemented, an inline table with one key:
 #                  { native = "<body>" }      it runs in user mode: the DLL's own code, an
 #                                             `f2k_export_<Name>` body in its Rust or assembly
@@ -40,7 +44,8 @@
 #                                             argument, by its kind) and the reason through
 #                                             ntdll's DbgPrint, then fails as the export fails
 #                                             (its `fails`, the last error
-#                                             ERROR_CALL_NOT_IMPLEMENTED; `never`: it raises
+#                                             ERROR_CALL_NOT_IMPLEMENTED; `void`: it returns,
+#                                             there is no failure to report; `never`: it raises
 #                                             STATUS_NOT_IMPLEMENTED). The reason says what is
 #                                             missing ("not yet implemented"). A native's code
 #                                             takes the same path on what it does not handle:
@@ -55,6 +60,8 @@
 #                cannot fail); a stub's is required
 #   note         optional: a fact worth keeping beside the export
 #   internal     optional: true for an F2K-internal entry point, not a Windows 2000 export
+#   data         optional: true for a variable, not a function: the DLL's own storage, a native
+#                (an `f2k_export_<Name>` static in its Rust), exported as DATA; no args, no fails
 #
 # A record without an impl is one of the DLL's exports F2K does not implement yet, catalogued from
 # the real DLL's export table (scripts/catalogue_exports.py, over the dumps of
@@ -2004,6 +2011,24 @@ impl = { stub = "not yet implemented" }
 ordinal = 77
 fails = "FALSE"
 
+[[export]]
+name = "CmdBatNotification"
+group = "processes"
+args = ["u32 fBeginEnd"]
+impl = { stub = "not yet implemented" }
+ordinal = 33
+fails = "void"
+note = "cmd.exe's word to NTVDM that a batch file begins or ends; it returns nothing"
+
+[[export]]
+name = "GetVDMCurrentDirectories"
+group = "processes"
+args = ["u32 cchCurDirs", "ptr lpszzCurDirs"]
+impl = { stub = "not yet implemented" }
+ordinal = 402
+fails = "0"
+note = "NTVDM's current directories, for cmd.exe; with no DOS subsystem there are none (0 characters)"
+
 # --- not implemented yet: the rest of KERNEL32.dll 5.0.2195.6688's export table, by ordinal ------
 
 [[export]]
@@ -2125,10 +2150,6 @@ ordinal = 30
 [[export]]
 name = "CloseProfileUserMapping"
 ordinal = 32
-
-[[export]]
-name = "CmdBatNotification"
-ordinal = 33
 
 [[export]]
 name = "CommConfigDialogA"
@@ -3156,10 +3177,6 @@ ordinal = 400
 [[export]]
 name = "GetUserDefaultUILanguage"
 ordinal = 401
-
-[[export]]
-name = "GetVDMCurrentDirectories"
-ordinal = 402
 
 
 

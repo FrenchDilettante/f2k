@@ -4,7 +4,7 @@
 
 use std::fmt::Write;
 
-use crate::{w2k, ArgKind, Export, Implementation, Spec};
+use crate::{w2k, ArgKind, Convention, Export, Implementation, Spec};
 
 /// The line every generated Rust file starts with.
 fn banner(source: &str) -> String {
@@ -205,15 +205,30 @@ pub fn stub_exports(spec: &Spec, source: &str) -> String {
     out
 }
 
+/// The variables the DLL exports (its data exports, its own storage): `DATA_EXPORTS`, their names
+/// in file order, for the tests that check where the built DLL keeps them.
+pub fn data_exports(spec: &Spec, source: &str) -> String {
+    let data = spec.data();
+    let mut out = banner(source);
+    out.push_str("/// The variables the spec exports, in spec order.\n");
+    writeln!(out, "pub const DATA_EXPORTS: [&str; {}] = [", data.len()).unwrap();
+    for export in data {
+        writeln!(out, "    {},", quote(&export.name)).unwrap();
+    }
+    out.push_str("];\n");
+    out
+}
+
 /// `dll`'s generated Rust, included by its crate:
 ///
-/// - `spec`: an `rtl::stub::Entry` for each export its own code implements or stubs (the natives
-///   and the stubs: name, arguments' kinds and names, failure return), named as the export. The
-///   stubs' bodies use theirs; a native's code hands its own to the DLL's stub routine on a path it
-///   does not handle;
-/// - each stubbed export's body: `f2k_export_<Export>`, stdcall (cdecl when it takes variable
-///   arguments), taking the arguments as its callers push them and handing them, with the spec's
-///   reason, to the DLL's stub routine: `crate::stub::stubbed(&Entry, reason, &[u64]) -> u32`.
+/// - `spec`: an `rtl::stub::Entry` for each function its own code implements or stubs (the natives
+///   and the stubs, its variables left out: name, arguments' kinds and names, failure return),
+///   named as the export. The stubs' bodies use theirs; a native's code hands its own to the DLL's
+///   stub routine on a path it does not handle;
+/// - each stubbed export's body: `f2k_export_<Export>`, in the DLL's convention (stdcall unless
+///   its spec says cdecl; cdecl whenever it takes variable arguments), taking the arguments as its
+///   callers push them and handing them, with the spec's reason, to the DLL's stub routine:
+///   `crate::stub::stubbed(&Entry, reason, &[u64]) -> u32`.
 pub fn dll_rust(specs: &[(&str, &Spec)], dll: &str, source: &str) -> String {
     let own = own_spec(specs, dll);
     let mut out = banner(source);
@@ -222,10 +237,11 @@ pub fn dll_rust(specs: &[(&str, &Spec)], dll: &str, source: &str) -> String {
          them.\n#[allow(non_upper_case_globals, dead_code)]\npub mod spec {\n    use rtl::stub::{Entry, Fails, Kind};\n\n",
     );
     for export in own.exports.iter().filter(|e| {
-        matches!(
-            e.implementation,
-            Implementation::Native(_) | Implementation::Stub(_)
-        )
+        !e.data
+            && matches!(
+                e.implementation,
+                Implementation::Native(_) | Implementation::Stub(_)
+            )
     }) {
         let args: Vec<String> = export
             .args
@@ -252,7 +268,6 @@ pub fn dll_rust(specs: &[(&str, &Spec)], dll: &str, source: &str) -> String {
         let Implementation::Stub(reason) = &export.implementation else {
             unreachable!()
         };
-        let variadic = export.args.iter().any(|a| a.kind == ArgKind::Varargs);
         let fixed: Vec<_> = export
             .args
             .iter()
@@ -278,7 +293,10 @@ pub fn dll_rust(specs: &[(&str, &Spec)], dll: &str, source: &str) -> String {
             "\n/// {name}: stubbed ({reason}).\n#[allow(non_snake_case, clippy::too_many_arguments)]\n#[unsafe(export_name = \"f2k_export_{name}\")]\npub unsafe extern \"{abi}\" fn f2k_stub_{name}({params}) -> u32 {{\n    // SAFETY: the arguments are the caller's, read as its export's kinds say.\n    unsafe {{ crate::stub::stubbed(&spec::{name}, {reason_text}, &[{values}]) }}\n}}",
             name = export.name,
             reason = reason,
-            abi = if variadic { "C" } else { "system" },
+            abi = match export.convention(own.convention) {
+                Convention::Cdecl => "C",
+                Convention::Stdcall => "system",
+            },
             params = params.join(", "),
             reason_text = quote(reason),
             values = values.join(", "),
@@ -378,8 +396,9 @@ pub fn dll_stubs(specs: &[(&str, &Spec)], dll: &str) -> String {
     out
 }
 
-/// `dll`'s module-definition file: its hand-written exports (to their code, in `hand_exports`
-/// order: the order of the `.globl` lines of its assembly sources), then its stubbed exports (to
+/// `dll`'s module-definition file: its hand-written exports (to their code or, for a variable, its
+/// storage, marked DATA; in `hand_exports` order: the order of the `.globl` lines of its assembly
+/// sources, then of its Rust sources' exports), then its stubbed exports (to
 /// their generated bodies, in spec order), then its system services (each under its `Nt` and its
 /// `Zw` name, to its stub, in number order), then its forwarders (`Name=MODULE.Export`, in spec
 /// order). An export's ordinal is its spec's when it has one (a
@@ -400,31 +419,33 @@ pub fn dll_def(
             "{dll}: the assembly sources export {written:?}, the spec's natives are {natives:?}"
         ));
     }
-    // Each line with its ordinal, when the spec gives one.
-    let mut lines: Vec<(Option<u16>, String)> = Vec::new();
+    // Each line with its ordinal, when the spec gives one, and whether it exports a variable.
+    let mut lines: Vec<(Option<u16>, String, bool)> = Vec::new();
     for name in hand_exports {
         let export = own.export(name).expect("checked against the natives above");
         lines.push((
             export.ordinal,
             format!("{}={}", export.name, &hand_symbol(&export.name)[1..]),
+            export.data,
         ));
     }
     for export in own.stubs() {
         lines.push((
             export.ordinal,
             format!("{}={}", export.name, &hand_symbol(&export.name)[1..]),
+            false,
         ));
     }
     for (export, _) in syscalls(own) {
         let nt = &export.name;
         let zw = w2k::zw_alias(nt);
         let symbol = &nt_stub_symbol(nt)[1..];
-        lines.push((export.ordinal, format!("{nt}={symbol}")));
-        lines.push((export.zw_ordinal, format!("{zw}={symbol}")));
+        lines.push((export.ordinal, format!("{nt}={symbol}"), false));
+        lines.push((export.zw_ordinal, format!("{zw}={symbol}"), false));
     }
     for export in &own.exports {
         if let Implementation::Forward(target) = &export.implementation {
-            lines.push((export.ordinal, format!("{}={target}", export.name)));
+            lines.push((export.ordinal, format!("{}={target}", export.name), false));
         }
     }
     // The next free ordinal skips every one the platform's table holds, catalogued ones included.
@@ -437,7 +458,7 @@ pub fn dll_def(
         .collect();
     let mut next = 1u16;
     let mut out = format!("LIBRARY {dll}.dll\nEXPORTS\n");
-    for (ordinal, line) in lines {
+    for (ordinal, line, data) in lines {
         let ordinal = match ordinal {
             Some(ordinal) => ordinal,
             None => {
@@ -448,7 +469,8 @@ pub fn dll_def(
                 next - 1
             }
         };
-        writeln!(out, "  {line} @{ordinal}").unwrap();
+        let data = if data { " DATA" } else { "" };
+        writeln!(out, "  {line} @{ordinal}{data}").unwrap();
     }
     Ok(out)
 }
@@ -695,11 +717,49 @@ impl = { syscall = "crate::nt::object::close" }
             "{def}"
         );
         assert!(!dll_exports(&kernel32, "t").contains("CreateProcessW"));
+        // A cdecl DLL's stubs are cdecl, the variadic ones as the others.
+        let msvcrt = parse_spec(&format!("convention = \"cdecl\"\n{text}")).unwrap();
+        let specs = [("msvcrt", &msvcrt), ("ntdll", &ntdll)];
+        let rust = dll_rust(&specs, "msvcrt", "t");
+        assert!(
+            rust.contains(
+                "pub unsafe extern \"C\" fn f2k_stub_CreateProcessW(a0: usize, a1: u64, a2: usize)"
+            ),
+            "{rust}"
+        );
+        assert!(
+            rust.contains("pub unsafe extern \"C\" fn f2k_stub_Trace(a0: usize) -> u32"),
+            "{rust}"
+        );
         let stubs = stub_exports(&kernel32, "t");
         assert!(
             stubs.contains("[(&str, u32); 2]")
                 && stubs.contains("    (\"CreateProcessW\", 16),\n    (\"Trace\", 4),"),
             "{stubs}"
         );
+    }
+
+    /// A variable: exported as DATA, at its ordinal, from the DLL's own storage; listed for the
+    /// kernel's tests; no stub description.
+    #[test]
+    fn variables_are_exported_as_data() {
+        let text = SPEC.to_string()
+            + "\n[[export]]\nname = \"_iob\"\ngroup = \"termination\"\ndata = true\n\
+               impl = { native = \"_iob\" }\nordinal = 0x20\n";
+        let kernel32 = parse_spec(&text).unwrap();
+        let ntdll = parse_spec(NTDLL).unwrap();
+        let specs = [("kernel32", &kernel32), ("ntdll", &ntdll)];
+        let mut hand = natives();
+        hand.push("_iob".into());
+        let def = dll_def(&specs, "kernel32", &hand).unwrap();
+        assert!(def.contains("  _iob=f2k_export__iob @32 DATA\n"), "{def}");
+        assert!(def.contains("  GetVersion=f2k_export_GetVersion @2\n"), "{def}");
+        let data = data_exports(&kernel32, "t");
+        assert!(
+            data.contains("pub const DATA_EXPORTS: [&str; 1] = [\n    \"_iob\",\n];"),
+            "{data}"
+        );
+        assert!(!dll_rust(&specs, "kernel32", "t").contains("_iob"));
+        assert!(dll_exports(&kernel32, "t").contains("    (\"_iob\", 0),"));
     }
 }

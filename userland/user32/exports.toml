@@ -1,9 +1,63 @@
 # USER32.dll's exports: the one source every list of them derives from (the format is
 # kernel32's, documented in userland/kernel32/exports.toml).
 #
-# None is implemented yet: each record is catalogued from USER32.dll 5.0.2195.6688's export table
-# (scripts/catalogue_exports.py): its name and ordinal. Implementing one gives it its group,
-# prototype and implementation.
+# F2K's user32 exports what the corpus fixtures (tests/user32, hellogui aside: it draws through
+# gdi32) and cmd.exe import: its own code over ntdll and kernel32, as Windows 2000's user32 imports
+# them, and stubs for what is not written yet. The rest of the records are catalogued from
+# USER32.dll 5.0.2195.6688's export table (scripts/catalogue_exports.py): their name and ordinal.
+# Implementing one gives it its group, prototype and implementation.
+
+[[group]]
+key = "winsta"
+title = "window stations / desktops"
+
+[[group]]
+key = "sound"
+title = "sounds"
+
+# --- window stations / desktops -------------------------------------------------------------------
+
+[[export]]
+name = "GetProcessWindowStation"
+group = "winsta"
+args = []
+impl = { stub = "not yet implemented" }
+ordinal = 316
+fails = "NULL"
+
+[[export]]
+name = "GetThreadDesktop"
+group = "winsta"
+args = ["u32 dwThreadId"]
+impl = { stub = "not yet implemented" }
+ordinal = 334
+fails = "NULL"
+
+[[export]]
+name = "GetUserObjectInformationA"
+group = "winsta"
+args = ["handle hObj", "i32 nIndex", "ptr pvInfo", "u32 nLength", "ptr<u32> lpnLengthNeeded"]
+impl = { stub = "not yet implemented" }
+ordinal = 339
+fails = "FALSE"
+
+[[export]]
+name = "GetUserObjectInformationW"
+group = "winsta"
+args = ["handle hObj", "i32 nIndex", "ptr pvInfo", "u32 nLength", "ptr<u32> lpnLengthNeeded"]
+impl = { stub = "not yet implemented" }
+ordinal = 340
+fails = "FALSE"
+
+# --- sounds ---------------------------------------------------------------------------------------
+
+[[export]]
+name = "MessageBeep"
+group = "sound"
+args = ["u32 uType"]
+impl = { stub = "not yet implemented" }
+ordinal = 451
+fails = "FALSE"
 
 # --- not implemented yet: the rest of USER32.dll 5.0.2195.6688's export table, by ordinal --------
 
@@ -1268,10 +1322,6 @@ name = "GetProcessDefaultLayout"
 ordinal = 315
 
 [[export]]
-name = "GetProcessWindowStation"
-ordinal = 316
-
-[[export]]
 name = "GetProgmanWindow"
 ordinal = 317
 
@@ -1340,10 +1390,6 @@ name = "GetTaskmanWindow"
 ordinal = 333
 
 [[export]]
-name = "GetThreadDesktop"
-ordinal = 334
-
-[[export]]
 name = "GetTitleBarInfo"
 ordinal = 335
 
@@ -1358,14 +1404,6 @@ ordinal = 337
 [[export]]
 name = "GetUpdateRgn"
 ordinal = 338
-
-[[export]]
-name = "GetUserObjectInformationA"
-ordinal = 339
-
-[[export]]
-name = "GetUserObjectInformationW"
-ordinal = 340
 
 [[export]]
 name = "GetUserObjectSecurity"
@@ -1806,10 +1844,6 @@ ordinal = 449
 [[export]]
 name = "MenuWindowProcW"
 ordinal = 450
-
-[[export]]
-name = "MessageBeep"
-ordinal = 451
 
 [[export]]
 name = "MessageBoxA"

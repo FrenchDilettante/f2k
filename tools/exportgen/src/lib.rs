@@ -28,6 +28,9 @@ use toml::{Table, Value};
 /// One DLL's spec.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Spec {
+    /// The calling convention of every export the DLL implements (its top-level `convention`;
+    /// stdcall when absent).
+    pub convention: Convention,
     /// The API groups, in file order.
     pub groups: Vec<Group>,
     /// The exports, in file order.
@@ -48,6 +51,17 @@ pub struct Catalogued {
     pub data: bool,
     /// A fact worth keeping beside the export.
     pub note: Option<String>,
+}
+
+/// A DLL's calling convention: who pops an export's arguments.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Convention {
+    /// The callee pops them (`ret N`): WINAPI, the system DLLs' own (`stdcall`).
+    #[default]
+    Stdcall,
+    /// The caller pops them: the C library's functions (`cdecl`). An export with variable
+    /// arguments is cdecl whatever its DLL's convention.
+    Cdecl,
 }
 
 /// An API group: the unit the compatibility report groups by.
@@ -76,6 +90,9 @@ pub struct Export {
     /// An F2K-internal entry point (the kernel's own calls into user mode), not a Windows 2000
     /// export: the compatibility report leaves it out.
     pub internal: bool,
+    /// A variable, not a function: the DLL's own storage (a native, `f2k_export_<Name>`), which the
+    /// `.def` exports as DATA (an importer reaches it through its import address table).
+    pub data: bool,
 }
 
 /// One prototype argument.
@@ -246,7 +263,8 @@ pub enum Implementation {
     Forward(String),
     /// Not written yet: a generated body logs the call, every argument, and the reason (what is
     /// missing: `not yet implemented`), then fails as the export fails (its `fails` value, the last
-    /// error ERROR_CALL_NOT_IMPLEMENTED), or raises for an export that cannot fail (`never`).
+    /// error ERROR_CALL_NOT_IMPLEMENTED); one that returns nothing (`void`) returns, having no
+    /// failure to report, and one that cannot fail (`never`) raises.
     Stub(String),
 }
 
@@ -258,9 +276,19 @@ impl Implementation {
 }
 
 impl Export {
-    /// The argument block the export's callers push and its body pops (stdcall).
+    /// The argument block the export's callers push (and its body pops, when it is stdcall).
     pub fn arg_bytes(&self) -> u32 {
         self.args.iter().map(|arg| arg.kind.bytes()).sum()
+    }
+
+    /// Its calling convention in a DLL whose convention is `dll`: cdecl when it takes variable
+    /// arguments (`...`), the DLL's otherwise.
+    pub fn convention(&self, dll: Convention) -> Convention {
+        if self.args.iter().any(|arg| arg.kind == ArgKind::Varargs) {
+            Convention::Cdecl
+        } else {
+            dll
+        }
     }
 
     /// A system service's generated wrapper: the NT service table's entry for it.
@@ -350,6 +378,11 @@ impl Spec {
             .collect()
     }
 
+    /// The variables (data exports) the DLL implements, in file order.
+    pub fn data(&self) -> Vec<&Export> {
+        self.exports.iter().filter(|e| e.data).collect()
+    }
+
     /// The stubbed exports, in file order.
     pub fn stubs(&self) -> Vec<&Export> {
         self.exports
@@ -373,11 +406,31 @@ pub fn load(path: &Path) -> Result<Spec, String> {
 /// Read and check a spec's text.
 pub fn parse_spec(text: &str) -> Result<Spec, String> {
     let root = toml::parse(text).map_err(|e| e.to_string())?;
-    if let Some(key) = root.keys().find(|key| *key != "group" && *key != "export") {
+    if let Some(key) = root
+        .keys()
+        .find(|key| !["convention", "group", "export"].contains(key))
+    {
         return Err(format!(
-            "unknown top-level key {key:?} (a spec holds [[group]] and [[export]] records)"
+            "unknown top-level key {key:?} (a spec holds its convention, [[group]] and [[export]] \
+             records)"
         ));
     }
+    let convention = match root.get("convention") {
+        None => Convention::Stdcall,
+        Some(Value::String(word)) if word == "stdcall" => Convention::Stdcall,
+        Some(Value::String(word)) if word == "cdecl" => Convention::Cdecl,
+        Some(Value::String(word)) => {
+            return Err(format!(
+                "convention is \"stdcall\" or \"cdecl\", not {word:?}"
+            ))
+        }
+        Some(other) => {
+            return Err(format!(
+                "convention must be a string, not {}",
+                other.kind()
+            ))
+        }
+    };
     let mut groups: Vec<Group> = Vec::new();
     for (index, table) in tables(&root, "group")?.into_iter().enumerate() {
         let context = format!("group #{}", index + 1);
@@ -440,7 +493,16 @@ pub fn parse_spec(text: &str) -> Result<Spec, String> {
             ));
         }
     }
+    if convention == Convention::Cdecl {
+        if let Some(service) = exports.iter().find(|e| e.implementation.is_syscall()) {
+            return Err(format!(
+                "export {:?}: a system service is stdcall, and the spec's convention is cdecl",
+                service.name
+            ));
+        }
+    }
     Ok(Spec {
+        convention,
         groups,
         exports,
         catalogued,
@@ -457,22 +519,16 @@ fn read_catalogued(table: &Table, index: usize) -> Result<Catalogued, String> {
         format!("{e} (an export without an impl is catalogued: name, ordinal, data, note)")
     })?;
     let name = string(table, "name", &context)?;
-    if !is_identifier(&name) {
-        return Err(format!("{context}: the name must be an identifier"));
+    // The platform's names, decorated C++ ones among them (msvcrt's `??0exception@@QAE@XZ`).
+    if !name.bytes().all(|b| b.is_ascii_graphic()) {
+        return Err(format!(
+            "{context}: the name must be printable ASCII, without spaces"
+        ));
     }
     Ok(Catalogued {
         ordinal: ordinal_field(table, "ordinal", &context)?
             .ok_or_else(|| format!("{context}: a catalogued export has its platform ordinal"))?,
-        data: match table.get("data") {
-            None => false,
-            Some(Value::Boolean(flag)) => *flag,
-            Some(other) => {
-                return Err(format!(
-                    "{context}: data must be a boolean, not {}",
-                    other.kind()
-                ))
-            }
-        },
+        data: boolean(table, "data", &context)?,
         note: optional_string(table, "note", &context)?,
         name,
     })
@@ -507,9 +563,11 @@ fn read_export(table: &Table, index: usize, groups: &[Group]) -> Result<Export, 
             "fails",
             "note",
             "internal",
+            "data",
         ],
         &context,
     )?;
+    let data = boolean(table, "data", &context)?;
     let name = string(table, "name", &context)?;
     if !is_identifier(&name) {
         return Err(format!("{context}: the name must be an identifier"));
@@ -518,7 +576,13 @@ fn read_export(table: &Table, index: usize, groups: &[Group]) -> Result<Export, 
     if !groups.iter().any(|g| g.key == group) {
         return Err(format!("{context}: unknown group {group:?}"));
     }
-    let args = strings(table, "args", &context)?
+    // A variable has no prototype: its record may leave the arguments out.
+    let args = if data && table.get("args").is_none() {
+        Vec::new()
+    } else {
+        strings(table, "args", &context)?
+    };
+    let args = args
         .into_iter()
         .map(|text| {
             if text == "..." {
@@ -636,6 +700,18 @@ fn read_export(table: &Table, index: usize, groups: &[Group]) -> Result<Export, 
              pointers)"
         ));
     }
+    if data {
+        if !matches!(implementation, Implementation::Native(_)) {
+            return Err(format!(
+                "{context}: a variable is the DLL's own storage: impl = {{ native = \"<Name>\" }}"
+            ));
+        }
+        if !args.is_empty() || fails.is_some() {
+            return Err(format!(
+                "{context}: a variable takes no arguments and has no failure return (args, fails)"
+            ));
+        }
+    }
     Ok(Export {
         name,
         group,
@@ -645,17 +721,21 @@ fn read_export(table: &Table, index: usize, groups: &[Group]) -> Result<Export, 
         zw_ordinal,
         fails,
         note: optional_string(table, "note", &context)?,
-        internal: match table.get("internal") {
-            None => false,
-            Some(Value::Boolean(flag)) => *flag,
-            Some(other) => {
-                return Err(format!(
-                    "{context}: internal must be a boolean, not {}",
-                    other.kind()
-                ))
-            }
-        },
+        internal: boolean(table, "internal", &context)?,
+        data,
     })
+}
+
+/// An optional boolean field: false when absent.
+fn boolean(table: &Table, key: &str, context: &str) -> Result<bool, String> {
+    match table.get(key) {
+        None => Ok(false),
+        Some(Value::Boolean(flag)) => Ok(*flag),
+        Some(other) => Err(format!(
+            "{context}: {key} must be a boolean, not {}",
+            other.kind()
+        )),
+    }
 }
 
 pub(crate) fn is_identifier(text: &str) -> bool {
@@ -877,6 +957,70 @@ ordinal = 0x10
         assert_eq!(spec.natives().len(), 4);
     }
 
+    /// A spec's convention: stdcall unless it says cdecl, any other word refused; a cdecl DLL has
+    /// no system services; a variadic export is cdecl in either.
+    #[test]
+    fn reads_the_convention() {
+        let spec = parse_spec(SPEC).unwrap();
+        assert_eq!(spec.convention, Convention::Stdcall);
+        let exit = spec.export("ExitProcess").unwrap();
+        assert_eq!(exit.convention(spec.convention), Convention::Stdcall);
+        let cdecl = parse_spec(&format!("convention = \"cdecl\"\n{SPEC}")).unwrap();
+        assert_eq!(cdecl.convention, Convention::Cdecl);
+        assert_eq!(
+            cdecl.export("ExitProcess").unwrap().convention(cdecl.convention),
+            Convention::Cdecl
+        );
+        let variadic = parse_spec(&SPEC.replacen(
+            "args = [\"u32 uExitCode\"]",
+            "args = [\"u32 uExitCode\", \"...\"]",
+            1,
+        ))
+        .unwrap();
+        assert_eq!(
+            variadic.export("ExitProcess").unwrap().convention(Convention::Stdcall),
+            Convention::Cdecl
+        );
+        for (head, message) in [
+            ("convention = \"fastcall\"\n", "\"stdcall\" or \"cdecl\""),
+            ("convention = 1\n", "must be a string"),
+            ("calling = \"cdecl\"\n", "unknown top-level key"),
+        ] {
+            let error = parse_spec(&format!("{head}{SPEC}")).unwrap_err();
+            assert!(error.contains(message), "{head}: {error}");
+        }
+        let service = "convention = \"cdecl\"\n[[group]]\nkey = \"nt\"\ntitle = \"nt\"\n\n[[export]]\n\
+                       name = \"NtClose\"\ngroup = \"nt\"\nargs = [\"handle Handle\"]\n\
+                       impl = { syscall = \"x\" }\n";
+        assert!(parse_spec(service).unwrap_err().contains("stdcall"));
+    }
+
+    /// A variable: the DLL's own storage (a native), without arguments or a failure return.
+    #[test]
+    fn reads_variables() {
+        let text = format!(
+            "{SPEC}\n[[export]]\nname = \"_iob\"\ngroup = \"termination\"\ndata = true\n\
+             impl = {{ native = \"_iob\" }}\nordinal = 0x20\n"
+        );
+        let spec = parse_spec(&text).unwrap();
+        let iob = spec.export("_iob").unwrap();
+        assert!(iob.data && iob.args.is_empty());
+        assert_eq!(spec.data().len(), 1);
+        assert!(spec.natives().contains(&iob), "a variable is the DLL's own");
+        assert!(!spec.export("ExitProcess").unwrap().data);
+        for (from, to, message) in [
+            ("native = \"_iob\"", "forward = \"NTDLL.x\"", "own storage"),
+            ("data = true", "data = true\nargs = [\"u32 x\"]", "no arguments"),
+            ("data = true", "data = true\nfails = \"0\"", "no arguments"),
+            ("data = true", "data = 1", "must be a boolean"),
+        ] {
+            let changed = text.replacen(from, to, 1);
+            assert_ne!(changed, text, "the change applies: {from:?}");
+            let error = parse_spec(&changed).unwrap_err();
+            assert!(error.contains(message), "{to}: {error}");
+        }
+    }
+
     #[test]
     fn fail_values_read_as_dwords() {
         for (text, value) in [
@@ -955,6 +1099,7 @@ ordinal = 0x10
             ),
             ("name = \"AddAtomA\"\nordinal = 0x10", "share ordinal 16"),
             ("name = \"GetVersion\"\nordinal = 2", "declared twice"),
+            ("name = \"Add Atom\"\nordinal = 2", "printable ASCII"),
         ] {
             let text = format!("{SPEC}\n[[export]]\n{record}\n");
             let error = parse_spec(&text).unwrap_err();
@@ -970,6 +1115,8 @@ ordinal = 0x10
                 .zw_ordinal,
             Some(3)
         );
+        let decorated = format!("{SPEC}\n[[export]]\nname = \"??0exception@@QAE@XZ\"\nordinal = 2\n");
+        assert_eq!(parse_spec(&decorated).unwrap().catalogued.len(), 1);
         let apart = format!("{zw}\n[[export]]\nname = \"ZwClose\"\nordinal = 4\n");
         assert!(parse_spec(&apart).unwrap_err().contains("alias"));
         let clash = format!("{zw}\n[[export]]\nname = \"NtYieldExecution\"\nordinal = 3\n");

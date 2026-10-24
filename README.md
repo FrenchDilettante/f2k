@@ -29,11 +29,12 @@ curl -LsSf https://astral.sh/uv/install.sh | sh && uv sync
 
 ## Building
 
-The system DLLs (`userland/`: `ntdll.dll` and `kernel32.dll`, real PE32 images) build first: the
-kernel embeds ntdll and maps it into every process, and the disk image carries both in its system
-directory, `\WINNT\system32`. As on Windows 2000, the kernel maps only a program and ntdll; ntdll's
-process start loads every other DLL from the volume, kernel32 included, snaps their imports and
-calls their entry points (the kernel reads kernel32's start thunk, where every program's main
+The system DLLs (`userland/`: `ntdll.dll`, `kernel32.dll`, `msvcrt.dll`, `advapi32.dll` and
+`user32.dll`, real PE32 images at Windows 2000's base addresses) build first: the kernel embeds
+ntdll and maps it into every process, and the disk image carries them all in its system directory,
+`\WINNT\system32`. As on Windows 2000, the kernel maps only a program and ntdll; ntdll's process
+start loads every other DLL from the volume, kernel32 included, snaps their imports and calls
+their entry points (the kernel reads kernel32's start thunk, where every program's main
 thread starts, from the same file at boot). `userland/` is its own Cargo workspace with
 its own target (`userland/i686-f2k-pe.json`, linked by the toolchain's `rust-lld` in its MSVC
 mode); `make kernel` builds it first, and the DLLs land in `target/userland/`. The kernel's build
@@ -124,8 +125,11 @@ fails once a gap's test passes (the marker goes with the fix).
 
 A stub (`impl = { stub = "<reason>" }` in the spec) is an export that exists but does nothing
 yet: when called, it writes a line to COM1 with its arguments and the reason, then fails the way
-the real function fails. Code that hits a case it doesn't handle yet can do the same, through
-`stub::stubbed`.
+the real function fails (one that returns nothing just returns). Code that hits a case it doesn't
+handle yet can do the same, through `stub::stubbed`. msvcrt, advapi32 and user32 are stubs for
+now, all but msvcrt's three variables (`_iob`, `_fmode`, `_adjust_fdiv`), which are real, zeroed
+storage. The stubs log through ntdll's `DbgPrint`, which Windows 2000's msvcrt and user32 do not
+import: `--check` allows that one import (`STUB_LOG_IMPORT` in `scripts/compat.py`).
 ```bash
 uv run scripts/compat.py --check
 uv run scripts/compat.py --run
@@ -256,7 +260,8 @@ f2k/
 │   └── common/           # The fixtures' shared header (f2kt.h) and stamp tool
 │
 ├── tools/exportgen/  # The export specs' reader and generator (a host crate, outside the workspace)
-├── userland/         # The system DLLs (own workspace and target): rtl, ntdll, kernel32, each
+├── userland/         # The system DLLs (own workspace and target): rtl, ntdll, kernel32,
+│                     # msvcrt, advapi32, user32, each
 │                     # DLL's export spec in userland/<dll>/exports.toml (the DLLs F2K
 │                     # does not build yet: their specs alone, catalogued)
 │

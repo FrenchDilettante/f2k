@@ -23,7 +23,9 @@
 //! On the DLLs' target (i686 Windows) only: what the compiler expects of an MSVC environment
 //! without its CRT (the 64-bit division helpers LLVM calls on i686-*-windows-msvc, `_aulldiv`,
 //! `_aullrem`, `_alldiv`, `_allrem`, and the `_fltused` marker; their cores are host-tested), the
-//! panic handler, and [`sys`], the calling thread's TEB, the gate and the raises.
+//! panic handler, [`sys`], the calling thread's TEB, the gate and the raises, and [`probe`], a read
+//! probe under an exception frame of its own (the stub routines of the DLLs whose imports hold no
+//! memory query read their string arguments through it).
 
 #![cfg_attr(not(test), no_std)]
 
@@ -42,6 +44,8 @@ pub mod message;
 pub mod modules;
 pub mod path;
 pub mod printf;
+#[cfg(all(target_arch = "x86", target_os = "windows", not(test)))]
+pub mod probe;
 pub mod resource;
 pub mod seh;
 pub mod status;

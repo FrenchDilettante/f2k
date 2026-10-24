@@ -387,8 +387,9 @@ the Makefile; the root's one cluster is full) and the sectioned
 fixtures into `\CORPUS`, and the kernel reads the selected program off
 the volume by path before loading it. The disk's system directory,
 `\WINNT\system32`, holds the system DLLs the userland workspace builds:
-ntdll loads every program's DLLs from the volume, kernel32 from there,
-the fixtures' companions from beside the program. The suite attaches
+ntdll loads every program's DLLs from the volume, kernel32, msvcrt,
+advapi32 and user32 from there, the fixtures' companions from beside
+the program. The suite attaches
 that disk to every case, kernel-path cases included.
 
 A boot chooses its programs by command line: the text after `--` on

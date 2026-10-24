@@ -71,6 +71,27 @@ pub static KERNEL32: SystemDll = SystemDll {
     file: include_bytes!(concat!(env!("F2K_SYSTEM_DLLS"), "/kernel32.dll")),
 };
 
+/// msvcrt, advapi32 and user32, as the userland build left them, at Windows 2000's bases for them:
+/// the tests check them against their specs and the corpus (ntdll loads them from the volume).
+#[cfg(test)]
+pub static MSVCRT: SystemDll = SystemDll {
+    file_name: "msvcrt.dll",
+    base: 0x7800_0000,
+    file: include_bytes!(concat!(env!("F2K_SYSTEM_DLLS"), "/msvcrt.dll")),
+};
+#[cfg(test)]
+pub static ADVAPI32: SystemDll = SystemDll {
+    file_name: "advapi32.dll",
+    base: 0x7C2D_0000,
+    file: include_bytes!(concat!(env!("F2K_SYSTEM_DLLS"), "/advapi32.dll")),
+};
+#[cfg(test)]
+pub static USER32: SystemDll = SystemDll {
+    file_name: "user32.dll",
+    base: 0x77E1_0000,
+    file: include_bytes!(concat!(env!("F2K_SYSTEM_DLLS"), "/user32.dll")),
+};
+
 /// A DLL file's SizeOfImage, at build time (the system regions reserve the image's extent).
 const fn size_of_image(file: &[u8]) -> u32 {
     let lfanew = u32::from_le_bytes([file[0x3C], file[0x3D], file[0x3E], file[0x3F]]) as usize;
@@ -106,11 +127,11 @@ impl SystemDll {
 /// How many forwarders a resolution follows before it is refused (a cycle in the DLLs' build).
 const FORWARD_DEPTH: u32 = 4;
 
-/// The DLLs a resolution reaches: ntdll, and in the tests kernel32 too.
+/// The DLLs a resolution reaches: ntdll, and in the tests the other system DLLs too.
 #[cfg(not(test))]
 static SYSTEM_DLLS: [&SystemDll; 1] = [&NTDLL];
 #[cfg(test)]
-static SYSTEM_DLLS: [&SystemDll; 2] = [&NTDLL, &KERNEL32];
+static SYSTEM_DLLS: [&SystemDll; 5] = [&NTDLL, &KERNEL32, &MSVCRT, &ADVAPI32, &USER32];
 
 /// The DLL `name` (as an import descriptor or a forwarder spells it) designates.
 fn system_dll(name: &str) -> Option<&'static SystemDll> {
@@ -373,7 +394,7 @@ mod tests {
             Err(Unresolved::NoEntry)
         );
         assert_eq!(
-            resolve("USER32.dll", "MessageBoxA"),
+            resolve("GDI32.dll", "TextOutA"),
             Err(Unresolved::NoModule)
         );
         let unwind = resolve("KERNEL32.dll", "RtlUnwind").unwrap();
@@ -789,5 +810,197 @@ mod tests {
             ),
             Err(Unresolved::NoEntry)
         );
+    }
+
+    // The other system DLLs' tables from their specs, each in its own module (the names are the
+    // same): `DLL_EXPORTS`, every export it implements (its variables included); `STUB_EXPORTS`,
+    // its stubs; `DATA_EXPORTS`, its variables.
+    mod msvcrt {
+        include!(concat!(env!("OUT_DIR"), "/msvcrt_exports.rs"));
+        include!(concat!(env!("OUT_DIR"), "/msvcrt_stubs.rs"));
+        include!(concat!(env!("OUT_DIR"), "/msvcrt_data.rs"));
+    }
+    mod advapi32 {
+        include!(concat!(env!("OUT_DIR"), "/advapi32_exports.rs"));
+        include!(concat!(env!("OUT_DIR"), "/advapi32_stubs.rs"));
+        include!(concat!(env!("OUT_DIR"), "/advapi32_data.rs"));
+    }
+    mod user32 {
+        include!(concat!(env!("OUT_DIR"), "/user32_exports.rs"));
+        include!(concat!(env!("OUT_DIR"), "/user32_stubs.rs"));
+        include!(concat!(env!("OUT_DIR"), "/user32_data.rs"));
+    }
+
+    /// A system DLL ntdll loads on a program's demand, with its spec's tables: the exports it
+    /// implements, its stubs, its variables.
+    struct Loaded {
+        dll: &'static SystemDll,
+        exports: &'static [(&'static str, u32)],
+        stubs: &'static [(&'static str, u32)],
+        data: &'static [&'static str],
+    }
+
+    /// msvcrt, advapi32 and user32.
+    fn loaded_dlls() -> [Loaded; 3] {
+        [
+            Loaded {
+                dll: &MSVCRT,
+                exports: &msvcrt::DLL_EXPORTS,
+                stubs: &msvcrt::STUB_EXPORTS,
+                data: &msvcrt::DATA_EXPORTS,
+            },
+            Loaded {
+                dll: &ADVAPI32,
+                exports: &advapi32::DLL_EXPORTS,
+                stubs: &advapi32::STUB_EXPORTS,
+                data: &advapi32::DATA_EXPORTS,
+            },
+            Loaded {
+                dll: &USER32,
+                exports: &user32::DLL_EXPORTS,
+                stubs: &user32::STUB_EXPORTS,
+                data: &user32::DATA_EXPORTS,
+            },
+        ]
+    }
+
+    /// The index of the section of `image` holding `rva`.
+    fn section_holding(image: &Image, rva: u32) -> Option<usize> {
+        (0..image.num_sections()).find(|&i| {
+            let start = image.section(i).virtual_address;
+            (start..start + image.section_extent(i)).contains(&rva)
+        })
+    }
+
+    /// msvcrt, advapi32 and user32: i386 DLL images at Windows 2000's bases for them (images are
+    /// never relocated), clear of each other, of ntdll and kernel32, and of kernel space; each has
+    /// an entry point in its code, which ntdll's loader calls, and imports from kernel32 and ntdll
+    /// at most (scripts/compat.py holds each import against Windows 2000's table).
+    #[test]
+    fn the_loaded_dlls_are_images_at_their_bases() {
+        let mut extents: Vec<(u32, u32)> = [&NTDLL, &KERNEL32, &MSVCRT, &ADVAPI32, &USER32]
+            .into_iter()
+            .map(|dll| (dll.base, dll.base + dll.image().size_of_image))
+            .collect();
+        extents.sort_unstable();
+        for pair in extents.windows(2) {
+            assert!(pair[0].1 <= pair[1].0, "{pair:x?} overlap");
+        }
+        assert!(extents.iter().all(|&(_, end)| end <= crate::mem::paging::KERNEL_BASE));
+        for Loaded { dll, .. } in loaded_dlls() {
+            let image = dll.image();
+            assert!(image.is_dll(), "{}", dll.file_name);
+            assert_eq!(image.image_base, dll.base, "{}", dll.file_name);
+            let entry = image.entry_va() - dll.base;
+            let code = section_holding(&image, entry)
+                .unwrap_or_else(|| panic!("{}: the entry point lies in no section", dll.file_name));
+            assert!(entry != 0 && image.section(code).protection().2, "{}", dll.file_name);
+            for (module, name) in imports_of(dll.file) {
+                assert!(
+                    ["kernel32.dll", "ntdll.dll"]
+                        .iter()
+                        .any(|known| module.eq_ignore_ascii_case(known)),
+                    "{} imports {module}!{name}",
+                    dll.file_name
+                );
+            }
+        }
+    }
+
+    /// Each DLL's table carries every export its spec implements or stubs, each function its own
+    /// code (no two at one address), every one inside the image.
+    #[test]
+    fn the_loaded_dlls_export_their_specs() {
+        for Loaded {
+            dll,
+            exports,
+            stubs,
+            data,
+        } in loaded_dlls()
+        {
+            let size = dll.image().size_of_image;
+            let mut addresses = Vec::new();
+            for &(name, _) in exports.iter().chain(stubs) {
+                let address = resolve_in(dll, name, 0)
+                    .unwrap_or_else(|_| panic!("{} does not export {name}", dll.file_name));
+                assert!((dll.base..dll.base + size).contains(&address), "{name}");
+                addresses.push(address);
+            }
+            addresses.sort_unstable();
+            addresses.dedup();
+            assert_eq!(addresses.len(), exports.len() + stubs.len(), "{}", dll.file_name);
+            assert!(data.iter().all(|name| exports.iter().any(|&(e, _)| e == *name)));
+        }
+        assert_eq!(msvcrt::DATA_EXPORTS, ["_fmode", "_adjust_fdiv", "_iob"]);
+        assert!(advapi32::DATA_EXPORTS.is_empty() && user32::DATA_EXPORTS.is_empty());
+    }
+
+    /// The variables are writable data: each lies in a writable section that holds no code,
+    /// mapped copy-on-write (each process writes its own copy, as an image's writable pages are
+    /// mapped), zero until the C runtime gives it its value; `_iob`'s 20 FILEs (32 bytes each) fit
+    /// in its section.
+    #[test]
+    fn variables_are_writable_data() {
+        for Loaded { dll, data, .. } in loaded_dlls() {
+            let image = dll.image();
+            let mut mapped = vec![0u8; image.size_of_image as usize];
+            image.map_into(dll.file, &mut mapped);
+            for name in data {
+                let rva = resolve_in(dll, name, 0).unwrap() - dll.base;
+                let section = section_holding(&image, rva)
+                    .unwrap_or_else(|| panic!("{name} lies in no section"));
+                let (read, write, execute) = image.section(section).protection();
+                assert!(read && write && !execute, "{name}");
+                assert_eq!(
+                    crate::exec::loader::page_protect(&image, rva & !0xFFF),
+                    crate::mem::vm::PAGE_WRITECOPY,
+                    "{name}"
+                );
+                let size = if *name == "_iob" { 20 * 32 } else { 4 };
+                let end = image.section(section).virtual_address + image.section_extent(section);
+                assert!(rva + size <= end, "{name} fits its section");
+                assert!(
+                    mapped[rva as usize..(rva + size) as usize]
+                        .iter()
+                        .all(|&b| b == 0),
+                    "{name} starts zeroed"
+                );
+            }
+        }
+    }
+
+    /// The corpus binaries that import msvcrt, advapi32 or user32 (hellogui aside: it draws through
+    /// gdi32, which F2K does not have).
+    const LOADED_CORPUS: [(&str, &[u8]); 7] = [
+        (
+            "hellomd",
+            include_bytes!("../../../tests/crt/hellomd/hellomd.exe"),
+        ),
+        ("crt", include_bytes!("../../../tests/crt/crt/crt.exe")),
+        ("seh", include_bytes!("../../../tests/crt/seh/seh.exe")),
+        ("fd", include_bytes!("../../../tests/crt/fd/fd.exe")),
+        ("wide", include_bytes!("../../../tests/crt/wide/wide.exe")),
+        (
+            "registry",
+            include_bytes!("../../../tests/advapi32/registry/registry.exe"),
+        ),
+        (
+            "winsta",
+            include_bytes!("../../../tests/user32/winsta/winsta.exe"),
+        ),
+    ];
+
+    /// Every import of those binaries resolves in the system DLL it names: each loads, and runs
+    /// until it calls a stub.
+    #[test]
+    fn the_loaded_corpus_resolves() {
+        for (fixture, file) in LOADED_CORPUS {
+            for (module, name) in imports_of(file) {
+                assert!(
+                    resolve(&module, &name).is_ok(),
+                    "{fixture} imports {module}!{name}, which no system DLL exports"
+                );
+            }
+        }
     }
 }

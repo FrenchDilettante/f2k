@@ -47,7 +47,7 @@ pub enum Kind {
 pub enum Fails {
     /// Its failure value (a function's `FALSE`, `NULL`, `INVALID_HANDLE_VALUE`...).
     Value(u32),
-    /// It returns nothing: the caller sees no failure but the last error.
+    /// It returns nothing: a stub returns, having no failure to report.
     Void,
     /// It cannot fail (it never returns, or has no failure to report): a stub raises instead.
     Never,

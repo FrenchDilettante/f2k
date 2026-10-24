@@ -14,8 +14,8 @@
 
 use std::path::{Path, PathBuf};
 
-/// The system DLLs whose specs are read and checked together (a forward names the other's export).
-const DLLS: [&str; 2] = ["kernel32", "ntdll"];
+/// The system DLLs whose specs are read and checked together (a forward names another's export).
+const DLLS: [&str; 5] = ["kernel32", "ntdll", "msvcrt", "advapi32", "user32"];
 
 /// The hand-written exports a source declares: an assembly source's `.globl _f2k_export_<Name>`
 /// lines, a Rust source's `#[unsafe(export_name = "f2k_export_<Name>")]` functions (stdcall: the
@@ -56,8 +56,10 @@ fn rust_sources(dir: &Path) -> Vec<PathBuf> {
 /// Generate `dll`'s build inputs into OUT_DIR and link it: `consts.s` (the kernel ABI constants as
 /// `.set`s), `stubs.s` (its system services' stubs), `exports.rs` (its exports' descriptions and
 /// its stubbed exports' bodies), and the .def (the hand-written exports of `asm_sources` and the
-/// Rust sources, the stubbed exports, the system services' stubs, and its forwarders).
-fn build_dll(dll: &str, base: u32, asm_sources: &[&str]) {
+/// Rust sources, the stubbed exports, the system services' stubs, and its forwarders). `entry`
+/// names its entry point (a stdcall `DllMain`-shaped function the loader calls with each
+/// DLL_PROCESS_ and DLL_THREAD_ reason), or none: the image has no entry point.
+fn build_dll(dll: &str, base: u32, entry: Option<&str>, asm_sources: &[&str]) {
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let repo = manifest.join("../..");
@@ -104,11 +106,17 @@ fn build_dll(dll: &str, base: u32, asm_sources: &[&str]) {
 
     for arg in [
         "/DLL".to_string(),
-        // The kernel maps the system DLLs itself and calls no entry point (no DllMain yet).
-        "/NOENTRY".to_string(),
+        // ntdll's loader calls a DLL's entry point when its image has one (ntdll's and kernel32's
+        // have none).
+        match entry {
+            Some(symbol) => format!("/ENTRY:{symbol}"),
+            None => "/NOENTRY".to_string(),
+        },
         format!("/DEF:{}", def_path.display()),
         format!("/BASE:{base:#x}"),
-        // File offsets equal RVAs: the kernel reads the embedded file as the mapped image.
+        // File offsets equal RVAs: the kernel reads the embedded file (ntdll's) as the mapped
+        // image. A DLL with zero-initialized data alone in its writable section has no file bytes
+        // for it, and the sections after it start a page earlier in the file.
         "/FILEALIGN:0x1000".to_string(),
         // Windows 2000-era characteristics (rustc's own /NXCOMPAT precedes these).
         "/NXCOMPAT:NO".to_string(),

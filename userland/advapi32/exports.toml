@@ -1,9 +1,184 @@
 # ADVAPI32.dll's exports: the one source every list of them derives from (the format is
 # kernel32's, documented in userland/kernel32/exports.toml).
 #
-# None is implemented yet: each record is catalogued from ADVAPI32.dll 5.0.2195.6710's export table
-# (scripts/catalogue_exports.py): its name and ordinal. Implementing one gives it its group,
+# F2K's advapi32 exports what the corpus fixtures (tests/advapi32) and cmd.exe import: its own code
+# over ntdll and kernel32, as Windows 2000's advapi32 imports them, and stubs for what is not
+# written yet. The rest of the records are catalogued from ADVAPI32.dll 5.0.2195.6710's export table
+# (scripts/catalogue_exports.py): their name and ordinal. Implementing one gives it its group,
 # prototype and implementation.
+
+[[group]]
+key = "registry"
+title = "registry"
+
+[[group]]
+key = "security"
+title = "security"
+
+# --- registry -------------------------------------------------------------------------------------
+
+[[export]]
+name = "RegCloseKey"
+group = "registry"
+args = ["handle hKey"]
+impl = { stub = "not yet implemented" }
+ordinal = 396
+fails = "120"
+
+[[export]]
+name = "RegCreateKeyExA"
+group = "registry"
+args = ["handle hKey", "strA lpSubKey", "u32 Reserved", "strA? lpClass", "u32 dwOptions", "u32 samDesired", "ptr lpSecurityAttributes", "ptr<u32> phkResult", "ptr<u32> lpdwDisposition"]
+impl = { stub = "not yet implemented" }
+ordinal = 400
+fails = "120"
+
+[[export]]
+name = "RegCreateKeyExW"
+group = "registry"
+args = ["handle hKey", "strW lpSubKey", "u32 Reserved", "strW? lpClass", "u32 dwOptions", "u32 samDesired", "ptr lpSecurityAttributes", "ptr<u32> phkResult", "ptr<u32> lpdwDisposition"]
+impl = { stub = "not yet implemented" }
+ordinal = 401
+fails = "120"
+
+[[export]]
+name = "RegOpenKeyA"
+group = "registry"
+args = ["handle hKey", "strA? lpSubKey", "ptr<u32> phkResult"]
+impl = { stub = "not yet implemented" }
+ordinal = 420
+fails = "120"
+
+[[export]]
+name = "RegOpenKeyW"
+group = "registry"
+args = ["handle hKey", "strW? lpSubKey", "ptr<u32> phkResult"]
+impl = { stub = "not yet implemented" }
+ordinal = 423
+fails = "120"
+
+[[export]]
+name = "RegOpenKeyExA"
+group = "registry"
+args = ["handle hKey", "strA? lpSubKey", "u32 ulOptions", "u32 samDesired", "ptr<u32> phkResult"]
+impl = { stub = "not yet implemented" }
+ordinal = 421
+fails = "120"
+
+[[export]]
+name = "RegOpenKeyExW"
+group = "registry"
+args = ["handle hKey", "strW? lpSubKey", "u32 ulOptions", "u32 samDesired", "ptr<u32> phkResult"]
+impl = { stub = "not yet implemented" }
+ordinal = 422
+fails = "120"
+
+[[export]]
+name = "RegDeleteKeyA"
+group = "registry"
+args = ["handle hKey", "strA lpSubKey"]
+impl = { stub = "not yet implemented" }
+ordinal = 403
+fails = "120"
+
+[[export]]
+name = "RegDeleteKeyW"
+group = "registry"
+args = ["handle hKey", "strW lpSubKey"]
+impl = { stub = "not yet implemented" }
+ordinal = 404
+fails = "120"
+
+[[export]]
+name = "RegEnumKeyA"
+group = "registry"
+args = ["handle hKey", "u32 dwIndex", "ptr lpName", "u32 cchName"]
+impl = { stub = "not yet implemented" }
+ordinal = 408
+fails = "120"
+
+[[export]]
+name = "RegEnumKeyW"
+group = "registry"
+args = ["handle hKey", "u32 dwIndex", "ptr lpName", "u32 cchName"]
+impl = { stub = "not yet implemented" }
+ordinal = 411
+fails = "120"
+
+[[export]]
+name = "RegQueryValueA"
+group = "registry"
+args = ["handle hKey", "strA? lpSubKey", "ptr lpValue", "ptr<i32> lpcbValue"]
+impl = { stub = "not yet implemented" }
+ordinal = 430
+fails = "120"
+
+[[export]]
+name = "RegQueryValueW"
+group = "registry"
+args = ["handle hKey", "strW? lpSubKey", "ptr lpValue", "ptr<i32> lpcbValue"]
+impl = { stub = "not yet implemented" }
+ordinal = 433
+fails = "120"
+
+[[export]]
+name = "RegQueryValueExA"
+group = "registry"
+args = ["handle hKey", "strA? lpValueName", "ptr<u32> lpReserved", "ptr<u32> lpType", "ptr lpData", "ptr<u32> lpcbData"]
+impl = { stub = "not yet implemented" }
+ordinal = 431
+fails = "120"
+
+[[export]]
+name = "RegQueryValueExW"
+group = "registry"
+args = ["handle hKey", "strW? lpValueName", "ptr<u32> lpReserved", "ptr<u32> lpType", "ptr lpData", "ptr<u32> lpcbData"]
+impl = { stub = "not yet implemented" }
+ordinal = 432
+fails = "120"
+
+[[export]]
+name = "RegSetValueA"
+group = "registry"
+args = ["handle hKey", "strA? lpSubKey", "u32 dwType", "strA lpData", "u32 cbData"]
+impl = { stub = "not yet implemented" }
+ordinal = 441
+fails = "120"
+
+[[export]]
+name = "RegSetValueW"
+group = "registry"
+args = ["handle hKey", "strW? lpSubKey", "u32 dwType", "strW lpData", "u32 cbData"]
+impl = { stub = "not yet implemented" }
+ordinal = 444
+fails = "120"
+
+[[export]]
+name = "RegSetValueExA"
+group = "registry"
+args = ["handle hKey", "strA? lpValueName", "u32 Reserved", "u32 dwType", "ptr lpData", "u32 cbData"]
+impl = { stub = "not yet implemented" }
+ordinal = 442
+fails = "120"
+
+[[export]]
+name = "RegSetValueExW"
+group = "registry"
+args = ["handle hKey", "strW? lpValueName", "u32 Reserved", "u32 dwType", "ptr lpData", "u32 cbData"]
+impl = { stub = "not yet implemented" }
+ordinal = 443
+fails = "120"
+
+# --- security -------------------------------------------------------------------------------------
+
+[[export]]
+name = "GetSecurityInfoExW"
+group = "security"
+args = ["handle hObject", "u32 ObjectType", "u32 SecurityInfo", "strW? lpProvider", "strW? lpProperty", "ptr ppAccessList", "ptr ppAuditList", "ptr lppOwner", "ptr lppGroup"]
+impl = { stub = "not yet implemented" }
+ordinal = 227
+fails = "1204"
+note = "the error it returns is ERROR_BAD_PROVIDER, which is what cmd.exe needs from it"
 
 # --- not implemented yet: the rest of ADVAPI32.dll 5.0.2195.6710's export table, by ordinal ------
 
@@ -912,10 +1087,6 @@ name = "GetSecurityInfoExA"
 ordinal = 226
 
 [[export]]
-name = "GetSecurityInfoExW"
-ordinal = 227
-
-[[export]]
 name = "GetServiceDisplayNameA"
 ordinal = 228
 
@@ -1588,10 +1759,6 @@ name = "ReadEventLogW"
 ordinal = 395
 
 [[export]]
-name = "RegCloseKey"
-ordinal = 396
-
-[[export]]
 name = "RegConnectRegistryA"
 ordinal = 397
 
@@ -1604,24 +1771,8 @@ name = "RegCreateKeyA"
 ordinal = 399
 
 [[export]]
-name = "RegCreateKeyExA"
-ordinal = 400
-
-[[export]]
-name = "RegCreateKeyExW"
-ordinal = 401
-
-[[export]]
 name = "RegCreateKeyW"
 ordinal = 402
-
-[[export]]
-name = "RegDeleteKeyA"
-ordinal = 403
-
-[[export]]
-name = "RegDeleteKeyW"
-ordinal = 404
 
 [[export]]
 name = "RegDeleteValueA"
@@ -1636,20 +1787,12 @@ name = "RegDisablePredefinedCache"
 ordinal = 407
 
 [[export]]
-name = "RegEnumKeyA"
-ordinal = 408
-
-[[export]]
 name = "RegEnumKeyExA"
 ordinal = 409
 
 [[export]]
 name = "RegEnumKeyExW"
 ordinal = 410
-
-[[export]]
-name = "RegEnumKeyW"
-ordinal = 411
 
 [[export]]
 name = "RegEnumValueA"
@@ -1684,22 +1827,6 @@ name = "RegOpenCurrentUser"
 ordinal = 419
 
 [[export]]
-name = "RegOpenKeyA"
-ordinal = 420
-
-[[export]]
-name = "RegOpenKeyExA"
-ordinal = 421
-
-[[export]]
-name = "RegOpenKeyExW"
-ordinal = 422
-
-[[export]]
-name = "RegOpenKeyW"
-ordinal = 423
-
-[[export]]
 name = "RegOpenUserClassesRoot"
 ordinal = 424
 
@@ -1722,22 +1849,6 @@ ordinal = 428
 [[export]]
 name = "RegQueryMultipleValuesW"
 ordinal = 429
-
-[[export]]
-name = "RegQueryValueA"
-ordinal = 430
-
-[[export]]
-name = "RegQueryValueExA"
-ordinal = 431
-
-[[export]]
-name = "RegQueryValueExW"
-ordinal = 432
-
-[[export]]
-name = "RegQueryValueW"
-ordinal = 433
 
 [[export]]
 name = "RegReplaceKeyA"
@@ -1766,22 +1877,6 @@ ordinal = 439
 [[export]]
 name = "RegSetKeySecurity"
 ordinal = 440
-
-[[export]]
-name = "RegSetValueA"
-ordinal = 441
-
-[[export]]
-name = "RegSetValueExA"
-ordinal = 442
-
-[[export]]
-name = "RegSetValueExW"
-ordinal = 443
-
-[[export]]
-name = "RegSetValueW"
-ordinal = 444
 
 [[export]]
 name = "RegUnLoadKeyA"

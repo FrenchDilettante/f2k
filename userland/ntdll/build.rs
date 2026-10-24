@@ -5,6 +5,7 @@ fn main() {
     build_dll(
         "ntdll",
         0x77F8_0000,
+        None,
         &[
             "src/ldr.s",
             "src/except.s",

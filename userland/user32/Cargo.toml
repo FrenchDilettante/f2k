@@ -1,0 +1,22 @@
+[package]
+name = "user32"
+version = "0.1.0"
+edition = "2021"
+
+# user32's user-mode code, host-testable: its exports' bodies.
+[lib]
+name = "user32"
+path = "src/lib.rs"
+
+# The DLL: the library's exports and its entry point.
+[[bin]]
+name = "user32"
+path = "src/main.rs"
+test = false
+
+[dependencies]
+rtl = { path = "../rtl" }
+
+# The build script generates the .def and the stubs' bodies from the export specs.
+[build-dependencies]
+exportgen = { path = "../../tools/exportgen" }

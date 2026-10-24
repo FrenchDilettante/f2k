@@ -75,7 +75,10 @@ CORPUS_FIXTURES ?= $(sort $(foreach fixture,$(notdir $(patsubst %/fixture.toml,%
 # The system DLLs the userland workspace builds, which the disk carries in its system directory
 # (\WINNT\system32, under the kernel's NtSystemRoot).
 SYSTEM_DLLS = $(BUILD_DIR)/userland/i686-f2k-pe/release/ntdll.dll \
-              $(BUILD_DIR)/userland/i686-f2k-pe/release/kernel32.dll
+              $(BUILD_DIR)/userland/i686-f2k-pe/release/kernel32.dll \
+              $(BUILD_DIR)/userland/i686-f2k-pe/release/msvcrt.dll \
+              $(BUILD_DIR)/userland/i686-f2k-pe/release/advapi32.dll \
+              $(BUILD_DIR)/userland/i686-f2k-pe/release/user32.dll
 
 # Limine bootloader settings
 LIMINE_DIR ?= $(BOOT_DIR)/limine
@@ -93,7 +96,8 @@ help:
 	@echo ""
 	@echo "Targets:"
 	@echo "  all           - Build everything and create bootable disk"
-	@echo "  userland     - Build the system DLLs (ntdll.dll, which the kernel embeds, and kernel32.dll)"
+	@echo "  userland     - Build the system DLLs (ntdll.dll, which the kernel embeds, kernel32.dll,"
+	@echo "                 msvcrt.dll, advapi32.dll and user32.dll)"
 	@echo "  kernel       - Build the kernel (the system DLLs first)"
 	@echo "  qemu         - Build the disk and boot the kernel directly in QEMU (Multiboot, disk attached)"
 	@echo "  test         - Run every on-target QEMU test (kernel boots and the corpus)"
@@ -123,7 +127,7 @@ help:
 all: disk
 
 # The system DLLs (userland/, its own Cargo workspace and target): the kernel embeds ntdll (and its
-# tests read kernel32), and the disk carries both, so they build first. Their generated stubs and .def come from the export specs
+# tests read the others), and the disk carries them all, so they build first. Their generated stubs and .def come from the export specs
 # (userland/<dll>/exports.toml, through tools/exportgen), the source the kernel's NT service table
 # is generated from too.
 .PHONY: userland
@@ -173,7 +177,8 @@ disk: kernel limine
 	done
 	# The system directory, under the system root (KUSER_SHARED_DATA's NtSystemRoot, C:\WINNT):
 	# the system DLLs the userland workspace builds. ntdll loads kernel32 from here into every
-	# process (the kernel maps ntdll itself and reads kernel32's start thunk from here at boot).
+	# process, and msvcrt, advapi32 and user32 into the programs that import them (the kernel maps
+	# ntdll itself and reads kernel32's start thunk from here at boot).
 	mmd -i $(DISK_IMG)@@1M ::/WINNT ::/WINNT/system32
 	mcopy -i $(DISK_IMG)@@1M $(SYSTEM_DLLS) ::/WINNT/system32/
 	# The sectioned corpus in \CORPUS, with the files fixture's data tree beside
@@ -272,8 +277,10 @@ run-tests: userland
 	# built from source): the userland workspace's own configuration would hand them a from-source
 	# core beside the prebuilt std (its build-std array cannot be emptied from the command line).
 	CARGO_UNSTABLE_BUILD_STD=std cargo test --manifest-path $(USERLAND_DIR)/rtl/Cargo.toml --target $(RUST_HOST_TARGET) --target-dir target/userland-host
-	# kernel32's user-mode code (its library).
-	CARGO_UNSTABLE_BUILD_STD=std cargo test --manifest-path $(USERLAND_DIR)/kernel32/Cargo.toml --lib --target $(RUST_HOST_TARGET) --target-dir target/userland-host
+	# The system DLLs' user-mode code (their libraries).
+	for dll in kernel32 msvcrt advapi32 user32; do \
+		CARGO_UNSTABLE_BUILD_STD=std cargo test --manifest-path $(USERLAND_DIR)/$$dll/Cargo.toml --lib --target $(RUST_HOST_TARGET) --target-dir target/userland-host || exit 1; \
+	done
 
 .PHONY: check
 check: userland

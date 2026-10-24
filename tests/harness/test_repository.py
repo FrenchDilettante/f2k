@@ -249,15 +249,22 @@ def test_current_mut_call_sites_only_go_down():
     )
 
 
-# --- kernel32 as Windows 2000 builds it ----------------------------------------------------------
+# --- The system DLLs as Windows 2000 builds them --------------------------------------------------
 
 import tomllib
 
 
-def kernel32_exports() -> list[dict]:
-    """kernel32's implemented exports (its spec's catalogued records, without an impl, left out)."""
-    spec = tomllib.loads((f2kboot.REPO_ROOT / "userland" / "kernel32" / "exports.toml").read_text())
+def dll_exports(dll: str) -> list[dict]:
+    """A DLL's implemented and stubbed exports (its spec's catalogued records, without an impl,
+    left out)."""
+    spec = tomllib.loads((f2kboot.REPO_ROOT / "userland" / dll / "exports.toml").read_text())
     return [export for export in spec["export"] if "impl" in export]
+
+
+# The DLLs F2K builds: the userland workspace's crates with an export spec (ntdll, kernel32, msvcrt,
+# advapi32, user32), by module name.
+BUILT_DLLS = sorted(path.parent.name for path in (f2kboot.REPO_ROOT / "userland").glob("*/exports.toml")
+                    if (path.parent / "Cargo.toml").is_file())
 
 
 def test_no_export_is_a_kernel_served_win32_service():
@@ -281,15 +288,22 @@ def test_no_export_is_a_kernel_served_win32_service():
 
 
 def test_the_spec_lists_every_fixture_import():
-    """kernel32 implements every kernel32 function the corpus fixtures import, so every fixture
-    loads: the loader stops at the first missing import.
-    hellogui imports user32 and gdi32, which F2K does not have."""
-    exported = {e["name"] for e in kernel32_exports()}
+    """Every import of every corpus fixture names a DLL F2K builds and an export its spec
+    implements or stubs, so every fixture loads: the loader stops at the first missing import. A
+    fixture's own companion DLLs (beside it, as dllmain's) are its own.
+    hellogui imports gdi32, which F2K does not have."""
+    exported = {dll: {e["name"] for e in dll_exports(dll)} for dll in BUILT_DLLS}
     for exe in sorted(TESTS.glob("*/*/*.exe")):
         if exe.parent.name == "hellogui":
             continue
-        missing = sorted(set(pe_imports(exe).get("kernel32.dll", [])) - exported)
-        assert not missing, f"{exe.name} imports {missing}"
+        companions = {path.name.lower() for path in exe.parent.rglob("*.dll")}
+        for module, names in pe_imports(exe).items():
+            if module in companions:
+                continue
+            dll = module.removesuffix(".dll")
+            assert dll in exported, f"{exe.name} imports from {module}, which F2K does not build"
+            missing = sorted(set(names) - exported[dll])
+            assert not missing, f"{exe.name} imports {missing} from {module}"
 
 
 def pe_rva_reader(data: bytes):
@@ -349,19 +363,20 @@ def int2eh_pairs(path: Path) -> int:
     )
 
 
-def kernel32_dll(builder) -> Path:
+def built_dll(builder, dll: str) -> Path:
     builder([])
-    return f2kboot.REPO_ROOT / "target" / "userland" / "i686-f2k-pe" / "release" / "kernel32.dll"
+    return f2kboot.REPO_ROOT / "target" / "userland" / "i686-f2k-pe" / "release" / f"{dll}.dll"
 
 
 def test_kernel32_imports_nothing_but_ntdll(builder):
     """kernel32.dll's imports name ntdll.dll at most: Windows 2000's kernel32 imports ntdll alone."""
-    modules = set(pe_imports(kernel32_dll(builder)))
+    modules = set(pe_imports(built_dll(builder, "kernel32")))
     assert modules <= {"ntdll.dll"}, modules
 
 
-def test_kernel32_enters_the_kernel_only_through_ntdll(builder):
-    """Windows 2000's kernel32 holds no `int 2Eh`: only ntdll's stubs enter the kernel, every
-    kernel32 export being user-mode code over ntdll."""
-    gates = int2eh_pairs(kernel32_dll(builder))
-    assert gates == 0, f"{gates} int 2Eh byte pairs in kernel32's code"
+@pytest.mark.parametrize("dll", [dll for dll in BUILT_DLLS if dll != "ntdll"])
+def test_the_dlls_enter_the_kernel_only_through_ntdll(builder, dll: str):
+    """Windows 2000's DLLs above ntdll hold no `int 2Eh`: only ntdll's stubs enter the kernel, every
+    other DLL's export being user-mode code over ntdll."""
+    gates = int2eh_pairs(built_dll(builder, dll))
+    assert gates == 0, f"{gates} int 2Eh byte pairs in {dll}'s code"

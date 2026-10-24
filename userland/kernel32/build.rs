@@ -7,6 +7,7 @@ fn main() {
     build_dll(
         "kernel32",
         0x7C4E_0000,
+        None,
         &[
             "src/natives.s",
             "src/start.s",
