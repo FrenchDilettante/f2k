@@ -4,7 +4,7 @@ The system DLLs' compatibility: every export of every spec (userland/<dll>/expor
 far the tests cover it.
 
 The tests declare what they pin, as `dll.Export`: a corpus fixture's `[pins]`
-(tests/<fixture>/fixture.toml: per block section, "*" for every block of the fixture) and a host
+(tests/<dll>/<fixture>/fixture.toml: per block section, "*" for every block of the fixture) and a host
 scenario's `/// Pins:` doc lines (userland/kernel32/src/scenarios). An export's status comes from
 its pinning tests' last results:
 
@@ -148,8 +148,7 @@ def load_specs():
 def corpus_fixtures():
     """The sectioned fixtures: name -> (declaration, captured blocks; None while awaited)."""
     fixtures = {}
-    for declaration in sorted(TESTS.glob("*/fixture.toml")):
-        name = declaration.parent.name
+    for name in sorted(f2kboot.fixture_directories()):
         declared = f2kboot.declaration(name)
         if declared.get("kind") != "sectioned":
             continue
@@ -194,7 +193,7 @@ def check(specs, fixtures, scenarios):
         return None
 
     for fixture, (declared, blocks) in fixtures.items():
-        where = f"tests/{fixture}/fixture.toml"
+        where = f"{f2kboot.fixture_directory(fixture).relative_to(REPO_ROOT)}/fixture.toml"
         names = None if blocks is None else {block.name for block in blocks}
         for section, pins in declared.get("pins", {}).items():
             if names is not None and section != "*" and section not in names:

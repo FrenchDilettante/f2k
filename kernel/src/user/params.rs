@@ -96,10 +96,11 @@ pub const ENVIRONMENT_BLOCK: u32 = 0x0035_0000;
 /// The region's size in pages.
 pub const ENVIRONMENT_BLOCK_PAGES: u32 = 5;
 
-/// The standard handles the block carries, per the real-machine trace (`tests/hello/trace.txt`):
-/// the GetFileType probes after each GetStdHandle, and the WriteFile that prints, name stdin 3,
-/// stdout 7, stderr 0xB — the console server's first three handles
-/// (`rtl::console::STANDARD_HANDLES`). All three carry the console tag (the low two bits set).
+/// The standard handles the block carries, per the real-machine trace
+/// (`tests/core/hello/trace.txt`): the GetFileType probes after each GetStdHandle, and the
+/// WriteFile that prints, name stdin 3, stdout 7, stderr 0xB — the console server's first three
+/// handles (`rtl::console::STANDARD_HANDLES`). All three carry the console tag (the low two bits
+/// set).
 pub(crate) const STD_INPUT: u32 = 3;
 pub(crate) const STD_OUTPUT: u32 = 0x07;
 pub(crate) const STD_ERROR: u32 = 0x0B;

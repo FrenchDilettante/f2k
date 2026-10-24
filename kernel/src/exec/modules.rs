@@ -4,8 +4,8 @@
 //! The system DLLs are real PE images built by the userland workspace (userland/: ntdll.dll and
 //! kernel32.dll), embedded in the kernel and mapped into every process at their preferred bases
 //! (the bases Windows 2000 gives them; kernel32's was measured on the capture machine,
-//! tests/hello/trace.txt), in Windows 2000's load order: ntdll, then kernel32. A module's handle is
-//! its base.
+//! tests/core/hello/trace.txt), in Windows 2000's load order: ntdll, then kernel32. A module's
+//! handle is its base.
 //!
 //! Exports come from the DLLs' real export directories, read from the embedded files: the DLLs are
 //! linked with file offsets equal to their RVAs, so each file is its mapped image (its zero tail
@@ -441,26 +441,44 @@ mod tests {
     /// The corpus binaries (the smokes in the root directory, the sectioned fixtures in \CORPUS):
     /// the import surface kernel32 exports.
     const CORPUS: [(&str, &[u8]); 11] = [
-        ("bare", include_bytes!("../../../tests/bare/bare.exe")),
-        ("files", include_bytes!("../../../tests/files/files.exe")),
+        ("bare", include_bytes!("../../../tests/core/bare/bare.exe")),
+        (
+            "files",
+            include_bytes!("../../../tests/kernel32/files/files.exe"),
+        ),
         (
             "fswrite",
-            include_bytes!("../../../tests/fswrite/fswrite.exe"),
+            include_bytes!("../../../tests/kernel32/fswrite/fswrite.exe"),
         ),
-        ("memory", include_bytes!("../../../tests/memory/memory.exe")),
+        (
+            "memory",
+            include_bytes!("../../../tests/kernel32/memory/memory.exe"),
+        ),
         (
             "runtime",
-            include_bytes!("../../../tests/runtime/runtime.exe"),
+            include_bytes!("../../../tests/kernel32/runtime/runtime.exe"),
         ),
-        ("sched", include_bytes!("../../../tests/sched/sched.exe")),
-        ("sync", include_bytes!("../../../tests/sync/sync.exe")),
+        (
+            "sched",
+            include_bytes!("../../../tests/kernel32/sched/sched.exe"),
+        ),
+        (
+            "sync",
+            include_bytes!("../../../tests/kernel32/sync/sync.exe"),
+        ),
         (
             "threads",
-            include_bytes!("../../../tests/threads/threads.exe"),
+            include_bytes!("../../../tests/kernel32/threads/threads.exe"),
         ),
-        ("exit0", include_bytes!("../../../tests/exit0/exit0.exe")),
-        ("ret0", include_bytes!("../../../tests/ret0/ret0.exe")),
-        ("hello", include_bytes!("../../../tests/hello/hello.exe")),
+        (
+            "exit0",
+            include_bytes!("../../../tests/core/exit0/exit0.exe"),
+        ),
+        ("ret0", include_bytes!("../../../tests/core/ret0/ret0.exe")),
+        (
+            "hello",
+            include_bytes!("../../../tests/core/hello/hello.exe"),
+        ),
     ];
 
     /// A binary's imports, as (module, name), read through the loader's own import walk.

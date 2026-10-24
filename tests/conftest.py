@@ -1,5 +1,5 @@
-"""Shared fixtures for the on-target QEMU tests: the kernel's own boots (tests/kernel/test_kernel.py)
-and the sectioned corpus (tests/<name>/test_<name>.py)."""
+"""Shared fixtures for the on-target QEMU tests: the kernel's own boots (tests/core/kernel/test_kernel.py)
+and the sectioned corpus (tests/<dll>/<name>/test_<name>.py)."""
 from __future__ import annotations
 
 import json
@@ -37,7 +37,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     group.addoption(
         "--update-screens",
         action="store_true",
-        help="record the screen smokes' reference images (tests/screens/) from this run's screens"
+        help="record the screen smokes' reference images (tests/core/screens/) from this run's screens"
         " instead of comparing against them",
     )
     group.addoption(
