@@ -111,8 +111,8 @@ help:
 	@echo "  compat-report - The DLL compatibility report from the last test results (target/compat/)"
 	@echo "  check-all    - run-tests, then compat, then test"
 	@echo "  check        - cargo check + clippy"
-	@echo "  fmt          - Format all Rust sources (rustfmt)"
-	@echo "  fmt-check    - Fail if any Rust source is not formatted"
+	@echo "  fmt          - Format the Rust sources (rustfmt) and the Markdown files (rumdl)"
+	@echo "  fmt-check    - Fail if a Rust source or a Markdown file is not formatted"
 	@echo "  kernel-bin   - Convert kernel to raw binary"
 	@echo "  disk         - Create Limine-bootable hard disk image (needs mtools)"
 	@echo "  limine       - Download/setup limine bootloader (if needed)"
@@ -300,17 +300,20 @@ check: userland
 	cd $(KERNEL_DIR) && cargo check
 	cd $(KERNEL_DIR) && cargo clippy
 
-# Formatting: settings live in rustfmt.toml at the workspace root.
+# Formatting: the Rust sources' settings live in rustfmt.toml at the workspace root, the Markdown
+# files' (rumdl) in pyproject.toml.
 .PHONY: fmt fmt-check
 fmt:
 	cargo fmt --all
 	cd $(EXPORTGEN_DIR) && cargo fmt
 	cd $(USERLAND_DIR) && cargo fmt --all
+	uv run rumdl fmt .
 
 fmt-check:
 	cargo fmt --all -- --check
 	cd $(EXPORTGEN_DIR) && cargo fmt -- --check
 	cd $(USERLAND_DIR) && cargo fmt --all -- --check
+	uv run rumdl check .
 
 # =============================================================================
 # Limine Bootloader Targets

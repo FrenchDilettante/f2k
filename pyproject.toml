@@ -9,7 +9,11 @@ requires-python = ">=3.11"
 dependencies = []
 
 [dependency-groups]
-dev = ["pytest>=8", "pytest-xdist>=3.5"]
+dev = [
+    "pytest>=8",
+    "pytest-xdist>=3.5",
+    "rumdl>=0.3.0",
+]
 
 [tool.uv]
 # Tooling only: nothing here is a Python package to build or install.
@@ -27,3 +31,17 @@ markers = [
     "disk: a suite case booting the disk image through Limine",
     "corpus: a sectioned-corpus block, checked against its real-machine capture",
 ]
+
+# The Markdown linter and formatter (make fmt, make fmt-check): one sentence per line, the editor
+# wraps; tables aligned.
+[tool.rumdl]
+exclude = ["boot/limine", "target", ".scratch", ".claude"]
+
+[tool.rumdl.MD013]
+line-length = 0
+reflow = true
+reflow-mode = "sentence-per-line"
+
+[tool.rumdl.MD060]
+enabled = true
+style = "aligned"
