@@ -415,9 +415,20 @@ pub fn start_main_thread(process: &mut Process, user: crate::sched::startup::Use
 /// Make `process`'s main thread, its ladder planted ([`start_main_thread`]), schedulable: the next
 /// switch away from the idle thread can enter it, whatever address space is live now (the switch
 /// loads the process's own).
+///
+/// The readying runs with interrupts masked, the flag put back as found: the idle thread may call
+/// this with them enabled (the boot's runner, before the idle loop), and an interrupt's exit can
+/// switch to a thread readied earlier — taking it out of the dispatcher's standby slot in the
+/// middle of this one's readying.
 pub fn ready_main_thread(process: &mut Process) {
+    let state = crate::interrupt::irql::state_mut();
+    let enabled = state.interrupts_enabled();
+    state.mask_interrupts();
     let dispatcher: &'static mut Dispatcher = crate::sched::idle::dispatcher();
     dispatcher.make_ready(process.main_thread());
+    if enabled {
+        state.unmask_interrupts();
+    }
 }
 
 /// The fault-test boots' ring-3 entry: end `process`'s load, start its main thread in `user` and

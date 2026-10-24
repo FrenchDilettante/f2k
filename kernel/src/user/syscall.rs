@@ -319,6 +319,13 @@ extern "C" fn syscall_dispatch(frame: &mut TrapFrame) {
     // Contract: the gate is raised from ring 3 only; the kernel never int 0x2Es. A ring-0 entry
     // would mean the frame has no ring-3 tail and the machine is already off the rails.
     assert_eq!(frame.cs & 3, 3, "syscall gate raised from ring 0");
+    // Services run with interrupts masked: the gate cleared the flag, and the level ledger must
+    // say so. Left as user mode had it (enabled), the first wait or raise/lower pair inside the
+    // service would restore that state and run the rest of the service preemptible, and another
+    // thread could then interleave inside the kernel's unlocked structures (the scratch window,
+    // the frame database, a process's page tables) — another process's thread, once processes
+    // run side by side.
+    crate::interrupt::irql::state_mut().mask_interrupts();
 
     // A Windows 2000 system service of either table, the client-server call, or the debugger
     // print.

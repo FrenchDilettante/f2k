@@ -1,4 +1,4 @@
-//! The boot's programs, run one after another.
+//! The boot's programs, run one after another (or side by side, with the `concurrent` option).
 //!
 //! The user command line lists the programs to run (see [`crate::boot::cmdline::programs`]): one
 //! command line, or several separated by ` ;; `; without one the boot runs exit0. Each runs as its
@@ -31,6 +31,15 @@
 //! child (`F2K: child process 136 (spawn) exited normally (exit code=0)`, by its process id and its
 //! image's name), with no audit line, no pause and no count of its own.
 //!
+//! With the kernel option `concurrent` (`... concurrent -- CORPUS\sched.exe sleep ;; hello`), the
+//! legs run side by side instead: the runner loads every leg first, announcing each with its
+//! start line as it is loaded, then readies every main thread, and the scheduler runs them all at
+//! once. Every load is done before any thread is ready: a load runs on the idle thread, in the
+//! loaded process's address space, and a ready thread could preempt it. No reap starts a leg (every
+//! leg has started); each leg's end line prints as it ends, its audit line at the next quiescent
+//! point, and the summary once every leg is reaped. The program output of legs that overlap
+//! interleaves on COM1, so the log is judged whole, not split by leg.
+//!
 //! With the kernel option `screens` (`F2K: ... screens -- CORPUS\console.exe info ;; ...`), each
 //! process's end pauses the boot before its audit line, for the test harness to take a screenshot
 //! of what the process left on the screen: the runner announces `F2K: screen: process N ended`
@@ -57,8 +66,8 @@ fn suite() -> &'static mut Suite {
     unsafe { &mut *core::ptr::addr_of_mut!(SUITE) }
 }
 
-/// Run the boot's programs: record the allocator baseline, ready the first program's main thread,
-/// and enter the idle loop. Never returns.
+/// Run the boot's programs: record the allocator baseline, ready the first program's main thread
+/// (every program's, with the `concurrent` option), and enter the idle loop. Never returns.
 pub fn run() -> ! {
     let legs = programs().count() as u32;
     // SAFETY: runner state; single-threaded boot, written only here.
@@ -67,7 +76,12 @@ pub fn run() -> ! {
     // The baseline for the per-process teardown audits: recorded once the boot's permanent
     // allocations are done, before the first process takes any frame.
     crate::process::record_allocator_baseline();
-    start_leg(1);
+    use crate::boot::cmdline::{kernel_command_line, kernel_option};
+    if kernel_option(kernel_command_line(), b"concurrent") {
+        start_every_leg(legs);
+    } else {
+        start_leg(1);
+    }
     crate::sched::idle::idle_loop()
 }
 
@@ -152,6 +166,27 @@ fn programs() -> impl Iterator<Item = &'static [u8]> {
 fn start_leg(index: u32) {
     let process = load_leg(index);
     crate::process::threads::ready_main_thread(process);
+}
+
+/// With the `concurrent` option, start all `legs` at once: load every leg, in order, then ready
+/// every main thread, in the same order (see the module's documentation).
+///
+/// # Panics
+///
+/// More legs than there can be processes at once.
+fn start_every_leg(legs: u32) {
+    use crate::process::MAX_PROCESSES;
+    assert!(
+        legs as usize <= MAX_PROCESSES,
+        "{legs} programs run side by side, at most {MAX_PROCESSES}"
+    );
+    let mut loaded: [Option<&'static mut Process>; MAX_PROCESSES] = [const { None }; MAX_PROCESSES];
+    for (slot, index) in loaded.iter_mut().zip(1..=legs) {
+        *slot = Some(load_leg(index));
+    }
+    for process in loaded.iter_mut().flatten() {
+        crate::process::threads::ready_main_thread(process);
+    }
 }
 
 /// Announce leg `index` and load it: create its process — its program read off the boot volume, the

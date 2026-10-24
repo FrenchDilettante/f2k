@@ -1,5 +1,5 @@
 """kernel - the kernel's own boots: fault stubs, the Limine disk path, the program smokes, the
-multi-process suite, and the interrupt and IDE diagnostics.
+multi-process suite, its concurrent runs, and the interrupt and IDE diagnostics.
 
 These boots carry no sectioned capture to compare against: each case builds the kernel and disk
 with its cargo features (once per feature set per test run), boots the kernel ELF through QEMU's
@@ -89,6 +89,43 @@ PROCESS_SUITE = (
     "F2K: process 6 (exit0) exited normally (exit code=0)",
     "F2K: process 6 teardown audit: frame database ok, kernel heap ok",
     "F2K: process suite complete: 6 run, 0 faulted, 0 leaks",
+)
+
+# The concurrent runs (the kernel option `concurrent`): every leg loaded, its start line printed as
+# it is, before any runs; then all run side by side on the scheduler. Their output interleaves on
+# COM1, so the whole log is judged, in order. Each leg's end line prints at its end, the audit lines
+# together once no process is left (in reap order), then the summary.
+#
+# A long leg and a short one: sched's sleep section sleeps and waits for over half a second in all
+# (200 ms, then shorter sleeps and timed waits); hello runs and ends meanwhile. Which prints first
+# varies (each loads its DLLs on its own main thread, through disk reads that let the other run);
+# leg 2's end before leg 1's does not, and a runner of one leg at a time can never print it.
+PROCESS_CONCURRENT = (
+    *BOOTED,
+    "F2K: process 1 of 2: CORPUS\\sched.exe sleep",
+    "F2K: process 2 of 2: hello",
+    "Hello, world!",
+    "F2K: process 2 (hello) exited normally (exit code=0)",
+    "sched: done",
+    "F2K: process 1 (sched) exited normally (exit code=0)",
+    "F2K: process 2 teardown audit: frame database ok, kernel heap ok",
+    "F2K: process 1 teardown audit: frame database ok, kernel heap ok",
+    "F2K: process suite complete: 2 run, 0 faulted, 0 leaks",
+)
+# The same image twice, alive together at the same image base and the same TEB addresses, each in
+# its own address space: both print their section's header before either ends, so the scheduler
+# ran one while the other slept; both run to their own end, in either order.
+PROCESS_CONCURRENT_SAME_IMAGE = (
+    *BOOTED,
+    "F2K: process 1 of 2: CORPUS\\sched.exe sleep",
+    "F2K: process 2 of 2: CORPUS\\sched.exe sleep",
+    "== sleep",
+    "== sleep",
+    "re:^F2K: process [12] \\(sched\\) exited normally \\(exit code=0\\)$",
+    "re:^F2K: process [12] \\(sched\\) exited normally \\(exit code=0\\)$",
+    "re:^F2K: process [12] teardown audit: frame database ok, kernel heap ok$",
+    "re:^F2K: process [12] teardown audit: frame database ok, kernel heap ok$",
+    "F2K: process suite complete: 2 run, 0 faulted, 0 leaks",
 )
 
 # What a one-process boot reports once its program has run and its process is gone.
@@ -256,6 +293,22 @@ CASES = (
         "sequential multi-process run (exit0, ret0, bare x2, bare null-write, exit0) with per-process teardown audits and a zero-leak summary",
         cmdline=" ;; ".join(PROCESS_SUITE_PROGRAMS),
         expects=PROCESS_SUITE,
+    ),
+    *both_paths(
+        "process-concurrent",
+        "two legs side by side (sched's sleep section, then hello): the short one ends before the long one, both torn down clean, then the summary",
+        cmdline="CORPUS\\sched.exe sleep ;; hello",
+        kernel_options="concurrent",
+        ordered=True,
+        expects=PROCESS_CONCURRENT,
+    ),
+    *both_paths(
+        "process-concurrent-same-image",
+        "the same image twice side by side (sched's sleep section): both alive at once at the same image base and TEB addresses, both end clean, then the summary",
+        cmdline="CORPUS\\sched.exe sleep ;; CORPUS\\sched.exe sleep",
+        kernel_options="concurrent",
+        ordered=True,
+        expects=PROCESS_CONCURRENT_SAME_IMAGE,
     ),
     # Interrupt/timer core: the irq-smoke diagnostic boot proves the hardware layer and the
     # interrupt core are live, then the normal boot proceeds to the default image's exit (the tick

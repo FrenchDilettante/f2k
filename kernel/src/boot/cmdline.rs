@@ -8,8 +8,8 @@
 //! read ;; CORPUS\files.exe seek`, see [`programs`]). Each one's first token names the image on the
 //! boot volume; its whole text is what that process's GetCommandLineA reports. Without a separator
 //! the boot runs exit0. Before the separator stand the kernel's own options ([`kernel_option`]):
-//! `screens` pauses the boot after each program for the test harness's screenshot
-//! (`process::runner`).
+//! `screens` pauses the boot after each program for the test harness's screenshot, and
+//! `concurrent` runs the programs side by side instead of one after another (`process::runner`).
 //!
 //! The string is copied out first thing in the boot: it lives in loader memory the frame allocator
 //! is about to reclaim, inside the identity window that is torn down soon after.
@@ -206,6 +206,10 @@ mod tests {
             b"screens"
         ));
         assert!(kernel_option(b"screens", b"screens"));
+        assert!(kernel_option(
+            b"/path/f2k-kernel concurrent screens -- A.EXE ;; B.EXE",
+            b"concurrent"
+        ));
         assert!(!kernel_option(
             b"/path/f2k-kernel -- A.EXE screens",
             b"screens"

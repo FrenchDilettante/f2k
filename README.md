@@ -66,6 +66,7 @@ make clean
 ## Running
 
 A boot runs the program its kernel command line names (`-- <program> [arguments]`; `exit0` without one).
+Several programs, ` ;; ` between two, run one after another, or side by side with the kernel option `concurrent` before the `--` (`concurrent -- CORPUS\sched.exe sleep ;; hello`).
 Every process starts in its program's directory with the same environment (`kernel/src/user/params.rs`): `COMPUTERNAME=QEMU`, `ComSpec=C:\WINNT\system32\cmd.exe`, `PATH=C:\WINNT\system32;C:\WINNT`, `PATHEXT=.COM;.EXE;.BAT;.CMD`, `SystemRoot=C:\WINNT`, `USERNAME=jeb` and `windir=C:\WINNT`.
 
 ### QEMU (ISO with Limine)
@@ -175,7 +176,7 @@ The on-target tests run through pytest, so an IDE lists and runs them one by one
   A fixture's blocks share one boot, each block's program its own process, and each test compares its own part of the boot's COM1 log (`target/qemu/logs/<fixture>.log`).
   Selecting one block (`-k crt`) boots that block alone; if the boot stops early, the block it stopped in fails with the reason and the later ones fail as not run.
   Fixtures that draw on the screen can save a screenshot per block (`target/qemu/screens/`), not compared yet.
-- **The kernel's own boots** (the fault stubs, the Limine disk path, the program smokes, the multi-process suite, the interrupt and IDE diagnostics) are cases in `tests/core/kernel/test_kernel.py`: the kernel features to build with, the image to boot, the program's command line, the COM1 strings expected (anywhere, in order, as one block of lines) or forbidden.
+- **The kernel's own boots** (the fault stubs, the Limine disk path, the program smokes, the multi-process suite and its concurrent runs, the interrupt and IDE diagnostics) are cases in `tests/core/kernel/test_kernel.py`: the kernel features to build with, the image to boot, the program's command line, the COM1 strings expected (anywhere, in order, as one block of lines) or forbidden.
   A kernel panic fails every case.
 
 Each test builds the kernel and disk for its feature set (once per run, cached under `target/qemu/builds/`); each run removes earlier runs' builds and logs older than two days.
