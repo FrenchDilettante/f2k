@@ -45,12 +45,6 @@ fault-test-exitio = []
 # 2000's service number (0x18) on a handle naming nothing, then exits
 # with the status: the NT service table must answer STATUS_INVALID_HANDLE.
 fault-test-ntclose = []
-# The multi-process suite case: exit0, ret0, bare, bare,
-# bare null-write, exit0 run in sequence in one boot, each process torn down
-# and audited before the next starts. The sequence runner and the
-# per-process teardown are the runner's deliverables; the
-# tests/core/kernel cases pin the COM1 shapes.
-run-process-suite = []
 # The interrupt/timer diagnostic boot: once the interrupt subsystem is up, a
 # boot-time pass reports the PIC remap and line masks, the PIT programming
 # (read back from channel 0) at the captured 10.0144 ms tick, the live tick

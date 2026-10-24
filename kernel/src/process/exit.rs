@@ -7,7 +7,8 @@
 //! thread inside a critical region (holding the volume and its drive) is the exception: it runs on
 //! to the region's end and ends itself there, and the process's end passes to the last such
 //! thread. The process's end is then reported, and the idle thread tears the process down — after
-//! which a suite boot starts its next leg (or prints its summary) and a one-process boot rests.
+//! which a suite (a boot of several programs, each one leg) starts its next leg or prints its
+//! summary, and a one-process boot rests.
 
 use core::fmt;
 
@@ -180,8 +181,8 @@ pub fn hand_over(plan: ExitPlan, deferred: u16) -> (ExitPlan, Option<ProcessEnd>
     )
 }
 
-/// The suite leg a process runs as: its 1-based index and fixture name. A one-process boot has
-/// none.
+/// The suite leg a process runs as: its 1-based index and fixture name. A one-process boot (one
+/// program) has none.
 pub type Leg = (u32, &'static str);
 
 /// The process-end report line: the one-process boot's form, or the suite's with the leg's index
@@ -273,7 +274,7 @@ impl fmt::Display for AuditReport {
 }
 
 /// What follows a suite leg's teardown.
-#[cfg(any(test, feature = "run-process-suite"))]
+#[cfg(any(test, target_arch = "x86"))]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum AfterLeg {
     /// The next leg (1-based).
@@ -284,7 +285,7 @@ pub enum AfterLeg {
 
 /// The decision after leg `index` (1-based) of `legs` is torn down: the next leg until the last,
 /// then the summary.
-#[cfg(any(test, feature = "run-process-suite"))]
+#[cfg(any(test, target_arch = "x86"))]
 pub fn after_leg(index: u32, legs: u32) -> AfterLeg {
     assert!(index >= 1 && index <= legs, "suite leg {index} of {legs}");
     if index < legs {
@@ -295,7 +296,7 @@ pub fn after_leg(index: u32, legs: u32) -> AfterLeg {
 }
 
 /// The suite's running counts, and its summary line.
-#[cfg(any(test, feature = "run-process-suite"))]
+#[cfg(any(test, target_arch = "x86"))]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct SuiteTally {
     pub run: u32,
@@ -303,7 +304,7 @@ pub struct SuiteTally {
     pub leaks: u32,
 }
 
-#[cfg(any(test, feature = "run-process-suite"))]
+#[cfg(any(test, target_arch = "x86"))]
 impl SuiteTally {
     /// Nothing run yet.
     pub const fn new() -> Self {
@@ -326,7 +327,7 @@ impl SuiteTally {
     }
 }
 
-#[cfg(any(test, feature = "run-process-suite"))]
+#[cfg(any(test, target_arch = "x86"))]
 impl fmt::Display for SuiteTally {
     fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(

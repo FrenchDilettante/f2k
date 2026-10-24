@@ -92,7 +92,7 @@ pub fn read_image_file(
 /// cannot be read is reported on COM1 and halts, as a rejected image does. The read blocks on the
 /// disk: the boot context halts between interrupts until it completes.
 #[cfg(target_arch = "x86")]
-pub fn load_path(path: &'static [u8], name: &'static str, command_line: &[u8]) -> u32 {
+pub fn load_path(path: &[u8], name: &'static str, command_line: &[u8]) -> u32 {
     // SAFETY: single-threaded boot (or the idle thread's reap step), the only staging user.
     let staging = unsafe { &mut (*core::ptr::addr_of_mut!(FILE_STAGING)).0 };
     let shown = core::str::from_utf8(path).unwrap_or("(not ASCII)");

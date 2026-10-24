@@ -53,9 +53,10 @@ IRQ_SMOKE = (
 )
 
 # The multi-process suite's lines: exit0, ret0, bare, bare, bare null-write, exit0 in one
-# boot, each process torn down to the post-boot baseline before the next starts. COM1 protocol (the
-# sequence runner implements it; the shapes parallel the single-process lines with the per-process
-# index and name added):
+# boot (the command line lists them, ` ;; ` between two), each process torn down to the post-boot
+# baseline before the next starts. COM1 protocol (the kernel's runner implements it; the shapes
+# parallel the single-process lines with the per-process index and name added):
+#   start:       F2K: process <i> of <n>: <its command line>
 #   normal exit: F2K: process <i> (<name>) exited normally (exit code=N)
 #   fault:       F2K: process <i> (<name>) ended by fault (vector N, exit code=X)
 #   teardown:    F2K: process <i> teardown audit: frame database ok, kernel heap ok
@@ -67,8 +68,12 @@ IRQ_SMOKE = (
 # kernel-ended fault (F2K's own expectation, as Windows 2000 builds the start frame; the fixture's
 # exit code is the same either way). bare's default run (its image checks, 256 KiB of stack grown
 # on demand) is legs 3 and 4.
+PROCESS_SUITE_PROGRAMS = (
+    "exit0", "ret0", "CORPUS\\bare.exe", "CORPUS\\bare.exe", "CORPUS\\bare.exe null-write", "exit0",
+)
 PROCESS_SUITE = (
     *BOOTED,
+    *(f"F2K: process {index} of 6: {program}" for index, program in enumerate(PROCESS_SUITE_PROGRAMS, start=1)),
     "F2K: process 1 (exit0) exited normally (exit code=0)",
     "F2K: process 1 teardown audit: frame database ok, kernel heap ok",
     "F2K: process 2 (ret0) exited normally (exit code=0)",
@@ -243,7 +248,7 @@ CASES = (
     *both_paths(
         "process-suite",
         "sequential multi-process run (exit0, ret0, bare x2, bare null-write, exit0) with per-process teardown audits and a zero-leak summary",
-        features=("run-process-suite",),
+        cmdline=" ;; ".join(PROCESS_SUITE_PROGRAMS),
         expects=PROCESS_SUITE,
     ),
     # Interrupt/timer core: the irq-smoke diagnostic boot proves the hardware layer and the

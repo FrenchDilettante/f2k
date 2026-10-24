@@ -5,8 +5,9 @@ block's command line (Limine's `cmdline`), instead of QEMU's Multiboot loader (`
 These are the sectioned successors of the single-path smokes' Limine (`-disk`) variants in
 tests/core/kernel/test_kernel.py (pingpong, sleep, spin, suspend, respawn and fileio), which retired as these
 passed, plus the command line's own path through a real loader (`runtime args`) and the loader's
-memory map (`memory sysinfo`). Each block compares against the same capture, with the same declaration, as its Multiboot
-run in tests/<dll>/<fixture>/test_<fixture>.py.
+memory map (`memory sysinfo`). The blocks run in one boot, each its own process (see `run_block`,
+tests/conftest.py); each compares against the same capture, with the same declaration, as its
+Multiboot run in tests/<dll>/<fixture>/test_<fixture>.py.
 
     uv run pytest tests/core/test_limine.py
 """

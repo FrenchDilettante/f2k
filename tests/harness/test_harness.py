@@ -47,6 +47,48 @@ def test_a_suite_legs_audit_line_counts():
     assert f2kboot.teardown_audited("F2K: process 3 teardown audit: frame database ok, kernel heap ok")
 
 
+# --- Batches: a fixture's blocks in one boot, each judged on its own part of the log -------------
+
+BATCH_BOOT = [*f2kboot.BOOT_CHECKS, "F2K: command line: CORPUS\\t.exe a ;; CORPUS\\t.exe b ;; CORPUS\\t.exe c"]
+
+
+def leg(index: int, command: str, output: str, code: int = 0) -> list[str]:
+    return [f"F2K: process {index} of 3: CORPUS\\{command}", "F2K: entering ring 3", output,
+            f"F2K: process {index} (t) exited normally (exit code={code})",
+            f"F2K: process {index} teardown audit: frame database ok, kernel heap ok"]
+
+
+def batch_of(lines: list[str], stopped: str = "done") -> f2kboot.Batch:
+    log = "\n".join(lines) + "\n"
+    return f2kboot.Batch(["t.exe a", "t.exe b", "t.exe c"], log, f2kboot.WORK / "logs" / "t.log", stopped,
+                         *f2kboot.split_programs(log))
+
+
+def test_each_block_is_judged_on_its_own_part_of_the_batch():
+    batch = batch_of(BATCH_BOOT + leg(1, "t.exe a", "A") + leg(2, "t.exe b", "B", code=3) + leg(3, "t.exe c", "C")
+                     + ["F2K: process suite complete: 3 run, 0 faulted, 0 leaks"])
+    assert [command for command, _ in batch.programs] == ["CORPUS\\t.exe a", "CORPUS\\t.exe b", "CORPUS\\t.exe c"]
+    assert batch.verdict(0, [], f2kboot.Block("t.exe a", ["A"], 0)) is None
+    assert batch.verdict(1, [], f2kboot.Block("t.exe b", ["B"], 3)) is None
+    assert batch.verdict(2, [], f2kboot.Block("t.exe c", ["B"], 0)) == "line 1: [C], expected [B]"
+    # A block whose part is another's (the order went wrong) is not compared at all.
+    assert "where [CORPUS\\t.exe c] was expected" in batch.verdict(1, [], f2kboot.Block("t.exe c", ["C"], 0))
+
+
+def test_a_boot_that_stops_fails_its_block_and_leaves_the_rest_not_run():
+    batch = batch_of(BATCH_BOOT + leg(1, "t.exe a", "A")
+                     + ["F2K: process 2 of 3: CORPUS\\t.exe b", "KERNEL PANIC: at kernel/src/x.rs"])
+    assert batch.verdict(0, [], f2kboot.Block("t.exe a", ["A"], 0)) is None
+    assert batch.verdict(1, [], f2kboot.Block("t.exe b", ["B"], 0)).startswith("KERNEL PANIC")
+    assert batch.stopped_in() == "t.exe b"
+    assert batch.verdict(2, [], f2kboot.Block("t.exe c", ["C"], 0)) == "not run: the boot stopped in t.exe b (done)"
+    # A boot that never reached its first program fails that one on the boot's own lines.
+    early = batch_of(["F2K Booted Successfully"], stopped="timeout")
+    assert early.verdict(0, [], f2kboot.Block("t.exe a", ["A"], 0)) == (
+        "the boot did not report [F2K: frame database audit: ok]")
+    assert early.verdict(1, [], f2kboot.Block("t.exe b", ["B"], 0)) == "not run: the boot stopped in t.exe a (timeout)"
+
+
 # --- --no-build: the build on disk must be the one the test needs------------------------------
 
 

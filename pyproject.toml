@@ -19,7 +19,9 @@ package = false
 testpaths = ["tests"]
 # The suites share their helpers (tests/f2kboot.py) by module name.
 pythonpath = ["tests"]
-addopts = ["-ra"]
+# A corpus fixture's blocks share one boot (tests/conftest.py, `run_block`): under xdist
+# (`-n 4`), each fixture's tests go to one worker.
+addopts = ["-ra", "--dist=loadgroup"]
 markers = [
     "kernel: a suite case booting the kernel ELF through QEMU's Multiboot loader",
     "disk: a suite case booting the disk image through Limine",

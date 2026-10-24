@@ -36,8 +36,8 @@
 /// the suite's leg order and tally.
 pub mod exit;
 
-/// The sequential multi-process suite runner (`run-process-suite`).
-#[cfg(all(target_arch = "x86", feature = "run-process-suite"))]
+/// The boot's programs, run one after another.
+#[cfg(target_arch = "x86")]
 pub mod runner;
 
 /// The process pool and the current process.
@@ -622,31 +622,16 @@ pub fn release_process(
     release(dir_phys);
 }
 
-/// The idle thread's reap step: tear the ended process down, then let the boot decide what
-/// follows — a suite leg's audit and the next leg (or the summary), or, on a one-process boot, the
-/// teardown audit line, after which the idle thread rests.
+/// The idle thread's reap step: tear the ended process down, then let the runner decide what
+/// follows — the teardown audit line, and on a boot of several programs the next one (or the
+/// summary); the idle thread rests after the last.
 #[cfg(target_arch = "x86")]
 pub fn reap() {
     let process = pool::ended().expect("reap with no ended process");
     let end = process.end.expect("an ended process recorded its end");
     teardown(process);
-    #[cfg(feature = "run-process-suite")]
     runner::process_reaped(end);
-    #[cfg(not(feature = "run-process-suite"))]
-    {
-        let _ = end;
-        // Before the audit line: the harness stops the boot on it, so the dump must land first.
-        #[cfg(feature = "perf-trace")]
-        crate::perf::report();
-        crate::serial_println!(
-            "{}",
-            exit::AuditReport {
-                index: None,
-                audit: audit_allocators()
-            }
-        );
-    }
-    #[cfg(all(not(feature = "run-process-suite"), feature = "fault-test-exitio"))]
+    #[cfg(feature = "fault-test-exitio")]
     crate::user::check_volume_after_teardown();
 }
 
