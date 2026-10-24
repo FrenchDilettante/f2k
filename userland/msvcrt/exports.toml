@@ -43,6 +43,10 @@ title = "memory"
 key = "utility"
 title = "sorting / random numbers / time / locale"
 
+[[group]]
+key = "process"
+title = "child processes"
+
 # --- program start-up and exit --------------------------------------------------------------------
 
 [[export]]
@@ -188,6 +192,14 @@ data = true
 impl = { native = "_adjust_fdiv" }
 ordinal = 160
 
+[[export]]
+name = "_putenv"
+group = "startup"
+args = ["strA envstring"]
+impl = { stub = "not yet implemented" }
+ordinal = 418
+fails = "-1"
+
 # --- exception handling / setjmp ------------------------------------------------------------------
 
 [[export]]
@@ -312,6 +324,14 @@ group = "lowio"
 args = []
 impl = { native = "_errno" }
 ordinal = 204
+fails = "never"
+
+[[export]]
+name = "__doserrno"
+group = "lowio"
+args = []
+impl = { stub = "not yet implemented" }
+ordinal = 89
 fails = "never"
 
 [[export]]
@@ -633,6 +653,62 @@ impl = { native = "_ultoa" }
 ordinal = 489
 fails = "never"
 
+[[export]]
+name = "strcat"
+group = "strings"
+args = ["ptr dest", "strA src"]
+impl = { stub = "not yet implemented" }
+ordinal = 716
+fails = "never"
+
+[[export]]
+name = "strcpy"
+group = "strings"
+args = ["ptr dest", "strA src"]
+impl = { stub = "not yet implemented" }
+ordinal = 720
+fails = "never"
+
+[[export]]
+name = "strcspn"
+group = "strings"
+args = ["strA string", "strA charset"]
+impl = { stub = "not yet implemented" }
+ordinal = 721
+fails = "never"
+
+[[export]]
+name = "strlen"
+group = "strings"
+args = ["strA string"]
+impl = { stub = "not yet implemented" }
+ordinal = 724
+fails = "never"
+
+[[export]]
+name = "strrchr"
+group = "strings"
+args = ["strA string", "i32 c"]
+impl = { stub = "not yet implemented" }
+ordinal = 729
+fails = "never"
+
+[[export]]
+name = "_strnicmp"
+group = "strings"
+args = ["strA string1", "strA string2", "u32 count"]
+impl = { stub = "not yet implemented" }
+ordinal = 468
+fails = "0x7FFFFFFF"
+
+[[export]]
+name = "strtoul"
+group = "strings"
+args = ["strA nptr", "ptr endptr", "i32 base"]
+impl = { stub = "not yet implemented" }
+ordinal = 735
+fails = "never"
+
 # --- wide characters ------------------------------------------------------------------------------
 
 [[export]]
@@ -683,6 +759,14 @@ impl = { native = "towupper" }
 ordinal = 748
 fails = "never"
 
+[[export]]
+name = "toupper"
+group = "characters"
+args = ["i32 c"]
+impl = { stub = "not yet implemented" }
+ordinal = 746
+fails = "never"
+
 # --- memory ---------------------------------------------------------------------------------------
 
 [[export]]
@@ -723,6 +807,22 @@ group = "memory"
 args = ["ptr dest", "ptr src", "u32 count"]
 impl = { native = "memmove" }
 ordinal = 686
+fails = "never"
+
+[[export]]
+name = "memcmp"
+group = "memory"
+args = ["ptr buf1", "ptr buf2", "u32 count"]
+impl = { stub = "not yet implemented" }
+ordinal = 684
+fails = "never"
+
+[[export]]
+name = "memset"
+group = "memory"
+args = ["ptr dest", "i32 c", "u32 count"]
+impl = { stub = "not yet implemented" }
+ordinal = 687
 fails = "never"
 
 # --- sorting / random numbers / time / locale -----------------------------------------------------
@@ -766,6 +866,70 @@ args = ["i32 category", "strA? locale"]
 impl = { native = "setlocale" }
 ordinal = 707
 fails = "NULL"
+
+[[export]]
+name = "_spawnl"
+group = "process"
+args = ["i32 mode", "strA cmdname", "strA? arg0", "..."]
+impl = { stub = "not yet implemented" }
+ordinal = 447
+fails = "-1"
+
+[[export]]
+name = "_spawnle"
+group = "process"
+args = ["i32 mode", "strA cmdname", "strA? arg0", "..."]
+impl = { stub = "not yet implemented" }
+ordinal = 448
+fails = "-1"
+
+[[export]]
+name = "_spawnlp"
+group = "process"
+args = ["i32 mode", "strA cmdname", "strA? arg0", "..."]
+impl = { stub = "not yet implemented" }
+ordinal = 449
+fails = "-1"
+
+[[export]]
+name = "_spawnv"
+group = "process"
+args = ["i32 mode", "strA cmdname", "ptr argv"]
+impl = { stub = "not yet implemented" }
+ordinal = 451
+fails = "-1"
+
+[[export]]
+name = "_spawnve"
+group = "process"
+args = ["i32 mode", "strA cmdname", "ptr argv", "ptr envp"]
+impl = { stub = "not yet implemented" }
+ordinal = 452
+fails = "-1"
+
+[[export]]
+name = "_spawnvp"
+group = "process"
+args = ["i32 mode", "strA cmdname", "ptr argv"]
+impl = { stub = "not yet implemented" }
+ordinal = 453
+fails = "-1"
+
+[[export]]
+name = "_cwait"
+group = "process"
+args = ["ptr<i32> termstat", "handle procHandle", "i32 action"]
+impl = { stub = "not yet implemented" }
+ordinal = 194
+fails = "-1"
+
+[[export]]
+name = "system"
+group = "process"
+args = ["strA? command"]
+impl = { stub = "not yet implemented" }
+ordinal = 739
+fails = "-1"
 
 # --- not implemented yet: the rest of MSVCRT.dll 6.1.9844.0's export table, by ordinal -----------
 
@@ -1120,10 +1284,6 @@ ordinal = 86
 [[export]]
 name = "__crtLCMapStringA"
 ordinal = 87
-
-[[export]]
-name = "__doserrno"
-ordinal = 89
 
 [[export]]
 name = "__fpecode"
@@ -1502,10 +1662,6 @@ ordinal = 192
 name = "_ctype"
 ordinal = 193
 data = true
-
-[[export]]
-name = "_cwait"
-ordinal = 194
 
 [[export]]
 name = "_daylight"
@@ -2338,10 +2494,6 @@ name = "_putch"
 ordinal = 417
 
 [[export]]
-name = "_putenv"
-ordinal = 418
-
-[[export]]
 name = "_putw"
 ordinal = 419
 
@@ -2439,32 +2591,8 @@ name = "_sopen"
 ordinal = 446
 
 [[export]]
-name = "_spawnl"
-ordinal = 447
-
-[[export]]
-name = "_spawnle"
-ordinal = 448
-
-[[export]]
-name = "_spawnlp"
-ordinal = 449
-
-[[export]]
 name = "_spawnlpe"
 ordinal = 450
-
-[[export]]
-name = "_spawnv"
-ordinal = 451
-
-[[export]]
-name = "_spawnve"
-ordinal = 452
-
-[[export]]
-name = "_spawnvp"
-ordinal = 453
 
 [[export]]
 name = "_spawnvpe"
@@ -2517,10 +2645,6 @@ ordinal = 466
 [[export]]
 name = "_strncoll"
 ordinal = 467
-
-[[export]]
-name = "_strnicmp"
-ordinal = 468
 
 [[export]]
 name = "_strnicoll"
@@ -3301,16 +3425,8 @@ name = "memchr"
 ordinal = 683
 
 [[export]]
-name = "memcmp"
-ordinal = 684
-
-[[export]]
 name = "memcpy"
 ordinal = 685
-
-[[export]]
-name = "memset"
-ordinal = 687
 
 [[export]]
 name = "mktime"
@@ -3393,10 +3509,6 @@ name = "sscanf"
 ordinal = 715
 
 [[export]]
-name = "strcat"
-ordinal = 716
-
-[[export]]
 name = "strchr"
 ordinal = 717
 
@@ -3405,24 +3517,12 @@ name = "strcoll"
 ordinal = 719
 
 [[export]]
-name = "strcpy"
-ordinal = 720
-
-[[export]]
-name = "strcspn"
-ordinal = 721
-
-[[export]]
 name = "strerror"
 ordinal = 722
 
 [[export]]
 name = "strftime"
 ordinal = 723
-
-[[export]]
-name = "strlen"
-ordinal = 724
 
 [[export]]
 name = "strncat"
@@ -3439,10 +3539,6 @@ ordinal = 727
 [[export]]
 name = "strpbrk"
 ordinal = 728
-
-[[export]]
-name = "strrchr"
-ordinal = 729
 
 [[export]]
 name = "strspn"
@@ -3465,16 +3561,8 @@ name = "strtol"
 ordinal = 734
 
 [[export]]
-name = "strtoul"
-ordinal = 735
-
-[[export]]
 name = "strxfrm"
 ordinal = 736
-
-[[export]]
-name = "system"
-ordinal = 739
 
 [[export]]
 name = "tan"
@@ -3495,10 +3583,6 @@ ordinal = 744
 [[export]]
 name = "tolower"
 ordinal = 745
-
-[[export]]
-name = "toupper"
-ordinal = 746
 
 [[export]]
 name = "ungetc"

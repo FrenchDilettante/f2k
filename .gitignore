@@ -39,6 +39,7 @@ tests/common/srcsum.exe
 # The scratch directories the write fixtures leave beside their programs on the real machine
 tests/kernel32/fswrite/SCRATCH/
 tests/crt/fd/SCRATCH/
+tests/kernel32/spawn/SCRATCH/
 
 # The files make vbox-image adds to the VirtualBox disk: the owner's own, never committed
 /vbox-image/*

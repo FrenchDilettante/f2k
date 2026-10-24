@@ -1207,6 +1207,14 @@ ordinal = 113
 note = "a console handle is its server's to duplicate (DuplicateConsoleHandle); any other handle is NtDuplicateObject's, within the calling process — a file handle's duplicate shares its file object and its position"
 
 [[export]]
+name = "SetHandleInformation"
+group = "threads"
+args = ["handle hObject", "u32 dwMask", "u32 dwFlags"]
+impl = { stub = "not yet implemented" }
+ordinal = 670
+fails = "FALSE"
+
+[[export]]
 name = "ExitThread"
 group = "threads"
 args = ["u32 dwExitCode"]
@@ -2080,6 +2088,22 @@ ordinal = 77
 fails = "FALSE"
 
 [[export]]
+name = "CreateProcessA"
+group = "processes"
+args = ["strA? lpApplicationName", "strA? lpCommandLine", "ptr lpProcessAttributes", "ptr lpThreadAttributes", "bool bInheritHandles", "u32 dwCreationFlags", "ptr lpEnvironment", "strA? lpCurrentDirectory", "ptr lpStartupInfo", "ptr lpProcessInformation"]
+impl = { stub = "not yet implemented" }
+ordinal = 73
+fails = "FALSE"
+
+[[export]]
+name = "OpenProcess"
+group = "processes"
+args = ["u32 dwDesiredAccess", "bool bInheritHandle", "u32 dwProcessId"]
+impl = { stub = "not yet implemented" }
+ordinal = 534
+fails = "NULL"
+
+[[export]]
 name = "CmdBatNotification"
 group = "processes"
 args = ["u32 fBeginEnd"]
@@ -2114,11 +2138,27 @@ ordinal = 581
 fails = "FALSE"
 
 [[export]]
+name = "WriteProcessMemory"
+group = "processes"
+args = ["handle hProcess", "ptr lpBaseAddress", "ptr lpBuffer", "u32 nSize", "ptr<u32> lpNumberOfBytesWritten"]
+impl = { stub = "not yet implemented" }
+ordinal = 796
+fails = "FALSE"
+
+[[export]]
 name = "GetBinaryTypeW"
 group = "processes"
 args = ["strW lpApplicationName", "ptr<u32> lpBinaryType"]
 impl = { stub = "not yet implemented" }
 ordinal = 211
+fails = "FALSE"
+
+[[export]]
+name = "GetBinaryTypeA"
+group = "processes"
+args = ["strA lpApplicationName", "ptr<u32> lpBinaryType"]
+impl = { stub = "not yet implemented" }
+ordinal = 210
 fails = "FALSE"
 
 # --- not implemented yet: the rest of KERNEL32.dll 5.0.2195.6688's export table, by ordinal ------
@@ -2344,10 +2384,6 @@ ordinal = 71
 [[export]]
 name = "CreatePipe"
 ordinal = 72
-
-[[export]]
-name = "CreateProcessA"
-ordinal = 73
 
 [[export]]
 name = "CreateProcessInternalA"
@@ -2756,10 +2792,6 @@ ordinal = 208
 [[export]]
 name = "GetBinaryType"
 ordinal = 209
-
-[[export]]
-name = "GetBinaryTypeA"
-ordinal = 210
 
 [[export]]
 name = "GetCPInfoExA"
@@ -3546,10 +3578,6 @@ ordinal = 531
 
 
 [[export]]
-name = "OpenProcess"
-ordinal = 534
-
-[[export]]
 name = "OpenProfileUserMapping"
 ordinal = 535
 
@@ -3919,10 +3947,6 @@ name = "SetFilePointerEx"
 ordinal = 667
 
 [[export]]
-name = "SetHandleInformation"
-ordinal = 670
-
-[[export]]
 name = "SetInformationJobObject"
 ordinal = 671
 
@@ -4271,10 +4295,6 @@ ordinal = 794
 [[export]]
 name = "WritePrivateProfileStructW"
 ordinal = 795
-
-[[export]]
-name = "WriteProcessMemory"
-ordinal = 796
 
 [[export]]
 name = "WriteProfileSectionA"
