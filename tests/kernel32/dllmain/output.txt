@@ -1,0 +1,74 @@
+# F2K capture of dllmain (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-AC9F3E6, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Sat 10/24/2026 14:12:51.40
+dllmain F2KT-SOURCE-CRC=0xFE8D3BA4
+>>> dllmain.exe attach
+== attach
+entry-point calls before main: 2
+  f2kbase: DLL_PROCESS_ATTACH, lpReserved non-NULL, on the main thread
+  f2kmid: DLL_PROCESS_ATTACH, lpReserved non-NULL, on the main thread
+f2km_value() = 7
+dllmain: done
+<<< exit code=0
+>>> dllmain.exe order
+== order
+f2kbase attached before main: yes
+f2kmid attached before main: yes
+f2kbase (which f2kmid imports) attached before f2kmid: yes
+dllmain: done
+<<< exit code=0
+>>> dllmain.exe threads
+== threads
+CreateThread: created yes err=-
+its end: WAIT_OBJECT_0
+entry-point calls of a created thread: 4
+  f2kbase: DLL_THREAD_ATTACH, lpReserved NULL, on the created thread
+  f2kmid: DLL_THREAD_ATTACH, lpReserved NULL, on the created thread
+  f2kmid: DLL_THREAD_DETACH, lpReserved NULL, on the created thread
+  f2kbase: DLL_THREAD_DETACH, lpReserved NULL, on the created thread
+DisableThreadLibraryCalls(f2kmid): ret=1 err=-
+DisableThreadLibraryCalls, a handle naming no module: ret=1 err=-
+CreateThread: created yes err=-
+its end: WAIT_OBJECT_0
+entry-point calls of a second thread, f2kmid's thread calls off: 2
+  f2kbase: DLL_THREAD_ATTACH, lpReserved NULL, on the created thread
+  f2kbase: DLL_THREAD_DETACH, lpReserved NULL, on the created thread
+dllmain: done
+<<< exit code=0
+>>> dllmain.exe dynamic
+== dynamic
+LoadLibraryA(f2kdyn.dll): loaded yes err=-
+entry-point calls of the load: 2
+  f2kdep: DLL_PROCESS_ATTACH, lpReserved NULL, on the main thread
+  f2kdyn: DLL_PROCESS_ATTACH, lpReserved NULL, on the main thread
+FreeLibrary(f2kdyn): ret=1 err=-
+entry-point calls of the free: 2
+  f2kdyn: DLL_PROCESS_DETACH, lpReserved NULL, on the main thread
+  f2kdep: DLL_PROCESS_DETACH, lpReserved NULL, on the main thread
+GetModuleHandleA(f2kdep.dll), after: ret null yes err=126
+LoadLibraryA(f2kmid.dll), a static DLL: same module yes err=-
+FreeLibrary(f2kmid): ret=1 err=-
+entry-point calls of the static DLL's load and free: 0
+LoadLibraryA(f2kfail.dll), its DllMain answering FALSE: ret null yes err=1114
+entry-point calls of the failed load: 2
+  f2kfail: DLL_PROCESS_ATTACH, lpReserved NULL, on the main thread
+  f2kfail: DLL_PROCESS_DETACH, lpReserved NULL, on the main thread
+GetModuleHandleA(f2kfail.dll), after: ret null yes err=126
+dllmain: done
+<<< exit code=0
+>>> dllmain.exe search
+== search
+LoadLibraryA(f2ksub.dll), the current directory the program's: ret null yes err=126
+SetCurrentDirectoryA(dllsub): ret=1 err=-
+LoadLibraryA(f2ksub.dll), the current directory dllsub: loaded yes err=-
+GetModuleFileNameA(f2ksub): DLLSUB\F2KSUB.DLL err=-
+entry-point calls of the load: 1
+  f2ksub: DLL_PROCESS_ATTACH, lpReserved NULL, on the main thread
+LoadLibraryA(f2kdyn.dll), the current directory dllsub: loaded yes err=-
+GetModuleFileNameA(f2kdyn): F2KDYN.DLL err=-
+FreeLibrary(f2ksub): ret=1 err=-
+SetCurrentDirectoryA(..): ret=1 err=-
+dllmain: done
+<<< exit code=0
