@@ -68,26 +68,39 @@ fn in_use(capacity: usize, request: usize) -> u32 {
     STATE_IN_USE | ((capacity - request.min(capacity)) as u32) << SLACK_SHIFT
 }
 
+/// Why an area refused an allocation: it has no room (its owner can commit more of the segment,
+/// or try another), or a header on the walk is not a block (the heap is corrupt: more room cannot
+/// mend it, and the call fails).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Refusal {
+    Full,
+    Corrupt,
+}
+
 /// First-fit allocation. Absorbs adjacent free blocks while walking, splits a fitting block when
 /// the tail is worth keeping, otherwise bumps at the top edge. Returns the user offset (past the
-/// header) or `None` if even the bump path does not fit — the caller can then extend the region and
-/// retry. A failed call never allocates; the walk's free-block absorption may persist (idempotent).
+/// header), or why not: [`Refusal::Full`] when even the bump path does not fit — the caller can
+/// then extend the region and retry. A failed call never allocates; the walk's free-block
+/// absorption may persist (idempotent).
 pub fn alloc_block(
     region: &mut [u8],
     top: &mut usize,
     request: usize,
     zero: bool,
-) -> Option<usize> {
-    let need = round_up(request)?;
-    if need > region.len() || *top > region.len() {
-        return None;
+) -> Result<usize, Refusal> {
+    let need = round_up(request).ok_or(Refusal::Full)?;
+    if *top > region.len() {
+        return Err(Refusal::Corrupt);
+    }
+    if need > region.len() {
+        return Err(Refusal::Full);
     }
 
     let mut offset = 0;
     while offset < *top {
         let (mut size, state) = read_header(region, offset);
         // A header that is not a block ends the walk: the heap is corrupt, the call fails.
-        let mut next = next_block(offset, size, *top)?;
+        let mut next = next_block(offset, size, *top).ok_or(Refusal::Corrupt)?;
         if state_of(state) == STATE_FREE {
             // Absorb following free blocks into this candidate.
             while next < *top {
@@ -95,7 +108,7 @@ pub fn alloc_block(
                 if state_of(next_state) != STATE_FREE {
                     break;
                 }
-                let after = next_block(next, next_size, *top)?;
+                let after = next_block(next, next_size, *top).ok_or(Refusal::Corrupt)?;
                 size = (after - offset - HEADER_SIZE) as u32;
                 write_header(region, offset, size, STATE_FREE);
                 next = after;
@@ -111,7 +124,7 @@ pub fn alloc_block(
                 if zero {
                     region[offset + HEADER_SIZE..offset + HEADER_SIZE + need].fill(0);
                 }
-                return Some(offset + HEADER_SIZE);
+                return Ok(offset + HEADER_SIZE);
             }
         }
         offset = next;
@@ -120,7 +133,7 @@ pub fn alloc_block(
     // Bump: a fresh in-use block at the top edge.
     let total = HEADER_SIZE + need;
     if total > region.len() - *top {
-        return None;
+        return Err(Refusal::Full);
     }
     write_header(region, *top, need as u32, in_use(need, request));
     if zero {
@@ -128,7 +141,7 @@ pub fn alloc_block(
     }
     let user = *top + HEADER_SIZE;
     *top += total;
-    Some(user)
+    Ok(user)
 }
 
 /// Cut the block at `offset` of `capacity` down to `need` when the tail is worth keeping, planting
@@ -279,7 +292,7 @@ pub fn realloc_block(
     if resize_in_place(region, *top, user, request, zero) {
         return Some(user);
     }
-    let new = alloc_block(region, top, request, false)?;
+    let new = alloc_block(region, top, request, false).ok()?;
     // A plain loop, not slice::copy_within: the blocks never overlap.
     for i in 0..old {
         region[new + i] = region[user + i];
@@ -328,7 +341,12 @@ mod tests {
         }
 
         fn alloc(&mut self, request: usize, zero: bool) -> Option<usize> {
-            alloc_block(&mut self.bytes, &mut self.top, request, zero)
+            alloc_block(&mut self.bytes, &mut self.top, request, zero).ok()
+        }
+
+        /// Why an allocation is refused, when it is.
+        fn refusal(&mut self, request: usize) -> Option<Refusal> {
+            alloc_block(&mut self.bytes, &mut self.top, request, false).err()
         }
 
         fn free(&mut self, user: usize) -> bool {
@@ -502,8 +520,8 @@ mod tests {
         assert_eq!(arena.alloc(usize::MAX, false), None);
         assert_eq!(arena.alloc(usize::MAX - 7, true), None);
         assert_eq!(
-            arena.alloc(0x8000, false),
-            None,
+            arena.refusal(0x8000),
+            Some(Refusal::Full),
             "header plus request > region"
         );
         assert_eq!(arena.top, 0);
@@ -544,7 +562,11 @@ mod tests {
             let mut walk = Arena::new();
             walk.bytes = arena.bytes;
             walk.top = arena.top;
-            assert_eq!(walk.alloc(0x40, false), None, "{bogus:#x}: walk stops at b");
+            assert_eq!(
+                walk.refusal(0x40),
+                Some(Refusal::Corrupt),
+                "{bogus:#x}: walk stops at b, and says why"
+            );
         }
     }
 

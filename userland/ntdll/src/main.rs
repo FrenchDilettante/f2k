@@ -172,21 +172,17 @@ fn refused(handle: usize, flags: u32) -> u64 {
     }
 }
 
-/// RtlCreateHeap(Flags, HeapBase, ReserveSize, CommitSize): a growable heap (HEAP_GROWABLE, or no
-/// reservation size) or one of ReserveSize bytes, CommitSize committed; null when there is no room,
-/// or for a caller-supplied base (not supported).
+/// RtlCreateHeap(Flags, HeapBase, ReserveSize, CommitSize): a heap whose first segment reserves
+/// ReserveSize bytes with CommitSize committed, which adds segments as it fills when growable
+/// (HEAP_GROWABLE, or no reservation size); null when there is no room, or for a caller-supplied
+/// base (not supported).
 #[unsafe(no_mangle)]
 extern "C" fn f2k_rtl_create_heap(flags: u32, base: usize, reserve: usize, commit: usize) -> usize {
     if base != 0 {
         return 0;
     }
-    let maximum = if flags & HEAP_GROWABLE != 0 {
-        0
-    } else {
-        reserve
-    };
     sys::process()
-        .create(&Native, flags, commit, maximum)
+        .create_sized(&Native, flags, reserve, commit)
         .map_or(0, |heap| heap.handle())
 }
 
@@ -303,7 +299,9 @@ extern "C" fn f2k_ldr_initialize(context: u32) {
         let process = sys::process();
         // SAFETY: the PEB's lock slot, zero until now (no other thread exists yet).
         let _ = unsafe { &*process.lock }.initialize(&Native, 0);
-        if let Some(heap) = process.create(&Native, 0, 0, 0) {
+        // The process heap, its first segment as the image's header sizes it.
+        let (reserve, commit) = rtl::image::process_heap_sizes(sys::image_base());
+        if let Some(heap) = process.create_sized(&Native, HEAP_GROWABLE, reserve, commit) {
             sys::set_process_heap(heap.handle());
         }
         // The PEB lock, with the routines that take and release it, then the loader lock.

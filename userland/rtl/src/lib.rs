@@ -12,13 +12,14 @@
 //! ([`handles`]: ntdll's RtlAllocateHandle family), the resources and the message tables
 //! ([`resource`]: ntdll's LdrFindResource_U family and RtlFindMessage), the message formatter
 //! ([`message`]: ntdll's RtlFormatMessage), the environment blocks ([`env`]:
-//! ntdll's RtlSetEnvironmentVariable family), the loader's share of a thread's start ([`ldr`]), the
-//! loader's module lists and export lookups ([`modules`]: ntdll's LdrGetDllHandle family), the
-//! console server's message format and rules ([`console`]: kernel32's side and the kernel's
-//! stand-in for csrss share them), and structured exception handling's walks ([`seh`]: ntdll's
-//! RtlDispatchException and RtlUnwind, with the CONTEXT and record layouts the kernel writes), the
-//! stubs' log line ([`stub`]: the system DLLs' exports not written yet, and the paths their code
-//! does not handle) and DbgPrint's formatting ([`printf`]).
+//! ntdll's RtlSetEnvironmentVariable family), the loader's share of a thread's start ([`ldr`]) and
+//! the image headers it reads ([`image`]), the loader's module lists and export lookups
+//! ([`modules`]: ntdll's LdrGetDllHandle family), the console server's message format and rules
+//! ([`console`]: kernel32's side and the kernel's stand-in for csrss share them), and structured
+//! exception handling's walks ([`seh`]: ntdll's RtlDispatchException and RtlUnwind, with the
+//! CONTEXT and record layouts the kernel writes), the stubs' log line ([`stub`]: the system DLLs'
+//! exports not written yet, and the paths their code does not handle) and DbgPrint's formatting
+//! ([`printf`]).
 //!
 //! On the DLLs' target (i686 Windows) only: what the compiler expects of an MSVC environment
 //! without its CRT (the 64-bit division helpers LLVM calls on i686-*-windows-msvc, `_aulldiv`,
@@ -38,6 +39,7 @@ pub mod env;
 pub mod handles;
 pub mod heap;
 pub mod heapcore;
+pub mod image;
 pub mod ldr;
 pub mod localmem;
 pub mod message;
