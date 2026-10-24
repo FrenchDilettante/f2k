@@ -48,9 +48,9 @@ extern "C" fn f2k_dbg_print(format: *const u8, args: *const u32) -> u32 {
     let mut line = Line::new();
     match printf::format(text, &mut Stack(args), &Mapped, &mut line) {
         Ok(()) => {
-            let shown = line.terminated();
-            // The NUL the line carries for a C caller is not text.
-            print(&shown[..shown.len() - 1]);
+            // The text as formatted: Windows 2000's DbgPrint adds no line end (its callers end
+            // their own lines; a stub's line, printed through "%s", already carries its LF).
+            print(line.shown());
             0
         }
         Err(Unsupported { at, length }) => {

@@ -297,11 +297,36 @@ mod target {
     pub fn block_device() -> Option<&'static dyn BlockDevice> {
         identity().map(|_| &IDE_DISK as &'static dyn BlockDevice)
     }
+
+    /// The `nest-smoke` diagnostic's disk interrupt: CHECK POWER MODE, a command without data
+    /// whose completion asserts the line with no wait armed for it — the service routine
+    /// acknowledges it and counts it unsolicited ([`unsolicited`]).
+    #[cfg(feature = "nest-smoke")]
+    pub fn request_interrupt() {
+        use crate::hw::ide::regs::{CHECK_POWER_MODE, COMMAND};
+        use crate::hw::portio::Io;
+        // SAFETY: the boot context, between requests: the channel is idle and this is its only
+        // user. Bring-up left the master selected and the interrupt enabled.
+        let channel = unsafe { &mut *addr_of_mut!(CHANNEL) };
+        channel.io().out(PRIMARY_BASE + COMMAND, CHECK_POWER_MODE);
+    }
+
+    /// Interrupts the service routine acknowledged with no wait armed for them.
+    #[cfg(feature = "nest-smoke")]
+    pub fn unsolicited() -> u32 {
+        LATCH.unsolicited()
+    }
 }
+
+/// IRQ 14's vector.
+#[cfg(feature = "nest-smoke")]
+pub const VECTOR: u8 = super::regs::PRIMARY_VECTOR;
 
 #[cfg(target_arch = "x86")]
 #[allow(unused_imports)]
 pub use target::{block_device, identity, init, read};
+#[cfg(all(target_arch = "x86", feature = "nest-smoke"))]
+pub use target::{request_interrupt, unsolicited};
 
 #[cfg(test)]
 mod tests {

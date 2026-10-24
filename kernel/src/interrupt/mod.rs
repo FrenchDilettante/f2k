@@ -25,6 +25,10 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(all(target_arch = "x86", feature = "irq-smoke"))]
 pub use smoke::run as smoke;
+#[cfg(all(target_arch = "x86", feature = "nest-smoke"))]
+mod nest_smoke;
+#[cfg(all(target_arch = "x86", feature = "nest-smoke"))]
+pub use nest_smoke::run as nest_smoke;
 
 use crate::interrupt::irql::{Irql, IrqlState, HIGH, SYNCH};
 
@@ -453,8 +457,9 @@ mod target {
         }
 
         fn end(&mut self, previous: Irql, vector: u8) {
-            self.end_of_interrupt(vector);
-            irql::state_mut().lower(previous);
+            // Acknowledged with interrupts masked: a line the claim held off waits for the lower
+            // (see `IrqlState::end_claim`).
+            irql::state_mut().end_claim(previous, |_| self.end_of_interrupt(vector));
         }
 
         fn enable(&mut self, vector: u8) -> bool {

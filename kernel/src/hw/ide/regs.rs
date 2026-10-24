@@ -37,6 +37,10 @@ pub const IDENTIFY_DEVICE: u8 = 0xEC;
 pub const READ_SECTORS: u8 = 0x20;
 /// WRITE SECTORS (PIO data-out, LBA28).
 pub const WRITE_SECTORS: u8 = 0x30;
+/// CHECK POWER MODE: no data; its completion asserts INTRQ (the `nest-smoke` diagnostic's
+/// interrupt).
+#[cfg(feature = "nest-smoke")]
+pub const CHECK_POWER_MODE: u8 = 0xE5;
 
 /// Device/head for the master in LBA mode: bits 5-7 set (bit 6 is LBA), bit 4 clear (master), the
 /// LBA's top nibble in bits 0-3.

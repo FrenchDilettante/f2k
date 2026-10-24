@@ -107,6 +107,8 @@ class Case:
     ordered: bool = False
     contiguous: tuple[str, ...] = ()
     forbids: tuple[str, ...] = ()
+    # A COM1 line on which the harness presses a key (QEMU's monitor `sendkey`), once.
+    press_on: str | None = None
 
     def __post_init__(self) -> None:
         assert self.image in ("kernel", "disk"), f"{self.name}: image is kernel or disk"
@@ -308,9 +310,46 @@ CASES = (
             "F2K: user process exited normally (exit code=0)",
         ),
     ),
+    # Interrupt nesting: a disk interrupt held behind the keyboard's in service, let in by the
+    # keyboard's end. The diagnostic holds the keyboard's line at the controller and asks for a
+    # key, which the case presses; with interrupts masked the disk then completes a command
+    # (CHECK POWER MODE, nothing armed for it: one unsolicited interrupt), and both are let in at
+    # once. The disk's must be claimed after the keyboard's has lowered: claimed between the
+    # keyboard's acknowledgment and its lower, on top of the keyboard's level, its raise goes
+    # below the current level — the panic a `dir` hit when a key's release came in during its
+    # disk reads.
+    Case(
+        name="nest-smoke",
+        description="a disk interrupt held behind the keyboard's is claimed after the keyboard's claim has ended, both served and the interrupt audit clean, then the default image exits 0",
+        image="kernel",
+        features=("nest-smoke",),
+        ordered=True,
+        press_on="F2K: nest-smoke: keyboard line held at the controller; press a key",
+        expects=(
+            "F2K: nest-smoke: keyboard line held at the controller; press a key",
+            "F2K: nest-smoke: keyboard and disk interrupts pending together",
+            "F2K: nest-smoke: both served, the disk's after the keyboard's; interrupt audit: ok",
+            "F2K: entering ring 3",
+            *EXITED_CLEAN,
+        ),
+    ),
 )
 
 assert len({case.name for case in CASES}) == len(CASES), "case names are unique"
+
+
+class KeyPress:
+    """A boot's `during` hook: once `line` appears on COM1, press a key through the monitor."""
+
+    def __init__(self, line: str) -> None:
+        self.line = line
+        self.pressed = False
+
+    def __call__(self, socket, log: str) -> None:
+        if not self.pressed and self.line in log:
+            self.pressed = True
+            f2kboot.qmp_command(socket, [{"execute": "human-monitor-command",
+                                          "arguments": {"command-line": "sendkey a"}}])
 
 
 @pytest.mark.parametrize(
@@ -333,6 +372,7 @@ def test_kernel(case, builder, log_path, boot_timeout, write_profile):
         log_path=log_path,
         timeout=boot_timeout(DEFAULT_TIMEOUT),
         done=lambda log: expectation.check(log)[0] != "pending",
+        during=KeyPress(case.press_on) if case.press_on else None,
     )
     write_profile(log, build)
     status, detail = expectation.check(log)

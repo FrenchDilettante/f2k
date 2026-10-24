@@ -71,6 +71,14 @@ disk-smoke = []
 # feature gates only the diagnostic lines. tests/core/test_input.py drives keys
 # through QEMU's monitor and pins them.
 kbd-smoke = []
+# The interrupt-nesting diagnostic boot: once the disk and the keyboard are
+# up, the keyboard's line is held at the interrupt controller while the
+# harness presses a key, the disk completes a command with interrupts
+# masked, and both interrupts are let in together — the disk's held behind
+# the keyboard's in service, delivered by the keyboard's end. Both must be
+# served and the interrupt audit stay clean; then the normal boot proceeds.
+# The tests/core/kernel nest-smoke case drives the key and pins the lines.
+nest-smoke = []
 # The opt-in performance trace: the interval clock's interrupt samples the
 # interrupted context and its frame-pointer call stack into a static ring
 # buffer, and the boot's end dumps it on COM1 before the line the harness

@@ -88,8 +88,11 @@ impl IrqlState {
 
     /// Raise to `level`, returning the previous level. The interrupted flag state is captured
     /// first; interrupts are then masked for the transition and re-enabled only below the hardware
-    /// floor.
+    /// floor. Raising below the current level is a bug and is refused, here where it happens
+    /// rather than at the lower of the pair it interrupted, which it would break: an interrupt
+    /// claimed below the level it lands on, say.
     pub fn raise(&mut self, level: Irql) -> Irql {
+        assert!(level.0 >= self.current, "raising below the current level");
         assert!(self.depth < NESTING, "interrupt level nesting overflow");
         self.saved[self.depth] = self.interrupts;
         self.depth += 1;
@@ -116,6 +119,22 @@ impl IrqlState {
             self.unmask_interrupts();
         }
         self.lowers = self.lowers.wrapping_add(1);
+    }
+
+    /// End a hardware interrupt's claim: mask interrupts, run `acknowledge` (the controller's
+    /// end-of-interrupt), then lower back to `level`, restoring the flag state the claim's raise
+    /// captured.
+    ///
+    /// The order is the point. A device level below the hardware floor runs its service with
+    /// interrupts enabled, the lines below it held off only by the controller's in-service state;
+    /// the acknowledgment clears that state, and a line it was holding (the disk's, behind the
+    /// keyboard's) is delivered at the first instruction the flag allows. Acknowledged masked, it
+    /// waits for the lower and is claimed from the level the ended claim interrupted, not on top
+    /// of the claim's own level — where its raise would go below the current level.
+    pub fn end_claim(&mut self, level: Irql, acknowledge: impl FnOnce(&Self)) {
+        self.mask_interrupts();
+        acknowledge(self);
+        self.lower(level);
     }
 
     /// Set the interrupt flag. Not `nomem`, here or at the other flag changes: an interrupt
@@ -374,10 +393,163 @@ mod tests {
         let mut irql = IrqlState::new();
         irql.raise(DISPATCH);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            irql.raise(PASSIVE); // still at DISPATCH
             irql.lower(CLOCK); // above current: must refuse
         }));
         assert!(result.is_err());
+    }
+
+    /// Raising below the current level is a bug too, refused where it happens: the pair it opens
+    /// would record the higher level as its previous one, and the outer pair's lower would refuse
+    /// later, far from the cause. A raise to the current level is no raise below it.
+    #[test]
+    fn raising_below_current_is_refused() {
+        let mut irql = IrqlState::new();
+        irql.raise(KEYBOARD);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            irql.raise(IDE);
+        }));
+        assert!(result.is_err());
+
+        let mut irql = IrqlState::new();
+        let first = irql.raise(KEYBOARD);
+        let second = irql.raise(KEYBOARD);
+        irql.lower(second);
+        irql.lower(first);
+        assert_eq!(irql.audit(), Ok(()));
+    }
+
+    /// A model of the interrupt controller, enough for the order of a claim's end: the lines
+    /// requesting service and the lines in service, each named by its level. The controller ranks
+    /// the connected lines as their levels do (the clock, the keyboard, then the cascade the disk
+    /// arrives through), and a line in service holds off every line not above it.
+    struct Lines {
+        requested: Vec<Irql>,
+        in_service: Vec<Irql>,
+    }
+
+    impl Lines {
+        /// The line the processor takes now: the highest requested one the in-service lines do not
+        /// hold off, if the interrupt flag is set.
+        fn deliverable(&self, irql: &IrqlState) -> Option<Irql> {
+            let line = *self.requested.iter().max()?;
+            let held = self.in_service.iter().any(|&busy| busy >= line);
+            (irql.interrupts_enabled() && !held).then_some(line)
+        }
+
+        /// Claim `line` (the processor took it): in service, raised to its level.
+        fn claim(&mut self, irql: &mut IrqlState, line: Irql) -> Irql {
+            self.requested.retain(|&requested| requested != line);
+            self.in_service.push(line);
+            irql.raise(line)
+        }
+
+        /// Take every interrupt the controller and the flag let through, each claimed, served
+        /// (a higher line nesting inside, the flag permitting), and ended.
+        fn take(&mut self, irql: &mut IrqlState) {
+            while let Some(line) = self.deliverable(irql) {
+                let previous = self.claim(irql, line);
+                self.take(irql);
+                self.end(irql, previous);
+            }
+        }
+
+        /// A claim's end through the level state's order: the acknowledgment clears the line in
+        /// service, releasing the lines it held, and nothing it released may be taken before the
+        /// lower — at the ended claim's level, its raise would go below the current one.
+        fn end(&mut self, irql: &mut IrqlState, previous: Irql) {
+            let mut acknowledged = false;
+            irql.end_claim(previous, |irql| {
+                self.in_service.pop();
+                acknowledged = true;
+                assert_eq!(
+                    self.deliverable(irql),
+                    None,
+                    "an interrupt taken before the lower"
+                );
+            });
+            assert!(acknowledged);
+        }
+    }
+
+    /// The disk's interrupt, requested while the keyboard's is in service, is held by the
+    /// controller until the keyboard's acknowledgment, and must not be taken between that and the
+    /// keyboard's lower: claimed at the keyboard's level, its raise would go below it (and, before
+    /// raises were checked, the keyboard's lower refused instead: "lowering above the current
+    /// level", the panic a `dir` hit when a key's release came in during its disk reads). Ended in
+    /// this order, the disk is claimed after the lower, from the level the keyboard interrupted.
+    #[test]
+    fn a_held_disk_interrupt_waits_for_the_keyboards_lower() {
+        let mut irql = IrqlState::new();
+        let mut lines = Lines {
+            requested: vec![KEYBOARD],
+            in_service: Vec::new(),
+        };
+        assert_eq!(lines.deliverable(&irql), Some(KEYBOARD));
+        let previous = lines.claim(&mut irql, KEYBOARD);
+        assert!(
+            irql.interrupts_enabled(),
+            "a device level below the hardware floor runs enabled"
+        );
+        // Inside the keyboard's service the disk requests, and is held.
+        lines.requested.push(IDE);
+        assert_eq!(lines.deliverable(&irql), None);
+
+        lines.end(&mut irql, previous);
+        assert_eq!(irql.current(), PASSIVE);
+        assert_eq!(lines.deliverable(&irql), Some(IDE));
+        lines.take(&mut irql);
+        assert!(lines.requested.is_empty() && lines.in_service.is_empty());
+        assert_eq!(irql.current(), PASSIVE);
+        assert_eq!(irql.audit(), Ok(()));
+    }
+
+    /// The order the level state replaced, shown to fail: acknowledged with the flag still set,
+    /// the held disk interrupt is taken on top of the keyboard's level, and its claim is refused.
+    #[test]
+    fn acknowledging_enabled_takes_the_disk_interrupt_too_early() {
+        let mut irql = IrqlState::new();
+        let mut lines = Lines {
+            requested: vec![KEYBOARD],
+            in_service: Vec::new(),
+        };
+        lines.claim(&mut irql, KEYBOARD);
+        lines.requested.push(IDE);
+        // The acknowledgment alone, the flag still set.
+        lines.in_service.pop();
+        assert_eq!(
+            lines.deliverable(&irql),
+            Some(IDE),
+            "taken before the lower"
+        );
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            lines.claim(&mut irql, IDE);
+        }));
+        assert!(
+            result.is_err(),
+            "a claim below the current level is refused"
+        );
+    }
+
+    /// A clock tick nests inside a device's service (its line outranks the device's), and the
+    /// disk interrupt the keyboard holds still waits for the keyboard's lower.
+    #[test]
+    fn a_tick_nests_inside_a_device_service() {
+        let mut irql = IrqlState::new();
+        let mut lines = Lines {
+            requested: vec![KEYBOARD],
+            in_service: Vec::new(),
+        };
+        let previous = lines.claim(&mut irql, KEYBOARD);
+        lines.requested.push(IDE);
+        lines.requested.push(CLOCK);
+        lines.take(&mut irql);
+        assert_eq!(lines.requested, vec![IDE], "the tick taken, the disk held");
+        assert_eq!(irql.current(), KEYBOARD);
+
+        lines.end(&mut irql, previous);
+        lines.take(&mut irql);
+        assert!(lines.requested.is_empty() && lines.in_service.is_empty());
+        assert_eq!(irql.audit(), Ok(()));
     }
 
     /// An unbalanced audit is detectable: a raise without its lower leaves the level stuck and the

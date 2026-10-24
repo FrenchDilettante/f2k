@@ -277,6 +277,11 @@ pub extern "C" fn kmain(magic: u32, multiboot_info: u32) -> ! {
     #[cfg(feature = "disk-smoke")]
     crate::hw::ide::smoke::run();
 
+    // The interrupt-nesting diagnostic boot: a disk interrupt held behind the keyboard's, both let
+    // in at once, then the normal boot.
+    #[cfg(feature = "nest-smoke")]
+    interrupt::nest_smoke();
+
     // The user processes (the programs the kernel command line lists, else exit0, through the PE
     // loader, one after another; the fault-test features substitute their own), each entered as
     // its main thread: this boot context becomes the idle thread. An image ends through its exit

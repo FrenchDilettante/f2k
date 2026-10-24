@@ -206,15 +206,23 @@ impl Line {
         }
     }
 
-    /// The line's bytes, with a final LF, and a NUL after it (for a C caller): the room for
-    /// both is kept.
-    pub fn terminated(&mut self) -> &[u8] {
+    /// The line's bytes as written, a cut marked with `...`: what DbgPrint hands the kernel (its
+    /// text exactly as formatted — the caller writes any LF it wants, as on Windows).
+    pub fn shown(&mut self) -> &[u8] {
         let room = LINE_BYTES - 2;
         if self.cut {
             self.length = room - 3;
             self.bytes[self.length..room].copy_from_slice(b"...");
             self.length = room;
+            self.cut = false;
         }
+        &self.bytes[..self.length]
+    }
+
+    /// The line's bytes, with a final LF, and a NUL after it (for a C caller): the room for
+    /// both is kept.
+    pub fn terminated(&mut self) -> &[u8] {
+        self.shown();
         self.bytes[self.length] = b'\n';
         self.bytes[self.length + 1] = 0;
         &self.bytes[..self.length + 2]
@@ -423,5 +431,21 @@ mod tests {
         short.write_str("stub").unwrap();
         assert_eq!(short.text(), "stub");
         assert_eq!(short.terminated(), b"stub\n\0");
+    }
+
+    /// DbgPrint's text is the line as written, with no line end of its own: a stub's line, which
+    /// carries its LF, reaches the kernel with that one LF only.
+    #[test]
+    fn the_shown_text_adds_no_line_end() {
+        let mut line = Line::new();
+        line.write_str("stub kernel32.X(): not yet implemented\n")
+            .unwrap();
+        assert_eq!(line.shown(), b"stub kernel32.X(): not yet implemented\n");
+        let mut long = Line::new();
+        write!(long, "{}", "x".repeat(LINE_BYTES * 2)).unwrap();
+        let shown = long.shown();
+        assert_eq!(shown.len(), LINE_BYTES - 2);
+        assert!(shown.ends_with(b"x..."));
+        assert!(long.terminated().ends_with(b"x...\n\0"));
     }
 }
