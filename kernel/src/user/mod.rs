@@ -15,7 +15,6 @@
 
 pub mod apc;
 pub mod args;
-pub mod ldr;
 pub mod params;
 pub mod seh;
 pub mod shared;
@@ -347,8 +346,8 @@ pub fn process_exited(code: u32) -> ! {
 /// main thread through the idle loop. Never returns.
 #[cfg(target_arch = "x86")]
 pub fn run_user_process() -> ! {
-    // The system DLLs' pages: the kernel's for the boot's life, every process one more holder of
-    // them — made before the teardown audit's baseline, as the boot's other permanent pages are.
+    // ntdll's pages: the kernel's for the boot's life, every process one more holder of them —
+    // made before the teardown audit's baseline, as the boot's other permanent pages are.
     crate::exec::loader::prepare_system_dlls();
     #[cfg(any(
         feature = "fault-test-badargs",
@@ -371,6 +370,9 @@ pub fn run_user_process() -> ! {
         feature = "fault-test-ntclose"
     )))]
     {
+        // Where every main thread starts: kernel32's start thunk, read off the volume once (the
+        // programs' kernel32 is ntdll's to load, each process its own view of the file).
+        crate::exec::loader::locate_process_start();
         crate::process::runner::run()
     }
 }

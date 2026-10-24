@@ -2,23 +2,23 @@
 //!
 //! [`load_path`] reads the program's file off the boot volume by its path into a raw-file staging
 //! buffer; [`load_image`] then parses it, checks that its preferred base places it clear of the
-//! system's fixed user regions, stages the in-memory image, maps the system DLLs
-//! ([`map_system_dlls`]), snaps the IAT through the module table ([`resolve_import`]), maps the
-//! pages at the preferred base with their final protections, and returns the entry point: the
-//! caller enters the process as its main thread, which the scheduler starts there.
+//! system's fixed user regions, stages the in-memory image, maps ntdll ([`map_ntdll`]), maps the
+//! image's pages at the preferred base with their final protections, and returns the entry point:
+//! the caller enters the process as its main thread, which the scheduler starts at kernel32's
+//! BaseProcessStartThunk ([`locate_process_start`] finds it at boot).
 //!
-//! Images are never relocated: an image maps at its preferred base or is refused. The module table
-//! holds the system DLLs, ntdll and kernel32 (`exec::modules`); an import naming any other module
-//! fails the snap. A DLL loaded at run time maps through the same parse and page protections, as
-//! an image section's view (`nt::section`, page by page: [`Image::map_page`]).
+//! The kernel maps the image and ntdll alone, as Windows 2000's does, and snaps no import: ntdll's
+//! process initialization, the main thread's first user-mode work, loads every DLL the image
+//! imports from the volume, kernel32 included, and snaps them (an image section's view per DLL,
+//! `nt::section`, page by page: [`Image::map_page`], through the same parse and page protections).
+//! Images are never relocated: an image maps at its preferred base or is refused.
 //!
 //! Quirk: the file and the image are built in staging buffers — borrowed statics, not stack frames
-//! — because the loader runs on the small boot stack. The snap happens in staging, before mapping:
-//! mapped pages carry their final protection and ring-0 writes must not touch them.
+//! — because the loader runs on the small boot stack.
 
 use core::fmt;
 
-use crate::exec::pe::{Image, Unresolved};
+use crate::exec::pe::Image;
 use crate::fs::fat32::lookup::{lookup, LookupError};
 use crate::fs::fat32::read::read;
 use crate::fs::fat32::volume::Volume;
@@ -126,7 +126,7 @@ static mut IMAGE_STAGING: crate::mem::paging::Aligned<[u8; STAGING_SIZE]> =
 /// map at their preferred base (nothing is relocated), so one that would land on a region is
 /// refused, not moved. The main thread's stack is its whole reservation (1 MiB, committed on
 /// demand below its two top pages, see `user::stack`).
-const SYSTEM_REGIONS: [(&str, u32, u32); 9] = {
+const SYSTEM_REGIONS: [(&str, u32, u32); 8] = {
     use crate::user::{
         PARAMS_PAGE,
         PEB_PAGE,
@@ -137,7 +137,7 @@ const SYSTEM_REGIONS: [(&str, u32, u32); 9] = {
     };
     const PAGE: u32 = crate::mem::paging::PAGE_SIZE;
     const CHILDREN: u32 = crate::process::CHILD_THREADS as u32;
-    use crate::exec::modules::{KERNEL32_BASE, KERNEL32_SIZE, NTDLL_BASE, NTDLL_SIZE};
+    use crate::exec::modules::{NTDLL_BASE, NTDLL_SIZE};
     [
         ("main thread stack", USER_STACK_BASE, USER_STACK_TOP),
         ("main thread TEB", TEB_PAGE, TEB_PAGE + PAGE),
@@ -160,11 +160,6 @@ const SYSTEM_REGIONS: [(&str, u32, u32); 9] = {
         ),
         ("ntdll.dll image", NTDLL_BASE, NTDLL_BASE + NTDLL_SIZE),
         (
-            "kernel32.dll image",
-            KERNEL32_BASE,
-            KERNEL32_BASE + KERNEL32_SIZE,
-        ),
-        (
             SHARED_DATA_REGION,
             crate::user::shared::USER_ADDRESS,
             crate::user::shared::USER_ADDRESS + PAGE,
@@ -184,13 +179,6 @@ pub fn system_region_overlapping(base: u32, size: u32) -> Option<&'static str> {
             start < region_end as u64 && (region_start as u64) < end
         })
         .map(|&(name, ..)| name)
-}
-
-/// The module table: resolve `name` in `module` (as an import descriptor or a forwarder spells it)
-/// to the address an IAT slot receives. The system DLLs are the only modules; any other name is not
-/// loaded.
-pub fn resolve_import(module: &str, name: &str) -> Result<u32, Unresolved> {
-    crate::exec::modules::resolve(module, name)
 }
 
 /// A page's protection, as a query reports it: the combined access of the sections in it (an
@@ -227,8 +215,9 @@ pub(crate) fn page_protect(image: &Image, page_rva: u32) -> u32 {
 
 /// Record the process's address space as a query reports it: the image of `image_size` bytes at
 /// `image_base` (one allocation, its pages carrying their sections' protections), and the areas the
-/// kernel maps itself, the system DLLs' images among them (MEM_IMAGE allocations, as the program's
-/// own). Every user page the kernel maps lies in one of these regions.
+/// kernel maps itself, ntdll's image among them (a MEM_IMAGE allocation, as the program's
+/// own). Every user page the kernel maps lies in one of these regions; the DLLs ntdll loads are
+/// views it maps itself.
 pub fn seed_regions(space: &mut crate::mem::vm::AddressSpace, image_base: u32, image_size: u32) {
     use crate::mem::vm::{Kind, Region, PAGE_EXECUTE_WRITECOPY, PAGE_READWRITE};
     space
@@ -257,82 +246,116 @@ pub fn seed_regions(space: &mut crate::mem::vm::AddressSpace, image_base: u32, i
     }
 }
 
-/// Staging for a system DLL's image while it is mapped (the program's image is staged separately,
-/// and is in staging while the DLLs map).
+/// Staging for ntdll's image while its pages are made (the program's image is staged separately).
 #[cfg(target_arch = "x86")]
 static mut DLL_STAGING: crate::mem::paging::Aligned<[u8; DLL_STAGING_SIZE]> =
     crate::mem::paging::Aligned([0; DLL_STAGING_SIZE]);
 
-/// The largest system DLL image the staging holds.
+/// The largest ntdll image the staging holds.
 #[cfg(target_arch = "x86")]
 const DLL_STAGING_SIZE: usize = 0x4_0000;
 
-/// The pages a system DLL image may span: what the staging holds.
+/// The pages ntdll's image may span: what the staging holds.
 #[cfg(target_arch = "x86")]
 const DLL_PAGES: usize = DLL_STAGING_SIZE / crate::mem::paging::PAGE_SIZE as usize;
 
-/// The system DLLs' pages, made once at boot ([`prepare_system_dlls`]): each DLL's frames, page by
-/// page — the kernel's, every process mapping them as one more holder.
+/// ntdll's pages, made once at boot ([`prepare_system_dlls`]): its frames, page by page — the
+/// kernel's, every process mapping them as one more holder.
 #[cfg(target_arch = "x86")]
-static mut DLL_FRAMES: [[u32; DLL_PAGES]; crate::exec::modules::SYSTEM_DLLS.len()] =
-    [[0; DLL_PAGES]; crate::exec::modules::SYSTEM_DLLS.len()];
+static mut DLL_FRAMES: [u32; DLL_PAGES] = [0; DLL_PAGES];
 
-/// Make the system DLLs' pages (`exec::modules`), once, before the first process: each image staged
-/// from its embedded file, its imports snapped against the module table (the bases are fixed, so
-/// the snapped pages are every process's), then copied into frames of the kernel's, one per page.
+/// Make ntdll's pages (`exec::modules`), once, before the first process: the image staged from its
+/// embedded file (it imports nothing: nothing to snap), then copied into frames of the kernel's,
+/// one per page.
 #[cfg(target_arch = "x86")]
 pub fn prepare_system_dlls() {
     use crate::mem::paging::{self, PAGE_SIZE};
-    for (index, dll) in crate::exec::modules::SYSTEM_DLLS.iter().enumerate() {
-        let image = dll.image();
-        assert!(
-            image.size_of_image as usize <= DLL_STAGING_SIZE,
-            "{} exceeds the DLL staging",
-            dll.file_name
-        );
-        // SAFETY: single-threaded boot, the only staging user.
-        let staging = unsafe {
-            let buffer = &mut *core::ptr::addr_of_mut!(DLL_STAGING);
-            &mut buffer.0[..image.size_of_image as usize]
-        };
-        staging.fill(0);
-        image.map_into(dll.file, staging);
-        image.snap_imports(dll.file, staging, resolve_import);
-        for page in 0..image.size_of_image.div_ceil(PAGE_SIZE) {
-            let offset = (page * PAGE_SIZE) as usize;
-            let end = (offset + PAGE_SIZE as usize).min(staging.len());
-            let frame = paging::allocate_frame_phys();
-            paging::init_frame(frame, 0, &staging[offset..end]);
-            // SAFETY: single-threaded boot; read-only once made.
-            unsafe { (*core::ptr::addr_of_mut!(DLL_FRAMES))[index][page as usize] = frame };
+    let dll = &crate::exec::modules::NTDLL;
+    let image = dll.image();
+    assert!(
+        image.size_of_image as usize <= DLL_STAGING_SIZE,
+        "{} exceeds the DLL staging",
+        dll.file_name
+    );
+    // SAFETY: single-threaded boot, the only staging user.
+    let staging = unsafe {
+        let buffer = &mut *core::ptr::addr_of_mut!(DLL_STAGING);
+        &mut buffer.0[..image.size_of_image as usize]
+    };
+    staging.fill(0);
+    image.map_into(dll.file, staging);
+    for page in 0..image.size_of_image.div_ceil(PAGE_SIZE) {
+        let offset = (page * PAGE_SIZE) as usize;
+        let end = (offset + PAGE_SIZE as usize).min(staging.len());
+        let frame = paging::allocate_frame_phys();
+        paging::init_frame(frame, 0, &staging[offset..end]);
+        // SAFETY: single-threaded boot; read-only once made.
+        unsafe { (*core::ptr::addr_of_mut!(DLL_FRAMES))[page as usize] = frame };
+    }
+}
+
+/// Find kernel32's BaseProcessStartThunk, once, before the first process: kernel32.dll read off the
+/// boot volume (`<system root>\system32\kernel32.dll`, `exec::modules::kernel32_volume_path`) into
+/// the file staging, its image staged, its export directory read (`exec::modules`). A kernel32
+/// that cannot be read, or exports no start thunk, is reported on COM1 and halts: no program could
+/// start.
+#[cfg(target_arch = "x86")]
+pub fn locate_process_start() {
+    let mut path = [0u8; 64];
+    let length = crate::exec::modules::kernel32_volume_path(&mut path);
+    let shown = core::str::from_utf8(&path[..length]).unwrap_or("kernel32.dll");
+    // SAFETY: single-threaded boot, the only staging user.
+    let (file, image) = unsafe {
+        (
+            &mut (*core::ptr::addr_of_mut!(FILE_STAGING)).0,
+            &mut (*core::ptr::addr_of_mut!(IMAGE_STAGING)).0,
+        )
+    };
+    let read = crate::fs::fat32::volume::with_boot_volume(|volume| {
+        read_image_file(volume, &path[..length], &mut file[..])
+    });
+    let length = match read {
+        Some(Ok(length)) => length,
+        Some(Err(error)) => {
+            crate::serial_println!("F2K: {} not read: {}", shown, error);
+            crate::halt()
+        }
+        None => {
+            crate::serial_println!("F2K: {} not read: no boot volume", shown);
+            crate::halt()
+        }
+    };
+    match crate::exec::modules::process_start_in(&file[..length], &mut image[..]) {
+        Ok(address) => crate::exec::modules::set_process_start_thunk(address),
+        Err(error) => {
+            crate::serial_println!("F2K: {} has no start thunk: {:?}", shown, error);
+            crate::halt()
         }
     }
 }
 
-/// Map the system DLLs into the current process at their bases, each page with its sections'
-/// protections inside the DLL's own MEM_IMAGE region (seeded with the system areas): the kernel's
-/// frames ([`prepare_system_dlls`]), shared — a page the process makes writable is copy-on-write,
-/// its writes its own (`mem::vm`).
+/// Map ntdll into the current process at its base, each page with its sections' protections
+/// inside its MEM_IMAGE region (seeded with the system areas): the kernel's frames
+/// ([`prepare_system_dlls`]), shared — a page the process makes writable is copy-on-write, its
+/// writes its own (`mem::vm`).
 #[cfg(target_arch = "x86")]
-pub fn map_system_dlls(space: &mut crate::mem::vm::AddressSpace) {
+pub fn map_ntdll(space: &mut crate::mem::vm::AddressSpace) {
     use crate::mem::paging::PAGE_SIZE;
     use crate::mem::vm::CurrentPages;
-    for (index, dll) in crate::exec::modules::SYSTEM_DLLS.iter().enumerate() {
-        let image = dll.image();
-        for page in 0..image.size_of_image.div_ceil(PAGE_SIZE) {
-            // SAFETY: made at boot, read-only afterwards.
-            let frame = unsafe { (*core::ptr::addr_of!(DLL_FRAMES))[index][page as usize] };
-            assert_ne!(frame, 0, "the system DLLs are prepared at boot");
-            let va = image.image_base + page * PAGE_SIZE;
-            space
-                .map_shared(
-                    &mut CurrentPages,
-                    va,
-                    frame,
-                    page_protect(&image, page * PAGE_SIZE),
-                )
-                .expect("a system DLL maps once, inside its region");
-        }
+    let image = crate::exec::modules::NTDLL.image();
+    for page in 0..image.size_of_image.div_ceil(PAGE_SIZE) {
+        // SAFETY: made at boot, read-only afterwards.
+        let frame = unsafe { (*core::ptr::addr_of!(DLL_FRAMES))[page as usize] };
+        assert_ne!(frame, 0, "ntdll's pages are made at boot");
+        let va = image.image_base + page * PAGE_SIZE;
+        space
+            .map_shared(
+                &mut CurrentPages,
+                va,
+                frame,
+                page_protect(&image, page * PAGE_SIZE),
+            )
+            .expect("ntdll maps once, inside its region");
     }
 }
 
@@ -351,10 +374,11 @@ fn page_writable(image: &Image, page_rva: u32) -> bool {
     })
 }
 
-/// Load `file` as the new current process — parse, stage, create the process, snap the imports,
-/// map the image, stack, TEB, parameters and PEB pages — and return its entry point for the main
-/// thread's ladder. `name` names the process; `command_line` is the process parameters' command
-/// line, and `path`, the file's volume path, their image path (in its Win32 form, `C:\...`).
+/// Load `file` as the new current process — parse, stage, create the process, map ntdll, the image,
+/// stack, TEB, parameters and PEB pages — and return its entry point for the main thread's ladder
+/// (its imports are ntdll's to load and snap, in user mode). `name` names the process;
+/// `command_line` is the process parameters' command line, and `path`, the file's volume path,
+/// their image path (in its Win32 form, `C:\...`).
 #[cfg(target_arch = "x86")]
 pub fn load_image(file: &[u8], path: &[u8], name: &'static str, command_line: &[u8]) -> u32 {
     use crate::mem::paging::{self, PAGE_SIZE};
@@ -406,20 +430,18 @@ pub fn load_image(file: &[u8], path: &[u8], name: &'static str, command_line: &[
 
     // The process's own state, all in one place: a fresh address space (kernel half inherited,
     // active on CR3) and the main thread's ring-0 gate stack (mapped supervisor-only with its guard
-    // page; the switch into the thread installs it as the TSS esp0). Every mapping below (system
-    // DLLs, image, stack, TEB, params) lands in this process's directory.
+    // page; the switch into the thread installs it as the TSS esp0). Every mapping below (ntdll,
+    // image, stack, TEB, params) lands in this process's directory.
     let process = crate::process::Process::start(name);
     let (process_id, thread_id) = (process.id(), process.main_thread().thread_id());
     let space = process.vm();
     // The regions first: every user page the kernel maps lies in one.
     seed_regions(space, image.image_base, image.size_of_image);
 
-    // The system DLLs, in load order, before the snap: IAT slots receive their user-space
-    // addresses.
-    map_system_dlls(space);
+    // ntdll, the one DLL the kernel maps: the rest are its to load.
+    map_ntdll(space);
     // KUSER_SHARED_DATA, read-only, the kernel's page.
     crate::user::shared::map_into(space);
-    let snap = image.snap_imports(file, staging, resolve_import);
 
     // Map the staged image at its preferred base, one frame per page, each with its sections'
     // protection (writable exactly where a mapped section is writable).
@@ -457,16 +479,9 @@ pub fn load_image(file: &[u8], path: &[u8], name: &'static str, command_line: &[
     );
 
     // The process parameters (the command line, the image's path, the standard handles, the empty
-    // environment block) and the loader's module lists (the image, then the system DLLs), and the
-    // PEB pointing at them: the system's version and the image's subsystem.
-    let module = crate::user::ldr::Module {
-        base: image.image_base,
-        entry_point: image.entry_va(),
-        size: image.size_of_image,
-        time_date_stamp: image.time_date_stamp,
-        dll: false,
-    };
-    crate::user::params::map(space, command_line, path, module);
+    // environment block), and the PEB pointing at them: the system's version and the image's
+    // subsystem (its loader data is ntdll's to make).
+    crate::user::params::map(space, command_line, path);
     crate::user::teb::map_peb(
         space,
         &crate::user::teb::PebInit {
@@ -478,11 +493,10 @@ pub fn load_image(file: &[u8], path: &[u8], name: &'static str, command_line: &[
     );
 
     crate::serial_println!(
-        "F2K: image loaded (base {:#010x}, entry {:#010x}, {} pages, {} imports snapped)",
+        "F2K: image loaded (base {:#010x}, entry {:#010x}, {} pages)",
         image.image_base,
         image.entry_va(),
-        pages,
-        snap.thunks
+        pages
     );
     crate::serial_println!(
         "F2K: entering ring 3 (entry {:#010x}, stack {:#010x})",
@@ -690,18 +704,21 @@ mod tests {
     }
 
     /// The era's system binaries place at their preferred bases (the images' measured bases, with a
-    /// generous size: none comes near a system region).
+    /// generous size: none comes near a system region), kernel32 among them (ntdll's to map);
+    /// ntdll's own base is the kernel's.
     #[test]
     fn system_binary_bases_place_cleanly() {
-        assert_eq!(
-            system_region_overlapping(0x7C4E_0000, 0x1000),
-            Some("kernel32.dll image")
-        );
         assert_eq!(
             system_region_overlapping(0x77F8_0000, 0x1000),
             Some("ntdll.dll image")
         );
-        for base in [0x4AD0_0000, 0x7800_0000, 0x77E1_0000, 0x7C2D_0000] {
+        for base in [
+            0x4AD0_0000,
+            0x7800_0000,
+            0x77E1_0000,
+            0x7C2D_0000,
+            0x7C4E_0000,
+        ] {
             assert_eq!(
                 system_region_overlapping(base, 0x0010_0000),
                 None,
@@ -714,29 +731,25 @@ mod tests {
     /// a region starts is not.
     #[test]
     fn images_covering_a_system_region_are_refused() {
-        use crate::exec::modules::{KERNEL32_BASE, KERNEL32_SIZE, NTDLL_BASE};
-        const REGION: Option<&str> = Some("kernel32.dll image");
-        assert_eq!(system_region_overlapping(KERNEL32_BASE, 0x1000), REGION);
+        use crate::exec::modules::{NTDLL_BASE, NTDLL_SIZE};
+        const REGION: Option<&str> = Some("ntdll.dll image");
+        assert_eq!(system_region_overlapping(NTDLL_BASE, 0x1000), REGION);
         // The image's last page.
         assert_eq!(
-            system_region_overlapping(KERNEL32_BASE + KERNEL32_SIZE - 0x1000, 0x1000),
+            system_region_overlapping(NTDLL_BASE + NTDLL_SIZE - 0x1000, 0x1000),
             REGION
         );
         assert_eq!(
-            system_region_overlapping(KERNEL32_BASE + KERNEL32_SIZE, 0x1000),
+            system_region_overlapping(NTDLL_BASE + NTDLL_SIZE, 0x1000),
             None
         );
         assert_eq!(
-            system_region_overlapping(KERNEL32_BASE - 0x1_0000, 0x1_0000),
+            system_region_overlapping(NTDLL_BASE - 0x1_0000, 0x1_0000),
             None
         );
         assert_eq!(
-            system_region_overlapping(KERNEL32_BASE - 0x1_0000, 0x1_1000),
+            system_region_overlapping(NTDLL_BASE - 0x1_0000, 0x1_1000),
             REGION
-        );
-        assert_eq!(
-            system_region_overlapping(NTDLL_BASE, 0x1000),
-            Some("ntdll.dll image")
         );
         // A 16 MiB image at the corpus base reaches the child-thread regions.
         assert_eq!(
@@ -757,38 +770,6 @@ mod tests {
             None,
             "the heaps' reservations are the program's own (NtAllocateVirtualMemory)"
         );
-    }
-
-    /// The module table: the system DLLs' exports, under any spelling of the module's name; nothing
-    /// else.
-    #[test]
-    fn imports_resolve_through_the_module_table() {
-        let exit = crate::exec::modules::kernel32_export("ExitProcess");
-        assert!(exit.is_some());
-        for module in ["KERNEL32.dll", "kernel32.DLL", "KERNEL32"] {
-            assert_eq!(resolve_import(module, "ExitProcess").ok(), exit, "{module}");
-        }
-        assert_eq!(
-            resolve_import("KERNEL32.dll", "NoSuchExport"),
-            Err(Unresolved::NoEntry)
-        );
-        // Export names are case-sensitive.
-        assert_eq!(
-            resolve_import("KERNEL32.dll", "exitprocess"),
-            Err(Unresolved::NoEntry)
-        );
-        // kernel32's RtlUnwind forwards into ntdll.
-        assert_eq!(
-            resolve_import("KERNEL32.dll", "RtlUnwind"),
-            resolve_import("ntdll.dll", "RtlUnwind")
-        );
-        for module in ["MSVCRT.dll", "USER32.dll", "KERNEL32.exe"] {
-            assert_eq!(
-                resolve_import(module, "ExitProcess"),
-                Err(Unresolved::NoModule),
-                "{module}"
-            );
-        }
     }
 
     const FILE: u8 = 0x20;

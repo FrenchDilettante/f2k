@@ -460,6 +460,8 @@ unsafe extern "system" {
         handle: *mut u32,
     ) -> u32;
     pub fn LdrUnloadDll(module: u32) -> u32;
+    /// LdrDisableThreadCalloutsForDll: the DLL's thread notifications turned off.
+    pub fn LdrDisableThreadCalloutsForDll(module: u32) -> u32;
     pub fn LdrGetProcedureAddress(
         module: u32,
         name: *const AnsiString,
@@ -2548,7 +2550,7 @@ pub mod threads {
     }
 }
 
-/// The host tests' loader: the PEB's module lists as the kernel lays them out (the image, ntdll,
+/// The host tests' loader: the PEB's module lists as ntdll lays them out (the image, ntdll,
 /// kernel32, in load order), and ntdll's loader exports over a table of the same modules (the
 /// lookups themselves are `rtl::modules`', tested there and against the real DLLs in the kernel).
 #[cfg(test)]
@@ -2590,7 +2592,7 @@ pub mod modules {
         unsafe { (at as *mut u32).write(value) }
     }
 
-    /// The PEB's Ldr (its load-order list) and LoaderLock, as the kernel and ntdll set them.
+    /// The PEB's Ldr (its load-order list) and LoaderLock, as ntdll sets them.
     pub fn plant(peb: usize) {
         let pointer = crate::base::write_pointer;
         let page =
@@ -2680,6 +2682,25 @@ pub mod modules {
             return status;
         }
         if MODULE_PATHS.iter().any(|&(base, _)| base == module) {
+            0
+        } else {
+            STATUS_DLL_NOT_FOUND
+        }
+    }
+
+    std::thread_local! {
+        /// The modules whose thread notifications were turned off.
+        pub static NO_THREAD_CALLS: RefCell<std::vec::Vec<u32>> = const { RefCell::new(std::vec::Vec::new()) };
+    }
+
+    /// A module of the lists has its thread notifications turned off (recorded); any other handle
+    /// is STATUS_DLL_NOT_FOUND.
+    pub unsafe extern "system" fn LdrDisableThreadCalloutsForDll(module: u32) -> u32 {
+        if let Some(status) = failure() {
+            return status;
+        }
+        if MODULE_PATHS.iter().any(|&(base, _)| base == module) {
+            NO_THREAD_CALLS.with(|modules| modules.borrow_mut().push(module));
             0
         } else {
             STATUS_DLL_NOT_FOUND

@@ -151,7 +151,7 @@ group = "termination"
 args = []
 impl = { native = "BaseProcessStartThunk" }
 internal = true
-note = "every image's main thread starts here (EAX its entry point): BaseProcessStart calls it under kernel32's exception frame, its return value to ExitThread. Windows 2000's kernel32 does not export it; F2K's kernel, which makes the process, finds it by name"
+note = "every image's main thread starts here (EAX its entry point): BaseProcessStart calls it under kernel32's exception frame, its return value to ExitThread. Windows 2000's kernel32 does not export it; F2K's kernel, which makes the process, finds it by name, in the export directory of the kernel32.dll on the boot volume, read once at boot"
 
 [[export]]
 name = "GetProcAddress"
@@ -208,6 +208,15 @@ group = "termination"
 args = ["handle hLibModule"]
 impl = { native = "FreeLibrary" }
 ordinal = 200
+
+[[export]]
+name = "DisableThreadLibraryCalls"
+group = "termination"
+args = ["handle hLibModule"]
+impl = { native = "DisableThreadLibraryCalls" }
+ordinal = 105
+fails = "FALSE"
+note = "over ntdll's LdrDisableThreadCalloutsForDll: the DLL's DLL_THREAD_ATTACH and DLL_THREAD_DETACH turned off"
 
 [[export]]
 name = "GetModuleHandleA"
@@ -2073,10 +2082,6 @@ ordinal = 103
 [[export]]
 name = "DeviceIoControl"
 ordinal = 104
-
-[[export]]
-name = "DisableThreadLibraryCalls"
-ordinal = 105
 
 [[export]]
 name = "DisconnectNamedPipe"

@@ -30,7 +30,11 @@ curl -LsSf https://astral.sh/uv/install.sh | sh && uv sync
 ## Building
 
 The system DLLs (`userland/`: `ntdll.dll` and `kernel32.dll`, real PE32 images) build first: the
-kernel embeds them and maps them into every process. `userland/` is its own Cargo workspace with
+kernel embeds ntdll and maps it into every process, and the disk image carries both in its system
+directory, `\WINNT\system32`. As on Windows 2000, the kernel maps only a program and ntdll; ntdll's
+process start loads every other DLL from the volume, kernel32 included, snaps their imports and
+calls their entry points (the kernel reads kernel32's start thunk, where every program's main
+thread starts, from the same file at boot). `userland/` is its own Cargo workspace with
 its own target (`userland/i686-f2k-pe.json`, linked by the toolchain's `rust-lld` in its MSVC
 mode); `make kernel` builds it first, and the DLLs land in `target/userland/`. The kernel's build
 script reads them, so a bare `cargo check` or `cargo build` in `kernel/` (and rust-analyzer) fails
@@ -256,12 +260,12 @@ f2k/
 │
 └── kernel/           # F2K Kernel
     ├── Cargo.toml        # Kernel package
-    ├── build.rs          # The NT service table from the export specs; the embedded DLLs
+    ├── build.rs          # The NT service table from the export specs; the embedded ntdll
     └── src/
         ├── block/        # Block devices, partitions, and the device registry
         ├── boot/         # Boot-related code
         ├── cpu/          # The CPU tables
-        ├── exec/         # Executable loading, and the system DLLs every process maps
+        ├── exec/         # Executable loading, and ntdll, the DLL every process maps
         ├── fs/           # FAT32 over the block devices, and the open files
         ├── hw/           # The hardware layer: devices the kernel drives directly
         ├── interrupt/    # The interrupt core (hardware-neutral, host-testable)

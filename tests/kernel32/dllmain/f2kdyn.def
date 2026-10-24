@@ -1,0 +1,3 @@
+LIBRARY f2kdyn BASE=0x10400000
+EXPORTS
+    f2ky_value  @1

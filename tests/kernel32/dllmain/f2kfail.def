@@ -1,0 +1,3 @@
+LIBRARY f2kfail BASE=0x10500000
+EXPORTS
+    f2kf_value  @1

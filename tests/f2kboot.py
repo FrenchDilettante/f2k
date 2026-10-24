@@ -974,9 +974,10 @@ def declaration(fixture: str) -> dict:
         return tomllib.load(file)
 
 
-# A sectioned fixture's real-machine files: its program (and the source it is built from) and its
-# capture. A fixture declared before they are checked in has none of them: it is awaited.
-REAL_MACHINE_FILES = ("{name}.exe", "{name}.c", "output.txt")
+# A sectioned fixture's real-machine files: its program and its capture. A fixture declared before
+# they are checked in has neither: it is awaited (its source may lead them, written here and built
+# and captured on the real machine).
+REAL_MACHINE_FILES = ("{name}.exe", "output.txt")
 
 
 def real_machine_files(fixture: str) -> list[Path]:

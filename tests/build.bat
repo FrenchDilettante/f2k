@@ -22,7 +22,7 @@ if not "%~1"=="" goto one
 
 call :srcsum
 if errorlevel 1 exit /b 1
-for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll) do (
+for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain) do (
     call :%%F
     if errorlevel 1 exit /b 1
 )
@@ -34,7 +34,7 @@ rem needs it and it is not there (the fixtures built on common\f2kt.h
 rem stamp their source with it).
 :one
 set F2KT_ONE=
-for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll) do if /I "%%F"=="%~1" set F2KT_ONE=yes
+for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain) do if /I "%%F"=="%~1" set F2KT_ONE=yes
 if not defined F2KT_ONE (
     echo build.bat: no such fixture %~1
     exit /b 1
@@ -181,6 +181,35 @@ call :stamp dll.c
 cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% dll.c
 if errorlevel 1 (echo build.bat: dll failed & exit /b 1)
 del dll.obj
+cd ..\..
+goto :eof
+
+rem dllmain's companion DLLs build first, each with no C runtime and
+rem DllMain its entry point, at the base its .def names (F2K never
+rem relocates an image), f2kbase.dll first (the others import it), then
+rem f2kdep.dll (f2kdyn.dll imports it); f2ksub.dll goes into dllsub\.
+rem The program links against f2kbase.lib and f2kmid.lib.
+:dllmain
+echo === dllmain
+cd kernel32\dllmain
+cl /nologo /LD f2kbase.c /link /NODEFAULTLIB /ENTRY:DllMain /DEF:f2kbase.def kernel32.lib
+if errorlevel 1 (echo build.bat: f2kbase failed & exit /b 1)
+cl /nologo /LD f2kdep.c /link /NODEFAULTLIB /ENTRY:DllMain /DEF:f2kdep.def kernel32.lib f2kbase.lib
+if errorlevel 1 (echo build.bat: f2kdep failed & exit /b 1)
+cl /nologo /LD f2kmid.c /link /NODEFAULTLIB /ENTRY:DllMain /DEF:f2kmid.def kernel32.lib f2kbase.lib
+if errorlevel 1 (echo build.bat: f2kmid failed & exit /b 1)
+cl /nologo /LD f2kdyn.c /link /NODEFAULTLIB /ENTRY:DllMain /DEF:f2kdyn.def kernel32.lib f2kbase.lib f2kdep.lib
+if errorlevel 1 (echo build.bat: f2kdyn failed & exit /b 1)
+cl /nologo /LD f2kfail.c /link /NODEFAULTLIB /ENTRY:DllMain /DEF:f2kfail.def kernel32.lib f2kbase.lib
+if errorlevel 1 (echo build.bat: f2kfail failed & exit /b 1)
+cl /nologo /LD f2ksub.c /link /NODEFAULTLIB /ENTRY:DllMain /DEF:f2ksub.def kernel32.lib f2kbase.lib
+if errorlevel 1 (echo build.bat: f2ksub failed & exit /b 1)
+if not exist dllsub mkdir dllsub
+move /y f2ksub.dll dllsub\ > nul
+call :stamp dllmain.c
+cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% dllmain.c f2kbase.lib f2kmid.lib
+if errorlevel 1 (echo build.bat: dllmain failed & exit /b 1)
+del *.obj *.lib *.exp
 cd ..\..
 goto :eof
 

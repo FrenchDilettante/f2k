@@ -1,0 +1,3 @@
+LIBRARY f2kdep BASE=0x10300000
+EXPORTS
+    f2kd_value  @1

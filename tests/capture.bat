@@ -39,7 +39,7 @@ call kernel32\files\setup.bat > nul
 
 call :cap_bare
 call :cap_runtime
-for %%F in (memory threads sync sched files fswrite dll) do call :listed kernel32 %%F
+for %%F in (memory threads sync sched files fswrite dll dllmain) do call :listed kernel32 %%F
 
 echo Captured. Run "kernel32\runtime\runtime.exe console" in an interactive console
 echo by hand, into kernel32\runtime\overrides.txt.
@@ -50,7 +50,7 @@ rem needs its data tree's attributes first (kernel32\files\setup.bat).
 :one
 set F2KT_DLL=
 for %%F in (bare) do if /I "%%F"=="%~1" set F2KT_DLL=core
-for %%F in (runtime memory threads sync sched files fswrite dll) do if /I "%%F"=="%~1" set F2KT_DLL=kernel32
+for %%F in (runtime memory threads sync sched files fswrite dll dllmain) do if /I "%%F"=="%~1" set F2KT_DLL=kernel32
 if not defined F2KT_DLL (
     echo capture.bat: no such fixture %~1
     exit /b 1

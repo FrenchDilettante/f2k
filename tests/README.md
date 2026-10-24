@@ -14,7 +14,7 @@ tests/
 ├── core/       # the kernel's own boots (kernel/), the Limine, input and screen tests
 │               # (test_limine.py, test_input.py, test_screen.py and its screens/), and the
 │               # fixtures exit0, ret0, hello and bare
-├── kernel32/   # runtime, memory, threads, sync, sched, files, fswrite, dll
+├── kernel32/   # runtime, memory, threads, sync, sched, files, fswrite, dll, dllmain
 ├── user32/     # hellogui
 ├── harness/    # checks of the tests and the repository themselves (no QEMU)
 └── common/     # f2kt.h, srcsum.c: shared by the fixtures' sources
@@ -153,12 +153,22 @@ The fixtures:
   Replaced the `fileio` smoke.
 - `dll` - a program and its companion DLL (`f2kcom.dll`, built
   beside it from `f2kcom.c` and `f2kcom.def`, with no C runtime and
-  no entry point: a loaded DLL's entry point is never called, so
-  nothing is observed from load time): the program-driven dynamic
-  linking - LoadLibraryA from the program's directory, the load
-  reference count, GetProcAddress by name and by ordinal (its .def
-  pins them), a call into the DLL, the counter reset by the unload
-  and reload, FreeLibrary down to the unload. Gated.
+  no entry point, so nothing runs at load time): the program-driven
+  dynamic linking - LoadLibraryA from the program's directory, the
+  load reference count, GetProcAddress by name and by ordinal (its
+  .def pins them), a call into the DLL, the counter reset by the
+  unload and reload, FreeLibrary down to the unload. Gated.
+- `dllmain` - the counterpart of `dll`: companion DLLs with a DllMain
+  each (no C runtime, `DllMain` their entry point), every call
+  recorded in `f2kbase.dll`'s log, which the program prints: the
+  static DLLs' DLL_PROCESS_ATTACH before `main` (lpReserved non-NULL)
+  and in dependency order, a created thread's DLL_THREAD_ATTACH and
+  DETACH and DisableThreadLibraryCalls turning them off, LoadLibraryA
+  and FreeLibrary's attach and detach (a new dependency first), a
+  DllMain answering FALSE, and the search through the program's
+  directory and the current directory (`f2ksub.dll` sits in its
+  `dllsub` subdirectory alone). Declared ahead of its real-machine
+  build and capture. Gated.
 - `fswrite` - the write side (create dispositions, writes, truncation,
   share modes, rename/copy/delete, directories, file times, CRT
   writes) in a scratch directory, captured on a local FAT32 volume.
@@ -237,12 +247,15 @@ for a capture to be retaken (its blocks skipped). A `[pending]`, `[masks]` or `[
 section with no captured block is an error, as is a mask that matches none of its
 block's lines. The fixture's `test_<name>.py` only binds
 `f2kboot.corpus_test("<name>")`. A sectioned fixture may be declared
-ahead of its real-machine files (`<name>.exe`, `<name>.c` and
-`output.txt`, all absent): it is then one skipped test, and the disk
-build leaves it out; `harness/test_repository.py` refuses a fixture holding
-only some of them. A fixture's companion DLLs (`tests/<dll>/<name>/*.dll`)
-go into `\CORPUS` beside its program, by their uppercase names (keep
-them 8.3), as they sit beside it on the real machine. Every corpus boot goes through QEMU's
+ahead of its real-machine files (`<name>.exe` and `output.txt`, both
+absent; its sources may come first, for the real machine to build): it
+is then one skipped test, and the disk build leaves it out;
+`harness/test_repository.py` refuses a fixture holding only one of them.
+A fixture's companion DLLs (`tests/<dll>/<name>/*.dll`) go into
+`\CORPUS` beside its program, by their uppercase names (keep them 8.3),
+as they sit beside it on the real machine, and those in a subdirectory
+of the fixture's (`tests/<dll>/<name>/<sub>/*.dll`) into that
+subdirectory of `\CORPUS`. Every corpus boot goes through QEMU's
 Multiboot loader (`-kernel`, the command line by `-append`), except
 `core/test_limine.py`'s: a few blocks (the scenarios the retired smokes ran
 on both paths, the command line, the memory map) booted from the disk
@@ -329,8 +342,11 @@ the single-path fixtures into the FAT32 volume's root directory by
 their 8.3 names (`EXIT0.EXE`, `RET0.EXE`, ...; see `DISK_FIXTURES` in
 the Makefile; the root's one cluster is full) and the sectioned
 fixtures into `\CORPUS`, and the kernel reads the selected program off
-the volume by path before loading it. The suite attaches that disk to
-every case, kernel-path cases included.
+the volume by path before loading it. The disk's system directory,
+`\WINNT\system32`, holds the system DLLs the userland workspace builds:
+ntdll loads every program's DLLs from the volume, kernel32 from there,
+the fixtures' companions from beside the program. The suite attaches
+that disk to every case, kernel-path cases included.
 
 A boot chooses its programs by command line: the text after `--` on
 the kernel command line is the programs' own command lines,

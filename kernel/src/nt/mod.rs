@@ -117,8 +117,8 @@ mod tests {
     /// another version of the spec fails here.
     #[test]
     fn ntdll_stubs_raise_windows_2000s_numbers() {
-        use crate::exec::modules::{resolve, NTDLL, SYSTEM_DLLS};
-        let dll = &SYSTEM_DLLS[NTDLL];
+        use crate::exec::modules::{resolve, NTDLL};
+        let dll = &NTDLL;
         for &(number, name, bytes, _) in &NT_SERVICES {
             let address =
                 resolve("ntdll.dll", name).unwrap_or_else(|_| panic!("ntdll exports no {name}"));
