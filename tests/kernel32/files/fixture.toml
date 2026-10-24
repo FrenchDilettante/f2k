@@ -62,6 +62,9 @@ find = [
     "kernel32.GetFileAttributesA",
     "ntdll.NtOpenFile",
     "ntdll.NtQueryDirectoryFile",
+    "ntdll.RtlInitAnsiString",
+    "ntdll.RtlAnsiStringToUnicodeString",
+    "ntdll.RtlUnicodeStringToAnsiString",
 ]
 mapping = [
     "kernel32.GetLastError",
@@ -119,6 +122,9 @@ open = [
     "ntdll.RtlGetCurrentDirectory_U",
     "ntdll.RtlSetCurrentDirectory_U",
     "ntdll.RtlGetFullPathName_U",
+    "ntdll.RtlInitAnsiString",
+    "ntdll.RtlAnsiStringToUnicodeString",
+    "ntdll.RtlUnicodeToMultiByteN",
 ]
 read = [
     "kernel32.GetLastError",

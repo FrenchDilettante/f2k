@@ -151,6 +151,53 @@ impl SystemTime {
     }
 }
 
+/// A TIME_FIELDS, the documented structure ntdll's conversions fill and read: the civil fields,
+/// each a CSHORT, in its order (the day of the week last, where a SYSTEMTIME has it third).
+#[repr(C)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct TimeFields {
+    pub year: i16,
+    pub month: i16,
+    pub day: i16,
+    pub hour: i16,
+    pub minute: i16,
+    pub second: i16,
+    pub milliseconds: i16,
+    pub weekday: i16,
+}
+
+/// RtlTimeToTimeFields: the civil fields of a time (100 ns units since 1601), its day of the week
+/// with them.
+pub fn time_to_time_fields(time: i64) -> TimeFields {
+    let civil = system_time_from_filetime(time as u64);
+    TimeFields {
+        year: civil.year as i16,
+        month: civil.month as i16,
+        day: civil.day as i16,
+        hour: civil.hour as i16,
+        minute: civil.minute as i16,
+        second: civil.second as i16,
+        milliseconds: civil.milliseconds as i16,
+        weekday: civil.day_of_week as i16,
+    }
+}
+
+/// RtlTimeFieldsToTime: the time of the civil fields; none (the call's FALSE) for a field out of
+/// its range, the weekday not consulted ([`filetime_from_system_time`]'s ranges).
+pub fn time_fields_to_time(fields: &TimeFields) -> Option<i64> {
+    filetime_from_system_time(SystemTime {
+        year: fields.year as u16,
+        month: fields.month as u16,
+        day_of_week: fields.weekday as u16,
+        day: fields.day as u16,
+        hour: fields.hour as u16,
+        minute: fields.minute as u16,
+        second: fields.second as u16,
+        milliseconds: fields.milliseconds as u16,
+    })
+    .map(|time| time as i64)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -194,6 +241,38 @@ mod tests {
         );
         assert_eq!(filetime_from_system_time(st), Some(base + 1_234_0000));
         assert_eq!(SystemTime::from_bytes(&st.to_bytes()), st);
+    }
+
+    /// The TIME_FIELDS forms: a time's fields, the weekday last, and back; a field out of range,
+    /// or one a CSHORT reads as negative, refused.
+    #[test]
+    fn time_fields_convert_both_ways() {
+        let time = filetime_from_fields(2024, 2, 29, 13, 45, 30) as i64 + 2_340_000;
+        let fields = time_to_time_fields(time);
+        assert_eq!(
+            fields,
+            TimeFields {
+                year: 2024,
+                month: 2,
+                day: 29,
+                hour: 13,
+                minute: 45,
+                second: 30,
+                milliseconds: 234,
+                weekday: 4,
+            }
+        );
+        assert_eq!(time_fields_to_time(&fields), Some(time));
+        let any_weekday = TimeFields {
+            weekday: 0,
+            ..fields
+        };
+        assert_eq!(time_fields_to_time(&any_weekday), Some(time));
+        assert_eq!(time_fields_to_time(&TimeFields { day: 30, ..fields }), None);
+        assert_eq!(
+            time_fields_to_time(&TimeFields { hour: -1, ..fields }),
+            None
+        );
     }
 
     /// SystemTimeToFileTime refuses a field out of its range (not the day of the week).

@@ -1,16 +1,15 @@
 //! Synchronization objects, waits, sleeps, handles and user APCs: kernel32's own code over ntdll's
 //! system services, as on Windows 2000. The W calls take their names as given; the A calls convert
-//! theirs through the ANSI code page and call the W ones (Windows 2000 converts into the thread's
-//! static Unicode string, MAX_PATH + 1 units: a longer name is ERROR_FILENAME_EXCED_RANGE, which
-//! the W call does not refuse); named objects are made in `\BaseNamedObjects`,
-//! OBJ_OPENIF ([`crate::base::format_object_attributes`]); a failed service's status sets the
-//! last error through BaseSetLastNTError.
+//! theirs through the ANSI code page (ntdll's RtlAnsiStringToUnicodeString) and call the W ones
+//! (Windows 2000 converts into the thread's static Unicode string, MAX_PATH + 1 units: a longer
+//! name is ERROR_FILENAME_EXCED_RANGE, which the W call does not refuse); named objects are made
+//! in `\BaseNamedObjects`, OBJ_OPENIF ([`crate::base::format_object_attributes`]); a failed
+//! service's status sets the last error through BaseSetLastNTError.
 //!
 //! Console handles are not kernel handles: they are the console server's, and kernel32 hands them
 //! to it as Windows 2000's does (see [`crate::console`]) — closing one closes it there, duplicating
 //! one duplicates it there, and a wait on one waits on the console's input-wait handle.
 
-use rtl::cp1252;
 use rtl::status::nt_success;
 
 use crate::base::{
@@ -66,26 +65,17 @@ const MAXIMUM_WAIT_OBJECTS: usize = 64;
 /// The ANSI path limit: an object name's longest, in characters.
 const MAX_PATH: usize = 260;
 
-/// An ANSI object name into UTF-16 in `out`, NUL-terminated: ERROR_FILENAME_EXCED_RANGE past
-/// MAX_PATH characters.
+/// An ANSI object name into UTF-16 in `out`, NUL-terminated (ntdll's conversion,
+/// [`crate::base::ansi_into`]): ERROR_FILENAME_EXCED_RANGE past MAX_PATH characters.
 ///
 /// # Safety
 ///
 /// `name` points at a NUL-terminated string (a bad pointer faults the caller, as on the platform).
 unsafe fn widen(name: *const u8, out: &mut [u16; MAX_PATH + 1]) -> Result<(), u32> {
-    let mut length = 0;
-    loop {
-        // SAFETY: the caller's string, read to its terminator.
-        let byte = unsafe { name.add(length).read() };
-        if byte == 0 {
-            out[length] = 0;
-            return Ok(());
-        }
-        if length == MAX_PATH {
-            return Err(ERROR_FILENAME_EXCED_RANGE);
-        }
-        out[length] = cp1252::MB_TO_WC[byte as usize];
-        length += 1;
+    // SAFETY: the caller's string, into the buffer.
+    match unsafe { crate::base::ansi_into(name, out) } {
+        Some(_) => Ok(()),
+        None => Err(ERROR_FILENAME_EXCED_RANGE),
     }
 }
 

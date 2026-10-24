@@ -1,10 +1,9 @@
 //! The environment group, kernel32's own code over ntdll's (RtlQueryEnvironmentVariable_U,
 //! RtlSetEnvironmentVariable, RtlExpandEnvironmentStrings_U), as on Windows 2000: the narrow forms
-//! convert through the ANSI code page into buffers on the process heap and share the W forms' work;
-//! GetEnvironmentStringsW hands out the live block, GetEnvironmentStrings (and
-//! GetEnvironmentStringsA, the same function) an ANSI copy on the process heap.
-
-use rtl::cp1252;
+//! convert through the ANSI code page (ntdll's RtlAnsiStringToUnicodeString) into buffers on the
+//! process heap and share the W forms' work; GetEnvironmentStringsW hands out the live block,
+//! GetEnvironmentStrings (and GetEnvironmentStringsA, the same function) an ANSI copy on the
+//! process heap (ntdll's RtlUnicodeToMultiByteN).
 
 use crate::base::{set_last_error, set_last_nt_error, Text};
 use crate::error::ERROR_NOT_ENOUGH_MEMORY;
@@ -64,40 +63,46 @@ unsafe fn length<U: Copy + Default + PartialEq>(string: *const U) -> usize {
     at
 }
 
-/// The most characters a counted Unicode string holds with its terminator (its byte length is a
-/// word: MAX_USTRING, 0xFFFE bytes, terminator included).
-const MAX_CONVERTED: usize = 0xFFFE / 2 - 1;
+/// An A call's string, converted onto the process heap; freed (RtlFreeUnicodeString) when dropped.
+struct Converted(UnicodeString);
 
-/// STATUS_INVALID_PARAMETER_2 (RtlAnsiStringToUnicodeString's refusal of a string too long to
-/// count) and STATUS_NO_MEMORY.
-const STATUS_INVALID_PARAMETER_2: u32 = 0xC000_00F0;
-const STATUS_NO_MEMORY: u32 = 0xC000_0017;
+impl Drop for Converted {
+    fn drop(&mut self) {
+        // SAFETY: ntdll's export, over the string its conversion allocated.
+        unsafe { nt::RtlFreeUnicodeString(&mut self.0) };
+    }
+}
 
-/// An ANSI string, widened through code page 1252 onto the process heap, as Windows 2000's
-/// RtlAnsiStringToUnicodeString converts it: the buffer and its length; STATUS_INVALID_PARAMETER_2
-/// past [`MAX_CONVERTED`] characters, STATUS_NO_MEMORY when the heap has no room.
+/// An ANSI string converted through the ANSI code page onto the process heap, as Windows 2000's
+/// kernel32 converts the environment calls' strings (ntdll's RtlInitAnsiString, then
+/// RtlAnsiStringToUnicodeString, its allocating form): STATUS_INVALID_PARAMETER_2 for a string
+/// whose Unicode form is past a counted string's reach (32766 characters and its terminator),
+/// STATUS_NO_MEMORY when the heap has no room.
 ///
 /// # Safety
 ///
-/// `string` points at a NUL-terminated string.
-unsafe fn widen(string: *const u8) -> Result<(Wide, usize), u32> {
-    // SAFETY: the caller's contract.
-    let length = unsafe { length(string) };
-    if length > MAX_CONVERTED {
-        return Err(STATUS_INVALID_PARAMETER_2);
+/// `string` is null (the empty string) or points at a NUL-terminated string.
+unsafe fn widen(string: *const u8) -> Result<Converted, u32> {
+    let mut ansi = nt::AnsiString {
+        length: 0,
+        maximum_length: 0,
+        buffer: core::ptr::null_mut(),
+    };
+    let mut wide = UnicodeString {
+        length: 0,
+        maximum_length: 0,
+        buffer: core::ptr::null_mut(),
+    };
+    // SAFETY: ntdll's exports, over the caller's string and the structures above.
+    let status = unsafe {
+        nt::RtlInitAnsiString(&mut ansi, string);
+        nt::RtlAnsiStringToUnicodeString(&mut wide, &ansi, 1)
+    };
+    if rtl::status::nt_success(status) {
+        Ok(Converted(wide))
+    } else {
+        Err(status)
     }
-    let wide = Wide::new(length + 1).ok_or(STATUS_NO_MEMORY)?;
-    for at in 0..length {
-        // SAFETY: inside the caller's string and the buffer.
-        unsafe {
-            wide.buffer
-                .add(at)
-                .write(cp1252::MB_TO_WC[string.add(at).read() as usize])
-        };
-    }
-    // SAFETY: inside the buffer.
-    unsafe { wide.buffer.add(length).write(0) };
-    Ok((wide, length))
 }
 
 /// A wide string's UNICODE_STRING (its buffer the caller's).
@@ -143,12 +148,12 @@ pub extern "system" fn get_environment_strings() -> *mut u8 {
     unsafe {
         nt::RtlAcquirePebLock();
         let block = crate::base::environment_block();
-        let units = block_units(block);
-        let copy = nt::RtlAllocateHeap(crate::base::process_heap(), 0, units);
+        let bytes = 2 * block_units(block) as u32;
+        let mut size = 0;
+        nt::RtlUnicodeToMultiByteSize(&mut size, block, bytes);
+        let copy = nt::RtlAllocateHeap(crate::base::process_heap(), 0, size as usize);
         if !copy.is_null() {
-            for at in 0..units {
-                copy.add(at).write(cp1252::wc_to_mb(block.add(at).read()));
-            }
+            nt::RtlUnicodeToMultiByteN(copy, size, core::ptr::null_mut(), block, bytes);
         }
         nt::RtlReleasePebLock();
         if copy.is_null() {
@@ -249,7 +254,7 @@ pub unsafe extern "system" fn get_environment_variable_a(
     size: u32,
 ) -> u32 {
     // SAFETY: the caller's name.
-    let (wide_name, name_length) = match unsafe { widen(name) } {
+    let wide_name = match unsafe { widen(name) } {
         Ok(wide) => wide,
         Err(status) => {
             set_last_nt_error(status);
@@ -257,7 +262,7 @@ pub unsafe extern "system" fn get_environment_variable_a(
         }
     };
     // SAFETY: the caller's buffer.
-    unsafe { variable(&wide_name.string(name_length), Text::Ansi(buffer), size) }
+    unsafe { variable(&wide_name.0, Text::Ansi(buffer), size) }
 }
 
 /// GetEnvironmentVariableW (see [`variable`]).
@@ -295,23 +300,21 @@ pub unsafe extern "system" fn set_environment_variable_a(name: *const u8, value:
             },
         )
     };
-    let ((wide_name, name_length), value) = match converted {
+    let (wide_name, value) = match converted {
         (Ok(name), Ok(value)) => (name, value),
         (Err(status), _) | (_, Err(status)) => {
             set_last_nt_error(status);
             return 0;
         }
     };
-    let name_string = wide_name.string(name_length);
-    let value_string = value.as_ref().map(|(wide, length)| wide.string(*length));
     // SAFETY: ntdll's export, over the strings above.
     let status = unsafe {
         nt::RtlSetEnvironmentVariable(
             core::ptr::null_mut(),
-            &name_string,
-            value_string
+            &wide_name.0,
+            value
                 .as_ref()
-                .map_or(core::ptr::null(), |string| string as *const UnicodeString),
+                .map_or(core::ptr::null(), |wide| &wide.0 as *const UnicodeString),
         )
     };
     if status != 0 {
@@ -416,7 +419,7 @@ pub unsafe extern "system" fn expand_environment_strings_a(
     size: u32,
 ) -> u32 {
     // SAFETY: the caller's source.
-    let (wide_source, source_length) = match unsafe { widen(source) } {
+    let wide_source = match unsafe { widen(source) } {
         Ok(wide) => wide,
         Err(status) => {
             set_last_nt_error(status);
@@ -424,7 +427,7 @@ pub unsafe extern "system" fn expand_environment_strings_a(
         }
     };
     // SAFETY: the caller's buffer.
-    unsafe { expand(&wide_source.string(source_length), Text::Ansi(buffer), size) }
+    unsafe { expand(&wide_source.0, Text::Ansi(buffer), size) }
 }
 
 /// ExpandEnvironmentStringsW (see [`expand`]).

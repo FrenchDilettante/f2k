@@ -7,21 +7,12 @@
 //! [`host`]. A stand-in records what it was given in thread-locals and fails on demand
 //! ([`host::FAIL_NEXT`]).
 
-/// A UNICODE_STRING: its length and room in bytes, and its buffer.
-#[repr(C)]
-pub struct UnicodeString {
-    pub length: u16,
-    pub maximum_length: u16,
-    pub buffer: *mut u16,
-}
-
-/// An ANSI_STRING: its length and room in bytes, and its buffer.
-#[repr(C)]
-pub struct AnsiString {
-    pub length: u16,
-    pub maximum_length: u16,
-    pub buffer: *const u8,
-}
+/// The counted strings, UNICODE_STRING and ANSI_STRING (`rtl::string`'s, which ntdll
+/// converts), the TIME_FIELDS ntdll's time conversions fill and read, and the RTL_BITMAP
+/// header its bitmap calls take.
+pub use rtl::bitmap::RtlBitmap;
+pub use rtl::string::{AnsiString, UnicodeString};
+pub use rtl::time::TimeFields;
 
 /// An OBJECT_ATTRIBUTES: what names an object to the system services.
 #[repr(C)]
@@ -475,6 +466,42 @@ unsafe extern "system" {
         ordinal: u32,
         address: *mut u32,
     ) -> u32;
+    /// The counted strings, through the ANSI code page: a narrow string counted, converted to a
+    /// Unicode one (into the caller's buffer, or one on the process heap, freed with
+    /// RtlFreeUnicodeString), a Unicode one to a narrow one, and UTF-16 units narrowed and their
+    /// narrow size.
+    pub fn RtlInitAnsiString(destination: *mut AnsiString, source: *const u8);
+    pub fn RtlAnsiStringToUnicodeString(
+        destination: *mut UnicodeString,
+        source: *const AnsiString,
+        allocate: u32,
+    ) -> u32;
+    pub fn RtlUnicodeStringToAnsiString(
+        destination: *mut AnsiString,
+        source: *const UnicodeString,
+        allocate: u32,
+    ) -> u32;
+    pub fn RtlFreeUnicodeString(string: *mut UnicodeString);
+    pub fn RtlUnicodeToMultiByteN(
+        multi_byte: *mut u8,
+        max_bytes: u32,
+        bytes_written: *mut u32,
+        unicode: *const u16,
+        unicode_bytes: u32,
+    ) -> u32;
+    pub fn RtlUnicodeToMultiByteSize(
+        bytes: *mut u32,
+        unicode: *const u16,
+        unicode_bytes: u32,
+    ) -> u32;
+    /// The time conversions: a time to its TIME_FIELDS, and back (FALSE for a field out of range).
+    pub fn RtlTimeToTimeFields(time: *const i64, fields: *mut TimeFields);
+    pub fn RtlTimeFieldsToTime(fields: *const TimeFields, time: *mut i64) -> u8;
+    /// The bitmaps: a run of clear bits found and set (0xFFFFFFFF: none), bits cleared, and
+    /// whether a range is set.
+    pub fn RtlFindClearBitsAndSet(bitmap: *mut RtlBitmap, count: u32, hint: u32) -> u32;
+    pub fn RtlClearBits(bitmap: *mut RtlBitmap, start: u32, count: u32);
+    pub fn RtlAreBitsSet(bitmap: *const RtlBitmap, start: u32, length: u32) -> u8;
 }
 
 // ntdll's cdecl imports.
@@ -771,6 +798,163 @@ pub mod host {
             );
         }
         1
+    }
+
+    /// A block on the stand-in heap, as ntdll's string conversions allocate.
+    fn string_block(size: usize) -> *mut u8 {
+        // SAFETY: the stand-in heap.
+        unsafe { RtlAllocateHeap(0, 0, size) }
+    }
+
+    /// ntdll's string calls, over the stand-in heap (rtl::string, as ntdll runs them).
+    pub unsafe extern "system" fn RtlInitAnsiString(
+        destination: *mut super::AnsiString,
+        source: *const u8,
+    ) {
+        // SAFETY: the caller's string and structure.
+        unsafe { destination.write(rtl::string::init_ansi_string(source)) };
+    }
+
+    pub unsafe extern "system" fn RtlAnsiStringToUnicodeString(
+        destination: *mut super::UnicodeString,
+        source: *const super::AnsiString,
+        allocate: u32,
+    ) -> u32 {
+        // SAFETY: the caller's strings.
+        unsafe {
+            rtl::string::ansi_string_to_unicode_string(
+                &mut *destination,
+                &*source,
+                allocate as u8 != 0,
+                string_block,
+            )
+        }
+    }
+
+    pub unsafe extern "system" fn RtlUnicodeStringToAnsiString(
+        destination: *mut super::AnsiString,
+        source: *const super::UnicodeString,
+        allocate: u32,
+    ) -> u32 {
+        // SAFETY: the caller's strings.
+        unsafe {
+            rtl::string::unicode_string_to_ansi_string(
+                &mut *destination,
+                &*source,
+                allocate as u8 != 0,
+                string_block,
+            )
+        }
+    }
+
+    pub unsafe extern "system" fn RtlFreeUnicodeString(string: *mut super::UnicodeString) {
+        // SAFETY: the caller's string, its buffer the stand-in heap's.
+        rtl::string::free_unicode_string(unsafe { &mut *string }, |buffer| unsafe {
+            RtlFreeHeap(0, 0, buffer);
+        });
+    }
+
+    pub unsafe extern "system" fn RtlUnicodeToMultiByteN(
+        multi_byte: *mut u8,
+        max_bytes: u32,
+        bytes_written: *mut u32,
+        unicode: *const u16,
+        unicode_bytes: u32,
+    ) -> u32 {
+        let units = unicode_bytes as usize / 2;
+        // SAFETY: the caller's buffers, of the sizes given.
+        let written = unsafe {
+            rtl::string::unicode_to_multi_byte(
+                if max_bytes == 0 {
+                    &mut []
+                } else {
+                    core::slice::from_raw_parts_mut(multi_byte, max_bytes as usize)
+                },
+                if units == 0 {
+                    &[]
+                } else {
+                    core::slice::from_raw_parts(unicode, units)
+                },
+            )
+        };
+        if !bytes_written.is_null() {
+            // SAFETY: the caller's count.
+            unsafe { bytes_written.write(written as u32) };
+        }
+        0
+    }
+
+    pub unsafe extern "system" fn RtlUnicodeToMultiByteSize(
+        bytes: *mut u32,
+        _unicode: *const u16,
+        unicode_bytes: u32,
+    ) -> u32 {
+        // SAFETY: the caller's count.
+        unsafe { bytes.write(rtl::string::unicode_to_multi_byte_size(unicode_bytes)) };
+        0
+    }
+
+    /// ntdll's time conversions (rtl::time, as ntdll runs them).
+    pub unsafe extern "system" fn RtlTimeToTimeFields(
+        time: *const i64,
+        fields: *mut super::TimeFields,
+    ) {
+        // SAFETY: the caller's time and structure.
+        unsafe { fields.write(rtl::time::time_to_time_fields(time.read_unaligned())) };
+    }
+
+    pub unsafe extern "system" fn RtlTimeFieldsToTime(
+        fields: *const super::TimeFields,
+        time: *mut i64,
+    ) -> u8 {
+        // SAFETY: the caller's structure and time.
+        match rtl::time::time_fields_to_time(unsafe { &*fields }) {
+            Some(converted) => {
+                unsafe { time.write_unaligned(converted) };
+                1
+            }
+            None => 0,
+        }
+    }
+
+    /// The RTL_BITMAP at `header`'s dwords and size: the PEB's TLS bitmaps' headers as the stand-in
+    /// process keeps them (the size a dword, the buffer a pointer beside the page:
+    /// `crate::base::read_pointer`).
+    fn bitmap_bits(header: *const super::RtlBitmap) -> (&'static mut [u32], u32) {
+        let header = header as usize;
+        let size = crate::base::read(header);
+        let buffer = crate::base::read_pointer(header + 4) as *mut u32;
+        // SAFETY: the stand-in process's bit array, its size's bits.
+        let bits = unsafe { core::slice::from_raw_parts_mut(buffer, rtl::bitmap::words(size)) };
+        (bits, size)
+    }
+
+    /// ntdll's bitmap calls (rtl::bitmap, as ntdll runs them).
+    pub unsafe extern "system" fn RtlFindClearBitsAndSet(
+        bitmap: *mut super::RtlBitmap,
+        count: u32,
+        hint: u32,
+    ) -> u32 {
+        let (bits, size) = bitmap_bits(bitmap);
+        rtl::bitmap::find_clear_and_set(bits, size, count, hint)
+    }
+
+    pub unsafe extern "system" fn RtlClearBits(
+        bitmap: *mut super::RtlBitmap,
+        start: u32,
+        count: u32,
+    ) {
+        let (bits, size) = bitmap_bits(bitmap);
+        rtl::bitmap::clear(bits, size, start, count);
+    }
+
+    pub unsafe extern "system" fn RtlAreBitsSet(
+        bitmap: *const super::RtlBitmap,
+        start: u32,
+        length: u32,
+    ) -> u8 {
+        let (bits, size) = bitmap_bits(bitmap);
+        u8::from(rtl::bitmap::are_set(bits, size, start, length))
     }
 
     std::thread_local! {

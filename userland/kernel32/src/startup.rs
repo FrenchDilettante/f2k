@@ -5,8 +5,6 @@
 //! process heap; F2K calls no DllMain, so both are made at their first use, under the PEB lock, on
 //! the process heap, their pointers on the PEB's page (kernel32 keeps no writable data).
 
-use rtl::cp1252;
-
 use crate::base::{
     peb,
     process_heap,
@@ -53,20 +51,27 @@ const PLATFORM_WIN32_NT: u32 = 2;
 const ERROR_INSUFFICIENT_BUFFER: u32 = 122;
 const STATUS_NO_MEMORY: u32 = 0xC000_0017;
 
-/// The UTF-16 units narrowed through code page 1252 into a new NUL-terminated block on the process
-/// heap (RtlUnicodeStringToAnsiString's allocating form); null when the heap has no room.
+/// The UTF-16 units narrowed through the ANSI code page into a new NUL-terminated block on the
+/// process heap (ntdll's RtlUnicodeStringToAnsiString, its allocating form); null when the heap has
+/// no room.
 fn narrow_on_heap(units: &[u16]) -> *mut u8 {
-    // SAFETY: ntdll's export, on the process heap.
-    let block = unsafe { nt::RtlAllocateHeap(process_heap(), 0, units.len() + 1) };
-    if !block.is_null() {
-        for (at, &unit) in units.iter().enumerate() {
-            // SAFETY: inside the block.
-            unsafe { block.add(at).write(cp1252::wc_to_mb(unit)) };
-        }
-        // SAFETY: as above.
-        unsafe { block.add(units.len()).write(0) };
+    let source = nt::UnicodeString {
+        length: (2 * units.len()) as u16,
+        maximum_length: (2 * units.len()) as u16,
+        buffer: units.as_ptr() as *mut u16,
+    };
+    let mut narrow = nt::AnsiString {
+        length: 0,
+        maximum_length: 0,
+        buffer: core::ptr::null_mut(),
+    };
+    // SAFETY: ntdll's export, over the string above; the block it allocates is the process heap's.
+    let status = unsafe { nt::RtlUnicodeStringToAnsiString(&mut narrow, &source, 1) };
+    if rtl::status::nt_success(status) {
+        narrow.buffer
+    } else {
+        core::ptr::null_mut()
     }
-    block
 }
 
 /// The PEB-page slot's block, made by `make` at the first use, under the PEB lock (as Windows
