@@ -193,7 +193,7 @@ pub unsafe extern "system" fn get_proc_address(module: u32, name: *const u8) -> 
                 let string = AnsiString {
                     length: length as u16,
                     maximum_length: length as u16 + 1,
-                    buffer: name,
+                    buffer: name as *mut u8,
                 };
                 // SAFETY: ntdll's export, over the string above.
                 unsafe { nt::LdrGetProcedureAddress(module, &string, 0, &mut address) }

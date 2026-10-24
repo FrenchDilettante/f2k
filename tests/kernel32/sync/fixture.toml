@@ -78,6 +78,8 @@ event = [
     "ntdll.NtResetEvent",
     "ntdll.NtClearEvent",
     "ntdll.NtPulseEvent",
+    "ntdll.RtlInitAnsiString",
+    "ntdll.RtlAnsiStringToUnicodeString",
 ]
 mutex = [
     "kernel32.SetLastError",

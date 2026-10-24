@@ -2,8 +2,9 @@
 //! thread's last error, BaseSetLastNTError (a failed system service's status, mapped through
 //! ntdll's RtlNtStatusToDosError), BaseFormatTimeOut, BaseFormatObjectAttributes and
 //! BaseGetNamedObjectDirectory, the PEB lock's critical regions, the PEB, the process parameters,
-//! the process heap and the environment block as the thread reaches them, and the standard and
-//! console handles' tests.
+//! the process heap and the environment block as the thread reaches them, the standard and console
+//! handles' tests, and the A calls' strings converted through ntdll's code-page calls (in through
+//! RtlAnsiStringToUnicodeString, out through RtlUnicodeToMultiByteN).
 
 use crate::nt::{self, ObjectAttributes, UnicodeString};
 
@@ -113,9 +114,60 @@ pub unsafe fn wide_units<'a>(string: *const u16) -> &'a [u16] {
     unsafe { core::slice::from_raw_parts(string, length) }
 }
 
-/// A caller's buffer for a string a call hands back: an A call's bytes (each unit narrowed through
-/// the ANSI code page) or a W call's UTF-16 units as they are. Code page 1252 is one byte a
-/// character, so both count the same characters.
+/// An A call's narrow string converted into `buffer`, terminated, as Windows 2000's kernel32
+/// converts one into a buffer of its own (the thread's static Unicode string, for a name): ntdll's
+/// RtlInitAnsiString, then RtlAnsiStringToUnicodeString through the ANSI code page. Its length in
+/// units; none when the buffer cannot hold it and its terminator (a null string is the empty one).
+///
+/// # Safety
+///
+/// `string` is null or a NUL-terminated string (a bad pointer faults the caller, as on the
+/// platform).
+pub unsafe fn ansi_into(string: *const u8, buffer: &mut [u16]) -> Option<usize> {
+    let mut ansi = nt::AnsiString {
+        length: 0,
+        maximum_length: 0,
+        buffer: core::ptr::null_mut(),
+    };
+    let mut wide = UnicodeString {
+        length: 0,
+        maximum_length: (2 * buffer.len()).min(rtl::string::MAX_USTRING) as u16,
+        buffer: buffer.as_mut_ptr(),
+    };
+    // SAFETY: ntdll's exports, over the caller's string and the buffer, of the room given.
+    let status = unsafe {
+        nt::RtlInitAnsiString(&mut ansi, string);
+        nt::RtlAnsiStringToUnicodeString(&mut wide, &ansi, 0)
+    };
+    rtl::status::nt_success(status).then_some(wide.length as usize / 2)
+}
+
+/// UTF-16 units narrowed through the ANSI code page into the bytes at `buffer`, as Windows 2000's
+/// kernel32 hands an A call's strings back (ntdll's RtlUnicodeToMultiByteN). The code page is one
+/// byte a character: `buffer` takes as many bytes as there are units.
+///
+/// # Safety
+///
+/// `buffer` holds `units.len()` bytes.
+pub unsafe fn narrow(units: &[u16], buffer: *mut u8) {
+    if units.is_empty() {
+        return;
+    }
+    // SAFETY: ntdll's export, over the caller's buffer and the units, of the sizes given.
+    unsafe {
+        nt::RtlUnicodeToMultiByteN(
+            buffer,
+            units.len() as u32,
+            core::ptr::null_mut(),
+            units.as_ptr(),
+            (2 * units.len()) as u32,
+        )
+    };
+}
+
+/// A caller's buffer for a string a call hands back: an A call's bytes (the units narrowed through
+/// the ANSI code page, [`narrow`]) or a W call's UTF-16 units as they are. Code page 1252 is one
+/// byte a character, so both count the same characters.
 #[derive(Clone, Copy)]
 pub enum Text {
     Ansi(*mut u8),
@@ -136,9 +188,16 @@ impl Text {
     ///
     /// The buffer holds them.
     pub unsafe fn put(self, units: &[u16]) {
-        for (at, &unit) in units.iter().enumerate() {
-            // SAFETY: the caller's contract.
-            unsafe { self.put_unit(at, unit) };
+        // SAFETY: the caller's contract.
+        unsafe {
+            match self {
+                Text::Ansi(buffer) => narrow(units, buffer),
+                Text::Wide(buffer) => {
+                    for (at, &unit) in units.iter().enumerate() {
+                        buffer.add(at).write_unaligned(unit);
+                    }
+                }
+            }
         }
     }
 
@@ -164,7 +223,7 @@ impl Text {
         // SAFETY: the caller's contract.
         unsafe {
             match self {
-                Text::Ansi(buffer) => buffer.add(at).write(rtl::cp1252::wc_to_mb(unit)),
+                Text::Ansi(buffer) => narrow(&[unit], buffer.add(at)),
                 Text::Wide(buffer) => buffer.add(at).write_unaligned(unit),
             }
         }

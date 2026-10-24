@@ -110,5 +110,8 @@ tls = [
     "ntdll.NtSetInformationThread",
     "ntdll.LdrInitializeThunk",
     "ntdll.LdrShutdownThread",
+    "ntdll.RtlFindClearBitsAndSet",
+    "ntdll.RtlAreBitsSet",
+    "ntdll.RtlClearBits",
 ]
 crt = ["kernel32.CreateEventA", "kernel32.SetEvent"]

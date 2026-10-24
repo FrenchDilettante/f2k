@@ -1,9 +1,10 @@
 //! The file API: kernel32's own code over ntdll's file services, as on Windows 2000. Each call's
-//! work is its W form's; the narrow calls convert their names through the ANSI code page into a
-//! buffer of MAX_PATH + 1 units (Windows 2000's kernel32 converts into the thread's static Unicode
-//! string, of that size: a longer name is ERROR_FILENAME_EXCED_RANGE), the W calls copy theirs
-//! into the same ([`wide`]), and the names a call hands back go to either kind of buffer
-//! ([`crate::base::Text`]); ntdll makes the NT path of the DOS one
+//! work is its W form's; the narrow calls convert their names through the ANSI code page (ntdll's
+//! RtlAnsiStringToUnicodeString) into a buffer of MAX_PATH + 1 units (Windows 2000's kernel32
+//! converts into the thread's static Unicode string, of that size: a longer name is
+//! ERROR_FILENAME_EXCED_RANGE), the W calls copy theirs into the same ([`wide`]), and the names a
+//! call hands back go to either kind of buffer ([`crate::base::Text`], an A call's narrowed by
+//! ntdll's RtlUnicodeToMultiByteN); ntdll makes the NT path of the DOS one
 //! (RtlDosPathNameToNtPathName_U, which fails for a name it cannot make: ERROR_PATH_NOT_FOUND), a
 //! relative path under the current directory coming back relative to its handle; and a failed
 //! service's status sets the last error through BaseSetLastNTError, but where Windows 2000's
@@ -19,8 +20,6 @@ pub mod find;
 pub mod handle;
 pub mod names;
 pub mod volume;
-
-use rtl::cp1252;
 
 use crate::base::{process_heap, set_last_error, SecurityAttributes, OBJ_INHERIT};
 use crate::nt::{self, IoStatus, ObjectAttributes, RelativeName, UnicodeString};
@@ -140,29 +139,25 @@ impl Wide {
     }
 }
 
-/// An ANSI name into UTF-16; none (ERROR_FILENAME_EXCED_RANGE set) past MAX_PATH characters.
+/// An ANSI name into UTF-16 (ntdll's conversion, [`crate::base::ansi_into`]); none
+/// (ERROR_FILENAME_EXCED_RANGE set) past MAX_PATH characters.
 ///
 /// # Safety
 ///
-/// `name` points at a NUL-terminated string (a bad pointer faults the caller, as on the platform).
+/// `name` is null (the empty name) or points at a NUL-terminated string (a bad pointer faults the
+/// caller, as on the platform).
 pub unsafe fn widen(name: *const u8) -> Option<Wide> {
     let mut wide = Wide {
         units: [0; MAX_PATH + 1],
         length: 0,
     };
-    loop {
-        // SAFETY: the caller's string, read to its terminator.
-        let byte = unsafe { name.add(wide.length).read() };
-        if byte == 0 {
-            return Some(wide);
-        }
-        if wide.length == MAX_PATH {
-            set_last_error(ERROR_FILENAME_EXCED_RANGE);
-            return None;
-        }
-        wide.units[wide.length] = cp1252::MB_TO_WC[byte as usize];
-        wide.length += 1;
-    }
+    // SAFETY: the caller's string, into the buffer.
+    let Some(length) = (unsafe { crate::base::ansi_into(name, &mut wide.units) }) else {
+        set_last_error(ERROR_FILENAME_EXCED_RANGE);
+        return None;
+    };
+    wide.length = length;
+    Some(wide)
 }
 
 /// A W call's name, copied into the buffer an A call's conversion fills. A W call does not convert:
@@ -190,12 +185,11 @@ pub unsafe fn wide(name: *const u16) -> Option<Wide> {
 ///
 /// `buffer` holds `size` bytes, and `size` exceeds `units`' length.
 pub unsafe fn narrow_into(units: &[u16], buffer: *mut u8) {
-    for (at, &unit) in units.iter().enumerate() {
-        // SAFETY: the caller's buffer holds the name and its terminator.
-        unsafe { buffer.add(at).write(cp1252::wc_to_mb(unit)) };
+    // SAFETY: the caller's buffer holds the name and its terminator.
+    unsafe {
+        crate::base::narrow(units, buffer);
+        buffer.add(units.len()).write(0);
     }
-    // SAFETY: as above.
-    unsafe { buffer.add(units.len()).write(0) };
 }
 
 /// A DOS path's NT form, as ntdll made it (its buffer on the process heap, freed with it): the name

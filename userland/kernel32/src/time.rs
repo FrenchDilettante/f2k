@@ -1,9 +1,9 @@
 //! The clocks and the time conversions, kernel32's own code as on Windows 2000: the tick count, the
 //! system time and the time-zone bias from KUSER_SHARED_DATA ([`crate::shared`]), the time zone and
 //! the performance counter from ntdll's system services, the FILETIME/SYSTEMTIME conversions
-//! through rtl's (RtlTimeToTimeFields, RtlTimeFieldsToTime).
+//! through ntdll's (RtlTimeToTimeFields, RtlTimeFieldsToTime).
 
-use rtl::time::{filetime_from_system_time, system_time_from_filetime, SystemTime};
+use rtl::time::{SystemTime, TimeFields};
 
 use crate::base::{set_last_error, set_last_nt_error};
 use crate::error::ERROR_INVALID_PARAMETER;
@@ -47,7 +47,7 @@ pub unsafe extern "system" fn get_system_time_as_file_time(file_time: *mut u64) 
 #[unsafe(export_name = "f2k_export_GetSystemTime")]
 pub unsafe extern "system" fn get_system_time(out: *mut u8) {
     // SAFETY: the caller's SYSTEMTIME.
-    unsafe { write_system_time(out, system_time_from_filetime(system_time())) };
+    unsafe { write_system_time(out, civil(system_time())) };
 }
 
 /// GetLocalTime: the local time as a SYSTEMTIME.
@@ -58,7 +58,43 @@ pub unsafe extern "system" fn get_system_time(out: *mut u8) {
 #[unsafe(export_name = "f2k_export_GetLocalTime")]
 pub unsafe extern "system" fn get_local_time(out: *mut u8) {
     // SAFETY: the caller's SYSTEMTIME.
-    unsafe { write_system_time(out, system_time_from_filetime(local_time())) };
+    unsafe { write_system_time(out, civil(local_time())) };
+}
+
+/// A time's SYSTEMTIME: ntdll's RtlTimeToTimeFields, its TIME_FIELDS in the SYSTEMTIME's order
+/// (the day of the week third, where TIME_FIELDS has it last).
+fn civil(time: u64) -> SystemTime {
+    let mut fields = TimeFields::default();
+    // SAFETY: ntdll's export, over the time and the structure above.
+    unsafe { nt::RtlTimeToTimeFields(&(time as i64), &mut fields) };
+    SystemTime {
+        year: fields.year as u16,
+        month: fields.month as u16,
+        day_of_week: fields.weekday as u16,
+        day: fields.day as u16,
+        hour: fields.hour as u16,
+        minute: fields.minute as u16,
+        second: fields.second as u16,
+        milliseconds: fields.milliseconds as u16,
+    }
+}
+
+/// A SYSTEMTIME's time: its fields as a TIME_FIELDS to ntdll's RtlTimeFieldsToTime, which judges
+/// them; none for a field out of its range (the day of the week is not consulted).
+fn time_of(civil: SystemTime) -> Option<u64> {
+    let fields = TimeFields {
+        year: civil.year as i16,
+        month: civil.month as i16,
+        day: civil.day as i16,
+        hour: civil.hour as i16,
+        minute: civil.minute as i16,
+        second: civil.second as i16,
+        milliseconds: civil.milliseconds as i16,
+        weekday: civil.day_of_week as i16,
+    };
+    let mut time = 0i64;
+    // SAFETY: ntdll's export, over the structure and the time above.
+    (unsafe { nt::RtlTimeFieldsToTime(&fields, &mut time) } != 0).then_some(time as u64)
 }
 
 /// # Safety
@@ -157,7 +193,7 @@ pub unsafe extern "system" fn system_time_to_file_time(
             .as_mut_ptr()
             .copy_from_nonoverlapping(system_time, bytes.len())
     };
-    match filetime_from_system_time(SystemTime::from_bytes(&bytes)) {
+    match time_of(SystemTime::from_bytes(&bytes)) {
         Some(time) => {
             // SAFETY: the caller's FILETIME.
             unsafe { file_time.write_unaligned(time) };
@@ -188,7 +224,7 @@ pub unsafe extern "system" fn file_time_to_system_time(
         return 0;
     }
     // SAFETY: the caller's SYSTEMTIME.
-    unsafe { write_system_time(system_time, system_time_from_filetime(time)) };
+    unsafe { write_system_time(system_time, civil(time)) };
     1
 }
 

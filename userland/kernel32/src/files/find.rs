@@ -9,7 +9,6 @@
 //! pattern that ended in a dot (before ntdll trimmed it) DOS_STAR. FindNextFile continues the
 //! search a buffer's worth at a time.
 
-use rtl::cp1252;
 use rtl::status::nt_success;
 
 use super::*;
@@ -89,7 +88,8 @@ impl FindDataW {
         );
     }
 
-    /// Its WIN32_FIND_DATAA form into `out` (the names through the ANSI code page).
+    /// Its WIN32_FIND_DATAA form into `out`: the names through the ANSI code page, each an
+    /// ANSI_STRING over its array (ntdll's RtlUnicodeStringToAnsiString: what fits, terminated).
     ///
     /// # Safety
     ///
@@ -99,11 +99,17 @@ impl FindDataW {
         unsafe {
             out.copy_from_nonoverlapping(self.head.as_ptr(), 44);
             let put = |at: usize, units: &[u16], room: usize| {
-                let count = units.len().min(room - 1);
-                for (index, &unit) in units.iter().take(count).enumerate() {
-                    out.add(at + index).write(cp1252::wc_to_mb(unit));
-                }
-                out.add(at + count).write(0);
+                let source = UnicodeString {
+                    length: (2 * units.len()) as u16,
+                    maximum_length: (2 * units.len()) as u16,
+                    buffer: units.as_ptr() as *mut u16,
+                };
+                let mut name = nt::AnsiString {
+                    length: 0,
+                    maximum_length: room as u16,
+                    buffer: out.add(at),
+                };
+                nt::RtlUnicodeStringToAnsiString(&mut name, &source, 0);
             };
             put(44, self.name(), MAX_PATH);
             put(304, self.alternate(), 14);

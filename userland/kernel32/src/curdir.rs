@@ -1,39 +1,16 @@
 //! The current directory's Win32 calls, kernel32's own code over ntdll's (RtlGetCurrentDirectory_U,
 //! RtlSetCurrentDirectory_U), as on Windows 2000, each call's work its W form's: the narrow forms
-//! convert through the ANSI code page, in a buffer of MAX_PATH units (Windows 2000's kernel32
-//! converts into the thread's static Unicode string, of that size).
+//! convert through the ANSI code page (ntdll's RtlAnsiStringToUnicodeString), in a buffer of
+//! MAX_PATH units (Windows 2000's kernel32 converts into the thread's static Unicode string, of
+//! that size), and hand theirs back narrowed ([`Text`]).
 
-use rtl::cp1252;
-
-use crate::base::{set_last_error, set_last_nt_error, wide_units, Text};
+use crate::base::{ansi_into, set_last_error, set_last_nt_error, wide_units, Text};
 use crate::nt::{self, UnicodeString};
 
 /// The ANSI path limit, terminator included.
 const MAX_PATH: usize = 260;
 /// ERROR_FILENAME_EXCED_RANGE: a path past MAX_PATH.
 const ERROR_FILENAME_EXCED_RANGE: u32 = 206;
-
-/// An ANSI path into UTF-16 in `out`: its length in units; None when it does not fit with its
-/// terminator.
-///
-/// # Safety
-///
-/// `path` points at a NUL-terminated string.
-unsafe fn widen(path: *const u8, out: &mut [u16; MAX_PATH]) -> Option<usize> {
-    let mut length = 0;
-    loop {
-        // SAFETY: the caller's string, read to its terminator.
-        let byte = unsafe { path.add(length).read() };
-        if byte == 0 {
-            return Some(length);
-        }
-        if length + 1 >= MAX_PATH {
-            return None;
-        }
-        out[length] = cp1252::MB_TO_WC[byte as usize];
-        length += 1;
-    }
-}
 
 /// GetCurrentDirectoryW's work: the current directory (no trailing separator but a root's) into
 /// the caller's buffer of `size` characters: its length when it fits with its terminator;
@@ -109,7 +86,7 @@ fn set_current_directory(wide: &mut [u16], length: usize) -> u32 {
 pub unsafe extern "system" fn set_current_directory_a(path: *const u8) -> u32 {
     let mut wide = [0u16; MAX_PATH];
     // SAFETY: the caller's string.
-    let Some(length) = (unsafe { widen(path, &mut wide) }) else {
+    let Some(length) = (unsafe { ansi_into(path, &mut wide) }) else {
         set_last_error(ERROR_FILENAME_EXCED_RANGE);
         return 0;
     };

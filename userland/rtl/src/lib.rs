@@ -2,7 +2,10 @@
 //!
 //! What every build shares, host-tested: the status mapping ([`status`]: RtlNtStatusToDosError's
 //! table, which kernel32 reports every failed system service through), the code pages and their
-//! conversions ([`codepage`], [`cp1252`]), the time conversions ([`time`]), the critical sections
+//! conversions ([`codepage`], [`cp1252`]), the counted strings ([`string`]: ntdll's
+//! RtlAnsiStringToUnicodeString family, which kernel32's narrow calls convert through), the time
+//! conversions ([`time`]: ntdll's RtlTimeToTimeFields and RtlTimeFieldsToTime), the bitmaps
+//! ([`bitmap`]: ntdll's RtlFindClearBitsAndSet family, kernel32's TLS slots), the critical sections
 //! ([`critsec`]: ntdll's RtlEnterCriticalSection family, over the system it is handed), the heaps
 //! ([`heap`] over the allocator core [`heapcore`]: ntdll's RtlCreateHeap family), Local and Global
 //! memory ([`localmem`]: kernel32's, over ntdll's heap calls), the environment blocks ([`env`]:
@@ -21,6 +24,7 @@
 
 #![cfg_attr(not(test), no_std)]
 
+pub mod bitmap;
 pub mod codepage;
 pub mod console;
 pub mod cp1252;
@@ -36,6 +40,7 @@ pub mod printf;
 pub mod seh;
 pub mod status;
 mod status_table;
+pub mod string;
 pub mod stub;
 #[cfg(all(target_arch = "x86", target_os = "windows", not(test)))]
 pub mod sys;

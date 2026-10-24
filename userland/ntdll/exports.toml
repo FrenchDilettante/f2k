@@ -9,9 +9,10 @@
 # reports a failed service through; the exception dispatcher and RtlUnwind, which kernel32 forwards
 # to; the critical sections, which kernel32's Enter, Leave, TryEnter and Delete forward to, and the
 # PEB lock; the heaps, which kernel32's HeapAlloc, HeapFree, HeapReAlloc, HeapSize and HeapValidate
-# forward to; the environment; LdrInitializeThunk, a fresh thread's first user-mode work), and the
-# F2K-internal entry point the kernel sends a thread to (`internal = true`: not a Windows 2000
-# export).
+# forward to; the environment; the counted strings, the time conversions and the bitmaps kernel32's
+# narrow calls, file times and TLS slots go through; LdrInitializeThunk, a fresh thread's first
+# user-mode work), and the F2K-internal entry point the kernel sends a thread to (`internal = true`:
+# not a Windows 2000 export).
 
 [[group]]
 key = "nt"
@@ -36,6 +37,18 @@ title = "heaps"
 [[group]]
 key = "paths"
 title = "paths, the current directory and the environment"
+
+[[group]]
+key = "strings"
+title = "counted strings and the ANSI code page"
+
+[[group]]
+key = "time"
+title = "time conversions"
+
+[[group]]
+key = "bitmaps"
+title = "bitmaps"
 
 [[group]]
 key = "loader"
@@ -782,6 +795,104 @@ group = "paths"
 args = ["ptr Environment", "ptr Source", "ptr Destination", "ptr<u32> ReturnedLength"]
 impl = { native = "RtlExpandEnvironmentStrings_U" }
 ordinal = 452
+
+# --- counted strings and the ANSI code page (src/strings.rs over rtl::string) ----------------------
+
+[[export]]
+name = "RtlInitAnsiString"
+group = "strings"
+args = ["ptr DestinationString", "strA? SourceString"]
+impl = { native = "RtlInitAnsiString" }
+ordinal = 510
+fails = "void"
+note = "a string past the counts' reach is counted as its first 65534 bytes"
+
+[[export]]
+name = "RtlAnsiStringToUnicodeString"
+group = "strings"
+args = ["ptr DestinationString", "ptr SourceString", "u32 AllocateDestinationString"]
+impl = { native = "RtlAnsiStringToUnicodeString" }
+ordinal = 339
+note = "code page 1252; an allocated buffer is the process heap's. Into the caller's buffer, STATUS_BUFFER_OVERFLOW (nothing converted) when its room is not past the string's length"
+
+[[export]]
+name = "RtlUnicodeStringToAnsiString"
+group = "strings"
+args = ["ptr DestinationString", "ptr SourceString", "u32 AllocateDestinationString"]
+impl = { native = "RtlUnicodeStringToAnsiString" }
+ordinal = 655
+note = "code page 1252; an allocated buffer is the process heap's. Into the caller's buffer, what fits is converted and terminated, STATUS_BUFFER_OVERFLOW when the string does not"
+
+[[export]]
+name = "RtlFreeUnicodeString"
+group = "strings"
+args = ["ptr UnicodeString"]
+impl = { native = "RtlFreeUnicodeString" }
+ordinal = 479
+fails = "void"
+
+[[export]]
+name = "RtlUnicodeToMultiByteN"
+group = "strings"
+args = ["ptr MultiByteString", "u32 MaxBytesInMultiByteString", "ptr<u32> BytesInMultiByteString", "ptr UnicodeString", "u32 BytesInUnicodeString"]
+impl = { native = "RtlUnicodeToMultiByteN" }
+ordinal = 661
+note = "code page 1252"
+
+[[export]]
+name = "RtlUnicodeToMultiByteSize"
+group = "strings"
+args = ["ptr<u32> BytesInMultiByteString", "ptr UnicodeString", "u32 BytesInUnicodeString"]
+impl = { native = "RtlUnicodeToMultiByteSize" }
+ordinal = 662
+note = "code page 1252: a byte per unit"
+
+# --- time conversions (src/time.rs over rtl::time) ------------------------------------------------
+
+[[export]]
+name = "RtlTimeToTimeFields"
+group = "time"
+args = ["ptr<u64> Time", "ptr TimeFields"]
+impl = { native = "RtlTimeToTimeFields" }
+ordinal = 644
+fails = "void"
+
+[[export]]
+name = "RtlTimeFieldsToTime"
+group = "time"
+args = ["ptr TimeFields", "ptr<u64> Time"]
+impl = { native = "RtlTimeFieldsToTime" }
+ordinal = 640
+fails = "FALSE"
+note = "FALSE for a field out of its range (the year 1601 to 30827); the weekday is not consulted"
+
+# --- bitmaps (src/bitmap.rs over rtl::bitmap) -----------------------------------------------------
+
+[[export]]
+name = "RtlFindClearBitsAndSet"
+group = "bitmaps"
+args = ["ptr BitMapHeader", "u32 NumberToFind", "u32 HintIndex"]
+impl = { native = "RtlFindClearBitsAndSet" }
+ordinal = 460
+fails = "0xFFFFFFFF"
+note = "from the hint on, then from the start; a run never wraps past the end"
+
+[[export]]
+name = "RtlClearBits"
+group = "bitmaps"
+args = ["ptr BitMapHeader", "u32 StartingIndex", "u32 NumberToClear"]
+impl = { native = "RtlClearBits" }
+ordinal = 358
+fails = "void"
+
+[[export]]
+name = "RtlAreBitsSet"
+group = "bitmaps"
+args = ["ptr BitMapHeader", "u32 StartingIndex", "u32 Length"]
+impl = { native = "RtlAreBitsSet" }
+ordinal = 349
+fails = "FALSE"
+note = "FALSE for an empty range or one past the end"
 
 # --- the loader's module lists (src/loader.rs over rtl::modules) ----------------------------------
 
@@ -1921,10 +2032,6 @@ name = "RtlAnsiStringToUnicodeSize"
 ordinal = 338
 
 [[export]]
-name = "RtlAnsiStringToUnicodeString"
-ordinal = 339
-
-[[export]]
 name = "RtlAppendAsciizToString"
 ordinal = 340
 
@@ -1961,10 +2068,6 @@ name = "RtlAreBitsClear"
 ordinal = 348
 
 [[export]]
-name = "RtlAreBitsSet"
-ordinal = 349
-
-[[export]]
 name = "RtlAssert"
 ordinal = 350
 
@@ -1995,10 +2098,6 @@ ordinal = 356
 [[export]]
 name = "RtlClearAllBits"
 ordinal = 357
-
-[[export]]
-name = "RtlClearBits"
-ordinal = 358
 
 [[export]]
 name = "RtlCompactHeap"
@@ -2381,10 +2480,6 @@ name = "RtlFindClearBits"
 ordinal = 459
 
 [[export]]
-name = "RtlFindClearBitsAndSet"
-ordinal = 460
-
-[[export]]
 name = "RtlFindLastBackwardRunClear"
 ordinal = 461
 
@@ -2451,10 +2546,6 @@ ordinal = 477
 [[export]]
 name = "RtlFreeSid"
 ordinal = 478
-
-[[export]]
-name = "RtlFreeUnicodeString"
-ordinal = 479
 
 [[export]]
 name = "RtlFreeUserThreadStack"
@@ -2567,10 +2658,6 @@ ordinal = 508
 [[export]]
 name = "RtlImpersonateSelf"
 ordinal = 509
-
-[[export]]
-name = "RtlInitAnsiString"
-ordinal = 510
 
 [[export]]
 name = "RtlInitCodePageTable"
@@ -3037,10 +3124,6 @@ name = "RtlSystemTimeToLocalTime"
 ordinal = 639
 
 [[export]]
-name = "RtlTimeFieldsToTime"
-ordinal = 640
-
-[[export]]
 name = "RtlTimeToElapsedTimeFields"
 ordinal = 641
 
@@ -3051,10 +3134,6 @@ ordinal = 642
 [[export]]
 name = "RtlTimeToSecondsSince1980"
 ordinal = 643
-
-[[export]]
-name = "RtlTimeToTimeFields"
-ordinal = 644
 
 [[export]]
 name = "RtlTraceDatabaseAdd"
@@ -3093,10 +3172,6 @@ name = "RtlUnicodeStringToAnsiSize"
 ordinal = 654
 
 [[export]]
-name = "RtlUnicodeStringToAnsiString"
-ordinal = 655
-
-[[export]]
 name = "RtlUnicodeStringToCountedOemString"
 ordinal = 656
 
@@ -3115,14 +3190,6 @@ ordinal = 659
 [[export]]
 name = "RtlUnicodeToCustomCPN"
 ordinal = 660
-
-[[export]]
-name = "RtlUnicodeToMultiByteN"
-ordinal = 661
-
-[[export]]
-name = "RtlUnicodeToMultiByteSize"
-ordinal = 662
 
 [[export]]
 name = "RtlUnicodeToOemN"

@@ -13,7 +13,8 @@
 //! gives the thread's TLS back (LdrShutdownThread) before NtTerminateThread.
 //!
 //! The TLS indexes are the PEB's two bitmaps (TlsBitmap, indexes 0..64; TlsExpansionBitmap,
-//! 64..1088), changed under the PEB lock; a thread's slots are its TEB's TlsSlots and, past 64, its
+//! 64..1088), changed under the PEB lock through ntdll's bitmap calls (RtlFindClearBitsAndSet,
+//! RtlAreBitsSet, RtlClearBits); a thread's slots are its TEB's TlsSlots and, past 64, its
 //! TlsExpansionSlots (made by TlsSetValue on first use, on the process heap: src/natives.s, and
 //! `f2k_k32_tls_expansion` in src/main.rs; a set that finds no room fails with
 //! ERROR_NOT_ENOUGH_MEMORY).
@@ -22,7 +23,6 @@ use rtl::status::nt_success;
 
 use crate::base::{
     peb,
-    read,
     read_pointer,
     set_last_error,
     set_last_nt_error,
@@ -557,32 +557,25 @@ pub extern "system" fn set_thread_priority_boost(thread: u32, disable: u32) -> u
     set_information(thread, THREAD_PRIORITY_BOOST, u32::from(disable != 0))
 }
 
-/// RtlFindClearBitsAndSet(bitmap, 1, 0), for the RTL_BITMAP at `header`: its lowest clear bit, set;
-/// none when every bit is.
+/// The lowest clear bit of the RTL_BITMAP at `header`, set (ntdll's RtlFindClearBitsAndSet, one bit
+/// from the start); none when every bit is.
 fn find_clear_and_set(header: usize) -> Option<u32> {
-    let (size, buffer) = (read(header), read_pointer(header + 4));
-    for word in 0..size.div_ceil(32) {
-        let at = buffer + 4 * word as usize;
-        let bits = read(at);
-        let index = 32 * word + bits.trailing_ones();
-        if index < size && bits != u32::MAX {
-            write(at, bits | 1 << (index % 32));
-            return Some(index);
-        }
-    }
-    None
+    // SAFETY: ntdll's export, over one of the PEB's TLS bitmaps (the caller holds the PEB lock).
+    let index = unsafe { nt::RtlFindClearBitsAndSet(header as *mut nt::RtlBitmap, 1, 0) };
+    (index != u32::MAX).then_some(index)
 }
 
-/// Whether bit `index` of the RTL_BITMAP at `header` is set (RtlAreBitsSet: false past its end).
+/// Whether bit `index` of the RTL_BITMAP at `header` is set (ntdll's RtlAreBitsSet: false past its
+/// end).
 fn bit_set(header: usize, index: u32) -> bool {
-    let (size, buffer) = (read(header), read_pointer(header + 4));
-    index < size && read(buffer + 4 * (index / 32) as usize) & 1 << (index % 32) != 0
+    // SAFETY: as above.
+    unsafe { nt::RtlAreBitsSet(header as *const nt::RtlBitmap, index, 1) != 0 }
 }
 
-/// Clear bit `index` of the RTL_BITMAP at `header`.
+/// Clear bit `index` of the RTL_BITMAP at `header` (ntdll's RtlClearBits).
 fn clear_bit(header: usize, index: u32) {
-    let at = read_pointer(header + 4) + 4 * (index / 32) as usize;
-    write(at, read(at) & !(1 << (index % 32)));
+    // SAFETY: as above.
+    unsafe { nt::RtlClearBits(header as *mut nt::RtlBitmap, index, 1) };
 }
 
 /// TlsAlloc: the lowest free index — the TEB's slots' first, then the expansion slots' — marked in

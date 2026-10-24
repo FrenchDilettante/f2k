@@ -111,6 +111,10 @@ times = [
     "kernel32.SystemTimeToFileTime",
     "kernel32.GetFileTime",
     "ntdll.NtSetInformationFile",
+    "ntdll.RtlTimeToTimeFields",
+    "ntdll.RtlTimeFieldsToTime",
+    "ntdll.RtlInitAnsiString",
+    "ntdll.RtlAnsiStringToUnicodeString",
 ]
 write = [
     "kernel32.CloseHandle",

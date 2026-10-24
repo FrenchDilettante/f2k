@@ -36,6 +36,8 @@ seh = ["int 3: handled yes code 0x80000003 flags 0 params 3 info 0 *"]
     "ntdll.RtlAllocateHeap",
     "ntdll.RtlFreeHeap",
     "ntdll.LdrInitializeThunk",
+    "ntdll.RtlUnicodeStringToAnsiString",
+    "ntdll.RtlUnicodeToMultiByteN",
 ]
 unhandled = [
     "kernel32.UnhandledExceptionFilter",
@@ -117,6 +119,10 @@ env = [
     "ntdll.RtlQueryEnvironmentVariable_U",
     "ntdll.RtlSetEnvironmentVariable",
     "ntdll.RtlExpandEnvironmentStrings_U",
+    "ntdll.RtlInitAnsiString",
+    "ntdll.RtlAnsiStringToUnicodeString",
+    "ntdll.RtlFreeUnicodeString",
+    "ntdll.RtlUnicodeToMultiByteSize",
 ]
 locale = [
     "kernel32.GetLastError",
