@@ -4,9 +4,10 @@
 //! exports' and all its exports' declared argument blocks, for the tests that check the built DLLs
 //! against the specs. The generated files land in OUT_DIR, included where the tables live.
 //!
-//! It also points the kernel at the system DLLs it embeds (userland/: ntdll.dll and kernel32.dll,
-//! mapped into every process). They are built first, by the userland workspace (`make userland`);
-//! the kernel rebuilds when they change.
+//! It also points the kernel at the system DLLs the userland workspace builds (userland/):
+//! ntdll.dll, which it embeds and maps into every process, and kernel32.dll, which its tests read
+//! (the disk image carries it for ntdll to load). They are built first (`make userland`); the
+//! kernel rebuilds when they change.
 
 use std::path::{Path, PathBuf};
 

@@ -5,7 +5,9 @@
 //! [`Image::map_into`] builds the in-memory image under the eager mapping rule (headers verbatim,
 //! then each section's raw bytes, zero-fill to the section extent), [`Image::exports`] reads the
 //! export directory of a mapped image, and [`Image::snap_imports`] resolves the import directory
-//! module by module through a caller-supplied resolver, writing addresses into the IAT slots.
+//! module by module through a caller-supplied resolver, writing addresses into the IAT slots. The
+//! kernel snaps no import at run time (ntdll's loader snaps every module's, in user mode): the
+//! import walk is the tests', reading the corpus binaries' imports against the built DLLs.
 //!
 //! Every image maps at its own preferred base (no relocation machinery exists): the base must be a
 //! 64 KiB multiple and the image must fit below the kernel window.
@@ -54,11 +56,15 @@ const MAX_DIRECTORIES: usize = 16;
 
 /// Data-directory indices the loader consumes.
 pub const DIR_EXPORT: usize = 0;
+#[cfg(test)]
 pub const DIR_IMPORT: usize = 1;
+#[cfg(test)]
 pub const DIR_BASERELOC: usize = 5;
+#[cfg(test)]
 pub const DIR_IAT: usize = 12;
 
 /// The high bit of a thunk marks an import by ordinal, not by name.
+#[cfg(test)]
 const ORDINAL_FLAG: u32 = 0x8000_0000;
 
 /// Section-characteristic bits the loader maps to page protection.
@@ -76,6 +82,7 @@ const SIZE_SECTION_HEADER: usize = 40;
 const SIZE_OPT_STANDARD: usize = 96;
 const SIZE_DIRECTORY_ENTRY: usize = 8;
 /// One import descriptor: five dwords, terminated by an all-zero one.
+#[cfg(test)]
 const SIZE_IMPORT_DESCRIPTOR: usize = 20;
 /// The export directory's fixed part (its arrays and strings live elsewhere in the image).
 const SIZE_EXPORT_DIRECTORY: usize = 40;
@@ -218,6 +225,7 @@ pub struct Image {
 
 /// The outcome of an import snap: descriptors walked and IAT slots written.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg(test)]
 pub struct SnapResult {
     pub descriptors: usize,
     pub thunks: usize,
@@ -441,6 +449,7 @@ fn read_u32(bytes: &[u8], off: usize, what: &str) -> u32 {
     u32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]])
 }
 
+#[cfg(test)]
 fn write_u32(bytes: &mut [u8], off: usize, value: u32, what: &str) {
     need(bytes, off, 4, what);
     bytes[off..off + 4].copy_from_slice(&value.to_le_bytes());
@@ -723,6 +732,7 @@ impl Image {
 
     /// The section whose raw data backs `rva`, if any. The bound is the raw size: file-mode lookups
     /// can only find bytes that exist in the file.
+    #[cfg(test)]
     pub fn section_for_rva(&self, rva: u32) -> Option<usize> {
         (0..self.num_sections).find(|&i| {
             let s = &self.sections[i];
@@ -732,6 +742,7 @@ impl Image {
 
     /// File-mode RVA to file offset: header-region RVAs resolve directly, others through the
     /// section table.
+    #[cfg(test)]
     pub fn rva_to_offset(&self, rva: u32) -> Option<usize> {
         if rva < self.size_of_headers {
             return Some(rva as usize);
@@ -743,6 +754,7 @@ impl Image {
 
     /// A data directory, if the image has it. A directory whose RVA points outside the image is
     /// malformed bytes, not an absent directory.
+    #[cfg(test)]
     pub fn directory(&self, index: usize) -> Option<(u32, u32)> {
         if index >= self.num_directories {
             return None;
@@ -766,6 +778,7 @@ impl Image {
     }
 
     /// How many raw bytes the mapping copies for the section.
+    #[cfg(test)]
     pub fn section_copy_len(&self, index: usize) -> u32 {
         self.sections[index].copy_len(self.section_alignment)
     }
@@ -852,6 +865,7 @@ impl Image {
     /// The IAT region: the IAT directory when the linker emitted one, else the whole raw extent of
     /// the section holding the import directory. Call only when an import directory exists (the
     /// zero-import image never reaches here).
+    #[cfg(test)]
     fn iat_region(&self) -> (u32, u32) {
         if let Some((rva, size)) = self.directory(DIR_IAT) {
             return (rva, size);
@@ -877,6 +891,7 @@ impl Image {
     /// zero tail cannot hold names. The hint is read but never authoritative. Ordinal imports are
     /// not served: the resolver is name-keyed (the system DLLs' ordinals are not Windows 2000's
     /// yet).
+    #[cfg(test)]
     fn import_name<'a>(&self, file: &'a [u8], thunk: u32) -> &'a str {
         if thunk & ORDINAL_FLAG != 0 {
             panic!(
@@ -899,6 +914,7 @@ impl Image {
 
     /// A NUL-terminated string at `rva`, read out of the file bytes: it must lie inside the image
     /// and be file-backed.
+    #[cfg(test)]
     fn file_cstr<'a>(&self, file: &'a [u8], rva: u32, what: &str) -> &'a str {
         assert!(
             rva < self.size_of_image,
@@ -918,6 +934,7 @@ impl Image {
     /// is never trusted. Descriptor and thunk reads come from the mapped image (what the loader
     /// actually walks); module and entry-point names come from the file bytes (they must be
     /// file-backed).
+    #[cfg(test)]
     pub fn snap_imports(
         &self,
         file: &[u8],

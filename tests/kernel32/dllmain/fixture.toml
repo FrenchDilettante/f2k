@@ -1,0 +1,30 @@
+# dllmain: one test per block of the real-machine capture (output.txt); see tests/README.md. Its
+# companion DLLs, built beside dllmain.exe from their sources and .def files with no C runtime and
+# DllMain their entry point (f2kbase.dll, f2kmid.dll, f2kdep.dll, f2kdyn.dll, f2kfail.dll; f2ksub.dll
+# in its dllsub subdirectory), go into \CORPUS as they sit beside the program on the real machine.
+# Declared ahead of its real-machine build and capture (no dllmain.exe, no output.txt yet).
+description = "dllmain - DLL entry points: DLL_PROCESS_ATTACH before main and in dependency order, a created thread's DLL_THREAD_ATTACH and DLL_THREAD_DETACH and DisableThreadLibraryCalls, LoadLibraryA's and FreeLibrary's attach and detach, a DllMain answering FALSE, and the search through the program's and the current directory."
+kind = "sectioned"
+gate = true
+
+[pins]
+# The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
+# calls); scripts/compat.py derives each export's coverage from them.
+attach = ["ntdll.LdrInitializeThunk"]
+threads = [
+    "kernel32.DisableThreadLibraryCalls",
+    "ntdll.LdrDisableThreadCalloutsForDll",
+    "kernel32.CreateThread",
+    "ntdll.LdrShutdownThread",
+]
+dynamic = [
+    "kernel32.LoadLibraryA",
+    "kernel32.FreeLibrary",
+    "ntdll.LdrLoadDll",
+    "ntdll.LdrUnloadDll",
+]
+search = [
+    "kernel32.SetCurrentDirectoryA",
+    "kernel32.LoadLibraryA",
+    "kernel32.GetModuleFileNameA",
+]

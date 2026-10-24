@@ -1,0 +1,3 @@
+LIBRARY f2kmid BASE=0x10200000
+EXPORTS
+    f2km_value  @1

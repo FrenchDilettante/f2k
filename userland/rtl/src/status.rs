@@ -50,11 +50,13 @@ pub const STATUS_CANNOT_DELETE: u32 = 0xC000_0121;
 pub const STATUS_USER_MAPPED_FILE: u32 = 0xC000_0243;
 pub const STATUS_INVALID_SYSTEM_SERVICE: u32 = 0xC000_001C;
 /// The loader's: an export name a module does not have, or a module without exports; a module the
-/// process has not loaded; an ordinal a module does not export; an entry point not found.
+/// process has not loaded; an ordinal a module does not export; an entry point not found; a DLL's
+/// entry point answering FALSE to DLL_PROCESS_ATTACH.
 pub const STATUS_PROCEDURE_NOT_FOUND: u32 = 0xC000_007A;
 pub const STATUS_DLL_NOT_FOUND: u32 = 0xC000_0135;
 pub const STATUS_ORDINAL_NOT_FOUND: u32 = 0xC000_0138;
 pub const STATUS_ENTRYPOINT_NOT_FOUND: u32 = 0xC000_0139;
+pub const STATUS_DLL_INIT_FAILED: u32 = 0xC000_0142;
 
 /// ERROR_MR_MID_NOT_FOUND: a status the table does not map.
 pub const ERROR_MR_MID_NOT_FOUND: u32 = 317;
@@ -147,6 +149,7 @@ mod tests {
             (STATUS_DLL_NOT_FOUND, 126),
             (STATUS_ORDINAL_NOT_FOUND, 182),
             (STATUS_ENTRYPOINT_NOT_FOUND, 127),
+            (STATUS_DLL_INIT_FAILED, 1114),
         ] {
             assert_eq!(dos_error(status), error, "{status:#010x}");
         }

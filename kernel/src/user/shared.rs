@@ -16,6 +16,11 @@ pub const USER_ADDRESS: u32 = 0x7FFE_0000;
 /// Where the kernel writes it (Windows 2000's own address for it).
 pub const KERNEL_ADDRESS: u32 = 0xFFDF_0000;
 
+/// The system root, the page's NtSystemRoot: the one place every system path comes from (ntdll's
+/// DLL search and its own module path read it from the page; the kernel finds kernel32 under it on
+/// the boot volume, `exec::modules`).
+pub const NT_SYSTEM_ROOT: &[u8] = b"C:\\WINNT";
+
 /// The fields, at their NT 5.0 offsets.
 pub mod offset {
     pub const TICK_COUNT_LOW: u32 = 0x000;
@@ -56,7 +61,7 @@ pub fn constant_fields(out: &mut [u8; 0x1000]) {
     );
     put(offset::IMAGE_NUMBER_LOW, &0x014Cu16.to_le_bytes());
     put(offset::IMAGE_NUMBER_HIGH, &0x014Cu16.to_le_bytes());
-    for (index, &byte) in b"C:\\WINNT".iter().enumerate() {
+    for (index, &byte) in NT_SYSTEM_ROOT.iter().enumerate() {
         put(
             offset::NT_SYSTEM_ROOT + 2 * index as u32,
             &u16::from(byte).to_le_bytes(),

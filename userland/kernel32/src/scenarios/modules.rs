@@ -1,10 +1,11 @@
-//! The modules: GetModuleHandleA, LoadLibraryA, FreeLibrary and GetProcAddress over ntdll's loader,
-//! GetModuleFileNameA over the PEB's module lists (the stand-in lists: the image, ntdll and
-//! kernel32, as the kernel lays them out).
+//! The modules: GetModuleHandleA, LoadLibraryA, FreeLibrary, GetProcAddress and
+//! DisableThreadLibraryCalls over ntdll's loader, GetModuleFileNameA over the PEB's module lists
+//! (the stand-in lists: the image, ntdll and kernel32, as ntdll lays them out).
 
 use super::{last_error, UNREAD};
 use crate::base::set_last_error;
 use crate::module::{
+    disable_thread_library_calls,
     free_library,
     get_module_file_name_a,
     get_module_handle_a,
@@ -18,6 +19,7 @@ use crate::nt::{
     IMAGE_BASE as IMAGE,
     IMAGE_PATH,
     KERNEL32,
+    NO_THREAD_CALLS,
     NTDLL,
 };
 
@@ -186,6 +188,25 @@ fn free_library_answers_for_modules() {
     assert_eq!(free_library(KERNEL32), 1);
     assert_eq!(free_library(0x1234_0000), 0);
     assert_eq!(last_error(), ERROR_MOD_NOT_FOUND);
+}
+
+/// DisableThreadLibraryCalls: the loader turns the module's thread notifications off (TRUE, the
+/// last error untouched); a handle naming no module is FALSE with ERROR_MOD_NOT_FOUND, as Windows
+/// 2000 maps LdrDisableThreadCalloutsForDll's STATUS_DLL_NOT_FOUND.
+///
+/// Pins: kernel32.DisableThreadLibraryCalls
+#[test]
+fn thread_library_calls_are_turned_off_by_the_loader() {
+    NO_THREAD_CALLS.with(|modules| modules.borrow_mut().clear());
+    set_last_error(0x0F2F_2F2F);
+    assert_eq!(disable_thread_library_calls(KERNEL32), 1);
+    assert_eq!(last_error(), 0x0F2F_2F2F, "untouched");
+    assert_eq!(disable_thread_library_calls(0x1234_0000), 0);
+    assert_eq!(last_error(), ERROR_MOD_NOT_FOUND);
+    assert_eq!(
+        NO_THREAD_CALLS.with(|modules| modules.borrow().clone()),
+        [KERNEL32]
+    );
 }
 
 /// GetProcAddress: a null handle is the image's; an ordinal (a value below 0x10000) is looked up as

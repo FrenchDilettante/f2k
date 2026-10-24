@@ -19,12 +19,15 @@
 //! RtlFreeUnicodeString, RtlUnicodeToMultiByteN, RtlUnicodeToMultiByteSize: `src/strings.rs` over
 //! `rtl::string`); the time conversions (RtlTimeToTimeFields, RtlTimeFieldsToTime: `src/time.rs`
 //! over `rtl::time`); the bitmaps kernel32 keeps the TLS slots in (RtlFindClearBitsAndSet,
-//! RtlClearBits, RtlAreBitsSet: `src/bitmap.rs` over `rtl::bitmap`); the loader's exports over the
-//! process's module lists (LdrGetDllHandle, LdrLoadDll, LdrUnloadDll, LdrGetProcedureAddress:
-//! `src/loader.rs` over `rtl::modules`); and the loader's share of a thread's start and end:
-//! LdrInitializeThunk, which the kernel delivers before a fresh thread's first instruction
-//! (`src/ldr.s`: the process heap, the PEB lock and the loader lock, the thread's implicit TLS),
-//! and LdrShutdownThread and LdrShutdownProcess, kernel32's ExitThread's and ExitProcess's;
+//! RtlClearBits, RtlAreBitsSet: `src/bitmap.rs` over `rtl::bitmap`); the loader, which loads every
+//! DLL of the process but ntdll from the volume, kernel32 included, and calls their entry points
+//! (`src/loader.rs` over `rtl::modules`: the process's module lists, LdrGetDllHandle, LdrLoadDll,
+//! LdrUnloadDll, LdrGetProcedureAddress, LdrDisableThreadCalloutsForDll); and the loader's share of
+//! a thread's start and end: LdrInitializeThunk, which the kernel delivers before a fresh thread's
+//! first instruction (`src/ldr.s`: the process heap, the PEB lock and the loader lock and the
+//! image's DLLs on the first thread, the thread's implicit TLS, the DLLs' DLL_PROCESS_ATTACH or
+//! DLL_THREAD_ATTACH), and LdrShutdownThread and LdrShutdownProcess, kernel32's ExitThread's and
+//! ExitProcess's;
 //! DbgPrint (`src/dbgprint.s`, `src/dbgprint.rs` over `rtl::printf`: the text to the
 //! kernel's debugger channel, COM1); and the stub routine its stubbed exports' generated bodies go
 //! to (`src/stub.rs`). The kernel finds LdrInitializeThunk and the two
@@ -248,14 +251,18 @@ extern "C" fn f2k_rtl_validate_heap(handle: usize, flags: u32, pointer: usize) -
 // The loader's share of a thread's start and end: LdrInitializeThunk's body (src/ldr.s calls it),
 // LdrShutdownThread (kernel32's ExitThread) and LdrShutdownProcess (kernel32's ExitProcess).
 
-/// A fresh thread's initialization, before anything else it runs in user mode: the process's first
-/// thread makes the heap list's lock and the process heap (PEB+0x18), the PEB lock and the loader
-/// lock, and opens the starting current directory's handle; every thread its implicit-TLS block,
-/// when the image has a TLS directory. What finds no room is left undone (the program meets a null
-/// process heap or TLS pointer).
+/// A fresh thread's initialization, before anything else it runs in user mode, `context` its
+/// initial context. The process's first thread makes the heap list's lock and the process heap
+/// (PEB+0x18), the PEB lock and the loader lock, opens the starting current directory's handle,
+/// and builds the module lists, loading the image's DLLs (`loader`); every thread then makes its
+/// implicit-TLS block, when the image has a TLS directory; then the DLLs' entry points: the first
+/// thread's DLL_PROCESS_ATTACH (lpReserved the context), a later thread's DLL_THREAD_ATTACH. A
+/// process whose DLLs do not load or initialize ends here with the status. A TLS block that finds
+/// no room is left undone (the program meets a null TLS pointer).
 #[unsafe(no_mangle)]
-extern "C" fn f2k_ldr_initialize() {
-    if sys::process_heap_handle() == 0 {
+extern "C" fn f2k_ldr_initialize(context: u32) {
+    let first = sys::process_heap_handle() == 0;
+    if first {
         let process = sys::process();
         // SAFETY: the PEB's lock slot, zero until now (no other thread exists yet).
         let _ = unsafe { &*process.lock }.initialize(&Native, 0);
@@ -276,8 +283,27 @@ extern "C" fn f2k_ldr_initialize() {
         );
         sys::init_peb_lock(enter, leave);
         sys::init_loader_lock();
+        if sys::process_heap_handle() == 0 {
+            loader::fail_process(rtl::status::STATUS_NO_MEMORY);
+        }
         curdir::open_starting_directory();
+        if let Err(status) = loader::initialize_process() {
+            loader::fail_process(status);
+        }
     }
+    thread_tls();
+    if first {
+        if let Err(status) = loader::attach_process(context) {
+            loader::fail_process(status);
+        }
+    } else {
+        loader::attach_thread();
+    }
+}
+
+/// The calling thread's implicit-TLS block, when the image has a TLS directory: its array on the
+/// TEB (ThreadLocalStoragePointer), on the process heap.
+fn thread_tls() {
     let base = sys::image_base();
     let Some(directory) =
         ldr::tls_directory(|offset| Some(sys::read(base + offset as usize) as u32))
@@ -300,14 +326,15 @@ extern "C" fn f2k_ldr_initialize() {
     }
 }
 
-/// LdrShutdownThread: a thread ending through ExitThread gives its implicit-TLS block and its TLS
-/// expansion slots back to the process heap (Windows 2000 also sends DLL_THREAD_DETACH here; F2K
-/// calls no DllMain).
+/// LdrShutdownThread: a thread ending through ExitThread calls its DLLs' entry points with
+/// DLL_THREAD_DETACH (`loader`), then gives its implicit-TLS block and its TLS expansion slots back
+/// to the process heap.
 #[unsafe(export_name = "f2k_export_LdrShutdownThread")]
 pub extern "system" fn ldr_shutdown_thread() -> u32 {
     if sys::process_heap_handle() == 0 {
         return 0;
     }
+    loader::detach_thread();
     let (teb, heap) = (sys::teb(), sys::process_heap());
     let array = sys::read(teb + sys::TEB_THREAD_LOCAL_STORAGE_POINTER);
     if array != 0 {
@@ -322,10 +349,13 @@ pub extern "system" fn ldr_shutdown_thread() -> u32 {
     0
 }
 
-/// LdrShutdownProcess: kernel32's ExitProcess calls it once the process's other threads are gone.
-/// Windows 2000 sends DLL_PROCESS_DETACH and runs the image's TLS callbacks here; F2K calls no
-/// DllMain and runs no TLS callback, so nothing is left to do.
+/// LdrShutdownProcess: kernel32's ExitProcess calls it once the process's other threads are gone:
+/// the DLLs' entry points get DLL_PROCESS_DETACH, lpReserved non-NULL, in reverse initialization
+/// order (`loader`). Windows 2000 also runs the image's TLS callbacks here; F2K runs none.
 #[unsafe(export_name = "f2k_export_LdrShutdownProcess")]
 pub extern "system" fn ldr_shutdown_process() -> u32 {
+    if sys::process_heap_handle() != 0 {
+        loader::detach_process();
+    }
     0
 }

@@ -7,8 +7,7 @@
 //! platform's are. The service pack's name the PEB's CSDVersion points at shares the pages, past
 //! the block's strings. kernel32 makes its narrow command line (GetCommandLineA's) and startup
 //! information (GetStartupInfoA's) from the block, in user mode and on the process heap, as Windows
-//! 2000's does. The loader's module lists share the first page, past the block's strings
-//! (`user::ldr::LOADER_DATA`).
+//! 2000's does.
 //!
 //! The kernel writes only the process's starting values and never reads the block back. The
 //! current directory starts as the image's own directory, its DOS path alone: ntdll's process
@@ -218,16 +217,10 @@ pub fn starting_directory(image_path: &[u8], out: &mut [u8; MODULE_ROOM]) -> usi
 /// Map the parameters pages at [`crate::user::PARAMS_PAGE`] into `space` (the current address
 /// space) and write the block: the command line, the image's Win32 path (from its volume path
 /// `module`), the current directory (the image's own), the standard handles and the environment
-/// block's address; the service pack's name; and the loader's module lists (`image`, then the
-/// system DLLs: see `user::ldr`), the image's entry over the block's ImagePathName. The environment
-/// block's region is mapped too, its zeroed pages an empty block.
+/// block's address; the service pack's name. The environment block's region is mapped too, its
+/// zeroed pages an empty block.
 #[cfg(target_arch = "x86")]
-pub fn map(
-    space: &mut crate::mem::vm::AddressSpace,
-    command_line: &[u8],
-    module: &[u8],
-    image: crate::user::ldr::Module,
-) {
+pub fn map(space: &mut crate::mem::vm::AddressSpace, command_line: &[u8], module: &[u8]) {
     use crate::mem::{paging::PAGE_SIZE, vm};
     use crate::user::syscall::write_user;
     assert!(
@@ -267,7 +260,6 @@ pub fn map(
         standard: [STD_INPUT, STD_OUTPUT, STD_ERROR],
     });
     let _ = write_user(base, &block);
-    crate::user::ldr::map(image, &name[..name_length]);
     for page in 0..ENVIRONMENT_BLOCK_PAGES {
         vm::map_zeroed(
             space,

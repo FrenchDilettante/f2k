@@ -1,7 +1,8 @@
 //! The modules, as Windows 2000's kernel32 serves them: GetModuleHandle and LoadLibrary (A and W),
-//! FreeLibrary and GetProcAddress over ntdll's loader (LdrGetDllHandle, LdrLoadDll, LdrUnloadDll,
-//! LdrGetProcedureAddress), and GetModuleFileName (A and W) over the PEB's module lists, which it
-//! walks itself under the loader lock, as Windows 2000's does.
+//! FreeLibrary, GetProcAddress and DisableThreadLibraryCalls over ntdll's loader (LdrGetDllHandle,
+//! LdrLoadDll, LdrUnloadDll, LdrGetProcedureAddress, LdrDisableThreadCalloutsForDll), and
+//! GetModuleFileName (A and W) over the PEB's module lists, which it walks itself under the loader
+//! lock, as Windows 2000's does.
 //!
 //! A module name converts as Windows 2000's converts it, into a MAX_PATH-character Unicode string
 //! (Basep8BitStringToStaticUnicodeString): a longer one is ERROR_FILENAME_EXCED_RANGE, never cut
@@ -157,6 +158,20 @@ pub unsafe extern "system" fn load_library_w(name: *const u16) -> u32 {
 pub extern "system" fn free_library(module: u32) -> u32 {
     // SAFETY: ntdll's export.
     let status = unsafe { nt::LdrUnloadDll(module) };
+    if !nt_success(status) {
+        set_last_nt_error(status);
+        return 0;
+    }
+    1
+}
+
+/// DisableThreadLibraryCalls: the DLL whose handle is `module` gets no DLL_THREAD_ATTACH and
+/// DLL_THREAD_DETACH from now on (LdrDisableThreadCalloutsForDll). FALSE with the status's error
+/// for a handle naming no module.
+#[unsafe(export_name = "f2k_export_DisableThreadLibraryCalls")]
+pub extern "system" fn disable_thread_library_calls(module: u32) -> u32 {
+    // SAFETY: ntdll's export.
+    let status = unsafe { nt::LdrDisableThreadCalloutsForDll(module) };
     if !nt_success(status) {
         set_last_nt_error(status);
         return 0;

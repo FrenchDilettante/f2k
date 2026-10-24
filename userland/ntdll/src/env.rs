@@ -90,6 +90,19 @@ fn with_environment<R>(environment: *mut u16, body: impl FnOnce(*mut u16) -> R) 
     result
 }
 
+/// The value of `name` in the process's environment, under the PEB lock, into `out` (cut to its
+/// room): its length in units, zero for an unset name.
+pub(crate) fn process_variable(name: &[u16], out: &mut [u16]) -> usize {
+    with_environment(core::ptr::null_mut(), |block| {
+        // SAFETY: the process's environment block.
+        let (block, _) = unsafe { block_at(block) };
+        let found = env::query(block, name).unwrap_or(&[]);
+        let length = found.len().min(out.len());
+        out[..length].copy_from_slice(&found[..length]);
+        length
+    })
+}
+
 /// RtlQueryEnvironmentVariable_U: the value of `name` in the environment (the process's for null)
 /// into `value`'s buffer, its length in bytes in `value.Length`, terminated when there is room.
 /// STATUS_VARIABLE_NOT_FOUND for an unset name; STATUS_BUFFER_TOO_SMALL, the length it needs in

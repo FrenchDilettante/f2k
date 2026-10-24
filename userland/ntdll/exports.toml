@@ -902,7 +902,7 @@ group = "loader"
 args = ["ptr DllPath", "ptr DllCharacteristics", "ptr DllName", "ptr<u32> DllHandle"]
 impl = { native = "LdrGetDllHandle" }
 ordinal = 42
-note = "over the PEB's module lists, which the kernel builds at the process's creation; a name with a path is matched against the full paths"
+note = "over the PEB's module lists, which ntdll builds at the process's start; a name with a path is matched against the full paths"
 
 [[export]]
 name = "LdrLoadDll"
@@ -910,7 +910,7 @@ group = "loader"
 args = ["ptr DllPath", "ptr DllCharacteristics", "ptr DllName", "ptr<u32> DllHandle"]
 impl = { native = "LdrLoadDll" }
 ordinal = 46
-note = "a module the lists hold, its load count raised, or one loaded from the volume (the current directory, then the root): an image section mapped at its preferred base, never relocated, its imports snapped in user mode; no DllMain runs"
+note = "a module the lists hold, its load count raised, or one loaded from the volume (Windows 2000's default search: the program's directory, the current directory, the system directories, PATH; the DllPath argument is not consulted): an image section mapped at its preferred base, never relocated, its imports snapped in user mode, then DLL_PROCESS_ATTACH (lpReserved NULL) for every DLL it brought in, its dependencies first; FALSE fails the load (STATUS_DLL_INIT_FAILED)"
 
 [[export]]
 name = "LdrUnloadDll"
@@ -918,7 +918,15 @@ group = "loader"
 args = ["u32 DllHandle"]
 impl = { native = "LdrUnloadDll" }
 ordinal = 53
-note = "a module's load count lowered: a loaded module's last reference unmaps it and releases its imports; the modules the process starts with stay"
+note = "a module's load count lowered: a loaded module's last reference calls its DLL_PROCESS_DETACH (lpReserved NULL), unmaps it and releases its imports; the modules the process starts with stay"
+
+[[export]]
+name = "LdrDisableThreadCalloutsForDll"
+group = "loader"
+args = ["u32 DllHandle"]
+impl = { native = "LdrDisableThreadCalloutsForDll" }
+ordinal = 36
+note = "the DLL's DLL_THREAD_ATTACH and DLL_THREAD_DETACH turned off (LDRP_DONT_CALL_FOR_THREADS); STATUS_DLL_NOT_FOUND for a handle naming no module. Its one argument is the owner's reading, to be confirmed against the real ntdll"
 
 [[export]]
 name = "LdrGetProcedureAddress"
@@ -936,7 +944,7 @@ group = "loader"
 args = ["ptr NormalContext", "ptr SystemArgument1", "ptr SystemArgument2"]
 impl = { native = "LdrInitializeThunk" }
 ordinal = 44
-note = "the kernel delivers a fresh thread's initialization here, like a user APC over its initial context: the process heap, the PEB lock and the loader lock (the first thread), the thread's TLS, then NtContinue of the context"
+note = "the kernel delivers a fresh thread's initialization here, like a user APC over its initial context: the process heap, the PEB lock, the loader lock and the module lists, the image's DLLs loaded from the volume and snapped (the first thread), the thread's TLS, the DLLs' DLL_PROCESS_ATTACH (lpReserved the context) or DLL_THREAD_ATTACH, then NtContinue of the context; a DLL not found, an import not exported or an entry point answering FALSE ends the process with the status"
 
 [[export]]
 name = "LdrShutdownThread"
@@ -944,7 +952,7 @@ group = "loader"
 args = []
 impl = { native = "LdrShutdownThread" }
 ordinal = 51
-note = "the thread's implicit-TLS block and TLS expansion slots back to the process heap (no DLL_THREAD_DETACH: DllMain is not called)"
+note = "the DLLs' DLL_THREAD_DETACH (reverse initialization order), then the thread's implicit-TLS block and TLS expansion slots back to the process heap"
 
 [[export]]
 name = "LdrShutdownProcess"
@@ -952,7 +960,7 @@ group = "loader"
 args = []
 impl = { native = "LdrShutdownProcess" }
 ordinal = 50
-note = "nothing to run: no DLL_PROCESS_DETACH (DllMain is not called) and no TLS callbacks"
+note = "the DLLs' DLL_PROCESS_DETACH, lpReserved non-NULL, in reverse initialization order; no TLS callbacks"
 
 # --- not implemented yet: the rest of ntdll.dll 5.0.2195.6685's export table, by ordinal ---------
 
@@ -1079,10 +1087,6 @@ ordinal = 34
 [[export]]
 name = "LdrAlternateResourcesEnabled"
 ordinal = 35
-
-[[export]]
-name = "LdrDisableThreadCalloutsForDll"
-ordinal = 36
 
 [[export]]
 name = "LdrEnumResources"

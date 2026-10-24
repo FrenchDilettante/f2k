@@ -1,0 +1,5 @@
+LIBRARY f2kbase BASE=0x10100000
+EXPORTS
+    f2kb_log    @1
+    f2kb_count  @2
+    f2kb_get    @3

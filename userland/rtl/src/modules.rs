@@ -2,22 +2,25 @@
 //! them.
 //!
 //! The PEB's Ldr (PEB_LDR_DATA) heads three lists of the process's modules (LDR_DATA_TABLE_ENTRY):
-//! in load order (the image, ntdll, kernel32), in memory order (the same), and in initialization
-//! order (ntdll, kernel32: the image is not initialized as a DLL is). Programs and packers walk the
-//! lists themselves (to find kernel32's base), so the layout is the platform's, byte for byte. The
-//! kernel builds them at the process's creation (`kernel/src/user/ldr.rs`): Windows 2000's
-//! LdrpInitialize builds them in user mode, but F2K's loader of the program still runs in the
-//! kernel. A DLL loaded after that (LdrLoadDll) joins them here ([`loaded_entry`], [`insert`]), its
-//! imports walked and snapped against them ([`import_descriptors`], [`import_address`]), and leaves
-//! them at its last unload ([`remove`]).
+//! in load order (the image, ntdll, then each DLL as it is mapped), in memory order (the same), and
+//! in initialization order (ntdll, then each DLL once its imports are snapped, so a DLL comes after
+//! the DLLs it imports; the image is not initialized as a DLL is). Programs and packers walk the
+//! lists themselves (to find kernel32's base), so the layout is the platform's, byte for byte.
+//! ntdll's process initialization builds them in user mode, on the process heap, as Windows 2000's
+//! LdrpInitializeProcess does: the image's entry and ntdll's, then every DLL the image imports,
+//! loaded and snapped like any other. A DLL joins them as it is mapped ([`loaded_entry`],
+//! [`insert`]), its imports walked and snapped against them ([`import_descriptors`],
+//! [`import_address`]), joins the initialization order once they are ([`insert_initialized`]), and
+//! leaves them at its last unload ([`remove`]).
 //!
 //! What ntdll's loader exports do over them (LdrGetDllHandle, LdrGetProcedureAddress, LdrLoadDll,
 //! LdrUnloadDll): find a module by its base, or by its name ([`by_name`]: without regard to case,
 //! against its BaseDllName, or against its FullDllName for a name with a path, which the caller
-//! has made absolute; a name without an extension is taken as `.DLL`); and find an export of a
-//! module by its exact name or by its ordinal, through the module's export directory as mapped
-//! ([`procedure_address`], [`procedure_by_ordinal`]), following forwarders (`NTDLL.RtlUnwind`,
-//! split at the first dot; `NTDLL.#12` by ordinal) into the modules they name.
+//! has made absolute; a name without an extension is taken as `.DLL`); look for a module's file
+//! where Windows 2000 looks ([`search_place`]); and find an export of a module by its exact name or
+//! by its ordinal, through the module's export directory as mapped ([`procedure_address`],
+//! [`procedure_by_ordinal`]), following forwarders (`NTDLL.RtlUnwind`, split at the first dot;
+//! `NTDLL.#12` by ordinal) into the modules they name.
 //!
 //! The reads go through [`Memory`], by 32-bit user address: the process's own memory on the target,
 //! a model in the tests.
@@ -89,11 +92,16 @@ pub mod entry {
     pub const SIZE: u32 = 0x48;
 }
 
-/// The LDRP_* flags of an entry: a DLL's image (LDRP_IMAGE_DLL), and an entry the process's
-/// initialization has processed (LDRP_ENTRY_PROCESSED).
+/// The LDRP_* flags of an entry: a DLL's image (LDRP_IMAGE_DLL); an entry the loader's
+/// initialization pass has taken (LDRP_ENTRY_PROCESSED: its entry point called, or none to call);
+/// a DLL whose thread notifications are off (LDRP_DONT_CALL_FOR_THREADS:
+/// LdrDisableThreadCalloutsForDll); and a DLL whose entry point has been called with
+/// DLL_PROCESS_ATTACH (LDRP_PROCESS_ATTACH_CALLED: it is owed its DLL_PROCESS_DETACH).
 pub mod flags {
     pub const IMAGE_DLL: u32 = 0x0000_0004;
     pub const ENTRY_PROCESSED: u32 = 0x0000_4000;
+    pub const DONT_CALL_FOR_THREADS: u32 = 0x0004_0000;
+    pub const PROCESS_ATTACH_CALLED: u32 = 0x0008_0000;
 }
 
 /// The load count of a module loaded with the process (its image's imports): never unloaded, the
@@ -114,20 +122,67 @@ const BACKSLASH: u16 = b'\\' as u16;
 const SLASH: u16 = b'/' as u16;
 const DOT: u16 = b'.' as u16;
 
-/// The entries of the PEB_LDR_DATA at `ldr`, in load order (each entry's address).
-pub fn load_order<M: Memory>(memory: &M, ldr: u32) -> impl Iterator<Item = u32> + '_ {
-    let head = ldr.wrapping_add(data::IN_LOAD_ORDER_MODULE_LIST);
-    let mut next = memory.word(head);
+/// The entries of the list headed at `head` in the PEB_LDR_DATA at `ldr`, linked through their
+/// `links` (each entry's address): from the head's Flink, or from its Blink for `backward`.
+fn walk<M: Memory>(
+    memory: &M,
+    ldr: u32,
+    head: u32,
+    links: u32,
+    backward: bool,
+) -> impl Iterator<Item = u32> + '_ {
+    let head = ldr.wrapping_add(head);
+    let step = if backward { 4 } else { 0 };
+    let mut next = memory.word(head + step);
     let mut left = MAX_ENTRIES;
     core::iter::from_fn(move || {
         if next == head || next == 0 || left == 0 {
             return None;
         }
         left -= 1;
-        let entry = next.wrapping_sub(entry::IN_LOAD_ORDER_LINKS);
-        next = memory.word(next);
+        let entry = next.wrapping_sub(links);
+        next = memory.word(next + step);
         Some(entry)
     })
+}
+
+/// The entries of the PEB_LDR_DATA at `ldr`, in load order (each entry's address).
+pub fn load_order<M: Memory>(memory: &M, ldr: u32) -> impl Iterator<Item = u32> + '_ {
+    walk(
+        memory,
+        ldr,
+        data::IN_LOAD_ORDER_MODULE_LIST,
+        entry::IN_LOAD_ORDER_LINKS,
+        false,
+    )
+}
+
+/// The entries of the PEB_LDR_DATA at `ldr`, in memory order (the order the thread attach
+/// notifications take).
+pub fn memory_order<M: Memory>(memory: &M, ldr: u32) -> impl Iterator<Item = u32> + '_ {
+    walk(
+        memory,
+        ldr,
+        data::IN_MEMORY_ORDER_MODULE_LIST,
+        entry::IN_MEMORY_ORDER_LINKS,
+        false,
+    )
+}
+
+/// The entries of the PEB_LDR_DATA at `ldr` in initialization order (a DLL after the DLLs it
+/// imports), or in its reverse for `backward` (the order the detach notifications take).
+pub fn initialization_order<M: Memory>(
+    memory: &M,
+    ldr: u32,
+    backward: bool,
+) -> impl Iterator<Item = u32> + '_ {
+    walk(
+        memory,
+        ldr,
+        data::IN_INITIALIZATION_ORDER_MODULE_LIST,
+        entry::IN_INITIALIZATION_ORDER_LINKS,
+        backward,
+    )
 }
 
 /// The entry of the module whose base is `base` (its handle).
@@ -197,7 +252,7 @@ pub fn referenced(count: u16) -> u16 {
 }
 
 /// LdrUnloadDll's count for a module freed once: one reference fewer, a static module's count
-/// staying (F2K never unmaps a module: one the count releases stays where it is).
+/// staying (a module the process started with is never unloaded), a count already at zero too.
 pub fn released(count: u16) -> u16 {
     if count == STATIC_LOAD_COUNT || count == 0 {
         count
@@ -440,35 +495,121 @@ pub trait MemoryMut: Memory {
     fn set_word(&mut self, at: u32, value: u32);
 }
 
-/// Where LdrLoadDll looks for a module the lists do not hold, `name` as [`module_name`] formed it:
-/// the full DOS path of place `index` into `out` (terminated), its length; none past the last
-/// place, or for a path that does not fit. A name with a path has one place, itself made absolute
-/// against the current directory `current` (its DOS path, trailing separator included); a bare
-/// name is looked for in the current directory, then in the root of its volume (once, when the
-/// current directory is the root).
-pub fn search_place(name: &[u16], current: &[u16], index: usize, out: &mut [u16]) -> Option<usize> {
-    let mut first = [0u16; MAX_SEARCH_PATH + 1];
-    let (first_length, _) = full_path_name(name, current, &mut first).ok()?;
-    let place = match index {
-        0 => &first[..first_length],
-        1 if !has_path(name) => {
-            let mut rooted = [0u16; MAX_SEARCH_PATH + 1];
-            *rooted.first_mut()? = BACKSLASH;
-            rooted.get_mut(1..name.len() + 1)?.copy_from_slice(name);
-            let mut root = [0u16; MAX_SEARCH_PATH + 1];
-            let (length, _) = full_path_name(&rooted[..name.len() + 1], current, &mut root).ok()?;
-            if root[..length] == first[..first_length] {
-                return None;
+/// Where a load looks for a module's file: Windows 2000 SP4's default search (SafeDllSearchMode
+/// off), as kernel32 computes it for LoadLibrary and the process parameters carry it for the
+/// image's imports. A bare name is looked for in the program's directory, the current directory,
+/// the system directory (`<SystemRoot>\system32`), the 16-bit system directory
+/// (`<SystemRoot>\system`), the Windows directory (`<SystemRoot>`), then each directory of PATH,
+/// in its order; a name with a path is used as given, made absolute against the current directory.
+/// KnownDLLs is not consulted (there is no registry to list them).
+#[derive(Clone, Copy, Debug)]
+pub struct SearchPath<'a> {
+    /// The program's full path (the process parameters' ImagePathName): its directory is the
+    /// first place.
+    pub image: &'a [u16],
+    /// The current directory's DOS path, its trailing separator included.
+    pub current: &'a [u16],
+    /// The system root (KUSER_SHARED_DATA's NtSystemRoot, `C:\WINNT`).
+    pub system_root: &'a [u16],
+    /// PATH's value: directories separated by semicolons (empty entries ignored).
+    pub path: &'a [u16],
+}
+
+/// The places of the search under the system root, after the program's and the current directory:
+/// each one's directory relative to the root.
+const SYSTEM_PLACES: [&[u8]; 3] = [b"\\system32", b"\\system", b""];
+
+/// How many places the search for `name` (as [`module_name`] formed it) has: one for a name with a
+/// path; for a bare name, the fixed five and PATH's directories.
+pub fn search_places(name: &[u16], search: &SearchPath) -> usize {
+    if has_path(name) {
+        1
+    } else {
+        2 + SYSTEM_PLACES.len() + path_directories(search.path).count()
+    }
+}
+
+/// PATH's directories, in order (empty entries skipped).
+fn path_directories(path: &[u16]) -> impl Iterator<Item = &[u16]> {
+    path.split(|&unit| unit == u16::from(b';'))
+        .filter(|directory| !directory.is_empty())
+}
+
+/// Place `index` (below [`search_places`]) of the search for `name` (as [`module_name`] formed
+/// it): the full DOS path into `out` (terminated), its length; none for a place the name cannot be
+/// joined to within MAX_PATH (the search moves on to the next), and for the current directory when
+/// it is the program's own (the place was just tried).
+pub fn search_place(
+    name: &[u16],
+    search: &SearchPath,
+    index: usize,
+    out: &mut [u16],
+) -> Option<usize> {
+    if has_path(name) {
+        return if index == 0 {
+            absolute(&[name], search.current, out)
+        } else {
+            None
+        };
+    }
+    let image_directory = &search.image[..search
+        .image
+        .iter()
+        .rposition(|&unit| unit == BACKSLASH || unit == SLASH)
+        .map_or(0, |at| at + 1)];
+    let mut system = [0u16; 16];
+    let parts: [&[u16]; 3] = match index {
+        0 => [image_directory, &[], name],
+        1 if same_path(search.current, image_directory) => return None,
+        1 => [search.current, &[], name],
+        _ if index < 2 + SYSTEM_PLACES.len() => {
+            let place = SYSTEM_PLACES[index - 2];
+            for (unit, &byte) in system.iter_mut().zip(place) {
+                *unit = u16::from(byte);
             }
-            out.get_mut(..length + 1)?
-                .copy_from_slice(&root[..length + 1]);
-            return Some(length);
+            [search.system_root, &system[..place.len()], name]
         }
-        _ => return None,
+        _ => [
+            path_directories(search.path).nth(index - 2 - SYSTEM_PLACES.len())?,
+            &[],
+            name,
+        ],
     };
-    out.get_mut(..place.len() + 1)?
-        .copy_from_slice(&first[..place.len() + 1]);
-    Some(place.len())
+    absolute(&parts, search.current, out)
+}
+
+/// Whether two directories' paths are one, without regard to case.
+fn same_path(a: &[u16], b: &[u16]) -> bool {
+    a.len() == b.len()
+        && a.iter()
+            .zip(b)
+            .all(|(&a, &b)| crate::path::upcase(a) == crate::path::upcase(b))
+}
+
+/// `parts` joined into one path (a separator before the last part, the name, unless what precedes
+/// it ends in one), made absolute against `current` and folded into `out`, terminated: its length.
+/// Never inlined: its buffers stay out of its callers' frames, which the system DLLs keep below a
+/// page (a frame of a page or more calls a stack probe the DLLs' link does not carry).
+#[inline(never)]
+fn absolute(parts: &[&[u16]], current: &[u16], out: &mut [u16]) -> Option<usize> {
+    let mut joined = [0u16; MAX_SEARCH_PATH + 1];
+    let mut length = 0;
+    let last = parts.len() - 1;
+    for (index, part) in parts.iter().enumerate() {
+        if index == last && length > 0 && !matches!(joined[length - 1], BACKSLASH | SLASH) {
+            *joined.get_mut(length)? = BACKSLASH;
+            length += 1;
+        }
+        joined
+            .get_mut(length..length + part.len())?
+            .copy_from_slice(part);
+        length += part.len();
+    }
+    let mut full = [0u16; MAX_SEARCH_PATH + 1];
+    let (length, _) = full_path_name(&joined[..length], current, &mut full).ok()?;
+    out.get_mut(..length + 1)?
+        .copy_from_slice(&full[..length + 1]);
+    Some(length)
 }
 
 /// The longest full path a search builds, in units: MAX_PATH less its terminator.
@@ -476,7 +617,7 @@ pub const MAX_SEARCH_PATH: usize = crate::path::MAX_PATH - 1;
 
 use crate::path::full_path_name;
 
-/// A module LdrLoadDll mapped, as its entry records it: its base (its handle), its entry point
+/// A module the loader mapped, as its entry records it: its base (its handle), its entry point
 /// (zero for none), its size as mapped, its file header's TimeDateStamp, and whether it is a DLL.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Loaded {
@@ -487,9 +628,9 @@ pub struct Loaded {
     pub dll: bool,
 }
 
-/// The facts an entry records of the image mapped at `base`, read from its headers (its size is
-/// the mapping's, `size`): see [`Loaded`].
-pub fn loaded<M: Memory>(memory: &M, base: u32, size: u32) -> Loaded {
+/// The facts an entry records of the image mapped at `base`, read from its headers (its size the
+/// mapping's, `size`, or the headers' SizeOfImage for none): see [`Loaded`].
+pub fn loaded<M: Memory>(memory: &M, base: u32, size: Option<u32>) -> Loaded {
     let nt = base.wrapping_add(memory.word(base + 0x3C));
     let entry_rva = memory.word(nt + 0x18 + 0x10);
     Loaded {
@@ -499,24 +640,25 @@ pub fn loaded<M: Memory>(memory: &M, base: u32, size: u32) -> Loaded {
         } else {
             base.wrapping_add(entry_rva)
         },
-        size,
+        size: size.unwrap_or_else(|| memory.word(nt + 0x18 + 0x38)),
         time_date_stamp: memory.word(nt + 8),
         dll: memory.half(nt + 22) & 0x2000 != 0,
     }
 }
 
-/// The LDR_DATA_TABLE_ENTRY's bytes of a module LdrLoadDll loaded: `module`, its FullDllName the
-/// path it was opened by (`path`, in units, at `buffer`, its room the path and a terminator), its
-/// BaseDllName the path's file part (the name as asked, its default extension supplied); a
-/// LoadCount of 1, TlsIndex 0, the hash links empty (no hash table: the lookups walk the lists),
-/// the list links left for [`insert`]. Its flags say a DLL's image (LDRP_IMAGE_DLL) and an entry
-/// processed: no entry point is ever called (LDRP_PROCESS_ATTACH_CALLED stays clear, so a DllMain
-/// that runs later can tell which entries it has not seen).
+/// The LDR_DATA_TABLE_ENTRY's bytes of a module the loader mapped: `module`, its FullDllName the
+/// path it was opened by (`path`, in units, at `buffer`, its room `room` bytes), its BaseDllName
+/// the path's file part (the name as asked, its default extension supplied); a LoadCount of 1,
+/// TlsIndex 0, the hash links empty (no hash table: the lookups walk the lists), the load and
+/// memory order links left for [`insert`], and the initialization order's linked to the entry
+/// itself until [`insert_initialized`] (so [`remove`] leaves alone an entry that never joined
+/// it). Its flags say a DLL's image (LDRP_IMAGE_DLL), nothing processed yet.
 pub fn loaded_entry(
     at: u32,
     module: &Loaded,
     buffer: u32,
     path: &[u16],
+    room: u32,
 ) -> [u8; entry::SIZE as usize] {
     let mut bytes = [0u8; entry::SIZE as usize];
     let mut put = |offset: u32, value: u32| {
@@ -526,22 +668,20 @@ pub fn loaded_entry(
     put(entry::ENTRY_POINT, module.entry_point);
     put(entry::SIZE_OF_IMAGE, module.size);
     let length = 2 * path.len() as u32;
-    put(entry::FULL_DLL_NAME, length | (length + 2) << 16);
+    put(entry::FULL_DLL_NAME, length | room << 16);
     put(entry::FULL_DLL_NAME + 4, buffer);
     let file = 2 * path
         .iter()
         .rposition(|&unit| unit == BACKSLASH)
         .map_or(0, |at| at + 1) as u32;
-    put(
-        entry::BASE_DLL_NAME,
-        (length - file) | (length + 2 - file) << 16,
-    );
+    put(entry::BASE_DLL_NAME, (length - file) | (room - file) << 16);
     put(entry::BASE_DLL_NAME + 4, buffer + file);
-    let kind = if module.dll { flags::IMAGE_DLL } else { 0 };
-    put(entry::FLAGS, kind | flags::ENTRY_PROCESSED);
+    put(entry::FLAGS, if module.dll { flags::IMAGE_DLL } else { 0 });
     put(entry::LOAD_COUNT, 1);
-    put(entry::HASH_LINKS, at + entry::HASH_LINKS);
-    put(entry::HASH_LINKS + 4, at + entry::HASH_LINKS);
+    for links in [entry::IN_INITIALIZATION_ORDER_LINKS, entry::HASH_LINKS] {
+        put(links, at + links);
+        put(links + 4, at + links);
+    }
     put(entry::TIME_DATE_STAMP, module.time_date_stamp);
     bytes
 }
@@ -555,7 +695,7 @@ fn link_last<M: MemoryMut>(memory: &mut M, head: u32, node: u32) {
     memory.set_word(head + 4, node);
 }
 
-/// Unlink the LIST_ENTRY at `node` from its list.
+/// Unlink the LIST_ENTRY at `node` from its list (one linked to itself stays as it is).
 fn unlink<M: MemoryMut>(memory: &mut M, node: u32) {
     let (next, previous) = (memory.word(node), memory.word(node + 4));
     memory.set_word(previous, next);
@@ -575,12 +715,35 @@ const ORDERS: [(u32, u32); 3] = [
     ),
 ];
 
-/// The entry at `entry` joins the lists of the PEB_LDR_DATA at `ldr`: after their last entries,
-/// in each order (in the initialization order, after kernel32 and every module loaded before).
+/// An empty PEB_LDR_DATA's bytes, at `at`: its Length, Initialized, and the three lists' heads
+/// linked to themselves.
+pub fn empty_lists(at: u32) -> [u8; data::SIZE as usize] {
+    let mut bytes = [0u8; data::SIZE as usize];
+    let mut put = |offset: u32, value: u32| {
+        bytes[offset as usize..offset as usize + 4].copy_from_slice(&value.to_le_bytes())
+    };
+    put(data::LENGTH, data::SIZE);
+    put(data::INITIALIZED, 1);
+    for (head, _) in ORDERS {
+        put(head, at + head);
+        put(head + 4, at + head);
+    }
+    bytes
+}
+
+/// The entry at `entry` joins the load and memory orders of the PEB_LDR_DATA at `ldr`, after
+/// their last entries (its module is mapped).
 pub fn insert<M: MemoryMut>(memory: &mut M, ldr: u32, entry: u32) {
-    for (head, links) in ORDERS {
+    for (head, links) in &ORDERS[..2] {
         link_last(memory, ldr + head, entry + links);
     }
+}
+
+/// The entry at `entry` joins the initialization order of the PEB_LDR_DATA at `ldr`, after its last
+/// entry (its module's imports are snapped: every DLL it imports is already there).
+pub fn insert_initialized<M: MemoryMut>(memory: &mut M, ldr: u32, entry: u32) {
+    let (head, links) = ORDERS[2];
+    link_last(memory, ldr + head, entry + links);
 }
 
 /// The entry at `entry` leaves the three lists.
@@ -1241,62 +1404,102 @@ mod tests {
         bases
     }
 
-    /// Where a name is looked for: a bare name in the current directory, then in the volume's root
-    /// (once when the two are one); a name with a path made absolute against the current directory,
-    /// one place; the case as asked, the default extension as `module_name` supplied it.
+    /// Where a name is looked for, Windows 2000's default order: a bare name in the program's
+    /// directory, the current directory (unless it is the program's), the system directory, the
+    /// 16-bit system directory, the
+    /// Windows directory, then PATH's directories (relative ones against the current directory,
+    /// empty entries skipped); a name with a path made absolute against the current directory, one
+    /// place; the case as asked, the default extension as `module_name` supplied it.
     #[test]
-    fn modules_are_searched_for_in_the_current_directory_then_the_root() {
-        let places = |name: &str, current: &str| -> std::vec::Vec<std::string::String> {
-            let mut formed = [0u16; 300];
-            let length = module_name(&wide(name), &mut formed).unwrap();
-            (0..4)
-                .map_while(|index| {
-                    let mut out = [0u16; MAX_SEARCH_PATH + 1];
-                    let length = search_place(&formed[..length], &wide(current), index, &mut out)?;
-                    assert_eq!(out[length], 0, "terminated");
-                    Some(std::string::String::from_utf16(&out[..length]).unwrap())
-                })
-                .collect()
-        };
+    fn modules_are_searched_for_where_windows_2000_looks() {
+        let places =
+            |name: &str, current: &str, path: &str| -> std::vec::Vec<std::string::String> {
+                let mut formed = [0u16; 300];
+                let length = module_name(&wide(name), &mut formed).unwrap();
+                let (image, current, root, path) = (
+                    wide("C:\\CORPUS\\RUNTIME.EXE"),
+                    wide(current),
+                    wide("C:\\WINNT"),
+                    wide(path),
+                );
+                let search = SearchPath {
+                    image: &image,
+                    current: &current,
+                    system_root: &root,
+                    path: &path,
+                };
+                (0..search_places(&formed[..length], &search))
+                    .filter_map(|index| {
+                        let mut out = [0u16; MAX_SEARCH_PATH + 1];
+                        let length = search_place(&formed[..length], &search, index, &mut out)?;
+                        assert_eq!(out[length], 0, "terminated");
+                        Some(std::string::String::from_utf16(&out[..length]).unwrap())
+                    })
+                    .collect()
+            };
         assert_eq!(
-            places("Companion", "C:\\CORPUS\\"),
-            ["C:\\CORPUS\\Companion.DLL", "C:\\Companion.DLL"]
+            places("kernel32.dll", "c:\\corpus\\", ""),
+            [
+                "C:\\CORPUS\\kernel32.dll",
+                "C:\\WINNT\\system32\\kernel32.dll",
+                "C:\\WINNT\\system\\kernel32.dll",
+                "C:\\WINNT\\kernel32.dll",
+            ],
+            "the current directory the program's: tried once"
         );
         assert_eq!(
-            places("comp.dll", "C:\\CORPUS\\"),
-            ["C:\\CORPUS\\comp.dll", "C:\\comp.dll"]
+            places("Companion", "C:\\CORPUS\\DLLSUB\\", ""),
+            [
+                "C:\\CORPUS\\Companion.DLL",
+                "C:\\CORPUS\\DLLSUB\\Companion.DLL",
+                "C:\\WINNT\\system32\\Companion.DLL",
+                "C:\\WINNT\\system\\Companion.DLL",
+                "C:\\WINNT\\Companion.DLL",
+            ]
         );
         assert_eq!(
-            places("comp.", "C:\\CORPUS\\"),
-            ["C:\\CORPUS\\comp", "C:\\comp"],
-            "a trailing dot: no extension"
+            places("comp.", "C:\\", ";C:\\TOOLS\\;;bin;"),
+            [
+                "C:\\CORPUS\\comp",
+                "C:\\comp",
+                "C:\\WINNT\\system32\\comp",
+                "C:\\WINNT\\system\\comp",
+                "C:\\WINNT\\comp",
+                "C:\\TOOLS\\comp",
+                "C:\\bin\\comp",
+            ],
+            "a trailing dot: no extension; PATH's directories, a relative one made absolute"
         );
-        assert_eq!(places("comp", "C:\\"), ["C:\\comp.DLL"], "the root once");
         assert_eq!(
-            places("sub\\comp", "C:\\CORPUS\\"),
+            places("sub\\comp", "C:\\CORPUS\\", "C:\\TOOLS"),
             ["C:\\CORPUS\\sub\\comp.DLL"],
             "a relative path: one place"
         );
-        assert_eq!(places("..\\comp.dll", "C:\\CORPUS\\"), ["C:\\comp.dll"]);
+        assert_eq!(places("..\\comp.dll", "C:\\CORPUS\\", ""), ["C:\\comp.dll"]);
         assert_eq!(
-            places("C:\\elsewhere\\COMP.DLL", "C:\\CORPUS\\"),
+            places("C:\\elsewhere\\COMP.DLL", "C:\\CORPUS\\", ""),
             ["C:\\elsewhere\\COMP.DLL"]
         );
         assert_eq!(
-            places("/elsewhere/comp", "C:\\CORPUS\\"),
+            places("/elsewhere/comp", "C:\\CORPUS\\", ""),
             ["C:\\elsewhere\\comp.DLL"]
         );
-        let long = "x".repeat(300);
-        assert_eq!(
-            search_place(
-                &wide(&long),
-                &wide("C:\\"),
-                0,
-                &mut [0u16; MAX_SEARCH_PATH + 1]
-            ),
-            None,
-            "past MAX_PATH"
-        );
+        let long = wide(&"x".repeat(300));
+        let (image, current, root) = (wide("C:\\A.EXE"), wide("C:\\"), wide("C:\\WINNT"));
+        let search = SearchPath {
+            image: &image,
+            current: &current,
+            system_root: &root,
+            path: &[],
+        };
+        assert_eq!(search_places(&long, &search), 5);
+        for index in 0..5 {
+            assert_eq!(
+                search_place(&long, &search, index, &mut [0u16; MAX_SEARCH_PATH + 1]),
+                None,
+                "past MAX_PATH"
+            );
+        }
     }
 
     /// A loaded module's entry: its base, entry point, size and stamp; its full path as opened and
@@ -1313,7 +1516,7 @@ mod tests {
         };
         let path = wide("C:\\CORPUS\\Companion.DLL");
         let at = 0x0050_0000;
-        let bytes = loaded_entry(at, &module, at + entry::SIZE, &path);
+        let bytes = loaded_entry(at, &module, at + entry::SIZE, &path, 2 * 23 + 2);
         let mut space = Space(std::vec![(at, bytes.to_vec())]);
         let word = |offset: u32| space.word(at + offset);
         assert_eq!(word(entry::DLL_BASE), 0x1000_0000);
@@ -1330,7 +1533,8 @@ mod tests {
         assert_eq!(word(entry::BASE_DLL_NAME + 4), at + entry::SIZE + 2 * 10);
         assert_eq!(
             word(entry::FLAGS),
-            flags::IMAGE_DLL | flags::ENTRY_PROCESSED
+            flags::IMAGE_DLL,
+            "nothing processed yet"
         );
         assert_eq!(space.half(at + entry::LOAD_COUNT), 1);
         assert_eq!(space.half(at + entry::TLS_INDEX), 0);
@@ -1338,16 +1542,28 @@ mod tests {
             (word(entry::HASH_LINKS), word(entry::HASH_LINKS + 4)),
             (at + entry::HASH_LINKS, at + entry::HASH_LINKS)
         );
+        let initialization = entry::IN_INITIALIZATION_ORDER_LINKS;
+        assert_eq!(
+            (word(initialization), word(initialization + 4)),
+            (at + initialization, at + initialization),
+            "in no initialization order yet"
+        );
         let program = Loaded {
             dll: false,
             entry_point: 0,
             ..module
         };
-        let bytes = loaded_entry(at, &program, at + entry::SIZE, &wide("C:\\x.exe"));
+        let bytes = loaded_entry(
+            at,
+            &program,
+            at + entry::SIZE,
+            &wide("C:\\x.exe"),
+            2 * 8 + 2,
+        );
         space.0[0].1 = bytes.to_vec();
         assert_eq!(
             space.word(at + entry::FLAGS),
-            flags::ENTRY_PROCESSED,
+            0,
             "a program's image: no DLL flag"
         );
         assert_eq!(space.word(at + entry::ENTRY_POINT), 0);
@@ -1358,8 +1574,10 @@ mod tests {
         );
     }
 
-    /// A loaded module joins every order after the last module, the initialization order's after
-    /// kernel32; found by its name and base; it leaves all three, the others' links mended.
+    /// A loaded module joins the load and memory orders after the last module as it is mapped, and
+    /// the initialization order after kernel32 once its imports are snapped; found by its name and
+    /// base; it leaves all three, the others' links mended. One that never joined the
+    /// initialization order leaves the other two alone.
     #[test]
     fn a_loaded_module_joins_and_leaves_the_lists() {
         let mut space = process();
@@ -1373,13 +1591,20 @@ mod tests {
             time_date_stamp: 0,
             dll: true,
         };
-        let mut bytes = loaded_entry(at, &module, at + entry::SIZE, &path).to_vec();
+        let mut bytes = loaded_entry(at, &module, at + entry::SIZE, &path, 2 * 23 + 2).to_vec();
         for unit in path.iter().chain([&0]) {
             bytes.extend_from_slice(&unit.to_le_bytes());
         }
-        space.0.push((at, bytes));
+        space.0.push((at, bytes.clone()));
         insert(&mut space, LDR, at);
         let orders = |space: &Space| ORDERS.map(|(head, links)| order(space, LDR + head, links));
+        let mapped = [
+            std::vec![IMAGE, NTDLL, KERNEL32, COMPANION],
+            std::vec![IMAGE, NTDLL, KERNEL32, COMPANION],
+            std::vec![NTDLL, KERNEL32],
+        ];
+        assert_eq!(orders(&space), mapped, "mapped: not initialized yet");
+        insert_initialized(&mut space, LDR, at);
         assert_eq!(
             orders(&space),
             [
@@ -1387,6 +1612,13 @@ mod tests {
                 std::vec![IMAGE, NTDLL, KERNEL32, COMPANION],
                 std::vec![NTDLL, KERNEL32, COMPANION]
             ]
+        );
+        assert_eq!(
+            initialization_order(&space, LDR, true)
+                .map(|entry| space.word(entry + entry::DLL_BASE))
+                .collect::<std::vec::Vec<_>>(),
+            [COMPANION, KERNEL32, NTDLL],
+            "backward"
         );
         assert_eq!(found(&space, "companion"), Some(COMPANION));
         assert_eq!(found(&space, "C:\\CORPUS\\COMPANION.DLL"), Some(COMPANION));
@@ -1401,6 +1633,37 @@ mod tests {
             ]
         );
         assert_eq!(found(&space, "companion"), None);
+        // Mapped, then refused before its imports were snapped: out of the two orders it joined.
+        let at = 0x0060_0000;
+        space.0.retain(|(base, _)| *base != at);
+        space.0.push((at, bytes));
+        insert(&mut space, LDR, at);
+        remove(&mut space, at);
+        assert_eq!(
+            orders(&space),
+            [
+                std::vec![IMAGE, NTDLL, KERNEL32],
+                std::vec![IMAGE, NTDLL, KERNEL32],
+                std::vec![NTDLL, KERNEL32]
+            ]
+        );
+    }
+
+    /// An empty PEB_LDR_DATA: its length, initialized, each list's head a ring of its own.
+    #[test]
+    fn the_lists_start_empty() {
+        const AT: u32 = 0x0050_0000;
+        let space = Space(std::vec![(AT, empty_lists(AT).to_vec())]);
+        assert_eq!(space.word(AT + data::LENGTH), 0x24);
+        assert_eq!(space.word(AT + data::INITIALIZED), 1);
+        for (head, _) in ORDERS {
+            assert_eq!(
+                (space.word(AT + head), space.word(AT + head + 4)),
+                (AT + head, AT + head)
+            );
+        }
+        assert_eq!(load_order(&space, AT).count(), 0);
+        assert_eq!(initialization_order(&space, AT, false).count(), 0);
     }
 
     /// A loaded image's facts come from its headers: the entry point (none at RVA 0), the stamp,
@@ -1413,7 +1676,7 @@ mod tests {
         dll[0x56..0x58].copy_from_slice(&0x2102u16.to_le_bytes());
         let space = Space(std::vec![(0x1000_0000, dll)]);
         assert_eq!(
-            loaded(&space, 0x1000_0000, 0x4000),
+            loaded(&space, 0x1000_0000, Some(0x4000)),
             Loaded {
                 base: 0x1000_0000,
                 entry_point: 0x1000_1010,
@@ -1423,8 +1686,13 @@ mod tests {
             }
         );
         let space = Space(std::vec![(0x1000_0000, image(&[]))]);
-        let facts = loaded(&space, 0x1000_0000, 0x1000);
+        let facts = loaded(&space, 0x1000_0000, None);
         assert_eq!((facts.entry_point, facts.dll), (0, false));
+        assert_eq!(
+            facts.size,
+            space.word(0x1000_0000 + 0x58 + 0x38),
+            "the headers' SizeOfImage"
+        );
     }
 
     /// The import walk: each descriptor's module (named as the lookups take it) and its imports, by

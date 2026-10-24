@@ -69,8 +69,13 @@ DISK_FIXTURES ?= exit0 ret0
 # its own directory on the real machine: the root keeps its one cluster (the disk-smoke pins it).
 # They are the fixtures whose declaration, tests/<dll>/<name>/fixture.toml, says kind "sectioned",
 # less those declared ahead of their real-machine build (no <name>.exe yet). Each one's companion
-# DLLs (tests/<dll>/<name>/*.dll) go beside it, as they sit beside the program on the real machine.
+# DLLs (tests/<dll>/<name>/*.dll) go beside it, as they sit beside the program on the real machine,
+# and those in a subdirectory of its (tests/<dll>/<name>/<sub>/*.dll) in that subdirectory.
 CORPUS_FIXTURES ?= $(sort $(foreach fixture,$(notdir $(patsubst %/fixture.toml,%,$(shell grep -l '^kind = "sectioned"' tests/*/*/fixture.toml))),$(if $(wildcard $(call fixture_dir,$(fixture))/$(fixture).exe),$(fixture))))
+# The system DLLs the userland workspace builds, which the disk carries in its system directory
+# (\WINNT\system32, under the kernel's NtSystemRoot).
+SYSTEM_DLLS = $(BUILD_DIR)/userland/i686-f2k-pe/release/ntdll.dll \
+              $(BUILD_DIR)/userland/i686-f2k-pe/release/kernel32.dll
 
 # Limine bootloader settings
 LIMINE_DIR ?= $(BOOT_DIR)/limine
@@ -88,7 +93,7 @@ help:
 	@echo ""
 	@echo "Targets:"
 	@echo "  all           - Build everything and create bootable disk"
-	@echo "  userland     - Build the system DLLs (ntdll.dll, kernel32.dll) the kernel embeds"
+	@echo "  userland     - Build the system DLLs (ntdll.dll, which the kernel embeds, and kernel32.dll)"
 	@echo "  kernel       - Build the kernel (the system DLLs first)"
 	@echo "  qemu         - Build the disk and boot the kernel directly in QEMU (Multiboot, disk attached)"
 	@echo "  test         - Run every on-target QEMU test (kernel boots and the corpus)"
@@ -117,8 +122,8 @@ help:
 .PHONY: all
 all: disk
 
-# The system DLLs (userland/, its own Cargo workspace and target): the kernel embeds them, so they
-# build first. Their generated stubs and .def come from the export specs
+# The system DLLs (userland/, its own Cargo workspace and target): the kernel embeds ntdll (and its
+# tests read kernel32), and the disk carries both, so they build first. Their generated stubs and .def come from the export specs
 # (userland/<dll>/exports.toml, through tools/exportgen), the source the kernel's NT service table
 # is generated from too.
 .PHONY: userland
@@ -166,6 +171,11 @@ disk: kernel limine
 	for exe in $(foreach fixture,$(DISK_FIXTURES),$(call fixture_dir,$(fixture))/$(fixture).exe); do \
 		mcopy -i $(DISK_IMG)@@1M $$exe ::/$$(basename $$exe | tr a-z A-Z) || exit 1; \
 	done
+	# The system directory, under the system root (KUSER_SHARED_DATA's NtSystemRoot, C:\WINNT):
+	# the system DLLs the userland workspace builds. ntdll loads kernel32 from here into every
+	# process (the kernel maps ntdll itself and reads kernel32's start thunk from here at boot).
+	mmd -i $(DISK_IMG)@@1M ::/WINNT ::/WINNT/system32
+	mcopy -i $(DISK_IMG)@@1M $(SYSTEM_DLLS) ::/WINNT/system32/
 	# The sectioned corpus in \CORPUS, with the files fixture's data tree beside
 	# FILES.EXE and the two attributes git cannot carry (tests/kernel32/files/setup.bat
 	# sets them on the real machine).
@@ -174,10 +184,12 @@ disk: kernel limine
 		fixture=$$(basename $$directory); \
 		mcopy -i $(DISK_IMG)@@1M $$directory/$$fixture.exe \
 			::/CORPUS/$$(echo $$fixture | tr a-z A-Z).EXE || exit 1; \
-		for dll in $$directory/*.dll; do \
+		for dll in $$directory/*.dll $$directory/*/*.dll; do \
 			[ -f "$$dll" ] || continue; \
+			place=$$(dirname "$${dll#$$directory}" | tr a-z A-Z); \
+			[ "$$place" = / ] || mmd -D s -i $(DISK_IMG)@@1M ::/CORPUS$$place 2>/dev/null; \
 			mcopy -i $(DISK_IMG)@@1M "$$dll" \
-				::/CORPUS/$$(basename "$$dll" | tr a-z A-Z) || exit 1; \
+				::/CORPUS$${place%/}/$$(basename "$$dll" | tr a-z A-Z) || exit 1; \
 		done; \
 	done
 	mcopy -s -i $(DISK_IMG)@@1M $(call fixture_dir,files)/DATA ::/CORPUS/
