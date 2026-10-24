@@ -52,9 +52,17 @@
 //!
 //! Every entry point is called through `f2k_call_dll_entry` (src/ldr.s), which gives the stack
 //! pointer and the callee-saved registers back whatever the routine does with them.
+//!
+//! **The stack.** A process's first thread loads its DLLs within the two pages of stack it starts
+//! with, as Windows 2000's loader does: the import loading recurses (a DLL's imports load before
+//! its own load completes), so its frames keep no MAX_PATH-sized buffers. The paths a level works
+//! on live in blocks on the process heap ([`HeapUnits`]), given back before the next level loads;
+//! an import's name lives in a frame that ends before it ([`locate_import`]); the failures' reports
+//! build their lines in frames of their own.
 
 use core::fmt::Write;
 
+use rtl::heap::HEAP_ZERO_MEMORY;
 use rtl::modules::{
     self,
     data,
@@ -125,6 +133,47 @@ fn locked<T>(body: impl FnOnce() -> T) -> T {
     answer
 }
 
+/// UTF-16 units in a block on the process heap, zeroed, given back when dropped: the buffers the
+/// loader would otherwise keep on the stack (see the module doc).
+struct HeapUnits {
+    at: core::ptr::NonNull<u16>,
+    length: usize,
+}
+
+impl HeapUnits {
+    /// A fresh block of `length` units; none without room.
+    fn new(length: usize) -> Option<Self> {
+        let at = sys::process_heap().alloc(&Native, HEAP_ZERO_MEMORY, 2 * length)?;
+        Some(Self {
+            at: core::ptr::NonNull::new(at as *mut u16)?,
+            length,
+        })
+    }
+}
+
+impl core::ops::Deref for HeapUnits {
+    type Target = [u16];
+
+    fn deref(&self) -> &[u16] {
+        // SAFETY: the block holds `length` zeroed units, aligned as the heap aligns every block,
+        // ours alone until dropped.
+        unsafe { core::slice::from_raw_parts(self.at.as_ptr(), self.length) }
+    }
+}
+
+impl core::ops::DerefMut for HeapUnits {
+    fn deref_mut(&mut self) -> &mut [u16] {
+        // SAFETY: as above.
+        unsafe { core::slice::from_raw_parts_mut(self.at.as_ptr(), self.length) }
+    }
+}
+
+impl Drop for HeapUnits {
+    fn drop(&mut self) {
+        sys::process_heap().free(&Native, 0, self.at.as_ptr() as usize);
+    }
+}
+
 /// An ANSI_STRING: its length and room in bytes, and its buffer.
 #[repr(C)]
 pub struct AnsiString {
@@ -192,9 +241,27 @@ unsafe extern "C" {
     static IMAGE_BASE: u8;
 }
 
-/// KUSER_SHARED_DATA's NtSystemRoot (`C:\WINNT`, NUL-terminated), on the page every process maps
-/// read-only: the one place every system path comes from.
-const SYSTEM_ROOT: usize = 0x7FFE_0030;
+/// KUSER_SHARED_DATA, as far as its NtSystemRoot (`C:\WINNT`, NUL-terminated): the one place every
+/// system path comes from.
+#[repr(C)]
+struct SharedData {
+    tick_count_low: u32,
+    tick_count_multiplier: u32,
+    /// InterruptTime, SystemTime and TimeZoneBias: KSYSTEM_TIMEs (LowPart, High1Time, High2Time).
+    times: [[u32; 3]; 3],
+    image_number_low: u16,
+    image_number_high: u16,
+    nt_system_root: [u16; MAX_PATH],
+}
+
+/// Where every process maps KUSER_SHARED_DATA, read-only.
+const SHARED_DATA: usize = 0x7FFE_0000;
+
+/// KUSER_SHARED_DATA.
+fn shared_data() -> &'static SharedData {
+    // SAFETY: the shared data page, mapped read-only into every process for its whole life.
+    unsafe { &*(SHARED_DATA as *const SharedData) }
+}
 
 /// The process parameters' ImagePathName.
 const IMAGE_PATH_NAME: usize = 0x38;
@@ -214,8 +281,16 @@ fn find(name: &[u16]) -> Option<u32> {
     if !modules::has_path(&formed[..length]) {
         return modules::by_name(&Mapped, ldr(), &formed[..length]);
     }
-    let mut full = [0u16; MAX_PATH + 1];
-    // SAFETY: the formed name is terminated; the buffer holds MAX_PATH + 1 units.
+    find_by_path(&formed[..length + 1])
+}
+
+/// The entry of the module whose formed name `formed` (terminated) has a path: the name made
+/// absolute (RtlGetFullPathName_U) on the process heap (no room there: none found), matched
+/// against the modules' full paths. Never inlined: its frame ends before a load goes on.
+#[inline(never)]
+fn find_by_path(formed: &[u16]) -> Option<u32> {
+    let mut full = HeapUnits::new(MAX_PATH + 1)?;
+    // SAFETY: the formed name is terminated; the buffer holds its length in units.
     let bytes = unsafe {
         curdir::rtl_get_full_path_name_u(
             formed.as_ptr(),
@@ -278,7 +353,9 @@ fn narrow<'a>(units: &[u16], out: &'a mut [u8; 96]) -> &'a str {
 }
 
 /// Report a failure of the process's initialization on the debugger's channel (Windows 2000 shows
-/// it in a hard-error popup): `body` writes what failed.
+/// it in a hard-error popup): `body` writes what failed. Never inlined: its line stays out of the
+/// loader's frames.
+#[inline(never)]
 fn report(body: impl FnOnce(&mut Line) -> core::fmt::Result) {
     if !initializing() {
         return;
@@ -439,74 +516,113 @@ fn image_path() -> &'static [u16] {
     unsafe { (*((sys::process_parameters() + IMAGE_PATH_NAME) as *const UnicodeString)).units() }
 }
 
-/// The system root (KUSER_SHARED_DATA's NtSystemRoot) into `out`: its length in units.
-fn system_root(out: &mut [u16; MAX_PATH]) -> usize {
-    let mut length = 0;
-    while length < MAX_PATH - 1 {
-        // SAFETY: the shared data page, mapped read-only into every process.
-        let unit = unsafe { ((SYSTEM_ROOT + 2 * length) as *const u16).read_volatile() };
-        if unit == 0 {
-            break;
-        }
-        out[length] = unit;
-        length += 1;
+/// The system root (KUSER_SHARED_DATA's NtSystemRoot), in place, at most MAX_PATH less one units.
+fn system_root() -> &'static [u16] {
+    let root = &shared_data().nt_system_root[..MAX_PATH - 1];
+    &root[..root
+        .iter()
+        .position(|&unit| unit == 0)
+        .unwrap_or(root.len())]
+}
+
+/// Where a search's buffers (see [`find_file`]) sit in its block: the current directory's copy,
+/// PATH's value, then each place's full path.
+const SEARCH_CURRENT: usize = MAX_PATH + 1;
+const SEARCH_PATH: usize = PATH_ROOM;
+const SEARCH_FULL: usize = MAX_SEARCH_PATH + 1;
+
+/// A module's file, found and opened: its handle, and the full path it was found at (`length`
+/// units, terminated, in the search's block).
+struct Found {
+    file: u32,
+    length: usize,
+    buffers: HeapUnits,
+}
+
+impl Found {
+    /// The full path the file was found at.
+    fn path(&self) -> &[u16] {
+        let at = SEARCH_CURRENT + SEARCH_PATH;
+        &self.buffers[at..at + self.length]
     }
-    length
 }
 
 /// Find the file of the module `name` (formed: its default extension supplied) where Windows 2000
-/// looks (see the module doc), and open it: its handle, and the full path it was found at (its
-/// length, the path in the buffer, terminated). Never inlined: its buffers stay out of the load's
-/// frame, which stays below a page (a frame of a page or more calls a stack probe the DLLs' link
-/// does not carry).
+/// looks (see the module doc), and open it, the search's buffers in one block on the process heap
+/// (no room there: STATUS_NO_MEMORY). Never inlined, as [`open_file`]: the search's frames end
+/// before the load goes on.
 #[inline(never)]
-fn find_file(name: &[u16]) -> Result<(u32, usize, [u16; MAX_SEARCH_PATH + 1]), u32> {
-    let mut current = [0u16; MAX_PATH + 1];
-    let (current_length, _) = curdir::current_directory(&mut current);
-    let mut root = [0u16; MAX_PATH];
-    let root_length = system_root(&mut root);
-    let mut path = [0u16; PATH_ROOM];
-    let path_length = crate::env::process_variable(&PATH, &mut path);
+fn find_file(name: &[u16]) -> Result<Found, u32> {
+    let mut buffers =
+        HeapUnits::new(SEARCH_CURRENT + SEARCH_PATH + SEARCH_FULL).ok_or(STATUS_NO_MEMORY)?;
+    let (current, rest) = buffers.split_at_mut(SEARCH_CURRENT);
+    let (path, full) = rest.split_at_mut(SEARCH_PATH);
+    let (current_length, _) = curdir::current_directory(current);
+    let path_length = crate::env::process_variable(&PATH, path);
     let search = SearchPath {
         image: image_path(),
         current: &current[..current_length],
-        system_root: &root[..root_length],
+        system_root: system_root(),
         path: &path[..path_length],
     };
-    let mut full = [0u16; MAX_SEARCH_PATH + 1];
-    for index in 0..modules::search_places(name, &search) {
-        let Some(length) = modules::search_place(name, &search, index, &mut full) else {
-            continue;
-        };
-        if let Ok(file) = open_file(&full[..length]) {
-            return Ok((file, length, full));
-        }
-    }
-    Err(STATUS_DLL_NOT_FOUND)
+    let opened = (0..modules::search_places(name, &search)).find_map(|index| {
+        let length = modules::search_place(name, &search, index, full)?;
+        open_file(&full[..length]).ok().map(|file| (file, length))
+    });
+    let (file, length) = opened.ok_or(STATUS_DLL_NOT_FOUND)?;
+    Ok(Found {
+        file,
+        length,
+        buffers,
+    })
 }
 
-/// Load the module `name` (formed: its default extension supplied) from the volume (see the module
-/// doc): its entry, its load count 1, its imports snapped, in the initialization order (its entry
-/// point not called yet). Under the loader lock.
+/// [`find_file`], a module not found reported (see [`report`]).
+fn open_module(name: &[u16]) -> Result<Found, u32> {
+    find_file(name).inspect_err(|&status| {
+        if status == STATUS_DLL_NOT_FOUND {
+            report_not_found(name);
+        }
+    })
+}
+
+/// Report a module that was not found (see [`report`]).
+#[inline(never)]
+fn report_not_found(name: &[u16]) {
+    let mut shown = [0u8; 96];
+    report(|line| write!(line, "{} was not found", narrow(name, &mut shown)));
+}
+
+/// Report a module's file that could not be mapped (see [`report`]).
+#[inline(never)]
+fn report_unmapped(path: &[u16], status: u32) {
+    let mut shown = [0u8; 96];
+    report(|line| {
+        write!(
+            line,
+            "{} could not be mapped (status {status:#010X})",
+            narrow(path, &mut shown)
+        )
+    });
+}
+
+/// Load the module `name` (formed: its default extension supplied) from the volume: see
+/// [`load_file`].
 fn load(name: &[u16]) -> Result<u32, u32> {
-    let (file, length, full) = find_file(name).inspect_err(|_| {
-        let mut shown = [0u8; 96];
-        report(|line| write!(line, "{} was not found", narrow(name, &mut shown)));
-    })?;
-    let mapped = map_image(file);
+    load_file(open_module(name)?)
+}
+
+/// Load the module whose file `found` opened (see the module doc): its entry, its load count 1, its
+/// imports snapped, in the initialization order (its entry point not called yet). The search's
+/// buffers go back to the heap before its imports load. Under the loader lock.
+fn load_file(found: Found) -> Result<u32, u32> {
+    let mapped = map_image(found.file);
     // The section holds the file.
-    close(file);
-    let (base, size) = mapped.inspect_err(|&status| {
-        let mut shown = [0u8; 96];
-        report(|line| {
-            write!(
-                line,
-                "{} could not be mapped (status {status:#010X})",
-                narrow(&full[..length], &mut shown)
-            )
-        });
-    })?;
-    let Some(at) = add_entry(base, Some(size), &full[..length]) else {
+    close(found.file);
+    let (base, size) = mapped.inspect_err(|&status| report_unmapped(found.path(), status))?;
+    let added = add_entry(base, Some(size), found.path());
+    drop(found);
+    let Some(at) = added else {
         unmap(base);
         return Err(STATUS_NO_MEMORY);
     };
@@ -518,37 +634,58 @@ fn load(name: &[u16]) -> Result<u32, u32> {
     Ok(at)
 }
 
+/// What the lists or the volume hold for a module an image imports: its entry, or its file, found
+/// and opened.
+enum Located {
+    Listed(u32),
+    Opened(Found),
+}
+
+/// The module an import descriptor names (its ANSI name at `name`, formed): its entry in the lists,
+/// or else its file, found and opened (a module not found reported). STATUS_DLL_NOT_FOUND for a
+/// name that does not fit. Never inlined: the name's buffer stays out of the recursion's frames.
+#[inline(never)]
+fn locate_import(name: u32) -> Result<Located, u32> {
+    let mut formed = [0u16; NAME_ROOM];
+    let length =
+        modules::import_module_name(&Mapped, name, &mut formed).ok_or(STATUS_DLL_NOT_FOUND)?;
+    match find(&formed[..length]) {
+        Some(entry) => Ok(Located::Listed(entry)),
+        None => open_module(&formed[..length]).map(Located::Opened),
+    }
+}
+
+/// The entry of the module an import descriptor names (its ANSI name at `name`), when the lists
+/// hold it. Never inlined, as [`locate_import`].
+#[inline(never)]
+fn find_import(name: u32) -> Option<u32> {
+    let mut formed = [0u16; NAME_ROOM];
+    let length = modules::import_module_name(&Mapped, name, &mut formed)?;
+    find(&formed[..length])
+}
+
 /// Snap the imports of the image mapped at `base` against the lists, descriptor by descriptor: each
 /// module it imports referenced once more, or loaded. On a failure, its status and how many
 /// descriptors' modules were referenced.
 fn snap(base: u32) -> Result<(), (u32, usize)> {
     for (index, descriptor) in modules::import_descriptors(&Mapped, base).enumerate() {
-        let mut name = [0u16; NAME_ROOM];
-        let length = modules::import_module_name(&Mapped, descriptor.name, &mut name)
-            .ok_or((STATUS_DLL_NOT_FOUND, index))?;
-        let module = match find(&name[..length]) {
-            Some(entry) => {
+        let module = match locate_import(descriptor.name).map_err(|status| (status, index))? {
+            Located::Listed(entry) => {
                 set_load_count(entry, modules::referenced(load_count(entry)));
                 base_of(entry)
             }
-            None => base_of(load(&name[..length]).map_err(|status| (status, index))?),
+            Located::Opened(found) => base_of(load_file(found).map_err(|status| (status, index))?),
         };
-        snap_descriptor(base, &descriptor, module, &name[..length])
-            .map_err(|status| (status, index + 1))?;
+        snap_descriptor(base, &descriptor, module).map_err(|status| (status, index + 1))?;
     }
     Ok(())
 }
 
 /// Write each IAT slot of `descriptor` (of the image at `base`) with its import's address in the
-/// module whose handle is `module` (named `name`), the IAT writable meanwhile. An import the
-/// module does not export is STATUS_ENTRYPOINT_NOT_FOUND by name, STATUS_ORDINAL_NOT_FOUND by
-/// ordinal, as Windows 2000's snap answers.
-fn snap_descriptor(
-    base: u32,
-    descriptor: &Descriptor,
-    module: u32,
-    name: &[u16],
-) -> Result<(), u32> {
+/// module whose handle is `module`, the IAT writable meanwhile. An import the module does not
+/// export is STATUS_ENTRYPOINT_NOT_FOUND by name, STATUS_ORDINAL_NOT_FOUND by ordinal, as Windows
+/// 2000's snap answers.
+fn snap_descriptor(base: u32, descriptor: &Descriptor, module: u32) -> Result<(), u32> {
     let count = modules::imports(&Mapped, base, descriptor.lookup).count() as u32;
     if count == 0 {
         return Ok(());
@@ -566,7 +703,7 @@ fn snap_descriptor(
                     (_, Import::Ordinal(_)) => STATUS_ORDINAL_NOT_FOUND,
                     (_, Import::Name(_)) => STATUS_ENTRYPOINT_NOT_FOUND,
                 });
-                report_import(import, name);
+                report_import(import, descriptor.name);
                 break;
             }
         }
@@ -575,10 +712,14 @@ fn snap_descriptor(
     snapped
 }
 
-/// Report an import that does not resolve (see [`report`]).
-fn report_import(import: Import, module: &[u16]) {
+/// Report an import that does not resolve, of the module an import descriptor names (its ANSI name
+/// at `module`; see [`report`]).
+#[inline(never)]
+fn report_import(import: Import, module: u32) {
+    let mut formed = [0u16; NAME_ROOM];
+    let length = modules::import_module_name(&Mapped, module, &mut formed).unwrap_or(0);
     let mut shown = [0u8; 96];
-    let module = narrow(module, &mut shown);
+    let module = narrow(&formed[..length], &mut shown);
     report(|line| match import {
         Import::Ordinal(ordinal) => write!(line, "ordinal {ordinal} was not found in {module}"),
         Import::Name(at) => {
@@ -620,10 +761,7 @@ fn discard(entry: u32, referenced: usize) {
     }
     modules::remove(&mut Mapped, entry);
     for descriptor in modules::import_descriptors(&Mapped, base).take(referenced) {
-        let mut name = [0u16; NAME_ROOM];
-        if let Some(found) = modules::import_module_name(&Mapped, descriptor.name, &mut name)
-            .and_then(|length| find(&name[..length]))
-        {
+        if let Some(found) = find_import(descriptor.name) {
             dereference(found);
         }
     }
@@ -670,6 +808,21 @@ fn run_initializers(reserved: u32) -> Result<(), u32> {
     }
 }
 
+/// ntdll's entry: its path under the system root (built on the process heap), its base the
+/// linker's symbol; none without room.
+fn add_ntdll() -> Option<u32> {
+    let mut path = HeapUnits::new(MAX_PATH)?;
+    let root = system_root();
+    let file = b"\\system32\\ntdll.dll";
+    path[..root.len()].copy_from_slice(root);
+    for (unit, &byte) in path[root.len()..].iter_mut().zip(file) {
+        *unit = u16::from(byte);
+    }
+    // The linker's symbol, by address only.
+    let base = core::ptr::addr_of!(IMAGE_BASE) as u32;
+    add_entry(base, None, &path[..root.len() + file.len()])
+}
+
 /// The process's initialization, on its first thread once the process heap and the locks are made
 /// (see the module doc): the lists built, the image's imports loaded and snapped, every module
 /// static. The failure's status.
@@ -713,18 +866,7 @@ pub(crate) fn initialize_process() -> Result<(), u32> {
 
         // ntdll: at the system directory, first in the initialization order, its entry processed
         // (it has no entry point).
-        let mut root = [0u16; MAX_PATH];
-        let root_length = system_root(&mut root);
-        let mut path = [0u16; MAX_PATH];
-        let file = b"\\system32\\ntdll.dll";
-        path[..root_length].copy_from_slice(&root[..root_length]);
-        for (unit, &byte) in path[root_length..].iter_mut().zip(file) {
-            *unit = u16::from(byte);
-        }
-        // The linker's symbol, by address only.
-        let ntdll_base = core::ptr::addr_of!(IMAGE_BASE) as u32;
-        let ntdll = add_entry(ntdll_base, None, &path[..root_length + file.len()])
-            .ok_or(STATUS_NO_MEMORY)?;
+        let ntdll = add_ntdll().ok_or(STATUS_NO_MEMORY)?;
         set_flags(ntdll, flags_of(ntdll) | flags::ENTRY_PROCESSED);
         modules::insert_initialized(&mut Mapped, lists, ntdll);
 

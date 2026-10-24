@@ -197,7 +197,9 @@ pub unsafe extern "system" fn rtl_get_current_directory_u(
 
 /// The process's first thread's share of the loader's work: open the starting current directory's
 /// handle (the kernel names it in the process parameters; a directory that cannot be opened leaves
-/// it without one).
+/// it without one). Never inlined: its copy of the path stays out of the frame the process's DLLs
+/// load under.
+#[inline(never)]
 pub fn open_starting_directory() {
     let current = dos_path();
     let mut copy = [0u16; MAX_PATH + 1];
@@ -233,13 +235,14 @@ unsafe fn terminated<'a>(string: *const u16) -> &'a [u16] {
     unsafe { core::slice::from_raw_parts(string, length) }
 }
 
-/// The current directory's DOS path and handle, copied under the PEB lock into `out`: its length.
-pub(crate) fn current_directory(out: &mut [u16; MAX_PATH + 1]) -> (usize, u32) {
+/// The current directory's DOS path and handle, copied under the PEB lock into `out` (cut to
+/// MAX_PATH units and to its room): its length.
+pub(crate) fn current_directory(out: &mut [u16]) -> (usize, u32) {
     let lock = sys::peb_lock();
     lock.enter(&sys::Native);
     // SAFETY: the DOS path's buffer holds its length.
     let units = unsafe { dos_path().units() };
-    let length = units.len().min(MAX_PATH);
+    let length = units.len().min(MAX_PATH).min(out.len());
     out[..length].copy_from_slice(&units[..length]);
     let handle = sys::read(sys::process_parameters() + CURRENT_DIRECTORY_HANDLE) as u32;
     lock.leave(&sys::Native);
