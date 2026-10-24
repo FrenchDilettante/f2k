@@ -129,10 +129,10 @@ pub struct Thread {
     /// The thread's client id (what GetCurrentThreadId reports, through its TEB): handed out when
     /// a user thread is created; zero for kernel threads.
     pub(crate) thread_id: u32,
-    /// The base of the thread's user-stack reservation, released with the record (zero for kernel
-    /// threads, and for the main thread, whose stack is a system region). How far the stack has
-    /// grown is the TEB's to say (see `user::stack`).
-    pub(crate) stack_reservation: u32,
+    /// The thread's ordinal within its process: what places its TEB page (0 for the main thread;
+    /// see `process::ordinals`, which also holds the pages a terminated thread leaves mapped).
+    /// Unrelated to the record's place in the pool.
+    pub(crate) ordinal: u16,
     /// The thread's exit status: [`STILL_ACTIVE`] while it lives, then the status it ended with.
     pub(crate) exit_status: u32,
     /// The thread's level ledger: captured at switch-out, restored at resume. A fresh thread
@@ -296,7 +296,7 @@ impl Thread {
             initial_stack: 0,
             teb_va: 0,
             thread_id: 0,
-            stack_reservation: 0,
+            ordinal: 0,
             exit_status: STILL_ACTIVE,
             level: LevelSnapshot::empty(),
             gate_slot: NO_GATE_SLOT,
@@ -478,6 +478,11 @@ impl Thread {
     /// The thread's client id, zero for kernel threads.
     pub fn thread_id(&self) -> u32 {
         self.thread_id
+    }
+
+    /// The thread's ordinal within its process (0 for the main thread).
+    pub fn ordinal(&self) -> u16 {
+        self.ordinal
     }
 
     /// The thread's gate-stack slot index, or [`NO_GATE_SLOT`] before allocation.

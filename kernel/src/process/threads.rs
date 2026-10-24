@@ -1,9 +1,10 @@
 //! The thread surface: child-thread creation, the process's thread and event records, and the
 //! thread-exit path.
 //!
-//! NtCreateThread behind kernel32's CreateThread: a child takes a thread record from its process, a
-//! gate-stack slot from the process's window, its own TEB page from the per-thread region, and a
-//! startup ladder the context switch enters — the same machinery the main thread's boot entry uses.
+//! NtCreateThread behind kernel32's CreateThread: a child takes a thread record from the pool, a
+//! gate-stack slot from the process's window, an ordinal from its process (which places its own TEB
+//! page in the per-thread region), and a startup ladder the context switch enters — the same
+//! machinery the main thread's boot entry uses.
 //! Its user stack and initial context are its creator's (kernel32's BaseCreateStack and
 //! BaseInitializeContext, as on Windows 2000): it enters user mode at kernel32's
 //! BaseThreadStartThunk, which calls the start routine and hands its return value to ExitThread.
@@ -27,38 +28,42 @@ use crate::process::Process;
 use crate::sched::dispatcher::{Dispatcher, Termination};
 use crate::sched::thread::{Thread, ThreadState};
 
-/// A fresh thread object for a created thread, with its record and ordinal, or none (the
-/// program-visible create failure): a record never used, or one whose thread has terminated and
-/// that nothing references any more (nothing can reach it again). The ordinal (the record's index)
-/// places the thread's TEB and user stack, so a reused record's pages are released before they are
-/// mapped afresh. The object holds the thread's own reference.
+/// A fresh thread object for a thread `process` creates over the user stack reserved at `stack`,
+/// with its record and its ordinal in the process, or none (the program-visible create failure):
+/// every ordinal of the process held by a thread something still references, or every record of
+/// the pool in use. The record is any free one of the pool; the ordinal is the process's lowest
+/// free one, which places the thread's TEB — an ordinal a terminated thread held has its pages
+/// released first, in this process. The object holds the thread's own reference.
 fn free_thread(
-    space: &mut crate::mem::vm::AddressSpace,
-) -> Option<(crate::ob::ObjectId, &'static mut Thread, u32)> {
+    process: &mut Process,
+    stack: u32,
+) -> Option<(crate::ob::ObjectId, &'static mut Thread, u16)> {
     let directory = crate::ob::directory();
-    let id =
-        directory.create_thread_in(crate::process::MAIN_THREAD as usize + 1..crate::ob::THREADS)?;
-    let thread = directory.threads.record(id.index);
-    let ordinal = id.index as u32;
-    if thread.state() == ThreadState::Terminated {
-        release_thread_pages(space, ordinal, thread.stack_reservation);
+    let ordinal = process.ordinals.free(|id| directory.is_live(id))?;
+    let id = directory.create_thread()?;
+    if let Some(leftover) = process.ordinals.hold(ordinal, id, stack) {
+        release_thread_pages(process, leftover);
     }
+    let thread = directory.threads.record(id.index);
     *thread = Thread::empty();
+    thread.ordinal = ordinal;
     Some((id, thread, ordinal))
 }
 
-/// Release the user pages a terminated thread at `ordinal` left mapped — its TEB page, and its
-/// stack reservation at `stack_base` — through the address space (the record is about to be
-/// reused): a TEB the program made inaccessible gives its frame back too.
-fn release_thread_pages(space: &mut crate::mem::vm::AddressSpace, ordinal: u32, stack_base: u32) {
+/// Release the user pages a terminated thread left mapped at an ordinal of `process` that is about
+/// to be reused — its TEB page and its stack reservation — through the process's address space: a
+/// TEB the program made inaccessible gives its frame back too. The process creates the thread, so
+/// its address space is the live one.
+fn release_thread_pages(process: &mut Process, leftover: crate::process::ordinals::Leftover) {
     use crate::mem::vm::CurrentPages;
-    let _ = space.decommit(
-        &mut CurrentPages,
-        crate::user::thread_teb_va(ordinal),
-        paging::PAGE_SIZE,
+    assert!(
+        core::ptr::eq(crate::process::current(), process),
+        "a reused ordinal's pages are released in its own process"
     );
-    if stack_base != 0 {
-        let _ = space.release(&mut CurrentPages, stack_base);
+    let space = process.vm();
+    let _ = space.decommit(&mut CurrentPages, leftover.teb, paging::PAGE_SIZE);
+    if leftover.stack != 0 {
+        let _ = space.release(&mut CurrentPages, leftover.stack);
     }
 }
 
@@ -68,13 +73,13 @@ fn release_thread_pages(space: &mut crate::mem::vm::AddressSpace, ordinal: u32, 
 /// the caller's handle exists, so a thread never runs before its creator holds a way to wait on
 /// it. Returns the thread's object (holding the thread's own reference), its record, and its
 /// identifier (its client id, never reused within the boot). None is the program-visible failure:
-/// no free record. `process` is the caller's.
+/// no free ordinal in the process, or no free record in the pool. `process` is the caller's.
 pub fn create(
     process: &mut Process,
     user: crate::sched::startup::UserStart,
     stack: crate::sched::startup::InitialStack,
 ) -> Option<(crate::ob::ObjectId, *mut Thread, u32)> {
-    let (object, thread, ordinal) = free_thread(process.vm())?;
+    let (object, thread, ordinal) = free_thread(process, stack.allocation_base)?;
     // An exited thread's stack is released before a slot is taken, so its slot is free to reuse
     // (unmapped, not merely marked free).
     if let Some(dead) = process.dead_stack.take() {
@@ -98,7 +103,7 @@ pub fn create(
 
     // The TEB page: the per-thread region, one page, carrying the thread's identity and the stack
     // its creator made.
-    thread.teb_va = crate::user::thread_teb_va(ordinal);
+    thread.teb_va = crate::user::thread_teb_va(ordinal as u32);
     thread.thread_id = crate::process::new_client_id();
     // Its TLS is user memory: ntdll's thread initialization makes the implicit-TLS block, and
     // TlsSetValue the expansion slots on first use (both on the process heap).
@@ -112,7 +117,6 @@ pub fn create(
         peb: crate::user::PEB_PAGE,
     };
     crate::user::teb::map_teb(process.vm(), &init);
-    thread.stack_reservation = stack.allocation_base;
 
     // The startup ladder: the stub calls the system routine (the startup's deliveries), then
     // enters ring 3 in the creator's context.

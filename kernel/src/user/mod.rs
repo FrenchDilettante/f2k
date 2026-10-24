@@ -94,9 +94,10 @@ pub fn main_thread_start(entry: u32) -> crate::sched::startup::UserStart {
     }
 }
 
-/// Thread `index`'s TEB page: the first thread's fixed page, then one page lower per index.
-pub const fn thread_teb_va(index: u32) -> u32 {
-    TEB_PAGE - index * 4096
+/// The TEB page of the thread at `ordinal` in its process (see `process::ordinals`): the main
+/// thread's fixed page, then one page lower per ordinal, in every process alike.
+pub const fn thread_teb_va(ordinal: u32) -> u32 {
+    TEB_PAGE - ordinal * 4096
 }
 
 /// An unmapped user address the bad-args stub passes as the syscall argument pointer: below the

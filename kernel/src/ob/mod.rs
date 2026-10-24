@@ -127,10 +127,11 @@ pub const TIMERS: usize = 32;
 pub const SECTIONS: usize = 16;
 /// How many file objects can exist at once.
 pub const FILES: usize = crate::fs::file::OPEN_FILES;
-/// How many thread records exist: the current process's main thread (record 0) and its created
-/// threads (records 1 on). A record's index is its thread's ordinal, which places its TEB and stack
-/// pages (single-process for now: the ordinals are the process's).
-pub const THREADS: usize = 1 + crate::process::CHILD_THREADS;
+/// How many thread records exist, across every process: any process's thread takes any free
+/// record, main thread or created. A record's index is not its thread's ordinal (the process's own
+/// numbering, which places its TEB: see [`crate::process::ordinals`]). Room for two processes at
+/// nearly their full thread counts.
+pub const THREADS: usize = 128;
 /// How many processes can exist at once: the process pool's records ([`crate::process::pool`]),
 /// one process object each.
 pub const PROCESSES: usize = crate::process::MAX_PROCESSES;
@@ -557,13 +558,18 @@ impl Directory {
         Some(self.id(ObjectType::Timer, index))
     }
 
-    /// A thread record for a new thread object, in `range` (record 0 is the main thread's; created
-    /// threads take 1 on). The record is returned as it was left — a dead thread's record still
-    /// holds what its pages need for release; the caller renews it. Holds the thread's own
-    /// reference, released when the thread ends.
+    /// A thread record for a new thread object, in `range`. The record is returned as it was left;
+    /// the caller renews it. Holds the thread's own reference, released when the thread ends.
     pub fn create_thread_in(&mut self, range: core::ops::Range<usize>) -> Option<ObjectId> {
         let index = self.threads.allocate_in(range)?;
         Some(self.id(ObjectType::Thread, index))
+    }
+
+    /// A thread record for a new thread object of any process, main thread or created: the lowest
+    /// free record of the whole pool (see [`Directory::create_thread_in`]). None when every record
+    /// holds a live thread object.
+    pub fn create_thread(&mut self) -> Option<ObjectId> {
+        self.create_thread_in(0..THREADS)
     }
 
     /// A process object for a new process, unsignaled and still active, holding the process's own
@@ -735,13 +741,19 @@ impl Directory {
         self.is_live(id).then_some(id)
     }
 
-    /// The thread object whose client id is `thread_id`, among the threads that have not ended (one
-    /// process at a time: the current process's); none when no such thread has it.
-    pub fn thread_by_client_id(&mut self, thread_id: u32) -> Option<ObjectId> {
+    /// The thread object whose client id is `thread_id`, among the threads that have not ended of
+    /// the process whose scheduling record is `owner`; none when no such thread has it (a thread of
+    /// another process is not the owner's).
+    pub fn thread_by_client_id(
+        &mut self,
+        owner: *const crate::sched::process::SchedProcess,
+        thread_id: u32,
+    ) -> Option<ObjectId> {
         for index in 0..THREADS as u16 {
             let id = self.id(ObjectType::Thread, index);
             let found = self.thread(id).is_some_and(|thread| {
-                thread.thread_id() == thread_id
+                core::ptr::eq(thread.process, owner)
+                    && thread.thread_id() == thread_id
                     && thread.state() != crate::sched::thread::ThreadState::Terminated
             });
             if found {
@@ -1635,6 +1647,31 @@ mod tests {
             directory.create_thread_in(1..THREADS).map(|id| id.index),
             Some(last.index)
         );
+    }
+
+    /// Two processes' threads interleave in the pool, any process's thread taking the lowest free
+    /// record; a client-id lookup finds only the asking process's own threads.
+    #[test]
+    fn thread_lookups_by_client_id_stay_within_their_process() {
+        use crate::sched::process::SchedProcess;
+        let directory = directory();
+        let a = Box::leak(Box::new(SchedProcess::new(0x0090_0000, 8))) as *mut SchedProcess;
+        let b = Box::leak(Box::new(SchedProcess::new(0x00A0_0000, 8))) as *mut SchedProcess;
+        // A's main thread, B's main thread, then a created thread of A's: records 0, 1, 2.
+        let threads = [(a, 8), (b, 16), (a, 20)].map(|(owner, client_id)| {
+            let id = directory.create_thread().unwrap();
+            let record = directory.threads.record(id.index);
+            *record = Thread::empty();
+            record.process = owner;
+            record.thread_id = client_id;
+            id
+        });
+        assert_eq!(threads.map(|id| id.index), [0, 1, 2]);
+        assert_eq!(directory.thread_by_client_id(a, 20), Some(threads[2]));
+        assert_eq!(directory.thread_by_client_id(a, 8), Some(threads[0]));
+        assert_eq!(directory.thread_by_client_id(b, 16), Some(threads[1]));
+        assert_eq!(directory.thread_by_client_id(b, 20), None, "A's thread");
+        assert_eq!(directory.thread_by_client_id(a, 16), None, "B's thread");
     }
 
     /// The pools refuse past their capacity.

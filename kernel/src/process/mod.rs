@@ -9,9 +9,10 @@
 //! The per-thread state split: the ring-0 gate stack (the thread's kernel stack, what the TSS
 //! `esp0` points into) is per-thread, sub-allocated as slots of the process's window
 //! ([`GateSlots`]), each slot's frames recorded by their owning thread. The thread records
-//! themselves are the object manager's ([`crate::ob`]). The scheduling record leads the process at
-//! a pinned offset, so a thread's owner pointer resolves the directory base the context switch
-//! loads.
+//! themselves are the object manager's ([`crate::ob`]), taken from its whole pool; the process
+//! numbers its own threads ([`ordinals`]), which places their TEB pages. The scheduling record
+//! leads the process at a pinned offset, so a thread's owner pointer resolves the directory base
+//! the context switch loads.
 //!
 //! A process runs on its threads until its last thread ends, and the idle thread tears it down.
 //! The teardown touches only what the process owns — its handles, its views, its address space,
@@ -53,6 +54,9 @@ pub mod pool;
 /// The process's own synchronization records: the user-APC records QueueUserAPC queues.
 pub mod objects;
 
+/// The process's thread ordinals: which thread holds which TEB page.
+pub mod ordinals;
+
 pub use pool::MAX_PROCESSES;
 #[cfg(target_arch = "x86")]
 pub use pool::{current, current_mut, reap_pending};
@@ -87,6 +91,12 @@ pub struct Process {
     hard_error_mode: u32,
     /// The gate-stack window's slot occupancy (which threads own which slots).
     gate_slots: GateSlots,
+    /// The main thread's record in the object manager's thread pool (any free record when the
+    /// process started).
+    main_thread: u16,
+    /// The thread ordinals: which thread holds which TEB page, and the pages a terminated thread
+    /// left mapped.
+    ordinals: ordinals::Ordinals,
     /// The address space's regions: every user page the process holds lies in one, and every
     /// mapping, commit and release of its pages goes through it.
     vm: crate::mem::vm::AddressSpace,
@@ -131,14 +141,11 @@ pub const NORMAL_PRIORITY_CLASS: u8 = crate::nt::process::PRIORITY_CLASS_NORMAL;
 /// CREATE_DEFAULT_ERROR_MODE's parent mode; kernel32's SetErrorMode reads it as mode 0).
 pub const DEFAULT_HARD_ERROR_MODE: u32 = 1;
 
-/// How many threads a process can have alive besides its main thread. A terminated thread's record
-/// is reused once nothing references its object, so this bounds the live threads, not the threads
-/// created (the threads fixture's scale block keeps 64 children alive at once).
+/// How many threads a process can have alive besides its main thread: its created threads'
+/// ordinals ([`ordinals`]). A terminated thread's ordinal is reused once nothing references its
+/// object, so this bounds the live threads, not the threads created (the threads fixture's scale
+/// block keeps 64 children alive at once).
 pub const CHILD_THREADS: usize = 64;
-
-/// The main thread's record in the object manager's thread pool (created threads take the records
-/// after it; a record's index is its thread's ordinal).
-pub const MAIN_THREAD: u16 = 0;
 
 /// One gate stack: its slot index and the frames mapped in it.
 pub type GateStack = (u16, [u32; crate::mem::paging::GATE_STACK_PAGES]);
@@ -329,15 +336,11 @@ impl Process {
             .insert(crate::ob::Entry::object(id, access, inherit))
     }
 
-    /// Every thread that has a TEB, as (ordinal, TEB address): the main thread at ordinal 0, then
-    /// the created threads (terminated ones too: their pages stay mapped until the record is
-    /// reused).
-    #[cfg(target_arch = "x86")]
-    pub fn thread_tebs(&self) -> impl Iterator<Item = (u32, u32)> {
-        (0..crate::ob::THREADS as u16).filter_map(|index| {
-            let teb = crate::ob::directory().threads.record(index).teb_va();
-            (teb != 0).then_some((index as u32, teb))
-        })
+    /// Every thread of this process that has a TEB, as (ordinal, TEB address): the main thread at
+    /// ordinal 0, then the created threads (terminated ones too: their pages stay mapped until the
+    /// ordinal is reused). Another process's threads are never among them.
+    pub fn thread_tebs(&self) -> impl Iterator<Item = (u32, u32)> + '_ {
+        self.ordinals.tebs()
     }
 
     /// Release every handle at once: the process-exit step. Each closes as a CloseHandle would.
@@ -395,12 +398,14 @@ impl Process {
         process.sched.init();
 
         // The main thread: its object holds the thread's own reference while it runs (released at
-        // its end), on the main thread's record. It attaches to the process and takes the lowest
-        // free gate-stack slot.
+        // its end), on any free record of the pool; it holds the process's ordinal 0 (the fixed TEB
+        // page). It attaches to the process and takes the lowest free gate-stack slot.
         let directory = crate::ob::directory();
         let id = directory
-            .create_thread_in(MAIN_THREAD as usize..MAIN_THREAD as usize + 1)
-            .expect("the main thread's record is free when a process starts");
+            .create_thread()
+            .expect("a thread record is free for a new process's main thread");
+        process.main_thread = id.index;
+        process.ordinals.hold_main(id);
         let thread: *mut crate::sched::thread::Thread = directory.threads.record(id.index);
         // SAFETY: the record is the pool's (static, its final address) and nothing else reaches it.
         unsafe { *thread = crate::sched::thread::Thread::empty() };
@@ -417,7 +422,8 @@ impl Process {
             (*thread).gate_slot = slot;
             (*thread).gate_frames = frames;
             (*thread).initial_stack = paging::gate_slot_top(slot as u32);
-            (*thread).teb_va = crate::user::TEB_PAGE;
+            (*thread).ordinal = ordinals::MAIN;
+            (*thread).teb_va = crate::user::thread_teb_va(ordinals::MAIN as u32);
             (*thread).thread_id = new_client_id();
         }
         // The TSS `esp0` is the switch's to install: the first switch into the main thread loads
@@ -427,7 +433,7 @@ impl Process {
 
     /// The process's main thread: its record in the object manager's thread pool.
     pub fn main_thread(&self) -> &'static mut crate::sched::thread::Thread {
-        crate::ob::directory().threads.record(MAIN_THREAD)
+        crate::ob::directory().threads.record(self.main_thread)
     }
 }
 
@@ -550,6 +556,8 @@ unsafe fn write_fresh(
         addr_of_mut!((*process).priority_class).write(NORMAL_PRIORITY_CLASS);
         addr_of_mut!((*process).hard_error_mode).write(DEFAULT_HARD_ERROR_MODE);
         addr_of_mut!((*process).gate_slots).write(GateSlots::empty());
+        addr_of_mut!((*process).main_thread).write(0);
+        addr_of_mut!((*process).ordinals).write(ordinals::Ordinals::empty());
         crate::mem::vm::AddressSpace::write_empty(addr_of_mut!((*process).vm));
         crate::sched::object::HandleTable::write_empty(addr_of_mut!((*process).handles));
         addr_of_mut!((*process).console).write(rtl::console::Handles::standard());
@@ -841,6 +849,8 @@ mod tests {
             priority_class: NORMAL_PRIORITY_CLASS,
             hard_error_mode: DEFAULT_HARD_ERROR_MODE,
             gate_slots: GateSlots::empty(),
+            main_thread: 0,
+            ordinals: ordinals::Ordinals::empty(),
             vm: crate::mem::vm::AddressSpace::new(),
             handles: crate::sched::object::HandleTable::empty(),
             console: rtl::console::Handles::standard(),

@@ -167,7 +167,7 @@ pub fn get_process_window_station(call: &mut NtCall, out: UserPtr<u32>) -> NtRes
 /// `thread_id` (its desktop is the process's); STATUS_INVALID_PARAMETER for an id no running thread
 /// has.
 pub fn get_thread_desktop(call: &mut NtCall, thread_id: u32, out: UserPtr<u32>) -> NtResult {
-    if !is_thread(thread_id) {
+    if !is_thread(call, thread_id) {
         return Err(STATUS_INVALID_PARAMETER);
     }
     let connection = connection(call)?;
@@ -231,11 +231,13 @@ fn connection(call: &mut NtCall) -> Result<Connection, Status> {
     connect(call.process())
 }
 
-/// Whether a thread of the calling process that has not ended has client id `thread_id`.
+/// Whether a thread of the calling process that has not ended has client id `thread_id` (another
+/// process's thread is not one).
 #[cfg(target_arch = "x86")]
-fn is_thread(thread_id: u32) -> bool {
+fn is_thread(call: &mut NtCall, thread_id: u32) -> bool {
+    let owner = &call.process().sched as *const crate::sched::process::SchedProcess;
     crate::ob::directory()
-        .thread_by_client_id(thread_id)
+        .thread_by_client_id(owner, thread_id)
         .is_some()
 }
 
@@ -272,7 +274,7 @@ fn connection(_: &mut NtCall) -> Result<Connection, Status> {
 }
 
 #[cfg(not(target_arch = "x86"))]
-fn is_thread(_: u32) -> bool {
+fn is_thread(_: &mut NtCall, _: u32) -> bool {
     false
 }
 
