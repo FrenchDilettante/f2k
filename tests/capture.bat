@@ -40,6 +40,7 @@ call kernel32\files\setup.bat > nul
 call :cap_bare
 call :cap_runtime
 for %%F in (memory threads sync sched files fswrite dll dllmain msgtable console) do call :listed kernel32 %%F
+call :cap_spawn
 call :listed user32 winsta
 call :listed advapi32 registry
 call :cap_hellomd
@@ -55,7 +56,7 @@ rem needs its data tree's attributes first (kernel32\files\setup.bat).
 :one
 set F2KT_DLL=
 for %%F in (bare) do if /I "%%F"=="%~1" set F2KT_DLL=core
-for %%F in (runtime memory threads sync sched files fswrite dll dllmain msgtable console) do if /I "%%F"=="%~1" set F2KT_DLL=kernel32
+for %%F in (runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn) do if /I "%%F"=="%~1" set F2KT_DLL=kernel32
 for %%F in (winsta) do if /I "%%F"=="%~1" set F2KT_DLL=user32
 for %%F in (registry) do if /I "%%F"=="%~1" set F2KT_DLL=advapi32
 for %%F in (hellomd crt seh fd wide) do if /I "%%F"=="%~1" set F2KT_DLL=crt
@@ -70,6 +71,10 @@ if /I "%~1"=="bare" (
 )
 if /I "%~1"=="runtime" (
     call :cap_runtime
+    goto done
+)
+if /I "%~1"=="spawn" (
+    call :cap_spawn
     goto done
 )
 if /I "%~1"=="hellomd" (
@@ -101,6 +106,21 @@ call :fixture kernel32 runtime
 >> output.txt 2>&1 runtime.exe args one "two words" back\slash "tail\\" x
 >> output.txt echo ^<^<^< exit code=%ERRORLEVEL%
 call :sections runtime.exe args
+cd ..\..
+goto :eof
+
+rem Capture spawn: its overlay block replaces the program with a child,
+rem which still runs once the program has ended; wait for it (ping as a
+rem two-second sleep: Windows 2000 has no timeout command) before the
+rem block's last line, so the child's output lands inside the block.
+:cap_spawn
+call :fixture kernel32 spawn
+call :sections spawn.exe overlay
+>> output.txt echo ^>^>^> spawn.exe overlay
+>> output.txt 2>&1 spawn.exe overlay
+set F2KT_RC=%ERRORLEVEL%
+ping -n 3 127.0.0.1 > nul
+>> output.txt echo ^<^<^< exit code=%F2KT_RC%
 cd ..\..
 goto :eof
 

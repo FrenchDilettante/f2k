@@ -133,6 +133,31 @@ def test_binaries_are_built_from_the_checked_in_source(fixture: str):
     )
 
 
+def test_the_corpus_names_are_8_3_and_distinct():
+    """The disk build puts every sectioned fixture's program and its companions (the other programs
+    and the DLLs beside it, and the DLLs in its subdirectories) in \\CORPUS, by their upper-cased
+    names (the Makefile's corpus loop): each must be an 8.3 name, and no two may meet, or one would
+    replace another. An awaited fixture's program counts by its name already."""
+    def is_8_3(part: str) -> bool:
+        stem, dot, extension = part.partition(".")
+        return 1 <= len(stem) <= 8 and len(extension) <= 3 and "." not in extension and " " not in part
+
+    seen: dict[str, str] = {}
+    for fixture in DECLARED:
+        if f2kboot.declaration(fixture)["kind"] != "sectioned":
+            continue
+        directory = f2kboot.fixture_directory(fixture)
+        names = {f"{fixture}.exe"} | {
+            path.relative_to(directory).as_posix()
+            for pattern in ("*.exe", "*.dll", "*/*.dll") for path in directory.glob(pattern)
+        }
+        for name in sorted(names):
+            placed = name.upper()
+            assert all(is_8_3(part) for part in placed.split("/")), f"{fixture}: {name} is not 8.3"
+            assert placed not in seen, f"{fixture}'s {name} meets {seen[placed]}'s in \\CORPUS"
+            seen[placed] = fixture
+
+
 def test_the_pins_check_out():
     """The tests' pins agree with the export specs and the captures (scripts/compat.py --check):
     every pin names an export of a spec, every pinned section has a captured block, every

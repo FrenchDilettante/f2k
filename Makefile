@@ -74,8 +74,9 @@ DISK_FIXTURES ?= exit0 ret0
 # its own directory on the real machine: the root keeps its one cluster (the disk-smoke pins it).
 # They are the fixtures whose declaration, tests/<dll>/<name>/fixture.toml, says kind "sectioned",
 # less those declared ahead of their real-machine build (no <name>.exe yet). Each one's companion
-# DLLs (tests/<dll>/<name>/*.dll) go beside it, as they sit beside the program on the real machine,
-# and those in a subdirectory of its (tests/<dll>/<name>/<sub>/*.dll) in that subdirectory.
+# DLLs and programs (tests/<dll>/<name>/*.dll, and *.exe but its own) go beside it, as they sit
+# beside the program on the real machine, and the DLLs in a subdirectory of its
+# (tests/<dll>/<name>/<sub>/*.dll) in that subdirectory.
 CORPUS_FIXTURES ?= $(sort $(foreach fixture,$(notdir $(patsubst %/fixture.toml,%,$(shell grep -l '^kind = "sectioned"' tests/*/*/fixture.toml))),$(if $(wildcard $(call fixture_dir,$(fixture))/$(fixture).exe),$(fixture))))
 # The system DLLs the userland workspace builds, which the disk carries in its system directory
 # (\WINNT\system32, under the kernel's NtSystemRoot).
@@ -196,12 +197,13 @@ disk: kernel limine
 		fixture=$$(basename $$directory); \
 		mcopy -i $(DISK_IMG)@@1M $$directory/$$fixture.exe \
 			::/CORPUS/$$(echo $$fixture | tr a-z A-Z).EXE || exit 1; \
-		for dll in $$directory/*.dll $$directory/*/*.dll; do \
-			[ -f "$$dll" ] || continue; \
-			place=$$(dirname "$${dll#$$directory}" | tr a-z A-Z); \
+		for companion in $$directory/*.dll $$directory/*.exe $$directory/*/*.dll; do \
+			[ -f "$$companion" ] || continue; \
+			[ "$$companion" = "$$directory/$$fixture.exe" ] && continue; \
+			place=$$(dirname "$${companion#$$directory}" | tr a-z A-Z); \
 			[ "$$place" = / ] || mmd -D s -i $(DISK_IMG)@@1M ::/CORPUS$$place 2>/dev/null; \
-			mcopy -i $(DISK_IMG)@@1M "$$dll" \
-				::/CORPUS$${place%/}/$$(basename "$$dll" | tr a-z A-Z) || exit 1; \
+			mcopy -i $(DISK_IMG)@@1M "$$companion" \
+				::/CORPUS$${place%/}/$$(basename "$$companion" | tr a-z A-Z) || exit 1; \
 		done; \
 	done
 	mcopy -s -i $(DISK_IMG)@@1M $(call fixture_dir,files)/DATA ::/CORPUS/

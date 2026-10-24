@@ -22,7 +22,7 @@ if not "%~1"=="" goto one
 
 call :srcsum
 if errorlevel 1 exit /b 1
-for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console winsta registry hellomd crt seh fd wide) do (
+for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn winsta registry hellomd crt seh fd wide) do (
     call :%%F
     if errorlevel 1 exit /b 1
 )
@@ -34,7 +34,7 @@ rem needs it and it is not there (the fixtures built on common\f2kt.h
 rem stamp their source with it).
 :one
 set F2KT_ONE=
-for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console winsta registry hellomd crt seh fd wide) do if /I "%%F"=="%~1" set F2KT_ONE=yes
+for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn winsta registry hellomd crt seh fd wide) do if /I "%%F"=="%~1" set F2KT_ONE=yes
 if not defined F2KT_ONE (
     echo build.bat: no such fixture %~1
     exit /b 1
@@ -241,6 +241,20 @@ call :stamp console.c
 cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% console.c
 if errorlevel 1 (echo build.bat: console failed & exit /b 1)
 del console.obj
+cd ..\..
+goto :eof
+
+rem spawn's companion program, spawnkid.exe (the child every section
+rem starts), builds beside it with no source stamp; both with /MD.
+:spawn
+echo === spawn
+cd kernel32\spawn
+cl /nologo /MD spawnkid.c
+if errorlevel 1 (echo build.bat: spawnkid failed & exit /b 1)
+call :stamp spawn.c
+cl /nologo /MD /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% spawn.c
+if errorlevel 1 (echo build.bat: spawn failed & exit /b 1)
+del spawn.obj spawnkid.obj
 cd ..\..
 goto :eof
 

@@ -13,7 +13,7 @@ tests/
 │               # (test_limine.py, test_input.py, test_screen.py and its screens/), and the
 │               # fixtures exit0, ret0, hello and bare
 ├── kernel32/   # runtime, memory, threads, sync, sched, files, fswrite, dll, dllmain, msgtable,
-│               # console
+│               # console, spawn
 ├── user32/     # hellogui, winsta
 ├── advapi32/   # registry
 ├── crt/        # msvcrt.dll's: hellomd, crt, seh, fd, wide (built with /MD)
@@ -31,6 +31,8 @@ tests/<dll>/<name>/
 ├── <name>.exe      # the compiled fixture (committed; it is the point)
 ├── *.dll           # companion DLLs the program loads, if any (committed, built beside it
 │                   # from their checked-in source and .def)
+├── <other>.exe     # companion programs the program starts, if any (committed, built beside
+│                   # it from their checked-in source)
 ├── fixture.toml    # the declaration: its kind, and how its capture compares (served fixtures)
 ├── output.txt      # the real-machine capture, where there is one
 ├── overrides.txt   # blocks the capture script cannot take (an interactive console...), if any
@@ -102,6 +104,10 @@ The fixtures:
 - `console` - the console through `CONOUT$` and `CONIN$`, so the capture script takes it: the screen buffer's size and attributes, the input and output modes, `ReadConsoleW`/`ReadConsoleA` over input the program queues itself, the title, and control handlers.
   Gated; its screens are saved (`screenshots`).
   What a program writes through `CONOUT$` shows on the screen only, not on COM1: as on the real machine, where the capture redirects standard output to a file and `CONOUT$` stays on the console.
+- `spawn` - child processes, with its companion program `spawnkid.exe` (built beside it from `spawnkid.c`), the child every section starts, which does what its first argument says and prints through the standard handles it inherits: Windows 2000's fixed addresses (the parent's TEB and PEB and the fields they point to, a second thread's TEB, a child's PEB and TEB through ntdll's queries and `ReadProcessMemory`, printed as values: Windows 2000 has no address randomization), `CreateProcessA`/`CreateProcessW` (the names, the search order, quoting and spaces, the errors), waits and exit codes, process and thread handles (`OpenProcess`, `CREATE_SUSPENDED`, `TerminateProcess`, `DuplicateHandle` into a child), inherited standard handles, environment blocks and the current directory, `ReadProcessMemory` and `WriteProcessMemory`, `GetBinaryTypeA`/`GetBinaryTypeW`, msvcrt's `_spawn` family and `_cwait`, `system()`, detached and new-console children, and named-only `overlay` (`_P_OVERLAY`, whose child capture.bat waits for before it closes the block).
+  Built with `/MD`, in a scratch directory as `fswrite`'s.
+  Declared ahead of its real-machine build and capture.
+  Its `system` block (no cmd.exe on F2K's disk) and `detach` block (F2K's stub path) are expected to stay failing.
 - `winsta` (user32) - the window station and desktop: their handles, names, types and flags (`GetUserObjectInformation`), and `MessageBeep`.
 - `registry` (advapi32) - keys and values under `HKEY_CURRENT_USER\Software\F2K` only, deleted before and after each section: creating, opening and closing keys, setting and querying values of each type, default values, enumeration and deletion.
 
@@ -145,7 +151,7 @@ The screenshots are recorded only, never compared.
 A `[pending]`, `[masks]` or `[pins]` section with no captured block is an error, as is a mask that matches none of its block's lines.
 The fixture's `test_<name>.py` only binds `f2kboot.corpus_test("<name>")`.
 A sectioned fixture may be declared ahead of its real-machine files (`<name>.exe` and `output.txt`, both absent; its sources may come first, for the real machine to build): it is then one skipped test, and the disk build leaves it out; `harness/test_repository.py` refuses a fixture holding only one of them.
-A fixture's companion DLLs (`tests/<dll>/<name>/*.dll`) go into `\CORPUS` beside its program, by their uppercase names (keep them 8.3), as they sit beside it on the real machine, and those in a subdirectory of the fixture's (`tests/<dll>/<name>/<sub>/*.dll`) into that subdirectory of `\CORPUS`.
+A fixture's companion DLLs and programs (`tests/<dll>/<name>/*.dll`, and the `*.exe` other than its own) go into `\CORPUS` beside its program, by their uppercase names (8.3, and distinct across the fixtures: `harness/test_repository.py` checks both), as they sit beside it on the real machine, and the DLLs in a subdirectory of the fixture's (`tests/<dll>/<name>/<sub>/*.dll`) into that subdirectory of `\CORPUS`.
 Every corpus boot goes through QEMU's Multiboot loader (`-kernel`, the command line by `-append`), except `core/test_limine.py`'s: a few blocks (the scenarios the retired smokes ran on both paths, the command line, the memory map) booted from the disk through Limine, together in one boot, on a copy of the disk whose Limine entry carries their command lines (`cmdline:`), each compared against its own capture with its own declaration.
 The Makefile's corpus derives from the declarations too: a new fixture is its directory, in its DLL's group, and its `fixture.toml`.
 Every boot's COM1 log stays under `target/qemu/logs/`, a batch's named after its fixture (`limine.log` for the Limine blocks).

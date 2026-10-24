@@ -1,0 +1,85 @@
+# spawn: one test per block of the real-machine capture (output.txt); see tests/README.md. Built with
+# /MD. Its companion program, spawnkid.exe (built beside spawn.exe from spawnkid.c, with /MD), is the
+# child every section starts; it goes into \CORPUS beside the program, as it sits beside it on the
+# real machine. Declared ahead of its real-machine build and capture (no spawn.exe, no output.txt
+# yet), and not gated: F2K runs one process at a time. Once captured, the system block (no cmd.exe
+# on F2K's disk) and the detach block (F2K's stub path) are expected to stay pending. The create
+# block starts some sixty processes, hence the longer timeout.
+description = "spawn - child processes (spawn.c, with its companion program spawnkid.c): Windows 2000's fixed addresses of the TEB, PEB and their fields in the parent, a second thread and a child; CreateProcessA/W's names, search order, quoting and errors; waits and exit codes; process and thread handles, OpenProcess, CREATE_SUSPENDED, TerminateProcess and DuplicateHandle into a child; inherited standard handles; environment blocks and the current directory; ReadProcessMemory and WriteProcessMemory; GetBinaryTypeA/W; msvcrt's _spawn family, _cwait, _P_OVERLAY, system(); DETACHED_PROCESS, CREATE_NEW_CONSOLE and _P_DETACH."
+kind = "sectioned"
+timeout = 60
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. Only what a section calls itself: never the C runtime's startup, nor what a library calls
+# underneath (_spawnl pins msvcrt._spawnl, not the CreateProcessA beneath it).
+layout = [
+    "kernel32.CreateThread",
+    "kernel32.CreateProcessA",
+    "ntdll.NtQueryInformationProcess",
+    "ntdll.NtQueryInformationThread",
+    "kernel32.ReadProcessMemory",
+    "kernel32.GetExitCodeProcess",
+]
+create = [
+    "kernel32.CreateProcessA",
+    "kernel32.CreateProcessW",
+    "kernel32.WaitForSingleObject",
+    "kernel32.GetExitCodeProcess",
+    "kernel32.SetCurrentDirectoryA",
+    "kernel32.SetEnvironmentVariableA",
+]
+wait = [
+    "kernel32.CreateProcessA",
+    "kernel32.WaitForSingleObject",
+    "kernel32.WaitForMultipleObjects",
+    "kernel32.GetExitCodeProcess",
+    "kernel32.GetExitCodeThread",
+]
+handles = [
+    "kernel32.CreateProcessA",
+    "kernel32.OpenProcess",
+    "kernel32.TerminateProcess",
+    "kernel32.GetExitCodeProcess",
+    "kernel32.GetExitCodeThread",
+    "kernel32.SuspendThread",
+    "kernel32.ResumeThread",
+    "kernel32.DuplicateHandle",
+]
+inherit = [
+    "kernel32.CreateProcessA",
+    "kernel32.CreateProcessW",
+    "kernel32.CreateFileA",
+    "kernel32.SetHandleInformation",
+]
+environment = [
+    "kernel32.CreateProcessA",
+    "kernel32.CreateProcessW",
+    "kernel32.SetEnvironmentVariableA",
+    "kernel32.SetEnvironmentVariableW",
+]
+curdir = ["kernel32.CreateProcessA", "kernel32.CreateProcessW", "kernel32.SetCurrentDirectoryA"]
+memory = [
+    "kernel32.CreateProcessA",
+    "ntdll.NtQueryInformationProcess",
+    "kernel32.ReadProcessMemory",
+    "kernel32.WriteProcessMemory",
+    "kernel32.OpenProcess",
+    "kernel32.ResumeThread",
+]
+binarytype = ["kernel32.GetBinaryTypeA", "kernel32.GetBinaryTypeW"]
+spawn = [
+    "msvcrt._spawnl",
+    "msvcrt._spawnv",
+    "msvcrt._spawnlp",
+    "msvcrt._spawnvp",
+    "msvcrt._spawnle",
+    "msvcrt._spawnve",
+    "msvcrt._cwait",
+    "msvcrt._putenv",
+    "msvcrt._errno",
+    "msvcrt.__doserrno",
+]
+overlay = ["msvcrt._spawnl"]
+system = ["msvcrt.system"]
+detach = ["kernel32.CreateProcessA", "kernel32.CreateProcessW", "msvcrt._spawnl"]
