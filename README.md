@@ -165,19 +165,27 @@ lines (`contiguous`), or forbid strings (`forbids`). A kernel panic
 fails every case. The sectioned fixtures' tests are their real-machine
 captures (see `tests/README.md`): one test per captured block, each
 fixture's `fixture.toml` stating what its comparison allows and which
-blocks are still pending.
+blocks are still pending. A fixture's blocks share one boot: the first
+of its tests to run boots the kernel once with every block the run
+selected, in the capture's order, each block's program its own process
+one after another, and each test compares its own block's part of that
+boot's COM1 log (`target/qemu/logs/<fixture>.log`). Selecting one block
+(`-k crt`) boots that block alone; if the boot stops early, the block
+it stopped in fails with the reason and the later ones fail as not run.
 
 Each test builds the kernel and disk for its feature set (once per
 run, cached under `target/qemu/builds/`) and keeps its COM1 log under
-`target/qemu/logs/`; each run starts by removing the builds of earlier
-runs and logs older than two days. Boots attach the disk as a snapshot,
-so tests run in parallel (`-n 4` by default in `make test`,
-pytest-xdist).
+`target/qemu/logs/` (a fixture's, one per fixture); each run starts by
+removing the builds of earlier runs and logs older than two days. Boots
+attach the disk as a snapshot, so tests run in parallel (`-n 4` by
+default in `make test`, pytest-xdist; `--dist loadgroup`, set in
+`pyproject.toml`, keeps a fixture's tests on one worker).
 ```bash
 make test        # every on-target test: the kernel boots and the corpus
 uv run pytest --collect-only -q                     # list every test
 uv run pytest tests/core/kernel -k fault-ud         # one kernel case
-uv run pytest tests/core/bare -n 4                  # one fixture's blocks
+uv run pytest tests/core/bare                       # one fixture's blocks, one boot
+uv run pytest tests/kernel32/runtime -k crt         # one block
 uv run pytest tests/kernel32 -n 4                   # one DLL's fixtures
 uv run pytest tests/kernel32/runtime --runxfail     # see why the work list fails
 uv run pytest --no-build ...                        # reuse the last make disk (its features only)

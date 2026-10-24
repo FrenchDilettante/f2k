@@ -386,8 +386,6 @@ mod tests {
             0,
             "an allocation-granularity base"
         );
-        // The longest boot command line fits the block's, terminated.
-        assert!(crate::boot::cmdline::MAX_LEN < COMMAND_LINE_ROOM as usize / 2);
     }
 
     /// Text widens through code page 1252.

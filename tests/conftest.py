@@ -32,7 +32,8 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         "--boot-timeout",
         type=float,
         default=None,
-        help="seconds per boot, overriding the cases' own (kernel cases default 10, corpus default 20)",
+        help="seconds per boot (per block in a corpus batch), overriding the cases' own (kernel cases"
+        " default 10, corpus blocks 20)",
     )
     group.addoption(
         "--update-screens",
@@ -70,14 +71,18 @@ def pytest_configure(config: pytest.Config) -> None:
         OUTCOMES = {}
 
 
+@pytest.hookimpl(tryfirst=True)
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     """Tag each corpus block's test with its block (`<fixture>/<section name>`, the key its
     fixture's `[pins]` use): the results carry it, and it travels from xdist workers in the
-    reports."""
+    reports. Group it with its batch's other blocks (`xdist_group`), so that `--dist loadgroup`
+    (pyproject.toml) keeps a batch on one worker, the one that boots it. Before xdist's own hook,
+    which reads the groups."""
     for item in items:
         captured = getattr(item, "callspec", None) and item.callspec.params.get("captured")
         if isinstance(captured, f2kboot.Captured):
             item.user_properties.append(("block", f"{captured.fixture}/{captured.block.name}"))
+            item.add_marker(pytest.mark.xdist_group(batch_name(item)))
 
 
 def pytest_runtest_logreport(report: pytest.TestReport) -> None:
@@ -156,23 +161,27 @@ def profile_path(request: pytest.FixtureRequest) -> Path:
 
 
 @pytest.fixture
-def write_profile(request: pytest.FixtureRequest, profile_path: Path) -> Callable[[str, f2kboot.Build], None]:
-    """Write a boot's profile from its log, when the run asked for `--perf-trace`; a log without a
-    trace writes nothing."""
+def profile_writer(request: pytest.FixtureRequest) -> Callable[[str, f2kboot.Build, Path], None]:
+    """Write a boot's profile from its log to a path, when the run asked for `--perf-trace`; a log
+    without a trace writes nothing."""
     if not request.config.getoption("--perf-trace"):
-        return lambda log, build: None
+        return lambda log, build, path: None
 
-    def write(log: str, build: f2kboot.Build) -> None:
+    def write(log: str, build: f2kboot.Build, path: Path) -> None:
         trace = perf_profile.parse_trace(log)
         if trace is None or not trace[1]:
             return
         name_of = perf_profile.symbolizer(perf_profile.elf32_symbols(build.kernel))
-        profile_path.parent.mkdir(parents=True, exist_ok=True)
-        profile_path.write_text(
-            json.dumps(perf_profile.build_profile(trace[1], trace[0], name_of), indent=1)
-        )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(perf_profile.build_profile(trace[1], trace[0], name_of), indent=1))
 
     return write
+
+
+@pytest.fixture
+def write_profile(profile_writer, profile_path: Path) -> Callable[[str, f2kboot.Build], None]:
+    """Write this test's boot's profile (see `profile_writer`)."""
+    return lambda log, build: profile_writer(log, build, profile_path)
 
 
 @pytest.fixture
@@ -182,34 +191,63 @@ def boot_timeout(request: pytest.FixtureRequest) -> Callable[[float], float]:
     return lambda own: override if override is not None else own
 
 
+def batch_name(item: pytest.Item) -> str:
+    """The batch a block's test belongs to: its test function's name, `test_` dropped (a corpus
+    fixture's name, or `limine`). The batch's log and profile are named after it."""
+    return item.originalname.removeprefix("test_")
+
+
+def batch_items(session: pytest.Session, function: Callable) -> list[pytest.Item]:
+    """A test function's blocks this session runs, in collection order (the capture's): those
+    collected and selected, skipped ones aside."""
+    return [item for item in session.items
+            if getattr(item, "function", None) is function
+            and isinstance(item.callspec.params.get("captured"), f2kboot.Captured)
+            and item.get_closest_marker("skip") is None]
+
+
+# The batches booted by this process, by name: each test function's selected blocks, booted once.
+BATCHES: dict[str, f2kboot.Batch] = {}
+
+
 @pytest.fixture
-def run_block(builder, log_path, boot_timeout, write_profile) -> Callable[[f2kboot.Captured], None]:
-    """Run one captured block on F2K: the plain kernel booted with the block's command line (by
-    QEMU's Multiboot loader, or with `image="disk"` through Limine), the program run from the
-    corpus's directory; fails unless the program's output equals the block line
-    for line (masks applied), the process ends with the block's exit code, and its teardown audits
-    clean."""
+def run_block(request, builder, boot_timeout, profile_writer) -> Callable[[f2kboot.Captured], None]:
+    """Run one captured block on F2K, in its batch: the first block of a test function to run boots
+    the plain kernel (by QEMU's Multiboot loader, or with `image="disk"` through Limine) with every
+    block of the function this session runs, in order, each its own process, run from the corpus's
+    directory; each block's test then reads its own part of that boot's log. It fails unless the
+    program's output equals the block line for line (masks applied), the process ends with the
+    block's exit code, and its teardown audits clean; a block the boot never reached fails as not
+    run, naming the block the boot stopped in."""
 
     def run(captured: f2kboot.Captured, image: str = "kernel") -> None:
-        block = captured.block
-        build = builder([])
-        log, stopped = f2kboot.boot(
-            build,
-            image=image,
-            cmdline=f"{f2kboot.CORPUS_DIRECTORY}\\{block.command}",
-            memory="256M",
-            log_path=log_path,
-            timeout=boot_timeout(captured.timeout),
-            done=f2kboot.teardown_audited,
-        )
-        write_profile(log, build)
-        mismatch = f2kboot.compare_block(block, log, list(captured.masks))
+        name = batch_name(request.node)
+        items = batch_items(request.session, request.function)
+        batch = BATCHES.get(name)
+        if batch is None:
+            build = builder([])
+            selected = [item.callspec.params["captured"] for item in items]
+            batch = f2kboot.boot_batch(
+                build,
+                [each.block for each in selected],
+                image=image,
+                log_path=f2kboot.log_path_for(name),
+                timeouts=[boot_timeout(each.timeout) for each in selected],
+            )
+            BATCHES[name] = batch
+            profile_writer(batch.log, build, f2kboot.profile_path_for(name))
+        index = next(i for i, item in enumerate(items) if item is request.node)
+        mismatch = batch.verdict(index, list(captured.masks), captured.block)
         if mismatch is not None:
-            # Why the boot stopped ("done", "exited", "timeout") and anything QEMU itself said.
-            context = f"boot stopped: {stopped}"
-            complaint = f2kboot.qemu_complaint(log)
+            # Why the boot stopped ("done", "exited", "timeout"), where, and anything QEMU itself
+            # said.
+            context = f"boot stopped: {batch.stopped}"
+            if batch.stopped != "done":
+                context += f" in {batch.stopped_in()}"
+            complaint = f2kboot.qemu_complaint(batch.log)
             if complaint is not None:
                 context += f"; QEMU: {complaint}"
-            pytest.fail(f"{block.command}: {mismatch}\n{context}\nlog: {log_path}", pytrace=False)
+            pytest.fail(f"{captured.block.command}: {mismatch}\n{context}\nlog: {batch.log_path}",
+                        pytrace=False)
 
     return run

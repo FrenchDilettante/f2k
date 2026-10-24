@@ -368,16 +368,9 @@ pub fn terminate_thread(
     Ok(())
 }
 
-/// The suite leg the current process runs as, for its report; none on a one-process boot.
+/// The leg the current process runs as, for its report; none on a boot of one program.
 fn leg() -> Option<exit::Leg> {
-    #[cfg(feature = "run-process-suite")]
-    {
-        Some(crate::process::runner::current_leg())
-    }
-    #[cfg(not(feature = "run-process-suite"))]
-    {
-        None
-    }
+    crate::process::runner::current_leg()
 }
 
 /// Release an exited thread's gate stack: unmap the slot's pages from the (current) process

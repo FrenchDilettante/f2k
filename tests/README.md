@@ -202,9 +202,21 @@ it.
 
 Each sectioned fixture's capture runs on the
 kernel, one pytest test per block (`make test` runs them with
-everything else; `-m corpus` selects them alone): one boot per block, the block's command line passed
-on the kernel command line, the program's output compared line for line
-and its exit code checked. The
+everything else; `-m corpus` selects them alone): one boot per fixture,
+the kernel command line listing the selected blocks' command lines in
+the capture's order (`-- CORPUS\runtime.exe crt ;; CORPUS\runtime.exe
+env`), and the kernel running each as its own process, one after
+another, each torn down and audited before the next starts. The kernel
+announces each process's start on COM1 (`F2K: process 2 of 12:
+CORPUS\runtime.exe env`); the harness splits the boot's log there and
+compares each block's own part, the program's output line for line and
+its exit code. The first of a fixture's tests to run boots the batch,
+the others read its log; a run of one block (`uv run pytest
+tests/kernel32/runtime -k crt`) boots that block alone. If the boot
+stops early (a kernel panic, a timeout, QEMU exiting), the block it
+stopped in fails with the reason and every later block fails as not
+run, naming it. Each block keeps its `timeout` (the boot's start
+counts against the first). The
 disk build puts the sectioned fixtures in `\CORPUS` (the files
 fixture's data tree beside them), the way each runs from its own
 directory on the real machine. The fixture's declaration,
@@ -234,18 +246,20 @@ them 8.3), as they sit beside it on the real machine. Every corpus boot goes thr
 Multiboot loader (`-kernel`, the command line by `-append`), except
 `core/test_limine.py`'s: a few blocks (the scenarios the retired smokes ran
 on both paths, the command line, the memory map) booted from the disk
-through Limine, on a copy of the disk whose Limine entry carries the
-block's command line (`cmdline:`), compared against the same capture
-with the same declaration. The Makefile's corpus derives from the
+through Limine, together in one boot, on a copy of the disk whose
+Limine entry carries their command lines (`cmdline:`), each compared
+against its own capture with its own declaration. The Makefile's corpus derives from the
 declarations too: a new fixture is its directory, in its DLL's group,
 and its `fixture.toml`. Every boot's COM1 log stays under
-`target/qemu/logs/`.
+`target/qemu/logs/`, a batch's named after its fixture (`limine.log`
+for the Limine blocks).
 
 ### Tracing a slow block
 
 `--perf-trace` builds the kernel with its `perf-trace` cargo feature and,
 once each boot is done, turns its COM1 log into a performance profile
-beside it: `target/qemu/profiles/<test id>.json`, one file per boot,
+beside it: `target/qemu/profiles/<test id>.json` (a batch's
+`<fixture>.json`), one file per boot,
 loadable at profiler.firefox.com (Load profile from file). The kernel's
 interval clock then samples the interrupted context and its call stack on
 every tick and dumps the samples before the line the harness stops the
@@ -318,23 +332,24 @@ fixtures into `\CORPUS`, and the kernel reads the selected program off
 the volume by path before loading it. The suite attaches that disk to
 every case, kernel-path cases included.
 
-A boot chooses its program by command line: the text after `--` on
-the kernel command line is the program's own command line,
-`<program> [arguments]` (QEMU's `-append "-- CORPUS\sync.exe event"`,
-the Limine entry's `cmdline:`, a kernel case's `cmdline`). Its first
-token is the image's root-relative volume path (`.exe` added when it
-has no extension); the program's GetCommandLineA reports the whole
-text verbatim and its GetModuleFileNameA the volume path. Without a
-command line the kernel runs `exit0`. The `run-process-suite` feature
-(the multi-process case) runs the sequence `exit0`, `ret0`,
-`bare`, `bare`, `bare null-write`, `exit0` in one boot: the second
-`bare` catches frames reused without re-zeroing, `bare
-null-write` a fault that must end its process (through kernel32's
-start frame, with the access violation's code) before the last `exit0`
-runs. Each boot
-prints the observed process exit code on COM1 and then the teardown
-audit (`F2K: teardown audit: frame database ok, kernel heap ok`), which
-the corpus comparison waits for. Host unit tests still read the
+A boot chooses its programs by command line: the text after `--` on
+the kernel command line is the programs' own command lines,
+`<program> [arguments]`, several separated by ` ;; ` (QEMU's `-append
+"-- CORPUS\sync.exe event ;; CORPUS\sync.exe mutex"`, the Limine entry's
+`cmdline:`, a kernel case's `cmdline`), run one after another, each its
+own process. A command line's first token is the image's root-relative
+volume path (`.exe` added when it has no extension); the program's
+GetCommandLineA reports its command line verbatim and its
+GetModuleFileNameA the volume path. Without a command line the kernel
+runs `exit0`. The multi-process case lists `exit0`, `ret0`, `bare`,
+`bare`, `bare null-write`, `exit0`: the second `bare` catches frames
+reused without re-zeroing, `bare null-write` a fault that must end its
+process (through kernel32's start frame, with the access violation's
+code) before the last `exit0` runs. Each process's start is announced
+on COM1 (`F2K: process 1 of 6: exit0`); its end prints the observed
+exit code and then the teardown audit (`F2K: teardown audit: frame
+database ok, kernel heap ok`; with several programs, each line names
+the process's index, and a summary line follows the last). Host unit tests still read the
 checked-in `.exe` files directly (`include_bytes!`, test builds
 only).
 

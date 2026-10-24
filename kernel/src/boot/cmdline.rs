@@ -3,22 +3,27 @@
 //! The Multiboot loader hands over one NUL-terminated string. Loaders differ on what leads it (QEMU
 //! and GRUB put the kernel's own path first, others pass the configured text alone), so F2K looks
 //! for an explicit separator: everything after the first ` -- ` (or a leading `-- `) is the user
-//! program's command line, `<program> [arguments]`, exactly as a Windows shell hands one to
-//! CreateProcess. Its first token names the image on the boot volume; the whole text is what the
-//! process's GetCommandLineA reports. Without a separator the build chooses the program (the run
-//! features, else exit0).
+//! programs' command lines, run one after another: one `<program> [arguments]`, exactly as a
+//! Windows shell hands one to CreateProcess, or several separated by ` ;; ` (`-- CORPUS\files.exe
+//! read ;; CORPUS\files.exe seek`, see [`programs`]). Each one's first token names the image on the
+//! boot volume; its whole text is what that process's GetCommandLineA reports. Without a separator
+//! the boot runs exit0.
 //!
 //! The string is copied out first thing in the boot: it lives in loader memory the frame allocator
 //! is about to reclaim, inside the identity window that is torn down soon after.
 
-/// The longest kernel command line kept (the rest is cut).
-pub const MAX_LEN: usize = 512;
+/// The longest kernel command line kept (the rest is cut): room for a fixture's every section, each
+/// its own program's command line.
+pub const MAX_LEN: usize = 4096;
 
 /// Multiboot information flag: `cmdline` is valid.
 const FLAG_CMDLINE: u32 = 1 << 2;
 
 /// The separator between the kernel's own arguments and the user command line.
 const SEPARATOR: &[u8] = b"--";
+
+/// The separator between two programs' command lines in the user command line.
+const PROGRAM_SEPARATOR: &[u8] = b";;";
 
 /// The captured kernel command line and its length.
 #[cfg(target_arch = "x86")]
@@ -62,24 +67,50 @@ pub fn kernel_command_line() -> &'static [u8] {
 /// The user command line the kernel command line carries: the text after the separator, its
 /// leading blanks dropped; none without a separator or with nothing after it.
 pub fn user_command_line(kernel: &[u8]) -> Option<&[u8]> {
-    let is_blank = |byte: &u8| *byte == b' ' || *byte == b'\t';
-    let mut start = None;
-    let mut index = 0;
-    while index + SEPARATOR.len() <= kernel.len() {
-        let before_ok = index == 0 || is_blank(&kernel[index - 1]);
-        let after = index + SEPARATOR.len();
-        let after_ok = after == kernel.len() || is_blank(&kernel[after]);
-        if before_ok && after_ok && &kernel[index..after] == SEPARATOR {
-            start = Some(after);
-            break;
+    let start = find_word(kernel, SEPARATOR)? + SEPARATOR.len();
+    trimmed(&kernel[start..])
+}
+
+/// The programs' command lines a user command line lists, in order: the text between the ` ;; `
+/// separators, each without its surrounding blanks (an empty one is skipped). A command line
+/// without a separator is a list of one.
+pub fn programs(user: &[u8]) -> impl Iterator<Item = &[u8]> {
+    let mut rest = Some(user);
+    core::iter::from_fn(move || {
+        while let Some(text) = rest {
+            let (program, after) = match find_word(text, PROGRAM_SEPARATOR) {
+                Some(at) => (&text[..at], Some(&text[at + PROGRAM_SEPARATOR.len()..])),
+                None => (text, None),
+            };
+            rest = after;
+            if let Some(program) = trimmed(program) {
+                return Some(program);
+            }
         }
-        index += 1;
-    }
-    let rest = &kernel[start?..];
-    let first = rest.iter().position(|byte| !is_blank(byte))?;
-    let rest = &rest[first..];
-    let last = rest.iter().rposition(|byte| !is_blank(byte))?;
-    Some(&rest[..=last])
+        None
+    })
+}
+
+fn is_blank(byte: &u8) -> bool {
+    *byte == b' ' || *byte == b'\t'
+}
+
+/// Where `word` first stands in `text` as a word of its own: at the start or after a blank, and at
+/// the end or before one.
+fn find_word(text: &[u8], word: &[u8]) -> Option<usize> {
+    (0..(text.len() + 1).saturating_sub(word.len())).find(|&index| {
+        let after = index + word.len();
+        &text[index..after] == word
+            && (index == 0 || is_blank(&text[index - 1]))
+            && (after == text.len() || is_blank(&text[after]))
+    })
+}
+
+/// `text` without its leading and trailing blanks; none when nothing else is left.
+fn trimmed(text: &[u8]) -> Option<&[u8]> {
+    let first = text.iter().position(|byte| !is_blank(byte))?;
+    let last = text.iter().rposition(|byte| !is_blank(byte))?;
+    Some(&text[first..=last])
 }
 
 /// The program token of a command line: the first token, unquoted (a quoted token runs to its
@@ -133,6 +164,26 @@ mod tests {
         // A `--` glued to other text is not the separator.
         assert_eq!(user_command_line(b"kernel --verbose"), None);
         assert_eq!(user_command_line(b"kernel a--b"), None);
+    }
+
+    /// The user command line lists the programs, ` ;; ` between two; one without a separator is a
+    /// list of one.
+    #[test]
+    fn the_user_command_line_lists_the_programs() {
+        let listed = |line: &'static [u8]| programs(line).collect::<Vec<_>>();
+        assert_eq!(listed(b"SYNC.EXE event"), [&b"SYNC.EXE event"[..]]);
+        assert_eq!(
+            listed(b"CORPUS\\runtime.exe crt ;; CORPUS\\runtime.exe env"),
+            [&b"CORPUS\\runtime.exe crt"[..], b"CORPUS\\runtime.exe env"]
+        );
+        // Blanks around a program go; empty programs are skipped.
+        assert_eq!(
+            listed(b";; exit0 ;;\t;;  ret0   ;;"),
+            [&b"exit0"[..], b"ret0"]
+        );
+        assert_eq!(listed(b";;"), [] as [&[u8]; 0]);
+        // A `;;` glued to other text is an argument, not the separator.
+        assert_eq!(listed(b"a;; b ;;c"), [&b"a;; b ;;c"[..]]);
     }
 
     #[test]

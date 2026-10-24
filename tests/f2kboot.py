@@ -9,7 +9,9 @@ Three pieces the test modules share:
   side), stopped as soon as the caller's check has its answer;
 - checks: the kernel cases' expected-string rules (`Expectation`), and the corpus's capture blocks
   compared against the program output a boot carries (`Block`, `blocks`); a sectioned fixture's
-  tests come from its declaration, tests/<dll>/<fixture>/fixture.toml (`corpus_test`);
+  tests come from its declaration, tests/<dll>/<fixture>/fixture.toml (`corpus_test`); a
+  fixture's blocks run in one boot, each its own process, and each is compared on its own part of
+  the log (`boot_batch`, `Batch`);
 - the text screen: a boot that asks for it carries a QMP socket, and the machine's VGA text page is
   read through it while QEMU still runs (`read_text_screen`, `TextScreen`), or drawn as QEMU shows
   it (`screendump`, a PNG; `read_png`, `differing_cells`).
@@ -654,7 +656,9 @@ class Expectation:
 ENTER = "F2K: entering ring 3"
 # The boot's own checks, reported before any program runs: every block's boot must pass them.
 BOOT_CHECKS = ("F2K Booted Successfully", "F2K: frame database audit: ok", "F2K: kernel heap: alloc/free ok")
-END = re.compile(r"^F2K: user process (exited normally|ended by fault)")
+# A process's end: a one-process boot's form, or a batch's, which names the process's index and
+# name ("F2K: process 3 (bare) exited normally ...").
+END = re.compile(r"^F2K: (?:user process|process \d+ \(.*\)) (exited normally|ended by fault)")
 EXIT_CODE = re.compile(r"exit code=(\d+)")
 # Kernel output inside the program's span: its own report lines and the fault dump.
 KERNEL_PREFIXES = ("F2K:", "CPU EXCEPTION:")
@@ -1013,8 +1017,9 @@ def corpus_params(fixture: str) -> list:
 
 def corpus_test(fixture: str) -> Callable:
     """A sectioned fixture's test function, from its declaration: one test per captured block, run
-    through the `run_block` fixture (tests/conftest.py). A fixture's module binds it to
-    test_<fixture>, the name the test ids carry."""
+    through the `run_block` fixture (tests/conftest.py), which runs the fixture's selected blocks
+    in one boot. A fixture's module binds it to test_<fixture>, the name the test ids carry and its
+    batch is named after."""
     import pytest
 
     declared = declaration(fixture)
@@ -1026,6 +1031,133 @@ def corpus_test(fixture: str) -> Callable:
 
     test.__doc__ = declared.get("description")
     return test
+
+
+# --- Batches: a fixture's blocks in one boot -----------------------------------------------------
+#
+# A fixture's blocks run in one boot, in the capture's order: the kernel command line lists their
+# command lines (` ;; ` between two), and the kernel runs each as its own process, announcing each
+# one's start on COM1 before it. The log splits at those lines, and each block is compared on the
+# boot's own lines (before the first program) followed by its own part.
+
+# A program's start: its index in the list, the list's length, and its command line.
+START = re.compile(r"^F2K: process (\d+) of (\d+): (.*)$")
+# The line a boot of several programs ends with, once the last is torn down.
+SUMMARY = "F2K: process suite complete:"
+# The longest kernel command line the kernel keeps, its terminator included (kernel/src/boot/
+# cmdline.rs, MAX_LEN).
+KERNEL_COMMAND_LINE = 4096
+
+
+def batch_command_line(commands: list[str]) -> str:
+    """The user command line that runs `commands` (blocks' command lines) from the corpus's
+    directory, one after another."""
+    return " ;; ".join(f"{CORPUS_DIRECTORY}\\{command}" for command in commands)
+
+
+def split_programs(log: str) -> tuple[str, list[tuple[str, str]]]:
+    """A boot's log at its programs' start lines: the boot's own part (before the first program),
+    and each program that started, as its command line and its part of the log (from its start line
+    to the next one's, the last to the end)."""
+    prefix: list[str] = []
+    programs: list[tuple[str, list[str]]] = []
+    for line in log.splitlines(keepends=True):
+        start = START.match(line.rstrip("\r\n"))
+        if start is not None:
+            programs.append((start.group(3), [line]))
+        elif programs:
+            programs[-1][1].append(line)
+        else:
+            prefix.append(line)
+    return "".join(prefix), [(command, "".join(lines)) for command, lines in programs]
+
+
+class BatchWatch:
+    """A batch boot's stop check: true once the last program is torn down (with several, once the
+    summary follows), the kernel panicked, or the running program overran its own timeout (the
+    boot's start counts against the first). `overran` then names that program's index."""
+
+    def __init__(self, timeouts: list[float]):
+        self.timeouts = timeouts
+        self.started = 0
+        self.since = time.monotonic()
+        self.overran: int | None = None
+
+    def __call__(self, log: str) -> bool:
+        if "KERNEL PANIC" in log:
+            return True
+        lines = lines_of(log)
+        finished = sum(1 for line in lines if TEARDOWN.match(line))
+        if finished >= len(self.timeouts) and (len(self.timeouts) == 1 or SUMMARY in log):
+            return True
+        started = sum(1 for line in lines if START.match(line))
+        if started != self.started:
+            self.started, self.since = started, time.monotonic()
+        running = max(started, 1) - 1
+        if time.monotonic() - self.since > self.timeouts[min(running, len(self.timeouts) - 1)]:
+            self.overran = running
+            return True
+        return False
+
+
+@dataclass
+class Batch:
+    """A batch boot's outcome: the blocks' command lines it ran, in order; its log (at `log_path`)
+    and why it stopped ("done", "exited", "timeout"); the log split at the programs' starts."""
+
+    commands: list[str]
+    log: str
+    log_path: Path
+    stopped: str
+    prefix: str
+    programs: list[tuple[str, str]]
+
+    def stopped_in(self) -> str:
+        """The block's command line the boot stopped in: the last to start (the first when none
+        did)."""
+        return self.commands[max(len(self.programs), 1) - 1]
+
+    def verdict(self, index: int, masks: list[re.Pattern[str]], block: Block) -> str | None:
+        """None when block `index` (its capture `block`) was reproduced in its own part of the log;
+        otherwise why not, in one line."""
+        if index >= len(self.programs) and index > 0:
+            return f"not run: the boot stopped in {self.stopped_in()} ({self.stopped})"
+        if index < len(self.programs):
+            ran = self.programs[index][0]
+            expected = f"{CORPUS_DIRECTORY}\\{block.command}"
+            if ran != expected:
+                return f"the boot ran [{ran}] where [{expected}] was expected"
+            part = self.programs[index][1]
+        else:
+            part = ""  # the boot stopped before the first program: its own lines say why
+        return compare_block(block, self.prefix + part, masks)
+
+
+def boot_batch(build: Build, blocks: list[Block], *, image: str, log_path: Path,
+               timeouts: list[float]) -> Batch:
+    """Run `blocks` in one boot of `build` (`image` as `boot` takes it), each its own process, in
+    order; `timeouts` are each block's seconds (the boot's start counts against the first)."""
+    watch = BatchWatch(timeouts)
+    commands = [block.command for block in blocks]
+    cmdline = batch_command_line(commands)
+    # The kernel keeps the first KERNEL_COMMAND_LINE bytes; QEMU's loader puts the kernel's path
+    # first.
+    if len(str(build.kernel)) + len(cmdline) + 4 >= KERNEL_COMMAND_LINE:
+        raise ValueError(f"the batch's command line is {len(cmdline)} bytes, more than the kernel keeps"
+                         f" ({KERNEL_COMMAND_LINE}, kernel/src/boot/cmdline.rs MAX_LEN)")
+    log, stopped = boot(
+        build,
+        image=image,
+        cmdline=cmdline,
+        memory="256M",
+        log_path=log_path,
+        timeout=sum(timeouts),
+        done=watch,
+    )
+    if watch.overran is not None:
+        stopped = "timeout"
+    prefix, programs = split_programs(log)
+    return Batch(commands, log, log_path, stopped, prefix, programs)
 
 
 def log_path_for(nodeid: str) -> Path:
