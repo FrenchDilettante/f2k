@@ -1,0 +1,44 @@
+# console: one test per block of the real-machine capture (output.txt); see tests/README.md. Every
+# section works through CONIN$ and CONOUT$ opened by name, so capture.bat takes every block.
+# Declared ahead of its real-machine build and capture (no console.exe, no output.txt yet).
+description = "console - the console calls cmd.exe makes at startup, through CONIN$ and CONOUT$: GetConsoleScreenBufferInfo and the cursor's move, Get/SetConsoleMode, ReadConsole in line and raw mode over input queued with WriteConsoleInput, FlushConsoleInputBuffer, Get/SetConsoleTitle, and SetConsoleCtrlHandler registration."
+kind = "sectioned"
+
+[pins]
+# The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
+# calls); scripts/compat.py derives each export's coverage from them.
+info = [
+    "kernel32.CreateFileA",
+    "kernel32.GetConsoleScreenBufferInfo",
+    "kernel32.WriteConsoleW",
+    "kernel32.WriteConsoleA",
+    "kernel32.GetModuleFileNameA",
+    "kernel32.CloseHandle",
+    "ntdll.CsrClientCallServer",
+]
+mode = [
+    "kernel32.CreateFileA",
+    "kernel32.GetConsoleMode",
+    "kernel32.SetConsoleMode",
+    "ntdll.CsrClientCallServer",
+]
+read = [
+    "kernel32.CreateFileA",
+    "kernel32.GetConsoleMode",
+    "kernel32.SetConsoleMode",
+    "kernel32.ReadConsoleW",
+    "kernel32.ReadConsoleA",
+    "kernel32.WriteConsoleInputW",
+    "kernel32.WriteConsoleInputA",
+    "kernel32.FlushConsoleInputBuffer",
+    "kernel32.GetNumberOfConsoleInputEvents",
+    "ntdll.CsrClientCallServer",
+]
+title = [
+    "kernel32.GetConsoleTitleW",
+    "kernel32.GetConsoleTitleA",
+    "kernel32.SetConsoleTitleW",
+    "kernel32.SetConsoleTitleA",
+    "ntdll.CsrClientCallServer",
+]
+ctrl = ["kernel32.SetConsoleCtrlHandler"]

@@ -6,6 +6,10 @@ kind = "sectioned"
 gate = true
 timeout = 40
 
+[pending]
+search = "not yet implemented"
+diskfree = "not yet implemented"
+
 [pins]
 # The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
 # calls); scripts/compat.py derives each export's coverage from them.
@@ -152,3 +156,9 @@ concurrent = [
     "ntdll.NtReadFile",
 ]
 crt = ["kernel32.ReadFile", "ntdll.NtQueryDirectoryFile", "ntdll.RtlGetFullPathName_U"]
+search = ["kernel32.SearchPathA", "kernel32.SearchPathW"]
+diskfree = [
+    "kernel32.GetDiskFreeSpaceExA",
+    "kernel32.GetDiskFreeSpaceExW",
+    "ntdll.NtQueryVolumeInformationFile",
+]

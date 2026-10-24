@@ -5,6 +5,9 @@ kind = "sectioned"
 gate = true
 timeout = 40
 
+[pending]
+movex = "not yet implemented"
+
 [pins]
 # The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
 # calls); scripts/compat.py derives each export's coverage from them.
@@ -134,3 +137,4 @@ write = [
     "ntdll.NtSetInformationFile",
 ]
 crt = ["kernel32.GetFileAttributesExA", "kernel32.GetFileAttributesExW", "ntdll.NtWriteFile"]
+movex = ["kernel32.MoveFileExA", "kernel32.MoveFileExW", "ntdll.NtSetInformationFile"]

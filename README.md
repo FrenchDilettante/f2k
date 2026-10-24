@@ -249,7 +249,9 @@ f2k/
 ├── tests/            # Windows 2000 test corpus and the pytest suite (see tests/README.md)
 │   ├── core/             # The kernel's own boots and the smoke fixtures
 │   ├── kernel32/         # The kernel32 fixtures
-│   ├── user32/           # The user32 fixture (hellogui)
+│   ├── user32/           # The user32 fixtures (hellogui, winsta)
+│   ├── advapi32/         # The advapi32 fixture (registry)
+│   ├── crt/              # The msvcrt fixtures, built against msvcrt.dll (/MD)
 │   ├── harness/          # Checks of the tests and the repository (no QEMU)
 │   └── common/           # The fixtures' shared header (f2kt.h) and stamp tool
 │

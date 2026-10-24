@@ -1,0 +1,121 @@
+# F2K capture of fd (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-AC9F3E6, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Sat 10/24/2026 15:28:15.52
+fd F2KT-SOURCE-CRC=0xEC18FA28
+>>> fd.exe osfhandle
+== osfhandle
+CreateFileA: yes
+_open_osfhandle(the handle, 0): fd 3 errno 0
+_get_osfhandle(fd): the handle given: yes
+_get_osfhandle(0), (1), (2): valid valid valid
+_get_osfhandle(1) is GetStdHandle(STD_OUTPUT_HANDLE): yes
+_get_osfhandle(-1): -1 errno 9
+_get_osfhandle(fd + 1, never opened): -1 errno 9
+_get_osfhandle(5000): -1 errno 9
+_close(fd): 0 errno 0
+GetFileType(the handle after _close): 0 err=6
+_get_osfhandle(fd) after _close: -1 errno 9
+_close(fd) again: -1 errno 9
+_open_osfhandle(INVALID_HANDLE_VALUE, 0): -1 errno 9
+_open_osfhandle(a second handle, _O_RDONLY): fd 3
+_write to it: 1 errno 0
+fd: done
+<<< exit code=0
+>>> fd.exe dup
+== dup
+_dup(fd 3): fd 4 errno 0, another handle: yes
+_write(fd): 2, _write(the duplicate): 2, _tell(fd) 4
+_dup2(fd, 10): 0 errno 0, fd 10 valid
+_write(10): 2
+_dup(-1): -1 errno 9
+_dup(77, not open): -1 errno 9
+_dup2(77, 11): -1 errno 9
+_dup2(fd, 5000): -1 errno 9
+dup.txt: [abcdef]
+_dup(1): fd 4
+_dup2(fd, 1): 0 errno 0; GetStdHandle(STD_OUTPUT_HANDLE) is fd 1's handle: yes
+printf: 17, fflush: 0, _write(1): 10
+_dup2(saved, 1): 0; GetStdHandle(STD_OUTPUT_HANDLE) is fd 1's handle: yes
+out.txt: [printf into fd 1\r\n_write(1)\r\n]
+line() after the restore
+fd: done
+<<< exit code=0
+>>> fd.exe setmode
+== setmode
+_tell(new fd): 0
+_setmode(fd opened with 0, _O_TEXT): previous 0x8000
+text: _write("a\nb") 3, _tell 4
+text: _write("x\r\ny\n\n") 6, _tell 13
+_setmode(fd, _O_BINARY): previous 0x4000
+binary: _write("a\nb") 3, _tell 16
+_setmode(fd, _O_BINARY) again: previous 0x8000
+_setmode(fd, 0x1234): -1 errno 22
+_setmode(77, not open): -1 errno 9
+mode.txt: [a\r\nbx\r\r\ny\r\n\r\na\nb]
+_setmode(fd opened with _O_TEXT, _O_BINARY): previous 0x4000
+fd: done
+<<< exit code=0
+>>> fd.exe stdio
+== stdio
+sizeof(FILE): 32
+_iob[0]: _file 0, _flag 0x101, _cnt 0, buffered bytes 0, _bufsiz 4096
+_iob[1]: _file 1, _flag 0x2, _cnt 0, buffered bytes -1, _bufsiz 0
+_iob[2]: _file 2, _flag 0x2, _cnt 0, buffered bytes -1, _bufsiz 0
+stdin, stdout and stderr are &_iob[0], [1] and [2]: yes
+setvbuf(stdout), setvbuf(stderr), _IOFBF 256 bytes: 0 0
+stdout after fprintf: _file 1, _flag 0x502, _cnt 229, buffered bytes 27, _bufsiz 256
+stderr after fprintf: _file 2, _flag 0x502, _cnt 229, buffered bytes 27, _bufsiz 256
+stdio: line() after fprintf 27, fprintf(stderr) 27, printf 30
+stdio: fprintf(stderr) two
+fflush(stderr): 0
+stdio: fprintf(&_iob[1]) 1
+stdio: printf 3|three| 2.50|z
+fflush(&_iob[1]): 0
+stdout after fflush: _file 1, _flag 0x502, _cnt 0, buffered bytes 0, _bufsiz 256
+stdio: fprintf(stdout), then fflush(NULL)
+fflush(NULL): 0
+_fdopen(_open_osfhandle(a new file, _O_TEXT), "w"): yes
+fprintf to the file: 4; the file's size before fflush 0
+the file's stream: _file 3, _flag 0xA, _cnt 4092, buffered bytes 4, _bufsiz 4096
+fflush: 0; the file's size after 5
+fclose: 0; buf.txt: [abc\r\n]
+fd: done
+<<< exit code=0
+>>> fd.exe fgets
+== fgets
+_fdopen(_open_osfhandle(lines.txt, _O_RDONLY | _O_TEXT), "r"): yes
+text: fgets 1: [one\n] the buffer returned: yes
+text: fgets 2: [two\n] the buffer returned: yes
+text: fgets 3: [three] the buffer returned: yes
+text: fgets 4: [-is-long\n] the buffer returned: yes
+text: fgets 5: [\n] the buffer returned: yes
+text: fgets 6: [last] the buffer returned: yes
+text: fgets 7: NULL, feof yes
+_fdopen(_open_osfhandle(lines.txt, _O_RDONLY), "rb"): yes
+binary: fgets 1: [one\r\n] the buffer returned: yes
+binary: fgets 2: [two\n] the buffer returned: yes
+binary: fgets 3: [three] the buffer returned: yes
+binary: fgets 4: [-is-long\r\n] the buffer returned: yes
+binary: fgets 5: [\r\n] the buffer returned: yes
+binary: fgets 6: [last] the buffer returned: yes
+binary: fgets 7: NULL, feof yes
+the descriptor after fclose: -1
+text with Ctrl-Z: fgets 1: [a\n] the buffer returned: yes
+text with Ctrl-Z: fgets 2: [b] the buffer returned: yes
+text with Ctrl-Z: fgets 3: NULL, feof yes
+binary with Ctrl-Z: fgets 1: [a\r\n] the buffer returned: yes
+binary with Ctrl-Z: fgets 2: [b\x1Ac\r\n] the buffer returned: yes
+binary with Ctrl-Z: fgets 3: NULL, feof yes
+fd: done
+<<< exit code=0
+>>> fd.exe getch
+== getch
+CreateFileA(CONIN$): yes
+FlushConsoleInputBuffer: ret=1 err=-
+WriteConsoleInputW(16 key events): ret=1 written=16 err=-
+_getch: 0x61 0x5A 0x31 0x0D 0x1B 0xE0 0x48 0x00 0x3B
+_getch calls: 9, then _kbhit: 0
+fd: done
+<<< exit code=0

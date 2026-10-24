@@ -1,0 +1,157 @@
+# F2K capture of console (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-AC9F3E6, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Sat 10/24/2026 15:42:15.72
+console F2KT-SOURCE-CRC=0x666AD541
+>>> console.exe info
+== info
+CreateFileA(CONOUT$): valid yes err=0
+CreateFileA(CONIN$): valid yes err=0
+GetConsoleScreenBufferInfo(CONOUT$): ret=1 err=-
+buffer size: 80 x 300
+window size: 80 x 25
+window inside the buffer: yes
+cursor inside the buffer: yes
+attributes: 0x0007
+largest window within the buffer size: yes
+GetConsoleScreenBufferInfo(CONIN$): ret=0 err=6
+the image file open: yes
+GetConsoleScreenBufferInfo(the image file): ret=0 err=6
+GetConsoleScreenBufferInfo(a bogus handle): ret=0 err=6
+WriteConsoleW of one character: ret=1 written 1 err=-
+cursor column after the CR: 0, moved by 1 columns and 0 rows (W)
+WriteConsoleA of one character: ret=1 written 1 err=-
+cursor column after the CR: 0, moved by 1 columns and 0 rows (A)
+console: done
+<<< exit code=0
+>>> console.exe mode
+== mode
+CONIN$ and CONOUT$ open: yes
+GetConsoleMode(CONIN$): ret=1 err=- mode 0xE7
+SetConsoleMode(CONIN$, 0x1): ret=1 err=-
+GetConsoleMode(CONIN$): ret=1 err=- mode 0x1
+SetConsoleMode(CONIN$, 0x0): ret=1 err=-
+GetConsoleMode(CONIN$): ret=1 err=- mode 0x0
+SetConsoleMode(CONIN$, 0x1F): ret=1 err=-
+GetConsoleMode(CONIN$): ret=1 err=- mode 0x1F
+SetConsoleMode(CONIN$, 0x4): ret=0 err=87
+GetConsoleMode(CONIN$): ret=1 err=- mode 0x1F
+SetConsoleMode(CONIN$, 0x20): ret=1 err=-
+GetConsoleMode(CONIN$): ret=1 err=- mode 0xA0
+SetConsoleMode(CONIN$, 0x8000): ret=0 err=87
+GetConsoleMode(CONIN$): ret=1 err=- mode 0xA0
+CONIN$ mode restored: yes
+GetConsoleMode(CONOUT$): ret=1 err=- mode 0x3
+SetConsoleMode(CONOUT$, 0x1): ret=1 err=-
+GetConsoleMode(CONOUT$): ret=1 err=- mode 0x1
+SetConsoleMode(CONOUT$, 0x0): ret=1 err=-
+GetConsoleMode(CONOUT$): ret=1 err=- mode 0x0
+SetConsoleMode(CONOUT$, 0x3): ret=1 err=-
+GetConsoleMode(CONOUT$): ret=1 err=- mode 0x3
+SetConsoleMode(CONOUT$, 0x8000): ret=0 err=87
+GetConsoleMode(CONOUT$): ret=1 err=- mode 0x3
+CONOUT$ mode restored: yes
+the image file open: yes
+GetConsoleMode(the image file): ret=0 err=6 mode untouched yes
+SetConsoleMode(the image file, 0x0): ret=0 err=6
+GetConsoleMode(a bogus handle): ret=0 err=6 mode untouched yes
+SetConsoleMode(a bogus handle, 0x0): ret=0 err=6
+console: done
+<<< exit code=0
+>>> console.exe read
+== read
+CONIN$ and CONOUT$ open: yes
+SetConsoleMode(CONIN$, 0x3): ret=1 err=-
+FlushConsoleInputBuffer: ret=1 err=-
+WriteConsoleInputW([dir abc\r]): ret=1 written 16 of 16 err=-
+GetNumberOfConsoleInputEvents queued: ret=1 count 16 err=-
+ReadConsoleW(64): ret=1 read 9 err=- [dir abc\r\n]
+GetNumberOfConsoleInputEvents after the read: ret=1 count 1 err=-
+FlushConsoleInputBuffer: ret=1 err=-
+WriteConsoleInputW([abcdefgh\r]): ret=1 written 18 of 18 err=-
+ReadConsoleW(4): ret=1 read 4 err=- [abcd]
+WriteConsoleInputW([zz\r]): ret=1 written 6 of 6 err=-
+ReadConsoleW(64): ret=1 read 6 err=- [efgh\r\n]
+GetNumberOfConsoleInputEvents after the reads: ret=1 count 7 err=-
+SetConsoleMode(CONIN$, 0x1): ret=1 err=-
+FlushConsoleInputBuffer: ret=1 err=-
+WriteConsoleInputW([xyz\r]): ret=1 written 8 of 8 err=-
+GetNumberOfConsoleInputEvents queued: ret=1 count 8 err=-
+ReadConsoleW(64): ret=1 read 4 err=- [x\0yz]
+GetNumberOfConsoleInputEvents after the read: ret=1 count 0 err=-
+FlushConsoleInputBuffer: ret=1 err=-
+WriteConsoleInputW([pq]): ret=1 written 4 of 4 err=-
+ReadConsoleW(1): ret=1 read 1 err=- [p]
+GetNumberOfConsoleInputEvents after the read: ret=1 count 3 err=-
+FlushConsoleInputBuffer: ret=1 err=-
+SetConsoleMode(CONIN$, 0x3): ret=1 err=-
+FlushConsoleInputBuffer: ret=1 err=-
+WriteConsoleInputA([dir abc\r]): ret=1 written 16 of 16 err=-
+GetNumberOfConsoleInputEvents queued: ret=1 count 16 err=-
+ReadConsoleA(64): ret=1 read 9 err=- [dir abc\r\n]
+GetNumberOfConsoleInputEvents after the read: ret=1 count 1 err=-
+FlushConsoleInputBuffer: ret=1 err=-
+WriteConsoleInputA([abcdefgh\r]): ret=1 written 18 of 18 err=-
+ReadConsoleA(4): ret=1 read 4 err=- [abcd]
+WriteConsoleInputA([zz\r]): ret=1 written 6 of 6 err=-
+ReadConsoleA(64): ret=1 read 6 err=- [efgh\r\n]
+GetNumberOfConsoleInputEvents after the reads: ret=1 count 7 err=-
+SetConsoleMode(CONIN$, 0x1): ret=1 err=-
+FlushConsoleInputBuffer: ret=1 err=-
+WriteConsoleInputA([xyz\r]): ret=1 written 8 of 8 err=-
+GetNumberOfConsoleInputEvents queued: ret=1 count 8 err=-
+ReadConsoleA(64): ret=1 read 4 err=- [x\0yz]
+GetNumberOfConsoleInputEvents after the read: ret=1 count 0 err=-
+FlushConsoleInputBuffer: ret=1 err=-
+WriteConsoleInputA([pq]): ret=1 written 4 of 4 err=-
+ReadConsoleA(1): ret=1 read 1 err=- [p]
+GetNumberOfConsoleInputEvents after the read: ret=1 count 3 err=-
+FlushConsoleInputBuffer: ret=1 err=-
+FlushConsoleInputBuffer: ret=1 err=-
+WriteConsoleInputW([abc]): ret=1 written 6 of 6 err=-
+GetNumberOfConsoleInputEvents queued: ret=1 count 6 err=-
+FlushConsoleInputBuffer: ret=1 err=-
+GetNumberOfConsoleInputEvents after the flush: ret=1 count 0 err=-
+CONIN$ mode restored: yes
+console: done
+<<< exit code=0
+>>> console.exe title
+== title
+SetConsoleTitleW(F2K title): ret=1 err=-
+GetConsoleTitleW(64): ret=9 err=- buffer [F2K title\0] after it untouched yes
+GetConsoleTitleW(10): ret=9 err=- buffer [F2K title\0] after it untouched yes
+GetConsoleTitleW(9): ret=8 err=- buffer [F2K titl\0] after it untouched yes
+GetConsoleTitleW(4): ret=3 err=- buffer [F2K\0] after it untouched yes
+GetConsoleTitleW(0): ret=0 err=- buffer [] after it untouched yes
+SetConsoleTitleW(an empty title): ret=1 err=-
+GetConsoleTitleW(64): ret=0 err=- buffer [################################################################] after it untouched yes
+SetConsoleTitleW(300 characters): ret=1 err=-
+GetConsoleTitleW(1024): ret=300 err=- the title set yes
+SetConsoleTitleA(F2K title): ret=1 err=-
+GetConsoleTitleA(64): ret=9 err=- buffer [F2K title\0] after it untouched yes
+GetConsoleTitleA(10): ret=9 err=- buffer [F2K title\0] after it untouched yes
+GetConsoleTitleA(9): ret=0 err=- buffer [#########] after it untouched yes
+GetConsoleTitleA(4): ret=0 err=- buffer [####] after it untouched yes
+GetConsoleTitleA(0): ret=0 err=- buffer [] after it untouched yes
+SetConsoleTitleA(an empty title): ret=1 err=-
+GetConsoleTitleA(64): ret=0 err=- buffer [################################################################] after it untouched yes
+SetConsoleTitleA(300 characters): ret=1 err=-
+GetConsoleTitleA(1024): ret=300 err=- the title set yes
+title restored: yes
+console: done
+<<< exit code=0
+>>> console.exe ctrl
+== ctrl
+SetConsoleCtrlHandler(handler, TRUE): ret=1 err=-
+SetConsoleCtrlHandler(handler, TRUE): ret=1 err=-
+SetConsoleCtrlHandler(handler, FALSE): ret=1 err=-
+SetConsoleCtrlHandler(handler, FALSE): ret=1 err=-
+SetConsoleCtrlHandler(handler, FALSE): ret=0 err=87
+SetConsoleCtrlHandler(a handler never added, FALSE): ret=0 err=87
+SetConsoleCtrlHandler(NULL, TRUE): ret=1 err=-
+SetConsoleCtrlHandler(NULL, FALSE): ret=1 err=-
+SetConsoleCtrlHandler(NULL, FALSE): ret=1 err=-
+added 20 times: removals before one failed 20, its err=87
+console: done
+<<< exit code=0

@@ -27,7 +27,8 @@ writes). A report over a partial run says so.
 Options:
   --check   check the pins against the repository: every pin names an export of a spec, every
             fixture's pinned section has a captured block, every scenario pins something, every
-            ignore and pending reason leads with a gap id; and the layering: every import of a DLL
+            ignore reason leads with a gap id and every pending block gives its reason; and the
+            layering: every import of a DLL
             F2K builds is one Windows 2000's DLL makes too, from the same module (its import table,
             userland/<dll>/imports-<version>.txt, dumped by scripts/dump_exports.py)
   --run     run every host scenario, ignored ones included, and keep the results: fails if an
@@ -202,8 +203,8 @@ def check(specs, fixtures, scenarios):
                 if (why := unknown(pin)) is not None:
                     problems.append(f"{where}: pins {section!r}: {pin} {why}")
         for section, reason in declared.get("pending", {}).items():
-            if not gap_of(reason):
-                problems.append(f"{where}: pending {section!r}: the reason leads with the gap id, not {reason!r}")
+            if not reason.strip():
+                problems.append(f"{where}: pending {section!r}: no reason given")
     for dll, (_, exports) in specs.items():
         for export in exports.values():
             if "impl" in export.spec and "ordinal" not in export.spec:

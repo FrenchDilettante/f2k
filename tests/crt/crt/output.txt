@@ -1,0 +1,79 @@
+# F2K capture of crt (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-AC9F3E6, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Sat 10/24/2026 15:28:15.46
+crt F2KT-SOURCE-CRC=0xBB3C0BE5
+>>> crt.exe args one "two words" back\slash "tail\\" a\\\"b "q\"uote" "" x"y z"w
+== args
+argc: 10
+argv[0]: CRT.EXE
+argv[1]: [args]
+argv[2]: [one]
+argv[3]: [two words]
+argv[4]: [back\slash]
+argv[5]: [tail\]
+argv[6]: [a\"b]
+argv[7]: [q"uote]
+argv[8]: []
+argv[9]: [xy zw]
+argv[argc] is NULL: yes
+__argc is argc: yes, __argv is argv: yes
+crt: done
+<<< exit code=0
+>>> crt.exe env
+== env
+envp is _environ: yes
+envp is __initenv: yes
+GetEnvironmentStrings: a block yes
+envp entries: as many as the block's not starting with '=': yes
+envp entries: the block's not starting with '=', in order: yes
+envp entries starting with '=': no
+a PATH entry: in envp yes, in the block yes
+crt: done
+<<< exit code=0
+>>> crt.exe modes
+== modes
+_fmode: 0x0
+_commode: 0x0
+_controlfp(0, 0): 0x0009001F
+fields: precision 0x10000 rounding 0x0 infinity 0x0 exception mask 0x8001F
+_controlfp(_PC_24, _MCW_PC): 0x000A001F
+_controlfp(_RC_CHOP, _MCW_RC): 0x000A031F
+restored: 0x0009001F, as at first: yes
+_controlfp(0, 0): 0x0009001F
+crt: done
+<<< exit code=0
+>>> crt.exe init
+== init
+before main: XIU (main entered no, __argc 0), XCU first (main entered no, __argc 2), XCU second (main entered no, __argc 2)
+argc in main: 2
+crt: done
+<<< exit code=0
+>>> crt.exe exit
+== exit
+setvbuf(stdout, _IOFBF, 512): 0
+atexit: 0 0 0
+exit: calling exit(3)
+atexit: the third registered
+atexit: the first registered
+exit: printf before exit, not flushed
+atexit: the second registered, through printf
+<<< exit code=3
+>>> crt.exe _exit
+== _exit
+setvbuf(stdout, _IOFBF, 512): 0
+atexit: 0
+_exit: calling _exit(4)
+<<< exit code=4
+>>> crt.exe return
+== return
+atexit: 0
+return: main returns 9
+crt: done
+atexit: the first registered
+<<< exit code=9
+>>> crt.exe unhandled
+== unhandled
+unhandled: writing to NULL
+<<< exit code=-1073741819

@@ -1,0 +1,273 @@
+# F2K capture of wide (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-AC9F3E6, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Sat 10/24/2026 15:51:18.29
+wide F2KT-SOURCE-CRC=0x52408459
+>>> wide.exe wcs
+== wcs
+wcslen: "" 0, "abc" 3, U+00E9 1, mixed 16
+wcscpy: [hello\0##] returned the destination yes
+wcsncpy("ab", 6): [ab\0\0\0\0##] returned the destination yes
+wcsncpy("abcdef", 4): [abcd##]
+wcsncpy("abcd", 4): [abcd##]
+wcsncpy("abc", 0): [####]
+wcscat("ab", "cd"): [abcd\0#] returned the destination yes
+wcscat("abcd", ""): [abcd\0#]
+wcscat("abcd", non-ASCII): [abcd<U+00E9><U+00C9><U+00FF><U+0101><U+0100><U+03B1><U+0391><U+0436><U+0416>]
+wcscmp: (abc, abd) -1, (abc, abc) 0, (abd, abc) 1, (ab, abc) -1, (abc, ab) 1, ("", "") 0
+wcscmp: (U+00E9, z) 1, (a, A) 1, (U+0391, U+03B1) -1
+wcsncmp: (abcd, abce, 3) 0, (abcd, abce, 4) -1, (ab, abc, 5) -99, (x, y, 0) 0
+wcschr("a,b,c"): ',' +1, 'c' +4, 'z' NULL, 0 +5
+wcsrchr("a,b,c"): ',' +3, 'a' +0, 'z' NULL, 0 +5
+wcschr(mixed, U+0436) +14, wcsrchr(mixed, U+00E9) +7
+wcsstr("haystack"): "st" +3, "stack" +3, "k" +7, "" +0, "stacks" NULL, "x" NULL
+wcsspn: (aabbcx, ab) 4, (xyz, ab) 0, ("", a) 0, (abc, "") 0, (abc, cba) 3
+wide: done
+<<< exit code=0
+>>> wide.exe case
+== case
+"C": _wcsicmp: (abc, ABC) 0, (abc, ABD) -1, (abd, ABC) 1, (a, AB) -98, ("", "") 0
+"C": _wcsicmp: ([, a) -6, (_, A) -2, (U+00E9, U+00C9) 32, (U+00E9, E) 132, (U+03B1, U+0391) 32
+"C": _wcsnicmp: (abcX, ABCy, 3) 0, (abcX, ABCy, 4) -1, (ab, AB, 10) 0, (a, b, 0) 0
+"C": _wcslwr: [abc 1[_<U+00E9><U+00C9><U+00FF><U+0101><U+0100><U+03B1><U+0391><U+0436><U+0416>] returned the string yes
+"C": _wcsupr: [ABC 1[_<U+00E9><U+00C9><U+00FF><U+0101><U+0100><U+03B1><U+0391><U+0436><U+0416>] returned the string yes
+setlocale(LC_ALL, ""): English_United States.1252
+"": _wcsicmp: (abc, ABC) 0, (abc, ABD) -1, (abd, ABC) 1, (a, AB) -98, ("", "") 0
+"": _wcsicmp: ([, a) -6, (_, A) -2, (U+00E9, U+00C9) 0, (U+00E9, E) 132, (U+03B1, U+0391) 0
+"": _wcsnicmp: (abcX, ABCy, 3) 0, (abcX, ABCy, 4) -1, (ab, AB, 10) 0, (a, b, 0) 0
+"": _wcslwr: [abc 1[_<U+00E9><U+00E9><U+00FF><U+0101><U+0101><U+03B1><U+03B1><U+0436><U+0436>] returned the string yes
+"": _wcsupr: [ABC 1[_<U+00C9><U+00C9><U+0178><U+0100><U+0100><U+0391><U+0391><U+0416><U+0416>] returned the string yes
+wide: done
+<<< exit code=0
+>>> wide.exe ctype
+== ctype
+"C": U+0009: alpha 0 digit 0 space 8 xdigit 0 lower U+0009 upper U+0009
+"C": U+000A: alpha 0 digit 0 space 8 xdigit 0 lower U+000A upper U+000A
+"C": U+0020: alpha 0 digit 0 space 8 xdigit 0 lower U+0020 upper U+0020
+"C": U+0030: alpha 0 digit 4 space 0 xdigit 80 lower U+0030 upper U+0030
+"C": U+0039: alpha 0 digit 4 space 0 xdigit 80 lower U+0039 upper U+0039
+"C": U+0041: alpha 1 digit 0 space 0 xdigit 80 lower U+0061 upper U+0041
+"C": U+0046: alpha 1 digit 0 space 0 xdigit 80 lower U+0066 upper U+0046
+"C": U+0047: alpha 1 digit 0 space 0 xdigit 0 lower U+0067 upper U+0047
+"C": U+005F: alpha 0 digit 0 space 0 xdigit 0 lower U+005F upper U+005F
+"C": U+0061: alpha 2 digit 0 space 0 xdigit 80 lower U+0061 upper U+0041
+"C": U+0066: alpha 2 digit 0 space 0 xdigit 80 lower U+0066 upper U+0046
+"C": U+007A: alpha 2 digit 0 space 0 xdigit 0 lower U+007A upper U+005A
+"C": U+007F: alpha 0 digit 0 space 0 xdigit 0 lower U+007F upper U+007F
+"C": U+00A0: alpha 0 digit 0 space 0 xdigit 0 lower U+00A0 upper U+00A0
+"C": U+00AA: alpha 0 digit 0 space 0 xdigit 0 lower U+00AA upper U+00AA
+"C": U+00B2: alpha 0 digit 0 space 0 xdigit 0 lower U+00B2 upper U+00B2
+"C": U+00B5: alpha 0 digit 0 space 0 xdigit 0 lower U+00B5 upper U+00B5
+"C": U+00C9: alpha 0 digit 0 space 0 xdigit 0 lower U+00C9 upper U+00C9
+"C": U+00D7: alpha 0 digit 0 space 0 xdigit 0 lower U+00D7 upper U+00D7
+"C": U+00DF: alpha 0 digit 0 space 0 xdigit 0 lower U+00DF upper U+00DF
+"C": U+00E9: alpha 0 digit 0 space 0 xdigit 0 lower U+00E9 upper U+00E9
+"C": U+00FF: alpha 0 digit 0 space 0 xdigit 0 lower U+00FF upper U+00FF
+"C": U+0100: alpha 101 digit 0 space 0 xdigit 0 lower U+0100 upper U+0100
+"C": U+0101: alpha 102 digit 0 space 0 xdigit 0 lower U+0101 upper U+0101
+"C": U+0178: alpha 101 digit 0 space 0 xdigit 0 lower U+0178 upper U+0178
+"C": U+0391: alpha 101 digit 0 space 0 xdigit 0 lower U+0391 upper U+0391
+"C": U+03B1: alpha 102 digit 0 space 0 xdigit 0 lower U+03B1 upper U+03B1
+"C": U+0416: alpha 101 digit 0 space 0 xdigit 0 lower U+0416 upper U+0416
+"C": U+0436: alpha 102 digit 0 space 0 xdigit 0 lower U+0436 upper U+0436
+"C": U+0660: alpha 0 digit 4 space 0 xdigit 0 lower U+0660 upper U+0660
+"C": U+0669: alpha 0 digit 4 space 0 xdigit 0 lower U+0669 upper U+0669
+"C": U+2000: alpha 0 digit 0 space 8 xdigit 0 lower U+2000 upper U+2000
+"C": U+2028: alpha 0 digit 0 space 0 xdigit 0 lower U+2028 upper U+2028
+"C": U+3000: alpha 0 digit 0 space 8 xdigit 0 lower U+3000 upper U+3000
+"C": U+4E00: alpha 100 digit 0 space 0 xdigit 0 lower U+4E00 upper U+4E00
+"C": U+FEFF: alpha 0 digit 0 space 8 xdigit 0 lower U+FEFF upper U+FEFF
+"C": U+FF10: alpha 0 digit 4 space 0 xdigit 80 lower U+FF10 upper U+FF10
+"C": U+FF21: alpha 101 digit 0 space 0 xdigit 80 lower U+FF21 upper U+FF21
+"C": U+FF41: alpha 102 digit 0 space 0 xdigit 80 lower U+FF41 upper U+FF41
+setlocale(LC_ALL, ""): English_United States.1252
+"": U+0009: alpha 0 digit 0 space 8 xdigit 0 lower U+0009 upper U+0009
+"": U+000A: alpha 0 digit 0 space 8 xdigit 0 lower U+000A upper U+000A
+"": U+0020: alpha 0 digit 0 space 8 xdigit 0 lower U+0020 upper U+0020
+"": U+0030: alpha 0 digit 4 space 0 xdigit 80 lower U+0030 upper U+0030
+"": U+0039: alpha 0 digit 4 space 0 xdigit 80 lower U+0039 upper U+0039
+"": U+0041: alpha 101 digit 0 space 0 xdigit 80 lower U+0061 upper U+0041
+"": U+0046: alpha 101 digit 0 space 0 xdigit 80 lower U+0066 upper U+0046
+"": U+0047: alpha 101 digit 0 space 0 xdigit 0 lower U+0067 upper U+0047
+"": U+005F: alpha 0 digit 0 space 0 xdigit 0 lower U+005F upper U+005F
+"": U+0061: alpha 102 digit 0 space 0 xdigit 80 lower U+0061 upper U+0041
+"": U+0066: alpha 102 digit 0 space 0 xdigit 80 lower U+0066 upper U+0046
+"": U+007A: alpha 102 digit 0 space 0 xdigit 0 lower U+007A upper U+005A
+"": U+007F: alpha 0 digit 0 space 0 xdigit 0 lower U+007F upper U+007F
+"": U+00A0: alpha 0 digit 0 space 8 xdigit 0 lower U+00A0 upper U+00A0
+"": U+00AA: alpha 0 digit 0 space 0 xdigit 0 lower U+00AA upper U+00AA
+"": U+00B2: alpha 0 digit 4 space 0 xdigit 0 lower U+00B2 upper U+00B2
+"": U+00B5: alpha 0 digit 0 space 0 xdigit 0 lower U+00B5 upper U+00B5
+"": U+00C9: alpha 101 digit 0 space 0 xdigit 0 lower U+00E9 upper U+00C9
+"": U+00D7: alpha 0 digit 0 space 0 xdigit 0 lower U+00D7 upper U+00D7
+"": U+00DF: alpha 102 digit 0 space 0 xdigit 0 lower U+00DF upper U+00DF
+"": U+00E9: alpha 102 digit 0 space 0 xdigit 0 lower U+00E9 upper U+00C9
+"": U+00FF: alpha 102 digit 0 space 0 xdigit 0 lower U+00FF upper U+0178
+"": U+0100: alpha 101 digit 0 space 0 xdigit 0 lower U+0101 upper U+0100
+"": U+0101: alpha 102 digit 0 space 0 xdigit 0 lower U+0101 upper U+0100
+"": U+0178: alpha 101 digit 0 space 0 xdigit 0 lower U+00FF upper U+0178
+"": U+0391: alpha 101 digit 0 space 0 xdigit 0 lower U+03B1 upper U+0391
+"": U+03B1: alpha 102 digit 0 space 0 xdigit 0 lower U+03B1 upper U+0391
+"": U+0416: alpha 101 digit 0 space 0 xdigit 0 lower U+0436 upper U+0416
+"": U+0436: alpha 102 digit 0 space 0 xdigit 0 lower U+0436 upper U+0416
+"": U+0660: alpha 0 digit 4 space 0 xdigit 0 lower U+0660 upper U+0660
+"": U+0669: alpha 0 digit 4 space 0 xdigit 0 lower U+0669 upper U+0669
+"": U+2000: alpha 0 digit 0 space 8 xdigit 0 lower U+2000 upper U+2000
+"": U+2028: alpha 0 digit 0 space 0 xdigit 0 lower U+2028 upper U+2028
+"": U+3000: alpha 0 digit 0 space 8 xdigit 0 lower U+3000 upper U+3000
+"": U+4E00: alpha 100 digit 0 space 0 xdigit 0 lower U+4E00 upper U+4E00
+"": U+FEFF: alpha 0 digit 0 space 8 xdigit 0 lower U+FEFF upper U+FEFF
+"": U+FF10: alpha 0 digit 4 space 0 xdigit 80 lower U+FF10 upper U+FF10
+"": U+FF21: alpha 101 digit 0 space 0 xdigit 80 lower U+FF41 upper U+FF21
+"": U+FF41: alpha 102 digit 0 space 0 xdigit 80 lower U+FF41 upper U+FF21
+wide: done
+<<< exit code=0
+>>> wide.exe locale
+== locale
+setlocale(LC_ALL, NULL): C
+setlocale(LC_ALL, ""): English_United States.1252
+setlocale(LC_CTYPE, NULL): English_United States.1252
+setlocale(LC_ALL, "C"): C
+setlocale(LC_ALL, "zz-not-a-locale"): NULL
+then setlocale(LC_ALL, NULL): C
+setlocale(LC_NUMERIC, ""): English_United States.1252
+then setlocale(LC_ALL, NULL): LC_COLLATE=C;LC_CTYPE=C;LC_MONETARY=C;LC_NUMERIC=English_United States.1252;LC_TIME=C
+setlocale(LC_ALL, "C"): C
+wide: done
+<<< exit code=0
+>>> wide.exe format
+== format
+swprintf integers: 20 [-42|42|ff|FF|10|-7|%]
+swprintf flags and widths: 84 [[   42][42   ][00042][+42][ 42][007][  007][   9][0xff][0XFF][010][4294967295][4464]]
+swprintf strings: 48 [wide|narrow|narrow|wide|wi|   ab|ab   |<U+00E9><U+00C9><U+00FF><U+0101><U+0100><U+03B1><U+0391><U+0436><U+0416>]
+swprintf characters: 9 [a|b|c|d|<U+00E9>]
+swprintf narrow non-ASCII: 8 [caf<U+00E9>|<U+00E9>t<U+00E9>]
+swprintf empty: 0 [\0]
+_snwprintf(5, "overflowing"): -1 [overf###]
+_snwprintf(5, "abcde"): 5 [abcde###]
+_snwprintf(6, "abcde"): 5 [abcde\0##]
+_snwprintf(0, "abc"): -1 [####]
+_snwprintf(10, "%d-%d"): 6 [12-345\0#]
+_vsnwprintf(6, "%d|%s"): -1 [1234|t###]
+_vsnwprintf(9, "%d|%s"): 9 [1234|tail##]
+_vsnwprintf(20, "%d|%s"): 9 [1234|tail\0#]
+wide: done
+<<< exit code=0
+>>> wide.exe scan
+== scan
+swscanf("%d %d %x %s %S"): 5: 42 -17 31 [word] [rest]
+swscanf("%[a-z]%d%s"): 3: [abc] 123 [def]
+swscanf("%[^=]=%[^\n]"): 2: [key] [value with spaces]
+swscanf("%3d%d", "12345"): 2: 123 45
+swscanf("%i %i %i", "0x1A 077 -5"): 3: 26 63 -5
+swscanf("%d%n", "10 20"): 1: 10 2
+swscanf("%d %d", "7 x"): 1: 7 -999
+swscanf("%d", "x"): 0: -999
+swscanf("%d", ""): 0: -999
+swscanf("%d", "   "): 0: -999
+swscanf("abd%d", "abc"): 0: -999
+wide: done
+<<< exit code=0
+>>> wide.exe numbers
+== numbers
+_ultoa(0): radix 2 0, 8 0, 10 0, 16 0, 36 0; returned the buffer yes
+_ultoa(1): radix 2 1, 8 1, 10 1, 16 1, 36 1; returned the buffer yes
+_ultoa(255): radix 2 11111111, 8 377, 10 255, 16 ff, 36 73; returned the buffer yes
+_ultoa(123456789): radix 2 111010110111100110100010101, 8 726746425, 10 123456789, 16 75bcd15, 36 21i3v9; returned the buffer yes
+_ultoa(2147483648): radix 2 10000000000000000000000000000000, 8 20000000000, 10 2147483648, 16 80000000, 36 zik0zk; returned the buffer yes
+_ultoa(4294967295): radix 2 11111111111111111111111111111111, 8 37777777777, 10 4294967295, 16 ffffffff, 36 1z141z3; returned the buffer yes
+_wtol("123"): 123 errno 0
+_wtol("  -123abc"): -123 errno 0
+_wtol("+7"): 7 errno 0
+_wtol("\t\n 42"): 42 errno 0
+_wtol(""): 0 errno 0
+_wtol("abc"): 0 errno 0
+_wtol("0x1A"): 0 errno 0
+_wtol("2147483647"): 2147483647 errno 0
+_wtol("2147483648"): -2147483648 errno 0
+_wtol("-2147483649"): 2147483647 errno 0
+_wtol("<U+0661><U+0662>"): 0 errno 0
+wcstol("0x1A", 0): 26 errno 0 end +4
+wcstol("0X1a", 0): 26 errno 0 end +4
+wcstol("  -077", 0): -63 errno 0 end +6
+wcstol("0", 0): 0 errno 0 end +1
+wcstol("08", 0): 0 errno 0 end +1
+wcstol("12abc", 0): 12 errno 0 end +2
+wcstol("+42", 10): 42 errno 0 end +3
+wcstol("-0x10", 0): -16 errno 0 end +5
+wcstol("0x", 0): 0 errno 0 end +0
+wcstol("0x", 16): 0 errno 0 end +0
+wcstol("0x1A", 16): 26 errno 0 end +4
+wcstol("0x1A", 10): 0 errno 0 end +1
+wcstol("zz", 36): 1295 errno 0 end +2
+wcstol("ZZ", 36): 1295 errno 0 end +2
+wcstol("1010", 2): 10 errno 0 end +4
+wcstol("2147483647", 10): 2147483647 errno 0 end +10
+wcstol("2147483648", 10): 2147483647 errno 34 end +10
+wcstol("-2147483648", 10): -2147483648 errno 0 end +11
+wcstol("-2147483649", 10): -2147483648 errno 34 end +11
+wcstol("99999999999999999999x", 10): 2147483647 errno 34 end +20
+wcstol("   ", 10): 0 errno 0 end +0
+wcstol("", 10): 0 errno 0 end +0
+wcstol("abc", 10): 0 errno 0 end +0
+wcstol("- 5", 10): 0 errno 0 end +0
+wcstol("12", 37): 0 errno 0 end +0
+wcstol("<U+0661><U+0662>", 10): 0 errno 0 end +0
+wcstol("<U+FF11><U+FF12>", 10): 0 errno 0 end +0
+wcstoul("4294967295", 10): 4294967295 errno 0 end +10
+wcstoul("4294967296", 10): 4294967295 errno 34 end +10
+wcstoul("-1", 10): 4294967295 errno 0 end +2
+wcstoul("-4294967296", 10): 1 errno 34 end +11
+wcstoul("0xFFFFFFFF", 16): 4294967295 errno 0 end +10
+wcstoul("0x100000000", 0): 4294967295 errno 34 end +11
+wcstoul("  +12", 0): 12 errno 0 end +5
+wcstoul("-0x10", 0): 4294967280 errno 0 end +5
+wcstoul("017", 0): 15 errno 0 end +3
+wcstoul("0", 0): 0 errno 0 end +1
+wcstoul("", 0): 0 errno 0 end +0
+wcstoul("x", 0): 0 errno 0 end +0
+wide: done
+<<< exit code=0
+>>> wide.exe memory
+== memory
+malloc(16): yes
+realloc(16 to 4096): yes, contents kept yes
+realloc(4096 to 8): yes, contents kept yes
+realloc(NULL, 32): a block yes
+realloc(the block, 0): NULL
+calloc(8, 8): yes, all zero yes
+malloc(0): a block
+calloc(0, 4): a block
+malloc(0x7FFFFFF0): NULL errno 0
+free(NULL): returned
+1000 blocks of 100 to 1099 bytes: allocated and intact yes
+memmove(buf + 2, buf, 5): [0101234789] returned the destination yes
+memmove(buf, buf + 2, 5): [2345656789] returned the destination yes
+memmove(buf + 3, buf + 3, 4): [2345656789]
+memmove(buf, buf + 5, 0): [2345656789] returned the destination yes
+wide: done
+<<< exit code=0
+>>> wide.exe sort
+== sort
+qsort(12 integers): -2147483647 -7 -1 0 5 8 13 42 64 99 1000 2147483647
+qsort of one and of no element: returned, first -2147483647
+qsort(6 wide strings, wcscmp): [] [Apple] [apple] [banana] [pear] [<U+00E9>]
+wide: done
+<<< exit code=0
+>>> wide.exe rand
+== rand
+rand without srand: 41 18467 6334 26500 19169 15724 11478 29358
+rand after srand(1): 41 18467 6334 26500 19169 15724 11478 29358
+rand after srand(42): 175 400 17869 30056 16083 12879 8016 7644
+rand after srand(1) again: 41 18467 6334 26500 19169 15724 11478 29358
+RAND_MAX: 32767
+wide: done
+<<< exit code=0
+>>> wide.exe time
+== time
+time(&t) returned t: yes
+time(NULL) within a second of time(&t): yes
+after 2000-01-01 00:00:00 UTC: yes
+wide: done
+<<< exit code=0

@@ -1,0 +1,8 @@
+# F2K capture of hellomd (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-AC9F3E6, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Sat 10/24/2026 15:28:15.45
+>>> hellomd.exe
+Hello, world!
+<<< exit code=0

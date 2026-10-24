@@ -25,15 +25,22 @@
  *   times    SetFileTime/GetFileTime round trip at a two-second boundary
  *   crt      fopen "w"/"a"/"r+" with text-mode translation, fwrite,
  *            remove, rename
+ *   movex    MoveFileExA: a rename; onto an existing file without and
+ *            with MOVEFILE_REPLACE_EXISTING; MOVEFILE_COPY_ALLOWED and
+ *            MOVEFILE_WRITE_THROUGH on one volume; a directory; into a
+ *            subdirectory; a missing source; a NULL destination without
+ *            MOVEFILE_DELAY_UNTIL_REBOOT (never that flag: it writes the
+ *            registry); REPLACE_EXISTING onto a directory and onto a
+ *            read-only file; then what is left on disk
  *
- * The create, share, names and dirs observations run twice: through the
- * A calls, then through their W twins on the same names (the W lines
- * carry the W names, or "(W)"); create and names empty SCRATCH between
- * the two runs, so both start from the same state. The setup (making
- * the files a check uses, emptying SCRATCH) stays A. The directory of
- * 100 files is listed and sized again through the W calls before it is
- * emptied, and the write and crt sizes are read again through
- * GetFileAttributesExW.
+ * The create, share, names, dirs and movex observations run twice:
+ * through the A calls, then through their W twins on the same names (the
+ * W lines carry the W names, or "(W)"); create, names and movex empty
+ * SCRATCH between the two runs, so both start from the same state. The
+ * setup (making the files a check uses, emptying SCRATCH, listing what a
+ * move left) stays A. The directory of 100 files is listed and sized
+ * again through the W calls before it is emptied, and the write and crt
+ * sizes are read again through GetFileAttributesExW.
  *
  * Build (real Windows 2000 machine, MSVC 6):
  *   cl /nologo fswrite.c
@@ -43,6 +50,11 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <errno.h>
+
+/* Windows NT's MoveFileEx flag, which MSVC 6's headers may lack. */
+#ifndef MOVEFILE_WRITE_THROUGH
+#define MOVEFILE_WRITE_THROUGH 0x00000008
+#endif
 
 static char base[MAX_PATH];         /* SCRATCH\ under the image's directory */
 static WCHAR wbase[MAX_PATH];       /* the same, in the ANSI code page's Unicode */
@@ -676,6 +688,162 @@ static void sec_crt(void)
     line("remove again: %d errno %d", r, errno);
 }
 
+/* --- movex --------------------------------------------------------- */
+
+/* What a name under SCRATCH is now, as printed: absent, a directory, or
+   a file's size; read-only when it is. Through the A calls or (wide)
+   their W twins. */
+static const char *what_is(int wide, const char *rel, const WCHAR *wrel)
+{
+    static char bufs[4][48];
+    static int next;
+    char *b = bufs[next++ & 3];
+    DWORD a = attrs_of(wide, rel, wrel);
+
+    if (a == INVALID_FILE_ATTRIBUTES) {
+        return "absent";
+    }
+    if (a & FILE_ATTRIBUTE_DIRECTORY) {
+        strcpy(b, "a directory");
+    } else {
+        sprintf(b, "%lu bytes", size_of(wide, rel, wrel));
+    }
+    if (a & FILE_ATTRIBUTE_READONLY) {
+        strcat(b, ", read-only");
+    }
+    return b;
+}
+
+/* MoveFileExA, or (wide) MoveFileExW, from one name under SCRATCH to
+   another (NULL for none), under __try: a NULL destination might fault,
+   and the fixture must not stop on a dialog. Prints the return, the
+   error, and what both names are afterwards. */
+static void move_ex(int wide, const char *from, const WCHAR *wfrom, const char *to, const WCHAR *wto,
+                    DWORD flags, const char *flag_names)
+{
+    const char *aw = wide ? "W" : "A";
+    const char *src = at(from);
+    const char *dst = to != NULL ? at(to) : NULL;
+    const WCHAR *wsrc = wat(wfrom);
+    const WCHAR *wdst = wto != NULL ? wat(wto) : NULL;
+    const char *e;
+    BOOL r = FALSE;
+    int faulted = 0;
+
+    arm();
+    __try {
+        r = wide ? MoveFileExW(wsrc, wdst, flags) : MoveFileExA(src, dst, flags);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        faulted = 1;
+    }
+    e = le();
+    if (faulted) {
+        line("MoveFileEx%s(%s, %s, %s): faulted", aw, from, to != NULL ? to : "NULL", flag_names);
+    } else if (to == NULL) {
+        line("MoveFileEx%s(%s, NULL, %s): ret=%d err=%s, %s %s", aw, from, flag_names, r, e,
+             from, what_is(wide, from, wfrom));
+    } else {
+        line("MoveFileEx%s(%s, %s, %s): ret=%d err=%s, %s %s, %s %s", aw, from, to, flag_names, r, e,
+             from, what_is(wide, from, wfrom), to, what_is(wide, to, wto));
+    }
+}
+
+static int cmp_left(const void *a, const void *b)
+{
+    return strcmp((const char *)a, (const char *)b);
+}
+
+/* What a directory under SCRATCH holds (`dir` relative, with its
+   trailing backslash, or ""), sorted, each name with its size or
+   "(directory)", and "read-only" where set. Listed through the A calls:
+   the observation is the moves', not the listing's. */
+static void left_in(const char *tag, const char *dir)
+{
+    static char names[32][MAX_PATH + 32];
+    char pat[2 * MAX_PATH];
+    char out[900];
+    WIN32_FIND_DATAA fd;
+    HANDLE f;
+    int n = 0;
+    int i;
+
+    sprintf(pat, "%s%s*", base, dir);
+    f = FindFirstFileA(pat, &fd);
+    if (f != INVALID_HANDLE_VALUE) {
+        do {
+            if (strcmp(fd.cFileName, ".") == 0 || strcmp(fd.cFileName, "..") == 0 || n == 32) {
+                continue;
+            }
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+                sprintf(names[n], "%s (directory)", fd.cFileName);
+            } else {
+                sprintf(names[n], "%s %lu bytes", fd.cFileName, fd.nFileSizeLow);
+            }
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_READONLY) {
+                strcat(names[n], " read-only");
+            }
+            n++;
+        } while (FindNextFileA(f, &fd));
+        FindClose(f);
+    }
+    qsort(names, n, sizeof names[0], cmp_left);
+    out[0] = 0;
+    for (i = 0; i < n && strlen(out) + strlen(names[i]) + 3 < sizeof out; i++) {
+        if (i > 0) {
+            strcat(out, ", ");
+        }
+        strcat(out, names[i]);
+    }
+    line("left in SCRATCH\\%s%s: %s", dir, tag, n != 0 ? out : "nothing");
+}
+
+/* MoveFileEx's cases, through MoveFileExA or (wide) MoveFileExW. The
+   files they move are made through the A calls (setup). */
+static void movex_block(int wide)
+{
+    const char *tag = wide ? " (W)" : "";
+
+    write_text("X1.TXT", "first");
+    move_ex(wide, "X1.TXT", L"X1.TXT", "X2.TXT", L"X2.TXT", 0, "0");
+    write_text("X3.TXT", "existing!");
+    move_ex(wide, "X2.TXT", L"X2.TXT", "X3.TXT", L"X3.TXT", 0, "0");
+    move_ex(wide, "X2.TXT", L"X2.TXT", "X3.TXT", L"X3.TXT", MOVEFILE_REPLACE_EXISTING, "REPLACE_EXISTING");
+    write_text("X4.TXT", "copy allowed");
+    move_ex(wide, "X4.TXT", L"X4.TXT", "X5.TXT", L"X5.TXT", MOVEFILE_COPY_ALLOWED, "COPY_ALLOWED");
+    move_ex(wide, "X5.TXT", L"X5.TXT", "X6.TXT", L"X6.TXT", MOVEFILE_WRITE_THROUGH, "WRITE_THROUGH");
+    write_text("X7.TXT", "seven");
+    move_ex(wide, "X6.TXT", L"X6.TXT", "X7.TXT", L"X7.TXT", MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED,
+            "REPLACE_EXISTING | COPY_ALLOWED");
+
+    CreateDirectoryA(at("XD1"), NULL);
+    write_text("XD1\\IN.TXT", "inside");
+    move_ex(wide, "XD1", L"XD1", "XD2", L"XD2", 0, "0");
+    line("XD2\\IN.TXT after the directory moved%s: %s", tag, what_is(wide, "XD2\\IN.TXT", L"XD2\\IN.TXT"));
+    move_ex(wide, "X7.TXT", L"X7.TXT", "XD2\\X7.TXT", L"XD2\\X7.TXT", 0, "0");
+
+    move_ex(wide, "NOSUCH.TXT", L"NOSUCH.TXT", "X8.TXT", L"X8.TXT", 0, "0");
+    write_text("X8.TXT", "eight");
+    move_ex(wide, "X8.TXT", L"X8.TXT", NULL, NULL, 0, "0");
+
+    write_text("X9.TXT", "nine");
+    CreateDirectoryA(at("XD3"), NULL);
+    move_ex(wide, "X9.TXT", L"X9.TXT", "XD3", L"XD3", MOVEFILE_REPLACE_EXISTING, "REPLACE_EXISTING");
+    write_text("XR.TXT", "read-only");
+    SetFileAttributesA(at("XR.TXT"), FILE_ATTRIBUTE_READONLY);
+    move_ex(wide, "X9.TXT", L"X9.TXT", "XR.TXT", L"XR.TXT", MOVEFILE_REPLACE_EXISTING, "REPLACE_EXISTING");
+
+    left_in(tag, "");
+    left_in(tag, "XD2\\");
+    left_in(tag, "XD3\\");
+}
+
+static void sec_movex(void)
+{
+    movex_block(0);
+    wipe(base);
+    movex_block(1);
+}
+
 static const section_t sections[] = {
     { "create", sec_create, 0 },
     { "write", sec_write, 0 },
@@ -684,6 +852,7 @@ static const section_t sections[] = {
     { "dirs", sec_dirs, 0 },
     { "times", sec_times, 0 },
     { "crt", sec_crt, 0 },
+    { "movex", sec_movex, 0 },
     { NULL, NULL, 0 }
 };
 

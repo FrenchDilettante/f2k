@@ -30,6 +30,20 @@
  *              (continue search / continue execution), __finally on
  *              normal and abnormal exits, unwinding through frames,
  *              stack overflow
+ *   windir     GetWindowsDirectoryA: the answer, the return with room,
+ *              with too little (the size needed) and with none
+ *   filetime   CompareFileTime: equal, earlier, later, the high dword
+ *              alone, the low and high dwords' top bits (unsigned)
+ *   lstrcmp    lstrcmpA and lstrcmpiA: case, word sort (hyphens and
+ *              apostrophes), prefixes, digits, Latin-1 letters, NULL
+ *              arguments (under __try); the sign only
+ *   threadlocale  GetThreadLocale, SetThreadLocale to French and back,
+ *              invalid and default LCIDs; GetUserDefaultLCID beside it
+ *   localtime  SetLocalTime to the current time (GetLocalTime's), then
+ *              invalid fields: the return and the error, never the time
+ *   debugbreak DebugBreak caught by __except: the exception code, the
+ *              filter's calls, which module the exception address lies
+ *              in (kernel32, ntdll, the program), never the address
  *
  * Named-only sections:
  *
@@ -47,7 +61,8 @@
  * GetStartupInfoA), GetVersionExW (version, with the EX sizes of both),
  * the module calls (module, teb), FormatMessageW (lasterror),
  * GetEnvironmentVariableW and ExpandEnvironmentStringsW (env, beside
- * GetEnvironmentStringsA by its own name) and WriteConsoleW (console).
+ * GetEnvironmentStringsA by its own name), WriteConsoleW (console),
+ * GetWindowsDirectoryW (windir) and lstrcmpW and lstrcmpiW (lstrcmp).
  * The locale section enumerates the system locales through both
  * EnumSystemLocalesA and EnumSystemLocalesW.
  *
@@ -1568,6 +1583,331 @@ static void sec_seh(void)
          yesno(handled), seen_code, yesno(overflow_depth > 256));
 }
 
+/* --- windir -------------------------------------------------------- */
+
+/* GetWindowsDirectoryA into `size` characters, then GetWindowsDirectoryW
+   into as many: the return, the text where it fit, and whether a buffer
+   too small was left as it was. */
+static void windir_into(const char *label, UINT size)
+{
+    char buf[MAX_PATH];
+    WCHAR wbuf[MAX_PATH];
+    const char *p1;
+    UINT n;
+    int i;
+
+    memset(buf, '#', sizeof buf);
+    arm();
+    n = GetWindowsDirectoryA(buf, size);
+    p1 = le();
+    if (n != 0 && n < size) {
+        line("GetWindowsDirectoryA into %s: ret=%u [%s] err=%s", label, n, buf, p1);
+    } else {
+        line("GetWindowsDirectoryA into %s: ret=%u untouched %s err=%s", label, n, yesno(buf[0] == '#'), p1);
+    }
+    for (i = 0; i < MAX_PATH; i++) {
+        wbuf[i] = L'#';
+    }
+    arm();
+    n = GetWindowsDirectoryW(wbuf, size);
+    p1 = le();
+    if (n != 0 && n < size) {
+        line("GetWindowsDirectoryW into %s: ret=%u [%s] err=%s", label, n, ws(wbuf), p1);
+    } else {
+        line("GetWindowsDirectoryW into %s: ret=%u untouched %s err=%s", label, n, yesno(wbuf[0] == L'#'), p1);
+    }
+}
+
+static void sec_windir(void)
+{
+    char buf[MAX_PATH];
+    UINT length;
+
+    windir_into("MAX_PATH", MAX_PATH);
+    length = GetWindowsDirectoryA(buf, sizeof buf);
+    if (length == 0 || length >= sizeof buf) {
+        line("GetWindowsDirectoryA: no answer to size the buffers by");
+        return;
+    }
+    windir_into("its length + 1", length + 1);
+    windir_into("its length", length);
+    windir_into("1", 1);
+    windir_into("0", 0);
+}
+
+/* --- filetime ------------------------------------------------------ */
+
+static void compare_times(const char *what, DWORD hi1, DWORD lo1, DWORD hi2, DWORD lo2)
+{
+    FILETIME a, b;
+    LONG r;
+
+    a.dwHighDateTime = hi1;
+    a.dwLowDateTime = lo1;
+    b.dwHighDateTime = hi2;
+    b.dwLowDateTime = lo2;
+    arm();
+    r = CompareFileTime(&a, &b);
+    line("CompareFileTime(%08lX:%08lX, %08lX:%08lX) %s: %ld err=%s", hi1, lo1, hi2, lo2, what, r, le());
+}
+
+static void sec_filetime(void)
+{
+    FILETIME a;
+    LONG r;
+
+    compare_times("equal", 1, 5, 1, 5);
+    compare_times("earlier", 1, 4, 1, 5);
+    compare_times("later", 1, 6, 1, 5);
+    compare_times("the high dword only, lower", 1, 5, 2, 5);
+    compare_times("the high dword only, higher", 2, 5, 1, 5);
+    compare_times("the high dword decides over the low", 1, 0xFFFFFFFF, 2, 0);
+    compare_times("the low dword's top bit set, first", 1, 0x80000000, 1, 0x7FFFFFFF);
+    compare_times("the low dword's top bit set, second", 1, 0x7FFFFFFF, 1, 0x80000000);
+    compare_times("the high dword's top bit set, first", 0x80000000, 0, 0x7FFFFFFF, 0);
+    compare_times("the high dword's top bit set, second", 0x7FFFFFFF, 0, 0x80000000, 0);
+    compare_times("zero and the largest", 0, 0, 0xFFFFFFFF, 0xFFFFFFFF);
+    a.dwHighDateTime = 3;
+    a.dwLowDateTime = 7;
+    arm();
+    r = CompareFileTime(&a, &a);
+    line("CompareFileTime(one FILETIME twice): %ld err=%s", r, le());
+}
+
+/* --- lstrcmp ------------------------------------------------------- */
+
+/* One string pair, the A and W forms of the same text (the A text in code
+   page 1252: E9 is e acute, C9 E acute). */
+typedef struct {
+    const char *label;
+    const char *a1;
+    const char *a2;
+    const WCHAR *w1;
+    const WCHAR *w2;
+} str_pair;
+
+static const str_pair str_pairs[] = {
+    { "a, a", "a", "a", L"a", L"a" },
+    { "a, A", "a", "A", L"a", L"A" },
+    { "A, a", "A", "a", L"A", L"a" },
+    { "a, B", "a", "B", L"a", L"B" },
+    { "A, b", "A", "b", L"A", L"b" },
+    { "abc, ABC", "abc", "ABC", L"abc", L"ABC" },
+    { "co-op, coop", "co-op", "coop", L"co-op", L"coop" },
+    { "coop, co-op", "coop", "co-op", L"coop", L"co-op" },
+    { "co-op, cop", "co-op", "cop", L"co-op", L"cop" },
+    { "co'op, coop", "co'op", "coop", L"co'op", L"coop" },
+    { "co'op, co-op", "co'op", "co-op", L"co'op", L"co-op" },
+    { "it's, its", "it's", "its", L"it's", L"its" },
+    { "it's, itself", "it's", "itself", L"it's", L"itself" },
+    { "ab, abc", "ab", "abc", L"ab", L"abc" },
+    { "abc, ab", "abc", "ab", L"abc", L"ab" },
+    { "empty, a", "", "a", L"", L"a" },
+    { "empty, empty", "", "", L"", L"" },
+    { "1, 2", "1", "2", L"1", L"2" },
+    { "10, 9", "10", "9", L"10", L"9" },
+    { "a1, a10", "a1", "a10", L"a1", L"a10" },
+    { "a, 1", "a", "1", L"a", L"1" },
+    { "e acute, e", "\xE9", "e", L"\x00E9", L"e" },
+    { "e acute, f", "\xE9", "f", L"\x00E9", L"f" },
+    { "e acute, E acute", "\xE9", "\xC9", L"\x00E9", L"\x00C9" },
+    { "e acute, E", "\xE9", "E", L"\x00E9", L"E" },
+    { "NULL, a", NULL, "a", NULL, L"a" },
+    { "a, NULL", "a", NULL, L"a", NULL },
+    { "NULL, NULL", NULL, NULL, NULL, NULL },
+    { "NULL, empty", NULL, "", NULL, L"" },
+    { NULL, NULL, NULL, NULL, NULL }
+};
+
+/* lstrcmpA (0), lstrcmpW (1), lstrcmpiA (2) or lstrcmpiW (3), under
+   __try: what a NULL argument does is what the NULL pairs observe, and
+   a fault must not stop the fixture on a dialog. */
+static int compare_strings(int which, const str_pair *p, int *faulted)
+{
+    int r = 0;
+
+    *faulted = 0;
+    __try {
+        switch (which) {
+        case 0:
+            r = lstrcmpA(p->a1, p->a2);
+            break;
+        case 1:
+            r = lstrcmpW(p->w1, p->w2);
+            break;
+        case 2:
+            r = lstrcmpiA(p->a1, p->a2);
+            break;
+        default:
+            r = lstrcmpiW(p->w1, p->w2);
+            break;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        *faulted = 1;
+    }
+    return r;
+}
+
+static void sec_lstrcmp(void)
+{
+    static const char *const names[4] = { "lstrcmpA", "lstrcmpW", "lstrcmpiA", "lstrcmpiW" };
+    const str_pair *p;
+    const char *p1;
+    int which, r, faulted;
+
+    SetErrorMode(SEM_NOGPFAULTERRORBOX | SEM_FAILCRITICALERRORS);
+    for (p = str_pairs; p->label != NULL; p++) {
+        for (which = 0; which < 4; which++) {
+            arm();
+            r = compare_strings(which, p, &faulted);
+            p1 = le();
+            if (faulted) {
+                line("%s(%s): faulted", names[which], p->label);
+            } else {
+                /* The sign only: the contract is the sign. */
+                line("%s(%s): %d err=%s", names[which], p->label, r < 0 ? -1 : r > 0 ? 1 : 0, p1);
+            }
+        }
+    }
+}
+
+/* --- threadlocale -------------------------------------------------- */
+
+static void set_thread_locale(const char *label, LCID lcid)
+{
+    const char *p1;
+    BOOL r;
+
+    arm();
+    r = SetThreadLocale(lcid);
+    p1 = le();
+    line("SetThreadLocale(%s): ret=%d err=%s, GetThreadLocale now 0x%04lX", label, r, p1, GetThreadLocale());
+}
+
+static void sec_threadlocale(void)
+{
+    LCID initial;
+    const char *p1;
+
+    arm();
+    initial = GetThreadLocale();
+    p1 = le();
+    line("GetThreadLocale: 0x%04lX err=%s", initial, p1);
+    line("GetUserDefaultLCID: 0x%04lX", GetUserDefaultLCID());
+    set_thread_locale("0x040C, French", 0x040C);
+    line("GetUserDefaultLCID after: 0x%04lX", GetUserDefaultLCID());
+    set_thread_locale("0x12345678, invalid", 0x12345678);
+    set_thread_locale("0", 0);
+    set_thread_locale("LOCALE_USER_DEFAULT", LOCALE_USER_DEFAULT);
+    set_thread_locale("LOCALE_SYSTEM_DEFAULT", LOCALE_SYSTEM_DEFAULT);
+    set_thread_locale("the initial value", initial);
+}
+
+/* --- localtime ----------------------------------------------------- */
+
+/* SetLocalTime on one SYSTEMTIME: the return and the error, never the
+   time itself. The VM account is an administrator; SetLocalTime enables
+   the system-time privilege itself. */
+static void set_local_time(const char *label, const SYSTEMTIME *st)
+{
+    const char *p1;
+    BOOL r;
+
+    arm();
+    r = SetLocalTime(st);
+    p1 = le();
+    line("SetLocalTime(%s): ret=%d err=%s", label, r, p1);
+}
+
+static void sec_localtime(void)
+{
+    SYSTEMTIME now;
+    SYSTEMTIME bad;
+
+    /* The current time set again: harmless (a few milliseconds back). */
+    GetLocalTime(&now);
+    set_local_time("the current time", &now);
+    GetLocalTime(&now);
+    bad = now;
+    bad.wDayOfWeek = 9;
+    set_local_time("the current time, a day of week of 9", &bad);
+    bad = now;
+    bad.wMonth = 13;
+    set_local_time("month 13", &bad);
+    bad = now;
+    bad.wMonth = 0;
+    set_local_time("month 0", &bad);
+    bad = now;
+    bad.wDay = 32;
+    set_local_time("day 32", &bad);
+    bad = now;
+    bad.wMonth = 2;
+    bad.wDay = 30;
+    set_local_time("February 30", &bad);
+    bad = now;
+    bad.wHour = 24;
+    set_local_time("hour 24", &bad);
+    bad = now;
+    bad.wMinute = 60;
+    set_local_time("minute 60", &bad);
+}
+
+/* --- debugbreak ---------------------------------------------------- */
+
+static int break_calls;
+static DWORD break_code;
+static DWORD break_flags;
+static DWORD break_params;
+static DWORD break_address;
+
+static int break_filter(EXCEPTION_POINTERS *ep)
+{
+    EXCEPTION_RECORD *er = ep->ExceptionRecord;
+
+    break_calls++;
+    break_code = er->ExceptionCode;
+    break_flags = er->ExceptionFlags;
+    break_params = er->NumberParameters;
+    break_address = (DWORD)er->ExceptionAddress;
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+
+/* Whether an address lies inside a loaded module's image: between its
+   handle and the handle plus SizeOfImage, from its own headers. */
+static int inside_module(DWORD address, HMODULE h)
+{
+    IMAGE_DOS_HEADER *dos;
+    IMAGE_NT_HEADERS *nt;
+
+    if (h == NULL) {
+        return 0;
+    }
+    dos = (IMAGE_DOS_HEADER *)h;
+    nt = (IMAGE_NT_HEADERS *)((BYTE *)h + dos->e_lfanew);
+    return address >= (DWORD)h && address - (DWORD)h < nt->OptionalHeader.SizeOfImage;
+}
+
+static void sec_debugbreak(void)
+{
+    int handled = 0;
+
+    SetErrorMode(SEM_NOGPFAULTERRORBOX | SEM_FAILCRITICALERRORS);
+    break_calls = 0;
+    break_address = 0;
+    __try {
+        DebugBreak();
+        line("DebugBreak returned");
+    } __except (break_filter(GetExceptionInformation())) {
+        handled = 1;
+    }
+    line("DebugBreak: handled %s, filter calls %d, code 0x%08lX flags %lu params %lu", yesno(handled), break_calls,
+         break_code, break_flags, break_params);
+    line("DebugBreak: exception address inside kernel32 %s, inside ntdll %s, inside the program %s",
+         yesno(inside_module(break_address, GetModuleHandleA("kernel32.dll"))),
+         yesno(inside_module(break_address, GetModuleHandleA("ntdll.dll"))),
+         yesno(inside_module(break_address, GetModuleHandleA(NULL))));
+}
+
 /* --- console (named only) ------------------------------------------ */
 
 static void sec_console(void)
@@ -1672,6 +2012,12 @@ static const section_t sections[] = {
     { "locale", sec_locale, 0 },
     { "crt", sec_crt, 0 },
     { "seh", sec_seh, 0 },
+    { "windir", sec_windir, 0 },
+    { "filetime", sec_filetime, 0 },
+    { "lstrcmp", sec_lstrcmp, 0 },
+    { "threadlocale", sec_threadlocale, 0 },
+    { "localtime", sec_localtime, 0 },
+    { "debugbreak", sec_debugbreak, 0 },
     { "console", sec_console, F2KT_INTERACTIVE },
     { "unhandled", sec_unhandled, 1 },
     { "exit", sec_exit, 1 },

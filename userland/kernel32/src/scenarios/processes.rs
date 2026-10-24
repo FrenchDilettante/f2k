@@ -1,4 +1,4 @@
-//! The processes group's exports: CreateProcessW, a stub until child processes (M2), as cmd.exe
+//! The processes group's exports: CreateProcessW, a stub until child processes exist, as cmd.exe
 //! needs it to load. Its generated body logs the call through DbgPrint, every argument shown by
 //! its kind, and fails as CreateProcessW fails.
 
@@ -38,7 +38,7 @@ fn create_process_is_a_stub_until_child_processes() {
              lpCommandLine=\"hello.exe \\\"an arg\\\"\", lpProcessAttributes=NULL, \
              lpThreadAttributes=NULL, bInheritHandles=TRUE, dwCreationFlags=0x410, \
              lpEnvironment=NULL, lpCurrentDirectory=\"C:\\\\CORPUS\", \
-             lpStartupInfo=0x0012FE00, lpProcessInformation=0x0012FF00): M2: child processes\n"]
+             lpStartupInfo=0x0012FE00, lpProcessInformation=0x0012FF00): not yet implemented\n"]
     );
 }
 

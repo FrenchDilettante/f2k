@@ -2,8 +2,8 @@
 
 Microsoft Windows 2000 [Version 5.00.2195]
 # machine: CLANKER-AC9F3E6, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Sat 10/24/2026 14:14:58.53
-fswrite F2KT-SOURCE-CRC=0x2348447F
+# date: Sat 10/24/2026 15:30:44.27
+fswrite F2KT-SOURCE-CRC=0xE92815BF
 >>> fswrite.exe create
 == create
 CREATE_NEW, new: opened err=0, size now 0
@@ -150,5 +150,41 @@ rename: 0, size under the new name 4
 rename (W): size under the new name 4
 remove: 0
 remove again: -1 errno 2
+fswrite: done
+<<< exit code=0
+>>> fswrite.exe movex
+== movex
+MoveFileExA(X1.TXT, X2.TXT, 0): ret=1 err=-, X1.TXT absent, X2.TXT 5 bytes
+MoveFileExA(X2.TXT, X3.TXT, 0): ret=0 err=183, X2.TXT 5 bytes, X3.TXT 9 bytes
+MoveFileExA(X2.TXT, X3.TXT, REPLACE_EXISTING): ret=1 err=-, X2.TXT absent, X3.TXT 5 bytes
+MoveFileExA(X4.TXT, X5.TXT, COPY_ALLOWED): ret=1 err=-, X4.TXT absent, X5.TXT 12 bytes
+MoveFileExA(X5.TXT, X6.TXT, WRITE_THROUGH): ret=1 err=-, X5.TXT absent, X6.TXT 12 bytes
+MoveFileExA(X6.TXT, X7.TXT, REPLACE_EXISTING | COPY_ALLOWED): ret=1 err=-, X6.TXT absent, X7.TXT 12 bytes
+MoveFileExA(XD1, XD2, 0): ret=1 err=-, XD1 absent, XD2 a directory
+XD2\IN.TXT after the directory moved: 6 bytes
+MoveFileExA(X7.TXT, XD2\X7.TXT, 0): ret=1 err=-, X7.TXT absent, XD2\X7.TXT 12 bytes
+MoveFileExA(NOSUCH.TXT, X8.TXT, 0): ret=0 err=2, NOSUCH.TXT absent, X8.TXT absent
+MoveFileExA(X8.TXT, NULL, 0): ret=0 err=3, X8.TXT 5 bytes
+MoveFileExA(X9.TXT, XD3, REPLACE_EXISTING): ret=0 err=183, X9.TXT 4 bytes, XD3 a directory
+MoveFileExA(X9.TXT, XR.TXT, REPLACE_EXISTING): ret=0 err=183, X9.TXT 4 bytes, XR.TXT 9 bytes, read-only
+left in SCRATCH\: X3.TXT 5 bytes, X8.TXT 5 bytes, X9.TXT 4 bytes, XD2 (directory), XD3 (directory), XR.TXT 9 bytes read-only
+left in SCRATCH\XD2\: IN.TXT 6 bytes, X7.TXT 12 bytes
+left in SCRATCH\XD3\: nothing
+MoveFileExW(X1.TXT, X2.TXT, 0): ret=1 err=-, X1.TXT absent, X2.TXT 5 bytes
+MoveFileExW(X2.TXT, X3.TXT, 0): ret=0 err=183, X2.TXT 5 bytes, X3.TXT 9 bytes
+MoveFileExW(X2.TXT, X3.TXT, REPLACE_EXISTING): ret=1 err=-, X2.TXT absent, X3.TXT 5 bytes
+MoveFileExW(X4.TXT, X5.TXT, COPY_ALLOWED): ret=1 err=-, X4.TXT absent, X5.TXT 12 bytes
+MoveFileExW(X5.TXT, X6.TXT, WRITE_THROUGH): ret=1 err=-, X5.TXT absent, X6.TXT 12 bytes
+MoveFileExW(X6.TXT, X7.TXT, REPLACE_EXISTING | COPY_ALLOWED): ret=1 err=-, X6.TXT absent, X7.TXT 12 bytes
+MoveFileExW(XD1, XD2, 0): ret=1 err=-, XD1 absent, XD2 a directory
+XD2\IN.TXT after the directory moved (W): 6 bytes
+MoveFileExW(X7.TXT, XD2\X7.TXT, 0): ret=1 err=-, X7.TXT absent, XD2\X7.TXT 12 bytes
+MoveFileExW(NOSUCH.TXT, X8.TXT, 0): ret=0 err=2, NOSUCH.TXT absent, X8.TXT absent
+MoveFileExW(X8.TXT, NULL, 0): ret=0 err=3, X8.TXT 5 bytes
+MoveFileExW(X9.TXT, XD3, REPLACE_EXISTING): ret=0 err=183, X9.TXT 4 bytes, XD3 a directory
+MoveFileExW(X9.TXT, XR.TXT, REPLACE_EXISTING): ret=0 err=183, X9.TXT 4 bytes, XR.TXT 9 bytes, read-only
+left in SCRATCH\ (W): X3.TXT 5 bytes, X8.TXT 5 bytes, X9.TXT 4 bytes, XD2 (directory), XD3 (directory), XR.TXT 9 bytes read-only
+left in SCRATCH\XD2\ (W): IN.TXT 6 bytes, X7.TXT 12 bytes
+left in SCRATCH\XD3\ (W): nothing
 fswrite: done
 <<< exit code=0

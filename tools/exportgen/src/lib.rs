@@ -244,10 +244,9 @@ pub enum Implementation {
     Native(String),
     /// Forwarded to another module's export (`NTDLL.RtlUnwind`).
     Forward(String),
-    /// Not written yet: a generated body logs the call, every argument, and the reason (leading
-    /// with the milestone or gap that writes it: `M2: child processes`), then fails as the export
-    /// fails (its `fails` value, the last error ERROR_CALL_NOT_IMPLEMENTED), or raises for an
-    /// export that cannot fail (`never`).
+    /// Not written yet: a generated body logs the call, every argument, and the reason (what is
+    /// missing: `not yet implemented`), then fails as the export fails (its `fails` value, the last
+    /// error ERROR_CALL_NOT_IMPLEMENTED), or raises for an export that cannot fail (`never`).
     Stub(String),
 }
 
@@ -575,7 +574,7 @@ fn read_export(table: &Table, index: usize, groups: &[Group]) -> Result<Export, 
                 "stub" => {
                     if value.trim().is_empty() {
                         return Err(format!(
-                            "{context}: a stub gives its reason (\"M2: child processes\")"
+                            "{context}: a stub gives its reason (\"not yet implemented\")"
                         ));
                     }
                     Implementation::Stub(value.clone())
@@ -989,7 +988,7 @@ ordinal = 0x10
                 "args = []\nimpl = { stub = \"\" }\nfails = \"FALSE\"",
                 "its reason",
             ),
-            ("args = []\nimpl = { stub = \"M2: x\" }", "failure return"),
+            ("args = []\nimpl = { stub = \"not yet implemented\" }", "failure return"),
             (
                 "args = [\"...\", \"u32 x\"]\nimpl = { native = \"x\" }",
                 "come last",
@@ -1008,11 +1007,11 @@ ordinal = 0x10
             .contains("variable arguments"));
         let stub = format!(
             "{SPEC}\n[[export]]\nname = \"Stubbed\"\ngroup = \"termination\"\nargs = [\"strA f\", \"...\"]\n\
-             impl = {{ stub = \"M2: x\" }}\nfails = \"void\"\n"
+             impl = {{ stub = \"not yet implemented\" }}\nfails = \"void\"\n"
         );
         let spec = parse_spec(&stub).unwrap();
         let stubbed = spec.export("Stubbed").unwrap();
-        assert_eq!(stubbed.implementation, Implementation::Stub("M2: x".into()));
+        assert_eq!(stubbed.implementation, Implementation::Stub("not yet implemented".into()));
         assert_eq!(stubbed.arg_bytes(), 4);
         assert_eq!(stubbed.args[1].to_string(), "...");
         assert_eq!(spec.stubs().len(), 1);

@@ -1,0 +1,85 @@
+# F2K capture of winsta (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-AC9F3E6, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Sat 10/24/2026 15:28:15.33
+winsta F2KT-SOURCE-CRC=0xB511859E
+>>> winsta.exe handles
+== handles
+GetProcessWindowStation: non-NULL yes err=-
+GetProcessWindowStation, again: the same handle yes err=-
+GetThreadDesktop(the current thread): non-NULL yes err=-
+GetThreadDesktop(the current thread), again: the same handle yes err=-
+the window station and the desktop handles differ: yes
+GetThreadDesktop(a bogus thread id): NULL yes err=87
+winsta: done
+<<< exit code=0
+>>> winsta.exe objects
+== objects
+GetUserObjectInformationW(the window station, UOI_NAME): ret=1 err=- needed=16 text=WinSta0\0
+GetUserObjectInformationA(the window station, UOI_NAME): ret=1 err=- needed=8 text=WinSta0\0
+GetUserObjectInformationW(the window station, UOI_TYPE): ret=1 err=- needed=28 text=WindowStation\0
+GetUserObjectInformationA(the window station, UOI_TYPE): ret=1 err=- needed=14 text=WindowStation\0
+GetUserObjectInformationW(the window station, UOI_FLAGS): ret=1 err=- needed=12 fInherit=0 fReserved=0 dwFlags=0x1
+GetUserObjectInformationA(the window station, UOI_FLAGS): ret=1 err=- needed=12 fInherit=0 fReserved=0 dwFlags=0x1
+GetUserObjectInformationW(the desktop, UOI_NAME): ret=1 err=- needed=16 text=Default\0
+GetUserObjectInformationA(the desktop, UOI_NAME): ret=1 err=- needed=8 text=Default\0
+GetUserObjectInformationW(the desktop, UOI_TYPE): ret=1 err=- needed=16 text=Desktop\0
+GetUserObjectInformationA(the desktop, UOI_TYPE): ret=1 err=- needed=8 text=Desktop\0
+GetUserObjectInformationW(the desktop, UOI_FLAGS): ret=1 err=- needed=12 fInherit=0 fReserved=0 dwFlags=0x0
+GetUserObjectInformationA(the desktop, UOI_FLAGS): ret=1 err=- needed=12 fInherit=0 fReserved=0 dwFlags=0x0
+winsta: done
+<<< exit code=0
+>>> winsta.exe sizes
+== sizes
+GetUserObjectInformationW(the window station, UOI_NAME, NULL, 0): ret=0 err=122 needed=16
+GetUserObjectInformationA(the window station, UOI_NAME, NULL, 0): ret=0 err=122 needed=16
+GetUserObjectInformationW(the window station, UOI_TYPE, NULL, 0): ret=0 err=122 needed=28
+GetUserObjectInformationA(the window station, UOI_TYPE, NULL, 0): ret=0 err=122 needed=28
+GetUserObjectInformationW(the window station, UOI_FLAGS, NULL, 0): ret=0 err=122 needed=12
+GetUserObjectInformationA(the window station, UOI_FLAGS, NULL, 0): ret=0 err=122 needed=12
+GetUserObjectInformationW(the desktop, UOI_NAME, NULL, 0): ret=0 err=122 needed=16
+GetUserObjectInformationA(the desktop, UOI_NAME, NULL, 0): ret=0 err=122 needed=16
+GetUserObjectInformationW(the desktop, UOI_TYPE, NULL, 0): ret=0 err=122 needed=16
+GetUserObjectInformationA(the desktop, UOI_TYPE, NULL, 0): ret=0 err=122 needed=16
+GetUserObjectInformationW(the desktop, UOI_FLAGS, NULL, 0): ret=0 err=122 needed=12
+GetUserObjectInformationA(the desktop, UOI_FLAGS, NULL, 0): ret=0 err=122 needed=12
+GetUserObjectInformationW(the window station, UOI_NAME, 14 bytes: one character short): ret=0 err=122 needed=16 buffer=<U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC>
+GetUserObjectInformationW(the window station, UOI_NAME, 16 bytes: exactly its size): ret=1 err=- needed=16 buffer=WinSta0\0
+GetUserObjectInformationA(the window station, UOI_NAME, 7 bytes: one character short): ret=0 err=122 needed=16 buffer=\xCC\xCC\xCC\xCC\xCC\xCC\xCC
+GetUserObjectInformationA(the window station, UOI_NAME, 8 bytes: exactly its size): ret=1 err=- needed=8 buffer=WinSta0\0
+GetUserObjectInformationW(the window station, UOI_TYPE, 26 bytes: one character short): ret=0 err=122 needed=28 buffer=<U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC>
+GetUserObjectInformationW(the window station, UOI_TYPE, 28 bytes: exactly its size): ret=1 err=- needed=28 buffer=WindowStation\0
+GetUserObjectInformationA(the window station, UOI_TYPE, 13 bytes: one character short): ret=0 err=122 needed=28 buffer=\xCC\xCC\xCC\xCC\xCC\xCC\xCC\xCC\xCC\xCC\xCC\xCC\xCC
+GetUserObjectInformationA(the window station, UOI_TYPE, 14 bytes: exactly its size): ret=1 err=- needed=14 buffer=WindowStation\0
+GetUserObjectInformationW(the desktop, UOI_NAME, 14 bytes: one character short): ret=0 err=122 needed=16 buffer=<U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC>
+GetUserObjectInformationW(the desktop, UOI_NAME, 16 bytes: exactly its size): ret=1 err=- needed=16 buffer=Default\0
+GetUserObjectInformationA(the desktop, UOI_NAME, 7 bytes: one character short): ret=0 err=122 needed=16 buffer=\xCC\xCC\xCC\xCC\xCC\xCC\xCC
+GetUserObjectInformationA(the desktop, UOI_NAME, 8 bytes: exactly its size): ret=1 err=- needed=8 buffer=Default\0
+GetUserObjectInformationW(the desktop, UOI_TYPE, 14 bytes: one character short): ret=0 err=122 needed=16 buffer=<U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC>
+GetUserObjectInformationW(the desktop, UOI_TYPE, 16 bytes: exactly its size): ret=1 err=- needed=16 buffer=Desktop\0
+GetUserObjectInformationA(the desktop, UOI_TYPE, 7 bytes: one character short): ret=0 err=122 needed=16 buffer=\xCC\xCC\xCC\xCC\xCC\xCC\xCC
+GetUserObjectInformationA(the desktop, UOI_TYPE, 8 bytes: exactly its size): ret=1 err=- needed=8 buffer=Desktop\0
+GetUserObjectInformationW(the window station, UOI_FLAGS, 11 bytes: one byte short): ret=0 err=122 needed=12 buffer untouched: yes
+GetUserObjectInformationA(the window station, UOI_FLAGS, 11 bytes: one byte short): ret=0 err=122 needed=12 buffer untouched: yes
+GetUserObjectInformationW(the desktop, UOI_FLAGS, 11 bytes: one byte short): ret=0 err=122 needed=12 buffer untouched: yes
+GetUserObjectInformationA(the desktop, UOI_FLAGS, 11 bytes: one byte short): ret=0 err=122 needed=12 buffer untouched: yes
+winsta: done
+<<< exit code=0
+>>> winsta.exe errors
+== errors
+GetUserObjectInformationW(the window station, 99): ret=0 err=87 needed=0 buffer untouched: yes
+GetUserObjectInformationA(the window station, 99): ret=0 err=87 needed=0 buffer untouched: yes
+GetUserObjectInformationW(NULL, UOI_NAME): ret=0 err=6 needed=4294967295 buffer untouched: yes
+GetUserObjectInformationA(NULL, UOI_NAME): ret=0 err=6 needed=4294967295 buffer untouched: yes
+GetUserObjectInformationW(a bogus handle, UOI_NAME): ret=0 err=6 needed=4294967295 buffer untouched: yes
+GetUserObjectInformationA(a bogus handle, UOI_NAME): ret=0 err=6 needed=4294967295 buffer untouched: yes
+winsta: done
+<<< exit code=0
+>>> winsta.exe beep
+== beep
+MessageBeep(MB_OK): ret=1 err=-
+MessageBeep(0xFFFFFFFF): ret=1 err=-
+MessageBeep(MB_ICONHAND): ret=1 err=-
+winsta: done
+<<< exit code=0

@@ -2,8 +2,8 @@
 
 Microsoft Windows 2000 [Version 5.00.2195]
 # machine: CLANKER-AC9F3E6, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Sat 10/24/2026  9:32:42.24
-runtime F2KT-SOURCE-CRC=0x527B9C65
+# date: Sat 10/24/2026 15:27:30.08
+runtime F2KT-SOURCE-CRC=0x434DC925
 >>> runtime.exe args one "two words" back\slash "tail\\" x
 == args
 argc: 7
@@ -341,6 +341,187 @@ unwind order: inner try, middle filter (continue search), outer filter, inner fi
 __leave: try, finally
 normal exit: try, finally
 stack overflow: handled yes code 0xC00000FD deeper than 256 frames yes
+runtime: done
+<<< exit code=0
+>>> runtime.exe windir
+== windir
+GetWindowsDirectoryA into MAX_PATH: ret=8 [C:\WINNT] err=-
+GetWindowsDirectoryW into MAX_PATH: ret=8 [C:\WINNT] err=-
+GetWindowsDirectoryA into its length + 1: ret=8 [C:\WINNT] err=-
+GetWindowsDirectoryW into its length + 1: ret=8 [C:\WINNT] err=-
+GetWindowsDirectoryA into its length: ret=9 untouched yes err=-
+GetWindowsDirectoryW into its length: ret=9 untouched yes err=-
+GetWindowsDirectoryA into 1: ret=9 untouched yes err=-
+GetWindowsDirectoryW into 1: ret=9 untouched yes err=-
+GetWindowsDirectoryA into 0: ret=9 untouched yes err=-
+GetWindowsDirectoryW into 0: ret=9 untouched yes err=-
+runtime: done
+<<< exit code=0
+>>> runtime.exe filetime
+== filetime
+CompareFileTime(00000001:00000005, 00000001:00000005) equal: 0 err=-
+CompareFileTime(00000001:00000004, 00000001:00000005) earlier: -1 err=-
+CompareFileTime(00000001:00000006, 00000001:00000005) later: 1 err=-
+CompareFileTime(00000001:00000005, 00000002:00000005) the high dword only, lower: -1 err=-
+CompareFileTime(00000002:00000005, 00000001:00000005) the high dword only, higher: 1 err=-
+CompareFileTime(00000001:FFFFFFFF, 00000002:00000000) the high dword decides over the low: -1 err=-
+CompareFileTime(00000001:80000000, 00000001:7FFFFFFF) the low dword's top bit set, first: 1 err=-
+CompareFileTime(00000001:7FFFFFFF, 00000001:80000000) the low dword's top bit set, second: -1 err=-
+CompareFileTime(80000000:00000000, 7FFFFFFF:00000000) the high dword's top bit set, first: 1 err=-
+CompareFileTime(7FFFFFFF:00000000, 80000000:00000000) the high dword's top bit set, second: -1 err=-
+CompareFileTime(00000000:00000000, FFFFFFFF:FFFFFFFF) zero and the largest: -1 err=-
+CompareFileTime(one FILETIME twice): 0 err=-
+runtime: done
+<<< exit code=0
+>>> runtime.exe lstrcmp
+== lstrcmp
+lstrcmpA(a, a): 0 err=-
+lstrcmpW(a, a): 0 err=-
+lstrcmpiA(a, a): 0 err=-
+lstrcmpiW(a, a): 0 err=-
+lstrcmpA(a, A): -1 err=-
+lstrcmpW(a, A): -1 err=-
+lstrcmpiA(a, A): 0 err=-
+lstrcmpiW(a, A): 0 err=-
+lstrcmpA(A, a): 1 err=-
+lstrcmpW(A, a): 1 err=-
+lstrcmpiA(A, a): 0 err=-
+lstrcmpiW(A, a): 0 err=-
+lstrcmpA(a, B): -1 err=-
+lstrcmpW(a, B): -1 err=-
+lstrcmpiA(a, B): -1 err=-
+lstrcmpiW(a, B): -1 err=-
+lstrcmpA(A, b): -1 err=-
+lstrcmpW(A, b): -1 err=-
+lstrcmpiA(A, b): -1 err=-
+lstrcmpiW(A, b): -1 err=-
+lstrcmpA(abc, ABC): -1 err=-
+lstrcmpW(abc, ABC): -1 err=-
+lstrcmpiA(abc, ABC): 0 err=-
+lstrcmpiW(abc, ABC): 0 err=-
+lstrcmpA(co-op, coop): 1 err=-
+lstrcmpW(co-op, coop): 1 err=-
+lstrcmpiA(co-op, coop): 1 err=-
+lstrcmpiW(co-op, coop): 1 err=-
+lstrcmpA(coop, co-op): -1 err=-
+lstrcmpW(coop, co-op): -1 err=-
+lstrcmpiA(coop, co-op): -1 err=-
+lstrcmpiW(coop, co-op): -1 err=-
+lstrcmpA(co-op, cop): -1 err=-
+lstrcmpW(co-op, cop): -1 err=-
+lstrcmpiA(co-op, cop): -1 err=-
+lstrcmpiW(co-op, cop): -1 err=-
+lstrcmpA(co'op, coop): 1 err=-
+lstrcmpW(co'op, coop): 1 err=-
+lstrcmpiA(co'op, coop): 1 err=-
+lstrcmpiW(co'op, coop): 1 err=-
+lstrcmpA(co'op, co-op): -1 err=-
+lstrcmpW(co'op, co-op): -1 err=-
+lstrcmpiA(co'op, co-op): -1 err=-
+lstrcmpiW(co'op, co-op): -1 err=-
+lstrcmpA(it's, its): 1 err=-
+lstrcmpW(it's, its): 1 err=-
+lstrcmpiA(it's, its): 1 err=-
+lstrcmpiW(it's, its): 1 err=-
+lstrcmpA(it's, itself): -1 err=-
+lstrcmpW(it's, itself): -1 err=-
+lstrcmpiA(it's, itself): -1 err=-
+lstrcmpiW(it's, itself): -1 err=-
+lstrcmpA(ab, abc): -1 err=-
+lstrcmpW(ab, abc): -1 err=-
+lstrcmpiA(ab, abc): -1 err=-
+lstrcmpiW(ab, abc): -1 err=-
+lstrcmpA(abc, ab): 1 err=-
+lstrcmpW(abc, ab): 1 err=-
+lstrcmpiA(abc, ab): 1 err=-
+lstrcmpiW(abc, ab): 1 err=-
+lstrcmpA(empty, a): -1 err=-
+lstrcmpW(empty, a): -1 err=-
+lstrcmpiA(empty, a): -1 err=-
+lstrcmpiW(empty, a): -1 err=-
+lstrcmpA(empty, empty): 0 err=-
+lstrcmpW(empty, empty): 0 err=-
+lstrcmpiA(empty, empty): 0 err=-
+lstrcmpiW(empty, empty): 0 err=-
+lstrcmpA(1, 2): -1 err=-
+lstrcmpW(1, 2): -1 err=-
+lstrcmpiA(1, 2): -1 err=-
+lstrcmpiW(1, 2): -1 err=-
+lstrcmpA(10, 9): -1 err=-
+lstrcmpW(10, 9): -1 err=-
+lstrcmpiA(10, 9): -1 err=-
+lstrcmpiW(10, 9): -1 err=-
+lstrcmpA(a1, a10): -1 err=-
+lstrcmpW(a1, a10): -1 err=-
+lstrcmpiA(a1, a10): -1 err=-
+lstrcmpiW(a1, a10): -1 err=-
+lstrcmpA(a, 1): 1 err=-
+lstrcmpW(a, 1): 1 err=-
+lstrcmpiA(a, 1): 1 err=-
+lstrcmpiW(a, 1): 1 err=-
+lstrcmpA(e acute, e): 1 err=-
+lstrcmpW(e acute, e): 1 err=-
+lstrcmpiA(e acute, e): 1 err=-
+lstrcmpiW(e acute, e): 1 err=-
+lstrcmpA(e acute, f): -1 err=-
+lstrcmpW(e acute, f): -1 err=-
+lstrcmpiA(e acute, f): -1 err=-
+lstrcmpiW(e acute, f): -1 err=-
+lstrcmpA(e acute, E acute): -1 err=-
+lstrcmpW(e acute, E acute): -1 err=-
+lstrcmpiA(e acute, E acute): 0 err=-
+lstrcmpiW(e acute, E acute): 0 err=-
+lstrcmpA(e acute, E): 1 err=-
+lstrcmpW(e acute, E): 1 err=-
+lstrcmpiA(e acute, E): 1 err=-
+lstrcmpiW(e acute, E): 1 err=-
+lstrcmpA(NULL, a): -1 err=87
+lstrcmpW(NULL, a): -1 err=87
+lstrcmpiA(NULL, a): -1 err=87
+lstrcmpiW(NULL, a): -1 err=87
+lstrcmpA(a, NULL): 1 err=87
+lstrcmpW(a, NULL): 1 err=87
+lstrcmpiA(a, NULL): 1 err=87
+lstrcmpiW(a, NULL): 1 err=87
+lstrcmpA(NULL, NULL): 0 err=87
+lstrcmpW(NULL, NULL): 0 err=87
+lstrcmpiA(NULL, NULL): 0 err=87
+lstrcmpiW(NULL, NULL): 0 err=87
+lstrcmpA(NULL, empty): -1 err=87
+lstrcmpW(NULL, empty): -1 err=87
+lstrcmpiA(NULL, empty): -1 err=87
+lstrcmpiW(NULL, empty): -1 err=87
+runtime: done
+<<< exit code=0
+>>> runtime.exe threadlocale
+== threadlocale
+GetThreadLocale: 0x0409 err=-
+GetUserDefaultLCID: 0x0409
+SetThreadLocale(0x040C, French): ret=1 err=-, GetThreadLocale now 0x040C
+GetUserDefaultLCID after: 0x0409
+SetThreadLocale(0x12345678, invalid): ret=0 err=87, GetThreadLocale now 0x040C
+SetThreadLocale(0): ret=1 err=-, GetThreadLocale now 0x0409
+SetThreadLocale(LOCALE_USER_DEFAULT): ret=1 err=-, GetThreadLocale now 0x0409
+SetThreadLocale(LOCALE_SYSTEM_DEFAULT): ret=1 err=-, GetThreadLocale now 0x0409
+SetThreadLocale(the initial value): ret=1 err=-, GetThreadLocale now 0x0409
+runtime: done
+<<< exit code=0
+>>> runtime.exe localtime
+== localtime
+SetLocalTime(the current time): ret=1 err=-
+SetLocalTime(the current time, a day of week of 9): ret=1 err=-
+SetLocalTime(month 13): ret=0 err=87
+SetLocalTime(month 0): ret=0 err=87
+SetLocalTime(day 32): ret=0 err=87
+SetLocalTime(February 30): ret=0 err=87
+SetLocalTime(hour 24): ret=0 err=87
+SetLocalTime(minute 60): ret=0 err=87
+runtime: done
+<<< exit code=0
+>>> runtime.exe debugbreak
+== debugbreak
+DebugBreak: handled yes, filter calls 1, code 0x80000003 flags 0 params 3
+DebugBreak: exception address inside kernel32 no, inside ntdll yes, inside the program no
 runtime: done
 <<< exit code=0
 >>> runtime.exe unhandled

@@ -42,12 +42,27 @@
  *               view granularity, mapping past the end, an empty file,
  *               a write through a read-only view
  *   concurrent  three threads reading the tree at once
+ *   search      SearchPathA over an explicit path (one directory, a
+ *               list, a missing one, a relative one), the extension
+ *               added only to a name without one, relative and absolute
+ *               names, a directory, a missing file; the default search
+ *               (lpPath NULL) from DATA\SUB\DEEP: the current directory,
+ *               the image's directory, kernel32.dll in the system
+ *               directory (relations only); the return with and without
+ *               room (the size needed, terminator included) and
+ *               lpFilePart
+ *   diskfree    GetDiskFreeSpaceExA on the current volume's root, NULL,
+ *               directories with and without a trailing backslash, a
+ *               file, a missing directory, a drive letter with no
+ *               volume: the return, the error and how the sizes relate,
+ *               never the sizes
  *
  * The opens, paths, metadata, listings and mappings run twice: through
  * the A calls, then through their W twins on the same paths (converted
  * through the ANSI code page, as the A calls convert theirs); the W lines
  * carry the W names, or "(W)". The open, find and mapping blocks run whole
- * twice; meta and handles add each W observation after its A one.
+ * twice; meta, handles, search and diskfree add each W observation after
+ * its A one.
  *
  * Build (real Windows 2000 machine, MSVC 6):
  *   cl /nologo files.c
@@ -995,6 +1010,334 @@ static void sec_concurrent(void)
          rs[0].ok ? "ok" : "failed", rs[1].ok ? "ok" : "failed", rs[2].ok ? "ok" : "failed");
 }
 
+/* --- search -------------------------------------------------------- */
+
+static char sysdir[MAX_PATH];       /* GetSystemDirectoryA's answer */
+static WCHAR wsysdir[MAX_PATH];     /* the same, through the ANSI code page */
+
+/* Where a found path lies, as printed: below the image directory, relative
+   to it; a relative path as returned; "elsewhere" for any other (an
+   absolute path outside the image directory is machine-specific). */
+static const char *placed(const char *full)
+{
+    static char bufs[2][2 * MAX_PATH + 40];
+    static int next;
+    char *b = bufs[next++ & 1];
+    size_t n = strlen(base);
+
+    if (_strnicmp(full, base, n) == 0) {
+        sprintf(b, "[%s] under the image directory", full + n);
+    } else if (full[0] != '\\' && full[0] != '/' && (full[0] == 0 || full[1] != ':')) {
+        sprintf(b, "[%s] relative", full);
+    } else {
+        strcpy(b, "elsewhere");
+    }
+    return b;
+}
+
+/* The same, wide (it calls no API). */
+static const char *placed_w(const WCHAR *full)
+{
+    static char bufs[2][2 * MAX_PATH + 40];
+    static int next;
+    char *b = bufs[next++ & 1];
+    size_t n = wcslen(wbase);
+
+    if (_wcsnicmp(full, wbase, n) == 0) {
+        sprintf(b, "[%s] under the image directory", ws(full + n));
+    } else if (full[0] != L'\\' && full[0] != L'/' && (full[0] == 0 || full[1] != L':')) {
+        sprintf(b, "[%s] relative", ws(full));
+    } else {
+        strcpy(b, "elsewhere");
+    }
+    return b;
+}
+
+/* SearchPathA on one input, or (wide) SearchPathW on the same input
+   through the ANSI code page: the return against the result's length,
+   where the result lies, and what lpFilePart points at. */
+static void search_one(int wide, const char *label, const char *path, const char *name, const char *ext)
+{
+    const char *aw = wide ? "W" : "A";
+    char buf[MAX_PATH];
+    WCHAR wbuf[MAX_PATH];
+    char *part = NULL;
+    WCHAR *wpart = NULL;
+    const WCHAR *wpath = NULL;
+    const WCHAR *wname = NULL;
+    const WCHAR *wext = NULL;
+    const char *p1;
+    DWORD n;
+
+    if (wide) {
+        wpath = path != NULL ? widen(path) : NULL;
+        wname = widen(name);
+        wext = ext != NULL ? widen(ext) : NULL;
+    }
+    arm();
+    n = wide ? SearchPathW(wpath, wname, wext, MAX_PATH, wbuf, &wpart)
+             : SearchPathA(path, name, ext, MAX_PATH, buf, &part);
+    p1 = le();
+    if (n == 0 || n >= MAX_PATH) {
+        line("SearchPath%s(%s): ret=%s err=%s", aw, label, n == 0 ? "0" : "MAX_PATH or more", p1);
+        return;
+    }
+    if (wide) {
+        line("SearchPath%s(%s): length matches %s, %s, file part [%s] err=%s", aw, label,
+             yesno(n == wcslen(wbuf)), placed_w(wbuf),
+             wpart >= wbuf && wpart <= wbuf + n ? ws(wpart) : "(outside the buffer)", p1);
+    } else {
+        line("SearchPath%s(%s): length matches %s, %s, file part [%s] err=%s", aw, label,
+             yesno(n == strlen(buf)), placed(buf),
+             part >= buf && part <= buf + n ? part : "(outside the buffer)", p1);
+    }
+}
+
+/* The A observation, then its W twin. */
+static void search(const char *label, const char *path, const char *name, const char *ext)
+{
+    search_one(0, label, path, name, ext);
+    search_one(1, label, path, name, ext);
+}
+
+/* kernel32.dll through the default search (lpPath NULL), A then W: it lies
+   in the system directory, above the image directory, so only relations
+   print: the name it ends with, the directory it lies in, the file part. */
+static void search_system(const char *label, const char *name, const char *ext)
+{
+    char buf[MAX_PATH];
+    WCHAR wbuf[MAX_PATH];
+    char *part = NULL;
+    WCHAR *wpart = NULL;
+    const WCHAR *wname = widen(name);
+    const WCHAR *wext = ext != NULL ? widen(ext) : NULL;
+    const char *p1;
+    DWORD n;
+    size_t sl = strlen(sysdir);
+    size_t wsl = wcslen(wsysdir);
+
+    arm();
+    n = SearchPathA(NULL, name, ext, MAX_PATH, buf, &part);
+    p1 = le();
+    if (n == 0 || n >= MAX_PATH) {
+        line("SearchPathA(NULL, %s): ret=%s err=%s", label, n == 0 ? "0" : "MAX_PATH or more", p1);
+    } else {
+        line("SearchPathA(NULL, %s): length matches %s, ends with \\KERNEL32.DLL %s, directly in the system"
+             " directory %s, file part at the name %s err=%s", label, yesno(n == strlen(buf)),
+             yesno(n >= 13 && _stricmp(buf + n - 13, "\\KERNEL32.DLL") == 0),
+             yesno(sl > 0 && _strnicmp(buf, sysdir, sl) == 0 && buf[sl] == '\\' && strchr(buf + sl + 1, '\\') == NULL),
+             yesno(n >= 12 && part == buf + n - 12), p1);
+    }
+    arm();
+    n = SearchPathW(NULL, wname, wext, MAX_PATH, wbuf, &wpart);
+    p1 = le();
+    if (n == 0 || n >= MAX_PATH) {
+        line("SearchPathW(NULL, %s): ret=%s err=%s", label, n == 0 ? "0" : "MAX_PATH or more", p1);
+    } else {
+        line("SearchPathW(NULL, %s): length matches %s, ends with \\KERNEL32.DLL %s, directly in the system"
+             " directory %s, file part at the name %s err=%s", label, yesno(n == wcslen(wbuf)),
+             yesno(n >= 13 && _wcsicmp(wbuf + n - 13, L"\\KERNEL32.DLL") == 0),
+             yesno(wsl > 0 && _wcsnicmp(wbuf, wsysdir, wsl) == 0 && wbuf[wsl] == L'\\'
+                   && wcschr(wbuf + wsl + 1, L'\\') == NULL),
+             yesno(n >= 12 && wpart == wbuf + n - 12), p1);
+    }
+}
+
+/* A return against `length` (the found path's, in characters, its
+   terminator excluded), as printed: "0", "length", "length+1"... */
+static const char *versus(DWORD n, DWORD length)
+{
+    static char bufs[4][24];
+    static int next;
+    char *b = bufs[next++ & 3];
+
+    if (n == 0) {
+        return "0";
+    }
+    if (n == length) {
+        return "length";
+    }
+    sprintf(b, "length%+ld", (long)n - (long)length);
+    return b;
+}
+
+/* The buffer sizes, through SearchPathA or (wide) SearchPathW: the found
+   path's length first, then the return into exactly that many characters
+   (no room for the terminator), one more, one, and zero with no buffer,
+   and the return with no lpFilePart. */
+static void search_sizes(int wide)
+{
+    const char *aw = wide ? "W" : "A";
+    static const DWORD offsets[] = { 0, 1 };
+    char buf[MAX_PATH];
+    WCHAR wbuf[MAX_PATH];
+    char *part;
+    WCHAR *wpart;
+    const char *path = at("DATA");
+    const WCHAR *wpath = widen(path);
+    DWORD length, n;
+    int i;
+
+    length = wide ? SearchPathW(wpath, L"SMALL.TXT", NULL, MAX_PATH, wbuf, &wpart)
+                  : SearchPathA(path, "SMALL.TXT", NULL, MAX_PATH, buf, &part);
+    line("SearchPath%s(DATA, SMALL.TXT) found: %s", aw, yesno(length != 0 && length < MAX_PATH));
+    if (length == 0 || length >= MAX_PATH) {
+        return;
+    }
+    for (i = 0; i < 2; i++) {
+        arm();
+        n = wide ? SearchPathW(wpath, L"SMALL.TXT", NULL, length + offsets[i], wbuf, &wpart)
+                 : SearchPathA(path, "SMALL.TXT", NULL, length + offsets[i], buf, &part);
+        line("SearchPath%s into length%s characters: ret=%s err=%s", aw, offsets[i] ? "+1" : "",
+             versus(n, length), le());
+    }
+    arm();
+    n = wide ? SearchPathW(wpath, L"SMALL.TXT", NULL, 1, wbuf, &wpart)
+             : SearchPathA(path, "SMALL.TXT", NULL, 1, buf, &part);
+    line("SearchPath%s into 1 character: ret=%s err=%s", aw, versus(n, length), le());
+    arm();
+    n = wide ? SearchPathW(wpath, L"SMALL.TXT", NULL, 0, NULL, NULL)
+             : SearchPathA(path, "SMALL.TXT", NULL, 0, NULL, NULL);
+    line("SearchPath%s into 0, no buffer: ret=%s err=%s", aw, versus(n, length), le());
+    arm();
+    n = wide ? SearchPathW(wpath, L"SMALL.TXT", NULL, MAX_PATH, wbuf, NULL)
+             : SearchPathA(path, "SMALL.TXT", NULL, MAX_PATH, buf, NULL);
+    line("SearchPath%s with no lpFilePart: ret=%s err=%s", aw, versus(n, length), le());
+}
+
+static void sec_search(void)
+{
+    char list[3 * MAX_PATH];
+
+    GetSystemDirectoryA(sysdir, sizeof sysdir);
+    MultiByteToWideChar(CP_ACP, 0, sysdir, -1, wsysdir, MAX_PATH);
+    SetCurrentDirectoryA(base);
+
+    /* An explicit path: one directory, a list, the extension. */
+    search("DATA, SMALL.TXT", at("DATA"), "SMALL.TXT", NULL);
+    search("DATA with a trailing backslash, SMALL.TXT", at("DATA\\"), "SMALL.TXT", NULL);
+    search("DATA, small.txt", at("DATA"), "small.txt", NULL);
+    search("DATA, Long File Name.txt", at("DATA"), "Long File Name.txt", NULL);
+    sprintf(list, "%sDATA\\SUB\\DEEP;%sDATA", base, base);
+    search("DATA\\SUB\\DEEP;DATA, SMALL.TXT (the second has it)", list, "SMALL.TXT", NULL);
+    search("DATA\\SUB\\DEEP;DATA, LEAF.TXT (the first has it)", list, "LEAF.TXT", NULL);
+    sprintf(list, "%sNODIR;%sDATA", base, base);
+    search("NODIR;DATA, SMALL.TXT (a missing directory first)", list, "SMALL.TXT", NULL);
+    search("NODIR, SMALL.TXT (a missing directory)", at("NODIR"), "SMALL.TXT", NULL);
+    search("DATA relative to the current directory, SMALL.TXT", "DATA", "SMALL.TXT", NULL);
+    search("DATA, SMALL + .TXT", at("DATA"), "SMALL", ".TXT");
+    search("DATA, SMALL.TXT + .BIN", at("DATA"), "SMALL.TXT", ".BIN");
+    search("DATA, BIG.BIN + .TXT", at("DATA"), "BIG.BIN", ".TXT");
+    search("DATA, BIG + .TXT", at("DATA"), "BIG", ".TXT");
+    search("DATA, SUB\\DEEP\\LEAF.TXT", at("DATA"), "SUB\\DEEP\\LEAF.TXT", NULL);
+    search("DATA\\SUB, an absolute name", at("DATA\\SUB"), at("DATA\\SMALL.TXT"), NULL);
+    search("DATA, SUB (a directory)", at("DATA"), "SUB", NULL);
+    search("DATA, NOSUCH.TXT", at("DATA"), "NOSUCH.TXT", NULL);
+    search("DATA, an empty name", at("DATA"), "", NULL);
+    search("an empty path, SMALL.TXT", "", "SMALL.TXT", NULL);
+
+    /* The default search (lpPath NULL), from DATA\SUB\DEEP: the current
+       directory, the image's directory, the system directory, then none. */
+    SetCurrentDirectoryA(at("DATA\\SUB\\DEEP"));
+    search("NULL, LEAF.TXT (in the current directory)", NULL, "LEAF.TXT", NULL);
+    search("NULL, files.exe (in the image directory)", NULL, "files.exe", NULL);
+    search("NULL, files + .exe", NULL, "files", ".exe");
+    search("NULL, an absolute name", NULL, at("DATA\\SMALL.TXT"), NULL);
+    search_system("kernel32.dll", "kernel32.dll", NULL);
+    search_system("kernel32 + .dll", "kernel32", ".dll");
+    search("NULL, NOSUCH.F2K (nowhere)", NULL, "NOSUCH.F2K", NULL);
+    SetCurrentDirectoryA(base);
+
+    search_sizes(0);
+    search_sizes(1);
+}
+
+/* --- diskfree ------------------------------------------------------ */
+
+/* GetDiskFreeSpaceExA on one path, or (wide) GetDiskFreeSpaceExW on the
+   same path through the ANSI code page: the return, the error, and how
+   the sizes relate, never the sizes. With no `total_free`, the third
+   pointer is NULL (documented as optional). */
+static void free_space(int wide, const char *label, const char *path, int total_free)
+{
+    const char *aw = wide ? "W" : "A";
+    const WCHAR *wpath = wide && path != NULL ? widen(path) : NULL;
+    ULARGE_INTEGER caller, total, avail;
+    PULARGE_INTEGER availp = total_free ? &avail : NULL;
+    const char *p1;
+    BOOL r;
+
+    caller.QuadPart = 0;
+    total.QuadPart = 0;
+    avail.QuadPart = 0;
+    arm();
+    r = wide ? GetDiskFreeSpaceExW(wpath, &caller, &total, availp)
+             : GetDiskFreeSpaceExA(path, &caller, &total, availp);
+    p1 = le();
+    if (!r) {
+        line("GetDiskFreeSpaceEx%s(%s): ret=%d err=%s", aw, label, r, p1);
+    } else if (!total_free) {
+        line("GetDiskFreeSpaceEx%s(%s): ret=%d err=%s, total nonzero %s, free to caller <= total %s", aw, label,
+             r, p1, yesno(total.QuadPart != 0), yesno(caller.QuadPart <= total.QuadPart));
+    } else {
+        line("GetDiskFreeSpaceEx%s(%s): ret=%d err=%s, total nonzero %s, free to caller <= total %s,"
+             " total free <= total %s, free to caller <= total free %s", aw, label, r, p1,
+             yesno(total.QuadPart != 0), yesno(caller.QuadPart <= total.QuadPart),
+             yesno(avail.QuadPart <= total.QuadPart), yesno(caller.QuadPart <= avail.QuadPart));
+    }
+}
+
+/* The A observation, then its W twin. */
+static void free_spaces(const char *label, const char *path, int total_free)
+{
+    free_space(0, label, path, total_free);
+    free_space(1, label, path, total_free);
+}
+
+static void sec_diskfree(void)
+{
+    char cwd[MAX_PATH];
+    char root[4];
+    char missing[4];
+    DWORD n;
+    int c;
+
+    SetCurrentDirectoryA(base);
+    n = GetCurrentDirectoryA(sizeof cwd, cwd);
+    root[0] = 0;
+    if (n >= 3 && n < sizeof cwd && cwd[1] == ':' && cwd[2] == '\\') {
+        root[0] = cwd[0];
+        root[1] = ':';
+        root[2] = '\\';
+        root[3] = 0;
+    }
+    line("the current directory has a drive letter: %s", yesno(root[0] != 0));
+    /* A drive letter no volume uses on this machine, from Z down. */
+    missing[0] = 0;
+    for (c = 'Z'; c >= 'D' && missing[0] == 0; c--) {
+        missing[0] = (char)c;
+        missing[1] = ':';
+        missing[2] = '\\';
+        missing[3] = 0;
+        if (GetDriveTypeA(missing) != DRIVE_NO_ROOT_DIR) {
+            missing[0] = 0;
+        }
+    }
+    line("a drive letter with no volume: found %s", yesno(missing[0] != 0));
+
+    free_spaces("the current directory's root", root, 1);
+    free_spaces("NULL", NULL, 1);
+    free_spaces("the image directory, its trailing backslash", base, 1);
+    free_spaces("DATA, no trailing backslash", at("DATA"), 1);
+    free_spaces("DATA\\SUB\\", at("DATA\\SUB\\"), 1);
+    free_spaces("DATA\\SUB\\ relative", "DATA\\SUB\\", 1);
+    free_spaces("a file", at("DATA\\SMALL.TXT"), 1);
+    free_spaces("a missing directory", at("NODIR\\"), 1);
+    free_spaces("a drive with no volume", missing, 1);
+    free_spaces("an empty string", "", 1);
+    free_spaces("the root, no total-free pointer", root, 0);
+}
+
 static const section_t sections[] = {
     { "open", sec_open, 0 },
     { "read", sec_read, 0 },
@@ -1005,6 +1348,8 @@ static const section_t sections[] = {
     { "crt", sec_crt, 0 },
     { "mapping", sec_mapping, 0 },
     { "concurrent", sec_concurrent, 0 },
+    { "search", sec_search, 0 },
+    { "diskfree", sec_diskfree, 0 },
     { NULL, NULL, 0 }
 };
 

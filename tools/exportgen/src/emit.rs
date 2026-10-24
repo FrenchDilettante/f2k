@@ -651,9 +651,9 @@ impl = { syscall = "crate::nt::object::close" }
         let text = SPEC.to_string()
             + "\n[[export]]\nname = \"CreateProcessW\"\ngroup = \"termination\"\n\
                args = [\"strW? lpCommandLine\", \"u64 Offset\", \"ptr<u32> Out\"]\n\
-               impl = { stub = \"M2: child processes\" }\nordinal = 77\nfails = \"FALSE\"\n\
+               impl = { stub = \"not yet implemented\" }\nordinal = 77\nfails = \"FALSE\"\n\
                \n[[export]]\nname = \"Trace\"\ngroup = \"termination\"\nargs = [\"strA Format\", \"...\"]\n\
-               impl = { stub = \"M9: tracing\" }\nfails = \"never\"\n";
+               impl = { stub = \"not yet implemented\" }\nfails = \"never\"\n";
         let kernel32 = parse_spec(&text).unwrap();
         let ntdll = parse_spec(NTDLL).unwrap();
         let specs = [("kernel32", &kernel32), ("ntdll", &ntdll)];
@@ -676,7 +676,7 @@ impl = { syscall = "crate::nt::object::close" }
                 "#[unsafe(export_name = \"f2k_export_CreateProcessW\")]\npub unsafe extern \"system\" fn \
                  f2k_stub_CreateProcessW(a0: usize, a1: u64, a2: usize) -> u32 {\n    \
                  // SAFETY: the arguments are the caller's, read as its export's kinds say.\n    \
-                 unsafe { crate::stub::stubbed(&spec::CreateProcessW, \"M2: child processes\", \
+                 unsafe { crate::stub::stubbed(&spec::CreateProcessW, \"not yet implemented\", \
                  &[a0 as u64, a1 as u64, a2 as u64]) }\n}"
             ),
             "{rust}"

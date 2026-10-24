@@ -14,13 +14,18 @@ tests/
 ├── core/       # the kernel's own boots (kernel/), the Limine, input and screen tests
 │               # (test_limine.py, test_input.py, test_screen.py and its screens/), and the
 │               # fixtures exit0, ret0, hello and bare
-├── kernel32/   # runtime, memory, threads, sync, sched, files, fswrite, dll, dllmain
-├── user32/     # hellogui
+├── kernel32/   # runtime, memory, threads, sync, sched, files, fswrite, dll, dllmain, msgtable,
+│               # console
+├── user32/     # hellogui, winsta
+├── advapi32/   # registry
+├── crt/        # msvcrt.dll's: hellomd, crt, seh, fd, wide (built with /MD)
 ├── harness/    # checks of the tests and the repository themselves (no QEMU)
 └── common/     # f2kt.h, srcsum.c: shared by the fixtures' sources
 ```
 
 No fixture calls ntdll directly yet, so there is no `ntdll/` group.
+msvcrt's group is `crt/`: a `tests/msvcrt/` directory would shadow
+Python's `msvcrt` module, which `subprocess` imports to detect Windows.
 Inside its group, each test has its own directory, named after the
 test:
 
@@ -174,6 +179,44 @@ The fixtures:
   writes) in a scratch directory, captured on a local FAT32 volume.
   Gated (the test disk boots as a QEMU snapshot, so its writes never
   reach the image).
+- `msgtable` - `FormatMessageW` and `FormatMessageA` over the
+  program's own message table (`msgtable.mc`, compiled by the message
+  compiler into a resource) and over strings: lookup by id and
+  language, inserts through a `va_list` and an argument array, the
+  escapes, line widths, the caller's buffer and an allocated one.
+- `console` - the console through `CONOUT$` and `CONIN$`, so the
+  capture script takes it: the screen buffer's size and attributes,
+  the input and output modes, `ReadConsoleW`/`ReadConsoleA` over input
+  the program queues itself, the title, and control handlers.
+- `winsta` (user32) - the window station and desktop: their handles,
+  names, types and flags (`GetUserObjectInformation`), and
+  `MessageBeep`.
+- `registry` (advapi32) - keys and values under
+  `HKEY_CURRENT_USER\Software\F2K` only, deleted before and after
+  each section: creating, opening and closing keys, setting and
+  querying values of each type, default values, enumeration and
+  deletion.
+
+The `crt` fixtures (msvcrt.dll's) are built with `/MD`: their C runtime is
+msvcrt.dll's rather than a static copy linked into the program.
+
+- `hellomd` - `hello` built with `/MD` (`hellomd.c` includes
+  `core/hello/hello.c`): msvcrt's startup protocol and `printf`.
+- `crt` - startup and exit: `argv` and `envp` as `__getmainargs`
+  builds them, `_fmode`, `_commode` and `_controlfp`, the
+  initializers `_initterm` runs, and the exit paths (`exit` and its
+  `atexit` handlers, `_exit`, `main`'s return, an unhandled exception).
+- `seh` - structured exception handling compiled against msvcrt's
+  `_except_handler3`: faults, filters, `__finally`, nesting,
+  `RaiseException`, `setjmp`/`longjmp`, and `longjmp` out of `__try`
+  blocks.
+- `fd` - the descriptor layer: `_open_osfhandle`/`_get_osfhandle`,
+  `_dup`/`_dup2`, `_setmode` and `_tell`, the standard streams in
+  `_iob`, `fgets`, and `_getch` over console input the program queues
+  itself.
+- `wide` - the wide string, character-class and conversion functions,
+  `swprintf` and `swscanf`, number parsing, the allocator, `qsort`,
+  `rand`, `setlocale` and `time`.
 
 Capture `files` and `fswrite` from a local FAT32 volume: F2K's boot
 volume is FAT32, and file-system details differ elsewhere — NTFS has
@@ -232,8 +275,8 @@ fixture's data tree beside them), the way each runs from its own
 directory on the real machine. The fixture's declaration,
 `fixture.toml`, states what its comparison allows: `gate = true` once
 F2K passes every block, `[pending]` for the blocks still on the work
-list (each with the increment that enables it: `yield =
-"B7: threads and scheduling"`), both run as
+list (each with its reason: `search = "not yet implemented"`), both
+run as
 strict expected failures (a block that starts passing fails the run, so
 the marker goes with the fix; `--runxfail` shows each failure's first
 differing line), `[masks]` for the few capture lines that carry

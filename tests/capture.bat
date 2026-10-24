@@ -39,7 +39,12 @@ call kernel32\files\setup.bat > nul
 
 call :cap_bare
 call :cap_runtime
-for %%F in (memory threads sync sched files fswrite dll dllmain) do call :listed kernel32 %%F
+for %%F in (memory threads sync sched files fswrite dll dllmain msgtable console) do call :listed kernel32 %%F
+call :listed user32 winsta
+call :listed advapi32 registry
+call :cap_hellomd
+call :cap_crt
+for %%F in (seh fd wide) do call :listed crt %%F
 
 echo Captured. Run "kernel32\runtime\runtime.exe console" in an interactive console
 echo by hand, into kernel32\runtime\overrides.txt.
@@ -50,7 +55,10 @@ rem needs its data tree's attributes first (kernel32\files\setup.bat).
 :one
 set F2KT_DLL=
 for %%F in (bare) do if /I "%%F"=="%~1" set F2KT_DLL=core
-for %%F in (runtime memory threads sync sched files fswrite dll dllmain) do if /I "%%F"=="%~1" set F2KT_DLL=kernel32
+for %%F in (runtime memory threads sync sched files fswrite dll dllmain msgtable console) do if /I "%%F"=="%~1" set F2KT_DLL=kernel32
+for %%F in (winsta) do if /I "%%F"=="%~1" set F2KT_DLL=user32
+for %%F in (registry) do if /I "%%F"=="%~1" set F2KT_DLL=advapi32
+for %%F in (hellomd crt seh fd wide) do if /I "%%F"=="%~1" set F2KT_DLL=crt
 if not defined F2KT_DLL (
     echo capture.bat: no such fixture %~1
     exit /b 1
@@ -62,6 +70,14 @@ if /I "%~1"=="bare" (
 )
 if /I "%~1"=="runtime" (
     call :cap_runtime
+    goto done
+)
+if /I "%~1"=="hellomd" (
+    call :cap_hellomd
+    goto done
+)
+if /I "%~1"=="crt" (
+    call :cap_crt
     goto done
 )
 call :listed %F2KT_DLL% %~1
@@ -85,6 +101,24 @@ call :fixture kernel32 runtime
 >> output.txt 2>&1 runtime.exe args one "two words" back\slash "tail\\" x
 >> output.txt echo ^<^<^< exit code=%ERRORLEVEL%
 call :sections runtime.exe args
+cd ..\..
+goto :eof
+
+rem Capture hellomd: hello built with /MD, no sections and no stamp.
+:cap_hellomd
+call :fixture crt hellomd nostamp
+call :cap hellomd.exe
+cd ..\..
+goto :eof
+
+rem Capture crt: its args block takes its own arguments (__getmainargs'
+rem quoting rules), the rest their list.
+:cap_crt
+call :fixture crt crt
+>> output.txt echo ^>^>^> crt.exe args one "two words" back\slash "tail\\" a\\\"b "q\"uote" "" x"y z"w
+>> output.txt 2>&1 crt.exe args one "two words" back\slash "tail\\" a\\\"b "q\"uote" "" x"y z"w
+>> output.txt echo ^<^<^< exit code=%ERRORLEVEL%
+call :sections crt.exe args
 cd ..\..
 goto :eof
 

@@ -317,11 +317,11 @@ mod tests {
             0x24,
         ];
         assert_eq!(
-            line(&CREATE, "M2: child processes", &args, &ALL),
+            line(&CREATE, "not yet implemented", &args, &ALL),
             "stub kernel32.CreateProcessW(lpApplicationName=NULL, \
              lpCommandLine=\"hello.exe \\\"two words\\\" c:\\\\x \\u{00E9}\", \
              lpProcessAttributes=NULL, bInheritHandles=TRUE, dwCreationFlags=0x10, count=-2, \
-             hFile=0x24): M2: child processes"
+             hFile=0x24): not yet implemented"
         );
     }
 

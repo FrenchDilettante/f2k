@@ -1,0 +1,31 @@
+# winsta: one test per block of the real-machine capture (output.txt); see tests/README.md.
+# Declared ahead of its real-machine build and capture (no winsta.exe, no output.txt yet); on the
+# work list until F2K has user32.
+description = "winsta - the window station and desktop calls cmd.exe imports from user32: GetProcessWindowStation, GetThreadDesktop, GetUserObjectInformation (W and A) with UOI_NAME, UOI_TYPE and UOI_FLAGS, its size queries, short buffers and errors; and MessageBeep."
+kind = "sectioned"
+
+[pins]
+# The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
+# calls); scripts/compat.py derives each export's coverage from them.
+handles = [
+    "user32.GetProcessWindowStation",
+    "user32.GetThreadDesktop",
+    "kernel32.GetCurrentThreadId",
+]
+objects = [
+    "user32.GetUserObjectInformationW",
+    "user32.GetUserObjectInformationA",
+    "user32.GetProcessWindowStation",
+    "user32.GetThreadDesktop",
+]
+sizes = [
+    "user32.GetUserObjectInformationW",
+    "user32.GetUserObjectInformationA",
+    "user32.GetProcessWindowStation",
+    "user32.GetThreadDesktop",
+]
+errors = [
+    "user32.GetUserObjectInformationW",
+    "user32.GetUserObjectInformationA",
+]
+beep = ["user32.MessageBeep"]

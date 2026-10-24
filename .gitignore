@@ -36,6 +36,10 @@ tests/common/srcsum.exe
 # Checked-in test fixtures (the host tests embed them at compile time)
 !kernel/src/fs/fat32/testdata/*.bin
 
+# The scratch directories the write fixtures leave beside their programs on the real machine
+tests/kernel32/fswrite/SCRATCH/
+tests/crt/fd/SCRATCH/
+
 # Logs
 *.log
 

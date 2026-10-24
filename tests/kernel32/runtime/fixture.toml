@@ -7,6 +7,14 @@ gate = true
 # The breakpoint record's second parameter is a stack address.
 seh = ["int 3: handled yes code 0x80000003 flags 0 params 3 info 0 *"]
 
+[pending]
+windir = "not yet implemented"
+filetime = "not yet implemented"
+lstrcmp = "not yet implemented"
+threadlocale = "not yet implemented"
+localtime = "not yet implemented"
+debugbreak = "not yet implemented"
+
 [pins]
 # The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
 # calls); scripts/compat.py derives each export's coverage from them.
@@ -143,3 +151,14 @@ locale = [
     "kernel32.IsValidCodePage",
 ]
 exit = ["ntdll.NtTerminateProcess", "ntdll.LdrShutdownProcess"]
+windir = ["kernel32.GetWindowsDirectoryA", "kernel32.GetWindowsDirectoryW"]
+filetime = ["kernel32.CompareFileTime"]
+lstrcmp = ["kernel32.lstrcmpA", "kernel32.lstrcmpW", "kernel32.lstrcmpiA", "kernel32.lstrcmpiW"]
+threadlocale = ["kernel32.GetThreadLocale", "kernel32.SetThreadLocale", "kernel32.GetUserDefaultLCID"]
+localtime = [
+    "kernel32.GetLocalTime",
+    "kernel32.SetLocalTime",
+    "ntdll.RtlTimeFieldsToTime",
+    "ntdll.NtSetSystemTime",
+]
+debugbreak = ["kernel32.DebugBreak", "ntdll.DbgBreakPoint", "ntdll.KiUserExceptionDispatcher"]

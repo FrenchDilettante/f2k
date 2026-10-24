@@ -1,0 +1,90 @@
+# fd: one test per block of the real-machine capture (output.txt); see tests/README.md. Built with
+# /MD, so it imports the C runtime from msvcrt.dll as cmd.exe does. Works in a SCRATCH directory
+# beside the program, which each section empties first. Declared ahead of its real-machine build
+# and capture (no fd.exe, no output.txt yet).
+description = "fd - msvcrt.dll's descriptor layer and stdio under /MD (fd.c): _open_osfhandle and _get_osfhandle, _dup and _dup2 (fd 1 redirected into a file and restored), _close, _setmode's text and binary modes and _tell, _iob's streams with fprintf, printf and fflush, fgets in text and binary mode, and _getch over queued console key events."
+kind = "sectioned"
+
+[pins]
+# The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
+# calls); scripts/compat.py derives each export's coverage from them.
+"*" = [
+    "msvcrt.__set_app_type",
+    "msvcrt.__p__fmode",
+    "msvcrt.__p__commode",
+    "msvcrt._controlfp",
+    "msvcrt.__setusermatherr",
+    "msvcrt._initterm",
+    "msvcrt.__getmainargs",
+    "msvcrt.__p___initenv",
+    "msvcrt.exit",
+    "msvcrt._vsnprintf",
+    "msvcrt.strcmp",
+    "msvcrt._stricmp",
+]
+osfhandle = [
+    "msvcrt._open_osfhandle",
+    "msvcrt._get_osfhandle",
+    "msvcrt._close",
+    "msvcrt._write",
+    "msvcrt._errno",
+    "kernel32.CreateFileA",
+    "kernel32.GetFileType",
+    "kernel32.GetStdHandle",
+]
+dup = [
+    "msvcrt._dup",
+    "msvcrt._dup2",
+    "msvcrt._open_osfhandle",
+    "msvcrt._get_osfhandle",
+    "msvcrt._write",
+    "msvcrt._tell",
+    "msvcrt._close",
+    "msvcrt.printf",
+    "msvcrt.fflush",
+    "msvcrt._iob",
+    "msvcrt._errno",
+    "kernel32.CreateFileA",
+    "kernel32.ReadFile",
+    "kernel32.GetStdHandle",
+]
+setmode = [
+    "msvcrt._setmode",
+    "msvcrt._open_osfhandle",
+    "msvcrt._write",
+    "msvcrt._tell",
+    "msvcrt._close",
+    "msvcrt._errno",
+    "kernel32.CreateFileA",
+    "kernel32.ReadFile",
+]
+stdio = [
+    "msvcrt._iob",
+    "msvcrt.setvbuf",
+    "msvcrt.fprintf",
+    "msvcrt.printf",
+    "msvcrt.fflush",
+    "msvcrt._open_osfhandle",
+    "msvcrt._fdopen",
+    "msvcrt.fclose",
+    "msvcrt._get_osfhandle",
+    "kernel32.CreateFileA",
+    "kernel32.GetFileSize",
+]
+fgets = [
+    "msvcrt.fgets",
+    "msvcrt._fdopen",
+    "msvcrt.fclose",
+    "msvcrt._open_osfhandle",
+    "msvcrt._get_osfhandle",
+    "kernel32.CreateFileA",
+    "kernel32.WriteFile",
+]
+getch = [
+    "msvcrt._getch",
+    "msvcrt._kbhit",
+    "kernel32.CreateFileA",
+    "kernel32.FlushConsoleInputBuffer",
+    "kernel32.WriteConsoleInputW",
+    "kernel32.CloseHandle",
+]

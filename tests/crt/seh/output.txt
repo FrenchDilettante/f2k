@@ -1,0 +1,77 @@
+# F2K capture of seh (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-AC9F3E6, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Sat 10/24/2026 15:28:15.50
+seh F2KT-SOURCE-CRC=0xD216D4EB
+>>> seh.exe faults
+== faults
+write to NULL: handled yes code 0xC0000005 flags 0 params 2 info 1 0
+write to NULL: GetExceptionCode in the handler 0xC0000005
+read from 0x10: handled yes code 0xC0000005 flags 0 params 2 info 0 10
+integer divide by zero: handled yes code 0xC0000094 flags 0 params 0
+integer divide by zero: GetExceptionCode in the handler 0xC0000094
+int 3: handled yes code 0x80000003 flags 0 params 3
+hlt: handled yes code 0xC0000096 flags 0 params 0
+GetExceptionCode in the filter: 0xC0000005
+seh: done
+<<< exit code=0
+>>> seh.exe filters
+== filters
+execute handler: try, filter (execute handler), handler, after
+continue search, one function: inner filter (continue search), outer filter, outer handler
+VirtualAlloc(PAGE_READONLY): yes
+continue execution after the fix: write, filter, page made writable, write resumed
+continue execution after the fix: filter calls 1, code 0xC0000005, info 1, value 42, handler ran no
+continue execution, continuable: RaiseException returned; filter calls 1, handler ran no
+continue execution, noncontinuable: filter 0xE0000004 flags 1, filter 0xC0000025 flags 1, handler
+continue execution, noncontinuable: filter calls 2, last code 0xC0000025 flags 1, chained 0xE0000004, handler ran yes
+seh: done
+<<< exit code=0
+>>> seh.exe finally
+== finally
+normal exit: try, finally
+__leave: try, finally
+return out of __try: returned 5, try, finally (abnormal)
+unwind through two functions: inner try, outer filter, inner finally (abnormal), middle finally (abnormal), outer handler
+unwind order: inner try, middle filter (continue search), outer filter, inner finally (abnormal), outer handler
+seh: done
+<<< exit code=0
+>>> seh.exe nested
+== nested
+three levels: level 0 try, level 1 try, level 2 try, level 1 filter (continue search), level 0 filter, level 2 finally (abnormal), level 0 handler
+siblings: first filter, first handler, second filter, second handler, third try
+raised in a handler: inner filter, inner handler raises, outer filter, outer handler; the outer filter saw 0xE0000014
+seh: done
+<<< exit code=0
+>>> seh.exe raise
+== raise
+no arguments: handled yes code 0xE0000020 flags 0 params 0
+two arguments: handled yes code 0xE0000021 flags 0 params 2 info 100 101
+fifteen arguments: handled yes code 0xE0000022 flags 0 params 15 info 100 101 102 103 104 105 106 107 108 109 10A 10B 10C 10D 10E
+sixteen arguments: handled yes code 0xE0000023 flags 0 params 15 info 100 101 102 103 104 105 106 107 108 109 10A 10B 10C 10D 10E
+three arguments, a NULL array: handled yes code 0xE0000024 flags 0 params 0
+noncontinuable: handled yes code 0xE0000025 flags 1 params 1 info 100
+code 0xF0000027 (bit 28 set): handled yes code 0xE0000027 flags 0 params 0
+code 0x00000028 (customer bit clear): handled yes code 0x00000028 flags 0 params 0
+seh: done
+<<< exit code=0
+>>> seh.exe setjmp
+== setjmp
+plain: setjmp returned 3
+from nested calls: setjmp returned 7
+value 0: setjmp returned 1
+value -1: setjmp returned -1
+volatile local: setjmp returned 9, marker 2
+reused buffer: 3 jumps, setjmp last returned 13
+seh: done
+<<< exit code=0
+>>> seh.exe sehjmp
+== sehjmp
+out of this function's __try/__finally: setjmp returned 4; try, finally (abnormal), back at setjmp
+through a called function's __finally: setjmp returned 5; try, middle try, middle finally (abnormal), finally (abnormal), back at setjmp
+out of an __except handler: setjmp returned 6; try, filter, handler, back at setjmp
+after the jump, a new __try: next filter, next handler
+from an inner try level to an outer one: setjmp returned 8; inner try, inner finally (abnormal), back at setjmp, outer finally
+seh: done
+<<< exit code=0

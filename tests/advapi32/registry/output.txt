@@ -1,0 +1,350 @@
+# F2K capture of registry (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-AC9F3E6, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Sat 10/24/2026 15:28:15.41
+registry F2KT-SOURCE-CRC=0xC8411B56
+>>> registry.exe create
+== create
+-- the W calls
+RegCreateKeyExW(HKCU, "Software\F2K\one\two\three"), F2K and three levels below it missing: ret=0 err=- result=a handle disposition=REG_CREATED_NEW_KEY
+RegCreateKeyExW(HKCU, "Software\F2K\one\two\three"), again: ret=0 err=- result=a handle disposition=REG_OPENED_EXISTING_KEY
+RegOpenKeyExW(HKCU, "Software\F2K\one\two"), a level the first call created: ret=0 err=- result=a handle
+RegCreateKeyExW(HKCU, "Software\F2K\one"), another level the first call created: ret=0 err=- result=a handle disposition=REG_OPENED_EXISTING_KEY
+RegCreateKeyExW(HKCU, "SOFTWARE\f2k\ONE\Two\four"), the path in other case: ret=0 err=- result=a handle disposition=REG_CREATED_NEW_KEY
+RegCreateKeyExW(one, ""), an empty subkey name: ret=0 err=- result=a handle disposition=REG_OPENED_EXISTING_KEY
+  a new handle: yes
+RegCreateKeyExW(one, "five"), a NULL disposition: ret=0 err=- result=a handle disposition=not asked
+RegCreateKeyExW(one, "\six"), a leading backslash: ret=161 err=- result=NULL disposition=unset
+RegCreateKeyExW(one, "seven\"), a trailing backslash: ret=0 err=- result=a handle disposition=REG_CREATED_NEW_KEY
+RegCreateKeyExW(a bogus handle, "eight"): ret=6 err=- result=NULL disposition=unset
+  subkeys of one: five, seven, two
+  subkeys of one\two: four, three
+the F2K tree deleted: yes
+-- the A calls
+RegCreateKeyExA(HKCU, "Software\F2K\one\two\three"), F2K and three levels below it missing: ret=0 err=- result=a handle disposition=REG_CREATED_NEW_KEY
+RegCreateKeyExA(HKCU, "Software\F2K\one\two\three"), again: ret=0 err=- result=a handle disposition=REG_OPENED_EXISTING_KEY
+RegOpenKeyExA(HKCU, "Software\F2K\one\two"), a level the first call created: ret=0 err=- result=a handle
+RegCreateKeyExA(HKCU, "Software\F2K\one"), another level the first call created: ret=0 err=- result=a handle disposition=REG_OPENED_EXISTING_KEY
+RegCreateKeyExA(HKCU, "SOFTWARE\f2k\ONE\Two\four"), the path in other case: ret=0 err=- result=a handle disposition=REG_CREATED_NEW_KEY
+RegCreateKeyExA(one, ""), an empty subkey name: ret=0 err=- result=a handle disposition=REG_OPENED_EXISTING_KEY
+  a new handle: yes
+RegCreateKeyExA(one, "five"), a NULL disposition: ret=0 err=- result=a handle disposition=not asked
+RegCreateKeyExA(one, "\six"), a leading backslash: ret=161 err=- result=NULL disposition=unset
+RegCreateKeyExA(one, "seven\"), a trailing backslash: ret=0 err=- result=a handle disposition=REG_CREATED_NEW_KEY
+RegCreateKeyExA(a bogus handle, "eight"): ret=6 err=- result=NULL disposition=unset
+  subkeys of one: five, seven, two
+  subkeys of one\two: four, three
+the F2K tree deleted: yes
+registry: done
+<<< exit code=0
+>>> registry.exe open
+== open
+-- the W calls
+RegOpenKeyExW(HKCU, "Software\F2K\Sub"): ret=0 err=- result=a handle
+RegOpenKeyExW(HKCU, "software\f2k\SUB"), in other case: ret=0 err=- result=a handle
+RegOpenKeyExW(F2K, "Sub\Inner"), two levels down: ret=0 err=- result=a handle
+RegOpenKeyExW(F2K, "Missing"), a missing key: ret=2 err=- result=NULL
+RegOpenKeyExW(F2K, "Missing\Inner"), below a missing key: ret=2 err=- result=NULL
+RegOpenKeyExW(F2K, "Sub\Missing"), missing below an existing key: ret=2 err=- result=NULL
+RegOpenKeyExW(F2K, ""), an empty subkey name: ret=0 err=- result=a handle
+  a new handle: yes, to the same key: yes
+RegOpenKeyExW(F2K, NULL), a NULL subkey: ret=0 err=- result=a handle
+  a new handle: yes, to the same key: yes
+RegOpenKeyExW(F2K, "\Sub"), a leading backslash: ret=161 err=- result=NULL
+RegOpenKeyExW(F2K, "Sub\"), a trailing backslash: ret=0 err=- result=a handle
+RegOpenKeyExW(a bogus handle, "Sub"): ret=6 err=- result=NULL
+RegOpenKeyExW(NULL, "Sub"): ret=6 err=- result=unset
+RegOpenKeyExW(F2K, "Sub"), KEY_READ: ret=0 err=- result=a handle
+  RegSetValueExW("v") through it: ret=5 err=-
+RegCreateKeyExW(Sub (KEY_READ), "New"), through it: ret=0 err=- result=a handle disposition=REG_CREATED_NEW_KEY
+RegOpenKeyExW(Sub (KEY_READ), "Inner"), KEY_ALL_ACCESS through it: ret=0 err=- result=a handle
+RegOpenKeyW(F2K, NULL), a NULL subkey: ret=0 err=- result=a handle the same handle: yes
+RegOpenKeyW(F2K, ""), an empty subkey name: ret=0 err=- result=a handle the same handle: yes
+RegOpenKeyW(F2K, "Sub"): ret=0 err=- result=a handle the same handle: no
+RegOpenKeyW(F2K, "Missing"), a missing key: ret=2 err=- result=NULL the same handle: no
+RegOpenKeyW(HKCU, NULL), a NULL subkey: ret=0 err=- result=a handle the same handle: yes
+the F2K tree deleted: yes
+-- the A calls
+RegOpenKeyExA(HKCU, "Software\F2K\Sub"): ret=0 err=- result=a handle
+RegOpenKeyExA(HKCU, "software\f2k\SUB"), in other case: ret=0 err=- result=a handle
+RegOpenKeyExA(F2K, "Sub\Inner"), two levels down: ret=0 err=- result=a handle
+RegOpenKeyExA(F2K, "Missing"), a missing key: ret=2 err=- result=NULL
+RegOpenKeyExA(F2K, "Missing\Inner"), below a missing key: ret=2 err=- result=NULL
+RegOpenKeyExA(F2K, "Sub\Missing"), missing below an existing key: ret=2 err=- result=NULL
+RegOpenKeyExA(F2K, ""), an empty subkey name: ret=0 err=- result=a handle
+  a new handle: yes, to the same key: yes
+RegOpenKeyExA(F2K, NULL), a NULL subkey: ret=0 err=- result=a handle
+  a new handle: yes, to the same key: yes
+RegOpenKeyExA(F2K, "\Sub"), a leading backslash: ret=161 err=- result=NULL
+RegOpenKeyExA(F2K, "Sub\"), a trailing backslash: ret=0 err=- result=a handle
+RegOpenKeyExA(a bogus handle, "Sub"): ret=6 err=- result=NULL
+RegOpenKeyExA(NULL, "Sub"): ret=6 err=- result=unset
+RegOpenKeyExA(F2K, "Sub"), KEY_READ: ret=0 err=- result=a handle
+  RegSetValueExA("v") through it: ret=5 err=-
+RegCreateKeyExA(Sub (KEY_READ), "New"), through it: ret=0 err=- result=a handle disposition=REG_CREATED_NEW_KEY
+RegOpenKeyExA(Sub (KEY_READ), "Inner"), KEY_ALL_ACCESS through it: ret=0 err=- result=a handle
+RegOpenKeyA(F2K, NULL), a NULL subkey: ret=0 err=- result=a handle the same handle: yes
+RegOpenKeyA(F2K, ""), an empty subkey name: ret=0 err=- result=a handle the same handle: yes
+RegOpenKeyA(F2K, "Sub"): ret=0 err=- result=a handle the same handle: no
+RegOpenKeyA(F2K, "Missing"), a missing key: ret=2 err=- result=NULL the same handle: no
+RegOpenKeyA(HKCU, NULL), a NULL subkey: ret=0 err=- result=a handle the same handle: yes
+the F2K tree deleted: yes
+registry: done
+<<< exit code=0
+>>> registry.exe close
+== close
+RegCloseKey, an open key: ret=0 err=-
+RegCloseKey, the same handle again: ret=6 err=-
+RegCloseKey(NULL): ret=6 err=-
+RegCloseKey, a bogus handle: ret=6 err=-
+RegCloseKey(HKEY_CURRENT_USER): ret=0 err=-
+RegOpenKeyExW(HKCU, "Software\F2K\c"), HKCU used again: ret=0 err=- result=a handle
+RegOpenKeyExA(HKCU, "Software\F2K\c"), HKCU used again: ret=0 err=- result=a handle
+the F2K tree deleted: yes
+registry: done
+<<< exit code=0
+>>> registry.exe setvalue
+== setvalue
+-- the W calls
+RegSetValueExW("sz"), REG_SZ, its terminator counted: ret=0 err=-
+  RegQueryValueExW("sz"): ret=0 err=- type=REG_SZ cb=8 data=abc\0 next=CC CC
+RegSetValueExW("noterm"), REG_SZ, its terminator not counted: ret=0 err=-
+  RegQueryValueExW("noterm"): ret=0 err=- type=REG_SZ cb=8 data=abc\0 next=CC CC
+RegSetValueExW("expand"), REG_EXPAND_SZ: ret=0 err=-
+  RegQueryValueExW("expand"): ret=0 err=- type=REG_EXPAND_SZ cb=26 data=%WINDIR%\f2k\0 next=CC CC
+RegSetValueExW("multi"), REG_MULTI_SZ: ret=0 err=-
+  RegQueryValueExW("multi"): ret=0 err=- type=REG_MULTI_SZ cb=18 data=one\0two\0\0 next=CC CC
+RegSetValueExW("dword"), REG_DWORD 0x12345678: ret=0 err=-
+  RegQueryValueExW("dword"): ret=0 err=- type=REG_DWORD cb=4 data=78 56 34 12
+RegSetValueExW("binary"), REG_BINARY: ret=0 err=-
+  RegQueryValueExW("binary"): ret=0 err=- type=REG_BINARY cb=5 data=00 01 FE FF 80
+RegSetValueExW("empty"), REG_BINARY, 0 bytes: ret=0 err=-
+  RegQueryValueExW("empty"): ret=0 err=- type=REG_BINARY cb=0 data=(none)
+RegSetValueExW("emptysz"), REG_SZ, 0 bytes: ret=0 err=-
+  RegQueryValueExW("emptysz"): ret=0 err=- type=REG_SZ cb=0 data=(none) next=CC CC
+RegSetValueExW("over"), REG_SZ: ret=0 err=-
+  RegQueryValueExW("over"): ret=0 err=- type=REG_SZ cb=8 data=abc\0 next=CC CC
+RegSetValueExW("over"), overwritten with a REG_DWORD: ret=0 err=-
+  RegQueryValueExW("over"): ret=0 err=- type=REG_DWORD cb=4 data=78 56 34 12
+RegSetValueExW("over"), back to a longer REG_SZ: ret=0 err=-
+  RegQueryValueExW("over"): ret=0 err=- type=REG_SZ cb=24 data=longer text\0 next=CC CC
+RegSetValueExW(NULL), the default value: ret=0 err=-
+  RegQueryValueExW(NULL): ret=0 err=- type=REG_SZ cb=10 data=dflt\0 next=CC CC
+  RegQueryValueExW(""): ret=0 err=- type=REG_SZ cb=10 data=dflt\0 next=CC CC
+RegSetValueExW(""), the default value: ret=0 err=-
+  RegQueryValueExW(""): ret=0 err=- type=REG_SZ cb=12 data=other\0 next=CC CC
+  RegQueryValueExW(NULL): ret=0 err=- type=REG_SZ cb=12 data=other\0 next=CC CC
+the F2K tree deleted: yes
+-- the A calls
+RegSetValueExA("sz"), REG_SZ, its terminator counted: ret=0 err=-
+  RegQueryValueExA("sz"): ret=0 err=- type=REG_SZ cb=4 data=abc\0 next=63
+RegSetValueExA("noterm"), REG_SZ, its terminator not counted: ret=0 err=-
+  RegQueryValueExA("noterm"): ret=0 err=- type=REG_SZ cb=4 data=abc\0 next=63
+RegSetValueExA("expand"), REG_EXPAND_SZ: ret=0 err=-
+  RegQueryValueExA("expand"): ret=0 err=- type=REG_EXPAND_SZ cb=13 data=%WINDIR%\f2k\0 next=00
+RegSetValueExA("multi"), REG_MULTI_SZ: ret=0 err=-
+  RegQueryValueExA("multi"): ret=0 err=- type=REG_MULTI_SZ cb=9 data=one\0two\0\0 next=00
+RegSetValueExA("dword"), REG_DWORD 0x12345678: ret=0 err=-
+  RegQueryValueExA("dword"): ret=0 err=- type=REG_DWORD cb=4 data=78 56 34 12
+RegSetValueExA("binary"), REG_BINARY: ret=0 err=-
+  RegQueryValueExA("binary"): ret=0 err=- type=REG_BINARY cb=5 data=00 01 FE FF 80
+RegSetValueExA("empty"), REG_BINARY, 0 bytes: ret=0 err=-
+  RegQueryValueExA("empty"): ret=0 err=- type=REG_BINARY cb=0 data=(none)
+RegSetValueExA("emptysz"), REG_SZ, 0 bytes: ret=0 err=-
+  RegQueryValueExA("emptysz"): ret=0 err=- type=REG_SZ cb=0 data=(none) next=CC
+RegSetValueExA("over"), REG_SZ: ret=0 err=-
+  RegQueryValueExA("over"): ret=0 err=- type=REG_SZ cb=4 data=abc\0 next=63
+RegSetValueExA("over"), overwritten with a REG_DWORD: ret=0 err=-
+  RegQueryValueExA("over"): ret=0 err=- type=REG_DWORD cb=4 data=78 56 34 12
+RegSetValueExA("over"), back to a longer REG_SZ: ret=0 err=-
+  RegQueryValueExA("over"): ret=0 err=- type=REG_SZ cb=12 data=longer text\0 next=20
+RegSetValueExA(NULL), the default value: ret=0 err=-
+  RegQueryValueExA(NULL): ret=0 err=- type=REG_SZ cb=5 data=dflt\0 next=00
+  RegQueryValueExA(""): ret=0 err=- type=REG_SZ cb=5 data=dflt\0 next=00
+RegSetValueExA(""), the default value: ret=0 err=-
+  RegQueryValueExA(""): ret=0 err=- type=REG_SZ cb=6 data=other\0 next=65
+  RegQueryValueExA(NULL): ret=0 err=- type=REG_SZ cb=6 data=other\0 next=65
+the F2K tree deleted: yes
+registry: done
+<<< exit code=0
+>>> registry.exe queryvalue
+== queryvalue
+-- the W calls
+value sz: REG_SZ "abc", its terminator counted (8 bytes in the pass's characters)
+RegQueryValueExW("sz"), NULL data: the size alone: ret=0 err=- type=REG_SZ cb=8 no buffer
+RegQueryValueExW("sz"), NULL data and size: ret=0 err=- type=REG_SZ cb=not asked no buffer
+RegQueryValueExW("sz"), a buffer of the data's size: ret=0 err=- type=REG_SZ cb=8 data=abc\0
+RegQueryValueExW("sz"), one byte short: ret=234 err=- type=REG_SZ cb=8 buffer=CC CC CC CC CC CC CC
+RegQueryValueExW("sz"), an empty buffer: ret=234 err=- type=REG_SZ cb=8 buffer=(none)
+RegQueryValueExW("sz"), data with a NULL size: ret=87 err=- type=unset cb=not asked buffer=untouched
+RegQueryValueExW("sz"), a NULL type: ret=0 err=- type=not asked cb=8 data=abc\0
+RegQueryValueExW("SZ"), the name in other case: ret=0 err=- type=REG_SZ cb=8 data=abc\0
+RegQueryValueExW("missing"), a missing value: ret=2 err=- type=4240464 cb=1024 buffer=untouched
+RegQueryValueExW("missing"), a missing value, NULL data: ret=2 err=- type=REG_NONE cb=0 no buffer
+RegQueryValueExW("dw"), a REG_DWORD into 4 bytes: ret=0 err=- type=REG_DWORD cb=4 data=78 56 34 12
+RegQueryValueExW("dw"), a REG_DWORD into 3 bytes: ret=234 err=- type=REG_DWORD cb=4 buffer=CC CC CC
+the F2K tree deleted: yes
+-- the A calls
+value sz: REG_SZ "abc", its terminator counted (4 bytes in the pass's characters)
+RegQueryValueExA("sz"), NULL data: the size alone: ret=0 err=- type=REG_SZ cb=4 no buffer
+RegQueryValueExA("sz"), NULL data and size: ret=0 err=- type=REG_SZ cb=not asked no buffer
+RegQueryValueExA("sz"), a buffer of the data's size: ret=0 err=- type=REG_SZ cb=4 data=abc\0
+RegQueryValueExA("sz"), one byte short: ret=234 err=- type=REG_SZ cb=4 buffer=CC CC CC
+RegQueryValueExA("sz"), an empty buffer: ret=234 err=- type=REG_SZ cb=4 buffer=(none)
+RegQueryValueExA("sz"), data with a NULL size: ret=87 err=- type=unset cb=not asked buffer=untouched
+RegQueryValueExA("sz"), a NULL type: ret=0 err=- type=not asked cb=4 data=abc\0
+RegQueryValueExA("SZ"), the name in other case: ret=0 err=- type=REG_SZ cb=4 data=abc\0
+RegQueryValueExA("missing"), a missing value: ret=2 err=- type=968 cb=1024 buffer=untouched
+RegQueryValueExA("missing"), a missing value, NULL data: ret=2 err=- type=968 cb=0 no buffer
+RegQueryValueExA("dw"), a REG_DWORD into 4 bytes: ret=0 err=- type=REG_DWORD cb=4 data=78 56 34 12
+RegQueryValueExA("dw"), a REG_DWORD into 3 bytes: ret=234 err=- type=REG_DWORD cb=4 buffer=CC CC CC
+the F2K tree deleted: yes
+registry: done
+<<< exit code=0
+>>> registry.exe default
+== default
+-- the W calls
+RegSetValueW(F2K, "sv", REG_SZ, "hello"), a missing subkey: ret=0 err=-
+  subkey sv exists: yes
+RegQueryValueW(F2K, "sv"): ret=0 err=- cb=12 data=hello\0
+RegQueryValueW(F2K, "sv"), NULL data: the size alone: ret=0 err=- cb=12 no buffer
+RegQueryValueW(F2K, "sv"), a buffer of the data's size: ret=0 err=- cb=12 data=hello\0
+RegQueryValueW(F2K, "sv"), one byte short: ret=234 err=- cb=12 buffer=CC CC CC CC CC CC CC CC CC CC CC
+  RegQueryValueExW(NULL): ret=0 err=- type=REG_SZ cb=12 data=hello\0 next=CC CC
+RegSetValueW(F2K, "deep\er\est", REG_SZ, "deeper"), three levels missing: ret=0 err=-
+RegQueryValueW(F2K, "deep\er\est"): ret=0 err=- cb=14 data=deeper\0
+RegSetValueW(F2K, NULL, REG_SZ, "mine"), a NULL subkey: ret=0 err=-
+RegQueryValueW(F2K, NULL), a NULL subkey: ret=0 err=- cb=10 data=mine\0
+RegQueryValueW(F2K, ""), an empty subkey name: ret=0 err=- cb=10 data=mine\0
+  RegQueryValueExW(NULL): ret=0 err=- type=REG_SZ cb=10 data=mine\0 next=CC CC
+RegSetValueW(F2K, "sv", REG_DWORD, "x"), a type other than REG_SZ: ret=87 err=-
+RegQueryValueW(F2K, "sv"), after: ret=0 err=- cb=12 data=hello\0
+RegSetValueW(F2K, "sv", REG_EXPAND_SZ, "y"), a type other than REG_SZ: ret=87 err=-
+RegQueryValueW(F2K, "sv"), after: ret=0 err=- cb=12 data=hello\0
+RegQueryValueW(F2K, "nodef"), a subkey with no default value, NULL data: ret=0 err=- cb=2 no buffer
+RegQueryValueW(F2K, "nodef"), a subkey with no default value: ret=0 err=- cb=2 data=\0
+RegQueryValueW(F2K, "missing"), a missing subkey: ret=2 err=- cb=1024 buffer=untouched
+RegQueryValueW(F2K, "dw"), a default value of REG_DWORD: ret=13 err=- cb=4 buffer=written
+the F2K tree deleted: yes
+-- the A calls
+RegSetValueA(F2K, "sv", REG_SZ, "hello"), a missing subkey: ret=0 err=-
+  subkey sv exists: yes
+RegQueryValueA(F2K, "sv"): ret=0 err=- cb=6 data=hello\0
+RegQueryValueA(F2K, "sv"), NULL data: the size alone: ret=0 err=- cb=6 no buffer
+RegQueryValueA(F2K, "sv"), a buffer of the data's size: ret=0 err=- cb=6 data=hello\0
+RegQueryValueA(F2K, "sv"), one byte short: ret=234 err=- cb=6 buffer=CC CC CC CC CC
+  RegQueryValueExA(NULL): ret=0 err=- type=REG_SZ cb=6 data=hello\0 next=6C
+RegSetValueA(F2K, "deep\er\est", REG_SZ, "deeper"), three levels missing: ret=0 err=-
+RegQueryValueA(F2K, "deep\er\est"): ret=0 err=- cb=7 data=deeper\0
+RegSetValueA(F2K, NULL, REG_SZ, "mine"), a NULL subkey: ret=0 err=-
+RegQueryValueA(F2K, NULL), a NULL subkey: ret=0 err=- cb=5 data=mine\0
+RegQueryValueA(F2K, ""), an empty subkey name: ret=0 err=- cb=5 data=mine\0
+  RegQueryValueExA(NULL): ret=0 err=- type=REG_SZ cb=5 data=mine\0 next=00
+RegSetValueA(F2K, "sv", REG_DWORD, "x"), a type other than REG_SZ: ret=87 err=-
+RegQueryValueA(F2K, "sv"), after: ret=0 err=- cb=6 data=hello\0
+RegSetValueA(F2K, "sv", REG_EXPAND_SZ, "y"), a type other than REG_SZ: ret=87 err=-
+RegQueryValueA(F2K, "sv"), after: ret=0 err=- cb=6 data=hello\0
+RegQueryValueA(F2K, "nodef"), a subkey with no default value, NULL data: ret=0 err=- cb=1 no buffer
+RegQueryValueA(F2K, "nodef"), a subkey with no default value: ret=0 err=- cb=1 data=\0
+RegQueryValueA(F2K, "missing"), a missing subkey: ret=2 err=- cb=1024 buffer=untouched
+RegQueryValueA(F2K, "dw"), a default value of REG_DWORD: ret=13 err=- cb=4 buffer=written
+the F2K tree deleted: yes
+registry: done
+<<< exit code=0
+>>> registry.exe enum
+== enum
+-- the W calls
+subkeys created in the order delta, Alpha, charlie, bravo, Echo; Alpha\child below Alpha
+RegEnumKeyW(F2K, 0, 256 units): ret=0 err=- name=Alpha
+RegEnumKeyW(F2K, 1, 256 units): ret=0 err=- name=bravo
+RegEnumKeyW(F2K, 2, 256 units): ret=0 err=- name=charlie
+RegEnumKeyW(F2K, 3, 256 units): ret=0 err=- name=delta
+RegEnumKeyW(F2K, 4, 256 units): ret=0 err=- name=Echo
+RegEnumKeyW(F2K, 5, 256 units): ret=259 err=- buffer=untouched
+RegEnumKeyW(F2K, 50, 256 units), far past the end: ret=259 err=- buffer=untouched
+RegEnumKeyW(F2K, 0, 0 units), a 0-unit buffer: ret=234 err=- buffer=(none)
+RegEnumKeyW(F2K, 0, 3 units), 3 units: ret=234 err=- buffer=<U+CCCC><U+CCCC><U+CCCC>
+RegEnumKeyW(F2K, 0, 5 units), room for the name, not its terminator: ret=234 err=- buffer=<U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC>
+RegEnumKeyW(F2K, 0, 6 units), room for the name and its terminator: ret=0 err=- name=Alpha
+RegEnumKeyW(child, 0, 256 units), a key with no subkeys: ret=259 err=- buffer=untouched
+charlie deleted
+RegEnumKeyW(F2K, 0, 256 units): ret=0 err=- name=Alpha
+RegEnumKeyW(F2K, 1, 256 units): ret=0 err=- name=bravo
+RegEnumKeyW(F2K, 2, 256 units): ret=0 err=- name=delta
+RegEnumKeyW(F2K, 3, 256 units): ret=0 err=- name=Echo
+RegEnumKeyW(F2K, 4, 256 units): ret=259 err=- buffer=untouched
+the F2K tree deleted: yes
+-- the A calls
+subkeys created in the order delta, Alpha, charlie, bravo, Echo; Alpha\child below Alpha
+RegEnumKeyA(F2K, 0, 256 units): ret=0 err=- name=Alpha
+RegEnumKeyA(F2K, 1, 256 units): ret=0 err=- name=bravo
+RegEnumKeyA(F2K, 2, 256 units): ret=0 err=- name=charlie
+RegEnumKeyA(F2K, 3, 256 units): ret=0 err=- name=delta
+RegEnumKeyA(F2K, 4, 256 units): ret=0 err=- name=Echo
+RegEnumKeyA(F2K, 5, 256 units): ret=259 err=- buffer=untouched
+RegEnumKeyA(F2K, 50, 256 units), far past the end: ret=259 err=- buffer=untouched
+RegEnumKeyA(F2K, 0, 0 units), a 0-unit buffer: ret=234 err=- buffer=(none)
+RegEnumKeyA(F2K, 0, 3 units), 3 units: ret=234 err=- buffer=Al\0
+RegEnumKeyA(F2K, 0, 5 units), room for the name, not its terminator: ret=234 err=- buffer=Alph\0
+RegEnumKeyA(F2K, 0, 6 units), room for the name and its terminator: ret=0 err=- name=Alpha
+RegEnumKeyA(child, 0, 256 units), a key with no subkeys: ret=259 err=- buffer=untouched
+charlie deleted
+RegEnumKeyA(F2K, 0, 256 units): ret=0 err=- name=Alpha
+RegEnumKeyA(F2K, 1, 256 units): ret=0 err=- name=bravo
+RegEnumKeyA(F2K, 2, 256 units): ret=0 err=- name=delta
+RegEnumKeyA(F2K, 3, 256 units): ret=0 err=- name=Echo
+RegEnumKeyA(F2K, 4, 256 units): ret=259 err=- buffer=untouched
+the F2K tree deleted: yes
+registry: done
+<<< exit code=0
+>>> registry.exe delete
+== delete
+-- the W calls
+RegDeleteKeyW(F2K, "a"), a key with a subkey: ret=5 err=-
+  a exists: yes
+RegDeleteKeyW(F2K, "a\b\c"), a leaf two levels down: ret=0 err=-
+  a\b exists: yes, a\b\c exists: no
+RegDeleteKeyW(F2K, "a\b"), the level emptied above it: ret=0 err=-
+RegDeleteKeyW(F2K, "a"), the next level up: ret=0 err=-
+  a exists: no
+RegDeleteKeyW(F2K, "LEAF"), a leaf, named in other case: ret=0 err=-
+RegDeleteKeyW(F2K, "Leaf"), again: ret=2 err=-
+RegDeleteKeyW(F2K, "missing\x"), below a missing key: ret=2 err=-
+RegDeleteKeyW(a bogus handle, "gone"): ret=6 err=-
+gone: a handle to it open
+RegDeleteKeyW(F2K, "gone"), a key open through another handle: ret=0 err=-
+RegQueryValueExW("x"), through the deleted key's handle: ret=1018 err=- type=4240464 cb=1024 buffer=untouched
+RegSetValueExW("x"), through the deleted key's handle: ret=1018 err=-
+RegCreateKeyExW(gone (deleted), "child"), through the deleted key's handle: ret=1018 err=- result=NULL disposition=unset
+RegEnumKeyW(gone (deleted), 0, 256 units), through the deleted key's handle: ret=1018 err=- buffer=untouched
+RegOpenKeyExW(F2K, "gone"), after its delete: ret=2 err=- result=NULL
+RegCreateKeyExW(F2K, "gone"), the name created anew: ret=0 err=- result=a handle disposition=REG_CREATED_NEW_KEY
+RegQueryValueExW("x"), the old handle, the name created anew with a value x: ret=1018 err=- type=4240464 cb=1024 buffer=untouched
+RegCloseKey, the deleted key's handle: ret=0 err=-
+the F2K tree deleted: yes
+-- the A calls
+RegDeleteKeyA(F2K, "a"), a key with a subkey: ret=5 err=-
+  a exists: yes
+RegDeleteKeyA(F2K, "a\b\c"), a leaf two levels down: ret=0 err=-
+  a\b exists: yes, a\b\c exists: no
+RegDeleteKeyA(F2K, "a\b"), the level emptied above it: ret=0 err=-
+RegDeleteKeyA(F2K, "a"), the next level up: ret=0 err=-
+  a exists: no
+RegDeleteKeyA(F2K, "LEAF"), a leaf, named in other case: ret=0 err=-
+RegDeleteKeyA(F2K, "Leaf"), again: ret=2 err=-
+RegDeleteKeyA(F2K, "missing\x"), below a missing key: ret=2 err=-
+RegDeleteKeyA(a bogus handle, "gone"): ret=6 err=-
+gone: a handle to it open
+RegDeleteKeyA(F2K, "gone"), a key open through another handle: ret=0 err=-
+RegQueryValueExA("x"), through the deleted key's handle: ret=1018 err=- type=964 cb=1024 buffer=untouched
+RegSetValueExA("x"), through the deleted key's handle: ret=1018 err=-
+RegCreateKeyExA(gone (deleted), "child"), through the deleted key's handle: ret=1018 err=- result=NULL disposition=unset
+RegEnumKeyA(gone (deleted), 0, 256 units), through the deleted key's handle: ret=1018 err=- buffer=untouched
+RegOpenKeyExA(F2K, "gone"), after its delete: ret=2 err=- result=NULL
+RegCreateKeyExA(F2K, "gone"), the name created anew: ret=0 err=- result=a handle disposition=REG_CREATED_NEW_KEY
+RegQueryValueExA("x"), the old handle, the name created anew with a value x: ret=1018 err=- type=964 cb=1024 buffer=untouched
+RegCloseKey, the deleted key's handle: ret=0 err=-
+the F2K tree deleted: yes
+registry: done
+<<< exit code=0

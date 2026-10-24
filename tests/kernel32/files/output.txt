@@ -2,8 +2,8 @@
 
 Microsoft Windows 2000 [Version 5.00.2195]
 # machine: CLANKER-AC9F3E6, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Sat 10/24/2026 14:15:05.83
-files F2KT-SOURCE-CRC=0xFA27B3C6
+# date: Sat 10/24/2026 15:30:38.00
+files F2KT-SOURCE-CRC=0x16A4A363
 >>> files.exe open
 == open
 DATA\SMALL.TXT: opened err=0
@@ -348,5 +348,101 @@ files: done
 >>> files.exe concurrent
 == concurrent
 three threads reading BIG.BIN at once (512 x1, 4093 x2, 8192 x3): ok ok ok
+files: done
+<<< exit code=0
+>>> files.exe search
+== search
+SearchPathA(DATA, SMALL.TXT): length matches yes, [DATA\SMALL.TXT] under the image directory, file part [SMALL.TXT] err=-
+SearchPathW(DATA, SMALL.TXT): length matches yes, [DATA\SMALL.TXT] under the image directory, file part [SMALL.TXT] err=-
+SearchPathA(DATA with a trailing backslash, SMALL.TXT): length matches yes, [DATA\SMALL.TXT] under the image directory, file part [SMALL.TXT] err=-
+SearchPathW(DATA with a trailing backslash, SMALL.TXT): length matches yes, [DATA\SMALL.TXT] under the image directory, file part [SMALL.TXT] err=-
+SearchPathA(DATA, small.txt): length matches yes, [DATA\small.txt] under the image directory, file part [small.txt] err=-
+SearchPathW(DATA, small.txt): length matches yes, [DATA\small.txt] under the image directory, file part [small.txt] err=-
+SearchPathA(DATA, Long File Name.txt): length matches yes, [DATA\Long File Name.txt] under the image directory, file part [Long File Name.txt] err=-
+SearchPathW(DATA, Long File Name.txt): length matches yes, [DATA\Long File Name.txt] under the image directory, file part [Long File Name.txt] err=-
+SearchPathA(DATA\SUB\DEEP;DATA, SMALL.TXT (the second has it)): length matches yes, [DATA\SMALL.TXT] under the image directory, file part [SMALL.TXT] err=-
+SearchPathW(DATA\SUB\DEEP;DATA, SMALL.TXT (the second has it)): length matches yes, [DATA\SMALL.TXT] under the image directory, file part [SMALL.TXT] err=-
+SearchPathA(DATA\SUB\DEEP;DATA, LEAF.TXT (the first has it)): length matches yes, [DATA\SUB\DEEP\LEAF.TXT] under the image directory, file part [LEAF.TXT] err=-
+SearchPathW(DATA\SUB\DEEP;DATA, LEAF.TXT (the first has it)): length matches yes, [DATA\SUB\DEEP\LEAF.TXT] under the image directory, file part [LEAF.TXT] err=-
+SearchPathA(NODIR;DATA, SMALL.TXT (a missing directory first)): length matches yes, [DATA\SMALL.TXT] under the image directory, file part [SMALL.TXT] err=-
+SearchPathW(NODIR;DATA, SMALL.TXT (a missing directory first)): length matches yes, [DATA\SMALL.TXT] under the image directory, file part [SMALL.TXT] err=-
+SearchPathA(NODIR, SMALL.TXT (a missing directory)): ret=0 err=2
+SearchPathW(NODIR, SMALL.TXT (a missing directory)): ret=0 err=2
+SearchPathA(DATA relative to the current directory, SMALL.TXT): length matches yes, [DATA\SMALL.TXT] under the image directory, file part [SMALL.TXT] err=-
+SearchPathW(DATA relative to the current directory, SMALL.TXT): length matches yes, [DATA\SMALL.TXT] under the image directory, file part [SMALL.TXT] err=-
+SearchPathA(DATA, SMALL + .TXT): length matches yes, [DATA\SMALL.TXT] under the image directory, file part [SMALL.TXT] err=-
+SearchPathW(DATA, SMALL + .TXT): length matches yes, [DATA\SMALL.TXT] under the image directory, file part [SMALL.TXT] err=-
+SearchPathA(DATA, SMALL.TXT + .BIN): length matches yes, [DATA\SMALL.TXT] under the image directory, file part [SMALL.TXT] err=-
+SearchPathW(DATA, SMALL.TXT + .BIN): length matches yes, [DATA\SMALL.TXT] under the image directory, file part [SMALL.TXT] err=-
+SearchPathA(DATA, BIG.BIN + .TXT): length matches yes, [DATA\BIG.BIN] under the image directory, file part [BIG.BIN] err=-
+SearchPathW(DATA, BIG.BIN + .TXT): length matches yes, [DATA\BIG.BIN] under the image directory, file part [BIG.BIN] err=-
+SearchPathA(DATA, BIG + .TXT): ret=0 err=2
+SearchPathW(DATA, BIG + .TXT): ret=0 err=2
+SearchPathA(DATA, SUB\DEEP\LEAF.TXT): length matches yes, [DATA\SUB\DEEP\LEAF.TXT] under the image directory, file part [LEAF.TXT] err=-
+SearchPathW(DATA, SUB\DEEP\LEAF.TXT): length matches yes, [DATA\SUB\DEEP\LEAF.TXT] under the image directory, file part [LEAF.TXT] err=-
+SearchPathA(DATA\SUB, an absolute name): length matches yes, [DATA\SMALL.TXT] under the image directory, file part [SMALL.TXT] err=-
+SearchPathW(DATA\SUB, an absolute name): length matches yes, [DATA\SMALL.TXT] under the image directory, file part [SMALL.TXT] err=-
+SearchPathA(DATA, SUB (a directory)): length matches yes, [DATA\SUB] under the image directory, file part [SUB] err=-
+SearchPathW(DATA, SUB (a directory)): length matches yes, [DATA\SUB] under the image directory, file part [SUB] err=-
+SearchPathA(DATA, NOSUCH.TXT): ret=0 err=2
+SearchPathW(DATA, NOSUCH.TXT): ret=0 err=2
+SearchPathA(DATA, an empty name): ret=0 err=87
+SearchPathW(DATA, an empty name): ret=0 err=87
+SearchPathA(an empty path, SMALL.TXT): ret=0 err=2
+SearchPathW(an empty path, SMALL.TXT): ret=0 err=2
+SearchPathA(NULL, LEAF.TXT (in the current directory)): length matches yes, [DATA\SUB\DEEP\LEAF.TXT] under the image directory, file part [LEAF.TXT] err=-
+SearchPathW(NULL, LEAF.TXT (in the current directory)): length matches yes, [DATA\SUB\DEEP\LEAF.TXT] under the image directory, file part [LEAF.TXT] err=-
+SearchPathA(NULL, files.exe (in the image directory)): length matches yes, [files.exe] under the image directory, file part [files.exe] err=-
+SearchPathW(NULL, files.exe (in the image directory)): length matches yes, [files.exe] under the image directory, file part [files.exe] err=-
+SearchPathA(NULL, files + .exe): length matches yes, [files.exe] under the image directory, file part [files.exe] err=-
+SearchPathW(NULL, files + .exe): length matches yes, [files.exe] under the image directory, file part [files.exe] err=-
+SearchPathA(NULL, an absolute name): length matches yes, [DATA\SMALL.TXT] under the image directory, file part [SMALL.TXT] err=-
+SearchPathW(NULL, an absolute name): length matches yes, [DATA\SMALL.TXT] under the image directory, file part [SMALL.TXT] err=-
+SearchPathA(NULL, kernel32.dll): length matches yes, ends with \KERNEL32.DLL yes, directly in the system directory yes, file part at the name yes err=-
+SearchPathW(NULL, kernel32.dll): length matches yes, ends with \KERNEL32.DLL yes, directly in the system directory yes, file part at the name yes err=-
+SearchPathA(NULL, kernel32 + .dll): length matches yes, ends with \KERNEL32.DLL yes, directly in the system directory yes, file part at the name yes err=-
+SearchPathW(NULL, kernel32 + .dll): length matches yes, ends with \KERNEL32.DLL yes, directly in the system directory yes, file part at the name yes err=-
+SearchPathA(NULL, NOSUCH.F2K (nowhere)): ret=0 err=2
+SearchPathW(NULL, NOSUCH.F2K (nowhere)): ret=0 err=2
+SearchPathA(DATA, SMALL.TXT) found: yes
+SearchPathA into length characters: ret=length+1 err=-
+SearchPathA into length+1 characters: ret=length err=-
+SearchPathA into 1 character: ret=length+1 err=-
+SearchPathA into 0, no buffer: ret=length+1 err=-
+SearchPathA with no lpFilePart: ret=length err=-
+SearchPathW(DATA, SMALL.TXT) found: yes
+SearchPathW into length characters: ret=length+1 err=-
+SearchPathW into length+1 characters: ret=length err=-
+SearchPathW into 1 character: ret=length+1 err=-
+SearchPathW into 0, no buffer: ret=length+1 err=-
+SearchPathW with no lpFilePart: ret=length err=-
+files: done
+<<< exit code=0
+>>> files.exe diskfree
+== diskfree
+the current directory has a drive letter: yes
+a drive letter with no volume: found yes
+GetDiskFreeSpaceExA(the current directory's root): ret=1 err=-, total nonzero yes, free to caller <= total yes, total free <= total yes, free to caller <= total free yes
+GetDiskFreeSpaceExW(the current directory's root): ret=1 err=-, total nonzero yes, free to caller <= total yes, total free <= total yes, free to caller <= total free yes
+GetDiskFreeSpaceExA(NULL): ret=1 err=-, total nonzero yes, free to caller <= total yes, total free <= total yes, free to caller <= total free yes
+GetDiskFreeSpaceExW(NULL): ret=1 err=-, total nonzero yes, free to caller <= total yes, total free <= total yes, free to caller <= total free yes
+GetDiskFreeSpaceExA(the image directory, its trailing backslash): ret=1 err=-, total nonzero yes, free to caller <= total yes, total free <= total yes, free to caller <= total free yes
+GetDiskFreeSpaceExW(the image directory, its trailing backslash): ret=1 err=-, total nonzero yes, free to caller <= total yes, total free <= total yes, free to caller <= total free yes
+GetDiskFreeSpaceExA(DATA, no trailing backslash): ret=1 err=-, total nonzero yes, free to caller <= total yes, total free <= total yes, free to caller <= total free yes
+GetDiskFreeSpaceExW(DATA, no trailing backslash): ret=1 err=-, total nonzero yes, free to caller <= total yes, total free <= total yes, free to caller <= total free yes
+GetDiskFreeSpaceExA(DATA\SUB\): ret=1 err=-, total nonzero yes, free to caller <= total yes, total free <= total yes, free to caller <= total free yes
+GetDiskFreeSpaceExW(DATA\SUB\): ret=1 err=-, total nonzero yes, free to caller <= total yes, total free <= total yes, free to caller <= total free yes
+GetDiskFreeSpaceExA(DATA\SUB\ relative): ret=1 err=-, total nonzero yes, free to caller <= total yes, total free <= total yes, free to caller <= total free yes
+GetDiskFreeSpaceExW(DATA\SUB\ relative): ret=1 err=-, total nonzero yes, free to caller <= total yes, total free <= total yes, free to caller <= total free yes
+GetDiskFreeSpaceExA(a file): ret=0 err=267
+GetDiskFreeSpaceExW(a file): ret=0 err=267
+GetDiskFreeSpaceExA(a missing directory): ret=0 err=3
+GetDiskFreeSpaceExW(a missing directory): ret=0 err=3
+GetDiskFreeSpaceExA(a drive with no volume): ret=0 err=3
+GetDiskFreeSpaceExW(a drive with no volume): ret=0 err=3
+GetDiskFreeSpaceExA(an empty string): ret=0 err=3
+GetDiskFreeSpaceExW(an empty string): ret=0 err=3
+GetDiskFreeSpaceExA(the root, no total-free pointer): ret=1 err=-, total nonzero yes, free to caller <= total yes
+GetDiskFreeSpaceExW(the root, no total-free pointer): ret=1 err=-, total nonzero yes, free to caller <= total yes
 files: done
 <<< exit code=0

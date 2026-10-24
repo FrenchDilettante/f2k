@@ -41,10 +41,10 @@
 #                                             ntdll's DbgPrint, then fails as the export fails
 #                                             (its `fails`, the last error
 #                                             ERROR_CALL_NOT_IMPLEMENTED; `never`: it raises
-#                                             STATUS_NOT_IMPLEMENTED). The reason leads with the
-#                                             milestone or gap that writes it ("M2: child
-#                                             processes"). A native's code takes the same path on
-#                                             what it does not handle: crate::stub::stubbed
+#                                             STATUS_NOT_IMPLEMENTED). The reason says what is
+#                                             missing ("not yet implemented"). A native's code
+#                                             takes the same path on what it does not handle:
+#                                             crate::stub::stubbed
 #                no export enters the kernel but ntdll's system services: kernel32 is user code
 #   ordinal      the export ordinal, from Windows 2000's own table (an F2K-internal export has
 #                none: it takes a free one)
@@ -194,6 +194,14 @@ group = "termination"
 args = ["u32 dwExceptionCode", "u32 dwExceptionFlags", "u32 nNumberOfArguments", "ptr lpArguments"]
 impl = { native = "RaiseException" }
 ordinal = 565
+
+[[export]]
+name = "DebugBreak"
+group = "termination"
+args = []
+impl = { stub = "not yet implemented" }
+ordinal = 90
+fails = "void"
 
 [[export]]
 name = "SetUnhandledExceptionFilter"
@@ -422,6 +430,110 @@ args = ["handle hConsoleOutput", "ptr lpBuffer", "u32 nNumberOfCharsToWrite", "p
 impl = { native = "WriteConsoleW" }
 ordinal = 786
 
+[[export]]
+name = "FlushConsoleInputBuffer"
+group = "console"
+args = ["handle hConsoleInput"]
+impl = { stub = "not yet implemented" }
+ordinal = 189
+fails = "FALSE"
+
+[[export]]
+name = "GetConsoleScreenBufferInfo"
+group = "console"
+args = ["handle hConsoleOutput", "ptr lpConsoleScreenBufferInfo"]
+impl = { stub = "not yet implemented" }
+ordinal = 261
+fails = "FALSE"
+
+[[export]]
+name = "GetConsoleTitleA"
+group = "console"
+args = ["ptr lpConsoleTitle", "u32 nSize"]
+impl = { stub = "not yet implemented" }
+ordinal = 262
+fails = "0"
+
+[[export]]
+name = "GetConsoleTitleW"
+group = "console"
+args = ["ptr lpConsoleTitle", "u32 nSize"]
+impl = { stub = "not yet implemented" }
+ordinal = 263
+fails = "0"
+
+[[export]]
+name = "GetNumberOfConsoleInputEvents"
+group = "console"
+args = ["handle hConsoleInput", "ptr<u32> lpNumberOfEvents"]
+impl = { stub = "not yet implemented" }
+ordinal = 329
+fails = "FALSE"
+
+[[export]]
+name = "ReadConsoleA"
+group = "console"
+args = ["handle hConsoleInput", "ptr lpBuffer", "u32 nNumberOfCharsToRead", "ptr<u32> lpNumberOfCharsRead", "ptr lpReserved"]
+impl = { stub = "not yet implemented" }
+ordinal = 566
+fails = "FALSE"
+
+[[export]]
+name = "ReadConsoleW"
+group = "console"
+args = ["handle hConsoleInput", "ptr lpBuffer", "u32 nNumberOfCharsToRead", "ptr<u32> lpNumberOfCharsRead", "ptr lpReserved"]
+impl = { stub = "not yet implemented" }
+ordinal = 576
+fails = "FALSE"
+
+[[export]]
+name = "SetConsoleCtrlHandler"
+group = "console"
+args = ["u32 HandlerRoutine", "bool Add"]
+impl = { stub = "not yet implemented" }
+ordinal = 625
+fails = "FALSE"
+
+[[export]]
+name = "SetConsoleMode"
+group = "console"
+args = ["handle hConsoleHandle", "u32 dwMode"]
+impl = { stub = "not yet implemented" }
+ordinal = 640
+fails = "FALSE"
+
+[[export]]
+name = "SetConsoleTitleA"
+group = "console"
+args = ["strA lpConsoleTitle"]
+impl = { stub = "not yet implemented" }
+ordinal = 649
+fails = "FALSE"
+
+[[export]]
+name = "SetConsoleTitleW"
+group = "console"
+args = ["strW lpConsoleTitle"]
+impl = { stub = "not yet implemented" }
+ordinal = 650
+fails = "FALSE"
+
+[[export]]
+name = "WriteConsoleInputA"
+group = "console"
+args = ["handle hConsoleInput", "ptr lpBuffer", "u32 nLength", "ptr<u32> lpNumberOfEventsWritten"]
+impl = { stub = "not yet implemented" }
+ordinal = 777
+fails = "FALSE"
+
+[[export]]
+name = "WriteConsoleInputW"
+group = "console"
+args = ["handle hConsoleInput", "ptr lpBuffer", "u32 nLength", "ptr<u32> lpNumberOfEventsWritten"]
+impl = { stub = "not yet implemented" }
+ordinal = 780
+fails = "FALSE"
+
 # --- environment ------------------------------------------------------------------------------------
 
 [[export]]
@@ -500,6 +612,30 @@ group = "environment"
 args = ["strW? lpName", "strW?[32768] lpValue"]
 impl = { native = "SetEnvironmentVariableW" }
 ordinal = 659
+
+[[export]]
+name = "GetSystemDirectoryA"
+group = "environment"
+args = ["ptr lpBuffer", "u32 uSize"]
+impl = { stub = "not yet implemented" }
+ordinal = 373
+fails = "0"
+
+[[export]]
+name = "GetWindowsDirectoryA"
+group = "environment"
+args = ["ptr lpBuffer", "u32 uSize"]
+impl = { stub = "not yet implemented" }
+ordinal = 412
+fails = "0"
+
+[[export]]
+name = "GetWindowsDirectoryW"
+group = "environment"
+args = ["ptr lpBuffer", "u32 uSize"]
+impl = { stub = "not yet implemented" }
+ordinal = 413
+fails = "0"
 
 # --- heap -------------------------------------------------------------------------------------------
 
@@ -767,6 +903,54 @@ group = "locale"
 args = []
 impl = { native = "GetUserDefaultLCID" }
 ordinal = 399
+
+[[export]]
+name = "lstrcmpA"
+group = "locale"
+args = ["strA? lpString1", "strA? lpString2"]
+impl = { stub = "not yet implemented" }
+ordinal = 814
+fails = "never"
+
+[[export]]
+name = "lstrcmpW"
+group = "locale"
+args = ["strW? lpString1", "strW? lpString2"]
+impl = { stub = "not yet implemented" }
+ordinal = 815
+fails = "never"
+
+[[export]]
+name = "lstrcmpiA"
+group = "locale"
+args = ["strA? lpString1", "strA? lpString2"]
+impl = { stub = "not yet implemented" }
+ordinal = 817
+fails = "never"
+
+[[export]]
+name = "lstrcmpiW"
+group = "locale"
+args = ["strW? lpString1", "strW? lpString2"]
+impl = { stub = "not yet implemented" }
+ordinal = 818
+fails = "never"
+
+[[export]]
+name = "GetThreadLocale"
+group = "locale"
+args = []
+impl = { stub = "not yet implemented" }
+ordinal = 390
+fails = "never"
+
+[[export]]
+name = "SetThreadLocale"
+group = "locale"
+args = ["u32 Locale"]
+impl = { stub = "not yet implemented" }
+ordinal = 696
+fails = "FALSE"
 
 [[export]]
 name = "GetSystemDefaultLCID"
@@ -1230,6 +1414,14 @@ impl = { native = "GetLocalTime" }
 ordinal = 308
 
 [[export]]
+name = "SetLocalTime"
+group = "threads"
+args = ["ptr lpSystemTime"]
+impl = { stub = "not yet implemented" }
+ordinal = 674
+fails = "FALSE"
+
+[[export]]
 name = "GetSystemTime"
 group = "threads"
 args = ["ptr lpSystemTime"]
@@ -1352,6 +1544,14 @@ impl = { native = "FileTimeToSystemTime" }
 ordinal = 158
 
 [[export]]
+name = "CompareFileTime"
+group = "files"
+args = ["ptr lpFileTime1", "ptr lpFileTime2"]
+impl = { stub = "not yet implemented" }
+ordinal = 36
+fails = "never"
+
+[[export]]
 name = "FindClose"
 group = "files"
 args = ["handle hFindFile"]
@@ -1443,6 +1643,22 @@ impl = { native = "MoveFileW" }
 ordinal = 515
 
 [[export]]
+name = "MoveFileExA"
+group = "files"
+args = ["strA lpExistingFileName", "strA? lpNewFileName", "u32 dwFlags"]
+impl = { stub = "not yet implemented" }
+ordinal = 513
+fails = "FALSE"
+
+[[export]]
+name = "MoveFileExW"
+group = "files"
+args = ["strW lpExistingFileName", "strW? lpNewFileName", "u32 dwFlags"]
+impl = { stub = "not yet implemented" }
+ordinal = 514
+fails = "FALSE"
+
+[[export]]
 name = "RemoveDirectoryA"
 group = "files"
 args = ["strA[260] lpPathName"]
@@ -1527,6 +1743,22 @@ impl = { native = "GetDiskFreeSpaceW" }
 ordinal = 283
 
 [[export]]
+name = "GetDiskFreeSpaceExA"
+group = "files"
+args = ["strA? lpDirectoryName", "ptr<u64> lpFreeBytesAvailableToCaller", "ptr<u64> lpTotalNumberOfBytes", "ptr<u64> lpTotalNumberOfFreeBytes"]
+impl = { stub = "not yet implemented" }
+ordinal = 281
+fails = "FALSE"
+
+[[export]]
+name = "GetDiskFreeSpaceExW"
+group = "files"
+args = ["strW? lpDirectoryName", "ptr<u64> lpFreeBytesAvailableToCaller", "ptr<u64> lpTotalNumberOfBytes", "ptr<u64> lpTotalNumberOfFreeBytes"]
+impl = { stub = "not yet implemented" }
+ordinal = 282
+fails = "FALSE"
+
+[[export]]
 name = "GetDriveTypeA"
 group = "files"
 args = ["strA?[260] lpRootPathName"]
@@ -1602,6 +1834,22 @@ group = "files"
 args = ["strW[260] lpFileName", "u32 nBufferLength", "ptr lpBuffer", "ptr<u32> lpFilePart"]
 impl = { native = "GetFullPathNameW" }
 ordinal = 303
+
+[[export]]
+name = "SearchPathA"
+group = "files"
+args = ["strA? lpPath", "strA lpFileName", "strA? lpExtension", "u32 nBufferLength", "ptr lpBuffer", "ptr lpFilePart"]
+impl = { stub = "not yet implemented" }
+ordinal = 608
+fails = "0"
+
+[[export]]
+name = "SearchPathW"
+group = "files"
+args = ["strW? lpPath", "strW lpFileName", "strW? lpExtension", "u32 nBufferLength", "ptr lpBuffer", "ptr lpFilePart"]
+impl = { stub = "not yet implemented" }
+ordinal = 609
+fails = "0"
 
 [[export]]
 name = "GetShortPathNameA"
@@ -1752,7 +2000,7 @@ ordinal = 471
 name = "CreateProcessW"
 group = "processes"
 args = ["strW? lpApplicationName", "strW? lpCommandLine", "ptr lpProcessAttributes", "ptr lpThreadAttributes", "bool bInheritHandles", "u32 dwCreationFlags", "ptr lpEnvironment", "strW? lpCurrentDirectory", "ptr lpStartupInfo", "ptr lpProcessInformation"]
-impl = { stub = "M2: child processes" }
+impl = { stub = "not yet implemented" }
 ordinal = 77
 fails = "FALSE"
 
@@ -1889,10 +2137,6 @@ ordinal = 34
 [[export]]
 name = "CommConfigDialogW"
 ordinal = 35
-
-[[export]]
-name = "CompareFileTime"
-ordinal = 36
 
 [[export]]
 name = "ConnectNamedPipe"
@@ -2033,10 +2277,6 @@ ordinal = 86
 [[export]]
 name = "DebugActiveProcess"
 ordinal = 89
-
-[[export]]
-name = "DebugBreak"
-ordinal = 90
 
 [[export]]
 name = "DefineDosDeviceA"
@@ -2360,10 +2600,6 @@ name = "FindVolumeMountPointClose"
 ordinal = 188
 
 [[export]]
-name = "FlushConsoleInputBuffer"
-ordinal = 189
-
-[[export]]
 name = "FlushInstructionCache"
 ordinal = 191
 
@@ -2598,18 +2834,6 @@ name = "GetConsoleNlsMode"
 ordinal = 259
 
 [[export]]
-name = "GetConsoleScreenBufferInfo"
-ordinal = 261
-
-[[export]]
-name = "GetConsoleTitleA"
-ordinal = 262
-
-[[export]]
-name = "GetConsoleTitleW"
-ordinal = 263
-
-[[export]]
 name = "GetConsoleWindow"
 ordinal = 264
 
@@ -2649,18 +2873,6 @@ ordinal = 278
 [[export]]
 name = "GetDevicePowerState"
 ordinal = 279
-
-[[export]]
-name = "GetDiskFreeSpaceExA"
-ordinal = 281
-
-[[export]]
-name = "GetDiskFreeSpaceExW"
-ordinal = 282
-
-
-
-
 
 [[export]]
 name = "GetExitCodeProcess"
@@ -2742,10 +2954,6 @@ ordinal = 327
 [[export]]
 name = "GetNumberOfConsoleFonts"
 ordinal = 328
-
-[[export]]
-name = "GetNumberOfConsoleInputEvents"
-ordinal = 329
 
 [[export]]
 name = "GetNumberOfConsoleMouseButtons"
@@ -2874,10 +3082,6 @@ name = "GetSystemDefaultUILanguage"
 ordinal = 372
 
 [[export]]
-name = "GetSystemDirectoryA"
-ordinal = 373
-
-[[export]]
 name = "GetSystemDirectoryW"
 ordinal = 374
 
@@ -2930,10 +3134,6 @@ name = "GetThreadContext"
 ordinal = 389
 
 [[export]]
-name = "GetThreadLocale"
-ordinal = 390
-
-[[export]]
 name = "GetThreadSelectorEntry"
 ordinal = 393
 
@@ -2978,14 +3178,6 @@ ordinal = 410
 [[export]]
 name = "GetVolumePathNameW"
 ordinal = 411
-
-[[export]]
-name = "GetWindowsDirectoryA"
-ordinal = 412
-
-[[export]]
-name = "GetWindowsDirectoryW"
-ordinal = 413
 
 [[export]]
 name = "GetWriteWatch"
@@ -3214,15 +3406,6 @@ name = "Module32NextW"
 ordinal = 511
 
 [[export]]
-name = "MoveFileExA"
-ordinal = 513
-
-[[export]]
-name = "MoveFileExW"
-ordinal = 514
-
-
-[[export]]
 name = "MoveFileWithProgressA"
 ordinal = 516
 
@@ -3364,10 +3547,6 @@ name = "QueueUserWorkItem"
 ordinal = 564
 
 [[export]]
-name = "ReadConsoleA"
-ordinal = 566
-
-[[export]]
 name = "ReadConsoleInputA"
 ordinal = 567
 
@@ -3402,10 +3581,6 @@ ordinal = 574
 [[export]]
 name = "ReadConsoleOutputW"
 ordinal = 575
-
-[[export]]
-name = "ReadConsoleW"
-ordinal = 576
 
 [[export]]
 name = "ReadDirectoryChangesW"
@@ -3504,14 +3679,6 @@ name = "ScrollConsoleScreenBufferW"
 ordinal = 607
 
 [[export]]
-name = "SearchPathA"
-ordinal = 608
-
-[[export]]
-name = "SearchPathW"
-ordinal = 609
-
-[[export]]
 name = "SetCPGlobal"
 ordinal = 610
 
@@ -3572,10 +3739,6 @@ name = "SetConsoleCommandHistoryMode"
 ordinal = 624
 
 [[export]]
-name = "SetConsoleCtrlHandler"
-ordinal = 625
-
-[[export]]
 name = "SetConsoleCursor"
 ordinal = 626
 
@@ -3632,10 +3795,6 @@ name = "SetConsoleMenuClose"
 ordinal = 639
 
 [[export]]
-name = "SetConsoleMode"
-ordinal = 640
-
-[[export]]
 name = "SetConsoleNlsMode"
 ordinal = 641
 
@@ -3666,14 +3825,6 @@ ordinal = 647
 [[export]]
 name = "SetConsoleTextAttribute"
 ordinal = 648
-
-[[export]]
-name = "SetConsoleTitleA"
-ordinal = 649
-
-[[export]]
-name = "SetConsoleTitleW"
-ordinal = 650
 
 [[export]]
 name = "SetConsoleWindowInfo"
@@ -3717,10 +3868,6 @@ ordinal = 671
 [[export]]
 name = "SetLastConsoleEventActive"
 ordinal = 672
-
-[[export]]
-name = "SetLocalTime"
-ordinal = 674
 
 [[export]]
 name = "SetLocaleInfoA"
@@ -3793,10 +3940,6 @@ ordinal = 694
 [[export]]
 name = "SetThreadIdealProcessor"
 ordinal = 695
-
-[[export]]
-name = "SetThreadLocale"
-ordinal = 696
 
 [[export]]
 name = "SetTimeZoneInformation"
@@ -4008,20 +4151,12 @@ name = "WinExec"
 ordinal = 775
 
 [[export]]
-name = "WriteConsoleInputA"
-ordinal = 777
-
-[[export]]
 name = "WriteConsoleInputVDMA"
 ordinal = 778
 
 [[export]]
 name = "WriteConsoleInputVDMW"
 ordinal = 779
-
-[[export]]
-name = "WriteConsoleInputW"
-ordinal = 780
 
 [[export]]
 name = "WriteConsoleOutputA"
@@ -4149,24 +4284,8 @@ name = "lstrcmp"
 ordinal = 813
 
 [[export]]
-name = "lstrcmpA"
-ordinal = 814
-
-[[export]]
-name = "lstrcmpW"
-ordinal = 815
-
-[[export]]
 name = "lstrcmpi"
 ordinal = 816
-
-[[export]]
-name = "lstrcmpiA"
-ordinal = 817
-
-[[export]]
-name = "lstrcmpiW"
-ordinal = 818
 
 [[export]]
 name = "lstrcpy"

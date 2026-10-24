@@ -22,7 +22,7 @@ if not "%~1"=="" goto one
 
 call :srcsum
 if errorlevel 1 exit /b 1
-for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain) do (
+for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console winsta registry hellomd crt seh fd wide) do (
     call :%%F
     if errorlevel 1 exit /b 1
 )
@@ -34,7 +34,7 @@ rem needs it and it is not there (the fixtures built on common\f2kt.h
 rem stamp their source with it).
 :one
 set F2KT_ONE=
-for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain) do if /I "%%F"=="%~1" set F2KT_ONE=yes
+for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console winsta registry hellomd crt seh fd wide) do if /I "%%F"=="%~1" set F2KT_ONE=yes
 if not defined F2KT_ONE (
     echo build.bat: no such fixture %~1
     exit /b 1
@@ -210,6 +210,109 @@ call :stamp dllmain.c
 cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% dllmain.c f2kbase.lib f2kmid.lib
 if errorlevel 1 (echo build.bat: dllmain failed & exit /b 1)
 del *.obj *.lib *.exp
+cd ..\..
+goto :eof
+
+rem msgtable's message table: mc compiles msgtable.mc (-U: the texts in
+rem Unicode, as cmd.exe's are) into msgtable.rc and MSG00409.bin, rc
+rem compiles those into msgtable.res, which links into the program.
+:msgtable
+echo === msgtable
+cd kernel32\msgtable
+for %%I in (mc.exe rc.exe) do if "%%~$PATH:I"=="" (
+    echo build.bat: %%I not found on PATH - msgtable needs the message and resource compilers
+    exit /b 1
+)
+call :stamp msgtable.c
+mc -U msgtable.mc
+if errorlevel 1 (echo build.bat: msgtable's mc failed & exit /b 1)
+rc msgtable.rc
+if errorlevel 1 (echo build.bat: msgtable's rc failed & exit /b 1)
+cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% msgtable.c msgtable.res
+if errorlevel 1 (echo build.bat: msgtable failed & exit /b 1)
+del msgtable.obj msgtable.res msgtable.rc msgtable.h MSG00409.bin
+cd ..\..
+goto :eof
+
+:console
+echo === console
+cd kernel32\console
+call :stamp console.c
+cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% console.c
+if errorlevel 1 (echo build.bat: console failed & exit /b 1)
+del console.obj
+cd ..\..
+goto :eof
+
+:winsta
+echo === winsta
+cd user32\winsta
+call :stamp winsta.c
+cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% winsta.c user32.lib
+if errorlevel 1 (echo build.bat: winsta failed & exit /b 1)
+del winsta.obj
+cd ..\..
+goto :eof
+
+:registry
+echo === registry
+cd advapi32\registry
+call :stamp registry.c
+cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% registry.c advapi32.lib
+if errorlevel 1 (echo build.bat: registry failed & exit /b 1)
+del registry.obj
+cd ..\..
+goto :eof
+
+rem The crt fixtures build with /MD: their C runtime is msvcrt.dll's,
+rem as cmd.exe's is. hellomd is core\hello\hello.c (hellomd.c includes
+rem it), with no source stamp, as hello has none.
+:hellomd
+echo === hellomd
+cd crt\hellomd
+cl /nologo /MD hellomd.c
+if errorlevel 1 (echo build.bat: hellomd failed & exit /b 1)
+del hellomd.obj
+cd ..\..
+goto :eof
+
+:crt
+echo === crt
+cd crt\crt
+call :stamp crt.c
+cl /nologo /MD /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% crt.c
+if errorlevel 1 (echo build.bat: crt failed & exit /b 1)
+del crt.obj
+cd ..\..
+goto :eof
+
+:seh
+echo === seh
+cd crt\seh
+call :stamp seh.c
+cl /nologo /MD /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% seh.c
+if errorlevel 1 (echo build.bat: seh failed & exit /b 1)
+del seh.obj
+cd ..\..
+goto :eof
+
+:fd
+echo === fd
+cd crt\fd
+call :stamp fd.c
+cl /nologo /MD /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% fd.c
+if errorlevel 1 (echo build.bat: fd failed & exit /b 1)
+del fd.obj
+cd ..\..
+goto :eof
+
+:wide
+echo === wide
+cd crt\wide
+call :stamp wide.c
+cl /nologo /MD /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% wide.c
+if errorlevel 1 (echo build.bat: wide failed & exit /b 1)
+del wide.obj
 cd ..\..
 goto :eof
 

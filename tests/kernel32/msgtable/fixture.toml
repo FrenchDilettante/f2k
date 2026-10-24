@@ -1,0 +1,56 @@
+# msgtable: one test per block of the real-machine capture (output.txt); see tests/README.md. Its
+# message table is compiled from msgtable.mc (mc, rc) and linked into msgtable.exe.
+# Declared ahead of its real-machine build and capture (no msgtable.exe, no output.txt yet).
+description = "msgtable - FormatMessageW and FormatMessageA over the program's own message table (FORMAT_MESSAGE_FROM_HMODULE, as cmd.exe reads its messages) and over strings: lookup by id and language with the system fallback, string and numeric inserts through a va_list and an argument array, IGNORE_INSERTS, the escapes and %0, line widths, the caller's and allocated buffers."
+kind = "sectioned"
+
+[pins]
+# The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
+# calls); scripts/compat.py derives each export's coverage from them.
+lookup = [
+    "kernel32.FormatMessageW",
+    "kernel32.FormatMessageA",
+    "kernel32.GetModuleHandleW",
+    "kernel32.GetModuleHandleA",
+    "ntdll.RtlFindMessage",
+    "ntdll.LdrFindResource_U",
+    "ntdll.LdrAccessResource",
+    "ntdll.RtlFormatMessage",
+]
+inserts = [
+    "kernel32.FormatMessageW",
+    "kernel32.FormatMessageA",
+    "ntdll.RtlFindMessage",
+    "ntdll.RtlFormatMessage",
+]
+ignore = [
+    "kernel32.FormatMessageW",
+    "kernel32.FormatMessageA",
+    "ntdll.RtlFindMessage",
+    "ntdll.RtlFormatMessage",
+]
+escapes = [
+    "kernel32.FormatMessageW",
+    "kernel32.FormatMessageA",
+    "ntdll.RtlFindMessage",
+    "ntdll.RtlFormatMessage",
+]
+width = [
+    "kernel32.FormatMessageW",
+    "kernel32.FormatMessageA",
+    "ntdll.RtlFindMessage",
+    "ntdll.RtlFormatMessage",
+]
+buffers = [
+    "kernel32.FormatMessageW",
+    "kernel32.FormatMessageA",
+    "kernel32.LocalSize",
+    "kernel32.LocalFree",
+    "ntdll.RtlFindMessage",
+    "ntdll.RtlFormatMessage",
+]
+string = [
+    "kernel32.FormatMessageW",
+    "kernel32.FormatMessageA",
+    "ntdll.RtlFormatMessage",
+]

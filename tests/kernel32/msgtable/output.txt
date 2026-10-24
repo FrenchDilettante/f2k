@@ -1,0 +1,185 @@
+# F2K capture of msgtable (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-AC9F3E6, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Sat 10/24/2026 15:28:15.26
+msgtable F2KT-SOURCE-CRC=0x6AE8BA32
+>>> msgtable.exe lookup
+== lookup
+FormatMessageW plain, NULL module: ret=82 err=- [The first line of a plain message.\r\nIts second line, after a regular line break.\r\n]
+FormatMessageA plain, NULL module: ret=82 err=- [The first line of a plain message.\r\nIts second line, after a regular line break.\r\n]
+GetModuleHandleW(NULL) is GetModuleHandleA(NULL): yes
+FormatMessageW plain, GetModuleHandleW(NULL): ret=82 err=- [The first line of a plain message.\r\nIts second line, after a regular line break.\r\n]
+FormatMessageA plain, GetModuleHandleA(NULL): ret=82 err=- [The first line of a plain message.\r\nIts second line, after a regular line break.\r\n]
+FormatMessageW the second block (0x200): ret=31 err=- [From the second block of ids.\r\n]
+FormatMessageA the second block (0x200): ret=31 err=- [From the second block of ids.\r\n]
+FormatMessageW an id in the gap (0x150): ret=0 err=317 []
+FormatMessageA an id in the gap (0x150): ret=0 err=317 []
+FormatMessageW an id beyond the blocks (0x20000999): ret=0 err=317 []
+FormatMessageA an id beyond the blocks (0x20000999): ret=0 err=317 []
+FormatMessageW module and system, 2 (system only): ret=44 err=- [The system cannot find the file specified.\r\n]
+FormatMessageA module and system, 2 (system only): ret=44 err=- [The system cannot find the file specified.\r\n]
+FormatMessageW module and system, 0x102 (both): ret=32 err=- [Inserts: %1, %2, and %1 again.\r\n]
+FormatMessageA module and system, 0x102 (both): ret=32 err=- [Inserts: %1, %2, and %1 again.\r\n]
+FormatMessageW module and system, 0x20000999 (neither): ret=0 err=317 []
+FormatMessageA module and system, 0x20000999 (neither): ret=0 err=317 []
+FormatMessageW short, language 0x0000: ret=16 err=- [Short message.\r\n]
+FormatMessageA short, language 0x0000: ret=16 err=- [Short message.\r\n]
+FormatMessageW short, language 0x0400: ret=16 err=- [Short message.\r\n]
+FormatMessageA short, language 0x0400: ret=16 err=- [Short message.\r\n]
+FormatMessageW short, language 0x0409: ret=16 err=- [Short message.\r\n]
+FormatMessageA short, language 0x0409: ret=16 err=- [Short message.\r\n]
+FormatMessageW short, language 0x0009: ret=0 err=1815 []
+FormatMessageA short, language 0x0009: ret=0 err=1815 []
+FormatMessageW short, language 0x0809: ret=0 err=1815 []
+FormatMessageA short, language 0x0809: ret=0 err=1815 []
+FormatMessageW short, language 0x040C: ret=0 err=1815 []
+FormatMessageA short, language 0x040C: ret=0 err=1815 []
+msgtable: done
+<<< exit code=0
+>>> msgtable.exe inserts
+== inserts
+FormatMessageW inserts, va_list: ret=35 err=- [Inserts: one, two, and one again.\r\n]
+FormatMessageA inserts, va_list: ret=35 err=- [Inserts: one, two, and one again.\r\n]
+FormatMessageW inserts holding %, va_list: ret=51 err=- [Inserts: 50%% off %2, two, and 50%% off %2 again.\r\n]
+FormatMessageA inserts holding %, va_list: ret=51 err=- [Inserts: 50%% off %2, two, and 50%% off %2 again.\r\n]
+FormatMessageW numbers, va_list: ret=59 err=- [Numbers: -42, 0000BEEF, 4000000000, [   42], [7    ], ff.\r\n]
+FormatMessageA numbers, va_list: ret=59 err=- [Numbers: -42, 0000BEEF, 4000000000, [   42], [7    ], ff.\r\n]
+FormatMessageW widths, va_list: ret=55 err=- [Strings: wide (the call's width), narrow (the other).\r\n]
+FormatMessageA widths, va_list: ret=55 err=- [Strings: narrow (the call's width), wide (the other).\r\n]
+FormatMessageW star, va_list: ret=32 err=- [Star: [     abc] four [    xy]\r\n]
+FormatMessageA star, va_list: ret=32 err=- [Star: [     abc] four [    xy]\r\n]
+FormatMessageW prompt, va_list: ret=35 err=- [Are you sure about file.txt (Y/N)? ]
+FormatMessageA prompt, va_list: ret=35 err=- [Are you sure about file.txt (Y/N)? ]
+FormatMessageW inserts, array: ret=35 err=- [Inserts: one, two, and one again.\r\n]
+FormatMessageA inserts, array: ret=35 err=- [Inserts: one, two, and one again.\r\n]
+FormatMessageW numbers, array: ret=59 err=- [Numbers: -42, 0000BEEF, 4000000000, [   42], [7    ], ff.\r\n]
+FormatMessageA numbers, array: ret=59 err=- [Numbers: -42, 0000BEEF, 4000000000, [   42], [7    ], ff.\r\n]
+FormatMessageW widths, array: ret=55 err=- [Strings: wide (the call's width), narrow (the other).\r\n]
+FormatMessageA widths, array: ret=55 err=- [Strings: narrow (the call's width), wide (the other).\r\n]
+FormatMessageW star, array: ret=32 err=- [Star: [     abc] four [    xy]\r\n]
+FormatMessageA star, array: ret=32 err=- [Star: [     abc] four [    xy]\r\n]
+FormatMessageW prompt, array: ret=35 err=- [Are you sure about file.txt (Y/N)? ]
+FormatMessageA prompt, array: ret=35 err=- [Are you sure about file.txt (Y/N)? ]
+msgtable: done
+<<< exit code=0
+>>> msgtable.exe ignore
+== ignore
+FormatMessageW ignore, inserts: ret=32 err=- [Inserts: %1, %2, and %1 again.\r\n]
+FormatMessageA ignore, inserts: ret=32 err=- [Inserts: %1, %2, and %1 again.\r\n]
+FormatMessageW ignore, numbers: ret=62 err=- [Numbers: %1!d!, %2!08lX!, %3!u!, [%4!5d!], [%5!-5d!], %6!x!.\r\n]
+FormatMessageA ignore, numbers: ret=62 err=- [Numbers: %1!d!, %2!08lX!, %3!u!, [%4!5d!], [%5!-5d!], %6!x!.\r\n]
+FormatMessageW ignore, widths: ret=52 err=- [Strings: %1 (the call's width), %2!S! (the other).\r\n]
+FormatMessageA ignore, widths: ret=52 err=- [Strings: %1 (the call's width), %2!S! (the other).\r\n]
+FormatMessageW ignore, star: ret=30 err=- [Star: [%1!*.*s!] %4 [%5!*s!]\r\n]
+FormatMessageA ignore, star: ret=30 err=- [Star: [%1!*.*s!] %4 [%5!*s!]\r\n]
+FormatMessageW ignore, escapes: ret=145 err=- [100%% sure.\r\nA hard break before this, and a\rcarriage return.\r\n%.\r\nA lone period above; %! is an exclamation mark, then\ta tab, a forced% space.\r\n]
+FormatMessageA ignore, escapes: ret=145 err=- [100%% sure.\r\nA hard break before this, and a\rcarriage return.\r\n%.\r\nA lone period above; %! is an exclamation mark, then\ta tab, a forced% space.\r\n]
+FormatMessageW ignore, prompt: ret=29 err=- [Are you sure about %1 (Y/N)? ]
+FormatMessageA ignore, prompt: ret=29 err=- [Are you sure about %1 (Y/N)? ]
+FormatMessageW ignore, empty: ret=0 err=- []
+FormatMessageA ignore, empty: ret=0 err=- []
+msgtable: done
+<<< exit code=0
+>>> msgtable.exe escapes
+== escapes
+FormatMessageW escapes: ret=141 err=- [100% sure.\r\nA hard break before this, and a\rcarriage return.\r\n.\r\nA lone period above; ! is an exclamation mark, then\ta tab, a forced space.\r\n]
+FormatMessageA escapes: ret=141 err=- [100% sure.\r\nA hard break before this, and a\rcarriage return.\r\n.\r\nA lone period above; ! is an exclamation mark, then\ta tab, a forced space.\r\n]
+FormatMessageW empty: ret=0 err=- []
+FormatMessageA empty: ret=0 err=- []
+FormatMessageW a line ending in a blank: ret=53 err=- [This line ends in a blank: \r\nand this one does not.\r\n]
+FormatMessageA a line ending in a blank: ret=53 err=- [This line ends in a blank: \r\nand this one does not.\r\n]
+FormatMessageW long: ret=199 err=- [A long line of words to wrap at a small width, with supercalifragilisticexpialidocious, a word longer than some widths, inside it.\r\nA second line after a regular break,\r\nand one after a hard break.\r\n]
+FormatMessageA long: ret=199 err=- [A long line of words to wrap at a small width, with supercalifragilisticexpialidocious, a word longer than some widths, inside it.\r\nA second line after a regular break,\r\nand one after a hard break.\r\n]
+msgtable: done
+<<< exit code=0
+>>> msgtable.exe width
+== width
+FormatMessageW long, width 0: ret=199 err=- [A long line of words to wrap at a small width, with supercalifragilisticexpialidocious, a word longer than some widths, inside it.\r\nA second line after a regular break,\r\nand one after a hard break.\r\n]
+FormatMessageA long, width 0: ret=199 err=- [A long line of words to wrap at a small width, with supercalifragilisticexpialidocious, a word longer than some widths, inside it.\r\nA second line after a regular break,\r\nand one after a hard break.\r\n]
+FormatMessageW long, width 20: ret=208 err=- [A long line of\r\nwords to wrap at a\r\nsmall width, with\r\nsupercalifragilistic\r\nexpialidocious, a\r\nword longer than\r\nsome widths, inside\r\nit. A second line\r\nafter a regular\r\nbreak,\r\nand one after a\r\nhard break. ]
+FormatMessageA long, width 20: ret=208 err=- [A long line of\r\nwords to wrap at a\r\nsmall width, with\r\nsupercalifragilistic\r\nexpialidocious, a\r\nword longer than\r\nsome widths, inside\r\nit. A second line\r\nafter a regular\r\nbreak,\r\nand one after a\r\nhard break. ]
+FormatMessageW long, width 40: ret=202 err=- [A long line of words to wrap at a small\r\nwidth, with\r\nsupercalifragilisticexpialidocious, a\r\nword longer than some widths, inside\r\nit. A second line after a regular\r\nbreak,\r\nand one after a hard break. ]
+FormatMessageA long, width 40: ret=202 err=- [A long line of words to wrap at a small\r\nwidth, with\r\nsupercalifragilisticexpialidocious, a\r\nword longer than some widths, inside\r\nit. A second line after a regular\r\nbreak,\r\nand one after a hard break. ]
+FormatMessageW long, width 255: ret=197 err=- [A long line of words to wrap at a small width, with supercalifragilisticexpialidocious, a word longer than some widths, inside it. A second line after a regular break,\r\nand one after a hard break. ]
+FormatMessageA long, width 255: ret=197 err=- [A long line of words to wrap at a small width, with supercalifragilisticexpialidocious, a word longer than some widths, inside it. A second line after a regular break,\r\nand one after a hard break. ]
+FormatMessageW short, width 1: ret=43 err=- [S\r\nh\r\no\r\nr\r\nt\r\n\r\nm\r\ne\r\ns\r\ns\r\na\r\ng\r\ne\r\n.\r\n\r\n]
+FormatMessageA short, width 1: ret=43 err=- [S\r\nh\r\no\r\nr\r\nt\r\n\r\nm\r\ne\r\ns\r\ns\r\na\r\ng\r\ne\r\n.\r\n\r\n]
+FormatMessageW plain, width 255: ret=80 err=- [The first line of a plain message. Its second line, after a regular line break. ]
+FormatMessageA plain, width 255: ret=80 err=- [The first line of a plain message. Its second line, after a regular line break. ]
+FormatMessageW escapes, width 20: ret=144 err=- [100% sure.\r\nA hard break before\r\nthis, and a\rcarriage return. .\r\nA lone period\r\nabove; ! is an\r\nexclamation mark,\r\nthen\ta tab, a\r\nforced space. ]
+FormatMessageA escapes, width 20: ret=144 err=- [100% sure.\r\nA hard break before\r\nthis, and a\rcarriage return. .\r\nA lone period\r\nabove; ! is an\r\nexclamation mark,\r\nthen\ta tab, a\r\nforced space. ]
+FormatMessageW escapes, width 255: ret=138 err=- [100% sure.\r\nA hard break before this, and a\rcarriage return. . A lone period above; ! is an exclamation mark, then\ta tab, a forced space. ]
+FormatMessageA escapes, width 255: ret=138 err=- [100% sure.\r\nA hard break before this, and a\rcarriage return. . A lone period above; ! is an exclamation mark, then\ta tab, a forced space. ]
+FormatMessageW a line ending in a blank, width 255: ret=51 err=- [This line ends in a blank:  and this one does not. ]
+FormatMessageA a line ending in a blank, width 255: ret=51 err=- [This line ends in a blank:  and this one does not. ]
+FormatMessageW a line ending in a blank, width 20: ret=53 err=- [This line ends in a\r\nblank:  and this\r\none does not. ]
+FormatMessageA a line ending in a blank, width 20: ret=53 err=- [This line ends in a\r\nblank:  and this\r\none does not. ]
+FormatMessageW inserts, width 12: ret=54 err=- [Inserts:\r\nalpha beta,\r\ngamma, and\r\nalpha beta\r\nagain. ]
+FormatMessageA inserts, width 12: ret=54 err=- [Inserts:\r\nalpha beta,\r\ngamma, and\r\nalpha beta\r\nagain. ]
+FormatMessageW prompt, width 255: ret=35 err=- [Are you sure about file.txt (Y/N)? ]
+FormatMessageA prompt, width 255: ret=35 err=- [Are you sure about file.txt (Y/N)? ]
+msgtable: done
+<<< exit code=0
+>>> msgtable.exe buffers
+== buffers
+FormatMessageW 0x101, size 17: ret=16 err=- buffer [Short message.\r\n\0] after it untouched yes
+FormatMessageA 0x101, size 17: ret=16 err=- buffer [Short message.\r\n\0] after it untouched yes
+FormatMessageW 0x101, size 16: ret=0 err=122 buffer [################] after it untouched yes
+FormatMessageA 0x101, size 16: ret=0 err=122 buffer [################] after it untouched yes
+FormatMessageW 0x101, size 15: ret=0 err=122 buffer [###############] after it untouched yes
+FormatMessageA 0x101, size 15: ret=0 err=122 buffer [###############] after it untouched yes
+FormatMessageW 0x101, size 1: ret=0 err=122 buffer [#] after it untouched yes
+FormatMessageA 0x101, size 1: ret=0 err=122 buffer [#] after it untouched yes
+FormatMessageW 0x101, size 0: ret=0 err=122 buffer [] after it untouched yes
+FormatMessageA 0x101, size 0: ret=0 err=122 buffer [] after it untouched yes
+FormatMessageW 0x108, size 8: ret=0 err=- buffer [\0#######] after it untouched yes
+FormatMessageA 0x108, size 8: ret=0 err=- buffer [########] after it untouched yes
+FormatMessageW 0x101 allocated, nSize 0: ret=16 err=- [Short message.\r\n] terminated yes
+LocalSize (W) holds the text and its terminator: yes, at least nSize: yes
+LocalFree (W): yes
+FormatMessageA 0x101 allocated, nSize 0: ret=16 err=- [Short message.\r\n] terminated yes
+LocalSize (A) holds the text and its terminator: yes, at least nSize: yes
+LocalFree (A): yes
+FormatMessageW 0x101 allocated, nSize 200: ret=16 err=- [Short message.\r\n] terminated yes
+LocalSize (W) holds the text and its terminator: yes, at least nSize: no
+LocalFree (W): yes
+FormatMessageA 0x101 allocated, nSize 200: ret=16 err=- [Short message.\r\n] terminated yes
+LocalSize (A) holds the text and its terminator: yes, at least nSize: no
+LocalFree (A): yes
+FormatMessageW 0x100 allocated, nSize 10: ret=82 err=- [The first line of a plain message.\r\nIts second line, after a regular line break.\r\n] terminated yes
+LocalSize (W) holds the text and its terminator: yes, at least nSize: yes
+LocalFree (W): yes
+FormatMessageA 0x100 allocated, nSize 10: ret=82 err=- [The first line of a plain message.\r\nIts second line, after a regular line break.\r\n] terminated yes
+LocalSize (A) holds the text and its terminator: yes, at least nSize: yes
+LocalFree (A): yes
+FormatMessageW 0x108 allocated, nSize 0: ret=0 err=- block null yes
+FormatMessageA 0x108 allocated, nSize 0: ret=0 err=- block null yes
+msgtable: done
+<<< exit code=0
+>>> msgtable.exe string
+== string
+FormatMessageW string inserts, va_list: ret=33 err=- [Inserts: one, two, and one again.]
+FormatMessageA string inserts, va_list: ret=33 err=- [Inserts: one, two, and one again.]
+FormatMessageW string numbers, va_list: ret=57 err=- [Numbers: -42, 0000BEEF, 4000000000, [   42], [7    ], ff.]
+FormatMessageA string numbers, va_list: ret=57 err=- [Numbers: -42, 0000BEEF, 4000000000, [   42], [7    ], ff.]
+FormatMessageW string widths, va_list: ret=53 err=- [Strings: wide (the call's width), narrow (the other).]
+FormatMessageA string widths, va_list: ret=53 err=- [Strings: narrow (the call's width), wide (the other).]
+FormatMessageW string star, array: ret=30 err=- [Star: [     abc] four [    xy]]
+FormatMessageA string star, array: ret=30 err=- [Star: [     abc] four [    xy]]
+FormatMessageW string of only an insert, array: ret=15 err=- [just the insert]
+FormatMessageA string of only an insert, array: ret=15 err=- [just the insert]
+FormatMessageW string escapes: ret=48 err=- [100% sure.\r\nHard break; . ! then\ttab, stops here]
+FormatMessageA string escapes: ret=48 err=- [100% sure.\r\nHard break; . ! then\ttab, stops here]
+FormatMessageW string prompt: ret=14 err=- [Prompt (Y/N)? ]
+FormatMessageA string prompt: ret=14 err=- [Prompt (Y/N)? ]
+FormatMessageW string with CR LF: ret=36 err=- [Two lines\r\nby CR LF in the string.\r\n]
+FormatMessageA string with CR LF: ret=36 err=- [Two lines\r\nby CR LF in the string.\r\n]
+FormatMessageW string with CR LF, width 255: ret=34 err=- [Two lines by CR LF in the string. ]
+FormatMessageA string with CR LF, width 255: ret=34 err=- [Two lines by CR LF in the string. ]
+FormatMessageW string, ignore: ret=30 err=- [Inserts: %1, %2, and %1 again.]
+FormatMessageA string, ignore: ret=30 err=- [Inserts: %1, %2, and %1 again.]
+FormatMessageW empty string: ret=0 err=- []
+FormatMessageA empty string: ret=0 err=- []
+msgtable: done
+<<< exit code=0

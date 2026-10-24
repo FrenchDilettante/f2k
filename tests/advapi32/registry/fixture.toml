@@ -1,0 +1,125 @@
+# registry: one test per block of the real-machine capture (output.txt); see tests/README.md. It
+# works under HKEY_CURRENT_USER\Software\F2K alone, deleting that tree at each pass's start and end.
+# Declared ahead of its real-machine build and capture (no registry.exe, no output.txt yet); on
+# the work list until F2K has advapi32 and a registry.
+description = "registry - the registry calls cmd.exe imports, W and A: RegCreateKeyEx and its dispositions, RegOpenKeyEx and RegOpenKey, RegCloseKey, RegSetValueEx and RegQueryValueEx over the value types and buffer sizes, RegSetValue and RegQueryValue's default values, RegEnumKey's order and buffers, RegDeleteKey and a deleted key's open handle, under HKCU\\Software\\F2K."
+kind = "sectioned"
+
+[masks]
+# A missing value's query leaves whatever advapi32 had at hand in the type: stack contents, not an
+# answer.
+queryvalue = [
+    "RegQueryValueExW(\"missing\"), a missing value: ret=2 err=- type=* cb=1024 buffer=untouched",
+    "RegQueryValueExW(\"missing\"), a missing value, NULL data: ret=2 err=- type=* cb=0 no buffer",
+    "RegQueryValueExA(\"missing\"), a missing value: ret=2 err=- type=* cb=1024 buffer=untouched",
+    "RegQueryValueExA(\"missing\"), a missing value, NULL data: ret=2 err=- type=* cb=0 no buffer",
+]
+delete = [
+    "RegQueryValueExW(\"x\"), through the deleted key's handle: ret=1018 err=- type=* cb=1024 buffer=untouched",
+    "RegQueryValueExW(\"x\"), the old handle, the name created anew with a value x: ret=1018 err=- type=* cb=1024 buffer=untouched",
+    "RegQueryValueExA(\"x\"), through the deleted key's handle: ret=1018 err=- type=* cb=1024 buffer=untouched",
+    "RegQueryValueExA(\"x\"), the old handle, the name created anew with a value x: ret=1018 err=- type=* cb=1024 buffer=untouched",
+]
+
+[pins]
+# The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
+# calls); scripts/compat.py derives each export's coverage from them. Every block deletes the F2K
+# tree (RegOpenKeyExW, RegEnumKeyW, RegDeleteKeyW, RegCloseKey) and makes its keys
+# (RegCreateKeyExW).
+create = [
+    "advapi32.RegCreateKeyExW",
+    "advapi32.RegCreateKeyExA",
+    "advapi32.RegOpenKeyExW",
+    "advapi32.RegOpenKeyExA",
+    "advapi32.RegEnumKeyW",
+    "advapi32.RegDeleteKeyW",
+    "advapi32.RegCloseKey",
+    "ntdll.NtCreateKey",
+]
+open = [
+    "advapi32.RegOpenKeyExW",
+    "advapi32.RegOpenKeyExA",
+    "advapi32.RegOpenKeyW",
+    "advapi32.RegOpenKeyA",
+    "advapi32.RegCreateKeyExW",
+    "advapi32.RegCreateKeyExA",
+    "advapi32.RegSetValueExW",
+    "advapi32.RegSetValueExA",
+    "advapi32.RegQueryValueExW",
+    "advapi32.RegEnumKeyW",
+    "advapi32.RegDeleteKeyW",
+    "advapi32.RegCloseKey",
+    "ntdll.NtOpenKey",
+]
+close = [
+    "advapi32.RegCloseKey",
+    "advapi32.RegOpenKeyExW",
+    "advapi32.RegOpenKeyExA",
+    "advapi32.RegCreateKeyExW",
+    "advapi32.RegEnumKeyW",
+    "advapi32.RegDeleteKeyW",
+    "ntdll.NtClose",
+]
+setvalue = [
+    "advapi32.RegSetValueExW",
+    "advapi32.RegSetValueExA",
+    "advapi32.RegQueryValueExW",
+    "advapi32.RegQueryValueExA",
+    "advapi32.RegCreateKeyExW",
+    "advapi32.RegOpenKeyExW",
+    "advapi32.RegEnumKeyW",
+    "advapi32.RegDeleteKeyW",
+    "advapi32.RegCloseKey",
+    "ntdll.NtSetValueKey",
+    "ntdll.NtQueryValueKey",
+]
+queryvalue = [
+    "advapi32.RegQueryValueExW",
+    "advapi32.RegQueryValueExA",
+    "advapi32.RegSetValueExW",
+    "advapi32.RegCreateKeyExW",
+    "advapi32.RegOpenKeyExW",
+    "advapi32.RegEnumKeyW",
+    "advapi32.RegDeleteKeyW",
+    "advapi32.RegCloseKey",
+    "ntdll.NtQueryValueKey",
+]
+default = [
+    "advapi32.RegSetValueW",
+    "advapi32.RegSetValueA",
+    "advapi32.RegQueryValueW",
+    "advapi32.RegQueryValueA",
+    "advapi32.RegQueryValueExW",
+    "advapi32.RegQueryValueExA",
+    "advapi32.RegSetValueExW",
+    "advapi32.RegCreateKeyExW",
+    "advapi32.RegOpenKeyExW",
+    "advapi32.RegEnumKeyW",
+    "advapi32.RegDeleteKeyW",
+    "advapi32.RegCloseKey",
+]
+enum = [
+    "advapi32.RegEnumKeyW",
+    "advapi32.RegEnumKeyA",
+    "advapi32.RegCreateKeyExW",
+    "advapi32.RegOpenKeyExW",
+    "advapi32.RegDeleteKeyW",
+    "advapi32.RegCloseKey",
+    "ntdll.NtEnumerateKey",
+]
+delete = [
+    "advapi32.RegDeleteKeyW",
+    "advapi32.RegDeleteKeyA",
+    "advapi32.RegOpenKeyExW",
+    "advapi32.RegOpenKeyExA",
+    "advapi32.RegCreateKeyExW",
+    "advapi32.RegCreateKeyExA",
+    "advapi32.RegQueryValueExW",
+    "advapi32.RegQueryValueExA",
+    "advapi32.RegSetValueExW",
+    "advapi32.RegSetValueExA",
+    "advapi32.RegEnumKeyW",
+    "advapi32.RegEnumKeyA",
+    "advapi32.RegCloseKey",
+    "ntdll.NtDeleteKey",
+]

@@ -1,0 +1,52 @@
+# seh: one test per block of the real-machine capture (output.txt); see tests/README.md. Built with
+# /MD: every __try registers msvcrt.dll's _except_handler3, and setjmp is msvcrt.dll's _setjmp3.
+# Declared ahead of its real-machine build and capture (no seh.exe, no output.txt yet).
+description = "seh - structured exception handling and setjmp/longjmp under /MD (seh.c): faults and RaiseException through msvcrt.dll's _except_handler3, filter results, __finally and AbnormalTermination, nested try levels, setjmp/longjmp through _setjmp3, and longjmp out of __try blocks through _seh_longjmp_unwind."
+kind = "sectioned"
+
+[pins]
+# The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
+# calls); scripts/compat.py derives each export's coverage from them.
+"*" = [
+    "msvcrt.__set_app_type",
+    "msvcrt.__p__fmode",
+    "msvcrt.__p__commode",
+    "msvcrt._controlfp",
+    "msvcrt.__setusermatherr",
+    "msvcrt._initterm",
+    "msvcrt.__getmainargs",
+    "msvcrt.__p___initenv",
+    "msvcrt.exit",
+    "msvcrt._vsnprintf",
+    "msvcrt.strcmp",
+    "msvcrt._stricmp",
+]
+faults = ["msvcrt._except_handler3", "ntdll.KiUserExceptionDispatcher", "ntdll.RtlUnwind"]
+filters = [
+    "msvcrt._except_handler3",
+    "kernel32.RaiseException",
+    "kernel32.VirtualAlloc",
+    "kernel32.VirtualProtect",
+    "kernel32.VirtualFree",
+    "ntdll.NtContinue",
+    "ntdll.RtlUnwind",
+]
+finally = [
+    "msvcrt._except_handler3",
+    "msvcrt._local_unwind2",
+    "msvcrt._abnormal_termination",
+    "kernel32.RaiseException",
+    "ntdll.RtlUnwind",
+]
+nested = ["msvcrt._except_handler3", "msvcrt._abnormal_termination", "kernel32.RaiseException"]
+raise = ["msvcrt._except_handler3", "kernel32.RaiseException"]
+setjmp = ["msvcrt._setjmp3", "msvcrt.longjmp"]
+sehjmp = [
+    "msvcrt._setjmp3",
+    "msvcrt.longjmp",
+    "msvcrt._seh_longjmp_unwind",
+    "msvcrt._except_handler3",
+    "msvcrt._abnormal_termination",
+    "kernel32.RaiseException",
+    "ntdll.RtlUnwind",
+]

@@ -1,0 +1,61 @@
+# wide: one test per block of the real-machine capture (output.txt); see tests/README.md. Built with
+# /MD, so it imports the C runtime from msvcrt.dll as cmd.exe does. The case, ctype and locale blocks
+# print what setlocale(LC_ALL, "") gives on the real machine (its user locale). Declared ahead of
+# its real-machine build and capture (no wide.exe, no output.txt yet).
+description = "wide - the breadth of msvcrt.dll cmd.exe calls under /MD (wide.c): the wcs* functions, _wcsicmp and case mapping, the isw* and tow* classes, setlocale, swprintf, _snwprintf, _vsnwprintf and swscanf, _ultoa, _wtol, wcstol and wcstoul, the heap and memmove, qsort, rand and time."
+kind = "sectioned"
+
+[pins]
+# The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
+# calls); scripts/compat.py derives each export's coverage from them.
+"*" = [
+    "msvcrt.__set_app_type",
+    "msvcrt.__p__fmode",
+    "msvcrt.__p__commode",
+    "msvcrt._controlfp",
+    "msvcrt.__setusermatherr",
+    "msvcrt._initterm",
+    "msvcrt.__getmainargs",
+    "msvcrt.__p___initenv",
+    "msvcrt.exit",
+    "msvcrt._vsnprintf",
+    "msvcrt.strcmp",
+    "msvcrt._stricmp",
+]
+wcs = [
+    "msvcrt.wcslen",
+    "msvcrt.wcscpy",
+    "msvcrt.wcsncpy",
+    "msvcrt.wcscat",
+    "msvcrt.wcscmp",
+    "msvcrt.wcsncmp",
+    "msvcrt.wcschr",
+    "msvcrt.wcsrchr",
+    "msvcrt.wcsstr",
+    "msvcrt.wcsspn",
+]
+case = ["msvcrt._wcsicmp", "msvcrt._wcsnicmp", "msvcrt._wcslwr", "msvcrt._wcsupr", "msvcrt.setlocale"]
+ctype = [
+    "msvcrt.iswalpha",
+    "msvcrt.iswdigit",
+    "msvcrt.iswspace",
+    "msvcrt.iswxdigit",
+    "msvcrt.towlower",
+    "msvcrt.towupper",
+    "msvcrt.setlocale",
+]
+locale = ["msvcrt.setlocale"]
+format = ["msvcrt.swprintf", "msvcrt._snwprintf", "msvcrt._vsnwprintf"]
+scan = ["msvcrt.swscanf"]
+numbers = ["msvcrt._ultoa", "msvcrt._wtol", "msvcrt.wcstol", "msvcrt.wcstoul", "msvcrt._errno"]
+memory = [
+    "msvcrt.malloc",
+    "msvcrt.calloc",
+    "msvcrt.realloc",
+    "msvcrt.free",
+    "msvcrt.memmove",
+    "msvcrt._errno",
+]
+sort = ["msvcrt.qsort", "msvcrt.wcscmp"]
+rand = ["msvcrt.rand", "msvcrt.srand"]
+time = ["msvcrt.time"]
