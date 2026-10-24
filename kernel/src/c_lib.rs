@@ -113,4 +113,3 @@ pub unsafe extern "C" fn memcpy(dest: *mut c_void, src: *const c_void, n: usize)
     }
     dest
 }
-

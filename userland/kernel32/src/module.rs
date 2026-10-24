@@ -166,9 +166,9 @@ pub extern "system" fn free_library(module: u32) -> u32 {
 }
 
 /// DisableThreadLibraryCalls: the DLL whose handle is `module` gets no DLL_THREAD_ATTACH and
-/// DLL_THREAD_DETACH from now on (LdrDisableThreadCalloutsForDll). A handle naming no module is TRUE
-/// too, the last error untouched (the dllmain capture); a failed call is FALSE with its status's
-/// error.
+/// DLL_THREAD_DETACH from now on (LdrDisableThreadCalloutsForDll). A handle naming no module is
+/// TRUE too, the last error untouched (the dllmain capture); a failed call is FALSE with its
+/// status's error.
 #[unsafe(export_name = "f2k_export_DisableThreadLibraryCalls")]
 pub extern "system" fn disable_thread_library_calls(module: u32) -> u32 {
     // SAFETY: ntdll's export.

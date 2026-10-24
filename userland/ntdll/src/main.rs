@@ -24,8 +24,8 @@
 //! `src/strings.rs` over `rtl::string`); the current user's registry hive, as advapi32 opens it
 //! (RtlOpenCurrentUser: `src/registry.rs`); the time conversions (RtlTimeToTimeFields,
 //! RtlTimeFieldsToTime: `src/time.rs` over `rtl::time`); the bitmaps kernel32 keeps the TLS slots
-//! in (RtlFindClearBitsAndSet, RtlClearBits, RtlAreBitsSet: `src/bitmap.rs` over `rtl::bitmap`); the
-//! resources and the messages kernel32's FormatMessage finds and lays out (LdrFindResource_U,
+//! in (RtlFindClearBitsAndSet, RtlClearBits, RtlAreBitsSet: `src/bitmap.rs` over `rtl::bitmap`);
+//! the resources and the messages kernel32's FormatMessage finds and lays out (LdrFindResource_U,
 //! LdrFindResourceDirectory_U, LdrAccessResource, RtlFindMessage, RtlFormatMessage:
 //! `src/resource.rs` over `rtl::resource` and `rtl::message`); the loader, which loads every DLL of
 //! the process but ntdll from the volume, kernel32 included, and calls their entry points

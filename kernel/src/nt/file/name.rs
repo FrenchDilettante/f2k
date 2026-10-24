@@ -92,9 +92,9 @@ fn valid_unit(unit: u16) -> bool {
 }
 
 /// The components of `units` (no leading separator) into `name`, validated. A `.` or `..` is no
-/// folding here (ntdll folded the DOS path's): inside the path it is a name the volume's directories
-/// never answer to (their dot entries match no name), so the walk finds the path missing, as
-/// Windows 2000's does (the files capture: `DATA\...\SMALL.TXT`, which ntdll makes
+/// folding here (ntdll folded the DOS path's): inside the path it is a name the volume's
+/// directories never answer to (their dot entries match no name), so the walk finds the path
+/// missing, as Windows 2000's does (the files capture: `DATA\...\SMALL.TXT`, which ntdll makes
 /// `DATA\..\SMALL.TXT`, is ERROR_PATH_NOT_FOUND); as the last component it is invalid.
 fn components(units: &[u16], name: &mut FileName) -> Result<(), Status> {
     if units.is_empty() {

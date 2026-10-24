@@ -7,10 +7,10 @@
 //! (doubled separators) vanish; `.` and `..` fold lexically (`..` at the root stays there); the
 //! last component loses its trailing dots and spaces, the others keep theirs but for a component of
 //! three dots or more, written `..` and not folded (the files capture: `DATA. \SUB\...\X. .` is
-//! `DATA. \SUB\..\X`; the file system decides what an inner `DATA.`, `DATA ` or `..` names). A drive-relative path (`C:name`) on the current
-//! directory's drive is relative to it, on another drive relative to that drive's root (no
-//! per-drive directories are kept: the `=C:` environment variables are not consulted). A UNC path
-//! keeps its `\\server\share` prefix.
+//! `DATA. \SUB\..\X`; the file system decides what an inner `DATA.`, `DATA ` or `..` names). A
+//! drive-relative path (`C:name`) on the current directory's drive is relative to it, on another
+//! drive relative to that drive's root (no per-drive directories are kept: the `=C:` environment
+//! variables are not consulted). A UNC path keeps its `\\server\share` prefix.
 
 /// The longest path the functions build, in units, the terminator included (MAX_PATH).
 pub const MAX_PATH: usize = 260;
