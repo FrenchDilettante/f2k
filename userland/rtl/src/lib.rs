@@ -8,7 +8,10 @@
 //! ([`bitmap`]: ntdll's RtlFindClearBitsAndSet family, kernel32's TLS slots), the critical sections
 //! ([`critsec`]: ntdll's RtlEnterCriticalSection family, over the system it is handed), the heaps
 //! ([`heap`] over the allocator core [`heapcore`]: ntdll's RtlCreateHeap family), Local and Global
-//! memory ([`localmem`]: kernel32's, over ntdll's heap calls), the environment blocks ([`env`]:
+//! memory ([`localmem`]: kernel32's, over ntdll's heap and handle-table calls), the handle tables
+//! ([`handles`]: ntdll's RtlAllocateHandle family), the resources and the message tables
+//! ([`resource`]: ntdll's LdrFindResource_U family and RtlFindMessage), the message formatter
+//! ([`message`]: ntdll's RtlFormatMessage), the environment blocks ([`env`]:
 //! ntdll's RtlSetEnvironmentVariable family), the loader's share of a thread's start ([`ldr`]), the
 //! loader's module lists and export lookups ([`modules`]: ntdll's LdrGetDllHandle family), the
 //! console server's message format and rules ([`console`]: kernel32's side and the kernel's
@@ -30,13 +33,16 @@ pub mod console;
 pub mod cp1252;
 pub mod critsec;
 pub mod env;
+pub mod handles;
 pub mod heap;
 pub mod heapcore;
 pub mod ldr;
 pub mod localmem;
+pub mod message;
 pub mod modules;
 pub mod path;
 pub mod printf;
+pub mod resource;
 pub mod seh;
 pub mod status;
 mod status_table;

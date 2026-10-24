@@ -125,6 +125,12 @@ local = [
     "kernel32.GlobalHandle",
     "kernel32.GlobalSize",
     "kernel32.GlobalReAlloc",
+    "ntdll.RtlInitializeHandleTable",
+    "ntdll.RtlAllocateHandle",
+    "ntdll.RtlFreeHandle",
+    "ntdll.RtlIsValidHandle",
+    "ntdll.RtlLockHeap",
+    "ntdll.RtlUnlockHeap",
 ]
 sysinfo = [
     "kernel32.GetSystemInfo",

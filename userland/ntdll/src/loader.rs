@@ -85,7 +85,7 @@ use crate::curdir::{self, UnicodeString};
 
 /// The process's own memory, read and written in place (a bad pointer faults the caller, as on
 /// Windows 2000).
-struct Mapped;
+pub(crate) struct Mapped;
 
 impl Memory for Mapped {
     fn byte(&self, at: u32) -> u8 {
