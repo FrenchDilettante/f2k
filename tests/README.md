@@ -212,8 +212,7 @@ msvcrt.dll's rather than a static copy linked into the program.
   builds them, `_fmode`, `_commode` and `_controlfp`, the
   initializers `_initterm` runs, and the exit paths (`exit` and its
   `atexit` handlers, `_exit`, `main`'s return, an unhandled exception).
-  Gated; its `env` block is pending, as F2K starts a process with an
-  empty environment (no `PATH`).
+  Gated.
 - `seh` - structured exception handling compiled against msvcrt's
   `_except_handler3`: faults, filters, `__finally`, nesting,
   `RaiseException`, `setjmp`/`longjmp`, and `longjmp` out of `__try`
@@ -221,7 +220,7 @@ msvcrt.dll's rather than a static copy linked into the program.
 - `fd` - the descriptor layer: `_open_osfhandle`/`_get_osfhandle`,
   `_dup`/`_dup2`, `_setmode` and `_tell`, the standard streams in
   `_iob`, `fgets`, and `_getch` over console input the program queues
-  itself. Gated; its `getch` block is pending (console input).
+  itself. Gated.
 - `wide` - the wide string, character-class and conversion functions,
   `swprintf` and `swscanf`, number parsing, the allocator, `qsort`,
   `rand`, `setlocale` and `time`. Gated.

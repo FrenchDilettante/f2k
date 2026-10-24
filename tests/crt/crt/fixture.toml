@@ -1,13 +1,9 @@
 # crt: one test per block of the real-machine capture (output.txt); see tests/README.md. Built with
 # /MD, so it imports the C runtime from msvcrt.dll as cmd.exe does. Its args block runs with its own
-# command line (tests/capture.bat). Its env block is pending: F2K starts a process with an empty
-# environment, so there is no PATH entry for it to find.
+# command line (tests/capture.bat).
 description = "crt - msvcrt.dll's startup and exit protocol under /MD (crt.c): argv and envp as __getmainargs builds them, _fmode, _commode and _controlfp, the .CRT$XIU/.CRT$XCU initializers _initterm runs, and the exit paths: atexit and exit, _exit, main's return, and an unhandled exception through _XcptFilter."
 kind = "sectioned"
 gate = true
-
-[pending]
-env = "not yet implemented"
 
 [pins]
 # The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup

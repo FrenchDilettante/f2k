@@ -57,6 +57,11 @@ make clean
 
 ## Running
 
+Every process starts in its program's directory, with the same environment
+(`kernel/src/user/params.rs`): `COMPUTERNAME=QEMU`, `ComSpec=C:\WINNT\system32\cmd.exe`,
+`PATH=C:\WINNT\system32;C:\WINNT`, `PATHEXT=.COM;.EXE;.BAT;.CMD`, `SystemRoot=C:\WINNT`,
+`USERNAME=jeb` and `windir=C:\WINNT`.
+
 ### QEMU (ISO with Limine)
 ```bash
 make iso          # Create ISO first
@@ -136,7 +141,7 @@ the real function fails (one that returns nothing just returns). Code that hits 
 handle yet can do the same, through `stub::stubbed`. msvcrt is F2K's own C runtime over
 kernel32: program start-up and exit, structured exception handling and `setjmp`, file descriptors
 and stdio streams, `printf` and `swscanf`, wide strings, the locale, the allocator, `qsort`, `rand`
-and `time`; its pipes (`_pipe`, `_popen`, `_pclose`) and console input (`_getch`, `_kbhit`) are
+and `time`, and console input (`_getch`, `_kbhit`); its pipes (`_pipe`, `_popen`, `_pclose`) are
 stubs. advapi32's registry calls run over the kernel's registry (`GetSecurityInfoExW` is a stub),
 and user32's window station and desktop calls and MessageBeep are written. The stubs log through
 ntdll's `DbgPrint`, which Windows 2000's msvcrt and user32 do not import: `--check` allows that one

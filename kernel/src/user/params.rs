@@ -14,14 +14,17 @@
 //! start opens its handle, and it is ntdll's to change from then on (RtlSetCurrentDirectory_U) and
 //! to resolve relative paths against (its handle the root of the NT names it makes). The
 //! environment block the block's Environment points at is user mode's from the start, as on Windows
-//! 2000: the kernel maps it empty ([`ENVIRONMENT_BLOCK`]), and ntdll's environment functions edit
-//! it and move it to a larger allocation when it outgrows its region.
+//! 2000: the kernel maps it ([`ENVIRONMENT_BLOCK`]) holding the variables every process starts
+//! with ([`ENVIRONMENT`]), and ntdll's environment functions edit it and move it to a larger
+//! allocation when it outgrows its region.
 
 // The layouts' fields user code reads, whether the kernel writes them or not (kernel32 and ntdll
 // read them by these offsets).
 #![allow(dead_code)]
 
 use rtl::cp1252::MB_TO_WC;
+
+use crate::user::shared::NT_SYSTEM_ROOT;
 
 /// The block's size: RTL_USER_PROCESS_PARAMETERS on NT 5.0, x86.
 pub const SIZE: u32 = 0x290;
@@ -87,13 +90,46 @@ pub const PAGES: u32 = 2;
 /// block's strings on the second page.
 pub const CSD_VERSION_BUFFER: u32 = COMMAND_LINE_BUFFER + COMMAND_LINE_ROOM;
 pub const CSD_VERSION_TEXT: &[u8] = b"Service Pack 4";
-/// The environment block's starting region, which the block's Environment points at: an empty
-/// block (two NULs, the region's zeroed pages), user mode's from then on (ntdll's
+/// The environment block's starting region, which the block's Environment points at: the
+/// starting variables ([`ENVIRONMENT`]) at its start, user mode's from then on (ntdll's
 /// RtlSetEnvironmentVariable edits it in place, and moves it to a larger allocation when it
 /// outgrows the region, releasing this one).
 pub const ENVIRONMENT_BLOCK: u32 = 0x0035_0000;
 /// The region's size in pages.
 pub const ENVIRONMENT_BLOCK_PAGES: u32 = 5;
+
+/// The variables every process starts with, each `NAME=value` as the parts that make it, in the
+/// order Windows keeps an environment block (sorted by name, without regard to case) and spelled
+/// as Windows 2000 spells them. The system's paths are under the system root, the shared
+/// page's NtSystemRoot ([`NT_SYSTEM_ROOT`]).
+pub const ENVIRONMENT: [&[&[u8]]; 7] = [
+    &[b"COMPUTERNAME=QEMU"],
+    &[b"ComSpec=", NT_SYSTEM_ROOT, b"\\system32\\cmd.exe"],
+    &[b"PATH=", NT_SYSTEM_ROOT, b"\\system32;", NT_SYSTEM_ROOT],
+    &[b"PATHEXT=.COM;.EXE;.BAT;.CMD"],
+    &[b"SystemRoot=", NT_SYSTEM_ROOT],
+    &[b"USERNAME=jeb"],
+    &[b"windir=", NT_SYSTEM_ROOT],
+];
+
+/// The starting environment block's room in bytes: the variables, in UTF-16, fit it.
+pub const ENVIRONMENT_ROOM: usize = 0x400;
+
+/// The starting environment block ([`ENVIRONMENT`]) in UTF-16 into `out`: each entry
+/// NUL-terminated, a final NUL after the last; the bytes written.
+pub fn environment(out: &mut [u8; ENVIRONMENT_ROOM]) -> usize {
+    let mut at = 0;
+    for entry in ENVIRONMENT {
+        for part in entry {
+            at += widen(part, &mut out[at..]);
+        }
+        // The entry's terminator.
+        out[at..at + 2].fill(0);
+        at += 2;
+    }
+    out[at..at + 2].fill(0);
+    at + 2
+}
 
 /// The standard handles the block carries, per the real-machine trace
 /// (`tests/core/hello/trace.txt`): the GetFileType probes after each GetStdHandle, and the
@@ -217,8 +253,8 @@ pub fn starting_directory(image_path: &[u8], out: &mut [u8; MODULE_ROOM]) -> usi
 /// Map the parameters pages at [`crate::user::PARAMS_PAGE`] into `space` (the current address
 /// space) and write the block: the command line, the image's Win32 path (from its volume path
 /// `module`), the current directory (the image's own), the standard handles and the environment
-/// block's address; the service pack's name. The environment block's region is mapped too, its
-/// zeroed pages an empty block.
+/// block's address; the service pack's name. The environment block's region is mapped too, the
+/// starting variables written at its start.
 #[cfg(target_arch = "x86")]
 pub fn map(space: &mut crate::mem::vm::AddressSpace, command_line: &[u8], module: &[u8]) {
     use crate::mem::{paging::PAGE_SIZE, vm};
@@ -267,6 +303,9 @@ pub fn map(space: &mut crate::mem::vm::AddressSpace, command_line: &[u8], module
             vm::PAGE_READWRITE,
         );
     }
+    let mut environment_block = [0u8; ENVIRONMENT_ROOM];
+    let environment_bytes = environment(&mut environment_block);
+    let _ = write_user(ENVIRONMENT_BLOCK, &environment_block[..environment_bytes]);
 }
 
 #[cfg(test)]
@@ -378,6 +417,41 @@ mod tests {
             0,
             "an allocation-granularity base"
         );
+    }
+
+    /// The starting environment: its entries in order, under the system root, sorted by their
+    /// upper-cased names as ntdll keeps a block, ended by an empty entry.
+    #[test]
+    fn the_environment_block_holds_the_starting_variables() {
+        let mut out = [0xFFu8; ENVIRONMENT_ROOM];
+        let length = environment(&mut out);
+        let units: Vec<u16> = out[..length]
+            .chunks_exact(2)
+            .map(|unit| u16::from_le_bytes([unit[0], unit[1]]))
+            .collect();
+        assert_eq!(rtl::env::block_length(&units), units.len());
+        let text = String::from_utf16(&units).unwrap();
+        let entries: Vec<&str> = text.split('\0').collect();
+        assert_eq!(
+            entries,
+            [
+                "COMPUTERNAME=QEMU",
+                "ComSpec=C:\\WINNT\\system32\\cmd.exe",
+                "PATH=C:\\WINNT\\system32;C:\\WINNT",
+                "PATHEXT=.COM;.EXE;.BAT;.CMD",
+                "SystemRoot=C:\\WINNT",
+                "USERNAME=jeb",
+                "windir=C:\\WINNT",
+                "",
+                "",
+            ]
+        );
+        let names: Vec<String> = entries[..ENVIRONMENT.len()]
+            .iter()
+            .map(|entry| entry.split('=').next().unwrap().to_ascii_uppercase())
+            .collect();
+        assert!(names.is_sorted(), "{names:?}");
+        assert!(length <= (ENVIRONMENT_BLOCK_PAGES * 0x1000) as usize);
     }
 
     /// Text widens through code page 1252.

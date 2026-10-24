@@ -18,7 +18,8 @@ pub const KERNEL_ADDRESS: u32 = 0xFFDF_0000;
 
 /// The system root, the page's NtSystemRoot: the one place every system path comes from (ntdll's
 /// DLL search and its own module path read it from the page; the kernel finds kernel32 under it on
-/// the boot volume, `exec::modules`).
+/// the boot volume, `exec::modules`; every process's starting environment names it,
+/// `user::params::ENVIRONMENT`).
 pub const NT_SYSTEM_ROOT: &[u8] = b"C:\\WINNT";
 
 /// The fields, at their NT 5.0 offsets.

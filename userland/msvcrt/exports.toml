@@ -4,7 +4,7 @@
 # Every export is cdecl, as the C runtime's functions are (the convention below). F2K's msvcrt
 # exports what the corpus fixtures (tests/crt) and cmd.exe import: its own code (src/lib.rs, and
 # src/seh.s for the exception handling and setjmp exports) over kernel32, as Windows 2000's msvcrt
-# imports kernel32 alone, and stubs for what is not written yet (pipes and console input).
+# imports kernel32 alone, and stubs for what is not written yet (pipes).
 # Its variables (`data = true`) are its own storage (src/data.rs). The rest of the records are
 # catalogued from MSVCRT.dll 6.1.9844.0's export table (scripts/catalogue_exports.py): their name
 # and ordinal. Implementing one gives it its group, prototype and implementation.
@@ -326,7 +326,7 @@ fails = "-1"
 name = "_getch"
 group = "lowio"
 args = []
-impl = { stub = "not yet implemented" }
+impl = { native = "_getch" }
 ordinal = 257
 fails = "never"
 
@@ -334,7 +334,7 @@ fails = "never"
 name = "_kbhit"
 group = "lowio"
 args = []
-impl = { stub = "not yet implemented" }
+impl = { native = "_kbhit" }
 ordinal = 324
 fails = "never"
 

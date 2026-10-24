@@ -1,13 +1,9 @@
 # fd: one test per block of the real-machine capture (output.txt); see tests/README.md. Built with
 # /MD, so it imports the C runtime from msvcrt.dll as cmd.exe does. Works in a SCRATCH directory
-# beside the program, which each section empties first. Its getch block is pending: msvcrt's
-# _kbhit and _getch need kernel32's console input calls.
+# beside the program, which each section empties first.
 description = "fd - msvcrt.dll's descriptor layer and stdio under /MD (fd.c): _open_osfhandle and _get_osfhandle, _dup and _dup2 (fd 1 redirected into a file and restored), _close, _setmode's text and binary modes and _tell, _iob's streams with fprintf, printf and fflush, fgets in text and binary mode, and _getch over queued console key events."
 kind = "sectioned"
 gate = true
-
-[pending]
-getch = "not yet implemented"
 
 [pins]
 # The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup

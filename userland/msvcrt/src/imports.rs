@@ -58,6 +58,24 @@ unsafe extern "system" {
     ) -> u32;
     pub fn GetCurrentProcess() -> usize;
 
+    /// The console's input buffer (`CONIN$`) and the console input calls `_kbhit` and `_getch`
+    /// make: the waiting records counted, copied and taken (INPUT_RECORDs, the characters in the
+    /// console's code page), and the input's mode.
+    pub fn CreateFileA(
+        name: *const u8,
+        access: u32,
+        share: u32,
+        security: usize,
+        disposition: u32,
+        flags: u32,
+        template: usize,
+    ) -> usize;
+    pub fn GetNumberOfConsoleInputEvents(console: usize, count: *mut u32) -> u32;
+    pub fn PeekConsoleInputA(console: usize, records: *mut u8, length: u32, read: *mut u32) -> u32;
+    pub fn ReadConsoleInputA(console: usize, records: *mut u8, length: u32, read: *mut u32) -> u32;
+    pub fn GetConsoleMode(console: usize, mode: *mut u32) -> u32;
+    pub fn SetConsoleMode(console: usize, mode: u32) -> u32;
+
     /// The C runtime's own heap.
     pub fn HeapCreate(options: u32, initial: usize, maximum: usize) -> usize;
     pub fn HeapAlloc(heap: usize, flags: u32, size: usize) -> *mut u8;
@@ -252,6 +270,48 @@ pub mod host {
 
     pub unsafe extern "system" fn GetCurrentProcess() -> usize {
         usize::MAX
+    }
+
+    pub unsafe extern "system" fn CreateFileA(
+        _: *const u8,
+        _: u32,
+        _: u32,
+        _: usize,
+        _: u32,
+        _: u32,
+        _: usize,
+    ) -> usize {
+        unreachable("CreateFileA")
+    }
+
+    pub unsafe extern "system" fn GetNumberOfConsoleInputEvents(_: usize, _: *mut u32) -> u32 {
+        unreachable("GetNumberOfConsoleInputEvents")
+    }
+
+    pub unsafe extern "system" fn PeekConsoleInputA(
+        _: usize,
+        _: *mut u8,
+        _: u32,
+        _: *mut u32,
+    ) -> u32 {
+        unreachable("PeekConsoleInputA")
+    }
+
+    pub unsafe extern "system" fn ReadConsoleInputA(
+        _: usize,
+        _: *mut u8,
+        _: u32,
+        _: *mut u32,
+    ) -> u32 {
+        unreachable("ReadConsoleInputA")
+    }
+
+    pub unsafe extern "system" fn GetConsoleMode(_: usize, _: *mut u32) -> u32 {
+        unreachable("GetConsoleMode")
+    }
+
+    pub unsafe extern "system" fn SetConsoleMode(_: usize, _: u32) -> u32 {
+        unreachable("SetConsoleMode")
     }
 
     /// The host heap stands in for the C runtime's: each block carries its size ahead of it.
