@@ -21,7 +21,7 @@ doctest = false
 [features]
 # Test-only fault injection (see kmain): raise a CPU exception right after
 # boot so the exception stubs and the COM1 dump can be verified on target
-# by the fault-ud / fault-gp cases of tests/kernel/test_kernel.py.
+# by the fault-ud / fault-gp cases of tests/core/kernel/test_kernel.py.
 fault-test-ud = []
 fault-test-gp = []
 # Swaps the ring-3 smoke stub for one that passes an unmapped user
@@ -49,7 +49,7 @@ fault-test-ntclose = []
 # bare null-write, exit0 run in sequence in one boot, each process torn down
 # and audited before the next starts. The sequence runner and the
 # per-process teardown are the runner's deliverables; the
-# tests/kernel cases pin the COM1 shapes.
+# tests/core/kernel cases pin the COM1 shapes.
 run-process-suite = []
 # The interrupt/timer diagnostic boot: once the interrupt subsystem is up, a
 # boot-time pass reports the PIC remap and line masks, the PIT programming
@@ -57,7 +57,7 @@ run-process-suite = []
 # counter, the clock DPC's timer expiry, and the interrupt-core audit on COM1,
 # then lets the normal boot proceed to the default image's exit. The tick is
 # default-on kernel machinery; the feature gates only the diagnostic lines and
-# their bounded waits. The tests/kernel irq-smoke cases pin the COM1 shapes.
+# their bounded waits. The tests/core/kernel irq-smoke cases pin the COM1 shapes.
 irq-smoke = []
 # The IDE diagnostic boot: after the driver comes up, a boot-time pass
 # reads the drive's identity, the MBR, the volume boot sector, and the
@@ -66,7 +66,7 @@ irq-smoke = []
 # exit — coexistence, not just the diagnostic. The driver itself is
 # default-on kernel machinery; the feature gates only the diagnostic
 # lines. Disk path only (the image is the IDE primary master); the
-# tests/kernel case pins the COM1 shapes.
+# tests/core/kernel case pins the COM1 shapes.
 disk-smoke = []
 # The keyboard diagnostic boot: the keyboard driver's DPC reports on COM1
 # each byte it takes from the controller (the keyboard's replies to the
@@ -74,7 +74,7 @@ disk-smoke = []
 # appends to the input buffer, as the buffer holds it (down or up, the
 # virtual key, the scan code, the character, the control-key state, the
 # repeat count). The driver itself is default-on kernel machinery; the
-# feature gates only the diagnostic lines. tests/test_input.py drives keys
+# feature gates only the diagnostic lines. tests/core/test_input.py drives keys
 # through QEMU's monitor and pins them.
 kbd-smoke = []
 # The opt-in performance trace: the interval clock's interrupt samples the

@@ -1,3 +1,0 @@
-# exit0: served, no capture (the kernel cases in tests/kernel/test_kernel.py boot it).
-description = "exit0 - no C runtime: ExitProcess(0) from the entry point, the one-import program."
-kind = "smoke"

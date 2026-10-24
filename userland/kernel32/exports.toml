@@ -64,7 +64,7 @@
 # record to its group's section, with its group, args and impl.
 #
 # What pins an export is declared by the tests, not here: a fixture block's `[pins]` in
-# tests/<fixture>/fixture.toml, a host scenario's `/// Pins:` doc line (kernel32.<Name>).
+# tests/<dll>/<fixture>/fixture.toml, a host scenario's `/// Pins:` doc line (kernel32.<Name>).
 # scripts/compat.py derives each export's coverage from them and from the tests' results.
 #
 # kernel32 exports every function the corpus fixtures import, all of it user-mode code: its own

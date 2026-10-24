@@ -151,9 +151,10 @@ make check-all PYTEST_FLAGS="-n 2"
 
 ### On-target QEMU tests
 The on-target tests run through pytest (each sectioned fixture's
-`tests/<name>/test_<name>.py`, the kernel's own boots in
-`tests/kernel/test_kernel.py`, helpers in `tests/f2kboot.py` and
-`tests/conftest.py`), so an IDE lists and runs them one by one. The
+`tests/<dll>/<name>/test_<name>.py`, under the DLL it exercises; the
+kernel's own boots in `tests/core/kernel/test_kernel.py`; helpers in
+`tests/f2kboot.py` and `tests/conftest.py`), so an IDE lists and runs
+them one by one. The
 kernel boots (the fault stubs, the Limine disk path, the program
 smokes, the multi-process suite, the interrupt and IDE diagnostics) are
 cases in `test_kernel.py`: kernel features to build with, image to
@@ -175,9 +176,10 @@ pytest-xdist).
 ```bash
 make test        # every on-target test: the kernel boots and the corpus
 uv run pytest --collect-only -q                     # list every test
-uv run pytest tests/kernel -k fault-ud              # one kernel case
-uv run pytest tests/bare -n 4                       # one fixture's blocks
-uv run pytest tests/runtime --runxfail              # see why the work list fails
+uv run pytest tests/core/kernel -k fault-ud         # one kernel case
+uv run pytest tests/core/bare -n 4                  # one fixture's blocks
+uv run pytest tests/kernel32 -n 4                   # one DLL's fixtures
+uv run pytest tests/kernel32/runtime --runxfail     # see why the work list fails
 uv run pytest --no-build ...                        # reuse the last make disk (its features only)
 make test KERNEL_PROFILE=dev-opt                    # the kernel's dependencies optimized
 ```
@@ -225,7 +227,7 @@ f2k/
 │   ├── x86-elf-ld         # Linker wrapper
 │   ├── linker.x86         # Custom linker script
 │   ├── create_partition_table.py  # MBR partition table for the disk image
-│   ├── gen-files-data.py  # The files fixture's data tree (tests/files/DATA)
+│   ├── gen-files-data.py  # The files fixture's data tree (tests/kernel32/files/DATA)
 │   ├── gen-nt-tables.py   # Windows 2000's service numbers and the status table, regenerated
 │   ├── compat.py          # The DLL compatibility: the pins checked, the scenarios run, the report
 │   ├── dump_exports.py    # A real DLL's export and import tables, dumped
@@ -233,6 +235,11 @@ f2k/
 │
 ├── pyproject.toml    # The Python tooling (uv): pytest for the on-target tests
 ├── tests/            # Windows 2000 test corpus and the pytest suite (see tests/README.md)
+│   ├── core/             # The kernel's own boots and the smoke fixtures
+│   ├── kernel32/         # The kernel32 fixtures
+│   ├── user32/           # The user32 fixture (hellogui)
+│   ├── harness/          # Checks of the tests and the repository (no QEMU)
+│   └── common/           # The fixtures' shared header (f2kt.h) and stamp tool
 │
 ├── tools/exportgen/  # The export specs' reader and generator (a host crate, outside the workspace)
 ├── userland/         # The system DLLs (own workspace and target): rtl, ntdll, kernel32, each

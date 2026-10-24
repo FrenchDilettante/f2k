@@ -499,12 +499,15 @@ mod tests {
     use crate::mem::paging::PAGE_SIZE;
     use crate::status::{STATUS_FILE_CORRUPT_ERROR, STATUS_NO_SUCH_FILE};
 
-    const EXIT0: &[u8] = include_bytes!("../../../tests/exit0/exit0.exe");
-    const RET0: &[u8] = include_bytes!("../../../tests/ret0/ret0.exe");
+    const EXIT0: &[u8] = include_bytes!("../../../tests/core/exit0/exit0.exe");
+    const RET0: &[u8] = include_bytes!("../../../tests/core/ret0/ret0.exe");
 
     /// The corpus the disk carries (see the Makefile's disk target), by fixture name.
     const CORPUS: [(&str, &[u8]); 3] = [
-        ("hello", include_bytes!("../../../tests/hello/hello.exe")),
+        (
+            "hello",
+            include_bytes!("../../../tests/core/hello/hello.exe"),
+        ),
         ("exit0", EXIT0),
         ("ret0", RET0),
     ];

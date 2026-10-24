@@ -9,7 +9,7 @@ Three pieces the test modules share:
   side), stopped as soon as the caller's check has its answer;
 - checks: the kernel cases' expected-string rules (`Expectation`), and the corpus's capture blocks
   compared against the program output a boot carries (`Block`, `blocks`); a sectioned fixture's
-  tests come from its declaration, tests/<fixture>/fixture.toml (`corpus_test`);
+  tests come from its declaration, tests/<dll>/<fixture>/fixture.toml (`corpus_test`);
 - the text screen: a boot that asks for it carries a QMP socket, and the machine's VGA text page is
   read through it while QEMU still runs (`read_text_screen`, `TextScreen`), or drawn as QEMU shows
   it (`screendump`, a PNG; `read_png`, `differing_cells`).
@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Callable
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+TESTS = REPO_ROOT / "tests"
 QEMU = os.environ.get("QEMU", "qemu-system-i386")
 WORK = REPO_ROOT / "target" / "qemu"
 # The kernel's cargo profile (the Makefile's KERNEL_PROFILE, which `make test` passes on): dev, the
@@ -717,7 +718,7 @@ def read_capture(fixture: str) -> list[Block]:
     capture script cannot take: an interactive console, a real-hardware answer) merged over it. An
     override replaces the captured block with the same command line, in place, or comes after them
     all."""
-    directory = REPO_ROOT / "tests" / fixture
+    directory = fixture_directory(fixture)
     blocks = parse_capture(directory / "output.txt")
     overrides = directory / "overrides.txt"
     if overrides.is_file():
@@ -848,11 +849,11 @@ def teardown_problem(lines: list[str]) -> str | None:
 
 # --- The sectioned corpus ------------------------------------------------------------------------
 #
-# Each sectioned fixture's real-machine capture, tests/<name>/output.txt (tests/capture.bat), with the
-# blocks of its overrides.txt merged over it, is its expectation; its declaration,
-# tests/<name>/fixture.toml, says how the comparison goes, and tests/<name>/test_<name>.py binds
-# `corpus_test(<name>)`: one test per captured block, through `blocks` and the `run_block` fixture
-# (tests/conftest.py).
+# Each sectioned fixture's real-machine capture, tests/<dll>/<name>/output.txt (tests/capture.bat),
+# with the blocks of its overrides.txt merged over it, is its expectation; its declaration,
+# tests/<dll>/<name>/fixture.toml, says how the comparison goes, and
+# tests/<dll>/<name>/test_<name>.py binds `corpus_test(<name>)`: one test per captured block, through
+# `blocks` and the `run_block` fixture (tests/conftest.py).
 
 # The fixtures' directory on the boot volume (the Makefile's CORPUS_FIXTURES go to \CORPUS): each
 # block's program runs from there, as each runs from its own directory on the real machine.
@@ -937,10 +938,35 @@ def blocks(
     return params
 
 
+@functools.cache
+def fixture_directories() -> dict[str, Path]:
+    """Every declared fixture's directory, by name: tests/<dll>/<name>/, the one holding its
+    fixture.toml. The fixtures are grouped by the DLL they exercise, but the disk carries them all
+    in one directory (and the pins and results key on the bare name): a name two groups declare is
+    an error."""
+    directories: dict[str, Path] = {}
+    for path in sorted(TESTS.glob("*/*/fixture.toml")):
+        name = path.parent.name
+        if name in directories:
+            first, second = (where.relative_to(REPO_ROOT) for where in (directories[name], path.parent))
+            raise ValueError(f"fixture {name!r} is declared twice, in {first} and {second}: the names must be"
+                             " unique across the groups")
+        directories[name] = path.parent
+    return directories
+
+
+def fixture_directory(fixture: str) -> Path:
+    """A declared fixture's directory, tests/<dll>/<fixture>/."""
+    try:
+        return fixture_directories()[fixture]
+    except KeyError:
+        raise ValueError(f"no fixture {fixture!r} is declared (tests/*/{fixture}/fixture.toml)") from None
+
+
 def declaration(fixture: str) -> dict:
-    """A fixture's declaration, tests/<fixture>/fixture.toml (tests/README.md documents its
+    """A fixture's declaration, tests/<dll>/<fixture>/fixture.toml (tests/README.md documents its
     fields)."""
-    with open(REPO_ROOT / "tests" / fixture / "fixture.toml", "rb") as file:
+    with open(fixture_directory(fixture) / "fixture.toml", "rb") as file:
         return tomllib.load(file)
 
 
@@ -951,13 +977,13 @@ REAL_MACHINE_FILES = ("{name}.exe", "{name}.c", "output.txt")
 
 def real_machine_files(fixture: str) -> list[Path]:
     """A sectioned fixture's real-machine files (REAL_MACHINE_FILES), by path."""
-    directory = REPO_ROOT / "tests" / fixture
+    directory = fixture_directory(fixture)
     return [directory / name.format(name=fixture) for name in REAL_MACHINE_FILES]
 
 
 def awaited(fixture: str) -> bool:
     """Whether a fixture is declared ahead of its real-machine files: none of them is checked in
-    (tests/test_repository.py refuses a fixture holding only some)."""
+    (tests/harness/test_repository.py refuses a fixture holding only some)."""
     return not any(path.exists() for path in real_machine_files(fixture))
 
 
@@ -968,7 +994,8 @@ def corpus_params(fixture: str) -> list:
 
     declared = declaration(fixture)
     if declared.get("kind") != "sectioned":
-        raise ValueError(f"tests/{fixture}/fixture.toml does not declare a sectioned fixture")
+        raise ValueError(f"{fixture_directory(fixture).relative_to(REPO_ROOT)}/fixture.toml does not declare"
+                         " a sectioned fixture")
     if awaited(fixture):
         reason = (f"{fixture} awaits its real-machine build and capture "
                   f"({', '.join(path.name for path in real_machine_files(fixture))})")

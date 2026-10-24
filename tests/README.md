@@ -7,10 +7,25 @@ environment, not by what F2K happens to implement.
 
 ## Layout
 
-One directory per test, named after the test:
+The tests are grouped by the DLL they exercise, one directory per group:
 
 ```
-tests/<name>/
+tests/
+├── core/       # the kernel's own boots (kernel/), the Limine, input and screen tests
+│               # (test_limine.py, test_input.py, test_screen.py and its screens/), and the
+│               # fixtures exit0, ret0, hello and bare
+├── kernel32/   # runtime, memory, threads, sync, sched, files, fswrite, dll
+├── user32/     # hellogui
+├── harness/    # checks of the tests and the repository themselves (no QEMU)
+└── common/     # f2kt.h, srcsum.c: shared by the fixtures' sources
+```
+
+No fixture calls ntdll directly yet, so there is no `ntdll/` group.
+Inside its group, each test has its own directory, named after the
+test:
+
+```
+tests/<dll>/<name>/
 ├── <name>.c        # the source, built on the real Windows 2000 machine
 ├── <name>.exe      # the compiled fixture (committed; it is the point)
 ├── *.dll           # companion DLLs the program loads, if any (committed, built beside it
@@ -28,14 +43,19 @@ our own toolchain as well as the reference one; it lands when the
 toolchain can build it. Build intermediates (`.obj` etc.) are ignored,
 not committed.
 
-Shared pieces sit beside the tests: `common/f2kt.h` (the reporting and
+A fixture's name is unique across the groups: the disk carries every
+program in one directory, and the declarations, pins and results name
+a fixture by its name alone (`f2kboot.fixture_directory` finds its
+directory, and refuses a name two groups declare).
+
+Shared pieces sit beside the groups: `common/f2kt.h` (the reporting and
 section helpers the sectioned fixtures include), `build.bat`,
 `capture.bat` (the real-machine capture of the sectioned fixtures), and
 the pytest side: `conftest.py` and `f2kboot.py` (building, booting,
-comparing), `kernel/test_kernel.py`, the kernel's own boots (the
+comparing), `core/kernel/test_kernel.py`, the kernel's own boots (the
 fault stubs, the Limine disk path, the multi-process suite, the
 interrupt and IDE diagnostics, and the single-path program smokes
-below), which have no sectioned capture to compare against, and `test_limine.py`, a few corpus blocks booted
+below), which have no sectioned capture to compare against, and `core/test_limine.py`, a few corpus blocks booted
 through Limine instead of QEMU's Multiboot loader.
 
 ## Sectioned fixtures
@@ -123,12 +143,12 @@ The fixtures:
   at 100% CPU (a normal-priority thread yielding with `Sleep(0)`), so
   below-normal threads there run only at the balance-set boost, 300
   ticks in, and it answered `no`.
-- `files` - the read side of the file API over `files/DATA` (generated
+- `files` - the read side of the file API over `kernel32/files/DATA` (generated
   by `scripts/gen-files-data.py`; every byte is formula-defined): path
   forms and errors, chunked and boundary reads, seeks, metadata,
   `FindFirstFile` listings, share modes, CRT file I/O, read-only file
   mappings, concurrent readers. Captured on a local FAT32 volume, as
-  F2K's boot volume is (run `files/setup.bat` once on the real machine:
+  F2K's boot volume is (run `kernel32/files/setup.bat` once on the real machine:
   attributes git cannot carry). Gated.
   Replaced the `fileio` smoke.
 - `dll` - a program and its companion DLL (`f2kcom.dll`, built
@@ -165,10 +185,10 @@ one.
 
 `build.bat` stamps each of those binaries with the CRC-32 of its source
 and `f2kt.h` (`common/srcsum.c` computes it; `<fixture>.exe --source`
-prints it), and `test_repository.py` checks the stamp against the
+prints it), and `harness/test_repository.py` checks the stamp against the
 checked-in source, so a stale binary shows. Binaries built before the
 stamp existed skip that check; once `build.bat` has rebuilt them all, set
-`REQUIRE_SOURCE_STAMPS = True` in `test_repository.py`.
+`REQUIRE_SOURCE_STAMPS = True` in `harness/test_repository.py`.
 
 A block the script cannot take goes in the fixture's `overrides.txt`
 (same format, its reasons in the header): `runtime console` needs an
@@ -207,18 +227,18 @@ block's lines. The fixture's `test_<name>.py` only binds
 `f2kboot.corpus_test("<name>")`. A sectioned fixture may be declared
 ahead of its real-machine files (`<name>.exe`, `<name>.c` and
 `output.txt`, all absent): it is then one skipped test, and the disk
-build leaves it out; `test_repository.py` refuses a fixture holding
-only some of them. A fixture's companion DLLs (`tests/<name>/*.dll`)
+build leaves it out; `harness/test_repository.py` refuses a fixture holding
+only some of them. A fixture's companion DLLs (`tests/<dll>/<name>/*.dll`)
 go into `\CORPUS` beside its program, by their uppercase names (keep
 them 8.3), as they sit beside it on the real machine. Every corpus boot goes through QEMU's
 Multiboot loader (`-kernel`, the command line by `-append`), except
-`test_limine.py`'s: a few blocks (the scenarios the retired smokes ran
+`core/test_limine.py`'s: a few blocks (the scenarios the retired smokes ran
 on both paths, the command line, the memory map) booted from the disk
 through Limine, on a copy of the disk whose Limine entry carries the
 block's command line (`cmdline:`), compared against the same capture
 with the same declaration. The Makefile's corpus derives from the
-declarations too: a new fixture is its directory and its
-`fixture.toml`. Every boot's COM1 log stays under
+declarations too: a new fixture is its directory, in its DLL's group,
+and its `fixture.toml`. Every boot's COM1 log stays under
 `target/qemu/logs/`.
 
 ### Tracing a slow block
@@ -255,10 +275,10 @@ before the teardown may cut the dump short.
 The single-path smokes below predate the sectioned fixtures. Each one's
 scenario reappears in a sectioned fixture (named above); they retire
 once the suite passes the sectioned fixture's blocks in their place
-(`tests/test_limine.py` names each successor). `exit0` (the one-import
+(`tests/core/test_limine.py` names each successor). `exit0` (the one-import
 boot smoke) and `hello` (the CRT smoke, the pinned import trace, and
 the disk-smoke checksum file) stay. Their checks are the kernel cases
-in `kernel/test_kernel.py`; `exit0`, `ret0` and `hello` carry a
+in `core/kernel/test_kernel.py`; `exit0`, `ret0` and `hello` carry a
 `fixture.toml` of kind `smoke` (no capture).
 
 - `exit0` - no C runtime: the entry point calls `ExitProcess(0)`; a
@@ -266,7 +286,7 @@ in `kernel/test_kernel.py`; `exit0`, `ret0` and `hello` carry a
   the exit path and nothing else.
 - `ret0` - the default MSVC 6 `/ML` CRT startup around
   `int main() { return 0; }`; exercises the full CRT initialization
-  surface (35 KERNEL32.dll imports; see `ret0/imports.txt`).
+  surface (35 KERNEL32.dll imports; see `core/ret0/imports.txt`).
 - `hello` - the console rung: the same CRT startup, then `printf`
   writes "Hello, world!" to stdout and exits 0; the first test with
   observable output. Also carries `trace.txt`, the real-machine
@@ -283,7 +303,10 @@ in `kernel/test_kernel.py`; `exit0`, `ret0` and `hello` carry a
 Run `build.bat` from a command prompt that has the MSVC 6 compiler on
 PATH (the VS command prompt sets this up, e.g. via `vcvars32.bat`).
 The exact per-test command lines live in `build.bat`; expected exit
-code 0 means pass.
+code 0 means pass. Each fixture builds inside its own directory,
+`<dll>\<name>`; the fixtures built on `common/f2kt.h` include it as
+`"../common/f2kt.h"`, which `build.bat`'s `/I ..` (the group's
+directory) resolves.
 
 ## How F2K consumes these
 

@@ -997,7 +997,7 @@ mod tests {
         );
     }
 
-    const EXIT0: &[u8] = include_bytes!("../../../tests/exit0/exit0.exe");
+    const EXIT0: &[u8] = include_bytes!("../../../tests/core/exit0/exit0.exe");
 
     /// An image's layout is its headers' (preferred base, SizeOfImage); a file the loader's parse
     /// refuses — not a PE file, a foreign one, a truncated one — is STATUS_INVALID_IMAGE_FORMAT.

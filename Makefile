@@ -59,16 +59,18 @@ DISK_IMG ?= $(OUT_DIR)/f2k-disk.img
 ISO_IMG ?= $(OUT_DIR)/f2k.iso
 # 64MB disk image (131072 * 512 bytes): large enough for a spec-compliant FAT32 partition
 DISK_SIZE ?= 131072
-# The corpus fixtures the disk carries in its root directory (tests/<name>/<name>.exe, stored as
-# NAME.EXE), after HELLO.EXE: the boots load their images from the volume by these paths.
+# A fixture's directory, tests/<dll>/<name>: the fixtures are grouped by the DLL they exercise, and
+# their names are unique across the groups (the disk carries them flat, by name).
+fixture_dir = $(patsubst %/fixture.toml,%,$(wildcard tests/*/$(1)/fixture.toml))
+# The corpus fixtures the disk carries in its root directory (tests/<dll>/<name>/<name>.exe, stored
+# as NAME.EXE), after HELLO.EXE: the boots load their images from the volume by these paths.
 DISK_FIXTURES ?= exit0 ret0
 # The sectioned fixtures (tests/README.md), in their own directory, \CORPUS, the way each runs from
 # its own directory on the real machine: the root keeps its one cluster (the disk-smoke pins it).
-# They are the fixtures whose declaration, tests/<name>/fixture.toml, says kind "sectioned", less
-# those declared ahead of their real-machine build (no tests/<name>/<name>.exe yet). Each one's
-# companion DLLs (tests/<name>/*.dll) go beside it, as they sit beside the program on the real
-# machine.
-CORPUS_FIXTURES ?= $(sort $(foreach fixture,$(patsubst tests/%/fixture.toml,%,$(shell grep -l '^kind = "sectioned"' tests/*/fixture.toml)),$(if $(wildcard tests/$(fixture)/$(fixture).exe),$(fixture))))
+# They are the fixtures whose declaration, tests/<dll>/<name>/fixture.toml, says kind "sectioned",
+# less those declared ahead of their real-machine build (no <name>.exe yet). Each one's companion
+# DLLs (tests/<dll>/<name>/*.dll) go beside it, as they sit beside the program on the real machine.
+CORPUS_FIXTURES ?= $(sort $(foreach fixture,$(notdir $(patsubst %/fixture.toml,%,$(shell grep -l '^kind = "sectioned"' tests/*/*/fixture.toml))),$(if $(wildcard $(call fixture_dir,$(fixture))/$(fixture).exe),$(fixture))))
 
 # Limine bootloader settings
 LIMINE_DIR ?= $(BOOT_DIR)/limine
@@ -155,30 +157,30 @@ disk: kernel limine
 	# fresh volume gets cluster 3 (LBA 4067), the sector the diagnostic
 	# reads. It must stay ahead of every other copy and the mmd below (a
 	# directory would take the cluster).
-	mcopy -i $(DISK_IMG)@@1M tests/hello/hello.exe ::/HELLO.EXE
+	mcopy -i $(DISK_IMG)@@1M $(call fixture_dir,hello)/hello.exe ::/HELLO.EXE
 	mmd -i $(DISK_IMG)@@1M ::/boot ::/boot/limine
 	mcopy -i $(DISK_IMG)@@1M $(KERNEL_ELF) ::/f2k-kernel
 	mcopy -i $(DISK_IMG)@@1M $(LIMINE_SYS) $(LIMINE_CONF) ::/boot/limine/
 	# The corpus the boots run, by 8.3 name: the loader reads every image from
 	# the volume by path. The root's entries stay within its one sector.
-	for fixture in $(DISK_FIXTURES); do \
-		mcopy -i $(DISK_IMG)@@1M tests/$$fixture/$$fixture.exe \
-			::/$$(echo $$fixture | tr a-z A-Z).EXE || exit 1; \
+	for exe in $(foreach fixture,$(DISK_FIXTURES),$(call fixture_dir,$(fixture))/$(fixture).exe); do \
+		mcopy -i $(DISK_IMG)@@1M $$exe ::/$$(basename $$exe | tr a-z A-Z) || exit 1; \
 	done
 	# The sectioned corpus in \CORPUS, with the files fixture's data tree beside
-	# FILES.EXE and the two attributes git cannot carry (tests/files/setup.bat
+	# FILES.EXE and the two attributes git cannot carry (tests/kernel32/files/setup.bat
 	# sets them on the real machine).
 	mmd -i $(DISK_IMG)@@1M ::/CORPUS
-	for fixture in $(CORPUS_FIXTURES); do \
-		mcopy -i $(DISK_IMG)@@1M tests/$$fixture/$$fixture.exe \
+	for directory in $(foreach fixture,$(CORPUS_FIXTURES),$(call fixture_dir,$(fixture))); do \
+		fixture=$$(basename $$directory); \
+		mcopy -i $(DISK_IMG)@@1M $$directory/$$fixture.exe \
 			::/CORPUS/$$(echo $$fixture | tr a-z A-Z).EXE || exit 1; \
-		for dll in tests/$$fixture/*.dll; do \
+		for dll in $$directory/*.dll; do \
 			[ -f "$$dll" ] || continue; \
 			mcopy -i $(DISK_IMG)@@1M "$$dll" \
 				::/CORPUS/$$(basename "$$dll" | tr a-z A-Z) || exit 1; \
 		done; \
 	done
-	mcopy -s -i $(DISK_IMG)@@1M tests/files/DATA ::/CORPUS/
+	mcopy -s -i $(DISK_IMG)@@1M $(call fixture_dir,files)/DATA ::/CORPUS/
 	mattrib -i $(DISK_IMG)@@1M +r ::/CORPUS/DATA/RDONLY.TXT
 	mattrib -i $(DISK_IMG)@@1M +h ::/CORPUS/DATA/HIDDEN.TXT
 	$(LIMINE_BIN) bios-install $(DISK_IMG)
@@ -208,9 +210,9 @@ clobber: clean
 	-rm -rf $(BUILD_DIR)
 
 # On-target QEMU tests, through pytest (uv drives the environment, pyproject.toml): the kernel's own
-# boots are tests/kernel/test_kernel.py (kernel features to build with, image to boot, expected
-# COM1 strings); the sectioned corpus's tests are tests/<name>/test_<name>.py, one per fixture,
-# over its real-machine capture (gating fixtures must pass; the rest run as expected failures, a
+# boots are tests/core/kernel/test_kernel.py (kernel features to build with, image to boot,
+# expected COM1 strings); the sectioned corpus's tests are tests/<dll>/<name>/test_<name>.py, one per
+# fixture, over its real-machine capture (gating fixtures must pass; the rest run as expected failures, a
 # progress report). `make test` runs them all; each test builds what it needs, and boots run in
 # parallel. New cases are data, not new Makefile targets: narrow a run through pytest instead
 # (`make test PYTEST_FLAGS="-n 4 -m disk"`, or the `kernel` and `corpus` markers).
