@@ -1,6 +1,7 @@
 # kernel32's own heap and Local/Global exports (the heap's allocation calls
 # forward to ntdll). Their bodies are Rust (src/main.rs: rtl::localmem over ntdll's RtlAllocateHeap
-# family on the process heap, and RtlCreateHeap/RtlDestroyHeap, cdecl):
+# family on the process heap and its RtlAllocateHandle family on kernel32's handle table, and
+# RtlCreateHeap/RtlDestroyHeap, cdecl):
 # each export re-pushes its arguments for the body and pops its stdcall block. A Local and a Global
 # export share a body, as on NT, but keep exports of their own.
 .text

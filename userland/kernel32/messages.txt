@@ -1,0 +1,24 @@
+# kernel32's system messages: the text FormatMessage's FORMAT_MESSAGE_FROM_SYSTEM finds for a Win32
+# error code, in Windows 2000's English wording.
+#
+# One message per line: its code (decimal), a blank, then its text to the line's end. kernel32's
+# build (build-support/resources.rs) makes them a message table, each text ending in the CR LF the
+# message compiler ends a one-line message with, and links it into kernel32.dll as its
+# RT_MESSAGETABLE resource (name 1, US English), where FormatMessage looks a message up through
+# ntdll's RtlFindMessage. Blank lines and lines starting with `#` are skipped.
+
+0 The operation completed successfully.
+1 Incorrect function.
+2 The system cannot find the file specified.
+3 The system cannot find the path specified.
+4 The system cannot open the file.
+5 Access is denied.
+6 The handle is invalid.
+8 Not enough storage is available to process this command.
+87 The parameter is incorrect.
+122 The data area passed to a system call is too small.
+126 The specified module could not be found.
+127 The specified procedure could not be found.
+183 Cannot create a file when that file already exists.
+203 The system could not find the environment option that was entered.
+998 Invalid access to memory location.

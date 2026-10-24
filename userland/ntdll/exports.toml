@@ -10,9 +10,10 @@
 # to; the critical sections, which kernel32's Enter, Leave, TryEnter and Delete forward to, and the
 # PEB lock; the heaps, which kernel32's HeapAlloc, HeapFree, HeapReAlloc, HeapSize and HeapValidate
 # forward to; the environment; the counted strings, the time conversions and the bitmaps kernel32's
-# narrow calls, file times and TLS slots go through; LdrInitializeThunk, a fresh thread's first
-# user-mode work), and the F2K-internal entry point the kernel sends a thread to (`internal = true`:
-# not a Windows 2000 export).
+# narrow calls, file times and TLS slots go through; the handle tables, the resources and the
+# message calls kernel32's Local and Global memory and FormatMessage go through;
+# LdrInitializeThunk, a fresh thread's first user-mode work), and the F2K-internal entry point the
+# kernel sends a thread to (`internal = true`: not a Windows 2000 export).
 
 [[group]]
 key = "nt"
@@ -49,6 +50,14 @@ title = "time conversions"
 [[group]]
 key = "bitmaps"
 title = "bitmaps"
+
+[[group]]
+key = "handles"
+title = "handle tables"
+
+[[group]]
+key = "resources"
+title = "resources and messages"
 
 [[group]]
 key = "loader"
@@ -742,6 +751,23 @@ args = ["u32 hHeap", "u32 dwFlags", "ptr lpMem"]
 impl = { native = "RtlValidateHeap" }
 ordinal = 683
 
+[[export]]
+name = "RtlLockHeap"
+group = "heap"
+args = ["u32 HeapHandle"]
+impl = { native = "RtlLockHeap" }
+ordinal = 551
+fails = "FALSE"
+note = "the heap's lock held across the caller's calls (kernel32's Local and Global memory holds the process heap's); FALSE for a handle naming no heap"
+
+[[export]]
+name = "RtlUnlockHeap"
+group = "heap"
+args = ["u32 HeapHandle"]
+impl = { native = "RtlUnlockHeap" }
+ordinal = 665
+fails = "FALSE"
+
 # --- the current directory (src/curdir.rs over rtl::path) -----------------------------------------
 
 [[export]]
@@ -893,6 +919,83 @@ impl = { native = "RtlAreBitsSet" }
 ordinal = 349
 fails = "FALSE"
 note = "FALSE for an empty range or one past the end"
+
+# --- handle tables (src/handles.rs over rtl::handles) ---------------------------------------------
+
+[[export]]
+name = "RtlInitializeHandleTable"
+group = "handles"
+args = ["u32 MaximumNumberOfHandles", "u32 SizeOfHandleTableEntry", "ptr HandleTable"]
+impl = { native = "RtlInitializeHandleTable" }
+ordinal = 521
+fails = "void"
+note = "the table's shape recorded; its entries' memory is reserved (MaximumNumberOfHandles entries) at the first allocation and committed a page at a time"
+
+[[export]]
+name = "RtlAllocateHandle"
+group = "handles"
+args = ["ptr HandleTable", "ptr<u32> HandleIndex"]
+impl = { native = "RtlAllocateHandle" }
+ordinal = 335
+fails = "NULL"
+note = "the entry's first dword cleared: the caller marks it RTL_HANDLE_ALLOCATED"
+
+[[export]]
+name = "RtlFreeHandle"
+group = "handles"
+args = ["ptr HandleTable", "ptr Handle"]
+impl = { native = "RtlFreeHandle" }
+ordinal = 474
+fails = "FALSE"
+
+[[export]]
+name = "RtlIsValidHandle"
+group = "handles"
+args = ["ptr HandleTable", "ptr Handle"]
+impl = { native = "RtlIsValidHandle" }
+ordinal = 536
+fails = "FALSE"
+
+# --- resources and messages (src/resource.rs over rtl::resource and rtl::message) -----------------
+
+[[export]]
+name = "LdrFindResource_U"
+group = "resources"
+args = ["u32 DllHandle", "ptr ResourceIdPath", "u32 ResourceIdPathLength", "ptr<u32> ResourceDataEntry"]
+impl = { native = "LdrFindResource_U" }
+ordinal = 40
+note = "the type, the name, the language: numbers, or names matched exactly; language 0 searches the neutral language, the thread's, the user's and the system's defaults (F2K's one locale, US English), US English, then any; LANG_NEUTRAL with SUBLANG_DEFAULT or SUBLANG_SYS_DEFAULT is that default; a module handle is a mapped image's base (no data-file handles)"
+
+[[export]]
+name = "LdrFindResourceDirectory_U"
+group = "resources"
+args = ["u32 DllHandle", "ptr ResourceIdPath", "u32 ResourceIdPathLength", "ptr<u32> ResourceDirectory"]
+impl = { native = "LdrFindResourceDirectory_U" }
+ordinal = 39
+note = "LdrFindResource_U's walk, ending on a directory (the root for an empty path); no test pins it: nothing in the corpus reaches it"
+
+[[export]]
+name = "LdrAccessResource"
+group = "resources"
+args = ["u32 DllHandle", "ptr ResourceDataEntry", "ptr<u32> Address", "ptr<u32> Size"]
+impl = { native = "LdrAccessResource" }
+ordinal = 34
+
+[[export]]
+name = "RtlFindMessage"
+group = "resources"
+args = ["u32 DllHandle", "u32 MessageTableId", "u32 MessageLanguageId", "u32 MessageId", "ptr<u32> MessageEntry"]
+impl = { native = "RtlFindMessage" }
+ordinal = 464
+note = "the message table is the resource of type MessageTableId, name 1, through LdrFindResource_U and LdrAccessResource; STATUS_MESSAGE_NOT_FOUND for an identifier it lacks"
+
+[[export]]
+name = "RtlFormatMessage"
+group = "resources"
+args = ["strW MessageFormat", "u32 MaximumWidth", "u32 IgnoreInserts", "u32 ArgumentsAreAnsi", "u32 ArgumentsAreAnArray", "ptr Arguments", "ptr Buffer", "u32 Length", "ptr<u32> ReturnLength"]
+impl = { native = "RtlFormatMessage" }
+ordinal = 472
+note = "FormatMessage's escapes, inserts and line width (MaximumWidth 0 keeps the text's line breaks, MAXULONG makes them blanks); Length and ReturnLength in bytes, the terminator's included"
 
 # --- the loader's module lists (src/loader.rs over rtl::modules) ----------------------------------
 
@@ -1081,10 +1184,6 @@ name = "KiUserCallbackDispatcher"
 ordinal = 32
 
 [[export]]
-name = "LdrAccessResource"
-ordinal = 34
-
-[[export]]
 name = "LdrAlternateResourcesEnabled"
 ordinal = 35
 
@@ -1095,14 +1194,6 @@ ordinal = 37
 [[export]]
 name = "LdrFindEntryForAddress"
 ordinal = 38
-
-[[export]]
-name = "LdrFindResourceDirectory_U"
-ordinal = 39
-
-[[export]]
-name = "LdrFindResource_U"
-ordinal = 40
 
 [[export]]
 name = "LdrFlushAlternateResourceModules"
@@ -2024,10 +2115,6 @@ name = "RtlAllocateAndInitializeSid"
 ordinal = 334
 
 [[export]]
-name = "RtlAllocateHandle"
-ordinal = 335
-
-[[export]]
 name = "RtlAnsiCharToUnicodeChar"
 ordinal = 337
 
@@ -2496,10 +2583,6 @@ name = "RtlFindLongestRunClear"
 ordinal = 463
 
 [[export]]
-name = "RtlFindMessage"
-ordinal = 464
-
-[[export]]
 name = "RtlFindMostSignificantBit"
 ordinal = 465
 
@@ -2528,16 +2611,8 @@ name = "RtlFormatCurrentUserKeyPath"
 ordinal = 471
 
 [[export]]
-name = "RtlFormatMessage"
-ordinal = 472
-
-[[export]]
 name = "RtlFreeAnsiString"
 ordinal = 473
-
-[[export]]
-name = "RtlFreeHandle"
-ordinal = 474
 
 [[export]]
 name = "RtlFreeOemString"
@@ -2696,10 +2771,6 @@ name = "RtlInitializeGenericTable"
 ordinal = 520
 
 [[export]]
-name = "RtlInitializeHandleTable"
-ordinal = 521
-
-[[export]]
 name = "RtlInitializeRXact"
 ordinal = 522
 
@@ -2756,10 +2827,6 @@ name = "RtlIsTextUnicode"
 ordinal = 535
 
 [[export]]
-name = "RtlIsValidHandle"
-ordinal = 536
-
-[[export]]
 name = "RtlIsValidIndexHandle"
 ordinal = 537
 
@@ -2810,10 +2877,6 @@ ordinal = 549
 [[export]]
 name = "RtlLocalTimeToSystemTime"
 ordinal = 550
-
-[[export]]
-name = "RtlLockHeap"
-ordinal = 551
 
 [[export]]
 name = "RtlLookupAtomInAtomTable"
@@ -3202,10 +3265,6 @@ ordinal = 663
 [[export]]
 name = "RtlUniform"
 ordinal = 664
-
-[[export]]
-name = "RtlUnlockHeap"
-ordinal = 665
 
 [[export]]
 name = "RtlUpcaseUnicodeChar"

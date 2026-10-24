@@ -10,24 +10,29 @@
 //! TryEnter and Delete forwarding here: `src/critsec.s` over `rtl::critsec`) and the PEB lock
 //! (RtlAcquirePebLock, RtlReleasePebLock); the heaps, entirely in user mode (the RtlCreateHeap
 //! family, kernel32's HeapAlloc, HeapFree, HeapReAlloc, HeapSize and HeapValidate forwarding here:
-//! `src/heap.s` over `rtl::heap`); the environment (RtlSetEnvironmentVariable,
-//! RtlQueryEnvironmentVariable_U, RtlExpandEnvironmentStrings_U: `src/env.rs` over `rtl::env`);
-//! the current directory and the DOS paths (RtlSetCurrentDirectory_U, RtlGetCurrentDirectory_U,
-//! RtlGetFullPathName_U, RtlDosPathNameToNtPathName_U: `src/curdir.rs` over `rtl::path`); the
-//! counted strings and the ANSI code page, which kernel32's narrow calls convert through
-//! (RtlInitAnsiString, RtlAnsiStringToUnicodeString, RtlUnicodeStringToAnsiString,
-//! RtlFreeUnicodeString, RtlUnicodeToMultiByteN, RtlUnicodeToMultiByteSize: `src/strings.rs` over
-//! `rtl::string`); the time conversions (RtlTimeToTimeFields, RtlTimeFieldsToTime: `src/time.rs`
-//! over `rtl::time`); the bitmaps kernel32 keeps the TLS slots in (RtlFindClearBitsAndSet,
-//! RtlClearBits, RtlAreBitsSet: `src/bitmap.rs` over `rtl::bitmap`); the loader, which loads every
-//! DLL of the process but ntdll from the volume, kernel32 included, and calls their entry points
-//! (`src/loader.rs` over `rtl::modules`: the process's module lists, LdrGetDllHandle, LdrLoadDll,
-//! LdrUnloadDll, LdrGetProcedureAddress, LdrDisableThreadCalloutsForDll); and the loader's share of
-//! a thread's start and end: LdrInitializeThunk, which the kernel delivers before a fresh thread's
-//! first instruction (`src/ldr.s`: the process heap, the PEB lock and the loader lock and the
-//! image's DLLs on the first thread, the thread's implicit TLS, the DLLs' DLL_PROCESS_ATTACH or
-//! DLL_THREAD_ATTACH), and LdrShutdownThread and LdrShutdownProcess, kernel32's ExitThread's and
-//! ExitProcess's;
+//! `src/heap.s` over `rtl::heap`; RtlLockHeap and RtlUnlockHeap); the handle tables kernel32 keeps
+//! its movable Local and Global blocks' handles in (RtlInitializeHandleTable, RtlAllocateHandle,
+//! RtlFreeHandle, RtlIsValidHandle: `src/handles.rs` over `rtl::handles`); the environment
+//! (RtlSetEnvironmentVariable, RtlQueryEnvironmentVariable_U, RtlExpandEnvironmentStrings_U:
+//! `src/env.rs` over `rtl::env`); the current directory and the DOS paths
+//! (RtlSetCurrentDirectory_U, RtlGetCurrentDirectory_U, RtlGetFullPathName_U,
+//! RtlDosPathNameToNtPathName_U: `src/curdir.rs` over `rtl::path`); the counted strings and the
+//! ANSI code page, which kernel32's narrow calls convert through (RtlInitAnsiString,
+//! RtlAnsiStringToUnicodeString, RtlUnicodeStringToAnsiString, RtlFreeUnicodeString,
+//! RtlUnicodeToMultiByteN, RtlUnicodeToMultiByteSize: `src/strings.rs` over `rtl::string`); the
+//! time conversions (RtlTimeToTimeFields, RtlTimeFieldsToTime: `src/time.rs` over `rtl::time`); the
+//! bitmaps kernel32 keeps the TLS slots in (RtlFindClearBitsAndSet, RtlClearBits, RtlAreBitsSet:
+//! `src/bitmap.rs` over `rtl::bitmap`); the resources and the messages kernel32's FormatMessage
+//! finds and lays out (LdrFindResource_U, LdrFindResourceDirectory_U, LdrAccessResource,
+//! RtlFindMessage, RtlFormatMessage: `src/resource.rs` over `rtl::resource` and `rtl::message`);
+//! the loader, which loads every DLL of the process but ntdll from the volume, kernel32 included,
+//! and calls their entry points (`src/loader.rs` over `rtl::modules`: the process's module lists,
+//! LdrGetDllHandle, LdrLoadDll, LdrUnloadDll, LdrGetProcedureAddress,
+//! LdrDisableThreadCalloutsForDll); and the loader's share of a thread's start and end:
+//! LdrInitializeThunk, which the kernel delivers before a fresh thread's first instruction
+//! (`src/ldr.s`: the process heap, the PEB lock and the loader lock and the image's DLLs on the
+//! first thread, the thread's implicit TLS, the DLLs' DLL_PROCESS_ATTACH or DLL_THREAD_ATTACH), and
+//! LdrShutdownThread and LdrShutdownProcess, kernel32's ExitThread's and ExitProcess's;
 //! DbgPrint (`src/dbgprint.s`, `src/dbgprint.rs` over `rtl::printf`: the text to the
 //! kernel's debugger channel, COM1); and the stub routine its stubbed exports' generated bodies go
 //! to (`src/stub.rs`). The kernel finds LdrInitializeThunk and the two
@@ -43,7 +48,9 @@ mod curdir;
 mod dbgprint;
 mod env;
 mod except;
+mod handles;
 mod loader;
+mod resource;
 mod status;
 mod strings;
 mod stub;
@@ -236,6 +243,31 @@ extern "C" fn f2k_rtl_size_heap(handle: usize, flags: u32, pointer: usize) -> us
         .heap(handle)
         .and_then(|heap| heap.size(&Native, flags, pointer))
         .unwrap_or(usize::MAX)
+}
+
+/// RtlLockHeap: the heap's lock taken, held across the caller's calls on it (kernel32's Local and
+/// Global memory holds the process heap's so); FALSE for a handle naming no heap.
+#[unsafe(export_name = "f2k_export_RtlLockHeap")]
+pub extern "system" fn rtl_lock_heap(handle: usize) -> u32 {
+    match sys::process().heap(handle) {
+        Some(heap) => {
+            heap.lock(&Native);
+            1
+        }
+        None => 0,
+    }
+}
+
+/// RtlUnlockHeap: the lock RtlLockHeap took, released; FALSE for a handle naming no heap.
+#[unsafe(export_name = "f2k_export_RtlUnlockHeap")]
+pub extern "system" fn rtl_unlock_heap(handle: usize) -> u32 {
+    match sys::process().heap(handle) {
+        Some(heap) => {
+            heap.unlock(&Native);
+            1
+        }
+        None => 0,
+    }
 }
 
 /// RtlValidateHeap: the whole heap's headers (a null pointer), or one block.

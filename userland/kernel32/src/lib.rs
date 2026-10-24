@@ -15,13 +15,13 @@
 //! the environment ([`env`], over ntdll's), the TLS indexes ([`thread`]), the process's end
 //! ([`process`]), exceptions ([`except`]: RaiseException, the pointer probes' unwind), the locale
 //! group ([`locale`] over `rtl::codepage`, with [`collate`] and [`localeinfo`]), the clocks
-//! ([`time`], over the shared data page, [`shared`]), the system messages ([`message`]), virtual
-//! memory and the system's memory facts ([`vm`]) and the paging file's mappings ([`filemap`]). The
-//! heap and Local/Global functions are the DLL's (src/main.rs and src/memory.s, over ntdll's heap
-//! exports). The trivial natives (src/natives.s), the main thread's start (src/start.s) and the
-//! pointer probes (src/probe.s) are assembly. No export enters the kernel itself: only ntdll's
-//! system-service stubs do (`tests/harness/test_repository.py` checks the built DLL holds no
-//! `int 2Eh`).
+//! ([`time`], over the shared data page, [`shared`]), the system messages ([`message`], over
+//! ntdll's message calls and kernel32's own message table), virtual memory and the system's memory
+//! facts ([`vm`]) and the paging file's mappings ([`filemap`]). The heap and Local/Global functions
+//! are the DLL's (src/main.rs and src/memory.s, over ntdll's heap and handle-table exports). The
+//! trivial natives (src/natives.s), the main thread's start (src/start.s) and the pointer probes
+//! (src/probe.s) are assembly. No export enters the kernel itself: only ntdll's system-service
+//! stubs do (`tests/harness/test_repository.py` checks the built DLL holds no `int 2Eh`).
 
 #![cfg_attr(not(test), no_std)]
 

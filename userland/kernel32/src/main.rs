@@ -3,11 +3,11 @@
 //! The library (src/lib.rs) is the home of kernel32's user-mode code; this binary links it into the
 //! DLL beside the assembly natives (src/natives.s), the critical sections' initialization
 //! (src/critsec.s, over ntdll's), the heap and Local/Global functions (src/memory.s, over ntdll's
-//! heap exports, their bodies here), the thread start thunks (src/start.s), the pointer probes
-//! (src/probe.s), and the generated stubs file (empty for kernel32: only ntdll's system services
-//! have generated bodies). RtlUnwind, the
-//! critical sections' Enter, Leave, TryEnter and Delete, and HeapAlloc, HeapFree, HeapReAlloc and
-//! HeapSize are forwarders: they live in ntdll, as on Windows 2000.
+//! heap and handle-table exports, their bodies here), the thread start thunks (src/start.s), the
+//! pointer probes (src/probe.s), the generated stubs file (empty for kernel32: only ntdll's system
+//! services have generated bodies), and the system messages' table (its resource, which the build
+//! links in). RtlUnwind, the critical sections' Enter, Leave, TryEnter and Delete, and HeapAlloc,
+//! HeapFree, HeapReAlloc and HeapSize are forwarders: they live in ntdll, as on Windows 2000.
 
 #![no_std]
 #![no_main]
@@ -27,7 +27,8 @@ core::arch::global_asm!(
 );
 
 use kernel32::nt;
-use rtl::localmem::{HeapCalls, Memory, Outcome};
+use rtl::handles::HandleTable;
+use rtl::localmem::{HandleCalls, HeapCalls, Memory, Outcome, ENTRY_SIZE, MAXIMUM_HANDLES};
 use rtl::sys;
 
 /// InitializeCriticalSection: ntdll's RtlInitializeCriticalSection, its failure raised (as Windows
@@ -113,10 +114,57 @@ impl HeapCalls for ProcessHeap {
     }
 }
 
-/// The process heap's Local and Global memory, over ntdll's heap calls.
-fn with_memory<R>(body: impl FnOnce(&Memory<'_, ProcessHeap>) -> R) -> R {
+/// kernel32's handle table, where the movable Local and Global blocks' handles come from:
+/// kernel32's own data on Windows 2000, here on the PEB's page past the PEB proper, where kernel32
+/// keeps its other per-process state (F2K's system DLLs keep no writable data). Zero until the
+/// first Local or Global call initializes it (kernel32 has no DllMain to do it at the process's
+/// start).
+const HANDLE_TABLE: usize = 0x8E0;
+
+/// kernel32's handle table, through ntdll's RtlAllocateHandle family (as Windows 2000's kernel32
+/// keeps its movable blocks' handles).
+struct BaseHandles(*mut HandleTable);
+
+impl HandleCalls for BaseHandles {
+    fn allocate(&self) -> Option<usize> {
+        // SAFETY: ntdll's export, over kernel32's initialized table, under the heap's lock.
+        Some(unsafe { nt::RtlAllocateHandle(self.0, core::ptr::null_mut()) })
+            .filter(|&entry| entry != 0)
+    }
+
+    fn free(&self, entry: usize) -> bool {
+        // SAFETY: as above; an address that is no entry in use is refused, not followed.
+        (unsafe { nt::RtlFreeHandle(self.0, entry) }) != 0
+    }
+
+    fn is_valid(&self, entry: usize) -> bool {
+        // SAFETY: as above.
+        (unsafe { nt::RtlIsValidHandle(self.0, entry) }) != 0
+    }
+}
+
+/// The process heap's Local and Global memory, over ntdll's heap calls and kernel32's handle table,
+/// the heap's lock held across the call (RtlLockHeap, RtlUnlockHeap: the table and the blocks
+/// change together, as Windows 2000's kernel32 holds it). The table is initialized at the first
+/// call, under the lock.
+fn with_memory<R>(body: impl FnOnce(&Memory<'_, ProcessHeap, BaseHandles>) -> R) -> R {
     let heap = ProcessHeap(sys::process_heap_handle());
-    body(&Memory { heap: &heap })
+    let table = (sys::peb() + HANDLE_TABLE) as *mut HandleTable;
+    // SAFETY: ntdll's exports; the table is kernel32's slot on the PEB's page, the process's own,
+    // changed only under the heap's lock.
+    unsafe {
+        nt::RtlLockHeap(heap.0);
+        if (*table).maximum_number_of_handles == 0 {
+            nt::RtlInitializeHandleTable(MAXIMUM_HANDLES, ENTRY_SIZE, table);
+        }
+    }
+    let result = body(&Memory {
+        heap: &heap,
+        handles: &BaseHandles(table),
+    });
+    // SAFETY: ntdll's export; the lock taken above.
+    unsafe { nt::RtlUnlockHeap(heap.0) };
+    result
 }
 
 /// A Local/Global call's answer: its value, its last error set when it names one.

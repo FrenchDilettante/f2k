@@ -87,6 +87,10 @@ lasterror = [
     "kernel32.GetLastError",
     "kernel32.SetLastError",
     "kernel32.GetTickCount",
+    "ntdll.RtlFindMessage",
+    "ntdll.RtlFormatMessage",
+    "ntdll.LdrFindResource_U",
+    "ntdll.LdrAccessResource",
 ]
 args = [
     "kernel32.GetLastError",

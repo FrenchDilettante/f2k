@@ -227,6 +227,25 @@ impl Heap {
         result
     }
 
+    /// RtlLockHeap's work: the heap's lock taken, held across the caller's calls (they take it
+    /// again, recursively); a HEAP_NO_SERIALIZE heap has none to take.
+    pub fn lock(self, system: &impl System) {
+        // SAFETY: a live heap's lock, used in place through its atomics.
+        let lock = unsafe { &*addr_of!((*self.header()).lock) };
+        if self.flags() & HEAP_NO_SERIALIZE == 0 {
+            lock.enter(system);
+        }
+    }
+
+    /// RtlUnlockHeap's work: the lock [`Heap::lock`] took, released.
+    pub fn unlock(self, system: &impl System) {
+        // SAFETY: as above.
+        let lock = unsafe { &*addr_of!((*self.header()).lock) };
+        if self.flags() & HEAP_NO_SERIALIZE == 0 {
+            lock.leave(system);
+        }
+    }
+
     /// Commit the segment so the area covers `bytes`; refused past the reservation.
     fn grow(self, system: &impl Vm, bytes: usize) -> bool {
         let Some(end) = bytes

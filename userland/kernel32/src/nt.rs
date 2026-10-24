@@ -8,9 +8,10 @@
 //! ([`host::FAIL_NEXT`]).
 
 /// The counted strings, UNICODE_STRING and ANSI_STRING (`rtl::string`'s, which ntdll
-/// converts), the TIME_FIELDS ntdll's time conversions fill and read, and the RTL_BITMAP
-/// header its bitmap calls take.
+/// converts), the TIME_FIELDS ntdll's time conversions fill and read, the RTL_BITMAP
+/// header its bitmap calls take, and the RTL_HANDLE_TABLE its handle-table calls take.
 pub use rtl::bitmap::RtlBitmap;
+pub use rtl::handles::HandleTable;
 pub use rtl::string::{AnsiString, UnicodeString};
 pub use rtl::time::TimeFields;
 
@@ -504,6 +505,37 @@ unsafe extern "system" {
     pub fn RtlFindClearBitsAndSet(bitmap: *mut RtlBitmap, count: u32, hint: u32) -> u32;
     pub fn RtlClearBits(bitmap: *mut RtlBitmap, start: u32, count: u32);
     pub fn RtlAreBitsSet(bitmap: *const RtlBitmap, start: u32, length: u32) -> u8;
+    /// The messages: a message's MESSAGE_RESOURCE_ENTRY in a module's message table (the resource
+    /// of the type given, name 1, in the language), and a message's text laid out (the width, the
+    /// escapes, the inserts unless ignored) into a buffer of `length` bytes, the bytes written with
+    /// the terminator's to `return_length`.
+    pub fn RtlFindMessage(
+        module: usize,
+        table: u32,
+        language: u32,
+        id: u32,
+        entry: *mut *const u8,
+    ) -> u32;
+    pub fn RtlFormatMessage(
+        format: *const u16,
+        width: u32,
+        ignore_inserts: u32,
+        ansi: u32,
+        array: u32,
+        arguments: *const u8,
+        buffer: *mut u16,
+        length: u32,
+        return_length: *mut u32,
+    ) -> u32;
+    /// The handle tables: a table's shape recorded, an entry handed out (null: none) and its index,
+    /// an entry in use freed, and whether an entry is in use.
+    pub fn RtlInitializeHandleTable(maximum: u32, size: u32, table: *mut HandleTable);
+    pub fn RtlAllocateHandle(table: *mut HandleTable, index: *mut u32) -> usize;
+    pub fn RtlFreeHandle(table: *mut HandleTable, entry: usize) -> u8;
+    pub fn RtlIsValidHandle(table: *const HandleTable, entry: usize) -> u8;
+    /// A heap's lock, held across several calls on it, and released.
+    pub fn RtlLockHeap(heap: usize) -> u8;
+    pub fn RtlUnlockHeap(heap: usize) -> u8;
 }
 
 // ntdll's cdecl imports.
@@ -957,6 +989,161 @@ pub mod host {
     ) -> u8 {
         let (bits, size) = bitmap_bits(bitmap);
         u8::from(rtl::bitmap::are_set(bits, size, start, length))
+    }
+
+    /// kernel32's message table, as its build makes it from messages.txt (the bytes it links into
+    /// the DLL as its RT_MESSAGETABLE resource), dword-aligned as in the image.
+    #[repr(C, align(4))]
+    struct Aligned<T: ?Sized>(T);
+    static MESSAGE_TABLE: &Aligned<[u8]> =
+        &Aligned(*include_bytes!(concat!(env!("OUT_DIR"), "/messages.bin")));
+
+    /// The table's bytes, read by offset (`rtl::resource`'s reads, the table at offset zero).
+    struct TableBytes;
+
+    impl rtl::modules::Memory for TableBytes {
+        fn byte(&self, at: u32) -> u8 {
+            MESSAGE_TABLE.0[at as usize]
+        }
+    }
+
+    /// RtlFindMessage, over kernel32's own table whatever the module (the resource walk is
+    /// `rtl::resource`'s, tested there): the table is US English, so a language whose search does
+    /// not reach US English is STATUS_RESOURCE_LANG_NOT_FOUND.
+    pub unsafe extern "system" fn RtlFindMessage(
+        _module: usize,
+        table: u32,
+        language: u32,
+        id: u32,
+        entry: *mut *const u8,
+    ) -> u32 {
+        use rtl::resource::{self, Defaults, LANG_ENGLISH_US};
+        if table != resource::RT_MESSAGETABLE {
+            return resource::STATUS_RESOURCE_TYPE_NOT_FOUND;
+        }
+        let (languages, count, any) = resource::languages(language as u16, Defaults::F2K);
+        if !any && !languages[..count].contains(&LANG_ENGLISH_US) {
+            return resource::STATUS_RESOURCE_LANG_NOT_FOUND;
+        }
+        let size = MESSAGE_TABLE.0.len() as u32;
+        match resource::message_entry(&TableBytes, 0, size, id) {
+            Ok(offset) => {
+                // SAFETY: the caller's pointer place.
+                unsafe { entry.write(MESSAGE_TABLE.0.as_ptr().add(offset as usize)) };
+                0
+            }
+            Err(status) => status,
+        }
+    }
+
+    /// RtlFormatMessage (rtl::message, as ntdll runs it).
+    pub unsafe extern "system" fn RtlFormatMessage(
+        format: *const u16,
+        width: u32,
+        ignore_inserts: u32,
+        ansi: u32,
+        array: u32,
+        arguments: *const u8,
+        buffer: *mut u16,
+        length: u32,
+        return_length: *mut u32,
+    ) -> u32 {
+        let mut units = std::vec::Vec::new();
+        // SAFETY: the caller's string, read to its NUL.
+        while let unit @ 1.. = unsafe { (format as *const u16).add(units.len()).read_unaligned() } {
+            units.push(unit);
+        }
+        let arguments = (!arguments.is_null()).then(|| rtl::message::Arguments {
+            slots: if array as u8 != 0 {
+                arguments as *const usize
+            } else {
+                // SAFETY: a va_list's address.
+                unsafe { (arguments as *const *const usize).read_unaligned() }
+            },
+            ansi: ansi as u8 != 0,
+        });
+        // SAFETY: the caller's buffer, `length` bytes.
+        let out = unsafe { core::slice::from_raw_parts_mut(buffer, length as usize / 2) };
+        match rtl::message::format(&units, width, ignore_inserts as u8 != 0, arguments, out) {
+            Ok(written) => {
+                if !return_length.is_null() {
+                    // SAFETY: the caller's count.
+                    unsafe { return_length.write(2 * (written as u32 + 1)) };
+                }
+                0
+            }
+            Err(status) => status,
+        }
+    }
+
+    /// The handle tables' memory: page-aligned host allocations, never given back (a test's tables
+    /// live as long as it does).
+    struct HostVm;
+
+    impl rtl::heap::Vm for HostVm {
+        fn reserve(&self, size: usize) -> Option<usize> {
+            let layout = std::alloc::Layout::from_size_align(size, rtl::heap::PAGE).ok()?;
+            // SAFETY: a nonzero, page-aligned layout.
+            Some(unsafe { std::alloc::alloc_zeroed(layout) } as usize).filter(|&base| base != 0)
+        }
+
+        fn commit(&self, _base: usize, _size: usize) -> bool {
+            true
+        }
+
+        fn release(&self, _base: usize) {}
+    }
+
+    /// ntdll's handle-table calls (rtl::handles, as ntdll runs them), over host memory.
+    pub unsafe extern "system" fn RtlInitializeHandleTable(
+        maximum: u32,
+        size: u32,
+        table: *mut super::HandleTable,
+    ) {
+        // SAFETY: the caller's table.
+        unsafe { &mut *table }.initialize(maximum, size);
+    }
+
+    pub unsafe extern "system" fn RtlAllocateHandle(
+        table: *mut super::HandleTable,
+        index: *mut u32,
+    ) -> usize {
+        // SAFETY: the caller's table.
+        match unsafe { &mut *table }.allocate(&HostVm) {
+            Some((entry, number)) => {
+                if !index.is_null() {
+                    // SAFETY: the caller's index.
+                    unsafe { index.write(number) };
+                }
+                entry
+            }
+            None => 0,
+        }
+    }
+
+    pub unsafe extern "system" fn RtlFreeHandle(
+        table: *mut super::HandleTable,
+        entry: usize,
+    ) -> u8 {
+        // SAFETY: the caller's table.
+        u8::from(unsafe { &mut *table }.free(entry))
+    }
+
+    pub unsafe extern "system" fn RtlIsValidHandle(
+        table: *const super::HandleTable,
+        entry: usize,
+    ) -> u8 {
+        // SAFETY: the caller's table.
+        u8::from(unsafe { &*table }.is_valid(entry))
+    }
+
+    /// RtlLockHeap and RtlUnlockHeap: the stand-in heap is the host's allocator, its own lock.
+    pub unsafe extern "system" fn RtlLockHeap(_heap: usize) -> u8 {
+        1
+    }
+
+    pub unsafe extern "system" fn RtlUnlockHeap(_heap: usize) -> u8 {
+        1
     }
 
     std::thread_local! {
