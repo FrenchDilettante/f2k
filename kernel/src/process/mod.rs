@@ -21,7 +21,7 @@
 //! system (the leak sweep over every object pool and the open-file records, the free frames against
 //! the post-boot baseline) wait for quiescence: the reap after which no process remains that has
 //! not been torn down. The boot's runner starts each program once the last is reaped, so every
-//! reap is quiescent today.
+//! reap is quiescent then; under the kernel option `concurrent`, only the last one is.
 //!
 //! The end of a process, in the platform's order:
 //!
