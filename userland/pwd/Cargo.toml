@@ -1,0 +1,18 @@
+[package]
+name = "pwd"
+version = "0.1.0"
+edition = "2021"
+
+# pwd's output, host-testable.
+[lib]
+name = "pwd"
+path = "src/lib.rs"
+
+# The program: pwd.exe (the target names its images .dll: the Makefile copies it to its name).
+[[bin]]
+name = "pwd"
+path = "src/main.rs"
+test = false
+
+[dependencies]
+exe = { path = "../exe" }

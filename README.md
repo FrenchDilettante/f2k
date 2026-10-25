@@ -13,6 +13,8 @@ Five of Windows 2000's system DLLs are F2K's own code:
 - **advapi32**: the registry calls, over a registry the kernel keeps in memory.
 - **user32**: window stations, desktops and `MessageBeep`; no windows yet.
 
+Beside them in `\WINNT\system32` is one program of F2K's own, written in Rust: `pwd`, which prints the current directory.
+
 Windows 2000's own `cmd.exe` starts and runs its built-in commands (`dir`, `copy`, `set`, `type`, `md`...); it cannot start other programs yet, since F2K runs one process at a time.
 Functions F2K does not have yet are either absent or stubs that log their call (see the compatibility report below).
 

@@ -85,6 +85,11 @@ SYSTEM_DLLS = $(BUILD_DIR)/userland/i686-f2k-pe/release/ntdll.dll \
               $(BUILD_DIR)/userland/i686-f2k-pe/release/msvcrt.dll \
               $(BUILD_DIR)/userland/i686-f2k-pe/release/advapi32.dll \
               $(BUILD_DIR)/userland/i686-f2k-pe/release/user32.dll
+# F2K's own programs the userland workspace builds (userland/<program>), which the disk carries in
+# the system directory beside the DLLs. The target names every image it links <name>.dll (the
+# DLLs are its binaries too), so `userland` copies each program to its .exe name beside it.
+SYSTEM_PROGRAMS = pwd
+SYSTEM_EXES = $(foreach program,$(SYSTEM_PROGRAMS),$(BUILD_DIR)/userland/i686-f2k-pe/release/$(program).exe)
 
 # Limine bootloader settings
 LIMINE_DIR ?= $(BOOT_DIR)/limine
@@ -103,7 +108,7 @@ help:
 	@echo "Targets:"
 	@echo "  all           - Build everything and create bootable disk"
 	@echo "  userland     - Build the system DLLs (ntdll.dll, which the kernel embeds, kernel32.dll,"
-	@echo "                 msvcrt.dll, advapi32.dll and user32.dll)"
+	@echo "                 msvcrt.dll, advapi32.dll and user32.dll) and F2K's own programs (pwd.exe)"
 	@echo "  kernel       - Build the kernel (the system DLLs first)"
 	@echo "  qemu         - Build the disk and boot the kernel directly in QEMU (Multiboot, disk attached)"
 	@echo "  test         - Run every on-target QEMU test (kernel boots and the corpus)"
@@ -140,8 +145,9 @@ all: disk
 # is generated from too.
 .PHONY: userland
 userland:
-	@echo "Building the system DLLs..."
+	@echo "Building the system DLLs and programs..."
 	cd $(USERLAND_DIR) && cargo build --release
+	for exe in $(SYSTEM_EXES); do cp $${exe%.exe}.dll $$exe || exit 1; done
 
 .PHONY: kernel
 kernel: userland
@@ -186,9 +192,10 @@ disk: kernel limine
 	# The system directory, under the system root (KUSER_SHARED_DATA's NtSystemRoot, C:\WINNT):
 	# the system DLLs the userland workspace builds. ntdll loads kernel32 from here into every
 	# process, and msvcrt, advapi32 and user32 into the programs that import them (the kernel maps
-	# ntdll itself and reads kernel32's start thunk from here at boot).
+	# ntdll itself and reads kernel32's start thunk from here at boot). F2K's own programs go beside
+	# them, on the PATH every process starts with.
 	mmd -i $(DISK_IMG)@@1M ::/WINNT ::/WINNT/system32
-	mcopy -i $(DISK_IMG)@@1M $(SYSTEM_DLLS) ::/WINNT/system32/
+	mcopy -i $(DISK_IMG)@@1M $(SYSTEM_DLLS) $(SYSTEM_EXES) ::/WINNT/system32/
 	# The sectioned corpus in \CORPUS, with the files fixture's data tree beside
 	# FILES.EXE and the two attributes git cannot carry (tests/kernel32/files/setup.bat
 	# sets them on the real machine).
@@ -295,7 +302,7 @@ run-tests: userland
 		CARGO_UNSTABLE_BUILD_STD=std cargo test --manifest-path $(USERLAND_DIR)/$$dll/Cargo.toml --lib --target $(RUST_HOST_TARGET) --target-dir target/userland-host || exit 1; \
 	done
 	# The compiler's helpers, F2K's own programs' runtime, and the programs' libraries.
-	for crate in compiler-helpers exe; do \
+	for crate in compiler-helpers exe $(SYSTEM_PROGRAMS); do \
 		CARGO_UNSTABLE_BUILD_STD=std cargo test --manifest-path $(USERLAND_DIR)/$$crate/Cargo.toml --lib --target $(RUST_HOST_TARGET) --target-dir target/userland-host || exit 1; \
 	done
 
