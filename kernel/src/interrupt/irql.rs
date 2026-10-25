@@ -76,6 +76,17 @@ impl IrqlState {
         }
     }
 
+    /// The boot processor's state at the kernel's entry: passive, interrupts masked — the loader
+    /// hands over with the flag clear, and it stays clear until the interrupt subsystem enables it.
+    /// A model that said enabled there would have the boot's masked sections (a raise/lower pair,
+    /// a scratch-window use) set the flag on their way out, before the vectors are wired.
+    pub const fn at_boot() -> Self {
+        Self {
+            interrupts: false,
+            ..Self::new()
+        }
+    }
+
     /// The current level.
     pub fn current(&self) -> Irql {
         Irql(self.current)
@@ -167,6 +178,23 @@ impl IrqlState {
         unsafe {
             core::arch::asm!("cli", options(nostack, preserves_flags));
         }
+    }
+
+    /// A gate's entry: the kernel's interrupt gates (exceptions, system services) clear the
+    /// interrupt flag as they enter, and the model must say so. Left as the interrupted context had
+    /// it (user mode's enabled, say), the first wait or raise/lower pair inside the handler would
+    /// restore that state and run the rest of the handler preemptible, another thread free to
+    /// interleave inside the structures it is changing.
+    pub fn enter_gate(&mut self) {
+        self.mask_interrupts();
+    }
+
+    /// A gate's return to the context it interrupted: the `iretd` that follows puts back the
+    /// interrupt flag the entry saved (`enabled`: the saved EFLAGS' interrupt flag), so the model
+    /// takes that state without touching the hardware flag — enabling it here would open a window
+    /// on the gate's own frame before the return.
+    pub fn leave_gate(&mut self, enabled: bool) {
+        self.interrupts = enabled;
     }
 
     /// Open a one-instruction interrupt window from masked code and close it again: an interrupt
@@ -272,7 +300,7 @@ impl IrqlState {
 
 /// The one level state (single processor).
 #[cfg(target_arch = "x86")]
-static mut STATE: IrqlState = IrqlState::new();
+static mut STATE: IrqlState = IrqlState::at_boot();
 
 /// The kernel's level state. Mutating it performs the real interrupt-flag transitions.
 ///
@@ -383,6 +411,56 @@ mod tests {
         irql.lower(outer);
         assert!(!irql.interrupts_enabled());
         assert_eq!(irql.current(), PASSIVE);
+        assert_eq!(irql.audit(), Ok(()));
+    }
+
+    /// A gate entered from an enabled context (user mode, or kernel code running enabled): without
+    /// the entry's step, a raise/lower pair inside the handler — a frame allocation's, a wait's —
+    /// restores the enabled state the model still carries, and the rest of the handler runs
+    /// preemptible though the gate masked it.
+    #[test]
+    fn a_pair_inside_a_gate_reenables_without_the_entry_step() {
+        let mut irql = IrqlState::new();
+        let previous = irql.raise(DISPATCH);
+        irql.lower(previous);
+        assert!(irql.interrupts_enabled(), "the stale model re-enables");
+    }
+
+    /// With the entry's step, the handler stays masked through its raise/lower pairs; its return
+    /// takes the interrupted context's flag (the `iretd` restores the hardware's), at the level
+    /// the gate found.
+    #[test]
+    fn a_gate_keeps_its_handler_masked_until_the_return() {
+        for interrupted in [true, false] {
+            let mut irql = IrqlState::new();
+            if !interrupted {
+                irql.mask_interrupts();
+            }
+            irql.enter_gate();
+            assert!(!irql.interrupts_enabled());
+            let previous = irql.raise(DISPATCH);
+            irql.lower(previous);
+            let previous = irql.raise(HIGH);
+            irql.lower(previous);
+            assert!(!irql.interrupts_enabled(), "a pair re-enabled the handler");
+            irql.leave_gate(interrupted);
+            assert_eq!(irql.interrupts_enabled(), interrupted);
+            assert_eq!(irql.current(), PASSIVE);
+            assert_eq!(irql.audit(), Ok(()));
+        }
+    }
+
+    /// The boot's state is masked, as the loader hands the processor over: a raise/lower pair
+    /// before the interrupt subsystem's enable leaves it masked.
+    #[test]
+    fn the_boot_state_stays_masked_until_enabled() {
+        let mut irql = IrqlState::at_boot();
+        assert!(!irql.interrupts_enabled());
+        let previous = irql.raise(SYNCH);
+        irql.lower(previous);
+        assert!(!irql.interrupts_enabled(), "a boot pair enabled interrupts");
+        irql.unmask_interrupts();
+        assert!(irql.interrupts_enabled());
         assert_eq!(irql.audit(), Ok(()));
     }
 

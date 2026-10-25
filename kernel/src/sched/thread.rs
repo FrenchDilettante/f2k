@@ -249,6 +249,11 @@ pub struct Thread {
     /// Whether the thread runs its own exit path: a critical region it leaves there (the exit's
     /// own volume work) no longer ends it.
     pub(crate) exiting: bool,
+    /// Whether the thread is inside a user-memory copy on its process's behalf (a system service's
+    /// argument copy): a kernel fault under it ends the process instead of halting the kernel
+    /// (see `user::syscall::copying_user_args`). Per thread, as a copy may be interrupted by
+    /// another thread's run.
+    pub(crate) copying_user_memory: bool,
 }
 
 // The machine-state layout contract with the switch's assembly: on the 32-bit target the offsets it
@@ -339,6 +344,7 @@ impl Thread {
             owned_mutexes: List::empty(),
             multi_blocks: [WaitBlock::detached(); super::wait::MAXIMUM_WAIT_OBJECTS],
             exiting: false,
+            copying_user_memory: false,
         }
     }
 

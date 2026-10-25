@@ -30,7 +30,8 @@
 //! run through one copy routine whose faulting instruction the exception handler knows, and a
 //! fault there resumes at the routine's fixup, so a bad user pointer is a failed transfer the
 //! service reports (STATUS_ACCESS_VIOLATION), not the end of the process. The argument copy runs
-//! under the attribution flag instead: a fault there ends the user process, not the kernel.
+//! under the running thread's attribution flag instead: a fault there ends the user process, not
+//! the kernel.
 
 use crate::user::TrapFrame;
 
@@ -114,36 +115,45 @@ pub(crate) fn probe_user_range(pointer: u32, length: u32) -> Result<(), u32> {
     }
 }
 
-/// Set while the kernel copies user memory on the process's behalf (argument copies, service
-/// transfers). The exception handler attributes a fault under this flag to the user process.
-static mut COPYING_USER_ARGS: bool = false;
+/// The running thread's record, once the scheduler has one: what a user-memory copy's attribution
+/// is kept in.
+#[cfg(target_arch = "x86")]
+fn running_thread() -> Option<&'static mut crate::sched::thread::Thread> {
+    let thread = crate::sched::idle::dispatcher().current_thread();
+    // SAFETY: the dispatcher's running thread is live while it runs, and this processor is running
+    // it; the attribution's readers and writers (the copies, the exception handler) run masked on
+    // that thread, one borrow at a time.
+    unsafe { thread.as_mut() }
+}
 
-/// Whether the kernel is inside a user-memory copy.
+/// Whether the running thread is inside a user-memory copy on its process's behalf (an argument
+/// copy): the exception handler attributes a kernel fault under it to the user process. Kept per
+/// thread, as Windows keeps such state in the thread: a copy another thread's run interrupts
+/// (a wait inside it, a switch) must not make that thread's kernel faults its process's.
+#[cfg(target_arch = "x86")]
 pub fn copying_user_args() -> bool {
-    // SAFETY: single CPU with interrupts disabled throughout.
-    unsafe { core::ptr::read_volatile(core::ptr::addr_of!(COPYING_USER_ARGS)) }
+    running_thread().is_some_and(|thread| thread.copying_user_memory)
 }
 
-/// Clear the attribution flag: the exception handler's step when a fault inside a user-memory copy
-/// ends the process. The copy never returns to clear it itself, and a flag left set would attribute
-/// every later kernel fault to whichever process runs next.
+/// Clear the running thread's attribution: the exception handler's step when a fault inside a
+/// user-memory copy ends the process. The copy never returns to clear it itself, and a flag left
+/// set would attribute the thread's later kernel faults (its exit path's) to the user copy.
+#[cfg(target_arch = "x86")]
 pub fn end_user_attribution() {
-    // SAFETY: as `with_user_attribution`.
-    unsafe {
-        core::ptr::write_volatile(core::ptr::addr_of_mut!(COPYING_USER_ARGS), false);
+    if let Some(thread) = running_thread() {
+        thread.copying_user_memory = false;
     }
 }
 
-/// Run `body` under the attribution flag.
+/// Run `body` under the running thread's attribution, putting back the state it found.
+#[cfg(target_arch = "x86")]
 fn with_user_attribution<T>(body: impl FnOnce() -> T) -> T {
-    // SAFETY: single-threaded kernel context; the flag's only other reader is the exception
-    // handler, which runs in this same context.
-    unsafe {
-        core::ptr::write_volatile(core::ptr::addr_of_mut!(COPYING_USER_ARGS), true);
-    }
+    let thread = running_thread().expect("a user-memory copy runs on a thread");
+    let previous = core::mem::replace(&mut thread.copying_user_memory, true);
     let result = body();
-    unsafe {
-        core::ptr::write_volatile(core::ptr::addr_of_mut!(COPYING_USER_ARGS), false);
+    // Read afresh: the body may have borrowed the record itself.
+    if let Some(thread) = running_thread() {
+        thread.copying_user_memory = previous;
     }
     result
 }
@@ -303,6 +313,7 @@ pub mod host {
 ///
 /// The range must have passed [`probe_user_range`]; a fault on an unmapped page is attributed to
 /// the user process.
+#[cfg(target_arch = "x86")]
 fn copy_user_args(pointer: u32, length: u32, out: &mut [u32; MAX_ARG_BYTES / 4]) {
     // SAFETY: see contract above; the flag makes a fault on a bad pointer end the process rather
     // than halt the kernel mid-copy.
@@ -325,7 +336,7 @@ extern "C" fn syscall_dispatch(frame: &mut TrapFrame) {
     // thread could then interleave inside the kernel's unlocked structures (the scratch window,
     // the frame database, a process's page tables) — another process's thread, once processes
     // run side by side.
-    crate::interrupt::irql::state_mut().mask_interrupts();
+    crate::interrupt::irql::state_mut().enter_gate();
 
     // A Windows 2000 system service of either table, the client-server call, or the debugger
     // print.

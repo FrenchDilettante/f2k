@@ -354,9 +354,28 @@ const NAMES: [&str; EXCEPTION_VECTORS] = [
 /// diagnostic dump on COM1 and the origin decides: user-raised faults (including bad user pointers
 /// in syscall argument copies) end the user process with the exception code they raise; the rest
 /// are kernel faults, which halt.
+///
+/// The gates are interrupt gates: the entry cleared the interrupt flag, and the level ledger is
+/// told so first (as the system-service gate does), so a wait or a raise/lower pair inside the
+/// resolution — a copy-on-write's frame, a stack's growth, the exception's dispatch — cannot turn
+/// interrupts back on halfway through it. A resolved exception's return gives the ledger the
+/// interrupted context's flag, which the stub's `iretd` puts back in the hardware.
 #[allow(dead_code)] // referenced only from the generated stubs (sym operand)
 #[cfg(target_arch = "x86")]
 extern "C" fn exception_handler(frame: &mut ExceptionFrame) {
+    crate::interrupt::irql::state_mut().enter_gate();
+    resolve_or_end(frame);
+    crate::interrupt::irql::state_mut().leave_gate(frame.eflags & EFLAGS_IF != 0);
+}
+
+/// The interrupt flag's bit in EFLAGS.
+#[cfg(target_arch = "x86")]
+const EFLAGS_IF: u32 = 1 << 9;
+
+/// The exception handler's body (see [`exception_handler`]): returns only when the exception is
+/// resolved and the interrupted context resumes; otherwise it ends the process or halts.
+#[cfg(target_arch = "x86")]
+fn resolve_or_end(frame: &mut ExceptionFrame) {
     let from_user = frame.cs & 3 != 0;
     let in_copy = !from_user && crate::user::syscall::copy_fixup(frame.eip).is_some();
     let cr2: u32 = if frame.vector == 14 {
@@ -485,8 +504,8 @@ extern "C" fn exception_handler(frame: &mut ExceptionFrame) {
             in_user_copy: false,
         });
     } else if crate::user::syscall::copying_user_args() {
-        // The copy that set the flag never resumes: clear it here, or the next process's kernel
-        // faults would be reported as its own.
+        // The copy that set the thread's flag never resumes: clear it here, or the thread's exit
+        // path would run attributed to the copy.
         crate::user::syscall::end_user_attribution();
         // The fault was raised on the process's behalf inside a user-memory copy: same
         // containment, its own report.
