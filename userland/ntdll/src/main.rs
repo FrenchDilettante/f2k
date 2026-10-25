@@ -15,12 +15,12 @@
 //! RtlFreeHandle, RtlIsValidHandle: `src/handles.rs` over `rtl::handles`); the environment
 //! (RtlSetEnvironmentVariable, RtlQueryEnvironmentVariable_U, RtlExpandEnvironmentStrings_U,
 //! RtlCreateEnvironment, RtlDestroyEnvironment: `src/env.rs` over `rtl::env`); the process
-//! parameters a new process starts with (RtlCreateProcessParameters, RtlDestroyProcessParameters:
-//! `src/params.rs` over `rtl::params`); the current directory and the DOS paths
-//! (RtlSetCurrentDirectory_U, RtlGetCurrentDirectory_U, RtlGetFullPathName_U,
-//! RtlDosPathNameToNtPathName_U, RtlDoesFileExists_U, RtlDetermineDosPathNameType_U:
-//! `src/curdir.rs` over `rtl::path`); the counted strings and the ANSI code page, which kernel32's
-//! narrow calls convert through
+//! parameters a new process starts with (RtlCreateProcessParameters, RtlDestroyProcessParameters,
+//! RtlNormalizeProcessParams, RtlDeNormalizeProcessParams: `src/params.rs` over `rtl::params`); the
+//! current directory and the DOS paths (RtlSetCurrentDirectory_U, RtlGetCurrentDirectory_U,
+//! RtlGetFullPathName_U, RtlDosPathNameToNtPathName_U, RtlDoesFileExists_U,
+//! RtlDetermineDosPathNameType_U: `src/curdir.rs` over `rtl::path`); the counted strings and the
+//! ANSI code page, which kernel32's narrow calls convert through
 //! (RtlInitAnsiString, RtlAnsiStringToUnicodeString, RtlUnicodeStringToAnsiString,
 //! RtlFreeUnicodeString, RtlUnicodeToMultiByteN, RtlMultiByteToUnicodeN, RtlUnicodeToMultiByteSize:
 //! `src/strings.rs` over `rtl::string`); the current user's registry hive, as advapi32 opens it,
@@ -302,6 +302,7 @@ extern "C" fn f2k_rtl_validate_heap(handle: usize, flags: u32, pointer: usize) -
 extern "C" fn f2k_ldr_initialize(context: u32) {
     let first = sys::process_heap_handle() == 0;
     if first {
+        params::normalize_own_parameters();
         let process = sys::process();
         // SAFETY: the PEB's lock slot, zero until now (no other thread exists yet).
         let _ = unsafe { &*process.lock }.initialize(&Native, 0);

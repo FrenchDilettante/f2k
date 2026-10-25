@@ -360,6 +360,45 @@ mod tests {
         assert_eq!(header, denormalized, "already denormalized");
     }
 
+    /// Only the eight strings move: the environment (an address in either form), the handles and
+    /// the drive table are left as they are, as is a block's lengths.
+    #[test]
+    fn normalizing_moves_only_the_strings() {
+        let image = wide("C:\\A.EXE");
+        let strings = Strings {
+            image_path_name: &image,
+            command_line: &image,
+            ..Strings::default()
+        };
+        let mut header = ProcessParameters::default();
+        let mut tail = vec![0u8; strings.room()];
+        lay_out(&mut header, &mut tail, &strings, 0x0001_0000);
+        header.console_handle = 0x10;
+        header.standard_output = 0x7;
+        header.current_directory.handle = 0x24;
+        header.current_directories[2].dos_path.buffer = 0x30;
+        let before = header;
+        header.normalize(0x0002_0000);
+        assert_eq!(
+            (
+                header.environment,
+                header.console_handle,
+                header.standard_output
+            ),
+            (0x0001_0000, 0x10, 0x7)
+        );
+        assert_eq!(header.current_directory.handle, 0x24);
+        assert_eq!(header.current_directories, before.current_directories);
+        assert_eq!(
+            (header.length, header.maximum_length),
+            (before.length, before.maximum_length)
+        );
+        assert_eq!(
+            header.current_directory.dos_path.buffer,
+            before.current_directory.dos_path.buffer + 0x0002_0000
+        );
+    }
+
     /// A current directory longer than MAX_PATH gets the room it needs.
     #[test]
     fn a_long_current_directory_gets_its_room() {

@@ -4,7 +4,9 @@
 //! denormalized, its strings' buffers offsets from its start, so that it reads the same wherever it
 //! is copied. What the caller leaves out comes from the calling process's own block, under the PEB
 //! lock: its DLL search path and current directory, its environment; the command line defaults to
-//! the image's path.
+//! the image's path. The new process normalizes the block it was handed early in its
+//! initialization ([`normalize_own_parameters`], RtlNormalizeProcessParams: the offsets made
+//! addresses); RtlDeNormalizeProcessParams does the reverse.
 
 use core::mem::size_of;
 
@@ -149,6 +151,51 @@ pub unsafe extern "system" fn rtl_create_process_parameters(
         *out = header;
         STATUS_SUCCESS
     })
+}
+
+/// RtlNormalizeProcessParams: the block at `parameters` normalized in place, each string's offset
+/// from the block made its address (`rtl::params`); a block already normalized is left as it is.
+/// The block (null for null).
+///
+/// # Safety
+///
+/// `parameters` is null or a writable process parameters block.
+#[unsafe(export_name = "f2k_export_RtlNormalizeProcessParams")]
+pub unsafe extern "system" fn rtl_normalize_process_params(
+    parameters: *mut ProcessParameters<usize>,
+) -> *mut ProcessParameters<usize> {
+    // SAFETY: the caller's block.
+    if let Some(block) = unsafe { parameters.as_mut() } {
+        block.normalize(parameters as usize);
+    }
+    parameters
+}
+
+/// RtlDeNormalizeProcessParams: the block at `parameters` denormalized in place, each string's
+/// address made its offset from the block (`rtl::params`); a block already denormalized is left as
+/// it is. The block (null for null).
+///
+/// # Safety
+///
+/// `parameters` is null or a writable process parameters block.
+#[unsafe(export_name = "f2k_export_RtlDeNormalizeProcessParams")]
+pub unsafe extern "system" fn rtl_denormalize_process_params(
+    parameters: *mut ProcessParameters<usize>,
+) -> *mut ProcessParameters<usize> {
+    // SAFETY: the caller's block.
+    if let Some(block) = unsafe { parameters.as_mut() } {
+        block.denormalize(parameters as usize);
+    }
+    parameters
+}
+
+/// The process's own block normalized, as Windows 2000's loader does first thing in a process's
+/// initialization: kernel32's CreateProcess writes a new process's block denormalized; the kernel
+/// writes a boot program's already normalized, which this leaves as it is.
+pub fn normalize_own_parameters() {
+    // SAFETY: the PEB's ProcessParameters, null or the process's block, mapped and writable; the
+    // process's first thread is the only one running.
+    unsafe { rtl_normalize_process_params(sys::process_parameters() as *mut _) };
 }
 
 /// RtlDestroyProcessParameters: the block RtlCreateProcessParameters made, released

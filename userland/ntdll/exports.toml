@@ -1030,6 +1030,22 @@ args = ["ptr ProcessParameters"]
 impl = { native = "RtlDestroyProcessParameters" }
 ordinal = 426
 
+[[export]]
+name = "RtlNormalizeProcessParams"
+group = "processes"
+args = ["ptr ProcessParameters"]
+impl = { native = "RtlNormalizeProcessParams" }
+ordinal = 564
+note = "in place, the strings' offsets made addresses; returns the block; a normalized block is left as it is. ntdll's start-up normalizes the process's own block"
+
+[[export]]
+name = "RtlDeNormalizeProcessParams"
+group = "processes"
+args = ["ptr ProcessParameters"]
+impl = { native = "RtlDeNormalizeProcessParams" }
+ordinal = 401
+note = "in place, the strings' addresses made offsets; returns the block; a denormalized block is left as it is"
+
 # --- counted strings and the ANSI code page (src/strings.rs over rtl::string) ----------------------
 
 [[export]]
@@ -2519,10 +2535,6 @@ name = "RtlCutoverTimeToSystemTime"
 ordinal = 400
 
 [[export]]
-name = "RtlDeNormalizeProcessParams"
-ordinal = 401
-
-[[export]]
 name = "RtlDebugPrintTimes"
 ordinal = 402
 
@@ -3065,10 +3077,6 @@ ordinal = 562
 [[export]]
 name = "RtlNewSecurityObjectEx"
 ordinal = 563
-
-[[export]]
-name = "RtlNormalizeProcessParams"
-ordinal = 564
 
 [[export]]
 name = "RtlNumberGenericTableElements"

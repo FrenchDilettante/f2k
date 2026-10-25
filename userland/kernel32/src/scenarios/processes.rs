@@ -176,10 +176,11 @@ fn run(command_line: &str) -> (u32, u32, ProcessInformation) {
     )
 }
 
-/// The child's UNICODE_STRING at `at` (its buffer the child's address), as text.
-fn child_string(at: usize) -> String {
-    let length = child_dword(at) & 0xFFFF;
-    let buffer = child_dword(at + 4) as usize;
+/// The UNICODE_STRING at `field` in the child's parameters block (denormalized: its buffer an
+/// offset from the block), as text.
+fn child_string(field: usize) -> String {
+    let length = child_dword(PARAMETERS + field) & 0xFFFF;
+    let buffer = PARAMETERS + child_dword(PARAMETERS + field + 4) as usize;
     let bytes = child_bytes(buffer, length as usize);
     let units: Vec<u16> = bytes
         .chunks(2)
@@ -229,13 +230,13 @@ const ENVIRONMENT_AT: usize = 0x0001_0000;
 /// A program run by its full name with a command line: the image opened for execution (shared
 /// for reading and deleting, synchronous, no directory), an image section made of it and its
 /// Debugger option asked; the process made of the section, the caller its parent, inheriting;
-/// its environment written at 0x00010000, its parameters block at 0x00020000 (normalized, its
-/// strings the child's addresses: the image's path, the command line as given, the caller's
-/// current directory, the default search as the DLL path, the image's path as the title; the
-/// console program's standard handles the caller's) and the PEB pointed at it; the stack reserved
-/// below 0x00130000 with its commit and guard page; the first thread at BaseProcessStartThunk
-/// (EAX the entry, EBX the PEB), made suspended and resumed; the file and section closed, the
-/// block freed, the handles and ids handed out, the last error untouched.
+/// its environment written at 0x00010000, its parameters block at 0x00020000 (denormalized, its
+/// strings' buffers offsets from the block: the image's path, the command line as given, the
+/// caller's current directory, the default search as the DLL path, the image's path as the title;
+/// the console program's standard handles the caller's) and the PEB pointed at it; the stack
+/// reserved below 0x00130000 with its commit and guard page; the first thread at
+/// BaseProcessStartThunk (EAX the entry, EBX the PEB), made suspended and resumed; the file and
+/// section closed, the block freed, the handles and ids handed out, the last error untouched.
 ///
 /// Pins: kernel32.CreateProcessW
 #[test]
@@ -306,7 +307,16 @@ fn create_process_runs_a_program_in_a_new_process() {
         "the environment, the parameters, the stack: its reservation, commit and guard page"
     );
     assert_eq!(child_dword(CHILD_PEB + 0x10), PARAMETERS as u32);
-    assert_eq!(child_dword(PARAMETERS + 0x08) & 1, 1, "normalized");
+    assert_eq!(
+        child_dword(PARAMETERS + 0x08) & 1,
+        0,
+        "denormalized: the child's ntdll normalizes it"
+    );
+    assert_eq!(
+        child_dword(PARAMETERS + 0x3C),
+        (0x290 + 520 + (2 * SEARCH.encode_utf16().count() + 2).next_multiple_of(4)) as u32,
+        "the image's path an offset from the block"
+    );
     assert_eq!(child_dword(PARAMETERS + 0x48), ENVIRONMENT_AT as u32);
     assert_eq!(
         child_dword(PARAMETERS) as usize,
@@ -317,14 +327,11 @@ fn create_process_runs_a_program_in_a_new_process() {
         child_text(ENVIRONMENT_AT, OWN_ENVIRONMENT.len()),
         OWN_ENVIRONMENT
     );
-    assert_eq!(child_string(PARAMETERS + 0x38), "C:\\CORPUS\\SPAWNKID.EXE");
-    assert_eq!(
-        child_string(PARAMETERS + 0x40),
-        "spawnkid args one \"two words\""
-    );
-    assert_eq!(child_string(PARAMETERS + 0x24), "C:\\CORPUS\\");
-    assert_eq!(child_string(PARAMETERS + 0x30), SEARCH);
-    assert_eq!(child_string(PARAMETERS + 0x70), "C:\\CORPUS\\SPAWNKID.EXE");
+    assert_eq!(child_string(0x38), "C:\\CORPUS\\SPAWNKID.EXE");
+    assert_eq!(child_string(0x40), "spawnkid args one \"two words\"");
+    assert_eq!(child_string(0x24), "C:\\CORPUS\\");
+    assert_eq!(child_string(0x30), SEARCH);
+    assert_eq!(child_string(0x70), "C:\\CORPUS\\SPAWNKID.EXE");
     assert_eq!(
         [0x18, 0x1C, 0x20].map(|at| child_dword(PARAMETERS + at)),
         [3, 7, 0xB],
@@ -390,10 +397,7 @@ fn made_room() -> usize {
 
 /// The child's image path and command line, as the last creation wrote them.
 fn child_names() -> (String, String) {
-    (
-        child_string(PARAMETERS + 0x38),
-        child_string(PARAMETERS + 0x40),
-    )
+    (child_string(0x38), child_string(0x40))
 }
 
 /// A command line alone: its first name searched for as SearchPath's default search looks (the
@@ -676,7 +680,7 @@ fn the_current_directory_asked_for_must_be_a_directory() {
         made()[0].current_directory.as_deref(),
         Some("C:\\CORPUS\\SCRATCH\\sub")
     );
-    assert_eq!(child_string(PARAMETERS + 0x24), "C:\\CORPUS\\SCRATCH\\sub");
+    assert_eq!(child_string(0x24), "C:\\CORPUS\\SCRATCH\\sub");
 
     for (attributes, failure) in [(0x20, 0), (0x10, 0xC000_0034)] {
         setup();
@@ -797,11 +801,11 @@ fn the_startup_information_reaches_the_child() {
             .collect::<Vec<_>>(),
         [1, 2, 3, 4, 5, 6, 7, 0x100, 5]
     );
-    assert_eq!(child_string(PARAMETERS + 0x70), "a title");
-    assert_eq!(child_string(PARAMETERS + 0x78), "WinSta0\\Default");
-    assert_eq!(child_string(PARAMETERS + 0x80), "shell");
+    assert_eq!(child_string(0x70), "a title");
+    assert_eq!(child_string(0x78), "WinSta0\\Default");
+    assert_eq!(child_string(0x80), "shell");
     let length = child_dword(PARAMETERS + 0x88) & 0xFFFF;
-    let buffer = child_dword(PARAMETERS + 0x8C) as usize;
+    let buffer = PARAMETERS + child_dword(PARAMETERS + 0x8C) as usize;
     assert_eq!(child_bytes(buffer, length as usize), runtime);
 
     setup();

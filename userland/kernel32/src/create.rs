@@ -32,9 +32,11 @@
 //!    made in the caller (RtlCreateProcessParameters: the image's path, the DLL search path, the
 //!    current directory, the command line, the window title, desktop, shell information and the C
 //!    runtime's data), the startup values and the standard handles set (STARTUPINFO's with
-//!    STARTF_USESTDHANDLES, else the caller's for a console program, which shares its console), its
-//!    strings' offsets made the new process's addresses (normalized: the block is written where the
-//!    new process reads it, at 0x00020000) and the PEB's ProcessParameters pointed at it.
+//!    STARTF_USESTDHANDLES, else the caller's for a console program, which shares its console),
+//!    written into the new process as RtlCreateProcessParameters left it, denormalized (its
+//!    strings' buffers offsets from the block, at 0x00020000 in a fresh address space), and the
+//!    PEB's ProcessParameters pointed at it: the new process's ntdll normalizes the block during
+//!    its initialization (RtlNormalizeProcessParams), as on Windows 2000.
 //! 7. Its first thread: the stack the image asks (BaseCreateStack in the new process: its
 //!    reservation, its commit and a guard page — the stack at 0x00130000 down), the context
 //!    (BaseProcessStartThunk with EAX the image's entry point and EBX the PEB), NtCreateThread
@@ -52,7 +54,7 @@ use core::mem::size_of;
 use core::ops::{Deref, DerefMut};
 use core::ptr::NonNull;
 
-use rtl::params::{CountedString, CurrentDirectory, DriveDirectory, NORMALIZED};
+use rtl::params::{CountedString, CurrentDirectory, DriveDirectory};
 
 use crate::base::{
     self,
@@ -582,11 +584,11 @@ fn write_environment(process: u32, environment: Environment) -> Result<usize, Fa
 const HEADER: usize = size_of::<rtl::params::ProcessParameters<usize>>();
 const CHILD_HEADER: usize = size_of::<rtl::params::ProcessParameters<u32>>();
 
-/// The parameters block's structure as the new process reads it at `base`, `length` bytes long:
-/// normalized, each string's offset from the block made its address there.
+/// The parameters block's structure as the new process gets it, `length` bytes long: denormalized,
+/// as RtlCreateProcessParameters made it, each string's buffer its offset from the block (the
+/// structure's size in the new process standing for the caller's).
 fn in_child(
     header: &rtl::params::ProcessParameters<usize>,
-    base: u32,
     length: u32,
 ) -> rtl::params::ProcessParameters<u32> {
     let string = |string: &CountedString<usize>| CountedString {
@@ -595,13 +597,13 @@ fn in_child(
         buffer: if string.buffer == 0 {
             0
         } else {
-            base + (string.buffer - HEADER + CHILD_HEADER) as u32
+            (string.buffer - HEADER + CHILD_HEADER) as u32
         },
     };
     rtl::params::ProcessParameters {
         maximum_length: length,
         length,
-        flags: header.flags | NORMALIZED,
+        flags: header.flags,
         debug_flags: header.debug_flags,
         console_handle: header.console_handle as u32,
         console_flags: header.console_flags,
@@ -705,7 +707,7 @@ fn push_parameters(
     let length = CHILD_HEADER + strings.len();
     let (at, _) = ntcall::allocate_virtual_memory(process, 0, length, MEM_COMMIT, PAGE_READWRITE)
         .map_err(Failure::Status)?;
-    let child = in_child(block.header(), at as u32, length as u32);
+    let child = in_child(block.header(), length as u32);
     ntcall::write_virtual_memory(process, at, Source::of(child.bytes()), None)
         .and_then(|()| {
             ntcall::write_virtual_memory(process, at + CHILD_HEADER, Source::of(strings), None)
