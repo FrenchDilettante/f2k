@@ -16,6 +16,9 @@
 //! - Text mode writes each LF as CR LF (`_write` answers the caller's bytes, `_tell` sees the
 //!   file's); it reads CR LF as LF and stops at Ctrl-Z (a file's end, for a file).
 //! - `_setmode` answers the previous mode (`_O_TEXT` or `_O_BINARY`); another mode is EINVAL.
+//! - A child the _spawn family starts is handed the open descriptors (but those opened
+//!   `_O_NOINHERIT`) in STARTUPINFO's C runtime block ([`inheritance_length`]); its start-up takes
+//!   them, then the standard handles for those of 0 to 2 it was not handed.
 
 use crate::data::Global;
 use crate::imports;
@@ -102,9 +105,103 @@ fn type_flags(kind: u32) -> u8 {
     }
 }
 
-/// The DLL's process attach: descriptors 0 to 2 over the standard handles, in text mode.
+/// The descriptors a parent hands its child, as the C runtime passes them in STARTUPINFO's
+/// cbReserved2 and lpReserved2 (MSDN: "reserved for use by the C run-time"): a dword, the count;
+/// then each descriptor's flags, a byte (zero for one not handed on); then each one's handle, a
+/// dword (INVALID_HANDLE_VALUE for none). Its length for `count` descriptors.
+pub const fn inheritance_length(count: usize) -> usize {
+    4 + 5 * count
+}
+
+/// The block for `descriptors` (each its flags and handle) into `out`, of its
+/// [`inheritance_length`].
+pub fn encode_inheritance(descriptors: impl ExactSizeIterator<Item = (u8, u32)>, out: &mut [u8]) {
+    let count = descriptors.len();
+    out[..4].copy_from_slice(&(count as u32).to_le_bytes());
+    for (at, (flags, handle)) in descriptors.enumerate() {
+        out[4 + at] = flags;
+        let handle_at = 4 + count + 4 * at;
+        out[handle_at..handle_at + 4].copy_from_slice(&handle.to_le_bytes());
+    }
+}
+
+/// The descriptors a block hands on, each its flags and handle, in descriptor order: as many as
+/// its count says and its length holds.
+pub fn decode_inheritance(block: &[u8]) -> impl Iterator<Item = (u8, u32)> + '_ {
+    let count = block
+        .get(..4)
+        .map_or(0, |count| {
+            u32::from_le_bytes(count.try_into().unwrap()) as usize
+        })
+        .min(block.len().saturating_sub(4) / 5);
+    (0..count).map(move |at| {
+        let handle_at = 4 + count + 4 * at;
+        let handle = u32::from_le_bytes(block[handle_at..handle_at + 4].try_into().unwrap());
+        (block[4 + at], handle)
+    })
+}
+
+/// The descriptors a child inherits (see [`inheritance_length`]): up to the last one open, each
+/// open one's flags and handle unless it was opened `_O_NOINHERIT` (then none, as a closed one).
+/// The caller holds the C runtime's lock.
+pub fn inheritance_count() -> usize {
+    table()
+        .iter()
+        .rposition(|entry| entry.flags & FOPEN != 0)
+        .map_or(0, |last| last + 1)
+}
+
+/// The block for the descriptors a child inherits into `out`, of the [`inheritance_length`] of
+/// [`inheritance_count`]'s count. The caller holds the C runtime's lock.
+pub fn write_inheritance(out: &mut [u8]) {
+    let descriptors = table()[..inheritance_count()].iter().map(|entry| {
+        if entry.flags & FOPEN != 0 && entry.flags & FNOINHERIT == 0 {
+            (entry.flags, entry.handle as u32)
+        } else {
+            (0, u32::MAX)
+        }
+    });
+    encode_inheritance(descriptors, out);
+}
+
+/// The descriptors the parent handed on (STARTUPINFO's C runtime block): each open one whose
+/// handle is valid and of a known type takes its descriptor, flags and all.
+fn take_inherited() {
+    let mut info = imports::StartupInfoA::new();
+    // SAFETY: kernel32's export, into the structure above.
+    unsafe { imports::GetStartupInfoA(&mut info) };
+    if info.reserved2.is_null() || info.reserved2_length < 4 {
+        return;
+    }
+    // SAFETY: the block the parent's C runtime made, cbReserved2 bytes at lpReserved2 (kernel32
+    // copied it into the process parameters, for the process's whole life).
+    let block =
+        unsafe { core::slice::from_raw_parts(info.reserved2, usize::from(info.reserved2_length)) };
+    for (fd, (flags, handle)) in decode_inheritance(block).enumerate().take(DESCRIPTORS) {
+        let handle = handle as usize;
+        if flags & FOPEN == 0 || handle == 0 || handle as u32 == u32::MAX {
+            continue;
+        }
+        // SAFETY: kernel32's export.
+        if unsafe { imports::GetFileType(handle) } == FILE_TYPE_UNKNOWN {
+            continue;
+        }
+        table()[fd] = Descriptor {
+            handle,
+            flags,
+            ahead: 0x100,
+        };
+    }
+}
+
+/// The DLL's process attach: the descriptors the parent handed on, then those of 0 to 2 it did
+/// not over the standard handles, in text mode.
 pub fn initialize() {
+    take_inherited();
     for (fd, &which) in STANDARD.iter().enumerate() {
+        if table()[fd].flags & FOPEN != 0 {
+            continue;
+        }
         // SAFETY: kernel32's exports.
         let (handle, kind) = unsafe {
             let handle = imports::GetStdHandle(which);

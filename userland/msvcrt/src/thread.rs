@@ -98,7 +98,10 @@ pub fn detach_thread() {
 
 /// errno's values (errno.h).
 pub const ENOENT: i32 = 2;
+pub const E2BIG: i32 = 7;
+pub const ENOEXEC: i32 = 8;
 pub const EBADF: i32 = 9;
+pub const ECHILD: i32 = 10;
 pub const ENOMEM: i32 = 12;
 pub const EACCES: i32 = 13;
 pub const EEXIST: i32 = 17;
@@ -124,7 +127,8 @@ pub fn set_doserrno(value: u32) {
 /// A system call's failure maps the Win32 error the way errno.h's values read: the files and paths
 /// not found to ENOENT, too many open files to EMFILE, access denied to EACCES, a bad handle to
 /// EBADF, no memory to ENOMEM, an existing file to EEXIST, a broken pipe to EPIPE, a full disk to
-/// ENOSPC, anything else to EINVAL.
+/// ENOSPC, a file that is no program to ENOEXEC (spawn's capture: _spawnl of a text file is errno
+/// 8, _doserrno 193), anything else to EINVAL.
 pub fn set_dos_error(doserrno: u32) {
     let errno = match doserrno {
         2 | 3 | 15 | 18 => ENOENT,
@@ -135,6 +139,7 @@ pub fn set_dos_error(doserrno: u32) {
         80 | 183 => EEXIST,
         109 => EPIPE,
         112 => ENOSPC,
+        193 => ENOEXEC,
         _ => EINVAL,
     };
     // SAFETY: the thread's own data.

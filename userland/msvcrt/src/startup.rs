@@ -417,6 +417,30 @@ fn sets(entry: &[u8], name: &[u8]) -> bool {
             .all(|(&a, &b)| crate::ctype::byte_lower(a) == crate::ctype::byte_lower(b))
 }
 
+/// The C runtime's environment's value of `name` (as getenv reads `_environ`), copied into `out`:
+/// its length, none when the variable is unset or its value does not fit. The C runtime's lock is
+/// taken for the read.
+pub fn environment_value(name: &[u8], out: &mut [u8]) -> Option<usize> {
+    let _lock = Locked::take();
+    // SAFETY: the C runtime's own variable, under its lock.
+    let current = unsafe { *ENVIRON.get() };
+    if current.is_null() {
+        return None;
+    }
+    // SAFETY: `_environ` is the C runtime's array of NUL-terminated entries, ended by NULL.
+    let entries = (0..)
+        .map(|i| unsafe { *current.add(i) })
+        .take_while(|entry| !entry.is_null())
+        .map(|entry| unsafe { crate::string::narrow(entry) });
+    let value = entries
+        .into_iter()
+        .find(|entry| sets(entry, name))
+        .map(|entry| &entry[name.len() + 1..])?;
+    let room = out.get_mut(..value.len())?;
+    room.copy_from_slice(value);
+    Some(value.len())
+}
+
 /// `_environ` with `name`'s entry replaced by `entry` (a fresh `NAME=value` of the C runtime's
 /// heap), added at its end when the name has none, or removed for none: a new array, the old one
 /// freed unless it is `__initenv`'s (main's envp keeps it). A replaced entry's string is kept (a

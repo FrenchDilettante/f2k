@@ -146,6 +146,85 @@ unsafe extern "system" {
 
     /// The time of day, as a FILETIME.
     pub fn GetSystemTimeAsFileTime(time: *mut u64);
+
+    /// The process calls the _spawn family makes: a process made (its handles and ids into the
+    /// PROCESS_INFORMATION), waited for, its exit code; a file's attributes (the program's
+    /// search); the startup information (the descriptors a parent handed on).
+    pub fn CreateProcessA(
+        application_name: *const u8,
+        command_line: *mut u8,
+        process_attributes: usize,
+        thread_attributes: usize,
+        inherit_handles: u32,
+        flags: u32,
+        environment: *const u8,
+        current_directory: *const u8,
+        startup_info: *const StartupInfoA,
+        process_information: *mut ProcessInformation,
+    ) -> u32;
+    pub fn WaitForSingleObject(handle: usize, milliseconds: u32) -> u32;
+    pub fn GetExitCodeProcess(process: usize, code: *mut u32) -> u32;
+    pub fn GetFileAttributesA(name: *const u8) -> u32;
+    pub fn GetStartupInfoA(info: *mut StartupInfoA);
+}
+
+/// STARTUPINFOA: its strings (lpReserved, lpDesktop, lpTitle), the window's and console's values
+/// (dwX to dwFillAttribute), the STARTF_* flags, wShowWindow, the C runtime's block (cbReserved2,
+/// lpReserved2) and the standard handles.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct StartupInfoA {
+    pub cb: u32,
+    pub reserved: *const u8,
+    pub desktop: *const u8,
+    pub title: *const u8,
+    pub values: [u32; 7],
+    pub flags: u32,
+    pub show_window: u16,
+    pub reserved2_length: u16,
+    pub reserved2: *const u8,
+    pub standard_input: usize,
+    pub standard_output: usize,
+    pub standard_error: usize,
+}
+
+impl StartupInfoA {
+    /// An empty one, its size set.
+    pub const fn new() -> StartupInfoA {
+        StartupInfoA {
+            cb: core::mem::size_of::<StartupInfoA>() as u32,
+            reserved: core::ptr::null(),
+            desktop: core::ptr::null(),
+            title: core::ptr::null(),
+            values: [0; 7],
+            flags: 0,
+            show_window: 0,
+            reserved2_length: 0,
+            reserved2: core::ptr::null(),
+            standard_input: 0,
+            standard_output: 0,
+            standard_error: 0,
+        }
+    }
+}
+
+impl Default for StartupInfoA {
+    fn default() -> StartupInfoA {
+        StartupInfoA::new()
+    }
+}
+
+#[cfg(target_arch = "x86")]
+const _: () = assert!(core::mem::size_of::<StartupInfoA>() == 68);
+
+/// PROCESS_INFORMATION: the new process's and its first thread's handles and ids.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ProcessInformation {
+    pub process: usize,
+    pub thread: usize,
+    pub process_id: u32,
+    pub thread_id: u32,
 }
 
 #[cfg(all(target_arch = "x86", not(test)))]
@@ -254,8 +333,150 @@ pub mod host {
         unreachable("SetFilePointer")
     }
 
-    pub unsafe extern "system" fn CloseHandle(_: usize) -> u32 {
-        unreachable("CloseHandle")
+    std::thread_local! {
+        /// The handles CloseHandle was given, in order.
+        pub static CLOSED: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
+    }
+
+    /// CloseHandle: the handle kept; it succeeds.
+    pub unsafe extern "system" fn CloseHandle(handle: usize) -> u32 {
+        CLOSED.with(|closed| closed.borrow_mut().push(handle));
+        1
+    }
+
+    /// What CreateProcessA was handed: the application name, the command line, bInheritHandles,
+    /// the flags, the environment block (through its final empty entry) and the C runtime's block
+    /// in STARTUPINFO.
+    #[derive(Clone, Debug, Default, PartialEq, Eq)]
+    pub struct Created {
+        pub application_name: String,
+        pub command_line: String,
+        pub inherit_handles: bool,
+        pub flags: u32,
+        pub environment: Option<Vec<u8>>,
+        pub runtime_data: Vec<u8>,
+    }
+
+    /// The handles and ids the stand-in's processes get.
+    pub const PROCESS: usize = 0x80;
+    pub const THREAD: usize = 0x84;
+
+    std::thread_local! {
+        /// The processes CreateProcessA made.
+        pub static CREATED: RefCell<Vec<Created>> = const { RefCell::new(Vec::new()) };
+        /// The error the next CreateProcessA fails with (0: it succeeds).
+        pub static CREATE_FAILS: Cell<u32> = const { Cell::new(0) };
+        /// The exit code GetExitCodeProcess answers.
+        pub static EXIT_CODE: Cell<u32> = const { Cell::new(0) };
+        /// The paths that exist, for GetFileAttributesA (compared without regard to case), and
+        /// those it was asked about.
+        pub static EXISTING: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+        pub static ATTRIBUTES_ASKED: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+        /// What GetStartupInfoA answers.
+        pub static STARTUP: Cell<super::StartupInfoA> = const { Cell::new(super::StartupInfoA::new()) };
+    }
+
+    /// A NUL-terminated string as text.
+    unsafe fn text(at: *const u8) -> String {
+        // SAFETY: the caller's string.
+        String::from_utf8_lossy(unsafe { core::ffi::CStr::from_ptr(at.cast()) }.to_bytes())
+            .into_owned()
+    }
+
+    /// CreateProcessA: the call kept; it fails with [`CREATE_FAILS`]' error when one is arranged,
+    /// and otherwise hands out [`PROCESS`] and [`THREAD`].
+    pub unsafe extern "system" fn CreateProcessA(
+        application_name: *const u8,
+        command_line: *mut u8,
+        _process_attributes: usize,
+        _thread_attributes: usize,
+        inherit_handles: u32,
+        flags: u32,
+        environment: *const u8,
+        _current_directory: *const u8,
+        startup_info: *const super::StartupInfoA,
+        process_information: *mut super::ProcessInformation,
+    ) -> u32 {
+        // SAFETY: the caller's strings, block and structures.
+        let created = unsafe {
+            let info = &*startup_info;
+            Created {
+                application_name: text(application_name),
+                command_line: text(command_line),
+                inherit_handles: inherit_handles != 0,
+                flags,
+                environment: (!environment.is_null()).then(|| {
+                    let mut length = 0;
+                    while *environment.add(length) != 0 || *environment.add(length + 1) != 0 {
+                        length += 1;
+                    }
+                    core::slice::from_raw_parts(environment, length + 2).to_vec()
+                }),
+                runtime_data: if info.reserved2.is_null() {
+                    Vec::new()
+                } else {
+                    core::slice::from_raw_parts(info.reserved2, usize::from(info.reserved2_length))
+                        .to_vec()
+                },
+            }
+        };
+        CREATED.with(|made| made.borrow_mut().push(created));
+        let error = CREATE_FAILS.with(|fails| fails.replace(0));
+        if error != 0 {
+            LAST_ERROR.with(|last| last.set(error));
+            return 0;
+        }
+        // SAFETY: the caller's structure.
+        unsafe {
+            process_information.write(super::ProcessInformation {
+                process: PROCESS,
+                thread: THREAD,
+                process_id: 0x2C,
+                thread_id: 0x24,
+            })
+        };
+        1
+    }
+
+    /// WaitForSingleObject: a handle CloseHandle closed is WAIT_FAILED (ERROR_INVALID_HANDLE),
+    /// any other signaled at once.
+    pub unsafe extern "system" fn WaitForSingleObject(handle: usize, _milliseconds: u32) -> u32 {
+        if CLOSED.with(|closed| closed.borrow().contains(&handle)) {
+            LAST_ERROR.with(|last| last.set(6));
+            return u32::MAX;
+        }
+        0
+    }
+
+    /// GetExitCodeProcess: [`EXIT_CODE`].
+    pub unsafe extern "system" fn GetExitCodeProcess(_process: usize, code: *mut u32) -> u32 {
+        // SAFETY: the caller's slot.
+        unsafe { code.write(EXIT_CODE.with(Cell::get)) };
+        1
+    }
+
+    /// GetFileAttributesA: a normal file's for a path of [`EXISTING`], none (ERROR_FILE_NOT_FOUND)
+    /// otherwise; the path kept.
+    pub unsafe extern "system" fn GetFileAttributesA(name: *const u8) -> u32 {
+        // SAFETY: the caller's string.
+        let name = unsafe { text(name) };
+        ATTRIBUTES_ASKED.with(|asked| asked.borrow_mut().push(name.clone()));
+        if EXISTING.with(|existing| {
+            existing
+                .borrow()
+                .iter()
+                .any(|path| path.eq_ignore_ascii_case(&name))
+        }) {
+            return 0x80;
+        }
+        LAST_ERROR.with(|last| last.set(2));
+        u32::MAX
+    }
+
+    /// GetStartupInfoA: [`STARTUP`].
+    pub unsafe extern "system" fn GetStartupInfoA(info: *mut super::StartupInfoA) {
+        // SAFETY: the caller's structure.
+        unsafe { info.write(STARTUP.with(Cell::get)) };
     }
 
     pub unsafe extern "system" fn DuplicateHandle(

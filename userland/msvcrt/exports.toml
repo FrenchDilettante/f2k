@@ -871,7 +871,7 @@ fails = "NULL"
 name = "_spawnl"
 group = "process"
 args = ["i32 mode", "strA cmdname", "strA? arg0", "..."]
-impl = { stub = "not yet implemented" }
+impl = { native = "_spawnl" }
 ordinal = 447
 fails = "-1"
 
@@ -879,7 +879,7 @@ fails = "-1"
 name = "_spawnle"
 group = "process"
 args = ["i32 mode", "strA cmdname", "strA? arg0", "..."]
-impl = { stub = "not yet implemented" }
+impl = { native = "_spawnle" }
 ordinal = 448
 fails = "-1"
 
@@ -887,7 +887,7 @@ fails = "-1"
 name = "_spawnlp"
 group = "process"
 args = ["i32 mode", "strA cmdname", "strA? arg0", "..."]
-impl = { stub = "not yet implemented" }
+impl = { native = "_spawnlp" }
 ordinal = 449
 fails = "-1"
 
@@ -895,7 +895,7 @@ fails = "-1"
 name = "_spawnv"
 group = "process"
 args = ["i32 mode", "strA cmdname", "ptr argv"]
-impl = { stub = "not yet implemented" }
+impl = { native = "_spawnv" }
 ordinal = 451
 fails = "-1"
 
@@ -903,7 +903,7 @@ fails = "-1"
 name = "_spawnve"
 group = "process"
 args = ["i32 mode", "strA cmdname", "ptr argv", "ptr envp"]
-impl = { stub = "not yet implemented" }
+impl = { native = "_spawnve" }
 ordinal = 452
 fails = "-1"
 
@@ -911,7 +911,7 @@ fails = "-1"
 name = "_spawnvp"
 group = "process"
 args = ["i32 mode", "strA cmdname", "ptr argv"]
-impl = { stub = "not yet implemented" }
+impl = { native = "_spawnvp" }
 ordinal = 453
 fails = "-1"
 
@@ -919,7 +919,7 @@ fails = "-1"
 name = "_cwait"
 group = "process"
 args = ["ptr<i32> termstat", "handle procHandle", "i32 action"]
-impl = { stub = "not yet implemented" }
+impl = { native = "_cwait" }
 ordinal = 194
 fails = "-1"
 
@@ -927,9 +927,10 @@ fails = "-1"
 name = "system"
 group = "process"
 args = ["strA? command"]
-impl = { stub = "not yet implemented" }
+impl = { native = "system" }
 ordinal = 739
 fails = "-1"
+note = "%COMSPEC% /c, else cmd.exe on PATH: F2K has no cmd.exe on its disk"
 
 # --- not implemented yet: the rest of MSVCRT.dll 6.1.9844.0's export table, by ordinal -----------
 
