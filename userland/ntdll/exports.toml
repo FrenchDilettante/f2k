@@ -99,7 +99,7 @@ args = ["handle ProcessHandle", "u32 ExitStatus"]
 impl = { syscall = "crate::nt::process::terminate_process" }
 ordinal = 290
 zw_ordinal = 935
-note = "no handle terminates the caller's other threads; the calling process's handle ends it (no other process is reachable)"
+note = "no handle terminates the caller's other threads; a handle naming the calling process ends it, one naming another process (granting PROCESS_TERMINATE) ends that one and returns"
 
 [[export]]
 name = "NtCreateProcess"
@@ -594,7 +594,7 @@ args = ["ptr<u32> ThreadHandle", "u32 DesiredAccess", "ptr ObjectAttributes", "h
 impl = { syscall = "crate::nt::thread::create_thread" }
 ordinal = 106
 zw_ordinal = 752
-note = "in the calling process only, on the stack the INITIAL_TEB describes and starting in the CONTEXT (its segments and EFLAGS every user thread's)"
+note = "in the calling process or another (a handle granting PROCESS_CREATE_THREAD; the first thread of a process NtCreateProcess made is its main thread), on the stack the INITIAL_TEB describes and starting in the CONTEXT (its segments and EFLAGS every user thread's)"
 
 [[export]]
 name = "NtTerminateThread"

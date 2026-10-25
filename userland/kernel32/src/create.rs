@@ -38,7 +38,8 @@
 //!    PEB's ProcessParameters pointed at it: the new process's ntdll normalizes the block during
 //!    its initialization (RtlNormalizeProcessParams), as on Windows 2000.
 //! 7. Its first thread: the stack the image asks (BaseCreateStack in the new process: its
-//!    reservation, its commit and a guard page — the stack at 0x00130000 down), the context
+//!    reservation, its commit — two pages at least, what Windows 2000's child is seen to start its
+//!    program with — and a guard page: the stack at 0x00130000 down), the context
 //!    (BaseProcessStartThunk with EAX the image's entry point and EBX the PEB), NtCreateThread
 //!    suspended, then resumed unless CREATE_SUSPENDED. Windows 2000 announces the new process to
 //!    the base server between the two (CsrClientCallServer); F2K has no csrss (a known gap): the
@@ -140,6 +141,15 @@ const PAGE: u32 = 0x1000;
 const GRANULARITY: u32 = 0x1_0000;
 const MIB: u32 = 0x10_0000;
 
+/// The committed stack a new process's first thread is seen to start with: two pages. Windows
+/// 2000's child commits the image's one page, and its start-up (ntdll's process initialization,
+/// on that stack) reaches the guard page below and grows the stack by a page before the program's
+/// own code runs, so the program finds two pages committed (the spawn fixture's layout block: the
+/// child's StackLimit 0x0012E000, while a second thread, which does not grow, shows one page).
+/// F2K's start-up uses less than a page, so the first thread is given the two pages outright, as
+/// the boot loader gives a boot's program.
+const FIRST_THREAD_COMMIT: u32 = 2 * PAGE;
+
 /// PROCESSINFOCLASS: the hard-error mode and the priority class, and the classes' values
 /// CreateProcess tells apart (idle, normal, below normal).
 const PROCESS_DEFAULT_HARD_ERROR_MODE: u32 = 12;
@@ -148,10 +158,11 @@ const CLASS_IDLE: u8 = 1;
 const CLASS_NORMAL: u8 = 2;
 const CLASS_BELOW_NORMAL: u8 = 5;
 
-/// The PEB's ProcessParameters, and the caller's parameters' ConsoleHandle, standard handles and
+/// The PEB's ProcessParameters, and the caller's parameters' ConsoleHandle, ConsoleFlags and
 /// DesktopInfo.
 const PEB_PROCESS_PARAMETERS: usize = 0x10;
 const PARAMETERS_CONSOLE_HANDLE: usize = 0x10;
+const PARAMETERS_CONSOLE_FLAGS: usize = 0x14;
 const PARAMETERS_DESKTOP_INFO: usize = 0x78;
 
 /// An ASCII text as UTF-16, at compile time.
@@ -687,7 +698,14 @@ fn push_parameters(
     } else {
         0
     };
-    header.console_flags = u32::from(request.flags & CREATE_NEW_PROCESS_GROUP != 0);
+    // The ignoring of Ctrl+C is inherited (SetConsoleCtrlHandler's documentation); a new process
+    // group starts with it set (CreateProcess's documentation: CREATE_NEW_PROCESS_GROUP disables
+    // Ctrl+C in the new process).
+    header.console_flags = if request.flags & CREATE_NEW_PROCESS_GROUP != 0 {
+        1
+    } else {
+        base::read(own + PARAMETERS_CONSOLE_FLAGS)
+    };
     [
         header.standard_input,
         header.standard_output,
@@ -783,6 +801,7 @@ fn start(
         image,
     )?;
     let (reserve, commit) = stack_sizes(image);
+    let commit = commit.max(FIRST_THREAD_COMMIT);
     let stack = thread::create_stack(process, reserve, commit).map_err(Failure::Status)?;
     let context = thread::thread_context(
         process_start_thunk(),

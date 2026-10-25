@@ -301,10 +301,10 @@ fn create_process_runs_a_program_in_a_new_process() {
             ("allocate", ENVIRONMENT_AT, 0x1000, 0x1000),
             ("allocate", PARAMETERS, 0x1000, 0x1000),
             ("allocate", 0x0003_0000, 0x10_0000, 0x2000),
-            ("allocate", 0x0012_E000, 0x2000, 0x1000),
-            ("protect", 0x0012_E000, 0x1000, 0x104),
+            ("allocate", 0x0012_D000, 0x3000, 0x1000),
+            ("protect", 0x0012_D000, 0x1000, 0x104),
         ],
-        "the environment, the parameters, the stack: its reservation, commit and guard page"
+        "the environment, the parameters, the stack: its reservation, two pages committed and a guard page"
     );
     assert_eq!(child_dword(CHILD_PEB + 0x10), PARAMETERS as u32);
     assert_eq!(
@@ -362,7 +362,7 @@ fn create_process_runs_a_program_in_a_new_process() {
             thread.stack.stack_limit,
             thread.stack.allocation_base
         ),
-        (0x0013_0000, 0x0012_F000, 0x0003_0000)
+        (0x0013_0000, 0x0012_E000, 0x0003_0000)
     );
     THREADS.with(|threads| {
         let threads = threads.borrow();
@@ -878,6 +878,39 @@ fn the_flags_and_attributes_shape_the_child() {
         &startup(),
     );
     with_child(|child| assert_eq!(child.information[1], (12, vec![1, 0, 0, 0])));
+}
+
+/// The child's ConsoleFlags: the caller's own (its ignoring of Ctrl+C is inherited), set under
+/// CREATE_NEW_PROCESS_GROUP.
+///
+/// Pins: kernel32.CreateProcessW
+#[test]
+fn the_ignoring_of_ctrl_c_is_inherited() {
+    let own_flags = crate::base::process_parameters() + 0x14;
+    for (own, flags, child) in [
+        (0, 0, 0),
+        (1, 0, 1),
+        (0, 0x0000_0200, 1),
+        (1, 0x0000_0200, 1),
+    ] {
+        setup();
+        existing(&["C:\\CORPUS\\SPAWNKID.EXE"]);
+        crate::base::write(own_flags, own);
+        create(
+            None,
+            Some("spawnkid args"),
+            flags,
+            core::ptr::null(),
+            None,
+            &startup(),
+        );
+        assert_eq!(
+            child_dword(PARAMETERS + 0x14),
+            child,
+            "the caller's {own}, the flags {flags:#x}"
+        );
+    }
+    crate::base::write(own_flags, 0);
 }
 
 /// Every failure undoes what was made: NtCreateProcess refused (its error; the file and section
