@@ -269,7 +269,8 @@ pub fn create_arguments(slot_ok: bool, parent: Handle, section: Handle) -> Resul
 /// (ProcessBasicInformation's InheritedFromUniqueProcessId), its parent's hard-error mode taken
 /// (CreateProcess's CREATE_DEFAULT_ERROR_MODE is kernel32's to undo); with InheritObjectTable (a
 /// BOOLEAN), every inheritable handle of the parent's at its own value in the child's table, and
-/// the parent's console handles (see [`crate::process::Process::inherit_handles`]) — without it,
+/// the parent's inheritable console handles (see [`crate::process::Process::inherit_handles`]) —
+/// without it,
 /// the console's standard handles alone, as a process of the console starts. Named
 /// `<image's file name, without its extension>` in its end report. A handle to it with
 /// DesiredAccess (its generic rights mapped, see [`super::object::process_access`]), inheritable as

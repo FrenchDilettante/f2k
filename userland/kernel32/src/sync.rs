@@ -28,6 +28,7 @@ use crate::base::{
 };
 use crate::console;
 use crate::nt::{self, ObjectAttributes};
+use crate::ntcall;
 
 /// DuplicateConsoleHandle's failure.
 const INVALID_HANDLE_VALUE: u32 = 0xFFFF_FFFF;
@@ -756,6 +757,40 @@ pub unsafe extern "system" fn duplicate_handle(
             options,
         )
     })
+}
+
+/// SetHandleInformation's flags: the handle inherited by a child created with inheritance, the
+/// handle protected from CloseHandle.
+const HANDLE_FLAG_INHERIT: u32 = 0x1;
+const HANDLE_FLAG_PROTECT_FROM_CLOSE: u32 = 0x2;
+
+/// SetHandleInformation: the flags `mask` names set from `flags`, the others left as they are.
+/// A console handle is its server's (its inheritance alone: see
+/// [`console::set_console_handle_information`]); any other handle's flags are its entry's in the
+/// process's handle table, read (NtQueryObject) and written back changed (NtSetInformationObject),
+/// as Windows 2000's does. A handle naming nothing fails with ERROR_INVALID_HANDLE.
+#[unsafe(export_name = "f2k_export_SetHandleInformation")]
+pub extern "system" fn set_handle_information(object: u32, mask: u32, flags: u32) -> u32 {
+    let object = standard_handle(object);
+    if is_console_handle(object) {
+        return console::set_console_handle_information(object, mask, flags);
+    }
+    let changed = ntcall::handle_flags(object).and_then(|mut current| {
+        if mask & HANDLE_FLAG_INHERIT != 0 {
+            current.inherit = u8::from(flags & HANDLE_FLAG_INHERIT != 0);
+        }
+        if mask & HANDLE_FLAG_PROTECT_FROM_CLOSE != 0 {
+            current.protect_from_close = u8::from(flags & HANDLE_FLAG_PROTECT_FROM_CLOSE != 0);
+        }
+        ntcall::set_handle_flags(object, current)
+    });
+    match changed {
+        Ok(()) => 1,
+        Err(status) => {
+            set_last_nt_error(status);
+            0
+        }
+    }
 }
 
 /// QueueUserAPC: queue the routine and its parameter on the thread's user-APC queue. Fails —

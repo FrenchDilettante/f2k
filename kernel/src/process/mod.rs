@@ -336,6 +336,16 @@ impl Process {
         true
     }
 
+    /// Change the entry a handle names in this process's table with `change` (its inheritance, its
+    /// protection from close: NtSetInformationObject's); false when the handle names nothing.
+    pub fn update_handle(
+        &mut self,
+        handle: u32,
+        change: impl FnOnce(crate::ob::Entry) -> crate::ob::Entry,
+    ) -> bool {
+        self.handles.update(handle, change)
+    }
+
     /// Release what one closed handle named. A process's last handle closing ends the process if
     /// it never had a thread (see [`threads::forsake_if_abandoned`]).
     fn release_entry(&mut self, entry: crate::ob::Entry) {
@@ -405,12 +415,12 @@ impl Process {
     /// Take into this process's table, a fresh one, every inheritable handle of `parent`'s, each at
     /// its own value with its access and inheritance — the documented inheritance of a process
     /// created with InheritObjectTable (CreateProcess's bInheritHandles) — each object counting its
-    /// new handle; and the parent's console handles, which the console server hands an inheriting
-    /// child as Windows 2000's does. Returns how many handles were taken.
+    /// new handle; and the parent's inheritable console handles, which the console server hands an
+    /// inheriting child as Windows 2000's does. Returns how many handles were taken.
     #[cfg(target_arch = "x86")]
     pub fn inherit_handles(&mut self, parent: &Process) -> usize {
         let directory = crate::ob::directory();
-        self.console = parent.console;
+        self.console = parent.console.inherited();
         self.handles.inherit_from(&parent.handles, |entry| {
             // A handle names a live object (it holds it), so the count always takes.
             entry.inherit

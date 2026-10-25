@@ -93,6 +93,24 @@ ordinal = 83
 zw_ordinal = 729
 
 [[export]]
+name = "NtQueryObject"
+group = "nt"
+args = ["handle Handle", "u32 ObjectInformationClass", "ptr ObjectInformation", "u32 ObjectInformationLength", "ptr<u32> ReturnLength"]
+impl = { syscall = "crate::nt::object::query_object" }
+ordinal = 205
+zw_ordinal = 850
+note = "answers ObjectHandleFlagInformation (4) alone: a handle's inheritance and protection from close"
+
+[[export]]
+name = "NtSetInformationObject"
+group = "nt"
+args = ["handle Handle", "u32 ObjectInformationClass", "ptr ObjectInformation", "u32 ObjectInformationLength"]
+impl = { syscall = "crate::nt::object::set_information_object" }
+ordinal = 262
+zw_ordinal = 907
+note = "sets ObjectHandleFlagInformation (4) alone: a handle's inheritance and protection from close"
+
+[[export]]
 name = "NtTerminateProcess"
 group = "nt"
 args = ["handle ProcessHandle", "u32 ExitStatus"]
@@ -1916,10 +1934,6 @@ name = "NtQueryMutant"
 ordinal = 204
 
 [[export]]
-name = "NtQueryObject"
-ordinal = 205
-
-[[export]]
 name = "NtQueryOpenSubKeys"
 ordinal = 206
 
@@ -2078,10 +2092,6 @@ ordinal = 260
 [[export]]
 name = "NtSetInformationKey"
 ordinal = 261
-
-[[export]]
-name = "NtSetInformationObject"
-ordinal = 262
 
 [[export]]
 name = "NtSetInformationToken"
@@ -3972,10 +3982,6 @@ name = "ZwQueryMutant"
 ordinal = 849
 
 [[export]]
-name = "ZwQueryObject"
-ordinal = 850
-
-[[export]]
 name = "ZwQueryOpenSubKeys"
 ordinal = 851
 
@@ -4134,10 +4140,6 @@ ordinal = 905
 [[export]]
 name = "ZwSetInformationKey"
 ordinal = 906
-
-[[export]]
-name = "ZwSetInformationObject"
-ordinal = 907
 
 [[export]]
 name = "ZwSetInformationToken"

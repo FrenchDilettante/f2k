@@ -327,6 +327,54 @@ pub fn set_information_process(process: u32, class: u32, value: &[u8]) -> Result
     })
 }
 
+/// ObjectHandleFlagInformation, NtQueryObject's and NtSetInformationObject's class 4.
+const OBJECT_HANDLE_FLAG_INFORMATION: u32 = 4;
+
+/// OBJECT_HANDLE_FLAG_INFORMATION: a handle's inheritance and its protection from close, as
+/// BOOLEANs.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HandleFlags {
+    pub inherit: u8,
+    pub protect_from_close: u8,
+}
+
+const _: () = assert!(size_of::<HandleFlags>() == 2);
+
+// SAFETY: integers, without padding.
+unsafe impl Plain for HandleFlags {}
+
+/// A handle's flags (NtQueryObject, ObjectHandleFlagInformation).
+pub fn handle_flags(handle: u32) -> Result<HandleFlags, NtStatus> {
+    let mut flags = HandleFlags::default();
+    let out = flags.bytes_mut();
+    // SAFETY: ntdll's export, into the structure's own bytes; no return length asked.
+    checked(unsafe {
+        nt::NtQueryObject(
+            handle,
+            OBJECT_HANDLE_FLAG_INFORMATION,
+            out.as_mut_ptr(),
+            out.len() as u32,
+            core::ptr::null_mut(),
+        )
+    })?;
+    Ok(flags)
+}
+
+/// Set a handle's flags (NtSetInformationObject, ObjectHandleFlagInformation).
+pub fn set_handle_flags(handle: u32, flags: HandleFlags) -> Result<(), NtStatus> {
+    let bytes = flags.bytes();
+    // SAFETY: ntdll's export, from the structure's own bytes.
+    checked(unsafe {
+        nt::NtSetInformationObject(
+            handle,
+            OBJECT_HANDLE_FLAG_INFORMATION,
+            bytes.as_ptr(),
+            bytes.len() as u32,
+        )
+    })
+}
+
 /// NtTerminateProcess of a process kernel32 holds a handle to (never a null handle: that names the
 /// caller's other threads).
 pub fn terminate_process(process: u32, status: NtStatus) -> Result<(), NtStatus> {

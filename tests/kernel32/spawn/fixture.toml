@@ -10,7 +10,6 @@ gate = true
 timeout = 60
 
 [pending]
-inherit = "not yet implemented"
 system = "no cmd.exe on F2K's disk"
 detach = "F2K's stub path (logged, error 120)"
 

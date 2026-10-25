@@ -316,6 +316,17 @@ pub fn duplicate_console_handle(console: u32, access: u32, inherit: u32, options
     data[4] as u32
 }
 
+/// SetHandleInformation's work for a console handle, as Windows 2000's hands it to the console
+/// server: the handle's inheritance set from `flags` when `mask` names HANDLE_FLAG_INHERIT (a
+/// console handle carries no protection from close: that flag is not looked at);
+/// ERROR_INVALID_HANDLE for one naming nothing.
+pub fn set_console_handle_information(console: u32, mask: u32, flags: u32) -> u32 {
+    succeeded(call_server(
+        api::SET_HANDLE_INFORMATION,
+        &mut [console as usize, mask as usize, flags as usize],
+    ))
+}
+
 // --- Opening the console by name -----------------------------------------------------------------
 
 /// Which console buffer a file name names, as Windows 2000's CreateFile reads it: CONIN$ the input

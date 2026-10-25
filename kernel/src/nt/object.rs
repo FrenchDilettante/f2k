@@ -19,6 +19,8 @@ use super::call::{
     NtCall,
     NtResult,
     Status,
+    UserAddr,
+    UserPtr,
     STATUS_INVALID_HANDLE,
     STATUS_INVALID_PARAMETER,
     STATUS_SUCCESS,
@@ -220,12 +222,24 @@ pub(crate) fn names_current_process(handle: u32) -> bool {
     handle == CURRENT_PROCESS
 }
 
+/// STATUS_HANDLE_NOT_CLOSABLE: NtClose of a handle protected from close (ntstatus.h: "NtClose was
+/// called on a handle that was protected from close via NtSetInformationObject").
+pub const STATUS_HANDLE_NOT_CLOSABLE: Status = Status(0xC000_0235);
+
 /// NtClose: the handle's entry released from the calling process's handle table (the object goes
-/// once its last reference does). STATUS_INVALID_HANDLE for a handle naming no entry.
+/// once its last reference does). STATUS_INVALID_HANDLE for a handle naming no entry,
+/// STATUS_HANDLE_NOT_CLOSABLE for one protected from close (see [`set_information_object`]), left
+/// open.
 pub fn close(call: &mut NtCall, handle: Handle) -> NtResult {
     #[cfg(target_arch = "x86")]
     {
-        if call.process().close_handle(handle.raw()) {
+        let process = call.process();
+        let entry = process
+            .handles()
+            .lookup(handle.raw())
+            .ok_or(STATUS_INVALID_HANDLE)?;
+        closable(entry)?;
+        if process.close_handle(handle.raw()) {
             Ok(STATUS_SUCCESS)
         } else {
             Err(STATUS_INVALID_HANDLE)
@@ -234,6 +248,151 @@ pub fn close(call: &mut NtCall, handle: Handle) -> NtResult {
     #[cfg(not(target_arch = "x86"))]
     {
         let _ = (call, handle);
+        Err(STATUS_INVALID_HANDLE)
+    }
+}
+
+/// Whether NtClose may close the handle an entry is: not when it is protected from close.
+pub fn closable(entry: Entry) -> Result<(), Status> {
+    if entry.protect_from_close {
+        Err(STATUS_HANDLE_NOT_CLOSABLE)
+    } else {
+        Ok(())
+    }
+}
+
+/// OBJECT_INFORMATION_CLASS: ObjectHandleFlagInformation, the one class NtQueryObject and
+/// NtSetInformationObject answer here.
+pub const OBJECT_HANDLE_FLAG_INFORMATION: u32 = 4;
+
+/// STATUS_INVALID_INFO_CLASS and STATUS_INFO_LENGTH_MISMATCH: a class not answered, a buffer not
+/// the class's size.
+const STATUS_INVALID_INFO_CLASS: Status = Status(0xC000_0003);
+const STATUS_INFO_LENGTH_MISMATCH: Status = Status(0xC000_0004);
+
+/// OBJECT_HANDLE_FLAG_INFORMATION: a handle's two attributes, as BOOLEANs.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ObjectHandleFlagInformation {
+    pub inherit: u8,
+    pub protect_from_close: u8,
+}
+
+/// The structure's size in bytes.
+pub const OBJECT_HANDLE_FLAG_INFORMATION_SIZE: u32 =
+    core::mem::size_of::<ObjectHandleFlagInformation>() as u32;
+const _: () = assert!(OBJECT_HANDLE_FLAG_INFORMATION_SIZE == 2);
+
+impl ObjectHandleFlagInformation {
+    /// An entry's attributes.
+    pub fn of(entry: Entry) -> Self {
+        ObjectHandleFlagInformation {
+            inherit: u8::from(entry.inherit),
+            protect_from_close: u8::from(entry.protect_from_close),
+        }
+    }
+
+    /// `entry` with these attributes (a BOOLEAN is TRUE when nonzero).
+    pub fn applied_to(self, entry: Entry) -> Entry {
+        Entry {
+            inherit: self.inherit != 0,
+            protect_from_close: self.protect_from_close != 0,
+            ..entry
+        }
+    }
+
+    /// The structure's bytes, as the caller's buffer holds them.
+    pub fn to_bytes(self) -> [u8; 2] {
+        [self.inherit, self.protect_from_close]
+    }
+
+    /// The structure, from the caller's bytes.
+    pub fn from_bytes(bytes: [u8; 2]) -> Self {
+        ObjectHandleFlagInformation {
+            inherit: bytes[0],
+            protect_from_close: bytes[1],
+        }
+    }
+}
+
+/// The checks NtQueryObject and NtSetInformationObject make of their class and length before the
+/// handle: a class other than ObjectHandleFlagInformation is STATUS_INVALID_INFO_CLASS (the
+/// others, the object's basic, name, type and all-types information, are not answered here), a
+/// length other than its structure's STATUS_INFO_LENGTH_MISMATCH.
+pub fn handle_flag_arguments(class: u32, length: u32) -> Result<(), Status> {
+    if class != OBJECT_HANDLE_FLAG_INFORMATION {
+        return Err(STATUS_INVALID_INFO_CLASS);
+    }
+    if length != OBJECT_HANDLE_FLAG_INFORMATION_SIZE {
+        return Err(STATUS_INFO_LENGTH_MISMATCH);
+    }
+    Ok(())
+}
+
+/// NtQueryObject(Handle, ObjectInformationClass, ObjectInformation, ObjectInformationLength,
+/// ReturnLength): ObjectHandleFlagInformation alone: the handle's inheritance and its protection
+/// from close, from its entry in the calling process's handle table (kernel32's
+/// GetHandleInformation), its size written to ReturnLength when given. The class and length are
+/// checked first (see [`handle_flag_arguments`]), then the handle (STATUS_INVALID_HANDLE for one
+/// naming no entry: a pseudo-handle or a console handle has none).
+pub fn query_object(
+    call: &mut NtCall,
+    handle: Handle,
+    class: u32,
+    information: UserAddr,
+    length: u32,
+    return_length: UserPtr<u32>,
+) -> NtResult {
+    handle_flag_arguments(class, length)?;
+    #[cfg(target_arch = "x86")]
+    {
+        let entry = call
+            .process()
+            .handles()
+            .lookup(handle.raw())
+            .ok_or(STATUS_INVALID_HANDLE)?;
+        information.write(&ObjectHandleFlagInformation::of(entry).to_bytes())?;
+        return_length.write_optional(OBJECT_HANDLE_FLAG_INFORMATION_SIZE)?;
+        Ok(STATUS_SUCCESS)
+    }
+    #[cfg(not(target_arch = "x86"))]
+    {
+        let _ = (call, handle, information, return_length);
+        Err(STATUS_INVALID_HANDLE)
+    }
+}
+
+/// NtSetInformationObject(Handle, ObjectInformationClass, ObjectInformation,
+/// ObjectInformationLength): ObjectHandleFlagInformation alone: the handle's entry in the calling
+/// process's handle table takes the structure's inheritance (what a child process created with
+/// inheritance takes) and protection from close (NtClose refuses it: see [`close`]); kernel32's
+/// SetHandleInformation. The class and length first (see [`handle_flag_arguments`]), then the
+/// caller's structure, then the handle (STATUS_INVALID_HANDLE for one naming no entry).
+pub fn set_information_object(
+    call: &mut NtCall,
+    handle: Handle,
+    class: u32,
+    information: UserAddr,
+    length: u32,
+) -> NtResult {
+    handle_flag_arguments(class, length)?;
+    let mut bytes = [0u8; 2];
+    information.read(&mut bytes)?;
+    let flags = ObjectHandleFlagInformation::from_bytes(bytes);
+    #[cfg(target_arch = "x86")]
+    {
+        if call
+            .process()
+            .update_handle(handle.raw(), |entry| flags.applied_to(entry))
+        {
+            Ok(STATUS_SUCCESS)
+        } else {
+            Err(STATUS_INVALID_HANDLE)
+        }
+    }
+    #[cfg(not(target_arch = "x86"))]
+    {
+        let _ = (call, handle, flags);
         Err(STATUS_INVALID_HANDLE)
     }
 }
@@ -300,6 +459,7 @@ pub fn duplicate_entry(
                 target: entry.target,
                 access,
                 inherit,
+                protect_from_close: false,
             }) {
                 0 => Err(STATUS_INSUFFICIENT_RESOURCES),
                 handle => write(handle).map(|()| STATUS_SUCCESS).map_err(|fault| {
@@ -652,5 +812,48 @@ mod tests {
         }
         assert!(!is_console_handle(INVALID_HANDLE_VALUE));
         assert!(!is_console_handle(0));
+    }
+
+    /// NtQueryObject and NtSetInformationObject answer ObjectHandleFlagInformation alone, of its
+    /// structure's size exactly, the class checked before the length.
+    #[test]
+    fn handle_flags_are_the_one_class_answered() {
+        assert_eq!(handle_flag_arguments(4, 2), Ok(()));
+        assert_eq!(
+            handle_flag_arguments(4, 4),
+            Err(STATUS_INFO_LENGTH_MISMATCH)
+        );
+        assert_eq!(
+            handle_flag_arguments(4, 1),
+            Err(STATUS_INFO_LENGTH_MISMATCH)
+        );
+        for class in [0, 1, 2, 3, 5] {
+            assert_eq!(
+                handle_flag_arguments(class, 2),
+                Err(STATUS_INVALID_INFO_CLASS)
+            );
+        }
+    }
+
+    /// An entry's attributes read as two BOOLEANs, and set from them (any nonzero byte TRUE), what
+    /// the entry names and its access untouched; a protected entry is not closable.
+    #[test]
+    fn handle_flags_read_and_set_an_entry() {
+        let entry = event();
+        assert_eq!(ObjectHandleFlagInformation::of(entry).to_bytes(), [0, 0]);
+        let set = ObjectHandleFlagInformation::from_bytes([1, 0x80]).applied_to(entry);
+        assert_eq!(
+            set,
+            Entry {
+                inherit: true,
+                protect_from_close: true,
+                ..entry
+            }
+        );
+        assert_eq!(ObjectHandleFlagInformation::of(set).to_bytes(), [1, 1]);
+        assert_eq!(closable(set), Err(STATUS_HANDLE_NOT_CLOSABLE));
+        let cleared = ObjectHandleFlagInformation::from_bytes([0, 0]).applied_to(set);
+        assert_eq!(cleared, entry);
+        assert_eq!(closable(cleared), Ok(()));
     }
 }

@@ -78,22 +78,25 @@ pub enum Target {
     Object(ObjectId),
 }
 
-/// One handle-table entry: what the handle names, the access it was granted, and whether a child
-/// process would inherit it.
+/// One handle-table entry: what the handle names, the access it was granted, whether a child
+/// process would inherit it, and whether it is protected from close (NtSetInformationObject's
+/// ObjectHandleFlagInformation: NtClose refuses it).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Entry {
     pub target: Target,
     pub access: u32,
     pub inherit: bool,
+    pub protect_from_close: bool,
 }
 
 impl Entry {
-    /// An entry naming an object.
+    /// An entry naming an object (not protected from close: a handle is made closable).
     pub fn object(id: ObjectId, access: u32, inherit: bool) -> Self {
         Entry {
             target: Target::Object(id),
             access,
             inherit,
+            protect_from_close: false,
         }
     }
 

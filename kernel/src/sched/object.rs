@@ -94,6 +94,16 @@ impl<E: Copy> HandleTable<E> {
         self.slots[index]
     }
 
+    /// Change the entry a handle names in place with `change`; false when the handle names
+    /// nothing (the low tag bits ignored, as on lookup).
+    pub fn update(&mut self, handle: u32, change: impl FnOnce(E) -> E) -> bool {
+        let Some(entry) = self.lookup(handle) else {
+            return false;
+        };
+        self.slots[(handle >> HANDLE_SHIFT) as usize] = Some(change(entry));
+        true
+    }
+
     /// Release the slot a handle names, returning what it held. None when the handle names nothing
     /// (a double close, a foreign value). What the entry named is the caller's to release.
     pub fn close(&mut self, handle: u32) -> Option<E> {
@@ -352,6 +362,21 @@ mod tests {
         let handle = table.insert(event_entry());
         assert!(table.close(handle).is_some());
         assert_eq!(table.close(handle), None, "the second close finds nothing");
+    }
+
+    /// An update changes the entry in place, at its value; a handle naming nothing is refused.
+    #[test]
+    fn an_entry_is_updated_in_place() {
+        let mut table: HandleTable = HandleTable::empty();
+        let handle = table.insert(file_entry(1, 0x8000_0000, false));
+        assert!(table.update(handle | 3, |entry| Entry {
+            inherit: true,
+            ..entry
+        }));
+        assert_eq!(table.lookup(handle), Some(file_entry(1, 0x8000_0000, true)));
+        assert!(!table.update(handle + 4, |entry| entry));
+        table.close(handle);
+        assert!(!table.update(handle, |entry| entry), "a closed handle");
     }
 
     // --- Group B: entries ----------------------------------------------------

@@ -150,6 +150,10 @@ pub mod api {
     /// ConsolepGetInputWaitHandle: [out handle] — the calling process's handle to the console's
     /// input-wait event, signaled while the input buffer holds records.
     pub const GET_INPUT_WAIT_HANDLE: u32 = number(22);
+    /// ConsolepSetHandleInformation: [handle, mask, flags] — the handle's inheritance set from
+    /// `flags` when `mask` holds HANDLE_FLAG_INHERIT (SetHandleInformation's, for a console
+    /// handle).
+    pub const SET_HANDLE_INFORMATION: u32 = number(23);
 
     /// Each API's data length in dwords.
     pub const fn words(api: u32) -> Option<usize> {
@@ -169,6 +173,7 @@ pub mod api {
             PEEK_INPUT | READ_INPUT | WRITE_INPUT => 5,
             OPEN_CONSOLE => 5,
             GET_INPUT_WAIT_HANDLE => 1,
+            SET_HANDLE_INFORMATION => 3,
             _ => return None,
         })
     }
@@ -466,6 +471,10 @@ impl Default for Console {
     }
 }
 
+/// SetHandleInformation's flag a console handle carries: whether a child process created with
+/// inheritance inherits it.
+pub const HANDLE_FLAG_INHERIT: u32 = 1;
+
 /// DuplicateHandle's options and the access a console handle carries.
 const DUPLICATE_CLOSE_SOURCE: u32 = 1;
 const DUPLICATE_SAME_ACCESS: u32 = 2;
@@ -489,6 +498,9 @@ pub const STANDARD_HANDLES: [u32; 3] = [3, 7, 0xB];
 /// real machine's capture redirects standard output to. A screen buffer opened by name (CONOUT$)
 /// shows on the screen alone, as on the real machine, where the capture leaves CONOUT$ on the
 /// console.
+///
+/// Each handle carries its inheritance, as a kernel handle does: a child process created with
+/// inheritance takes the inheritable ones, at their values ([`Handles::inherited`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Handles {
     /// The open slots.
@@ -497,6 +509,8 @@ pub struct Handles {
     output: u32,
     /// Of those, the standard ones: the process's first handles and their duplicates.
     logged: u32,
+    /// Of those, the inheritable ones.
+    inheritable: u32,
 }
 
 impl Handles {
@@ -506,17 +520,19 @@ impl Handles {
             open: 0,
             output: 0,
             logged: 0,
+            inheritable: 0,
         }
     }
 
     /// A fresh process's: stdin on the input buffer, stdout and stderr on the screen buffer, opened
-    /// in that order.
+    /// in that order, inheritable (a console's standard handles reach the children that inherit,
+    /// as a command interpreter's children share its console's).
     pub const fn standard() -> Self {
         let mut handles = Self::empty();
         let kinds = [Kind::Input, Kind::Output, Kind::Output];
         let mut index = 0;
         while index < kinds.len() {
-            match handles.open(kinds[index]) {
+            match handles.open(kinds[index], true) {
                 Ok(handle) => assert!(handle == STANDARD_HANDLES[index]),
                 Err(_) => panic!("an empty table has room"),
             }
@@ -526,9 +542,9 @@ impl Handles {
         handles
     }
 
-    /// Open a handle on `kind`'s buffer in the lowest free slot; STATUS_NO_MEMORY when every slot
-    /// is taken.
-    pub const fn open(&mut self, kind: Kind) -> Result<u32, u32> {
+    /// Open a handle on `kind`'s buffer in the lowest free slot, inheritable as `inherit` says;
+    /// STATUS_NO_MEMORY when every slot is taken.
+    pub const fn open(&mut self, kind: Kind, inherit: bool) -> Result<u32, u32> {
         let free = (!self.open).trailing_zeros();
         if free == 32 {
             return Err(STATUS_NO_MEMORY);
@@ -536,6 +552,9 @@ impl Handles {
         self.open |= 1 << free;
         if matches!(kind, Kind::Output) {
             self.output |= 1 << free;
+        }
+        if inherit {
+            self.inheritable |= 1 << free;
         }
         Ok((free << 2) | 3)
     }
@@ -570,19 +589,56 @@ impl Handles {
         self.open &= !bit;
         self.output &= !bit;
         self.logged &= !bit;
+        self.inheritable &= !bit;
         Ok(())
     }
 
-    /// A new handle on what `handle` names, in the lowest free slot (the source closed for
-    /// DUPLICATE_CLOSE_SOURCE). A console handle carries read and write access at most: anything
-    /// else asked for (without DUPLICATE_SAME_ACCESS) is STATUS_INVALID_PARAMETER; a full table
-    /// STATUS_NO_MEMORY.
-    pub fn duplicate(&mut self, handle: u32, access: u32, options: u32) -> Result<u32, u32> {
+    /// Whether an open handle is inheritable; none for any other value.
+    pub fn inheritable(&self, handle: u32) -> Option<bool> {
+        self.kind(handle)?;
+        Some(self.inheritable & (1 << (handle >> 2)) != 0)
+    }
+
+    /// Make an open handle inheritable or not: STATUS_INVALID_HANDLE for any other value.
+    pub fn set_inheritable(&mut self, handle: u32, inherit: bool) -> Result<(), u32> {
+        self.kind(handle).ok_or(STATUS_INVALID_HANDLE)?;
+        let bit = 1 << (handle >> 2);
+        if inherit {
+            self.inheritable |= bit;
+        } else {
+            self.inheritable &= !bit;
+        }
+        Ok(())
+    }
+
+    /// What a child process created with inheritance takes: the inheritable handles, each at its
+    /// own value, naming what it names, a standard one still standard; the others are not there.
+    pub fn inherited(&self) -> Handles {
+        let taken = self.inheritable & self.open;
+        Handles {
+            open: taken,
+            output: self.output & taken,
+            logged: self.logged & taken,
+            inheritable: taken,
+        }
+    }
+
+    /// A new handle on what `handle` names, in the lowest free slot, inheritable as `inherit` says
+    /// (the source closed for DUPLICATE_CLOSE_SOURCE). A console handle carries read and write
+    /// access at most: anything else asked for (without DUPLICATE_SAME_ACCESS) is
+    /// STATUS_INVALID_PARAMETER; a full table STATUS_NO_MEMORY.
+    pub fn duplicate(
+        &mut self,
+        handle: u32,
+        access: u32,
+        inherit: bool,
+        options: u32,
+    ) -> Result<u32, u32> {
         let kind = self.kind(handle).ok_or(STATUS_INVALID_HANDLE)?;
         if options & DUPLICATE_SAME_ACCESS == 0 && access & !(GENERIC_READ | GENERIC_WRITE) != 0 {
             return Err(STATUS_INVALID_PARAMETER);
         }
-        let duplicate = self.open(kind)?;
+        let duplicate = self.open(kind, inherit)?;
         if self.logged(handle) {
             self.logged |= 1 << (duplicate >> 2);
         }
@@ -1000,12 +1056,20 @@ fn answer(
             } else {
                 Kind::Input
             };
-            data[4] = handles.open(kind)? as usize;
+            data[4] = handles.open(kind, data[2] != 0)? as usize;
         }
         api::GET_INPUT_WAIT_HANDLE => data[0] = client.input_wait_handle()? as usize,
         api::CLOSE_HANDLE => handles.close(handle)?,
         api::DUP_HANDLE => {
-            data[4] = handles.duplicate(handle, data[1] as u32, data[3] as u32)? as usize
+            data[4] =
+                handles.duplicate(handle, data[1] as u32, data[2] != 0, data[3] as u32)? as usize
+        }
+        api::SET_HANDLE_INFORMATION => {
+            if data[1] as u32 & HANDLE_FLAG_INHERIT != 0 {
+                handles.set_inheritable(handle, data[2] as u32 & HANDLE_FLAG_INHERIT != 0)?;
+            } else {
+                handles.kind(handle).ok_or(STATUS_INVALID_HANDLE)?;
+            }
         }
         api::GET_CURSOR_POSITION => {
             output()?;
@@ -1223,7 +1287,7 @@ mod tests {
         let handles = Handles::standard();
         let mut opened = Handles::empty();
         assert_eq!(
-            [Kind::Input, Kind::Output, Kind::Output].map(|kind| opened.open(kind)),
+            [Kind::Input, Kind::Output, Kind::Output].map(|kind| opened.open(kind, true)),
             [Ok(3), Ok(7), Ok(0xB)],
             "allocated in the lowest free slots"
         );
@@ -1365,7 +1429,7 @@ mod tests {
         assert_eq!(
             server
                 .handles
-                .duplicate(3, GENERIC_READ, DUPLICATE_CLOSE_SOURCE),
+                .duplicate(3, GENERIC_READ, false, DUPLICATE_CLOSE_SOURCE),
             Ok(7)
         );
         assert_eq!(
@@ -1373,40 +1437,104 @@ mod tests {
             (Some(Kind::Input), None)
         );
         assert_eq!(
-            server.handles.duplicate(0xB, 0x1F_0000, 0),
+            server.handles.duplicate(0xB, 0x1F_0000, false, 0),
             Err(STATUS_INVALID_PARAMETER)
         );
         assert_eq!(
-            server.handles.duplicate(3, 0, 0),
+            server.handles.duplicate(3, 0, false, 0),
             Err(STATUS_INVALID_HANDLE)
         );
         while server
             .handles
-            .duplicate(0xB, 0, DUPLICATE_SAME_ACCESS)
+            .duplicate(0xB, 0, false, DUPLICATE_SAME_ACCESS)
             .is_ok()
         {}
         assert_eq!(
-            server.handles.duplicate(0xB, 0, DUPLICATE_SAME_ACCESS),
+            server
+                .handles
+                .duplicate(0xB, 0, false, DUPLICATE_SAME_ACCESS),
             Err(STATUS_NO_MEMORY)
         );
         assert_eq!(server.handles.kind((31 << 2) | 3), Some(Kind::Output));
+    }
+
+    /// Each handle carries its inheritance: the standard ones inheritable, an open or a duplicate
+    /// as asked, changed through the server; a child created with inheritance takes the
+    /// inheritable ones alone, at their values, each naming what it names.
+    #[test]
+    fn handles_carry_their_inheritance() {
+        let mut server = Server::new();
+        assert_eq!(
+            [3, 7, 0xB].map(|handle| server.handles.inheritable(handle)),
+            [Some(true); 3]
+        );
+        let (status, data) = server.call(api::OPEN_CONSOLE, &[1, 0, 0, 0, 0]);
+        assert_eq!((status, data[4]), (0, 0xF));
+        assert_eq!(server.handles.inheritable(0xF), Some(false));
+        let (status, data) = server.call(
+            api::DUP_HANDLE,
+            &[3, 0, 1, DUPLICATE_SAME_ACCESS as usize, 0],
+        );
+        assert_eq!((status, data[4]), (0, 0x13));
+        assert_eq!(server.handles.inheritable(0x13), Some(true));
+        // The mask decides what changes; the inheritance alone is a console handle's.
+        assert_eq!(server.call(api::SET_HANDLE_INFORMATION, &[7, 2, 0]).0, 0);
+        assert_eq!(server.handles.inheritable(7), Some(true));
+        assert_eq!(server.call(api::SET_HANDLE_INFORMATION, &[7, 1, 0]).0, 0);
+        assert_eq!(server.handles.inheritable(7), Some(false));
+        assert_eq!(server.call(api::SET_HANDLE_INFORMATION, &[0xF, 3, 3]).0, 0);
+        assert_eq!(server.handles.inheritable(0xF), Some(true));
+        assert_eq!(
+            server.call(api::SET_HANDLE_INFORMATION, &[0x17, 1, 1]).0,
+            STATUS_INVALID_HANDLE
+        );
+        assert_eq!(
+            server.call(api::SET_HANDLE_INFORMATION, &[0x17, 0, 0]).0,
+            STATUS_INVALID_HANDLE
+        );
+        let child = server.handles.inherited();
+        assert_eq!(
+            [3, 7, 0xB, 0xF, 0x13].map(|handle| child.kind(handle)),
+            [
+                Some(Kind::Input),
+                None,
+                Some(Kind::Output),
+                Some(Kind::Output),
+                Some(Kind::Input)
+            ]
+        );
+        assert!(child.logged(3) && child.logged(0x13) && !child.logged(0xF));
+        assert_eq!(child.inheritable(0xF), Some(true));
+        assert_eq!(server.handles.close(0xF), Ok(()));
+        assert_eq!(server.handles.inheritable(0xF), None);
+        let mut reopened = server.handles;
+        assert_eq!(reopened.open(Kind::Output, false), Ok(0xF));
+        assert_eq!(
+            reopened.inheritable(0xF),
+            Some(false),
+            "a closed slot keeps no inheritance"
+        );
     }
 
     #[test]
     fn handles_open_in_the_lowest_free_slot() {
         let mut handles = Handles::empty();
         assert_eq!(handles.kind(3), None);
-        assert_eq!(handles.open(Kind::Output), Ok(3));
-        assert_eq!(handles.open(Kind::Input), Ok(7));
+        assert_eq!(handles.open(Kind::Output, false), Ok(3));
+        assert_eq!(handles.open(Kind::Input, false), Ok(7));
         assert_eq!(handles.close(3), Ok(()));
-        assert_eq!(handles.open(Kind::Input), Ok(3), "the freed slot first");
+        assert_eq!(
+            handles.open(Kind::Input, false),
+            Ok(3),
+            "the freed slot first"
+        );
         assert_eq!(
             handles.kind(3),
             Some(Kind::Input),
             "the new kind, not the old"
         );
-        while handles.open(Kind::Output).is_ok() {}
-        assert_eq!(handles.open(Kind::Input), Err(STATUS_NO_MEMORY));
+        while handles.open(Kind::Output, false).is_ok() {}
+        assert_eq!(handles.open(Kind::Input, false), Err(STATUS_NO_MEMORY));
         assert_eq!(handles.kind((31 << 2) | 3), Some(Kind::Output));
     }
 
@@ -2222,12 +2350,12 @@ mod tests {
         assert!(server.handles.logged(7) && server.handles.logged(0xB));
         let duplicate = server
             .handles
-            .duplicate(7, 0, DUPLICATE_SAME_ACCESS)
+            .duplicate(7, 0, false, DUPLICATE_SAME_ACCESS)
             .unwrap();
         assert!(server.handles.logged(duplicate));
         let duplicate = server
             .handles
-            .duplicate(0x13, 0, DUPLICATE_SAME_ACCESS)
+            .duplicate(0x13, 0, false, DUPLICATE_SAME_ACCESS)
             .unwrap();
         assert!(!server.handles.logged(duplicate));
         assert_eq!(

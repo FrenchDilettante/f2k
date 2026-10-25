@@ -14,6 +14,7 @@ use rtl::path::{
     full_path_name,
     nt_path,
     path_type,
+    upcase,
     PathError,
     PathType,
     MAX_PATH,
@@ -100,8 +101,13 @@ fn open_directory(name: &[u16]) -> Result<u32, u32> {
 /// RtlSetCurrentDirectory_U: `path` made absolute against the current directory, its trailing
 /// separator added, opened (NtOpenFile: a missing directory is the open's status, a file
 /// STATUS_NOT_A_DIRECTORY), then the current directory: its DOS path and handle (the old handle
-/// closed). STATUS_OBJECT_NAME_INVALID for an empty path, STATUS_NAME_TOO_LONG for one past the DOS
-/// path's room.
+/// closed). The current directory itself (the same path, in any case) keeps its open handle: only
+/// its path's spelling is taken, nothing is opened or closed — a SetCurrentDirectory to where the
+/// process already is leaves its handle table as it was (the spawn fixture's capture implies it:
+/// its inherit block's child, made without inheritance, finds none of the parent's file handles'
+/// values among its own, though the parent sets its current directory to the one it starts in
+/// twice before opening them). STATUS_OBJECT_NAME_INVALID for an empty path, STATUS_NAME_TOO_LONG
+/// for one past the DOS path's room.
 ///
 /// # Safety
 ///
@@ -134,19 +140,32 @@ fn set_current_directory(path: &[u16]) -> u32 {
     if 2 * (length + 1) > current.maximum_length as usize {
         return STATUS_NAME_TOO_LONG;
     }
-    let mut name = [0u16; MAX_PATH + 8];
-    let Ok(name_length) = nt_path(&full[..length], &mut name) else {
-        return STATUS_NAME_TOO_LONG;
-    };
-    let handle = match open_directory(&name[..name_length]) {
-        Ok(handle) => handle,
-        Err(status) => return status,
-    };
     let handle_slot = sys::process_parameters() + CURRENT_DIRECTORY_HANDLE;
     let old = sys::read(handle_slot);
-    if old != 0 {
-        system_service(nr::NtClose, &[old as u32]);
-    }
+    // SAFETY: the DOS path's buffer holds its length.
+    let current_units = unsafe { current.units() };
+    let same = old != 0
+        && current_units.len() == length
+        && current_units
+            .iter()
+            .zip(&full[..length])
+            .all(|(&a, &b)| upcase(a) == upcase(b));
+    let handle = if same {
+        old as u32
+    } else {
+        let mut name = [0u16; MAX_PATH + 8];
+        let Ok(name_length) = nt_path(&full[..length], &mut name) else {
+            return STATUS_NAME_TOO_LONG;
+        };
+        let handle = match open_directory(&name[..name_length]) {
+            Ok(handle) => handle,
+            Err(status) => return status,
+        };
+        if old != 0 {
+            system_service(nr::NtClose, &[old as u32]);
+        }
+        handle
+    };
     // SAFETY: the DOS path's own room, checked above to hold the path and its terminator.
     unsafe {
         current

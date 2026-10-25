@@ -10,6 +10,7 @@ use crate::nt::LAST_WAITED;
 use crate::sync::{
     close_handle,
     duplicate_handle,
+    set_handle_information,
     signal_object_and_wait,
     wait_for_multiple_objects,
     wait_for_single_object,
@@ -359,6 +360,63 @@ fn duplicate_handle_duplicates_kernel_handles() {
         1
     );
     assert_ne!(target, 0);
+}
+
+/// SetHandleInformation of a kernel handle reads its flags (NtQueryObject) and writes them back
+/// with those the mask names changed (NtSetInformationObject), ObjectHandleFlagInformation both
+/// times. A handle naming nothing is ERROR_INVALID_HANDLE, nothing written (the spawn fixture's
+/// inherit block makes a handle inheritable before a child inherits it).
+///
+/// Pins: kernel32.SetHandleInformation
+#[test]
+fn handle_information_is_the_handle_entrys_flags() {
+    use crate::nt::{FAIL_NEXT, HANDLE_FLAGS, OBJECT_CLASSES};
+    let flags_of = |handle| HANDLE_FLAGS.with(|all| all.borrow().get(&handle).copied());
+    assert_eq!(set_handle_information(0x44, 1, 1), 1);
+    assert_eq!(flags_of(0x44), Some([1, 0]));
+    assert_eq!(
+        set_handle_information(0x44, 2, 3),
+        1,
+        "the inheritance left as it is"
+    );
+    assert_eq!(flags_of(0x44), Some([1, 1]));
+    assert_eq!(
+        set_handle_information(0x44, 0, 0),
+        1,
+        "nothing named, nothing changed"
+    );
+    assert_eq!(flags_of(0x44), Some([1, 1]));
+    assert_eq!(set_handle_information(0x44, 3, 2), 1);
+    assert_eq!(flags_of(0x44), Some([0, 1]));
+    assert!(
+        OBJECT_CLASSES.with(|classes| classes.borrow().iter().all(|&asked| asked == (4, 2))),
+        "ObjectHandleFlagInformation, two bytes"
+    );
+    crate::base::set_last_error(0);
+    FAIL_NEXT.with(|fail| fail.set(0xC000_0008));
+    assert_eq!(set_handle_information(0x1234, 1, 1), 0);
+    assert_eq!(last_error(), 6);
+    assert_eq!(flags_of(0x1234), None);
+}
+
+/// A console handle's information is its server's: its inheritance alone (no protection from
+/// close), a standard handle's pseudo-value the process parameters' handle; a console handle
+/// naming nothing is ERROR_INVALID_HANDLE.
+///
+/// Pins: kernel32.SetHandleInformation
+#[test]
+fn a_console_handles_information_is_its_servers() {
+    let inheritable =
+        |handle| crate::nt::CONSOLE_HANDLES.with(|handles| handles.get().inheritable(handle));
+    assert_eq!(inheritable(STDOUT), Some(true));
+    assert_eq!(set_handle_information(STD_OUTPUT_HANDLE, 3, 2), 1);
+    assert_eq!(inheritable(STDOUT), Some(false));
+    assert_eq!(inheritable(STDIN), Some(true));
+    assert_eq!(set_handle_information(STDOUT, 1, 1), 1);
+    assert_eq!(inheritable(STDOUT), Some(true));
+    crate::base::set_last_error(0);
+    assert_eq!(set_handle_information(0x13, 1, 1), 0);
+    assert_eq!(last_error(), 6);
 }
 
 /// A wait on a console handle naming a console object waits on the console's input-wait event

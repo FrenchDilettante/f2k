@@ -349,6 +349,23 @@ unsafe extern "system" {
         attributes: u32,
         options: u32,
     ) -> u32;
+    /// NtQueryObject: the class's structure into the caller's buffer (F2K answers
+    /// ObjectHandleFlagInformation, 4, alone).
+    pub fn NtQueryObject(
+        handle: u32,
+        class: u32,
+        information: *mut u8,
+        length: u32,
+        return_length: *mut u32,
+    ) -> u32;
+    /// NtSetInformationObject: the class's structure set (F2K answers ObjectHandleFlagInformation,
+    /// 4, alone).
+    pub fn NtSetInformationObject(
+        handle: u32,
+        class: u32,
+        information: *const u8,
+        length: u32,
+    ) -> u32;
     /// NtSetInformationThread: the class's value set (F2K answers the priority, 2, the base
     /// priority, 3, the affinity, 4, ThreadZeroTlsCell, 10, and the boost, 14).
     pub fn NtSetInformationThread(
@@ -887,6 +904,57 @@ pub mod host {
         if status == 0 && !target.is_null() {
             // SAFETY: the caller's handle slot.
             unsafe { target.write(HANDLE) };
+        }
+        status
+    }
+
+    std::thread_local! {
+        /// Each handle's ObjectHandleFlagInformation as the stand-ins keep it (a handle not listed
+        /// has neither flag), and the classes asked of NtQueryObject and NtSetInformationObject.
+        pub static HANDLE_FLAGS: RefCell<std::collections::BTreeMap<u32, [u8; 2]>> =
+            const { RefCell::new(std::collections::BTreeMap::new()) };
+        pub static OBJECT_CLASSES: RefCell<std::vec::Vec<(u32, u32)>> = const { RefCell::new(std::vec::Vec::new()) };
+    }
+
+    /// NtQueryObject: the handle's flags from [`HANDLE_FLAGS`] (any class and length the caller
+    /// asks are recorded; the structure is written when it is the two-byte one).
+    pub unsafe extern "system" fn NtQueryObject(
+        handle: u32,
+        class: u32,
+        information: *mut u8,
+        length: u32,
+        return_length: *mut u32,
+    ) -> u32 {
+        OBJECT_CLASSES.with(|classes| classes.borrow_mut().push((class, length)));
+        let status = answer();
+        if status == 0 && length == 2 {
+            let flags = HANDLE_FLAGS
+                .with(|flags| flags.borrow().get(&handle).copied())
+                .unwrap_or([0, 0]);
+            // SAFETY: the caller's two-byte structure.
+            unsafe { information.copy_from_nonoverlapping(flags.as_ptr(), 2) };
+            if !return_length.is_null() {
+                // SAFETY: the caller's length slot.
+                unsafe { return_length.write(2) };
+            }
+        }
+        status
+    }
+
+    /// NtSetInformationObject: the handle's flags into [`HANDLE_FLAGS`].
+    pub unsafe extern "system" fn NtSetInformationObject(
+        handle: u32,
+        class: u32,
+        information: *const u8,
+        length: u32,
+    ) -> u32 {
+        OBJECT_CLASSES.with(|classes| classes.borrow_mut().push((class, length)));
+        let status = answer();
+        if status == 0 && length == 2 {
+            let mut flags = [0u8; 2];
+            // SAFETY: the caller's two-byte structure.
+            unsafe { flags.as_mut_ptr().copy_from_nonoverlapping(information, 2) };
+            HANDLE_FLAGS.with(|all| all.borrow_mut().insert(handle, flags));
         }
         status
     }

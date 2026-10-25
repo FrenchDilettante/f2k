@@ -1210,9 +1210,9 @@ note = "a console handle is its server's to duplicate (DuplicateConsoleHandle); 
 name = "SetHandleInformation"
 group = "threads"
 args = ["handle hObject", "u32 dwMask", "u32 dwFlags"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SetHandleInformation" }
 ordinal = 670
-fails = "FALSE"
+note = "the flags the mask names (HANDLE_FLAG_INHERIT, HANDLE_FLAG_PROTECT_FROM_CLOSE) through NtQueryObject and NtSetInformationObject's ObjectHandleFlagInformation; a console handle's inheritance alone, its server's"
 
 [[export]]
 name = "ExitThread"
