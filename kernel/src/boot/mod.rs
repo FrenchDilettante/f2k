@@ -43,8 +43,9 @@ core::arch::global_asm!(
     "    mov esi, eax", // Multiboot magic, kept across the switch
     "    mov edi, ebx", // Multiboot info physical address
     // The boot page directory and tables are kernel statics: their physical addresses are the
-    // linked addresses minus KERNEL_BASE (0x80000000). Zero the directory, then fill the four
-    // entries: 0, 1 = low identity window; 512, 513 = kernel window.
+    // linked addresses minus KERNEL_BASE (0x80000000). Zero the directory, then point entry i of
+    // the low identity window (entries 0-3) and of the kernel image window (entries 512-515) at
+    // boot table i, for each of the tables (physical [0, 16 MiB), 4 MiB per table).
     "    mov eax, offset BOOT_PD",
     "    sub eax, 0x80000000",
     "    mov edx, eax",
@@ -54,16 +55,17 @@ core::arch::global_asm!(
     "    inc ecx",
     "    cmp ecx, 1024",
     "    jne 1b",
-    "    mov edx, offset BOOT_PT_LO",
+    "    mov edx, offset BOOT_TABLES",
     "    sub edx, 0x80000000",
     "    or edx, 3", // present | writable
-    "    mov [eax], edx",
-    "    mov [eax + 2048], edx",
-    "    mov edx, offset BOOT_PT_HI",
-    "    sub edx, 0x80000000",
-    "    or edx, 3",
-    "    mov [eax + 4], edx",
-    "    mov [eax + 2052], edx",
+    "    xor ecx, ecx",
+    "3:",
+    "    mov [eax + ecx*4], edx",
+    "    mov [eax + ecx*4 + {image_window}], edx",
+    "    add edx, 4096", // the next table
+    "    inc ecx",
+    "    cmp ecx, {tables}",
+    "    jne 3b",
     // Paging on: CR3 = physical directory, CR0.PG = 1, CR0.WP = 1. WP makes read-only mappings
     // bind ring-0 writes too, which the user/kernel split (and later copy-on-write) relies on.
     // Execution continues at the physical EIP through the low identity window.
@@ -71,7 +73,7 @@ core::arch::global_asm!(
     "    mov eax, cr0",
     "    or eax, 0x80010000",
     "    mov cr0, eax",
-    // Switch to the kernel window: the same code, at its virtual alias (the low 8 MiB appear
+    // Switch to the kernel window: the same code, at its virtual alias (the low 16 MiB appear
     // identically at 0x80000000+).
     "    mov edx, offset start_high",
     "    add edx, 0x80000000",
@@ -93,4 +95,7 @@ core::arch::global_asm!(
     "2:  cli",
     "    hlt",
     "    jmp 2b",
+    // The kernel image window's first directory entry, as a byte offset into the directory.
+    image_window = const crate::mem::layout::KERNEL_IMAGE.first_entry() * 4,
+    tables = const crate::mem::paging::BOOT_TABLE_COUNT,
 );

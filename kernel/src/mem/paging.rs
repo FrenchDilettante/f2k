@@ -1,11 +1,13 @@
 //! Paging: the kernel window and the runtime user mappings.
 //!
-//! 32-bit x86 two-level paging, 4 KiB pages. The kernel is linked at `KERNEL_BASE + 1 MiB` and runs
-//! there; the boot trampoline builds the initial directory:
+//! 32-bit x86 two-level paging, 4 KiB pages. The kernel half's regions are laid out in
+//! [`crate::mem::layout`]. The kernel is linked at `KERNEL_BASE + 1 MiB` and runs there; the boot
+//! trampoline builds the initial directory:
 //!
-//! - `[0, 8 MiB)`: physical identity, the boot transition window (entry stub, Multiboot info) until
-//!   [`teardown_low_identity`] removes it;
-//! - `[KERNEL_BASE, KERNEL_BASE + 8 MiB)`: the kernel window over physical `[0, 8 MiB)`.
+//! - `[0, 16 MiB)`: physical identity, the boot transition window (entry stub, Multiboot info)
+//!   until [`teardown_low_identity`] removes it;
+//! - `[KERNEL_BASE, KERNEL_BASE + 16 MiB)`: the kernel image window ([`layout::KERNEL_IMAGE`]) over
+//!   physical `[0, 16 MiB)`.
 //!
 //! The boot tables are link-time identity constants; the directory is filled by the entry stub,
 //! which addresses it physically before paging is on. Everything below `KERNEL_BASE` is unmapped
@@ -18,8 +20,10 @@ use core::arch::asm;
 #[cfg(target_arch = "x86")]
 use core::sync::atomic::{AtomicBool, Ordering};
 
-/// Virtual base of kernel space (user space is the low 2 GiB).
-pub const KERNEL_BASE: u32 = 0x8000_0000;
+use super::layout;
+
+/// Virtual base of kernel space (user space is the low 2 GiB): the kernel image window's start.
+pub const KERNEL_BASE: u32 = layout::KERNEL_IMAGE.start;
 
 /// Physical load address of the kernel image (also the start of the frames the kernel occupies).
 pub const KERNEL_PHYS_BASE: u32 = 0x0010_0000;
@@ -55,49 +59,58 @@ const fn identity_page_table(first_page: usize) -> [u32; PT_ENTRIES] {
 #[repr(align(4096))]
 pub struct Aligned<T>(pub T);
 
-/// Page table for physical/virtual pages `[0, 1024)`: the low 4 MiB.
-#[no_mangle]
-pub static BOOT_PT_LO: Aligned<[u32; PT_ENTRIES]> = Aligned(identity_page_table(0));
+/// How many boot page tables there are: one per directory entry of the kernel image window, each
+/// mapping 4 MiB of physical `[0, 16 MiB)`.
+pub const BOOT_TABLE_COUNT: usize = layout::KERNEL_IMAGE.entries;
 
-/// Page table for physical/virtual pages `[1024, 2048)`: 4-8 MiB.
-#[no_mangle]
-pub static BOOT_PT_HI: Aligned<[u32; PT_ENTRIES]> = Aligned(identity_page_table(PT_ENTRIES));
+/// The boot tables' contents: table `t` maps pages `[t * 1024, (t + 1) * 1024)` to themselves.
+const fn boot_tables() -> [[u32; PT_ENTRIES]; BOOT_TABLE_COUNT] {
+    let mut tables = [[0u32; PT_ENTRIES]; BOOT_TABLE_COUNT];
+    let mut t = 0;
+    while t < BOOT_TABLE_COUNT {
+        tables[t] = identity_page_table(t * PT_ENTRIES);
+        t += 1;
+    }
+    tables
+}
 
-/// The boot page directory. Zero-initialized; the entry stub fills entries 0, 1 (low identity
-/// window) and 512, 513 (kernel window), all pointing at the two tables above.
+/// The boot page tables, mapping physical `[0, 16 MiB)` 4 MiB apiece. The entry stub points the
+/// low identity window's entries and the kernel image window's at them, in order; each table is
+/// one page, so every one of them is page-aligned.
+#[no_mangle]
+pub static BOOT_TABLES: Aligned<[[u32; PT_ENTRIES]; BOOT_TABLE_COUNT]> = Aligned(boot_tables());
+
+/// The boot page directory. Zero-initialized; the entry stub fills entries `[0, BOOT_TABLE_COUNT)`
+/// (low identity window) and the kernel image window's, all pointing at [`BOOT_TABLES`].
 #[no_mangle]
 pub static mut BOOT_PD: Aligned<[u32; PT_ENTRIES]> = Aligned([0; PT_ENTRIES]);
 
-/// Remove the low identity window (called once the Multiboot info is consumed): clears entries 0-1
-/// and flushes the TLB via a CR3 reload. User space is unmapped from here on.
+/// Remove the low identity window (called once the Multiboot info is consumed): clears entries
+/// `[0, BOOT_TABLE_COUNT)` and flushes the TLB via a CR3 reload. User space is unmapped from here
+/// on.
 #[cfg(target_arch = "x86")]
 pub fn teardown_low_identity() {
     // SAFETY: the boot context is the only mutator of the directory; paging is on and the kernel
     // window entries are live.
-    let pd = unsafe { &mut *core::ptr::addr_of_mut!(BOOT_PD) }
-        .0
-        .as_mut_ptr();
+    let pd = &mut unsafe { &mut *core::ptr::addr_of_mut!(BOOT_PD) }.0;
 
     // The kernel window must be established before the low window goes away; this also catches a
     // directory the stub never filled.
-    let pt_lo_phys = (BOOT_PT_LO.0.as_ptr() as u32) - KERNEL_BASE;
-    assert_eq!(
-        unsafe { *pd.add(512) } & PAGE_ADDR_MASK,
-        pt_lo_phys,
-        "kernel window is not mapped"
-    );
-    assert_ne!(
-        unsafe { *pd.add(0) },
-        0,
-        "low identity window is already gone"
-    );
+    let image = layout::KERNEL_IMAGE.first_entry();
+    for (i, table) in BOOT_TABLES.0.iter().enumerate() {
+        assert_eq!(
+            pd[image + i] & PAGE_ADDR_MASK,
+            table.as_ptr() as u32 - KERNEL_BASE,
+            "kernel window is not mapped"
+        );
+    }
+    assert_ne!(pd[0], 0, "low identity window is already gone");
 
-    unsafe {
-        *pd.add(0) = 0;
-        *pd.add(1) = 0;
+    for entry in &mut pd[..BOOT_TABLE_COUNT] {
+        *entry = 0;
     }
 
-    let pd_phys = pd as u32 - KERNEL_BASE;
+    let pd_phys = pd.as_ptr() as u32 - KERNEL_BASE;
     // SAFETY: paging is on; reloading CR3 with the (same) directory flushes non-global TLB entries,
     // dropping the low mappings.
     unsafe {
@@ -115,12 +128,14 @@ pub fn teardown_low_identity() {
 // - the scratch table ([`SCRATCH_SLOT`]): entry 0 aliases whichever frame the kernel is
 //   initializing, so fresh frames can be zeroed and written before they are mapped anywhere else.
 
-/// Directory entry that maps the directory into its own window (NT-style: self-map at 0xC0000000).
-pub const SELF_MAP_SLOT: usize = 768;
+/// Directory entry that maps the directory into its own window (NT-style: self-map at 0xC0000000,
+/// [`layout::PAGE_TABLES`]).
+pub const SELF_MAP_SLOT: usize = layout::PAGE_TABLES.first_entry();
 /// Virtual address of the self-mapped directory (SELF_MAP_SLOT << 22).
 pub const SELF_MAP_VA: u32 = (SELF_MAP_SLOT as u32) << 22;
-/// Directory entry that holds the scratch page table (NT-style: scratch/hyperspace at 0xC0400000).
-pub const SCRATCH_SLOT: usize = 769;
+/// Directory entry that holds the scratch page table (NT-style: scratch/hyperspace at 0xC0400000,
+/// [`layout::HYPERSPACE`]).
+pub const SCRATCH_SLOT: usize = layout::HYPERSPACE.first_entry();
 /// Virtual address of scratch entry 0: the one-page alias of the frame being initialized.
 pub const SCRATCH_VA: u32 = (SCRATCH_SLOT as u32) << 22;
 /// First directory entry of the kernel half (KERNEL_BASE's own window): entries below it belong to
@@ -131,10 +146,10 @@ pub const KERNEL_HALF_START: usize = (KERNEL_BASE >> 22) as usize;
 /// sits at `DIRECTORY_ENTRY_VA + i*4`. Distinct from the table window below, which addresses any
 /// window's page *table*.
 pub const DIRECTORY_ENTRY_VA: u32 = SELF_MAP_VA + ((SELF_MAP_SLOT as u32) << 12);
-/// The per-process ring-0 gate stack window (directory entry 514): sub-allocated into per-thread
-/// slots, each a guard page plus the 32 KiB stack. Slot 0's top is [`GATE_STACK_TOP`], a main
-/// thread's stack.
-pub const GATE_STACK_WINDOW: u32 = KERNEL_BASE + 2 * 0x0040_0000;
+/// The per-process ring-0 gate stack window: the first directory entry of the kernel stack region
+/// ([`layout::KERNEL_STACKS`], entry 656), sub-allocated into per-thread slots, each a guard page
+/// plus the 32 KiB stack. Slot 0's top is [`GATE_STACK_TOP`], a main thread's stack.
+pub const GATE_STACK_WINDOW: u32 = layout::KERNEL_STACKS.start;
 /// Gate stack pages, one frame each (32 KiB): room for the file system's walks under the debug
 /// build's frames.
 pub const GATE_STACK_PAGES: usize = 8;
@@ -146,7 +161,7 @@ pub const GATE_STACK_TOP: u32 = gate_slot_top(0);
 pub const GATE_SLOT_STRIDE: u32 = ((GATE_STACK_PAGES + 1) as u32) * PAGE_SIZE;
 /// How many slots the window (one directory entry, 4 MiB) holds. The binding per-thread capacity of
 /// the process: an allocation past it is a bug, not a wrap.
-pub const GATE_SLOT_CAPACITY: usize = (0x0040_0000 / GATE_SLOT_STRIDE) as usize;
+pub const GATE_SLOT_CAPACITY: usize = (layout::ENTRY_SPAN / GATE_SLOT_STRIDE) as usize;
 
 /// Slot `index`'s base: its guard page, never mapped.
 pub const fn gate_slot_base(index: u32) -> u32 {
@@ -586,7 +601,7 @@ pub fn map_kernel_page(vaddr: u32, frame_phys: u32) {
         "kernel mappings live in the kernel half"
     );
     assert!(
-        window != 512 && window != 513,
+        !layout::KERNEL_IMAGE.holds_entry(window),
         "kernel mapping collides with the static kernel image window"
     );
     assert!(
@@ -636,7 +651,7 @@ pub fn unmap_kernel_page(vaddr: u32) -> u32 {
         "kernel mappings live in the kernel half"
     );
     assert!(
-        window != 512 && window != 513,
+        !layout::KERNEL_IMAGE.holds_entry(window),
         "kernel unmapping collides with the static kernel image window"
     );
     assert!(
@@ -727,8 +742,9 @@ mod tests {
 
     #[test]
     fn tables_are_page_aligned() {
-        assert_eq!(BOOT_PT_LO.0.as_ptr() as usize % 4096, 0);
-        assert_eq!(BOOT_PT_HI.0.as_ptr() as usize % 4096, 0);
+        for table in &BOOT_TABLES.0 {
+            assert_eq!(table.as_ptr() as usize % 4096, 0);
+        }
         // SAFETY: read-only access before any boot code runs.
         assert_eq!(
             unsafe { &*core::ptr::addr_of!(BOOT_PD) }.0.as_ptr() as usize % 4096,
@@ -736,28 +752,45 @@ mod tests {
         );
     }
 
+    /// One boot table per entry of the kernel image window: four, 16 MiB.
     #[test]
-    fn low_table_maps_the_first_4mib_identity() {
-        assert_eq!(BOOT_PT_LO.0[0], 0x0000_0000 | PAGE_PRESENT | PAGE_WRITE);
-        assert_eq!(BOOT_PT_LO.0[256], 0x0010_0000 | PAGE_PRESENT | PAGE_WRITE);
-        assert_eq!(BOOT_PT_LO.0[1023], 0x003F_F000 | PAGE_PRESENT | PAGE_WRITE);
+    fn the_boot_tables_cover_the_image_window() {
+        assert_eq!(BOOT_TABLE_COUNT, 4);
+        assert_eq!(
+            (BOOT_TABLE_COUNT * PT_ENTRIES) as u32 * PAGE_SIZE,
+            layout::KERNEL_IMAGE.size()
+        );
     }
 
     #[test]
-    fn high_table_maps_the_second_4mib_identity() {
-        assert_eq!(BOOT_PT_HI.0[0], 0x0040_0000 | PAGE_PRESENT | PAGE_WRITE);
-        assert_eq!(BOOT_PT_HI.0[1023], 0x007F_F000 | PAGE_PRESENT | PAGE_WRITE);
+    fn the_first_table_maps_the_low_4mib_identity() {
+        let low = &BOOT_TABLES.0[0];
+        assert_eq!(low[0], 0x0000_0000 | PAGE_PRESENT | PAGE_WRITE);
+        assert_eq!(low[256], 0x0010_0000 | PAGE_PRESENT | PAGE_WRITE);
+        assert_eq!(low[1023], 0x003F_F000 | PAGE_PRESENT | PAGE_WRITE);
+    }
+
+    #[test]
+    fn the_later_tables_map_the_next_4mib_each() {
+        assert_eq!(BOOT_TABLES.0[1][0], 0x0040_0000 | PAGE_PRESENT | PAGE_WRITE);
+        assert_eq!(
+            BOOT_TABLES.0[1][1023],
+            0x007F_F000 | PAGE_PRESENT | PAGE_WRITE
+        );
+        assert_eq!(BOOT_TABLES.0[2][0], 0x0080_0000 | PAGE_PRESENT | PAGE_WRITE);
+        assert_eq!(
+            BOOT_TABLES.0[3][1023],
+            0x00FF_F000 | PAGE_PRESENT | PAGE_WRITE
+        );
     }
 
     #[test]
     fn every_entry_is_present_writable_and_in_window() {
-        for (i, &entry) in BOOT_PT_LO.0.iter().enumerate() {
-            assert_eq!(entry & PAGE_ADDR_MASK, (i * 4096) as u32);
-            assert_eq!(entry & !PAGE_ADDR_MASK, PAGE_PRESENT | PAGE_WRITE);
-        }
-        for (i, &entry) in BOOT_PT_HI.0.iter().enumerate() {
-            assert_eq!(entry & PAGE_ADDR_MASK, ((PT_ENTRIES + i) * 4096) as u32);
-            assert_eq!(entry & !PAGE_ADDR_MASK, PAGE_PRESENT | PAGE_WRITE);
+        for (t, table) in BOOT_TABLES.0.iter().enumerate() {
+            for (i, &entry) in table.iter().enumerate() {
+                assert_eq!(entry & PAGE_ADDR_MASK, ((t * PT_ENTRIES + i) * 4096) as u32);
+                assert_eq!(entry & !PAGE_ADDR_MASK, PAGE_PRESENT | PAGE_WRITE);
+            }
         }
     }
 
@@ -782,8 +815,8 @@ mod tests {
     }
 
     /// The self-map and scratch slots sit at the NT-style addresses (0xC0000000 and 0xC0400000,
-    /// where Windows executables and tooling expect them), in the kernel window, distinct from the
-    /// boot entries (512, 513) and from each other.
+    /// where Windows executables and tooling expect them), in the kernel half, distinct from the
+    /// image window's entries (512-515) and from each other.
     #[test]
     fn runtime_access_slots_are_well_placed() {
         assert_eq!(SELF_MAP_SLOT, 768);
@@ -793,7 +826,7 @@ mod tests {
         assert!(SELF_MAP_VA >= KERNEL_BASE);
         assert!(SCRATCH_VA > SELF_MAP_VA);
         for slot in [SELF_MAP_SLOT, SCRATCH_SLOT] {
-            assert!(slot != 512 && slot != 513 && slot < PT_ENTRIES);
+            assert!(!layout::KERNEL_IMAGE.holds_entry(slot) && slot < PT_ENTRIES);
         }
     }
 
@@ -913,14 +946,14 @@ mod tests {
     #[test]
     fn kernel_tables_are_created_before_the_first_process_directory() {
         let gate_window = (GATE_STACK_WINDOW >> 22) as usize;
-        for window in [514usize, 515, 700, 1023] {
+        for window in [516usize, 657, 700, 1023] {
             assert!(
                 kernel_table_may_be_created(window, false),
                 "window {window}"
             );
         }
         assert!(kernel_table_may_be_created(gate_window, true));
-        for window in [515usize, 700, 1023] {
+        for window in [516usize, 657, 700, 1023] {
             assert!(
                 !kernel_table_may_be_created(window, true),
                 "window {window}"
@@ -938,23 +971,31 @@ mod tests {
         assert_eq!(directory_cr3(0), 0);
     }
 
-    /// The gate stack window: the first kernel window above the 8 MiB kernel image mapping
-    /// (directory entry 514, clear of the static window and the runtime access slots), with an
-    /// unmapped guard page at the window base and the 32 KiB stack above it — a gate-stack overflow
-    /// faults into the guard instead of corrupting the kernel window below.
+    /// The gate stack window: the kernel stack region's first directory entry (656, at
+    /// 0xA4000000: clear of the image window and the runtime access slots), with an unmapped guard
+    /// page at the window base and the 32 KiB stack above it — a gate-stack overflow faults into
+    /// the guard instead of corrupting whatever lies below.
     #[test]
     fn gate_stack_window_layout() {
-        assert_eq!(GATE_STACK_WINDOW, KERNEL_BASE + 8 * 0x0010_0000);
-        assert_eq!((GATE_STACK_WINDOW >> 22) as usize, 514);
-        for reserved in [512usize, 513, SELF_MAP_SLOT, SCRATCH_SLOT] {
+        assert_eq!(GATE_STACK_WINDOW, 0xA400_0000);
+        assert_eq!((GATE_STACK_WINDOW >> 22) as usize, 656);
+        assert_eq!(
+            (GATE_STACK_WINDOW >> 22) as usize,
+            layout::KERNEL_STACKS.first_entry()
+        );
+        assert!(!layout::KERNEL_IMAGE.holds(GATE_STACK_WINDOW));
+        for reserved in [SELF_MAP_SLOT, SCRATCH_SLOT] {
             assert_ne!((GATE_STACK_WINDOW >> 22) as usize, reserved);
         }
         assert_eq!(GATE_STACK_PAGES, 8);
         assert_eq!(GATE_STACK_TOP, GATE_STACK_WINDOW + 9 * PAGE_SIZE);
-        assert_eq!(GATE_STACK_TOP, 0x8080_9000);
+        assert_eq!(GATE_STACK_TOP, 0xA400_9000);
         // A process's threads all fit: the main thread and every child.
         assert!(GATE_SLOT_CAPACITY > crate::process::CHILD_THREADS);
-        // Everything (guard + stack) stays inside window 514.
-        assert!(GATE_STACK_TOP < GATE_STACK_WINDOW + 0x0040_0000);
+        // Everything (guard + stack) stays inside the window's one directory entry.
+        assert!(GATE_STACK_TOP < GATE_STACK_WINDOW + layout::ENTRY_SPAN);
+        assert!(
+            gate_slot_top(GATE_SLOT_CAPACITY as u32 - 1) <= GATE_STACK_WINDOW + layout::ENTRY_SPAN
+        );
     }
 }

@@ -49,7 +49,8 @@ SECTIONS
     . = ALIGN(4096);
     _kernel_end = .;
 
-    /* The boot maps the kernel window over physical [0, 8 MiB): the image (its statics, the
-     * process pool's records among them) must end inside it. */
-    ASSERT(_kernel_end <= 0x80800000, "the kernel image outgrows the 8 MiB kernel window")
+    /* The boot maps the kernel image window over physical [0, 16 MiB) (KERNEL_IMAGE in
+     * kernel/src/mem/layout.rs): the image (its statics, the process pool's records among them)
+     * must end inside it. */
+    ASSERT(_kernel_end <= 0x81000000, "the kernel image outgrows the 16 MiB kernel image window")
 }

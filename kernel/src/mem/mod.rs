@@ -2,6 +2,7 @@
 
 pub mod frame;
 pub mod heap;
+pub mod layout;
 pub mod multiboot;
 pub mod paging;
 pub mod vm;

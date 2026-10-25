@@ -153,9 +153,10 @@ static mut TRACE: Trace = Trace::new();
 #[cfg(target_arch = "x86")]
 static mut SAMPLE_INTERVAL: u32 = crate::interrupt::clock::INTERVAL_100NS;
 
-/// The end of the kernel window: every kernel stack lives inside it.
+/// The end of the kernel image window, mapped in every address space: the kernel stacks the image
+/// holds (the boot stack's among them) live inside it.
 #[cfg(target_arch = "x86")]
-const WINDOW_END: u32 = crate::mem::paging::KERNEL_BASE + 8 * 1024 * 1024;
+const WINDOW_END: u32 = crate::mem::layout::KERNEL_IMAGE.end() as u32;
 
 // The kernel image's bounds, exported by the linker script.
 #[cfg(target_arch = "x86")]

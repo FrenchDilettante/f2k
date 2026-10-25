@@ -10,6 +10,7 @@
 
 use super::frame::{self, ColorTables, FrameDb, FrameEntry, FrameState, NoHooks, MAX_FRAMES};
 use super::heap::KernelHeap;
+use super::layout::KERNEL_IMAGE;
 use super::multiboot::{self, MultibootInfo, UsableRange};
 use super::paging::{KERNEL_BASE, KERNEL_PHYS_BASE};
 
@@ -30,16 +31,28 @@ extern "C" {
 
 /// Frames in [first, end) are occupied by the kernel image: from the physical load address up to
 /// the aligned end of the image.
+///
+/// # Panics
+///
+/// The image ends past the kernel image window (the linker script checks the same at link time):
+/// its last statics would be unmapped.
 fn kernel_frame_bounds() -> (u32, u32) {
     let start = KERNEL_PHYS_BASE / 4096;
     // SAFETY: taking the address of a linker-provided symbol; a constant fixed at link time.
-    let end = (unsafe { &_kernel_end as *const u8 as u32 } - KERNEL_BASE).div_ceil(4096);
+    let image_end = unsafe { &_kernel_end as *const u8 as u32 };
+    assert!(
+        image_end as u64 <= KERNEL_IMAGE.end(),
+        "the kernel image ends at {image_end:#010x}, past its window's end {:#010x}",
+        KERNEL_IMAGE.end()
+    );
+    let end = (image_end - KERNEL_BASE).div_ceil(4096);
     (start, end)
 }
 
 /// The end of the boot identity window: until the low identity mapping is torn down, physical
-/// `[0, 8 MiB)` reads at its own address. The Multiboot structures are read through it.
-const BOOT_IDENTITY_LIMIT: u64 = 0x80_0000;
+/// `[0, 16 MiB)` (the span of the kernel image window) reads at its own address. The Multiboot
+/// structures are read through it.
+const BOOT_IDENTITY_LIMIT: u64 = KERNEL_IMAGE.size() as u64;
 
 /// Release every frame of `range` except those the kernel occupies, those a reserved record of
 /// `map` covers, and those an earlier (overlapping) available record already released.

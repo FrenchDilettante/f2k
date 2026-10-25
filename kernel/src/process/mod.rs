@@ -1270,7 +1270,11 @@ mod tests {
     #[test]
     fn the_gate_window_sits_in_the_kernel_half() {
         assert!((GATE_STACK_WINDOW >> 22) as usize >= KERNEL_HALF_START);
-        assert_eq!((GATE_STACK_WINDOW >> 22) as usize, 514);
+        assert_eq!(
+            (GATE_STACK_WINDOW >> 22) as usize,
+            crate::mem::layout::KERNEL_STACKS.first_entry()
+        );
+        assert_eq!((GATE_STACK_WINDOW >> 22) as usize, 656);
         assert_eq!(KERNEL_HALF_START, 512);
     }
 }

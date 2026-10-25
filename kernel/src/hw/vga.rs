@@ -2,7 +2,7 @@
 //!
 //! The machine boots in text mode 3: [`COLUMNS`] × [`ROWS`] cells, each two bytes (the character,
 //! then its attribute) laid out row by row from physical [`PHYS_BASE`]. The kernel window maps
-//! physical `[0, 8 MiB)` at `KERNEL_BASE` from the boot directory on (`crate::mem::paging`), so
+//! physical `[0, 16 MiB)` at `KERNEL_BASE` from the boot directory on (`crate::mem::layout`), so
 //! the screen is reached at [`VIRT_BASE`] with no mapping of its own. The cursor is the CRT
 //! controller's: its location (`row * COLUMNS + column`) is registers 0x0E (high byte) and 0x0F
 //! (low byte), reached through the index and data ports.
@@ -166,14 +166,14 @@ mod tests {
     /// The boot window maps the text page where the screen reaches it.
     #[test]
     fn the_kernel_window_maps_the_text_page() {
-        use crate::mem::paging::{BOOT_PT_LO, KERNEL_BASE, PAGE_PRESENT, PAGE_WRITE};
+        use crate::mem::paging::{BOOT_TABLES, KERNEL_BASE, PAGE_PRESENT, PAGE_WRITE};
         assert_eq!(VIRT_BASE, 0x800B_8000);
         assert_eq!(
             (VIRT_BASE >> 22) as usize,
             (KERNEL_BASE >> 22) as usize,
             "the window's table"
         );
-        let entry = BOOT_PT_LO.0[((VIRT_BASE >> 12) & 0x3FF) as usize];
+        let entry = BOOT_TABLES.0[0][((VIRT_BASE >> 12) & 0x3FF) as usize];
         assert_eq!(entry, PHYS_BASE | PAGE_PRESENT | PAGE_WRITE);
     }
 
