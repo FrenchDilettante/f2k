@@ -1,13 +1,19 @@
 //! The virtual-memory services: NtAllocateVirtualMemory, NtFreeVirtualMemory,
-//! NtProtectVirtualMemory and NtQueryVirtualMemory, over the calling process's address space
-//! (`mem::vm`), answering Windows 2000's statuses. kernel32's VirtualAlloc, VirtualFree,
-//! VirtualProtect and VirtualQuery are Win32 code over these, as on Windows 2000.
+//! NtProtectVirtualMemory and NtQueryVirtualMemory over a process's address space (`mem::vm`), and
+//! NtReadVirtualMemory and NtWriteVirtualMemory between the caller's memory and a process's,
+//! answering Windows 2000's statuses. kernel32's VirtualAlloc(Ex), VirtualFree(Ex),
+//! VirtualProtect(Ex), VirtualQuery(Ex), ReadProcessMemory and WriteProcessMemory are Win32 code
+//! over these, as on Windows 2000.
 //!
-//! Only the calling process's own space is served: its pseudo-handle (NtCurrentProcess, -1) or a
-//! handle to its object (there is no other process to name). The address and size arguments are
-//! in/out, as on Windows 2000: probed for writing before the call acts, and the base and the size
-//! the call settled on written back. The rules are functions over an [`AddressSpace`] and its
-//! [`Pages`] (host-tested); the services move their arguments through user memory.
+//! The process is any the caller holds a handle to (see [`super::object::reference_process`]),
+//! with the access MSDN's Win32 calls name: PROCESS_VM_OPERATION to change its memory,
+//! PROCESS_QUERY_INFORMATION to query it, PROCESS_VM_READ and PROCESS_VM_WRITE to copy from and
+//! into it. Another process's space is reached by attaching to it for the scope
+//! ([`crate::sched::attach`]): its regions are its record's, its page tables the live ones then.
+//! The address and size arguments are in/out, as on Windows 2000: probed for writing before the
+//! call acts, and the base and the size the call settled on written back — in the caller's memory,
+//! never while attached. The rules are functions over an [`AddressSpace`] and its [`Pages`]
+//! (host-tested); the services move their arguments through user memory.
 
 use super::call::{
     Handle,
@@ -16,9 +22,14 @@ use super::call::{
     Status,
     UserAddr,
     UserPtr,
-    STATUS_INVALID_HANDLE,
     STATUS_INVALID_PARAMETER,
     STATUS_SUCCESS,
+};
+use super::object::{
+    PROCESS_QUERY_INFORMATION,
+    PROCESS_VM_OPERATION,
+    PROCESS_VM_READ,
+    PROCESS_VM_WRITE,
 };
 use crate::mem::vm::{
     self,
@@ -44,6 +55,10 @@ pub const STATUS_INVALID_PARAMETER_2: Status = Status(0xC000_00F0);
 const STATUS_INVALID_PARAMETER_3: Status = Status(0xC000_00F1);
 pub const STATUS_INVALID_PARAMETER_4: Status = Status(0xC000_00F2);
 const STATUS_INVALID_PARAMETER_5: Status = Status(0xC000_00F3);
+/// STATUS_PARTIAL_COPY: a copy between address spaces stopped at a page of the process's it could
+/// not reach (kernel32's ERROR_PARTIAL_COPY, "only part of a ReadProcessMemory or
+/// WriteProcessMemory request was completed"). A warning: the count copied is written all the same.
+pub const STATUS_PARTIAL_COPY: Status = Status(0x8000_000D);
 
 /// NtAllocateVirtualMemory's other allocation types: allocate top-down (taken as a hint, never
 /// honored), and reset (the pages' contents no longer matter; nothing to do without a paging file).
@@ -214,29 +229,51 @@ pub fn capture(at: UserPtr<u32>) -> Result<u32, Status> {
     Ok(value)
 }
 
-/// Run `body` over the calling process's address space and page tables; STATUS_INVALID_HANDLE for
-/// a process handle naming another process, or nothing.
+/// Run `body` over the address space and the live page tables of the process `process` names,
+/// which must grant `access` (see [`super::object::ProcessRef::attached`]): the handle's refusals,
+/// or STATUS_PROCESS_IS_TERMINATING for a process that has ended.
+#[cfg(target_arch = "x86")]
+pub fn with_space_for<R>(
+    call: &mut NtCall,
+    process: Handle,
+    access: u32,
+    body: impl FnOnce(&mut AddressSpace, &mut vm::CurrentPages) -> Result<R, Status>,
+) -> Result<R, Status> {
+    let _ = call;
+    super::object::reference_process(process.raw(), access)?
+        .attached(|record| body(record.vm(), &mut vm::CurrentPages))
+}
+
+/// Host builds have no process: the services run on the target only.
+#[cfg(not(target_arch = "x86"))]
+pub fn with_space_for<R>(
+    _call: &mut NtCall,
+    process: Handle,
+    _access: u32,
+    _body: impl FnOnce(&mut AddressSpace, &mut NoPages) -> Result<R, Status>,
+) -> Result<R, Status> {
+    let _ = process;
+    Err(super::call::STATUS_INVALID_HANDLE)
+}
+
+/// [`with_space_for`] a change to the process's memory: PROCESS_VM_OPERATION.
 #[cfg(target_arch = "x86")]
 pub fn with_space<R>(
     call: &mut NtCall,
     process: Handle,
     body: impl FnOnce(&mut AddressSpace, &mut vm::CurrentPages) -> Result<R, Status>,
 ) -> Result<R, Status> {
-    if !super::object::names_current_process(process.raw()) {
-        return Err(STATUS_INVALID_HANDLE);
-    }
-    body(call.process().vm(), &mut vm::CurrentPages)
+    with_space_for(call, process, PROCESS_VM_OPERATION, body)
 }
 
 /// Host builds have no process: the services run on the target only.
 #[cfg(not(target_arch = "x86"))]
 pub fn with_space<R>(
-    _call: &mut NtCall,
+    call: &mut NtCall,
     process: Handle,
-    _body: impl FnOnce(&mut AddressSpace, &mut NoPages) -> Result<R, Status>,
+    body: impl FnOnce(&mut AddressSpace, &mut NoPages) -> Result<R, Status>,
 ) -> Result<R, Status> {
-    let _ = process;
-    Err(STATUS_INVALID_HANDLE)
+    with_space_for(call, process, PROCESS_VM_OPERATION, body)
 }
 
 #[cfg(not(target_arch = "x86"))]
@@ -269,6 +306,210 @@ impl Pages for NoPages {
     }
 
     fn set_frame_word(&mut self, _frame: u32, _index: u32, _value: u32) {}
+}
+
+// --- Copies between address spaces --------------------------------------------------------------
+
+/// The kernel buffer a copy between address spaces moves through, one chunk at a time: the
+/// caller's memory and the process's are never reached at once (the process's only while attached
+/// to it, the caller's only detached).
+pub const COPY_CHUNK: usize = 512;
+
+/// Which memory a copy's fault was in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Side {
+    /// The caller's buffer.
+    Caller,
+    /// The other process's memory.
+    Process,
+}
+
+impl Side {
+    /// The status a fault on this side fails the copy with: the caller's buffer
+    /// STATUS_ACCESS_VIOLATION, the process's memory STATUS_PARTIAL_COPY.
+    fn status(self) -> Status {
+        match self {
+            Side::Caller => super::call::STATUS_ACCESS_VIOLATION,
+            Side::Process => STATUS_PARTIAL_COPY,
+        }
+    }
+}
+
+/// Copy `size` bytes in chunks of at most [`COPY_CHUNK`] through a kernel buffer: each chunk read
+/// whole by `read(offset, chunk)` then written whole by `write(offset, chunk)` (the offsets from
+/// the copy's start). The bytes copied — whole chunks: a chunk that faults counts for none of its
+/// bytes, as the spawn fixture's 16-byte read across an image's end copies none — and the status
+/// of the fault that stopped the copy, if any (see [`Side::status`]).
+pub fn copy_chunks(
+    size: u32,
+    mut read: impl FnMut(u32, &mut [u8]) -> Result<(), Side>,
+    mut write: impl FnMut(u32, &[u8]) -> Result<(), Side>,
+) -> (u32, Result<(), Status>) {
+    let mut buffer = [0u8; COPY_CHUNK];
+    let mut done = 0;
+    while done < size {
+        let chunk = &mut buffer[..(size - done).min(COPY_CHUNK as u32) as usize];
+        if let Err(side) = read(done, chunk).and_then(|()| write(done, chunk)) {
+            return (done, Err(side.status()));
+        }
+        done += chunk.len() as u32;
+    }
+    (done, Ok(()))
+}
+
+/// Whether `[address, address + size)` lies in the application range (below
+/// [`USER_HIGH`], without wrapping): NtReadVirtualMemory's and NtWriteVirtualMemory's first check,
+/// on both sides of the copy.
+pub fn in_application_range(address: u32, size: u32) -> bool {
+    address as u64 + size as u64 <= USER_HIGH as u64
+}
+
+/// Which way a copy between address spaces goes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Direction {
+    /// From the process's memory into the caller's buffer (NtReadVirtualMemory).
+    FromProcess,
+    /// From the caller's buffer into the process's memory (NtWriteVirtualMemory).
+    IntoProcess,
+}
+
+/// NtReadVirtualMemory's and NtWriteVirtualMemory's shared body. A range outside the application
+/// range, on either side, is STATUS_ACCESS_VIOLATION before anything else, the count untouched (the
+/// spawn fixture's read at 0x80000000 leaves it as it was), and so is a count the probe refuses.
+/// From there the count is written whatever the outcome: zero bytes copy nothing and succeed (no
+/// handle is looked at), a handle the call cannot take or a process that has ended copies nothing
+/// (the fixture's null handle and handle without PROCESS_VM_READ print a count of 0), and a fault
+/// stops the copy (see [`copy_chunks`]). The process's pages are reached as its protections allow,
+/// as a program's own access would: a write to a read-only page faults (a copy-on-write page is
+/// made the process's own), no protection is changed — kernel32's WriteProcessMemory makes the
+/// pages writable first, as Windows 2000's does.
+fn copy_virtual_memory(
+    call: &mut NtCall,
+    process: Handle,
+    base: UserAddr,
+    buffer: UserAddr,
+    size: u32,
+    count: UserPtr<u32>,
+    direction: Direction,
+) -> NtResult {
+    if !in_application_range(base.raw(), size) || !in_application_range(buffer.raw(), size) {
+        return Err(super::call::STATUS_ACCESS_VIOLATION);
+    }
+    if !count.is_null() {
+        capture(count)?;
+    }
+    let (copied, result) = if size == 0 {
+        (0, Ok(()))
+    } else {
+        copy_between(call, process, base, buffer, size, direction)
+    };
+    // The count probed above; a page unmapped since is not the copy's failure.
+    let _ = count.write_optional(copied);
+    result.map(|()| STATUS_SUCCESS)
+}
+
+/// The copy itself, once the ranges and the count are checked: the bytes copied, and the status.
+#[cfg(target_arch = "x86")]
+fn copy_between(
+    _call: &mut NtCall,
+    process: Handle,
+    base: UserAddr,
+    buffer: UserAddr,
+    size: u32,
+    direction: Direction,
+) -> (u32, Result<(), Status>) {
+    let access = match direction {
+        Direction::FromProcess => PROCESS_VM_READ,
+        Direction::IntoProcess => PROCESS_VM_WRITE,
+    };
+    let target = match super::object::reference_process(process.raw(), access) {
+        Ok(target) => target,
+        Err(status) => return (0, Err(status)),
+    };
+    let mut copied = 0;
+    let result = target.visit(|| {
+        // The process's memory is reached attached to it, a chunk at a time; the caller's
+        // detached.
+        let process = |result: Result<(), super::call::Fault>| result.map_err(|_| Side::Process);
+        let caller = |result: Result<(), super::call::Fault>| result.map_err(|_| Side::Caller);
+        let (done, result) = match direction {
+            Direction::FromProcess => copy_chunks(
+                size,
+                |offset, chunk| process(target.reach(|| base.offset(offset).read(chunk))),
+                |offset, chunk| caller(buffer.offset(offset).write(chunk)),
+            ),
+            Direction::IntoProcess => copy_chunks(
+                size,
+                |offset, chunk| caller(buffer.offset(offset).read(chunk)),
+                |offset, chunk| process(target.reach(|| base.offset(offset).write(chunk))),
+            ),
+        };
+        copied = done;
+        result
+    });
+    (copied, result)
+}
+
+/// Host builds have no process: the copies run on the target only.
+#[cfg(not(target_arch = "x86"))]
+fn copy_between(
+    _call: &mut NtCall,
+    _process: Handle,
+    _base: UserAddr,
+    _buffer: UserAddr,
+    _size: u32,
+    direction: Direction,
+) -> (u32, Result<(), Status>) {
+    let _ = (
+        PROCESS_VM_READ,
+        PROCESS_VM_WRITE,
+        direction == Direction::FromProcess,
+    );
+    (0, Err(super::call::STATUS_INVALID_HANDLE))
+}
+
+/// NtReadVirtualMemory: `size` bytes of the process's memory from `base` into the caller's
+/// `buffer`, the bytes read into `count` (see [`copy_virtual_memory`]); the process's handle needs
+/// PROCESS_VM_READ. The pseudo-handle reads the caller's own memory.
+pub fn read_virtual_memory(
+    call: &mut NtCall,
+    process: Handle,
+    base: UserAddr,
+    buffer: UserAddr,
+    size: u32,
+    count: UserPtr<u32>,
+) -> NtResult {
+    copy_virtual_memory(
+        call,
+        process,
+        base,
+        buffer,
+        size,
+        count,
+        Direction::FromProcess,
+    )
+}
+
+/// NtWriteVirtualMemory: `size` bytes of the caller's `buffer` into the process's memory at
+/// `base`, the bytes written into `count` (see [`copy_virtual_memory`]); the process's handle
+/// needs PROCESS_VM_WRITE.
+pub fn write_virtual_memory(
+    call: &mut NtCall,
+    process: Handle,
+    base: UserAddr,
+    buffer: UserAddr,
+    size: u32,
+    count: UserPtr<u32>,
+) -> NtResult {
+    copy_virtual_memory(
+        call,
+        process,
+        base,
+        buffer,
+        size,
+        count,
+        Direction::IntoProcess,
+    )
 }
 
 /// NtAllocateVirtualMemory (see [`allocate`]); the zero-bits constraint is not applied.
@@ -349,7 +590,9 @@ pub fn query_virtual_memory(
     if length < MEMORY_BASIC_INFORMATION_SIZE {
         return Err(STATUS_INFO_LENGTH_MISMATCH);
     }
-    let info = with_space(call, process, |space, pages| query(space, pages, address))?;
+    let info = with_space_for(call, process, PROCESS_QUERY_INFORMATION, |space, pages| {
+        query(space, pages, address)
+    })?;
     information.write(&info.to_bytes())?;
     return_length.write_optional(MEMORY_BASIC_INFORMATION_SIZE)?;
     Ok(STATUS_SUCCESS)
@@ -404,6 +647,163 @@ mod tests {
             Ok(_) => panic!("the call succeeds"),
             Err(Status(status)) => rtl::status::dos_error(status),
         }
+    }
+
+    /// The chunked copy: whole chunks of at most COPY_CHUNK bytes, each read then written at its
+    /// offset; a fault counts none of its chunk's bytes, and its side decides the status.
+    #[test]
+    fn copies_move_whole_chunks() {
+        let mut reads = Vec::new();
+        let mut writes = Vec::new();
+        let result = copy_chunks(
+            1300,
+            |offset, chunk| {
+                reads.push((offset, chunk.len()));
+                chunk.fill(offset as u8);
+                Ok(())
+            },
+            |offset, chunk| {
+                assert!(chunk.iter().all(|&byte| byte == offset as u8));
+                writes.push((offset, chunk.len()));
+                Ok(())
+            },
+        );
+        assert_eq!(result, (1300, Ok(())));
+        assert_eq!(reads, [(0, 512), (512, 512), (1024, 276)]);
+        assert_eq!(writes, reads);
+        assert_eq!(
+            copy_chunks(
+                0,
+                |_, _| panic!("nothing to read"),
+                |_, _| panic!("nothing to write")
+            ),
+            (0, Ok(()))
+        );
+        // The process's memory faults in the third chunk: the first two count.
+        assert_eq!(
+            copy_chunks(
+                1300,
+                |offset, _| if offset < 1024 {
+                    Ok(())
+                } else {
+                    Err(Side::Process)
+                },
+                |_, _| Ok(()),
+            ),
+            (1024, Err(STATUS_PARTIAL_COPY))
+        );
+        // The spawn fixture's 16-byte read across an image's end: one chunk, none of it counted.
+        assert_eq!(
+            copy_chunks(16, |_, _| Err(Side::Process), |_, _| Ok(())),
+            (0, Err(STATUS_PARTIAL_COPY))
+        );
+        // The caller's buffer refuses the second chunk.
+        assert_eq!(
+            copy_chunks(
+                600,
+                |_, _| Ok(()),
+                |offset, _| if offset == 0 {
+                    Ok(())
+                } else {
+                    Err(Side::Caller)
+                },
+            ),
+            (512, Err(super::super::call::STATUS_ACCESS_VIOLATION))
+        );
+        // ReadProcessMemory's and WriteProcessMemory's errors: ERROR_PARTIAL_COPY, ERROR_NOACCESS.
+        assert_eq!(rtl::status::dos_error(STATUS_PARTIAL_COPY.0), 299);
+        assert_eq!(rtl::status::dos_error(0xC000_0005), 998);
+        assert!(!rtl::status::nt_success(STATUS_PARTIAL_COPY.0));
+    }
+
+    /// Both sides of a copy lie in the application range, without wrapping.
+    #[test]
+    fn copies_stay_in_the_application_range() {
+        assert!(in_application_range(0, 0));
+        assert!(in_application_range(0x0040_0000, 0x1000));
+        assert!(in_application_range(USER_HIGH - 0x10, 0x10));
+        assert!(!in_application_range(USER_HIGH - 0x10, 0x11));
+        assert!(!in_application_range(0x8000_0000, 4));
+        assert!(!in_application_range(0xFFFF_FFF0, 0x20));
+    }
+
+    /// The copies' argument rules, before any process is reached: a range outside the application
+    /// range is an access violation with the count untouched (the spawn fixture's read at
+    /// 0x80000000 prints its sentinel); zero bytes succeed with a count of zero; a handle the call
+    /// cannot take copies nothing, and says so in the count (the fixture's null handle: 0).
+    #[test]
+    fn the_copies_write_their_count_as_windows_does() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        use crate::user::syscall::host::{install, UserMemory};
+        struct Page(Vec<u8>);
+        impl UserMemory for Page {
+            fn read(&self, pointer: u32, bytes: &mut [u8]) -> Result<(), u32> {
+                let at = pointer.checked_sub(0x10000).ok_or(0xC000_0005u32)? as usize;
+                bytes.copy_from_slice(self.0.get(at..at + bytes.len()).ok_or(0xC000_0005u32)?);
+                Ok(())
+            }
+
+            fn write(&mut self, pointer: u32, bytes: &[u8]) -> Result<(), u32> {
+                let at = pointer.checked_sub(0x10000).ok_or(0xC000_0005u32)? as usize;
+                self.0
+                    .get_mut(at..at + bytes.len())
+                    .ok_or(0xC000_0005u32)?
+                    .copy_from_slice(bytes);
+                Ok(())
+            }
+        }
+        const SENTINEL: u32 = 0xF2F2;
+        let memory = Rc::new(RefCell::new(Page(vec![0; 0x100])));
+        let _installed = install(memory.clone());
+        // SAFETY: a trap frame is plain dwords; all zeros is a valid one.
+        let mut frame: crate::user::TrapFrame = unsafe { core::mem::zeroed() };
+        let mut call = NtCall::new(&mut frame);
+        let count = UserPtr::<u32>::at(0x10000);
+        let buffer = UserAddr(0x10010);
+        let me = Handle(0xFFFF_FFFF);
+        count.write(SENTINEL).unwrap();
+        assert_eq!(
+            read_virtual_memory(&mut call, me, UserAddr(0x8000_0000), buffer, 4, count),
+            Err(super::super::call::STATUS_ACCESS_VIOLATION)
+        );
+        assert_eq!(
+            write_virtual_memory(
+                &mut call,
+                me,
+                UserAddr(0x10000),
+                UserAddr(0x7FFF_FFF0),
+                0x20,
+                count
+            ),
+            Err(super::super::call::STATUS_ACCESS_VIOLATION)
+        );
+        assert_eq!(count.read(), Ok(SENTINEL), "the count is untouched");
+        assert_eq!(
+            read_virtual_memory(&mut call, Handle(0), UserAddr(0x10020), buffer, 0, count),
+            Ok(STATUS_SUCCESS),
+            "zero bytes copy nothing"
+        );
+        assert_eq!(count.read(), Ok(0));
+        count.write(SENTINEL).unwrap();
+        assert_eq!(
+            read_virtual_memory(&mut call, Handle(0), UserAddr(0x10020), buffer, 4, count),
+            Err(super::super::call::STATUS_INVALID_HANDLE)
+        );
+        assert_eq!(count.read(), Ok(0), "a refused handle copies nothing");
+        assert_eq!(
+            read_virtual_memory(
+                &mut call,
+                Handle(0),
+                UserAddr(0x10020),
+                buffer,
+                4,
+                UserPtr::at(0x20000)
+            ),
+            Err(super::super::call::STATUS_ACCESS_VIOLATION),
+            "a count the probe refuses"
+        );
     }
 
     /// The memory fixture's invalid requests (memory/virtual): their statuses map to the errors

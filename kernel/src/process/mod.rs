@@ -88,6 +88,9 @@ pub struct Process {
     name: &'static str,
     /// The process's client id (what GetCurrentProcessId reports, through the TEB).
     id: u32,
+    /// The client id of the process that created it (ProcessBasicInformation's
+    /// InheritedFromUniqueProcessId): zero for a boot's program, which no process created.
+    parent_id: u32,
     /// The boot's program the process runs as, its 1-based index in the boot's list (see
     /// [`runner`]); none for a process another process started. Its end reports by it.
     leg: Option<u32>,
@@ -164,6 +167,19 @@ impl Process {
     /// The process's client id.
     pub fn id(&self) -> u32 {
         self.id
+    }
+
+    /// The client id of the process that created this one; zero for a boot's program.
+    pub fn parent_id(&self) -> u32 {
+        self.parent_id
+    }
+
+    /// Record the client id of the process that created this one (its creator sets it, once the
+    /// record is written).
+    // Process creation by another process (NtCreateProcess) is its caller.
+    #[allow(dead_code)]
+    pub fn set_parent_id(&mut self, parent_id: u32) {
+        self.parent_id = parent_id;
     }
 
     /// The boot's program the process runs as (its 1-based index); none for a child.
@@ -527,6 +543,7 @@ unsafe fn write_fresh(
         ));
         addr_of_mut!((*process).name).write(name);
         addr_of_mut!((*process).id).write(new_client_id());
+        addr_of_mut!((*process).parent_id).write(0);
         addr_of_mut!((*process).leg).write(leg);
         addr_of_mut!((*process).object).write(object);
         addr_of_mut!((*process).priority_class).write(NORMAL_PRIORITY_CLASS);
@@ -788,6 +805,7 @@ mod tests {
             sched: SchedProcess::new(dir, 8),
             name: "fixture",
             id: FIRST_CLIENT_ID,
+            parent_id: 0,
             leg: None,
             object: crate::ob::ObjectId {
                 kind: crate::ob::ObjectType::Process,

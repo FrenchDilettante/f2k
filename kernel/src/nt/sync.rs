@@ -32,12 +32,7 @@ use super::call::{
     STATUS_INVALID_PARAMETER,
     STATUS_SUCCESS,
 };
-use crate::nt::object::{
-    is_console_handle,
-    names_current_process,
-    CURRENT_PROCESS,
-    CURRENT_THREAD,
-};
+use crate::nt::object::{is_console_handle, CURRENT_PROCESS, CURRENT_THREAD};
 use crate::ob::{self, ObjectId, ObjectType};
 use crate::sched::event::{EventKind, EVENT_WAKE_INCREMENT};
 use crate::sched::wait::{self, WaitMode, WaitReason, Waitable, MAXIMUM_WAIT_OBJECTS};
@@ -762,13 +757,18 @@ pub fn yield_execution(_call: &mut NtCall) -> NtResult {
 
 // --- Handles and APCs ----------------------------------------------------------------------------
 
-/// NtDuplicateObject, within the calling process: a new handle naming the same object (the
-/// current-thread and current-process pseudo-handles duplicate to real handles to their objects),
-/// with the access asked for or the source's (DUPLICATE_SAME_ACCESS), inheritable as the
-/// attributes say (OBJ_INHERIT), optionally closing the source (DUPLICATE_CLOSE_SOURCE), which a
-/// found source is whatever happens next (see [`super::object::duplicate_entry`]); with no target
-/// process, closing it is all the call does. A target handle the probe refuses fails the call
-/// before anything is looked up. Other processes are not reachable.
+/// NtDuplicateObject: a new handle in the target process naming the object the source handle names
+/// in the source process — any processes the caller holds handles with PROCESS_DUP_HANDLE to, its
+/// own among them (see [`super::object::reference_process`]). The current-thread and
+/// current-process pseudo-handles duplicate to real handles to their objects: the calling thread,
+/// and the source process (a pseudo-handle is read in the source process's context, as MSDN's
+/// DuplicateHandle reads the source handle). The duplicate has the access asked for or the
+/// source's (DUPLICATE_SAME_ACCESS), is inheritable as the attributes say (OBJ_INHERIT), and the
+/// call optionally closes the source in its process (DUPLICATE_CLOSE_SOURCE), which a found source
+/// is whatever happens next (see [`super::object::duplicate_entry`]); with no target process,
+/// closing it is all the call does. The new handle's value goes into the caller's memory: a target
+/// handle the probe refuses fails the call before anything is looked up. A process that has ended
+/// is STATUS_PROCESS_IS_TERMINATING on either side (its handles are gone with it).
 #[allow(clippy::too_many_arguments)]
 pub fn duplicate_object(
     _call: &mut NtCall,
@@ -780,54 +780,90 @@ pub fn duplicate_object(
     attributes: u32,
     options: u32,
 ) -> NtResult {
-    use super::object::{duplicate_entry, DuplicateTable, TargetProcess};
+    use super::object::{
+        duplicate_entry,
+        reference_process,
+        DuplicateTables,
+        TargetProcess,
+        PROCESS_DUP_HANDLE,
+        STATUS_PROCESS_IS_TERMINATING,
+    };
     use crate::ob::Target;
+    use crate::process::pool::of_object;
 
-    /// The calling process's table: an object's handle counts on the object (a file object's
-    /// duplicate shares its position, as the files fixture's handles block shows).
-    struct Calling;
-    impl DuplicateTable for Calling {
+    /// The two processes' tables, by their objects (the call holds both): an object's handle
+    /// counts on the object (a file object's duplicate shares its position, as the files fixture's
+    /// handles block shows).
+    struct Tables {
+        source: ObjectId,
+        target: Option<ObjectId>,
+    }
+    impl Tables {
+        fn target(&self) -> &'static mut crate::process::Process {
+            of_object(self.target.expect("a duplicate has a target process"))
+                .expect("the call holds its target process")
+        }
+    }
+    impl DuplicateTables for Tables {
         fn insert(&mut self, entry: ob::Entry) -> u32 {
             let Target::Object(id) = entry.target;
-            calling_process().insert_object(id, entry.access, entry.inherit)
+            self.target().insert_object(id, entry.access, entry.inherit)
         }
 
-        fn close(&mut self, handle: u32) {
-            calling_process().close_handle(handle);
+        fn close_duplicate(&mut self, handle: u32) {
+            self.target().close_handle(handle);
+        }
+
+        fn close_source(&mut self, handle: u32) {
+            of_object(self.source)
+                .expect("the call holds its source process")
+                .close_handle(handle);
         }
     }
 
     let source = source.raw();
     probe(target.addr().raw(), 4)?;
-    if !names_current_process(source_process.raw()) {
-        return Err(STATUS_INVALID_HANDLE);
+    let source_process = reference_process(source_process.raw(), PROCESS_DUP_HANDLE)?;
+    if source_process.ended() {
+        return Err(STATUS_PROCESS_IS_TERMINATING);
     }
     let entry = if source == CURRENT_THREAD {
         let id = ob::current_thread().ok_or(STATUS_INVALID_HANDLE)?;
         ob::Entry::object(id, ob::THREAD_ALL_ACCESS, false)
     } else if source == CURRENT_PROCESS {
         // The pseudo-handle becomes a real handle to the process's object.
-        ob::Entry::object(
-            crate::process::current().object(),
-            ob::PROCESS_ALL_ACCESS,
-            false,
-        )
+        ob::Entry::object(source_process.id(), ob::PROCESS_ALL_ACCESS, false)
     } else if is_console_handle(source) {
         return Err(STATUS_INVALID_HANDLE);
     } else {
-        calling_process()
+        source_process
+            .record()
             .handles()
             .lookup(source)
             .ok_or(STATUS_INVALID_HANDLE)?
     };
     let closable = (source != CURRENT_THREAD && source != CURRENT_PROCESS).then_some(source);
-    let target_process = match target_process.raw() {
-        0 => TargetProcess::None,
-        handle if names_current_process(handle) => TargetProcess::Current,
-        _ => TargetProcess::Invalid,
+    let reached = match target_process.raw() {
+        0 => None,
+        handle => Some(reference_process(handle, PROCESS_DUP_HANDLE)),
+    };
+    let target_process = match &reached {
+        None => TargetProcess::None,
+        Some(Err(status)) => TargetProcess::Refused(*status),
+        Some(Ok(process)) if process.ended() => {
+            TargetProcess::Refused(STATUS_PROCESS_IS_TERMINATING)
+        }
+        Some(Ok(_)) => TargetProcess::Reached,
+    };
+    let mut tables = Tables {
+        source: source_process.id(),
+        target: reached
+            .as_ref()
+            .and_then(|process| process.as_ref().ok())
+            .map(|process| process.id()),
     };
     duplicate_entry(
-        &mut Calling,
+        &mut tables,
         entry,
         closable,
         target_process,

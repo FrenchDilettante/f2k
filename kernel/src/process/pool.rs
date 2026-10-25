@@ -123,14 +123,16 @@ fn running<R>(query: impl FnOnce(&crate::sched::thread::Thread) -> Option<R>) ->
 }
 
 /// The process the idle thread has to reap: one that has ended (its last thread's exit recorded
-/// why) and is not yet torn down. None when every process is running or gone.
+/// why) and is not yet torn down, no other process's thread attached to it. None when every
+/// process is running, visited or gone.
 #[cfg(target_arch = "x86")]
 pub fn ended() -> Option<&'static mut Process> {
     (0..MAX_PROCESSES as u16).find_map(|index| {
         let id = crate::ob::directory().processes_live(index)?;
         // SAFETY: the record of a live process object, at its final address.
         let process = unsafe { &mut *record(index) };
-        (process.end.is_some() && !process.torn_down && process.object == id).then_some(process)
+        (process.end.is_some() && !process.torn_down && process.object == id && !visited(process))
+            .then_some(process)
     })
 }
 
@@ -159,7 +161,41 @@ pub fn reap_pending() -> bool {
             .is_some_and(|id| {
                 // SAFETY: as in `ended`.
                 let process = unsafe { &*record(index) };
-                process.end.is_some() && !process.torn_down && process.object == id
+                process.end.is_some()
+                    && !process.torn_down
+                    && process.object == id
+                    && !visited(process)
             })
+    })
+}
+
+/// Whether a thread of another process runs attached to `process`'s address space (a service
+/// reaching into it, see [`crate::sched::attach`]): its teardown waits for the scope to end, so
+/// the directory the thread runs on is never freed under it.
+#[cfg(target_arch = "x86")]
+fn visited(process: &Process) -> bool {
+    crate::ob::directory().attached_to(&process.sched)
+}
+
+/// The record of the process `id` names: none when `id` names no live process object. A record
+/// lives as long as its object does — torn down, it still holds its identity (its client ids, its
+/// object).
+#[cfg(target_arch = "x86")]
+pub fn of_object(id: crate::ob::ObjectId) -> Option<&'static mut Process> {
+    crate::ob::directory().process(id)?;
+    // SAFETY: the record of a live process object, at its final address.
+    let process = unsafe { &mut *record(id.index) };
+    (process.object == id).then_some(process)
+}
+
+/// The process object whose process has client id `id`, among the live objects — a process that
+/// has ended while a handle holds its object among them (its client id is not reused).
+#[cfg(target_arch = "x86")]
+pub fn by_client_id(id: u32) -> Option<crate::ob::ObjectId> {
+    (0..MAX_PROCESSES as u16).find_map(|index| {
+        let object = crate::ob::directory().processes_live(index)?;
+        // SAFETY: as in `ended`.
+        let process = unsafe { &*record(index) };
+        (process.object == object && process.id == id).then_some(object)
     })
 }

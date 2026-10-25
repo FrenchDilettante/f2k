@@ -114,37 +114,35 @@ note = "a stub until the kernel serves it: its Zw alias is catalogued below unti
 name = "NtOpenProcess"
 group = "nt"
 args = ["ptr<u32> ProcessHandle", "u32 DesiredAccess", "ptr ObjectAttributes", "ptr ClientId"]
-impl = { stub = "not yet implemented" }
-fails = "0xC0000002"
+impl = { syscall = "crate::nt::process::open_process" }
 ordinal = 169
-note = "a stub until the kernel serves it: its Zw alias is catalogued below until then"
+zw_ordinal = 814
+note = "by client id; any live process, or one ended whose object a handle holds"
 
 [[export]]
 name = "NtQuerySection"
 group = "nt"
 args = ["handle SectionHandle", "u32 SectionInformationClass", "ptr SectionInformation", "u32 SectionInformationLength", "ptr<u32> ResultLength"]
-impl = { stub = "not yet implemented" }
-fails = "0xC0000002"
+impl = { syscall = "crate::nt::section::query_section" }
 ordinal = 209
-note = "a stub until the kernel serves it: its Zw alias is catalogued below until then"
+zw_ordinal = 854
+note = "SectionBasicInformation (0) and SectionImageInformation (1)"
 
 [[export]]
 name = "NtReadVirtualMemory"
 group = "nt"
 args = ["handle ProcessHandle", "ptr BaseAddress", "ptr Buffer", "u32 BufferSize", "ptr<u32> NumberOfBytesRead"]
-impl = { stub = "not yet implemented" }
-fails = "0xC0000002"
+impl = { syscall = "crate::nt::memory::read_virtual_memory" }
 ordinal = 227
-note = "a stub until the kernel serves it: its Zw alias is catalogued below until then"
+zw_ordinal = 872
 
 [[export]]
 name = "NtWriteVirtualMemory"
 group = "nt"
 args = ["handle ProcessHandle", "ptr BaseAddress", "ptr Buffer", "u32 BufferSize", "ptr<u32> NumberOfBytesWritten"]
-impl = { stub = "not yet implemented" }
-fails = "0xC0000002"
+impl = { syscall = "crate::nt::memory::write_virtual_memory" }
 ordinal = 306
-note = "a stub until the kernel serves it: its Zw alias is catalogued below until then"
+zw_ordinal = 951
 
 [[export]]
 name = "NtContinue"
@@ -197,7 +195,7 @@ args = ["handle ProcessHandle", "u32 ProcessInformationClass", "ptr ProcessInfor
 impl = { syscall = "crate::nt::process::query_information_process" }
 ordinal = 196
 zw_ordinal = 841
-note = "answers ProcessBasicInformation (0), ProcessVmCounters (3), ProcessDefaultHardErrorMode (12) and ProcessPriorityClass (18), of the calling process only"
+note = "answers ProcessBasicInformation (0), ProcessVmCounters (3), ProcessDefaultHardErrorMode (12) and ProcessPriorityClass (18), of any process"
 
 [[export]]
 name = "NtSetInformationProcess"
@@ -206,7 +204,7 @@ args = ["handle ProcessHandle", "u32 ProcessInformationClass", "ptr ProcessInfor
 impl = { syscall = "crate::nt::process::set_information_process" }
 ordinal = 263
 zw_ordinal = 908
-note = "answers ProcessDefaultHardErrorMode (12), ProcessPriorityClass (18) and ProcessAffinityMask (21), of the calling process only"
+note = "answers ProcessDefaultHardErrorMode (12), ProcessPriorityClass (18) and ProcessAffinityMask (21), of any process"
 
 [[export]]
 name = "NtAllocateVirtualMemory"
@@ -215,7 +213,7 @@ args = ["handle ProcessHandle", "ptr<u32> BaseAddress", "u32 ZeroBits", "ptr<u32
 impl = { syscall = "crate::nt::memory::allocate_virtual_memory" }
 ordinal = 75
 zw_ordinal = 721
-note = "the calling process only (NtCurrentProcess)"
+note = "of any process (PROCESS_VM_OPERATION)"
 
 [[export]]
 name = "NtFreeVirtualMemory"
@@ -224,7 +222,7 @@ args = ["handle ProcessHandle", "ptr<u32> BaseAddress", "ptr<u32> RegionSize", "
 impl = { syscall = "crate::nt::memory::free_virtual_memory" }
 ordinal = 132
 zw_ordinal = 777
-note = "the calling process only (NtCurrentProcess)"
+note = "of any process (PROCESS_VM_OPERATION)"
 
 [[export]]
 name = "NtQueryVirtualMemory"
@@ -233,7 +231,7 @@ args = ["handle ProcessHandle", "u32 BaseAddress", "u32 MemoryInformationClass",
 impl = { syscall = "crate::nt::memory::query_virtual_memory" }
 ordinal = 219
 zw_ordinal = 864
-note = "MemoryBasicInformation, of the calling process only (NtCurrentProcess)"
+note = "MemoryBasicInformation, of any process (PROCESS_QUERY_INFORMATION)"
 
 [[export]]
 name = "NtProtectVirtualMemory"
@@ -242,7 +240,7 @@ args = ["handle ProcessHandle", "ptr<u32> BaseAddress", "ptr<u32> NumberOfBytesT
 impl = { syscall = "crate::nt::memory::protect_virtual_memory" }
 ordinal = 182
 zw_ordinal = 827
-note = "the calling process only (NtCurrentProcess)"
+note = "of any process (PROCESS_VM_OPERATION)"
 
 [[export]]
 name = "NtCreateSection"
@@ -268,7 +266,7 @@ args = ["handle SectionHandle", "handle ProcessHandle", "ptr<u32> BaseAddress", 
 impl = { syscall = "crate::nt::section::map_view_of_section" }
 ordinal = 155
 zw_ordinal = 800
-note = "into the calling process only (NtCurrentProcess)"
+note = "into any process (PROCESS_VM_OPERATION)"
 
 [[export]]
 name = "NtUnmapViewOfSection"
@@ -277,7 +275,7 @@ args = ["handle ProcessHandle", "ptr BaseAddress"]
 impl = { syscall = "crate::nt::section::unmap_view_of_section" }
 ordinal = 297
 zw_ordinal = 942
-note = "of the calling process only (NtCurrentProcess)"
+note = "of any process (PROCESS_VM_OPERATION)"
 
 # --- the file services (kernel/src/nt/file) ------------------------------------------------------
 
@@ -561,7 +559,7 @@ args = ["handle SourceProcessHandle", "handle SourceHandle", "handle TargetProce
 impl = { syscall = "crate::nt::sync::duplicate_object" }
 ordinal = 119
 zw_ordinal = 764
-note = "within the calling process only"
+note = "between any processes the caller holds PROCESS_DUP_HANDLE handles to"
 
 [[export]]
 name = "NtQueueApcThread"
@@ -3877,10 +3875,6 @@ name = "ZwOpenObjectAuditAlarm"
 ordinal = 813
 
 [[export]]
-name = "ZwOpenProcess"
-ordinal = 814
-
-[[export]]
 name = "ZwOpenProcessToken"
 ordinal = 815
 
@@ -3985,10 +3979,6 @@ name = "ZwQueryQuotaInformationFile"
 ordinal = 853
 
 [[export]]
-name = "ZwQuerySection"
-ordinal = 854
-
-[[export]]
 name = "ZwQuerySecurityObject"
 ordinal = 855
 
@@ -4027,10 +4017,6 @@ ordinal = 870
 [[export]]
 name = "ZwReadRequestData"
 ordinal = 871
-
-[[export]]
-name = "ZwReadVirtualMemory"
-ordinal = 872
 
 [[export]]
 name = "ZwRegisterThreadTerminatePort"
@@ -4267,10 +4253,6 @@ ordinal = 949
 [[export]]
 name = "ZwWriteRequestData"
 ordinal = 950
-
-[[export]]
-name = "ZwWriteVirtualMemory"
-ordinal = 951
 
 [[export]]
 name = "_CIpow"

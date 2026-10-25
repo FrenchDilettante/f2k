@@ -1,6 +1,7 @@
-//! The section services: NtCreateSection, NtOpenSection, NtMapViewOfSection and
-//! NtUnmapViewOfSection. kernel32's CreateFileMappingA, OpenFileMappingA, MapViewOfFile and
-//! UnmapViewOfFile are Win32 code over these, as on Windows 2000.
+//! The section services: NtCreateSection, NtOpenSection, NtMapViewOfSection,
+//! NtUnmapViewOfSection and NtQuerySection. kernel32's CreateFileMappingA, OpenFileMappingA,
+//! MapViewOfFile and UnmapViewOfFile are Win32 code over these, as on Windows 2000, and its
+//! CreateProcess asks NtQuerySection for an image's entry point and stack sizes.
 //!
 //! A section is of a file opened for reading, or of the paging file (no file handle). It owns its
 //! frames (`mem::vm::SectionFrames`), made as views first need them — a file's pages filled from
@@ -309,6 +310,204 @@ pub fn view_arguments(inherit: u32, allocation: u32, protect: u32) -> Result<(),
         PAGE_NOACCESS | PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY
     ) {
         return Err(STATUS_INVALID_PAGE_PROTECTION);
+    }
+    Ok(())
+}
+
+// --- NtQuerySection
+// -------------------------------------------------------------------------------
+
+/// SECTION_INFORMATION_CLASS: SectionBasicInformation and SectionImageInformation.
+pub const SECTION_BASIC_INFORMATION: u32 = 0;
+pub const SECTION_IMAGE_INFORMATION: u32 = 1;
+
+/// STATUS_SECTION_NOT_IMAGE: the image information of a data section.
+pub const STATUS_SECTION_NOT_IMAGE: Status = Status(0xC000_0049);
+
+/// SECTION_BASIC_INFORMATION: a section's base (an image's preferred base; zero for a data
+/// section, which has none), its allocation attributes and its size (a LARGE_INTEGER).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SectionBasicInformation {
+    pub base_address: u32,
+    pub allocation_attributes: u32,
+    pub maximum_size: u64,
+}
+
+const _: () = assert!(core::mem::size_of::<SectionBasicInformation>() == 16);
+
+impl SectionBasicInformation {
+    /// A section's: an image's (SEC_IMAGE | SEC_FILE, at its preferred base), a file's data
+    /// section's (SEC_FILE) or the paging file's (SEC_COMMIT: its pages are all committed).
+    pub fn of(image_base: u32, image: bool, file: bool, size: u32) -> Self {
+        let allocation_attributes = match (image, file) {
+            (true, _) => SEC_IMAGE | SEC_FILE,
+            (false, true) => SEC_FILE,
+            (false, false) => SEC_COMMIT,
+        };
+        SectionBasicInformation {
+            base_address: if image { image_base } else { 0 },
+            allocation_attributes,
+            maximum_size: size as u64,
+        }
+    }
+
+    /// The structure's bytes, as the caller's buffer receives them.
+    pub fn to_bytes(self) -> [u8; 16] {
+        let mut bytes = [0u8; 16];
+        bytes[0..4].copy_from_slice(&self.base_address.to_le_bytes());
+        bytes[4..8].copy_from_slice(&self.allocation_attributes.to_le_bytes());
+        bytes[8..16].copy_from_slice(&self.maximum_size.to_le_bytes());
+        bytes
+    }
+}
+
+/// SECTION_IMAGE_INFORMATION as Windows 2000 (NT 5.0) lays it out, 0x30 bytes: what the image's
+/// headers say of its first thread and its subsystem, for kernel32's CreateProcess.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SectionImageInformation {
+    /// The entry point's address, at the image's preferred base.
+    pub transfer_address: u32,
+    /// The zero bits of the image's base: none asked.
+    pub zero_bits: u32,
+    /// The stack reservation and commit the headers ask for its threads.
+    pub maximum_stack_size: u32,
+    pub committed_stack_size: u32,
+    /// The subsystem, and the subsystem version it was linked for (minor, then major).
+    pub subsystem_type: u32,
+    pub subsystem_minor_version: u16,
+    pub subsystem_major_version: u16,
+    /// The global pointer: none on x86.
+    pub gp_value: u32,
+    /// The file header's characteristics, the optional header's DLL characteristics, and the
+    /// machine.
+    pub image_characteristics: u16,
+    pub dll_characteristics: u16,
+    pub machine: u16,
+    /// Whether the image holds code (its headers' code size is not zero).
+    pub image_contains_code: u8,
+    pub spare1: u8,
+    /// The optional header's loader flags.
+    pub loader_flags: u32,
+    pub reserved: [u32; 2],
+}
+
+/// SECTION_IMAGE_INFORMATION's size on Windows 2000.
+pub const SECTION_IMAGE_INFORMATION_SIZE: u32 = 0x30;
+
+const _: () = {
+    use core::mem::offset_of;
+    assert!(core::mem::size_of::<SectionImageInformation>() == 0x30);
+    assert!(offset_of!(SectionImageInformation, subsystem_minor_version) == 0x14);
+    assert!(offset_of!(SectionImageInformation, gp_value) == 0x18);
+    assert!(offset_of!(SectionImageInformation, image_characteristics) == 0x1C);
+    assert!(offset_of!(SectionImageInformation, machine) == 0x20);
+    assert!(offset_of!(SectionImageInformation, image_contains_code) == 0x22);
+    assert!(offset_of!(SectionImageInformation, loader_flags) == 0x24);
+    assert!(offset_of!(SectionImageInformation, reserved) == 0x28);
+};
+
+impl SectionImageInformation {
+    /// The structure's bytes, as the caller's buffer receives them.
+    pub fn to_bytes(self) -> [u8; SECTION_IMAGE_INFORMATION_SIZE as usize] {
+        let mut bytes = [0u8; SECTION_IMAGE_INFORMATION_SIZE as usize];
+        let mut put = |at: usize, field: &[u8]| bytes[at..at + field.len()].copy_from_slice(field);
+        put(0x00, &self.transfer_address.to_le_bytes());
+        put(0x04, &self.zero_bits.to_le_bytes());
+        put(0x08, &self.maximum_stack_size.to_le_bytes());
+        put(0x0C, &self.committed_stack_size.to_le_bytes());
+        put(0x10, &self.subsystem_type.to_le_bytes());
+        put(0x14, &self.subsystem_minor_version.to_le_bytes());
+        put(0x16, &self.subsystem_major_version.to_le_bytes());
+        put(0x18, &self.gp_value.to_le_bytes());
+        put(0x1C, &self.image_characteristics.to_le_bytes());
+        put(0x1E, &self.dll_characteristics.to_le_bytes());
+        put(0x20, &self.machine.to_le_bytes());
+        put(0x22, &[self.image_contains_code, self.spare1]);
+        put(0x24, &self.loader_flags.to_le_bytes());
+        put(0x28, &self.reserved[0].to_le_bytes());
+        put(0x2C, &self.reserved[1].to_le_bytes());
+        bytes
+    }
+}
+
+/// The PE header fields the image information reports beyond the loader's parse, by their
+/// documented offsets: e_lfanew in the DOS header, where the NT headers start; from there, the
+/// machine in the file header (after the 4-byte signature) and the PE32 optional header (after the
+/// 20-byte file header), whose code size, DLL characteristics, stack sizes and loader flags follow
+/// at their own offsets.
+const E_LFANEW: usize = 0x3C;
+const FILE_MACHINE: usize = 4;
+const OPTIONAL_HEADER: usize = 24;
+const OPTIONAL_SIZE_OF_CODE: usize = 4;
+const OPTIONAL_DLL_CHARACTERISTICS: usize = 70;
+const OPTIONAL_STACK_RESERVE: usize = 72;
+const OPTIONAL_STACK_COMMIT: usize = 76;
+const OPTIONAL_LOADER_FLAGS: usize = 88;
+
+/// An image's SECTION_IMAGE_INFORMATION, from its first bytes `headers` (up to [`IMAGE_HEADERS`])
+/// in a file of `file_size` bytes. STATUS_INVALID_IMAGE_FORMAT for a file the loader's parse
+/// refuses (an image section's file never is: its creation parsed it).
+pub fn image_information(
+    headers: &[u8],
+    file_size: u32,
+) -> Result<SectionImageInformation, Status> {
+    let image = crate::exec::pe::Image::parse_headers(headers, file_size as usize)
+        .map_err(|_| STATUS_INVALID_IMAGE_FORMAT)?;
+    // The parse checked the headers hold the file header and the whole optional header, whose
+    // fixed part the fields below lie in.
+    let u16_at = |at: usize| u16::from_le_bytes([headers[at], headers[at + 1]]);
+    let u32_at = |at: usize| {
+        u32::from_le_bytes([
+            headers[at],
+            headers[at + 1],
+            headers[at + 2],
+            headers[at + 3],
+        ])
+    };
+    let nt = u32_at(E_LFANEW) as usize;
+    let optional = nt + OPTIONAL_HEADER;
+    let (major, minor) = image.subsystem_version;
+    Ok(SectionImageInformation {
+        transfer_address: image.image_base.wrapping_add(image.entry_rva),
+        zero_bits: 0,
+        maximum_stack_size: u32_at(optional + OPTIONAL_STACK_RESERVE),
+        committed_stack_size: u32_at(optional + OPTIONAL_STACK_COMMIT),
+        subsystem_type: image.subsystem as u32,
+        subsystem_minor_version: minor,
+        subsystem_major_version: major,
+        gp_value: 0,
+        image_characteristics: image.characteristics,
+        dll_characteristics: u16_at(optional + OPTIONAL_DLL_CHARACTERISTICS),
+        machine: u16_at(nt + FILE_MACHINE),
+        image_contains_code: (u32_at(optional + OPTIONAL_SIZE_OF_CODE) != 0) as u8,
+        spare1: 0,
+        loader_flags: u32_at(optional + OPTIONAL_LOADER_FLAGS),
+        reserved: [0; 2],
+    })
+}
+
+/// NtQuerySection's class and length rules: the class's structure's size, which the buffer must
+/// hold at least. STATUS_INVALID_INFO_CLASS for another class, STATUS_INFO_LENGTH_MISMATCH for a
+/// shorter buffer.
+pub fn query_size(class: u32, length: u32) -> Result<u32, Status> {
+    let size = match class {
+        SECTION_BASIC_INFORMATION => core::mem::size_of::<SectionBasicInformation>() as u32,
+        SECTION_IMAGE_INFORMATION => SECTION_IMAGE_INFORMATION_SIZE,
+        _ => return Err(crate::nt::memory::STATUS_INVALID_INFO_CLASS),
+    };
+    if length < size {
+        return Err(crate::nt::memory::STATUS_INFO_LENGTH_MISMATCH);
+    }
+    Ok(size)
+}
+
+/// Whether a handle granted `access` may query its section (SECTION_QUERY, its generic rights
+/// mapped): STATUS_ACCESS_DENIED otherwise.
+pub fn query_access(access: u32) -> Result<(), Status> {
+    if section_access(access) & SECTION_QUERY == 0 {
+        return Err(STATUS_ACCESS_DENIED);
     }
     Ok(())
 }
@@ -848,6 +1047,61 @@ mod target {
         ob::release_mapping(mapping);
         Ok(STATUS_SUCCESS)
     }
+
+    /// NtQuerySection(SectionHandle, Class, Information, Length, ResultLength): a section's basic
+    /// information (see [`SectionBasicInformation::of`]), or an image section's image information,
+    /// read from its image's headers (see [`image_information`]): the file the image segment holds
+    /// is read again, inside a critical region, as the section's first creation read it. The class
+    /// and the length are checked first (see [`query_size`]), then the buffers are probed for
+    /// writing, then the handle — a section handle granted SECTION_QUERY (see [`query_access`]) —
+    /// and last whether a data section is asked its image information
+    /// (STATUS_SECTION_NOT_IMAGE). The structure's size goes into ResultLength.
+    pub fn query_section(
+        _call: &mut NtCall,
+        section: Handle,
+        class: u32,
+        information: UserAddr,
+        length: u32,
+        result_length: UserPtr<u32>,
+    ) -> NtResult {
+        let size = query_size(class, length)?;
+        sync::probe(information.raw(), size)?;
+        sync::probe(result_length.addr().raw(), 4)?;
+        let (object, access) = section_of(section.raw())?;
+        query_access(access)?;
+        let record = *object.section();
+        if class == SECTION_BASIC_INFORMATION {
+            let image = record.segment.is_some();
+            let file = record.file_object.is_some() || image;
+            information.write(
+                &SectionBasicInformation::of(record.image_base, image, file, record.size)
+                    .to_bytes(),
+            )?;
+        } else {
+            let segment = record.segment.ok_or(STATUS_SECTION_NOT_IMAGE)?;
+            let directory = ob::directory();
+            let file_object = directory
+                .segment(segment)
+                .expect("an image section holds its segment")
+                .file_object;
+            let file_record = directory
+                .file(file_object)
+                .expect("an image segment holds its file object")
+                .record;
+            let file = crate::fs::file::records().get(file_record).file;
+            let info = crate::process::threads::critical_region(|| {
+                let mut headers = [0u8; IMAGE_HEADERS];
+                let headers = &mut headers[..IMAGE_HEADERS.min(file.size as usize)];
+                if crate::fs::io::read_file_at(&file, 0, headers).is_none() {
+                    return Err(STATUS_IO_DEVICE_ERROR);
+                }
+                image_information(headers, file.size)
+            })?;
+            information.write(&info.to_bytes())?;
+        }
+        result_length.write_optional(size)?;
+        Ok(STATUS_SUCCESS)
+    }
 }
 
 #[cfg(not(target_arch = "x86"))]
@@ -867,6 +1121,7 @@ mod host {
         open_section(UserPtr<u32>, u32, UserAddr);
         map_view_of_section(Handle, Handle, UserPtr<u32>, u32, u32, UserPtr<u64>, UserPtr<u32>, u32, u32, u32);
         unmap_view_of_section(Handle, UserAddr);
+        query_section(Handle, u32, UserAddr, u32, UserPtr<u32>);
     }
 }
 
@@ -1102,6 +1357,99 @@ mod tests {
             image_layout(&foreign, size),
             Err(STATUS_INVALID_IMAGE_FORMAT)
         );
+    }
+
+    /// SECTION_IMAGE_INFORMATION from an image's headers: the entry point at the preferred base,
+    /// the stack sizes, the subsystem and its version, the characteristics and the machine, as
+    /// the file's headers hold them; a file the parse refuses is no image.
+    #[test]
+    fn the_image_information_is_the_headers() {
+        let size = EXIT0.len() as u32;
+        let info = image_information(&EXIT0[..IMAGE_HEADERS], size).unwrap();
+        let image = crate::exec::pe::Image::parse(EXIT0).unwrap();
+        let header = |at: usize| u32::from_le_bytes(EXIT0[at..at + 4].try_into().unwrap());
+        let optional = header(0x3C) as usize + 24;
+        assert_eq!(info.transfer_address, 0x0040_0000 + image.entry_rva);
+        assert_eq!(
+            (info.maximum_stack_size, info.committed_stack_size),
+            (header(optional + 72), header(optional + 76))
+        );
+        assert_eq!(info.subsystem_type, 3, "a console image");
+        assert_eq!(
+            (info.subsystem_major_version, info.subsystem_minor_version),
+            image.subsystem_version
+        );
+        assert_eq!(info.machine, 0x14C);
+        assert_eq!(info.image_characteristics, image.characteristics);
+        assert_eq!(info.image_contains_code, 1);
+        assert_eq!(
+            (info.zero_bits, info.gp_value, info.reserved),
+            (0, 0, [0, 0])
+        );
+        let bytes = info.to_bytes();
+        assert_eq!(bytes.len(), 0x30);
+        assert_eq!(&bytes[0..4], &info.transfer_address.to_le_bytes());
+        assert_eq!(
+            &bytes[0x14..0x16],
+            &info.subsystem_minor_version.to_le_bytes()
+        );
+        assert_eq!(
+            &bytes[0x16..0x18],
+            &info.subsystem_major_version.to_le_bytes()
+        );
+        assert_eq!(&bytes[0x20..0x23], &[0x4C, 0x01, 1]);
+        assert_eq!(
+            image_information(b"plain text, not an image", 24),
+            Err(STATUS_INVALID_IMAGE_FORMAT)
+        );
+    }
+
+    /// SECTION_BASIC_INFORMATION: an image at its base (SEC_IMAGE | SEC_FILE), a file's data
+    /// section and the paging file's at none, the size a LARGE_INTEGER.
+    #[test]
+    fn the_basic_information_names_the_section_kind() {
+        let image = SectionBasicInformation::of(0x0040_0000, true, true, 0x3000);
+        assert_eq!(
+            (
+                image.base_address,
+                image.allocation_attributes,
+                image.maximum_size
+            ),
+            (0x0040_0000, SEC_IMAGE | SEC_FILE, 0x3000)
+        );
+        let data = SectionBasicInformation::of(0, false, true, 0x1234);
+        assert_eq!(
+            (data.base_address, data.allocation_attributes),
+            (0, SEC_FILE)
+        );
+        let paging = SectionBasicInformation::of(0, false, false, 0x10_0000);
+        assert_eq!(paging.allocation_attributes, SEC_COMMIT);
+        let bytes = image.to_bytes();
+        assert_eq!(&bytes[..4], &0x0040_0000u32.to_le_bytes());
+        assert_eq!(&bytes[4..8], &(SEC_IMAGE | SEC_FILE).to_le_bytes());
+        assert_eq!(&bytes[8..16], &0x3000u64.to_le_bytes());
+    }
+
+    /// NtQuerySection's classes and lengths, and its access: SECTION_QUERY, or a generic right
+    /// that maps to it.
+    #[test]
+    fn the_query_rules() {
+        assert_eq!(query_size(SECTION_BASIC_INFORMATION, 16), Ok(16));
+        assert_eq!(query_size(SECTION_IMAGE_INFORMATION, 0x30), Ok(0x30));
+        assert_eq!(query_size(SECTION_IMAGE_INFORMATION, 0x40), Ok(0x30));
+        assert_eq!(
+            query_size(SECTION_IMAGE_INFORMATION, 0x2C),
+            Err(crate::nt::memory::STATUS_INFO_LENGTH_MISMATCH)
+        );
+        assert_eq!(
+            query_size(2, 0x100),
+            Err(crate::nt::memory::STATUS_INVALID_INFO_CLASS)
+        );
+        assert_eq!(query_access(SECTION_QUERY), Ok(()));
+        assert_eq!(query_access(GENERIC_READ), Ok(()));
+        assert_eq!(query_access(crate::ob::SECTION_ALL_ACCESS), Ok(()));
+        assert_eq!(query_access(SECTION_MAP_READ), Err(STATUS_ACCESS_DENIED));
+        assert_eq!(error(query_access(SECTION_MAP_WRITE)), 5);
     }
 
     /// An image section's view is the whole image at its preferred base: no offset, no size short

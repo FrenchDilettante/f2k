@@ -890,6 +890,16 @@ impl Directory {
         None
     }
 
+    /// Whether a live thread runs attached to the address space of the process whose scheduling
+    /// record is `space` (a thread of another process inside a service that reaches into it).
+    pub fn attached_to(&mut self, space: *const crate::sched::process::SchedProcess) -> bool {
+        (0..THREADS as u16).any(|index| {
+            let id = self.id(ObjectType::Thread, index);
+            self.thread(id)
+                .is_some_and(|thread| thread.attached() && core::ptr::eq(thread.space(), space))
+        })
+    }
+
     // --- Counts --------------------------------------------------------------------------------
 
     /// Take a reference on `id`; false when it names nothing.
