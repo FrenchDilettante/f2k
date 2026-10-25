@@ -102,6 +102,51 @@ zw_ordinal = 935
 note = "no handle terminates the caller's other threads; the calling process's handle ends it (no other process is reachable)"
 
 [[export]]
+name = "NtCreateProcess"
+group = "nt"
+args = ["ptr<u32> ProcessHandle", "u32 DesiredAccess", "ptr ObjectAttributes", "handle ParentProcess", "bool InheritObjectTable", "handle SectionHandle", "handle DebugPort", "handle ExceptionPort"]
+impl = { stub = "not yet implemented" }
+fails = "0xC0000002"
+ordinal = 101
+note = "a stub until the kernel serves it: its Zw alias is catalogued below until then"
+
+[[export]]
+name = "NtOpenProcess"
+group = "nt"
+args = ["ptr<u32> ProcessHandle", "u32 DesiredAccess", "ptr ObjectAttributes", "ptr ClientId"]
+impl = { stub = "not yet implemented" }
+fails = "0xC0000002"
+ordinal = 169
+note = "a stub until the kernel serves it: its Zw alias is catalogued below until then"
+
+[[export]]
+name = "NtQuerySection"
+group = "nt"
+args = ["handle SectionHandle", "u32 SectionInformationClass", "ptr SectionInformation", "u32 SectionInformationLength", "ptr<u32> ResultLength"]
+impl = { stub = "not yet implemented" }
+fails = "0xC0000002"
+ordinal = 209
+note = "a stub until the kernel serves it: its Zw alias is catalogued below until then"
+
+[[export]]
+name = "NtReadVirtualMemory"
+group = "nt"
+args = ["handle ProcessHandle", "ptr BaseAddress", "ptr Buffer", "u32 BufferSize", "ptr<u32> NumberOfBytesRead"]
+impl = { stub = "not yet implemented" }
+fails = "0xC0000002"
+ordinal = 227
+note = "a stub until the kernel serves it: its Zw alias is catalogued below until then"
+
+[[export]]
+name = "NtWriteVirtualMemory"
+group = "nt"
+args = ["handle ProcessHandle", "ptr BaseAddress", "ptr Buffer", "u32 BufferSize", "ptr<u32> NumberOfBytesWritten"]
+impl = { stub = "not yet implemented" }
+fails = "0xC0000002"
+ordinal = 306
+note = "a stub until the kernel serves it: its Zw alias is catalogued below until then"
+
+[[export]]
 name = "NtContinue"
 group = "nt"
 args = ["ptr Context", "u32 TestAlert"]
@@ -1568,10 +1613,6 @@ name = "NtCreatePort"
 ordinal = 100
 
 [[export]]
-name = "NtCreateProcess"
-ordinal = 101
-
-[[export]]
 name = "NtCreateProfile"
 ordinal = 102
 
@@ -1764,10 +1805,6 @@ name = "NtOpenObjectAuditAlarm"
 ordinal = 168
 
 [[export]]
-name = "NtOpenProcess"
-ordinal = 169
-
-[[export]]
 name = "NtOpenProcessToken"
 ordinal = 170
 
@@ -1872,10 +1909,6 @@ name = "NtQueryQuotaInformationFile"
 ordinal = 208
 
 [[export]]
-name = "NtQuerySection"
-ordinal = 209
-
-[[export]]
 name = "NtQuerySecurityObject"
 ordinal = 210
 
@@ -1914,10 +1947,6 @@ ordinal = 225
 [[export]]
 name = "NtReadRequestData"
 ordinal = 226
-
-[[export]]
-name = "NtReadVirtualMemory"
-ordinal = 227
 
 [[export]]
 name = "NtRegisterThreadTerminatePort"
@@ -2154,10 +2183,6 @@ ordinal = 304
 [[export]]
 name = "NtWriteRequestData"
 ordinal = 305
-
-[[export]]
-name = "NtWriteVirtualMemory"
-ordinal = 306
 
 [[export]]
 name = "PfxFindPrefix"
