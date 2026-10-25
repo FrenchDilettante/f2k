@@ -725,14 +725,14 @@ fn teardown(process: &'static mut Process, quiescent: bool) {
 fn release_address_space_of(process: &mut Process) {
     use crate::mem::frame::FrameState;
     use crate::mem::paging::{self, PAGE_SIZE};
-    // The views go first, each dropping its reference on its section (a section nothing else
-    // references goes with it, dropping its hold on its frames).
+    // The views go first, each dropping its reference on its section or image segment (one nothing
+    // else references goes with it, dropping its hold on its frames).
     let directory = crate::ob::directory();
     let dispatcher = crate::sched::idle::dispatcher();
     let mut gone = [None; crate::mem::vm::VIEWS];
     let mut count = 0;
-    process.vm().drop_views(|section| {
-        gone[count] = directory.dereference(section, dispatcher);
+    process.vm().drop_views(|mapping| {
+        gone[count] = directory.release_mapping(mapping, dispatcher);
         count += 1;
     });
     for followup in gone[..count].iter().flatten() {
@@ -787,8 +787,9 @@ fn release_record(process: &mut Process) {
     pool::detach();
 }
 
-/// A file-backed section is gone: its file is mapped once less, and the section's reference on the
-/// file object goes (the followup is the object's close, when that was its last reference).
+/// A file-backed section, or an image segment, is gone: its file is mapped once less, and its
+/// reference on the file object goes (the followup is the object's close, when that was its last
+/// reference).
 #[cfg(target_arch = "x86")]
 fn unmap_file(file_object: crate::ob::ObjectId) -> Option<crate::ob::Followup> {
     let directory = crate::ob::directory();

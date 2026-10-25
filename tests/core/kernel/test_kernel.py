@@ -128,6 +128,23 @@ PROCESS_CONCURRENT_SAME_IMAGE = (
     "F2K: process suite complete: 2 run, 0 faulted, 0 leaks",
 )
 
+# Sixteen C-runtime (/MD) programs alive at once, the process pool's whole capacity: hellomd first,
+# then fifteen of spawn's companion program sleeping two seconds (it prints nothing), so all sixteen
+# hold their DLLs' views together. Each maps kernel32 and msvcrt from the volume: every process
+# maps the same two image segments, its sections closed once mapped, so the section pool does not
+# grow with the processes. hellomd prints and ends while the others sleep; then they end, in any
+# order, and every process is torn down clean.
+PROCESS_CONCURRENT_MD_PROGRAMS = ("CORPUS\\hellomd.exe", *("CORPUS\\spawnkid.exe sleep 2000",) * 15)
+PROCESS_CONCURRENT_MD = (
+    *BOOTED,
+    *(f"F2K: process {index} of 16: {program}" for index, program in enumerate(PROCESS_CONCURRENT_MD_PROGRAMS, start=1)),
+    "Hello, world!",
+    "F2K: process 1 (hellomd) exited normally (exit code=0)",
+    *("re:^F2K: process ([2-9]|1[0-6]) \\(spawnkid\\) exited normally \\(exit code=0\\)$",) * 15,
+    *("re:^F2K: process ([1-9]|1[0-6]) teardown audit: frame database ok, kernel heap ok$",) * 16,
+    "F2K: process suite complete: 16 run, 0 faulted, 0 leaks",
+)
+
 # What a one-process boot reports once its program has run and its process is gone.
 EXITED_CLEAN = (
     "F2K: user process exited normally (exit code=0)",
@@ -309,6 +326,14 @@ CASES = (
         kernel_options="concurrent",
         ordered=True,
         expects=PROCESS_CONCURRENT_SAME_IMAGE,
+    ),
+    *both_paths(
+        "process-concurrent-md",
+        "sixteen C-runtime programs alive at once (hellomd, then spawnkid sleeping, fifteen times), their DLLs' image segments shared: all end clean, then the summary",
+        cmdline=" ;; ".join(PROCESS_CONCURRENT_MD_PROGRAMS),
+        kernel_options="concurrent",
+        ordered=True,
+        expects=PROCESS_CONCURRENT_MD,
     ),
     # Interrupt/timer core: the irq-smoke diagnostic boot proves the hardware layer and the
     # interrupt core are live, then the normal boot proceeds to the default image's exit (the tick

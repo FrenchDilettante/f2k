@@ -279,8 +279,12 @@ pub struct FileRecord {
     references: u16,
     /// Whether the file goes with its last cleanup.
     delete_pending: bool,
-    /// How many mappings of the file exist (a section holds its file object).
+    /// How many mappings of the file exist (a data section, or the file's image segment, holds
+    /// its file object).
     pub user_mapped: u16,
+    /// The file's image segment, which every image section of the file shares (NT's section
+    /// object pointers): none, or a stale id, until an image section of the file makes one.
+    pub image: Option<crate::ob::SegmentId>,
 }
 
 /// Why an open found no record.
@@ -366,6 +370,7 @@ impl FileRecords {
                     references: 0,
                     delete_pending: false,
                     user_mapped: 0,
+                    image: None,
                 });
                 index
             }

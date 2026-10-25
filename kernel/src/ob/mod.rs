@@ -124,7 +124,9 @@ pub const MUTEXES: usize = 64;
 /// How many waitable timers can exist at once.
 pub const TIMERS: usize = 32;
 /// How many sections can exist at once.
-pub const SECTIONS: usize = 16;
+pub const SECTIONS: usize = 32;
+/// How many image segments can exist at once: one per image file mapped (see [`ImageSegment`]).
+pub const SEGMENTS: usize = 16;
 /// How many file objects can exist at once.
 pub const FILES: usize = crate::fs::file::OPEN_FILES;
 /// How many thread records exist, across every process: any process's thread takes any free
@@ -258,9 +260,10 @@ impl ProcessObject {
     }
 }
 
-/// A section object's body: the mapping itself (on NT, the section and its segment). It is the
-/// kernel's, not a process's: a view names it by its object, and its frames outlive the handle that
-/// made it while a view references it.
+/// A section object's body: the mapping itself. A data section is its own segment: its frames are
+/// its own, and a view names it by its object, so its frames outlive the handle that made it while
+/// a view references it. An image section is a section of its file's one [`ImageSegment`]: it
+/// holds the segment, and its views hold the segment, not the section.
 #[derive(Clone, Copy)]
 pub struct SectionObject {
     /// The mapped file, as its open found it (a file-backed section).
@@ -277,6 +280,8 @@ pub struct SectionObject {
     pub file_object: Option<ObjectId>,
     /// An image section's preferred base, where its one view maps (zero: a data section).
     pub image_base: u32,
+    /// An image section's segment, which it holds a reference on (none: a data section).
+    pub segment: Option<SegmentId>,
 }
 
 impl SectionObject {
@@ -290,8 +295,60 @@ impl SectionObject {
             writable: false,
             file_object: None,
             image_base: 0,
+            segment: None,
         }
     }
+}
+
+/// An image segment: an image file's pages as mapped, shared by every image section of the file
+/// and every view of them (NT's image control area and segment). A file has at most one, reached
+/// from its record ([`crate::fs::file::FileRecord::image`], NT's section object pointers): the
+/// first image section of the file makes it, and later ones share it, so every process's view of a
+/// DLL maps the same frames (its writable pages copy-on-write). It holds the file object it was
+/// made from — the file stays open, counted as mapped, while it lives — and lives while an image
+/// section or a view references it; its last reference gives its frames and its file back.
+#[derive(Clone, Copy)]
+pub struct ImageSegment {
+    /// Its frames, page by page, made as views first need them.
+    pub frames: crate::mem::vm::SectionFrames,
+    /// The file object it holds.
+    pub file_object: ObjectId,
+    /// The image's preferred base, where every view maps it.
+    pub image_base: u32,
+    /// The image's size as mapped.
+    pub size: u32,
+}
+
+impl ImageSegment {
+    /// A record holding no segment (a pool's fresh record).
+    const fn none() -> Self {
+        ImageSegment {
+            frames: crate::mem::vm::SectionFrames::empty(),
+            file_object: ObjectId {
+                kind: ObjectType::File,
+                index: 0,
+                generation: 0,
+            },
+            image_base: 0,
+            size: 0,
+        }
+    }
+}
+
+/// An image segment's name: its pool index and the generation of that record, so a name that
+/// outlived its segment (a file record's, once the segment went) resolves to nothing.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct SegmentId {
+    pub index: u16,
+    pub generation: u16,
+}
+
+/// What a mapped view maps, and holds a reference on for as long as it is mapped: a data section,
+/// or an image segment (the image section that made the view may be closed at once).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Mapping {
+    Section(ObjectId),
+    Image(SegmentId),
 }
 
 /// A window station's body: its name (the window station's own, as GetUserObjectInformation's
@@ -329,8 +386,8 @@ impl DesktopObject {
 /// the object manager's reach, which the process finishes ([`crate::process::Process::finish`]).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Followup {
-    /// A section was deleted: its frames (taken out of its record) and the file object a file's
-    /// section held are the caller's to release.
+    /// A section or an image segment was deleted: its frames (taken out of its record) and the
+    /// file object a file's section or a segment held are the caller's to release.
     Section {
         frames: crate::mem::vm::SectionFrames,
         file_object: Option<ObjectId>,
@@ -413,6 +470,7 @@ pub struct Directory {
     pub threads: Pool<Thread, THREADS>,
     pub processes: Pool<ProcessObject, PROCESSES>,
     pub sections: Pool<SectionObject, SECTIONS>,
+    pub segments: Pool<ImageSegment, SEGMENTS>,
     pub files: Pool<crate::fs::file::FileObject, FILES>,
     pub directories: Pool<(), DIRECTORIES>,
     pub window_stations: Pool<WindowStationObject, WINDOW_STATIONS>,
@@ -444,6 +502,7 @@ impl Directory {
             Pool::write_empty(addr_of_mut!((*directory).threads), Thread::empty);
             Pool::write_empty(addr_of_mut!((*directory).processes), ProcessObject::new);
             Pool::write_empty(addr_of_mut!((*directory).sections), SectionObject::none);
+            Pool::write_empty(addr_of_mut!((*directory).segments), ImageSegment::none);
             Pool::write_empty(addr_of_mut!((*directory).files), || {
                 crate::fs::file::FileObject::new(0, 0, 0, 0)
             });
@@ -587,6 +646,74 @@ impl Directory {
         let index = self.sections.allocate_in(0..SECTIONS)?;
         *self.sections.record(index) = section;
         Some(self.id(ObjectType::Section, index))
+    }
+
+    /// An image segment holding `segment`, with one reference: its creator's (the image section
+    /// made with it). None when the pool is exhausted.
+    pub fn create_segment(&mut self, segment: ImageSegment) -> Option<SegmentId> {
+        let index = self.segments.allocate_in(0..SEGMENTS)?;
+        *self.segments.record(index) = segment;
+        Some(SegmentId {
+            index,
+            generation: self.segments.headers[index as usize].generation,
+        })
+    }
+
+    /// The live image segment `id` names.
+    pub fn segment(&mut self, id: SegmentId) -> Option<&mut ImageSegment> {
+        self.segments.get(id.index, id.generation)
+    }
+
+    /// Take a reference on the image segment `id`; false when it names nothing.
+    pub fn reference_segment(&mut self, id: SegmentId) -> bool {
+        match self.segment_header(id) {
+            Some(header) => {
+                header.pointers += 1;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Drop a reference on the image segment `id`; the last one deletes it, its frames and the
+    /// file object it held left to the caller.
+    pub fn dereference_segment(&mut self, id: SegmentId) -> Option<Followup> {
+        let header = self.segment_header(id)?;
+        header.pointers -= 1;
+        if header.pointers != 0 {
+            return None;
+        }
+        Some(self.delete_segment(id.index))
+    }
+
+    /// Delete the image segment at pool `index`: its record is dead and its ids stale.
+    fn delete_segment(&mut self, index: u16) -> Followup {
+        let segment = core::mem::replace(self.segments.record(index), ImageSegment::none());
+        let header = &mut self.segments.headers[index as usize];
+        header.live = false;
+        header.pointers = 0;
+        header.generation = header.generation.wrapping_add(1);
+        Followup::Section {
+            frames: segment.frames,
+            file_object: Some(segment.file_object),
+        }
+    }
+
+    fn segment_header(&mut self, id: SegmentId) -> Option<&mut Header> {
+        let header = self.segments.headers.get_mut(id.index as usize)?;
+        (header.live && header.generation == id.generation).then_some(header)
+    }
+
+    /// A view went: drop its reference on what it mapped (the last one deletes it).
+    pub fn release_mapping(
+        &mut self,
+        mapping: Mapping,
+        dispatcher: &mut Dispatcher,
+    ) -> Option<Followup> {
+        match mapping {
+            Mapping::Section(id) => self.dereference(id, dispatcher),
+            Mapping::Image(id) => self.dereference_segment(id),
+        }
     }
 
     /// A file object of file record `record`, opened for `access` (as the share check reads it;
@@ -836,7 +963,8 @@ impl Directory {
     }
 
     /// Delete the object `id` names: its kind's teardown, then the record is dead and its id stale.
-    /// A section leaves its frames (and a file's section its file object) to the caller, a file
+    /// A section leaves its frames (and a file's section its file object; an image section its
+    /// segment's, when it held the segment's last reference) to the caller, a file
     /// object its record's reference; an owned mutex leaves its owner's list; no other
     /// kind here needs more than the record going: a waitable's last reference is gone, so nothing
     /// waits on it; a thread's record stays as it ended (its pages are released when the record is
@@ -857,10 +985,14 @@ impl Directory {
             ObjectType::Section => {
                 let section =
                     core::mem::replace(self.sections.record(id.index), SectionObject::none());
-                Some(Followup::Section {
-                    frames: section.frames,
-                    file_object: section.file_object,
-                })
+                match section.segment {
+                    // An image section's frames and file are its segment's.
+                    Some(segment) => self.dereference_segment(segment),
+                    None => Some(Followup::Section {
+                        frames: section.frames,
+                        file_object: section.file_object,
+                    }),
+                }
             }
             ObjectType::File => Some(Followup::FileClose {
                 record: self.files.record(id.index).record,
@@ -986,11 +1118,11 @@ impl Directory {
     }
 
     /// The sweep at quiescence, once no process remains that has not been torn down: every
-    /// reference a process held went with its end, so every object still live is a leak. Each is
-    /// deleted, every thread record starts over, and every name is freed. Returns how many objects
-    /// outlived their processes; what a deleted one leaves (a leaked section's hold on its frames)
-    /// is handed to `finish`. Process objects are not swept: the reaped process's own goes with its
-    /// own reference, at its teardown's end.
+    /// reference a process held went with its end, so every object (and image segment) still live
+    /// is a leak. Each is deleted, every thread record starts over, and every name is freed.
+    /// Returns how many objects and segments outlived their processes; what a deleted one leaves (a
+    /// leaked section's or segment's hold on its frames) is handed to `finish`. Process objects are
+    /// not swept: the reaped process's own goes with its own reference, at its teardown's end.
     pub fn sweep(
         &mut self,
         dispatcher: &mut Dispatcher,
@@ -1020,6 +1152,15 @@ impl Directory {
                         finish(followup);
                     }
                 }
+            }
+        }
+        // The image sections went above, and every view with its process: a segment left is a
+        // leak too.
+        let mut leaked = leaked;
+        for index in 0..SEGMENTS {
+            if self.segments.headers[index].live {
+                finish(self.delete_segment(index as u16));
+                leaked += 1;
             }
         }
         for index in 0..THREADS {
@@ -1227,6 +1368,15 @@ pub fn reference_by_handle(handle: u32, kind: Option<ObjectType>) -> Option<ObRe
 #[cfg(target_arch = "x86")]
 pub fn release(id: ObjectId) {
     if let Some(followup) = directory().dereference(id, crate::sched::idle::dispatcher()) {
+        crate::user::args::calling_process().finish(followup);
+    }
+}
+
+/// A view went: drop its reference on what it mapped (the last one deletes it, the current
+/// process finishing what the deletion leaves it).
+#[cfg(target_arch = "x86")]
+pub fn release_mapping(mapping: Mapping) {
+    if let Some(followup) = directory().release_mapping(mapping, crate::sched::idle::dispatcher()) {
         crate::user::args::calling_process().finish(followup);
     }
 }
@@ -2034,6 +2184,135 @@ mod tests {
             0,
             "the record holds no mapping any more"
         );
+    }
+
+    /// An image section of `segment`, as NtCreateSection makes one and publishes it (one handle).
+    fn image_section(
+        directory: &mut Directory,
+        segment: SegmentId,
+        dispatcher: &mut Dispatcher,
+    ) -> ObjectId {
+        let id = directory
+            .create_section(SectionObject {
+                size: 0x3000,
+                image_base: 0x1000_0000,
+                segment: Some(segment),
+                ..SectionObject::none()
+            })
+            .unwrap();
+        published(directory, id, dispatcher);
+        id
+    }
+
+    /// An image file's segment is shared: every image section of the file and every view holds
+    /// it, a view's section can be closed at once, and only the last of them hands its frames and
+    /// its file object back — once. Its id goes stale with it.
+    #[test]
+    fn an_image_segment_lives_while_a_section_or_view_holds_it() {
+        let directory = directory();
+        let dispatcher = dispatcher();
+        let file_object = ObjectId {
+            kind: ObjectType::File,
+            index: 7,
+            generation: 2,
+        };
+        let segment = directory
+            .create_segment(ImageSegment {
+                frames: crate::mem::vm::SectionFrames::empty(),
+                file_object,
+                image_base: 0x1000_0000,
+                size: 0x3000,
+            })
+            .unwrap();
+        // The first process's loader: its section made the segment (the creator's reference is
+        // the section's), its view holds the segment, and its handle closes.
+        let first = image_section(directory, segment, dispatcher);
+        let view = Mapping::Image(segment);
+        assert!(directory.reference_segment(segment), "the first view");
+        assert_eq!(closed(directory, first, dispatcher), vec![]);
+        assert!(
+            !directory.is_live(first),
+            "the view does not hold the section"
+        );
+        assert!(
+            directory.segment(segment).is_some(),
+            "the view holds the segment"
+        );
+        // A second process shares the segment.
+        assert!(directory.reference_segment(segment), "the second section");
+        let second = image_section(directory, segment, dispatcher);
+        assert!(directory.reference_segment(segment), "the second view");
+        assert_eq!(closed(directory, second, dispatcher), vec![]);
+        assert_eq!(directory.release_mapping(view, dispatcher), None);
+        assert_eq!(directory.segments.live(), 1, "one segment for the file");
+        let gone = Followup::Section {
+            frames: crate::mem::vm::SectionFrames::empty(),
+            file_object: Some(file_object),
+        };
+        assert_eq!(directory.release_mapping(view, dispatcher), Some(gone));
+        assert!(directory.segment(segment).is_none(), "its id is stale");
+        assert!(!directory.reference_segment(segment));
+        assert_eq!(directory.release_mapping(view, dispatcher), None);
+        // A section that outlives the views is the last holder in its turn.
+        let again = directory
+            .create_segment(ImageSegment {
+                frames: crate::mem::vm::SectionFrames::empty(),
+                file_object,
+                image_base: 0x1000_0000,
+                size: 0x3000,
+            })
+            .unwrap();
+        assert_eq!(again.index, segment.index, "the record is reused");
+        assert_ne!(again, segment, "under a new generation");
+        let section = image_section(directory, again, dispatcher);
+        assert!(directory.reference_segment(again), "a view");
+        assert_eq!(
+            directory.release_mapping(Mapping::Image(again), dispatcher),
+            None
+        );
+        assert_eq!(closed(directory, section, dispatcher), vec![gone]);
+        // A data view holds its section, as before.
+        let data = directory.create_section(SectionObject::none()).unwrap();
+        assert_eq!(
+            directory.release_mapping(Mapping::Section(data), dispatcher),
+            Some(Followup::Section {
+                frames: crate::mem::vm::SectionFrames::empty(),
+                file_object: None,
+            })
+        );
+    }
+
+    /// The sweep at quiescence deletes a segment left behind as a leak, handing its frames and
+    /// file object back; one a leaked image section held goes with the section.
+    #[test]
+    fn the_sweep_takes_leaked_segments() {
+        let directory = directory();
+        let dispatcher = dispatcher();
+        let segment = |directory: &mut Directory, index| {
+            directory
+                .create_segment(ImageSegment {
+                    frames: crate::mem::vm::SectionFrames::empty(),
+                    file_object: ObjectId {
+                        kind: ObjectType::File,
+                        index,
+                        generation: 0,
+                    },
+                    image_base: 0x1000_0000,
+                    size: 0x1000,
+                })
+                .unwrap()
+        };
+        let held = segment(directory, 1);
+        image_section(directory, held, dispatcher);
+        segment(directory, 2);
+        let mut followups = Vec::new();
+        assert_eq!(
+            directory.sweep(dispatcher, |followup| followups.push(followup)),
+            2,
+            "the section and the lone segment"
+        );
+        assert_eq!(followups.len(), 2);
+        assert_eq!(directory.segments.live(), 0);
     }
 
     /// A file object's last handle is its cleanup (share access, delete-on-close), and its last

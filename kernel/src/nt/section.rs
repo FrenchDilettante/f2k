@@ -18,14 +18,20 @@
 //! STATUS_ACCESS_DENIED), and a read-write view needs a section made read-write
 //! (STATUS_SECTION_PROTECTION).
 //!
-//! An image section (SEC_IMAGE) is of a PE file, parsed at its creation by the loader's own parse
-//! (`exec::pe`: a file it refuses is STATUS_INVALID_IMAGE_FORMAT): it is the image as mapped, its
-//! size the image's. Its one view is the whole image at its preferred base — an image is never
-//! relocated, so a base another region holds is STATUS_CONFLICTING_ADDRESSES — a MEM_IMAGE
-//! reservation whose pages carry their sections' protections, as the loader maps a program's (a
-//! writable section's pages copy-on-write: the section's frames stay the file's). Its frames are
-//! made page by page as the first view needs them, each read from the file through the image's
-//! section table. Nothing is snapped: the imports are the mapper's to resolve (ntdll's loader).
+//! An image section (SEC_IMAGE) is of a PE file, parsed by the loader's own parse (`exec::pe`: a
+//! file it refuses is STATUS_INVALID_IMAGE_FORMAT): it is the image as mapped, its size the
+//! image's. As on Windows 2000, the image itself is the file's one image segment
+//! ([`ob::ImageSegment`], NT's image control area), reached from the file's record: the first image
+//! section of a file makes it (and parses the image then), every later one shares it, so every
+//! process's view of a DLL maps the same frames. The segment holds the file object, so the file
+//! stays open — and cannot be truncated or deleted — while any image section or view of it lives;
+//! a view holds the segment, not the section, so the section's handle can be closed as soon as the
+//! view is mapped. A view is the whole image at its preferred base — an image is never relocated,
+//! so a base another region holds is STATUS_CONFLICTING_ADDRESSES — a MEM_IMAGE reservation whose
+//! pages carry their sections' protections, as the loader maps a program's (a writable section's
+//! pages copy-on-write: the segment's frames stay the file's). The segment's frames are made page
+//! by page as a view first needs them, each read from the file through the image's section table.
+//! Nothing is snapped: the imports are the mapper's to resolve (ntdll's loader).
 
 use super::call::{Status, STATUS_INVALID_HANDLE};
 use super::memory::{STATUS_INVALID_PAGE_PROTECTION, STATUS_INVALID_PARAMETER_4};
@@ -366,10 +372,11 @@ mod target {
     }
 
     /// NtCreateSection (see [`plan`]): a section of the file the handle names, or of the paging
-    /// file (no handle), named or not (see `sync`'s create). A file's section holds its file
+    /// file (no handle), named or not (see `sync`'s create). A file's data section holds its file
     /// object, and the file counts it as mapped: the file stays open while the section lives,
     /// and cannot be truncated nor deleted meanwhile. The section's deletion gives both back.
-    /// Its frames are made as views need them.
+    /// Its frames are made as views need them. An image section holds its file's image segment
+    /// instead (see [`create_image_section`]).
     #[allow(clippy::too_many_arguments)]
     pub fn create_section(
         _call: &mut NtCall,
@@ -403,23 +410,19 @@ mod target {
                 writable: plan.writable,
                 ..ob::SectionObject::none()
             },
-            Some((file_object, file, _)) => {
-                // An image's size and base are its headers': read and parsed now.
-                let (image_base, size) = if allocation & SEC_IMAGE != 0 {
-                    crate::process::threads::critical_region(|| read_layout(&file))?
-                } else {
-                    (0, plan.size)
-                };
-                ob::SectionObject {
-                    file,
-                    paging_file: false,
-                    frames: crate::mem::vm::SectionFrames::empty(),
-                    size,
-                    writable: plan.writable,
-                    file_object: Some(file_object),
-                    image_base,
-                }
+            Some((file_object, file, _)) if allocation & SEC_IMAGE != 0 => {
+                return create_image_section(slot, access, attributes, file_object, &file);
             }
+            Some((file_object, file, _)) => ob::SectionObject {
+                file,
+                paging_file: false,
+                frames: crate::mem::vm::SectionFrames::empty(),
+                size: plan.size,
+                writable: plan.writable,
+                file_object: Some(file_object),
+                image_base: 0,
+                segment: None,
+            },
         };
         sync::create(slot, access, attributes, ObjectType::Section, || {
             let directory = ob::directory();
@@ -432,6 +435,78 @@ mod target {
             }
             // A failed publication deletes the object, which gives the file back.
             Some(id)
+        })
+    }
+
+    /// NtCreateSection of an image (SEC_IMAGE): a section of the file's image segment — the one
+    /// the file's record names, while it lives, or a new one, the image's layout read and parsed
+    /// now (see [`image_layout`]). A new segment holds the file object the handle names, and the
+    /// file counts it as mapped; the segment's last reference gives both back.
+    fn create_image_section(
+        slot: UserPtr<u32>,
+        access: u32,
+        attributes: UserAddr,
+        file_object: ObjectId,
+        file: &crate::fs::fat32::lookup::File,
+    ) -> NtResult {
+        let record = ob::directory()
+            .file(file_object)
+            .expect("the handle's file object lives")
+            .record;
+        let segment_of = |directory: &mut ob::Directory| {
+            let id = crate::fs::file::records().get(record).image?;
+            directory
+                .segment(id)
+                .map(|segment| (id, segment.image_base, segment.size))
+        };
+        // A file's first image section reads and parses its headers; later ones take the layout
+        // the segment holds.
+        let layout = match segment_of(ob::directory()) {
+            Some((_, image_base, size)) => (image_base, size),
+            None => crate::process::threads::critical_region(|| read_layout(file))?,
+        };
+        sync::create(slot, access, attributes, ObjectType::Section, || {
+            let directory = ob::directory();
+            let segment = match segment_of(directory) {
+                Some((id, _, _)) => {
+                    let held = directory.reference_segment(id);
+                    debug_assert!(held, "the file's segment lives");
+                    id
+                }
+                None => {
+                    let (image_base, size) = layout;
+                    let id = directory.create_segment(ob::ImageSegment {
+                        frames: crate::mem::vm::SectionFrames::empty(),
+                        file_object,
+                        image_base,
+                        size,
+                    })?;
+                    let held = directory.reference(file_object);
+                    debug_assert!(held, "the handle's file object lives");
+                    let record = crate::fs::file::records().get_mut(record);
+                    record.user_mapped += 1;
+                    record.image = Some(id);
+                    id
+                }
+            };
+            let segment_record = *directory.segment(segment).expect("held");
+            let section = directory.create_section(ob::SectionObject {
+                file: *file,
+                paging_file: false,
+                size: segment_record.size,
+                image_base: segment_record.image_base,
+                segment: Some(segment),
+                ..ob::SectionObject::none()
+            });
+            if section.is_none() {
+                // No section record: the segment's reference goes back (and a new segment with
+                // it).
+                if let Some(followup) = directory.dereference_segment(segment) {
+                    crate::user::args::calling_process().finish(followup);
+                }
+            }
+            // A failed publication deletes the section, which drops its hold on the segment.
+            section
         })
     }
 
@@ -506,7 +581,7 @@ mod target {
         let length = capture(size)?;
         let (object, access) = section_of(section.raw())?;
         let record = *object.section();
-        if record.image_base != 0 {
+        if let Some(segment) = record.segment {
             image_view(
                 access,
                 requested,
@@ -515,8 +590,9 @@ mod target {
                 record.image_base,
                 record.size,
             )?;
+            // The section holds its segment while this call references it.
             let mapped = with_space(call, process, |space, pages| {
-                map_image(space, pages, object.id())
+                map_image(space, pages, segment)
             })?;
             base.write(mapped)?;
             size.write(record.size)?;
@@ -658,7 +734,7 @@ mod target {
                 return Err(STATUS_NO_MEMORY);
             }
         }
-        let recorded = space.add_view(base, object);
+        let recorded = space.add_view(base, ob::Mapping::Section(object));
         debug_assert!(recorded, "the view table had room");
         // The view holds its section for as long as it is mapped.
         let held = directory.reference(object);
@@ -666,14 +742,15 @@ mod target {
         Ok(base)
     }
 
-    /// Map the image section `object` names as its one view: the whole image at its preferred base
+    /// Map the image segment `segment` names as a view: the whole image at its preferred base
     /// (STATUS_CONFLICTING_ADDRESSES when another region holds any of it), a MEM_IMAGE reservation
-    /// whose pages carry their sections' protections. A page not made yet is built from the file,
-    /// through the image's section table (its headers parsed again from the file's first page).
+    /// whose pages carry their sections' protections, every page the segment's frame. A page not
+    /// made yet is built from the file, through the image's section table (its headers parsed
+    /// again from the file's first page). The view holds the segment, not the section.
     fn map_image(
         space: &mut crate::mem::vm::AddressSpace,
         table: &mut CurrentPages,
-        object: ObjectId,
+        segment: ob::SegmentId,
     ) -> Result<u32, Status> {
         use crate::exec::loader::page_protect;
         use crate::mem::vm::PAGE_EXECUTE_WRITECOPY;
@@ -681,17 +758,14 @@ mod target {
             return Err(STATUS_NO_MEMORY);
         }
         let directory = ob::directory();
+        // The file as its record holds it now (the segment keeps it open).
         let file = {
-            let section = *directory
-                .section(object)
-                .expect("the caller holds the section");
-            match section
-                .file_object
-                .and_then(|file_object| directory.file(file_object).map(|object| object.record))
-            {
-                Some(record) => crate::fs::file::records().get(record).file,
-                None => section.file,
-            }
+            let file_object = directory
+                .segment(segment)
+                .expect("the caller holds the segment")
+                .file_object;
+            let record = directory.file(file_object).expect("held").record;
+            crate::fs::file::records().get(record).file
         };
         let mut buffer = [0u8; PAGE as usize];
         let headers = (file.size as usize).min(IMAGE_HEADERS);
@@ -700,9 +774,9 @@ mod target {
         }
         let image = crate::exec::pe::Image::parse_headers(&buffer[..headers], file.size as usize)
             .map_err(|_| STATUS_INVALID_IMAGE_FORMAT)?;
-        let section = directory
-            .section(object)
-            .expect("the caller holds the section");
+        let segment_record = directory
+            .segment(segment)
+            .expect("the caller holds the segment");
         let base = space
             .reserve(
                 Some(image.image_base),
@@ -717,7 +791,7 @@ mod target {
             })?;
         for page in 0..image.size_of_image.div_ceil(PAGE) {
             let rva = page * PAGE;
-            let made = section.frames.made(table, page);
+            let made = segment_record.frames.made(table, page);
             // A page not yet made is built first: a read that fails maps nothing.
             if made.is_none()
                 && !image.map_page(rva, &mut buffer, |offset, out| {
@@ -729,7 +803,7 @@ mod target {
             }
             let frame = match made {
                 Some(frame) => Ok(frame),
-                None => section.frames.frame(table, page, |frame| {
+                None => segment_record.frames.frame(table, page, |frame| {
                     crate::mem::paging::write_frame(frame, 0, &buffer);
                 }),
             };
@@ -741,23 +815,24 @@ mod target {
                 return Err(STATUS_NO_MEMORY);
             }
         }
-        let recorded = space.add_view(base, object);
+        let recorded = space.add_view(base, ob::Mapping::Image(segment));
         debug_assert!(recorded, "the view table had room");
-        // The view holds its section for as long as it is mapped.
-        let held = directory.reference(object);
-        debug_assert!(held, "a section being mapped lives");
+        // The view holds the segment for as long as it is mapped.
+        let held = directory.reference_segment(segment);
+        debug_assert!(held, "a segment being mapped lives");
         Ok(base)
     }
 
     /// NtUnmapViewOfSection: unmap the view holding the address — any address inside it names it,
-    /// as on Windows 2000 — (a section nothing names any more goes with its last view);
+    /// as on Windows 2000 — (a section, or an image segment, nothing names any more goes with its
+    /// last view);
     /// STATUS_NOT_MAPPED_VIEW for an address no view holds.
     pub fn unmap_view_of_section(
         call: &mut NtCall,
         process: Handle,
         address: UserAddr,
     ) -> NtResult {
-        let object = with_space(call, process, |space, pages| {
+        let mapping = with_space(call, process, |space, pages| {
             // A data view, or an image section's (the image and the system DLLs, mapped by the
             // kernel itself, are no views).
             let base = space
@@ -765,12 +840,12 @@ mod target {
                 .filter(|region| matches!(region.kind, Kind::Mapped | Kind::Image))
                 .ok_or(STATUS_NOT_MAPPED_VIEW)?
                 .base;
-            let object = space.take_view(base).ok_or(STATUS_NOT_MAPPED_VIEW)?;
+            let mapping = space.take_view(base).ok_or(STATUS_NOT_MAPPED_VIEW)?;
             let _ = space.release(pages, base);
-            Ok(object)
+            Ok(mapping)
         })?;
-        // The view's reference goes; a section nothing else references goes with it.
-        ob::release(object);
+        // The view's reference goes; a section or segment nothing else references goes with it.
+        ob::release_mapping(mapping);
         Ok(STATUS_SUCCESS)
     }
 }

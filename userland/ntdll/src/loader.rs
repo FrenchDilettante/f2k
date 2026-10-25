@@ -459,7 +459,7 @@ fn map_image(file: u32) -> Result<(u32, u32), u32> {
         PAGE_READWRITE,
     ];
     let status = system_service(nr::NtMapViewOfSection, &args);
-    // The view holds the section.
+    // The view holds the image (its file's segment), not the section: the section goes now.
     close(section);
     match status {
         STATUS_SUCCESS => Ok((base, size)),

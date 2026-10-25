@@ -26,15 +26,16 @@
 //! Region kinds are metadata (what a query reports as the type); the services (`nt::memory`,
 //! `nt::section`) decide what each kind refuses.
 //!
-//! A frame may have several holders: a section owns its frames ([`SectionFrames`]), and each view
-//! of it maps them too; a system DLL's pages are the kernel's, each process mapping them. The frame
-//! database counts the holders; a page's release drops its own hold, and the frame goes back only
-//! with the last. Copy-on-write pages (PAGE_WRITECOPY, an image's writable sections and
-//! FILE_MAP_COPY views) are read-only to the hardware: the first write makes the page private — a
-//! copy of a frame other holders still map, or the frame itself when it is the page's alone — and
-//! the page turns read-write, as the platform reports it ([`copy_on_write`]). A writable protection
-//! given to a page whose frame others hold, outside a view, is copy-on-write in fact: the system
-//! DLLs' pages, and the shared data page, stay the kernel's.
+//! A frame may have several holders: a data section, or an image file's segment, owns its frames
+//! ([`SectionFrames`]), and each view of it maps them too; a system DLL's pages are the kernel's,
+//! each process mapping them. The frame database counts the holders; a page's release drops its own
+//! hold, and the frame goes back only with the last. Copy-on-write pages (PAGE_WRITECOPY, an
+//! image's writable sections and FILE_MAP_COPY views) are read-only to the hardware: the first
+//! write makes the page private — a copy of a frame other holders still map, or the frame itself
+//! when it is the page's alone — and the page turns read-write, as the platform reports it
+//! ([`copy_on_write`]). A writable protection given to a page whose frame others hold, outside a
+//! view, is copy-on-write in fact: the system DLLs' pages, and the shared data page, stay the
+//! kernel's.
 
 /// The page size and the allocation granularity.
 pub const PAGE: u32 = 0x1000;
@@ -330,12 +331,12 @@ fn page_up(va: u64) -> u64 {
 /// How many mapped views a process can hold at once.
 pub const VIEWS: usize = 32;
 
-/// One mapped view: its region's base, and the section object whose frames it maps (the view holds
-/// a reference on it for as long as it is mapped).
+/// One mapped view: its region's base, and what it maps — a data section, or an image's segment —
+/// whose frames it maps (the view holds a reference on it for as long as it is mapped).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct View {
     pub base: u32,
-    pub section: crate::ob::ObjectId,
+    pub mapping: crate::ob::Mapping,
 }
 
 /// A process's regions, and its mapped views (on NT, the VADs a view's section hangs off). All
@@ -360,32 +361,32 @@ impl AddressSpace {
         self.views.iter().any(Option::is_none)
     }
 
-    /// Record a view mapped at `base` of `section`; false when the view table is full.
-    pub fn add_view(&mut self, base: u32, section: crate::ob::ObjectId) -> bool {
+    /// Record a view mapped at `base` of `mapping`; false when the view table is full.
+    pub fn add_view(&mut self, base: u32, mapping: crate::ob::Mapping) -> bool {
         match self.views.iter_mut().find(|view| view.is_none()) {
             Some(slot) => {
-                *slot = Some(View { base, section });
+                *slot = Some(View { base, mapping });
                 true
             }
             None => false,
         }
     }
 
-    /// Forget the view at `base`, returning the section it mapped; none when no view starts there.
-    pub fn take_view(&mut self, base: u32) -> Option<crate::ob::ObjectId> {
+    /// Forget the view at `base`, returning what it mapped; none when no view starts there.
+    pub fn take_view(&mut self, base: u32) -> Option<crate::ob::Mapping> {
         let slot = self
             .views
             .iter_mut()
             .find(|view| view.is_some_and(|view| view.base == base))?;
-        slot.take().map(|view| view.section)
+        slot.take().map(|view| view.mapping)
     }
 
-    /// Forget every view (the address space goes, and its pages with it), handing each view's
-    /// section to `release` for the reference the view held.
-    pub fn drop_views(&mut self, mut release: impl FnMut(crate::ob::ObjectId)) {
+    /// Forget every view (the address space goes, and its pages with it), handing what each view
+    /// mapped to `release` for the reference the view held.
+    pub fn drop_views(&mut self, mut release: impl FnMut(crate::ob::Mapping)) {
         for slot in self.views.iter_mut() {
             if let Some(view) = slot.take() {
-                release(view.section);
+                release(view.mapping);
             }
         }
     }
@@ -944,11 +945,13 @@ mod tests {
     /// and every one handed back (with its section) when the space goes.
     #[test]
     fn the_space_records_its_views() {
-        use crate::ob::{ObjectId, ObjectType};
-        let section = |index| ObjectId {
-            kind: ObjectType::Section,
-            index,
-            generation: 0,
+        use crate::ob::{Mapping, ObjectId, ObjectType, SegmentId};
+        let section = |index| {
+            Mapping::Section(ObjectId {
+                kind: ObjectType::Section,
+                index,
+                generation: 0,
+            })
         };
         let mut space = Box::new(AddressSpace::new());
         assert!(space.add_view(0x30_0000, section(1)));
@@ -968,10 +971,29 @@ mod tests {
             !space.add_view(0x7000_0000, section(4)),
             "the table is full"
         );
+        let image = Mapping::Image(SegmentId {
+            index: 5,
+            generation: 1,
+        });
+        assert_eq!(space.take_view(0x41_0000), Some(section(3)));
+        assert!(
+            space.add_view(0x41_0000, image),
+            "an image's view maps its segment"
+        );
         let mut released = Vec::new();
-        space.drop_views(|section| released.push(section.index));
+        space.drop_views(|mapping| released.push(mapping));
         assert_eq!(released.len(), VIEWS);
-        assert_eq!(released.iter().filter(|&&index| index == 2).count(), 1);
+        assert_eq!(
+            released
+                .iter()
+                .filter(|&&mapping| mapping == section(2))
+                .count(),
+            1
+        );
+        assert_eq!(
+            released.iter().filter(|&&mapping| mapping == image).count(),
+            1
+        );
         assert!(space.has_view_room() && space.take_view(0x31_0000).is_none());
     }
 
