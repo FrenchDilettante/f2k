@@ -294,6 +294,10 @@ run-tests: userland
 	for dll in kernel32 msvcrt advapi32 user32; do \
 		CARGO_UNSTABLE_BUILD_STD=std cargo test --manifest-path $(USERLAND_DIR)/$$dll/Cargo.toml --lib --target $(RUST_HOST_TARGET) --target-dir target/userland-host || exit 1; \
 	done
+	# The compiler's helpers, F2K's own programs' runtime, and the programs' libraries.
+	for crate in compiler-helpers exe; do \
+		CARGO_UNSTABLE_BUILD_STD=std cargo test --manifest-path $(USERLAND_DIR)/$$crate/Cargo.toml --lib --target $(RUST_HOST_TARGET) --target-dir target/userland-host || exit 1; \
+	done
 
 .PHONY: check
 check: userland

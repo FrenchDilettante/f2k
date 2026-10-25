@@ -1,0 +1,15 @@
+[package]
+name = "exe"
+version = "0.1.0"
+edition = "2021"
+
+# The runtime of F2K's own programs (userland/<program>): their entry point, their standard output
+# and error, their panic handler, and the kernel32 calls they make, wrapped safely. A library: each
+# program is a crate of its own whose binary links it.
+[lib]
+name = "exe"
+path = "src/lib.rs"
+
+# What the compiler expects of an MSVC environment without its C runtime.
+[dependencies]
+compiler-helpers = { path = "../compiler-helpers" }

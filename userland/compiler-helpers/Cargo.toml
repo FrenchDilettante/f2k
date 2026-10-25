@@ -1,0 +1,10 @@
+[package]
+name = "compiler-helpers"
+version = "0.1.0"
+edition = "2021"
+
+# The helpers the compiler calls in an MSVC environment without its C runtime, linked into every
+# image the workspace builds (through rtl and exe).
+[lib]
+name = "compiler_helpers"
+path = "src/lib.rs"

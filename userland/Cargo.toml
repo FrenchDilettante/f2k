@@ -1,7 +1,7 @@
 # The userland workspace: the code that runs in ring 3, built for its own target
 # (.cargo/config.toml). The root workspace excludes it.
 [workspace]
-members = ["rtl", "ntdll", "kernel32", "msvcrt", "advapi32", "user32"]
+members = ["rtl", "ntdll", "kernel32", "msvcrt", "advapi32", "user32", "compiler-helpers", "exe"]
 resolver = "2"
 
 # Panic behaviour is not set here: the target spec (i686-f2k-pe.json) says panic-strategy

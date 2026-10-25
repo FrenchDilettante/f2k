@@ -8,3 +8,7 @@ edition = "2021"
 # from.
 [build-dependencies]
 exportgen = { path = "../../tools/exportgen" }
+
+# What the compiler expects of an MSVC environment without its C runtime.
+[dependencies]
+compiler-helpers = { path = "../compiler-helpers" }
