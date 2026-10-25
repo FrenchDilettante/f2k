@@ -36,6 +36,13 @@
  *            local, _alloca), the stack reservation and guard page, a
  *            child thread with a requested stack size, a child that
  *            overflows and catches it
+ *   query    ntdll's NtQuerySection: SectionBasicInformation of
+ *            paging-file sections (committed, SEC_RESERVE), a file's
+ *            data section and its SEC_IMAGE section (the program's own
+ *            file); SectionImageInformation of the image against the
+ *            program's own headers; class 1 on data sections, lengths
+ *            short and long, an unknown class, no length pointer, a
+ *            handle without SECTION_QUERY, an event, NULL: the statuses
  *
  * The named mappings run twice: through the A calls, then through their
  * W twins on the same names (the W lines carry the W names, or "(W)");
@@ -975,6 +982,149 @@ static void sec_stack(void)
     line("overflowing child: caught code 0x%08lX, survived %s", r.code, yesno(r.survived));
 }
 
+/* --- query --------------------------------------------------------- */
+
+/* ntdll's NtQuerySection, which no import library declares: reached
+ * through GetProcAddress. */
+typedef LONG (WINAPI *query_section_fn)(HANDLE, ULONG, PVOID, ULONG, PULONG);
+
+typedef struct {                    /* SectionBasicInformation (0) */
+    DWORD BaseAddress;
+    DWORD Attributes;
+    LARGE_INTEGER Size;
+} section_basic_t;
+
+typedef struct {                    /* SectionImageInformation (1), NT 5.0 */
+    DWORD TransferAddress;
+    DWORD ZeroBits;
+    DWORD MaximumStackSize;
+    DWORD CommittedStackSize;
+    DWORD SubSystemType;
+    WORD SubSystemMinorVersion;
+    WORD SubSystemMajorVersion;
+    DWORD GpValue;
+    WORD ImageCharacteristics;
+    WORD DllCharacteristics;
+    WORD Machine;
+    BYTE ImageContainsCode;
+    BYTE Spare1;
+    DWORD LoaderFlags;
+    DWORD Reserved[2];
+} section_image_t;
+
+static query_section_fn query_section;
+
+static void basic(const char *label, HANDLE section)
+{
+    section_basic_t b;
+    ULONG len = F2KT_UNTOUCHED;
+    LONG st;
+
+    memset(&b, 0xEE, sizeof b);
+    st = query_section(section, 0, &b, sizeof b, &len);
+    if (st != 0) {
+        line("%s: basic 0x%08lX, length %lu", label, st, len);
+        return;
+    }
+    line("%s: basic 0x%08lX, length %lu, base %s, attributes 0x%08lX, size 0x%lX%08lX", label, st, len,
+         b.BaseAddress == 0 ? "0" : "nonzero", b.Attributes, b.Size.HighPart, b.Size.LowPart);
+}
+
+static void sec_query(void)
+{
+    char path[MAX_PATH];
+    section_basic_t b;
+    section_image_t im;
+    IMAGE_NT_HEADERS *nt;
+    BYTE *own;
+    HANDLE paging, reserve, file, data, image, named, mapread, ev;
+    ULONG len;
+    LONG st;
+
+    query_section = (query_section_fn)GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtQuerySection");
+    if (query_section == NULL) {
+        line("ntdll's NtQuerySection: not found");
+        return;
+    }
+    line("sizes: basic %u, image %u", (unsigned)sizeof b, (unsigned)sizeof im);
+    paging = CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, MB, NULL);
+    basic("the paging file, 1 MiB, committed", paging);
+    reserve = CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE | SEC_RESERVE, 0, MB, NULL);
+    basic("the paging file, 1 MiB, SEC_RESERVE", reserve);
+
+    GetModuleFileNameA(NULL, path, sizeof path);
+    file = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    data = CreateFileMappingA(file, NULL, PAGE_READONLY, 0, 0, NULL);
+    basic("the program's file, read-only", data);
+    image = CreateFileMappingA(file, NULL, PAGE_READONLY | SEC_IMAGE, 0, 0, NULL);
+    basic("the program's file, SEC_IMAGE", image);
+
+    own = (BYTE *)GetModuleHandleA(NULL);
+    nt = (IMAGE_NT_HEADERS *)(own + ((IMAGE_DOS_HEADER *)own)->e_lfanew);
+    memset(&b, 0, sizeof b);
+    query_section(image, 0, &b, sizeof b, &len);
+    line("  its base the image's ImageBase: %s, its size the image's SizeOfImage: %s",
+         yesno(b.BaseAddress == nt->OptionalHeader.ImageBase),
+         yesno(b.Size.LowPart == nt->OptionalHeader.SizeOfImage && b.Size.HighPart == 0));
+
+    memset(&im, 0xEE, sizeof im);
+    len = F2KT_UNTOUCHED;
+    st = query_section(image, 1, &im, sizeof im, &len);
+    line("the program's file, SEC_IMAGE: image 0x%08lX, length %lu", st, len);
+    if (st == 0) {
+        line("  TransferAddress the image's entry: %s",
+             yesno(im.TransferAddress
+                   == nt->OptionalHeader.ImageBase + nt->OptionalHeader.AddressOfEntryPoint));
+        line("  ZeroBits %lu, stack reserve 0x%lX, commit 0x%lX, the header's: %s", im.ZeroBits,
+             im.MaximumStackSize, im.CommittedStackSize,
+             yesno(im.MaximumStackSize == nt->OptionalHeader.SizeOfStackReserve
+                   && im.CommittedStackSize == nt->OptionalHeader.SizeOfStackCommit));
+        line("  subsystem %lu, version %u.%u, GpValue 0x%lX", im.SubSystemType, im.SubSystemMajorVersion,
+             im.SubSystemMinorVersion, im.GpValue);
+        line("  characteristics 0x%04X (the header's 0x%04X), DLL characteristics 0x%04X, machine 0x%04X",
+             im.ImageCharacteristics, nt->FileHeader.Characteristics, im.DllCharacteristics, im.Machine);
+        line("  contains code %u, spare %u, loader flags 0x%lX, reserved 0x%lX 0x%lX", im.ImageContainsCode,
+             im.Spare1, im.LoaderFlags, im.Reserved[0], im.Reserved[1]);
+    }
+
+    len = F2KT_UNTOUCHED;
+    st = query_section(paging, 1, &im, sizeof im, &len);
+    line("the paging file's section, class 1: 0x%08lX, length %lu", st, len);
+    len = F2KT_UNTOUCHED;
+    st = query_section(data, 1, &im, sizeof im, &len);
+    line("the file's data section, class 1: 0x%08lX, length %lu", st, len);
+    len = F2KT_UNTOUCHED;
+    st = query_section(image, 0, &b, sizeof b - 1, &len);
+    line("class 0, one byte short: 0x%08lX, length %lu", st, len);
+    len = F2KT_UNTOUCHED;
+    st = query_section(image, 0, &im, sizeof b + 4, &len);
+    line("class 0, four bytes over: 0x%08lX, length %lu", st, len);
+    len = F2KT_UNTOUCHED;
+    st = query_section(image, 1, &im, sizeof im - 1, &len);
+    line("class 1, one byte short: 0x%08lX, length %lu", st, len);
+    len = F2KT_UNTOUCHED;
+    st = query_section(image, 2, &im, sizeof im, &len);
+    line("class 2: 0x%08lX, length %lu", st, len);
+    st = query_section(image, 0, &b, sizeof b, NULL);
+    line("class 0, no length pointer: 0x%08lX", st);
+
+    named = CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, 0x10000, "F2KQuerySection");
+    mapread = OpenFileMappingA(FILE_MAP_READ, FALSE, "F2KQuerySection");
+    basic("a handle opened with FILE_MAP_READ only", mapread);
+    ev = CreateEventA(NULL, TRUE, FALSE, NULL);
+    basic("an event's handle", ev);
+    basic("NULL", NULL);
+
+    CloseHandle(ev);
+    CloseHandle(mapread);
+    CloseHandle(named);
+    CloseHandle(image);
+    CloseHandle(data);
+    CloseHandle(file);
+    CloseHandle(reserve);
+    CloseHandle(paging);
+}
+
 static const section_t sections[] = {
     { "sysinfo", sec_sysinfo, 0 },
     { "malloc", sec_malloc, 0 },
@@ -985,6 +1135,7 @@ static const section_t sections[] = {
     { "image", sec_image, 0 },
     { "mapping", sec_mapping, 0 },
     { "stack", sec_stack, 0 },
+    { "query", sec_query, 0 },
     { NULL, NULL, 0 }
 };
 

@@ -56,6 +56,19 @@
  *               file, a missing directory, a drive letter with no
  *               volume: the return, the error and how the sizes relate,
  *               never the sizes
+ *   slots       which handle value an open takes after SetCurrentDirectoryA
+ *               to the current directory (as GetCurrentDirectoryA spells
+ *               it, lower case, with a trailing backslash), to another
+ *               directory and back: a fresh slot, or one the call freed;
+ *               and which freed slot the next opens take (relations
+ *               only, never the values)
+ *   flags       GetHandleInformation and SetHandleInformation on files:
+ *               inheritable and not, the masks, HANDLE_FLAG_PROTECT_FROM_
+ *               CLOSE (CloseHandle refused, a duplicate's flags,
+ *               DUPLICATE_CLOSE_SOURCE), pseudo and NULL handles; then
+ *               ntdll's NtQueryObject and NtSetInformationObject on
+ *               ObjectHandleFlagInformation (class 4): lengths and
+ *               statuses
  *
  * The opens, paths, metadata, listings and mappings run twice: through
  * the A calls, then through their W twins on the same paths (converted
@@ -75,6 +88,7 @@
 #include <fcntl.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <ctype.h>
 
 #define BIG_SIZE 150000
 
@@ -1338,6 +1352,220 @@ static void sec_diskfree(void)
     free_spaces("the root, no total-free pointer", root, 0);
 }
 
+/* --- slots --------------------------------------------------------- */
+
+/* The current directory set by `spelling`, between a handle closed and
+ * the next one opened: whether the open takes the slot just freed (the
+ * call opened and closed nothing) or another (the call reopened the
+ * directory's handle). Handle values never print, only their equality. */
+static void same_directory(const char *label, const char *spelling)
+{
+    HANDLE a, b;
+    BOOL r;
+
+    a = open_read("DATA\\SMALL.TXT");
+    CloseHandle(a);
+    arm();
+    r = SetCurrentDirectoryA(spelling);
+    b = open_read("DATA\\SMALL.TXT");
+    line("SetCurrentDirectoryA(%s): ret=%d err=%s, the next open takes the slot freed before it: %s", label,
+         r, le(), yesno(b == a));
+    CloseHandle(b);
+}
+
+static void sec_slots(void)
+{
+    char current[MAX_PATH];
+    char spelled[MAX_PATH];
+    HANDLE a, b, c, d, e;
+    char *p;
+
+    /* The method first: a close then an open, nothing in between. */
+    a = open_read("DATA\\SMALL.TXT");
+    CloseHandle(a);
+    b = open_read("DATA\\SMALL.TXT");
+    line("a close, then an open: the open takes the slot just freed: %s", yesno(b == a));
+    CloseHandle(b);
+
+    GetCurrentDirectoryA(sizeof current, current);
+    same_directory("the current directory, as GetCurrentDirectoryA spells it", current);
+    strcpy(spelled, current);
+    for (p = spelled; *p != 0; p++) {
+        *p = (char)tolower((unsigned char)*p);
+    }
+    same_directory("the same, lower case", spelled);
+    if (strlen(current) > 3) {
+        sprintf(spelled, "%s\\", current);
+        same_directory("the same, a trailing backslash", spelled);
+    }
+    same_directory("DATA, another directory", at("DATA"));
+    same_directory("back to the first", current);
+
+    /* Two slots freed: which one each of the next two opens takes. */
+    a = open_read("DATA\\SMALL.TXT");
+    b = open_read("DATA\\SMALL.TXT");
+    c = open_read("DATA\\SMALL.TXT");
+    CloseHandle(a);
+    CloseHandle(b);
+    d = open_read("DATA\\SMALL.TXT");
+    e = open_read("DATA\\SMALL.TXT");
+    line("three opens, the first closed, then the second, then two more opens:");
+    line("  the first of them takes the second's slot %s, the first's %s", yesno(d == b), yesno(d == a));
+    line("  the next takes the second's slot %s, the first's %s", yesno(e == b), yesno(e == a));
+    CloseHandle(c);
+    CloseHandle(d);
+    CloseHandle(e);
+}
+
+/* --- flags --------------------------------------------------------- */
+
+typedef LONG (WINAPI *object_info_fn)(HANDLE, ULONG, PVOID, ULONG, PULONG);
+
+static const char *flags_text(HANDLE h)
+{
+    static char bufs[4][32];
+    static int next;
+    char *b = bufs[next++ & 3];
+    DWORD flags = F2KT_UNTOUCHED;
+    BOOL r;
+
+    arm();
+    r = GetHandleInformation(h, &flags);
+    if (!r) {
+        sprintf(b, "ret=0 err=%s", le());
+    } else {
+        sprintf(b, "flags 0x%lX", flags);
+    }
+    return b;
+}
+
+static HANDLE open_flagged(BOOL inheritable)
+{
+    SECURITY_ATTRIBUTES sa;
+
+    sa.nLength = sizeof sa;
+    sa.lpSecurityDescriptor = NULL;
+    sa.bInheritHandle = inheritable;
+    return CreateFileA(at("DATA\\SMALL.TXT"), GENERIC_READ, FILE_SHARE_READ, &sa, OPEN_EXISTING, 0, NULL);
+}
+
+static void sec_flags(void)
+{
+    object_info_fn query_object, set_object;
+    HANDLE f, g, d;
+    BYTE info[8];
+    ULONG len;
+    const char *e;
+    LONG st;
+    BOOL r;
+
+    f = open_flagged(TRUE);
+    g = open_flagged(FALSE);
+    line("GetHandleInformation, a file opened inheritable: %s", flags_text(f));
+    line("GetHandleInformation, a file opened not inheritable: %s", flags_text(g));
+    line("GetHandleInformation, the current process's pseudo-handle: %s", flags_text(GetCurrentProcess()));
+    line("GetHandleInformation, NULL: %s", flags_text(NULL));
+    __try {
+        arm();
+        r = GetHandleInformation(f, NULL);
+        line("GetHandleInformation, no flags pointer: ret=%d err=%s", r, le());
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        line("GetHandleInformation, no flags pointer: faulted 0x%08lX", GetExceptionCode());
+    }
+
+    arm();
+    r = SetHandleInformation(g, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+    e = le();
+    line("SetHandleInformation(INHERIT, INHERIT), the second: ret=%d err=%s, %s", r, e, flags_text(g));
+    arm();
+    r = SetHandleInformation(g, HANDLE_FLAG_INHERIT, 0);
+    e = le();
+    line("SetHandleInformation(INHERIT, 0): ret=%d err=%s, %s", r, e, flags_text(g));
+    arm();
+    r = SetHandleInformation(g, 0, HANDLE_FLAG_INHERIT);
+    e = le();
+    line("SetHandleInformation(0, INHERIT), the mask empty: ret=%d err=%s, %s", r, e, flags_text(g));
+    arm();
+    r = SetHandleInformation(g, 0x80, 0x80);
+    e = le();
+    line("SetHandleInformation(0x80, 0x80), a flag with no meaning: ret=%d err=%s, %s", r, e,
+         flags_text(g));
+    arm();
+    r = SetHandleInformation(NULL, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+    line("SetHandleInformation, NULL: ret=%d err=%s", r, le());
+
+    arm();
+    r = SetHandleInformation(f, HANDLE_FLAG_PROTECT_FROM_CLOSE, HANDLE_FLAG_PROTECT_FROM_CLOSE);
+    e = le();
+    line("SetHandleInformation(PROTECT_FROM_CLOSE), the first: ret=%d err=%s, %s", r, e, flags_text(f));
+    arm();
+    r = CloseHandle(f);
+    e = le();
+    line("CloseHandle, the protected handle: ret=%d err=%s, still open: %s", r, e,
+         yesno(GetFileType(f) == FILE_TYPE_DISK));
+    d = NULL;
+    arm();
+    r = DuplicateHandle(GetCurrentProcess(), f, GetCurrentProcess(), &d, 0, TRUE, DUPLICATE_SAME_ACCESS);
+    e = le();
+    line("DuplicateHandle of it, inheritable: ret=%d err=%s, the duplicate's %s", r, e, flags_text(d));
+    if (d != NULL) {
+        CloseHandle(d);
+    }
+    d = NULL;
+    arm();
+    r = DuplicateHandle(GetCurrentProcess(), f, GetCurrentProcess(), &d, 0, FALSE,
+                        DUPLICATE_SAME_ACCESS | DUPLICATE_CLOSE_SOURCE);
+    e = le();
+    line("DuplicateHandle of it, DUPLICATE_CLOSE_SOURCE: ret=%d err=%s, the source still open: %s", r, e,
+         yesno(GetFileType(f) == FILE_TYPE_DISK));
+    if (d != NULL) {
+        CloseHandle(d);
+    }
+    arm();
+    r = SetHandleInformation(f, HANDLE_FLAG_PROTECT_FROM_CLOSE, 0);
+    line("SetHandleInformation(PROTECT_FROM_CLOSE, 0): ret=%d err=%s", r, le());
+    arm();
+    r = CloseHandle(f);
+    line("CloseHandle then: ret=%d err=%s", r, le());
+    CloseHandle(g);
+
+    /* The service beneath, ObjectHandleFlagInformation (class 4): two
+     * BOOLEANs, Inherit and ProtectFromClose. */
+    query_object = (object_info_fn)GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtQueryObject");
+    set_object = (object_info_fn)GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtSetInformationObject");
+    if (query_object == NULL || set_object == NULL) {
+        line("ntdll's NtQueryObject and NtSetInformationObject: not found");
+        return;
+    }
+    f = open_flagged(TRUE);
+    memset(info, 0xEE, sizeof info);
+    len = F2KT_UNTOUCHED;
+    st = query_object(f, 4, info, 2, &len);
+    line("NtQueryObject(class 4, 2 bytes): 0x%08lX, inherit %u protect %u, length %lu", st, info[0], info[1],
+         len);
+    memset(info, 0xEE, sizeof info);
+    len = F2KT_UNTOUCHED;
+    st = query_object(f, 4, info, 8, &len);
+    line("NtQueryObject(class 4, 8 bytes): 0x%08lX, the third byte untouched %s, length %lu", st,
+         yesno(info[2] == 0xEE), len);
+    len = F2KT_UNTOUCHED;
+    st = query_object(f, 4, info, 1, &len);
+    line("NtQueryObject(class 4, 1 byte): 0x%08lX, length %lu", st, len);
+    st = query_object(f, 4, info, 2, NULL);
+    line("NtQueryObject(class 4), no length pointer: 0x%08lX", st);
+    info[0] = 0;
+    info[1] = 1;
+    st = set_object(f, 4, info, 2, NULL);
+    line("NtSetInformationObject(class 4, not inherit, protect): 0x%08lX, %s", st, flags_text(f));
+    info[1] = 0;
+    st = set_object(f, 4, info, 1, NULL);
+    line("NtSetInformationObject(class 4, 1 byte): 0x%08lX", st);
+    st = set_object(f, 4, info, 8, NULL);
+    line("NtSetInformationObject(class 4, 8 bytes): 0x%08lX, %s", st, flags_text(f));
+    SetHandleInformation(f, HANDLE_FLAG_PROTECT_FROM_CLOSE, 0);
+    CloseHandle(f);
+}
+
 static const section_t sections[] = {
     { "open", sec_open, 0 },
     { "read", sec_read, 0 },
@@ -1350,6 +1578,8 @@ static const section_t sections[] = {
     { "concurrent", sec_concurrent, 0 },
     { "search", sec_search, 0 },
     { "diskfree", sec_diskfree, 0 },
+    { "slots", sec_slots, 0 },
+    { "flags", sec_flags, 0 },
     { NULL, NULL, 0 }
 };
 

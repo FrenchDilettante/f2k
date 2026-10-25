@@ -39,6 +39,15 @@
  *                   duplicated it into this process)
  *   mark            the dword at e_res2 in its own image's DOS header
  *                   (zero in the file; the parent writes one there)
+ *   crtinfo         the STARTUPINFO's cbReserved2 and lpReserved2 as the
+ *                   C runtime's parent left them: the count at its start,
+ *                   then per descriptor whether a handle follows, and from
+ *                   descriptor 3 on its flags byte and file type (the
+ *                   standard handles' flags and types depend on how the
+ *                   parent was started); then which of the C runtime's
+ *                   descriptors 0 to 5 are open
+ *   flags <h>...    each handle value's GetHandleInformation flags and
+ *                   file type, or the error; never the value
  *   (anything else) that the mode is unknown, then what where prints;
  *                   exit 100
  *
@@ -53,6 +62,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <io.h>
 
 /* The last-error sentinel, as common/f2kt.h's. */
 #define UNTOUCHED 0x0F2F2F2Fu
@@ -324,6 +334,62 @@ static void use_duplicate(const char *file)
     say(out(), "SetEvent on the duplicated handle: ret=%d err=%s", r, le());
 }
 
+static void crt_info(void)
+{
+    STARTUPINFOA si;
+    BYTE *p;
+    HANDLE h;
+    DWORD type;
+    int count, i;
+
+    memset(&si, 0, sizeof si);
+    si.cb = sizeof si;
+    GetStartupInfoA(&si);
+    say(out(), "cbReserved2 %u, lpReserved2 %s", si.cbReserved2, si.lpReserved2 != NULL ? "set" : "NULL");
+    if (si.lpReserved2 != NULL && si.cbReserved2 >= 4) {
+        p = si.lpReserved2;
+        count = *(UNALIGNED int *)p;
+        say(out(), "the count at its start %d, the size 4 + 5 per descriptor: %s", count,
+            si.cbReserved2 == 4 + 5 * count ? "yes" : "no");
+        for (i = 0; i < count && 4 + count + 4 * i + 4 <= (int)si.cbReserved2; i++) {
+            h = *(UNALIGNED HANDLE *)(p + 4 + count + 4 * i);
+            if (i < 3) {
+                say(out(), "descriptor %d: %s", i, h == INVALID_HANDLE_VALUE || h == NULL ? "no handle" : "a handle");
+            } else if (h == INVALID_HANDLE_VALUE || h == NULL) {
+                say(out(), "descriptor %d: flags 0x%02X, no handle", i, p[4 + i]);
+            } else {
+                SetLastError(UNTOUCHED);
+                type = GetFileType(h);
+                say(out(), "descriptor %d: flags 0x%02X, a handle of type %lu err=%s", i, p[4 + i], type, le());
+            }
+        }
+    }
+    for (i = 0; i < 6; i++) {
+        say(out(), "C runtime descriptor %d: %s", i, _get_osfhandle(i) == -1 ? "closed" : "open");
+    }
+}
+
+static void show_flags(int argc, char **argv)
+{
+    HANDLE h;
+    DWORD flags, type;
+    const char *err;
+    int i;
+
+    for (i = 2; i < argc; i++) {
+        h = (HANDLE)strtoul(argv[i], NULL, 0);
+        flags = UNTOUCHED;
+        SetLastError(UNTOUCHED);
+        if (GetHandleInformation(h, &flags)) {
+            type = GetFileType(h);
+            say(out(), "handle %d: flags 0x%lX, type %lu", i - 1, flags, type);
+        } else {
+            err = le();
+            say(out(), "handle %d: ret=0 err=%s", i - 1, err);
+        }
+    }
+}
+
 int main(int argc, char **argv)
 {
     const char *mode = argc >= 2 ? argv[1] : "args";
@@ -365,6 +431,10 @@ int main(int argc, char **argv)
         return signal_event(argv[2]);
     } else if (strcmp(mode, "usedup") == 0 && argc >= 3) {
         use_duplicate(argv[2]);
+    } else if (strcmp(mode, "crtinfo") == 0) {
+        crt_info();
+    } else if (strcmp(mode, "flags") == 0) {
+        show_flags(argc, argv);
     } else if (strcmp(mode, "mark") == 0) {
         image = (BYTE *)GetModuleHandleA(NULL);
         say(out(), "header mark 0x%08lX",

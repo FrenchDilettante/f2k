@@ -91,6 +91,50 @@
  *               F2K logs these through its stub path for now: this block
  *               is expected to stay failing there. On the real machine,
  *               CREATE_NEW_CONSOLE opens a console window briefly.
+ *   ended       a child that has ended, its process handle kept:
+ *               NtQueryInformationProcess on it (exit status, its id, its
+ *               parent this program), OpenProcess by its id while the
+ *               handle holds it (GetExitCodeProcess, a wait,
+ *               TerminateProcess) and once every handle is closed; a
+ *               running child's parent id
+ *   unstarted   the exit codes a child's thread and process end with:
+ *               TerminateProcess (7, 0xC0000005) and TerminateThread (45)
+ *               on a suspended child that never ran, TerminateProcess
+ *               (46) and TerminateThread (47) on a running one, and a
+ *               suspended child resumed to its own exit (3)
+ *   dupclose    DUPLICATE_CLOSE_SOURCE out of a suspended child: back
+ *               into this program, with no target process, into a handle
+ *               that names no process; whether the child's handle is
+ *               still there after each; and within this program
+ *   remote      VirtualAllocEx, VirtualQueryEx, VirtualProtectEx and
+ *               VirtualFreeEx in a suspended child; WriteProcessMemory
+ *               into its read-write, read-only, execute-read, no-access
+ *               and reserved pages (what each leaves of the page's
+ *               protection, what was written); its image base, address 0
+ *               and 0x80000000 queried; a handle with PROCESS_VM_READ
+ *               only; FlushInstructionCache through handles with each
+ *               access right alone, this program's, and NULL
+ *   selfmem     ReadProcessMemory and WriteProcessMemory on this program's
+ *               own memory through a real handle (DuplicateHandle of the
+ *               pseudo-handle), OpenProcess's handle and the pseudo-handle:
+ *               reads and writes crossing from committed into reserved
+ *               pages, into a read-only page, a buffer crossing into a
+ *               reserved page: the return, the count and the error
+ *   crtfds      msvcrt's descriptors handed to a child: three files
+ *               _open'ed (one _O_NOINHERIT, one append text), then
+ *               _spawnl(_P_WAIT) of spawnkid crtinfo (the STARTUPINFO's
+ *               cbReserved2 and lpReserved2 as the child finds them), again
+ *               with one closed, and CreateProcessA with no block
+ *   inheritflags GetHandleInformation's flags on an inheritable file, the
+ *               same protected from close, CONOUT$ opened inheritable and
+ *               not, protecting CONOUT$; what a child finds behind each
+ *               value with bInheritHandles TRUE and FALSE (spawnkid flags)
+ *   binaryforms GetBinaryTypeA/W on headers made in SCRATCH: a DOS
+ *               program (e_lfarlc 0x1C), a new header past the file's end,
+ *               NE headers for Windows, OS/2 and an unknown target, an LE
+ *               header, a PE signature with nothing after it, a bare
+ *               64-byte MZ header, a DOS program named .txt, text files
+ *               named .com, .pif and with no extension
  *
  * Named-only section (it ends the program):
  *
@@ -111,6 +155,10 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <process.h>
+#include <io.h>
+#include <fcntl.h>
+#include <sys/types.h>
+#include <sys/stat.h>
 
 /* ntdll's information queries, which no import library declares:
  * reached through GetProcAddress. */
@@ -1428,6 +1476,636 @@ static void sec_detach(void)
     CloseHandle(ev);
 }
 
+/* --- ended --------------------------------------------------------- */
+
+static void sec_ended(void)
+{
+    PROCESS_INFORMATION pi;
+    process_basic_t pb;
+    HANDLE again;
+    DWORD id, code, w;
+    ULONG len;
+    LONG st;
+    BOOL r;
+
+    reset();
+    if (query_process == NULL) {
+        line("ntdll's NtQueryInformationProcess: not found");
+        return;
+    }
+    if (!launch(0, kid, "spawnkid exit 5", TRUE, 0, NULL, NULL, NULL, &pi)) {
+        line("spawnkid exit 5: not started, err=%s", le());
+        return;
+    }
+    id = pi.dwProcessId;
+    w = WaitForSingleObject(pi.hProcess, WAIT_MS);
+    CloseHandle(pi.hThread);
+    line("spawnkid exit 5: its end %s; its thread handle closed, its process handle kept", wr(w));
+    memset(&pb, 0, sizeof pb);
+    len = F2KT_UNTOUCHED;
+    st = query_process(pi.hProcess, 0, &pb, sizeof pb, &len);
+    line("NtQueryInformationProcess(ProcessBasicInformation), the ended child: 0x%08lX, length %lu", st, len);
+    line("  exit status %s, a PEB %s, its id CreateProcess's %s, its parent this program %s",
+         code_text((DWORD)pb.ExitStatus), yesno(pb.PebBaseAddress != 0), yesno(pb.UniqueProcessId == id),
+         yesno(pb.InheritedFromUniqueProcessId == GetCurrentProcessId()));
+    arm();
+    again = OpenProcess(PROCESS_QUERY_INFORMATION | SYNCHRONIZE, FALSE, id);
+    line("OpenProcess by its id, a handle still holding it: opened %s err=%s", yesno(again != NULL), le());
+    if (again != NULL) {
+        code = 0xF2F2F2F2u;
+        arm();
+        r = GetExitCodeProcess(again, &code);
+        line("  GetExitCodeProcess through it: ret=%d code=%s err=%s", r, code_text(code), le());
+        line("  WaitForSingleObject(0) on it: %s", wr(WaitForSingleObject(again, 0)));
+        CloseHandle(again);
+    }
+    arm();
+    again = OpenProcess(PROCESS_TERMINATE, FALSE, id);
+    line("OpenProcess(PROCESS_TERMINATE) by its id: opened %s err=%s", yesno(again != NULL), le());
+    if (again != NULL) {
+        arm();
+        r = TerminateProcess(again, 9);
+        line("  TerminateProcess(9) through it: ret=%d err=%s", r, le());
+        CloseHandle(again);
+    }
+    CloseHandle(pi.hProcess);
+    arm();
+    again = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, id);
+    line("OpenProcess by its id, every handle closed: opened %s err=%s", yesno(again != NULL), le());
+    if (again != NULL) {
+        CloseHandle(again);
+    }
+
+    line("a waiting child:");
+    if (start_waiting(&pi)) {
+        memset(&pb, 0, sizeof pb);
+        st = query_process(pi.hProcess, 0, &pb, sizeof pb, &len);
+        line("  NtQueryInformationProcess: 0x%08lX, exit status %s, its parent this program %s", st,
+             code_text((DWORD)pb.ExitStatus), yesno(pb.InheritedFromUniqueProcessId == GetCurrentProcessId()));
+        SetEvent(ev_go);
+        code = finish(&pi, &w);
+        line("  its end: %s, exit code %s", wr(w), code_text(code));
+    }
+}
+
+/* --- unstarted ----------------------------------------------------- */
+
+/* A child ended by `what` (its return and error given): its end, its
+ * thread's exit code, the process's. */
+static void show_end(PROCESS_INFORMATION *pi, const char *what, BOOL r, const char *err)
+{
+    DWORD w, thread_code = 0xF2F2F2F2u, process_code;
+
+    w = WaitForSingleObject(pi->hProcess, WAIT_MS);
+    GetExitCodeThread(pi->hThread, &thread_code);
+    process_code = finish(pi, NULL);
+    line("  %s: ret=%d err=%s; the child's end: %s, its thread's exit code %s, the process's %s", what, r,
+         err, wr(w), code_text(thread_code), code_text(process_code));
+}
+
+static void sec_unstarted(void)
+{
+    PROCESS_INFORMATION pi;
+    char err[16];
+    BOOL r;
+
+    reset();
+    line("CreateProcessA(CREATE_SUSPENDED), spawnkid args never, never resumed:");
+    if (launch(0, kid, "spawnkid args never", TRUE, CREATE_SUSPENDED, NULL, NULL, NULL, &pi)) {
+        arm();
+        r = TerminateProcess(pi.hProcess, 7);
+        strcpy(err, le());
+        show_end(&pi, "TerminateProcess(7)", r, err);
+    }
+    if (launch(0, kid, "spawnkid args never", TRUE, CREATE_SUSPENDED, NULL, NULL, NULL, &pi)) {
+        arm();
+        r = TerminateProcess(pi.hProcess, 0xC0000005u);
+        strcpy(err, le());
+        show_end(&pi, "TerminateProcess(0xC0000005)", r, err);
+    }
+    if (launch(0, kid, "spawnkid args never", TRUE, CREATE_SUSPENDED, NULL, NULL, NULL, &pi)) {
+        arm();
+        r = TerminateThread(pi.hThread, 45);
+        strcpy(err, le());
+        show_end(&pi, "TerminateThread(45), its only thread", r, err);
+    }
+    line("a running child (it set its ready event and waits for another):");
+    if (start_waiting(&pi)) {
+        arm();
+        r = TerminateProcess(pi.hProcess, 46);
+        strcpy(err, le());
+        show_end(&pi, "TerminateProcess(46)", r, err);
+    }
+    if (start_waiting(&pi)) {
+        arm();
+        r = TerminateThread(pi.hThread, 47);
+        strcpy(err, le());
+        show_end(&pi, "TerminateThread(47), its only thread", r, err);
+    }
+    line("CreateProcessA(CREATE_SUSPENDED), spawnkid exit 3, resumed:");
+    if (launch(0, kid, "spawnkid exit 3", TRUE, CREATE_SUSPENDED, NULL, NULL, NULL, &pi)) {
+        arm();
+        r = ResumeThread(pi.hThread) != (DWORD)-1;
+        strcpy(err, le());
+        show_end(&pi, "ResumeThread", r, err);
+    }
+}
+
+/* --- dupclose ------------------------------------------------------ */
+
+/* The child's handle `value` duplicated back out of it: whether it is
+ * still open there. */
+static void still_there(const char *label, HANDLE child, HANDLE value)
+{
+    HANDLE again = NULL;
+    BOOL r;
+
+    arm();
+    r = DuplicateHandle(child, value, GetCurrentProcess(), &again, 0, FALSE, DUPLICATE_SAME_ACCESS);
+    line("  %s: ret=%d err=%s", label, r, le());
+    if (again != NULL) {
+        CloseHandle(again);
+    }
+}
+
+static void sec_dupclose(void)
+{
+    PROCESS_INFORMATION pi;
+    HANDLE ev, in_child, back, own, dup;
+    BOOL r;
+
+    reset();
+    ev = CreateEventA(NULL, TRUE, FALSE, NULL);
+    line("a suspended child, spawnkid args never, an event duplicated into it:");
+    if (!launch(0, kid, "spawnkid args never", TRUE, CREATE_SUSPENDED, NULL, NULL, NULL, &pi)) {
+        line("  not started, err=%s", le());
+        CloseHandle(ev);
+        return;
+    }
+    in_child = NULL;
+    DuplicateHandle(GetCurrentProcess(), ev, pi.hProcess, &in_child, 0, FALSE, DUPLICATE_SAME_ACCESS);
+    back = NULL;
+    arm();
+    r = DuplicateHandle(pi.hProcess, in_child, GetCurrentProcess(), &back, 0, FALSE,
+                        DUPLICATE_SAME_ACCESS | DUPLICATE_CLOSE_SOURCE);
+    line("  back out of it, DUPLICATE_CLOSE_SOURCE: ret=%d err=%s", r, le());
+    if (back != NULL) {
+        SetEvent(back);
+        line("  the same event: %s", yesno(WaitForSingleObject(ev, 0) == WAIT_OBJECT_0));
+        ResetEvent(ev);
+        CloseHandle(back);
+    }
+    still_there("the child's handle, duplicated out again", pi.hProcess, in_child);
+
+    in_child = NULL;
+    DuplicateHandle(GetCurrentProcess(), ev, pi.hProcess, &in_child, 0, FALSE, DUPLICATE_SAME_ACCESS);
+    arm();
+    r = DuplicateHandle(pi.hProcess, in_child, NULL, NULL, 0, FALSE, DUPLICATE_CLOSE_SOURCE);
+    line("  a second one, DUPLICATE_CLOSE_SOURCE with no target process: ret=%d err=%s", r, le());
+    still_there("the second, duplicated out again", pi.hProcess, in_child);
+
+    in_child = NULL;
+    DuplicateHandle(GetCurrentProcess(), ev, pi.hProcess, &in_child, 0, FALSE, DUPLICATE_SAME_ACCESS);
+    arm();
+    r = DuplicateHandle(pi.hProcess, in_child, ev, &back, 0, FALSE, DUPLICATE_SAME_ACCESS | DUPLICATE_CLOSE_SOURCE);
+    line("  a third one, DUPLICATE_CLOSE_SOURCE into an event's handle (no process): ret=%d err=%s", r, le());
+    still_there("the third, duplicated out again", pi.hProcess, in_child);
+
+    TerminateProcess(pi.hProcess, 0);
+    finish(&pi, NULL);
+
+    own = CreateEventA(NULL, TRUE, FALSE, NULL);
+    dup = NULL;
+    arm();
+    r = DuplicateHandle(GetCurrentProcess(), own, GetCurrentProcess(), &dup, 0, FALSE,
+                        DUPLICATE_SAME_ACCESS | DUPLICATE_CLOSE_SOURCE);
+    line("DuplicateHandle within this program, DUPLICATE_CLOSE_SOURCE: ret=%d err=%s", r, le());
+    arm();
+    r = CloseHandle(own);
+    line("  CloseHandle on the source then: ret=%d err=%s", r, le());
+    arm();
+    r = CloseHandle(dup);
+    line("  CloseHandle on the duplicate: ret=%d err=%s", r, le());
+    CloseHandle(ev);
+}
+
+/* --- remote -------------------------------------------------------- */
+
+/* VirtualQueryEx at `at` in `process`, as printed; the region's size
+ * only when `sized` (a free region's runs to wherever the next
+ * allocation is). */
+static void query_at(const char *label, HANDLE process, LPCVOID at, int sized)
+{
+    MEMORY_BASIC_INFORMATION mbi;
+    char region[24];
+    DWORD n;
+
+    memset(&mbi, 0, sizeof mbi);
+    arm();
+    n = VirtualQueryEx(process, at, &mbi, sizeof mbi);
+    if (n == 0) {
+        line("%s: ret=0 err=%s", label, le());
+        return;
+    }
+    if (sized) {
+        sprintf(region, " region 0x%lX", mbi.RegionSize);
+    } else {
+        region[0] = 0;
+    }
+    line("%s: ret=%lu, base the address %s, allocation base the address %s, state 0x%lX protect 0x%lX "
+         "type 0x%lX allocprotect 0x%lX%s", label, n, yesno(mbi.BaseAddress == at),
+         yesno(mbi.AllocationBase == at), mbi.State, mbi.Protect, mbi.Type, mbi.AllocationProtect, region);
+}
+
+static void remote_write(const char *label, HANDLE process, BYTE *at, const BYTE *data)
+{
+    DWORD n = 0xF2F2;
+    BOOL r;
+
+    arm();
+    r = WriteProcessMemory(process, at, (LPVOID)data, 16, &n);
+    line("%s: ret=%d n=%lu err=%s", label, r, n, le());
+}
+
+static void remote_protect(const char *label, HANDLE process, BYTE *at, DWORD protect)
+{
+    DWORD old = 0xF2F2;
+    BOOL r;
+
+    arm();
+    r = VirtualProtectEx(process, at, 0x1000, protect, &old);
+    line("%s: ret=%d old 0x%lX err=%s", label, r, old, le());
+}
+
+static void remote_flush(const char *label, DWORD access, DWORD id, LPCVOID at)
+{
+    HANDLE h = OpenProcess(access, FALSE, id);
+    BOOL r;
+
+    arm();
+    r = FlushInstructionCache(h, at, 16);
+    line("FlushInstructionCache, a handle with %s only: ret=%d err=%s", label, r, le());
+    if (h != NULL) {
+        CloseHandle(h);
+    }
+}
+
+static void sec_remote(void)
+{
+    static const BYTE data[16] = "F2K remote data";
+    PROCESS_INFORMATION pi;
+    process_basic_t pb;
+    BYTE got[16];
+    HANDLE limited;
+    BYTE *a, *c;
+    DWORD image = 0, w, code, n;
+    ULONG len;
+    BOOL r;
+
+    reset();
+    if (query_process == NULL) {
+        line("ntdll's NtQueryInformationProcess: not found");
+        return;
+    }
+    line("a suspended child, spawnkid exit 0:");
+    if (!launch(0, kid, "spawnkid exit 0", TRUE, CREATE_SUSPENDED, NULL, NULL, NULL, &pi)) {
+        line("  not started, err=%s", le());
+        return;
+    }
+    arm();
+    a = (BYTE *)VirtualAllocEx(pi.hProcess, NULL, 0x20000, MEM_RESERVE, PAGE_NOACCESS);
+    line("VirtualAllocEx(MEM_RESERVE, 128 KiB): non-null %s, on the 64 KiB granularity %s err=%s",
+         yesno(a != NULL), yesno(((DWORD)a & 0xFFFF) == 0), le());
+    if (a == NULL) {
+        TerminateProcess(pi.hProcess, 0);
+        finish(&pi, NULL);
+        return;
+    }
+    query_at("VirtualQueryEx, the reservation", pi.hProcess, a, 1);
+    arm();
+    c = (BYTE *)VirtualAllocEx(pi.hProcess, a, 0x1000, MEM_COMMIT, PAGE_READWRITE);
+    line("VirtualAllocEx(MEM_COMMIT, its first page): the address %s err=%s", yesno(c == a), le());
+    query_at("VirtualQueryEx, the committed page", pi.hProcess, a, 1);
+    query_at("VirtualQueryEx, the page after it", pi.hProcess, a + 0x1000, 1);
+
+    remote_write("WriteProcessMemory into the committed page", pi.hProcess, a, data);
+    remote_protect("VirtualProtectEx(PAGE_READONLY)", pi.hProcess, a, PAGE_READONLY);
+    remote_write("WriteProcessMemory into the read-only page", pi.hProcess, a + 16, data);
+    query_at("  VirtualQueryEx after it", pi.hProcess, a, 1);
+    remote_protect("VirtualProtectEx(PAGE_EXECUTE_READ)", pi.hProcess, a, PAGE_EXECUTE_READ);
+    remote_write("WriteProcessMemory into the execute-read page", pi.hProcess, a + 32, data);
+    query_at("  VirtualQueryEx after it", pi.hProcess, a, 1);
+    remote_protect("VirtualProtectEx(PAGE_NOACCESS)", pi.hProcess, a, PAGE_NOACCESS);
+    remote_write("WriteProcessMemory into the no-access page", pi.hProcess, a + 48, data);
+    query_at("  VirtualQueryEx after it", pi.hProcess, a, 1);
+    remote_protect("VirtualProtectEx(PAGE_READWRITE)", pi.hProcess, a, PAGE_READWRITE);
+    remote_write("WriteProcessMemory into the reserved page after it", pi.hProcess, a + 0x1000, data);
+    memset(got, 0, sizeof got);
+    ReadProcessMemory(pi.hProcess, a, got, 16, &n);
+    line("read back: the first write there %s", yesno(memcmp(got, data, 16) == 0));
+    memset(got, 0, sizeof got);
+    ReadProcessMemory(pi.hProcess, a + 16, got, 16, &n);
+    line("  the read-only page's %s", yesno(memcmp(got, data, 16) == 0));
+    memset(got, 0, sizeof got);
+    ReadProcessMemory(pi.hProcess, a + 32, got, 16, &n);
+    line("  the execute-read page's %s", yesno(memcmp(got, data, 16) == 0));
+    memset(got, 0, sizeof got);
+    ReadProcessMemory(pi.hProcess, a + 48, got, 16, &n);
+    line("  the no-access page's %s", yesno(memcmp(got, data, 16) == 0));
+
+    memset(&pb, 0, sizeof pb);
+    query_process(pi.hProcess, 0, &pb, sizeof pb, &len);
+    peek(pi.hProcess, pb.PebBaseAddress + 0x08, &image);
+    query_at("VirtualQueryEx, the child's image base", pi.hProcess, (LPCVOID)image, 1);
+    query_at("VirtualQueryEx, address 0", pi.hProcess, NULL, 1);
+    query_at("VirtualQueryEx, address 0x80000000", pi.hProcess, (LPCVOID)0x80000000u, 1);
+
+    limited = OpenProcess(PROCESS_VM_READ, FALSE, pi.dwProcessId);
+    query_at("VirtualQueryEx, a handle with PROCESS_VM_READ only", limited, a, 1);
+    arm();
+    c = (BYTE *)VirtualAllocEx(limited, NULL, 0x1000, MEM_COMMIT, PAGE_READWRITE);
+    line("VirtualAllocEx, the same handle: non-null %s err=%s", yesno(c != NULL), le());
+    remote_protect("VirtualProtectEx, the same handle", limited, a, PAGE_READONLY);
+    CloseHandle(limited);
+
+    arm();
+    r = FlushInstructionCache(pi.hProcess, a, 16);
+    line("FlushInstructionCache, CreateProcess's handle: ret=%d err=%s", r, le());
+    remote_flush("PROCESS_VM_WRITE", PROCESS_VM_WRITE, pi.dwProcessId, a);
+    remote_flush("PROCESS_VM_OPERATION", PROCESS_VM_OPERATION, pi.dwProcessId, a);
+    remote_flush("PROCESS_QUERY_INFORMATION", PROCESS_QUERY_INFORMATION, pi.dwProcessId, a);
+    arm();
+    r = FlushInstructionCache(GetCurrentProcess(), NULL, 0);
+    line("FlushInstructionCache, this program, NULL, 0 bytes: ret=%d err=%s", r, le());
+    arm();
+    r = FlushInstructionCache(NULL, NULL, 0);
+    line("FlushInstructionCache, a NULL handle: ret=%d err=%s", r, le());
+
+    arm();
+    r = VirtualFreeEx(pi.hProcess, a, 0, MEM_RELEASE);
+    line("VirtualFreeEx(MEM_RELEASE): ret=%d err=%s", r, le());
+    query_at("VirtualQueryEx, the released address", pi.hProcess, a, 0);
+    arm();
+    r = VirtualFreeEx(pi.hProcess, a, 0, MEM_RELEASE);
+    line("VirtualFreeEx(MEM_RELEASE) again: ret=%d err=%s", r, le());
+
+    line("the child resumed:");
+    ResumeThread(pi.hThread);
+    code = finish(&pi, &w);
+    line("  its end: %s, exit code %s", wr(w), code_text(code));
+}
+
+/* --- selfmem ------------------------------------------------------- */
+
+static void self_copy(int write, const char *label, HANDLE process, BYTE *at, BYTE *buffer, DWORD size)
+{
+    DWORD n = 0xF2F2;
+    BOOL r;
+
+    arm();
+    if (write) {
+        r = WriteProcessMemory(process, at, buffer, size, &n);
+    } else {
+        r = ReadProcessMemory(process, at, buffer, size, &n);
+    }
+    line("%s: ret=%d n=0x%lX err=%s", label, r, n, le());
+}
+
+/* How many of the reservation's leading bytes hold `value`. */
+static DWORD run_of(const BYTE *p, DWORD size, BYTE value)
+{
+    DWORD i;
+
+    for (i = 0; i < size && p[i] == value; i++) {
+    }
+    return i;
+}
+
+static void pattern(BYTE *p, DWORD size)
+{
+    DWORD i;
+
+    for (i = 0; i < size; i++) {
+        p[i] = (BYTE)(i * 7 + 3);
+    }
+}
+
+static void sec_selfmem(void)
+{
+    static BYTE buf[0x6000];
+    MEMORY_BASIC_INFORMATION mbi;
+    HANDLE self, opened;
+    BYTE *p;
+    DWORD old;
+    char err[16];
+    BOOL r;
+
+    self = NULL;
+    arm();
+    r = DuplicateHandle(GetCurrentProcess(), GetCurrentProcess(), GetCurrentProcess(), &self, 0, FALSE,
+                        DUPLICATE_SAME_ACCESS);
+    strcpy(err, le());
+    line("DuplicateHandle of the current process's pseudo-handle: ret=%d err=%s, a real handle %s", r, err,
+         yesno(self != NULL && self != GetCurrentProcess()));
+    opened = OpenProcess(PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_VM_OPERATION, FALSE,
+                         GetCurrentProcessId());
+    line("OpenProcess, this program's own id: opened %s", yesno(opened != NULL));
+    p = (BYTE *)VirtualAlloc(NULL, 0x10000, MEM_RESERVE, PAGE_NOACCESS);
+    VirtualAlloc(p, 0x2000, MEM_COMMIT, PAGE_READWRITE);
+    pattern(p, 0x2000);
+
+    line("8 KiB committed at the start of a 64 KiB reservation, the rest reserved:");
+    self_copy(0, "  ReadProcessMemory, the duplicated handle, 8 KiB", self, p, buf, 0x2000);
+    line("    the bytes: %s", yesno(memcmp(buf, p, 0x2000) == 0));
+    self_copy(0, "  12 KiB, across into the reserved page", self, p, buf, 0x3000);
+    self_copy(0, "  4 KiB from 2 KiB before the reserved page", self, p + 0x1800, buf, 0x1000);
+    self_copy(0, "  16 bytes from 8 bytes before it", self, p + 0x1FF8, buf, 16);
+    self_copy(0, "  4 KiB, all reserved", self, p + 0x2000, buf, 0x1000);
+    self_copy(0, "  12 KiB through OpenProcess's handle", opened, p, buf, 0x3000);
+    self_copy(0, "  12 KiB through the pseudo-handle", GetCurrentProcess(), p, buf, 0x3000);
+    self_copy(0, "  4 KiB into a buffer crossing into the reserved page", self, buf, p + 0x1800, 0x1000);
+    line("    the buffer's committed part filled: %s", yesno(memcmp(p + 0x1800, buf, 0x800) == 0));
+
+    pattern(p, 0x2000);
+    memset(buf, 0x5A, 0x3000);
+    self_copy(1, "  WriteProcessMemory, 12 KiB across into the reserved page", self, p, buf, 0x3000);
+    line("    bytes written from the start: 0x%lX", run_of(p, 0x2000, 0x5A));
+    pattern(p, 0x2000);
+    self_copy(1, "  16 bytes from 8 bytes before the reserved page", self, p + 0x1FF8, buf, 16);
+    line("    bytes written: 0x%lX", run_of(p + 0x1FF8, 8, 0x5A));
+    pattern(p, 0x2000);
+    VirtualProtect(p + 0x1000, 0x1000, PAGE_READONLY, &old);
+    self_copy(1, "  4 KiB into the second page, now read-only", self, p + 0x1000, buf, 0x1000);
+    VirtualQuery(p + 0x1000, &mbi, sizeof mbi);
+    line("    its protection after: 0x%lX, bytes written: 0x%lX", mbi.Protect, run_of(p + 0x1000, 0x1000, 0x5A));
+    VirtualProtect(p + 0x1000, 0x1000, PAGE_READWRITE, &old);
+    pattern(p, 0x2000);
+    VirtualProtect(p + 0x1000, 0x1000, PAGE_READONLY, &old);
+    self_copy(1, "  8 KiB over both pages, the second read-only", self, p, buf, 0x2000);
+    line("    bytes written from the start: 0x%lX", run_of(p, 0x2000, 0x5A));
+
+    VirtualFree(p, 0, MEM_RELEASE);
+    if (opened != NULL) {
+        CloseHandle(opened);
+    }
+    if (self != NULL) {
+        CloseHandle(self);
+    }
+}
+
+/* --- crtfds -------------------------------------------------------- */
+
+static void sec_crtfds(void)
+{
+    int a, b, c, r;
+
+    reset();
+    make_file(at("SCRATCH\\a.txt"), "first\r\n");
+    make_file(at("SCRATCH\\b.txt"), "second\r\n");
+    a = _open(at("SCRATCH\\a.txt"), _O_RDONLY | _O_BINARY);
+    b = _open(at("SCRATCH\\b.txt"), _O_RDONLY | _O_NOINHERIT);
+    c = _open(at("SCRATCH\\c.txt"), _O_WRONLY | _O_CREAT | _O_APPEND | _O_TEXT, _S_IREAD | _S_IWRITE);
+    line("_open: a.txt read binary %d, b.txt read _O_NOINHERIT %d, c.txt write append text %d", a, b, c);
+    line("_spawnl(_P_WAIT), spawnkid crtinfo:");
+    r = _spawnl(_P_WAIT, kid, "spawnkid", "crtinfo", NULL);
+    line("  ret %d", r);
+    if (b >= 0) {
+        _close(b);
+    }
+    line("b.txt closed, _spawnl(_P_WAIT), spawnkid crtinfo:");
+    r = _spawnl(_P_WAIT, kid, "spawnkid", "crtinfo", NULL);
+    line("  ret %d", r);
+    if (a >= 0) {
+        _close(a);
+    }
+    if (c >= 0) {
+        _close(c);
+    }
+    create(0, "no C runtime block, spawnkid crtinfo", kid, "spawnkid crtinfo");
+}
+
+/* --- inheritflags -------------------------------------------------- */
+
+static const char *flags_of(HANDLE h)
+{
+    static char bufs[4][32];
+    static int next;
+    char *b = bufs[next++ & 3];
+    DWORD flags = F2KT_UNTOUCHED;
+
+    arm();
+    if (GetHandleInformation(h, &flags)) {
+        sprintf(b, "flags 0x%lX", flags);
+    } else {
+        sprintf(b, "ret=0 err=%s", le());
+    }
+    return b;
+}
+
+static HANDLE open_console(BOOL inheritable)
+{
+    SECURITY_ATTRIBUTES sa;
+
+    sa.nLength = sizeof sa;
+    sa.lpSecurityDescriptor = NULL;
+    sa.bInheritHandle = inheritable;
+    return CreateFileA("CONOUT$", GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa,
+                       OPEN_EXISTING, 0, NULL);
+}
+
+static void sec_inheritflags(void)
+{
+    HANDLE plain, guarded, con_yes, con_no;
+    char cmd[160];
+    char err[16];
+    BOOL r;
+
+    reset();
+    make_file(at("SCRATCH\\a.txt"), "a\r\n");
+    plain = open_file("SCRATCH\\a.txt", GENERIC_READ, OPEN_EXISTING, TRUE);
+    guarded = open_file("SCRATCH\\a.txt", GENERIC_READ, OPEN_EXISTING, TRUE);
+    SetHandleInformation(guarded, HANDLE_FLAG_PROTECT_FROM_CLOSE, HANDLE_FLAG_PROTECT_FROM_CLOSE);
+    con_yes = open_console(TRUE);
+    con_no = open_console(FALSE);
+    line("an inheritable file: %s; the same, protected from close: %s", flags_of(plain), flags_of(guarded));
+    line("CONOUT$ opened inheritable: %s; not inheritable: %s", flags_of(con_yes), flags_of(con_no));
+    arm();
+    r = SetHandleInformation(con_no, HANDLE_FLAG_PROTECT_FROM_CLOSE, HANDLE_FLAG_PROTECT_FROM_CLOSE);
+    strcpy(err, le());
+    line("SetHandleInformation(PROTECT_FROM_CLOSE), CONOUT$: ret=%d err=%s, %s", r, err, flags_of(con_no));
+    SetHandleInformation(con_no, HANDLE_FLAG_PROTECT_FROM_CLOSE, 0);
+    sprintf(cmd, "spawnkid flags %lu %lu %lu %lu", (DWORD)plain, (DWORD)guarded, (DWORD)con_yes,
+            (DWORD)con_no);
+    create_ex(0, "spawnkid flags, the four in that order", kid, cmd, TRUE, 0, NULL, NULL, NULL);
+    create_ex(0, "the same, bInheritHandles FALSE", kid, cmd, FALSE, 0, NULL, NULL, NULL);
+    SetHandleInformation(guarded, HANDLE_FLAG_PROTECT_FROM_CLOSE, 0);
+    CloseHandle(plain);
+    CloseHandle(guarded);
+    CloseHandle(con_yes);
+    CloseHandle(con_no);
+}
+
+/* --- binaryforms --------------------------------------------------- */
+
+/* A file of `size` bytes, zero but for a DOS header: "MZ", e_lfarlc
+ * (the relocation table's offset: 0x40 or more announces a new header)
+ * and e_lfanew; at e_lfanew, when `sig` is given, its two bytes and, at
+ * 0x36 past it, `target` (an NE header's target operating system). */
+static void make_header(const char *rel, WORD lfarlc, DWORD lfanew, const char *sig, BYTE target, DWORD size)
+{
+    BYTE b[512];
+    DWORD n;
+    HANDLE f;
+
+    memset(b, 0, sizeof b);
+    b[0] = 'M';
+    b[1] = 'Z';
+    *(WORD *)(b + 0x18) = lfarlc;
+    *(DWORD *)(b + 0x3C) = lfanew;
+    if (sig != NULL && lfanew + 0x40 <= sizeof b) {
+        b[lfanew] = sig[0];
+        b[lfanew + 1] = sig[1];
+        b[lfanew + 0x36] = target;
+    }
+    f = CreateFileA(at(rel), GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (f == INVALID_HANDLE_VALUE) {
+        line("setup: %s not created, err=%lu", rel, GetLastError());
+        return;
+    }
+    WriteFile(f, b, size, &n, NULL);
+    CloseHandle(f);
+}
+
+static void sec_binaryforms(void)
+{
+    reset();
+    make_header("SCRATCH\\dos.exe", 0x1C, 0, NULL, 0, 512);
+    make_header("SCRATCH\\dosfar.exe", 0x40, 0x400, NULL, 0, 512);
+    make_header("SCRATCH\\win16.exe", 0x40, 0x80, "NE", 2, 512);
+    make_header("SCRATCH\\os2.exe", 0x40, 0x80, "NE", 1, 512);
+    make_header("SCRATCH\\netarget0.exe", 0x40, 0x80, "NE", 0, 512);
+    make_header("SCRATCH\\le.exe", 0x40, 0x80, "LE", 0, 512);
+    make_header("SCRATCH\\pecut.exe", 0x40, 0x80, "PE", 0, 512);
+    make_header("SCRATCH\\mzonly.exe", 0x40, 0, NULL, 0, 64);
+    make_header("SCRATCH\\dos.txt", 0x1C, 0, NULL, 0, 512);
+    make_file(at("SCRATCH\\text.com"), "not a program\r\n");
+    make_file(at("SCRATCH\\text.pif"), "not a program\r\n");
+    make_file(at("SCRATCH\\text"), "not a program\r\n");
+
+    binary_both("an MZ header, e_lfarlc 0x1C (a DOS program)", "SCRATCH\\dos.exe");
+    binary_both("e_lfarlc 0x40, e_lfanew past the file's end", "SCRATCH\\dosfar.exe");
+    binary_both("an NE header, target 2 (Windows)", "SCRATCH\\win16.exe");
+    binary_both("an NE header, target 1 (OS/2)", "SCRATCH\\os2.exe");
+    binary_both("an NE header, target 0 (unknown)", "SCRATCH\\netarget0.exe");
+    binary_both("an LE header", "SCRATCH\\le.exe");
+    binary_both("a PE signature, nothing after it", "SCRATCH\\pecut.exe");
+    binary_both("an MZ header alone, 64 bytes, e_lfanew 0", "SCRATCH\\mzonly.exe");
+    binary_both("a DOS program named .txt", "SCRATCH\\dos.txt");
+    binary_both("a text file named .com", "SCRATCH\\text.com");
+    binary_both("a text file named .pif", "SCRATCH\\text.pif");
+    binary_both("a text file with no extension", "SCRATCH\\text");
+}
+
 static const section_t sections[] = {
     { "layout", sec_layout, F2KT_ALWAYS },
     { "create", sec_create, F2KT_ALWAYS },
@@ -1441,6 +2119,14 @@ static const section_t sections[] = {
     { "spawn", sec_spawn, F2KT_ALWAYS },
     { "system", sec_system, F2KT_ALWAYS },
     { "detach", sec_detach, F2KT_ALWAYS },
+    { "ended", sec_ended, F2KT_ALWAYS },
+    { "unstarted", sec_unstarted, F2KT_ALWAYS },
+    { "dupclose", sec_dupclose, F2KT_ALWAYS },
+    { "remote", sec_remote, F2KT_ALWAYS },
+    { "selfmem", sec_selfmem, F2KT_ALWAYS },
+    { "crtfds", sec_crtfds, F2KT_ALWAYS },
+    { "inheritflags", sec_inheritflags, F2KT_ALWAYS },
+    { "binaryforms", sec_binaryforms, F2KT_ALWAYS },
     { "overlay", sec_overlay, F2KT_NAMED },
     { NULL, NULL, 0 }
 };
