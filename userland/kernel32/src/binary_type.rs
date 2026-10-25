@@ -1,11 +1,13 @@
 //! GetBinaryTypeA and GetBinaryTypeW: what kind of program a file is, without running it.
 //!
-//! Windows 2000's kernel32 decides through an image section: NtCreateSection with SEC_IMAGE over
-//! the file, then NtQuerySection's SectionImageInformation, the section's refusal statuses saying
-//! what a file that is not a Windows image is. F2K has no NtQuerySection yet, so the headers are
-//! read here through the file services kernel32 already uses (NtOpenFile, NtReadFile), to the
-//! same answers ([`classify`]); the section path is Windows' and can replace this once
-//! NtQuerySection exists.
+//! As Windows 2000's kernel32 decides it, through an image section: the file opened as
+//! CreateProcess opens an image (for execution, a directory refused), an image section made of it
+//! (NtCreateSection with SEC_IMAGE) and its SECTION_IMAGE_INFORMATION asked (NtQuerySection). A
+//! Windows image's description decides between a program ([`of_image`]: SCS_32BIT_BINARY, or
+//! SCS_POSIX_BINARY by its subsystem) and an image that is none (a DLL); the section's refusal of a
+//! file that is no Windows image says what it is instead ([`of_refusal`]: a DOS, Windows 3.x or
+//! OS/2 program, or a file without the MZ signature, typed by its name's extension). The file and
+//! the section are closed on every path.
 //!
 //! As spawn's capture pins it: a Windows program is SCS_32BIT_BINARY; a DLL, a text file named
 //! `.txt` and an empty file are ERROR_BAD_EXE_FORMAT; a file that is not an image but is named
@@ -14,21 +16,10 @@
 //! directory ERROR_PATH_NOT_FOUND. The type is written only on success, and success leaves the
 //! last error alone.
 
-use core::mem::size_of;
-
-use rtl::image::{
-    ImageDosHeader,
-    ImageFileHeader,
-    ImageNtHeaders32,
-    ImageOptionalHeader32,
-    DOS_MAGIC,
-    NT_SIGNATURE,
-};
-use rtl::status::{nt_success, STATUS_END_OF_FILE};
-
 use crate::base::{set_last_error, set_last_nt_error};
-use crate::files::{self, NtPath, Wide, ERROR_PATH_NOT_FOUND, SYNCHRONIZE};
-use crate::nt::{self, IoStatus};
+use crate::create::{Owned, OPEN_ACCESS, OPEN_OPTIONS, OPEN_SHARE};
+use crate::files::{self, NtPath, Wide, ERROR_PATH_NOT_FOUND};
+use crate::ntcall::{self, NtStatus, SectionImageInformation};
 
 /// The binary types (winbase.h's SCS_*).
 pub const SCS_32BIT_BINARY: u32 = 0;
@@ -36,75 +27,40 @@ pub const SCS_DOS_BINARY: u32 = 1;
 pub const SCS_WOW_BINARY: u32 = 2;
 pub const SCS_PIF_BINARY: u32 = 3;
 pub const SCS_POSIX_BINARY: u32 = 4;
+pub const SCS_OS216_BINARY: u32 = 5;
 
 pub const ERROR_BAD_EXE_FORMAT: u32 = 193;
 
-/// The access the file is opened with (to read its headers, as an image is opened: for execution),
-/// the share modes an image's open allows, and its options: a file, synchronous I/O.
-const FILE_READ_DATA: u32 = 0x0001;
-const FILE_EXECUTE: u32 = 0x0020;
-const SHARE_AS_AN_IMAGE: u32 = files::FILE_SHARE_READ | files::FILE_SHARE_DELETE;
-const OPTIONS: u32 = files::FILE_SYNCHRONOUS_IO_NONALERT | files::FILE_NON_DIRECTORY_FILE;
-
-/// The PE headers' facts the answer turns on: the machine (i386), the characteristics (an
-/// executable image, a DLL), the optional header's magic (PE32) and the POSIX subsystem.
-const IMAGE_FILE_MACHINE_I386: u16 = 0x014C;
+/// What an image's description says (its file header's characteristics, its machine, its
+/// subsystem): an executable, a DLL, an i386 image, the POSIX subsystem.
 const IMAGE_FILE_EXECUTABLE_IMAGE: u16 = 0x0002;
 const IMAGE_FILE_DLL: u16 = 0x2000;
-const PE32_MAGIC: u16 = 0x010B;
-const IMAGE_SUBSYSTEM_POSIX_CUI: u16 = 7;
-/// A Windows 3.x program's new header signature, "NE".
-const NE_SIGNATURE: u16 = 0x454E;
+const IMAGE_FILE_MACHINE_I386: u16 = 0x014C;
+const IMAGE_SUBSYSTEM_POSIX_CUI: u32 = 7;
 
-/// The image headers' types: integers only, so any bytes of their size make one.
-///
-/// # Safety
-///
-/// Every bit pattern of the type's size is a valid value, and the type is at most
-/// [`HEADER_ROOM`] bytes.
-pub unsafe trait Plain: Copy {}
-
-// SAFETY: integers only (Windows' header layouts), each at most HEADER_ROOM bytes.
-unsafe impl Plain for ImageDosHeader {}
-// SAFETY: as above.
-unsafe impl Plain for ImageNtHeaders32 {}
-// SAFETY: as above.
-unsafe impl Plain for u32 {}
-
-/// The largest header read: IMAGE_NT_HEADERS32.
-const HEADER_ROOM: usize = size_of::<ImageNtHeaders32>();
-
-const _: () = assert!(
-    size_of::<ImageNtHeaders32>()
-        == 4 + size_of::<ImageFileHeader>() + size_of::<ImageOptionalHeader32>()
-);
-
-/// What the headers are read from: `read` fills the start of `buffer` from `offset` on, answering
-/// how many bytes it read (zero past the end) or a failed read's status.
-pub trait Source {
-    fn read(&mut self, offset: u64, buffer: &mut [u8]) -> Result<usize, u32>;
-}
-
-/// The `T` at `offset`: none when the source ends before its last byte.
-fn fetch<T: Plain>(source: &mut impl Source, offset: u64) -> Result<Option<T>, u32> {
-    let mut bytes = [0u8; HEADER_ROOM];
-    let bytes = &mut bytes[..size_of::<T>()];
-    if source.read(offset, bytes)? < bytes.len() {
-        return Ok(None);
-    }
-    // SAFETY: `T` is plain data (any bytes make one) of `bytes`' size; read unaligned.
-    Ok(Some(unsafe {
-        core::ptr::read_unaligned(bytes.as_ptr().cast::<T>())
-    }))
-}
+/// The image section's refusals of a file that is no Windows image (ntstatus.h): a file no image
+/// section can be made of, a broken or foreign PE file, an empty file; an OS/2 (NE) program, an LE
+/// one, a file without the MZ signature, a DOS program (an MZ file without a new header), a
+/// Windows 3.x program.
+const STATUS_INVALID_FILE_FOR_SECTION: NtStatus = 0xC000_0020;
+const STATUS_INVALID_IMAGE_FORMAT: NtStatus = 0xC000_007B;
+const STATUS_MAPPED_FILE_SIZE_ZERO: NtStatus = 0xC000_011E;
+const STATUS_INVALID_IMAGE_NE_FORMAT: NtStatus = 0xC000_011B;
+const STATUS_INVALID_IMAGE_LE_FORMAT: NtStatus = 0xC000_012E;
+const STATUS_INVALID_IMAGE_NOT_MZ: NtStatus = 0xC000_012F;
+const STATUS_INVALID_IMAGE_PROTECT: NtStatus = 0xC000_0130;
+const STATUS_INVALID_IMAGE_WIN_16: NtStatus = 0xC000_0131;
 
 /// Why a file has no binary type: a service's status (its error set through ntdll's mapping), or
 /// a Win32 error kernel32 sets itself.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Refusal {
-    Status(u32),
+    Status(NtStatus),
     Error(u32),
 }
+
+/// A file that is no program of a type GetBinaryType names.
+const BAD: Refusal = Refusal::Error(ERROR_BAD_EXE_FORMAT);
 
 /// The type a name's extension gives a file that is not an image (the DOS machine runs a `.com` or
 /// `.exe` as a DOS program, a `.pif` describes one); none for any other name.
@@ -130,98 +86,57 @@ fn by_extension(name: &[u16]) -> Option<u32> {
     }
 }
 
-/// What the file `source` reads is, for GetBinaryType, its name `name` (as given). An empty file is
-/// no program; a file without the MZ signature is a DOS program or none by its extension; an MZ
-/// file is a Windows program when its new header is a PE one for the i386 (ERROR_BAD_EXE_FORMAT
-/// for a DLL, another machine or a header that is not one's), a POSIX one when its subsystem says
-/// so, a Windows 3.x one for an NE header, and a DOS program otherwise.
-pub fn classify(source: &mut impl Source, name: &[u16]) -> Result<u32, Refusal> {
-    const BAD: Refusal = Refusal::Error(ERROR_BAD_EXE_FORMAT);
-    let mut first = [0u8; 2];
-    let read = source.read(0, &mut first).map_err(Refusal::Status)?;
-    if read == 0 {
-        return Err(BAD);
-    }
-    if read < 2 || u16::from_le_bytes(first) != DOS_MAGIC {
-        return by_extension(name).ok_or(BAD);
-    }
-    let Some(dos) = fetch::<ImageDosHeader>(source, 0).map_err(Refusal::Status)? else {
-        return Err(BAD);
-    };
-    let Ok(at) = u64::try_from(dos.e_lfanew) else {
-        return Ok(SCS_DOS_BINARY);
-    };
-    let Some(signature) = fetch::<u32>(source, at).map_err(Refusal::Status)? else {
-        return Ok(SCS_DOS_BINARY);
-    };
-    if signature != NT_SIGNATURE {
-        return Ok(if signature as u16 == NE_SIGNATURE {
-            SCS_WOW_BINARY
-        } else {
-            SCS_DOS_BINARY
-        });
-    }
-    let Some(nt) = fetch::<ImageNtHeaders32>(source, at).map_err(Refusal::Status)? else {
-        return Err(BAD);
-    };
-    let file = nt.file_header;
-    let optional = nt.optional_header;
-    if file.machine != IMAGE_FILE_MACHINE_I386
-        || file.characteristics & IMAGE_FILE_EXECUTABLE_IMAGE == 0
-        || file.characteristics & IMAGE_FILE_DLL != 0
-        || optional.magic != PE32_MAGIC
+/// What an image section's description says the file is: an executable for the i386 is a Windows
+/// program (SCS_32BIT_BINARY), or a POSIX one by its subsystem; a DLL, an image not marked
+/// executable or one for another machine is ERROR_BAD_EXE_FORMAT.
+pub fn of_image(image: &SectionImageInformation) -> Result<u32, Refusal> {
+    let characteristics = image.image_characteristics;
+    if characteristics & IMAGE_FILE_DLL != 0
+        || characteristics & IMAGE_FILE_EXECUTABLE_IMAGE == 0
+        || image.machine != IMAGE_FILE_MACHINE_I386
     {
         return Err(BAD);
     }
-    Ok(if optional.subsystem == IMAGE_SUBSYSTEM_POSIX_CUI {
+    Ok(if image.subsystem_type == IMAGE_SUBSYSTEM_POSIX_CUI {
         SCS_POSIX_BINARY
     } else {
         SCS_32BIT_BINARY
     })
 }
 
-/// An open file read at explicit offsets (NtReadFile, synchronous).
-struct OpenFile(u32);
-
-impl Source for OpenFile {
-    fn read(&mut self, offset: u64, buffer: &mut [u8]) -> Result<usize, u32> {
-        let mut io_status = IoStatus::default();
-        // SAFETY: ntdll's export, into the buffer of its length, at the offset above.
-        let status = unsafe {
-            nt::NtReadFile(
-                self.0,
-                0,
-                0,
-                0,
-                &mut io_status,
-                buffer.as_mut_ptr(),
-                buffer.len() as u32,
-                &offset,
-                core::ptr::null(),
-            )
-        };
-        match status {
-            STATUS_END_OF_FILE => Ok(0),
-            status if nt_success(status) => Ok(io_status.information as usize),
-            status => Err(status),
-        }
+/// What the image section's refusal `status` says the file named `name` (as given) is: a file
+/// without the MZ signature is a DOS program or none by its name's extension; an MZ file without a
+/// new header, or with an LE one, a DOS program; with a Windows NE header a Windows 3.x program,
+/// with another NE one an OS/2 program. Any other file no image section is made of (an empty one,
+/// a broken PE one) is ERROR_BAD_EXE_FORMAT, and any other status the failure it is.
+pub fn of_refusal(status: NtStatus, name: &[u16]) -> Result<u32, Refusal> {
+    match status {
+        STATUS_INVALID_IMAGE_NOT_MZ => by_extension(name).ok_or(BAD),
+        STATUS_INVALID_IMAGE_PROTECT | STATUS_INVALID_IMAGE_LE_FORMAT => Ok(SCS_DOS_BINARY),
+        STATUS_INVALID_IMAGE_WIN_16 => Ok(SCS_WOW_BINARY),
+        STATUS_INVALID_IMAGE_NE_FORMAT => Ok(SCS_OS216_BINARY),
+        STATUS_INVALID_IMAGE_FORMAT
+        | STATUS_MAPPED_FILE_SIZE_ZERO
+        | STATUS_INVALID_FILE_FOR_SECTION => Err(BAD),
+        status => Err(Refusal::Status(status)),
     }
 }
 
-/// GetBinaryTypeW's work over a name: the file opened as an image is (a directory refused), its
-/// headers read, the file closed.
+/// GetBinaryTypeW's work over a name: the file opened as CreateProcess opens an image, an image
+/// section made of it (the file closed then) and its description asked (the section closed then).
 fn type_of(name: &Wide) -> Result<u32, Refusal> {
     let path = NtPath::of(name.terminated()).ok_or(Refusal::Error(ERROR_PATH_NOT_FOUND))?;
-    let file = files::open(
-        &path,
-        FILE_READ_DATA | FILE_EXECUTE | SYNCHRONIZE,
-        SHARE_AS_AN_IMAGE,
-        OPTIONS,
-    )
-    .map_err(Refusal::Status)?;
-    let answer = classify(&mut OpenFile(file), name.text());
-    files::close(file);
-    answer
+    let file =
+        Owned(files::open(&path, OPEN_ACCESS, OPEN_SHARE, OPEN_OPTIONS).map_err(Refusal::Status)?);
+    let section = ntcall::create_image_section(file.0);
+    drop(file);
+    let section = match section {
+        Ok(section) => Owned(section),
+        Err(status) => return of_refusal(status, name.text()),
+    };
+    let image = ntcall::query_image(section.0);
+    drop(section);
+    of_image(&image.map_err(Refusal::Status)?)
 }
 
 /// The export's answer: the type written and TRUE, or the refusal's error set and FALSE.
@@ -279,131 +194,99 @@ pub unsafe extern "system" fn get_binary_type_a(name: *const u8, binary_type: *m
 mod tests {
     use super::*;
 
-    /// A file's bytes, read as the file services read them.
-    struct Bytes(Vec<u8>);
-
-    impl Source for Bytes {
-        fn read(&mut self, offset: u64, buffer: &mut [u8]) -> Result<usize, u32> {
-            let start = (offset as usize).min(self.0.len());
-            let count = buffer.len().min(self.0.len() - start);
-            buffer[..count].copy_from_slice(&self.0[start..start + count]);
-            Ok(count)
-        }
-    }
-
     fn name(text: &str) -> Vec<u16> {
         text.encode_utf16().collect()
     }
 
-    fn put(bytes: &mut [u8], at: usize, value: &[u8]) {
-        bytes[at..at + value.len()].copy_from_slice(value);
+    /// A program's description: an i386 executable for the console subsystem.
+    fn program() -> SectionImageInformation {
+        SectionImageInformation {
+            subsystem_type: 3,
+            image_characteristics: 0x010F,
+            machine: IMAGE_FILE_MACHINE_I386,
+            ..SectionImageInformation::default()
+        }
     }
 
-    /// An image's first bytes: MZ, the new header at 0x80, a PE32 for the i386 (an executable,
-    /// the console subsystem), as MSVC 6 links a program.
-    fn program() -> Vec<u8> {
-        let mut bytes = vec![0u8; 0x400];
-        put(&mut bytes, 0, &DOS_MAGIC.to_le_bytes());
-        put(&mut bytes, 0x3C, &0x80u32.to_le_bytes());
-        put(&mut bytes, 0x80, &NT_SIGNATURE.to_le_bytes());
-        put(&mut bytes, 0x84, &IMAGE_FILE_MACHINE_I386.to_le_bytes());
-        put(&mut bytes, 0x84 + 18, &0x010Fu16.to_le_bytes());
-        put(&mut bytes, 0x98, &PE32_MAGIC.to_le_bytes());
-        put(&mut bytes, 0x98 + 0x44, &3u16.to_le_bytes());
-        bytes
-    }
-
-    fn classified(bytes: Vec<u8>, file_name: &str) -> Result<u32, Refusal> {
-        classify(&mut Bytes(bytes), &name(file_name))
-    }
-
-    const BAD: Result<u32, Refusal> = Err(Refusal::Error(ERROR_BAD_EXE_FORMAT));
-
-    /// spawn's binarytype block, as the headers decide it: a program; a DLL, a text file named
-    /// .txt and an empty file refused; a text file named .exe a DOS program.
+    /// An i386 executable is a Windows program, a POSIX one by its subsystem; a DLL, another
+    /// machine's image or one not marked executable is none.
     #[test]
-    fn the_captured_files_classify_as_captured() {
-        assert_eq!(classified(program(), "spawnkid.exe"), Ok(SCS_32BIT_BINARY));
-        let mut dll = program();
-        put(&mut dll, 0x84 + 18, &0x210Eu16.to_le_bytes());
-        assert_eq!(classified(dll, "C:\\WINNT\\system32\\kernel32.dll"), BAD);
-        let text = b"not a program\r\n".to_vec();
-        assert_eq!(classified(text.clone(), "SCRATCH\\notexe.txt"), BAD);
-        assert_eq!(classified(text, "SCRATCH\\notexe.exe"), Ok(SCS_DOS_BINARY));
-        assert_eq!(classified(Vec::new(), "SCRATCH\\empty.txt"), BAD);
+    fn the_description_decides_an_image() {
+        assert_eq!(of_image(&program()), Ok(SCS_32BIT_BINARY));
+        let gui = SectionImageInformation {
+            subsystem_type: 2,
+            ..program()
+        };
+        assert_eq!(of_image(&gui), Ok(SCS_32BIT_BINARY));
+        let posix = SectionImageInformation {
+            subsystem_type: IMAGE_SUBSYSTEM_POSIX_CUI,
+            ..program()
+        };
+        assert_eq!(of_image(&posix), Ok(SCS_POSIX_BINARY));
+        let dll = SectionImageInformation {
+            image_characteristics: 0x210E,
+            ..program()
+        };
+        assert_eq!(of_image(&dll), Err(BAD));
+        let alpha = SectionImageInformation {
+            machine: 0x0184,
+            ..program()
+        };
+        assert_eq!(of_image(&alpha), Err(BAD));
+        let object = SectionImageInformation {
+            image_characteristics: 0x0100,
+            ..program()
+        };
+        assert_eq!(of_image(&object), Err(BAD));
     }
 
-    /// A name's extension decides a file that is not an image, in any case, after its last
-    /// separator.
+    /// A file without MZ is typed by its name's extension, in any case, after its last separator.
     #[test]
-    fn a_non_image_is_typed_by_its_extension() {
-        let text = || b"echo".to_vec();
-        assert_eq!(classified(text(), "A.COM"), Ok(SCS_DOS_BINARY));
-        assert_eq!(classified(text(), "a.Exe"), Ok(SCS_DOS_BINARY));
-        assert_eq!(classified(text(), "a.pif"), Ok(SCS_PIF_BINARY));
-        assert_eq!(classified(text(), "a.bat"), BAD);
-        assert_eq!(classified(text(), "a.exe.txt"), BAD);
-        assert_eq!(classified(text(), "dir.exe\\file"), BAD);
-        assert_eq!(classified(text(), "exe"), BAD);
-        assert_eq!(classified(vec![b'M'], "one.exe"), Ok(SCS_DOS_BINARY));
+    fn a_file_without_mz_is_typed_by_its_extension() {
+        let typed = |file_name: &str| of_refusal(STATUS_INVALID_IMAGE_NOT_MZ, &name(file_name));
+        assert_eq!(typed("SCRATCH\\notexe.exe"), Ok(SCS_DOS_BINARY));
+        assert_eq!(typed("A.COM"), Ok(SCS_DOS_BINARY));
+        assert_eq!(typed("a.Exe"), Ok(SCS_DOS_BINARY));
+        assert_eq!(typed("a.pif"), Ok(SCS_PIF_BINARY));
+        assert_eq!(typed("SCRATCH\\notexe.txt"), Err(BAD));
+        assert_eq!(typed("a.bat"), Err(BAD));
+        assert_eq!(typed("a.exe.txt"), Err(BAD));
+        assert_eq!(typed("dir.exe\\file"), Err(BAD));
+        assert_eq!(typed("dir.exe/file"), Err(BAD));
+        assert_eq!(typed("exe"), Err(BAD));
     }
 
-    /// MZ files: a DOS program without a PE header, a Windows 3.x one with an NE header, a POSIX
-    /// one by its subsystem; another machine, a PE32+ header, an image not marked executable or
-    /// headers cut short refused.
+    /// The section's other refusals: a DOS program (no new header, or an LE one), a Windows 3.x
+    /// or OS/2 program by its NE header; an empty file, a broken PE one or a file no section is
+    /// made of none, whatever its name; any other status its failure.
     #[test]
-    fn mz_files_are_typed_by_their_new_header() {
-        let mut dos = program();
-        put(&mut dos, 0x80, b"\0\0\0\0");
-        assert_eq!(classified(dos.clone(), "a.exe"), Ok(SCS_DOS_BINARY));
-        put(&mut dos, 0x3C, &0x1000u32.to_le_bytes());
+    fn the_section_refusals_type_the_rest() {
+        let exe = name("a.exe");
         assert_eq!(
-            classified(dos.clone(), "a.exe"),
-            Ok(SCS_DOS_BINARY),
-            "past the end"
+            of_refusal(STATUS_INVALID_IMAGE_PROTECT, &exe),
+            Ok(SCS_DOS_BINARY)
         );
-        put(&mut dos, 0x3C, &(-4i32).to_le_bytes());
         assert_eq!(
-            classified(dos, "a.exe"),
-            Ok(SCS_DOS_BINARY),
-            "a negative offset"
+            of_refusal(STATUS_INVALID_IMAGE_LE_FORMAT, &exe),
+            Ok(SCS_DOS_BINARY)
         );
-        let mut win16 = program();
-        put(&mut win16, 0x80, b"NE\x05\x0A");
-        assert_eq!(classified(win16, "a.exe"), Ok(SCS_WOW_BINARY));
-        let mut posix = program();
-        put(
-            &mut posix,
-            0x98 + 0x44,
-            &IMAGE_SUBSYSTEM_POSIX_CUI.to_le_bytes(),
+        assert_eq!(
+            of_refusal(STATUS_INVALID_IMAGE_WIN_16, &exe),
+            Ok(SCS_WOW_BINARY)
         );
-        assert_eq!(classified(posix, "a.exe"), Ok(SCS_POSIX_BINARY));
-        let mut alpha = program();
-        put(&mut alpha, 0x84, &0x0184u16.to_le_bytes());
-        assert_eq!(classified(alpha, "a.exe"), BAD);
-        let mut plus = program();
-        put(&mut plus, 0x98, &0x020Bu16.to_le_bytes());
-        assert_eq!(classified(plus, "a.exe"), BAD);
-        let mut object = program();
-        put(&mut object, 0x84 + 18, &0x0100u16.to_le_bytes());
-        assert_eq!(classified(object, "a.exe"), BAD);
-        let mut short = program();
-        short.truncate(0x100);
-        assert_eq!(classified(short, "a.exe"), BAD);
-        assert_eq!(classified(b"MZ".to_vec(), "a.exe"), BAD);
-    }
-
-    /// A failed read is the read's status.
-    #[test]
-    fn a_failed_read_is_its_status() {
-        struct Failing;
-        impl Source for Failing {
-            fn read(&mut self, _: u64, _: &mut [u8]) -> Result<usize, u32> {
-                Err(0xC000_0022)
-            }
+        assert_eq!(
+            of_refusal(STATUS_INVALID_IMAGE_NE_FORMAT, &exe),
+            Ok(SCS_OS216_BINARY)
+        );
+        for status in [
+            STATUS_INVALID_IMAGE_FORMAT,
+            STATUS_MAPPED_FILE_SIZE_ZERO,
+            STATUS_INVALID_FILE_FOR_SECTION,
+        ] {
+            assert_eq!(of_refusal(status, &exe), Err(BAD), "{status:#x}");
         }
         assert_eq!(
-            classify(&mut Failing, &name("a.exe")),
+            of_refusal(0xC000_0022, &exe),
             Err(Refusal::Status(0xC000_0022))
         );
     }

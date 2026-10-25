@@ -123,9 +123,10 @@ const IMAGE_SUBSYSTEM_WINDOWS_CUI: u32 = 3;
 /// The image's open: for execution, synchronizable; shared for reading and deleting, as an image
 /// is; a file, synchronous I/O.
 const FILE_EXECUTE: u32 = 0x0020;
-const OPEN_ACCESS: u32 = files::SYNCHRONIZE | FILE_EXECUTE;
-const OPEN_SHARE: u32 = files::FILE_SHARE_READ | files::FILE_SHARE_DELETE;
-const OPEN_OPTIONS: u32 = files::FILE_SYNCHRONOUS_IO_NONALERT | files::FILE_NON_DIRECTORY_FILE;
+pub(crate) const OPEN_ACCESS: u32 = files::SYNCHRONIZE | FILE_EXECUTE;
+pub(crate) const OPEN_SHARE: u32 = files::FILE_SHARE_READ | files::FILE_SHARE_DELETE;
+pub(crate) const OPEN_OPTIONS: u32 =
+    files::FILE_SYNCHRONOUS_IO_NONALERT | files::FILE_NON_DIRECTORY_FILE;
 
 /// THREAD_ALL_ACCESS: what the first thread's handle grants.
 const THREAD_ALL_ACCESS: u32 = 0x001F_03FF;
@@ -258,7 +259,7 @@ impl<T: Copy + Default> Drop for HeapArray<T> {
 }
 
 /// A handle kernel32 made for the creation: closed when dropped, unless it is handed out.
-struct Owned(u32);
+pub(crate) struct Owned(pub(crate) u32);
 
 impl Owned {
     /// The handle, for the caller to keep.

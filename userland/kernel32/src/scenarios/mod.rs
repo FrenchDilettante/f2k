@@ -8,6 +8,7 @@
 //! An address no call may read (a source a refusal must leave unread) is [`UNREAD`]: dereferencing
 //! it faults the test.
 
+mod binary_type;
 mod clocks;
 mod console;
 mod curdir;

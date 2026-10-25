@@ -19,20 +19,22 @@
 //! STATUS_ACCESS_DENIED), and a read-write view needs a section made read-write
 //! (STATUS_SECTION_PROTECTION).
 //!
-//! An image section (SEC_IMAGE) is of a PE file, parsed by the loader's own parse (`exec::pe`: a
-//! file it refuses is STATUS_INVALID_IMAGE_FORMAT): it is the image as mapped, its size the
-//! image's. As on Windows 2000, the image itself is the file's one image segment
-//! ([`ob::ImageSegment`], NT's image control area), reached from the file's record: the first image
-//! section of a file makes it (and parses the image then), every later one shares it, so every
-//! process's view of a DLL maps the same frames. The segment holds the file object, so the file
-//! stays open — and cannot be truncated or deleted — while any image section or view of it lives;
-//! a view holds the segment, not the section, so the section's handle can be closed as soon as the
-//! view is mapped. A view is the whole image at its preferred base — an image is never relocated,
-//! so a base another region holds is STATUS_CONFLICTING_ADDRESSES — a MEM_IMAGE reservation whose
-//! pages carry their sections' protections, as the loader maps a program's (a writable section's
-//! pages copy-on-write: the segment's frames stay the file's). The segment's frames are made page
-//! by page as a view first needs them, each read from the file through the image's section table.
-//! Nothing is snapped: the imports are the mapper's to resolve (ntdll's loader).
+//! An image section (SEC_IMAGE) is of a PE file, parsed by the loader's own parse (`exec::pe`): it
+//! is the image as mapped, its size the image's. A file the parse refuses is refused as Windows
+//! 2000 tells such files apart (see [`image_layout`]): no MZ signature, a DOS, Windows 3.x, OS/2 or
+//! LE program, or a PE file that is broken or foreign (STATUS_INVALID_IMAGE_FORMAT). As on Windows
+//! 2000, the image itself is the file's one image segment ([`ob::ImageSegment`], NT's image control
+//! area), reached from the file's record: the first image section of a file makes it (and parses
+//! the image then), every later one shares it, so every process's view of a DLL maps the same
+//! frames. The segment holds the file object, so the file stays open — and cannot be truncated or
+//! deleted — while any image section or view of it lives; a view holds the segment, not the
+//! section, so the section's handle can be closed as soon as the view is mapped. A view is the
+//! whole image at its preferred base — an image is never relocated, so a base another region holds
+//! is STATUS_CONFLICTING_ADDRESSES — a MEM_IMAGE reservation whose pages carry their sections'
+//! protections, as the loader maps a program's (a writable section's pages copy-on-write: the
+//! segment's frames stay the file's). The segment's frames are made page by page as a view first
+//! needs them, each read from the file through the image's section table. Nothing is snapped: the
+//! imports are the mapper's to resolve (ntdll's loader).
 
 use super::call::{Status, STATUS_INVALID_HANDLE};
 use super::memory::{STATUS_INVALID_PAGE_PROTECTION, STATUS_INVALID_PARAMETER_4};
@@ -49,6 +51,11 @@ const STATUS_INVALID_PARAMETER_6: Status = Status(0xC000_00F4);
 const STATUS_INVALID_PARAMETER_8: Status = Status(0xC000_00F6);
 const STATUS_INVALID_PARAMETER_9: Status = Status(0xC000_00F7);
 const STATUS_MAPPED_FILE_SIZE_ZERO: Status = Status(0xC000_011E);
+const STATUS_INVALID_IMAGE_NE_FORMAT: Status = Status(0xC000_011B);
+const STATUS_INVALID_IMAGE_LE_FORMAT: Status = Status(0xC000_012E);
+const STATUS_INVALID_IMAGE_NOT_MZ: Status = Status(0xC000_012F);
+const STATUS_INVALID_IMAGE_PROTECT: Status = Status(0xC000_0130);
+const STATUS_INVALID_IMAGE_WIN_16: Status = Status(0xC000_0131);
 #[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
 const STATUS_IO_DEVICE_ERROR: Status = Status(0xC000_0185);
 const STATUS_MAPPED_ALIGNMENT: Status = Status(0xC000_0220);
@@ -207,15 +214,62 @@ fn image_plan(protect: u32, file: Option<Backing>) -> Result<Plan, Status> {
 pub const IMAGE_HEADERS: usize = 0x1000;
 
 /// An image's layout, from its first bytes `headers` (up to [`IMAGE_HEADERS`]) in a file of
-/// `file_size` bytes: its preferred base and its size as mapped. STATUS_INVALID_IMAGE_FORMAT for a
-/// file the loader's parse refuses, a truncated one included.
+/// `file_size` bytes: its preferred base and its size as mapped. A file the loader's parse refuses
+/// is `not_an_image`'s status.
 pub fn image_layout(headers: &[u8], file_size: u32) -> Result<(u32, u32), Status> {
     let image = crate::exec::pe::Image::parse_headers(headers, file_size as usize)
-        .map_err(|_| STATUS_INVALID_IMAGE_FORMAT)?;
+        .map_err(|_| not_an_image(headers))?;
     if image.size_of_image as u64 > crate::mem::vm::SECTION_MAX {
         return Err(STATUS_SECTION_TOO_BIG);
     }
     Ok((image.image_base, image.size_of_image))
+}
+
+/// The new header signatures an MZ file's e_lfanew may lead to: a PE image's, a 16-bit NE
+/// program's and an LE one's; and the NE header's target operating system (OS/2's, 1).
+const PE_SIGNATURE: &[u8] = b"PE\0\0";
+const NE_SIGNATURE: &[u8] = b"NE";
+const LE_SIGNATURE: &[u8] = b"LE";
+const NE_TARGET_OS: usize = 0x36;
+const NE_OS2: u8 = 1;
+
+/// Why the file whose first bytes are `headers` is no image the parse accepts, with the statuses
+/// Windows 2000's section creation tells such files apart by (ntstatus.h): no MZ signature
+/// (STATUS_INVALID_IMAGE_NOT_MZ); an MZ file whose new header is a 16-bit NE one, a Windows
+/// program's (STATUS_INVALID_IMAGE_WIN_16) or OS/2's (STATUS_INVALID_IMAGE_NE_FORMAT), or an LE
+/// one (STATUS_INVALID_IMAGE_LE_FORMAT); an MZ file without a new header, a DOS program
+/// (STATUS_INVALID_IMAGE_PROTECT); and STATUS_INVALID_IMAGE_FORMAT for the rest — a PE file the
+/// parse refuses (broken, truncated or foreign) or a DOS header cut short.
+fn not_an_image(headers: &[u8]) -> Status {
+    if headers.get(..2) != Some(b"MZ".as_slice()) {
+        return STATUS_INVALID_IMAGE_NOT_MZ;
+    }
+    let Some(new_header) = headers.get(E_LFANEW..E_LFANEW + 4) else {
+        return STATUS_INVALID_IMAGE_FORMAT;
+    };
+    let at = u32::from_le_bytes([new_header[0], new_header[1], new_header[2], new_header[3]]);
+    let signature = |wanted: &[u8]| {
+        (at as usize)
+            .checked_add(wanted.len())
+            .and_then(|end| headers.get(at as usize..end))
+            == Some(wanted)
+    };
+    if signature(PE_SIGNATURE) {
+        STATUS_INVALID_IMAGE_FORMAT
+    } else if signature(NE_SIGNATURE) {
+        let target = (at as usize)
+            .checked_add(NE_TARGET_OS)
+            .and_then(|at| headers.get(at));
+        if target == Some(&NE_OS2) {
+            STATUS_INVALID_IMAGE_NE_FORMAT
+        } else {
+            STATUS_INVALID_IMAGE_WIN_16
+        }
+    } else if signature(LE_SIGNATURE) {
+        STATUS_INVALID_IMAGE_LE_FORMAT
+    } else {
+        STATUS_INVALID_IMAGE_PROTECT
+    }
 }
 
 /// An image section's view rules: the whole image (no offset, no size short of it) at its
@@ -1329,8 +1383,10 @@ mod tests {
 
     const EXIT0: &[u8] = include_bytes!("../../../tests/core/exit0/exit0.exe");
 
-    /// An image's layout is its headers' (preferred base, SizeOfImage); a file the loader's parse
-    /// refuses — not a PE file, a foreign one, a truncated one — is STATUS_INVALID_IMAGE_FORMAT.
+    /// An image's layout is its headers' (preferred base, SizeOfImage); a PE file the loader's
+    /// parse refuses — a foreign one, a truncated one — is STATUS_INVALID_IMAGE_FORMAT, and a file
+    /// that is no PE file at all is told apart (see `not_an_image`'s test): a text file has no MZ,
+    /// and a file cut before its new header is an MZ file without one, a DOS program's.
     #[test]
     fn image_layouts_come_from_the_headers() {
         let size = EXIT0.len() as u32;
@@ -1340,11 +1396,11 @@ mod tests {
         );
         assert_eq!(
             image_layout(b"plain text, not an image", 24),
-            Err(STATUS_INVALID_IMAGE_FORMAT)
+            Err(STATUS_INVALID_IMAGE_NOT_MZ)
         );
         assert_eq!(
             image_layout(&EXIT0[..0x40], 0x40),
-            Err(STATUS_INVALID_IMAGE_FORMAT)
+            Err(STATUS_INVALID_IMAGE_PROTECT)
         );
         assert_eq!(
             image_layout(&EXIT0[..IMAGE_HEADERS], size - 1),
@@ -1356,6 +1412,73 @@ mod tests {
         assert_eq!(
             image_layout(&foreign, size),
             Err(STATUS_INVALID_IMAGE_FORMAT)
+        );
+    }
+
+    /// A file that is no PE image, as Windows 2000's section creation refuses it: without MZ (a
+    /// text file, a single byte), a DOS program (no new header, or one past the headers or of
+    /// another kind), a Windows 3.x or OS/2 NE program, an LE one; an MZ file whose DOS header is
+    /// cut short, or whose PE header the parse refuses, is no image format at all.
+    #[test]
+    fn files_that_are_no_image_are_told_apart() {
+        assert_eq!(
+            not_an_image(b"not a program\r\n"),
+            STATUS_INVALID_IMAGE_NOT_MZ
+        );
+        assert_eq!(not_an_image(b"M"), STATUS_INVALID_IMAGE_NOT_MZ);
+        let mz = |new_header: u32, signature: &[u8], target: u8| {
+            let mut bytes = vec![0u8; 0x200];
+            bytes[..2].copy_from_slice(b"MZ");
+            bytes[E_LFANEW..E_LFANEW + 4].copy_from_slice(&new_header.to_le_bytes());
+            // A new header within the bytes gets its signature and target system.
+            let at = new_header as usize;
+            if at < 0x100 {
+                bytes[at..at + signature.len()].copy_from_slice(signature);
+                bytes[at + NE_TARGET_OS] = target;
+            }
+            bytes
+        };
+        assert_eq!(
+            not_an_image(&mz(0x80, b"\0\0", 0)),
+            STATUS_INVALID_IMAGE_PROTECT
+        );
+        assert_eq!(
+            not_an_image(&mz(0x1000, b"", 0)),
+            STATUS_INVALID_IMAGE_PROTECT,
+            "past the headers"
+        );
+        assert_eq!(
+            not_an_image(&mz(u32::MAX, b"", 0)),
+            STATUS_INVALID_IMAGE_PROTECT
+        );
+        assert_eq!(
+            not_an_image(&mz(0x80, b"NE", 2)),
+            STATUS_INVALID_IMAGE_WIN_16
+        );
+        assert_eq!(
+            not_an_image(&mz(0x80, b"NE", 0)),
+            STATUS_INVALID_IMAGE_WIN_16
+        );
+        assert_eq!(
+            not_an_image(&mz(0x80, b"NE", NE_OS2)),
+            STATUS_INVALID_IMAGE_NE_FORMAT
+        );
+        assert_eq!(
+            not_an_image(&mz(0x80, b"LE", 0)),
+            STATUS_INVALID_IMAGE_LE_FORMAT
+        );
+        assert_eq!(
+            not_an_image(&mz(0x80, PE_SIGNATURE, 0)),
+            STATUS_INVALID_IMAGE_FORMAT
+        );
+        assert_eq!(
+            not_an_image(b"MZ"),
+            STATUS_INVALID_IMAGE_FORMAT,
+            "a DOS header cut short"
+        );
+        assert_eq!(
+            image_layout(&mz(0x80, b"NE", 2), 0x200),
+            Err(STATUS_INVALID_IMAGE_WIN_16)
         );
     }
 
