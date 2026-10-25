@@ -26,7 +26,7 @@ const STATUS_BUFFER_TOO_SMALL: u32 = 0xC000_0023;
 const SYSTEM_PLACES: [&[u8]; 3] = [b"\\system32", b"\\system", b""];
 
 /// A list of directories on the process heap, separated by semicolons (freed with it).
-struct List {
+pub struct List {
     block: *mut u16,
     length: usize,
 }
@@ -51,7 +51,7 @@ impl List {
         }
     }
 
-    fn units(&self) -> &[u16] {
+    pub fn units(&self) -> &[u16] {
         // SAFETY: the block holds the units pushed.
         unsafe { core::slice::from_raw_parts(self.block, self.length) }
     }
@@ -70,10 +70,20 @@ impl Drop for List {
 fn default_list() -> Option<List> {
     // SAFETY: the process parameters' ImagePathName, the process's own string.
     let image = unsafe { crate::base::units(crate::base::process_parameters() + 0x38) };
-    let image_directory = &image[..image
+    search_list(directory_of(image))
+}
+
+/// A path's directory: the path less its last component (empty without a separator).
+pub fn directory_of(path: &[u16]) -> &[u16] {
+    &path[..path
         .iter()
         .rposition(|&unit| unit == u16::from(b'\\'))
-        .unwrap_or(0)];
+        .unwrap_or(0)]
+}
+
+/// The default search's list for a program in `image_directory` (see [`default_list`]): what
+/// CreateProcess passes a new process as its DLL search path; none when the heap has no room.
+pub fn search_list(image_directory: &[u16]) -> Option<List> {
     let mut root = [0u16; MAX_PATH];
     let root_length = crate::shared::system_root(&mut root);
     let root = &root[..root_length];
@@ -250,6 +260,32 @@ unsafe fn search_path(
         unsafe { file_part.write_unaligned(at.map_or(0, |at| buffer.address(at))) };
     }
     length as u32
+}
+
+/// SearchPathW's default search for `name`, `extension` added when its last component has none:
+/// the full path found, or none with the search's error set (see [`search_path`]).
+pub fn search_default(name: &Wide, extension: &Wide) -> Option<Wide> {
+    let mut found = Wide {
+        units: [0; MAX_PATH + 1],
+        length: 0,
+    };
+    let size = found.units.len() as u32;
+    // SAFETY: the buffer holds `size` characters; no file part asked.
+    let length = unsafe {
+        search_path(
+            None,
+            name,
+            Some(extension),
+            size,
+            Text::Wide(found.units.as_mut_ptr()),
+            core::ptr::null_mut(),
+        )
+    } as usize;
+    if length == 0 || length >= found.units.len() {
+        return None;
+    }
+    found.length = length;
+    Some(found)
 }
 
 /// A narrow search list converted through the ANSI code page (ntdll's RtlInitAnsiString and

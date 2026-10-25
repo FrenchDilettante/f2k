@@ -33,7 +33,7 @@ use crate::base::{
     CURRENT_PROCESS,
     CURRENT_THREAD,
 };
-use crate::nt;
+use crate::{nt, ntcall};
 
 /// THREADINFOCLASS: the classes kernel32 asks.
 const THREAD_BASIC_INFORMATION: u32 = 0;
@@ -132,7 +132,6 @@ pub const STACK_COMMIT: u32 = 2 * PAGE;
 /// The memory services' allocation types and protections.
 const MEM_COMMIT: u32 = 0x1000;
 const MEM_RESERVE: u32 = 0x2000;
-const MEM_RELEASE: u32 = 0x8000;
 const PAGE_READWRITE: u32 = 0x04;
 const PAGE_GUARD: u32 = 0x100;
 
@@ -165,59 +164,36 @@ pub struct InitialTeb {
     pub allocation_base: usize,
 }
 
-/// BaseCreateStack: the thread's stack reserved (`reserve` bytes anywhere), its top `commit` bytes
-/// committed read-write and the page below them guarded (PAGE_GUARD: the first touch grows the
-/// stack), as Windows 2000 builds it; the status that refused it otherwise, nothing left behind.
-pub fn create_stack(reserve: u32, commit: u32) -> Result<InitialTeb, u32> {
-    let (mut base, mut size) = (0usize, reserve as usize);
-    // SAFETY: ntdll's export, over the locals above.
-    let status = unsafe {
-        nt::NtAllocateVirtualMemory(
-            CURRENT_PROCESS,
-            &mut base,
-            0,
-            &mut size,
-            MEM_RESERVE,
-            PAGE_READWRITE,
-        )
-    };
-    if !nt_success(status) {
-        return Err(status);
-    }
+/// BaseCreateStack: a thread's stack in `process` (the caller's own, or a new process's first
+/// thread's) reserved (`reserve` bytes anywhere), its top `commit` bytes committed read-write and
+/// the page below them guarded (PAGE_GUARD: the first touch grows the stack), as Windows 2000
+/// builds it; the status that refused it otherwise, nothing left behind.
+pub fn create_stack(process: u32, reserve: u32, commit: u32) -> Result<InitialTeb, u32> {
+    let (base, size) =
+        ntcall::allocate_virtual_memory(process, 0, reserve as usize, MEM_RESERVE, PAGE_READWRITE)?;
     let top = base + size;
     let guard = size > commit as usize;
     let committed = top - commit as usize - if guard { PAGE as usize } else { 0 };
-    let (mut at, mut length) = (committed, top - committed);
-    // SAFETY: as above.
-    let mut status = unsafe {
-        nt::NtAllocateVirtualMemory(
-            CURRENT_PROCESS,
-            &mut at,
-            0,
-            &mut length,
-            MEM_COMMIT,
-            PAGE_READWRITE,
+    let made = ntcall::allocate_virtual_memory(
+        process,
+        committed,
+        top - committed,
+        MEM_COMMIT,
+        PAGE_READWRITE,
+    )
+    .and_then(|_| {
+        if !guard {
+            return Ok(committed);
+        }
+        ntcall::protect_virtual_memory(
+            process,
+            committed,
+            PAGE as usize,
+            PAGE_READWRITE | PAGE_GUARD,
         )
-    };
-    let mut limit = committed;
-    if nt_success(status) && guard {
-        let (mut page, mut length, mut old) = (committed, PAGE as usize, 0);
-        // SAFETY: as above.
-        status = unsafe {
-            nt::NtProtectVirtualMemory(
-                CURRENT_PROCESS,
-                &mut page,
-                &mut length,
-                PAGE_READWRITE | PAGE_GUARD,
-                &mut old,
-            )
-        };
-        limit = committed + PAGE as usize;
-    }
-    if !nt_success(status) {
-        free_stack(base);
-        return Err(status);
-    }
+        .map(|_| committed + PAGE as usize)
+    });
+    let limit = made.inspect_err(|_| free_stack(process, base))?;
     Ok(InitialTeb {
         old_stack_base: 0,
         old_stack_limit: 0,
@@ -228,10 +204,8 @@ pub fn create_stack(reserve: u32, commit: u32) -> Result<InitialTeb, u32> {
 }
 
 /// BaseFreeThreadStack: a stack whose thread was never made goes back whole.
-fn free_stack(base: usize) {
-    let (mut base, mut size) = (base, 0usize);
-    // SAFETY: ntdll's export, over the locals above.
-    unsafe { nt::NtFreeVirtualMemory(CURRENT_PROCESS, &mut base, &mut size, MEM_RELEASE) };
+fn free_stack(process: u32, base: usize) {
+    ntcall::free_virtual_memory(process, base);
 }
 
 /// The CONTEXT's size, flags and register offsets (in dwords) CreateThread fills.
@@ -325,7 +299,11 @@ pub unsafe extern "system" fn create_thread(
     flags: u32,
     thread_id: *mut u32,
 ) -> u32 {
-    let stack = match create_stack(stack_reservation(stack_size, flags), STACK_COMMIT) {
+    let stack = match create_stack(
+        CURRENT_PROCESS,
+        stack_reservation(stack_size, flags),
+        STACK_COMMIT,
+    ) {
         Ok(stack) => stack,
         Err(status) => {
             set_last_nt_error(status);
@@ -362,7 +340,7 @@ pub unsafe extern "system" fn create_thread(
         )
     };
     if !nt_success(status) {
-        free_stack(stack.allocation_base);
+        free_stack(CURRENT_PROCESS, stack.allocation_base);
         set_last_nt_error(status);
         return 0;
     }

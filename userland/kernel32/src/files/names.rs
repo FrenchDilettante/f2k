@@ -38,7 +38,7 @@ fn succeeded(status: u32) -> u32 {
 
 /// GetFileAttributesW's work: the file's or directory's attributes (NtQueryAttributesFile);
 /// INVALID_FILE_ATTRIBUTES with the error.
-fn file_attributes(name: &Wide) -> u32 {
+pub(crate) fn file_attributes(name: &Wide) -> u32 {
     let Some(path) = nt_path(name) else {
         return INVALID_FILE_ATTRIBUTES;
     };

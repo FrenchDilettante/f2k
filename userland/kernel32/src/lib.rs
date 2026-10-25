@@ -1,6 +1,7 @@
 //! kernel32's user-mode code: the bodies of its exports that run in the calling thread, as Windows
 //! 2000's kernel32 runs them, over ntdll's exports ([`nt`]: the system services and the runtime
-//! library, imported as Windows 2000's kernel32 imports them).
+//! library, imported as Windows 2000's kernel32 imports them; [`ntcall`] is a typed, safe layer
+//! over those the process calls use).
 //!
 //! An export here is an `extern "system"` function named `f2k_export_<Name>`, which the DLL's
 //! module-definition file exports under its name (build-support/stubs.rs finds them; the export
@@ -12,8 +13,9 @@
 //! console ([`console`], to the console server), the start-up calls ([`startup`]), the modules
 //! ([`module`]), the synchronization objects, the waits and the handle calls ([`sync`]), the files'
 //! read side ([`files`], over ntdll's file services) and the current directory ([`curdir`]),
-//! the environment ([`env`], over ntdll's), the TLS indexes ([`thread`]), the process's end
-//! ([`process`]), a file's binary type ([`binary_type`]), exceptions ([`except`]: RaiseException, the pointer probes' unwind), the locale
+//! the environment ([`env`], over ntdll's), the TLS indexes ([`thread`]), new processes
+//! ([`create`]: CreateProcess), the processes' calls ([`process`]: their end, OpenProcess, their
+//! exit codes and memory), a file's binary type ([`binary_type`]), exceptions ([`except`]: RaiseException, the pointer probes' unwind), the locale
 //! group ([`locale`] over `rtl::codepage`, with [`collate`] and [`localeinfo`]), the clocks
 //! ([`time`], over the shared data page, [`shared`]), the system messages ([`message`], over
 //! ntdll's message calls and kernel32's own message table), virtual memory and the system's memory
@@ -30,6 +32,7 @@ pub mod base;
 pub mod binary_type;
 pub mod collate;
 pub mod console;
+pub mod create;
 pub mod curdir;
 pub mod env;
 pub mod error;
@@ -41,6 +44,7 @@ pub mod localeinfo;
 pub mod message;
 pub mod module;
 pub mod nt;
+pub mod ntcall;
 pub mod process;
 pub mod shared;
 pub mod startup;

@@ -143,7 +143,7 @@ group = "termination"
 args = ["handle hProcess", "u32 uExitCode"]
 impl = { native = "TerminateProcess" }
 ordinal = 720
-note = "the C runtime's fatal paths (abort, a /GS failure) call it; no fixture block reaches them"
+note = "the caller (the C runtime's fatal paths) or another process: a child, one OpenProcess opened"
 
 [[export]]
 name = "GetCurrentProcess"
@@ -2083,25 +2083,52 @@ ordinal = 471
 name = "CreateProcessW"
 group = "processes"
 args = ["strW? lpApplicationName", "strW? lpCommandLine", "ptr lpProcessAttributes", "ptr lpThreadAttributes", "bool bInheritHandles", "u32 dwCreationFlags", "ptr lpEnvironment", "strW? lpCurrentDirectory", "ptr lpStartupInfo", "ptr lpProcessInformation"]
-impl = { stub = "not yet implemented" }
+impl = { native = "CreateProcessW" }
 ordinal = 77
 fails = "FALSE"
+note = "NtCreateProcess, the parameters written into the new process, NtCreateThread; DETACHED_PROCESS, CREATE_NEW_CONSOLE and the DEBUG_* flags take the stub path; no csrss is told; an Image File Execution Options Debugger is not started"
 
 [[export]]
 name = "CreateProcessA"
 group = "processes"
 args = ["strA? lpApplicationName", "strA? lpCommandLine", "ptr lpProcessAttributes", "ptr lpThreadAttributes", "bool bInheritHandles", "u32 dwCreationFlags", "ptr lpEnvironment", "strA? lpCurrentDirectory", "ptr lpStartupInfo", "ptr lpProcessInformation"]
-impl = { stub = "not yet implemented" }
+impl = { native = "CreateProcessA" }
 ordinal = 73
 fails = "FALSE"
+note = "CreateProcessW's work, its strings converted through the ANSI code page"
 
 [[export]]
 name = "OpenProcess"
 group = "processes"
 args = ["u32 dwDesiredAccess", "bool bInheritHandle", "u32 dwProcessId"]
-impl = { stub = "not yet implemented" }
+impl = { native = "OpenProcess" }
 ordinal = 534
 fails = "NULL"
+
+[[export]]
+name = "GetExitCodeProcess"
+group = "processes"
+args = ["handle hProcess", "ptr<u32> lpExitCode"]
+impl = { native = "GetExitCodeProcess" }
+ordinal = 291
+fails = "FALSE"
+
+[[export]]
+name = "ReadProcessMemory"
+group = "processes"
+args = ["handle hProcess", "ptr lpBaseAddress", "ptr lpBuffer", "u32 nSize", "ptr<u32> lpNumberOfBytesRead"]
+impl = { native = "ReadProcessMemory" }
+ordinal = 581
+fails = "FALSE"
+
+[[export]]
+name = "WriteProcessMemory"
+group = "processes"
+args = ["handle hProcess", "ptr lpBaseAddress", "ptr lpBuffer", "u32 nSize", "ptr<u32> lpNumberOfBytesWritten"]
+impl = { native = "WriteProcessMemory" }
+ordinal = 796
+fails = "FALSE"
+note = "the range made writable first, read-only pages refused (ERROR_NOACCESS); no NtFlushInstructionCache (ntdll does not export it yet)"
 
 [[export]]
 name = "CmdBatNotification"
@@ -2120,30 +2147,6 @@ impl = { stub = "not yet implemented" }
 ordinal = 402
 fails = "0"
 note = "NTVDM's current directories, for cmd.exe; with no DOS subsystem there are none (0 characters)"
-
-[[export]]
-name = "GetExitCodeProcess"
-group = "processes"
-args = ["handle hProcess", "ptr<u32> lpExitCode"]
-impl = { stub = "not yet implemented" }
-ordinal = 291
-fails = "FALSE"
-
-[[export]]
-name = "ReadProcessMemory"
-group = "processes"
-args = ["handle hProcess", "ptr lpBaseAddress", "ptr lpBuffer", "u32 nSize", "ptr<u32> lpNumberOfBytesRead"]
-impl = { stub = "not yet implemented" }
-ordinal = 581
-fails = "FALSE"
-
-[[export]]
-name = "WriteProcessMemory"
-group = "processes"
-args = ["handle hProcess", "ptr lpBaseAddress", "ptr lpBuffer", "u32 nSize", "ptr<u32> lpNumberOfBytesWritten"]
-impl = { stub = "not yet implemented" }
-ordinal = 796
-fails = "FALSE"
 
 [[export]]
 name = "GetBinaryTypeW"

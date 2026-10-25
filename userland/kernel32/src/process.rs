@@ -1,12 +1,15 @@
-//! The process's end, scheduling and error mode: ExitProcess and TerminateProcess, its priority
-//! class, its affinity and SetErrorMode — kernel32's own code over ntdll's process services, as on
-//! Windows 2000. Only the current process is reachable (its pseudo-handle, or a
-//! handle to it): the kernel refuses any other handle (ERROR_INVALID_HANDLE).
+//! The processes' calls over ntdll's process services, as on Windows 2000: ExitProcess and
+//! TerminateProcess, OpenProcess and GetExitCodeProcess, ReadProcessMemory and
+//! WriteProcessMemory, the priority class, the affinity and SetErrorMode. A process is named by
+//! its handle (the current one's pseudo-handle, or a handle CreateProcess or OpenProcess handed
+//! out); the kernel checks the handle's access and answers for the process (CreateProcess itself
+//! is [`crate::create`]'s).
 
 use rtl::status::nt_success;
 
 use crate::base::{set_last_error, set_last_nt_error, succeeded, CURRENT_PROCESS};
-use crate::nt;
+use crate::nt::{self, ClientId};
+use crate::ntcall::{self, Destination, Source};
 
 /// PROCESSINFOCLASS: the classes kernel32 asks.
 const PROCESS_DEFAULT_HARD_ERROR_MODE: u32 = 12;
@@ -80,18 +83,180 @@ pub extern "C" fn f2k_k32_exit_process(code: u32) -> ! {
     exit_process(code)
 }
 
-/// TerminateProcess: NtTerminateProcess on the process its handle names — the caller's own ends it
-/// with the code, its loader not told (the C runtime's fatal paths end themselves so); any other
-/// handle is ERROR_INVALID_HANDLE (only the calling process is reachable).
+/// TerminateProcess: NtTerminateProcess on the process its handle names, ended with the code — the
+/// caller's own, its loader not told (the C runtime's fatal paths end themselves so), or another
+/// (a child, a process OpenProcess opened: the kernel refuses a handle without PROCESS_TERMINATE,
+/// and a process already ended, ERROR_ACCESS_DENIED both). A null handle names no process here
+/// (NtTerminateProcess would take it as the caller's other threads): ERROR_INVALID_HANDLE.
 #[unsafe(export_name = "f2k_export_TerminateProcess")]
 pub extern "system" fn terminate_process(process: u32, code: u32) -> u32 {
     if process == 0 {
-        // NtTerminateProcess would take a null handle as the caller's other threads.
         set_last_error(ERROR_INVALID_HANDLE);
         return 0;
     }
-    // SAFETY: ntdll's export.
-    succeeded(unsafe { nt::NtTerminateProcess(process, code) })
+    match ntcall::terminate_process(process, code) {
+        Ok(()) => 1,
+        Err(status) => {
+            set_last_nt_error(status);
+            0
+        }
+    }
+}
+
+/// OpenProcess: a handle with the access to the process the id names (NtOpenProcess by CLIENT_ID,
+/// no thread), inheritable when asked (OBJ_INHERIT); NULL with the error otherwise — a process id
+/// naming no process, zero included, is ERROR_INVALID_PARAMETER (the kernel's
+/// STATUS_INVALID_CID).
+#[unsafe(export_name = "f2k_export_OpenProcess")]
+pub extern "system" fn open_process(access: u32, inherit: u32, process_id: u32) -> u32 {
+    let attributes = ntcall::unnamed_attributes(inherit != 0, core::ptr::null());
+    let client_id = ClientId {
+        unique_process: process_id as usize,
+        unique_thread: 0,
+    };
+    match ntcall::open_process(access, &attributes, &client_id) {
+        Ok(process) => process,
+        Err(status) => {
+            set_last_nt_error(status);
+            0
+        }
+    }
+}
+
+/// STILL_ACTIVE: the exit code of a process still running (STATUS_PENDING).
+pub const STILL_ACTIVE: u32 = 259;
+
+/// GetExitCodeProcess: the process's exit status (ProcessBasicInformation's ExitStatus:
+/// STILL_ACTIVE while it runs) into `*code`; FALSE with the status's error when the handle cannot
+/// be queried (PROCESS_QUERY_INFORMATION). A null `code` faults the caller, as Windows 2000's
+/// writes through it.
+///
+/// # Safety
+///
+/// `code` is writable.
+#[unsafe(export_name = "f2k_export_GetExitCodeProcess")]
+pub unsafe extern "system" fn get_exit_code_process(process: u32, code: *mut u32) -> u32 {
+    // SAFETY: the caller's slot.
+    let Some(code) = (unsafe { code.as_mut() }) else {
+        ntcall::raise_status(rtl::status::STATUS_ACCESS_VIOLATION);
+    };
+    match ntcall::basic_information(process) {
+        Ok(information) => {
+            *code = information.exit_status;
+            1
+        }
+        Err(status) => {
+            set_last_nt_error(status);
+            0
+        }
+    }
+}
+
+/// ReadProcessMemory: `size` bytes of the process at `address` into the caller's buffer
+/// (NtReadVirtualMemory, PROCESS_VM_READ), the count the service settles on written where asked
+/// (a partial copy's too, ERROR_PARTIAL_COPY; an address the service refuses outright leaves it
+/// untouched); FALSE with the status's error on any failure.
+///
+/// # Safety
+///
+/// `buffer` is the caller's, of `size` bytes, and `count` null or writable (the service probes
+/// both: a bad pointer is its error, not a fault).
+#[unsafe(export_name = "f2k_export_ReadProcessMemory")]
+pub unsafe extern "system" fn read_process_memory(
+    process: u32,
+    address: usize,
+    buffer: *mut u8,
+    size: u32,
+    count: *mut u32,
+) -> u32 {
+    // SAFETY: the caller's buffer and count, as the contract says.
+    let (destination, count) = unsafe {
+        (
+            Destination::caller(buffer as usize, size as usize),
+            count.as_mut(),
+        )
+    };
+    match ntcall::read_virtual_memory(process, address, destination, count) {
+        Ok(()) => 1,
+        Err(status) => {
+            set_last_nt_error(status);
+            0
+        }
+    }
+}
+
+/// The page protections WriteProcessMemory tells apart: those that let a write through, and those
+/// it refuses to write past (read-only data, no access).
+const WRITABLE: u32 = 0x04 | 0x08 | 0x40 | 0x80;
+const READ_ONLY: u32 = 0x01 | 0x02;
+const PAGE_EXECUTE_READWRITE: u32 = 0x40;
+/// The protection's modifiers (PAGE_GUARD, PAGE_NOCACHE), set beside its kind.
+const PROTECTION_KIND: u32 = 0xFF;
+
+/// ERROR_NOACCESS: what a write into read-only memory is.
+const ERROR_NOACCESS: u32 = 998;
+
+/// WriteProcessMemory, as Windows 2000's: the range made writable first (NtProtectVirtualMemory to
+/// PAGE_EXECUTE_READWRITE: its refusal's error is the call's — a range not all allocated, a
+/// handle without PROCESS_VM_OPERATION). Pages that were writable get their protection back and
+/// the bytes written (NtWriteVirtualMemory); pages that were read-only or not accessible get it
+/// back and the call fails with ERROR_NOACCESS, nothing written (spawn's capture: the image's
+/// read-only header); code pages (execute, execute-read) are written under the temporary
+/// protection, then get theirs back. The count is written where asked once a write was tried.
+/// Windows 2000 then flushes the instruction cache (NtFlushInstructionCache); ntdll does not
+/// export it yet, and on F2K's one i386 processor a write is seen by the next fetch anyway.
+///
+/// # Safety
+///
+/// `buffer` is the caller's, of `size` bytes, and `count` null or writable (the service probes
+/// the buffer).
+#[unsafe(export_name = "f2k_export_WriteProcessMemory")]
+pub unsafe extern "system" fn write_process_memory(
+    process: u32,
+    address: usize,
+    buffer: *const u8,
+    size: u32,
+    count: *mut u32,
+) -> u32 {
+    // SAFETY: the caller's buffer and count, as the contract says.
+    let (source, count) = unsafe {
+        (
+            Source::caller(buffer as usize, size as usize),
+            count.as_mut(),
+        )
+    };
+    let length = size as usize;
+    let old = match ntcall::protect_virtual_memory(process, address, length, PAGE_EXECUTE_READWRITE)
+    {
+        Ok(old) => old,
+        Err(status) => {
+            set_last_nt_error(status);
+            return 0;
+        }
+    };
+    let restore = || {
+        let _ = ntcall::protect_virtual_memory(process, address, length, old);
+    };
+    let kind = old & PROTECTION_KIND;
+    let written = if kind & WRITABLE != 0 {
+        restore();
+        ntcall::write_virtual_memory(process, address, source, count)
+    } else if kind & READ_ONLY != 0 {
+        restore();
+        set_last_error(ERROR_NOACCESS);
+        return 0;
+    } else {
+        let written = ntcall::write_virtual_memory(process, address, source, count);
+        restore();
+        written
+    };
+    match written {
+        Ok(()) => 1,
+        Err(status) => {
+            set_last_nt_error(status);
+            0
+        }
+    }
 }
 
 /// GetPriorityClass: ProcessPriorityClass as its class flag; zero with the status's error.
