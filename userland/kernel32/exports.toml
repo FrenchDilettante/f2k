@@ -2128,7 +2128,7 @@ args = ["handle hProcess", "ptr lpBaseAddress", "ptr lpBuffer", "u32 nSize", "pt
 impl = { native = "WriteProcessMemory" }
 ordinal = 796
 fails = "FALSE"
-note = "the range made writable first, read-only pages refused (ERROR_NOACCESS); no NtFlushInstructionCache (ntdll does not export it yet)"
+note = "the range made writable first, read-only pages refused (ERROR_NOACCESS); the instruction cache flushed after a write (NtFlushInstructionCache)"
 
 [[export]]
 name = "CmdBatNotification"

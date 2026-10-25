@@ -213,6 +213,9 @@ unsafe extern "system" {
         length: u32,
         written: *mut u32,
     ) -> u32;
+    /// NtFlushInstructionCache: a process's instruction cache over a range made to see the
+    /// writes to its memory.
+    pub fn NtFlushInstructionCache(process: u32, address: usize, length: u32) -> u32;
     /// LdrQueryImageFileExecutionOptions: an option under Image File Execution Options\<the
     /// image's file name> into the buffer, as the type asks (REG_SZ, 1: the text).
     pub fn LdrQueryImageFileExecutionOptions(
@@ -3705,6 +3708,26 @@ pub mod children {
             unsafe { written.write(count as u32) };
         }
         status
+    }
+
+    /// NtFlushInstructionCache: recorded among the child's memory calls ("flush", the range); the
+    /// calling process's own is nothing to record.
+    pub unsafe extern "system" fn NtFlushInstructionCache(
+        process: u32,
+        address: usize,
+        length: u32,
+    ) -> u32 {
+        if let Some(status) = failing("NtFlushInstructionCache") {
+            return status;
+        }
+        if process == super::threads::CURRENT_PROCESS {
+            return 0;
+        }
+        if !is_child(process) {
+            return STATUS_INVALID_HANDLE;
+        }
+        with_child(|child| child.vm.push(("flush", address, length as usize, 0)));
+        0
     }
 
     /// LdrQueryImageFileExecutionOptions: the question recorded; no image has options.

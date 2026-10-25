@@ -420,6 +420,17 @@ pub fn write_virtual_memory(
     })
 }
 
+/// NtFlushInstructionCache: a process's instruction cache over `[address, address + length)` made
+/// to see the writes to its memory.
+pub fn flush_instruction_cache(
+    process: u32,
+    address: usize,
+    length: usize,
+) -> Result<(), NtStatus> {
+    // SAFETY: ntdll's export, over plain values: the service reads no memory.
+    checked(unsafe { nt::NtFlushInstructionCache(process, address, length as u32) })
+}
+
 /// NtCreateThread: a thread of `process` on the stack the INITIAL_TEB describes, starting in the
 /// CONTEXT, suspended when asked; its handle and client id.
 pub fn create_thread(

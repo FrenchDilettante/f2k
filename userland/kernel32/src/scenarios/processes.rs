@@ -1135,7 +1135,8 @@ fn read_process_memory_reads_the_child() {
 /// WriteProcessMemory makes the range writable first: read-only pages get their protection back
 /// and the call fails with ERROR_NOACCESS, nothing written and the count untouched; writable pages
 /// get theirs back, then the bytes are written; code pages are written under the temporary
-/// protection, then get theirs back; a range not mapped is the protection's refusal (487).
+/// protection, then get theirs back; each write is followed by the instruction cache's flush over
+/// the range; a range not mapped is the protection's refusal (487), nothing flushed.
 ///
 /// Pins: kernel32.WriteProcessMemory
 #[test]
@@ -1164,7 +1165,8 @@ fn write_process_memory_writes_what_may_be_written() {
         child_vm(),
         [
             ("protect", CHILD_PEB, 0x1000, 0x40),
-            ("protect", CHILD_PEB, 0x1000, 0x04)
+            ("protect", CHILD_PEB, 0x1000, 0x04),
+            ("flush", slot, 4, 0)
         ]
     );
 
@@ -1174,8 +1176,10 @@ fn write_process_memory_writes_what_may_be_written() {
         unsafe { write_process_memory(CHILD_PROCESS, code, source, 4, core::ptr::null_mut()) };
     assert_eq!((written, child_dword(code)), (1, mark));
     assert_eq!(with_child(|child| child.regions[0].protect), 0x20);
+    assert_eq!(child_vm().last(), Some(&("flush", code, 4, 0)));
 
     count = 0xF2F2;
     let written = unsafe { write_process_memory(CHILD_PROCESS, 0, source, 4, &mut count) };
     assert_eq!((written, last_error(), count), (0, 487, 0xF2F2));
+    assert!(!child_vm().iter().any(|call| call.0 == "flush"));
 }

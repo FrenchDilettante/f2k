@@ -145,6 +145,15 @@ ordinal = 306
 zw_ordinal = 951
 
 [[export]]
+name = "NtFlushInstructionCache"
+group = "nt"
+args = ["handle ProcessHandle", "ptr BaseAddress", "u32 Length"]
+impl = { syscall = "crate::nt::memory::flush_instruction_cache" }
+ordinal = 127
+zw_ordinal = 772
+note = "the process handle checked (PROCESS_VM_WRITE); nothing else to do on one i386 processor, whose instruction cache follows writes to memory"
+
+[[export]]
 name = "NtContinue"
 group = "nt"
 args = ["ptr Context", "u32 TestAlert"]
@@ -1681,10 +1690,6 @@ ordinal = 124
 [[export]]
 name = "NtFindAtom"
 ordinal = 125
-
-[[export]]
-name = "NtFlushInstructionCache"
-ordinal = 127
 
 [[export]]
 name = "NtFlushVirtualMemory"
@@ -3745,10 +3750,6 @@ ordinal = 769
 [[export]]
 name = "ZwFindAtom"
 ordinal = 770
-
-[[export]]
-name = "ZwFlushInstructionCache"
-ordinal = 772
 
 [[export]]
 name = "ZwFlushVirtualMemory"

@@ -202,9 +202,10 @@ const ERROR_NOACCESS: u32 = 998;
 /// the bytes written (NtWriteVirtualMemory); pages that were read-only or not accessible get it
 /// back and the call fails with ERROR_NOACCESS, nothing written (spawn's capture: the image's
 /// read-only header); code pages (execute, execute-read) are written under the temporary
-/// protection, then get theirs back. The count is written where asked once a write was tried.
-/// Windows 2000 then flushes the instruction cache (NtFlushInstructionCache); ntdll does not
-/// export it yet, and on F2K's one i386 processor a write is seen by the next fetch anyway.
+/// protection, then get theirs back. The count is written where asked once a write was tried. A
+/// write tried, the process's instruction cache is flushed over the range
+/// (NtFlushInstructionCache), as Windows 2000's does: the bytes may be code; the flush's own
+/// status does not change the call's.
 ///
 /// # Safety
 ///
@@ -250,6 +251,7 @@ pub unsafe extern "system" fn write_process_memory(
         restore();
         written
     };
+    let _ = ntcall::flush_instruction_cache(process, address, length);
     match written {
         Ok(()) => 1,
         Err(status) => {

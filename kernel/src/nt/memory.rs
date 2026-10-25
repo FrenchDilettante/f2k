@@ -1,19 +1,20 @@
 //! The virtual-memory services: NtAllocateVirtualMemory, NtFreeVirtualMemory,
-//! NtProtectVirtualMemory and NtQueryVirtualMemory over a process's address space (`mem::vm`), and
-//! NtReadVirtualMemory and NtWriteVirtualMemory between the caller's memory and a process's,
-//! answering Windows 2000's statuses. kernel32's VirtualAlloc(Ex), VirtualFree(Ex),
-//! VirtualProtect(Ex), VirtualQuery(Ex), ReadProcessMemory and WriteProcessMemory are Win32 code
-//! over these, as on Windows 2000.
+//! NtProtectVirtualMemory and NtQueryVirtualMemory over a process's address space (`mem::vm`),
+//! NtReadVirtualMemory and NtWriteVirtualMemory between the caller's memory and a process's, and
+//! NtFlushInstructionCache, answering Windows 2000's statuses. kernel32's VirtualAlloc(Ex),
+//! VirtualFree(Ex), VirtualProtect(Ex), VirtualQuery(Ex), ReadProcessMemory and WriteProcessMemory
+//! are Win32 code over these, as on Windows 2000.
 //!
 //! The process is any the caller holds a handle to (see [`super::object::reference_process`]),
 //! with the access MSDN's Win32 calls name: PROCESS_VM_OPERATION to change its memory,
 //! PROCESS_QUERY_INFORMATION to query it, PROCESS_VM_READ and PROCESS_VM_WRITE to copy from and
-//! into it. Another process's space is reached by attaching to it for the scope
-//! ([`crate::sched::attach`]): its regions are its record's, its page tables the live ones then.
-//! The address and size arguments are in/out, as on Windows 2000: probed for writing before the
-//! call acts, and the base and the size the call settled on written back — in the caller's memory,
-//! never while attached. The rules are functions over an [`AddressSpace`] and its [`Pages`]
-//! (host-tested); the services move their arguments through user memory.
+//! into it (and PROCESS_VM_WRITE to flush its instruction cache after such a copy). Another
+//! process's space is reached by attaching to it for the scope ([`crate::sched::attach`]): its
+//! regions are its record's, its page tables the live ones then. The address and size arguments are
+//! in/out, as on Windows 2000: probed for writing before the call acts, and the base and the size
+//! the call settled on written back — in the caller's memory, never while attached. The rules are
+//! functions over an [`AddressSpace`] and its [`Pages`] (host-tested); the services move their
+//! arguments through user memory.
 
 use super::call::{
     Handle,
@@ -510,6 +511,37 @@ pub fn write_virtual_memory(
         count,
         Direction::IntoProcess,
     )
+}
+
+/// NtFlushInstructionCache: the process's instruction cache over `length` bytes from `base` (all
+/// of it for a null base) made to see the writes to its memory; the process's handle needs
+/// PROCESS_VM_WRITE, the right to write the code a flush follows (the Native API's documented
+/// requirement; MSDN's FlushInstructionCache names none). On F2K's one i386 processor nothing is
+/// left to do once the handle is checked: the processor keeps its instruction cache and prefetch
+/// queue coherent with writes to memory itself, by physical address (Intel's manual,
+/// "Self-Modifying Code"), so a write through another process's mapping is seen too; and the return
+/// to user mode serializes. The range is not looked at.
+pub fn flush_instruction_cache(
+    call: &mut NtCall,
+    process: Handle,
+    _base: UserAddr,
+    _length: u32,
+) -> NtResult {
+    check_process(call, process, PROCESS_VM_WRITE)?;
+    Ok(STATUS_SUCCESS)
+}
+
+/// Whether the process `process` names grants `access`: the handle's refusals.
+#[cfg(target_arch = "x86")]
+fn check_process(_call: &mut NtCall, process: Handle, access: u32) -> Result<(), Status> {
+    super::object::reference_process(process.raw(), access).map(drop)
+}
+
+/// Host builds have no process: the services run on the target only.
+#[cfg(not(target_arch = "x86"))]
+fn check_process(_call: &mut NtCall, process: Handle, _access: u32) -> Result<(), Status> {
+    let _ = process;
+    Err(super::call::STATUS_INVALID_HANDLE)
 }
 
 /// NtAllocateVirtualMemory (see [`allocate`]); the zero-bits constraint is not applied.
