@@ -187,7 +187,8 @@ pub fn key_byte(byte: u8, lights: &mut impl rtl::console::input::Lights) {
         let _ = record;
     });
     // The object directory is safe here too: everything else that touches it runs with
-    // interrupts masked (the services, the teardown), so no DPC lands inside it.
+    // interrupts masked (the services, the loads — whose disk waits open them outside any use of
+    // it — and the teardown), so no DPC lands inside it.
     show_input(console);
 }
 

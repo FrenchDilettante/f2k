@@ -38,7 +38,10 @@
 //! the loaded process, and a ready thread could preempt it. No reap starts a leg (every leg has
 //! started); each leg's end line prints as it ends, its audit line at the next quiescent point,
 //! and the summary once every leg is reaped. The program output of legs that overlap
-//! interleaves on COM1, so the log is judged whole, not split by leg.
+//! interleaves on COM1, so the log is judged whole, not split by leg. A boot of more legs than
+//! there can be processes at once stops at the first leg past the pool's capacity: its start line,
+//! then `F2K: process not created (status 0xc000009a)` (STATUS_INSUFFICIENT_RESOURCES), and the
+//! boot halts, as on any leg that does not load (its file unread, its image rejected).
 //!
 //! With the kernel option `screens` (`F2K: ... screens -- CORPUS\console.exe info ;; ...`), each
 //! process's end pauses the boot before its audit line, for the test harness to take a screenshot
@@ -76,6 +79,10 @@ pub fn run() -> ! {
     // The baseline for the per-process teardown audits: recorded once the boot's permanent
     // allocations are done, before the first process takes any frame.
     crate::process::record_allocator_baseline();
+    // The loads run masked, as the reap step's do (the idle loop masks before each step): a load
+    // creates objects in the object directory, which a DPC may reach too, and its disk waits open
+    // interrupts only inside their halts.
+    crate::interrupt::irql::state_mut().mask_interrupts();
     use crate::boot::cmdline::{kernel_command_line, kernel_option};
     if kernel_option(kernel_command_line(), b"concurrent") {
         start_every_leg(legs);
@@ -169,20 +176,16 @@ fn start_leg(index: u32) {
 }
 
 /// With the `concurrent` option, start all `legs` at once: load every leg, in order, then ready
-/// every main thread, in the same order (see the module's documentation).
-///
-/// # Panics
-///
-/// More legs than there can be processes at once.
+/// every main thread, in the same order (see the module's documentation). More legs than there can
+/// be processes at once are refused by the first load past the pool's capacity, as any leg that
+/// does not load is.
 fn start_every_leg(legs: u32) {
     use crate::process::MAX_PROCESSES;
-    assert!(
-        legs as usize <= MAX_PROCESSES,
-        "{legs} programs run side by side, at most {MAX_PROCESSES}"
-    );
     let mut loaded: [Option<&'static mut Process>; MAX_PROCESSES] = [const { None }; MAX_PROCESSES];
-    for (slot, index) in loaded.iter_mut().zip(1..=legs) {
-        *slot = Some(load_leg(index));
+    for index in 1..=legs {
+        let process = load_leg(index);
+        // Every loaded leg holds a process record, so the pool's capacity bounds the index.
+        loaded[index as usize - 1] = Some(process);
     }
     for process in loaded.iter_mut().flatten() {
         crate::process::threads::ready_main_thread(process);
@@ -192,7 +195,8 @@ fn start_every_leg(legs: u32) {
 /// Announce leg `index` and load it: create its process — its program read off the boot volume, the
 /// leg its own, its address space built attached to it — and plant its main thread's start. The
 /// thread is not readied: nothing runs until the caller readies it, so another leg could be loaded
-/// first.
+/// first. A leg that does not load — its file unread, its image rejected, its process refused — is
+/// reported on COM1 and halts the boot.
 fn load_leg(index: u32) -> &'static mut crate::process::Process {
     suite().started(index);
     let command_line = programs()
@@ -206,8 +210,12 @@ fn load_leg(index: u32) -> &'static mut crate::process::Process {
     );
     let mut path = [0u8; crate::user::MAX_PATH];
     let (length, name) = crate::user::program_image(command_line, &mut path);
-    let (process, entry) =
-        crate::exec::loader::load_path(&path[..length], name, command_line, Some(index));
+    let path = &path[..length];
+    let (process, entry) = crate::exec::loader::load_path(path, name, command_line, Some(index))
+        .unwrap_or_else(|error| {
+            crate::serial_println!("F2K: {}", error.report(path));
+            crate::halt()
+        });
     crate::process::threads::start_main_thread(process, crate::user::main_thread_start(entry));
     process
 }

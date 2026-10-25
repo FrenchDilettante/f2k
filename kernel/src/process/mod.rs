@@ -377,23 +377,48 @@ impl Process {
     /// to the process ([`Process::attach`]) to map its user pages, each inside one of its regions.
     /// `leg` is the boot's program the process runs as (none for a child). Returns the record for
     /// the caller's setup (the loader's), which threads it through.
+    ///
+    /// STATUS_INSUFFICIENT_RESOURCES when a process record, a gate-stack slot or a thread record is
+    /// not to be had (Windows 2000's answer to a full table or an exhausted kernel stack). A
+    /// refusal leaves nothing behind: what was taken before it — the address space, the process
+    /// object and its record, the slot — is given back, in the reverse order.
     // The record is the pool's, not borrowed from `name` (see `pool::create`).
     #[allow(clippy::mut_from_ref)]
-    pub fn start(name: &'static str, leg: Option<u32>) -> &'static mut Process {
+    pub fn start(
+        name: &'static str,
+        leg: Option<u32>,
+    ) -> Result<&'static mut Process, crate::nt::call::Status> {
+        use crate::nt::object::STATUS_INSUFFICIENT_RESOURCES;
         let dir_phys = paging::create_address_space();
-        let process = pool::create(dir_phys, name, leg);
+        let process = match pool::create(dir_phys, name, leg) {
+            Ok(process) => process,
+            Err(status) => {
+                free_directory(dir_phys);
+                return Err(status);
+            }
+        };
 
         // The scheduling record's thread-list sentinel closes now that the record is at its final
         // address.
         process.sched.init();
 
+        // The main thread's gate stack, taken before its record (as a created thread's is): a
+        // release undoes it when the record is not to be had, and nothing is attached before both
+        // are held.
+        let Some((slot, frames)) = crate::mem::kstacks::create() else {
+            process.abandon();
+            return Err(STATUS_INSUFFICIENT_RESOURCES);
+        };
+
         // The main thread: its object holds the thread's own reference while it runs (released at
         // its end), on any free record of the pool; it holds the process's ordinal 0 (the fixed TEB
-        // page). It attaches to the process and takes the system's lowest free gate-stack slot.
+        // page). It attaches to the process and runs on the gate stack just taken.
         let directory = crate::ob::directory();
-        let id = directory
-            .create_thread()
-            .expect("a thread record is free for a new process's main thread");
+        let Some(id) = directory.create_thread() else {
+            crate::mem::kstacks::release((slot, frames));
+            process.abandon();
+            return Err(STATUS_INSUFFICIENT_RESOURCES);
+        };
         process.main_thread = id.index;
         process.ordinals.hold_main(id);
         let thread: *mut crate::sched::thread::Thread = directory.threads.record(id.index);
@@ -403,8 +428,6 @@ impl Process {
         // SAFETY: the process record is installed at its final address, and so is the thread
         // record.
         unsafe { (*thread).attach_to(&mut *sched) };
-        let (slot, frames) = crate::mem::kstacks::create()
-            .expect("a kernel stack slot is free for a new process's main thread");
         // SAFETY: the main thread is not yet schedulable; nothing else reaches it.
         unsafe {
             (*thread).gate_slot = slot;
@@ -416,7 +439,16 @@ impl Process {
         }
         // The TSS `esp0` is the switch's to install: the first switch into the main thread loads
         // its stack top.
-        process
+        Ok(process)
+    }
+
+    /// Undo a start refused before the main thread was attached: the process's own reference on
+    /// its object goes (no handle exists yet, so the object and the record go with it), then the
+    /// fresh address space's directory, which maps nothing yet.
+    fn abandon(&mut self) {
+        let dir_phys = self.dir_phys();
+        release_record(self);
+        free_directory(dir_phys);
     }
 
     /// The process's main thread: its record in the object manager's thread pool.
@@ -458,6 +490,16 @@ pub fn new_client_id() -> u32 {
         *next = next_client_id(id);
         id
     }
+}
+
+/// Give back the directory frame of an address space that maps nothing of its own (a start
+/// refused before its first mapping): its kernel half is shared, so the frame is all it holds.
+#[cfg(target_arch = "x86")]
+fn free_directory(dir_phys: u32) {
+    use crate::mem::frame::FrameState;
+    crate::mem::bootmem::with_frame_db(|db| {
+        db.release(dir_phys / paging::PAGE_SIZE, FrameState::Free)
+    });
 }
 
 /// Build a fresh process record at `process`: the address space at `dir_phys`, named `name`,

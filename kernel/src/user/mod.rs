@@ -453,8 +453,11 @@ pub fn run_fault_stub() -> ! {
 
     // The stub's one code page stands where an image would, with the system areas around it. The
     // stub is the boot's one program, leg 1, though no runner drives it: it reports as a
-    // one-process boot's.
-    let process = crate::process::Process::start("stub", Some(1));
+    // one-process boot's. A refused creation is reported as the runner reports a leg's, and halts.
+    let process = crate::process::Process::start("stub", Some(1)).unwrap_or_else(|status| {
+        crate::serial_println!("F2K: process not created (status {:#010x})", status.0);
+        crate::halt()
+    });
     // Built attached to the process: the pages below land in its directory, the live one.
     let attached = process.attach();
     let space = process.vm();

@@ -145,6 +145,15 @@ PROCESS_CONCURRENT_MD = (
     "F2K: process suite complete: 16 run, 0 faulted, 0 leaks",
 )
 
+# One leg more than the process pool holds: sixteen exit0 legs load, the seventeenth's process is
+# refused (STATUS_INSUFFICIENT_RESOURCES: every process record in use), reported after its start
+# line, and the boot halts there, as on any leg that does not load: no leg runs.
+PROCESS_CONCURRENT_TOO_MANY = (
+    *BOOTED,
+    *(f"F2K: process {index} of 17: exit0" for index in range(1, 18)),
+    "F2K: process not created (status 0xc000009a)",
+)
+
 # What a one-process boot reports once its program has run and its process is gone.
 EXITED_CLEAN = (
     "F2K: user process exited normally (exit code=0)",
@@ -334,6 +343,16 @@ CASES = (
         kernel_options="concurrent",
         ordered=True,
         expects=PROCESS_CONCURRENT_MD,
+    ),
+    Case(
+        name="process-concurrent-too-many",
+        description="seventeen legs side by side, one more than the process pool holds: the seventeenth's creation is refused with its status after its start line, and the boot halts with no leg run",
+        image="kernel",
+        cmdline=" ;; ".join(("exit0",) * 17),
+        kernel_options="concurrent",
+        ordered=True,
+        expects=PROCESS_CONCURRENT_TOO_MANY,
+        forbids=("exited normally",),
     ),
     # Interrupt/timer core: the irq-smoke diagnostic boot proves the hardware layer and the
     # interrupt core are live, then the normal boot proceeds to the default image's exit (the tick

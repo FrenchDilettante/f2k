@@ -14,30 +14,44 @@
 //! Images are never relocated: an image maps at its preferred base or is refused.
 //!
 //! Quirk: the file and the image are built in staging buffers — borrowed statics, not stack frames
-//! — because the loader runs on the small boot stack.
+//! — because the loader runs on the small boot stack. The stagings are one set, so loads take
+//! turns: the loader lock ([`LOADER`]) holds them for a load's whole use, a lock a thread waits on
+//! (a load reads the disk under it). The boot's loads run on the idle thread, which cannot wait: it
+//! is the only loader while it loads, so the lock is always free for it.
+//!
+//! A refusal is a [`LoadError`]: what went wrong, for the boot's COM1 line, and the status a
+//! service answers with ([`LoadError::status`]). A refused load leaves nothing behind.
 
 use core::fmt;
 
-use crate::exec::pe::Image;
+use crate::exec::pe::{Image, Reject};
 use crate::fs::fat32::lookup::{lookup, LookupError};
 use crate::fs::fat32::read::read;
 use crate::fs::fat32::volume::Volume;
+use crate::nt::call::Status;
 use crate::status::{nt_success, NtStatus};
 
 /// The raw-file staging size: the largest file the loader reads. Room for the era's system binaries
 /// (a few hundred KiB each); the corpus's biggest fixture file is 0x7000 bytes.
 const FILE_STAGING_SIZE: usize = 0x8_0000;
 
-/// Staging for the program's file as read off the volume (see the module doc).
-#[cfg(target_arch = "x86")]
-static mut FILE_STAGING: crate::mem::paging::Aligned<[u8; FILE_STAGING_SIZE]> =
-    crate::mem::paging::Aligned([0; FILE_STAGING_SIZE]);
+/// STATUS_FILE_IS_A_DIRECTORY: the path names a directory where a file must be.
+const STATUS_FILE_IS_A_DIRECTORY: Status = Status(0xC000_00BA);
+/// STATUS_SECTION_TOO_BIG: the image is larger than the loader can hold (as an image section's is
+/// past what its frame tables name).
+const STATUS_SECTION_TOO_BIG: Status = Status(0xC000_0040);
+/// STATUS_INVALID_IMAGE_FORMAT: the bytes are no image the loader accepts.
+const STATUS_INVALID_IMAGE_FORMAT: Status = Status(0xC000_007B);
 
 /// Why a program's file could not be read off the volume.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum FileError {
-    /// The path did not resolve.
-    Lookup(LookupError),
+    /// The path did not resolve; `on_the_way` when it failed before the file itself (a directory
+    /// the path goes through is missing, or is a file).
+    Lookup {
+        error: LookupError,
+        on_the_way: bool,
+    },
     /// The path names a directory.
     Directory,
     /// The file (its size in bytes) is larger than the raw staging buffer.
@@ -46,10 +60,35 @@ pub enum FileError {
     Read(NtStatus),
 }
 
+impl FileError {
+    /// The status an open of the program's file fails with, as Windows' open reports it: a missing
+    /// file STATUS_OBJECT_NAME_NOT_FOUND, a missing directory on the way (or a file there)
+    /// STATUS_OBJECT_PATH_NOT_FOUND, a malformed name STATUS_OBJECT_NAME_INVALID, a directory
+    /// STATUS_FILE_IS_A_DIRECTORY, a file larger than the staging STATUS_SECTION_TOO_BIG (see
+    /// [`LoadError::status`]), and a failed read its own status.
+    pub fn status(&self) -> Status {
+        use crate::nt::attributes::{STATUS_OBJECT_NAME_NOT_FOUND, STATUS_OBJECT_PATH_NOT_FOUND};
+        match *self {
+            FileError::Lookup {
+                error: LookupError::NotFound | LookupError::NotADirectory,
+                on_the_way: true,
+            } => STATUS_OBJECT_PATH_NOT_FOUND,
+            FileError::Lookup {
+                error: LookupError::NotFound | LookupError::NotADirectory,
+                on_the_way: false,
+            } => STATUS_OBJECT_NAME_NOT_FOUND,
+            FileError::Lookup { error, .. } => Status(error.status() as u32),
+            FileError::Directory => STATUS_FILE_IS_A_DIRECTORY,
+            FileError::TooLarge(_) => STATUS_SECTION_TOO_BIG,
+            FileError::Read(status) => Status(status as u32),
+        }
+    }
+}
+
 impl fmt::Display for FileError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
-            FileError::Lookup(error) => write!(
+            FileError::Lookup { error, .. } => write!(
                 f,
                 "lookup failed ({:?}, status {:#010x})",
                 error,
@@ -73,7 +112,13 @@ pub fn read_image_file(
     path: &[u8],
     buffer: &mut [u8],
 ) -> Result<usize, FileError> {
-    let file = lookup(volume, path).map_err(FileError::Lookup)?;
+    let file = match lookup(volume, path) {
+        Ok(file) => file,
+        Err(error) => {
+            let on_the_way = failed_on_the_way(volume, path, error);
+            return Err(FileError::Lookup { error, on_the_way });
+        }
+    };
     if file.directory {
         return Err(FileError::Directory);
     }
@@ -87,46 +132,215 @@ pub fn read_image_file(
     Ok(file.size as usize)
 }
 
-/// Load the program at `path` on the boot volume as a new process (see [`load_image`]), with
-/// `command_line` as what its GetCommandLineA reports and `leg` the boot's program it runs as (none
-/// for a child), and return the process and its entry point. A file that cannot be read is reported
-/// on COM1 and halts, as a rejected image does. The read blocks on the disk: the boot context halts
-/// between interrupts until it completes.
-#[cfg(target_arch = "x86")]
-pub fn load_path(
-    path: &[u8],
-    name: &'static str,
-    command_line: &[u8],
-    leg: Option<u32>,
-) -> (&'static mut crate::process::Process, u32) {
-    // SAFETY: single-threaded boot (or the idle thread's reap step), the only staging user.
-    let staging = unsafe { &mut (*core::ptr::addr_of_mut!(FILE_STAGING)).0 };
-    let shown = core::str::from_utf8(path).unwrap_or("(not ASCII)");
-    let read = crate::fs::fat32::volume::with_boot_volume(|volume| {
-        read_image_file(volume, path, &mut staging[..])
-    });
-    let length = match read {
-        Some(Ok(length)) => length,
-        Some(Err(error)) => {
-            crate::serial_println!("F2K: image file {} not loaded: {}", shown, error);
-            crate::halt()
+/// Whether a lookup of `path` that failed with `error` failed on the way to the file rather than at
+/// the file: a path continuing past a file always does, and a missing component does unless the
+/// directory the file would be in exists (looked up again, on this failure path alone).
+fn failed_on_the_way(volume: &mut Volume, path: &[u8], error: LookupError) -> bool {
+    match error {
+        LookupError::NotADirectory => true,
+        LookupError::NotFound => match path.iter().rposition(|&byte| byte == b'\\') {
+            None => false,
+            Some(separator) => {
+                !matches!(lookup(volume, &path[..separator]), Ok(parent) if parent.directory)
+            }
+        },
+        _ => false,
+    }
+}
+
+/// Why a program did not load. A refusal leaves nothing behind: the checks that refuse an image run
+/// before its process is created, and a process whose creation is refused is undone.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum LoadError {
+    /// The program's file could not be read off the boot volume.
+    File(FileError),
+    /// No volume is mounted.
+    NoVolume,
+    /// The bytes are no program this loader accepts.
+    Rejected(Reject),
+    /// The image (its size) is larger than the image staging.
+    TooBig(u32),
+    /// The image's range at its preferred base covers a system region (named).
+    Conflict {
+        base: u32,
+        size: u32,
+        region: &'static str,
+    },
+    /// The process could not be created (see [`crate::process::Process::start`]).
+    Process(Status),
+}
+
+impl LoadError {
+    /// The status the refusal answers with: the file's (see [`FileError::status`]); a missing
+    /// volume STATUS_OBJECT_PATH_NOT_FOUND (a path through a drive that is not there); a rejected
+    /// image STATUS_INVALID_IMAGE_FORMAT, as an image section's create answers it; an image (or a
+    /// file) larger than the staging STATUS_SECTION_TOO_BIG, the loader's own limit answered as an
+    /// image section answers one larger than its frame tables; an image whose preferred base
+    /// conflicts with a system region STATUS_CONFLICTING_ADDRESSES, as an image view's map answers
+    /// a base another region holds (images are never relocated); and a refused process creation
+    /// its own.
+    pub fn status(&self) -> Status {
+        match *self {
+            LoadError::File(error) => error.status(),
+            LoadError::NoVolume => crate::nt::attributes::STATUS_OBJECT_PATH_NOT_FOUND,
+            LoadError::Rejected(_) => STATUS_INVALID_IMAGE_FORMAT,
+            LoadError::TooBig(_) => STATUS_SECTION_TOO_BIG,
+            LoadError::Conflict { .. } => crate::nt::memory::STATUS_CONFLICTING_ADDRESSES,
+            LoadError::Process(status) => status,
         }
-        None => {
-            crate::serial_println!("F2K: image file {} not loaded: no boot volume", shown);
-            crate::halt()
+    }
+
+    /// The refusal as the boot reports it on COM1 (after the `F2K: ` prefix), the program's file
+    /// named by its volume `path`.
+    pub fn report<'a>(&'a self, path: &'a [u8]) -> impl fmt::Display + 'a {
+        Report { error: self, path }
+    }
+}
+
+/// A service answers a refused load with its status.
+impl From<LoadError> for Status {
+    fn from(error: LoadError) -> Status {
+        error.status()
+    }
+}
+
+/// A refusal's COM1 report (see [`LoadError::report`]).
+struct Report<'a> {
+    error: &'a LoadError,
+    path: &'a [u8],
+}
+
+impl fmt::Display for Report<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let shown = core::str::from_utf8(self.path).unwrap_or("(not ASCII)");
+        match *self.error {
+            LoadError::File(error) => write!(f, "image file {} not loaded: {}", shown, error),
+            LoadError::NoVolume => write!(f, "image file {} not loaded: no boot volume", shown),
+            LoadError::Rejected(reject) => {
+                write!(f, "image rejected by the loader: {:?}", reject)
+            }
+            LoadError::TooBig(size) => write!(
+                f,
+                "image rejected by the loader: image {:#x} exceeds the staging {:#x}",
+                size, STAGING_SIZE
+            ),
+            LoadError::Conflict { base, size, region } => write!(
+                f,
+                "image rejected by the loader: [{:#010x}, {:#010x}) covers the {}",
+                base,
+                base as u64 + size as u64,
+                region
+            ),
+            LoadError::Process(Status(status)) => {
+                write!(f, "process not created (status {:#010x})", status)
+            }
         }
-    };
-    load_image(&staging[..length], path, name, command_line, leg)
+    }
 }
 
 /// The image staging size: the largest in-memory image the loader accepts. Sized like the file
 /// staging; the corpus's biggest fixture image is 0x8000 bytes.
 const STAGING_SIZE: usize = 0x8_0000;
 
-/// Staging for the in-memory image (see the module doc).
+/// The largest ntdll image the staging holds.
 #[cfg(target_arch = "x86")]
-static mut IMAGE_STAGING: crate::mem::paging::Aligned<[u8; STAGING_SIZE]> =
-    crate::mem::paging::Aligned([0; STAGING_SIZE]);
+const DLL_STAGING_SIZE: usize = 0x4_0000;
+
+/// The pages ntdll's image may span: what the staging holds.
+#[cfg(target_arch = "x86")]
+const DLL_PAGES: usize = DLL_STAGING_SIZE / crate::mem::paging::PAGE_SIZE as usize;
+
+/// The loader's stagings (see the module doc), and ntdll's pages: reached only through the loader
+/// lock ([`with_stagings`]).
+#[cfg(target_arch = "x86")]
+struct Stagings {
+    /// The program's file as read off the volume.
+    file: crate::mem::paging::Aligned<[u8; FILE_STAGING_SIZE]>,
+    /// The program's in-memory image.
+    image: crate::mem::paging::Aligned<[u8; STAGING_SIZE]>,
+    /// ntdll's image while its pages are made (the program's image is staged separately).
+    dll: crate::mem::paging::Aligned<[u8; DLL_STAGING_SIZE]>,
+    /// ntdll's pages, made once at boot ([`prepare_system_dlls`]): its frames, page by page — the
+    /// kernel's, every process mapping them as one more holder.
+    ntdll_frames: [u32; DLL_PAGES],
+}
+
+/// The loader lock and the stagings it holds.
+#[cfg(target_arch = "x86")]
+struct LoaderLock {
+    /// Serializes the loads: a synchronization event a thread waits on (see
+    /// [`crate::block::lock`]).
+    lock: crate::block::lock::DeviceLock,
+    stagings: core::cell::UnsafeCell<Stagings>,
+}
+
+// SAFETY: one processor; the stagings are reached only through `with_stagings`, under the lock.
+#[cfg(target_arch = "x86")]
+unsafe impl Sync for LoaderLock {}
+
+/// The loader lock: one load at a time uses the stagings.
+#[cfg(target_arch = "x86")]
+static LOADER: LoaderLock = LoaderLock {
+    lock: crate::block::lock::DeviceLock::new(),
+    stagings: core::cell::UnsafeCell::new(Stagings {
+        file: crate::mem::paging::Aligned([0; FILE_STAGING_SIZE]),
+        image: crate::mem::paging::Aligned([0; STAGING_SIZE]),
+        dll: crate::mem::paging::Aligned([0; DLL_STAGING_SIZE]),
+        ntdll_frames: [0; DLL_PAGES],
+    }),
+};
+
+/// Run `body` on the stagings, holding the loader lock: a thread waits while another load holds
+/// it, inside a critical region (a load blocks on the disk under the lock, and a termination waits
+/// for the lock's release). The idle thread never waits: it loads only when no other load can be
+/// under way — the boot's loads, before any process thread runs, and the reap step's, the only
+/// loader there is today — so the lock is free for it.
+///
+/// # Panics
+///
+/// The idle thread finds the lock held, or `body` loads again (the lock it holds).
+#[cfg(target_arch = "x86")]
+fn with_stagings<R>(body: impl FnOnce(&mut Stagings) -> R) -> R {
+    assert!(
+        !crate::sched::idle::on_idle_thread() || LOADER.lock.is_free(),
+        "the idle thread loads only while no other load holds the loader lock"
+    );
+    crate::process::threads::critical_region(|| {
+        LOADER.lock.with(|| {
+            // SAFETY: the lock makes this the only reference to the stagings until `body` returns.
+            body(unsafe { &mut *LOADER.stagings.get() })
+        })
+    })
+}
+
+/// Load the program at `path` on the boot volume as a new process (see [`load_image`]), with
+/// `command_line` as what its GetCommandLineA reports and `leg` the boot's program it runs as (none
+/// for a child), and return the process and its entry point; a file that cannot be read is
+/// refused, as a rejected image is. The read blocks on the disk, under the loader lock: a thread
+/// waits for its completion, the idle thread halts between interrupts until it completes.
+#[cfg(target_arch = "x86")]
+pub fn load_path(
+    path: &[u8],
+    name: &'static str,
+    command_line: &[u8],
+    leg: Option<u32>,
+) -> Result<(&'static mut crate::process::Process, u32), LoadError> {
+    with_stagings(|stagings| {
+        let read = crate::fs::fat32::volume::with_boot_volume(|volume| {
+            read_image_file(volume, path, &mut stagings.file.0[..])
+        });
+        let length = read.ok_or(LoadError::NoVolume)?.map_err(LoadError::File)?;
+        load_image(
+            &stagings.file.0[..length],
+            &mut stagings.image.0,
+            &stagings.ntdll_frames,
+            path,
+            name,
+            command_line,
+            leg,
+        )
+    })
+}
 
 /// The system's fixed user regions, in address order, as (name, start, end): an image may cover
 /// none of them. Images map at their preferred base (nothing is relocated), so one that would land
@@ -252,30 +466,13 @@ pub fn seed_regions(space: &mut crate::mem::vm::AddressSpace, image_base: u32, i
     }
 }
 
-/// Staging for ntdll's image while its pages are made (the program's image is staged separately).
-#[cfg(target_arch = "x86")]
-static mut DLL_STAGING: crate::mem::paging::Aligned<[u8; DLL_STAGING_SIZE]> =
-    crate::mem::paging::Aligned([0; DLL_STAGING_SIZE]);
-
-/// The largest ntdll image the staging holds.
-#[cfg(target_arch = "x86")]
-const DLL_STAGING_SIZE: usize = 0x4_0000;
-
-/// The pages ntdll's image may span: what the staging holds.
-#[cfg(target_arch = "x86")]
-const DLL_PAGES: usize = DLL_STAGING_SIZE / crate::mem::paging::PAGE_SIZE as usize;
-
-/// ntdll's pages, made once at boot ([`prepare_system_dlls`]): its frames, page by page — the
-/// kernel's, every process mapping them as one more holder.
-#[cfg(target_arch = "x86")]
-static mut DLL_FRAMES: [u32; DLL_PAGES] = [0; DLL_PAGES];
-
 /// Make ntdll's pages (`exec::modules`), once, before the first process: the image staged from its
 /// embedded file (it imports nothing: nothing to snap), then copied into frames of the kernel's,
-/// one per page.
+/// one per page. Readies the loader lock first: this is the loader's first use.
 #[cfg(target_arch = "x86")]
 pub fn prepare_system_dlls() {
     use crate::mem::paging::{self, PAGE_SIZE};
+    LOADER.lock.init();
     let dll = &crate::exec::modules::NTDLL;
     let image = dll.image();
     assert!(
@@ -283,21 +480,18 @@ pub fn prepare_system_dlls() {
         "{} exceeds the DLL staging",
         dll.file_name
     );
-    // SAFETY: single-threaded boot, the only staging user.
-    let staging = unsafe {
-        let buffer = &mut *core::ptr::addr_of_mut!(DLL_STAGING);
-        &mut buffer.0[..image.size_of_image as usize]
-    };
-    staging.fill(0);
-    image.map_into(dll.file, staging);
-    for page in 0..image.size_of_image.div_ceil(PAGE_SIZE) {
-        let offset = (page * PAGE_SIZE) as usize;
-        let end = (offset + PAGE_SIZE as usize).min(staging.len());
-        let frame = paging::allocate_frame_phys();
-        paging::init_frame(frame, 0, &staging[offset..end]);
-        // SAFETY: single-threaded boot; read-only once made.
-        unsafe { (*core::ptr::addr_of_mut!(DLL_FRAMES))[page as usize] = frame };
-    }
+    with_stagings(|stagings| {
+        let staging = &mut stagings.dll.0[..image.size_of_image as usize];
+        staging.fill(0);
+        image.map_into(dll.file, staging);
+        for page in 0..image.size_of_image.div_ceil(PAGE_SIZE) {
+            let offset = (page * PAGE_SIZE) as usize;
+            let end = (offset + PAGE_SIZE as usize).min(staging.len());
+            let frame = paging::allocate_frame_phys();
+            paging::init_frame(frame, 0, &staging[offset..end]);
+            stagings.ntdll_frames[page as usize] = frame;
+        }
+    });
 }
 
 /// Find kernel32's BaseProcessStartThunk, once, before the first process: kernel32.dll read off the
@@ -310,28 +504,25 @@ pub fn locate_process_start() {
     let mut path = [0u8; 64];
     let length = crate::exec::modules::kernel32_volume_path(&mut path);
     let shown = core::str::from_utf8(&path[..length]).unwrap_or("kernel32.dll");
-    // SAFETY: single-threaded boot, the only staging user.
-    let (file, image) = unsafe {
-        (
-            &mut (*core::ptr::addr_of_mut!(FILE_STAGING)).0,
-            &mut (*core::ptr::addr_of_mut!(IMAGE_STAGING)).0,
-        )
-    };
-    let read = crate::fs::fat32::volume::with_boot_volume(|volume| {
-        read_image_file(volume, &path[..length], &mut file[..])
+    let found = with_stagings(|stagings| {
+        let (file, image) = (&mut stagings.file.0, &mut stagings.image.0);
+        let read = crate::fs::fat32::volume::with_boot_volume(|volume| {
+            read_image_file(volume, &path[..length], &mut file[..])
+        });
+        let length = match read {
+            Some(Ok(length)) => length,
+            Some(Err(error)) => {
+                crate::serial_println!("F2K: {} not read: {}", shown, error);
+                crate::halt()
+            }
+            None => {
+                crate::serial_println!("F2K: {} not read: no boot volume", shown);
+                crate::halt()
+            }
+        };
+        crate::exec::modules::process_start_in(&file[..length], &mut image[..])
     });
-    let length = match read {
-        Some(Ok(length)) => length,
-        Some(Err(error)) => {
-            crate::serial_println!("F2K: {} not read: {}", shown, error);
-            crate::halt()
-        }
-        None => {
-            crate::serial_println!("F2K: {} not read: no boot volume", shown);
-            crate::halt()
-        }
-    };
-    match crate::exec::modules::process_start_in(&file[..length], &mut image[..]) {
+    match found {
         Ok(address) => crate::exec::modules::set_process_start_thunk(address),
         Err(error) => {
             crate::serial_println!("F2K: {} has no start thunk: {:?}", shown, error);
@@ -341,17 +532,16 @@ pub fn locate_process_start() {
 }
 
 /// Map ntdll into the current process at its base, each page with its sections' protections
-/// inside its MEM_IMAGE region (seeded with the system areas): the kernel's frames
+/// inside its MEM_IMAGE region (seeded with the system areas): the kernel's `frames`
 /// ([`prepare_system_dlls`]), shared — a page the process makes writable is copy-on-write, its
 /// writes its own (`mem::vm`).
 #[cfg(target_arch = "x86")]
-pub fn map_ntdll(space: &mut crate::mem::vm::AddressSpace) {
+fn map_ntdll(space: &mut crate::mem::vm::AddressSpace, frames: &[u32; DLL_PAGES]) {
     use crate::mem::paging::PAGE_SIZE;
     use crate::mem::vm::CurrentPages;
     let image = crate::exec::modules::NTDLL.image();
     for page in 0..image.size_of_image.div_ceil(PAGE_SIZE) {
-        // SAFETY: made at boot, read-only afterwards.
-        let frame = unsafe { (*core::ptr::addr_of!(DLL_FRAMES))[page as usize] };
+        let frame = frames[page as usize];
         assert_ne!(frame, 0, "ntdll's pages are made at boot");
         let va = image.image_base + page * PAGE_SIZE;
         space
@@ -380,22 +570,25 @@ fn page_writable(image: &Image, page_rva: u32) -> bool {
     })
 }
 
-/// Load `file` as a new process — parse, stage, create the process, map ntdll, the image, stack,
-/// TEB, parameters and PEB pages — and return the process and its entry point for the main
-/// thread's ladder (its imports are ntdll's to load and snap, in user mode). The load runs attached
-/// to the new process ([`crate::process::Process::attach`]) and ends detached: the ladder goes
-/// onto the main thread's kernel stack, mapped in every address space (see
-/// [`crate::process::threads::start_main_thread`]). `name` names the process, and `leg` is the
+/// Load `file` as a new process — parse, stage into `staging`, create the process, map ntdll (its
+/// `ntdll_frames`), the image, stack, TEB, parameters and PEB pages — and return the process and
+/// its entry point for the main thread's ladder (its imports are ntdll's to load and snap, in user
+/// mode). The load runs attached to the new process ([`crate::process::Process::attach`]) and ends
+/// detached: the ladder goes onto the main thread's kernel stack, mapped in every address space
+/// (see [`crate::process::threads::start_main_thread`]). `name` names the process, and `leg` is the
 /// boot's program it runs as (none for a child); `command_line` is the process parameters' command
-/// line, and `path`, the file's volume path, their image path (in its Win32 form, `C:\...`).
+/// line, and `path`, the file's volume path, their image path (in its Win32 form, `C:\...`). The
+/// caller holds the loader lock (the stagings are its).
 #[cfg(target_arch = "x86")]
-pub fn load_image(
+fn load_image(
     file: &[u8],
+    staging: &mut [u8; STAGING_SIZE],
+    ntdll_frames: &[u32; DLL_PAGES],
     path: &[u8],
     name: &'static str,
     command_line: &[u8],
     leg: Option<u32>,
-) -> (&'static mut crate::process::Process, u32) {
+) -> Result<(&'static mut crate::process::Process, u32), LoadError> {
     use crate::mem::paging::{self, PAGE_SIZE};
     use crate::mem::vm;
     use crate::user::{
@@ -406,49 +599,32 @@ pub fn load_image(
         USER_STACK_TOP,
     };
 
-    // Identity questions: bytes this loader does not accept, an image it cannot stage, and a
-    // preferred base it cannot honor are reported, not panicked on.
-    let image = match Image::parse_program(file) {
-        Ok(image) => image,
-        Err(reject) => {
-            crate::serial_println!("F2K: image rejected by the loader: {:?}", reject);
-            crate::halt()
-        }
-    };
+    // Identity questions, before anything is taken: bytes this loader does not accept, an image it
+    // cannot stage, and a preferred base it cannot honor are refused, not panicked on.
+    let image = Image::parse_program(file).map_err(LoadError::Rejected)?;
     if image.size_of_image as usize > STAGING_SIZE {
-        crate::serial_println!(
-            "F2K: image rejected by the loader: image {:#x} exceeds the staging {:#x}",
-            image.size_of_image,
-            STAGING_SIZE
-        );
-        crate::halt()
+        return Err(LoadError::TooBig(image.size_of_image));
     }
     if let Some(region) = system_region_overlapping(image.image_base, image.size_of_image) {
-        crate::serial_println!(
-            "F2K: image rejected by the loader: [{:#010x}, {:#010x}) covers the {}",
-            image.image_base,
-            image.image_base as u64 + image.size_of_image as u64,
-            region
-        );
-        crate::halt()
+        return Err(LoadError::Conflict {
+            base: image.image_base,
+            size: image.size_of_image,
+            region,
+        });
     }
 
     // Zero the staging explicitly: gaps the image does not describe must read as zero, not stale
     // staging bytes.
-    // SAFETY: single-threaded boot, the only staging user.
-    let staging = unsafe {
-        let buffer = &mut *core::ptr::addr_of_mut!(IMAGE_STAGING);
-        &mut buffer.0[..image.size_of_image as usize]
-    };
+    let staging = &mut staging[..image.size_of_image as usize];
     staging.fill(0);
     image.map_into(file, staging);
 
     // The process's own state, all in one place: a fresh address space (kernel half inherited) and
     // the main thread's ring-0 gate stack (mapped supervisor-only with its guard page; the switch
-    // into the thread installs it as the TSS esp0). The running thread attaches to the process for
-    // the rest of the load: every mapping below (ntdll, image, stack, TEB, params) lands in its
-    // directory, the live one.
-    let process = crate::process::Process::start(name, leg);
+    // into the thread installs it as the TSS esp0). A refused creation is undone by the start
+    // itself. The running thread attaches to the process for the rest of the load: every mapping
+    // below (ntdll, image, stack, TEB, params) lands in its directory, the live one.
+    let process = crate::process::Process::start(name, leg).map_err(LoadError::Process)?;
     let _attached = process.attach();
     let (process_id, thread_id) = (process.id(), process.main_thread().thread_id());
     let space = process.vm();
@@ -456,7 +632,7 @@ pub fn load_image(
     seed_regions(space, image.image_base, image.size_of_image);
 
     // ntdll, the one DLL the kernel maps: the rest are its to load.
-    map_ntdll(space);
+    map_ntdll(space, ntdll_frames);
     // KUSER_SHARED_DATA, read-only, the kernel's page.
     crate::user::shared::map_into(space);
 
@@ -520,7 +696,7 @@ pub fn load_image(
         image.entry_va(),
         USER_STACK_TOP
     );
-    (process, image.entry_va())
+    Ok((process, image.entry_va()))
 }
 
 #[cfg(test)]
@@ -861,18 +1037,22 @@ mod tests {
         let (mut crafted, _) = volume_with_exit0();
         let mut volume = Volume::mount(crafted.device()).unwrap();
         let mut buffer = vec![0u8; FILE_STAGING_SIZE];
+        let at_the_file = |error| FileError::Lookup {
+            error,
+            on_the_way: false,
+        };
         assert_eq!(
             read_image_file(&mut volume, b"missing.exe", &mut buffer),
-            Err(FileError::Lookup(LookupError::NotFound))
+            Err(at_the_file(LookupError::NotFound))
         );
         assert_eq!(
             read_image_file(&mut volume, b"not-an-8.3-name.exe", &mut buffer),
-            Err(FileError::Lookup(LookupError::NotFound)),
+            Err(at_the_file(LookupError::NotFound)),
             "a long name the directory does not hold"
         );
         assert_eq!(
             read_image_file(&mut volume, b"what?.exe", &mut buffer),
-            Err(FileError::Lookup(LookupError::Invalid))
+            Err(at_the_file(LookupError::Invalid))
         );
         assert_eq!(
             read_image_file(&mut volume, b"sub", &mut buffer),
@@ -888,6 +1068,127 @@ mod tests {
         assert_eq!(
             read_image_file(&mut broken, b"exit0.exe", &mut buffer),
             Err(FileError::Read(STATUS_FILE_CORRUPT_ERROR))
+        );
+    }
+
+    /// A missing file is told from a missing path: a file missing from a directory that exists is
+    /// missing at the file; a directory on the way that is missing, or is a file, is missing on the
+    /// way. Each answers with its open's status.
+    #[test]
+    fn a_missing_file_is_told_from_a_missing_path() {
+        use crate::nt::attributes::{STATUS_OBJECT_NAME_NOT_FOUND, STATUS_OBJECT_PATH_NOT_FOUND};
+        let (mut crafted, sub) = volume_with_exit0();
+        crafted.chain(&[sub]);
+        crafted.directory(sub, &[]);
+        let mut volume = Volume::mount(crafted.device()).unwrap();
+        let mut buffer = vec![0u8; FILE_STAGING_SIZE];
+        let mut status = |path: &[u8]| {
+            read_image_file(&mut volume, path, &mut buffer)
+                .unwrap_err()
+                .status()
+        };
+        assert_eq!(status(b"missing.exe"), STATUS_OBJECT_NAME_NOT_FOUND);
+        assert_eq!(status(b"sub\\missing.exe"), STATUS_OBJECT_NAME_NOT_FOUND);
+        assert_eq!(status(b"nodir\\exit0.exe"), STATUS_OBJECT_PATH_NOT_FOUND);
+        assert_eq!(
+            status(b"sub\\nodir\\exit0.exe"),
+            STATUS_OBJECT_PATH_NOT_FOUND
+        );
+        assert_eq!(
+            status(b"exit0.exe\\missing.exe"),
+            STATUS_OBJECT_PATH_NOT_FOUND,
+            "a path continuing past a file"
+        );
+    }
+
+    /// Every refusal answers with Windows' status for it: the open's for the file, the image
+    /// section's for the image, and a refused process creation its own.
+    #[test]
+    fn refusals_answer_with_their_statuses() {
+        let cases = [
+            (
+                LoadError::File(FileError::Lookup {
+                    error: LookupError::Invalid,
+                    on_the_way: false,
+                }),
+                0xC000_0033, // STATUS_OBJECT_NAME_INVALID
+            ),
+            (
+                LoadError::File(FileError::Lookup {
+                    error: LookupError::Corrupt,
+                    on_the_way: false,
+                }),
+                0xC000_0102, // STATUS_FILE_CORRUPT_ERROR
+            ),
+            (LoadError::File(FileError::Directory), 0xC000_00BA), // STATUS_FILE_IS_A_DIRECTORY
+            (LoadError::File(FileError::TooLarge(600_000)), 0xC000_0040), // STATUS_SECTION_TOO_BIG
+            (
+                LoadError::File(FileError::Read(crate::status::STATUS_IO_DEVICE_ERROR)),
+                0xC000_0185,
+            ),
+            (LoadError::NoVolume, 0xC000_003A), // STATUS_OBJECT_PATH_NOT_FOUND
+            (
+                LoadError::Rejected(crate::exec::pe::Reject::NotPe),
+                0xC000_007B, // STATUS_INVALID_IMAGE_FORMAT
+            ),
+            (LoadError::TooBig(0x10_0000), 0xC000_0040), // STATUS_SECTION_TOO_BIG
+            (
+                LoadError::Conflict {
+                    base: 0x77F8_0000,
+                    size: 0x1000,
+                    region: "ntdll.dll image",
+                },
+                0xC000_0018, // STATUS_CONFLICTING_ADDRESSES
+            ),
+            (
+                LoadError::Process(crate::nt::object::STATUS_INSUFFICIENT_RESOURCES),
+                0xC000_009A,
+            ),
+        ];
+        for (error, status) in cases {
+            assert_eq!(error.status(), Status(status), "{error:?}");
+            assert_eq!(Status::from(error), Status(status), "{error:?}");
+        }
+    }
+
+    /// The boot's COM1 line for each refusal: the wording the boots have always printed, and the
+    /// refused process creation's.
+    #[test]
+    fn refusals_report_as_the_boot_prints_them() {
+        let path = b"CORPUS\\missing.exe";
+        let report = |error: LoadError| error.report(path).to_string();
+        assert_eq!(
+            report(LoadError::File(FileError::Lookup {
+                error: LookupError::NotFound,
+                on_the_way: false,
+            })),
+            "image file CORPUS\\missing.exe not loaded: lookup failed (NotFound, status 0xc000000f)"
+        );
+        assert_eq!(
+            report(LoadError::NoVolume),
+            "image file CORPUS\\missing.exe not loaded: no boot volume"
+        );
+        assert_eq!(
+            report(LoadError::Rejected(crate::exec::pe::Reject::NotPe)),
+            "image rejected by the loader: NotPe"
+        );
+        assert_eq!(
+            report(LoadError::TooBig(0x10_0000)),
+            "image rejected by the loader: image 0x100000 exceeds the staging 0x80000"
+        );
+        assert_eq!(
+            report(LoadError::Conflict {
+                base: 0x77F0_0000,
+                size: 0x10_0000,
+                region: "ntdll.dll image",
+            }),
+            "image rejected by the loader: [0x77f00000, 0x78000000) covers the ntdll.dll image"
+        );
+        assert_eq!(
+            report(LoadError::Process(
+                crate::nt::object::STATUS_INSUFFICIENT_RESOURCES
+            )),
+            "process not created (status 0xc000009a)"
         );
     }
 
@@ -932,7 +1233,11 @@ mod tests {
     #[test]
     fn refusals_report_their_status() {
         assert_eq!(
-            FileError::Lookup(LookupError::NotFound).to_string(),
+            FileError::Lookup {
+                error: LookupError::NotFound,
+                on_the_way: false,
+            }
+            .to_string(),
             format!(
                 "lookup failed (NotFound, status {:#010x})",
                 STATUS_NO_SUCH_FILE as u32

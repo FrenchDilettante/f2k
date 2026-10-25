@@ -4,7 +4,7 @@
 //! A record is in use while its process object lives ([`crate::ob`]'s process pool, same index):
 //! the object is created with the record and holds the process's own reference until its teardown
 //! ends, so a handle to the process outlives the record's resources but not its slot. The capacity
-//! is fixed (one process runs at a time until CreateProcess exists).
+//! is fixed: a process created while every record is in use is refused ([`create`]).
 //!
 //! A running thread has two processes (see [`crate::sched::attach`]), and the pool answers both.
 //! The current process, the calling process of a system service, is the running thread's owner:
@@ -54,23 +54,28 @@ fn index_of(owner: *const crate::sched::process::SchedProcess) -> Option<u16> {
         .then(|| ((at - base) / size) as u16)
 }
 
-/// Create a process: its object (none free is the caller's failure, a panic today: one process runs
-/// at a time) and its record at the same index, built in place over the address space at
-/// `dir_phys`, named `name`, running as leg `leg` (none for a child).
+/// Create a process: its object and its record at the same index, built in place over the address
+/// space at `dir_phys`, named `name`, running as leg `leg` (none for a child).
+/// STATUS_INSUFFICIENT_RESOURCES when every process record is in use (Windows 2000's answer to a
+/// full table); nothing is taken then, and the address space stays the caller's.
 #[cfg(target_arch = "x86")]
 // The record is the pool's, not borrowed from `name`: the lint reads the name's reference as the
 // input the returned one comes from.
 #[allow(clippy::mut_from_ref)]
-pub(super) fn create(dir_phys: u32, name: &'static str, leg: Option<u32>) -> &'static mut Process {
+pub(super) fn create(
+    dir_phys: u32,
+    name: &'static str,
+    leg: Option<u32>,
+) -> Result<&'static mut Process, crate::nt::call::Status> {
     let object = crate::ob::directory()
         .create_process()
-        .expect("a process record is free (one process runs at a time)");
+        .ok_or(crate::nt::object::STATUS_INSUFFICIENT_RESOURCES)?;
     let process = record(object.index);
     // SAFETY: single CPU, interrupts disabled; the record is free (its object was not live), and
     // every field is written before the record is read.
     unsafe {
         super::write_fresh(process, dir_phys, name, leg, object);
-        &mut *process
+        Ok(&mut *process)
     }
 }
 
