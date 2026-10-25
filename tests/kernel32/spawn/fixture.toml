@@ -1,10 +1,9 @@
 # spawn: one test per block of the real-machine capture (output.txt); see tests/README.md. Built with
 # /MD. Its companion program, spawnkid.exe (built beside spawn.exe from spawnkid.c, with /MD), is the
 # child every section starts; it goes into \CORPUS beside the program, as it sits beside it on the
-# real machine. Gated for its binarytype block, which starts no process; every other block waits
-# for CreateProcess (F2K runs one process at a time), and the system block (no cmd.exe on F2K's
-# disk) and the detach block (F2K's stub path) are expected to stay pending. The create block
-# starts some sixty processes, hence the longer timeout.
+# real machine. Gated. The system block (no cmd.exe on F2K's disk) and the detach block (F2K's stub
+# path) are expected to stay pending. The create block starts some sixty processes, hence the
+# longer timeout.
 description = "spawn - child processes (spawn.c, with its companion program spawnkid.c): Windows 2000's fixed addresses of the TEB, PEB and their fields in the parent, a second thread and a child; CreateProcessA/W's names, search order, quoting and errors; waits and exit codes; process and thread handles, OpenProcess, CREATE_SUSPENDED, TerminateProcess and DuplicateHandle into a child; inherited standard handles; environment blocks and the current directory; ReadProcessMemory and WriteProcessMemory; GetBinaryTypeA/W; msvcrt's _spawn family, _cwait, _P_OVERLAY, system(); DETACHED_PROCESS, CREATE_NEW_CONSOLE and _P_DETACH."
 kind = "sectioned"
 gate = true
@@ -12,14 +11,7 @@ timeout = 60
 
 [pending]
 layout = "not yet implemented"
-create = "not yet implemented"
-wait = "not yet implemented"
-handles = "not yet implemented"
 inherit = "not yet implemented"
-environment = "not yet implemented"
-curdir = "not yet implemented"
-memory = "not yet implemented"
-spawn = "not yet implemented"
 system = "no cmd.exe on F2K's disk"
 detach = "F2K's stub path (logged, error 120)"
 overlay = "not yet implemented"
