@@ -14,9 +14,10 @@
 //! leads the process at a pinned offset, so a thread's owner pointer resolves the directory base
 //! the context switch loads.
 //!
-//! A process runs on its threads until its last thread ends, and the idle thread tears it down.
-//! The teardown touches only what the process owns — its handles, its views, its address space,
-//! its threads' records — so another process may live on through it. The checks over the whole
+//! A process runs on its threads until its last thread ends — the process's end, which its waiters
+//! observe at once — and the idle thread tears it down later. The end and the teardown touch only
+//! what the process owns — its handles, its views, its address space, its threads' records — so
+//! another process may live on through them. The checks over the whole
 //! system (the leak sweep over every object pool and the open-file records, the free frames against
 //! the post-boot baseline) wait for quiescence: the reap after which no process remains that has
 //! not been torn down. The boot's runner starts each program once the last is reaped, so every
@@ -27,13 +28,15 @@
 //! 1. every other thread is terminated, without running again (the exit service's and a fault's
 //!    end; a thread inside a critical region finishes it first);
 //! 2. every handle closes, as CloseHandle would — the objects go with their last references;
-//! 3. the address space goes: every frame;
-//! 4. the process object signals with the exit code;
+//! 3. the last thread's object signals, then the process object with the exit code: their waiters
+//!    wake, and the switch away from the last thread may select one of them;
+//! 4. the address space goes: every frame;
 //! 5. the record is freed with the object's last reference.
 //!
-//! Steps 1 and 2 run on the last thread, in [`threads`]; 3 to 5 on the idle thread's reap, in
-//! [`reap`], with the object audit between 3 and 4 and the teardown audit after 5; their checks
-//! over the whole system, and the audit lines, wait for quiescence.
+//! Steps 1 to 3 run on the last thread, in [`threads`]: by its switch away the process has ended
+//! for everyone who can observe it, however long the reap waits for the processor. Steps 4 and 5
+//! run on the idle thread's reap, in [`reap`], with the object audit between them and the teardown
+//! audit after 5; their checks over the whole system, and the audit lines, wait for quiescence.
 //!
 //! The records live in the process pool ([`pool`]), which also answers which process is current:
 //! kernel state (like CR3 and the TSS), not per-process state. Everything per-process lives inside
@@ -383,6 +386,18 @@ impl Process {
         assert!(self.end.is_none(), "a process ends once");
         self.end = Some(end);
     }
+
+    /// The process has ended, step 3 of its end (see the module notes): its object signals with
+    /// `end`'s exit code, and its waiters wake. The last thread's exit signals it, after its own
+    /// object, before its switch away selects the next thread.
+    #[cfg(target_arch = "x86")]
+    pub fn signal_end(&mut self, end: exit::ProcessEnd) {
+        crate::ob::directory().signal_process_end(
+            self.object,
+            end.exit_status(),
+            crate::sched::idle::dispatcher(),
+        );
+    }
 }
 
 #[cfg(target_arch = "x86")]
@@ -678,24 +693,32 @@ pub fn reap() {
     crate::user::check_volume_after_teardown();
 }
 
-/// Tear the ended `process` down, steps 3 to 5 of its end (see the module notes): its address
-/// space goes, its object signals, and its own reference on the object goes (the record is free for
-/// the next process once nothing else references the object). Between the address space and the
-/// signal, the object audit: its threads' records start over, and at a `quiescent` reap the leak
-/// sweep runs.
+/// Tear the ended `process` down, steps 4 and 5 of its end (see the module notes): its address
+/// space goes, then its own reference on the object goes (the record is free for the next process
+/// once nothing else references the object). Between the two, the object audit: its threads'
+/// records start over, and at a `quiescent` reap the leak sweep runs. Nothing here is observable
+/// to the process's waiters: its object signalled at its last thread's exit, which the teardown
+/// checks first.
 ///
 /// Must run on the boot address space — the walk reads the dead directory through the scratch
 /// window, never through a mapping.
 #[cfg(target_arch = "x86")]
 fn teardown(process: &'static mut Process, quiescent: bool) {
     let end = process.end.expect("a torn-down process has ended");
+    let object = crate::ob::directory()
+        .process(process.object)
+        .expect("an ended process's object outlives its teardown");
+    assert!(
+        object.waitable.signal_state() > 0 && object.exit_status == end.exit_status(),
+        "a process's object signals its end before the teardown"
+    );
     release_address_space_of(process);
     audit_objects(process, quiescent);
-    signal_end(process, end);
+    process.torn_down = true;
     release_record(process);
 }
 
-/// Step 3: the address space goes — every frame the process owns, per thread then per process (see
+/// Step 4: the address space goes — every frame the process owns, per thread then per process (see
 /// [`release_process`]). The process is torn down in place: its record holds absolute addresses
 /// into itself.
 #[cfg(target_arch = "x86")]
@@ -754,17 +777,6 @@ fn audit_objects(process: &mut Process, quiescent: bool) {
             leaked
         );
     }
-}
-
-/// Step 4: the process has ended — its object signals with the exit code, and its waiters wake.
-#[cfg(target_arch = "x86")]
-fn signal_end(process: &mut Process, end: exit::ProcessEnd) {
-    crate::ob::directory().signal_process_end(
-        process.object,
-        end.exit_status(),
-        crate::sched::idle::dispatcher(),
-    );
-    process.torn_down = true;
 }
 
 /// Step 5: the process's own reference on its object goes, and the kernel detaches from it. The

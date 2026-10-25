@@ -1840,6 +1840,46 @@ mod tests {
         assert_eq!(d.audit_waits(), Ok(()));
     }
 
+    /// A process's last thread ends in two halves around its process's signal: retired (its
+    /// object signals) while it still holds the processor, then the process object signals, then
+    /// the next thread is selected — and a waiter only the process's signal woke, in another
+    /// process, is one that selection weighs: the higher priority wins it over the thread's waiter.
+    #[test]
+    fn a_process_signal_between_retirement_and_selection_is_weighed() {
+        let d = dispatcher();
+        let ending = process(8);
+        let other = process(8);
+        let last = thread(ending);
+        let thread_waiter = thread(other);
+        let process_waiter = thread(other);
+        process_waiter.priority = 10;
+        run(d, last);
+        // The process object's stand-in: a notification object, as the process object's is.
+        let process_object = event(EventKind::Notification, false);
+        block_on(d, thread_waiter, last.waitable(), None);
+        block_on(d, process_waiter, process_object.waitable(), None);
+
+        d.retire_current();
+        assert!(last.signaled());
+        assert_eq!(thread_waiter.state(), ThreadState::Ready);
+        assert_eq!(
+            process_waiter.state(),
+            ThreadState::Waiting,
+            "the process has not signalled yet"
+        );
+        assert_eq!(unsafe { (*ending).stack_count() }, 0);
+
+        process_object.waitable.signal_state = 1;
+        d.satisfy_waiters(process_object.waitable(), 0);
+        assert_eq!(process_waiter.wait_status(), STATUS_SUCCESS);
+        assert_eq!(
+            d.select_next(),
+            as_ptr(process_waiter),
+            "the process's waiter is weighed by the same switch"
+        );
+        assert_eq!(d.audit_waits(), Ok(()));
+    }
+
     /// Terminating a parked thread off the processor unwinds its wait without readying it: the
     /// block leaves the object, the thread leaves the waiting list, its timeout leaves the timer
     /// table — and the object's later signal finds nobody.

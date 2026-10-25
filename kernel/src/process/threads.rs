@@ -189,11 +189,13 @@ pub fn critical_region<R>(body: impl FnOnce() -> R) -> R {
 
 /// The one exit path, in its order: NtTerminateProcess's or a fault's terminations of the other
 /// threads first (the process's end passing to any that finish a critical region first); then the
-/// per-thread teardown (the gate stack is parked for release from another
-/// stack, and an earlier exit's parked stack is released); then the thread object signals and its
-/// waiters wake, the thread leaves the process list and is Terminated; then, for the last thread,
-/// the process's end — the report, the handle table cleared, the end recorded for the idle
-/// thread's reap. The switch away ends the thread's timeline.
+/// per-thread teardown (the gate stack is parked for release from another stack, and an earlier
+/// exit's parked stack is released), and for the last thread its process's handles closed; then
+/// the thread object signals and its waiters wake, the thread leaves the process list and is
+/// Terminated; then, for the last thread, the process object signals with the exit code and its
+/// waiters wake; then the next thread is selected among them all; then, for the last thread, the
+/// report and the end recorded for the idle thread's reap (which only frees the address space and
+/// the record). The switch away ends the thread's timeline.
 fn end_thread(end: ThreadEnd) -> ! {
     let dispatcher = crate::sched::idle::dispatcher();
     // SAFETY: the running thread, live and exclusive in the gate.
@@ -260,10 +262,17 @@ fn end_thread(end: ThreadEnd) -> ! {
     // SAFETY: the running thread, live and exclusive in the gate.
     unsafe { crate::sched::apc::close_apc_queue(&mut *current) };
 
-    // The thread object signals and its waiters wake (the satisfy step inside terminate), the
-    // thread leaves the process list, and the processor's next thread is selected and takes the
-    // current slot before the switch (the swap's caller-side install).
-    let selected = dispatcher.terminate();
+    // The thread object signals and its waiters wake, and the thread leaves the process list.
+    dispatcher.retire_current();
+    // The process's end, step 3: with its threads ended and their objects signalled, the process
+    // object signals with the exit code and its waiters wake — now, not at the idle thread's
+    // reap, which a busy sibling process would hold off.
+    if let Some(end) = plan.process_end {
+        process.signal_end(end);
+    }
+    // Then the processor's next thread is selected — among the waiters either signal woke — and
+    // takes the current slot before the switch (the swap's caller-side install).
+    let selected = dispatcher.select_next();
     dispatcher.enter(selected);
     // The thread has ended: its own reference on its object goes (the record is reused only once
     // nothing holds it, and never before this code is off its stack: a record is renewed by a
@@ -271,7 +280,8 @@ fn end_thread(end: ThreadEnd) -> ! {
     crate::ob::end_thread_references(current);
 
     // The last-thread route: a process with no threads must not linger — the last thread's end is
-    // the process's end. The idle thread tears it down once this thread is off its stack.
+    // the process's end, reported and recorded here. The idle thread frees what is left once this
+    // thread is off its stack.
     if let Some(end) = plan.process_end {
         assert_eq!(
             process.sched.stack_count(),

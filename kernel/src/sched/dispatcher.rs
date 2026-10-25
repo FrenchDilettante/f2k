@@ -797,11 +797,21 @@ impl Dispatcher {
         boosted
     }
 
-    /// Terminate the running thread: mark its object signaled (the thread's waiters observe the
-    /// mark), satisfy every wait parked on the thread object, remove it from its process's thread
-    /// list, mark it Terminated, return the kernel-stack loan, and select the processor's next
-    /// thread. Returns the selected thread — the caller's context switch enters it.
+    /// Terminate the running thread: retire it ([`Dispatcher::retire_current`]), then select the
+    /// processor's next thread. Returns the selected thread — the caller's context switch enters
+    /// it.
     pub fn terminate(&mut self) -> *mut Thread {
+        self.retire_current();
+        self.select_next()
+    }
+
+    /// Retire the running thread, the first half of its termination: mark its object signaled (the
+    /// thread's waiters observe the mark), satisfy every wait parked on the thread object, remove
+    /// it from its process's thread list, mark it Terminated and return the kernel-stack loan. It
+    /// keeps the current slot until the caller selects the next thread
+    /// ([`Dispatcher::select_next`]), so whatever signals in between — its process's object, when
+    /// it was the last thread — wakes waiters that same selection weighs.
+    pub fn retire_current(&mut self) {
         debug_assert!(
             !self.current.is_null(),
             "terminate without a running thread"
@@ -809,7 +819,6 @@ impl Dispatcher {
         // SAFETY: the running thread is live and attached; its process list and process are valid.
         let thread: &mut Thread = unsafe { &mut *self.current };
         self.retire(thread);
-        self.select_next()
     }
 
     /// Terminate `thread`, another thread off the processor: at once
