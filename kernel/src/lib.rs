@@ -26,6 +26,9 @@ mod interrupt;
 // Memory management: physical frame allocator
 mod mem;
 
+// The audited wrapper for kernel globals: a shared value reached under masked interrupts
+mod global;
+
 // Executable loading: PE32 parsing, and the kernel-side loader (staging, section mapping, entry
 // into ring 3)
 mod exec;

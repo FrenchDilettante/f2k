@@ -2,6 +2,7 @@
 
 pub mod frame;
 pub mod heap;
+pub mod kstacks;
 pub mod layout;
 pub mod multiboot;
 pub mod paging;

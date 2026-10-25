@@ -146,22 +146,23 @@ pub const KERNEL_HALF_START: usize = (KERNEL_BASE >> 22) as usize;
 /// sits at `DIRECTORY_ENTRY_VA + i*4`. Distinct from the table window below, which addresses any
 /// window's page *table*.
 pub const DIRECTORY_ENTRY_VA: u32 = SELF_MAP_VA + ((SELF_MAP_SLOT as u32) << 12);
-/// The per-process ring-0 gate stack window: the first directory entry of the kernel stack region
-/// ([`layout::KERNEL_STACKS`], entry 656), sub-allocated into per-thread slots, each a guard page
-/// plus the 32 KiB stack. Slot 0's top is [`GATE_STACK_TOP`], a main thread's stack.
+/// The ring-0 gate stacks' window: the kernel stack region ([`layout::KERNEL_STACKS`], entries
+/// 656-659), sub-allocated into per-thread slots numbered across the whole region (one ledger for
+/// the system, [`crate::mem::kstacks`]), each a guard page plus the 32 KiB stack. Slot 0's top is
+/// [`GATE_STACK_TOP`].
 pub const GATE_STACK_WINDOW: u32 = layout::KERNEL_STACKS.start;
 /// Gate stack pages, one frame each (32 KiB): room for the file system's walks under the debug
 /// build's frames.
 pub const GATE_STACK_PAGES: usize = 8;
-/// Slot 0's top: the main thread's stack, pinned by the layout tests (the switch installs every
-/// thread's top from its record, so nothing else reads it).
+/// Slot 0's top, pinned by the layout tests (the switch installs every thread's top from its
+/// record, so nothing else reads it).
 #[cfg(test)]
 pub const GATE_STACK_TOP: u32 = gate_slot_top(0);
 /// One thread's slot: a guard page plus the stack pages.
 pub const GATE_SLOT_STRIDE: u32 = ((GATE_STACK_PAGES + 1) as u32) * PAGE_SIZE;
-/// How many slots the window (one directory entry, 4 MiB) holds. The binding per-thread capacity of
-/// the process: an allocation past it is a bug, not a wrap.
-pub const GATE_SLOT_CAPACITY: usize = (layout::ENTRY_SPAN / GATE_SLOT_STRIDE) as usize;
+/// How many slots the region (four directory entries, 16 MiB) holds: the system's capacity for
+/// kernel stacks. A slot may straddle two of the region's page tables.
+pub const GATE_SLOT_CAPACITY: usize = (layout::KERNEL_STACKS.size() / GATE_SLOT_STRIDE) as usize;
 
 /// Slot `index`'s base: its guard page, never mapped.
 pub const fn gate_slot_base(index: u32) -> u32 {
@@ -475,9 +476,9 @@ pub fn set_user_pte(vaddr: u32, entry: u32) {
 /// directory, which is only ever read), self-map entry pointing at the new directory's own frame
 /// `own_phys`, scratch entry at the shared scratch table `scratch_phys`.
 ///
-/// One kernel-half entry is deliberately *not* inherited: the gate stack window
-/// ([`GATE_STACK_WINDOW`]) is per-process — each process maps its own stack there, so the base's
-/// entry (whatever it maps) must not leak into a new directory.
+/// The kernel stack region's entries are deliberately *not* inherited: each process maps its own
+/// threads' stacks there, in tables of its own, so the base's entries (whatever they map) must not
+/// leak into a new directory.
 ///
 /// Pure over the entries: the caller supplies how base entries are read (a volatile self-map read
 /// on target, a plain array read in tests).
@@ -497,7 +498,9 @@ pub fn assemble_process_directory(
     // kernel-only) and no global bit (every entry must drop out of the TLB when CR3 reloads).
     dir[SELF_MAP_SLOT] = own_phys | PAGE_PRESENT | PAGE_WRITE;
     dir[SCRATCH_SLOT] = scratch_phys | PAGE_PRESENT | PAGE_WRITE;
-    dir[(GATE_STACK_WINDOW >> 22) as usize] = 0;
+    for entry in &mut dir[layout::KERNEL_STACKS.first_entry()..layout::KERNEL_STACKS.end_entry()] {
+        *entry = 0;
+    }
 }
 
 /// Whether a kernel-half table may be created for directory entry `window` once the kernel half is
@@ -505,10 +508,10 @@ pub fn assemble_process_directory(
 /// when it is assembled ([`assemble_process_directory`]), and nothing propagates a later one: a
 /// table created afterwards would map its pages in one directory and leave them missing from the
 /// others. So the kernel half's tables are all created at boot (the shared data page's, say);
-/// mappings into existing tables stay free. The gate stack window alone is per-process, its table
-/// each directory's own.
+/// mappings into existing tables stay free. The kernel stack region alone is per-process, its
+/// tables each directory's own.
 pub const fn kernel_table_may_be_created(window: usize, frozen: bool) -> bool {
-    !frozen || window == (GATE_STACK_WINDOW >> 22) as usize
+    !frozen || layout::KERNEL_STACKS.holds_entry(window)
 }
 
 /// The value CR3 takes for a directory at `dir_phys`: the address bits only, so a sloppy caller's
@@ -681,12 +684,12 @@ pub fn unmap_kernel_page(vaddr: u32) -> u32 {
 ///
 /// # Panics
 ///
-/// The index is past the window's capacity, or a slot page is not mapped.
+/// The index is past the region's capacity, or a slot page is not mapped.
 #[cfg(target_arch = "x86")]
 pub fn unmap_gate_slot(index: u32) -> [u32; GATE_STACK_PAGES] {
     assert!(
         (index as usize) < GATE_SLOT_CAPACITY,
-        "gate-slot index past the window's capacity"
+        "gate-slot index past the region's capacity"
     );
     let base = gate_slot_base(index);
     let mut frames = [0u32; GATE_STACK_PAGES];
@@ -702,12 +705,12 @@ pub fn unmap_gate_slot(index: u32) -> [u32; GATE_STACK_PAGES] {
 ///
 /// # Panics
 ///
-/// The index is past the window's capacity.
+/// The index is past the region's capacity.
 #[cfg(target_arch = "x86")]
 pub fn map_gate_slot(index: u32) -> [u32; GATE_STACK_PAGES] {
     assert!(
         (index as usize) < GATE_SLOT_CAPACITY,
-        "gate-slot index past the window's capacity"
+        "gate-slot index past the region's capacity"
     );
     let base = gate_slot_base(index);
     let mut frames = [0u32; GATE_STACK_PAGES];
@@ -859,16 +862,19 @@ mod tests {
         dir
     }
 
-    /// The kernel half is inherited wholesale except the two runtime slots and the gate stack
-    /// window (per-process: never inherited); the user half starts zero no matter what the target
+    /// The kernel half is inherited wholesale except the two runtime slots and the kernel stack
+    /// region (per-process: never inherited); the user half starts zero no matter what the target
     /// frame held before.
     #[test]
     fn process_directory_inherits_the_kernel_half_and_zeroes_the_user_half() {
+        let stacks = layout::KERNEL_STACKS;
         let mut base = [0u32; PT_ENTRIES];
         base[512] = 0x0010_1000 | PAGE_PRESENT | PAGE_WRITE;
         base[513] = 0x0050_1000 | PAGE_PRESENT | PAGE_WRITE;
         base[700] = 0x0090_0000 | PAGE_PRESENT | PAGE_WRITE | PAGE_USER;
-        base[(GATE_STACK_WINDOW >> 22) as usize] = 0x00C0_0000 | PAGE_PRESENT | PAGE_WRITE;
+        for (i, entry) in (stacks.first_entry()..stacks.end_entry()).enumerate() {
+            base[entry] = (0x00C0_0000 + i as u32 * PAGE_SIZE) | PAGE_PRESENT | PAGE_WRITE;
+        }
         base[1023] = 0x00B0_0000 | PAGE_PRESENT | PAGE_WRITE;
         let dir = assembled(&base, 0x9000, 0xB000);
 
@@ -876,9 +882,9 @@ mod tests {
             if i == SELF_MAP_SLOT || i == SCRATCH_SLOT {
                 continue;
             }
-            if i == (GATE_STACK_WINDOW >> 22) as usize {
-                // Per-process: the base's entry must not leak in.
-                assert_eq!(dir[i], 0, "gate stack window inherited");
+            if stacks.holds_entry(i) {
+                // Per-process: the base's entries must not leak in.
+                assert_eq!(dir[i], 0, "kernel stack entry {i} inherited");
                 continue;
             }
             let expected = if i < KERNEL_HALF_START { 0 } else { base[i] };
@@ -942,18 +948,19 @@ mod tests {
     }
 
     /// The kernel half freezes with the first process directory: before it, any kernel window may
-    /// gain a table; after it, only the per-process gate stack window.
+    /// gain a table; after it, only the per-process kernel stack region's.
     #[test]
     fn kernel_tables_are_created_before_the_first_process_directory() {
-        let gate_window = (GATE_STACK_WINDOW >> 22) as usize;
-        for window in [516usize, 657, 700, 1023] {
+        for window in [516usize, 656, 659, 700, 1023] {
             assert!(
                 kernel_table_may_be_created(window, false),
                 "window {window}"
             );
         }
-        assert!(kernel_table_may_be_created(gate_window, true));
-        for window in [516usize, 657, 700, 1023] {
+        for window in 656..660 {
+            assert!(kernel_table_may_be_created(window, true), "window {window}");
+        }
+        for window in [516usize, 655, 660, 700, 1023] {
             assert!(
                 !kernel_table_may_be_created(window, true),
                 "window {window}"
@@ -971,10 +978,10 @@ mod tests {
         assert_eq!(directory_cr3(0), 0);
     }
 
-    /// The gate stack window: the kernel stack region's first directory entry (656, at
-    /// 0xA4000000: clear of the image window and the runtime access slots), with an unmapped guard
-    /// page at the window base and the 32 KiB stack above it — a gate-stack overflow faults into
-    /// the guard instead of corrupting whatever lies below.
+    /// The gate stack window: the kernel stack region (entries 656-659, from 0xA4000000: clear of
+    /// the image window and the runtime access slots), with an unmapped guard page at each slot's
+    /// base and the 32 KiB stack above it — a gate-stack overflow faults into the guard instead of
+    /// corrupting whatever lies below.
     #[test]
     fn gate_stack_window_layout() {
         assert_eq!(GATE_STACK_WINDOW, 0xA400_0000);
@@ -990,12 +997,9 @@ mod tests {
         assert_eq!(GATE_STACK_PAGES, 8);
         assert_eq!(GATE_STACK_TOP, GATE_STACK_WINDOW + 9 * PAGE_SIZE);
         assert_eq!(GATE_STACK_TOP, 0xA400_9000);
-        // A process's threads all fit: the main thread and every child.
-        assert!(GATE_SLOT_CAPACITY > crate::process::CHILD_THREADS);
-        // Everything (guard + stack) stays inside the window's one directory entry.
-        assert!(GATE_STACK_TOP < GATE_STACK_WINDOW + layout::ENTRY_SPAN);
-        assert!(
-            gate_slot_top(GATE_SLOT_CAPACITY as u32 - 1) <= GATE_STACK_WINDOW + layout::ENTRY_SPAN
-        );
+        // Every thread record of the system fits.
+        assert!(GATE_SLOT_CAPACITY > crate::ob::THREADS);
+        // Everything (guard + stack) stays inside the region.
+        assert!(gate_slot_top(GATE_SLOT_CAPACITY as u32 - 1) as u64 <= layout::KERNEL_STACKS.end());
     }
 }

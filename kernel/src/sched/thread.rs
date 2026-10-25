@@ -138,8 +138,8 @@ pub struct Thread {
     /// The thread's level ledger: captured at switch-out, restored at resume. A fresh thread
     /// adopts an empty one.
     pub(crate) level: LevelSnapshot,
-    /// The thread's gate-stack slot index in its process's window, or the empty slot's value
-    /// before allocation.
+    /// The thread's gate-stack slot index in the kernel stack region (numbered system-wide), or
+    /// the empty slot's value before allocation.
     pub(crate) gate_slot: u16,
     /// The slot's frames, recorded for exactly-once release (the guard page below them is never
     /// mapped, so it is never recorded).

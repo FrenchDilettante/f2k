@@ -287,7 +287,7 @@ pub const STATUS_CANT_TERMINATE_SELF: Status = Status(0xC000_00DB);
 /// nothing) — its handle signaling and its waiters waking; one that has already ended (or whose
 /// termination is pending) is STATUS_INVALID_PARAMETER, which kernel32's TerminateThread reports
 /// as the capture shows (ERROR_INVALID_PARAMETER).
-pub fn terminate_thread(call: &mut NtCall, thread: Handle, status: u32) -> NtResult {
+pub fn terminate_thread(_call: &mut NtCall, thread: Handle, status: u32) -> NtResult {
     #[cfg(target_arch = "x86")]
     {
         if thread.raw() == 0 {
@@ -301,14 +301,14 @@ pub fn terminate_thread(call: &mut NtCall, thread: Handle, status: u32) -> NtRes
             drop(target);
             crate::process::threads::exit_thread(status as i32);
         }
-        match crate::process::threads::terminate_thread(call.process(), &mut target, status) {
+        match crate::process::threads::terminate_thread(&mut target, status) {
             Ok(()) => Ok(STATUS_SUCCESS),
             Err(crate::process::threads::TerminateError::Ended) => Err(STATUS_INVALID_PARAMETER),
         }
     }
     #[cfg(not(target_arch = "x86"))]
     {
-        let _ = (call, thread, status);
+        let _ = (thread, status);
         Err(super::call::STATUS_INVALID_HANDLE)
     }
 }
