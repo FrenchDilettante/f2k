@@ -104,11 +104,11 @@ note = "no handle terminates the caller's other threads; the calling process's h
 [[export]]
 name = "NtCreateProcess"
 group = "nt"
-args = ["ptr<u32> ProcessHandle", "u32 DesiredAccess", "ptr ObjectAttributes", "handle ParentProcess", "bool InheritObjectTable", "handle SectionHandle", "handle DebugPort", "handle ExceptionPort"]
-impl = { stub = "not yet implemented" }
-fails = "0xC0000002"
+args = ["ptr<u32> ProcessHandle", "u32 DesiredAccess", "ptr ObjectAttributes", "handle ParentProcess", "u32 InheritObjectTable", "handle SectionHandle", "handle DebugPort", "handle ExceptionPort"]
+impl = { syscall = "crate::nt::process::create_process" }
 ordinal = 101
-note = "a stub until the kernel serves it: its Zw alias is catalogued below until then"
+zw_ordinal = 747
+note = "a process with no thread from an image section, its parent's inheritable handles at their values when asked; no section (a fork) is not made"
 
 [[export]]
 name = "NtOpenProcess"
@@ -3694,10 +3694,6 @@ ordinal = 745
 [[export]]
 name = "ZwCreatePort"
 ordinal = 746
-
-[[export]]
-name = "ZwCreateProcess"
-ordinal = 747
 
 [[export]]
 name = "ZwCreateProfile"

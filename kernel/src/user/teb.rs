@@ -87,8 +87,12 @@ pub mod peb_offset {
     pub const IMAGE_SUBSYSTEM_MAJOR_VERSION: u32 = 0xB8;
     pub const IMAGE_SUBSYSTEM_MINOR_VERSION: u32 = 0xBC;
     /// CSDVersion: the service pack's name, a UNICODE_STRING (GetVersionExA's szCSDVersion; its
-    /// buffer on the process parameters' pages, `user::params::CSD_VERSION_BUFFER`).
+    /// buffer past the PEB proper on its page, [`CSD_VERSION_BUFFER`]).
     pub const CSD_VERSION: u32 = 0x1DC;
+    /// The service pack's name CSDVersion points at, UTF-16: past the PEB proper on its page, so
+    /// every process has it from its creation (a process another process created gets its
+    /// parameters from its creator, later).
+    pub const CSD_VERSION_BUFFER: u32 = 0xA00;
     /// kernel32's top-level exception filter (SetUnhandledExceptionFilter's): past the PEB proper
     /// on its page; kernel32's natives reach it through FS (the system DLLs' assembly reads the
     /// value off this line, see tools/exportgen's `abi`).
@@ -112,8 +116,10 @@ pub mod peb_offset {
     // input-wait handle (0x8C0) and control handlers (0x8C4, 0x8C8, 0x8CC: a block on the process
     // heap, the handlers it holds, its room), its handle table for the
     // movable Local and Global blocks (0x8E0, an RTL_HANDLE_TABLE), the loader lock (0x900),
-    // the loader's own state (0x920, 0x924: the DLLs owed calls, the initialization under way).
-    // The page starts zeroed; the kernel writes only the bitmaps' headers (ntdll makes the locks).
+    // the loader's own state (0x920, 0x924: the DLLs owed calls, the initialization under way),
+    // the service pack's name (0xA00, the kernel's).
+    // The page starts zeroed; the kernel writes only the bitmaps' headers and the service pack's
+    // name (ntdll makes the locks).
 }
 
 /// The empty SEH chain's terminator: the frame link Windows starts every thread with.
@@ -163,7 +169,9 @@ pub fn teb_words(init: &TebInit) -> [(u32, u32); 9] {
 pub struct PebInit {
     /// The image's base.
     pub image_base: u32,
-    /// The process parameters' address (none: zero).
+    /// The process parameters' address: a boot's program's, which the kernel writes; zero for a
+    /// process another process created (NtCreateProcess), whose creator writes its parameters
+    /// into it and the pointer into its PEB, as Windows 2000's kernel32 does.
     pub parameters: u32,
     /// The image's subsystem, and the subsystem version it was linked for (major, minor).
     pub subsystem: u16,
@@ -177,6 +185,8 @@ pub const VERSION: u32 = 0x0893_0005;
 /// The system's service pack, as OSCSDVersion holds it: 4.0, the major number in the high byte
 /// (GetVersionExA's "Service Pack 4").
 const OS_CSD_VERSION: u32 = 0x0400;
+/// The service pack's name, as CSDVersion holds it.
+pub const CSD_VERSION_TEXT: &[u8] = b"Service Pack 4";
 /// VER_PLATFORM_WIN32_NT.
 const PLATFORM_WIN32_NT: u32 = 2;
 
@@ -185,7 +195,7 @@ const PLATFORM_WIN32_NT: u32 = 2;
 /// LdrInitializeThunk makes the process heap, the list's first entry), the TLS bitmaps' headers
 /// (every index free), the
 /// system's version (GetVersion's: 5.0, build 2195, service pack 4, NT), the image's subsystem and
-/// its version, and the service pack's name (on the parameters' pages: none without them). The
+/// its version, and the service pack's name (its text on the PEB's page, [`map_peb`]'s). The
 /// loader's module lists are ntdll's to make (Ldr stays null until its process initialization).
 pub fn peb_words(peb: u32, init: &PebInit) -> [(u32, u32); 19] {
     use peb_offset::*;
@@ -222,29 +232,15 @@ pub fn peb_words(peb: u32, init: &PebInit) -> [(u32, u32); 19] {
             IMAGE_SUBSYSTEM_MINOR_VERSION,
             u32::from(init.subsystem_version.1),
         ),
-        (
-            CSD_VERSION,
-            if init.parameters == 0 {
-                0
-            } else {
-                csd_version_lengths()
-            },
-        ),
-        (
-            CSD_VERSION + 4,
-            if init.parameters == 0 {
-                0
-            } else {
-                init.parameters + crate::user::params::CSD_VERSION_BUFFER
-            },
-        ),
+        (CSD_VERSION, csd_version_lengths()),
+        (CSD_VERSION + 4, peb + CSD_VERSION_BUFFER),
     ]
 }
 
 /// CSDVersion's Length and MaximumLength words, as one dword: the name's bytes, and its bytes with
 /// the terminator.
 fn csd_version_lengths() -> u32 {
-    let length = 2 * crate::user::params::CSD_VERSION_TEXT.len() as u32;
+    let length = 2 * CSD_VERSION_TEXT.len() as u32;
     length | (length + 2) << 16
 }
 
@@ -259,7 +255,8 @@ pub fn map_teb(space: &mut crate::mem::vm::AddressSpace, init: &TebInit) {
     }
 }
 
-/// Map the process's PEB page at [`crate::user::PEB_PAGE`] into `space`, recording `init`.
+/// Map the process's PEB page at [`crate::user::PEB_PAGE`] into `space`, recording `init`, the
+/// service pack's name past the PEB proper.
 #[cfg(target_arch = "x86")]
 pub fn map_peb(space: &mut crate::mem::vm::AddressSpace, init: &PebInit) {
     use crate::mem::{paging, vm};
@@ -268,6 +265,13 @@ pub fn map_peb(space: &mut crate::mem::vm::AddressSpace, init: &PebInit) {
     for (offset, value) in peb_words(peb, init) {
         paging::write_frame(frame, offset as usize, &value.to_le_bytes());
     }
+    let mut name = [0u8; 2 * CSD_VERSION_TEXT.len()];
+    let length = crate::user::params::widen(CSD_VERSION_TEXT, &mut name);
+    paging::write_frame(
+        frame,
+        peb_offset::CSD_VERSION_BUFFER as usize,
+        &name[..length],
+    );
 }
 
 #[cfg(test)]
@@ -376,10 +380,8 @@ mod tests {
             Some(28 | 30 << 16),
             "CSDVersion: \"Service Pack 4\", terminated"
         );
-        assert_eq!(
-            value(0x1E0),
-            Some(0x0002_0000 + crate::user::params::CSD_VERSION_BUFFER)
-        );
+        assert_eq!(value(0x1E0), Some(0x7FFD_FA00), "past the PEB proper");
+        // A process another process created: no parameters yet, the name all the same.
         let bare = peb_words(
             0x7FFD_F000,
             &PebInit {
@@ -387,10 +389,8 @@ mod tests {
                 ..CONSOLE_4_0
             },
         );
-        assert!(
-            bare.contains(&(0x1DC, 0)) && bare.contains(&(0x1E0, 0)),
-            "no parameters, no name"
-        );
+        assert!(bare.contains(&(peb_offset::PROCESS_PARAMETERS, 0)));
+        assert!(bare.contains(&(0x1DC, 28 | 30 << 16)) && bare.contains(&(0x1E0, 0x7FFD_FA00)));
     }
 
     /// A fresh PEB: the image and the parameters; no module lists and no process heap yet
@@ -434,6 +434,9 @@ mod tests {
             );
         }
         assert!(peb_offset::TLS_BITMAP_HEADER > peb_offset::TOP_LEVEL_FILTER);
+        // The service pack's name sits past the system DLLs' slots, and fits the page.
+        assert!(peb_offset::CSD_VERSION_BUFFER > 0x924 + 4);
+        assert!(peb_offset::CSD_VERSION_BUFFER as usize + 2 * CSD_VERSION_TEXT.len() + 2 <= 0x1000);
     }
 
     /// The version dword splits into the CRT's globals (its own shift/mask recipe, restated

@@ -4,11 +4,11 @@
 //! TerminateThread, SuspendThread, ResumeThread, GetExitCodeThread, the thread priorities and
 //! boosts, and TlsFree are Win32 code over these, as on Windows 2000.
 //!
-//! A handle names a thread of the calling process, or is the current-thread pseudo-handle
-//! (NtCurrentThread, -2); STATUS_INVALID_HANDLE for a handle naming nothing,
-//! STATUS_OBJECT_TYPE_MISMATCH for one naming another kind of object (both ERROR_INVALID_HANDLE to
-//! kernel32). The information's length is the class's structure's exactly, as Windows 2000 checks
-//! it (STATUS_INFO_LENGTH_MISMATCH).
+//! A handle names a thread — of the calling process or of another (a child's, from CreateProcess)
+//! — or is the current-thread pseudo-handle (NtCurrentThread, -2); STATUS_INVALID_HANDLE for a
+//! handle naming nothing, STATUS_OBJECT_TYPE_MISMATCH for one naming another kind of object (both
+//! ERROR_INVALID_HANDLE to kernel32). The information's length is the class's structure's exactly,
+//! as Windows 2000 checks it (STATUS_INFO_LENGTH_MISMATCH).
 
 #[cfg(target_arch = "x86")]
 use super::call::STATUS_SUCCESS;
@@ -185,14 +185,19 @@ pub fn initial_context(
 }
 
 /// NtCreateThread(ThreadHandle, DesiredAccess, ObjectAttributes, ProcessHandle, ClientId,
-/// ThreadContext, InitialTeb, CreateSuspended): a thread of the calling process (the only one
-/// reachable: STATUS_INVALID_HANDLE otherwise), on the stack its INITIAL_TEB describes (its creator
-/// reserved and committed it) and starting in its CONTEXT, its handle (inheritable as the
-/// attributes ask) and CLIENT_ID written back. Every refusal comes before the thread exists: the
-/// handle and client-id pointers probed, the context and stack read, a full handle table
-/// (STATUS_INSUFFICIENT_RESOURCES), no free thread record (STATUS_NO_MEMORY). The handle exists
-/// before the thread is made schedulable, so the creator can always wait on what it created;
-/// CreateSuspended (a BOOLEAN) parks it before its first instruction until a resume.
+/// ThreadContext, InitialTeb, CreateSuspended): a thread of the process the handle names — the
+/// calling process, or another whose handle grants PROCESS_CREATE_THREAD (kernel32's CreateProcess
+/// makes a child's first thread so) — on the stack its INITIAL_TEB describes (its creator reserved
+/// and committed it, in that process) and starting in its CONTEXT, its handle in the calling
+/// process (inheritable as the attributes ask) and CLIENT_ID written back. The first thread of a
+/// process NtCreateProcess made is its main thread (the fixed TEB page; see
+/// [`crate::process::threads::create`]). Every refusal comes before the thread exists: the handle
+/// and client-id pointers probed, the context and stack read, the process handle's (see
+/// [`super::object::reference_process`]), a process that has ended or is ending
+/// (STATUS_PROCESS_IS_TERMINATING), a full handle table (STATUS_INSUFFICIENT_RESOURCES), no free
+/// thread record (STATUS_NO_MEMORY). The handle exists before the thread is made schedulable, so
+/// the creator can always wait on what it created; CreateSuspended (a BOOLEAN) parks it before its
+/// first instruction until a resume.
 #[allow(clippy::too_many_arguments)]
 pub fn create_thread(
     call: &mut NtCall,
@@ -224,29 +229,39 @@ pub fn create_thread(
         let mut name = [0u16; super::attributes::MAX_NAME];
         super::attributes::read(attributes, &mut name)?.inherit()
     };
-    super::process::current(process)?;
     let (user, stack) = (initial_context(&context), initial_stack(&teb));
     #[cfg(target_arch = "x86")]
     {
-        use super::object::STATUS_INSUFFICIENT_RESOURCES;
+        use super::object::{
+            reference_process,
+            PROCESS_CREATE_THREAD,
+            STATUS_INSUFFICIENT_RESOURCES,
+            STATUS_PROCESS_IS_TERMINATING,
+        };
         const STATUS_NO_MEMORY: Status = Status(0xC000_0017);
+        let target = reference_process(process.raw(), PROCESS_CREATE_THREAD)?;
         // Once a thread record is attached to the process there is no unwinding it: the create
         // must not fail after.
-        let process = call.process();
-        if process.handles().is_full() {
+        if call.process().handles().is_full() {
             return Err(STATUS_INSUFFICIENT_RESOURCES);
         }
-        let (object, thread, id) =
-            crate::process::threads::create(process, user, stack).ok_or(STATUS_NO_MEMORY)?;
+        // Made attached to the target (its TEB page is mapped there), inside a critical region
+        // for another process.
+        let (object, thread, id) = target.attached(|record| {
+            if record.terminating() {
+                return Err(STATUS_PROCESS_IS_TERMINATING);
+            }
+            crate::process::threads::create(record, user, stack).ok_or(STATUS_NO_MEMORY)
+        })?;
         // The handle joins the thread's own reference (which its end releases).
-        let opened = crate::ob::open(process, object, access, inherit);
+        let opened = crate::ob::open(call.process(), object, access, inherit);
         assert_ne!(opened, 0, "the table had a free slot before the create");
         // Written back as the platform writes them, the thread created whatever happens to the
         // caller's memory (kernel32's own locals, probed above).
         let _ = handle.write(opened);
         if !client_id.is_null() {
             let mut cid = [0u8; 8];
-            cid[..4].copy_from_slice(&call.process().id().to_le_bytes());
+            cid[..4].copy_from_slice(&target.record().id().to_le_bytes());
             cid[4..].copy_from_slice(&id.to_le_bytes());
             let _ = client_id.write(&cid);
         }
@@ -271,7 +286,16 @@ pub fn create_thread(
     }
     #[cfg(not(target_arch = "x86"))]
     {
-        let _ = (call, access, inherit, create_suspended, user, stack);
+        // Host builds have no process to create a thread in.
+        let _ = (
+            call,
+            access,
+            inherit,
+            create_suspended,
+            user,
+            stack,
+            process,
+        );
         Err(super::call::STATUS_INVALID_HANDLE)
     }
 }

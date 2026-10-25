@@ -95,7 +95,7 @@ pub fn run() -> ! {
 /// Who `process`'s end reports as, by its own leg: a suite's leg by its index and name, the lone
 /// program of a boot of one (or of a boot the runner does not drive), or a child by its process id
 /// and name.
-pub fn identity(process: &Process) -> Identity {
+pub fn identity(process: &Process) -> Identity<'_> {
     exit::identity(process.leg(), leg_count(), process.id(), process.name())
 }
 

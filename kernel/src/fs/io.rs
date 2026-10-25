@@ -221,6 +221,27 @@ mod target {
             with_boot_volume(|volume| crate::fs::fat32::read::read_at(volume, file, offset, out))?;
         read.ok().filter(|&got| got == out.len())
     }
+
+    /// The name `file`'s entry shows in its directory (its long name, else its 8.3 name), read off
+    /// the boot volume into `out`: its length, or none when the directory cannot be read or no
+    /// longer holds the entry.
+    pub fn entry_name(
+        file: &File,
+        out: &mut [u8; crate::fs::fat32::path::MAX_NAME],
+    ) -> Option<usize> {
+        let mut length = None;
+        let walked = with_boot_volume(|volume| {
+            crate::fs::fat32::dir::walk(volume, file.parent_cluster, |listed| {
+                if listed.index != file.index {
+                    return true;
+                }
+                length = Some(listed.name(out));
+                false
+            })
+        })?;
+        walked.ok()?;
+        length
+    }
 }
 
 #[cfg(target_arch = "x86")]

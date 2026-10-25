@@ -566,6 +566,16 @@ pub fn query_access(access: u32) -> Result<(), Status> {
     Ok(())
 }
 
+/// Whether a section handle granted `access` may make a process's image (NtCreateProcess's
+/// SectionHandle must grant SECTION_MAP_EXECUTE, its generic rights mapped):
+/// STATUS_ACCESS_DENIED otherwise.
+pub fn process_image_access(access: u32) -> Result<(), Status> {
+    if section_access(access) & SECTION_MAP_EXECUTE == 0 {
+        return Err(STATUS_ACCESS_DENIED);
+    }
+    Ok(())
+}
+
 #[cfg(target_arch = "x86")]
 pub use target::*;
 
@@ -847,7 +857,7 @@ mod target {
             let mapped = with_space(call, process, |space, pages| {
                 map_image(space, pages, segment)
             })?;
-            base.write(mapped)?;
+            base.write(mapped.base)?;
             size.write(record.size)?;
             return Ok(STATUS_SUCCESS);
         }
@@ -995,16 +1005,28 @@ mod target {
         Ok(base)
     }
 
+    /// The image segment of the image section `handle` names, for a process's image
+    /// (NtCreateProcess): the section referenced, and its segment. The handle's refusals (see
+    /// [`section_of`]), one not granted SECTION_MAP_EXECUTE (see [`process_image_access`]), and a
+    /// data section STATUS_SECTION_NOT_IMAGE.
+    pub fn image_segment_of(handle: u32) -> Result<(ob::ObRef, ob::SegmentId), Status> {
+        let (object, access) = section_of(handle)?;
+        process_image_access(access)?;
+        let segment = object.section().segment.ok_or(STATUS_SECTION_NOT_IMAGE)?;
+        Ok((object, segment))
+    }
+
     /// Map the image segment `segment` names as a view: the whole image at its preferred base
     /// (STATUS_CONFLICTING_ADDRESSES when another region holds any of it), a MEM_IMAGE reservation
     /// whose pages carry their sections' protections, every page the segment's frame. A page not
     /// made yet is built from the file, through the image's section table (its headers parsed
-    /// again from the file's first page). The view holds the segment, not the section.
-    fn map_image(
+    /// again from the file's first page). The view holds the segment, not the section. Returns
+    /// what a process made from the image records of it (see [`ImageView`]).
+    pub fn map_image(
         space: &mut crate::mem::vm::AddressSpace,
         table: &mut CurrentPages,
         segment: ob::SegmentId,
-    ) -> Result<u32, Status> {
+    ) -> Result<ImageView, Status> {
         use crate::exec::loader::page_protect;
         use crate::mem::vm::PAGE_EXECUTE_WRITECOPY;
         if !space.has_view_room() {
@@ -1073,7 +1095,20 @@ mod target {
         // The view holds the segment for as long as it is mapped.
         let held = directory.reference_segment(segment);
         debug_assert!(held, "a segment being mapped lives");
-        Ok(base)
+        Ok(ImageView {
+            base,
+            subsystem: image.subsystem,
+            subsystem_version: image.subsystem_version,
+        })
+    }
+
+    /// An image's view, as a process made from it records it in its PEB: the view's base (the
+    /// image's preferred base), the image's subsystem and the subsystem version it was linked for.
+    #[derive(Clone, Copy, Debug)]
+    pub struct ImageView {
+        pub base: u32,
+        pub subsystem: u16,
+        pub subsystem_version: (u16, u16),
     }
 
     /// NtUnmapViewOfSection: unmap the view holding the address — any address inside it names it,
@@ -1573,6 +1608,22 @@ mod tests {
         assert_eq!(query_access(crate::ob::SECTION_ALL_ACCESS), Ok(()));
         assert_eq!(query_access(SECTION_MAP_READ), Err(STATUS_ACCESS_DENIED));
         assert_eq!(error(query_access(SECTION_MAP_WRITE)), 5);
+    }
+
+    /// A process's image section: its handle must grant SECTION_MAP_EXECUTE, or a generic right
+    /// that maps to it (kernel32's CreateProcess opens it with SECTION_ALL_ACCESS); a data section
+    /// is no image (STATUS_SECTION_NOT_IMAGE, ERROR_INVALID_PARAMETER to kernel32).
+    #[test]
+    fn a_process_image_maps_for_executing() {
+        assert_eq!(process_image_access(SECTION_MAP_EXECUTE), Ok(()));
+        assert_eq!(process_image_access(GENERIC_EXECUTE), Ok(()));
+        assert_eq!(process_image_access(crate::ob::SECTION_ALL_ACCESS), Ok(()));
+        assert_eq!(process_image_access(MAXIMUM_ALLOWED), Ok(()));
+        assert_eq!(
+            process_image_access(SECTION_MAP_READ | SECTION_QUERY | GENERIC_READ),
+            Err(STATUS_ACCESS_DENIED)
+        );
+        assert_eq!(error(Err::<(), _>(STATUS_SECTION_NOT_IMAGE)), 87);
     }
 
     /// An image section's view is the whole image at its preferred base: no offset, no size short

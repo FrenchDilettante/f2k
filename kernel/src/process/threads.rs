@@ -1,13 +1,25 @@
 //! The thread surface: child-thread creation, the process's thread and event records, and the
 //! thread-exit path.
 //!
-//! NtCreateThread behind kernel32's CreateThread: a child takes a thread record from the pool, a
-//! gate stack from the system's kernel stacks (mapped in every address space), an ordinal from its
-//! process (which places its own TEB page in the per-thread region), and a startup ladder the
-//! context switch enters — the same machinery the main thread's boot entry uses.
-//! Its user stack and initial context are its creator's (kernel32's BaseCreateStack and
-//! BaseInitializeContext, as on Windows 2000): it enters user mode at kernel32's
+//! NtCreateThread behind kernel32's CreateThread and CreateProcess: a thread takes a thread record
+//! from the pool, a gate stack from the system's kernel stacks (mapped in every address space), an
+//! ordinal from its process (which places its own TEB page in the per-thread region), and a
+//! startup ladder the context switch enters — the same machinery the main thread's boot entry
+//! uses. Its user stack and initial context are its creator's (kernel32's BaseCreateStack and
+//! BaseInitializeContext, as on Windows 2000): a created thread enters user mode at kernel32's
 //! BaseThreadStartThunk, which calls the start routine and hands its return value to ExitThread.
+//! The first thread of a process another process created (NtCreateProcess makes none) is that
+//! process's main thread: it takes ordinal 0, the fixed TEB page, and kernel32's CreateProcess
+//! starts it at BaseProcessStartThunk, the image's entry point in EAX, as a boot's program's.
+//! Every thread's first user-mode work is ntdll's LdrInitializeThunk, which initializes the
+//! process on its first thread.
+//!
+//! A process ends with no thread of its own running its end in two cases: another process
+//! terminates it (NtTerminateProcess through a handle), or it never had a thread and its last
+//! handle closes (Windows deletes the process object then). Its threads, if any, are terminated
+//! from the terminating thread, and its end's steps — its handles closed, its object signalled —
+//! run there too ([`end_unattended`]), unless one of them finishes a critical region first and
+//! ends the process from its own exit.
 //!
 //! The exit path, in its order: the process-ending service's or a fault's terminations of the
 //! process's other threads first (both end the whole process); then the thread object signals and
@@ -23,22 +35,31 @@
 //! to the last such thread.
 
 use crate::mem::paging;
-use crate::process::exit::{self, Fault, ThreadEnd};
+use crate::process::exit::{self, Fault, ProcessEnd, ThreadEnd};
 use crate::process::Process;
 use crate::sched::dispatcher::{Dispatcher, Termination};
 use crate::sched::thread::{Thread, ThreadState};
 
-/// A fresh thread object for a thread `process` creates over the user stack reserved at `stack`,
-/// with its record and its ordinal in the process, or none (the program-visible create failure):
-/// every ordinal of the process held by a thread something still references, or every record of
-/// the pool in use. The record is any free one of the pool; the ordinal is the process's lowest
-/// free one, which places the thread's TEB — an ordinal a terminated thread held has its pages
-/// released first, in this process. The object holds the thread's own reference.
+/// A fresh thread object for a thread created in `process` over the user stack reserved at
+/// `stack`, with its record and its ordinal in the process, or none (the program-visible create
+/// failure): every ordinal of the process held by a thread something still references, or every
+/// record of the pool in use. The record is any free one of the pool; the ordinal is the main
+/// thread's for a process that has none yet (its first thread), else the process's lowest free
+/// one, which places the thread's TEB — an ordinal a terminated thread held has its pages released
+/// first, in this process. The object holds the thread's own reference.
 fn free_thread(
     process: &mut Process,
     stack: u32,
 ) -> Option<(crate::ob::ObjectId, &'static mut Thread, u16)> {
     let directory = crate::ob::directory();
+    if !process.has_main_thread() {
+        let id = directory.create_thread()?;
+        process.hold_main_thread(id, stack);
+        let thread = directory.threads.record(id.index);
+        *thread = Thread::empty();
+        thread.ordinal = crate::process::ordinals::MAIN;
+        return Some((id, thread, crate::process::ordinals::MAIN));
+    }
     let ordinal = process.ordinals.free(|id| directory.is_live(id))?;
     let id = directory.create_thread()?;
     if let Some(leftover) = process.ordinals.hold(ordinal, id, stack) {
@@ -52,12 +73,12 @@ fn free_thread(
 
 /// Release the user pages a terminated thread left mapped at an ordinal of `process` that is about
 /// to be reused — its TEB page and its stack reservation — through the process's address space: a
-/// TEB the program made inaccessible gives its frame back too. The process creates the thread, so
-/// its address space is the live one.
+/// TEB the program made inaccessible gives its frame back too. The thread is created in the
+/// process, so its address space is the live one (the creator's own, or one it attached to).
 fn release_thread_pages(process: &mut Process, leftover: crate::process::ordinals::Leftover) {
     use crate::mem::vm::CurrentPages;
     assert!(
-        core::ptr::eq(crate::process::current(), process),
+        core::ptr::eq(crate::process::pool::address_space(), process),
         "a reused ordinal's pages are released in its own process"
     );
     let space = process.vm();
@@ -67,14 +88,15 @@ fn release_thread_pages(process: &mut Process, leftover: crate::process::ordinal
     }
 }
 
-/// Create a child thread over its creator's stack and initial user context (NtCreateThread's
-/// INITIAL_TEB and CONTEXT): a pooled record attached to the current process, its gate-stack slot
-/// and TEB page mapped, its startup ladder planted — but not readied: the service readies it once
-/// the caller's handle exists, so a thread never runs before its creator holds a way to wait on
-/// it. Returns the thread's object (holding the thread's own reference), its record, and its
-/// identifier (its client id, never reused within the boot). None is the program-visible failure:
-/// no free ordinal in the process, no free record in the pool, or no free slot in the kernel stack
-/// region. `process` is the caller's.
+/// Create a thread over its creator's stack and initial user context (NtCreateThread's
+/// INITIAL_TEB and CONTEXT): a pooled record attached to `process`, its gate-stack slot and TEB
+/// page mapped, its startup ladder planted — but not readied: the service readies it once the
+/// caller's handle exists, so a thread never runs before its creator holds a way to wait on it.
+/// The first thread of a process with none is its main thread (see [`free_thread`]). Returns the
+/// thread's object (holding the thread's own reference), its record, and its identifier (its
+/// client id, never reused within the boot). None is the program-visible failure: no free ordinal
+/// in the process, no free record in the pool, or no free slot in the kernel stack region.
+/// `process`'s address space is the live one: the caller's own, or one it attached to.
 pub fn create(
     process: &mut Process,
     user: crate::sched::startup::UserStart,
@@ -140,7 +162,11 @@ pub fn create(
 /// LdrInitializeThunk first, whose NtContinue delivers the user APCs queued before the thread ran
 /// (a process without the system DLLs delivers them here instead).
 unsafe extern "C" fn user_thread_startup(_start: u32, _parameter: u32) {
-    crate::sched::idle::dispatcher().deliver_pending_apcs();
+    let dispatcher = crate::sched::idle::dispatcher();
+    dispatcher.deliver_pending_apcs();
+    // Past its suspends: the thread has reached user mode.
+    // SAFETY: the running thread, live.
+    unsafe { (*dispatcher.current_thread()).user_started = true };
     if !crate::user::apc::deliver_initialization() {
         crate::user::apc::deliver_at_startup();
     }
@@ -227,7 +253,7 @@ fn end_thread(end: ThreadEnd) -> ! {
     // The process's end, step 1 (see `process`'s notes on its order): every other thread is
     // terminated, without running again.
     if plan.terminate_others {
-        let deferred = terminate_others(process, current, status);
+        let deferred = terminate_others(process, current, |_| status);
         let (after, handed) = exit::hand_over(plan, deferred);
         plan = after;
         if let Some(end) = handed {
@@ -299,25 +325,29 @@ fn end_thread(end: ThreadEnd) -> ! {
     unreachable!("a terminated thread never resumes")
 }
 
-/// Terminate every thread of the current process but `current` (the running thread), none of them
-/// running again, each with exit status `status`: each is taken off whatever holds it and retired,
-/// then its gate stack — not the one this code runs on — is released here. A thread inside a
-/// critical region is the exception: it runs on to the region's end and ends itself there. Returns
-/// how many are still finishing a region so — this call's deferrals, and an earlier one's (a
-/// TerminateThread's, or an ExitProcess's first NtTerminateProcess, whose threads the process's end
-/// must still wait for).
-fn terminate_others(process: &mut Process, current: *mut Thread, status: u32) -> u16 {
+/// Terminate every thread of `process` but `current` (the running thread, when it is one of the
+/// process's; null otherwise), none of them running again, each with the exit status `status`
+/// gives it: each is taken off whatever holds it and retired, then its gate stack — not the one
+/// this code runs on — is released here. A thread inside a critical region is the exception: it
+/// runs on to the region's end and ends itself there. Returns how many are still finishing a
+/// region so — this call's deferrals, and an earlier one's (a TerminateThread's, or an
+/// ExitProcess's first NtTerminateProcess, whose threads the process's end must still wait for).
+fn terminate_others(
+    process: &mut Process,
+    current: *mut Thread,
+    status: impl Fn(&Thread) -> u32,
+) -> u16 {
     let dispatcher = crate::sched::idle::dispatcher();
     loop {
         let other = process.sched.first_thread_except(current);
         if other.is_null() {
             // Only the threads whose termination is pending are still attached beside this one.
-            return process.sched.stack_count() - 1;
+            return process.sched.stack_count() - u16::from(!current.is_null());
         }
-        // SAFETY: an attached thread of this process, off the processor; the record outlives its
+        // SAFETY: an attached thread of the process, off the processor; the record outlives its
         // termination (it is renewed only by a create, which nothing runs here).
         let other = unsafe { &mut *other };
-        other.exit_status = status;
+        other.exit_status = status(other);
         run_down_timers(other);
         if dispatcher.request_termination(other) == Termination::Done {
             crate::mem::kstacks::release((other.gate_slot, other.gate_frames));
@@ -333,7 +363,91 @@ fn terminate_others(process: &mut Process, current: *mut Thread, status: u32) ->
 /// runs on — its process's own end comes with its next call. `process` is the caller's.
 pub fn terminate_other_threads(process: &mut Process, status: u32) {
     let current = crate::sched::idle::dispatcher().current_thread();
-    let _ = terminate_others(process, current, status);
+    let _ = terminate_others(process, current, |_| status);
+}
+
+/// NtTerminateProcess on another process: every thread of `process` is terminated, without
+/// running again, and the process ends with exit code `status` — from here, its end's steps run
+/// by the calling thread ([`end_unattended`]), or, when some of its threads are finishing a
+/// critical region, from the last of them as it leaves (the end handed on, as an exit's is). A
+/// thread terminated before it reached user mode ends with STATUS_THREAD_IS_TERMINATING, and a
+/// process none of whose threads it terminates had reached it with exit code 0, as the spawn
+/// fixture's capture shows Windows 2000's do (a suspended child that never ran, terminated with
+/// 44: its thread's code 0xC000004B, the process's 0). Runs inside a critical region of the
+/// caller's (an end's handles may close through the volume): the caller is never terminated
+/// half-way through.
+///
+/// # Panics
+///
+/// The process is the caller's own (it ends through [`exit_process`]), or it is terminating
+/// already (the service refuses it first).
+pub fn terminate_process(process: &mut Process, status: u32) {
+    use crate::status::STATUS_THREAD_IS_TERMINATING;
+    assert!(
+        !core::ptr::eq(crate::process::current(), process),
+        "the calling process ends through its own exit"
+    );
+    assert!(!process.terminating(), "a process is terminated once");
+    critical_region(|| {
+        let started = core::cell::Cell::new(false);
+        let deferred = terminate_others(process, core::ptr::null_mut(), |thread| {
+            if thread.user_started {
+                started.set(true);
+                status
+            } else {
+                STATUS_THREAD_IS_TERMINATING as u32
+            }
+        });
+        let end = ProcessEnd::Exited(if started.get() { status } else { 0 });
+        if deferred != 0 {
+            process.hand_end(end);
+        } else {
+            end_unattended(process, end, true);
+        }
+    });
+}
+
+/// A process object's handle has closed: when it was the last and the process never had a thread
+/// (NtCreateProcess makes a process with none, and its creator may close it unstarted), the
+/// process ends — its handles closed, its object signalled — and goes to the idle thread's reap
+/// for its teardown, as Windows deletes such a process with its object. Nothing reports its end:
+/// it never ran. A process ending already, or one whose object went, is left alone.
+pub fn forsake_if_abandoned(id: crate::ob::ObjectId) {
+    if crate::ob::directory().handle_count(id) != Some(0) {
+        return;
+    }
+    let Some(process) = crate::process::pool::of_object(id) else {
+        return;
+    };
+    if process.has_main_thread() || process.terminating() || process.end.is_some() {
+        return;
+    }
+    critical_region(|| end_unattended(process, ProcessEnd::Exited(0), false));
+}
+
+/// The end of a process none of whose threads runs it, steps 2 and 3 of its end (see `process`'s
+/// notes) from another process's thread — or none, for a process that never had one: its handles
+/// close, its object signals with `end`'s exit code, the end is reported on COM1 when `report`
+/// says so, and recorded for the idle thread's reap. The process is marked ending first: nothing
+/// creates a thread in it meanwhile, and its handles' closing cannot end it twice.
+///
+/// # Panics
+///
+/// A thread of the process is still attached: its end is that thread's to run.
+pub fn end_unattended(process: &mut Process, end: ProcessEnd, report: bool) {
+    assert_eq!(
+        process.sched.stack_count(),
+        0,
+        "an unattended end follows the process's last thread"
+    );
+    process.ending = true;
+    process.release_handles();
+    process.signal_end(end);
+    if report {
+        let identity = crate::process::runner::identity(process);
+        crate::serial_println!("{}", exit::EndReport { end, identity });
+    }
+    process.set_end(end);
 }
 
 /// Whether the calling thread is its process's only one (ThreadAmILastThread): no other thread is

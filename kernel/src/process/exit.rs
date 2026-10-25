@@ -181,22 +181,23 @@ pub fn hand_over(plan: ExitPlan, deferred: u16) -> (ExitPlan, Option<ProcessEnd>
     )
 }
 
-/// Who a process's end reports as: the boot's one program, a leg of a suite, or a child.
+/// Who a process's end reports as: the boot's one program, a leg of a suite, or a child — the
+/// name borrowed from the process's record.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Identity {
+pub enum Identity<'a> {
     /// The one program of a one-process boot (or of a boot no runner drives: the fault tests').
     Lone,
     /// A suite's leg: its 1-based index and its image's name.
-    Leg(u32, &'static str),
+    Leg(u32, &'a str),
     /// A process another process started, not one the boot's command line lists: its process id
     /// and its image's name.
-    Child(u32, &'static str),
+    Child(u32, &'a str),
 }
 
 /// The identity a process reports its end under: `leg` its leg of the boot's `legs` programs
 /// (none for a child), `id` its process id, `name` its image's name. A leg of a boot of one
 /// program — or of none, a boot the runner does not drive — is the lone program.
-pub fn identity(leg: Option<u32>, legs: u32, id: u32, name: &'static str) -> Identity {
+pub fn identity(leg: Option<u32>, legs: u32, id: u32, name: &str) -> Identity<'_> {
     match leg {
         None => Identity::Child(id, name),
         Some(index) if legs > 1 => Identity::Leg(index, name),
@@ -206,12 +207,12 @@ pub fn identity(leg: Option<u32>, legs: u32, id: u32, name: &'static str) -> Ide
 
 /// The process-end report line: the one-process boot's form, the suite's with the leg's index and
 /// name, or a child's with its process id and name.
-pub struct EndReport {
+pub struct EndReport<'a> {
     pub end: ProcessEnd,
-    pub identity: Identity,
+    pub identity: Identity<'a>,
 }
 
-impl fmt::Display for EndReport {
+impl fmt::Display for EndReport<'_> {
     fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
         let (prefix, number, name) = match self.identity {
             Identity::Lone => return self.fmt_lone(out),
@@ -232,7 +233,7 @@ impl fmt::Display for EndReport {
     }
 }
 
-impl EndReport {
+impl EndReport<'_> {
     /// The one-process boot's form, which names the kind of fault and that the boot halts.
     fn fmt_lone(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.end {

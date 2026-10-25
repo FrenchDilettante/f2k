@@ -570,6 +570,11 @@ impl Directory {
         self.header(id).is_some()
     }
 
+    /// How many handles name `id`; none for an id that names nothing.
+    pub fn handle_count(&mut self, id: ObjectId) -> Option<u32> {
+        self.header(id).map(|header| header.handles)
+    }
+
     /// An object's (pointer, handle) counts; none for an id that names nothing.
     #[cfg(test)]
     pub fn counts(&mut self, id: ObjectId) -> Option<(u32, u32)> {

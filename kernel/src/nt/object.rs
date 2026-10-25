@@ -119,6 +119,11 @@ impl ProcessRef {
         self.reference.id()
     }
 
+    /// Whether it is the calling process.
+    pub fn is_current(&self) -> bool {
+        self.current
+    }
+
     /// The process's record, live while the reference holds its object. Borrowed for the caller's
     /// statement: for the calling process it is the record [`NtCall::process`] lends too.
     pub fn record(&self) -> &'static mut crate::process::Process {
@@ -207,21 +212,9 @@ pub(crate) fn is_console_handle(handle: u32) -> bool {
     handle & 0x1000_0003 == 0x3
 }
 
-/// Whether `handle` names the calling process: its pseudo-handle, or a handle to its object (what
-/// the services that act on the calling process alone accept: a thread's creation, the process's
-/// termination).
-#[cfg(target_arch = "x86")]
-pub(crate) fn names_current_process(handle: u32) -> bool {
-    let process = crate::process::current();
-    handle == CURRENT_PROCESS
-        || process
-            .handles()
-            .lookup(handle)
-            .and_then(|entry| entry.object_id())
-            == Some(process.object())
-}
-
-/// Host builds have no process table: only the pseudo-handle.
+/// Whether `handle` names the calling process, in host builds: they have no process table, so only
+/// the pseudo-handle does (the target's services reference the process a handle names instead,
+/// see [`reference_process`]).
 #[cfg(not(target_arch = "x86"))]
 pub(crate) fn names_current_process(handle: u32) -> bool {
     handle == CURRENT_PROCESS

@@ -6,6 +6,11 @@
 //! are mapped fresh each run into the process's directory, each inside a region the loader seeds
 //! first, so they are per-process by construction.
 //!
+//! A boot's program starts with its main thread ([`Process::start`]); a process another process
+//! creates (NtCreateProcess) starts with none ([`Process::create`]), and its first thread, created
+//! later by its creator, is its main thread. Until then nothing ends it but a termination or its
+//! last handle's closing (see [`threads`]).
+//!
 //! The per-thread state split: the ring-0 gate stack (the thread's kernel stack, what the TSS
 //! `esp0` points into) is per-thread, a slot of the kernel stack region numbered system-wide and
 //! mapped in every address space ([`crate::mem::kstacks`]), each slot's frames recorded by their
@@ -84,8 +89,8 @@ pub struct Process {
     /// The scheduling record, leading the process record: the context switch's assembly reads the
     /// directory base through a thread's owner pointer at a pinned offset.
     pub sched: crate::sched::process::SchedProcess,
-    /// The fixture's name, as invoked (reported on COM1).
-    name: &'static str,
+    /// The image's name, as its end reports it on COM1.
+    name: ProcessName,
     /// The process's client id (what GetCurrentProcessId reports, through the TEB).
     id: u32,
     /// The client id of the process that created it (ProcessBasicInformation's
@@ -130,8 +135,57 @@ pub struct Process {
     /// The end an exit or fault decided while some threads were still finishing a critical region:
     /// the last of them ends the process with it.
     handed_end: Option<exit::ProcessEnd>,
+    /// Whether its end is under way with none of its threads running it (a termination from
+    /// another process, or the deletion of one that never had a thread; see
+    /// [`threads::end_unattended`]): it takes no new thread, and is not ended twice.
+    ending: bool,
     /// Whether the teardown has run (the record waits for its object's last reference).
     torn_down: bool,
+}
+
+/// A process's name: its image's file name without the extension, as its end report shows it — at
+/// most [`NAME_ROOM`] bytes, as Windows 2000 keeps an image's name in its process
+/// (EPROCESS.ImageFileName, sixteen bytes with the terminator). A byte past ASCII reads as `?`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ProcessName {
+    bytes: [u8; NAME_ROOM],
+    length: u8,
+}
+
+/// A process name's room in bytes.
+pub const NAME_ROOM: usize = 15;
+
+impl ProcessName {
+    /// The name `name` gives, cut at its room.
+    pub fn new(name: &[u8]) -> Self {
+        let mut bytes = [0u8; NAME_ROOM];
+        let length = name.len().min(NAME_ROOM);
+        for (out, &byte) in bytes.iter_mut().zip(&name[..length]) {
+            *out = if byte.is_ascii() && byte != 0 {
+                byte
+            } else {
+                b'?'
+            };
+        }
+        ProcessName {
+            bytes,
+            length: length as u8,
+        }
+    }
+
+    /// The stem of the file name `file_name`: what precedes its first dot.
+    pub fn of_file(file_name: &[u8]) -> Self {
+        let stem = file_name
+            .iter()
+            .position(|&byte| byte == b'.')
+            .map_or(file_name, |dot| &file_name[..dot]);
+        Self::new(stem)
+    }
+
+    /// The name, as text.
+    pub fn as_str(&self) -> &str {
+        core::str::from_utf8(&self.bytes[..self.length as usize]).unwrap_or("?")
+    }
 }
 
 /// A process record's parts, borrowed apart (see [`Process::parts_mut`]).
@@ -160,8 +214,8 @@ const _: () = assert!(core::mem::offset_of!(Process, sched) == 0);
 
 impl Process {
     /// The process's name.
-    pub fn name(&self) -> &'static str {
-        self.name
+    pub fn name(&self) -> &str {
+        self.name.as_str()
     }
 
     /// The process's client id.
@@ -176,8 +230,6 @@ impl Process {
 
     /// Record the client id of the process that created this one (its creator sets it, once the
     /// record is written).
-    // Process creation by another process (NtCreateProcess) is its caller.
-    #[allow(dead_code)]
     pub fn set_parent_id(&mut self, parent_id: u32) {
         self.parent_id = parent_id;
     }
@@ -195,6 +247,18 @@ impl Process {
     /// The console handles (the console server serves them).
     pub fn console_mut(&mut self) -> &mut rtl::console::Handles {
         &mut self.console
+    }
+
+    /// Whether the process is ending: its end is held for threads finishing a critical region, or
+    /// under way with none of its threads running it. It takes no new thread then.
+    pub fn terminating(&self) -> bool {
+        self.ending || self.handed_end.is_some()
+    }
+
+    /// Whether the process has a main thread: a boot's program from its start, a process another
+    /// created (NtCreateProcess) from its first thread's creation on.
+    pub fn has_main_thread(&self) -> bool {
+        self.ordinals.has_main()
     }
 
     /// The process's connection to win32k, once its first win32k service made it.
@@ -272,15 +336,21 @@ impl Process {
         true
     }
 
-    /// Release what one closed handle named.
+    /// Release what one closed handle named. A process's last handle closing ends the process if
+    /// it never had a thread (see [`threads::forsake_if_abandoned`]).
     fn release_entry(&mut self, entry: crate::ob::Entry) {
         match entry.target {
             #[cfg(target_arch = "x86")]
-            crate::ob::Target::Object(id) => crate::ob::directory().handle_closed(
-                id,
-                crate::sched::idle::dispatcher(),
-                |followup| self.finish(followup),
-            ),
+            crate::ob::Target::Object(id) => {
+                crate::ob::directory().handle_closed(
+                    id,
+                    crate::sched::idle::dispatcher(),
+                    |followup| self.finish(followup),
+                );
+                if id.kind == crate::ob::ObjectType::Process {
+                    threads::forsake_if_abandoned(id);
+                }
+            }
             #[cfg(not(target_arch = "x86"))]
             crate::ob::Target::Object(_) => {}
         }
@@ -330,6 +400,24 @@ impl Process {
         }
         self.handles
             .insert(crate::ob::Entry::object(id, access, inherit))
+    }
+
+    /// Take into this process's table, a fresh one, every inheritable handle of `parent`'s, each at
+    /// its own value with its access and inheritance — the documented inheritance of a process
+    /// created with InheritObjectTable (CreateProcess's bInheritHandles) — each object counting its
+    /// new handle; and the parent's console handles, which the console server hands an inheriting
+    /// child as Windows 2000's does. Returns how many handles were taken.
+    #[cfg(target_arch = "x86")]
+    pub fn inherit_handles(&mut self, parent: &Process) -> usize {
+        let directory = crate::ob::directory();
+        self.console = parent.console;
+        self.handles.inherit_from(&parent.handles, |entry| {
+            // A handle names a live object (it holds it), so the count always takes.
+            entry.inherit
+                && entry
+                    .object_id()
+                    .is_some_and(|id| directory.handle_opened(id))
+        })
     }
 
     /// Every thread of this process that has a TEB, as (ordinal, TEB address): the main thread at
@@ -387,24 +475,17 @@ impl Process {
 
 #[cfg(target_arch = "x86")]
 impl Process {
-    /// Create the process: a fresh address space with the record built at its final address in the
-    /// pool, then its main thread taking the system's lowest free gate-stack slot, the fixed TEB
-    /// page, and the process's scheduling data. The address space is not live: the caller attaches
-    /// to the process ([`Process::attach`]) to map its user pages, each inside one of its regions.
-    /// `leg` is the boot's program the process runs as (none for a child). Returns the record for
-    /// the caller's setup (the loader's), which threads it through.
+    /// Create a process with no thread: a fresh address space with the record built at its final
+    /// address in the pool, named `name`, running as leg `leg` (none for a child), its scheduling
+    /// record's thread list closed. The address space is not live: the caller attaches to the
+    /// process ([`Process::attach`]) to map its user pages, each inside one of its regions.
     ///
-    /// STATUS_INSUFFICIENT_RESOURCES when a process record, a gate-stack slot or a thread record is
-    /// not to be had (Windows 2000's answer to a full table or an exhausted kernel stack). A
-    /// refusal leaves nothing behind: what was taken before it — the address space, the process
-    /// object and its record, the slot — is given back, in the reverse order.
-    // The record is the pool's, not borrowed from `name` (see `pool::create`).
-    #[allow(clippy::mut_from_ref)]
-    pub fn start(
-        name: &'static str,
+    /// STATUS_INSUFFICIENT_RESOURCES when no process record is to be had (Windows 2000's answer to
+    /// a full table); the fresh directory is given back then.
+    pub fn create(
+        name: ProcessName,
         leg: Option<u32>,
     ) -> Result<&'static mut Process, crate::nt::call::Status> {
-        use crate::nt::object::STATUS_INSUFFICIENT_RESOURCES;
         let dir_phys = paging::create_address_space();
         let process = match pool::create(dir_phys, name, leg) {
             Ok(process) => process,
@@ -413,10 +494,29 @@ impl Process {
                 return Err(status);
             }
         };
-
         // The scheduling record's thread-list sentinel closes now that the record is at its final
         // address.
         process.sched.init();
+        Ok(process)
+    }
+
+    /// Create a boot's program's process (see [`Process::create`]), then its main thread taking
+    /// the system's lowest free gate-stack slot, the fixed TEB page, and the process's scheduling
+    /// data. `leg` is the boot's program the process runs as. Returns the record for the caller's
+    /// setup (the loader's), which threads it through.
+    ///
+    /// STATUS_INSUFFICIENT_RESOURCES when a process record, a gate-stack slot or a thread record is
+    /// not to be had (Windows 2000's answer to a full table or an exhausted kernel stack). A
+    /// refusal leaves nothing behind: what was taken before it — the address space, the process
+    /// object and its record, the slot — is given back, in the reverse order.
+    // The record is the pool's, not borrowed from `name`.
+    #[allow(clippy::mut_from_ref)]
+    pub fn start(
+        name: &str,
+        leg: Option<u32>,
+    ) -> Result<&'static mut Process, crate::nt::call::Status> {
+        use crate::nt::object::STATUS_INSUFFICIENT_RESOURCES;
+        let process = Process::create(ProcessName::new(name.as_bytes()), leg)?;
 
         // The main thread's gate stack, taken before its record (as a created thread's is): a
         // release undoes it when the record is not to be had, and nothing is attached before both
@@ -435,8 +535,8 @@ impl Process {
             process.abandon();
             return Err(STATUS_INSUFFICIENT_RESOURCES);
         };
-        process.main_thread = id.index;
-        process.ordinals.hold_main(id);
+        // Its stack is a system region, not a reservation of its own.
+        process.hold_main_thread(id, 0);
         let thread: *mut crate::sched::thread::Thread = directory.threads.record(id.index);
         // SAFETY: the record is the pool's (static, its final address) and nothing else reaches it.
         unsafe { *thread = crate::sched::thread::Thread::empty() };
@@ -465,6 +565,30 @@ impl Process {
         let dir_phys = self.dir_phys();
         release_record(self);
         free_directory(dir_phys);
+    }
+
+    /// Undo a creation refused after the process's address space was built — a process with no
+    /// thread and no handle to it — at once, as its teardown would: its handles (inherited ones)
+    /// close, its views and its address space go, then its own reference on its object, which
+    /// takes the object and the record with it. Runs detached from it: the directory goes here.
+    pub fn discard(&mut self) {
+        assert!(
+            self.sched.stack_count() == 0 && !self.has_main_thread(),
+            "a discarded process never had a thread"
+        );
+        self.release_handles();
+        release_address_space_of(self);
+        self.torn_down = true;
+        release_record(self);
+    }
+
+    /// Record the process's main thread: `id` its object, holding ordinal 0 over the stack
+    /// reserved at `stack` (zero: a system region, a boot's program's). A boot's program's is made
+    /// with the process; a process another process created has its first thread for it (see
+    /// [`threads::create`]).
+    fn hold_main_thread(&mut self, id: crate::ob::ObjectId, stack: u32) {
+        self.main_thread = id.index;
+        self.ordinals.hold_main(id, stack);
     }
 
     /// The process's main thread: its record in the object manager's thread pool.
@@ -530,7 +654,7 @@ fn free_directory(dir_phys: u32) {
 unsafe fn write_fresh(
     process: *mut Process,
     dir_phys: u32,
-    name: &'static str,
+    name: ProcessName,
     leg: Option<u32>,
     object: crate::ob::ObjectId,
 ) {
@@ -557,6 +681,7 @@ unsafe fn write_fresh(
         objects::SyncObjects::write_empty(addr_of_mut!((*process).objects));
         addr_of_mut!((*process).end).write(None);
         addr_of_mut!((*process).handed_end).write(None);
+        addr_of_mut!((*process).ending).write(false);
         addr_of_mut!((*process).torn_down).write(false);
     }
 }
@@ -803,7 +928,7 @@ mod tests {
     fn record_at(dir: u32) -> Process {
         Process {
             sched: SchedProcess::new(dir, 8),
-            name: "fixture",
+            name: ProcessName::new(b"fixture"),
             id: FIRST_CLIENT_ID,
             parent_id: 0,
             leg: None,
@@ -823,12 +948,37 @@ mod tests {
             objects: objects::SyncObjects::empty(),
             end: None,
             handed_end: None,
+            ending: false,
             torn_down: false,
         }
     }
 
     fn fresh_process() -> Box<Process> {
         Box::new(record_at(0x0090_0000))
+    }
+
+    /// A process's name: its image's file name without the extension, cut at fifteen bytes (the
+    /// image name Windows keeps in a process), a byte past ASCII as `?`.
+    #[test]
+    fn a_process_is_named_by_its_images_stem() {
+        assert_eq!(ProcessName::of_file(b"spawnkid.exe").as_str(), "spawnkid");
+        assert_eq!(ProcessName::of_file(b"kid copy.exe").as_str(), "kid copy");
+        assert_eq!(ProcessName::of_file(b"KIDCOPY").as_str(), "KIDCOPY");
+        assert_eq!(ProcessName::of_file(b"a.b.exe").as_str(), "a");
+        assert_eq!(
+            ProcessName::of_file(b"averyveryverylongname.exe").as_str(),
+            "averyveryverylo"
+        );
+        assert_eq!(ProcessName::new(b"caf\xe9").as_str(), "caf?");
+        assert_eq!(ProcessName::new(b"").as_str(), "");
+    }
+
+    /// A fresh record: no end under way, no main thread yet.
+    #[test]
+    fn a_fresh_process_is_not_ending() {
+        let process = fresh_process();
+        assert!(!process.terminating());
+        assert!(!process.has_main_thread());
     }
 
     /// Client ids are NT's: never 0 or 4 (the System process), stepping by four, one space for

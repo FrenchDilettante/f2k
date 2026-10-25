@@ -56,16 +56,22 @@ impl Ordinals {
         }
     }
 
-    /// The main thread `thread` takes ordinal 0, for the process's life (its stack is a system
-    /// region, not a reservation of its own).
+    /// The main thread `thread` takes ordinal 0, for the process's life, over the user-stack
+    /// reservation at `stack` (zero: a boot's program's, whose stack is a system region).
     ///
     /// # Panics
     ///
     /// The process already has a main thread.
-    pub fn hold_main(&mut self, thread: ObjectId) {
+    pub fn hold_main(&mut self, thread: ObjectId, stack: u32) {
         let slot = &mut self.slots[MAIN as usize];
         assert_eq!(*slot, Slot::Free, "a process has one main thread");
-        *slot = Slot::Held { thread, stack: 0 };
+        *slot = Slot::Held { thread, stack };
+    }
+
+    /// Whether the main thread's ordinal is taken: a process another process created has none
+    /// until its first thread.
+    pub fn has_main(&self) -> bool {
+        self.slots[MAIN as usize] != Slot::Free
     }
 
     /// The ordinal the next created thread takes: the lowest one never taken, or held by a
@@ -137,7 +143,7 @@ mod tests {
     #[test]
     fn the_main_thread_holds_ordinal_zero_and_created_threads_count_from_one() {
         let mut ordinals = Ordinals::empty();
-        ordinals.hold_main(thread(5, 0));
+        ordinals.hold_main(thread(5, 0), 0);
         assert_eq!(ordinals.holder(MAIN), Some(thread(5, 0)));
         assert_eq!(ordinals.tebs().collect::<Vec<_>>(), vec![(0, TEB_PAGE)]);
         for index in 1..ORDINALS as u16 {
@@ -153,13 +159,26 @@ mod tests {
         assert_eq!(ordinals.free(|_| false), Some(1));
     }
 
+    /// A process another process created has no main thread until its first thread takes
+    /// ordinal 0, over the stack its creator reserved; created threads still count from 1.
+    #[test]
+    fn a_created_process_has_no_main_thread_until_its_first() {
+        let mut ordinals = Ordinals::empty();
+        assert!(!ordinals.has_main());
+        assert_eq!(ordinals.tebs().count(), 0);
+        ordinals.hold_main(thread(3, 0), 0x0003_0000);
+        assert!(ordinals.has_main());
+        assert_eq!(ordinals.tebs().collect::<Vec<_>>(), vec![(0, TEB_PAGE)]);
+        assert_eq!(ordinals.free(|_| true), Some(1));
+    }
+
     /// One main thread per process.
     #[test]
     #[should_panic(expected = "a process has one main thread")]
     fn a_second_main_thread_is_refused() {
         let mut ordinals = Ordinals::empty();
-        ordinals.hold_main(thread(0, 0));
-        ordinals.hold_main(thread(1, 0));
+        ordinals.hold_main(thread(0, 0), 0);
+        ordinals.hold_main(thread(1, 0), 0);
     }
 
     /// Two processes whose threads' records interleave in the pool number their threads
@@ -169,8 +188,8 @@ mod tests {
     fn two_processes_number_their_threads_independently() {
         let (mut a, mut b) = (Ordinals::empty(), Ordinals::empty());
         // The pool hands out records 0, 1, 2, 3 ... alternately to the two processes.
-        a.hold_main(thread(0, 0));
-        b.hold_main(thread(1, 0));
+        a.hold_main(thread(0, 0), 0);
+        b.hold_main(thread(1, 0), 0);
         let mut records = 2..;
         let mut take = |ordinals: &mut Ordinals| {
             let ordinal = ordinals.free(|_| true).unwrap();
@@ -200,8 +219,8 @@ mod tests {
     #[test]
     fn a_reused_ordinal_releases_its_pages_in_its_own_process() {
         let (mut a, mut b) = (Ordinals::empty(), Ordinals::empty());
-        a.hold_main(thread(0, 0));
-        b.hold_main(thread(1, 0));
+        a.hold_main(thread(0, 0), 0);
+        b.hold_main(thread(1, 0), 0);
         let first = thread(2, 0);
         let ordinal = a.free(|_| true).unwrap();
         assert_eq!(a.hold(ordinal, first, 0x0060_0000), None);

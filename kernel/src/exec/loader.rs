@@ -1,4 +1,5 @@
-//! Kernel-side image loader: run a PE32 file from the boot volume as the user process.
+//! Kernel-side image loader: run a PE32 file from the boot volume as the user process, or build a
+//! process another process creates.
 //!
 //! [`load_path`] reads the program's file off the boot volume by its path into a raw-file staging
 //! buffer; [`load_image`] then parses it, checks that its preferred base places it clear of the
@@ -6,6 +7,16 @@
 //! image's pages at the preferred base with their final protections, and returns the entry point:
 //! the caller enters the process as its main thread, which the scheduler starts at kernel32's
 //! BaseProcessStartThunk ([`locate_process_start`] finds it at boot).
+//!
+//! [`load_section`] builds a process from an image section instead (NtCreateProcess, behind
+//! kernel32's CreateProcess): the same address space a boot's program starts with — ntdll, the
+//! shared data page, the TEB region, the PEB — with the image an image section's view (its file's
+//! one image segment, as every other process's view of it), and no thread. What a boot's program
+//! gets from the kernel besides — its process parameters, its environment block, its main
+//! thread's stack, its TEB — a created process gets from its creator, as on Windows 2000: kernel32
+//! allocates and writes the first three in it (the lowest free addresses, Windows 2000's
+//! 0x00010000, 0x00020000 and 0x00030000, which the address space leaves free), and its first
+//! thread's creation (NtCreateThread) maps its TEB.
 //!
 //! The kernel maps the image and ntdll alone, as Windows 2000's does, and snaps no import: ntdll's
 //! process initialization, the main thread's first user-mode work, loads every DLL the image
@@ -250,8 +261,8 @@ const DLL_STAGING_SIZE: usize = 0x4_0000;
 #[cfg(target_arch = "x86")]
 const DLL_PAGES: usize = DLL_STAGING_SIZE / crate::mem::paging::PAGE_SIZE as usize;
 
-/// The loader's stagings (see the module doc), and ntdll's pages: reached only through the loader
-/// lock ([`with_stagings`]).
+/// The loader's stagings (see the module doc): reached only through the loader lock
+/// ([`with_stagings`]).
 #[cfg(target_arch = "x86")]
 struct Stagings {
     /// The program's file as read off the volume.
@@ -260,10 +271,13 @@ struct Stagings {
     image: crate::mem::paging::Aligned<[u8; STAGING_SIZE]>,
     /// ntdll's image while its pages are made (the program's image is staged separately).
     dll: crate::mem::paging::Aligned<[u8; DLL_STAGING_SIZE]>,
-    /// ntdll's pages, made once at boot ([`prepare_system_dlls`]): its frames, page by page — the
-    /// kernel's, every process mapping them as one more holder.
-    ntdll_frames: [u32; DLL_PAGES],
 }
+
+/// ntdll's pages, made once at boot ([`prepare_system_dlls`]): its frames, page by page — the
+/// kernel's, every process mapping them as one more holder. Read, never changed, after the boot.
+#[cfg(target_arch = "x86")]
+static NTDLL_FRAMES: crate::global::Global<[u32; DLL_PAGES]> =
+    crate::global::Global::new([0; DLL_PAGES]);
 
 /// The loader lock and the stagings it holds.
 #[cfg(target_arch = "x86")]
@@ -286,7 +300,6 @@ static LOADER: LoaderLock = LoaderLock {
         file: crate::mem::paging::Aligned([0; FILE_STAGING_SIZE]),
         image: crate::mem::paging::Aligned([0; STAGING_SIZE]),
         dll: crate::mem::paging::Aligned([0; DLL_STAGING_SIZE]),
-        ntdll_frames: [0; DLL_PAGES],
     }),
 };
 
@@ -333,7 +346,6 @@ pub fn load_path(
         load_image(
             &stagings.file.0[..length],
             &mut stagings.image.0,
-            &stagings.ntdll_frames,
             path,
             name,
             command_line,
@@ -342,22 +354,17 @@ pub fn load_path(
     })
 }
 
-/// The system's fixed user regions, in address order, as (name, start, end): an image may cover
-/// none of them. Images map at their preferred base (nothing is relocated), so one that would land
-/// on a region is refused, not moved. The main thread's stack is its whole reservation (1 MiB,
-/// committed on demand below its two top pages, see `user::stack`).
-const SYSTEM_REGIONS: [(&str, u32, u32); 8] = {
-    use crate::user::{
-        PARAMS_PAGE,
-        PEB_PAGE,
-        TEB_PAGE,
-        THREAD_TEB_REGION,
-        USER_STACK_BASE,
-        USER_STACK_TOP,
-    };
+/// A fixed user region: its name, its start, its end.
+type SystemRegion = (&'static str, u32, u32);
+
+/// The fixed user regions the kernel makes for a boot's program alone, in address order: its
+/// environment block, its process parameters and its main thread's stack, the whole reservation
+/// (1 MiB, committed on demand below its two top pages, see `user::stack`). A process another
+/// process creates gets these from its creator (see the module notes): its address space leaves
+/// them free.
+const BOOT_REGIONS: [SystemRegion; 3] = {
+    use crate::user::{PARAMS_PAGE, USER_STACK_BASE, USER_STACK_TOP};
     const PAGE: u32 = crate::mem::paging::PAGE_SIZE;
-    const CHILDREN: u32 = crate::process::CHILD_THREADS as u32;
-    use crate::exec::modules::{NTDLL_BASE, NTDLL_SIZE};
     [
         (
             "environment block",
@@ -371,6 +378,17 @@ const SYSTEM_REGIONS: [(&str, u32, u32); 8] = {
             PARAMS_PAGE + crate::user::params::PAGES * PAGE,
         ),
         ("main thread stack", USER_STACK_BASE, USER_STACK_TOP),
+    ]
+};
+
+/// The fixed user regions every process's address space holds from its creation, in address
+/// order: ntdll's image, the TEB pages, the PEB, the shared data page.
+const PROCESS_REGIONS: [SystemRegion; 5] = {
+    use crate::exec::modules::{NTDLL_BASE, NTDLL_SIZE};
+    use crate::user::{PEB_PAGE, TEB_PAGE, THREAD_TEB_REGION};
+    const PAGE: u32 = crate::mem::paging::PAGE_SIZE;
+    const CHILDREN: u32 = crate::process::CHILD_THREADS as u32;
+    [
         ("ntdll.dll image", NTDLL_BASE, NTDLL_BASE + NTDLL_SIZE),
         (
             "child thread TEBs",
@@ -387,14 +405,20 @@ const SYSTEM_REGIONS: [(&str, u32, u32); 8] = {
     ]
 };
 
+/// A boot's program's fixed user regions, in address order, as (name, start, end): its image may
+/// cover none of them. Images map at their preferred base (nothing is relocated), so one that
+/// would land on a region is refused, not moved.
+fn system_regions() -> impl Iterator<Item = &'static SystemRegion> {
+    BOOT_REGIONS.iter().chain(PROCESS_REGIONS.iter())
+}
+
 /// The shared data page's name among the system regions (KUSER_SHARED_DATA, read-only).
 const SHARED_DATA_REGION: &str = "shared data";
 
 /// The first system region that an image of `size` bytes at `base` would cover, if any.
 pub fn system_region_overlapping(base: u32, size: u32) -> Option<&'static str> {
     let (start, end) = (base as u64, base as u64 + size as u64);
-    SYSTEM_REGIONS
-        .iter()
+    system_regions()
         .find(|&&(_, region_start, region_end)| {
             start < region_end as u64 && (region_start as u64) < end
         })
@@ -433,13 +457,13 @@ pub(crate) fn page_protect(image: &Image, page_rva: u32) -> u32 {
     }
 }
 
-/// Record the process's address space as a query reports it: the image of `image_size` bytes at
-/// `image_base` (one allocation, its pages carrying their sections' protections), and the areas the
-/// kernel maps itself, ntdll's image among them (a MEM_IMAGE allocation, as the program's
+/// Record a boot's program's address space as a query reports it: the image of `image_size` bytes
+/// at `image_base` (one allocation, its pages carrying their sections' protections), and the areas
+/// the kernel maps itself, ntdll's image among them (a MEM_IMAGE allocation, as the program's
 /// own). Every user page the kernel maps lies in one of these regions; the DLLs ntdll loads are
 /// views it maps itself.
 pub fn seed_regions(space: &mut crate::mem::vm::AddressSpace, image_base: u32, image_size: u32) {
-    use crate::mem::vm::{Kind, Region, PAGE_EXECUTE_WRITECOPY, PAGE_READWRITE};
+    use crate::mem::vm::{Kind, Region, PAGE_EXECUTE_WRITECOPY};
     space
         .insert(Region {
             base: image_base,
@@ -448,7 +472,24 @@ pub fn seed_regions(space: &mut crate::mem::vm::AddressSpace, image_base: u32, i
             kind: Kind::Image,
         })
         .expect("a fresh address space takes the image");
-    for &(name, start, end) in SYSTEM_REGIONS.iter() {
+    seed_system_regions(space, system_regions());
+}
+
+/// Record the areas every process's address space holds from its creation (see
+/// [`PROCESS_REGIONS`]): a process another process creates, whose image is a view and whose
+/// parameters, environment and stack its creator allocates.
+pub fn seed_process_regions(space: &mut crate::mem::vm::AddressSpace) {
+    seed_system_regions(space, PROCESS_REGIONS.iter());
+}
+
+/// Record `regions` in `space`, each its own allocation: ntdll's a MEM_IMAGE one, the shared data
+/// page read-only, the rest read-write.
+fn seed_system_regions<'a>(
+    space: &mut crate::mem::vm::AddressSpace,
+    regions: impl Iterator<Item = &'a SystemRegion>,
+) {
+    use crate::mem::vm::{Kind, Region, PAGE_EXECUTE_WRITECOPY, PAGE_READWRITE};
+    for &(name, start, end) in regions {
         let image = name.ends_with(".dll image");
         let alloc_protect = match name {
             _ if image => PAGE_EXECUTE_WRITECOPY,
@@ -484,13 +525,15 @@ pub fn prepare_system_dlls() {
         let staging = &mut stagings.dll.0[..image.size_of_image as usize];
         staging.fill(0);
         image.map_into(dll.file, staging);
-        for page in 0..image.size_of_image.div_ceil(PAGE_SIZE) {
-            let offset = (page * PAGE_SIZE) as usize;
-            let end = (offset + PAGE_SIZE as usize).min(staging.len());
-            let frame = paging::allocate_frame_phys();
-            paging::init_frame(frame, 0, &staging[offset..end]);
-            stagings.ntdll_frames[page as usize] = frame;
-        }
+        NTDLL_FRAMES.with(|frames| {
+            for page in 0..image.size_of_image.div_ceil(PAGE_SIZE) {
+                let offset = (page * PAGE_SIZE) as usize;
+                let end = (offset + PAGE_SIZE as usize).min(staging.len());
+                let frame = paging::allocate_frame_phys();
+                paging::init_frame(frame, 0, &staging[offset..end]);
+                frames[page as usize] = frame;
+            }
+        });
     });
 }
 
@@ -531,14 +574,24 @@ pub fn locate_process_start() {
     }
 }
 
+/// Map what every process's address space starts with into `space`, the live one, its regions
+/// seeded: ntdll ([`map_ntdll`]) and KUSER_SHARED_DATA (read-only, the kernel's page).
+#[cfg(target_arch = "x86")]
+fn map_system_pages(space: &mut crate::mem::vm::AddressSpace) {
+    // ntdll, the one DLL the kernel maps: the rest are its to load.
+    map_ntdll(space);
+    crate::user::shared::map_into(space);
+}
+
 /// Map ntdll into the current process at its base, each page with its sections' protections
-/// inside its MEM_IMAGE region (seeded with the system areas): the kernel's `frames`
+/// inside its MEM_IMAGE region (seeded with the system areas): the kernel's frames
 /// ([`prepare_system_dlls`]), shared — a page the process makes writable is copy-on-write, its
 /// writes its own (`mem::vm`).
 #[cfg(target_arch = "x86")]
-fn map_ntdll(space: &mut crate::mem::vm::AddressSpace, frames: &[u32; DLL_PAGES]) {
+fn map_ntdll(space: &mut crate::mem::vm::AddressSpace) {
     use crate::mem::paging::PAGE_SIZE;
     use crate::mem::vm::CurrentPages;
+    let frames = NTDLL_FRAMES.with(|frames| *frames);
     let image = crate::exec::modules::NTDLL.image();
     for page in 0..image.size_of_image.div_ceil(PAGE_SIZE) {
         let frame = frames[page as usize];
@@ -570,8 +623,8 @@ fn page_writable(image: &Image, page_rva: u32) -> bool {
     })
 }
 
-/// Load `file` as a new process — parse, stage into `staging`, create the process, map ntdll (its
-/// `ntdll_frames`), the image, stack, TEB, parameters and PEB pages — and return the process and
+/// Load `file` as a new process — parse, stage into `staging`, create the process, map ntdll, the
+/// image, stack, TEB, parameters and PEB pages — and return the process and
 /// its entry point for the main thread's ladder (its imports are ntdll's to load and snap, in user
 /// mode). The load runs attached to the new process ([`crate::process::Process::attach`]) and ends
 /// detached: the ladder goes onto the main thread's kernel stack, mapped in every address space
@@ -583,7 +636,6 @@ fn page_writable(image: &Image, page_rva: u32) -> bool {
 fn load_image(
     file: &[u8],
     staging: &mut [u8; STAGING_SIZE],
-    ntdll_frames: &[u32; DLL_PAGES],
     path: &[u8],
     name: &'static str,
     command_line: &[u8],
@@ -630,11 +682,8 @@ fn load_image(
     let space = process.vm();
     // The regions first: every user page the kernel maps lies in one.
     seed_regions(space, image.image_base, image.size_of_image);
-
-    // ntdll, the one DLL the kernel maps: the rest are its to load.
-    map_ntdll(space, ntdll_frames);
-    // KUSER_SHARED_DATA, read-only, the kernel's page.
-    crate::user::shared::map_into(space);
+    // ntdll and the shared data page, as every process has them.
+    map_system_pages(space);
 
     // Map the staged image at its preferred base, one frame per page, each with its sections'
     // protection (writable exactly where a mapped section is writable).
@@ -697,6 +746,55 @@ fn load_image(
         USER_STACK_TOP
     );
     Ok((process, image.entry_va()))
+}
+
+/// Build a process from the image segment `segment` names (NtCreateProcess's section; see the
+/// module notes): a new process named `name`, of no leg, with no thread, its address space built
+/// attached to it — every process's regions, ntdll and the shared data page, the image's view at
+/// its base, the PEB (no process parameters yet: its creator writes them). Returns the process,
+/// detached. A refusal leaves nothing behind: a process that cannot be created is the creation's
+/// refusal, and an image that cannot be mapped (its base taken by a system region:
+/// STATUS_CONFLICTING_ADDRESSES; its file unreadable: STATUS_IO_DEVICE_ERROR) takes its process
+/// back with it. The caller holds the segment (through its section) for the call.
+#[cfg(target_arch = "x86")]
+pub fn load_section(
+    segment: crate::ob::SegmentId,
+    name: crate::process::ProcessName,
+) -> Result<&'static mut crate::process::Process, Status> {
+    let process = crate::process::Process::create(name, None)?;
+    let built = {
+        let _attached = process.attach();
+        build_from_section(process.vm(), segment)
+    };
+    match built {
+        Ok(()) => Ok(process),
+        Err(status) => {
+            process.discard();
+            Err(status)
+        }
+    }
+}
+
+/// The address space of a process made from the image segment `segment` names, into `space`, the
+/// live one (see [`load_section`]).
+#[cfg(target_arch = "x86")]
+fn build_from_section(
+    space: &mut crate::mem::vm::AddressSpace,
+    segment: crate::ob::SegmentId,
+) -> Result<(), Status> {
+    seed_process_regions(space);
+    map_system_pages(space);
+    let image = crate::nt::section::map_image(space, &mut crate::mem::vm::CurrentPages, segment)?;
+    crate::user::teb::map_peb(
+        space,
+        &crate::user::teb::PebInit {
+            image_base: image.base,
+            parameters: 0,
+            subsystem: image.subsystem,
+            subsystem_version: image.subsystem_version,
+        },
+    );
+    Ok(())
 }
 
 #[cfg(test)]
@@ -786,7 +884,7 @@ mod tests {
                 (image.image_base, Kind::Image),
                 "{name}"
             );
-            for &(area, start, end) in SYSTEM_REGIONS.iter() {
+            for &(area, start, end) in system_regions() {
                 let region = space.region_at(start).expect(area);
                 assert_eq!((region.base, region.size), (start, end - start), "{area}");
             }
@@ -868,18 +966,64 @@ mod tests {
         assert!(!page_writable(&ret0, 0x4000));
     }
 
-    /// The system regions are ordered, disjoint, page-aligned and in user space.
+    /// The system regions are ordered, disjoint, page-aligned and in user space: a boot's
+    /// program's own below every process's.
     #[test]
     fn system_regions_are_ordered_and_disjoint() {
-        for (index, &(name, start, end)) in SYSTEM_REGIONS.iter().enumerate() {
+        let regions: Vec<_> = system_regions().copied().collect();
+        assert_eq!(regions.len(), BOOT_REGIONS.len() + PROCESS_REGIONS.len());
+        for (index, &(name, start, end)) in regions.iter().enumerate() {
             assert!(start < end, "{name}");
             assert_eq!(start % PAGE_SIZE, 0, "{name}");
             assert_eq!(end % PAGE_SIZE, 0, "{name}");
             assert!(end <= crate::exec::pe::USER_SPACE_END, "{name}");
-            if let Some(&(next, next_start, _)) = SYSTEM_REGIONS.get(index + 1) {
+            if let Some(&(next, next_start, _)) = regions.get(index + 1) {
                 assert!(end <= next_start, "{name} runs into {next}");
             }
         }
+    }
+
+    /// A process another process creates starts with every process's regions alone: the lowest
+    /// addresses are free, so its creator's first allocations land where Windows 2000's do — the
+    /// environment block at 0x00010000, the parameters at 0x00020000 (each under 64 KiB, one
+    /// allocation-granularity unit), then the main thread's 1 MiB stack from 0x00030000 (its base
+    /// 0x00130000), and the process heap, ntdll's first reservation, at 0x00130000 — the spawn
+    /// fixture's child layout. Its image is a view, reserved at its base past them.
+    #[test]
+    fn a_created_process_leaves_the_low_addresses_to_its_creator() {
+        use crate::mem::vm::{AddressSpace, Kind, MEM_FREE, PAGE_READWRITE};
+        let mut space = Box::new(AddressSpace::new());
+        seed_process_regions(&mut space);
+        let fake = NoPages;
+        for (area, address) in [
+            ("environment block", crate::user::params::ENVIRONMENT_BLOCK),
+            ("process parameters", crate::user::PARAMS_PAGE),
+            ("main thread stack", crate::user::USER_STACK_BASE),
+            ("image", 0x0040_0000),
+        ] {
+            assert_eq!(space.query(&fake, address).state, MEM_FREE, "{area}");
+        }
+        for &(area, start, end) in PROCESS_REGIONS.iter() {
+            let region = space.region_at(start).expect(area);
+            assert_eq!((region.base, region.size), (start, end - start), "{area}");
+        }
+        let mut reserve = |size| {
+            space
+                .reserve(None, size, PAGE_READWRITE, Kind::Private)
+                .unwrap()
+        };
+        assert_eq!(reserve(0x1000), 0x0001_0000, "the environment");
+        assert_eq!(reserve(0x1000), 0x0002_0000, "the parameters");
+        assert_eq!(reserve(0x10_0000), 0x0003_0000, "the stack");
+        assert_eq!(0x0003_0000 + 0x10_0000, crate::user::USER_STACK_TOP);
+        assert_eq!(reserve(0x10_0000), 0x0013_0000, "the process heap");
+        assert_eq!(
+            space
+                .reserve(Some(0x0040_0000), 0x6000, PAGE_READWRITE, Kind::Image)
+                .unwrap(),
+            0x0040_0000,
+            "the image's view"
+        );
     }
 
     /// Every corpus program places at its own preferred base, clear of the system regions.

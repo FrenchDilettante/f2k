@@ -4,12 +4,14 @@
 //!
 //! The block leads the parameters pages ([`crate::user::PARAMS_PAGE`]), normalized (its strings'
 //! buffers are absolute addresses), its strings after it on the same pages, UTF-16 as the
-//! platform's are. The service pack's name the PEB's CSDVersion points at shares the pages, past
-//! the block's strings. kernel32 makes its narrow command line (GetCommandLineA's) and startup
+//! platform's are. kernel32 makes its narrow command line (GetCommandLineA's) and startup
 //! information (GetStartupInfoA's) from the block, in user mode and on the process heap, as Windows
 //! 2000's does.
 //!
-//! The kernel writes only the process's starting values and never reads the block back. The
+//! The kernel writes a boot's program's block alone: a process another process creates
+//! (NtCreateProcess) gets its block, its environment and the PEB's pointer from its creator,
+//! kernel32's CreateProcess, as on Windows 2000. The kernel writes only the process's starting
+//! values and never reads the block back. The
 //! current directory starts as the image's own directory, its DOS path alone: ntdll's process
 //! start opens its handle, and it is ntdll's to change from then on (RtlSetCurrentDirectory_U) and
 //! to resolve relative paths against (its handle the root of the NT names it makes). The
@@ -94,10 +96,6 @@ pub const COMMAND_LINE_BUFFER: u32 = 0x1000;
 pub const COMMAND_LINE_ROOM: u32 = 0x800;
 /// The pages the block and its strings take.
 pub const PAGES: u32 = 2;
-/// The service pack's name the PEB's CSDVersion points at (GetVersionExA's szCSDVersion), past the
-/// block's strings on the second page.
-pub const CSD_VERSION_BUFFER: u32 = COMMAND_LINE_BUFFER + COMMAND_LINE_ROOM;
-pub const CSD_VERSION_TEXT: &[u8] = b"Service Pack 4";
 /// The environment block's starting region, which the block's Environment points at: the
 /// starting variables ([`ENVIRONMENT`]) at its start, user mode's from then on (ntdll's
 /// RtlSetEnvironmentVariable edits it in place, and moves it to a larger allocation when it
@@ -262,8 +260,8 @@ pub fn starting_directory(image_path: &[u8], out: &mut [u8; MODULE_ROOM]) -> usi
 /// Map the parameters pages at [`crate::user::PARAMS_PAGE`] into `space` (the current address
 /// space) and write the block: the command line, the image's Win32 path (from its volume path
 /// `module`), the current directory (the image's own), the standard handles and the environment
-/// block's address; the service pack's name. The environment block's region is mapped too, the
-/// starting variables written at its start.
+/// block's address. The environment block's region is mapped too, the starting variables written
+/// at its start.
 #[cfg(target_arch = "x86")]
 pub fn map(space: &mut crate::mem::vm::AddressSpace, command_line: &[u8], module: &[u8]) {
     use crate::mem::{paging::PAGE_SIZE, vm};
@@ -294,8 +292,6 @@ pub fn map(space: &mut crate::mem::vm::AddressSpace, command_line: &[u8], module
         base + CURRENT_DIRECTORY_BUFFER,
         &wide[..current_directory_bytes],
     );
-    let csd_version_bytes = widen(CSD_VERSION_TEXT, &mut wide);
-    let _ = write_user(base + CSD_VERSION_BUFFER, &wide[..csd_version_bytes]);
     let block = header(&Header {
         base,
         command_line: command_line_bytes as u32,
@@ -413,14 +409,13 @@ mod tests {
         assert_eq!(&out[..length], b"C:\\");
     }
 
-    /// The pages' contents do not overlap: the block and its strings and the service pack's name,
-    /// all on the two pages; the environment block's region lies below them, both at
-    /// allocation-granularity bases (Windows 2000's 0x00010000 and 0x00020000).
+    /// The pages' contents do not overlap: the block and its strings, all on the two pages; the
+    /// environment block's region lies below them, both at allocation-granularity bases (Windows
+    /// 2000's 0x00010000 and 0x00020000).
     #[test]
     fn the_pages_hold_everything_apart() {
         assert!(IMAGE_PATH_BUFFER + PATH_ROOM <= COMMAND_LINE_BUFFER);
-        assert!(COMMAND_LINE_BUFFER + COMMAND_LINE_ROOM <= CSD_VERSION_BUFFER);
-        assert!(CSD_VERSION_BUFFER + 2 * CSD_VERSION_TEXT.len() as u32 + 2 <= PAGES * 0x1000);
+        assert!(COMMAND_LINE_BUFFER + COMMAND_LINE_ROOM <= PAGES * 0x1000);
         assert!(ENVIRONMENT_BLOCK + ENVIRONMENT_BLOCK_PAGES * 0x1000 <= crate::user::PARAMS_PAGE);
         assert_eq!(
             ENVIRONMENT_BLOCK % 0x1_0000,

@@ -117,6 +117,43 @@ impl<E: Copy> HandleTable<E> {
         unsafe { HandleTable::write_empty(self) };
     }
 
+    /// Fill this table, a fresh one, with the entries of `parent` that `admit` takes, each in the
+    /// slot it holds there — so it has the same handle value — as a child process's table inherits
+    /// its creator's inheritable handles (the documented inheritance: same values, same access).
+    /// `admit` sees every entry once, in slot order, and counts what it takes. The slots left free
+    /// below the highest one taken go first to the table's next inserts, lowest first. Returns how
+    /// many entries were taken.
+    ///
+    /// # Panics
+    ///
+    /// The table is not fresh: a slot was already handed out.
+    pub fn inherit_from(
+        &mut self,
+        parent: &HandleTable<E>,
+        mut admit: impl FnMut(&E) -> bool,
+    ) -> usize {
+        assert!(
+            self.freed_top == 0 && self.next_fresh == 1,
+            "a table inherits only while fresh"
+        );
+        let mut taken = 0;
+        for index in 1..HANDLE_SLOTS {
+            if let Some(entry) = parent.slots[index].filter(|entry| admit(entry)) {
+                self.slots[index] = Some(entry);
+                self.next_fresh = index as u32 + 1;
+                taken += 1;
+            }
+        }
+        // The gaps below the highest slot taken, highest pushed first: the lowest is on top.
+        for index in (1..self.next_fresh as usize).rev() {
+            if self.slots[index].is_none() {
+                self.freed[self.freed_top] = index as u32;
+                self.freed_top += 1;
+            }
+        }
+        taken
+    }
+
     /// How many slots hold an entry `which` accepts.
     pub fn count(&self, which: impl Fn(&E) -> bool) -> usize {
         self.slots
@@ -213,6 +250,47 @@ mod tests {
         // Then fresh indices continue.
         assert_eq!(table.insert(event_entry()), h3 + 4);
         assert_eq!(table.live(), 4);
+    }
+
+    /// A child's table inherits its creator's inheritable handles at their own values, with their
+    /// access, and nothing else; its own handles then fill the gaps below them, lowest first,
+    /// before fresh slots past them (the spawn fixture's probe: placeholders left out of the
+    /// inheritance leave room below the inherited handle for the child's own).
+    #[test]
+    fn a_child_inherits_the_inheritable_handles_at_their_values() {
+        let mut parent: Box<HandleTable> = Box::new(HandleTable::empty());
+        let hole = parent.insert(event_entry());
+        let kept = parent.insert(file_entry(1, 0x8000_0000, true));
+        let left = parent.insert(file_entry(2, 0x4000_0000, false));
+        let last = parent.insert(file_entry(3, 0x0012_0089, true));
+        assert_eq!((hole, kept, left, last), (4, 8, 12, 16));
+        let mut child: Box<HandleTable> = Box::new(HandleTable::empty());
+        let mut seen = Vec::new();
+        let taken = child.inherit_from(&parent, |entry| {
+            seen.push(*entry);
+            entry.inherit
+        });
+        assert_eq!(taken, 2);
+        assert_eq!(seen.len(), 4, "every entry is offered once");
+        assert_eq!(child.lookup(kept), parent.lookup(kept));
+        assert_eq!(child.lookup(last), Some(file_entry(3, 0x0012_0089, true)));
+        assert_eq!(child.lookup(hole), None);
+        assert_eq!(child.lookup(left), None);
+        assert_eq!(child.live(), 2);
+        // The child's own: the gaps below, lowest first, then past the inherited ones.
+        assert_eq!(child.insert(event_entry()), hole);
+        assert_eq!(child.insert(event_entry()), left);
+        assert_eq!(child.insert(event_entry()), last + 4);
+    }
+
+    /// Nothing inheritable: the child's table is a fresh one.
+    #[test]
+    fn a_child_with_nothing_to_inherit_starts_fresh() {
+        let mut parent: Box<HandleTable> = Box::new(HandleTable::empty());
+        parent.insert(event_entry());
+        let mut child: Box<HandleTable> = Box::new(HandleTable::empty());
+        assert_eq!(child.inherit_from(&parent, |entry| entry.inherit), 0);
+        assert_eq!(child.insert(event_entry()), 4);
     }
 
     /// Lookup: the low two tag bits are ignored, a miss is a miss — zero, out-of-range, and the

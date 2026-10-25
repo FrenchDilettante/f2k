@@ -259,6 +259,10 @@ pub struct Thread {
     /// (see `user::syscall::copying_user_args`). Per thread, as a copy may be interrupted by
     /// another thread's run.
     pub(crate) copying_user_memory: bool,
+    /// Whether the thread has reached user mode: set as its startup leaves the kernel for its
+    /// first user instruction. A thread terminated before then ends with
+    /// STATUS_THREAD_IS_TERMINATING, as the spawn fixture's capture shows Windows 2000's do.
+    pub(crate) user_started: bool,
 }
 
 // The machine-state layout contract with the switch's assembly: on the 32-bit target the offsets it
@@ -352,6 +356,7 @@ impl Thread {
             multi_blocks: [WaitBlock::detached(); super::wait::MAXIMUM_WAIT_OBJECTS],
             exiting: false,
             copying_user_memory: false,
+            user_started: false,
         }
     }
 

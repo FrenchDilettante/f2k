@@ -1,17 +1,25 @@
-//! The process services: NtOpenProcess, NtTerminateProcess, and NtQueryInformationProcess and
-//! NtSetInformationProcess, the classes kernel32's process calls ask. kernel32's OpenProcess,
-//! ExitProcess, TerminateProcess, GetExitCodeProcess, GlobalMemoryStatus (the virtual-memory
-//! counters), Get/SetPriorityClass, SetProcessAffinityMask and SetErrorMode are Win32 code over
-//! these, as on Windows 2000.
+//! The process services: NtCreateProcess, NtOpenProcess, NtTerminateProcess, and
+//! NtQueryInformationProcess and NtSetInformationProcess, the classes kernel32's process calls ask.
+//! kernel32's CreateProcess, OpenProcess, ExitProcess, TerminateProcess, GetExitCodeProcess,
+//! GlobalMemoryStatus (the virtual-memory counters), Get/SetPriorityClass, SetProcessAffinityMask
+//! and SetErrorMode are Win32 code over these, as on Windows 2000.
 //!
-//! The information services reach any process the caller holds a handle to (see
+//! The services reach any process the caller holds a handle to (see
 //! [`super::object::reference_process`]), with the access MSDN's Win32 calls name:
+//! PROCESS_CREATE_PROCESS to create a child of it, PROCESS_TERMINATE to end it,
 //! PROCESS_QUERY_INFORMATION to query, PROCESS_SET_INFORMATION to set. A process that has ended
 //! still answers: its exit status from its object, its identity from its record (which lives as
-//! long as the object). Termination reaches the calling process alone: any other handle is
-//! STATUS_INVALID_HANDLE. The information's length is the class's structure's exactly, as Windows
+//! long as the object). The information's length is the class's structure's exactly, as Windows
 //! 2000 checks it (STATUS_INFO_LENGTH_MISMATCH), before the handle is.
+//!
+//! NtCreateProcess makes a process with no thread, as Windows 2000's does: its address space (see
+//! `exec::loader::load_section`), its handles inherited when asked, and a handle to it. kernel32's
+//! CreateProcess then writes its environment and parameters into it, makes its first thread's
+//! stack there, and creates that thread (NtCreateThread). F2K has no csrss to tell of the new
+//! process (CsrClientCallServer's BasepCreateProcess): the kernel keeps every process itself.
 
+#[cfg(not(target_arch = "x86"))]
+use super::call::STATUS_INVALID_HANDLE;
 use super::call::{
     Handle,
     NtCall,
@@ -19,7 +27,6 @@ use super::call::{
     Status,
     UserAddr,
     UserPtr,
-    STATUS_INVALID_HANDLE,
     STATUS_INVALID_PARAMETER,
     STATUS_SUCCESS,
 };
@@ -29,6 +36,9 @@ use super::memory::{STATUS_INFO_LENGTH_MISMATCH, STATUS_INVALID_INFO_CLASS};
 /// thread of the process.
 const STATUS_INVALID_PARAMETER_MIX: Status = Status(0xC000_0030);
 const STATUS_INVALID_CID: Status = Status(0xC000_000B);
+/// NtCreateProcess's refusal of a process with no section: its parent's address space copied (the
+/// fork the Native API documents) is not made here.
+const STATUS_NOT_IMPLEMENTED: Status = Status(0xC000_0002);
 
 /// PROCESSINFOCLASS: the classes F2K answers.
 /// ProcessBasicInformation: PROCESS_BASIC_INFORMATION (query).
@@ -142,8 +152,9 @@ fn size_of_class(class: u32) -> Option<u32> {
     }
 }
 
-/// The process a handle names, when it is the calling process (the services that reach no other:
-/// termination, a thread's creation).
+/// The process a handle names, when it is the calling process: host builds have no other process
+/// to reach.
+#[cfg(not(target_arch = "x86"))]
 pub(super) fn current(process: Handle) -> Result<(), Status> {
     if crate::nt::object::names_current_process(process.raw()) {
         Ok(())
@@ -231,11 +242,149 @@ pub fn open_process(
     }
 }
 
+/// The arguments NtCreateProcess checks before it reaches an object, in Windows 2000's order: the
+/// handle's slot probed (`slot_ok`: STATUS_ACCESS_VIOLATION otherwise), a parent process given
+/// (STATUS_INVALID_PARAMETER: only the system's own first process has none), and a section given —
+/// none asks for the parent's address space copied, which F2K does not make
+/// (STATUS_NOT_IMPLEMENTED).
+pub fn create_arguments(slot_ok: bool, parent: Handle, section: Handle) -> Result<(), Status> {
+    if !slot_ok {
+        return Err(super::call::STATUS_ACCESS_VIOLATION);
+    }
+    if parent.raw() == 0 {
+        return Err(STATUS_INVALID_PARAMETER);
+    }
+    if section.raw() == 0 {
+        return Err(STATUS_NOT_IMPLEMENTED);
+    }
+    Ok(())
+}
+
+/// NtCreateProcess(ProcessHandle, DesiredAccess, ObjectAttributes, ParentProcess,
+/// InheritObjectTable, SectionHandle, DebugPort, ExceptionPort): a new process, with no thread,
+/// whose image is the image section `SectionHandle` names (granting SECTION_MAP_EXECUTE: see
+/// [`super::section::image_segment_of`]; a data section is STATUS_SECTION_NOT_IMAGE), child of the
+/// process `ParentProcess` names (granting PROCESS_CREATE_PROCESS): its address space as every
+/// process's starts (see `exec::loader::load_section`), its parent's client id recorded
+/// (ProcessBasicInformation's InheritedFromUniqueProcessId), its parent's hard-error mode taken
+/// (CreateProcess's CREATE_DEFAULT_ERROR_MODE is kernel32's to undo); with InheritObjectTable (a
+/// BOOLEAN), every inheritable handle of the parent's at its own value in the child's table, and
+/// the parent's console handles (see [`crate::process::Process::inherit_handles`]) — without it,
+/// the console's standard handles alone, as a process of the console starts. Named
+/// `<image's file name, without its extension>` in its end report. A handle to it with
+/// DesiredAccess (its generic rights mapped, see [`super::object::process_access`]), inheritable as
+/// the attributes say (OBJ_INHERIT; a name is not looked at: process objects have none), goes into
+/// ProcessHandle. The ports have no meaning here (F2K has no LPC ports): they are not looked at.
+///
+/// The argument checks first (see [`create_arguments`]), then the parent's handle and the
+/// section's (their refusals; a parent that has ended or is ending is
+/// STATUS_PROCESS_IS_TERMINATING), a full handle table (STATUS_INSUFFICIENT_RESOURCES), then the
+/// process's creation's (see [`crate::exec::loader::load_section`]): every refusal leaves nothing
+/// behind. The creation is one critical region: the caller cannot end half-way through it.
+#[allow(clippy::too_many_arguments)]
+pub fn create_process(
+    call: &mut NtCall,
+    slot: UserPtr<u32>,
+    access: u32,
+    attributes: UserAddr,
+    parent: Handle,
+    inherit_object_table: u32,
+    section: Handle,
+    debug_port: Handle,
+    exception_port: Handle,
+) -> NtResult {
+    let slot_ok =
+        !slot.is_null() && crate::user::syscall::probe_user_range(slot.addr().raw(), 4).is_ok();
+    create_arguments(slot_ok, parent, section)?;
+    let _ = (debug_port, exception_port);
+    #[cfg(target_arch = "x86")]
+    {
+        use super::object::{
+            reference_process,
+            PROCESS_CREATE_PROCESS,
+            STATUS_INSUFFICIENT_RESOURCES,
+            STATUS_PROCESS_IS_TERMINATING,
+        };
+        let parent = reference_process(parent.raw(), PROCESS_CREATE_PROCESS)?;
+        if parent.ended() || parent.record().terminating() {
+            return Err(STATUS_PROCESS_IS_TERMINATING);
+        }
+        // The section, and through it the image segment, is held for the call.
+        let (_section, segment) = super::section::image_segment_of(section.raw())?;
+        let inherit = if attributes.is_null() {
+            false
+        } else {
+            let mut name = [0u16; super::attributes::MAX_NAME];
+            super::attributes::read(attributes, &mut name)?.inherit()
+        };
+        if call.process().handles().is_full() {
+            return Err(STATUS_INSUFFICIENT_RESOURCES);
+        }
+        crate::process::threads::critical_region(|| {
+            let name = image_name(segment);
+            let child = crate::exec::loader::load_section(segment, name)?;
+            let creator = parent.record();
+            child.set_parent_id(creator.id());
+            child.set_hard_error_mode(creator.hard_error_mode());
+            if inherit_object_table & 0xFF != 0 {
+                child.inherit_handles(creator);
+            }
+            let process = call.process();
+            let handle = crate::ob::open(
+                process,
+                child.object(),
+                super::object::process_access(access),
+                inherit,
+            );
+            if handle == 0 {
+                child.discard();
+                return Err(STATUS_INSUFFICIENT_RESOURCES);
+            }
+            // Probed above; a slot that went away meanwhile takes the process back: its one handle
+            // closes, which ends a process that never had a thread.
+            if slot.write(handle).is_err() {
+                process.close_handle(handle);
+                return Err(super::call::STATUS_ACCESS_VIOLATION);
+            }
+            Ok(STATUS_SUCCESS)
+        })
+    }
+    #[cfg(not(target_arch = "x86"))]
+    {
+        // Host builds have no process to make one of.
+        let _ = (call, access, attributes, inherit_object_table);
+        Err(STATUS_INVALID_HANDLE)
+    }
+}
+
+/// The name a process made from the image segment `segment` names reports by: its file's name in
+/// its directory, without its extension ("?" when the directory cannot be read).
+#[cfg(target_arch = "x86")]
+fn image_name(segment: crate::ob::SegmentId) -> crate::process::ProcessName {
+    let directory = crate::ob::directory();
+    let file_object = directory
+        .segment(segment)
+        .map(|segment| segment.file_object);
+    let file = file_object
+        .and_then(|file_object| directory.file(file_object))
+        .map(|object| crate::fs::file::records().get(object.record).file);
+    let mut name = [0u8; crate::fs::fat32::path::MAX_NAME];
+    match file.and_then(|file| crate::fs::io::entry_name(&file, &mut name)) {
+        Some(length) => crate::process::ProcessName::of_file(&name[..length]),
+        None => crate::process::ProcessName::new(b"?"),
+    }
+}
+
 /// NtTerminateProcess(ProcessHandle, ExitStatus): no handle terminates every other thread of the
 /// calling process with the status, the caller running on (ExitProcess's first step on Windows
 /// 2000, before the loader's shutdown); a handle naming the calling process ends it — its other
-/// threads first, then the caller — with the status as its exit code. Only the calling process is
-/// reachable: any other handle is STATUS_INVALID_HANDLE.
+/// threads first, then the caller — with the status as its exit code; a handle naming another
+/// process ends that one — every thread of it, then the process with the status as its exit code
+/// (see [`crate::process::threads::terminate_process`]: a process that never reached user mode
+/// ends with 0) — and returns. The handle must grant PROCESS_TERMINATE (see
+/// [`super::object::reference_process`]: STATUS_ACCESS_DENIED otherwise); a process that has ended,
+/// or whose end is under way, is STATUS_PROCESS_IS_TERMINATING (kernel32's TerminateProcess
+/// prints ERROR_ACCESS_DENIED for it in the spawn fixture).
 pub fn terminate_process(call: &mut NtCall, process: Handle, status: u32) -> NtResult {
     if process.raw() == 0 {
         #[cfg(target_arch = "x86")]
@@ -244,8 +393,27 @@ pub fn terminate_process(call: &mut NtCall, process: Handle, status: u32) -> NtR
         let _ = call;
         return Ok(STATUS_SUCCESS);
     }
-    current(process)?;
-    crate::user::process_exited(status)
+    #[cfg(target_arch = "x86")]
+    {
+        use super::object::{reference_process, PROCESS_TERMINATE, STATUS_PROCESS_IS_TERMINATING};
+        let _ = call;
+        let target = reference_process(process.raw(), PROCESS_TERMINATE)?;
+        if target.is_current() {
+            drop(target);
+            crate::user::process_exited(status)
+        }
+        if target.ended() || target.record().terminating() {
+            return Err(STATUS_PROCESS_IS_TERMINATING);
+        }
+        crate::process::threads::terminate_process(target.record(), status);
+        Ok(STATUS_SUCCESS)
+    }
+    #[cfg(not(target_arch = "x86"))]
+    {
+        // Host builds have no process table: the pseudo-handle alone names a process.
+        current(process)?;
+        crate::user::process_exited(status)
+    }
 }
 
 /// NtQueryInformationProcess: the basic information (the exit status from the process's object,
@@ -483,6 +651,46 @@ mod tests {
         assert_eq!(
             open_process(&mut call, slot, 0x400, attributes, client_id),
             Err(STATUS_INVALID_PARAMETER)
+        );
+    }
+
+    /// NtCreateProcess's own checks, in order: the handle's slot, then a parent (required: only
+    /// the system's first process has none), then a section (none asks for a fork, not made). On
+    /// the host, past them, no handle names anything.
+    #[test]
+    fn create_process_checks_its_arguments_in_order() {
+        use super::super::call::STATUS_ACCESS_VIOLATION;
+        let (parent, section) = (Handle(0xFFFF_FFFF), Handle(0x44));
+        assert_eq!(
+            create_arguments(false, Handle(0), Handle(0)),
+            Err(STATUS_ACCESS_VIOLATION)
+        );
+        assert_eq!(
+            create_arguments(true, Handle(0), section),
+            Err(STATUS_INVALID_PARAMETER)
+        );
+        assert_eq!(
+            create_arguments(true, parent, Handle(0)),
+            Err(STATUS_NOT_IMPLEMENTED)
+        );
+        assert_eq!(create_arguments(true, parent, section), Ok(()));
+        assert_eq!(rtl::status::dos_error(STATUS_NOT_IMPLEMENTED.0), 1);
+        // SAFETY: a trap frame is plain dwords; all zeros is a valid one.
+        let mut frame: crate::user::TrapFrame = unsafe { core::mem::zeroed() };
+        let mut call = NtCall::new(&mut frame);
+        assert_eq!(
+            create_process(
+                &mut call,
+                UserPtr::at(0),
+                0x1F_0FFF,
+                UserAddr(0),
+                parent,
+                1,
+                section,
+                Handle(0),
+                Handle(0)
+            ),
+            Err(STATUS_ACCESS_VIOLATION)
         );
     }
 

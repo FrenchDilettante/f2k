@@ -59,12 +59,9 @@ fn index_of(owner: *const crate::sched::process::SchedProcess) -> Option<u16> {
 /// STATUS_INSUFFICIENT_RESOURCES when every process record is in use (Windows 2000's answer to a
 /// full table); nothing is taken then, and the address space stays the caller's.
 #[cfg(target_arch = "x86")]
-// The record is the pool's, not borrowed from `name`: the lint reads the name's reference as the
-// input the returned one comes from.
-#[allow(clippy::mut_from_ref)]
 pub(super) fn create(
     dir_phys: u32,
-    name: &'static str,
+    name: super::ProcessName,
     leg: Option<u32>,
 ) -> Result<&'static mut Process, crate::nt::call::Status> {
     let object = crate::ob::directory()
