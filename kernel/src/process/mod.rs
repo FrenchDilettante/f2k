@@ -7,12 +7,12 @@
 //! first, so they are per-process by construction.
 //!
 //! The per-thread state split: the ring-0 gate stack (the thread's kernel stack, what the TSS
-//! `esp0` points into) is per-thread, a slot of the kernel stack region numbered system-wide
-//! ([`crate::mem::kstacks`]) and mapped in its process's directory, each slot's frames recorded by
-//! their owning thread. The thread records themselves are the object manager's ([`crate::ob`]),
-//! taken from its whole pool; the process numbers its own threads ([`ordinals`]), which places
-//! their TEB pages. The scheduling record leads the process at a pinned offset, so a thread's owner
-//! pointer resolves the directory base the context switch loads.
+//! `esp0` points into) is per-thread, a slot of the kernel stack region numbered system-wide and
+//! mapped in every address space ([`crate::mem::kstacks`]), each slot's frames recorded by their
+//! owning thread. The thread records themselves are the object manager's ([`crate::ob`]), taken
+//! from its whole pool; the process numbers its own threads ([`ordinals`]), which places their TEB
+//! pages. The scheduling record leads the process at a pinned offset, so a thread's owner pointer
+//! resolves the directory base the context switch loads.
 //!
 //! A process runs on its threads until its last thread ends — the process's end, which its waiters
 //! observe at once — and the idle thread tears it down later. The end and the teardown touch only
@@ -72,7 +72,7 @@ pub mod threads;
 #[cfg(target_arch = "x86")]
 use crate::mem::paging;
 
-/// A process: one address space, its threads' gate stacks mapped in it.
+/// A process: one address space and its threads.
 #[repr(C)]
 pub struct Process {
     /// The scheduling record, leading the process record: the context switch's assembly reads the
@@ -113,8 +113,6 @@ pub struct Process {
     /// The process's connection to win32k: its window station's and desktop's handles, made at its
     /// first win32k service (see `crate::win32k::winsta`); none until then.
     win32k: Option<crate::win32k::winsta::Connection>,
-    /// An exited thread's gate stack, not yet released (see [`DeadStack`]).
-    dead_stack: DeadStack,
     /// The user-APC records (the objects themselves are the object manager's).
     objects: objects::SyncObjects,
     /// Why the process ended, recorded by its last thread's exit; the idle thread's reap step
@@ -133,8 +131,6 @@ pub struct ProcessParts<'a> {
     pub vm: &'a mut crate::mem::vm::AddressSpace,
     /// The handle table.
     pub handles: &'a mut crate::sched::object::HandleTable,
-    /// An exited thread's gate stack, not yet released.
-    pub dead_stack: &'a mut DeadStack,
 }
 
 /// The default priority class: PROCESS_PRIORITY_CLASS_NORMAL.
@@ -148,33 +144,6 @@ pub const DEFAULT_HARD_ERROR_MODE: u32 = 1;
 /// object, so this bounds the live threads, not the threads created (the threads fixture's scale
 /// block keeps 64 children alive at once).
 pub const CHILD_THREADS: usize = 64;
-
-/// One gate stack: its slot index and the frames mapped in it.
-pub type GateStack = (u16, [u32; crate::mem::paging::GATE_STACK_PAGES]);
-
-/// The process's exited-but-unreleased gate stack. A thread's exit runs on its own gate stack, so
-/// it cannot unmap it: the exit parks it here, and code running on another stack releases it — the
-/// next exit (which gets the earlier stack back from [`DeadStack::park`]), the next spawn, or the
-/// teardown. At most one stack is ever parked: a park hands the previous one back.
-pub struct DeadStack(Option<GateStack>);
-
-impl DeadStack {
-    /// Nothing parked.
-    pub const fn empty() -> Self {
-        DeadStack(None)
-    }
-
-    /// Park `stack` (the exiting thread's own) and return the previously parked one, which the
-    /// caller can release: it is not the stack the caller runs on.
-    pub fn park(&mut self, stack: GateStack) -> Option<GateStack> {
-        self.0.replace(stack)
-    }
-
-    /// Take the parked stack for release, if any.
-    pub fn take(&mut self) -> Option<GateStack> {
-        self.0.take()
-    }
-}
 
 // The scheduling record leads the process record: a thread's owner pointer and the process's
 // directory base are one pinned chain.
@@ -247,7 +216,6 @@ impl Process {
         ProcessParts {
             vm: &mut self.vm,
             handles: &mut self.handles,
-            dead_stack: &mut self.dead_stack,
         }
     }
 
@@ -408,6 +376,12 @@ impl Process {
     pub fn start(name: &'static str, leg: Option<u32>) -> &'static mut Process {
         let dir_phys = paging::create_address_space();
         paging::activate_address_space(dir_phys);
+        // The new directory maps every thread's gate stack already, the other processes' threads'
+        // among them: the kernel stack region's tables are shared.
+        debug_assert!(
+            crate::mem::kstacks::every_stack_mapped_here(),
+            "a new address space misses another thread's gate stack"
+        );
 
         let process = pool::create(dir_phys, name, leg);
 
@@ -431,11 +405,8 @@ impl Process {
         // SAFETY: the process record is installed at its final address, and so is the thread
         // record.
         unsafe { (*thread).attach_to(&mut *sched) };
-        let slot = crate::mem::kstacks::allocate_slot()
+        let (slot, frames) = crate::mem::kstacks::create()
             .expect("a kernel stack slot is free for a new process's main thread");
-        // The slot pages map into the current address space, above the slot's unmapped guard
-        // page.
-        let frames = paging::map_gate_slot(slot as u32);
         // SAFETY: the main thread is not yet schedulable; nothing else reaches it.
         unsafe {
             (*thread).gate_slot = slot;
@@ -518,7 +489,6 @@ unsafe fn write_fresh(
         crate::sched::object::HandleTable::write_empty(addr_of_mut!((*process).handles));
         addr_of_mut!((*process).console).write(rtl::console::Handles::standard());
         addr_of_mut!((*process).win32k).write(None);
-        addr_of_mut!((*process).dead_stack).write(DeadStack::empty());
         objects::SyncObjects::write_empty(addr_of_mut!((*process).objects));
         addr_of_mut!((*process).end).write(None);
         addr_of_mut!((*process).handed_end).write(None);
@@ -536,15 +506,14 @@ unsafe fn write_fresh(
 
 /// Walk the process directory at `dir_phys` and release everything it owns exclusively: every
 /// committed PTE's data frame in the user windows — present, or committed but inaccessible (a
-/// no-access or guard page still names its frame) — and their page tables, plus the kernel stack
-/// region's tables. The gate slots' data frames are the threads' (released per thread, before this
-/// walk); the shared kernel half is never touched, and the directory frame is the caller's, last.
+/// no-access or guard page still names its frame) — and their page tables. The shared kernel half
+/// (the kernel stack region's tables among it, the gate stacks being the threads') is never
+/// touched, and the directory frame is the caller's, last.
 pub fn release_address_space(
     dir_phys: u32,
     read_entry: impl Fn(u32, usize) -> u32,
     mut release: impl FnMut(u32),
 ) {
-    use crate::mem::layout::KERNEL_STACKS;
     use crate::mem::paging::{KERNEL_HALF_START, PAGE_ADDR_MASK, PAGE_PRESENT, PT_ENTRIES};
     for window in 0..KERNEL_HALF_START {
         let pde = read_entry(dir_phys, window);
@@ -560,22 +529,12 @@ pub fn release_address_space(
         }
         release(table);
     }
-    // The kernel stack region (in the kernel half, per-process): its page-table frames are the
-    // directory entries; the slot data frames belong to the threads (released through the thread
-    // records).
-    for window in KERNEL_STACKS.first_entry()..KERNEL_STACKS.end_entry() {
-        let pde = read_entry(dir_phys, window);
-        if pde & PAGE_PRESENT != 0 {
-            release(pde & PAGE_ADDR_MASK);
-        }
-    }
 }
 
-/// Release every frame a finished process owns, in the teardown's order: per-thread first, then
-/// per-process. Every thread has ended by now and released its own gate stack from another stack —
-/// except the last one, whose exit could only park it: its frames go first (the mapping goes with
-/// the region's tables). Then the address space, and the directory frame last of all. Returns the
-/// parked stack's slot, for the caller to give back to the system's ledger.
+/// Release every frame a finished process owns: the address space, and the directory frame last of
+/// all. Its threads' gate stacks are not among them: every thread has ended by now, its stack
+/// released by the system's kernel stacks (the last exit's parked one, by the caller before this,
+/// unless another exit or creation already did).
 ///
 /// # Panics
 ///
@@ -584,7 +543,7 @@ pub fn release_process(
     process: &mut Process,
     read_entry: impl Fn(u32, usize) -> u32,
     mut release: impl FnMut(u32),
-) -> Option<u16> {
+) {
     assert_eq!(
         process.sched.stack_count(),
         0,
@@ -592,19 +551,9 @@ pub fn release_process(
     );
     let dir_phys = process.dir_phys();
 
-    // Per thread: the last exit's parked stack.
-    let parked = process.dead_stack.take();
-    if let Some((_, frames)) = parked {
-        for frame in frames {
-            release(frame);
-        }
-    }
-
-    // Per process: user data frames and their tables from the walk, the kernel stack region's
-    // tables from its directory entries, then the directory itself.
+    // User data frames and their tables from the walk, then the directory itself.
     release_address_space(dir_phys, read_entry, &mut release);
     release(dir_phys);
-    parked.map(|(slot, _)| slot)
 }
 
 /// The idle thread's reap step: tear the ended process down, then let the runner decide what
@@ -649,9 +598,11 @@ fn teardown(process: &'static mut Process, quiescent: bool) {
     release_record(process);
 }
 
-/// Step 4: the address space goes — every frame the process owns, per thread then per process (see
-/// [`release_process`]). The process is torn down in place: its record holds absolute addresses
-/// into itself.
+/// Step 4: the address space goes — every frame the process owns, per thread then per process: the
+/// parked gate stack first (the last exit's, or a later exit's in another process: whichever is
+/// parked, its owner off it for good, since this runs on the idle thread's boot stack), then the
+/// address space (see [`release_process`]). The process is
+/// torn down in place: its record holds absolute addresses into itself.
 #[cfg(target_arch = "x86")]
 fn release_address_space_of(process: &mut Process) {
     use crate::mem::frame::FrameState;
@@ -669,7 +620,8 @@ fn release_address_space_of(process: &mut Process) {
     for followup in gone[..count].iter().flatten() {
         process.finish(*followup);
     }
-    let parked_slot = release_process(
+    crate::mem::kstacks::release_parked();
+    release_process(
         process,
         |frame, index| paging::read_frame_word(frame, index),
         |frame_phys| {
@@ -682,9 +634,6 @@ fn release_address_space_of(process: &mut Process) {
             });
         },
     );
-    if let Some(slot) = parked_slot {
-        crate::mem::kstacks::release_slot(slot);
-    }
 }
 
 /// The object audit. With its handles closed, its waits returned and its threads ended, the
@@ -775,7 +724,7 @@ mod tests {
     use std::collections::HashMap;
 
     use super::*;
-    use crate::mem::kstacks::GateSlots;
+    use crate::mem::kstacks::{GateSlots, GateStack, KernelStacks};
     use crate::mem::layout::KERNEL_STACKS;
     use crate::mem::paging::{KERNEL_HALF_START, PAGE_PRESENT, PT_ENTRIES};
     use crate::mem::vm::{encode, PAGE_GUARD, PAGE_NOACCESS, PAGE_READWRITE};
@@ -805,7 +754,6 @@ mod tests {
             handles: crate::sched::object::HandleTable::empty(),
             console: rtl::console::Handles::standard(),
             win32k: None,
-            dead_stack: DeadStack::empty(),
             objects: objects::SyncObjects::empty(),
             end: None,
             handed_end: None,
@@ -827,16 +775,15 @@ mod tests {
         assert_eq!(record_at(0x0090_0000).id(), FIRST_CLIENT_ID);
     }
 
-    /// A fresh process: the scheduling record leads it (the directory base at the pinned offset),
-    /// and nothing is parked — the process owns no gate stack of its own; its threads do.
+    /// A fresh process: the scheduling record leads it (the directory base at the pinned offset);
+    /// the process owns no gate stack of its own, its threads do.
     #[test]
     fn fresh_process_state_starts_clean() {
-        let mut process = fresh_process();
+        let process = fresh_process();
         assert_eq!(process.name(), "fixture");
         assert_eq!(process.dir_phys(), 0x0090_0000);
         assert_eq!(process.sched.base_priority(), 8);
         assert_eq!(Thread::empty().gate_slot(), NO_GATE_SLOT);
-        assert!(process.dead_stack.take().is_none());
         assert_eq!(process.handles().live(), 0);
     }
 
@@ -847,7 +794,6 @@ mod tests {
         let parts = process.parts_mut();
         let handle = parts.handles.insert(event_entry());
         assert!(parts.vm.region_at(0x0040_0000).is_none());
-        assert!(parts.dead_stack.take().is_none());
         assert_eq!(process.handles().lookup(handle), Some(event_entry()));
     }
 
@@ -882,46 +828,6 @@ mod tests {
         );
     }
 
-    // --- The dead-stack handoff (slot reuse after a thread exit) -----------
-
-    /// An exit parks its own stack and hands back the one parked before it; a spawn takes whatever
-    /// is parked. At most one stack waits at any time.
-    #[test]
-    fn the_dead_stack_parks_one_and_hands_back_the_previous() {
-        let mut dead = DeadStack::empty();
-        assert_eq!(dead.take(), None);
-        assert_eq!(dead.park((1, [10, 11, 12, 13, 14, 15, 16, 17])), None);
-        assert_eq!(
-            dead.park((2, [20, 21, 22, 23, 24, 25, 26, 27])),
-            Some((1, [10, 11, 12, 13, 14, 15, 16, 17]))
-        );
-        assert_eq!(dead.take(), Some((2, [20, 21, 22, 23, 24, 25, 26, 27])));
-        assert_eq!(dead.take(), None);
-    }
-
-    /// The exit-then-spawn sequence the respawn fixture drives: a child's slot stays taken while
-    /// its stack is parked (its pages are still mapped), and the next spawn's release frees it
-    /// before the allocation, so the child after it gets the same slot back — unmapped first,
-    /// never double-mapped.
-    #[test]
-    fn a_spawn_after_an_exit_reuses_the_released_slot() {
-        let mut ledger = GateSlots::empty();
-        let mut dead = DeadStack::empty();
-        let main = ledger.allocate().unwrap();
-        let first = ledger.allocate().unwrap();
-        assert_eq!((main, first), (0, 1));
-
-        // The child exits: its stack is parked, its slot still taken.
-        assert_eq!(dead.park((first, [1, 2, 3, 4, 5, 6, 7, 8])), None);
-        assert!(ledger.is_taken(first));
-
-        // The next spawn releases the parked stack before it allocates.
-        let (slot, _) = dead.take().expect("the exited child's stack is parked");
-        ledger.release(slot);
-        assert_eq!(ledger.allocate(), Some(first));
-        assert_eq!(dead.take(), None);
-    }
-
     // --- Teardown accounting -------------------------------------------------
     //
     // Fake physical memory: frames as pages of 1024 words, released frames collected with counts.
@@ -952,17 +858,20 @@ mod tests {
             self.frames[&frame][index]
         }
 
-        /// Run the real teardown collection over the fake memory, in its order; returns the slot
-        /// it hands back to the system's ledger.
-        fn release(&mut self, process: &mut Process) -> Option<u16> {
+        /// Run the teardown's releases over the fake memory, in the target's order: the parked
+        /// gate stack first (the system's kernel stacks give its frames back), then the real
+        /// collection of the process's own frames.
+        fn tear_down(&mut self, stacks: &mut KernelStacks, process: &mut Process) {
+            if let Some((_, frames)) = stacks.take_parked() {
+                self.released.extend_from_slice(&frames);
+            }
             let mut released = core::mem::take(&mut self.released);
-            let slot = release_process(
+            release_process(
                 process,
                 |frame, index| self.read(frame, index),
                 |frame_phys| released.push(frame_phys),
             );
             self.released = released;
-            slot
         }
 
         /// How many times `frame` was released.
@@ -993,9 +902,12 @@ mod tests {
         0x00F8_1000,
     ];
 
-    /// A planted directory — two user tables' worth (a TEB page and an image page) and the kernel
-    /// stack region's first table — and a process whose main thread owns slot 0 and whose child
-    /// owns slot 1, both attached.
+    /// The kernel stack region's first table: the boot's, shared by every directory.
+    const SHARED_STACK_TABLE: u32 = 0x00C0_0000;
+
+    /// A planted directory — two user tables' worth (a TEB page and an image page), and the shared
+    /// kernel half with the kernel stack region's first table — and a process whose main thread
+    /// owns slot 0 and whose child owns slot 1, both attached.
     fn planted_process(
         dir: u32,
     ) -> (
@@ -1006,13 +918,15 @@ mod tests {
     ) {
         let mut mem = FakeMemory::new();
         let user_table = 0x00A0_0000;
-        let gate_table = 0x00C0_0000;
         mem.plant(
             dir,
             &[
                 (1, user_table | PAGE_PRESENT),
-                (KERNEL_STACKS.first_entry(), gate_table | PAGE_PRESENT),
                 // The shared kernel half: present entries that must not be walked or released.
+                (
+                    KERNEL_STACKS.first_entry(),
+                    SHARED_STACK_TABLE | PAGE_PRESENT,
+                ),
                 (KERNEL_HALF_START, 0x0010_0000 | PAGE_PRESENT),
                 (KERNEL_HALF_START + 1, dir | PAGE_PRESENT), // self-map
             ],
@@ -1028,7 +942,7 @@ mod tests {
                 (2, encode(0x00E2_0000, PAGE_READWRITE | PAGE_GUARD)),
             ],
         );
-        mem.plant(gate_table, &[]);
+        mem.plant(SHARED_STACK_TABLE, &[]);
 
         // Boxed to its final address before anything links into it: the thread list's entries are
         // absolute addresses, so the record must never move once attached.
@@ -1036,10 +950,10 @@ mod tests {
         process.sched.init();
         let sched = core::ptr::addr_of_mut!(process.sched);
         // The thread records are the object manager's on target; leaked here, at their final
-        // addresses all the same.
+        // addresses all the same. The system's ledger is the target's; a local one hands out the
+        // same slots here.
         let main = Box::leak(Box::new(Thread::empty()));
         let child = Box::leak(Box::new(Thread::empty()));
-        // The system's ledger is the target's; a local one hands out the same slots here.
         let mut slots = GateSlots::empty();
         // SAFETY: the process record and the threads are at their final addresses.
         unsafe {
@@ -1053,48 +967,40 @@ mod tests {
         (mem, process, main, child)
     }
 
-    /// Run `thread`'s exit as the exit path does, on a host dispatcher: park its own stack and
-    /// release whatever an earlier exit parked (returned, for the caller to account), then the
-    /// scheduler's termination.
-    fn exit(process: &mut Process, thread: &mut Thread) -> Option<GateStack> {
-        let released = process
-            .dead_stack
-            .park((thread.gate_slot, thread.gate_frames));
+    /// Run `thread`'s exit as the exit path does, on a host dispatcher: the scheduler's
+    /// termination, then its own stack parked with the system's kernel stacks, the one parked
+    /// before it handed back (returned, for the caller to account).
+    fn exit(stacks: &mut KernelStacks, thread: &mut Thread) -> Option<GateStack> {
         let dispatcher = Box::leak(Box::new(crate::sched::dispatcher::Dispatcher::zeroed()));
         dispatcher.init();
         dispatcher.enter(thread);
         dispatcher.terminate();
-        released
+        stacks.park((thread.gate_slot, thread.gate_frames))
     }
 
     /// Teardown after every thread has exited releases exactly the process's own frames, each
     /// exactly once: the last exit's parked stack, the walked user data frames (committed pages the
-    /// program may not touch included) and tables, the kernel stack region's table, and the
-    /// directory —
-    /// nothing from the shared kernel half. An earlier exit's stack is not teardown's: the next
-    /// exit released it. A thread's TEB page is released once, by the walk (the thread records
-    /// never hold user-half frames).
+    /// program may not touch included) and tables, and the directory — nothing from the shared
+    /// kernel half, the kernel stack region's table included. An earlier exit's stack is not
+    /// teardown's: the next exit released it. A thread's TEB page is released once, by the walk
+    /// (the thread records never hold user-half frames).
     #[test]
     fn teardown_releases_exactly_the_process_frames() {
         let dir = 0x0090_0000;
         let (mut mem, process, main, child) = planted_process(dir);
+        let mut stacks = KernelStacks::empty();
         // The child exits first, then the main thread — whose exit hands back the child's stack
         // for release from its own.
-        assert_eq!(exit(process, child), None);
-        assert_eq!(exit(process, main), Some((1, CHILD_STACK)));
+        assert_eq!(exit(&mut stacks, child), None);
+        assert_eq!(exit(&mut stacks, main), Some((1, CHILD_STACK)));
         assert_eq!(process.sched.stack_count(), 0);
 
-        assert_eq!(
-            mem.release(process),
-            Some(0),
-            "the main thread's slot goes back"
-        );
+        mem.tear_down(&mut stacks, process);
 
         let mut released = mem.released.clone();
         released.sort_unstable();
         let mut expected = vec![
             0x00A0_0000, // the user table
-            0x00C0_0000, // the kernel stack region's table
             0x00E0_0000, // the TEB/image data page
             0x00E1_0000, // the no-access page
             0x00E2_0000, // the guard page
@@ -1107,12 +1013,14 @@ mod tests {
         for frame in expected {
             assert_eq!(mem.count(frame), 1, "frame {frame:#x}");
         }
-        // The child's stack was the main thread's exit to release; the kernel half's targets stay.
+        // The child's stack was the main thread's exit to release; the kernel half's tables and
+        // targets stay.
         for frame in CHILD_STACK {
             assert_eq!(mem.count(frame), 0);
         }
+        assert_eq!(mem.count(SHARED_STACK_TABLE), 0);
         assert_eq!(mem.count(0x0010_0000), 0);
-        assert_eq!(process.dead_stack.take(), None);
+        assert_eq!(stacks.take_parked(), None);
     }
 
     /// The teardown's order: per thread first (the parked stack), then per process (the
@@ -1121,10 +1029,11 @@ mod tests {
     fn teardown_releases_per_thread_then_per_process() {
         let dir = 0x0090_0000;
         let (mut mem, process, main, child) = planted_process(dir);
-        exit(process, child);
-        exit(process, main);
+        let mut stacks = KernelStacks::empty();
+        exit(&mut stacks, child);
+        exit(&mut stacks, main);
 
-        mem.release(process);
+        mem.tear_down(&mut stacks, process);
         let released = &mem.released;
         assert_eq!(
             &released[..MAIN_STACK.len()],
@@ -1132,7 +1041,38 @@ mod tests {
             "the parked stack first"
         );
         assert_eq!(released.last(), Some(&dir), "the directory last");
-        assert_eq!(released.len(), MAIN_STACK.len() + 5 + 1);
+        assert_eq!(released.len(), MAIN_STACK.len() + 4 + 1);
+    }
+
+    /// One parked stack serves the system: a process's last exit parks its stack, another
+    /// process's thread exiting before the teardown releases it (handed back by its own park), and
+    /// the teardown releases whatever is parked then — that other thread's stack, its owner off it
+    /// for good. Every stack is released once, the process's own frames by the walk.
+    #[test]
+    fn a_teardown_releases_whatever_stack_is_parked() {
+        let dir = 0x0090_0000;
+        let (mut mem, process, main, child) = planted_process(dir);
+        let mut stacks = KernelStacks::empty();
+        assert_eq!(exit(&mut stacks, child), None);
+        assert_eq!(exit(&mut stacks, main), Some((1, CHILD_STACK)));
+
+        // A thread of another process (slot 2) exits before the teardown runs.
+        let other_process = Box::leak(Box::new(record_at(0x0095_0000)));
+        other_process.sched.init();
+        let other = Box::leak(Box::new(Thread::empty()));
+        // SAFETY: the process record and the thread are at their final addresses.
+        unsafe { other.attach_to(&mut other_process.sched) };
+        other.gate_slot = 2;
+        other.gate_frames = [0x00D0_0000; crate::mem::paging::GATE_STACK_PAGES];
+        assert_eq!(exit(&mut stacks, other), Some((0, MAIN_STACK)));
+
+        mem.tear_down(&mut stacks, process);
+        assert_eq!(mem.count(0x00D0_0000), crate::mem::paging::GATE_STACK_PAGES);
+        for frame in MAIN_STACK {
+            assert_eq!(mem.count(frame), 0, "released by the other thread's exit");
+        }
+        assert_eq!(mem.count(dir), 1);
+        assert_eq!(stacks.take_parked(), None);
     }
 
     /// Teardown never precedes the last thread's end: a process with a thread still attached is
@@ -1142,12 +1082,13 @@ mod tests {
     fn teardown_refuses_a_process_with_attached_threads() {
         let dir = 0x0090_0000;
         let (mut mem, process, _main, child) = planted_process(dir);
-        exit(process, child);
-        mem.release(process);
+        let mut stacks = KernelStacks::empty();
+        exit(&mut stacks, child);
+        mem.tear_down(&mut stacks, process);
     }
 
     /// The walk's user range ends below the kernel stack region: the region's entries are in the
-    /// kernel half, their tables released from the directory entries, never by scanning.
+    /// shared kernel half, which the walk never reaches.
     #[test]
     fn the_kernel_stack_region_sits_in_the_kernel_half() {
         assert!(KERNEL_STACKS.first_entry() >= KERNEL_HALF_START);

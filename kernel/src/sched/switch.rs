@@ -9,10 +9,12 @@
 //! it zeroes the registers, lowers the level, calls the system routine, and a user thread then
 //! enters ring 3 from its planted trap frame.
 //!
-//! Load-bearing discipline: `cli` spans the CR3 load and the `esp` switch — kernel stacks live in a
-//! per-process window, so the old stack dies at the CR3 load and the new one is not mapped until it
-//! happens. One resume tail (`popfd`; `ret`) serves both frame shapes: a saved frame returns into
-//! the resume label, a fresh frame's planted return address is the startup stub.
+//! Load-bearing discipline: `cli` spans everything from the old `esp`'s save to the new one's load
+//! — the `esp0`, the TEB descriptor, the CR3 load — so no interrupt lands on a half-installed
+//! thread. Kernel stacks are mapped in every address space (the kernel stack region's tables are
+//! shared), so both stacks stay mapped across the CR3 load. One resume tail (`popfd`; `ret`) serves
+//! both frame shapes: a saved frame returns into the resume label, a fresh frame's planted return
+//! address is the startup stub.
 
 // --- Pinned machine-state offsets -----------------------------------------
 //
@@ -121,7 +123,7 @@ core::arch::global_asm!(
     "    mov eax, [eax]",
     "    mov cr3, eax",
     "1:",
-    // The new stack is mapped in the CR3 just loaded; from here interrupts are safe again.
+    // The new thread is fully installed; from here interrupts are safe again.
     "    mov esp, [esi + {kstack_off}]",
     "    sti",
     "    popfd",

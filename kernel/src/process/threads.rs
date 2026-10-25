@@ -2,20 +2,20 @@
 //! thread-exit path.
 //!
 //! NtCreateThread behind kernel32's CreateThread: a child takes a thread record from the pool, a
-//! gate-stack slot from the system's ledger (mapped in its process's directory), an ordinal from
-//! its process (which places its own TEB page in the per-thread region), and a startup ladder the
+//! gate stack from the system's kernel stacks (mapped in every address space), an ordinal from its
+//! process (which places its own TEB page in the per-thread region), and a startup ladder the
 //! context switch enters — the same machinery the main thread's boot entry uses.
 //! Its user stack and initial context are its creator's (kernel32's BaseCreateStack and
 //! BaseInitializeContext, as on Windows 2000): it enters user mode at kernel32's
 //! BaseThreadStartThunk, which calls the start routine and hands its return value to ExitThread.
 //!
 //! The exit path, in its order: the process-ending service's or a fault's terminations of the
-//! process's other threads first (both end the whole process); then the per-thread teardown (the
-//! gate stack is parked for release from another stack, and an earlier exit's parked stack is
-//! released); then the thread object signals and its waiters wake, and the thread leaves the
-//! process list and is Terminated;
-//! then the last-thread check routes either to the thread's end or the process's — the last
-//! thread's exit is the process's exit, which the idle thread tears down.
+//! process's other threads first (both end the whole process); then the thread object signals and
+//! its waiters wake, and the thread leaves the process list and is Terminated; then the
+//! last-thread check routes either to the thread's end or the process's — the last thread's exit is
+//! the process's exit, which the idle thread tears down. Its gate stack, the one the exit runs on,
+//! is parked last, just before the switch away, for release from another stack (and the stack
+//! parked before it is released).
 //!
 //! A thread inside a critical region ([`critical_region`]) is not terminated where it stands: it
 //! may hold the boot volume with its drive mid-command. Its termination is deferred — it finishes
@@ -82,14 +82,12 @@ pub fn create(
 ) -> Option<(crate::ob::ObjectId, *mut Thread, u32)> {
     // An exited thread's stack is released before a slot is taken, so its slot is free to reuse
     // (unmapped, not merely marked free).
-    if let Some(dead) = process.dead_stack.take() {
-        release_gate_stack(dead);
-    }
-    // The gate-stack slot: this thread's kernel stack, taken first — it is the one step with
-    // nothing to undo when the record or the ordinal is not to be had.
-    let slot = crate::mem::kstacks::allocate_slot()?;
+    crate::mem::kstacks::release_parked();
+    // The gate stack: this thread's kernel stack, mapped in every address space, taken first — a
+    // release undoes it when the record or the ordinal is not to be had.
+    let (slot, frames) = crate::mem::kstacks::create()?;
     let Some((object, thread, ordinal)) = free_thread(process, stack.allocation_base) else {
-        crate::mem::kstacks::release_slot(slot);
+        crate::mem::kstacks::release((slot, frames));
         return None;
     };
 
@@ -99,8 +97,6 @@ pub fn create(
     // initialized.
     unsafe { thread.attach_to(&mut process.sched) };
 
-    // The slot's pages map into the current address space, above the slot's unmapped guard page.
-    let frames = paging::map_gate_slot(slot as u32);
     thread.gate_slot = slot;
     thread.gate_frames = frames;
     thread.initial_stack = paging::gate_slot_top(slot as u32);
@@ -239,20 +235,6 @@ fn end_thread(end: ThreadEnd) -> ! {
         }
     }
 
-    // The per-thread teardown first. The gate stack is the one this code runs on, so it cannot be
-    // unmapped here: it is parked as the process's dead stack, released by whoever next runs on
-    // another stack. An earlier exit's parked stack is released now (it is not this one).
-    {
-        // SAFETY: the running thread, live.
-        let thread = unsafe { &*current };
-        if let Some(previous) = process
-            .dead_stack
-            .park((thread.gate_slot, thread.gate_frames))
-        {
-            release_gate_stack(previous);
-        }
-    }
-
     // The process's end, step 2: every handle closes while this thread still runs, as CloseHandle
     // would — the objects go with their last references (a timer leaves the timer table, an owned
     // mutex its owner's list).
@@ -297,6 +279,16 @@ fn end_thread(end: ThreadEnd) -> ! {
         process.set_end(end);
     }
 
+    // The gate stack is the one this code runs on, so it cannot be unmapped here: it is parked,
+    // last, released by whoever next runs on another stack. The stack parked before it is released
+    // now (it is not this one).
+    {
+        // SAFETY: the running thread, live (its record is renewed only by a create, which no
+        // thread runs before the switch away).
+        let thread = unsafe { &*current };
+        crate::mem::kstacks::park((thread.gate_slot, thread.gate_frames));
+    }
+
     // The switch away, at the dispatch level; the exiting thread's timeline ends at the swap, so
     // its outstanding raises — this one included — are written off.
     let _previous = crate::interrupt::irql::state_mut().raise(crate::interrupt::irql::DISPATCH);
@@ -328,7 +320,7 @@ fn terminate_others(process: &mut Process, current: *mut Thread, status: u32) ->
         other.exit_status = status;
         run_down_timers(other);
         if dispatcher.request_termination(other) == Termination::Done {
-            release_gate_stack((other.gate_slot, other.gate_frames));
+            crate::mem::kstacks::release((other.gate_slot, other.gate_frames));
             // It never returns from whatever it was in: its wait's references and its own go.
             crate::ob::end_thread_references(other);
         }
@@ -367,7 +359,7 @@ pub enum TerminateError {
 /// running again — at once, or, inside a critical region, as it leaves the region (holding
 /// nothing). Its handle signals and its waiters wake; the process lives on (the caller is alive).
 /// The calling thread ends through [`exit_thread`] instead. The target's gate stack is released
-/// through the current directory, the caller's.
+/// from the shared tables, whatever address space is current.
 pub fn terminate_thread(target: &mut Thread, status: u32) -> Result<(), TerminateError> {
     if target.state() == ThreadState::Terminated || target.termination_pending() {
         return Err(TerminateError::Ended);
@@ -377,38 +369,18 @@ pub fn terminate_thread(target: &mut Thread, status: u32) -> Result<(), Terminat
     let dispatcher = crate::sched::idle::dispatcher();
     if dispatcher.request_termination(target) == Termination::Done {
         // Not the stack this code runs on: release it now.
-        release_gate_stack((target.gate_slot, target.gate_frames));
+        crate::mem::kstacks::release((target.gate_slot, target.gate_frames));
         // It never returns from whatever it was in: its wait's references and its own go.
         crate::ob::end_thread_references(target);
     }
     Ok(())
 }
 
-/// Release an exited thread's gate stack: unmap the slot's pages from the current process
-/// directory, return the frames to the frame database, and the slot to the system's ledger. Never
-/// the stack the processor runs on: a stack is parked by its own exit and released only from
-/// another stack.
-fn release_gate_stack((slot, frames): crate::process::GateStack) {
-    use crate::mem::frame::FrameState;
-    let mapped = paging::unmap_gate_slot(slot as u32);
-    debug_assert_eq!(
-        mapped, frames,
-        "the slot maps the frames its thread recorded"
-    );
-    crate::mem::kstacks::release_slot(slot);
-    for frame in frames {
-        crate::mem::bootmem::with_frame_db(|db| {
-            db.release(frame / paging::PAGE_SIZE, FrameState::Free);
-        });
-    }
-}
-
 /// Give `process`'s main thread its initial context `user` (see
 /// [`crate::user::main_thread_start`]): plant its startup ladder (the same frame shape a child
-/// gets), without readying it ([`ready_main_thread`] does). Part of the process's load: the ladder
-/// goes onto the thread's gate stack, which only the process's own directory maps, so that
-/// directory must be the live one — as it is from the process's creation until another address
-/// space is loaded.
+/// gets), without readying it ([`ready_main_thread`] does). Part of the process's load, in the
+/// process's own address space: the ladder goes onto the thread's gate stack (mapped in every
+/// address space).
 pub fn start_main_thread(process: &mut Process, user: crate::sched::startup::UserStart) {
     // The main thread's gate slot, TEB page and stack top were taken at process start; only the
     // ladder is missing.

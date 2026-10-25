@@ -147,9 +147,9 @@ pub const KERNEL_HALF_START: usize = (KERNEL_BASE >> 22) as usize;
 /// window's page *table*.
 pub const DIRECTORY_ENTRY_VA: u32 = SELF_MAP_VA + ((SELF_MAP_SLOT as u32) << 12);
 /// The ring-0 gate stacks' window: the kernel stack region ([`layout::KERNEL_STACKS`], entries
-/// 656-659), sub-allocated into per-thread slots numbered across the whole region (one ledger for
-/// the system, [`crate::mem::kstacks`]), each a guard page plus the 32 KiB stack. Slot 0's top is
-/// [`GATE_STACK_TOP`].
+/// 656-659), its tables made at boot and shared by every directory, sub-allocated into per-thread
+/// slots numbered across the whole region (one ledger for the system, [`crate::mem::kstacks`]),
+/// each a guard page plus the 32 KiB stack. Slot 0's top is [`GATE_STACK_TOP`].
 pub const GATE_STACK_WINDOW: u32 = layout::KERNEL_STACKS.start;
 /// Gate stack pages, one frame each (32 KiB): room for the file system's walks under the debug
 /// build's frames.
@@ -216,9 +216,52 @@ pub fn init_table_access() {
 #[cfg(target_arch = "x86")]
 static mut SCRATCH_TABLE: Aligned<[u32; PT_ENTRIES]> = Aligned([0; PT_ENTRIES]);
 
+/// Make the kernel stack region's page tables, once, at boot, after [`init_table_access`] and
+/// before the first process directory: zeroed frames installed in the boot directory, which every
+/// process directory inherits with the rest of the kernel half. The tables are then shared: a gate
+/// stack mapped in them ([`map_gate_slot`]) is mapped in every address space. They are never
+/// released.
+#[cfg(target_arch = "x86")]
+pub fn init_kernel_stack_tables() {
+    assert!(
+        !KERNEL_HALF_FROZEN.load(Ordering::Relaxed),
+        "the kernel stack tables made after the first process directory"
+    );
+    for window in layout::KERNEL_STACKS.first_entry()..layout::KERNEL_STACKS.end_entry() {
+        // Zeroed while still unreachable: no garbage entry may become walkable.
+        let table_phys = allocate_frame_phys();
+        init_frame(table_phys, 0, &[]);
+        install_kernel_table(window, table_phys);
+    }
+}
+
+/// Point the current directory's entry `window` at the page table `table_phys`: present, writable,
+/// supervisor, not global.
+///
+/// # Panics
+///
+/// The entry is already present.
+#[cfg(target_arch = "x86")]
+fn install_kernel_table(window: usize, table_phys: u32) {
+    assert_eq!(
+        kernel_pde(window) & PAGE_PRESENT,
+        0,
+        "kernel-half table already installed"
+    );
+    // SAFETY: the self-map window is live in every directory, and the entry stays on the
+    // directory's view page (`kernel_pde` checked the index); nothing maps through the entry
+    // before it is written. Volatile: the CPU sets accessed bits on directory entries.
+    unsafe {
+        ((DIRECTORY_ENTRY_VA + (window as u32) * 4) as *mut u32)
+            .write_volatile(table_phys | PAGE_PRESENT | PAGE_WRITE);
+    }
+}
+
 /// Set once the first process directory is assembled: from then on the kernel half is frozen, every
-/// directory holding its own copy of the kernel-half directory entries (see
-/// [`kernel_table_may_be_created`]).
+/// directory holding its own copy of the kernel-half directory entries. Nothing propagates a later
+/// one, so a table created afterwards would map its pages in one directory and leave them missing
+/// from the others: the kernel half's tables are all created at boot (the shared data page's, the
+/// kernel stack region's), and only mappings into existing tables come later.
 #[cfg(target_arch = "x86")]
 static KERNEL_HALF_FROZEN: AtomicBool = AtomicBool::new(false);
 
@@ -465,7 +508,8 @@ pub fn set_user_pte(vaddr: u32, entry: u32) {
 // --- Per-process address spaces --------------------------------------------
 //
 // A process owns a page-directory frame. Creation inherits the kernel half from the current
-// directory (the kernel window must stay mapped wherever CR3 points), zeroes the user half, points
+// directory (the kernel window and the kernel stacks must stay mapped wherever CR3 points: every
+// kernel-half table is shared by every directory), zeroes the user half, points
 // the self-map entry at the new directory itself, and installs the shared scratch table. The new
 // directory is built through the scratch window — its own self-map is unreachable until CR3 loads
 // it. Activation is a single CR3 load, which is also the full TLB flush (no F2K mapping is global,
@@ -474,11 +518,9 @@ pub fn set_user_pte(vaddr: u32, entry: u32) {
 /// Assemble a fresh process directory in `dir`: user half zeroed, kernel half inherited through
 /// `read_base_entry` (called for each entry in `[KERNEL_HALF_START, PT_ENTRIES)` of the base
 /// directory, which is only ever read), self-map entry pointing at the new directory's own frame
-/// `own_phys`, scratch entry at the shared scratch table `scratch_phys`.
-///
-/// The kernel stack region's entries are deliberately *not* inherited: each process maps its own
-/// threads' stacks there, in tables of its own, so the base's entries (whatever they map) must not
-/// leak into a new directory.
+/// `own_phys`, scratch entry at the shared scratch table `scratch_phys`. The kernel stack region's
+/// entries are inherited like the rest: its tables are shared, so every thread's gate stack is
+/// mapped in the new directory as in every other.
 ///
 /// Pure over the entries: the caller supplies how base entries are read (a volatile self-map read
 /// on target, a plain array read in tests).
@@ -498,20 +540,6 @@ pub fn assemble_process_directory(
     // kernel-only) and no global bit (every entry must drop out of the TLB when CR3 reloads).
     dir[SELF_MAP_SLOT] = own_phys | PAGE_PRESENT | PAGE_WRITE;
     dir[SCRATCH_SLOT] = scratch_phys | PAGE_PRESENT | PAGE_WRITE;
-    for entry in &mut dir[layout::KERNEL_STACKS.first_entry()..layout::KERNEL_STACKS.end_entry()] {
-        *entry = 0;
-    }
-}
-
-/// Whether a kernel-half table may be created for directory entry `window` once the kernel half is
-/// `frozen` (a process directory exists). Every process directory copies the kernel half's entries
-/// when it is assembled ([`assemble_process_directory`]), and nothing propagates a later one: a
-/// table created afterwards would map its pages in one directory and leave them missing from the
-/// others. So the kernel half's tables are all created at boot (the shared data page's, say);
-/// mappings into existing tables stay free. The kernel stack region alone is per-process, its
-/// tables each directory's own.
-pub const fn kernel_table_may_be_created(window: usize, frozen: bool) -> bool {
-    !frozen || layout::KERNEL_STACKS.holds_entry(window)
 }
 
 /// The value CR3 takes for a directory at `dir_phys`: the address bits only, so a sloppy caller's
@@ -585,14 +613,15 @@ pub fn activate_address_space(dir_phys: u32) {
 
 /// Map `vaddr` to `frame_phys` for the kernel only: present, writable, supervisor (no user bit —
 /// ring 3 must not reach these pages). The window's table is allocated on first use, like
-/// [`set_user_pte`]'s; the mapping lands in the current directory.
+/// [`set_user_pte`]'s, which only the boot may do; every kernel-half table is shared by every
+/// directory, so the mapping lands in all of them.
 ///
 /// # Panics
 ///
 /// Unaligned `vaddr`/`frame_phys`, `vaddr` outside the kernel half, `vaddr` in a window the
 /// kernel owns for other purposes (the static kernel image window, the self-map, the scratch
 /// window), or a window whose table would be created after the first process directory (see
-/// [`kernel_table_may_be_created`]).
+/// [`KERNEL_HALF_FROZEN`]).
 #[cfg(target_arch = "x86")]
 pub fn map_kernel_page(vaddr: u32, frame_phys: u32) {
     assert!(vaddr % PAGE_SIZE == 0, "kernel address not page-aligned");
@@ -618,12 +647,12 @@ pub fn map_kernel_page(vaddr: u32, frame_phys: u32) {
         let pde = (DIRECTORY_ENTRY_VA + (window as u32) * 4) as *mut u32;
         if pde.read_volatile() & PAGE_PRESENT == 0 {
             assert!(
-                kernel_table_may_be_created(window, KERNEL_HALF_FROZEN.load(Ordering::Relaxed)),
+                !KERNEL_HALF_FROZEN.load(Ordering::Relaxed),
                 "a kernel-half table created after the first process directory"
             );
             let table_phys = allocate_frame_phys();
             init_frame(table_phys, 0, &[]);
-            pde.write_volatile(table_phys | PAGE_PRESENT | PAGE_WRITE);
+            install_kernel_table(window, table_phys);
         }
         let table = (SELF_MAP_VA + ((window as u32) << 12)) as *mut u32;
         assert_eq!(
@@ -678,9 +707,11 @@ pub fn unmap_kernel_page(vaddr: u32) -> u32 {
     }
 }
 
-/// Unmap gate-stack slot `index`'s pages from the current address space: the inverse of
-/// [`map_gate_slot`]. Returns the frames that were mapped, for the owner to release. Never call it
-/// on the slot the processor is running on.
+/// Unmap gate-stack slot `index`'s pages from the shared tables, so from every address space: the
+/// inverse of [`map_gate_slot`]. Each page's TLB entry is flushed here; one cached under another
+/// directory goes with the CR3 load that switches back to it (one processor, and no F2K mapping is
+/// global). Returns the frames that were mapped, for the owner to release. Never call it on the
+/// slot the processor is running on.
 ///
 /// # Panics
 ///
@@ -699,18 +730,23 @@ pub fn unmap_gate_slot(index: u32) -> [u32; GATE_STACK_PAGES] {
     frames
 }
 
-/// Map a fresh gate-stack slot `index` into the current address space: one frame per page,
-/// supervisor-only, above the slot's unmapped guard page. Returns the frames for the owner thread
-/// to release at its exit.
+/// Map a fresh gate-stack slot `index` into the shared tables, so into every address space at once:
+/// one frame per page, supervisor-only, above the slot's unmapped guard page. Returns the frames
+/// for the owner thread to release at its exit.
 ///
 /// # Panics
 ///
-/// The index is past the region's capacity.
+/// The index is past the region's capacity, or the region's tables are not made yet
+/// ([`init_kernel_stack_tables`]).
 #[cfg(target_arch = "x86")]
 pub fn map_gate_slot(index: u32) -> [u32; GATE_STACK_PAGES] {
     assert!(
         (index as usize) < GATE_SLOT_CAPACITY,
         "gate-slot index past the region's capacity"
+    );
+    assert!(
+        kernel_stack_tables_installed(),
+        "a gate stack mapped before the kernel stack tables are made"
     );
     let base = gate_slot_base(index);
     let mut frames = [0u32; GATE_STACK_PAGES];
@@ -721,6 +757,49 @@ pub fn map_gate_slot(index: u32) -> [u32; GATE_STACK_PAGES] {
         *slot = frame;
     }
     frames
+}
+
+/// Whether the current directory holds every table of the kernel stack region.
+#[cfg(target_arch = "x86")]
+fn kernel_stack_tables_installed() -> bool {
+    (layout::KERNEL_STACKS.first_entry()..layout::KERNEL_STACKS.end_entry())
+        .all(|window| kernel_pde(window) & PAGE_PRESENT != 0)
+}
+
+/// Whether gate-stack slot `index` is mapped in the current directory as [`map_gate_slot`] leaves
+/// it: every stack page present, the guard page below them not.
+#[cfg(target_arch = "x86")]
+pub fn gate_slot_mapped(index: u32) -> bool {
+    let base = gate_slot_base(index);
+    let present = |vaddr: u32| kernel_pte(vaddr) & PAGE_PRESENT != 0;
+    !present(base) && (1..=GATE_STACK_PAGES as u32).all(|page| present(base + page * PAGE_SIZE))
+}
+
+/// The current directory's entry `window`, raw.
+#[cfg(target_arch = "x86")]
+fn kernel_pde(window: usize) -> u32 {
+    assert!(window < PT_ENTRIES, "directory index past the directory");
+    // SAFETY: the self-map window is live in every directory; the read stays on the directory's
+    // view page. Volatile: the CPU sets accessed bits on directory entries.
+    unsafe { ((DIRECTORY_ENTRY_VA + (window as u32) * 4) as *const u32).read_volatile() }
+}
+
+/// The current directory's page-table entry for kernel address `vaddr`, raw; 0 when its window has
+/// no table.
+#[cfg(target_arch = "x86")]
+fn kernel_pte(vaddr: u32) -> u32 {
+    let window = (vaddr >> 22) as usize;
+    if kernel_pde(window) & PAGE_PRESENT == 0 {
+        return 0;
+    }
+    let index = ((vaddr >> 12) & 0x3FF) as usize;
+    // SAFETY: the window's table is present, reached through the self-map, and the index is inside
+    // it. Volatile: the CPU sets accessed/dirty bits on table entries.
+    unsafe {
+        ((SELF_MAP_VA + ((window as u32) << 12)) as *const u32)
+            .add(index)
+            .read_volatile()
+    }
 }
 
 /// Read word `index` of `frame_phys` through the scratch window: the one-page alias of any frame,
@@ -862,9 +941,9 @@ mod tests {
         dir
     }
 
-    /// The kernel half is inherited wholesale except the two runtime slots and the kernel stack
-    /// region (per-process: never inherited); the user half starts zero no matter what the target
-    /// frame held before.
+    /// The kernel half is inherited wholesale except the two runtime slots, the kernel stack
+    /// region's shared tables included; the user half starts zero no matter what the target frame
+    /// held before.
     #[test]
     fn process_directory_inherits_the_kernel_half_and_zeroes_the_user_half() {
         let stacks = layout::KERNEL_STACKS;
@@ -880,11 +959,6 @@ mod tests {
 
         for i in 0..PT_ENTRIES {
             if i == SELF_MAP_SLOT || i == SCRATCH_SLOT {
-                continue;
-            }
-            if stacks.holds_entry(i) {
-                // Per-process: the base's entries must not leak in.
-                assert_eq!(dir[i], 0, "kernel stack entry {i} inherited");
                 continue;
             }
             let expected = if i < KERNEL_HALF_START { 0 } else { base[i] };
@@ -947,24 +1021,40 @@ mod tests {
         }
     }
 
-    /// The kernel half freezes with the first process directory: before it, any kernel window may
-    /// gain a table; after it, only the per-process kernel stack region's.
+    /// The kernel stack region's tables, made at boot in the base, are every directory's: two
+    /// processes' directories assembled from it name the same four tables, so a stack mapped for a
+    /// thread of the first is mapped in the second — a slot straddling two tables included.
     #[test]
-    fn kernel_tables_are_created_before_the_first_process_directory() {
-        for window in [516usize, 656, 659, 700, 1023] {
-            assert!(
-                kernel_table_may_be_created(window, false),
-                "window {window}"
-            );
+    fn every_directory_inherits_the_kernel_stack_tables() {
+        let stacks = layout::KERNEL_STACKS;
+        let mut base = [0u32; PT_ENTRIES];
+        base[512] = 0x0010_1000 | PAGE_PRESENT | PAGE_WRITE;
+        let tables: Vec<u32> = (0..stacks.entries as u32)
+            .map(|i| 0x00C0_0000 + i * PAGE_SIZE)
+            .collect();
+        for (entry, table) in (stacks.first_entry()..stacks.end_entry()).zip(&tables) {
+            base[entry] = table | PAGE_PRESENT | PAGE_WRITE;
         }
-        for window in 656..660 {
-            assert!(kernel_table_may_be_created(window, true), "window {window}");
+        let first = assembled(&base, 0x0090_0000, 0x00B0_0000);
+        let second = assembled(&base, 0x0095_0000, 0x00B0_0000);
+
+        for (entry, table) in (stacks.first_entry()..stacks.end_entry()).zip(&tables) {
+            for dir in [&first, &second] {
+                assert_eq!(
+                    dir[entry],
+                    table | PAGE_PRESENT | PAGE_WRITE,
+                    "entry {entry}"
+                );
+            }
         }
-        for window in [516usize, 655, 660, 700, 1023] {
-            assert!(
-                !kernel_table_may_be_created(window, true),
-                "window {window}"
-            );
+        let straddling = (0..GATE_SLOT_CAPACITY as u32)
+            .find(|&index| gate_slot_base(index) >> 22 != (gate_slot_top(index) - 1) >> 22)
+            .expect("a slot straddles a table boundary");
+        for vaddr in [gate_slot_base(straddling), gate_slot_top(straddling) - 1] {
+            let window = (vaddr >> 22) as usize;
+            assert!(stacks.holds_entry(window));
+            assert_eq!(first[window], second[window]);
+            assert_ne!(first[window] & PAGE_PRESENT, 0);
         }
     }
 

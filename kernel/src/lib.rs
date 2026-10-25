@@ -214,6 +214,8 @@ pub extern "C" fn kmain(magic: u32, multiboot_info: u32) -> ! {
     );
     // Install the runtime table access (self-map, scratch table).
     mem::paging::init_table_access();
+    // The kernel stack region's tables, shared by every address space from the first on.
+    mem::paging::init_kernel_stack_tables();
 
     // Kernel heap smoke.
     mem::bootmem::heap_init();
