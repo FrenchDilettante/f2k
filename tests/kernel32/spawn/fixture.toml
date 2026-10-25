@@ -14,7 +14,6 @@ layout = "not yet implemented"
 inherit = "not yet implemented"
 system = "no cmd.exe on F2K's disk"
 detach = "F2K's stub path (logged, error 120)"
-overlay = "not yet implemented"
 
 [masks]
 # The command line's buffer follows the process parameters' strings before it (the current

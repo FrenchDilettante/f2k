@@ -176,6 +176,9 @@ class Case:
     press_on: str | None = None
     # The kernel's own options, before the kernel command line's "--" (none: the defaults).
     kernel_options: str = ""
+    # The boot's seconds before the case fails as timed out (a boot loading many programs needs room
+    # under a parallel run's load).
+    timeout: float = DEFAULT_TIMEOUT
 
     def __post_init__(self) -> None:
         assert self.image in ("kernel", "disk"), f"{self.name}: image is kernel or disk"
@@ -343,6 +346,7 @@ CASES = (
         kernel_options="concurrent",
         ordered=True,
         expects=PROCESS_CONCURRENT_MD,
+        timeout=30.0,
     ),
     # F2K's own pwd.exe, from the system directory: a boot's program starts in its image's directory
     # (kernel/src/user/params.rs, `starting_directory`: the volume path upper-cased), which
@@ -489,7 +493,7 @@ def test_kernel(case, builder, log_path, boot_timeout, write_profile):
         cmdline=case.cmdline,
         kernel_options=case.kernel_options,
         log_path=log_path,
-        timeout=boot_timeout(DEFAULT_TIMEOUT),
+        timeout=boot_timeout(case.timeout),
         done=lambda log: expectation.check(log)[0] != "pending",
         during=KeyPress(case.press_on) if case.press_on else None,
     )

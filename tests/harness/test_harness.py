@@ -173,6 +173,46 @@ def test_a_batch_keeps_a_childs_lines_in_its_parents_part():
     assert alone("\n".join(WITH_CHILDREN + [ENDED[-1], CLEAN]))
 
 
+# A parent replaced by its child (_P_OVERLAY): the parent ends first, its child prints after it.
+OVERLAID = [
+    "F2K: entering ring 3",
+    "parent: the program ends, its replacement prints next",
+    "F2K: user process exited normally (exit code=0)",
+    "kid: replacing it",
+    "F2K: child process 16 (kid) exited normally (exit code=3)",
+    CLEAN,
+]
+
+
+def test_a_block_ends_when_its_process_tree_has_ended():
+    log = "\n".join([*f2kboot.BOOT_CHECKS, *OVERLAID])
+    expected = ["parent: the program ends, its replacement prints next", "kid: replacing it"]
+    # The child's lines after its parent's end are the block's; the exit code is the parent's.
+    assert f2kboot.program_output(log) == (expected, 0)
+    assert f2kboot.compare_block(f2kboot.Block("parent", expected, 0), log, []) is None
+    assert f2kboot.compare_block(f2kboot.Block("parent", expected[:1], 0), log, []) == (
+        "line 2: extra [kid: replacing it]")
+    # Nothing past the teardown audit line, printed once the tree has ended, is the block's.
+    assert f2kboot.program_output(log + "\nstray\n") == (expected, 0)
+    # A tree still running at the log's end: what it printed so far, the parent's exit code.
+    assert f2kboot.program_output("\n".join(OVERLAID[:4])) == (expected, 0)
+
+
+def test_a_batch_leg_ends_when_its_process_tree_has_ended():
+    first = [
+        "F2K: process 1 of 3: CORPUS\\t.exe a",
+        *OVERLAID[:-1],
+        "F2K: process 1 teardown audit: frame database ok, kernel heap ok",
+    ]
+    first[3] = "F2K: process 1 (t) exited normally (exit code=0)"
+    lines = BATCH_BOOT + first + leg(2, "t.exe b", "B") + leg(3, "t.exe c", "C")
+    batch = batch_of(lines + ["F2K: process suite complete: 3 run, 0 faulted, 0 leaks"])
+    expected = ["parent: the program ends, its replacement prints next", "kid: replacing it"]
+    assert batch.verdict(0, [], f2kboot.Block("t.exe a", expected, 0)) is None
+    assert batch.verdict(1, [], f2kboot.Block("t.exe b", ["B"], 0)) is None
+    assert batch.verdict(2, [], f2kboot.Block("t.exe c", ["C"], 0)) is None
+
+
 def test_a_childs_end_takes_no_screenshot(tmp_path):
     # No pause announced: the taker reaches for no monitor (there is none at this socket's path).
     taker = f2kboot.ScreenTaker([f2kboot.Block("t.exe a")], tmp_path)

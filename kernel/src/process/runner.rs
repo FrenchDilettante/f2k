@@ -25,6 +25,14 @@
 //! process starts at that point too, so each line follows its own process's end. The perf trace
 //! dump (the `perf-trace` feature) lands at the last quiescent point, before the boot's last line.
 //!
+//! A leg is finished when its whole process tree has ended: its process and every process descended
+//! from it (a child it started, that child's own...), as the capture script's block ends only once
+//! the program's descendants are done (a `_P_OVERLAY` child prints after its parent's end). The
+//! runner holds that rule through quiescence: a leg's audit line, the next leg's start and the
+//! summary all wait for the quiescent point, when no process at all remains, so a descendant that
+//! outlives its leg's process — its lines, its end line — always lands before them, inside its
+//! leg's part of the log, where the test harness takes a block's output up to the leg's audit line.
+//!
 //! Each process carries its leg, its index in the list, and everything it reports goes by that leg
 //! — its end line, its audit line, its screenshot pause, its count in the summary — never by which
 //! leg started last. A process with no leg, one another process started, reports its end as a

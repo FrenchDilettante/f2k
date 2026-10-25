@@ -807,23 +807,35 @@ def process_ended(log: str) -> bool:
 
 
 def program_output(log: str) -> tuple[list[str], int | None]:
-    """The program's lines in a boot's log and its exit code (None when it did not end). Its
-    children's output lines are its own; their end lines are kernel lines, left out."""
+    """The program's lines in a boot's log and its exit code (None when it did not end).
+
+    A block ends when its whole process tree has ended, as the real machine's capture closes a
+    block only once the program's descendants are done (a `_P_OVERLAY` child prints after its
+    parent's end): the program's lines run past its own end line, through what its descendants
+    print after it, to its teardown audit line, which the kernel prints only once the program and
+    every process descended from it have ended (or to the next program's start, the suite's
+    summary, the log's end). Its descendants' output lines are its own; their end lines, and its
+    own, are kernel lines, left out. The exit code is the program's own, from its end line."""
     lines = lines_of(log)
     start = next((i + 1 for i, line in enumerate(lines) if line.startswith(ENTER)), None)
     if start is None:
         return [], None
     output = []
+    exit_code = None
     for line in lines[start:]:
         if line == QEMU_STDERR:
             break  # COM1 ends here; what follows is QEMU's own
+        if TEARDOWN.match(line) or START.match(line) or line.startswith(SUMMARY):
+            break  # the process tree has ended
         if END.match(line):
-            match = EXIT_CODE.search(line)
-            return output, int(match.group(1)) if match else None
+            if exit_code is None:
+                match = EXIT_CODE.search(line)
+                exit_code = int(match.group(1)) if match else None
+            continue
         if line.startswith(KERNEL_PREFIXES) or line.startswith(DUMP_PREFIXES):
             continue
         output.append(line)
-    return output, None
+    return output, exit_code
 
 
 def compare_block(block: Block, log: str, masks: list[re.Pattern[str]]) -> str | None:
