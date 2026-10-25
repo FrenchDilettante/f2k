@@ -378,9 +378,8 @@ pub fn terminate_thread(target: &mut Thread, status: u32) -> Result<(), Terminat
 
 /// Give `process`'s main thread its initial context `user` (see
 /// [`crate::user::main_thread_start`]): plant its startup ladder (the same frame shape a child
-/// gets), without readying it ([`ready_main_thread`] does). Part of the process's load, in the
-/// process's own address space: the ladder goes onto the thread's gate stack (mapped in every
-/// address space).
+/// gets), without readying it ([`ready_main_thread`] does). Part of the process's load, under any
+/// address space: the ladder goes onto the thread's gate stack (mapped in every address space).
 pub fn start_main_thread(process: &mut Process, user: crate::sched::startup::UserStart) {
     // The main thread's gate slot, TEB page and stack top were taken at process start; only the
     // ladder is missing.
@@ -392,7 +391,7 @@ pub fn start_main_thread(process: &mut Process, user: crate::sched::startup::Use
         user: Some(user),
     };
     // SAFETY: the thread's `initial_stack` names its mapped, empty kernel-stack slot (nothing has
-    // entered a gate on it yet), in the live directory (the caller's contract above).
+    // entered a gate on it yet), mapped in every directory.
     unsafe { crate::sched::startup::plant(thread, &params) };
 }
 
@@ -415,12 +414,10 @@ pub fn ready_main_thread(process: &mut Process) {
     }
 }
 
-/// The fault-test boots' ring-3 entry: end `process`'s load, start its main thread in `user` and
-/// ready it, then enter the idle loop — the first switch away from idle is into this thread. Never
-/// returns.
+/// The fault-test boots' ring-3 entry: start `process`'s main thread in `user` and ready it, then
+/// enter the idle loop — the first switch away from idle is into this thread. Never returns.
 pub fn enter_as_main_thread(process: &mut Process, user: crate::sched::startup::UserStart) -> ! {
     start_main_thread(process, user);
-    crate::process::detach();
     ready_main_thread(process);
     crate::sched::idle::idle_loop()
 }

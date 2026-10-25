@@ -4,10 +4,17 @@
 //! nonvolatile registers and `esp` into a switch frame on the old thread's kernel stack, saves its
 //! floating-point state (x87, MXCSR and the XMM registers) into its record (restoring the new
 //! thread's), installs the new thread's stack top as the TSS `esp0`, rewrites the TEB descriptor's
-//! base, loads CR3 when the process changes, and resumes the new thread. [`THREAD_STARTUP`] is a
-//! fresh thread's first instructions, reached as the planted return address of the initial switch:
-//! it zeroes the registers, lowers the level, calls the system routine, and a user thread then
-//! enters ring 3 from its planted trap frame.
+//! base, loads CR3 when the address space changes, and resumes the new thread. [`THREAD_STARTUP`]
+//! is a fresh thread's first instructions, reached as the planted return address of the initial
+//! switch: it zeroes the registers, lowers the level, calls the system routine, and a user thread
+//! then enters ring 3 from its planted trap frame.
+//!
+//! The address space a thread runs on is its address-space process's (see [`super::attach`]): its
+//! owner's, or while attached the process it attached to. The switch compares the two threads'
+//! address-space processes, not their owners, and loads the incoming one's directory: a thread
+//! attached to another process, switched away and back, resumes on the directory it attached to.
+//! CR3 always holds the running thread's address-space directory (an attach moves both together,
+//! masked), which debug builds check wherever a thread resumes.
 //!
 //! Load-bearing discipline: `cli` spans everything from the old `esp`'s save to the new one's load
 //! — the `esp0`, the TEB descriptor, the CR3 load — so no interrupt lands on a half-installed
@@ -25,10 +32,6 @@
 /// else observes the new thread. Host tests pin this to the thread record's `#[repr(C)]` layout.
 pub const THREAD_STATE_OFF: u32 = 0;
 
-/// The owner-pointer field's offset in the thread record: pointer identity between the two threads'
-/// owners decides the CR3 load. Host tests pin this to the thread record's `#[repr(C)]` layout.
-pub const THREAD_PROCESS_OFF: u32 = 4;
-
 /// The saved-esp field's offset in the thread record: what a switch stores the old thread's switch
 /// frame at and loads the new thread's stack from. Host tests pin this to the thread record's
 /// `#[repr(C)]` layout.
@@ -43,12 +46,18 @@ pub const THREAD_INITIAL_STACK_OFF: u32 = 12;
 /// `#[repr(C)]` layout.
 pub const THREAD_TEB_VA_OFF: u32 = 16;
 
+/// The address-space pointer's offset in the thread record: pointer identity between the two
+/// threads' address-space processes decides the CR3 load, and the incoming one's names the
+/// directory. Host tests pin this to the thread record's `#[repr(C)]` layout.
+pub const THREAD_SPACE_OFF: u32 = 20;
+
 /// The saved floating-point state's offset in the thread record (taken from the layout itself:
 /// nothing else depends on where it sits, so it is not pinned to a number; the record's layout
 /// keeps it 16-byte aligned, as `fxsave` needs).
 pub const THREAD_FPU_OFF: u32 = core::mem::offset_of!(super::thread::Thread, fpu) as u32;
 
-/// The directory-base offset inside the scheduling record, read only when the process changes.
+/// The directory-base offset inside the scheduling record, read only when the address space
+/// changes.
 pub const PROCESS_DIR_PHYS_OFF: u32 = 0;
 
 /// The TEB descriptor's base-byte offsets inside the GDT, derived from the selector: 15:0 at +2,
@@ -61,15 +70,47 @@ const TEB_BASE_HI_OFF: u32 = crate::cpu::gdt::TEB_SELECTOR as u32 + 7;
 // above), and the thread record is `#[repr(C)]`, so the pointer ABI is sound.
 #[cfg(target_arch = "x86")]
 unsafe extern "C" {
-    /// Switch the processor from `old` to `new`, entered at the dispatch level with interrupts
-    /// enabled. Never "returns" in the calling thread's present: the return path executes in
-    /// whichever thread a later switch resumes here.
-    pub fn swap_context(old: *mut super::thread::Thread, new: *mut super::thread::Thread);
+    /// The swap itself (see [`swap_context`]).
+    #[link_name = "swap_context"]
+    fn swap_context_asm(old: *mut super::thread::Thread, new: *mut super::thread::Thread);
 
     /// The startup stub's address, planted by the frame builder as a fresh thread's switch-frame
     /// return address. Address-only; the stub is never called from Rust.
     #[link_name = "thread_startup"]
     pub static THREAD_STARTUP: u8;
+}
+
+/// Switch the processor from `old` to `new`, entered at the dispatch level with interrupts enabled.
+/// Never "returns" in the calling thread's present: the return path executes when a later switch
+/// resumes `old`, which debug builds check runs on its address-space directory.
+///
+/// # Safety
+///
+/// Both threads are live records; `new`'s switch frame is planted (fresh) or saved (resumed), and
+/// the dispatcher has adopted it as the running thread.
+#[cfg(target_arch = "x86")]
+pub unsafe fn swap_context(old: *mut super::thread::Thread, new: *mut super::thread::Thread) {
+    // SAFETY: the caller's contract.
+    unsafe { swap_context_asm(old, new) };
+    // SAFETY: `old` runs again: its record is live.
+    debug_assert_on_own_space(unsafe { &*old });
+}
+
+/// Debug builds: CR3 holds `thread`'s address-space directory — `thread` being the one that runs.
+#[cfg(target_arch = "x86")]
+fn debug_assert_on_own_space(thread: &super::thread::Thread) {
+    if cfg!(debug_assertions) {
+        let cr3: u32;
+        // SAFETY: reading CR3 has no side effect.
+        unsafe { core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack)) };
+        // SAFETY: a running thread's address-space process outlives its scope on it.
+        let dir_phys = unsafe { (*thread.space).dir_phys() };
+        assert_eq!(
+            crate::mem::paging::directory_cr3(cr3),
+            dir_phys,
+            "a thread resumes on its address-space directory"
+        );
+    }
 }
 
 // The swap. cdecl: [esp+4] = old, [esp+8] = new; eax/ecx/edx are scratch, edi/esi hold the two
@@ -97,7 +138,7 @@ core::arch::global_asm!(
     // dispatcher context is released.
     "    mov byte ptr [esi + {state_off}], {running}",
     // From here until the new esp is live no interrupt may run. Order: save the old esp, install
-    // the new esp0, rewrite the TEB base, load CR3 (only on a process change), switch esp.
+    // the new esp0, rewrite the TEB base, load CR3 (only on an address-space change), switch esp.
     "    cli",
     // The floating-point state: the old thread's saved, the new thread's restored (`fxrstor`
     // replaces the whole unit's state, so nothing of the old thread's survives the switch). Both
@@ -115,10 +156,10 @@ core::arch::global_asm!(
     "    mov [edx + {teb_mid}], al",
     "    shr eax, 8",
     "    mov [edx + {teb_hi}], al",
-    "    mov eax, [edi + {process_off}]",
-    "    cmp eax, [esi + {process_off}]",
+    "    mov eax, [edi + {space_off}]",
+    "    cmp eax, [esi + {space_off}]",
     "    je 1f",
-    "    mov eax, [esi + {process_off}]",
+    "    mov eax, [esi + {space_off}]",
     "    add eax, {dir_phys_off}",
     "    mov eax, [eax]",
     "    mov cr3, eax",
@@ -141,7 +182,7 @@ core::arch::global_asm!(
     init_stack_off = const THREAD_INITIAL_STACK_OFF,
     teb_off = const THREAD_TEB_VA_OFF,
     fpu_off = const THREAD_FPU_OFF,
-    process_off = const THREAD_PROCESS_OFF,
+    space_off = const THREAD_SPACE_OFF,
     dir_phys_off = const PROCESS_DIR_PHYS_OFF,
     teb_lo = const TEB_BASE_LO_OFF,
     teb_mid = const TEB_BASE_MID_OFF,
@@ -200,6 +241,8 @@ core::arch::global_asm!(
 #[cfg(target_arch = "x86")]
 unsafe extern "C" fn fresh_thread_level() {
     crate::interrupt::irql::state_mut().begin_thread();
+    // SAFETY: the dispatcher adopted this thread before the switch into it: its record is live.
+    debug_assert_on_own_space(unsafe { &*crate::sched::idle::dispatcher().current_thread() });
 }
 
 /// A kernel thread's system routine returned with no user context to enter: report the bug on the
@@ -219,10 +262,10 @@ unsafe extern "C" fn startup_no_user_context() -> ! {
 
 /// One switch's decisions: what the assembly will write and load.
 pub struct SwitchPlan {
-    /// Whether the two threads belong to one process.
-    pub same_process: bool,
-    /// The directory base to load into CR3 — only when the process changed; a same-process switch
-    /// loads nothing.
+    /// Whether the two threads run on one address space (their address-space processes are one).
+    pub same_space: bool,
+    /// The directory base to load into CR3 — the new thread's address-space process's, only when
+    /// the address space changes; a switch within one loads nothing.
     pub cr3: Option<u32>,
     /// The base written into the TEB segment descriptor: the new thread's own TEB page, on every
     /// switch.
@@ -245,15 +288,15 @@ pub fn switch_plan(
         !dpc_active,
         "context switch attempted while a DPC routine is active"
     );
-    let same_process = core::ptr::eq(old.process, new.process);
+    let same_space = core::ptr::eq(old.space, new.space);
     SwitchPlan {
-        same_process,
-        cr3: if same_process {
+        same_space,
+        cr3: if same_space {
             None
         } else {
-            // SAFETY: an attached thread's owner outlives it; the accessor reads the leading
-            // directory-base field.
-            Some(unsafe { (*new.process).dir_phys() })
+            // SAFETY: a thread's address-space process outlives its scope on it (the owner, its
+            // thread); the accessor reads the leading directory-base field.
+            Some(unsafe { (*new.space).dir_phys() })
         },
         teb_base: new.teb_va,
         esp0: new.initial_stack,
@@ -315,16 +358,46 @@ mod tests {
         let (a, same, cross) = threads();
 
         let same_process = switch_plan(a, same, false);
-        assert!(same_process.same_process);
+        assert!(same_process.same_space);
         assert_eq!(same_process.cr3, None);
         assert_eq!(same_process.teb_base, thread_teb_va(1));
         assert_eq!(same_process.esp0, same.initial_stack);
         assert_eq!(same_process.new_kernel_esp, same.kernel_stack);
 
         let cross_process = switch_plan(a, cross, false);
-        assert!(!cross_process.same_process);
+        assert!(!cross_process.same_space);
         assert_eq!(cross_process.cr3, Some(0x00B0_0000));
         assert_eq!(cross_process.teb_base, thread_teb_va(0));
+    }
+
+    /// A thread attached to another process switches as that process's threads do: away from its
+    /// own process's threads it loads the attached directory, and back to it from them it loads
+    /// it again — never its owner's — while between it and the attached process's threads nothing
+    /// is loaded. Detached, it switches as its owner's thread again.
+    #[test]
+    fn cr3_follows_the_attached_address_space() {
+        let (attacher, own_sibling, of_target) = threads();
+        // SAFETY: the target's record is leaked; the thread is attached to its own process.
+        let target = unsafe { &*of_target.process };
+        assert_eq!(attacher.attach_space(target), Some(0x00B0_0000));
+
+        let back_from_sibling = switch_plan(own_sibling, attacher, false);
+        assert_eq!(
+            back_from_sibling.cr3,
+            Some(0x00B0_0000),
+            "resumes on the attached directory"
+        );
+        let to_sibling = switch_plan(attacher, own_sibling, false);
+        assert_eq!(to_sibling.cr3, Some(0x0090_0000));
+        assert!(switch_plan(of_target, attacher, false).same_space);
+        assert_eq!(switch_plan(attacher, of_target, false).cr3, None);
+
+        attacher.detach_space();
+        assert_eq!(
+            switch_plan(of_target, attacher, false).cr3,
+            Some(0x0090_0000)
+        );
+        assert!(switch_plan(own_sibling, attacher, false).same_space);
     }
 
     // C1's plantable half: the saved stack pointer's shape.

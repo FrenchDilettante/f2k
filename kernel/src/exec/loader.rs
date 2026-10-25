@@ -382,9 +382,10 @@ fn page_writable(image: &Image, page_rva: u32) -> bool {
 
 /// Load `file` as a new process — parse, stage, create the process, map ntdll, the image, stack,
 /// TEB, parameters and PEB pages — and return the process and its entry point for the main
-/// thread's ladder (its imports are ntdll's to load and snap, in user mode). The process's load
-/// scope is still open, and its address space the live one, for the caller to plant the ladder in
-/// (see [`crate::process::threads::start_main_thread`]). `name` names the process, and `leg` is the
+/// thread's ladder (its imports are ntdll's to load and snap, in user mode). The load runs attached
+/// to the new process ([`crate::process::Process::attach`]) and ends detached: the ladder goes
+/// onto the main thread's kernel stack, mapped in every address space (see
+/// [`crate::process::threads::start_main_thread`]). `name` names the process, and `leg` is the
 /// boot's program it runs as (none for a child); `command_line` is the process parameters' command
 /// line, and `path`, the file's volume path, their image path (in its Win32 form, `C:\...`).
 #[cfg(target_arch = "x86")]
@@ -442,11 +443,13 @@ pub fn load_image(
     staging.fill(0);
     image.map_into(file, staging);
 
-    // The process's own state, all in one place: a fresh address space (kernel half inherited,
-    // active on CR3) and the main thread's ring-0 gate stack (mapped supervisor-only with its guard
-    // page; the switch into the thread installs it as the TSS esp0). Every mapping below (ntdll,
-    // image, stack, TEB, params) lands in this process's directory.
+    // The process's own state, all in one place: a fresh address space (kernel half inherited) and
+    // the main thread's ring-0 gate stack (mapped supervisor-only with its guard page; the switch
+    // into the thread installs it as the TSS esp0). The running thread attaches to the process for
+    // the rest of the load: every mapping below (ntdll, image, stack, TEB, params) lands in its
+    // directory, the live one.
     let process = crate::process::Process::start(name, leg);
+    let _attached = process.attach();
     let (process_id, thread_id) = (process.id(), process.main_thread().thread_id());
     let space = process.vm();
     // The regions first: every user page the kernel maps lies in one.

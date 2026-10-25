@@ -113,8 +113,8 @@ pub struct Thread {
     // --- Machine state (the context switch's ABI) ---
     /// The scheduling state.
     pub(crate) state: ThreadState,
-    /// The owning process; the source of the quantum and of the priority class rules, and the
-    /// identity a switch compares to decide the CR3 load. Valid for the thread's lifetime.
+    /// The owning process: the source of the quantum and of the priority class rules, and the
+    /// process whose thread this is. Valid for the thread's lifetime.
     pub(crate) process: *mut SchedProcess,
     /// The saved kernel stack pointer: where a switch-out stored this thread's switch frame, and
     /// what a switch-in loads as the new `esp`. The startup-frame builder plants it for a
@@ -126,6 +126,11 @@ pub struct Thread {
     /// The thread's TEB page: the base the switch writes into the TEB segment descriptor. Zero for
     /// kernel and idle threads.
     pub(crate) teb_va: u32,
+    /// The address-space process (Windows' ApcState.Process): the process whose page directory the
+    /// thread runs on — its owner, except while attached to another (see [`super::attach`]). The
+    /// identity a switch compares to decide the CR3 load, and the record it loads the directory
+    /// from. Never written through.
+    pub(crate) space: *const SchedProcess,
     /// The thread's client id (what GetCurrentThreadId reports, through its TEB): handed out when
     /// a user thread is created; zero for kernel threads.
     pub(crate) thread_id: u32,
@@ -262,7 +267,6 @@ pub struct Thread {
 #[cfg(target_arch = "x86")]
 const _: () = {
     assert!(core::mem::offset_of!(Thread, state) as u32 == super::switch::THREAD_STATE_OFF);
-    assert!(core::mem::offset_of!(Thread, process) as u32 == super::switch::THREAD_PROCESS_OFF);
     assert!(
         core::mem::offset_of!(Thread, kernel_stack) as u32
             == super::switch::THREAD_KERNEL_STACK_OFF
@@ -272,11 +276,12 @@ const _: () = {
             == super::switch::THREAD_INITIAL_STACK_OFF
     );
     assert!(core::mem::offset_of!(Thread, teb_va) as u32 == super::switch::THREAD_TEB_VA_OFF);
+    assert!(core::mem::offset_of!(Thread, space) as u32 == super::switch::THREAD_SPACE_OFF);
 };
 
 /// The machine block leads the record in the assembly's field order, on every pointer width: state
-/// first, then the owner pointer, then the three stack/TEB words. (The host layout widens the
-/// pointer; the order is what stays pinned here.)
+/// first, then the owner pointer, then the three stack/TEB words, then the address-space pointer.
+/// (The host layout widens the pointers; the order is what stays pinned here.)
 const _: () = {
     assert!(core::mem::offset_of!(Thread, state) == 0);
     assert!(core::mem::offset_of!(Thread, process) > 0);
@@ -285,6 +290,7 @@ const _: () = {
         core::mem::offset_of!(Thread, initial_stack) > core::mem::offset_of!(Thread, kernel_stack)
     );
     assert!(core::mem::offset_of!(Thread, teb_va) > core::mem::offset_of!(Thread, initial_stack));
+    assert!(core::mem::offset_of!(Thread, space) > core::mem::offset_of!(Thread, teb_va));
     // `fxsave` and `fxrstor` fault on an unaligned image: the record's alignment carries it.
     assert!(core::mem::offset_of!(Thread, fpu) % FPU_STATE_ALIGN == 0);
     assert!(core::mem::align_of::<Thread>() >= FPU_STATE_ALIGN);
@@ -300,6 +306,7 @@ impl Thread {
             kernel_stack: 0,
             initial_stack: 0,
             teb_va: 0,
+            space: core::ptr::null(),
             thread_id: 0,
             ordinal: 0,
             exit_status: STILL_ACTIVE,
@@ -364,6 +371,7 @@ impl Thread {
             "a thread's floating-point area is 16-byte aligned"
         );
         self.process = process as *mut SchedProcess;
+        self.space = process as *const SchedProcess;
         self.base_priority = process.base_priority;
         self.priority = self.base_priority;
         self.quantum = process.thread_quantum;
@@ -562,6 +570,49 @@ impl Thread {
     pub unsafe fn process(&self) -> &SchedProcess {
         unsafe { &*self.process }
     }
+
+    /// The address-space process: the one whose directory the thread runs on (its owner unless
+    /// attached).
+    pub fn space(&self) -> *const SchedProcess {
+        self.space
+    }
+
+    /// Whether the thread runs attached to another process's address space.
+    pub fn attached(&self) -> bool {
+        !core::ptr::eq(self.space, self.process)
+    }
+
+    /// Begin running on `target`'s address space: the attach's bookkeeping. Returns the directory
+    /// to load, or none when `target` is the address-space process already (a scope that changes
+    /// nothing, as Windows' attach to the process in place is).
+    ///
+    /// # Panics
+    ///
+    /// The thread is attached to another process already: attaches do not nest.
+    pub(crate) fn attach_space(&mut self, target: &SchedProcess) -> Option<u32> {
+        if core::ptr::eq(self.space, target) {
+            return None;
+        }
+        assert!(
+            !self.attached(),
+            "a thread attaches to another process only from its own"
+        );
+        self.space = target;
+        Some(target.dir_phys())
+    }
+
+    /// Return to the thread's own address space: the detach's bookkeeping. Returns the owner's
+    /// directory, to load.
+    ///
+    /// # Panics
+    ///
+    /// The thread is not attached.
+    pub(crate) fn detach_space(&mut self) -> u32 {
+        assert!(self.attached(), "a thread detaches once, after it attached");
+        self.space = self.process;
+        // SAFETY: the owner outlives its thread.
+        unsafe { (*self.process).dir_phys() }
+    }
 }
 
 #[cfg(test)]
@@ -690,5 +741,76 @@ mod tests {
     #[should_panic(expected = "never entered")]
     fn leaving_an_unentered_region_is_a_contract_violation() {
         Thread::empty().leave_critical_region();
+    }
+
+    /// A thread of `process`, leaked at its final address.
+    fn thread_of(process: &mut SchedProcess) -> &'static mut Thread {
+        let thread = Box::leak(Box::new(Thread::empty()));
+        // SAFETY: both records are leaked at their final addresses.
+        unsafe { thread.attach_to(process) };
+        thread
+    }
+
+    /// A process record leaked at its final address, on directory `dir`.
+    fn process_on(dir: u32) -> &'static mut SchedProcess {
+        let process = Box::leak(Box::new(SchedProcess::new(dir, 8)));
+        process.init();
+        process
+    }
+
+    /// A thread runs on its owner's address space from its attach to its process; attached to
+    /// another, it runs on that one's (the directory to load is the target's), its owner unchanged;
+    /// detached, on its owner's again (the directory to load is the owner's).
+    #[test]
+    fn an_attach_moves_the_address_space_and_not_the_owner() {
+        let own = process_on(0x0090_0000);
+        let other = process_on(0x00B0_0000);
+        let thread = thread_of(own);
+        assert!(core::ptr::eq(thread.space(), own));
+        assert!(!thread.attached());
+
+        assert_eq!(thread.attach_space(other), Some(0x00B0_0000));
+        assert!(thread.attached());
+        assert!(core::ptr::eq(thread.space(), other));
+        assert!(core::ptr::eq(thread.process, own), "the owner stays");
+
+        assert_eq!(thread.detach_space(), 0x0090_0000);
+        assert!(!thread.attached());
+        assert!(core::ptr::eq(thread.space(), own));
+    }
+
+    /// Attaching to the address space already in place changes nothing and loads nothing: the
+    /// thread's own, or the one it is attached to.
+    #[test]
+    fn an_attach_to_the_space_in_place_changes_nothing() {
+        let own = process_on(0x0090_0000);
+        let other = process_on(0x00B0_0000);
+        let thread = thread_of(own);
+        assert_eq!(thread.attach_space(own), None);
+        assert!(!thread.attached());
+        assert_eq!(thread.attach_space(other), Some(0x00B0_0000));
+        assert_eq!(thread.attach_space(other), None);
+        assert!(core::ptr::eq(thread.space(), other));
+    }
+
+    /// Attaches do not nest: a thread attached to one process cannot attach to a third.
+    #[test]
+    #[should_panic(expected = "only from its own")]
+    fn attaches_do_not_nest() {
+        let own = process_on(0x0090_0000);
+        let thread = thread_of(own);
+        thread.attach_space(process_on(0x00B0_0000));
+        thread.attach_space(process_on(0x00C0_0000));
+    }
+
+    /// A detach follows its attach, once.
+    #[test]
+    #[should_panic(expected = "detaches once")]
+    fn a_detach_follows_an_attach() {
+        let own = process_on(0x0090_0000);
+        let thread = thread_of(own);
+        thread.attach_space(process_on(0x00B0_0000));
+        thread.detach_space();
+        thread.detach_space();
     }
 }

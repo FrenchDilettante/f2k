@@ -826,7 +826,8 @@ pub fn map_zeroed(space: &mut AddressSpace, va: u32, protect: u32) -> u32 {
     frame
 }
 
-/// The running process's page tables and the frame database.
+/// The live page tables — the running thread's address-space process's: its own process's, or
+/// while attached the one it attached to (see [`crate::sched::attach`]) — and the frame database.
 #[cfg(target_arch = "x86")]
 pub struct CurrentPages;
 

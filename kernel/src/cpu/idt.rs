@@ -401,11 +401,17 @@ fn resolve_or_end(frame: &mut ExceptionFrame) {
         // A guard page fires, once. Inside the running thread's stack it grows the stack and the
         // access resumes; any other guard's access raises the guard violation — the program's, or,
         // for the kernel's copy, a failed copy (as the platform's probe of one fails), the guard
-        // spent.
+        // spent. A thread attached to another process's address space (the kernel's copy into
+        // that process's memory) has no stack there: its guard is any other.
         if crate::mem::vm::fire_guard(&mut crate::mem::vm::CurrentPages, cr2) {
             use crate::process::exit::status;
             use crate::user::stack::{grow_on_guard, Growth};
-            match grow_on_guard(cr2) {
+            let growth = if crate::sched::attach::running_attached() {
+                Growth::NotStack
+            } else {
+                grow_on_guard(cr2)
+            };
+            match growth {
                 Growth::Grown => return,
                 Growth::Overflow => raised = Some(status::STACK_OVERFLOW),
                 Growth::NotStack => raised = Some(status::GUARD_PAGE_VIOLATION),

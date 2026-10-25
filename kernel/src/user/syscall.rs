@@ -368,6 +368,12 @@ extern "C" fn syscall_dispatch(frame: &mut TrapFrame) {
     let mut args = [0u32; MAX_ARG_BYTES / 4];
     copy_user_args(frame.edx, arg_bytes, &mut args);
     service(frame, &args[..arg_bytes as usize / 4]);
+    // A service attaches to another process only for a scope inside it: the caller resumes on its
+    // own address space (Windows stops on the same mismatch, APC_INDEX_MISMATCH).
+    assert!(
+        !crate::sched::attach::running_attached(),
+        "a system service returns to user mode detached"
+    );
 
     // The service boundary is where a same-processor preemption lands: a thread the service readied
     // at strictly higher priority — or a quantum the tick ended mid-service — is switched to here,

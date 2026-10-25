@@ -40,6 +40,10 @@ pub mod process;
 /// address threads through.
 pub mod switch;
 
+/// Attaching a thread to another process's address space, for a scope.
+#[cfg(target_arch = "x86")]
+pub mod attach;
+
 /// The startup frame builder: a fresh thread's first kernel stack contents, as pure layout.
 pub mod startup;
 

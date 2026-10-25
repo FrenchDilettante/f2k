@@ -92,7 +92,9 @@ pub fn grow_on_guard(address: u32) -> Growth {
     let Some(guard) = next_guard else {
         return Growth::Overflow;
     };
-    let space = crate::user::args::calling_process().vm();
+    // The address space whose tables are live: the faulting thread's own here (an attached
+    // thread's guard is never its stack's).
+    let space = crate::process::pool::address_space().vm();
     // The page below already committed (the program committed it itself) needs no guard: the stack
     // runs into it.
     if space.frame_at(&CurrentPages, guard).is_some() || space.plant_guard(&mut CurrentPages, guard)

@@ -6,12 +6,16 @@
 //! ends, so a handle to the process outlives the record's resources but not its slot. The capacity
 //! is fixed (one process runs at a time until CreateProcess exists).
 //!
-//! The current process is the running thread's owner: the thread record's owner pointer is the
-//! process record's leading scheduling record. Outside the process's own threads the kernel acts
-//! for a process only inside two scopes, attached to it: its load (from its creation until its
-//! main thread's start is planted, see [`detach`]) and its reap (from [`ended`] to the record's
-//! release). Elsewhere on the idle thread (whose own owner is the idle process, no pooled process)
-//! no process is current: code that acts for a process there takes it explicitly.
+//! A running thread has two processes (see [`crate::sched::attach`]), and the pool answers both.
+//! The current process, the calling process of a system service, is the running thread's owner:
+//! the thread record's owner pointer is the process record's leading scheduling record. Its handles
+//! and objects are the ones a service acts on, whatever address space the thread runs on. The
+//! address-space process ([`address_space`]) is the one whose directory the thread runs on: its
+//! owner, or while attached the process it attached to — the process whose user pages the live
+//! page tables, the page-fault resolution and the user-memory copies reach (Windows'
+//! PsGetCurrentProcess). On the idle thread (whose own owner is the idle process, no pooled
+//! process) no process is current: code that acts for a process there — the loader, attached to
+//! the process it builds; the reap, on the boot address space — takes it explicitly.
 
 #[cfg(target_arch = "x86")]
 use super::Process;
@@ -24,50 +28,6 @@ pub const MAX_PROCESSES: usize = 16;
 #[cfg(target_arch = "x86")]
 static mut POOL: core::mem::MaybeUninit<[Process; MAX_PROCESSES]> =
     core::mem::MaybeUninit::uninit();
-
-/// The record the kernel acts for outside the process's own threads (see the module notes).
-#[cfg(target_arch = "x86")]
-static mut ATTACHED: Attachment = Attachment::none();
-
-/// Which process record the kernel is attached to: none outside a load or reap scope. Scopes never
-/// nest: a load starts once the previous scope has ended (a reap ends before the next load the
-/// runner starts from it).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct Attachment(Option<u16>);
-
-impl Attachment {
-    /// Attached to nothing.
-    pub const fn none() -> Self {
-        Attachment(None)
-    }
-
-    /// Begin a scope acting for the record at `index`.
-    ///
-    /// # Panics
-    ///
-    /// A scope is already open.
-    pub fn begin(&mut self, index: u16) {
-        assert!(
-            self.0.is_none(),
-            "a process's load or reap begins with no other process attached"
-        );
-        self.0 = Some(index);
-    }
-
-    /// End the open scope.
-    ///
-    /// # Panics
-    ///
-    /// No scope is open.
-    pub fn end(&mut self) {
-        assert!(self.0.take().is_some(), "a scope ends once, after it began");
-    }
-
-    /// The record the open scope acts for; none outside a scope.
-    pub fn index(&self) -> Option<u16> {
-        self.0
-    }
-}
 
 // The records own no resources of their own (their frames are released by the teardown walk), so
 // reusing one is overwriting it.
@@ -96,8 +56,7 @@ fn index_of(owner: *const crate::sched::process::SchedProcess) -> Option<u16> {
 
 /// Create a process: its object (none free is the caller's failure, a panic today: one process runs
 /// at a time) and its record at the same index, built in place over the address space at
-/// `dir_phys`, named `name`, running as leg `leg` (none for a child). Its load scope begins: the
-/// kernel is attached to it until the loader is done with it ([`detach`]).
+/// `dir_phys`, named `name`, running as leg `leg` (none for a child).
 #[cfg(target_arch = "x86")]
 // The record is the pool's, not borrowed from `name`: the lint reads the name's reference as the
 // input the returned one comes from.
@@ -109,35 +68,24 @@ pub(super) fn create(dir_phys: u32, name: &'static str, leg: Option<u32>) -> &'s
     let process = record(object.index);
     // SAFETY: single CPU, interrupts disabled; the record is free (its object was not live), and
     // every field is written before the record is read.
-    let process = unsafe {
+    unsafe {
         super::write_fresh(process, dir_phys, name, leg, object);
         &mut *process
-    };
-    attach(object.index);
-    process
+    }
 }
 
-/// The current process, mutably (see the module notes).
+/// The current process, mutably: the running thread's own (see the module notes) — the calling
+/// process, whose handles and objects a service acts on, attached or not.
 ///
 /// # Panics
 ///
-/// No process is current: the running thread is no process's and the kernel is attached to none.
+/// No process is current: the running thread is no pooled process's (the idle thread).
 #[cfg(target_arch = "x86")]
 pub fn current_mut() -> &'static mut Process {
-    // SAFETY: single CPU; the running thread is live, and its owner (when it is a pooled process)
-    // is that process's record at its final address. The attachment has no other writer.
-    unsafe {
-        let thread = crate::sched::idle::dispatcher().current_thread();
-        let owner = if thread.is_null() {
-            None
-        } else {
-            index_of((*thread).process)
-        };
-        let index = owner
-            .or((*core::ptr::addr_of!(ATTACHED)).index())
-            .expect("no process is current");
-        &mut *record(index)
-    }
+    let index = running(|thread| index_of(thread.process)).expect("no process is current");
+    // SAFETY: the record of the running thread's owner, at its final address for the thread's
+    // life.
+    unsafe { &mut *record(index) }
 }
 
 /// The current process, immutably (reporting paths, and the handle lookups that change nothing).
@@ -146,35 +94,38 @@ pub fn current() -> &'static Process {
     current_mut()
 }
 
-/// Attach the kernel to the process at `index`: its load or its reap begins.
+/// The process whose address space the running thread runs on (see the module notes): the one it
+/// is attached to, or its own. Its user pages are the live ones.
+///
+/// # Panics
+///
+/// The running thread runs on no pooled process's address space (the idle thread, attached to
+/// none).
 #[cfg(target_arch = "x86")]
-fn attach(index: u16) {
-    // SAFETY: single CPU; the attachment's writers run serialized.
-    unsafe { (*core::ptr::addr_of_mut!(ATTACHED)).begin(index) };
+pub fn address_space() -> &'static mut Process {
+    let index = running(|thread| index_of(thread.space())).expect("no process's pages are live");
+    // SAFETY: the record of the running thread's address-space process, which outlives the
+    // thread's scope on it.
+    unsafe { &mut *record(index) }
 }
 
-/// Detach the kernel from the process it acts for: the loader is done with the process (its main
-/// thread's start is the caller's, through the process it holds), or its teardown is.
+/// What `query` answers of the running thread's record; none before the scheduler has a thread.
 #[cfg(target_arch = "x86")]
-pub fn detach() {
-    // SAFETY: as `attach`.
-    unsafe { (*core::ptr::addr_of_mut!(ATTACHED)).end() };
+fn running<R>(query: impl FnOnce(&crate::sched::thread::Thread) -> Option<R>) -> Option<R> {
+    let thread = crate::sched::idle::dispatcher().current_thread();
+    // SAFETY: single CPU; the running thread's record is live while it runs.
+    unsafe { thread.as_ref() }.and_then(query)
 }
 
-/// The process the idle thread has to reap, attached for it: one that has ended (its last thread's
-/// exit recorded why) and is not yet torn down. None when every process is running or gone.
+/// The process the idle thread has to reap: one that has ended (its last thread's exit recorded
+/// why) and is not yet torn down. None when every process is running or gone.
 #[cfg(target_arch = "x86")]
 pub fn ended() -> Option<&'static mut Process> {
     (0..MAX_PROCESSES as u16).find_map(|index| {
         let id = crate::ob::directory().processes_live(index)?;
         // SAFETY: the record of a live process object, at its final address.
         let process = unsafe { &mut *record(index) };
-        if process.end.is_some() && !process.torn_down && process.object == id {
-            attach(index);
-            Some(process)
-        } else {
-            None
-        }
+        (process.end.is_some() && !process.torn_down && process.object == id).then_some(process)
     })
 }
 
@@ -206,43 +157,4 @@ pub fn reap_pending() -> bool {
                 process.end.is_some() && !process.torn_down && process.object == id
             })
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::Attachment;
-
-    /// A scope acts for its process from its beginning to its end, and for none after; the next
-    /// scope begins afresh.
-    #[test]
-    fn a_scope_attaches_until_it_ends() {
-        let mut attachment = Attachment::none();
-        assert_eq!(attachment.index(), None);
-        attachment.begin(3);
-        assert_eq!(attachment.index(), Some(3));
-        attachment.end();
-        assert_eq!(attachment.index(), None, "cleared after the scope");
-        attachment.begin(0);
-        assert_eq!(attachment.index(), Some(0));
-    }
-
-    /// Two loads, or a load inside a reap, would leave the first process current for the second's
-    /// work: scopes never nest.
-    #[test]
-    #[should_panic(expected = "no other process attached")]
-    fn scopes_never_nest() {
-        let mut attachment = Attachment::none();
-        attachment.begin(1);
-        attachment.begin(2);
-    }
-
-    /// A scope ends once.
-    #[test]
-    #[should_panic(expected = "a scope ends once")]
-    fn a_scope_ends_once() {
-        let mut attachment = Attachment::none();
-        attachment.begin(1);
-        attachment.end();
-        attachment.end();
-    }
 }

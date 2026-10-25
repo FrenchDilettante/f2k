@@ -292,10 +292,13 @@ impl Dispatcher {
             }
             ApcMode::User => {
                 // The user arm: an alertable user-mode wait breaks; nothing else (the delivery is
-                // the thread's own, on its way back to user mode: `user::apc`).
+                // the thread's own, on its way back to user mode: `user::apc`). Not while the
+                // thread is attached to another process's address space (see `super::attach`): the
+                // APC waits queued until the thread is back on its own.
                 if thread.state == ThreadState::Waiting
                     && thread.wait_mode == WaitMode::User
                     && thread.wait_alertable
+                    && !thread.attached()
                 {
                     thread.user_apc_pending = true;
                     self.unwait(thread, STATUS_USER_APC, increment);

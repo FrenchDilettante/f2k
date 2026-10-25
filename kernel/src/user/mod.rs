@@ -455,6 +455,8 @@ pub fn run_fault_stub() -> ! {
     // stub is the boot's one program, leg 1, though no runner drives it: it reports as a
     // one-process boot's.
     let process = crate::process::Process::start("stub", Some(1));
+    // Built attached to the process: the pages below land in its directory, the live one.
+    let attached = process.attach();
     let space = process.vm();
     crate::exec::loader::seed_regions(space, USER_CODE_PAGE, paging::PAGE_SIZE);
 
@@ -469,6 +471,8 @@ pub fn run_fault_stub() -> ! {
         USER_CODE_PAGE,
         USER_STACK_TOP
     );
+    // Detached before the idle loop, which never returns to end the scope.
+    drop(attached);
     crate::process::threads::enter_as_main_thread(
         process,
         crate::sched::startup::UserStart {

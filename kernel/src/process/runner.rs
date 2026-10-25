@@ -34,10 +34,10 @@
 //! With the kernel option `concurrent` (`... concurrent -- CORPUS\sched.exe sleep ;; hello`), the
 //! legs run side by side instead: the runner loads every leg first, announcing each with its
 //! start line as it is loaded, then readies every main thread, and the scheduler runs them all at
-//! once. Every load is done before any thread is ready: a load runs on the idle thread, in the
-//! loaded process's address space, and a ready thread could preempt it. No reap starts a leg (every
-//! leg has started); each leg's end line prints as it ends, its audit line at the next quiescent
-//! point, and the summary once every leg is reaped. The program output of legs that overlap
+//! once. Every load is done before any thread is ready: a load runs on the idle thread, attached to
+//! the loaded process, and a ready thread could preempt it. No reap starts a leg (every leg has
+//! started); each leg's end line prints as it ends, its audit line at the next quiescent point,
+//! and the summary once every leg is reaped. The program output of legs that overlap
 //! interleaves on COM1, so the log is judged whole, not split by leg.
 //!
 //! With the kernel option `screens` (`F2K: ... screens -- CORPUS\console.exe info ;; ...`), each
@@ -190,9 +190,9 @@ fn start_every_leg(legs: u32) {
 }
 
 /// Announce leg `index` and load it: create its process — its program read off the boot volume, the
-/// leg its own — and plant its main thread's start while the process's address space is the live
-/// one, then end the load. The thread is not readied: nothing runs until the caller readies it, so
-/// another leg could be loaded first.
+/// leg its own, its address space built attached to it — and plant its main thread's start. The
+/// thread is not readied: nothing runs until the caller readies it, so another leg could be loaded
+/// first.
 fn load_leg(index: u32) -> &'static mut crate::process::Process {
     suite().started(index);
     let command_line = programs()
@@ -209,7 +209,6 @@ fn load_leg(index: u32) -> &'static mut crate::process::Process {
     let (process, entry) =
         crate::exec::loader::load_path(&path[..length], name, command_line, Some(index));
     crate::process::threads::start_main_thread(process, crate::user::main_thread_start(entry));
-    crate::process::detach();
     process
 }
 

@@ -11,8 +11,14 @@
 //! mapped in every address space ([`crate::mem::kstacks`]), each slot's frames recorded by their
 //! owning thread. The thread records themselves are the object manager's ([`crate::ob`]), taken
 //! from its whole pool; the process numbers its own threads ([`ordinals`]), which places their TEB
-//! pages. The scheduling record leads the process at a pinned offset, so a thread's owner pointer
-//! resolves the directory base the context switch loads.
+//! pages. The scheduling record leads the process at a pinned offset, so a thread's address-space
+//! pointer (its owner's record, or the one it attached to) resolves the directory base the context
+//! switch loads.
+//!
+//! Kernel code builds or reads a process's address space from outside its threads by attaching to
+//! it ([`Process::attach`], see [`crate::sched::attach`]): the loader, on the idle thread, builds a
+//! new process's that way. The teardown does not attach: it reads the dead directory through the
+//! scratch window, on the boot address space.
 //!
 //! A process runs on its threads until its last thread ends — the process's end, which its waiters
 //! observe at once — and the idle thread tears it down later. The end and the teardown touch only
@@ -62,7 +68,7 @@ pub mod ordinals;
 
 pub use pool::MAX_PROCESSES;
 #[cfg(target_arch = "x86")]
-pub use pool::{current, current_mut, detach, reap_pending};
+pub use pool::{current, current_mut, reap_pending};
 
 /// The smoke-subset thread surface: child-thread creation, the thread records, the thread-exit
 /// path.
@@ -365,24 +371,16 @@ impl Process {
 
 #[cfg(target_arch = "x86")]
 impl Process {
-    /// Create the process and make it current: a fresh address space with the record built at its
-    /// final address in the pool, then its main thread taking the system's lowest free gate-stack
-    /// slot, the fixed TEB page, and the process's scheduling data. Every later user mapping lands
-    /// in this process's directory, inside one of its regions. `leg` is the boot's program the
-    /// process runs as (none for a child). Returns the record for the caller's setup (the
-    /// loader's), which threads it through rather than reaching for the current process again.
+    /// Create the process: a fresh address space with the record built at its final address in the
+    /// pool, then its main thread taking the system's lowest free gate-stack slot, the fixed TEB
+    /// page, and the process's scheduling data. The address space is not live: the caller attaches
+    /// to the process ([`Process::attach`]) to map its user pages, each inside one of its regions.
+    /// `leg` is the boot's program the process runs as (none for a child). Returns the record for
+    /// the caller's setup (the loader's), which threads it through.
     // The record is the pool's, not borrowed from `name` (see `pool::create`).
     #[allow(clippy::mut_from_ref)]
     pub fn start(name: &'static str, leg: Option<u32>) -> &'static mut Process {
         let dir_phys = paging::create_address_space();
-        paging::activate_address_space(dir_phys);
-        // The new directory maps every thread's gate stack already, the other processes' threads'
-        // among them: the kernel stack region's tables are shared.
-        debug_assert!(
-            crate::mem::kstacks::every_stack_mapped_here(),
-            "a new address space misses another thread's gate stack"
-        );
-
         let process = pool::create(dir_phys, name, leg);
 
         // The scheduling record's thread-list sentinel closes now that the record is at its final
@@ -424,6 +422,14 @@ impl Process {
     /// The process's main thread: its record in the object manager's thread pool.
     pub fn main_thread(&self) -> &'static mut crate::sched::thread::Thread {
         crate::ob::directory().threads.record(self.main_thread)
+    }
+
+    /// Attach the running thread to this process's address space until the guard drops (see
+    /// [`crate::sched::attach`]): its user pages are the live ones, while the thread's own process
+    /// stays the calling process ([`current`]). The record outlives the scope: the caller holds a
+    /// reference on the process, or builds it.
+    pub fn attach(&self) -> crate::sched::attach::Attached {
+        crate::sched::attach::attach(&self.sched)
     }
 }
 
@@ -580,8 +586,9 @@ pub fn reap() {
 /// to the process's waiters: its object signalled at its last thread's exit, which the teardown
 /// checks first.
 ///
-/// Must run on the boot address space — the walk reads the dead directory through the scratch
-/// window, never through a mapping.
+/// Must run on the boot address space, attached to nothing — the walk reads the dead directory
+/// through the scratch window, never through a mapping, and nothing else here reaches the process's
+/// user pages (its views' sections give their frames back through the frame database).
 #[cfg(target_arch = "x86")]
 fn teardown(process: &'static mut Process, quiescent: bool) {
     let end = process.end.expect("a torn-down process has ended");
@@ -662,12 +669,11 @@ fn audit_objects(process: &mut Process, quiescent: bool) {
     }
 }
 
-/// Step 5: the process's own reference on its object goes, and the kernel detaches from it. The
-/// record is reused once the object is gone — now, unless a handle to the process outlives it.
+/// Step 5: the process's own reference on its object goes. The record is reused once the object is
+/// gone — now, unless a handle to the process outlives it.
 #[cfg(target_arch = "x86")]
 fn release_record(process: &mut Process) {
     let _ = crate::ob::directory().dereference(process.object, crate::sched::idle::dispatcher());
-    pool::detach();
 }
 
 /// A file-backed section, or an image segment, is gone: its file is mapped once less, and its
