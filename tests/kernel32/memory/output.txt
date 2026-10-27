@@ -1,9 +1,9 @@
 # F2K capture of memory (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-AC9F3E6, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Sat 10/24/2026  9:14:45.02
-memory F2KT-SOURCE-CRC=0x1BBEA797
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Tue 10/27/2026 13:26:11.31
+memory F2KT-SOURCE-CRC=0x36387241
 >>> memory.exe sysinfo
 == sysinfo
 page size 0x1000 granularity 0x10000
@@ -140,7 +140,7 @@ GetModuleHandleW(NULL): the same base yes
 section .text: protect 0x20 type 0x1000000 same allocation yes
 section .rdata: protect 0x2 type 0x1000000 same allocation yes
 section .data: protect 0x8 type 0x1000000 same allocation yes
-past the image end: state 0x10000 protect 0x1 type 0x0 region 0xB000 allocprotect 0x0
+past the image end: state 0x10000 protect 0x1 type 0x0 region 0xA000 allocprotect 0x0
 memory: done
 <<< exit code=0
 >>> memory.exe mapping
@@ -177,5 +177,31 @@ child with a 256 KiB stack: 200 KiB of recursion ok, reservation 0x100000
 child with a 4 MiB stack: 3 MiB of recursion ok, reservation 0x400000
 child with the default stack: 512 KiB of recursion ok, reservation 0x100000
 overflowing child: caught code 0xC00000FD, survived yes
+memory: done
+<<< exit code=0
+>>> memory.exe query
+== query
+sizes: basic 16, image 48
+the paging file, 1 MiB, committed: basic 0x00000000, length 16, base 0, attributes 0x08000000, size 0x000100000
+the paging file, 1 MiB, SEC_RESERVE: basic 0x00000000, length 16, base 0, attributes 0x04000000, size 0x000100000
+the program's file, read-only: basic 0x00000000, length 16, base 0, attributes 0x00800000, size 0x00000E000
+the program's file, SEC_IMAGE: basic 0x00000000, length 16, base 0, attributes 0x01800000, size 0x000016000
+  its base the image's ImageBase: no, its size the image's SizeOfImage: yes
+the program's file, SEC_IMAGE: image 0x00000000, length 48
+  TransferAddress the image's entry: yes
+  ZeroBits 0, stack reserve 0x100000, commit 0x1000, the header's: yes
+  subsystem 3, version 4.0, GpValue 0x0
+  characteristics 0x010F (the header's 0x010F), DLL characteristics 0x0000, machine 0x014C
+  contains code 1, spare 0, loader flags 0x0, reserved 0x0 0x0
+the paging file's section, class 1: 0xC0000049, length 254750511
+the file's data section, class 1: 0xC0000049, length 254750511
+class 0, one byte short: 0xC0000004, length 254750511
+class 0, four bytes over: 0x00000000, length 16
+class 1, one byte short: 0xC0000004, length 254750511
+class 2: 0xC0000003, length 254750511
+class 0, no length pointer: 0x00000000
+a handle opened with FILE_MAP_READ only: basic 0xC0000022, length 254750511
+an event's handle: basic 0xC0000024, length 254750511
+NULL: basic 0xC0000008, length 254750511
 memory: done
 <<< exit code=0

@@ -2,8 +2,8 @@
 
 Microsoft Windows 2000 [Version 5.00.2195]
 # machine: CLANKER-AC9F3E6, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Sat 10/24/2026 21:39:31.53
-spawn F2KT-SOURCE-CRC=0x03300E13
+# date: Tue 10/27/2026 17:57:13.07
+spawn F2KT-SOURCE-CRC=0x98AC5E56
 >>> spawn.exe layout
 == layout
 parent: TEB 0x7FFDE000, PEB 0x7FFDF000, image base 0x00400000
@@ -12,7 +12,7 @@ parent: environment 0x00010000, command line buffer 0x00020774
 parent: stack base 0x00130000, limit 0x0012E000
 parent: the TEB's PEB pointer the PEB: yes
 second thread: TEB 0x7FFDD000, its PEB pointer the PEB: yes
-second thread: stack base 0x00520000, limit 0x0051F000
+second thread: stack base 0x00530000, limit 0x0052F000
 NtQueryInformationProcess(ProcessBasicInformation): status 0x00000000, length 24
   ExitStatus 0x00000103, UniqueProcessId the child's id: yes, InheritedFromUniqueProcessId the parent's: yes
 NtQueryInformationProcess, a buffer 4 bytes short: status 0xC0000004
@@ -651,6 +651,208 @@ CreateProcessW(CREATE_NEW_CONSOLE, spawnkid exit 13):
   ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 13
 _spawnl(_P_DETACH), spawnkid signal: ret 0 errno=0
   the detached child set the event: yes
+spawn: done
+<<< exit code=0
+>>> spawn.exe ended
+== ended
+spawnkid exit 5: its end WAIT_OBJECT_0; its thread handle closed, its process handle kept
+NtQueryInformationProcess(ProcessBasicInformation), the ended child: 0x00000000, length 24
+  exit status 5, a PEB yes, its id CreateProcess's yes, its parent this program yes
+OpenProcess by its id, a handle still holding it: opened no err=87
+OpenProcess(PROCESS_TERMINATE) by its id: opened no err=87
+OpenProcess by its id, every handle closed: opened no err=87
+a waiting child:
+  NtQueryInformationProcess: 0x00000000, exit status 259, its parent this program yes
+  its end: WAIT_OBJECT_0, exit code 0
+spawn: done
+<<< exit code=0
+>>> spawn.exe unstarted
+== unstarted
+CreateProcessA(CREATE_SUSPENDED), spawnkid args never, never resumed:
+  TerminateProcess(7): ret=1 err=-; the child's end: WAIT_OBJECT_0, its thread's exit code 0xC000004B, the process's 0
+  TerminateProcess(0xC0000005): ret=1 err=-; the child's end: WAIT_OBJECT_0, its thread's exit code 0xC000004B, the process's 0
+  TerminateThread(45), its only thread: ret=1 err=-; the child's end: WAIT_OBJECT_0, its thread's exit code 0xC000004B, the process's 0
+a running child (it set its ready event and waits for another):
+  TerminateProcess(46): ret=1 err=-; the child's end: WAIT_OBJECT_0, its thread's exit code 46, the process's 46
+  TerminateThread(47), its only thread: ret=1 err=-; the child's end: WAIT_OBJECT_0, its thread's exit code 47, the process's 47
+CreateProcessA(CREATE_SUSPENDED), spawnkid exit 3, resumed:
+  ResumeThread: ret=1 err=-; the child's end: WAIT_OBJECT_0, its thread's exit code 3, the process's 3
+spawn: done
+<<< exit code=0
+>>> spawn.exe dupclose
+== dupclose
+a suspended child, spawnkid args never, an event duplicated into it:
+  back out of it, DUPLICATE_CLOSE_SOURCE: ret=1 err=-
+  the same event: yes
+  the child's handle, duplicated out again: ret=0 err=6
+  a second one, DUPLICATE_CLOSE_SOURCE with no target process: ret=1 err=-
+  the second, duplicated out again: ret=0 err=6
+  a third one, DUPLICATE_CLOSE_SOURCE into an event's handle (no process): ret=0 err=6
+  the third, duplicated out again: ret=0 err=6
+DuplicateHandle within this program, DUPLICATE_CLOSE_SOURCE: ret=1 err=-
+  CloseHandle on the source then: ret=1 err=-
+  CloseHandle on the duplicate: ret=0 err=6
+spawn: done
+<<< exit code=0
+>>> spawn.exe remote
+== remote
+a suspended child, spawnkid exit 0:
+VirtualAllocEx(MEM_RESERVE, 128 KiB): non-null yes, on the 64 KiB granularity yes err=-
+VirtualQueryEx, the reservation: ret=28, base the address yes, allocation base the address yes, state 0x2000 protect 0x0 type 0x20000 allocprotect 0x1 region 0x20000
+VirtualAllocEx(MEM_COMMIT, its first page): the address yes err=-
+VirtualQueryEx, the committed page: ret=28, base the address yes, allocation base the address yes, state 0x1000 protect 0x4 type 0x20000 allocprotect 0x1 region 0x1000
+VirtualQueryEx, the page after it: ret=28, base the address yes, allocation base the address no, state 0x2000 protect 0x0 type 0x20000 allocprotect 0x1 region 0x1F000
+WriteProcessMemory into the committed page: ret=1 n=16 err=-
+VirtualProtectEx(PAGE_READONLY): ret=1 old 0x4 err=-
+WriteProcessMemory into the read-only page: ret=0 n=62194 err=998
+  VirtualQueryEx after it: ret=28, base the address yes, allocation base the address yes, state 0x1000 protect 0x2 type 0x20000 allocprotect 0x1 region 0x1000
+VirtualProtectEx(PAGE_EXECUTE_READ): ret=1 old 0x2 err=-
+WriteProcessMemory into the execute-read page: ret=1 n=16 err=-
+  VirtualQueryEx after it: ret=28, base the address yes, allocation base the address yes, state 0x1000 protect 0x20 type 0x20000 allocprotect 0x1 region 0x1000
+VirtualProtectEx(PAGE_NOACCESS): ret=1 old 0x20 err=-
+WriteProcessMemory into the no-access page: ret=0 n=62194 err=998
+  VirtualQueryEx after it: ret=28, base the address yes, allocation base the address yes, state 0x1000 protect 0x1 type 0x20000 allocprotect 0x1 region 0x1000
+VirtualProtectEx(PAGE_READWRITE): ret=1 old 0x1 err=-
+WriteProcessMemory into the reserved page after it: ret=0 n=62194 err=487
+read back: the first write there yes
+  the read-only page's no
+  the execute-read page's yes
+  the no-access page's no
+VirtualQueryEx, the child's image base: ret=28, base the address yes, allocation base the address yes, state 0x1000 protect 0x2 type 0x1000000 allocprotect 0x80 region 0x1000
+VirtualQueryEx, address 0: ret=28, base the address yes, allocation base the address yes, state 0x10000 protect 0x1 type 0x0 allocprotect 0x0 region 0x10000
+VirtualQueryEx, address 0x80000000: ret=0 err=87
+VirtualQueryEx, a handle with PROCESS_VM_READ only: ret=0 err=5
+VirtualAllocEx, the same handle: non-null no err=5
+VirtualProtectEx, the same handle: ret=0 old 0xF2F2 err=5
+FlushInstructionCache, CreateProcess's handle: ret=1 err=-
+FlushInstructionCache, a handle with PROCESS_VM_WRITE only: ret=1 err=-
+FlushInstructionCache, a handle with PROCESS_VM_OPERATION only: ret=0 err=5
+FlushInstructionCache, a handle with PROCESS_QUERY_INFORMATION only: ret=0 err=5
+FlushInstructionCache, this program, NULL, 0 bytes: ret=1 err=-
+FlushInstructionCache, a NULL handle: ret=0 err=6
+VirtualFreeEx(MEM_RELEASE): ret=1 err=-
+VirtualQueryEx, the released address: ret=28, base the address yes, allocation base the address no, state 0x10000 protect 0x1 type 0x0 allocprotect 0x0
+VirtualFreeEx(MEM_RELEASE) again: ret=0 err=487
+the child resumed:
+  its end: WAIT_OBJECT_0, exit code 0
+spawn: done
+<<< exit code=0
+>>> spawn.exe selfmem
+== selfmem
+DuplicateHandle of the current process's pseudo-handle: ret=1 err=-, a real handle yes
+OpenProcess, this program's own id: opened yes
+8 KiB committed at the start of a 64 KiB reservation, the rest reserved:
+  ReadProcessMemory, the duplicated handle, 8 KiB: ret=1 n=0x2000 err=-
+    the bytes: yes
+  12 KiB, across into the reserved page: ret=0 n=0x0 err=299
+  4 KiB from 2 KiB before the reserved page: ret=0 n=0x0 err=299
+  16 bytes from 8 bytes before it: ret=0 n=0x0 err=299
+  4 KiB, all reserved: ret=0 n=0x0 err=299
+  12 KiB through OpenProcess's handle: ret=0 n=0x0 err=299
+  12 KiB through the pseudo-handle: ret=0 n=0x0 err=299
+  4 KiB into a buffer crossing into the reserved page: ret=0 n=0x0 err=998
+    the buffer's committed part filled: yes
+  WriteProcessMemory, 12 KiB across into the reserved page: ret=0 n=0xF2F2 err=487
+    bytes written from the start: 0x0
+  16 bytes from 8 bytes before the reserved page: ret=0 n=0xF2F2 err=487
+    bytes written: 0x0
+  4 KiB into the second page, now read-only: ret=0 n=0xF2F2 err=998
+    its protection after: 0x2, bytes written: 0x0
+  8 KiB over both pages, the second read-only: ret=1 n=0x2000 err=-
+    bytes written from the start: 0x2000
+spawn: done
+<<< exit code=0
+>>> spawn.exe crtfds
+== crtfds
+_open: a.txt read binary 3, b.txt read _O_NOINHERIT 4, c.txt write append text 5
+_spawnl(_P_WAIT), spawnkid crtinfo:
+kid: cbReserved2 34, lpReserved2 set
+kid: the count at its start 6, the size 4 + 5 per descriptor: yes
+kid: descriptor 0: a handle
+kid: descriptor 1: a handle
+kid: descriptor 2: a handle
+kid: descriptor 3: flags 0x01, a handle of type 1 err=-
+kid: descriptor 4: flags 0x00, no handle
+kid: descriptor 5: flags 0xA1, a handle of type 1 err=-
+kid: C runtime descriptor 0: open
+kid: C runtime descriptor 1: open
+kid: C runtime descriptor 2: open
+kid: C runtime descriptor 3: open
+kid: C runtime descriptor 4: closed
+kid: C runtime descriptor 5: open
+  ret 0
+b.txt closed, _spawnl(_P_WAIT), spawnkid crtinfo:
+kid: cbReserved2 34, lpReserved2 set
+kid: the count at its start 6, the size 4 + 5 per descriptor: yes
+kid: descriptor 0: a handle
+kid: descriptor 1: a handle
+kid: descriptor 2: a handle
+kid: descriptor 3: flags 0x01, a handle of type 1 err=-
+kid: descriptor 4: flags 0x00, no handle
+kid: descriptor 5: flags 0xA1, a handle of type 1 err=-
+kid: C runtime descriptor 0: open
+kid: C runtime descriptor 1: open
+kid: C runtime descriptor 2: open
+kid: C runtime descriptor 3: open
+kid: C runtime descriptor 4: closed
+kid: C runtime descriptor 5: open
+  ret 0
+CreateProcessA(no C runtime block, spawnkid crtinfo):
+kid: cbReserved2 0, lpReserved2 NULL
+kid: C runtime descriptor 0: open
+kid: C runtime descriptor 1: open
+kid: C runtime descriptor 2: open
+kid: C runtime descriptor 3: closed
+kid: C runtime descriptor 4: closed
+kid: C runtime descriptor 5: closed
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+spawn: done
+<<< exit code=0
+>>> spawn.exe inheritflags
+== inheritflags
+an inheritable file: flags 0x1; the same, protected from close: flags 0x3
+CONOUT$ opened inheritable: flags 0x1; not inheritable: flags 0x0
+SetHandleInformation(PROTECT_FROM_CLOSE), CONOUT$: ret=1 err=-, flags 0x0
+CreateProcessA(spawnkid flags, the four in that order):
+kid: handle 1: flags 0x1, type 1
+kid: handle 2: flags 0x3, type 1
+kid: handle 3: flags 0x1, type 2
+kid: handle 4: ret=0 err=6
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessA(the same, bInheritHandles FALSE):
+kid: handle 1: ret=0 err=6
+kid: handle 2: ret=0 err=6
+kid: handle 3: flags 0x1, type 2
+kid: handle 4: ret=0 err=6
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+spawn: done
+<<< exit code=0
+>>> spawn.exe binaryforms
+== binaryforms
+GetBinaryTypeA(an MZ header, e_lfarlc 0x1C (a DOS program)): ret=1 type=1 err=-
+GetBinaryTypeW(an MZ header, e_lfarlc 0x1C (a DOS program)): ret=1 type=1 err=-
+GetBinaryTypeA(e_lfarlc 0x40, e_lfanew past the file's end): ret=1 type=1 err=-
+GetBinaryTypeW(e_lfarlc 0x40, e_lfanew past the file's end): ret=1 type=1 err=-
+GetBinaryTypeA(an NE header, target 2 (Windows)): ret=1 type=2 err=-
+GetBinaryTypeW(an NE header, target 2 (Windows)): ret=1 type=2 err=-
+GetBinaryTypeA(an NE header, target 1 (OS/2)): ret=1 type=1 err=-
+GetBinaryTypeW(an NE header, target 1 (OS/2)): ret=1 type=1 err=-
+GetBinaryTypeA(an NE header, target 0 (unknown)): ret=1 type=1 err=-
+GetBinaryTypeW(an NE header, target 0 (unknown)): ret=1 type=1 err=-
+GetBinaryTypeA(an LE header): ret=1 type=1 err=-
+GetBinaryTypeW(an LE header): ret=1 type=1 err=-
+GetBinaryTypeA(a PE signature, nothing after it): ret=1 type=1 err=-
+GetBinaryTypeW(a PE signature, nothing after it): ret=1 type=1 err=-
+GetBinaryTypeA(an MZ header alone, 64 bytes, e_lfanew 0): ret=1 type=1 err=-
+GetBinaryTypeW(an MZ header alone, 64 bytes, e_lfanew 0): ret=1 type=1 err=-
+GetBinaryTypeA(a DOS program named .txt): ret=1 type=1 err=-
+GetBinaryTypeW(a DOS program named .txt): ret=1 type=1 err=-
+GetBinaryTypeA(a text file named .com): ret=1 type=1 err=-
+GetBinaryTypeW(a text file named .com): ret=1 type=1 err=-
+GetBinaryTypeA(a text file named .pif): ret=1 type=3 err=-
+GetBinaryTypeW(a text file named .pif): ret=1 type=3 err=-
+GetBinaryTypeA(a text file with no extension): ret=0 type=untouched err=193
+GetBinaryTypeW(a text file with no extension): ret=0 type=untouched err=193
 spawn: done
 <<< exit code=0
 >>> spawn.exe overlay

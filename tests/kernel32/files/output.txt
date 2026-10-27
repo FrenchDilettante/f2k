@@ -1,9 +1,9 @@
 # F2K capture of files (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-AC9F3E6, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Sat 10/24/2026 15:30:38.00
-files F2KT-SOURCE-CRC=0x16A4A363
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Tue 10/27/2026 13:25:47.24
+files F2KT-SOURCE-CRC=0xB2D51553
 >>> files.exe open
 == open
 DATA\SMALL.TXT: opened err=0
@@ -444,5 +444,45 @@ GetDiskFreeSpaceExA(an empty string): ret=0 err=3
 GetDiskFreeSpaceExW(an empty string): ret=0 err=3
 GetDiskFreeSpaceExA(the root, no total-free pointer): ret=1 err=-, total nonzero yes, free to caller <= total yes
 GetDiskFreeSpaceExW(the root, no total-free pointer): ret=1 err=-, total nonzero yes, free to caller <= total yes
+files: done
+<<< exit code=0
+>>> files.exe slots
+== slots
+a close, then an open: the open takes the slot just freed: yes
+SetCurrentDirectoryA(the current directory, as GetCurrentDirectoryA spells it): ret=1 err=0, the next open takes the slot freed before it: yes
+SetCurrentDirectoryA(the same, lower case): ret=1 err=0, the next open takes the slot freed before it: yes
+SetCurrentDirectoryA(the same, a trailing backslash): ret=1 err=0, the next open takes the slot freed before it: no
+SetCurrentDirectoryA(DATA, another directory): ret=1 err=0, the next open takes the slot freed before it: no
+SetCurrentDirectoryA(back to the first): ret=1 err=0, the next open takes the slot freed before it: no
+three opens, the first closed, then the second, then two more opens:
+  the first of them takes the second's slot yes, the first's no
+  the next takes the second's slot no, the first's yes
+files: done
+<<< exit code=0
+>>> files.exe flags
+== flags
+GetHandleInformation, a file opened inheritable: flags 0x1
+GetHandleInformation, a file opened not inheritable: flags 0x0
+GetHandleInformation, the current process's pseudo-handle: flags 0x0
+GetHandleInformation, NULL: ret=0 err=6
+GetHandleInformation, no flags pointer: faulted 0xC0000005
+SetHandleInformation(INHERIT, INHERIT), the second: ret=1 err=-, flags 0x1
+SetHandleInformation(INHERIT, 0): ret=1 err=-, flags 0x0
+SetHandleInformation(0, INHERIT), the mask empty: ret=1 err=-, flags 0x0
+SetHandleInformation(0x80, 0x80), a flag with no meaning: ret=1 err=-, flags 0x0
+SetHandleInformation, NULL: ret=0 err=6
+SetHandleInformation(PROTECT_FROM_CLOSE), the first: ret=1 err=-, flags 0x3
+CloseHandle, the protected handle: ret=0 err=6, still open: yes
+DuplicateHandle of it, inheritable: ret=1 err=-, the duplicate's flags 0x1
+DuplicateHandle of it, DUPLICATE_CLOSE_SOURCE: ret=1 err=-, the source still open: yes
+SetHandleInformation(PROTECT_FROM_CLOSE, 0): ret=1 err=-
+CloseHandle then: ret=1 err=-
+NtQueryObject(class 4, 2 bytes): 0x00000000, inherit 1 protect 0, length 2
+NtQueryObject(class 4, 8 bytes): 0x00000000, the third byte untouched yes, length 2
+NtQueryObject(class 4, 1 byte): 0xC0000004, length 2
+NtQueryObject(class 4), no length pointer: 0x00000000
+NtSetInformationObject(class 4, not inherit, protect): 0x00000000, flags 0x2
+NtSetInformationObject(class 4, 1 byte): 0xC0000004
+NtSetInformationObject(class 4, 8 bytes): 0xC0000004, flags 0x2
 files: done
 <<< exit code=0
