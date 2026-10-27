@@ -10,12 +10,6 @@ gate = true
 timeout = 60
 
 [pending]
-ended = "OpenProcess opens a process that has ended"
-unstarted = "TerminateThread on a child's only thread, never started, leaves the process running"
-dupclose = "DUPLICATE_CLOSE_SOURCE closes the source after the duplicate is made"
-remote = "VirtualAllocEx, VirtualFreeEx, VirtualProtectEx, VirtualQueryEx and FlushInstructionCache not yet implemented"
-selfmem = "ReadProcessMemory reports a partial copy's count"
-binaryforms = "the kernel refuses an NE program for no target as a Windows one, and a PE signature with nothing after it as a broken image; Windows 2000 types both as DOS programs (1)"
 system = "no cmd.exe on F2K's disk"
 detach = "F2K's stub path (logged, error 120)"
 

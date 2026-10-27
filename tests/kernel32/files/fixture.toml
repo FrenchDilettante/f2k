@@ -6,9 +6,6 @@ kind = "sectioned"
 gate = true
 timeout = 40
 
-[pending]
-flags = "DUPLICATE_CLOSE_SOURCE closes a source handle protected from close; Windows 2000 leaves it open"
-
 [pins]
 # The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
 # calls); scripts/compat.py derives each export's coverage from them.

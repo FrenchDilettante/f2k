@@ -9,7 +9,6 @@ image = ["past the image end: state 0x10000 protect 0x1 type 0x0 region * allocp
 
 # The blocks this kernel does not pass yet, each with the increment that enables it.
 [pending]
-query = "NtQuerySection's attributes and refusals differ from Windows 2000's"
 
 [pins]
 # The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup

@@ -338,24 +338,26 @@ impl Side {
 
 /// Copy `size` bytes in chunks of at most [`COPY_CHUNK`] through a kernel buffer: each chunk read
 /// whole by `read(offset, chunk)` then written whole by `write(offset, chunk)` (the offsets from
-/// the copy's start). The bytes copied — whole chunks: a chunk that faults counts for none of its
-/// bytes, as the spawn fixture's 16-byte read across an image's end copies none — and the status
-/// of the fault that stopped the copy, if any (see [`Side::status`]).
+/// the copy's start). The bytes copied, all of them, or the status of the fault that stopped the
+/// copy (see [`Side::status`]): a failed copy counts none of its bytes. The chunks before the
+/// fault stay where they were written, but the spawn fixture's capture shows Windows 2000
+/// reporting none copied for every copy that fails part-way: a read running from committed memory
+/// into a reserved page, and a read into a buffer running into one, whose committed part is filled.
 pub fn copy_chunks(
     size: u32,
     mut read: impl FnMut(u32, &mut [u8]) -> Result<(), Side>,
     mut write: impl FnMut(u32, &[u8]) -> Result<(), Side>,
-) -> (u32, Result<(), Status>) {
+) -> Result<u32, Status> {
     let mut buffer = [0u8; COPY_CHUNK];
     let mut done = 0;
     while done < size {
         let chunk = &mut buffer[..(size - done).min(COPY_CHUNK as u32) as usize];
-        if let Err(side) = read(done, chunk).and_then(|()| write(done, chunk)) {
-            return (done, Err(side.status()));
-        }
+        read(done, chunk)
+            .and_then(|()| write(done, chunk))
+            .map_err(Side::status)?;
         done += chunk.len() as u32;
     }
-    (done, Ok(()))
+    Ok(done)
 }
 
 /// Whether `[address, address + size)` lies in the application range (below
@@ -380,10 +382,10 @@ enum Direction {
 /// From there the count is written whatever the outcome: zero bytes copy nothing and succeed (no
 /// handle is looked at), a handle the call cannot take or a process that has ended copies nothing
 /// (the fixture's null handle and handle without PROCESS_VM_READ print a count of 0), and a fault
-/// stops the copy (see [`copy_chunks`]). The process's pages are reached as its protections allow,
-/// as a program's own access would: a write to a read-only page faults (a copy-on-write page is
-/// made the process's own), no protection is changed — kernel32's WriteProcessMemory makes the
-/// pages writable first, as Windows 2000's does.
+/// stops the copy, its count 0 (see [`copy_chunks`]). The process's pages are reached as its
+/// protections allow, as a program's own access would: a write to a read-only page faults (a
+/// copy-on-write page is made the process's own), no protection is changed — kernel32's
+/// WriteProcessMemory makes the pages writable first, as Windows 2000's does.
 fn copy_virtual_memory(
     call: &mut NtCall,
     process: Handle,
@@ -399,17 +401,17 @@ fn copy_virtual_memory(
     if !count.is_null() {
         capture(count)?;
     }
-    let (copied, result) = if size == 0 {
-        (0, Ok(()))
+    let result = if size == 0 {
+        Ok(0)
     } else {
         copy_between(call, process, base, buffer, size, direction)
     };
     // The count probed above; a page unmapped since is not the copy's failure.
-    let _ = count.write_optional(copied);
-    result.map(|()| STATUS_SUCCESS)
+    let _ = count.write_optional(result.unwrap_or(0));
+    result.map(|_| STATUS_SUCCESS)
 }
 
-/// The copy itself, once the ranges and the count are checked: the bytes copied, and the status.
+/// The copy itself, once the ranges and the count are checked: the bytes copied, or the status.
 #[cfg(target_arch = "x86")]
 fn copy_between(
     _call: &mut NtCall,
@@ -418,22 +420,18 @@ fn copy_between(
     buffer: UserAddr,
     size: u32,
     direction: Direction,
-) -> (u32, Result<(), Status>) {
+) -> Result<u32, Status> {
     let access = match direction {
         Direction::FromProcess => PROCESS_VM_READ,
         Direction::IntoProcess => PROCESS_VM_WRITE,
     };
-    let target = match super::object::reference_process(process.raw(), access) {
-        Ok(target) => target,
-        Err(status) => return (0, Err(status)),
-    };
-    let mut copied = 0;
-    let result = target.visit(|| {
+    let target = super::object::reference_process(process.raw(), access)?;
+    target.visit(|| {
         // The process's memory is reached attached to it, a chunk at a time; the caller's
         // detached.
         let process = |result: Result<(), super::call::Fault>| result.map_err(|_| Side::Process);
         let caller = |result: Result<(), super::call::Fault>| result.map_err(|_| Side::Caller);
-        let (done, result) = match direction {
+        match direction {
             Direction::FromProcess => copy_chunks(
                 size,
                 |offset, chunk| process(target.reach(|| base.offset(offset).read(chunk))),
@@ -444,11 +442,8 @@ fn copy_between(
                 |offset, chunk| caller(buffer.offset(offset).read(chunk)),
                 |offset, chunk| process(target.reach(|| base.offset(offset).write(chunk))),
             ),
-        };
-        copied = done;
-        result
-    });
-    (copied, result)
+        }
+    })
 }
 
 /// Host builds have no process: the copies run on the target only.
@@ -460,13 +455,13 @@ fn copy_between(
     _buffer: UserAddr,
     _size: u32,
     direction: Direction,
-) -> (u32, Result<(), Status>) {
+) -> Result<u32, Status> {
     let _ = (
         PROCESS_VM_READ,
         PROCESS_VM_WRITE,
         direction == Direction::FromProcess,
     );
-    (0, Err(super::call::STATUS_INVALID_HANDLE))
+    Err(super::call::STATUS_INVALID_HANDLE)
 }
 
 /// NtReadVirtualMemory: `size` bytes of the process's memory from `base` into the caller's
@@ -682,7 +677,8 @@ mod tests {
     }
 
     /// The chunked copy: whole chunks of at most COPY_CHUNK bytes, each read then written at its
-    /// offset; a fault counts none of its chunk's bytes, and its side decides the status.
+    /// offset; a fault fails the copy, counting none of its bytes, and its side decides the
+    /// status.
     #[test]
     fn copies_move_whole_chunks() {
         let mut reads = Vec::new();
@@ -700,7 +696,7 @@ mod tests {
                 Ok(())
             },
         );
-        assert_eq!(result, (1300, Ok(())));
+        assert_eq!(result, Ok(1300));
         assert_eq!(reads, [(0, 512), (512, 512), (1024, 276)]);
         assert_eq!(writes, reads);
         assert_eq!(
@@ -709,9 +705,10 @@ mod tests {
                 |_, _| panic!("nothing to read"),
                 |_, _| panic!("nothing to write")
             ),
-            (0, Ok(()))
+            Ok(0)
         );
-        // The process's memory faults in the third chunk: the first two count.
+        // The process's memory faults in the third chunk (selfmem's read into the reserved page):
+        // the first two were written, but nothing counts.
         assert_eq!(
             copy_chunks(
                 1300,
@@ -722,12 +719,12 @@ mod tests {
                 },
                 |_, _| Ok(()),
             ),
-            (1024, Err(STATUS_PARTIAL_COPY))
+            Err(STATUS_PARTIAL_COPY)
         );
         // The spawn fixture's 16-byte read across an image's end: one chunk, none of it counted.
         assert_eq!(
             copy_chunks(16, |_, _| Err(Side::Process), |_, _| Ok(())),
-            (0, Err(STATUS_PARTIAL_COPY))
+            Err(STATUS_PARTIAL_COPY)
         );
         // The caller's buffer refuses the second chunk.
         assert_eq!(
@@ -740,7 +737,7 @@ mod tests {
                     Err(Side::Caller)
                 },
             ),
-            (512, Err(super::super::call::STATUS_ACCESS_VIOLATION))
+            Err(super::super::call::STATUS_ACCESS_VIOLATION)
         );
         // ReadProcessMemory's and WriteProcessMemory's errors: ERROR_PARTIAL_COPY, ERROR_NOACCESS.
         assert_eq!(rtl::status::dos_error(STATUS_PARTIAL_COPY.0), 299);

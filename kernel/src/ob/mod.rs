@@ -273,6 +273,9 @@ pub struct SectionObject {
     pub file: crate::fs::fat32::lookup::File,
     /// Whether it is the paging file's (its pages start zeroed) rather than a file's.
     pub paging_file: bool,
+    /// Whether a paging-file section was created SEC_RESERVE rather than SEC_COMMIT, as
+    /// NtQuerySection reports it (its views' pages are made as they are touched all the same).
+    pub reserve: bool,
     /// Its frames, page by page, made as views first need them.
     pub frames: crate::mem::vm::SectionFrames,
     /// The section's size in bytes.
@@ -293,6 +296,7 @@ impl SectionObject {
         SectionObject {
             file: crate::fs::fat32::lookup::File::plain(0, 0, false),
             paging_file: true,
+            reserve: false,
             frames: crate::mem::vm::SectionFrames::empty(),
             size: 0,
             writable: false,

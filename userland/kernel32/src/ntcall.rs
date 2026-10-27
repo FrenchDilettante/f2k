@@ -410,6 +410,67 @@ pub fn free_virtual_memory(process: u32, base: usize) {
     unsafe { nt::NtFreeVirtualMemory(process, &mut base, &mut size, MEM_RELEASE) };
 }
 
+/// NtFreeVirtualMemory in a process, of either kind (MEM_RELEASE, MEM_DECOMMIT): the pages of
+/// `[base, base + size)`, or a whole reservation for a release of size zero.
+pub fn free_virtual_memory_range(
+    process: u32,
+    base: usize,
+    size: usize,
+    kind: u32,
+) -> Result<(), NtStatus> {
+    let (mut base, mut size) = (base, size);
+    // SAFETY: ntdll's export, over the locals above.
+    checked(unsafe { nt::NtFreeVirtualMemory(process, &mut base, &mut size, kind) })
+}
+
+/// NtProtectVirtualMemory in a process, the old protection written where the caller asked: the
+/// service probes `old` before anything changes (a missing one is its access violation).
+pub fn protect_virtual_memory_reporting(
+    process: u32,
+    base: usize,
+    size: usize,
+    protect: u32,
+    old: Option<&mut u32>,
+) -> Result<(), NtStatus> {
+    let (mut base, mut size) = (base, size);
+    // SAFETY: ntdll's export, over the locals above and the caller's old protection (or null).
+    checked(unsafe {
+        nt::NtProtectVirtualMemory(
+            process,
+            &mut base,
+            &mut size,
+            protect,
+            old.map_or(core::ptr::null_mut(), |old| old as *mut u32),
+        )
+    })
+}
+
+/// MemoryBasicInformation, NtQueryVirtualMemory's class 0.
+const MEMORY_BASIC_INFORMATION: u32 = 0;
+
+/// NtQueryVirtualMemory: the MEMORY_BASIC_INFORMATION of a process's pages from `address` into
+/// the destination (the service probes it); the structure's size.
+pub fn query_virtual_memory(
+    process: u32,
+    address: usize,
+    destination: Destination,
+) -> Result<usize, NtStatus> {
+    let mut returned = 0;
+    // SAFETY: ntdll's export: the service probes the destination (kernel32's own bytes, or its
+    // caller's under the export's contract).
+    checked(unsafe {
+        nt::NtQueryVirtualMemory(
+            process,
+            address,
+            MEMORY_BASIC_INFORMATION,
+            destination.address as *mut u8,
+            destination.length,
+            &mut returned,
+        )
+    })?;
+    Ok(returned)
+}
+
 /// NtProtectVirtualMemory in a process: the pages of `[base, base + size)` given the protection;
 /// the protection they had.
 pub fn protect_virtual_memory(

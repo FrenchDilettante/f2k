@@ -329,11 +329,24 @@ impl Process {
     /// handle cleans a file object up, the last reference deletes the object). False when the
     /// handle names nothing.
     pub fn close_handle(&mut self, handle: u32) -> bool {
-        let Some(entry) = self.handles.close(handle) else {
+        let Some(entry) = self.take_handle(handle) else {
             return false;
         };
-        self.release_entry(entry);
+        self.release_handle(entry);
         true
+    }
+
+    /// The first half of a handle's close: its slot is free from here on (the next insert takes
+    /// it), while what its entry names stays counted until [`Process::release_handle`]. None when
+    /// the handle names nothing.
+    pub fn take_handle(&mut self, handle: u32) -> Option<crate::ob::Entry> {
+        self.handles.close(handle)
+    }
+
+    /// The second half of a handle's close: what the entry [`Process::take_handle`] took out
+    /// names is released (see [`Process::close_handle`]).
+    pub fn release_handle(&mut self, entry: crate::ob::Entry) {
+        self.release_entry(entry);
     }
 
     /// Change the entry a handle names in this process's table with `change` (its inheritance, its

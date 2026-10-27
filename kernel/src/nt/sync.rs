@@ -765,10 +765,11 @@ pub fn yield_execution(_call: &mut NtCall) -> NtResult {
 /// DuplicateHandle reads the source handle). The duplicate has the access asked for or the
 /// source's (DUPLICATE_SAME_ACCESS), is inheritable as the attributes say (OBJ_INHERIT), and the
 /// call optionally closes the source in its process (DUPLICATE_CLOSE_SOURCE), which a found source
-/// is whatever happens next (see [`super::object::duplicate_entry`]); with no target process,
-/// closing it is all the call does. The new handle's value goes into the caller's memory: a target
-/// handle the probe refuses fails the call before anything is looked up. A process that has ended
-/// is STATUS_PROCESS_IS_TERMINATING on either side (its handles are gone with it).
+/// is whatever happens next, its slot freed before the duplicate is made (see
+/// [`super::object::duplicate_entry`]); with no target process, closing it is all the call does.
+/// The new handle's value goes into the caller's memory: a target handle the probe refuses fails
+/// the call before anything is looked up. A process that has ended is
+/// STATUS_PROCESS_IS_TERMINATING on either side (its handles are gone with it).
 #[allow(clippy::too_many_arguments)]
 pub fn duplicate_object(
     _call: &mut NtCall,
@@ -803,6 +804,10 @@ pub fn duplicate_object(
             of_object(self.target.expect("a duplicate has a target process"))
                 .expect("the call holds its target process")
         }
+
+        fn source(&self) -> &'static mut crate::process::Process {
+            of_object(self.source).expect("the call holds its source process")
+        }
     }
     impl DuplicateTables for Tables {
         fn insert(&mut self, entry: ob::Entry) -> u32 {
@@ -814,10 +819,12 @@ pub fn duplicate_object(
             self.target().close_handle(handle);
         }
 
-        fn close_source(&mut self, handle: u32) {
-            of_object(self.source)
-                .expect("the call holds its source process")
-                .close_handle(handle);
+        fn take_source(&mut self, handle: u32) -> Option<ob::Entry> {
+            self.source().take_handle(handle)
+        }
+
+        fn release_source(&mut self, entry: ob::Entry) {
+            self.source().release_handle(entry);
         }
     }
 

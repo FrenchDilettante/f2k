@@ -1,17 +1,19 @@
 //! Virtual memory and the system's memory facts: kernel32's own code over ntdll's system services,
-//! as on Windows 2000. VirtualAlloc, VirtualFree, VirtualProtect and VirtualQuery
-//! act on the calling process (NtCurrentProcess), a failed service's status setting the last error
-//! through BaseSetLastNTError; GetSystemInfo and GlobalMemoryStatus read
-//! NtQuerySystemInformation's basic, processor and performance classes and the process's
+//! as on Windows 2000. VirtualAllocEx, VirtualFreeEx, VirtualProtectEx and VirtualQueryEx act on
+//! the process a handle names, and VirtualAlloc, VirtualFree, VirtualProtect and VirtualQuery are
+//! them on the calling process (NtCurrentProcess), as Windows 2000's are, a failed service's
+//! status setting the last error through BaseSetLastNTError; GetSystemInfo and GlobalMemoryStatus
+//! read NtQuerySystemInformation's basic, processor and performance classes and the process's
 //! virtual-memory counters (NtQueryInformationProcess). Windows 2000 reads the basic information
 //! from the base server's static data, which csrss fills at its start with the same query (no
 //! csrss).
 
 use rtl::status::nt_success;
 
+use crate::base::set_last_nt_error;
 pub use crate::base::CURRENT_PROCESS;
-use crate::base::{set_last_nt_error, succeeded};
 use crate::nt;
+use crate::ntcall::{self, Destination};
 
 const MEM_RELEASE: u32 = 0x8000;
 const STATUS_INVALID_PARAMETER: u32 = 0xC000_000D;
@@ -32,9 +34,16 @@ const PROCESSOR_INTEL_386: u32 = 386;
 const PROCESSOR_INTEL_486: u32 = 486;
 const PROCESSOR_INTEL_PENTIUM: u32 = 586;
 
-/// VirtualAlloc: a reservation, a commit inside one, or both; the base the call settled on (the
-/// granularity's for a reservation, the first page's for a commit), or null with the status's
-/// error.
+/// A service's answer as an export returns it: its value, or `failed` with the status's error set
+/// (BaseSetLastNTError).
+fn answer<T>(result: Result<T, ntcall::NtStatus>, failed: T) -> T {
+    result.unwrap_or_else(|status| {
+        set_last_nt_error(status);
+        failed
+    })
+}
+
+/// VirtualAlloc: VirtualAllocEx in the calling process.
 #[unsafe(export_name = "f2k_export_VirtualAlloc")]
 pub extern "system" fn virtual_alloc(
     address: usize,
@@ -42,37 +51,58 @@ pub extern "system" fn virtual_alloc(
     kind: u32,
     protect: u32,
 ) -> usize {
-    let (mut base, mut size) = (address, size);
-    // SAFETY: ntdll's export, over the in/out values above.
-    let status = unsafe {
-        nt::NtAllocateVirtualMemory(CURRENT_PROCESS, &mut base, 0, &mut size, kind, protect)
-    };
-    if !nt_success(status) {
-        set_last_nt_error(status);
-        return 0;
-    }
-    base
+    virtual_alloc_ex(CURRENT_PROCESS, address, size, kind, protect)
 }
 
-/// VirtualFree: a release (a reservation's base, no size: ERROR_INVALID_PARAMETER for a size, as
-/// Windows 2000 checks before the call) or a decommit.
+/// VirtualAllocEx: a reservation, a commit inside one, or both, in the process the handle names
+/// (PROCESS_VM_OPERATION); the base the call settled on (the granularity's for a reservation, the
+/// first page's for a commit), or null with the status's error.
+#[unsafe(export_name = "f2k_export_VirtualAllocEx")]
+pub extern "system" fn virtual_alloc_ex(
+    process: u32,
+    address: usize,
+    size: usize,
+    kind: u32,
+    protect: u32,
+) -> usize {
+    answer(
+        ntcall::allocate_virtual_memory(process, address, size, kind, protect)
+            .map(|(base, _)| base),
+        0,
+    )
+}
+
+/// VirtualFree: VirtualFreeEx in the calling process.
 #[unsafe(export_name = "f2k_export_VirtualFree")]
 pub extern "system" fn virtual_free(address: usize, size: usize, kind: u32) -> u32 {
+    virtual_free_ex(CURRENT_PROCESS, address, size, kind)
+}
+
+/// VirtualFreeEx: a release (a reservation's base, no size: ERROR_INVALID_PARAMETER for a size, as
+/// Windows 2000 checks before the call) or a decommit, in the process the handle names
+/// (PROCESS_VM_OPERATION).
+#[unsafe(export_name = "f2k_export_VirtualFreeEx")]
+pub extern "system" fn virtual_free_ex(
+    process: u32,
+    address: usize,
+    size: usize,
+    kind: u32,
+) -> u32 {
     if kind & MEM_RELEASE != 0 && size != 0 {
         set_last_nt_error(STATUS_INVALID_PARAMETER);
         return 0;
     }
-    let (mut base, mut size) = (address, size);
-    // SAFETY: ntdll's export, over the in/out values above.
-    succeeded(unsafe { nt::NtFreeVirtualMemory(CURRENT_PROCESS, &mut base, &mut size, kind) })
+    answer(
+        ntcall::free_virtual_memory_range(process, address, size, kind).map(|()| 1),
+        0,
+    )
 }
 
-/// VirtualProtect: the pages' new protection, the first one's old protection into `old` (which the
-/// service probes: a bad pointer is ERROR_NOACCESS).
+/// VirtualProtect: VirtualProtectEx in the calling process.
 ///
 /// # Safety
 ///
-/// `old` is the caller's (the service reaches it through the user-memory copy).
+/// As [`virtual_protect_ex`]'s.
 #[unsafe(export_name = "f2k_export_VirtualProtect")]
 pub unsafe extern "system" fn virtual_protect(
     address: usize,
@@ -80,35 +110,70 @@ pub unsafe extern "system" fn virtual_protect(
     protect: u32,
     old: *mut u32,
 ) -> u32 {
-    let (mut base, mut size) = (address, size);
-    // SAFETY: ntdll's export, over the in/out values above.
-    succeeded(unsafe {
-        nt::NtProtectVirtualMemory(CURRENT_PROCESS, &mut base, &mut size, protect, old)
-    })
+    // SAFETY: the caller's contract, passed on.
+    unsafe { virtual_protect_ex(CURRENT_PROCESS, address, size, protect, old) }
 }
 
-/// VirtualQuery: the MEMORY_BASIC_INFORMATION of the pages from `address` into `buffer`; the
-/// structure's size, or zero with the status's error (ERROR_BAD_LENGTH for a short buffer).
+/// VirtualProtectEx: the pages' new protection in the process the handle names
+/// (PROCESS_VM_OPERATION), the first one's old protection into `old` (which the service probes: a
+/// bad pointer is ERROR_NOACCESS; a failure leaves it untouched).
 ///
 /// # Safety
 ///
-/// `buffer` is the caller's (the service reaches it through the user-memory copy).
+/// `old` is null or the caller's (the service reaches it through the user-memory copy).
+#[unsafe(export_name = "f2k_export_VirtualProtectEx")]
+pub unsafe extern "system" fn virtual_protect_ex(
+    process: u32,
+    address: usize,
+    size: usize,
+    protect: u32,
+    old: *mut u32,
+) -> u32 {
+    // SAFETY: the caller's old protection, as the contract says.
+    let old = unsafe { old.as_mut() };
+    answer(
+        ntcall::protect_virtual_memory_reporting(process, address, size, protect, old).map(|()| 1),
+        0,
+    )
+}
+
+/// VirtualQuery: VirtualQueryEx in the calling process.
+///
+/// # Safety
+///
+/// As [`virtual_query_ex`]'s.
 #[unsafe(export_name = "f2k_export_VirtualQuery")]
 pub unsafe extern "system" fn virtual_query(
     address: usize,
     buffer: *mut u8,
     length: usize,
 ) -> usize {
-    let mut returned = 0;
-    // SAFETY: ntdll's export.
-    let status = unsafe {
-        nt::NtQueryVirtualMemory(CURRENT_PROCESS, address, 0, buffer, length, &mut returned)
-    };
-    if !nt_success(status) {
-        set_last_nt_error(status);
-        return 0;
-    }
-    returned
+    // SAFETY: the caller's contract, passed on.
+    unsafe { virtual_query_ex(CURRENT_PROCESS, address, buffer, length) }
+}
+
+/// VirtualQueryEx: the MEMORY_BASIC_INFORMATION of the pages from `address` in the process the
+/// handle names (PROCESS_QUERY_INFORMATION) into `buffer`; the structure's size, or zero with the
+/// status's error (ERROR_BAD_LENGTH for a short buffer, ERROR_INVALID_PARAMETER for an address
+/// past the application range).
+///
+/// # Safety
+///
+/// `buffer` is the caller's, of `length` bytes (the service reaches it through the user-memory
+/// copy).
+#[unsafe(export_name = "f2k_export_VirtualQueryEx")]
+pub unsafe extern "system" fn virtual_query_ex(
+    process: u32,
+    address: usize,
+    buffer: *mut u8,
+    length: usize,
+) -> usize {
+    // SAFETY: the caller's buffer, as the contract says.
+    let destination = unsafe { Destination::caller(buffer as usize, length) };
+    answer(
+        ntcall::query_virtual_memory(process, address, destination),
+        0,
+    )
 }
 
 /// A system query's structure, as dwords; none when the query fails.
@@ -317,6 +382,57 @@ mod tests {
         // SAFETY: a short buffer.
         assert_eq!(unsafe { virtual_query(BASE, info.as_mut_ptr(), 27) }, 0);
         assert_eq!(last_error(), 24, "ERROR_BAD_LENGTH");
+    }
+
+    /// The Ex functions take the process's handle to the service, and the plain ones are them on
+    /// the calling process (spawn's remote block); VirtualFreeEx refuses a release with a size
+    /// before the call, and VirtualProtectEx's failure leaves the old protection untouched.
+    #[test]
+    fn the_ex_functions_act_on_the_handle_given() {
+        const PROCESS: u32 = 0x8C;
+        assert_eq!(virtual_alloc_ex(PROCESS, 0, 0x2_0000, 0x2000, 1), BASE);
+        assert_eq!(last_vm(), Some((0, 0x2_0000, 0x2000)));
+        fail_next(0xC000_0022);
+        assert_eq!(virtual_alloc_ex(PROCESS, 0, 0x1000, 0x2000, 1), 0);
+        assert_eq!(last_error(), 5, "a handle without PROCESS_VM_OPERATION");
+        last_vm();
+
+        set_last_error(0);
+        assert_eq!(virtual_free_ex(PROCESS, BASE, 0x1000, MEM_RELEASE), 0);
+        assert_eq!((last_error(), last_vm()), (87, None));
+        fail_next(0xC000_009F);
+        assert_eq!(virtual_free_ex(PROCESS, BASE, 0, MEM_RELEASE), 0);
+        assert_eq!(last_error(), 487, "released already");
+        assert_eq!(virtual_free_ex(PROCESS, BASE, 0, MEM_RELEASE), 1);
+
+        let mut old = 0xF2F2;
+        fail_next(0xC000_0022);
+        // SAFETY: a writable old protection.
+        assert_eq!(
+            unsafe { virtual_protect_ex(PROCESS, BASE, 0x1000, 2, &mut old) },
+            0
+        );
+        assert_eq!((old, last_error()), (0xF2F2, 5), "old untouched");
+        // SAFETY: as above.
+        assert_eq!(
+            unsafe { virtual_protect_ex(PROCESS, BASE, 0x1000, 2, &mut old) },
+            1
+        );
+        assert_eq!(old, 4);
+
+        let mut info = [0u8; 28];
+        fail_next(0xC000_000D);
+        // SAFETY: a 28-byte buffer.
+        assert_eq!(
+            unsafe { virtual_query_ex(PROCESS, 0x8000_0000, info.as_mut_ptr(), 28) },
+            0
+        );
+        assert_eq!(last_error(), 87, "past the application range");
+        // SAFETY: as above.
+        assert_eq!(
+            unsafe { virtual_query_ex(PROCESS, BASE, info.as_mut_ptr(), 28) },
+            28
+        );
     }
 
     /// The memory fixture's sysinfo block: 4 KiB pages, 64 KiB granularity, the application range,

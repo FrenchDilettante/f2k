@@ -154,8 +154,8 @@ pub unsafe extern "system" fn get_exit_code_process(process: u32, code: *mut u32
 
 /// ReadProcessMemory: `size` bytes of the process at `address` into the caller's buffer
 /// (NtReadVirtualMemory, PROCESS_VM_READ), the count the service settles on written where asked
-/// (a partial copy's too, ERROR_PARTIAL_COPY; an address the service refuses outright leaves it
-/// untouched); FALSE with the status's error on any failure.
+/// (a copy that fails part-way, ERROR_PARTIAL_COPY or ERROR_NOACCESS, counts 0; an address the
+/// service refuses outright leaves it untouched); FALSE with the status's error on any failure.
 ///
 /// # Safety
 ///
@@ -253,6 +253,20 @@ pub unsafe extern "system" fn write_process_memory(
     };
     let _ = ntcall::flush_instruction_cache(process, address, length);
     match written {
+        Ok(()) => 1,
+        Err(status) => {
+            set_last_nt_error(status);
+            0
+        }
+    }
+}
+
+/// FlushInstructionCache: the process's instruction cache over `[address, address + size)` made
+/// to see the writes to its memory (NtFlushInstructionCache, PROCESS_VM_WRITE); TRUE, or FALSE with
+/// the status's error.
+#[unsafe(export_name = "f2k_export_FlushInstructionCache")]
+pub extern "system" fn flush_instruction_cache(process: u32, address: usize, size: u32) -> u32 {
+    match ntcall::flush_instruction_cache(process, address, size as usize) {
         Ok(()) => 1,
         Err(status) => {
             set_last_nt_error(status);
@@ -383,5 +397,20 @@ mod tests {
             assert_eq!(flag_of(class), flag);
         }
         assert_eq!(flag_of(0), NORMAL_PRIORITY_CLASS);
+    }
+
+    /// FlushInstructionCache: TRUE through a handle the service takes (the calling process's,
+    /// with no range), FALSE with the status's error otherwise (spawn's remote block: a null
+    /// handle is ERROR_INVALID_HANDLE, a handle without PROCESS_VM_WRITE ERROR_ACCESS_DENIED).
+    #[test]
+    fn flushes_answer_the_services_status() {
+        use crate::base::last_error;
+        crate::nt::children::reset();
+        assert_eq!(flush_instruction_cache(CURRENT_PROCESS, 0, 0), 1);
+        assert_eq!(flush_instruction_cache(0, 0, 0), 0);
+        assert_eq!(last_error(), 6);
+        crate::nt::children::fail("NtFlushInstructionCache", 0xC000_0022);
+        assert_eq!(flush_instruction_cache(CURRENT_PROCESS, 0, 0), 0);
+        assert_eq!(last_error(), 5);
     }
 }

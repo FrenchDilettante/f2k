@@ -308,7 +308,9 @@ pub const STATUS_CANT_TERMINATE_SELF: Status = Status(0xC000_00DB);
 /// again. No handle names the caller, refused (STATUS_CANT_TERMINATE_SELF) when it is its process's
 /// last thread; a handle naming the caller ends it, and its process with it when it is the last.
 /// Another thread ends at once — or, inside a critical region, as it leaves the region (holding
-/// nothing) — its handle signaling and its waiters waking; one that has already ended (or whose
+/// nothing) — its handle signaling and its waiters waking, and its process with it when it is
+/// another process's last thread (see [`crate::process::threads::terminate_thread`]); one that
+/// has already ended (or whose
 /// termination is pending) is STATUS_INVALID_PARAMETER, which kernel32's TerminateThread reports
 /// as the capture shows (ERROR_INVALID_PARAMETER).
 pub fn terminate_thread(_call: &mut NtCall, thread: Handle, status: u32) -> NtResult {

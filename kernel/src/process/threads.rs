@@ -469,14 +469,23 @@ pub enum TerminateError {
     Ended,
 }
 
-/// TerminateThread on another thread of the current process: it ends with `status`, without
-/// running again — at once, or, inside a critical region, as it leaves the region (holding
-/// nothing). Its handle signals and its waiters wake; the process lives on (the caller is alive).
-/// The calling thread ends through [`exit_thread`] instead. The target's gate stack is released
-/// from the shared tables, whatever address space is current.
+/// TerminateThread on a thread other than the caller: it ends with `status`, without running
+/// again — at once, or, inside a critical region, as it leaves the region (holding nothing). Its
+/// handle signals and its waiters wake. The last thread of another process ends that process with
+/// it, as any last thread's end does: the process is terminated with `status`
+/// ([`terminate_process`]'s rule, so a thread that never reached user mode ends with
+/// STATUS_THREAD_IS_TERMINATING and its process with 0, as the spawn fixture's capture shows).
+/// A thread of the current process is never its last (the caller is alive). The calling thread
+/// ends through [`exit_thread`] instead. The target's gate stack is released from the shared
+/// tables, whatever address space is current.
 pub fn terminate_thread(target: &mut Thread, status: u32) -> Result<(), TerminateError> {
     if target.state() == ThreadState::Terminated || target.termination_pending() {
         return Err(TerminateError::Ended);
+    }
+    let owner = crate::process::pool::owner_of(target).expect("a user thread's process");
+    if !core::ptr::eq(owner, crate::process::current()) && owner.sched.stack_count() == 1 {
+        terminate_process(owner, status);
+        return Ok(());
     }
     target.exit_status = status;
     run_down_timers(target);

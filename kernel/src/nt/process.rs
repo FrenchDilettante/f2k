@@ -180,10 +180,10 @@ pub fn open_by(named: bool, client_id: Option<ClientId>) -> Result<ClientId, Sta
 /// granted the access asked for — no security descriptor restricts it — its generic rights mapped
 /// (see [`super::object::process_access`]), inheritable as the attributes say (OBJ_INHERIT). A
 /// client id naming no process is STATUS_INVALID_PARAMETER (Windows 2000's answer: kernel32's
-/// OpenProcess of id 0 prints ERROR_INVALID_PARAMETER in the spawn fixture). A process that has
-/// ended opens while its object lives — a handle holds it — as its client id is not reused until
-/// then. The handle's slot is probed first (STATUS_ACCESS_VIOLATION); a full table is
-/// STATUS_INSUFFICIENT_RESOURCES.
+/// OpenProcess of id 0 prints ERROR_INVALID_PARAMETER in the spawn fixture), and so is the id of a
+/// process that has ended, even while a handle holds its object: its id left the client id table
+/// with its last thread (see [`crate::process::pool::by_client_id`]). The handle's slot is probed
+/// first (STATUS_ACCESS_VIOLATION); a full table is STATUS_INSUFFICIENT_RESOURCES.
 pub fn open_process(
     call: &mut NtCall,
     slot: UserPtr<u32>,

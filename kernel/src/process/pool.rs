@@ -76,6 +76,15 @@ pub(super) fn create(
     }
 }
 
+/// The process `thread` belongs to: the record whose scheduling record is the thread's owner;
+/// none for the idle thread, which no pooled process owns.
+#[cfg(target_arch = "x86")]
+pub fn owner_of(thread: &crate::sched::thread::Thread) -> Option<&'static mut Process> {
+    let index = index_of(thread.process)?;
+    // SAFETY: the record of a live thread's owner, at its final address for the thread's life.
+    Some(unsafe { &mut *record(index) })
+}
+
 /// The current process, mutably: the running thread's own (see the module notes) — the calling
 /// process, whose handles and objects a service acts on, attached or not.
 ///
@@ -185,14 +194,16 @@ pub fn of_object(id: crate::ob::ObjectId) -> Option<&'static mut Process> {
     (process.object == id).then_some(process)
 }
 
-/// The process object whose process has client id `id`, among the live objects — a process that
-/// has ended while a handle holds its object among them (its client id is not reused).
+/// The process object whose process has client id `id`, among the processes that have not ended:
+/// as on Windows 2000, a process leaves the client id table when its last thread ends, while its
+/// object lives on for the handles that hold it (they still query it and wait on it), so its id
+/// names nothing any more.
 #[cfg(target_arch = "x86")]
 pub fn by_client_id(id: u32) -> Option<crate::ob::ObjectId> {
     (0..MAX_PROCESSES as u16).find_map(|index| {
         let object = crate::ob::directory().processes_live(index)?;
         // SAFETY: as in `ended`.
         let process = unsafe { &*record(index) };
-        (process.object == object && process.id == id).then_some(object)
+        (process.object == object && process.id == id && process.end.is_none()).then_some(object)
     })
 }

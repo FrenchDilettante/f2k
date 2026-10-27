@@ -226,20 +226,26 @@ pub fn image_layout(headers: &[u8], file_size: u32) -> Result<(u32, u32), Status
 }
 
 /// The new header signatures an MZ file's e_lfanew may lead to: a PE image's, a 16-bit NE
-/// program's and an LE one's; and the NE header's target operating system (OS/2's, 1).
+/// program's and an LE one's; the NE header's target operating system (Windows', 2: the NE
+/// format's documented values are 0 unknown, 1 OS/2, 2 Windows, 3 European MS-DOS 4.x, 4 Windows
+/// 386); and the PE32 optional header's magic, its first word (the PE/COFF specification's 0x10B).
 const PE_SIGNATURE: &[u8] = b"PE\0\0";
 const NE_SIGNATURE: &[u8] = b"NE";
 const LE_SIGNATURE: &[u8] = b"LE";
 const NE_TARGET_OS: usize = 0x36;
-const NE_OS2: u8 = 1;
+const NE_WINDOWS: u8 = 2;
+const PE32_MAGIC: [u8; 2] = 0x10Bu16.to_le_bytes();
 
 /// Why the file whose first bytes are `headers` is no image the parse accepts, with the statuses
 /// Windows 2000's section creation tells such files apart by (ntstatus.h): no MZ signature
 /// (STATUS_INVALID_IMAGE_NOT_MZ); an MZ file whose new header is a 16-bit NE one, a Windows
-/// program's (STATUS_INVALID_IMAGE_WIN_16) or OS/2's (STATUS_INVALID_IMAGE_NE_FORMAT), or an LE
-/// one (STATUS_INVALID_IMAGE_LE_FORMAT); an MZ file without a new header, a DOS program
-/// (STATUS_INVALID_IMAGE_PROTECT); and STATUS_INVALID_IMAGE_FORMAT for the rest — a PE file the
-/// parse refuses (broken, truncated or foreign) or a DOS header cut short.
+/// program's (target 2: STATUS_INVALID_IMAGE_WIN_16) or any other target's, OS/2's and the
+/// unknown one included (STATUS_INVALID_IMAGE_NE_FORMAT), or an LE one
+/// (STATUS_INVALID_IMAGE_LE_FORMAT); an MZ file without a new header, a DOS program
+/// (STATUS_INVALID_IMAGE_PROTECT), and so is one whose PE signature leads to no PE32 optional
+/// header (no NT header at all: the spawn fixture's capture has GetBinaryType call a PE signature
+/// followed by zeros a DOS program); and STATUS_INVALID_IMAGE_FORMAT for the rest — a PE32 file
+/// the parse refuses (broken, truncated or foreign) or a DOS header cut short.
 fn not_an_image(headers: &[u8]) -> Status {
     if headers.get(..2) != Some(b"MZ".as_slice()) {
         return STATUS_INVALID_IMAGE_NOT_MZ;
@@ -254,16 +260,22 @@ fn not_an_image(headers: &[u8]) -> Status {
             .and_then(|end| headers.get(at as usize..end))
             == Some(wanted)
     };
+    let field = |offset: usize, length: usize| {
+        (at as usize)
+            .checked_add(offset)
+            .and_then(|start| headers.get(start..start.checked_add(length)?))
+    };
     if signature(PE_SIGNATURE) {
-        STATUS_INVALID_IMAGE_FORMAT
-    } else if signature(NE_SIGNATURE) {
-        let target = (at as usize)
-            .checked_add(NE_TARGET_OS)
-            .and_then(|at| headers.get(at));
-        if target == Some(&NE_OS2) {
-            STATUS_INVALID_IMAGE_NE_FORMAT
+        if field(OPTIONAL_HEADER, 2) == Some(PE32_MAGIC.as_slice()) {
+            STATUS_INVALID_IMAGE_FORMAT
         } else {
+            STATUS_INVALID_IMAGE_PROTECT
+        }
+    } else if signature(NE_SIGNATURE) {
+        if field(NE_TARGET_OS, 1) == Some([NE_WINDOWS].as_slice()) {
             STATUS_INVALID_IMAGE_WIN_16
+        } else {
+            STATUS_INVALID_IMAGE_NE_FORMAT
         }
     } else if signature(LE_SIGNATURE) {
         STATUS_INVALID_IMAGE_LE_FORMAT
@@ -378,8 +390,9 @@ pub const SECTION_IMAGE_INFORMATION: u32 = 1;
 /// STATUS_SECTION_NOT_IMAGE: the image information of a data section.
 pub const STATUS_SECTION_NOT_IMAGE: Status = Status(0xC000_0049);
 
-/// SECTION_BASIC_INFORMATION: a section's base (an image's preferred base; zero for a data
-/// section, which has none), its allocation attributes and its size (a LARGE_INTEGER).
+/// SECTION_BASIC_INFORMATION: a section's base (zero for every section on Windows 2000, an image
+/// section's included: a section has no base of its own, only its views do), its allocation
+/// attributes and its size (a LARGE_INTEGER).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SectionBasicInformation {
@@ -390,17 +403,29 @@ pub struct SectionBasicInformation {
 
 const _: () = assert!(core::mem::size_of::<SectionBasicInformation>() == 16);
 
+/// What a section is made of, as its basic information names it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SectionKind {
+    /// An image section (SEC_IMAGE | SEC_FILE).
+    Image,
+    /// A file's data section (SEC_FILE).
+    File,
+    /// The paging file's, created SEC_COMMIT or SEC_RESERVE.
+    PagingFile { reserve: bool },
+}
+
 impl SectionBasicInformation {
-    /// A section's: an image's (SEC_IMAGE | SEC_FILE, at its preferred base), a file's data
-    /// section's (SEC_FILE) or the paging file's (SEC_COMMIT: its pages are all committed).
-    pub fn of(image_base: u32, image: bool, file: bool, size: u32) -> Self {
-        let allocation_attributes = match (image, file) {
-            (true, _) => SEC_IMAGE | SEC_FILE,
-            (false, true) => SEC_FILE,
-            (false, false) => SEC_COMMIT,
+    /// A section's: its kind's attributes and its size (an image's SizeOfImage, a data
+    /// section's maximum size).
+    pub fn of(kind: SectionKind, size: u32) -> Self {
+        let allocation_attributes = match kind {
+            SectionKind::Image => SEC_IMAGE | SEC_FILE,
+            SectionKind::File => SEC_FILE,
+            SectionKind::PagingFile { reserve: true } => SEC_RESERVE,
+            SectionKind::PagingFile { reserve: false } => SEC_COMMIT,
         };
         SectionBasicInformation {
-            base_address: if image { image_base } else { 0 },
+            base_address: 0,
             allocation_attributes,
             maximum_size: size as u64,
         }
@@ -671,6 +696,7 @@ mod target {
             None => ob::SectionObject {
                 size: plan.size,
                 writable: plan.writable,
+                reserve: allocation & SEC_RESERVE != 0,
                 ..ob::SectionObject::none()
             },
             Some((file_object, file, _)) if allocation & SEC_IMAGE != 0 => {
@@ -679,6 +705,7 @@ mod target {
             Some((file_object, file, _)) => ob::SectionObject {
                 file,
                 paging_file: false,
+                reserve: false,
                 frames: crate::mem::vm::SectionFrames::empty(),
                 size: plan.size,
                 writable: plan.writable,
@@ -1160,12 +1187,16 @@ mod target {
         query_access(access)?;
         let record = *object.section();
         if class == SECTION_BASIC_INFORMATION {
-            let image = record.segment.is_some();
-            let file = record.file_object.is_some() || image;
-            information.write(
-                &SectionBasicInformation::of(record.image_base, image, file, record.size)
-                    .to_bytes(),
-            )?;
+            let kind = if record.segment.is_some() {
+                SectionKind::Image
+            } else if record.file_object.is_some() {
+                SectionKind::File
+            } else {
+                SectionKind::PagingFile {
+                    reserve: record.reserve,
+                }
+            };
+            information.write(&SectionBasicInformation::of(kind, record.size).to_bytes())?;
         } else {
             let segment = record.segment.ok_or(STATUS_SECTION_NOT_IMAGE)?;
             let directory = ob::directory();
@@ -1450,10 +1481,12 @@ mod tests {
         );
     }
 
-    /// A file that is no PE image, as Windows 2000's section creation refuses it: without MZ (a
-    /// text file, a single byte), a DOS program (no new header, or one past the headers or of
-    /// another kind), a Windows 3.x or OS/2 NE program, an LE one; an MZ file whose DOS header is
-    /// cut short, or whose PE header the parse refuses, is no image format at all.
+    /// A file that is no PE image, as Windows 2000's section creation refuses it (spawn's
+    /// binaryforms block): without MZ (a text file, a single byte), a DOS program (no new header,
+    /// one past the headers or of another kind, or a PE signature with no PE32 optional header
+    /// after it), a Windows 3.x NE program (target 2) or another NE one (OS/2's, an unknown
+    /// target's), an LE one; an MZ file whose DOS header is cut short, or whose PE32 header the
+    /// parse refuses, is no image format at all.
     #[test]
     fn files_that_are_no_image_are_told_apart() {
         assert_eq!(
@@ -1490,22 +1523,25 @@ mod tests {
             not_an_image(&mz(0x80, b"NE", 2)),
             STATUS_INVALID_IMAGE_WIN_16
         );
-        assert_eq!(
-            not_an_image(&mz(0x80, b"NE", 0)),
-            STATUS_INVALID_IMAGE_WIN_16
-        );
-        assert_eq!(
-            not_an_image(&mz(0x80, b"NE", NE_OS2)),
-            STATUS_INVALID_IMAGE_NE_FORMAT
-        );
+        for target in [0, 1, 3, 4] {
+            assert_eq!(
+                not_an_image(&mz(0x80, b"NE", target)),
+                STATUS_INVALID_IMAGE_NE_FORMAT,
+                "target {target}"
+            );
+        }
         assert_eq!(
             not_an_image(&mz(0x80, b"LE", 0)),
             STATUS_INVALID_IMAGE_LE_FORMAT
         );
         assert_eq!(
             not_an_image(&mz(0x80, PE_SIGNATURE, 0)),
-            STATUS_INVALID_IMAGE_FORMAT
+            STATUS_INVALID_IMAGE_PROTECT,
+            "a PE signature, nothing after it"
         );
+        let mut pe32 = mz(0x80, PE_SIGNATURE, 0);
+        pe32[0x80 + OPTIONAL_HEADER..0x80 + OPTIONAL_HEADER + 2].copy_from_slice(&PE32_MAGIC);
+        assert_eq!(not_an_image(&pe32), STATUS_INVALID_IMAGE_FORMAT);
         assert_eq!(
             not_an_image(b"MZ"),
             STATUS_INVALID_IMAGE_FORMAT,
@@ -1562,28 +1598,31 @@ mod tests {
         );
     }
 
-    /// SECTION_BASIC_INFORMATION: an image at its base (SEC_IMAGE | SEC_FILE), a file's data
-    /// section and the paging file's at none, the size a LARGE_INTEGER.
+    /// SECTION_BASIC_INFORMATION (memory/query's): no base for any section, an image's
+    /// included; an image is SEC_IMAGE | SEC_FILE, a file's data section SEC_FILE, the paging
+    /// file's SEC_COMMIT or SEC_RESERVE as created; the size a LARGE_INTEGER.
     #[test]
     fn the_basic_information_names_the_section_kind() {
-        let image = SectionBasicInformation::of(0x0040_0000, true, true, 0x3000);
+        let image = SectionBasicInformation::of(SectionKind::Image, 0x3000);
         assert_eq!(
             (
                 image.base_address,
                 image.allocation_attributes,
                 image.maximum_size
             ),
-            (0x0040_0000, SEC_IMAGE | SEC_FILE, 0x3000)
+            (0, 0x0180_0000, 0x3000)
         );
-        let data = SectionBasicInformation::of(0, false, true, 0x1234);
+        let data = SectionBasicInformation::of(SectionKind::File, 0x1234);
         assert_eq!(
             (data.base_address, data.allocation_attributes),
-            (0, SEC_FILE)
+            (0, 0x0080_0000)
         );
-        let paging = SectionBasicInformation::of(0, false, false, 0x10_0000);
-        assert_eq!(paging.allocation_attributes, SEC_COMMIT);
+        let commit = SectionBasicInformation::of(SectionKind::PagingFile { reserve: false }, 1);
+        assert_eq!(commit.allocation_attributes, 0x0800_0000);
+        let reserve = SectionBasicInformation::of(SectionKind::PagingFile { reserve: true }, 1);
+        assert_eq!(reserve.allocation_attributes, 0x0400_0000);
         let bytes = image.to_bytes();
-        assert_eq!(&bytes[..4], &0x0040_0000u32.to_le_bytes());
+        assert_eq!(&bytes[..4], &0u32.to_le_bytes());
         assert_eq!(&bytes[4..8], &(SEC_IMAGE | SEC_FILE).to_le_bytes());
         assert_eq!(&bytes[8..16], &0x3000u64.to_le_bytes());
     }

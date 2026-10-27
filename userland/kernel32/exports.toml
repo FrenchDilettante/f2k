@@ -2040,7 +2040,7 @@ ordinal = 761
 name = "VirtualAllocEx"
 group = "virtual-memory"
 args = ["handle hProcess", "u32 lpAddress", "u32 dwSize", "u32 flAllocationType", "u32 flProtect"]
-impl = { stub = "not yet implemented" }
+impl = { native = "VirtualAllocEx" }
 ordinal = 756
 fails = "NULL"
 
@@ -2048,7 +2048,7 @@ fails = "NULL"
 name = "VirtualFreeEx"
 group = "virtual-memory"
 args = ["handle hProcess", "u32 lpAddress", "u32 dwSize", "u32 dwFreeType"]
-impl = { stub = "not yet implemented" }
+impl = { native = "VirtualFreeEx" }
 ordinal = 759
 fails = "FALSE"
 
@@ -2056,7 +2056,7 @@ fails = "FALSE"
 name = "VirtualQueryEx"
 group = "virtual-memory"
 args = ["handle hProcess", "ptr lpAddress", "ptr lpBuffer", "u32 dwLength"]
-impl = { stub = "not yet implemented" }
+impl = { native = "VirtualQueryEx" }
 ordinal = 764
 fails = "0"
 
@@ -2064,7 +2064,7 @@ fails = "0"
 name = "VirtualProtectEx"
 group = "virtual-memory"
 args = ["handle hProcess", "ptr lpAddress", "u32 dwSize", "u32 flNewProtect", "ptr<u32> lpflOldProtect"]
-impl = { stub = "not yet implemented" }
+impl = { native = "VirtualProtectEx" }
 ordinal = 762
 fails = "FALSE"
 
@@ -2175,7 +2175,7 @@ note = "the range made writable first, read-only pages refused (ERROR_NOACCESS);
 name = "FlushInstructionCache"
 group = "processes"
 args = ["handle hProcess", "ptr lpBaseAddress", "u32 dwSize"]
-impl = { stub = "not yet implemented" }
+impl = { native = "FlushInstructionCache" }
 ordinal = 191
 fails = "FALSE"
 

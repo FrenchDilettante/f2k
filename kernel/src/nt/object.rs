@@ -448,8 +448,11 @@ pub trait DuplicateTables {
     fn insert(&mut self, entry: Entry) -> u32;
     /// Close the duplicate `handle` again, in the target process's table, releasing what it named.
     fn close_duplicate(&mut self, handle: u32);
-    /// Close the source `handle`, in the source process's table, releasing what it named.
-    fn close_source(&mut self, handle: u32);
+    /// Free the source `handle`'s slot in the source process's table, what it names still
+    /// counted: none when it names nothing any more.
+    fn take_source(&mut self, handle: u32) -> Option<Entry>;
+    /// Release what the source entry [`DuplicateTables::take_source`] took out names.
+    fn release_source(&mut self, entry: Entry);
 }
 
 /// NtDuplicateObject's target-process argument.
@@ -472,8 +475,12 @@ pub enum TargetProcess {
 /// 2000's does: with no target process that is the whole call (STATUS_SUCCESS;
 /// STATUS_INVALID_PARAMETER without the option); a target process refused is its reason, a handle
 /// that cannot be made STATUS_INSUFFICIENT_RESOURCES, and a target the write cannot reach
-/// STATUS_ACCESS_VIOLATION, the new handle closed again. The duplicate is made before the source
-/// closes, so the object never loses its last handle in between.
+/// STATUS_ACCESS_VIOLATION, the new handle closed again. A source protected from close stays
+/// open, the call succeeding all the same (the files fixture's capture). The source's slot is
+/// freed before the duplicate is made — a duplicate into the same process takes the source's own
+/// value back (slots are reused most recently freed first), as the spawn fixture's capture shows
+/// Windows 2000's does — while what the source names is released only after it, so the object
+/// never loses its last handle in between.
 #[allow(clippy::too_many_arguments)]
 pub fn duplicate_entry(
     tables: &mut impl DuplicateTables,
@@ -486,6 +493,10 @@ pub fn duplicate_entry(
     write: impl FnOnce(u32) -> Result<(), Fault>,
 ) -> NtResult {
     let close_source = options & DUPLICATE_CLOSE_SOURCE != 0;
+    let taken = match closable {
+        Some(source) if close_source && self::closable(entry).is_ok() => tables.take_source(source),
+        _ => None,
+    };
     let result = match target_process {
         TargetProcess::None if close_source => Ok(STATUS_SUCCESS),
         TargetProcess::None => Err(STATUS_INVALID_PARAMETER),
@@ -511,8 +522,8 @@ pub fn duplicate_entry(
             }
         }
     };
-    if let (true, Some(source)) = (close_source, closable) {
-        tables.close_source(source);
+    if let Some(source) = taken {
+        tables.release_source(source);
     }
     result
 }
@@ -526,11 +537,21 @@ mod tests {
     const SOURCE: u32 = 0x44;
     const NEW: u32 = 0x48;
 
+    /// What a duplication did to the tables, in its order.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Step {
+        TakeSource,
+        Insert,
+        CloseDuplicate,
+        ReleaseSource,
+    }
+    use Step::*;
+
     /// A handle table that records what the duplication did to it.
     struct Table {
         full: bool,
         inserted: Vec<Entry>,
-        closed: Vec<u32>,
+        steps: Vec<Step>,
     }
 
     impl Table {
@@ -538,13 +559,14 @@ mod tests {
             Table {
                 full,
                 inserted: Vec::new(),
-                closed: Vec::new(),
+                steps: Vec::new(),
             }
         }
     }
 
     impl DuplicateTables for Table {
         fn insert(&mut self, entry: Entry) -> u32 {
+            self.steps.push(Insert);
             if self.full {
                 return 0;
             }
@@ -554,12 +576,18 @@ mod tests {
 
         fn close_duplicate(&mut self, handle: u32) {
             assert_eq!(handle, NEW, "only the duplicate closes in the target");
-            self.closed.push(handle);
+            self.steps.push(CloseDuplicate);
         }
 
-        fn close_source(&mut self, handle: u32) {
+        fn take_source(&mut self, handle: u32) -> Option<Entry> {
             assert_eq!(handle, SOURCE, "only the source closes in the source");
-            self.closed.push(handle);
+            self.steps.push(TakeSource);
+            Some(event())
+        }
+
+        fn release_source(&mut self, entry: Entry) {
+            assert_eq!(entry, event(), "the source's own entry is released");
+            self.steps.push(ReleaseSource);
         }
     }
 
@@ -597,7 +625,9 @@ mod tests {
     }
 
     /// A duplicate names the source's object, with the access asked for or the source's, and the
-    /// inheritance the attributes ask; the source is closed only when asked.
+    /// inheritance the attributes ask; the source is closed only when asked — its slot freed
+    /// before the duplicate is made (a duplicate into its own process takes its value back), what
+    /// it names released after, so the object keeps a handle throughout.
     #[test]
     fn a_duplicate_names_the_object_with_its_access() {
         let mut table = Table::new(false);
@@ -612,7 +642,7 @@ mod tests {
                 ..event()
             }]
         );
-        assert!(table.closed.is_empty());
+        assert_eq!(table.steps, [Insert]);
 
         let mut table = Table::new(false);
         let result = duplicate_entry(
@@ -633,7 +663,7 @@ mod tests {
                 ..event()
             }]
         );
-        assert_eq!(table.closed, [SOURCE]);
+        assert_eq!(table.steps, [TakeSource, Insert, ReleaseSource]);
     }
 
     /// DUPLICATE_CLOSE_SOURCE closes the source whatever the outcome once it is found: a
@@ -650,7 +680,7 @@ mod tests {
         );
         assert_eq!(result, Err(STATUS_INVALID_HANDLE));
         assert!(table.inserted.is_empty());
-        assert_eq!(table.closed, [SOURCE]);
+        assert_eq!(table.steps, [TakeSource, ReleaseSource]);
 
         let mut table = Table::new(true);
         let result = duplicate(
@@ -660,7 +690,7 @@ mod tests {
             Ok(()),
         );
         assert_eq!(result, Err(STATUS_INSUFFICIENT_RESOURCES));
-        assert_eq!(table.closed, [SOURCE]);
+        assert_eq!(table.steps, [TakeSource, Insert, ReleaseSource]);
 
         let mut table = Table::new(false);
         let result = duplicate(
@@ -670,14 +700,17 @@ mod tests {
             Err(Fault),
         );
         assert_eq!(result, Err(STATUS_ACCESS_VIOLATION));
-        assert_eq!(table.closed, [NEW, SOURCE]);
+        assert_eq!(
+            table.steps,
+            [TakeSource, Insert, CloseDuplicate, ReleaseSource]
+        );
 
         let mut table = Table::new(true);
         assert_eq!(
             duplicate(&mut table, TargetProcess::Reached, 0, Ok(())),
             Err(STATUS_INSUFFICIENT_RESOURCES)
         );
-        assert!(table.closed.is_empty());
+        assert_eq!(table.steps, [Insert]);
     }
 
     /// With no target process, closing the source is the whole call: STATUS_SUCCESS with
@@ -695,14 +728,14 @@ mod tests {
             Ok(STATUS_SUCCESS)
         );
         assert!(table.inserted.is_empty());
-        assert_eq!(table.closed, [SOURCE]);
+        assert_eq!(table.steps, [TakeSource, ReleaseSource]);
 
         let mut table = Table::new(false);
         assert_eq!(
             duplicate(&mut table, TargetProcess::None, 0, Ok(())),
             Err(STATUS_INVALID_PARAMETER)
         );
-        assert!(table.inserted.is_empty() && table.closed.is_empty());
+        assert!(table.inserted.is_empty() && table.steps.is_empty());
     }
 
     /// A pseudo-handle source (the current thread or process) has nothing to close.
@@ -720,7 +753,31 @@ mod tests {
             |_| Ok(()),
         );
         assert_eq!(result, Err(STATUS_INSUFFICIENT_RESOURCES));
-        assert!(table.closed.is_empty());
+        assert_eq!(table.steps, [Insert]);
+    }
+
+    /// A source protected from close stays open under DUPLICATE_CLOSE_SOURCE, and the call
+    /// succeeds (the files fixture's flags block); its duplicate is not protected.
+    #[test]
+    fn a_protected_source_stays_open() {
+        let mut table = Table::new(false);
+        let protected = Entry {
+            protect_from_close: true,
+            ..event()
+        };
+        let result = duplicate_entry(
+            &mut table,
+            protected,
+            Some(SOURCE),
+            TargetProcess::Reached,
+            0,
+            0,
+            DUPLICATE_SAME_ACCESS | DUPLICATE_CLOSE_SOURCE,
+            |_| Ok(()),
+        );
+        assert_eq!(result, Ok(STATUS_SUCCESS));
+        assert_eq!(table.steps, [Insert]);
+        assert_eq!(table.inserted, [event()]);
     }
 
     /// A process handle's checks, in Windows' order: an entry to find, a process object, then the
@@ -835,7 +892,7 @@ mod tests {
             );
             assert_eq!(result, Err(reason));
             assert!(table.inserted.is_empty());
-            assert_eq!(table.closed, [SOURCE]);
+            assert_eq!(table.steps, [TakeSource, ReleaseSource]);
         }
     }
 
