@@ -1,5 +1,5 @@
 # memory: one test per block of the real-machine capture (output.txt); see tests/README.md.
-description = "memory - allocation, address space, and stacks (memory.c): the C runtime heap the way programs use it, the Win32 heaps, Local/Global memory, the virtual memory API and its protections, the image's own sections, paging-file mappings, and stacks."
+description = "memory - allocation, address space, and stacks (memory.c): the C runtime heap the way programs use it, the Win32 heaps, Local/Global memory, the virtual memory API and its protections, the image's own sections, paging-file mappings, stacks, and NtQuerySection."
 kind = "sectioned"
 gate = true
 [masks]
@@ -9,6 +9,7 @@ image = ["past the image end: state 0x10000 protect 0x1 type 0x0 region * allocp
 
 # The blocks this kernel does not pass yet, each with the increment that enables it.
 [pending]
+query = "NtQuerySection's attributes and refusals differ from Windows 2000's"
 
 [pins]
 # The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
@@ -137,4 +138,11 @@ sysinfo = [
     "kernel32.GlobalMemoryStatus",
     "ntdll.NtQuerySystemInformation",
     "ntdll.NtQueryInformationProcess",
+]
+query = [
+    "ntdll.NtQuerySection",
+    "kernel32.CreateFileA",
+    "kernel32.CreateFileMappingA",
+    "kernel32.OpenFileMappingA",
+    "kernel32.CloseHandle",
 ]

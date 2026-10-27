@@ -1215,6 +1215,14 @@ ordinal = 670
 note = "the flags the mask names (HANDLE_FLAG_INHERIT, HANDLE_FLAG_PROTECT_FROM_CLOSE) through NtQueryObject and NtSetInformationObject's ObjectHandleFlagInformation; a console handle's inheritance alone, its server's"
 
 [[export]]
+name = "GetHandleInformation"
+group = "threads"
+args = ["handle hObject", "ptr<u32> lpdwFlags"]
+impl = { stub = "not yet implemented" }
+ordinal = 304
+fails = "FALSE"
+
+[[export]]
 name = "ExitThread"
 group = "threads"
 args = ["u32 dwExitCode"]
@@ -2028,6 +2036,38 @@ impl = { native = "VirtualProtect" }
 ordinal = 761
 
 [[export]]
+name = "VirtualAllocEx"
+group = "virtual-memory"
+args = ["handle hProcess", "u32 lpAddress", "u32 dwSize", "u32 flAllocationType", "u32 flProtect"]
+impl = { stub = "not yet implemented" }
+ordinal = 756
+fails = "NULL"
+
+[[export]]
+name = "VirtualFreeEx"
+group = "virtual-memory"
+args = ["handle hProcess", "u32 lpAddress", "u32 dwSize", "u32 dwFreeType"]
+impl = { stub = "not yet implemented" }
+ordinal = 759
+fails = "FALSE"
+
+[[export]]
+name = "VirtualQueryEx"
+group = "virtual-memory"
+args = ["handle hProcess", "ptr lpAddress", "ptr lpBuffer", "u32 dwLength"]
+impl = { stub = "not yet implemented" }
+ordinal = 764
+fails = "0"
+
+[[export]]
+name = "VirtualProtectEx"
+group = "virtual-memory"
+args = ["handle hProcess", "ptr lpAddress", "u32 dwSize", "u32 flNewProtect", "ptr<u32> lpflOldProtect"]
+impl = { stub = "not yet implemented" }
+ordinal = 762
+fails = "FALSE"
+
+[[export]]
 name = "GetSystemInfo"
 group = "virtual-memory"
 args = ["ptr lpSystemInfo"]
@@ -2129,6 +2169,14 @@ impl = { native = "WriteProcessMemory" }
 ordinal = 796
 fails = "FALSE"
 note = "the range made writable first, read-only pages refused (ERROR_NOACCESS); the instruction cache flushed after a write (NtFlushInstructionCache)"
+
+[[export]]
+name = "FlushInstructionCache"
+group = "processes"
+args = ["handle hProcess", "ptr lpBaseAddress", "u32 dwSize"]
+impl = { stub = "not yet implemented" }
+ordinal = 191
+fails = "FALSE"
 
 [[export]]
 name = "CmdBatNotification"
@@ -2745,10 +2793,6 @@ name = "FindVolumeMountPointClose"
 ordinal = 188
 
 [[export]]
-name = "FlushInstructionCache"
-ordinal = 191
-
-[[export]]
 name = "FlushViewOfFile"
 ordinal = 192
 
@@ -3017,10 +3061,6 @@ ordinal = 279
 name = "GetFileSizeEx"
 ordinal = 299
 
-
-[[export]]
-name = "GetHandleInformation"
-ordinal = 304
 
 [[export]]
 name = "GetLargestConsoleWindowSize"
@@ -4188,28 +4228,12 @@ name = "VerifyVersionInfoW"
 ordinal = 754
 
 [[export]]
-name = "VirtualAllocEx"
-ordinal = 756
-
-[[export]]
 name = "VirtualBufferExceptionHandler"
 ordinal = 757
 
 [[export]]
-name = "VirtualFreeEx"
-ordinal = 759
-
-[[export]]
 name = "VirtualLock"
 ordinal = 760
-
-[[export]]
-name = "VirtualProtectEx"
-ordinal = 762
-
-[[export]]
-name = "VirtualQueryEx"
-ordinal = 764
 
 [[export]]
 name = "VirtualUnlock"

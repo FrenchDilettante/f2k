@@ -4,12 +4,20 @@
 # real machine. Gated. The system block (no cmd.exe on F2K's disk) and the detach block (F2K's stub
 # path) are expected to stay pending. The create block starts some sixty processes, hence the
 # longer timeout.
-description = "spawn - child processes (spawn.c, with its companion program spawnkid.c): Windows 2000's fixed addresses of the TEB, PEB and their fields in the parent, a second thread and a child; CreateProcessA/W's names, search order, quoting and errors; waits and exit codes; process and thread handles, OpenProcess, CREATE_SUSPENDED, TerminateProcess and DuplicateHandle into a child; inherited standard handles; environment blocks and the current directory; ReadProcessMemory and WriteProcessMemory; GetBinaryTypeA/W; msvcrt's _spawn family, _cwait, _P_OVERLAY, system(); DETACHED_PROCESS, CREATE_NEW_CONSOLE and _P_DETACH."
+description = "spawn - child processes (spawn.c, with its companion program spawnkid.c): Windows 2000's fixed addresses of the TEB, PEB and their fields in the parent, a second thread and a child; CreateProcessA/W's names, search order, quoting and errors; waits and exit codes; process and thread handles, OpenProcess, CREATE_SUSPENDED, TerminateProcess and DuplicateHandle into a child; inherited standard handles; environment blocks and the current directory; ReadProcessMemory and WriteProcessMemory; GetBinaryTypeA/W, on programs and on made-up headers; an ended process, a child never started, DUPLICATE_CLOSE_SOURCE, another process's memory (VirtualAllocEx and the rest, FlushInstructionCache), handle flags in a child; msvcrt's descriptor block for a child, its _spawn family, _cwait, _P_OVERLAY, system(); DETACHED_PROCESS, CREATE_NEW_CONSOLE and _P_DETACH."
 kind = "sectioned"
 gate = true
 timeout = 60
 
 [pending]
+ended = "OpenProcess opens a process that has ended"
+unstarted = "TerminateThread on a child's only thread, never started, leaves the process running"
+dupclose = "DUPLICATE_CLOSE_SOURCE closes the source after the duplicate is made"
+remote = "VirtualAllocEx, VirtualFreeEx, VirtualProtectEx, VirtualQueryEx and FlushInstructionCache not yet implemented"
+selfmem = "ReadProcessMemory reports a partial copy's count"
+crtfds = "_open not yet implemented"
+inheritflags = "GetHandleInformation not yet implemented"
+binaryforms = "GetBinaryType reports an NE program for OS/2 as OS/2 (5); Windows 2000 reports it as DOS (1)"
 system = "no cmd.exe on F2K's disk"
 detach = "F2K's stub path (logged, error 120)"
 
@@ -98,3 +106,47 @@ spawn = [
 overlay = ["msvcrt._spawnl"]
 system = ["msvcrt.system"]
 detach = ["kernel32.CreateProcessA", "kernel32.CreateProcessW", "msvcrt._spawnl"]
+ended = [
+    "kernel32.CreateProcessA",
+    "kernel32.WaitForSingleObject",
+    "ntdll.NtQueryInformationProcess",
+    "kernel32.OpenProcess",
+    "kernel32.GetExitCodeProcess",
+    "kernel32.TerminateProcess",
+    "kernel32.GetCurrentProcessId",
+]
+unstarted = [
+    "kernel32.CreateProcessA",
+    "kernel32.TerminateProcess",
+    "kernel32.TerminateThread",
+    "kernel32.ResumeThread",
+    "kernel32.GetExitCodeThread",
+    "kernel32.GetExitCodeProcess",
+    "kernel32.WaitForSingleObject",
+]
+dupclose = ["kernel32.CreateProcessA", "kernel32.DuplicateHandle", "kernel32.CloseHandle"]
+remote = [
+    "kernel32.CreateProcessA",
+    "kernel32.VirtualAllocEx",
+    "kernel32.VirtualQueryEx",
+    "kernel32.VirtualProtectEx",
+    "kernel32.VirtualFreeEx",
+    "kernel32.WriteProcessMemory",
+    "kernel32.ReadProcessMemory",
+    "kernel32.OpenProcess",
+    "kernel32.FlushInstructionCache",
+]
+selfmem = [
+    "kernel32.DuplicateHandle",
+    "kernel32.OpenProcess",
+    "kernel32.ReadProcessMemory",
+    "kernel32.WriteProcessMemory",
+]
+crtfds = ["msvcrt._open", "msvcrt._close", "msvcrt._spawnl", "kernel32.CreateProcessA"]
+inheritflags = [
+    "kernel32.CreateFileA",
+    "kernel32.SetHandleInformation",
+    "kernel32.GetHandleInformation",
+    "kernel32.CreateProcessA",
+]
+binaryforms = ["kernel32.GetBinaryTypeA", "kernel32.GetBinaryTypeW"]

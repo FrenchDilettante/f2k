@@ -343,6 +343,14 @@ ordinal = 414
 fails = "-1"
 
 [[export]]
+name = "_open"
+group = "lowio"
+args = ["strA filename", "i32 oflag", "..."]
+impl = { stub = "not yet implemented" }
+ordinal = 404
+fails = "-1"
+
+[[export]]
 name = "_getch"
 group = "lowio"
 args = []
@@ -2449,10 +2457,6 @@ ordinal = 401
 [[export]]
 name = "_nextafter"
 ordinal = 402
-
-[[export]]
-name = "_open"
-ordinal = 404
 
 [[export]]
 name = "_osplatform"

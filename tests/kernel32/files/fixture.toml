@@ -1,10 +1,14 @@
 # files: one test per block of the real-machine capture (output.txt); see tests/README.md. The read
 # block's five thousand small reads take about twenty seconds in the unoptimized kernel, each through
 # kernel32's ReadFile and NtReadFile, hence the longer timeout.
-description = "files - the read side of the file API over files/DATA (files.c): path forms and errors, chunked and boundary reads, seeks, metadata, FindFirstFile listings, share modes, CRT file I/O, read-only file mappings, and concurrent readers. Captured on a local FAT32 volume, as F2K's boot volume is."
+description = "files - the read side of the file API over files/DATA (files.c): path forms and errors, chunked and boundary reads, seeks, metadata, FindFirstFile listings, share modes, CRT file I/O, read-only file mappings, concurrent readers, which freed handle slot an open takes, and handle flags (GetHandleInformation, SetHandleInformation, NtQueryObject). Captured on a local FAT32 volume, as F2K's boot volume is."
 kind = "sectioned"
 gate = true
 timeout = 40
+
+[pending]
+slots = "the current directory set to itself with a trailing backslash keeps its handle"
+flags = "GetHandleInformation not yet implemented"
 
 [pins]
 # The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
@@ -165,4 +169,19 @@ diskfree = [
     "kernel32.GetDiskFreeSpaceExA",
     "kernel32.GetDiskFreeSpaceExW",
     "ntdll.NtQueryVolumeInformationFile",
+]
+slots = [
+    "kernel32.CreateFileA",
+    "kernel32.CloseHandle",
+    "kernel32.GetCurrentDirectoryA",
+    "kernel32.SetCurrentDirectoryA",
+]
+flags = [
+    "kernel32.CreateFileA",
+    "kernel32.CloseHandle",
+    "kernel32.GetHandleInformation",
+    "kernel32.SetHandleInformation",
+    "kernel32.DuplicateHandle",
+    "ntdll.NtQueryObject",
+    "ntdll.NtSetInformationObject",
 ]
