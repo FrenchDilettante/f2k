@@ -8,14 +8,16 @@ F2K boots on a PC (QEMU or VirtualBox) from a FAT32 disk and runs Win32 console 
 Five of Windows 2000's system DLLs are F2K's own code:
 
 - **ntdll**: the system calls into the kernel, the program loader, and the runtime library the other DLLs build on.
-- **kernel32**: processes and threads, synchronization, memory, files, the console, the environment, code pages and locale, messages.
-- **msvcrt**: the C runtime for programs built against msvcrt.dll: start-up and exit, exception handling and `setjmp`, files and stdio, `printf` and `scanf`, narrow and wide strings, `_putenv`, the allocator.
+- **kernel32**: processes (child processes included) and threads, synchronization, memory, files, the console, the environment, code pages and locale, messages.
+- **msvcrt**: the C runtime for programs built against msvcrt.dll: start-up and exit, exception handling and `setjmp`, files and stdio, `printf` and `scanf`, narrow and wide strings, `_putenv`, the allocator, and starting child processes (`_spawn`, `_cwait`).
 - **advapi32**: the registry calls, over a registry the kernel keeps in memory.
 - **user32**: window stations, desktops and `MessageBeep`; no windows yet.
 
 Beside them in `\WINNT\system32` is one program of F2K's own, written in Rust: `pwd`, which prints the current directory.
 
-Windows 2000's own `cmd.exe` starts and runs its built-in commands (`dir`, `copy`, `set`, `type`, `md`...); it cannot start other programs yet, since F2K runs one process at a time.
+Windows 2000's own `cmd.exe` starts, runs its built-in commands (`dir`, `copy`, `set`, `type`, `md`...) and starts other programs, redirecting their input and output to files.
+Up to 16 processes run at once.
+Pipes (`|`) and new consoles for child processes are not there yet.
 Functions F2K does not have yet are either absent or stubs that log their call (see the compatibility report below).
 
 ## Prerequisites
@@ -69,7 +71,8 @@ make clean
 
 A boot runs the program its kernel command line names (`-- <program> [arguments]`; `exit0` without one).
 Several programs, ` ;; ` between two, run one after another, or side by side with the kernel option `concurrent` before the `--` (`concurrent -- CORPUS\sched.exe sleep ;; hello`).
-Every process starts in its program's directory with the same environment (`kernel/src/user/params.rs`): `COMPUTERNAME=QEMU`, `ComSpec=C:\WINNT\system32\cmd.exe`, `PATH=C:\WINNT\system32;C:\WINNT`, `PATHEXT=.COM;.EXE;.BAT;.CMD`, `SystemRoot=C:\WINNT`, `USERNAME=jeb` and `windir=C:\WINNT`.
+A program the boot runs starts in its program's directory with the same environment (`kernel/src/user/params.rs`): `COMPUTERNAME=QEMU`, `ComSpec=C:\WINNT\system32\cmd.exe`, `PATH=C:\WINNT\system32;C:\WINNT`, `PATHEXT=.COM;.EXE;.BAT;.CMD`, `SystemRoot=C:\WINNT`, `USERNAME=jeb` and `windir=C:\WINNT`.
+A child process starts with what its parent hands it: its environment, its current directory and its inheritable handles.
 
 ### QEMU (ISO with Limine)
 
