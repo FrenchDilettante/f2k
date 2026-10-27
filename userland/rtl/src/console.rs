@@ -154,6 +154,10 @@ pub mod api {
     /// `flags` when `mask` holds HANDLE_FLAG_INHERIT (SetHandleInformation's, for a console
     /// handle).
     pub const SET_HANDLE_INFORMATION: u32 = number(23);
+    /// ConsolepGetHandleInformation: [handle, out flags] — HANDLE_FLAG_INHERIT when the handle is
+    /// inheritable, nothing else (GetHandleInformation's, for a console handle: a console handle
+    /// is never protected from close).
+    pub const GET_HANDLE_INFORMATION: u32 = number(24);
 
     /// Each API's data length in dwords.
     pub const fn words(api: u32) -> Option<usize> {
@@ -174,6 +178,7 @@ pub mod api {
             OPEN_CONSOLE => 5,
             GET_INPUT_WAIT_HANDLE => 1,
             SET_HANDLE_INFORMATION => 3,
+            GET_HANDLE_INFORMATION => 2,
             _ => return None,
         })
     }
@@ -1071,6 +1076,14 @@ fn answer(
                 handles.kind(handle).ok_or(STATUS_INVALID_HANDLE)?;
             }
         }
+        api::GET_HANDLE_INFORMATION => {
+            let inheritable = handles.inheritable(handle).ok_or(STATUS_INVALID_HANDLE)?;
+            data[1] = if inheritable {
+                HANDLE_FLAG_INHERIT as usize
+            } else {
+                0
+            };
+        }
         api::GET_CURSOR_POSITION => {
             output()?;
             data[1] = console.screen_buffer_info().cursor_position.word() as usize;
@@ -1490,6 +1503,15 @@ mod tests {
         );
         assert_eq!(
             server.call(api::SET_HANDLE_INFORMATION, &[0x17, 0, 0]).0,
+            STATUS_INVALID_HANDLE
+        );
+        // Asked back: the inheritance alone, never a protection from close.
+        let (status, data) = server.call(api::GET_HANDLE_INFORMATION, &[0xF, 0]);
+        assert_eq!((status, data[1]), (0, 1));
+        let (status, data) = server.call(api::GET_HANDLE_INFORMATION, &[7, 0]);
+        assert_eq!((status, data[1]), (0, 0));
+        assert_eq!(
+            server.call(api::GET_HANDLE_INFORMATION, &[0x17, 0]).0,
             STATUS_INVALID_HANDLE
         );
         let child = server.handles.inherited();

@@ -435,7 +435,7 @@ mod tests {
         // binary-type, process-creation, process and module calls and RaiseException its Rust, the
         // heap and Local/Global calls its own over ntdll's heap). The internal start thunks are not
         // among them.
-        assert_eq!(NATIVE_EXPORTS.len(), 261);
+        assert_eq!(NATIVE_EXPORTS.len(), 262);
         for &(name, _) in &NATIVE_EXPORTS {
             let address =
                 kernel32_export(name).unwrap_or_else(|| panic!("kernel32 exports no {name}"));
@@ -639,7 +639,7 @@ mod tests {
     #[test]
     fn the_surface_is_the_corpus_import_surface() {
         let names: Vec<&str> = DLL_EXPORTS.iter().map(|&(name, _)| name).collect();
-        assert_eq!(names.len(), 270, "the corpus's import surface");
+        assert_eq!(names.len(), 271, "the corpus's import surface");
         for (i, name) in names.iter().enumerate() {
             assert!(!names[i + 1..].contains(name), "{name} listed twice");
             assert!(

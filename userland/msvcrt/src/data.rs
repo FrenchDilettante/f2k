@@ -35,6 +35,14 @@ impl<T> Exported<T> {
     }
 }
 
+impl<T: Copy> Exported<T> {
+    /// The variable's value, as the DLL or a program last wrote it.
+    pub fn read(&self) -> T {
+        // SAFETY: a plain read of the process's own variable.
+        unsafe { self.0.get().read() }
+    }
+}
+
 /// A process-wide variable of the C runtime's own: shared by every thread, guarded where it needs
 /// to be by the C runtime's lock ([`crate::thread::Locked`]).
 #[repr(transparent)]

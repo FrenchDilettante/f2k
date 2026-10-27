@@ -793,6 +793,58 @@ pub extern "system" fn set_handle_information(object: u32, mask: u32, flags: u32
     }
 }
 
+/// A handle's flags as GetHandleInformation answers them: HANDLE_FLAG_INHERIT and
+/// HANDLE_FLAG_PROTECT_FROM_CLOSE from ObjectHandleFlagInformation's two BOOLEANs.
+fn flags_of(flags: ntcall::HandleFlags) -> u32 {
+    let inherit = if flags.inherit != 0 {
+        HANDLE_FLAG_INHERIT
+    } else {
+        0
+    };
+    let protect = if flags.protect_from_close != 0 {
+        HANDLE_FLAG_PROTECT_FROM_CLOSE
+    } else {
+        0
+    };
+    inherit | protect
+}
+
+/// GetHandleInformation: the handle's flags into `*flags` — HANDLE_FLAG_INHERIT and
+/// HANDLE_FLAG_PROTECT_FROM_CLOSE. A console handle's are its server's (its inheritance alone: see
+/// [`console::get_console_handle_information`]); any other handle's are its entry's in the
+/// process's handle table (NtQueryObject, ObjectHandleFlagInformation, as Windows 2000's asks: a
+/// pseudo-handle answers none set). A handle naming nothing fails with ERROR_INVALID_HANDLE,
+/// `*flags` untouched; on success a null `flags` faults the caller, as Windows 2000's writes
+/// through it.
+///
+/// # Safety
+///
+/// `flags` is null or writable.
+#[unsafe(export_name = "f2k_export_GetHandleInformation")]
+pub unsafe extern "system" fn get_handle_information(object: u32, flags: *mut u32) -> u32 {
+    // SAFETY: the caller's slot.
+    let flags = unsafe { flags.as_mut() };
+    let object = standard_handle(object);
+    let answer = if is_console_handle(object) {
+        console::get_console_handle_information(object)
+    } else {
+        ntcall::handle_flags(object).map(flags_of)
+    };
+    match answer {
+        Ok(value) => {
+            let Some(flags) = flags else {
+                ntcall::raise_status(rtl::status::STATUS_ACCESS_VIOLATION);
+            };
+            *flags = value;
+            1
+        }
+        Err(status) => {
+            set_last_nt_error(status);
+            0
+        }
+    }
+}
+
 /// QueueUserAPC: queue the routine and its parameter on the thread's user-APC queue. Fails —
 /// returning zero and, as on Windows 2000, leaving the last error alone — when the service does.
 #[unsafe(export_name = "f2k_export_QueueUserAPC")]

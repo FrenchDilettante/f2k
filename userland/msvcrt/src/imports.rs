@@ -65,7 +65,7 @@ unsafe extern "system" {
         name: *const u8,
         access: u32,
         share: u32,
-        security: usize,
+        security: *const SecurityAttributes,
         disposition: u32,
         flags: u32,
         template: usize,
@@ -216,6 +216,30 @@ impl Default for StartupInfoA {
 
 #[cfg(target_arch = "x86")]
 const _: () = assert!(core::mem::size_of::<StartupInfoA>() == 68);
+
+/// SECURITY_ATTRIBUTES: its size, a security descriptor (none: the default) and whether the handle
+/// made is inheritable.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct SecurityAttributes {
+    pub length: u32,
+    pub security_descriptor: *const u8,
+    pub inherit_handle: u32,
+}
+
+impl SecurityAttributes {
+    /// The default security, the handle inheritable as `inherit` says.
+    pub const fn inheritable(inherit: bool) -> SecurityAttributes {
+        SecurityAttributes {
+            length: core::mem::size_of::<SecurityAttributes>() as u32,
+            security_descriptor: core::ptr::null(),
+            inherit_handle: inherit as u32,
+        }
+    }
+}
+
+#[cfg(target_arch = "x86")]
+const _: () = assert!(core::mem::size_of::<SecurityAttributes>() == 12);
 
 /// PROCESS_INFORMATION: the new process's and its first thread's handles and ids.
 #[repr(C)]
@@ -499,7 +523,7 @@ pub mod host {
         _: *const u8,
         _: u32,
         _: u32,
-        _: usize,
+        _: *const super::SecurityAttributes,
         _: u32,
         _: u32,
         _: usize,

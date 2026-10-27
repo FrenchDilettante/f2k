@@ -5,16 +5,19 @@
 //! (NtCreateSection with SEC_IMAGE) and its SECTION_IMAGE_INFORMATION asked (NtQuerySection). A
 //! Windows image's description decides between a program ([`of_image`]: SCS_32BIT_BINARY, or
 //! SCS_POSIX_BINARY by its subsystem) and an image that is none (a DLL); the section's refusal of a
-//! file that is no Windows image says what it is instead ([`of_refusal`]: a DOS, Windows 3.x or
-//! OS/2 program, or a file without the MZ signature, typed by its name's extension). The file and
-//! the section are closed on every path.
+//! file that is no Windows image says what it is instead ([`of_refusal`]: a DOS or Windows 3.x
+//! program, or a file without the MZ signature, typed by its name's extension). The file and the
+//! section are closed on every path.
 //!
 //! As spawn's capture pins it: a Windows program is SCS_32BIT_BINARY; a DLL, a text file named
 //! `.txt` and an empty file are ERROR_BAD_EXE_FORMAT; a file that is not an image but is named
 //! `.exe` is SCS_DOS_BINARY (the DOS machine would run it); the name is taken as given (no `.exe`
 //! added); a directory is ERROR_ACCESS_DENIED, a missing file ERROR_FILE_NOT_FOUND, a missing
 //! directory ERROR_PATH_NOT_FOUND. The type is written only on success, and success leaves the
-//! last error alone.
+//! last error alone. Its binaryforms block, on made-up headers: an NE program for OS/2 is a DOS
+//! program (SCS_DOS_BINARY), not SCS_OS216_BINARY, which Windows 2000's GetBinaryType does not
+//! answer for it; a DOS program named `.txt` is one all the same (the name types only a file
+//! without MZ).
 
 use crate::base::{set_last_error, set_last_nt_error};
 use crate::create::{Owned, OPEN_ACCESS, OPEN_OPTIONS, OPEN_SHARE};
@@ -106,15 +109,16 @@ pub fn of_image(image: &SectionImageInformation) -> Result<u32, Refusal> {
 
 /// What the image section's refusal `status` says the file named `name` (as given) is: a file
 /// without the MZ signature is a DOS program or none by its name's extension; an MZ file without a
-/// new header, or with an LE one, a DOS program; with a Windows NE header a Windows 3.x program,
-/// with another NE one an OS/2 program. Any other file no image section is made of (an empty one,
-/// a broken PE one) is ERROR_BAD_EXE_FORMAT, and any other status the failure it is.
+/// new header, or with an LE one or an NE one for OS/2, a DOS program; with a Windows NE header a
+/// Windows 3.x program. Any other file no image section is made of (an empty one, a broken PE one)
+/// is ERROR_BAD_EXE_FORMAT, and any other status the failure it is.
 pub fn of_refusal(status: NtStatus, name: &[u16]) -> Result<u32, Refusal> {
     match status {
         STATUS_INVALID_IMAGE_NOT_MZ => by_extension(name).ok_or(BAD),
-        STATUS_INVALID_IMAGE_PROTECT | STATUS_INVALID_IMAGE_LE_FORMAT => Ok(SCS_DOS_BINARY),
+        STATUS_INVALID_IMAGE_PROTECT
+        | STATUS_INVALID_IMAGE_LE_FORMAT
+        | STATUS_INVALID_IMAGE_NE_FORMAT => Ok(SCS_DOS_BINARY),
         STATUS_INVALID_IMAGE_WIN_16 => Ok(SCS_WOW_BINARY),
-        STATUS_INVALID_IMAGE_NE_FORMAT => Ok(SCS_OS216_BINARY),
         STATUS_INVALID_IMAGE_FORMAT
         | STATUS_MAPPED_FILE_SIZE_ZERO
         | STATUS_INVALID_FILE_FOR_SECTION => Err(BAD),
@@ -256,9 +260,9 @@ mod tests {
         assert_eq!(typed("exe"), Err(BAD));
     }
 
-    /// The section's other refusals: a DOS program (no new header, or an LE one), a Windows 3.x
-    /// or OS/2 program by its NE header; an empty file, a broken PE one or a file no section is
-    /// made of none, whatever its name; any other status its failure.
+    /// The section's other refusals: a DOS program (no new header, an LE one or an OS/2 NE one),
+    /// a Windows 3.x program by its NE header; an empty file, a broken PE one or a file no section
+    /// is made of none, whatever its name; any other status its failure.
     #[test]
     fn the_section_refusals_type_the_rest() {
         let exe = name("a.exe");
@@ -276,7 +280,7 @@ mod tests {
         );
         assert_eq!(
             of_refusal(STATUS_INVALID_IMAGE_NE_FORMAT, &exe),
-            Ok(SCS_OS216_BINARY)
+            Ok(SCS_DOS_BINARY)
         );
         for status in [
             STATUS_INVALID_IMAGE_FORMAT,

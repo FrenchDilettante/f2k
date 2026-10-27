@@ -268,10 +268,11 @@ pub fn create_arguments(slot_ok: bool, parent: Handle, section: Handle) -> Resul
 /// process's starts (see `exec::loader::load_section`), its parent's client id recorded
 /// (ProcessBasicInformation's InheritedFromUniqueProcessId), its parent's hard-error mode taken
 /// (CreateProcess's CREATE_DEFAULT_ERROR_MODE is kernel32's to undo); with InheritObjectTable (a
-/// BOOLEAN), every inheritable handle of the parent's at its own value in the child's table, and
-/// the parent's inheritable console handles (see [`crate::process::Process::inherit_handles`]) —
-/// without it,
-/// the console's standard handles alone, as a process of the console starts. Named
+/// BOOLEAN), every inheritable handle of the parent's at its own value in the child's table (see
+/// [`crate::process::Process::inherit_handles`]). With it or without it, the parent's inheritable
+/// console handles, at their values, as the console server hands them to every process sharing the
+/// console (the spawn fixture's inheritflags block: an inheritable CONOUT$ handle reaches a child
+/// created without bInheritHandles; a handle not inheritable does not). Named
 /// `<image's file name, without its extension>` in its end report. A handle to it with
 /// DesiredAccess (its generic rights mapped, see [`super::object::process_access`]), inheritable as
 /// the attributes say (OBJ_INHERIT; a name is not looked at: process objects have none), goes into
@@ -327,6 +328,7 @@ pub fn create_process(
             let creator = parent.record();
             child.set_parent_id(creator.id());
             child.set_hard_error_mode(creator.hard_error_mode());
+            *child.console_mut() = creator.console_mut().inherited();
             if inherit_object_table & 0xFF != 0 {
                 child.inherit_handles(creator);
             }

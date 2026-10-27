@@ -140,7 +140,7 @@ fn input() -> Option<usize> {
                 c"CONIN$".as_ptr().cast(),
                 GENERIC_READ_WRITE,
                 FILE_SHARE_READ_WRITE,
-                0,
+                core::ptr::null(),
                 OPEN_EXISTING,
                 0,
                 0,

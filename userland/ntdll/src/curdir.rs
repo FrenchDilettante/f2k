@@ -101,13 +101,14 @@ fn open_directory(name: &[u16]) -> Result<u32, u32> {
 /// RtlSetCurrentDirectory_U: `path` made absolute against the current directory, its trailing
 /// separator added, opened (NtOpenFile: a missing directory is the open's status, a file
 /// STATUS_NOT_A_DIRECTORY), then the current directory: its DOS path and handle (the old handle
-/// closed). The current directory itself (the same path, in any case) keeps its open handle: only
-/// its path's spelling is taken, nothing is opened or closed — a SetCurrentDirectory to where the
-/// process already is leaves its handle table as it was (the spawn fixture's capture implies it:
-/// its inherit block's child, made without inheritance, finds none of the parent's file handles'
-/// values among its own, though the parent sets its current directory to the one it starts in
-/// twice before opening them). STATUS_OBJECT_NAME_INVALID for an empty path, STATUS_NAME_TOO_LONG
-/// for one past the DOS path's room.
+/// closed). The current directory itself keeps its open handle: only its path's spelling is taken,
+/// nothing is opened or closed — a SetCurrentDirectory to where the process already is leaves its
+/// handle table as it was (the files fixture's slots block: the next open takes the slot freed
+/// before it). "Itself" is the full path as the caller spelled it, before the trailing separator
+/// is added, matching the current directory less its own, in any case: the same directory given
+/// with a trailing backslash is reopened (the old handle closed), as on Windows 2000. A drive's
+/// root keeps its separator on both sides of the comparison. STATUS_OBJECT_NAME_INVALID for an
+/// empty path, STATUS_NAME_TOO_LONG for one past the DOS path's room.
 ///
 /// # Safety
 ///
@@ -132,6 +133,10 @@ fn set_current_directory(path: &[u16]) -> u32 {
         Err(PathError::Empty) => return STATUS_OBJECT_NAME_INVALID,
         Err(PathError::TooLong) => return STATUS_NAME_TOO_LONG,
     };
+    let handle_slot = sys::process_parameters() + CURRENT_DIRECTORY_HANDLE;
+    let old = sys::read(handle_slot);
+    // SAFETY: the DOS path's buffer holds its length.
+    let same = old != 0 && same_directory(&full[..length], unsafe { current.units() });
     if full[length - 1] != u16::from(b'\\') {
         full[length] = u16::from(b'\\');
         length += 1;
@@ -140,16 +145,6 @@ fn set_current_directory(path: &[u16]) -> u32 {
     if 2 * (length + 1) > current.maximum_length as usize {
         return STATUS_NAME_TOO_LONG;
     }
-    let handle_slot = sys::process_parameters() + CURRENT_DIRECTORY_HANDLE;
-    let old = sys::read(handle_slot);
-    // SAFETY: the DOS path's buffer holds its length.
-    let current_units = unsafe { current.units() };
-    let same = old != 0
-        && current_units.len() == length
-        && current_units
-            .iter()
-            .zip(&full[..length])
-            .all(|(&a, &b)| upcase(a) == upcase(b));
     let handle = if same {
         old as u32
     } else {
@@ -176,6 +171,21 @@ fn set_current_directory(path: &[u16]) -> u32 {
     current.length = (2 * length) as u16;
     sys::write(handle_slot, handle as usize);
     STATUS_SUCCESS
+}
+
+/// Whether `full`, a full path as the caller spelled it (before its trailing separator is added),
+/// names the current directory `current` (its DOS path, with its trailing separator): the same
+/// units in any case, `current` taken less its separator unless it is a drive's root (`C:\`).
+fn same_directory(full: &[u16], current: &[u16]) -> bool {
+    let current = match current {
+        [rest @ .., last] if current.len() > 3 && *last == u16::from(b'\\') => rest,
+        _ => current,
+    };
+    full.len() == current.len()
+        && full
+            .iter()
+            .zip(current)
+            .all(|(&a, &b)| upcase(a) == upcase(b))
 }
 
 /// RtlGetCurrentDirectory_U: the current directory's DOS path into the caller's buffer of

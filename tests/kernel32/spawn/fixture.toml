@@ -15,9 +15,7 @@ unstarted = "TerminateThread on a child's only thread, never started, leaves the
 dupclose = "DUPLICATE_CLOSE_SOURCE closes the source after the duplicate is made"
 remote = "VirtualAllocEx, VirtualFreeEx, VirtualProtectEx, VirtualQueryEx and FlushInstructionCache not yet implemented"
 selfmem = "ReadProcessMemory reports a partial copy's count"
-crtfds = "_open not yet implemented"
-inheritflags = "GetHandleInformation not yet implemented"
-binaryforms = "GetBinaryType reports an NE program for OS/2 as OS/2 (5); Windows 2000 reports it as DOS (1)"
+binaryforms = "the kernel refuses an NE program for no target as a Windows one, and a PE signature with nothing after it as a broken image; Windows 2000 types both as DOS programs (1)"
 system = "no cmd.exe on F2K's disk"
 detach = "F2K's stub path (logged, error 120)"
 

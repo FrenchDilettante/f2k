@@ -4,6 +4,10 @@
 //! standard handles when the DLL is loaded (one that is missing still counts as open, a device), so
 //! the first a program opens is 3. As fd's capture pins it:
 //!
+//! - `_open` opens a file by name on the lowest free descriptor, as MSDN documents its flags
+//!   ([`open_plan`]); spawn's crtfds capture pins its descriptors and the flags a child is handed:
+//!   0x01 for a file read in binary, 0xA1 for one written appending in text, none for one opened
+//!   `_O_NOINHERIT`.
 //! - `_open_osfhandle` takes the lowest free descriptor, text mode only with `_O_TEXT` (so its
 //!   flags 0 are binary), and refuses a handle whose type is unknown (EBADF); a read-only flag does
 //!   not stop writes.
@@ -36,11 +40,36 @@ const FAPPEND: u8 = 0x20;
 const FDEV: u8 = 0x40;
 const FTEXT: u8 = 0x80;
 
-/// fcntl.h's flags `_open_osfhandle` and `_setmode` take.
+/// fcntl.h's flags `_open`, `_open_osfhandle` and `_setmode` take: the access (the low two bits),
+/// appending, the creation's and the translation's.
+pub const O_RDONLY: i32 = 0x0000;
+pub const O_WRONLY: i32 = 0x0001;
+pub const O_RDWR: i32 = 0x0002;
+const O_ACCESS: i32 = 0x0003;
 pub const O_APPEND: i32 = 0x0008;
 pub const O_NOINHERIT: i32 = 0x0080;
+pub const O_CREAT: i32 = 0x0100;
+pub const O_TRUNC: i32 = 0x0200;
+pub const O_EXCL: i32 = 0x0400;
 pub const O_TEXT: i32 = 0x4000;
 pub const O_BINARY: i32 = 0x8000;
+
+/// sys/stat.h's write permission: a file `_open` creates without it is read-only.
+pub const S_IWRITE: i32 = 0x0080;
+
+/// CreateFileA's values `_open` asks with: the access, the sharing (`_SH_DENYNO`: both ways), the
+/// dispositions and the attributes.
+const GENERIC_READ: u32 = 0x8000_0000;
+const GENERIC_WRITE: u32 = 0x4000_0000;
+const FILE_SHARE_READ_WRITE: u32 = 0x3;
+const CREATE_NEW: u32 = 1;
+const CREATE_ALWAYS: u32 = 2;
+const OPEN_EXISTING: u32 = 3;
+const OPEN_ALWAYS: u32 = 4;
+const TRUNCATE_EXISTING: u32 = 5;
+const FILE_ATTRIBUTE_READONLY: u32 = 0x01;
+const FILE_ATTRIBUTE_NORMAL: u32 = 0x80;
+const INVALID_HANDLE_VALUE: usize = usize::MAX;
 
 /// GetFileType's answers.
 const FILE_TYPE_UNKNOWN: u32 = 0;
@@ -295,6 +324,136 @@ pub extern "C" fn open_osfhandle(handle: usize, flags: i32) -> i32 {
     table()[fd] = Descriptor {
         handle: usize::MAX,
         flags: mode,
+        ahead: 0x100,
+    };
+    set_handle(fd, handle);
+    fd as i32
+}
+
+/// What `_open` asks CreateFileA for and the descriptor it makes: the access, the disposition, the
+/// new file's attributes, whether the handle is inheritable, and the descriptor's mode flags (its
+/// type's are the handle's, added once it is open).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct OpenPlan {
+    access: u32,
+    disposition: u32,
+    attributes: u32,
+    inherit: bool,
+    mode: u8,
+}
+
+/// `_open`'s plan for `oflag`, `pmode` (looked at only with `_O_CREAT`) and `_fmode`'s value
+/// `fmode`, as MSDN's `_open` documents the flags: the access mode `_O_RDONLY`, `_O_WRONLY` or
+/// `_O_RDWR` (any other is none: EINVAL); `_O_CREAT` creates a missing file (failing on an
+/// existing one with `_O_EXCL`, truncating it with `_O_TRUNC`), read-only when `pmode` lacks
+/// `_S_IWRITE`; `_O_TRUNC` alone truncates an existing file; `_O_APPEND` writes at the end;
+/// `_O_BINARY` or `_O_TEXT` sets the translation (`_O_BINARY` deciding when both are given), else
+/// `_fmode` does (text unless it is `_O_BINARY`); `_O_NOINHERIT` keeps the handle and the
+/// descriptor from a child.
+fn open_plan(oflag: i32, pmode: i32, fmode: i32) -> Option<OpenPlan> {
+    let access = match oflag & O_ACCESS {
+        O_RDONLY => GENERIC_READ,
+        O_WRONLY => GENERIC_WRITE,
+        O_RDWR => GENERIC_READ | GENERIC_WRITE,
+        _ => return None,
+    };
+    let disposition = match (
+        oflag & O_CREAT != 0,
+        oflag & O_EXCL != 0,
+        oflag & O_TRUNC != 0,
+    ) {
+        (true, true, _) => CREATE_NEW,
+        (true, false, true) => CREATE_ALWAYS,
+        (true, false, false) => OPEN_ALWAYS,
+        (false, _, true) => TRUNCATE_EXISTING,
+        (false, _, false) => OPEN_EXISTING,
+    };
+    let attributes = if oflag & O_CREAT != 0 && pmode & S_IWRITE == 0 {
+        FILE_ATTRIBUTE_READONLY
+    } else {
+        FILE_ATTRIBUTE_NORMAL
+    };
+    let text = if oflag & O_BINARY != 0 {
+        false
+    } else if oflag & O_TEXT != 0 {
+        true
+    } else {
+        fmode != O_BINARY
+    };
+    let inherit = oflag & O_NOINHERIT == 0;
+    let mut mode = FOPEN;
+    if text {
+        mode |= FTEXT;
+    }
+    if oflag & O_APPEND != 0 {
+        mode |= FAPPEND;
+    }
+    if !inherit {
+        mode |= FNOINHERIT;
+    }
+    Some(OpenPlan {
+        access,
+        disposition,
+        attributes,
+        inherit,
+        mode,
+    })
+}
+
+/// _open: the file `name` opened (or created) as `oflag` says (see [`open_plan`]), shared for
+/// reading and writing (`_SH_DENYNO`), on the lowest free descriptor. -1 with EINVAL for an access
+/// mode that is none, EMFILE when no descriptor is free, and errno and `_doserrno` from
+/// CreateFileA's error when the file cannot be opened.
+///
+/// cdecl: the caller pushes the arguments and takes them back, so the optional `pmode` is this
+/// function's third parameter, read only with `_O_CREAT` (MSDN's prototype: `_open(filename,
+/// oflag [, pmode])`).
+///
+/// # Safety
+///
+/// `name` is a NUL-terminated string; `pmode` is passed when `oflag` holds `_O_CREAT`.
+#[unsafe(export_name = "f2k_export__open")]
+pub unsafe extern "C" fn open_file(name: *const u8, oflag: i32, pmode: i32) -> i32 {
+    let pmode = if oflag & O_CREAT != 0 { pmode } else { 0 };
+    let Some(plan) = open_plan(oflag, pmode, crate::data::FMODE.read()) else {
+        set_errno(EINVAL);
+        thread::set_doserrno(0);
+        return -1;
+    };
+    let _lock = Locked::take();
+    let Some(fd) = free_descriptor() else {
+        return -1;
+    };
+    let security = imports::SecurityAttributes::inheritable(plan.inherit);
+    // SAFETY: kernel32's export, over the caller's name and the attributes above.
+    let handle = unsafe {
+        imports::CreateFileA(
+            name,
+            plan.access,
+            FILE_SHARE_READ_WRITE,
+            &security,
+            plan.disposition,
+            plan.attributes,
+            0,
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        // SAFETY: kernel32's export.
+        set_dos_error(unsafe { imports::GetLastError() });
+        return -1;
+    }
+    // SAFETY: kernel32's export, over the handle just opened.
+    let kind = unsafe { imports::GetFileType(handle) };
+    if kind == FILE_TYPE_UNKNOWN {
+        // SAFETY: kernel32's export, over the handle just opened.
+        unsafe { imports::CloseHandle(handle) };
+        set_errno(EBADF);
+        thread::set_doserrno(0);
+        return -1;
+    }
+    table()[fd] = Descriptor {
+        handle: usize::MAX,
+        flags: plan.mode | type_flags(kind),
         ahead: 0x100,
     };
     set_handle(fd, handle);
@@ -651,4 +810,61 @@ pub unsafe fn read(fd: i32, buffer: *mut u8, count: usize) -> i32 {
         to += 1;
     }
     to as i32
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn plan(oflag: i32, pmode: i32, fmode: i32) -> OpenPlan {
+        open_plan(oflag, pmode, fmode).expect("an access mode")
+    }
+
+    /// The access mode is the low two bits: read, write, both; the fourth value is none.
+    #[test]
+    fn the_access_mode_is_the_low_bits() {
+        assert_eq!(plan(O_RDONLY, 0, 0).access, GENERIC_READ);
+        assert_eq!(plan(O_WRONLY, 0, 0).access, GENERIC_WRITE);
+        assert_eq!(plan(O_RDWR, 0, 0).access, GENERIC_READ | GENERIC_WRITE);
+        assert_eq!(open_plan(O_ACCESS, 0, 0), None);
+    }
+
+    /// `_O_CREAT`, `_O_EXCL` and `_O_TRUNC` choose the disposition; `_O_EXCL` alone means
+    /// nothing; a file created without `_S_IWRITE` is read-only.
+    #[test]
+    fn the_creation_flags_choose_the_disposition() {
+        let disposition = |oflag| plan(O_WRONLY | oflag, S_IWRITE, 0).disposition;
+        assert_eq!(disposition(0), OPEN_EXISTING);
+        assert_eq!(disposition(O_EXCL), OPEN_EXISTING);
+        assert_eq!(disposition(O_TRUNC), TRUNCATE_EXISTING);
+        assert_eq!(disposition(O_CREAT), OPEN_ALWAYS);
+        assert_eq!(disposition(O_CREAT | O_TRUNC), CREATE_ALWAYS);
+        assert_eq!(disposition(O_CREAT | O_EXCL), CREATE_NEW);
+        assert_eq!(disposition(O_CREAT | O_EXCL | O_TRUNC), CREATE_NEW);
+        let attributes = |oflag, pmode| plan(O_WRONLY | oflag, pmode, 0).attributes;
+        assert_eq!(attributes(O_CREAT, S_IWRITE), FILE_ATTRIBUTE_NORMAL);
+        assert_eq!(attributes(O_CREAT, 0x0100), FILE_ATTRIBUTE_READONLY);
+        assert_eq!(attributes(0, 0), FILE_ATTRIBUTE_NORMAL);
+    }
+
+    /// The descriptor's flags as spawn's crtfds capture shows them handed to a child: a file read
+    /// in binary 0x01, one written appending in text 0xA1, one opened `_O_NOINHERIT` not
+    /// inheritable; `_fmode` decides the translation when the flags do not.
+    #[test]
+    fn the_mode_flags_match_the_capture() {
+        let binary = plan(O_RDONLY | O_BINARY, 0, 0);
+        assert_eq!((binary.mode, binary.inherit), (0x01, true));
+        let appending = plan(O_WRONLY | O_CREAT | O_APPEND | O_TEXT, 0x0180, 0);
+        assert_eq!(appending.mode, 0xA1);
+        let private = plan(O_RDONLY | O_NOINHERIT, 0, 0);
+        assert_eq!(
+            (private.mode & FNOINHERIT, private.inherit),
+            (FNOINHERIT, false)
+        );
+        assert_eq!(private.mode & FTEXT, FTEXT, "_fmode 0 is text");
+        assert_eq!(plan(O_RDONLY, 0, O_BINARY).mode & FTEXT, 0);
+        assert_eq!(plan(O_RDONLY, 0, O_TEXT).mode & FTEXT, FTEXT);
+        assert_eq!(plan(O_RDONLY | O_TEXT, 0, O_BINARY).mode & FTEXT, FTEXT);
+        assert_eq!(plan(O_RDONLY | O_BINARY | O_TEXT, 0, 0).mode & FTEXT, 0);
+    }
 }

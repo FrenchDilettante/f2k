@@ -327,6 +327,17 @@ pub fn set_console_handle_information(console: u32, mask: u32, flags: u32) -> u3
     ))
 }
 
+/// GetHandleInformation's work for a console handle, as Windows 2000's asks the console server:
+/// HANDLE_FLAG_INHERIT when the handle is inheritable, no other flag (a console handle carries no
+/// protection from close); the server's status (STATUS_INVALID_HANDLE) for one naming nothing.
+pub fn get_console_handle_information(console: u32) -> Result<u32, u32> {
+    let mut data = [console as usize, 0];
+    match call_server(api::GET_HANDLE_INFORMATION, &mut data) {
+        status if nt_success(status) => Ok(data[1] as u32),
+        status => Err(status),
+    }
+}
+
 // --- Opening the console by name -----------------------------------------------------------------
 
 /// Which console buffer a file name names, as Windows 2000's CreateFile reads it: CONIN$ the input

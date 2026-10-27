@@ -7,8 +7,7 @@ gate = true
 timeout = 40
 
 [pending]
-slots = "the current directory set to itself with a trailing backslash keeps its handle"
-flags = "GetHandleInformation not yet implemented"
+flags = "DUPLICATE_CLOSE_SOURCE closes a source handle protected from close; Windows 2000 leaves it open"
 
 [pins]
 # The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup

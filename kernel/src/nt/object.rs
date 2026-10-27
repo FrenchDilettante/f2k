@@ -265,8 +265,8 @@ pub fn closable(entry: Entry) -> Result<(), Status> {
 /// NtSetInformationObject answer here.
 pub const OBJECT_HANDLE_FLAG_INFORMATION: u32 = 4;
 
-/// STATUS_INVALID_INFO_CLASS and STATUS_INFO_LENGTH_MISMATCH: a class not answered, a buffer not
-/// the class's size.
+/// STATUS_INVALID_INFO_CLASS and STATUS_INFO_LENGTH_MISMATCH: a class not answered, a buffer
+/// too short for the class's structure (or, for NtSetInformationObject, not its size).
 const STATUS_INVALID_INFO_CLASS: Status = Status(0xC000_0003);
 const STATUS_INFO_LENGTH_MISMATCH: Status = Status(0xC000_0004);
 
@@ -315,26 +315,50 @@ impl ObjectHandleFlagInformation {
     }
 }
 
+/// What NtQueryObject and NtSetInformationObject do with their length: a query takes any buffer
+/// with room for the structure (the bytes past it untouched), a set the structure's size exactly.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FlagLength {
+    AtLeast,
+    Exactly,
+}
+
 /// The checks NtQueryObject and NtSetInformationObject make of their class and length before the
 /// handle: a class other than ObjectHandleFlagInformation is STATUS_INVALID_INFO_CLASS (the
 /// others, the object's basic, name, type and all-types information, are not answered here), a
-/// length other than its structure's STATUS_INFO_LENGTH_MISMATCH.
-pub fn handle_flag_arguments(class: u32, length: u32) -> Result<(), Status> {
+/// length the service does not take (see [`FlagLength`]) STATUS_INFO_LENGTH_MISMATCH.
+pub fn handle_flag_arguments(class: u32, length: u32, rule: FlagLength) -> Result<(), Status> {
     if class != OBJECT_HANDLE_FLAG_INFORMATION {
         return Err(STATUS_INVALID_INFO_CLASS);
     }
-    if length != OBJECT_HANDLE_FLAG_INFORMATION_SIZE {
+    let taken = match rule {
+        FlagLength::AtLeast => length >= OBJECT_HANDLE_FLAG_INFORMATION_SIZE,
+        FlagLength::Exactly => length == OBJECT_HANDLE_FLAG_INFORMATION_SIZE,
+    };
+    if !taken {
         return Err(STATUS_INFO_LENGTH_MISMATCH);
     }
     Ok(())
+}
+
+/// The flags NtQueryObject answers for a pseudo-handle, which has no entry to read them from: none
+/// set (Windows 2000 answers the current process's pseudo-handle so). None for any other handle.
+pub fn pseudo_handle_flags(handle: u32) -> Option<ObjectHandleFlagInformation> {
+    matches!(handle, CURRENT_PROCESS | CURRENT_THREAD).then_some(ObjectHandleFlagInformation {
+        inherit: 0,
+        protect_from_close: 0,
+    })
 }
 
 /// NtQueryObject(Handle, ObjectInformationClass, ObjectInformation, ObjectInformationLength,
 /// ReturnLength): ObjectHandleFlagInformation alone: the handle's inheritance and its protection
 /// from close, from its entry in the calling process's handle table (kernel32's
 /// GetHandleInformation), its size written to ReturnLength when given. The class and length are
-/// checked first (see [`handle_flag_arguments`]), then the handle (STATUS_INVALID_HANDLE for one
-/// naming no entry: a pseudo-handle or a console handle has none).
+/// checked first (see [`handle_flag_arguments`]: a buffer too short still has the size written to
+/// ReturnLength, as the service's documentation has it), then the handle: a pseudo-handle answers
+/// no flags set ([`pseudo_handle_flags`]), any other handle naming no entry (a console handle has
+/// none) is STATUS_INVALID_HANDLE. Only the structure's bytes are written, whatever the buffer's
+/// length.
 pub fn query_object(
     call: &mut NtCall,
     handle: Handle,
@@ -343,21 +367,38 @@ pub fn query_object(
     length: u32,
     return_length: UserPtr<u32>,
 ) -> NtResult {
-    handle_flag_arguments(class, length)?;
+    if let Err(status) = handle_flag_arguments(class, length, FlagLength::AtLeast) {
+        if status == STATUS_INFO_LENGTH_MISMATCH {
+            return_length.write_optional(OBJECT_HANDLE_FLAG_INFORMATION_SIZE)?;
+        }
+        return Err(status);
+    }
+    let flags = match pseudo_handle_flags(handle.raw()) {
+        Some(flags) => flags,
+        None => handle_entry_flags(call, handle)?,
+    };
+    information.write(&flags.to_bytes())?;
+    return_length.write_optional(OBJECT_HANDLE_FLAG_INFORMATION_SIZE)?;
+    Ok(STATUS_SUCCESS)
+}
+
+/// The flags of the entry `handle` names in the calling process's handle table;
+/// STATUS_INVALID_HANDLE for a handle naming none.
+fn handle_entry_flags(
+    call: &mut NtCall,
+    handle: Handle,
+) -> Result<ObjectHandleFlagInformation, Status> {
     #[cfg(target_arch = "x86")]
     {
-        let entry = call
-            .process()
+        call.process()
             .handles()
             .lookup(handle.raw())
-            .ok_or(STATUS_INVALID_HANDLE)?;
-        information.write(&ObjectHandleFlagInformation::of(entry).to_bytes())?;
-        return_length.write_optional(OBJECT_HANDLE_FLAG_INFORMATION_SIZE)?;
-        Ok(STATUS_SUCCESS)
+            .map(ObjectHandleFlagInformation::of)
+            .ok_or(STATUS_INVALID_HANDLE)
     }
     #[cfg(not(target_arch = "x86"))]
     {
-        let _ = (call, handle, information, return_length);
+        let _ = (call, handle);
         Err(STATUS_INVALID_HANDLE)
     }
 }
@@ -366,8 +407,9 @@ pub fn query_object(
 /// ObjectInformationLength): ObjectHandleFlagInformation alone: the handle's entry in the calling
 /// process's handle table takes the structure's inheritance (what a child process created with
 /// inheritance takes) and protection from close (NtClose refuses it: see [`close`]); kernel32's
-/// SetHandleInformation. The class and length first (see [`handle_flag_arguments`]), then the
-/// caller's structure, then the handle (STATUS_INVALID_HANDLE for one naming no entry).
+/// SetHandleInformation. The class and length first (see [`handle_flag_arguments`]: the
+/// structure's size exactly), then the caller's structure, then the handle (STATUS_INVALID_HANDLE
+/// for one naming no entry).
 pub fn set_information_object(
     call: &mut NtCall,
     handle: Handle,
@@ -375,7 +417,7 @@ pub fn set_information_object(
     information: UserAddr,
     length: u32,
 ) -> NtResult {
-    handle_flag_arguments(class, length)?;
+    handle_flag_arguments(class, length, FlagLength::Exactly)?;
     let mut bytes = [0u8; 2];
     information.read(&mut bytes)?;
     let flags = ObjectHandleFlagInformation::from_bytes(bytes);
@@ -814,24 +856,47 @@ mod tests {
         assert!(!is_console_handle(0));
     }
 
-    /// NtQueryObject and NtSetInformationObject answer ObjectHandleFlagInformation alone, of its
-    /// structure's size exactly, the class checked before the length.
+    /// NtQueryObject and NtSetInformationObject answer ObjectHandleFlagInformation alone, the
+    /// class checked before the length: a query into any buffer with room for the structure, a
+    /// set from its size exactly (the files fixture's flags block).
     #[test]
     fn handle_flags_are_the_one_class_answered() {
-        assert_eq!(handle_flag_arguments(4, 2), Ok(()));
+        use FlagLength::{AtLeast, Exactly};
+        assert_eq!(handle_flag_arguments(4, 2, AtLeast), Ok(()));
+        assert_eq!(handle_flag_arguments(4, 8, AtLeast), Ok(()));
         assert_eq!(
-            handle_flag_arguments(4, 4),
+            handle_flag_arguments(4, 1, AtLeast),
             Err(STATUS_INFO_LENGTH_MISMATCH)
         );
-        assert_eq!(
-            handle_flag_arguments(4, 1),
-            Err(STATUS_INFO_LENGTH_MISMATCH)
-        );
-        for class in [0, 1, 2, 3, 5] {
+        assert_eq!(handle_flag_arguments(4, 2, Exactly), Ok(()));
+        for length in [0, 1, 4, 8] {
             assert_eq!(
-                handle_flag_arguments(class, 2),
-                Err(STATUS_INVALID_INFO_CLASS)
+                handle_flag_arguments(4, length, Exactly),
+                Err(STATUS_INFO_LENGTH_MISMATCH),
+                "{length}"
             );
+        }
+        for class in [0, 1, 2, 3, 5] {
+            for rule in [AtLeast, Exactly] {
+                assert_eq!(
+                    handle_flag_arguments(class, 1, rule),
+                    Err(STATUS_INVALID_INFO_CLASS)
+                );
+            }
+        }
+    }
+
+    /// The pseudo-handles answer no flags set; any other handle is its entry's.
+    #[test]
+    fn pseudo_handles_answer_no_flags() {
+        for handle in [CURRENT_PROCESS, CURRENT_THREAD] {
+            assert_eq!(
+                pseudo_handle_flags(handle).map(ObjectHandleFlagInformation::to_bytes),
+                Some([0, 0])
+            );
+        }
+        for handle in [0, 4, 0xFFFF_FFFD] {
+            assert_eq!(pseudo_handle_flags(handle), None);
         }
     }
 

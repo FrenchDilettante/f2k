@@ -346,7 +346,7 @@ fails = "-1"
 name = "_open"
 group = "lowio"
 args = ["strA filename", "i32 oflag", "..."]
-impl = { stub = "not yet implemented" }
+impl = { native = "_open" }
 ordinal = 404
 fails = "-1"
 

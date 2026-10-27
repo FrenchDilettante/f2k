@@ -1218,9 +1218,10 @@ note = "the flags the mask names (HANDLE_FLAG_INHERIT, HANDLE_FLAG_PROTECT_FROM_
 name = "GetHandleInformation"
 group = "threads"
 args = ["handle hObject", "ptr<u32> lpdwFlags"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetHandleInformation" }
 ordinal = 304
 fails = "FALSE"
+note = "HANDLE_FLAG_INHERIT and HANDLE_FLAG_PROTECT_FROM_CLOSE through NtQueryObject's ObjectHandleFlagInformation; a console handle's inheritance alone, its server's"
 
 [[export]]
 name = "ExitThread"
