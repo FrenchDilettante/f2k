@@ -934,14 +934,21 @@ fn stub_arguments(
     ]
 }
 
-/// A caller's optional NUL-terminated string, its terminator left out.
+/// A caller's optional NUL-terminated string, its terminator left out (copied onto the process
+/// heap when unaligned: [`base::wide_units`]); ERROR_NOT_ENOUGH_MEMORY when that copy finds no
+/// room.
 ///
 /// # Safety
 ///
 /// `string` is null or a NUL-terminated string (a bad pointer faults the caller).
-unsafe fn optional_wide<'a>(string: *const u16) -> Option<&'a [u16]> {
-    // SAFETY: the caller's contract.
-    (!string.is_null()).then(|| unsafe { base::wide_units(string) })
+unsafe fn optional_wide<'a>(string: *const u16) -> Result<Option<base::WideUnits<'a>>, Failure> {
+    if string.is_null() {
+        return Ok(None);
+    }
+    // SAFETY: the caller's contract: a non-null string is NUL-terminated.
+    unsafe { base::wide_units(string) }
+        .map(Some)
+        .ok_or(Failure::Error(ERROR_NOT_ENOUGH_MEMORY))
 }
 
 /// A caller's optional ANSI string converted through the ANSI code page onto the process heap.
@@ -1069,24 +1076,39 @@ pub unsafe extern "system" fn create_process_w(
     }) else {
         ntcall::raise_status(STATUS_ACCESS_VIOLATION);
     };
-    // SAFETY: the caller's strings, attributes, block and structure, as the contract says.
+    // SAFETY: the caller's strings, as the contract says.
+    let read = unsafe {
+        [
+            application_name,
+            command_line.cast_const(),
+            current_directory,
+            info.reserved,
+            info.desktop,
+            info.title,
+        ]
+        .map(|string| optional_wide(string))
+    };
+    let mut strings = [None, None, None, None, None, None];
+    for (slot, string) in strings.iter_mut().zip(read) {
+        match string {
+            Ok(string) => *slot = string,
+            Err(failure) => return answer(Err(failure), information),
+        }
+    }
+    let [application_name, command_line, current_directory, reserved, desktop, title] =
+        strings.each_ref().map(|string| string.as_deref());
+    // SAFETY: the caller's attributes, block and structure, as the contract says.
     let request = unsafe {
         Request {
-            application_name: optional_wide(application_name),
-            command_line: optional_wide(command_line),
+            application_name,
+            command_line,
             process_attributes: process_attributes.as_ref(),
             thread_attributes: thread_attributes.as_ref(),
             inherit_handles: inherit_handles != 0,
             flags,
             environment: environment(environment_block, flags),
-            current_directory: optional_wide(current_directory),
-            startup: startup(
-                info,
-                optional_wide(info.reserved),
-                optional_wide(info.desktop),
-                optional_wide(info.title),
-                runtime_data(info),
-            ),
+            current_directory,
+            startup: startup(info, reserved, desktop, title, runtime_data(info)),
         }
     };
     answer(create_process(&request), information)

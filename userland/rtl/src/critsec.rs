@@ -629,6 +629,7 @@ mod tests {
                 });
             }
         });
+        // SAFETY: the scope joined every thread that wrote the counter; none touches it now.
         assert_eq!(unsafe { *counter.0.get() }, 400_000);
         assert_eq!(fields(&section).1, -1);
         assert_eq!(fields(&section).3, 0);

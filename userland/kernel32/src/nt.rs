@@ -3811,7 +3811,9 @@ pub mod children {
         let (image, option) = unsafe {
             (
                 text(image).unwrap_or_default(),
-                String::from_utf16_lossy(crate::base::wide_units(option)),
+                String::from_utf16_lossy(
+                    &crate::base::wide_units(option).expect("the option name"),
+                ),
             )
         };
         OPTIONS_ASKED.with(|asked| asked.borrow_mut().push((image, option)));

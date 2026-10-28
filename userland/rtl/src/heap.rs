@@ -1342,6 +1342,8 @@ pub(crate) mod tests {
             Some(more[14]),
             "the last moved into the freed slot"
         );
+        // SAFETY: `process.list` points at the local `list`, alive for the test, and no other
+        // reference to it is live while the count is read.
         assert_eq!(unsafe { &*process.list }.count, HEAPS - 1);
     }
 }

@@ -107,22 +107,59 @@ static TABLE: Global<[Descriptor; DESCRIPTORS]> = Global::new([CLOSED; DESCRIPTO
 /// handles in step), 2 for a GUI one, 0 before the program says.
 pub static APP_TYPE: Global<i32> = Global::new(0);
 
-fn table() -> &'static mut [Descriptor; DESCRIPTORS] {
-    // SAFETY: the process's descriptors; callers hold the C runtime's lock where they change them.
-    unsafe { &mut *TABLE.get() }
+/// `f` run over the descriptor table under the C runtime's lock, which it takes itself (the lock is
+/// recursive, so a caller may already hold it). The reference lives only for `f`: no `&mut` into
+/// the table outlives the call, and `f` must not reach the table again (through this function or
+/// a helper built on it), which would make a second reference to the same array.
+fn with_table<R>(f: impl FnOnce(&mut [Descriptor; DESCRIPTORS]) -> R) -> R {
+    let _lock = Locked::take();
+    // SAFETY: every access to TABLE goes through this function, under the C runtime's lock, so no
+    // other thread holds a reference into it; on this thread no other call is live (`f` does not
+    // re-enter), so the reference is the only one for its life.
+    f(unsafe { &mut *TABLE.get() })
 }
 
-/// The open descriptor `fd`'s entry, or none (errno EBADF).
-fn open(fd: i32) -> Option<&'static mut Descriptor> {
-    let entry = usize::try_from(fd)
-        .ok()
-        .and_then(|fd| table().get_mut(fd))
-        .filter(|entry| entry.flags & FOPEN != 0);
+/// Descriptor `fd`'s entry, a copy, open or not; none when `fd` is out of range.
+fn descriptor(fd: i32) -> Option<Descriptor> {
+    let fd = usize::try_from(fd).ok()?;
+    with_table(|table| table.get(fd).copied())
+}
+
+/// The open descriptor `fd`'s entry, a copy, or none (errno EBADF).
+fn open(fd: i32) -> Option<Descriptor> {
+    let entry = descriptor(fd).filter(|entry| entry.flags & FOPEN != 0);
     if entry.is_none() {
         set_errno(EBADF);
         thread::set_doserrno(0);
     }
     entry
+}
+
+/// Descriptor `fd` (in range) set to `descriptor`.
+fn store(fd: usize, descriptor: Descriptor) {
+    with_table(|table| table[fd] = descriptor);
+}
+
+/// Descriptor `fd`'s entry changed by `change`, if it is still open over `handle`. A caller that
+/// copied the entry and let the lock go (for a kernel32 call that can block, so that one thread
+/// waiting on the console does not stop another's output) writes back what changed only when no
+/// other thread closed or reused the descriptor meanwhile. What `change` answers, or none.
+fn update<R>(fd: i32, handle: usize, change: impl FnOnce(&mut Descriptor) -> R) -> Option<R> {
+    let fd = usize::try_from(fd).ok()?;
+    with_table(|table| {
+        table
+            .get_mut(fd)
+            .filter(|entry| entry.flags & FOPEN != 0 && entry.handle == handle)
+            .map(change)
+    })
+}
+
+/// The descriptors up to the last one open: those a child inherits.
+fn inherited_count(table: &[Descriptor]) -> usize {
+    table
+        .iter()
+        .rposition(|entry| entry.flags & FOPEN != 0)
+        .map_or(0, |last| last + 1)
 }
 
 /// The flags a handle's type gives a descriptor.
@@ -172,25 +209,24 @@ pub fn decode_inheritance(block: &[u8]) -> impl Iterator<Item = (u8, u32)> + '_ 
 
 /// The descriptors a child inherits (see [`inheritance_length`]): up to the last one open, each
 /// open one's flags and handle unless it was opened `_O_NOINHERIT` (then none, as a closed one).
-/// The caller holds the C runtime's lock.
+/// The caller holds the C runtime's lock (so the count stays the one [`write_inheritance`] sees).
 pub fn inheritance_count() -> usize {
-    table()
-        .iter()
-        .rposition(|entry| entry.flags & FOPEN != 0)
-        .map_or(0, |last| last + 1)
+    with_table(|table| inherited_count(table))
 }
 
 /// The block for the descriptors a child inherits into `out`, of the [`inheritance_length`] of
 /// [`inheritance_count`]'s count. The caller holds the C runtime's lock.
 pub fn write_inheritance(out: &mut [u8]) {
-    let descriptors = table()[..inheritance_count()].iter().map(|entry| {
-        if entry.flags & FOPEN != 0 && entry.flags & FNOINHERIT == 0 {
-            (entry.flags, entry.handle as u32)
-        } else {
-            (0, u32::MAX)
-        }
+    with_table(|table| {
+        let descriptors = table[..inherited_count(table)].iter().map(|entry| {
+            if entry.flags & FOPEN != 0 && entry.flags & FNOINHERIT == 0 {
+                (entry.flags, entry.handle as u32)
+            } else {
+                (0, u32::MAX)
+            }
+        });
+        encode_inheritance(descriptors, out);
     });
-    encode_inheritance(descriptors, out);
 }
 
 /// The descriptors the parent handed on (STARTUPINFO's C runtime block): each open one whose
@@ -215,11 +251,14 @@ fn take_inherited() {
         if unsafe { imports::GetFileType(handle) } == FILE_TYPE_UNKNOWN {
             continue;
         }
-        table()[fd] = Descriptor {
-            handle,
-            flags,
-            ahead: 0x100,
-        };
+        store(
+            fd,
+            Descriptor {
+                handle,
+                flags,
+                ahead: 0x100,
+            },
+        );
     }
 }
 
@@ -228,7 +267,7 @@ fn take_inherited() {
 pub fn initialize() {
     take_inherited();
     for (fd, &which) in STANDARD.iter().enumerate() {
-        if table()[fd].flags & FOPEN != 0 {
+        if descriptor(fd as i32).is_some_and(|entry| entry.flags & FOPEN != 0) {
             continue;
         }
         // SAFETY: kernel32's exports.
@@ -244,31 +283,32 @@ pub fn initialize() {
                 },
             )
         };
-        table()[fd] = Descriptor {
-            handle,
-            flags: FOPEN
-                | FTEXT
-                | if kind == FILE_TYPE_UNKNOWN {
-                    FDEV
-                } else {
-                    type_flags(kind)
-                },
-            ahead: 0x100,
-        };
+        store(
+            fd,
+            Descriptor {
+                handle,
+                flags: FOPEN
+                    | FTEXT
+                    | if kind == FILE_TYPE_UNKNOWN {
+                        FDEV
+                    } else {
+                        type_flags(kind)
+                    },
+                ahead: 0x100,
+            },
+        );
     }
 }
 
 /// Whether `fd` is a character device (the console).
 pub fn is_device(fd: i32) -> bool {
-    usize::try_from(fd)
-        .ok()
-        .and_then(|fd| table().get(fd))
-        .is_some_and(|entry| entry.flags & (FOPEN | FDEV) == FOPEN | FDEV)
+    descriptor(fd).is_some_and(|entry| entry.flags & (FOPEN | FDEV) == FOPEN | FDEV)
 }
 
-/// The lowest free descriptor, or none (errno EMFILE).
+/// The lowest free descriptor, or none (errno EMFILE). The caller holds the C runtime's lock until
+/// it has stored the descriptor, so that no other thread takes the same one.
 fn free_descriptor() -> Option<usize> {
-    let fd = table().iter().position(|entry| entry.flags & FOPEN == 0);
+    let fd = with_table(|table| table.iter().position(|entry| entry.flags & FOPEN == 0));
     if fd.is_none() {
         set_errno(EMFILE);
         thread::set_doserrno(0);
@@ -278,7 +318,7 @@ fn free_descriptor() -> Option<usize> {
 
 /// Descriptor `fd` given `handle`: a standard one's handle follows in a console program.
 fn set_handle(fd: usize, handle: usize) {
-    table()[fd].handle = handle;
+    with_table(|table| table[fd].handle = handle);
     if fd < 3 && APP_TYPE.read() == 1 {
         // SAFETY: kernel32's export.
         unsafe { imports::SetStdHandle(STANDARD[fd], handle) };
@@ -287,7 +327,7 @@ fn set_handle(fd: usize, handle: usize) {
 
 /// Descriptor `fd` freed: a standard one's handle cleared in a console program.
 fn free(fd: usize) {
-    table()[fd] = CLOSED;
+    store(fd, CLOSED);
     if fd < 3 && APP_TYPE.read() == 1 {
         // SAFETY: kernel32's export.
         unsafe { imports::SetStdHandle(STANDARD[fd], 0) };
@@ -321,11 +361,14 @@ pub extern "C" fn open_osfhandle(handle: usize, flags: i32) -> i32 {
     if flags & O_NOINHERIT != 0 {
         mode |= FNOINHERIT;
     }
-    table()[fd] = Descriptor {
-        handle: usize::MAX,
-        flags: mode,
-        ahead: 0x100,
-    };
+    store(
+        fd,
+        Descriptor {
+            handle: usize::MAX,
+            flags: mode,
+            ahead: 0x100,
+        },
+    );
     set_handle(fd, handle);
     fd as i32
 }
@@ -451,11 +494,14 @@ pub unsafe extern "C" fn open_file(name: *const u8, oflag: i32, pmode: i32) -> i
         thread::set_doserrno(0);
         return -1;
     }
-    table()[fd] = Descriptor {
-        handle: usize::MAX,
-        flags: plan.mode | type_flags(kind),
-        ahead: 0x100,
-    };
+    store(
+        fd,
+        Descriptor {
+            handle: usize::MAX,
+            flags: plan.mode | type_flags(kind),
+            ahead: 0x100,
+        },
+    );
     set_handle(fd, handle);
     fd as i32
 }
@@ -479,8 +525,8 @@ pub extern "C" fn close(fd: i32) -> i32 {
     let handle = entry.handle;
     // Descriptors 1 and 2 on one handle: the other keeps it.
     let shared = (fd == 1 || fd == 2)
-        && table()[3 - fd as usize].flags & FOPEN != 0
-        && table()[3 - fd as usize].handle == handle;
+        && descriptor(3 - fd)
+            .is_some_and(|other| other.flags & FOPEN != 0 && other.handle == handle);
     let mut result = 0;
     // SAFETY: kernel32's export, over the descriptor's own handle.
     if !shared && unsafe { imports::CloseHandle(handle) } == 0 {
@@ -521,11 +567,14 @@ pub extern "C" fn dup(fd: i32) -> i32 {
     let Some(copy) = duplicate(handle) else {
         return -1;
     };
-    table()[new] = Descriptor {
-        handle: usize::MAX,
-        flags: flags & !(FNOINHERIT | FEOF),
-        ahead: 0x100,
-    };
+    store(
+        new,
+        Descriptor {
+            handle: usize::MAX,
+            flags: flags & !(FNOINHERIT | FEOF),
+            ahead: 0x100,
+        },
+    );
     set_handle(new, copy);
     new as i32
 }
@@ -549,14 +598,17 @@ pub extern "C" fn dup2(from: i32, to: i32) -> i32 {
     let Some(copy) = duplicate(handle) else {
         return -1;
     };
-    if table()[to as usize].flags & FOPEN != 0 {
+    if descriptor(to).is_some_and(|entry| entry.flags & FOPEN != 0) {
         close(to);
     }
-    table()[to as usize] = Descriptor {
-        handle: usize::MAX,
-        flags: flags & !(FNOINHERIT | FEOF),
-        ahead: 0x100,
-    };
+    store(
+        to as usize,
+        Descriptor {
+            handle: usize::MAX,
+            flags: flags & !(FNOINHERIT | FEOF),
+            ahead: 0x100,
+        },
+    );
     set_handle(to as usize, copy);
     0
 }
@@ -573,35 +625,42 @@ pub extern "C" fn setmode(fd: i32, mode: i32) -> i32 {
     } else {
         O_BINARY
     };
-    match mode {
-        O_TEXT => entry.flags |= FTEXT,
-        O_BINARY => entry.flags &= !FTEXT,
+    let text = match mode {
+        O_TEXT => true,
+        O_BINARY => false,
         _ => {
             set_errno(EINVAL);
             return -1;
         }
-    }
+    };
+    update(fd, entry.handle, |entry| {
+        if text {
+            entry.flags |= FTEXT;
+        } else {
+            entry.flags &= !FTEXT;
+        }
+    });
     previous
 }
 
 /// The descriptor's file pointer moved (SetFilePointer's methods), its end-of-file mark cleared;
-/// the new position, or -1.
+/// the new position, or -1. The C runtime's lock is not held across SetFilePointer.
 pub fn seek(fd: i32, offset: i32, origin: u32) -> i32 {
     let Some(entry) = open(fd) else {
         return -1;
     };
     // SAFETY: kernel32's exports, over the descriptor's handle.
-    unsafe {
+    let (position, error) = unsafe {
         imports::SetLastError(0);
         let position = imports::SetFilePointer(entry.handle, offset, core::ptr::null_mut(), origin);
-        let error = imports::GetLastError();
-        if position == u32::MAX && error != 0 {
-            set_dos_error(error);
-            return -1;
-        }
-        entry.flags &= !FEOF;
-        position as i32
+        (position, imports::GetLastError())
+    };
+    if position == u32::MAX && error != 0 {
+        set_dos_error(error);
+        return -1;
     }
+    update(fd, entry.handle, |entry| entry.flags &= !FEOF);
+    position as i32
 }
 
 /// _tell: the descriptor's file position.
@@ -624,7 +683,8 @@ fn write_all(handle: usize, bytes: &[u8]) -> Result<usize, u32> {
 
 /// _write: `count` bytes to the descriptor, each LF as CR LF in text mode, at the file's end when
 /// it appends; the caller's bytes written, or -1 (EBADF for a descriptor not open or not writable,
-/// ENOSPC when nothing could be written).
+/// ENOSPC when nothing could be written). The descriptor is read under the C runtime's lock, which
+/// is not held across WriteFile.
 ///
 /// # Safety
 ///
@@ -712,7 +772,9 @@ pub unsafe extern "C" fn write(fd: i32, buffer: *const u8, count: u32) -> i32 {
 }
 
 /// The descriptor's next bytes into `buffer`, CR LF read as LF and Ctrl-Z the end of a file in
-/// text mode: the count, 0 at the end, -1 (errno) on an error.
+/// text mode: the count, 0 at the end, -1 (errno) on an error. The descriptor is read and written
+/// back (its byte read ahead, its end-of-file mark) under the C runtime's lock, which is not held
+/// across ReadFile: a thread waiting on the console does not stop another's output.
 ///
 /// # Safety
 ///
@@ -721,23 +783,29 @@ pub unsafe fn read(fd: i32, buffer: *mut u8, count: usize) -> i32 {
     let Some(entry) = open(fd) else {
         return -1;
     };
-    if count == 0 || entry.flags & FEOF != 0 {
+    let (handle, flags) = (entry.handle, entry.flags);
+    if count == 0 || flags & FEOF != 0 {
         return 0;
     }
     // SAFETY: the caller's buffer.
     let bytes = unsafe { core::slice::from_raw_parts_mut(buffer, count) };
     let mut got = 0;
-    if entry.ahead != 0x100 && entry.flags & (FPIPE | FDEV) != 0 {
-        bytes[0] = entry.ahead as u8;
-        entry.ahead = 0x100;
-        got = 1;
+    if entry.ahead != 0x100 && flags & (FPIPE | FDEV) != 0 {
+        // Taken under the lock, so that no other reader takes the same byte.
+        let ahead = update(fd, handle, |entry| {
+            core::mem::replace(&mut entry.ahead, 0x100)
+        });
+        if let Some(ahead) = ahead.filter(|&ahead| ahead != 0x100) {
+            bytes[0] = ahead as u8;
+            got = 1;
+        }
     }
     let mut read = 0u32;
     // SAFETY: kernel32's exports, over the rest of the buffer.
     unsafe {
         if got < count
             && imports::ReadFile(
-                entry.handle,
+                handle,
                 bytes[got..].as_mut_ptr(),
                 (count - got) as u32,
                 &mut read,
@@ -760,15 +828,15 @@ pub unsafe fn read(fd: i32, buffer: *mut u8, count: usize) -> i32 {
         }
     }
     got += read as usize;
-    if entry.flags & FTEXT == 0 {
+    if flags & FTEXT == 0 {
         return got as i32;
     }
     // The translation, in place.
     let (mut from, mut to) = (0, 0);
     while from < got {
         let byte = bytes[from];
-        if byte == CTRL_Z && entry.flags & FDEV == 0 {
-            entry.flags |= FEOF;
+        if byte == CTRL_Z && flags & FDEV == 0 {
+            update(fd, handle, |entry| entry.flags |= FEOF);
             break;
         }
         if byte != b'\r' {
@@ -793,17 +861,17 @@ pub unsafe fn read(fd: i32, buffer: *mut u8, count: usize) -> i32 {
         let (mut next, mut one) = (0u8, 0u32);
         // SAFETY: kernel32's export, over one byte.
         let peeked =
-            unsafe { imports::ReadFile(entry.handle, &mut next, 1, &mut one, 0) } != 0 && one == 1;
+            unsafe { imports::ReadFile(handle, &mut next, 1, &mut one, 0) } != 0 && one == 1;
         if peeked && next == b'\n' {
             bytes[to] = b'\n';
         } else {
             bytes[to] = b'\r';
             if peeked {
-                if entry.flags & (FPIPE | FDEV) != 0 {
-                    entry.ahead = next as u16;
+                if flags & (FPIPE | FDEV) != 0 {
+                    update(fd, handle, |entry| entry.ahead = u16::from(next));
                 } else {
                     // SAFETY: kernel32's export: the byte given back to the file.
-                    unsafe { imports::SetFilePointer(entry.handle, -1, core::ptr::null_mut(), 1) };
+                    unsafe { imports::SetFilePointer(handle, -1, core::ptr::null_mut(), 1) };
                 }
             }
         }

@@ -29,6 +29,8 @@ const SYSTEM_PLACES: [&[u8]; 3] = [b"\\system32", b"\\system", b""];
 pub struct List {
     block: *mut u16,
     length: usize,
+    /// The units the block has room for.
+    capacity: usize,
 }
 
 impl List {
@@ -39,20 +41,27 @@ impl List {
         (!block.is_null()).then_some(List {
             block: block as *mut u16,
             length: 0,
+            capacity: units,
         })
     }
 
-    /// Add `units` at the end.
+    /// Add `units` at the end. The callers size the list for everything they push, so running
+    /// past its room is a bug, not an input error: it panics.
     fn push(&mut self, units: impl IntoIterator<Item = u16>) {
         for unit in units {
-            // SAFETY: the block was made for every unit pushed.
+            assert!(
+                self.length < self.capacity,
+                "a search list pushed past its room"
+            );
+            // SAFETY: `length` is below `capacity`, and the block holds `capacity` units.
             unsafe { self.block.add(self.length).write(unit) };
             self.length += 1;
         }
     }
 
     pub fn units(&self) -> &[u16] {
-        // SAFETY: the block holds the units pushed.
+        // SAFETY: the block's first `length` units (no more than its `capacity`) are written, by
+        // `push` and by PATH's query; the heap's blocks are aligned.
         unsafe { core::slice::from_raw_parts(self.block, self.length) }
     }
 }
@@ -118,10 +127,15 @@ pub fn search_list(image_directory: &[u16]) -> Option<List> {
     }
     if path_length != 0 {
         list.push([separator]);
+        assert!(
+            list.length + path_length <= list.capacity,
+            "a search list without room for PATH"
+        );
         let mut value = UnicodeString {
             length: 0,
             maximum_length: (2 * path_length) as u16,
-            // SAFETY: the block holds PATH's value after the units pushed.
+            // SAFETY: the block holds `capacity` units, PATH's `path_length` after those pushed
+            // (asserted above); ntdll writes no more than `maximum_length` bytes there.
             buffer: unsafe { list.block.add(list.length) },
         };
         // SAFETY: ntdll's export, into the list's block.
@@ -403,8 +417,19 @@ pub unsafe extern "system" fn search_path_w(
     buffer: *mut u16,
     file_part: *mut *mut u16,
 ) -> u32 {
-    // SAFETY: the caller's strings.
-    let list = (!path.is_null()).then(|| unsafe { crate::base::wide_units(path) });
+    let list = if path.is_null() {
+        None
+    } else {
+        // SAFETY: the caller's contract: a non-null `path` is a NUL-terminated UTF-16 string.
+        match unsafe { crate::base::wide_units(path) } {
+            Some(list) => Some(list),
+            None => {
+                set_last_error(ERROR_NOT_ENOUGH_MEMORY);
+                return 0;
+            }
+        }
+    };
+    // SAFETY: the caller's contract: `name` is a NUL-terminated UTF-16 string.
     let Some(name) = (unsafe { wide(name) }) else {
         return 0;
     };
@@ -420,7 +445,7 @@ pub unsafe extern "system" fn search_path_w(
     // SAFETY: the caller's buffer and slot.
     unsafe {
         search_path(
-            list,
+            list.as_deref(),
             &name,
             extension.as_ref(),
             size,

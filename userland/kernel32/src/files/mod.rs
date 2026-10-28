@@ -172,8 +172,11 @@ pub unsafe fn widen(name: *const u8) -> Option<Wide> {
 /// `name` points at a NUL-terminated UTF-16 string (a bad pointer faults the caller).
 pub unsafe fn wide(name: *const u16) -> Option<Wide> {
     // SAFETY: the caller's string.
-    let units = unsafe { crate::base::wide_units(name) };
-    let copied = Wide::of(units);
+    let Some(units) = (unsafe { crate::base::wide_units(name) }) else {
+        set_last_error(ERROR_NOT_ENOUGH_MEMORY);
+        return None;
+    };
+    let copied = Wide::of(&units);
     if copied.is_none() {
         set_last_error(ERROR_PATH_NOT_FOUND);
     }

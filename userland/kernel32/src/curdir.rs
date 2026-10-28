@@ -104,13 +104,16 @@ pub unsafe extern "system" fn set_current_directory_a(path: *const u8) -> u32 {
 #[unsafe(export_name = "f2k_export_SetCurrentDirectoryW")]
 pub unsafe extern "system" fn set_current_directory_w(path: *const u16) -> u32 {
     // SAFETY: the caller's string.
-    let units = unsafe { wide_units(path) };
+    let Some(units) = (unsafe { wide_units(path) }) else {
+        set_last_error(crate::error::ERROR_NOT_ENOUGH_MEMORY);
+        return 0;
+    };
     if units.len() + 1 >= MAX_PATH {
         set_last_error(ERROR_FILENAME_EXCED_RANGE);
         return 0;
     }
     let mut wide = [0u16; MAX_PATH];
-    wide[..units.len()].copy_from_slice(units);
+    wide[..units.len()].copy_from_slice(&units);
     set_current_directory(&mut wide, units.len())
 }
 

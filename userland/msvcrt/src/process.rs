@@ -755,6 +755,8 @@ mod tests {
         existing(&["spawnkid.exe"]);
         EXIT_CODE.with(|code| code.set(5));
         let arguments = argv(&[b"spawnkid\0", b"exit\0", b"5\0"]);
+        // SAFETY: a NUL-terminated name; `argv` makes a NULL-terminated array of NUL-terminated
+        // strings, alive for the call.
         let answer = unsafe { spawnv(P_WAIT, b"spawnkid\0".as_ptr(), arguments.as_ptr()) };
         assert_eq!(answer, 5);
         ATTRIBUTES_ASKED
@@ -788,13 +790,18 @@ mod tests {
         EXIT_CODE.with(|code| code.set(9));
         let arguments = argv(&[b"spawnkid\0", b"exit\0", b"9\0"]);
         let name = b"C:\\CORPUS\\SPAWNKID.EXE\0";
+        // SAFETY: a NUL-terminated name; `argv` makes a NULL-terminated array of NUL-terminated
+        // strings, alive for the call.
         let handle = unsafe { spawnv(P_NOWAIT, name.as_ptr(), arguments.as_ptr()) };
         assert_eq!(handle, PROCESS as isize);
         let mut status = 0xF2F2;
+        // SAFETY: `status` is a writable local.
         assert_eq!(unsafe { cwait(&mut status, handle, 0) }, handle);
         assert_eq!(status, 9);
+        // SAFETY: as above.
         assert_eq!(unsafe { cwait(&mut status, handle, 0) }, -1);
         assert_eq!((status, errno()), (-1, (ECHILD, 6)));
+        // SAFETY: a null status, which _cwait leaves unwritten.
         assert_eq!(unsafe { cwait(core::ptr::null_mut(), handle, 0) }, -1);
     }
 
@@ -850,6 +857,8 @@ mod tests {
         existing(&["kid.exe", "notexe.txt"]);
         let arguments = argv(&[b"kid\0", b"envall\0"]);
         let envp = argv(&[b"F2KE=one\0", b"F2KF=two words\0"]);
+        // SAFETY: a NUL-terminated name; `arguments` and `envp` NULL-terminated arrays of
+        // NUL-terminated strings (`argv`'s), alive for the call.
         let answer = unsafe {
             spawnve(
                 P_WAIT,
@@ -866,6 +875,8 @@ mod tests {
         reset();
         let mut list = argv(&[b"kid\0", b"envall\0"]);
         list.push(envp.as_ptr().cast());
+        // SAFETY: a NUL-terminated name; `list` the arguments, their NULL, then the envp array, as
+        // _spawnle's variable arguments lie on the stack, all alive for the call.
         let answer = unsafe { spawnle_va(P_WAIT, b"kid.exe\0".as_ptr(), list.as_ptr()) };
         assert_eq!(answer, 0);
         assert_eq!(
@@ -874,9 +885,12 @@ mod tests {
         );
         reset();
         CREATE_FAILS.with(|fails| fails.set(193));
+        // SAFETY: a NUL-terminated name; `argv` makes a NULL-terminated array of NUL-terminated
+        // strings, alive for the call.
         let answer = unsafe { spawnv(P_WAIT, b"notexe.txt\0".as_ptr(), arguments.as_ptr()) };
         assert_eq!((answer, errno()), (-1, (8, 193)));
         reset();
+        // SAFETY: as above.
         let answer = unsafe { spawnv(99, b"kid.exe\0".as_ptr(), arguments.as_ptr()) };
         assert_eq!((answer, errno()), (-1, (EINVAL, 0)));
         assert!(CREATED.with(|created| created.borrow().is_empty()));
@@ -885,6 +899,7 @@ mod tests {
         let mut long = long.to_vec();
         long.push(0);
         let arguments = argv(&[b"kid\0", &long]);
+        // SAFETY: as above, the long argument NUL-terminated too.
         let answer = unsafe { spawnv(P_WAIT, b"kid.exe\0".as_ptr(), arguments.as_ptr()) };
         assert_eq!((answer, errno().0), (-1, E2BIG));
     }

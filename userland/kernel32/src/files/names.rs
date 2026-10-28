@@ -389,12 +389,13 @@ pub unsafe extern "system" fn move_file_ex_w(from: *const u16, to: *const u16, f
             crate::stub::stubbed(&crate::spec::MoveFileExW, "not yet implemented", &args)
         };
     }
-    // SAFETY: the caller's strings.
     let to = if to.is_null() {
         Wide::of(&[])
     } else {
+        // SAFETY: the caller's contract: a non-null `to` is a NUL-terminated UTF-16 string.
         unsafe { wide(to) }
     };
+    // SAFETY: the caller's contract: `from` is a NUL-terminated UTF-16 string.
     match (unsafe { wide(from) }, to) {
         (Some(from), Some(to)) => move_file_ex(&from, &to, flags),
         _ => 0,

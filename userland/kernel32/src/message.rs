@@ -146,6 +146,8 @@ fn table_message(module: usize, id: u32, language: u32) -> Result<Message, u32> 
     // SAFETY: a MESSAGE_RESOURCE_ENTRY: its length and flags, then its NUL-terminated text.
     let flags = unsafe { (entry.add(2) as *const u16).read_unaligned() };
     if flags & MESSAGE_RESOURCE_UNICODE != 0 {
+        // SAFETY: the entry's text, 4 bytes in (after its length and flags), inside the entry
+        // RtlFindMessage found in the module's mapped image.
         Ok(Message::borrowed(unsafe { entry.add(4) } as *const u16))
     } else {
         // SAFETY: as above, an ANSI text.
@@ -297,9 +299,13 @@ unsafe fn format_message(
         // SAFETY: the caller's pointer place.
         unsafe { (buffer as *mut *mut u8).write_unaligned(core::ptr::null_mut()) };
     }
-    // SAFETY: the caller's source and arguments.
-    let laid = unsafe { message(flags, source, id, language, wide) }
-        .and_then(|message| unsafe { laid_out(message.text, flags, arguments, wide) });
+    // SAFETY: the caller's source, of the form the flags say (the contract).
+    let laid = unsafe { message(flags, source, id, language, wide) }.and_then(|message| {
+        // SAFETY: the message's text is NUL-terminated (a string, a table entry's or its
+        // conversion, alive while `message` is); `arguments` holds every value its inserts name
+        // (the contract).
+        unsafe { laid_out(message.text, flags, arguments, wide) }
+    });
     let laid = match laid {
         Ok(laid) => laid,
         Err(status) => {

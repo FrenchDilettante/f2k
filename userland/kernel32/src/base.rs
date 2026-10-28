@@ -98,20 +98,49 @@ pub unsafe fn wide_string(string: *const u16) -> UnicodeString {
     }
 }
 
-/// A caller's NUL-terminated UTF-16 string, its terminator left out.
+/// A caller's UTF-16 string as [`wide_units`] reads it, its terminator left out: the caller's own
+/// units where its pointer is aligned, a copy on the process heap where it is not.
+pub enum WideUnits<'a> {
+    Borrowed(&'a [u16]),
+    Copied(crate::create::HeapArray<u16>),
+}
+
+impl core::ops::Deref for WideUnits<'_> {
+    type Target = [u16];
+
+    fn deref(&self) -> &[u16] {
+        match self {
+            WideUnits::Borrowed(units) => units,
+            WideUnits::Copied(units) => units,
+        }
+    }
+}
+
+/// A caller's NUL-terminated UTF-16 string, its terminator left out. An x86 program may hand an
+/// LPCWSTR at an odd address, which Windows reads like any other; a Rust slice must be aligned, so
+/// such a string is copied onto the process heap. None only when that copy finds no room.
 ///
 /// # Safety
 ///
-/// `string` points at a NUL-terminated UTF-16 string (a bad pointer faults the caller, as on the
-/// platform).
-pub unsafe fn wide_units<'a>(string: *const u16) -> &'a [u16] {
+/// `string` points at a NUL-terminated UTF-16 string, aligned or not, that stays unchanged for
+/// `'a` (a bad pointer faults the caller, as on the platform).
+pub unsafe fn wide_units<'a>(string: *const u16) -> Option<WideUnits<'a>> {
     let mut length = 0;
-    // SAFETY: the caller's string, read to its terminator.
+    // SAFETY: the caller's string, read to its terminator; an unaligned read takes any address.
     while unsafe { string.add(length).read_unaligned() } != 0 {
         length += 1;
     }
-    // SAFETY: as above.
-    unsafe { core::slice::from_raw_parts(string, length) }
+    if string.is_aligned() {
+        // SAFETY: the `length` units the loop read, at an aligned address, the caller's for 'a.
+        let units = unsafe { core::slice::from_raw_parts(string, length) };
+        return Some(WideUnits::Borrowed(units));
+    }
+    let mut copy = crate::create::HeapArray::new(length).ok()?;
+    for (at, unit) in copy.iter_mut().enumerate() {
+        // SAFETY: one of the units the loop read, unaligned.
+        *unit = unsafe { string.add(at).read_unaligned() };
+    }
+    Some(WideUnits::Copied(copy))
 }
 
 /// An A call's narrow string converted into `buffer`, terminated, as Windows 2000's kernel32
@@ -564,6 +593,31 @@ mod tests {
         assert_eq!(last_error(), 0);
         assert_eq!((succeeded(0), last_error()), (1, 0));
         assert_eq!((succeeded(0xC000_0008), last_error()), (0, 6));
+    }
+
+    /// A caller's string reads alike at any address: an aligned one is the caller's own units, an
+    /// unaligned one (an x86 program may pass one) a copy.
+    #[test]
+    fn wide_units_reads_an_unaligned_string() {
+        let text: Vec<u16> = "C:\\F2K\\KID.EXE".encode_utf16().collect();
+        let mut storage = [0u16; 32];
+        storage[..text.len()].copy_from_slice(&text);
+        // SAFETY: a NUL-terminated string in `storage`, aligned.
+        let aligned = unsafe { wide_units(storage.as_ptr()) }.unwrap();
+        assert!(matches!(aligned, WideUnits::Borrowed(_)));
+        assert_eq!(*aligned, text[..]);
+        #[repr(align(2))]
+        struct Even([u8; 64]);
+        let mut bytes = Even([0; 64]);
+        for (at, unit) in text.iter().enumerate() {
+            bytes.0[1 + 2 * at..3 + 2 * at].copy_from_slice(&unit.to_le_bytes());
+        }
+        let odd = bytes.0[1..].as_ptr() as *const u16;
+        assert!(!odd.is_aligned());
+        // SAFETY: a NUL-terminated string in `bytes` (zeroed past the text), at an odd address.
+        let unaligned = unsafe { wide_units(odd) }.unwrap();
+        assert!(matches!(unaligned, WideUnits::Copied(_)));
+        assert_eq!(*unaligned, text[..]);
     }
 
     /// The stand-ins record their calls and fail on demand.
