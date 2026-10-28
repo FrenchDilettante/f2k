@@ -281,6 +281,8 @@ impl DpcQueue {
 
 /// `Dpc`'s links member, as a link pointer.
 fn links_of(dpc: *const Dpc) -> *mut Links {
+    // SAFETY: every caller passes a reference to a live `Dpc` (coerced to the pointer), and
+    // `addr_of!` takes the member's address without reading it.
     unsafe { core::ptr::addr_of!((*dpc).links) as *mut Links }
 }
 
@@ -291,11 +293,15 @@ fn links_of(dpc: *const Dpc) -> *mut Links {
 /// `anchor` is the sentinel or a link currently on this queue's list; `dpc` is on no list.
 unsafe fn link_after(anchor: *mut Links, dpc: &mut Dpc) {
     let entry = links_of(dpc);
-    let next = (*anchor).next;
-    (*entry).next = next;
-    (*entry).prev = anchor;
-    (*next).prev = entry;
-    (*anchor).next = entry;
+    // SAFETY: the caller's contract: `anchor` is on the queue's ring, so it and its `next` are
+    // live links, and `dpc`'s links are on no list, so rewiring the three touches nothing else.
+    unsafe {
+        let next = (*anchor).next;
+        (*entry).next = next;
+        (*entry).prev = anchor;
+        (*next).prev = entry;
+        (*anchor).next = entry;
+    }
 }
 
 /// Link `dpc` before `anchor` (the sentinel for a tail insert).
@@ -305,11 +311,14 @@ unsafe fn link_after(anchor: *mut Links, dpc: &mut Dpc) {
 /// Same contract as [`link_after`].
 unsafe fn link_before(anchor: *mut Links, dpc: &mut Dpc) {
     let entry = links_of(dpc);
-    let prev = (*anchor).prev;
-    (*entry).prev = prev;
-    (*entry).next = anchor;
-    (*prev).next = entry;
-    (*anchor).prev = entry;
+    // SAFETY: as in `link_after`, with `anchor`'s `prev` as the other live neighbour.
+    unsafe {
+        let prev = (*anchor).prev;
+        (*entry).prev = prev;
+        (*entry).next = anchor;
+        (*prev).next = entry;
+        (*anchor).prev = entry;
+    }
 }
 
 /// Unlink `dpc` from the list it is on.
@@ -319,10 +328,14 @@ unsafe fn link_before(anchor: *mut Links, dpc: &mut Dpc) {
 /// `dpc` is linked on a list whose sentinel is alive.
 unsafe fn unlink(dpc: &Dpc) {
     let entry = links_of(dpc);
-    let prev = (*entry).prev;
-    let next = (*entry).next;
-    (*prev).next = next;
-    (*next).prev = prev;
+    // SAFETY: the caller's contract: `dpc` is linked on a list whose sentinel is alive, so its
+    // `prev` and `next` are live links of that ring.
+    unsafe {
+        let prev = (*entry).prev;
+        let next = (*entry).next;
+        (*prev).next = next;
+        (*next).prev = prev;
+    }
 }
 
 /// Detach the queue's head and return the Dpc it belongs to.
@@ -332,12 +345,18 @@ unsafe fn unlink(dpc: &Dpc) {
 /// The queue is initialized and non-empty; the returned pointer's reference must not outlive the
 /// retire iteration (the next iteration or an insert may touch the DPC).
 unsafe fn detach_head(queue: *mut DpcQueue) -> *const Dpc {
-    let sentinel = addr_of_mut!((*queue).head);
-    let entry = (*sentinel).next;
-    let next = (*entry).next;
-    (*sentinel).next = next;
-    (*next).prev = sentinel;
-    (entry as usize - core::mem::offset_of!(Dpc, links)) as *const Dpc
+    // SAFETY: the caller's contract: `queue` is live, initialized and holds a DPC, so the
+    // sentinel's `next` is that DPC's links and the entry's `next` is a live link (another DPC's,
+    // or the sentinel). Every link on the queue is a `Dpc`'s `links` member, so stepping back by
+    // its offset yields the DPC.
+    unsafe {
+        let sentinel = addr_of_mut!((*queue).head);
+        let entry = (*sentinel).next;
+        let next = (*entry).next;
+        (*sentinel).next = next;
+        (*next).prev = sentinel;
+        (entry as usize - core::mem::offset_of!(Dpc, links)) as *const Dpc
+    }
 }
 
 // --- The kernel queue (target) ---------------------------------------------

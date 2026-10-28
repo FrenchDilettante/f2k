@@ -519,6 +519,8 @@ mod tests {
         harness.queue.retire(&mut drain_irql);
         drain_irql.lower(previous);
         assert!(harness.queue.is_empty());
+        // SAFETY: the dispatcher's current thread is the leaked record entered above, alive for
+        // the rest of the test; its earlier `&mut` is shadowed here and never used again.
         let thread = unsafe { &*(pair.1.current_thread()) };
         assert_ne!(
             thread.state(),

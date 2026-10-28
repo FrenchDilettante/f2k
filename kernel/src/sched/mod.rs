@@ -169,6 +169,8 @@ impl List {
     ///
     /// The list is initialized and `entry` is on no list; `entry` stays valid while linked.
     pub unsafe fn push_front(&mut self, entry: *mut Links) {
+        // SAFETY: the caller's contract: the list is initialized, so its sentinel is a linked
+        // anchor, and `entry` is on no list and outlives its time on this one.
         unsafe { link_after(addr_of_mut!(self.head), entry) };
     }
 
@@ -178,6 +180,7 @@ impl List {
     ///
     /// Same contract as [`List::push_front`].
     pub unsafe fn push_back(&mut self, entry: *mut Links) {
+        // SAFETY: as in `push_front`: an initialized sentinel, and an `entry` on no list.
         unsafe { link_before(addr_of_mut!(self.head), entry) };
     }
 
@@ -191,6 +194,8 @@ impl List {
             return null_mut();
         }
         let entry = self.head.next;
+        // SAFETY: the list is initialized (the caller's contract) and not empty, so `head.next` is
+        // a live entry linked on this list, whose sentinel is `self.head`.
         unsafe { unlink(entry) };
         entry
     }
@@ -220,6 +225,8 @@ impl List {
 ///
 /// `anchor` is a linked sentinel or a linked entry; `entry` is on no list.
 pub(crate) unsafe fn link_after(anchor: *mut Links, entry: *mut Links) {
+    // SAFETY: the caller's contract: `anchor` is linked, so it and its `next` are live links of
+    // one ring, and `entry` is a live link on no list, so the rewiring touches no other list.
     unsafe {
         let next = (*anchor).next;
         (*entry).next = next;
@@ -235,6 +242,7 @@ pub(crate) unsafe fn link_after(anchor: *mut Links, entry: *mut Links) {
 ///
 /// Same contract as [`link_after`].
 pub(crate) unsafe fn link_before(anchor: *mut Links, entry: *mut Links) {
+    // SAFETY: as in `link_after`, with `anchor`'s `prev` as the other live neighbour.
     unsafe {
         let prev = (*anchor).prev;
         (*entry).prev = prev;
@@ -250,6 +258,8 @@ pub(crate) unsafe fn link_before(anchor: *mut Links, entry: *mut Links) {
 ///
 /// `entry` is linked on a list whose sentinel is alive.
 pub(crate) unsafe fn unlink(entry: *mut Links) {
+    // SAFETY: the caller's contract: `entry` is linked on a list whose sentinel is alive, so its
+    // `prev` and `next` are live links of that ring.
     unsafe {
         let prev = (*entry).prev;
         let next = (*entry).next;

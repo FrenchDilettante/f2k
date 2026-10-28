@@ -153,6 +153,9 @@ impl IrqlState {
     /// compiler barrier — an optimizing build otherwise hoists such a read out of a halt loop.
     pub fn unmask_interrupts(&mut self) {
         self.interrupts = true;
+        // SAFETY: the kernel runs at CPL 0, where `sti` is legal, and boot loads the IDT before
+        // anything enables interrupts, so every vector the enable lets in has its gate. The ledger
+        // records the change in the same step.
         #[cfg(target_arch = "x86")]
         unsafe {
             core::arch::asm!("sti", options(nostack, preserves_flags));
@@ -166,6 +169,8 @@ impl IrqlState {
     #[cfg(target_arch = "x86")]
     pub fn unmask_and_halt(&mut self) {
         self.interrupts = true;
+        // SAFETY: as in `unmask_interrupts`; `hlt` is legal at CPL 0 too, and with interrupts
+        // enabled the next one wakes it.
         unsafe {
             core::arch::asm!("sti", "hlt", options(nostack, preserves_flags));
         }
@@ -174,6 +179,8 @@ impl IrqlState {
     /// Clear the interrupt flag.
     pub fn mask_interrupts(&mut self) {
         self.interrupts = false;
+        // SAFETY: `cli` is legal at CPL 0, where the kernel runs, and masking is always sound: it
+        // only defers interrupts. The ledger records the change in the same step.
         #[cfg(target_arch = "x86")]
         unsafe {
             core::arch::asm!("cli", options(nostack, preserves_flags));

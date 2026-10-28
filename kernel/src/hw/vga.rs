@@ -103,9 +103,10 @@ pub struct VgaMemory;
 #[cfg(target_arch = "x86")]
 impl CellMemory for VgaMemory {
     fn store(&mut self, index: usize, word: u16) {
-        debug_assert!(index < COLUMNS * ROWS);
-        // SAFETY: the text page is mapped in the kernel window for the kernel's lifetime; the cell
-        // index is inside mode 3's grid. The store is device memory: volatile.
+        assert!(index < COLUMNS * ROWS);
+        // SAFETY: the text page is mapped in the kernel window for the kernel's lifetime; the
+        // assertion above keeps the cell index inside mode 3's grid. The store is device memory:
+        // volatile.
         unsafe { (VIRT_BASE as *mut u16).add(index).write_volatile(word) }
     }
 }

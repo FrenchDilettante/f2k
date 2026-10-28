@@ -446,13 +446,9 @@ fn resolve_or_end(frame: &mut ExceptionFrame) {
         .copied()
         .unwrap_or("Unknown");
 
-    // The ring-3 tail exists only for ring-3 exceptions; read it once, guarded, through the
-    // extended frame.
-    let (user_esp, user_ss) = if from_user {
-        (ring3_tail(frame), ring3_user_ss(frame))
-    } else {
-        (0, 0)
-    };
+    // The ring-3 tail exists only for ring-3 exceptions; read it once, through the extended
+    // frame. Ring-0 frames report zeroes.
+    let (user_esp, user_ss) = ring3_tail(frame).unwrap_or((0, 0));
 
     crate::serial_println!("CPU EXCEPTION: vector {} ({})", frame.vector, name);
     crate::serial_println!(
@@ -560,22 +556,17 @@ fn read_code(eip: u32, out: &mut [u8]) -> bool {
     read > 0
 }
 
-/// The interrupted user ESP of a ring-3 exception: the CPU pushed it as part of the ring-3 tail.
-/// Zero for ring-0 frames (no tail).
-///
-/// # Safety contract
-///
-/// Call only when `frame.cs` carries RPL 3; the tail does not exist for ring-0 exceptions.
-fn ring3_tail(frame: &ExceptionFrame) -> u32 {
-    // SAFETY: guaranteed by the caller's RPL check; the CPU pushed the tail above the common frame
-    // on the TSS stack.
-    unsafe { &*(core::ptr::addr_of!(*frame) as *const Ring3ExceptionFrame) }.user_esp
-}
-
-/// The interrupted user SS of a ring-3 exception; see [`ring3_tail`].
-fn ring3_user_ss(frame: &ExceptionFrame) -> u32 {
-    // SAFETY: same contract as ring3_tail.
-    unsafe { &*(core::ptr::addr_of!(*frame) as *const Ring3ExceptionFrame) }.user_ss
+/// The interrupted user ESP and SS of a ring-3 exception, which the CPU pushed as the ring-3
+/// tail above the common frame. `None` for a frame without RPL 3: ring-0 exceptions have no tail.
+fn ring3_tail(frame: &ExceptionFrame) -> Option<(u32, u32)> {
+    if frame.cs & 3 != 3 {
+        return None;
+    }
+    // SAFETY: the frame's CS carries RPL 3, so the CPU changed privilege on entry and pushed the
+    // user ESP and SS above the common frame on the TSS stack: the words `Ring3ExceptionFrame`
+    // reads past `ExceptionFrame` are part of this exception's frame.
+    let ring3 = unsafe { &*(core::ptr::addr_of!(*frame) as *const Ring3ExceptionFrame) };
+    Some((ring3.user_esp, ring3.user_ss))
 }
 
 /// ESP of the interrupted context. Ring 0: five frame words (vector, error code, EIP, CS, EFLAGS)

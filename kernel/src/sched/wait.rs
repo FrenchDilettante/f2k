@@ -475,6 +475,7 @@ impl Dispatcher {
             }
         } else if let Some(index) = objects
             .iter()
+            // SAFETY: every object is a live, initialized waitable (the caller's references).
             .position(|&object| unsafe { signaled_for(object, me) })
         {
             // SAFETY: as above.

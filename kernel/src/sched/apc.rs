@@ -182,6 +182,8 @@ pub(crate) fn suspend_apc_normal(
     {
         let _ = dispatcher;
         super::wait::wait_current(
+            // SAFETY: `semaphore` points into `thread`, the running thread's live record; the
+            // header outlives the wait, which the thread itself is parked in.
             unsafe { (*semaphore).waitable() },
             WaitReason::Suspension,
             None,
@@ -197,6 +199,8 @@ pub(crate) fn suspend_apc_normal(
         };
         let _ = dispatcher.wait_single(
             thread,
+            // SAFETY: `semaphore` points into `thread`'s live record; the raw pointer lets the
+            // header be named alongside the `&mut Thread` the wait also takes.
             unsafe { (*semaphore).waitable() },
             WaitReason::Suspension,
             WaitMode::Kernel,
@@ -517,6 +521,8 @@ impl Dispatcher {
             thread.suspend_count -= 1;
             if thread.suspend_count == 0 && thread.freeze_count == 0 {
                 let semaphore = addr_of_mut!(thread.suspend_semaphore);
+                // SAFETY: the semaphore is a field of `thread`, a live record this call holds
+                // exclusively, and no other reference to it is in use across the release.
                 self.release_suspend_semaphore(unsafe { &mut *semaphore });
             }
         }
@@ -533,6 +539,7 @@ impl Dispatcher {
         thread.freeze_count = 0;
         thread.suspend_count = 0;
         let semaphore = addr_of_mut!(thread.suspend_semaphore);
+        // SAFETY: as in `resume_thread`: a field of the live `thread` this call holds exclusively.
         self.release_suspend_semaphore(unsafe { &mut *semaphore });
         old
     }

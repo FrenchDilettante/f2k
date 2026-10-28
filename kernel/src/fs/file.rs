@@ -471,8 +471,12 @@ static mut RECORDS_BUILT: bool = false;
 /// The kernel's file records.
 #[cfg(target_arch = "x86")]
 pub fn records() -> &'static mut FileRecords {
-    // SAFETY: single CPU; services run serialized (the gate masks interrupts), and a record's
+    // SAFETY: single CPU, and no interrupt path reaches the records. Services hold interrupts
+    // masked between their waits, and every caller uses the reference within one step (a copy
+    // out, a write back) that does not wait, so no other thread forms one meanwhile. A record's
     // changes that span a volume I/O are made under the volume lock. Built once, in place.
+    // Note: nothing enforces the one-step use: a reference held across a wait (a disk read, the
+    // volume lock, a file object's lock) would alias the one another thread's service takes.
     unsafe {
         let records = (*core::ptr::addr_of_mut!(RECORDS)).as_mut_ptr();
         if !RECORDS_BUILT {

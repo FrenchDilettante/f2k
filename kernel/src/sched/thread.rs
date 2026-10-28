@@ -538,6 +538,7 @@ impl Thread {
     /// fixed offset in the record. The caller must know the header is a thread's (a handle table
     /// slot's kind, say); a foreign header is a caller bug.
     pub fn from_waitable(waitable: *mut Waitable) -> *mut Thread {
+        // SAFETY: the caller passes a live, initialized waitable header (a handle slot's object).
         debug_assert_eq!(unsafe { (*waitable).kind() }, WaitKind::Thread);
         (waitable as usize - core::mem::offset_of!(Thread, waitable)) as *mut Thread
     }
@@ -573,6 +574,8 @@ impl Thread {
     ///
     /// The thread is attached (its lifetime pins the process).
     pub unsafe fn process(&self) -> &SchedProcess {
+        // SAFETY: the caller's contract: the thread is attached, and `attach_to`'s contract keeps
+        // the owning process alive while the thread is on its list.
         unsafe { &*self.process }
     }
 

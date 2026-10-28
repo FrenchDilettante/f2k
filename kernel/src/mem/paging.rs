@@ -179,20 +179,10 @@ pub const fn gate_slot_top(index: u32) -> u32 {
 #[cfg(target_arch = "x86")]
 pub fn init_table_access() {
     // SAFETY: the boot context is the only mutator of the directory.
-    let pd = unsafe { &mut *core::ptr::addr_of_mut!(BOOT_PD) }
-        .0
-        .as_mut_ptr();
-    let pd_phys = pd as u32 - KERNEL_BASE;
-    assert_eq!(
-        unsafe { *pd.add(SELF_MAP_SLOT) },
-        0,
-        "self-map already installed"
-    );
-    assert_eq!(
-        unsafe { *pd.add(SCRATCH_SLOT) },
-        0,
-        "scratch table already installed"
-    );
+    let pd = &mut unsafe { &mut *core::ptr::addr_of_mut!(BOOT_PD) }.0;
+    let pd_phys = pd.as_ptr() as u32 - KERNEL_BASE;
+    assert_eq!(pd[SELF_MAP_SLOT], 0, "self-map already installed");
+    assert_eq!(pd[SCRATCH_SLOT], 0, "scratch table already installed");
 
     // The scratch table is a kernel static (its frame is part of the image and never enters the
     // frame database), so it can be zeroed directly through the kernel window before it is
@@ -206,9 +196,9 @@ pub fn init_table_access() {
         }
         let scratch_table_phys = (scratch.0.as_mut_ptr() as u32) - KERNEL_BASE;
 
-        // SAFETY: both slots were asserted empty; the boot context is the only mutator.
-        *pd.add(SELF_MAP_SLOT) = pd_phys | PAGE_PRESENT | PAGE_WRITE;
-        *pd.add(SCRATCH_SLOT) = scratch_table_phys | PAGE_PRESENT | PAGE_WRITE;
+        // Both slots were asserted empty above.
+        pd[SELF_MAP_SLOT] = pd_phys | PAGE_PRESENT | PAGE_WRITE;
+        pd[SCRATCH_SLOT] = scratch_table_phys | PAGE_PRESENT | PAGE_WRITE;
     }
 }
 
@@ -641,8 +631,13 @@ pub fn map_kernel_page(vaddr: u32, frame_phys: u32) {
         "kernel mapping collides with the runtime access windows"
     );
 
-    // SAFETY: the boot context is the only mutator of these windows; entries are CPU-mutated
-    // (accessed/dirty), so access is volatile.
+    // SAFETY: the self-map and directory windows are installed, so both addresses reach the
+    // current directory and the window's table. Past the boot (before any thread runs), these
+    // windows change only here and in `unmap_kernel_page`, at every thread create and exit, from
+    // `map_gate_slot`/`unmap_gate_slot` inside the kernel-stack ledger's `Global` closure
+    // (`STACKS` in mem/kstacks.rs), which masks interrupts: on one processor nothing else
+    // touches the entry between the check and the store. Only the boot creates a table (the
+    // frozen-half assertion). Entries are CPU-mutated (accessed/dirty), so access is volatile.
     unsafe {
         let pde = (DIRECTORY_ENTRY_VA + (window as u32) * 4) as *mut u32;
         if pde.read_volatile() & PAGE_PRESENT == 0 {
@@ -691,7 +686,9 @@ pub fn unmap_kernel_page(vaddr: u32) -> u32 {
         "kernel unmapping collides with the runtime access windows"
     );
 
-    // SAFETY: as `map_kernel_page`; the table exists because a mapping in it does.
+    // SAFETY: as `map_kernel_page`: the caller, `unmap_gate_slot`, runs inside the kernel-stack
+    // ledger's closure with interrupts masked, so nothing else touches the entry meanwhile. The
+    // table exists because a mapping in it does.
     unsafe {
         let pde = (DIRECTORY_ENTRY_VA + (window as u32) * 4) as *const u32;
         assert!(

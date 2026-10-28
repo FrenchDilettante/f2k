@@ -1251,8 +1251,12 @@ static mut BUILT: bool = false;
 /// The kernel's directory of objects.
 #[cfg(target_arch = "x86")]
 pub fn directory() -> &'static mut Directory {
-    // SAFETY: single CPU; services and the teardown run serialized (the gate masks interrupts), and
-    // no interrupt path reaches the directory. Built once, in place, before the first use.
+    // SAFETY: single CPU. The reference is not the directory's only path: the clock's DPC changes
+    // the WaitableTimer, Thread and Event records inside its pools through the dispatcher's raw
+    // links (`expire_timers`, from the clock's deferred work), and so does every satisfy walk.
+    // Services and the teardown hold the reference only with interrupts masked (the gate masks
+    // them), so no DPC runs while it is in use; a reference held across a wait, where interrupts
+    // open, would overlap the DPC's changes. Built once, in place, before the first use.
     unsafe {
         let directory = (*core::ptr::addr_of_mut!(DIRECTORY)).as_mut_ptr();
         if !BUILT {
@@ -1361,7 +1365,12 @@ impl<T: 'static> core::ops::Deref for Referenced<T> {
 #[cfg(target_arch = "x86")]
 impl<T: 'static> core::ops::DerefMut for Referenced<T> {
     fn deref_mut(&mut self) -> &mut T {
-        // SAFETY: as `deref`; services run serialized, so the record has no other user meanwhile.
+        // SAFETY: as `deref`. The record has no other user while its holder runs with interrupts
+        // masked and does not block, as a service does between its waits: no DPC and no other
+        // thread reaches it meanwhile.
+        // Note: a holder that blocks breaks this. `fs::io::serialized` forms `&mut FileObject`
+        // and then waits on the object's lock, so every thread queued on that lock holds its own
+        // `&mut` to the same record, and the lock's release changes the record under them.
         unsafe { &mut *self.record }
     }
 }

@@ -738,9 +738,14 @@ static mut BUILT: bool = false;
 /// The kernel's registry.
 #[cfg(target_arch = "x86")]
 pub fn registry() -> &'static mut Registry {
-    // SAFETY: single CPU; the services run serialized (the gate masks interrupts), and no interrupt
-    // path reaches the registry. Built once, in place, before the first use; the pool is this
+    // SAFETY: single CPU, and no interrupt path reaches the registry. Its callers are services,
+    // which run with interrupts masked and never wait while they hold the reference, so no other
+    // thread forms one meanwhile. Built once, in place, before the first use; the pool is this
     // module's alone, handed to the registry's arena once.
+    // Note: `with_scratch` reads user memory inside the borrow. A fault in that copy enters the
+    // exception handler with the reference live; it resolves without the registry and without
+    // waiting today, but a resolution that waited would let another thread's service take a
+    // second reference.
     unsafe {
         let registry = (*core::ptr::addr_of_mut!(REGISTRY)).as_mut_ptr();
         if !BUILT {

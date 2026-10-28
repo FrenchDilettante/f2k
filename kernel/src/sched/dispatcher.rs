@@ -351,6 +351,8 @@ impl Dispatcher {
     /// run the state machine. Returns the previous priority.
     pub fn set_priority(&mut self, thread: &mut Thread, priority: i8) -> i8 {
         let old = thread.priority;
+        // SAFETY: the dispatcher handles attached threads only, and `attach_to`'s contract
+        // keeps their owner alive while they are on its list: `thread.process` is live.
         thread.quantum = unsafe { (*thread.process).thread_quantum };
         thread.decrement_count = 0;
         thread.priority_decrement = 0;
@@ -372,6 +374,8 @@ impl Dispatcher {
             if new >= REALTIME_BASE {
                 new = REALTIME_BASE - 1;
             }
+            // SAFETY: the dispatcher handles attached threads only, and `attach_to`'s contract
+            // keeps their owner alive while they are on its list: `thread.process` is live.
             thread.quantum = unsafe { (*thread.process).thread_quantum };
             self.apply_priority(thread, new);
         }
@@ -380,6 +384,8 @@ impl Dispatcher {
     /// The increment of `thread`'s base priority over its process's: what a base-priority change
     /// would report as the previous value. A saturated thread reports its pin, not the raw delta.
     pub fn base_increment(&self, thread: &Thread) -> i32 {
+        // SAFETY: the dispatcher handles attached threads only, and `attach_to`'s contract
+        // keeps their owner alive while they are on its list: `thread.process` is live.
         let increment =
             thread.base_priority as i32 - unsafe { (*thread.process).base_priority } as i32;
         if thread.saturation != 0 {
@@ -513,6 +519,8 @@ impl Dispatcher {
             return self.next;
         }
 
+        // SAFETY: as above: the running thread's owner outlives it, and nothing else holds a
+        // reference to the process record while the dispatcher ends the quantum.
         let process = unsafe { &mut *thread.process };
         if process.disable_quantum && thread.priority >= REALTIME_BASE {
             thread.quantum = i8::MAX;
@@ -657,6 +665,8 @@ impl Dispatcher {
     /// is one discipline. Returns whether the charge exhausted the quantum with the priority left
     /// where it was — the condition the no-wait tail's round-robin acts on.
     pub fn charge_wait(&mut self, thread: &mut Thread) -> bool {
+        // SAFETY: the dispatcher handles attached threads only, and `attach_to`'s contract
+        // keeps their owner alive while they are on its list: `thread.process` is live.
         let thread_quantum = unsafe { (*thread.process).thread_quantum };
         if thread.priority >= REALTIME_BASE || thread.base_priority >= TIME_CRITICAL_CEILING {
             thread.quantum = thread_quantum;
@@ -724,6 +734,8 @@ impl Dispatcher {
                 || !self.ready_queue_holds(thread),
             "balance boost on a still-queued thread"
         );
+        // SAFETY: the dispatcher handles attached threads only, and `attach_to`'s contract
+        // keeps their owner alive while they are on its list: `thread.process` is live.
         let thread_quantum = unsafe { (*thread.process).thread_quantum };
         let boost_priority = REALTIME_BASE - 1;
         thread.priority_decrement += boost_priority - thread.priority;
@@ -933,6 +945,9 @@ impl Dispatcher {
                 &mut *((entry as usize - core::mem::offset_of!(Thread, process_links))
                     as *mut Thread)
             };
+            // SAFETY: the entry is linked on the process's thread list, so its `next` is a live
+            // link of that ring (another thread's, or the sentinel). Read before the priority
+            // machinery runs, which never unlinks a thread from its process.
             entry = unsafe { (*entry).next };
 
             let mut new_priority = thread.base_priority as i32 + adjustment;

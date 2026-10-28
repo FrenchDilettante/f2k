@@ -63,19 +63,15 @@ impl KernelHeap {
     }
 
     // -----------------------------------------------------------------
-    // Raw field access. Offsets are 4-byte aligned by construction.
+    // Field access: little-endian words in the pool. Offsets are 4-byte aligned by construction;
+    // an offset outside the pool panics instead of touching memory past it.
 
     fn rd(&self, off: usize) -> u32 {
-        // SAFETY: callers only pass offsets inside the pool, computed from block boundaries; reads
-        // are unaligned-tolerant.
-        unsafe { (self.pool.as_ptr().add(off) as *const u32).read_unaligned() }
+        u32::from_le_bytes(self.pool[off..off + 4].try_into().unwrap())
     }
 
     fn wr(&mut self, off: usize, value: u32) {
-        // SAFETY: same contract as `rd`.
-        unsafe {
-            (self.pool.as_mut_ptr().add(off) as *mut u32).write_unaligned(value);
-        }
+        self.pool[off..off + 4].copy_from_slice(&value.to_le_bytes());
     }
 
     /// Block payload size, read from the header at `off`.

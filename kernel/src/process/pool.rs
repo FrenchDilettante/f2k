@@ -95,7 +95,10 @@ pub fn owner_of(thread: &crate::sched::thread::Thread) -> Option<&'static mut Pr
 pub fn current_mut() -> &'static mut Process {
     let index = running(|thread| index_of(thread.process)).expect("no process is current");
     // SAFETY: the record of the running thread's owner, at its final address for the thread's
-    // life.
+    // life. It is not exclusive: every other thread of the process gets the same `&'static mut`
+    // to the same record here (and `owner_of` hands out another), so it is sound only while the
+    // holder runs masked within one service and drops it before any other thread of the process
+    // runs. The `'static` overstates too: the record is the process's until its last thread ends.
     unsafe { &mut *record(index) }
 }
 

@@ -13,6 +13,8 @@ const COM1: u16 = 0x3F8;
 /// Initialize serial port
 #[cfg(target_arch = "x86")]
 pub fn init() {
+    // SAFETY: ports 0x3F8-0x3FC are COM1's UART registers, which only this module drives; the
+    // writes program the line (38400 baud, 8N1, FIFOs, DTR/RTS) and touch no memory.
     unsafe {
         // Disable interrupts
         write_byte(COM1 + 1, 0x00);
@@ -53,6 +55,8 @@ unsafe fn read_byte(port: u16) -> u8 {
 /// Wait for serial port to be ready to transmit
 #[cfg(target_arch = "x86")]
 fn wait_transmit() {
+    // SAFETY: port 0x3FD is COM1's line status register; reading it changes nothing the
+    // transmit path depends on and touches no memory.
     unsafe {
         // Wait for Transmitter Holding Register to be empty
         while read_byte(COM1 + 5) & 0x20 == 0 {
@@ -65,6 +69,8 @@ fn wait_transmit() {
 #[cfg(target_arch = "x86")]
 pub fn write_byte_blocking(byte: u8) {
     wait_transmit();
+    // SAFETY: port 0x3F8 is COM1's transmit register (the divisor latch is off since `init`),
+    // empty after the wait above; the write touches no memory.
     unsafe {
         write_byte(COM1, byte);
     }
