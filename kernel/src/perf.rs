@@ -11,6 +11,9 @@
 //!
 //! Nothing here compiles without the feature.
 
+#[cfg(target_arch = "x86")]
+use core::sync::atomic::{compiler_fence, AtomicBool, Ordering};
+
 /// Samples the ring buffer keeps (~10 s of platform ticks at the default rate; a longer boot
 /// keeps the most recent ones).
 pub const CAPACITY: usize = 1024;
@@ -148,10 +151,14 @@ mod tests {
 #[cfg(target_arch = "x86")]
 static mut TRACE: Trace = Trace::new();
 
-/// The sampling interval in 100 ns units (the platform tick by default, its `per_tick`th under
-/// `perf-rate`; [init] writes it).
+/// Whether the trace has stopped: [`report`] sets it before reading the samples, and [`sample`]
+/// records nothing from then on, so the dump reads a ring no interrupt writes any more.
 #[cfg(target_arch = "x86")]
-static mut SAMPLE_INTERVAL: u32 = crate::interrupt::clock::INTERVAL_100NS;
+static STOPPED: AtomicBool = AtomicBool::new(false);
+
+/// The sampling interval in 100 ns units: the platform tick divided by [`SAMPLES_PER_TICK`].
+#[cfg(target_arch = "x86")]
+const SAMPLE_INTERVAL: u32 = crate::interrupt::clock::INTERVAL_100NS / SAMPLES_PER_TICK;
 
 /// The end of the kernel image window, mapped in every address space: the kernel stacks the image
 /// holds (the boot stack's among them) live inside it.
@@ -172,21 +179,27 @@ pub fn init() {
     if SAMPLES_PER_TICK == 1 {
         return;
     }
-    let interval = crate::interrupt::clock::INTERVAL_100NS / SAMPLES_PER_TICK;
     // SAFETY: boot CPU, interrupts disabled (the interrupt init calls this before they fly);
     // the timer and the clock are programmed here, sole access.
     unsafe {
         let mut ports = crate::hw::portio::Ports;
-        crate::hw::pit::program_interval(&mut ports, crate::hw::pit::divisor_for_100ns(interval));
+        crate::hw::pit::program_interval(
+            &mut ports,
+            crate::hw::pit::divisor_for_100ns(SAMPLE_INTERVAL),
+        );
         crate::interrupt::clock::set_source_per_tick(SAMPLES_PER_TICK);
-        core::ptr::write_volatile(core::ptr::addr_of_mut!(SAMPLE_INTERVAL), interval);
     }
 }
 
-/// Record one sample: the interrupted context of the clock interrupt, with its call stack.
+/// Record one sample: the interrupted context of the clock interrupt, with its call stack. Once
+/// the trace has stopped (see [`report`]), nothing.
 #[cfg(target_arch = "x86")]
 pub fn sample(frame: &crate::cpu::idt::ExceptionFrame) {
-    // SAFETY: single CPU; the trace's only writers run at the clock level, serialized by it.
+    if STOPPED.load(Ordering::Relaxed) {
+        return;
+    }
+    // SAFETY: single CPU; the trace's only writer runs at the clock level, serialized by it, and
+    // its only reader, the dump, reads only after the trace has stopped (checked above).
     unsafe {
         let (eip, cs) = frame.interrupted_pc();
         let mut frames = [0u32; MAX_STACK];
@@ -213,6 +226,8 @@ pub fn sample(frame: &crate::cpu::idt::ExceptionFrame) {
 #[cfg(target_arch = "x86")]
 unsafe fn walk(mut ebp: u32, cs: u32, frames: &mut [u32; MAX_STACK]) -> usize {
     let ring3 = cs & 3 == 3;
+    // SAFETY: the linker script defines both symbols; only their addresses are taken, never
+    // their contents.
     let kernel_text =
         unsafe { (&_kernel_start as *const u8 as u32)..(&_kernel_end as *const u8 as u32) };
     let mut depth = 1;
@@ -260,22 +275,25 @@ fn user_mapped(address: u32) -> bool {
         .is_some()
 }
 
-/// Dump the trace on COM1: the header and one line per kept sample. Runs on the idle thread,
-/// before the teardown audit line (the single-process boot) or the suite's summary line — the
-/// line the harness stops the boot on.
+/// Stop the trace and dump it on COM1: the header and one line per kept sample. Runs on the idle
+/// thread, before the teardown audit line (the single-process boot) or the suite's summary line —
+/// the line the harness stops the boot on. The trace stays stopped: the dump is the boot's last.
 #[cfg(target_arch = "x86")]
 pub fn report() {
-    // SAFETY: single CPU; the boot is over for user code, and a tick during the dump only
-    // advances the ring's cursor, never the kept samples' order.
+    STOPPED.store(true, Ordering::Relaxed);
+    // The ring's reads below must not move above the stop: the clock interrupt is the other side.
+    compiler_fence(Ordering::SeqCst);
+    // SAFETY: single CPU; the trace has stopped, so a clock interrupt that runs from here on
+    // returns before touching it, and one that ran before the stop has finished its write. No
+    // writer exists while this shared reference lives.
     let trace = unsafe { &*core::ptr::addr_of!(TRACE) };
     let taken = trace.taken();
     let kept = trace.kept().count() as u64;
-    let interval = unsafe { core::ptr::read_volatile(core::ptr::addr_of!(SAMPLE_INTERVAL)) };
     crate::serial_println!(
         "F2K: perf trace: {} samples taken, {} kept (the sample interval is {} 100ns units)",
         taken,
         kept,
-        interval
+        SAMPLE_INTERVAL
     );
     for sample in trace.kept() {
         if sample.depth > 1 {

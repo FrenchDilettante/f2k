@@ -83,7 +83,8 @@ mod time;
 #[cfg(feature = "perf-trace")]
 mod perf;
 
-// C library functions for bare-metal (linker support)
+// The C library's memory routines for the target (linker support).
+#[cfg(target_arch = "x86")]
 mod c_lib;
 
 #[cfg(target_arch = "x86")]
@@ -104,6 +105,8 @@ pub fn panic(info: &core::panic::PanicInfo) -> ! {
 #[cfg(target_arch = "x86")]
 pub(crate) fn halt() -> ! {
     loop {
+        // SAFETY: ring 0, where `cli` and `hlt` are permitted; they touch no memory and no stack,
+        // and the loop halts again if a non-maskable interrupt wakes the CPU.
         unsafe {
             asm!("cli", "hlt", options(nomem, nostack));
         }
@@ -117,6 +120,8 @@ pub(crate) fn halt() -> ! {
 #[no_mangle]
 pub extern "C" fn kmain(magic: u32, multiboot_info: u32) -> ! {
     // Signal that we've started by writing to port 0x80 (POST code port)
+    // SAFETY: ring 0; port 0x80 is the POST diagnostic port, which no device claims, so the write
+    // has no effect beyond the code a debug card would display.
     unsafe {
         asm!("out 0x80, al", in("al") 0xFEu8, options(nomem, nostack, preserves_flags));
     }
@@ -146,12 +151,15 @@ pub extern "C" fn kmain(magic: u32, multiboot_info: u32) -> ! {
             crate::cpu::gdt::debug_descriptor(2)
         );
         let esp: u32;
+        // SAFETY: copying ESP into a register reads no memory and changes no state.
         unsafe { asm!("mov {}, esp", out(reg) esp, options(nomem, nostack)) };
         serial_println!("F2K: ESP before fault: {:#010x}", esp);
     }
     #[cfg(feature = "fault-test-ud")]
     {
         serial_println!("F2K: fault test: forcing #UD (no error code)");
+        // SAFETY: a deliberate fault in a test-only build: `ud2` raises #UD, whose handler dumps
+        // the frame and halts, so execution never continues past it.
         unsafe { asm!("ud2", options(nomem, nostack)) };
     }
     #[cfg(feature = "fault-test-gp")]
@@ -160,6 +168,9 @@ pub extern "C" fn kmain(magic: u32, multiboot_info: u32) -> ! {
         // error code 0x38 — the EXC_STUB_ERR path. Segment registers can only be loaded from a
         // general-purpose register.
         serial_println!("F2K: fault test: forcing #GP (error code path)");
+        // SAFETY: a deliberate fault in a test-only build: loading the out-of-limit selector
+        // raises #GP before DS changes, and its handler dumps the frame and halts, so execution
+        // never continues past it.
         unsafe {
             asm!(
                 "mov ax, 0x38",
@@ -216,22 +227,6 @@ pub extern "C" fn kmain(magic: u32, multiboot_info: u32) -> ! {
     mem::paging::init_table_access();
     // The kernel stack region's tables, shared by every address space from the first on.
     mem::paging::init_kernel_stack_tables();
-
-    // Kernel heap smoke.
-    mem::bootmem::heap_init();
-    mem::bootmem::with_heap(|heap| {
-        const MARK: u32 = 0x4832_4B46; // "F2KH"
-        let block = heap
-            .alloc(core::alloc::Layout::from_size_align(256, 8).unwrap())
-            .expect("heap smoke allocation");
-        // SAFETY: the block is a live, exclusive allocation of 256 aligned bytes.
-        unsafe { block.cast::<u32>().write(MARK) };
-        let read_back = unsafe { block.cast::<u32>().read() };
-        heap.dealloc(block);
-        assert_eq!(read_back, MARK);
-        assert_eq!(heap.audit(), Ok(()));
-    });
-    serial_println!("F2K: kernel heap: alloc/free ok");
 
     // The scheduler's resting state: the idle thread, armed while interrupts are still disabled
     // (nothing is schedulable yet; its loop is the kernel's resting state once no thread remains).

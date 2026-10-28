@@ -107,18 +107,18 @@ pub fn identity(process: &Process) -> Identity<'_> {
     exit::identity(process.leg(), leg_count(), process.id(), process.name())
 }
 
-/// The reap step's landing point, on the idle thread after a process's teardown: audit the
-/// allocators' structures and, for a leg (`leg`, none for a child), pause for its screenshot and
+/// The reap step's landing point, on the idle thread after a process's teardown: audit the frame
+/// database's structure and, for a leg (`leg`, none for a child), pause for its screenshot and
 /// defer its audit line. At a `quiescent` reap, compare the free frames with the post-boot
 /// baseline and report every deferred line, counting each leg on a boot of several programs (see
 /// [`Suite`]); then ready the next leg — or print the summary, after which the idle thread rests.
 pub fn process_reaped(leg: Option<u32>, end: ProcessEnd, quiescent: bool) {
-    let (frames_audit_ok, heap_audit_ok) = crate::process::audit_structures();
+    let frames_audit_ok = crate::process::audit_structures();
     let frames = quiescent.then(crate::process::frames_against_baseline);
     if let Some(index) = leg {
         pause_for_screen(index);
     }
-    suite().reaped(leg, end, frames_audit_ok, heap_audit_ok);
+    suite().reaped(leg, end, frames_audit_ok);
     let Some((available, baseline)) = frames else {
         return;
     };

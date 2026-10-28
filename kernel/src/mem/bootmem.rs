@@ -9,7 +9,6 @@
 //! The database then serves the rest of the kernel through [`with_frame_db`].
 
 use super::frame::{self, ColorTables, FrameDb, FrameEntry, FrameState, NoHooks, MAX_FRAMES};
-use super::heap::KernelHeap;
 use super::layout::KERNEL_IMAGE;
 use super::multiboot::{self, MultibootInfo, UsableRange};
 use super::paging::{KERNEL_BASE, KERNEL_PHYS_BASE};
@@ -154,50 +153,6 @@ pub fn boot_init(multiboot_info_addr: u32) {
     }
 }
 
-/// Kernel heap pool: a fixed region inside the kernel image.
-pub const HEAP_POOL_SIZE: usize = 256 * 1024;
-
-/// Quirk: the aligned wrapper — a bare `[u8; N]` is only 1-byte aligned, but the heap's 8-aligned
-/// `NonNull` writes must not depend on link order.
-#[repr(align(8))]
-struct HeapPool([u8; HEAP_POOL_SIZE]);
-
-static mut HEAP_POOL: HeapPool = HeapPool([0; HEAP_POOL_SIZE]);
-
-/// The kernel heap; built once by [`heap_init`].
-static mut KERNEL_HEAP: Option<KernelHeap> = None;
-
-/// Build the kernel heap over its static pool.
-pub fn heap_init() {
-    // SAFETY: the pool is a static owned by this module; the heap holds its only reference.
-    // Single-threaded boot.
-    let pool: &'static mut [u8] = unsafe {
-        core::slice::from_raw_parts_mut(
-            core::ptr::addr_of_mut!(HEAP_POOL).cast::<u8>(),
-            HEAP_POOL_SIZE,
-        )
-    };
-    // SAFETY: single-threaded boot; heap_init runs once, before any call to with_heap.
-    unsafe {
-        KERNEL_HEAP = Some(KernelHeap::new(pool));
-    }
-}
-
-/// Run `f` against the kernel heap.
-///
-/// Contract: called from the single-threaded boot context only (one caller at a time). Panics if
-/// called before [`heap_init`].
-pub fn with_heap<R>(f: impl FnOnce(&mut KernelHeap) -> R) -> R {
-    // SAFETY: the boot context is the only caller, so the mutable reference handed to `f` is never
-    // aliased.
-    let heap = unsafe {
-        (*core::ptr::addr_of_mut!(KERNEL_HEAP))
-            .as_mut()
-            .expect("kernel heap not initialized")
-    };
-    f(heap)
-}
-
 /// Run `f` against the boot frame database.
 ///
 /// Contract: called from the single-threaded boot context only (one caller at a time). Panics if
@@ -212,17 +167,4 @@ pub fn with_frame_db<R>(f: impl FnOnce(&mut FrameDb<NoHooks>) -> R) -> R {
             .expect("frame database not initialized")
     };
     f(db)
-}
-
-#[cfg(test)]
-mod tests {
-    /// The heap pool's address is 8-byte aligned regardless of link order (the `NonNull` writes are
-    /// alignment-checked).
-    #[test]
-    fn heap_pool_is_aligned() {
-        assert_eq!(core::mem::align_of::<HeapPool>(), 8);
-        // SAFETY: read-only address check before any boot code runs.
-        let addr = unsafe { core::ptr::addr_of!(super::HEAP_POOL) } as usize;
-        assert_eq!(addr % 8, 0);
-    }
 }

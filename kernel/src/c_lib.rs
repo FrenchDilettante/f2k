@@ -1,7 +1,8 @@
-//! C Library Functions for bare-metal
+//! The C library's memory routines the compiler lowers to on the target: `memcmp`, `memset`,
+//! `memcpy` and `memmove`. They are unsafe because they dereference raw pointers.
 //!
-//! Provides C standard library functions needed for linking. These are marked as unsafe because
-//! they dereference raw pointers.
+//! Target only: host builds (the unit tests) link the host's C library, whose routines these must
+//! not replace.
 
 use core::ffi::c_void;
 
@@ -21,11 +22,10 @@ pub unsafe extern "C" fn memcmp(s1: *const c_void, s2: *const c_void, n: usize) 
     0
 }
 
-/// Memory set and copy for the target: the string instructions, one `rep` each. They must not be
-/// Rust loops: the kernel crate builds unoptimized under every test profile (see Cargo.toml), where
-/// a `for` over `ptr::add` costs a range step and two precondition checks per byte — every struct
-/// move goes through these symbols, so a byte loop makes a thread's creation take milliseconds.
-#[cfg(target_arch = "x86")]
+// Memory set and copy for the target: the string instructions, one `rep` each. They must not be
+// Rust loops: the kernel crate builds unoptimized under every test profile (see Cargo.toml), where
+// a `for` over `ptr::add` costs a range step and two precondition checks per byte — every struct
+// move goes through these symbols, so a byte loop makes a thread's creation take milliseconds.
 core::arch::global_asm!(
     ".section .text.memset, \"ax\"",
     ".global memset",
@@ -89,27 +89,3 @@ core::arch::global_asm!(
     "    ret",
     ".size memmove, . - memmove",
 );
-
-/// Memory set for bare-metal (the host build's; the target's is the routine above)
-#[cfg(not(target_arch = "x86"))]
-#[no_mangle]
-pub unsafe extern "C" fn memset(s: *mut c_void, c: i32, n: usize) -> *mut c_void {
-    let p = s as *mut u8;
-    let byte = c as u8;
-    for i in 0..n {
-        *p.add(i) = byte;
-    }
-    s
-}
-
-/// Memory copy for bare-metal (the host build's; the target's is the routine above)
-#[cfg(not(target_arch = "x86"))]
-#[no_mangle]
-pub unsafe extern "C" fn memcpy(dest: *mut c_void, src: *const c_void, n: usize) -> *mut c_void {
-    let d = dest as *mut u8;
-    let s = src as *const u8;
-    for i in 0..n {
-        *d.add(i) = *s.add(i);
-    }
-    dest
-}

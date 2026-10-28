@@ -1,4 +1,5 @@
-//! Memory management: physical frames now; paging and the kernel heap as the boot path grows.
+//! Memory management: the physical frame database, paging, kernel stacks, virtual memory, and the
+//! block heap the registry's arena runs on.
 
 pub mod frame;
 pub mod heap;

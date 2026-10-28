@@ -15,8 +15,8 @@ ENDED = [
     "hello",
     "F2K: user process exited normally (exit code=0)",
 ]
-CLEAN = "F2K: teardown audit: frame database ok, kernel heap ok"
-LEAKED = "F2K: teardown audit FAILED: 1234 frames available, 1240 before the process (frame database ok, kernel heap ok)"
+CLEAN = "F2K: teardown audit: frame database ok"
+LEAKED = "F2K: teardown audit FAILED: 1234 frames available, 1240 before the process (frame database ok)"
 
 
 def test_a_clean_teardown_passes():
@@ -44,7 +44,7 @@ def test_a_fault_during_teardown_is_named():
 
 
 def test_a_suite_legs_audit_line_counts():
-    assert f2kboot.teardown_audited("F2K: process 3 teardown audit: frame database ok, kernel heap ok")
+    assert f2kboot.teardown_audited("F2K: process 3 teardown audit: frame database ok")
 
 
 # --- Batches: a fixture's blocks in one boot, each judged on its own part of the log -------------
@@ -55,7 +55,7 @@ BATCH_BOOT = [*f2kboot.BOOT_CHECKS, "F2K: command line: CORPUS\\t.exe a ;; CORPU
 def leg(index: int, command: str, output: str, code: int = 0) -> list[str]:
     return [f"F2K: process {index} of 3: CORPUS\\{command}", "F2K: entering ring 3", output,
             f"F2K: process {index} (t) exited normally (exit code={code})",
-            f"F2K: process {index} teardown audit: frame database ok, kernel heap ok"]
+            f"F2K: process {index} teardown audit: frame database ok"]
 
 
 def batch_of(lines: list[str], stopped: str = "done") -> f2kboot.Batch:
@@ -202,7 +202,7 @@ def test_a_batch_leg_ends_when_its_process_tree_has_ended():
     first = [
         "F2K: process 1 of 3: CORPUS\\t.exe a",
         *OVERLAID[:-1],
-        "F2K: process 1 teardown audit: frame database ok, kernel heap ok",
+        "F2K: process 1 teardown audit: frame database ok",
     ]
     first[3] = "F2K: process 1 (t) exited normally (exit code=0)"
     lines = BATCH_BOOT + first + leg(2, "t.exe b", "B") + leg(3, "t.exe c", "C")

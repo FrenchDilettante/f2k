@@ -708,7 +708,7 @@ class Expectation:
 
 ENTER = "F2K: entering ring 3"
 # The boot's own checks, reported before any program runs: every block's boot must pass them.
-BOOT_CHECKS = ("F2K Booted Successfully", "F2K: frame database audit: ok", "F2K: kernel heap: alloc/free ok")
+BOOT_CHECKS = ("F2K Booted Successfully", "F2K: frame database audit: ok")
 # A process's end: a one-process boot's form, or a batch's, which names the process's index and
 # name ("F2K: process 3 (bare) exited normally ...").
 END = re.compile(r"^F2K: (?:user process|process \d+ \(.*\)) (exited normally|ended by fault)")
@@ -891,10 +891,10 @@ def compare_block(block: Block, log: str, masks: list[re.Pattern[str]]) -> str |
     return teardown_problem(lines)
 
 
-# The teardown audit line that follows every process's end: the allocators back at the post-boot
-# baseline ("... teardown audit: frame database ok, kernel heap ok"), or what is off ("... teardown
-# audit FAILED: ..."). A suite leg's line names the leg ("F2K: process 3 teardown audit ..."). A
-# child's end has none (CHILD_END).
+# The teardown audit line that follows every process's end: the frame database back at the
+# post-boot baseline ("... teardown audit: frame database ok"), or what is off ("... teardown audit
+# FAILED: ..."). A suite leg's line names the leg ("F2K: process 3 teardown audit ..."). A child's
+# end has none (CHILD_END).
 TEARDOWN = re.compile(r"^F2K: (?:process \d+ )?teardown audit")
 
 # The object audit's line, printed only when objects outlived their process (a reference leak),

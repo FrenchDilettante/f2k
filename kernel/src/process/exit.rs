@@ -261,7 +261,7 @@ impl EndReport<'_> {
 }
 
 /// What a teardown audit found wrong: the frame database's available count against the post-boot
-/// baseline, and whether each allocator's own structure audit held.
+/// baseline, and whether its own structure audit held.
 #[cfg(any(test, target_arch = "x86"))]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Leak {
@@ -271,11 +271,9 @@ pub struct Leak {
     pub baseline: u32,
     /// Whether the frame database's structure audit held.
     pub frames_audit_ok: bool,
-    /// Whether the kernel heap's structure audit held.
-    pub heap_audit_ok: bool,
 }
 
-/// The teardown audit line every process's end is followed by: the allocators back at the
+/// The teardown audit line every process's end is followed by: the frame database back at the
 /// post-boot baseline, or what is off. A suite leg's line names the leg's index; a one-process
 /// boot's names none.
 #[cfg(any(test, target_arch = "x86"))]
@@ -291,24 +289,22 @@ impl fmt::Display for AuditReport {
         if let Some(index) = self.index {
             write!(out, "process {index} ")?;
         }
-        let verdict = |ok: bool| if ok { "ok" } else { "corrupt" };
         match self.audit {
-            Ok(()) => out.write_str("teardown audit: frame database ok, kernel heap ok"),
+            Ok(()) => out.write_str("teardown audit: frame database ok"),
             Err(leak) => write!(
                 out,
-                "teardown audit FAILED: {} frames available, {} before the process (frame database {}, kernel heap {})",
+                "teardown audit FAILED: {} frames available, {} before the process (frame database {})",
                 leak.available,
                 leak.baseline,
-                verdict(leak.frames_audit_ok),
-                verdict(leak.heap_audit_ok)
+                if leak.frames_audit_ok { "ok" } else { "corrupt" }
             ),
         }
     }
 }
 
 /// A torn-down process whose teardown audit line waits for the next quiescent point: its leg's
-/// index (none on a one-process boot), how it ended, and the allocators' structure audits taken at
-/// its reap (they hold at any time; the comparison with the post-boot baseline does not).
+/// index (none on a one-process boot), how it ended, and the frame database's structure audit
+/// taken at its reap (it holds at any time; the comparison with the post-boot baseline does not).
 #[cfg(any(test, target_arch = "x86"))]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Reaped {
@@ -316,8 +312,6 @@ pub struct Reaped {
     pub end: ProcessEnd,
     /// Whether the frame database's structure audit held at the reap.
     pub frames_audit_ok: bool,
-    /// Whether the kernel heap's structure audit held at the reap.
-    pub heap_audit_ok: bool,
 }
 
 /// The teardown audits deferred to the next quiescent point, in reap order.
@@ -371,15 +365,13 @@ impl DeferredAudits {
             let Some(reaped) = slot.take() else {
                 break;
             };
-            let verdict = if reaped.frames_audit_ok && reaped.heap_audit_ok && available == baseline
-            {
+            let verdict = if reaped.frames_audit_ok && available == baseline {
                 Ok(())
             } else {
                 Err(Leak {
                     available,
                     baseline,
                     frames_audit_ok: reaped.frames_audit_ok,
-                    heap_audit_ok: reaped.heap_audit_ok,
                 })
             };
             report(reaped, verdict);
@@ -516,17 +508,11 @@ impl Suite {
         self.started = self.started.max(index);
     }
 
-    /// A process torn down: `leg` its leg (none for a child), `end` how it ended, and the
-    /// allocators' structure audits taken at its reap. A leg's audit line is deferred to the next
+    /// A process torn down: `leg` its leg (none for a child), `end` how it ended, and the frame
+    /// database's structure audit taken at its reap. A leg's audit line is deferred to the next
     /// quiescent point, and on a suite the leg after it is named to start there (see
     /// [`after_leg`]) unless it has started already (legs started together).
-    pub fn reaped(
-        &mut self,
-        leg: Option<u32>,
-        end: ProcessEnd,
-        frames_audit_ok: bool,
-        heap_audit_ok: bool,
-    ) {
+    pub fn reaped(&mut self, leg: Option<u32>, end: ProcessEnd, frames_audit_ok: bool) {
         let Some(index) = leg else {
             return;
         };
@@ -536,7 +522,6 @@ impl Suite {
             index: suite.then_some(index),
             end,
             frames_audit_ok,
-            heap_audit_ok,
         });
         if suite {
             match after_leg(index, self.legs) {
@@ -774,13 +759,12 @@ mod tests {
                 audit: Ok(())
             }
             .to_string(),
-            "F2K: process 3 teardown audit: frame database ok, kernel heap ok"
+            "F2K: process 3 teardown audit: frame database ok"
         );
         let leak = Leak {
             available: 1234,
             baseline: 1240,
             frames_audit_ok: true,
-            heap_audit_ok: false,
         };
         assert_eq!(
             AuditReport {
@@ -789,7 +773,7 @@ mod tests {
             }
             .to_string(),
             "F2K: process 4 teardown audit FAILED: 1234 frames available, 1240 before the process \
-             (frame database ok, kernel heap corrupt)"
+             (frame database ok)"
         );
         // A one-process boot's line names no leg.
         assert_eq!(
@@ -798,7 +782,7 @@ mod tests {
                 audit: Ok(())
             }
             .to_string(),
-            "F2K: teardown audit: frame database ok, kernel heap ok"
+            "F2K: teardown audit: frame database ok"
         );
         assert_eq!(
             AuditReport {
@@ -810,7 +794,7 @@ mod tests {
             }
             .to_string(),
             "F2K: teardown audit FAILED: 1234 frames available, 1240 before the process \
-             (frame database corrupt, kernel heap corrupt)"
+             (frame database corrupt)"
         );
     }
 
@@ -820,7 +804,6 @@ mod tests {
             index: Some(index),
             end,
             frames_audit_ok: true,
-            heap_audit_ok: true,
         }
     }
 
@@ -830,7 +813,7 @@ mod tests {
     fn deferred_audits_settle_at_quiescence() {
         let mut audits = DeferredAudits::new();
         let first = Reaped {
-            heap_audit_ok: false,
+            frames_audit_ok: false,
             ..reaped(1, ProcessEnd::Exited(0))
         };
         audits.defer(first);
@@ -845,8 +828,7 @@ mod tests {
                     Err(Leak {
                         available: 1240,
                         baseline: 1240,
-                        frames_audit_ok: true,
-                        heap_audit_ok: false,
+                        frames_audit_ok: false,
                     })
                 ),
                 (reaped(2, ProcessEnd::Faulted(PAGE_FAULT)), Ok(())),
@@ -874,7 +856,7 @@ mod tests {
             lines,
             [3, 4].map(|index| format!(
                 "F2K: process {index} teardown audit FAILED: 1238 frames available, 1240 before \
-                 the process (frame database ok, kernel heap ok)"
+                 the process (frame database ok)"
             ))
         );
     }
@@ -898,10 +880,7 @@ mod tests {
                     .to_string(),
                 )
             });
-            assert_eq!(
-                lines,
-                ["F2K: teardown audit: frame database ok, kernel heap ok"]
-            );
+            assert_eq!(lines, ["F2K: teardown audit: frame database ok"]);
         }
     }
 
@@ -1063,12 +1042,12 @@ mod tests {
             } else {
                 ProcessEnd::Exited(0)
             };
-            suite.reaped(Some(index), end, true, true);
+            suite.reaped(Some(index), end, true);
             let (lines, after) = settle(&mut suite, 1240);
             assert_eq!(
                 lines,
                 [format!(
-                    "F2K: process {index} teardown audit: frame database ok, kernel heap ok"
+                    "F2K: process {index} teardown audit: frame database ok"
                 )]
             );
             let expected = if index < 3 {
@@ -1097,13 +1076,13 @@ mod tests {
             if legs == 1 {
                 suite.started(1);
             }
-            suite.reaped(Some(1), ProcessEnd::Faulted(PAGE_FAULT), true, true);
+            suite.reaped(Some(1), ProcessEnd::Faulted(PAGE_FAULT), true);
             assert_eq!(
                 settle(&mut suite, 1238),
                 (
                     vec![
                         "F2K: teardown audit FAILED: 1238 frames available, 1240 before the \
-                         process (frame database ok, kernel heap ok)"
+                         process (frame database ok)"
                             .to_string()
                     ],
                     AtQuiescence::Rest
@@ -1122,15 +1101,15 @@ mod tests {
         suite.begin(2);
         suite.started(1);
         suite.started(2);
-        suite.reaped(Some(2), ProcessEnd::Faulted(PAGE_FAULT), true, true);
-        suite.reaped(Some(1), ProcessEnd::Exited(0), true, false);
+        suite.reaped(Some(2), ProcessEnd::Faulted(PAGE_FAULT), true);
+        suite.reaped(Some(1), ProcessEnd::Exited(0), false);
         let (lines, after) = settle(&mut suite, 1240);
         assert_eq!(
             lines,
             [
-                "F2K: process 2 teardown audit: frame database ok, kernel heap ok",
+                "F2K: process 2 teardown audit: frame database ok",
                 "F2K: process 1 teardown audit FAILED: 1240 frames available, 1240 before the \
-                 process (frame database ok, kernel heap corrupt)",
+                 process (frame database corrupt)",
             ]
         );
         let tally = SuiteTally {
@@ -1152,14 +1131,12 @@ mod tests {
         suite.started(1);
 
         // A child ended inside its parent's leg: the parent's reap settles one line.
-        suite.reaped(None, ProcessEnd::Exited(0), true, true);
-        suite.reaped(Some(1), ProcessEnd::Exited(0), true, true);
+        suite.reaped(None, ProcessEnd::Exited(0), true);
+        suite.reaped(Some(1), ProcessEnd::Exited(0), true);
         assert_eq!(
             settle(&mut suite, 1240),
             (
-                vec![
-                    "F2K: process 1 teardown audit: frame database ok, kernel heap ok".to_string()
-                ],
+                vec!["F2K: process 1 teardown audit: frame database ok".to_string()],
                 AtQuiescence::Start(2)
             )
         );
@@ -1167,28 +1144,24 @@ mod tests {
 
         // A child outliving its parent: the leg's reap is not quiescent; the child's is, and only
         // then the leg's line and the next leg's start.
-        suite.reaped(Some(2), ProcessEnd::Exited(0), true, true);
-        suite.reaped(None, ProcessEnd::Faulted(PAGE_FAULT), true, true);
+        suite.reaped(Some(2), ProcessEnd::Exited(0), true);
+        suite.reaped(None, ProcessEnd::Faulted(PAGE_FAULT), true);
         assert_eq!(
             settle(&mut suite, 1240),
             (
-                vec![
-                    "F2K: process 2 teardown audit: frame database ok, kernel heap ok".to_string()
-                ],
+                vec!["F2K: process 2 teardown audit: frame database ok".to_string()],
                 AtQuiescence::Start(3)
             )
         );
         suite.started(3);
 
         // The same past the last leg: the summary waits for the child's reap.
-        suite.reaped(Some(3), ProcessEnd::Exited(0), true, true);
-        suite.reaped(None, ProcessEnd::Exited(0), true, true);
+        suite.reaped(Some(3), ProcessEnd::Exited(0), true);
+        suite.reaped(None, ProcessEnd::Exited(0), true);
         assert_eq!(
             settle(&mut suite, 1240),
             (
-                vec![
-                    "F2K: process 3 teardown audit: frame database ok, kernel heap ok".to_string()
-                ],
+                vec!["F2K: process 3 teardown audit: frame database ok".to_string()],
                 AtQuiescence::Summary(SuiteTally {
                     run: 3,
                     faulted: 0,
@@ -1201,7 +1174,7 @@ mod tests {
         let mut lone = Suite::new();
         lone.begin(1);
         lone.started(1);
-        lone.reaped(None, ProcessEnd::Exited(0), true, true);
+        lone.reaped(None, ProcessEnd::Exited(0), true);
         assert_eq!(settle(&mut lone, 1240), (vec![], AtQuiescence::Rest));
     }
 }

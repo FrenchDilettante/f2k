@@ -36,7 +36,6 @@ DEFAULT_TIMEOUT = 10.0
 BOOTED = (
     "F2K Booted Successfully",
     "F2K: frame database audit: ok",
-    "F2K: kernel heap: alloc/free ok",
 )
 
 # The irq-smoke boot's lines, in order (both boot paths). The PIT runs in mode 2, the rate generator.
@@ -61,7 +60,7 @@ IRQ_SMOKE = (
 #   start:       F2K: process <i> of <n>: <its command line>
 #   normal exit: F2K: process <i> (<name>) exited normally (exit code=N)
 #   fault:       F2K: process <i> (<name>) ended by fault (vector N, exit code=X)
-#   teardown:    F2K: process <i> teardown audit: frame database ok, kernel heap ok
+#   teardown:    F2K: process <i> teardown audit: frame database ok
 #   summary:     F2K: process suite complete: 6 run, 0 faulted, 0 leaks
 # The teardown line prints after every process (all six), so every index is asserted
 # independently. bare null-write writes through the unmapped NULL page, which raises #PF (vector
@@ -77,17 +76,17 @@ PROCESS_SUITE = (
     *BOOTED,
     *(f"F2K: process {index} of 6: {program}" for index, program in enumerate(PROCESS_SUITE_PROGRAMS, start=1)),
     "F2K: process 1 (exit0) exited normally (exit code=0)",
-    "F2K: process 1 teardown audit: frame database ok, kernel heap ok",
+    "F2K: process 1 teardown audit: frame database ok",
     "F2K: process 2 (ret0) exited normally (exit code=0)",
-    "F2K: process 2 teardown audit: frame database ok, kernel heap ok",
+    "F2K: process 2 teardown audit: frame database ok",
     "F2K: process 3 (bare) exited normally (exit code=0)",
-    "F2K: process 3 teardown audit: frame database ok, kernel heap ok",
+    "F2K: process 3 teardown audit: frame database ok",
     "F2K: process 4 (bare) exited normally (exit code=0)",
-    "F2K: process 4 teardown audit: frame database ok, kernel heap ok",
+    "F2K: process 4 teardown audit: frame database ok",
     "F2K: process 5 (bare) exited normally (exit code=3221225477)",
-    "F2K: process 5 teardown audit: frame database ok, kernel heap ok",
+    "F2K: process 5 teardown audit: frame database ok",
     "F2K: process 6 (exit0) exited normally (exit code=0)",
-    "F2K: process 6 teardown audit: frame database ok, kernel heap ok",
+    "F2K: process 6 teardown audit: frame database ok",
     "F2K: process suite complete: 6 run, 0 faulted, 0 leaks",
 )
 
@@ -108,8 +107,8 @@ PROCESS_CONCURRENT = (
     "F2K: process 2 (hello) exited normally (exit code=0)",
     "sched: done",
     "F2K: process 1 (sched) exited normally (exit code=0)",
-    "F2K: process 2 teardown audit: frame database ok, kernel heap ok",
-    "F2K: process 1 teardown audit: frame database ok, kernel heap ok",
+    "F2K: process 2 teardown audit: frame database ok",
+    "F2K: process 1 teardown audit: frame database ok",
     "F2K: process suite complete: 2 run, 0 faulted, 0 leaks",
 )
 # The same image twice, alive together at the same image base and the same TEB addresses, each in
@@ -123,8 +122,8 @@ PROCESS_CONCURRENT_SAME_IMAGE = (
     "== sleep",
     "re:^F2K: process [12] \\(sched\\) exited normally \\(exit code=0\\)$",
     "re:^F2K: process [12] \\(sched\\) exited normally \\(exit code=0\\)$",
-    "re:^F2K: process [12] teardown audit: frame database ok, kernel heap ok$",
-    "re:^F2K: process [12] teardown audit: frame database ok, kernel heap ok$",
+    "re:^F2K: process [12] teardown audit: frame database ok$",
+    "re:^F2K: process [12] teardown audit: frame database ok$",
     "F2K: process suite complete: 2 run, 0 faulted, 0 leaks",
 )
 
@@ -141,7 +140,7 @@ PROCESS_CONCURRENT_MD = (
     "Hello, world!",
     "F2K: process 1 (hellomd) exited normally (exit code=0)",
     *("re:^F2K: process ([2-9]|1[0-6]) \\(spawnkid\\) exited normally \\(exit code=0\\)$",) * 15,
-    *("re:^F2K: process ([1-9]|1[0-6]) teardown audit: frame database ok, kernel heap ok$",) * 16,
+    *("re:^F2K: process ([1-9]|1[0-6]) teardown audit: frame database ok$",) * 16,
     "F2K: process suite complete: 16 run, 0 faulted, 0 leaks",
 )
 
@@ -157,7 +156,7 @@ PROCESS_CONCURRENT_TOO_MANY = (
 # What a one-process boot reports once its program has run and its process is gone.
 EXITED_CLEAN = (
     "F2K: user process exited normally (exit code=0)",
-    "F2K: teardown audit: frame database ok, kernel heap ok",
+    "F2K: teardown audit: frame database ok",
 )
 
 

@@ -912,13 +912,10 @@ pub fn record_allocator_baseline() {
     }
 }
 
-/// The allocators' structure audits, valid at any time and run at every reap: whether the frame
-/// database's holds, and whether the kernel heap's does (nothing per-process is allocated from it).
+/// The frame database's structure audit, valid at any time and run at every reap: whether it holds.
 #[cfg(target_arch = "x86")]
-pub fn audit_structures() -> (bool, bool) {
-    let frames_audit_ok = crate::mem::bootmem::with_frame_db(|db| db.audit().is_ok());
-    let heap_audit_ok = crate::mem::bootmem::with_heap(|heap| heap.audit().is_ok());
-    (frames_audit_ok, heap_audit_ok)
+pub fn audit_structures() -> bool {
+    crate::mem::bootmem::with_frame_db(|db| db.audit().is_ok())
 }
 
 /// The free frames now and at the post-boot baseline: equal at quiescence, when no process holds a

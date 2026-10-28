@@ -304,58 +304,51 @@ pub struct Exports {
 
 impl Exports {
     /// The export directory at `rva` (`size` bytes) of the mapped image `mapped`, its arrays
-    /// checked to lie inside the image.
-    fn read(mapped: &[u8], rva: u32, size: u32) -> Exports {
-        let at = rva as usize;
-        need(mapped, at, SIZE_EXPORT_DIRECTORY, "export directory");
+    /// checked to lie inside the image. None when the directory or an array does not: the bytes
+    /// are malformed.
+    fn read(mapped: &[u8], rva: u32, size: u32) -> Option<Exports> {
+        let directory = span(mapped, rva as usize, SIZE_EXPORT_DIRECTORY)?;
+        let field = |at: usize| get_u32(directory, at);
         let exports = Exports {
             directory_rva: rva,
             directory_size: size,
-            ordinal_base: read_u32(mapped, at + 16, "export directory"),
-            num_functions: read_u32(mapped, at + 20, "export directory"),
-            num_names: read_u32(mapped, at + 24, "export directory"),
-            functions_rva: read_u32(mapped, at + 28, "export directory"),
-            names_rva: read_u32(mapped, at + 32, "export directory"),
-            name_ordinals_rva: read_u32(mapped, at + 36, "export directory"),
+            ordinal_base: field(16)?,
+            num_functions: field(20)?,
+            num_names: field(24)?,
+            functions_rva: field(28)?,
+            names_rva: field(32)?,
+            name_ordinals_rva: field(36)?,
         };
         // The arrays must lie inside the image: every lookup indexes them.
-        let array = |rva: u32, count: u32, width: usize, what: &str| {
-            let len = (count as usize).checked_mul(width).unwrap_or_else(|| {
-                panic!("{what} of {count} entries wraps");
-            });
-            need(mapped, rva as usize, len, what);
+        let array = |rva: u32, count: u32, width: usize| {
+            span(mapped, rva as usize, (count as usize).checked_mul(width)?).map(|_| ())
         };
-        array(
-            exports.functions_rva,
-            exports.num_functions,
-            4,
-            "export address table",
-        );
-        array(exports.names_rva, exports.num_names, 4, "export name table");
-        array(
-            exports.name_ordinals_rva,
-            exports.num_names,
-            2,
-            "export name-ordinal table",
-        );
-        exports
+        array(exports.functions_rva, exports.num_functions, 4)?;
+        array(exports.names_rva, exports.num_names, 4)?;
+        array(exports.name_ordinals_rva, exports.num_names, 2)?;
+        Some(exports)
     }
 
     /// The export directory of a PE32 image `mapped` (a file whose offsets are its RVAs, or the
     /// mapped image), read straight from its headers, if it has one. For lookups on a small stack:
-    /// a parsed [`Image`] takes several KiB, too much for a system service's gate stack. The image
-    /// must be one [`Image::parse`] accepts (the system DLLs are, pinned by their tests).
+    /// a parsed [`Image`] takes several KiB, too much for a system service's gate stack. None as
+    /// well when the headers or the directory do not lie inside the bytes: a malformed image
+    /// exports nothing, so a damaged system DLL read from disk fails its lookups instead of
+    /// panicking the kernel.
     pub fn in_headers(mapped: &[u8]) -> Option<Exports> {
-        let nt = read_u32(mapped, OFF_E_LFANEW, "e_lfanew") as usize;
-        let opt = nt + SIZE_NT_SIGNATURE + SIZE_FILE_HEADER;
-        let directories = read_u32(mapped, opt + SIZE_OPT_STANDARD - 4, "NumberOfRvaAndSizes");
+        let nt = get_u32(mapped, OFF_E_LFANEW)? as usize;
+        let opt = nt.checked_add(SIZE_NT_SIGNATURE + SIZE_FILE_HEADER)?;
+        let directories = get_u32(mapped, opt.checked_add(SIZE_OPT_STANDARD - 4)?)?;
         if directories as usize <= DIR_EXPORT {
             return None;
         }
-        let entry = opt + SIZE_OPT_STANDARD + DIR_EXPORT * SIZE_DIRECTORY_ENTRY;
-        let rva = read_u32(mapped, entry, "export directory entry");
-        let size = read_u32(mapped, entry + 4, "export directory entry");
-        (rva != 0).then(|| Exports::read(mapped, rva, size))
+        let entry = opt.checked_add(SIZE_OPT_STANDARD + DIR_EXPORT * SIZE_DIRECTORY_ENTRY)?;
+        let rva = get_u32(mapped, entry)?;
+        let size = get_u32(mapped, entry.checked_add(4)?)?;
+        if rva == 0 {
+            return None;
+        }
+        Exports::read(mapped, rva, size)
     }
 
     /// Every exported name, in the name table's order.
@@ -369,22 +362,18 @@ impl Exports {
     }
 
     /// The export with this name. Names compare exactly (export names are case-sensitive); the name
-    /// table is walked in full, so its sort order is not relied on.
+    /// table is walked in full, so its sort order is not relied on. None as well when the walk
+    /// meets malformed bytes: a name outside the image or unterminated, or a slot past the address
+    /// table.
     pub fn by_name<'a>(&self, mapped: &'a [u8], name: &str) -> Option<Export<'a>> {
         for index in 0..self.num_names as usize {
-            let name_rva = read_u32(mapped, self.names_rva as usize + index * 4, "export name");
-            if read_cstr(mapped, name_rva as usize, "export name") == name {
-                let slot = read_u16(
-                    mapped,
-                    self.name_ordinals_rva as usize + index * 2,
-                    "export name ordinal",
-                );
+            let name_rva = get_u32(mapped, self.names_rva as usize + index * 4)?;
+            if get_cstr(mapped, name_rva as usize)? == name {
+                let slot = get_u16(mapped, self.name_ordinals_rva as usize + index * 2)?;
                 // The name-ordinal table holds address-table indexes, not biased ordinals.
-                assert!(
-                    (slot as u32) < self.num_functions,
-                    "export '{name}' names slot {slot} of a {}-slot address table",
-                    self.num_functions
-                );
+                if slot as u32 >= self.num_functions {
+                    return None;
+                }
                 return self.slot(mapped, slot as u32);
             }
         }
@@ -400,30 +389,41 @@ impl Exports {
         self.slot(mapped, slot)
     }
 
-    /// Address-table slot `slot`: an unused slot (zero) exports nothing.
+    /// Address-table slot `slot`: an unused slot (zero) exports nothing, nor does one whose RVA
+    /// lies outside the image or names an unterminated forwarder.
     fn slot<'a>(&self, mapped: &'a [u8], slot: u32) -> Option<Export<'a>> {
-        let rva = read_u32(
-            mapped,
-            self.functions_rva as usize + slot as usize * 4,
-            "export address",
-        );
+        let rva = get_u32(mapped, self.functions_rva as usize + slot as usize * 4)?;
         if rva == 0 {
             return None;
         }
         if rva >= self.directory_rva && rva - self.directory_rva < self.directory_size {
-            return Some(Export::Forwarder(read_cstr(
-                mapped,
-                rva as usize,
-                "export forwarder",
-            )));
+            return get_cstr(mapped, rva as usize).map(Export::Forwarder);
         }
-        assert!(
-            rva < mapped.len() as u32,
-            "export RVA 0x{rva:x} is outside the image 0x{:x}",
-            mapped.len()
-        );
-        Some(Export::Address(rva))
+        ((rva as usize) < mapped.len()).then_some(Export::Address(rva))
     }
+}
+
+/// The bytes `[off, off + len)` of `bytes`, if they lie inside it.
+fn span(bytes: &[u8], off: usize, len: usize) -> Option<&[u8]> {
+    bytes.get(off..off.checked_add(len)?)
+}
+
+/// The little-endian `u16` at `off`, if it lies inside `bytes`.
+fn get_u16(bytes: &[u8], off: usize) -> Option<u16> {
+    Some(u16::from_le_bytes(span(bytes, off, 2)?.try_into().ok()?))
+}
+
+/// The little-endian `u32` at `off`, if it lies inside `bytes`.
+fn get_u32(bytes: &[u8], off: usize) -> Option<u32> {
+    Some(u32::from_le_bytes(span(bytes, off, 4)?.try_into().ok()?))
+}
+
+/// The NUL-terminated string at `off`, if there is one: None when `off` lies past the end, no NUL
+/// follows before it, or the bytes are not UTF-8.
+fn get_cstr(bytes: &[u8], off: usize) -> Option<&str> {
+    let tail = bytes.get(off..)?;
+    let end = tail.iter().position(|&b| b == 0)?;
+    core::str::from_utf8(&tail[..end]).ok()
 }
 
 /// Bounds-check a read: `what` at `[off, off + len)` must fit inside `bytes`. Violations are
@@ -455,16 +455,13 @@ fn write_u32(bytes: &mut [u8], off: usize, value: u32, what: &str) {
     bytes[off..off + 4].copy_from_slice(&value.to_le_bytes());
 }
 
-/// A NUL-terminated string at `off`. An unterminated string is malformed bytes, so it panics; so
-/// does a non-UTF-8 one.
+/// A NUL-terminated string at `off`, for the import snapping's tests: an unterminated string is
+/// malformed bytes, so it panics naming `what`; so does a non-UTF-8 one.
+#[cfg(test)]
 fn read_cstr<'a>(bytes: &'a [u8], off: usize, what: &str) -> &'a str {
     need(bytes, off, 1, what);
-    let end = bytes[off..]
-        .iter()
-        .position(|&b| b == 0)
-        .unwrap_or_else(|| panic!("{what} at 0x{off:x} is not NUL-terminated"));
-    core::str::from_utf8(&bytes[off..off + end])
-        .unwrap_or_else(|_| panic!("{what} is not valid UTF-8"))
+    get_cstr(bytes, off)
+        .unwrap_or_else(|| panic!("{what} at 0x{off:x} is not NUL-terminated UTF-8"))
 }
 
 /// Whether `[off, off + len)` lies inside `bytes`: a header range that does not is a truncated
@@ -719,7 +716,7 @@ impl Image {
     #[cfg(test)]
     pub fn exports(&self, mapped: &[u8]) -> Option<Exports> {
         let (rva, size) = self.directory(DIR_EXPORT)?;
-        Some(Exports::read(mapped, rva, size))
+        Exports::read(mapped, rva, size)
     }
 
     pub fn section(&self, index: usize) -> &Section {
@@ -2128,26 +2125,63 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "names slot 4 of a 4-slot address table")]
-    fn a_name_past_the_address_table_panics() {
+    fn a_name_past_the_address_table_is_no_export() {
         let bad = with_exports(5, &[Slot::Code(0x1000); 4], &[("Alpha", 4)]);
         let (mapped, exports) = exports_of(&bad);
-        let _ = exports.by_name(&mapped, "Alpha");
+        assert_eq!(exports.by_name(&mapped, "Alpha"), None);
     }
 
     #[test]
-    #[should_panic(expected = "export address table")]
-    fn an_address_table_past_the_image_panics() {
+    fn an_address_table_past_the_image_is_no_directory() {
         let bad = patched(&synth(), |b| w32(b, EXPORT_DIR + 20, 0x1000));
-        let _ = exports_of(&bad);
+        let image = parse_ok(&bad);
+        let mut mapped = vec![0u8; image.size_of_image as usize];
+        image.map_into(&bad, &mut mapped);
+        assert_eq!(image.exports(&mapped), None);
+        assert_eq!(Exports::in_headers(&mapped), None);
     }
 
     #[test]
-    #[should_panic(expected = "outside the image")]
-    fn an_export_rva_past_the_image_panics() {
+    fn an_export_rva_past_the_image_is_no_export() {
         let bad = with_exports(1, &[Slot::Code(0x9000)], &[("Far", 0)]);
         let (mapped, exports) = exports_of(&bad);
-        let _ = exports.by_name(&mapped, "Far");
+        assert_eq!(exports.by_name(&mapped, "Far"), None);
+        assert_eq!(exports.by_ordinal(&mapped, 1), None);
+    }
+
+    /// A name-table entry pointing outside the image is malformed bytes: the lookup that meets it
+    /// finds nothing, where it used to panic the kernel reading a damaged system DLL from disk.
+    #[test]
+    fn a_name_rva_past_the_image_is_no_export() {
+        let bad = patched(&synth(), |b| w32(b, EXPORT_NAMES, 0x9000));
+        let (mapped, exports) = exports_of(&bad);
+        assert_eq!(exports.by_name(&mapped, "Alpha"), None);
+        // The ordinal path never reads the names.
+        assert_eq!(
+            exports.by_ordinal(&mapped, 5),
+            Some(Export::Address(0x1000))
+        );
+    }
+
+    /// A name that runs to the image's end without a NUL is no name either.
+    #[test]
+    fn an_unterminated_name_is_no_export() {
+        let image = parse_ok(&synth());
+        let mut mapped = vec![0u8; image.size_of_image as usize];
+        image.map_into(&synth(), &mut mapped);
+        let end = mapped.len();
+        mapped[end - 4..].copy_from_slice(b"Tail");
+        w32(&mut mapped, EXPORT_NAMES, (end - 4) as u32);
+        let exports = Exports::in_headers(&mapped).expect("the directory still reads");
+        assert_eq!(exports.by_name(&mapped, "Alpha"), None);
+    }
+
+    /// Headers whose NT header offset points past the bytes read no directory.
+    #[test]
+    fn a_header_offset_past_the_image_reads_no_directory() {
+        let (mut mapped, _) = exports_of(&synth());
+        w32(&mut mapped, OFF_E_LFANEW, u32::MAX);
+        assert_eq!(Exports::in_headers(&mapped), None);
     }
 
     #[test]

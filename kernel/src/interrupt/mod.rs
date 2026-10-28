@@ -438,11 +438,8 @@ mod target {
     /// The kernel's interrupt controller (the remapped 8259A pair).
     pub(super) static mut CONTROLLER: Pic<Ports> = Pic::new(Ports);
 
-    // The claim/audit counters (the smoke's audit reads these).
-    static mut CLAIMED: u32 = 0;
-    static mut ENDED: u32 = 0;
+    /// Spurious interrupts counted so far (see [`spurious_count`]).
     static mut SPURIOUS: u32 = 0;
-    static mut UNEXPECTED: u32 = 0;
 
     impl Controller for Pic<Ports> {
         fn claim(&mut self, vector: u8, level: Irql) -> Claim {
@@ -510,14 +507,6 @@ mod target {
             );
             match outcome {
                 Outcome::Served => {
-                    core::ptr::write_volatile(
-                        addr_of_mut!(CLAIMED),
-                        core::ptr::read_volatile(addr_of!(CLAIMED)).wrapping_add(1),
-                    );
-                    core::ptr::write_volatile(
-                        addr_of_mut!(ENDED),
-                        core::ptr::read_volatile(addr_of!(ENDED)).wrapping_add(1),
-                    );
                     crate::interrupt::dpc::drain();
                     crate::sched::idle::dispatcher().deliver_pending();
                 }
@@ -528,10 +517,6 @@ mod target {
                     );
                 }
                 Outcome::Unexpected => {
-                    core::ptr::write_volatile(
-                        addr_of_mut!(UNEXPECTED),
-                        core::ptr::read_volatile(addr_of!(UNEXPECTED)).wrapping_add(1),
-                    );
                     crate::serial_println!(
                         "F2K: unexpected interrupt on vector {:#04x}; halting",
                         vector
@@ -554,6 +539,10 @@ mod target {
     ///
     /// Boot CPU, ring 0, with interrupts disabled, before any code that expects the tick.
     pub unsafe fn init() {
+        // SAFETY: the caller guarantees the boot CPU at ring 0 with interrupts disabled, so nothing
+        // else touches the table, the controller or the clock object while they are set up, and
+        // the port writes program hardware no other code drives yet. The clock object is a static,
+        // so the address the table keeps stays valid.
         unsafe {
             // The 8259 pair: vectors 0x30-0x3F, every line masked.
             (*addr_of_mut!(CONTROLLER)).remap(pic::MASTER_VECTOR_BASE, pic::SLAVE_VECTOR_BASE);
@@ -610,18 +599,12 @@ mod target {
         }
     }
 
-    /// The interrupt subsystem's audit: the level transitions are balanced, every claimed interrupt
-    /// was ended, no line is enabled without an object, and the chip carries no stuck in-service
-    /// state.
+    /// The interrupt subsystem's audit: the level transitions are balanced, no line is enabled
+    /// without an object, and the chip carries no stuck in-service state.
     pub fn audit() -> Result<(), &'static str> {
         // SAFETY: read-only except the table audit's controller probes; single CPU.
         unsafe {
             irql::state_mut().audit()?;
-            let claimed = core::ptr::read_volatile(addr_of!(CLAIMED));
-            let ended = core::ptr::read_volatile(addr_of!(ENDED));
-            if claimed != ended {
-                return Err("claimed interrupts not all ended");
-            }
             (*addr_of_mut!(TABLE)).audit(&mut *addr_of_mut!(CONTROLLER))?;
         }
         Ok(())
