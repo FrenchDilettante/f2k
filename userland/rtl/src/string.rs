@@ -16,23 +16,11 @@ use crate::status::{
     STATUS_SUCCESS,
 };
 
-/// An ANSI_STRING: its length and room in bytes, and its buffer.
-#[repr(C)]
-#[derive(Debug)]
-pub struct AnsiString {
-    pub length: u16,
-    pub maximum_length: u16,
-    pub buffer: *mut u8,
-}
+/// An ANSI_STRING ([`crate::nt::AnsiString`]) over the caller's own memory.
+pub type AnsiString = crate::nt::AnsiString<*mut u8>;
 
-/// A UNICODE_STRING: its length and room in bytes, and its buffer.
-#[repr(C)]
-#[derive(Debug)]
-pub struct UnicodeString {
-    pub length: u16,
-    pub maximum_length: u16,
-    pub buffer: *mut u16,
-}
+/// A UNICODE_STRING ([`crate::nt::UnicodeString`]) over the caller's own memory.
+pub type UnicodeString = crate::nt::UnicodeString<*mut u16>;
 
 /// The most bytes a counted string's room holds (its length a word: MAX_USTRING for a Unicode
 /// string, the terminator included).
@@ -93,42 +81,15 @@ pub unsafe fn init_ansi_string(source: *const u8) -> AnsiString {
             buffer: core::ptr::null_mut(),
         };
     }
-    let mut length = 0usize;
-    // SAFETY: the caller's string, read to its terminator or the counts' reach.
-    while length < MAX_STRING - 1 && unsafe { source.add(length).read() } != 0 {
-        length += 1;
-    }
+    // SAFETY: the caller's string, read to its terminator.
+    let length = unsafe { crate::cstr::bytes_until_nul(source) }
+        .len()
+        .min(MAX_STRING - 1);
     AnsiString {
         length: length as u16,
         maximum_length: length as u16 + 1,
         buffer: source as *mut u8,
     }
-}
-
-/// The bytes of an ANSI_STRING.
-///
-/// # Safety
-///
-/// Its buffer holds its length.
-unsafe fn ansi_bytes(string: &AnsiString) -> &[u8] {
-    if string.length == 0 {
-        return &[];
-    }
-    // SAFETY: the caller's contract.
-    unsafe { core::slice::from_raw_parts(string.buffer, string.length as usize) }
-}
-
-/// The units of a UNICODE_STRING.
-///
-/// # Safety
-///
-/// Its buffer holds its length.
-unsafe fn unicode_units(string: &UnicodeString) -> &[u16] {
-    if string.length < 2 {
-        return &[];
-    }
-    // SAFETY: the caller's contract.
-    unsafe { core::slice::from_raw_parts(string.buffer, string.length as usize / 2) }
 }
 
 /// RtlAnsiStringToUnicodeString: `source` converted into `destination`, terminated when its room
@@ -167,7 +128,7 @@ pub unsafe fn ansi_string_to_unicode_string(
     // when its room does.
     unsafe {
         let out = core::slice::from_raw_parts_mut(destination.buffer, room);
-        let count = multi_byte_to_unicode(&mut out[..length / 2], ansi_bytes(source));
+        let count = multi_byte_to_unicode(&mut out[..length / 2], source.bytes());
         if count < room {
             out[count] = 0;
         }
@@ -216,7 +177,7 @@ pub unsafe fn unicode_string_to_ansi_string(
     // SAFETY: the caller's source; the destination's buffer holds `length` bytes and a terminator.
     unsafe {
         let out = core::slice::from_raw_parts_mut(destination.buffer, length + 1);
-        let count = unicode_to_multi_byte(&mut out[..length], unicode_units(source));
+        let count = unicode_to_multi_byte(&mut out[..length], source.units());
         out[count] = 0;
     }
     status

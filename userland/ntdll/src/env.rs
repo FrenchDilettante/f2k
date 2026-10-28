@@ -14,15 +14,8 @@ use rtl::status::{
     STATUS_SUCCESS,
     STATUS_VARIABLE_NOT_FOUND,
 };
+use rtl::string::UnicodeString;
 use rtl::sys::{self, nr, system_service};
-
-/// A UNICODE_STRING.
-#[repr(C)]
-pub struct UnicodeString {
-    pub length: u16,
-    pub maximum_length: u16,
-    pub buffer: *mut u16,
-}
 
 /// The process parameters' Environment.
 const ENVIRONMENT: usize = 0x48;
@@ -85,11 +78,9 @@ fn with_environment<R>(environment: *mut u16, body: impl FnOnce(*mut u16) -> R) 
     if !environment.is_null() {
         return body(environment);
     }
-    let lock = sys::peb_lock();
-    lock.enter(&sys::Native);
-    let result = body(sys::read(sys::process_parameters() + ENVIRONMENT) as *mut u16);
-    lock.leave(&sys::Native);
-    result
+    sys::peb_lock().with(&sys::Native, || {
+        body(sys::read(sys::process_parameters() + ENVIRONMENT) as *mut u16)
+    })
 }
 
 /// The value of `name` in the process's environment, under the PEB lock, into `out` (cut to its
@@ -162,19 +153,15 @@ pub unsafe extern "system" fn rtl_set_environment_variable(
 ) -> u32 {
     // SAFETY: the caller's strings.
     let (name, value) = unsafe { (units(name), (!value.is_null()).then(|| units(value))) };
-    let slot = if environment.is_null() {
-        let lock = sys::peb_lock();
-        lock.enter(&sys::Native);
-        let slot = (sys::process_parameters() + ENVIRONMENT) as *mut *mut u16;
-        // SAFETY: the process parameters' Environment, under the PEB lock.
-        let status = unsafe { set_in(slot, name, value) };
-        lock.leave(&sys::Native);
-        return status;
-    } else {
-        environment
-    };
+    if environment.is_null() {
+        return sys::peb_lock().with(&sys::Native, || {
+            let slot = (sys::process_parameters() + ENVIRONMENT) as *mut *mut u16;
+            // SAFETY: the process parameters' Environment, under the PEB lock.
+            unsafe { set_in(slot, name, value) }
+        });
+    }
     // SAFETY: the caller's block pointer.
-    unsafe { set_in(slot, name, value) }
+    unsafe { set_in(environment, name, value) }
 }
 
 /// The set, over the block `*slot` names, the block moved when it must grow.

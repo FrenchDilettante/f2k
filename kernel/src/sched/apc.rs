@@ -424,7 +424,7 @@ impl Dispatcher {
                         thread.kernel_apc_in_progress = true;
                         // The passivate shape: the normal half runs at the passive level.
                         #[cfg(target_arch = "x86")]
-                        irql::state_mut().lower(irql::PASSIVE);
+                        crate::pcr::pcr().lower(irql::PASSIVE);
                         normal(
                             self,
                             thread,
@@ -440,7 +440,7 @@ impl Dispatcher {
                             return ApcDelivery::Parked;
                         }
                         #[cfg(target_arch = "x86")]
-                        irql::state_mut().raise(irql::APC);
+                        crate::pcr::pcr().raise(irql::APC);
                     }
                     thread.kernel_apc_in_progress = false;
                 } else {
@@ -476,9 +476,10 @@ impl Dispatcher {
         if !unsafe { (*self.current_thread()).kernel_apc_pending } {
             return;
         }
-        let previous = irql::state_mut().raise(irql::APC);
+        let pcr = crate::pcr::pcr();
+        let previous = pcr.raise(irql::APC);
         self.deliver_kernel_apcs();
-        irql::state_mut().lower(previous);
+        pcr.lower(previous);
     }
 
     // --- The suspend consumer ------------------------------------------------

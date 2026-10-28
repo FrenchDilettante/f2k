@@ -6,7 +6,7 @@ use super::latch::{Completion, Latch};
 use super::regs::{IDENTIFY_DEVICE, SECTOR_SIZE};
 use super::taskfile::TaskFile;
 use crate::hw::portio::Io;
-use crate::status::{nt_success, NtStatus};
+use crate::status::NtStatus;
 
 /// What IDENTIFY DEVICE reports that the driver uses.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -59,7 +59,7 @@ pub fn bring_up<IoT: Io, C: Completion<IoT>>(
         IDENTIFY_DEVICE,
         &mut block,
     );
-    if !nt_success(status) {
+    if !status.is_success() {
         return Err(Absent::NotAta(status));
     }
     let identity = decode_identify(&block);

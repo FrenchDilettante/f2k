@@ -6,40 +6,42 @@
 //! `Err` an error. The last error is never touched. A fault in the caller's memory is
 //! STATUS_ACCESS_VIOLATION, which `?` converts to.
 
-// The status constants and the frame accessor the later services use.
+// The frame accessor the later services use.
 #![allow(dead_code)]
 
+use crate::level::{At, Passive};
+use crate::status::*;
 pub use crate::user::args::*;
 use crate::user::TrapFrame;
 
-/// An error status (severity error or warning): what fails a system service.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Status(pub u32);
-
-/// A system service's result: its success status, or the status that fails it.
-pub type NtResult = Result<u32, Status>;
-
-pub const STATUS_SUCCESS: u32 = 0;
-pub const STATUS_ACCESS_VIOLATION: Status = Status(0xC000_0005);
-pub const STATUS_INVALID_HANDLE: Status = Status(0xC000_0008);
-pub const STATUS_INVALID_PARAMETER: Status = Status(0xC000_000D);
+/// A system service's result: its success or informational status, or the status that fails it
+/// (an error or a warning).
+pub type NtResult = Result<NtStatus, NtStatus>;
 
 /// A fault in the caller's memory: STATUS_ACCESS_VIOLATION.
-impl From<Fault> for Status {
-    fn from(_: Fault) -> Status {
+impl From<Fault> for NtStatus {
+    fn from(_: Fault) -> NtStatus {
         STATUS_ACCESS_VIOLATION
     }
 }
 
-/// The call a system service is serving: its trap frame (whose EAX the convention fills).
+/// The call a system service is serving: its trap frame (whose EAX the convention fills), and the
+/// passive-level token the system-call entry made for it.
 pub struct NtCall<'f> {
     frame: &'f mut TrapFrame,
+    passive: &'f mut At<Passive>,
 }
 
 impl<'f> NtCall<'f> {
     /// The call the wrapper is about to hand its handler.
-    pub fn new(frame: &'f mut TrapFrame) -> Self {
-        NtCall { frame }
+    pub fn new(frame: &'f mut TrapFrame, passive: &'f mut At<Passive>) -> Self {
+        NtCall { frame, passive }
+    }
+
+    /// The service's passive-level token: what it raises from (a clock read, a lock) and what a
+    /// wait or a user-memory copy takes once they hold tokens.
+    pub fn passive(&mut self) -> &mut At<Passive> {
+        self.passive
     }
 
     /// The calling process, borrowed for as long as the handler holds it.
@@ -56,10 +58,8 @@ impl<'f> NtCall<'f> {
 
     /// Apply the result convention: the status into EAX.
     pub fn finish(self, result: NtResult) {
-        self.frame.eax = match result {
-            Ok(status) => status,
-            Err(Status(status)) => status,
-        };
+        let (Ok(status) | Err(status)) = result;
+        self.frame.eax = status.0;
     }
 }
 
@@ -71,10 +71,11 @@ mod tests {
     fn the_status_is_the_answer() {
         // SAFETY: a trap frame is plain dwords; all zeros is a valid one.
         let mut frame: TrapFrame = unsafe { core::mem::zeroed() };
-        NtCall::new(&mut frame).finish(Ok(0x102));
+        let mut passive = crate::level::passive_for_test();
+        NtCall::new(&mut frame, &mut passive).finish(Ok(STATUS_TIMEOUT));
         assert_eq!(frame.eax, 0x102);
-        NtCall::new(&mut frame).finish(Err(STATUS_INVALID_HANDLE));
+        NtCall::new(&mut frame, &mut passive).finish(Err(STATUS_INVALID_HANDLE));
         assert_eq!(frame.eax, 0xC000_0008);
-        assert_eq!(Status::from(Fault), STATUS_ACCESS_VIOLATION);
+        assert_eq!(NtStatus::from(Fault), STATUS_ACCESS_VIOLATION);
     }
 }

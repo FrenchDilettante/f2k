@@ -12,13 +12,13 @@ use super::wait::{
     WaitMode,
     WaitReason,
     Waitable,
-    STATUS_TIMEOUT,
     TIMER_BLOCK,
     WAIT_BLOCKS,
 };
 use super::Links;
 use super::List;
 use crate::interrupt::irql::{self, LevelSnapshot};
+use crate::status::{NtStatus, STATUS_SUCCESS, STATUS_TIMEOUT};
 
 /// The gate-slot index of a thread whose slot is not allocated yet.
 pub const NO_GATE_SLOT: u16 = 0xFFFF;
@@ -187,7 +187,7 @@ pub struct Thread {
     /// The circular chain head of the current wait's blocks, null between waits.
     pub(crate) wait_block_head: *mut WaitBlock,
     /// The completion status of the current or last wait.
-    pub(crate) wait_status: i32,
+    pub(crate) wait_status: NtStatus,
     /// Why the thread is waiting (diagnostic data).
     pub(crate) wait_reason: WaitReason,
     /// The mode of the current wait (inert until the APC machinery exists).
@@ -330,7 +330,7 @@ impl Thread {
             waitable: Waitable::new(WaitKind::Thread, 0),
             wait_blocks: [WaitBlock::detached(); WAIT_BLOCKS],
             wait_block_head: null_mut(),
-            wait_status: 0,
+            wait_status: STATUS_SUCCESS,
             wait_reason: WaitReason::Executive,
             wait_mode: WaitMode::Kernel,
             wait_alertable: false,
@@ -544,7 +544,7 @@ impl Thread {
     }
 
     /// The completion status of the current or last wait.
-    pub fn wait_status(&self) -> i32 {
+    pub fn wait_status(&self) -> NtStatus {
         self.wait_status
     }
 

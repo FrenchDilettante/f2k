@@ -13,7 +13,7 @@ use super::dispatcher::Dispatcher;
 use super::thread::Thread;
 use super::wait::{WaitKind, Waitable};
 use super::{unlink, Links};
-use crate::status::{NtStatus, STATUS_ABANDONED, STATUS_MUTANT_NOT_OWNED};
+use crate::status::{NtStatus, STATUS_ABANDONED, STATUS_MUTANT_NOT_OWNED, STATUS_SUCCESS};
 
 /// The priority increment a release grants the waiter it wakes.
 pub const MUTEX_WAKE_INCREMENT: i8 = 1;
@@ -80,7 +80,7 @@ pub(crate) fn available_to(mutex: &Mutex, thread: *const Thread) -> bool {
 pub(crate) fn acquire(mutex: &mut Mutex, thread: &mut Thread) -> NtStatus {
     mutex.waitable.signal_state -= 1;
     if mutex.waitable.signal_state != 0 {
-        return 0;
+        return STATUS_SUCCESS;
     }
     mutex.owner = thread as *mut Thread;
     // SAFETY: a free mutex is on no owner list; the thread's list is initialized at attach.
@@ -93,7 +93,7 @@ pub(crate) fn acquire(mutex: &mut Mutex, thread: &mut Thread) -> NtStatus {
         mutex.abandoned = false;
         STATUS_ABANDONED
     } else {
-        0
+        STATUS_SUCCESS
     }
 }
 
@@ -227,8 +227,14 @@ mod tests {
         let (owner, other) = (thread(p), thread(p));
         let m = mutex();
 
-        assert_eq!(wait(d, owner, m.waitable()), WaitDisposition::Complete(0));
-        assert_eq!(wait(d, owner, m.waitable()), WaitDisposition::Complete(0));
+        assert_eq!(
+            wait(d, owner, m.waitable()),
+            WaitDisposition::Complete(STATUS_SUCCESS)
+        );
+        assert_eq!(
+            wait(d, owner, m.waitable()),
+            WaitDisposition::Complete(STATUS_SUCCESS)
+        );
         assert_eq!(m.waitable.signal_state, -1, "held twice");
         assert!(core::ptr::eq(m.owner(), owner));
 
@@ -260,8 +266,14 @@ mod tests {
         let p = process();
         let (owner, waiter, late) = (thread(p), thread(p), thread(p));
         let (m1, m2) = (mutex(), mutex());
-        assert_eq!(wait(d, owner, m1.waitable()), WaitDisposition::Complete(0));
-        assert_eq!(wait(d, owner, m2.waitable()), WaitDisposition::Complete(0));
+        assert_eq!(
+            wait(d, owner, m1.waitable()),
+            WaitDisposition::Complete(STATUS_SUCCESS)
+        );
+        assert_eq!(
+            wait(d, owner, m2.waitable()),
+            WaitDisposition::Complete(STATUS_SUCCESS)
+        );
         assert_eq!(wait(d, waiter, m1.waitable()), WaitDisposition::Yield);
 
         d.terminate_other(owner);
@@ -278,7 +290,7 @@ mod tests {
         assert_eq!(d.release_mutex(m2, late), Ok(0));
         assert_eq!(
             wait(d, late, m2.waitable()),
-            WaitDisposition::Complete(0),
+            WaitDisposition::Complete(STATUS_SUCCESS),
             "reported once"
         );
     }
@@ -308,8 +320,8 @@ mod tests {
                 STAMP,
             )
         };
-        assert_eq!(any(d, t, Some(0)), WaitDisposition::Complete(1));
-        assert_eq!(any(d, t, Some(0)), WaitDisposition::Complete(2));
+        assert_eq!(any(d, t, Some(0)), WaitDisposition::Complete(NtStatus(1)));
+        assert_eq!(any(d, t, Some(0)), WaitDisposition::Complete(NtStatus(2)));
         assert_eq!(
             any(d, t, Some(0)),
             WaitDisposition::Complete(STATUS_TIMEOUT)
@@ -318,7 +330,7 @@ mod tests {
         assert_eq!(any(d, t, None), WaitDisposition::Yield);
         events[2].set(d, EVENT_WAKE_INCREMENT);
         assert_eq!(t.state(), ThreadState::Ready);
-        assert_eq!(t.wait_status(), 2);
+        assert_eq!(t.wait_status(), NtStatus(2));
         for e in events.iter() {
             assert!(e.waitable.waiters.is_empty(), "every block unwound");
         }
@@ -336,7 +348,10 @@ mod tests {
             event(EventKind::Synchronization, false),
         );
         let m = mutex();
-        assert_eq!(wait(d, t, m.waitable()), WaitDisposition::Complete(0));
+        assert_eq!(
+            wait(d, t, m.waitable()),
+            WaitDisposition::Complete(STATUS_SUCCESS)
+        );
         let objects = [e0.waitable(), e1.waitable(), m.waitable()];
         let all = |d: &mut Dispatcher, t: &mut Thread, timeout| {
             d.wait_multiple(
@@ -359,7 +374,7 @@ mod tests {
         assert_eq!(all(d, t, None), WaitDisposition::Yield);
         e1.set(d, EVENT_WAKE_INCREMENT);
         assert_eq!(t.state(), ThreadState::Ready);
-        assert_eq!(t.wait_status(), 0);
+        assert_eq!(t.wait_status(), STATUS_SUCCESS);
         assert!(!e0.signaled() && !e1.signaled(), "both taken");
         assert_eq!(m.waitable.signal_state, -1, "the mutex taken again");
     }

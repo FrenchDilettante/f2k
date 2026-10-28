@@ -3,19 +3,18 @@
 //! count when it carries a plausible one, else a FAT scan), its device type (a disk), and its file
 //! system's name, flags and longest component (FAT32's).
 
-use super::super::call::{Handle, NtCall, NtResult, Status, UserAddr, STATUS_SUCCESS};
+use super::super::call::{Handle, NtCall, NtResult, UserAddr};
 use super::common::{complete, file_object, probe};
 use super::info::{self, Volume};
-use super::{STATUS_BUFFER_OVERFLOW, STATUS_INFO_LENGTH_MISMATCH, STATUS_INVALID_INFO_CLASS};
 use crate::fs::fat32::fat::FatEntry;
-use crate::status::{nt_success, STATUS_IO_DEVICE_ERROR};
+use crate::status::*;
 
 /// Read the boot volume's facts.
-fn volume_facts() -> Result<Volume, Status> {
+fn volume_facts() -> Result<Volume, NtStatus> {
     crate::fs::io::with_volume(|volume| {
         let layout = *volume.layout();
         let mut sector = [0u8; 512];
-        if !nt_success(volume.device().read(0, &mut sector)) {
+        if !volume.device().read(0, &mut sector).is_success() {
             return Err(STATUS_IO_DEVICE_ERROR);
         }
         let serial = u32::from_le_bytes([sector[67], sector[68], sector[69], sector[70]]);
@@ -25,7 +24,7 @@ fn volume_facts() -> Result<Volume, Status> {
         let mut free = None;
         if info_sector != 0
             && info_sector != 0xFFFF
-            && nt_success(volume.device().read(info_sector, &mut sector))
+            && volume.device().read(info_sector, &mut sector).is_success()
         {
             let word = |at: usize| {
                 u32::from_le_bytes([sector[at], sector[at + 1], sector[at + 2], sector[at + 3]])
@@ -50,7 +49,6 @@ fn volume_facts() -> Result<Volume, Status> {
             free_clusters: free,
         })
     })
-    .map_err(super::status)
 }
 
 /// NtQueryVolumeInformationFile: FileFsVolumeInformation, FileFsSizeInformation,
@@ -93,6 +91,6 @@ pub fn query_volume_information_file(
     if code == STATUS_SUCCESS {
         Ok(code)
     } else {
-        Err(Status(code))
+        Err(code)
     }
 }

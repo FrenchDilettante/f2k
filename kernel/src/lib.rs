@@ -2,11 +2,20 @@
 //!
 //! Built two ways: as the `f2k-kernel` binary (entered by the Multiboot `_start` stub), and as a
 //! host test harness where the x86-only assembly is cfg'd out and the pure-Rust parts get unit
-//! tests (`make run-tests`).
+//! tests (`make run-tests`). The host's plain library build exists for the documentation tests:
+//! the compile-fail examples of the level tokens and the locks, which `make run-tests` runs too.
 
 #![cfg_attr(not(test), no_std)]
 // Host builds exist only to run unit tests.
 #![cfg_attr(not(target_arch = "x86"), allow(dead_code))]
+// The host's plain library build compiles the test-only paths' callees without the tests: what is
+// unused there is not the target's concern.
+#![cfg_attr(all(not(test), not(target_arch = "x86")), allow(unused))]
+
+// The host's plain library build (the documentation tests' dependency) has std, as the unit tests
+// do: the host's processor control region is a thread-local.
+#[cfg(all(not(test), not(target_arch = "x86")))]
+extern crate std;
 
 // Boot module (Multiboot header and _start stub)
 mod boot;
@@ -23,11 +32,25 @@ mod hw;
 // procedure call queue, and the interval clock
 mod interrupt;
 
+// Level tokens: the interrupt level as a type, and the state each level owns. Public on the host,
+// where the documentation tests name it from outside the crate.
+#[cfg(target_arch = "x86")]
+mod level;
+#[cfg(not(target_arch = "x86"))]
+pub mod level;
+
+// The processor control region: the level ledger and the deferred procedure call queue
+mod pcr;
+
 // Memory management: physical frame allocator
 mod mem;
 
-// The audited wrapper for kernel globals: a shared value reached under masked interrupts
-mod global;
+// State outside the level cells: set-once values, static buffers handed out once, and the short
+// lock for passive-level state. Public on the host, as the level tokens are.
+#[cfg(target_arch = "x86")]
+mod sync;
+#[cfg(not(target_arch = "x86"))]
+pub mod sync;
 
 // Executable loading: PE32 parsing, and the kernel-side loader (staging, section mapping, entry
 // into ring 3)
@@ -94,7 +117,7 @@ use core::arch::asm;
 ///
 /// The `#[panic_handler]` must be defined exactly once, in the final binary (a library must not
 /// define one); the binary's handler forwards here so both crates share this one code path.
-#[cfg(not(test))]
+#[cfg(all(not(test), target_arch = "x86"))]
 pub fn panic(info: &core::panic::PanicInfo) -> ! {
     serial_println!("KERNEL PANIC: {}", info);
     halt()

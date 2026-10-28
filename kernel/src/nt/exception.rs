@@ -5,13 +5,14 @@
 //! stack pointer, KiUserExceptionDispatcher entered), its second chance the process's end with the
 //! code (no debugger, no exception port), as Windows 2000 does then.
 
-use super::call::{Status, UserAddr, STATUS_INVALID_PARAMETER};
+use super::call::UserAddr;
+use crate::status::*;
 use crate::user::seh::{self, CONTEXT_SIZE, EXCEPTION_MAXIMUM_PARAMETERS, RECORD_SIZE};
 
 /// The record user code hands NtRaiseException: its fixed part and its parameters (the rest of the
 /// 80 bytes zero). More than fifteen parameters is STATUS_INVALID_PARAMETER, as Windows 2000
 /// checks; memory that cannot be read, STATUS_ACCESS_VIOLATION.
-pub fn read_record(record: UserAddr) -> Result<[u8; RECORD_SIZE], Status> {
+pub fn read_record(record: UserAddr) -> Result<[u8; RECORD_SIZE], NtStatus> {
     let mut image = [0u8; RECORD_SIZE];
     record.read(&mut image[..seh::record_length(0)])?;
     let count = seh::word(&image, 16);
@@ -23,7 +24,7 @@ pub fn read_record(record: UserAddr) -> Result<[u8; RECORD_SIZE], Status> {
 }
 
 /// A CONTEXT in user memory.
-pub fn read_context(context: UserAddr) -> Result<[u8; CONTEXT_SIZE], Status> {
+pub fn read_context(context: UserAddr) -> Result<[u8; CONTEXT_SIZE], NtStatus> {
     let mut image = [0u8; CONTEXT_SIZE];
     context.read(&mut image)?;
     Ok(image)
@@ -48,7 +49,8 @@ mod target {
         if test_alert & 0xFF != 0 {
             crate::user::apc::test_alert();
         }
-        Ok(frame.eax)
+        // EAX as the context restored it: the convention writes it back unchanged.
+        Ok(NtStatus(frame.eax))
     }
 
     /// NtRaiseException(ExceptionRecord, Context, FirstChance): the first chance (a BOOLEAN) puts
@@ -72,7 +74,8 @@ mod target {
         if !seh::deliver(frame, &record, &context) {
             seh::second_chance(code, address);
         }
-        Ok(frame.eax)
+        // EAX as the delivery left it: the convention writes it back unchanged.
+        Ok(NtStatus(frame.eax))
     }
 }
 
@@ -97,14 +100,20 @@ mod tests {
     struct Page(Vec<u8>);
 
     impl UserMemory for Page {
-        fn read(&self, pointer: u32, bytes: &mut [u8]) -> Result<(), u32> {
-            let at = pointer.checked_sub(0x10000).ok_or(0xC000_0005u32)? as usize;
-            bytes.copy_from_slice(self.0.get(at..at + bytes.len()).ok_or(0xC000_0005u32)?);
+        fn read(&self, pointer: u32, bytes: &mut [u8]) -> Result<(), NtStatus> {
+            let at = pointer
+                .checked_sub(0x10000)
+                .ok_or(STATUS_ACCESS_VIOLATION)? as usize;
+            bytes.copy_from_slice(
+                self.0
+                    .get(at..at + bytes.len())
+                    .ok_or(STATUS_ACCESS_VIOLATION)?,
+            );
             Ok(())
         }
 
-        fn write(&mut self, _: u32, _: &[u8]) -> Result<(), u32> {
-            Err(0xC000_0005)
+        fn write(&mut self, _: u32, _: &[u8]) -> Result<(), NtStatus> {
+            Err(STATUS_ACCESS_VIOLATION)
         }
     }
 
@@ -133,10 +142,7 @@ mod tests {
             read_record(UserAddr(0x10000)),
             Err(STATUS_INVALID_PARAMETER)
         );
-        assert_eq!(
-            read_record(UserAddr(0x10FF0)),
-            Err(super::super::call::STATUS_ACCESS_VIOLATION)
-        );
+        assert_eq!(read_record(UserAddr(0x10FF0)), Err(STATUS_ACCESS_VIOLATION));
         assert!(read_context(UserAddr(0x10000)).is_ok());
         assert!(read_context(UserAddr(0x10E00)).is_err());
     }

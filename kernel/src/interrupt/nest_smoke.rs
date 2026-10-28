@@ -16,12 +16,10 @@
 //! too, unmasks the keyboard's line, and lets both in at once — the keyboard's first, its line
 //! outranking the cascade.
 
-use core::ptr::addr_of_mut;
-
 use crate::hw::ide::disk;
 use crate::hw::kbd;
 use crate::interrupt::clock;
-use crate::interrupt::irql;
+use crate::pcr::pcr;
 use crate::serial_println;
 
 /// How long the diagnostic waits for the harness's key, in ticks (about ten seconds).
@@ -38,27 +36,27 @@ const SERVED_TICKS: u64 = 100;
 /// runs masked; the halt enables and halts as one step, so nothing is taken between the test and
 /// the halt.
 fn halt_while(ticks: u64, mut waiting: impl FnMut() -> bool) -> bool {
-    let state = irql::state_mut();
+    let pcr = pcr();
     let deadline = clock::ticks() + ticks;
     loop {
-        state.mask_interrupts();
+        pcr.mask_interrupts();
         if !waiting() {
-            state.unmask_interrupts();
+            pcr.unmask_interrupts();
             return true;
         }
         if clock::ticks() >= deadline {
-            state.unmask_interrupts();
+            pcr.unmask_interrupts();
             return false;
         }
-        state.unmask_and_halt();
+        pcr.unmask_and_halt();
     }
 }
 
 /// Run the diagnostic. Called once, from the boot, after the disk and the keyboard are up.
 pub fn run() {
-    // SAFETY: single CPU; the controller is the kernel's own, touched here with the line masks the
-    // diagnostic changes and restores.
-    let controller = unsafe { &mut *addr_of_mut!(super::target::CONTROLLER) };
+    // The controller is the kernel's own, touched here with the line masks the diagnostic changes
+    // and restores.
+    let controller = &super::target::CONTROLLER;
     controller.mask(kbd::VECTOR);
     serial_println!("F2K: nest-smoke: keyboard line held at the controller; press a key");
     if !halt_while(KEY_TICKS, || !controller.requested(kbd::VECTOR)) {
@@ -67,8 +65,7 @@ pub fn run() {
         return;
     }
 
-    let state = irql::state_mut();
-    state.mask_interrupts();
+    pcr().mask_interrupts();
     let unsolicited = disk::unsolicited();
     disk::request_interrupt();
     let mut polls = 0;
@@ -77,7 +74,7 @@ pub fn run() {
     }
     if polls == DISK_POLLS {
         controller.unmask(kbd::VECTOR);
-        state.unmask_interrupts();
+        pcr().unmask_interrupts();
         serial_println!("F2K: nest-smoke: FAILED (the disk's interrupt never came)");
         return;
     }

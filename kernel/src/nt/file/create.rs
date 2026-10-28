@@ -2,25 +2,8 @@
 //! the walk, the disposition's decision against what the name names, a new file or directory made,
 //! the open (its share check), and an overwrite's truncation.
 
-use super::super::call::{
-    NtCall,
-    NtResult,
-    Status,
-    UserAddr,
-    UserPtr,
-    STATUS_INVALID_PARAMETER,
-    STATUS_SUCCESS,
-};
+use super::super::call::{NtCall, NtResult, UserAddr, UserPtr};
 use super::common::{complete, deliver, probe, target, walk, Found, Target};
-use super::{
-    status,
-    STATUS_ACCESS_DENIED,
-    STATUS_DIRECTORY_NOT_EMPTY,
-    STATUS_FILE_IS_A_DIRECTORY,
-    STATUS_NOT_A_DIRECTORY,
-    STATUS_OBJECT_NAME_COLLISION,
-    STATUS_USER_MAPPED_FILE,
-};
 use crate::fs::fat32::dir::is_empty;
 use crate::fs::fat32::dirent::{ATTR_HIDDEN, ATTR_READ_ONLY, ATTR_SYSTEM};
 use crate::fs::fat32::lookup::File;
@@ -28,8 +11,7 @@ use crate::fs::fat32::volume::Volume;
 use crate::fs::fat32::write;
 use crate::fs::file::{records, rights};
 use crate::fs::io::{self, ATTRIBUTE_ARCHIVE, SETTABLE_ATTRIBUTES};
-use crate::nt::attributes::{STATUS_OBJECT_NAME_INVALID, STATUS_OBJECT_NAME_NOT_FOUND};
-use crate::status::NtStatus;
+use crate::status::*;
 
 /// The dispositions.
 const FILE_SUPERSEDE: u32 = 0;
@@ -79,7 +61,7 @@ fn check_arguments(
     share: u32,
     disposition: u32,
     options: u32,
-) -> Result<(), Status> {
+) -> Result<(), NtStatus> {
     let synchronous = options & (FILE_SYNCHRONOUS_IO_ALERT | FILE_SYNCHRONOUS_IO_NONALERT);
     let invalid = disposition > FILE_OVERWRITE_IF
         || options & !FILE_VALID_OPTION_FLAGS != 0
@@ -108,31 +90,31 @@ fn existing(
 ) -> Result<(File, u32, bool, u32), NtStatus> {
     let mut granted = request.granted;
     if request.disposition == FILE_CREATE {
-        return Err(STATUS_OBJECT_NAME_COLLISION.0 as NtStatus);
+        return Err(STATUS_OBJECT_NAME_COLLISION);
     }
     if file.directory {
         if request.options & FILE_NON_DIRECTORY_FILE != 0 {
-            return Err(STATUS_FILE_IS_A_DIRECTORY.0 as NtStatus);
+            return Err(STATUS_FILE_IS_A_DIRECTORY);
         }
         // A directory only opens (an assumption, unverified against FastFat's collision answer).
         if !matches!(request.disposition, FILE_OPEN | FILE_OPEN_IF) {
-            return Err(STATUS_ACCESS_DENIED.0 as NtStatus);
+            return Err(STATUS_ACCESS_DENIED);
         }
         // The root is never deleted (it has no entry).
         if (target.name.volume || file.parent_cluster == 0) && granted & rights::DELETE != 0 {
-            return Err(STATUS_ACCESS_DENIED.0 as NtStatus);
+            return Err(STATUS_ACCESS_DENIED);
         }
         if request.options & FILE_DELETE_ON_CLOSE != 0 && !is_empty(volume, file.first_cluster)? {
-            return Err(STATUS_DIRECTORY_NOT_EMPTY.0 as NtStatus);
+            return Err(STATUS_DIRECTORY_NOT_EMPTY);
         }
         return Ok((file, FILE_OPENED, false, granted));
     }
     if request.options & FILE_DIRECTORY_FILE != 0 {
-        return Err(STATUS_NOT_A_DIRECTORY.0 as NtStatus);
+        return Err(STATUS_NOT_A_DIRECTORY);
     }
     // A file named with a trailing separator is no name.
     if target.name.trailing {
-        return Err(STATUS_OBJECT_NAME_INVALID.0 as NtStatus);
+        return Err(STATUS_OBJECT_NAME_INVALID);
     }
     let overwrite = matches!(
         request.disposition,
@@ -143,7 +125,7 @@ fn existing(
             granted &= !CHANGES;
         }
         if granted & CHANGES != 0 || overwrite {
-            return Err(STATUS_ACCESS_DENIED.0 as NtStatus);
+            return Err(STATUS_ACCESS_DENIED);
         }
     }
     if !overwrite {
@@ -153,7 +135,7 @@ fn existing(
     // documented refusal).
     let keeps = |bit: u8| file.attributes & bit == 0 || request.attributes & bit as u32 != 0;
     if !keeps(ATTR_HIDDEN) || !keeps(ATTR_SYSTEM) {
-        return Err(STATUS_ACCESS_DENIED.0 as NtStatus);
+        return Err(STATUS_ACCESS_DENIED);
     }
     let information = if request.disposition == FILE_SUPERSEDE {
         FILE_SUPERSEDED
@@ -175,14 +157,14 @@ fn missing(
         request.disposition,
         FILE_CREATE | FILE_OPEN_IF | FILE_OVERWRITE_IF | FILE_SUPERSEDE
     ) {
-        return Err(STATUS_OBJECT_NAME_NOT_FOUND.0 as NtStatus);
+        return Err(STATUS_OBJECT_NAME_NOT_FOUND);
     }
     let name = target.name.last();
     if request.options & FILE_DIRECTORY_FILE != 0 {
         return write::make_directory(volume, parent.first_cluster, name, io::now());
     }
     if target.name.trailing {
-        return Err(STATUS_OBJECT_NAME_INVALID.0 as NtStatus);
+        return Err(STATUS_OBJECT_NAME_INVALID);
     }
     let mut file = File::plain(0, 0, false);
     file.attributes = request.attributes as u8 & SETTABLE_ATTRIBUTES | ATTRIBUTE_ARCHIVE;
@@ -196,7 +178,7 @@ fn missing(
 /// (STATUS_USER_MAPPED_FILE).
 fn overwrite(record: u16, attributes: u32) -> Result<(), NtStatus> {
     if io::mapped(record) && records().get(record).file.size > 0 {
-        return Err(STATUS_USER_MAPPED_FILE.0 as NtStatus);
+        return Err(STATUS_USER_MAPPED_FILE);
     }
     io::with_volume(|volume| {
         let mut file = records().get(record).file;
@@ -245,8 +227,7 @@ fn create(
             Found::Missing { parent } => missing(volume, &target, parent, &request)
                 .map(|file| (file, FILE_CREATED, false, request.granted)),
         }
-    })
-    .map_err(status)?;
+    })?;
     let open = io::Open {
         granted,
         share: share as u8,
@@ -254,12 +235,12 @@ fn create(
         synchronous: options & (FILE_SYNCHRONOUS_IO_ALERT | FILE_SYNCHRONOUS_IO_NONALERT) != 0,
         delete_on_close: options & FILE_DELETE_ON_CLOSE != 0,
     };
-    let handle = io::open(file, &open).map_err(status)?;
+    let handle = io::open(file, &open)?;
     if overwrites {
         let record = io::object_of(handle).expect("just opened").record;
         if let Err(failure) = overwrite(record, file_attributes) {
             crate::user::args::calling_process().close_handle(handle);
-            return Err(status(failure));
+            return Err(failure);
         }
     }
     deliver(slot, handle)?;

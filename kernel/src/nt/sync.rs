@@ -10,43 +10,13 @@
 //! its low byte, as the platform reads it. A timeout is a LARGE_INTEGER: negative a relative
 //! interval in 100 ns units, positive an absolute system time, none (a null pointer) forever.
 
-use super::attributes::{
-    self,
-    Resolved,
-    MAX_NAME,
-    OBJ_OPENIF,
-    STATUS_OBJECT_NAME_INVALID,
-    STATUS_OBJECT_NAME_NOT_FOUND,
-    STATUS_OBJECT_TYPE_MISMATCH,
-};
-use super::call::{
-    calling_process,
-    Handle,
-    NtCall,
-    NtResult,
-    Status,
-    UserAddr,
-    UserPtr,
-    STATUS_ACCESS_VIOLATION,
-    STATUS_INVALID_HANDLE,
-    STATUS_INVALID_PARAMETER,
-    STATUS_SUCCESS,
-};
+use super::attributes::{self, Resolved, MAX_NAME, OBJ_OPENIF};
+use super::call::{calling_process, Handle, NtCall, NtResult, UserAddr, UserPtr};
 use crate::nt::object::{is_console_handle, CURRENT_PROCESS, CURRENT_THREAD};
 use crate::ob::{self, ObjectId, ObjectType};
 use crate::sched::event::{EventKind, EVENT_WAKE_INCREMENT};
 use crate::sched::wait::{self, WaitMode, WaitReason, Waitable, MAXIMUM_WAIT_OBJECTS};
-
-const STATUS_UNSUCCESSFUL: Status = Status(0xC000_0001);
-const STATUS_NO_MEMORY: Status = Status(0xC000_0017);
-const STATUS_INVALID_PARAMETER_MIX: Status = Status(0xC000_0030);
-const STATUS_OBJECT_NAME_COLLISION: Status = Status(0xC000_0035);
-const STATUS_SEMAPHORE_LIMIT_EXCEEDED: Status = Status(0xC000_0047);
-const STATUS_INSUFFICIENT_RESOURCES: Status = Status(0xC000_009A);
-const STATUS_INVALID_PARAMETER_1: Status = Status(0xC000_00EF);
-const STATUS_INVALID_PARAMETER_3: Status = Status(0xC000_00F1);
-const STATUS_OBJECT_NAME_EXISTS: u32 = 0x4000_0000;
-const STATUS_TIMER_RESUME_IGNORED: u32 = 0x4000_0025;
+use crate::status::*;
 
 /// The priority increment a semaphore release grants the waiters it wakes.
 const SEMAPHORE_WAKE_INCREMENT: i8 = 1;
@@ -58,7 +28,7 @@ fn boolean(value: u32) -> bool {
 
 /// Probe `size` bytes at `at` for the call's writes, when given: STATUS_ACCESS_VIOLATION before the
 /// call acts, as the platform's probes are.
-pub(super) fn probe(at: u32, size: u32) -> Result<(), Status> {
+pub(super) fn probe(at: u32, size: u32) -> Result<(), NtStatus> {
     if at == 0 {
         return Ok(());
     }
@@ -79,7 +49,7 @@ struct Request {
 
 /// Read the request at `attributes` (none: an unnamed object, a handle not inherited), the name's
 /// bytes into `out`.
-fn request(attributes: UserAddr, out: &mut [u8; ob::MAX_NAME]) -> Result<Request, Status> {
+fn request(attributes: UserAddr, out: &mut [u8; ob::MAX_NAME]) -> Result<Request, NtStatus> {
     let mut request = Request {
         name: None,
         directory: false,
@@ -108,7 +78,7 @@ fn request(attributes: UserAddr, out: &mut [u8; ob::MAX_NAME]) -> Result<Request
 
 /// The new handle into the caller's slot, with the call's status; a slot that faults takes the
 /// handle back (STATUS_ACCESS_VIOLATION).
-fn deliver(slot: UserPtr<u32>, handle: u32, status: u32) -> NtResult {
+fn deliver(slot: UserPtr<u32>, handle: u32, status: NtStatus) -> NtResult {
     if slot.write(handle).is_err() {
         calling_process().close_handle(handle);
         return Err(STATUS_ACCESS_VIOLATION);
@@ -198,7 +168,7 @@ pub(super) fn open(
 /// The object of `kind` `handle` names in the calling process, referenced for the caller's scope:
 /// STATUS_INVALID_HANDLE for a handle naming nothing (a console handle included),
 /// STATUS_OBJECT_TYPE_MISMATCH for one naming another kind.
-pub(super) fn object_of(handle: u32, kind: ObjectType) -> Result<ob::ObRef, Status> {
+pub(super) fn object_of(handle: u32, kind: ObjectType) -> Result<ob::ObRef, NtStatus> {
     if is_console_handle(handle) {
         return Err(STATUS_INVALID_HANDLE);
     }
@@ -358,9 +328,7 @@ pub fn release_mutant(_call: &mut NtCall, mutant: Handle, previous: UserPtr<i32>
     probe(previous.addr().raw(), 4)?;
     let reference = object_of(mutant.raw(), ObjectType::Mutex)?;
     let dispatcher = crate::sched::idle::dispatcher();
-    let was = dispatcher
-        .release_mutex(reference.mutex(), dispatcher.current_thread())
-        .map_err(|status| Status(status as u32))?;
+    let was = dispatcher.release_mutex(reference.mutex(), dispatcher.current_thread())?;
     previous.write_optional(was)?;
     Ok(STATUS_SUCCESS)
 }
@@ -447,7 +415,7 @@ pub fn open_timer(
 }
 
 /// Write a BOOLEAN out argument, when given.
-fn write_boolean(at: UserAddr, value: bool) -> Result<(), Status> {
+fn write_boolean(at: UserAddr, value: bool) -> Result<(), NtStatus> {
     if !at.is_null() {
         at.write(&[u8::from(value)])?;
     }
@@ -464,7 +432,7 @@ fn write_boolean(at: UserAddr, value: bool) -> Result<(), Status> {
 /// STATUS_INVALID_PARAMETER for a negative period.
 #[allow(clippy::too_many_arguments)]
 pub fn set_timer(
-    _call: &mut NtCall,
+    call: &mut NtCall,
     timer: Handle,
     due_time: UserPtr<u64>,
     routine: UserAddr,
@@ -480,7 +448,10 @@ pub fn set_timer(
         return Err(STATUS_INVALID_PARAMETER);
     }
     let timer = reference.timer();
-    let now = crate::interrupt::clock::interrupt_time();
+    let now = crate::interrupt::clock::read_at(
+        call.passive(),
+        crate::interrupt::clock::Clock::interrupt_time,
+    );
     let signal_time = crate::time::system_filetime();
     let due = wait::due_time(due, now, signal_time);
     let dispatcher = crate::sched::idle::dispatcher();
@@ -530,7 +501,7 @@ pub fn cancel_timer(_call: &mut NtCall, timer: Handle, current: UserAddr) -> NtR
 /// interval from now, in 100 ns units — negative values are relative already, positive ones an
 /// absolute system time (a time already past is a past due, which the waits complete at once).
 /// The longest relative interval stays the far future the wrap-safe due arithmetic makes it.
-fn timeout_of(at: UserPtr<u64>) -> Result<Option<i64>, Status> {
+fn timeout_of(at: UserPtr<u64>) -> Result<Option<i64>, NtStatus> {
     if at.is_null() {
         return Ok(None);
     }
@@ -550,7 +521,7 @@ fn interval_of(value: i64) -> i64 {
 /// object's header, or the thread and process pseudo-handles' own objects. STATUS_INVALID_HANDLE
 /// for a handle naming nothing (a console handle included), STATUS_OBJECT_TYPE_MISMATCH for an
 /// object no wait can name (a file, a section, the directory).
-fn waitable_of(handle: u32) -> Result<(Option<ObjectId>, *mut Waitable), Status> {
+fn waitable_of(handle: u32) -> Result<(Option<ObjectId>, *mut Waitable), NtStatus> {
     let id = match handle {
         CURRENT_THREAD => ob::current_thread().ok_or(STATUS_INVALID_HANDLE)?,
         CURRENT_PROCESS => crate::process::current().object(),
@@ -575,7 +546,7 @@ fn wait_one(
     (object, waitable): (Option<ObjectId>, *mut Waitable),
     timeout: Option<i64>,
     alertable: bool,
-) -> u32 {
+) -> NtStatus {
     let held = object.as_slice();
     ob::waiting(held, || {
         wait::wait_current_with(|dispatcher, thread, stamp, replay| {
@@ -589,7 +560,7 @@ fn wait_one(
                 timeout,
                 stamp,
             )
-        }) as u32
+        })
     })
 }
 
@@ -669,7 +640,7 @@ pub fn wait_for_multiple_objects(
             )
         })
     });
-    Ok(status as u32)
+    Ok(status)
 }
 
 /// NtSignalAndWaitForSingleObject: signal one object — set an event, release a semaphore by one,
@@ -711,9 +682,7 @@ pub fn signal_and_wait_for_single_object(
         }
         Some(ObjectType::Mutex) => {
             let mutex = object_of(signal, ObjectType::Mutex)?;
-            dispatcher
-                .release_mutex(mutex.mutex(), dispatcher.current_thread())
-                .map_err(|status| Status(status as u32))?;
+            dispatcher.release_mutex(mutex.mutex(), dispatcher.current_thread())?;
         }
         Some(_) => return Err(STATUS_OBJECT_TYPE_MISMATCH),
         None => return Err(STATUS_INVALID_HANDLE),
@@ -737,7 +706,9 @@ pub fn delay_execution(_call: &mut NtCall, alertable: u32, interval: UserPtr<u64
         };
         dispatcher.delay(thread, WaitMode::User, alertable, interval, stamp)
     });
-    Ok(crate::sched::dispatcher::Dispatcher::delay_completed(status) as u32)
+    Ok(crate::sched::dispatcher::Dispatcher::delay_completed(
+        status,
+    ))
 }
 
 /// NtYieldExecution: hand the processor to any ready thread, a lower-priority one included (see
@@ -746,13 +717,13 @@ pub fn delay_execution(_call: &mut NtCall, alertable: u32, interval: UserPtr<u64
 pub fn yield_execution(_call: &mut NtCall) -> NtResult {
     let status = wait::wait_current_with(|dispatcher, thread, _stamp, _replay| {
         if dispatcher.yield_execution(thread) {
-            thread.wait_status = crate::status::STATUS_SUCCESS;
+            thread.wait_status = STATUS_SUCCESS;
             wait::WaitDisposition::Yield
         } else {
-            wait::WaitDisposition::Complete(crate::status::STATUS_NO_YIELD_PERFORMED)
+            wait::WaitDisposition::Complete(STATUS_NO_YIELD_PERFORMED)
         }
     });
-    Ok(status as u32)
+    Ok(status)
 }
 
 // --- Handles and APCs ----------------------------------------------------------------------------
@@ -787,7 +758,6 @@ pub fn duplicate_object(
         DuplicateTables,
         TargetProcess,
         PROCESS_DUP_HANDLE,
-        STATUS_PROCESS_IS_TERMINATING,
     };
     use crate::ob::Target;
     use crate::process::pool::of_object;

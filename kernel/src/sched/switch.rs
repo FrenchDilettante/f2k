@@ -240,7 +240,7 @@ core::arch::global_asm!(
 /// ledger.
 #[cfg(target_arch = "x86")]
 unsafe extern "C" fn fresh_thread_level() {
-    crate::interrupt::irql::state_mut().begin_thread();
+    crate::pcr::pcr().begin_thread();
     // SAFETY: the dispatcher adopted this thread before the switch into it: its record is live.
     debug_assert_on_own_space(unsafe { &*crate::sched::idle::dispatcher().current_thread() });
 }

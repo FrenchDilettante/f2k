@@ -56,6 +56,7 @@ use core::ops::{Deref, DerefMut};
 use core::ptr::NonNull;
 
 use rtl::params::{CountedString, CurrentDirectory, DriveDirectory};
+use rtl::pod::Pod;
 
 use crate::base::{
     self,
@@ -70,7 +71,7 @@ use crate::files::names::file_attributes;
 use crate::files::search::{directory_of, search_default, search_list};
 use crate::files::{self, NtPath, Wide, MAX_PATH};
 use crate::nt::ClientId;
-use crate::ntcall::{self, NtStatus, ParameterStrings, Plain, SectionImageInformation, Source};
+use crate::ntcall::{self, NtStatus, ParameterStrings, SectionImageInformation, Source};
 use crate::thread;
 
 /// The creation flags CreateProcess reads.
@@ -526,14 +527,15 @@ fn set_scheduling(process: u32, flags: u32) {
         if ntcall::query_information_process(
             CURRENT_PROCESS,
             PROCESS_DEFAULT_HARD_ERROR_MODE,
-            own.bytes_mut(),
+            own.as_bytes_mut(),
         )
         .is_ok()
         {
             mode = own;
         }
     }
-    let _ = ntcall::set_information_process(process, PROCESS_DEFAULT_HARD_ERROR_MODE, mode.bytes());
+    let _ =
+        ntcall::set_information_process(process, PROCESS_DEFAULT_HARD_ERROR_MODE, mode.as_bytes());
 }
 
 /// An environment block's length in units: through its final empty entry (two NULs for an empty
@@ -727,7 +729,7 @@ fn push_parameters(
     let (at, _) = ntcall::allocate_virtual_memory(process, 0, length, MEM_COMMIT, PAGE_READWRITE)
         .map_err(Failure::Status)?;
     let child = in_child(block.header(), length as u32);
-    ntcall::write_virtual_memory(process, at, Source::of(child.bytes()), None)
+    ntcall::write_virtual_memory(process, at, Source::of(child.as_bytes()), None)
         .and_then(|()| {
             ntcall::write_virtual_memory(process, at + CHILD_HEADER, Source::of(strings), None)
         })
@@ -736,7 +738,7 @@ fn push_parameters(
             ntcall::write_virtual_memory(
                 process,
                 peb + PEB_PROCESS_PARAMETERS,
-                Source::of(pointer.bytes()),
+                Source::of(pointer.as_bytes()),
                 None,
             )
         })

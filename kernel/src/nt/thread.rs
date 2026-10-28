@@ -10,10 +10,8 @@
 //! ERROR_INVALID_HANDLE to kernel32). The information's length is the class's structure's exactly,
 //! as Windows 2000 checks it (STATUS_INFO_LENGTH_MISMATCH).
 
-#[cfg(target_arch = "x86")]
-use super::call::STATUS_SUCCESS;
-use super::call::{Handle, NtCall, NtResult, Status, UserAddr, UserPtr, STATUS_INVALID_PARAMETER};
-use super::memory::{STATUS_INFO_LENGTH_MISMATCH, STATUS_INVALID_INFO_CLASS};
+use super::call::{Handle, NtCall, NtResult, UserAddr, UserPtr};
+use crate::status::*;
 
 /// THREADINFOCLASS: the classes F2K answers.
 /// ThreadBasicInformation: THREAD_BASIC_INFORMATION (query).
@@ -57,7 +55,7 @@ const CURRENT_THREAD: u32 = super::object::CURRENT_THREAD;
 
 /// ThreadBasePriority's value as Windows 2000 checks it: an increment in -2..=2, or a saturation
 /// value (±16); STATUS_INVALID_PARAMETER otherwise.
-pub fn base_priority_increment(value: i32) -> Result<i32, Status> {
+pub fn base_priority_increment(value: i32) -> Result<i32, NtStatus> {
     match value {
         BASE_PRIORITY_MIN..=BASE_PRIORITY_MAX => Ok(value),
         SATURATION => Ok(value),
@@ -67,7 +65,7 @@ pub fn base_priority_increment(value: i32) -> Result<i32, Status> {
 }
 
 /// ThreadPriority's value: a priority in 1..=31; STATUS_INVALID_PARAMETER otherwise.
-pub fn priority_value(value: i32) -> Result<i8, Status> {
+pub fn priority_value(value: i32) -> Result<i8, NtStatus> {
     if (LOWEST_PRIORITY..=HIGHEST_PRIORITY).contains(&value) {
         Ok(value as i8)
     } else {
@@ -77,7 +75,7 @@ pub fn priority_value(value: i32) -> Result<i8, Status> {
 
 /// An affinity mask a thread or process takes: a non-empty subset of the system's processors;
 /// STATUS_INVALID_PARAMETER otherwise.
-pub fn affinity_mask(mask: u32) -> Result<u32, Status> {
+pub fn affinity_mask(mask: u32) -> Result<u32, NtStatus> {
     if mask == 0 || mask & !SYSTEM_AFFINITY != 0 {
         Err(STATUS_INVALID_PARAMETER)
     } else {
@@ -119,7 +117,7 @@ pub fn basic_information(info: &BasicInformation) -> [u8; THREAD_BASIC_INFORMATI
 
 /// The length a class's information must have: its structure's (STATUS_INFO_LENGTH_MISMATCH
 /// otherwise).
-fn exactly(length: u32, size: u32) -> Result<(), Status> {
+fn exactly(length: u32, size: u32) -> Result<(), NtStatus> {
     if length == size {
         Ok(())
     } else {
@@ -132,8 +130,7 @@ fn exactly(length: u32, size: u32) -> Result<(), Status> {
 #[cfg(target_arch = "x86")]
 pub(super) fn thread_of(
     handle: Handle,
-) -> Result<crate::ob::Referenced<crate::sched::thread::Thread>, Status> {
-    use super::call::STATUS_INVALID_HANDLE;
+) -> Result<crate::ob::Referenced<crate::sched::thread::Thread>, NtStatus> {
     let reference = if handle.raw() == CURRENT_THREAD {
         crate::ob::current_thread()
             .and_then(crate::ob::reference)
@@ -210,7 +207,6 @@ pub fn create_thread(
     initial_teb: UserAddr,
     create_suspended: u32,
 ) -> NtResult {
-    use super::call::STATUS_ACCESS_VIOLATION;
     // The pointers the create writes back, probed before anything is read or made.
     let probe = |at: u32, size: u32| {
         crate::user::syscall::probe_user_range(at, size).map_err(|_| STATUS_ACCESS_VIOLATION)
@@ -232,13 +228,7 @@ pub fn create_thread(
     let (user, stack) = (initial_context(&context), initial_stack(&teb));
     #[cfg(target_arch = "x86")]
     {
-        use super::object::{
-            reference_process,
-            PROCESS_CREATE_THREAD,
-            STATUS_INSUFFICIENT_RESOURCES,
-            STATUS_PROCESS_IS_TERMINATING,
-        };
-        const STATUS_NO_MEMORY: Status = Status(0xC000_0017);
+        use super::object::{reference_process, PROCESS_CREATE_THREAD};
         let target = reference_process(process.raw(), PROCESS_CREATE_THREAD)?;
         // Once a thread record is attached to the process there is no unwinding it: the create
         // must not fail after.
@@ -278,7 +268,7 @@ pub fn create_thread(
         // and zeroes pages) is taken before the new thread is schedulable — on Windows the
         // tick lands while the creator is still inside the create — so a quantum it ends
         // passes the processor on without the new thread jumping ahead of its creator.
-        crate::interrupt::irql::state_mut().interrupt_window();
+        crate::pcr::pcr().interrupt_window();
         // The handle exists; the thread becomes schedulable now.
         // SAFETY: the created thread, live and exclusive here.
         crate::sched::idle::dispatcher().make_ready(unsafe { &mut *thread });
@@ -296,13 +286,9 @@ pub fn create_thread(
             stack,
             process,
         );
-        Err(super::call::STATUS_INVALID_HANDLE)
+        Err(STATUS_INVALID_HANDLE)
     }
 }
-
-/// STATUS_CANT_TERMINATE_SELF: NtTerminateThread with no handle from a process's only thread
-/// (kernel32's ExitThread then ends the process instead).
-pub const STATUS_CANT_TERMINATE_SELF: Status = Status(0xC000_00DB);
 
 /// NtTerminateThread(ThreadHandle, ExitStatus): end the thread with the status, without it running
 /// again. No handle names the caller, refused (STATUS_CANT_TERMINATE_SELF) when it is its process's
@@ -335,7 +321,7 @@ pub fn terminate_thread(_call: &mut NtCall, thread: Handle, status: u32) -> NtRe
     #[cfg(not(target_arch = "x86"))]
     {
         let _ = (thread, status);
-        Err(super::call::STATUS_INVALID_HANDLE)
+        Err(STATUS_INVALID_HANDLE)
     }
 }
 
@@ -347,22 +333,19 @@ pub fn terminate_thread(_call: &mut NtCall, thread: Handle, status: u32) -> NtRe
 pub fn suspend_thread(_call: &mut NtCall, thread: Handle, previous: UserPtr<u32>) -> NtResult {
     #[cfg(target_arch = "x86")]
     {
-        use crate::status::STATUS_THREAD_IS_TERMINATING;
         super::sync::probe(previous.addr().raw(), 4)?;
         let mut thread = thread_of(thread)?;
         if thread.state() == crate::sched::thread::ThreadState::Terminated {
-            return Err(Status(STATUS_THREAD_IS_TERMINATING as u32));
+            return Err(STATUS_THREAD_IS_TERMINATING);
         }
-        let count = crate::sched::idle::dispatcher()
-            .suspend_thread(&mut thread)
-            .map_err(|status| Status(status as u32))?;
+        let count = crate::sched::idle::dispatcher().suspend_thread(&mut thread)?;
         previous.write_optional(u32::from(count))?;
         Ok(STATUS_SUCCESS)
     }
     #[cfg(not(target_arch = "x86"))]
     {
         let _ = (thread, previous);
-        Err(super::call::STATUS_INVALID_HANDLE)
+        Err(STATUS_INVALID_HANDLE)
     }
 }
 
@@ -385,7 +368,7 @@ pub fn resume_thread(_call: &mut NtCall, thread: Handle, previous: UserPtr<u32>)
     #[cfg(not(target_arch = "x86"))]
     {
         let _ = (thread, previous);
-        Err(super::call::STATUS_INVALID_HANDLE)
+        Err(STATUS_INVALID_HANDLE)
     }
 }
 
@@ -438,7 +421,7 @@ pub fn query_information_thread(
     #[cfg(not(target_arch = "x86"))]
     {
         let _ = (thread, information, return_length);
-        Err(super::call::STATUS_INVALID_HANDLE)
+        Err(STATUS_INVALID_HANDLE)
     }
 }
 
@@ -505,7 +488,7 @@ pub fn set_information_thread(
     #[cfg(not(target_arch = "x86"))]
     {
         let _ = (call, thread, value);
-        Err(super::call::STATUS_INVALID_HANDLE)
+        Err(STATUS_INVALID_HANDLE)
     }
 }
 
@@ -563,14 +546,7 @@ mod tests {
     /// maximum ERROR_SIGNAL_REFUSED, a thread that ended ERROR_ACCESS_DENIED.
     #[test]
     fn suspend_refusals_map_to_the_fixtures_errors() {
-        use crate::status::{STATUS_SUSPEND_COUNT_EXCEEDED, STATUS_THREAD_IS_TERMINATING};
-        assert_eq!(
-            rtl::status::dos_error(STATUS_SUSPEND_COUNT_EXCEEDED as u32),
-            156
-        );
-        assert_eq!(
-            rtl::status::dos_error(STATUS_THREAD_IS_TERMINATING as u32),
-            5
-        );
+        assert_eq!(rtl::status::dos_error(STATUS_SUSPEND_COUNT_EXCEEDED.0), 156);
+        assert_eq!(rtl::status::dos_error(STATUS_THREAD_IS_TERMINATING.0), 5);
     }
 }

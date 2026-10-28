@@ -363,9 +363,9 @@ const NAMES: [&str; EXCEPTION_VECTORS] = [
 #[allow(dead_code)] // referenced only from the generated stubs (sym operand)
 #[cfg(target_arch = "x86")]
 extern "C" fn exception_handler(frame: &mut ExceptionFrame) {
-    crate::interrupt::irql::state_mut().enter_gate();
+    crate::pcr::pcr().enter_gate();
     resolve_or_end(frame);
-    crate::interrupt::irql::state_mut().leave_gate(frame.eflags & EFLAGS_IF != 0);
+    crate::pcr::pcr().leave_gate(frame.eflags & EFLAGS_IF != 0);
 }
 
 /// The interrupt flag's bit in EFLAGS.

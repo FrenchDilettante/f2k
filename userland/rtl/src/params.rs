@@ -13,6 +13,8 @@
 
 use core::mem::size_of;
 
+use crate::pod::Pod;
+
 /// RTL_USER_PROC_PARAMS_NORMALIZED: the strings' buffers are addresses, not offsets.
 pub const NORMALIZED: u32 = 1;
 
@@ -20,15 +22,9 @@ pub const NORMALIZED: u32 = 1;
 /// buffer.
 pub const CURRENT_DIRECTORY_ROOM: usize = 2 * 260;
 
-/// A UNICODE_STRING with a pointer of type `P`: its length and room in bytes, its buffer (an
-/// address, or an offset in a denormalized block; zero for none).
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct CountedString<P> {
-    pub length: u16,
-    pub maximum_length: u16,
-    pub buffer: P,
-}
+/// A UNICODE_STRING with a pointer of type `P` ([`crate::nt::UnicodeString`]): its buffer an
+/// address, or an offset in a denormalized block; zero for none.
+pub type CountedString<P> = crate::nt::UnicodeString<P>;
 
 /// CURDIR: the current directory's DOS path and its handle.
 #[repr(C)]
@@ -103,6 +99,10 @@ const _: () = {
     assert!(core::mem::offset_of!(Layout, runtime_data) == 0x88);
     assert!(core::mem::offset_of!(Layout, current_directories) == 0x90);
 };
+
+// SAFETY: integers and their arrays: u32 and u16 fields laid out without padding (the u16 pairs
+// fill whole dwords), as the layout asserts above pin.
+unsafe impl Pod for ProcessParameters<u32> {}
 
 impl<P> ProcessParameters<P> {
     /// The block's strings, in the order the block holds their buffers.

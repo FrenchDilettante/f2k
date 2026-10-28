@@ -507,7 +507,7 @@ impl Process {
     pub fn create(
         name: ProcessName,
         leg: Option<u32>,
-    ) -> Result<&'static mut Process, crate::nt::call::Status> {
+    ) -> Result<&'static mut Process, crate::status::NtStatus> {
         let dir_phys = paging::create_address_space();
         let process = match pool::create(dir_phys, name, leg) {
             Ok(process) => process,
@@ -536,8 +536,8 @@ impl Process {
     pub fn start(
         name: &str,
         leg: Option<u32>,
-    ) -> Result<&'static mut Process, crate::nt::call::Status> {
-        use crate::nt::object::STATUS_INSUFFICIENT_RESOURCES;
+    ) -> Result<&'static mut Process, crate::status::NtStatus> {
+        use crate::status::STATUS_INSUFFICIENT_RESOURCES;
         let process = Process::create(ProcessName::new(name.as_bytes()), leg)?;
 
         // The main thread's gate stack, taken before its record (as a created thread's is): a

@@ -36,10 +36,7 @@ pub fn key_name(image: &[u16], out: &mut [u16]) -> Option<usize> {
 /// sign, then `0x` (hexadecimal), `0o` (octal) or `0b` (binary), decimal otherwise; the digits up
 /// to the first that is not one (or the text's NUL), wrapping around.
 pub fn text_number(text: &[u16]) -> u32 {
-    let text = &text[..text
-        .iter()
-        .position(|&unit| unit == 0)
-        .unwrap_or(text.len())];
+    let text = &text[..crate::cstr::nul_len(text)];
     let mut at = text.iter().take_while(|&&unit| unit <= b' ' as u16).count();
     let negative = text.get(at) == Some(&(b'-' as u16));
     if negative || text.get(at) == Some(&(b'+' as u16)) {

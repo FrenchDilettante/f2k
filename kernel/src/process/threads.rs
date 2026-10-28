@@ -317,8 +317,9 @@ fn end_thread(end: ThreadEnd) -> ! {
 
     // The switch away, at the dispatch level; the exiting thread's timeline ends at the swap, so
     // its outstanding raises — this one included — are written off.
-    let _previous = crate::interrupt::irql::state_mut().raise(crate::interrupt::irql::DISPATCH);
-    crate::interrupt::irql::state_mut().write_off_thread();
+    let pcr = crate::pcr::pcr();
+    let _previous = pcr.raise(crate::interrupt::irql::DISPATCH);
+    pcr.write_off_thread();
     // SAFETY: the selected thread is the selection discipline's own (a woken waiter, a ready
     // thread, or the idle fallback).
     unsafe { crate::sched::switch::swap_context(current, selected) };
@@ -395,7 +396,7 @@ pub fn terminate_process(process: &mut Process, status: u32) {
                 started.set(true);
                 status
             } else {
-                STATUS_THREAD_IS_TERMINATING as u32
+                STATUS_THREAD_IS_TERMINATING.0
             }
         });
         let end = ProcessEnd::Exited(if started.get() { status } else { 0 });
@@ -527,14 +528,9 @@ pub fn start_main_thread(process: &mut Process, user: crate::sched::startup::Use
 /// switch to a thread readied earlier — taking it out of the dispatcher's standby slot in the
 /// middle of this one's readying.
 pub fn ready_main_thread(process: &mut Process) {
-    let state = crate::interrupt::irql::state_mut();
-    let enabled = state.interrupts_enabled();
-    state.mask_interrupts();
+    let _masked = crate::pcr::pcr().mask_guard();
     let dispatcher: &'static mut Dispatcher = crate::sched::idle::dispatcher();
     dispatcher.make_ready(process.main_thread());
-    if enabled {
-        state.unmask_interrupts();
-    }
 }
 
 /// The fault-test boots' ring-3 entry: start `process`'s main thread in `user` and ready it, then

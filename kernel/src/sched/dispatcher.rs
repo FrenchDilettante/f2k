@@ -627,13 +627,14 @@ impl Dispatcher {
     /// resumed thread delivers its own.
     #[cfg(target_arch = "x86")]
     pub fn deliver_pending(&mut self) {
-        if crate::interrupt::irql::state_mut().current() >= crate::interrupt::irql::DISPATCH {
+        let pcr = crate::pcr::pcr();
+        if pcr.current() >= crate::interrupt::irql::DISPATCH {
             return;
         }
-        let previous = crate::interrupt::irql::state_mut().raise(crate::interrupt::irql::DISPATCH);
+        let previous = pcr.raise(crate::interrupt::irql::DISPATCH);
         let target = self.dispatch_target();
         if target.is_null() {
-            crate::interrupt::irql::state_mut().lower(previous);
+            pcr.lower(previous);
             // No switch: the running thread's own kernel APCs deliver here.
             self.deliver_pending_apcs();
             return;
@@ -641,7 +642,7 @@ impl Dispatcher {
         // SAFETY: the running thread, live and exclusive here.
         let old = self.current_thread();
         // SAFETY: as above.
-        unsafe { (*old).level = crate::interrupt::irql::state_mut().capture() };
+        unsafe { (*old).level = pcr.capture() };
         self.enter(target);
         // SAFETY: the target's frame is planted (fresh) or saved (resumed) — the selection
         // discipline guarantees it — and the dispatch level masks the dispatcher context.
@@ -652,8 +653,8 @@ impl Dispatcher {
         // `enter` above) would name the thread switched to, not the one resumed.
         let current = crate::sched::idle::dispatcher().current_thread();
         // SAFETY: as above.
-        unsafe { crate::interrupt::irql::state_mut().restore((*current).level) };
-        crate::interrupt::irql::state_mut().lower(previous);
+        unsafe { pcr.restore((*current).level) };
+        pcr.lower(previous);
         // The resume delivery: a kernel APC queued on the thread while it was off the processor
         // runs now, on the thread's own timeline, before its parked frames unwind.
         crate::sched::idle::dispatcher().deliver_pending_apcs();

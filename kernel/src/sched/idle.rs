@@ -84,6 +84,7 @@ mod target {
     use super::super::thread::Thread;
     use super::{idle_step, install, IdleAction};
     use crate::interrupt::irql;
+    use crate::pcr::pcr;
 
     /// The one dispatcher (single processor).
     static mut DISPATCHER: Dispatcher = Dispatcher::zeroed();
@@ -128,7 +129,7 @@ mod target {
     /// the wake always comes back to an enabled machine.
     pub(crate) fn idle_loop() -> ! {
         loop {
-            irql::state_mut().mask_interrupts();
+            pcr().mask_interrupts();
             match idle_step(
                 crate::interrupt::dpc::has_pending(),
                 crate::process::reap_pending(),
@@ -150,7 +151,7 @@ mod target {
                     // Enabled through the model, so the flag stays in step with the hardware, and
                     // halted in the same step: the step's decision was taken masked, and nothing
                     // may run between the enable and the halt.
-                    irql::state_mut().unmask_and_halt();
+                    pcr().unmask_and_halt();
                 }
             }
         }
@@ -159,20 +160,20 @@ mod target {
     /// The switch away from the idle thread: the dispatch level around the switch, the level-ledger
     /// handover, the caller-side install, then the swap.
     fn switch_away_from_idle() {
-        let previous = irql::state_mut().raise(irql::DISPATCH);
+        let previous = pcr().raise(irql::DISPATCH);
         let dispatch = dispatcher();
         // SAFETY: the running thread (the idle thread), live and exclusive here.
         let old = dispatch.current_thread();
         // SAFETY: as above.
-        unsafe { (*old).level = irql::state_mut().capture() };
+        unsafe { (*old).level = pcr().capture() };
         let selected = dispatch.select_next();
         // The step said something was schedulable; if the selection raced empty anyway, this pass
         // simply returns to the loop.
         let idle = idle_thread();
         if selected.is_null() || eq(selected, idle) {
             // SAFETY: the running thread, live.
-            unsafe { irql::state_mut().restore((*dispatch.current_thread()).level) };
-            irql::state_mut().lower(previous);
+            unsafe { pcr().restore((*dispatch.current_thread()).level) };
+            pcr().lower(previous);
             return;
         }
         dispatch.enter(selected);
@@ -183,8 +184,8 @@ mod target {
         // this site made.
         let current = dispatcher().current_thread();
         // SAFETY: the running thread, live.
-        unsafe { irql::state_mut().restore((*current).level) };
-        irql::state_mut().lower(previous);
+        unsafe { pcr().restore((*current).level) };
+        pcr().lower(previous);
     }
 
     /// The idle thread's address (the static's).

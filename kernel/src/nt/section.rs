@@ -36,29 +36,7 @@
 //! needs them, each read from the file through the image's section table. Nothing is snapped: the
 //! imports are the mapper's to resolve (ntdll's loader).
 
-use super::call::{Status, STATUS_INVALID_HANDLE};
-use super::memory::{STATUS_INVALID_PAGE_PROTECTION, STATUS_INVALID_PARAMETER_4};
-
-pub const STATUS_ACCESS_DENIED: Status = Status(0xC000_0022);
-const STATUS_NOT_MAPPED_VIEW: Status = Status(0xC000_0019);
-const STATUS_INVALID_VIEW_SIZE: Status = Status(0xC000_001F);
-const STATUS_SECTION_TOO_BIG: Status = Status(0xC000_0040);
-const STATUS_SECTION_PROTECTION: Status = Status(0xC000_004E);
-const STATUS_INVALID_FILE_FOR_SECTION: Status = Status(0xC000_0020);
-const STATUS_INVALID_IMAGE_FORMAT: Status = Status(0xC000_007B);
-const STATUS_MEDIA_WRITE_PROTECTED: Status = Status(0xC000_00A2);
-const STATUS_INVALID_PARAMETER_6: Status = Status(0xC000_00F4);
-const STATUS_INVALID_PARAMETER_8: Status = Status(0xC000_00F6);
-const STATUS_INVALID_PARAMETER_9: Status = Status(0xC000_00F7);
-const STATUS_MAPPED_FILE_SIZE_ZERO: Status = Status(0xC000_011E);
-const STATUS_INVALID_IMAGE_NE_FORMAT: Status = Status(0xC000_011B);
-const STATUS_INVALID_IMAGE_LE_FORMAT: Status = Status(0xC000_012E);
-const STATUS_INVALID_IMAGE_NOT_MZ: Status = Status(0xC000_012F);
-const STATUS_INVALID_IMAGE_PROTECT: Status = Status(0xC000_0130);
-const STATUS_INVALID_IMAGE_WIN_16: Status = Status(0xC000_0131);
-#[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
-const STATUS_IO_DEVICE_ERROR: Status = Status(0xC000_0185);
-const STATUS_MAPPED_ALIGNMENT: Status = Status(0xC000_0220);
+use crate::status::*;
 
 /// The page protections a section and a view take.
 const PAGE_NOACCESS: u32 = 0x01;
@@ -129,7 +107,7 @@ pub fn plan(
     protect: u32,
     allocation: u32,
     file: Option<Backing>,
-) -> Result<Plan, Status> {
+) -> Result<Plan, NtStatus> {
     if allocation & !(SEC_FILE | SEC_IMAGE | SEC_RESERVE | SEC_COMMIT | SEC_NOCACHE) != 0
         || allocation & (SEC_IMAGE | SEC_RESERVE | SEC_COMMIT) == 0
         || allocation & (SEC_RESERVE | SEC_COMMIT) == SEC_RESERVE | SEC_COMMIT
@@ -181,7 +159,7 @@ pub fn plan(
 /// An image section's rules over its file, before the image itself is read (see
 /// [`image_layout`]): a file opened for reading (or executing), and a page protection a view of
 /// code takes (any but no-access); the size is the image's, settled by its parse.
-fn image_plan(protect: u32, file: Option<Backing>) -> Result<Plan, Status> {
+fn image_plan(protect: u32, file: Option<Backing>) -> Result<Plan, NtStatus> {
     let file = file.ok_or(STATUS_INVALID_FILE_FOR_SECTION)?;
     if !matches!(
         protect,
@@ -216,7 +194,7 @@ pub const IMAGE_HEADERS: usize = 0x1000;
 /// An image's layout, from its first bytes `headers` (up to [`IMAGE_HEADERS`]) in a file of
 /// `file_size` bytes: its preferred base and its size as mapped. A file the loader's parse refuses
 /// is `not_an_image`'s status.
-pub fn image_layout(headers: &[u8], file_size: u32) -> Result<(u32, u32), Status> {
+pub fn image_layout(headers: &[u8], file_size: u32) -> Result<(u32, u32), NtStatus> {
     let image = crate::exec::pe::Image::parse_headers(headers, file_size as usize)
         .map_err(|_| not_an_image(headers))?;
     if image.size_of_image as u64 > crate::mem::vm::SECTION_MAX {
@@ -246,7 +224,7 @@ const PE32_MAGIC: [u8; 2] = 0x10Bu16.to_le_bytes();
 /// header (no NT header at all: the spawn fixture's capture has GetBinaryType call a PE signature
 /// followed by zeros a DOS program); and STATUS_INVALID_IMAGE_FORMAT for the rest — a PE32 file
 /// the parse refuses (broken, truncated or foreign) or a DOS header cut short.
-fn not_an_image(headers: &[u8]) -> Status {
+fn not_an_image(headers: &[u8]) -> NtStatus {
     if headers.get(..2) != Some(b"MZ".as_slice()) {
         return STATUS_INVALID_IMAGE_NOT_MZ;
     }
@@ -293,7 +271,7 @@ pub fn image_view(
     bytes: u32,
     image_base: u32,
     size: u32,
-) -> Result<(), Status> {
+) -> Result<(), NtStatus> {
     if section_access(access) & (SECTION_MAP_READ | SECTION_MAP_EXECUTE) == 0 {
         return Err(STATUS_ACCESS_DENIED);
     }
@@ -301,7 +279,7 @@ pub fn image_view(
         return Err(STATUS_INVALID_VIEW_SIZE);
     }
     if base != 0 && base != image_base {
-        return Err(crate::nt::memory::STATUS_CONFLICTING_ADDRESSES);
+        return Err(STATUS_CONFLICTING_ADDRESSES);
     }
     Ok(())
 }
@@ -336,7 +314,7 @@ pub fn view(
     base: u32,
     offset: u64,
     bytes: u32,
-) -> Result<u32, Status> {
+) -> Result<u32, NtStatus> {
     let needs = if protect == PAGE_READWRITE {
         SECTION_MAP_WRITE
     } else {
@@ -364,7 +342,7 @@ pub fn view(
 
 /// NtMapViewOfSection's own argument checks, before the handle is looked at: the inherit
 /// disposition, the allocation type and the view's protection.
-pub fn view_arguments(inherit: u32, allocation: u32, protect: u32) -> Result<(), Status> {
+pub fn view_arguments(inherit: u32, allocation: u32, protect: u32) -> Result<(), NtStatus> {
     if inherit != VIEW_SHARE && inherit != VIEW_UNMAP {
         return Err(STATUS_INVALID_PARAMETER_8);
     }
@@ -386,9 +364,6 @@ pub fn view_arguments(inherit: u32, allocation: u32, protect: u32) -> Result<(),
 /// SECTION_INFORMATION_CLASS: SectionBasicInformation and SectionImageInformation.
 pub const SECTION_BASIC_INFORMATION: u32 = 0;
 pub const SECTION_IMAGE_INFORMATION: u32 = 1;
-
-/// STATUS_SECTION_NOT_IMAGE: the image information of a data section.
-pub const STATUS_SECTION_NOT_IMAGE: Status = Status(0xC000_0049);
 
 /// SECTION_BASIC_INFORMATION: a section's base (zero for every section on Windows 2000, an image
 /// section's included: a section has no base of its own, only its views do), its allocation
@@ -531,7 +506,7 @@ const OPTIONAL_LOADER_FLAGS: usize = 88;
 pub fn image_information(
     headers: &[u8],
     file_size: u32,
-) -> Result<SectionImageInformation, Status> {
+) -> Result<SectionImageInformation, NtStatus> {
     let image = crate::exec::pe::Image::parse_headers(headers, file_size as usize)
         .map_err(|_| STATUS_INVALID_IMAGE_FORMAT)?;
     // The parse checked the headers hold the file header and the whole optional header, whose
@@ -570,21 +545,21 @@ pub fn image_information(
 /// NtQuerySection's class and length rules: the class's structure's size, which the buffer must
 /// hold at least. STATUS_INVALID_INFO_CLASS for another class, STATUS_INFO_LENGTH_MISMATCH for a
 /// shorter buffer.
-pub fn query_size(class: u32, length: u32) -> Result<u32, Status> {
+pub fn query_size(class: u32, length: u32) -> Result<u32, NtStatus> {
     let size = match class {
         SECTION_BASIC_INFORMATION => core::mem::size_of::<SectionBasicInformation>() as u32,
         SECTION_IMAGE_INFORMATION => SECTION_IMAGE_INFORMATION_SIZE,
-        _ => return Err(crate::nt::memory::STATUS_INVALID_INFO_CLASS),
+        _ => return Err(STATUS_INVALID_INFO_CLASS),
     };
     if length < size {
-        return Err(crate::nt::memory::STATUS_INFO_LENGTH_MISMATCH);
+        return Err(STATUS_INFO_LENGTH_MISMATCH);
     }
     Ok(size)
 }
 
 /// Whether a handle granted `access` may query its section (SECTION_QUERY, its generic rights
 /// mapped): STATUS_ACCESS_DENIED otherwise.
-pub fn query_access(access: u32) -> Result<(), Status> {
+pub fn query_access(access: u32) -> Result<(), NtStatus> {
     if section_access(access) & SECTION_QUERY == 0 {
         return Err(STATUS_ACCESS_DENIED);
     }
@@ -594,7 +569,7 @@ pub fn query_access(access: u32) -> Result<(), Status> {
 /// Whether a section handle granted `access` may make a process's image (NtCreateProcess's
 /// SectionHandle must grant SECTION_MAP_EXECUTE, its generic rights mapped):
 /// STATUS_ACCESS_DENIED otherwise.
-pub fn process_image_access(access: u32) -> Result<(), Status> {
+pub fn process_image_access(access: u32) -> Result<(), NtStatus> {
     if section_access(access) & SECTION_MAP_EXECUTE == 0 {
         return Err(STATUS_ACCESS_DENIED);
     }
@@ -608,22 +583,8 @@ pub use target::*;
 mod target {
     use super::*;
     use crate::mem::vm::{CurrentPages, Kind, PAGE};
-    use crate::nt::call::{
-        calling_process,
-        Handle,
-        NtCall,
-        NtResult,
-        UserAddr,
-        UserPtr,
-        STATUS_SUCCESS,
-    };
-    use crate::nt::memory::{
-        capture,
-        with_space,
-        STATUS_CONFLICTING_ADDRESSES,
-        STATUS_INVALID_PARAMETER_2,
-        STATUS_NO_MEMORY,
-    };
+    use crate::nt::call::{calling_process, Handle, NtCall, NtResult, UserAddr, UserPtr};
+    use crate::nt::memory::{capture, with_space};
     use crate::nt::object::is_console_handle;
     use crate::nt::sync;
     use crate::ob::{self, ObjectId, ObjectType};
@@ -636,7 +597,9 @@ mod target {
     /// The file object a handle names, with its file as its record holds it now and the access the
     /// handle's open was granted. STATUS_INVALID_HANDLE for a handle naming nothing (a console
     /// handle included), STATUS_OBJECT_TYPE_MISMATCH for one naming another kind.
-    fn file_of(handle: u32) -> Result<(ObjectId, crate::fs::fat32::lookup::File, Backing), Status> {
+    fn file_of(
+        handle: u32,
+    ) -> Result<(ObjectId, crate::fs::fat32::lookup::File, Backing), NtStatus> {
         if is_console_handle(handle) {
             return Err(STATUS_INVALID_HANDLE);
         }
@@ -646,7 +609,7 @@ mod target {
             .and_then(|entry| entry.object_id())
             .ok_or(STATUS_INVALID_HANDLE)?;
         if id.kind != ObjectType::File {
-            return Err(crate::nt::attributes::STATUS_OBJECT_TYPE_MISMATCH);
+            return Err(STATUS_OBJECT_TYPE_MISMATCH);
         }
         let object = ob::directory().file(id).ok_or(STATUS_INVALID_HANDLE)?;
         let file = crate::fs::file::records().get(object.record).file;
@@ -801,7 +764,7 @@ mod target {
     }
 
     /// An image file's layout (see [`image_layout`]), from its first page as the volume holds it.
-    fn read_layout(file: &crate::fs::fat32::lookup::File) -> Result<(u32, u32), Status> {
+    fn read_layout(file: &crate::fs::fat32::lookup::File) -> Result<(u32, u32), NtStatus> {
         let mut headers = [0u8; IMAGE_HEADERS];
         let headers = &mut headers[..IMAGE_HEADERS.min(file.size as usize)];
         if crate::fs::io::read_file_at(file, 0, headers).is_none() {
@@ -821,7 +784,7 @@ mod target {
     }
 
     /// The section a handle names, referenced, with the access the handle was granted.
-    fn section_of(handle: u32) -> Result<(ob::ObRef, u32), Status> {
+    fn section_of(handle: u32) -> Result<(ob::ObRef, u32), NtStatus> {
         if is_console_handle(handle) {
             return Err(STATUS_INVALID_HANDLE);
         }
@@ -831,7 +794,7 @@ mod target {
             .ok_or(STATUS_INVALID_HANDLE)?;
         let id = entry.object_id().ok_or(STATUS_INVALID_HANDLE)?;
         if id.kind != ObjectType::Section {
-            return Err(crate::nt::attributes::STATUS_OBJECT_TYPE_MISMATCH);
+            return Err(STATUS_OBJECT_TYPE_MISMATCH);
         }
         Ok((
             ob::reference(id).ok_or(STATUS_INVALID_HANDLE)?,
@@ -957,7 +920,7 @@ mod target {
         offset: u32,
         bytes: u32,
         protect: u32,
-    ) -> Result<u32, Status> {
+    ) -> Result<u32, NtStatus> {
         if !space.has_view_room() {
             return Err(STATUS_NO_MEMORY);
         }
@@ -1036,7 +999,7 @@ mod target {
     /// (NtCreateProcess): the section referenced, and its segment. The handle's refusals (see
     /// [`section_of`]), one not granted SECTION_MAP_EXECUTE (see [`process_image_access`]), and a
     /// data section STATUS_SECTION_NOT_IMAGE.
-    pub fn image_segment_of(handle: u32) -> Result<(ob::ObRef, ob::SegmentId), Status> {
+    pub fn image_segment_of(handle: u32) -> Result<(ob::ObRef, ob::SegmentId), NtStatus> {
         let (object, access) = section_of(handle)?;
         process_image_access(access)?;
         let segment = object.section().segment.ok_or(STATUS_SECTION_NOT_IMAGE)?;
@@ -1053,7 +1016,7 @@ mod target {
         space: &mut crate::mem::vm::AddressSpace,
         table: &mut CurrentPages,
         segment: ob::SegmentId,
-    ) -> Result<ImageView, Status> {
+    ) -> Result<ImageView, NtStatus> {
         use crate::exec::loader::page_protect;
         use crate::mem::vm::PAGE_EXECUTE_WRITECOPY;
         if !space.has_view_room() {
@@ -1249,7 +1212,7 @@ mod host {
 mod tests {
     use super::*;
 
-    fn error<T: core::fmt::Debug>(result: Result<T, Status>) -> u32 {
+    fn error<T: core::fmt::Debug>(result: Result<T, NtStatus>) -> u32 {
         rtl::status::dos_error(result.expect_err("the call fails").0)
     }
 
@@ -1636,12 +1599,9 @@ mod tests {
         assert_eq!(query_size(SECTION_IMAGE_INFORMATION, 0x40), Ok(0x30));
         assert_eq!(
             query_size(SECTION_IMAGE_INFORMATION, 0x2C),
-            Err(crate::nt::memory::STATUS_INFO_LENGTH_MISMATCH)
+            Err(STATUS_INFO_LENGTH_MISMATCH)
         );
-        assert_eq!(
-            query_size(2, 0x100),
-            Err(crate::nt::memory::STATUS_INVALID_INFO_CLASS)
-        );
+        assert_eq!(query_size(2, 0x100), Err(STATUS_INVALID_INFO_CLASS));
         assert_eq!(query_access(SECTION_QUERY), Ok(()));
         assert_eq!(query_access(GENERIC_READ), Ok(()));
         assert_eq!(query_access(crate::ob::SECTION_ALL_ACCESS), Ok(()));
@@ -1684,7 +1644,7 @@ mod tests {
         );
         assert_eq!(
             image_view(map, 0x2000_0000, 0, 0, base, size),
-            Err(crate::nt::memory::STATUS_CONFLICTING_ADDRESSES)
+            Err(STATUS_CONFLICTING_ADDRESSES)
         );
         assert_eq!(
             image_view(map, 0, 0x1_0000, 0, base, size),

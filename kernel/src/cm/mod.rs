@@ -26,15 +26,7 @@ use core::cmp::Ordering;
 use core::ptr::NonNull;
 
 use crate::mem::heap::KernelHeap;
-use crate::nt::attributes::{STATUS_OBJECT_NAME_INVALID, STATUS_OBJECT_NAME_NOT_FOUND};
-use crate::nt::call::Status;
-
-/// A key deleted while a handle still named it: what every service answers through that handle.
-pub const STATUS_KEY_DELETED: Status = Status(0xC000_017C);
-/// A key that cannot be deleted: one with subkeys, or a hive's root.
-pub const STATUS_CANNOT_DELETE: Status = Status(0xC000_0121);
-/// No record or arena room is left for a new key or value.
-pub const STATUS_INSUFFICIENT_RESOURCES: Status = Status(0xC000_009A);
+use crate::status::*;
 
 /// How many keys can exist at once.
 pub const KEYS: usize = 512;
@@ -208,7 +200,7 @@ pub fn same_name(a: &[u16], b: &[u16]) -> bool {
 /// A relative path's key names, checked: one trailing separator is ignored; an empty name
 /// elsewhere (a doubled separator, a leading one) or one past [`MAX_KEY_NAME`] is
 /// STATUS_OBJECT_NAME_INVALID. The empty path has no names.
-pub fn components(path: &[u16]) -> Result<Components<'_>, Status> {
+pub fn components(path: &[u16]) -> Result<Components<'_>, NtStatus> {
     let path = path.strip_suffix(&[SEPARATOR]).unwrap_or(path);
     if !path.is_empty()
         && path
@@ -345,7 +337,7 @@ impl Registry {
     }
 
     /// The record of `key`, while it lives; STATUS_KEY_DELETED once it is gone.
-    pub fn check(&self, key: Key) -> Result<u16, Status> {
+    pub fn check(&self, key: Key) -> Result<u16, NtStatus> {
         let node = self
             .nodes
             .get(key.index as usize)
@@ -359,7 +351,7 @@ impl Registry {
 
     /// `units` copied into a fresh arena block (none for no units); STATUS_INSUFFICIENT_RESOURCES
     /// when the arena has no room.
-    fn store_units(&mut self, units: &[u16]) -> Result<Blob, Status> {
+    fn store_units(&mut self, units: &[u16]) -> Result<Blob, NtStatus> {
         let blob = self.allocate(2 * units.len())?;
         put_units(blob.bytes_mut(), units);
         Ok(blob)
@@ -367,7 +359,7 @@ impl Registry {
 
     /// A fresh arena block of `bytes` bytes (none for none); STATUS_INSUFFICIENT_RESOURCES when the
     /// arena has no room.
-    fn allocate(&mut self, bytes: usize) -> Result<Blob, Status> {
+    fn allocate(&mut self, bytes: usize) -> Result<Blob, NtStatus> {
         if bytes == 0 {
             return Ok(Blob::EMPTY);
         }
@@ -395,9 +387,9 @@ impl Registry {
     pub fn with_scratch<R>(
         &mut self,
         units: usize,
-        fill: impl FnOnce(&mut [u8]) -> Result<(), Status>,
+        fill: impl FnOnce(&mut [u8]) -> Result<(), NtStatus>,
         then: impl FnOnce(&mut Registry, &[u16]) -> R,
-    ) -> Result<R, Status> {
+    ) -> Result<R, NtStatus> {
         let blob = self.allocate(2 * units)?;
         let result = fill(blob.bytes_mut()).map(|()| then(self, blob.units()));
         self.free(blob);
@@ -433,7 +425,7 @@ impl Registry {
 
     /// The key `path` names below `from` ("" names `from` itself): STATUS_OBJECT_NAME_NOT_FOUND
     /// when a key on the way is missing.
-    pub fn open(&self, from: Key, path: &[u16]) -> Result<Key, Status> {
+    pub fn open(&self, from: Key, path: &[u16]) -> Result<Key, NtStatus> {
         let mut index = self.check(from)?;
         for name in components(path)? {
             index = self
@@ -451,7 +443,7 @@ impl Registry {
         path: &[u16],
         class: &[u16],
         now: u64,
-    ) -> Result<(Key, bool), Status> {
+    ) -> Result<(Key, bool), NtStatus> {
         let mut index = self.check(from)?;
         let mut names = components(path)?.peekable();
         while let Some(name) = names.next() {
@@ -475,7 +467,7 @@ impl Registry {
         name: &[u16],
         class: &[u16],
         now: u64,
-    ) -> Result<Key, Status> {
+    ) -> Result<Key, NtStatus> {
         let index = (1..KEYS)
             .find(|&index| !self.nodes[index].live)
             .ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
@@ -503,7 +495,7 @@ impl Registry {
 
     /// Delete `key` with its values (at `now`): STATUS_CANNOT_DELETE for a key with subkeys or a
     /// hive's root. Its record moves on to a new generation, so its key objects find it gone.
-    pub fn delete(&mut self, key: Key, now: u64) -> Result<(), Status> {
+    pub fn delete(&mut self, key: Key, now: u64) -> Result<(), NtStatus> {
         let index = self.check(key)?;
         let node = self.nodes[index as usize];
         if node.permanent
@@ -529,7 +521,7 @@ impl Registry {
     }
 
     /// Subkey `position` of `key`, in the listing's order; none past the last.
-    pub fn subkey(&self, key: Key, position: u32) -> Result<Option<Key>, Status> {
+    pub fn subkey(&self, key: Key, position: u32) -> Result<Option<Key>, NtStatus> {
         let index = self.check(key)?;
         let mut children = [0u16; KEYS];
         let count = self.children(index, &mut children);
@@ -539,7 +531,7 @@ impl Registry {
     }
 
     /// What the information classes report about `key`.
-    pub fn info(&self, key: Key) -> Result<KeyInfo<'_>, Status> {
+    pub fn info(&self, key: Key) -> Result<KeyInfo<'_>, NtStatus> {
         let index = self.check(key)?;
         let node = &self.nodes[index as usize];
         let mut info = KeyInfo {
@@ -592,7 +584,7 @@ impl Registry {
 
     /// The value of `key` named `name` (the empty name is the key's default value):
     /// STATUS_OBJECT_NAME_NOT_FOUND when it has none.
-    pub fn query_value(&self, key: Key, name: &[u16]) -> Result<ValueInfo<'_>, Status> {
+    pub fn query_value(&self, key: Key, name: &[u16]) -> Result<ValueInfo<'_>, NtStatus> {
         let index = self.check(key)?;
         let slot = self
             .find_value(index, name)
@@ -601,7 +593,7 @@ impl Registry {
     }
 
     /// Value `position` of `key`, in the order its values were first set; none past the last.
-    pub fn value_at(&self, key: Key, position: u32) -> Result<Option<ValueInfo<'_>>, Status> {
+    pub fn value_at(&self, key: Key, position: u32) -> Result<Option<ValueInfo<'_>>, NtStatus> {
         let index = self.check(key)?;
         let mut after = None;
         let mut slot = None;
@@ -631,8 +623,8 @@ impl Registry {
         kind: u32,
         size: usize,
         now: u64,
-        fill: impl FnOnce(&mut [u8]) -> Result<(), Status>,
-    ) -> Result<(), Status> {
+        fill: impl FnOnce(&mut [u8]) -> Result<(), NtStatus>,
+    ) -> Result<(), NtStatus> {
         let index = self.check(key)?;
         let data = self.allocate(size)?;
         if let Err(status) = fill(data.bytes_mut()) {
@@ -676,7 +668,7 @@ impl Registry {
     }
 
     /// Delete `key`'s value `name` (at `now`): STATUS_OBJECT_NAME_NOT_FOUND when it has none.
-    pub fn delete_value(&mut self, key: Key, name: &[u16], now: u64) -> Result<(), Status> {
+    pub fn delete_value(&mut self, key: Key, name: &[u16], now: u64) -> Result<(), NtStatus> {
         let index = self.check(key)?;
         let slot = self
             .find_value(index, name)
@@ -943,8 +935,8 @@ mod tests {
         assert_eq!(r.info(user).unwrap().last_write, 6);
         // A failed fill leaves the value as it was.
         assert_eq!(
-            r.set_value(user, &w("one"), 1, 4, 7, |_| Err(Status(0xC000_0005))),
-            Err(Status(0xC000_0005))
+            r.set_value(user, &w("one"), 1, 4, 7, |_| Err(STATUS_ACCESS_VIOLATION)),
+            Err(STATUS_ACCESS_VIOLATION)
         );
         assert_eq!(r.query_value(user, &w("one")).unwrap().data, &[9, 9]);
     }

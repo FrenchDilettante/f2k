@@ -8,15 +8,7 @@
 //! (STATUS_BUFFER_OVERFLOW), the search past it. Entries match by their long name, then their 8.3
 //! name; a listing reports the 8.3 name beside a long one only.
 
-use super::super::call::{
-    Handle,
-    NtCall,
-    NtResult,
-    Status,
-    UserAddr,
-    STATUS_INVALID_PARAMETER,
-    STATUS_SUCCESS,
-};
+use super::super::call::{Handle, NtCall, NtResult, UserAddr};
 use super::common::{
     check_access,
     cluster_bytes,
@@ -27,20 +19,12 @@ use super::common::{
     signal,
 };
 use super::info::{self, Entry};
-use super::{
-    STATUS_BUFFER_OVERFLOW,
-    STATUS_INFO_LENGTH_MISMATCH,
-    STATUS_INSUFFICIENT_RESOURCES,
-    STATUS_INVALID_INFO_CLASS,
-    STATUS_NOT_IMPLEMENTED,
-    STATUS_NO_MORE_FILES,
-    STATUS_NO_SUCH_FILE,
-};
 use crate::fs::fat32::dir::{decode_byte, fold_unit, walk, Listed};
 use crate::fs::fat32::lookup::File;
 use crate::fs::fat32::path::MAX_NAME;
 use crate::fs::file::rights;
 use crate::fs::search::{matches, searches, MAX_EXPRESSION};
+use crate::status::*;
 
 /// The most a query copies out at once (a listing buffer's worth: FindFirstFile's is 4 KiB).
 const MAX_BUFFER: usize = 0x4000;
@@ -136,7 +120,7 @@ fn query_directory_file_held(
                 header[4], header[5], header[6], header[7],
             ]));
             if count > MAX_EXPRESSION {
-                return Err(super::super::attributes::STATUS_OBJECT_NAME_INVALID);
+                return Err(STATUS_OBJECT_NAME_INVALID);
             }
             let mut raw = [0u8; 2 * MAX_EXPRESSION];
             buffer.read(&mut raw[..2 * count])?;
@@ -214,7 +198,7 @@ fn query_directory_file_held(
             state.next = next;
             state.answered = answered;
             match last {
-                None if search.answered => Err(Status(STATUS_NO_MORE_FILES)),
+                None if search.answered => Err(STATUS_NO_MORE_FILES),
                 None => Err(STATUS_NO_SUCH_FILE),
                 Some(_) => {
                     information.write(&buffer[..used])?;
@@ -226,17 +210,17 @@ fn query_directory_file_held(
                 }
             }
         }
-        Some(Err(_)) | None => Err(super::status(crate::status::STATUS_FILE_CORRUPT_ERROR)),
+        Some(Err(_)) | None => Err(STATUS_FILE_CORRUPT_ERROR),
     };
     let (code, information) = match result {
         Ok(code) => (code, used as u32),
-        Err(Status(code)) => (code, 0),
+        Err(code) => (code, 0),
     };
     complete(io_status, code, information);
     signal(event);
     // A cut entry is a warning: the status fails the call, the record still delivered.
     if code == STATUS_BUFFER_OVERFLOW {
-        return Err(Status(code));
+        return Err(code);
     }
     result
 }

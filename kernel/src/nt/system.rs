@@ -4,21 +4,9 @@
 //! GetTimeZoneInformation and QueryPerformanceCounter/Frequency over the others, SetLocalTime over
 //! the last, as on Windows 2000.
 
-use super::call::{
-    NtCall,
-    NtResult,
-    Status,
-    UserAddr,
-    UserPtr,
-    STATUS_INVALID_PARAMETER,
-    STATUS_SUCCESS,
-};
+use super::call::{NtCall, NtResult, UserAddr, UserPtr};
 use crate::mem::vm::{GRANULARITY, PAGE, USER_HIGH, USER_LOW};
-
-/// STATUS_INVALID_INFO_CLASS: a class the service does not answer.
-pub const STATUS_INVALID_INFO_CLASS: Status = Status(0xC000_0003);
-/// STATUS_INFO_LENGTH_MISMATCH: a buffer of the wrong length for the class's structure.
-pub const STATUS_INFO_LENGTH_MISMATCH: Status = Status(0xC000_0004);
+use crate::status::*;
 
 /// SystemBasicInformation: the page size, the physical pages, the allocation granularity, the
 /// application range and the processors (SYSTEM_BASIC_INFORMATION, 44 bytes).
@@ -115,7 +103,7 @@ pub fn system_information(
     length: u32,
     (pages, available): (u32, u32),
     out: &mut [u8; SYSTEM_PERFORMANCE_INFORMATION_SIZE as usize],
-) -> Result<usize, Status> {
+) -> Result<usize, NtStatus> {
     let exactly = |size: u32| {
         if length == size {
             Ok(size as usize)
@@ -216,7 +204,7 @@ mod tests {
         u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap())
     }
 
-    fn query(class: u32, length: u32) -> Result<std::vec::Vec<u8>, Status> {
+    fn query(class: u32, length: u32) -> Result<std::vec::Vec<u8>, NtStatus> {
         let mut out = [0u8; SYSTEM_PERFORMANCE_INFORMATION_SIZE as usize];
         let size = system_information(class, length, (0x4000, 0x1000), &mut out)?;
         Ok(out[..size].to_vec())

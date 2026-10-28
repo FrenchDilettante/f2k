@@ -31,13 +31,11 @@ use rtl::console::{header, Client, Console, Handles, DATA_WORDS, MESSAGE_BYTES};
 
 use crate::hw::portio::Io;
 use crate::hw::vga::{CellMemory, TextScreen};
-use crate::nt::call::{NtResult, Status, UserAddr, STATUS_INVALID_PARAMETER};
+use crate::nt::call::{NtResult, UserAddr};
 #[cfg(target_arch = "x86")]
 use crate::ob::ObjectId;
+use crate::status::*;
 use crate::user::syscall::ServiceFn;
-
-/// STATUS_INVALID_USER_BUFFER: a buffer that passed the probe but could not be read.
-const STATUS_INVALID_USER_BUFFER: u32 = 0xC000_00E8;
 
 /// The service the dispatcher raises SYS_CSR_CALL into: its four dword arguments, and its body.
 pub const SERVICE: (u32, ServiceFn) = (16, service);
@@ -85,8 +83,12 @@ pub fn init() {
 /// SYS_CSR_CALL's service: CsrClientCallServer(message, capture buffer, API number, data length),
 /// answered for the calling process.
 #[cfg(target_arch = "x86")]
-fn service(frame: &mut crate::user::TrapFrame, args: &[u32]) {
-    let mut call = crate::nt::call::NtCall::new(frame);
+fn service(
+    frame: &mut crate::user::TrapFrame,
+    args: &[u32],
+    passive: &mut crate::level::At<crate::level::Passive>,
+) {
+    let mut call = crate::nt::call::NtCall::new(frame, passive);
     let handles = call.process().console_mut();
     // SAFETY: a system service: one CPU, interrupts off.
     let console = unsafe { console() };
@@ -128,10 +130,9 @@ fn show_input(console: &Console) {
 /// The calling process's handle to the input-wait event: a new handle on the live one, or a fresh
 /// event published with it; STATUS_INSUFFICIENT_RESOURCES when neither can be had.
 #[cfg(target_arch = "x86")]
-fn input_wait_handle() -> Result<u32, u32> {
+fn input_wait_handle() -> Result<u32, NtStatus> {
     use crate::ob::{self, EVENT_ALL_ACCESS};
     use crate::sched::event::EventKind;
-    const STATUS_INSUFFICIENT_RESOURCES: u32 = 0xC000_009A;
     let process = crate::user::args::calling_process();
     // SAFETY: the console's own state, touched in its service (see `console`).
     let slot = unsafe { &mut *core::ptr::addr_of_mut!(INPUT_EVENT) };
@@ -209,7 +210,11 @@ fn present<M: CellMemory, P: Io>(screen: &mut ScreenBuffer, vga: &mut TextScreen
 
 /// Host builds compile the dispatch but never raise it.
 #[cfg(not(target_arch = "x86"))]
-fn service(_frame: &mut crate::user::TrapFrame, _args: &[u32]) {
+fn service(
+    _frame: &mut crate::user::TrapFrame,
+    _args: &[u32],
+    _passive: &mut crate::level::At<crate::level::Passive>,
+) {
     unreachable!("the gate is the target's");
 }
 
@@ -242,21 +247,27 @@ pub fn client_call_server(
     {
         *word = u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]) as usize;
     }
-    let status = rtl::console::serve(console, handles, client, api, &mut data[..length / 4]);
+    let status = NtStatus(rtl::console::serve(
+        console,
+        handles,
+        client,
+        api,
+        &mut data[..length / 4],
+    ));
     let mut put = |at: usize, value: u32| bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
     put(header::CAPTURE_BUFFER, capture.raw());
     put(header::API_NUMBER, api);
-    put(header::RETURN_VALUE, status);
+    put(header::RETURN_VALUE, status.0);
     for (index, &word) in data[..length / 4].iter().enumerate() {
         put(header::DATA + 4 * index, word as u32);
     }
     message
         .offset(header::CAPTURE_BUFFER as u32)
         .write(&bytes[header::CAPTURE_BUFFER..size])?;
-    if status >> 30 >= 2 {
-        Err(Status(status))
-    } else {
+    if status.is_success() {
         Ok(status)
+    } else {
+        Err(status)
     }
 }
 
@@ -277,14 +288,14 @@ impl Client for Dual {
         logged: bool,
     ) -> Result<(), u32> {
         let (buffer, count) = (buffer as u32, count as u32);
-        crate::user::syscall::probe_user_range(buffer, count)?;
+        crate::user::syscall::probe_user_range(buffer, count).map_err(|status| status.0)?;
         let mut chunk = [0u8; 256];
         let mut done = 0u32;
         while done < count {
             let take = (count - done).min(chunk.len() as u32) as usize;
             UserAddr(buffer.wrapping_add(done))
                 .read(&mut chunk[..take])
-                .map_err(|_| STATUS_INVALID_USER_BUFFER)?;
+                .map_err(|_| STATUS_INVALID_USER_BUFFER.0)?;
             if logged {
                 for &byte in &chunk[..take] {
                     serial_byte(byte);
@@ -308,22 +319,24 @@ impl Client for Dual {
 
     /// The caller's memory, refused as the services refuse it: STATUS_ACCESS_VIOLATION.
     fn read(&mut self, buffer: usize, into: &mut [u8]) -> Result<(), u32> {
-        crate::user::syscall::probe_user_range(buffer as u32, into.len() as u32)?;
+        crate::user::syscall::probe_user_range(buffer as u32, into.len() as u32)
+            .map_err(|status| status.0)?;
         UserAddr(buffer as u32)
             .read(into)
-            .map_err(|fault| Status::from(fault).0)
+            .map_err(|fault| NtStatus::from(fault).0)
     }
 
     fn write(&mut self, buffer: usize, bytes: &[u8]) -> Result<(), u32> {
-        crate::user::syscall::probe_user_range(buffer as u32, bytes.len() as u32)?;
+        crate::user::syscall::probe_user_range(buffer as u32, bytes.len() as u32)
+            .map_err(|status| status.0)?;
         UserAddr(buffer as u32)
             .write(bytes)
-            .map_err(|fault| Status::from(fault).0)
+            .map_err(|fault| NtStatus::from(fault).0)
     }
 
     fn input_wait_handle(&mut self) -> Result<u32, u32> {
         #[cfg(target_arch = "x86")]
-        return input_wait_handle();
+        return input_wait_handle().map_err(|status| status.0);
         #[cfg(not(target_arch = "x86"))]
         unreachable!("the gate is the target's");
     }
@@ -362,7 +375,7 @@ mod tests {
                 length,
             )
         };
-        assert_eq!(call(&mut handles, 4), Err(Status(0xC000_0005)));
+        assert_eq!(call(&mut handles, 4), Err(STATUS_ACCESS_VIOLATION));
         assert_eq!(handles, Handles::standard(), "nothing served");
         assert_eq!(call(&mut handles, 6), Err(STATUS_INVALID_PARAMETER));
         assert_eq!(

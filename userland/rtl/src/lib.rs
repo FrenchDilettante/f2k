@@ -24,6 +24,12 @@
 //! exports not written yet, and the paths their code does not handle) and DbgPrint's formatting
 //! ([`printf`]).
 //!
+//! The building blocks under them: the NT structures every side shares ([`nt`]: UNICODE_STRING,
+//! OBJECT_ATTRIBUTES, CLIENT_ID, IO_STATUS_BLOCK, generic over their pointers' width), plain data
+//! viewed as bytes ([`pod`]), a vector of fixed capacity for the code without an allocator
+//! ([`array_vec`]), NUL-terminated strings read once ([`cstr`]) and a process's state behind a
+//! lock ([`sync`]).
+//!
 //! On the DLLs' target (i686 Windows) only: what the compiler expects of an MSVC environment
 //! without its CRT (the compiler-helpers crate, which this library links into every DLL), the
 //! panic handler, [`sys`], the calling thread's TEB, the gate and the raises, and [`probe`], a read
@@ -32,11 +38,13 @@
 
 #![cfg_attr(not(test), no_std)]
 
+pub mod array_vec;
 pub mod bitmap;
 pub mod codepage;
 pub mod console;
 pub mod cp1252;
 pub mod critsec;
+pub mod cstr;
 pub mod env;
 pub mod execution_options;
 pub mod handles;
@@ -47,8 +55,10 @@ pub mod ldr;
 pub mod localmem;
 pub mod message;
 pub mod modules;
+pub mod nt;
 pub mod params;
 pub mod path;
+pub mod pod;
 pub mod printf;
 #[cfg(all(target_arch = "x86", target_os = "windows", not(test)))]
 pub mod probe;
@@ -58,6 +68,7 @@ pub mod status;
 mod status_table;
 pub mod string;
 pub mod stub;
+pub mod sync;
 #[cfg(all(target_arch = "x86", target_os = "windows", not(test)))]
 pub mod sys;
 pub mod time;

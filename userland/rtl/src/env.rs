@@ -28,10 +28,7 @@ pub enum EnvError {
 pub fn block_length(block: &[u16]) -> usize {
     let mut at = 0;
     loop {
-        let end = block[at..]
-            .iter()
-            .position(|&unit| unit == 0)
-            .map_or(block.len(), |i| at + i);
+        let end = at + crate::cstr::nul_len(&block[at..]);
         if end == at {
             // The final NUL; an empty block's first entry is empty too.
             return (at + 1).max(2).min(block.len());

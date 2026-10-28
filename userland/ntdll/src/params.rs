@@ -20,15 +20,6 @@ const MEM_COMMIT: u32 = 0x1000;
 const MEM_RESERVE: u32 = 0x2000;
 const PAGE_READWRITE: u32 = 0x04;
 
-/// Run `body` under the PEB lock.
-fn with_peb_lock<R>(body: impl FnOnce() -> R) -> R {
-    let lock = sys::peb_lock();
-    lock.enter(&sys::Native);
-    let result = body();
-    lock.leave(&sys::Native);
-    result
-}
-
 /// The calling process's own block.
 fn own_parameters() -> &'static ProcessParameters<usize> {
     // SAFETY: the PEB's ProcessParameters points at the process's block, mapped for its whole life
@@ -109,7 +100,7 @@ pub unsafe extern "system" fn rtl_create_process_parameters(
     let (Some(out), Some(image_path_name)) = (out, image_path_name) else {
         return STATUS_INVALID_PARAMETER;
     };
-    with_peb_lock(|| {
+    sys::peb_lock().with(&sys::Native, || {
         let own = own_parameters();
         let strings = Strings {
             current_directory: current_directory

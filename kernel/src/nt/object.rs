@@ -13,32 +13,14 @@
 //! exit): the services that need it answer STATUS_PROCESS_IS_TERMINATING, ntstatus.h's "an attempt
 //! was made to access an exiting process".
 
-use super::call::{
-    Fault,
-    Handle,
-    NtCall,
-    NtResult,
-    Status,
-    UserAddr,
-    UserPtr,
-    STATUS_INVALID_HANDLE,
-    STATUS_INVALID_PARAMETER,
-    STATUS_SUCCESS,
-};
+use super::call::{Fault, Handle, NtCall, NtResult, UserAddr, UserPtr};
 use crate::ob::{Entry, ObjectId, ObjectType};
+use crate::status::*;
 
 /// NtDuplicateObject's options: close the source handle, and give the duplicate the source's
 /// access.
 pub const DUPLICATE_CLOSE_SOURCE: u32 = 1;
 pub const DUPLICATE_SAME_ACCESS: u32 = 2;
-
-/// STATUS_INSUFFICIENT_RESOURCES: no handle could be made.
-pub const STATUS_INSUFFICIENT_RESOURCES: Status = Status(0xC000_009A);
-/// STATUS_ACCESS_DENIED: the handle was not granted the access the service needs.
-pub const STATUS_ACCESS_DENIED: Status = Status(0xC000_0022);
-/// STATUS_PROCESS_IS_TERMINATING: the process has ended (kernel32 maps it to ERROR_ACCESS_DENIED,
-/// as the spawn fixture's TerminateProcess of an ended process prints).
-pub const STATUS_PROCESS_IS_TERMINATING: Status = Status(0xC000_010A);
 
 /// The process access rights (winnt.h's PROCESS_*).
 pub const PROCESS_TERMINATE: u32 = 0x0001;
@@ -94,11 +76,11 @@ pub fn process_access(access: u32) -> u32 {
 /// is STATUS_INVALID_HANDLE, an entry naming another kind of object STATUS_OBJECT_TYPE_MISMATCH,
 /// one whose access lacks a right `needed` asks STATUS_ACCESS_DENIED — Windows' checks, in that
 /// order.
-pub fn process_of_entry(entry: Option<Entry>, needed: u32) -> Result<ObjectId, Status> {
+pub fn process_of_entry(entry: Option<Entry>, needed: u32) -> Result<ObjectId, NtStatus> {
     let entry = entry.ok_or(STATUS_INVALID_HANDLE)?;
     let id = entry.object_id().ok_or(STATUS_INVALID_HANDLE)?;
     if id.kind != ObjectType::Process {
-        return Err(super::attributes::STATUS_OBJECT_TYPE_MISMATCH);
+        return Err(STATUS_OBJECT_TYPE_MISMATCH);
     }
     if process_access(entry.access) & needed != needed {
         return Err(STATUS_ACCESS_DENIED);
@@ -151,7 +133,7 @@ impl ProcessRef {
     /// process, inside a critical region, so the thread cannot end attached (a termination
     /// requested meanwhile waits for the region's end). STATUS_PROCESS_IS_TERMINATING for a process
     /// that has ended: its address space is gone, or going.
-    pub fn visit<R>(&self, body: impl FnOnce() -> Result<R, Status>) -> Result<R, Status> {
+    pub fn visit<R>(&self, body: impl FnOnce() -> Result<R, NtStatus>) -> Result<R, NtStatus> {
         if self.ended() {
             return Err(STATUS_PROCESS_IS_TERMINATING);
         }
@@ -178,8 +160,8 @@ impl ProcessRef {
     /// [`ProcessRef::visit`] and [`ProcessRef::reach`]).
     pub fn attached<R>(
         &self,
-        body: impl FnOnce(&mut crate::process::Process) -> Result<R, Status>,
-    ) -> Result<R, Status> {
+        body: impl FnOnce(&mut crate::process::Process) -> Result<R, NtStatus>,
+    ) -> Result<R, NtStatus> {
         self.visit(|| self.reach(|| body(self.record())))
     }
 }
@@ -187,7 +169,7 @@ impl ProcessRef {
 /// Reference the process `handle` names (see the module notes), checking it grants `needed`: the
 /// pseudo-handle names the calling process with every access; a console handle names nothing.
 #[cfg(target_arch = "x86")]
-pub fn reference_process(handle: u32, needed: u32) -> Result<ProcessRef, Status> {
+pub fn reference_process(handle: u32, needed: u32) -> Result<ProcessRef, NtStatus> {
     let calling = crate::process::current();
     let id = match handle {
         CURRENT_PROCESS => calling.object(),
@@ -222,10 +204,6 @@ pub(crate) fn names_current_process(handle: u32) -> bool {
     handle == CURRENT_PROCESS
 }
 
-/// STATUS_HANDLE_NOT_CLOSABLE: NtClose of a handle protected from close (ntstatus.h: "NtClose was
-/// called on a handle that was protected from close via NtSetInformationObject").
-pub const STATUS_HANDLE_NOT_CLOSABLE: Status = Status(0xC000_0235);
-
 /// NtClose: the handle's entry released from the calling process's handle table (the object goes
 /// once its last reference does). STATUS_INVALID_HANDLE for a handle naming no entry,
 /// STATUS_HANDLE_NOT_CLOSABLE for one protected from close (see [`set_information_object`]), left
@@ -253,7 +231,7 @@ pub fn close(call: &mut NtCall, handle: Handle) -> NtResult {
 }
 
 /// Whether NtClose may close the handle an entry is: not when it is protected from close.
-pub fn closable(entry: Entry) -> Result<(), Status> {
+pub fn closable(entry: Entry) -> Result<(), NtStatus> {
     if entry.protect_from_close {
         Err(STATUS_HANDLE_NOT_CLOSABLE)
     } else {
@@ -264,11 +242,6 @@ pub fn closable(entry: Entry) -> Result<(), Status> {
 /// OBJECT_INFORMATION_CLASS: ObjectHandleFlagInformation, the one class NtQueryObject and
 /// NtSetInformationObject answer here.
 pub const OBJECT_HANDLE_FLAG_INFORMATION: u32 = 4;
-
-/// STATUS_INVALID_INFO_CLASS and STATUS_INFO_LENGTH_MISMATCH: a class not answered, a buffer
-/// too short for the class's structure (or, for NtSetInformationObject, not its size).
-const STATUS_INVALID_INFO_CLASS: Status = Status(0xC000_0003);
-const STATUS_INFO_LENGTH_MISMATCH: Status = Status(0xC000_0004);
 
 /// OBJECT_HANDLE_FLAG_INFORMATION: a handle's two attributes, as BOOLEANs.
 #[repr(C)]
@@ -327,7 +300,7 @@ pub enum FlagLength {
 /// handle: a class other than ObjectHandleFlagInformation is STATUS_INVALID_INFO_CLASS (the
 /// others, the object's basic, name, type and all-types information, are not answered here), a
 /// length the service does not take (see [`FlagLength`]) STATUS_INFO_LENGTH_MISMATCH.
-pub fn handle_flag_arguments(class: u32, length: u32, rule: FlagLength) -> Result<(), Status> {
+pub fn handle_flag_arguments(class: u32, length: u32, rule: FlagLength) -> Result<(), NtStatus> {
     if class != OBJECT_HANDLE_FLAG_INFORMATION {
         return Err(STATUS_INVALID_INFO_CLASS);
     }
@@ -387,7 +360,7 @@ pub fn query_object(
 fn handle_entry_flags(
     call: &mut NtCall,
     handle: Handle,
-) -> Result<ObjectHandleFlagInformation, Status> {
+) -> Result<ObjectHandleFlagInformation, NtStatus> {
     #[cfg(target_arch = "x86")]
     {
         call.process()
@@ -464,7 +437,7 @@ pub enum TargetProcess {
     Reached,
     /// A handle the call cannot take as its target, with the reason: one naming nothing, another
     /// kind of object, a process handle without PROCESS_DUP_HANDLE, a process that has ended.
-    Refused(Status),
+    Refused(NtStatus),
 }
 
 /// NtDuplicateObject once its source handle is found, as `entry`: a new handle naming the same
@@ -517,7 +490,7 @@ pub fn duplicate_entry(
                 0 => Err(STATUS_INSUFFICIENT_RESOURCES),
                 handle => write(handle).map(|()| STATUS_SUCCESS).map_err(|fault| {
                     tables.close_duplicate(handle);
-                    Status::from(fault)
+                    NtStatus::from(fault)
                 }),
             }
         }
@@ -531,7 +504,6 @@ pub fn duplicate_entry(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::nt::call::STATUS_ACCESS_VIOLATION;
     use crate::ob::{ObjectId, ObjectType};
 
     const SOURCE: u32 = 0x44;
@@ -810,7 +782,7 @@ mod tests {
                 }),
                 PROCESS_VM_READ
             ),
-            Err(super::super::attributes::STATUS_OBJECT_TYPE_MISMATCH),
+            Err(STATUS_OBJECT_TYPE_MISMATCH),
             "the kind before the access"
         );
         assert_eq!(
@@ -838,7 +810,7 @@ mod tests {
         );
         for (status, error) in [
             (STATUS_INVALID_HANDLE, 6),
-            (super::super::attributes::STATUS_OBJECT_TYPE_MISMATCH, 6),
+            (STATUS_OBJECT_TYPE_MISMATCH, 6),
             (STATUS_ACCESS_DENIED, 5),
             (STATUS_PROCESS_IS_TERMINATING, 5),
         ] {

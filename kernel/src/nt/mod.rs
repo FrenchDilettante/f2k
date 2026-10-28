@@ -21,7 +21,7 @@
 macro_rules! unserved {
     ($($name:ident($($arg:ty),*);)*) => {$(
         pub fn $name(_: &mut NtCall, $(_: $arg),*) -> NtResult {
-            Err($crate::nt::call::Status(0xC000_0002))
+            Err($crate::status::STATUS_NOT_IMPLEMENTED)
         }
     )*};
 }
@@ -150,7 +150,7 @@ mod tests {
         // SAFETY: a trap frame is plain dwords; all zeros is a valid one.
         let mut frame: crate::user::TrapFrame = unsafe { core::mem::zeroed() };
         let (_, service) = lookup(0x18).unwrap();
-        service(&mut frame, &[0x44]);
+        service(&mut frame, &[0x44], &mut crate::level::passive_for_test());
         assert_eq!(frame.eax, 0xC000_0008);
     }
 }

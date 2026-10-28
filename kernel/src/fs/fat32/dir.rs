@@ -27,7 +27,6 @@ use super::fat::FatEntry;
 use super::lookup::LookupError;
 use super::path::{oem_to_ansi, short_form, MAX_NAME};
 use super::volume::Volume;
-use crate::status::nt_success;
 
 /// The most parts a long-name run has: 20 parts of 13 units cover the 255-unit limit.
 const MAX_PARTS: usize = 20;
@@ -240,7 +239,7 @@ pub fn walk(
         let first = layout.cluster_lba(cluster);
         for offset in 0..layout.sectors_per_cluster as u64 {
             let status = volume.device().read(first + offset, &mut sector);
-            if !nt_success(status) {
+            if !status.is_success() {
                 return Err(LookupError::Device(status));
             }
             for bytes in sector.as_chunks::<ENTRY_SIZE>().0 {

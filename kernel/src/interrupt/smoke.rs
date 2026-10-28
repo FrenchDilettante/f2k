@@ -14,6 +14,7 @@ use crate::hw::pit::{self, Programming};
 use crate::hw::portio::Ports;
 use crate::interrupt::clock::{self, CLOCK_VECTOR};
 use crate::interrupt::irql;
+use crate::pcr::pcr;
 use crate::sched::waitable_timer::WaitableTimer;
 use crate::serial_println;
 
@@ -21,6 +22,8 @@ use crate::serial_println;
 const LIVE_TICKS: u64 = 5;
 
 /// The diagnostic's timer: the clock's deferred work signals it.
+// Note: it stays a `static mut`: a waitable timer is initialized and armed through `&mut`, its
+// waiters list linking into the record, until the dispatcher database holds the timers.
 static mut TIMER: WaitableTimer = WaitableTimer::new(true);
 
 /// Sleep until the next interrupt: IF on, halt (interrupts are already enabled hardware-wide here;
@@ -35,8 +38,8 @@ fn wait_for_interrupt() {
 /// Run the diagnostic. Called once, from the boot, right after `interrupt::init`, before any other
 /// driver connects a line.
 pub fn run() {
-    // SAFETY: single CPU; the controller is the kernel's own, and these reads change no state.
-    let controller = unsafe { &mut *addr_of_mut!(super::target::CONTROLLER) };
+    // The controller is the kernel's own; these reads change no state.
+    let controller = &super::target::CONTROLLER;
     let (master_base, slave_base) = controller.vector_bases();
     serial_println!(
         "F2K: irq-smoke: PIC remapped (master {:#04x}, slave {:#04x}, IRQ0 {})",
@@ -86,7 +89,7 @@ pub fn run() {
     // a notification timer of the diagnostic's own, due one tick out. Its expiry, the DPC's walk,
     // signals it — nobody waits on it, and the signal is the observable.
     let timer = addr_of_mut!(TIMER);
-    let previous = irql::state_mut().raise(irql::DISPATCH);
+    let previous = pcr().raise(irql::DISPATCH);
     let now = clock::interrupt_time();
     // SAFETY: single CPU, at the dispatch level; the timer is this diagnostic's static, armed once,
     // here, and initialized at its final address before the set.
@@ -101,7 +104,7 @@ pub fn run() {
             0,
         );
     }
-    irql::state_mut().lower(previous);
+    pcr().lower(previous);
     // SAFETY: the expiry writes the signal state at the dispatch level, inside an interrupt; each
     // read goes through the pointer after the halt (a memory clobber), so it sees the write.
     while unsafe { (*timer).timer.waitable.signal_state() } == 0 {

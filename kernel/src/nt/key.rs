@@ -23,8 +23,8 @@
 //! STATUS_BUFFER_OVERFLOW, what fits written; the size the whole takes goes to ResultLength either
 //! way.
 
-use super::call::{Status, STATUS_INVALID_PARAMETER, STATUS_SUCCESS};
 use crate::cm::unit_bytes;
+use crate::status::*;
 
 /// The key rights.
 pub const KEY_QUERY_VALUE: u32 = 0x0001;
@@ -47,11 +47,6 @@ const SPECIFIC_AND_STANDARD: u32 = 0x00FF_FFFF;
 /// NtCreateKey's dispositions.
 pub const REG_CREATED_NEW_KEY: u32 = 1;
 pub const REG_OPENED_EXISTING_KEY: u32 = 2;
-
-pub const STATUS_BUFFER_OVERFLOW: Status = Status(0x8000_0005);
-pub const STATUS_NO_MORE_ENTRIES: Status = Status(0x8000_001A);
-pub const STATUS_ACCESS_DENIED: Status = Status(0xC000_0022);
-pub const STATUS_BUFFER_TOO_SMALL: Status = Status(0xC000_0023);
 
 /// The key information classes.
 const KEY_BASIC_INFORMATION: u32 = 0;
@@ -100,8 +95,8 @@ impl Reply<'_> {
     pub fn deliver(
         &self,
         length: u32,
-        mut write: impl FnMut(usize, &[u8]) -> Result<(), Status>,
-    ) -> Result<u32, Status> {
+        mut write: impl FnMut(usize, &[u8]) -> Result<(), NtStatus>,
+    ) -> Result<NtStatus, NtStatus> {
         let length = length as usize;
         if length < self.fixed_size {
             return Err(STATUS_BUFFER_TOO_SMALL);
@@ -129,7 +124,7 @@ fn fixed(words: &[u32], size: usize) -> ([u8; 44], usize) {
 
 /// Key information class `class` of `info`: STATUS_INVALID_PARAMETER for a class Windows 2000
 /// does not define.
-pub fn key_reply<'a>(class: u32, info: &crate::cm::KeyInfo<'a>) -> Result<Reply<'a>, Status> {
+pub fn key_reply<'a>(class: u32, info: &crate::cm::KeyInfo<'a>) -> Result<Reply<'a>, NtStatus> {
     let name = unit_bytes(info.name);
     let class_bytes = unit_bytes(info.class);
     let time = [info.last_write as u32, (info.last_write >> 32) as u32];
@@ -186,7 +181,10 @@ pub fn key_reply<'a>(class: u32, info: &crate::cm::KeyInfo<'a>) -> Result<Reply<
 
 /// Value information class `class` of `value`: STATUS_INVALID_PARAMETER for a class Windows 2000
 /// does not define.
-pub fn value_reply<'a>(class: u32, value: &crate::cm::ValueInfo<'a>) -> Result<Reply<'a>, Status> {
+pub fn value_reply<'a>(
+    class: u32,
+    value: &crate::cm::ValueInfo<'a>,
+) -> Result<Reply<'a>, NtStatus> {
     let name = unit_bytes(value.name);
     let data = value.data;
     let ((fixed, fixed_size), parts) = match class {
@@ -229,33 +227,12 @@ pub use services::*;
 /// The services themselves, on the calling process's handles and the kernel's registry.
 #[cfg(target_arch = "x86")]
 mod services {
-    use super::super::attributes::{
-        self,
-        MAX_NAME,
-        STATUS_OBJECT_NAME_INVALID,
-        STATUS_OBJECT_NAME_NOT_FOUND,
-        STATUS_OBJECT_PATH_SYNTAX_BAD,
-        STATUS_OBJECT_TYPE_MISMATCH,
-    };
-    use super::super::call::{
-        calling_process,
-        Handle,
-        NtCall,
-        NtResult,
-        Status,
-        UserAddr,
-        UserPtr,
-        STATUS_ACCESS_VIOLATION,
-        STATUS_INVALID_HANDLE,
-        STATUS_INVALID_PARAMETER,
-        STATUS_SUCCESS,
-    };
+    use super::super::attributes::{self, MAX_NAME};
+    use super::super::call::{calling_process, Handle, NtCall, NtResult, UserAddr, UserPtr};
     use super::*;
     use crate::cm::{self, Key, KeyBody, MAX_VALUE_NAME, SEPARATOR};
     use crate::nt::object::is_console_handle;
     use crate::ob::{self, ObjectType};
-
-    const STATUS_INSUFFICIENT_RESOURCES: Status = cm::STATUS_INSUFFICIENT_RESOURCES;
 
     /// The registry's root in the object namespace.
     const REGISTRY: &str = "\\Registry";
@@ -269,7 +246,7 @@ mod services {
     /// STATUS_INVALID_HANDLE for a handle naming nothing (a console handle included),
     /// STATUS_OBJECT_TYPE_MISMATCH for another kind of object, STATUS_ACCESS_DENIED for an open
     /// without the rights. The key itself may be gone (the registry's answers say so).
-    fn key_of(handle: u32, needed: u32) -> Result<Key, Status> {
+    fn key_of(handle: u32, needed: u32) -> Result<Key, NtStatus> {
         if is_console_handle(handle) {
             return Err(STATUS_INVALID_HANDLE);
         }
@@ -304,7 +281,7 @@ mod services {
     fn resolve(
         attributes: UserAddr,
         units: &mut [u16; MAX_NAME],
-    ) -> Result<(Key, core::ops::Range<usize>, bool), Status> {
+    ) -> Result<(Key, core::ops::Range<usize>, bool), NtStatus> {
         if attributes.is_null() {
             return Err(STATUS_INVALID_PARAMETER);
         }
@@ -337,7 +314,7 @@ mod services {
 
     /// A counted string at `at` (a UNICODE_STRING): its length in units and its buffer.
     /// STATUS_INVALID_PARAMETER past a value name's longest.
-    fn counted(at: UserAddr) -> Result<(usize, UserAddr), Status> {
+    fn counted(at: UserAddr) -> Result<(usize, UserAddr), NtStatus> {
         let mut header = [0u8; 8];
         at.read(&mut header)?;
         let units = u16::from_le_bytes([header[0], header[1]]) as usize / 2;
@@ -354,8 +331,8 @@ mod services {
     /// None (a null pointer) is the empty name.
     fn with_counted<R>(
         at: UserAddr,
-        then: impl FnOnce(&mut cm::Registry, &[u16]) -> Result<R, Status>,
-    ) -> Result<R, Status> {
+        then: impl FnOnce(&mut cm::Registry, &[u16]) -> Result<R, NtStatus>,
+    ) -> Result<R, NtStatus> {
         let (units, buffer) = if at.is_null() {
             (0, UserAddr(0))
         } else {
@@ -363,14 +340,14 @@ mod services {
         };
         cm::registry().with_scratch(
             units,
-            |bytes| buffer.read(bytes).map_err(Status::from),
+            |bytes| buffer.read(bytes).map_err(NtStatus::from),
             then,
         )?
     }
 
     /// A new key object for `key`, its handle (with `desired`'s rights) into `slot`; a slot that
     /// faults takes the handle back (STATUS_ACCESS_VIOLATION).
-    fn publish(slot: UserPtr<u32>, key: Key, desired: u32, inherit: bool) -> Result<u32, Status> {
+    fn publish(slot: UserPtr<u32>, key: Key, desired: u32, inherit: bool) -> Result<u32, NtStatus> {
         let id = ob::directory()
             .create_key(KeyBody { key })
             .ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
@@ -388,7 +365,7 @@ mod services {
     fn answer(reply: &Reply, out: UserAddr, length: u32, result: UserPtr<u32>) -> NtResult {
         result.write(reply.size() as u32)?;
         reply.deliver(length, |at, bytes| {
-            out.offset(at as u32).write(bytes).map_err(Status::from)
+            out.offset(at as u32).write(bytes).map_err(NtStatus::from)
         })
     }
 
@@ -546,7 +523,7 @@ mod services {
         }
         with_counted(name, |registry, name| {
             registry.set_value(key, name, kind, size as usize, now(), |bytes| {
-                data.read(bytes).map_err(Status::from)
+                data.read(bytes).map_err(NtStatus::from)
             })
         })?;
         Ok(STATUS_SUCCESS)
@@ -604,7 +581,7 @@ mod tests {
     }
 
     /// What a buffer of `length` bytes receives of the reply, and the status.
-    fn delivered(reply: &Reply, length: u32) -> (Vec<u8>, Result<u32, Status>) {
+    fn delivered(reply: &Reply, length: u32) -> (Vec<u8>, Result<NtStatus, NtStatus>) {
         let mut out = vec![0xCCu8; length as usize];
         let status = reply.deliver(length, |at, bytes| {
             out[at..at + bytes.len()].copy_from_slice(bytes);

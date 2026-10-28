@@ -13,6 +13,7 @@
 use core::marker::PhantomData;
 use core::mem::size_of;
 
+use rtl::pod::Pod;
 use rtl::status::nt_success;
 
 use crate::nt::{self, ClientId, ObjectAttributes, ProcessParameters, UnicodeString};
@@ -29,31 +30,6 @@ fn checked(status: NtStatus) -> Result<(), NtStatus> {
         Err(status)
     }
 }
-
-/// The structures the services fill or take as bytes: integers only, without padding, so any
-/// bytes of their size make one and their bytes are all initialized.
-///
-/// # Safety
-///
-/// Every bit pattern of the type's size is a valid value, and the type has no padding.
-pub unsafe trait Plain: Copy {
-    /// The value's bytes.
-    fn bytes(&self) -> &[u8] {
-        // SAFETY: the trait's contract: no padding, so every byte is initialized.
-        unsafe { core::slice::from_raw_parts((self as *const Self).cast(), size_of::<Self>()) }
-    }
-
-    /// The value's bytes, writable.
-    fn bytes_mut(&mut self) -> &mut [u8] {
-        // SAFETY: the trait's contract: any bytes make a value.
-        unsafe { core::slice::from_raw_parts_mut((self as *mut Self).cast(), size_of::<Self>()) }
-    }
-}
-
-// SAFETY: an integer.
-unsafe impl Plain for u32 {}
-// SAFETY: integers.
-unsafe impl Plain for [u8; 2] {}
 
 /// SECTION_IMAGE_INFORMATION, NT 5.0's (0x30 bytes): an image section's entry point, stack sizes,
 /// subsystem and characteristics (NtQuerySection's SectionImageInformation). Its addresses are
@@ -80,7 +56,7 @@ pub struct SectionImageInformation {
 const _: () = assert!(size_of::<SectionImageInformation>() == 0x30);
 
 // SAFETY: integers, laid out without padding (the assertion above).
-unsafe impl Plain for SectionImageInformation {}
+unsafe impl Pod for SectionImageInformation {}
 
 /// PROCESS_BASIC_INFORMATION (24 bytes): a process's exit status (STILL_ACTIVE while it runs), its
 /// PEB's address, its affinity, its base priority, its id and its parent's.
@@ -98,11 +74,7 @@ pub struct ProcessBasicInformation {
 const _: () = assert!(size_of::<ProcessBasicInformation>() == 24);
 
 // SAFETY: integers, without padding.
-unsafe impl Plain for ProcessBasicInformation {}
-
-// SAFETY: RTL_USER_PROCESS_PARAMETERS with 32-bit pointers: dwords and pairs of words, without
-// padding (rtl::params asserts its size, 0x290).
-unsafe impl Plain for rtl::params::ProcessParameters<u32> {}
+unsafe impl Pod for ProcessBasicInformation {}
 
 /// Bytes a service reads: an address and a length (kernel32 never reads them itself).
 #[derive(Clone, Copy)]
@@ -241,7 +213,7 @@ const SECTION_IMAGE_INFORMATION: u32 = 1;
 /// NtQuerySection: an image section's SECTION_IMAGE_INFORMATION.
 pub fn query_image(section: u32) -> Result<SectionImageInformation, NtStatus> {
     let mut information = SectionImageInformation::default();
-    let bytes = information.bytes_mut();
+    let bytes = information.as_bytes_mut();
     // SAFETY: ntdll's export, into the structure's bytes.
     checked(unsafe {
         nt::NtQuerySection(
@@ -315,7 +287,11 @@ const PROCESS_BASIC_INFORMATION: u32 = 0;
 /// A process's basic information (NtQueryInformationProcess, ProcessBasicInformation).
 pub fn basic_information(process: u32) -> Result<ProcessBasicInformation, NtStatus> {
     let mut information = ProcessBasicInformation::default();
-    query_information_process(process, PROCESS_BASIC_INFORMATION, information.bytes_mut())?;
+    query_information_process(
+        process,
+        PROCESS_BASIC_INFORMATION,
+        information.as_bytes_mut(),
+    )?;
     Ok(information)
 }
 
@@ -342,12 +318,12 @@ pub struct HandleFlags {
 const _: () = assert!(size_of::<HandleFlags>() == 2);
 
 // SAFETY: integers, without padding.
-unsafe impl Plain for HandleFlags {}
+unsafe impl Pod for HandleFlags {}
 
 /// A handle's flags (NtQueryObject, ObjectHandleFlagInformation).
 pub fn handle_flags(handle: u32) -> Result<HandleFlags, NtStatus> {
     let mut flags = HandleFlags::default();
-    let out = flags.bytes_mut();
+    let out = flags.as_bytes_mut();
     // SAFETY: ntdll's export, into the structure's own bytes; no return length asked.
     checked(unsafe {
         nt::NtQueryObject(
@@ -363,7 +339,7 @@ pub fn handle_flags(handle: u32) -> Result<HandleFlags, NtStatus> {
 
 /// Set a handle's flags (NtSetInformationObject, ObjectHandleFlagInformation).
 pub fn set_handle_flags(handle: u32, flags: HandleFlags) -> Result<(), NtStatus> {
-    let bytes = flags.bytes();
+    let bytes = flags.as_bytes();
     // SAFETY: ntdll's export, from the structure's own bytes.
     checked(unsafe {
         nt::NtSetInformationObject(

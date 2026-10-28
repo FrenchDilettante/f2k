@@ -18,27 +18,8 @@
 //! stack there, and creates that thread (NtCreateThread). F2K has no csrss to tell of the new
 //! process (CsrClientCallServer's BasepCreateProcess): the kernel keeps every process itself.
 
-#[cfg(not(target_arch = "x86"))]
-use super::call::STATUS_INVALID_HANDLE;
-use super::call::{
-    Handle,
-    NtCall,
-    NtResult,
-    Status,
-    UserAddr,
-    UserPtr,
-    STATUS_INVALID_PARAMETER,
-    STATUS_SUCCESS,
-};
-use super::memory::{STATUS_INFO_LENGTH_MISMATCH, STATUS_INVALID_INFO_CLASS};
-
-/// NtOpenProcess's refusals: a client id and a name both given, or neither; a thread id naming no
-/// thread of the process.
-const STATUS_INVALID_PARAMETER_MIX: Status = Status(0xC000_0030);
-const STATUS_INVALID_CID: Status = Status(0xC000_000B);
-/// NtCreateProcess's refusal of a process with no section: its parent's address space copied (the
-/// fork the Native API documents) is not made here.
-const STATUS_NOT_IMPLEMENTED: Status = Status(0xC000_0002);
+use super::call::{Handle, NtCall, NtResult, UserAddr, UserPtr};
+use crate::status::*;
 
 /// PROCESSINFOCLASS: the classes F2K answers.
 /// ProcessBasicInformation: PROCESS_BASIC_INFORMATION (query).
@@ -97,7 +78,7 @@ pub struct ClientId {
 
 impl ClientId {
     /// The structure, from the caller's memory.
-    fn read(at: UserAddr) -> Result<ClientId, Status> {
+    fn read(at: UserAddr) -> Result<ClientId, NtStatus> {
         let mut raw = [0u8; size_of::<ClientId>()];
         at.read(&mut raw)?;
         let word = |i: usize| u32::from_le_bytes([raw[i], raw[i + 1], raw[i + 2], raw[i + 3]]);
@@ -108,10 +89,6 @@ impl ClientId {
     }
 }
 
-/// A live process's exit status: STATUS_PENDING (kernel32's STILL_ACTIVE).
-#[cfg(test)]
-const STATUS_PENDING: u32 = 0x103;
-
 /// The priority classes (PROCESS_PRIORITY_CLASS_*), and each one's base priority (Windows 2000's
 /// PspPriorityTable): idle 4, normal 8, high 13, realtime 24, below normal 6, above normal 10.
 pub const PRIORITY_CLASS_NORMAL: u8 = 2;
@@ -119,7 +96,7 @@ const PRIORITY_CLASS_BASES: [i8; 7] = [0, 4, 8, 13, 24, 6, 10];
 
 /// The base priority a priority class gives the process; STATUS_INVALID_PARAMETER for a value
 /// naming no class (Windows 2000 refuses past ABOVE_NORMAL, 6; F2K refuses UNKNOWN, 0, as well).
-pub fn class_base_priority(class: u8) -> Result<i8, Status> {
+pub fn class_base_priority(class: u8) -> Result<i8, NtStatus> {
     match PRIORITY_CLASS_BASES.get(class as usize) {
         Some(&base) if class != 0 => Ok(base),
         _ => Err(STATUS_INVALID_PARAMETER),
@@ -155,7 +132,7 @@ fn size_of_class(class: u32) -> Option<u32> {
 /// The process a handle names, when it is the calling process: host builds have no other process
 /// to reach.
 #[cfg(not(target_arch = "x86"))]
-pub(super) fn current(process: Handle) -> Result<(), Status> {
+pub(super) fn current(process: Handle) -> Result<(), NtStatus> {
     if crate::nt::object::names_current_process(process.raw()) {
         Ok(())
     } else {
@@ -166,10 +143,10 @@ pub(super) fn current(process: Handle) -> Result<(), Status> {
 /// NtOpenProcess's choice of what to open, from whether the OBJECT_ATTRIBUTES name an object and
 /// the CLIENT_ID given: the client id. Both, or neither, is STATUS_INVALID_PARAMETER_MIX; a name
 /// alone names nothing (no process object is named): STATUS_OBJECT_NAME_NOT_FOUND.
-pub fn open_by(named: bool, client_id: Option<ClientId>) -> Result<ClientId, Status> {
+pub fn open_by(named: bool, client_id: Option<ClientId>) -> Result<ClientId, NtStatus> {
     match (named, client_id) {
         (false, Some(client_id)) => Ok(client_id),
-        (true, None) => Err(super::attributes::STATUS_OBJECT_NAME_NOT_FOUND),
+        (true, None) => Err(STATUS_OBJECT_NAME_NOT_FOUND),
         _ => Err(STATUS_INVALID_PARAMETER_MIX),
     }
 }
@@ -191,7 +168,6 @@ pub fn open_process(
     attributes: UserAddr,
     client_id: UserAddr,
 ) -> NtResult {
-    use super::call::STATUS_ACCESS_VIOLATION;
     if slot.is_null() {
         return Err(STATUS_ACCESS_VIOLATION);
     }
@@ -213,7 +189,6 @@ pub fn open_process(
     let access = super::object::process_access(access);
     #[cfg(target_arch = "x86")]
     {
-        use super::object::STATUS_INSUFFICIENT_RESOURCES;
         let id = crate::process::pool::by_client_id(client_id.unique_process)
             .filter(|_| client_id.unique_process != 0)
             .ok_or(STATUS_INVALID_PARAMETER)?;
@@ -247,9 +222,9 @@ pub fn open_process(
 /// (STATUS_INVALID_PARAMETER: only the system's own first process has none), and a section given —
 /// none asks for the parent's address space copied, which F2K does not make
 /// (STATUS_NOT_IMPLEMENTED).
-pub fn create_arguments(slot_ok: bool, parent: Handle, section: Handle) -> Result<(), Status> {
+pub fn create_arguments(slot_ok: bool, parent: Handle, section: Handle) -> Result<(), NtStatus> {
     if !slot_ok {
-        return Err(super::call::STATUS_ACCESS_VIOLATION);
+        return Err(STATUS_ACCESS_VIOLATION);
     }
     if parent.raw() == 0 {
         return Err(STATUS_INVALID_PARAMETER);
@@ -301,12 +276,7 @@ pub fn create_process(
     let _ = (debug_port, exception_port);
     #[cfg(target_arch = "x86")]
     {
-        use super::object::{
-            reference_process,
-            PROCESS_CREATE_PROCESS,
-            STATUS_INSUFFICIENT_RESOURCES,
-            STATUS_PROCESS_IS_TERMINATING,
-        };
+        use super::object::{reference_process, PROCESS_CREATE_PROCESS};
         let parent = reference_process(parent.raw(), PROCESS_CREATE_PROCESS)?;
         if parent.ended() || parent.record().terminating() {
             return Err(STATUS_PROCESS_IS_TERMINATING);
@@ -347,7 +317,7 @@ pub fn create_process(
             // closes, which ends a process that never had a thread.
             if slot.write(handle).is_err() {
                 process.close_handle(handle);
-                return Err(super::call::STATUS_ACCESS_VIOLATION);
+                return Err(STATUS_ACCESS_VIOLATION);
             }
             Ok(STATUS_SUCCESS)
         })
@@ -398,7 +368,7 @@ pub fn terminate_process(call: &mut NtCall, process: Handle, status: u32) -> NtR
     }
     #[cfg(target_arch = "x86")]
     {
-        use super::object::{reference_process, PROCESS_TERMINATE, STATUS_PROCESS_IS_TERMINATING};
+        use super::object::{reference_process, PROCESS_TERMINATE};
         let _ = call;
         let target = reference_process(process.raw(), PROCESS_TERMINATE)?;
         if target.is_current() {
@@ -557,7 +527,7 @@ mod tests {
     #[test]
     fn the_basic_information_is_the_nt_layout() {
         let bytes = ProcessBasicInformation {
-            exit_status: STATUS_PENDING,
+            exit_status: STATUS_PENDING.0,
             peb_base_address: crate::user::PEB_PAGE,
             affinity_mask: 1,
             base_priority: 13,
@@ -593,10 +563,7 @@ mod tests {
         assert_eq!(open_by(false, Some(id)), Ok(id));
         assert_eq!(open_by(true, Some(id)), Err(STATUS_INVALID_PARAMETER_MIX));
         assert_eq!(open_by(false, None), Err(STATUS_INVALID_PARAMETER_MIX));
-        assert_eq!(
-            open_by(true, None),
-            Err(super::super::attributes::STATUS_OBJECT_NAME_NOT_FOUND)
-        );
+        assert_eq!(open_by(true, None), Err(STATUS_OBJECT_NAME_NOT_FOUND));
         assert_eq!(rtl::status::dos_error(STATUS_INVALID_PARAMETER_MIX.0), 87);
         assert_eq!(rtl::status::dos_error(STATUS_INVALID_CID.0), 87);
         assert_eq!(rtl::status::dos_error(STATUS_INVALID_PARAMETER.0), 87);
@@ -613,17 +580,25 @@ mod tests {
         use crate::user::syscall::host::{install, UserMemory};
         struct Page(Vec<u8>);
         impl UserMemory for Page {
-            fn read(&self, pointer: u32, bytes: &mut [u8]) -> Result<(), u32> {
-                let at = pointer.checked_sub(0x10000).ok_or(0xC000_0005u32)? as usize;
-                bytes.copy_from_slice(self.0.get(at..at + bytes.len()).ok_or(0xC000_0005u32)?);
+            fn read(&self, pointer: u32, bytes: &mut [u8]) -> Result<(), NtStatus> {
+                let at = pointer
+                    .checked_sub(0x10000)
+                    .ok_or(STATUS_ACCESS_VIOLATION)? as usize;
+                bytes.copy_from_slice(
+                    self.0
+                        .get(at..at + bytes.len())
+                        .ok_or(STATUS_ACCESS_VIOLATION)?,
+                );
                 Ok(())
             }
 
-            fn write(&mut self, pointer: u32, bytes: &[u8]) -> Result<(), u32> {
-                let at = pointer.checked_sub(0x10000).ok_or(0xC000_0005u32)? as usize;
+            fn write(&mut self, pointer: u32, bytes: &[u8]) -> Result<(), NtStatus> {
+                let at = pointer
+                    .checked_sub(0x10000)
+                    .ok_or(STATUS_ACCESS_VIOLATION)? as usize;
                 self.0
                     .get_mut(at..at + bytes.len())
-                    .ok_or(0xC000_0005u32)?
+                    .ok_or(STATUS_ACCESS_VIOLATION)?
                     .copy_from_slice(bytes);
                 Ok(())
             }
@@ -635,10 +610,11 @@ mod tests {
         let _installed = install(memory.clone());
         // SAFETY: a trap frame is plain dwords; all zeros is a valid one.
         let mut frame: crate::user::TrapFrame = unsafe { core::mem::zeroed() };
-        let mut call = NtCall::new(&mut frame);
+        let mut passive = crate::level::passive_for_test();
+        let mut call = NtCall::new(&mut frame, &mut passive);
         let slot = UserPtr::at(0x10000);
         let (client_id, attributes) = (UserAddr(0x10010), UserAddr(0x10020));
-        let access = super::super::call::STATUS_ACCESS_VIOLATION;
+        let access = STATUS_ACCESS_VIOLATION;
         assert_eq!(
             open_process(&mut call, UserPtr::at(0), 0x400, attributes, client_id),
             Err(access)
@@ -662,7 +638,6 @@ mod tests {
     /// the host, past them, no handle names anything.
     #[test]
     fn create_process_checks_its_arguments_in_order() {
-        use super::super::call::STATUS_ACCESS_VIOLATION;
         let (parent, section) = (Handle(0xFFFF_FFFF), Handle(0x44));
         assert_eq!(
             create_arguments(false, Handle(0), Handle(0)),
@@ -680,7 +655,8 @@ mod tests {
         assert_eq!(rtl::status::dos_error(STATUS_NOT_IMPLEMENTED.0), 1);
         // SAFETY: a trap frame is plain dwords; all zeros is a valid one.
         let mut frame: crate::user::TrapFrame = unsafe { core::mem::zeroed() };
-        let mut call = NtCall::new(&mut frame);
+        let mut passive = crate::level::passive_for_test();
+        let mut call = NtCall::new(&mut frame, &mut passive);
         assert_eq!(
             create_process(
                 &mut call,
@@ -705,7 +681,8 @@ mod tests {
         assert_eq!(current(Handle(0x44)), Err(STATUS_INVALID_HANDLE));
         // SAFETY: a trap frame is plain dwords; all zeros is a valid one.
         let mut frame: crate::user::TrapFrame = unsafe { core::mem::zeroed() };
-        let mut call = NtCall::new(&mut frame);
+        let mut passive = crate::level::passive_for_test();
+        let mut call = NtCall::new(&mut frame, &mut passive);
         assert_eq!(
             terminate_process(&mut call, Handle(0x44), 3),
             Err(STATUS_INVALID_HANDLE)
@@ -723,21 +700,28 @@ mod tests {
         use crate::user::syscall::host::{install, UserMemory};
         struct Word(Vec<u8>);
         impl UserMemory for Word {
-            fn read(&self, pointer: u32, bytes: &mut [u8]) -> Result<(), u32> {
-                let at = pointer.checked_sub(0x10000).ok_or(0xC000_0005u32)? as usize;
-                bytes.copy_from_slice(self.0.get(at..at + bytes.len()).ok_or(0xC000_0005u32)?);
+            fn read(&self, pointer: u32, bytes: &mut [u8]) -> Result<(), NtStatus> {
+                let at = pointer
+                    .checked_sub(0x10000)
+                    .ok_or(STATUS_ACCESS_VIOLATION)? as usize;
+                bytes.copy_from_slice(
+                    self.0
+                        .get(at..at + bytes.len())
+                        .ok_or(STATUS_ACCESS_VIOLATION)?,
+                );
                 Ok(())
             }
 
-            fn write(&mut self, _: u32, _: &[u8]) -> Result<(), u32> {
-                Err(0xC000_0005)
+            fn write(&mut self, _: u32, _: &[u8]) -> Result<(), NtStatus> {
+                Err(STATUS_ACCESS_VIOLATION)
             }
         }
         let memory = Rc::new(RefCell::new(Word(1u32.to_le_bytes().to_vec())));
         let _installed = install(memory.clone());
         // SAFETY: a trap frame is plain dwords; all zeros is a valid one.
         let mut frame: crate::user::TrapFrame = unsafe { core::mem::zeroed() };
-        let mut call = NtCall::new(&mut frame);
+        let mut passive = crate::level::passive_for_test();
+        let mut call = NtCall::new(&mut frame, &mut passive);
         let me = Handle(0xFFFF_FFFF);
         let at = UserAddr(0x10000);
         assert_eq!(
@@ -760,14 +744,14 @@ mod tests {
             memory.borrow_mut().0 = mask.to_le_bytes().to_vec();
             assert_eq!(
                 set_information_process(&mut call, me, 21, at, 4),
-                Err(super::super::call::STATUS_INVALID_PARAMETER),
+                Err(STATUS_INVALID_PARAMETER),
                 "{mask:#x}"
             );
         }
         assert_eq!(rtl::status::dos_error(0xC000_000D), 87);
         assert_eq!(
             set_information_process(&mut call, me, 21, UserAddr(0x20000), 4),
-            Err(super::super::call::STATUS_ACCESS_VIOLATION)
+            Err(STATUS_ACCESS_VIOLATION)
         );
     }
 

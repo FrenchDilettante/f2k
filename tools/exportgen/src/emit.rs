@@ -68,8 +68,9 @@ pub fn win32k_services(specs: &[(&str, &Spec)], source: &str) -> String {
 
 /// A service table named `name`: one `(number, service, argument bytes, handler)` entry per
 /// service, in number order, then each handler, a generated wrapper: decode the argument block by
-/// the spec's kinds, call the typed handler with the call's context first, and put its NTSTATUS in
-/// EAX ([`NtCall::finish`] in `nt::call`).
+/// the spec's kinds, call the typed handler with the call's context first (the trap frame and the
+/// service's passive-level token, which the system-call entry makes), and put its NTSTATUS in EAX
+/// ([`NtCall::finish`] in `nt::call`).
 fn service_table(out: &mut String, name: &str, mut services: Vec<&Export>) {
     services.sort_by_key(|export| export.syscall_number());
     writeln!(
@@ -104,7 +105,8 @@ fn service_table(out: &mut String, name: &str, mut services: Vec<&Export>) {
         writeln!(out, "#[allow(non_snake_case, unused_imports)]").unwrap();
         writeln!(
             out,
-            "fn {}(frame: &mut crate::user::TrapFrame, args: &[u32]) {{",
+            "fn {}(frame: &mut crate::user::TrapFrame, args: &[u32], \
+             passive: &mut crate::level::At<crate::level::Passive>) {{",
             export.nt_wrapper()
         )
         .unwrap();
@@ -112,7 +114,7 @@ fn service_table(out: &mut String, name: &str, mut services: Vec<&Export>) {
         if export.args.is_empty() {
             writeln!(out, "    let _ = args;").unwrap();
         }
-        writeln!(out, "    let mut call = NtCall::new(frame);").unwrap();
+        writeln!(out, "    let mut call = NtCall::new(frame, passive);").unwrap();
         let mut call_args = vec!["&mut call".to_string()];
         call_args.extend(decode_args(export));
         writeln!(out, "    let result = {path}({});", call_args.join(", ")).unwrap();

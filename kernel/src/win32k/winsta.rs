@@ -21,20 +21,8 @@
 //! - NtUserGetObjectInformation(handle Object, u32 Index, ptr Information, u32 Length, ptr<u32>
 //!   LengthNeeded): GetUserObjectInformationW's answer.
 
-use crate::nt::call::{
-    Handle,
-    NtCall,
-    NtResult,
-    Status,
-    UserAddr,
-    UserPtr,
-    STATUS_INVALID_HANDLE,
-    STATUS_INVALID_PARAMETER,
-    STATUS_SUCCESS,
-};
-
-/// STATUS_BUFFER_TOO_SMALL: the answer does not fit the caller's buffer (its length is reported).
-pub const STATUS_BUFFER_TOO_SMALL: Status = Status(0xC000_0023);
+use crate::nt::call::{Handle, NtCall, NtResult, UserAddr, UserPtr};
+use crate::status::*;
 
 /// GetUserObjectInformation's indexes (winuser.h).
 pub const UOI_FLAGS: u32 = 1;
@@ -200,8 +188,7 @@ pub fn init() {
 /// not already: a handle to each, not inheritable, in its handle table (see the module notes for
 /// which ones). STATUS_INSUFFICIENT_RESOURCES when the handle table is full.
 #[cfg(target_arch = "x86")]
-pub fn connect(process: &mut crate::process::Process) -> Result<Connection, Status> {
-    use crate::nt::object::STATUS_INSUFFICIENT_RESOURCES;
+pub fn connect(process: &mut crate::process::Process) -> Result<Connection, NtStatus> {
     if let Some(connection) = process.win32k() {
         return Ok(connection);
     }
@@ -227,7 +214,7 @@ pub fn connect(process: &mut crate::process::Process) -> Result<Connection, Stat
 
 /// The calling process's connection (its first win32k service made it).
 #[cfg(target_arch = "x86")]
-fn connection(call: &mut NtCall) -> Result<Connection, Status> {
+fn connection(call: &mut NtCall) -> Result<Connection, NtStatus> {
     connect(call.process())
 }
 
@@ -269,8 +256,8 @@ fn user_object(call: &mut NtCall, handle: Handle) -> Option<UserObject> {
 // host tests exercise [`information`] and [`answer`]).
 
 #[cfg(not(target_arch = "x86"))]
-fn connection(_: &mut NtCall) -> Result<Connection, Status> {
-    Err(Status(0xC000_0002))
+fn connection(_: &mut NtCall) -> Result<Connection, NtStatus> {
+    Err(STATUS_NOT_IMPLEMENTED)
 }
 
 #[cfg(not(target_arch = "x86"))]
@@ -340,20 +327,26 @@ mod tests {
     struct Page(std::vec::Vec<u8>);
 
     impl UserMemory for Page {
-        fn read(&self, pointer: u32, bytes: &mut [u8]) -> Result<(), u32> {
+        fn read(&self, pointer: u32, bytes: &mut [u8]) -> Result<(), NtStatus> {
             let at = (pointer as usize)
                 .checked_sub(0x1000)
-                .ok_or(0xC000_0005u32)?;
-            let source = self.0.get(at..at + bytes.len()).ok_or(0xC000_0005u32)?;
+                .ok_or(STATUS_ACCESS_VIOLATION)?;
+            let source = self
+                .0
+                .get(at..at + bytes.len())
+                .ok_or(STATUS_ACCESS_VIOLATION)?;
             bytes.copy_from_slice(source);
             Ok(())
         }
 
-        fn write(&mut self, pointer: u32, bytes: &[u8]) -> Result<(), u32> {
+        fn write(&mut self, pointer: u32, bytes: &[u8]) -> Result<(), NtStatus> {
             let at = (pointer as usize)
                 .checked_sub(0x1000)
-                .ok_or(0xC000_0005u32)?;
-            let target = self.0.get_mut(at..at + bytes.len()).ok_or(0xC000_0005u32)?;
+                .ok_or(STATUS_ACCESS_VIOLATION)?;
+            let target = self
+                .0
+                .get_mut(at..at + bytes.len())
+                .ok_or(STATUS_ACCESS_VIOLATION)?;
             target.copy_from_slice(bytes);
             Ok(())
         }
@@ -404,7 +397,7 @@ mod tests {
         assert_eq!(page.borrow().0[16], 0xCC, "the answer alone");
         assert_eq!(
             answer(Some(DEFAULT), UOI_TYPE, UserAddr(0x2000), 16, needed),
-            Err(crate::nt::call::STATUS_ACCESS_VIOLATION)
+            Err(STATUS_ACCESS_VIOLATION)
         );
     }
 }

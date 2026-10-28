@@ -10,7 +10,7 @@ use super::boot_sector::{validate, Refusal};
 use super::fat::{decode_entry, entry_position, FatCache, FatEntry, ENTRY_MASK};
 use super::layout::Layout;
 use crate::block::BlockDevice;
-use crate::status::{nt_success, NtStatus, STATUS_UNRECOGNIZED_VOLUME};
+use crate::status::{NtStatus, STATUS_UNRECOGNIZED_VOLUME};
 
 /// FAT[1]'s clean-shutdown bit: set while the volume on disk is consistent, clear (dirty) from a
 /// writer's first change until it marks the volume clean again — a volume found dirty gets a check
@@ -60,7 +60,7 @@ impl Volume {
         }
         let mut sector = [0u8; 512];
         let status = device.read(0, &mut sector);
-        if !nt_success(status) {
+        if !status.is_success() {
             return Err(MountError::Read(status));
         }
         let layout = validate(&sector).map_err(MountError::Refused)?;
@@ -176,7 +176,7 @@ impl Volume {
     /// Read one sector of the volume.
     pub fn read_sector(&self, lba: u64, data: &mut [u8; 512]) -> Result<(), NtStatus> {
         let status = self.device.read(lba, data);
-        if nt_success(status) {
+        if status.is_success() {
             Ok(())
         } else {
             Err(status)
@@ -191,7 +191,7 @@ impl Volume {
 
     fn write_raw(&self, lba: u64, data: &[u8; 512]) -> Result<(), NtStatus> {
         let status = self.device.write(lba, data);
-        if nt_success(status) {
+        if status.is_success() {
             Ok(())
         } else {
             Err(status)
@@ -221,7 +221,7 @@ mod target {
     /// The boot's mount: none on a boot with no partition, else the outcome.
     static mut MOUNT: Option<Result<Volume, MountError>> = None;
     /// Serializes the volume's users (its FAT cache is shared state).
-    static LOCK: DeviceLock = DeviceLock::new();
+    static LOCK: DeviceLock = DeviceLock::new(());
 
     /// Mount the first partition the registry holds. Boot context, after the block-device scan;
     /// silent — a boot without a volume is normal, and a refused one is left unmounted.
@@ -248,7 +248,7 @@ mod target {
     /// of the running thread: a suspend or a termination waits until the volume is released.
     pub fn with_boot_volume<R>(body: impl FnOnce(&mut Volume) -> R) -> Option<R> {
         crate::process::threads::critical_region(|| {
-            LOCK.with(|| {
+            LOCK.with(|_| {
                 // SAFETY: the lock makes this the only user of the volume.
                 let mount = unsafe { &mut *addr_of_mut!(MOUNT) };
                 match mount {

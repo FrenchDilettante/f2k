@@ -137,6 +137,17 @@ impl CriticalSection {
         }
     }
 
+    /// Run `body` with the section entered, and answer what it answers: entered first, left when
+    /// `body` returns or unwinds.
+    pub fn with<R>(&self, system: &impl System, body: impl FnOnce() -> R) -> R {
+        self.enter(system);
+        let _entered = Entered {
+            section: self,
+            system,
+        };
+        body()
+    }
+
     /// RtlDeleteCriticalSection: close the section's event, if it ever got one. The other fields
     /// are left as they are.
     pub fn delete(&self, system: &impl System) {
@@ -185,6 +196,18 @@ impl CriticalSection {
                 existing
             }
         }
+    }
+}
+
+/// Leaves the section once when dropped ([`CriticalSection::with`]).
+struct Entered<'a, S: System> {
+    section: &'a CriticalSection,
+    system: &'a S,
+}
+
+impl<S: System> Drop for Entered<'_, S> {
+    fn drop(&mut self) {
+        self.section.leave(self.system);
     }
 }
 
@@ -333,6 +356,27 @@ mod tests {
         assert_eq!(core::mem::offset_of!(CriticalSection, owning_thread), 0xC);
         assert_eq!(core::mem::offset_of!(CriticalSection, lock_semaphore), 0x10);
         assert_eq!(core::mem::offset_of!(CriticalSection, spin_count), 0x14);
+    }
+
+    /// `with` runs its body with the section entered, recursively within another entry, and
+    /// leaves it after, as an unwinding body does too.
+    #[test]
+    fn with_enters_for_the_body_only() {
+        let system = Scripted::new(1);
+        let section = initialized(&system);
+        let answer = section.with(&system, || {
+            let (_, lock_count, recursion_count, owner, _, _) = fields(&section);
+            assert_eq!((lock_count, recursion_count, owner), (0, 1, 8));
+            section.with(&system, || fields(&section).2)
+        });
+        assert_eq!(answer, 2);
+        assert_eq!(fields(&section), (0, -1, 0, 0, 0, 0));
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            section.with(&system, || panic!("the body fails"))
+        }));
+        assert!(unwound.is_err());
+        assert_eq!(fields(&section), (0, -1, 0, 0, 0, 0));
+        assert!(system.calls().is_empty());
     }
 
     /// Initialization: free, no owner, no event, no debug information; a uniprocessor stores no

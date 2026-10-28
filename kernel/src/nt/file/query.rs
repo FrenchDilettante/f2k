@@ -8,21 +8,8 @@
 //! file as its record holds it, every change written to its entry inside the volume's locked
 //! section.
 
-use super::super::attributes::{
-    MAX_NAME,
-    STATUS_OBJECT_NAME_INVALID,
-    STATUS_OBJECT_NAME_NOT_FOUND,
-};
-use super::super::call::{
-    Handle,
-    NtCall,
-    NtResult,
-    Status,
-    UserAddr,
-    STATUS_INVALID_HANDLE,
-    STATUS_INVALID_PARAMETER,
-    STATUS_SUCCESS,
-};
+use super::super::attributes::MAX_NAME;
+use super::super::call::{Handle, NtCall, NtResult, UserAddr};
 use super::common::{
     check_access,
     cluster_bytes,
@@ -35,24 +22,13 @@ use super::common::{
 };
 use super::info::{self, Open};
 use super::name::{self, FileName};
-use super::{
-    status,
-    STATUS_ACCESS_DENIED,
-    STATUS_CANNOT_DELETE,
-    STATUS_DELETE_PENDING,
-    STATUS_DIRECTORY_NOT_EMPTY,
-    STATUS_DISK_FULL,
-    STATUS_INFO_LENGTH_MISMATCH,
-    STATUS_INVALID_INFO_CLASS,
-    STATUS_OBJECT_NAME_COLLISION,
-    STATUS_USER_MAPPED_FILE,
-};
 use crate::fs::fat32::dir::is_empty;
 use crate::fs::fat32::dirent::{Times, ATTR_DIRECTORY, ATTR_READ_ONLY};
 use crate::fs::fat32::lookup::File;
 use crate::fs::fat32::write;
 use crate::fs::file::{records, rights, same_entry};
 use crate::fs::io::{self, times_at, SETTABLE_ATTRIBUTES};
+use crate::status::*;
 
 /// FileModeInformation's synchronous-I/O mode.
 const FILE_SYNCHRONOUS_IO_NONALERT: u32 = 0x20;
@@ -80,7 +56,7 @@ fn set_rights(class: u32) -> u32 {
 }
 
 /// The class and length checks: the class's least size.
-fn sized(size: Option<usize>, length: u32) -> Result<usize, Status> {
+fn sized(size: Option<usize>, length: u32) -> Result<usize, NtStatus> {
     let size = size.ok_or(STATUS_INVALID_INFO_CLASS)?;
     if (length as usize) < size {
         return Err(STATUS_INFO_LENGTH_MISMATCH);
@@ -165,7 +141,7 @@ fn rename_target(
     bytes: &[u8],
     length: u32,
     information: UserAddr,
-) -> Result<(FileName, Start), Status> {
+) -> Result<(FileName, Start), NtStatus> {
     let word =
         |at: usize| u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]);
     let (root, name_length) = (word(4), word(8) as usize / 2);
@@ -197,19 +173,15 @@ fn rename_target(
 /// replaced only when asked, and only a file that is not read-only, nor a directory:
 /// STATUS_OBJECT_NAME_COLLISION otherwise, as when not asked; and only one no one holds open:
 /// STATUS_ACCESS_DENIED), its record following it.
-fn rename(
-    record: u16,
-    replace: bool,
-    target: (FileName, Start),
-) -> Result<(), crate::status::NtStatus> {
+fn rename(record: u16, replace: bool, target: (FileName, Start)) -> Result<(), NtStatus> {
     let (name, start) = target;
     io::with_volume(|volume| {
         let file = records().get(record).file;
         if file.parent_cluster == 0 {
-            return Err(STATUS_ACCESS_DENIED.0 as i32);
+            return Err(STATUS_ACCESS_DENIED);
         }
         if name.trailing && !file.directory {
-            return Err(STATUS_OBJECT_NAME_INVALID.0 as i32);
+            return Err(STATUS_OBJECT_NAME_INVALID);
         }
         let start = match start {
             Start::At(start) => start,
@@ -218,16 +190,16 @@ fn rename(
         let parent = match walk(volume, start, &name)? {
             // A case-only rename names the file itself (refused as a collision).
             Found::Existing(existing) if !replace || same_entry(&existing, &file) => {
-                return Err(STATUS_OBJECT_NAME_COLLISION.0 as i32)
+                return Err(STATUS_OBJECT_NAME_COLLISION)
             }
             Found::Existing(existing) => {
                 // A directory or a read-only file is never replaced: the name stays taken (the
                 // fswrite capture's MoveFileEx answers ERROR_ALREADY_EXISTS for both).
                 if existing.directory || existing.attributes & ATTR_READ_ONLY != 0 {
-                    return Err(STATUS_OBJECT_NAME_COLLISION.0 as i32);
+                    return Err(STATUS_OBJECT_NAME_COLLISION);
                 }
                 if records().find(&existing).is_some() {
-                    return Err(STATUS_ACCESS_DENIED.0 as i32);
+                    return Err(STATUS_ACCESS_DENIED);
                 }
                 write::delete(volume, &existing)?;
                 File::plain(existing.parent_cluster, 0, true)
@@ -243,7 +215,7 @@ fn rename(
 /// A size change (FileEndOfFileInformation, or FileAllocationInformation when it cuts the file):
 /// a directory has none to change (STATUS_INVALID_HANDLE, an assumption, unverified); past 4 GiB
 /// is STATUS_DISK_FULL; a mapped file is not cut (STATUS_USER_MAPPED_FILE).
-fn resize(record: u16, size: u64, allocation_only: bool) -> Result<(), Status> {
+fn resize(record: u16, size: u64, allocation_only: bool) -> Result<(), NtStatus> {
     let file = records().get(record).file;
     if file.directory {
         return Err(STATUS_INVALID_HANDLE);
@@ -261,7 +233,6 @@ fn resize(record: u16, size: u64, allocation_only: bool) -> Result<(), Status> {
         records().get_mut(record).file = file;
         Ok(())
     })
-    .map_err(status)
 }
 
 /// NtSetInformationFile: the basic times and attributes (zero leaves one as it is; the directory
@@ -306,14 +277,13 @@ fn set_information_file_held(
                 write::update_entry(volume, &file)?;
                 records().get_mut(record).file = file;
                 Ok(())
-            })
-            .map_err(status)?;
+            })?;
         }
         info::FILE_RENAME_INFORMATION => {
             let mut header = [0u8; 12];
             information.read(&mut header)?;
             let target = rename_target(&header, length, information)?;
-            rename(record, header[0] != 0, target).map_err(status)?;
+            rename(record, header[0] != 0, target)?;
         }
         info::FILE_DISPOSITION_INFORMATION => {
             let delete = bytes[0] != 0;
@@ -326,8 +296,7 @@ fn set_information_file_held(
                     return Err(STATUS_CANNOT_DELETE);
                 }
                 if file.directory
-                    && !io::with_volume(|volume| is_empty(volume, file.first_cluster))
-                        .map_err(status)?
+                    && !io::with_volume(|volume| is_empty(volume, file.first_cluster))?
                 {
                     return Err(STATUS_DIRECTORY_NOT_EMPTY);
                 }
@@ -352,7 +321,7 @@ fn set_information_file_held(
 /// The file a name names, for the attribute queries: STATUS_OBJECT_NAME_NOT_FOUND when it is
 /// missing, STATUS_DELETE_PENDING while it is being deleted, STATUS_OBJECT_NAME_INVALID for a file
 /// named with a trailing separator.
-fn named(attributes: UserAddr, out: UserAddr, size: u32) -> Result<File, Status> {
+fn named(attributes: UserAddr, out: UserAddr, size: u32) -> Result<File, NtStatus> {
     let target = target(attributes)?;
     probe(out, size)?;
     let file = io::with_volume(|volume| {
@@ -361,10 +330,9 @@ fn named(attributes: UserAddr, out: UserAddr, size: u32) -> Result<File, Status>
         }
         match walk(volume, target.start, &target.name)? {
             Found::Existing(file) => Ok(file),
-            Found::Missing { .. } => Err(STATUS_OBJECT_NAME_NOT_FOUND.0 as i32),
+            Found::Missing { .. } => Err(STATUS_OBJECT_NAME_NOT_FOUND),
         }
-    })
-    .map_err(status)?;
+    })?;
     if target.name.trailing && !file.directory {
         return Err(STATUS_OBJECT_NAME_INVALID);
     }

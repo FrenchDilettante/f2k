@@ -116,25 +116,19 @@ static mut PERFORMANCE_COUNTER: PerformanceCounter = PerformanceCounter::new();
 /// request line read together with interrupts masked.
 #[cfg(target_arch = "x86")]
 pub fn performance_counter() -> u64 {
-    let state = crate::interrupt::irql::state_mut();
-    let enabled = state.interrupts_enabled();
-    state.mask_interrupts();
+    let _masked = crate::pcr::pcr().mask_guard();
     let base = performance_count(crate::interrupt::clock::interrupt_time());
     let count = crate::hw::pit::read_count(&mut crate::hw::portio::Ports);
     let pending = crate::interrupt::clock_requested();
     // SAFETY: the reader's one user, serialized with interrupts masked.
-    let value = unsafe {
+    unsafe {
         (*core::ptr::addr_of_mut!(PERFORMANCE_COUNTER)).read(
             base,
             count,
             pending,
             crate::hw::pit::programmed_divisor(),
         )
-    };
-    if enabled {
-        state.unmask_interrupts();
     }
-    value
 }
 
 /// The boot's wall-clock reading, a FILETIME: set at boot, and moved when the system time is set
@@ -171,16 +165,11 @@ pub fn system_filetime() -> u64 {
 /// moved), and the real-time clock is not written: the machine's next boot reads its own again.
 #[cfg(target_arch = "x86")]
 pub fn set_system_filetime(now: u64) {
-    let state = crate::interrupt::irql::state_mut();
-    let enabled = state.interrupts_enabled();
-    state.mask_interrupts();
+    let _masked = crate::pcr::pcr().mask_guard();
     let boot = now.wrapping_sub(crate::interrupt::clock::system_time());
     // SAFETY: a single processor, interrupts masked: no reader runs across the write.
     unsafe { BOOT_FILETIME = boot };
     crate::user::shared::set_system_time(now);
-    if enabled {
-        state.unmask_interrupts();
-    }
 }
 
 #[cfg(test)]

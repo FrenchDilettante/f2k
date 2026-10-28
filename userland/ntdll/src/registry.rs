@@ -26,16 +26,9 @@ const KEY_VALUE_PARTIAL_INFORMATION: u32 = 2;
 /// (RtlFormatCurrentUserKeyPath); F2K's one user is `jeb`.
 const CURRENT_USER: &[u8] = b"\\Registry\\User\\jeb";
 
-/// OBJECT_ATTRIBUTES: a name for the key services, from the namespace's root.
-#[repr(C)]
-struct ObjectAttributes<'a> {
-    length: u32,
-    root_directory: u32,
-    object_name: &'a UnicodeString,
-    attributes: u32,
-    security_descriptor: usize,
-    security_quality_of_service: usize,
-}
+/// OBJECT_ATTRIBUTES (`rtl::nt`'s): a name for the key services, borrowed for as long as the
+/// attributes are.
+type ObjectAttributes<'a> = rtl::nt::ObjectAttributes<u32, &'a UnicodeString, usize>;
 
 /// A UNICODE_STRING over `units` (the services only read it).
 fn counted(units: &[u16]) -> UnicodeString {

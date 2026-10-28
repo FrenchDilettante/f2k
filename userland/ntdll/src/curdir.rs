@@ -20,30 +20,8 @@ use rtl::path::{
     MAX_PATH,
 };
 use rtl::status::{STATUS_NAME_TOO_LONG, STATUS_OBJECT_NAME_INVALID, STATUS_SUCCESS};
+use rtl::string::UnicodeString;
 use rtl::sys::{self, nr, system_service};
-
-/// A UNICODE_STRING.
-#[repr(C)]
-pub struct UnicodeString {
-    pub length: u16,
-    pub maximum_length: u16,
-    pub buffer: *mut u16,
-}
-
-impl UnicodeString {
-    /// Its units.
-    ///
-    /// # Safety
-    ///
-    /// The buffer holds `length` bytes.
-    pub(crate) unsafe fn units(&self) -> &[u16] {
-        if self.length == 0 {
-            return &[];
-        }
-        // SAFETY: the caller's contract.
-        unsafe { core::slice::from_raw_parts(self.buffer, self.length as usize / 2) }
-    }
-}
 
 /// The process parameters' CURDIR: CurrentDirectory.DosPath at 0x24, its Handle at 0x2C.
 const CURRENT_DIRECTORY: usize = 0x24;
@@ -115,12 +93,10 @@ fn open_directory(name: &[u16]) -> Result<u32, u32> {
 /// `path` is a UNICODE_STRING whose buffer holds its length.
 #[unsafe(export_name = "f2k_export_RtlSetCurrentDirectory_U")]
 pub unsafe extern "system" fn rtl_set_current_directory_u(path: *const UnicodeString) -> u32 {
-    let lock = sys::peb_lock();
-    lock.enter(&sys::Native);
-    // SAFETY: the caller's string.
-    let status = set_current_directory(unsafe { (*path).units() });
-    lock.leave(&sys::Native);
-    status
+    sys::peb_lock().with(&sys::Native, || {
+        // SAFETY: the caller's string.
+        set_current_directory(unsafe { (*path).units() })
+    })
 }
 
 fn set_current_directory(path: &[u16]) -> u32 {
@@ -201,27 +177,25 @@ pub unsafe extern "system" fn rtl_get_current_directory_u(
     buffer_length: u32,
     buffer: *mut u16,
 ) -> u32 {
-    let lock = sys::peb_lock();
-    lock.enter(&sys::Native);
-    let current = dos_path();
-    // SAFETY: the DOS path's buffer holds its length.
-    let units = unsafe { current.units() };
-    let mut length = units.len();
-    if length > 3 && units[length - 1] == u16::from(b'\\') {
-        length -= 1;
-    }
-    let answer = if (buffer_length as usize) < 2 * (length + 1) {
-        (2 * (length + 1)) as u32
-    } else {
-        // SAFETY: the caller's buffer, which holds the path and its terminator.
-        unsafe {
-            buffer.copy_from_nonoverlapping(units.as_ptr(), length);
-            buffer.add(length).write(0);
+    sys::peb_lock().with(&sys::Native, || {
+        let current = dos_path();
+        // SAFETY: the DOS path's buffer holds its length.
+        let units = unsafe { current.units() };
+        let mut length = units.len();
+        if length > 3 && units[length - 1] == u16::from(b'\\') {
+            length -= 1;
         }
-        (2 * length) as u32
-    };
-    lock.leave(&sys::Native);
-    answer
+        if (buffer_length as usize) < 2 * (length + 1) {
+            (2 * (length + 1)) as u32
+        } else {
+            // SAFETY: the caller's buffer, which holds the path and its terminator.
+            unsafe {
+                buffer.copy_from_nonoverlapping(units.as_ptr(), length);
+                buffer.add(length).write(0);
+            }
+            (2 * length) as u32
+        }
+    })
 }
 
 /// The process's first thread's share of the loader's work: open the starting current directory's
@@ -267,15 +241,14 @@ unsafe fn terminated<'a>(string: *const u16) -> &'a [u16] {
 /// The current directory's DOS path and handle, copied under the PEB lock into `out` (cut to
 /// MAX_PATH units and to its room): its length.
 pub(crate) fn current_directory(out: &mut [u16]) -> (usize, u32) {
-    let lock = sys::peb_lock();
-    lock.enter(&sys::Native);
-    // SAFETY: the DOS path's buffer holds its length.
-    let units = unsafe { dos_path().units() };
-    let length = units.len().min(MAX_PATH).min(out.len());
-    out[..length].copy_from_slice(&units[..length]);
-    let handle = sys::read(sys::process_parameters() + CURRENT_DIRECTORY_HANDLE) as u32;
-    lock.leave(&sys::Native);
-    (length, handle)
+    sys::peb_lock().with(&sys::Native, || {
+        // SAFETY: the DOS path's buffer holds its length.
+        let units = unsafe { dos_path().units() };
+        let length = units.len().min(MAX_PATH).min(out.len());
+        out[..length].copy_from_slice(&units[..length]);
+        let handle = sys::read(sys::process_parameters() + CURRENT_DIRECTORY_HANDLE) as u32;
+        (length, handle)
+    })
 }
 
 /// The NT path's buffer, in units: a full DOS path's room and the longest prefix (`\??\UNC`).

@@ -43,63 +43,23 @@ pub use query::{
 #[cfg(target_arch = "x86")]
 pub use volume::query_volume_information_file;
 
-use super::call::Status;
-
-pub const STATUS_NOT_IMPLEMENTED: Status = Status(0xC000_0002);
-pub const STATUS_INVALID_INFO_CLASS: Status = Status(0xC000_0003);
-pub const STATUS_INFO_LENGTH_MISMATCH: Status = Status(0xC000_0004);
-pub const STATUS_NO_SUCH_FILE: Status = Status(0xC000_000F);
-pub const STATUS_INVALID_DEVICE_REQUEST: Status = Status(0xC000_0010);
-pub const STATUS_END_OF_FILE: Status = Status(0xC000_0011);
-pub const STATUS_ACCESS_DENIED: Status = Status(0xC000_0022);
-pub const STATUS_OBJECT_NAME_COLLISION: Status = Status(0xC000_0035);
-pub const STATUS_DELETE_PENDING: Status = Status(0xC000_0056);
-pub const STATUS_DISK_FULL: Status = Status(0xC000_007F);
-pub const STATUS_INSUFFICIENT_RESOURCES: Status = Status(0xC000_009A);
-pub const STATUS_FILE_IS_A_DIRECTORY: Status = Status(0xC000_00BA);
-pub const STATUS_DIRECTORY_NOT_EMPTY: Status = Status(0xC000_0101);
-pub const STATUS_NOT_A_DIRECTORY: Status = Status(0xC000_0103);
-pub const STATUS_CANNOT_DELETE: Status = Status(0xC000_0121);
-pub const STATUS_USER_MAPPED_FILE: Status = Status(0xC000_0243);
-/// The warnings a listing or a query answers with.
-pub const STATUS_BUFFER_OVERFLOW: u32 = 0x8000_0005;
-pub const STATUS_NO_MORE_FILES: u32 = 0x8000_0006;
-
-/// A file system status as the services' status.
-pub fn status(status: crate::status::NtStatus) -> Status {
-    Status(status as u32)
-}
-
 /// The services' shared pieces on the target: a handle's file object, the start of a name, the
 /// walk, and the completion.
 #[cfg(target_arch = "x86")]
 mod common {
-    use super::super::attributes::{
-        self,
-        Root,
-        MAX_NAME,
-        STATUS_OBJECT_NAME_INVALID,
-        STATUS_OBJECT_TYPE_MISMATCH,
-    };
-    use super::super::call::{
-        Status,
-        UserAddr,
-        UserPtr,
-        STATUS_ACCESS_VIOLATION,
-        STATUS_INVALID_HANDLE,
-        STATUS_INVALID_PARAMETER,
-    };
+    use super::super::attributes::{self, Root, MAX_NAME};
+    use super::super::call::{UserAddr, UserPtr};
     use super::name::{self, FileName};
     use crate::fs::fat32::lookup::{find, root, File, LookupError};
     use crate::fs::fat32::volume::Volume;
     use crate::fs::file::{records, FileObject};
     use crate::ob::{ObjectType, Referenced};
-    use crate::status::{NtStatus, STATUS_FILE_CORRUPT_ERROR, STATUS_OBJECT_PATH_NOT_FOUND};
+    use crate::status::*;
 
     /// The file object `handle` names in the calling process, referenced: STATUS_INVALID_HANDLE for
     /// a handle naming nothing (a console handle included), STATUS_OBJECT_TYPE_MISMATCH for another
     /// kind of object.
-    pub fn file_object(handle: u32) -> Result<Referenced<FileObject>, Status> {
+    pub fn file_object(handle: u32) -> Result<Referenced<FileObject>, NtStatus> {
         let reference = super::super::sync::object_of(handle, ObjectType::File)?;
         let object = crate::ob::directory()
             .file(reference.id())
@@ -109,30 +69,30 @@ mod common {
 
     /// Whether an object was granted any of `rights`; STATUS_ACCESS_DENIED otherwise. None asks
     /// for nothing.
-    pub fn check_access(object: &FileObject, rights: u32) -> Result<(), Status> {
+    pub fn check_access(object: &FileObject, rights: u32) -> Result<(), NtStatus> {
         if rights != 0 && object.granted & rights == 0 {
-            return Err(super::STATUS_ACCESS_DENIED);
+            return Err(STATUS_ACCESS_DENIED);
         }
         Ok(())
     }
 
     /// Probe `size` bytes at `at` for the call's writes: STATUS_ACCESS_VIOLATION before it acts.
-    pub fn probe(at: UserAddr, size: u32) -> Result<(), Status> {
+    pub fn probe(at: UserAddr, size: u32) -> Result<(), NtStatus> {
         crate::user::syscall::probe_user_range(at.raw(), size).map_err(|_| STATUS_ACCESS_VIOLATION)
     }
 
     /// Write an IO_STATUS_BLOCK: the status and the information (a fault there is the caller's,
     /// past the call's own work: not reported).
-    pub fn complete(io_status: UserAddr, status: u32, information: u32) {
+    pub fn complete(io_status: UserAddr, status: NtStatus, information: u32) {
         let mut block = [0u8; 8];
-        block[..4].copy_from_slice(&status.to_le_bytes());
+        block[..4].copy_from_slice(&status.0.to_le_bytes());
         block[4..].copy_from_slice(&information.to_le_bytes());
         let _ = io_status.write(&block);
     }
 
     /// The new handle into the caller's slot; a slot that faults takes the handle back
     /// (STATUS_ACCESS_VIOLATION).
-    pub fn deliver(slot: UserPtr<u32>, handle: u32) -> Result<(), Status> {
+    pub fn deliver(slot: UserPtr<u32>, handle: u32) -> Result<(), NtStatus> {
         if slot.write(handle).is_err() {
             crate::user::args::calling_process().close_handle(handle);
             return Err(STATUS_ACCESS_VIOLATION);
@@ -152,7 +112,7 @@ mod common {
     /// relative to a directory's file object (ntdll names files under the current directory against
     /// its handle). STATUS_OBJECT_NAME_INVALID without a name; a root that is no file object is
     /// STATUS_OBJECT_TYPE_MISMATCH, a file's (not a directory's) STATUS_INVALID_PARAMETER.
-    pub fn target(attributes: UserAddr) -> Result<Target, Status> {
+    pub fn target(attributes: UserAddr) -> Result<Target, NtStatus> {
         if attributes.is_null() {
             return Err(STATUS_INVALID_PARAMETER);
         }
@@ -196,7 +156,7 @@ mod common {
         match error {
             LookupError::Corrupt => STATUS_FILE_CORRUPT_ERROR,
             LookupError::Device(status) => status,
-            LookupError::Invalid => crate::status::STATUS_OBJECT_NAME_INVALID,
+            LookupError::Invalid => STATUS_OBJECT_NAME_INVALID,
             LookupError::NotFound | LookupError::NotADirectory => STATUS_OBJECT_PATH_NOT_FOUND,
         }
     }
@@ -240,7 +200,7 @@ mod common {
 
     /// The event a read, write or listing signals once it completes, reset now; none for a null
     /// handle. STATUS_INVALID_HANDLE or STATUS_OBJECT_TYPE_MISMATCH for a handle naming no event.
-    pub fn completion_event(handle: u32) -> Result<Option<crate::ob::ObRef>, Status> {
+    pub fn completion_event(handle: u32) -> Result<Option<crate::ob::ObRef>, NtStatus> {
         if handle == 0 {
             return Ok(None);
         }

@@ -11,7 +11,8 @@
 
 use core::fmt::Write;
 
-use crate::nt::call::{NtResult, Status, UserAddr};
+use crate::nt::call::{NtResult, UserAddr};
+use crate::status::*;
 use crate::user::syscall::ServiceFn;
 
 /// The most text one print carries: DbgPrint's buffer, 512 bytes.
@@ -25,8 +26,12 @@ const PREFIX: &str = "F2K: debug: ";
 pub const SERVICE: (u32, ServiceFn) = (8, service);
 
 #[cfg(target_arch = "x86")]
-fn service(frame: &mut crate::user::TrapFrame, args: &[u32]) {
-    let call = crate::nt::call::NtCall::new(frame);
+fn service(
+    frame: &mut crate::user::TrapFrame,
+    args: &[u32],
+    passive: &mut crate::level::At<crate::level::Passive>,
+) {
+    let call = crate::nt::call::NtCall::new(frame, passive);
     let result = print(UserAddr(args[0]), args[1], &mut |line| {
         crate::serial_println!("{PREFIX}{line}");
     });
@@ -35,7 +40,11 @@ fn service(frame: &mut crate::user::TrapFrame, args: &[u32]) {
 
 /// Host builds compile the dispatch but never raise it.
 #[cfg(not(target_arch = "x86"))]
-fn service(_frame: &mut crate::user::TrapFrame, _args: &[u32]) {
+fn service(
+    _frame: &mut crate::user::TrapFrame,
+    _args: &[u32],
+    _passive: &mut crate::level::At<crate::level::Passive>,
+) {
     unreachable!("the gate is the target's");
 }
 
@@ -44,9 +53,9 @@ fn service(_frame: &mut crate::user::TrapFrame, _args: &[u32]) {
 fn print(text: UserAddr, length: u32, out: &mut dyn FnMut(Line<'_>)) -> NtResult {
     let mut buffer = [0u8; MAX_TEXT];
     let bytes = &mut buffer[..(length as usize).min(MAX_TEXT)];
-    crate::user::syscall::read_user(text.0, bytes).map_err(Status)?;
+    crate::user::syscall::read_user(text.0, bytes)?;
     lines(bytes).for_each(out);
-    Ok(crate::nt::call::STATUS_SUCCESS)
+    Ok(STATUS_SUCCESS)
 }
 
 /// One line of the text, as COM1 shows it: a byte outside printable ASCII as `\xNN`.

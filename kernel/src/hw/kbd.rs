@@ -428,8 +428,8 @@ mod target {
     use super::*;
     use crate::hw::portio::Ports;
     use crate::interrupt::dpc::{self, Dpc};
-    use crate::interrupt::irql;
     use crate::interrupt::InterruptObject;
+    use crate::level::{At, Dispatch, Keyboard as KeyboardLevel};
     use crate::serial_println;
 
     /// How long bring-up waits for each of the keyboard's answers: 50 ticks, about half a second
@@ -437,27 +437,28 @@ mod target {
     const ANSWER_TICKS: u64 = 50;
 
     static RING: ByteRing = ByteRing::new();
+    // Note: the controller's command state and the lost count the DPC last reported belong in the
+    // keyboard's device extension, which the driver does not have yet.
     static mut CONTROLLER: Controller<Ports> = Controller::new(Ports);
-    static mut OBJECT: InterruptObject = InterruptObject::zeroed();
-    static mut DPC: Dpc = Dpc::new(input_routine, 0);
+    /// The keyboard's interrupt: IRQ 1, served at the keyboard's level.
+    static OBJECT: InterruptObject = InterruptObject::at_keyboard(service, 0, VECTOR, false, false);
+    static DPC: Dpc = Dpc::new(input_routine, 0);
     /// The ring's lost count the DPC last reported.
     static mut REPORTED_LOST: u32 = 0;
 
     /// The service routine: runs claimed at the keyboard level. The one byte read ends the
     /// interrupt; everything else is the DPC's.
-    fn service(_object: &InterruptObject, _context: usize) -> bool {
+    fn service(keyboard: &mut At<KeyboardLevel>, _context: usize) -> bool {
         if let Some(byte) = super::service(&mut Ports) {
             RING.push(byte);
-            // SAFETY: single CPU; the DPC is a static the queue links through, and the enqueue is
-            // single-flight.
-            unsafe { dpc::enqueue(&mut *addr_of_mut!(DPC), 0, 0) };
+            dpc::enqueue_at(keyboard, &DPC, 0, 0);
         }
         true
     }
 
     /// The DPC: the ring's bytes in order, the keyboard's replies to the driver claimed, the rest
     /// fed to the console's producer.
-    fn input_routine(_dpc: &Dpc, _context: usize, _argument1: usize, _argument2: usize) {
+    fn input_routine(_: &mut At<Dispatch>, _: &Dpc, _context: usize, _: usize, _: usize) {
         // SAFETY: the drain runs DPCs one at a time at the dispatch level, and bring-up is over
         // before the interrupt is connected: the controller's command state is this routine's.
         let controller = unsafe { &mut *addr_of_mut!(CONTROLLER) };
@@ -507,24 +508,10 @@ mod target {
             serial_println!("F2K: kbd: no i8042 controller answered");
             return;
         };
-        // SAFETY: as above.
-        unsafe {
-            let object = &mut *addr_of_mut!(OBJECT);
-            crate::interrupt::initialize(
-                object,
-                service,
-                0,
-                VECTOR,
-                irql::KEYBOARD,
-                irql::KEYBOARD,
-                false,
-                false,
-            );
-            assert!(
-                crate::interrupt::connect(object),
-                "connecting the keyboard interrupt failed"
-            );
-        }
+        assert!(
+            crate::interrupt::connect(&OBJECT),
+            "connecting the keyboard interrupt failed"
+        );
         let translation = if found.translation() { "on" } else { "off" };
         match found.keyboard {
             Keyboard::Ready => {

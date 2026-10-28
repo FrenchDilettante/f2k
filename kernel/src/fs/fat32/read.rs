@@ -9,13 +9,7 @@
 use super::fat::FatEntry;
 use super::lookup::File;
 use super::volume::Volume;
-use crate::status::{
-    nt_success,
-    NtStatus,
-    STATUS_BUFFER_TOO_SMALL,
-    STATUS_FILE_CORRUPT_ERROR,
-    STATUS_SUCCESS,
-};
+use crate::status::{NtStatus, STATUS_BUFFER_TOO_SMALL, STATUS_FILE_CORRUPT_ERROR, STATUS_SUCCESS};
 
 /// Read `file` (a file, not a directory) into the start of `buffer`, which must hold its size.
 /// Returns an NT status; on failure the buffer's contents are unspecified.
@@ -101,14 +95,14 @@ fn read_span(volume: &Volume, lba: u64, start: usize, out: &mut [u8]) -> Result<
         let take = if within == 0 && remaining >= 512 {
             let whole = remaining / 512 * 512;
             let status = volume.device().read(sector, &mut out[done..done + whole]);
-            if !nt_success(status) {
+            if !status.is_success() {
                 return Err(status);
             }
             whole
         } else {
             let mut bounce = [0u8; 512];
             let status = volume.device().read(sector, &mut bounce);
-            if !nt_success(status) {
+            if !status.is_success() {
                 return Err(status);
             }
             let take = (512 - within).min(remaining);

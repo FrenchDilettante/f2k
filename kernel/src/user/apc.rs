@@ -100,7 +100,7 @@ pub fn deliver(frame: &mut TrapFrame) {
     if super::syscall::write_user(esp, &bytes).is_err() {
         crate::process::threads::fault_exit(crate::process::exit::Fault {
             vector: 14,
-            status: super::syscall::STATUS_ACCESS_VIOLATION,
+            status: crate::status::STATUS_ACCESS_VIOLATION.0,
             in_user_copy: true,
         });
     }
@@ -124,9 +124,7 @@ pub fn test_alert() {
 /// delivered into its planted frame.
 #[cfg(target_arch = "x86")]
 pub fn deliver_at_startup() {
-    let state = crate::interrupt::irql::state_mut();
-    let enabled = state.interrupts_enabled();
-    state.mask_interrupts();
+    let _masked = crate::pcr::pcr().mask_guard();
     // SAFETY: the running thread, live; its planted trap frame sits at the top of its kernel stack.
     let thread = unsafe { &mut *crate::sched::idle::dispatcher().current_thread() };
     if !thread.user_apcs.is_empty() {
@@ -135,9 +133,6 @@ pub fn deliver_at_startup() {
             (thread.initial_stack - core::mem::size_of::<TrapFrame>() as u32) as *mut TrapFrame;
         // SAFETY: the planted frame, which the startup stub pops next.
         deliver(unsafe { &mut *frame });
-    }
-    if enabled {
-        state.unmask_interrupts();
     }
 }
 
@@ -157,9 +152,7 @@ pub fn deliver_initialization() -> bool {
     if crate::mem::vm::CurrentPages.entry(crate::exec::modules::NTDLL_BASE) & 1 == 0 {
         return false;
     }
-    let state = crate::interrupt::irql::state_mut();
-    let enabled = state.interrupts_enabled();
-    state.mask_interrupts();
+    let _masked = crate::pcr::pcr().mask_guard();
     // SAFETY: the running thread, live; its planted trap frame sits at the top of its kernel stack.
     let thread = unsafe { &mut *crate::sched::idle::dispatcher().current_thread() };
     let frame = (thread.initial_stack - core::mem::size_of::<TrapFrame>() as u32) as *mut TrapFrame;
@@ -169,15 +162,12 @@ pub fn deliver_initialization() -> bool {
     if super::syscall::write_user(esp, &bytes).is_err() {
         crate::process::threads::fault_exit(crate::process::exit::Fault {
             vector: 14,
-            status: super::syscall::STATUS_ACCESS_VIOLATION,
+            status: crate::status::STATUS_ACCESS_VIOLATION.0,
             in_user_copy: true,
         });
     }
     frame.user_esp = esp;
     frame.eip = crate::exec::modules::ldr_initialize_thunk();
-    if enabled {
-        state.unmask_interrupts();
-    }
     true
 }
 

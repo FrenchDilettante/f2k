@@ -273,26 +273,18 @@ unsafe fn invlpg(vaddr: u32) {
 /// through the caller's buffer, never through a pointer into the window.
 #[cfg(target_arch = "x86")]
 struct ScratchClaim {
-    /// Whether interrupts were enabled at the claim, in the level ledger.
-    enabled: bool,
+    /// Interrupts masked through the level ledger for the claim's length (the guard checks that
+    /// the ledger agrees with the processor's flag).
+    _masked: crate::pcr::MaskGuard,
 }
 
 #[cfg(target_arch = "x86")]
 impl ScratchClaim {
-    /// Mask interrupts through the level ledger for the window's use. The ledger must agree with
-    /// the processor's flag: the drop puts back what the ledger says, and a ledger that disagreed
-    /// would leave interrupts enabled where the code before the claim had them masked, or the
-    /// reverse.
+    /// Mask interrupts through the level ledger for the window's use.
     fn take() -> Self {
-        let state = crate::interrupt::irql::state_mut();
-        let enabled = state.interrupts_enabled();
-        assert_eq!(
-            enabled,
-            !interrupts_masked(),
-            "the level ledger disagrees with the interrupt flag"
-        );
-        state.mask_interrupts();
-        ScratchClaim { enabled }
+        ScratchClaim {
+            _masked: crate::pcr::pcr().mask_guard(),
+        }
     }
 
     /// Point the window at `frame_phys` (page-aligned) and return its address: the frame,
@@ -300,15 +292,6 @@ impl ScratchClaim {
     fn map(&self, frame_phys: u32) -> u32 {
         install_scratch(self, frame_phys);
         SCRATCH_VA
-    }
-}
-
-#[cfg(target_arch = "x86")]
-impl Drop for ScratchClaim {
-    fn drop(&mut self) {
-        if self.enabled {
-            crate::interrupt::irql::state_mut().unmask_interrupts();
-        }
     }
 }
 
@@ -634,7 +617,7 @@ pub fn map_kernel_page(vaddr: u32, frame_phys: u32) {
     // SAFETY: the self-map and directory windows are installed, so both addresses reach the
     // current directory and the window's table. Past the boot (before any thread runs), these
     // windows change only here and in `unmap_kernel_page`, at every thread create and exit, from
-    // `map_gate_slot`/`unmap_gate_slot` inside the kernel-stack ledger's `Global` closure
+    // `map_gate_slot`/`unmap_gate_slot` under the kernel-stack ledger's high-level borrow
     // (`STACKS` in mem/kstacks.rs), which masks interrupts: on one processor nothing else
     // touches the entry between the check and the store. Only the boot creates a table (the
     // frozen-half assertion). Entries are CPU-mutated (accessed/dirty), so access is volatile.

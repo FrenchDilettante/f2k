@@ -316,15 +316,8 @@ mod tests {
     use crate::sched::event::{Event, EventKind, EVENT_WAKE_INCREMENT};
     use crate::sched::process::SchedProcess;
     use crate::sched::thread::{Thread, ThreadState};
-    use crate::sched::wait::{
-        ClockStamp,
-        WaitDisposition,
-        WaitMode,
-        WaitReason,
-        STATUS_SUCCESS,
-        STATUS_TIMEOUT,
-        TIMER_BLOCK,
-    };
+    use crate::sched::wait::{ClockStamp, WaitDisposition, WaitMode, WaitReason, TIMER_BLOCK};
+    use crate::status::{STATUS_SUCCESS, STATUS_TIMEOUT};
 
     const INCREMENT: u64 = crate::interrupt::clock::INTERVAL_100NS as u64;
 

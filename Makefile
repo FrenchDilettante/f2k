@@ -112,7 +112,7 @@ help:
 	@echo "  kernel       - Build the kernel (the system DLLs first)"
 	@echo "  qemu         - Build the disk and boot the kernel directly in QEMU (Multiboot, disk attached)"
 	@echo "  test         - Run every on-target QEMU test (kernel boots and the corpus)"
-	@echo "  run-tests    - Run host unit tests (cargo test --lib)"
+	@echo "  run-tests    - Run host unit tests (cargo test --lib, and the kernel's doc tests)"
 	@echo "  compat       - The tests' pins checked against the export specs, the host scenarios run"
 	@echo "  compat-report - The DLL compatibility report from the last test results (target/compat/)"
 	@echo "  check-all    - run-tests, then compat, then test"
@@ -291,6 +291,9 @@ run-tests: userland
 	# source for the kernel; for host tests that collides with the host's
 	# prebuilt std, so build std (and its deps) from source instead.
 	cd $(KERNEL_DIR) && CARGO_UNSTABLE_BUILD_STD=std cargo test --lib --target $(RUST_HOST_TARGET)
+	# The kernel's documentation tests: the compile-fail examples of the level tokens and the
+	# locks, each checked for the error code it names (against the library's plain host build).
+	cd $(KERNEL_DIR) && CARGO_UNSTABLE_BUILD_STD=std cargo test --doc --target $(RUST_HOST_TARGET)
 	# The export-spec generator the build scripts run (a host crate of its own).
 	cd $(EXPORTGEN_DIR) && CARGO_UNSTABLE_BUILD_STD=std cargo test --target $(RUST_HOST_TARGET)
 	# The userland runtime's host tests, under the root configuration as the kernel's are (std

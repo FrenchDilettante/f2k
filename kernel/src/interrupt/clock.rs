@@ -14,9 +14,12 @@
 //! discipline every DPC enqueue uses. The runtime accounting folds the DPC request-rate history.
 
 #[cfg(target_arch = "x86")]
-use core::ptr::addr_of_mut;
-
-use crate::interrupt::dpc::{Dpc, DpcQueue};
+use crate::interrupt::dpc;
+use crate::interrupt::dpc::Dpc;
+#[cfg(target_arch = "x86")]
+use crate::level::{self, Above, At, Dispatch, Level, LevelCell};
+#[cfg(target_arch = "x86")]
+use crate::pcr::pcr;
 
 /// The interval in 100 ns units a real machine of this platform family reports as its default time
 /// increment (10.0144 ms).
@@ -153,23 +156,22 @@ impl Clock {
         self.interrupt_count = self.interrupt_count.wrapping_add(1);
         Tick::Full
     }
-
-    /// The runtime accounting on a full tick: fold the deferred-work request-rate history. (The
-    /// per-thread quantum work belongs to the scheduler, not the clock.)
-    pub fn account_runtime(&self, queue: &mut DpcQueue) {
-        queue.update_request_rate();
-    }
 }
 
 /// The deferred timer routine: the clock's DPC callback — the timer table's expiry walk. The
 /// argument is the firing tick's low word (the trigger's), and the walk scans the table from that
 /// tick's bucket through the current one, waking every thread whose timeout came due.
 #[cfg(target_arch = "x86")]
-fn timer_routine(_dpc: &Dpc, _context: usize, argument1: usize, _argument2: usize) {
-    // The readings in one masked read: the routine runs with interrupts enabled, from the retire
-    // pass at the dispatch level — the dispatcher's entries run serialized there. The system time
-    // is the pass's signal time, what the expired timers' APCs are given.
-    let (now, tick, system_time) = read_clock(|clock| {
+fn timer_routine(
+    dispatch: &mut At<Dispatch>,
+    _dpc: &Dpc,
+    _context: usize,
+    argument1: usize,
+    _argument2: usize,
+) {
+    // The readings in one read at the clock level, raised from the routine's own level. The system
+    // time is the pass's signal time, what the expired timers' APCs are given.
+    let (now, tick, system_time) = read_at(dispatch, |clock| {
         (
             clock.interrupt_time(),
             clock.tick_count() as u32,
@@ -182,15 +184,16 @@ fn timer_routine(_dpc: &Dpc, _context: usize, argument1: usize, _argument2: usiz
 
 // --- Target wiring: the kernel clock --------------------------------------
 
-/// The kernel's clock and its deferred timer work.
+/// The kernel's clock: clock-level state, advanced by the clock interrupt and read by raising to
+/// its level.
 #[cfg(target_arch = "x86")]
-static mut CLOCK: Clock = Clock::new();
+static CLOCK: LevelCell<level::Clock, Clock> = LevelCell::new(Clock::new());
 
 /// The deferred timer work: enqueued by the clock's interrupt on a full tick, drained at the
 /// dispatch level. Single-flight like every DPC: a tick that finds it already queued skips the
 /// enqueue.
 #[cfg(target_arch = "x86")]
-static mut TIMER_DPC: Dpc = Dpc::new(timer_routine, 0);
+static TIMER_DPC: Dpc = Dpc::new(timer_routine, 0);
 
 /// How often the balance-set scan runs, in full ticks: about a second.
 pub const BALANCE_PERIOD_TICKS: u32 = 100;
@@ -199,95 +202,103 @@ pub const BALANCE_PERIOD_TICKS: u32 = 100;
 /// [`crate::sched::dispatcher::Dispatcher::scan_ready_queues`]): the platform runs it in its
 /// balance-set manager thread, woken once a second; here the clock enqueues it once a second.
 #[cfg(target_arch = "x86")]
-static mut BALANCE_DPC: Dpc = Dpc::new(balance_routine, 0);
+static BALANCE_DPC: Dpc = Dpc::new(balance_routine, 0);
 
 #[cfg(target_arch = "x86")]
-fn balance_routine(_dpc: &Dpc, _context: usize, _argument1: usize, _argument2: usize) {
+fn balance_routine(
+    _dispatch: &mut At<Dispatch>,
+    _dpc: &Dpc,
+    _context: usize,
+    _argument1: usize,
+    _argument2: usize,
+) {
     crate::sched::idle::dispatcher().scan_ready_queues();
 }
 
 /// The vector the timer interrupt arrives on (IRQ 0 after the remap).
 pub const CLOCK_VECTOR: u8 = crate::hw::pic::MASTER_VECTOR_BASE;
 
-/// The clock's interrupt service body: run at the clock level with interrupts masked, after the
-/// interrupt has been claimed. Updates the clock and enqueues the deferred timer work when a timer
-/// is due — the timer table's hand check, with the firing tick's low word as the argument the walk
-/// resumes from.
+/// The clock's interrupt service body, handed the clock-level token by the interrupt dispatch once
+/// the interrupt has been claimed (interrupts masked). Updates the clock and enqueues the deferred
+/// timer work when a timer is due — the timer table's hand check, with the firing tick's low word
+/// as the argument the walk resumes from.
 #[cfg(target_arch = "x86")]
-pub fn service() {
-    // SAFETY: single CPU; the clock, its DPC, the queue, and the level state are kernel statics
-    // whose accessors run serialized by the level discipline — the clock level masks the
-    // dispatcher's.
-    unsafe {
-        let clock = &mut *addr_of_mut!(CLOCK);
-        let tick = clock.tick();
-        let full = matches!(tick, Tick::Full).then(|| (clock.system_time(), clock.tick_count()));
-        crate::user::shared::update(clock.interrupt_time(), full);
-        if let Tick::Full = tick {
-            let tick_low = clock.tick_count() as u32;
-            // The hand check at the transition to tick N: the buckets of ticks N-1 and N against
-            // the just-advanced interrupt time. A due head fires the deferred work, single-flight
-            // like every enqueue, carrying the firing tick's low word.
-            if let Some(argument) =
-                crate::sched::idle::dispatcher().timer_trigger(clock.interrupt_time(), tick_low)
-            {
-                let dpc = &mut *addr_of_mut!(TIMER_DPC);
-                crate::interrupt::dpc::enqueue(dpc, argument as usize, 0);
-            }
-            clock.account_runtime(crate::interrupt::dpc::queue_mut());
-            // A full tick charges the running thread's quantum; a charge that runs the quantum out
-            // requests the dispatch window's decision at this interrupt's exit.
-            let dispatcher = crate::sched::idle::dispatcher();
-            dispatcher.note_tick(clock.tick_count());
-            dispatcher.charge_running_tick();
-            // Once a second, the balance-set scan.
-            if tick_low % BALANCE_PERIOD_TICKS == 0 {
-                let dpc = &mut *addr_of_mut!(BALANCE_DPC);
-                crate::interrupt::dpc::enqueue(dpc, 0, 0);
-            }
-        }
+pub fn service(at_clock: &mut At<level::Clock>) {
+    // The clock's own update, inside its cell's borrow. Everything after works from the readings,
+    // with the borrow over and the token free for the raises below.
+    let clock = CLOCK.get(at_clock);
+    let tick = clock.tick();
+    let interrupt_time = clock.interrupt_time();
+    let full = matches!(tick, Tick::Full).then(|| (clock.system_time(), clock.tick_count()));
+    crate::user::shared::update(interrupt_time, full);
+    let Some((_, tick_count)) = full else {
+        return;
+    };
+    let tick_low = tick_count as u32;
+    // Note: the dispatcher is dispatch-level state, and this interrupt still reaches it from the
+    // clock level, outside the level rules: the timer table's hand check (`timer_trigger`, the
+    // unlocked bucket-head read Windows 2000's clock interrupt makes too), the tick's copy
+    // (`note_tick`) and the running thread's quantum (`charge_running_tick`). They move to a
+    // narrow interface of their own when the dispatcher's per-processor fields are split out.
+    //
+    // The hand check at the transition to tick N: the buckets of ticks N-1 and N against the
+    // just-advanced interrupt time. A due head fires the deferred work, single-flight like every
+    // enqueue, carrying the firing tick's low word.
+    if let Some(argument) = crate::sched::idle::dispatcher().timer_trigger(interrupt_time, tick_low)
+    {
+        dpc::enqueue_at(at_clock, &TIMER_DPC, argument as usize, 0);
+    }
+    // The runtime accounting: fold the deferred-work request-rate history. (The per-thread
+    // quantum work belongs to the scheduler, not the clock.)
+    pcr().dpc_queue.with(
+        &mut at_clock.raise::<level::High>(),
+        dpc::DpcQueue::update_request_rate,
+    );
+    // A full tick charges the running thread's quantum; a charge that runs the quantum out
+    // requests the dispatch window's decision at this interrupt's exit.
+    let dispatcher = crate::sched::idle::dispatcher();
+    dispatcher.note_tick(tick_count);
+    dispatcher.charge_running_tick();
+    // Once a second, the balance-set scan.
+    if tick_low % BALANCE_PERIOD_TICKS == 0 {
+        dpc::enqueue_at(at_clock, &BALANCE_DPC, 0, 0);
     }
 }
 
 /// Point the kernel clock at the captured platform rate (10.0144 ms per interrupt; 1.0032 ms the
-/// finest offered).
-///
-/// # Safety
-///
-/// Boot CPU, interrupts disabled, before the first tick.
+/// finest offered). Boot calls it, before the first tick.
 #[cfg(target_arch = "x86")]
-pub unsafe fn init() {
-    // SAFETY: sole access, before interrupts are enabled.
-    unsafe { (*addr_of_mut!(CLOCK)).set_time_increment(INTERVAL_100NS, FINEST_100NS) };
+pub fn init() {
+    level::raised::<level::Clock, _>(|at_clock| {
+        CLOCK
+            .get(at_clock)
+            .set_time_increment(INTERVAL_100NS, FINEST_100NS)
+    });
 }
 
 /// Run the kernel clock's source `per_tick` times per platform tick (the perf trace's sampling
-/// rate; see [`Clock::set_source_per_tick`]).
-///
-/// # Safety
-///
-/// Boot CPU, interrupts disabled, before the first tick (the perf trace's init calls this).
+/// rate; see [`Clock::set_source_per_tick`]). Boot calls it, before the first tick.
 #[cfg(target_arch = "x86")]
-pub unsafe fn set_source_per_tick(per_tick: u32) {
-    // SAFETY: sole access, before interrupts are enabled.
-    unsafe { (*addr_of_mut!(CLOCK)).set_source_per_tick(per_tick) };
+pub fn set_source_per_tick(per_tick: u32) {
+    level::raised::<level::Clock, _>(|at_clock| CLOCK.get(at_clock).set_source_per_tick(per_tick));
 }
 
-/// Read the kernel clock with interrupts masked for the read, restoring the caller's flag exactly.
-/// The 64-bit fields are two loads on this processor; a tick taken in the gap — precisely when the
-/// low word carries — would hand back a value about 429 s off.
+/// Read the kernel clock from code that holds a level token below the clock's: raised to the clock
+/// level for the read. The 64-bit fields are two loads on this processor; a tick taken in the gap
+/// — precisely when the low word carries — would hand back a value about 429 s off.
+#[cfg(target_arch = "x86")]
+pub fn read_at<L: Level, T>(at: &mut At<L>, read: impl FnOnce(&Clock) -> T) -> T
+where
+    level::Clock: Above<L>,
+{
+    read(CLOCK.get(&mut at.raise::<level::Clock>()))
+}
+
+/// Read the kernel clock from code that holds no level token yet: [`read_at`], through the bridge
+/// to the clock level.
 #[cfg(target_arch = "x86")]
 fn read_clock<T>(read: impl FnOnce(&Clock) -> T) -> T {
-    let flags: u32;
-    // SAFETY: saves EFLAGS and clears IF; the matching restore below puts the flag back as it was,
-    // so the level model's view of it never changes. Neither is `nomem`: the read must stay
-    // between them, and be redone at each call (the interrupt advances the clock).
-    unsafe { core::arch::asm!("pushfd", "pop {}", "cli", out(reg) flags) };
-    // SAFETY: the clock's only writer is the clock interrupt, masked for the read.
-    let value = read(unsafe { &*addr_of_mut!(CLOCK) });
-    // SAFETY: restores the flags captured above.
-    unsafe { core::arch::asm!("push {}", "popfd", in(reg) flags) };
-    value
+    level::raised::<level::Clock, _>(|at_clock| read(CLOCK.get(at_clock)))
 }
 
 /// The kernel clock's tick count (diagnostic and smoke reads).
@@ -318,7 +329,6 @@ pub fn stamp() -> crate::sched::wait::ClockStamp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::interrupt::irql::IrqlState;
 
     /// One clock for every due: a wait's stamp reads interrupt time, the clock the timer
     /// table expires against, so a slewed system time moves no wait's deadline.
@@ -475,23 +485,23 @@ mod tests {
     /// queue.
     #[test]
     fn full_ticks_fold_the_request_rate() {
-        fn noop(_: &Dpc, _: usize, _: usize, _: usize) {}
+        use crate::interrupt::dpc::DpcQueue;
+        use crate::level::{At, Dispatch};
+
+        fn noop(_: &mut At<Dispatch>, _: &Dpc, _: usize, _: usize, _: usize) {}
         let mut clock = Clock::new();
         clock.set_time_increment(INTERVAL_100NS, FINEST_100NS);
-        let mut queue = DpcQueue::zeroed();
-        queue.init(4, 0);
+        let mut queue = DpcQueue::new(4, 0);
 
         // Four distinct deferred works (single flight refuses a re-insert), then four full ticks
-        // account for them.
-        let mut dpcs: Vec<Dpc> = (0..4).map(|_| Dpc::new(noop, 0)).collect();
-        let mut irql = IrqlState::new();
-        for dpc in dpcs.iter_mut() {
-            assert!(queue.insert(dpc, 0, 0, &mut irql));
+        // account for them, as the service does on each.
+        for _ in 0..4 {
+            assert!(queue.insert(Box::leak(Box::new(Dpc::new(noop, 0))), 0, 0));
         }
         assert_eq!(queue.depth(), 4);
         for expected in [2i32, 1, 0, 0] {
             assert_eq!(clock.tick(), Tick::Full);
-            clock.account_runtime(&mut queue);
+            queue.update_request_rate();
             assert_eq!(queue.request_rate(), expected);
         }
         assert_eq!(queue.depth(), 4, "accounting does not drain the queue");

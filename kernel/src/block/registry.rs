@@ -7,7 +7,7 @@
 
 use super::partition::{walk_mbr, MbrEntry, MbrError, Partition};
 use super::{BlockDevice, DeviceKind};
-use crate::status::{nt_success, NtStatus};
+use crate::status::NtStatus;
 
 /// How many devices the table holds.
 pub const CAPACITY: usize = 16;
@@ -97,7 +97,7 @@ pub fn scan(
     }
     let mut sector = [0u8; 512];
     let status = disk.read(0, &mut sector);
-    if !nt_success(status) {
+    if !status.is_success() {
         return (id, Scan::ReadFailed(status));
     }
     let entries = match walk_mbr(&sector, info.sectors) {

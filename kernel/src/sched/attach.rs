@@ -96,12 +96,6 @@ impl Drop for Attached {
 
 /// Run `body` with interrupts masked, then put the flag back as found.
 fn masked<R>(body: impl FnOnce() -> R) -> R {
-    let state = crate::interrupt::irql::state_mut();
-    let enabled = state.interrupts_enabled();
-    state.mask_interrupts();
-    let result = body();
-    if enabled {
-        state.unmask_interrupts();
-    }
-    result
+    let _masked = crate::pcr::pcr().mask_guard();
+    body()
 }

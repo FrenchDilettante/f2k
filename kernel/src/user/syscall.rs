@@ -33,6 +33,13 @@
 //! under the running thread's attribution flag instead: a fault there ends the user process, not
 //! the kernel.
 
+use crate::level::{At, Passive};
+use crate::status::{
+    NtStatus,
+    STATUS_ACCESS_VIOLATION,
+    STATUS_INVALID_SYSTEM_SERVICE,
+    STATUS_NOT_IMPLEMENTED,
+};
 use crate::user::TrapFrame;
 
 /// The system-call vector: int 02Eh, above the CPU exception range.
@@ -52,18 +59,14 @@ pub const SYS_CSR_CALL: u32 = 0x8000_0010;
 /// writes to COM1 ([`crate::dbgprint`]), STATUS_SUCCESS in EAX.
 pub const SYS_DEBUG_PRINT: u32 = 0x8000_0011;
 
-/// Documented NTSTATUS values (public ABI constants).
-pub const STATUS_ACCESS_VIOLATION: u32 = 0xC000_0005;
-pub const STATUS_INVALID_SYSTEM_SERVICE: u32 = 0xC000_001C;
-pub const STATUS_NOT_IMPLEMENTED: u32 = 0xC000_0002;
-
 /// Largest argument block the dispatcher copies onto the kernel stack. Sized up front so the gate
 /// path stays allocation-free: Windows 2000's largest services, NtCreateFile's and
 /// NtQueryDirectoryFile's, take eleven arguments.
 pub const MAX_ARG_BYTES: usize = 44;
 
-/// A service: places its result in the frame's EAX slot.
-pub type ServiceFn = fn(&mut TrapFrame, &[u32]);
+/// A service: places its result in the frame's EAX slot. It is handed the passive-level token the
+/// system-call entry makes, which its call context ([`crate::nt::call::NtCall`]) lends its handler.
+pub type ServiceFn = fn(&mut TrapFrame, &[u32], &mut At<Passive>);
 
 /// Where a service number's table bits sit (bits 12-13), as Windows 2000's dispatcher reads them.
 pub const SERVICE_TABLE_SHIFT: u32 = 12;
@@ -82,7 +85,7 @@ pub fn service_table(number: u32) -> u32 {
 /// The service a number names (see the module notes): its argument block's size and its handler;
 /// STATUS_NOT_IMPLEMENTED for a service F2K does not serve, STATUS_INVALID_SYSTEM_SERVICE for a
 /// number no table holds.
-pub fn find_service(number: u32) -> Result<(u32, ServiceFn), u32> {
+pub fn find_service(number: u32) -> Result<(u32, ServiceFn), NtStatus> {
     if number == SYS_CSR_CALL {
         return Ok(crate::csr::SERVICE);
     }
@@ -103,7 +106,7 @@ pub fn find_service(number: u32) -> Result<(u32, ServiceFn), u32> {
 
 /// Probe a user range: zero length passes; otherwise it must lie below [`USER_PROBE_LIMIT`] without
 /// wrapping. Violations report [`STATUS_ACCESS_VIOLATION`]; the range is never read.
-pub(crate) fn probe_user_range(pointer: u32, length: u32) -> Result<(), u32> {
+pub(crate) fn probe_user_range(pointer: u32, length: u32) -> Result<(), NtStatus> {
     if length == 0 {
         return Ok(());
     }
@@ -201,7 +204,7 @@ pub fn copy_fixup(eip: u32) -> Option<u32> {
 
 /// Copy `len` bytes between kernel and user memory through the fault-tolerant routine.
 #[cfg(target_arch = "x86")]
-fn user_copy(dst: *mut u8, src: *const u8, len: usize) -> Result<(), u32> {
+fn user_copy(dst: *mut u8, src: *const u8, len: usize) -> Result<(), NtStatus> {
     // SAFETY: one side is the caller's kernel buffer; the other passed the user probe, and a fault
     // on it resumes at the routine's fixup.
     let remaining = unsafe { f2k_user_copy(dst, src, len) };
@@ -214,7 +217,7 @@ fn user_copy(dst: *mut u8, src: *const u8, len: usize) -> Result<(), u32> {
 
 /// Read `bytes` from user memory: probed, then copied fault-tolerantly. A range outside user space
 /// or a page that cannot be read fails with STATUS_ACCESS_VIOLATION, `bytes` partly written.
-pub fn read_user(pointer: u32, bytes: &mut [u8]) -> Result<(), u32> {
+pub fn read_user(pointer: u32, bytes: &mut [u8]) -> Result<(), NtStatus> {
     probe_user_range(pointer, bytes.len() as u32)?;
     #[cfg(target_arch = "x86")]
     {
@@ -228,7 +231,7 @@ pub fn read_user(pointer: u32, bytes: &mut [u8]) -> Result<(), u32> {
 
 /// Write `bytes` to user memory: probed, then copied fault-tolerantly. A range outside user space,
 /// or a page that is not mapped writable, fails with STATUS_ACCESS_VIOLATION, partly written.
-pub fn write_user(pointer: u32, bytes: &[u8]) -> Result<(), u32> {
+pub fn write_user(pointer: u32, bytes: &[u8]) -> Result<(), NtStatus> {
     probe_user_range(pointer, bytes.len() as u32)?;
     #[cfg(target_arch = "x86")]
     {
@@ -246,13 +249,13 @@ pub fn write_user(pointer: u32, bytes: &[u8]) -> Result<(), u32> {
 /// fails as an unmapped page does.
 #[cfg(not(target_arch = "x86"))]
 pub mod host {
-    use super::STATUS_ACCESS_VIOLATION;
+    use super::{NtStatus, STATUS_ACCESS_VIOLATION};
 
     /// A user address space, as the copies see it: a range that is not all mapped fails with
     /// STATUS_ACCESS_VIOLATION.
     pub trait UserMemory {
-        fn read(&self, pointer: u32, bytes: &mut [u8]) -> Result<(), u32>;
-        fn write(&mut self, pointer: u32, bytes: &[u8]) -> Result<(), u32>;
+        fn read(&self, pointer: u32, bytes: &mut [u8]) -> Result<(), NtStatus>;
+        fn write(&mut self, pointer: u32, bytes: &[u8]) -> Result<(), NtStatus>;
     }
 
     /// A memory the tests install: shared with the test, which stages and inspects it.
@@ -286,8 +289,8 @@ pub mod host {
     /// none. An empty access touches nothing and succeeds, as on the target.
     pub(super) fn with_memory(
         length: usize,
-        access: impl FnOnce(&mut dyn UserMemory) -> Result<(), u32>,
-    ) -> Result<(), u32> {
+        access: impl FnOnce(&mut dyn UserMemory) -> Result<(), NtStatus>,
+    ) -> Result<(), NtStatus> {
         if length == 0 {
             return Ok(());
         }
@@ -336,14 +339,21 @@ extern "C" fn syscall_dispatch(frame: &mut TrapFrame) {
     // thread could then interleave inside the kernel's unlocked structures (the scratch window,
     // the frame database, a process's page tables) — another process's thread, once processes
     // run side by side.
-    crate::interrupt::irql::state_mut().enter_gate();
+    crate::pcr::pcr().enter_gate();
+    // The service runs at the passive level, as Windows 2000's do (masked, which grants nothing a
+    // token would): it may wait, copy user memory, and raise.
+    // SAFETY: an entry: the gate is raised from user mode only (asserted above), which runs at the
+    // passive level, and the ledger reads it (a gate does not raise); the token is this thread's,
+    // and it is dropped when the dispatch returns to user mode.
+    let mut passive = unsafe { At::<Passive>::enter() };
+    debug_assert_eq!(crate::pcr::pcr().current(), crate::interrupt::irql::PASSIVE);
 
     // A Windows 2000 system service of either table, the client-server call, or the debugger
     // print.
     let (arg_bytes, service) = match find_service(frame.eax) {
         Ok(found) => found,
         Err(status) => {
-            frame.eax = status;
+            frame.eax = status.0;
             return;
         }
     };
@@ -352,22 +362,20 @@ extern "C" fn syscall_dispatch(frame: &mut TrapFrame) {
     // Windows 2000's first win32k call makes a thread a GUI thread (the internal numbers' table
     // bits are 0).
     if service_table(frame.eax) == WIN32K_TABLE {
-        if let Err(crate::nt::call::Status(status)) =
-            crate::win32k::winsta::connect(crate::user::args::calling_process())
-        {
-            frame.eax = status;
+        if let Err(status) = crate::win32k::winsta::connect(crate::user::args::calling_process()) {
+            frame.eax = status.0;
             return;
         }
     }
 
     if let Err(status) = probe_user_range(frame.edx, arg_bytes) {
-        frame.eax = status;
+        frame.eax = status.0;
         return;
     }
 
     let mut args = [0u32; MAX_ARG_BYTES / 4];
     copy_user_args(frame.edx, arg_bytes, &mut args);
-    service(frame, &args[..arg_bytes as usize / 4]);
+    service(frame, &args[..arg_bytes as usize / 4], &mut passive);
     // A service attaches to another process only for a scope inside it: the caller resumes on its
     // own address space (Windows stops on the same mismatch, APC_INDEX_MISMATCH).
     assert!(
@@ -532,8 +540,8 @@ mod tests {
     /// The documented NTSTATUS constants (public ABI).
     #[test]
     fn status_values_match_the_documented_constants() {
-        assert_eq!(STATUS_ACCESS_VIOLATION, 0xC000_0005);
-        assert_eq!(STATUS_INVALID_SYSTEM_SERVICE, 0xC000_001C);
+        assert_eq!(STATUS_ACCESS_VIOLATION.0, 0xC000_0005);
+        assert_eq!(STATUS_INVALID_SYSTEM_SERVICE.0, 0xC000_001C);
     }
 
     /// 0x2E, above the CPU exception range.

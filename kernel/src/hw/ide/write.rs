@@ -6,13 +6,7 @@ use super::latch::{Completion, Latch};
 use super::regs::{MAX_SECTORS_PER_COMMAND, SECTOR_SIZE, WRITE_SECTORS};
 use super::taskfile::pack_lba28;
 use crate::hw::portio::Io;
-use crate::status::{
-    nt_success,
-    NtStatus,
-    STATUS_INVALID_PARAMETER,
-    STATUS_NO_SUCH_DEVICE,
-    STATUS_SUCCESS,
-};
+use crate::status::{NtStatus, STATUS_INVALID_PARAMETER, STATUS_NO_SUCH_DEVICE, STATUS_SUCCESS};
 
 /// Write `buffer.len() / 512` contiguous sectors starting at `lba` to a disk of `capacity` sectors
 /// (0: no disk), one WRITE SECTORS command per 256. Returns an NT status.
@@ -46,7 +40,7 @@ pub fn write<IoT: Io, C: Completion<IoT>>(
             WRITE_SECTORS,
             run,
         );
-        if !nt_success(status) {
+        if !status.is_success() {
             return status;
         }
         next += count;

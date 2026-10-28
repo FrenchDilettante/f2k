@@ -179,16 +179,12 @@ pub fn init() {
     if SAMPLES_PER_TICK == 1 {
         return;
     }
-    // SAFETY: boot CPU, interrupts disabled (the interrupt init calls this before they fly);
-    // the timer and the clock are programmed here, sole access.
-    unsafe {
-        let mut ports = crate::hw::portio::Ports;
-        crate::hw::pit::program_interval(
-            &mut ports,
-            crate::hw::pit::divisor_for_100ns(SAMPLE_INTERVAL),
-        );
-        crate::interrupt::clock::set_source_per_tick(SAMPLES_PER_TICK);
-    }
+    let mut ports = crate::hw::portio::Ports;
+    crate::hw::pit::program_interval(
+        &mut ports,
+        crate::hw::pit::divisor_for_100ns(SAMPLE_INTERVAL),
+    );
+    crate::interrupt::clock::set_source_per_tick(SAMPLES_PER_TICK);
 }
 
 /// Record one sample: the interrupted context of the clock interrupt, with its call stack. Once

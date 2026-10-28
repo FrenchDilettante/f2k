@@ -46,16 +46,18 @@ mod target {
     use crate::hw::ide::write;
     use crate::hw::portio::Ports;
     use crate::interrupt::dpc::{self, Dpc};
-    use crate::interrupt::irql;
     use crate::interrupt::InterruptObject;
+    use crate::level::{At, Dispatch, Ide};
     use crate::sched::event::EventKind;
     use crate::sched::wait::WaitReason;
     use crate::serial_println;
     use crate::status::NtStatus;
 
     static mut CHANNEL: Channel<Ports> = Channel::new(Ports, PRIMARY_BASE, PRIMARY_CONTROL);
-    static mut OBJECT: InterruptObject = InterruptObject::zeroed();
-    static mut DPC: Dpc = Dpc::new(completion_routine, 0);
+    /// The disk's interrupt: IRQ 14, served at the IDE level.
+    static OBJECT: InterruptObject =
+        InterruptObject::at_ide(service, 0, PRIMARY_VECTOR, false, false);
+    static DPC: Dpc = Dpc::new(completion_routine, 0);
     static mut EVENT: Event = Event::new(EventKind::Synchronization, false);
     /// The disk's LBA28 sector count; 0 until bring-up finds a usable disk.
     static mut CAPACITY: u32 = 0;
@@ -66,17 +68,15 @@ mod target {
 
     /// The service routine: runs claimed at the IDE level. One status read acknowledges INTRQ; an
     /// armed wait's completion is deferred to the DPC.
-    fn service(_object: &InterruptObject, _context: usize) -> bool {
+    fn service(ide: &mut At<Ide>, _context: usize) -> bool {
         if LATCH.service(&mut Ports, PRIMARY_BASE) {
-            // SAFETY: single CPU; the DPC is a static the queue links through, and the enqueue is
-            // single-flight.
-            unsafe { dpc::enqueue(&mut *addr_of_mut!(DPC), 0, 0) };
+            dpc::enqueue_at(ide, &DPC, 0, 0);
         }
         true
     }
 
     /// The DPC: signal the completion event (at the dispatch level, from the drain).
-    fn completion_routine(_dpc: &Dpc, _context: usize, _argument1: usize, _argument2: usize) {
+    fn completion_routine(_: &mut At<Dispatch>, _: &Dpc, _context: usize, _: usize, _: usize) {
         // SAFETY: the drain runs DPCs serialized at the dispatch level, where the dispatcher's
         // state and the event are touched.
         unsafe { complete(&mut *addr_of_mut!(EVENT), crate::sched::idle::dispatcher()) };
@@ -109,33 +109,23 @@ mod target {
     /// the halt (the tick bounds the wait).
     fn halt_until_signaled() -> bool {
         let deadline = crate::interrupt::clock::ticks() + COMPLETION_TIMEOUT_TICKS;
-        let state = irql::state_mut();
-        let enabled = state.interrupts_enabled();
-        let signaled = loop {
-            state.mask_interrupts();
+        let pcr = crate::pcr::pcr();
+        // Put back as found once the wait is over; each pass below masks for its test.
+        let _masked = pcr.mask_guard();
+        loop {
+            pcr.mask_interrupts();
             // SAFETY: interrupts are masked; nothing else touches the event now.
             let event = unsafe { &mut *addr_of_mut!(EVENT) };
             if event.signaled() {
                 event.reset();
-                break true;
+                return true;
             }
             if crate::interrupt::clock::ticks() >= deadline {
-                break false;
+                return false;
             }
             // Enable and halt as one step: a completion landing after the check above still
             // wakes this halt.
-            state.unmask_and_halt();
-        };
-        restore_interrupts(enabled);
-        signaled
-    }
-
-    /// Put the interrupt flag back the way the wait found it.
-    fn restore_interrupts(enabled: bool) {
-        if enabled {
-            irql::state_mut().unmask_interrupts();
-        } else {
-            irql::state_mut().mask_interrupts();
+            pcr.unmask_and_halt();
         }
     }
 
@@ -167,19 +157,8 @@ mod target {
             }
             // Acknowledge anything the firmware left asserted before the line is enabled.
             channel.status();
-            let object = &mut *addr_of_mut!(OBJECT);
-            crate::interrupt::initialize(
-                object,
-                service,
-                0,
-                PRIMARY_VECTOR,
-                irql::IDE,
-                irql::IDE,
-                false,
-                false,
-            );
             assert!(
-                crate::interrupt::connect(object),
+                crate::interrupt::connect(&OBJECT),
                 "connecting the IDE interrupt failed"
             );
             match identify::bring_up(channel, &LATCH, &mut EventWait) {
@@ -261,7 +240,7 @@ mod target {
     }
 
     static IDE_DISK: IdeDisk = IdeDisk {
-        lock: DeviceLock::new(),
+        lock: DeviceLock::new(()),
     };
 
     impl BlockDevice for IdeDisk {
@@ -282,14 +261,14 @@ mod target {
                 return status;
             }
             // The run is on the disk, whose LBA28 capacity fits in 32 bits.
-            self.lock.with(|| read(lba as u32, buffer))
+            self.lock.with(|_| read(lba as u32, buffer))
         }
 
         fn write(&self, lba: u64, buffer: &[u8]) -> NtStatus {
             if let Err(status) = check_request(&self.info(), lba, buffer) {
                 return status;
             }
-            self.lock.with(|| write(lba as u32, buffer))
+            self.lock.with(|_| write(lba as u32, buffer))
         }
     }
 
@@ -348,8 +327,8 @@ mod tests {
     /// signaling the event — which readies the thread blocked on it with success.
     #[test]
     fn the_claim_defers_the_completion_and_the_dpc_wakes_the_waiter() {
-        use crate::interrupt::dpc::{Dpc, DpcQueue};
-        use crate::interrupt::irql::{Irql, IrqlState, DISPATCH, IDE, PASSIVE};
+        use crate::interrupt::dpc::{retire, Dpc, ProcessorQueue};
+        use crate::interrupt::irql::{Irql, IrqlState, IDE, PASSIVE};
         use crate::interrupt::{
             initialize,
             service_interrupt,
@@ -359,6 +338,7 @@ mod tests {
             Outcome,
             VectorTable,
         };
+        use crate::level::{raised, At, Dispatch, High};
         use crate::sched::dispatcher::Dispatcher;
         use crate::sched::event::{Event, EventKind};
         use crate::sched::process::SchedProcess;
@@ -405,8 +385,8 @@ mod tests {
         struct Harness {
             sim: SimChannel,
             latch: Latch,
-            queue: DpcQueue,
-            dpc: Dpc,
+            queue: &'static ProcessorQueue,
+            dpc: &'static Dpc,
             controller: *const Line,
             level_seen: Option<Irql>,
         }
@@ -416,14 +396,17 @@ mod tests {
             let harness = unsafe { &mut *(context as *mut Harness) };
             harness.level_seen = Some(unsafe { (*harness.controller).irql.current() });
             if harness.latch.service(&mut harness.sim, PRIMARY_BASE) {
-                let mut irql = IrqlState::new();
-                harness.queue.insert(&mut harness.dpc, 0, 0, &mut irql);
+                raised::<High, _>(|high| {
+                    harness
+                        .queue
+                        .with(high, |queue| queue.insert(harness.dpc, 0, 0))
+                });
             }
             true
         }
 
         /// The completion DPC: its context word points at the event and dispatcher pair.
-        fn completion(_dpc: &Dpc, context: usize, _argument1: usize, _argument2: usize) {
+        fn completion(_: &mut At<Dispatch>, _: &Dpc, context: usize, _: usize, _: usize) {
             // SAFETY: the context is the test's live pair.
             let (event, dispatcher) =
                 unsafe { &mut *(context as *mut (&mut Event, &mut Dispatcher)) };
@@ -470,19 +453,18 @@ mod tests {
         let mut harness = Box::new(Harness {
             sim: SimChannel::with_disk(DISK),
             latch: Latch::new(),
-            queue: DpcQueue::zeroed(),
-            dpc: Dpc::new(completion, &mut pair as *mut _ as usize),
+            queue: Box::leak(Box::new(ProcessorQueue::new(4, 0))),
+            dpc: Box::leak(Box::new(Dpc::new(completion, &mut pair as *mut _ as usize))),
             controller: &*line as *const Line,
             level_seen: None,
         });
-        harness.queue.init(4, 0);
         harness.sim.out(PRIMARY_CONTROL, 0);
         harness.latch.arm();
         harness.sim.out(PRIMARY_BASE + COMMAND, IDENTIFY_DEVICE);
         assert!(harness.sim.line());
 
         // Connected at the IDE vector and level.
-        let mut table = VectorTable::zeroed();
+        let table = VectorTable::zeroed();
         let object = Box::leak(Box::new(InterruptObject::zeroed()));
         initialize(
             object,
@@ -494,8 +476,7 @@ mod tests {
             false,
             false,
         );
-        let mut connect_irql = IrqlState::new();
-        assert!(table.connect(object, &mut *line, &mut connect_irql));
+        assert!(table.connect(object, &mut *line));
         assert_eq!(PRIMARY_VECTOR, 0x3E);
 
         // The interrupt: claimed, served at the IDE level, ended.
@@ -509,16 +490,19 @@ mod tests {
             "the service routine's status read acknowledged INTRQ"
         );
         assert_eq!(harness.latch.serviced(), 1);
-        assert_eq!(harness.queue.depth(), 1, "the completion is deferred");
+        assert_eq!(
+            raised::<High, _>(|high| harness.queue.with(high, |queue| queue.depth())),
+            1,
+            "the completion is deferred"
+        );
         assert!(!pair.0.signaled());
         assert_eq!(pair.1.current_thread(), thread as *mut Thread);
 
         // The drain at the dispatch level runs the DPC: the event is signaled into the waiter.
-        let mut drain_irql = IrqlState::new();
-        let previous = drain_irql.raise(DISPATCH);
-        harness.queue.retire(&mut drain_irql);
-        drain_irql.lower(previous);
-        assert!(harness.queue.is_empty());
+        raised::<Dispatch, _>(|dispatch| retire(harness.queue, dispatch));
+        assert!(raised::<High, _>(|high| harness
+            .queue
+            .with(high, |queue| queue.is_empty())));
         // SAFETY: the dispatcher's current thread is the leaked record entered above, alive for
         // the rest of the test; its earlier `&mut` is shadowed here and never used again.
         let thread = unsafe { &*(pair.1.current_thread()) };

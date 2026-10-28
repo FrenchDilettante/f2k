@@ -11,14 +11,8 @@
 //! `..`, at most 255 units, and in code page 1252 (the volume's names are kept as its bytes:
 //! unverified); an empty component is no name either (STATUS_OBJECT_NAME_INVALID).
 
-use super::super::attributes::{
-    MAX_NAME,
-    STATUS_OBJECT_NAME_INVALID,
-    STATUS_OBJECT_NAME_NOT_FOUND,
-    STATUS_OBJECT_PATH_NOT_FOUND,
-    STATUS_OBJECT_PATH_SYNTAX_BAD,
-};
-use super::super::call::Status;
+use super::super::attributes::MAX_NAME;
+use crate::status::*;
 
 /// The longest component, in units (a FAT long name's).
 pub const MAX_COMPONENT: usize = 255;
@@ -96,7 +90,7 @@ fn valid_unit(unit: u16) -> bool {
 /// directories never answer to (their dot entries match no name), so the walk finds the path
 /// missing, as Windows 2000's does (the files capture: `DATA\...\SMALL.TXT`, which ntdll makes
 /// `DATA\..\SMALL.TXT`, is ERROR_PATH_NOT_FOUND); as the last component it is invalid.
-fn components(units: &[u16], name: &mut FileName) -> Result<(), Status> {
+fn components(units: &[u16], name: &mut FileName) -> Result<(), NtStatus> {
     if units.is_empty() {
         return Ok(());
     }
@@ -133,7 +127,7 @@ fn components(units: &[u16], name: &mut FileName) -> Result<(), Status> {
 }
 
 /// An absolute NT name: the components below the volume's root.
-pub fn absolute(units: &[u16]) -> Result<FileName, Status> {
+pub fn absolute(units: &[u16]) -> Result<FileName, NtStatus> {
     if units.first() != Some(&SEPARATOR) {
         return Err(STATUS_OBJECT_PATH_SYNTAX_BAD);
     }
@@ -170,7 +164,7 @@ pub fn absolute(units: &[u16]) -> Result<FileName, Status> {
 
 /// A name relative to a directory: the components below it (none: the directory itself). A
 /// leading separator is no relative name.
-pub fn relative(units: &[u16]) -> Result<FileName, Status> {
+pub fn relative(units: &[u16]) -> Result<FileName, NtStatus> {
     if units.first() == Some(&SEPARATOR) {
         return Err(STATUS_OBJECT_NAME_INVALID);
     }
@@ -187,7 +181,9 @@ mod tests {
         text.encode_utf16().collect()
     }
 
-    fn path(name: Result<FileName, Status>) -> Result<(std::string::String, bool, bool), Status> {
+    fn path(
+        name: Result<FileName, NtStatus>,
+    ) -> Result<(std::string::String, bool, bool), NtStatus> {
         name.map(|name| {
             (
                 std::string::String::from_utf8(name.path().to_vec()).unwrap(),

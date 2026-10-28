@@ -86,10 +86,11 @@ use rtl::status::{
     STATUS_ORDINAL_NOT_FOUND,
     STATUS_SUCCESS,
 };
+use rtl::string::{AnsiString, UnicodeString};
 use rtl::stub::Line;
 use rtl::sys::{self, nr, system_service, Native};
 
-use crate::curdir::{self, UnicodeString};
+use crate::curdir;
 
 /// The process's own memory, read and written in place (a bad pointer faults the caller, as on
 /// Windows 2000).
@@ -126,11 +127,7 @@ fn ldr() -> u32 {
 
 /// `body`, the loader lock held.
 fn locked<T>(body: impl FnOnce() -> T) -> T {
-    let lock = sys::loader_lock();
-    lock.enter(&Native);
-    let answer = body();
-    lock.leave(&Native);
-    answer
+    sys::loader_lock().with(&Native, body)
 }
 
 /// UTF-16 units in a block on the process heap, zeroed, given back when dropped: the buffers the
@@ -172,14 +169,6 @@ impl Drop for HeapUnits {
     fn drop(&mut self) {
         sys::process_heap().free(&Native, 0, self.at.as_ptr() as usize);
     }
-}
-
-/// An ANSI_STRING: its length and room in bytes, and its buffer.
-#[repr(C)]
-pub struct AnsiString {
-    pub length: u16,
-    pub maximum_length: u16,
-    pub buffer: *const u8,
 }
 
 /// A module name's room, formed: MAX_PATH and its default extension.

@@ -85,7 +85,6 @@ pub fn run() {
     use crate::hw::ide::disk::{self, LATCH};
     use crate::hw::ide::regs::SECTOR_SIZE;
     use crate::serial_println;
-    use crate::status::nt_success;
 
     /// The disk image the disk build lays down: 64 MiB, one FAT32 partition at 1 MiB.
     const DISK_SECTORS: u64 = 131_072;
@@ -103,10 +102,10 @@ pub fn run() {
     fn read(device: &dyn BlockDevice, lba: u64, buffer: &mut [u8]) {
         let status = device.read(lba, buffer);
         assert!(
-            nt_success(status),
+            status.is_success(),
             "disk-smoke: read at LBA {} failed with status {:#010x}",
             lba,
-            status as u32
+            status.0
         );
     }
 
@@ -274,9 +273,9 @@ pub fn run() {
     );
     let status = hello_status.unwrap();
     assert!(
-        nt_success(status),
+        status.is_success(),
         "disk-smoke: HELLO.EXE read failed with status {:#010x}",
-        status as u32
+        status.0
     );
     serial_println!(
         "F2K: disk-smoke: HELLO.EXE via chain: CRC-32 {:#010X}",

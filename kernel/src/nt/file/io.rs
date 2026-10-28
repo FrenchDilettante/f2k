@@ -5,27 +5,12 @@
 //! section and copies it out once the volume is released, a write the reverse. A chunk the caller's
 //! memory refuses ends the call with STATUS_ACCESS_VIOLATION, what moved before it counted.
 
-use super::super::call::{
-    Handle,
-    NtCall,
-    NtResult,
-    Status,
-    UserAddr,
-    UserPtr,
-    STATUS_INVALID_PARAMETER,
-    STATUS_SUCCESS,
-};
+use super::super::call::{Handle, NtCall, NtResult, UserAddr, UserPtr};
 use super::common::{check_access, complete, completion_event, file_object, probe, signal};
-use super::{
-    status,
-    STATUS_DISK_FULL,
-    STATUS_END_OF_FILE,
-    STATUS_INVALID_DEVICE_REQUEST,
-    STATUS_NOT_IMPLEMENTED,
-};
 use crate::fs::fat32::write;
 use crate::fs::file::{records, rights, FileObject};
 use crate::fs::io;
+use crate::status::*;
 use crate::user::syscall::{read_user, write_user};
 
 /// The chunk bytes move through.
@@ -53,7 +38,7 @@ fn transfer(
     io_status: UserAddr,
     offset: UserPtr<u64>,
     needs: u32,
-) -> Result<Transfer, Status> {
+) -> Result<Transfer, NtStatus> {
     let object = file_object(handle.raw())?;
     check_access(&object, needs)?;
     probe(io_status, 8)?;
@@ -81,10 +66,10 @@ fn transfer(
 }
 
 /// Finish a transfer: its I/O status, its event, and its answer.
-fn finish(transfer: Transfer, io_status: UserAddr, result: Result<u32, Status>) -> NtResult {
+fn finish(transfer: Transfer, io_status: UserAddr, result: Result<u32, NtStatus>) -> NtResult {
     let (code, moved) = match result {
         Ok(moved) => (STATUS_SUCCESS, moved),
-        Err(Status(code)) => (code, 0),
+        Err(code) => (code, 0),
     };
     complete(io_status, code, moved);
     signal(transfer.event);
@@ -137,11 +122,11 @@ fn read_file_held(
             if let Err(error) =
                 io::read_record(object.record, start as u32 + moved, &mut chunk[..take])
             {
-                failure = Some(status(error));
+                failure = Some(error);
                 break;
             }
             if write_user(buffer.raw().wrapping_add(moved), &chunk[..take]).is_err() {
-                failure = Some(super::super::call::STATUS_ACCESS_VIOLATION);
+                failure = Some(STATUS_ACCESS_VIOLATION);
                 break;
             }
             moved += take as u32;
@@ -221,7 +206,7 @@ fn write_file_held(
         while done < length {
             let take = (length - done).min(CHUNK as u32) as usize;
             if read_user(buffer.raw().wrapping_add(done), &mut chunk[..take]).is_err() {
-                failure = Some(super::super::call::STATUS_ACCESS_VIOLATION);
+                failure = Some(STATUS_ACCESS_VIOLATION);
                 break;
             }
             let position = start as u32 + done;
@@ -235,7 +220,7 @@ fn write_file_held(
                 Ok(())
             });
             if let Err(error) = written {
-                failure = Some(status(error));
+                failure = Some(error);
                 break;
             }
             done += take as u32;

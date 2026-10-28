@@ -5,7 +5,9 @@
 //! and lowers back on exit, so the level is balanced at rest; nesting is safe because a second
 //! interrupt at or below the current level is not accepted while the first is being served.
 //!
-//! The level slots live in one [`IrqlState`]: raise returns the previous level, lower restores it.
+//! The level slots live in one [`IrqlState`], the processor control region's ledger
+//! ([`crate::pcr`]): raise returns the previous level, lower restores it. Level tokens
+//! ([`crate::level`]) are built on it.
 //! The same state carries the interrupt-flag discipline: transitions at or above the clock level
 //! run with interrupts masked, transitions below it leave them enabled — the dispatch software
 //! level must not block the tick, and the tick must block everything.
@@ -162,20 +164,6 @@ impl IrqlState {
         }
     }
 
-    /// Set the interrupt flag and halt until the next interrupt, as one pair: the interrupt
-    /// shadow after `sti` (interrupts are only taken after the next instruction) makes the `hlt`
-    /// the first interruptible point, so no interrupt can be taken between the enable and the
-    /// halt — and then leave the processor sleeping a full tick after a wake it missed.
-    #[cfg(target_arch = "x86")]
-    pub fn unmask_and_halt(&mut self) {
-        self.interrupts = true;
-        // SAFETY: as in `unmask_interrupts`; `hlt` is legal at CPL 0 too, and with interrupts
-        // enabled the next one wakes it.
-        unsafe {
-            core::arch::asm!("sti", "hlt", options(nostack, preserves_flags));
-        }
-    }
-
     /// Clear the interrupt flag.
     pub fn mask_interrupts(&mut self) {
         self.interrupts = false;
@@ -204,20 +192,12 @@ impl IrqlState {
         self.interrupts = enabled;
     }
 
-    /// Open a one-instruction interrupt window from masked code and close it again: an interrupt
-    /// held pending meanwhile (a tick that fell inside a long service) is taken here, with every
-    /// consequence an interrupt exit has — a quantum it ends may switch the processor away and
-    /// back. The NOP is the window: STI's shadow would hold the interrupt across a CLI right
-    /// behind it.
-    pub fn interrupt_window(&mut self) {
-        self.interrupts = true;
-        // SAFETY: the window runs the interrupt exit's own paths, which the caller's state must
-        // admit (no dispatcher state half-updated); the asm is a compiler barrier.
-        #[cfg(target_arch = "x86")]
-        unsafe {
-            core::arch::asm!("sti", "nop", "cli", options(nostack));
-        }
-        self.interrupts = false;
+    /// Record the interrupt flag without touching it: the model's half of an instruction sequence
+    /// that takes interrupts in its middle (an enable-and-halt, an interrupt window). The
+    /// processor control region runs those instructions itself, outside its hold on the ledger,
+    /// because an interrupt taken inside them runs its own ledger operations.
+    pub fn record_interrupts(&mut self, enabled: bool) {
+        self.interrupts = enabled;
     }
 }
 
@@ -301,23 +281,6 @@ impl IrqlState {
         self.saved = [false; NESTING];
         self.unmask_interrupts();
     }
-}
-
-// --- The kernel's level state (target) -------------------------------------
-
-/// The one level state (single processor).
-#[cfg(target_arch = "x86")]
-static mut STATE: IrqlState = IrqlState::at_boot();
-
-/// The kernel's level state. Mutating it performs the real interrupt-flag transitions.
-///
-/// # Safety (target)
-///
-/// Single CPU; access is serialized by the level discipline and the interrupt gates.
-#[cfg(target_arch = "x86")]
-pub fn state_mut() -> &'static mut IrqlState {
-    // SAFETY: single CPU; every caller runs serialized.
-    unsafe { &mut *core::ptr::addr_of_mut!(STATE) }
 }
 
 #[cfg(test)]

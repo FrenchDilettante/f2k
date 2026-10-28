@@ -28,10 +28,7 @@ use core::ptr::{addr_of_mut, eq, null_mut};
 use super::dispatcher::Dispatcher;
 use super::thread::{Thread, ThreadState};
 use super::{unlink, Links, List, REALTIME_BASE, TIME_CRITICAL_CEILING};
-use crate::status::STATUS_KERNEL_APC;
-/// The wait statuses: what a completed wait reports. The timeout value is the ABI the Win32
-/// wait returns raw (WAIT_TIMEOUT).
-pub use crate::status::{STATUS_SUCCESS, STATUS_TIMEOUT};
+use crate::status::{NtStatus, STATUS_KERNEL_APC, STATUS_SUCCESS, STATUS_TIMEOUT};
 
 /// The low three bits of a waitable kind: the selector that decides whether a satisfied wait
 /// consumes the object's signal. The timer kinds share numbers with the event kinds through it.
@@ -204,7 +201,7 @@ pub struct WaitBlock {
     pub(crate) next_block: *mut WaitBlock,
     /// The status this block's satisfaction reports: the object block carries success, the timer
     /// block the timeout.
-    pub(crate) key: i32,
+    pub(crate) key: NtStatus,
     /// Whether the block is a wait-all claim. The multiple-object wait that would construct one is
     /// not built; the satisfy walk keeps the rule anyway.
     pub(crate) wait_all: bool,
@@ -218,7 +215,7 @@ impl WaitBlock {
             thread: null_mut(),
             object: null_mut(),
             next_block: null_mut(),
-            key: 0,
+            key: STATUS_SUCCESS,
             wait_all: false,
         }
     }
@@ -264,7 +261,7 @@ pub struct ClockStamp {
 #[derive(Debug, PartialEq, Eq)]
 pub enum WaitDisposition {
     /// The wait completed without blocking, with the status.
-    Complete(i32),
+    Complete(NtStatus),
     /// The thread is Waiting and the caller must switch away. The completion status lands in the
     /// thread's wait-status field when the wake runs; the thread's resume side reads it.
     Yield,
@@ -274,7 +271,7 @@ pub enum WaitDisposition {
 /// user APCs queued does not block — it arms their delivery (the service boundary runs them on the
 /// way out) and completes with the user-APC status. Not while the thread is attached to another
 /// process's address space: its user APCs wait for it to be back on its own.
-fn test_alert(thread: &mut Thread, mode: WaitMode, alertable: bool) -> Option<i32> {
+fn test_alert(thread: &mut Thread, mode: WaitMode, alertable: bool) -> Option<NtStatus> {
     if alertable && mode == WaitMode::User && !thread.user_apcs.is_empty() && !thread.attached() {
         thread.user_apc_pending = true;
         return Some(crate::status::STATUS_USER_APC);
@@ -308,7 +305,7 @@ pub(crate) unsafe fn signaled_for(object: *mut Waitable, thread: *const Thread) 
 /// stays. Returns the status bits the take adds to the wait's completion: the abandonment of a
 /// mutex its last owner ended holding, else none.
 // SAFETY-contract: `object` is a live waitable that [`signaled_for`] `thread`; `thread` is live.
-pub(crate) unsafe fn consume_signal(object: *mut Waitable, thread: *mut Thread) -> i32 {
+pub(crate) unsafe fn consume_signal(object: *mut Waitable, thread: *mut Thread) -> NtStatus {
     unsafe {
         match (*object).kind {
             WaitKind::Semaphore => (*object).signal_state -= 1,
@@ -322,7 +319,7 @@ pub(crate) unsafe fn consume_signal(object: *mut Waitable, thread: *mut Thread) 
             _ => {}
         }
     }
-    0
+    STATUS_SUCCESS
 }
 
 /// The most objects one wait may name: the documented MAXIMUM_WAIT_OBJECTS.
@@ -344,7 +341,7 @@ impl Dispatcher {
     ) -> WaitDisposition {
         // A fresh wait starts from a clean completion status: the wake ORs its status into the
         // field.
-        thread.wait_status = 0;
+        thread.wait_status = STATUS_SUCCESS;
 
         // An already-signaled object satisfies the wait outright. The take consumes an auto-reset
         // flavor's signal; the thread never leaves the Running state, and the wait it did not block
@@ -354,7 +351,7 @@ impl Dispatcher {
             // SAFETY: as above; the object is signaled for the thread.
             let status = unsafe { consume_signal(object, thread) };
             self.charge_nowait(thread);
-            return WaitDisposition::Complete(STATUS_SUCCESS | status);
+            return WaitDisposition::Complete(NtStatus(STATUS_SUCCESS.0 | status.0));
         }
         // SAFETY: as above.
         let object: &mut Waitable = unsafe { &mut *object };
@@ -457,7 +454,7 @@ impl Dispatcher {
         stamp: ClockStamp,
     ) -> WaitDisposition {
         debug_assert!(!objects.is_empty() && objects.len() <= MAXIMUM_WAIT_OBJECTS);
-        thread.wait_status = 0;
+        thread.wait_status = STATUS_SUCCESS;
         let me = thread as *mut Thread;
         // SAFETY: every object is a live, initialized waitable.
         if wait_all {
@@ -468,7 +465,7 @@ impl Dispatcher {
                 let mut status = STATUS_SUCCESS;
                 for &object in objects {
                     // SAFETY: as above; each is signaled for the thread, and none repeats.
-                    status |= unsafe { consume_signal(object, me) };
+                    status = NtStatus(status.0 | unsafe { consume_signal(object, me) }.0);
                 }
                 self.charge_nowait(thread);
                 return WaitDisposition::Complete(status);
@@ -481,7 +478,7 @@ impl Dispatcher {
             // SAFETY: as above.
             let status = unsafe { consume_signal(objects[index], me) };
             self.charge_nowait(thread);
-            return WaitDisposition::Complete(index as i32 | status);
+            return WaitDisposition::Complete(NtStatus(index as u32 | status.0));
         }
 
         if let Some(status) = test_alert(thread, mode, alertable) {
@@ -509,7 +506,7 @@ impl Dispatcher {
                     key: if wait_all {
                         STATUS_SUCCESS
                     } else {
-                        index as i32
+                        NtStatus(index as u32)
                     },
                     wait_all,
                 });
@@ -574,7 +571,7 @@ impl Dispatcher {
         interval: i64,
         stamp: ClockStamp,
     ) -> WaitDisposition {
-        thread.wait_status = 0;
+        thread.wait_status = STATUS_SUCCESS;
         // An alertable delay with user APCs queued completes at once, for their delivery.
         if let Some(status) = test_alert(thread, mode, alertable) {
             return WaitDisposition::Complete(status);
@@ -635,7 +632,7 @@ impl Dispatcher {
 
     /// The delay's resume-side conversion: a sleep that timed out is a successful sleep. The
     /// thread's wait status carries the timeout; the delay completes as success.
-    pub fn delay_completed(status: i32) -> i32 {
+    pub fn delay_completed(status: NtStatus) -> NtStatus {
         if status == STATUS_TIMEOUT {
             STATUS_SUCCESS
         } else {
@@ -649,13 +646,13 @@ impl Dispatcher {
     /// unwinds the wait's blocks from their objects, leaves the waiting list, cancels the wait's
     /// timer if it is still live, applies the boost (the thread's no-boost policy gates it here —
     /// the boost itself leaves policy to its caller), charges the wait, and readies the thread.
-    pub fn unwait(&mut self, thread: &mut Thread, status: i32, increment: i8) {
+    pub fn unwait(&mut self, thread: &mut Thread, status: NtStatus, increment: i8) {
         assert!(
             thread.state == ThreadState::Waiting,
             "the wait exit runs on a waiting thread"
         );
         // The status is OR'd in, not assigned: a wait may carry a status its wake must preserve.
-        thread.wait_status |= status;
+        thread.wait_status = NtStatus(thread.wait_status.0 | status.0);
 
         self.unwind_wait(thread);
 
@@ -723,12 +720,12 @@ impl Dispatcher {
                 // SAFETY: as above.
                 let status = unsafe { satisfy_chain(block) };
                 // SAFETY: the waking thread is live.
-                unsafe { (*thread).wait_status |= status };
+                unsafe { (*thread).wait_status = NtStatus((*thread).wait_status.0 | status.0) };
             } else {
                 // SAFETY: the object is signaled (the loop's test) and the thread is live.
                 let status = unsafe { consume_signal(object, thread) };
                 // SAFETY: as above.
-                unsafe { (*thread).wait_status |= status };
+                unsafe { (*thread).wait_status = NtStatus((*thread).wait_status.0 | status.0) };
             }
 
             // SAFETY: the waking thread is a live, waiting thread.
@@ -809,11 +806,12 @@ impl Dispatcher {
     /// wake's completion status is the thread's wait-status field.
     #[cfg(target_arch = "x86")]
     pub fn park_and_switch(&mut self) {
-        let previous = crate::interrupt::irql::state_mut().raise(crate::interrupt::irql::DISPATCH);
+        let pcr = crate::pcr::pcr();
+        let previous = pcr.raise(crate::interrupt::irql::DISPATCH);
         // SAFETY: the running thread, live and exclusive here.
         let old = self.current_thread();
         // SAFETY: as above.
-        unsafe { (*old).level = crate::interrupt::irql::state_mut().capture() };
+        unsafe { (*old).level = pcr.capture() };
         let selected = self.select_next();
         debug_assert!(
             !selected.is_null(),
@@ -829,8 +827,8 @@ impl Dispatcher {
         // `enter` above) would name the thread switched to, not the one resumed.
         let current = crate::sched::idle::dispatcher().current_thread();
         // SAFETY: as above.
-        unsafe { crate::interrupt::irql::state_mut().restore((*current).level) };
-        crate::interrupt::irql::state_mut().lower(previous);
+        unsafe { pcr.restore((*current).level) };
+        pcr.lower(previous);
         // The wait-exit delivery: a kernel APC queued while this thread was parked — or armed by
         // the delivery that broke the wait — runs now, before the parked caller reads its wait
         // status. This is where a thread woken mid-wait runs the APC that woke it. The status the
@@ -978,12 +976,11 @@ pub fn wait_current_with(
         "the idle thread cannot block"
     );
     let dispatcher = crate::sched::idle::dispatcher();
-    let state = crate::interrupt::irql::state_mut();
-    let enabled = state.interrupts_enabled();
-    state.mask_interrupts();
+    let pcr = crate::pcr::pcr();
+    let masked = pcr.mask_guard();
     // The level the wait is entered at — the APC break's gate. Every F2K wait enters at the
     // passive level; the field keeps the gate armed for any future raised-level wait.
-    let wait_level = state.current();
+    let wait_level = pcr.current();
     let status = wait_with_replay(
         dispatcher,
         crate::interrupt::clock::stamp,
@@ -993,11 +990,7 @@ pub fn wait_current_with(
         },
         |dispatcher| dispatcher.park_and_switch(),
     );
-    if enabled {
-        state.unmask_interrupts();
-    } else {
-        state.mask_interrupts();
-    }
+    drop(masked);
     status
 }
 
@@ -1032,13 +1025,13 @@ unsafe fn chain_all_signaled(block: *mut WaitBlock) -> bool {
 /// Consume the signal of every non-timer object of a wait-all chain, head included. Returns the
 /// status bits the takes add (an abandoned mutex's).
 // SAFETY-contract: as `chain_all_signaled`.
-unsafe fn satisfy_chain(block: *mut WaitBlock) -> i32 {
-    let mut status = 0;
+unsafe fn satisfy_chain(block: *mut WaitBlock) -> NtStatus {
+    let mut status = STATUS_SUCCESS;
     unsafe {
         let mut probe = block;
         loop {
             if (*probe).key != STATUS_TIMEOUT {
-                status |= consume_signal((*probe).object, (*probe).thread);
+                status = NtStatus(status.0 | consume_signal((*probe).object, (*probe).thread).0);
             }
             probe = (*probe).next_block;
             if eq(probe, block) {
@@ -1188,7 +1181,7 @@ mod tests {
     }
 
     /// A completed wait's outcome, with its status.
-    fn complete(status: i32) -> WaitDisposition {
+    fn complete(status: NtStatus) -> WaitDisposition {
         WaitDisposition::Complete(status)
     }
 
@@ -1314,7 +1307,7 @@ mod tests {
         assert_eq!(t.wait_mode(), WaitMode::User);
         assert!(t.wait_alertable());
         assert_eq!(t.wait_time(), 77);
-        assert_eq!(t.wait_status(), 0);
+        assert_eq!(t.wait_status(), STATUS_SUCCESS);
         assert!(!t.wait_links.prev.is_null(), "on the waiting list");
         assert!(t.ready_links.next.is_null(), "on no ready list");
         assert_eq!(d.audit_waits(), Ok(()));
@@ -1812,9 +1805,9 @@ mod tests {
         // zeroes the field, so only a wake-time pre-set status can observe the distinction here.
         let t2 = thread(p);
         block_on(d, t2, ev.waitable(), None);
-        t2.wait_status = 0x80;
+        t2.wait_status = NtStatus(0x80);
         d.unwait(t2, STATUS_SUCCESS, 0);
-        assert_eq!(t2.wait_status(), 0x80);
+        assert_eq!(t2.wait_status(), NtStatus(0x80));
     }
 
     /// Thread termination satisfies the thread object's waiters: the object signals once, forever,
@@ -2228,7 +2221,7 @@ mod tests {
         let p = process(8);
         let t = thread(p);
         run(d, t);
-        d.unwait(t, 0, 0);
+        d.unwait(t, STATUS_SUCCESS, 0);
     }
 
     #[test]
@@ -2238,7 +2231,7 @@ mod tests {
         let p = process(8);
         let t = thread(p);
         t.state = ThreadState::Ready;
-        d.unwait(t, 0, 0);
+        d.unwait(t, STATUS_SUCCESS, 0);
     }
 
     #[test]
@@ -2447,7 +2440,11 @@ mod tests {
                     stamp(20_000, 9),
                 );
                 assert_eq!(nested, complete(STATUS_SUCCESS));
-                assert_eq!(t.wait_status(), 0, "the nested wait reset the field");
+                assert_eq!(
+                    t.wait_status(),
+                    STATUS_SUCCESS,
+                    "the nested wait reset the field"
+                );
             });
             assert_eq!(t.wait_status(), woken);
         }

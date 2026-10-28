@@ -90,7 +90,7 @@ pub fn run() -> ! {
     // The loads run masked, as the reap step's do (the idle loop masks before each step): a load
     // creates objects in the object directory, which a DPC may reach too, and its disk waits open
     // interrupts only inside their halts.
-    crate::interrupt::irql::state_mut().mask_interrupts();
+    crate::pcr::pcr().mask_interrupts();
     use crate::boot::cmdline::{kernel_command_line, kernel_option};
     if kernel_option(kernel_command_line(), b"concurrent") {
         start_every_leg(legs);

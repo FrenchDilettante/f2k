@@ -18,6 +18,8 @@
 //! last thread's exit, finds that exit's stack parked or already released.
 
 use super::{layout, paging};
+#[cfg(target_arch = "x86")]
+use crate::level::{self, High, LevelCell};
 
 /// How many slots the ledger tracks: every slot of the region.
 pub const SLOTS: usize = paging::GATE_SLOT_CAPACITY;
@@ -124,19 +126,29 @@ const _: () = {
 
 // --- The system's kernel stacks (target) ----------------------------------
 //
-// Each step runs whole inside the global's closure (interrupts masked), so the ledger and the
-// shared tables agree wherever anything else can look: a taken slot is mapped, a free one is not.
+// Each step runs whole inside one borrow of the stacks at the high level (interrupts masked), so
+// the ledger and the shared tables agree wherever anything else can look: a taken slot is mapped, a
+// free one is not.
 
 /// The system's kernel stacks.
+// Note: this belongs at the dispatch level once its callers hold tokens, as Windows 2000 keeps its
+// page frame database under the PFN lock, at DISPATCH_LEVEL. Until then the bridge reaches it at
+// the high level, masking interrupts for each step, and refuses a step that reaches it again from
+// inside its own borrow.
 #[cfg(target_arch = "x86")]
-static STACKS: crate::global::Global<KernelStacks> =
-    crate::global::Global::new(KernelStacks::empty());
+static STACKS: LevelCell<High, KernelStacks> = LevelCell::new(KernelStacks::empty());
+
+/// Run `step` on the system's kernel stacks, through the bridge to the high level.
+#[cfg(target_arch = "x86")]
+fn with_stacks<R>(step: impl FnOnce(&mut KernelStacks) -> R) -> R {
+    level::raised::<High, _>(|high| step(STACKS.get(high)))
+}
 
 /// A fresh gate stack: the system's lowest free slot, mapped in the shared tables (in every address
 /// space at once); none when the region is full.
 #[cfg(target_arch = "x86")]
 pub fn create() -> Option<GateStack> {
-    STACKS.with(|stacks| {
+    with_stacks(|stacks| {
         let slot = stacks.slots.allocate()?;
         Some((slot, paging::map_gate_slot(slot as u32)))
     })
@@ -147,13 +159,13 @@ pub fn create() -> Option<GateStack> {
 /// processor runs on (see [`park`]).
 #[cfg(target_arch = "x86")]
 pub fn release(stack: GateStack) {
-    STACKS.with(|stacks| release_in(stacks, stack));
+    with_stacks(|stacks| release_in(stacks, stack));
 }
 
 /// Park the exiting thread's own stack, releasing the one parked before it.
 #[cfg(target_arch = "x86")]
 pub fn park(stack: GateStack) {
-    STACKS.with(|stacks| {
+    with_stacks(|stacks| {
         if let Some(previous) = stacks.park(stack) {
             release_in(stacks, previous);
         }
@@ -163,7 +175,7 @@ pub fn park(stack: GateStack) {
 /// Release the parked stack, if any: from code running on another stack.
 #[cfg(target_arch = "x86")]
 pub fn release_parked() {
-    STACKS.with(|stacks| {
+    with_stacks(|stacks| {
         if let Some(stack) = stacks.take_parked() {
             release_in(stacks, stack);
         }
@@ -175,7 +187,7 @@ pub fn release_parked() {
 /// in the others.
 #[cfg(target_arch = "x86")]
 pub fn every_stack_mapped_here() -> bool {
-    STACKS.with(|stacks| {
+    with_stacks(|stacks| {
         stacks
             .slots
             .taken()

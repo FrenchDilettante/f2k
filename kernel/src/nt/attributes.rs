@@ -8,14 +8,8 @@
 //! (BaseGetNamedObjectDirectory, NtOpenDirectoryObject) and names everything relative to, as on
 //! Windows 2000 ([`root_of`]).
 
-use super::call::{Status, UserAddr, STATUS_INVALID_HANDLE, STATUS_INVALID_PARAMETER};
-
-pub const STATUS_OBJECT_TYPE_MISMATCH: Status = Status(0xC000_0024);
-pub const STATUS_OBJECT_NAME_INVALID: Status = Status(0xC000_0033);
-pub const STATUS_OBJECT_NAME_NOT_FOUND: Status = Status(0xC000_0034);
-pub const STATUS_OBJECT_PATH_NOT_FOUND: Status = Status(0xC000_003A);
-pub const STATUS_OBJECT_PATH_SYNTAX_BAD: Status = Status(0xC000_003B);
-pub const STATUS_NAME_TOO_LONG: Status = Status(0xC000_0106);
+use super::call::UserAddr;
+use crate::status::*;
 
 /// OBJECT_ATTRIBUTES' size, and its Attributes' OBJ_INHERIT and OBJ_OPENIF.
 const OBJECT_ATTRIBUTES_SIZE: u32 = 24;
@@ -42,7 +36,7 @@ impl Attributes {
 
 /// Read the OBJECT_ATTRIBUTES at `at` and its name's units into `name`. STATUS_INVALID_PARAMETER
 /// for a structure of another size, STATUS_NAME_TOO_LONG past [`MAX_NAME`] units.
-pub fn read(at: UserAddr, name: &mut [u16; MAX_NAME]) -> Result<Attributes, Status> {
+pub fn read(at: UserAddr, name: &mut [u16; MAX_NAME]) -> Result<Attributes, NtStatus> {
     let mut raw = [0u8; OBJECT_ATTRIBUTES_SIZE as usize];
     at.read(&mut raw)?;
     let word = |i: usize| u32::from_le_bytes([raw[i], raw[i + 1], raw[i + 2], raw[i + 3]]);
@@ -104,7 +98,7 @@ pub enum Resolved {
 /// one (no root) must be in `\BaseNamedObjects` — any other directory is not there
 /// (STATUS_OBJECT_PATH_NOT_FOUND), and a name not starting with a separator is no path at all
 /// (STATUS_OBJECT_PATH_SYNTAX_BAD).
-pub fn resolve(units: &[u16], root: u32, root_is_directory: bool) -> Result<Resolved, Status> {
+pub fn resolve(units: &[u16], root: u32, root_is_directory: bool) -> Result<Resolved, NtStatus> {
     let separator = u16::from(b'\\');
     if root != 0 {
         if !root_is_directory {
@@ -141,7 +135,7 @@ pub fn resolve(units: &[u16], root: u32, root_is_directory: bool) -> Result<Reso
 /// a separator past them names a subdirectory there is none of
 /// (STATUS_OBJECT_PATH_NOT_FOUND). A character the namespace's bytes cannot hold is
 /// STATUS_OBJECT_NAME_INVALID, and so is a name longer than [`crate::ob::MAX_NAME`].
-pub fn object_name(units: &[u16], out: &mut [u8; crate::ob::MAX_NAME]) -> Result<usize, Status> {
+pub fn object_name(units: &[u16], out: &mut [u8; crate::ob::MAX_NAME]) -> Result<usize, NtStatus> {
     if units.len() > out.len() {
         return Err(STATUS_OBJECT_NAME_INVALID);
     }
@@ -182,7 +176,7 @@ pub enum Root {
 /// `nt::file::name`); STATUS_INVALID_HANDLE for a handle naming nothing (a console handle
 /// included).
 #[cfg(target_arch = "x86")]
-pub fn root_of(handle: u32) -> Result<Root, Status> {
+pub fn root_of(handle: u32) -> Result<Root, NtStatus> {
     if handle == 0 {
         return Ok(Root::None);
     }
@@ -202,7 +196,7 @@ pub fn root_of(handle: u32) -> Result<Root, Status> {
 
 /// Host builds have no handle table: any root names `\BaseNamedObjects`.
 #[cfg(not(target_arch = "x86"))]
-pub fn root_of(handle: u32) -> Result<Root, Status> {
+pub fn root_of(handle: u32) -> Result<Root, NtStatus> {
     let _ = STATUS_INVALID_HANDLE;
     Ok(if handle == 0 {
         Root::None
@@ -212,7 +206,7 @@ pub fn root_of(handle: u32) -> Result<Root, Status> {
 }
 
 /// Whether `handle` names `\BaseNamedObjects` in the calling process (see [`root_of`]).
-pub fn root_is_directory(handle: u32) -> Result<bool, Status> {
+pub fn root_is_directory(handle: u32) -> Result<bool, NtStatus> {
     Ok(root_of(handle)? == Root::NamedObjects)
 }
 

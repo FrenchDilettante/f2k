@@ -154,6 +154,7 @@ impl<T: Plain> UserPtr<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::status::{NtStatus, STATUS_ACCESS_VIOLATION};
     use crate::user::syscall::host::{install, Installed, UserMemory};
 
     /// Mapped user memory at [BASE, BASE + len): anything else faults.
@@ -163,16 +164,26 @@ mod tests {
     }
 
     impl UserMemory for Pages {
-        fn read(&self, pointer: u32, bytes: &mut [u8]) -> Result<(), u32> {
-            let start = pointer.checked_sub(self.base).ok_or(1u32)? as usize;
-            let slice = self.bytes.get(start..start + bytes.len()).ok_or(1u32)?;
+        fn read(&self, pointer: u32, bytes: &mut [u8]) -> Result<(), NtStatus> {
+            let start = pointer
+                .checked_sub(self.base)
+                .ok_or(STATUS_ACCESS_VIOLATION)? as usize;
+            let slice = self
+                .bytes
+                .get(start..start + bytes.len())
+                .ok_or(STATUS_ACCESS_VIOLATION)?;
             bytes.copy_from_slice(slice);
             Ok(())
         }
 
-        fn write(&mut self, pointer: u32, bytes: &[u8]) -> Result<(), u32> {
-            let start = pointer.checked_sub(self.base).ok_or(1u32)? as usize;
-            let slice = self.bytes.get_mut(start..start + bytes.len()).ok_or(1u32)?;
+        fn write(&mut self, pointer: u32, bytes: &[u8]) -> Result<(), NtStatus> {
+            let start = pointer
+                .checked_sub(self.base)
+                .ok_or(STATUS_ACCESS_VIOLATION)? as usize;
+            let slice = self
+                .bytes
+                .get_mut(start..start + bytes.len())
+                .ok_or(STATUS_ACCESS_VIOLATION)?;
             slice.copy_from_slice(bytes);
             Ok(())
         }

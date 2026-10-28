@@ -63,10 +63,10 @@ pub(super) fn create(
     dir_phys: u32,
     name: super::ProcessName,
     leg: Option<u32>,
-) -> Result<&'static mut Process, crate::nt::call::Status> {
+) -> Result<&'static mut Process, crate::status::NtStatus> {
     let object = crate::ob::directory()
         .create_process()
-        .ok_or(crate::nt::object::STATUS_INSUFFICIENT_RESOURCES)?;
+        .ok_or(crate::status::STATUS_INSUFFICIENT_RESOURCES)?;
     let process = record(object.index);
     // SAFETY: single CPU, interrupts disabled; the record is free (its object was not live), and
     // every field is written before the record is read.

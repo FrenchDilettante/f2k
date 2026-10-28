@@ -7,16 +7,9 @@
 /// converts).
 pub use rtl::string::{AnsiString, UnicodeString};
 
-/// An OBJECT_ATTRIBUTES: what names a key to the key services.
-#[repr(C)]
-pub struct ObjectAttributes {
-    pub length: u32,
-    pub root_directory: u32,
-    pub object_name: *const UnicodeString,
-    pub attributes: u32,
-    pub security_descriptor: *const u8,
-    pub security_quality_of_service: *const u8,
-}
+/// An OBJECT_ATTRIBUTES (`rtl::nt`'s): what names a key to the key services, its name and security
+/// pointers the process's own.
+pub type ObjectAttributes = rtl::nt::ObjectAttributes<u32, *const UnicodeString, *const u8>;
 
 #[cfg(all(target_arch = "x86", not(test)))]
 #[link(

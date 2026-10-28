@@ -8,7 +8,7 @@
 use core::fmt;
 
 use crate::block::BlockDevice;
-use crate::status::{nt_success, NtStatus};
+use crate::status::NtStatus;
 
 /// The bits of an entry that count.
 pub const ENTRY_MASK: u32 = 0x0FFF_FFFF;
@@ -111,7 +111,7 @@ impl FatCache {
             None => {
                 let mut data = [0u8; 512];
                 let status = device.read(lba, &mut data);
-                if !nt_success(status) {
+                if !status.is_success() {
                     return Err(status);
                 }
                 // Empty slots have never been used, so they go first.

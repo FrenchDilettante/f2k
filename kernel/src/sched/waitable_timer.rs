@@ -122,7 +122,7 @@ mod tests {
     use crate::sched::process::SchedProcess;
     use crate::sched::thread::{Thread, ThreadState};
     use crate::sched::wait::{ClockStamp, WaitDisposition, WaitMode, WaitReason};
-    use crate::status::{STATUS_TIMEOUT, STATUS_USER_APC};
+    use crate::status::{STATUS_SUCCESS, STATUS_TIMEOUT, STATUS_USER_APC};
 
     const INCREMENT: u64 = crate::interrupt::clock::INTERVAL_100NS as u64;
 
@@ -198,10 +198,13 @@ mod tests {
         expire_at(d, 10);
         assert!(!m.armed());
         let now = 10 * INCREMENT;
-        assert_eq!(wait(d, t, m.waitable(), now), WaitDisposition::Complete(0));
         assert_eq!(
             wait(d, t, m.waitable(), now),
-            WaitDisposition::Complete(0),
+            WaitDisposition::Complete(STATUS_SUCCESS)
+        );
+        assert_eq!(
+            wait(d, t, m.waitable(), now),
+            WaitDisposition::Complete(STATUS_SUCCESS),
             "still signaled"
         );
         assert!(
@@ -228,7 +231,10 @@ mod tests {
             assert!(a.armed(), "re-armed");
             assert_eq!(a.timer.due_time, (n + 5) * INCREMENT);
             let now = n * INCREMENT;
-            assert_eq!(wait(d, t, a.waitable(), now), WaitDisposition::Complete(0));
+            assert_eq!(
+                wait(d, t, a.waitable(), now),
+                WaitDisposition::Complete(STATUS_SUCCESS)
+            );
             assert_eq!(
                 wait(d, t, a.waitable(), now),
                 WaitDisposition::Complete(STATUS_TIMEOUT),
