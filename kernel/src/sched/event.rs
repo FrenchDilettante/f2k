@@ -5,11 +5,14 @@
 //! signal wakes every waiter, a synchronization (auto-reset) event's signal serves exactly one
 //! waiter. Which flavor an event is decides only what a satisfied wait does to the signal — the
 //! wait discipline is one code.
-
-use core::ptr::addr_of_mut;
+//!
+//! An event object is a record of the dispatcher database; a kernel structure that synchronizes
+//! on an event of its own (a lock, a file object, a device) embeds one, as Windows 2000 embeds a
+//! KEVENT, and names it by its address once it is in place ([`Event::init`]).
 
 use super::dispatcher::Dispatcher;
-use super::wait::{entry_to_block, WaitKind, Waitable};
+use super::list;
+use super::wait::{WaitKind, Waitable, WaitableId, Waiters};
 
 /// The priority increment a set grants the waiters it wakes.
 pub const EVENT_WAKE_INCREMENT: i8 = 1;
@@ -23,28 +26,44 @@ pub enum EventKind {
     Synchronization,
 }
 
+impl EventKind {
+    /// The flavor's waitable kind.
+    const fn wait_kind(self) -> WaitKind {
+        match self {
+            EventKind::Notification => WaitKind::NotificationEvent,
+            EventKind::Synchronization => WaitKind::SynchronizationEvent,
+        }
+    }
+}
+
 /// An event: a waitable object with no state beyond its header.
-#[repr(C)]
 pub struct Event {
     /// The waitable header — the whole object.
     pub(crate) waitable: Waitable,
 }
 
 impl Event {
-    /// A fresh event of `kind` with the given initial signal state. Call [`Event::init`] once the
-    /// event is at its final address.
+    /// A fresh event to embed, of `kind` with the given initial signal state. Call [`Event::init`]
+    /// once the event is at its final address.
     pub const fn new(kind: EventKind, signaled: bool) -> Self {
-        let wait_kind = match kind {
-            EventKind::Notification => WaitKind::NotificationEvent,
-            EventKind::Synchronization => WaitKind::SynchronizationEvent,
-        };
-        let signal_state = if signaled { 1 } else { 0 };
         Event {
-            waitable: Waitable::new(wait_kind, signal_state),
+            waitable: Waitable::new(kind.wait_kind(), signaled as i32),
         }
     }
 
-    /// Close the waiters sentinel; call once at the final address.
+    /// A fresh event object: the record `index` of the event pool.
+    pub const fn record(index: u16, kind: EventKind, signaled: bool) -> Self {
+        Event {
+            waitable: Waitable::with_id(
+                kind.wait_kind(),
+                signaled as i32,
+                WaitableId::Event(index),
+            ),
+        }
+    }
+
+    /// Name an embedded event by its address; call once at its final address, before anything
+    /// waits on it.
     pub fn init(&mut self) {
         self.waitable.init();
     }
@@ -69,7 +88,7 @@ impl Event {
 
     /// The event's waitable header, as the wait entry takes it.
     pub fn waitable(&mut self) -> *mut Waitable {
-        addr_of_mut!(self.waitable)
+        &mut self.waitable
     }
 
     /// Clear the event: the write-only fast form. Clearing wakes nobody — a waiter parked on the
@@ -86,37 +105,40 @@ impl Event {
     }
 
     /// Signal the event, granting its waiters a wake boost of `increment`, and return the previous
-    /// signal state.
+    /// signal state (see [`Dispatcher::set_event`]).
+    pub fn set(&mut self, dispatcher: &mut Dispatcher, increment: i8) -> i32 {
+        let id = self.waitable.id();
+        dispatcher.set_event(id, increment)
+    }
+}
+
+impl Dispatcher {
+    /// Signal the event `event`, granting its waiters a wake boost of `increment`, and return the
+    /// previous signal state.
     ///
     /// With no waiters the signal parks on the event — for both flavors — until a waiter consumes
     /// it. With waiters: a notification event signals and wakes every waiter present; a
     /// synchronization event wakes exactly one, the oldest — and with a single waiter it does so
     /// directly, leaving the signal state unwritten (it stays clear, which a one-waiter walk would
     /// have produced anyway).
-    pub fn set(&mut self, dispatcher: &mut Dispatcher, increment: i8) -> i32 {
-        let previous = self.waitable.signal_state;
-        if self.waitable.waiters.is_empty() {
-            self.waitable.signal_state = 1;
+    pub fn set_event(&mut self, event: WaitableId, increment: i8) -> i32 {
+        let header = self.waitable_mut(event);
+        let previous = header.signal_state;
+        let kind = header.kind;
+        let Some(head) = list::first(self, Waiters(event)) else {
+            self.waitable_mut(event).signal_state = 1;
             return previous;
-        }
+        };
 
-        // SAFETY: the waiters list is initialized and non-empty; its first entry is a live wait
-        // block.
-        let head = entry_to_block(unsafe { self.waitable.waiters.first() });
-        // SAFETY: the head block's wait-all flag is a plain read.
-        let head_wait_all = unsafe { (*head).wait_all };
-
-        if self.waitable.kind == WaitKind::NotificationEvent || head_wait_all {
+        let block = *self.block(head);
+        if kind == WaitKind::NotificationEvent || block.wait_all {
             if previous == 0 {
-                self.waitable.signal_state = 1;
-                let waitable = addr_of_mut!(self.waitable);
-                dispatcher.satisfy_waiters(waitable, increment);
+                self.waitable_mut(event).signal_state = 1;
+                self.satisfy_waiters(event, increment);
             }
         } else {
             // The synchronization fast path: exactly one waiter, served directly.
-            // SAFETY: the head block's thread and key are live; the thread is a waiting thread.
-            let (thread, key) = unsafe { ((*head).thread, (*head).key) };
-            dispatcher.unwait(unsafe { &mut *thread }, key, increment);
+            self.unwait(block.thread, block.key, increment);
         }
         previous
     }
@@ -129,9 +151,7 @@ mod tests {
     use crate::sched::wait::{WaitKind, WAIT_KIND_MASK};
 
     fn dispatcher() -> &'static mut Dispatcher {
-        let d = Box::leak(Box::new(Dispatcher::zeroed()));
-        d.init();
-        d
+        crate::sched::testkit::dispatcher()
     }
 
     fn event(kind: EventKind, signaled: bool) -> &'static mut Event {

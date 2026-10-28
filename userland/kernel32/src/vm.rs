@@ -282,21 +282,12 @@ pub unsafe extern "system" fn global_memory_status(buffer: *mut MemoryStatus) {
         total_virtual: 0,
         avail_virtual: 0,
     };
-    let mut counters = [0u32; VM_COUNTERS_SIZE / 4];
-    // SAFETY: ntdll's export, into the buffer above.
-    let counted = nt_success(unsafe {
-        nt::NtQueryInformationProcess(
-            CURRENT_PROCESS,
-            PROCESS_VM_COUNTERS,
-            counters.as_mut_ptr().cast(),
-            VM_COUNTERS_SIZE as u32,
-            core::ptr::null_mut(),
-        )
-    });
-    if let (Some(basic), Some(performance), true) = (
+    let counters =
+        ntcall::query_process::<[u32; VM_COUNTERS_SIZE / 4]>(CURRENT_PROCESS, PROCESS_VM_COUNTERS);
+    if let (Some(basic), Some(performance), Ok(counters)) = (
         query::<{ BASIC_SIZE / 4 }>(SYSTEM_BASIC_INFORMATION),
         query::<{ PERFORMANCE_SIZE / 4 }>(SYSTEM_PERFORMANCE_INFORMATION),
-        counted,
+        counters,
     ) {
         let page = u64::from(basic[2]);
         let bytes = |pages: u32| (u64::from(pages) * page).min(u64::from(u32::MAX)) as u32;

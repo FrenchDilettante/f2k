@@ -315,16 +315,12 @@ mod services {
     /// A counted string at `at` (a UNICODE_STRING): its length in units and its buffer.
     /// STATUS_INVALID_PARAMETER past a value name's longest.
     fn counted(at: UserAddr) -> Result<(usize, UserAddr), NtStatus> {
-        let mut header = [0u8; 8];
-        at.read(&mut header)?;
-        let units = u16::from_le_bytes([header[0], header[1]]) as usize / 2;
+        let string = at.cast::<rtl::nt::UnicodeString<u32>>().read()?;
+        let units = usize::from(string.length) / 2;
         if units > MAX_VALUE_NAME {
             return Err(STATUS_INVALID_PARAMETER);
         }
-        let buffer = UserAddr(u32::from_le_bytes([
-            header[4], header[5], header[6], header[7],
-        ]));
-        Ok((units, buffer))
+        Ok((units, UserAddr(string.buffer)))
     }
 
     /// Run `then` on the registry with the counted string at `at` read: a value name, or a class.

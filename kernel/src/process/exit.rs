@@ -503,6 +503,11 @@ impl Suite {
         self.legs = legs;
     }
 
+    /// How many programs the boot runs: 0 until the runner starts (a boot it does not drive).
+    pub fn legs(&self) -> u32 {
+        self.legs
+    }
+
     /// Leg `index` has started.
     pub fn started(&mut self, index: u32) {
         self.started = self.started.max(index);
@@ -1072,7 +1077,9 @@ mod tests {
     fn a_lone_program_reports_and_rests() {
         for legs in [0, 1] {
             let mut suite = Suite::new();
+            assert_eq!(suite.legs(), 0);
             suite.begin(legs);
+            assert_eq!(suite.legs(), legs);
             if legs == 1 {
                 suite.started(1);
             }

@@ -21,7 +21,6 @@ use crate::base::{
     is_console_handle,
     parameters_standard_handle,
     peb,
-    process_heap,
     process_parameters,
     read,
     read_pointer,
@@ -37,6 +36,7 @@ use crate::base::{
 #[cfg(test)]
 pub use crate::nt::host::console_writes;
 use crate::nt::{self, ApiMessage};
+use crate::ntcall;
 
 const INVALID_HANDLE_VALUE: u32 = 0xFFFF_FFFF;
 const ERROR_NOT_ENOUGH_MEMORY: u32 = 8;
@@ -826,18 +826,16 @@ pub extern "system" fn set_console_ctrl_handler(routine: u32, add: u32) -> u32 {
             let room = read(peb + CTRL_HANDLER_ROOM);
             if count == room as usize {
                 let grown = if room == 0 { FIRST_ROOM } else { 2 * room };
-                // SAFETY: ntdll's export, the process heap.
-                let block = unsafe { nt::RtlAllocateHeap(process_heap(), 0, 4 * grown as usize) }
-                    as *mut u32;
-                if block.is_null() {
+                let Some(block) = ntcall::allocate_heap(4 * grown as usize) else {
                     return ERROR_NOT_ENOUGH_MEMORY;
-                }
+                };
+                let block = block.as_ptr().cast::<u32>();
                 if !list.is_null() {
                     // SAFETY: the old block holds `count` handlers; the new one has room for
-                    // them. The old block is the list's own.
+                    // them. The old block is the list's own, used no more.
                     unsafe {
                         core::ptr::copy_nonoverlapping(list, block, count);
-                        nt::RtlFreeHeap(process_heap(), 0, list.cast());
+                        ntcall::free_heap(list.cast());
                     }
                 }
                 list = block;

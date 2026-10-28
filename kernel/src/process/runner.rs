@@ -57,33 +57,37 @@
 //! and waits, interrupts masked, until the harness writes the CMOS mailbox byte through QEMU's
 //! monitor ([`crate::hw::rtc::await_mailbox`]), or a few seconds' worth of reads pass.
 
+use crate::level::{self, High, LevelCell};
 use crate::process::exit::{self, AtQuiescence, Identity, ProcessEnd, Suite};
 use crate::process::Process;
 
 /// The program a boot without a user command line runs.
 const DEFAULT_PROGRAM: &[u8] = b"exit0";
 
-/// How many programs the boot runs; 0 until the runner starts (the fault-test boots never start
-/// it). Read by an ending process's report, outside the runner's account.
-static mut LEGS: u32 = 0;
-/// The runner's account of the boot's programs: the legs started and reaped, their outcomes, and
-/// what waits to be reported.
-static mut SUITE: Suite = Suite::new();
+/// The runner's account of the boot's programs: how many there are, the legs started and reaped,
+/// their outcomes, and what waits to be reported.
+///
+/// Its callers are the runner's start on the boot thread, the start of a leg and the idle thread's
+/// reap step (the last two with interrupts masked, under the idle loop's mask), and an ending
+/// process's report, which reads the leg count from a system service, masked too. No interrupt and
+/// no DPC reaches it: the DPC a load guards against reaches the object directory, not this. It is
+/// passive state, touched by one thread at a time, which a short lock would guard; but none of its
+/// callers holds a passive token, and a short lock raises to the APC level, which would open
+/// interrupts in the masked ones. So it lives at the high level, reached through the bridge: each
+/// access masks interrupts for its own length, as its callers mostly have already, which keeps the
+/// interrupt exposure as it was, and an access from inside another's borrow is refused.
+static SUITE: LevelCell<High, Suite> = LevelCell::new(Suite::new());
 
-/// The runner's account (see [`SUITE`]).
-fn suite() -> &'static mut Suite {
-    // SAFETY: runner state; single CPU, touched only by the boot's start and the idle thread's
-    // reap step, one call's borrow at a time.
-    unsafe { &mut *core::ptr::addr_of_mut!(SUITE) }
+/// Run `step` on the runner's account (see [`SUITE`]), through the bridge to the high level.
+fn with_suite<R>(step: impl FnOnce(&mut Suite) -> R) -> R {
+    level::raised::<High, _>(|high| step(SUITE.get(high)))
 }
 
 /// Run the boot's programs: record the allocator baseline, ready the first program's main thread
 /// (every program's, with the `concurrent` option), and enter the idle loop. Never returns.
 pub fn run() -> ! {
     let legs = programs().count() as u32;
-    // SAFETY: runner state; single-threaded boot, written only here.
-    unsafe { core::ptr::write_volatile(core::ptr::addr_of_mut!(LEGS), legs) };
-    suite().begin(legs);
+    with_suite(|suite| suite.begin(legs));
     // The baseline for the per-process teardown audits: recorded once the boot's permanent
     // allocations are done, before the first process takes any frame.
     crate::process::record_allocator_baseline();
@@ -118,7 +122,7 @@ pub fn process_reaped(leg: Option<u32>, end: ProcessEnd, quiescent: bool) {
     if let Some(index) = leg {
         pause_for_screen(index);
     }
-    suite().reaped(leg, end, frames_audit_ok);
+    with_suite(|suite| suite.reaped(leg, end, frames_audit_ok));
     let Some((available, baseline)) = frames else {
         return;
     };
@@ -128,8 +132,10 @@ pub fn process_reaped(leg: Option<u32>, end: ProcessEnd, quiescent: bool) {
     if leg_count() <= 1 {
         crate::perf::report();
     }
-    let after = suite().settle(available, baseline, |report| {
-        crate::serial_println!("{}", report);
+    let after = with_suite(|suite| {
+        suite.settle(available, baseline, |report| {
+            crate::serial_println!("{}", report);
+        })
     });
     match after {
         AtQuiescence::Start(next) => start_leg(next),
@@ -206,7 +212,7 @@ fn start_every_leg(legs: u32) {
 /// first. A leg that does not load — its file unread, its image rejected, its process refused — is
 /// reported on COM1 and halts the boot.
 fn load_leg(index: u32) -> &'static mut crate::process::Process {
-    suite().started(index);
+    with_suite(|suite| suite.started(index));
     let command_line = programs()
         .nth(index as usize - 1)
         .expect("a leg the list holds");
@@ -228,8 +234,8 @@ fn load_leg(index: u32) -> &'static mut crate::process::Process {
     process
 }
 
-/// How many programs the boot runs (0 before the runner starts).
+/// How many programs the boot runs: 0 before the runner starts (the fault-test boots never start
+/// it).
 fn leg_count() -> u32 {
-    // SAFETY: runner state; single CPU, read-only here.
-    unsafe { core::ptr::read_volatile(core::ptr::addr_of!(LEGS)) }
+    with_suite(|suite| suite.legs())
 }

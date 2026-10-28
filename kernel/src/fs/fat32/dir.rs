@@ -13,6 +13,7 @@
 //! long name, or the 8.3 name with the NT case bits applied; the short name it shows beside a long
 //! one is the 8.3 name as stored — both in code page 1252.
 
+use super::check;
 use super::dirent::{
     checksum,
     decode,
@@ -22,6 +23,7 @@ use super::dirent::{
     CASE_LOWER_BASE,
     CASE_LOWER_EXTENSION,
     ENTRY_SIZE,
+    PART_UNITS,
 };
 use super::fat::FatEntry;
 use super::lookup::LookupError;
@@ -30,8 +32,6 @@ use super::volume::Volume;
 
 /// The most parts a long-name run has: 20 parts of 13 units cover the 255-unit limit.
 const MAX_PARTS: usize = 20;
-/// Units per long-name part.
-const PART_UNITS: usize = 13;
 
 /// One entry of a listing.
 #[derive(Clone, Copy)]
@@ -238,10 +238,8 @@ pub fn walk(
         }
         let first = layout.cluster_lba(cluster);
         for offset in 0..layout.sectors_per_cluster as u64 {
-            let status = volume.device().read(first + offset, &mut sector);
-            if !status.is_success() {
-                return Err(LookupError::Device(status));
-            }
+            check(volume.device().read(first + offset, &mut sector))
+                .map_err(LookupError::Device)?;
             for bytes in sector.as_chunks::<ENTRY_SIZE>().0 {
                 let record = decode(bytes);
                 let (entry, dot) = match record {
@@ -298,6 +296,7 @@ pub fn is_empty(volume: &mut Volume, cluster: u32) -> Result<bool, crate::status
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use super::super::dirent::DELETED;
     use super::super::fixtures::{record, Crafted};
     use super::*;
 
@@ -309,24 +308,18 @@ pub(crate) mod tests {
             units.push(0);
         }
         units.resize(parts * PART_UNITS, 0xFFFF);
-        let sum = checksum(short);
-        let offsets: Vec<usize> = (1..11)
-            .step_by(2)
-            .chain((14..26).step_by(2))
-            .chain((28..32).step_by(2))
-            .collect();
+        let chunks = units.as_chunks::<PART_UNITS>().0;
         (1..=parts)
             .rev()
             .map(|order| {
-                let mut bytes = [0u8; 32];
-                bytes[0] = order as u8 | if order == parts { 0x40 } else { 0 };
-                bytes[11] = 0x0F;
-                bytes[13] = sum;
-                for (i, &offset) in offsets.iter().enumerate() {
-                    let unit = units[(order - 1) * PART_UNITS + i];
-                    bytes[offset..offset + 2].copy_from_slice(&unit.to_le_bytes());
+                LongPart {
+                    order: order as u8,
+                    last: order == parts,
+                    checksum: checksum(short),
+                    units: chunks[order - 1],
                 }
-                bytes
+                .record()
+                .bytes()
             })
             .collect()
     }
@@ -450,7 +443,7 @@ pub(crate) mod tests {
     #[test]
     fn emptiness_is_the_dot_records_alone() {
         let mut deleted = record(b"GONE    TXT", 0x20, 5, 1);
-        deleted[0] = 0xE5;
+        deleted[0] = DELETED;
         let mut crafted = Crafted::new(1, 8);
         crafted.directory(
             2,

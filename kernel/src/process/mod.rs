@@ -109,9 +109,9 @@ pub struct Process {
     /// hard-error and fault dialogs it governs never exist here; the value is kept for its round
     /// trip).
     hard_error_mode: u32,
-    /// The main thread's record in the object manager's thread pool (any free record when the
-    /// process started).
-    main_thread: u16,
+    /// The main thread's object (on any free thread record when the process started); none before
+    /// the process has one. Its generation tells a later thread of the same record apart.
+    main_thread: Option<crate::ob::ObjectId>,
     /// The thread ordinals: which thread holds which TEB page, and the pages a terminated thread
     /// left mapped.
     ordinals: ordinals::Ordinals,
@@ -498,8 +498,8 @@ impl Process {
 #[cfg(target_arch = "x86")]
 impl Process {
     /// Create a process with no thread: a fresh address space with the record built at its final
-    /// address in the pool, named `name`, running as leg `leg` (none for a child), its scheduling
-    /// record's thread list closed. The address space is not live: the caller attaches to the
+    /// address in the pool, named `name`, running as leg `leg` (none for a child). The
+    /// address space is not live: the caller attaches to the
     /// process ([`Process::attach`]) to map its user pages, each inside one of its regions.
     ///
     /// STATUS_INSUFFICIENT_RESOURCES when no process record is to be had (Windows 2000's answer to
@@ -516,9 +516,6 @@ impl Process {
                 return Err(status);
             }
         };
-        // The scheduling record's thread-list sentinel closes now that the record is at its final
-        // address.
-        process.sched.init();
         Ok(process)
     }
 
@@ -559,22 +556,16 @@ impl Process {
         };
         // Its stack is a system region, not a reservation of its own.
         process.hold_main_thread(id, 0);
-        let thread: *mut crate::sched::thread::Thread = directory.threads.record(id.index);
-        // SAFETY: the record is the pool's (static, its final address) and nothing else reaches it.
-        unsafe { *thread = crate::sched::thread::Thread::empty() };
-        let sched = core::ptr::addr_of_mut!(process.sched);
-        // SAFETY: the process record is installed at its final address, and so is the thread
-        // record.
-        unsafe { (*thread).attach_to(&mut *sched) };
-        // SAFETY: the main thread is not yet schedulable; nothing else reaches it.
-        unsafe {
-            (*thread).gate_slot = slot;
-            (*thread).gate_frames = frames;
-            (*thread).initial_stack = paging::gate_slot_top(slot as u32);
-            (*thread).ordinal = ordinals::MAIN;
-            (*thread).teb_va = crate::user::thread_teb_va(ordinals::MAIN as u32);
-            (*thread).thread_id = new_client_id();
-        }
+        let thread = directory.renew_thread(id);
+        thread.gate_slot = slot;
+        thread.gate_frames = frames;
+        thread.initial_stack = paging::gate_slot_top(slot as u32);
+        thread.ordinal = ordinals::MAIN;
+        thread.teb_va = crate::user::thread_teb_va(ordinals::MAIN as u32);
+        thread.thread_id = new_client_id();
+        // SAFETY: the process record is the pool's, at its final address, and outlives its
+        // threads (its teardown follows the last one's end).
+        unsafe { crate::sched::idle::dispatcher().attach(thread.id(), &mut process.sched) };
         // The TSS `esp0` is the switch's to install: the first switch into the main thread loads
         // its stack top.
         Ok(process)
@@ -609,13 +600,14 @@ impl Process {
     /// with the process; a process another process created has its first thread for it (see
     /// [`threads::create`]).
     fn hold_main_thread(&mut self, id: crate::ob::ObjectId, stack: u32) {
-        self.main_thread = id.index;
+        self.main_thread = Some(id);
         self.ordinals.hold_main(id, stack);
     }
 
-    /// The process's main thread: its record in the object manager's thread pool.
-    pub fn main_thread(&self) -> &'static mut crate::sched::thread::Thread {
-        crate::ob::directory().threads.record(self.main_thread)
+    /// The process's main thread's record, while its object lives; none before the process has
+    /// one, and once the object is gone (the record may be another thread's by then).
+    pub fn main_thread(&self) -> Option<&'static mut crate::sched::thread::Thread> {
+        crate::ob::directory().thread(self.main_thread?)
     }
 
     /// Attach the running thread to this process's address space until the guard drops (see
@@ -629,29 +621,22 @@ impl Process {
 
 /// The next client id to hand out (see [`new_client_id`]).
 #[cfg(target_arch = "x86")]
-static mut NEXT_CLIENT_ID: u32 = FIRST_CLIENT_ID;
+static NEXT_CLIENT_ID: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(FIRST_CLIENT_ID);
 
 /// The first client id: NT never hands out 0 (no object) or 4 (the System process).
 pub const FIRST_CLIENT_ID: u32 = 8;
 
-/// The id after `id`: client ids step by four, as the platform's do (handle-table indices
-/// there).
-pub const fn next_client_id(id: u32) -> u32 {
-    id + 4
-}
+/// How far apart client ids are: four, as the platform's are (handle-table indices there).
+pub const CLIENT_ID_STEP: u32 = 4;
 
 /// A fresh client id for a process or a thread: processes and threads share one id space, as on
 /// NT, and an id is never reused within a boot (system state, not per-process state).
 #[cfg(target_arch = "x86")]
 pub fn new_client_id() -> u32 {
-    // SAFETY: single CPU; ids are handed out from service and boot paths only, never from an
-    // interrupt.
-    unsafe {
-        let next = &mut *core::ptr::addr_of_mut!(NEXT_CLIENT_ID);
-        let id = *next;
-        *next = next_client_id(id);
-        id
-    }
+    // The id is the counter's value before the step, taken in one read-modify-write, so no two
+    // callers are handed the same id. Nothing else is published with it, hence relaxed.
+    NEXT_CLIENT_ID.fetch_add(CLIENT_ID_STEP, core::sync::atomic::Ordering::Relaxed)
 }
 
 /// Give back the directory frame of an address space that maps nothing of its own (a start
@@ -694,13 +679,13 @@ unsafe fn write_fresh(
         addr_of_mut!((*process).object).write(object);
         addr_of_mut!((*process).priority_class).write(NORMAL_PRIORITY_CLASS);
         addr_of_mut!((*process).hard_error_mode).write(DEFAULT_HARD_ERROR_MODE);
-        addr_of_mut!((*process).main_thread).write(0);
+        addr_of_mut!((*process).main_thread).write(None);
         addr_of_mut!((*process).ordinals).write(ordinals::Ordinals::empty());
         crate::mem::vm::AddressSpace::write_empty(addr_of_mut!((*process).vm));
         crate::sched::object::HandleTable::write_empty(addr_of_mut!((*process).handles));
         addr_of_mut!((*process).console).write(rtl::console::Handles::standard());
         addr_of_mut!((*process).win32k).write(None);
-        objects::SyncObjects::write_empty(addr_of_mut!((*process).objects));
+        objects::SyncObjects::write_empty(addr_of_mut!((*process).objects), object.index);
         addr_of_mut!((*process).end).write(None);
         addr_of_mut!((*process).handed_end).write(None);
         addr_of_mut!((*process).ending).write(false);
@@ -897,19 +882,16 @@ fn unmap_file(file_object: crate::ob::ObjectId) -> Option<crate::ob::Followup> {
 /// quiescence. Recorded once the boot's own permanent allocations are done, before the first
 /// process starts.
 #[cfg(target_arch = "x86")]
-static mut BASELINE_FRAMES: u32 = 0;
+static BASELINE_FRAMES: crate::sync::InitOnce<u32> = crate::sync::InitOnce::new();
 
 /// Record the allocator baseline (`available()` at the call site).
+///
+/// # Panics
+///
+/// The baseline is recorded already: the boot records it once.
 #[cfg(target_arch = "x86")]
 pub fn record_allocator_baseline() {
-    // SAFETY: single CPU; written once at boot before the first process, read by the teardown
-    // audits.
-    unsafe {
-        core::ptr::write_volatile(
-            core::ptr::addr_of_mut!(BASELINE_FRAMES),
-            crate::mem::bootmem::with_frame_db(|db| db.available()),
-        );
-    }
+    BASELINE_FRAMES.set(crate::mem::bootmem::with_frame_db(|db| db.available()));
 }
 
 /// The frame database's structure audit, valid at any time and run at every reap: whether it holds.
@@ -920,10 +902,13 @@ pub fn audit_structures() -> bool {
 
 /// The free frames now and at the post-boot baseline: equal at quiescence, when no process holds a
 /// frame (see [`exit::DeferredAudits`]).
+///
+/// # Panics
+///
+/// The baseline is not recorded yet: it is, before the first process starts.
 #[cfg(target_arch = "x86")]
 pub fn frames_against_baseline() -> (u32, u32) {
-    // SAFETY: recorded before the first process; read-only here.
-    let baseline = unsafe { core::ptr::read_volatile(core::ptr::addr_of!(BASELINE_FRAMES)) };
+    let baseline = *BASELINE_FRAMES.get();
     let available = crate::mem::bootmem::with_frame_db(|db| db.available());
     (available, baseline)
 }
@@ -938,7 +923,7 @@ mod tests {
     use crate::mem::paging::{KERNEL_HALF_START, PAGE_PRESENT, PT_ENTRIES};
     use crate::mem::vm::{encode, PAGE_GUARD, PAGE_NOACCESS, PAGE_READWRITE};
     use crate::sched::process::SchedProcess;
-    use crate::sched::thread::{Thread, NO_GATE_SLOT};
+    use crate::sched::thread::{Thread, ThreadId, NO_GATE_SLOT};
 
     // --- The process record (the per-thread state split's shape) --------
 
@@ -958,7 +943,7 @@ mod tests {
             },
             priority_class: NORMAL_PRIORITY_CLASS,
             hard_error_mode: DEFAULT_HARD_ERROR_MODE,
-            main_thread: 0,
+            main_thread: None,
             ordinals: ordinals::Ordinals::empty(),
             vm: crate::mem::vm::AddressSpace::new(),
             handles: crate::sched::object::HandleTable::empty(),
@@ -1005,8 +990,7 @@ mod tests {
     #[test]
     fn client_ids_step_by_four_from_eight() {
         assert_eq!(FIRST_CLIENT_ID, 8);
-        assert_eq!(next_client_id(FIRST_CLIENT_ID), 12);
-        assert_eq!(next_client_id(next_client_id(FIRST_CLIENT_ID)), 16);
+        assert_eq!(CLIENT_ID_STEP, 4);
         assert_eq!(record_at(0x0090_0000).id(), FIRST_CLIENT_ID);
     }
 
@@ -1018,7 +1002,7 @@ mod tests {
         assert_eq!(process.name(), "fixture");
         assert_eq!(process.dir_phys(), 0x0090_0000);
         assert_eq!(process.sched.base_priority(), 8);
-        assert_eq!(Thread::empty().gate_slot(), NO_GATE_SLOT);
+        assert_eq!(Thread::new(ThreadId(0)).gate_slot(), NO_GATE_SLOT);
         assert_eq!(process.handles().live(), 0);
     }
 
@@ -1148,8 +1132,8 @@ mod tests {
     ) -> (
         FakeMemory,
         &'static mut Process,
-        &'static mut Thread,
-        &'static mut Thread,
+        crate::sched::testkit::Rec<Thread>,
+        crate::sched::testkit::Rec<Thread>,
     ) {
         let mut mem = FakeMemory::new();
         let user_table = 0x00A0_0000;
@@ -1179,36 +1163,31 @@ mod tests {
         );
         mem.plant(SHARED_STACK_TABLE, &[]);
 
-        // Boxed to its final address before anything links into it: the thread list's entries are
-        // absolute addresses, so the record must never move once attached.
+        // Boxed to its final address before anything attaches to it: its threads name it by its
+        // address, so the record must never move once attached.
         let process = Box::leak(Box::new(record_at(dir)));
-        process.sched.init();
-        let sched = core::ptr::addr_of_mut!(process.sched);
-        // The thread records are the object manager's on target; leaked here, at their final
-        // addresses all the same. The system's ledger is the target's; a local one hands out the
-        // same slots here.
-        let main = Box::leak(Box::new(Thread::empty()));
-        let child = Box::leak(Box::new(Thread::empty()));
+        // The thread records are the dispatcher database's: a host dispatcher's here. The
+        // system's ledger is the target's; a local one hands out the same slots here.
+        crate::sched::testkit::dispatcher();
+        let mut main = crate::sched::testkit::thread(&mut process.sched);
+        let mut child = crate::sched::testkit::thread(&mut process.sched);
         let mut slots = GateSlots::empty();
-        // SAFETY: the process record and the threads are at their final addresses.
-        unsafe {
-            main.attach_to(&mut *sched);
-            main.gate_slot = slots.allocate().unwrap();
-            main.gate_frames = MAIN_STACK;
-            child.attach_to(&mut *sched);
-            child.gate_slot = slots.allocate().unwrap();
-            child.gate_frames = CHILD_STACK;
-        }
+        main.gate_slot = slots.allocate().unwrap();
+        main.gate_frames = MAIN_STACK;
+        child.gate_slot = slots.allocate().unwrap();
+        child.gate_frames = CHILD_STACK;
         (mem, process, main, child)
     }
 
-    /// Run `thread`'s exit as the exit path does, on a host dispatcher: the scheduler's
-    /// termination, then its own stack parked with the system's kernel stacks, the one parked
-    /// before it handed back (returned, for the caller to account).
-    fn exit(stacks: &mut KernelStacks, thread: &mut Thread) -> Option<GateStack> {
-        let dispatcher = Box::leak(Box::new(crate::sched::dispatcher::Dispatcher::zeroed()));
-        dispatcher.init();
-        dispatcher.enter(thread);
+    /// Run `thread`'s exit as the exit path does, on the host dispatcher holding it: the
+    /// scheduler's termination, then its own stack parked with the system's kernel stacks, the one
+    /// parked before it handed back (returned, for the caller to account).
+    fn exit(
+        stacks: &mut KernelStacks,
+        thread: crate::sched::testkit::Rec<Thread>,
+    ) -> Option<GateStack> {
+        let dispatcher = crate::sched::testkit::installed();
+        dispatcher.enter(thread.id());
         dispatcher.terminate();
         stacks.park((thread.gate_slot, thread.gate_frames))
     }
@@ -1293,10 +1272,7 @@ mod tests {
 
         // A thread of another process (slot 2) exits before the teardown runs.
         let other_process = Box::leak(Box::new(record_at(0x0095_0000)));
-        other_process.sched.init();
-        let other = Box::leak(Box::new(Thread::empty()));
-        // SAFETY: the process record and the thread are at their final addresses.
-        unsafe { other.attach_to(&mut other_process.sched) };
+        let mut other = crate::sched::testkit::thread(&mut other_process.sched);
         other.gate_slot = 2;
         other.gate_frames = [0x00D0_0000; crate::mem::paging::GATE_STACK_PAGES];
         assert_eq!(exit(&mut stacks, other), Some((0, MAIN_STACK)));

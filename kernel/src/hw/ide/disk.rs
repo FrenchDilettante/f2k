@@ -342,7 +342,7 @@ mod tests {
         use crate::sched::dispatcher::Dispatcher;
         use crate::sched::event::{Event, EventKind};
         use crate::sched::process::SchedProcess;
-        use crate::sched::thread::{Thread, ThreadState};
+        use crate::sched::thread::ThreadState;
         use crate::sched::wait::{ClockStamp, WaitDisposition, WaitMode, WaitReason};
 
         /// A controller whose line is in service once the test acknowledges it.
@@ -414,15 +414,11 @@ mod tests {
         }
 
         // The scheduler side: a thread blocked on the completion event.
-        let dispatcher = Box::leak(Box::new(Dispatcher::zeroed()));
-        dispatcher.init();
+        let dispatcher = crate::sched::testkit::dispatcher();
         let process = Box::leak(Box::new(SchedProcess::new(0x0090_0000, 8)));
-        process.init();
-        let thread = Box::leak(Box::new(Thread::empty()));
-        // SAFETY: both records are leaked at their final addresses.
-        unsafe { thread.attach_to(process) };
+        let mut thread = crate::sched::testkit::thread(process);
         thread.state = ThreadState::Running;
-        dispatcher.enter(thread as *mut Thread);
+        dispatcher.enter(thread.id());
         let event = Box::leak(Box::new(Event::new(EventKind::Synchronization, false)));
         event.init();
         let stamp = ClockStamp {
@@ -496,7 +492,7 @@ mod tests {
             "the completion is deferred"
         );
         assert!(!pair.0.signaled());
-        assert_eq!(pair.1.current_thread(), thread as *mut Thread);
+        assert_eq!(pair.1.current_thread(), thread.as_ptr());
 
         // The drain at the dispatch level runs the DPC: the event is signaled into the waiter.
         raised::<Dispatch, _>(|dispatch| retire(harness.queue, dispatch));

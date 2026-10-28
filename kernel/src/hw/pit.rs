@@ -8,6 +8,8 @@
 //! corpus-captured platform value — the interval a real machine of this family reports as its
 //! default time increment.
 
+use core::sync::atomic::{AtomicU16, Ordering};
+
 use crate::hw::portio::Io;
 
 /// The gate frequency the counter divides: 1.193182 MHz.
@@ -47,18 +49,16 @@ pub fn program_interval<IoT: Io>(io: &mut IoT, divisor: u16) {
     io.out(CONTROL, MODE2_LO_HIBYTE);
     io.out(CHANNEL0, (divisor & 0xFF) as u8);
     io.out(CHANNEL0, (divisor >> 8) as u8);
-    // SAFETY: single CPU; the boot programs the channel before interrupts fly, and only the
-    // perf-trace rate change reprograms it (also with interrupts disabled).
-    unsafe { core::ptr::write_volatile(core::ptr::addr_of_mut!(PROGRAMMED), divisor) };
+    PROGRAMMED.store(divisor, Ordering::Relaxed);
 }
 
-/// The divisor channel 0 was last programmed with.
-static mut PROGRAMMED: u16 = INTERVAL_DIVISOR;
+/// The divisor channel 0 was last programmed with: set at boot, before interrupts fly, and again
+/// only by the perf trace's rate change (also before).
+static PROGRAMMED: AtomicU16 = AtomicU16::new(INTERVAL_DIVISOR);
 
 /// The interval channel 0 currently runs (see [`program_interval`]).
 pub fn programmed_divisor() -> u16 {
-    // SAFETY: written only while programming the channel; read-only afterwards.
-    unsafe { core::ptr::read_volatile(core::ptr::addr_of!(PROGRAMMED)) }
+    PROGRAMMED.load(Ordering::Relaxed)
 }
 
 /// Channel 0's current count, latched (the divisor just after a reload, down to 1 at the end of

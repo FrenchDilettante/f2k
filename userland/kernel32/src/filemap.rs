@@ -5,10 +5,8 @@
 //! directory's handle, BaseGetNamedObjectDirectory); a view is mapped into the calling process
 //! (NtCurrentProcess). A failed service's status sets the last error through BaseSetLastNTError.
 
-use rtl::status::nt_success;
-
-use crate::base::{set_last_nt_error, succeeded, SecurityAttributes, CURRENT_PROCESS};
-use crate::nt;
+use crate::base::{set_last_nt_error, win32_bool, SecurityAttributes, CURRENT_PROCESS};
+use crate::ntcall::{self, View};
 use crate::sync;
 
 const INVALID_HANDLE_VALUE: u32 = 0xFFFF_FFFF;
@@ -78,28 +76,16 @@ pub unsafe extern "system" fn create_file_mapping_w(
     } else {
         file
     };
-    // SAFETY: the caller's arguments; ntdll's export.
+    // SAFETY: the caller's arguments.
     unsafe {
-        sync::create_w(security, name, |handle, object_attributes| {
+        sync::create_w(security, name, |object_attributes| {
             if !matches!(protect, PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY)
                 || file == 0 && maximum == 0
             {
-                return STATUS_INVALID_PARAMETER;
+                return Err(STATUS_INVALID_PARAMETER);
             }
-            let size = if maximum != 0 {
-                &maximum as *const i64
-            } else {
-                core::ptr::null()
-            };
-            nt::NtCreateSection(
-                handle,
-                access,
-                object_attributes,
-                size,
-                protect,
-                allocation,
-                file,
-            )
+            let size = (maximum != 0).then_some(&maximum);
+            ntcall::create_section(access, object_attributes, size, protect, allocation, file)
         })
     }
 }
@@ -143,12 +129,8 @@ pub unsafe extern "system" fn open_file_mapping_w(
     } else {
         access
     };
-    // SAFETY: the caller's string; ntdll's export.
-    unsafe {
-        sync::open_w(access, inherit, name, |handle, access, attributes| {
-            nt::NtOpenSection(handle, access, attributes)
-        })
-    }
+    // SAFETY: the caller's string.
+    unsafe { sync::open_w(access, inherit, name, ntcall::open_section) }
 }
 
 /// OpenFileMappingA: [`open_file_mapping_w`], the name converted (see [`sync::narrow`]).
@@ -186,36 +168,25 @@ pub extern "system" fn map_view_of_file(
     } else {
         PAGE_NOACCESS
     };
-    let (mut base, mut size) = (0, bytes);
-    let mut offset = (i64::from(offset_high) << 32) | i64::from(offset_low);
-    // SAFETY: ntdll's export, over the in/out values above.
-    let status = unsafe {
-        nt::NtMapViewOfSection(
-            section,
-            CURRENT_PROCESS,
-            &mut base,
-            0,
-            0,
-            &mut offset,
-            &mut size,
-            VIEW_SHARE,
-            0,
-            protect,
-        )
+    let view = View {
+        base: 0,
+        size: bytes,
+        offset: (i64::from(offset_high) << 32) | i64::from(offset_low),
+        inherit: VIEW_SHARE,
+        allocation: 0,
+        protect,
     };
-    if !nt_success(status) {
+    ntcall::map_view_of_section(section, CURRENT_PROCESS, view).unwrap_or_else(|status| {
         set_last_nt_error(status);
-        return 0;
-    }
-    base
+        0
+    })
 }
 
 /// UnmapViewOfFile: the view holding the address unmapped (the mapping goes with its last handle
 /// and view).
 #[unsafe(export_name = "f2k_export_UnmapViewOfFile")]
 pub extern "system" fn unmap_view_of_file(base: usize) -> u32 {
-    // SAFETY: ntdll's export.
-    succeeded(unsafe { nt::NtUnmapViewOfSection(CURRENT_PROCESS, base) })
+    win32_bool(ntcall::unmap_view_of_section(CURRENT_PROCESS, base))
 }
 
 #[cfg(test)]

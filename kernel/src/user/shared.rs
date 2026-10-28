@@ -117,12 +117,16 @@ pub fn set_system_time(value: u64) {
 /// The clock interrupt's update: the interrupt time on every interrupt; the system time (the boot's
 /// wall-clock reading plus the kernel's system time) and the tick count on a full tick.
 #[cfg(target_arch = "x86")]
-pub fn update(interrupt_time: u64, full_tick: Option<(u64, u64)>) {
+pub fn update(
+    at_clock: &mut crate::level::At<crate::level::Clock>,
+    interrupt_time: u64,
+    full_tick: Option<(u64, u64)>,
+) {
     write_time(offset::INTERRUPT_TIME, interrupt_time);
     if let Some((system_time, tick_count)) = full_tick {
         write_time(
             offset::SYSTEM_TIME,
-            crate::time::boot_filetime() + system_time,
+            crate::time::boot_filetime_at(at_clock) + system_time,
         );
         // SAFETY: as `write_time`.
         unsafe {

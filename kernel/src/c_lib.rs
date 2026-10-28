@@ -1,32 +1,41 @@
 //! The C library's memory routines the compiler lowers to on the target: `memcmp`, `memset`,
-//! `memcpy` and `memmove`. They are unsafe because they dereference raw pointers.
+//! `memcpy` and `memmove`, in assembly.
 //!
 //! Target only: host builds (the unit tests) link the host's C library, whose routines these must
 //! not replace.
 
-use core::ffi::c_void;
-
-/// Memory comparison for bare-metal
-#[no_mangle]
-pub unsafe extern "C" fn memcmp(s1: *const c_void, s2: *const c_void, n: usize) -> i32 {
-    let p1 = s1 as *const u8;
-    let p2 = s2 as *const u8;
-
-    for i in 0..n {
-        let a = *p1.add(i);
-        let b = *p2.add(i);
-        if a != b {
-            return (a as i32) - (b as i32);
-        }
-    }
-    0
-}
-
-// Memory set and copy for the target: the string instructions, one `rep` each. They must not be
-// Rust loops: the kernel crate builds unoptimized under every test profile (see Cargo.toml), where
-// a `for` over `ptr::add` costs a range step and two precondition checks per byte — every struct
-// move goes through these symbols, so a byte loop makes a thread's creation take milliseconds.
+// The string instructions, one `rep` each. They must not be Rust loops: the kernel crate builds
+// unoptimized under every test profile (see Cargo.toml), where a `for` over `ptr::add` costs a
+// range step and two precondition checks per byte — every struct move goes through these symbols,
+// so a byte loop makes a thread's creation take milliseconds.
 core::arch::global_asm!(
+    // memcmp: `repe cmpsb` runs to the first differing byte or the end. On a difference the two
+    // pointers stand one past it, and the result is the first block's byte less the second's,
+    // both unsigned, so its sign is memcmp's. A zero length compares nothing and leaves the flags
+    // alone, so it is answered before the compare.
+    ".section .text.memcmp, \"ax\"",
+    ".global memcmp",
+    ".type memcmp, @function",
+    "memcmp:",
+    "    push esi",
+    "    push edi",
+    "    mov esi, [esp + 12]",
+    "    mov edi, [esp + 16]",
+    "    mov ecx, [esp + 20]",
+    "    xor eax, eax",
+    "    test ecx, ecx",
+    "    jz 2f",
+    "    cld",
+    "    repe cmpsb",
+    "    je 2f",
+    "    movzx eax, byte ptr [esi - 1]",
+    "    movzx ecx, byte ptr [edi - 1]",
+    "    sub eax, ecx",
+    "2:",
+    "    pop edi",
+    "    pop esi",
+    "    ret",
+    ".size memcmp, . - memcmp",
     ".section .text.memset, \"ax\"",
     ".global memset",
     ".type memset, @function",

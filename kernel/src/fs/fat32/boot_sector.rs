@@ -1,10 +1,15 @@
-//! The volume boot sector: the BIOS parameter block's fields at their offsets, and the gate list a
-//! volume must pass to mount as FAT32.
+//! The volume boot sector: the BIOS parameter block's fields in their on-disk layout, and the gate
+//! list a volume must pass to mount as FAT32.
 //!
 //! The validation is one pure function over the sector, the gates in a fixed order, each failure
 //! reported distinctly: a refused volume is debuggable input, not a kernel fault.
 
+use core::mem::{offset_of, size_of};
+
+use rtl::pod::Pod;
+
 use super::layout::Layout;
+use super::raw::{from_block, Le16, Le32};
 
 /// The boot-sector signature word at offset 510.
 pub const SIGNATURE: u16 = 0xAA55;
@@ -41,38 +46,96 @@ pub struct BootSector {
 }
 
 impl BootSector {
-    /// Decode the fields at their offsets (little-endian).
+    /// Decode the fields from the stored sector.
     pub fn decode(sector: &[u8; 512]) -> Self {
-        let u16_at = |offset: usize| u16::from_le_bytes([sector[offset], sector[offset + 1]]);
-        let u32_at = |offset: usize| {
-            u32::from_le_bytes([
-                sector[offset],
-                sector[offset + 1],
-                sector[offset + 2],
-                sector[offset + 3],
-            ])
-        };
+        let raw: RawBootSector = from_block(sector);
         BootSector {
-            jump: sector[0],
-            bytes_per_sector: u16_at(11),
-            sectors_per_cluster: sector[13],
-            reserved_sectors: u16_at(14),
-            fats: sector[16],
-            root_entries: u16_at(17),
-            total_sectors_16: u16_at(19),
-            media: sector[21],
-            sectors_per_fat_16: u16_at(22),
-            total_sectors_32: u32_at(32),
-            sectors_per_fat_32: u32_at(36),
-            mirroring_flags: u16_at(40),
-            version: u16_at(42),
-            root_cluster: u32_at(44),
-            fsinfo_sector: u16_at(48),
-            backup_boot_sector: u16_at(50),
-            signature: u16_at(510),
+            jump: raw.jump[0],
+            bytes_per_sector: raw.bytes_per_sector.get(),
+            sectors_per_cluster: raw.sectors_per_cluster,
+            reserved_sectors: raw.reserved_sectors.get(),
+            fats: raw.fats,
+            root_entries: raw.root_entries.get(),
+            total_sectors_16: raw.total_sectors_16.get(),
+            media: raw.media,
+            sectors_per_fat_16: raw.sectors_per_fat_16.get(),
+            total_sectors_32: raw.total_sectors_32.get(),
+            sectors_per_fat_32: raw.sectors_per_fat_32.get(),
+            mirroring_flags: raw.mirroring_flags.get(),
+            version: raw.version.get(),
+            root_cluster: raw.root_cluster.get(),
+            fsinfo_sector: raw.fsinfo_sector.get(),
+            backup_boot_sector: raw.backup_boot_sector.get(),
+            signature: raw.signature.get(),
         }
     }
 }
+
+/// The boot sector as stored: the boot jump, the BIOS parameter block with FAT32's extension of
+/// it, the boot code, and the signature. The BPB's words sit at odd offsets (11, 17, 19, 22), so
+/// every multi-byte field is an unaligned little-endian one.
+#[repr(C)]
+#[derive(Clone, Copy)]
+// The layout names every field; the mount reads only those it validates.
+#[allow(dead_code)]
+struct RawBootSector {
+    jump: [u8; 3],
+    oem_name: [u8; 8],
+    bytes_per_sector: Le16,
+    sectors_per_cluster: u8,
+    reserved_sectors: Le16,
+    fats: u8,
+    root_entries: Le16,
+    total_sectors_16: Le16,
+    media: u8,
+    sectors_per_fat_16: Le16,
+    sectors_per_track: Le16,
+    heads: Le16,
+    hidden_sectors: Le32,
+    total_sectors_32: Le32,
+    // FAT32's extension.
+    sectors_per_fat_32: Le32,
+    mirroring_flags: Le16,
+    version: Le16,
+    root_cluster: Le32,
+    fsinfo_sector: Le16,
+    backup_boot_sector: Le16,
+    reserved: [u8; 12],
+    drive_number: u8,
+    reserved_nt: u8,
+    extended_signature: u8,
+    volume_id: Le32,
+    volume_label: [u8; 11],
+    file_system_type: [u8; 8],
+    boot_code: [u8; 420],
+    signature: Le16,
+}
+
+// SAFETY: bytes and byte arrays only (`Le16` and `Le32` are byte arrays), so there is no padding
+// (the size is asserted below) and every bit pattern is a value.
+unsafe impl Pod for RawBootSector {}
+
+const _: () = {
+    assert!(size_of::<RawBootSector>() == 512);
+    assert!(offset_of!(RawBootSector, bytes_per_sector) == 11);
+    assert!(offset_of!(RawBootSector, sectors_per_cluster) == 13);
+    assert!(offset_of!(RawBootSector, reserved_sectors) == 14);
+    assert!(offset_of!(RawBootSector, fats) == 16);
+    assert!(offset_of!(RawBootSector, root_entries) == 17);
+    assert!(offset_of!(RawBootSector, total_sectors_16) == 19);
+    assert!(offset_of!(RawBootSector, media) == 21);
+    assert!(offset_of!(RawBootSector, sectors_per_fat_16) == 22);
+    assert!(offset_of!(RawBootSector, total_sectors_32) == 32);
+    assert!(offset_of!(RawBootSector, sectors_per_fat_32) == 36);
+    assert!(offset_of!(RawBootSector, mirroring_flags) == 40);
+    assert!(offset_of!(RawBootSector, version) == 42);
+    assert!(offset_of!(RawBootSector, root_cluster) == 44);
+    assert!(offset_of!(RawBootSector, fsinfo_sector) == 48);
+    assert!(offset_of!(RawBootSector, backup_boot_sector) == 50);
+    assert!(offset_of!(RawBootSector, volume_id) == 67);
+    assert!(offset_of!(RawBootSector, boot_code) == 90);
+    assert!(offset_of!(RawBootSector, signature) == 510);
+};
 
 /// Why a boot sector does not mount as FAT32: one variant per gate, carrying the offending value.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

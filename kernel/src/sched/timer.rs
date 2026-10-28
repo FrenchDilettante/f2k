@@ -15,62 +15,70 @@
 //!
 //! Due times are clock readings (100 ns units) compared as plain unsigned values; a due time is
 //! "past" when it is less than or equal to the current reading. One membership link per timer
-//! serves the bucket list and the walk's collection list: a timer is on exactly one at a time.
+//! serves the bucket list and the walk's collection list: a timer is on exactly one at a time. The
+//! timers themselves are records of the dispatcher database — a thread's wait timer, or a waitable
+//! timer — linked by their names.
 //!
 //! One processor, no locking: every entry runs serialized at the dispatch level or above.
 
-use core::ptr::{addr_of_mut, eq, null_mut};
-
 use super::dispatcher::Dispatcher;
-use super::wait::Timer;
-use super::{link_after, Links, List};
+use super::list::{self, IndexList, ListKind};
+use super::thread::ThreadId;
+use super::wait::WaitableId;
 
 /// The number of buckets: one per hand value, a power of two.
 pub const TIMER_TABLE_SIZE: usize = 128;
 
+/// A timer's name in the dispatcher database: a thread's wait timer, or a waitable timer's.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TimerId {
+    /// The thread's wait-timeout timer.
+    Thread(ThreadId),
+    /// The waitable timer object at its pool index.
+    Waitable(u16),
+}
+
+impl TimerId {
+    /// The timer's waitable header's name.
+    pub fn waitable(self) -> WaitableId {
+        match self {
+            TimerId::Thread(thread) => WaitableId::ThreadTimer(thread),
+            TimerId::Waitable(index) => WaitableId::Timer(index),
+        }
+    }
+}
+
+/// The lists a timer joins: a bucket of the table, or the expiry walk's collection list.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TimerList {
+    /// The bucket of that hand value.
+    Bucket(u8),
+    /// The timers the expiry walk collected, awaiting their expiry in due order.
+    Expired,
+}
+
+impl ListKind for TimerList {
+    type Entry = TimerId;
+}
+
 /// The timer table: the due-time-ordered buckets of pending timers.
-#[repr(C)]
 pub struct TimerTable {
     /// The buckets, indexed by `floor(due / increment) & 127`.
-    buckets: [List; TIMER_TABLE_SIZE],
+    buckets: [IndexList<TimerList>; TIMER_TABLE_SIZE],
+    /// The expiry walk's collection list (empty between walks).
+    expired: IndexList<TimerList>,
     /// The time increment the bucket arithmetic divides by (the clock's interval, 100 ns units).
     increment: u64,
 }
 
-/// The timer a bucket entry belongs to.
-// SAFETY-contract: `links` is the links field of a live timer.
-fn timer_of(links: *mut Links) -> *mut Timer {
-    (links as usize - core::mem::offset_of!(Timer, links)) as *mut Timer
-}
-
-/// A list's sentinel link (the shared accessor needs a mutable borrow; the walks here only read).
-fn sentinel_of(list: &List) -> *mut Links {
-    core::ptr::addr_of!(list.head) as *mut Links
-}
-
-/// Whether the head of `bucket` is due by `now`.
-// SAFETY-contract: the bucket is initialized; its entries are live timers.
-unsafe fn head_due(bucket: &List, now: u64) -> bool {
-    let head = unsafe { bucket.first() };
-    !head.is_null() && unsafe { (*timer_of(head)).due_time } <= now
-}
-
 impl TimerTable {
-    /// A table with unlinked sentinels; call [`TimerTable::init`] once it is at its final address.
-    pub const fn zeroed() -> Self {
+    /// An empty table whose bucket arithmetic divides by `increment` (the clock's interval).
+    pub const fn new(increment: u64) -> Self {
         TimerTable {
-            buckets: [List::empty(); TIMER_TABLE_SIZE],
-            increment: 0,
+            buckets: [IndexList::new(); TIMER_TABLE_SIZE],
+            expired: IndexList::new(),
+            increment,
         }
-    }
-
-    /// Close the bucket sentinels and set the increment the bucket arithmetic divides by (the
-    /// clock's interval).
-    pub fn init(&mut self, increment: u64) {
-        for bucket in self.buckets.iter_mut() {
-            bucket.init();
-        }
-        self.increment = increment;
     }
 
     /// The bucket a due time belongs to: the tick it falls within, masked to the table.
@@ -78,89 +86,103 @@ impl TimerTable {
         ((due / self.increment) as usize) & (TIMER_TABLE_SIZE - 1)
     }
 
+    /// The head of `list`.
+    pub(crate) fn list(&self, list: TimerList) -> &IndexList<TimerList> {
+        match list {
+            TimerList::Bucket(index) => &self.buckets[index as usize],
+            TimerList::Expired => &self.expired,
+        }
+    }
+
+    /// The head of `list`, to change.
+    pub(crate) fn list_mut(&mut self, list: TimerList) -> &mut IndexList<TimerList> {
+        match list {
+            TimerList::Bucket(index) => &mut self.buckets[index as usize],
+            TimerList::Expired => &mut self.expired,
+        }
+    }
+}
+
+impl Dispatcher {
     /// Insert `timer` at `due` (a clock reading, 100 ns units): clear any stale signal, record the
     /// due time, and link it into its bucket in due order. False means the due time is already past
     /// — the timer stays unsignaled and unheld, and the caller reports a timeout at once. The
     /// past-due verdict is settled at the entry, not after linking: the serialized kernel cannot
     /// move the clock between the caller's reading and the link, so the entry check is exact.
-    pub fn insert(&mut self, timer: &mut Timer, due: u64, now: u64) -> bool {
-        timer.waitable.signal_state = 0;
-        self.link(timer, due, now)
+    pub fn insert_timer(&mut self, timer: TimerId, due: u64, now: u64) -> bool {
+        self.timer_mut(timer).waitable.signal_state = 0;
+        self.link_timer(timer, due, now)
     }
 
-    /// A periodic timer's re-arm at its expiry: as [`TimerTable::insert`], but the signal the
+    /// A periodic timer's re-arm at its expiry: as [`Dispatcher::insert_timer`], but the signal the
     /// expiry just set stands — a periodic timer is never reset by its own re-arm, only by a wait
     /// that consumes the signal or a new set.
-    pub fn reinsert_periodic(&mut self, timer: &mut Timer, due: u64, now: u64) -> bool {
-        self.link(timer, due, now)
+    fn reinsert_periodic(&mut self, timer: TimerId, due: u64, now: u64) -> bool {
+        self.link_timer(timer, due, now)
     }
 
     /// Record `due` and link `timer` into its bucket in due order; false (nothing linked) when the
     /// due time is already past.
-    fn link(&mut self, timer: &mut Timer, due: u64, now: u64) -> bool {
+    fn link_timer(&mut self, timer: TimerId, due: u64, now: u64) -> bool {
+        let record = self.timer_mut(timer);
         if due <= now {
-            timer.inserted = false;
+            record.inserted = false;
             return false;
         }
-        timer.due_time = due;
-        timer.inserted = true;
+        record.due_time = due;
+        record.inserted = true;
 
-        let bucket = &mut self.buckets[self.bucket_of(due)];
-        // SAFETY: the bucket is initialized; the timer's links are detached (an inserted timer is
-        // on no list, and the entry check above refused a still-linked record's reuse).
-        unsafe {
-            let links = addr_of_mut!(timer.links);
-            let sentinel = sentinel_of(bucket);
-            // Search from the back: the first entry whose due is not later places the new timer
-            // right after it, so equal dues keep insertion order; an empty bucket or an all-later
-            // one inserts at the front.
-            let mut anchor = (*sentinel).prev;
-            while !eq(anchor, sentinel) {
-                let other = timer_of(anchor);
-                if (*other).due_time <= due {
-                    break;
-                }
-                anchor = (*anchor).prev;
+        let bucket = TimerList::Bucket(self.timer_table.bucket_of(due) as u8);
+        // Search from the back: the first entry whose due is not later places the new timer right
+        // after it, so equal dues keep insertion order; an empty bucket or an all-later one inserts
+        // at the front.
+        let mut anchor = list::last(self, bucket);
+        while let Some(other) = anchor {
+            if self.timer(other).due_time <= due {
+                break;
             }
-            link_after(anchor, links);
+            anchor = self.timer(other).link.prev();
         }
+        list::insert_after(self, bucket, anchor, timer);
         true
     }
 
-    /// Cancel `timer`: unlink it from the list it is on and release the hold, leaving the due time
-    /// recorded. A cancelled timer expires as a no-op.
-    pub fn remove(&mut self, timer: &mut Timer) {
-        if timer.inserted {
-            timer.inserted = false;
-            // SAFETY: an inserted timer's links are wired into a bucket (or, mid-walk, the walk's
-            // collection list); the unlink is the same either way.
-            unsafe { unlink(addr_of_mut!(timer.links)) };
+    /// Cancel `timer`: take it off the list it is on (its bucket, or mid-walk the walk's
+    /// collection list) and release the hold, leaving the due time recorded. A cancelled timer
+    /// expires as a no-op.
+    pub fn remove_timer(&mut self, timer: TimerId) {
+        let record = self.timer_mut(timer);
+        if record.inserted {
+            record.inserted = false;
+            list::unlink::<TimerList, _>(self, timer);
         }
+    }
+
+    /// Whether the head of `bucket` is due by `now`.
+    fn head_due(&self, bucket: usize, now: u64) -> bool {
+        list::first(self, TimerList::Bucket(bucket as u8))
+            .is_some_and(|head| self.timer(head).due_time <= now)
     }
 
     /// The clock's expiry check at the transition to tick `tick_low`: the bucket of tick N-1 first,
     /// then the bucket of tick N, against `now` (the already-advanced interrupt time). The result
     /// is the firing bucket's tick — the argument the deferred expiry work carries.
-    pub fn trigger(&self, now: u64, tick_low: u32) -> Option<u32> {
+    pub(crate) fn timer_trigger(&self, now: u64, tick_low: u32) -> Option<u32> {
         let previous = tick_low.wrapping_sub(1);
-        let index = (previous as usize) & (TIMER_TABLE_SIZE - 1);
-        // SAFETY: the bucket is initialized.
-        if unsafe { head_due(&self.buckets[index], now) } {
+        if self.head_due((previous as usize) & (TIMER_TABLE_SIZE - 1), now) {
             return Some(previous);
         }
-        let index = (tick_low as usize) & (TIMER_TABLE_SIZE - 1);
-        // SAFETY: as above.
-        if unsafe { head_due(&self.buckets[index], now) } {
+        if self.head_due((tick_low as usize) & (TIMER_TABLE_SIZE - 1), now) {
             return Some(tick_low);
         }
         None
     }
 
-    /// Collect the timers due by `now` into `expired`, from the buckets `argument`'s own through
-    /// the current tick's (in wrap-around order); `tick_low` is the current tick's low word. A
-    /// deferred work delayed over a full table round scans every bucket instead — the window
-    /// bookkeeping is void at that point, so everything is checked.
-    fn collect_due(&mut self, expired: &mut List, now: u64, tick_low: u32, argument: u32) {
+    /// Collect the timers due by `now` onto the collection list, from the buckets `argument`'s own
+    /// through the current tick's (in wrap-around order); `tick_low` is the current tick's low
+    /// word. A deferred work delayed over a full table round scans every bucket instead — the
+    /// window bookkeeping is void at that point, so everything is checked.
+    fn collect_due(&mut self, now: u64, tick_low: u32, argument: u32) {
         let limit = (tick_low as usize) & (TIMER_TABLE_SIZE - 1);
         let start = (argument as usize) & (TIMER_TABLE_SIZE - 1);
         let full = tick_low.wrapping_sub(argument) >= TIMER_TABLE_SIZE as u32;
@@ -172,70 +194,40 @@ impl TimerTable {
             (limit + TIMER_TABLE_SIZE - start) % TIMER_TABLE_SIZE + 1
         };
         for step in 0..span {
-            let bucket = &mut self.buckets[(start + step) & (TIMER_TABLE_SIZE - 1)];
-            // SAFETY: the bucket is initialized; its entries are live, inserted timers.
-            unsafe {
-                while head_due(bucket, now) {
-                    let entry = bucket.first();
-                    unlink(entry);
-                    expired.push_back(entry);
-                }
+            let index = (start + step) & (TIMER_TABLE_SIZE - 1);
+            while self.head_due(index, now) {
+                let timer = list::pop_front(self, TimerList::Bucket(index as u8))
+                    .expect("a due head is linked");
+                list::push_back(self, TimerList::Expired, timer);
             }
         }
     }
 
     /// The table's consistency audit: every bucket entry is an inserted, unsignaled timer in its
     /// own bucket, in due order.
-    pub fn audit(&self) -> Result<(), &'static str> {
-        for (index, bucket) in self.buckets.iter().enumerate() {
-            let sentinel = sentinel_of(bucket);
+    pub fn audit_timers(&self) -> Result<(), &'static str> {
+        for index in 0..TIMER_TABLE_SIZE {
             let mut last_due: Option<u64> = None;
-            // SAFETY: the bucket is initialized; the walk ends at the sentinel.
-            let mut entry = unsafe { bucket.first() };
-            while !entry.is_null() && !eq(entry, sentinel) {
-                // SAFETY: the entry is a live timer's links.
-                let timer = unsafe { &*timer_of(entry) };
-                if !timer.inserted {
+            for timer in list::iter(self, TimerList::Bucket(index as u8)) {
+                let record = self.timer(timer);
+                if !record.inserted {
                     return Err("a bucket entry is not inserted");
                 }
                 // A periodic timer re-arms with its signal standing; every other entry was reset
                 // by its insert.
-                if timer.waitable.signal_state != 0 && timer.period == 0 {
+                if record.waitable.signal_state != 0 && record.period == 0 {
                     return Err("a bucket entry is signaled");
                 }
-                if self.bucket_of(timer.due_time) != index {
+                if self.timer_table.bucket_of(record.due_time) != index {
                     return Err("a timer is linked in the wrong bucket");
                 }
-                if let Some(due) = last_due {
-                    if timer.due_time < due {
-                        return Err("a bucket is not due-ordered");
-                    }
+                if last_due.is_some_and(|due| record.due_time < due) {
+                    return Err("a bucket is not due-ordered");
                 }
-                last_due = Some(timer.due_time);
-                // SAFETY: a linked entry's next pointer names the next entry (or the sentinel).
-                entry = unsafe { (*entry).next };
+                last_due = Some(record.due_time);
             }
         }
         Ok(())
-    }
-}
-
-// SAFETY-contract: `entry` is a linked links field whose list sentinel is alive.
-unsafe fn unlink(entry: *mut Links) {
-    unsafe {
-        let prev = (*entry).prev;
-        let next = (*entry).next;
-        (*prev).next = next;
-        (*next).prev = prev;
-        (*entry).prev = null_mut();
-        (*entry).next = null_mut();
-    }
-}
-
-impl Dispatcher {
-    /// The clock's expiry check (the table's trigger, for the interrupt service).
-    pub(crate) fn timer_trigger(&self, now: u64, tick_low: u32) -> Option<u32> {
-        self.timer_table.trigger(now, tick_low)
     }
 
     /// The deferred expiry work: collect the timers due by `now` — from the buckets the `argument`
@@ -249,25 +241,14 @@ impl Dispatcher {
         argument: u32,
         signal_time: u64,
     ) {
-        // The collection list: timers unlinked from their buckets await their expiry here, in due
-        // order.
-        let mut expired = List::empty();
-        expired.init();
-        self.timer_table
-            .collect_due(&mut expired, now, tick_low, argument);
-
-        // SAFETY: the list is initialized and holds unlinked-from- their-bucket timers; each pass
-        // unlinks one entry and releases the hold — the removal the expiry entry would otherwise
-        // repeat.
-        unsafe {
-            while !expired.is_empty() {
-                let entry = expired.first();
-                unlink(entry);
-                let timer = timer_of(entry);
-                (*timer).inserted = false;
-                self.expire_timer(timer);
-                self.timer_fired(&mut *timer, now, signal_time);
-            }
+        self.collect_due(now, tick_low, argument);
+        // Each pass takes one timer off the collection list and releases the hold — the removal
+        // the expiry entry would otherwise repeat. A wake inside an expiry may cancel a timer still
+        // waiting here: it leaves the list then, with its hold.
+        while let Some(timer) = list::pop_front(self, TimerList::Expired) {
+            self.timer_mut(timer).inserted = false;
+            self.expire_timer(timer);
+            self.timer_fired(timer, now, signal_time);
         }
     }
 
@@ -275,48 +256,48 @@ impl Dispatcher {
     /// one is still queued) with the signal time, a FILETIME, as its two system arguments (low
     /// dword, high dword: what a completion routine receives on Windows 2000), and re-arm a
     /// periodic timer one period from `now`. A thread's wait timer has neither.
-    pub(crate) fn timer_fired(&mut self, timer: &mut Timer, now: u64, signal_time: u64) {
-        if !timer.apc.is_null() {
-            // SAFETY: a timer's APC record lives as long as the timer (both in one record).
-            if !unsafe { (*timer.apc).inserted } {
+    pub(crate) fn timer_fired(&mut self, timer: TimerId, now: u64, signal_time: u64) {
+        if let Some(apc) = self.timer(timer).apc {
+            if !self.apc(apc).inserted {
                 self.queue_apc(
-                    timer.apc,
+                    apc,
                     signal_time as u32 as usize,
                     (signal_time >> 32) as usize,
                     0,
                 );
             }
         }
-        if timer.period != 0 && !timer.inserted {
+        let record = self.timer(timer);
+        if record.period != 0 && !record.inserted {
             // The period is at least a millisecond, so the re-arm is always in the future.
-            self.timer_table
-                .reinsert_periodic(timer, now + timer.period, now);
+            let period = record.period;
+            self.reinsert_periodic(timer, now + period, now);
         }
     }
 
     /// Cancel `timer`: out of the table, its period and APC dropped, a queued APC taken back out of
     /// its thread's queue. Returns whether the timer was signaled.
-    pub(crate) fn cancel_timer(&mut self, timer: &mut Timer) -> bool {
-        self.timer_table.remove(timer);
-        timer.period = 0;
-        if !timer.apc.is_null() {
-            self.remove_apc(timer.apc);
-            timer.apc = null_mut();
+    pub(crate) fn cancel_timer(&mut self, timer: TimerId) -> bool {
+        self.remove_timer(timer);
+        let record = self.timer_mut(timer);
+        record.period = 0;
+        if let Some(apc) = record.apc.take() {
+            self.remove_apc(apc);
         }
-        timer.waitable.signal_state > 0
+        self.timer(timer).waitable.signal_state > 0
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use core::ptr::addr_of_mut;
-
     use super::*;
     use crate::sched::dispatcher::Dispatcher;
     use crate::sched::event::{Event, EventKind, EVENT_WAKE_INCREMENT};
     use crate::sched::process::SchedProcess;
+    use crate::sched::testkit::Rec;
     use crate::sched::thread::{Thread, ThreadState};
-    use crate::sched::wait::{ClockStamp, WaitDisposition, WaitMode, WaitReason, TIMER_BLOCK};
+    use crate::sched::wait::{BlockId, Timer};
+    use crate::sched::wait::{ClockStamp, WaitDisposition, WaitMode, WaitReason};
     use crate::status::{STATUS_SUCCESS, STATUS_TIMEOUT};
 
     const INCREMENT: u64 = crate::interrupt::clock::INTERVAL_100NS as u64;
@@ -326,53 +307,56 @@ mod tests {
         n * INCREMENT
     }
 
-    fn fresh_table() -> &'static mut TimerTable {
-        let table = Box::leak(Box::new(TimerTable::zeroed()));
-        table.init(INCREMENT);
-        table
+    /// The table's entries over timer records, as the tests drive them.
+    trait Table {
+        fn insert(&mut self, timer: Rec<Timer>, due: u64, now: u64) -> bool;
+        fn remove(&mut self, timer: Rec<Timer>);
+        fn trigger(&self, now: u64, tick_low: u32) -> Option<u32>;
     }
 
-    fn fresh_timer() -> &'static mut Timer {
-        let timer = Box::leak(Box::new(Timer::new()));
-        timer.init();
-        timer
+    impl Table for Dispatcher {
+        fn insert(&mut self, timer: Rec<Timer>, due: u64, now: u64) -> bool {
+            self.insert_timer(timer.id(), due, now)
+        }
+
+        fn remove(&mut self, timer: Rec<Timer>) {
+            self.remove_timer(timer.id())
+        }
+
+        fn trigger(&self, now: u64, tick_low: u32) -> Option<u32> {
+            self.timer_trigger(now, tick_low)
+        }
+    }
+
+    /// A fresh dispatcher, whose table the timers below join.
+    fn fresh_table() -> &'static mut Dispatcher {
+        crate::sched::testkit::dispatcher()
+    }
+
+    fn fresh_timer() -> Rec<Timer> {
+        crate::sched::testkit::timer()
     }
 
     /// Walk one bucket head to tail, collecting the dues.
-    fn bucket_dues(table: &TimerTable, index: usize) -> Vec<u64> {
-        let bucket = &table.buckets[index];
-        let sentinel = sentinel_of(bucket);
-        let mut dues = Vec::new();
-        // SAFETY: the bucket is initialized.
-        let mut entry = unsafe { bucket.first() };
-        while !entry.is_null() && !eq(entry, sentinel) {
-            // SAFETY: the entry is a live timer's links.
-            dues.push(unsafe { (*timer_of(entry)).due_time });
-            // SAFETY: a linked entry's next names the next entry.
-            entry = unsafe { (*entry).next };
-        }
-        dues
+    fn bucket_dues(table: &Dispatcher, index: usize) -> Vec<u64> {
+        list::iter(table, TimerList::Bucket(index as u8))
+            .map(|timer| table.timer(timer).due_time)
+            .collect()
     }
 
     // --- The wait rig (the wait tests' shape) ---------------------------
 
     fn dispatcher() -> &'static mut Dispatcher {
-        let dispatcher = Box::leak(Box::new(Dispatcher::zeroed()));
-        dispatcher.init();
-        dispatcher
+        crate::sched::testkit::dispatcher()
     }
 
     fn process(base: i8) -> *mut SchedProcess {
         let process = Box::leak(Box::new(SchedProcess::new(0x0090_0000, base)));
-        process.init();
         process
     }
 
-    fn thread(process: *mut SchedProcess) -> &'static mut Thread {
-        let thread = Box::leak(Box::new(Thread::empty()));
-        // SAFETY: the process is initialized; the thread is at its final address.
-        unsafe { thread.attach_to(&mut *process) };
-        thread
+    fn thread(process: *mut SchedProcess) -> crate::sched::testkit::Rec<Thread> {
+        crate::sched::testkit::thread(process)
     }
 
     fn event(kind: EventKind, signaled: bool) -> &'static mut Event {
@@ -390,7 +374,7 @@ mod tests {
 
     fn block_on(
         dispatcher: &mut Dispatcher,
-        thread: &mut Thread,
+        thread: crate::sched::testkit::Rec<Thread>,
         object: *mut crate::sched::wait::Waitable,
         timeout: Option<i64>,
         at: ClockStamp,
@@ -424,12 +408,12 @@ mod tests {
         assert!(timer.inserted());
         assert_eq!(bucket_dues(table, 123), vec![tick(1000) + 2_000_000]);
         // Nowhere else: every other bucket is empty.
-        for (index, _) in table.buckets.iter().enumerate() {
+        for index in 0..TIMER_TABLE_SIZE {
             if index != 123 {
                 assert_eq!(bucket_dues(table, index), Vec::<u64>::new());
             }
         }
-        assert_eq!(table.audit(), Ok(()));
+        assert_eq!(table.audit_timers(), Ok(()));
     }
 
     /// A2: a due exactly on a tick multiple lands in that tick's own bucket — caught by the
@@ -462,13 +446,11 @@ mod tests {
         let dispatcher = dispatcher();
         let early = fresh_timer();
         let late = fresh_timer();
-        assert!(dispatcher.timer_table.insert(early, tick(1300), tick(1000)));
-        assert!(dispatcher
-            .timer_table
-            .insert(late, tick(1300) + 5_000, tick(1000)));
+        assert!(dispatcher.insert(early, tick(1300), tick(1000)));
+        assert!(dispatcher.insert(late, tick(1300) + 5_000, tick(1000)));
         // Both in bucket 1300 & 127 = 20, earliest due first.
         assert_eq!(
-            bucket_dues(&dispatcher.timer_table, 20),
+            bucket_dues(dispatcher, 20),
             vec![tick(1300), tick(1300) + 5_000]
         );
 
@@ -484,17 +466,14 @@ mod tests {
         assert!(!early.inserted());
         assert_eq!(early.waitable.signal_state(), 1);
         assert!(late.inserted());
-        assert_eq!(
-            bucket_dues(&dispatcher.timer_table, 20),
-            vec![tick(1300) + 5_000]
-        );
+        assert_eq!(bucket_dues(dispatcher, 20), vec![tick(1300) + 5_000]);
 
         // The tail expires at tick 1301, through the first arm (its bucket is tick 1300's) with
         // argument 1300.
         assert_eq!(dispatcher.timer_trigger(tick(1301), 1301), Some(1300));
         dispatcher.expire_timers(tick(1301), 1301, 1300, 0);
         assert_eq!(late.waitable.signal_state(), 1);
-        assert_eq!(dispatcher.timer_table.audit(), Ok(()));
+        assert_eq!(dispatcher.audit_timers(), Ok(()));
     }
 
     /// A5: the due-time base. The waits stamp the system-time accumulator; the table indexes by the
@@ -533,7 +512,7 @@ mod tests {
             bucket_dues(table, 1000 & 127),
             vec![now + 50_000, now + 70_000, now + 70_000]
         );
-        assert_eq!(table.audit(), Ok(()));
+        assert_eq!(table.audit_timers(), Ok(()));
     }
 
     /// B2: an insert into an empty bucket is the front insert.
@@ -543,7 +522,7 @@ mod tests {
         let timer = fresh_timer();
         assert!(table.insert(timer, tick(1000) + 2_000_000, tick(1000)));
         assert_eq!(bucket_dues(table, 123), vec![tick(1000) + 2_000_000]);
-        assert_eq!(table.audit(), Ok(()));
+        assert_eq!(table.audit_timers(), Ok(()));
     }
 
     /// B3/B4: a due that is already past is refused at the entry — unsignaled, unheld, unlinked —
@@ -573,7 +552,7 @@ mod tests {
         let fresh = fresh_timer();
         assert!(!table.insert(fresh, now, now));
         assert!(!fresh.inserted());
-        assert_eq!(table.audit(), Ok(()));
+        assert_eq!(table.audit_timers(), Ok(()));
     }
 
     // --- Group C: the walk ---------------------------------------------
@@ -588,19 +567,15 @@ mod tests {
         let in_range = fresh_timer();
         let behind = fresh_timer();
         let now = tick(1002);
-        assert!(dispatcher
-            .timer_table
-            .insert(in_range, tick(1000) + 50_000, tick(1000)));
-        assert!(dispatcher
-            .timer_table
-            .insert(behind, tick(999) + 50_000, tick(999)));
+        assert!(dispatcher.insert(in_range, tick(1000) + 50_000, tick(1000)));
+        assert!(dispatcher.insert(behind, tick(999) + 50_000, tick(999)));
         dispatcher.expire_timers(now, 1002, 1000, 0);
         assert!(!in_range.inserted());
         assert_eq!(in_range.waitable.signal_state(), 1);
         // Behind the argument's bucket: this walk's range is [1000, 1002]; bucket 103 is not in it.
         assert!(behind.inserted());
         assert_eq!(behind.waitable.signal_state(), 0);
-        assert_eq!(dispatcher.timer_table.audit(), Ok(()));
+        assert_eq!(dispatcher.audit_timers(), Ok(()));
 
         // The older argument covers it.
         dispatcher.expire_timers(now, 1002, 999, 0);
@@ -613,7 +588,7 @@ mod tests {
     fn a_delayed_walk_scans_the_whole_table() {
         let dispatcher = dispatcher();
         let stale = fresh_timer();
-        assert!(dispatcher.timer_table.insert(stale, tick(500), tick(400)));
+        assert!(dispatcher.insert(stale, tick(500), tick(400)));
         // 130 ticks late: over the 128-bucket round.
         dispatcher.expire_timers(tick(1130), 1130, 1000, 0);
         assert!(!stale.inserted());
@@ -628,12 +603,8 @@ mod tests {
         let head = fresh_timer();
         let tail = fresh_timer();
         // Both dues fall within tick 1000 — one bucket.
-        assert!(dispatcher
-            .timer_table
-            .insert(head, tick(1000) + 50_000, tick(1000)));
-        assert!(dispatcher
-            .timer_table
-            .insert(tail, tick(1000) + 90_000, tick(1000)));
+        assert!(dispatcher.insert(head, tick(1000) + 50_000, tick(1000)));
+        assert!(dispatcher.insert(tail, tick(1000) + 90_000, tick(1000)));
         // Mid-tick: the head is due, the tail is not.
         dispatcher.expire_timers(tick(1000) + 60_000, 1000, 1000, 0);
         assert!(!head.inserted());
@@ -641,10 +612,10 @@ mod tests {
         assert!(tail.inserted());
         assert_eq!(tail.waitable.signal_state(), 0);
         assert_eq!(
-            bucket_dues(&dispatcher.timer_table, 1000 & 127),
+            bucket_dues(dispatcher, 1000 & 127),
             vec![tick(1000) + 90_000]
         );
-        assert_eq!(dispatcher.timer_table.audit(), Ok(()));
+        assert_eq!(dispatcher.audit_timers(), Ok(()));
     }
 
     /// C4: the collection preserves due order across a mask-wrapping range (and C5: a due-later
@@ -658,12 +629,10 @@ mod tests {
         let b = fresh_timer();
         let c = fresh_timer();
         let outside = fresh_timer();
-        assert!(dispatcher.timer_table.insert(a, tick(1151), tick(1000)));
-        assert!(dispatcher.timer_table.insert(b, tick(1153), tick(1000)));
-        assert!(dispatcher.timer_table.insert(c, tick(1155), tick(1000)));
-        assert!(dispatcher
-            .timer_table
-            .insert(outside, tick(1163), tick(1000)));
+        assert!(dispatcher.insert(a, tick(1151), tick(1000)));
+        assert!(dispatcher.insert(b, tick(1153), tick(1000)));
+        assert!(dispatcher.insert(c, tick(1155), tick(1000)));
+        assert!(dispatcher.insert(outside, tick(1163), tick(1000)));
 
         dispatcher.expire_timers(tick(1160), 131, 126, 0);
         for expired in [a, b, c] {
@@ -672,7 +641,7 @@ mod tests {
         }
         assert!(outside.inserted());
         assert_eq!(outside.waitable.signal_state(), 0);
-        assert_eq!(dispatcher.timer_table.audit(), Ok(()));
+        assert_eq!(dispatcher.audit_timers(), Ok(()));
     }
 
     /// C6/G2 composed: a thread parked on a delay is woken by the walk in collection order, with
@@ -696,7 +665,7 @@ mod tests {
         // Both in the table, in their own buckets (20 ticks and 10 ticks out).
         assert!(sleeper_a.timer.inserted());
         assert!(sleeper_b.timer.inserted());
-        assert_eq!(dispatcher.timer_table.audit(), Ok(()));
+        assert_eq!(dispatcher.audit_timers(), Ok(()));
 
         // The transition to tick 1010: the first arm's bucket (1009 — the tick sleeper_b's due
         // falls within) holds its timer; the argument is that tick.
@@ -722,12 +691,12 @@ mod tests {
     #[test]
     fn the_audit_rejects_a_signaled_bucket_entry() {
         let table = fresh_table();
-        let timer = fresh_timer();
+        let mut timer = fresh_timer();
         assert!(table.insert(timer, tick(1000) + 50_000, tick(1000)));
-        assert_eq!(table.audit(), Ok(()));
+        assert_eq!(table.audit_timers(), Ok(()));
         // A linked timer must not be signaled.
         timer.waitable.signal_state = 1;
-        assert_ne!(table.audit(), Ok(()));
+        assert_ne!(table.audit_timers(), Ok(()));
     }
 
     // --- Group D: removal ----------------------------------------------
@@ -751,7 +720,7 @@ mod tests {
             bucket_dues(table, 1000 & 127),
             vec![now + 50_000, now + 70_000]
         );
-        assert_eq!(table.audit(), Ok(()));
+        assert_eq!(table.audit_timers(), Ok(()));
 
         // Re-insert with a later due: lands behind t3.
         assert!(table.insert(t2, now + 90_000, now));
@@ -782,14 +751,14 @@ mod tests {
         ev.set(dispatcher, EVENT_WAKE_INCREMENT);
         assert_eq!(waiter.wait_status(), STATUS_SUCCESS);
         assert!(!waiter.timer.inserted());
-        assert_eq!(dispatcher.timer_table.audit(), Ok(()));
+        assert_eq!(dispatcher.audit_timers(), Ok(()));
 
         // The walk at and past the would-be due tick: nothing expires for it, and the thread keeps
         // the wake's status.
         dispatcher.expire_timers(tick(1020), 1020, 1019, 0);
         assert_eq!(waiter.wait_status(), STATUS_SUCCESS);
         assert_eq!(waiter.state(), ThreadState::Ready);
-        assert_eq!(dispatcher.timer_table.audit(), Ok(()));
+        assert_eq!(dispatcher.audit_timers(), Ok(()));
     }
 
     // --- Group F: the trigger -------------------------------------------
@@ -838,16 +807,10 @@ mod tests {
         }
         assert_eq!(sleeper.state(), ThreadState::Waiting);
         assert_eq!(sleeper.wait_reason(), WaitReason::DelayExecution);
-        assert!(eq(
-            sleeper.wait_block_head,
-            addr_of_mut!(sleeper.wait_blocks[TIMER_BLOCK])
-        ));
+        assert_eq!(sleeper.wait_block_head, Some(BlockId::timer(sleeper.id())));
         assert!(sleeper.timer.inserted());
-        assert_eq!(
-            bucket_dues(&dispatcher.timer_table, 123),
-            vec![tick(1000) + 2_000_000]
-        );
-        assert_eq!(dispatcher.timer_table.audit(), Ok(()));
+        assert_eq!(bucket_dues(dispatcher, 123), vec![tick(1000) + 2_000_000]);
+        assert_eq!(dispatcher.audit_timers(), Ok(()));
     }
 
     /// G4: a timed wait's expiry through the walk returns the raw timeout status, exactly as a
@@ -872,7 +835,7 @@ mod tests {
         assert_eq!(waiter.wait_status(), STATUS_TIMEOUT);
         assert_eq!(waiter.state(), ThreadState::Ready);
         assert_eq!(ev.signal_state(), 0);
-        assert_eq!(dispatcher.timer_table.audit(), Ok(()));
+        assert_eq!(dispatcher.audit_timers(), Ok(()));
     }
 
     /// E1's wrap-safety: the longest relative interval (the sleep service's INFINITE arm) parks for
@@ -896,6 +859,6 @@ mod tests {
             dispatcher.timer_trigger(now.wrapping_add(u32::MAX as u64), u32::MAX),
             None
         );
-        assert_eq!(dispatcher.timer_table.audit(), Ok(()));
+        assert_eq!(dispatcher.audit_timers(), Ok(()));
     }
 }

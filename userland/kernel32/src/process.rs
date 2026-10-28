@@ -5,11 +5,9 @@
 //! out); the kernel checks the handle's access and answers for the process (CreateProcess itself
 //! is [`crate::create`]'s).
 
-use rtl::status::nt_success;
-
-use crate::base::{set_last_error, set_last_nt_error, succeeded, CURRENT_PROCESS};
-use crate::nt::{self, ClientId};
-use crate::ntcall::{self, Destination, Source};
+use crate::base::{set_last_error, set_last_nt_error, win32_bool, CURRENT_PROCESS};
+use crate::nt::ClientId;
+use crate::ntcall::{self, Destination, PebLock, PriorityClass, Source};
 
 /// PROCESSINFOCLASS: the classes kernel32 asks.
 const PROCESS_DEFAULT_HARD_ERROR_MODE: u32 = 12;
@@ -48,14 +46,6 @@ pub fn flag_of(class: u8) -> u32 {
         .map_or(NORMAL_PRIORITY_CLASS, |&(flag, _)| flag)
 }
 
-/// PROCESS_PRIORITY_CLASS: never foreground (no window has the focus), and the class.
-#[repr(C)]
-#[derive(Default)]
-struct PriorityClass {
-    foreground: u8,
-    class: u8,
-}
-
 /// ExitProcess, in Windows 2000's order: under the PEB lock (no other thread is inside a
 /// loader-held section as the process goes), every other thread terminated (NtTerminateProcess with
 /// no handle), the loader's shutdown (LdrShutdownProcess), then the process ended with the code
@@ -63,13 +53,11 @@ struct PriorityClass {
 /// exit between the two; F2K has no base server to tell.
 #[unsafe(export_name = "f2k_export_ExitProcess")]
 pub extern "system" fn exit_process(code: u32) -> ! {
-    // SAFETY: ntdll's exports.
-    unsafe {
-        nt::RtlAcquirePebLock();
-        nt::NtTerminateProcess(0, code);
-        nt::LdrShutdownProcess();
-        nt::NtTerminateProcess(CURRENT_PROCESS, code);
-    }
+    // Held to the end: the process goes with it.
+    let _lock = PebLock::acquire();
+    let _ = ntcall::terminate_process(0, code);
+    ntcall::shutdown_process();
+    let _ = ntcall::terminate_process(CURRENT_PROCESS, code);
     // NtTerminateProcess of the caller does not return.
     loop {
         core::hint::spin_loop();
@@ -278,22 +266,13 @@ pub extern "system" fn flush_instruction_cache(process: u32, address: usize, siz
 /// GetPriorityClass: ProcessPriorityClass as its class flag; zero with the status's error.
 #[unsafe(export_name = "f2k_export_GetPriorityClass")]
 pub extern "system" fn get_priority_class(process: u32) -> u32 {
-    let mut class = PriorityClass::default();
-    // SAFETY: ntdll's export, over the structure above.
-    let status = unsafe {
-        nt::NtQueryInformationProcess(
-            process,
-            PROCESS_PRIORITY_CLASS,
-            (&mut class as *mut PriorityClass).cast(),
-            2,
-            core::ptr::null_mut(),
-        )
-    };
-    if !nt_success(status) {
-        set_last_nt_error(status);
-        return 0;
+    match ntcall::query_process::<PriorityClass>(process, PROCESS_PRIORITY_CLASS) {
+        Ok(class) => flag_of(class.class),
+        Err(status) => {
+            set_last_nt_error(status);
+            0
+        }
     }
-    flag_of(class.class)
 }
 
 /// SetPriorityClass: the class the value's first class flag names, through ProcessPriorityClass
@@ -306,34 +285,19 @@ pub extern "system" fn set_priority_class(process: u32, flags: u32) -> u32 {
         set_last_error(ERROR_INVALID_PARAMETER);
         return 0;
     };
+    // Never foreground: no window has the focus.
     let class = PriorityClass {
         foreground: 0,
         class,
     };
-    // SAFETY: ntdll's export, over the structure above.
-    succeeded(unsafe {
-        nt::NtSetInformationProcess(
-            process,
-            PROCESS_PRIORITY_CLASS,
-            (&class as *const PriorityClass).cast(),
-            2,
-        )
-    })
+    win32_bool(ntcall::set_process(process, PROCESS_PRIORITY_CLASS, &class))
 }
 
 /// SetProcessAffinityMask: ProcessAffinityMask (a non-empty subset of the one processor, which
 /// changes nothing; ERROR_INVALID_PARAMETER otherwise).
 #[unsafe(export_name = "f2k_export_SetProcessAffinityMask")]
 pub extern "system" fn set_process_affinity_mask(process: u32, mask: u32) -> u32 {
-    // SAFETY: ntdll's export, over the mask.
-    succeeded(unsafe {
-        nt::NtSetInformationProcess(
-            process,
-            PROCESS_AFFINITY_MASK,
-            (&mask as *const u32).cast(),
-            4,
-        )
-    })
+    win32_bool(ntcall::set_process(process, PROCESS_AFFINITY_MASK, &mask))
 }
 
 /// SEM_FAILCRITICALERRORS: the one mode bit the process's hard-error mode stores inverted (its
@@ -343,22 +307,13 @@ const SEM_FAILCRITICALERRORS: u32 = 0x0001;
 /// GetErrorMode (Windows 2000's internal one): ProcessDefaultHardErrorMode, its
 /// SEM_FAILCRITICALERRORS bit inverted; zero with the status's error.
 fn error_mode() -> u32 {
-    let mut mode = 0u32;
-    // SAFETY: ntdll's export, over the value above.
-    let status = unsafe {
-        nt::NtQueryInformationProcess(
-            CURRENT_PROCESS,
-            PROCESS_DEFAULT_HARD_ERROR_MODE,
-            (&mut mode as *mut u32).cast(),
-            4,
-            core::ptr::null_mut(),
-        )
-    };
-    if !nt_success(status) {
-        set_last_nt_error(status);
-        return 0;
+    match ntcall::query_process::<u32>(CURRENT_PROCESS, PROCESS_DEFAULT_HARD_ERROR_MODE) {
+        Ok(mode) => mode ^ SEM_FAILCRITICALERRORS,
+        Err(status) => {
+            set_last_nt_error(status);
+            0
+        }
     }
-    mode ^ SEM_FAILCRITICALERRORS
 }
 
 /// SetErrorMode: the previous mode, the new one stored as the process's hard-error mode (its
@@ -368,16 +323,8 @@ fn error_mode() -> u32 {
 pub extern "system" fn set_error_mode(mode: u32) -> u32 {
     let previous = error_mode();
     let stored = mode ^ SEM_FAILCRITICALERRORS;
-    // SAFETY: ntdll's export, over the value above; a refusal leaves the mode (and the last error)
-    // as they were, as on Windows 2000.
-    let _ = unsafe {
-        nt::NtSetInformationProcess(
-            CURRENT_PROCESS,
-            PROCESS_DEFAULT_HARD_ERROR_MODE,
-            (&stored as *const u32).cast(),
-            4,
-        )
-    };
+    // A refusal leaves the mode (and the last error) as they were, as on Windows 2000.
+    let _ = ntcall::set_process(CURRENT_PROCESS, PROCESS_DEFAULT_HARD_ERROR_MODE, &stored);
     previous
 }
 

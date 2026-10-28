@@ -10,6 +10,8 @@
 //! in the system DLLs' code does: Windows 2000's user32 imports neither kernel32's RaiseException
 //! nor ntdll's raises.
 
+use core::ffi::CStr;
+
 use rtl::stub::{describe, Entry, Fails, Line};
 
 use crate::imports::{self, Probed};
@@ -27,17 +29,16 @@ pub const ERROR_CALL_NOT_IMPLEMENTED: u32 = 120;
 pub unsafe fn stubbed(entry: &Entry, reason: &str, args: &[u64]) -> u32 {
     let mut line = Line::new();
     let _ = describe(entry, reason, args, &Probed, &mut line);
-    // SAFETY: the imports; the format and the line are NUL-terminated.
-    unsafe {
-        imports::DbgPrint(b"%s\0".as_ptr(), line.terminated().as_ptr());
-        match entry.fails {
-            Fails::Value(value) => {
-                imports::SetLastError(ERROR_CALL_NOT_IMPLEMENTED);
-                value
-            }
-            Fails::Void => 0,
-            Fails::Never => panic!("{}.{}: not implemented", entry.dll, entry.name),
+    if let Ok(text) = CStr::from_bytes_until_nul(line.terminated()) {
+        imports::debug_print(text);
+    }
+    match entry.fails {
+        Fails::Value(value) => {
+            imports::set_last_error(ERROR_CALL_NOT_IMPLEMENTED);
+            value
         }
+        Fails::Void => 0,
+        Fails::Never => panic!("{}.{}: not implemented", entry.dll, entry.name),
     }
 }
 

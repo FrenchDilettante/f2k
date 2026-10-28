@@ -23,6 +23,7 @@
 #                  u32          a dword value (counts, flags, code addresses)        u32
 #                  i32          a signed dword (a count where -1 means "to the NUL")  i32
 #                  bool         a Win32 BOOL (nonzero is true)                       bool
+#                  boolean      an NT BOOLEAN (its low byte; nonzero is true)        bool
 #                  handle       a handle value                                       Handle
 #                  ptr          a pointer into caller memory                         UserAddr
 #                  ptr<T>       a pointer to one T (u8, u16, u32, i32, u64)          UserPtr<T>

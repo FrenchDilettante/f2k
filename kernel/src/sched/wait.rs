@@ -19,15 +19,25 @@
 //! and satisfies its waiters like any other object — with the timeout status planted in the timer
 //! block at thread setup, the timeout needs no special wake path at all.
 //!
+//! Everything links by index within the dispatcher database: a wait block is named by its thread
+//! and its slot, an object by its kind's pool and record ([`WaitableId`]). A header embedded in
+//! another structure — a lock's event, a file object's, the disk's completion event, as Windows
+//! 2000 embeds a KEVENT — is no record of the database: it is named by its address, which its
+//! embedder pins.
+//!
 //! One processor, no locking: everything here runs serialized at the dispatch level, so there are
 //! no races to arbitrate — which of a wake and an expiry "wins" is decided by which runs first, and
 //! the loser finds its lists already unwound.
 
-use core::ptr::{addr_of_mut, eq, null_mut};
+use core::ptr::NonNull;
 
+use super::apc::ApcId;
 use super::dispatcher::Dispatcher;
-use super::thread::{Thread, ThreadState};
-use super::{unlink, Links, List, REALTIME_BASE, TIME_CRITICAL_CEILING};
+use super::list::{self, IndexList, Link, ListKind};
+use super::mutex::MutexId;
+use super::thread::{Thread, ThreadId, ThreadState};
+use super::timer::{TimerId, TimerList};
+use super::{REALTIME_BASE, TIME_CRITICAL_CEILING};
 use crate::status::{NtStatus, STATUS_KERNEL_APC, STATUS_SUCCESS, STATUS_TIMEOUT};
 
 /// The low three bits of a waitable kind: the selector that decides whether a satisfied wait
@@ -77,6 +87,92 @@ impl WaitKind {
     }
 }
 
+/// A waitable object's name: the dispatcher database's record that holds its header, or the
+/// address of a header embedded elsewhere.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum WaitableId {
+    /// An event object (the event pool's record).
+    Event(u16),
+    /// A semaphore object.
+    Semaphore(u16),
+    /// A mutex object.
+    Mutex(u16),
+    /// A waitable timer object.
+    Timer(u16),
+    /// A process object: signaled once its process has ended.
+    Process(u16),
+    /// A thread object: the thread record's own header.
+    Thread(ThreadId),
+    /// A thread's wait-timeout timer.
+    ThreadTimer(ThreadId),
+    /// A thread's builtin suspend semaphore.
+    Suspend(ThreadId),
+    /// A header embedded in a structure outside the database (a lock's event, a file object's, a
+    /// device's), named by its address: its embedder keeps it there, alive, while anything waits
+    /// on it or signals it.
+    Embedded(NonNull<Waitable>),
+}
+
+impl WaitableId {
+    /// The id a waitable header carries.
+    ///
+    /// # Safety
+    ///
+    /// `header` points at a live waitable header: a database record's, or an embedded one after
+    /// its [`Waitable::init`].
+    pub unsafe fn of(header: *const Waitable) -> WaitableId {
+        // SAFETY: the caller's contract.
+        unsafe { (*header).id() }
+    }
+}
+
+/// The waiters of one waitable object: the wait blocks parked on it, oldest first.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Waiters(pub WaitableId);
+
+impl ListKind for Waiters {
+    type Entry = BlockId;
+}
+
+/// The dispatcher's waiting list: the threads blocked on a wait, for the audit's walk.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct WaitingList;
+
+impl ListKind for WaitingList {
+    type Entry = ThreadId;
+}
+
+/// A wait block's name: its thread and its slot there — a builtin block below [`WAIT_BLOCKS`], a
+/// multiple-object wait's block from it on.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct BlockId {
+    pub thread: ThreadId,
+    pub slot: u8,
+}
+
+impl BlockId {
+    /// The thread's builtin block `slot`.
+    pub const fn builtin(thread: ThreadId, slot: usize) -> Self {
+        BlockId {
+            thread,
+            slot: slot as u8,
+        }
+    }
+
+    /// The thread's timer block.
+    pub const fn timer(thread: ThreadId) -> Self {
+        Self::builtin(thread, TIMER_BLOCK)
+    }
+
+    /// The thread's multiple-object wait block for the object at `index`.
+    pub const fn multi(thread: ThreadId, index: usize) -> Self {
+        BlockId {
+            thread,
+            slot: (WAIT_BLOCKS + index) as u8,
+        }
+    }
+}
+
 /// The header every waitable object carries: what kind it is, whether it is signaled, and which
 /// threads are parked on it.
 #[repr(C)]
@@ -86,32 +182,58 @@ pub struct Waitable {
     /// The signal state: positive means signaled.
     pub(crate) signal_state: i32,
     /// The wait blocks parked on this object.
-    pub(crate) waiters: List,
+    pub(crate) waiters: IndexList<Waiters>,
+    /// The header's own name: a database record's from its building on, an embedded header's
+    /// from its [`Waitable::init`].
+    id: Option<WaitableId>,
 }
 
 impl Waitable {
-    /// A fresh, unsignaled header; call [`Waitable::init`] once the owning object is at its final
-    /// address.
+    /// A fresh, unsignaled header to embed; call [`Waitable::init`] once the owning structure is at
+    /// its final address.
     pub const fn new(kind: WaitKind, signal_state: i32) -> Self {
         Waitable {
             kind,
             signal_state,
-            waiters: List::empty(),
+            waiters: IndexList::new(),
+            id: None,
         }
     }
 
-    /// A fresh, signaled header.
-    pub const fn signaled(kind: WaitKind) -> Self {
+    /// A fresh header of the database record `id`.
+    pub const fn with_id(kind: WaitKind, signal_state: i32, id: WaitableId) -> Self {
         Waitable {
             kind,
-            signal_state: 1,
-            waiters: List::empty(),
+            signal_state,
+            waiters: IndexList::new(),
+            id: Some(id),
         }
     }
 
-    /// Close the waiters sentinel; call once at the final address.
+    /// A fresh, signaled header to embed.
+    pub const fn signaled(kind: WaitKind) -> Self {
+        Self::new(kind, 1)
+    }
+
+    /// Name an embedded header by its address and empty its waiters; call once the owning
+    /// structure is at its final address, before anything waits on it.
     pub fn init(&mut self) {
-        self.waiters.init();
+        debug_assert!(
+            matches!(self.id, None | Some(WaitableId::Embedded(_))),
+            "a database record's header is named by its record"
+        );
+        self.waiters = IndexList::new();
+        self.id = Some(WaitableId::Embedded(NonNull::from(&mut *self)));
+    }
+
+    /// The header's name.
+    ///
+    /// # Panics
+    ///
+    /// An embedded header before its [`Waitable::init`].
+    pub fn id(&self) -> WaitableId {
+        self.id
+            .expect("a waitable header is named before it is used")
     }
 
     /// The object's kind.
@@ -123,10 +245,15 @@ impl Waitable {
     pub fn signal_state(&self) -> i32 {
         self.signal_state
     }
+
+    /// Whether a wait block is parked on the object.
+    pub fn has_waiters(&self) -> bool {
+        !self.waiters.is_empty()
+    }
 }
 
 /// A wait's timer: the record the timeout machinery inserts, removes, and expires. Each thread owns
-/// one for its wait timeouts.
+/// one for its wait timeouts; a waitable timer is one with a period and an APC.
 #[repr(C)]
 pub struct Timer {
     /// The timer as a waitable object: expiry signals it and satisfies its waiters.
@@ -136,41 +263,38 @@ pub struct Timer {
     pub(crate) due_time: u64,
     /// Whether the timer table currently holds the timer.
     pub(crate) inserted: bool,
-    /// The timer-table membership link: the bucket list while held, the expiry walk's collection
-    /// list mid-walk — a timer is on exactly one at a time.
-    pub(crate) links: Links,
+    /// The timer-table membership: the bucket list while held, the expiry walk's collection list
+    /// mid-walk — a timer is on exactly one at a time.
+    pub(crate) link: Link<TimerList>,
     /// The period a periodic timer re-arms by at each expiry (100 ns units); zero for a one-shot.
     /// A thread's wait timer is always a one-shot.
     pub(crate) period: u64,
-    /// The APC queued at each expiry, or null: a waitable timer's completion routine (see
+    /// The APC queued at each expiry, or none: a waitable timer's completion routine (see
     /// [`crate::sched::waitable_timer`]).
-    pub(crate) apc: *mut super::apc::Apc,
+    pub(crate) apc: Option<ApcId>,
 }
 
 impl Timer {
-    /// A fresh timer, uninserted and unsignaled; call [`Timer::init`] once the owning thread is at
-    /// its final address.
-    pub const fn new() -> Self {
+    /// A fresh timer of `kind` (one of the two timer kinds), uninserted and unsignaled, its header
+    /// the database record `id` (a thread's wait timer, or a waitable timer).
+    pub const fn with_id(kind: WaitKind, id: WaitableId) -> Self {
         Timer {
-            waitable: Waitable::new(WaitKind::TimerNotification, 0),
+            waitable: Waitable::with_id(kind, 0, id),
             due_time: 0,
             inserted: false,
-            links: Links::detached(),
+            link: Link::detached(),
             period: 0,
-            apc: null_mut(),
+            apc: None,
         }
     }
 
-    /// A fresh timer of `kind` (one of the two timer kinds), as [`Timer::new`].
-    pub const fn of_kind(kind: WaitKind) -> Self {
-        let mut timer = Timer::new();
-        timer.waitable.kind = kind;
-        timer
-    }
-
-    /// Close the header's waiters sentinel.
-    pub fn init(&mut self) {
-        self.waitable.init();
+    /// The timer's name in the table.
+    pub fn id(&self) -> TimerId {
+        match self.waitable.id() {
+            WaitableId::ThreadTimer(thread) => TimerId::Thread(thread),
+            WaitableId::Timer(index) => TimerId::Waitable(index),
+            other => unreachable!("a timer's header is a timer record's, not {other:?}"),
+        }
     }
 
     /// The recorded due time, in 100 ns units.
@@ -188,33 +312,32 @@ impl Timer {
 /// the thread's other blocks for the same wait. A thread embeds a fixed set: the first block holds
 /// a single-object wait, its timer block joins when the wait carries a timeout, and the timer block
 /// alone is a delay.
-#[repr(C)]
 #[derive(Clone, Copy)]
 pub struct WaitBlock {
-    /// The waiters-list membership link.
-    pub(crate) links: Links,
+    /// The waiters-list membership.
+    pub(crate) link: Link<Waiters>,
     /// The claiming thread.
-    pub(crate) thread: *mut Thread,
-    /// The claimed object's header.
-    pub(crate) object: *mut Waitable,
+    pub(crate) thread: ThreadId,
+    /// The claimed object (meaningful while the block is in a wait; the timer block's is
+    /// constant).
+    pub(crate) object: WaitableId,
     /// The next block of the same wait, circularly.
-    pub(crate) next_block: *mut WaitBlock,
+    pub(crate) next_block: BlockId,
     /// The status this block's satisfaction reports: the object block carries success, the timer
     /// block the timeout.
     pub(crate) key: NtStatus,
-    /// Whether the block is a wait-all claim. The multiple-object wait that would construct one is
-    /// not built; the satisfy walk keeps the rule anyway.
+    /// Whether the block is a wait-all claim.
     pub(crate) wait_all: bool,
 }
 
 impl WaitBlock {
-    /// A detached block; the owning thread wires the fields at attach and per wait.
-    pub const fn detached() -> Self {
+    /// The detached block `id`: its thread's, on no list, chained to itself.
+    pub const fn detached(id: BlockId) -> Self {
         WaitBlock {
-            links: Links::detached(),
-            thread: null_mut(),
-            object: null_mut(),
-            next_block: null_mut(),
+            link: Link::detached(),
+            thread: id.thread,
+            object: WaitableId::ThreadTimer(id.thread),
+            next_block: id,
             key: STATUS_SUCCESS,
             wait_all: false,
         }
@@ -279,60 +402,67 @@ fn test_alert(thread: &mut Thread, mode: WaitMode, alertable: bool) -> Option<Nt
     None
 }
 
-/// The wait block owning a waiters-list entry.
-// SAFETY-contract: `entry` is the links field of a live wait block.
-pub(crate) fn entry_to_block(entry: *mut Links) -> *mut WaitBlock {
-    (entry as usize - core::mem::offset_of!(WaitBlock, links)) as *mut WaitBlock
-}
-
-/// Whether `object` would satisfy a wait by `thread` now: signaled — or, for a mutex, owned by
-/// `thread` already (the recursion).
-// SAFETY-contract: `object` is a live, initialized waitable.
-pub(crate) unsafe fn signaled_for(object: *mut Waitable, thread: *const Thread) -> bool {
-    unsafe {
-        if (*object).kind == WaitKind::Mutant {
-            return super::mutex::available_to(
-                &*super::mutex::Mutex::from_waitable(object),
-                thread,
-            );
-        }
-        (*object).signal_state > 0
-    }
-}
-
-/// Satisfy `thread`'s claim on `object`: a synchronization flavor's signal is consumed by the take,
-/// a semaphore's claim takes exactly one count, a mutex's one unit of ownership, everything else's
-/// stays. Returns the status bits the take adds to the wait's completion: the abandonment of a
-/// mutex its last owner ended holding, else none.
-// SAFETY-contract: `object` is a live waitable that [`signaled_for`] `thread`; `thread` is live.
-pub(crate) unsafe fn consume_signal(object: *mut Waitable, thread: *mut Thread) -> NtStatus {
-    unsafe {
-        match (*object).kind {
-            WaitKind::Semaphore => (*object).signal_state -= 1,
-            WaitKind::Mutant => {
-                return super::mutex::acquire(
-                    &mut *super::mutex::Mutex::from_waitable(object),
-                    &mut *thread,
-                )
-            }
-            kind if kind.consumes_signal() => (*object).signal_state = 0,
-            _ => {}
-        }
-    }
-    STATUS_SUCCESS
-}
-
 /// The most objects one wait may name: the documented MAXIMUM_WAIT_OBJECTS.
 pub const MAXIMUM_WAIT_OBJECTS: usize = 64;
 
 impl Dispatcher {
+    /// Whether `object` would satisfy a wait by `thread` now: signaled — or, for a mutex, owned by
+    /// `thread` already (the recursion).
+    pub(crate) fn signaled_for(&self, object: WaitableId, thread: ThreadId) -> bool {
+        match object {
+            WaitableId::Mutex(index) => {
+                super::mutex::available_to(self.mutex(MutexId(index)), thread)
+            }
+            _ => self.waitable(object).signal_state > 0,
+        }
+    }
+
+    /// Satisfy `thread`'s claim on `object`, which is [`Dispatcher::signaled_for`] it: a
+    /// synchronization flavor's signal is consumed by the take, a semaphore's claim takes exactly
+    /// one count, a mutex's one unit of ownership, everything else's stays. Returns the status bits
+    /// the take adds to the wait's completion: the abandonment of a mutex its last owner ended
+    /// holding, else none.
+    pub(crate) fn consume_signal(&mut self, object: WaitableId, thread: ThreadId) -> NtStatus {
+        if let WaitableId::Mutex(index) = object {
+            return self.acquire_mutex(MutexId(index), thread);
+        }
+        let waitable = self.waitable_mut(object);
+        match waitable.kind {
+            WaitKind::Semaphore => waitable.signal_state -= 1,
+            kind if kind.consumes_signal() => waitable.signal_state = 0,
+            _ => {}
+        }
+        STATUS_SUCCESS
+    }
+
+    /// Wait on the single object at `object` (a header a waitable record or an embedder hands
+    /// out): [`Dispatcher::wait_for`] on the object it names.
+    #[allow(clippy::too_many_arguments)]
+    pub fn wait_single(
+        &mut self,
+        thread: impl Into<ThreadId>,
+        object: *mut Waitable,
+        reason: WaitReason,
+        mode: WaitMode,
+        alertable: bool,
+        timeout: Option<i64>,
+        stamp: ClockStamp,
+    ) -> WaitDisposition {
+        let thread = thread.into();
+        // SAFETY: the callers hand out the headers of live objects only: a record the directory
+        // names, held for the wait, or a header embedded in a pinned structure and initialized.
+        let object = unsafe { WaitableId::of(object) };
+        self.wait_for(thread, object, reason, mode, alertable, timeout, stamp)
+    }
+
     /// Wait on a single object. Satisfies the wait at once when the object is signaled or the
     /// timeout is zero or already past; otherwise parks the thread: a wait block on the object, the
     /// state Waiting, the waiting list — and the switch away is the caller's business.
-    pub fn wait_single(
+    #[allow(clippy::too_many_arguments)]
+    pub fn wait_for(
         &mut self,
-        thread: &mut Thread,
-        object: *mut Waitable,
+        thread: ThreadId,
+        object: WaitableId,
         reason: WaitReason,
         mode: WaitMode,
         alertable: bool,
@@ -341,35 +471,29 @@ impl Dispatcher {
     ) -> WaitDisposition {
         // A fresh wait starts from a clean completion status: the wake ORs its status into the
         // field.
-        thread.wait_status = STATUS_SUCCESS;
+        self.thread_mut(thread).wait_status = STATUS_SUCCESS;
 
         // An already-signaled object satisfies the wait outright. The take consumes an auto-reset
         // flavor's signal; the thread never leaves the Running state, and the wait it did not block
         // on still costs its quantum charge.
-        // SAFETY: the object is a live, initialized waitable.
-        if unsafe { signaled_for(object, thread) } {
-            // SAFETY: as above; the object is signaled for the thread.
-            let status = unsafe { consume_signal(object, thread) };
+        if self.signaled_for(object, thread) {
+            let status = self.consume_signal(object, thread);
             self.charge_nowait(thread);
             return WaitDisposition::Complete(NtStatus(STATUS_SUCCESS.0 | status.0));
         }
-        // SAFETY: as above.
-        let object: &mut Waitable = unsafe { &mut *object };
 
         // Plant the object block. Its fields are per-wait; the chain is closed below, with the
         // timer block when a timeout arms one.
-        // SAFETY: the block lives inside the thread for its lifetime.
-        let block: *mut WaitBlock = addr_of_mut!(thread.wait_blocks[0]);
-        thread.wait_block_head = block;
-        // SAFETY: as above.
-        unsafe {
-            (*block).object = object as *mut Waitable;
-            (*block).key = STATUS_SUCCESS;
-            (*block).wait_all = false;
-        }
+        let block = BlockId::builtin(thread, 0);
+        let record = self.thread_mut(thread);
+        record.wait_block_head = Some(block);
+        let planted = record.block_mut(block.slot);
+        planted.object = object;
+        planted.key = STATUS_SUCCESS;
+        planted.wait_all = false;
 
         // An alertable wait with user APCs queued completes at once, for their delivery.
-        if let Some(status) = test_alert(thread, mode, alertable) {
+        if let Some(status) = test_alert(self.thread_mut(thread), mode, alertable) {
             return WaitDisposition::Complete(status);
         }
 
@@ -381,70 +505,29 @@ impl Dispatcher {
 
         match timeout {
             Some(interval) => {
-                // The wait chain: object block, timer block, circularly. The timer block's own
-                // claim is constant per thread — its object, its key (the timeout status), its wait
-                // type — planted once at thread setup; the wait only re-links it.
-                // SAFETY: both blocks live inside the thread.
-                let timer_block: *mut WaitBlock = addr_of_mut!(thread.wait_blocks[TIMER_BLOCK]);
-                // SAFETY: as above.
-                unsafe {
-                    (*block).next_block = timer_block;
-                    (*timer_block).next_block = block;
-                    // SAFETY: the timer's waiters list is initialized at thread attach, and the
-                    // block is on no list.
-                    thread
-                        .timer
-                        .waitable
-                        .waiters
-                        .push_back(addr_of_mut!((*timer_block).links));
-                }
-                let due = stamp.interrupt_time.wrapping_add(interval as u64);
-                if !self
-                    .timer_table
-                    .insert(&mut thread.timer, due, stamp.interrupt_time)
-                {
-                    // Already past: the wait reports a timeout and unwinds what it linked.
-                    // SAFETY: linked above.
-                    unsafe { unlink(addr_of_mut!((*timer_block).links)) };
+                // The wait chain: object block, timer block, circularly.
+                if !self.arm_timeout(thread, block, block, interval, stamp) {
+                    // Already past: the wait reports a timeout.
                     self.charge_nowait(thread);
                     return WaitDisposition::Complete(STATUS_TIMEOUT);
                 }
             }
-            None => {
-                // No timeout: the one-block chain closes on itself.
-                // SAFETY: as above.
-                unsafe { (*block).next_block = block };
-            }
+            // No timeout: the one-block chain closes on itself.
+            None => self.block_mut(block).next_block = block,
         }
 
         // Join the object's waiters at the tail: waits satisfy first-blocked-first-woken.
-        // SAFETY: the block is on no list; the object's waiters list is initialized.
-        unsafe { object.waiters.push_back(addr_of_mut!((*block).links)) };
-
-        // The block path: the wait's parameters land on the thread and it joins the waiting list,
-        // in the Waiting state. The switch away is the caller's business.
-        thread.wait_alertable = alertable;
-        thread.wait_mode = mode;
-        thread.wait_reason = reason;
-        thread.wait_time = stamp.tick;
-        thread.state = ThreadState::Waiting;
-        // SAFETY: the thread is on no waiting list; the dispatcher's list is initialized.
-        unsafe { self.waiting.push_back(addr_of_mut!(thread.wait_links)) };
+        list::push_back(self, Waiters(object), block);
+        self.park(thread, reason, mode, alertable, stamp);
         WaitDisposition::Yield
     }
 
-    /// Wait on several objects at once, through the thread's multiple-wait blocks — one per object.
-    /// A wait-any is satisfied
-    /// by the lowest-indexed object signaled for the thread and completes with that index; a
-    /// wait-all only once every object is, taking them all at once, and completes with success. An
-    /// abandoned mutex's take adds the abandonment to the status. Otherwise the thread parks with a
-    /// block on every object (wait-any keys are the indexes, wait-all keys success), chained
-    /// circularly with the timer block when a timeout arms one. The caller validates the count and,
-    /// for a wait-all, that no object repeats.
+    /// Wait on several objects at once (headers, as [`Dispatcher::wait_single`] takes one):
+    /// [`Dispatcher::wait_for_multiple`] on the objects they name.
     #[allow(clippy::too_many_arguments)]
     pub fn wait_multiple(
         &mut self,
-        thread: &mut Thread,
+        thread: impl Into<ThreadId>,
         objects: &[*mut Waitable],
         wait_all: bool,
         reason: WaitReason,
@@ -453,35 +536,61 @@ impl Dispatcher {
         timeout: Option<i64>,
         stamp: ClockStamp,
     ) -> WaitDisposition {
+        let thread = thread.into();
+        let mut ids = [WaitableId::Thread(thread); MAXIMUM_WAIT_OBJECTS];
+        for (id, &object) in ids.iter_mut().zip(objects) {
+            // SAFETY: as in `wait_single`: each header is a live object's the caller holds.
+            *id = unsafe { WaitableId::of(object) };
+        }
+        let ids = &ids[..objects.len()];
+        self.wait_for_multiple(
+            thread, ids, wait_all, reason, mode, alertable, timeout, stamp,
+        )
+    }
+
+    /// Wait on several objects at once, through the thread's multiple-wait blocks — one per object.
+    /// A wait-any is satisfied by the lowest-indexed object signaled for the thread and completes
+    /// with that index; a wait-all only once every object is, taking them all at once, and
+    /// completes with success. An abandoned mutex's take adds the abandonment to the status.
+    /// Otherwise the thread parks with a block on every object (wait-any keys are the indexes,
+    /// wait-all keys success), chained circularly with the timer block when a timeout arms one. The
+    /// caller validates the count and, for a wait-all, that no object repeats.
+    #[allow(clippy::too_many_arguments)]
+    pub fn wait_for_multiple(
+        &mut self,
+        thread: ThreadId,
+        objects: &[WaitableId],
+        wait_all: bool,
+        reason: WaitReason,
+        mode: WaitMode,
+        alertable: bool,
+        timeout: Option<i64>,
+        stamp: ClockStamp,
+    ) -> WaitDisposition {
         debug_assert!(!objects.is_empty() && objects.len() <= MAXIMUM_WAIT_OBJECTS);
-        thread.wait_status = STATUS_SUCCESS;
-        let me = thread as *mut Thread;
-        // SAFETY: every object is a live, initialized waitable.
+        self.thread_mut(thread).wait_status = STATUS_SUCCESS;
         if wait_all {
             if objects
                 .iter()
-                .all(|&object| unsafe { signaled_for(object, me) })
+                .all(|&object| self.signaled_for(object, thread))
             {
                 let mut status = STATUS_SUCCESS;
                 for &object in objects {
-                    // SAFETY: as above; each is signaled for the thread, and none repeats.
-                    status = NtStatus(status.0 | unsafe { consume_signal(object, me) }.0);
+                    status = NtStatus(status.0 | self.consume_signal(object, thread).0);
                 }
                 self.charge_nowait(thread);
                 return WaitDisposition::Complete(status);
             }
         } else if let Some(index) = objects
             .iter()
-            // SAFETY: every object is a live, initialized waitable (the caller's references).
-            .position(|&object| unsafe { signaled_for(object, me) })
+            .position(|&object| self.signaled_for(object, thread))
         {
-            // SAFETY: as above.
-            let status = unsafe { consume_signal(objects[index], me) };
+            let status = self.consume_signal(objects[index], thread);
             self.charge_nowait(thread);
             return WaitDisposition::Complete(NtStatus(index as u32 | status.0));
         }
 
-        if let Some(status) = test_alert(thread, mode, alertable) {
+        if let Some(status) = test_alert(self.thread_mut(thread), mode, alertable) {
             return WaitDisposition::Complete(status);
         }
         if timeout == Some(0) {
@@ -492,68 +601,35 @@ impl Dispatcher {
         // The chain: the object blocks in order, then the timer block when a timeout arms one,
         // circularly.
         let count = objects.len();
-        let blocks: *mut WaitBlock = thread.multi_blocks.as_mut_ptr();
-        // SAFETY: the thread's array holds `count` blocks, none on any list (no wait is in
-        // progress).
-        unsafe {
-            for (index, &object) in objects.iter().enumerate() {
-                let block = blocks.add(index);
-                block.write(WaitBlock {
-                    links: Links::detached(),
-                    thread: me,
-                    object,
-                    next_block: blocks.add((index + 1) % count),
-                    key: if wait_all {
-                        STATUS_SUCCESS
-                    } else {
-                        NtStatus(index as u32)
-                    },
-                    wait_all,
-                });
-            }
+        for (index, &object) in objects.iter().enumerate() {
+            let block = BlockId::multi(thread, index);
+            *self.block_mut(block) = WaitBlock {
+                link: Link::detached(),
+                thread,
+                object,
+                next_block: BlockId::multi(thread, (index + 1) % count),
+                key: if wait_all {
+                    STATUS_SUCCESS
+                } else {
+                    NtStatus(index as u32)
+                },
+                wait_all,
+            };
         }
-        thread.wait_block_head = blocks;
+        let first = BlockId::multi(thread, 0);
+        self.thread_mut(thread).wait_block_head = Some(first);
         if let Some(interval) = timeout {
-            let timer_block: *mut WaitBlock = addr_of_mut!(thread.wait_blocks[TIMER_BLOCK]);
-            // SAFETY: the blocks are the thread's own; the timer's
-            // waiters list is initialized at thread attach, and the block is on no list.
-            unsafe {
-                (*blocks.add(count - 1)).next_block = timer_block;
-                (*timer_block).next_block = blocks;
-                thread
-                    .timer
-                    .waitable
-                    .waiters
-                    .push_back(addr_of_mut!((*timer_block).links));
-            }
-            let due = stamp.interrupt_time.wrapping_add(interval as u64);
-            if !self
-                .timer_table
-                .insert(&mut thread.timer, due, stamp.interrupt_time)
-            {
-                // SAFETY: linked above.
-                unsafe { unlink(addr_of_mut!((*timer_block).links)) };
+            let last = BlockId::multi(thread, count - 1);
+            if !self.arm_timeout(thread, first, last, interval, stamp) {
                 self.charge_nowait(thread);
                 return WaitDisposition::Complete(STATUS_TIMEOUT);
             }
         }
         // Join every object's waiters at the tail.
-        // SAFETY: each block is on no list; each object's waiters list is initialized.
-        unsafe {
-            for (index, &object) in objects.iter().enumerate() {
-                (*object)
-                    .waiters
-                    .push_back(addr_of_mut!((*blocks.add(index)).links));
-            }
+        for (index, &object) in objects.iter().enumerate() {
+            list::push_back(self, Waiters(object), BlockId::multi(thread, index));
         }
-
-        thread.wait_alertable = alertable;
-        thread.wait_mode = mode;
-        thread.wait_reason = reason;
-        thread.wait_time = stamp.tick;
-        thread.state = ThreadState::Waiting;
-        // SAFETY: the thread is on no waiting list.
-        unsafe { self.waiting.push_back(addr_of_mut!(thread.wait_links)) };
+        self.park(thread, reason, mode, alertable, stamp);
         WaitDisposition::Yield
     }
 
@@ -565,69 +641,92 @@ impl Dispatcher {
     /// delay completes at once.
     pub fn delay(
         &mut self,
-        thread: &mut Thread,
+        thread: impl Into<ThreadId>,
         mode: WaitMode,
         alertable: bool,
         interval: i64,
         stamp: ClockStamp,
     ) -> WaitDisposition {
-        thread.wait_status = STATUS_SUCCESS;
+        let thread = thread.into();
+        self.thread_mut(thread).wait_status = STATUS_SUCCESS;
         // An alertable delay with user APCs queued completes at once, for their delivery.
-        if let Some(status) = test_alert(thread, mode, alertable) {
+        if let Some(status) = test_alert(self.thread_mut(thread), mode, alertable) {
             return WaitDisposition::Complete(status);
         }
-        // SAFETY: the timer block lives inside the thread.
-        let block: *mut WaitBlock = addr_of_mut!(thread.wait_blocks[TIMER_BLOCK]);
-        thread.wait_block_head = block;
-        // SAFETY: as above; the timer's waiters list is initialized at thread attach, and the block
-        // is on no list.
-        unsafe {
-            (*block).next_block = block;
-            thread
-                .timer
-                .waitable
-                .waiters
-                .push_back(addr_of_mut!((*block).links));
-        }
-
+        let block = BlockId::timer(thread);
+        self.thread_mut(thread).wait_block_head = Some(block);
         // The wrap-safe due: the longest relative interval wraps to the far side of the clock, a
         // far future — not a past.
-        let due = stamp.interrupt_time.wrapping_add(interval as u64);
-        if !self
-            .timer_table
-            .insert(&mut thread.timer, due, stamp.interrupt_time)
-        {
+        if !self.arm_timeout(thread, block, block, interval, stamp) {
             // Already past: never a wait state. Drop a boosted variable thread to its base — the
             // drop itself may select a replacement — then try to hand the processor to an equal if
             // nobody was selected.
-            // SAFETY: linked above; the thread stays unparked.
-            unsafe { unlink(addr_of_mut!((*block).links)) };
-            let base = thread.base_priority;
-            if thread.priority < REALTIME_BASE && thread.priority != base {
-                thread.priority_decrement = 0;
+            let record = self.thread_mut(thread);
+            let base = record.base_priority;
+            if record.priority < REALTIME_BASE && record.priority != base {
+                record.priority_decrement = 0;
                 self.apply_priority(thread, base);
             }
-            if self.next_thread().is_null() {
-                self.standby_from_ready(thread.priority);
+            if self.next_thread().is_none() {
+                self.standby_from_ready(self.thread(thread).priority);
             }
-            if !self.next_thread().is_null() {
-                thread.preempted = false;
-                // SAFETY: the thread is attached; its process outlives it.
-                thread.quantum = unsafe { (*thread.process).thread_quantum };
+            if self.next_thread().is_some() {
+                let record = self.thread_mut(thread);
+                record.preempted = false;
+                record.quantum = record.thread_quantum();
                 self.make_ready(thread);
                 return WaitDisposition::Yield;
             }
             return WaitDisposition::Complete(STATUS_SUCCESS);
         }
-
-        thread.wait_alertable = alertable;
-        thread.wait_mode = mode;
-        thread.wait_reason = WaitReason::DelayExecution;
-        thread.wait_time = stamp.tick;
-        thread.state = ThreadState::Waiting;
-        // SAFETY: the thread is on no waiting list.
-        unsafe { self.waiting.push_back(addr_of_mut!(thread.wait_links)) };
+        self.park(thread, WaitReason::DelayExecution, mode, alertable, stamp);
         WaitDisposition::Yield
+    }
+
+    /// Close a wait's chain through `thread`'s timer block and arm its timeout: `last`'s next block
+    /// is the timer block and the timer block's is `first` (the timer block alone, for a delay,
+    /// closes on itself), the timer block parks on the thread's own timer, and the timer is
+    /// inserted at `interval` from the stamp's interrupt time (wrap-safe). False when that due
+    /// time is already past: the timer block leaves the timer's waiters again and nothing is
+    /// armed.
+    fn arm_timeout(
+        &mut self,
+        thread: ThreadId,
+        first: BlockId,
+        last: BlockId,
+        interval: i64,
+        stamp: ClockStamp,
+    ) -> bool {
+        let timer_block = BlockId::timer(thread);
+        self.block_mut(last).next_block = timer_block;
+        self.block_mut(timer_block).next_block = first;
+        let timer = Waiters(WaitableId::ThreadTimer(thread));
+        list::push_back(self, timer, timer_block);
+        let due = stamp.interrupt_time.wrapping_add(interval as u64);
+        if !self.insert_timer(TimerId::Thread(thread), due, stamp.interrupt_time) {
+            list::remove(self, timer, timer_block);
+            return false;
+        }
+        true
+    }
+
+    /// The block path's bookkeeping: the wait's parameters land on the thread and it joins the
+    /// waiting list, in the Waiting state. The switch away is the caller's business.
+    fn park(
+        &mut self,
+        thread: ThreadId,
+        reason: WaitReason,
+        mode: WaitMode,
+        alertable: bool,
+        stamp: ClockStamp,
+    ) {
+        let record = self.thread_mut(thread);
+        record.wait_alertable = alertable;
+        record.wait_mode = mode;
+        record.wait_reason = reason;
+        record.wait_time = stamp.tick;
+        record.state = ThreadState::Waiting;
+        list::push_back(self, WaitingList, thread);
     }
 
     /// The delay's resume-side conversion: a sleep that timed out is a successful sleep. The
@@ -646,17 +745,19 @@ impl Dispatcher {
     /// unwinds the wait's blocks from their objects, leaves the waiting list, cancels the wait's
     /// timer if it is still live, applies the boost (the thread's no-boost policy gates it here —
     /// the boost itself leaves policy to its caller), charges the wait, and readies the thread.
-    pub fn unwait(&mut self, thread: &mut Thread, status: NtStatus, increment: i8) {
+    pub fn unwait(&mut self, thread: impl Into<ThreadId>, status: NtStatus, increment: i8) {
+        let thread = thread.into();
+        let record = self.thread_mut(thread);
         assert!(
-            thread.state == ThreadState::Waiting,
+            record.state == ThreadState::Waiting,
             "the wait exit runs on a waiting thread"
         );
         // The status is OR'd in, not assigned: a wait may carry a status its wake must preserve.
-        thread.wait_status = NtStatus(thread.wait_status.0 | status.0);
+        record.wait_status = NtStatus(record.wait_status.0 | status.0);
 
         self.unwind_wait(thread);
 
-        if !thread.disable_boost {
+        if !self.thread(thread).disable_boost {
             self.boost(thread, increment);
         }
         self.charge_wait(thread);
@@ -667,133 +768,118 @@ impl Dispatcher {
     /// leave the waiting list, and cancel the wait's timer if it is still live. The wait exit's
     /// first half; the termination of a parked thread uses it alone — that thread never runs again,
     /// so nothing readies it.
-    pub(super) fn unwind_wait(&mut self, thread: &mut Thread) {
-        debug_assert!(thread.state == ThreadState::Waiting);
-        let mut block = thread.wait_block_head;
-        // SAFETY: the chain is circular, every block is linked, and the walk returns to its head.
-        unsafe {
-            loop {
-                unlink(addr_of_mut!((*block).links));
-                block = (*block).next_block;
-                if eq(block, thread.wait_block_head) {
-                    break;
-                }
+    pub(super) fn unwind_wait(&mut self, thread: ThreadId) {
+        debug_assert!(self.thread(thread).state == ThreadState::Waiting);
+        let head = self
+            .thread(thread)
+            .wait_block_head
+            .expect("a waiting thread has a wait chain");
+        let mut block = head;
+        loop {
+            let object = self.block(block).object;
+            list::remove(self, Waiters(object), block);
+            block = self.block(block).next_block;
+            if block == head {
+                break;
             }
         }
-        // SAFETY: a waiting thread is on the waiting list.
-        unsafe { unlink(addr_of_mut!(thread.wait_links)) };
+        list::remove(self, WaitingList, thread);
         // The wait is unwound: no chain to walk until the next one, and the ready path may check.
-        thread.wait_block_head = null_mut();
+        self.thread_mut(thread).wait_block_head = None;
 
         // A wake beats its timeout: cancel the wait's timer if it is still live.
-        if thread.timer.inserted {
-            self.timer_table.remove(&mut thread.timer);
+        if self.thread(thread).timer.inserted {
+            self.remove_timer(TimerId::Thread(thread));
         }
     }
 
     /// Satisfy as many of `object`'s waits as its signal allows: while it is signaled and waiters
     /// are parked, wake the head waiter with `increment`. An auto-reset flavor's signal serves
     /// exactly one waiter; every other kind's serves all present at once.
-    pub fn satisfy_waiters(&mut self, object: *mut Waitable, increment: i8) {
-        // SAFETY: the object is a live, initialized waitable.
-        let object: &mut Waitable = unsafe { &mut *object };
-        let sentinel = object.waiters.sentinel();
-        // SAFETY: the waiters list is initialized and its entries are wait blocks.
-        let mut entry = unsafe { object.waiters.first() };
-        while object.signal_state > 0 && !entry.is_null() && !eq(entry, sentinel) {
-            // SAFETY: the entry is a wait block's links field.
-            let block = entry_to_block(entry);
-            // SAFETY: the block's thread and key are live.
-            let thread = unsafe { (*block).thread };
-            let key = unsafe { (*block).key };
+    pub fn satisfy_waiters(&mut self, object: WaitableId, increment: i8) {
+        let waiters = Waiters(object);
+        let mut entry = list::first(self, waiters);
+        while self.waitable(object).signal_state > 0 {
+            let Some(block) = entry else {
+                break;
+            };
+            let WaitBlock {
+                thread,
+                key,
+                wait_all,
+                ..
+            } = *self.block(block);
 
-            // SAFETY: the wait-all flag is a plain read.
-            if unsafe { (*block).wait_all } {
+            let status = if wait_all {
                 // A wait-all claim needs every object of its chain signaled; otherwise it stays
                 // parked and the walk moves on.
-                // SAFETY: the chain is circular and every non- timer block names a live waitable.
-                if !unsafe { chain_all_signaled(block) } {
-                    // SAFETY: a linked entry's next pointer names the next waiter.
-                    entry = unsafe { (*entry).next };
+                if !self.chain_all_signaled(block) {
+                    entry = self.block(block).link.next();
                     continue;
                 }
-                // SAFETY: as above.
-                let status = unsafe { satisfy_chain(block) };
-                // SAFETY: the waking thread is live.
-                unsafe { (*thread).wait_status = NtStatus((*thread).wait_status.0 | status.0) };
+                self.satisfy_chain(block)
             } else {
-                // SAFETY: the object is signaled (the loop's test) and the thread is live.
-                let status = unsafe { consume_signal(object, thread) };
-                // SAFETY: as above.
-                unsafe { (*thread).wait_status = NtStatus((*thread).wait_status.0 | status.0) };
-            }
+                self.consume_signal(object, thread)
+            };
+            let record = self.thread_mut(thread);
+            record.wait_status = NtStatus(record.wait_status.0 | status.0);
 
-            // SAFETY: the waking thread is a live, waiting thread.
-            self.unwait(unsafe { &mut *thread }, key, increment);
+            self.unwait(thread, key, increment);
             // The wake unlinked the head block: continue from the new head.
-            // SAFETY: as above.
-            entry = unsafe { object.waiters.first() };
+            entry = list::first(self, waiters);
         }
     }
 
     /// Expire `timer`: signal it and satisfy its waiters with no priority increment — what the
     /// clock's expiry work does per due timer, in the order its walk collected them. A timer an
     /// earlier wake already cancelled expires as a no-op.
-    pub fn expire_timer(&mut self, timer: *mut Timer) {
-        // SAFETY: the timer is a live, initialized record.
-        let timer: &mut Timer = unsafe { &mut *timer };
-        if timer.inserted {
-            self.timer_table.remove(timer);
+    pub fn expire_timer(&mut self, timer: TimerId) {
+        if self.timer(timer).inserted {
+            self.remove_timer(timer);
         }
-        timer.waitable.signal_state = 1;
-        let waitable = addr_of_mut!(timer.waitable);
-        self.satisfy_waiters(waitable, TIMER_WAKE_INCREMENT);
+        self.timer_mut(timer).waitable.signal_state = 1;
+        self.satisfy_waiters(timer.waitable(), TIMER_WAKE_INCREMENT);
     }
 
     /// The wait structures' audit: the waiting list holds only waiting threads, every block of a
     /// waiting thread's chain is linked on exactly the object it names, and every block parked on
     /// such an object belongs to a waiting thread's chain.
     pub fn audit_waits(&self) -> Result<(), &'static str> {
-        let sentinel = list_sentinel(&self.waiting);
-        // SAFETY: read-only walks of initialized lists.
-        unsafe {
-            let mut entry = self.waiting.first();
-            while !entry.is_null() && !eq(entry, sentinel) {
-                let thread = waiting_thread(entry);
-                if (*thread).state != ThreadState::Waiting {
-                    return Err("a non-waiting thread is on the waiting list");
+        for thread in list::iter(self, WaitingList) {
+            let record = self.thread(thread);
+            if record.state != ThreadState::Waiting {
+                return Err("a non-waiting thread is on the waiting list");
+            }
+            let Some(head) = record.wait_block_head else {
+                return Err("a waiting thread has no wait chain");
+            };
+            // The chain: every block linked, and its object's list holding it.
+            let mut block = head;
+            loop {
+                let link = &self.block(block).link;
+                if !link.is_linked() {
+                    return Err("a waiting thread's block is unlinked");
                 }
-                // The chain: every block linked, and its object's list holding it.
-                let head = (*thread).wait_block_head;
-                let mut block = head;
-                loop {
-                    if !linked(block) {
-                        return Err("a waiting thread's block is unlinked");
-                    }
-                    let object = (*block).object;
-                    if !list_holds(&(*object).waiters, addr_of_mut!((*block).links)) {
-                        return Err("a wait block is not on its object's list");
-                    }
-                    // The reverse: every block parked on this object belongs to a waiting thread's
-                    // chain.
-                    let osentinel = (*object).waiters.sentinel();
-                    let mut oentry = (*object).waiters.first();
-                    while !oentry.is_null() && !eq(oentry, osentinel) {
-                        let other = entry_to_block(oentry);
-                        let owner = (*other).thread;
-                        if (*owner).state != ThreadState::Waiting
-                            || !chain_holds((*owner).wait_block_head, other)
-                        {
-                            return Err("a parked block has no waiting owner");
-                        }
-                        oentry = (*oentry).next;
-                    }
-                    block = (*block).next_block;
-                    if eq(block, head) {
-                        break;
+                let waiters = Waiters(self.block(block).object);
+                if link.list() != Some(waiters)
+                    || !list::iter(self, waiters).any(|parked| parked == block)
+                {
+                    return Err("a wait block is not on its object's list");
+                }
+                // The reverse: every block parked on this object belongs to a waiting thread's
+                // chain.
+                for other in list::iter(self, waiters) {
+                    let owner = self.thread(self.block(other).thread);
+                    if owner.state != ThreadState::Waiting
+                        || !self.chain_holds(owner.wait_block_head, other)
+                    {
+                        return Err("a parked block has no waiting owner");
                     }
                 }
-                entry = (*entry).next;
+                block = self.block(block).next_block;
+                if block == head {
+                    break;
+                }
             }
         }
         Ok(())
@@ -808,26 +894,26 @@ impl Dispatcher {
     pub fn park_and_switch(&mut self) {
         let pcr = crate::pcr::pcr();
         let previous = pcr.raise(crate::interrupt::irql::DISPATCH);
-        // SAFETY: the running thread, live and exclusive here.
-        let old = self.current_thread();
-        // SAFETY: as above.
-        unsafe { (*old).level = pcr.capture() };
-        let selected = self.select_next();
-        debug_assert!(
-            !selected.is_null(),
-            "selection always yields the idle fallback"
-        );
+        let old = self.current().expect("a parked thread is the running one");
+        self.thread_mut(old).level = pcr.capture();
+        let selected = self
+            .select_next()
+            .expect("selection always yields the idle fallback");
         self.enter(selected);
-        // SAFETY: the selected thread's frame is planted (fresh) or saved (resumed) — the selection
-        // discipline guarantees it — and the dispatch level masks the dispatcher context.
-        unsafe { super::switch::swap_context(old, selected) };
+        let (from, to) = (self.thread_address(old), self.thread_address(selected));
+        // SAFETY: both records are the database's, pinned; the selected thread's frame is planted
+        // (fresh) or saved (resumed) — the selection discipline guarantees it — and the dispatch
+        // level masks the dispatcher context.
+        unsafe { super::switch::swap_context(from, to) };
         // The parked thread's timeline resumes here. The current thread is re-read from the
         // dispatcher static, not through `self`: other threads ran and rewrote the dispatcher in
         // between, so a value held through this `&mut` (which the optimizer may forward from the
         // `enter` above) would name the thread switched to, not the one resumed.
-        let current = crate::sched::idle::dispatcher().current_thread();
-        // SAFETY: as above.
-        unsafe { pcr.restore((*current).level) };
+        let dispatcher = crate::sched::idle::dispatcher();
+        let current = dispatcher
+            .current()
+            .expect("a resumed thread is the running one");
+        pcr.restore(dispatcher.thread(current).level);
         pcr.lower(previous);
         // The wait-exit delivery: a kernel APC queued while this thread was parked — or armed by
         // the delivery that broke the wait — runs now, before the parked caller reads its wait
@@ -841,14 +927,11 @@ impl Dispatcher {
     /// waits the delivery itself performs, the thread's status afterwards is the one its last wake
     /// left — the completion its parked caller is about to read.
     pub(crate) fn preserving_wait_status(&mut self, deliver: impl FnOnce(&mut Dispatcher)) {
-        let thread = self.current_thread();
-        // SAFETY: the running thread, live; the delivery runs on its own timeline and returns to
-        // it.
-        let status = unsafe { (*thread).wait_status };
+        let thread = self.current().expect("a delivery runs on a thread");
+        let status = self.thread(thread).wait_status;
         deliver(self);
-        // SAFETY: as above — the same thread, read through the pointer rather than the dispatcher
-        // (other threads may have run inside the delivery).
-        unsafe { (*thread).wait_status = status };
+        // The same thread, by its id: other threads may have run inside the delivery.
+        self.thread_mut(thread).wait_status = status;
     }
 
     /// The no-wait quantum adjustment: the tail of a wait that was satisfied without blocking. A
@@ -856,29 +939,108 @@ impl Dispatcher {
     /// the quantum resets and the priority decays one step, and when the decay left the priority
     /// alone, an equal-priority ready thread takes the standby slot — the round-robin among equals.
     /// Realtime threads and time-critical bases are not adjusted at all.
-    fn charge_nowait(&mut self, thread: &mut Thread) {
-        if thread.priority >= REALTIME_BASE || thread.base_priority >= TIME_CRITICAL_CEILING {
+    fn charge_nowait(&mut self, thread: ThreadId) {
+        let record = self.thread(thread);
+        if record.priority >= REALTIME_BASE || record.base_priority >= TIME_CRITICAL_CEILING {
             return;
         }
         if self.charge_wait(thread) {
-            self.standby_from_ready(thread.priority);
+            self.standby_from_ready(self.thread(thread).priority);
+        }
+    }
+
+    // --- The walk helpers -----------------------------------------------------
+
+    /// Whether every object of a wait-all chain is signaled. The head block's object is the one
+    /// under test; the rest are checked here, skipping the timer block — its key, the timeout
+    /// status, is the chain's not-an-object marker.
+    fn chain_all_signaled(&self, block: BlockId) -> bool {
+        let mut probe = self.block(block).next_block;
+        while probe != block {
+            let WaitBlock {
+                key,
+                object,
+                thread,
+                next_block,
+                ..
+            } = *self.block(probe);
+            if key != STATUS_TIMEOUT && !self.signaled_for(object, thread) {
+                return false;
+            }
+            probe = next_block;
+        }
+        true
+    }
+
+    /// Consume the signal of every non-timer object of a wait-all chain, head included. Returns the
+    /// status bits the takes add (an abandoned mutex's).
+    fn satisfy_chain(&mut self, block: BlockId) -> NtStatus {
+        let mut status = STATUS_SUCCESS;
+        let mut probe = block;
+        loop {
+            let WaitBlock {
+                key,
+                object,
+                thread,
+                next_block,
+                ..
+            } = *self.block(probe);
+            if key != STATUS_TIMEOUT {
+                status = NtStatus(status.0 | self.consume_signal(object, thread).0);
+            }
+            probe = next_block;
+            if probe == block {
+                break;
+            }
+        }
+        status
+    }
+
+    /// Whether the chain from `head` (a circular wait-block chain; none between waits) holds
+    /// `block`.
+    fn chain_holds(&self, head: Option<BlockId>, block: BlockId) -> bool {
+        let Some(head) = head else {
+            return false;
+        };
+        let mut probe = head;
+        loop {
+            if probe == block {
+                return true;
+            }
+            probe = self.block(probe).next_block;
+            if probe == head {
+                return false;
+            }
         }
     }
 }
 
-/// Block the running thread from kernel code, with an optional timeout (100 ns units, relative),
-/// and return the wait's status (see [`wait_current_with`]). A kernel APC breaks the wait; the
-/// replay re-plants from the due the first attempt recorded.
+/// Block the running thread from kernel code on the object at `object` (a header, see
+/// [`Dispatcher::wait_single`]), with an optional timeout (100 ns units, relative), and return the
+/// wait's status (see [`wait_current_with`]).
 #[cfg(target_arch = "x86")]
 pub fn wait_current(
     object: *mut Waitable,
     reason: WaitReason,
     timeout: Option<i64>,
 ) -> crate::status::NtStatus {
+    // SAFETY: the caller's header is a live, pinned object's (the disk's completion event).
+    wait_current_for(unsafe { WaitableId::of(object) }, reason, timeout)
+}
+
+/// Block the running thread from kernel code on `object`, with an optional timeout (100 ns units,
+/// relative), and return the wait's status (see [`wait_current_with`]). A kernel APC breaks the
+/// wait; the replay re-plants from the due the first attempt recorded.
+#[cfg(target_arch = "x86")]
+pub fn wait_current_for(
+    object: WaitableId,
+    reason: WaitReason,
+    timeout: Option<i64>,
+) -> crate::status::NtStatus {
     wait_current_with(|dispatcher, thread, stamp, replay| {
         let timeout = replay_timeout(thread, replay, timeout, stamp.interrupt_time);
-        dispatcher.wait_single(
-            thread,
+        dispatcher.wait_for(
+            thread.id(),
             object,
             reason,
             WaitMode::Kernel,
@@ -932,6 +1094,10 @@ pub(crate) fn replay_timeout(
 /// broke it. The APC delivery itself has already run by the time the park returns (the resume tail
 /// delivers), so the replay re-enters `start` with the delivery's work done. Returns the wait's
 /// completion status.
+///
+/// `start` is handed the running thread's record beside the dispatcher, for the wait entries'
+/// callers outside the scheduler, which name the thread by its record; the entries themselves take
+/// it by its id at once.
 pub(crate) fn wait_with_replay(
     dispatcher: &mut Dispatcher,
     mut stamp_of: impl FnMut() -> ClockStamp,
@@ -940,16 +1106,17 @@ pub(crate) fn wait_with_replay(
 ) -> crate::status::NtStatus {
     let mut replay = false;
     loop {
-        // SAFETY: the running thread, live and exclusive in the serialized dispatcher.
-        let current: &mut Thread = unsafe { &mut *dispatcher.current_thread() };
-        match start(dispatcher, current, stamp_of(), replay) {
+        let current = dispatcher.current_thread();
+        // SAFETY: the running thread's record, a pinned record of the database. The reference is
+        // handed beside the dispatcher that holds it: the entries `start` calls read only its id
+        // and its timer's due time before they work through the dispatcher.
+        match start(dispatcher, unsafe { &mut *current }, stamp_of(), replay) {
             WaitDisposition::Complete(status) => return status,
             WaitDisposition::Yield => {
                 park(dispatcher);
                 // Other threads ran inside the park: re-read the (now resumed) current thread.
-                // SAFETY: as above.
-                let current: &mut Thread = unsafe { &mut *dispatcher.current_thread() };
-                let status = current.wait_status();
+                let current = dispatcher.current().expect("a wait resumes on its thread");
+                let status = dispatcher.thread(current).wait_status();
                 if status != STATUS_KERNEL_APC {
                     return status;
                 }
@@ -1003,105 +1170,12 @@ pub fn wait_current_with(
 // cancel through the table; the expiry entry above is what the clock's expiry work calls per
 // collected timer — the wake itself needs no special path at all.
 
-// --- The walk helpers -----------------------------------------------------
-
-/// Whether every object of a wait-all chain is signaled. The head block's object is the one under
-/// test; the rest are checked here, skipping the timer block — its key, the timeout status, is the
-/// chain's not-an-object marker.
-// SAFETY-contract: `block` heads a circular chain of live blocks.
-unsafe fn chain_all_signaled(block: *mut WaitBlock) -> bool {
-    unsafe {
-        let mut probe = (*block).next_block;
-        while !eq(probe, block) {
-            if (*probe).key != STATUS_TIMEOUT && !signaled_for((*probe).object, (*probe).thread) {
-                return false;
-            }
-            probe = (*probe).next_block;
-        }
-    }
-    true
-}
-
-/// Consume the signal of every non-timer object of a wait-all chain, head included. Returns the
-/// status bits the takes add (an abandoned mutex's).
-// SAFETY-contract: as `chain_all_signaled`.
-unsafe fn satisfy_chain(block: *mut WaitBlock) -> NtStatus {
-    let mut status = STATUS_SUCCESS;
-    unsafe {
-        let mut probe = block;
-        loop {
-            if (*probe).key != STATUS_TIMEOUT {
-                status = NtStatus(status.0 | consume_signal((*probe).object, (*probe).thread).0);
-            }
-            probe = (*probe).next_block;
-            if eq(probe, block) {
-                break;
-            }
-        }
-    }
-    status
-}
-
-/// Whether `block`'s links are wired into a list: both neighbors point back at it.
-// SAFETY-contract: `block` is a live wait block.
-unsafe fn linked(block: *mut WaitBlock) -> bool {
-    unsafe {
-        let links = addr_of_mut!((*block).links);
-        let prev = (*links).prev;
-        let next = (*links).next;
-        !prev.is_null() && !next.is_null() && (*prev).next == links && (*next).prev == links
-    }
-}
-
-/// Whether `list` holds `entry`.
-// SAFETY-contract: `list` is initialized; `entry` is a live links field.
-unsafe fn list_holds(list: &List, entry: *mut Links) -> bool {
-    unsafe {
-        let sentinel = list_sentinel(list);
-        let mut probe = list.first();
-        while !probe.is_null() && !eq(probe, sentinel) {
-            if eq(probe, entry) {
-                return true;
-            }
-            probe = (*probe).next;
-        }
-    }
-    false
-}
-
-/// A list's sentinel, read-only (the audit walks must not borrow what they inspect).
-fn list_sentinel(list: &List) -> *mut Links {
-    core::ptr::addr_of!(list.head) as *mut Links
-}
-
-/// Whether `chain` (a circular wait-block chain) holds `block`.
-// SAFETY-contract: `chain` heads a circular chain; `block` is a live wait block.
-unsafe fn chain_holds(chain: *mut WaitBlock, block: *mut WaitBlock) -> bool {
-    unsafe {
-        let mut probe = chain;
-        loop {
-            if eq(probe, block) {
-                return true;
-            }
-            probe = (*probe).next_block;
-            if eq(probe, chain) {
-                return false;
-            }
-        }
-    }
-}
-
-/// The waiting thread owning a waiting-list entry.
-// SAFETY-contract: `entry` is the wait link of a live thread.
-unsafe fn waiting_thread(entry: *mut Links) -> *mut Thread {
-    (entry as usize - core::mem::offset_of!(Thread, wait_links)) as *mut Thread
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::sched::event::{Event, EventKind, EVENT_WAKE_INCREMENT};
     use crate::sched::process::SchedProcess;
+    use crate::sched::testkit::Rec;
 
     // --- The rig ----------------------------------------------------------
     //
@@ -1109,33 +1183,27 @@ mod tests {
     // they are linked, so the rig leaks everything it creates.
 
     fn dispatcher() -> &'static mut Dispatcher {
-        let d = Box::leak(Box::new(Dispatcher::zeroed()));
-        d.init();
-        d
+        crate::sched::testkit::dispatcher()
     }
 
     fn process(base: i8) -> *mut SchedProcess {
         let p = Box::leak(Box::new(SchedProcess::new(0x0090_0000, base)));
-        p.init();
         p as *mut SchedProcess
     }
 
-    fn thread(p: *mut SchedProcess) -> &'static mut Thread {
-        let t = Box::leak(Box::new(Thread::empty()));
-        // SAFETY: both objects are leaked at their final addresses.
-        unsafe { t.attach_to(&mut *p) };
-        t
+    fn thread(p: *mut SchedProcess) -> Rec<Thread> {
+        crate::sched::testkit::thread(p)
     }
 
     /// Run `t` as the processor's current thread.
-    fn run(d: &mut Dispatcher, t: &mut Thread) {
-        let ptr: *mut Thread = t;
-        d.enter(ptr);
+    fn run(d: &mut Dispatcher, mut t: Rec<Thread>) {
+        d.enter(t.id());
         t.state = ThreadState::Running;
     }
 
-    fn as_ptr<T>(r: &T) -> *mut T {
-        r as *const T as *mut T
+    /// `t`'s id, as the selection entries answer it.
+    fn some_id(t: Rec<Thread>) -> Option<ThreadId> {
+        Some(t.id())
     }
 
     fn stamp(interrupt_time: u64, tick: u64) -> ClockStamp {
@@ -1165,7 +1233,7 @@ mod tests {
 
     /// Block `t` on `object` (with the rig's fixed clock reading), asserting the wait actually
     /// parked it.
-    fn block_on(d: &mut Dispatcher, t: &mut Thread, object: *mut Waitable, timeout: Option<i64>) {
+    fn block_on(d: &mut Dispatcher, t: Rec<Thread>, object: *mut Waitable, timeout: Option<i64>) {
         match d.wait_single(
             t,
             object,
@@ -1186,21 +1254,11 @@ mod tests {
     }
 
     /// The threads parked on `event`, in wait order.
-    fn waiters(event: &Event) -> Vec<*mut Thread> {
-        let list = &event.waitable.waiters;
-        let sentinel = list_sentinel(list);
-        let mut parked = Vec::new();
-        // SAFETY: the list is initialized; the entries are wait blocks parked on the event.
-        let mut entry = unsafe { list.first() };
-        while !entry.is_null() && !eq(entry, sentinel) {
-            // SAFETY: the entry is a wait block's links field.
-            let block = entry_to_block(entry);
-            // SAFETY: the block's thread is live.
-            parked.push(unsafe { (*block).thread });
-            // SAFETY: a linked entry's next pointer names the next waiter.
-            entry = unsafe { (*entry).next };
-        }
-        parked
+    fn waiters(event: &Event) -> Vec<ThreadId> {
+        let d = crate::sched::testkit::installed();
+        list::iter(d, Waiters(event.waitable.id()))
+            .map(|block| d.block(block).thread)
+            .collect()
     }
 
     // --- Group B: construction and the block path ---------------------------
@@ -1210,22 +1268,23 @@ mod tests {
     /// own timer, its key the timeout status.
     #[test]
     fn thread_setup_wires_the_wait_fields() {
+        let _d = dispatcher();
         let p = process(8);
         let t = thread(p);
 
         assert_eq!(t.waitable.kind(), WaitKind::Thread);
         assert_eq!(t.waitable.signal_state(), 0);
         assert!(t.waitable.waiters.is_empty());
-        assert!(t.wait_blocks.iter().all(|b| eq(b.thread, as_ptr(t))));
+        assert!(t.wait_blocks.iter().all(|b| b.thread == t.id()));
 
         let timer_block = &t.wait_blocks[TIMER_BLOCK];
-        assert!(eq(timer_block.object, addr_of_mut!(t.timer.waitable)));
+        assert_eq!(timer_block.object, WaitableId::ThreadTimer(t.id()));
         assert_eq!(timer_block.key, STATUS_TIMEOUT);
         assert!(!timer_block.wait_all);
 
         assert!(!t.timer.inserted());
         assert_eq!(t.timer.due_time(), 0);
-        assert!(t.wait_block_head.is_null());
+        assert!(t.wait_block_head.is_none());
         assert_eq!(t.wait_status(), STATUS_SUCCESS);
     }
 
@@ -1239,26 +1298,26 @@ mod tests {
 
         let t1 = thread(p);
         block_on(d, t1, ev.waitable(), None);
-        let head = t1.wait_block_head;
-        // SAFETY: the chain is live for the wait.
-        unsafe {
-            assert!(
-                eq((*head).next_block, head),
-                "the one-block chain closes on itself"
-            );
-            assert!(eq((*head).object, ev.waitable()));
-            assert_eq!((*head).key, STATUS_SUCCESS);
-            assert!(!(*head).wait_all);
-        }
+        let head = t1.wait_block_head.expect("parked");
+        let block = d.block(head);
+        assert_eq!(
+            block.next_block, head,
+            "the one-block chain closes on itself"
+        );
+        assert_eq!(block.object, ev.waitable.id());
+        assert_eq!(block.key, STATUS_SUCCESS);
+        assert!(!block.wait_all);
 
         let t2 = thread(p);
         block_on(d, t2, ev.waitable(), Some(1_000_000));
-        let head = t2.wait_block_head;
-        // SAFETY: as above.
-        let timer_block = unsafe { (*head).next_block };
-        assert!(eq(timer_block, addr_of_mut!(t2.wait_blocks[TIMER_BLOCK])));
-        // SAFETY: as above.
-        unsafe { assert!(eq((*timer_block).next_block, head)) };
+        let head = t2.wait_block_head.expect("parked");
+        let timer_block = d.block(head).next_block;
+        assert_eq!(timer_block, BlockId::timer(t2.id()));
+        assert_eq!(d.block(timer_block).next_block, head);
+        assert_eq!(
+            d.block(timer_block).link.list(),
+            Some(Waiters(WaitableId::ThreadTimer(t2.id())))
+        );
         assert!(t2.timer.inserted());
         assert_eq!(t2.timer.due_time(), 10_000 + 1_000_000);
     }
@@ -1277,7 +1336,7 @@ mod tests {
         block_on(d, t2, ev.waitable(), None);
         block_on(d, t3, ev.waitable(), None);
 
-        assert_eq!(waiters(ev), vec![as_ptr(t1), as_ptr(t2), as_ptr(t3)]);
+        assert_eq!(waiters(ev), vec![t1.id(), t2.id(), t3.id()]);
     }
 
     /// The block path lands the wait's parameters on the thread and takes it out of scheduling:
@@ -1308,8 +1367,8 @@ mod tests {
         assert!(t.wait_alertable());
         assert_eq!(t.wait_time(), 77);
         assert_eq!(t.wait_status(), STATUS_SUCCESS);
-        assert!(!t.wait_links.prev.is_null(), "on the waiting list");
-        assert!(t.ready_links.next.is_null(), "on no ready list");
+        assert_eq!(t.wait_link.list(), Some(WaitingList), "on the waiting list");
+        assert!(!t.ready_link.is_linked(), "on no ready list");
         assert_eq!(d.audit_waits(), Ok(()));
     }
 
@@ -1398,13 +1457,13 @@ mod tests {
         let d = dispatcher();
         let p = process(8);
         let t = thread(p);
-        let other = thread(p);
+        let mut other = thread(p);
 
         block_on(d, t, other.waitable(), None);
         assert_eq!(t.state(), ThreadState::Waiting);
 
         other.waitable.signal_state = 1;
-        d.satisfy_waiters(other.waitable(), 0);
+        d.satisfy_waiters(other.waitable.id(), 0);
         assert_eq!(t.state(), ThreadState::Ready);
         assert_eq!(t.wait_status(), STATUS_SUCCESS);
         assert_eq!(d.audit_waits(), Ok(()));
@@ -1507,7 +1566,7 @@ mod tests {
 
         // Exhaustion: the quantum resets and the priority decays one step — 11 - 1 = 10, above the
         // base, so no floor.
-        let t = thread(p);
+        let mut t = thread(p);
         run(d, t);
         t.priority = 11;
         t.quantum = 1;
@@ -1528,12 +1587,12 @@ mod tests {
         assert_eq!(t.priority(), 10);
         assert_eq!(t.priority_decrement(), 0);
         assert!(
-            d.next_thread().is_null(),
+            d.next_thread().is_none(),
             "a decay that moved the priority installs nobody"
         );
 
         // A positive quantum survives the charge with no decay.
-        let t2 = thread(p);
+        let mut t2 = thread(p);
         run(d, t2);
         t2.priority = 11;
         t2.quantum = 2;
@@ -1553,7 +1612,7 @@ mod tests {
         assert_eq!(t2.priority(), 11);
 
         // A realtime thread is never adjusted at all.
-        let t3 = thread(p);
+        let mut t3 = thread(p);
         run(d, t3);
         t3.priority = 24;
         t3.quantum = 3;
@@ -1575,7 +1634,7 @@ mod tests {
         // The tail: exhaustion at the base leaves the priority alone, and an equal-priority ready
         // thread takes the standby slot — round-robin among equals.
         let d2 = dispatcher();
-        let t4 = thread(p);
+        let mut t4 = thread(p);
         run(d2, t4);
         t4.quantum = 1;
         let other = thread(p);
@@ -1593,7 +1652,7 @@ mod tests {
             complete(STATUS_SUCCESS)
         );
         assert_eq!(t4.priority(), 8, "8 - 1 floors back at the base: unchanged");
-        assert_eq!(d2.next_thread(), as_ptr(other));
+        assert_eq!(d2.next_thread(), some_id(other));
         assert_eq!(other.state(), ThreadState::Standby);
         assert_eq!(
             t4.state(),
@@ -1603,15 +1662,15 @@ mod tests {
 
         // Exclusivity: a pending standby blocks the install.
         let d3 = dispatcher();
-        let t5 = thread(p);
+        let mut t5 = thread(p);
         run(d3, t5);
         t5.quantum = 1;
-        let pending = thread(p);
+        let mut pending = thread(p);
         pending.priority = 9;
         d3.make_ready(pending);
         assert_eq!(
             d3.next_thread(),
-            as_ptr(pending),
+            some_id(pending),
             "the higher arrival took the standby slot"
         );
         assert_eq!(
@@ -1628,7 +1687,7 @@ mod tests {
         );
         assert_eq!(
             d3.next_thread(),
-            as_ptr(pending),
+            some_id(pending),
             "the pending standby is left alone"
         );
     }
@@ -1662,9 +1721,9 @@ mod tests {
             assert_eq!(t.wait_status(), STATUS_SUCCESS);
         }
         // Wake order preserved into the ready queue.
-        assert_eq!(d.find_ready(0), as_ptr(t1));
-        assert_eq!(d.find_ready(0), as_ptr(t2));
-        assert_eq!(d.find_ready(0), as_ptr(t3));
+        assert_eq!(d.find_ready(0), some_id(t1));
+        assert_eq!(d.find_ready(0), some_id(t2));
+        assert_eq!(d.find_ready(0), some_id(t3));
         assert_eq!(d.audit_waits(), Ok(()));
     }
 
@@ -1688,7 +1747,7 @@ mod tests {
         assert_eq!(t2.state(), ThreadState::Waiting);
         assert_eq!(t3.state(), ThreadState::Waiting);
         assert_eq!(ev.signal_state(), 0);
-        assert_eq!(waiters(ev), vec![as_ptr(t2), as_ptr(t3)]);
+        assert_eq!(waiters(ev), vec![t2.id(), t3.id()]);
 
         ev.set(d, EVENT_WAKE_INCREMENT);
         assert_eq!(t2.state(), ThreadState::Ready);
@@ -1737,20 +1796,16 @@ mod tests {
         // B (the multiple-object wait that would construct this is not built; the branch it drives
         // is).
         block_on(d, t, a.waitable(), None);
-        let head = t.wait_block_head;
-        let second = addr_of_mut!(t.wait_blocks[1]);
-        // SAFETY: both blocks live inside the thread; the objects are initialized, and the second
-        // block is on no list.
-        unsafe {
-            (*head).wait_all = true;
-            (*second).thread = as_ptr(t);
-            (*second).object = b.waitable();
-            (*second).key = STATUS_SUCCESS;
-            (*second).wait_all = false;
-            (*head).next_block = second;
-            (*second).next_block = head;
-            b.waitable.waiters.push_back(addr_of_mut!((*second).links));
-        }
+        let head = t.wait_block_head.expect("parked");
+        let second = BlockId::builtin(t.id(), 1);
+        d.block_mut(head).wait_all = true;
+        let block = d.block_mut(second);
+        block.object = b.waitable.id();
+        block.key = STATUS_SUCCESS;
+        block.wait_all = false;
+        block.next_block = head;
+        d.block_mut(head).next_block = second;
+        list::push_back(d, Waiters(b.waitable.id()), second);
         assert_eq!(d.audit_waits(), Ok(()));
 
         a.set(d, EVENT_WAKE_INCREMENT);
@@ -1764,7 +1819,7 @@ mod tests {
             ThreadState::Waiting,
             "the unsignaled B parks the claim"
         );
-        assert_eq!(waiters(a), vec![as_ptr(t)]);
+        assert_eq!(waiters(a), vec![t.id()]);
         assert_eq!(b.signal_state(), 0);
     }
 
@@ -1789,7 +1844,7 @@ mod tests {
         );
         assert!(!t.timer.inserted(), "the wake cancelled the timer");
         assert!(
-            t.wait_block_head.is_null(),
+            t.wait_block_head.is_none(),
             "the chain is gone until the next wait"
         );
         assert_eq!(t.state(), ThreadState::Ready);
@@ -1803,7 +1858,7 @@ mod tests {
 
         // The status is OR'd in, not assigned: a pre-set status survives the wake. The entry always
         // zeroes the field, so only a wake-time pre-set status can observe the distinction here.
-        let t2 = thread(p);
+        let mut t2 = thread(p);
         block_on(d, t2, ev.waitable(), None);
         t2.wait_status = NtStatus(0x80);
         d.unwait(t2, STATUS_SUCCESS, 0);
@@ -1817,7 +1872,7 @@ mod tests {
         let d = dispatcher();
         let p = process(8);
         let main = thread(p);
-        let child = thread(p);
+        let mut child = thread(p);
         run(d, child);
 
         block_on(d, main, child.waitable(), None);
@@ -1829,7 +1884,7 @@ mod tests {
         assert_eq!(main.wait_status(), STATUS_SUCCESS);
         assert_eq!(
             selected,
-            as_ptr(main),
+            some_id(main),
             "the woken waiter is the next thread"
         );
         assert_eq!(d.audit_waits(), Ok(()));
@@ -1844,9 +1899,9 @@ mod tests {
         let d = dispatcher();
         let ending = process(8);
         let other = process(8);
-        let last = thread(ending);
+        let mut last = thread(ending);
         let thread_waiter = thread(other);
-        let process_waiter = thread(other);
+        let mut process_waiter = thread(other);
         process_waiter.priority = 10;
         run(d, last);
         // The process object's stand-in: a notification object, as the process object's is.
@@ -1865,11 +1920,11 @@ mod tests {
         assert_eq!(unsafe { (*ending).stack_count() }, 0);
 
         process_object.waitable.signal_state = 1;
-        d.satisfy_waiters(process_object.waitable(), 0);
+        d.satisfy_waiters(process_object.waitable.id(), 0);
         assert_eq!(process_waiter.wait_status(), STATUS_SUCCESS);
         assert_eq!(
             d.select_next(),
-            as_ptr(process_waiter),
+            some_id(process_waiter),
             "the process's waiter is weighed by the same switch"
         );
         assert_eq!(d.audit_waits(), Ok(()));
@@ -1891,17 +1946,17 @@ mod tests {
 
         d.terminate_other(parked);
         assert_eq!(parked.state(), ThreadState::Terminated);
-        assert!(parked.wait_block_head.is_null());
+        assert!(parked.wait_block_head.is_none());
         assert!(!parked.timer.inserted, "the timeout left the table");
         assert!(waiters(ev).is_empty());
         assert!(d.waiting.is_empty());
         assert!(!d.has_schedulable());
         assert_eq!(d.audit(), Ok(()));
-        assert_eq!(d.timer_table.audit(), Ok(()));
+        assert_eq!(d.audit_timers(), Ok(()));
 
         // The event's signal has no one left to wake: it stays signaled.
         ev.waitable.signal_state = 1;
-        d.satisfy_waiters(ev.waitable(), 0);
+        d.satisfy_waiters(ev.waitable.id(), 0);
         assert_eq!(ev.signal_state(), 1);
         assert_eq!(parked.state(), ThreadState::Terminated);
     }
@@ -1917,7 +1972,7 @@ mod tests {
             let p = process(8);
             let running = thread(p);
             let waiter = thread(p);
-            let target = thread(p);
+            let mut target = thread(p);
             run(d, running);
             d.make_ready(target);
             block_on(d, waiter, target.waitable(), None);
@@ -1955,7 +2010,7 @@ mod tests {
         let d = dispatcher();
         let p = process(8);
         let running = thread(p);
-        let inside = thread(p);
+        let mut inside = thread(p);
         let outside = thread(p);
         let ev = event(EventKind::Synchronization, false);
         let other = event(EventKind::Synchronization, false);
@@ -2000,7 +2055,7 @@ mod tests {
         let d = dispatcher();
         let p = process(8);
         let running = thread(p);
-        let inside = thread(p);
+        let mut inside = thread(p);
         run(d, running);
         inside.enter_critical_region();
         d.request_termination(inside);
@@ -2063,7 +2118,7 @@ mod tests {
         let ev = event(EventKind::Notification, false);
 
         block_on(d, t, ev.waitable(), Some(1_000_000));
-        d.expire_timer(addr_of_mut!(t.timer));
+        d.expire_timer(t.timer.id());
 
         assert_eq!(t.timer.waitable.signal_state(), 1);
         assert_eq!(t.wait_status(), STATUS_TIMEOUT);
@@ -2089,7 +2144,7 @@ mod tests {
         assert_eq!(t.wait_status(), STATUS_SUCCESS);
         assert!(!t.timer.inserted());
 
-        d.expire_timer(addr_of_mut!(t.timer));
+        d.expire_timer(t.timer.id());
         assert_eq!(
             t.wait_status(),
             STATUS_SUCCESS,
@@ -2109,7 +2164,7 @@ mod tests {
         let ev = event(EventKind::Notification, false);
 
         block_on(d, t, ev.waitable(), Some(1_000_000));
-        d.expire_timer(addr_of_mut!(t.timer));
+        d.expire_timer(t.timer.id());
         assert_eq!(t.wait_status(), STATUS_TIMEOUT);
 
         assert_eq!(ev.set(d, EVENT_WAKE_INCREMENT), 0);
@@ -2126,7 +2181,7 @@ mod tests {
     fn the_delay_wait_blocks_on_the_timer_alone() {
         let d = dispatcher();
         let p = process(8);
-        let t = thread(p);
+        let mut t = thread(p);
         run(d, t);
         t.priority = 11;
 
@@ -2136,16 +2191,15 @@ mod tests {
         }
         assert_eq!(t.state(), ThreadState::Waiting);
         assert_eq!(t.wait_reason(), WaitReason::DelayExecution);
-        assert!(eq(
-            t.wait_block_head,
-            addr_of_mut!(t.wait_blocks[TIMER_BLOCK])
-        ));
-        // SAFETY: the chain is live for the wait.
-        unsafe { assert!(eq((*t.wait_block_head).next_block, t.wait_block_head)) };
+        assert_eq!(t.wait_block_head, Some(BlockId::timer(t.id())));
+        assert_eq!(
+            d.block(BlockId::timer(t.id())).next_block,
+            BlockId::timer(t.id())
+        );
         assert!(t.timer.inserted());
         assert_eq!(t.timer.due_time(), 100 + 1_000_000);
 
-        d.expire_timer(addr_of_mut!(t.timer));
+        d.expire_timer(t.timer.id());
         assert_eq!(t.wait_status(), STATUS_TIMEOUT);
         assert_eq!(Dispatcher::delay_completed(t.wait_status()), STATUS_SUCCESS);
     }
@@ -2157,7 +2211,7 @@ mod tests {
         // consumed.
         let d = dispatcher();
         let p = process(8);
-        let t = thread(p);
+        let mut t = thread(p);
         run(d, t);
         t.priority = 11;
         assert_eq!(
@@ -2177,7 +2231,7 @@ mod tests {
         // delay yields.
         let d2 = dispatcher();
         let p2 = process(8);
-        let t2 = thread(p2);
+        let mut t2 = thread(p2);
         run(d2, t2);
         t2.priority = 11;
         t2.quantum = 2;
@@ -2192,7 +2246,7 @@ mod tests {
         assert_eq!(t2.state(), ThreadState::Ready);
         assert!(!t2.preempted);
         assert_eq!(t2.quantum(), 6, "the yielding thread takes a fresh quantum");
-        assert_eq!(d2.next_thread(), as_ptr(other));
+        assert_eq!(d2.next_thread(), some_id(other));
     }
 
     // --- Group F: cross-cutting invariants -----------------------------------
@@ -2229,7 +2283,7 @@ mod tests {
     fn the_wait_exit_refuses_a_ready_thread() {
         let d = dispatcher();
         let p = process(8);
-        let t = thread(p);
+        let mut t = thread(p);
         t.state = ThreadState::Ready;
         d.unwait(t, STATUS_SUCCESS, 0);
     }
@@ -2267,8 +2321,7 @@ mod tests {
 
         // The negative: a thread on the waiting list that is not waiting is an audit failure.
         let stray = thread(p);
-        // SAFETY: the list is initialized; the stray thread's wait link is detached.
-        unsafe { d.waiting.push_back(addr_of_mut!(stray.wait_links)) };
+        list::push_back(d, WaitingList, stray.id());
         assert!(d.audit_waits().is_err());
     }
 
@@ -2279,7 +2332,7 @@ mod tests {
     fn the_wake_boost_caps_and_gates() {
         let d = dispatcher();
         let p15 = process(15);
-        let capped = thread(p15);
+        let mut capped = thread(p15);
         capped.priority = 15;
         block_on(
             d,
@@ -2296,7 +2349,7 @@ mod tests {
         );
 
         let p = process(8);
-        let rt = thread(p);
+        let mut rt = thread(p);
         rt.priority = 16;
         rt.quantum = 2;
         block_on(
@@ -2309,7 +2362,7 @@ mod tests {
         assert_eq!(rt.priority(), 16, "realtime: no boost");
         assert_eq!(rt.quantum(), 6, "realtime: full replenish");
 
-        let gated = thread(p);
+        let mut gated = thread(p);
         gated.disable_boost = true;
         gated.quantum = 6;
         block_on(
@@ -2322,7 +2375,7 @@ mod tests {
         assert_eq!(gated.priority(), 8, "the policy gate refuses the boost");
         assert_eq!(gated.quantum(), 5, "the charge is unconditional");
 
-        let indebted = thread(p);
+        let mut indebted = thread(p);
         indebted.priority_decrement = 2;
         indebted.quantum = 6;
         block_on(
@@ -2392,14 +2445,12 @@ mod tests {
                 if parks == 1 {
                     d.unwait(current, STATUS_KERNEL_APC, 0);
                 } else {
-                    d.expire_timer(&mut current.timer);
+                    d.expire_timer(current.timer.id());
                 }
                 // The dispatcher re-runs the woken thread (the host driver of the switch).
-                let selected = d.select_next();
-                assert!(!selected.is_null());
+                let selected = d.select_next().expect("a thread is selected");
                 d.enter(selected);
-                // SAFETY: the selected thread, live.
-                unsafe { (*selected).state = ThreadState::Running };
+                d.thread_mut(selected).state = ThreadState::Running;
             },
         );
         assert_eq!(parks, 2, "the wait parked, replayed, and completed");
@@ -2422,7 +2473,7 @@ mod tests {
             if woken == STATUS_KERNEL_APC {
                 d.unwait(t, STATUS_KERNEL_APC, 0);
             } else {
-                d.expire_timer(&mut t.timer);
+                d.expire_timer(t.timer.id());
             }
             run(d, t);
 
@@ -2431,7 +2482,7 @@ mod tests {
                 // SAFETY: the running thread, live.
                 let t = unsafe { &mut *d.current_thread() };
                 let nested = d.wait_single(
-                    t,
+                    &mut *t,
                     inner.waitable(),
                     WaitReason::Suspension,
                     WaitMode::Kernel,
@@ -2491,12 +2542,11 @@ mod tests {
                 if parks == 1 {
                     d.unwait(current, STATUS_KERNEL_APC, 0);
                 } else {
-                    d.expire_timer(&mut current.timer);
+                    d.expire_timer(current.timer.id());
                 }
-                let selected = d.select_next();
+                let selected = d.select_next().expect("a thread is selected");
                 d.enter(selected);
-                // SAFETY: the selected thread, live.
-                unsafe { (*selected).state = ThreadState::Running };
+                d.thread_mut(selected).state = ThreadState::Running;
                 // The park's resume tail: the delivered routine waits on its own object.
                 d.preserving_wait_status(|d| {
                     // SAFETY: the running thread, live.
@@ -2552,11 +2602,9 @@ mod tests {
                 // The signal raced the delivery: set it, so the replay's satisfaction test finds
                 // it and the wait completes at once.
                 ev.set(d, EVENT_WAKE_INCREMENT);
-                let selected = d.select_next();
-                assert!(!selected.is_null());
+                let selected = d.select_next().expect("a thread is selected");
                 d.enter(selected);
-                // SAFETY: the selected thread, live.
-                unsafe { (*selected).state = ThreadState::Running };
+                d.thread_mut(selected).state = ThreadState::Running;
             },
         );
         assert_eq!(status, STATUS_SUCCESS, "the replay found the signal");
@@ -2602,11 +2650,9 @@ mod tests {
                 // SAFETY: the parked thread, live.
                 let current = unsafe { &mut *current };
                 d.unwait(current, STATUS_KERNEL_APC, 0);
-                let selected = d.select_next();
-                assert!(!selected.is_null());
+                let selected = d.select_next().expect("a thread is selected");
                 d.enter(selected);
-                // SAFETY: the selected thread, live.
-                unsafe { (*selected).state = ThreadState::Running };
+                d.thread_mut(selected).state = ThreadState::Running;
             },
         );
         assert_eq!(parks, 1, "the replay never parked");
@@ -2648,13 +2694,11 @@ mod tests {
                 if parks == 1 {
                     d.unwait(current, STATUS_KERNEL_APC, 0);
                 } else {
-                    d.expire_timer(&mut current.timer);
+                    d.expire_timer(current.timer.id());
                 }
-                let selected = d.select_next();
-                assert!(!selected.is_null());
+                let selected = d.select_next().expect("a thread is selected");
                 d.enter(selected);
-                // SAFETY: the selected thread, live.
-                unsafe { (*selected).state = ThreadState::Running };
+                d.thread_mut(selected).state = ThreadState::Running;
             },
         );
         assert_eq!(parks, 2);
@@ -2717,11 +2761,9 @@ mod tests {
                     assert!(current.wait_alertable());
                     ev.set(d, EVENT_WAKE_INCREMENT);
                 }
-                let selected = d.select_next();
-                assert!(!selected.is_null());
+                let selected = d.select_next().expect("a thread is selected");
                 d.enter(selected);
-                // SAFETY: the selected thread, live.
-                unsafe { (*selected).state = ThreadState::Running };
+                d.thread_mut(selected).state = ThreadState::Running;
             },
         );
         assert_eq!(parks, 2, "one break, one replay, one completion");

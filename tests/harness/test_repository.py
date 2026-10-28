@@ -197,14 +197,11 @@ RAW_ACCESS_ALLOWED = {
     " data",
     "kernel/src/cpu/gdt.rs": "the kernel's own descriptor table",
     "kernel/src/cpu/idt.rs": "the kernel's own interrupt table",
-    "kernel/src/hw/pit.rs": "the programmed divisor, a kernel static",
     "kernel/src/hw/vga.rs": "the text screen's cells, device memory through the kernel window",
     "kernel/src/mem/bootmem.rs": "the boot memory map and the frame database, before any process",
     "kernel/src/mem/paging.rs": "the page tables and frames, through the kernel's own windows",
-    "kernel/src/perf.rs": "the sampler's interval static, and (perf-trace builds only) the frame-pointer"
-    " walk of a sampled stack, each frame checked against the process's regions first",
-    "kernel/src/process/mod.rs": "the allocator baseline, a kernel static",
-    "kernel/src/process/runner.rs": "the suite's process index, a kernel static",
+    "kernel/src/perf.rs": "(perf-trace builds only) the frame-pointer walk of a sampled stack, each"
+    " frame checked against the kernel window or the process's regions first",
     "kernel/src/sched/startup.rs": "a new thread's kernel gate stack",
     "kernel/src/user/syscall.rs": "the copy primitives themselves and the attribution flag",
     "kernel/src/user/shared.rs": "the shared data page through the kernel's own mapping of its frame",

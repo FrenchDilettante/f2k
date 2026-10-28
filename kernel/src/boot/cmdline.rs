@@ -27,43 +27,52 @@ const SEPARATOR: &[u8] = b"--";
 /// The separator between two programs' command lines in the user command line.
 const PROGRAM_SEPARATOR: &[u8] = b";;";
 
-/// The captured kernel command line and its length.
+/// The captured kernel command line, set once by [`capture`].
 #[cfg(target_arch = "x86")]
-static mut CAPTURED: ([u8; MAX_LEN], usize) = ([0; MAX_LEN], 0);
+static CAPTURED: crate::sync::InitOnce<rtl::array_vec::ArrayVec<u8, MAX_LEN>> =
+    crate::sync::InitOnce::new();
 
 /// Copy the kernel command line out of the Multiboot information at `info_phys` (identity-mapped
 /// physical memory at this point of the boot). A structure without one leaves the line empty.
 #[cfg(target_arch = "x86")]
 pub fn capture(info_phys: u32) {
-    // SAFETY: the loader's information structure, inside the boot identity window (the caller runs
-    // before the frame allocator and before the window's teardown). Single-threaded boot.
-    let info = unsafe { &*(info_phys as *const crate::mem::multiboot::MultibootInfo) };
-    if info.flags & FLAG_CMDLINE == 0 || info.cmdline == 0 {
-        return;
+    use crate::mem::bootmem::assert_identity_readable;
+    use crate::mem::multiboot::MultibootInfo;
+
+    assert_identity_readable(
+        "the Multiboot information",
+        info_phys,
+        core::mem::size_of::<MultibootInfo>(),
+    );
+    // SAFETY: the loader's information structure, inside the boot identity window (checked
+    // above), where physical reads at its own address; the caller runs before the frame allocator
+    // and before the window's teardown, and the boot is single-threaded, so nothing writes it
+    // while it is borrowed.
+    let info = unsafe { &*(info_phys as *const MultibootInfo) };
+    let mut line = rtl::array_vec::ArrayVec::new();
+    if info.flags & FLAG_CMDLINE != 0 && info.cmdline != 0 {
+        let start = info.cmdline;
+        assert_identity_readable("the kernel command line", start, 1);
+        // What can be read of the string: up to the window's end, and no more than is kept.
+        let room = (crate::mem::bootmem::BOOT_IDENTITY_LIMIT - u64::from(start)).min(MAX_LEN as u64)
+            as usize;
+        // SAFETY: `[start, start + room)` lies in the boot identity window (its start checked and
+        // its length clamped above), all of it mapped at its own address until the window's
+        // teardown, which comes later in the boot; nothing writes the loader's memory while the
+        // single-threaded boot reads it here.
+        let window = unsafe { core::slice::from_raw_parts(start as *const u8, room) };
+        let text =
+            core::ffi::CStr::from_bytes_until_nul(window).map_or(window, core::ffi::CStr::to_bytes);
+        line.try_extend_from_slice(text)
+            .expect("the window is no longer than the line kept");
     }
-    // SAFETY: as above; the captured buffer is this module's own, written once, here.
-    let (buffer, length) = unsafe { &mut *core::ptr::addr_of_mut!(CAPTURED) };
-    let mut index = 0;
-    while index < MAX_LEN - 1 {
-        // SAFETY: the loader's NUL-terminated string, identity-mapped; the walk stops at its NUL
-        // or at the buffer's room.
-        let byte =
-            unsafe { core::ptr::read_volatile((info.cmdline as usize + index) as *const u8) };
-        if byte == 0 {
-            break;
-        }
-        buffer[index] = byte;
-        index += 1;
-    }
-    *length = index;
+    CAPTURED.set(line);
 }
 
 /// The captured kernel command line.
 #[cfg(target_arch = "x86")]
 pub fn kernel_command_line() -> &'static [u8] {
-    // SAFETY: written once by `capture` during the single-threaded boot, read-only afterwards.
-    let (buffer, length) = unsafe { &*core::ptr::addr_of!(CAPTURED) };
-    &buffer[..*length]
+    CAPTURED.get()
 }
 
 /// The user command line the kernel command line carries: the text after the separator, its

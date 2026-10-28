@@ -267,14 +267,12 @@ pub fn find_first_w(pattern: &Wide, data: &mut FindDataW) -> u32 {
         return INVALID_HANDLE_VALUE;
     }
     data.fill(&record);
-    // SAFETY: ntdll's export: a block of the handle's size.
-    let find = unsafe { nt::RtlAllocateHeap(process_heap(), 0, core::mem::size_of::<FindHandle>()) }
-        as *mut FindHandle;
-    if find.is_null() {
+    let Some(find) = ntcall::allocate_heap(core::mem::size_of::<FindHandle>()) else {
         close(handle);
         set_last_error(ERROR_NOT_ENOUGH_MEMORY);
         return INVALID_HANDLE_VALUE;
-    }
+    };
+    let find = find.as_ptr().cast::<FindHandle>();
     // SAFETY: the fresh block; its lock initialized in place.
     unsafe {
         find.write(FindHandle {
@@ -302,8 +300,8 @@ pub fn find_next_w(find: u32, data: &mut FindDataW) -> u32 {
     unsafe { nt::RtlEnterCriticalSection(find.lock.as_mut_ptr()) };
     let answer = (|| {
         if find.buffer.is_null() {
-            // SAFETY: ntdll's export.
-            find.buffer = unsafe { nt::RtlAllocateHeap(process_heap(), 0, FIND_BUFFER_SIZE) };
+            find.buffer = ntcall::allocate_heap(FIND_BUFFER_SIZE)
+                .map_or(core::ptr::null_mut(), |block| block.as_ptr());
             if find.buffer.is_null() {
                 set_last_error(ERROR_NOT_ENOUGH_MEMORY);
                 return 0;
@@ -368,10 +366,10 @@ pub fn find_close(find: u32) -> u32 {
     unsafe {
         close((*handle).directory);
         if !(*handle).buffer.is_null() {
-            nt::RtlFreeHeap(process_heap(), 0, (*handle).buffer);
+            ntcall::free_heap((*handle).buffer);
         }
         nt::RtlDeleteCriticalSection((*handle).lock.as_mut_ptr());
-        nt::RtlFreeHeap(process_heap(), 0, handle as *mut u8);
+        ntcall::free_heap(handle.cast());
     }
     1
 }

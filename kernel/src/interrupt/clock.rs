@@ -230,7 +230,7 @@ pub fn service(at_clock: &mut At<level::Clock>) {
     let tick = clock.tick();
     let interrupt_time = clock.interrupt_time();
     let full = matches!(tick, Tick::Full).then(|| (clock.system_time(), clock.tick_count()));
-    crate::user::shared::update(interrupt_time, full);
+    crate::user::shared::update(at_clock, interrupt_time, full);
     let Some((_, tick_count)) = full else {
         return;
     };
@@ -334,18 +334,13 @@ mod tests {
     /// table expires against, so a slewed system time moves no wait's deadline.
     #[test]
     fn a_wait_expires_on_interrupt_time_whatever_the_slew() {
-        use crate::sched::dispatcher::Dispatcher;
         use crate::sched::process::SchedProcess;
-        use crate::sched::thread::{Thread, ThreadState};
+        use crate::sched::thread::ThreadState;
         use crate::sched::wait::{WaitDisposition, WaitMode};
 
-        let d = Box::leak(Box::new(Dispatcher::zeroed()));
-        d.init();
+        let d = crate::sched::testkit::dispatcher();
         let p = Box::leak(Box::new(SchedProcess::new(0x0090_0000, 8)));
-        p.init();
-        let t = Box::leak(Box::new(Thread::empty()));
-        // SAFETY: both records are leaked at their final addresses.
-        unsafe { t.attach_to(p) };
+        let t = crate::sched::testkit::thread(p);
 
         let mut clock = Clock::new();
         clock.set_time_increment(INTERVAL_100NS, FINEST_100NS);
@@ -528,19 +523,14 @@ mod tests {
     /// leaves the running thread's quantum alone; the full tick that follows charges it.
     #[test]
     fn only_a_full_tick_charges_the_quantum() {
-        use crate::sched::dispatcher::Dispatcher;
         use crate::sched::process::SchedProcess;
-        use crate::sched::thread::{Thread, ThreadState};
+        use crate::sched::thread::ThreadState;
 
-        let d = Box::leak(Box::new(Dispatcher::zeroed()));
-        d.init();
+        let d = crate::sched::testkit::dispatcher();
         let p = Box::leak(Box::new(SchedProcess::new(0x0090_0000, 8)));
-        p.init();
-        let t = Box::leak(Box::new(Thread::empty()));
-        // SAFETY: both records are leaked at their final addresses.
-        unsafe { t.attach_to(p) };
+        let mut t = crate::sched::testkit::thread(p);
         t.state = ThreadState::Running;
-        d.enter(t as *const Thread as *mut Thread);
+        d.enter(t.id());
 
         let mut clock = Clock::new();
         clock.set_time_increment(100_000, 10_000);

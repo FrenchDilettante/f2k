@@ -1,24 +1,52 @@
 //! The thread object: the scheduling state every thread carries.
 
-use core::ptr::{addr_of_mut, null_mut};
-
-use super::apc::{nop_kernel_routine, suspend_apc_normal, Apc, ApcMode};
-use super::process::SchedProcess;
+use super::apc::{nop_kernel_routine, suspend_apc_normal, Apc, ApcId, ApcMode, ApcQueue};
+use super::dispatcher::ReadyQueue;
+use super::list::{IndexList, Link};
+use super::mutex::OwnedMutexes;
+use super::process::{ProcessThreads, SchedProcess};
 use super::semaphore::Semaphore;
 use super::wait::{
+    BlockId,
     Timer,
     WaitBlock,
     WaitKind,
     WaitMode,
     WaitReason,
     Waitable,
+    WaitableId,
+    WaitingList,
     TIMER_BLOCK,
     WAIT_BLOCKS,
 };
-use super::Links;
-use super::List;
 use crate::interrupt::irql::{self, LevelSnapshot};
 use crate::status::{NtStatus, STATUS_SUCCESS, STATUS_TIMEOUT};
+
+/// A thread record's name: its index in the dispatcher database's thread pool. The object
+/// directory's thread objects use the same index for their headers; the idle thread's record is the
+/// one past them, which no object names.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct ThreadId(pub u16);
+
+impl ThreadId {
+    /// The record's index in the pool.
+    pub const fn index(self) -> u16 {
+        self.0
+    }
+}
+
+/// A thread record names itself: the scheduler's entry points take the record or its id alike.
+impl From<&Thread> for ThreadId {
+    fn from(thread: &Thread) -> Self {
+        thread.id
+    }
+}
+
+impl From<&mut Thread> for ThreadId {
+    fn from(thread: &mut Thread) -> Self {
+        thread.id
+    }
+}
 
 /// The gate-slot index of a thread whose slot is not allocated yet.
 pub const NO_GATE_SLOT: u16 = 0xFFFF;
@@ -102,19 +130,20 @@ pub enum ThreadState {
 /// The exit status of a thread that has not ended (the documented STILL_ACTIVE).
 pub const STILL_ACTIVE: u32 = 259;
 
-/// A thread: one schedulable unit of execution.
+/// A thread: one schedulable unit of execution, a record of the dispatcher database.
 ///
-/// An intrusive kernel object: it carries the links for the ready queue and its process's thread
-/// list, so queueing allocates nothing. The record leads with its machine state — the words the
+/// It carries the links of the lists it joins — a ready queue, the waiting list, its process's
+/// thread list — so queueing allocates nothing, and the heads of the lists that hang off it: its
+/// two APC queues and the mutexes it owns. The record leads with its machine state — the words the
 /// context switch's assembly addresses through pinned, compile-time checked offsets (saved esp,
-/// stack top, TEB page, level ledger).
+/// stack top, TEB page, address space).
 #[repr(C)]
 pub struct Thread {
     // --- Machine state (the context switch's ABI) ---
     /// The scheduling state.
     pub(crate) state: ThreadState,
     /// The owning process: the source of the quantum and of the priority class rules, and the
-    /// process whose thread this is. Valid for the thread's lifetime.
+    /// process whose thread this is. Set at attach; the process outlives its attached threads.
     pub(crate) process: *mut SchedProcess,
     /// The saved kernel stack pointer: where a switch-out stored this thread's switch frame, and
     /// what a switch-in loads as the new `esp`. The startup-frame builder plants it for a
@@ -153,6 +182,10 @@ pub struct Thread {
     /// switch, at the offset the assembly takes from this layout; 16-byte aligned, as the record).
     pub(crate) fpu: FpuState,
 
+    // --- Identity ---
+    /// The record's own name in the pool: constant for the record's life.
+    pub(crate) id: ThreadId,
+
     // --- Scheduling state ---
     /// The priority the scheduler queues and preempts by.
     pub(crate) priority: i8,
@@ -184,8 +217,8 @@ pub struct Thread {
     /// The wait blocks this thread owns: the first holds a single-object wait, the last slot its
     /// timer block.
     pub(crate) wait_blocks: [WaitBlock; WAIT_BLOCKS],
-    /// The circular chain head of the current wait's blocks, null between waits.
-    pub(crate) wait_block_head: *mut WaitBlock,
+    /// The first block of the current wait's circular chain, none between waits.
+    pub(crate) wait_block_head: Option<BlockId>,
     /// The completion status of the current or last wait.
     pub(crate) wait_status: NtStatus,
     /// Why the thread is waiting (diagnostic data).
@@ -198,20 +231,20 @@ pub struct Thread {
     pub(crate) wait_time: u64,
     /// The thread's wait-timeout timer.
     pub(crate) timer: Timer,
-    /// The dispatcher's waiting-list membership link.
-    pub(crate) wait_links: Links,
+    /// The dispatcher's waiting-list membership.
+    pub(crate) wait_link: Link<WaitingList>,
 
-    /// The ready-queue membership link.
-    pub(crate) ready_links: Links,
-    /// The owning process's thread-list membership link.
-    pub(crate) process_links: Links,
+    /// The ready-queue membership.
+    pub(crate) ready_link: Link<ReadyQueue>,
+    /// The owning process's thread-list membership.
+    pub(crate) process_link: Link<ProcessThreads>,
 
     // --- The APC machinery ---
-    /// The kernel-mode APC queue's sentinel.
-    pub(crate) kernel_apcs: List,
-    /// The user-mode APC queue's sentinel: QueueUserAPC's and the waitable timers' APCs, delivered
-    /// in user mode (see [`crate::user::apc`]).
-    pub(crate) user_apcs: List,
+    /// The kernel-mode APC queue.
+    pub(crate) kernel_apcs: IndexList<ApcQueue>,
+    /// The user-mode APC queue: QueueUserAPC's and the waitable timers' APCs, delivered in user
+    /// mode (see [`crate::user::apc`]).
+    pub(crate) user_apcs: IndexList<ApcQueue>,
     /// Whether a kernel APC is queued: the delivery windows' question, armed by the insert.
     pub(crate) kernel_apc_pending: bool,
     /// Whether a user APC's delivery is armed: an alertable wait completed for one, or
@@ -246,7 +279,7 @@ pub struct Thread {
     /// APC-breakable. F2K's waits are always entered at the passive level; the gate stays armed.
     pub(crate) wait_irql: irql::Irql,
     /// The mutexes the thread owns (see [`super::mutex`]): its end abandons them.
-    pub(crate) owned_mutexes: List,
+    pub(crate) owned_mutexes: IndexList<OwnedMutexes>,
     /// The blocks of a multiple-object wait, one per object. They live in the record, not on the
     /// waiting thread's stack: a wake may unwind them from any thread's context, and the kernel
     /// stacks are mapped per process.
@@ -301,9 +334,36 @@ const _: () = {
 };
 
 impl Thread {
-    /// A fresh, detached thread. Call [`Thread::attach_to`] before any scheduler operation, and
-    /// give it machine state (stacks, TEB) before it is ever readied.
-    pub const fn empty() -> Self {
+    /// A fresh, detached thread record at pool index `id`. Attach it to a process
+    /// ([`super::dispatcher::Dispatcher::attach`]) before any scheduler operation, and give it
+    /// machine state (stacks, TEB) before it is ever readied.
+    ///
+    /// The wait discipline's and the APC machinery's fixed wiring is part of the record: it is a
+    /// waitable object in its own right, every block names it, and the timer block's claim is
+    /// constant — its object is the thread's own timer and its key the timeout status — so a wait
+    /// only ever re-links it; the builtin suspend APC's kernel half does nothing, its normal half
+    /// parks the thread on its suspend semaphore (the suspend itself).
+    pub const fn new(id: ThreadId) -> Self {
+        let mut wait_blocks = [WaitBlock::detached(BlockId::builtin(id, 0)); WAIT_BLOCKS];
+        let mut slot = 0;
+        while slot < WAIT_BLOCKS {
+            wait_blocks[slot] = WaitBlock::detached(BlockId::builtin(id, slot));
+            slot += 1;
+        }
+        wait_blocks[TIMER_BLOCK].object = WaitableId::ThreadTimer(id);
+        wait_blocks[TIMER_BLOCK].key = STATUS_TIMEOUT;
+        let mut multi_blocks =
+            [WaitBlock::detached(BlockId::multi(id, 0)); super::wait::MAXIMUM_WAIT_OBJECTS];
+        let mut index = 0;
+        while index < super::wait::MAXIMUM_WAIT_OBJECTS {
+            multi_blocks[index] = WaitBlock::detached(BlockId::multi(id, index));
+            index += 1;
+        }
+        let mut suspend_apc = Apc::new(ApcId::Suspend(id));
+        suspend_apc.thread = Some(id);
+        suspend_apc.kernel_routine = nop_kernel_routine;
+        suspend_apc.normal_routine = Some(suspend_apc_normal);
+        suspend_apc.mode = ApcMode::Kernel;
         Thread {
             state: ThreadState::Initialized,
             process: core::ptr::null_mut(),
@@ -318,6 +378,7 @@ impl Thread {
             gate_slot: NO_GATE_SLOT,
             gate_frames: [0; crate::mem::paging::GATE_STACK_PAGES],
             fpu: FpuState::initial(),
+            id,
             priority: 0,
             base_priority: 0,
             priority_decrement: 0,
@@ -327,54 +388,46 @@ impl Thread {
             disable_boost: false,
             preempted: false,
             parked_on_process: false,
-            waitable: Waitable::new(WaitKind::Thread, 0),
-            wait_blocks: [WaitBlock::detached(); WAIT_BLOCKS],
-            wait_block_head: null_mut(),
+            waitable: Waitable::with_id(WaitKind::Thread, 0, WaitableId::Thread(id)),
+            wait_blocks,
+            wait_block_head: None,
             wait_status: STATUS_SUCCESS,
             wait_reason: WaitReason::Executive,
             wait_mode: WaitMode::Kernel,
             wait_alertable: false,
             wait_time: 0,
-            timer: Timer::new(),
-            wait_links: Links::detached(),
-            ready_links: Links::detached(),
-            process_links: Links::detached(),
-            kernel_apcs: List::empty(),
-            user_apcs: List::empty(),
+            timer: Timer::with_id(WaitKind::TimerNotification, WaitableId::ThreadTimer(id)),
+            wait_link: Link::detached(),
+            ready_link: Link::detached(),
+            process_link: Link::detached(),
+            kernel_apcs: IndexList::new(),
+            user_apcs: IndexList::new(),
             kernel_apc_pending: false,
             user_apc_pending: false,
             kernel_apc_in_progress: false,
             kernel_apc_disable: 0,
             apc_queueable: true,
             terminate_pending: false,
-            suspend_apc: Apc::detached(),
-            suspend_semaphore: Semaphore::new(super::apc::SUSPEND_SEMAPHORE_LIMIT),
+            suspend_apc,
+            suspend_semaphore: Semaphore::with_id(
+                super::apc::SUSPEND_SEMAPHORE_LIMIT,
+                WaitableId::Suspend(id),
+            ),
             suspend_count: 0,
             freeze_count: 0,
             wait_irql: irql::PASSIVE,
-            owned_mutexes: List::empty(),
-            multi_blocks: [WaitBlock::detached(); super::wait::MAXIMUM_WAIT_OBJECTS],
+            owned_mutexes: IndexList::new(),
+            multi_blocks,
             exiting: false,
             copying_user_memory: false,
             user_started: false,
         }
     }
 
-    /// Attach to `process`: take the process's base priority, quantum and boost policy, join its
-    /// thread list, and account the kernel stack. After this the thread is Initialized and
-    /// schedulable.
-    ///
-    /// # Safety
-    ///
-    /// The process must outlive the thread's membership in its list (the first link is written
-    /// here), and both objects must be at their final addresses.
-    pub unsafe fn attach_to(&mut self, process: &mut SchedProcess) {
-        // Every thread is attached at its final address before it first runs: the place the
-        // switch saves its floating-point state to.
-        assert!(
-            (core::ptr::addr_of!(self.fpu) as usize).is_multiple_of(FPU_STATE_ALIGN),
-            "a thread's floating-point area is 16-byte aligned"
-        );
+    /// The thread-local half of an attach to `process`: take the process's base priority, quantum
+    /// and boost policy, run on its address space, and stand Initialized. The dispatcher's attach
+    /// links the thread into the process's list.
+    pub(super) fn take_process_data(&mut self, process: &mut SchedProcess) {
         self.process = process as *mut SchedProcess;
         self.space = process as *const SchedProcess;
         self.base_priority = process.base_priority;
@@ -382,47 +435,11 @@ impl Thread {
         self.quantum = process.thread_quantum;
         self.disable_boost = process.disable_boost;
         self.state = ThreadState::Initialized;
+    }
 
-        // The wait discipline's fixed wiring. The thread is a waitable object in its own right,
-        // every block names its owner, and the timer block's claim is constant for the thread's
-        // life — its object is the thread's own timer and its key the timeout status — so a wait
-        // only ever re-links it.
-        self.waitable.init();
-        self.timer.init();
-        let thread = self as *mut Thread;
-        for block in self.wait_blocks.iter_mut() {
-            block.thread = thread;
-        }
-        // SAFETY: the thread and its timer are at their final addresses; the pointer stays valid
-        // for the thread's lifetime.
-        self.wait_blocks[TIMER_BLOCK].object = addr_of_mut!(self.timer.waitable);
-        self.wait_blocks[TIMER_BLOCK].key = STATUS_TIMEOUT;
-        self.wait_blocks[TIMER_BLOCK].wait_all = false;
-
-        // SAFETY: the thread's process link is detached and the process's thread list is
-        // initialized (caller contract).
-        unsafe { process.threads.push_back(addr_of_mut!(self.process_links)) };
-        if process.stack_count == super::process::NO_THREADS {
-            process.stack_count = 1;
-        } else {
-            process.stack_count += 1;
-        }
-        process.thread_seed = process.thread_seed.wrapping_add(1);
-
-        // The APC machinery's fixed wiring: the queues' sentinels, the suspend semaphore, and the
-        // builtin suspend APC — its kernel half does nothing, its normal half parks the thread on
-        // the semaphore (the suspend itself).
-        self.kernel_apcs.init();
-        self.user_apcs.init();
-        self.owned_mutexes.init();
-        self.suspend_semaphore.init();
-        self.suspend_apc.init(
-            thread,
-            nop_kernel_routine,
-            Some(suspend_apc_normal),
-            ApcMode::Kernel,
-            0,
-        );
+    /// The record's name in the pool.
+    pub fn id(&self) -> ThreadId {
+        self.id
     }
 
     /// The scheduling state.
@@ -531,16 +548,7 @@ impl Thread {
 
     /// The waitable header, as the wait entry takes it.
     pub fn waitable(&mut self) -> *mut Waitable {
-        addr_of_mut!(self.waitable)
-    }
-
-    /// The thread a thread-kind waitable header belongs to: the header is the thread's own, at a
-    /// fixed offset in the record. The caller must know the header is a thread's (a handle table
-    /// slot's kind, say); a foreign header is a caller bug.
-    pub fn from_waitable(waitable: *mut Waitable) -> *mut Thread {
-        // SAFETY: the caller passes a live, initialized waitable header (a handle slot's object).
-        debug_assert_eq!(unsafe { (*waitable).kind() }, WaitKind::Thread);
-        (waitable as usize - core::mem::offset_of!(Thread, waitable)) as *mut Thread
+        &mut self.waitable
     }
 
     /// The completion status of the current or last wait.
@@ -570,13 +578,20 @@ impl Thread {
 
     /// The owning process.
     ///
-    /// # Safety
+    /// # Panics
     ///
-    /// The thread is attached (its lifetime pins the process).
-    pub unsafe fn process(&self) -> &SchedProcess {
-        // SAFETY: the caller's contract: the thread is attached, and `attach_to`'s contract keeps
-        // the owning process alive while the thread is on its list.
+    /// The thread was never attached.
+    pub fn process(&self) -> &SchedProcess {
+        assert!(!self.process.is_null(), "an attached thread has a process");
+        // SAFETY: the owner is set at attach, whose contract keeps the process record at its
+        // address and alive while the thread is attached to it — the thread record's life, as far
+        // as the scheduler reaches it.
         unsafe { &*self.process }
+    }
+
+    /// The quantum the owning process's threads reset to.
+    pub(crate) fn thread_quantum(&self) -> i8 {
+        self.process().thread_quantum
     }
 
     /// The address-space process: the one whose directory the thread runs on (its owner unless
@@ -618,8 +633,39 @@ impl Thread {
     pub(crate) fn detach_space(&mut self) -> u32 {
         assert!(self.attached(), "a thread detaches once, after it attached");
         self.space = self.process;
-        // SAFETY: the owner outlives its thread.
-        unsafe { (*self.process).dir_phys() }
+        self.process().dir_phys()
+    }
+
+    /// The wait block `slot` names: a builtin one, or a multiple-object wait's.
+    pub(crate) fn block(&self, slot: u8) -> &WaitBlock {
+        match (slot as usize).checked_sub(WAIT_BLOCKS) {
+            None => &self.wait_blocks[slot as usize],
+            Some(index) => &self.multi_blocks[index],
+        }
+    }
+
+    /// The wait block `slot` names, to change.
+    pub(crate) fn block_mut(&mut self, slot: u8) -> &mut WaitBlock {
+        match (slot as usize).checked_sub(WAIT_BLOCKS) {
+            None => &mut self.wait_blocks[slot as usize],
+            Some(index) => &mut self.multi_blocks[index],
+        }
+    }
+
+    /// The APC queue of `mode`.
+    pub(crate) fn apc_queue(&self, mode: ApcMode) -> &IndexList<ApcQueue> {
+        match mode {
+            ApcMode::Kernel => &self.kernel_apcs,
+            ApcMode::User => &self.user_apcs,
+        }
+    }
+
+    /// The APC queue of `mode`, to change.
+    pub(crate) fn apc_queue_mut(&mut self, mode: ApcMode) -> &mut IndexList<ApcQueue> {
+        match mode {
+            ApcMode::Kernel => &mut self.kernel_apcs,
+            ApcMode::User => &mut self.user_apcs,
+        }
     }
 }
 
@@ -631,7 +677,7 @@ mod tests {
     /// word, the reset MXCSR, every register empty, everything else zero.
     #[test]
     fn a_fresh_thread_starts_with_the_initial_fpu_image() {
-        let image = Thread::empty().fpu.0;
+        let image = Thread::new(ThreadId(0)).fpu.0;
         assert_eq!(image.len(), 512);
         let half = |at: usize| u16::from_le_bytes([image[at], image[at + 1]]);
         let word = |at: usize| u32::from_le_bytes(image[at..at + 4].try_into().unwrap());
@@ -665,7 +711,7 @@ mod tests {
         assert_eq!(core::mem::offset_of!(Thread, fpu) % 16, 0);
         assert!(core::mem::align_of::<Thread>() >= 16);
         assert_eq!(super::super::switch::THREAD_FPU_OFF % 16, 0);
-        let thread = Box::new(Thread::empty());
+        let thread = Box::new(Thread::new(ThreadId(0)));
         assert_eq!(core::ptr::addr_of!(thread.fpu) as usize % 16, 0);
     }
 
@@ -682,18 +728,31 @@ mod tests {
         assert_eq!(ThreadState::Transition as u8, 6);
     }
 
-    /// The waitable header belongs to its thread: the reverse mapping returns the owning record.
+    /// A fresh record names itself everywhere: its id, its waitable header, its wait timer and
+    /// suspend semaphore, its blocks, its suspend APC — and the timer block's claim is planted for
+    /// the record's life: its object the thread's own timer, its key the timeout status.
     #[test]
-    fn from_waitable_returns_the_owning_thread() {
-        let p = Box::leak(Box::new(SchedProcess::new(0x0090_0000, 8)));
-        p.init();
-        let t = Box::leak(Box::new(Thread::empty()));
-        // SAFETY: both objects are leaked at their final addresses.
-        unsafe { t.attach_to(&mut *p) };
-        assert!(core::ptr::eq(
-            Thread::from_waitable(t.waitable()),
-            t as *const Thread as *mut Thread
-        ));
+    fn a_fresh_record_names_itself() {
+        let id = ThreadId(7);
+        let thread = Thread::new(id);
+        assert_eq!(thread.id(), id);
+        assert_eq!(thread.waitable.id(), WaitableId::Thread(id));
+        assert_eq!(thread.timer.id(), crate::sched::timer::TimerId::Thread(id));
+        assert_eq!(
+            thread.suspend_semaphore.waitable.id(),
+            WaitableId::Suspend(id)
+        );
+        assert_eq!(thread.suspend_apc.id(), ApcId::Suspend(id));
+        assert_eq!(thread.suspend_apc.thread(), Some(id));
+        assert!(thread.wait_blocks.iter().all(|block| block.thread == id));
+        assert!(thread.multi_blocks.iter().all(|block| block.thread == id));
+        let timer_block = &thread.wait_blocks[TIMER_BLOCK];
+        assert_eq!(timer_block.object, WaitableId::ThreadTimer(id));
+        assert_eq!(timer_block.key, STATUS_TIMEOUT);
+        assert_eq!(
+            thread.block(BlockId::multi(id, 3).slot).next_block,
+            BlockId::multi(id, 3)
+        );
     }
 
     /// Attaching takes the scheduling data from the process: base and current priority, quantum,
@@ -701,12 +760,10 @@ mod tests {
     /// advances per thread.
     #[test]
     fn attach_takes_process_data() {
+        let d = crate::sched::testkit::dispatcher();
         let process = Box::leak(Box::new(SchedProcess::new(0x0090_0000, 8)));
-        process.init();
 
-        let t1 = Box::leak(Box::new(Thread::empty()));
-        // SAFETY: both objects are boxed at their final addresses.
-        unsafe { t1.attach_to(process) };
+        let t1 = crate::sched::testkit::thread(process);
         assert_eq!(t1.base_priority(), 8);
         assert_eq!(t1.priority(), 8);
         assert_eq!(t1.quantum(), 6);
@@ -715,24 +772,21 @@ mod tests {
         assert_eq!(process.stack_count(), 1);
         let seed_after_first = process.thread_seed();
 
-        let t2 = Box::leak(Box::new(Thread::empty()));
-        // SAFETY: as above.
-        unsafe { t2.attach_to(process) };
+        let t2 = crate::sched::testkit::thread(process);
         assert_eq!(process.stack_count(), 2);
         assert_eq!(process.thread_seed(), seed_after_first.wrapping_add(1));
 
         // The process list holds both, in creation order.
-        // SAFETY: initialized list; entries stay linked.
-        let first = unsafe { process.threads.first() };
-        assert_eq!(first, core::ptr::addr_of_mut!(t1.process_links));
-        assert!(!process.threads.is_empty());
+        let threads = ProcessThreads(super::super::process::ProcessRef::new(process));
+        let linked: Vec<ThreadId> = super::super::list::iter(d, threads).collect();
+        assert_eq!(linked, [t1.id(), t2.id()]);
     }
 
     /// Critical regions nest: only leaving the outermost reports it, and the count is the gate the
     /// APC machinery reads.
     #[test]
     fn critical_regions_nest() {
-        let mut thread = Thread::empty();
+        let mut thread = Thread::new(ThreadId(0));
         assert!(!thread.in_critical_region());
         thread.enter_critical_region();
         thread.enter_critical_region();
@@ -748,22 +802,18 @@ mod tests {
     #[test]
     #[should_panic(expected = "never entered")]
     fn leaving_an_unentered_region_is_a_contract_violation() {
-        Thread::empty().leave_critical_region();
+        Thread::new(ThreadId(0)).leave_critical_region();
     }
 
-    /// A thread of `process`, leaked at its final address.
-    fn thread_of(process: &mut SchedProcess) -> &'static mut Thread {
-        let thread = Box::leak(Box::new(Thread::empty()));
-        // SAFETY: both records are leaked at their final addresses.
-        unsafe { thread.attach_to(process) };
-        thread
+    /// A thread of `process`, of a fresh dispatcher.
+    fn thread_of(process: &mut SchedProcess) -> crate::sched::testkit::Rec<Thread> {
+        crate::sched::testkit::dispatcher();
+        crate::sched::testkit::thread(process)
     }
 
     /// A process record leaked at its final address, on directory `dir`.
     fn process_on(dir: u32) -> &'static mut SchedProcess {
-        let process = Box::leak(Box::new(SchedProcess::new(dir, 8)));
-        process.init();
-        process
+        Box::leak(Box::new(SchedProcess::new(dir, 8)))
     }
 
     /// A thread runs on its owner's address space from its attach to its process; attached to
@@ -773,7 +823,7 @@ mod tests {
     fn an_attach_moves_the_address_space_and_not_the_owner() {
         let own = process_on(0x0090_0000);
         let other = process_on(0x00B0_0000);
-        let thread = thread_of(own);
+        let mut thread = thread_of(own);
         assert!(core::ptr::eq(thread.space(), own));
         assert!(!thread.attached());
 
@@ -793,7 +843,7 @@ mod tests {
     fn an_attach_to_the_space_in_place_changes_nothing() {
         let own = process_on(0x0090_0000);
         let other = process_on(0x00B0_0000);
-        let thread = thread_of(own);
+        let mut thread = thread_of(own);
         assert_eq!(thread.attach_space(own), None);
         assert!(!thread.attached());
         assert_eq!(thread.attach_space(other), Some(0x00B0_0000));
@@ -806,7 +856,7 @@ mod tests {
     #[should_panic(expected = "only from its own")]
     fn attaches_do_not_nest() {
         let own = process_on(0x0090_0000);
-        let thread = thread_of(own);
+        let mut thread = thread_of(own);
         thread.attach_space(process_on(0x00B0_0000));
         thread.attach_space(process_on(0x00C0_0000));
     }
@@ -816,7 +866,7 @@ mod tests {
     #[should_panic(expected = "detaches once")]
     fn a_detach_follows_an_attach() {
         let own = process_on(0x0090_0000);
-        let thread = thread_of(own);
+        let mut thread = thread_of(own);
         thread.attach_space(process_on(0x00B0_0000));
         thread.detach_space();
         thread.detach_space();

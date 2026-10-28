@@ -47,26 +47,26 @@ pub mod sync {
 
     unserved! {
         open_directory_object(UserPtr<u32>, u32, UserAddr);
-        create_event(UserPtr<u32>, u32, UserAddr, u32, u32);
+        create_event(UserPtr<u32>, u32, UserAddr, u32, bool);
         open_event(UserPtr<u32>, u32, UserAddr);
         set_event(Handle, UserPtr<i32>);
         reset_event(Handle, UserPtr<i32>);
         clear_event(Handle);
         pulse_event(Handle, UserPtr<i32>);
-        create_mutant(UserPtr<u32>, u32, UserAddr, u32);
+        create_mutant(UserPtr<u32>, u32, UserAddr, bool);
         open_mutant(UserPtr<u32>, u32, UserAddr);
         release_mutant(Handle, UserPtr<i32>);
         create_semaphore(UserPtr<u32>, u32, UserAddr, i32, i32);
         open_semaphore(UserPtr<u32>, u32, UserAddr);
         release_semaphore(Handle, i32, UserPtr<i32>);
-        wait_for_single_object(Handle, u32, UserPtr<u64>);
-        wait_for_multiple_objects(u32, UserAddr, u32, u32, UserPtr<u64>);
-        signal_and_wait_for_single_object(Handle, Handle, u32, UserPtr<u64>);
+        wait_for_single_object(Handle, bool, UserPtr<u64>);
+        wait_for_multiple_objects(u32, UserAddr, u32, bool, UserPtr<u64>);
+        signal_and_wait_for_single_object(Handle, Handle, bool, UserPtr<u64>);
         create_timer(UserPtr<u32>, u32, UserAddr, u32);
         open_timer(UserPtr<u32>, u32, UserAddr);
-        set_timer(Handle, UserPtr<u64>, UserAddr, UserAddr, u32, i32, UserAddr);
+        set_timer(Handle, UserPtr<u64>, UserAddr, UserAddr, bool, i32, UserAddr);
         cancel_timer(Handle, UserAddr);
-        delay_execution(u32, UserPtr<u64>);
+        delay_execution(bool, UserPtr<u64>);
         yield_execution();
         duplicate_object(Handle, Handle, Handle, UserPtr<u32>, u32, u32, u32);
         queue_apc_thread(Handle, UserAddr, UserAddr, UserAddr, UserAddr);

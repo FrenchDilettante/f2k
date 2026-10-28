@@ -19,9 +19,10 @@
 //! text then goes into the caller's buffer, or into a block it allocates
 //! (FORMAT_MESSAGE_ALLOCATE_BUFFER), an A call's narrowed through the ANSI code page.
 
-use crate::base::{process_heap, read_pointer, set_last_error, set_last_nt_error, Text};
+use crate::base::{read_pointer, set_last_error, set_last_nt_error, Text};
 use crate::error::{ERROR_INSUFFICIENT_BUFFER, ERROR_NOT_ENOUGH_MEMORY};
 use crate::nt::{self, AnsiString, UnicodeString};
+use crate::ntcall;
 
 /// FORMAT_MESSAGE_ALLOCATE_BUFFER, FORMAT_MESSAGE_IGNORE_INSERTS, FORMAT_MESSAGE_FROM_STRING,
 /// FORMAT_MESSAGE_FROM_HMODULE, FORMAT_MESSAGE_FROM_SYSTEM, FORMAT_MESSAGE_ARGUMENT_ARRAY, and
@@ -210,8 +211,8 @@ impl Laid {
 
 impl Drop for Laid {
     fn drop(&mut self) {
-        // SAFETY: ntdll's export, over kernel32's own block.
-        unsafe { nt::RtlFreeHeap(process_heap(), 0, self.block as *mut u8) };
+        // SAFETY: kernel32's own block, used no more.
+        unsafe { ntcall::free_heap(self.block.cast()) };
     }
 }
 
@@ -235,11 +236,10 @@ unsafe fn laid_out(
     };
     let mut room = FIRST_ROOM;
     loop {
-        // SAFETY: ntdll's export, on the process heap.
-        let block = unsafe { nt::RtlAllocateHeap(process_heap(), 0, 2 * room) } as *mut u16;
-        if block.is_null() {
+        let Some(block) = ntcall::allocate_heap(2 * room) else {
             return Err(STATUS_NO_MEMORY);
-        }
+        };
+        let block = block.as_ptr().cast::<u16>();
         let mut laid = Laid { block, length: 0 };
         let mut returned = 0u32;
         // SAFETY: ntdll's export, over the caller's text and arguments, into the block.
@@ -321,12 +321,12 @@ unsafe fn format_message(
     }
     let unit = if wide { 2 } else { 1 };
     let out = if allocate {
-        // SAFETY: ntdll's export, on the process heap, as LocalAlloc(LMEM_FIXED) makes a block.
-        let block = unsafe { nt::RtlAllocateHeap(process_heap(), 0, unit * (length + 1)) };
-        if block.is_null() {
+        // On the process heap, as LocalAlloc(LMEM_FIXED) makes a block.
+        let Some(block) = ntcall::allocate_heap(unit * (length + 1)) else {
             set_last_error(ERROR_NOT_ENOUGH_MEMORY);
             return 0;
-        }
+        };
+        let block = block.as_ptr();
         // SAFETY: the caller's pointer place.
         unsafe { (buffer as *mut *mut u8).write_unaligned(block) };
         block

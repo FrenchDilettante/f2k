@@ -8,16 +8,10 @@
 //! (STATUS_BUFFER_OVERFLOW), the search past it. Entries match by their long name, then their 8.3
 //! name; a listing reports the 8.3 name beside a long one only.
 
+use rtl::nt::UnicodeString;
+
 use super::super::call::{Handle, NtCall, NtResult, UserAddr};
-use super::common::{
-    check_access,
-    cluster_bytes,
-    complete,
-    completion_event,
-    file_object,
-    probe,
-    signal,
-};
+use super::common::{check_access, cluster_bytes, complete, completion_event, file_object, signal};
 use super::info::{self, Entry};
 use crate::fs::fat32::dir::{decode_byte, fold_unit, walk, Listed};
 use crate::fs::fat32::lookup::File;
@@ -88,16 +82,16 @@ fn query_directory_file_held(
     information: UserAddr,
     length: u32,
     class: u32,
-    single: u32,
+    single: bool,
     file_name: UserAddr,
-    restart: u32,
+    restart: bool,
 ) -> NtResult {
     let offset = info::entry_name_offset(class).ok_or(STATUS_INVALID_INFO_CLASS)?;
     if (length as usize) < offset {
         return Err(STATUS_INFO_LENGTH_MISMATCH);
     }
-    probe(io_status, 8)?;
-    probe(information, length)?;
+    io_status.probe(8)?;
+    information.probe(length)?;
     let mut object = file_object(handle.raw())?;
     check_access(&object, rights::FILE_READ_DATA)?;
     if !routine.is_null() {
@@ -113,26 +107,16 @@ fn query_directory_file_held(
         let mut units = [0u16; MAX_EXPRESSION];
         let mut expression = None;
         if !file_name.is_null() {
-            let mut header = [0u8; 8];
-            file_name.read(&mut header)?;
-            let count = u16::from_le_bytes([header[0], header[1]]) as usize / 2;
-            let buffer = UserAddr(u32::from_le_bytes([
-                header[4], header[5], header[6], header[7],
-            ]));
-            if count > MAX_EXPRESSION {
-                return Err(STATUS_OBJECT_NAME_INVALID);
-            }
-            let mut raw = [0u8; 2 * MAX_EXPRESSION];
-            buffer.read(&mut raw[..2 * count])?;
-            for (unit, pair) in units.iter_mut().zip(raw.chunks_exact(2)) {
-                *unit = u16::from_le_bytes([pair[0], pair[1]]);
-            }
+            let string = file_name.cast::<UnicodeString<u32>>().read()?;
+            let count = usize::from(string.length) / 2;
+            let name = units.get_mut(..count).ok_or(STATUS_OBJECT_NAME_INVALID)?;
+            UserAddr(string.buffer).read_units(name)?;
             expression = (count > 0).then_some(&units[..count]);
         }
         object.search = searches()
             .open(expression)
             .ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
-    } else if restart as u8 != 0 {
+    } else if restart {
         searches().get(object.search).restart();
     }
     let search = *searches().get(object.search);
@@ -188,7 +172,7 @@ fn query_directory_file_held(
             last = Some(start);
             used = start + written;
             next = listed.index + 1;
-            !(cut || single as u8 != 0)
+            !(cut || single)
         })
     });
     let result = match walked {
@@ -237,9 +221,9 @@ pub fn query_directory_file(
     information: UserAddr,
     length: u32,
     class: u32,
-    single: u32,
+    single: bool,
     file_name: UserAddr,
-    restart: u32,
+    restart: bool,
 ) -> NtResult {
     // The call holds its file object (a reference) across the volume's critical regions: run it
     // inside one of its own, so a termination requested meanwhile ends the thread only once the

@@ -135,6 +135,7 @@ fn decode_args(export: &Export) -> Vec<String> {
             ArgKind::U32 => at(0),
             ArgKind::I32 => format!("{} as i32", at(0)),
             ArgKind::Bool => format!("{} != 0", at(0)),
+            ArgKind::Boolean => format!("{} as u8 != 0", at(0)),
             ArgKind::Handle => format!("Handle({})", at(0)),
             ArgKind::Ptr => format!("UserAddr({})", at(0)),
             ArgKind::PtrTo(pointee) => format!("UserPtr::<{}>::at({})", pointee.rust(), at(0)),
@@ -343,6 +344,8 @@ fn stub_kind(kind: ArgKind) -> &'static str {
         ArgKind::U32 => "U32",
         ArgKind::I32 => "I32",
         ArgKind::Bool => "Bool",
+        // The dword as the caller pushed it: the log shows what arrived, the high bytes included.
+        ArgKind::Boolean => "U32",
         ArgKind::Handle => "Handle",
         ArgKind::Ptr | ArgKind::PtrTo(_) => "Ptr",
         ArgKind::U64 => "U64",
@@ -648,6 +651,28 @@ impl = { syscall = "crate::nt::object::close" }
         assert_eq!(
             nt_stub_bytes(0x18, 4),
             [0xB8, 0x18, 0, 0, 0, 0x8D, 0x54, 0x24, 0x04, 0xCD, 0x2E, 0xC2, 4, 0]
+        );
+    }
+
+    /// A BOOLEAN argument is its dword's low byte, as NT reads a UCHAR pushed as a dword; a BOOL is
+    /// the whole dword.
+    #[test]
+    fn booleans_decode_their_low_byte() {
+        let ntdll = parse_spec(
+            "[[group]]\nkey = \"nt\"\ntitle = \"nt\"\n\n[[export]]\n\
+             name = \"NtDelayExecution\"\ngroup = \"nt\"\n\
+             args = [\"boolean Alertable\", \"ptr<u64> DelayInterval\"]\n\
+             impl = { syscall = \"crate::nt::sync::delay_execution\" }\n",
+        )
+        .unwrap();
+        assert_eq!(ntdll.exports[0].args[0].kind, ArgKind::Boolean);
+        let out = nt_services(&ntdll, "t");
+        assert!(
+            out.contains(
+                "crate::nt::sync::delay_execution(&mut call, args[0] as u8 != 0, \
+                 UserPtr::<u64>::at(args[1]))"
+            ),
+            "{out}"
         );
     }
 

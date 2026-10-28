@@ -38,7 +38,7 @@ use crate::mem::paging;
 use crate::process::exit::{self, Fault, ProcessEnd, ThreadEnd};
 use crate::process::Process;
 use crate::sched::dispatcher::{Dispatcher, Termination};
-use crate::sched::thread::{Thread, ThreadState};
+use crate::sched::thread::{Thread, ThreadId, ThreadState};
 
 /// A fresh thread object for a thread created in `process` over the user stack reserved at
 /// `stack`, with its record and its ordinal in the process, or none (the program-visible create
@@ -47,28 +47,23 @@ use crate::sched::thread::{Thread, ThreadState};
 /// thread's for a process that has none yet (its first thread), else the process's lowest free
 /// one, which places the thread's TEB — an ordinal a terminated thread held has its pages released
 /// first, in this process. The object holds the thread's own reference.
-fn free_thread(
-    process: &mut Process,
-    stack: u32,
-) -> Option<(crate::ob::ObjectId, &'static mut Thread, u16)> {
+fn free_thread(process: &mut Process, stack: u32) -> Option<(crate::ob::ObjectId, ThreadId, u16)> {
     let directory = crate::ob::directory();
-    if !process.has_main_thread() {
+    let (id, ordinal) = if !process.has_main_thread() {
         let id = directory.create_thread()?;
         process.hold_main_thread(id, stack);
-        let thread = directory.threads.record(id.index);
-        *thread = Thread::empty();
-        thread.ordinal = crate::process::ordinals::MAIN;
-        return Some((id, thread, crate::process::ordinals::MAIN));
-    }
-    let ordinal = process.ordinals.free(|id| directory.is_live(id))?;
-    let id = directory.create_thread()?;
-    if let Some(leftover) = process.ordinals.hold(ordinal, id, stack) {
-        release_thread_pages(process, leftover);
-    }
-    let thread = directory.threads.record(id.index);
-    *thread = Thread::empty();
+        (id, crate::process::ordinals::MAIN)
+    } else {
+        let ordinal = process.ordinals.free(|id| directory.is_live(id))?;
+        let id = directory.create_thread()?;
+        if let Some(leftover) = process.ordinals.hold(ordinal, id, stack) {
+            release_thread_pages(process, leftover);
+        }
+        (id, ordinal)
+    };
+    let thread = directory.renew_thread(id);
     thread.ordinal = ordinal;
-    Some((id, thread, ordinal))
+    Some((id, thread.id(), ordinal))
 }
 
 /// Release the user pages a terminated thread left mapped at an ordinal of `process` that is about
@@ -113,11 +108,13 @@ pub fn create(
         return None;
     };
 
-    // Attach: the scheduling data, the process-list membership, and the wait discipline's fixed
-    // wiring.
-    // SAFETY: the record is static (its final address), and the process's thread list is
-    // initialized.
-    unsafe { thread.attach_to(&mut process.sched) };
+    // Attach: the scheduling data and the process-list membership.
+    let dispatcher = crate::sched::idle::dispatcher();
+    // SAFETY: the process record is the pool's, at its final address, and outlives its threads
+    // (its teardown follows the last one's end).
+    unsafe { dispatcher.attach(thread, &mut process.sched) };
+    let record = dispatcher.thread_address(thread);
+    let thread = dispatcher.thread_mut(thread);
 
     thread.gate_slot = slot;
     thread.gate_frames = frames;
@@ -152,7 +149,7 @@ pub fn create(
     unsafe { crate::sched::startup::plant(thread, &params) };
 
     let id = thread.thread_id;
-    Some((object, thread as *mut Thread, id))
+    Some((object, record, id))
 }
 
 /// A user thread's system routine: the kernel function the startup stub calls before entering the
@@ -224,8 +221,7 @@ pub fn critical_region<R>(body: impl FnOnce() -> R) -> R {
 /// the record). The switch away ends the thread's timeline.
 fn end_thread(end: ThreadEnd) -> ! {
     let dispatcher = crate::sched::idle::dispatcher();
-    // SAFETY: the running thread, live and exclusive in the gate.
-    let current = dispatcher.current_thread();
+    let current = dispatcher.current().expect("an exit runs on a thread");
     // The ending thread's process, resolved once: past the switch-away bookkeeping below, the
     // running thread is no longer this one.
     let process = crate::process::current_mut();
@@ -238,22 +234,20 @@ fn end_thread(end: ThreadEnd) -> ! {
         ThreadEnd::Fault(fault) => fault.status,
         ThreadEnd::Terminated(end) => end.exit_status(),
     };
-    // SAFETY: the running thread, live and exclusive in the gate. From here on the thread runs its
-    // own exit: the critical regions of its exit's own volume work do not end it again.
-    unsafe {
-        (*current).exit_status = status;
-        (*current).exiting = true;
-    }
-    // SAFETY: the running thread, live.
+    // From here on the thread runs its own exit: the critical regions of its exit's own volume
+    // work do not end it again.
+    let record = dispatcher.thread_mut(current);
+    record.exit_status = status;
+    record.exiting = true;
     assert!(
-        !unsafe { &*current }.in_critical_region(),
+        !record.in_critical_region(),
         "a thread ends outside critical regions"
     );
 
     // The process's end, step 1 (see `process`'s notes on its order): every other thread is
     // terminated, without running again.
     if plan.terminate_others {
-        let deferred = terminate_others(process, current, |_| status);
+        let deferred = terminate_others(process, Some(current), |_| status);
         let (after, handed) = exit::hand_over(plan, deferred);
         plan = after;
         if let Some(end) = handed {
@@ -271,8 +265,7 @@ fn end_thread(end: ThreadEnd) -> ! {
     // The timers whose completion APC targets this thread are cancelled, then the APC queue
     // closes, both before the scheduler teardown.
     run_down_timers(current);
-    // SAFETY: the running thread, live and exclusive in the gate.
-    unsafe { crate::sched::apc::close_apc_queue(&mut *current) };
+    dispatcher.close_apc_queue(current);
 
     // The thread object signals and its waiters wake, and the thread leaves the process list.
     dispatcher.retire_current();
@@ -284,7 +277,9 @@ fn end_thread(end: ThreadEnd) -> ! {
     }
     // Then the processor's next thread is selected — among the waiters either signal woke — and
     // takes the current slot before the switch (the swap's caller-side install).
-    let selected = dispatcher.select_next();
+    let selected = dispatcher
+        .select_next()
+        .expect("selection always yields the idle fallback");
     dispatcher.enter(selected);
     // The thread has ended: its own reference on its object goes (the record is reused only once
     // nothing holds it, and never before this code is off its stack: a record is renewed by a
@@ -307,51 +302,51 @@ fn end_thread(end: ThreadEnd) -> ! {
 
     // The gate stack is the one this code runs on, so it cannot be unmapped here: it is parked,
     // last, released by whoever next runs on another stack. The stack parked before it is released
-    // now (it is not this one).
-    {
-        // SAFETY: the running thread, live (its record is renewed only by a create, which no
-        // thread runs before the switch away).
-        let thread = unsafe { &*current };
-        crate::mem::kstacks::park((thread.gate_slot, thread.gate_frames));
-    }
+    // now (it is not this one). The record is renewed only by a create, which no thread runs
+    // before the switch away.
+    let record = dispatcher.thread(current);
+    crate::mem::kstacks::park((record.gate_slot, record.gate_frames));
 
     // The switch away, at the dispatch level; the exiting thread's timeline ends at the swap, so
     // its outstanding raises — this one included — are written off.
     let pcr = crate::pcr::pcr();
     let _previous = pcr.raise(crate::interrupt::irql::DISPATCH);
     pcr.write_off_thread();
-    // SAFETY: the selected thread is the selection discipline's own (a woken waiter, a ready
-    // thread, or the idle fallback).
-    unsafe { crate::sched::switch::swap_context(current, selected) };
+    let (from, to) = (
+        dispatcher.thread_address(current),
+        dispatcher.thread_address(selected),
+    );
+    // SAFETY: both records are the database's, pinned; the selected thread is the selection
+    // discipline's own (a woken waiter, a ready thread, or the idle fallback), its frame planted or
+    // saved.
+    unsafe { crate::sched::switch::swap_context(from, to) };
     unreachable!("a terminated thread never resumes")
 }
 
 /// Terminate every thread of `process` but `current` (the running thread, when it is one of the
-/// process's; null otherwise), none of them running again, each with the exit status `status`
-/// gives it: each is taken off whatever holds it and retired, then its gate stack — not the one
-/// this code runs on — is released here. A thread inside a critical region is the exception: it
-/// runs on to the region's end and ends itself there. Returns how many are still finishing a
-/// region so — this call's deferrals, and an earlier one's (a TerminateThread's, or an
-/// ExitProcess's first NtTerminateProcess, whose threads the process's end must still wait for).
+/// process's), none of them running again, each with the exit status `status` gives it: each is
+/// taken off whatever holds it and retired, then its gate stack — not the one this code runs on —
+/// is released here. A thread inside a critical region is the exception: it runs on to the region's
+/// end and ends itself there. Returns how many are still finishing a region so — this call's
+/// deferrals, and an earlier one's (a TerminateThread's, or an ExitProcess's first
+/// NtTerminateProcess, whose threads the process's end must still wait for).
 fn terminate_others(
     process: &mut Process,
-    current: *mut Thread,
+    current: Option<ThreadId>,
     status: impl Fn(&Thread) -> u32,
 ) -> u16 {
     let dispatcher = crate::sched::idle::dispatcher();
     loop {
-        let other = process.sched.first_thread_except(current);
-        if other.is_null() {
+        let Some(other) = dispatcher.first_thread_except(&mut process.sched, current) else {
             // Only the threads whose termination is pending are still attached beside this one.
-            return process.sched.stack_count() - u16::from(!current.is_null());
-        }
-        // SAFETY: an attached thread of the process, off the processor; the record outlives its
-        // termination (it is renewed only by a create, which nothing runs here).
-        let other = unsafe { &mut *other };
-        other.exit_status = status(other);
+            return process.sched.stack_count() - u16::from(current.is_some());
+        };
+        let record = dispatcher.thread_mut(other);
+        record.exit_status = status(record);
         run_down_timers(other);
         if dispatcher.request_termination(other) == Termination::Done {
-            crate::mem::kstacks::release((other.gate_slot, other.gate_frames));
+            let record = dispatcher.thread(other);
+            crate::mem::kstacks::release((record.gate_slot, record.gate_frames));
             // It never returns from whatever it was in: its wait's references and its own go.
             crate::ob::end_thread_references(other);
         }
@@ -363,7 +358,7 @@ fn terminate_others(
 /// inside a critical region finishes it first and ends itself as it leaves), and the calling thread
 /// runs on — its process's own end comes with its next call. `process` is the caller's.
 pub fn terminate_other_threads(process: &mut Process, status: u32) {
-    let current = crate::sched::idle::dispatcher().current_thread();
+    let current = crate::sched::idle::dispatcher().current();
     let _ = terminate_others(process, current, |_| status);
 }
 
@@ -391,7 +386,7 @@ pub fn terminate_process(process: &mut Process, status: u32) {
     assert!(!process.terminating(), "a process is terminated once");
     critical_region(|| {
         let started = core::cell::Cell::new(false);
-        let deferred = terminate_others(process, core::ptr::null_mut(), |thread| {
+        let deferred = terminate_others(process, None, |thread| {
             if thread.user_started {
                 started.set(true);
                 status
@@ -459,7 +454,7 @@ pub fn is_last_thread() -> bool {
 
 /// Cancel the current process's timers whose completion APC targets `thread`, which is ending:
 /// nothing may queue to it any more (the platform's timer rundown at thread exit).
-fn run_down_timers(thread: *mut Thread) {
+fn run_down_timers(thread: ThreadId) {
     crate::ob::directory().run_down_timers(crate::sched::idle::dispatcher(), thread);
 }
 
@@ -489,11 +484,13 @@ pub fn terminate_thread(target: &mut Thread, status: u32) -> Result<(), Terminat
         return Ok(());
     }
     target.exit_status = status;
+    let target = target.id();
     run_down_timers(target);
     let dispatcher = crate::sched::idle::dispatcher();
     if dispatcher.request_termination(target) == Termination::Done {
         // Not the stack this code runs on: release it now.
-        crate::mem::kstacks::release((target.gate_slot, target.gate_frames));
+        let record = dispatcher.thread(target);
+        crate::mem::kstacks::release((record.gate_slot, record.gate_frames));
         // It never returns from whatever it was in: its wait's references and its own go.
         crate::ob::end_thread_references(target);
     }
@@ -507,7 +504,9 @@ pub fn terminate_thread(target: &mut Thread, status: u32) -> Result<(), Terminat
 pub fn start_main_thread(process: &mut Process, user: crate::sched::startup::UserStart) {
     // The main thread's gate slot, TEB page and stack top were taken at process start; only the
     // ladder is missing.
-    let thread = process.main_thread();
+    let thread = process
+        .main_thread()
+        .expect("a started process has its main thread");
     let params = crate::sched::startup::StartParams {
         system_routine: user_thread_startup as u32,
         start_routine: user.eip,
@@ -530,7 +529,11 @@ pub fn start_main_thread(process: &mut Process, user: crate::sched::startup::Use
 pub fn ready_main_thread(process: &mut Process) {
     let _masked = crate::pcr::pcr().mask_guard();
     let dispatcher: &'static mut Dispatcher = crate::sched::idle::dispatcher();
-    dispatcher.make_ready(process.main_thread());
+    dispatcher.make_ready(
+        process
+            .main_thread()
+            .expect("a started process has its main thread"),
+    );
 }
 
 /// The fault-test boots' ring-3 entry: start `process`'s main thread in `user` and ready it, then

@@ -4,7 +4,7 @@
 //! system's name, flags and longest component (FAT32's).
 
 use super::super::call::{Handle, NtCall, NtResult, UserAddr};
-use super::common::{complete, file_object, probe};
+use super::common::{complete, file_object};
 use super::info::{self, Volume};
 use crate::fs::fat32::fat::FatEntry;
 use crate::status::*;
@@ -66,8 +66,8 @@ pub fn query_volume_information_file(
     if (length as usize) < size {
         return Err(STATUS_INFO_LENGTH_MISMATCH);
     }
-    probe(io_status, 8)?;
-    probe(information, length)?;
+    io_status.probe(8)?;
+    information.probe(length)?;
     file_object(handle.raw())?;
     let facts = if class == info::FILE_FS_DEVICE_INFORMATION {
         Volume {

@@ -1,108 +1,198 @@
-//! Serial port module for debugging output
+//! The serial line: a 16550 UART, COM1 at 0x3F8, the kernel's debugging output.
 //!
-//! Uses COM1 at 0x3F8 (standard serial port)
+//! The driver reaches the chip's registers through [`Io`], as the other drivers do, so its
+//! programming runs unchanged on the target against the real ports and in the host tests against
+//! a simulated register file. The line is programmed once, at boot, and written by polling: each
+//! byte waits for the transmit holding register to empty, so output never needs an interrupt.
 
-#[cfg(target_arch = "x86")]
-use core::arch::asm;
-#[cfg(target_arch = "x86")]
-use core::fmt::{self, Write};
+use crate::hw::portio::Io;
 
-/// Standard COM1 port address
-const COM1: u16 = 0x3F8;
+/// COM1's base port.
+pub const COM1: u16 = 0x3F8;
 
-/// Initialize serial port
-#[cfg(target_arch = "x86")]
-pub fn init() {
-    // SAFETY: ports 0x3F8-0x3FC are COM1's UART registers, which only this module drives; the
-    // writes program the line (38400 baud, 8N1, FIFOs, DTR/RTS) and touch no memory.
-    unsafe {
-        // Disable interrupts
-        write_byte(COM1 + 1, 0x00);
+/// The register offsets from the base. With the divisor latch open (DLAB set), offsets 0 and 1
+/// are the baud divisor's low and high bytes.
+const DATA: u16 = 0;
+const INTERRUPT_ENABLE: u16 = 1;
+const FIFO_CONTROL: u16 = 2;
+const LINE_CONTROL: u16 = 3;
+const MODEM_CONTROL: u16 = 4;
+const LINE_STATUS: u16 = 5;
 
-        // Set baud rate divisor to 3 (38400 baud for 1.8432 MHz clock)
-        write_byte(COM1 + 3, 0x80); // Set DLAB (bit 7)
-        write_byte(COM1 + 0, 0x03); // Low byte of divisor
-        write_byte(COM1 + 1, 0x00); // High byte of divisor
+/// Line control: the divisor latch access bit.
+const DLAB: u8 = 0x80;
+/// Line control: 8 data bits, no parity, one stop bit.
+const EIGHT_N_ONE: u8 = 0x03;
+/// The baud divisor for 38400 baud from the 1.8432 MHz clock.
+const DIVISOR_38400: u16 = 3;
+/// FIFO control: enable the FIFOs, clear both, 14-byte receive trigger.
+const FIFO_ENABLE_CLEAR: u8 = 0xC7;
+/// Modem control: data terminal ready, request to send, and OUT2.
+const DTR_RTS_OUT2: u8 = 0x0B;
+/// Line status: the transmit holding register is empty.
+const TRANSMIT_EMPTY: u8 = 0x20;
 
-        // 8 bits, no parity, one stop bit
-        write_byte(COM1 + 3, 0x03);
+/// A 16550 UART at `base` in the port space `IoT`.
+pub struct Uart<IoT: Io> {
+    io: IoT,
+    base: u16,
+}
 
-        // Enable FIFO, clear them
-        write_byte(COM1 + 2, 0xC7);
-
-        // Mark data terminal ready and request to send
-        write_byte(COM1 + 4, 0x0B);
+impl<IoT: Io> Uart<IoT> {
+    /// The UART at `base`.
+    pub const fn new(io: IoT, base: u16) -> Self {
+        Uart { io, base }
     }
-}
 
-/// Write a byte to an I/O port.
-///
-/// The UART lives in x86 I/O port space, which is only reachable with the `in`/`out` instructions.
-/// A volatile pointer write to 0x3F8 would hit RAM.
-#[cfg(target_arch = "x86")]
-unsafe fn write_byte(port: u16, byte: u8) {
-    asm!("out dx, al", in("dx") port, in("al") byte, options(nomem, nostack, preserves_flags));
-}
+    /// The port space (the host tests' simulation).
+    #[cfg(test)]
+    pub fn io(&mut self) -> &mut IoT {
+        &mut self.io
+    }
 
-/// Read a byte from an I/O port.
-#[cfg(target_arch = "x86")]
-unsafe fn read_byte(port: u16) -> u8 {
-    let byte: u8;
-    asm!("in al, dx", out("al") byte, in("dx") port, options(nomem, nostack, preserves_flags));
-    byte
-}
+    /// Program the line: no interrupts, 38400 baud, 8N1, FIFOs on and cleared, DTR and RTS.
+    pub fn init(&mut self) {
+        self.write_register(INTERRUPT_ENABLE, 0x00);
+        self.write_register(LINE_CONTROL, DLAB);
+        let [low, high] = DIVISOR_38400.to_le_bytes();
+        self.write_register(DATA, low);
+        self.write_register(INTERRUPT_ENABLE, high);
+        self.write_register(LINE_CONTROL, EIGHT_N_ONE);
+        self.write_register(FIFO_CONTROL, FIFO_ENABLE_CLEAR);
+        self.write_register(MODEM_CONTROL, DTR_RTS_OUT2);
+    }
 
-/// Wait for serial port to be ready to transmit
-#[cfg(target_arch = "x86")]
-fn wait_transmit() {
-    // SAFETY: port 0x3FD is COM1's line status register; reading it changes nothing the
-    // transmit path depends on and touches no memory.
-    unsafe {
-        // Wait for Transmitter Holding Register to be empty
-        while read_byte(COM1 + 5) & 0x20 == 0 {
+    /// Send one byte, once the transmit holding register has emptied.
+    pub fn write_byte(&mut self, byte: u8) {
+        while self.io.read(self.base + LINE_STATUS) & TRANSMIT_EMPTY == 0 {
             core::hint::spin_loop();
         }
+        self.write_register(DATA, byte);
+    }
+
+    fn write_register(&mut self, offset: u16, byte: u8) {
+        self.io.out(self.base + offset, byte);
     }
 }
 
-/// Write a byte to serial port (waits if needed)
-#[cfg(target_arch = "x86")]
-pub fn write_byte_blocking(byte: u8) {
-    wait_transmit();
-    // SAFETY: port 0x3F8 is COM1's transmit register (the divisor latch is off since `init`),
-    // empty after the wait above; the write touches no memory.
-    unsafe {
-        write_byte(COM1, byte);
-    }
-}
-
-/// Serial port writer for formatting
-pub struct SerialPort;
-
-#[cfg(target_arch = "x86")]
-impl Write for SerialPort {
-    fn write_str(&mut self, s: &str) -> fmt::Result {
-        for byte in s.bytes() {
-            write_byte_blocking(byte);
-        }
+impl<IoT: Io> core::fmt::Write for Uart<IoT> {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        s.bytes().for_each(|byte| self.write_byte(byte));
         Ok(())
     }
 }
 
-/// Print macro for serial output
+/// COM1 over the real ports. The line holds no state of its own beyond the chip's, so every
+/// writer makes its own.
+#[cfg(target_arch = "x86")]
+pub fn com1() -> Uart<crate::hw::portio::Ports> {
+    Uart::new(crate::hw::portio::Ports, COM1)
+}
+
+/// Program COM1 (boot, before the first line).
+#[cfg(target_arch = "x86")]
+pub fn init() {
+    com1().init();
+}
+
+/// Send one byte to COM1, waiting for room.
+#[cfg(target_arch = "x86")]
+pub fn write_byte_blocking(byte: u8) {
+    com1().write_byte(byte);
+}
+
+/// Print to COM1, formatted.
 #[macro_export]
 macro_rules! serial_print {
     ($($arg:tt)*) => {
-        let mut writer = $crate::hw::serial::SerialPort;
+        let mut writer = $crate::hw::serial::com1();
         core::fmt::write(&mut writer, format_args!($($arg)*)).unwrap();
     };
 }
 
-/// Println macro for serial output
+/// Print a line to COM1, formatted.
 #[macro_export]
 macro_rules! serial_println {
     ($($arg:tt)*) => {
         $crate::serial_print!($($arg)*);
         $crate::hw::serial::write_byte_blocking(b'\n');
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The port writes in order, and a line status register that reports the transmitter busy for
+    /// a set number of reads before it empties.
+    struct Line {
+        writes: Vec<(u16, u8)>,
+        busy_reads: u32,
+    }
+
+    impl Io for Line {
+        fn out(&mut self, port: u16, byte: u8) {
+            self.writes.push((port, byte));
+        }
+
+        fn read(&mut self, port: u16) -> u8 {
+            assert_eq!(port, COM1 + LINE_STATUS);
+            if self.busy_reads > 0 {
+                self.busy_reads -= 1;
+                0
+            } else {
+                TRANSMIT_EMPTY
+            }
+        }
+
+        fn read_word(&mut self, _port: u16) -> u16 {
+            unreachable!("the UART has no word registers")
+        }
+    }
+
+    fn uart() -> Uart<Line> {
+        Uart::new(
+            Line {
+                writes: Vec::new(),
+                busy_reads: 0,
+            },
+            COM1,
+        )
+    }
+
+    /// The bring-up programs COM1 as the boot always has: interrupts off, the divisor 3 behind
+    /// the latch, 8N1, the FIFOs, DTR and RTS.
+    #[test]
+    fn init_programs_the_line() {
+        let mut uart = uart();
+        uart.init();
+        assert_eq!(
+            uart.io().writes,
+            [
+                (0x3F9, 0x00),
+                (0x3FB, 0x80),
+                (0x3F8, 0x03),
+                (0x3F9, 0x00),
+                (0x3FB, 0x03),
+                (0x3FA, 0xC7),
+                (0x3FC, 0x0B),
+            ]
+        );
+    }
+
+    /// A byte waits for the transmitter, then goes to the data register; formatted text goes
+    /// byte by byte.
+    #[test]
+    fn bytes_wait_for_the_transmitter() {
+        use core::fmt::Write;
+        let mut uart = uart();
+        uart.io().busy_reads = 3;
+        uart.write_byte(b'A');
+        assert_eq!(uart.io().busy_reads, 0);
+        write!(uart, "{}{}", 4, 2).unwrap();
+        assert_eq!(
+            uart.io().writes,
+            [(0x3F8, b'A'), (0x3F8, b'4'), (0x3F8, b'2')]
+        );
+    }
 }

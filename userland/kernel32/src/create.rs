@@ -266,7 +266,7 @@ impl<T: Copy + Default> DerefMut for HeapArray<T> {
 impl<T: Copy + Default> Drop for HeapArray<T> {
     fn drop(&mut self) {
         // SAFETY: the block allocate_heap made, not used again.
-        unsafe { ntcall::free_heap(self.block.cast()) };
+        unsafe { ntcall::free_heap(self.block.as_ptr().cast()) };
     }
 }
 
@@ -284,7 +284,7 @@ impl Owned {
 
 impl Drop for Owned {
     fn drop(&mut self) {
-        ntcall::close(self.0);
+        let _ = ntcall::close(self.0);
     }
 }
 

@@ -3,12 +3,14 @@
 //!
 //! The logic is pure over `&dyn BlockDevice`, so the host tests run it against in-memory volumes;
 //! the boot mounts the first registered partition and keeps it for later users (`volume`). The
-//! boot sector and its gates are [`boot_sector`], the mount state and cluster math [`layout`],
-//! the entry decode and the FAT sector cache [`fat`], the mount and the boot volume [`volume`],
-//! directory records [`dirent`], path components [`path`], the directory walk with its long names
-//! [`dir`], path lookup [`lookup`], the chain read [`read`], the writes (allocation, data, sizes
-//! and directory entries) [`write`], and the host tests' shared volumes, devices, and captured
-//! sectors [`fixtures`].
+//! on-disk structures' little-endian fields are [`raw`], the boot sector and its gates
+//! [`boot_sector`], the mount state and cluster math [`layout`], the entry decode and the FAT
+//! sector cache [`fat`], the mount and the boot volume [`volume`], directory records [`dirent`],
+//! path components [`path`], the directory walk with its long names [`dir`], path lookup
+//! [`lookup`], the chain read [`read`], the writes (allocation, data, sizes and directory entries)
+//! [`write`], and the host tests' shared volumes, devices, and captured sectors [`fixtures`].
+
+use crate::status::NtStatus;
 
 pub mod boot_sector;
 pub mod dir;
@@ -19,6 +21,16 @@ pub(crate) mod fixtures;
 pub mod layout;
 pub mod lookup;
 pub mod path;
+pub mod raw;
 pub mod read;
 pub mod volume;
 pub mod write;
+
+/// A device call's status as a result: success, or the failure status itself.
+fn check(status: NtStatus) -> Result<(), NtStatus> {
+    if status.is_success() {
+        Ok(())
+    } else {
+        Err(status)
+    }
+}

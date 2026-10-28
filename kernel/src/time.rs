@@ -13,6 +13,8 @@
 //! it resolves well below a tick, and it never goes back.
 
 use crate::hw::rtc::CivilTime;
+#[cfg(target_arch = "x86")]
+use crate::level::{self, At, Clock, LevelCell};
 
 /// The performance counter's frequency: the 8254's input clock.
 pub const PERFORMANCE_FREQUENCY: u64 = 1_193_182;
@@ -108,49 +110,53 @@ impl PerformanceCounter {
     }
 }
 
-/// The kernel's performance counter reader.
+/// The kernel's performance counter reader: clock-level state, as the readings it combines are
+/// the clock's.
 #[cfg(target_arch = "x86")]
-static mut PERFORMANCE_COUNTER: PerformanceCounter = PerformanceCounter::new();
+static PERFORMANCE_COUNTER: LevelCell<Clock, PerformanceCounter> =
+    LevelCell::new(PerformanceCounter::new());
 
 /// The performance counter now: the interrupt time, the interval timer's count, and the clock's
-/// request line read together with interrupts masked.
+/// request line read together with interrupts masked, the reader's update inside the same mask.
 #[cfg(target_arch = "x86")]
 pub fn performance_counter() -> u64 {
     let _masked = crate::pcr::pcr().mask_guard();
     let base = performance_count(crate::interrupt::clock::interrupt_time());
     let count = crate::hw::pit::read_count(&mut crate::hw::portio::Ports);
     let pending = crate::interrupt::clock_requested();
-    // SAFETY: the reader's one user, serialized with interrupts masked.
-    unsafe {
-        (*core::ptr::addr_of_mut!(PERFORMANCE_COUNTER)).read(
-            base,
-            count,
-            pending,
-            crate::hw::pit::programmed_divisor(),
-        )
-    }
+    let divisor = crate::hw::pit::programmed_divisor();
+    level::raised::<Clock, _>(|at_clock| {
+        PERFORMANCE_COUNTER
+            .get(at_clock)
+            .read(base, count, pending, divisor)
+    })
 }
 
 /// The boot's wall-clock reading, a FILETIME: set at boot, and moved when the system time is set
-/// ([`set_system_filetime`]).
+/// ([`set_system_filetime`]). Clock-level state: the clock interrupt reads it for the shared data
+/// page's system time, and a 64-bit value is two loads on this processor, so every other reader
+/// and writer raises to the clock level for its access.
 #[cfg(target_arch = "x86")]
-static mut BOOT_FILETIME: u64 = FALLBACK_BOOT;
+static BOOT_FILETIME: LevelCell<Clock, u64> = LevelCell::new(FALLBACK_BOOT);
 
 /// Record the boot's wall-clock reading from the real-time clock (the fallback when it has none).
 /// Call once, at boot, while the kernel clock still reads zero.
 #[cfg(target_arch = "x86")]
 pub fn init<IoT: crate::hw::portio::Io>(io: &mut IoT) {
     let boot = crate::hw::rtc::read(io).map_or(FALLBACK_BOOT, filetime_from_civil);
-    // SAFETY: written once at boot, before any reader runs.
-    unsafe { BOOT_FILETIME = boot };
+    level::raised::<Clock, _>(|at_clock| *BOOT_FILETIME.get(at_clock) = boot);
 }
 
-/// The boot's wall-clock reading.
+/// The boot's wall-clock reading, from code that holds no level token.
 #[cfg(target_arch = "x86")]
 pub fn boot_filetime() -> u64 {
-    // SAFETY: a single processor; the writer ([`set_system_filetime`]) masks interrupts across its
-    // write, so a reader never sees half of it.
-    unsafe { BOOT_FILETIME }
+    level::raised::<Clock, _>(boot_filetime_at)
+}
+
+/// The boot's wall-clock reading, at the clock level (the clock interrupt's).
+#[cfg(target_arch = "x86")]
+pub fn boot_filetime_at(at_clock: &mut At<Clock>) -> u64 {
+    *BOOT_FILETIME.get(at_clock)
 }
 
 /// The current wall-clock time, a FILETIME.
@@ -163,12 +169,13 @@ pub fn system_filetime() -> u64 {
 /// time reads `now`, and the shared data page's system time written at once rather than at the
 /// next full tick. The kernel's clock and its timers keep their own count (a relative wait is not
 /// moved), and the real-time clock is not written: the machine's next boot reads its own again.
+/// Interrupts stay masked from the clock's reading to the page's write, so no tick lands between
+/// them.
 #[cfg(target_arch = "x86")]
 pub fn set_system_filetime(now: u64) {
     let _masked = crate::pcr::pcr().mask_guard();
     let boot = now.wrapping_sub(crate::interrupt::clock::system_time());
-    // SAFETY: a single processor, interrupts masked: no reader runs across the write.
-    unsafe { BOOT_FILETIME = boot };
+    level::raised::<Clock, _>(|at_clock| *BOOT_FILETIME.get(at_clock) = boot);
     crate::user::shared::set_system_time(now);
 }
 

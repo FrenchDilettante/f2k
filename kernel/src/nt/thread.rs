@@ -11,6 +11,7 @@
 //! as Windows 2000 checks it (STATUS_INFO_LENGTH_MISMATCH).
 
 use super::call::{Handle, NtCall, NtResult, UserAddr, UserPtr};
+use super::process::ClientId;
 use crate::status::*;
 
 /// THREADINFOCLASS: the classes F2K answers.
@@ -205,17 +206,15 @@ pub fn create_thread(
     client_id: UserAddr,
     context: UserAddr,
     initial_teb: UserAddr,
-    create_suspended: u32,
+    create_suspended: bool,
 ) -> NtResult {
+    let client_id = client_id.cast::<ClientId>();
     // The pointers the create writes back, probed before anything is read or made.
-    let probe = |at: u32, size: u32| {
-        crate::user::syscall::probe_user_range(at, size).map_err(|_| STATUS_ACCESS_VIOLATION)
-    };
     if handle.addr().is_null() {
         return Err(STATUS_ACCESS_VIOLATION);
     }
-    probe(handle.addr().raw(), 4)?;
-    probe(client_id.raw(), 8)?;
+    handle.addr().probe(4)?;
+    client_id.addr().probe(size_of::<ClientId>() as u32)?;
     let context = super::exception::read_context(context)?;
     let mut teb = [0u8; INITIAL_TEB_SIZE];
     initial_teb.read(&mut teb)?;
@@ -249,14 +248,12 @@ pub fn create_thread(
         // Written back as the platform writes them, the thread created whatever happens to the
         // caller's memory (kernel32's own locals, probed above).
         let _ = handle.write(opened);
-        if !client_id.is_null() {
-            let mut cid = [0u8; 8];
-            cid[..4].copy_from_slice(&target.record().id().to_le_bytes());
-            cid[4..].copy_from_slice(&id.to_le_bytes());
-            let _ = client_id.write(&cid);
-        }
+        let _ = client_id.write_optional(ClientId {
+            unique_process: target.record().id(),
+            unique_thread: id,
+        });
         let dispatcher = crate::sched::idle::dispatcher();
-        if create_suspended & 0xFF != 0 {
+        if create_suspended {
             // The suspend APC queues on the never-run thread; its startup delivers it before the
             // first user instruction, parking it until a resume. A fresh thread is never at the
             // count's maximum nor terminating, so the suspend cannot be refused.
@@ -333,7 +330,7 @@ pub fn terminate_thread(_call: &mut NtCall, thread: Handle, status: u32) -> NtRe
 pub fn suspend_thread(_call: &mut NtCall, thread: Handle, previous: UserPtr<u32>) -> NtResult {
     #[cfg(target_arch = "x86")]
     {
-        super::sync::probe(previous.addr().raw(), 4)?;
+        previous.addr().probe(4)?;
         let mut thread = thread_of(thread)?;
         if thread.state() == crate::sched::thread::ThreadState::Terminated {
             return Err(STATUS_THREAD_IS_TERMINATING);
@@ -355,7 +352,7 @@ pub fn suspend_thread(_call: &mut NtCall, thread: Handle, previous: UserPtr<u32>
 pub fn resume_thread(_call: &mut NtCall, thread: Handle, previous: UserPtr<u32>) -> NtResult {
     #[cfg(target_arch = "x86")]
     {
-        super::sync::probe(previous.addr().raw(), 4)?;
+        previous.addr().probe(4)?;
         let mut thread = thread_of(thread)?;
         let count = if thread.state() == crate::sched::thread::ThreadState::Terminated {
             0

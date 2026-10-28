@@ -19,24 +19,21 @@
 //! `f2k_k32_tls_expansion` in src/main.rs; a set that finds no room fails with
 //! ERROR_NOT_ENOUGH_MEMORY).
 
-use rtl::status::nt_success;
-
 use crate::base::{
-    peb,
     read_pointer,
     set_last_error,
     set_last_nt_error,
     teb_address,
-    under_peb_lock,
+    win32_bool,
     write,
     SecurityAttributes,
     CURRENT_PROCESS,
     CURRENT_THREAD,
 };
-use crate::{nt, ntcall};
+use crate::nt;
+use crate::ntcall::{self, PebLock, TlsBitmap};
 
-/// THREADINFOCLASS: the classes kernel32 asks.
-const THREAD_BASIC_INFORMATION: u32 = 0;
+/// THREADINFOCLASS: the classes kernel32 asks (ThreadBasicInformation is [`ntcall`]'s).
 const THREAD_BASE_PRIORITY: u32 = 3;
 const THREAD_ZERO_TLS_CELL: u32 = 10;
 const THREAD_AM_I_LAST_THREAD: u32 = 12;
@@ -55,61 +52,11 @@ const THREAD_PRIORITY_ERROR_RETURN: i32 = 0x7FFF_FFFF;
 /// TlsAlloc's failure.
 const TLS_OUT_OF_INDEXES: u32 = 0xFFFF_FFFF;
 
-/// The PEB's TlsBitmap and TlsExpansionBitmap (pointers to their RTL_BITMAP headers), and the TEB's
-/// TlsSlots and TlsExpansionSlots.
-const PEB_TLS_BITMAP: usize = 0x40;
-const PEB_TLS_EXPANSION_BITMAP: usize = 0x150;
+/// The TEB's TlsSlots and TlsExpansionSlots (the PEB's bitmaps are [`ntcall::TlsBitmap`]'s).
 const TEB_TLS_SLOTS: usize = 0xE10;
 const TEB_TLS_EXPANSION_SLOTS: usize = 0xF94;
 /// The TEB's own slots: indexes below this are theirs.
 const TEB_SLOTS: u32 = 64;
-
-/// THREAD_BASIC_INFORMATION.
-#[repr(C)]
-#[derive(Default)]
-struct BasicInformation {
-    exit_status: u32,
-    teb: u32,
-    process_id: u32,
-    thread_id: u32,
-    affinity_mask: u32,
-    priority: i32,
-    base_priority: i32,
-}
-
-/// The thread's basic information, or the status that refused it.
-fn basic_information(thread: u32) -> Result<BasicInformation, u32> {
-    let mut info = BasicInformation::default();
-    let size = core::mem::size_of::<BasicInformation>() as u32;
-    // SAFETY: ntdll's export, over the structure above.
-    let status = unsafe {
-        nt::NtQueryInformationThread(
-            thread,
-            THREAD_BASIC_INFORMATION,
-            (&mut info as *mut BasicInformation).cast(),
-            size,
-            core::ptr::null_mut(),
-        )
-    };
-    if nt_success(status) {
-        Ok(info)
-    } else {
-        Err(status)
-    }
-}
-
-/// NtSetInformationThread with a dword: TRUE, or FALSE with the status's error set.
-fn set_information(thread: u32, class: u32, value: u32) -> u32 {
-    // SAFETY: ntdll's export, over the value above.
-    let status =
-        unsafe { nt::NtSetInformationThread(thread, class, (&value as *const u32).cast(), 4) };
-    if nt_success(status) {
-        1
-    } else {
-        set_last_nt_error(status);
-        0
-    }
-}
 
 /// THREAD_ALL_ACCESS: what CreateThread's handle grants.
 const THREAD_ALL_ACCESS: u32 = 0x001F_03FF;
@@ -325,33 +272,28 @@ pub unsafe extern "system" fn create_thread(
             None,
         )
     };
-    let (mut handle, mut client_id) = (0u32, [0usize; 2]);
-    // SAFETY: ntdll's export, over the locals above.
-    let status = unsafe {
-        nt::NtCreateThread(
-            &mut handle,
-            THREAD_ALL_ACCESS,
-            object_attributes,
-            CURRENT_PROCESS,
-            client_id.as_mut_ptr(),
-            context.as_ptr(),
-            &stack,
-            1,
-        )
+    let created = ntcall::create_thread(
+        CURRENT_PROCESS,
+        THREAD_ALL_ACCESS,
+        object_attributes,
+        &context,
+        &stack,
+        true,
+    );
+    let (handle, client_id) = match created {
+        Ok(created) => created,
+        Err(status) => {
+            free_stack(CURRENT_PROCESS, stack.allocation_base);
+            set_last_nt_error(status);
+            return 0;
+        }
     };
-    if !nt_success(status) {
-        free_stack(CURRENT_PROCESS, stack.allocation_base);
-        set_last_nt_error(status);
-        return 0;
-    }
     if !thread_id.is_null() {
         // SAFETY: the caller's contract.
-        unsafe { thread_id.write(client_id[1] as u32) };
+        unsafe { thread_id.write(client_id.unique_thread as u32) };
     }
     if flags & CREATE_SUSPENDED == 0 {
-        let mut previous = 0;
-        // SAFETY: ntdll's export.
-        unsafe { nt::NtResumeThread(handle, &mut previous) };
+        let _ = ntcall::resume_thread(handle);
     }
     handle
 }
@@ -362,25 +304,13 @@ pub unsafe extern "system" fn create_thread(
 /// refuses the last thread, and the process ends instead.
 #[unsafe(export_name = "f2k_export_ExitThread")]
 pub extern "system" fn exit_thread(code: u32) -> ! {
-    let mut last = 0u32;
-    // SAFETY: ntdll's export, over the local above.
-    let status = unsafe {
-        nt::NtQueryInformationThread(
-            CURRENT_THREAD,
-            THREAD_AM_I_LAST_THREAD,
-            (&mut last as *mut u32).cast(),
-            4,
-            core::ptr::null_mut(),
-        )
-    };
-    if status == 0 && last != 0 {
+    let last = ntcall::query_thread::<u32>(CURRENT_THREAD, THREAD_AM_I_LAST_THREAD);
+    if matches!(last, Ok(last) if last != 0) {
         crate::process::exit_process(code);
     }
-    // SAFETY: ntdll's exports; the thread's own TLS goes, then the thread.
-    unsafe {
-        nt::LdrShutdownThread();
-        nt::NtTerminateThread(0, code);
-    }
+    // The thread's own TLS goes, then the thread.
+    ntcall::shutdown_thread();
+    let _ = ntcall::terminate_thread(0, code);
     crate::process::exit_process(code)
 }
 
@@ -401,44 +331,29 @@ pub extern "system" fn terminate_thread(thread: u32, code: u32) -> u32 {
         set_last_error(ERROR_INVALID_HANDLE);
         return 0;
     }
-    // SAFETY: ntdll's export.
-    let status = unsafe { nt::NtTerminateThread(thread, code) };
-    if nt_success(status) {
-        1
-    } else {
+    win32_bool(ntcall::terminate_thread(thread, code))
+}
+
+/// A suspend count's answer: the previous count, or (DWORD)-1 with the status's error.
+fn suspend_count(result: Result<u32, ntcall::NtStatus>) -> u32 {
+    result.unwrap_or_else(|status| {
         set_last_nt_error(status);
-        0
-    }
+        u32::MAX
+    })
 }
 
 /// SuspendThread: NtSuspendThread; the previous suspend count, or (DWORD)-1 with the status's error
 /// (ERROR_SIGNAL_REFUSED at the count's maximum, ERROR_ACCESS_DENIED for a thread that has ended).
 #[unsafe(export_name = "f2k_export_SuspendThread")]
 pub extern "system" fn suspend_thread(thread: u32) -> u32 {
-    let mut previous = 0;
-    // SAFETY: ntdll's export.
-    let status = unsafe { nt::NtSuspendThread(thread, &mut previous) };
-    if nt_success(status) {
-        previous
-    } else {
-        set_last_nt_error(status);
-        u32::MAX
-    }
+    suspend_count(ntcall::suspend_thread(thread))
 }
 
 /// ResumeThread: NtResumeThread; the previous suspend count (zero for a thread nobody suspended,
 /// and for one that has ended), or (DWORD)-1 with the status's error.
 #[unsafe(export_name = "f2k_export_ResumeThread")]
 pub extern "system" fn resume_thread(thread: u32) -> u32 {
-    let mut previous = 0;
-    // SAFETY: ntdll's export.
-    let status = unsafe { nt::NtResumeThread(thread, &mut previous) };
-    if nt_success(status) {
-        previous
-    } else {
-        set_last_nt_error(status);
-        u32::MAX
-    }
+    suspend_count(ntcall::resume_thread(thread))
 }
 
 /// GetExitCodeThread: the basic information's exit status (STILL_ACTIVE while the thread lives).
@@ -448,7 +363,7 @@ pub extern "system" fn resume_thread(thread: u32) -> u32 {
 /// `code` is writable (a bad pointer faults the caller, as on Windows 2000).
 #[unsafe(export_name = "f2k_export_GetExitCodeThread")]
 pub unsafe extern "system" fn get_exit_code_thread(thread: u32, code: *mut u32) -> u32 {
-    match basic_information(thread) {
+    match ntcall::thread_basic_information(thread) {
         Ok(info) => {
             // SAFETY: the caller's contract.
             unsafe { code.write(info.exit_status) };
@@ -486,14 +401,18 @@ pub fn thread_priority(base_priority: i32) -> i32 {
 /// thread the higher takes the processor before the call returns).
 #[unsafe(export_name = "f2k_export_SetThreadPriority")]
 pub extern "system" fn set_thread_priority(thread: u32, priority: i32) -> u32 {
-    set_information(thread, THREAD_BASE_PRIORITY, base_priority(priority) as u32)
+    win32_bool(ntcall::set_thread(
+        thread,
+        THREAD_BASE_PRIORITY,
+        &base_priority(priority),
+    ))
 }
 
 /// GetThreadPriority: the basic information's BasePriority, as SetThreadPriority names it;
 /// THREAD_PRIORITY_ERROR_RETURN with the status's error.
 #[unsafe(export_name = "f2k_export_GetThreadPriority")]
 pub extern "system" fn get_thread_priority(thread: u32) -> i32 {
-    match basic_information(thread) {
+    match ntcall::thread_basic_information(thread) {
         Ok(info) => thread_priority(info.base_priority),
         Err(status) => {
             set_last_nt_error(status);
@@ -509,51 +428,27 @@ pub extern "system" fn get_thread_priority(thread: u32) -> i32 {
 /// `disabled` is writable (a bad pointer faults the caller).
 #[unsafe(export_name = "f2k_export_GetThreadPriorityBoost")]
 pub unsafe extern "system" fn get_thread_priority_boost(thread: u32, disabled: *mut u32) -> u32 {
-    let mut value = 0u32;
-    // SAFETY: ntdll's export, over the value above.
-    let status = unsafe {
-        nt::NtQueryInformationThread(
-            thread,
-            THREAD_PRIORITY_BOOST,
-            (&mut value as *mut u32).cast(),
-            4,
-            core::ptr::null_mut(),
-        )
-    };
-    if !nt_success(status) {
-        set_last_nt_error(status);
-        return 0;
+    match ntcall::query_thread::<u32>(thread, THREAD_PRIORITY_BOOST) {
+        Ok(value) => {
+            // SAFETY: the caller's contract.
+            unsafe { disabled.write(value) };
+            1
+        }
+        Err(status) => {
+            set_last_nt_error(status);
+            0
+        }
     }
-    // SAFETY: the caller's contract.
-    unsafe { disabled.write(value) };
-    1
 }
 
 /// SetThreadPriorityBoost: ThreadPriorityBoost, the BOOL as TRUE or FALSE.
 #[unsafe(export_name = "f2k_export_SetThreadPriorityBoost")]
 pub extern "system" fn set_thread_priority_boost(thread: u32, disable: u32) -> u32 {
-    set_information(thread, THREAD_PRIORITY_BOOST, u32::from(disable != 0))
-}
-
-/// The lowest clear bit of the RTL_BITMAP at `header`, set (ntdll's RtlFindClearBitsAndSet, one bit
-/// from the start); none when every bit is.
-fn find_clear_and_set(header: usize) -> Option<u32> {
-    // SAFETY: ntdll's export, over one of the PEB's TLS bitmaps (the caller holds the PEB lock).
-    let index = unsafe { nt::RtlFindClearBitsAndSet(header as *mut nt::RtlBitmap, 1, 0) };
-    (index != u32::MAX).then_some(index)
-}
-
-/// Whether bit `index` of the RTL_BITMAP at `header` is set (ntdll's RtlAreBitsSet: false past its
-/// end).
-fn bit_set(header: usize, index: u32) -> bool {
-    // SAFETY: as above.
-    unsafe { nt::RtlAreBitsSet(header as *const nt::RtlBitmap, index, 1) != 0 }
-}
-
-/// Clear bit `index` of the RTL_BITMAP at `header` (ntdll's RtlClearBits).
-fn clear_bit(header: usize, index: u32) {
-    // SAFETY: as above.
-    unsafe { nt::RtlClearBits(header as *mut nt::RtlBitmap, index, 1) };
+    win32_bool(ntcall::set_thread(
+        thread,
+        THREAD_PRIORITY_BOOST,
+        &u32::from(disable != 0),
+    ))
 }
 
 /// TlsAlloc: the lowest free index — the TEB's slots' first, then the expansion slots' — marked in
@@ -562,23 +457,21 @@ fn clear_bit(header: usize, index: u32) {
 /// TLS_OUT_OF_INDEXES with ERROR_NOT_ENOUGH_MEMORY when all 1088 are taken.
 #[unsafe(export_name = "f2k_export_TlsAlloc")]
 pub extern "system" fn tls_alloc() -> u32 {
-    let (peb, teb) = (peb(), teb_address());
-    under_peb_lock(|| {
-        if let Some(index) = find_clear_and_set(read_pointer(peb + PEB_TLS_BITMAP)) {
-            write(teb + TEB_TLS_SLOTS + 4 * index as usize, 0);
-            index
-        } else if let Some(index) = find_clear_and_set(read_pointer(peb + PEB_TLS_EXPANSION_BITMAP))
-        {
-            let expansion = read_pointer(teb + TEB_TLS_EXPANSION_SLOTS);
-            if expansion != 0 {
-                write(expansion + 4 * index as usize, 0);
-            }
-            TEB_SLOTS + index
-        } else {
-            set_last_nt_error(STATUS_NO_MEMORY);
-            TLS_OUT_OF_INDEXES
+    let teb = teb_address();
+    let lock = PebLock::acquire();
+    if let Some(index) = ntcall::find_clear_bit_and_set(&lock, TlsBitmap::Slots) {
+        write(teb + TEB_TLS_SLOTS + 4 * index as usize, 0);
+        index
+    } else if let Some(index) = ntcall::find_clear_bit_and_set(&lock, TlsBitmap::Expansion) {
+        let expansion = read_pointer(teb + TEB_TLS_EXPANSION_SLOTS);
+        if expansion != 0 {
+            write(expansion + 4 * index as usize, 0);
         }
-    })
+        TEB_SLOTS + index
+    } else {
+        set_last_nt_error(STATUS_NO_MEMORY);
+        TLS_OUT_OF_INDEXES
+    }
 }
 
 /// TlsFree: an allocated index's slot zeroed in every thread of the process
@@ -586,35 +479,20 @@ pub extern "system" fn tls_alloc() -> u32 {
 /// ERROR_INVALID_PARAMETER for an index not allocated (or past the last).
 #[unsafe(export_name = "f2k_export_TlsFree")]
 pub extern "system" fn tls_free(index: u32) -> u32 {
-    let peb = peb();
-    let (header, bit) = if index >= TEB_SLOTS {
-        (
-            read_pointer(peb + PEB_TLS_EXPANSION_BITMAP),
-            index - TEB_SLOTS,
-        )
+    let (bitmap, bit) = if index >= TEB_SLOTS {
+        (TlsBitmap::Expansion, index - TEB_SLOTS)
     } else {
-        (read_pointer(peb + PEB_TLS_BITMAP), index)
+        (TlsBitmap::Slots, index)
     };
-    under_peb_lock(|| {
-        let freed = bit_set(header, bit) && {
-            // SAFETY: ntdll's export, over the index.
-            let status = unsafe {
-                nt::NtSetInformationThread(
-                    CURRENT_THREAD,
-                    THREAD_ZERO_TLS_CELL,
-                    (&index as *const u32).cast(),
-                    4,
-                )
-            };
-            nt_success(status)
-        };
-        if freed {
-            clear_bit(header, bit);
-        } else {
-            set_last_nt_error(STATUS_INVALID_PARAMETER);
-        }
-        u32::from(freed)
-    })
+    let lock = PebLock::acquire();
+    let freed = ntcall::is_bit_set(&lock, bitmap, bit)
+        && ntcall::set_thread(CURRENT_THREAD, THREAD_ZERO_TLS_CELL, &index).is_ok();
+    if freed {
+        ntcall::clear_bit(&lock, bitmap, bit);
+    } else {
+        set_last_nt_error(STATUS_INVALID_PARAMETER);
+    }
+    u32::from(freed)
 }
 
 #[cfg(test)]

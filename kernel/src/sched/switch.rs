@@ -66,13 +66,13 @@ const TEB_BASE_LO_OFF: u32 = crate::cpu::gdt::TEB_SELECTOR as u32 + 2;
 const TEB_BASE_MID_OFF: u32 = crate::cpu::gdt::TEB_SELECTOR as u32 + 4;
 const TEB_BASE_HI_OFF: u32 = crate::cpu::gdt::TEB_SELECTOR as u32 + 7;
 
-// Only the pointers themselves cross the boundary (the asm consumes them through the pinned offsets
-// above), and the thread record is `#[repr(C)]`, so the pointer ABI is sound.
+// Only the records' addresses cross the boundary, as opaque pointers: the asm consumes them through
+// the pinned offsets above, which the thread record's `#[repr(C)]` prefix holds to.
 #[cfg(target_arch = "x86")]
 unsafe extern "C" {
     /// The swap itself (see [`swap_context`]).
     #[link_name = "swap_context"]
-    fn swap_context_asm(old: *mut super::thread::Thread, new: *mut super::thread::Thread);
+    fn swap_context_asm(old: *mut core::ffi::c_void, new: *mut core::ffi::c_void);
 
     /// The startup stub's address, planted by the frame builder as a fresh thread's switch-frame
     /// return address. Address-only; the stub is never called from Rust.
@@ -91,7 +91,7 @@ unsafe extern "C" {
 #[cfg(target_arch = "x86")]
 pub unsafe fn swap_context(old: *mut super::thread::Thread, new: *mut super::thread::Thread) {
     // SAFETY: the caller's contract.
-    unsafe { swap_context_asm(old, new) };
+    unsafe { swap_context_asm(old.cast(), new.cast()) };
     // SAFETY: `old` runs again: its record is live.
     debug_assert_on_own_space(unsafe { &*old });
 }
@@ -319,23 +319,17 @@ mod tests {
     use super::*;
     use crate::cpu::gdt::{make_entry, TEB_SELECTOR};
     use crate::sched::process::SchedProcess;
+    use crate::sched::testkit::Rec;
     use crate::sched::thread::{Thread, ThreadState};
     use crate::user::thread_teb_va;
 
     /// Two threads of one process and a third of another, with machine state filled in.
-    fn threads() -> (
-        &'static mut Thread,
-        &'static mut Thread,
-        &'static mut Thread,
-    ) {
+    fn threads() -> (Rec<Thread>, Rec<Thread>, Rec<Thread>) {
+        crate::sched::testkit::dispatcher();
         let p1 = Box::leak(Box::new(SchedProcess::new(0x0090_0000, 8)));
         let p2 = Box::leak(Box::new(SchedProcess::new(0x00B0_0000, 8)));
-        p1.init();
-        p2.init();
         let of = |process: *mut SchedProcess, teb: u32, slot: u32| {
-            let t = Box::leak(Box::new(Thread::empty()));
-            // SAFETY: the process is leaked at its final address.
-            unsafe { t.attach_to(&mut *process) };
+            let mut t = crate::sched::testkit::thread(process);
             t.teb_va = teb;
             t.initial_stack = crate::mem::paging::gate_slot_top(slot);
             t.kernel_stack = t.initial_stack - 84;
@@ -357,14 +351,14 @@ mod tests {
     fn cr3_follows_the_process_and_the_teb_follows_the_thread() {
         let (a, same, cross) = threads();
 
-        let same_process = switch_plan(a, same, false);
+        let same_process = switch_plan(&a, &same, false);
         assert!(same_process.same_space);
         assert_eq!(same_process.cr3, None);
         assert_eq!(same_process.teb_base, thread_teb_va(1));
         assert_eq!(same_process.esp0, same.initial_stack);
         assert_eq!(same_process.new_kernel_esp, same.kernel_stack);
 
-        let cross_process = switch_plan(a, cross, false);
+        let cross_process = switch_plan(&a, &cross, false);
         assert!(!cross_process.same_space);
         assert_eq!(cross_process.cr3, Some(0x00B0_0000));
         assert_eq!(cross_process.teb_base, thread_teb_va(0));
@@ -376,28 +370,28 @@ mod tests {
     /// is loaded. Detached, it switches as its owner's thread again.
     #[test]
     fn cr3_follows_the_attached_address_space() {
-        let (attacher, own_sibling, of_target) = threads();
+        let (mut attacher, own_sibling, of_target) = threads();
         // SAFETY: the target's record is leaked; the thread is attached to its own process.
         let target = unsafe { &*of_target.process };
         assert_eq!(attacher.attach_space(target), Some(0x00B0_0000));
 
-        let back_from_sibling = switch_plan(own_sibling, attacher, false);
+        let back_from_sibling = switch_plan(&own_sibling, &attacher, false);
         assert_eq!(
             back_from_sibling.cr3,
             Some(0x00B0_0000),
             "resumes on the attached directory"
         );
-        let to_sibling = switch_plan(attacher, own_sibling, false);
+        let to_sibling = switch_plan(&attacher, &own_sibling, false);
         assert_eq!(to_sibling.cr3, Some(0x0090_0000));
-        assert!(switch_plan(of_target, attacher, false).same_space);
-        assert_eq!(switch_plan(attacher, of_target, false).cr3, None);
+        assert!(switch_plan(&of_target, &attacher, false).same_space);
+        assert_eq!(switch_plan(&attacher, &of_target, false).cr3, None);
 
         attacher.detach_space();
         assert_eq!(
-            switch_plan(of_target, attacher, false).cr3,
+            switch_plan(&of_target, &attacher, false).cr3,
             Some(0x0090_0000)
         );
-        assert!(switch_plan(own_sibling, attacher, false).same_space);
+        assert!(switch_plan(&own_sibling, &attacher, false).same_space);
     }
 
     // C1's plantable half: the saved stack pointer's shape.
@@ -413,7 +407,7 @@ mod tests {
         assert_eq!(a.kernel_stack, a.initial_stack - 84);
         assert_ne!(a.kernel_stack, a.initial_stack);
 
-        let plan = switch_plan(a, a, false);
+        let plan = switch_plan(&a, &a, false);
         assert_eq!(plan.new_kernel_esp, a.kernel_stack);
         assert_eq!(plan.esp0, a.initial_stack);
     }
@@ -425,8 +419,9 @@ mod tests {
     #[test]
     fn a_switch_under_an_active_dpc_routine_is_refused() {
         let (a, _same, cross) = threads();
-        let result =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| switch_plan(a, cross, true)));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            switch_plan(&a, &cross, true)
+        }));
         assert!(result.is_err());
     }
 
@@ -436,18 +431,13 @@ mod tests {
     /// the idle thread. The Standby-to-Running state write is the swap's own effect.
     #[test]
     fn the_dispatcher_adopts_the_selected_thread() {
-        use crate::sched::dispatcher::Dispatcher;
-        let (idle, _same, worker) = threads();
+        let (mut idle, _same, worker) = threads();
         idle.state = ThreadState::Running;
 
-        let mut dispatcher = Dispatcher::zeroed();
-        dispatcher.init();
+        let dispatcher = crate::sched::testkit::installed();
         // The boot install: the idle thread is current.
-        dispatcher.install_idle_thread(idle);
-        assert!(core::ptr::eq(
-            dispatcher.current_thread(),
-            idle as *mut Thread
-        ));
+        dispatcher.install_idle_thread(idle.id());
+        assert_eq!(dispatcher.current_thread(), idle.as_ptr());
         assert!(dispatcher.processor_idle());
 
         // Nothing schedulable: the loop stays in the idle call.
@@ -458,17 +448,14 @@ mod tests {
         dispatcher.make_ready(worker);
         assert!(dispatcher.has_schedulable());
         let selected = dispatcher.select_next();
-        assert!(core::ptr::eq(selected, worker as *mut Thread));
-        dispatcher.enter(selected);
-        assert!(core::ptr::eq(
-            dispatcher.current_thread(),
-            worker as *mut Thread
-        ));
-        assert!(dispatcher.next_thread().is_null());
+        assert_eq!(selected, Some(worker.id()));
+        dispatcher.enter(worker.id());
+        assert_eq!(dispatcher.current_thread(), worker.as_ptr());
+        assert!(dispatcher.next_thread().is_none());
         assert!(!dispatcher.processor_idle());
 
         // Adopting the idle thread marks the processor idle again.
-        dispatcher.enter(idle as *mut Thread);
+        dispatcher.enter(idle.id());
         assert!(dispatcher.processor_idle());
     }
 

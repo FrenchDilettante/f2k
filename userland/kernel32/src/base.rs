@@ -38,6 +38,18 @@ pub fn succeeded(status: u32) -> u32 {
     }
 }
 
+/// A typed service's answer as a BOOL: TRUE when it succeeded, FALSE with the failed status's
+/// error set (BaseSetLastNTError) otherwise.
+pub fn win32_bool<T>(result: Result<T, u32>) -> u32 {
+    match result {
+        Ok(_) => 1,
+        Err(status) => {
+            set_last_nt_error(status);
+            0
+        }
+    }
+}
+
 /// The current-process pseudo-handle (NtCurrentProcess).
 pub const CURRENT_PROCESS: u32 = 0xFFFF_FFFF;
 /// The current-thread pseudo-handle (NtCurrentThread).
@@ -47,13 +59,9 @@ pub const CURRENT_THREAD: u32 = 0xFFFF_FFFE;
 pub const INFINITE: u32 = 0xFFFF_FFFF;
 
 /// BaseFormatTimeOut: a Win32 timeout in milliseconds as the services' LARGE_INTEGER, a relative
-/// interval (negative, in 100 ns units) in `out`; none (a null pointer: forever) for INFINITE.
-pub fn format_timeout(milliseconds: u32, out: &mut i64) -> *const i64 {
-    if milliseconds == INFINITE {
-        return core::ptr::null();
-    }
-    *out = -(i64::from(milliseconds) * 10_000);
-    out
+/// interval (negative, in 100 ns units); none (forever) for INFINITE.
+pub fn format_timeout(milliseconds: u32) -> Option<i64> {
+    (milliseconds != INFINITE).then(|| -(i64::from(milliseconds) * 10_000))
 }
 
 /// OBJECT_ATTRIBUTES' Attributes: OBJ_INHERIT, OBJ_CASE_INSENSITIVE, OBJ_OPENIF.
@@ -270,12 +278,8 @@ impl Text {
 /// `body` under the PEB lock (RtlAcquirePebLock, RtlReleasePebLock): what serializes kernel32's
 /// lazily made per-process state, as Windows 2000's kernel32 serializes it.
 pub fn under_peb_lock<R>(body: impl FnOnce() -> R) -> R {
-    // SAFETY: ntdll's export; the lock is the PEB's, free from the process's creation on.
-    unsafe { nt::RtlAcquirePebLock() };
-    let result = body();
-    // SAFETY: as above; the caller holds it.
-    unsafe { nt::RtlReleasePebLock() };
-    result
+    let _lock = crate::ntcall::PebLock::acquire();
+    body()
 }
 
 /// BaseGetNamedObjectDirectory: the handle to `\BaseNamedObjects` every named object is made in,
@@ -330,13 +334,13 @@ pub struct SecurityAttributes {
 /// # Safety
 ///
 /// `security` is null or points at a SECURITY_ATTRIBUTES; `name` outlives the attributes' use.
-pub unsafe fn format_object_attributes(
-    out: &mut ObjectAttributes,
+pub unsafe fn format_object_attributes<'a>(
+    out: &'a mut ObjectAttributes,
     security: *const SecurityAttributes,
     name: Option<&UnicodeString>,
-) -> *const ObjectAttributes {
+) -> Option<&'a ObjectAttributes> {
     if security.is_null() && name.is_none() {
-        return core::ptr::null();
+        return None;
     }
     // SAFETY: the caller's structure, when given.
     let (mut attributes, descriptor) = match unsafe { security.as_ref() } {
@@ -363,7 +367,7 @@ pub unsafe fn format_object_attributes(
         security_descriptor: descriptor,
         security_quality_of_service: core::ptr::null(),
     };
-    out
+    Some(out)
 }
 
 /// Whether a handle is a console handle (Windows 2000's CONSOLE_HANDLE: the low two bits set, bit

@@ -3,7 +3,7 @@
 //! the open (its share check), and an overwrite's truncation.
 
 use super::super::call::{NtCall, NtResult, UserAddr, UserPtr};
-use super::common::{complete, deliver, probe, target, walk, Found, Target};
+use super::common::{complete, deliver, target, walk, Found, Target};
 use crate::fs::fat32::dir::is_empty;
 use crate::fs::fat32::dirent::{ATTR_HIDDEN, ATTR_READ_ONLY, ATTR_SYSTEM};
 use crate::fs::fat32::lookup::File;
@@ -206,8 +206,8 @@ fn create(
 ) -> NtResult {
     check_arguments(access, file_attributes, share, disposition, options)?;
     let target = target(attributes)?;
-    probe(slot.addr(), 4)?;
-    probe(io_status, 8)?;
+    slot.addr().probe(4)?;
+    io_status.probe(8)?;
     let request = Request {
         access,
         granted: rights::mapped(access),

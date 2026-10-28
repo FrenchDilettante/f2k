@@ -116,6 +116,9 @@ pub enum ArgKind {
     I32,
     /// A Win32 BOOL: nonzero is true (`bool`).
     Bool,
+    /// An NT BOOLEAN, a UCHAR pushed as a dword: its low byte, nonzero is true, whatever the rest
+    /// of the dword holds (`boolean`).
+    Boolean,
     /// A handle value (`handle`).
     Handle,
     /// A pointer into caller memory, untyped (`ptr`).
@@ -186,13 +189,14 @@ impl ArgKind {
         }
     }
 
-    /// Parse the kind word of an argument: `u32`, `i32`, `bool`, `handle`, `ptr`, `ptr<T>`, `u64`,
-    /// or a string `strA`/`strW` with an optional `?` and an optional `[limit]`.
+    /// Parse the kind word of an argument: `u32`, `i32`, `bool`, `boolean`, `handle`, `ptr`,
+    /// `ptr<T>`, `u64`, or a string `strA`/`strW` with an optional `?` and an optional `[limit]`.
     pub fn parse(word: &str) -> Option<ArgKind> {
         Some(match word {
             "u32" => ArgKind::U32,
             "i32" => ArgKind::I32,
             "bool" => ArgKind::Bool,
+            "boolean" => ArgKind::Boolean,
             "handle" => ArgKind::Handle,
             "ptr" => ArgKind::Ptr,
             "u64" => ArgKind::U64,
@@ -234,6 +238,7 @@ impl ArgKind {
             ArgKind::U32 => "u32".into(),
             ArgKind::I32 => "i32".into(),
             ArgKind::Bool => "bool".into(),
+            ArgKind::Boolean => "boolean".into(),
             ArgKind::Handle => "handle".into(),
             ArgKind::Ptr => "ptr".into(),
             ArgKind::PtrTo(pointee) => format!("ptr<{}>", pointee.word()),

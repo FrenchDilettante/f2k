@@ -7,8 +7,10 @@
 //! [`CLEAN_SHUTDOWN`] bit cleared in every FAT copy, as FastFat marks a volume it is changing.
 
 use super::boot_sector::{validate, Refusal};
+use super::check;
 use super::fat::{decode_entry, entry_position, FatCache, FatEntry, ENTRY_MASK};
 use super::layout::Layout;
+use super::raw::to_block;
 use crate::block::BlockDevice;
 use crate::status::{NtStatus, STATUS_UNRECOGNIZED_VOLUME};
 
@@ -59,10 +61,7 @@ impl Volume {
             return Err(MountError::DeviceSectorSize(sector_size));
         }
         let mut sector = [0u8; 512];
-        let status = device.read(0, &mut sector);
-        if !status.is_success() {
-            return Err(MountError::Read(status));
-        }
+        check(device.read(0, &mut sector)).map_err(MountError::Read)?;
         let layout = validate(&sector).map_err(MountError::Refused)?;
         Ok(Volume {
             device,
@@ -92,17 +91,11 @@ impl Volume {
             "cluster {} is not a data cluster of the volume",
             cluster
         );
-        let (sector, offset) = entry_position(cluster);
+        let (sector, index) = entry_position(cluster);
         let data = self
             .cache
             .sector(self.device, self.layout.fat_start + sector)?;
-        let raw = u32::from_le_bytes([
-            data[offset],
-            data[offset + 1],
-            data[offset + 2],
-            data[offset + 3],
-        ]);
-        Ok(decode_entry(raw, self.layout.max_cluster()))
+        Ok(decode_entry(data[index].get(), self.layout.max_cluster()))
     }
 
     /// How many FAT copies the volume keeps (every one is written).
@@ -120,33 +113,29 @@ impl Volume {
             cluster
         );
         self.changing()?;
-        let (sector, offset) = entry_position(cluster);
-        self.patch_fat(sector, offset, |old| old & !ENTRY_MASK | value & ENTRY_MASK)
+        let (sector, index) = entry_position(cluster);
+        self.patch_fat(sector, index, |old| old & !ENTRY_MASK | value & ENTRY_MASK)
     }
 
-    /// Rewrite the raw 32-bit FAT entry at `offset` of FAT sector `sector` through `update`, in
-    /// every FAT copy and the cache (nothing is written when it stays the same).
+    /// Rewrite the raw 32-bit FAT entry `index` of FAT sector `sector` through `update`, in every
+    /// FAT copy and the cache (nothing is written when it stays the same).
     fn patch_fat(
         &mut self,
         sector: u64,
-        offset: usize,
+        index: usize,
         update: impl FnOnce(u32) -> u32,
     ) -> Result<(), NtStatus> {
         let lba = self.layout.fat_start + sector;
         let mut data = *self.cache.sector(self.device, lba)?;
-        let old = u32::from_le_bytes([
-            data[offset],
-            data[offset + 1],
-            data[offset + 2],
-            data[offset + 3],
-        ]);
+        let old = data[index].get();
         let raw = update(old);
         if raw == old {
             return Ok(());
         }
-        data[offset..offset + 4].copy_from_slice(&raw.to_le_bytes());
+        data[index].set(raw);
+        let bytes = to_block(&data);
         for copy in 0..self.fat_copies() as u64 {
-            self.write_raw(lba + copy * self.layout.sectors_per_fat as u64, &data)?;
+            self.write_raw(lba + copy * self.layout.sectors_per_fat as u64, &bytes)?;
         }
         self.cache.store(lba, &data);
         Ok(())
@@ -155,7 +144,7 @@ impl Volume {
     /// Before a change: the dirty mark, when this mount has not made it yet.
     fn changing(&mut self) -> Result<(), NtStatus> {
         if !self.dirty {
-            self.patch_fat(0, 4, |old| old & !CLEAN_SHUTDOWN)?;
+            self.patch_fat(0, 1, |old| old & !CLEAN_SHUTDOWN)?;
             self.dirty = true;
         }
         Ok(())
@@ -167,7 +156,7 @@ impl Volume {
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn mark_clean(&mut self) -> Result<(), NtStatus> {
         if self.dirty {
-            self.patch_fat(0, 4, |old| old | CLEAN_SHUTDOWN)?;
+            self.patch_fat(0, 1, |old| old | CLEAN_SHUTDOWN)?;
             self.dirty = false;
         }
         Ok(())
@@ -175,12 +164,7 @@ impl Volume {
 
     /// Read one sector of the volume.
     pub fn read_sector(&self, lba: u64, data: &mut [u8; 512]) -> Result<(), NtStatus> {
-        let status = self.device.read(lba, data);
-        if status.is_success() {
-            Ok(())
-        } else {
-            Err(status)
-        }
+        check(self.device.read(lba, data))
     }
 
     /// Write one sector of the volume (a change: the dirty mark goes first).
@@ -190,12 +174,7 @@ impl Volume {
     }
 
     fn write_raw(&self, lba: u64, data: &[u8; 512]) -> Result<(), NtStatus> {
-        let status = self.device.write(lba, data);
-        if status.is_success() {
-            Ok(())
-        } else {
-            Err(status)
-        }
+        check(self.device.write(lba, data))
     }
 
     /// Where the next free-cluster search starts, and its update.
@@ -212,51 +191,51 @@ impl Volume {
 
 #[cfg(target_arch = "x86")]
 mod target {
-    use core::ptr::addr_of_mut;
-
     use super::*;
     use crate::block::lock::DeviceLock;
     use crate::block::registry::{registry, Role};
 
-    /// The boot's mount: none on a boot with no partition, else the outcome.
-    static mut MOUNT: Option<Result<Volume, MountError>> = None;
-    /// Serializes the volume's users (its FAT cache is shared state).
-    static LOCK: DeviceLock = DeviceLock::new(());
+    /// The boot's mount — none on a boot with no partition, else the outcome — behind the lock
+    /// that serializes the volume's users (its FAT cache is shared state).
+    type Mount = Option<Result<Volume, MountError>>;
+    static MOUNT: DeviceLock<Mount> = DeviceLock::new(None);
 
     /// Mount the first partition the registry holds. Boot context, after the block-device scan;
     /// silent — a boot without a volume is normal, and a refused one is left unmounted.
     pub fn mount_boot_volume() {
-        LOCK.init();
+        MOUNT.init();
         let partition = registry()
             .iter()
             .find(|(_, entry)| matches!(entry.role, Role::Partition { .. }));
         if let Some((_, entry)) = partition {
-            // SAFETY: boot context, before any user of the volume.
-            unsafe { *addr_of_mut!(MOUNT) = Some(Volume::mount(entry.device)) };
+            let mounted = Volume::mount(entry.device);
+            with_mount(|mount| *mount = Some(mounted));
         }
     }
 
     /// How the boot's mount went: none when there was nothing to mount.
     pub fn boot_mount() -> Option<Result<(), MountError>> {
-        // SAFETY: written once at boot, before any reader.
-        let mount = unsafe { (*addr_of_mut!(MOUNT)).as_ref() };
-        mount.map(|mount| mount.as_ref().map(|_| ()).map_err(|error| *error))
+        with_mount(|mount| {
+            mount
+                .as_ref()
+                .map(|mount| mount.as_ref().map(|_| ()).map_err(|error| *error))
+        })
     }
 
     /// Run `body` on the boot volume, serialized against its other users; none when no volume is
-    /// mounted. The whole use — the lock and the drive's commands under it — is one critical region
-    /// of the running thread: a suspend or a termination waits until the volume is released.
+    /// mounted.
     pub fn with_boot_volume<R>(body: impl FnOnce(&mut Volume) -> R) -> Option<R> {
-        crate::process::threads::critical_region(|| {
-            LOCK.with(|_| {
-                // SAFETY: the lock makes this the only user of the volume.
-                let mount = unsafe { &mut *addr_of_mut!(MOUNT) };
-                match mount {
-                    Some(Ok(volume)) => Some(body(volume)),
-                    _ => None,
-                }
-            })
+        with_mount(|mount| match mount {
+            Some(Ok(volume)) => Some(body(volume)),
+            _ => None,
         })
+    }
+
+    /// Run `body` on the mount, holding its lock. The whole use — the lock and the drive's
+    /// commands under it — is one critical region of the running thread: a suspend or a
+    /// termination waits until the volume is released.
+    fn with_mount<R>(body: impl FnOnce(&mut Mount) -> R) -> R {
+        crate::process::threads::critical_region(|| MOUNT.with(body))
     }
 }
 

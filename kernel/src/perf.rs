@@ -14,6 +14,9 @@
 #[cfg(target_arch = "x86")]
 use core::sync::atomic::{compiler_fence, AtomicBool, Ordering};
 
+#[cfg(target_arch = "x86")]
+use crate::level::{self, Clock, LevelCell};
+
 /// Samples the ring buffer keeps (~10 s of platform ticks at the default rate; a longer boot
 /// keeps the most recent ones).
 pub const CAPACITY: usize = 1024;
@@ -28,7 +31,9 @@ pub const MAX_STACK: usize = 24;
 /// build, verify at the default.
 pub const SAMPLES_PER_TICK: u32 = 1;
 
+// The rate is a tunable: at its default of 1 the remainder is trivially zero.
 #[cfg(target_arch = "x86")]
+#[allow(clippy::modulo_one)]
 const _: () = assert!(
     crate::interrupt::clock::INTERVAL_100NS % SAMPLES_PER_TICK == 0 && SAMPLES_PER_TICK <= 16,
     "SAMPLES_PER_TICK must be 1, 2, 4, 8, or 16"
@@ -89,11 +94,22 @@ impl Trace {
         self.taken
     }
 
-    /// The kept samples, oldest first.
-    pub fn kept(&self) -> impl Iterator<Item = Sample> + '_ {
-        let kept = (self.taken.min(CAPACITY as u64)) as usize;
+    /// How many samples it keeps: those taken, up to the capacity.
+    pub fn kept_len(&self) -> usize {
+        self.taken.min(CAPACITY as u64) as usize
+    }
+
+    /// The kept sample at `index`, oldest first; none past the kept ones.
+    pub fn kept_sample(&self, index: usize) -> Option<Sample> {
+        let kept = self.kept_len();
         let start = (self.next + CAPACITY - kept) % CAPACITY;
-        (0..kept).map(move |i| self.samples[(start + i) % CAPACITY])
+        (index < kept).then(|| self.samples[(start + index) % CAPACITY])
+    }
+
+    /// The kept samples, oldest first.
+    #[cfg(test)]
+    pub fn kept(&self) -> impl Iterator<Item = Sample> + '_ {
+        (0..self.kept_len()).map_while(|index| self.kept_sample(index))
     }
 }
 
@@ -147,12 +163,13 @@ mod tests {
 
 // --- Target wiring ----------------------------------------------------------
 
-/// The kernel's trace, filled by the clock interrupt and drained by the teardown's dump.
+/// The kernel's trace: clock-level state, filled by the clock interrupt's sample and copied out a
+/// sample at a time by the teardown's dump.
 #[cfg(target_arch = "x86")]
-static mut TRACE: Trace = Trace::new();
+static TRACE: LevelCell<Clock, Trace> = LevelCell::new(Trace::new());
 
 /// Whether the trace has stopped: [`report`] sets it before reading the samples, and [`sample`]
-/// records nothing from then on, so the dump reads a ring no interrupt writes any more.
+/// records nothing from then on, so the ring holds still while the dump copies it out.
 #[cfg(target_arch = "x86")]
 static STOPPED: AtomicBool = AtomicBool::new(false);
 
@@ -172,6 +189,14 @@ unsafe extern "C" {
     static _kernel_end: u8;
 }
 
+/// The kernel image's addresses, from the linker script's bounds: where a kernel return address
+/// must point.
+#[cfg(target_arch = "x86")]
+fn kernel_text() -> core::ops::Range<u32> {
+    // Only the symbols' addresses are taken, never their contents.
+    (&raw const _kernel_start as u32)..(&raw const _kernel_end as u32)
+}
+
 /// Set the sampling rate ([`SAMPLES_PER_TICK`]): reprogram the interval timer and the clock's
 /// source. Called from the interrupt init, before interrupts fly.
 #[cfg(target_arch = "x86")]
@@ -189,43 +214,40 @@ pub fn init() {
 
 /// Record one sample: the interrupted context of the clock interrupt, with its call stack. Once
 /// the trace has stopped (see [`report`]), nothing.
+///
+/// The interrupt dispatch calls it before the claim, interrupts masked and the ledger told so for
+/// the sample's length: the clock read and the record each raise to the clock level through the
+/// bridge, and each lower puts the masked state back rather than enabling interrupts inside the
+/// interrupt.
 #[cfg(target_arch = "x86")]
 pub fn sample(frame: &crate::cpu::idt::ExceptionFrame) {
     if STOPPED.load(Ordering::Relaxed) {
         return;
     }
-    // SAFETY: single CPU; the trace's only writer runs at the clock level, serialized by it, and
-    // its only reader, the dump, reads only after the trace has stopped (checked above).
-    unsafe {
-        let (eip, cs) = frame.interrupted_pc();
-        let mut frames = [0u32; MAX_STACK];
-        frames[0] = eip;
-        let depth = walk(frame.interrupted_ebp(), cs, &mut frames);
-        (*core::ptr::addr_of_mut!(TRACE)).record(Sample {
-            interrupt_time: crate::interrupt::clock::interrupt_time(),
-            cs,
-            frames,
-            depth,
-        });
-    }
+    let (eip, cs) = frame.interrupted_pc();
+    let mut frames = [0u32; MAX_STACK];
+    frames[0] = eip;
+    let depth = walk(frame.interrupted_ebp(), cs, &mut frames);
+    let sample = Sample {
+        interrupt_time: crate::interrupt::clock::interrupt_time(),
+        cs,
+        frames,
+        depth,
+    };
+    level::raised::<Clock, _>(|at_clock| TRACE.get(at_clock).record(sample));
 }
 
 /// Walk the frame-pointer chain from `ebp`, filling `frames[1..]` with the callers' return
 /// addresses (nearest first) and returning the sample's depth. A chain that fails a validation
 /// ends the walk where it stands.
 ///
-/// # Safety
-///
-/// Every read is validated to lie in mapped memory first: kernel-window addresses by
-/// construction, user addresses by the current process's region records, which match its page
-/// tables.
+/// Every read is validated to lie in mapped memory first: kernel-window addresses by construction
+/// (the window is mapped in every address space), user addresses by the current process's region
+/// records, which match its page tables.
 #[cfg(target_arch = "x86")]
-unsafe fn walk(mut ebp: u32, cs: u32, frames: &mut [u32; MAX_STACK]) -> usize {
+fn walk(mut ebp: u32, cs: u32, frames: &mut [u32; MAX_STACK]) -> usize {
     let ring3 = cs & 3 == 3;
-    // SAFETY: the linker script defines both symbols; only their addresses are taken, never
-    // their contents.
-    let kernel_text =
-        unsafe { (&_kernel_start as *const u8 as u32)..(&_kernel_end as *const u8 as u32) };
+    let kernel_text = kernel_text();
     let mut depth = 1;
     while depth < MAX_STACK {
         if ebp & 3 != 0 {
@@ -235,16 +257,17 @@ unsafe fn walk(mut ebp: u32, cs: u32, frames: &mut [u32; MAX_STACK]) -> usize {
             if !user_mapped(ebp) || !user_mapped(ebp.wrapping_add(4)) {
                 break;
             }
-        } else if ebp < crate::mem::paging::KERNEL_BASE || ebp >= WINDOW_END {
-            break;
+        } else if !(crate::mem::paging::KERNEL_BASE..=WINDOW_END - 8).contains(&ebp) {
+            break; // both of the frame's words must lie in the window
         }
-        // SAFETY: the frame pointer was just validated to lie in mapped memory.
-        let (next, ret) = unsafe {
-            (
-                (ebp as *const u32).read_volatile(),
-                (ebp as *const u32).add(1).read_volatile(),
-            )
-        };
+        let frame = ebp as *const u32;
+        // SAFETY: `ebp` is word-aligned and was just validated: in ring 3 both of the frame's
+        // words lie in regions of the current process, whose page tables match its records; in
+        // ring 0 both lie in the kernel image window, mapped in every address space. The
+        // read is volatile: the word is another context's stack, not memory this code owns.
+        let next = unsafe { frame.read_volatile() };
+        // SAFETY: as above, for the frame's second word.
+        let ret = unsafe { frame.add(1).read_volatile() };
         // The return address must name code the ring can run, and the chain must rise (stacks
         // grow down); a chain that does not rise is garbage, not a stack.
         let ok = if ring3 {
@@ -274,24 +297,27 @@ fn user_mapped(address: u32) -> bool {
 /// Stop the trace and dump it on COM1: the header and one line per kept sample. Runs on the idle
 /// thread, before the teardown audit line (the single-process boot) or the suite's summary line —
 /// the line the harness stops the boot on. The trace stays stopped: the dump is the boot's last.
+///
+/// Each sample is copied out at the clock level and printed below it, so the clock keeps ticking
+/// through the dump's long write; the stop keeps the ring still between the copies.
 #[cfg(target_arch = "x86")]
 pub fn report() {
     STOPPED.store(true, Ordering::Relaxed);
     // The ring's reads below must not move above the stop: the clock interrupt is the other side.
     compiler_fence(Ordering::SeqCst);
-    // SAFETY: single CPU; the trace has stopped, so a clock interrupt that runs from here on
-    // returns before touching it, and one that ran before the stop has finished its write. No
-    // writer exists while this shared reference lives.
-    let trace = unsafe { &*core::ptr::addr_of!(TRACE) };
-    let taken = trace.taken();
-    let kept = trace.kept().count() as u64;
+    let (taken, kept) = level::raised::<Clock, _>(|at_clock| {
+        let trace = TRACE.get(at_clock);
+        (trace.taken(), trace.kept_len())
+    });
     crate::serial_println!(
         "F2K: perf trace: {} samples taken, {} kept (the sample interval is {} 100ns units)",
         taken,
         kept,
         SAMPLE_INTERVAL
     );
-    for sample in trace.kept() {
+    let copied = (0..kept)
+        .map_while(|index| level::raised::<Clock, _>(|at| TRACE.get(at).kept_sample(index)));
+    for sample in copied {
         if sample.depth > 1 {
             // The callers follow on the same line, nearest first.
             crate::serial_print!(

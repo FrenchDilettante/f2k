@@ -22,8 +22,9 @@ pub mod names;
 pub mod search;
 pub mod volume;
 
-use crate::base::{process_heap, set_last_error, SecurityAttributes, OBJ_INHERIT};
+use crate::base::{set_last_error, SecurityAttributes, OBJ_INHERIT};
 use crate::nt::{self, IoStatus, ObjectAttributes, RelativeName, UnicodeString};
+use crate::ntcall;
 
 /// The ANSI path limit, terminator included.
 pub const MAX_PATH: usize = 260;
@@ -274,8 +275,8 @@ impl NtPath {
 
 impl Drop for NtPath {
     fn drop(&mut self) {
-        // SAFETY: ntdll's export, over its own block on the process heap.
-        unsafe { nt::RtlFreeHeap(process_heap(), 0, self.full.buffer as *mut u8) };
+        // SAFETY: ntdll's block on the process heap, the path's own, used no more.
+        unsafe { ntcall::free_heap(self.full.buffer.cast()) };
     }
 }
 
@@ -312,40 +313,24 @@ pub fn open(path: &NtPath, access: u32, share: u32, options: u32) -> Result<u32,
     }
 }
 
-/// Query `class` of an open file into `out` (NtQueryInformationFile): the status.
+/// A typed service's answer as the status the file calls test: STATUS_SUCCESS, or the failure.
+fn as_status(result: Result<(), ntcall::NtStatus>) -> u32 {
+    result.err().unwrap_or(rtl::status::STATUS_SUCCESS)
+}
+
+/// Query `class` of an open file into `out` ([`ntcall::query_information_file`]): the status.
 pub fn query(handle: u32, class: u32, out: &mut [u8]) -> u32 {
-    let mut io_status = IoStatus::default();
-    // SAFETY: ntdll's export, into the buffer of its length.
-    unsafe {
-        nt::NtQueryInformationFile(
-            handle,
-            &mut io_status,
-            out.as_mut_ptr(),
-            out.len() as u32,
-            class,
-        )
-    }
+    as_status(ntcall::query_information_file(handle, class, out))
 }
 
-/// Set `class` of an open file from `information` (NtSetInformationFile): the status.
+/// Set `class` of an open file from `information` ([`ntcall::set_information_file`]): the status.
 pub fn set(handle: u32, class: u32, information: &[u8]) -> u32 {
-    let mut io_status = IoStatus::default();
-    // SAFETY: ntdll's export, from the buffer of its length.
-    unsafe {
-        nt::NtSetInformationFile(
-            handle,
-            &mut io_status,
-            information.as_ptr(),
-            information.len() as u32,
-            class,
-        )
-    }
+    as_status(ntcall::set_information_file(handle, class, information))
 }
 
-/// Close a handle the call opened for itself.
+/// Close a handle the call opened for itself (a failure leaves nothing more to do).
 pub fn close(handle: u32) {
-    // SAFETY: ntdll's export.
-    unsafe { nt::NtClose(handle) };
+    let _ = ntcall::close(handle);
 }
 
 /// The dword at `at` of a structure.

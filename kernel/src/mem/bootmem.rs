@@ -6,22 +6,22 @@
 //! - the frames the kernel image itself occupies, [`_kernel_start`, `_kernel_end`) from the linker
 //!   script.
 //!
-//! The database then serves the rest of the kernel through [`with_frame_db`].
+//! The database then lives in the memory manager's database ([`super::Database`]), and serves the
+//! rest of the kernel through [`with_frame_db`].
 
 use super::frame::{self, ColorTables, FrameDb, FrameEntry, FrameState, NoHooks, MAX_FRAMES};
 use super::layout::KERNEL_IMAGE;
 use super::multiboot::{self, MultibootInfo, UsableRange};
 use super::paging::{KERNEL_BASE, KERNEL_PHYS_BASE};
+use crate::sync::StaticBuf;
 
 /// The per-frame bookkeeping table. Sized for the full development memory; frames past the highest
 /// usable frame stay unreleased.
-static mut FRAME_TABLE: [FrameEntry; MAX_FRAMES] = [FrameEntry::new(); MAX_FRAMES];
+static FRAME_TABLE: StaticBuf<[FrameEntry; MAX_FRAMES]> =
+    StaticBuf::new([FrameEntry::new(); MAX_FRAMES]);
 
 /// Color chain heads, kept beside the database the same way.
-static mut COLOR_TABLES: ColorTables = ColorTables::new();
-
-/// The boot frame database; built once by [`boot_init`].
-static mut BOOT_FRAME_DB: Option<FrameDb<NoHooks>> = None;
+static COLOR_TABLES: StaticBuf<ColorTables> = StaticBuf::new(ColorTables::new());
 
 // Kernel image end, exported by the linker script (4 KiB aligned, a kernel-window address).
 extern "C" {
@@ -51,7 +51,7 @@ fn kernel_frame_bounds() -> (u32, u32) {
 /// The end of the boot identity window: until the low identity mapping is torn down, physical
 /// `[0, 16 MiB)` (the span of the kernel image window) reads at its own address. The Multiboot
 /// structures are read through it.
-const BOOT_IDENTITY_LIMIT: u64 = KERNEL_IMAGE.size() as u64;
+pub(crate) const BOOT_IDENTITY_LIMIT: u64 = KERNEL_IMAGE.size() as u64;
 
 /// Release every frame of `range` except those the kernel occupies, those a reserved record of
 /// `map` covers, and those an earlier (overlapping) available record already released.
@@ -78,7 +78,7 @@ fn release_range(
 /// Panic unless `[addr, addr + len)` lies inside the boot identity window, naming `what`: a loader
 /// may place its structures anywhere below 4 GiB, and reading one past the window would fault with
 /// no diagnostic.
-fn assert_identity_readable(what: &str, addr: u32, len: usize) {
+pub(crate) fn assert_identity_readable(what: &str, addr: u32, len: usize) {
     let end = addr as u64 + len as u64;
     assert!(
         end <= BOOT_IDENTITY_LIMIT,
@@ -101,23 +101,19 @@ pub fn boot_init(multiboot_info_addr: u32) {
     // window (checked above), where physical == linear; the Multiboot contract guarantees the
     // structure is readable. Single-threaded boot.
     let mbi: &MultibootInfo = unsafe { &*(multiboot_info_addr as *const MultibootInfo) };
-    // SAFETY: the frame table is a static owned by this module; handing its only reference to the
-    // database for the kernel's lifetime. Single-threaded boot.
-    let table: &'static mut [FrameEntry] = unsafe {
-        core::slice::from_raw_parts_mut(
-            core::ptr::addr_of_mut!(FRAME_TABLE) as *mut FrameEntry,
-            MAX_FRAMES,
-        )
-    };
+    // The database holds the frame table and the color tables for the kernel's lifetime.
+    let table: &'static mut [FrameEntry] = FRAME_TABLE.take();
     // The frame table lives in BSS; loaders are required to zero it, but this table is large enough
     // that leftover loader data would be indistinguishable from live state, so zero it explicitly.
     for entry in table.iter_mut() {
         *entry = FrameEntry::new();
     }
-    // SAFETY: the color tables are a static owned by this module; the database holds their only
-    // reference. Single-threaded boot.
-    let buckets: &'static mut ColorTables = unsafe { &mut *core::ptr::addr_of_mut!(COLOR_TABLES) };
-    let mut db = FrameDb::new(table, buckets, frame::DEFAULT_COLOR_COUNT, NoHooks);
+    let mut db = FrameDb::new(
+        table,
+        COLOR_TABLES.take(),
+        frame::DEFAULT_COLOR_COUNT,
+        NoHooks,
+    );
 
     let kernel = kernel_frame_bounds();
 
@@ -147,24 +143,18 @@ pub fn boot_init(multiboot_info_addr: u32) {
         panic!("Multiboot info carries no memory information");
     }
 
-    // SAFETY: single-threaded boot; boot_init runs exactly once, before any call to with_frame_db.
-    unsafe {
-        BOOT_FRAME_DB = Some(db);
-    }
+    super::with_database(|database| {
+        assert!(database.frames.is_none(), "the frame database built twice");
+        database.frames = Some(db);
+    });
 }
 
-/// Run `f` against the boot frame database.
+/// Run `f` against the frame database: the bridge for code that does not hold the memory manager's
+/// database, which it borrows for the call (see [`super::with_database`]), interrupts masked.
 ///
-/// Contract: called from the single-threaded boot context only (one caller at a time). Panics if
-/// called before [`boot_init`].
+/// # Panics
+///
+/// Called before [`boot_init`], or from inside a borrow of the memory manager's database.
 pub fn with_frame_db<R>(f: impl FnOnce(&mut FrameDb<NoHooks>) -> R) -> R {
-    // SAFETY: single-threaded boot; the boot context is the only caller, so the mutable reference
-    // handed to `f` is never aliased. boot_init runs exactly once, before any call to
-    // with_frame_db.
-    let db = unsafe {
-        (*core::ptr::addr_of_mut!(BOOT_FRAME_DB))
-            .as_mut()
-            .expect("frame database not initialized")
-    };
-    f(db)
+    super::with_database(|database| f(database.frames()))
 }

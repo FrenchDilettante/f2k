@@ -7,7 +7,6 @@
 
 use crate::base::{
     peb,
-    process_heap,
     process_parameters,
     read,
     read_pointer,
@@ -19,6 +18,7 @@ use crate::base::{
     Text,
 };
 use crate::nt;
+use crate::ntcall;
 
 /// kernel32's slots on the PEB's page, past the PEB proper: the buffers of the narrow command
 /// line and the narrow startup information.
@@ -176,19 +176,18 @@ pub unsafe extern "system" fn get_startup_info_a(info: *mut u8) {
         let Some(image) = startup_info(process_parameters(), narrow_string) else {
             return 0;
         };
-        // SAFETY: ntdll's export, on the process heap.
-        let block = unsafe { nt::RtlAllocateHeap(process_heap(), 0, STARTUP_INFO_SIZE) };
-        if !block.is_null() {
-            // SAFETY: the block holds the image.
-            unsafe {
-                core::ptr::copy_nonoverlapping(
-                    image.as_ptr().cast::<u8>(),
-                    block,
-                    STARTUP_INFO_SIZE,
-                )
-            };
-        }
-        block as usize
+        let Some(block) = ntcall::allocate_heap(STARTUP_INFO_SIZE) else {
+            return 0;
+        };
+        // SAFETY: the fresh block holds the image.
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                image.as_ptr().cast::<u8>(),
+                block.as_ptr(),
+                STARTUP_INFO_SIZE,
+            )
+        };
+        block.as_ptr() as usize
     });
     if cached == 0 {
         set_last_nt_error(STATUS_NO_MEMORY);

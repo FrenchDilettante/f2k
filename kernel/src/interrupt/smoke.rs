@@ -8,23 +8,17 @@
 //! waits.
 
 use core::arch::asm;
-use core::ptr::addr_of_mut;
 
 use crate::hw::pit::{self, Programming};
 use crate::hw::portio::Ports;
 use crate::interrupt::clock::{self, CLOCK_VECTOR};
 use crate::interrupt::irql;
 use crate::pcr::pcr;
-use crate::sched::waitable_timer::WaitableTimer;
+use crate::sched::timer::TimerId;
 use crate::serial_println;
 
 /// The ticks the diagnostic waits for before it calls the timer live.
 const LIVE_TICKS: u64 = 5;
-
-/// The diagnostic's timer: the clock's deferred work signals it.
-// Note: it stays a `static mut`: a waitable timer is initialized and armed through `&mut`, its
-// waiters list linking into the record, until the dispatcher database holds the timers.
-static mut TIMER: WaitableTimer = WaitableTimer::new(true);
 
 /// Sleep until the next interrupt: IF on, halt (interrupts are already enabled hardware-wide here;
 /// the idle thread's loop keeps its own, model-tracked form). Not `nomem`: the interrupt it waits
@@ -88,29 +82,36 @@ pub fn run() {
     // The deferred timer work runs only when a timer is due (the table's hand check), so arm one:
     // a notification timer of the diagnostic's own, due one tick out. Its expiry, the DPC's walk,
     // signals it — nobody waits on it, and the signal is the observable.
-    let timer = addr_of_mut!(TIMER);
+    let timer = crate::ob::directory()
+        .create_timer(true)
+        .expect("the boot's timer pool has room");
     let previous = pcr().raise(irql::DISPATCH);
     let now = clock::interrupt_time();
-    // SAFETY: single CPU, at the dispatch level; the timer is this diagnostic's static, armed once,
-    // here, and initialized at its final address before the set.
-    unsafe {
-        (*timer).init();
-        crate::sched::idle::dispatcher().set_waitable_timer(
-            &mut *timer,
-            now + pit::INTERVAL_100NS as u64,
-            now,
-            0,
-            false,
-            0,
-        );
-    }
+    crate::sched::idle::dispatcher().set_waitable_timer(
+        TimerId::Waitable(timer.index),
+        now + pit::INTERVAL_100NS as u64,
+        now,
+        0,
+        false,
+        0,
+    );
     pcr().lower(previous);
-    // SAFETY: the expiry writes the signal state at the dispatch level, inside an interrupt; each
-    // read goes through the pointer after the halt (a memory clobber), so it sees the write.
-    while unsafe { (*timer).timer.waitable.signal_state() } == 0 {
+    // The expiry writes the signal state at the dispatch level, inside an interrupt; each read
+    // goes through the dispatcher after the halt (a memory clobber), so it sees the write.
+    let signaled = || {
+        crate::sched::idle::dispatcher()
+            .timer(TimerId::Waitable(timer.index))
+            .waitable
+            .signal_state()
+            > 0
+    };
+    while !signaled() {
         wait_for_interrupt();
     }
     serial_println!("F2K: irq-smoke: clock DPC fired");
+    // The timer goes with its creator's reference: no process holds it, and nothing outlives the
+    // diagnostic.
+    let _ = crate::ob::directory().dereference(timer, crate::sched::idle::dispatcher());
 
     match super::audit() {
         Ok(()) => {

@@ -1,12 +1,17 @@
 //! The File Allocation Table: entry decode, and a small cache of recently used FAT sectors.
 //!
 //! An entry is 32 bits, little-endian, of which the low 28 count. FAT1 — the first copy — is the
-//! one read; the mirror copies only matter to writes. The FAT is far larger than the kernel heap
-//! (the built volume's is 993 sectors), so it is never copied whole: entries are read through the
-//! device, one sector at a time, through a few cached sectors.
+//! one read; the mirror copies only matter to writes. The FAT is large (the built volume's is 993
+//! sectors, about half a megabyte), so the kernel never holds it whole: entries are read through
+//! the device, one sector at a time, through a few cached sectors. A sector is held as its 128
+//! stored entries ([`FatSector`]).
 
 use core::fmt;
 
+use rtl::pod::Pod;
+
+use super::check;
+use super::raw::Le32;
 use crate::block::BlockDevice;
 use crate::status::NtStatus;
 
@@ -18,6 +23,9 @@ pub const BAD: u32 = 0x0FFF_FFF7;
 pub const END_OF_CHAIN: u32 = 0x0FFF_FFF8;
 /// Entries per 512-byte FAT sector.
 pub const ENTRIES_PER_SECTOR: u32 = 128;
+
+/// One FAT sector: its entries as stored.
+pub type FatSector = [Le32; ENTRIES_PER_SECTOR as usize];
 
 /// What a cluster's FAT entry says.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -57,11 +65,11 @@ pub fn decode_entry(raw: u32, max_cluster: u32) -> FatEntry {
     }
 }
 
-/// Where cluster `cluster`'s entry lives: the sector within the FAT, and the byte offset in it.
+/// Where cluster `cluster`'s entry lives: the sector within the FAT, and the entry's index in it.
 pub fn entry_position(cluster: u32) -> (u64, usize) {
     (
         (cluster / ENTRIES_PER_SECTOR) as u64,
-        (cluster % ENTRIES_PER_SECTOR) as usize * 4,
+        (cluster % ENTRIES_PER_SECTOR) as usize,
     )
 }
 
@@ -74,7 +82,7 @@ struct Slot {
     lba: Option<u64>,
     /// When the slot was last used (the cache's clock).
     used: u64,
-    data: [u8; 512],
+    data: FatSector,
 }
 
 /// A read-through cache of FAT sectors, least recently used evicted first.
@@ -89,14 +97,14 @@ impl FatCache {
             slots: [Slot {
                 lba: None,
                 used: 0,
-                data: [0; 512],
+                data: [Le32([0; 4]); ENTRIES_PER_SECTOR as usize],
             }; CACHE_SECTORS],
             clock: 0,
         }
     }
 
     /// Keep a cached copy of the sector at `lba` in step with a write of `data` to it.
-    pub fn store(&mut self, lba: u64, data: &[u8; 512]) {
+    pub fn store(&mut self, lba: u64, data: &FatSector) {
         if let Some(slot) = self.slots.iter_mut().find(|slot| slot.lba == Some(lba)) {
             slot.data = *data;
         }
@@ -104,16 +112,13 @@ impl FatCache {
 
     /// The sector at `lba` on `device`: from the cache, or read into the least recently used slot.
     /// A failed read caches nothing.
-    pub fn sector(&mut self, device: &dyn BlockDevice, lba: u64) -> Result<&[u8; 512], NtStatus> {
+    pub fn sector(&mut self, device: &dyn BlockDevice, lba: u64) -> Result<&FatSector, NtStatus> {
         self.clock += 1;
         let index = match self.slots.iter().position(|slot| slot.lba == Some(lba)) {
             Some(hit) => hit,
             None => {
-                let mut data = [0u8; 512];
-                let status = device.read(lba, &mut data);
-                if !status.is_success() {
-                    return Err(status);
-                }
+                let mut data = FatSector::zeroed();
+                check(device.read(lba, data.as_bytes_mut()))?;
                 // Empty slots have never been used, so they go first.
                 let victim = (0..CACHE_SECTORS)
                     .min_by_key(|&index| (self.slots[index].lba.is_some(), self.slots[index].used))
@@ -162,14 +167,19 @@ mod tests {
         assert_eq!(decode_entry(0xFFFF_FFFF, MAX), FatEntry::EndOfChain);
     }
 
-    /// An entry's place: 128 to a sector, 4 bytes each.
+    /// An entry's place: 128 to a sector, 4 bytes each, little-endian.
     #[test]
     fn entries_are_128_to_a_sector() {
         assert_eq!(entry_position(0), (0, 0));
-        assert_eq!(entry_position(3), (0, 12));
-        assert_eq!(entry_position(127), (0, 508));
+        assert_eq!(entry_position(3), (0, 3));
+        assert_eq!(entry_position(127), (0, 127));
         assert_eq!(entry_position(128), (1, 0));
-        assert_eq!(entry_position(127_007), (992, 31 * 4));
+        assert_eq!(entry_position(127_007), (992, 31));
+
+        let mut bytes = [0u8; 512];
+        bytes[12..16].copy_from_slice(&[0x04, 0x03, 0x02, 0x01]);
+        let sector: FatSector = super::super::raw::from_block(&bytes);
+        assert_eq!(sector[3].get(), 0x0102_0304);
     }
 
     #[test]
@@ -190,7 +200,7 @@ mod tests {
         let mut cache = FatCache::new();
         let first = *cache.sector(disk, 5).unwrap();
         assert_eq!(disk.reads(), 1, "a miss reads");
-        assert_eq!(&first[..], &MemoryDisk::pattern_of(5, 1)[..]);
+        assert_eq!(first.as_bytes(), &MemoryDisk::pattern_of(5, 1)[..]);
         let again = *cache.sector(disk, 5).unwrap();
         assert_eq!(disk.reads(), 1, "a hit does not");
         assert_eq!(again, first);
@@ -214,7 +224,7 @@ mod tests {
         cache.sector(disk, 1).unwrap();
         assert_eq!(disk.reads(), 5, "the touched sector stayed");
         assert_eq!(
-            &cache.sector(disk, 2).unwrap()[..],
+            cache.sector(disk, 2).unwrap().as_bytes(),
             &MemoryDisk::pattern_of(2, 1)[..]
         );
         assert_eq!(disk.reads(), 6, "the least recently used was evicted");
@@ -229,7 +239,7 @@ mod tests {
         assert_eq!(cache.sector(disk, 7).err(), Some(STATUS_IO_DEVICE_ERROR));
         disk.fail(false);
         assert_eq!(
-            &cache.sector(disk, 7).unwrap()[..],
+            cache.sector(disk, 7).unwrap().as_bytes(),
             &MemoryDisk::pattern_of(7, 1)[..]
         );
         assert_eq!(disk.reads(), 2);

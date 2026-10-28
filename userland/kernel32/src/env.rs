@@ -8,6 +8,7 @@
 use crate::base::{set_last_error, set_last_nt_error, Text};
 use crate::error::ERROR_NOT_ENOUGH_MEMORY;
 use crate::nt::{self, UnicodeString};
+use crate::ntcall::{self, PebLock};
 
 /// STATUS_BUFFER_TOO_SMALL: the value or expansion did not fit.
 const STATUS_BUFFER_TOO_SMALL: u32 = 0xC000_0023;
@@ -20,11 +21,8 @@ struct Wide {
 
 impl Wide {
     fn new(units: usize) -> Option<Wide> {
-        // SAFETY: ntdll's heap, on the process heap.
-        let buffer =
-            unsafe { nt::RtlAllocateHeap(crate::base::process_heap(), 0, 2 * units.max(1)) }
-                as *mut u16;
-        (!buffer.is_null()).then_some(Wide { buffer, units })
+        let buffer = ntcall::allocate_heap(2 * units.max(1))?.as_ptr().cast();
+        Some(Wide { buffer, units })
     }
 
     /// The string of its first `length` units, its room the buffer's.
@@ -44,8 +42,8 @@ impl Wide {
 
 impl Drop for Wide {
     fn drop(&mut self) {
-        // SAFETY: the buffer this allocated.
-        unsafe { nt::RtlFreeHeap(crate::base::process_heap(), 0, self.buffer as *mut u8) };
+        // SAFETY: the buffer this allocated, used no more.
+        unsafe { ntcall::free_heap(self.buffer.cast()) };
     }
 }
 
@@ -144,22 +142,29 @@ pub extern "system" fn get_environment_strings_a() -> *mut u8 {
 /// the PEB lock); null with ERROR_NOT_ENOUGH_MEMORY when the heap has no room.
 #[unsafe(export_name = "f2k_export_GetEnvironmentStrings")]
 pub extern "system" fn get_environment_strings() -> *mut u8 {
-    // SAFETY: ntdll's exports; the block is read under the PEB lock.
-    unsafe {
-        nt::RtlAcquirePebLock();
+    let copy = {
+        let _lock = PebLock::acquire();
         let block = crate::base::environment_block();
-        let bytes = 2 * block_units(block) as u32;
+        // SAFETY: the process's environment block, read under the PEB lock.
+        let bytes = 2 * unsafe { block_units(block) } as u32;
         let mut size = 0;
-        nt::RtlUnicodeToMultiByteSize(&mut size, block, bytes);
-        let copy = nt::RtlAllocateHeap(crate::base::process_heap(), 0, size as usize);
-        if !copy.is_null() {
-            nt::RtlUnicodeToMultiByteN(copy, size, core::ptr::null_mut(), block, bytes);
-        }
-        nt::RtlReleasePebLock();
-        if copy.is_null() {
-            set_last_error(ERROR_NOT_ENOUGH_MEMORY);
+        // SAFETY: ntdll's export, over the block's `bytes` into the local size.
+        unsafe { nt::RtlUnicodeToMultiByteSize(&mut size, block, bytes) };
+        let copy = ntcall::allocate_heap(size as usize);
+        if let Some(copy) = copy {
+            // SAFETY: ntdll's export, from the block's `bytes` into the fresh copy of `size`.
+            unsafe {
+                nt::RtlUnicodeToMultiByteN(copy.as_ptr(), size, core::ptr::null_mut(), block, bytes)
+            };
         }
         copy
+    };
+    match copy {
+        Some(copy) => copy.as_ptr(),
+        None => {
+            set_last_error(ERROR_NOT_ENOUGH_MEMORY);
+            core::ptr::null_mut()
+        }
     }
 }
 
@@ -190,10 +195,8 @@ unsafe fn block_units(block: *const u16) -> usize {
 /// `block` is null or a copy GetEnvironmentStrings made.
 #[unsafe(export_name = "f2k_export_FreeEnvironmentStringsA")]
 pub unsafe extern "system" fn free_environment_strings_a(block: *mut u8) -> u32 {
-    // SAFETY: the caller's copy, on the process heap.
-    u32::from(
-        block.is_null() || unsafe { nt::RtlFreeHeap(crate::base::process_heap(), 0, block) } != 0,
-    )
+    // SAFETY: the caller's copy, on the process heap, which the caller gives back.
+    u32::from(block.is_null() || unsafe { ntcall::free_heap(block) })
 }
 
 /// GetEnvironmentVariableW's work: the variable's value into the buffer — its length, terminator

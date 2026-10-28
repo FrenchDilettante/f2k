@@ -17,15 +17,27 @@
 //! its characters, and an alias takes a character's best fit, or `_` when 437 has none.
 
 use rtl::cp1252::{map_case, MB_TO_WC};
+use rtl::pod::Pod;
 
 use super::dir::{decode_byte, walk};
 use super::dirent::{
     checksum,
+    decode,
+    LongPart,
+    RawDirEntry,
+    RawLongEntry,
+    Record,
+    RecordBytes,
     Times,
     ATTR_LONG_NAME,
     CASE_LOWER_BASE,
     CASE_LOWER_EXTENSION,
+    DELETED,
+    DOT,
+    DOT_DOT,
     ENTRY_SIZE,
+    LAST_LONG_PART,
+    PART_UNITS,
 };
 use super::fat::FatEntry;
 use super::lookup::{File, LookupError};
@@ -40,8 +52,6 @@ use crate::status::{
 
 /// The value that ends a chain.
 const END_OF_CHAIN: u32 = 0x0FFF_FFFF;
-/// Units per long-name record.
-const PART_UNITS: usize = 13;
 /// The long name's longest form, in units.
 const MAX_LONG: usize = 255;
 
@@ -285,54 +295,46 @@ pub fn set_size(volume: &mut Volume, file: &mut File, size: u32) -> Result<(), N
 
 // --- Directory records ------------------------------------------------------------------------
 
-/// Where record `index` of the directory starting at `first` lives: its sector and byte offset.
+/// Where record `index` of the directory starting at `first` lives: its sector and its place among
+/// the sector's records.
 fn record_at(volume: &mut Volume, first: u32, index: u32) -> Result<(u64, usize), NtStatus> {
-    let per_cluster = cluster_bytes(volume) / ENTRY_SIZE as u32;
+    const PER_SECTOR: u32 = 512 / ENTRY_SIZE as u32;
+    let per_cluster = volume.layout().sectors_per_cluster * PER_SECTOR;
     let cluster = nth(volume, first, index / per_cluster)?;
-    let byte = (index % per_cluster) * ENTRY_SIZE as u32;
+    let within = index % per_cluster;
     Ok((
-        volume.layout().cluster_lba(cluster) + (byte / 512) as u64,
-        (byte % 512) as usize,
+        volume.layout().cluster_lba(cluster) + (within / PER_SECTOR) as u64,
+        (within % PER_SECTOR) as usize,
     ))
 }
 
-fn read_record(volume: &mut Volume, first: u32, index: u32) -> Result<[u8; 32], NtStatus> {
-    let (lba, at) = record_at(volume, first, index)?;
+fn read_record(volume: &mut Volume, first: u32, index: u32) -> Result<RecordBytes, NtStatus> {
+    let (lba, slot) = record_at(volume, first, index)?;
     let mut sector = [0u8; 512];
     volume.read_sector(lba, &mut sector)?;
-    let mut record = [0u8; 32];
-    record.copy_from_slice(&sector[at..at + 32]);
-    Ok(record)
+    Ok(sector.as_chunks::<ENTRY_SIZE>().0[slot])
 }
 
 fn write_record(
     volume: &mut Volume,
     first: u32,
     index: u32,
-    record: &[u8; 32],
+    record: &RecordBytes,
 ) -> Result<(), NtStatus> {
-    let (lba, at) = record_at(volume, first, index)?;
+    let (lba, slot) = record_at(volume, first, index)?;
     let mut sector = [0u8; 512];
     volume.read_sector(lba, &mut sector)?;
-    sector[at..at + 32].copy_from_slice(record);
+    sector.as_chunks_mut::<ENTRY_SIZE>().0[slot] = *record;
     volume.write_sector(lba, &sector)
 }
 
 /// Patch a record's fields from `file`: attributes, first cluster, size (none for a directory),
 /// times.
-fn patch(record: &mut [u8; 32], file: &File) {
-    let t = &file.times;
-    record[11] = file.attributes;
-    record[13] = t.create_hundredths;
-    record[14..16].copy_from_slice(&t.create_time.to_le_bytes());
-    record[16..18].copy_from_slice(&t.create_date.to_le_bytes());
-    record[18..20].copy_from_slice(&t.access_date.to_le_bytes());
-    record[20..22].copy_from_slice(&((file.first_cluster >> 16) as u16).to_le_bytes());
-    record[22..24].copy_from_slice(&t.write_time.to_le_bytes());
-    record[24..26].copy_from_slice(&t.write_date.to_le_bytes());
-    record[26..28].copy_from_slice(&(file.first_cluster as u16).to_le_bytes());
-    let size = if file.directory { 0 } else { file.size };
-    record[28..32].copy_from_slice(&size.to_le_bytes());
+fn patch(record: &mut RawDirEntry, file: &File) {
+    record.attr = file.attributes;
+    record.set_times(&file.times);
+    record.set_first_cluster(file.first_cluster);
+    record.size.set(if file.directory { 0 } else { file.size });
 }
 
 /// Record `file`'s attributes, first cluster, size and times in its entry (the root has none).
@@ -340,9 +342,9 @@ pub fn update_entry(volume: &mut Volume, file: &File) -> Result<(), NtStatus> {
     if file.parent_cluster == 0 {
         return Ok(());
     }
-    let mut record = read_record(volume, file.parent_cluster, file.index)?;
+    let mut record = RawDirEntry::read(&read_record(volume, file.parent_cluster, file.index)?);
     patch(&mut record, file);
-    write_record(volume, file.parent_cluster, file.index, &record)
+    write_record(volume, file.parent_cluster, file.index, &record.bytes())
 }
 
 /// The index of the first run of `count` free records (deleted, or at and past the end) of the
@@ -362,9 +364,10 @@ fn free_run(volume: &mut Volume, first: u32, count: u32) -> Result<u32, NtStatus
         for sector_index in 0..volume.layout().sectors_per_cluster as u64 {
             let mut sector = [0u8; 512];
             volume.read_sector(lba + sector_index, &mut sector)?;
-            for record in sector.chunks_exact(ENTRY_SIZE) {
-                ended |= record[0] == 0x00;
-                if ended || record[0] == 0xE5 {
+            for bytes in sector.as_chunks::<ENTRY_SIZE>().0 {
+                let record = decode(bytes);
+                ended |= record == Record::End;
+                if ended || record == Record::Deleted {
                     if run == 0 {
                         start = index;
                     }
@@ -505,15 +508,12 @@ fn alias(volume: &mut Volume, first: u32, name: &[u8]) -> Result<[u8; 11], NtSta
 }
 
 /// A short record.
-fn short_record(name: &[u8; 11], case: u8, file: &File) -> [u8; 32] {
-    let mut record = [0u8; 32];
-    record[..11].copy_from_slice(name);
-    if record[0] == 0xE5 {
-        record[0] = 0x05;
-    }
-    record[12] = case;
+fn short_record(name: &[u8; 11], case: u8, file: &File) -> RecordBytes {
+    let mut record = RawDirEntry::zeroed();
+    record.set_short_name(name);
+    record.nt_res = case;
     patch(&mut record, file);
-    record
+    record.bytes()
 }
 
 /// Make a new entry named `name` in the directory starting at `parent` for `file` (its first
@@ -550,27 +550,20 @@ pub fn create_entry(
             units[name.len()] = 0;
         }
         let sum = checksum(&stored);
-        let offsets = (1..11)
-            .step_by(2)
-            .chain((14..26).step_by(2))
-            .chain((28..32).step_by(2));
-        let offsets: [usize; 13] = {
-            let mut all = [0usize; 13];
-            for (slot, offset) in all.iter_mut().zip(offsets) {
-                *slot = offset;
-            }
-            all
-        };
+        let chunks = units.as_chunks::<PART_UNITS>().0;
         for order in (1..=parts).rev() {
-            let mut record = [0u8; 32];
-            record[0] = order as u8 | if order == parts { 0x40 } else { 0 };
-            record[11] = ATTR_LONG_NAME;
-            record[13] = sum;
-            for (i, &offset) in offsets.iter().enumerate() {
-                let unit = units[(order - 1) * PART_UNITS + i];
-                record[offset..offset + 2].copy_from_slice(&unit.to_le_bytes());
-            }
-            write_record(volume, parent, start + (parts - order) as u32, &record)?;
+            let part = LongPart {
+                order: order as u8,
+                last: order == parts,
+                checksum: sum,
+                units: chunks[order - 1],
+            };
+            write_record(
+                volume,
+                parent,
+                start + (parts - order) as u32,
+                &part.record().bytes(),
+            )?;
         }
     }
     file.parent_cluster = parent;
@@ -586,25 +579,20 @@ pub fn create_entry(
 /// Remove `file`'s entry: its 8.3 record and the long-name records before it marked deleted. Its
 /// clusters stay.
 pub fn remove_entry(volume: &mut Volume, file: &File) -> Result<(), NtStatus> {
-    let mut record = read_record(volume, file.parent_cluster, file.index)?;
-    let mut stored = [0u8; 11];
-    stored.copy_from_slice(&record[..11]);
-    if stored[0] == 0x05 {
-        stored[0] = 0xE5;
-    }
-    let sum = checksum(&stored);
-    record[0] = 0xE5;
-    write_record(volume, file.parent_cluster, file.index, &record)?;
+    let mut record = RawDirEntry::read(&read_record(volume, file.parent_cluster, file.index)?);
+    let sum = checksum(&record.short_name());
+    record.name[0] = DELETED;
+    write_record(volume, file.parent_cluster, file.index, &record.bytes())?;
     let mut index = file.index;
     while index > 0 {
         index -= 1;
-        let mut part = read_record(volume, file.parent_cluster, index)?;
-        if part[11] != ATTR_LONG_NAME || part[0] == 0xE5 || part[13] != sum {
+        let mut part = RawLongEntry::read(&read_record(volume, file.parent_cluster, index)?);
+        if part.attr != ATTR_LONG_NAME || part.ord == DELETED || part.checksum != sum {
             break;
         }
-        let last = part[0] & 0x40 != 0;
-        part[0] = 0xE5;
-        write_record(volume, file.parent_cluster, index, &part)?;
+        let last = part.ord & LAST_LONG_PART != 0;
+        part.ord = DELETED;
+        write_record(volume, file.parent_cluster, index, &part.bytes())?;
         if last {
             break;
         }
@@ -634,15 +622,14 @@ pub fn rename(
     create_entry(volume, parent, name, &mut moved)?;
     remove_entry(volume, file)?;
     if file.directory && parent != file.parent_cluster && file.first_cluster != 0 {
-        let mut dotdot = read_record(volume, file.first_cluster, 1)?;
+        let mut dotdot = RawDirEntry::read(&read_record(volume, file.first_cluster, 1)?);
         let target = if parent == volume.layout().root_cluster {
             0
         } else {
             parent
         };
-        dotdot[20..22].copy_from_slice(&((target >> 16) as u16).to_le_bytes());
-        dotdot[26..28].copy_from_slice(&(target as u16).to_le_bytes());
-        write_record(volume, file.first_cluster, 1, &dotdot)?;
+        dotdot.set_first_cluster(target);
+        write_record(volume, file.first_cluster, 1, &dotdot.bytes())?;
     }
     Ok(moved)
 }
@@ -665,21 +652,9 @@ pub fn make_directory(
     };
     let mut up_file = File::plain(up, 0, true);
     up_file.times = times;
-    let made = write_record(
-        volume,
-        cluster,
-        0,
-        &short_record(b".          ", 0, &directory),
-    )
-    .and_then(|()| {
-        write_record(
-            volume,
-            cluster,
-            1,
-            &short_record(b"..         ", 0, &up_file),
-        )
-    })
-    .and_then(|()| create_entry(volume, parent, name, &mut directory));
+    let made = write_record(volume, cluster, 0, &short_record(&DOT, 0, &directory))
+        .and_then(|()| write_record(volume, cluster, 1, &short_record(&DOT_DOT, 0, &up_file)))
+        .and_then(|()| create_entry(volume, parent, name, &mut directory));
     if let Err(status) = made {
         free_chain(volume, cluster)?;
         return Err(status);

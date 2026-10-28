@@ -21,7 +21,7 @@ use crate::sched::apc::Apc;
 /// [`deliver`] in user mode, never by the kernel's own delivery — so this does nothing.
 pub fn user_normal_routine(
     _dispatcher: &mut crate::sched::dispatcher::Dispatcher,
-    _thread: &mut crate::sched::thread::Thread,
+    _thread: crate::sched::thread::ThreadId,
     _context: usize,
     _argument1: usize,
     _argument2: usize,
@@ -34,8 +34,16 @@ pub const CALL_WORDS: usize = 4;
 pub const DELIVERY_BYTES: usize = CALL_WORDS * 4 + CONTEXT_SIZE;
 
 /// Bind `apc` as a user APC on `thread`: its delivery calls `routine` (a user-mode address) with
-/// `context` and the two system arguments its queuing captures.
+/// `context` and the two system arguments its queuing captures. `thread` is the target's record:
+/// the running thread's, or one the caller holds a reference on.
+///
+/// # Panics
+///
+/// `thread` is no thread record of the dispatcher database.
 pub fn init(apc: &mut Apc, thread: *mut crate::sched::thread::Thread, routine: u32, context: u32) {
+    let thread = crate::sched::idle::dispatcher()
+        .thread_at(thread)
+        .expect("a user APC targets a thread record");
     apc.init(
         thread,
         crate::sched::apc::nop_kernel_routine,
@@ -81,19 +89,16 @@ pub fn delivery_image(frame: &TrapFrame, call: [u32; CALL_WORDS]) -> (u32, [u8; 
 #[cfg(target_arch = "x86")]
 pub fn deliver(frame: &mut TrapFrame) {
     let dispatcher = crate::sched::idle::dispatcher();
-    // SAFETY: the running thread, live and exclusive here (interrupts masked by the caller).
-    let thread = unsafe { &mut *dispatcher.current_thread() };
+    let current = dispatcher.current().expect("a delivery runs on a thread");
+    let thread = dispatcher.thread_mut(current);
     if !thread.user_apc_pending {
         return;
     }
     thread.user_apc_pending = false;
-    if thread.user_apcs.is_empty() {
+    let Some(apc) = dispatcher.first_apc(current, crate::sched::apc::ApcMode::User) else {
         return;
-    }
-    // SAFETY: the queue is initialized and non-empty; its head is a queued APC's link.
-    let apc = crate::sched::apc::entry_to_apc(unsafe { thread.user_apcs.first() });
-    // SAFETY: the APC is a live record (the current process's pool, or a timer's).
-    let call = call_frame(unsafe { &*apc });
+    };
+    let call = call_frame(dispatcher.apc(apc));
     dispatcher.remove_apc(apc);
 
     let (esp, bytes) = delivery_image(frame, call);
@@ -235,19 +240,13 @@ mod tests {
     /// (NtQueueApcThread's second and third arguments, a timer's signal time).
     #[test]
     fn a_user_apc_calls_its_routine_with_the_context_and_both_arguments() {
-        use crate::sched::dispatcher::Dispatcher;
         use crate::sched::process::SchedProcess;
-        use crate::sched::thread::Thread;
-        let d = Box::leak(Box::new(Dispatcher::zeroed()));
-        d.init();
+        let d = crate::sched::testkit::dispatcher();
         let p = Box::leak(Box::new(SchedProcess::new(0x0090_0000, 8)));
-        p.init();
-        let t = Box::leak(Box::new(Thread::empty()));
-        // SAFETY: both records are leaked at their final addresses.
-        unsafe { t.attach_to(p) };
-        let apc = Box::leak(Box::new(crate::sched::apc::Apc::detached()));
-        init(apc, t, 0x0040_5000, 7);
+        let t = crate::sched::testkit::thread(p);
+        let mut apc = crate::sched::testkit::apc();
+        init(&mut apc, t.as_ptr(), 0x0040_5000, 7);
         assert!(d.queue_apc(apc, 8, 9, 0));
-        assert_eq!(call_frame(apc), [0x0040_5000, 7, 8, 9]);
+        assert_eq!(call_frame(&apc), [0x0040_5000, 7, 8, 9]);
     }
 }

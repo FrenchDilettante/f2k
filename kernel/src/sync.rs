@@ -115,8 +115,6 @@ impl<T> Drop for InitOnce<T> {
 /// owner keeps (the frame table, the page colour tables).
 ///
 /// A second [`StaticBuf::take`] panics.
-// No adopter yet: the frame table and the colour tables take it when they move off `static mut`.
-#[cfg_attr(not(test), allow(dead_code))]
 pub struct StaticBuf<T> {
     taken: AtomicBool,
     value: UnsafeCell<T>,
@@ -126,7 +124,6 @@ pub struct StaticBuf<T> {
 // only reference to it; `T: Send` because that reference may be taken on any thread.
 unsafe impl<T: Send> Sync for StaticBuf<T> {}
 
-#[cfg_attr(not(test), allow(dead_code))]
 impl<T> StaticBuf<T> {
     /// A buffer holding `value`, not taken yet.
     pub const fn new(value: T) -> Self {
@@ -141,6 +138,9 @@ impl<T> StaticBuf<T> {
     /// # Panics
     ///
     /// It was taken already.
+    // The `&mut` from `&self` is the point: the swap below lets exactly one caller through, so the
+    // reference it hands out is the only one there will ever be.
+    #[allow(clippy::mut_from_ref)]
     pub fn take(&'static self) -> &'static mut T {
         assert!(
             !self.taken.swap(true, Ordering::AcqRel),

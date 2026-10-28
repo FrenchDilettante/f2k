@@ -27,7 +27,8 @@ core::arch::global_asm!(
     include_str!("memory.s"),
 );
 
-use kernel32::nt;
+use kernel32::{nt, ntcall};
+use rtl::critsec::CriticalSection;
 use rtl::handles::HandleTable;
 use rtl::localmem::{HandleCalls, HeapCalls, Memory, Outcome, ENTRY_SIZE, MAXIMUM_HANDLES};
 use rtl::sys;
@@ -37,13 +38,11 @@ use rtl::sys;
 /// critical-section initialization kernel32 keeps itself (src/critsec.s's export calls it, cdecl).
 #[unsafe(no_mangle)]
 extern "C" fn f2k_k32_initialize_critical_section(section: *mut u8) {
-    // SAFETY: ntdll's exports; the caller's section, written in place (a bad pointer faults the
-    // caller).
-    unsafe {
-        let status = nt::RtlInitializeCriticalSection(section);
-        if !rtl::status::nt_success(status) {
-            nt::RtlRaiseStatus(status);
-        }
+    // SAFETY: the caller's CRITICAL_SECTION, its 24 bytes a section's atomics (ntdll writes it in
+    // place; a bad pointer faults the caller there).
+    let section = unsafe { &*section.cast::<CriticalSection>() };
+    if let Err(status) = ntcall::initialize_critical_section(section) {
+        ntcall::raise_status(status);
     }
 }
 
@@ -92,14 +91,13 @@ struct ProcessHeap(usize);
 
 impl HeapCalls for ProcessHeap {
     fn alloc(&self, flags: u32, size: usize) -> Option<usize> {
-        // SAFETY: ntdll's export, on the process heap (which raises no failures).
-        Some(unsafe { nt::RtlAllocateHeap(self.0, flags, size) } as usize)
-            .filter(|&block| block != 0)
+        ntcall::allocate_heap_with(flags, size).map(|block| block.as_ptr() as usize)
     }
 
     fn free(&self, flags: u32, pointer: usize) -> bool {
-        // SAFETY: ntdll's export; a pointer that is no block of the heap is refused, not followed.
-        (unsafe { nt::RtlFreeHeap(self.0, flags, pointer as *mut u8) }) != 0
+        // SAFETY: LocalFree's and GlobalFree's caller gives the block back (nothing of kernel32's
+        // uses it); a pointer that is no block of the heap is refused, not followed.
+        unsafe { ntcall::free_heap_with(flags, pointer as *mut u8) }
     }
 
     fn size(&self, flags: u32, pointer: usize) -> Option<usize> {
@@ -228,17 +226,12 @@ extern "C" fn f2k_k32_local_realloc(handle: usize, size: usize, flags: u32) -> u
 /// on the process heap, recorded in its TEB; null when the heap has no room (src/natives.s).
 #[unsafe(no_mangle)]
 extern "C" fn f2k_k32_tls_expansion() -> usize {
-    // SAFETY: ntdll's export, over the process heap.
-    let slots = unsafe {
-        nt::RtlAllocateHeap(
-            sys::process_heap_handle(),
-            rtl::heap::HEAP_ZERO_MEMORY,
-            rtl::ldr::EXPANSION_BYTES,
-        )
-    } as usize;
-    if slots == 0 {
+    let Some(slots) =
+        ntcall::allocate_heap_with(rtl::heap::HEAP_ZERO_MEMORY, rtl::ldr::EXPANSION_BYTES)
+    else {
         return 0;
-    }
+    };
+    let slots = slots.as_ptr() as usize;
     sys::write(sys::teb() + sys::TEB_TLS_EXPANSION_SLOTS, slots);
     slots
 }

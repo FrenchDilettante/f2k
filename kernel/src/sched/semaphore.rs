@@ -5,13 +5,11 @@
 //! kernel-internal object); the object manager's semaphore objects, which handles name, are the
 //! others.
 
-use core::ptr::addr_of_mut;
-
 use super::dispatcher::Dispatcher;
-use super::wait::{WaitKind, Waitable};
+use super::thread::ThreadId;
+use super::wait::{WaitKind, Waitable, WaitableId};
 
 /// A counting semaphore.
-#[repr(C)]
 pub struct Semaphore {
     /// The count as a waitable signal state: positive means `count` units available.
     pub(crate) waitable: Waitable,
@@ -20,8 +18,8 @@ pub struct Semaphore {
 }
 
 impl Semaphore {
-    /// A fresh semaphore at count zero with the ceiling `limit`; call [`Semaphore::init`] once the
-    /// owning object is at its final address.
+    /// A fresh semaphore to embed, at count zero with the ceiling `limit`; call
+    /// [`Semaphore::init`] once it is at its final address.
     pub const fn new(limit: i32) -> Self {
         Semaphore {
             waitable: Waitable::new(WaitKind::Semaphore, 0),
@@ -29,14 +27,23 @@ impl Semaphore {
         }
     }
 
-    /// Close the waiters sentinel; call once at the final address.
+    /// A fresh semaphore of the database, at count zero with the ceiling `limit`, its header the
+    /// record `id`.
+    pub const fn with_id(limit: i32, id: WaitableId) -> Self {
+        Semaphore {
+            waitable: Waitable::with_id(WaitKind::Semaphore, 0, id),
+            limit,
+        }
+    }
+
+    /// Name an embedded semaphore by its address; call once at its final address.
     pub fn init(&mut self) {
         self.waitable.init();
     }
 
     /// The waitable header, as the wait entry takes it.
     pub(crate) fn waitable(&mut self) -> *mut Waitable {
-        addr_of_mut!(self.waitable)
+        &mut self.waitable
     }
 
     /// The current count.
@@ -55,17 +62,19 @@ impl Dispatcher {
         adjustment: i32,
         increment: i8,
     ) -> Result<i32, crate::status::NtStatus> {
-        let old = semaphore.waitable.signal_state;
+        // The record is read for its ceiling and its name; the release works through the name.
+        let (limit, semaphore) = (semaphore.limit, semaphore.waitable.id());
+        let header = self.waitable_mut(semaphore);
+        let old = header.signal_state;
         let new = old.wrapping_add(adjustment);
-        if new > semaphore.limit || new < old {
+        if new > limit || new < old {
             return Err(crate::status::STATUS_SEMAPHORE_LIMIT_EXCEEDED);
         }
-        semaphore.waitable.signal_state = new;
+        header.signal_state = new;
         // Waiters can only be parked while the count is zero, so a release from zero is the only
         // one that can satisfy anyone.
-        if old == 0 && !semaphore.waitable.waiters.is_empty() {
-            let waitable = addr_of_mut!(semaphore.waitable);
-            self.satisfy_waiters(waitable, increment);
+        if old == 0 && header.has_waiters() {
+            self.satisfy_waiters(semaphore, increment);
         }
         Ok(old)
     }
@@ -74,10 +83,15 @@ impl Dispatcher {
     /// bounds it), and the satisfy runs regardless of the previous count — a forced resume can
     /// release with nobody parked, and the count it leaves is the residue the next suspend's
     /// satisfied wait consumes. This is the wake half of resume.
-    pub(crate) fn release_suspend_semaphore(&mut self, semaphore: &mut Semaphore) {
-        semaphore.waitable.signal_state += 1;
-        let waitable = addr_of_mut!(semaphore.waitable);
-        self.satisfy_waiters(waitable, super::apc::SUSPEND_WAKE_INCREMENT);
+    pub(crate) fn release_suspend_semaphore(&mut self, thread: ThreadId) {
+        self.thread_mut(thread)
+            .suspend_semaphore
+            .waitable
+            .signal_state += 1;
+        self.satisfy_waiters(
+            WaitableId::Suspend(thread),
+            super::apc::SUSPEND_WAKE_INCREMENT,
+        );
     }
 }
 
@@ -92,26 +106,24 @@ mod tests {
     // The rig: the same leaked-objects style as the scheduler's other test modules.
 
     fn dispatcher() -> &'static mut Dispatcher {
-        let d = Box::leak(Box::new(Dispatcher::zeroed()));
-        d.init();
-        d
+        crate::sched::testkit::dispatcher()
     }
 
     fn process(base: i8) -> *mut SchedProcess {
         let p = Box::leak(Box::new(SchedProcess::new(0x0090_0000, base)));
-        p.init();
         p as *mut SchedProcess
     }
 
-    fn thread(p: *mut SchedProcess) -> &'static mut Thread {
-        let t = Box::leak(Box::new(Thread::empty()));
-        // SAFETY: both objects are leaked at their final addresses.
-        unsafe { t.attach_to(&mut *p) };
-        t
+    fn thread(p: *mut SchedProcess) -> crate::sched::testkit::Rec<Thread> {
+        crate::sched::testkit::thread(p)
     }
 
     /// Park `t` on `semaphore`, asserting the wait blocked.
-    fn park_on(d: &mut Dispatcher, t: &mut Thread, semaphore: &mut Semaphore) {
+    fn park_on(
+        d: &mut Dispatcher,
+        t: crate::sched::testkit::Rec<Thread>,
+        semaphore: &mut Semaphore,
+    ) {
         let stamp = crate::sched::wait::ClockStamp {
             interrupt_time: 10_000,
             tick: 5,

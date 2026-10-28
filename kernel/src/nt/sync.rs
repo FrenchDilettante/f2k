@@ -10,7 +10,7 @@
 //! its low byte, as the platform reads it. A timeout is a LARGE_INTEGER: negative a relative
 //! interval in 100 ns units, positive an absolute system time, none (a null pointer) forever.
 
-use super::attributes::{self, Resolved, MAX_NAME, OBJ_OPENIF};
+use super::attributes::{self, ObjectName, Resolved, MAX_NAME, OBJ_OPENIF};
 use super::call::{calling_process, Handle, NtCall, NtResult, UserAddr, UserPtr};
 use crate::nt::object::{is_console_handle, CURRENT_PROCESS, CURRENT_THREAD};
 use crate::ob::{self, ObjectId, ObjectType};
@@ -21,35 +21,20 @@ use crate::status::*;
 /// The priority increment a semaphore release grants the waiters it wakes.
 const SEMAPHORE_WAKE_INCREMENT: i8 = 1;
 
-/// A BOOLEAN argument: its low byte.
-fn boolean(value: u32) -> bool {
-    value as u8 != 0
-}
-
-/// Probe `size` bytes at `at` for the call's writes, when given: STATUS_ACCESS_VIOLATION before the
-/// call acts, as the platform's probes are.
-pub(super) fn probe(at: u32, size: u32) -> Result<(), NtStatus> {
-    if at == 0 {
-        return Ok(());
-    }
-    crate::user::syscall::probe_user_range(at, size).map_err(|_| STATUS_ACCESS_VIOLATION)
-}
-
 // --- Naming --------------------------------------------------------------------------------------
 
-/// What an OBJECT_ATTRIBUTES asks of a create or an open: the name in `\BaseNamedObjects` (its
-/// bytes' length; none for an unnamed object), whether it names the directory itself, and the
-/// handle's inheritance and OBJ_OPENIF.
+/// What an OBJECT_ATTRIBUTES asks of a create or an open: the name in `\BaseNamedObjects` (none
+/// for an unnamed object), whether it names the directory itself, and the handle's inheritance and
+/// OBJ_OPENIF.
 struct Request {
-    name: Option<usize>,
+    name: Option<ObjectName>,
     directory: bool,
     inherit: bool,
     open_if: bool,
 }
 
-/// Read the request at `attributes` (none: an unnamed object, a handle not inherited), the name's
-/// bytes into `out`.
-fn request(attributes: UserAddr, out: &mut [u8; ob::MAX_NAME]) -> Result<Request, NtStatus> {
+/// Read the request at `attributes` (none: an unnamed object, a handle not inherited).
+fn request(attributes: UserAddr) -> Result<Request, NtStatus> {
     let mut request = Request {
         name: None,
         directory: false,
@@ -70,7 +55,7 @@ fn request(attributes: UserAddr, out: &mut [u8; ob::MAX_NAME]) -> Result<Request
     match attributes::resolve(&units[..length], read.root, root_is_directory)? {
         Resolved::Directory => request.directory = true,
         Resolved::Named { start } => {
-            request.name = Some(attributes::object_name(&units[start..length], out)?)
+            request.name = Some(attributes::object_name(&units[start..length])?)
         }
     }
     Ok(request)
@@ -99,9 +84,8 @@ pub(super) fn create(
     kind: ObjectType,
     make: impl FnOnce() -> Option<ObjectId>,
 ) -> NtResult {
-    let mut bytes = [0u8; ob::MAX_NAME];
-    let request = request(attributes, &mut bytes)?;
-    probe(slot.addr().raw(), 4)?;
+    let request = request(attributes)?;
+    slot.addr().probe(4)?;
     let process = calling_process();
     // A full table refuses before an object is made.
     if process.handles().is_full() {
@@ -114,7 +98,7 @@ pub(super) fn create(
             STATUS_OBJECT_NAME_COLLISION
         });
     }
-    let name = request.name.map(|length| &bytes[..length]);
+    let name = request.name.as_deref();
     if let Some(existing) = name.and_then(|name| ob::directory().lookup_name(name)) {
         if !request.open_if {
             return Err(STATUS_OBJECT_NAME_COLLISION);
@@ -146,15 +130,14 @@ pub(super) fn open(
     if attributes.is_null() {
         return Err(STATUS_INVALID_PARAMETER);
     }
-    let mut bytes = [0u8; ob::MAX_NAME];
-    let request = request(attributes, &mut bytes)?;
-    probe(slot.addr().raw(), 4)?;
+    let request = request(attributes)?;
+    slot.addr().probe(4)?;
     if request.directory {
         return Err(STATUS_OBJECT_TYPE_MISMATCH);
     }
-    let length = request.name.ok_or(STATUS_OBJECT_NAME_INVALID)?;
+    let name = request.name.ok_or(STATUS_OBJECT_NAME_INVALID)?;
     let existing = ob::directory()
-        .lookup_name(&bytes[..length])
+        .lookup_name(&name)
         .ok_or(STATUS_OBJECT_NAME_NOT_FOUND)?;
     if existing.kind != kind {
         return Err(STATUS_OBJECT_TYPE_MISMATCH);
@@ -195,12 +178,11 @@ pub fn open_directory_object(
     if attributes.is_null() {
         return Err(STATUS_INVALID_PARAMETER);
     }
-    let mut bytes = [0u8; ob::MAX_NAME];
-    let request = request(attributes, &mut bytes)?;
-    probe(slot.addr().raw(), 4)?;
+    let request = request(attributes)?;
+    slot.addr().probe(4)?;
     if !request.directory {
-        let length = request.name.ok_or(STATUS_OBJECT_NAME_INVALID)?;
-        return Err(match ob::directory().lookup_name(&bytes[..length]) {
+        let name = request.name.ok_or(STATUS_OBJECT_NAME_INVALID)?;
+        return Err(match ob::directory().lookup_name(&name) {
             Some(_) => STATUS_OBJECT_TYPE_MISMATCH,
             None => STATUS_OBJECT_NAME_NOT_FOUND,
         });
@@ -224,7 +206,7 @@ pub fn create_event(
     access: u32,
     attributes: UserAddr,
     event_type: u32,
-    initial_state: u32,
+    initial_state: bool,
 ) -> NtResult {
     let kind = match event_type {
         0 => EventKind::Notification,
@@ -232,7 +214,7 @@ pub fn create_event(
         _ => return Err(STATUS_INVALID_PARAMETER),
     };
     create(slot, access, attributes, ObjectType::Event, || {
-        ob::directory().create_event(kind, boolean(initial_state))
+        ob::directory().create_event(kind, initial_state)
     })
 }
 
@@ -253,7 +235,7 @@ fn with_event(
     previous: UserPtr<i32>,
     change: impl FnOnce(&mut crate::sched::event::Event) -> i32,
 ) -> NtResult {
-    probe(previous.addr().raw(), 4)?;
+    previous.addr().probe(4)?;
     let reference = object_of(event.raw(), ObjectType::Event)?;
     let was = change(reference.event());
     previous.write_optional(was)?;
@@ -297,12 +279,12 @@ pub fn create_mutant(
     slot: UserPtr<u32>,
     access: u32,
     attributes: UserAddr,
-    initial_owner: u32,
+    initial_owner: bool,
 ) -> NtResult {
     create(slot, access, attributes, ObjectType::Mutex, || {
         let directory = ob::directory();
         let id = directory.create_mutex()?;
-        if boolean(initial_owner) {
+        if initial_owner {
             // SAFETY: the running thread's record, live while it runs a service.
             let thread = unsafe { &mut *crate::sched::idle::dispatcher().current_thread() };
             crate::sched::mutex::acquire(directory.mutex(id).expect("just created"), thread);
@@ -325,7 +307,7 @@ pub fn open_mutant(
 /// oldest waiter); the previous count into `previous` when given. STATUS_MUTANT_NOT_OWNED unless
 /// the caller owns it.
 pub fn release_mutant(_call: &mut NtCall, mutant: Handle, previous: UserPtr<i32>) -> NtResult {
-    probe(previous.addr().raw(), 4)?;
+    previous.addr().probe(4)?;
     let reference = object_of(mutant.raw(), ObjectType::Mutex)?;
     let dispatcher = crate::sched::idle::dispatcher();
     let was = dispatcher.release_mutex(reference.mutex(), dispatcher.current_thread())?;
@@ -371,7 +353,7 @@ pub fn release_semaphore(
     count: i32,
     previous: UserPtr<i32>,
 ) -> NtResult {
-    probe(previous.addr().raw(), 4)?;
+    previous.addr().probe(4)?;
     if count <= 0 {
         return Err(STATUS_INVALID_PARAMETER);
     }
@@ -437,11 +419,11 @@ pub fn set_timer(
     due_time: UserPtr<u64>,
     routine: UserAddr,
     context: UserAddr,
-    resume: u32,
+    resume: bool,
     period: i32,
     previous: UserAddr,
 ) -> NtResult {
-    probe(previous.raw(), 1)?;
+    previous.probe(1)?;
     let reference = object_of(timer.raw(), ObjectType::Timer)?;
     let due = due_time.read()? as i64;
     if period < 0 {
@@ -475,7 +457,7 @@ pub fn set_timer(
         signal_time,
     );
     write_boolean(previous, armed)?;
-    Ok(if boolean(resume) {
+    Ok(if resume {
         STATUS_TIMER_RESUME_IGNORED
     } else {
         STATUS_SUCCESS
@@ -485,7 +467,7 @@ pub fn set_timer(
 /// NtCancelTimer: disarm the timer, its period and any queued completion APC dropped; the signal
 /// state is left as it was, and goes into `current` when given.
 pub fn cancel_timer(_call: &mut NtCall, timer: Handle, current: UserAddr) -> NtResult {
-    probe(current.raw(), 1)?;
+    current.probe(1)?;
     let reference = object_of(timer.raw(), ObjectType::Timer)?;
     let timer = reference.timer();
     crate::sched::idle::dispatcher().cancel_waitable_timer(timer);
@@ -570,12 +552,12 @@ fn wait_one(
 pub fn wait_for_single_object(
     _call: &mut NtCall,
     object: Handle,
-    alertable: u32,
+    alertable: bool,
     timeout: UserPtr<u64>,
 ) -> NtResult {
     let timeout = timeout_of(timeout)?;
     let waitable = waitable_of(object.raw())?;
-    Ok(wait_one(waitable, timeout, boolean(alertable)))
+    Ok(wait_one(waitable, timeout, alertable))
 }
 
 /// NtWaitForMultipleObjects: wait on up to 64 objects at once — WaitAny (1: the lowest signaled
@@ -588,7 +570,7 @@ pub fn wait_for_multiple_objects(
     count: u32,
     handles: UserAddr,
     wait_type: u32,
-    alertable: u32,
+    alertable: bool,
     timeout: UserPtr<u64>,
 ) -> NtResult {
     let count = count as usize;
@@ -623,7 +605,6 @@ pub fn wait_for_multiple_objects(
     if wait_all && (1..count).any(|index| objects[..index].contains(&objects[index])) {
         return Err(STATUS_INVALID_PARAMETER_MIX);
     }
-    let alertable = boolean(alertable);
     // The wait holds every object it names throughout, replays included.
     let status = ob::waiting(&held[..holding], || {
         wait::wait_current_with(|dispatcher, thread, stamp, replay| {
@@ -652,7 +633,7 @@ pub fn signal_and_wait_for_single_object(
     _call: &mut NtCall,
     signal: Handle,
     wait: Handle,
-    alertable: u32,
+    alertable: bool,
     timeout: UserPtr<u64>,
 ) -> NtResult {
     let timeout = timeout_of(timeout)?;
@@ -687,7 +668,7 @@ pub fn signal_and_wait_for_single_object(
         Some(_) => return Err(STATUS_OBJECT_TYPE_MISMATCH),
         None => return Err(STATUS_INVALID_HANDLE),
     }
-    Ok(wait_one(waitable, timeout, boolean(alertable)))
+    Ok(wait_one(waitable, timeout, alertable))
 }
 
 /// NtDelayExecution: park the calling thread for the interval (see [`timeout_of`]) — the delay
@@ -695,9 +676,8 @@ pub fn signal_and_wait_for_single_object(
 /// relative one parks for good. A kernel APC breaks the delay and the shared entry replays it with
 /// the remaining time; the delay completes as STATUS_SUCCESS, or STATUS_USER_APC when an alertable
 /// one ran user APCs.
-pub fn delay_execution(_call: &mut NtCall, alertable: u32, interval: UserPtr<u64>) -> NtResult {
+pub fn delay_execution(_call: &mut NtCall, alertable: bool, interval: UserPtr<u64>) -> NtResult {
     let interval = interval_of(interval.read()? as i64);
-    let alertable = boolean(alertable);
     let status = wait::wait_current_with(|dispatcher, thread, stamp, replay| {
         let interval = if replay {
             wait::replay_interval(thread.timer.due_time, stamp.interrupt_time)
@@ -799,7 +779,7 @@ pub fn duplicate_object(
     }
 
     let source = source.raw();
-    probe(target.addr().raw(), 4)?;
+    target.addr().probe(4)?;
     let source_process = reference_process(source_process.raw(), PROCESS_DUP_HANDLE)?;
     if source_process.ended() {
         return Err(STATUS_PROCESS_IS_TERMINATING);

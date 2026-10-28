@@ -924,34 +924,46 @@ impl<H: FrameHooks> FrameDb<H> {
         frame
     }
 
+    /// Allocate any frame, as [`FrameDb::try_allocate`], for the callers that cannot run out (the
+    /// boot's, and the kernel's own tables and stacks).
+    ///
+    /// # Panics
+    ///
+    /// Nothing is available.
+    pub fn allocate(&mut self, color: u32) -> FrameId {
+        self.try_allocate(color).expect("no frames are available")
+    }
+
     /// Allocate any frame, preferring color `color` and non-zeroed content (no zeroing is ever
-    /// requested).
+    /// requested); none when nothing is available.
     ///
     /// Preference order: the Free list (requested color, then any), the Zeroed list (requested
-    /// color, then any), then Standby. Panics if nothing is available.
-    pub fn allocate(&mut self, color: u32) -> FrameId {
-        assert!(self.available != 0, "no frames are available");
+    /// color, then any), then Standby.
+    pub fn try_allocate(&mut self, color: u32) -> Option<FrameId> {
+        if self.available == 0 {
+            return None;
+        }
         assert!((color as usize) < self.colors, "color out of range");
         let color = color as usize;
 
         // Free, matching color.
         if let Some(frame) = self.buckets.inner[Self::color_table(FrameState::Free)][color].head {
             self.pop_colored(frame);
-            return frame;
+            return Some(frame);
         }
         // Zeroed, matching color.
         if let Some(frame) = self.buckets.inner[Self::color_table(FrameState::Zeroed)][color].head {
             self.pop_colored(frame);
-            return frame;
+            return Some(frame);
         }
         // Free, then zeroed, any color.
         if let Some(frame) = self.free.head {
             self.pop_colored(frame);
-            return frame;
+            return Some(frame);
         }
         if let Some(frame) = self.zeroed.head {
             self.pop_colored(frame);
-            return frame;
+            return Some(frame);
         }
 
         // Both colored lists are empty by chain; their totals must agree.
@@ -965,7 +977,7 @@ impl<H: FrameHooks> FrameDb<H> {
         );
         assert!(self.standby.total != 0, "no frames are available");
 
-        self.pop(FrameState::Standby)
+        Some(self.pop(FrameState::Standby))
     }
 
     /// Zero a frame on demand and mark it freshly zeroed.
@@ -1511,6 +1523,18 @@ mod tests {
     fn allocate_on_empty_database_panics() {
         let mut db = new_db();
         db.allocate(0);
+    }
+
+    /// The fallible allocation answers an empty database with none, and takes frames as the
+    /// panicking one does otherwise.
+    #[test]
+    fn try_allocate_reports_an_empty_database() {
+        let mut db = new_db();
+        assert_eq!(db.try_allocate(0), None);
+        release_all(&mut db, Free, &[5]);
+        assert_eq!(db.try_allocate(0), Some(5));
+        assert_eq!(db.try_allocate(0), None);
+        assert_eq!(db.audit(), Ok(()));
     }
 
     #[test]

@@ -7,111 +7,129 @@
 //! for as long as it is owned: a thread that ends holding mutexes abandons each one — the state
 //! goes back to one, the owner clears, and the next acquisition reports the abandonment.
 
-use core::ptr::{addr_of_mut, null_mut};
-
 use super::dispatcher::Dispatcher;
-use super::thread::Thread;
-use super::wait::{WaitKind, Waitable};
-use super::{unlink, Links};
+use super::list::{self, Link, ListKind};
+use super::thread::{Thread, ThreadId};
+use super::wait::{WaitKind, Waitable, WaitableId};
 use crate::status::{NtStatus, STATUS_ABANDONED, STATUS_MUTANT_NOT_OWNED, STATUS_SUCCESS};
 
 /// The priority increment a release grants the waiter it wakes.
 pub const MUTEX_WAKE_INCREMENT: i8 = 1;
 
+/// A mutex record's name: its index in the dispatcher database's mutex pool.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct MutexId(pub u16);
+
+/// A mutex record names itself: the entry points take the record or its id alike.
+impl From<&mut Mutex> for MutexId {
+    fn from(mutex: &mut Mutex) -> Self {
+        mutex.id()
+    }
+}
+
+/// The mutexes one thread owns.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct OwnedMutexes(pub ThreadId);
+
+impl ListKind for OwnedMutexes {
+    type Entry = MutexId;
+}
+
 /// A mutex.
-#[repr(C)]
 pub struct Mutex {
     /// The waitable header: one when free, `1 - n` while held `n` times.
     pub(crate) waitable: Waitable,
-    /// The owning thread; null while free.
-    pub(crate) owner: *mut Thread,
+    /// The owning thread; none while free.
+    pub(crate) owner: Option<ThreadId>,
     /// Whether the previous owner ended holding it: the next acquisition reports it and clears it.
     pub(crate) abandoned: bool,
     /// The owner's owned-mutex list membership.
-    pub(crate) owner_links: Links,
+    pub(crate) owner_link: Link<OwnedMutexes>,
 }
 
 impl Mutex {
-    /// A fresh, free mutex; call [`Mutex::init`] once it is at its final address.
-    pub const fn new() -> Self {
+    /// A fresh, free mutex: the record `id` of the pool.
+    pub const fn new(id: MutexId) -> Self {
         Mutex {
-            waitable: Waitable::new(WaitKind::Mutant, 1),
-            owner: null_mut(),
+            waitable: Waitable::with_id(WaitKind::Mutant, 1, WaitableId::Mutex(id.0)),
+            owner: None,
             abandoned: false,
-            owner_links: Links::detached(),
+            owner_link: Link::detached(),
         }
     }
 
-    /// Close the waiters sentinel; call once at the final address.
-    pub fn init(&mut self) {
-        self.waitable.init();
+    /// The record's name.
+    pub fn id(&self) -> MutexId {
+        match self.waitable.id() {
+            WaitableId::Mutex(index) => MutexId(index),
+            other => unreachable!("a mutex's header is a mutex record's, not {other:?}"),
+        }
     }
 
     /// The waitable header, as the wait entries take it.
     pub fn waitable(&mut self) -> *mut Waitable {
-        addr_of_mut!(self.waitable)
+        &mut self.waitable
     }
 
-    /// The owning thread, null while free.
-    pub fn owner(&self) -> *mut Thread {
+    /// The owning thread, none while free.
+    pub fn owner(&self) -> Option<ThreadId> {
         self.owner
-    }
-
-    /// The mutex a waitable header belongs to: the header leads the record.
-    pub fn from_waitable(waitable: *mut Waitable) -> *mut Mutex {
-        waitable as *mut Mutex
-    }
-}
-
-impl Default for Mutex {
-    fn default() -> Self {
-        Mutex::new()
     }
 }
 
 /// Whether `thread` may take `mutex` now: it is free, or `thread` already owns it.
-pub(crate) fn available_to(mutex: &Mutex, thread: *const Thread) -> bool {
-    mutex.waitable.signal_state > 0 || core::ptr::eq(mutex.owner, thread)
+pub(crate) fn available_to(mutex: &Mutex, thread: ThreadId) -> bool {
+    mutex.waitable.signal_state > 0 || mutex.owner == Some(thread)
 }
 
-/// Take one unit of `mutex` for `thread` (it must be [`available_to`] it). The first unit makes
-/// `thread` the owner and puts the mutex on its list; an abandoned mutex reports the abandonment
-/// once, as the status the take returns (success otherwise).
-pub(crate) fn acquire(mutex: &mut Mutex, thread: &mut Thread) -> NtStatus {
-    mutex.waitable.signal_state -= 1;
-    if mutex.waitable.signal_state != 0 {
-        return STATUS_SUCCESS;
-    }
-    mutex.owner = thread as *mut Thread;
-    // SAFETY: a free mutex is on no owner list; the thread's list is initialized at attach.
-    unsafe {
-        thread
-            .owned_mutexes
-            .push_back(addr_of_mut!(mutex.owner_links))
-    };
-    if mutex.abandoned {
-        mutex.abandoned = false;
-        STATUS_ABANDONED
-    } else {
-        STATUS_SUCCESS
-    }
+/// Take one unit of a just-created `mutex` for `thread` (NtCreateMutant's initial owner): see
+/// [`Dispatcher::acquire_mutex`].
+pub fn acquire(mutex: &mut Mutex, thread: &mut Thread) -> NtStatus {
+    let (mutex, thread) = (mutex.id(), thread.id());
+    crate::sched::idle::dispatcher().acquire_mutex(mutex, thread)
 }
 
 impl Dispatcher {
-    /// Release one unit of `mutex` on behalf of `thread`: refused unless `thread` owns it. The last
-    /// unit frees it — off the owner's list, the owner cleared — and wakes the oldest waiter, which
-    /// takes it. Returns the previous signal state.
+    /// Take one unit of `mutex` for `thread` (it must be [`available_to`] it). The first unit makes
+    /// `thread` the owner and puts the mutex on its list; an abandoned mutex reports the
+    /// abandonment once, as the status the take returns (success otherwise).
+    pub(crate) fn acquire_mutex(&mut self, mutex: MutexId, thread: ThreadId) -> NtStatus {
+        let record = self.mutex_mut(mutex);
+        record.waitable.signal_state -= 1;
+        if record.waitable.signal_state != 0 {
+            return STATUS_SUCCESS;
+        }
+        record.owner = Some(thread);
+        let abandoned = core::mem::replace(&mut record.abandoned, false);
+        list::push_back(self, OwnedMutexes(thread), mutex);
+        if abandoned {
+            STATUS_ABANDONED
+        } else {
+            STATUS_SUCCESS
+        }
+    }
+
+    /// Release one unit of `mutex` on behalf of the thread at `thread` (the running thread's
+    /// record): refused unless that thread owns it. The last unit frees it — off the owner's list,
+    /// the owner cleared — and wakes the oldest waiter, which takes it. Returns the previous signal
+    /// state.
     pub fn release_mutex(
         &mut self,
-        mutex: &mut Mutex,
+        mutex: impl Into<MutexId>,
         thread: *const Thread,
     ) -> Result<i32, NtStatus> {
-        if !core::ptr::eq(mutex.owner, thread) {
+        let mutex = mutex.into();
+        let owned = self
+            .mutex(mutex)
+            .owner
+            .is_some_and(|owner| core::ptr::eq(self.thread(owner), thread));
+        if !owned {
             return Err(STATUS_MUTANT_NOT_OWNED);
         }
-        let previous = mutex.waitable.signal_state;
-        mutex.waitable.signal_state += 1;
-        if mutex.waitable.signal_state == 1 {
+        let header = &mut self.mutex_mut(mutex).waitable;
+        let previous = header.signal_state;
+        header.signal_state += 1;
+        if header.signal_state == 1 {
             self.free_mutex(mutex);
         }
         Ok(previous)
@@ -119,42 +137,37 @@ impl Dispatcher {
 
     /// Abandon every mutex `thread` owns: each goes back to free, marked abandoned, and its oldest
     /// waiter takes it. The thread's end runs this, before its object signals.
-    pub(crate) fn abandon_mutexes(&mut self, thread: &mut Thread) {
-        while !thread.owned_mutexes.is_empty() {
-            // SAFETY: the list is initialized and non-empty; its entries are owned mutexes' links.
-            let entry = unsafe { thread.owned_mutexes.first() };
-            let mutex = (entry as usize - core::mem::offset_of!(Mutex, owner_links)) as *mut Mutex;
-            // SAFETY: the entry names a live, owned mutex.
-            let mutex = unsafe { &mut *mutex };
-            mutex.waitable.signal_state = 1;
-            mutex.abandoned = true;
+    pub(crate) fn abandon_mutexes(&mut self, thread: ThreadId) {
+        while let Some(mutex) = list::first(self, OwnedMutexes(thread)) {
+            let record = self.mutex_mut(mutex);
+            record.waitable.signal_state = 1;
+            record.abandoned = true;
             self.free_mutex(mutex);
         }
     }
 
     /// The mutex object is being deleted (its last reference went, so no thread waits on it): an
     /// owned mutex leaves its owner's list, which then has nothing of it to abandon.
-    pub(crate) fn forget_mutex(&mut self, mutex: &mut Mutex) {
+    pub(crate) fn forget_mutex(&mut self, mutex: MutexId) {
+        let record = self.mutex_mut(mutex);
         debug_assert!(
-            mutex.waitable.waiters.is_empty(),
+            !record.waitable.has_waiters(),
             "a deleted mutex has no waiters"
         );
-        if !mutex.owner.is_null() {
-            // SAFETY: an owned mutex is linked on its owner's list.
-            unsafe { unlink(addr_of_mut!(mutex.owner_links)) };
-            mutex.owner = null_mut();
-            mutex.waitable.signal_state = 1;
+        if let Some(owner) = record.owner.take() {
+            record.waitable.signal_state = 1;
+            list::remove(self, OwnedMutexes(owner), mutex);
         }
     }
 
     /// The free step: off the owner's list, no owner, and the waiters satisfied.
-    fn free_mutex(&mut self, mutex: &mut Mutex) {
-        // SAFETY: an owned mutex is linked on its owner's list.
-        unsafe { unlink(addr_of_mut!(mutex.owner_links)) };
-        mutex.owner = null_mut();
-        if !mutex.waitable.waiters.is_empty() {
-            let waitable = addr_of_mut!(mutex.waitable);
-            self.satisfy_waiters(waitable, MUTEX_WAKE_INCREMENT);
+    fn free_mutex(&mut self, mutex: MutexId) {
+        let record = self.mutex_mut(mutex);
+        let owner = record.owner.take().expect("a freed mutex was owned");
+        let waited = record.waitable.has_waiters();
+        list::remove(self, OwnedMutexes(owner), mutex);
+        if waited {
+            self.satisfy_waiters(WaitableId::Mutex(mutex.0), MUTEX_WAKE_INCREMENT);
         }
     }
 }
@@ -171,28 +184,20 @@ mod tests {
     // The rig: the same leaked-objects style as the scheduler's other test modules.
 
     fn dispatcher() -> &'static mut Dispatcher {
-        let d = Box::leak(Box::new(Dispatcher::zeroed()));
-        d.init();
-        d
+        crate::sched::testkit::dispatcher()
     }
 
     fn process() -> *mut SchedProcess {
         let p = Box::leak(Box::new(SchedProcess::new(0x0090_0000, 8)));
-        p.init();
         p as *mut SchedProcess
     }
 
-    fn thread(p: *mut SchedProcess) -> &'static mut Thread {
-        let t = Box::leak(Box::new(Thread::empty()));
-        // SAFETY: both objects are leaked at their final addresses.
-        unsafe { t.attach_to(&mut *p) };
-        t
+    fn thread(p: *mut SchedProcess) -> crate::sched::testkit::Rec<Thread> {
+        crate::sched::testkit::thread(p)
     }
 
-    fn mutex() -> &'static mut Mutex {
-        let m = Box::leak(Box::new(Mutex::new()));
-        m.init();
-        m
+    fn mutex() -> crate::sched::testkit::Rec<Mutex> {
+        crate::sched::testkit::mutex()
     }
 
     fn event(kind: EventKind, signaled: bool) -> &'static mut Event {
@@ -206,7 +211,11 @@ mod tests {
         tick: 5,
     };
 
-    fn wait(d: &mut Dispatcher, t: &mut Thread, object: *mut Waitable) -> WaitDisposition {
+    fn wait(
+        d: &mut Dispatcher,
+        t: crate::sched::testkit::Rec<Thread>,
+        object: *mut Waitable,
+    ) -> WaitDisposition {
         d.wait_single(
             t,
             object,
@@ -225,7 +234,7 @@ mod tests {
         let d = dispatcher();
         let p = process();
         let (owner, other) = (thread(p), thread(p));
-        let m = mutex();
+        let mut m = mutex();
 
         assert_eq!(
             wait(d, owner, m.waitable()),
@@ -236,23 +245,23 @@ mod tests {
             WaitDisposition::Complete(STATUS_SUCCESS)
         );
         assert_eq!(m.waitable.signal_state, -1, "held twice");
-        assert!(core::ptr::eq(m.owner(), owner));
+        assert_eq!(m.owner(), Some(owner.id()));
 
         assert_eq!(wait(d, other, m.waitable()), WaitDisposition::Yield);
         assert_eq!(
-            d.release_mutex(m, other),
+            d.release_mutex(m, other.as_ptr()),
             Err(STATUS_MUTANT_NOT_OWNED),
             "a non-owner's release is refused"
         );
-        assert_eq!(d.release_mutex(m, owner), Ok(-1));
+        assert_eq!(d.release_mutex(m, owner.as_ptr()), Ok(-1));
         assert_eq!(other.state(), ThreadState::Waiting, "still held once");
-        assert_eq!(d.release_mutex(m, owner), Ok(0));
+        assert_eq!(d.release_mutex(m, owner.as_ptr()), Ok(0));
         assert_eq!(other.state(), ThreadState::Ready, "the waiter took it");
-        assert!(core::ptr::eq(m.owner(), other));
+        assert_eq!(m.owner(), Some(other.id()));
         assert_eq!(m.waitable.signal_state, 0);
         assert!(owner.owned_mutexes.is_empty());
         assert_eq!(
-            d.release_mutex(m, owner),
+            d.release_mutex(m, owner.as_ptr()),
             Err(STATUS_MUTANT_NOT_OWNED),
             "the old owner no longer owns it"
         );
@@ -265,7 +274,7 @@ mod tests {
         let d = dispatcher();
         let p = process();
         let (owner, waiter, late) = (thread(p), thread(p), thread(p));
-        let (m1, m2) = (mutex(), mutex());
+        let (mut m1, mut m2) = (mutex(), mutex());
         assert_eq!(
             wait(d, owner, m1.waitable()),
             WaitDisposition::Complete(STATUS_SUCCESS)
@@ -279,15 +288,15 @@ mod tests {
         d.terminate_other(owner);
         assert_eq!(waiter.state(), ThreadState::Ready);
         assert_eq!(waiter.wait_status(), STATUS_ABANDONED);
-        assert!(core::ptr::eq(m1.owner(), waiter));
+        assert_eq!(m1.owner(), Some(waiter.id()));
         assert!(!m1.abandoned, "the take reported it");
 
-        assert!(m2.owner().is_null());
+        assert!(m2.owner().is_none());
         assert_eq!(
             wait(d, late, m2.waitable()),
             WaitDisposition::Complete(STATUS_ABANDONED)
         );
-        assert_eq!(d.release_mutex(m2, late), Ok(0));
+        assert_eq!(d.release_mutex(m2, late.as_ptr()), Ok(0));
         assert_eq!(
             wait(d, late, m2.waitable()),
             WaitDisposition::Complete(STATUS_SUCCESS),
@@ -308,7 +317,7 @@ mod tests {
             event(EventKind::Synchronization, true),
         ];
         let objects: Vec<*mut Waitable> = events.iter_mut().map(|e| e.waitable()).collect();
-        let any = |d: &mut Dispatcher, t: &mut Thread, timeout| {
+        let any = |d: &mut Dispatcher, t: crate::sched::testkit::Rec<Thread>, timeout| {
             d.wait_multiple(
                 t,
                 &objects,
@@ -347,13 +356,13 @@ mod tests {
             event(EventKind::Synchronization, true),
             event(EventKind::Synchronization, false),
         );
-        let m = mutex();
+        let mut m = mutex();
         assert_eq!(
             wait(d, t, m.waitable()),
             WaitDisposition::Complete(STATUS_SUCCESS)
         );
         let objects = [e0.waitable(), e1.waitable(), m.waitable()];
-        let all = |d: &mut Dispatcher, t: &mut Thread, timeout| {
+        let all = |d: &mut Dispatcher, t: crate::sched::testkit::Rec<Thread>, timeout| {
             d.wait_multiple(
                 t,
                 &objects,
@@ -385,10 +394,17 @@ mod tests {
     fn an_alertable_wait_with_user_apcs_queued_completes_at_once() {
         let d = dispatcher();
         let p = process();
-        let t = thread(p);
+        let mut t = thread(p);
         let e = event(EventKind::Notification, false);
-        let apc = Box::leak(Box::new(crate::sched::apc::Apc::detached()));
-        fn marker(_: &mut Dispatcher, _: &mut Thread, _: usize, _: usize, _: usize) {}
+        let mut apc = crate::sched::testkit::apc();
+        fn marker(
+            _: &mut Dispatcher,
+            _: crate::sched::thread::ThreadId,
+            _: usize,
+            _: usize,
+            _: usize,
+        ) {
+        }
         apc.init(
             t,
             crate::sched::apc::nop_kernel_routine,

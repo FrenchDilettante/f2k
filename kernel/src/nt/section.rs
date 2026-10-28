@@ -1144,8 +1144,8 @@ mod target {
         result_length: UserPtr<u32>,
     ) -> NtResult {
         let size = query_size(class, length)?;
-        sync::probe(information.raw(), size)?;
-        sync::probe(result_length.addr().raw(), 4)?;
+        information.probe(size)?;
+        result_length.addr().probe(4)?;
         let (object, access) = section_of(section.raw())?;
         query_access(access)?;
         let record = *object.section();

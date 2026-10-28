@@ -18,47 +18,46 @@
 //! process ends, and when the thread its APC targets ends — nothing then outlives what it points
 //! at.
 
-use core::ptr::addr_of_mut;
-
-use super::apc::Apc;
+use super::apc::{Apc, ApcId};
 use super::dispatcher::Dispatcher;
-use super::wait::{Timer, WaitKind, Waitable};
+use super::thread::ThreadId;
+use super::timer::TimerId;
+use super::wait::{Timer, WaitKind, Waitable, WaitableId};
 
 /// A waitable timer record: the timer, then the APC record its expiries queue.
-#[repr(C)]
 pub struct WaitableTimer {
-    /// The timer itself; its waitable header leads the record.
+    /// The timer itself.
     pub(crate) timer: Timer,
     /// The completion APC, bound to the setting thread by each set that names a routine.
     pub(crate) apc: Apc,
 }
 
-impl WaitableTimer {
-    /// A fresh, unsignaled, unarmed timer; call [`WaitableTimer::init`] at its final address.
-    pub const fn new(manual_reset: bool) -> Self {
-        WaitableTimer {
-            timer: Timer::of_kind(if manual_reset {
-                WaitKind::TimerNotification
-            } else {
-                WaitKind::TimerSynchronization
-            }),
-            apc: Apc::detached(),
-        }
+/// A waitable timer record names its timer: the entry points take the record or its id alike.
+impl From<&mut WaitableTimer> for TimerId {
+    fn from(timer: &mut WaitableTimer) -> Self {
+        timer.timer.id()
     }
+}
 
-    /// Close the header's waiters sentinel.
-    pub fn init(&mut self) {
-        self.timer.init();
+impl WaitableTimer {
+    /// A fresh, unsignaled, unarmed timer: the record `index` of the timer pool.
+    pub const fn new(index: u16, manual_reset: bool) -> Self {
+        WaitableTimer {
+            timer: Timer::with_id(
+                if manual_reset {
+                    WaitKind::TimerNotification
+                } else {
+                    WaitKind::TimerSynchronization
+                },
+                WaitableId::Timer(index),
+            ),
+            apc: Apc::new(ApcId::Timer(index)),
+        }
     }
 
     /// The waitable header, as the wait entries take it.
     pub fn waitable(&mut self) -> *mut Waitable {
-        addr_of_mut!(self.timer.waitable)
-    }
-
-    /// The record a waitable header leads.
-    pub fn from_waitable(waitable: *mut Waitable) -> *mut WaitableTimer {
-        waitable as *mut WaitableTimer
+        &mut self.timer.waitable
     }
 
     /// Whether the timer is armed (the table holds it).
@@ -71,13 +70,9 @@ impl WaitableTimer {
         self.timer.inserted || self.apc.inserted
     }
 
-    /// The thread the completion APC targets, null when the timer has none.
-    pub fn apc_thread(&self) -> *mut super::thread::Thread {
-        if self.timer.apc.is_null() {
-            core::ptr::null_mut()
-        } else {
-            self.apc.thread
-        }
+    /// The thread the completion APC targets, none when the timer has none.
+    pub fn apc_thread(&self) -> Option<ThreadId> {
+        self.timer.apc.and(self.apc.thread)
     }
 }
 
@@ -90,29 +85,35 @@ impl Dispatcher {
     /// signaled before the set.
     pub fn set_waitable_timer(
         &mut self,
-        timer: &mut WaitableTimer,
+        timer: impl Into<TimerId>,
         due: u64,
         now: u64,
         period: u64,
         completion: bool,
         signal_time: u64,
     ) -> bool {
-        let previous = self.cancel_timer(&mut timer.timer);
-        timer.timer.period = period;
+        let timer = timer.into();
+        let TimerId::Waitable(index) = timer else {
+            panic!("a waitable timer is set, not a thread's wait timer");
+        };
+        let previous = self.cancel_timer(timer);
+        let record = self.timer_mut(timer);
+        record.period = period;
         if completion {
-            timer.timer.apc = addr_of_mut!(timer.apc);
+            record.apc = Some(ApcId::Timer(index));
         }
-        if !self.timer_table.insert(&mut timer.timer, due, now) {
-            let header = addr_of_mut!(timer.timer);
-            self.expire_timer(header);
-            self.timer_fired(&mut timer.timer, now, signal_time);
+        if !self.insert_timer(timer, due, now) {
+            self.expire_timer(timer);
+            self.timer_fired(timer, now, signal_time);
         }
         previous
     }
 
     /// Cancel `timer` (see the module notes). Returns whether it was signaled.
     pub fn cancel_waitable_timer(&mut self, timer: &mut WaitableTimer) -> bool {
-        self.cancel_timer(&mut timer.timer)
+        // The record names its timer; the cancel works through the name.
+        let timer = timer.timer.id();
+        self.cancel_timer(timer)
     }
 }
 
@@ -127,28 +128,20 @@ mod tests {
     const INCREMENT: u64 = crate::interrupt::clock::INTERVAL_100NS as u64;
 
     fn dispatcher() -> &'static mut Dispatcher {
-        let d = Box::leak(Box::new(Dispatcher::zeroed()));
-        d.init();
-        d
+        crate::sched::testkit::dispatcher()
     }
 
     fn process() -> *mut SchedProcess {
         let p = Box::leak(Box::new(SchedProcess::new(0x0090_0000, 8)));
-        p.init();
         p as *mut SchedProcess
     }
 
-    fn thread(p: *mut SchedProcess) -> &'static mut Thread {
-        let t = Box::leak(Box::new(Thread::empty()));
-        // SAFETY: both objects are leaked at their final addresses.
-        unsafe { t.attach_to(&mut *p) };
-        t
+    fn thread(p: *mut SchedProcess) -> crate::sched::testkit::Rec<Thread> {
+        crate::sched::testkit::thread(p)
     }
 
-    fn timer(manual_reset: bool) -> &'static mut WaitableTimer {
-        let t = Box::leak(Box::new(WaitableTimer::new(manual_reset)));
-        t.init();
-        t
+    fn timer(manual_reset: bool) -> crate::sched::testkit::Rec<WaitableTimer> {
+        crate::sched::testkit::waitable_timer(manual_reset)
     }
 
     fn stamp(now: u64) -> ClockStamp {
@@ -160,7 +153,7 @@ mod tests {
 
     fn wait(
         d: &mut Dispatcher,
-        t: &mut Thread,
+        t: crate::sched::testkit::Rec<Thread>,
         object: *mut Waitable,
         now: u64,
     ) -> WaitDisposition {
@@ -188,7 +181,7 @@ mod tests {
     fn a_manual_timer_stays_signaled_until_set_again() {
         let d = dispatcher();
         let t = thread(process());
-        let m = timer(true);
+        let mut m = timer(true);
         assert!(!d.set_waitable_timer(m, 10 * INCREMENT, 0, 0, false, SIGNALED_AT));
         assert!(m.armed());
         assert_eq!(
@@ -223,7 +216,7 @@ mod tests {
     fn an_auto_reset_periodic_timer_rearms_and_cancels() {
         let d = dispatcher();
         let t = thread(process());
-        let a = timer(false);
+        let mut a = timer(false);
         d.set_waitable_timer(a, 5 * INCREMENT, 0, 5 * INCREMENT, false, SIGNALED_AT);
         for period in 1..=3u64 {
             let n = 5 * period;
@@ -241,7 +234,7 @@ mod tests {
                 "consumed"
             );
         }
-        assert!(!d.cancel_waitable_timer(a));
+        assert!(!d.cancel_waitable_timer(&mut a));
         assert!(!a.armed());
         expire_at(d, 20);
         assert_eq!(
@@ -266,8 +259,8 @@ mod tests {
     fn a_past_due_completion_is_queued_at_the_set() {
         let d = dispatcher();
         let setter = thread(process());
-        let m = timer(true);
-        crate::user::apc::init(&mut m.apc, setter, 0x0040_1000, 7);
+        let mut m = timer(true);
+        crate::user::apc::init(&mut m.apc, setter.as_ptr(), 0x0040_1000, 7);
         d.set_waitable_timer(m, 100, 200, 0, true, SIGNALED_AT);
         assert!(m.apc.inserted);
         assert_eq!(
@@ -284,8 +277,8 @@ mod tests {
         let d = dispatcher();
         let p = process();
         let setter = thread(p);
-        let m = timer(false);
-        crate::user::apc::init(&mut m.apc, setter, 0x0040_1000, 7);
+        let mut m = timer(false);
+        crate::user::apc::init(&mut m.apc, setter.as_ptr(), 0x0040_1000, 7);
         d.set_waitable_timer(m, 5 * INCREMENT, 0, 0, true, SIGNALED_AT);
 
         // The setter sleeps alertably; the expiry's APC wakes it with the user-APC status.
@@ -310,7 +303,10 @@ mod tests {
             (SIGNALED_AT as u32 as usize, (SIGNALED_AT >> 32) as usize)
         );
 
-        assert!(d.cancel_waitable_timer(m), "signaled: nobody waited on it");
+        assert!(
+            d.cancel_waitable_timer(&mut m),
+            "signaled: nobody waited on it"
+        );
         assert!(!m.apc.inserted, "the cancel took the queued APC back");
         assert!(!m.busy());
     }

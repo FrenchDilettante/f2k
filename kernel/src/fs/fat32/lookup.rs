@@ -175,6 +175,7 @@ pub fn lookup_with(
 
 #[cfg(test)]
 mod tests {
+    use super::super::dirent::{ATTR_LONG_NAME, DELETED, ESCAPED_E5};
     use super::super::fixtures::{built_volume_with_root, record, Counting, Crafted};
     use super::*;
 
@@ -234,14 +235,14 @@ mod tests {
     #[test]
     fn the_walk_skips_and_stops() {
         let mut deleted = record(b"TARGET  TXT", FILE, 9, 1);
-        deleted[0] = 0xE5;
+        deleted[0] = DELETED;
         let mut crafted = Crafted::new(1, 8);
         crafted.directory(
             2,
             &[
                 record(b"VOLUME     ", 0x08, 0, 0),
                 record(b".          ", DIR, 2, 0),
-                record(b"Ax\x00y\x00z\x00\x00\x00\x00\x00", 0x0F, 0, 0),
+                record(b"Ax\x00y\x00z\x00\x00\x00\x00\x00", ATTR_LONG_NAME, 0, 0),
                 deleted,
                 record(b"TARGET  TXT", FILE, 4, 10),
                 record(b"TARGET  TXT", FILE, 5, 20),
@@ -266,7 +267,7 @@ mod tests {
     #[test]
     fn the_escape_stands_for_a_real_first_byte() {
         let mut escaped = record(b"XNAME   TXT", FILE, 4, 1);
-        escaped[0] = 0x05;
+        escaped[0] = ESCAPED_E5;
         let mut crafted = Crafted::new(1, 4);
         crafted.directory(2, &[escaped, record(b"\x8FNAME   TXT", FILE, 5, 1)]);
         let mut volume = mount(&crafted);

@@ -651,7 +651,13 @@ fn load_image(
     // below (ntdll, image, stack, TEB, params) lands in its directory, the live one.
     let process = crate::process::Process::start(name, leg).map_err(LoadError::Process)?;
     let _attached = process.attach();
-    let (process_id, thread_id) = (process.id(), process.main_thread().thread_id());
+    let (process_id, thread_id) = (
+        process.id(),
+        process
+            .main_thread()
+            .expect("a started process has its main thread")
+            .thread_id(),
+    );
     let space = process.vm();
     // The regions first: every user page the kernel maps lies in one.
     seed_regions(space, image.image_base, image.size_of_image);

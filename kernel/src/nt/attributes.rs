@@ -8,11 +8,16 @@
 //! (BaseGetNamedObjectDirectory, NtOpenDirectoryObject) and names everything relative to, as on
 //! Windows 2000 ([`root_of`]).
 
+use core::mem::size_of;
+
+use rtl::array_vec::ArrayVec;
+use rtl::nt::{ObjectAttributes, UnicodeString};
+
 use super::call::UserAddr;
 use crate::status::*;
 
 /// OBJECT_ATTRIBUTES' size, and its Attributes' OBJ_INHERIT and OBJ_OPENIF.
-const OBJECT_ATTRIBUTES_SIZE: u32 = 24;
+const OBJECT_ATTRIBUTES_SIZE: u32 = size_of::<ObjectAttributes<u32>>() as u32;
 pub const OBJ_INHERIT: u32 = 0x2;
 pub const OBJ_OPENIF: u32 = 0x80;
 
@@ -37,37 +42,24 @@ impl Attributes {
 /// Read the OBJECT_ATTRIBUTES at `at` and its name's units into `name`. STATUS_INVALID_PARAMETER
 /// for a structure of another size, STATUS_NAME_TOO_LONG past [`MAX_NAME`] units.
 pub fn read(at: UserAddr, name: &mut [u16; MAX_NAME]) -> Result<Attributes, NtStatus> {
-    let mut raw = [0u8; OBJECT_ATTRIBUTES_SIZE as usize];
-    at.read(&mut raw)?;
-    let word = |i: usize| u32::from_le_bytes([raw[i], raw[i + 1], raw[i + 2], raw[i + 3]]);
-    if word(0) != OBJECT_ATTRIBUTES_SIZE {
+    let read = at.cast::<ObjectAttributes<u32>>().read()?;
+    if read.length != OBJECT_ATTRIBUTES_SIZE {
         return Err(STATUS_INVALID_PARAMETER);
     }
-    let string = UserAddr(word(8));
+    let string = UserAddr(read.object_name);
     let length = if string.is_null() {
         None
     } else {
-        let mut header = [0u8; 8];
-        string.read(&mut header)?;
-        let bytes = u16::from_le_bytes([header[0], header[1]]) as usize;
-        let buffer = UserAddr(u32::from_le_bytes([
-            header[4], header[5], header[6], header[7],
-        ]));
-        let length = bytes / 2;
-        if length > MAX_NAME {
-            return Err(STATUS_NAME_TOO_LONG);
-        }
-        let mut units = [0u8; 2 * MAX_NAME];
-        buffer.read(&mut units[..2 * length])?;
-        for (unit, pair) in name.iter_mut().zip(units[..2 * length].chunks_exact(2)) {
-            *unit = u16::from_le_bytes([pair[0], pair[1]]);
-        }
+        let string = string.cast::<UnicodeString<u32>>().read()?;
+        let length = usize::from(string.length) / 2;
+        let units = name.get_mut(..length).ok_or(STATUS_NAME_TOO_LONG)?;
+        UserAddr(string.buffer).read_units(units)?;
         Some(length)
     };
     Ok(Attributes {
-        root: word(4),
+        root: read.root_directory,
         length,
-        attributes: word(12),
+        attributes: read.attributes,
     })
 }
 
@@ -130,30 +122,33 @@ pub fn resolve(units: &[u16], root: u32, root_is_directory: bool) -> Result<Reso
     }
 }
 
-/// An object's name in `\BaseNamedObjects`, as the namespace keeps it: code page 1252 bytes into
-/// `out`, its length. `Global\` and `Local\` are the directory's links to itself (one session);
-/// a separator past them names a subdirectory there is none of
-/// (STATUS_OBJECT_PATH_NOT_FOUND). A character the namespace's bytes cannot hold is
-/// STATUS_OBJECT_NAME_INVALID, and so is a name longer than [`crate::ob::MAX_NAME`].
-pub fn object_name(units: &[u16], out: &mut [u8; crate::ob::MAX_NAME]) -> Result<usize, NtStatus> {
-    if units.len() > out.len() {
+/// An object's name in `\BaseNamedObjects`, as the namespace keeps it: code page 1252 bytes.
+pub type ObjectName = ArrayVec<u8, { crate::ob::MAX_NAME }>;
+
+/// The namespace's bytes for an object's name in `\BaseNamedObjects`. `Global\` and `Local\` are
+/// the directory's links to itself (one session); a separator past them names a subdirectory
+/// there is none of (STATUS_OBJECT_PATH_NOT_FOUND). A character the namespace's bytes cannot hold
+/// is STATUS_OBJECT_NAME_INVALID, and so is a name longer than [`crate::ob::MAX_NAME`].
+pub fn object_name(units: &[u16]) -> Result<ObjectName, NtStatus> {
+    let mut out = ObjectName::new();
+    if units.len() > out.capacity() {
         return Err(STATUS_OBJECT_NAME_INVALID);
     }
-    for (byte, &unit) in out.iter_mut().zip(units) {
+    for &unit in units {
         let narrow = rtl::cp1252::wc_to_mb(unit);
         if rtl::cp1252::MB_TO_WC[narrow as usize] != unit {
             return Err(STATUS_OBJECT_NAME_INVALID);
         }
-        *byte = narrow;
+        out.push(narrow);
     }
-    let name = crate::ob::namespace_name(&out[..units.len()]);
+    let name = crate::ob::namespace_name(&out);
     if name.contains(&b'\\') {
         return Err(STATUS_OBJECT_PATH_NOT_FOUND);
     }
     if name.is_empty() {
         return Err(STATUS_OBJECT_NAME_INVALID);
     }
-    Ok(units.len())
+    Ok(out)
 }
 
 /// What an OBJECT_ATTRIBUTES' RootDirectory handle names.
@@ -256,17 +251,101 @@ mod tests {
 
     #[test]
     fn object_names_are_the_namespace_bytes() {
-        let mut out = [0u8; crate::ob::MAX_NAME];
-        assert_eq!(object_name(&wide("Global\\E"), &mut out), Ok(8));
-        assert_eq!(&out[..8], b"Global\\E");
         assert_eq!(
-            object_name(&wide("a\\b"), &mut out),
+            object_name(&wide("Global\\E")).as_deref(),
+            Ok(&b"Global\\E"[..])
+        );
+        assert_eq!(
+            object_name(&wide("a\\b")),
             Err(STATUS_OBJECT_PATH_NOT_FOUND)
         );
         assert_eq!(
-            object_name(&wide("\u{4E2D}"), &mut out),
+            object_name(&wide("\u{4E2D}")),
             Err(STATUS_OBJECT_NAME_INVALID)
         );
-        assert_eq!(object_name(&wide("caf\u{E9}"), &mut out), Ok(4));
+        assert_eq!(
+            object_name(&wide("caf\u{E9}")).as_deref(),
+            Ok(&b"caf\xE9"[..])
+        );
+        assert_eq!(
+            object_name(&[u16::from(b'a'); crate::ob::MAX_NAME + 1]),
+            Err(STATUS_OBJECT_NAME_INVALID)
+        );
+    }
+
+    /// An OBJECT_ATTRIBUTES reads whole, its name (a UNICODE_STRING) with it: a structure of
+    /// another length is refused, a name past the longest is too long, a null name is none.
+    #[test]
+    fn attributes_read_with_their_name() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        use rtl::pod::Pod;
+
+        use crate::user::syscall::host::{install, UserMemory};
+        const BASE: u32 = 0x10000;
+        struct Page(std::vec::Vec<u8>);
+        impl UserMemory for Page {
+            fn read(&self, pointer: u32, bytes: &mut [u8]) -> Result<(), NtStatus> {
+                let at = pointer.checked_sub(BASE).ok_or(STATUS_ACCESS_VIOLATION)? as usize;
+                let from = self.0.get(at..at + bytes.len());
+                bytes.copy_from_slice(from.ok_or(STATUS_ACCESS_VIOLATION)?);
+                Ok(())
+            }
+
+            fn write(&mut self, _: u32, _: &[u8]) -> Result<(), NtStatus> {
+                Err(STATUS_ACCESS_VIOLATION)
+            }
+        }
+        // The attributes at BASE, their UNICODE_STRING at +0x20, its units at +0x40.
+        let mut page = std::vec![0u8; 0x1000];
+        let attributes = ObjectAttributes::<u32> {
+            length: 24,
+            root_directory: 0x10,
+            object_name: BASE + 0x20,
+            attributes: OBJ_INHERIT | OBJ_OPENIF,
+            security_descriptor: 0,
+            security_quality_of_service: 0,
+        };
+        page[..24].copy_from_slice(attributes.as_bytes());
+        let string = UnicodeString::<u32> {
+            length: 6,
+            maximum_length: 8,
+            buffer: BASE + 0x40,
+        };
+        page[0x20..0x28].copy_from_slice(string.as_bytes());
+        page[0x40..0x46].copy_from_slice(b"E\0v\0t\0");
+        let memory = Rc::new(RefCell::new(Page(page)));
+        let _installed = install(memory.clone());
+
+        let mut name = [0u16; MAX_NAME];
+        let got = read(UserAddr(BASE), &mut name).unwrap();
+        assert_eq!((got.root, got.length), (0x10, Some(3)));
+        assert!(got.inherit() && got.attributes & OBJ_OPENIF != 0);
+        assert_eq!(&name[..3], &wide("Evt")[..]);
+
+        // Too long: one unit past the longest.
+        let long = (2 * (MAX_NAME + 1)) as u16;
+        memory.borrow_mut().0[0x20..0x22].copy_from_slice(&long.to_le_bytes());
+        assert_eq!(
+            read(UserAddr(BASE), &mut name).map(|got| got.length),
+            Err(STATUS_NAME_TOO_LONG)
+        );
+        // No name.
+        memory.borrow_mut().0[8..12].fill(0);
+        assert_eq!(
+            read(UserAddr(BASE), &mut name).map(|got| got.length),
+            Ok(None)
+        );
+        // Another structure's length.
+        memory.borrow_mut().0[0] = 28;
+        assert_eq!(
+            read(UserAddr(BASE), &mut name).map(|got| got.length),
+            Err(STATUS_INVALID_PARAMETER)
+        );
+        assert_eq!(
+            read(UserAddr(BASE + 0xFF8), &mut name).map(|got| got.length),
+            Err(STATUS_ACCESS_VIOLATION)
+        );
     }
 }

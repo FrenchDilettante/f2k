@@ -36,10 +36,9 @@ pub struct List {
 impl List {
     /// A list of room for `units` units; none when the heap has no room.
     fn new(units: usize) -> Option<List> {
-        // SAFETY: ntdll's export, on the process heap.
-        let block = unsafe { nt::RtlAllocateHeap(process_heap(), 0, 2 * units.max(1)) };
-        (!block.is_null()).then_some(List {
-            block: block as *mut u16,
+        let block = ntcall::allocate_heap(2 * units.max(1))?;
+        Some(List {
+            block: block.as_ptr().cast(),
             length: 0,
             capacity: units,
         })
@@ -68,8 +67,8 @@ impl List {
 
 impl Drop for List {
     fn drop(&mut self) {
-        // SAFETY: ntdll's export, over kernel32's own block.
-        unsafe { nt::RtlFreeHeap(process_heap(), 0, self.block as *mut u8) };
+        // SAFETY: kernel32's own block, used no more.
+        unsafe { ntcall::free_heap(self.block.cast()) };
     }
 }
 

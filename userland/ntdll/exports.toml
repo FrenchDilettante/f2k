@@ -371,7 +371,7 @@ note = "the basic, rename, disposition, position, allocation and end-of-file cla
 [[export]]
 name = "NtQueryDirectoryFile"
 group = "nt"
-args = ["handle FileHandle", "handle Event", "ptr ApcRoutine", "ptr ApcContext", "ptr IoStatusBlock", "ptr FileInformation", "u32 Length", "u32 FileInformationClass", "u32 ReturnSingleEntry", "ptr FileName", "u32 RestartScan"]
+args = ["handle FileHandle", "handle Event", "ptr ApcRoutine", "ptr ApcContext", "ptr IoStatusBlock", "ptr FileInformation", "u32 Length", "u32 FileInformationClass", "boolean ReturnSingleEntry", "ptr FileName", "boolean RestartScan"]
 impl = { syscall = "crate::nt::file::query_directory_file" }
 ordinal = 187
 zw_ordinal = 832
@@ -414,7 +414,7 @@ note = "\\BaseNamedObjects alone, the one directory (kernel32's named objects ar
 [[export]]
 name = "NtCreateEvent"
 group = "nt"
-args = ["ptr<u32> EventHandle", "u32 DesiredAccess", "ptr ObjectAttributes", "u32 EventType", "u32 InitialState"]
+args = ["ptr<u32> EventHandle", "u32 DesiredAccess", "ptr ObjectAttributes", "u32 EventType", "boolean InitialState"]
 impl = { syscall = "crate::nt::sync::create_event" }
 ordinal = 90
 zw_ordinal = 736
@@ -462,7 +462,7 @@ zw_ordinal = 828
 [[export]]
 name = "NtCreateMutant"
 group = "nt"
-args = ["ptr<u32> MutantHandle", "u32 DesiredAccess", "ptr ObjectAttributes", "u32 InitialOwner"]
+args = ["ptr<u32> MutantHandle", "u32 DesiredAccess", "ptr ObjectAttributes", "boolean InitialOwner"]
 impl = { syscall = "crate::nt::sync::create_mutant" }
 ordinal = 97
 zw_ordinal = 743
@@ -526,7 +526,7 @@ zw_ordinal = 821
 [[export]]
 name = "NtSetTimer"
 group = "nt"
-args = ["handle TimerHandle", "ptr<u64> DueTime", "ptr TimerApcRoutine", "ptr TimerContext", "u32 ResumeTimer", "i32 Period", "ptr PreviousState"]
+args = ["handle TimerHandle", "ptr<u64> DueTime", "ptr TimerApcRoutine", "ptr TimerContext", "boolean ResumeTimer", "i32 Period", "ptr PreviousState"]
 impl = { syscall = "crate::nt::sync::set_timer" }
 ordinal = 278
 zw_ordinal = 923
@@ -542,7 +542,7 @@ zw_ordinal = 727
 [[export]]
 name = "NtWaitForSingleObject"
 group = "nt"
-args = ["handle Handle", "u32 Alertable", "ptr<u64> Timeout"]
+args = ["handle Handle", "boolean Alertable", "ptr<u64> Timeout"]
 impl = { syscall = "crate::nt::sync::wait_for_single_object" }
 ordinal = 300
 zw_ordinal = 945
@@ -550,7 +550,7 @@ zw_ordinal = 945
 [[export]]
 name = "NtWaitForMultipleObjects"
 group = "nt"
-args = ["u32 Count", "ptr Handles", "u32 WaitType", "u32 Alertable", "ptr<u64> Timeout"]
+args = ["u32 Count", "ptr Handles", "u32 WaitType", "boolean Alertable", "ptr<u64> Timeout"]
 impl = { syscall = "crate::nt::sync::wait_for_multiple_objects" }
 ordinal = 299
 zw_ordinal = 944
@@ -558,7 +558,7 @@ zw_ordinal = 944
 [[export]]
 name = "NtSignalAndWaitForSingleObject"
 group = "nt"
-args = ["handle SignalHandle", "handle WaitHandle", "u32 Alertable", "ptr<u64> Timeout"]
+args = ["handle SignalHandle", "handle WaitHandle", "boolean Alertable", "ptr<u64> Timeout"]
 impl = { syscall = "crate::nt::sync::signal_and_wait_for_single_object" }
 ordinal = 284
 zw_ordinal = 929
@@ -566,7 +566,7 @@ zw_ordinal = 929
 [[export]]
 name = "NtDelayExecution"
 group = "nt"
-args = ["u32 Alertable", "ptr<u64> DelayInterval"]
+args = ["boolean Alertable", "ptr<u64> DelayInterval"]
 impl = { syscall = "crate::nt::sync::delay_execution" }
 ordinal = 111
 zw_ordinal = 756
@@ -608,7 +608,7 @@ note = "answers ThreadPriority (2), ThreadBasePriority (3), ThreadAffinityMask (
 [[export]]
 name = "NtCreateThread"
 group = "nt"
-args = ["ptr<u32> ThreadHandle", "u32 DesiredAccess", "ptr ObjectAttributes", "handle ProcessHandle", "ptr ClientId", "ptr ThreadContext", "ptr InitialTeb", "u32 CreateSuspended"]
+args = ["ptr<u32> ThreadHandle", "u32 DesiredAccess", "ptr ObjectAttributes", "handle ProcessHandle", "ptr ClientId", "ptr ThreadContext", "ptr InitialTeb", "boolean CreateSuspended"]
 impl = { syscall = "crate::nt::thread::create_thread" }
 ordinal = 106
 zw_ordinal = 752

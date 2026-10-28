@@ -1,19 +1,28 @@
-//! The process record's scheduling side.
+//! The process record's scheduling side, and the process object's body.
 //!
 //! A process owns the scheduling parameters its threads start from: the base priority and the
 //! quantum. The quantum is fixed — set once here at creation to the kernel's one constant, never
 //! varied — so "the thread quantum" is always this record's value. A process is always resident in
 //! F2K (there is no process swapping), so a process's whole scheduling state is the fact of owning
 //! runnable threads or not.
+//!
+//! The scheduling record leads the process record (the process pool's), where the context switch
+//! reads its directory base; its thread list links the thread records of the dispatcher database by
+//! index. The process object's body — the waitable a wait on the process parks on, and the exit
+//! status — is a dispatcher-database record of its own, at the process record's index.
 
-use super::thread::Thread;
-use super::{List, QUANTUM_RESET};
+use core::ptr::NonNull;
+
+use super::list::{IndexList, ListKind};
+use super::thread::ThreadId;
+use super::wait::{WaitKind, Waitable, WaitableId};
+use super::QUANTUM_RESET;
 
 /// The stack-count value meaning "no thread has been created yet".
 pub const NO_THREADS: u16 = 0x7FFF;
 
 /// A process's scheduling record, leading with its directory base at a pinned offset: the context
-/// switch reads it through a thread's owner pointer when a switch changes process.
+/// switch reads it through a thread's address-space pointer when a switch changes process.
 #[repr(C)]
 pub struct SchedProcess {
     /// The process's page-directory frame (physical address).
@@ -36,13 +45,59 @@ pub struct SchedProcess {
     /// per-CPU placement); it stays as observable bookkeeping.
     pub(super) thread_seed: u8,
     /// The process's threads, in creation order.
-    pub(super) threads: List,
+    pub(super) threads: IndexList<ProcessThreads>,
+}
+
+/// A process's scheduling record, by its address: the process records are pinned (the process
+/// pool's, or the idle process's static) and outlive their threads' membership in their lists.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ProcessRef(NonNull<SchedProcess>);
+
+impl ProcessRef {
+    /// The record at `process`'s address.
+    pub fn new(process: &mut SchedProcess) -> Self {
+        ProcessRef(NonNull::from(process))
+    }
+
+    /// The record of a thread's owner pointer.
+    pub(super) fn of(process: *mut SchedProcess) -> Self {
+        ProcessRef(NonNull::new(process).expect("an attached thread has a process"))
+    }
+
+    /// The record, for as long as the caller's borrow of the dispatcher.
+    ///
+    /// # Safety
+    ///
+    /// `'a` is no longer than a borrow of the dispatcher the record's thread list belongs to, and
+    /// no other reference to the record is in use meanwhile. A process record is pinned and
+    /// outlives the threads attached to it (the attach's contract), so it is alive throughout.
+    pub(super) unsafe fn get<'a>(self) -> &'a SchedProcess {
+        // SAFETY: the caller's contract.
+        unsafe { self.0.as_ref() }
+    }
+
+    /// The record, to change, for as long as the caller's borrow of the dispatcher.
+    ///
+    /// # Safety
+    ///
+    /// As [`ProcessRef::get`], the borrow being exclusive.
+    pub(super) unsafe fn get_mut<'a>(mut self) -> &'a mut SchedProcess {
+        // SAFETY: the caller's contract.
+        unsafe { self.0.as_mut() }
+    }
+}
+
+/// The threads of one process.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ProcessThreads(pub ProcessRef);
+
+impl ListKind for ProcessThreads {
+    type Entry = ThreadId;
 }
 
 impl SchedProcess {
     /// A scheduling record with the given directory base and base priority, the fixed thread
-    /// quantum, no threads, and both policies off. Call [`SchedProcess::init`] once the record is
-    /// at its final address.
+    /// quantum, no threads, and both policies off.
     pub const fn new(dir_phys: u32, base_priority: i8) -> Self {
         SchedProcess {
             dir_phys,
@@ -52,7 +107,7 @@ impl SchedProcess {
             disable_quantum: false,
             stack_count: NO_THREADS,
             thread_seed: 0,
-            threads: List::empty(),
+            threads: IndexList::new(),
         }
     }
 
@@ -65,11 +120,6 @@ impl SchedProcess {
     /// record takes the directory that is active at boot.
     pub fn set_dir_phys(&mut self, dir_phys: u32) {
         self.dir_phys = dir_phys;
-    }
-
-    /// Close the thread-list sentinel (see [`List::init`]).
-    pub fn init(&mut self) {
-        self.threads.init();
     }
 
     /// The process's base priority.
@@ -105,26 +155,30 @@ impl SchedProcess {
         previous
     }
 
-    /// The first attached thread other than `except` whose termination is not already pending, in
-    /// creation order, or null. A process-ending termination repeats this query, one termination
-    /// per answer: each either unlinks its thread from this list or marks it pending (it stays
-    /// attached until its own exit), so the walk never holds a link across a change and never
-    /// answers the same thread twice.
-    pub fn first_thread_except(&mut self, except: *const Thread) -> *mut Thread {
-        let sentinel = self.threads.sentinel();
-        // SAFETY: the list is initialized; its entries are attached threads' process links.
-        let mut entry = unsafe { self.threads.first() };
-        while !entry.is_null() && !core::ptr::eq(entry, sentinel) {
-            let thread =
-                (entry as usize - core::mem::offset_of!(Thread, process_links)) as *mut Thread;
-            // SAFETY: an attached thread's record outlives its list membership.
-            if !core::ptr::eq(thread, except) && !unsafe { (*thread).terminate_pending } {
-                return thread;
-            }
-            // SAFETY: a linked entry's next pointer names the next entry (or the sentinel).
-            entry = unsafe { (*entry).next };
+    /// Whether no thread is attached.
+    pub fn has_no_threads(&self) -> bool {
+        self.threads.is_empty()
+    }
+}
+
+/// A process object's body: what a wait on the process, or a handle to it, reaches. The process
+/// record itself is the process pool's record at the same index; it is reused once the object is
+/// deleted (the process holds its own reference from its creation to the end of its teardown).
+pub struct ProcessObject {
+    /// Signaled when the process has ended (no thread of the process outlives that, so its own
+    /// threads only ever see it unsignaled).
+    pub waitable: Waitable,
+    /// The process's exit code: STILL_ACTIVE until it ends.
+    pub exit_status: u32,
+}
+
+impl ProcessObject {
+    /// A fresh body, unsignaled and still active: the record `index` of the pool.
+    pub const fn new(index: u16) -> Self {
+        ProcessObject {
+            waitable: Waitable::with_id(WaitKind::NotificationEvent, 0, WaitableId::Process(index)),
+            exit_status: crate::ob::STILL_ACTIVE,
         }
-        core::ptr::null_mut()
     }
 }
 
@@ -137,7 +191,6 @@ mod tests {
     #[test]
     fn process_defaults() {
         let process = Box::leak(Box::new(SchedProcess::new(0x0090_0000, 8)));
-        process.init();
         assert_eq!(process.dir_phys(), 0x0090_0000);
         assert_eq!(process.base_priority(), 8);
         assert_eq!(process.thread_quantum(), 6);
@@ -148,54 +201,55 @@ mod tests {
         assert_eq!(process.thread_seed(), 0);
     }
 
-    /// The other-thread query: creation order, skipping the excepted thread, null once only it
+    /// A process and a dispatcher whose threads attach to it, by id.
+    fn rig() -> (
+        &'static mut crate::sched::dispatcher::Dispatcher,
+        &'static mut SchedProcess,
+    ) {
+        let dispatcher = crate::sched::testkit::dispatcher();
+        let process = Box::leak(Box::new(SchedProcess::new(0x0090_0000, 8)));
+        (dispatcher, process)
+    }
+
+    /// Attach a fresh thread to `process`.
+    fn attach(process: &mut SchedProcess) -> ThreadId {
+        crate::sched::testkit::thread(process).id()
+    }
+
+    /// The other-thread query: creation order, skipping the excepted thread, none once only it
     /// (or nothing) is attached — and it follows the list as threads leave it.
     #[test]
     fn first_thread_except_walks_the_others() {
-        let process = Box::leak(Box::new(SchedProcess::new(0x0090_0000, 8)));
-        process.init();
-        let attach = |process: &mut SchedProcess| {
-            let thread = Box::leak(Box::new(Thread::empty()));
-            // SAFETY: both records are leaked at their final addresses.
-            unsafe { thread.attach_to(process) };
-            thread as *mut Thread
-        };
-        assert!(process.first_thread_except(core::ptr::null()).is_null());
+        let (d, process) = rig();
+        assert!(d.first_thread_except(process, None).is_none());
         let main = attach(process);
         let first = attach(process);
         let second = attach(process);
+        let threads = ProcessThreads(ProcessRef::new(process));
 
-        assert_eq!(process.first_thread_except(main), first);
-        assert_eq!(process.first_thread_except(first), main);
-        // SAFETY: the threads are attached; unlinking stands in for a termination.
-        unsafe { super::super::unlink(core::ptr::addr_of_mut!((*first).process_links)) };
-        assert_eq!(process.first_thread_except(main), second);
-        unsafe { super::super::unlink(core::ptr::addr_of_mut!((*second).process_links)) };
-        assert!(process.first_thread_except(main).is_null());
-        assert_eq!(process.first_thread_except(core::ptr::null()), main);
+        assert_eq!(d.first_thread_except(process, Some(main)), Some(first));
+        assert_eq!(d.first_thread_except(process, Some(first)), Some(main));
+        // Unlinking stands in for a termination.
+        crate::sched::list::remove(d, threads, first);
+        assert_eq!(d.first_thread_except(process, Some(main)), Some(second));
+        crate::sched::list::remove(d, threads, second);
+        assert!(d.first_thread_except(process, Some(main)).is_none());
+        assert_eq!(d.first_thread_except(process, None), Some(main));
     }
 
     /// A thread whose termination is pending stays attached but is not answered again: the
     /// termination walk moves past it.
     #[test]
     fn first_thread_except_skips_pending_terminations() {
-        let process = Box::leak(Box::new(SchedProcess::new(0x0090_0000, 8)));
-        process.init();
-        let attach = |process: &mut SchedProcess| {
-            let thread = Box::leak(Box::new(Thread::empty()));
-            // SAFETY: both records are leaked at their final addresses.
-            unsafe { thread.attach_to(process) };
-            thread as *mut Thread
-        };
+        let (d, process) = rig();
         let main = attach(process);
         let deferred = attach(process);
         let next = attach(process);
-        // SAFETY: the threads are leaked and attached.
-        unsafe { (*deferred).terminate_pending = true };
-        assert_eq!(process.first_thread_except(main), next);
-        unsafe { super::super::unlink(core::ptr::addr_of_mut!((*next).process_links)) };
-        assert!(process.first_thread_except(main).is_null());
-        assert_eq!(process.first_thread_except(next), main);
+        d.thread_mut(deferred).terminate_pending = true;
+        assert_eq!(d.first_thread_except(process, Some(main)), Some(next));
+        crate::sched::list::remove(d, ProcessThreads(ProcessRef::new(process)), next);
+        assert!(d.first_thread_except(process, Some(main)).is_none());
+        assert_eq!(d.first_thread_except(process, Some(next)), Some(main));
     }
 
     /// The quantum-end exemption flag is a plain store returning the previous value.

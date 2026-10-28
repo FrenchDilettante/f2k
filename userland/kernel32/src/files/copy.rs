@@ -155,21 +155,20 @@ fn copy_file(from: &Wide, to: &Wide, fail_if_exists: u32) -> u32 {
         close(source);
         return 0;
     }
-    // SAFETY: ntdll's export: the copy's buffer.
-    let buffer = unsafe { nt::RtlAllocateHeap(process_heap(), 0, COPY_CHUNK) };
-    let copied = if buffer.is_null() {
-        Err(0xC000_0017)
-    } else {
-        // SAFETY: the fresh block.
-        let result = copy_stream(
-            source,
-            target,
-            unsafe { core::slice::from_raw_parts_mut(buffer, COPY_CHUNK) },
-            quad(&basic, 16),
-        );
-        // SAFETY: ntdll's export, over its block.
-        unsafe { nt::RtlFreeHeap(process_heap(), 0, buffer) };
-        result
+    let copied = match ntcall::allocate_heap(COPY_CHUNK) {
+        None => Err(0xC000_0017),
+        Some(buffer) => {
+            // SAFETY: the fresh block, of COPY_CHUNK bytes.
+            let result = copy_stream(
+                source,
+                target,
+                unsafe { core::slice::from_raw_parts_mut(buffer.as_ptr(), COPY_CHUNK) },
+                quad(&basic, 16),
+            );
+            // SAFETY: the block above, used no more.
+            unsafe { ntcall::free_heap(buffer.as_ptr()) };
+            result
+        }
     };
     if let Err(status) = copied {
         set(target, FILE_DISPOSITION_INFORMATION, &[1]);

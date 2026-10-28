@@ -15,10 +15,12 @@
 //! failure to report: it returns, its last error untouched. An export that cannot fail (`never`)
 //! raises STATUS_NOT_IMPLEMENTED instead.
 
+use rtl::pod::Pod;
 use rtl::stub::{describe, Entry, Fails, Line, Memory};
 
 use crate::base::{set_last_error, CURRENT_PROCESS};
 use crate::nt;
+use crate::ntcall::{self, Destination};
 
 /// ERROR_CALL_NOT_IMPLEMENTED: "This function is not supported on this system."
 pub const ERROR_CALL_NOT_IMPLEMENTED: u32 = 120;
@@ -35,20 +37,14 @@ impl Memory for Mapped {
         if address < rtl::stub::LOWEST_MAPPED {
             return false;
         }
+        // MEMORY_BASIC_INFORMATION's seven dwords: State and Protect are the fifth and sixth.
         let mut info = [0u32; 7];
-        let mut returned = 0usize;
-        // SAFETY: ntdll's export, over the caller's own structure.
-        let status = unsafe {
-            nt::NtQueryVirtualMemory(
-                CURRENT_PROCESS,
-                address,
-                0, // MemoryBasicInformation
-                info.as_mut_ptr().cast(),
-                28,
-                &mut returned,
-            )
-        };
-        status == 0 && rtl::stub::readable(info[4], info[5])
+        let queried = ntcall::query_virtual_memory(
+            CURRENT_PROCESS,
+            address,
+            Destination::of(info.as_bytes_mut()),
+        );
+        queried.is_ok() && rtl::stub::readable(info[4], info[5])
     }
 }
 
@@ -70,7 +66,6 @@ pub unsafe fn stubbed(entry: &Entry, reason: &str, args: &[u64]) -> u32 {
             value
         }
         Fails::Void => 0,
-        // SAFETY: ntdll's export: it does not return.
-        Fails::Never => unsafe { nt::RtlRaiseStatus(STATUS_NOT_IMPLEMENTED) },
+        Fails::Never => ntcall::raise_status(STATUS_NOT_IMPLEMENTED),
     }
 }

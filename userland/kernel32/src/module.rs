@@ -23,16 +23,16 @@ use crate::base::{
 };
 use crate::files::widen;
 use crate::nt::{self, AnsiString};
+use crate::ntcall::LoaderLock;
 
 const ERROR_INVALID_PARAMETER: u32 = 87;
 const ERROR_MOD_NOT_FOUND: u32 = 126;
 const STATUS_ORDINAL_NOT_FOUND: u32 = 0xC000_0138;
 const STATUS_ENTRYPOINT_NOT_FOUND: u32 = 0xC000_0139;
 
-/// The PEB's ImageBaseAddress, Ldr and LoaderLock.
+/// The PEB's ImageBaseAddress and Ldr (its LoaderLock is [`LoaderLock`]'s).
 const PEB_IMAGE_BASE_ADDRESS: usize = 0x08;
 const PEB_LDR: usize = 0x0C;
-const PEB_LOADER_LOCK: usize = 0xA0;
 /// PEB_LDR_DATA's InLoadOrderModuleList, and an LDR_DATA_TABLE_ENTRY's DllBase and FullDllName (its
 /// InLoadOrderLinks lead it).
 const IN_LOAD_ORDER_MODULE_LIST: usize = 0x0C;
@@ -264,23 +264,21 @@ fn entry_of(module: u32) -> Option<usize> {
 /// `buffer` holds `size` characters (a bad pointer faults the caller).
 unsafe fn module_file_name(module: u32, buffer: Text, size: u32) -> u32 {
     let module = if module == 0 { image_base() } else { module };
-    let lock = read_pointer(peb() + PEB_LOADER_LOCK) as *mut u8;
-    // SAFETY: ntdll's export, on the PEB's loader lock.
-    unsafe { nt::RtlEnterCriticalSection(lock) };
-    let copied = entry_of(module).map(|entry| {
-        // SAFETY: the module's own path, in the lists.
-        let path = unsafe { units(entry + FULL_DLL_NAME) };
-        let copy = path.len().min(size as usize);
-        // SAFETY: the caller's buffer holds `size` characters.
-        unsafe { buffer.put(&path[..copy]) };
-        if copy < size as usize {
-            // SAFETY: as above.
-            unsafe { buffer.put_unit(copy, 0) };
-        }
-        copy as u32
-    });
-    // SAFETY: as above.
-    unsafe { nt::RtlLeaveCriticalSection(lock) };
+    let copied = {
+        let _loader = LoaderLock::enter();
+        entry_of(module).map(|entry| {
+            // SAFETY: the module's own path, in the lists.
+            let path = unsafe { units(entry + FULL_DLL_NAME) };
+            let copy = path.len().min(size as usize);
+            // SAFETY: the caller's buffer holds `size` characters.
+            unsafe { buffer.put(&path[..copy]) };
+            if copy < size as usize {
+                // SAFETY: as above.
+                unsafe { buffer.put_unit(copy, 0) };
+            }
+            copy as u32
+        })
+    };
     copied.unwrap_or_else(|| {
         set_last_error(ERROR_MOD_NOT_FOUND);
         0

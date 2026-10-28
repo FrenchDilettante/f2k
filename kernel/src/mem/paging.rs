@@ -17,10 +17,17 @@
 
 #[cfg(target_arch = "x86")]
 use core::arch::asm;
+use core::cell::UnsafeCell;
 #[cfg(target_arch = "x86")]
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use super::layout;
+#[cfg(target_arch = "x86")]
+use super::{
+    frame::{FrameDb, PRIMARY_COLOR},
+    with_database,
+    Parts,
+};
 
 /// Virtual base of kernel space (user space is the low 2 GiB): the kernel image window's start.
 pub const KERNEL_BASE: u32 = layout::KERNEL_IMAGE.start;
@@ -80,42 +87,138 @@ const fn boot_tables() -> [[u32; PT_ENTRIES]; BOOT_TABLE_COUNT] {
 #[no_mangle]
 pub static BOOT_TABLES: Aligned<[[u32; PT_ENTRIES]; BOOT_TABLE_COUNT]> = Aligned(boot_tables());
 
+/// A page table or directory kept in the kernel image: page-aligned, as CR3 and directory entries
+/// require, and shared with the processor, which walks it and sets accessed bits in it, hence the
+/// cell. The boot sets its entries up ([`ImageTable::boot_edit`]); from then on they change only
+/// through the self-map ([`self_map`]), as every directory's do.
+#[repr(C, align(4096))]
+struct ImageTable(UnsafeCell<[u32; PT_ENTRIES]>);
+
+// SAFETY: the entries are reached as Rust data only inside `boot_edit`, which runs on the boot's
+// own thread before any other exists, and never inside another edit; everything else reaches them
+// through the processor's walks and the self-map's volatile accesses, none of which runs inside an
+// edit.
+unsafe impl Sync for ImageTable {}
+
+impl ImageTable {
+    /// A table with no entry present.
+    const fn empty() -> Self {
+        ImageTable(UnsafeCell::new([0; PT_ENTRIES]))
+    }
+
+    /// The table's linked address, in the kernel image window.
+    fn address(&self) -> usize {
+        self.0.get() as usize
+    }
+
+    /// The table's physical address: its frame is part of the kernel image and never enters the
+    /// frame database.
+    #[cfg(target_arch = "x86")]
+    fn phys(&self) -> u32 {
+        self.address() as u32 - KERNEL_BASE
+    }
+
+    /// Run `edit` on the entries: the boot's setup, before the first process directory.
+    ///
+    /// # Panics
+    ///
+    /// The first process directory is made (no thread but the boot's may edit, and that one only
+    /// before others exist), or `edit` edits an image table itself.
+    #[cfg(target_arch = "x86")]
+    fn boot_edit<R>(&self, edit: impl FnOnce(&mut [u32; PT_ENTRIES]) -> R) -> R {
+        assert!(
+            !KERNEL_HALF_FROZEN.load(Ordering::Relaxed),
+            "an image table edited after the boot"
+        );
+        assert!(
+            !EDITING.swap(true, Ordering::Acquire),
+            "an image table edited inside another edit"
+        );
+        // SAFETY: the boot's thread is the only one (no process directory, so no other thread,
+        // exists yet), the flag refuses an edit inside this one, and the edits reach no entry
+        // through the self-map: this is the only reference to the entries until `edit` returns.
+        let result = edit(unsafe { &mut *self.0.get() });
+        EDITING.store(false, Ordering::Release);
+        result
+    }
+}
+
+/// Set while an image table is edited ([`ImageTable::boot_edit`]).
+#[cfg(target_arch = "x86")]
+static EDITING: AtomicBool = AtomicBool::new(false);
+
 /// The boot page directory. Zero-initialized; the entry stub fills entries `[0, BOOT_TABLE_COUNT)`
-/// (low identity window) and the kernel image window's, all pointing at [`BOOT_TABLES`].
+/// (low identity window) and the kernel image window's, all pointing at [`BOOT_TABLES`], through
+/// its symbol.
 #[no_mangle]
-pub static mut BOOT_PD: Aligned<[u32; PT_ENTRIES]> = Aligned([0; PT_ENTRIES]);
+static BOOT_PD: ImageTable = ImageTable::empty();
+
+/// A page-directory or page-table entry: the frame (or page table) it names and its flag bits.
+#[repr(transparent)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Pte(u32);
+
+impl Pte {
+    /// The entry that maps nothing.
+    pub const EMPTY: Pte = Pte(0);
+
+    /// The entry whose bits are `raw`, as the processor reads them.
+    pub const fn from_raw(raw: u32) -> Pte {
+        Pte(raw)
+    }
+
+    /// The entry's bits, as the processor reads them.
+    pub const fn raw(self) -> u32 {
+        self.0
+    }
+
+    /// Whether the entry maps anything.
+    pub const fn present(self) -> bool {
+        self.0 & PAGE_PRESENT != 0
+    }
+
+    /// The frame (or page table) the entry names, present or not.
+    pub const fn frame(self) -> u32 {
+        self.0 & PAGE_ADDR_MASK
+    }
+
+    /// A present, writable, supervisor-only entry for `frame`: the kernel's own pages and tables,
+    /// and the runtime access windows' directory entries.
+    pub const fn kernel_rw(frame: u32) -> Pte {
+        Pte(frame | PAGE_PRESENT | PAGE_WRITE)
+    }
+
+    /// A present entry ring 3 can reach for `frame`, with the further `flags` ([`PAGE_WRITE`] for a
+    /// writable one).
+    pub const fn user(frame: u32, flags: u32) -> Pte {
+        Pte(frame | PAGE_PRESENT | PAGE_USER | flags)
+    }
+}
 
 /// Remove the low identity window (called once the Multiboot info is consumed): clears entries
 /// `[0, BOOT_TABLE_COUNT)` and flushes the TLB via a CR3 reload. User space is unmapped from here
 /// on.
 #[cfg(target_arch = "x86")]
 pub fn teardown_low_identity() {
-    // SAFETY: the boot context is the only mutator of the directory; paging is on and the kernel
-    // window entries are live.
-    let pd = &mut unsafe { &mut *core::ptr::addr_of_mut!(BOOT_PD) }.0;
+    BOOT_PD.boot_edit(|pd| {
+        // The kernel window must be established before the low window goes away; this also catches
+        // a directory the stub never filled.
+        let image = layout::KERNEL_IMAGE.first_entry();
+        for (i, table) in BOOT_TABLES.0.iter().enumerate() {
+            assert_eq!(
+                Pte::from_raw(pd[image + i]).frame(),
+                table.as_ptr() as u32 - KERNEL_BASE,
+                "kernel window is not mapped"
+            );
+        }
+        assert_ne!(pd[0], 0, "low identity window is already gone");
 
-    // The kernel window must be established before the low window goes away; this also catches a
-    // directory the stub never filled.
-    let image = layout::KERNEL_IMAGE.first_entry();
-    for (i, table) in BOOT_TABLES.0.iter().enumerate() {
-        assert_eq!(
-            pd[image + i] & PAGE_ADDR_MASK,
-            table.as_ptr() as u32 - KERNEL_BASE,
-            "kernel window is not mapped"
-        );
-    }
-    assert_ne!(pd[0], 0, "low identity window is already gone");
-
-    for entry in &mut pd[..BOOT_TABLE_COUNT] {
-        *entry = 0;
-    }
-
-    let pd_phys = pd.as_ptr() as u32 - KERNEL_BASE;
-    // SAFETY: paging is on; reloading CR3 with the (same) directory flushes non-global TLB entries,
-    // dropping the low mappings.
-    unsafe {
-        asm!("mov cr3, {pd}", pd = in(reg) pd_phys, options(nostack, preserves_flags));
-    }
+        for entry in &mut pd[..BOOT_TABLE_COUNT] {
+            *entry = 0;
+        }
+    });
+    // Reloading CR3 with the (same) directory flushes the TLB, dropping the low mappings.
+    activate_address_space(boot_directory_phys());
 }
 
 // --- Runtime table access (user mappings) ---------------------------------
@@ -178,33 +281,88 @@ pub const fn gate_slot_top(index: u32) -> u32 {
 /// flushes needed: neither window was mapped before.
 #[cfg(target_arch = "x86")]
 pub fn init_table_access() {
-    // SAFETY: the boot context is the only mutator of the directory.
-    let pd = &mut unsafe { &mut *core::ptr::addr_of_mut!(BOOT_PD) }.0;
-    let pd_phys = pd.as_ptr() as u32 - KERNEL_BASE;
-    assert_eq!(pd[SELF_MAP_SLOT], 0, "self-map already installed");
-    assert_eq!(pd[SCRATCH_SLOT], 0, "scratch table already installed");
-
     // The scratch table is a kernel static (its frame is part of the image and never enters the
     // frame database), so it can be zeroed directly through the kernel window before it is
     // reachable through its own window. BSS is loader-zeroed in theory; zeroing explicitly keeps
     // that from being load-bearing.
-    // SAFETY: the boot context is the only accessor.
-    unsafe {
-        let scratch = &mut *core::ptr::addr_of_mut!(SCRATCH_TABLE);
-        for i in 0..PT_ENTRIES {
-            scratch.0[i] = 0;
-        }
-        let scratch_table_phys = (scratch.0.as_mut_ptr() as u32) - KERNEL_BASE;
-
-        // Both slots were asserted empty above.
-        pd[SELF_MAP_SLOT] = pd_phys | PAGE_PRESENT | PAGE_WRITE;
-        pd[SCRATCH_SLOT] = scratch_table_phys | PAGE_PRESENT | PAGE_WRITE;
-    }
+    SCRATCH_TABLE.boot_edit(|table| *table = [0; PT_ENTRIES]);
+    let (pd_phys, scratch_phys) = (BOOT_PD.phys(), SCRATCH_TABLE.phys());
+    BOOT_PD.boot_edit(|pd| {
+        assert_eq!(pd[SELF_MAP_SLOT], 0, "self-map already installed");
+        assert_eq!(pd[SCRATCH_SLOT], 0, "scratch table already installed");
+        pd[SELF_MAP_SLOT] = Pte::kernel_rw(pd_phys).raw();
+        pd[SCRATCH_SLOT] = Pte::kernel_rw(scratch_phys).raw();
+    });
 }
 
-/// The scratch table: a kernel static (its frame never enters the frame database).
+/// The scratch table: the page table of the scratch window's directory entry, shared by every
+/// directory. A kernel static (its frame never enters the frame database).
 #[cfg(target_arch = "x86")]
-static mut SCRATCH_TABLE: Aligned<[u32; PT_ENTRIES]> = Aligned([0; PT_ENTRIES]);
+static SCRATCH_TABLE: ImageTable = ImageTable::empty();
+
+/// The current directory's entries and page tables, reached through its self-map: the directory
+/// maps itself at [`SELF_MAP_SLOT`], so its entry `i` sits at `DIRECTORY_ENTRY_VA + i*4` and the
+/// page-table entry for an address `va` at `SELF_MAP_VA + (va >> 12)*4`. Both go through the
+/// **current** directory, the one CR3 points at, so they reach the active address space. The
+/// processor sets accessed and dirty bits in these entries as a side effect of ordinary memory
+/// traffic, so every access is volatile.
+///
+/// Every directory holds the self-map: the boot's from [`init_table_access`] on, and each process's
+/// from its creation ([`assemble_process_directory`]). The writers own the entries they write: the
+/// address-space manager ([`crate::mem::vm`]) its process's user windows; the boot, and steps under
+/// the memory manager's database (the kernel stacks, the scratch window), the kernel half's.
+#[cfg(target_arch = "x86")]
+mod self_map {
+    use super::{Pte, DIRECTORY_ENTRY_VA, PT_ENTRIES, SELF_MAP_VA};
+
+    /// Where directory entry `window` sits, on the directory's view of itself.
+    fn directory_slot(window: usize) -> *mut u32 {
+        assert!(window < PT_ENTRIES, "directory index past the directory");
+        (DIRECTORY_ENTRY_VA + window as u32 * 4) as *mut u32
+    }
+
+    /// Where the page-table entry for `va` sits, in its window's table through the self-map window.
+    fn table_slot(va: u32) -> *mut u32 {
+        (SELF_MAP_VA + (va >> 12) * 4) as *mut u32
+    }
+
+    /// The current directory's entry `window`.
+    pub fn pde(window: usize) -> Pte {
+        // SAFETY: the self-map is installed in every directory (see the module notes), so the
+        // directory's view page is mapped, and the slot lies on it (the index is checked).
+        Pte(unsafe { directory_slot(window).read_volatile() })
+    }
+
+    /// Set the current directory's entry `window`.
+    pub fn set_pde(window: usize, entry: Pte) {
+        // SAFETY: as in `pde`; the caller owns the entry (see the module notes).
+        unsafe { directory_slot(window).write_volatile(entry.0) }
+    }
+
+    /// The current directory's page-table entry for `va`; none when `va`'s window has no table.
+    pub fn pte(va: u32) -> Option<Pte> {
+        if !pde((va >> 22) as usize).present() {
+            return None;
+        }
+        // SAFETY: the window's table is present, so the self-map window maps it, and the slot is
+        // the address's entry in it.
+        Some(Pte(unsafe { table_slot(va).read_volatile() }))
+    }
+
+    /// Set the current directory's page-table entry for `va`.
+    ///
+    /// # Panics
+    ///
+    /// `va`'s window has no table.
+    pub fn set_pte(va: u32, entry: Pte) {
+        assert!(
+            pde((va >> 22) as usize).present(),
+            "a page-table entry set in a window with no table"
+        );
+        // SAFETY: as in `pte`; the caller owns the entry (see the module notes).
+        unsafe { table_slot(va).write_volatile(entry.0) }
+    }
+}
 
 /// Make the kernel stack region's page tables, once, at boot, after [`init_table_access`] and
 /// before the first process directory: zeroed frames installed in the boot directory, which every
@@ -217,34 +375,29 @@ pub fn init_kernel_stack_tables() {
         !KERNEL_HALF_FROZEN.load(Ordering::Relaxed),
         "the kernel stack tables made after the first process directory"
     );
-    for window in layout::KERNEL_STACKS.first_entry()..layout::KERNEL_STACKS.end_entry() {
-        // Zeroed while still unreachable: no garbage entry may become walkable.
-        let table_phys = allocate_frame_phys();
-        init_frame(table_phys, 0, &[]);
-        install_kernel_table(window, table_phys);
-    }
+    with_database(|database| {
+        let Parts {
+            frames, scratch, ..
+        } = database.parts();
+        for window in layout::KERNEL_STACKS.first_entry()..layout::KERNEL_STACKS.end_entry() {
+            install_kernel_table(window, new_table_in(frames, scratch));
+        }
+    });
 }
 
 /// Point the current directory's entry `window` at the page table `table_phys`: present, writable,
-/// supervisor, not global.
+/// supervisor, not global. Nothing maps through the entry before it is written.
 ///
 /// # Panics
 ///
 /// The entry is already present.
 #[cfg(target_arch = "x86")]
 fn install_kernel_table(window: usize, table_phys: u32) {
-    assert_eq!(
-        kernel_pde(window) & PAGE_PRESENT,
-        0,
+    assert!(
+        !self_map::pde(window).present(),
         "kernel-half table already installed"
     );
-    // SAFETY: the self-map window is live in every directory, and the entry stays on the
-    // directory's view page (`kernel_pde` checked the index); nothing maps through the entry
-    // before it is written. Volatile: the CPU sets accessed bits on directory entries.
-    unsafe {
-        ((DIRECTORY_ENTRY_VA + (window as u32) * 4) as *mut u32)
-            .write_volatile(table_phys | PAGE_PRESENT | PAGE_WRITE);
-    }
+    self_map::set_pde(window, Pte::kernel_rw(table_phys));
 }
 
 /// Set once the first process directory is assembled: from then on the kernel half is frozen, every
@@ -257,41 +410,115 @@ static KERNEL_HALF_FROZEN: AtomicBool = AtomicBool::new(false);
 
 /// Invalidate the TLB entry for `vaddr`.
 #[cfg(target_arch = "x86")]
-unsafe fn invlpg(vaddr: u32) {
-    // SAFETY: invlpg has no register side effects; the page's entry may or may not be cached, the
-    // instruction tolerates both.
+fn invlpg(vaddr: u32) {
+    // SAFETY: invlpg only drops the page's cached translation, whether or not one is cached; it
+    // changes no register and no memory.
     unsafe {
         asm!("invlpg [{va}]", va = in(reg) vaddr, options(nostack, preserves_flags));
     }
 }
 
-/// One use of the scratch window: interrupts masked from the claim to its drop, then put back as
-/// the claim found them. The window is one per processor, shared by every thread and by the idle
-/// thread's loads, so nothing may run between pointing it at a frame and the last access through
-/// it — as Windows uses its per-processor windows (hyperspace) at a raised level. A claim covers
-/// one function's accesses and never a wait (a disk read): the frame's contents come in or go out
-/// through the caller's buffer, never through a pointer into the window.
+/// Bytes per page, as a length.
+const PAGE_BYTES: usize = PAGE_SIZE as usize;
+
+/// The scratch window (Windows' hyperspace): one page of kernel address space, [`SCRATCH_VA`],
+/// that aliases whichever frame the kernel is reading or writing, so a fresh frame can be zeroed
+/// and filled before it is mapped anywhere else, and a dead process's tables read without mapping
+/// them.
+///
+/// The system has one, in the memory manager's database ([`crate::mem`]): its borrow keeps
+/// interrupts masked (the database's level is the high one) and makes it the window's only user,
+/// as Windows uses its per-processor windows at a raised level. Nothing runs between pointing the
+/// window at a frame and the last access through it, and the page [`ScratchWindow::map`] hands
+/// out lives no longer than that borrow. A frame's contents come in or go out through the caller's
+/// buffers, never across a wait (a disk read).
 #[cfg(target_arch = "x86")]
-struct ScratchClaim {
-    /// Interrupts masked through the level ledger for the claim's length (the guard checks that
-    /// the ledger agrees with the processor's flag).
-    _masked: crate::pcr::MaskGuard,
+pub struct ScratchWindow {
+    _one: (),
 }
 
 #[cfg(target_arch = "x86")]
-impl ScratchClaim {
-    /// Mask interrupts through the level ledger for the window's use.
-    fn take() -> Self {
-        ScratchClaim {
-            _masked: crate::pcr::pcr().mask_guard(),
-        }
+impl ScratchWindow {
+    /// The window: one exists, the memory manager's database's.
+    pub(super) const fn new() -> Self {
+        ScratchWindow { _one: () }
     }
 
-    /// Point the window at `frame_phys` (page-aligned) and return its address: the frame,
-    /// page-length, until the next `map` or the claim's drop.
-    fn map(&self, frame_phys: u32) -> u32 {
-        install_scratch(self, frame_phys);
-        SCRATCH_VA
+    /// Point the window at `frame_phys` and flush its old translation. The hardware flag is
+    /// checked, not only the level.
+    ///
+    /// # Panics
+    ///
+    /// `frame_phys` is not page-aligned, or interrupts are enabled.
+    fn point_at(&mut self, frame_phys: u32) {
+        assert!(frame_phys & (PAGE_SIZE - 1) == 0, "frame not page-aligned");
+        assert!(
+            interrupts_masked(),
+            "the scratch window used with interrupts enabled"
+        );
+        self_map::set_pte(SCRATCH_VA, Pte::kernel_rw(frame_phys));
+        invlpg(SCRATCH_VA);
+    }
+
+    /// The frame at `frame_phys`, as bytes, until the window is next used.
+    pub fn map(&mut self, frame_phys: u32) -> &mut [u8; PAGE_BYTES] {
+        self.point_at(frame_phys);
+        // SAFETY: the window maps exactly `frame_phys`, page-aligned and page-length, at
+        // SCRATCH_VA from the line above. The result borrows the system's one window mutably, so
+        // no other reference into the window exists while it lives, and nothing re-points the
+        // window meanwhile (that takes the window too).
+        unsafe { &mut *(SCRATCH_VA as *mut [u8; PAGE_BYTES]) }
+    }
+
+    /// The frame at `frame_phys`, as words (a directory or a page table), until the window is next
+    /// used.
+    pub fn map_words(&mut self, frame_phys: u32) -> &mut [u32; PT_ENTRIES] {
+        self.point_at(frame_phys);
+        // SAFETY: as in `map`; the window's address is page-aligned, so aligned for words.
+        unsafe { &mut *(SCRATCH_VA as *mut [u32; PT_ENTRIES]) }
+    }
+
+    /// Zero the frame at `frame_phys`, then copy `bytes` in at `offset` (tables: empty slice; image
+    /// pages: bytes; data pages: zero fill).
+    pub fn init_frame(&mut self, frame_phys: u32, offset: usize, bytes: &[u8]) {
+        assert!(
+            offset + bytes.len() <= PAGE_BYTES,
+            "write past the end of the frame"
+        );
+        let page = self.map(frame_phys);
+        // A zero fill compiles to one call of the string-instruction `memset`, a debug build
+        // included; a byte loop would stretch every page allocation there.
+        *page = [0; PAGE_BYTES];
+        page[offset..][..bytes.len()].copy_from_slice(bytes);
+    }
+
+    /// Copy `bytes` into the frame at `frame_phys` at `offset`, without zeroing the rest (unlike
+    /// [`ScratchWindow::init_frame`]).
+    pub fn write_frame(&mut self, frame_phys: u32, offset: usize, bytes: &[u8]) {
+        assert!(
+            offset + bytes.len() <= PAGE_BYTES,
+            "write past the end of the frame"
+        );
+        self.map(frame_phys)[offset..][..bytes.len()].copy_from_slice(bytes);
+    }
+
+    /// Copy `out.len()` bytes of the frame at `frame_phys`, from `offset`, into `out`.
+    pub fn read_frame(&mut self, frame_phys: u32, offset: usize, out: &mut [u8]) {
+        assert!(
+            offset + out.len() <= PAGE_BYTES,
+            "read past the end of the frame"
+        );
+        out.copy_from_slice(&self.map(frame_phys)[offset..][..out.len()]);
+    }
+
+    /// Word `index` of the frame at `frame_phys`.
+    ///
+    /// # Panics
+    ///
+    /// `index` past the frame's end.
+    pub fn read_word(&mut self, frame_phys: u32, index: usize) -> u32 {
+        assert!(index < PT_ENTRIES, "word index past the end of the frame");
+        self.map_words(frame_phys)[index]
     }
 }
 
@@ -306,98 +533,34 @@ fn interrupts_masked() -> bool {
     flags & (1 << 9) == 0
 }
 
-/// Point scratch entry 0 at `frame_phys` and flush it, under `_claim` (interrupts masked: the
-/// hardware flag is checked, not only the ledger).
-#[cfg(target_arch = "x86")]
-fn install_scratch(_claim: &ScratchClaim, frame_phys: u32) {
-    assert!(
-        interrupts_masked(),
-        "the scratch window used with interrupts enabled"
-    );
-    // The scratch table's entry 0, reached through the self-map.
-    // SAFETY: the self-map window is live in every directory; the claim makes this the window's
-    // only user until it drops, and every use rewrites and flushes the entry.
-    unsafe {
-        let scratch_pte0 = (SELF_MAP_VA + ((SCRATCH_SLOT as u32) << 12)) as *mut u32;
-        scratch_pte0.write_volatile(frame_phys | PAGE_PRESENT | PAGE_WRITE);
-        invlpg(SCRATCH_VA);
-    }
-}
-
-/// Zero a freshly allocated frame through the scratch alias, then copy `bytes` at `offset` (tables:
-/// empty slice; image pages: bytes; data pages: zero fill).
+/// Zero a freshly allocated frame through the scratch window, then copy `bytes` at `offset`: the
+/// bridge to [`ScratchWindow::init_frame`] for code that does not hold the memory manager's
+/// database.
 #[cfg(target_arch = "x86")]
 pub fn init_frame(frame_phys: u32, offset: usize, bytes: &[u8]) {
-    assert!(frame_phys & (PAGE_SIZE - 1) == 0, "frame not page-aligned");
-    assert!(
-        offset + bytes.len() <= PAGE_SIZE as usize,
-        "write past the end of the frame"
-    );
-    let claim = ScratchClaim::take();
-    let window = claim.map(frame_phys);
-    // SAFETY: the window aliases exactly this frame, page-length, for the claim's duration.
-    unsafe {
-        // One string store: a word loop is slow enough in a debug build to stretch every page
-        // allocation. The asm is opaque to the compiler, so the stores cannot be elided.
-        core::arch::asm!(
-            "rep stosd",
-            inout("ecx") PT_ENTRIES => _,
-            inout("edi") window => _,
-            in("eax") 0u32,
-            options(nostack, preserves_flags),
-        );
-        let dst = window as *mut u8;
-        for (i, &byte) in bytes.iter().enumerate() {
-            dst.add(offset + i).write_volatile(byte);
-        }
-    }
+    with_database(|database| database.scratch.init_frame(frame_phys, offset, bytes));
 }
 
 /// Patch `bytes` into a frame at `offset` without zeroing (unlike [`init_frame`]); for building a
-/// page in pieces.
+/// page in pieces. The bridge to [`ScratchWindow::write_frame`].
 #[cfg(target_arch = "x86")]
 pub fn write_frame(frame_phys: u32, offset: usize, bytes: &[u8]) {
-    assert!(frame_phys & (PAGE_SIZE - 1) == 0, "frame not page-aligned");
-    assert!(
-        offset + bytes.len() <= PAGE_SIZE as usize,
-        "write past the end of the frame"
-    );
-    let claim = ScratchClaim::take();
-    let window = claim.map(frame_phys);
-    // SAFETY: the window aliases exactly this frame, page-length, for the claim's duration.
-    unsafe {
-        let dst = window as *mut u8;
-        for (i, &byte) in bytes.iter().enumerate() {
-            dst.add(offset + i).write_volatile(byte);
-        }
-    }
+    with_database(|database| database.scratch.write_frame(frame_phys, offset, bytes));
 }
 
-/// Read `out.len()` bytes of a frame at `offset`, through the scratch alias.
+/// Read `out.len()` bytes of a frame at `offset`, through the scratch window. The bridge to
+/// [`ScratchWindow::read_frame`].
 #[cfg(target_arch = "x86")]
 pub fn read_frame(frame_phys: u32, offset: usize, out: &mut [u8]) {
-    assert!(frame_phys & (PAGE_SIZE - 1) == 0, "frame not page-aligned");
-    assert!(
-        offset + out.len() <= PAGE_SIZE as usize,
-        "read past the end of the frame"
-    );
-    let claim = ScratchClaim::take();
-    let window = claim.map(frame_phys);
-    // SAFETY: the window aliases exactly this frame, page-length, for the claim's duration.
-    unsafe {
-        let src = window as *const u8;
-        for (i, slot) in out.iter_mut().enumerate() {
-            *slot = src.add(offset + i).read_volatile();
-        }
-    }
+    with_database(|database| database.scratch.read_frame(frame_phys, offset, out));
 }
 
 /// Copy a whole frame's contents into another (a copy-on-write's private copy), through the
-/// scratch alias a chunk at a time.
+/// scratch window a chunk at a time.
 #[cfg(target_arch = "x86")]
 pub fn copy_frame(from_phys: u32, to_phys: u32) {
     let mut chunk = [0u8; 512];
-    for offset in (0..PAGE_SIZE as usize).step_by(chunk.len()) {
+    for offset in (0..PAGE_BYTES).step_by(chunk.len()) {
         read_frame(from_phys, offset, &mut chunk);
         write_frame(to_phys, offset, &chunk);
     }
@@ -405,45 +568,45 @@ pub fn copy_frame(from_phys: u32, to_phys: u32) {
 
 /// Allocate one frame, physical address. Quirk: the database never zeroes frames, so the contents
 /// are undefined until the caller runs [`init_frame`] — every frame handed to user space does.
+///
+/// # Panics
+///
+/// The frame database is empty.
 #[cfg(target_arch = "x86")]
 pub fn allocate_frame_phys() -> u32 {
-    let frame =
-        crate::mem::bootmem::with_frame_db(|db| db.allocate(crate::mem::frame::PRIMARY_COLOR));
-    frame * PAGE_SIZE
+    crate::mem::bootmem::with_frame_db(allocate_in)
+}
+
+/// [`allocate_frame_phys`]'s work, on the frame database the caller holds.
+#[cfg(target_arch = "x86")]
+fn allocate_in(frames: &mut FrameDb) -> u32 {
+    frames.allocate(PRIMARY_COLOR) * PAGE_SIZE
+}
+
+/// A fresh page table: a frame from `frames`, zeroed through `scratch` while it is still
+/// unreachable, so no garbage entry ever becomes walkable.
+#[cfg(target_arch = "x86")]
+fn new_table_in(frames: &mut FrameDb, scratch: &mut ScratchWindow) -> u32 {
+    let table_phys = allocate_in(frames);
+    scratch.init_frame(table_phys, 0, &[]);
+    table_phys
 }
 
 /// The current directory's page-table entry for user address `vaddr`, raw (present or not); 0 when
-/// its window has no table.
-///
-/// Both the window's directory entry (DIRECTORY_ENTRY_VA + window*4, through the directory's own
-/// self-map slot) and its page table (SELF_MAP_VA + window*4096, through the self-map window) are
-/// reached through the **current** directory — the one CR3 points at — so the access targets the
-/// active process's address space. The CPU may set accessed/dirty bits on any entry as a side
-/// effect of ordinary memory traffic, so all reads and writes are volatile.
+/// its window has no table. The entry is the active process's (see [`self_map`]).
 #[cfg(target_arch = "x86")]
 pub fn user_pte(vaddr: u32) -> u32 {
     assert!(
         vaddr < KERNEL_BASE,
         "user entries live below the kernel window"
     );
-    let window = vaddr >> 22;
-    let index = (vaddr >> 12) & 0x3FF;
-    // SAFETY: the self-map window is live in every directory; the table is read only when its
-    // directory entry is present.
-    unsafe {
-        let pde = (DIRECTORY_ENTRY_VA + window * 4) as *const u32;
-        if pde.read_volatile() & PAGE_PRESENT == 0 {
-            return 0;
-        }
-        ((SELF_MAP_VA + (window << 12)) as *const u32)
-            .add(index as usize)
-            .read_volatile()
-    }
+    self_map::pte(vaddr).map_or(0, Pte::raw)
 }
 
 /// Write the current directory's page-table entry for user address `vaddr` — any value, present or
 /// not (the address-space manager keeps committed but inaccessible pages as non-present entries
-/// that still name their frame) — and flush it. The window's table is allocated on first use.
+/// that still name their frame) — and flush it. The window's table is allocated on first use. The
+/// address-space manager is the only writer of user windows.
 ///
 /// # Panics
 ///
@@ -455,27 +618,24 @@ pub fn set_user_pte(vaddr: u32, entry: u32) {
         vaddr < KERNEL_BASE,
         "user entries live below the kernel window"
     );
-    let window = vaddr >> 22;
-    let index = (vaddr >> 12) & 0x3FF;
-    // SAFETY: as `user_pte`; the address-space manager is the only mutator of user windows.
-    unsafe {
-        let pde = (DIRECTORY_ENTRY_VA + window * 4) as *mut u32;
-        if pde.read_volatile() & PAGE_PRESENT == 0 {
-            if entry == 0 {
-                return;
-            }
-            let table_phys = allocate_frame_phys();
-            // Quirk: zero the table while it is still unreachable — present garbage entries must
-            // never become speculatively walkable. A user window must be traversable by ring 3; the
-            // per-page user/supervisor and read/write bits decide the rest.
-            init_frame(table_phys, 0, &[]);
-            pde.write_volatile(table_phys | PAGE_PRESENT | PAGE_WRITE | PAGE_USER);
+    let window = (vaddr >> 22) as usize;
+    if !self_map::pde(window).present() {
+        if entry == 0 {
+            return;
         }
-        ((SELF_MAP_VA + (window << 12)) as *mut u32)
-            .add(index as usize)
-            .write_volatile(entry);
-        invlpg(vaddr);
+        // Quirk: the table is zeroed while it is still unreachable — present garbage entries must
+        // never become speculatively walkable. A user window must be traversable by ring 3; the
+        // per-page user/supervisor and read/write bits decide the rest.
+        let table_phys = with_database(|database| {
+            let Parts {
+                frames, scratch, ..
+            } = database.parts();
+            new_table_in(frames, scratch)
+        });
+        self_map::set_pde(window, Pte::user(table_phys, PAGE_WRITE));
     }
+    self_map::set_pte(vaddr, Pte::from_raw(entry));
+    invlpg(vaddr);
 }
 
 // --- Per-process address spaces --------------------------------------------
@@ -511,8 +671,8 @@ pub fn assemble_process_directory(
     }
     // Present and writable, and nothing else: no user bit (the self-map and scratch windows are
     // kernel-only) and no global bit (every entry must drop out of the TLB when CR3 reloads).
-    dir[SELF_MAP_SLOT] = own_phys | PAGE_PRESENT | PAGE_WRITE;
-    dir[SCRATCH_SLOT] = scratch_phys | PAGE_PRESENT | PAGE_WRITE;
+    dir[SELF_MAP_SLOT] = Pte::kernel_rw(own_phys).raw();
+    dir[SCRATCH_SLOT] = Pte::kernel_rw(scratch_phys).raw();
 }
 
 /// The value CR3 takes for a directory at `dir_phys`: the address bits only, so a sloppy caller's
@@ -525,14 +685,14 @@ pub const fn directory_cr3(dir_phys: u32) -> u32 {
 /// enters the frame database).
 #[cfg(target_arch = "x86")]
 pub fn scratch_table_phys() -> u32 {
-    (core::ptr::addr_of!(SCRATCH_TABLE) as u32) - KERNEL_BASE
+    SCRATCH_TABLE.phys()
 }
 
 /// The boot directory's physical address: the address space the kernel returns to between
 /// processes.
 #[cfg(target_arch = "x86")]
 pub fn boot_directory_phys() -> u32 {
-    (core::ptr::addr_of!(BOOT_PD) as u32) - KERNEL_BASE
+    BOOT_PD.phys()
 }
 
 /// Create a fresh process address space and return its directory's physical address. The directory
@@ -545,27 +705,24 @@ pub fn boot_directory_phys() -> u32 {
 /// half-built).
 #[cfg(target_arch = "x86")]
 pub fn create_address_space() -> u32 {
-    // Allocated first: exhaustion fails before any write.
-    let dir_phys = allocate_frame_phys();
-
-    // The directory is assembled in its own frame, through the scratch window: every entry is
-    // written (user half zero, kernel half copied, both special entries set), so no separate
-    // zeroing pass is needed.
-    let claim = ScratchClaim::take();
-    let window = claim.map(dir_phys);
-    // SAFETY: the window aliases exactly the new directory's frame, page-length and page-aligned,
-    // for the claim's duration; nothing else references the fresh frame.
-    let dir = unsafe { &mut *(window as *mut [u32; PT_ENTRIES]) };
-    // The base directory's kernel half, read through the current directory's view of itself
-    // (DIRECTORY_ENTRY_VA): the directory page reached through its own self-map slot, one entry per
-    // word. Volatile: the CPU sets accessed/dirty bits on these entries as a side effect of
-    // ordinary memory traffic.
-    assemble_process_directory(dir, dir_phys, scratch_table_phys(), |i| {
-        // SAFETY: the view page is exactly the current directory (installed at boot, inherited by
-        // every process directory), and the reads stay inside it.
-        unsafe { ((DIRECTORY_ENTRY_VA + (i as u32) * 4) as *const u32).read_volatile() }
+    let dir_phys = with_database(|database| {
+        let Parts {
+            frames, scratch, ..
+        } = database.parts();
+        // Allocated first: exhaustion fails before any write.
+        let dir_phys = allocate_in(frames);
+        // The directory is assembled in its own frame, through the scratch window: every entry is
+        // written (user half zero, kernel half copied, both special entries set), so no separate
+        // zeroing pass is needed. The base directory's kernel half is read through the current
+        // directory's view of itself.
+        assemble_process_directory(
+            scratch.map_words(dir_phys),
+            dir_phys,
+            scratch_table_phys(),
+            |i| self_map::pde(i).raw(),
+        );
+        dir_phys
     });
-    drop(claim);
     // From here on, a kernel-half table created in one directory would be missing from this one.
     KERNEL_HALF_FROZEN.store(true, Ordering::Relaxed);
     dir_phys
@@ -587,20 +744,47 @@ pub fn activate_address_space(dir_phys: u32) {
 /// Map `vaddr` to `frame_phys` for the kernel only: present, writable, supervisor (no user bit —
 /// ring 3 must not reach these pages). The window's table is allocated on first use, like
 /// [`set_user_pte`]'s, which only the boot may do; every kernel-half table is shared by every
-/// directory, so the mapping lands in all of them.
+/// directory, so the mapping lands in all of them. The bridge to [`map_kernel_page_in`] for code
+/// that does not hold the memory manager's database: the boot's.
+///
+/// # Panics
+///
+/// As [`map_kernel_page_in`].
+#[cfg(target_arch = "x86")]
+pub fn map_kernel_page(vaddr: u32, frame_phys: u32) {
+    with_database(|database| {
+        let Parts {
+            frames, scratch, ..
+        } = database.parts();
+        map_kernel_page_in(frames, scratch, vaddr, frame_phys);
+    });
+}
+
+/// [`map_kernel_page`]'s work, on the frame database and the scratch window the caller holds (a
+/// new table's frame comes from them).
+///
+/// Past the boot (before any thread runs), the kernel windows change only here and in
+/// [`unmap_kernel_page`], at every thread create and exit, from [`map_gate_slot`] and
+/// [`unmap_gate_slot`] under the memory manager's database borrow, which masks interrupts: on one
+/// processor nothing else touches the entry between the check and the store. Only the boot creates
+/// a table (the frozen-half assertion).
 ///
 /// # Panics
 ///
 /// Unaligned `vaddr`/`frame_phys`, `vaddr` outside the kernel half, `vaddr` in a window the
 /// kernel owns for other purposes (the static kernel image window, the self-map, the scratch
-/// window), or a window whose table would be created after the first process directory (see
-/// [`KERNEL_HALF_FROZEN`]).
+/// window), `vaddr` already mapped, or a window whose table would be created after the first
+/// process directory (see [`KERNEL_HALF_FROZEN`]).
 #[cfg(target_arch = "x86")]
-pub fn map_kernel_page(vaddr: u32, frame_phys: u32) {
+fn map_kernel_page_in(
+    frames: &mut FrameDb,
+    scratch: &mut ScratchWindow,
+    vaddr: u32,
+    frame_phys: u32,
+) {
     assert!(vaddr % PAGE_SIZE == 0, "kernel address not page-aligned");
     assert!(frame_phys % PAGE_SIZE == 0, "frame not page-aligned");
     let window = (vaddr >> 22) as usize;
-    let index = ((vaddr >> 12) & 0x3FF) as usize;
     assert!(
         vaddr >= KERNEL_BASE,
         "kernel mappings live in the kernel half"
@@ -614,39 +798,25 @@ pub fn map_kernel_page(vaddr: u32, frame_phys: u32) {
         "kernel mapping collides with the runtime access windows"
     );
 
-    // SAFETY: the self-map and directory windows are installed, so both addresses reach the
-    // current directory and the window's table. Past the boot (before any thread runs), these
-    // windows change only here and in `unmap_kernel_page`, at every thread create and exit, from
-    // `map_gate_slot`/`unmap_gate_slot` under the kernel-stack ledger's high-level borrow
-    // (`STACKS` in mem/kstacks.rs), which masks interrupts: on one processor nothing else
-    // touches the entry between the check and the store. Only the boot creates a table (the
-    // frozen-half assertion). Entries are CPU-mutated (accessed/dirty), so access is volatile.
-    unsafe {
-        let pde = (DIRECTORY_ENTRY_VA + (window as u32) * 4) as *mut u32;
-        if pde.read_volatile() & PAGE_PRESENT == 0 {
-            assert!(
-                !KERNEL_HALF_FROZEN.load(Ordering::Relaxed),
-                "a kernel-half table created after the first process directory"
-            );
-            let table_phys = allocate_frame_phys();
-            init_frame(table_phys, 0, &[]);
-            install_kernel_table(window, table_phys);
-        }
-        let table = (SELF_MAP_VA + ((window as u32) << 12)) as *mut u32;
-        assert_eq!(
-            table.add(index).read_volatile() & PAGE_PRESENT,
-            0,
-            "kernel page already mapped"
+    if !self_map::pde(window).present() {
+        assert!(
+            !KERNEL_HALF_FROZEN.load(Ordering::Relaxed),
+            "a kernel-half table created after the first process directory"
         );
-        table
-            .add(index)
-            .write_volatile(frame_phys | PAGE_PRESENT | PAGE_WRITE);
-        invlpg(vaddr);
+        install_kernel_table(window, new_table_in(frames, scratch));
     }
+    assert!(
+        !self_map::pte(vaddr).is_some_and(Pte::present),
+        "kernel page already mapped"
+    );
+    self_map::set_pte(vaddr, Pte::kernel_rw(frame_phys));
+    invlpg(vaddr);
 }
 
 /// Remove the kernel-half mapping at `vaddr` from the current directory and flush it from the TLB,
-/// returning the frame it named. The frame itself is the caller's to release.
+/// returning the frame it named. The frame itself is the caller's to release. The caller,
+/// [`unmap_gate_slot`], runs under the memory manager's database borrow with interrupts masked, so
+/// nothing else touches the entry meanwhile.
 ///
 /// # Panics
 ///
@@ -655,7 +825,6 @@ pub fn map_kernel_page(vaddr: u32, frame_phys: u32) {
 pub fn unmap_kernel_page(vaddr: u32) -> u32 {
     assert!(vaddr % PAGE_SIZE == 0, "kernel address not page-aligned");
     let window = (vaddr >> 22) as usize;
-    let index = ((vaddr >> 12) & 0x3FF) as usize;
     assert!(
         vaddr >= KERNEL_BASE,
         "kernel mappings live in the kernel half"
@@ -669,22 +838,12 @@ pub fn unmap_kernel_page(vaddr: u32) -> u32 {
         "kernel unmapping collides with the runtime access windows"
     );
 
-    // SAFETY: as `map_kernel_page`: the caller, `unmap_gate_slot`, runs inside the kernel-stack
-    // ledger's closure with interrupts masked, so nothing else touches the entry meanwhile. The
-    // table exists because a mapping in it does.
-    unsafe {
-        let pde = (DIRECTORY_ENTRY_VA + (window as u32) * 4) as *const u32;
-        assert!(
-            pde.read_volatile() & PAGE_PRESENT != 0,
-            "kernel page not mapped"
-        );
-        let table = (SELF_MAP_VA + ((window as u32) << 12)) as *mut u32;
-        let pte = table.add(index).read_volatile();
-        assert!(pte & PAGE_PRESENT != 0, "kernel page not mapped");
-        table.add(index).write_volatile(0);
-        invlpg(vaddr);
-        pte & PAGE_ADDR_MASK
-    }
+    let pte = self_map::pte(vaddr)
+        .filter(|pte| pte.present())
+        .expect("kernel page not mapped");
+    self_map::set_pte(vaddr, Pte::EMPTY);
+    invlpg(vaddr);
+    pte.frame()
 }
 
 /// Unmap gate-stack slot `index`'s pages from the shared tables, so from every address space: the
@@ -711,15 +870,19 @@ pub fn unmap_gate_slot(index: u32) -> [u32; GATE_STACK_PAGES] {
 }
 
 /// Map a fresh gate-stack slot `index` into the shared tables, so into every address space at once:
-/// one frame per page, supervisor-only, above the slot's unmapped guard page. Returns the frames
-/// for the owner thread to release at its exit.
+/// one frame per page from `frames`, zeroed through `scratch`, supervisor-only, above the slot's
+/// unmapped guard page. Returns the frames for the owner thread to release at its exit.
 ///
 /// # Panics
 ///
 /// The index is past the region's capacity, or the region's tables are not made yet
 /// ([`init_kernel_stack_tables`]).
 #[cfg(target_arch = "x86")]
-pub fn map_gate_slot(index: u32) -> [u32; GATE_STACK_PAGES] {
+pub fn map_gate_slot(
+    frames: &mut FrameDb,
+    scratch: &mut ScratchWindow,
+    index: u32,
+) -> [u32; GATE_STACK_PAGES] {
     assert!(
         (index as usize) < GATE_SLOT_CAPACITY,
         "gate-slot index past the region's capacity"
@@ -729,21 +892,21 @@ pub fn map_gate_slot(index: u32) -> [u32; GATE_STACK_PAGES] {
         "a gate stack mapped before the kernel stack tables are made"
     );
     let base = gate_slot_base(index);
-    let mut frames = [0u32; GATE_STACK_PAGES];
-    for (i, slot) in frames.iter_mut().enumerate() {
-        let frame = allocate_frame_phys();
-        init_frame(frame, 0, &[]);
-        map_kernel_page(base + ((i + 1) as u32) * PAGE_SIZE, frame);
+    let mut stack = [0u32; GATE_STACK_PAGES];
+    for (i, slot) in stack.iter_mut().enumerate() {
+        let frame = allocate_in(frames);
+        scratch.init_frame(frame, 0, &[]);
+        map_kernel_page_in(frames, scratch, base + ((i + 1) as u32) * PAGE_SIZE, frame);
         *slot = frame;
     }
-    frames
+    stack
 }
 
 /// Whether the current directory holds every table of the kernel stack region.
 #[cfg(target_arch = "x86")]
 fn kernel_stack_tables_installed() -> bool {
     (layout::KERNEL_STACKS.first_entry()..layout::KERNEL_STACKS.end_entry())
-        .all(|window| kernel_pde(window) & PAGE_PRESENT != 0)
+        .all(|window| self_map::pde(window).present())
 }
 
 /// Whether gate-stack slot `index` is mapped in the current directory as [`map_gate_slot`] leaves
@@ -751,51 +914,20 @@ fn kernel_stack_tables_installed() -> bool {
 #[cfg(target_arch = "x86")]
 pub fn gate_slot_mapped(index: u32) -> bool {
     let base = gate_slot_base(index);
-    let present = |vaddr: u32| kernel_pte(vaddr) & PAGE_PRESENT != 0;
+    let present = |vaddr: u32| self_map::pte(vaddr).is_some_and(Pte::present);
     !present(base) && (1..=GATE_STACK_PAGES as u32).all(|page| present(base + page * PAGE_SIZE))
-}
-
-/// The current directory's entry `window`, raw.
-#[cfg(target_arch = "x86")]
-fn kernel_pde(window: usize) -> u32 {
-    assert!(window < PT_ENTRIES, "directory index past the directory");
-    // SAFETY: the self-map window is live in every directory; the read stays on the directory's
-    // view page. Volatile: the CPU sets accessed bits on directory entries.
-    unsafe { ((DIRECTORY_ENTRY_VA + (window as u32) * 4) as *const u32).read_volatile() }
-}
-
-/// The current directory's page-table entry for kernel address `vaddr`, raw; 0 when its window has
-/// no table.
-#[cfg(target_arch = "x86")]
-fn kernel_pte(vaddr: u32) -> u32 {
-    let window = (vaddr >> 22) as usize;
-    if kernel_pde(window) & PAGE_PRESENT == 0 {
-        return 0;
-    }
-    let index = ((vaddr >> 12) & 0x3FF) as usize;
-    // SAFETY: the window's table is present, reached through the self-map, and the index is inside
-    // it. Volatile: the CPU sets accessed/dirty bits on table entries.
-    unsafe {
-        ((SELF_MAP_VA + ((window as u32) << 12)) as *const u32)
-            .add(index)
-            .read_volatile()
-    }
 }
 
 /// Read word `index` of `frame_phys` through the scratch window: the one-page alias of any frame,
 /// used by the teardown walk to read a dead process's directory and tables without mapping them.
+/// The bridge to [`ScratchWindow::read_word`].
 ///
 /// # Panics
 ///
 /// `index` past the frame's end.
 #[cfg(target_arch = "x86")]
 pub fn read_frame_word(frame_phys: u32, index: usize) -> u32 {
-    assert!(index < PT_ENTRIES, "word index past the end of the frame");
-    let claim = ScratchClaim::take();
-    let window = claim.map(frame_phys);
-    // SAFETY: the window aliases exactly this frame, page-length, for the claim's duration, and the
-    // index is in bounds.
-    unsafe { (window as *const u32).add(index).read_volatile() }
+    with_database(|database| database.scratch.read_word(frame_phys, index))
 }
 
 #[cfg(test)]
@@ -807,11 +939,7 @@ mod tests {
         for table in &BOOT_TABLES.0 {
             assert_eq!(table.as_ptr() as usize % 4096, 0);
         }
-        // SAFETY: read-only access before any boot code runs.
-        assert_eq!(
-            unsafe { &*core::ptr::addr_of!(BOOT_PD) }.0.as_ptr() as usize % 4096,
-            0
-        );
+        assert_eq!(BOOT_PD.address() % 4096, 0);
     }
 
     /// One boot table per entry of the kernel image window: four, 16 MiB.
@@ -858,9 +986,9 @@ mod tests {
 
     #[test]
     fn boot_directory_starts_empty() {
-        // SAFETY: read-only access before any boot code runs.
-        let pd = unsafe { &*core::ptr::addr_of!(BOOT_PD) };
-        assert!(pd.0.iter().all(|&e| e == 0));
+        // SAFETY: no boot code runs in the host tests, so nothing writes the directory.
+        let pd = unsafe { &*BOOT_PD.0.get() };
+        assert!(pd.iter().all(|&e| e == 0));
     }
 
     /// Independent bit check: entry bit 0 is present, bit 1 is R/W, bit 2 is user/supervisor. The
@@ -874,6 +1002,26 @@ mod tests {
         assert_eq!(PAGE_PRESENT | PAGE_USER, 0x5);
         // Writable user page: present + R/W + user.
         assert_eq!(PAGE_PRESENT | PAGE_WRITE | PAGE_USER, 0x7);
+    }
+
+    /// The entry type builds the bits above: the kernel's entries present and writable without the
+    /// user bit, a user entry present with it, and the frame read back from the address bits
+    /// whether the entry is present or not.
+    #[test]
+    fn entries_carry_their_frame_and_flags() {
+        let kernel = Pte::kernel_rw(0x0090_0000);
+        assert_eq!(kernel.raw(), 0x0090_0000 | PAGE_PRESENT | PAGE_WRITE);
+        assert!(kernel.present());
+        assert_eq!(kernel.frame(), 0x0090_0000);
+
+        assert_eq!(Pte::user(0x0050_0000, 0).raw(), 0x0050_0005);
+        assert_eq!(Pte::user(0x0050_0000, PAGE_WRITE).raw(), 0x0050_0007);
+
+        let committed = Pte::from_raw(0x0070_0000 | PAGE_WRITE);
+        assert!(!committed.present());
+        assert_eq!(committed.frame(), 0x0070_0000);
+        assert!(!Pte::EMPTY.present());
+        assert_eq!(Pte::EMPTY.raw(), 0);
     }
 
     /// The self-map and scratch slots sit at the NT-style addresses (0xC0000000 and 0xC0400000,

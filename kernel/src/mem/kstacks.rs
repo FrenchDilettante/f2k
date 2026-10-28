@@ -17,9 +17,9 @@
 //! from the shared tables, not from one process's directory. A process's teardown, run after its
 //! last thread's exit, finds that exit's stack parked or already released.
 
-use super::{layout, paging};
 #[cfg(target_arch = "x86")]
-use crate::level::{self, High, LevelCell};
+use super::{frame::FrameDb, with_database, Parts};
+use super::{layout, paging};
 
 /// How many slots the ledger tracks: every slot of the region.
 pub const SLOTS: usize = paging::GATE_SLOT_CAPACITY;
@@ -126,31 +126,23 @@ const _: () = {
 
 // --- The system's kernel stacks (target) ----------------------------------
 //
-// Each step runs whole inside one borrow of the stacks at the high level (interrupts masked), so
-// the ledger and the shared tables agree wherever anything else can look: a taken slot is mapped, a
-// free one is not.
-
-/// The system's kernel stacks.
-// Note: this belongs at the dispatch level once its callers hold tokens, as Windows 2000 keeps its
-// page frame database under the PFN lock, at DISPATCH_LEVEL. Until then the bridge reaches it at
-// the high level, masking interrupts for each step, and refuses a step that reaches it again from
-// inside its own borrow.
-#[cfg(target_arch = "x86")]
-static STACKS: LevelCell<High, KernelStacks> = LevelCell::new(KernelStacks::empty());
-
-/// Run `step` on the system's kernel stacks, through the bridge to the high level.
-#[cfg(target_arch = "x86")]
-fn with_stacks<R>(step: impl FnOnce(&mut KernelStacks) -> R) -> R {
-    level::raised::<High, _>(|high| step(STACKS.get(high)))
-}
+// The stacks are part of the memory manager's database (`super::Database`), with the frame
+// database their frames come from. Each step runs whole inside one borrow of it at the high level
+// (interrupts masked), so the ledger and the shared tables agree wherever anything else can look:
+// a taken slot is mapped, a free one is not.
 
 /// A fresh gate stack: the system's lowest free slot, mapped in the shared tables (in every address
 /// space at once); none when the region is full.
 #[cfg(target_arch = "x86")]
 pub fn create() -> Option<GateStack> {
-    with_stacks(|stacks| {
+    with_database(|database| {
+        let Parts {
+            frames,
+            stacks,
+            scratch,
+        } = database.parts();
         let slot = stacks.slots.allocate()?;
-        Some((slot, paging::map_gate_slot(slot as u32)))
+        Some((slot, paging::map_gate_slot(frames, scratch, slot as u32)))
     })
 }
 
@@ -159,15 +151,19 @@ pub fn create() -> Option<GateStack> {
 /// processor runs on (see [`park`]).
 #[cfg(target_arch = "x86")]
 pub fn release(stack: GateStack) {
-    with_stacks(|stacks| release_in(stacks, stack));
+    with_database(|database| {
+        let Parts { frames, stacks, .. } = database.parts();
+        release_in(stacks, frames, stack);
+    });
 }
 
 /// Park the exiting thread's own stack, releasing the one parked before it.
 #[cfg(target_arch = "x86")]
 pub fn park(stack: GateStack) {
-    with_stacks(|stacks| {
+    with_database(|database| {
+        let Parts { frames, stacks, .. } = database.parts();
         if let Some(previous) = stacks.park(stack) {
-            release_in(stacks, previous);
+            release_in(stacks, frames, previous);
         }
     });
 }
@@ -175,9 +171,10 @@ pub fn park(stack: GateStack) {
 /// Release the parked stack, if any: from code running on another stack.
 #[cfg(target_arch = "x86")]
 pub fn release_parked() {
-    with_stacks(|stacks| {
+    with_database(|database| {
+        let Parts { frames, stacks, .. } = database.parts();
         if let Some(stack) = stacks.take_parked() {
-            release_in(stacks, stack);
+            release_in(stacks, frames, stack);
         }
     });
 }
@@ -187,27 +184,26 @@ pub fn release_parked() {
 /// in the others.
 #[cfg(target_arch = "x86")]
 pub fn every_stack_mapped_here() -> bool {
-    with_stacks(|stacks| {
-        stacks
+    with_database(|database| {
+        database
+            .stacks
             .slots
             .taken()
             .all(|slot| paging::gate_slot_mapped(slot as u32))
     })
 }
 
-/// [`release`]'s work, on the stacks the caller holds.
+/// [`release`]'s work, on the stacks and the frame database the caller holds.
 #[cfg(target_arch = "x86")]
-fn release_in(stacks: &mut KernelStacks, (slot, frames): GateStack) {
+fn release_in(stacks: &mut KernelStacks, frames: &mut FrameDb, (slot, stack): GateStack) {
     use crate::mem::frame::FrameState;
     let mapped = paging::unmap_gate_slot(slot as u32);
     debug_assert_eq!(
-        mapped, frames,
+        mapped, stack,
         "the slot maps the frames its thread recorded"
     );
-    for frame in frames {
-        crate::mem::bootmem::with_frame_db(|db| {
-            db.release(frame / paging::PAGE_SIZE, FrameState::Free);
-        });
+    for frame in stack {
+        frames.release(frame / paging::PAGE_SIZE, FrameState::Free);
     }
     stacks.slots.release(slot);
 }

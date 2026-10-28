@@ -1,47 +1,98 @@
 //! Kernel heap: a fixed-pool allocator for loader and runtime structures.
 //!
-//! Design: one static pool, blocks carved from a doubly-linked free list, first fit. Block layout
-//! (offsets from the pool base, all sizes multiples of 8):
+//! Design: one static pool, blocks carved from a doubly-linked free list, first fit. A block is a
+//! [`Tag`] (its payload size and whether it is free), the payload (8-byte aligned, a multiple of 8
+//! bytes), and the same tag again:
 //!
 //! ```text
-//! off + 0  payload size (u32)   off + 4  free flag (u32)
-//! off + 8  payload ...          (8-byte aligned)
-//! off + 8 + size  payload size copy (u32) + padding (u32)
+//! off            Tag { size, free }
+//! off + 8        payload ...
+//! off + 8 + size Tag { size, free }
 //! ```
 //!
-//! The trailing size copy lets a freed block merge with its predecessor. Free blocks keep the
-//! free-list links in their payload (`next` then `prev`, pool offsets). No coalescing metadata
-//! beyond that; the whole pool is one block chain, which [`KernelHeap::audit`] can walk and check.
+//! The trailing tag lets a freed block merge with its predecessor. Free blocks keep their free-list
+//! links in their payload ([`FreeLinks`], pool offsets). No coalescing metadata beyond that; the
+//! whole pool is one block chain, which the audit can walk and check.
 //!
 //! This is an independent, deliberately small design (the executive's tagged pools are a much
 //! larger machine, ported separately when the compatibility layer needs them).
 
 use core::alloc::Layout;
+use core::mem::{align_of, size_of};
 use core::ptr::NonNull;
 
-/// Header size: payload size + free flag.
-const HEADER_SIZE: usize = 8;
-/// Footer size: payload size copy (used for backward merges) + padding.
-const FOOTER_SIZE: usize = 8;
+/// A block's boundary tag, at both its ends: the payload size, and 1 when the block is free.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Tag {
+    size: u32,
+    free: u32,
+}
+
+/// A free block's free-list links, kept at the start of its payload.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct FreeLinks {
+    next: Link,
+    prev: Link,
+}
+
+/// A free-list link as the pool stores it: a free block's pool offset, `u32::MAX` for none.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+struct Link(u32);
+
+impl Link {
+    fn new(to: Option<u32>) -> Link {
+        Link(to.unwrap_or(u32::MAX))
+    }
+
+    fn get(self) -> Option<u32> {
+        (self.0 != u32::MAX).then_some(self.0)
+    }
+}
+
+impl FreeLinks {
+    fn new(next: Option<u32>, prev: Option<u32>) -> FreeLinks {
+        FreeLinks {
+            next: Link::new(next),
+            prev: Link::new(prev),
+        }
+    }
+}
+
+/// Header size: the leading tag.
+const HEADER_SIZE: usize = size_of::<Tag>();
+/// Footer size: the trailing tag (used for backward merges).
+const FOOTER_SIZE: usize = size_of::<Tag>();
+/// A block's size beyond its payload.
+const OVERHEAD: u32 = (HEADER_SIZE + FOOTER_SIZE) as u32;
 /// Smallest payload a block can carry: the two free-list links.
-const MIN_PAYLOAD: usize = 8;
+const MIN_PAYLOAD: usize = size_of::<FreeLinks>();
 /// Smallest payload worth splitting a block for.
 const MIN_SPLIT: usize = HEADER_SIZE + MIN_PAYLOAD + FOOTER_SIZE;
-/// Pool offset meaning "no link".
-const NONE: u32 = u32::MAX;
 
-/// A fixed-pool heap. The pool is borrowed for the heap's lifetime; the kernel supplies a static
-/// array, tests leak a boxed slice.
+/// A fixed-pool heap over a pool it owns for its lifetime; the kernel supplies a static array,
+/// tests leak a boxed slice.
+///
+/// The pool is held as its base pointer, never as a reference over the whole pool: the payloads it
+/// hands out are the callers', and a reference spanning them, re-borrowed at every call, would
+/// claim their bytes too. The heap reaches only its own bytes (the tags, a free block's links),
+/// each through a pointer derived from the base.
 pub struct KernelHeap {
-    pool: &'static mut [u8],
+    base: NonNull<u8>,
+    len: usize,
     free_head: Option<u32>,
 }
+
+// SAFETY: the heap owns its pool (it was handed the only reference to it), so moving the heap to
+// another thread moves that ownership with it; the pointer is just how it holds the pool.
+unsafe impl Send for KernelHeap {}
 
 impl KernelHeap {
     /// Build a heap over `pool` (one big free block).
     ///
-    /// The pool must be 8-byte aligned (the boot pool's type guarantees it) and its length a
-    /// positive multiple of 8.
+    /// The pool must be 8-byte aligned and its length a positive multiple of 8.
     pub fn new(pool: &'static mut [u8]) -> Self {
         assert!(
             pool.len().is_multiple_of(8),
@@ -51,83 +102,129 @@ impl KernelHeap {
             pool.len() >= HEADER_SIZE + MIN_PAYLOAD + FOOTER_SIZE,
             "pool too small"
         );
-        let payload = (pool.len() - HEADER_SIZE - FOOTER_SIZE) as u32;
+        assert!(
+            u32::try_from(pool.len()).is_ok(),
+            "pool offsets must fit 32 bits"
+        );
+        assert!(
+            pool.as_ptr().addr().is_multiple_of(8),
+            "pool must be 8-byte aligned"
+        );
+        let len = pool.len();
+        let payload = len as u32 - OVERHEAD;
         let mut heap = KernelHeap {
-            pool,
+            base: NonNull::from(pool).cast(),
+            len,
             free_head: None,
         };
         heap.write_block(0, payload, true);
-        heap.link(0, NONE, NONE);
+        heap.set_links(0, FreeLinks::new(None, None));
         heap.free_head = Some(0);
         heap
     }
 
     // -----------------------------------------------------------------
-    // Field access: little-endian words in the pool. Offsets are 4-byte aligned by construction;
-    // an offset outside the pool panics instead of touching memory past it.
+    // The heap's own bytes: tags and links, read and written by value.
 
-    fn rd(&self, off: usize) -> u32 {
-        u32::from_le_bytes(self.pool[off..off + 4].try_into().unwrap())
+    /// The `T` at pool offset `off`: one of the heap's own records.
+    ///
+    /// # Panics
+    ///
+    /// `off` is not aligned for `T`, or the record reaches past the pool, instead of touching
+    /// memory past it.
+    fn read<T: Copy>(&self, off: usize) -> T {
+        self.check::<T>(off);
+        // SAFETY: inside the pool and aligned (checked); the pool is the heap's for its lifetime,
+        // and `T` is a tag or links record, plain words for which any bits are a value.
+        unsafe { self.base.as_ptr().add(off).cast::<T>().read() }
     }
 
-    fn wr(&mut self, off: usize, value: u32) {
-        self.pool[off..off + 4].copy_from_slice(&value.to_le_bytes());
+    /// Write `value` at pool offset `off`; panics as [`KernelHeap::read`].
+    fn write<T: Copy>(&mut self, off: usize, value: T) {
+        self.check::<T>(off);
+        // SAFETY: as in `read`. The bytes are the heap's own: a tag, or a free block's payload,
+        // which no caller holds.
+        unsafe { self.base.as_ptr().add(off).cast::<T>().write(value) }
+    }
+
+    /// Panic unless a `T` at pool offset `off` is aligned and inside the pool.
+    fn check<T>(&self, off: usize) {
+        assert!(
+            off.is_multiple_of(align_of::<T>())
+                && off
+                    .checked_add(size_of::<T>())
+                    .is_some_and(|end| end <= self.len),
+            "heap record outside the pool"
+        );
+    }
+
+    /// The tag of the block at `off`.
+    fn tag(&self, off: u32) -> Tag {
+        self.read(off as usize)
     }
 
     /// Block payload size, read from the header at `off`.
     fn size(&self, off: u32) -> u32 {
-        self.rd(off as usize)
+        self.tag(off).size
     }
 
     fn is_free(&self, off: u32) -> bool {
-        self.rd(off as usize + 4) == 1
+        self.tag(off).free == 1
     }
 
     /// Write a block's header and footer (size + free flag both ends).
     fn write_block(&mut self, off: u32, payload: u32, free: bool) {
-        let o = off as usize;
-        self.wr(o, payload);
-        self.wr(o + 4, free as u32);
-        self.wr(o + HEADER_SIZE + payload as usize, payload);
-        self.wr(o + HEADER_SIZE + payload as usize + 4, free as u32);
+        let tag = Tag {
+            size: payload,
+            free: free as u32,
+        };
+        self.write(off as usize, tag);
+        self.write(off as usize + HEADER_SIZE + payload as usize, tag);
     }
 
     /// Free-list links, kept in the block payload.
-    fn links(&self, off: u32) -> (u32, u32) {
-        (
-            self.rd(off as usize + HEADER_SIZE),
-            self.rd(off as usize + HEADER_SIZE + 4),
-        )
+    fn links(&self, off: u32) -> FreeLinks {
+        self.read(off as usize + HEADER_SIZE)
     }
 
-    fn link(&mut self, off: u32, next: u32, prev: u32) {
-        self.wr(off as usize + HEADER_SIZE, next);
-        self.wr(off as usize + HEADER_SIZE + 4, prev);
+    fn set_links(&mut self, off: u32, links: FreeLinks) {
+        self.write(off as usize + HEADER_SIZE, links);
+    }
+
+    fn set_next(&mut self, off: u32, next: Option<u32>) {
+        let links = self.links(off);
+        self.set_links(off, FreeLinks::new(next, links.prev.get()));
+    }
+
+    fn set_prev(&mut self, off: u32, prev: Option<u32>) {
+        let links = self.links(off);
+        self.set_links(off, FreeLinks::new(links.next.get(), prev));
     }
 
     /// Block start of the block following the one at `off`.
     fn next_block(&self, off: u32, payload: u32) -> u32 {
-        off + (HEADER_SIZE + FOOTER_SIZE) as u32 + payload
+        off + OVERHEAD + payload
     }
 
     /// Unlink the free block at `off` from the free list.
     fn unlink(&mut self, off: u32) {
-        let (next, prev) = self.links(off);
+        let links = self.links(off);
+        let (next, prev) = (links.next.get(), links.prev.get());
         match prev {
-            NONE => self.free_head = if next == NONE { None } else { Some(next) },
-            p => self.wr(p as usize + HEADER_SIZE, next),
+            None => self.free_head = next,
+            Some(prev) => self.set_next(prev, next),
         }
-        if next != NONE {
-            self.wr(next as usize + HEADER_SIZE + 4, prev);
+        if let Some(next) = next {
+            self.set_prev(next, prev);
         }
     }
 
     /// Push the free block at `off` to the front of the free list.
     fn push_free(&mut self, off: u32) {
-        let old = self.free_head.unwrap_or(NONE);
-        self.link(off, old, NONE);
-        if old != NONE {
-            self.wr(old as usize + HEADER_SIZE + 4, off);
+        let old = self.free_head;
+        self.set_links(off, FreeLinks::new(old, None));
+        if let Some(old) = old {
+            self.set_prev(old, Some(off));
         }
         self.free_head = Some(off);
     }
@@ -143,37 +240,32 @@ impl KernelHeap {
         assert!(layout.align() <= 8, "kernel heap aligns to at most 8 bytes");
         let size = layout.size().max(MIN_PAYLOAD).next_multiple_of(8) as u32;
 
-        // First fit, tracking the previous block for unlinking.
-        let mut prev = NONE;
-        let mut cur = self.free_head.unwrap_or(NONE);
-        while cur != NONE {
-            let payload = self.size(cur);
-            if payload >= size {
-                break;
+        // First fit.
+        let mut cursor = self.free_head;
+        let cur = loop {
+            let cur = cursor?;
+            if self.size(cur) >= size {
+                break cur;
             }
-            prev = cur;
-            cur = self.links(cur).0;
-        }
-        if cur == NONE {
-            return None;
-        }
+            cursor = self.links(cur).next.get();
+        };
 
         let payload = self.size(cur);
         let remainder = payload - size;
         if remainder >= MIN_SPLIT as u32 {
             // Split: the allocated block takes the front, the remainder stays in the free list in
             // the same position.
-            let rest = cur + (HEADER_SIZE + FOOTER_SIZE) as u32 + size;
-            let rest_payload = payload - size - (HEADER_SIZE + FOOTER_SIZE) as u32;
-            let (next, prev_l) = self.links(cur);
+            let rest = cur + OVERHEAD + size;
+            let rest_payload = payload - size - OVERHEAD;
+            let links = self.links(cur);
             self.write_block(rest, rest_payload, true);
-            self.link(rest, next, prev_l);
-            if next != NONE {
-                self.wr(next as usize + HEADER_SIZE + 4, rest);
+            self.set_links(rest, links);
+            if let Some(next) = links.next.get() {
+                self.set_prev(next, Some(rest));
             }
-            match prev_l {
-                NONE => self.free_head = Some(rest),
-                p => self.wr(p as usize + HEADER_SIZE, rest),
+            match links.prev.get() {
+                None => self.free_head = Some(rest),
+                Some(prev) => self.set_next(prev, Some(rest)),
             }
             self.write_block(cur, size, false);
         } else {
@@ -182,11 +274,10 @@ impl KernelHeap {
             self.write_block(cur, payload, false);
         }
 
-        // SAFETY: the payload lies inside the pool and is 8-byte aligned (block starts and sizes
-        // are multiples of 8).
-        Some(unsafe {
-            NonNull::new_unchecked(self.pool.as_mut_ptr().add(cur as usize + HEADER_SIZE))
-        })
+        // The payload lies inside the pool and is 8-byte aligned (block starts and sizes are
+        // multiples of 8).
+        let at = self.base.as_ptr().wrapping_add(cur as usize + HEADER_SIZE);
+        Some(NonNull::new(at).expect("a pool address is never null"))
     }
 
     /// Free an allocation returned by [`KernelHeap::alloc`].
@@ -194,10 +285,10 @@ impl KernelHeap {
     /// Merges with the adjacent blocks when they are free. Panics on a pointer that is not a live
     /// allocation head.
     pub fn dealloc(&mut self, ptr: NonNull<u8>) {
-        let base = self.pool.as_ptr() as usize;
-        let payload = ptr.as_ptr() as usize;
+        let base = self.base.as_ptr().addr();
+        let payload = ptr.as_ptr().addr();
         assert!(
-            payload >= base + HEADER_SIZE && payload + FOOTER_SIZE <= base + self.pool.len(),
+            payload >= base + HEADER_SIZE && payload + FOOTER_SIZE <= base + self.len,
             "pointer is outside the heap pool"
         );
         let off = (payload - base - HEADER_SIZE) as u32;
@@ -207,21 +298,21 @@ impl KernelHeap {
 
         // Merge with the next block when it is free.
         let next_off = self.next_block(off, payload_size);
-        if (next_off as usize) + HEADER_SIZE <= self.pool.len() && self.is_free(next_off) {
+        if (next_off as usize) + HEADER_SIZE <= self.len && self.is_free(next_off) {
             let next_size = self.size(next_off);
             self.unlink(next_off);
-            payload_size += (HEADER_SIZE + FOOTER_SIZE) as u32 + next_size;
+            payload_size += OVERHEAD + next_size;
         }
 
         // Merge with the previous block when it is free (the footer right before our header carries
         // its payload size).
         let mut off = off;
         if off > 0 {
-            let prev_size = self.rd(off as usize - FOOTER_SIZE);
-            let prev_off = off - (HEADER_SIZE + FOOTER_SIZE) as u32 - prev_size;
+            let prev_size = self.read::<Tag>(off as usize - FOOTER_SIZE).size;
+            let prev_off = off - OVERHEAD - prev_size;
             if self.is_free(prev_off) {
                 self.unlink(prev_off);
-                payload_size += (HEADER_SIZE + FOOTER_SIZE) as u32 + prev_size;
+                payload_size += OVERHEAD + prev_size;
                 off = prev_off;
             }
         }
@@ -237,23 +328,24 @@ impl KernelHeap {
     ///
     /// Walks the whole block chain and checks: headers and footers agree, the chain exactly covers
     /// the pool, every free block is on the free list exactly once, and the list links are mutual.
+    #[cfg(test)]
     pub fn audit(&self) -> Result<(), HeapError> {
         // The block chain must tile the pool exactly.
         let mut off = 0usize;
         let mut free_blocks = 0usize;
-        while off < self.pool.len() {
-            if off + HEADER_SIZE > self.pool.len() {
+        while off < self.len {
+            if off + HEADER_SIZE > self.len {
                 return Err(HeapError::BlockOutsidePool);
             }
-            let payload = self.rd(off) as usize;
+            let payload = self.read::<Tag>(off).size as usize;
             if !payload.is_multiple_of(8) || payload < MIN_PAYLOAD {
                 return Err(HeapError::BadSize);
             }
             let end = off + HEADER_SIZE + payload + FOOTER_SIZE;
-            if end > self.pool.len() {
+            if end > self.len {
                 return Err(HeapError::BlockOutsidePool);
             }
-            if self.rd(off + HEADER_SIZE + payload) != payload as u32 {
+            if self.read::<Tag>(off + HEADER_SIZE + payload).size != payload as u32 {
                 return Err(HeapError::HeaderFooterMismatch);
             }
             if self.is_free(off as u32) {
@@ -261,29 +353,29 @@ impl KernelHeap {
             }
             off = end;
         }
-        if off != self.pool.len() {
+        if off != self.len {
             return Err(HeapError::ChainDoesNotCoverPool);
         }
 
         // The free list holds exactly the free blocks, once each, with mutual links.
-        let mut cur = self.free_head.unwrap_or(NONE);
-        let mut prev = NONE;
+        let mut cur = self.free_head;
+        let mut prev = None;
         let mut listed = 0usize;
-        while cur != NONE {
-            if cur as usize + HEADER_SIZE + MIN_PAYLOAD > self.pool.len() {
+        while let Some(at) = cur {
+            if !at.is_multiple_of(8) || at as usize + HEADER_SIZE + MIN_PAYLOAD > self.len {
                 return Err(HeapError::BadLink);
             }
-            if !self.is_free(cur) {
+            if !self.is_free(at) {
                 return Err(HeapError::ListedNotFree);
             }
-            let (next, prev_l) = self.links(cur);
-            if prev_l != prev {
+            let links = self.links(at);
+            if links.prev.get() != prev {
                 return Err(HeapError::BadLink);
             }
-            prev = cur;
-            cur = next;
+            prev = Some(at);
+            cur = links.next.get();
             listed += 1;
-            if listed > self.pool.len() {
+            if listed > self.len {
                 return Err(HeapError::ListDoesNotTerminate);
             }
         }
@@ -295,6 +387,7 @@ impl KernelHeap {
 }
 
 /// Ways the heap can be internally inconsistent; reported by [`KernelHeap::audit`].
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HeapError {
     /// A block header or footer lies outside the pool.
@@ -338,6 +431,13 @@ mod tests {
         assert!(heap.free_head.is_some());
     }
 
+    /// The records are the words the block layout names: two words of tag, two words of links.
+    #[test]
+    fn the_records_are_two_words_each() {
+        assert_eq!((HEADER_SIZE, FOOTER_SIZE, MIN_PAYLOAD), (8, 8, 8));
+        assert_eq!(MIN_SPLIT, 24);
+    }
+
     #[test]
     fn allocations_are_distinct_and_aligned() {
         let mut heap = heap();
@@ -349,6 +449,27 @@ mod tests {
         for p in [a, b, c] {
             assert_eq!(p.as_ptr() as usize % 8, 0);
         }
+        assert_eq!(heap.audit(), Ok(()));
+    }
+
+    /// The payloads are the callers': writing all of one leaves the heap's own records, and the
+    /// neighbours' payloads, intact.
+    #[test]
+    fn a_full_payload_write_leaves_the_heap_intact() {
+        let mut heap = heap();
+        let a = alloc(&mut heap, 40);
+        let b = alloc(&mut heap, 40);
+        // SAFETY: each pointer is a live 40-byte allocation of this heap.
+        unsafe {
+            core::ptr::write_bytes(b.as_ptr(), 0xBB, 40);
+            core::ptr::write_bytes(a.as_ptr(), 0xAA, 40);
+        }
+        assert_eq!(heap.audit(), Ok(()));
+        // SAFETY: as above, read back after the heap's audit.
+        let b_bytes = unsafe { b.as_ptr().cast::<[u8; 40]>().read() };
+        assert!(b_bytes.iter().all(|&byte| byte == 0xBB));
+        heap.dealloc(a);
+        heap.dealloc(b);
         assert_eq!(heap.audit(), Ok(()));
     }
 
@@ -438,11 +559,11 @@ mod tests {
     fn audit_detects_corruption() {
         let mut heap = heap();
         let a = alloc(&mut heap, 16);
-        let off = a.as_ptr() as usize - heap.pool.as_ptr() as usize - HEADER_SIZE;
-        // Corrupt the payload size in header and footer.
-        heap.wr(off, 24);
+        let off = a.as_ptr() as usize - heap.base.as_ptr() as usize - HEADER_SIZE;
+        // Corrupt the payload size in the header.
+        heap.write(off, Tag { size: 24, free: 0 });
         assert_ne!(heap.audit(), Ok(()));
-        heap.wr(off, 16);
+        heap.write(off, Tag { size: 16, free: 0 });
         assert_eq!(heap.audit(), Ok(()));
         heap.dealloc(a);
     }

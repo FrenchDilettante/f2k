@@ -7,6 +7,12 @@
 //! by a raw pointer: the generation moves on when the object is deleted, so an id that outlived its
 //! object resolves to nothing instead of to whatever reused the record.
 //!
+//! The dispatcher objects — events, semaphores, mutexes, waitable timers, threads, and the
+//! waitable side of processes — keep only their headers here: their bodies are records of the
+//! dispatcher database ([`crate::sched::database`]), at the same index, as Windows 2000 keeps a
+//! dispatcher object's DISPATCHER_HEADER and type fields apart from its object header. The typed
+//! accessors check the header and hand out the body.
+//!
 //! Each object carries two counts. The pointer count is every
 //! reference: the creator's while it builds the object, each handle's, each wait's (a waiting
 //! thread holds its objects for the wait's whole life, replays after an APC included), a thread's
@@ -33,11 +39,19 @@ use core::mem::MaybeUninit;
 
 use crate::sched::dispatcher::Dispatcher;
 use crate::sched::event::{Event, EventKind};
-use crate::sched::mutex::Mutex;
+use crate::sched::mutex::{Mutex, MutexId};
+pub use crate::sched::process::ProcessObject;
 use crate::sched::semaphore::Semaphore;
-use crate::sched::thread::Thread;
+use crate::sched::thread::{Thread, ThreadId};
+use crate::sched::timer::TimerId;
 use crate::sched::wait::{Waitable, MAXIMUM_WAIT_OBJECTS};
 use crate::sched::waitable_timer::WaitableTimer;
+
+/// The dispatcher database, where the dispatcher objects' bodies live: the kernel's one dispatcher
+/// (on the host, the test thread's).
+fn bodies() -> &'static mut Dispatcher {
+    crate::sched::idle::dispatcher()
+}
 
 /// The kinds of objects a handle can name.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -175,7 +189,8 @@ impl Header {
 }
 
 /// A fixed pool of records of one kind, each behind its header. Records stay at their addresses for
-/// the kernel's life (waitable headers carry intrusive list links).
+/// the kernel's life (a file object's lock event is named by its address). The dispatcher objects'
+/// pools hold headers alone (`T` is `()`): their bodies are the dispatcher database's.
 pub struct Pool<T, const N: usize> {
     headers: [Header; N],
     records: [T; N],
@@ -228,38 +243,14 @@ impl<T, const N: usize> Pool<T, N> {
         (header.live && header.generation == generation).then(|| &mut self.records[index as usize])
     }
 
-    /// The index of the record at `pointer`, if the pool holds it.
-    fn index_of(&self, pointer: *const T) -> Option<u16> {
-        let base = self.records.as_ptr() as usize;
-        let at = pointer as usize;
-        let size = core::mem::size_of::<T>();
-        (at >= base && at < base + N * size && (at - base) % size == 0)
-            .then(|| ((at - base) / size) as u16)
+    /// Whether the record at `index` holds a live object.
+    fn is_live_at(&self, index: u16) -> bool {
+        self.headers[index as usize].live
     }
 
     /// How many records hold a live object.
     fn live(&self) -> usize {
         self.headers.iter().filter(|header| header.live).count()
-    }
-}
-
-/// A process object's body: what a wait on the process, or a handle to it, reaches. The process
-/// record itself is the process pool's record at the same index; it is reused once the object is
-/// deleted (the process holds its own reference from its creation to the end of its teardown).
-pub struct ProcessObject {
-    /// Signaled when the process has ended (no thread of the process outlives that, so its own
-    /// threads only ever see it unsignaled).
-    pub waitable: Waitable,
-    /// The process's exit code: STILL_ACTIVE until it ends.
-    pub exit_status: u32,
-}
-
-impl ProcessObject {
-    const fn new() -> Self {
-        ProcessObject {
-            waitable: Waitable::new(crate::sched::wait::WaitKind::NotificationEvent, 0),
-            exit_status: STILL_ACTIVE,
-        }
     }
 }
 
@@ -468,14 +459,15 @@ impl WaitReferences {
     }
 }
 
-/// Every object, by kind, with the namespace and the waits' references.
+/// Every object, by kind, with the namespace and the waits' references. The dispatcher objects'
+/// pools are their headers alone: the bodies are the dispatcher database's, at the same index.
 pub struct Directory {
-    pub events: Pool<Event, EVENTS>,
-    pub semaphores: Pool<Semaphore, SEMAPHORES>,
-    pub mutexes: Pool<Mutex, MUTEXES>,
-    pub timers: Pool<WaitableTimer, TIMERS>,
-    pub threads: Pool<Thread, THREADS>,
-    pub processes: Pool<ProcessObject, PROCESSES>,
+    events: Pool<(), EVENTS>,
+    semaphores: Pool<(), SEMAPHORES>,
+    mutexes: Pool<(), MUTEXES>,
+    timers: Pool<(), TIMERS>,
+    threads: Pool<(), THREADS>,
+    processes: Pool<(), PROCESSES>,
     pub sections: Pool<SectionObject, SECTIONS>,
     pub segments: Pool<ImageSegment, SEGMENTS>,
     pub files: Pool<crate::fs::file::FileObject, FILES>,
@@ -498,16 +490,12 @@ impl Directory {
         use core::ptr::addr_of_mut;
         // SAFETY: the caller's contract; every field is written.
         unsafe {
-            Pool::write_empty(addr_of_mut!((*directory).events), || {
-                Event::new(EventKind::Notification, false)
-            });
-            Pool::write_empty(addr_of_mut!((*directory).semaphores), || Semaphore::new(0));
-            Pool::write_empty(addr_of_mut!((*directory).mutexes), Mutex::new);
-            Pool::write_empty(addr_of_mut!((*directory).timers), || {
-                WaitableTimer::new(true)
-            });
-            Pool::write_empty(addr_of_mut!((*directory).threads), Thread::empty);
-            Pool::write_empty(addr_of_mut!((*directory).processes), ProcessObject::new);
+            Pool::write_empty(addr_of_mut!((*directory).events), || ());
+            Pool::write_empty(addr_of_mut!((*directory).semaphores), || ());
+            Pool::write_empty(addr_of_mut!((*directory).mutexes), || ());
+            Pool::write_empty(addr_of_mut!((*directory).timers), || ());
+            Pool::write_empty(addr_of_mut!((*directory).threads), || ());
+            Pool::write_empty(addr_of_mut!((*directory).processes), || ());
             Pool::write_empty(addr_of_mut!((*directory).sections), SectionObject::none);
             Pool::write_empty(addr_of_mut!((*directory).segments), ImageSegment::none);
             Pool::write_empty(addr_of_mut!((*directory).files), || {
@@ -595,45 +583,51 @@ impl Directory {
     /// is exhausted.
     pub fn create_event(&mut self, kind: EventKind, signaled: bool) -> Option<ObjectId> {
         let index = self.events.allocate_in(0..EVENTS)?;
-        let event = self.events.record(index);
-        *event = Event::new(kind, signaled);
-        event.init();
+        bodies().renew_event(index, kind, signaled);
         Some(self.id(ObjectType::Event, index))
     }
 
     /// A fresh semaphore at `initial` with ceiling `limit`.
     pub fn create_semaphore(&mut self, initial: i32, limit: i32) -> Option<ObjectId> {
         let index = self.semaphores.allocate_in(0..SEMAPHORES)?;
-        let semaphore = self.semaphores.record(index);
-        *semaphore = Semaphore::new(limit);
-        semaphore.init();
-        semaphore.waitable.signal_state = initial;
+        bodies().renew_semaphore(index, initial, limit);
         Some(self.id(ObjectType::Semaphore, index))
     }
 
     /// A fresh, free mutex.
     pub fn create_mutex(&mut self) -> Option<ObjectId> {
         let index = self.mutexes.allocate_in(0..MUTEXES)?;
-        let mutex = self.mutexes.record(index);
-        *mutex = Mutex::new();
-        mutex.init();
+        bodies().renew_mutex(index);
         Some(self.id(ObjectType::Mutex, index))
     }
 
     /// A fresh, unarmed, unsignaled waitable timer.
     pub fn create_timer(&mut self, manual_reset: bool) -> Option<ObjectId> {
         let index = self.timers.allocate_in(0..TIMERS)?;
-        let timer = self.timers.record(index);
-        *timer = WaitableTimer::new(manual_reset);
-        timer.init();
+        bodies().renew_waitable_timer(index, manual_reset);
         Some(self.id(ObjectType::Timer, index))
     }
 
     /// A thread record for a new thread object, in `range`. The record is returned as it was left;
-    /// the caller renews it. Holds the thread's own reference, released when the thread ends.
+    /// the caller renews it ([`Directory::renew_thread`]). Holds the thread's own reference,
+    /// released when the thread ends.
     pub fn create_thread_in(&mut self, range: core::ops::Range<usize>) -> Option<ObjectId> {
         let index = self.threads.allocate_in(range)?;
         Some(self.id(ObjectType::Thread, index))
+    }
+
+    /// The record of the thread object `id`, started over as fresh as the pool made it: a created
+    /// thread's, before its attach.
+    ///
+    /// # Panics
+    ///
+    /// `id` names no live thread object.
+    pub fn renew_thread(&mut self, id: ObjectId) -> &mut Thread {
+        assert!(
+            id.kind == ObjectType::Thread && self.is_live(id),
+            "a renewed thread record is a live thread object's"
+        );
+        bodies().renew_thread(ThreadId(id.index))
     }
 
     /// A thread record for a new thread object of any process, main thread or created: the lowest
@@ -647,9 +641,7 @@ impl Directory {
     /// reference; none when every process record is in use. Its index is the process record's.
     pub fn create_process(&mut self) -> Option<ObjectId> {
         let index = self.processes.allocate_in(0..PROCESSES)?;
-        let process = self.processes.record(index);
-        *process = ProcessObject::new();
-        process.waitable.init();
+        bodies().renew_process_object(index);
         Some(self.id(ObjectType::Process, index))
     }
 
@@ -769,34 +761,39 @@ impl Directory {
 
     // --- Typed access ------------------------------------------------------------------------
 
+    /// The live header of `id` among a kind's headers, when `id` is of `kind`.
+    fn body_index(&mut self, id: ObjectId, kind: ObjectType) -> Option<u16> {
+        (id.kind == kind && self.is_live(id)).then_some(id.index)
+    }
+
     pub fn event(&mut self, id: ObjectId) -> Option<&mut Event> {
-        (id.kind == ObjectType::Event).then_some(())?;
-        self.events.get(id.index, id.generation)
+        let index = self.body_index(id, ObjectType::Event)?;
+        Some(bodies().event_mut(index))
     }
 
     pub fn semaphore(&mut self, id: ObjectId) -> Option<&mut Semaphore> {
-        (id.kind == ObjectType::Semaphore).then_some(())?;
-        self.semaphores.get(id.index, id.generation)
+        let index = self.body_index(id, ObjectType::Semaphore)?;
+        Some(bodies().semaphore_mut(index))
     }
 
     pub fn mutex(&mut self, id: ObjectId) -> Option<&mut Mutex> {
-        (id.kind == ObjectType::Mutex).then_some(())?;
-        self.mutexes.get(id.index, id.generation)
+        let index = self.body_index(id, ObjectType::Mutex)?;
+        Some(bodies().mutex_mut(MutexId(index)))
     }
 
     pub fn timer(&mut self, id: ObjectId) -> Option<&mut WaitableTimer> {
-        (id.kind == ObjectType::Timer).then_some(())?;
-        self.timers.get(id.index, id.generation)
+        let index = self.body_index(id, ObjectType::Timer)?;
+        Some(bodies().waitable_timer_mut(index))
     }
 
     pub fn thread(&mut self, id: ObjectId) -> Option<&mut Thread> {
-        (id.kind == ObjectType::Thread).then_some(())?;
-        self.threads.get(id.index, id.generation)
+        let index = self.body_index(id, ObjectType::Thread)?;
+        Some(bodies().thread_mut(ThreadId(index)))
     }
 
     pub fn process(&mut self, id: ObjectId) -> Option<&mut ProcessObject> {
-        (id.kind == ObjectType::Process).then_some(())?;
-        self.processes.get(id.index, id.generation)
+        let index = self.body_index(id, ObjectType::Process)?;
+        Some(bodies().process_object_mut(index))
     }
 
     pub fn section(&mut self, id: ObjectId) -> Option<&mut SectionObject> {
@@ -838,14 +835,14 @@ impl Directory {
         exit_status: u32,
         dispatcher: &mut Dispatcher,
     ) {
-        let Some(process) = self.process(id) else {
+        let Some(index) = self.body_index(id, ObjectType::Process) else {
             return;
         };
+        let process = dispatcher.process_object_mut(index);
         process.exit_status = exit_status;
         process.waitable.signal_state = 1;
-        let waitable = core::ptr::addr_of_mut!(process.waitable);
-        // SAFETY: the waitable is the live process object's, initialized at its creation.
-        if !unsafe { (*waitable).waiters.is_empty() } {
+        if process.waitable.has_waiters() {
+            let waitable = process.waitable.id();
             dispatcher.satisfy_waiters(waitable, 0);
         }
     }
@@ -862,7 +859,7 @@ impl Directory {
             ObjectType::Thread => self.thread(id).map(Thread::waitable),
             ObjectType::Process => self
                 .process(id)
-                .map(|process| core::ptr::addr_of_mut!(process.waitable)),
+                .map(|process| &mut process.waitable as *mut Waitable),
             ObjectType::Section
             | ObjectType::File
             | ObjectType::Directory
@@ -872,11 +869,13 @@ impl Directory {
         }
     }
 
-    /// The thread object whose record is at `thread`; none for a record outside the pool (the idle
-    /// thread's) or one holding no live object.
-    pub fn thread_id_of(&mut self, thread: *const Thread) -> Option<ObjectId> {
-        let index = self.threads.index_of(thread)?;
-        let id = self.id(ObjectType::Thread, index);
+    /// The thread object whose record is `thread`; none for the idle thread's record (no object
+    /// names it) or one holding no live object.
+    pub fn thread_object(&mut self, thread: ThreadId) -> Option<ObjectId> {
+        if thread.index() as usize >= THREADS {
+            return None;
+        }
+        let id = self.id(ObjectType::Thread, thread.index());
         self.is_live(id).then_some(id)
     }
 
@@ -995,13 +994,12 @@ impl Directory {
         let followup = match id.kind {
             ObjectType::Timer => {
                 // Nothing may expire or queue an APC for a timer no one can reach.
-                let timer = self.timers.record(id.index);
-                dispatcher.cancel_waitable_timer(timer);
+                dispatcher.cancel_timer(TimerId::Waitable(id.index));
                 None
             }
             ObjectType::Mutex => {
                 // An owned mutex leaves its owner's list (the owner's end has nothing to abandon).
-                dispatcher.forget_mutex(self.mutexes.record(id.index));
+                dispatcher.forget_mutex(MutexId(id.index));
                 None
             }
             ObjectType::Section => {
@@ -1112,12 +1110,12 @@ impl Directory {
 
     /// Cancel every live timer whose completion APC targets `thread` (it is ending: nothing may
     /// queue to it any more).
-    pub fn run_down_timers(&mut self, dispatcher: &mut Dispatcher, thread: *mut Thread) {
-        for index in 0..self.timers.used {
-            if self.timers.headers[index].live
-                && core::ptr::eq(self.timers.records[index].apc_thread(), thread)
+    pub fn run_down_timers(&mut self, dispatcher: &mut Dispatcher, thread: ThreadId) {
+        for index in 0..self.timers.used as u16 {
+            if self.timers.is_live_at(index)
+                && dispatcher.waitable_timer_mut(index).apc_thread() == Some(thread)
             {
-                dispatcher.cancel_waitable_timer(&mut self.timers.records[index]);
+                dispatcher.cancel_timer(TimerId::Waitable(index));
             }
         }
     }
@@ -1130,11 +1128,13 @@ impl Directory {
     /// still lives (another process holds a handle to the thread) stays as it ended: its object is
     /// still waitable and its exit code still readable.
     pub fn process_ended(&mut self, owner: *const crate::sched::process::SchedProcess) {
-        for index in 0..THREADS {
-            let left = !self.threads.headers[index].live
-                && core::ptr::eq(self.threads.records[index].process, owner);
+        let dispatcher = bodies();
+        for index in 0..THREADS as u16 {
+            let thread = ThreadId(index);
+            let left = !self.threads.is_live_at(index)
+                && core::ptr::eq(dispatcher.thread(thread).process, owner);
             if left {
-                self.threads.records[index] = Thread::empty();
+                dispatcher.renew_thread(thread);
             }
         }
     }
@@ -1185,9 +1185,9 @@ impl Directory {
                 leaked += 1;
             }
         }
-        for index in 0..THREADS {
-            *self.threads.record(index as u16) = Thread::empty();
-            self.waits[index] = WaitReferences::none();
+        for (index, waits) in self.waits.iter_mut().enumerate() {
+            dispatcher.renew_thread(ThreadId(index as u16));
+            *waits = WaitReferences::none();
         }
         for entry in self.names.iter_mut() {
             *entry = NameEntry::free();
@@ -1375,6 +1375,21 @@ impl<T: 'static> core::ops::DerefMut for Referenced<T> {
     }
 }
 
+/// A referenced thread names its record: the scheduler's entry points take it as the record.
+#[cfg(target_arch = "x86")]
+impl From<&Referenced<Thread>> for ThreadId {
+    fn from(thread: &Referenced<Thread>) -> Self {
+        Thread::id(thread)
+    }
+}
+
+#[cfg(target_arch = "x86")]
+impl From<&mut Referenced<Thread>> for ThreadId {
+    fn from(thread: &mut Referenced<Thread>) -> Self {
+        Thread::id(thread)
+    }
+}
+
 /// Take a reference on `id` for the caller's scope; none when it names nothing.
 #[cfg(target_arch = "x86")]
 pub fn reference(id: ObjectId) -> Option<ObRef> {
@@ -1452,7 +1467,7 @@ pub fn open(
 /// service is).
 #[cfg(target_arch = "x86")]
 pub fn current_thread() -> Option<ObjectId> {
-    directory().thread_id_of(crate::sched::idle::dispatcher().current_thread())
+    directory().thread_object(crate::sched::idle::dispatcher().current()?)
 }
 
 /// The running thread's record index in the thread pool.
@@ -1485,8 +1500,8 @@ fn release_wait(index: u16) {
 /// A thread has ended (its record is Terminated): its wait's references, if it ended inside one,
 /// and the thread's own reference on its object go. Its record is free once nothing else holds it.
 #[cfg(target_arch = "x86")]
-pub fn end_thread_references(thread: *const Thread) {
-    let Some(id) = directory().thread_id_of(thread) else {
+pub fn end_thread_references(thread: ThreadId) {
+    let Some(id) = directory().thread_object(thread) else {
         return;
     };
     release_wait(id.index);
@@ -1499,10 +1514,14 @@ mod tests {
     //! kinds' teardowns, over a directory of the tests' own.
 
     use super::*;
+    use crate::sched::testkit::record;
 
     // The rig: leaked records at their final addresses, as the scheduler's test modules build them.
+    // A directory comes with a fresh dispatcher of its own, which holds its dispatcher objects'
+    // bodies.
 
     fn directory() -> &'static mut Directory {
+        crate::sched::testkit::dispatcher();
         let mut directory = Box::<Directory>::new_uninit();
         // SAFETY: the box is valid, aligned and the records' final address once leaked.
         unsafe { Directory::write_empty(directory.as_mut_ptr()) };
@@ -1510,22 +1529,17 @@ mod tests {
         Box::leak(unsafe { directory.assume_init() })
     }
 
+    /// The dispatcher of the newest directory.
     fn dispatcher() -> &'static mut Dispatcher {
-        let d = Box::leak(Box::new(Dispatcher::zeroed()));
-        d.init();
-        d
+        crate::sched::testkit::installed()
     }
 
-    fn thread() -> &'static mut Thread {
+    fn thread() -> crate::sched::testkit::Rec<Thread> {
         let process = Box::leak(Box::new(crate::sched::process::SchedProcess::new(
             0x0090_0000,
             8,
         )));
-        process.init();
-        let thread = Box::leak(Box::new(Thread::empty()));
-        // SAFETY: both are leaked at their final addresses.
-        unsafe { thread.attach_to(process) };
-        thread
+        crate::sched::testkit::thread(process)
     }
 
     /// Close a handle to `id`, collecting what the caller must finish.
@@ -1731,7 +1745,9 @@ mod tests {
             "the wait's return released the last reference"
         );
         assert!(
-            !directory.timers.record(timer.index).armed(),
+            !crate::sched::idle::dispatcher()
+                .waitable_timer_mut(timer.index)
+                .armed(),
             "deletion cancelled it"
         );
     }
@@ -1745,7 +1761,9 @@ mod tests {
         dispatcher.set_waitable_timer(directory.timer(leaked).unwrap(), 1_000_000, 0, 0, false, 0);
         assert_eq!(directory.sweep(dispatcher, |_| {}), 1);
         assert!(
-            !directory.timers.record(leaked.index).armed(),
+            !crate::sched::idle::dispatcher()
+                .waitable_timer_mut(leaked.index)
+                .armed(),
             "the leaked timer left the table"
         );
     }
@@ -1814,16 +1832,16 @@ mod tests {
         }
         assert_eq!(created.len(), THREADS - 1);
         let last = *created.last().unwrap();
-        let record: *const Thread = directory.threads.record(last.index);
-        assert_eq!(directory.thread_id_of(record), Some(last));
+        let record = ThreadId(last.index);
+        assert_eq!(directory.thread_object(record), Some(last));
         assert_eq!(
-            directory.thread_id_of(core::ptr::null()),
+            directory.thread_object(crate::sched::database::IDLE_THREAD),
             None,
-            "not a pool record"
+            "the idle thread's record names no object"
         );
         // A thread's own reference released: its record is free again.
         assert_eq!(directory.dereference(last, dispatcher), None);
-        assert_eq!(directory.thread_id_of(record), None);
+        assert_eq!(directory.thread_object(record), None);
         assert_eq!(
             directory.create_thread_in(1..THREADS).map(|id| id.index),
             Some(last.index)
@@ -1841,8 +1859,7 @@ mod tests {
         // A's main thread, B's main thread, then a created thread of A's: records 0, 1, 2.
         let threads = [(a, 8), (b, 16), (a, 20)].map(|(owner, client_id)| {
             let id = directory.create_thread().unwrap();
-            let record = directory.threads.record(id.index);
-            *record = Thread::empty();
+            let record = directory.renew_thread(id);
             record.process = owner;
             record.thread_id = client_id;
             id
@@ -1872,14 +1889,14 @@ mod tests {
     fn a_deleted_owned_mutex_leaves_its_owner() {
         let directory = directory();
         let dispatcher = dispatcher();
-        let owner = thread();
+        let mut owner = thread();
         let id = directory.create_mutex().unwrap();
-        crate::sched::mutex::acquire(directory.mutex(id).unwrap(), owner);
+        crate::sched::mutex::acquire(directory.mutex(id).unwrap(), &mut owner);
         assert!(!owner.owned_mutexes.is_empty());
         assert!(directory.waitable(id).is_some(), "a mutex is waitable");
         assert_eq!(directory.dereference(id, dispatcher), None);
         assert!(owner.owned_mutexes.is_empty(), "the deletion unlinked it");
-        dispatcher.abandon_mutexes(owner);
+        dispatcher.abandon_mutexes(owner.id());
     }
 
     /// `\BaseNamedObjects` is made once, at its first need, and is permanent: no sweep
@@ -1938,13 +1955,13 @@ mod tests {
             .unwrap();
         directory.bind_name(b"left", leaked).unwrap();
         let main = directory.create_thread_in(0..1).unwrap();
-        directory.threads.record(main.index).teb_va = 0x7FFD_E000;
+        record(ThreadId(main.index)).teb_va = 0x7FFD_E000;
         assert_eq!(directory.sweep(dispatcher, |_| {}), 2);
         assert_eq!(directory.live_objects(), 0);
         assert!(!directory.is_live(leaked));
         assert_eq!(directory.lookup_name(b"left"), None);
         assert_eq!(
-            directory.threads.record(main.index).teb_va(),
+            record(ThreadId(main.index)).teb_va(),
             0,
             "records start over"
         );
@@ -1953,7 +1970,6 @@ mod tests {
     /// A process for the two-process tests: its scheduling record at its final address.
     fn sched_process(dir: u32) -> &'static mut crate::sched::process::SchedProcess {
         let process = Box::leak(Box::new(crate::sched::process::SchedProcess::new(dir, 8)));
-        process.init();
         process
     }
 
@@ -1965,11 +1981,9 @@ mod tests {
         teb: u32,
     ) -> ObjectId {
         let id = directory.create_thread_in(range).unwrap();
-        let record = directory.threads.record(id.index);
-        *record = Thread::empty();
-        // SAFETY: the record is the leaked directory's, the process leaked: both final.
-        unsafe { record.attach_to(process) };
-        record.teb_va = teb;
+        directory.renew_thread(id).teb_va = teb;
+        // SAFETY: the process is leaked at its final address.
+        unsafe { dispatcher().attach(ThreadId(id.index), process) };
         id
     }
 
@@ -2007,20 +2021,20 @@ mod tests {
         assert!(!directory.is_live(a_event), "its own went with its handle");
         assert_eq!(directory.lookup_name(b"F2K.a"), None);
         for id in [a_main, a_child] {
-            let record = directory.threads.record(id.index);
-            assert!(record.process.is_null() && record.teb_va() == 0, "reset");
+            let ended = record(ThreadId(id.index));
+            assert!(ended.process.is_null() && ended.teb_va() == 0, "reset");
         }
         assert_eq!(directory.counts(b_semaphore), Some((1, 1)), "the other's");
         assert_eq!(directory.lookup_name(b"F2K.b"), Some(b_semaphore));
         assert!(directory.is_live(b_thread));
-        let record = directory.threads.record(b_thread.index);
-        assert!(core::ptr::eq(record.process, b) && record.teb_va() == 0x7FFD_C000);
+        let b_record = record(ThreadId(b_thread.index));
+        assert!(core::ptr::eq(b_record.process, b) && b_record.teb_va() == 0x7FFD_C000);
 
         // The second ends: quiescence, and nothing leaked.
         assert_eq!(closed(directory, b_semaphore, dispatcher), vec![]);
         assert_eq!(directory.dereference(b_thread, dispatcher), None);
         directory.process_ended(b);
-        assert_eq!(directory.threads.record(b_thread.index).teb_va(), 0);
+        assert_eq!(record(ThreadId(b_thread.index)).teb_va(), 0);
         assert_eq!(directory.sweep(dispatcher, |_| {}), 0);
         assert_eq!(directory.live_objects(), 0);
     }
@@ -2053,7 +2067,7 @@ mod tests {
         );
         assert!(directory.is_live(a_main));
         assert_eq!(
-            directory.threads.record(a_main.index).teb_va(),
+            record(ThreadId(a_main.index)).teb_va(),
             0x7FFD_E000,
             "a held thread's record stays as it ended"
         );
@@ -2066,7 +2080,7 @@ mod tests {
             "the event and the thread"
         );
         assert_eq!(directory.live_objects(), 0);
-        assert_eq!(directory.threads.record(a_main.index).teb_va(), 0);
+        assert_eq!(record(ThreadId(a_main.index)).teb_va(), 0);
     }
 
     /// One namespace for every kind and both session prefixes: `Global\` and `Local\` name the same

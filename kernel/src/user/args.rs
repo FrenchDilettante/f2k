@@ -11,7 +11,9 @@
 
 use core::marker::PhantomData;
 
-use crate::user::syscall::{read_user, write_user};
+use rtl::pod::Pod;
+
+use crate::user::syscall::{probe_user_range, read_user, write_user};
 
 /// The process a service is serving: the caller's, borrowed for as long as the service holds it
 /// (the one place the services take it from).
@@ -63,36 +65,39 @@ impl UserAddr {
     pub fn write(self, bytes: &[u8]) -> Result<(), Fault> {
         write_user(self.0, bytes).map_err(|_| Fault)
     }
-}
 
-/// A value a typed pointer can carry: plain little-endian bytes.
-pub trait Plain: Copy {
-    /// Its size in bytes.
-    const SIZE: usize;
-    /// Its bytes, into `out` (`SIZE` long).
-    fn encode(self, out: &mut [u8]);
-    /// It, from `bytes` (`SIZE` long).
-    fn decode(bytes: &[u8]) -> Self;
-}
+    /// Check that the `length` bytes from it are the caller's to write, before the call acts: a
+    /// fault for a range reaching past the caller's half of the address space (or wrapping), as
+    /// the platform's probes refuse it. The memory itself is not touched (a later copy may still
+    /// fault on a page that is not mapped); a null address passes.
+    pub fn probe(self, length: u32) -> Result<(), Fault> {
+        probe_user_range(self.0, length).map_err(|_| Fault)
+    }
 
-macro_rules! plain {
-    ($($t:ty),*) => {$(
-        impl Plain for $t {
-            const SIZE: usize = core::mem::size_of::<$t>();
-            fn encode(self, out: &mut [u8]) {
-                out.copy_from_slice(&self.to_le_bytes());
-            }
-            fn decode(bytes: &[u8]) -> Self {
-                let mut raw = [0u8; core::mem::size_of::<$t>()];
-                raw.copy_from_slice(bytes);
-                <$t>::from_le_bytes(raw)
-            }
+    /// Read `units.len()` UTF-16 units from it (a counted string's buffer); a fault when they
+    /// cannot be read.
+    pub fn read_units(self, units: &mut [u16]) -> Result<(), Fault> {
+        /// The units copied at a time, through a buffer on the stack.
+        const CHUNK: usize = 256;
+        let mut at = self;
+        let mut buffer = [0u16; CHUNK];
+        for chunk in units.chunks_mut(CHUNK) {
+            let bytes = &mut buffer.as_bytes_mut()[..2 * chunk.len()];
+            at.read(bytes)?;
+            at = at.offset(bytes.len() as u32);
+            chunk.copy_from_slice(&buffer[..chunk.len()]);
         }
-    )*};
-}
-plain!(u8, u16, u32, i32, u64);
+        Ok(())
+    }
 
-/// A pointer to one `T` in the caller's memory.
+    /// The pointer, typed: a `T` lives at it.
+    pub fn cast<T: Pod>(self) -> UserPtr<T> {
+        UserPtr::at(self.0)
+    }
+}
+
+/// A pointer to one `T` in the caller's memory: an integer, or an NT structure laid out as the
+/// caller's (`rtl::nt`'s 32-bit forms), read and written whole.
 #[derive(Debug, PartialEq, Eq)]
 pub struct UserPtr<T> {
     addr: u32,
@@ -107,7 +112,7 @@ impl<T> Clone for UserPtr<T> {
 
 impl<T> Copy for UserPtr<T> {}
 
-impl<T: Plain> UserPtr<T> {
+impl<T: Pod> UserPtr<T> {
     /// The pointer at `addr`.
     pub fn at(addr: u32) -> Self {
         UserPtr {
@@ -127,18 +132,14 @@ impl<T: Plain> UserPtr<T> {
 
     /// The value it points to; a fault when it cannot be read.
     pub fn read(self) -> Result<T, Fault> {
-        let mut raw = [0u8; 8];
-        let raw = &mut raw[..T::SIZE];
-        self.addr().read(raw)?;
-        Ok(T::decode(raw))
+        let mut value = T::zeroed();
+        self.addr().read(value.as_bytes_mut())?;
+        Ok(value)
     }
 
     /// Store `value` where it points; a fault when it cannot be written.
     pub fn write(self, value: T) -> Result<(), Fault> {
-        let mut raw = [0u8; 8];
-        let raw = &mut raw[..T::SIZE];
-        value.encode(raw);
-        self.addr().write(raw)
+        self.addr().write(value.as_bytes())
     }
 
     /// Store `value` where it points, when it points anywhere (an optional out parameter).
@@ -153,6 +154,8 @@ impl<T: Plain> UserPtr<T> {
 
 #[cfg(test)]
 mod tests {
+    use rtl::nt::ClientId;
+
     use super::*;
     use crate::status::{NtStatus, STATUS_ACCESS_VIOLATION};
     use crate::user::syscall::host::{install, Installed, UserMemory};
@@ -210,5 +213,50 @@ mod tests {
         assert_eq!(UserPtr::<u16>::at(BASE + 8).read(), Ok(0x5678));
         assert_eq!(UserPtr::<u32>::at(0).write_optional(1), Ok(()));
         assert_eq!(UserPtr::<u32>::at(0x10).read(), Err(Fault));
+    }
+
+    #[test]
+    fn structures_round_trip_whole() {
+        let (memory, _installed) = pages();
+        let ptr = UserPtr::<ClientId<u32>>::at(BASE + 0x10);
+        let id = ClientId {
+            unique_process: 0x2C,
+            unique_thread: 0x30,
+        };
+        ptr.write(id).unwrap();
+        assert_eq!(
+            &memory.borrow().bytes[0x10..0x18],
+            &[0x2C, 0, 0, 0, 0x30, 0, 0, 0]
+        );
+        assert_eq!(ptr.read(), Ok(id));
+        assert_eq!(UserAddr(BASE + 0x10).cast::<ClientId<u32>>(), ptr);
+        assert_eq!(UserPtr::<ClientId<u32>>::at(BASE + 4092).read(), Err(Fault));
+    }
+
+    #[test]
+    fn units_read_in_any_number() {
+        let (memory, _installed) = pages();
+        for (i, byte) in memory.borrow_mut().bytes[..1200].iter_mut().enumerate() {
+            *byte = ((i / 2) as u8).wrapping_add((i % 2) as u8 * 0x10);
+        }
+        let mut units = [0u16; 600];
+        UserAddr(BASE).read_units(&mut units).unwrap();
+        assert!(units
+            .iter()
+            .enumerate()
+            .all(|(i, &unit)| unit == u16::from_le_bytes([i as u8, (i as u8).wrapping_add(0x10)])));
+        assert_eq!(UserAddr(BASE).read_units(&mut []), Ok(()));
+        assert_eq!(UserAddr(BASE + 4090).read_units(&mut [0; 4]), Err(Fault));
+    }
+
+    #[test]
+    fn probes_refuse_the_system_half() {
+        assert_eq!(UserAddr(BASE).probe(4096), Ok(()));
+        assert_eq!(UserAddr(0).probe(8), Ok(()));
+        assert_eq!(UserAddr(0xFFFF_FFF0).probe(0x20), Err(Fault));
+        assert_eq!(
+            UserAddr(crate::user::syscall::USER_PROBE_LIMIT).probe(1),
+            Err(Fault)
+        );
     }
 }

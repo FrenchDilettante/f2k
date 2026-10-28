@@ -5,9 +5,40 @@
 //! carries 13 UTF-16 units of the name of the 8.3 entry it precedes (see [`super::dir`]); the
 //! volume label is told apart, and so are a subdirectory's `.` and `..` records, which the path
 //! layer resolves itself and a directory listing shows.
+//!
+//! A record's two shapes are [`RawDirEntry`] and [`RawLongEntry`], `#[repr(C)]` over little-endian
+//! byte fields: a record is read from its 32 bytes by value, and written back as bytes.
+
+use core::mem::{offset_of, size_of};
+
+use rtl::pod::Pod;
+
+use super::raw::{from_block, to_block, Le16, Le32};
 
 /// Bytes per directory entry.
 pub const ENTRY_SIZE: usize = 32;
+
+/// One record's bytes, as a directory sector holds them.
+pub type RecordBytes = [u8; ENTRY_SIZE];
+
+/// The first byte of the record that ends the directory: none follows it.
+pub const END: u8 = 0x00;
+/// The first byte of a deleted record.
+pub const DELETED: u8 = 0xE5;
+/// The first byte stored for an 8.3 name that really starts with 0xE5, which would read as
+/// [`DELETED`].
+pub const ESCAPED_E5: u8 = 0x05;
+
+/// A long-name record's order byte: the flag on the name's last part (the first record of the run
+/// on disk), and the mask of the part's number.
+pub const LAST_LONG_PART: u8 = 0x40;
+pub const ORDER_MASK: u8 = 0x1F;
+/// Units per long-name record.
+pub const PART_UNITS: usize = 13;
+
+/// The stored names of a subdirectory's `.` and `..` records.
+pub const DOT: [u8; 11] = *b".          ";
+pub const DOT_DOT: [u8; 11] = *b"..         ";
 
 /// Attribute bits.
 pub const ATTR_READ_ONLY: u8 = 0x01;
@@ -70,7 +101,189 @@ pub struct LongPart {
     /// The checksum of the 8.3 name the run belongs to.
     pub checksum: u8,
     /// The units, NUL-terminated and 0xFFFF-padded in the last part.
-    pub units: [u16; 13],
+    pub units: [u16; PART_UNITS],
+}
+
+impl LongPart {
+    /// The record that stores this part.
+    pub fn record(&self) -> RawLongEntry {
+        let mut record = RawLongEntry::zeroed();
+        record.ord = self.order | if self.last { LAST_LONG_PART } else { 0 };
+        record.attr = ATTR_LONG_NAME;
+        record.checksum = self.checksum;
+        for (field, &unit) in record.unit_fields().zip(&self.units) {
+            field.set(unit);
+        }
+        record
+    }
+}
+
+/// An 8.3 record as stored (Microsoft's FAT specification's field names).
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct RawDirEntry {
+    /// The 8.3 name, its first byte escaped (see [`ESCAPED_E5`]) or structural.
+    pub name: [u8; 11],
+    pub attr: u8,
+    /// The NT case bits.
+    pub nt_res: u8,
+    /// The creation time's hundredths.
+    pub crt_tenth: u8,
+    pub crt_time: Le16,
+    pub crt_date: Le16,
+    pub acc_date: Le16,
+    /// The first cluster's high half.
+    pub clus_hi: Le16,
+    pub wrt_time: Le16,
+    pub wrt_date: Le16,
+    /// The first cluster's low half.
+    pub clus_lo: Le16,
+    pub size: Le32,
+}
+
+/// A long-name record as stored: its 13 units in three runs around the fields it shares with an
+/// 8.3 record's layout (the attributes at 11, a first cluster of zero at 26).
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct RawLongEntry {
+    /// The order byte: the part's number and the [`LAST_LONG_PART`] flag.
+    pub ord: u8,
+    pub name1: [Le16; 5],
+    /// Always [`ATTR_LONG_NAME`].
+    pub attr: u8,
+    /// Zero: a long-name component.
+    pub kind: u8,
+    /// The checksum of the 8.3 name the run belongs to.
+    pub checksum: u8,
+    pub name2: [Le16; 6],
+    /// Zero.
+    pub clus_lo: Le16,
+    pub name3: [Le16; 2],
+}
+
+// SAFETY: bytes and byte arrays only (`Le16` and `Le32` are byte arrays), so there is no padding
+// (the sizes are asserted below) and every bit pattern is a value.
+unsafe impl Pod for RawDirEntry {}
+// SAFETY: as for `RawDirEntry`.
+unsafe impl Pod for RawLongEntry {}
+
+const _: () = {
+    assert!(size_of::<RawDirEntry>() == ENTRY_SIZE);
+    assert!(offset_of!(RawDirEntry, attr) == 11);
+    assert!(offset_of!(RawDirEntry, nt_res) == 12);
+    assert!(offset_of!(RawDirEntry, crt_tenth) == 13);
+    assert!(offset_of!(RawDirEntry, crt_time) == 14);
+    assert!(offset_of!(RawDirEntry, crt_date) == 16);
+    assert!(offset_of!(RawDirEntry, acc_date) == 18);
+    assert!(offset_of!(RawDirEntry, clus_hi) == 20);
+    assert!(offset_of!(RawDirEntry, wrt_time) == 22);
+    assert!(offset_of!(RawDirEntry, wrt_date) == 24);
+    assert!(offset_of!(RawDirEntry, clus_lo) == 26);
+    assert!(offset_of!(RawDirEntry, size) == 28);
+
+    assert!(size_of::<RawLongEntry>() == ENTRY_SIZE);
+    assert!(offset_of!(RawLongEntry, name1) == 1);
+    assert!(offset_of!(RawLongEntry, attr) == 11);
+    assert!(offset_of!(RawLongEntry, kind) == 12);
+    assert!(offset_of!(RawLongEntry, checksum) == 13);
+    assert!(offset_of!(RawLongEntry, name2) == 14);
+    assert!(offset_of!(RawLongEntry, clus_lo) == 26);
+    assert!(offset_of!(RawLongEntry, name3) == 28);
+};
+
+impl RawDirEntry {
+    /// The record `bytes` hold.
+    pub fn read(bytes: &RecordBytes) -> Self {
+        from_block(bytes)
+    }
+
+    /// The record's bytes.
+    pub fn bytes(&self) -> RecordBytes {
+        to_block(self)
+    }
+
+    /// The 8.3 name, the [`ESCAPED_E5`] escape undone.
+    pub fn short_name(&self) -> [u8; 11] {
+        let mut name = self.name;
+        if name[0] == ESCAPED_E5 {
+            name[0] = DELETED;
+        }
+        name
+    }
+
+    /// Store the 8.3 name `name`, a leading 0xE5 escaped.
+    pub fn set_short_name(&mut self, name: &[u8; 11]) {
+        self.name = *name;
+        if self.name[0] == DELETED {
+            self.name[0] = ESCAPED_E5;
+        }
+    }
+
+    /// The first cluster, both halves combined.
+    pub fn first_cluster(&self) -> u32 {
+        (self.clus_hi.get() as u32) << 16 | self.clus_lo.get() as u32
+    }
+
+    pub fn set_first_cluster(&mut self, cluster: u32) {
+        self.clus_hi.set((cluster >> 16) as u16);
+        self.clus_lo.set(cluster as u16);
+    }
+
+    pub fn times(&self) -> Times {
+        Times {
+            create_hundredths: self.crt_tenth,
+            create_time: self.crt_time.get(),
+            create_date: self.crt_date.get(),
+            access_date: self.acc_date.get(),
+            write_time: self.wrt_time.get(),
+            write_date: self.wrt_date.get(),
+        }
+    }
+
+    pub fn set_times(&mut self, times: &Times) {
+        self.crt_tenth = times.create_hundredths;
+        self.crt_time.set(times.create_time);
+        self.crt_date.set(times.create_date);
+        self.acc_date.set(times.access_date);
+        self.wrt_time.set(times.write_time);
+        self.wrt_date.set(times.write_date);
+    }
+}
+
+impl RawLongEntry {
+    /// The record `bytes` hold.
+    pub fn read(bytes: &RecordBytes) -> Self {
+        from_block(bytes)
+    }
+
+    /// The record's bytes.
+    pub fn bytes(&self) -> RecordBytes {
+        to_block(self)
+    }
+
+    /// The fields holding the part's units, in name order: the one place the three runs are put
+    /// together.
+    fn unit_fields(&mut self) -> impl Iterator<Item = &mut Le16> {
+        self.name1
+            .iter_mut()
+            .chain(&mut self.name2)
+            .chain(&mut self.name3)
+    }
+
+    /// The part this record stores.
+    pub fn part(&self) -> LongPart {
+        let mut units = [0u16; PART_UNITS];
+        let mut record = *self;
+        for (unit, field) in units.iter_mut().zip(record.unit_fields()) {
+            *unit = field.get();
+        }
+        LongPart {
+            order: self.ord & ORDER_MASK,
+            last: self.ord & LAST_LONG_PART != 0,
+            checksum: self.checksum,
+            units,
+        }
+    }
 }
 
 /// The checksum a long-name run carries of its 8.3 entry's stored name.
@@ -93,56 +306,29 @@ pub enum Record {
     Entry(DirEntry),
 }
 
-/// Decode one record (`bytes` is exactly one entry).
-pub fn decode(bytes: &[u8]) -> Record {
-    assert_eq!(bytes.len(), ENTRY_SIZE, "a directory entry is 32 bytes");
-    match bytes[0] {
-        0x00 => return Record::End,
-        0xE5 => return Record::Deleted,
+/// Decode one record.
+pub fn decode(bytes: &RecordBytes) -> Record {
+    let raw = RawDirEntry::read(bytes);
+    match raw.name[0] {
+        END => return Record::End,
+        DELETED => return Record::Deleted,
         _ => {}
     }
-    let attributes = bytes[11];
-    let u16_at = |offset: usize| u16::from_le_bytes([bytes[offset], bytes[offset + 1]]);
     // A long-name record's attributes include the label bit, so it is told apart first.
-    if attributes == ATTR_LONG_NAME {
-        let mut units = [0u16; 13];
-        let offsets = (1..11)
-            .step_by(2)
-            .chain((14..26).step_by(2))
-            .chain((28..32).step_by(2));
-        for (unit, offset) in units.iter_mut().zip(offsets) {
-            *unit = u16_at(offset);
-        }
-        return Record::LongName(LongPart {
-            order: bytes[0] & 0x1F,
-            last: bytes[0] & 0x40 != 0,
-            checksum: bytes[13],
-            units,
-        });
+    if raw.attr == ATTR_LONG_NAME {
+        return Record::LongName(RawLongEntry::read(bytes).part());
     }
-    if attributes & ATTR_VOLUME_LABEL != 0 {
+    if raw.attr & ATTR_VOLUME_LABEL != 0 {
         return Record::VolumeLabel;
     }
-    let mut name = [0u8; 11];
-    name.copy_from_slice(&bytes[..11]);
-    let dot = name == *b".          " || name == *b"..         ";
-    if name[0] == 0x05 {
-        name[0] = 0xE5;
-    }
+    let dot = raw.name == DOT || raw.name == DOT_DOT;
     let entry = DirEntry {
-        name,
-        attributes,
-        case: bytes[12],
-        first_cluster: (u16_at(20) as u32) << 16 | u16_at(26) as u32,
-        size: u32::from_le_bytes([bytes[28], bytes[29], bytes[30], bytes[31]]),
-        times: Times {
-            create_hundredths: bytes[13],
-            create_time: u16_at(14),
-            create_date: u16_at(16),
-            access_date: u16_at(18),
-            write_time: u16_at(22),
-            write_date: u16_at(24),
-        },
+        name: raw.short_name(),
+        attributes: raw.attr,
+        case: raw.nt_res,
+        first_cluster: raw.first_cluster(),
+        size: raw.size.get(),
+        times: raw.times(),
     };
     if dot {
         Record::Dot(entry)
@@ -277,6 +463,47 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    /// A long-name part's record: the order byte with the last-part flag, the long-name
+    /// attributes, the checksum, and the 13 units in their three runs (from bytes 1, 14 and 28);
+    /// decoding it gives the part back.
+    #[test]
+    fn a_long_part_encodes_at_its_offsets() {
+        let units: [u16; PART_UNITS] = core::array::from_fn(|i| 0x0100 + i as u16);
+        let part = LongPart {
+            order: 2,
+            last: true,
+            checksum: 0xA7,
+            units,
+        };
+        let bytes = part.record().bytes();
+        assert_eq!(
+            (bytes[0], bytes[11], bytes[12], bytes[13]),
+            (0x42, 0x0F, 0, 0xA7)
+        );
+        let at = |offset: usize| u16::from_le_bytes([bytes[offset], bytes[offset + 1]]);
+        let offsets = [1, 3, 5, 7, 9, 14, 16, 18, 20, 22, 24, 28, 30];
+        assert_eq!(offsets.map(at), units);
+        assert_eq!(at(26), 0, "no first cluster");
+        assert_eq!(decode(&bytes), Record::LongName(part));
+    }
+
+    /// A short record's fields land at their offsets, and a leading 0xE5 is stored escaped.
+    #[test]
+    fn a_short_record_encodes_at_its_offsets() {
+        let mut raw = RawDirEntry::zeroed();
+        raw.set_short_name(b"\xE5NAME   TXT");
+        raw.attr = 0x20;
+        raw.set_first_cluster(0x0012_3456);
+        raw.size.set(31);
+        let bytes = raw.bytes();
+        assert_eq!(bytes[0], 0x05);
+        assert_eq!(raw.short_name(), *b"\xE5NAME   TXT");
+        let mut expected = record(b"\x05NAME   TXT", 0x20, 0x0012_3456, 31);
+        assert_eq!(bytes, expected);
+        expected[0] = b'X';
+        assert_eq!(RawDirEntry::read(&expected).short_name(), *b"XNAME   TXT");
     }
 
     #[test]

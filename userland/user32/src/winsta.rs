@@ -6,8 +6,10 @@
 //! desktop, the handles in the process's handle table. A service answers with an NTSTATUS; a
 //! failure becomes the last error through ntdll's RtlNtStatusToDosError.
 
-use crate::imports;
-use crate::spec;
+use rtl::status::NtStatus;
+
+use crate::imports::{self, HeapBlock, UserBuffer};
+use crate::{caller_bytes_mut, spec, Out};
 
 /// GetUserObjectInformation's indexes (winuser.h).
 pub const UOI_NAME: u32 = 2;
@@ -16,44 +18,28 @@ pub const UOI_USER_SID: u32 = 4;
 
 /// ERROR_NOT_ENOUGH_MEMORY: the conversion's buffer could not be had.
 pub const ERROR_NOT_ENOUGH_MEMORY: u32 = 8;
+/// ERROR_NOACCESS: a buffer the call cannot reach (a null address with a length).
+pub const ERROR_NOACCESS: u32 = 998;
 
-/// Whether a service succeeded; a failure's status becomes the last error.
-fn succeeded(status: u32) -> bool {
-    if (status as i32) < 0 {
-        // SAFETY: the imports.
-        unsafe { imports::SetLastError(imports::RtlNtStatusToDosError(status)) };
-        false
-    } else {
-        true
-    }
+/// A service's answer: its value, or none with the failure's status made the last error.
+fn answered<T>(answer: Result<T, NtStatus>) -> Option<T> {
+    answer
+        .map_err(|status| imports::set_last_error(imports::dos_error(status)))
+        .ok()
 }
 
 /// GetProcessWindowStation: the handle of the calling process's window station (the same handle
 /// every call); NULL with the last error when there is none.
 #[unsafe(export_name = "f2k_export_GetProcessWindowStation")]
 pub unsafe extern "system" fn get_process_window_station() -> usize {
-    let mut handle = 0u32;
-    // SAFETY: the service writes the handle into the local.
-    let status = unsafe { imports::NtUserGetProcessWindowStation(&mut handle) };
-    if succeeded(status) {
-        handle as usize
-    } else {
-        0
-    }
+    answered(imports::process_window_station()).map_or(0, |handle| handle as usize)
 }
 
 /// GetThreadDesktop: the handle of the desktop of the calling process's thread `thread_id`; NULL
 /// with ERROR_INVALID_PARAMETER for an id no thread has.
 #[unsafe(export_name = "f2k_export_GetThreadDesktop")]
 pub unsafe extern "system" fn get_thread_desktop(thread_id: u32) -> usize {
-    let mut handle = 0u32;
-    // SAFETY: the service writes the handle into the local.
-    let status = unsafe { imports::NtUserGetThreadDesktop(thread_id, &mut handle) };
-    if succeeded(status) {
-        handle as usize
-    } else {
-        0
-    }
+    answered(imports::thread_desktop(thread_id)).map_or(0, |handle| handle as usize)
 }
 
 /// GetUserObjectInformationW: a window station's or a desktop's flags (UOI_FLAGS, a
@@ -73,15 +59,30 @@ pub unsafe extern "system" fn get_user_object_information_w(
     length: u32,
     needed: *mut u32,
 ) -> u32 {
+    // SAFETY: the caller's buffer, handed to the kernel unread, and its length's place.
+    let (information, mut needed) =
+        unsafe { (UserBuffer::new(information, length), Out::new(needed)) };
+    information_w(object, index, information, needed.as_mut())
+}
+
+/// GetUserObjectInformationW's core: the service's answer, FALSE with its error as the last
+/// error; UOI_USER_SID the stub routine's.
+fn information_w(
+    object: usize,
+    index: i32,
+    information: UserBuffer,
+    mut needed: Option<&mut Out<'_, u32>>,
+) -> u32 {
     if index as u32 == UOI_USER_SID {
         let args = [
             object as u64,
             index as u32 as u64,
-            information as usize as u64,
-            u64::from(length),
-            needed as usize as u64,
+            information.address() as u64,
+            u64::from(information.length()),
+            needed.as_mut().map_or(0, |needed| needed.as_ptr() as usize) as u64,
         ];
-        // SAFETY: the arguments, as the export's kinds read them.
+        // SAFETY: the export's arguments, as its kinds read them: no string among them, so the
+        // routine reads none of the caller's memory.
         return unsafe {
             crate::stub::stubbed(
                 &spec::GetUserObjectInformationW,
@@ -90,12 +91,13 @@ pub unsafe extern "system" fn get_user_object_information_w(
             )
         };
     }
-    // SAFETY: the caller's buffer and length; the service reaches them through the kernel's
-    // fault-tolerant copies.
-    let status = unsafe {
-        imports::NtUserGetObjectInformation(object, index as u32, information, length, needed)
-    };
-    succeeded(status) as u32
+    answered(imports::object_information(
+        object,
+        index as u32,
+        information,
+        needed,
+    ))
+    .is_some() as u32
 }
 
 /// GetUserObjectInformationA: GetUserObjectInformationW's answer, the name and the type name
@@ -116,48 +118,61 @@ pub unsafe extern "system" fn get_user_object_information_a(
     needed: *mut u32,
 ) -> u32 {
     if index as u32 != UOI_NAME && index as u32 != UOI_TYPE {
-        // SAFETY: the caller's arguments, handed on.
-        return unsafe {
-            get_user_object_information_w(object, index, information, length, needed)
-        };
+        // SAFETY: the caller's buffer, handed to the kernel unread, and its length's place.
+        let (information, mut needed) =
+            unsafe { (UserBuffer::new(information, length), Out::new(needed)) };
+        return information_w(object, index, information, needed.as_mut());
     }
-    let wide_length = length.saturating_mul(2);
-    let heap = imports::process_heap();
-    let wide = if wide_length == 0 {
-        core::ptr::null_mut()
-    } else {
-        // SAFETY: the process heap.
-        let block = unsafe { imports::RtlAllocateHeap(heap, 0, wide_length as usize) };
-        if block.is_null() {
-            // SAFETY: the import.
-            unsafe { imports::SetLastError(ERROR_NOT_ENOUGH_MEMORY) };
-            return 0;
-        }
-        block
+    // SAFETY: the caller's buffer, which the conversion writes, and its length's place.
+    let (information, mut needed) = unsafe {
+        (
+            caller_bytes_mut(information, length as usize),
+            Out::new(needed),
+        )
     };
-    // SAFETY: the buffer just allocated, of `wide_length` bytes; the caller's length pointer.
-    let answered =
-        unsafe { get_user_object_information_w(object, index, wide, wide_length, needed) } != 0;
-    if answered {
-        let mut written = 0u32;
-        // SAFETY: the W form's text, `*needed` bytes of it, into the caller's buffer of `length`
-        // bytes (it has room: the text's units are no more than `length`).
-        unsafe {
-            imports::RtlUnicodeToMultiByteN(
-                information,
-                length,
-                &mut written,
-                wide as *const u16,
-                *needed,
-            );
-            *needed = written;
-        }
+    text_a(object, index, information, length, needed.as_mut())
+}
+
+/// GetUserObjectInformationA's core for a name: the W form's text, read into a block of the heap
+/// twice `length` long, converted into `information` (none: a buffer the call cannot reach).
+fn text_a(
+    object: usize,
+    index: i32,
+    information: Option<&mut [u8]>,
+    length: u32,
+    mut needed: Option<&mut Out<'_, u32>>,
+) -> u32 {
+    let wide_length = length.saturating_mul(2);
+    let mut wide = if wide_length == 0 {
+        None
+    } else {
+        let Some(block) = HeapBlock::new(wide_length as usize) else {
+            imports::set_last_error(ERROR_NOT_ENOUGH_MEMORY);
+            return 0;
+        };
+        Some(block)
+    };
+    let buffer = wide
+        .as_mut()
+        .map_or_else(UserBuffer::none, |wide| UserBuffer::from(wide.bytes_mut()));
+    if information_w(object, index, buffer, needed.as_deref_mut()) == 0 {
+        return 0;
     }
-    if !wide.is_null() {
-        // SAFETY: the block allocated above.
-        unsafe { imports::RtlFreeHeap(heap, 0, wide) };
-    }
-    answered as u32
+    let Some(information) = information else {
+        imports::set_last_error(ERROR_NOACCESS);
+        return 0;
+    };
+    let Some(needed) = needed else {
+        // The kernel refuses no place for the length: the W form failed above.
+        return 0;
+    };
+    // The W form's text, `*needed` bytes of it, into the caller's buffer of `length` bytes (it
+    // has room: the text's units are no more than `length`).
+    let units = wide.as_ref().map_or(&[][..], HeapBlock::units);
+    let units = &units[..(needed.get() as usize / 2).min(units.len())];
+    let written = imports::unicode_to_multi_byte(information, units);
+    needed.set(written as u32);
+    1
 }
 
 #[cfg(test)]

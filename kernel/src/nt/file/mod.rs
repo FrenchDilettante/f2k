@@ -55,6 +55,7 @@ mod common {
     use crate::fs::file::{records, FileObject};
     use crate::ob::{ObjectType, Referenced};
     use crate::status::*;
+    use rtl::nt::IoStatusBlock;
 
     /// The file object `handle` names in the calling process, referenced: STATUS_INVALID_HANDLE for
     /// a handle naming nothing (a console handle included), STATUS_OBJECT_TYPE_MISMATCH for another
@@ -76,18 +77,13 @@ mod common {
         Ok(())
     }
 
-    /// Probe `size` bytes at `at` for the call's writes: STATUS_ACCESS_VIOLATION before it acts.
-    pub fn probe(at: UserAddr, size: u32) -> Result<(), NtStatus> {
-        crate::user::syscall::probe_user_range(at.raw(), size).map_err(|_| STATUS_ACCESS_VIOLATION)
-    }
-
     /// Write an IO_STATUS_BLOCK: the status and the information (a fault there is the caller's,
     /// past the call's own work: not reported).
     pub fn complete(io_status: UserAddr, status: NtStatus, information: u32) {
-        let mut block = [0u8; 8];
-        block[..4].copy_from_slice(&status.0.to_le_bytes());
-        block[4..].copy_from_slice(&information.to_le_bytes());
-        let _ = io_status.write(&block);
+        let _ = io_status.cast::<IoStatusBlock<u32>>().write(IoStatusBlock {
+            status: status.0,
+            information,
+        });
     }
 
     /// The new handle into the caller's slot; a slot that faults takes the handle back
@@ -231,7 +227,7 @@ mod host {
         flush_buffers_file(Handle, UserAddr);
         query_information_file(Handle, UserAddr, UserAddr, u32, u32);
         set_information_file(Handle, UserAddr, UserAddr, u32, u32);
-        query_directory_file(Handle, Handle, UserAddr, UserAddr, UserAddr, UserAddr, u32, u32, u32, UserAddr, u32);
+        query_directory_file(Handle, Handle, UserAddr, UserAddr, UserAddr, UserAddr, u32, u32, bool, UserAddr, bool);
         query_attributes_file(UserAddr, UserAddr);
         query_full_attributes_file(UserAddr, UserAddr);
         query_volume_information_file(Handle, UserAddr, UserAddr, u32, u32);

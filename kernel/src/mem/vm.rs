@@ -846,7 +846,10 @@ impl Pages for CurrentPages {
         // kernel a panic.
         const KERNEL_RESERVE: u32 = 256;
         let frame = crate::mem::bootmem::with_frame_db(|db| {
-            (db.available() > KERNEL_RESERVE).then(|| db.allocate(crate::mem::frame::PRIMARY_COLOR))
+            if db.available() <= KERNEL_RESERVE {
+                return None;
+            }
+            db.try_allocate(crate::mem::frame::PRIMARY_COLOR)
         })?;
         let phys = frame * PAGE;
         crate::mem::paging::init_frame(phys, 0, &[]);

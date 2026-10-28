@@ -6,7 +6,7 @@
 //! memory refuses ends the call with STATUS_ACCESS_VIOLATION, what moved before it counted.
 
 use super::super::call::{Handle, NtCall, NtResult, UserAddr, UserPtr};
-use super::common::{check_access, complete, completion_event, file_object, probe, signal};
+use super::common::{check_access, complete, completion_event, file_object, signal};
 use crate::fs::fat32::write;
 use crate::fs::file::{records, rights, FileObject};
 use crate::fs::io;
@@ -41,7 +41,7 @@ fn transfer(
 ) -> Result<Transfer, NtStatus> {
     let object = file_object(handle.raw())?;
     check_access(&object, needs)?;
-    probe(io_status, 8)?;
+    io_status.probe(8)?;
     if !routine.is_null() {
         return Err(STATUS_NOT_IMPLEMENTED);
     }
@@ -260,7 +260,7 @@ pub fn write_file(
 pub fn flush_buffers_file(_call: &mut NtCall, handle: Handle, io_status: UserAddr) -> NtResult {
     let object = file_object(handle.raw())?;
     check_access(&object, rights::FILE_WRITE_DATA | rights::FILE_APPEND_DATA)?;
-    probe(io_status, 8)?;
+    io_status.probe(8)?;
     complete(io_status, STATUS_SUCCESS, 0);
     Ok(STATUS_SUCCESS)
 }

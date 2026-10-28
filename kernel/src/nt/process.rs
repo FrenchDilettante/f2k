@@ -68,26 +68,9 @@ impl ProcessBasicInformation {
     }
 }
 
-/// CLIENT_ID: a process's client id, and one of its threads' (zero: none).
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ClientId {
-    pub unique_process: u32,
-    pub unique_thread: u32,
-}
-
-impl ClientId {
-    /// The structure, from the caller's memory.
-    fn read(at: UserAddr) -> Result<ClientId, NtStatus> {
-        let mut raw = [0u8; size_of::<ClientId>()];
-        at.read(&mut raw)?;
-        let word = |i: usize| u32::from_le_bytes([raw[i], raw[i + 1], raw[i + 2], raw[i + 3]]);
-        Ok(ClientId {
-            unique_process: word(0),
-            unique_thread: word(4),
-        })
-    }
-}
+/// CLIENT_ID, as the caller's memory holds it: a process's client id, and one of its threads'
+/// (zero: none).
+pub type ClientId = rtl::nt::ClientId<u32>;
 
 /// The priority classes (PROCESS_PRIORITY_CLASS_*), and each one's base priority (Windows 2000's
 /// PspPriorityTable): idle 4, normal 8, high 13, realtime 24, below normal 6, above normal 10.
@@ -183,7 +166,7 @@ pub fn open_process(
     let client_id = if client_id.is_null() {
         None
     } else {
-        Some(ClientId::read(client_id)?)
+        Some(client_id.cast::<ClientId>().read()?)
     };
     let client_id = open_by(named, client_id)?;
     let access = super::object::process_access(access);
@@ -548,8 +531,6 @@ mod tests {
             core::mem::offset_of!(ProcessBasicInformation, inherited_from_unique_process_id),
             20
         );
-        assert_eq!(size_of::<ClientId>(), 8);
-        assert_eq!(core::mem::offset_of!(ClientId, unique_thread), 4);
     }
 
     /// NtOpenProcess opens by client id alone: a name besides it, or neither, is a parameter mix

@@ -8,18 +8,11 @@
 //! file as its record holds it, every change written to its entry inside the volume's locked
 //! section.
 
+use rtl::pod::Pod;
+
 use super::super::attributes::MAX_NAME;
 use super::super::call::{Handle, NtCall, NtResult, UserAddr};
-use super::common::{
-    check_access,
-    cluster_bytes,
-    complete,
-    file_object,
-    probe,
-    target,
-    walk,
-    Found,
-};
+use super::common::{check_access, cluster_bytes, complete, file_object, target, walk, Found};
 use super::info::{self, Open};
 use super::name::{self, FileName};
 use crate::fs::fat32::dir::is_empty;
@@ -74,8 +67,8 @@ fn query_information_file_held(
     class: u32,
 ) -> NtResult {
     let size = sized(info::query_size(class), length)?;
-    probe(io_status, 8)?;
-    probe(information, length)?;
+    io_status.probe(8)?;
+    information.probe(length)?;
     let object = file_object(handle.raw())?;
     check_access(&object, query_rights(class))?;
     let file = io::file_of(&object);
@@ -135,26 +128,46 @@ enum Start {
     Own,
 }
 
-/// A rename's target name (FILE_RENAME_INFORMATION's): relative to its root directory's file
-/// object, an absolute NT path, or a bare name in the file's own directory.
+/// FILE_RENAME_INFORMATION's fixed part: ReplaceIfExists (a BOOLEAN, padded to the handle's
+/// alignment), RootDirectory, and FileNameLength in bytes. The name's units follow it.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct RenameHeader {
+    replace_if_exists: u8,
+    padding: [u8; 3],
+    root_directory: u32,
+    file_name_length: u32,
+}
+
+// SAFETY: integers and a byte array, 12 bytes without padding (asserted below); any bytes make a
+// value.
+unsafe impl Pod for RenameHeader {}
+
+/// Where FileName starts: FILE_RENAME_INFORMATION's fixed part is 12 bytes on x86.
+const RENAME_NAME_OFFSET: usize = size_of::<RenameHeader>();
+const _: () = assert!(RENAME_NAME_OFFSET == 12);
+
+/// A rename's target name (FILE_RENAME_INFORMATION's, `length` bytes at `information`, its fixed
+/// part `header`): relative to its root directory's file object, an absolute NT path, or a bare
+/// name in the file's own directory.
 fn rename_target(
-    bytes: &[u8],
+    header: &RenameHeader,
     length: u32,
     information: UserAddr,
 ) -> Result<(FileName, Start), NtStatus> {
-    let word =
-        |at: usize| u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]);
-    let (root, name_length) = (word(4), word(8) as usize / 2);
-    if name_length == 0 || name_length > MAX_NAME || 12 + 2 * name_length > length as usize {
+    let (root, name_length) = (header.root_directory, header.file_name_length as usize / 2);
+    if name_length == 0
+        || name_length > MAX_NAME
+        || RENAME_NAME_OFFSET + 2 * name_length > length as usize
+    {
         return Err(STATUS_INVALID_PARAMETER);
     }
-    let mut raw = [0u8; 2 * MAX_NAME];
-    information.offset(12).read(&mut raw[..2 * name_length])?;
     let mut units = [0u16; MAX_NAME];
-    for (unit, pair) in units.iter_mut().zip(raw.chunks_exact(2)) {
-        *unit = u16::from_le_bytes([pair[0], pair[1]]);
-    }
-    let units = &units[..name_length];
+    let units = &mut units[..name_length];
+    information
+        .offset(RENAME_NAME_OFFSET as u32)
+        .read_units(units)?;
+    let units = &*units;
     if root != 0 {
         let directory = file_object(root)?;
         let directory = io::file_of(&directory);
@@ -249,7 +262,7 @@ fn set_information_file_held(
     class: u32,
 ) -> NtResult {
     let size = sized(info::set_size(class), length)?;
-    probe(io_status, 8)?;
+    io_status.probe(8)?;
     let mut bytes = [0u8; info::BASIC_SIZE];
     information.read(&mut bytes[..size])?;
     let mut object = file_object(handle.raw())?;
@@ -280,10 +293,9 @@ fn set_information_file_held(
             })?;
         }
         info::FILE_RENAME_INFORMATION => {
-            let mut header = [0u8; 12];
-            information.read(&mut header)?;
+            let header = information.cast::<RenameHeader>().read()?;
             let target = rename_target(&header, length, information)?;
-            rename(record, header[0] != 0, target)?;
+            rename(record, header.replace_if_exists != 0, target)?;
         }
         info::FILE_DISPOSITION_INFORMATION => {
             let delete = bytes[0] != 0;
@@ -323,7 +335,7 @@ fn set_information_file_held(
 /// named with a trailing separator.
 fn named(attributes: UserAddr, out: UserAddr, size: u32) -> Result<File, NtStatus> {
     let target = target(attributes)?;
-    probe(out, size)?;
+    out.probe(size)?;
     let file = io::with_volume(|volume| {
         if target.name.volume {
             return Ok(crate::fs::fat32::lookup::root(volume));

@@ -242,25 +242,20 @@ mod tests {
     use crate::status::STATUS_SUCCESS;
 
     fn dispatcher() -> &'static mut Dispatcher {
-        let dispatcher = Box::leak(Box::new(Dispatcher::zeroed()));
-        dispatcher.init();
-        dispatcher
+        crate::sched::testkit::dispatcher()
     }
 
     /// A running thread outside any critical region.
-    fn bare_thread() -> &'static mut Thread {
+    fn bare_thread() -> crate::sched::testkit::Rec<Thread> {
         let process = Box::leak(Box::new(SchedProcess::new(0x0090_0000, 8)));
-        process.init();
-        let thread = Box::leak(Box::new(Thread::empty()));
-        // SAFETY: both records are leaked at their final addresses.
-        unsafe { thread.attach_to(process) };
+        let mut thread = crate::sched::testkit::thread(process);
         thread.state = ThreadState::Running;
         thread
     }
 
     /// A running thread inside a critical region, as every taker of the lock must be.
-    fn thread() -> &'static mut Thread {
-        let thread = bare_thread();
+    fn thread() -> crate::sched::testkit::Rec<Thread> {
+        let mut thread = bare_thread();
         thread.enter_critical_region();
         thread
     }
@@ -281,18 +276,21 @@ mod tests {
     fn a_held_lock_parks_the_second_taker() {
         let d = dispatcher();
         let lock = lock();
-        let first = thread();
-        let second = thread();
+        let mut first = thread();
+        let mut second = thread();
         assert!(lock.is_free());
 
         assert_eq!(
-            lock.acquire_for(d, first, NOW),
+            lock.acquire_for(d, &mut first, NOW),
             WaitDisposition::Complete(STATUS_SUCCESS)
         );
         assert!(!lock.is_free());
         assert_eq!(first.state(), ThreadState::Running);
 
-        assert_eq!(lock.acquire_for(d, second, NOW), WaitDisposition::Yield);
+        assert_eq!(
+            lock.acquire_for(d, &mut second, NOW),
+            WaitDisposition::Yield
+        );
         assert_eq!(second.state(), ThreadState::Waiting);
     }
 
@@ -302,13 +300,16 @@ mod tests {
     fn the_release_hands_the_lock_to_the_oldest_waiter() {
         let d = dispatcher();
         let lock = lock();
-        let (first, second, third) = (thread(), thread(), thread());
+        let (mut first, mut second, mut third) = (thread(), thread(), thread());
         assert!(matches!(
-            lock.acquire_for(d, first, NOW),
+            lock.acquire_for(d, &mut first, NOW),
             WaitDisposition::Complete(_)
         ));
-        assert_eq!(lock.acquire_for(d, second, NOW), WaitDisposition::Yield);
-        assert_eq!(lock.acquire_for(d, third, NOW), WaitDisposition::Yield);
+        assert_eq!(
+            lock.acquire_for(d, &mut second, NOW),
+            WaitDisposition::Yield
+        );
+        assert_eq!(lock.acquire_for(d, &mut third, NOW), WaitDisposition::Yield);
 
         lock.release_with(d);
         assert_ne!(
@@ -337,7 +338,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "outside a critical region")]
     fn taking_the_lock_outside_a_critical_region_is_a_contract_violation() {
-        lock().acquire_for(dispatcher(), bare_thread(), NOW);
+        lock().acquire_for(dispatcher(), &mut bare_thread(), NOW);
     }
 
     #[test]
@@ -359,12 +360,12 @@ mod tests {
     fn the_owner_taking_the_lock_again_is_refused() {
         let d = dispatcher();
         let lock = lock();
-        let owner = thread();
+        let mut owner = thread();
         assert!(matches!(
-            lock.acquire_for(d, owner, NOW),
+            lock.acquire_for(d, &mut owner, NOW),
             WaitDisposition::Complete(_)
         ));
-        lock.acquire_for(d, owner, NOW);
+        lock.acquire_for(d, &mut owner, NOW);
     }
 
     /// The release clears the owner: the same thread may take the lock again afterwards.
@@ -372,14 +373,14 @@ mod tests {
     fn the_release_clears_the_owner() {
         let d = dispatcher();
         let lock = lock();
-        let owner = thread();
+        let mut owner = thread();
         assert!(matches!(
-            lock.acquire_for(d, owner, NOW),
+            lock.acquire_for(d, &mut owner, NOW),
             WaitDisposition::Complete(_)
         ));
         lock.release_with(d);
         assert!(matches!(
-            lock.acquire_for(d, owner, NOW),
+            lock.acquire_for(d, &mut owner, NOW),
             WaitDisposition::Complete(_)
         ));
     }

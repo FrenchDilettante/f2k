@@ -10,8 +10,6 @@
 //! to it as Windows 2000's does (see [`crate::console`]) — closing one closes it there, duplicating
 //! one duplicates it there, and a wait on one waits on the console's input-wait handle.
 
-use rtl::status::nt_success;
-
 use crate::base::{
     format_object_attributes,
     format_timeout,
@@ -20,15 +18,15 @@ use crate::base::{
     set_last_error,
     set_last_nt_error,
     standard_handle,
-    succeeded,
     wide_string,
+    win32_bool,
     SecurityAttributes,
     CURRENT_PROCESS,
     OBJ_INHERIT,
 };
 use crate::console;
-use crate::nt::{self, ObjectAttributes};
-use crate::ntcall;
+use crate::nt::ObjectAttributes;
+use crate::ntcall::{self, Created, NtStatus, Source};
 
 /// DuplicateConsoleHandle's failure.
 const INVALID_HANDLE_VALUE: u32 = 0xFFFF_FFFF;
@@ -38,7 +36,6 @@ const WAIT_IO_COMPLETION: u32 = 0xC0;
 
 const STATUS_USER_APC: u32 = 0xC0;
 const STATUS_ALERTED: u32 = 0x101;
-const STATUS_OBJECT_NAME_EXISTS: u32 = 0x4000_0000;
 const STATUS_NO_YIELD_PERFORMED: u32 = 0x4000_0024;
 const STATUS_TIMER_RESUME_IGNORED: u32 = 0x4000_0025;
 const STATUS_INVALID_PARAMETER: u32 = 0xC000_000D;
@@ -56,10 +53,6 @@ const TIMER_ALL_ACCESS: u32 = 0x001F_0003;
 /// The event and timer types: notification (manual-reset) and synchronization (auto-reset).
 const NOTIFICATION: u32 = 0;
 const SYNCHRONIZATION: u32 = 1;
-
-/// The wait types: all of the objects, or any.
-const WAIT_ALL: u32 = 0;
-const WAIT_ANY: u32 = 1;
 
 const MAXIMUM_WAIT_OBJECTS: usize = 64;
 
@@ -101,16 +94,11 @@ pub(crate) unsafe fn narrow(name: *const u8, wide: impl FnOnce(*const u16) -> u3
     }
 }
 
-/// A Win32 BOOL argument as a BOOLEAN.
-fn boolean(value: u32) -> u32 {
-    u32::from(value != 0)
-}
-
 /// The create every named kind shares (CreateEventW, CreateMutexW, CreateSemaphoreW,
-/// CreateWaitableTimerW, CreateFileMappingW): the attributes formatted, `service` raised with them.
-/// On success the handle, the last error ERROR_ALREADY_EXISTS when the name bound an existing
-/// object and cleared otherwise (Windows clears it on every successful create); on failure null
-/// with the status's error.
+/// CreateWaitableTimerW, CreateFileMappingW): the attributes formatted (none for an unnamed object
+/// without security attributes), `service` called with them. On success the handle, the last error
+/// ERROR_ALREADY_EXISTS when the name bound an existing object and cleared otherwise (Windows
+/// clears it on every successful create); on failure null with the status's error.
 ///
 /// # Safety
 ///
@@ -118,7 +106,7 @@ fn boolean(value: u32) -> u32 {
 pub(crate) unsafe fn create_w(
     security: *const SecurityAttributes,
     name: *const u16,
-    service: impl FnOnce(*mut u32, *const ObjectAttributes) -> u32,
+    service: impl FnOnce(Option<&ObjectAttributes>) -> Result<Created, NtStatus>,
 ) -> u32 {
     let named = !name.is_null();
     // SAFETY: the caller's string, when given.
@@ -128,18 +116,20 @@ pub(crate) unsafe fn create_w(
     let attributes = unsafe {
         format_object_attributes(&mut *attributes.as_mut_ptr(), security, string.as_ref())
     };
-    let mut handle = 0;
-    let status = service(&mut handle, attributes);
-    if !nt_success(status) {
-        set_last_nt_error(status);
-        return 0;
+    match service(attributes) {
+        Ok(created) => {
+            set_last_error(if created.existed {
+                ERROR_ALREADY_EXISTS
+            } else {
+                0
+            });
+            created.handle
+        }
+        Err(status) => {
+            set_last_nt_error(status);
+            0
+        }
     }
-    set_last_error(if status == STATUS_OBJECT_NAME_EXISTS {
-        ERROR_ALREADY_EXISTS
-    } else {
-        0
-    });
-    handle
 }
 
 /// The open every named kind shares (OpenEventW, OpenMutexW, OpenSemaphoreW, OpenWaitableTimerW,
@@ -154,7 +144,7 @@ pub(crate) unsafe fn open_w(
     access: u32,
     inherit: u32,
     name: *const u16,
-    service: impl FnOnce(*mut u32, u32, *const ObjectAttributes) -> u32,
+    service: impl FnOnce(u32, &ObjectAttributes) -> Result<u32, NtStatus>,
 ) -> u32 {
     // An empty name names nothing (an assumption: F2K's answer, unverified).
     // SAFETY: the caller's string, when given.
@@ -172,13 +162,10 @@ pub(crate) unsafe fn open_w(
         security_descriptor: core::ptr::null(),
         security_quality_of_service: core::ptr::null(),
     };
-    let mut handle = 0;
-    let status = service(&mut handle, access, &attributes);
-    if !nt_success(status) {
+    service(access, &attributes).unwrap_or_else(|status| {
         set_last_nt_error(status);
-        return 0;
-    }
-    handle
+        0
+    })
 }
 
 // --- Events --------------------------------------------------------------------------------------
@@ -201,16 +188,10 @@ pub unsafe extern "system" fn create_event_w(
     } else {
         SYNCHRONIZATION
     };
-    // SAFETY: the caller's arguments; ntdll's export.
+    // SAFETY: the caller's arguments.
     unsafe {
-        create_w(security, name, |handle, attributes| {
-            nt::NtCreateEvent(
-                handle,
-                EVENT_ALL_ACCESS,
-                attributes,
-                event_type,
-                boolean(initial_state),
-            )
+        create_w(security, name, |attributes| {
+            ntcall::create_event(EVENT_ALL_ACCESS, attributes, event_type, initial_state != 0)
         })
     }
 }
@@ -242,12 +223,8 @@ pub unsafe extern "system" fn create_event_a(
 /// `name` is null or a NUL-terminated UTF-16 string.
 #[unsafe(export_name = "f2k_export_OpenEventW")]
 pub unsafe extern "system" fn open_event_w(access: u32, inherit: u32, name: *const u16) -> u32 {
-    // SAFETY: the caller's string; ntdll's export.
-    unsafe {
-        open_w(access, inherit, name, |handle, access, attributes| {
-            nt::NtOpenEvent(handle, access, attributes)
-        })
-    }
+    // SAFETY: the caller's string.
+    unsafe { open_w(access, inherit, name, ntcall::open_event) }
 }
 
 /// OpenEventA: [`open_event_w`], the name converted (see [`narrow`]).
@@ -264,22 +241,19 @@ pub unsafe extern "system" fn open_event_a(access: u32, inherit: u32, name: *con
 /// SetEvent: signal the event.
 #[unsafe(export_name = "f2k_export_SetEvent")]
 pub extern "system" fn set_event(event: u32) -> u32 {
-    // SAFETY: ntdll's export, the previous state not asked for.
-    succeeded(unsafe { nt::NtSetEvent(event, core::ptr::null_mut()) })
+    win32_bool(ntcall::set_event(event))
 }
 
 /// ResetEvent: clear the event (NtClearEvent, as on Windows 2000).
 #[unsafe(export_name = "f2k_export_ResetEvent")]
 pub extern "system" fn reset_event(event: u32) -> u32 {
-    // SAFETY: ntdll's export.
-    succeeded(unsafe { nt::NtClearEvent(event) })
+    win32_bool(ntcall::clear_event(event))
 }
 
 /// PulseEvent: signal the event for the waiters present and leave it cleared.
 #[unsafe(export_name = "f2k_export_PulseEvent")]
 pub extern "system" fn pulse_event(event: u32) -> u32 {
-    // SAFETY: ntdll's export, the previous state not asked for.
-    succeeded(unsafe { nt::NtPulseEvent(event, core::ptr::null_mut()) })
+    win32_bool(ntcall::pulse_event(event))
 }
 
 // --- Mutexes and semaphores ----------------------------------------------------------------------
@@ -296,15 +270,10 @@ pub unsafe extern "system" fn create_mutex_w(
     initial_owner: u32,
     name: *const u16,
 ) -> u32 {
-    // SAFETY: the caller's arguments; ntdll's export.
+    // SAFETY: the caller's arguments.
     unsafe {
-        create_w(security, name, |handle, attributes| {
-            nt::NtCreateMutant(
-                handle,
-                MUTANT_ALL_ACCESS,
-                attributes,
-                boolean(initial_owner),
-            )
+        create_w(security, name, |attributes| {
+            ntcall::create_mutant(MUTANT_ALL_ACCESS, attributes, initial_owner != 0)
         })
     }
 }
@@ -331,12 +300,8 @@ pub unsafe extern "system" fn create_mutex_a(
 /// `name` is null or a NUL-terminated UTF-16 string.
 #[unsafe(export_name = "f2k_export_OpenMutexW")]
 pub unsafe extern "system" fn open_mutex_w(access: u32, inherit: u32, name: *const u16) -> u32 {
-    // SAFETY: the caller's string; ntdll's export.
-    unsafe {
-        open_w(access, inherit, name, |handle, access, attributes| {
-            nt::NtOpenMutant(handle, access, attributes)
-        })
-    }
+    // SAFETY: the caller's string.
+    unsafe { open_w(access, inherit, name, ntcall::open_mutant) }
 }
 
 /// OpenMutexA: [`open_mutex_w`], the name converted (see [`narrow`]).
@@ -353,8 +318,7 @@ pub unsafe extern "system" fn open_mutex_a(access: u32, inherit: u32, name: *con
 /// ReleaseMutex: give up one unit of the caller's ownership (ERROR_NOT_OWNER unless it owns it).
 #[unsafe(export_name = "f2k_export_ReleaseMutex")]
 pub extern "system" fn release_mutex(mutex: u32) -> u32 {
-    // SAFETY: ntdll's export, the previous count not asked for.
-    succeeded(unsafe { nt::NtReleaseMutant(mutex, core::ptr::null_mut()) })
+    win32_bool(ntcall::release_mutant(mutex))
 }
 
 /// CreateSemaphoreW: a semaphore at the initial count with the given maximum, or the named one
@@ -370,10 +334,10 @@ pub unsafe extern "system" fn create_semaphore_w(
     maximum: i32,
     name: *const u16,
 ) -> u32 {
-    // SAFETY: the caller's arguments; ntdll's export.
+    // SAFETY: the caller's arguments.
     unsafe {
-        create_w(security, name, |handle, attributes| {
-            nt::NtCreateSemaphore(handle, SEMAPHORE_ALL_ACCESS, attributes, initial, maximum)
+        create_w(security, name, |attributes| {
+            ntcall::create_semaphore(SEMAPHORE_ALL_ACCESS, attributes, initial, maximum)
         })
     }
 }
@@ -405,12 +369,8 @@ pub unsafe extern "system" fn create_semaphore_a(
 /// `name` is null or a NUL-terminated UTF-16 string.
 #[unsafe(export_name = "f2k_export_OpenSemaphoreW")]
 pub unsafe extern "system" fn open_semaphore_w(access: u32, inherit: u32, name: *const u16) -> u32 {
-    // SAFETY: the caller's string; ntdll's export.
-    unsafe {
-        open_w(access, inherit, name, |handle, access, attributes| {
-            nt::NtOpenSemaphore(handle, access, attributes)
-        })
-    }
+    // SAFETY: the caller's string.
+    unsafe { open_w(access, inherit, name, ntcall::open_semaphore) }
 }
 
 /// OpenSemaphoreA: [`open_semaphore_w`], the name converted (see [`narrow`]).
@@ -436,8 +396,9 @@ pub unsafe extern "system" fn release_semaphore(
     count: i32,
     previous: *mut i32,
 ) -> u32 {
-    // SAFETY: ntdll's export.
-    succeeded(unsafe { nt::NtReleaseSemaphore(semaphore, count, previous) })
+    // SAFETY: the caller's LONG, or null.
+    let previous = unsafe { previous.as_mut() };
+    win32_bool(ntcall::release_semaphore(semaphore, count, previous))
 }
 
 // --- Waitable timers -----------------------------------------------------------------------------
@@ -459,10 +420,10 @@ pub unsafe extern "system" fn create_waitable_timer_w(
     } else {
         SYNCHRONIZATION
     };
-    // SAFETY: the caller's arguments; ntdll's export.
+    // SAFETY: the caller's arguments.
     unsafe {
-        create_w(security, name, |handle, attributes| {
-            nt::NtCreateTimer(handle, TIMER_ALL_ACCESS, attributes, timer_type)
+        create_w(security, name, |attributes| {
+            ntcall::create_timer(TIMER_ALL_ACCESS, attributes, timer_type)
         })
     }
 }
@@ -497,12 +458,8 @@ pub unsafe extern "system" fn open_waitable_timer_w(
     inherit: u32,
     name: *const u16,
 ) -> u32 {
-    // SAFETY: the caller's string; ntdll's export.
-    unsafe {
-        open_w(access, inherit, name, |handle, access, attributes| {
-            nt::NtOpenTimer(handle, access, attributes)
-        })
-    }
+    // SAFETY: the caller's string.
+    unsafe { open_w(access, inherit, name, ntcall::open_timer) }
 }
 
 /// OpenWaitableTimerA: [`open_waitable_timer_w`], the name converted (see [`narrow`]).
@@ -536,33 +493,26 @@ pub unsafe extern "system" fn set_waitable_timer(
     argument: usize,
     resume: u32,
 ) -> u32 {
-    // SAFETY: ntdll's export.
-    let status = unsafe {
-        nt::NtSetTimer(
-            timer,
-            due_time,
-            routine,
-            argument,
-            boolean(resume),
-            period,
-            core::ptr::null_mut(),
-        )
-    };
-    if !nt_success(status) {
-        set_last_nt_error(status);
-        return 0;
+    // SAFETY: the caller's LARGE_INTEGER, which the service probes and reads.
+    let due = unsafe { Source::caller(due_time as usize, core::mem::size_of::<i64>()) };
+    match ntcall::set_timer(timer, due, routine, argument, resume != 0, period) {
+        Ok(status) => {
+            if status == STATUS_TIMER_RESUME_IGNORED {
+                set_last_error(ERROR_NOT_SUPPORTED);
+            }
+            1
+        }
+        Err(status) => {
+            set_last_nt_error(status);
+            0
+        }
     }
-    if status == STATUS_TIMER_RESUME_IGNORED {
-        set_last_error(ERROR_NOT_SUPPORTED);
-    }
-    1
 }
 
 /// CancelWaitableTimer: disarm the timer, its signal state left as it was.
 #[unsafe(export_name = "f2k_export_CancelWaitableTimer")]
 pub extern "system" fn cancel_waitable_timer(timer: u32) -> u32 {
-    // SAFETY: ntdll's export, the state not asked for.
-    succeeded(unsafe { nt::NtCancelTimer(timer, core::ptr::null_mut()) })
+    win32_bool(ntcall::cancel_timer(timer))
 }
 
 // --- Waits and sleeps ----------------------------------------------------------------------------
@@ -570,15 +520,15 @@ pub extern "system" fn cancel_waitable_timer(timer: u32) -> u32 {
 /// A wait's answer: its status (WAIT_OBJECT_0 + n, WAIT_ABANDONED_0 + n, WAIT_TIMEOUT,
 /// WAIT_IO_COMPLETION), or WAIT_FAILED with the status's error. An alerted alertable wait waits
 /// again, as on Windows 2000.
-fn wait(alertable: u32, mut service: impl FnMut() -> u32) -> u32 {
+fn wait(alertable: u32, mut service: impl FnMut() -> Result<NtStatus, NtStatus>) -> u32 {
     loop {
-        let status = service();
-        if !nt_success(status) {
-            set_last_nt_error(status);
-            return WAIT_FAILED;
-        }
-        if alertable == 0 || status != STATUS_ALERTED {
-            return status;
+        match service() {
+            Ok(STATUS_ALERTED) if alertable != 0 => continue,
+            Ok(status) => return status,
+            Err(status) => {
+                set_last_nt_error(status);
+                return WAIT_FAILED;
+            }
         }
     }
 }
@@ -598,11 +548,9 @@ pub extern "system" fn wait_for_single_object_ex(
     alertable: u32,
 ) -> u32 {
     let object = console::wait_handle(object);
-    let mut interval = 0;
-    let timeout = format_timeout(milliseconds, &mut interval);
-    // SAFETY: ntdll's export, over the timeout above.
-    wait(alertable, || unsafe {
-        nt::NtWaitForSingleObject(object, boolean(alertable), timeout)
+    let timeout = format_timeout(milliseconds);
+    wait(alertable, || {
+        ntcall::wait_for_single_object(object, alertable != 0, timeout.as_ref())
     })
 }
 
@@ -630,12 +578,14 @@ pub unsafe extern "system" fn wait_for_multiple_objects(
         // SAFETY: the caller's array of `count` handles.
         *slot = console::wait_handle(unsafe { handles.add(at).read_unaligned() });
     }
-    let wait_type = if wait_all != 0 { WAIT_ALL } else { WAIT_ANY };
-    let mut interval = 0;
-    let timeout = format_timeout(milliseconds, &mut interval);
-    // SAFETY: ntdll's export, over the copy and the timeout above.
-    wait(0, || unsafe {
-        nt::NtWaitForMultipleObjects(count, copy.as_ptr(), wait_type, 0, timeout)
+    let timeout = format_timeout(milliseconds);
+    wait(0, || {
+        ntcall::wait_for_multiple_objects(
+            &copy[..count as usize],
+            wait_all != 0,
+            false,
+            timeout.as_ref(),
+        )
     })
 }
 
@@ -649,11 +599,9 @@ pub extern "system" fn signal_object_and_wait(
     alertable: u32,
 ) -> u32 {
     let object = console::wait_handle(object);
-    let mut interval = 0;
-    let timeout = format_timeout(milliseconds, &mut interval);
-    // SAFETY: ntdll's export, over the timeout above.
-    wait(alertable, || unsafe {
-        nt::NtSignalAndWaitForSingleObject(signal, object, boolean(alertable), timeout)
+    let timeout = format_timeout(milliseconds);
+    wait(alertable, || {
+        ntcall::signal_and_wait(signal, object, alertable != 0, timeout.as_ref())
     })
 }
 
@@ -662,23 +610,13 @@ pub extern "system" fn signal_object_and_wait(
 /// relative interval there is, as on Windows 2000.
 #[unsafe(export_name = "f2k_export_SleepEx")]
 pub extern "system" fn sleep_ex(milliseconds: u32, alertable: u32) -> u32 {
-    let mut interval = 0;
-    let mut timeout = format_timeout(milliseconds, &mut interval);
-    let forever = i64::MIN;
-    if timeout.is_null() {
-        timeout = &forever;
-    }
+    let interval = format_timeout(milliseconds).unwrap_or(i64::MIN);
     loop {
-        // SAFETY: ntdll's export, over the interval above.
-        let status = unsafe { nt::NtDelayExecution(boolean(alertable), timeout) };
-        if alertable != 0 && status == STATUS_ALERTED {
-            continue;
+        match ntcall::delay_execution(alertable != 0, &interval) {
+            Ok(STATUS_ALERTED) if alertable != 0 => {}
+            Ok(STATUS_USER_APC) => return WAIT_IO_COMPLETION,
+            _ => return 0,
         }
-        return if status == STATUS_USER_APC {
-            WAIT_IO_COMPLETION
-        } else {
-            0
-        };
     }
 }
 
@@ -691,8 +629,7 @@ pub extern "system" fn sleep(milliseconds: u32) {
 /// SwitchToThread: hand the processor to any ready thread; TRUE when another ran.
 #[unsafe(export_name = "f2k_export_SwitchToThread")]
 pub extern "system" fn switch_to_thread() -> u32 {
-    // SAFETY: ntdll's export.
-    u32::from(unsafe { nt::NtYieldExecution() } != STATUS_NO_YIELD_PERFORMED)
+    u32::from(ntcall::yield_execution() != Ok(STATUS_NO_YIELD_PERFORMED))
 }
 
 // --- Handles and APCs ----------------------------------------------------------------------------
@@ -706,8 +643,7 @@ pub extern "system" fn close_handle(object: u32) -> u32 {
     if is_console_handle(object) {
         return console::close_console_handle(object);
     }
-    // SAFETY: ntdll's export.
-    succeeded(unsafe { nt::NtClose(object) })
+    win32_bool(ntcall::close(object))
 }
 
 /// DuplicateHandle: a new handle to the object, in the target process (the calling one),
@@ -745,18 +681,17 @@ pub unsafe extern "system" fn duplicate_handle(
         return 1;
     }
     let attributes = if inherit != 0 { OBJ_INHERIT } else { 0 };
-    // SAFETY: ntdll's export.
-    succeeded(unsafe {
-        nt::NtDuplicateObject(
-            source_process,
-            source,
-            target_process,
-            target,
-            access,
-            attributes,
-            options,
-        )
-    })
+    // SAFETY: the caller's HANDLE, or null.
+    let target = unsafe { target.as_mut() };
+    win32_bool(ntcall::duplicate_object(
+        source_process,
+        source,
+        target_process,
+        target,
+        access,
+        attributes,
+        options,
+    ))
 }
 
 /// SetHandleInformation's flags: the handle inherited by a child created with inheritance, the
@@ -849,14 +784,13 @@ pub unsafe extern "system" fn get_handle_information(object: u32, flags: *mut u3
 /// returning zero and, as on Windows 2000, leaving the last error alone — when the service does.
 #[unsafe(export_name = "f2k_export_QueueUserAPC")]
 pub extern "system" fn queue_user_apc(routine: usize, thread: u32, parameter: usize) -> u32 {
-    // SAFETY: ntdll's export.
-    u32::from(nt_success(unsafe {
-        nt::NtQueueApcThread(thread, routine, parameter, 0, 0)
-    }))
+    u32::from(ntcall::queue_apc_thread(thread, routine, [parameter, 0, 0]).is_ok())
 }
 
 #[cfg(test)]
 mod tests {
+    use rtl::status::STATUS_OBJECT_NAME_EXISTS;
+
     use super::*;
     use crate::base::last_error;
     use crate::nt::host::{FAIL_NEXT, HANDLE, LAST_NAME, LAST_TIMEOUT};
