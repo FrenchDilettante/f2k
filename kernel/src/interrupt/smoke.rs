@@ -12,7 +12,6 @@ use core::arch::asm;
 use crate::hw::pit::{self, Programming};
 use crate::hw::portio::Ports;
 use crate::interrupt::clock::{self, CLOCK_VECTOR};
-use crate::interrupt::irql;
 use crate::pcr::pcr;
 use crate::sched::timer::TimerId;
 use crate::serial_println;
@@ -85,25 +84,30 @@ pub fn run() {
     let timer = crate::ob::directory()
         .create_timer(true)
         .expect("the boot's timer pool has room");
-    let previous = pcr().raise(irql::DISPATCH);
-    let now = clock::interrupt_time();
-    crate::sched::idle::dispatcher().set_waitable_timer(
-        TimerId::Waitable(timer.index),
-        now + pit::INTERVAL_100NS as u64,
-        now,
-        0,
-        false,
-        0,
-    );
-    pcr().lower(previous);
-    // The expiry writes the signal state at the dispatch level, inside an interrupt; each read
-    // goes through the dispatcher after the halt (a memory clobber), so it sees the write.
+    crate::level::raised::<crate::level::Dispatch, _>(|dispatch| {
+        // Read and armed masked: no tick moves the clock between the two.
+        let _masked = pcr().mask_guard();
+        let now = clock::read_at(dispatch, clock::Clock::interrupt_time);
+        crate::sched::DISPATCHER.get(dispatch).set_waitable_timer(
+            TimerId::Waitable(timer.index),
+            now + pit::INTERVAL_100NS as u64,
+            now,
+            0,
+            false,
+            0,
+        );
+    });
+    // The expiry writes the signal state at the dispatch level, from the clock's DPC; each read
+    // raises to the dispatcher's level after the halt.
     let signaled = || {
-        crate::sched::idle::dispatcher()
-            .timer(TimerId::Waitable(timer.index))
-            .waitable
-            .signal_state()
-            > 0
+        crate::level::raised::<crate::level::Dispatch, _>(|dispatch| {
+            crate::sched::DISPATCHER
+                .get(dispatch)
+                .timer(TimerId::Waitable(timer.index))
+                .waitable
+                .signal_state()
+                > 0
+        })
     };
     while !signaled() {
         wait_for_interrupt();
@@ -111,7 +115,7 @@ pub fn run() {
     serial_println!("F2K: irq-smoke: clock DPC fired");
     // The timer goes with its creator's reference: no process holds it, and nothing outlives the
     // diagnostic.
-    let _ = crate::ob::directory().dereference(timer, crate::sched::idle::dispatcher());
+    let _ = crate::ob::directory().dereference(timer);
 
     match super::audit() {
         Ok(()) => {

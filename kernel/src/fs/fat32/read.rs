@@ -6,7 +6,6 @@
 //! its covered bytes copied. An end that arrives before the size is satisfied, a free or bad entry
 //! mid-chain, or a link outside the volume is corruption, reported as a status.
 
-use super::check;
 use super::fat::FatEntry;
 use super::lookup::File;
 use super::volume::Volume;
@@ -95,11 +94,11 @@ fn read_span(volume: &Volume, lba: u64, start: usize, out: &mut [u8]) -> Result<
         let remaining = out.len() - done;
         let take = if within == 0 && remaining >= 512 {
             let whole = remaining / 512 * 512;
-            check(volume.device().read(sector, &mut out[done..done + whole]))?;
+            volume.device().read(sector, &mut out[done..done + whole])?;
             whole
         } else {
             let mut bounce = [0u8; 512];
-            check(volume.device().read(sector, &mut bounce))?;
+            volume.device().read(sector, &mut bounce)?;
             let take = (512 - within).min(remaining);
             out[done..done + take].copy_from_slice(&bounce[within..within + take]);
             take

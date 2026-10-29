@@ -47,15 +47,16 @@ pub use volume::query_volume_information_file;
 /// walk, and the completion.
 #[cfg(target_arch = "x86")]
 mod common {
-    use super::super::attributes::{self, Root, MAX_NAME};
+    use rtl::nt::IoStatusBlock;
+
+    use super::super::attributes::{self, Root};
     use super::super::call::{UserAddr, UserPtr};
     use super::name::{self, FileName};
     use crate::fs::fat32::lookup::{find, root, File, LookupError};
     use crate::fs::fat32::volume::Volume;
-    use crate::fs::file::{records, FileObject};
+    use crate::fs::file::{with_records, FileObject};
     use crate::ob::{ObjectType, Referenced};
     use crate::status::*;
-    use rtl::nt::IoStatusBlock;
 
     /// The file object `handle` names in the calling process, referenced: STATUS_INVALID_HANDLE for
     /// a handle naming nothing (a console handle included), STATUS_OBJECT_TYPE_MISMATCH for another
@@ -112,12 +113,11 @@ mod common {
         if attributes.is_null() {
             return Err(STATUS_INVALID_PARAMETER);
         }
-        let mut units = [0u16; MAX_NAME];
-        let read = attributes::read(attributes, &mut units)?;
-        let length = read.length.unwrap_or(0);
-        let units = &units[..length];
+        let mut name = attributes::Name::new();
+        let read = attributes::read(attributes, &mut name)?;
+        let units = read.units();
         let (name, start) = match attributes::root_of(read.root)? {
-            Root::None if length == 0 => return Err(STATUS_OBJECT_NAME_INVALID),
+            Root::None if units.is_empty() => return Err(STATUS_OBJECT_NAME_INVALID),
             Root::None => (name::absolute(units)?, None),
             Root::File(id) => {
                 let reference = crate::ob::reference(id).ok_or(STATUS_INVALID_HANDLE)?;
@@ -125,7 +125,7 @@ mod common {
                     .file(reference.id())
                     .expect("held")
                     .record;
-                let directory = records().get(record).file;
+                let directory = crate::fs::io::file_at(record);
                 if !directory.directory {
                     return Err(STATUS_INVALID_PARAMETER);
                 }
@@ -179,11 +179,8 @@ mod common {
                 None => return Err(STATUS_OBJECT_PATH_NOT_FOUND),
             }
         }
-        Ok(Found::Existing(
-            records()
-                .find(&directory)
-                .map_or(directory, |index| records().get(index).file),
-        ))
+        let current = with_records(|records| records.current(directory));
+        Ok(Found::Existing(current))
     }
 
     /// The boot volume's cluster size in bytes (a file's allocation unit).
@@ -201,14 +198,20 @@ mod common {
             return Ok(None);
         }
         let event = super::super::sync::object_of(handle, ObjectType::Event)?;
-        event.event().reset();
+        let body = event.event();
+        crate::level::raised::<crate::level::Dispatch, _>(|dispatch| {
+            crate::sched::DISPATCHER.get(dispatch).reset_event(body)
+        });
         Ok(Some(event))
     }
 
     /// Signal a completion's event.
     pub fn signal(event: Option<crate::ob::ObRef>) {
         if let Some(event) = event {
-            event.event().set(crate::sched::idle::dispatcher(), 0);
+            let body = event.event();
+            crate::level::raised::<crate::level::Dispatch, _>(|dispatch| {
+                crate::sched::DISPATCHER.get(dispatch).set_event(body, 0)
+            });
         }
     }
 }

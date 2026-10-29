@@ -26,118 +26,160 @@
 //! keyboard byte it shows whether the input buffer holds records: a read the server answered
 //! STATUS_PENDING waits on it.
 
-use rtl::console::screen::ScreenBuffer;
-use rtl::console::{header, Client, Console, Handles, DATA_WORDS, MESSAGE_BYTES};
+use core::mem::offset_of;
+
+use rtl::console::screen::{ScreenBuffer, DEFAULT_ATTRIBUTE};
+use rtl::console::{Client, Console, CsrApiMsg, Handles, DATA_WORDS};
+use rtl::pod::Pod;
 
 use crate::hw::portio::Io;
 use crate::hw::vga::{CellMemory, TextScreen};
-use crate::nt::call::{NtResult, UserAddr};
 #[cfg(target_arch = "x86")]
+use crate::level::{At, Dispatch, LevelCell, Passive};
+use crate::nt::call::{NtResult, UserAddr};
 use crate::ob::ObjectId;
+#[cfg(target_arch = "x86")]
+use crate::sched::wait::WaitableId;
 use crate::status::*;
 use crate::user::syscall::ServiceFn;
 
 /// The service the dispatcher raises SYS_CSR_CALL into: its four dword arguments, and its body.
 pub const SERVICE: (u32, ServiceFn) = (16, service);
 
-/// The console: one, shared by every process.
+/// The console server's state: the one console every process shares, and its input-wait event
+/// (Windows 2000's CONSOLE_INFORMATION.InputEvent).
 #[cfg(target_arch = "x86")]
-static mut CONSOLE: Console = Console::new();
-
-/// The console's state, borrowed for one service call, one keyboard byte, or the boot's first
-/// look.
-///
-/// # Safety
-///
-/// A single CPU, interrupts off across the system service: the borrow is the console's only one.
-/// The keyboard's DPC borrows it too, at the dispatch level: DPCs drain only on an interrupt's
-/// exit and in the idle loop, neither of which can run inside the service, and no thread is
-/// switched to while a DPC runs, so no service starts inside one. The DPC queue runs one routine
-/// at a time.
-#[cfg(target_arch = "x86")]
-unsafe fn console() -> &'static mut Console {
-    // SAFETY: the caller's.
-    unsafe { &mut *core::ptr::addr_of_mut!(CONSOLE) }
+struct ConsoleServer {
+    console: Console,
+    /// The console's input-wait event, once a process asked for it: the object, which names
+    /// nothing once its process is gone.
+    input_event: Option<ObjectId>,
 }
 
-/// The console's input-wait event, once a process asked for it: the object, which names nothing
-/// once its process is gone.
+/// The console server, at the dispatch level: the keyboard's DPC feeds it there, and the system
+/// service raises there to serve a call. The dispatch token keeps the two apart: no DPC runs while
+/// the service holds it, and no service starts inside a DPC.
 #[cfg(target_arch = "x86")]
-static mut INPUT_EVENT: Option<ObjectId> = None;
+static SERVER: LevelCell<Dispatch, ConsoleServer> = LevelCell::new(ConsoleServer {
+    console: Console::new(),
+    input_event: None,
+});
 
 /// The boot's step: the text screen shows the fresh console's window (whatever the firmware and
 /// loader left there cleared), the hardware cursor at its cursor.
+///
+/// The boot runs with interrupts masked and the interrupt controllers not set up yet, so it does
+/// not raise to the server's level (a raise below the clock level enables interrupts). Nor does it
+/// need to look at the server: its console is a fresh one, whose window is blank in the default
+/// attribute with the cursor home, and whose screen buffer holds no change for the first call's
+/// look to copy.
 #[cfg(target_arch = "x86")]
 pub fn init() {
-    // SAFETY: the boot context, before any process runs.
-    let screen = &mut unsafe { console() }.screen;
-    let mut vga = crate::hw::vga::screen();
-    vga.clear(rtl::console::screen::DEFAULT_ATTRIBUTE);
-    vga.put_grid(screen.window_cells());
-    if let Some((row, column)) = screen.window_cursor() {
-        vga.set_cursor(row, column);
-    }
-    screen.take_damage();
+    show_fresh(&mut crate::hw::vga::screen());
+}
+
+/// Show what a fresh console's window holds: every cell blank in the default attribute, the
+/// cursor home.
+fn show_fresh<M: CellMemory, P: Io>(vga: &mut TextScreen<M, P>) {
+    vga.clear(DEFAULT_ATTRIBUTE);
+    vga.set_cursor(0, 0);
 }
 
 /// SYS_CSR_CALL's service: CsrClientCallServer(message, capture buffer, API number, data length),
 /// answered for the calling process.
 #[cfg(target_arch = "x86")]
-fn service(
-    frame: &mut crate::user::TrapFrame,
-    args: &[u32],
-    passive: &mut crate::level::At<crate::level::Passive>,
-) {
+fn service(frame: &mut crate::user::TrapFrame, args: &[u32], passive: &mut At<Passive>) {
     let mut call = crate::nt::call::NtCall::new(frame, passive);
-    let handles = call.process().console_mut();
-    // SAFETY: a system service: one CPU, interrupts off.
-    let console = unsafe { console() };
-    let result = client_call_server(
-        console,
-        handles,
-        &mut Dual,
-        UserAddr(args[0]),
-        UserAddr(args[1]),
-        args[2],
-        args[3],
-    );
-    present(&mut console.screen, &mut crate::hw::vga::screen());
-    show_input(console);
+    // The input-wait handle is an object's: made (or opened) here, below the server's level,
+    // where objects are made, and handed to the call that asks for it.
+    let mut prepared = (args[2] == rtl::console::api::GET_INPUT_WAIT_HANDLE)
+        .then(|| prepare_input_wait_handle(call.passive()));
+    let handles = crate::user::args::calling_process().console_mut();
+    let result = {
+        let mut dispatch = call.passive().raise::<Dispatch>();
+        // Nothing below waits: a fault in a user-memory copy resolves in place (a copy-on-write
+        // page, a stack's growth) or fails the copy.
+        let server = SERVER.get(&mut dispatch);
+        let result = client_call_server(
+            &mut server.console,
+            handles,
+            &mut Dual {
+                input_wait_handle: &mut prepared,
+            },
+            UserAddr(args[0]),
+            UserAddr(args[1]),
+            args[2],
+            args[3],
+        );
+        present(&mut server.console.screen, &mut crate::hw::vga::screen());
+        let input = server.input_state();
+        show_input(&mut dispatch, input);
+        result
+    };
+    // A call refused before it reached the handle (its message unreadable) leaves it unopened.
+    if let Some(Ok(handle)) = prepared {
+        call.process().close_handle(handle);
+    }
     call.finish(result);
 }
 
-/// The input-wait event, when one lives, set to show whether the console's input buffer holds
-/// records.
+/// The calling process's handle to the console's input-wait event (see [`input_wait_handle`]),
+/// for the call about to ask for it: the server's slot read and written back at its level, the
+/// object made and the handle inserted below it.
 #[cfg(target_arch = "x86")]
-fn show_input(console: &Console) {
-    // SAFETY: the console's own state, touched under the console's borrow (see `console`).
-    let Some(id) = (unsafe { *core::ptr::addr_of!(INPUT_EVENT) }) else {
-        return;
-    };
-    let Some(event) = crate::ob::directory().event(id) else {
-        return;
-    };
-    if !console.input_waiting() {
-        event.reset();
-    } else if !event.signaled() {
-        event.set(
-            crate::sched::idle::dispatcher(),
-            crate::sched::event::EVENT_WAKE_INCREMENT,
-        );
+fn prepare_input_wait_handle(passive: &mut At<Passive>) -> Result<u32, NtStatus> {
+    let mut slot = SERVER.get(&mut passive.raise::<Dispatch>()).input_event;
+    let handle = input_wait_handle(&mut slot);
+    SERVER.get(&mut passive.raise::<Dispatch>()).input_event = slot;
+    handle
+}
+
+#[cfg(target_arch = "x86")]
+impl ConsoleServer {
+    /// What the input-wait event must show, when one lives: its body, and whether the console's
+    /// input buffer holds records. The event's header is read in the object directory, from the
+    /// service and from the keyboard DPC alike: a DPC drained at a lower inside a directory
+    /// operation finds no event header half-written, since no operation lowers mid-change.
+    fn input_state(&self) -> Option<(WaitableId, bool)> {
+        let event = self
+            .input_event
+            .and_then(|id| crate::ob::directory().event(id))?;
+        Some((event, self.console.input_waiting()))
     }
 }
 
-/// The calling process's handle to the input-wait event: a new handle on the live one, or a fresh
-/// event published with it; STATUS_INSUFFICIENT_RESOURCES when neither can be had.
+/// Set the input-wait event to show whether the console's input buffer holds records, as
+/// [`ConsoleServer::input_state`] read them; nothing when no event lives.
 #[cfg(target_arch = "x86")]
-fn input_wait_handle() -> Result<u32, NtStatus> {
+fn show_input(dispatch: &mut At<Dispatch>, state: Option<(WaitableId, bool)>) {
+    let Some((event, waiting)) = state else {
+        return;
+    };
+    let dispatcher = crate::sched::DISPATCHER.get(dispatch);
+    if !waiting {
+        dispatcher.reset_event(event);
+    } else if dispatcher.waitable(event).signal_state() <= 0 {
+        dispatcher.set_event(event, crate::sched::event::EVENT_WAKE_INCREMENT);
+    }
+}
+
+/// The calling process's handle to the input-wait event `slot` holds: a new handle on the live
+/// one, or a fresh event published with it (and kept in `slot`); STATUS_INSUFFICIENT_RESOURCES
+/// when neither can be had.
+#[cfg(target_arch = "x86")]
+fn input_wait_handle(slot: &mut Option<ObjectId>) -> Result<u32, NtStatus> {
+    use core::num::NonZeroU32;
+
     use crate::ob::{self, EVENT_ALL_ACCESS};
     use crate::sched::event::EventKind;
     let process = crate::user::args::calling_process();
-    // SAFETY: the console's own state, touched in its service (see `console`).
-    let slot = unsafe { &mut *core::ptr::addr_of_mut!(INPUT_EVENT) };
-    let handle = match *slot {
-        Some(id) if ob::directory().is_live(id) => ob::open(process, id, EVENT_ALL_ACCESS, false),
+    match *slot {
+        // A handle of 0 is the handle table's refusal.
+        Some(id) if ob::directory().is_live(id) => {
+            NonZeroU32::new(ob::open(process, id, EVENT_ALL_ACCESS, false))
+                .map(NonZeroU32::get)
+                .ok_or(STATUS_INSUFFICIENT_RESOURCES)
+        }
         _ => {
             let id = ob::directory()
                 .create_event(EventKind::Notification, false)
@@ -145,31 +187,31 @@ fn input_wait_handle() -> Result<u32, NtStatus> {
             let handle = ob::publish(process, id, EVENT_ALL_ACCESS, false, None)
                 .ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
             *slot = Some(id);
-            handle
+            Ok(handle)
         }
-    };
-    match handle {
-        0 => Err(STATUS_INSUFFICIENT_RESOURCES),
-        handle => Ok(handle),
     }
 }
 
 /// The keyboard DPC's step: one key byte into the console's producer, each record it completes
-/// appended to the input buffer, the lights a toggle changes shown through `lights`. A record the
-/// full buffer cannot take is reported on COM1; the `kbd-smoke` diagnostic boot reports every
-/// record as the buffer holds it.
+/// appended to the input buffer, the lights a toggle changes asked of `lights`. A record the full
+/// buffer cannot take is reported on COM1; the `kbd-smoke` diagnostic boot reports every record as
+/// the buffer holds it.
 #[cfg(target_arch = "x86")]
-pub fn key_byte(byte: u8, lights: &mut impl rtl::console::input::Lights) {
+pub fn key_byte(
+    dispatch: &mut At<Dispatch>,
+    byte: u8,
+    lights: &mut impl rtl::console::input::Lights,
+) {
     use rtl::console::input::Append;
-    // SAFETY: the keyboard's DPC, at the dispatch level (see `console`): SYS_CSR_CALL's service
-    // runs with interrupts masked from its gate to its return, so no DPC drains inside it.
-    let console = unsafe { console() };
-    console.key_byte(byte, lights, &mut |outcome, record| {
-        if outcome == Append::Dropped {
-            crate::serial_println!("F2K: kbd: input buffer full: a key event dropped");
-        }
-        #[cfg(feature = "kbd-smoke")]
-        crate::serial_println!(
+    let server = SERVER.get(dispatch);
+    server
+        .console
+        .key_byte(byte, lights, &mut |outcome, record| {
+            if outcome == Append::Dropped {
+                crate::serial_println!("F2K: kbd: input buffer full: a key event dropped");
+            }
+            #[cfg(feature = "kbd-smoke")]
+            crate::serial_println!(
             "F2K: kbd: record {} vk={:#04x} scan={:#04x} char={:#06x} state={:#06x} repeat={}{}",
             if record.key_down != 0 { "down" } else { "up" },
             record.virtual_key_code,
@@ -184,13 +226,11 @@ pub fn key_byte(byte: u8, lights: &mut impl rtl::console::input::Lights) {
                 Append::Dropped => " (dropped)",
             }
         );
-        #[cfg(not(feature = "kbd-smoke"))]
-        let _ = record;
-    });
-    // The object directory is safe here too: everything else that touches it runs with
-    // interrupts masked (the services, the loads — whose disk waits open them outside any use of
-    // it — and the teardown), so no DPC lands inside it.
-    show_input(console);
+            #[cfg(not(feature = "kbd-smoke"))]
+            let _ = record;
+        });
+    let input = server.input_state();
+    show_input(dispatch, input);
 }
 
 /// Copy what the screen buffer changed since the last look to the text screen: the window's rows
@@ -234,36 +274,34 @@ pub fn client_call_server(
     length: u32,
 ) -> NtResult {
     let length = length as usize;
-    if length > 4 * DATA_WORDS || length % 4 != 0 {
+    if length > 4 * DATA_WORDS || !length.is_multiple_of(4) {
         return Err(STATUS_INVALID_PARAMETER);
     }
-    let size = header::DATA + length;
-    let mut bytes = [0u8; MESSAGE_BYTES];
-    message.read(&mut bytes[..size])?;
-    let mut data = [0usize; DATA_WORDS];
-    for (word, raw) in data
-        .iter_mut()
-        .zip(bytes[header::DATA..size].chunks_exact(4))
-    {
-        *word = u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]) as usize;
-    }
+    let words = length / 4;
+    // The message as far as the call's data goes, as Windows 2000's port copies a message's own
+    // length: the rest stays zeros here, and the caller's is neither read nor written.
+    let size = offset_of!(CsrApiMsg, data) + length;
+    let mut msg = CsrApiMsg::zeroed();
+    message.read(&mut msg.as_bytes_mut()[..size])?;
+    let mut data = msg.data.map(|word| word as usize);
     let status = NtStatus(rtl::console::serve(
         console,
         handles,
         client,
         api,
-        &mut data[..length / 4],
+        &mut data[..words],
     ));
-    let mut put = |at: usize, value: u32| bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
-    put(header::CAPTURE_BUFFER, capture.raw());
-    put(header::API_NUMBER, api);
-    put(header::RETURN_VALUE, status.0);
-    for (index, &word) in data[..length / 4].iter().enumerate() {
-        put(header::DATA + 4 * index, word as u32);
+    msg.capture_buffer = capture.raw();
+    msg.api_number = api;
+    msg.return_value = status.0;
+    for (word, &value) in msg.data.iter_mut().zip(&data[..words]) {
+        *word = value as u32;
     }
+    // Everything after the LPC header, which the server leaves as the caller wrote it.
+    let answer = offset_of!(CsrApiMsg, capture_buffer);
     message
-        .offset(header::CAPTURE_BUFFER as u32)
-        .write(&bytes[header::CAPTURE_BUFFER..size])?;
+        .offset(answer as u32)
+        .write(&msg.as_bytes()[answer..size])?;
     if status.is_success() {
         Ok(status)
     } else {
@@ -272,10 +310,15 @@ pub fn client_call_server(
 }
 
 /// The calling client: its bytes read through a kernel chunk, each chunk to the serial line, then
-/// to the screen buffer.
-struct Dual;
+/// to the screen buffer; and the console's input-wait event, which the client asks a handle to.
+struct Dual<'a> {
+    /// The input-wait handle prepared for a call that asks for it, taken by that call (the
+    /// target's: the host never serves that call).
+    #[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
+    input_wait_handle: &'a mut Option<Result<u32, NtStatus>>,
+}
 
-impl Client for Dual {
+impl Client for Dual<'_> {
     /// A buffer the caller cannot name is refused before a byte reaches the screen
     /// (STATUS_ACCESS_VIOLATION, ERROR_NOACCESS to the caller); one that passed the probe but
     /// cannot be read is an invalid user buffer (ERROR_INVALID_USER_BUFFER), what was read
@@ -335,10 +378,10 @@ impl Client for Dual {
     }
 
     fn input_wait_handle(&mut self) -> Result<u32, u32> {
-        #[cfg(target_arch = "x86")]
-        return input_wait_handle().map_err(|status| status.0);
-        #[cfg(not(target_arch = "x86"))]
-        unreachable!("the gate is the target's");
+        self.input_wait_handle
+            .take()
+            .expect("the input-wait handle is prepared for the call that asks for it")
+            .map_err(|status| status.0)
     }
 }
 
@@ -364,11 +407,14 @@ mod tests {
     fn the_message_must_be_readable_and_its_data_whole_dwords() {
         let mut handles = Handles::standard();
         let mut console = Console::new();
+        let mut input_wait_handle = None;
         let mut call = |handles: &mut Handles, length| {
             client_call_server(
                 &mut console,
                 handles,
-                &mut Dual,
+                &mut Dual {
+                    input_wait_handle: &mut input_wait_handle,
+                },
                 UserAddr(0x40_0000),
                 UserAddr(0),
                 api::CLOSE_HANDLE,
@@ -395,38 +441,67 @@ mod tests {
         );
     }
 
+    /// The text screen's cell memory, for the host.
+    struct Memory(std::vec::Vec<u16>);
+
+    impl CellMemory for Memory {
+        fn store(&mut self, index: usize, word: u16) {
+            self.0[index] = word;
+        }
+    }
+
+    /// The text screen's ports, for the host: what was written to them.
+    #[derive(Default)]
+    struct Ports(std::vec::Vec<(u16, u8)>);
+
+    impl Io for Ports {
+        fn out(&mut self, port: u16, byte: u8) {
+            self.0.push((port, byte));
+        }
+
+        fn read(&mut self, _port: u16) -> u8 {
+            0
+        }
+
+        fn read_word(&mut self, _port: u16) -> u16 {
+            0
+        }
+    }
+
+    /// A text screen over the host's fakes, every cell holding `word`.
+    fn text_screen(word: u16) -> TextScreen<Memory, Ports> {
+        use crate::hw::vga::{COLUMNS, ROWS};
+        TextScreen::new(Memory(std::vec![word; COLUMNS * ROWS]), Ports::default())
+    }
+
+    /// The boot's step shows what a fresh console's window holds without looking at it: the screen
+    /// cleared, then the window's cells and its cursor, over whatever the screen held; and a fresh
+    /// console holds no change for the first call's look to copy.
+    #[test]
+    fn the_boot_shows_a_fresh_console() {
+        let mut console = Console::new();
+        let screen = &mut console.screen;
+        let mut drawn = text_screen(0x4E41);
+        drawn.clear(DEFAULT_ATTRIBUTE);
+        drawn.put_grid(screen.window_cells());
+        let (row, column) = screen.window_cursor().expect("the cursor is in the window");
+        drawn.set_cursor(row, column);
+        let mut shown = text_screen(0x4E41);
+        show_fresh(&mut shown);
+        let (drawn, shown) = (drawn.parts(), shown.parts());
+        assert!(drawn.0 .0 == shown.0 .0, "the same cells");
+        assert_eq!(drawn.1 .0, shown.1 .0, "the same cursor");
+        assert_eq!(screen.take_damage(), None);
+    }
+
     /// After a call, the text screen gets the rows the screen buffer changed and its cursor;
     /// nothing at all when nothing changed.
     #[test]
     fn the_text_screen_gets_the_changed_rows_and_the_cursor() {
-        use std::vec::Vec;
-
         use rtl::console::screen::{Cell, HEIGHT, WIDTH};
 
-        struct Memory(Vec<u16>);
-        impl CellMemory for Memory {
-            fn store(&mut self, index: usize, word: u16) {
-                self.0[index] = word;
-            }
-        }
-        #[derive(Default)]
-        struct Ports(Vec<(u16, u8)>);
-        impl Io for Ports {
-            fn out(&mut self, port: u16, byte: u8) {
-                self.0.push((port, byte));
-            }
-
-            fn read(&mut self, _port: u16) -> u8 {
-                0
-            }
-
-            fn read_word(&mut self, _port: u16) -> u16 {
-                0
-            }
-        }
-
         use crate::hw::vga::{COLUMNS, ROWS};
-        let mut vga = TextScreen::new(Memory(std::vec![0; COLUMNS * ROWS]), Ports::default());
+        let mut vga = text_screen(0);
         let mut screen = ScreenBuffer::new();
         screen.take_damage();
         present(&mut screen, &mut vga);

@@ -22,42 +22,89 @@
 //! - An exception the program does not handle reaches `_XcptFilter`, which hands it to
 //!   UnhandledExceptionFilter; the start-up's handler ends the process with the exception's code.
 
-use crate::data::{Exported, Global, FMODE};
+use core::sync::atomic::Ordering::Relaxed;
+use core::sync::atomic::{AtomicBool, AtomicUsize};
+
+use rtl::sync::Locked;
+
+use crate::data::{Exported, FMODE};
 use crate::imports;
-use crate::lowio::APP_TYPE;
-use crate::thread::Locked;
+use crate::thread::Lock;
 
 /// `_commode`: the default commit mode of the streams a program opens (0).
 static COMMODE: Exported<i32> = Exported::new(0);
 /// `__argc` and `__argv` (`__getmainargs` sets them), `_environ` and `__initenv` (the DLL's
-/// initialization does).
+/// initialization does). The C runtime reaches them under the environment's lock
+/// ([`ENVIRONMENT`]).
 static ARGC: Exported<i32> = Exported::new(0);
 static ARGV: Exported<*mut *mut u8> = Exported::new(core::ptr::null_mut());
 static ENVIRON: Exported<*mut *mut u8> = Exported::new(core::ptr::null_mut());
 static INITENV: Exported<*mut *mut u8> = Exported::new(core::ptr::null_mut());
 /// The program's `_matherr` (`__setusermatherr`).
-static USER_MATHERR: Global<usize> = Global::new(0);
+static USER_MATHERR: AtomicUsize = AtomicUsize::new(0);
+
+/// A function registered for exit (`_onexit`, `atexit`, `__dllonexit`): a C `void (*)(void)`, or
+/// NULL.
+pub type ExitFunction = Option<extern "C" fn()>;
 
 /// The exit functions: a growable array from the C runtime's heap, in registration order.
 struct ExitTable {
-    functions: *mut usize,
+    functions: *mut ExitFunction,
     count: usize,
     capacity: usize,
 }
 
-static EXIT_TABLE: Global<ExitTable> = Global::new(ExitTable {
-    functions: core::ptr::null_mut(),
-    count: 0,
-    capacity: 0,
-});
+// SAFETY: the table owns its block of the C runtime's heap (a process-wide heap: any thread may
+// grow or free it), and the block holds plain function pointers; it moves between threads only
+// under the exit functions' lock.
+unsafe impl Send for ExitTable {}
+
+/// The exit functions, behind their lock (Windows 2000's msvcrt has one for its exit list). Each
+/// one is taken out under it and called after it is let go, so a function may register another.
+static EXIT: Locked<ExitTable, Lock> = Locked::new(
+    Lock::new(),
+    ExitTable {
+        functions: core::ptr::null_mut(),
+        count: 0,
+        capacity: 0,
+    },
+);
 
 /// Whether exit or _exit has run: the DLL's detach then leaves the process as they did.
-static EXITED: Global<bool> = Global::new(false);
+static EXITED: AtomicBool = AtomicBool::new(false);
+
+/// The environment's lock (Windows 2000's msvcrt has one for its environment), and the access to
+/// `_environ` and `__initenv` it guards: the C runtime reads and writes them only through the
+/// `&mut Environment` its `with` lends. Programs read them directly.
+static ENVIRONMENT: Locked<Environment, Lock> = Locked::new(Lock::new(), Environment(()));
+
+/// The C runtime's way to `_environ` and `__initenv`, lent under the environment's lock.
+struct Environment(());
+
+impl Environment {
+    /// `_environ`: the environment's array, NULL-terminated, of `NAME=value` strings.
+    fn current(&self) -> *mut *mut u8 {
+        ENVIRON.read()
+    }
+
+    /// `__initenv`: the array `main` was given.
+    fn initial(&self) -> *mut *mut u8 {
+        INITENV.read()
+    }
+
+    fn set_current(&mut self, array: *mut *mut u8) {
+        ENVIRON.write(array);
+    }
+
+    fn set_initial(&mut self, array: *mut *mut u8) {
+        INITENV.write(array);
+    }
+}
 
 /// __set_app_type: the program's kind, 1 a console program, 2 a GUI one.
 #[unsafe(export_name = "f2k_export___set_app_type")]
 pub extern "C" fn set_app_type(kind: i32) {
-    APP_TYPE.write(kind);
+    crate::lowio::set_app_type(kind);
 }
 
 /// __p__fmode: `_fmode`'s address.
@@ -99,7 +146,7 @@ pub extern "C" fn p_initenv() -> *mut *mut *mut u8 {
 /// __setusermatherr: the program's `_matherr`, kept.
 #[unsafe(export_name = "f2k_export___setusermatherr")]
 pub extern "C" fn setusermatherr(handler: usize) {
-    USER_MATHERR.write(handler);
+    USER_MATHERR.store(handler, Relaxed);
 }
 
 /// float.h's control word, abstract: the exception masks, the infinity, rounding and precision
@@ -183,14 +230,16 @@ mod fpu {
 /// The host's stand-in: the word kept in a variable.
 #[cfg(not(target_arch = "x86"))]
 mod fpu {
-    static WORD: crate::data::Global<u16> = crate::data::Global::new(0x027F);
+    use core::sync::atomic::{AtomicU16, Ordering::Relaxed};
+
+    static WORD: AtomicU16 = AtomicU16::new(0x027F);
 
     pub fn read() -> u16 {
-        WORD.read()
+        WORD.load(Relaxed)
     }
 
     pub fn write(word: u16) {
-        WORD.write(word)
+        WORD.store(word, Relaxed)
     }
 }
 
@@ -344,12 +393,19 @@ pub unsafe extern "C" fn getmainargs(
                 };
             }
         });
-        *ARGC.get() = count as i32;
-        *ARGV.get() = block;
-        *INITENV.get() = *ENVIRON.get();
+    }
+    let environment = ENVIRONMENT.with(|environment| {
+        ARGC.write(count as i32);
+        ARGV.write(block);
+        let current = environment.current();
+        environment.set_initial(current);
+        current
+    });
+    // SAFETY: the start-up's storage for argc, argv and envp.
+    unsafe {
         argc.write(count as i32);
         argv.write(block);
-        envp.write(*ENVIRON.get());
+        envp.write(environment);
     }
     0
 }
@@ -389,8 +445,10 @@ pub fn initialize_environment() -> bool {
             text.write(0);
             text = text.add(1);
         }
-        *ENVIRON.get() = array;
-        *INITENV.get() = array;
+        ENVIRONMENT.with(|environment| {
+            environment.set_current(array);
+            environment.set_initial(array);
+        });
         imports::FreeEnvironmentStringsA(block);
         true
     }
@@ -418,12 +476,15 @@ fn sets(entry: &[u8], name: &[u8]) -> bool {
 }
 
 /// The C runtime's environment's value of `name` (as getenv reads `_environ`), copied into `out`:
-/// its length, none when the variable is unset or its value does not fit. The C runtime's lock is
+/// its length, none when the variable is unset or its value does not fit. The environment's lock is
 /// taken for the read.
 pub fn environment_value(name: &[u8], out: &mut [u8]) -> Option<usize> {
-    let _lock = Locked::take();
-    // SAFETY: the C runtime's own variable, under its lock.
-    let current = unsafe { *ENVIRON.get() };
+    ENVIRONMENT.with(|environment| value_of(environment, name, out))
+}
+
+/// `name`'s value in `_environ`, into `out`: [`environment_value`]'s work, under the lock.
+fn value_of(environment: &Environment, name: &[u8], out: &mut [u8]) -> Option<usize> {
+    let current = environment.current();
     if current.is_null() {
         return None;
     }
@@ -445,11 +506,8 @@ pub fn environment_value(name: &[u8], out: &mut [u8]) -> Option<usize> {
 /// heap), added at its end when the name has none, or removed for none: a new array, the old one
 /// freed unless it is `__initenv`'s (main's envp keeps it). A replaced entry's string is kept (a
 /// pointer getenv handed out stays readable). False when the heap has no room.
-///
-/// The caller holds the C runtime's lock.
-fn edit_environ(name: &[u8], entry: Option<*mut u8>) -> bool {
-    // SAFETY: the C runtime's own variables, under its lock.
-    let (current, initial) = unsafe { (*ENVIRON.get(), *INITENV.get()) };
+fn edit_environ(environment: &mut Environment, name: &[u8], entry: Option<*mut u8>) -> bool {
+    let (current, initial) = (environment.current(), environment.initial());
     let entries: &[*mut u8] = if current.is_null() {
         &[]
     } else {
@@ -485,8 +543,7 @@ fn edit_environ(name: &[u8], entry: Option<*mut u8>) -> bool {
         // SAFETY: an array a previous edit made, of the C runtime's heap, no longer `_environ`.
         unsafe { crate::heap::release(current.cast()) };
     }
-    // SAFETY: as above.
-    unsafe { *ENVIRON.get() = array };
+    environment.set_current(array);
     true
 }
 
@@ -512,8 +569,13 @@ pub unsafe extern "C" fn putenv(string: *const u8) -> i32 {
     else {
         return -1;
     };
+    ENVIRONMENT.with(|environment| put(environment, string, split))
+}
+
+/// _putenv's work, under the environment's lock: `string`, `NAME=value` with its `=` at `split`,
+/// set in both environments.
+fn put(environment: &mut Environment, string: &[u8], split: usize) -> i32 {
     let (name, value) = (&string[..split], &string[split + 1..]);
-    let _lock = Locked::take();
     let entry = if value.is_empty() {
         None
     } else {
@@ -523,7 +585,7 @@ pub unsafe extern "C" fn putenv(string: *const u8) -> i32 {
         }
         Some(copy)
     };
-    if !edit_environ(name, entry) {
+    if !edit_environ(environment, name, entry) {
         if let Some(copy) = entry {
             // SAFETY: the copy made above, used nowhere.
             unsafe { crate::heap::release(copy) };
@@ -555,16 +617,16 @@ pub unsafe extern "C" fn putenv(string: *const u8) -> i32 {
 ///
 /// `functions` is null or a block of the C runtime's heap holding `count` entries.
 unsafe fn append(
-    functions: *mut usize,
+    functions: *mut ExitFunction,
     count: usize,
     capacity: usize,
-    function: usize,
-) -> Option<(*mut usize, usize)> {
+    function: ExitFunction,
+) -> Option<(*mut ExitFunction, usize)> {
     let (functions, capacity) = if count < capacity {
         (functions, capacity)
     } else {
         let capacity = (capacity * 2).max(32);
-        let bytes = capacity * core::mem::size_of::<usize>();
+        let bytes = capacity * core::mem::size_of::<ExitFunction>();
         let grown = if functions.is_null() {
             crate::heap::allocate(bytes, false)
         } else {
@@ -584,21 +646,16 @@ unsafe fn append(
 /// _onexit: `function` registered for exit, which calls them last registered first; answers it, or
 /// NULL when the table cannot grow (atexit's -1).
 #[unsafe(export_name = "f2k_export__onexit")]
-pub extern "C" fn onexit(function: usize) -> usize {
-    let _lock = Locked::take();
-    // SAFETY: the exit table, under the lock.
-    unsafe {
-        let table = &mut *EXIT_TABLE.get();
-        match append(table.functions, table.count, table.capacity, function) {
-            Some((functions, capacity)) => {
-                table.functions = functions;
-                table.capacity = capacity;
-                table.count += 1;
-                function
-            }
-            None => 0,
-        }
-    }
+pub extern "C" fn onexit(function: ExitFunction) -> ExitFunction {
+    EXIT.with(|table| {
+        // SAFETY: the table's own block of the C runtime's heap, holding `count` entries.
+        let grown = unsafe { append(table.functions, table.count, table.capacity, function) };
+        let (functions, capacity) = grown?;
+        table.functions = functions;
+        table.capacity = capacity;
+        table.count += 1;
+        function
+    })
 }
 
 /// __dllonexit: `function` appended to a DLL's own exit table, `*begin` to `*end` (a block of the
@@ -609,52 +666,46 @@ pub extern "C" fn onexit(function: usize) -> usize {
 /// `begin` and `end` hold the table's bounds, the table a block from malloc.
 #[unsafe(export_name = "f2k_export___dllonexit")]
 pub unsafe extern "C" fn dllonexit(
-    function: usize,
-    begin: *mut *mut usize,
-    end: *mut *mut usize,
-) -> usize {
-    let _lock = Locked::take();
-    // SAFETY: the caller's table.
-    unsafe {
-        let functions = *begin;
-        let count = if functions.is_null() {
-            0
-        } else {
-            (*end).offset_from(functions) as usize
-        };
-        let capacity = if functions.is_null() {
-            0
-        } else {
-            crate::heap::size_of(functions.cast()) / core::mem::size_of::<usize>()
-        };
-        match append(functions, count, capacity, function) {
-            Some((functions, _)) => {
-                *begin = functions;
-                *end = functions.add(count + 1);
-                function
-            }
-            None => 0,
+    function: ExitFunction,
+    begin: *mut *mut ExitFunction,
+    end: *mut *mut ExitFunction,
+) -> ExitFunction {
+    // Under the exit functions' lock, as the process's own table is changed.
+    EXIT.with(|_| {
+        // SAFETY: the caller's table: its bounds at `begin` and `end`, the table null or a block
+        // from malloc holding the entries between them.
+        unsafe {
+            let functions = *begin;
+            let count = if functions.is_null() {
+                0
+            } else {
+                (*end).offset_from(functions) as usize
+            };
+            let capacity = if functions.is_null() {
+                0
+            } else {
+                crate::heap::size_of(functions.cast()) / core::mem::size_of::<ExitFunction>()
+            };
+            let (functions, _) = append(functions, count, capacity, function)?;
+            *begin = functions;
+            *end = functions.add(count + 1);
+            function
         }
-    }
+    })
 }
 
 /// The exit functions run, last registered first (one that registers another has it run too).
 fn run_exit_functions() {
     loop {
-        let function = {
-            let _lock = Locked::take();
-            // SAFETY: the exit table, under the lock.
-            let table = unsafe { &mut *EXIT_TABLE.get() };
-            if table.count == 0 {
-                break;
-            }
-            table.count -= 1;
-            // SAFETY: inside the table.
-            unsafe { table.functions.add(table.count).read() }
-        };
-        if function != 0 {
-            // SAFETY: a function the program registered.
-            unsafe { core::mem::transmute::<usize, extern "C" fn()>(function)() };
+        let next = EXIT.with(|table| {
+            table.count = table.count.checked_sub(1)?;
+            // SAFETY: inside the table's block, which holds the entries below its count.
+            Some(unsafe { table.functions.add(table.count).read() })
+        });
+        match next {
+            None => break,
+            Some(Some(function)) => function(),
+            Some(None) => {}
         }
     }
 }
@@ -664,7 +715,7 @@ fn run_exit_functions() {
 pub extern "C" fn exit(status: i32) -> ! {
     run_exit_functions();
     crate::stdio::flush_all();
-    EXITED.write(true);
+    EXITED.store(true, Relaxed);
     // SAFETY: kernel32's export.
     unsafe { imports::ExitProcess(status as u32) }
 }
@@ -672,7 +723,7 @@ pub extern "C" fn exit(status: i32) -> ! {
 /// _exit: the process ended with `status` at once.
 #[unsafe(export_name = "f2k_export__exit")]
 pub extern "C" fn quick_exit(status: i32) -> ! {
-    EXITED.write(true);
+    EXITED.store(true, Relaxed);
     // SAFETY: kernel32's export.
     unsafe { imports::ExitProcess(status as u32) }
 }
@@ -680,8 +731,7 @@ pub extern "C" fn quick_exit(status: i32) -> ! {
 /// The DLL's detach as the process ends without exit or _exit (ExitProcess straight from the
 /// program): the exit functions run and the streams flushed, as exit would.
 pub fn detach_process() {
-    if !EXITED.read() {
-        EXITED.write(true);
+    if !EXITED.swap(true, Relaxed) {
         run_exit_functions();
         crate::stdio::flush_all();
     }
@@ -789,11 +839,10 @@ mod tests {
                 core::ptr::copy_nonoverlapping(entry.as_ptr(), text, entry.len());
                 text = text.add(entry.len() + 1);
             }
-            *ENVIRON.get() = array;
-            *INITENV.get() = array;
         }
-        // SAFETY: the C runtime's own variable, which only this test sets.
-        let environ = || entries_of(unsafe { *ENVIRON.get() });
+        ENVIRON.write(array);
+        INITENV.write(array);
+        let environ = || entries_of(ENVIRON.read());
         let sets = || ENVIRONMENT_SETS.with(|sets| std::mem::take(&mut *sets.borrow_mut()));
         let put = |text: &[u8]| {
             let mut owned = text.to_vec();
@@ -841,10 +890,10 @@ mod tests {
         assert_eq!(unsafe { putenv(core::ptr::null()) }, -1);
         assert!(sets().is_empty());
         assert_eq!(environ().len(), 3);
-        // SAFETY: main's envp, as the start-up left it.
         assert_eq!(
-            entries_of(unsafe { *INITENV.get() }),
-            ["F2KHOME=C:\\CORPUS", "PATH=C:\\WINNT"]
+            entries_of(INITENV.read()),
+            ["F2KHOME=C:\\CORPUS", "PATH=C:\\WINNT"],
+            "main's envp, as the start-up left it"
         );
     }
 }

@@ -10,11 +10,12 @@
 //! host tests run its code against [`nt`]'s stand-ins.
 //!
 //! The shared helpers are [`base`]'s (the last error, a failed service's status mapped to it, the
-//! PEB, the process parameters, the process heap and the environment block). The groups: the
-//! console ([`console`], to the console server), the start-up calls ([`startup`]), the modules
-//! ([`module`]), the synchronization objects, the waits and the handle calls ([`sync`]), the files'
-//! read side ([`files`], over ntdll's file services) and the current directory ([`curdir`]),
-//! the environment ([`env`], over ntdll's), the TLS indexes ([`thread`]), new processes
+//! PEB, the process parameters, the process heap and the environment block) and [`heap`]'s (what
+//! kernel32 holds on the process heap, and its own handles, as values freed when dropped). The
+//! groups: the console ([`console`], to the console server), the start-up calls ([`startup`]), the
+//! modules ([`module`]), the synchronization objects, the waits and the handle calls ([`sync`]),
+//! the files' read side ([`files`], over ntdll's file services) and the current directory
+//! ([`curdir`]), the environment ([`env`], over ntdll's), the TLS indexes ([`thread`]), new processes
 //! ([`create`]: CreateProcess), the processes' calls ([`process`]: their end, OpenProcess, their
 //! exit codes and memory), a file's binary type ([`binary_type`]), exceptions ([`except`]:
 //! RaiseException, the pointer probes' unwind), the locale group ([`locale`] over `rtl::codepage`,
@@ -40,6 +41,7 @@ pub mod error;
 pub mod except;
 pub mod filemap;
 pub mod files;
+pub mod heap;
 pub mod locale;
 pub mod localeinfo;
 pub mod message;

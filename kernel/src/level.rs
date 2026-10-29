@@ -95,9 +95,10 @@
 
 use core::cell::UnsafeCell;
 use core::marker::PhantomData;
+use core::mem::MaybeUninit;
 use core::ops::{Deref, DerefMut};
 
-use crate::interrupt::irql::{self, Irql};
+use crate::interrupt::irql::{self, Irql, OldIrql};
 use crate::pcr::pcr;
 
 mod sealed {
@@ -185,8 +186,8 @@ impl<L: Level> At<L> {
     /// # Safety
     ///
     /// Only at such an entry: the interrupt dispatch once the claim has raised to the object's
-    /// level, the DPC drain once it has raised to the dispatch level from below, and [`raised`]
-    /// once it has raised from below. The ledger must read `L`, it must have been below `L` before
+    /// level, the dispatch-level work's entry ([`dispatch_entry`]) and [`raised`] once they have
+    /// raised from below. The ledger must read `L`, it must have been below `L` before
     /// the entry's own raise (so no other token for `L` is live on the processor), and the token
     /// must be dropped before the entry lowers.
     ///
@@ -207,12 +208,13 @@ impl<L: Level> At<L> {
     #[inline]
     pub fn raise<M: Above<L>>(&mut self) -> Raised<'_, L, M> {
         let previous = pcr().raise(M::IRQL);
-        debug_assert_eq!(previous, L::IRQL, "a token outlived its level");
+        debug_assert_eq!(previous.level(), L::IRQL, "a token outlived its level");
         // SAFETY: the processor was at exactly `L` (this token) and the raise just put it at `M`,
         // above `L`, so no other token for `M` is live; the guard drops the token as it lowers.
         let at = unsafe { At::enter() };
         Raised {
             at,
+            previous,
             _lower: PhantomData,
         }
     }
@@ -221,6 +223,8 @@ impl<L: Level> At<L> {
 /// A raise from `L` to `M`: derefs to the `M` token, lowers back to `L` when dropped.
 pub struct Raised<'a, L: Level, M: Level> {
     at: At<M>,
+    /// What the raise found: `L`, and the interrupt flag the lower puts back.
+    previous: OldIrql,
     _lower: PhantomData<&'a mut At<L>>,
 }
 
@@ -243,7 +247,7 @@ impl<L: Level, M: Level> DerefMut for Raised<'_, L, M> {
 impl<L: Level, M: Level> Drop for Raised<'_, L, M> {
     #[inline]
     fn drop(&mut self) {
-        pcr().lower(L::IRQL);
+        pcr().lower(self.previous);
     }
 }
 
@@ -265,8 +269,47 @@ pub fn raised<L: Level, R>(f: impl FnOnce(&mut At<L>) -> R) -> R {
     f(&mut at)
 }
 
-/// Lowers the ledger back to the level it holds when dropped: the bridge's half of a raise.
-struct Lower(Irql);
+/// [`raised`] for an interrupt's entry before its claim (the performance trace's sample): the
+/// lower runs none of the dispatch-level work [`crate::pcr::Pcr::lower`] runs on the way down,
+/// which belongs after the interrupt's service, at its exit.
+///
+/// # Panics
+///
+/// As [`raised`].
+#[cfg(feature = "perf-trace")]
+pub(crate) fn raised_in_entry<L: Level, R>(f: impl FnOnce(&mut At<L>) -> R) -> R {
+    let Some(previous) = pcr().raise_from_below(L::IRQL) else {
+        panic!("a level bridge entered at or above its level");
+    };
+    let result = {
+        // SAFETY: an entry: as in `raised`; the token dies with this block, before the lower.
+        let mut at = unsafe { At::enter() };
+        f(&mut at)
+    };
+    pcr().lower_only(previous);
+    result
+}
+
+/// The entry of the dispatch-level work a lower below the dispatch level owes (Windows 2000's
+/// DISPATCH software interrupt: the DPC drain and the dispatch decision): raise to the dispatch
+/// level when the processor is below it, run `f` with the token, and lower without running that
+/// work again, since `f` is it. None, with nothing run, at or above the dispatch level.
+pub(crate) fn dispatch_entry<R>(f: impl FnOnce(&mut At<Dispatch>) -> R) -> Option<R> {
+    let previous = pcr().raise_from_below(Dispatch::IRQL)?;
+    let result = {
+        // SAFETY: an entry: `raise_from_below` found the ledger below the dispatch level and raised
+        // it there, with interrupts masked across the test and the raise; the token dies with this
+        // block, before the lower.
+        let mut at = unsafe { At::enter() };
+        f(&mut at)
+    };
+    pcr().lower_only(previous);
+    Some(result)
+}
+
+/// Lowers the ledger back to what the bridge's raise found when dropped: the bridge's half of a
+/// raise.
+struct Lower(OldIrql);
 
 impl Drop for Lower {
     #[inline]
@@ -276,22 +319,46 @@ impl Drop for Lower {
 }
 
 /// State that belongs to level `L`: reached only with the `L` token.
+///
+/// A cell holds its value from the start ([`LevelCell::new`]), or builds it in place at the first
+/// borrow ([`LevelCell::in_place`]): the shape for state too large to pass through a stack by
+/// value, as a constructor's return would (the dispatcher database).
 pub struct LevelCell<L: NoPreempt, T> {
-    value: UnsafeCell<T>,
+    value: UnsafeCell<MaybeUninit<T>>,
+    /// What builds the value at the first borrow; none once it is built (from the start, for a
+    /// cell made with its value). Reached only inside a borrow, as the value is.
+    build: UnsafeCell<Option<unsafe fn(*mut T)>>,
     _level: PhantomData<L>,
 }
 
 // SAFETY: one processor, and `get` needs an `At<L>`: only one of those is live at a time (see the
 // module's model), and the `&mut T` it hands out lives no longer than that token's borrow, so no
 // two references to the value are ever alive at once, whichever thread of the kernel makes them.
-// `T: Send`, as for a lock: the value is reached from whichever thread holds the token.
+// The build slot is reached only inside the same borrow. `T: Send`, as for a lock: the value is
+// reached from whichever thread holds the token.
 unsafe impl<L: NoPreempt, T: Send> Sync for LevelCell<L, T> {}
 
 impl<L: NoPreempt, T> LevelCell<L, T> {
     /// A cell holding `value`.
     pub const fn new(value: T) -> Self {
         LevelCell {
-            value: UnsafeCell::new(value),
+            value: UnsafeCell::new(MaybeUninit::new(value)),
+            build: UnsafeCell::new(None),
+            _level: PhantomData,
+        }
+    }
+
+    /// A cell whose value `build` writes in place at the first borrow, at the value's final
+    /// address.
+    ///
+    /// # Safety
+    ///
+    /// `build`, handed a pointer valid for writes and aligned for a `T`, leaves a valid `T` there,
+    /// and does not reach this cell itself (it runs inside the first borrow).
+    pub const unsafe fn in_place(build: unsafe fn(*mut T)) -> Self {
+        LevelCell {
+            value: UnsafeCell::new(MaybeUninit::uninit()),
+            build: UnsafeCell::new(Some(build)),
             _level: PhantomData,
         }
     }
@@ -300,14 +367,68 @@ impl<L: NoPreempt, T> LevelCell<L, T> {
     #[inline]
     pub fn get<'a>(&'a self, _at: &'a mut At<L>) -> &'a mut T {
         // SAFETY: the caller holds the one live `At<L>` (see the `Sync` impl), lent mutably for
-        // `'a`, so this is the only reference to the value for `'a`.
-        unsafe { &mut *self.value.get() }
+        // `'a`, so this is the only reference to the value and its build slot for `'a`. A cell
+        // with no build pending holds a value (`new`'s, or an earlier build's); one with a build
+        // pending gets its value here, from the build `in_place`'s caller vouched for, before it
+        // is read.
+        unsafe {
+            let value = &mut *self.value.get();
+            let build = &mut *self.build.get();
+            if let Some(write) = *build {
+                write(value.as_mut_ptr());
+                *build = None;
+            }
+            value.assume_init_mut()
+        }
     }
 
     /// The value, through exclusive ownership of the cell (no token needed).
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn get_mut(&mut self) -> &mut T {
-        self.value.get_mut()
+        let value = self.value.get_mut();
+        let build = self.build.get_mut();
+        if let Some(write) = *build {
+            // SAFETY: the build `in_place`'s caller vouched for, on the cell's own storage.
+            unsafe { write(value.as_mut_ptr()) };
+            *build = None;
+        }
+        // SAFETY: built just above, or holding its value from the start.
+        unsafe { value.assume_init_mut() }
+    }
+
+    /// A boxed cell built in place: how a host test makes a large one without passing it through
+    /// its stack.
+    ///
+    /// # Safety
+    ///
+    /// As [`LevelCell::in_place`].
+    #[cfg(not(target_arch = "x86"))]
+    pub unsafe fn boxed_in_place(build: unsafe fn(*mut T)) -> std::boxed::Box<Self> {
+        let mut cell = std::boxed::Box::<Self>::new_uninit();
+        let at = cell.as_mut_ptr();
+        // SAFETY: the box's storage is valid for writes and aligned. The value stays uninitialized
+        // (a `MaybeUninit`, valid so) with its build pending, and the marker takes no bytes, so
+        // the cell is whole once the slot is written.
+        unsafe {
+            core::ptr::addr_of_mut!((*at).build).write(UnsafeCell::new(Some(build)));
+            cell.assume_init()
+        }
+    }
+
+    /// The value's address, built if it was not yet: for a host test's rig, which reaches the
+    /// value beside the code under test, one reference at a time by its own discipline.
+    #[cfg(test)]
+    pub(crate) fn as_ptr(&self) -> *mut T {
+        raised::<L, _>(|at| self.get(at) as *mut T)
+    }
+}
+
+impl<L: NoPreempt, T> Drop for LevelCell<L, T> {
+    fn drop(&mut self) {
+        if self.build.get_mut().is_none() {
+            // SAFETY: no build pending, so the cell holds a value; it is dropped once, here.
+            unsafe { self.value.get_mut().assume_init_drop() };
+        }
     }
 }
 
@@ -340,11 +461,14 @@ mod tests {
         assert_eq!(High::IRQL, irql::HIGH);
     }
 
-    /// The token and the guard take no space.
+    /// The token takes no space, and the guard only what its raise found.
     #[test]
     fn tokens_are_zero_sized() {
         assert_eq!(core::mem::size_of::<At<Dispatch>>(), 0);
-        assert_eq!(core::mem::size_of::<Raised<'static, Dispatch, High>>(), 0);
+        assert_eq!(
+            core::mem::size_of::<Raised<'static, Dispatch, High>>(),
+            core::mem::size_of::<OldIrql>()
+        );
     }
 
     /// Raises nest and unwind: each guard puts the ledger at its level and back at the one below
@@ -408,5 +532,29 @@ mod tests {
         });
         let mut high_cell = high_cell;
         assert_eq!(*high_cell.get_mut(), 10);
+    }
+
+    /// A cell built in place gets its value at its first borrow, once, and keeps it.
+    #[test]
+    fn a_cell_built_in_place_is_built_at_its_first_borrow() {
+        std::thread_local! {
+            static BUILDS: core::cell::Cell<u32> = const { core::cell::Cell::new(0) };
+        }
+        /// Writes 40 at the cell's storage, counting the builds.
+        unsafe fn build(at: *mut u64) {
+            BUILDS.with(|builds| builds.set(builds.get() + 1));
+            // SAFETY: the cell hands its own storage, valid for writes and aligned.
+            unsafe { at.write(40) };
+        }
+        // SAFETY: `build` writes a whole value at the address it is handed, and reaches no cell.
+        let cell: LevelCell<Dispatch, u64> = unsafe { LevelCell::in_place(build) };
+        assert_eq!(BUILDS.with(|builds| builds.get()), 0, "nothing built yet");
+        raised::<Dispatch, _>(|dispatch| *cell.get(dispatch) += 2);
+        raised::<Dispatch, _>(|dispatch| assert_eq!(*cell.get(dispatch), 42));
+        assert_eq!(BUILDS.with(|builds| builds.get()), 1, "built once");
+
+        // SAFETY: as above.
+        let boxed = unsafe { LevelCell::<Dispatch, u64>::boxed_in_place(build) };
+        raised::<Dispatch, _>(|dispatch| assert_eq!(*boxed.get(dispatch), 40));
     }
 }

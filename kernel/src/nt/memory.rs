@@ -16,6 +16,8 @@
 //! functions over an [`AddressSpace`] and its [`Pages`] (host-tested); the services move their
 //! arguments through user memory.
 
+use rtl::nt::info::MemoryBasicInformation;
+
 use super::call::{Handle, NtCall, NtResult, UserAddr, UserPtr};
 use super::object::{
     PROCESS_QUERY_INFORMATION,
@@ -44,9 +46,26 @@ const MEM_RESET: u32 = 0x8_0000;
 const MEM_DECOMMIT: u32 = 0x4000;
 const MEM_RELEASE: u32 = 0x8000;
 
-/// MemoryBasicInformation, and its structure's size.
-const MEMORY_BASIC_INFORMATION: u32 = 0;
-const MEMORY_BASIC_INFORMATION_SIZE: u32 = 28;
+info_class! {
+    /// The classes NtQueryVirtualMemory answers (MEMORY_INFORMATION_CLASS).
+    pub enum MemoryClass {
+        /// MEMORY_BASIC_INFORMATION.
+        Basic = 0,
+    }
+}
+
+/// MEMORY_BASIC_INFORMATION of a query's answer.
+fn basic_information(info: vm::Info) -> MemoryBasicInformation {
+    MemoryBasicInformation {
+        base_address: info.base,
+        allocation_base: info.allocation_base,
+        allocation_protect: info.allocation_protect,
+        region_size: info.size,
+        state: info.state,
+        protect: info.protect,
+        kind: info.mem_type,
+    }
+}
 
 /// The first page of `address`, and the end of the pages `[address, address + size)` covers.
 fn page_span(address: u32, size: u32) -> (u32, u64) {
@@ -586,17 +605,16 @@ pub fn query_virtual_memory(
     length: u32,
     return_length: UserPtr<u32>,
 ) -> NtResult {
-    if class != MEMORY_BASIC_INFORMATION {
-        return Err(STATUS_INVALID_INFO_CLASS);
-    }
-    if length < MEMORY_BASIC_INFORMATION_SIZE {
+    let MemoryClass::Basic = MemoryClass::try_from(class)?;
+    let size = size_of::<MemoryBasicInformation>() as u32;
+    if length < size {
         return Err(STATUS_INFO_LENGTH_MISMATCH);
     }
     let info = with_space_for(call, process, PROCESS_QUERY_INFORMATION, |space, pages| {
         query(space, pages, address)
     })?;
-    information.write(&info.to_bytes())?;
-    return_length.write_optional(MEMORY_BASIC_INFORMATION_SIZE)?;
+    information.cast().write(basic_information(info))?;
+    return_length.write_optional(size)?;
     Ok(STATUS_SUCCESS)
 }
 
@@ -604,7 +622,27 @@ pub fn query_virtual_memory(
 mod tests {
     use std::collections::HashMap;
 
+    use rtl::pod::Pod;
+
     use super::*;
+
+    /// A query's answer is MEMORY_BASIC_INFORMATION's dwords in order.
+    #[test]
+    fn an_answer_is_the_structures_bytes() {
+        let info = basic_information(vm::Info {
+            base: 1,
+            allocation_base: 2,
+            allocation_protect: 3,
+            size: 4,
+            state: 5,
+            protect: 6,
+            mem_type: 7,
+        });
+        let bytes = info.as_bytes();
+        assert_eq!(bytes.len(), 28);
+        assert_eq!(&bytes[..8], &[1, 0, 0, 0, 2, 0, 0, 0]);
+        assert_eq!(&bytes[24..], &[7, 0, 0, 0]);
+    }
 
     #[derive(Default)]
     struct Fake {

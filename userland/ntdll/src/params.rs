@@ -25,7 +25,7 @@ fn own_parameters() -> &'static ProcessParameters<usize> {
     // SAFETY: the PEB's ProcessParameters points at the process's block, mapped for its whole life
     // and normalized (its strings' buffers addresses); its fields change only under the PEB lock,
     // which the callers hold while they read it.
-    unsafe { &*(sys::process_parameters() as *const ProcessParameters<usize>) }
+    unsafe { &*sys::process_parameters() }
 }
 
 /// A string of the process's own (normalized) block, as bytes.
@@ -100,7 +100,7 @@ pub unsafe extern "system" fn rtl_create_process_parameters(
     let (Some(out), Some(image_path_name)) = (out, image_path_name) else {
         return STATUS_INVALID_PARAMETER;
     };
-    sys::peb_lock().with(&sys::Native, || {
+    crate::process::peb_lock().with(&sys::Native, || {
         let own = own_parameters();
         let strings = Strings {
             current_directory: current_directory
@@ -186,7 +186,7 @@ pub unsafe extern "system" fn rtl_denormalize_process_params(
 pub fn normalize_own_parameters() {
     // SAFETY: the PEB's ProcessParameters, null or the process's block, mapped and writable; the
     // process's first thread is the only one running.
-    unsafe { rtl_normalize_process_params(sys::process_parameters() as *mut _) };
+    unsafe { rtl_normalize_process_params(sys::process_parameters()) };
 }
 
 /// RtlDestroyProcessParameters: the block RtlCreateProcessParameters made, released

@@ -1,11 +1,12 @@
 //! The dispatcher: the ready queues, the processor's thread slots, and the dispatcher database.
 //!
 //! One processor. The dispatcher owns the ready lists — one per priority level, summarized in a
-//! 32-bit bitmap whose bit P is set while ready list P is non-empty — and the processor's three
-//! slots: `current` (Running), `next` (the Standby thread the next switch will enter) and `idle`
-//! (the resting thread, installed by the boot). Selection is the bitmap: the highest set bit at or
-//! above the floor names the queue, whose head is taken first-in, first-out. It also owns the
-//! records all of this links (see [`super::database`]): threads are named by their index there.
+//! 32-bit bitmap whose bit P is set while ready list P is non-empty — and writes the processor's
+//! three thread slots, which the processor control region keeps ([`super::processor`]): `current`
+//! (Running), `next` (the Standby thread the next switch will enter) and `idle` (the resting
+//! thread, installed by the boot). Selection is the bitmap: the highest set bit at or above the
+//! floor names the queue, whose head is taken first-in, first-out. It also owns the records all of
+//! this links (see [`super::database`]): threads are named by their index there.
 //!
 //! The state machines below decide, from a thread's state, what a change of priority, a boost, or
 //! the end of a quantum does to the queues and the slots. They never switch: selecting the next
@@ -14,18 +15,20 @@
 use super::database::Database;
 use super::list::{self, Cursor, IndexList, ListKind};
 use super::process::{ProcessRef, ProcessThreads, SchedProcess};
-use super::thread::{Thread, ThreadId, ThreadState};
+use super::processor::{charged_tick, ThreadSlots};
+use super::thread::{ThreadId, ThreadState};
 use super::timer::TimerTable;
 use super::wait::WaitingList;
 use super::{
     HIGHEST_PRIORITY,
     PRIORITY_LEVELS,
-    QUANTUM_TICK,
     QUANTUM_WAIT_CHARGE,
     REALTIME_BASE,
     ROUND_TRIP_LIMIT,
     TIME_CRITICAL_CEILING,
 };
+#[cfg(target_arch = "x86")]
+use crate::level::{At, Dispatch};
 
 /// How a requested termination of another thread went (see [`Dispatcher::request_termination`]).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -53,7 +56,8 @@ impl ListKind for ReadyQueue {
     type Entry = ThreadId;
 }
 
-/// The dispatcher: ready queues, the summary, the processor slots, and the database.
+/// The dispatcher: ready queues, the summary, and the database. The processor slots it writes are
+/// the processor control region's ([`ThreadSlots`]).
 pub struct Dispatcher {
     /// One ready list per priority level.
     pub(super) ready: [IndexList<ReadyQueue>; PRIORITY_LEVELS],
@@ -62,23 +66,11 @@ pub struct Dispatcher {
     /// Whether the processor is running its idle thread (and a readied thread takes it
     /// immediately).
     processor_idle: bool,
-    /// The Running thread.
-    current: Option<ThreadId>,
-    /// The Standby thread: what the next switch enters, or none.
-    next: Option<ThreadId>,
-    /// The idle thread, entered when nothing else is schedulable.
-    idle_thread: Option<ThreadId>,
     /// The waiting threads: the blocked-on-a-wait set, for the audit's walk.
     pub(super) waiting: IndexList<WaitingList>,
     /// The timer table: the due-time-ordered home of wait timeouts, driven by the clock's deferred
     /// expiry work.
     pub(super) timer_table: TimerTable,
-    /// Whether the running thread's quantum ran out at the last full tick: the dispatch window's
-    /// question, consumed (and cleared) before the quantum decision runs.
-    quantum_end_requested: bool,
-    /// The clock's tick count as of its last full tick: the stamp a thread takes as it joins a
-    /// ready queue, which the balance-set scan measures ready-without-running time against.
-    tick: u64,
     /// The priority level the next balance-set scan starts at (the scans take turns over the
     /// levels).
     scan_level: i8,
@@ -86,9 +78,15 @@ pub struct Dispatcher {
     pub(crate) db: Database,
 }
 
+// SAFETY: the dispatcher's raw pointers name pinned process records (a thread's owner and
+// address-space process) and embedded waitable headers, each kept alive and in place by its owner
+// while linked. One processor, and the dispatcher is reached only through its dispatch-level cell,
+// so whichever kernel thread holds the token is the only one reaching what they point at.
+unsafe impl Send for Dispatcher {}
+
 impl Dispatcher {
-    /// Write an empty dispatcher at `dispatcher`: empty queues and slots, an empty timer table on
-    /// the clock's interval, and a fresh database.
+    /// Write an empty dispatcher at `dispatcher`: empty queues, empty processor slots, an empty
+    /// timer table on the clock's interval, and a fresh database.
     ///
     /// # Safety
     ///
@@ -101,18 +99,15 @@ impl Dispatcher {
             addr_of_mut!((*dispatcher).ready).write([IndexList::new(); PRIORITY_LEVELS]);
             addr_of_mut!((*dispatcher).ready_summary).write(0);
             addr_of_mut!((*dispatcher).processor_idle).write(false);
-            addr_of_mut!((*dispatcher).current).write(None);
-            addr_of_mut!((*dispatcher).next).write(None);
-            addr_of_mut!((*dispatcher).idle_thread).write(None);
             addr_of_mut!((*dispatcher).waiting).write(IndexList::new());
             addr_of_mut!((*dispatcher).timer_table).write(TimerTable::new(
                 crate::interrupt::clock::INTERVAL_100NS as u64,
             ));
-            addr_of_mut!((*dispatcher).quantum_end_requested).write(false);
-            addr_of_mut!((*dispatcher).tick).write(0);
             addr_of_mut!((*dispatcher).scan_level).write(1);
             Database::write_empty(addr_of_mut!((*dispatcher).db));
         }
+        slots().reset();
+        TimerTable::publish_empty();
     }
 
     /// The ready-summary and wait-structure invariants: bit P is set exactly while ready list P is
@@ -132,26 +127,22 @@ impl Dispatcher {
 
     /// The Standby thread, if one is selected.
     pub fn next_thread(&self) -> Option<ThreadId> {
-        self.next
+        slots().next()
     }
 
-    /// The Running thread.
+    /// Select `thread` into the standby slot, or empty it.
+    fn set_next(&mut self, thread: Option<ThreadId>) {
+        slots().set_next(thread);
+    }
+
+    /// The Running thread (see [`super::current_thread`]).
     pub fn current(&self) -> Option<ThreadId> {
-        self.current
-    }
-
-    /// The Running thread's record address, null before the boot installs one: what the switch
-    /// and the code reading the running thread's record take.
-    pub fn current_thread(&self) -> *mut Thread {
-        match self.current {
-            Some(thread) => self.thread_address(thread),
-            None => core::ptr::null_mut(),
-        }
+        slots().current()
     }
 
     /// The idle thread, once installed.
     pub fn idle_thread(&self) -> Option<ThreadId> {
-        self.idle_thread
+        slots().idle()
     }
 
     /// Whether the processor is running its idle thread.
@@ -162,7 +153,7 @@ impl Dispatcher {
     /// Whether a switch away from the idle thread is warranted: a Standby thread is pending or any
     /// ready queue is non-empty. The idle loop's next-thread check, as a query.
     pub fn has_schedulable(&self) -> bool {
-        self.next.is_some() || self.ready_summary != 0
+        self.next_thread().is_some() || self.ready_summary != 0
     }
 
     /// Attach `thread` (a renewed record) to `process`: take the process's base priority, quantum
@@ -216,18 +207,31 @@ impl Dispatcher {
     /// Install the idle thread and mark the processor idle. The boot install: the processor is
     /// executing this very thread, so it also takes the current slot.
     pub fn install_idle_thread(&mut self, thread: ThreadId) {
-        self.idle_thread = Some(thread);
+        let slots = slots();
+        slots.set_idle(Some(thread));
         self.processor_idle = true;
-        self.current = Some(thread);
-        self.next = None;
+        slots.set_current(Some(thread));
+        slots.set_next(None);
+        self.thread(thread).switch_in();
     }
 
     /// The switching path's caller-side install: the selected thread takes the current slot, and
-    /// the processor is marked idle exactly when it is the idle thread. The Standby-to-Running
-    /// state write is the swap's own effect.
+    /// the processor is marked idle exactly when it is the idle thread with nothing schedulable
+    /// (a process's last thread hands the processor to the idle thread for its reap even with
+    /// threads ready: those keep their places, and a thread readied meanwhile competes with them
+    /// rather than taking the standby slot of an idle processor). The running thread's
+    /// quantum and user-copy attribution go back to its record and the selected thread's come out
+    /// of its own, masked: the clock charges the slot, and no tick may land between the two
+    /// halves. The Standby-to-Running state write is the swap's own effect.
     pub fn enter(&mut self, selected: ThreadId) {
-        self.current = Some(selected);
-        self.processor_idle = Some(selected) == self.idle_thread;
+        let slots = slots();
+        let _masked = crate::pcr::pcr().mask_guard();
+        if let Some(running) = slots.current() {
+            self.thread_mut(running).switch_out();
+        }
+        slots.set_current(Some(selected));
+        self.thread(selected).switch_in();
+        self.processor_idle = Some(selected) == slots.idle() && !self.has_schedulable();
     }
 
     /// Select the highest-priority ready thread at or above `floor`, unlinking it from its queue.
@@ -269,25 +273,25 @@ impl Dispatcher {
 
             if self.processor_idle {
                 self.processor_idle = false;
-                self.next = Some(thread);
+                self.set_next(Some(thread));
                 self.thread_mut(thread).state = ThreadState::Standby;
                 return;
             }
 
-            if let Some(standby) = self.next {
+            if let Some(standby) = self.next_thread() {
                 if priority > self.thread(standby).priority {
                     self.thread_mut(standby).preempted = true;
-                    self.next = Some(thread);
+                    self.set_next(Some(thread));
                     self.thread_mut(thread).state = ThreadState::Standby;
                     thread = standby;
                     continue;
                 }
-            } else if let Some(current) = self.current {
+            } else if let Some(current) = self.current() {
                 // No standby thread: try the running thread. None (the processor is between
                 // threads) counts as non-preemptable.
                 if priority > self.thread(current).priority {
                     self.thread_mut(current).preempted = true;
-                    self.next = Some(thread);
+                    self.set_next(Some(thread));
                     self.thread_mut(thread).state = ThreadState::Standby;
                     // Asking the processor to redispatch is a no-op on one CPU: the dispatch level
                     // this runs at is itself the serialization.
@@ -296,7 +300,7 @@ impl Dispatcher {
             }
 
             // Nobody to preempt: queue by priority, stamped with the tick it joins at.
-            let tick = self.tick;
+            let tick = tick_count();
             let record = self.thread_mut(thread);
             record.state = ThreadState::Ready;
             record.wait_time = tick;
@@ -317,13 +321,14 @@ impl Dispatcher {
     /// thread. The returned thread's state is the caller's to set — the context switch flips
     /// Standby to Running.
     pub fn select_next(&mut self) -> Option<ThreadId> {
-        if let Some(selected) = self.next.take() {
+        if let Some(selected) = self.next_thread() {
+            self.set_next(None);
             return Some(selected);
         }
         let selected = self.find_ready(0);
         if selected.is_none() {
             self.processor_idle = true;
-            return self.idle_thread;
+            return self.idle_thread();
         }
         selected
     }
@@ -373,15 +378,15 @@ impl Dispatcher {
                 if priority < old {
                     if let Some(replacement) = self.find_ready(priority) {
                         self.thread_mut(replacement).state = ThreadState::Standby;
-                        self.next = Some(replacement);
+                        self.set_next(Some(replacement));
                         self.make_ready(thread);
                     }
                 }
             }
-            ThreadState::Running if self.next.is_none() && priority < old => {
+            ThreadState::Running if self.next_thread().is_none() && priority < old => {
                 if let Some(replacement) = self.find_ready(priority) {
                     self.thread_mut(replacement).state = ThreadState::Standby;
-                    self.next = Some(replacement);
+                    self.set_next(Some(replacement));
                 }
             }
             _ => {}
@@ -394,7 +399,8 @@ impl Dispatcher {
         let thread = thread.into();
         let record = self.thread_mut(thread);
         let old = record.priority;
-        record.quantum = record.thread_quantum();
+        let thread_quantum = record.thread_quantum();
+        record.set_quantum(thread_quantum);
         record.decrement_count = 0;
         record.priority_decrement = 0;
         self.apply_priority(thread, priority);
@@ -417,7 +423,8 @@ impl Dispatcher {
             if new >= REALTIME_BASE {
                 new = REALTIME_BASE - 1;
             }
-            record.quantum = record.thread_quantum();
+            let thread_quantum = record.thread_quantum();
+            record.set_quantum(thread_quantum);
             self.apply_priority(thread, new);
         }
     }
@@ -480,7 +487,8 @@ impl Dispatcher {
         record.decrement_count = 0;
         record.priority_decrement = 0;
         if new_priority != record.priority as i32 {
-            record.quantum = record.thread_quantum();
+            let thread_quantum = record.thread_quantum();
+            record.set_quantum(thread_quantum);
             self.apply_priority(thread, new_priority as i8);
         }
         old_increment
@@ -490,14 +498,14 @@ impl Dispatcher {
     /// end and the no-wait yield share. Does nothing while a standby thread is already pending;
     /// returns whether one was installed.
     pub fn standby_from_ready(&mut self, priority: i8) -> bool {
-        if self.next.is_some() {
+        if self.next_thread().is_some() {
             return false;
         }
         let Some(found) = self.find_ready(priority) else {
             return false;
         };
         self.thread_mut(found).state = ThreadState::Standby;
-        self.next = Some(found);
+        self.set_next(Some(found));
         true
     }
 
@@ -507,17 +515,18 @@ impl Dispatcher {
     /// (the decay debt consumed), and it queues at the tail of its level directly. It does not go
     /// through [`Dispatcher::make_ready`], which would let it take the standby slot straight back
     /// from a lower-priority thread. Returns whether it yielded; the caller then switches away.
-    pub fn yield_execution(&mut self, thread: &mut Thread) -> bool {
-        let thread = thread.id();
-        if self.next.is_none() {
+    pub fn yield_execution(&mut self, thread: impl Into<ThreadId>) -> bool {
+        let thread = thread.into();
+        if self.next_thread().is_none() {
             self.standby_from_ready(1);
         }
-        if self.next.is_none() {
+        if self.next_thread().is_none() {
             return false;
         }
-        let tick = self.tick;
+        let tick = tick_count();
         let record = self.thread_mut(thread);
-        record.quantum = record.thread_quantum();
+        let thread_quantum = record.thread_quantum();
+        record.set_quantum(thread_quantum);
         if record.priority < REALTIME_BASE {
             let decayed = record.priority - (record.priority_decrement + 1);
             record.priority = decayed.max(record.base_priority);
@@ -539,20 +548,22 @@ impl Dispatcher {
     /// thread whose process exempts it never ends its quantum at all (its quantum is refilled to
     /// the maximum instead). Returns the standby thread if one was selected.
     pub fn quantum_end(&mut self) -> Option<ThreadId> {
-        let thread = self.current.expect("quantum end without a running thread");
+        let thread = self
+            .current()
+            .expect("quantum end without a running thread");
         let record = self.thread_mut(thread);
-        if record.quantum > 0 {
-            return self.next;
+        if record.quantum() > 0 {
+            return self.next_thread();
         }
 
         let process = record.process();
         let (disable_quantum, thread_quantum) = (process.disable_quantum, process.thread_quantum);
         if disable_quantum && record.priority >= REALTIME_BASE {
-            record.quantum = i8::MAX;
-            return self.next;
+            record.set_quantum(i8::MAX);
+            return self.next_thread();
         }
 
-        record.quantum = thread_quantum;
+        record.set_quantum(thread_quantum);
         let priority = record.priority;
         let mut new_priority = priority;
         if priority < REALTIME_BASE {
@@ -562,49 +573,30 @@ impl Dispatcher {
 
         if new_priority != priority {
             self.apply_priority(thread, new_priority);
-        } else if self.next.is_none() {
+        } else if self.next_thread().is_none() {
             self.standby_from_ready(priority);
         }
         // A thread whose quantum ended goes behind its equals when it is displaced, whatever
         // displaced it: an earlier arrival's preemption mark must not put it back at the head.
-        if self.next.is_some() {
+        if self.next_thread().is_some() {
             self.thread_mut(thread).preempted = false;
         }
-        self.next
+        self.next_thread()
     }
 
-    /// Charge one clock tick against `thread`'s quantum. Returns whether the quantum ended: the
-    /// charge leaves a positive quantum alone; at zero it flags the end — except for the idle
-    /// thread, which is never flagged (so its ledger runs off the bottom; the arithmetic wraps like
-    /// the byte counter it is, and nothing reads it).
+    /// Charge one clock tick against `thread`'s quantum, as the clock charges the running thread's
+    /// ([`ThreadSlots::charge_running_tick`]). Returns whether the quantum ended: the charge leaves
+    /// a positive quantum alone; at zero it flags the end — except for the idle thread, which is
+    /// never flagged (so its quantum runs off the bottom, and nothing reads it).
     pub fn tick_quantum(&mut self, thread: impl Into<ThreadId>) -> bool {
         let thread = thread.into();
         let record = self.thread_mut(thread);
-        // Saturating: a thread charged for longer than its quantum without a dispatch window
-        // (about 43 ticks at the reset value) must not wrap back to a positive quantum.
-        record.quantum = record.quantum.saturating_sub(QUANTUM_TICK);
-        if record.quantum > 0 {
+        let quantum = charged_tick(record.quantum());
+        record.set_quantum(quantum);
+        if quantum > 0 {
             return false;
         }
-        Some(thread) != self.idle_thread
-    }
-
-    /// Charge the running thread's quantum for one full tick, and request the dispatch window's
-    /// decision when the charge runs the quantum out. The charge consults neither the interrupted
-    /// frame nor the processor's mode — whoever is current is charged, whatever it was doing. The
-    /// idle thread is charged like any other but never requests.
-    pub(crate) fn charge_running_tick(&mut self) {
-        let Some(current) = self.current else {
-            return;
-        };
-        if self.tick_quantum(current) {
-            self.quantum_end_requested = true;
-        }
-    }
-
-    /// Record the clock's tick count at a full tick (the ready-queue stamps' source).
-    pub(crate) fn note_tick(&mut self, tick: u64) {
-        self.tick = tick;
+        Some(thread) != self.idle_thread()
     }
 
     /// The dispatch window's decision: consume a pending request — the tick's quantum end first,
@@ -614,70 +606,21 @@ impl Dispatcher {
     /// the decision re-verifies the quantum, so a stale or mid-window re-armed request costs
     /// nothing and survives for the next window.
     pub fn dispatch_target(&mut self) -> Option<ThreadId> {
-        if self.quantum_end_requested {
-            self.quantum_end_requested = false;
+        if slots().take_quantum_end() {
             self.quantum_end();
         }
-        let target = self.next.filter(|&target| Some(target) != self.current)?;
-        // The target leaves the standby slot; the switch's caller enters it.
-        self.next = None;
+        let current = self.current();
+        let target = self
+            .next_thread()
+            .filter(|&target| Some(target) != current)?;
+        // The target leaves the standby slot; the switch enters it.
+        self.set_next(None);
         // The displaced thread goes back on the ready ladder — unless it is the idle thread, which
         // is never queued: selection reaches it only as the fallback.
-        if let Some(current) = self
-            .current
-            .filter(|&current| Some(current) != self.idle_thread)
-        {
+        if let Some(current) = current.filter(|&current| Some(current) != self.idle_thread()) {
             self.make_ready(current);
         }
         Some(target)
-    }
-
-    /// Deliver a pending dispatch request at a dispatch point: the interrupt exit (after the
-    /// deferred work has run) and the service boundary. The window opens only below the dispatch
-    /// level — a request armed inside an open window (the clock can preempt it) waits for the next
-    /// one. The decision itself runs at the dispatch level: it re-readies the running thread, and a
-    /// clock interrupt landing in it must not drain or deliver on top of it. A delivered switch
-    /// leaves the calling frames in place on the calling thread's kernel stack: the interrupted
-    /// exit unwinds when the thread is next resumed, its state untouched.
-    ///
-    /// The same window delivers the running thread's pending kernel APCs — after the dispatch
-    /// decision, mirroring the interrupt-exit order (the dispatch request outranks the APC request
-    /// on the way down). A decision that switches hands APC delivery to the tail below: the
-    /// resumed thread delivers its own.
-    #[cfg(target_arch = "x86")]
-    pub fn deliver_pending(&mut self) {
-        let pcr = crate::pcr::pcr();
-        if pcr.current() >= crate::interrupt::irql::DISPATCH {
-            return;
-        }
-        let previous = pcr.raise(crate::interrupt::irql::DISPATCH);
-        let Some(target) = self.dispatch_target() else {
-            pcr.lower(previous);
-            // No switch: the running thread's own kernel APCs deliver here.
-            self.deliver_pending_apcs();
-            return;
-        };
-        let old = self.current.expect("a dispatch window runs on a thread");
-        self.thread_mut(old).level = pcr.capture();
-        self.enter(target);
-        let (from, to) = (self.thread_address(old), self.thread_address(target));
-        // SAFETY: both records are the database's, pinned; the target's frame is planted (fresh)
-        // or saved (resumed) — the selection discipline guarantees it — and the dispatch level
-        // masks the dispatcher context.
-        unsafe { super::switch::swap_context(from, to) };
-        // The preempted thread's timeline resumes here. The current thread is re-read from the
-        // dispatcher static, not through `self`: other threads ran and rewrote the dispatcher in
-        // between, so a value held through this `&mut` (which the optimizer may forward from the
-        // `enter` above) would name the thread switched to, not the one resumed.
-        let dispatcher = crate::sched::idle::dispatcher();
-        let current = dispatcher
-            .current()
-            .expect("a resumed thread is the running one");
-        pcr.restore(dispatcher.thread(current).level);
-        pcr.lower(previous);
-        // The resume delivery: a kernel APC queued on the thread while it was off the processor
-        // runs now, on the thread's own timeline, before its parked frames unwind.
-        crate::sched::idle::dispatcher().deliver_pending_apcs();
     }
 
     /// Charge one completed wait against `thread`'s quantum, with the same decay at exhaustion as a
@@ -689,14 +632,15 @@ impl Dispatcher {
         let record = self.thread_mut(thread.into());
         let thread_quantum = record.thread_quantum();
         if record.priority >= REALTIME_BASE || record.base_priority >= TIME_CRITICAL_CEILING {
-            record.quantum = thread_quantum;
+            record.set_quantum(thread_quantum);
             return false;
         }
-        record.quantum -= QUANTUM_WAIT_CHARGE;
-        if record.quantum > 0 {
+        let quantum = record.quantum() - QUANTUM_WAIT_CHARGE;
+        if quantum > 0 {
+            record.set_quantum(quantum);
             return false;
         }
-        record.quantum = thread_quantum;
+        record.set_quantum(thread_quantum);
         let priority = record.priority;
         record.priority =
             (record.priority - (record.priority_decrement + 1)).max(record.base_priority);
@@ -711,7 +655,7 @@ impl Dispatcher {
     /// the ceiling is never boosted.
     pub fn boost_current_round_trip(&mut self) {
         let thread = self
-            .current
+            .current()
             .expect("round-trip boost without a running thread");
         loop {
             let record = self.thread_mut(thread);
@@ -720,7 +664,7 @@ impl Dispatcher {
                 record.priority_decrement = TIME_CRITICAL_CEILING - record.base_priority;
                 record.decrement_count = ROUND_TRIP_LIMIT;
                 record.priority = TIME_CRITICAL_CEILING;
-                record.quantum = thread_quantum * 2;
+                record.set_quantum(thread_quantum * 2);
                 return;
             }
             if record.priority_decrement == 0 {
@@ -728,7 +672,7 @@ impl Dispatcher {
             }
             record.decrement_count -= 1;
             if record.decrement_count > 0 {
-                record.quantum = thread_quantum * 2;
+                record.set_quantum(thread_quantum * 2);
                 return;
             }
             // Count exhausted: drop to base through the full form (quantum replenished, decay
@@ -756,7 +700,8 @@ impl Dispatcher {
         record.priority_decrement += boost_priority - record.priority;
         record.decrement_count = ROUND_TRIP_LIMIT;
         record.priority = boost_priority;
-        record.quantum = record.thread_quantum() * 2;
+        let thread_quantum = record.thread_quantum();
+        record.set_quantum(thread_quantum * 2);
         self.make_ready(thread);
     }
 
@@ -767,6 +712,7 @@ impl Dispatcher {
     /// [`THREAD_SCAN_LIMIT`] threads and boosts at most [`THREAD_READY_LIMIT`]. Returns how many it
     /// boosted.
     pub fn scan_ready_queues(&mut self) -> usize {
+        let tick = tick_count();
         let top = REALTIME_BASE - 2;
         let mut level = self.scan_level.clamp(1, top);
         let (mut examined, mut boosted) = (0, 0);
@@ -779,9 +725,7 @@ impl Dispatcher {
                         break;
                     };
                     examined += 1;
-                    if self.tick.wrapping_sub(self.thread(thread).wait_time)
-                        >= READY_WITHOUT_RUNNING
-                    {
+                    if tick.wrapping_sub(self.thread(thread).wait_time) >= READY_WITHOUT_RUNNING {
                         self.dequeue(thread, level);
                         self.balance_boost(thread);
                         boosted += 1;
@@ -812,7 +756,7 @@ impl Dispatcher {
     /// ([`Dispatcher::select_next`]), so whatever signals in between — its process's object, when
     /// it was the last thread — wakes waiters that same selection weighs.
     pub fn retire_current(&mut self) {
-        let thread = self.current.expect("terminate without a running thread");
+        let thread = self.current().expect("terminate without a running thread");
         self.retire(thread);
     }
 
@@ -835,7 +779,7 @@ impl Dispatcher {
             return Termination::Done;
         }
         assert!(
-            Some(thread) != self.current,
+            Some(thread) != self.current(),
             "the running thread terminates through its own exit"
         );
         let record = self.thread_mut(thread);
@@ -862,11 +806,11 @@ impl Dispatcher {
     pub fn terminate_other(&mut self, thread: impl Into<ThreadId>) {
         let thread = thread.into();
         assert!(
-            Some(thread) != self.current,
+            Some(thread) != self.current(),
             "the running thread terminates through its own exit"
         );
         assert!(
-            Some(thread) != self.idle_thread,
+            Some(thread) != self.idle_thread(),
             "the idle thread never exits"
         );
         let record = self.thread(thread);
@@ -875,10 +819,10 @@ impl Dispatcher {
             ThreadState::Ready => self.dequeue(thread, priority),
             ThreadState::Standby => {
                 assert!(
-                    self.next == Some(thread),
+                    self.next_thread() == Some(thread),
                     "a Standby thread holds the standby slot"
                 );
-                self.next = None;
+                self.set_next(None);
             }
             ThreadState::Waiting => self.unwind_wait(thread),
             // Attached but never readied: nothing schedules it yet.
@@ -961,10 +905,113 @@ impl Dispatcher {
     fn apply_thread_adjustment(&mut self, thread: ThreadId, new_priority: i32) {
         let record = self.thread_mut(thread);
         record.base_priority = new_priority as i8;
-        record.quantum = record.thread_quantum();
+        let thread_quantum = record.thread_quantum();
+        record.set_quantum(thread_quantum);
         record.decrement_count = 0;
         record.priority_decrement = 0;
         self.apply_priority(thread, new_priority as i8);
+    }
+}
+
+/// The processor's thread slots, which the dispatcher writes.
+fn slots() -> &'static ThreadSlots {
+    &crate::pcr::pcr().threads
+}
+
+/// The clock's tick count (Windows 2000's KeTickCount, read unlocked): the stamp a thread takes as
+/// it joins a ready queue, which the balance-set scan measures ready-without-running time against.
+#[cfg(target_arch = "x86")]
+fn tick_count() -> u64 {
+    crate::interrupt::clock::ticks()
+}
+
+/// The host's tick count: what the tests set ([`set_test_ticks`]), per test thread.
+#[cfg(not(target_arch = "x86"))]
+fn tick_count() -> u64 {
+    host_ticks::TICKS.with(core::cell::Cell::get)
+}
+
+#[cfg(not(target_arch = "x86"))]
+mod host_ticks {
+    extern crate std;
+
+    std::thread_local! {
+        /// The tick count the host's dispatcher reads.
+        pub static TICKS: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+    }
+}
+
+/// Set the host's tick count, as the clock advances the kernel's.
+#[cfg(test)]
+pub(crate) fn set_test_ticks(ticks: u64) {
+    host_ticks::TICKS.with(|cell| cell.set(ticks));
+}
+
+/// Deliver a pending dispatch request at a dispatch point: the interrupt exit (after the deferred
+/// work has run) and the service boundary. The window opens only below the dispatch level — a
+/// request armed inside an open window (the clock can preempt it) waits for the window's own lower.
+/// The decision itself runs at the dispatch level: it re-readies the running thread, and a clock
+/// interrupt landing in it must not drain or deliver on top of it. A delivered switch leaves the
+/// calling frames in place on the calling thread's kernel stack: the interrupted exit unwinds when
+/// the thread is next resumed, its state untouched.
+///
+/// The same window delivers the running thread's pending kernel APCs — after the dispatch
+/// decision, mirroring the interrupt-exit order (the dispatch request outranks the APC request on
+/// the way down): the running thread's own when nothing switched, the resumed thread's when the
+/// switch came back to it.
+#[cfg(target_arch = "x86")]
+pub fn deliver_pending() {
+    if crate::level::dispatch_entry(switch_if_requested).is_none() {
+        return;
+    }
+    // The running thread's timeline, at the level the window opened at: a kernel APC queued on
+    // it while it was off the processor runs now, before its interrupted frames unwind.
+    super::apc::deliver_pending_apcs();
+}
+
+/// The dispatch decision, at the dispatch level: switch to the thread the decision names, if any
+/// (see [`Dispatcher::dispatch_target`]). Returns whether it switched; the thread is running
+/// again either way.
+#[cfg(target_arch = "x86")]
+fn switch_if_requested(dispatch: &mut At<Dispatch>) -> bool {
+    let dispatcher = super::DISPATCHER.get(dispatch);
+    let running = dispatcher.current();
+    // The idle thread takes its own decisions, in its loop (Windows 2000's KiIdleLoop swaps to the
+    // next thread itself): the drain, then the reap of an ended process, then the switch. Taken
+    // here instead, the switch would leave an ended process waiting for the processor to fall idle
+    // again. The standby thread stays where it is for the loop's next pass.
+    if running.is_some() && running == dispatcher.idle_thread() {
+        return false;
+    }
+    let Some(target) = dispatcher.dispatch_target() else {
+        return false;
+    };
+    let running = running.expect("a dispatch window runs on a thread");
+    super::switch::switch_to(dispatch, running, target);
+    true
+}
+
+/// What a lower from the dispatch level or above to below it runs (Windows 2000's DISPATCH
+/// software interrupt, which fires as KeLowerIrql drops the level): the DPCs queued meanwhile,
+/// then, when the level reached runs with interrupts enabled, a dispatch decision requested
+/// meanwhile (a quantum a tick ended, a thread readied above the running one). A caller lowering
+/// to a masked level is not preemptible there: its own dispatch point takes the decision (the
+/// service boundary, a wait, an interrupt window). Kernel APCs wait for their own delivery points.
+///
+/// The work's own raises lower without coming back here: a switch is followed by another look, so
+/// what arrived while this thread was away is not left for the next interrupt.
+pub fn dispatch_on_lower() {
+    let pcr = crate::pcr::pcr();
+    loop {
+        crate::interrupt::dpc::drain();
+        if !pcr.interrupts_enabled() || !pcr.threads.dispatch_requested() {
+            return;
+        }
+        #[cfg(target_arch = "x86")]
+        if crate::level::dispatch_entry(switch_if_requested) == Some(true) {
+            continue;
+        }
+        return;
     }
 }
 
@@ -981,7 +1028,7 @@ mod tests {
     use crate::sched::process::SchedProcess;
     use crate::sched::testkit::Rec;
     use crate::sched::thread::{Thread, ThreadState};
-    use crate::sched::QUANTUM_RESET;
+    use crate::sched::{QUANTUM_RESET, QUANTUM_TICK};
 
     // --- The rig ----------------------------------------------------------
     //
@@ -1004,14 +1051,34 @@ mod tests {
 
     /// Run `t` as the processor's current thread.
     fn run(d: &mut Dispatcher, mut t: Rec<Thread>) {
-        d.current = Some(t.id());
+        install_current(d, t.id());
         t.state = ThreadState::Running;
+    }
+
+    /// Put `thread` in the processor's current slot, its quantum handed over as a switch hands it,
+    /// and nothing else changed.
+    fn install_current(d: &mut Dispatcher, thread: ThreadId) {
+        if let Some(running) = d.current() {
+            d.thread_mut(running).switch_out();
+        }
+        slots().set_current(Some(thread));
+        d.thread(thread).switch_in();
     }
 
     /// Make `t` the processor's standby thread.
     fn standby(d: &mut Dispatcher, mut t: Rec<Thread>) {
-        d.next = Some(t.id());
+        d.set_next(Some(t.id()));
         t.state = ThreadState::Standby;
+    }
+
+    /// One full tick's charge of the running thread's quantum, as the clock interrupt makes it.
+    fn charge_tick() {
+        crate::level::raised::<crate::level::Clock, _>(|clock| slots().charge_running_tick(clock));
+    }
+
+    /// Whether a tick's charge requested the dispatch window's quantum decision.
+    fn quantum_end_requested() -> bool {
+        slots().quantum_end_requested()
     }
 
     /// `t`'s id, as the selection entries and the processor slots hold it.
@@ -1031,9 +1098,9 @@ mod tests {
         }
         assert_eq!(d.ready_summary, 0);
         assert!(!d.processor_idle);
-        assert!(d.current.is_none());
-        assert!(d.next.is_none());
-        assert!(d.idle_thread.is_none());
+        assert!(d.current().is_none());
+        assert!(d.next_thread().is_none());
+        assert!(d.idle_thread().is_none());
         assert_eq!(d.audit(), Ok(()));
     }
 
@@ -1198,7 +1265,7 @@ mod tests {
         t.priority = 8;
         d.make_ready(t);
         assert_eq!(t.state(), ThreadState::Standby);
-        assert_eq!(d.next, id_of(t));
+        assert_eq!(d.next_thread(), id_of(t));
         assert!(!d.processor_idle);
         assert_eq!(d.ready_summary, 0, "never queued");
     }
@@ -1222,7 +1289,7 @@ mod tests {
         d.make_ready(arrival);
 
         assert_eq!(arrival.state(), ThreadState::Standby);
-        assert_eq!(d.next, id_of(arrival));
+        assert_eq!(d.next_thread(), id_of(arrival));
         assert_eq!(standby_t.state(), ThreadState::Ready);
         assert!(!standby_t.preempted, "consumed by the requeue");
         assert_eq!(
@@ -1248,7 +1315,7 @@ mod tests {
         d.make_ready(arrival);
 
         assert_eq!(arrival.state(), ThreadState::Standby);
-        assert_eq!(d.next, id_of(arrival));
+        assert_eq!(d.next_thread(), id_of(arrival));
         assert!(current.preempted);
         assert_eq!(current.state(), ThreadState::Running);
         assert_eq!(d.ready_summary, 0);
@@ -1268,7 +1335,7 @@ mod tests {
         d.make_ready(arrival);
 
         assert_eq!(arrival.state(), ThreadState::Ready);
-        assert!(d.next.is_none());
+        assert!(d.next_thread().is_none());
         assert!(!current.preempted);
         assert_eq!(d.ready_summary, 1 << 12);
     }
@@ -1282,7 +1349,7 @@ mod tests {
         standby(d, t);
 
         assert_eq!(d.select_next(), id_of(t));
-        assert!(d.next.is_none());
+        assert!(d.next_thread().is_none());
         assert_eq!(
             t.state(),
             ThreadState::Standby,
@@ -1308,7 +1375,7 @@ mod tests {
         let d = dispatcher();
         let p = process(8);
         let idle = thread(p);
-        d.idle_thread = id_of(idle);
+        slots().set_idle(id_of(idle));
 
         assert_eq!(d.select_next(), id_of(idle));
         assert!(d.processor_idle);
@@ -1365,7 +1432,7 @@ mod tests {
         assert!(!unsafe { (*p).threads.is_empty() });
         // A second thread terminating empties it.
         standby(d, survivor);
-        d.current = id_of(survivor);
+        install_current(d, id_of(survivor).expect("a thread"));
         assert!(!d.terminate().is_none());
         assert_eq!(unsafe { (*p).stack_count() }, 0);
         assert!(unsafe { (*p).threads.is_empty() });
@@ -1416,7 +1483,7 @@ mod tests {
         standby(d, next);
 
         d.terminate_other(next);
-        assert!(d.next.is_none());
+        assert!(d.next_thread().is_none());
         assert_eq!(next.state(), ThreadState::Terminated);
         assert!(!d.has_schedulable());
     }
@@ -1542,7 +1609,7 @@ mod tests {
 
         d.apply_priority(t, 8);
         assert_eq!(replacement.state(), ThreadState::Standby);
-        assert_eq!(d.next, id_of(replacement));
+        assert_eq!(d.next_thread(), id_of(replacement));
         assert_eq!(t.state(), ThreadState::Ready);
         assert_eq!(d.ready_summary, 1 << 8);
         assert_eq!(d.find_ready(8), id_of(t));
@@ -1561,7 +1628,7 @@ mod tests {
         d.apply_priority(t, 8);
         assert_eq!(t.priority(), 8);
         assert_eq!(t.state(), ThreadState::Standby);
-        assert_eq!(d.next, id_of(t));
+        assert_eq!(d.next_thread(), id_of(t));
         assert_eq!(d.ready_summary, 0);
     }
 
@@ -1580,7 +1647,7 @@ mod tests {
 
         d.apply_priority(t, 8);
         assert_eq!(candidate.state(), ThreadState::Standby);
-        assert_eq!(d.next, id_of(candidate));
+        assert_eq!(d.next_thread(), id_of(candidate));
         assert_eq!(t.state(), ThreadState::Running);
         assert_eq!(t.priority(), 8);
     }
@@ -1602,7 +1669,7 @@ mod tests {
         d.make_ready(queued);
 
         d.apply_priority(t, 8);
-        assert_eq!(d.next, id_of(pending));
+        assert_eq!(d.next_thread(), id_of(pending));
         assert_eq!(queued.state(), ThreadState::Ready);
         assert_eq!(d.ready_summary, 1 << 10);
     }
@@ -1618,7 +1685,7 @@ mod tests {
 
         d.apply_priority(t, 12);
         assert_eq!(t.priority(), 12);
-        assert!(d.next.is_none());
+        assert!(d.next_thread().is_none());
         assert_eq!(d.ready_summary, 0);
     }
 
@@ -1651,7 +1718,7 @@ mod tests {
         let p = process(8);
         let mut t = thread(p);
         t.priority = 8;
-        t.quantum = 0;
+        t.set_quantum(0);
         t.decrement_count = 3;
         t.priority_decrement = 2;
 
@@ -1738,7 +1805,7 @@ mod tests {
         let mut t = thread(p);
         t.base_priority = 8;
         t.priority = 8;
-        t.quantum = 1;
+        t.set_quantum(1);
         t.decrement_count = 5;
         t.priority_decrement = 0;
 
@@ -1761,7 +1828,7 @@ mod tests {
         let mut t = thread(p);
         t.base_priority = 8;
         t.priority = 8;
-        t.quantum = 1;
+        t.set_quantum(1);
 
         d.boost(t, 2);
         assert_eq!(t.priority(), 10);
@@ -1777,7 +1844,7 @@ mod tests {
         let mut t = thread(p);
         t.base_priority = 15;
         t.priority = 15;
-        t.quantum = 1;
+        t.set_quantum(1);
 
         d.boost(t, 10);
         assert_eq!(t.priority(), 15, "25 capped at 15");
@@ -1793,7 +1860,7 @@ mod tests {
         let mut t = thread(p);
         t.base_priority = 8;
         t.priority = 10;
-        t.quantum = 1;
+        t.set_quantum(1);
 
         d.boost(t, 2);
         assert_eq!(t.priority(), 10);
@@ -1809,7 +1876,7 @@ mod tests {
         t.base_priority = 8;
         t.priority = 12;
         t.priority_decrement = 4;
-        t.quantum = 2;
+        t.set_quantum(2);
 
         d.boost(t, 10);
         assert_eq!(t.priority(), 12);
@@ -1825,7 +1892,7 @@ mod tests {
         let mut t = thread(p);
         t.base_priority = 24;
         t.priority = 24;
-        t.quantum = 2;
+        t.set_quantum(2);
 
         d.boost(t, 10);
         assert_eq!(t.priority(), 24);
@@ -1850,7 +1917,7 @@ mod tests {
         d.boost(t, 6);
         assert_eq!(t.priority(), 14);
         assert_eq!(t.state(), ThreadState::Standby);
-        assert_eq!(d.next, id_of(t));
+        assert_eq!(d.next_thread(), id_of(t));
         assert!(current.preempted);
 
         // Raised below the running thread: queued at the tail of the new priority.
@@ -1879,7 +1946,7 @@ mod tests {
         let mut t = thread(p);
         t.base_priority = 8;
         t.priority = 8;
-        t.quantum = 1;
+        t.set_quantum(1);
         t.disable_boost = true;
 
         d.boost(t, 2);
@@ -1895,7 +1962,7 @@ mod tests {
         let d = dispatcher();
         let p = process(8);
         let mut t = thread(p);
-        t.quantum = 6;
+        t.set_quantum(6);
 
         assert!(!d.tick_quantum(t));
         assert_eq!(t.quantum(), 3);
@@ -1915,7 +1982,7 @@ mod tests {
         let p = process(8);
         let mut t = thread(p);
         run(d, t);
-        t.quantum = 0;
+        t.set_quantum(0);
 
         assert!(d.quantum_end().is_none());
         assert_eq!(t.quantum(), 6);
@@ -1929,7 +1996,7 @@ mod tests {
         let mut t = thread(p);
         t.priority = 10;
         run(d, t);
-        t.quantum = 0;
+        t.set_quantum(0);
 
         d.quantum_end();
         assert_eq!(t.priority(), 9);
@@ -1946,7 +2013,7 @@ mod tests {
         let mut t = thread(p);
         t.priority = 8;
         run(d, t);
-        t.quantum = 0;
+        t.set_quantum(0);
 
         assert!(d.quantum_end().is_none());
         assert_eq!(t.priority(), 8);
@@ -1962,7 +2029,7 @@ mod tests {
         t.priority = 10;
         t.priority_decrement = 3;
         run(d, t);
-        t.quantum = 0;
+        t.set_quantum(0);
 
         d.quantum_end();
         assert_eq!(t.priority(), 8, "10 - 3 - 1 = 6, floored at the base");
@@ -1978,7 +2045,7 @@ mod tests {
         let mut t = thread(p);
         t.priority = 24;
         run(d, t);
-        t.quantum = 0;
+        t.set_quantum(0);
         let mut equal = thread(p);
         equal.priority = 24;
         d.make_ready(equal);
@@ -1986,7 +2053,7 @@ mod tests {
         let selected = d.quantum_end();
         assert_eq!(selected, id_of(equal));
         assert_eq!(equal.state(), ThreadState::Standby);
-        assert_eq!(d.next, id_of(equal));
+        assert_eq!(d.next_thread(), id_of(equal));
         assert_eq!(t.priority(), 24, "no decay in the realtime band");
         assert_eq!(t.quantum(), 6);
     }
@@ -2001,12 +2068,12 @@ mod tests {
         let mut t = thread(p);
         t.priority = 24;
         run(d, t);
-        t.quantum = 0;
+        t.set_quantum(0);
 
         assert!(d.quantum_end().is_none());
         assert_eq!(t.quantum(), i8::MAX);
         assert_eq!(t.priority(), 24);
-        assert!(d.next.is_none());
+        assert!(d.next_thread().is_none());
     }
 
     /// The balance-set boost: raised to the top of the variable band with a doubled quantum — the
@@ -2017,7 +2084,7 @@ mod tests {
         let p = process(8);
         let mut t = thread(p);
         t.priority = 8;
-        t.quantum = 1;
+        t.set_quantum(1);
 
         d.balance_boost(t);
         assert_eq!(t.priority_decrement(), 7, "the debt is the boost distance");
@@ -2037,16 +2104,16 @@ mod tests {
         let mut hog = thread(p);
         hog.priority = 8;
         run(d, hog);
-        d.note_tick(1000);
+        set_test_ticks(1000);
         let mut starved = thread(p);
         starved.priority = 1;
         starved.base_priority = 1;
         d.make_ready(starved);
         assert_eq!(starved.wait_time(), 1000, "stamped as it queued");
 
-        d.note_tick(1000 + READY_WITHOUT_RUNNING - 1);
+        set_test_ticks(1000 + READY_WITHOUT_RUNNING - 1);
         assert_eq!(d.scan_ready_queues(), 0, "not starved long enough yet");
-        d.note_tick(1000 + READY_WITHOUT_RUNNING);
+        set_test_ticks(1000 + READY_WITHOUT_RUNNING);
         assert_eq!(d.scan_ready_queues(), 1);
         assert_eq!(starved.priority(), REALTIME_BASE - 1);
         assert_eq!(
@@ -2066,14 +2133,14 @@ mod tests {
         running.priority = 10;
         running.base_priority = 8;
         run(d, running);
-        assert!(!d.yield_execution(&mut running), "nothing else is ready");
+        assert!(!d.yield_execution(running), "nothing else is ready");
         assert_eq!(running.priority(), 10, "a refused yield changes nothing");
 
         let mut low = thread(p);
         low.priority = 4;
         low.base_priority = 4;
         d.make_ready(low);
-        assert!(d.yield_execution(&mut running));
+        assert!(d.yield_execution(running));
         assert_eq!(
             d.next_thread(),
             id_of(low),
@@ -2093,7 +2160,7 @@ mod tests {
         let mut t = thread(p);
         t.priority = 8;
         run(d, t);
-        t.quantum = 1;
+        t.set_quantum(1);
 
         d.boost_current_round_trip();
         assert_eq!(t.priority(), 14);
@@ -2124,7 +2191,7 @@ mod tests {
         let mut t = thread(p);
         t.priority = 15;
         run(d, t);
-        t.quantum = 3;
+        t.set_quantum(3);
 
         d.boost_current_round_trip();
         assert_eq!(t.priority(), 15);
@@ -2141,7 +2208,7 @@ mod tests {
 
         let mut t = thread(p);
         t.priority = 10;
-        t.quantum = 4;
+        t.set_quantum(4);
         d.charge_wait(t);
         assert_eq!(t.quantum(), 3);
 
@@ -2149,7 +2216,7 @@ mod tests {
         let mut t = thread(p);
         t.priority = 10;
         t.priority_decrement = 2;
-        t.quantum = 1;
+        t.set_quantum(1);
         d.charge_wait(t);
         assert_eq!(t.quantum(), 6);
         assert_eq!(t.priority(), 8, "10 - 2 - 1 = 7, floored at the base");
@@ -2158,7 +2225,7 @@ mod tests {
         // Realtime replenishes outright.
         let mut t = thread(p);
         t.priority = 24;
-        t.quantum = 5;
+        t.set_quantum(5);
         d.charge_wait(t);
         assert_eq!(t.quantum(), 6);
         assert_eq!(t.priority(), 24);
@@ -2167,7 +2234,7 @@ mod tests {
         let mut t = thread(p);
         t.priority = 10;
         t.base_priority = 14;
-        t.quantum = 2;
+        t.set_quantum(2);
         d.charge_wait(t);
         assert_eq!(t.quantum(), 6);
     }
@@ -2242,7 +2309,7 @@ mod tests {
         t.base_priority = 31;
         t.priority = 31;
         t.saturation = 1;
-        t.quantum = 2;
+        t.set_quantum(2);
         d.set_process_priority(unsafe { &mut *p }, 24);
         assert_eq!(t.base_priority(), 31, "untouched by the walk");
         assert_eq!(t.priority(), 31);
@@ -2254,7 +2321,7 @@ mod tests {
         t.base_priority = 15;
         t.priority = 15;
         t.saturation = 1;
-        t.quantum = 2;
+        t.set_quantum(2);
         d.set_process_priority(unsafe { &mut *p }, 10);
         assert_eq!(t.base_priority(), 15);
         assert_eq!(t.priority(), 15);
@@ -2291,29 +2358,64 @@ mod tests {
         run(d, t);
 
         // One charge: mid-quantum, no request.
-        d.charge_running_tick();
+        charge_tick();
         assert_eq!(t.quantum(), QUANTUM_RESET - QUANTUM_TICK);
         assert!(
-            !d.quantum_end_requested,
+            !quantum_end_requested(),
             "a mid-quantum charge requests nothing"
         );
 
         // Second charge: the quantum ends, the request is armed.
-        d.charge_running_tick();
+        charge_tick();
         assert_eq!(t.quantum(), 0);
-        assert!(d.quantum_end_requested, "the quantum end arms the request");
+        assert!(quantum_end_requested(), "the quantum end arms the request");
 
         // The window consumes the request; with nobody else schedulable the decision resets the
         // quantum and the thread continues.
         assert!(d.dispatch_target().is_none());
-        assert!(!d.quantum_end_requested, "the window consumes the request");
+        assert!(!quantum_end_requested(), "the window consumes the request");
         assert_eq!(t.quantum(), QUANTUM_RESET);
 
         // The cycle repeats.
-        d.charge_running_tick();
-        assert!(!d.quantum_end_requested);
-        d.charge_running_tick();
-        assert!(d.quantum_end_requested);
+        charge_tick();
+        assert!(!quantum_end_requested());
+        charge_tick();
+        assert!(quantum_end_requested());
+    }
+
+    /// A1b: the running thread's quantum is the processor's while it runs — the clock charges it in
+    /// the slots, without the dispatcher — and the switch hands it back to the record, the incoming
+    /// thread's coming out of its own.
+    #[test]
+    fn the_running_quantum_lives_in_the_processor_slots() {
+        let d = dispatcher();
+        let p = process(8);
+        let a = thread(p);
+        let b = thread(p);
+        d.enter(a.id());
+        assert_eq!(slots().quantum(), QUANTUM_RESET);
+
+        charge_tick();
+        assert_eq!(slots().quantum(), QUANTUM_RESET - QUANTUM_TICK);
+        assert_eq!(
+            a.quantum(),
+            QUANTUM_RESET - QUANTUM_TICK,
+            "read where it is kept"
+        );
+
+        d.enter(b.id());
+        assert_eq!(
+            a.quantum(),
+            QUANTUM_RESET - QUANTUM_TICK,
+            "handed back at the switch"
+        );
+        assert_eq!(
+            slots().quantum(),
+            QUANTUM_RESET,
+            "the incoming thread's own"
+        );
+        d.enter(a.id());
+        assert_eq!(slots().quantum(), QUANTUM_RESET - QUANTUM_TICK);
     }
 
     /// A2: the charge is mode- and context-blind — it lands on whoever is current, taking no frame
@@ -2325,7 +2427,7 @@ mod tests {
         let a = thread(p);
         let b = thread(p);
         run(d, a);
-        d.charge_running_tick();
+        charge_tick();
         assert_eq!(a.quantum(), QUANTUM_RESET - QUANTUM_TICK);
         assert_eq!(
             b.quantum(),
@@ -2334,7 +2436,7 @@ mod tests {
         );
 
         run(d, b);
-        d.charge_running_tick();
+        charge_tick();
         assert_eq!(b.quantum(), QUANTUM_RESET - QUANTUM_TICK);
         assert_eq!(a.quantum(), QUANTUM_RESET - QUANTUM_TICK);
     }
@@ -2347,10 +2449,10 @@ mod tests {
         let p = process(8);
         let mut t = thread(p);
         run(d, t);
-        t.quantum = 2;
-        d.charge_running_tick();
+        t.set_quantum(2);
+        charge_tick();
         assert_eq!(t.quantum(), -1);
-        assert!(d.quantum_end_requested);
+        assert!(quantum_end_requested());
     }
 
     /// A4: the idle thread is charged like any other thread but never requests — the gate sits
@@ -2363,21 +2465,21 @@ mod tests {
         d.install_idle_thread(idle.id());
         run(d, idle);
 
-        d.charge_running_tick();
+        charge_tick();
         assert_eq!(idle.quantum(), QUANTUM_RESET - QUANTUM_TICK);
-        assert!(!d.quantum_end_requested);
-        d.charge_running_tick();
+        assert!(!quantum_end_requested());
+        charge_tick();
         assert_eq!(idle.quantum(), 0, "the idle thread's quantum is real data");
-        assert!(!d.quantum_end_requested, "only the request is gated");
+        assert!(!quantum_end_requested(), "only the request is gated");
         assert!(d.dispatch_target().is_none());
 
         // The ledger's floor: a charge at the byte floor saturates (the counter is a signed byte)
         // rather than wrapping to a positive quantum — the never-reset ledger rests at the floor,
         // and no request ever arms.
-        idle.quantum = i8::MIN;
-        d.charge_running_tick();
+        idle.set_quantum(i8::MIN);
+        charge_tick();
         assert_eq!(idle.quantum(), i8::MIN);
-        assert!(!d.quantum_end_requested);
+        assert!(!quantum_end_requested());
     }
 
     /// A thread charged past its quantum without a dispatch window stays exhausted: the charge
@@ -2389,7 +2491,7 @@ mod tests {
         let p = process(8);
         let mut t = thread(p);
         run(d, t);
-        t.quantum = i8::MIN + 1;
+        t.set_quantum(i8::MIN + 1);
         assert!(d.tick_quantum(t));
         assert_eq!(t.quantum(), i8::MIN);
         assert!(d.tick_quantum(t), "still exhausted at the floor");
@@ -2498,9 +2600,9 @@ mod tests {
         d.make_ready(other);
         assert!(d.next_thread().is_none(), "an equal arrival never requests");
 
-        d.charge_running_tick();
-        d.charge_running_tick();
-        assert!(d.quantum_end_requested, "the charge itself is not exempted");
+        charge_tick();
+        charge_tick();
+        assert!(quantum_end_requested(), "the charge itself is not exempted");
         assert!(
             d.dispatch_target().is_none(),
             "the exemption refuses the switch"
@@ -2526,8 +2628,8 @@ mod tests {
         let b = thread(p);
         d.make_ready(b); // queued at 8
 
-        d.charge_running_tick();
-        d.charge_running_tick();
+        charge_tick();
+        charge_tick();
         let target = d.dispatch_target();
         assert!(target == id_of(b), "the round-robin look finds the equal");
         assert!(d.next_thread().is_none(), "the target leaves the slot");
@@ -2560,8 +2662,8 @@ mod tests {
         d.make_ready(higher); // takes the slot, flags a
         assert!(a.preempted);
 
-        d.charge_running_tick();
-        d.charge_running_tick();
+        charge_tick();
+        charge_tick();
         let target = d.dispatch_target();
         assert!(target == id_of(higher));
         assert!(!a.preempted, "the decision cleared the flag");
@@ -2589,8 +2691,8 @@ mod tests {
         d.make_ready(higher); // takes the slot, flags a
         assert!(a.preempted);
 
-        d.charge_running_tick();
-        d.charge_running_tick();
+        charge_tick();
+        charge_tick();
         let target = d.dispatch_target();
         assert!(target == id_of(higher));
         assert_eq!(a.priority(), 9, "the quantum end decayed one step");
@@ -2632,10 +2734,10 @@ mod tests {
         let a = thread(p);
         run(d, a);
 
-        d.charge_running_tick();
-        d.charge_running_tick();
+        charge_tick();
+        charge_tick();
         assert!(d.dispatch_target().is_none());
-        assert!(!d.quantum_end_requested);
+        assert!(!quantum_end_requested());
         assert_eq!(a.quantum(), QUANTUM_RESET);
         assert_eq!(
             a.state,
@@ -2652,7 +2754,7 @@ mod tests {
         let p = process(8);
         let mut a = thread(p);
         run(d, a);
-        a.quantum = QUANTUM_RESET - QUANTUM_TICK; // mid-quantum
+        a.set_quantum(QUANTUM_RESET - QUANTUM_TICK); // mid-quantum
 
         // A queued equal gives the head requeue something to be ahead of.
         let queued = thread(p);
@@ -2667,7 +2769,7 @@ mod tests {
 
         let target = d.dispatch_target();
         assert!(target == id_of(woken));
-        assert!(!d.quantum_end_requested, "no quantum was involved");
+        assert!(!quantum_end_requested(), "no quantum was involved");
         // The displaced thread went to the head of its queue.
         assert!(d.find_ready(0) == id_of(a));
         assert!(d.find_ready(0) == id_of(queued));
@@ -2681,8 +2783,8 @@ mod tests {
         let p = process(8);
         let a = thread(p);
         run(d, a);
-        d.charge_running_tick();
-        d.charge_running_tick(); // the quantum ends, the request arms
+        charge_tick();
+        charge_tick(); // the quantum ends, the request arms
 
         // The drained work readies an equal — after the request, before the decision.
         let s = thread(p);
@@ -2708,8 +2810,8 @@ mod tests {
         run(d, a);
         let b = thread(p);
         d.make_ready(b);
-        d.charge_running_tick();
-        d.charge_running_tick();
+        charge_tick();
+        charge_tick();
         assert!(d.dispatch_target() == id_of(b));
     }
 
@@ -2723,12 +2825,12 @@ mod tests {
         let p = process(8);
         let a = thread(p);
         run(d, a);
-        d.charge_running_tick();
-        d.charge_running_tick();
-        assert!(d.quantum_end_requested);
+        charge_tick();
+        charge_tick();
+        assert!(quantum_end_requested());
         assert!(d.dispatch_target().is_none());
         assert!(
-            !d.quantum_end_requested,
+            !quantum_end_requested(),
             "even a refused request is consumed"
         );
     }
@@ -2742,24 +2844,24 @@ mod tests {
         let a = thread(p);
         run(d, a);
 
-        d.charge_running_tick();
+        charge_tick();
         assert!(
-            !d.quantum_end_requested,
+            !quantum_end_requested(),
             "a mid-quantum charge arms nothing"
         );
-        d.charge_running_tick();
-        assert!(d.quantum_end_requested);
+        charge_tick();
+        assert!(quantum_end_requested());
         // A second end (a charge landing on the exhausted quantum mid-window) merges into the same
         // one-bit request.
-        d.charge_running_tick();
-        assert!(d.quantum_end_requested);
+        charge_tick();
+        assert!(quantum_end_requested());
         assert!(d.dispatch_target().is_none());
-        assert!(!d.quantum_end_requested, "one bit, one consumption");
+        assert!(!quantum_end_requested(), "one bit, one consumption");
 
         // The next cycle arms fresh.
-        d.charge_running_tick();
-        d.charge_running_tick();
-        assert!(d.quantum_end_requested);
+        charge_tick();
+        charge_tick();
+        assert!(quantum_end_requested());
     }
 
     /// D3: a stale request — one that outlived the window it armed (the quantum was reset before
@@ -2774,7 +2876,7 @@ mod tests {
         d.make_ready(b);
 
         // A's quantum is positive (fresh), but a request is pending — the stale shape.
-        d.quantum_end_requested = true;
+        slots().request_quantum_end();
         assert!(
             d.dispatch_target().is_none(),
             "the decision re-verifies, not trusts"
@@ -2842,11 +2944,7 @@ mod tests {
         static APC_KERNEL_ROUTINE_RAN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     }
 
-    fn apc_kernel_routine(
-        _dispatcher: &mut Dispatcher,
-        _apc: crate::sched::apc::ApcId,
-        _args: &mut ApcArgs,
-    ) {
+    fn apc_kernel_routine(_apc: crate::sched::apc::ApcId, _args: &mut ApcArgs) {
         APC_KERNEL_ROUTINE_RAN.with(|ran| ran.set(true));
     }
 
@@ -2869,8 +2967,8 @@ mod tests {
         apc.init(main, apc_kernel_routine, None, ApcMode::Kernel, 0);
         assert!(d.queue_apc(apc, 0, 0, 0));
         // The tick's quantum-end request: a charge that runs the quantum out arms the flag.
-        main.quantum = 0;
-        d.charge_running_tick();
+        main.set_quantum(0);
+        charge_tick();
 
         let target = d.dispatch_target();
         assert_eq!(target, id_of(equal), "the decision switched");
@@ -2894,7 +2992,10 @@ mod tests {
         assert!(d.queue_apc(apc, 0, 0, 0));
 
         assert!(d.dispatch_target().is_none(), "no request, no target");
-        assert_eq!(d.deliver_kernel_apcs(), ApcDelivery::Delivered);
+        assert_eq!(
+            crate::sched::apc::deliver_kernel_apcs(),
+            ApcDelivery::Delivered
+        );
         assert!(
             APC_KERNEL_ROUTINE_RAN.with(|ran| ran.get()),
             "the window delivered the armed APC on the current thread"

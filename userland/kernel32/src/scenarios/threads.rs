@@ -4,7 +4,7 @@
 //! (`nt::threads`) and its virtual memory (`nt::host`).
 
 use crate::base::last_error;
-use crate::nt::threads::{process, HostThread, ENDED_THREAD, THREAD, THREADS, ZEROED_TLS};
+use crate::nt::threads::{HostThread, ENDED_THREAD, THREAD, THREADS, ZEROED_TLS};
 use crate::process::{
     get_priority_class,
     set_error_mode,
@@ -207,12 +207,11 @@ fn error_modes_round_trip() {
 /// Pins: kernel32.TlsAlloc, kernel32.TlsFree
 #[test]
 fn tls_indexes_allocate_and_free() {
-    let teb = process().teb;
-    crate::base::write(teb + 0xE10, 0x1111);
+    crate::base::set_tls_slot(0, 0x1111);
     arm();
     assert_eq!(tls_alloc(), 0);
     assert_eq!(
-        (crate::base::read(teb + 0xE10), last_error()),
+        (crate::base::tls_slot(0), last_error()),
         (0, UNTOUCHED),
         "the caller's slot cleared"
     );
@@ -220,11 +219,11 @@ fn tls_indexes_allocate_and_free() {
         assert_eq!(tls_alloc(), expected);
     }
     assert_eq!((tls_alloc(), last_error()), (0xFFFF_FFFF, 8));
-    crate::base::write(teb + 0xE10 + 4 * 5, 0x5555);
+    crate::base::set_tls_slot(5, 0x5555);
     arm();
     assert_eq!(tls_free(5), 1);
     assert_eq!(last_error(), UNTOUCHED);
-    assert_eq!(crate::base::read(teb + 0xE10 + 4 * 5), 0);
+    assert_eq!(crate::base::tls_slot(5), 0);
     assert_eq!(ZEROED_TLS.with(|zeroed| zeroed.borrow().clone()), [5]);
     assert_eq!((tls_free(5), last_error()), (0, 87), "a double free");
     assert_eq!(tls_free(70), 1);

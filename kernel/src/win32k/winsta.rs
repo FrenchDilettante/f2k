@@ -165,9 +165,17 @@ pub fn get_thread_desktop(call: &mut NtCall, thread_id: u32, out: UserPtr<u32>) 
 
 // --- The target's side: the objects, the connection ------------------------------------------
 
-/// WinSta0 and its Default desktop, made at boot.
+/// The interactive window station and its desktop: the objects every process connects to.
 #[cfg(target_arch = "x86")]
-static mut INTERACTIVE: Option<(crate::ob::ObjectId, crate::ob::ObjectId)> = None;
+struct Interactive {
+    station: crate::ob::ObjectId,
+    desktop: crate::ob::ObjectId,
+}
+
+/// WinSta0 and its Default desktop, made at boot (Windows 2000's win32k keeps the interactive
+/// window station as gpwinstaInteractive).
+#[cfg(target_arch = "x86")]
+static INTERACTIVE: crate::sync::InitOnce<Interactive> = crate::sync::InitOnce::new();
 
 /// The boot's step: the interactive window station, WinSta0, and its Default desktop. Their
 /// creator's references are never dropped: they outlive every process.
@@ -180,8 +188,7 @@ pub fn init() {
     let desktop = directory
         .create_desktop("Default", 0)
         .expect("the boot makes the one desktop");
-    // SAFETY: the boot context, before any process runs; its only writer.
-    unsafe { *core::ptr::addr_of_mut!(INTERACTIVE) = Some((station, desktop)) };
+    INTERACTIVE.set(Interactive { station, desktop });
 }
 
 /// Connect the calling process to its window station and desktop, if its first win32k service has
@@ -192,24 +199,34 @@ pub fn connect(process: &mut crate::process::Process) -> Result<Connection, NtSt
     if let Some(connection) = process.win32k() {
         return Ok(connection);
     }
-    // SAFETY: written once at boot, read-only since.
-    let (station, desktop) = unsafe { *core::ptr::addr_of!(INTERACTIVE) }
-        .expect("the boot made WinSta0 and its desktop");
-    let window_station = process.insert_object(station, WINSTA_ALL_ACCESS, false);
-    if window_station == 0 {
-        return Err(STATUS_INSUFFICIENT_RESOURCES);
-    }
-    let desktop = process.insert_object(desktop, DESKTOP_ALL_ACCESS, false);
-    if desktop == 0 {
-        process.close_handle(window_station);
-        return Err(STATUS_INSUFFICIENT_RESOURCES);
-    }
+    let interactive = INTERACTIVE.get();
+    let window_station = insert(process, interactive.station, WINSTA_ALL_ACCESS)?;
+    let desktop = match insert(process, interactive.desktop, DESKTOP_ALL_ACCESS) {
+        Ok(desktop) => desktop,
+        Err(status) => {
+            process.close_handle(window_station);
+            return Err(status);
+        }
+    };
     let connection = Connection {
         window_station,
         desktop,
     };
     process.set_win32k(connection);
     Ok(connection)
+}
+
+/// A handle to `id` in `process`'s handle table, not inheritable; STATUS_INSUFFICIENT_RESOURCES
+/// when the table refuses it (its handle 0).
+#[cfg(target_arch = "x86")]
+fn insert(
+    process: &mut crate::process::Process,
+    id: crate::ob::ObjectId,
+    access: u32,
+) -> Result<u32, NtStatus> {
+    core::num::NonZeroU32::new(process.insert_object(id, access, false))
+        .map(core::num::NonZeroU32::get)
+        .ok_or(STATUS_INSUFFICIENT_RESOURCES)
 }
 
 /// The calling process's connection (its first win32k service made it).

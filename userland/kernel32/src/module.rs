@@ -8,16 +8,15 @@
 //! (Basep8BitStringToStaticUnicodeString): a longer one is ERROR_FILENAME_EXCED_RANGE, never cut
 //! down to fit (which would make a name with a tail past MAX_PATH find kernel32).
 
+use rtl::peb::LdrDataTableEntry;
 use rtl::status::nt_success;
 
 use crate::base::{
-    peb,
-    read,
-    read_pointer,
+    loader_data,
     set_last_error,
     set_last_nt_error,
+    string_units,
     unicode_string,
-    units,
     wide_string,
     Text,
 };
@@ -30,20 +29,12 @@ const ERROR_MOD_NOT_FOUND: u32 = 126;
 const STATUS_ORDINAL_NOT_FOUND: u32 = 0xC000_0138;
 const STATUS_ENTRYPOINT_NOT_FOUND: u32 = 0xC000_0139;
 
-/// The PEB's ImageBaseAddress and Ldr (its LoaderLock is [`LoaderLock`]'s).
-const PEB_IMAGE_BASE_ADDRESS: usize = 0x08;
-const PEB_LDR: usize = 0x0C;
-/// PEB_LDR_DATA's InLoadOrderModuleList, and an LDR_DATA_TABLE_ENTRY's DllBase and FullDllName (its
-/// InLoadOrderLinks lead it).
-const IN_LOAD_ORDER_MODULE_LIST: usize = 0x0C;
-const DLL_BASE: usize = 0x18;
-const FULL_DLL_NAME: usize = 0x24;
 /// How many entries the walk visits at most (a list corrupted into a cycle ends there).
 const MAX_ENTRIES: usize = 1024;
 
 /// The image's handle: its base, the PEB's ImageBaseAddress.
 fn image_base() -> u32 {
-    read(peb() + PEB_IMAGE_BASE_ADDRESS)
+    crate::base::image_base() as u32
 }
 
 /// A loader call: the module's handle (LdrGetDllHandle, LdrLoadDll).
@@ -237,18 +228,26 @@ pub unsafe extern "system" fn get_proc_address(module: u32, name: *const u8) -> 
     address
 }
 
-/// The entry of the module whose handle is `module`, walking the PEB's InLoadOrderModuleList.
-fn entry_of(module: u32) -> Option<usize> {
-    let head = read_pointer(peb() + PEB_LDR) + IN_LOAD_ORDER_MODULE_LIST;
-    let mut next = read_pointer(head);
-    for _ in 0..MAX_ENTRIES {
-        if next == head || next == 0 {
-            return None;
+/// The entry of the module whose handle is `module`, walking the PEB's InLoadOrderModuleList (the
+/// caller holds the loader lock).
+fn entry_of(module: u32) -> Option<*const LdrDataTableEntry<usize>> {
+    let data = loader_data();
+    // SAFETY: the loader's PEB_LDR_DATA and its entries, on the process heap for the process's
+    // life (an entry leaves the lists only under the loader lock, which the caller holds); each
+    // field is read in place, and an entry's InLoadOrderLinks lead it.
+    unsafe {
+        let head =
+            (&raw const (*data).in_load_order_module_list).cast::<LdrDataTableEntry<usize>>();
+        let mut next = (*data).in_load_order_module_list.flink as *const LdrDataTableEntry<usize>;
+        for _ in 0..MAX_ENTRIES {
+            if next == head || next.is_null() {
+                return None;
+            }
+            if (*next).dll_base as u32 == module {
+                return Some(next);
+            }
+            next = (*next).in_load_order_links.flink as *const LdrDataTableEntry<usize>;
         }
-        if read_pointer(next + DLL_BASE) as u32 == module {
-            return Some(next);
-        }
-        next = read_pointer(next);
     }
     None
 }
@@ -267,8 +266,8 @@ unsafe fn module_file_name(module: u32, buffer: Text, size: u32) -> u32 {
     let copied = {
         let _loader = LoaderLock::enter();
         entry_of(module).map(|entry| {
-            // SAFETY: the module's own path, in the lists.
-            let path = unsafe { units(entry + FULL_DLL_NAME) };
+            // SAFETY: the module's entry and its own path, in the lists (under the loader lock).
+            let path = unsafe { string_units(&(*entry).full_dll_name) };
             let copy = path.len().min(size as usize);
             // SAFETY: the caller's buffer holds `size` characters.
             unsafe { buffer.put(&path[..copy]) };

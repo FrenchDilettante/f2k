@@ -9,7 +9,7 @@ use crate::fs::fat32::dirent::{ATTR_HIDDEN, ATTR_READ_ONLY, ATTR_SYSTEM};
 use crate::fs::fat32::lookup::File;
 use crate::fs::fat32::volume::Volume;
 use crate::fs::fat32::write;
-use crate::fs::file::{records, rights};
+use crate::fs::file::{rights, FileRecordId};
 use crate::fs::io::{self, ATTRIBUTE_ARCHIVE, SETTABLE_ATTRIBUTES};
 use crate::status::*;
 
@@ -176,18 +176,18 @@ fn missing(
 /// Overwrite the open file at `record`: cut to nothing, the attributes asked for (and the archive
 /// bit) in place of its own, its last write now. A mapped file is not cut
 /// (STATUS_USER_MAPPED_FILE).
-fn overwrite(record: u16, attributes: u32) -> Result<(), NtStatus> {
-    if io::mapped(record) && records().get(record).file.size > 0 {
+fn overwrite(record: FileRecordId, attributes: u32) -> Result<(), NtStatus> {
+    if io::mapped(record) && io::file_at(record).size > 0 {
         return Err(STATUS_USER_MAPPED_FILE);
     }
     io::with_volume(|volume| {
-        let mut file = records().get(record).file;
+        let mut file = io::file_at(record);
         file.attributes = attributes as u8 & SETTABLE_ATTRIBUTES | ATTRIBUTE_ARCHIVE;
         let stamp = io::now();
         file.times.write_date = stamp.write_date;
         file.times.write_time = stamp.write_time;
         write::set_size(volume, &mut file, 0)?;
-        records().get_mut(record).file = file;
+        io::store_file(record, file);
         Ok(())
     })
 }

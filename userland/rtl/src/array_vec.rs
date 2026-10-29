@@ -92,6 +92,19 @@ impl<T: Copy + Default, const N: usize> ArrayVec<T, N> {
         Ok(())
     }
 
+    /// `count` default values added at the end, handed back to be filled; none, and the error,
+    /// when they do not fit.
+    pub fn try_extend_default(&mut self, count: usize) -> Result<&mut [T], CapacityError> {
+        let start = self.length;
+        let end = start
+            .checked_add(count)
+            .filter(|&end| end <= N)
+            .ok_or(CapacityError)?;
+        // The slots past the length already hold defaults (the vector's invariant).
+        self.length = end;
+        Ok(&mut self.items[start..end])
+    }
+
     /// The values, as a slice.
     pub fn as_slice(&self) -> &[T] {
         &self.items[..self.length]
@@ -214,6 +227,20 @@ mod tests {
         assert_eq!(vec.try_extend_from_slice(&[1, 2, 3]), Ok(()));
         assert_eq!(vec, [7, 1, 2, 3]);
         assert_eq!(vec.try_extend_from_slice(&[]), Ok(()));
+    }
+
+    #[test]
+    fn default_slots_are_added_to_be_filled() {
+        let mut vec = ArrayVec::<u16, 4>::new();
+        vec.push(7);
+        assert_eq!(vec.try_extend_default(4), Err(CapacityError));
+        assert_eq!(vec.try_extend_default(usize::MAX), Err(CapacityError));
+        let slots = vec.try_extend_default(2).unwrap();
+        assert_eq!(slots, [0, 0]);
+        slots.copy_from_slice(&[1, 2]);
+        assert_eq!(vec, [7, 1, 2]);
+        vec.pop();
+        assert_eq!(vec.try_extend_default(1), Ok(&mut [0][..]));
     }
 
     #[test]

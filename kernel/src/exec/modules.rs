@@ -26,7 +26,10 @@
 //! numbering, not Windows 2000's. The tests resolve in kernel32 too, as the userland build left it
 //! (`target/userland/`): the built DLLs against their export specs and the corpus's imports.
 
+use core::mem::offset_of;
 use core::sync::atomic::{AtomicU32, Ordering};
+
+use rtl::image::{ImageDosHeader, ImageNtHeaders32, ImageOptionalHeader32};
 
 use crate::exec::pe::{
     same_module,
@@ -92,35 +95,46 @@ pub static USER32: SystemDll = SystemDll {
     file: include_bytes!(concat!(env!("F2K_SYSTEM_DLLS"), "/user32.dll")),
 };
 
-/// A DLL file's SizeOfImage, at build time (the system regions reserve the image's extent).
+/// A DLL file's SizeOfImage, at build time (the system regions reserve the image's extent): the
+/// optional header's field, in the NT headers e_lfanew gives.
 const fn size_of_image(file: &[u8]) -> u32 {
-    let lfanew = u32::from_le_bytes([file[0x3C], file[0x3D], file[0x3E], file[0x3F]]) as usize;
-    // The PE signature, the 20-byte file header, then the optional header: SizeOfImage at +56.
-    let at = lfanew + 4 + 20 + 56;
-    u32::from_le_bytes([file[at], file[at + 1], file[at + 2], file[at + 3]])
+    const fn word(file: &[u8], at: usize) -> u32 {
+        u32::from_le_bytes([file[at], file[at + 1], file[at + 2], file[at + 3]])
+    }
+    let nt = word(file, offset_of!(ImageDosHeader, e_lfanew)) as usize;
+    word(
+        file,
+        nt + offset_of!(ImageNtHeaders32, optional_header)
+            + offset_of!(ImageOptionalHeader32, size_of_image),
+    )
 }
 
 /// ntdll's image size.
 pub const NTDLL_SIZE: u32 = size_of_image(NTDLL_FILE);
 
 impl SystemDll {
-    /// The DLL's parsed headers. The files are the build's own output, checked by the host tests.
-    pub fn image(&self) -> Image {
+    /// The DLL's parsed headers, a view of its file. The files are the build's own output, checked
+    /// by the host tests.
+    pub fn image(&self) -> Image<'static> {
         Image::parse(self.file)
             .unwrap_or_else(|reject| panic!("{} does not parse: {reject:?}", self.file_name))
     }
 
-    /// The export named `name`, as the DLL's export directory holds it. Read from the headers
-    /// alone, not through a parsed [`Image`]: the lookup runs on system services' small gate
-    /// stacks (a thread's creation).
+    /// The DLL's export directory, read from its file (its offsets are its RVAs): none for a file
+    /// that does not parse, so a lookup fails rather than panics.
+    fn exports(&self) -> Option<Exports> {
+        Image::parse(self.file).ok()?.exports(self.file)
+    }
+
+    /// The export named `name`, as the DLL's export directory holds it.
     fn export(&self, name: &str) -> Option<Export<'static>> {
-        Exports::in_headers(self.file)?.by_name(self.file, name)
+        self.exports()?.by_name(self.file, name)
     }
 
     /// The export with ordinal `ordinal` (biased by the directory's base), read as [`Self::export`]
     /// reads names.
     fn export_by_ordinal(&self, ordinal: u32) -> Option<Export<'static>> {
-        Exports::in_headers(self.file)?.by_ordinal(self.file, ordinal)
+        self.exports()?.by_ordinal(self.file, ordinal)
     }
 }
 
@@ -230,12 +244,17 @@ pub enum StartThunkError {
 pub fn process_start_in(file: &[u8], staging: &mut [u8]) -> Result<u32, StartThunkError> {
     let image = Image::parse(file).map_err(|_| StartThunkError::NotAnImage)?;
     let mapped = staging
-        .get_mut(..image.size_of_image as usize)
+        .get_mut(..image.size_of_image() as usize)
         .ok_or(StartThunkError::TooLarge)?;
     mapped.fill(0);
-    image.map_into(file, mapped);
-    match Exports::in_headers(mapped).and_then(|exports| exports.by_name(mapped, START_THUNK)) {
-        Some(Export::Address(rva)) => Ok(image.image_base + rva),
+    image
+        .map_into(file, mapped)
+        .map_err(|_| StartThunkError::NotAnImage)?;
+    match image
+        .exports(mapped)
+        .and_then(|exports| exports.by_name(mapped, START_THUNK))
+    {
+        Some(Export::Address(rva)) => Ok(image.image_base() + rva),
         _ => Err(StartThunkError::NoExport),
     }
 }
@@ -300,6 +319,7 @@ mod tests {
     use rtl::modules::{self as ldr, Memory, MemoryMut};
 
     use super::*;
+    use crate::exec::pe::Section;
 
     // `NATIVE_EXPORTS`: kernel32's native exports (its user-mode code), (export, argument bytes),
     // as the spec declares them.
@@ -322,13 +342,13 @@ mod tests {
         for dll in [&NTDLL, &KERNEL32] {
             let image = dll.image();
             assert!(image.is_dll(), "{}", dll.file_name);
-            assert_eq!(image.image_base, dll.base, "{}", dll.file_name);
+            assert_eq!(image.image_base(), dll.base, "{}", dll.file_name);
             assert!(
-                dll.base as u64 + image.size_of_image as u64
+                dll.base as u64 + image.size_of_image() as u64
                     <= crate::mem::paging::KERNEL_BASE as u64
             );
-            let mut mapped = vec![0u8; image.size_of_image as usize];
-            image.map_into(dll.file, &mut mapped);
+            let mut mapped = vec![0u8; image.size_of_image() as usize];
+            image.map_into(dll.file, &mut mapped).unwrap();
             let shared = dll.file.len().min(mapped.len());
             assert!(
                 mapped[..shared] == dll.file[..shared],
@@ -342,7 +362,7 @@ mod tests {
                 dll.file_name
             );
         }
-        assert_eq!(NTDLL.image().size_of_image, NTDLL_SIZE);
+        assert_eq!(NTDLL.image().size_of_image(), NTDLL_SIZE);
         assert!(NTDLL_BASE + NTDLL_SIZE <= KERNEL32_BASE);
         assert_eq!(imports_of(NTDLL.file), [], "ntdll imports nothing");
         assert!(
@@ -363,7 +383,7 @@ mod tests {
         let mut staging = vec![0u8; 0x8_0000];
         let thunk = process_start_in(KERNEL32.file, &mut staging).unwrap();
         assert_eq!(Some(thunk), kernel32_export(START_THUNK));
-        assert!((KERNEL32_BASE..KERNEL32_BASE + KERNEL32.image().size_of_image).contains(&thunk));
+        assert!((KERNEL32_BASE..KERNEL32_BASE + KERNEL32.image().size_of_image()).contains(&thunk));
         assert_eq!(
             process_start_in(KERNEL32.file, &mut staging[..0x1000]),
             Err(StartThunkError::TooLarge)
@@ -384,7 +404,7 @@ mod tests {
     /// kernel32's surface carries Windows 2000's names alone).
     #[test]
     fn exports_resolve_through_the_module_table() {
-        let kernel32_size = KERNEL32.image().size_of_image;
+        let kernel32_size = KERNEL32.image().size_of_image();
         let exit = resolve("KERNEL32.dll", "ExitProcess").unwrap();
         assert!((KERNEL32_BASE..KERNEL32_BASE + kernel32_size).contains(&exit));
         assert_eq!(resolve("kernel32", "ExitProcess"), Ok(exit));
@@ -468,7 +488,7 @@ mod tests {
     /// resumes the same; kernel32's start thunks clear EBP and push their registers (the main
     /// thread's entry point; a child's parameter, then its start address) under a zero return
     /// address, then jump to their bodies. The exception-filter natives address the top-level
-    /// filter's slot in the PEB page.
+    /// filter in kernel32's own data.
     #[test]
     fn the_entry_points_keep_their_protocols() {
         let dispatcher = bytes_at(exception_dispatcher());
@@ -533,11 +553,25 @@ mod tests {
             matches!(thunk[6], 0xE9 | 0xEB),
             "BaseThreadStartThunk: a jump"
         );
-        let slot = crate::user::teb::peb_offset::TOP_LEVEL_FILTER.to_le_bytes();
-        for name in ["SetUnhandledExceptionFilter", "UnhandledExceptionFilter"] {
-            let body = bytes_at(kernel32_export(name).unwrap());
-            assert!(body[..32].windows(4).any(|w| w == slot), "{name}");
-        }
+        // The filter: one dword of kernel32's writable data, addressed by both natives.
+        let image = KERNEL32.image();
+        let in_data = |window: &[u8]| {
+            let address = u32::from_le_bytes(window.try_into().unwrap());
+            address
+                .checked_sub(KERNEL32_BASE)
+                .and_then(|rva| section_holding(&image, rva))
+                .is_some_and(|section| section.protection().write)
+        };
+        let set = bytes_at(kernel32_export("SetUnhandledExceptionFilter").unwrap());
+        let filter = set[..16]
+            .windows(4)
+            .find(|window| in_data(window))
+            .expect("SetUnhandledExceptionFilter: the filter's address");
+        let unhandled = bytes_at(kernel32_export("UnhandledExceptionFilter").unwrap());
+        assert!(
+            unhandled[..16].windows(4).any(|window| window == filter),
+            "UnhandledExceptionFilter: the same filter"
+        );
     }
 
     /// The corpus binaries (the smokes in the root directory, the sectioned fixtures in \CORPUS):
@@ -621,8 +655,8 @@ mod tests {
     /// A binary's imports, as (module, name), read through the PE parser's import walk.
     fn imports_of(file: &[u8]) -> Vec<(String, String)> {
         let image = Image::parse(file).expect("the binary parses");
-        let mut mapped = vec![0u8; image.size_of_image as usize];
-        image.map_into(file, &mut mapped);
+        let mut mapped = vec![0u8; image.size_of_image() as usize];
+        image.map_into(file, &mut mapped).unwrap();
         let mut imports = Vec::new();
         image.snap_imports(file, &mut mapped, |module, name| {
             imports.push((module.to_string(), name.to_string()));
@@ -729,8 +763,8 @@ mod tests {
             .into_iter()
             .map(|dll| {
                 let image = dll.image();
-                let mut mapped = vec![0u8; image.size_of_image as usize];
-                image.map_into(dll.file, &mut mapped);
+                let mut mapped = vec![0u8; image.size_of_image() as usize];
+                image.map_into(dll.file, &mut mapped).unwrap();
                 (dll.base, mapped)
             })
             .collect();
@@ -811,7 +845,7 @@ mod tests {
     #[test]
     fn ordinals_resolve_through_the_export_directory() {
         let dll = &KERNEL32;
-        let exports = Exports::in_headers(dll.file).unwrap();
+        let exports = dll.exports().unwrap();
         let ordinal = (0..exports.num_functions)
             .map(|slot| exports.ordinal_base + slot)
             .find(|&ordinal| {
@@ -889,12 +923,11 @@ mod tests {
         ]
     }
 
-    /// The index of the section of `image` holding `rva`.
-    fn section_holding(image: &Image, rva: u32) -> Option<usize> {
-        (0..image.num_sections()).find(|&i| {
-            let start = image.section(i).virtual_address;
-            (start..start + image.section_extent(i)).contains(&rva)
-        })
+    /// The section of `image` holding `rva`.
+    fn section_holding(image: &Image<'_>, rva: u32) -> Option<Section> {
+        image
+            .sections()
+            .find(|s| (s.virtual_address..s.virtual_address + image.extent(s)).contains(&rva))
     }
 
     /// msvcrt, advapi32 and user32: i386 DLL images at Windows 2000's bases for them (images are
@@ -905,7 +938,7 @@ mod tests {
     fn the_loaded_dlls_are_images_at_their_bases() {
         let mut extents: Vec<(u32, u32)> = [&NTDLL, &KERNEL32, &MSVCRT, &ADVAPI32, &USER32]
             .into_iter()
-            .map(|dll| (dll.base, dll.base + dll.image().size_of_image))
+            .map(|dll| (dll.base, dll.base + dll.image().size_of_image()))
             .collect();
         extents.sort_unstable();
         for pair in extents.windows(2) {
@@ -917,15 +950,11 @@ mod tests {
         for Loaded { dll, .. } in loaded_dlls() {
             let image = dll.image();
             assert!(image.is_dll(), "{}", dll.file_name);
-            assert_eq!(image.image_base, dll.base, "{}", dll.file_name);
+            assert_eq!(image.image_base(), dll.base, "{}", dll.file_name);
             let entry = image.entry_va() - dll.base;
             let code = section_holding(&image, entry)
                 .unwrap_or_else(|| panic!("{}: the entry point lies in no section", dll.file_name));
-            assert!(
-                entry != 0 && image.section(code).protection().2,
-                "{}",
-                dll.file_name
-            );
+            assert!(entry != 0 && code.protection().execute, "{}", dll.file_name);
             for (module, name) in imports_of(dll.file) {
                 assert!(
                     ["kernel32.dll", "ntdll.dll"]
@@ -949,7 +978,7 @@ mod tests {
             data,
         } in loaded_dlls()
         {
-            let size = dll.image().size_of_image;
+            let size = dll.image().size_of_image();
             let mut addresses = Vec::new();
             for &(name, _) in exports.iter().chain(stubs) {
                 let address = resolve_in(dll, name, 0)
@@ -981,21 +1010,21 @@ mod tests {
     fn variables_are_writable_data() {
         for Loaded { dll, data, .. } in loaded_dlls() {
             let image = dll.image();
-            let mut mapped = vec![0u8; image.size_of_image as usize];
-            image.map_into(dll.file, &mut mapped);
+            let mut mapped = vec![0u8; image.size_of_image() as usize];
+            image.map_into(dll.file, &mut mapped).unwrap();
             for name in data {
                 let rva = resolve_in(dll, name, 0).unwrap() - dll.base;
                 let section = section_holding(&image, rva)
                     .unwrap_or_else(|| panic!("{name} lies in no section"));
-                let (read, write, execute) = image.section(section).protection();
-                assert!(read && write && !execute, "{name}");
+                let access = section.protection();
+                assert!(access.read && access.write && !access.execute, "{name}");
                 assert_eq!(
                     crate::exec::loader::page_protect(&image, rva & !0xFFF),
                     crate::mem::vm::PAGE_WRITECOPY,
                     "{name}"
                 );
                 let size = if *name == "_iob" { 20 * 32 } else { 4 };
-                let end = image.section(section).virtual_address + image.section_extent(section);
+                let end = section.virtual_address + image.extent(&section);
                 assert!(rva + size <= end, "{name} fits its section");
                 assert!(
                     mapped[rva as usize..(rva + size) as usize]

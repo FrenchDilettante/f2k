@@ -1,36 +1,50 @@
 //! PE32 image parsing, export lookup and import resolution for the image loader.
 //!
 //! Pure logic over a byte slice, with no kernel state: [`Image::parse`] validates a PE32 image's
-//! headers and section table — a program or a DLL, told apart by the file header's DLL flag —
-//! [`Image::map_into`] builds the in-memory image under the eager mapping rule (headers verbatim,
-//! then each section's raw bytes, zero-fill to the section extent), [`Image::exports`] reads the
-//! export directory of a mapped image, and [`Image::snap_imports`] resolves the import directory
-//! module by module through a caller-supplied resolver, writing addresses into the IAT slots. The
-//! kernel snaps no import at run time (ntdll's loader snaps every module's, in user mode): the
-//! import walk is the tests', reading the corpus binaries' imports against the built DLLs.
+//! headers and section table — a program or a DLL, told apart by the file header's DLL flag — and
+//! keeps a view of them: the NT headers, copied out, and the section table, left in the bytes and
+//! read row by row on demand ([`Image::sections`]). [`Image::map_into`] builds the in-memory image
+//! under the eager mapping rule (headers verbatim, then each section's raw bytes, zero-fill to the
+//! section extent), [`Image::exports`] reads the export directory of a mapped image, and
+//! [`Image::snap_imports`] resolves the import directory module by module through a
+//! caller-supplied resolver, writing addresses into the IAT slots. The kernel snaps no import at
+//! run time (ntdll's loader snaps every module's, in user mode): the import walk is the tests',
+//! reading the corpus binaries' imports against the built DLLs. The structures are Windows' own
+//! (`rtl::image`), each read whole from the bytes.
 //!
 //! Every image maps at its own preferred base (no relocation machinery exists): the base must be a
 //! 64 KiB multiple and the image must fit below the kernel window.
 //!
 //! Failure discipline: questions of identity ("is this an image we load?") come back as
 //! [`Reject`]s, a header that would read past its bytes or a section whose raw data lies past the
-//! file's end among them ([`Reject::Truncated`]: any file a program names is parsed); malformed
-//! bytes past the parse (an export or import table reading out of the image), and violations of
-//! the load contract, panic naming the violated contract. A run-to-completion program must
-//! have at least one live import, so a snap that resolves nothing is a contract violation, not
-//! a success.
+//! file's end among them ([`Reject::Truncated`]: any file a program names is parsed). Malformed
+//! bytes past the parse (an export table reading out of the image) make a lookup find nothing: no
+//! bytes read from the disk panic the kernel. The tests' import walk panics naming the violated
+//! contract: a run-to-completion program must have at least one live import, so a snap that
+//! resolves nothing is a contract violation, not a success.
 
-/// The DOS-header magic ("MZ").
-const DOS_MAGIC: u16 = 0x5A4D;
+use core::mem::{offset_of, size_of};
 
-/// The NT-header signature ("PE\0\0").
-const PE_SIGNATURE: u32 = 0x0000_4550;
+use rtl::image::{
+    data_directory,
+    ImageDataDirectory,
+    ImageDosHeader,
+    ImageExportDirectory,
+    ImageNtHeaders32,
+    ImageOptionalHeader32,
+    ImageSectionHeader,
+    DIRECTORY_EXPORT,
+    DOS_MAGIC,
+    NT_SIGNATURE,
+    NUMBER_OF_DIRECTORIES,
+    PE32_MAGIC,
+};
+#[cfg(test)]
+use rtl::image::{ImageImportDescriptor, DIRECTORY_IAT, DIRECTORY_IMPORT};
+use rtl::pod::Pod;
 
 /// The only machine type this loader accepts: i386.
 const MACHINE_I386: u16 = 0x014C;
-
-/// The only optional-header layout this loader accepts: PE32 (not PE32+).
-const OPT_MAGIC_PE32: u16 = 0x010B;
 
 /// The only subsystem this loader accepts for a program: console. A DLL's subsystem field is not
 /// consulted (the system DLLs carry either value).
@@ -51,18 +65,6 @@ pub const MAX_IMAGE_SIZE: u32 = 0x0100_0000;
 /// The section-count cap.
 const MAX_SECTIONS: usize = 96;
 
-/// The data-directory array cap (the format's maximum).
-const MAX_DIRECTORIES: usize = 16;
-
-/// Data-directory indices the loader consumes.
-pub const DIR_EXPORT: usize = 0;
-#[cfg(test)]
-pub const DIR_IMPORT: usize = 1;
-#[cfg(test)]
-pub const DIR_BASERELOC: usize = 5;
-#[cfg(test)]
-pub const DIR_IAT: usize = 12;
-
 /// The high bit of a thunk marks an import by ordinal, not by name.
 #[cfg(test)]
 const ORDINAL_FLAG: u32 = 0x8000_0000;
@@ -71,21 +73,6 @@ const ORDINAL_FLAG: u32 = 0x8000_0000;
 const SCN_EXECUTE: u32 = 0x2000_0000;
 const SCN_READ: u32 = 0x4000_0000;
 const SCN_WRITE: u32 = 0x8000_0000;
-
-// Header geometry: offsets and sizes within the file image.
-const OFF_E_LFANEW: usize = 0x3C;
-const SIZE_DOS_HEADER: usize = 0x40;
-const SIZE_NT_SIGNATURE: usize = 4;
-const SIZE_FILE_HEADER: usize = 20;
-const SIZE_SECTION_HEADER: usize = 40;
-/// The optional header's standard fields, before the directory array.
-const SIZE_OPT_STANDARD: usize = 96;
-const SIZE_DIRECTORY_ENTRY: usize = 8;
-/// One import descriptor: five dwords, terminated by an all-zero one.
-#[cfg(test)]
-const SIZE_IMPORT_DESCRIPTOR: usize = 20;
-/// The export directory's fixed part (its arrays and strings live elsewhere in the image).
-const SIZE_EXPORT_DIRECTORY: usize = 40;
 
 /// Why an image is not loadable. Identity questions only: bytes that merely do not describe a
 /// loadable PE32 image.
@@ -139,13 +126,6 @@ pub enum Reject {
     Truncated,
 }
 
-/// One data-directory entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DataDirectory {
-    pub rva: u32,
-    pub size: u32,
-}
-
 /// One section-table row, with the zero-raw-size fix applied (a section with no raw data has no
 /// meaningful raw offset either).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -156,6 +136,40 @@ pub struct Section {
     pub raw_size: u32,
     pub raw_offset: u32,
     pub characteristics: u32,
+}
+
+impl From<ImageSectionHeader> for Section {
+    fn from(row: ImageSectionHeader) -> Section {
+        Section {
+            name: row.name,
+            virtual_size: row.virtual_size,
+            virtual_address: row.virtual_address,
+            raw_size: row.size_of_raw_data,
+            raw_offset: if row.size_of_raw_data == 0 {
+                0
+            } else {
+                row.pointer_to_raw_data
+            },
+            characteristics: row.characteristics,
+        }
+    }
+}
+
+/// The access a section's pages map with, from its characteristics; the access of a page several
+/// sections share is their union (`|=`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Protection {
+    pub read: bool,
+    pub write: bool,
+    pub execute: bool,
+}
+
+impl core::ops::BitOrAssign for Protection {
+    fn bitor_assign(&mut self, other: Protection) {
+        self.read |= other.read;
+        self.write |= other.write;
+        self.execute |= other.execute;
+    }
 }
 
 impl Section {
@@ -179,48 +193,36 @@ impl Section {
     }
 
     /// The section's footprint in the image, rounded up to the section alignment.
-    fn extent(&self, section_alignment: u32) -> u32 {
+    fn extent(&self, section_alignment: u32) -> u64 {
         round_up(self.effective_vsize().max(self.raw_size), section_alignment)
     }
 
     /// How many raw bytes the mapping copies for this section: the raw data, capped at the
-    /// rounded-up virtual size.
+    /// rounded-up virtual size (so never more than the raw size).
     fn copy_len(&self, section_alignment: u32) -> u32 {
-        self.raw_size
-            .min(round_up(self.effective_vsize(), section_alignment))
+        let capped = round_up(self.effective_vsize(), section_alignment).min(self.raw_size.into());
+        capped as u32
     }
 
-    /// The (read, write, execute) protection this section maps with.
-    pub fn protection(&self) -> (bool, bool, bool) {
-        (
-            self.characteristics & SCN_READ != 0,
-            self.characteristics & SCN_WRITE != 0,
-            self.characteristics & SCN_EXECUTE != 0,
-        )
+    /// The access this section maps with.
+    pub fn protection(&self) -> Protection {
+        Protection {
+            read: self.characteristics & SCN_READ != 0,
+            write: self.characteristics & SCN_WRITE != 0,
+            execute: self.characteristics & SCN_EXECUTE != 0,
+        }
     }
 }
 
-/// A parsed PE32 image: the fields the loader needs, plus the section table. Borrows nothing:
-/// everything is copied out at parse time.
+/// A parsed PE32 image: a view of its headers, borrowing the bytes it was parsed from. The NT
+/// headers are copied out (a few hundred bytes); the section table stays in the bytes, its rows
+/// read on demand, so an image fits a system service's small gate stack.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Image {
-    pub entry_rva: u32,
-    pub image_base: u32,
-    pub section_alignment: u32,
-    pub file_alignment: u32,
-    pub size_of_image: u32,
-    pub size_of_headers: u32,
-    pub subsystem: u16,
-    /// The subsystem version the image was linked for (major, minor).
-    pub subsystem_version: (u16, u16),
-    /// The file header's characteristics (the DLL flag among them).
-    pub characteristics: u16,
-    /// The file header's TimeDateStamp (the loader's module lists record it).
-    pub time_date_stamp: u32,
-    directories: [DataDirectory; MAX_DIRECTORIES],
-    num_directories: usize,
-    sections: [Section; MAX_SECTIONS],
-    num_sections: usize,
+pub struct Image<'a> {
+    nt: ImageNtHeaders32,
+    /// The section table: the file header's count of whole rows, inside the header region (the
+    /// parse checked both).
+    table: &'a [u8],
 }
 
 /// The outcome of an import snap: descriptors walked and IAT slots written.
@@ -307,17 +309,16 @@ impl Exports {
     /// checked to lie inside the image. None when the directory or an array does not: the bytes
     /// are malformed.
     fn read(mapped: &[u8], rva: u32, size: u32) -> Option<Exports> {
-        let directory = span(mapped, rva as usize, SIZE_EXPORT_DIRECTORY)?;
-        let field = |at: usize| get_u32(directory, at);
+        let directory: ImageExportDirectory = read(mapped, rva as usize)?;
         let exports = Exports {
             directory_rva: rva,
             directory_size: size,
-            ordinal_base: field(16)?,
-            num_functions: field(20)?,
-            num_names: field(24)?,
-            functions_rva: field(28)?,
-            names_rva: field(32)?,
-            name_ordinals_rva: field(36)?,
+            ordinal_base: directory.base,
+            num_functions: directory.number_of_functions,
+            num_names: directory.number_of_names,
+            functions_rva: directory.address_of_functions,
+            names_rva: directory.address_of_names,
+            name_ordinals_rva: directory.address_of_name_ordinals,
         };
         // The arrays must lie inside the image: every lookup indexes them.
         let array = |rva: u32, count: u32, width: usize| {
@@ -329,47 +330,15 @@ impl Exports {
         Some(exports)
     }
 
-    /// The export directory of a PE32 image `mapped` (a file whose offsets are its RVAs, or the
-    /// mapped image), read straight from its headers, if it has one. For lookups on a small stack:
-    /// a parsed [`Image`] takes several KiB, too much for a system service's gate stack. None as
-    /// well when the headers or the directory do not lie inside the bytes: a malformed image
-    /// exports nothing, so a damaged system DLL read from disk fails its lookups instead of
-    /// panicking the kernel.
-    pub fn in_headers(mapped: &[u8]) -> Option<Exports> {
-        let nt = get_u32(mapped, OFF_E_LFANEW)? as usize;
-        let opt = nt.checked_add(SIZE_NT_SIGNATURE + SIZE_FILE_HEADER)?;
-        let directories = get_u32(mapped, opt.checked_add(SIZE_OPT_STANDARD - 4)?)?;
-        if directories as usize <= DIR_EXPORT {
-            return None;
-        }
-        let entry = opt.checked_add(SIZE_OPT_STANDARD + DIR_EXPORT * SIZE_DIRECTORY_ENTRY)?;
-        let rva = get_u32(mapped, entry)?;
-        let size = get_u32(mapped, entry.checked_add(4)?)?;
-        if rva == 0 {
-            return None;
-        }
-        Exports::read(mapped, rva, size)
-    }
-
-    /// Every exported name, in the name table's order.
-    #[cfg(test)]
-    pub fn names<'a>(&self, mapped: &'a [u8]) -> impl Iterator<Item = &'a str> + 'a {
-        let names_rva = self.names_rva as usize;
-        (0..self.num_names as usize).map(move |index| {
-            let name_rva = read_u32(mapped, names_rva + index * 4, "export name");
-            read_cstr(mapped, name_rva as usize, "export name")
-        })
-    }
-
     /// The export with this name. Names compare exactly (export names are case-sensitive); the name
     /// table is walked in full, so its sort order is not relied on. None as well when the walk
     /// meets malformed bytes: a name outside the image or unterminated, or a slot past the address
     /// table.
     pub fn by_name<'a>(&self, mapped: &'a [u8], name: &str) -> Option<Export<'a>> {
         for index in 0..self.num_names as usize {
-            let name_rva = get_u32(mapped, self.names_rva as usize + index * 4)?;
+            let name_rva: u32 = read(mapped, self.names_rva as usize + index * 4)?;
             if get_cstr(mapped, name_rva as usize)? == name {
-                let slot = get_u16(mapped, self.name_ordinals_rva as usize + index * 2)?;
+                let slot: u16 = read(mapped, self.name_ordinals_rva as usize + index * 2)?;
                 // The name-ordinal table holds address-table indexes, not biased ordinals.
                 if slot as u32 >= self.num_functions {
                     return None;
@@ -392,7 +361,7 @@ impl Exports {
     /// Address-table slot `slot`: an unused slot (zero) exports nothing, nor does one whose RVA
     /// lies outside the image or names an unterminated forwarder.
     fn slot<'a>(&self, mapped: &'a [u8], slot: u32) -> Option<Export<'a>> {
-        let rva = get_u32(mapped, self.functions_rva as usize + slot as usize * 4)?;
+        let rva: u32 = read(mapped, self.functions_rva as usize + slot as usize * 4)?;
         if rva == 0 {
             return None;
         }
@@ -408,14 +377,14 @@ fn span(bytes: &[u8], off: usize, len: usize) -> Option<&[u8]> {
     bytes.get(off..off.checked_add(len)?)
 }
 
-/// The little-endian `u16` at `off`, if it lies inside `bytes`.
-fn get_u16(bytes: &[u8], off: usize) -> Option<u16> {
-    Some(u16::from_le_bytes(span(bytes, off, 2)?.try_into().ok()?))
+/// The `T` at `off` in `bytes`, read whole at any alignment, if it lies inside them.
+fn read<T: Pod>(bytes: &[u8], off: usize) -> Option<T> {
+    T::from_bytes(bytes.get(off..)?)
 }
 
-/// The little-endian `u32` at `off`, if it lies inside `bytes`.
-fn get_u32(bytes: &[u8], off: usize) -> Option<u32> {
-    Some(u32::from_le_bytes(span(bytes, off, 4)?.try_into().ok()?))
+/// The header `T` at `off` in `bytes`: one that does not lie inside them is a truncated image.
+fn read_struct<T: Pod>(bytes: &[u8], off: usize) -> Result<T, Reject> {
+    read(bytes, off).ok_or(Reject::Truncated)
 }
 
 /// The NUL-terminated string at `off`, if there is one: None when `off` lies past the end, no NUL
@@ -426,8 +395,9 @@ fn get_cstr(bytes: &[u8], off: usize) -> Option<&str> {
     core::str::from_utf8(&tail[..end]).ok()
 }
 
-/// Bounds-check a read: `what` at `[off, off + len)` must fit inside `bytes`. Violations are
-/// malformed-image bounds, so they panic naming what was being read.
+/// Bounds-check one of the import walk's reads: `what` at `[off, off + len)` must fit inside
+/// `bytes`. Violations are malformed-image bounds, so they panic naming what was being read.
+#[cfg(test)]
 fn need(bytes: &[u8], off: usize, len: usize, what: &str) {
     let end = off.checked_add(len).unwrap_or_else(|| {
         panic!("{what} at 0x{off:x} wraps");
@@ -439,14 +409,11 @@ fn need(bytes: &[u8], off: usize, len: usize, what: &str) {
     );
 }
 
-fn read_u16(bytes: &[u8], off: usize, what: &str) -> u16 {
-    need(bytes, off, 2, what);
-    u16::from_le_bytes([bytes[off], bytes[off + 1]])
-}
-
-fn read_u32(bytes: &[u8], off: usize, what: &str) -> u32 {
-    need(bytes, off, 4, what);
-    u32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]])
+/// The `T` at `off`, for the import walk: one past the bytes panics naming `what` ([`need`]).
+#[cfg(test)]
+fn read_at<T: Pod>(bytes: &[u8], off: usize, what: &str) -> T {
+    need(bytes, off, size_of::<T>(), what);
+    read(bytes, off).expect("the bounds were checked")
 }
 
 #[cfg(test)]
@@ -467,237 +434,191 @@ fn read_cstr<'a>(bytes: &'a [u8], off: usize, what: &str) -> &'a str {
 /// Whether `[off, off + len)` lies inside `bytes`: a header range that does not is a truncated
 /// image.
 fn fits(bytes: &[u8], off: usize, len: usize) -> Result<(), Reject> {
-    match off.checked_add(len) {
-        Some(end) if end <= bytes.len() => Ok(()),
-        _ => Err(Reject::Truncated),
+    span(bytes, off, len).map(|_| ()).ok_or(Reject::Truncated)
+}
+
+/// `v` rounded up to a multiple of `align` (which must be nonzero), in 64 bits: a section's sizes
+/// come from the file and may be anything, and their rounding must not wrap.
+fn round_up(v: u32, align: u32) -> u64 {
+    u64::from(v).next_multiple_of(u64::from(align))
+}
+
+/// The identity contracts of the image whose NT headers are `nt`: a program must be a console
+/// image with an entry point; a DLL may be either subsystem and may have no entry point (nothing to
+/// call at attach). Either has sections, and a preferred base at which it fits below user space's
+/// end.
+fn check_identity(nt: &ImageNtHeaders32) -> Result<(), Reject> {
+    let optional = &nt.optional_header;
+    let dll = nt.file_header.characteristics & FILE_DLL != 0;
+    if nt.file_header.number_of_sections == 0 {
+        return Err(Reject::NoSections);
     }
+    let base = optional.image_base;
+    if base == 0 || !base.is_multiple_of(IMAGE_BASE_ALIGNMENT) {
+        return Err(Reject::ImageBaseUnaligned);
+    }
+    if !dll && optional.subsystem != SUBSYSTEM_CUI {
+        return Err(Reject::WrongSubsystem);
+    }
+    if !dll && optional.address_of_entry_point == 0 {
+        return Err(Reject::NoEntryPoint);
+    }
+    if optional.size_of_image > MAX_IMAGE_SIZE {
+        return Err(Reject::ImageTooLarge);
+    }
+    if base
+        .checked_add(optional.size_of_image)
+        .is_none_or(|end| end > USER_SPACE_END)
+    {
+        return Err(Reject::ImageOutsideUserSpace);
+    }
+    Ok(())
 }
 
-/// Round `v` up to a multiple of `align` (which must be nonzero).
-fn round_up(v: u32, align: u32) -> u32 {
-    let bumped = v
-        .checked_add(align - 1)
-        .unwrap_or_else(|| panic!("0x{v:x} does not round up to 0x{align:x}"));
-    (bumped / align) * align
+/// The alignment bundle: a nonzero power-of-two file alignment, a multiple of 512 unless it equals
+/// the section alignment, which is at least as large.
+fn check_alignment(optional: &ImageOptionalHeader32) -> Result<(), Reject> {
+    let (file, section) = (optional.file_alignment, optional.section_alignment);
+    if file == 0
+        || (!file.is_multiple_of(512) && file != section)
+        || !file.is_power_of_two()
+        || section < file
+    {
+        return Err(Reject::BadAlignment);
+    }
+    Ok(())
 }
 
-impl Image {
+/// The rows of the section table `table`, in order (whole rows only).
+fn sections(table: &[u8]) -> impl Iterator<Item = Section> + '_ {
+    table
+        .as_chunks::<{ size_of::<ImageSectionHeader>() }>()
+        .0
+        .iter()
+        .filter_map(|row| ImageSectionHeader::from_bytes(row))
+        .map(Section::from)
+}
+
+impl<'a> Image<'a> {
     /// Parse and validate a PE32 executable.
     ///
     /// `Err` means the bytes are not an image this loader accepts, a truncated one included.
-    pub fn parse(file: &[u8]) -> Result<Image, Reject> {
+    pub fn parse(file: &'a [u8]) -> Result<Image<'a>, Reject> {
         Image::parse_headers(file, file.len())
     }
 
     /// Parse and validate a PE32 image from its first bytes, `headers` (the header region at
     /// least: the DOS and NT headers and the section table), the whole file being `file_len`
     /// bytes long: its sections' raw data must lie inside the file, not inside `headers`.
-    pub fn parse_headers(headers: &[u8], file_len: usize) -> Result<Image, Reject> {
-        let file = headers;
-        // DOS header.
-        fits(file, 0, SIZE_DOS_HEADER)?;
-        if read_u16(file, 0, "DOS magic") != DOS_MAGIC {
+    pub fn parse_headers(headers: &'a [u8], file_len: usize) -> Result<Image<'a>, Reject> {
+        let dos: ImageDosHeader = read_struct(headers, 0)?;
+        if dos.e_magic != DOS_MAGIC {
             return Err(Reject::NotDos);
         }
-        let nt = read_u32(file, OFF_E_LFANEW, "e_lfanew") as usize;
-        fits(file, nt, SIZE_NT_SIGNATURE + SIZE_FILE_HEADER)?;
-        if read_u32(file, nt, "PE signature") != PE_SIGNATURE {
+        // e_lfanew, unsigned: a negative offset lies past any bytes. The NT headers are read whole:
+        // bytes that end inside them are a truncated image.
+        let at = dos.e_lfanew as u32 as usize;
+        let nt: ImageNtHeaders32 = read_struct(headers, at)?;
+        if nt.signature != NT_SIGNATURE {
             return Err(Reject::NotPe);
         }
-
-        // File header.
-        let machine = read_u16(file, nt + 4, "machine");
-        let num_sections = read_u16(file, nt + 6, "section count") as usize;
-        let size_optional = read_u16(file, nt + 20, "SizeOfOptionalHeader") as usize;
-        let characteristics = read_u16(file, nt + 22, "Characteristics");
-        let time_date_stamp = read_u32(file, nt + 8, "TimeDateStamp");
-        let opt = nt + SIZE_NT_SIGNATURE + SIZE_FILE_HEADER;
-
-        if machine != MACHINE_I386 {
+        if nt.file_header.machine != MACHINE_I386 {
             return Err(Reject::WrongMachine);
         }
-
-        // Optional header.
-        fits(file, opt, SIZE_OPT_STANDARD)?;
-        let magic = read_u16(file, opt, "optional-header magic");
-        if magic != OPT_MAGIC_PE32 {
+        let optional = &nt.optional_header;
+        if optional.magic != PE32_MAGIC {
             return Err(Reject::NotPe32);
         }
-        let num_directories = read_u32(file, opt + 92, "NumberOfRvaAndSizes") as usize;
-        if num_directories > MAX_DIRECTORIES {
+        let directories = optional.number_of_rva_and_sizes as usize;
+        if directories > NUMBER_OF_DIRECTORIES {
             return Err(Reject::TooManyDirectories);
         }
-        if SIZE_OPT_STANDARD + num_directories * SIZE_DIRECTORY_ENTRY > size_optional {
+        let size_optional = nt.file_header.size_of_optional_header as usize;
+        let directories_end = offset_of!(ImageOptionalHeader32, data_directory)
+            + directories * size_of::<ImageDataDirectory>();
+        if directories_end > size_optional {
             return Err(Reject::OptionalHeaderTooSmall);
         }
-        fits(file, opt, size_optional)?;
+        let optional_at = at + offset_of!(ImageNtHeaders32, optional_header);
+        fits(headers, optional_at, size_optional)?;
 
-        let entry_rva = read_u32(file, opt + 16, "AddressOfEntryPoint");
-        let image_base = read_u32(file, opt + 28, "ImageBase");
-        let section_alignment = read_u32(file, opt + 32, "SectionAlignment");
-        let file_alignment = read_u32(file, opt + 36, "FileAlignment");
-        let size_of_image = read_u32(file, opt + 56, "SizeOfImage");
-        let size_of_headers = read_u32(file, opt + 60, "SizeOfHeaders");
-        let subsystem = read_u16(file, opt + 68, "Subsystem");
-        let subsystem_version = (
-            read_u16(file, opt + 48, "MajorSubsystemVersion"),
-            read_u16(file, opt + 50, "MinorSubsystemVersion"),
-        );
-
-        let mut directories = [DataDirectory { rva: 0, size: 0 }; MAX_DIRECTORIES];
-        for i in 0..num_directories {
-            let at = opt + SIZE_OPT_STANDARD + i * SIZE_DIRECTORY_ENTRY;
-            directories[i] = DataDirectory {
-                rva: read_u32(file, at, "data directory"),
-                size: read_u32(file, at + 4, "data directory"),
-            };
-        }
-
-        // Identity contracts. A program must be a console image with an entry point; a DLL may be
-        // either subsystem and may have no entry point (nothing to call at attach).
-        let dll = characteristics & FILE_DLL != 0;
-        if num_sections == 0 {
-            return Err(Reject::NoSections);
-        }
-        if image_base == 0 || !image_base.is_multiple_of(IMAGE_BASE_ALIGNMENT) {
-            return Err(Reject::ImageBaseUnaligned);
-        }
-        if !dll && subsystem != SUBSYSTEM_CUI {
-            return Err(Reject::WrongSubsystem);
-        }
-        if !dll && entry_rva == 0 {
-            return Err(Reject::NoEntryPoint);
-        }
-        if size_of_image > MAX_IMAGE_SIZE {
-            return Err(Reject::ImageTooLarge);
-        }
-        if image_base
-            .checked_add(size_of_image)
-            .is_none_or(|end| end > USER_SPACE_END)
-        {
-            return Err(Reject::ImageOutsideUserSpace);
-        }
-
-        // The alignment bundle.
-        if file_alignment == 0 {
-            return Err(Reject::BadAlignment);
-        }
-        if file_alignment % 512 != 0 && file_alignment != section_alignment {
-            return Err(Reject::BadAlignment);
-        }
-        if file_alignment & (file_alignment - 1) != 0 {
-            return Err(Reject::BadAlignment);
-        }
-        if section_alignment < file_alignment {
-            return Err(Reject::BadAlignment);
-        }
+        check_identity(&nt)?;
+        check_alignment(optional)?;
 
         // Section table: it lives inside the header region, which lives inside the image.
-        let table = opt + size_optional;
-        fits(file, table, num_sections * SIZE_SECTION_HEADER)?;
-        if num_sections > MAX_SECTIONS {
+        let table_at = optional_at + size_optional;
+        let count = nt.file_header.number_of_sections as usize;
+        let table = span(headers, table_at, count * size_of::<ImageSectionHeader>())
+            .ok_or(Reject::Truncated)?;
+        if count > MAX_SECTIONS {
             return Err(Reject::TooManySections);
         }
-        let table_end = table + num_sections * SIZE_SECTION_HEADER;
-        if table_end > size_of_headers as usize {
+        let size_of_headers = optional.size_of_headers;
+        if table_at + table.len() > size_of_headers as usize {
             return Err(Reject::TableOutsideHeaders);
         }
-        if size_of_headers >= size_of_image {
+        if size_of_headers >= optional.size_of_image {
             return Err(Reject::HeadersOutsideImage);
         }
         if size_of_headers as usize > file_len {
             return Err(Reject::Truncated);
         }
 
-        // Sections and their mapping plan.
-        let mut sections = [Section {
-            name: [0; 8],
-            virtual_size: 0,
-            virtual_address: 0,
-            raw_size: 0,
-            raw_offset: 0,
-            characteristics: 0,
-        }; MAX_SECTIONS];
-        // The header region ends at the first section; sections must tile the image from there,
-        // contiguously and in order.
-        let mut running_va = round_up(size_of_headers, section_alignment) as u64;
-        for i in 0..num_sections {
-            let at = table + i * SIZE_SECTION_HEADER;
-            let mut name = [0u8; 8];
-            name.copy_from_slice(&file[at..at + 8]);
-            let mut section = Section {
-                name,
-                virtual_size: read_u32(file, at + 8, "section header"),
-                virtual_address: read_u32(file, at + 12, "section header"),
-                raw_size: read_u32(file, at + 16, "section header"),
-                raw_offset: read_u32(file, at + 20, "section header"),
-                characteristics: read_u32(file, at + 36, "section header"),
-            };
-            // A section with no raw data has no meaningful raw offset.
-            if section.raw_size == 0 {
-                section.raw_offset = 0;
-            }
+        // An image without an import directory is legal: it imports nothing and must end by fault
+        // (the fault-containment fixture) — the loader snaps zero imports.
+        let image = Image { nt, table };
+        image.check_sections(file_len)?;
+        Ok(image)
+    }
+
+    /// The section table's contracts, against a file of `file_len` bytes: each section's raw data
+    /// in the file and inside its extent; the sections tiling the image from the header region's
+    /// end, contiguously and in order, up to SizeOfImage; the entry point, when there is one,
+    /// inside an executable section.
+    fn check_sections(&self, file_len: usize) -> Result<(), Reject> {
+        let alignment = self.section_alignment();
+        // The header region ends at the first section.
+        let mut running_va = round_up(self.size_of_headers(), alignment);
+        for section in self.sections() {
             // The raw range must not wrap and must exist in the file.
             match section.raw_offset.checked_add(section.raw_size) {
                 Some(end) if end as usize <= file_len => {}
                 _ => return Err(Reject::Truncated),
             }
-            let extent = section.extent(section_alignment);
+            let extent = section.extent(alignment);
             if extent == 0 {
                 return Err(Reject::ZeroExtent);
             }
-            if round_up(section.effective_vsize(), section_alignment) < section.raw_size {
+            if round_up(section.effective_vsize(), alignment) < u64::from(section.raw_size) {
                 return Err(Reject::RawBeyondExtent);
             }
-            if section.virtual_address as u64 != running_va {
+            if u64::from(section.virtual_address) != running_va {
                 return Err(Reject::SectionDiscontiguous);
             }
-            running_va += extent as u64;
-            sections[i] = section;
+            running_va += extent;
         }
 
         // SizeOfImage is the rounded-up end of the last section.
-        if size_of_image % section_alignment != 0 {
-            return Err(Reject::SizeOfImageMismatch);
-        }
-        if running_va != size_of_image as u64 {
+        let size_of_image = self.size_of_image();
+        if !size_of_image.is_multiple_of(alignment) || running_va != u64::from(size_of_image) {
             return Err(Reject::SizeOfImageMismatch);
         }
 
-        // The entry point, when there is one, must be inside an executable section.
-        let entry_covered = entry_rva == 0
-            || (0..num_sections).any(|i| {
-                let s = &sections[i];
-                entry_rva >= s.virtual_address
-                    && entry_rva < s.virtual_address + s.extent(section_alignment)
-                    && s.characteristics & SCN_EXECUTE != 0
+        let entry = self.entry_rva();
+        let entry_covered = entry == 0
+            || self.sections().any(|s| {
+                let start = u64::from(s.virtual_address);
+                (start..start + s.extent(alignment)).contains(&u64::from(entry))
+                    && s.protection().execute
             });
         if !entry_covered {
             return Err(Reject::EntryNotExecutable);
         }
-
-        // An image without an import directory is legal: it imports nothing and must end by fault
-        // (the fault-containment fixture) — the loader snaps zero imports.
-        Ok(Image {
-            entry_rva,
-            image_base,
-            section_alignment,
-            file_alignment,
-            size_of_image,
-            size_of_headers,
-            subsystem,
-            subsystem_version,
-            characteristics,
-            time_date_stamp,
-            directories,
-            num_directories,
-            sections,
-            num_sections,
-        })
+        Ok(())
     }
 
     /// Parse an image that must be a program: a DLL is refused.
-    pub fn parse_program(file: &[u8]) -> Result<Image, Reject> {
+    pub fn parse_program(file: &'a [u8]) -> Result<Image<'a>, Reject> {
         let image = Image::parse(file)?;
         if image.is_dll() {
             return Err(Reject::NotAProgram);
@@ -705,47 +626,109 @@ impl Image {
         Ok(image)
     }
 
+    /// The image's NT headers, as its file holds them.
+    pub fn nt_headers(&self) -> &ImageNtHeaders32 {
+        &self.nt
+    }
+
+    /// The entry point's RVA (zero for a DLL without one).
+    pub fn entry_rva(&self) -> u32 {
+        self.nt.optional_header.address_of_entry_point
+    }
+
+    /// The preferred base: where the image maps.
+    pub fn image_base(&self) -> u32 {
+        self.nt.optional_header.image_base
+    }
+
+    /// The image's size as mapped (SizeOfImage).
+    pub fn size_of_image(&self) -> u32 {
+        self.nt.optional_header.size_of_image
+    }
+
+    /// The header region's size: the headers the mapping copies verbatim.
+    pub fn size_of_headers(&self) -> u32 {
+        self.nt.optional_header.size_of_headers
+    }
+
+    /// The alignment of the sections in memory.
+    pub fn section_alignment(&self) -> u32 {
+        self.nt.optional_header.section_alignment
+    }
+
+    /// The subsystem the image runs in.
+    pub fn subsystem(&self) -> u16 {
+        self.nt.optional_header.subsystem
+    }
+
+    /// The subsystem version the image was linked for (major, minor).
+    pub fn subsystem_version(&self) -> (u16, u16) {
+        let optional = &self.nt.optional_header;
+        (
+            optional.major_subsystem_version,
+            optional.minor_subsystem_version,
+        )
+    }
+
+    /// The file header's characteristics (the DLL flag among them).
+    pub fn characteristics(&self) -> u16 {
+        self.nt.file_header.characteristics
+    }
+
     /// Whether the image is a DLL (the file header's DLL flag, not the subsystem, decides).
     pub fn is_dll(&self) -> bool {
-        self.characteristics & FILE_DLL != 0
+        self.characteristics() & FILE_DLL != 0
     }
 
-    /// The export directory of the mapped image `mapped`, if the image has one. The kernel's own
-    /// lookups read it from the headers alone ([`Exports::in_headers`]); the tests hold the two
-    /// to agree.
-    #[cfg(test)]
+    /// The export directory of the mapped image `mapped` (as [`Image::map_into`] builds it, or a
+    /// file whose offsets are its RVAs), if the image has one. None as well when the directory or
+    /// one of its arrays does not lie inside `mapped`: a malformed image exports nothing, so a
+    /// damaged system DLL read from disk fails its lookups instead of panicking the kernel.
     pub fn exports(&self, mapped: &[u8]) -> Option<Exports> {
-        let (rva, size) = self.directory(DIR_EXPORT)?;
-        Exports::read(mapped, rva, size)
+        let directory = data_directory(&self.nt, DIRECTORY_EXPORT)?;
+        Exports::read(mapped, directory.virtual_address, directory.size)
     }
 
-    pub fn section(&self, index: usize) -> &Section {
-        &self.sections[index]
+    /// The section table's rows, in order, read from the header bytes.
+    pub fn sections(&self) -> impl Iterator<Item = Section> + 'a {
+        sections(self.table)
     }
 
+    /// The section's footprint in the image: its sizes rounded up to the section alignment. The
+    /// parse bounded every section's by SizeOfImage, so it fits.
+    pub fn extent(&self, section: &Section) -> u32 {
+        section.extent(self.section_alignment()) as u32
+    }
+
+    /// The section table's row `index`.
+    #[cfg(test)]
+    pub fn section(&self, index: usize) -> Section {
+        self.sections()
+            .nth(index)
+            .unwrap_or_else(|| panic!("the image has no section {index}"))
+    }
+
+    #[cfg(test)]
     pub fn num_sections(&self) -> usize {
-        self.num_sections
+        self.sections().count()
     }
 
     /// The section whose raw data backs `rva`, if any. The bound is the raw size: file-mode lookups
     /// can only find bytes that exist in the file.
     #[cfg(test)]
     pub fn section_for_rva(&self, rva: u32) -> Option<usize> {
-        (0..self.num_sections).find(|&i| {
-            let s = &self.sections[i];
-            rva >= s.virtual_address && rva < s.virtual_address + s.raw_size
-        })
+        self.sections()
+            .position(|s| rva >= s.virtual_address && rva < s.virtual_address + s.raw_size)
     }
 
     /// File-mode RVA to file offset: header-region RVAs resolve directly, others through the
     /// section table.
     #[cfg(test)]
     pub fn rva_to_offset(&self, rva: u32) -> Option<usize> {
-        if rva < self.size_of_headers {
+        if rva < self.size_of_headers() {
             return Some(rva as usize);
         }
-        let i = self.section_for_rva(rva)?;
-        let s = &self.sections[i];
+        let s = self.section(self.section_for_rva(rva)?);
         Some((rva - s.virtual_address + s.raw_offset) as usize)
     }
 
@@ -753,72 +736,57 @@ impl Image {
     /// malformed bytes, not an absent directory.
     #[cfg(test)]
     pub fn directory(&self, index: usize) -> Option<(u32, u32)> {
-        if index >= self.num_directories {
-            return None;
-        }
-        let d = self.directories[index];
-        if d.rva == 0 {
-            return None;
-        }
+        let d = data_directory(&self.nt, index)?;
         assert!(
-            d.rva < self.size_of_image,
+            d.virtual_address < self.size_of_image(),
             "directory {index} RVA 0x{:x} is outside the image 0x{:x}",
-            d.rva,
-            self.size_of_image
+            d.virtual_address,
+            self.size_of_image()
         );
-        Some((d.rva, d.size))
+        Some((d.virtual_address, d.size))
     }
 
-    /// The section's footprint in the image.
+    /// The footprint in the image of section `index`.
+    #[cfg(test)]
     pub fn section_extent(&self, index: usize) -> u32 {
-        self.sections[index].extent(self.section_alignment)
+        self.extent(&self.section(index))
     }
 
-    /// How many raw bytes the mapping copies for the section.
+    /// How many raw bytes the mapping copies for section `index`.
     #[cfg(test)]
     pub fn section_copy_len(&self, index: usize) -> u32 {
-        self.sections[index].copy_len(self.section_alignment)
+        self.section(index).copy_len(self.section_alignment())
     }
 
     /// The entry point's virtual address.
     pub fn entry_va(&self) -> u32 {
-        self.image_base + self.entry_rva
+        self.image_base() + self.entry_rva()
     }
 
     /// Build the in-memory image: headers verbatim, then each section's raw bytes, zero-filled to
-    /// the section extent. `out` must be at least `size_of_image` bytes.
-    pub fn map_into(&self, file: &[u8], out: &mut [u8]) {
+    /// the section extent. `out` must be at least `size_of_image` bytes. [`Reject::Truncated`] when
+    /// `file` is shorter than the headers or a section's raw data needs (an image parsed from its
+    /// headers, given the file's length, mapped from a shorter file).
+    pub fn map_into(&self, file: &[u8], out: &mut [u8]) -> Result<(), Reject> {
         assert!(
-            out.len() >= self.size_of_image as usize,
+            out.len() >= self.size_of_image() as usize,
             "destination 0x{:x} is smaller than the image 0x{:x}",
             out.len(),
-            self.size_of_image
+            self.size_of_image()
         );
-        assert!(
-            self.size_of_headers as usize <= file.len(),
-            "SizeOfHeaders 0x{:x} exceeds the file length 0x{:x}",
-            self.size_of_headers,
-            file.len()
-        );
-        let headers = self.size_of_headers as usize;
-        out[..headers].copy_from_slice(&file[..headers]);
-        for i in 0..self.num_sections {
-            let s = &self.sections[i];
-            let dst = s.virtual_address as usize;
-            let copy_len = s.copy_len(self.section_alignment) as usize;
-            if copy_len > 0 {
-                need(file, s.raw_offset as usize, copy_len, "section raw data");
-                need(out, dst, copy_len, "section mapping");
-                out[dst..dst + copy_len].copy_from_slice(
-                    &file[s.raw_offset as usize..s.raw_offset as usize + copy_len],
-                );
-            }
-            let extent = s.extent(self.section_alignment) as usize;
-            if extent > copy_len {
-                need(out, dst + copy_len, extent - copy_len, "section mapping");
-                out[dst + copy_len..dst + extent].fill(0);
-            }
+        let headers = self.size_of_headers() as usize;
+        out[..headers].copy_from_slice(file.get(..headers).ok_or(Reject::Truncated)?);
+        let alignment = self.section_alignment();
+        for s in self.sections() {
+            // The parse placed every section's extent inside SizeOfImage, which `out` holds.
+            let at = s.virtual_address as usize;
+            let mapped = &mut out[at..at + self.extent(&s) as usize];
+            let copy_len = s.copy_len(alignment) as usize;
+            let raw = span(file, s.raw_offset as usize, copy_len).ok_or(Reject::Truncated)?;
+            mapped[..copy_len].copy_from_slice(raw);
+            mapped[copy_len..].fill(0);
         }
+        Ok(())
     }
 
     /// One page of the in-memory image as [`Image::map_into`] builds it — the headers verbatim,
@@ -834,15 +802,11 @@ impl Image {
     ) -> bool {
         out.fill(0);
         let page_end = page_rva as u64 + out.len() as u64;
+        let alignment = self.section_alignment();
         // (RVA, bytes copied, file offset) for the headers, then each section.
-        let pieces = core::iter::once((0, self.size_of_headers, 0)).chain(
-            self.sections[..self.num_sections].iter().map(|s| {
-                (
-                    s.virtual_address,
-                    s.copy_len(self.section_alignment),
-                    s.raw_offset,
-                )
-            }),
+        let pieces = core::iter::once((0, self.size_of_headers(), 0)).chain(
+            self.sections()
+                .map(|s| (s.virtual_address, s.copy_len(alignment), s.raw_offset)),
         );
         for (rva, len, offset) in pieces {
             let start = (rva as u64).max(page_rva as u64);
@@ -864,24 +828,19 @@ impl Image {
     /// zero-import image never reaches here).
     #[cfg(test)]
     fn iat_region(&self) -> (u32, u32) {
-        if let Some((rva, size)) = self.directory(DIR_IAT) {
+        if let Some((rva, size)) = self.directory(DIRECTORY_IAT) {
             return (rva, size);
         }
         let (import_rva, _) = self
-            .directory(DIR_IMPORT)
+            .directory(DIRECTORY_IMPORT)
             .expect("the caller checked for an import directory");
-        for i in 0..self.num_sections {
-            let s = &self.sections[i];
-            if import_rva >= s.virtual_address && import_rva < s.virtual_address + s.raw_size {
-                let size = if s.virtual_size == 0 {
-                    s.raw_size
-                } else {
-                    s.virtual_size
-                };
-                return (s.virtual_address, size);
-            }
-        }
-        panic!("unable to locate the IAT region");
+        let s = self
+            .sections()
+            .find(|s| {
+                import_rva >= s.virtual_address && import_rva < s.virtual_address + s.raw_size
+            })
+            .unwrap_or_else(|| panic!("unable to locate the IAT region"));
+        (s.virtual_address, s.effective_vsize())
     }
 
     /// Read one import's name out of the file bytes. The name must live in file-backed bytes: the
@@ -889,31 +848,30 @@ impl Image {
     /// ordinal is named `#<ordinal>`, as the import dumps write it (a corpus program's own
     /// companion DLL may export by ordinal only; a system DLL's imports are by name).
     #[cfg(test)]
-    fn import_name<'a>(&self, file: &'a [u8], thunk: u32) -> std::borrow::Cow<'a, str> {
+    fn import_name<'f>(&self, file: &'f [u8], thunk: u32) -> std::borrow::Cow<'f, str> {
         if thunk & ORDINAL_FLAG != 0 {
             return format!("#{}", thunk & 0xFFFF).into();
         }
         assert!(
-            thunk < self.size_of_image,
+            thunk < self.size_of_image(),
             "import name RVA 0x{thunk:x} is outside the image 0x{:x}",
-            self.size_of_image
+            self.size_of_image()
         );
         let off = self.rva_to_offset(thunk).unwrap_or_else(|| {
             panic!("import name RVA 0x{thunk:x} is not backed by file data");
         });
-        need(file, off, 2, "hint/name entry");
-        let _hint = read_u16(file, off, "hint/name entry");
+        let _hint: u16 = read_at(file, off, "hint/name entry");
         read_cstr(file, off + 2, "import name").into()
     }
 
     /// A NUL-terminated string at `rva`, read out of the file bytes: it must lie inside the image
     /// and be file-backed.
     #[cfg(test)]
-    fn file_cstr<'a>(&self, file: &'a [u8], rva: u32, what: &str) -> &'a str {
+    fn file_cstr<'f>(&self, file: &'f [u8], rva: u32, what: &str) -> &'f str {
         assert!(
-            rva < self.size_of_image,
+            rva < self.size_of_image(),
             "{what} RVA 0x{rva:x} is outside the image 0x{:x}",
-            self.size_of_image
+            self.size_of_image()
         );
         let off = self.rva_to_offset(rva).unwrap_or_else(|| {
             panic!("{what} RVA 0x{rva:x} is not backed by file data");
@@ -935,7 +893,7 @@ impl Image {
         image: &mut [u8],
         mut resolve: impl FnMut(&str, &str) -> Result<u32, Unresolved>,
     ) -> SnapResult {
-        let Some((import_rva, _)) = self.directory(DIR_IMPORT) else {
+        let Some((import_rva, _)) = self.directory(DIRECTORY_IMPORT) else {
             // No import directory: nothing to snap (an importless program must end by fault).
             return SnapResult::default();
         };
@@ -943,25 +901,24 @@ impl Image {
         let mut result = SnapResult::default();
         let mut off = import_rva as usize;
         loop {
-            need(image, off, SIZE_IMPORT_DESCRIPTOR, "import descriptor");
-            let original_first_thunk = read_u32(image, off, "import descriptor");
-            let name_rva = read_u32(image, off + 12, "import descriptor");
-            let first_thunk = read_u32(image, off + 16, "import descriptor");
+            let descriptor: ImageImportDescriptor = read_at(image, off, "import descriptor");
             // The all-zero descriptor ends the array.
-            if name_rva == 0 || first_thunk == 0 {
+            if descriptor.name == 0 || descriptor.first_thunk == 0 {
                 break;
             }
+            off += size_of::<ImageImportDescriptor>();
             result.descriptors += 1;
-            let module = self.file_cstr(file, name_rva, "import module name");
+            let module = self.file_cstr(file, descriptor.name, "import module name");
+            let first_thunk = descriptor.first_thunk;
             // An import with no live references is skipped.
-            if read_u32(image, first_thunk as usize, "thunk slot") == 0 {
-                off += SIZE_IMPORT_DESCRIPTOR;
+            if read_at::<u32>(image, first_thunk as usize, "thunk slot") == 0 {
                 continue;
             }
             // A thunk array pointer that does not point inside the image is bogus; the first-thunk
             // array is walked in place instead.
-            let lookup = if original_first_thunk < self.size_of_headers
-                || original_first_thunk >= self.size_of_image
+            let original_first_thunk = descriptor.original_first_thunk;
+            let lookup = if original_first_thunk < self.size_of_headers()
+                || original_first_thunk >= self.size_of_image()
             {
                 first_thunk
             } else {
@@ -970,7 +927,7 @@ impl Image {
             let mut lookup_off = lookup as usize;
             let mut slot_off = first_thunk as usize;
             loop {
-                let thunk = read_u32(image, lookup_off, "thunk slot");
+                let thunk: u32 = read_at(image, lookup_off, "thunk slot");
                 // The zero slot ends the array.
                 if thunk == 0 {
                     break;
@@ -983,7 +940,6 @@ impl Image {
                         panic!("entry point '{name}' not found in {module}")
                     }
                 };
-                need(image, slot_off, 4, "IAT slot");
                 write_u32(image, slot_off, address, "IAT slot");
                 assert!(
                     slot_off >= iat_base as usize
@@ -995,7 +951,6 @@ impl Image {
                 lookup_off += 4;
                 slot_off += 4;
             }
-            off += SIZE_IMPORT_DESCRIPTOR;
         }
         // A run-to-completion program must resolve at least one import: its exit path. A DLL may
         // import nothing.
@@ -1009,6 +964,8 @@ impl Image {
 
 #[cfg(test)]
 mod tests {
+    use rtl::image::DIRECTORY_BASERELOC;
+
     use super::*;
 
     const EXIT0: &[u8] = include_bytes!("../../../tests/core/exit0/exit0.exe");
@@ -1105,16 +1062,19 @@ mod tests {
     const S_RAWOFF: usize = 20;
     const S_CHARS: usize = 36;
 
-    fn parse_ok(file: &[u8]) -> Image {
+    fn parse_ok(file: &[u8]) -> Image<'_> {
         Image::parse(file).expect("fixture parses")
     }
 
     /// Map a fixture (or a mutated copy) and snap its imports against `table`, recording every name
     /// the resolver saw.
-    fn snap(file: &[u8], table: &[(&str, u32)]) -> (Image, Vec<u8>, SnapResult, Vec<String>) {
+    fn snap<'f>(
+        file: &'f [u8],
+        table: &[(&str, u32)],
+    ) -> (Image<'f>, Vec<u8>, SnapResult, Vec<String>) {
         let image = parse_ok(file);
-        let mut mapped = vec![0u8; image.size_of_image as usize];
-        image.map_into(file, &mut mapped);
+        let mut mapped = vec![0u8; image.size_of_image() as usize];
+        image.map_into(file, &mut mapped).unwrap();
         let mut seen: Vec<String> = Vec::new();
         let result = image.snap_imports(file, &mut mapped, |module: &str, name: &str| {
             if !same_module(module, "KERNEL32.dll") {
@@ -1130,7 +1090,7 @@ mod tests {
         (image, mapped, result, seen)
     }
 
-    fn snap_default(file: &[u8]) -> (Image, Vec<u8>, SnapResult, Vec<String>) {
+    fn snap_default(file: &[u8]) -> (Image<'_>, Vec<u8>, SnapResult, Vec<String>) {
         // A full kernel32 stand-in covering both fixtures; the ret0 list contains ExitProcess
         // (index 2).
         let table: Vec<(&str, u32)> = RET0_IMPORTS
@@ -1146,25 +1106,25 @@ mod tests {
     #[test]
     fn fixtures_parse_with_expected_headers() {
         let e = parse_ok(EXIT0);
-        assert_eq!(e.entry_rva, 0x1000);
-        assert_eq!(e.image_base, 0x400000);
-        assert_eq!(e.section_alignment, 0x1000);
-        assert_eq!(e.file_alignment, 0x1000);
-        assert_eq!(e.size_of_image, 0x3000);
-        assert_eq!(e.size_of_headers, 0x1000);
-        assert_eq!(e.subsystem, 3);
-        assert_eq!(e.subsystem_version, (4, 0), "MSVC 6's link default");
+        assert_eq!(e.entry_rva(), 0x1000);
+        assert_eq!(e.image_base(), 0x400000);
+        assert_eq!(e.section_alignment(), 0x1000);
+        assert_eq!(e.nt_headers().optional_header.file_alignment, 0x1000);
+        assert_eq!(e.size_of_image(), 0x3000);
+        assert_eq!(e.size_of_headers(), 0x1000);
+        assert_eq!(e.subsystem(), 3);
+        assert_eq!(e.subsystem_version(), (4, 0), "MSVC 6's link default");
         assert_eq!(e.num_sections(), 2);
         assert_eq!(e.entry_va(), 0x401000);
 
         let r = parse_ok(RET0);
-        assert_eq!(r.entry_rva, 0x1007);
-        assert_eq!(r.image_base, 0x400000);
-        assert_eq!(r.section_alignment, 0x1000);
-        assert_eq!(r.file_alignment, 0x1000);
-        assert_eq!(r.size_of_image, 0x6000);
-        assert_eq!(r.size_of_headers, 0x1000);
-        assert_eq!(r.subsystem, 3);
+        assert_eq!(r.entry_rva(), 0x1007);
+        assert_eq!(r.image_base(), 0x400000);
+        assert_eq!(r.section_alignment(), 0x1000);
+        assert_eq!(r.nt_headers().optional_header.file_alignment, 0x1000);
+        assert_eq!(r.size_of_image(), 0x6000);
+        assert_eq!(r.size_of_headers(), 0x1000);
+        assert_eq!(r.subsystem(), 3);
         assert_eq!(r.num_sections(), 3);
         assert_eq!(r.entry_va(), 0x401007);
     }
@@ -1272,7 +1232,7 @@ mod tests {
         // cmd.exe's preferred base: a program linked anywhere in user space parses there.
         let moved = patched(EXIT0, |b| w32(b, off_opt(b) + 28, 0x4AD0_0000));
         let image = parse_ok(&moved);
-        assert_eq!(image.image_base, 0x4AD0_0000);
+        assert_eq!(image.image_base(), 0x4AD0_0000);
         assert_eq!(image.entry_va(), 0x4AD0_1000);
     }
 
@@ -1293,7 +1253,7 @@ mod tests {
         // exit0 spans 0x3000 bytes: at 0x7FFF0000 it still fits, one unit higher it reaches into
         // the kernel window, and near the top of the address space its end wraps.
         let fits = patched(EXIT0, |b| w32(b, off_opt(b) + 28, 0x7FFF_0000));
-        assert_eq!(parse_ok(&fits).image_base, 0x7FFF_0000);
+        assert_eq!(parse_ok(&fits).image_base(), 0x7FFF_0000);
         for base in [USER_SPACE_END, 0xFFFF_0000] {
             let bad = patched(EXIT0, |b| w32(b, off_opt(b) + 28, base));
             assert_eq!(
@@ -1351,7 +1311,7 @@ mod tests {
         for src in [EXIT0, RET0] {
             let image = Image::parse_program(src).expect("fixture parses as a program");
             assert!(!image.is_dll());
-            assert_eq!(image.characteristics & FILE_DLL, 0);
+            assert_eq!(image.characteristics() & FILE_DLL, 0);
         }
     }
 
@@ -1374,7 +1334,7 @@ mod tests {
     #[test]
     fn a_dll_may_have_no_entry_point() {
         let dll = patched(&as_dll(EXIT0), |b| w32(b, off_opt(b) + 16, 0));
-        assert_eq!(parse_ok(&dll).entry_rva, 0);
+        assert_eq!(parse_ok(&dll).entry_rva(), 0);
         // A DLL's entry point, when it has one, is held to the executable-section rule.
         let outside = patched(&as_dll(EXIT0), |b| w32(b, off_opt(b) + 16, 0x2000));
         assert_eq!(Image::parse(&outside), Err(Reject::EntryNotExecutable));
@@ -1459,16 +1419,16 @@ mod tests {
         let image = parse_ok(&bad);
         assert_eq!(image.section_copy_len(1), 0);
         assert_eq!(image.section_extent(1), 0x1000);
-        let mut mapped = vec![0u8; image.size_of_image as usize];
-        image.map_into(&bad, &mut mapped);
+        let mut mapped = vec![0u8; image.size_of_image() as usize];
+        image.map_into(&bad, &mut mapped).unwrap();
         assert!(mapped[0x2000..0x3000].iter().all(|&b| b == 0));
     }
 
     #[test]
     fn tail_bytes_between_vsize_and_raw_come_from_the_file() {
         let e = parse_ok(EXIT0);
-        let mut mapped = vec![0u8; e.size_of_image as usize];
-        e.map_into(EXIT0, &mut mapped);
+        let mut mapped = vec![0u8; e.size_of_image() as usize];
+        e.map_into(EXIT0, &mut mapped).unwrap();
         // .text holds 0xd live bytes; the rest of the page is the file's own padding, mapped as-is.
         assert_eq!(&mapped[0x1000..0x100d], &EXIT0[0x1000..0x100d]);
         assert_eq!(&mapped[0x100d..0x2000], &EXIT0[0x100d..0x2000]);
@@ -1483,8 +1443,8 @@ mod tests {
         let image = parse_ok(&bad);
         assert_eq!(image.section_extent(1), 0x2000);
         assert_eq!(image.section_copy_len(1), 0x1000);
-        let mut mapped = vec![0u8; image.size_of_image as usize];
-        image.map_into(&bad, &mut mapped);
+        let mut mapped = vec![0u8; image.size_of_image() as usize];
+        image.map_into(&bad, &mut mapped).unwrap();
         assert_eq!(&mapped[0x2000..0x3000], &EXIT0[0x2000..0x3000]);
         assert!(mapped[0x3000..0x4000].iter().all(|&b| b == 0));
     }
@@ -1513,8 +1473,8 @@ mod tests {
         const PAGE: usize = 0x1000;
         for src in [EXIT0, RET0, &as_dll(EXIT0)[..]] {
             let image = parse_ok(src);
-            let mut mapped = vec![0u8; image.size_of_image as usize];
-            image.map_into(src, &mut mapped);
+            let mut mapped = vec![0u8; image.size_of_image() as usize];
+            image.map_into(src, &mut mapped).unwrap();
             let mut page = vec![0xAAu8; PAGE];
             for (index, expected) in mapped.chunks(PAGE).enumerate() {
                 let read = |offset: u32, out: &mut [u8]| {
@@ -1556,8 +1516,8 @@ mod tests {
     fn headers_map_verbatim() {
         for src in [EXIT0, RET0] {
             let image = parse_ok(src);
-            let mut mapped = vec![0u8; image.size_of_image as usize];
-            image.map_into(src, &mut mapped);
+            let mut mapped = vec![0u8; image.size_of_image() as usize];
+            image.map_into(src, &mut mapped).unwrap();
             assert_eq!(&mapped[..0x1000], &src[..0x1000]);
         }
     }
@@ -1582,13 +1542,48 @@ mod tests {
         assert_eq!(Image::parse(&bad), Err(Reject::RawBeyondExtent));
     }
 
+    /// A virtual size whose rounding up would wrap 32 bits is refused as a layout that does not
+    /// tile the image, not a panic: the last section's then overruns SizeOfImage, and an earlier
+    /// one's leaves the next section discontiguous.
+    #[test]
+    fn a_virtual_size_near_the_top_rejects() {
+        let last = patched(EXIT0, |b| w32(b, off_sec(b, 1) + S_VSIZE, 0xFFFF_F001));
+        assert_eq!(Image::parse(&last), Err(Reject::SizeOfImageMismatch));
+        let first = patched(EXIT0, |b| w32(b, off_sec(b, 0) + S_VSIZE, u32::MAX));
+        assert_eq!(Image::parse(&first), Err(Reject::SectionDiscontiguous));
+    }
+
+    /// An image parsed from its headers, mapped from a file shorter than they say, is truncated:
+    /// the mapping refuses it rather than reading past the bytes.
+    #[test]
+    fn a_short_file_maps_as_truncated() {
+        let image = Image::parse_headers(&EXIT0[..0x1000], EXIT0.len()).unwrap();
+        let mut mapped = vec![0u8; image.size_of_image() as usize];
+        assert_eq!(
+            image.map_into(&EXIT0[..0x2800], &mut mapped),
+            Err(Reject::Truncated)
+        );
+        assert_eq!(
+            image.map_into(&EXIT0[..0x800], &mut mapped),
+            Err(Reject::Truncated)
+        );
+    }
+
     #[test]
     fn protections_follow_characteristics() {
+        let access = |read, write, execute| Protection {
+            read,
+            write,
+            execute,
+        };
         let e = parse_ok(EXIT0);
-        assert_eq!(e.section(0).protection(), (true, false, true));
-        assert_eq!(e.section(1).protection(), (true, false, false));
+        assert_eq!(e.section(0).protection(), access(true, false, true));
+        assert_eq!(e.section(1).protection(), access(true, false, false));
         let r = parse_ok(RET0);
-        assert_eq!(r.section(2).protection(), (true, true, false));
+        assert_eq!(r.section(2).protection(), access(true, true, false));
+        let mut shared = e.section(1).protection();
+        shared |= r.section(2).protection();
+        assert_eq!(shared, access(true, true, false), "a shared page's union");
     }
 
     #[test]
@@ -1661,8 +1656,8 @@ mod tests {
         // image, no file backing.
         assert_eq!(image.section_for_rva(0x3000), None);
         assert_eq!(image.rva_to_offset(0x3000), None);
-        let mut mapped = vec![0u8; image.size_of_image as usize];
-        image.map_into(&bad, &mut mapped);
+        let mut mapped = vec![0u8; image.size_of_image() as usize];
+        image.map_into(&bad, &mut mapped).unwrap();
         assert!(mapped[0x3000..0x4000].iter().all(|&b| b == 0));
     }
 
@@ -1671,13 +1666,13 @@ mod tests {
     #[test]
     fn directories_parse() {
         let e = parse_ok(EXIT0);
-        assert_eq!(e.directory(DIR_IMPORT), Some((0x2008, 0x28)));
-        assert_eq!(e.directory(DIR_IAT), Some((0x2000, 8)));
-        assert_eq!(e.directory(DIR_BASERELOC), None);
+        assert_eq!(e.directory(DIRECTORY_IMPORT), Some((0x2008, 0x28)));
+        assert_eq!(e.directory(DIRECTORY_IAT), Some((0x2000, 8)));
+        assert_eq!(e.directory(DIRECTORY_BASERELOC), None);
         let r = parse_ok(RET0);
-        assert_eq!(r.directory(DIR_IMPORT), Some((0x43f4, 0x28)));
-        assert_eq!(r.directory(DIR_IAT), Some((0x4000, 0x90)));
-        assert_eq!(r.directory(DIR_BASERELOC), None);
+        assert_eq!(r.directory(DIRECTORY_IMPORT), Some((0x43f4, 0x28)));
+        assert_eq!(r.directory(DIRECTORY_IAT), Some((0x4000, 0x90)));
+        assert_eq!(r.directory(DIRECTORY_BASERELOC), None);
     }
 
     #[test]
@@ -1696,16 +1691,16 @@ mod tests {
         // still in the file.
         let bad = patched(EXIT0, |b| w32(b, off_opt(b) + 92, 12));
         let image = parse_ok(&bad);
-        assert_eq!(image.directory(DIR_IAT), None);
-        assert_eq!(image.directory(DIR_IMPORT), Some((0x2008, 0x28)));
+        assert_eq!(image.directory(DIRECTORY_IAT), None);
+        assert_eq!(image.directory(DIRECTORY_IMPORT), Some((0x2008, 0x28)));
     }
 
     #[test]
     fn absent_import_directory_snaps_zero_imports() {
-        let bad = patched(EXIT0, |b| w32(b, off_dir(b, DIR_IMPORT), 0));
+        let bad = patched(EXIT0, |b| w32(b, off_dir(b, DIRECTORY_IMPORT), 0));
         let image = parse_ok(&bad);
-        let mut mapped = vec![0u8; image.size_of_image as usize];
-        image.map_into(&bad, &mut mapped);
+        let mut mapped = vec![0u8; image.size_of_image() as usize];
+        image.map_into(&bad, &mut mapped).unwrap();
         // Nothing to snap: the image imports nothing and must end by fault.
         assert_eq!(
             image.snap_imports(&bad, &mut mapped, |_, _| Err(Unresolved::NoModule)),
@@ -1716,16 +1711,16 @@ mod tests {
     #[test]
     #[should_panic(expected = "outside the image")]
     fn import_directory_outside_image_panics() {
-        let bad = patched(EXIT0, |b| w32(b, off_dir(b, DIR_IMPORT), 0x5000));
+        let bad = patched(EXIT0, |b| w32(b, off_dir(b, DIRECTORY_IMPORT), 0x5000));
         let image = parse_ok(&bad);
-        let _ = image.directory(DIR_IMPORT);
+        let _ = image.directory(DIRECTORY_IMPORT);
     }
 
     #[test]
     fn header_region_directory_resolves_directly() {
-        let bad = patched(EXIT0, |b| w32(b, off_dir(b, DIR_IMPORT), 0x200));
+        let bad = patched(EXIT0, |b| w32(b, off_dir(b, DIRECTORY_IMPORT), 0x200));
         let image = parse_ok(&bad);
-        assert_eq!(image.directory(DIR_IMPORT), Some((0x200, 0x28)));
+        assert_eq!(image.directory(DIRECTORY_IMPORT), Some((0x200, 0x28)));
         assert_eq!(image.rva_to_offset(0x200), Some(0x200));
     }
 
@@ -1751,7 +1746,7 @@ mod tests {
         assert_eq!(r32(&mapped, 0x2000), 0x5000_0002);
         // The terminator slot stays zero.
         assert_eq!(r32(&mapped, 0x2004), 0);
-        assert_eq!(image.directory(DIR_IAT), Some((0x2000, 8)));
+        assert_eq!(image.directory(DIRECTORY_IAT), Some((0x2000, 8)));
     }
 
     #[test]
@@ -1766,7 +1761,7 @@ mod tests {
         }
         // The terminator slot stays zero.
         assert_eq!(r32(&mapped, 0x4000 + 4 * 35), 0);
-        assert_eq!(image.directory(DIR_IAT), Some((0x4000, 0x90)));
+        assert_eq!(image.directory(DIRECTORY_IAT), Some((0x4000, 0x90)));
     }
 
     #[test]
@@ -1783,8 +1778,8 @@ mod tests {
     #[test]
     fn iat_holds_lookup_values_before_the_snap() {
         let image = parse_ok(EXIT0);
-        let mut mapped = vec![0u8; image.size_of_image as usize];
-        image.map_into(EXIT0, &mut mapped);
+        let mut mapped = vec![0u8; image.size_of_image() as usize];
+        image.map_into(EXIT0, &mut mapped).unwrap();
         assert_eq!(r32(&mapped, 0x2000), 0x2038);
         assert_eq!(r32(&mapped, 0x2030), 0x2038);
     }
@@ -1859,7 +1854,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "exceeds the buffer size")]
     fn descriptor_at_image_end_panics() {
-        let bad = patched(EXIT0, |b| w32(b, off_dir(b, DIR_IMPORT), 0x2ff8));
+        let bad = patched(EXIT0, |b| w32(b, off_dir(b, DIRECTORY_IMPORT), 0x2ff8));
         let _ = snap_default(&bad);
     }
 
@@ -1897,8 +1892,8 @@ mod tests {
     #[test]
     fn the_resolver_sees_the_module_as_spelled() {
         let image = parse_ok(EXIT0);
-        let mut mapped = vec![0u8; image.size_of_image as usize];
-        image.map_into(EXIT0, &mut mapped);
+        let mut mapped = vec![0u8; image.size_of_image() as usize];
+        image.map_into(EXIT0, &mut mapped).unwrap();
         let mut asked: Vec<(String, String)> = Vec::new();
         image.snap_imports(EXIT0, &mut mapped, |module, name| {
             asked.push((module.to_string(), name.to_string()));
@@ -1989,8 +1984,8 @@ mod tests {
             rva
         }
         patched(&as_dll(EXIT0), |b| {
-            w32(b, off_dir(b, DIR_EXPORT), EXPORT_DIR as u32);
-            w32(b, off_dir(b, DIR_EXPORT) + 4, EXPORT_DIR_SIZE);
+            w32(b, off_dir(b, DIRECTORY_EXPORT), EXPORT_DIR as u32);
+            w32(b, off_dir(b, DIRECTORY_EXPORT) + 4, EXPORT_DIR_SIZE);
             let mut strings = EXPORT_STRINGS;
             let module = put_str(b, &mut strings, "SYNTH.dll");
             w32(b, EXPORT_DIR + 12, module);
@@ -2020,13 +2015,13 @@ mod tests {
     /// Map `file` and read its export directory.
     fn exports_of(file: &[u8]) -> (Vec<u8>, Exports) {
         let image = parse_ok(file);
-        let mut mapped = vec![0u8; image.size_of_image as usize];
-        image.map_into(file, &mut mapped);
+        let mut mapped = vec![0u8; image.size_of_image() as usize];
+        image.map_into(file, &mut mapped).unwrap();
         let exports = image.exports(&mapped).expect("export directory present");
         assert_eq!(
-            Exports::in_headers(&mapped),
+            image.exports(file),
             Some(exports),
-            "the headers' reading agrees"
+            "the file reads the same: its offsets are its RVAs"
         );
         (mapped, exports)
     }
@@ -2050,10 +2045,9 @@ mod tests {
     fn the_fixtures_export_nothing() {
         for src in [EXIT0, RET0] {
             let image = parse_ok(src);
-            let mut mapped = vec![0u8; image.size_of_image as usize];
-            image.map_into(src, &mut mapped);
+            let mut mapped = vec![0u8; image.size_of_image() as usize];
+            image.map_into(src, &mut mapped).unwrap();
             assert_eq!(image.exports(&mapped), None);
-            assert_eq!(Exports::in_headers(&mapped), None);
         }
     }
 
@@ -2135,10 +2129,9 @@ mod tests {
     fn an_address_table_past_the_image_is_no_directory() {
         let bad = patched(&synth(), |b| w32(b, EXPORT_DIR + 20, 0x1000));
         let image = parse_ok(&bad);
-        let mut mapped = vec![0u8; image.size_of_image as usize];
-        image.map_into(&bad, &mut mapped);
+        let mut mapped = vec![0u8; image.size_of_image() as usize];
+        image.map_into(&bad, &mut mapped).unwrap();
         assert_eq!(image.exports(&mapped), None);
-        assert_eq!(Exports::in_headers(&mapped), None);
     }
 
     #[test]
@@ -2166,22 +2159,26 @@ mod tests {
     /// A name that runs to the image's end without a NUL is no name either.
     #[test]
     fn an_unterminated_name_is_no_export() {
-        let image = parse_ok(&synth());
-        let mut mapped = vec![0u8; image.size_of_image as usize];
-        image.map_into(&synth(), &mut mapped);
+        let file = synth();
+        let image = parse_ok(&file);
+        let mut mapped = vec![0u8; image.size_of_image() as usize];
+        image.map_into(&file, &mut mapped).unwrap();
         let end = mapped.len();
         mapped[end - 4..].copy_from_slice(b"Tail");
         w32(&mut mapped, EXPORT_NAMES, (end - 4) as u32);
-        let exports = Exports::in_headers(&mapped).expect("the directory still reads");
+        let exports = image.exports(&mapped).expect("the directory still reads");
         assert_eq!(exports.by_name(&mapped, "Alpha"), None);
     }
 
-    /// Headers whose NT header offset points past the bytes read no directory.
+    /// An export directory entry whose directory runs past the mapped bytes reads no directory:
+    /// none, not a panic.
     #[test]
-    fn a_header_offset_past_the_image_reads_no_directory() {
-        let (mut mapped, _) = exports_of(&synth());
-        w32(&mut mapped, OFF_E_LFANEW, u32::MAX);
-        assert_eq!(Exports::in_headers(&mapped), None);
+    fn a_directory_past_the_image_reads_no_directory() {
+        let bad = patched(&synth(), |b| w32(b, off_dir(b, DIRECTORY_EXPORT), 0x2FF0));
+        let image = parse_ok(&bad);
+        let mut mapped = vec![0u8; image.size_of_image() as usize];
+        image.map_into(&bad, &mut mapped).unwrap();
+        assert_eq!(image.exports(&mapped), None);
     }
 
     #[test]
@@ -2245,14 +2242,17 @@ mod tests {
         for src in [EXIT0, RET0] {
             let (image, _, result, _) = snap_default(src);
             // The IAT directory covers every slot the walk writes, terminator included.
-            let (iat_rva, iat_size) = image.directory(DIR_IAT).unwrap();
-            let ft = r32(src, image.directory(DIR_IMPORT).unwrap().0 as usize + 16);
+            let (iat_rva, iat_size) = image.directory(DIRECTORY_IAT).unwrap();
+            let ft = r32(
+                src,
+                image.directory(DIRECTORY_IMPORT).unwrap().0 as usize + 16,
+            );
             assert!(ft >= iat_rva);
             assert!(ft + (result.thunks as u32 + 1) * 4 <= iat_rva + iat_size);
             // The entry point lies inside the executable section.
             assert_eq!(image.section(0).name_str(), ".text");
-            assert!(image.entry_rva >= image.section(0).virtual_address);
-            assert!(image.entry_rva < image.section(0).virtual_address + image.section_extent(0));
+            assert!(image.entry_rva() >= image.section(0).virtual_address);
+            assert!(image.entry_rva() < image.section(0).virtual_address + image.section_extent(0));
         }
     }
 }

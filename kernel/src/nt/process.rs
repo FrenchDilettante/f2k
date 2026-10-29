@@ -18,53 +18,56 @@
 //! stack there, and creates that thread (NtCreateThread). F2K has no csrss to tell of the new
 //! process (CsrClientCallServer's BasepCreateProcess): the kernel keeps every process itself.
 
+pub use rtl::nt::info::{ProcessBasicInformation, ProcessPriorityClass, VmCounters};
+
 use super::call::{Handle, NtCall, NtResult, UserAddr, UserPtr};
 use crate::status::*;
 
-/// PROCESSINFOCLASS: the classes F2K answers.
-/// ProcessBasicInformation: PROCESS_BASIC_INFORMATION (query).
-pub const PROCESS_BASIC_INFORMATION: u32 = 0;
-/// ProcessVmCounters: VM_COUNTERS (query).
-pub const PROCESS_VM_COUNTERS: u32 = 3;
-/// ProcessDefaultHardErrorMode: the process's hard-error mode, a ULONG (query and set).
-pub const PROCESS_DEFAULT_HARD_ERROR_MODE: u32 = 12;
-/// ProcessPriorityClass: PROCESS_PRIORITY_CLASS (query and set).
-pub const PROCESS_PRIORITY_CLASS: u32 = 18;
-/// ProcessAffinityMask: the processors the process may run on, a KAFFINITY (set).
-pub const PROCESS_AFFINITY_MASK: u32 = 21;
-
-/// The classes' structures' sizes: PROCESS_BASIC_INFORMATION, VM_COUNTERS, and
-/// PROCESS_PRIORITY_CLASS (Foreground, a BOOLEAN; PriorityClass, a UCHAR).
-pub const PROCESS_BASIC_INFORMATION_SIZE: u32 = size_of::<ProcessBasicInformation>() as u32;
-pub const VM_COUNTERS_SIZE: u32 = 44;
-pub const PROCESS_PRIORITY_CLASS_SIZE: u32 = 2;
-
-/// PROCESS_BASIC_INFORMATION: a process's exit status (STATUS_PENDING, kernel32's STILL_ACTIVE,
-/// until it ends), its PEB, its affinity, its base priority, its client id and its creator's.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ProcessBasicInformation {
-    pub exit_status: u32,
-    pub peb_base_address: u32,
-    pub affinity_mask: u32,
-    pub base_priority: i32,
-    pub unique_process_id: u32,
-    pub inherited_from_unique_process_id: u32,
+info_class! {
+    /// The classes NtQueryInformationProcess answers (PROCESSINFOCLASS).
+    pub enum QueryClass {
+        /// PROCESS_BASIC_INFORMATION.
+        Basic = 0,
+        /// VM_COUNTERS.
+        VmCounters = 3,
+        /// The process's hard-error mode, a ULONG.
+        DefaultHardErrorMode = 12,
+        /// PROCESS_PRIORITY_CLASS.
+        PriorityClass = 18,
+    }
 }
 
-const _: () = assert!(size_of::<ProcessBasicInformation>() == 24);
+impl QueryClass {
+    /// The length the class's information must have: its structure's.
+    pub fn size(self) -> u32 {
+        (match self {
+            QueryClass::Basic => size_of::<ProcessBasicInformation>(),
+            QueryClass::VmCounters => size_of::<VmCounters>(),
+            QueryClass::DefaultHardErrorMode => size_of::<u32>(),
+            QueryClass::PriorityClass => size_of::<ProcessPriorityClass>(),
+        }) as u32
+    }
+}
 
-impl ProcessBasicInformation {
-    /// The structure's bytes, as the caller's buffer receives them.
-    pub fn to_bytes(self) -> [u8; PROCESS_BASIC_INFORMATION_SIZE as usize] {
-        layout(&[
-            self.exit_status,
-            self.peb_base_address,
-            self.affinity_mask,
-            self.base_priority as u32,
-            self.unique_process_id,
-            self.inherited_from_unique_process_id,
-        ])
+info_class! {
+    /// The classes NtSetInformationProcess takes (PROCESSINFOCLASS).
+    pub enum SetClass {
+        /// The process's hard-error mode, a ULONG.
+        DefaultHardErrorMode = 12,
+        /// PROCESS_PRIORITY_CLASS.
+        PriorityClass = 18,
+        /// The processors the process may run on, a KAFFINITY.
+        AffinityMask = 21,
+    }
+}
+
+impl SetClass {
+    /// The length the class's information must have: its structure's.
+    pub fn size(self) -> u32 {
+        (match self {
+            SetClass::DefaultHardErrorMode | SetClass::AffinityMask => size_of::<u32>(),
+            SetClass::PriorityClass => size_of::<ProcessPriorityClass>(),
+        }) as u32
     }
 }
 
@@ -86,29 +89,13 @@ pub fn class_base_priority(class: u8) -> Result<i8, NtStatus> {
     }
 }
 
-/// Dwords as the bytes of the structure they lay out (the rest zero).
-fn layout<const N: usize>(words: &[u32]) -> [u8; N] {
-    let mut bytes = [0u8; N];
-    for (i, word) in words.iter().enumerate() {
-        bytes[i * 4..i * 4 + 4].copy_from_slice(&word.to_le_bytes());
-    }
-    bytes
-}
-
 /// VM_COUNTERS for a process reserving `reserved` bytes: its virtual size (the peak is not kept: it
 /// reads as the current size); the page-fault, working-set, pool and paging-file counters zero.
-pub fn vm_counters(reserved: u32) -> [u8; VM_COUNTERS_SIZE as usize] {
-    layout(&[reserved, reserved])
-}
-
-/// The class's size: its structure's (none for a class F2K does not answer).
-fn size_of_class(class: u32) -> Option<u32> {
-    match class {
-        PROCESS_BASIC_INFORMATION => Some(PROCESS_BASIC_INFORMATION_SIZE),
-        PROCESS_VM_COUNTERS => Some(VM_COUNTERS_SIZE),
-        PROCESS_DEFAULT_HARD_ERROR_MODE | PROCESS_AFFINITY_MASK => Some(4),
-        PROCESS_PRIORITY_CLASS => Some(PROCESS_PRIORITY_CLASS_SIZE),
-        _ => None,
+pub fn vm_counters(reserved: u32) -> VmCounters {
+    VmCounters {
+        peak_virtual_size: reserved,
+        virtual_size: reserved,
+        ..Default::default()
     }
 }
 
@@ -159,9 +146,9 @@ pub fn open_process(
     let (named, inherit) = if attributes.is_null() {
         (false, false)
     } else {
-        let mut name = [0u16; super::attributes::MAX_NAME];
+        let mut name = super::attributes::Name::new();
         let read = super::attributes::read(attributes, &mut name)?;
-        (read.length.is_some(), read.inherit())
+        (read.name.is_some(), read.inherit())
     };
     let client_id = if client_id.is_null() {
         None
@@ -248,7 +235,7 @@ pub fn create_process(
     access: u32,
     attributes: UserAddr,
     parent: Handle,
-    inherit_object_table: u32,
+    inherit_object_table: bool,
     section: Handle,
     debug_port: Handle,
     exception_port: Handle,
@@ -269,7 +256,7 @@ pub fn create_process(
         let inherit = if attributes.is_null() {
             false
         } else {
-            let mut name = [0u16; super::attributes::MAX_NAME];
+            let mut name = super::attributes::Name::new();
             super::attributes::read(attributes, &mut name)?.inherit()
         };
         if call.process().handles().is_full() {
@@ -282,7 +269,7 @@ pub fn create_process(
             child.set_parent_id(creator.id());
             child.set_hard_error_mode(creator.hard_error_mode());
             *child.console_mut() = creator.console_mut().inherited();
-            if inherit_object_table & 0xFF != 0 {
+            if inherit_object_table {
                 child.inherit_handles(creator);
             }
             let process = call.process();
@@ -323,7 +310,7 @@ fn image_name(segment: crate::ob::SegmentId) -> crate::process::ProcessName {
         .map(|segment| segment.file_object);
     let file = file_object
         .and_then(|file_object| directory.file(file_object))
-        .map(|object| crate::fs::file::records().get(object.record).file);
+        .map(|object| crate::fs::io::file_of(object));
     let mut name = [0u8; crate::fs::fat32::path::MAX_NAME];
     match file.and_then(|file| crate::fs::io::entry_name(&file, &mut name)) {
         Some(length) => crate::process::ProcessName::of_file(&name[..length]),
@@ -385,11 +372,8 @@ pub fn query_information_process(
     length: u32,
     return_length: UserPtr<u32>,
 ) -> NtResult {
-    let size = match class {
-        PROCESS_AFFINITY_MASK => None,
-        class => size_of_class(class),
-    }
-    .ok_or(STATUS_INVALID_INFO_CLASS)?;
+    let class = QueryClass::try_from(class)?;
+    let size = class.size();
     if length != size {
         return Err(STATUS_INFO_LENGTH_MISMATCH);
     }
@@ -402,29 +386,29 @@ pub fn query_information_process(
         )?;
         let record = target.record();
         match class {
-            PROCESS_BASIC_INFORMATION => information.write(
-                &ProcessBasicInformation {
-                    exit_status: target.exit_status(),
-                    peb_base_address: crate::user::PEB_PAGE,
-                    affinity_mask: super::thread::SYSTEM_AFFINITY,
-                    base_priority: record.sched.base_priority() as i32,
-                    unique_process_id: record.id(),
-                    inherited_from_unique_process_id: record.parent_id(),
-                }
-                .to_bytes(),
-            )?,
-            PROCESS_VM_COUNTERS => {
+            QueryClass::Basic => information.cast().write(ProcessBasicInformation {
+                exit_status: target.exit_status(),
+                peb_base_address: crate::user::PEB_PAGE,
+                affinity_mask: super::thread::SYSTEM_AFFINITY,
+                base_priority: record.sched.base_priority() as i32,
+                unique_process_id: record.id(),
+                inherited_from_unique_process_id: record.parent_id(),
+            })?,
+            QueryClass::VmCounters => {
                 let reserved = if target.ended() {
                     0
                 } else {
                     record.space().reserved_size()
                 };
-                information.write(&vm_counters(reserved))?
+                information.cast().write(vm_counters(reserved))?
             }
-            PROCESS_DEFAULT_HARD_ERROR_MODE => {
-                UserPtr::<u32>::at(information.raw()).write(record.hard_error_mode())?
+            QueryClass::DefaultHardErrorMode => {
+                information.cast().write(record.hard_error_mode())?
             }
-            _ => information.write(&[0, record.priority_class()])?,
+            QueryClass::PriorityClass => information.cast().write(ProcessPriorityClass {
+                foreground: 0,
+                priority_class: record.priority_class(),
+            })?,
         }
     }
     #[cfg(not(target_arch = "x86"))]
@@ -450,14 +434,8 @@ pub fn set_information_process(
     information: UserAddr,
     length: u32,
 ) -> NtResult {
-    let size = match class {
-        PROCESS_DEFAULT_HARD_ERROR_MODE | PROCESS_PRIORITY_CLASS | PROCESS_AFFINITY_MASK => {
-            size_of_class(class)
-        }
-        _ => None,
-    }
-    .ok_or(STATUS_INVALID_INFO_CLASS)?;
-    if length != size {
+    let class = SetClass::try_from(class)?;
+    if length != class.size() {
         return Err(STATUS_INFO_LENGTH_MISMATCH);
     }
     #[cfg(target_arch = "x86")]
@@ -465,28 +443,30 @@ pub fn set_information_process(
         super::object::reference_process(process.raw(), super::object::PROCESS_SET_INFORMATION)?;
     #[cfg(not(target_arch = "x86"))]
     current(process)?;
-    let mut value = [0u8; 4];
-    information.read(&mut value[..size as usize])?;
     match class {
-        PROCESS_DEFAULT_HARD_ERROR_MODE => {
+        SetClass::DefaultHardErrorMode => {
+            let mode = information.cast::<u32>().read()?;
             #[cfg(target_arch = "x86")]
-            target
-                .record()
-                .set_hard_error_mode(u32::from_le_bytes(value));
+            target.record().set_hard_error_mode(mode);
+            #[cfg(not(target_arch = "x86"))]
+            let _ = mode;
         }
-        PROCESS_PRIORITY_CLASS => {
-            let base = class_base_priority(value[1])?;
+        SetClass::PriorityClass => {
+            let class = information.cast::<ProcessPriorityClass>().read()?;
+            let base = class_base_priority(class.priority_class)?;
             #[cfg(target_arch = "x86")]
             {
                 let record = target.record();
-                crate::sched::idle::dispatcher().set_process_priority(&mut record.sched, base);
-                record.set_priority_class(value[1]);
+                crate::sched::DISPATCHER
+                    .get(&mut call.passive().raise::<crate::level::Dispatch>())
+                    .set_process_priority(&mut record.sched, base);
+                record.set_priority_class(class.priority_class);
             }
             #[cfg(not(target_arch = "x86"))]
             let _ = base;
         }
-        _ => {
-            super::thread::affinity_mask(u32::from_le_bytes(value))?;
+        SetClass::AffinityMask => {
+            super::thread::affinity_mask(information.cast::<u32>().read()?)?;
         }
     }
     let _ = call;
@@ -494,6 +474,8 @@ pub fn set_information_process(
 }
 #[cfg(test)]
 mod tests {
+    use rtl::pod::Pod;
+
     use super::*;
 
     fn word(bytes: &[u8], at: usize) -> u32 {
@@ -502,29 +484,32 @@ mod tests {
 
     #[test]
     fn the_counters_report_the_virtual_size() {
-        assert_eq!(&vm_counters(0x5_0000)[..8], &[0, 0, 5, 0, 0, 0, 5, 0]);
+        assert_eq!(
+            &vm_counters(0x5_0000).as_bytes()[..8],
+            &[0, 0, 5, 0, 0, 0, 5, 0]
+        );
     }
 
     /// PROCESS_BASIC_INFORMATION's layout: the exit status, the PEB page, the processor, the base
     /// priority, the client id and the creator's.
     #[test]
     fn the_basic_information_is_the_nt_layout() {
-        let bytes = ProcessBasicInformation {
+        let information = ProcessBasicInformation {
             exit_status: STATUS_PENDING.0,
             peb_base_address: crate::user::PEB_PAGE,
             affinity_mask: 1,
             base_priority: 13,
             unique_process_id: 8,
             inherited_from_unique_process_id: 0x2C,
-        }
-        .to_bytes();
+        };
+        let bytes = information.as_bytes();
         assert_eq!(bytes.len(), 24);
         assert_eq!(
-            (word(&bytes, 0), word(&bytes, 4), word(&bytes, 8)),
+            (word(bytes, 0), word(bytes, 4), word(bytes, 8)),
             (0x103, crate::user::PEB_PAGE, 1)
         );
         assert_eq!(
-            (word(&bytes, 12), word(&bytes, 16), word(&bytes, 20)),
+            (word(bytes, 12), word(bytes, 16), word(bytes, 20)),
             (13, 8, 0x2C)
         );
         assert_eq!(
@@ -645,7 +630,7 @@ mod tests {
                 0x1F_0FFF,
                 UserAddr(0),
                 parent,
-                1,
+                true,
                 section,
                 Handle(0),
                 Handle(0)

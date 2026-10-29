@@ -179,7 +179,9 @@ fn timer_routine(
         )
     });
     let signal_time = crate::time::boot_filetime() + system_time;
-    crate::sched::idle::dispatcher().expire_timers(now, tick, argument1 as u32, signal_time);
+    crate::sched::DISPATCHER
+        .get(dispatch)
+        .expire_timers(now, tick, argument1 as u32, signal_time);
 }
 
 // --- Target wiring: the kernel clock --------------------------------------
@@ -206,13 +208,13 @@ static BALANCE_DPC: Dpc = Dpc::new(balance_routine, 0);
 
 #[cfg(target_arch = "x86")]
 fn balance_routine(
-    _dispatch: &mut At<Dispatch>,
+    dispatch: &mut At<Dispatch>,
     _dpc: &Dpc,
     _context: usize,
     _argument1: usize,
     _argument2: usize,
 ) {
-    crate::sched::idle::dispatcher().scan_ready_queues();
+    crate::sched::DISPATCHER.get(dispatch).scan_ready_queues();
 }
 
 /// The vector the timer interrupt arrives on (IRQ 0 after the remap).
@@ -235,30 +237,23 @@ pub fn service(at_clock: &mut At<level::Clock>) {
         return;
     };
     let tick_low = tick_count as u32;
-    // Note: the dispatcher is dispatch-level state, and this interrupt still reaches it from the
-    // clock level, outside the level rules: the timer table's hand check (`timer_trigger`, the
-    // unlocked bucket-head read Windows 2000's clock interrupt makes too), the tick's copy
-    // (`note_tick`) and the running thread's quantum (`charge_running_tick`). They move to a
-    // narrow interface of their own when the dispatcher's per-processor fields are split out.
-    //
-    // The hand check at the transition to tick N: the buckets of ticks N-1 and N against the
-    // just-advanced interrupt time. A due head fires the deferred work, single-flight like every
-    // enqueue, carrying the firing tick's low word.
-    if let Some(argument) = crate::sched::idle::dispatcher().timer_trigger(interrupt_time, tick_low)
-    {
+    // The dispatcher is dispatch-level state, which this interrupt never reaches: what it needs of
+    // the scheduler is published for it. The hand check at the transition to tick N: the buckets
+    // of ticks N-1 and N against the just-advanced interrupt time, through the dues the timer
+    // table publishes (the unlocked bucket-head read Windows 2000's clock interrupt makes too). A
+    // due head fires the deferred work, single-flight like every enqueue, carrying the firing
+    // tick's low word.
+    if let Some(argument) = crate::sched::timer::hand_due(at_clock, interrupt_time, tick_low) {
         dpc::enqueue_at(at_clock, &TIMER_DPC, argument as usize, 0);
     }
-    // The runtime accounting: fold the deferred-work request-rate history. (The per-thread
-    // quantum work belongs to the scheduler, not the clock.)
+    // The runtime accounting: fold the deferred-work request-rate history.
     pcr().dpc_queue.with(
         &mut at_clock.raise::<level::High>(),
         dpc::DpcQueue::update_request_rate,
     );
-    // A full tick charges the running thread's quantum; a charge that runs the quantum out
-    // requests the dispatch window's decision at this interrupt's exit.
-    let dispatcher = crate::sched::idle::dispatcher();
-    dispatcher.note_tick(tick_count);
-    dispatcher.charge_running_tick();
+    // A full tick charges the running thread's quantum, in the processor's slots; a charge that
+    // runs the quantum out requests the dispatch window's decision at this interrupt's exit.
+    pcr().threads.charge_running_tick(at_clock);
     // Once a second, the balance-set scan.
     if tick_low % BALANCE_PERIOD_TICKS == 0 {
         dpc::enqueue_at(at_clock, &BALANCE_DPC, 0, 0);
@@ -294,6 +289,12 @@ where
     read(CLOCK.get(&mut at.raise::<level::Clock>()))
 }
 
+/// Read the kernel clock at the clock level itself.
+#[cfg(all(target_arch = "x86", feature = "perf-trace"))]
+pub fn read_in<T>(at_clock: &mut At<level::Clock>, read: impl FnOnce(&Clock) -> T) -> T {
+    read(CLOCK.get(at_clock))
+}
+
 /// Read the kernel clock from code that holds no level token yet: [`read_at`], through the bridge
 /// to the clock level.
 #[cfg(target_arch = "x86")]
@@ -318,12 +319,6 @@ pub fn system_time() -> u64 {
 #[cfg(target_arch = "x86")]
 pub fn interrupt_time() -> u64 {
     read_clock(Clock::interrupt_time)
-}
-
-/// The wait discipline's source of "now": interrupt time and the tick count, in one read.
-#[cfg(target_arch = "x86")]
-pub fn stamp() -> crate::sched::wait::ClockStamp {
-    read_clock(Clock::stamp)
 }
 
 #[cfg(test)]
@@ -544,7 +539,9 @@ mod tests {
             "a fractional tick charges nothing"
         );
         assert_eq!(clock.tick(), Tick::Full);
-        d.charge_running_tick();
+        crate::level::raised::<crate::level::Clock, _>(|at_clock| {
+            crate::pcr::pcr().threads.charge_running_tick(at_clock)
+        });
         assert_eq!(
             t.quantum(),
             crate::sched::QUANTUM_RESET - crate::sched::QUANTUM_TICK,

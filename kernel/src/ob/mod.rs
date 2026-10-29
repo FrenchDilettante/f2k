@@ -11,7 +11,9 @@
 //! waitable side of processes — keep only their headers here: their bodies are records of the
 //! dispatcher database ([`crate::sched::database`]), at the same index, as Windows 2000 keeps a
 //! dispatcher object's DISPATCHER_HEADER and type fields apart from its object header. The typed
-//! accessors check the header and hand out the body.
+//! accessors check the header and hand out the body's name in the dispatcher database, where the
+//! body is reached with the dispatch token; the directory itself holds no token, so what it does
+//! to a body (a create's fresh body, a deletion's cancel) it does raised to the dispatch level.
 //!
 //! Each object carries two counts. The pointer count is every
 //! reference: the creator's while it builds the object, each handle's, each wait's (a waiting
@@ -37,20 +39,19 @@
 #[cfg(target_arch = "x86")]
 use core::mem::MaybeUninit;
 
+use crate::level::Dispatch;
 use crate::sched::dispatcher::Dispatcher;
-use crate::sched::event::{Event, EventKind};
-use crate::sched::mutex::{Mutex, MutexId};
-pub use crate::sched::process::ProcessObject;
-use crate::sched::semaphore::Semaphore;
-use crate::sched::thread::{Thread, ThreadId};
+use crate::sched::event::EventKind;
+use crate::sched::mutex::MutexId;
+use crate::sched::thread::ThreadId;
 use crate::sched::timer::TimerId;
-use crate::sched::wait::{Waitable, MAXIMUM_WAIT_OBJECTS};
-use crate::sched::waitable_timer::WaitableTimer;
+use crate::sched::wait::{WaitableId, MAXIMUM_WAIT_OBJECTS};
 
-/// The dispatcher database, where the dispatcher objects' bodies live: the kernel's one dispatcher
-/// (on the host, the test thread's).
-fn bodies() -> &'static mut Dispatcher {
-    crate::sched::idle::dispatcher()
+/// Run `f` on the dispatcher database, where the dispatcher objects' bodies live: the kernel's one
+/// dispatcher (on the host, the test thread's). The directory holds no token: it raises to the
+/// dispatch level for the length of `f` (the level bridge), so it is never reached from there.
+fn with_bodies<R>(f: impl FnOnce(&mut Dispatcher) -> R) -> R {
+    crate::level::raised::<Dispatch, _>(|dispatch| f(crate::sched::DISPATCHER.get(dispatch)))
 }
 
 /// The kinds of objects a handle can name.
@@ -392,16 +393,17 @@ pub enum Followup {
     },
     /// A file object's last handle closed (its cleanup): its share access leaves the file's
     /// record, its delete-on-close marks the file delete-pending, and the last cleanup of a
-    /// delete-pending file deletes it; its directory search (if any) goes back to the pool.
+    /// delete-pending file deletes it.
     FileCleanup {
-        record: u16,
+        record: crate::fs::file::FileRecordId,
         access: u8,
         share: u8,
         delete_on_close: bool,
-        search: u16,
     },
     /// A file object was deleted: its reference on the file's record goes.
-    FileClose { record: u16 },
+    FileClose {
+        record: crate::fs::file::FileRecordId,
+    },
 }
 
 /// A program's object name as the namespace keeps it: without a `Global\` or `Local\` prefix.
@@ -498,9 +500,10 @@ impl Directory {
             Pool::write_empty(addr_of_mut!((*directory).processes), || ());
             Pool::write_empty(addr_of_mut!((*directory).sections), SectionObject::none);
             Pool::write_empty(addr_of_mut!((*directory).segments), ImageSegment::none);
-            Pool::write_empty(addr_of_mut!((*directory).files), || {
-                crate::fs::file::FileObject::new(0, 0, 0, 0)
-            });
+            Pool::write_empty(
+                addr_of_mut!((*directory).files),
+                crate::fs::file::FileObject::none,
+            );
             Pool::write_empty(addr_of_mut!((*directory).directories), || ());
             Pool::write_empty(
                 addr_of_mut!((*directory).window_stations),
@@ -583,28 +586,36 @@ impl Directory {
     /// is exhausted.
     pub fn create_event(&mut self, kind: EventKind, signaled: bool) -> Option<ObjectId> {
         let index = self.events.allocate_in(0..EVENTS)?;
-        bodies().renew_event(index, kind, signaled);
+        with_bodies(|bodies| {
+            bodies.renew_event(index, kind, signaled);
+        });
         Some(self.id(ObjectType::Event, index))
     }
 
     /// A fresh semaphore at `initial` with ceiling `limit`.
     pub fn create_semaphore(&mut self, initial: i32, limit: i32) -> Option<ObjectId> {
         let index = self.semaphores.allocate_in(0..SEMAPHORES)?;
-        bodies().renew_semaphore(index, initial, limit);
+        with_bodies(|bodies| {
+            bodies.renew_semaphore(index, initial, limit);
+        });
         Some(self.id(ObjectType::Semaphore, index))
     }
 
     /// A fresh, free mutex.
     pub fn create_mutex(&mut self) -> Option<ObjectId> {
         let index = self.mutexes.allocate_in(0..MUTEXES)?;
-        bodies().renew_mutex(index);
+        with_bodies(|bodies| {
+            bodies.renew_mutex(index);
+        });
         Some(self.id(ObjectType::Mutex, index))
     }
 
     /// A fresh, unarmed, unsignaled waitable timer.
     pub fn create_timer(&mut self, manual_reset: bool) -> Option<ObjectId> {
         let index = self.timers.allocate_in(0..TIMERS)?;
-        bodies().renew_waitable_timer(index, manual_reset);
+        with_bodies(|bodies| {
+            bodies.renew_waitable_timer(index, manual_reset);
+        });
         Some(self.id(ObjectType::Timer, index))
     }
 
@@ -617,17 +628,21 @@ impl Directory {
     }
 
     /// The record of the thread object `id`, started over as fresh as the pool made it: a created
-    /// thread's, before its attach.
+    /// thread's, before its attach. Returns the record's name.
     ///
     /// # Panics
     ///
     /// `id` names no live thread object.
-    pub fn renew_thread(&mut self, id: ObjectId) -> &mut Thread {
+    pub fn renew_thread(&mut self, id: ObjectId) -> ThreadId {
         assert!(
             id.kind == ObjectType::Thread && self.is_live(id),
             "a renewed thread record is a live thread object's"
         );
-        bodies().renew_thread(ThreadId(id.index))
+        let thread = ThreadId(id.index);
+        with_bodies(|bodies| {
+            bodies.renew_thread(thread);
+        });
+        thread
     }
 
     /// A thread record for a new thread object of any process, main thread or created: the lowest
@@ -641,7 +656,9 @@ impl Directory {
     /// reference; none when every process record is in use. Its index is the process record's.
     pub fn create_process(&mut self) -> Option<ObjectId> {
         let index = self.processes.allocate_in(0..PROCESSES)?;
-        bodies().renew_process_object(index);
+        with_bodies(|bodies| {
+            bodies.renew_process_object(index);
+        });
         Some(self.id(ObjectType::Process, index))
     }
 
@@ -709,13 +726,9 @@ impl Directory {
     }
 
     /// A view went: drop its reference on what it mapped (the last one deletes it).
-    pub fn release_mapping(
-        &mut self,
-        mapping: Mapping,
-        dispatcher: &mut Dispatcher,
-    ) -> Option<Followup> {
+    pub fn release_mapping(&mut self, mapping: Mapping) -> Option<Followup> {
         match mapping {
-            Mapping::Section(id) => self.dereference(id, dispatcher),
+            Mapping::Section(id) => self.dereference(id),
             Mapping::Image(id) => self.dereference_segment(id),
         }
     }
@@ -724,7 +737,7 @@ impl Directory {
     /// `granted` the file rights) and allowing `share`.
     pub fn create_file(
         &mut self,
-        record: u16,
+        record: crate::fs::file::FileRecordId,
         access: u8,
         granted: u32,
         share: u8,
@@ -766,34 +779,40 @@ impl Directory {
         (id.kind == kind && self.is_live(id)).then_some(id.index)
     }
 
-    pub fn event(&mut self, id: ObjectId) -> Option<&mut Event> {
-        let index = self.body_index(id, ObjectType::Event)?;
-        Some(bodies().event_mut(index))
+    // The dispatcher objects: the body's name in the dispatcher database, for a live object of
+    // the kind (the body itself is reached there, with the dispatch token).
+
+    /// The event object's body: its waitable name.
+    pub fn event(&mut self, id: ObjectId) -> Option<WaitableId> {
+        self.body_index(id, ObjectType::Event)
+            .map(WaitableId::Event)
     }
 
-    pub fn semaphore(&mut self, id: ObjectId) -> Option<&mut Semaphore> {
-        let index = self.body_index(id, ObjectType::Semaphore)?;
-        Some(bodies().semaphore_mut(index))
+    /// The semaphore object's body: its waitable name.
+    pub fn semaphore(&mut self, id: ObjectId) -> Option<WaitableId> {
+        self.body_index(id, ObjectType::Semaphore)
+            .map(WaitableId::Semaphore)
     }
 
-    pub fn mutex(&mut self, id: ObjectId) -> Option<&mut Mutex> {
-        let index = self.body_index(id, ObjectType::Mutex)?;
-        Some(bodies().mutex_mut(MutexId(index)))
+    /// The mutex object's body.
+    pub fn mutex(&mut self, id: ObjectId) -> Option<MutexId> {
+        self.body_index(id, ObjectType::Mutex).map(MutexId)
     }
 
-    pub fn timer(&mut self, id: ObjectId) -> Option<&mut WaitableTimer> {
-        let index = self.body_index(id, ObjectType::Timer)?;
-        Some(bodies().waitable_timer_mut(index))
+    /// The waitable timer object's body.
+    pub fn timer(&mut self, id: ObjectId) -> Option<TimerId> {
+        self.body_index(id, ObjectType::Timer)
+            .map(TimerId::Waitable)
     }
 
-    pub fn thread(&mut self, id: ObjectId) -> Option<&mut Thread> {
-        let index = self.body_index(id, ObjectType::Thread)?;
-        Some(bodies().thread_mut(ThreadId(index)))
+    /// The thread object's record.
+    pub fn thread(&mut self, id: ObjectId) -> Option<ThreadId> {
+        self.body_index(id, ObjectType::Thread).map(ThreadId)
     }
 
-    pub fn process(&mut self, id: ObjectId) -> Option<&mut ProcessObject> {
-        let index = self.body_index(id, ObjectType::Process)?;
-        Some(bodies().process_object_mut(index))
+    /// The process object's body: its index in the dispatcher's process-object pool.
+    pub fn process(&mut self, id: ObjectId) -> Option<u16> {
+        self.body_index(id, ObjectType::Process)
     }
 
     pub fn section(&mut self, id: ObjectId) -> Option<&mut SectionObject> {
@@ -829,37 +848,34 @@ impl Directory {
 
     /// The process `id` names has ended with `exit_status`: its object signals, once, and its
     /// waiters wake (no boost: the end grants none).
-    pub fn signal_process_end(
-        &mut self,
-        id: ObjectId,
-        exit_status: u32,
-        dispatcher: &mut Dispatcher,
-    ) {
+    pub fn signal_process_end(&mut self, id: ObjectId, exit_status: u32) {
         let Some(index) = self.body_index(id, ObjectType::Process) else {
             return;
         };
-        let process = dispatcher.process_object_mut(index);
-        process.exit_status = exit_status;
-        process.waitable.signal_state = 1;
-        if process.waitable.has_waiters() {
-            let waitable = process.waitable.id();
-            dispatcher.satisfy_waiters(waitable, 0);
-        }
+        with_bodies(|bodies| {
+            let process = bodies.process_object_mut(index);
+            process.exit_status = exit_status;
+            process.waitable.signal_state = 1;
+            if process.waitable.has_waiters() {
+                let waitable = process.waitable.id();
+                bodies.satisfy_waiters(waitable, 0);
+            }
+        });
     }
 
-    /// The waitable header of a waitable object; none for a section, a file object (its I/O
-    /// completes at once: nothing waits on it), the directory, a window station, a desktop, a
-    /// key or a dead id.
-    pub fn waitable(&mut self, id: ObjectId) -> Option<*mut Waitable> {
+    /// The waitable name of a waitable object, as the wait entries take it; none for a section, a
+    /// file object (its I/O completes at once: nothing waits on it), the directory, a window
+    /// station, a desktop, a key or a dead id.
+    pub fn waitable(&mut self, id: ObjectId) -> Option<WaitableId> {
         match id.kind {
-            ObjectType::Event => self.event(id).map(Event::waitable),
-            ObjectType::Semaphore => self.semaphore(id).map(Semaphore::waitable),
-            ObjectType::Mutex => self.mutex(id).map(Mutex::waitable),
-            ObjectType::Timer => self.timer(id).map(WaitableTimer::waitable),
-            ObjectType::Thread => self.thread(id).map(Thread::waitable),
-            ObjectType::Process => self
-                .process(id)
-                .map(|process| &mut process.waitable as *mut Waitable),
+            ObjectType::Event => self.event(id),
+            ObjectType::Semaphore => self.semaphore(id),
+            ObjectType::Mutex => self.mutex(id).map(|mutex| WaitableId::Mutex(mutex.0)),
+            ObjectType::Timer => self
+                .body_index(id, ObjectType::Timer)
+                .map(WaitableId::Timer),
+            ObjectType::Thread => self.thread(id).map(WaitableId::Thread),
+            ObjectType::Process => self.process(id).map(WaitableId::Process),
             ObjectType::Section
             | ObjectType::File
             | ObjectType::Directory
@@ -887,27 +903,29 @@ impl Directory {
         owner: *const crate::sched::process::SchedProcess,
         thread_id: u32,
     ) -> Option<ObjectId> {
-        for index in 0..THREADS as u16 {
-            let id = self.id(ObjectType::Thread, index);
-            let found = self.thread(id).is_some_and(|thread| {
-                core::ptr::eq(thread.process, owner)
+        with_bodies(|bodies| {
+            (0..THREADS as u16).find_map(|index| {
+                let id = self.id(ObjectType::Thread, index);
+                let thread = bodies.thread(self.thread(id)?);
+                let found = core::ptr::eq(thread.process, owner)
                     && thread.thread_id() == thread_id
-                    && thread.state() != crate::sched::thread::ThreadState::Terminated
-            });
-            if found {
-                return Some(id);
-            }
-        }
-        None
+                    && thread.state() != crate::sched::thread::ThreadState::Terminated;
+                found.then_some(id)
+            })
+        })
     }
 
     /// Whether a live thread runs attached to the address space of the process whose scheduling
     /// record is `space` (a thread of another process inside a service that reaches into it).
     pub fn attached_to(&mut self, space: *const crate::sched::process::SchedProcess) -> bool {
-        (0..THREADS as u16).any(|index| {
-            let id = self.id(ObjectType::Thread, index);
-            self.thread(id)
-                .is_some_and(|thread| thread.attached() && core::ptr::eq(thread.space(), space))
+        with_bodies(|bodies| {
+            (0..THREADS as u16).any(|index| {
+                let id = self.id(ObjectType::Thread, index);
+                self.thread(id).is_some_and(|thread| {
+                    let thread = bodies.thread(thread);
+                    thread.attached() && core::ptr::eq(thread.space(), space)
+                })
+            })
         })
     }
 
@@ -926,7 +944,7 @@ impl Directory {
 
     /// Drop a reference on `id`; the last one deletes the object. Returns what the caller must
     /// finish for a deleted object.
-    pub fn dereference(&mut self, id: ObjectId, dispatcher: &mut Dispatcher) -> Option<Followup> {
+    pub fn dereference(&mut self, id: ObjectId) -> Option<Followup> {
         let header = self.header(id)?;
         debug_assert!(
             header.pointers > header.handles,
@@ -934,7 +952,7 @@ impl Directory {
         );
         header.pointers -= 1;
         if header.pointers == 0 {
-            return self.delete(id, dispatcher);
+            return self.delete(id);
         }
         None
     }
@@ -954,12 +972,7 @@ impl Directory {
     /// A handle to `id` was closed: the last handle drops the object's name and cleans up a file
     /// object, and the handle's reference goes with it (the last reference deletes the object).
     /// What the caller must finish is handed to `finish`, in order.
-    pub fn handle_closed(
-        &mut self,
-        id: ObjectId,
-        dispatcher: &mut Dispatcher,
-        mut finish: impl FnMut(Followup),
-    ) {
+    pub fn handle_closed(&mut self, id: ObjectId, mut finish: impl FnMut(Followup)) {
         let Some(header) = self.header(id) else {
             return;
         };
@@ -974,11 +987,10 @@ impl Directory {
                     access: file.access,
                     share: file.share,
                     delete_on_close: file.delete_on_close,
-                    search: file.search,
                 });
             }
         }
-        if let Some(followup) = self.dereference(id, dispatcher) {
+        if let Some(followup) = self.dereference(id) {
             finish(followup);
         }
     }
@@ -990,16 +1002,16 @@ impl Directory {
     /// kind here needs more than the record going: a waitable's last reference is gone, so nothing
     /// waits on it; a thread's record stays as it ended (its pages are released when the record is
     /// reused); a process's record is free for the next process once its object is gone.
-    fn delete(&mut self, id: ObjectId, dispatcher: &mut Dispatcher) -> Option<Followup> {
+    fn delete(&mut self, id: ObjectId) -> Option<Followup> {
         let followup = match id.kind {
             ObjectType::Timer => {
                 // Nothing may expire or queue an APC for a timer no one can reach.
-                dispatcher.cancel_timer(TimerId::Waitable(id.index));
+                with_bodies(|bodies| bodies.cancel_timer(TimerId::Waitable(id.index)));
                 None
             }
             ObjectType::Mutex => {
                 // An owned mutex leaves its owner's list (the owner's end has nothing to abandon).
-                dispatcher.forget_mutex(MutexId(id.index));
+                with_bodies(|bodies| bodies.forget_mutex(MutexId(id.index)));
                 None
             }
             ObjectType::Section => {
@@ -1092,15 +1104,10 @@ impl Directory {
 
     /// Release the references thread record `thread`'s wait holds; the followups of objects that
     /// went with them are handed to `finish`.
-    pub fn release_wait(
-        &mut self,
-        thread: u16,
-        dispatcher: &mut Dispatcher,
-        mut finish: impl FnMut(Followup),
-    ) {
+    pub fn release_wait(&mut self, thread: u16, mut finish: impl FnMut(Followup)) {
         let held = core::mem::replace(&mut self.waits[thread as usize], WaitReferences::none());
         for id in held.objects.iter().flatten() {
-            if let Some(followup) = self.dereference(*id, dispatcher) {
+            if let Some(followup) = self.dereference(*id) {
                 finish(followup);
             }
         }
@@ -1110,14 +1117,16 @@ impl Directory {
 
     /// Cancel every live timer whose completion APC targets `thread` (it is ending: nothing may
     /// queue to it any more).
-    pub fn run_down_timers(&mut self, dispatcher: &mut Dispatcher, thread: ThreadId) {
-        for index in 0..self.timers.used as u16 {
-            if self.timers.is_live_at(index)
-                && dispatcher.waitable_timer_mut(index).apc_thread() == Some(thread)
-            {
-                dispatcher.cancel_timer(TimerId::Waitable(index));
+    pub fn run_down_timers(&mut self, thread: ThreadId) {
+        with_bodies(|bodies| {
+            for index in 0..self.timers.used as u16 {
+                if self.timers.is_live_at(index)
+                    && bodies.waitable_timer_mut(index).apc_thread() == Some(thread)
+                {
+                    bodies.cancel_timer(TimerId::Waitable(index));
+                }
             }
-        }
+        });
     }
 
     /// The process whose scheduling record is `owner` is gone: the records its threads left start
@@ -1128,15 +1137,16 @@ impl Directory {
     /// still lives (another process holds a handle to the thread) stays as it ended: its object is
     /// still waitable and its exit code still readable.
     pub fn process_ended(&mut self, owner: *const crate::sched::process::SchedProcess) {
-        let dispatcher = bodies();
-        for index in 0..THREADS as u16 {
-            let thread = ThreadId(index);
-            let left = !self.threads.is_live_at(index)
-                && core::ptr::eq(dispatcher.thread(thread).process, owner);
-            if left {
-                dispatcher.renew_thread(thread);
+        with_bodies(|bodies| {
+            for index in 0..THREADS as u16 {
+                let thread = ThreadId(index);
+                let left = !self.threads.is_live_at(index)
+                    && core::ptr::eq(bodies.thread(thread).process, owner);
+                if left {
+                    bodies.renew_thread(thread);
+                }
             }
-        }
+        });
     }
 
     /// The sweep at quiescence, once no process remains that has not been torn down: every
@@ -1145,11 +1155,7 @@ impl Directory {
     /// Returns how many objects and segments outlived their processes; what a deleted one leaves (a
     /// leaked section's or segment's hold on its frames) is handed to `finish`. Process objects are
     /// not swept: the reaped process's own goes with its own reference, at its teardown's end.
-    pub fn sweep(
-        &mut self,
-        dispatcher: &mut Dispatcher,
-        mut finish: impl FnMut(Followup),
-    ) -> usize {
+    pub fn sweep(&mut self, mut finish: impl FnMut(Followup)) -> usize {
         // The processes outlive their own end, and the permanent directory, window station and
         // desktop every process.
         let leaked = self.live_objects()
@@ -1170,7 +1176,7 @@ impl Directory {
             for index in 0..self.capacity(kind) {
                 let id = self.id(kind, index as u16);
                 if self.is_live(id) {
-                    if let Some(followup) = self.delete(id, dispatcher) {
+                    if let Some(followup) = self.delete(id) {
                         finish(followup);
                     }
                 }
@@ -1185,10 +1191,12 @@ impl Directory {
                 leaked += 1;
             }
         }
-        for (index, waits) in self.waits.iter_mut().enumerate() {
-            dispatcher.renew_thread(ThreadId(index as u16));
-            *waits = WaitReferences::none();
-        }
+        with_bodies(|bodies| {
+            for (index, waits) in self.waits.iter_mut().enumerate() {
+                bodies.renew_thread(ThreadId(index as u16));
+                *waits = WaitReferences::none();
+            }
+        });
         for entry in self.names.iter_mut() {
             *entry = NameEntry::free();
         }
@@ -1251,12 +1259,13 @@ static mut BUILT: bool = false;
 /// The kernel's directory of objects.
 #[cfg(target_arch = "x86")]
 pub fn directory() -> &'static mut Directory {
-    // SAFETY: single CPU. The reference is not the directory's only path: the clock's DPC changes
-    // the WaitableTimer, Thread and Event records inside its pools through the dispatcher's raw
-    // links (`expire_timers`, from the clock's deferred work), and so does every satisfy walk.
-    // Services and the teardown hold the reference only with interrupts masked (the gate masks
-    // them), so no DPC runs while it is in use; a reference held across a wait, where interrupts
-    // open, would overlap the DPC's changes. Built once, in place, before the first use.
+    // SAFETY: single CPU. Services and the teardown hold the reference with interrupts masked (the
+    // gate masks them), so no other thread runs while they use it, except across a wait (an
+    // overlap the directory's own lock is to close). The dispatcher objects' bodies, which the
+    // clock's deferred work changes, are the dispatcher database's, not the directory's; the one
+    // DPC that reaches the directory, the keyboard's, reads an event's header, which no directory
+    // operation leaves half-written across the raises where DPCs run. Built once, in place, before
+    // the first use.
     unsafe {
         let directory = (*core::ptr::addr_of_mut!(DIRECTORY)).as_mut_ptr();
         if !BUILT {
@@ -1283,32 +1292,39 @@ impl ObRef {
         self.id
     }
 
-    /// The referenced event (the reference's kind is the caller's to know).
-    pub fn event(&self) -> &'static mut Event {
+    // The dispatcher objects' bodies, by their names in the dispatcher database (the reference's
+    // kind is the caller's to know): the reference keeps the body the object's.
+
+    /// The referenced event's body.
+    pub fn event(&self) -> WaitableId {
         directory()
             .event(self.id)
             .expect("a referenced event lives")
     }
 
-    pub fn semaphore(&self) -> &'static mut Semaphore {
+    /// The referenced semaphore's body.
+    pub fn semaphore(&self) -> WaitableId {
         directory()
             .semaphore(self.id)
             .expect("a referenced semaphore lives")
     }
 
-    pub fn mutex(&self) -> &'static mut Mutex {
+    /// The referenced mutex's body.
+    pub fn mutex(&self) -> MutexId {
         directory()
             .mutex(self.id)
             .expect("a referenced mutex lives")
     }
 
-    pub fn timer(&self) -> &'static mut WaitableTimer {
+    /// The referenced waitable timer's body.
+    pub fn timer(&self) -> TimerId {
         directory()
             .timer(self.id)
             .expect("a referenced timer lives")
     }
 
-    pub fn thread(&self) -> &'static mut Thread {
+    /// The referenced thread's record.
+    pub fn thread(&self) -> ThreadId {
         directory()
             .thread(self.id)
             .expect("a referenced thread lives")
@@ -1346,9 +1362,10 @@ impl<T: 'static> Referenced<T> {
         }
     }
 
-    /// The referenced object's id.
-    pub fn id(&self) -> ObjectId {
-        self._reference.id()
+    /// The record itself, borrowed by nothing: how a caller reaches a part of it (a lock) without
+    /// borrowing the whole while another thread may hold it.
+    pub fn as_ptr(&self) -> *mut T {
+        self.record
     }
 }
 
@@ -1367,26 +1384,14 @@ impl<T: 'static> core::ops::DerefMut for Referenced<T> {
     fn deref_mut(&mut self) -> &mut T {
         // SAFETY: as `deref`. The record has no other user while its holder runs with interrupts
         // masked and does not block, as a service does between its waits: no DPC and no other
-        // thread reaches it meanwhile.
-        // Note: a holder that blocks breaks this. `fs::io::serialized` forms `&mut FileObject`
-        // and then waits on the object's lock, so every thread queued on that lock holds its own
-        // `&mut` to the same record, and the lock's release changes the record under them.
+        // thread reaches it meanwhile. A file object's synchronous I/O, which blocks on disk with
+        // the record borrowed, borrows it only once it holds the object's lock, taken by the
+        // lock's address (`fs::io::serialized`), so the threads queued on the lock hold no borrow.
+        // Note: a holder outside that lock still breaks this when another thread blocks inside
+        // it: a query of the position, a change of it, or a directory listing through a duplicate
+        // handle borrows the record while the other thread's call holds its own borrow across the
+        // disk. Windows 2000 takes the object's lock for those too, on a synchronous object.
         unsafe { &mut *self.record }
-    }
-}
-
-/// A referenced thread names its record: the scheduler's entry points take it as the record.
-#[cfg(target_arch = "x86")]
-impl From<&Referenced<Thread>> for ThreadId {
-    fn from(thread: &Referenced<Thread>) -> Self {
-        Thread::id(thread)
-    }
-}
-
-#[cfg(target_arch = "x86")]
-impl From<&mut Referenced<Thread>> for ThreadId {
-    fn from(thread: &mut Referenced<Thread>) -> Self {
-        Thread::id(thread)
     }
 }
 
@@ -1413,7 +1418,7 @@ pub fn reference_by_handle(handle: u32, kind: Option<ObjectType>) -> Option<ObRe
 /// the deletion leaves it).
 #[cfg(target_arch = "x86")]
 pub fn release(id: ObjectId) {
-    if let Some(followup) = directory().dereference(id, crate::sched::idle::dispatcher()) {
+    if let Some(followup) = directory().dereference(id) {
         crate::user::args::calling_process().finish(followup);
     }
 }
@@ -1422,7 +1427,7 @@ pub fn release(id: ObjectId) {
 /// process finishing what the deletion leaves it).
 #[cfg(target_arch = "x86")]
 pub fn release_mapping(mapping: Mapping) {
-    if let Some(followup) = directory().release_mapping(mapping, crate::sched::idle::dispatcher()) {
+    if let Some(followup) = directory().release_mapping(mapping) {
         crate::user::args::calling_process().finish(followup);
     }
 }
@@ -1467,7 +1472,7 @@ pub fn open(
 /// service is).
 #[cfg(target_arch = "x86")]
 pub fn current_thread() -> Option<ObjectId> {
-    directory().thread_object(crate::sched::idle::dispatcher().current()?)
+    directory().thread_object(crate::sched::try_current_thread()?)
 }
 
 /// The running thread's record index in the thread pool.
@@ -1492,7 +1497,7 @@ pub fn waiting<R>(objects: &[ObjectId], wait: impl FnOnce() -> R) -> R {
 
 #[cfg(target_arch = "x86")]
 fn release_wait(index: u16) {
-    directory().release_wait(index, crate::sched::idle::dispatcher(), |followup| {
+    directory().release_wait(index, |followup| {
         crate::user::args::calling_process().finish(followup)
     });
 }
@@ -1515,6 +1520,7 @@ mod tests {
 
     use super::*;
     use crate::sched::testkit::record;
+    use crate::sched::thread::Thread;
 
     // The rig: leaked records at their final addresses, as the scheduler's test modules build them.
     // A directory comes with a fresh dispatcher of its own, which holds its dispatcher objects'
@@ -1543,20 +1549,16 @@ mod tests {
     }
 
     /// Close a handle to `id`, collecting what the caller must finish.
-    fn closed(
-        directory: &mut Directory,
-        id: ObjectId,
-        dispatcher: &mut Dispatcher,
-    ) -> Vec<Followup> {
+    fn closed(directory: &mut Directory, id: ObjectId) -> Vec<Followup> {
         let mut followups = Vec::new();
-        directory.handle_closed(id, dispatcher, |followup| followups.push(followup));
+        directory.handle_closed(id, |followup| followups.push(followup));
         followups
     }
 
     /// A published object, as a create leaves it: one handle, the creator's reference dropped.
-    fn published(directory: &mut Directory, id: ObjectId, dispatcher: &mut Dispatcher) {
+    fn published(directory: &mut Directory, id: ObjectId) {
         assert!(directory.handle_opened(id));
-        assert_eq!(directory.dereference(id, dispatcher), None);
+        assert_eq!(directory.dereference(id), None);
     }
 
     /// An object lives as long as anything references it: its creator's reference and each handle's
@@ -1564,7 +1566,6 @@ mod tests {
     #[test]
     fn an_object_lives_while_referenced() {
         let directory = directory();
-        let dispatcher = dispatcher();
         let id = directory
             .create_event(EventKind::Notification, false)
             .unwrap();
@@ -1575,15 +1576,15 @@ mod tests {
         );
         assert!(directory.handle_opened(id));
         assert_eq!(directory.counts(id), Some((2, 1)));
-        assert_eq!(directory.dereference(id, dispatcher), None);
+        assert_eq!(directory.dereference(id), None);
         assert_eq!(directory.counts(id), Some((1, 1)), "the handle holds it");
         assert!(directory.reference(id));
-        assert_eq!(closed(directory, id, dispatcher), vec![]);
+        assert_eq!(closed(directory, id), vec![]);
         assert!(
             directory.is_live(id),
             "a reference outlives the last handle"
         );
-        assert_eq!(directory.dereference(id, dispatcher), None);
+        assert_eq!(directory.dereference(id), None);
         assert!(!directory.is_live(id), "the last reference deletes it");
         assert_eq!(directory.event(id).map(|_| ()), None);
         assert!(!directory.reference(id), "a stale id names nothing");
@@ -1595,14 +1596,14 @@ mod tests {
     #[test]
     fn a_reused_record_has_a_new_generation() {
         let directory = directory();
-        let dispatcher = dispatcher();
         let first = directory.create_semaphore(0, 1).unwrap();
-        assert_eq!(directory.dereference(first, dispatcher), None);
+        assert_eq!(directory.dereference(first), None);
         let second = directory.create_semaphore(3, 5).unwrap();
         assert_eq!(first.index, second.index, "the record is reused");
         assert_ne!(first.generation, second.generation);
         assert!(directory.semaphore(first).is_none());
-        assert_eq!(directory.semaphore(second).unwrap().count(), 3);
+        let body = directory.semaphore(second).unwrap();
+        assert_eq!(dispatcher().waitable(body).signal_state(), 3);
         assert!(directory.waitable(first).is_none());
     }
 
@@ -1626,9 +1627,8 @@ mod tests {
     #[test]
     fn a_name_goes_with_the_last_handle() {
         let directory = directory();
-        let dispatcher = dispatcher();
         let id = directory.create_semaphore(0, 1).unwrap();
-        published(directory, id, dispatcher);
+        published(directory, id);
         directory.bind_name(b"F2K.sync.semaphore", id).unwrap();
         assert_eq!(directory.lookup_name(b"F2K.sync.semaphore"), Some(id));
         assert_eq!(
@@ -1638,7 +1638,7 @@ mod tests {
         );
         assert_eq!(directory.lookup_name(b"F2K.sync"), None);
         assert!(directory.reference(id));
-        assert_eq!(closed(directory, id, dispatcher), vec![]);
+        assert_eq!(closed(directory, id), vec![]);
         assert!(directory.is_live(id));
         assert_eq!(
             directory.lookup_name(b"F2K.sync.semaphore"),
@@ -1678,17 +1678,16 @@ mod tests {
     #[test]
     fn a_wait_holds_its_object_through_its_last_handle() {
         let directory = directory();
-        let dispatcher = dispatcher();
         let waiter = directory.create_thread_in(1..THREADS).unwrap();
         let event = directory
             .create_event(EventKind::Notification, false)
             .unwrap();
-        published(directory, event, dispatcher);
+        published(directory, event);
 
         directory.hold_wait(waiter.index, &[event]);
         assert_eq!(directory.counts(event), Some((2, 1)));
         assert_eq!(
-            closed(directory, event, dispatcher),
+            closed(directory, event),
             vec![],
             "the program closes its handle"
         );
@@ -1699,9 +1698,7 @@ mod tests {
         );
 
         let mut followups = Vec::new();
-        directory.release_wait(waiter.index, dispatcher, |followup| {
-            followups.push(followup)
-        });
+        directory.release_wait(waiter.index, |followup| followups.push(followup));
         assert!(followups.is_empty());
         assert!(
             !directory.is_live(event),
@@ -1717,37 +1714,33 @@ mod tests {
         let dispatcher = dispatcher();
         let waiter = directory.create_thread_in(1..THREADS).unwrap();
         let timer = directory.create_timer(true).unwrap();
-        published(directory, timer, dispatcher);
+        published(directory, timer);
         let record = directory.timer(timer).unwrap();
         dispatcher.set_waitable_timer(record, 1_000_000, 0, 0, false, 0);
-        assert!(directory.timer(timer).unwrap().armed());
+        assert!(dispatcher.timer(record).inserted());
 
         directory.hold_wait(waiter.index, &[timer]);
         assert_eq!(directory.counts(timer), Some((2, 1)));
         assert_eq!(
-            closed(directory, timer, dispatcher),
+            closed(directory, timer),
             vec![],
             "the program closes its handle"
         );
         assert!(directory.is_live(timer), "the wait holds it");
         assert!(
-            directory.timer(timer).unwrap().armed(),
+            dispatcher.timer(record).inserted(),
             "still armed for its waiter"
         );
 
         let mut followups = Vec::new();
-        directory.release_wait(waiter.index, dispatcher, |followup| {
-            followups.push(followup)
-        });
+        directory.release_wait(waiter.index, |followup| followups.push(followup));
         assert!(followups.is_empty());
         assert!(
             !directory.is_live(timer),
             "the wait's return released the last reference"
         );
         assert!(
-            !crate::sched::idle::dispatcher()
-                .waitable_timer_mut(timer.index)
-                .armed(),
+            !dispatcher.waitable_timer_mut(timer.index).armed(),
             "deletion cancelled it"
         );
     }
@@ -1759,11 +1752,9 @@ mod tests {
         let dispatcher = dispatcher();
         let leaked = directory.create_timer(true).unwrap();
         dispatcher.set_waitable_timer(directory.timer(leaked).unwrap(), 1_000_000, 0, 0, false, 0);
-        assert_eq!(directory.sweep(dispatcher, |_| {}), 1);
+        assert_eq!(directory.sweep(|_| {}), 1);
         assert!(
-            !crate::sched::idle::dispatcher()
-                .waitable_timer_mut(leaked.index)
-                .armed(),
+            !dispatcher.waitable_timer_mut(leaked.index).armed(),
             "the leaked timer left the table"
         );
     }
@@ -1773,12 +1764,11 @@ mod tests {
     #[test]
     fn a_waits_references_keep_records_from_reuse() {
         let directory = directory();
-        let dispatcher = dispatcher();
         let waiter = directory.create_thread_in(1..THREADS).unwrap();
         let semaphore = directory.create_semaphore(0, 1).unwrap();
-        published(directory, semaphore, dispatcher);
+        published(directory, semaphore);
         directory.hold_wait(waiter.index, &[semaphore]);
-        assert_eq!(closed(directory, semaphore, dispatcher), vec![]);
+        assert_eq!(closed(directory, semaphore), vec![]);
         let fresh = directory.create_semaphore(1, 1).unwrap();
         assert_ne!(
             fresh.index, semaphore.index,
@@ -1788,7 +1778,7 @@ mod tests {
             directory.semaphore(semaphore).is_some(),
             "the waiter's object is still its own"
         );
-        directory.release_wait(waiter.index, dispatcher, |_| {});
+        directory.release_wait(waiter.index, |_| {});
         assert!(!directory.is_live(semaphore));
     }
 
@@ -1796,7 +1786,6 @@ mod tests {
     #[test]
     fn a_wait_holds_every_object_it_names() {
         let directory = directory();
-        let dispatcher = dispatcher();
         let waiter = directory.create_thread_in(1..THREADS).unwrap();
         let a = directory
             .create_event(EventKind::Notification, false)
@@ -1807,7 +1796,7 @@ mod tests {
         directory.hold_wait(waiter.index, &[a, b, a]);
         assert_eq!(directory.counts(a), Some((3, 0)));
         assert_eq!(directory.counts(b), Some((2, 0)));
-        directory.release_wait(waiter.index, dispatcher, |_| {});
+        directory.release_wait(waiter.index, |_| {});
         assert_eq!(
             directory.counts(a),
             Some((1, 0)),
@@ -1821,7 +1810,6 @@ mod tests {
     #[test]
     fn thread_records_and_their_ranges() {
         let directory = directory();
-        let dispatcher = dispatcher();
         let main = directory.create_thread_in(0..1).unwrap();
         assert_eq!(main.index, 0);
         assert_eq!(directory.create_thread_in(0..1), None, "one main thread");
@@ -1840,7 +1828,7 @@ mod tests {
             "the idle thread's record names no object"
         );
         // A thread's own reference released: its record is free again.
-        assert_eq!(directory.dereference(last, dispatcher), None);
+        assert_eq!(directory.dereference(last), None);
         assert_eq!(directory.thread_object(record), None);
         assert_eq!(
             directory.create_thread_in(1..THREADS).map(|id| id.index),
@@ -1859,7 +1847,7 @@ mod tests {
         // A's main thread, B's main thread, then a created thread of A's: records 0, 1, 2.
         let threads = [(a, 8), (b, 16), (a, 20)].map(|(owner, client_id)| {
             let id = directory.create_thread().unwrap();
-            let record = directory.renew_thread(id);
+            let record = dispatcher().thread_mut(directory.renew_thread(id));
             record.process = owner;
             record.thread_id = client_id;
             id
@@ -1889,12 +1877,12 @@ mod tests {
     fn a_deleted_owned_mutex_leaves_its_owner() {
         let directory = directory();
         let dispatcher = dispatcher();
-        let mut owner = thread();
+        let owner = thread();
         let id = directory.create_mutex().unwrap();
-        crate::sched::mutex::acquire(directory.mutex(id).unwrap(), &mut owner);
+        dispatcher.acquire_mutex(directory.mutex(id).unwrap(), owner.id());
         assert!(!owner.owned_mutexes.is_empty());
         assert!(directory.waitable(id).is_some(), "a mutex is waitable");
-        assert_eq!(directory.dereference(id, dispatcher), None);
+        assert_eq!(directory.dereference(id), None);
         assert!(owner.owned_mutexes.is_empty(), "the deletion unlinked it");
         dispatcher.abandon_mutexes(owner.id());
     }
@@ -1904,15 +1892,14 @@ mod tests {
     #[test]
     fn the_named_objects_directory_is_permanent() {
         let directory = directory();
-        let dispatcher = dispatcher();
         let id = directory.named_objects().unwrap();
         assert_eq!(directory.named_objects(), Some(id), "one directory");
         assert_eq!(directory.waitable(id), None);
         // An open's handle, then its close: the creator's reference stays.
         assert!(directory.handle_opened(id));
-        assert_eq!(closed(directory, id, dispatcher), vec![]);
+        assert_eq!(closed(directory, id), vec![]);
         assert_eq!(directory.counts(id), Some((1, 0)));
-        assert_eq!(directory.sweep(dispatcher, |_| {}), 0);
+        assert_eq!(directory.sweep(|_| {}), 0);
         assert!(directory.is_live(id), "it outlives every process");
         assert_eq!(directory.named_objects(), Some(id));
     }
@@ -1923,7 +1910,6 @@ mod tests {
     #[test]
     fn window_stations_and_desktops_are_permanent() {
         let directory = directory();
-        let dispatcher = dispatcher();
         let station = directory.create_window_station("WinSta0", 1).unwrap();
         let desktop = directory.create_desktop("Default", 0).unwrap();
         assert_eq!(directory.window_station(station).unwrap().name, "WinSta0");
@@ -1937,10 +1923,10 @@ mod tests {
         assert_eq!(directory.create_window_station("Other", 0), None, "one");
         for id in [station, desktop] {
             assert!(directory.handle_opened(id));
-            assert_eq!(closed(directory, id, dispatcher), vec![]);
+            assert_eq!(closed(directory, id), vec![]);
             assert_eq!(directory.counts(id), Some((1, 0)));
         }
-        assert_eq!(directory.sweep(dispatcher, |_| {}), 0);
+        assert_eq!(directory.sweep(|_| {}), 0);
         assert!(directory.is_live(station) && directory.is_live(desktop));
     }
 
@@ -1949,14 +1935,13 @@ mod tests {
     #[test]
     fn the_sweep_clears_the_directory() {
         let directory = directory();
-        let dispatcher = dispatcher();
         let leaked = directory
             .create_event(EventKind::Notification, true)
             .unwrap();
         directory.bind_name(b"left", leaked).unwrap();
         let main = directory.create_thread_in(0..1).unwrap();
         record(ThreadId(main.index)).teb_va = 0x7FFD_E000;
-        assert_eq!(directory.sweep(dispatcher, |_| {}), 2);
+        assert_eq!(directory.sweep(|_| {}), 2);
         assert_eq!(directory.live_objects(), 0);
         assert!(!directory.is_live(leaked));
         assert_eq!(directory.lookup_name(b"left"), None);
@@ -1981,7 +1966,8 @@ mod tests {
         teb: u32,
     ) -> ObjectId {
         let id = directory.create_thread_in(range).unwrap();
-        directory.renew_thread(id).teb_va = teb;
+        let thread = directory.renew_thread(id);
+        dispatcher().thread_mut(thread).teb_va = teb;
         // SAFETY: the process is leaked at its final address.
         unsafe { dispatcher().attach(ThreadId(id.index), process) };
         id
@@ -1994,7 +1980,6 @@ mod tests {
     #[test]
     fn a_process_end_takes_only_its_own() {
         let directory = directory();
-        let dispatcher = dispatcher();
         let (a, b) = (sched_process(0x0090_0000), sched_process(0x00A0_0000));
         let a_main = pooled_thread(directory, 0..1, a, 0x7FFD_E000);
         let a_child = pooled_thread(directory, 1..THREADS, a, 0x7FFD_D000);
@@ -2002,20 +1987,20 @@ mod tests {
         let a_event = directory
             .create_event(EventKind::Notification, false)
             .unwrap();
-        published(directory, a_event, dispatcher);
+        published(directory, a_event);
         directory.bind_name(b"F2K.a", a_event).unwrap();
         let b_semaphore = directory.create_semaphore(0, 1).unwrap();
-        published(directory, b_semaphore, dispatcher);
+        published(directory, b_semaphore);
         directory.bind_name(b"F2K.b", b_semaphore).unwrap();
         // The first process opens the second's semaphore by its name.
         assert!(directory.handle_opened(b_semaphore));
 
         // The first process ends.
         for id in [a_event, b_semaphore] {
-            assert_eq!(closed(directory, id, dispatcher), vec![]);
+            assert_eq!(closed(directory, id), vec![]);
         }
         for id in [a_main, a_child] {
-            assert_eq!(directory.dereference(id, dispatcher), None);
+            assert_eq!(directory.dereference(id), None);
         }
         directory.process_ended(a);
         assert!(!directory.is_live(a_event), "its own went with its handle");
@@ -2031,11 +2016,11 @@ mod tests {
         assert!(core::ptr::eq(b_record.process, b) && b_record.teb_va() == 0x7FFD_C000);
 
         // The second ends: quiescence, and nothing leaked.
-        assert_eq!(closed(directory, b_semaphore, dispatcher), vec![]);
-        assert_eq!(directory.dereference(b_thread, dispatcher), None);
+        assert_eq!(closed(directory, b_semaphore), vec![]);
+        assert_eq!(directory.dereference(b_thread), None);
         directory.process_ended(b);
         assert_eq!(record(ThreadId(b_thread.index)).teb_va(), 0);
-        assert_eq!(directory.sweep(dispatcher, |_| {}), 0);
+        assert_eq!(directory.sweep(|_| {}), 0);
         assert_eq!(directory.live_objects(), 0);
     }
 
@@ -2045,21 +2030,20 @@ mod tests {
     #[test]
     fn the_sweep_at_quiescence_catches_a_leak() {
         let directory = directory();
-        let dispatcher = dispatcher();
         let (a, b) = (sched_process(0x0090_0000), sched_process(0x00A0_0000));
         let a_main = pooled_thread(directory, 0..1, a, 0x7FFD_E000);
         let b_thread = pooled_thread(directory, 1..THREADS, b, 0x7FFD_C000);
         let leaked = directory
             .create_event(EventKind::Notification, false)
             .unwrap();
-        published(directory, leaked, dispatcher);
+        published(directory, leaked);
         // A reference the first process takes and never releases (a kernel bug), and one on its
         // own thread object.
         assert!(directory.reference(leaked));
         assert!(directory.reference(a_main));
 
-        assert_eq!(closed(directory, leaked, dispatcher), vec![]);
-        assert_eq!(directory.dereference(a_main, dispatcher), None);
+        assert_eq!(closed(directory, leaked), vec![]);
+        assert_eq!(directory.dereference(a_main), None);
         directory.process_ended(a);
         assert!(
             directory.is_live(leaked),
@@ -2072,13 +2056,9 @@ mod tests {
             "a held thread's record stays as it ended"
         );
 
-        assert_eq!(directory.dereference(b_thread, dispatcher), None);
+        assert_eq!(directory.dereference(b_thread), None);
         directory.process_ended(b);
-        assert_eq!(
-            directory.sweep(dispatcher, |_| {}),
-            2,
-            "the event and the thread"
-        );
+        assert_eq!(directory.sweep(|_| {}), 2, "the event and the thread");
         assert_eq!(directory.live_objects(), 0);
         assert_eq!(record(ThreadId(a_main.index)).teb_va(), 0);
     }
@@ -2088,11 +2068,10 @@ mod tests {
     #[test]
     fn the_namespace_is_one_directory() {
         let directory = directory();
-        let dispatcher = dispatcher();
         let event = directory
             .create_event(EventKind::Notification, false)
             .unwrap();
-        published(directory, event, dispatcher);
+        published(directory, event);
         directory.bind_name(b"Global\\F2K.ready", event).unwrap();
         assert_eq!(directory.lookup_name(b"F2K.ready"), Some(event));
         assert_eq!(directory.lookup_name(b"Local\\F2K.ready"), Some(event));
@@ -2124,29 +2103,27 @@ mod tests {
         let id = directory.create_process().unwrap();
         assert_eq!(directory.processes_live(id.index), Some(id));
         assert_eq!(
-            directory.process(id).map(|process| process.exit_status),
+            directory
+                .process(id)
+                .map(|body| dispatcher.process_object_mut(body).exit_status),
             Some(STILL_ACTIVE)
         );
         let waitable = directory.waitable(id).expect("a process is waitable");
-        // SAFETY: the live process object's waitable.
-        assert_eq!(unsafe { (*waitable).signal_state() }, 0);
+        assert_eq!(dispatcher.waitable(waitable).signal_state(), 0);
         // A handle to it and the process's own reference.
         assert!(directory.handle_opened(id));
-        assert_eq!(
-            directory.sweep(dispatcher, |_| {}),
-            0,
-            "a process object is no leak"
-        );
+        assert_eq!(directory.sweep(|_| {}), 0, "a process object is no leak");
         assert!(directory.is_live(id));
-        directory.signal_process_end(id, 3, dispatcher);
-        // SAFETY: as above.
-        assert_eq!(unsafe { (*waitable).signal_state() }, 1);
+        directory.signal_process_end(id, 3);
+        assert_eq!(dispatcher.waitable(waitable).signal_state(), 1);
         assert_eq!(
-            directory.process(id).map(|process| process.exit_status),
+            directory
+                .process(id)
+                .map(|body| dispatcher.process_object_mut(body).exit_status),
             Some(3)
         );
         assert_eq!(
-            directory.dereference(id, dispatcher),
+            directory.dereference(id),
             None,
             "the process's own reference goes"
         );
@@ -2154,7 +2131,7 @@ mod tests {
             directory.is_live(id),
             "the handle still names the ended process"
         );
-        assert_eq!(closed(directory, id, dispatcher), vec![]);
+        assert_eq!(closed(directory, id), vec![]);
         assert_eq!(
             directory.processes_live(id.index),
             None,
@@ -2198,7 +2175,6 @@ mod tests {
     #[test]
     fn a_deleted_section_hands_back_its_frames() {
         let directory = directory();
-        let dispatcher = dispatcher();
         let file_object = ObjectId {
             kind: ObjectType::File,
             index: 2,
@@ -2213,12 +2189,12 @@ mod tests {
         let id = directory.create_section(section).unwrap();
         assert_eq!(directory.waitable(id), None, "a section is not waitable");
         assert_eq!(directory.section(id).map(|section| section.size), Some(3));
-        published(directory, id, dispatcher);
+        published(directory, id);
         // A view's reference keeps it past its handle.
         assert!(directory.reference(id));
-        assert_eq!(closed(directory, id, dispatcher), vec![]);
+        assert_eq!(closed(directory, id), vec![]);
         assert_eq!(
-            directory.dereference(id, dispatcher),
+            directory.dereference(id),
             Some(Followup::Section {
                 frames: crate::mem::vm::SectionFrames::empty(),
                 file_object: Some(file_object),
@@ -2232,11 +2208,7 @@ mod tests {
     }
 
     /// An image section of `segment`, as NtCreateSection makes one and publishes it (one handle).
-    fn image_section(
-        directory: &mut Directory,
-        segment: SegmentId,
-        dispatcher: &mut Dispatcher,
-    ) -> ObjectId {
+    fn image_section(directory: &mut Directory, segment: SegmentId) -> ObjectId {
         let id = directory
             .create_section(SectionObject {
                 size: 0x3000,
@@ -2245,7 +2217,7 @@ mod tests {
                 ..SectionObject::none()
             })
             .unwrap();
-        published(directory, id, dispatcher);
+        published(directory, id);
         id
     }
 
@@ -2255,7 +2227,6 @@ mod tests {
     #[test]
     fn an_image_segment_lives_while_a_section_or_view_holds_it() {
         let directory = directory();
-        let dispatcher = dispatcher();
         let file_object = ObjectId {
             kind: ObjectType::File,
             index: 7,
@@ -2271,10 +2242,10 @@ mod tests {
             .unwrap();
         // The first process's loader: its section made the segment (the creator's reference is
         // the section's), its view holds the segment, and its handle closes.
-        let first = image_section(directory, segment, dispatcher);
+        let first = image_section(directory, segment);
         let view = Mapping::Image(segment);
         assert!(directory.reference_segment(segment), "the first view");
-        assert_eq!(closed(directory, first, dispatcher), vec![]);
+        assert_eq!(closed(directory, first), vec![]);
         assert!(
             !directory.is_live(first),
             "the view does not hold the section"
@@ -2285,19 +2256,19 @@ mod tests {
         );
         // A second process shares the segment.
         assert!(directory.reference_segment(segment), "the second section");
-        let second = image_section(directory, segment, dispatcher);
+        let second = image_section(directory, segment);
         assert!(directory.reference_segment(segment), "the second view");
-        assert_eq!(closed(directory, second, dispatcher), vec![]);
-        assert_eq!(directory.release_mapping(view, dispatcher), None);
+        assert_eq!(closed(directory, second), vec![]);
+        assert_eq!(directory.release_mapping(view), None);
         assert_eq!(directory.segments.live(), 1, "one segment for the file");
         let gone = Followup::Section {
             frames: crate::mem::vm::SectionFrames::empty(),
             file_object: Some(file_object),
         };
-        assert_eq!(directory.release_mapping(view, dispatcher), Some(gone));
+        assert_eq!(directory.release_mapping(view), Some(gone));
         assert!(directory.segment(segment).is_none(), "its id is stale");
         assert!(!directory.reference_segment(segment));
-        assert_eq!(directory.release_mapping(view, dispatcher), None);
+        assert_eq!(directory.release_mapping(view), None);
         // A section that outlives the views is the last holder in its turn.
         let again = directory
             .create_segment(ImageSegment {
@@ -2309,17 +2280,14 @@ mod tests {
             .unwrap();
         assert_eq!(again.index, segment.index, "the record is reused");
         assert_ne!(again, segment, "under a new generation");
-        let section = image_section(directory, again, dispatcher);
+        let section = image_section(directory, again);
         assert!(directory.reference_segment(again), "a view");
-        assert_eq!(
-            directory.release_mapping(Mapping::Image(again), dispatcher),
-            None
-        );
-        assert_eq!(closed(directory, section, dispatcher), vec![gone]);
+        assert_eq!(directory.release_mapping(Mapping::Image(again)), None);
+        assert_eq!(closed(directory, section), vec![gone]);
         // A data view holds its section, as before.
         let data = directory.create_section(SectionObject::none()).unwrap();
         assert_eq!(
-            directory.release_mapping(Mapping::Section(data), dispatcher),
+            directory.release_mapping(Mapping::Section(data)),
             Some(Followup::Section {
                 frames: crate::mem::vm::SectionFrames::empty(),
                 file_object: None,
@@ -2332,7 +2300,6 @@ mod tests {
     #[test]
     fn the_sweep_takes_leaked_segments() {
         let directory = directory();
-        let dispatcher = dispatcher();
         let segment = |directory: &mut Directory, index| {
             directory
                 .create_segment(ImageSegment {
@@ -2348,11 +2315,11 @@ mod tests {
                 .unwrap()
         };
         let held = segment(directory, 1);
-        image_section(directory, held, dispatcher);
+        image_section(directory, held);
         segment(directory, 2);
         let mut followups = Vec::new();
         assert_eq!(
-            directory.sweep(dispatcher, |followup| followups.push(followup)),
+            directory.sweep(|followup| followups.push(followup)),
             2,
             "the section and the lone segment"
         );
@@ -2365,10 +2332,9 @@ mod tests {
     #[test]
     fn a_file_object_cleans_up_then_closes() {
         let directory = directory();
-        let dispatcher = dispatcher();
         let id = directory
             .create_file(
-                4,
+                crate::fs::file::FileRecordId::at(4),
                 crate::fs::file::ACCESS_READ,
                 0x8000_0000,
                 crate::fs::file::SHARE_ALL,
@@ -2380,42 +2346,39 @@ mod tests {
             "a file object is not waitable"
         );
         directory.file(id).unwrap().delete_on_close = true;
-        published(directory, id, dispatcher);
+        published(directory, id);
         assert!(directory.handle_opened(id), "a duplicate");
-        assert_eq!(
-            closed(directory, id, dispatcher),
-            vec![],
-            "another handle remains"
-        );
+        assert_eq!(closed(directory, id), vec![], "another handle remains");
         assert!(directory.reference(id), "a section's");
         assert_eq!(
-            closed(directory, id, dispatcher),
+            closed(directory, id),
             vec![Followup::FileCleanup {
-                record: 4,
+                record: crate::fs::file::FileRecordId::at(4),
                 access: 1,
                 share: 7,
                 delete_on_close: true,
-                search: 0
             }]
         );
         assert_eq!(
-            directory.dereference(id, dispatcher),
-            Some(Followup::FileClose { record: 4 })
+            directory.dereference(id),
+            Some(Followup::FileClose {
+                record: crate::fs::file::FileRecordId::at(4)
+            })
         );
         // Both at once when nothing else holds it.
-        let id = directory.create_file(5, 0, 0x80, 0).unwrap();
-        published(directory, id, dispatcher);
+        let five = crate::fs::file::FileRecordId::at(5);
+        let id = directory.create_file(five, 0, 0x80, 0).unwrap();
+        published(directory, id);
         assert_eq!(
-            closed(directory, id, dispatcher),
+            closed(directory, id),
             vec![
                 Followup::FileCleanup {
-                    record: 5,
+                    record: five,
                     access: 0,
                     share: 0,
                     delete_on_close: false,
-                    search: 0
                 },
-                Followup::FileClose { record: 5 },
+                Followup::FileClose { record: five },
             ]
         );
     }

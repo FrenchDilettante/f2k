@@ -1,6 +1,5 @@
-//! The kernel ABI constants the system DLLs' assembly uses: the gate vector, the internal service
-//! numbers (kernel/src/user/syscall.rs) and the PEB-page slot the exception-filter natives share
-//! (`TOP_LEVEL_FILTER`, kernel/src/user/teb.rs), read off the kernel's sources so the two sides
+//! The kernel ABI constants the system DLLs' assembly uses: the gate vector and the internal
+//! service numbers (kernel/src/user/syscall.rs), read off the kernel's sources so the two sides
 //! cannot disagree.
 
 use std::fmt::Write;
@@ -29,21 +28,14 @@ fn constants(text: &str, wanted: impl Fn(&str) -> bool) -> Vec<(String, u32)> {
 }
 
 /// The constants, from the kernel's sources under `repo`: the syscall module's `SYS_*` and
-/// `SYSCALL_VECTOR`, then `TOP_LEVEL_FILTER`.
+/// `SYSCALL_VECTOR`.
 pub fn kernel_constants(repo: &Path) -> Result<Vec<(String, u32)>, String> {
     let read = |relative: &str| {
         std::fs::read_to_string(repo.join(relative)).map_err(|e| format!("{relative}: {e}"))
     };
-    let mut found = constants(&read("kernel/src/user/syscall.rs")?, |name| {
+    let found = constants(&read("kernel/src/user/syscall.rs")?, |name| {
         name.starts_with("SYS_") || name == "SYSCALL_VECTOR"
     });
-    let filter = constants(&read("kernel/src/user/teb.rs")?, |name| {
-        name == "TOP_LEVEL_FILTER"
-    });
-    match filter.as_slice() {
-        [one] => found.push(one.clone()),
-        _ => return Err("kernel/src/user/teb.rs: no TOP_LEVEL_FILTER".to_string()),
-    }
     if !found.iter().any(|(name, _)| name == "SYSCALL_VECTOR") {
         return Err("kernel/src/user/syscall.rs: no SYSCALL_VECTOR".to_string());
     }

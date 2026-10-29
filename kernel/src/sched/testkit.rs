@@ -23,10 +23,12 @@ use super::thread::{Thread, ThreadId};
 use super::timer::TimerId;
 use super::wait::Timer;
 use super::waitable_timer::WaitableTimer;
+use crate::level::{Dispatch, LevelCell};
 
 std::thread_local! {
     /// The dispatchers this thread made, kept until it ends.
-    static MADE: RefCell<Vec<Box<Dispatcher>>> = const { RefCell::new(Vec::new()) };
+    static MADE: RefCell<Vec<Box<LevelCell<Dispatch, Dispatcher>>>> =
+        const { RefCell::new(Vec::new()) };
     /// The next free records of the installed dispatcher: thread, mutex, timer, user APC.
     static NEXT: Cell<[u16; 4]> = const { Cell::new([0; 4]) };
 }
@@ -97,26 +99,24 @@ impl From<Rec<Apc>> for ApcId {
 
 /// A fresh dispatcher, built in place and installed as this thread's.
 pub fn dispatcher() -> &'static mut Dispatcher {
-    let mut made = Box::<Dispatcher>::new_uninit();
-    // SAFETY: the box's storage is valid for writes, aligned, and the records' final address.
-    unsafe { Dispatcher::write_empty(made.as_mut_ptr()) };
-    // SAFETY: every field was written above.
-    let mut made = unsafe { made.assume_init() };
-    let dispatcher: *mut Dispatcher = &mut *made;
+    // SAFETY: `write_empty` writes a whole dispatcher at the address it is handed, and reaches no
+    // level cell.
+    let made = unsafe { LevelCell::boxed_in_place(Dispatcher::write_empty) };
+    let cell: *const LevelCell<Dispatch, Dispatcher> = &*made;
     MADE.with(|all| all.borrow_mut().push(made));
     NEXT.with(|next| next.set([0; 4]));
-    // SAFETY: the box lives until the thread ends, at its address (moving a box keeps its heap);
-    // the installed reference and the returned one name it for the rig's tests, which use one at
-    // a time.
-    unsafe {
-        super::idle::install_host(&mut *dispatcher);
-        &mut *dispatcher
-    }
+    // SAFETY: the box lives until the thread ends, at its address (moving a box keeps its heap).
+    let cell = unsafe { &*cell };
+    super::install_host(cell);
+    installed()
 }
 
-/// The installed dispatcher.
+/// The installed dispatcher. The rig's tests reach it beside the code under test, which reaches it
+/// through the dispatch token, one reference at a time.
 pub fn installed() -> &'static mut Dispatcher {
-    super::idle::dispatcher()
+    // SAFETY: the installed cell lives until the thread ends; the tests use one reference at a
+    // time.
+    unsafe { &mut *super::DISPATCHER.as_ptr() }
 }
 
 /// Take the next record of kind `kind` (0 threads, 1 mutexes, 2 timers, 3 user APCs).

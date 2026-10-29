@@ -50,9 +50,8 @@ pub mod peb_offset {
     /// ProcessHeap: what GetProcessHeap returns (ntdll's LdrInitializeThunk writes it on the
     /// process's first thread).
     pub const PROCESS_HEAP: u32 = 0x18;
-    /// FastPebLock: the PEB lock, the critical section RtlAcquirePebLock takes (its storage at
-    /// [`PEB_LOCK`], past the PEB proper; ntdll's LdrInitializeThunk makes both on the process's
-    /// first thread).
+    /// FastPebLock: the PEB lock, the critical section RtlAcquirePebLock takes (ntdll's own data;
+    /// its LdrInitializeThunk makes it and points this field at it on the process's first thread).
     pub const FAST_PEB_LOCK: u32 = 0x1C;
     /// NumberOfHeaps, MaximumNumberOfHeaps, ProcessHeaps: the process's heaps, the array of their
     /// handles (ntdll keeps the count and the array; the kernel plants the array's place and size,
@@ -60,18 +59,18 @@ pub mod peb_offset {
     pub const NUMBER_OF_HEAPS: u32 = 0x88;
     pub const MAXIMUM_NUMBER_OF_HEAPS: u32 = 0x8C;
     pub const PROCESS_HEAPS: u32 = 0x90;
-    /// The heap-handle array: right past Windows 2000's PEB proper (0x1E8 bytes), on its page.
+    /// The heap-handle array: right past Windows 2000's PEB proper (0x1E8 bytes), on its page, as
+    /// NT's PEB creation places it.
     pub const PROCESS_HEAPS_ARRAY: u32 = 0x1E8;
     /// How many heaps the array holds (`rtl::heap::HEAPS`).
     pub const HEAPS: u32 = 16;
-    /// The lock over the heap list: a critical section, ntdll's own data on the platform, here
-    /// past the PEB proper on its page (made by the process's first thread's LdrInitializeThunk).
-    pub const HEAP_LIST_LOCK: u32 = 0x840;
-    /// TlsBitmap: the RTL_BITMAP over TlsBitmapBits, the TLS indexes 0..64.
+    /// TlsBitmap: the RTL_BITMAP over TlsBitmapBits, the TLS indexes 0..64 (the header is ntdll's
+    /// own data; its LdrInitializeThunk makes it and points this field at it).
     pub const TLS_BITMAP: u32 = 0x40;
     /// TlsBitmapBits: two dwords, a bit per index 0..64 (set: allocated).
     pub const TLS_BITMAP_BITS: u32 = 0x44;
-    /// TlsExpansionBitmap: the RTL_BITMAP over TlsExpansionBitmapBits, the indexes 64..1088.
+    /// TlsExpansionBitmap: the RTL_BITMAP over TlsExpansionBitmapBits, the indexes 64..1088
+    /// (ntdll's, as TlsBitmap's).
     pub const TLS_EXPANSION_BITMAP: u32 = 0x150;
     /// TlsExpansionBitmapBits: 32 dwords, a bit per index 64..1088.
     pub const TLS_EXPANSION_BITMAP_BITS: u32 = 0x154;
@@ -93,33 +92,13 @@ pub mod peb_offset {
     /// every process has it from its creation (a process another process created gets its
     /// parameters from its creator, later).
     pub const CSD_VERSION_BUFFER: u32 = 0xA00;
-    /// kernel32's top-level exception filter (SetUnhandledExceptionFilter's): past the PEB proper
-    /// on its page; kernel32's natives reach it through FS (the system DLLs' assembly reads the
-    /// value off this line, see tools/exportgen's `abi`).
-    pub const TOP_LEVEL_FILTER: u32 = 0x800;
-    /// The two TLS bitmaps' RTL_BITMAP headers (SizeOfBitMap, Buffer): ntdll's own data on the
-    /// platform, here past the PEB proper on its page (like kernel32's top-level filter slot).
-    pub const TLS_BITMAP_HEADER: u32 = 0x810;
-    pub const TLS_EXPANSION_BITMAP_HEADER: u32 = 0x818;
-    /// The PEB lock's storage, the critical section FastPebLock points at: ntdll's own data on the
-    /// platform, here past the PEB proper on its page.
-    pub const PEB_LOCK: u32 = 0x860;
-    /// LoaderLock, and the loader lock's storage it points at (ntdll's LdrpLoaderLock on the
-    /// platform, here past the PEB proper on its page; LdrInitializeThunk makes both).
+    /// LoaderLock: the loader lock (ntdll's LdrpLoaderLock, its own data; its LdrInitializeThunk
+    /// makes it and points this field at it).
     pub const LOADER_LOCK: u32 = 0xA0;
-    pub const LOADER_LOCK_STORAGE: u32 = 0x900;
-    // Past the PEB proper (0x1E8 bytes), the system DLLs' own data (they keep no writable
-    // sections): the heap-handle array (0x1E8), kernel32's top-level filter (0x800, above), the TLS
-    // bitmaps' headers (0x810, 0x818), the heap list's lock (0x840), the PEB lock (0x860),
-    // kernel32's `\BaseNamedObjects` handle (0x880), its narrow command line and startup
-    // information (0x8A0, 0x8A4: pointers to blocks on the process heap), its console's
-    // input-wait handle (0x8C0) and control handlers (0x8C4, 0x8C8, 0x8CC: a block on the process
-    // heap, the handlers it holds, its room), its handle table for the
-    // movable Local and Global blocks (0x8E0, an RTL_HANDLE_TABLE), the loader lock (0x900),
-    // the loader's own state (0x920, 0x924: the DLLs owed calls, the initialization under way),
-    // the service pack's name (0xA00, the kernel's).
-    // The page starts zeroed; the kernel writes only the bitmaps' headers and the service pack's
-    // name (ntdll makes the locks).
+    // Past the PEB proper (0x1E8 bytes), the kernel keeps only the heap-handle array (0x1E8) and
+    // the service pack's name (0xA00). The page starts zeroed. The PEB's lock, loader lock and TLS
+    // bitmap fields point into ntdll's own data, and the system DLLs keep the rest of their
+    // per-process state in their own data sections, as on Windows 2000.
 }
 
 /// The empty SEH chain's terminator: the frame link Windows starts every thread with.
@@ -192,30 +171,18 @@ const PLATFORM_WIN32_NT: u32 = 2;
 
 /// A fresh PEB's nonzero words, as (offset, value), for the PEB at `peb`: the image's base, the
 /// process parameters, the heap list's room (its array, empty, and its size: ntdll's
-/// LdrInitializeThunk makes the process heap, the list's first entry), the TLS bitmaps' headers
-/// (every index free), the
-/// system's version (GetVersion's: 5.0, build 2195, service pack 4, NT), the image's subsystem and
-/// its version, and the service pack's name (its text on the PEB's page, [`map_peb`]'s). The
-/// loader's module lists are ntdll's to make (Ldr stays null until its process initialization).
-pub fn peb_words(peb: u32, init: &PebInit) -> [(u32, u32); 19] {
+/// LdrInitializeThunk makes the process heap, the list's first entry), the system's version
+/// (GetVersion's: 5.0, build 2195, service pack 4, NT), the image's subsystem and its version, and
+/// the service pack's name (its text on the PEB's page, [`map_peb`]'s). The loader's module lists,
+/// the PEB lock, the loader lock and the TLS bitmaps' headers are ntdll's to make (their fields
+/// stay null until its process initialization).
+pub fn peb_words(peb: u32, init: &PebInit) -> [(u32, u32); 13] {
     use peb_offset::*;
     [
         (IMAGE_BASE_ADDRESS, init.image_base),
         (PROCESS_PARAMETERS, init.parameters),
         (MAXIMUM_NUMBER_OF_HEAPS, HEAPS),
         (PROCESS_HEAPS, peb + PROCESS_HEAPS_ARRAY),
-        (TLS_BITMAP, peb + TLS_BITMAP_HEADER),
-        (TLS_BITMAP_HEADER, crate::user::tls::TEB_SLOTS),
-        (TLS_BITMAP_HEADER + 4, peb + TLS_BITMAP_BITS),
-        (TLS_EXPANSION_BITMAP, peb + TLS_EXPANSION_BITMAP_HEADER),
-        (
-            TLS_EXPANSION_BITMAP_HEADER,
-            crate::user::tls::EXPANSION_SLOTS,
-        ),
-        (
-            TLS_EXPANSION_BITMAP_HEADER + 4,
-            peb + TLS_EXPANSION_BITMAP_BITS,
-        ),
         (OS_MAJOR_VERSION, VERSION & 0xFF),
         (OS_MINOR_VERSION, (VERSION >> 8) & 0xFF),
         (
@@ -292,8 +259,6 @@ mod tests {
         assert_eq!(teb_offset::CURRENT_LOCALE, 0xC4);
         assert_eq!(teb_offset::DEALLOCATION_STACK, 0xE0C);
         assert_eq!(peb_offset::IMAGE_BASE_ADDRESS, 0x08);
-        assert_eq!(peb_offset::LDR, rtl::modules::peb::LDR);
-        assert_eq!(peb_offset::LOADER_LOCK, rtl::modules::peb::LOADER_LOCK);
         assert_eq!(peb_offset::PROCESS_PARAMETERS, 0x10);
         assert_eq!(peb_offset::PROCESS_HEAP, 0x18);
         assert_eq!(peb_offset::FAST_PEB_LOCK, 0x1C);
@@ -311,6 +276,98 @@ mod tests {
         assert_eq!(peb_offset::TLS_EXPANSION_BITMAP_BITS, 0x154);
         assert_eq!(teb_offset::TLS_SLOTS, 0xE10);
         assert_eq!(teb_offset::TLS_EXPANSION_SLOTS, 0xF94);
+    }
+
+    /// The offsets agree with the layouts the user-mode side reads them with (`rtl::peb`).
+    #[test]
+    fn offsets_are_the_user_layouts() {
+        use core::mem::{offset_of, size_of};
+
+        use rtl::peb::{Peb, Teb};
+        let at = |offset: usize| offset as u32;
+        assert_eq!(
+            teb_offset::EXCEPTION_LIST,
+            at(offset_of!(Teb<u32>, exception_list))
+        );
+        assert_eq!(teb_offset::STACK_BASE, at(offset_of!(Teb<u32>, stack_base)));
+        assert_eq!(
+            teb_offset::STACK_LIMIT,
+            at(offset_of!(Teb<u32>, stack_limit))
+        );
+        assert_eq!(teb_offset::SELF, at(offset_of!(Teb<u32>, self_)));
+        assert_eq!(
+            teb_offset::PROCESS_ID,
+            at(offset_of!(Teb<u32>, unique_process))
+        );
+        assert_eq!(
+            teb_offset::THREAD_ID,
+            at(offset_of!(Teb<u32>, unique_thread))
+        );
+        assert_eq!(
+            teb_offset::PEB,
+            at(offset_of!(Teb<u32>, process_environment_block))
+        );
+        assert_eq!(
+            teb_offset::LAST_ERROR,
+            at(offset_of!(Teb<u32>, last_error_value))
+        );
+        assert_eq!(
+            teb_offset::CURRENT_LOCALE,
+            at(offset_of!(Teb<u32>, current_locale))
+        );
+        assert_eq!(
+            teb_offset::DEALLOCATION_STACK,
+            at(offset_of!(Teb<u32>, deallocation_stack))
+        );
+        assert_eq!(teb_offset::TLS_SLOTS, at(offset_of!(Teb<u32>, tls_slots)));
+        assert_eq!(
+            teb_offset::TLS_EXPANSION_SLOTS,
+            at(offset_of!(Teb<u32>, tls_expansion_slots))
+        );
+        use peb_offset::*;
+        assert_eq!(
+            IMAGE_BASE_ADDRESS,
+            at(offset_of!(Peb<u32>, image_base_address))
+        );
+        assert_eq!(LDR, at(offset_of!(Peb<u32>, ldr)));
+        assert_eq!(
+            PROCESS_PARAMETERS,
+            at(offset_of!(Peb<u32>, process_parameters))
+        );
+        assert_eq!(PROCESS_HEAP, at(offset_of!(Peb<u32>, process_heap)));
+        assert_eq!(FAST_PEB_LOCK, at(offset_of!(Peb<u32>, fast_peb_lock)));
+        assert_eq!(NUMBER_OF_HEAPS, at(offset_of!(Peb<u32>, number_of_heaps)));
+        assert_eq!(
+            MAXIMUM_NUMBER_OF_HEAPS,
+            at(offset_of!(Peb<u32>, maximum_number_of_heaps))
+        );
+        assert_eq!(PROCESS_HEAPS, at(offset_of!(Peb<u32>, process_heaps)));
+        assert_eq!(PROCESS_HEAPS_ARRAY, at(size_of::<Peb<u32>>()));
+        assert_eq!(TLS_BITMAP, at(offset_of!(Peb<u32>, tls_bitmap)));
+        assert_eq!(TLS_BITMAP_BITS, at(offset_of!(Peb<u32>, tls_bitmap_bits)));
+        assert_eq!(
+            TLS_EXPANSION_BITMAP,
+            at(offset_of!(Peb<u32>, tls_expansion_bitmap))
+        );
+        assert_eq!(
+            TLS_EXPANSION_BITMAP_BITS,
+            at(offset_of!(Peb<u32>, tls_expansion_bitmap_bits))
+        );
+        assert_eq!(LOADER_LOCK, at(offset_of!(Peb<u32>, loader_lock)));
+        assert_eq!(OS_MAJOR_VERSION, at(offset_of!(Peb<u32>, os_major_version)));
+        assert_eq!(OS_MINOR_VERSION, at(offset_of!(Peb<u32>, os_minor_version)));
+        assert_eq!(OS_BUILD_NUMBER, at(offset_of!(Peb<u32>, os_build_number)));
+        assert_eq!(OS_PLATFORM_ID, at(offset_of!(Peb<u32>, os_platform_id)));
+        assert_eq!(IMAGE_SUBSYSTEM, at(offset_of!(Peb<u32>, image_subsystem)));
+        assert_eq!(
+            IMAGE_SUBSYSTEM_MAJOR_VERSION,
+            at(offset_of!(Peb<u32>, image_subsystem_major_version))
+        );
+        assert_eq!(
+            IMAGE_SUBSYSTEM_MINOR_VERSION,
+            at(offset_of!(Peb<u32>, image_subsystem_minor_version))
+        );
+        assert_eq!(CSD_VERSION, at(offset_of!(Peb<u32>, csd_version)));
     }
 
     /// A fresh TEB: the chain terminated, the self pointer and the ids in place, the locale the
@@ -395,9 +452,9 @@ mod tests {
 
     /// A fresh PEB: the image and the parameters; no module lists and no process heap yet
     /// (ntdll's LdrInitializeThunk makes them), the heap list empty over its 16-entry array past
-    /// the PEB proper; the two TLS bitmaps' headers (64 and 1024 bits, over the PEB's own bit
-    /// arrays, every index free); no PEB lock or loader lock yet (ntdll's LdrInitializeThunk
-    /// makes them). Past the PEB proper only the headers, clear of kernel32's filter slot.
+    /// the PEB proper; no TLS bitmap headers, PEB lock or loader lock yet (ntdll's
+    /// LdrInitializeThunk makes them, in its own data), every TLS index free. Nothing past the PEB
+    /// proper but the service pack's name ([`map_peb`]'s).
     #[test]
     fn fresh_peb_words() {
         let peb = 0x7FFD_F000;
@@ -410,32 +467,24 @@ mod tests {
         assert_eq!(value(peb_offset::NUMBER_OF_HEAPS), None, "no heap yet");
         assert_eq!(value(peb_offset::MAXIMUM_NUMBER_OF_HEAPS), Some(16));
         assert_eq!(value(peb_offset::PROCESS_HEAPS), Some(peb + 0x1E8));
+        assert_eq!(value(peb_offset::TLS_BITMAP), None, "ntdll's to make");
         assert_eq!(
-            value(peb_offset::HEAP_LIST_LOCK + 4),
+            value(peb_offset::TLS_EXPANSION_BITMAP),
             None,
             "ntdll's to make"
         );
-        assert_eq!(value(peb_offset::TLS_BITMAP), Some(peb + 0x810));
-        assert_eq!(value(0x810), Some(64));
-        assert_eq!(value(0x814), Some(peb + 0x44));
-        assert_eq!(value(peb_offset::TLS_EXPANSION_BITMAP), Some(peb + 0x818));
-        assert_eq!(value(0x818), Some(1024));
-        assert_eq!(value(0x81C), Some(peb + 0x154));
         assert_eq!(value(peb_offset::TLS_BITMAP_BITS), None, "every index free");
         assert_eq!(value(peb_offset::FAST_PEB_LOCK), None, "ntdll's to make");
         assert_eq!(value(peb_offset::LOADER_LOCK), None, "ntdll's to make");
         for &(offset, _) in &words {
             assert_eq!(offset % 4, 0);
-            assert!(
-                offset < 0x1E8
-                    || (peb_offset::TLS_BITMAP_HEADER..peb_offset::TLS_EXPANSION_BITMAP_HEADER + 8)
-                        .contains(&offset),
-                "{offset:#x}: inside the PEB proper, or the headers"
-            );
+            assert!(offset < 0x1E8, "{offset:#x}: inside the PEB proper");
         }
-        assert!(peb_offset::TLS_BITMAP_HEADER > peb_offset::TOP_LEVEL_FILTER);
-        // The service pack's name sits past the system DLLs' slots, and fits the page.
-        assert!(peb_offset::CSD_VERSION_BUFFER > 0x924 + 4);
+        // The service pack's name sits past the heap-handle array, and fits the page.
+        assert!(
+            peb_offset::CSD_VERSION_BUFFER
+                >= peb_offset::PROCESS_HEAPS_ARRAY + 4 * peb_offset::HEAPS
+        );
         assert!(peb_offset::CSD_VERSION_BUFFER as usize + 2 * CSD_VERSION_TEXT.len() + 2 <= 0x1000);
     }
 

@@ -51,11 +51,11 @@
 //! and structures are not inlined: their buffers stay off each other's frames (kernel32's frames
 //! stay within a page, no stack probe).
 
-use core::mem::size_of;
-use core::ops::{Deref, DerefMut};
-use core::ptr::NonNull;
+use core::mem::{offset_of, size_of};
+use core::ops::Deref;
 
 use rtl::params::{CountedString, CurrentDirectory, DriveDirectory};
+use rtl::peb::Peb;
 use rtl::pod::Pod;
 
 use crate::base::{
@@ -67,9 +67,11 @@ use crate::base::{
     SecurityAttributes,
     CURRENT_PROCESS,
 };
+use crate::env;
 use crate::files::names::file_attributes;
 use crate::files::search::{directory_of, search_default, search_list};
 use crate::files::{self, NtPath, Wide, MAX_PATH};
+use crate::heap::{HeapArray, OutOfMemory, Owned};
 use crate::nt::ClientId;
 use crate::ntcall::{self, NtStatus, ParameterStrings, SectionImageInformation, Source};
 use crate::thread;
@@ -159,12 +161,8 @@ const CLASS_IDLE: u8 = 1;
 const CLASS_NORMAL: u8 = 2;
 const CLASS_BELOW_NORMAL: u8 = 5;
 
-/// The PEB's ProcessParameters, and the caller's parameters' ConsoleHandle, ConsoleFlags and
-/// DesktopInfo.
-const PEB_PROCESS_PARAMETERS: usize = 0x10;
-const PARAMETERS_CONSOLE_HANDLE: usize = 0x10;
-const PARAMETERS_CONSOLE_FLAGS: usize = 0x14;
-const PARAMETERS_DESKTOP_INFO: usize = 0x78;
+/// The PEB's ProcessParameters, in the new process's PEB.
+const PEB_PROCESS_PARAMETERS: usize = offset_of!(Peb<u32>, process_parameters);
 
 /// An ASCII text as UTF-16, at compile time.
 const fn ascii<const N: usize>(text: &[u8; N]) -> [u16; N] {
@@ -216,75 +214,9 @@ impl Failure {
     }
 }
 
-/// Units or bytes on the process heap, freed when dropped.
-pub struct HeapArray<T: Copy + Default> {
-    block: NonNull<T>,
-    length: usize,
-}
-
-impl<T: Copy + Default> HeapArray<T> {
-    /// `length` default values; none (ERROR_NOT_ENOUGH_MEMORY) when the heap has no room.
-    pub fn new(length: usize) -> Result<HeapArray<T>, Failure> {
-        let block = ntcall::allocate_heap(size_of::<T>() * length.max(1))
-            .ok_or(Failure::Error(ERROR_NOT_ENOUGH_MEMORY))?
-            .cast::<T>();
-        for at in 0..length {
-            // SAFETY: the block holds `length` values (the heap's blocks are 8-byte aligned).
-            unsafe { block.as_ptr().add(at).write(T::default()) };
-        }
-        Ok(HeapArray { block, length })
-    }
-
-    /// The parts, one after the other.
-    pub fn joined(parts: &[&[T]]) -> Result<HeapArray<T>, Failure> {
-        let mut array = HeapArray::new(parts.iter().map(|part| part.len()).sum())?;
-        let mut at = 0;
-        for part in parts {
-            array[at..at + part.len()].copy_from_slice(part);
-            at += part.len();
-        }
-        Ok(array)
-    }
-}
-
-impl<T: Copy + Default> Deref for HeapArray<T> {
-    type Target = [T];
-
-    fn deref(&self) -> &[T] {
-        // SAFETY: the block holds `length` initialized values, ours until dropped.
-        unsafe { core::slice::from_raw_parts(self.block.as_ptr(), self.length) }
-    }
-}
-
-impl<T: Copy + Default> DerefMut for HeapArray<T> {
-    fn deref_mut(&mut self) -> &mut [T] {
-        // SAFETY: as above, borrowed mutably.
-        unsafe { core::slice::from_raw_parts_mut(self.block.as_ptr(), self.length) }
-    }
-}
-
-impl<T: Copy + Default> Drop for HeapArray<T> {
-    fn drop(&mut self) {
-        // SAFETY: the block allocate_heap made, not used again.
-        unsafe { ntcall::free_heap(self.block.as_ptr().cast()) };
-    }
-}
-
-/// A handle kernel32 made for the creation: closed when dropped, unless it is handed out.
-pub(crate) struct Owned(pub(crate) u32);
-
-impl Owned {
-    /// The handle, for the caller to keep.
-    fn into_raw(self) -> u32 {
-        let handle = self.0;
-        core::mem::forget(self);
-        handle
-    }
-}
-
-impl Drop for Owned {
-    fn drop(&mut self) {
-        let _ = ntcall::close(self.0);
+impl From<OutOfMemory> for Failure {
+    fn from(full: OutOfMemory) -> Failure {
+        Failure::Error(full.error())
     }
 }
 
@@ -538,33 +470,12 @@ fn set_scheduling(process: u32, flags: u32) {
         ntcall::set_information_process(process, PROCESS_DEFAULT_HARD_ERROR_MODE, mode.as_bytes());
 }
 
-/// An environment block's length in units: through its final empty entry (two NULs for an empty
-/// block).
-///
-/// # Safety
-///
-/// `block` points at an environment block: entries each NUL-terminated, an empty one last.
-pub unsafe fn block_length<T: Copy + Default + PartialEq>(block: *const T) -> usize {
-    let nul = T::default();
-    let mut at = 0;
-    // SAFETY: the caller's block, read through its final empty entry.
-    unsafe {
-        while block.add(at).read_unaligned() != nul {
-            while block.add(at).read_unaligned() != nul {
-                at += 1;
-            }
-            at += 1;
-        }
-    }
-    (at + 1).max(2)
-}
-
 /// The caller's own environment block.
 fn own_environment<'a>() -> &'a [u16] {
     let block = base::environment_block();
     // SAFETY: the process's environment block, which ntdll keeps terminated; the caller holds the
     // PEB lock, so ntdll neither edits nor moves it meanwhile.
-    unsafe { core::slice::from_raw_parts(block, block_length(block)) }
+    unsafe { core::slice::from_raw_parts(block, env::block_length(block)) }
 }
 
 /// UTF-16 units written into the new process, where the memory services find room for them: their
@@ -667,15 +578,14 @@ fn push_parameters(
 ) -> Result<(), Failure> {
     let startup = &request.startup;
     let environment = write_environment(process, request.environment)?;
-    let dll_path = search_list(directory_of(program.path.text()))
-        .ok_or(Failure::Error(ERROR_NOT_ENOUGH_MEMORY))?;
-    let own = base::process_parameters();
+    let dll_path = search_list(directory_of(program.path.text()))?;
+    let own = base::parameters();
     // SAFETY: the caller's parameters' DesktopInfo, the process's own string.
-    let own_desktop = unsafe { base::units(own + PARAMETERS_DESKTOP_INFO) };
+    let own_desktop = unsafe { base::string_units(&own.desktop_info) };
     let console = image.subsystem_type == IMAGE_SUBSYSTEM_WINDOWS_CUI;
     let mut block = ntcall::create_process_parameters(&ParameterStrings {
         image_path_name: program.path.text(),
-        dll_path: dll_path.units(),
+        dll_path: &dll_path,
         current_directory: current_directory.map(Wide::text),
         command_line: &program.command_line,
         environment,
@@ -695,18 +605,14 @@ fn push_parameters(
         [0; 3]
     };
     let header = block.header_mut();
-    header.console_handle = if console {
-        base::read_pointer(own + PARAMETERS_CONSOLE_HANDLE)
-    } else {
-        0
-    };
+    header.console_handle = if console { own.console_handle } else { 0 };
     // The ignoring of Ctrl+C is inherited (SetConsoleCtrlHandler's documentation); a new process
     // group starts with it set (CreateProcess's documentation: CREATE_NEW_PROCESS_GROUP disables
     // Ctrl+C in the new process).
     header.console_flags = if request.flags & CREATE_NEW_PROCESS_GROUP != 0 {
         1
     } else {
-        base::read(own + PARAMETERS_CONSOLE_FLAGS)
+        own.console_flags
     };
     [
         header.standard_input,
@@ -962,37 +868,60 @@ unsafe fn optional_ansi(string: *const u8) -> Result<Option<HeapArray<u16>>, Fai
     if string.is_null() {
         return Ok(None);
     }
-    let mut length = 0;
-    // SAFETY: the caller's string, read to its terminator.
-    while unsafe { string.add(length).read() } != 0 {
-        length += 1;
-    }
-    // SAFETY: as above, `length` bytes.
-    let bytes = unsafe { core::slice::from_raw_parts(string, length) };
-    let mut units = HeapArray::new(length)?;
+    // SAFETY: the caller's contract: a non-null string is NUL-terminated (bytes need no
+    // alignment).
+    let bytes = unsafe { rtl::cstr::bytes_until_nul(string) };
+    let mut units = HeapArray::new(bytes.len())?;
     ntcall::multi_byte_to_unicode(&mut units, bytes);
     Ok(Some(units))
 }
 
+/// The environment block a caller passes, read where it is: an ANSI block's bytes, a UTF-16 block's
+/// units (copied onto the process heap when unaligned, as a caller's string is:
+/// [`base::WideUnits`]).
+enum CallerEnvironment<'a> {
+    Inherited,
+    Ansi(&'a [u8]),
+    Wide(base::WideUnits<'a>),
+}
+
+impl CallerEnvironment<'_> {
+    /// The environment the creation hands the new process.
+    fn environment(&self) -> Environment<'_> {
+        match self {
+            CallerEnvironment::Inherited => Environment::Inherited,
+            CallerEnvironment::Ansi(bytes) => Environment::Ansi(bytes),
+            CallerEnvironment::Wide(units) => Environment::Wide(units),
+        }
+    }
+}
+
 /// The environment block a caller passes: none for null; otherwise UTF-16 with
 /// CREATE_UNICODE_ENVIRONMENT, ANSI without, through its final empty entry.
+/// ERROR_NOT_ENOUGH_MEMORY when an unaligned UTF-16 block's copy finds no room.
 ///
 /// # Safety
 ///
-/// `block` is null or an environment block of the kind the flags say.
-unsafe fn environment<'a>(block: *const u8, flags: u32) -> Environment<'a> {
+/// `block` is null or an environment block of the kind the flags say, at any address, unchanged
+/// for `'a` (a bad pointer faults the caller).
+unsafe fn environment<'a>(block: *const u8, flags: u32) -> Result<CallerEnvironment<'a>, Failure> {
     if block.is_null() {
-        return Environment::Inherited;
+        return Ok(CallerEnvironment::Inherited);
     }
-    // SAFETY: the caller's contract.
-    unsafe {
-        if flags & CREATE_UNICODE_ENVIRONMENT != 0 {
-            let block = block as *const u16;
-            Environment::Wide(core::slice::from_raw_parts(block, block_length(block)))
-        } else {
-            Environment::Ansi(core::slice::from_raw_parts(block, block_length(block)))
-        }
+    if flags & CREATE_UNICODE_ENVIRONMENT != 0 {
+        let block = block as *const u16;
+        // SAFETY: the caller's contract: a UTF-16 block, read through its final empty entry.
+        let length = unsafe { env::block_length(block) };
+        // SAFETY: as above, the `length` units the scan read.
+        return unsafe { base::wide_units_of(block, length) }
+            .map(CallerEnvironment::Wide)
+            .ok_or(Failure::Error(ERROR_NOT_ENOUGH_MEMORY));
     }
+    // SAFETY: the caller's contract: an ANSI block (bytes need no alignment), read through its
+    // final empty entry.
+    Ok(CallerEnvironment::Ansi(unsafe {
+        core::slice::from_raw_parts(block, env::block_length(block))
+    }))
 }
 
 /// A caller's STARTUPINFO's C runtime block (cbReserved2 bytes at lpReserved2), none without one.
@@ -1099,7 +1028,12 @@ pub unsafe extern "system" fn create_process_w(
     }
     let [application_name, command_line, current_directory, reserved, desktop, title] =
         strings.each_ref().map(|string| string.as_deref());
-    // SAFETY: the caller's attributes, block and structure, as the contract says.
+    // SAFETY: the caller's block, of the kind the flags say (the contract).
+    let environment = match unsafe { environment(environment_block, flags) } {
+        Ok(environment) => environment,
+        Err(failure) => return answer(Err(failure), information),
+    };
+    // SAFETY: the caller's attributes and structure, as the contract says.
     let request = unsafe {
         Request {
             application_name,
@@ -1108,7 +1042,7 @@ pub unsafe extern "system" fn create_process_w(
             thread_attributes: thread_attributes.as_ref(),
             inherit_handles: inherit_handles != 0,
             flags,
-            environment: environment(environment_block, flags),
+            environment: environment.environment(),
             current_directory,
             startup: startup(info, reserved, desktop, title, runtime_data(info)),
         }
@@ -1183,7 +1117,12 @@ pub unsafe extern "system" fn create_process_a(
     }
     let [application_name, command_line, current_directory, reserved, desktop, title] =
         strings.each_ref().map(|string| string.as_deref());
-    // SAFETY: the caller's attributes, block and structure, as the contract says.
+    // SAFETY: the caller's block, of the kind the flags say (the contract).
+    let environment = match unsafe { environment(environment_block, flags) } {
+        Ok(environment) => environment,
+        Err(failure) => return answer(Err(failure), information),
+    };
+    // SAFETY: the caller's attributes and structure, as the contract says.
     let request = unsafe {
         Request {
             application_name,
@@ -1192,7 +1131,7 @@ pub unsafe extern "system" fn create_process_a(
             thread_attributes: thread_attributes.as_ref(),
             inherit_handles: inherit_handles != 0,
             flags,
-            environment: environment(environment_block, flags),
+            environment: environment.environment(),
             current_directory,
             startup: startup(info, reserved, desktop, title, runtime_data(info)),
         }

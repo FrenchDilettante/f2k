@@ -886,7 +886,6 @@ fn the_flags_and_attributes_shape_the_child() {
 /// Pins: kernel32.CreateProcessW
 #[test]
 fn the_ignoring_of_ctrl_c_is_inherited() {
-    let own_flags = crate::base::process_parameters() + 0x14;
     for (own, flags, child) in [
         (0, 0, 0),
         (1, 0, 1),
@@ -895,7 +894,7 @@ fn the_ignoring_of_ctrl_c_is_inherited() {
     ] {
         setup();
         existing(&["C:\\CORPUS\\SPAWNKID.EXE"]);
-        crate::base::write(own_flags, own);
+        crate::base::update_console_flags(|_| own);
         create(
             None,
             Some("spawnkid args"),
@@ -910,7 +909,7 @@ fn the_ignoring_of_ctrl_c_is_inherited() {
             "the caller's {own}, the flags {flags:#x}"
         );
     }
-    crate::base::write(own_flags, 0);
+    crate::base::update_console_flags(|_| 0);
 }
 
 /// Every failure undoes what was made: NtCreateProcess refused (its error; the file and section

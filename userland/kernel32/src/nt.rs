@@ -1154,15 +1154,15 @@ pub mod host {
     }
 
     /// The RTL_BITMAP at `header`'s dwords and size: the PEB's TLS bitmaps' headers as the stand-in
-    /// process keeps them (the size a dword, the buffer a pointer beside the page:
-    /// `crate::base::read_pointer`).
+    /// process keeps them.
     fn bitmap_bits(header: *const super::RtlBitmap) -> (&'static mut [u32], u32) {
-        let header = header as usize;
-        let size = crate::base::read(header);
-        let buffer = crate::base::read_pointer(header + 4) as *mut u32;
-        // SAFETY: the stand-in process's bit array, its size's bits.
-        let bits = unsafe { core::slice::from_raw_parts_mut(buffer, rtl::bitmap::words(size)) };
-        (bits, size)
+        // SAFETY: one of the stand-in process's headers, over its PEB's bit arrays, its size's
+        // bits.
+        unsafe {
+            let size = (*header).size_of_bit_map;
+            let bits = core::slice::from_raw_parts_mut((*header).buffer, rtl::bitmap::words(size));
+            (bits, size)
+        }
     }
 
     /// ntdll's bitmap calls (rtl::bitmap, as ntdll runs them).
@@ -2545,7 +2545,12 @@ pub mod files {
 pub mod threads {
     use std::cell::{Cell, RefCell};
 
+    use rtl::bitmap::RtlBitmap;
+    use rtl::params::CountedString;
+    use rtl::peb::{Peb, Teb};
+
     use super::host::{failure, VIRTUAL_SIZE};
+    use super::ProcessParameters;
 
     /// The pseudo-handles: the current process (-1) and the current thread (-2).
     pub const CURRENT_PROCESS: u32 = 0xFFFF_FFFF;
@@ -2560,11 +2565,11 @@ pub mod threads {
     const STATUS_INVALID_PARAMETER: u32 = 0xC000_000D;
     const STATUS_SUSPEND_COUNT_EXCEEDED: u32 = 0xC000_004A;
     const STATUS_THREAD_IS_TERMINATING: u32 = 0xC000_004B;
-    /// The process's stand-in pages.
+    /// The process's stand-in blocks, laid out with the host's pointers.
     pub struct HostProcess {
-        pub peb: usize,
-        pub parameters: usize,
-        pub teb: usize,
+        pub peb: *mut Peb<usize>,
+        pub parameters: *mut ProcessParameters,
+        pub teb: *mut Teb<usize>,
     }
 
     /// The command line the stand-in parameters carry (its last character the euro sign, byte 0x80
@@ -2574,27 +2579,22 @@ pub mod threads {
     pub const IMAGE_PATH: &str = "C:\\CORPUS\\RET0.EXE";
     /// The image's base, the PEB's ImageBaseAddress.
     pub const IMAGE_BASE: u32 = 0x0040_0000;
-    /// Where the stand-in PEB's CSDVersion buffer sits on its page.
-    const CSD_VERSION_BUFFER: usize = 0xA00;
-
-    fn page(bytes: usize) -> usize {
-        std::boxed::Box::leak(std::vec![0u32; bytes / 4].into_boxed_slice()).as_mut_ptr() as usize
+    /// A leaked stand-in block, its value `value`.
+    fn leaked<T>(value: T) -> &'static mut T {
+        std::boxed::Box::leak(std::boxed::Box::new(value))
     }
 
-    fn put(at: usize, value: u32) {
-        // SAFETY: inside a leaked stand-in page.
-        unsafe { (at as *mut u32).write(value) }
-    }
-
-    fn pointer(at: usize, value: usize) {
-        crate::base::write_pointer(at, value)
-    }
-
-    fn put_units(at: usize, text: &str) -> u32 {
-        let units: std::vec::Vec<u16> = text.encode_utf16().collect();
-        // SAFETY: inside a leaked stand-in page.
-        unsafe { core::ptr::copy_nonoverlapping(units.as_ptr(), at as *mut u16, units.len()) };
-        2 * units.len() as u32
+    /// `text` as a string of the process's own: its units leaked, terminated, `room` bytes of room
+    /// (its length and terminator at least).
+    pub fn counted(text: &str, room: u16) -> CountedString<usize> {
+        let mut units: std::vec::Vec<u16> = text.encode_utf16().collect();
+        let length = 2 * units.len() as u16;
+        units.resize(usize::from(room.max(length + 2)) / 2, 0);
+        CountedString {
+            length,
+            maximum_length: room.max(length + 2),
+            buffer: units.leak().as_mut_ptr() as usize,
+        }
     }
 
     impl HostProcess {
@@ -2603,44 +2603,46 @@ pub mod threads {
         /// parameters' standard handles, image path, command line and startup values; the TEB's
         /// self and PEB pointers.
         fn new() -> HostProcess {
-            let (peb, parameters, teb) = (page(0x1000), page(0x2000), page(0x1000));
-            put(peb + 0x08, IMAGE_BASE);
-            pointer(peb + 0x10, parameters);
-            put(peb + 0xA4, 5);
-            put(peb + 0xA8, 0);
-            put(peb + 0xAC, 2195 | 0x0400 << 16);
-            put(peb + 0xB0, 2);
-            let length = put_units(peb + CSD_VERSION_BUFFER, "Service Pack 4");
-            put(peb + 0x1DC, length | (length + 2) << 16);
-            pointer(peb + 0x1E0, peb + CSD_VERSION_BUFFER);
-            for (at, value) in [
-                (0x18, 3),
-                (0x1C, 7),
-                (0x20, 0xB),
-                (0x50, 1),
-                (0x54, 100),
-                (0x58, 100),
-                (0x6C, 1),
-            ] {
-                put(parameters + at, value);
-            }
-            let length = put_units(parameters + 0x498, IMAGE_PATH);
-            put(parameters + 0x38, length | 520 << 16);
-            pointer(parameters + 0x3C, parameters + 0x498);
-            let length = put_units(parameters + 0x1000, COMMAND_LINE);
-            put(parameters + 0x40, length | 0x800 << 16);
-            pointer(parameters + 0x44, parameters + 0x1000);
-            // The TLS bitmaps' headers, past the PEB proper (`user::teb::peb_words`): 64 and 1024
-            // bits over the PEB's own bit arrays, every index free.
-            pointer(peb + 0x40, peb + 0x810);
-            put(peb + 0x810, 64);
-            pointer(peb + 0x814, peb + 0x44);
-            pointer(peb + 0x150, peb + 0x818);
-            put(peb + 0x818, 1024);
-            pointer(peb + 0x81C, peb + 0x154);
-            pointer(teb + 0x18, teb);
-            pointer(teb + 0x30, peb);
+            let parameters = leaked(ProcessParameters {
+                standard_input: 3,
+                standard_output: 7,
+                standard_error: 0xB,
+                image_path_name: counted(IMAGE_PATH, 520),
+                command_line: counted(COMMAND_LINE, 0x800),
+                starting_y: 1,
+                count_x: 100,
+                count_y: 100,
+                show_window_flags: 1,
+                ..ProcessParameters::default()
+            });
+            let peb = leaked(Peb::<usize> {
+                image_base_address: IMAGE_BASE as usize,
+                process_parameters: core::ptr::from_mut(parameters) as usize,
+                os_major_version: 5,
+                os_minor_version: 0,
+                os_build_number: 2195,
+                os_csd_version: 0x0400,
+                os_platform_id: 2,
+                csd_version: counted("Service Pack 4", 0),
+                ..Peb::default()
+            });
+            // The TLS bitmaps' headers, ntdll's (its process initialization's): 64 and 1024 bits
+            // over the PEB's own bit arrays, every index free.
+            let slots = leaked(RtlBitmap {
+                size_of_bit_map: 64,
+                buffer: peb.tls_bitmap_bits.as_mut_ptr(),
+            });
+            let expansion = leaked(RtlBitmap {
+                size_of_bit_map: 1024,
+                buffer: peb.tls_expansion_bitmap_bits.as_mut_ptr(),
+            });
+            peb.tls_bitmap = core::ptr::from_mut(slots) as usize;
+            peb.tls_expansion_bitmap = core::ptr::from_mut(expansion) as usize;
             super::modules::plant(peb);
+            let peb = core::ptr::from_mut(peb);
+            let teb = leaked(Teb::<usize>::default());
+            teb.self_ = core::ptr::from_mut(teb) as usize;
+            teb.process_environment_block = peb as usize;
             HostProcess {
                 peb,
                 parameters,
@@ -2901,7 +2903,7 @@ pub mod threads {
             let words: &[u32] = if class == 0 {
                 &[
                     thread.exit_status,
-                    process().teb as u32,
+                    process().teb as usize as u32,
                     8,
                     12,
                     1,
@@ -2947,16 +2949,15 @@ pub mod threads {
                     return STATUS_INVALID_PARAMETER;
                 }
                 ZEROED_TLS.with(|zeroed| zeroed.borrow_mut().push(value));
-                let teb = process().teb;
-                let slot = if value < 64 {
-                    teb + 0xE10 + 4 * value as usize
+                if value < 64 {
+                    crate::base::set_tls_slot(value as usize, 0);
                 } else {
-                    match crate::base::read_pointer(teb + 0xF94) {
-                        0 => return 0,
-                        expansion => expansion + 4 * (value as usize - 64),
+                    let expansion = crate::base::tls_expansion_slots();
+                    if !expansion.is_null() {
+                        // SAFETY: the stand-in thread's expansion slots, 1024 of them.
+                        unsafe { expansion.add(value as usize - 64).write(0) };
                     }
-                };
-                crate::base::write(slot, 0);
+                }
                 0
             }
             14 => answer(with_thread(thread, |thread| {
@@ -2984,7 +2985,14 @@ pub mod threads {
             return STATUS_INVALID_HANDLE;
         }
         let words: std::vec::Vec<u32> = match (class, length) {
-            (0, 24) => std::vec![259, self::process().peb as u32, 1, 8, PROCESS_ID as u32, 4],
+            (0, 24) => std::vec![
+                259,
+                self::process().peb as usize as u32,
+                1,
+                8,
+                PROCESS_ID as u32,
+                4
+            ],
             (3, 44) => {
                 let mut counters = std::vec![0; 11];
                 counters[..2].copy_from_slice(&[VIRTUAL_SIZE, VIRTUAL_SIZE]);
@@ -3055,6 +3063,8 @@ pub mod threads {
 pub mod modules {
     use std::cell::RefCell;
 
+    use rtl::peb::{LdrDataTableEntry, Peb, PebLdrData};
+
     use super::host::failure;
     use super::threads::{IMAGE_BASE, IMAGE_PATH};
     use super::{AnsiString, UnicodeString};
@@ -3084,43 +3094,27 @@ pub mod modules {
         pub static ASKED: RefCell<std::vec::Vec<std::string::String>> = const { RefCell::new(std::vec::Vec::new()) };
     }
 
-    fn put(at: usize, value: u32) {
-        // SAFETY: inside a leaked stand-in page.
-        unsafe { (at as *mut u32).write(value) }
-    }
-
     /// The PEB's Ldr (its load-order list) and LoaderLock, as ntdll sets them.
-    pub fn plant(peb: usize) {
-        let pointer = crate::base::write_pointer;
-        let page =
-            std::boxed::Box::leak(std::vec![0u32; 0x400].into_boxed_slice()).as_mut_ptr() as usize;
-        pointer(peb + 0x0C, page);
-        pointer(peb + 0xA0, peb + 0x900);
-        let head = page + 0x0C;
-        let entry = |index: usize| page + 0x40 + 0x48 * index;
-        let mut strings = entry(MODULE_PATHS.len());
-        for (index, (base, path)) in MODULE_PATHS.iter().enumerate() {
-            let at = entry(index);
-            pointer(
-                at,
-                if index + 1 < MODULE_PATHS.len() {
-                    entry(index + 1)
-                } else {
-                    head
-                },
-            );
-            pointer(at + 0x18, *base as usize);
-            let units: std::vec::Vec<u16> = path.encode_utf16().collect();
-            // SAFETY: inside the leaked page.
-            unsafe {
-                core::ptr::copy_nonoverlapping(units.as_ptr(), strings as *mut u16, units.len())
+    pub fn plant(peb: &mut Peb<usize>) {
+        let data = std::boxed::Box::leak(std::boxed::Box::new(PebLdrData::<usize>::default()));
+        let entries: &'static mut [LdrDataTableEntry<usize>] =
+            std::vec![LdrDataTableEntry::default(); MODULE_PATHS.len()].leak();
+        let head = core::ptr::from_ref(&data.in_load_order_module_list) as usize;
+        let at = entries.as_ptr() as usize;
+        let address = |index: usize| at + index * core::mem::size_of::<LdrDataTableEntry<usize>>();
+        for (index, (entry, (base, path))) in entries.iter_mut().zip(MODULE_PATHS).enumerate() {
+            entry.in_load_order_links.flink = if index + 1 < MODULE_PATHS.len() {
+                address(index + 1)
+            } else {
+                head
             };
-            let length = 2 * units.len() as u32;
-            put(at + 0x24, length | (length + 2) << 16);
-            pointer(at + 0x28, strings);
-            strings += length as usize + 2;
+            entry.dll_base = base as usize;
+            entry.full_dll_name = super::threads::counted(path, 0);
         }
-        pointer(head, entry(0));
+        data.in_load_order_module_list.flink = address(0);
+        peb.ldr = core::ptr::from_mut(data) as usize;
+        let loader_lock = std::boxed::Box::leak(std::boxed::Box::new([0u8; 24]));
+        peb.loader_lock = loader_lock.as_mut_ptr() as usize;
     }
 
     /// The module a name names: its file part, without regard to case, `.dll` when it has no

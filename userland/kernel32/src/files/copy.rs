@@ -10,6 +10,7 @@ use rtl::status::nt_success;
 use super::handle::create_file_w;
 use super::*;
 use crate::base::set_last_nt_error;
+use crate::heap::HeapArray;
 
 /// CreateFileA's dispositions and the flag the copy opens its files with.
 const CREATE_NEW: u32 = 1;
@@ -155,20 +156,9 @@ fn copy_file(from: &Wide, to: &Wide, fail_if_exists: u32) -> u32 {
         close(source);
         return 0;
     }
-    let copied = match ntcall::allocate_heap(COPY_CHUNK) {
-        None => Err(0xC000_0017),
-        Some(buffer) => {
-            // SAFETY: the fresh block, of COPY_CHUNK bytes.
-            let result = copy_stream(
-                source,
-                target,
-                unsafe { core::slice::from_raw_parts_mut(buffer.as_ptr(), COPY_CHUNK) },
-                quad(&basic, 16),
-            );
-            // SAFETY: the block above, used no more.
-            unsafe { ntcall::free_heap(buffer.as_ptr()) };
-            result
-        }
+    let copied = match HeapArray::<u8>::new(COPY_CHUNK) {
+        Err(_) => Err(0xC000_0017),
+        Ok(mut buffer) => copy_stream(source, target, &mut buffer, quad(&basic, 16)),
     };
     if let Err(status) = copied {
         set(target, FILE_DISPOSITION_INFORMATION, &[1]);

@@ -25,10 +25,11 @@
 //! ([`printf`]).
 //!
 //! The building blocks under them: the NT structures every side shares ([`nt`]: UNICODE_STRING,
-//! OBJECT_ATTRIBUTES, CLIENT_ID, IO_STATUS_BLOCK, generic over their pointers' width), plain data
-//! viewed as bytes ([`pod`]), a vector of fixed capacity for the code without an allocator
-//! ([`array_vec`]), NUL-terminated strings read once ([`cstr`]) and a process's state behind a
-//! lock ([`sync`]).
+//! OBJECT_ATTRIBUTES, CLIENT_ID, IO_STATUS_BLOCK, generic over their pointers' width, and the query
+//! and set services' structures), the process and thread environment blocks ([`peb`]: the PEB,
+//! the TEB, the loader's lists), plain data viewed as bytes ([`pod`]), a vector of fixed capacity
+//! for the code without an allocator ([`array_vec`]), NUL-terminated strings read once ([`cstr`])
+//! and a process's state behind a lock ([`sync`]).
 //!
 //! On the DLLs' target (i686 Windows) only: what the compiler expects of an MSVC environment
 //! without its CRT (the compiler-helpers crate, which this library links into every DLL), the
@@ -58,6 +59,7 @@ pub mod modules;
 pub mod nt;
 pub mod params;
 pub mod path;
+pub mod peb;
 pub mod pod;
 pub mod printf;
 #[cfg(all(target_arch = "x86", target_os = "windows", not(test)))]

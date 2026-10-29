@@ -60,6 +60,7 @@ mod handles;
 mod image;
 mod loader;
 mod params;
+mod process;
 mod registry;
 mod resource;
 mod status;
@@ -154,13 +155,13 @@ extern "C" fn f2k_rtl_set_critical_section_spin_count(
 /// RtlAcquirePebLock: take the PEB lock.
 #[unsafe(export_name = "f2k_export_RtlAcquirePebLock")]
 pub extern "system" fn rtl_acquire_peb_lock() {
-    sys::peb_lock().enter(&Native);
+    process::peb_lock().enter(&Native);
 }
 
 /// RtlReleasePebLock: release it.
 #[unsafe(export_name = "f2k_export_RtlReleasePebLock")]
 pub extern "system" fn rtl_release_peb_lock() {
-    sys::peb_lock().leave(&Native);
+    process::peb_lock().leave(&Native);
 }
 
 // The heaps' bodies, cdecl, called by src/heap.s's exports. A handle the process's heap list does
@@ -170,7 +171,7 @@ pub extern "system" fn rtl_release_peb_lock() {
 /// STATUS_NO_MEMORY instead (HEAP_GENERATE_EXCEPTIONS on the call or the heap): src/heap.s raises
 /// it from the export, through RtlRaiseException.
 fn refused(handle: usize, flags: u32) -> u64 {
-    let heap_flags = sys::process().heap(handle).map_or(0, |heap| heap.flags());
+    let heap_flags = process::heaps().heap(handle).map_or(0, |heap| heap.flags());
     if (flags | heap_flags) & HEAP_GENERATE_EXCEPTIONS != 0 {
         1 << 32
     } else {
@@ -187,7 +188,7 @@ extern "C" fn f2k_rtl_create_heap(flags: u32, base: usize, reserve: usize, commi
     if base != 0 {
         return 0;
     }
-    sys::process()
+    process::heaps()
         .create_sized(&Native, flags, reserve, commit)
         .map_or(0, |heap| heap.handle())
 }
@@ -195,7 +196,7 @@ extern "C" fn f2k_rtl_create_heap(flags: u32, base: usize, reserve: usize, commi
 /// RtlDestroyHeap: null once destroyed; the handle back for the process heap or no heap.
 #[unsafe(no_mangle)]
 extern "C" fn f2k_rtl_destroy_heap(handle: usize) -> usize {
-    if handle == sys::process_heap_handle() || !sys::process().destroy(&Native, handle) {
+    if handle == sys::process_heap_handle() || !process::heaps().destroy(&Native, handle) {
         return handle;
     }
     0
@@ -204,7 +205,7 @@ extern "C" fn f2k_rtl_destroy_heap(handle: usize) -> usize {
 /// RtlAllocateHeap: the block, or the refusal ([`refused`]).
 #[unsafe(no_mangle)]
 extern "C" fn f2k_rtl_allocate_heap(handle: usize, flags: u32, size: usize) -> u64 {
-    match sys::process()
+    match process::heaps()
         .heap(handle)
         .and_then(|heap| heap.alloc(&Native, flags, size))
     {
@@ -218,7 +219,7 @@ extern "C" fn f2k_rtl_allocate_heap(handle: usize, flags: u32, size: usize) -> u
 extern "C" fn f2k_rtl_free_heap(handle: usize, flags: u32, pointer: usize) -> u32 {
     u32::from(
         pointer == 0
-            || sys::process()
+            || process::heaps()
                 .heap(handle)
                 .is_some_and(|heap| heap.free(&Native, flags, pointer)),
     )
@@ -233,7 +234,7 @@ extern "C" fn f2k_rtl_reallocate_heap(
     pointer: usize,
     size: usize,
 ) -> u64 {
-    match sys::process()
+    match process::heaps()
         .heap(handle)
         .and_then(|heap| heap.realloc(&Native, flags, pointer, size))
     {
@@ -246,7 +247,7 @@ extern "C" fn f2k_rtl_reallocate_heap(
 /// RtlSizeHeap: the size asked for; -1 for what is not a block.
 #[unsafe(no_mangle)]
 extern "C" fn f2k_rtl_size_heap(handle: usize, flags: u32, pointer: usize) -> usize {
-    sys::process()
+    process::heaps()
         .heap(handle)
         .and_then(|heap| heap.size(&Native, flags, pointer))
         .unwrap_or(usize::MAX)
@@ -256,7 +257,7 @@ extern "C" fn f2k_rtl_size_heap(handle: usize, flags: u32, pointer: usize) -> us
 /// Global memory holds the process heap's so); FALSE for a handle naming no heap.
 #[unsafe(export_name = "f2k_export_RtlLockHeap")]
 pub extern "system" fn rtl_lock_heap(handle: usize) -> u32 {
-    match sys::process().heap(handle) {
+    match process::heaps().heap(handle) {
         Some(heap) => {
             heap.lock(&Native);
             1
@@ -268,7 +269,7 @@ pub extern "system" fn rtl_lock_heap(handle: usize) -> u32 {
 /// RtlUnlockHeap: the lock RtlLockHeap took, released; FALSE for a handle naming no heap.
 #[unsafe(export_name = "f2k_export_RtlUnlockHeap")]
 pub extern "system" fn rtl_unlock_heap(handle: usize) -> u32 {
-    match sys::process().heap(handle) {
+    match process::heaps().heap(handle) {
         Some(heap) => {
             heap.unlock(&Native);
             1
@@ -281,7 +282,7 @@ pub extern "system" fn rtl_unlock_heap(handle: usize) -> u32 {
 #[unsafe(no_mangle)]
 extern "C" fn f2k_rtl_validate_heap(handle: usize, flags: u32, pointer: usize) -> u32 {
     u32::from(
-        sys::process()
+        process::heaps()
             .heap(handle)
             .is_some_and(|heap| heap.validate(&Native, flags, pointer)),
     )
@@ -292,7 +293,8 @@ extern "C" fn f2k_rtl_validate_heap(handle: usize, flags: u32, pointer: usize) -
 
 /// A fresh thread's initialization, before anything else it runs in user mode, `context` its
 /// initial context. The process's first thread makes the heap list's lock and the process heap
-/// (PEB+0x18), the PEB lock and the loader lock, opens the starting current directory's handle,
+/// (PEB+0x18), the PEB lock, the loader lock and the TLS bitmaps' headers (ntdll's own data,
+/// `process`, the PEB's fields pointed at them), opens the starting current directory's handle,
 /// and builds the module lists, loading the image's DLLs (`loader`); every thread then makes its
 /// implicit-TLS block, when the image has a TLS directory; then the DLLs' entry points: the first
 /// thread's DLL_PROCESS_ATTACH (lpReserved the context), a later thread's DLL_THREAD_ATTACH. A
@@ -303,15 +305,15 @@ extern "C" fn f2k_ldr_initialize(context: u32) {
     let first = sys::process_heap_handle() == 0;
     if first {
         params::normalize_own_parameters();
-        let process = sys::process();
-        // SAFETY: the PEB's lock slot, zero until now (no other thread exists yet).
-        let _ = unsafe { &*process.lock }.initialize(&Native, 0);
+        process::initialize_heap_list_lock();
         // The process heap, its first segment as the image's header sizes it.
         let (reserve, commit) = rtl::image::process_heap_sizes(sys::image_base());
-        if let Some(heap) = process.create_sized(&Native, HEAP_GROWABLE, reserve, commit) {
+        let heap = process::heaps().create_sized(&Native, HEAP_GROWABLE, reserve, commit);
+        if let Some(heap) = heap {
             sys::set_process_heap(heap.handle());
         }
-        // The PEB lock, with the routines that take and release it, then the loader lock.
+        // The PEB lock, with the routines that take and release it, the loader lock and the TLS
+        // bitmaps' headers.
         unsafe extern "C" {
             #[link_name = "f2k_export_RtlEnterCriticalSection"]
             static ENTER: u8;
@@ -323,8 +325,7 @@ extern "C" fn f2k_ldr_initialize(context: u32) {
             core::ptr::addr_of!(ENTER) as usize,
             core::ptr::addr_of!(LEAVE) as usize,
         );
-        sys::init_peb_lock(enter, leave);
-        sys::init_loader_lock();
+        process::initialize(enter, leave);
         if sys::process_heap_handle() == 0 {
             loader::fail_process(rtl::status::STATUS_NO_MEMORY);
         }
@@ -347,9 +348,12 @@ extern "C" fn f2k_ldr_initialize(context: u32) {
 /// TEB (ThreadLocalStoragePointer), on the process heap.
 fn thread_tls() {
     let base = sys::image_base();
-    let Some(directory) =
-        ldr::tls_directory(|offset| Some(sys::read(base + offset as usize) as u32))
-    else {
+    let word = |offset: u32| {
+        // SAFETY: the image's headers and the directory they name, mapped for the process's whole
+        // life (a malformed image's offsets fault here, in the process's own image).
+        Some(unsafe { ((base + offset as usize) as *const u32).read_unaligned() })
+    };
+    let Some(directory) = ldr::tls_directory(word) else {
         return;
     };
     if sys::process_heap_handle() == 0 || directory.block_size().is_none() {
@@ -364,7 +368,7 @@ fn thread_tls() {
         directory.zero_fill as usize,
     );
     if let Some(array) = block {
-        sys::write(sys::teb() + sys::TEB_THREAD_LOCAL_STORAGE_POINTER, array);
+        sys::set_thread_local_storage_pointer(array);
     }
 }
 
@@ -377,15 +381,15 @@ pub extern "system" fn ldr_shutdown_thread() -> u32 {
         return 0;
     }
     loader::detach_thread();
-    let (teb, heap) = (sys::teb(), sys::process_heap());
-    let array = sys::read(teb + sys::TEB_THREAD_LOCAL_STORAGE_POINTER);
+    let heap = sys::process_heap();
+    let array = sys::thread_local_storage_pointer();
     if array != 0 {
-        sys::write(teb + sys::TEB_THREAD_LOCAL_STORAGE_POINTER, 0);
+        sys::set_thread_local_storage_pointer(0);
         ldr::free_thread_block(&Native, heap, array);
     }
-    let slots = sys::read(teb + sys::TEB_TLS_EXPANSION_SLOTS);
+    let slots = sys::tls_expansion_slots();
     if slots != 0 {
-        sys::write(teb + sys::TEB_TLS_EXPANSION_SLOTS, 0);
+        sys::set_tls_expansion_slots(0);
         heap.free(&Native, 0, slots);
     }
     0

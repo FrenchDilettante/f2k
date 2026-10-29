@@ -29,7 +29,7 @@ mod nest_smoke;
 #[cfg(all(target_arch = "x86", feature = "nest-smoke"))]
 pub use nest_smoke::run as nest_smoke;
 
-use crate::interrupt::irql::{Irql, HIGH, SYNCH};
+use crate::interrupt::irql::{Irql, OldIrql, HIGH, SYNCH};
 use crate::level::{At, Clock, Ide, Keyboard, Level};
 use crate::pcr::pcr;
 
@@ -51,8 +51,8 @@ pub const IRQ_VECTORS: [u8; VECTOR_COUNT] = [
 /// The claim verdict of a delivered interrupt.
 pub enum Claim {
     /// A real interrupt: the level was raised to the object's level; the claimer must run the
-    /// service and then end it ([`Controller::end`]) exactly once. Carries the previous level.
-    Accepted(Irql),
+    /// service and then end it ([`Controller::end`]) exactly once. Carries what the raise found.
+    Accepted(OldIrql),
     /// A spurious interrupt: nothing was raised, and the controller has already performed whatever
     /// partial acknowledgment the chip's quirk demands. The claimer must do nothing at all.
     Spurious,
@@ -73,12 +73,12 @@ pub enum Outcome {
 /// The hardware seam: everything the core knows about the chip.
 pub trait Controller {
     /// Claim a delivered vector at the given level: probe the interrupt, raise the level, and
-    /// return the previous one — or report the interrupt spurious (nothing raised).
+    /// return what the raise found — or report the interrupt spurious (nothing raised).
     fn claim(&mut self, vector: u8, level: Irql) -> Claim;
     /// End a claimed interrupt: acknowledge the chip, then lower back to the recorded level. The
     /// acknowledgment comes first, while interrupts are still masked: the lower may re-enable
     /// them, and an interrupt taken there may switch threads before this exit resumes.
-    fn end(&mut self, previous: Irql, vector: u8);
+    fn end(&mut self, previous: OldIrql, vector: u8);
     /// Enable (unmask) the vector's line; false if it could not be.
     fn enable(&mut self, vector: u8) -> bool;
     /// Disable (mask) the vector's line.
@@ -241,7 +241,7 @@ impl InterruptObject {
 
     /// Run the service, once the claim has raised the processor from `previous` to `claimed`, the
     /// level of the vector's first object. A typed service is handed its level's token.
-    fn serve(&self, previous: Irql, claimed: Irql) {
+    fn serve(&self, previous: OldIrql, claimed: Irql) {
         match self.service {
             Service::Untyped(service) => {
                 service(self, self.service_context);
@@ -257,11 +257,11 @@ impl InterruptObject {
 
 /// Run a service typed by its level `L`, handing it the token the claim proves: the claim raised
 /// the processor from `previous` to `claimed`.
-fn serve_at<L: Level>(service: TypedService<L>, context: usize, previous: Irql, claimed: Irql) {
+fn serve_at<L: Level>(service: TypedService<L>, context: usize, previous: OldIrql, claimed: Irql) {
     // A typed service is handed the token the claim proves, so it must have been claimed at its
     // own level (a shared vector's second object could differ), from below it.
     assert!(
-        claimed == L::IRQL && previous < claimed,
+        claimed == L::IRQL && previous.level() < claimed,
         "a typed interrupt service claimed at another level"
     );
     // SAFETY: an entry: the claim raised the processor to `L` from below it (both checked just
@@ -607,7 +607,7 @@ mod target {
             }
         }
 
-        fn end(&mut self, previous: Irql, vector: u8) {
+        fn end(&mut self, previous: OldIrql, vector: u8) {
             // Acknowledged with interrupts masked: a line the claim held off waits for the lower
             // (see `IrqlState::end_claim`).
             pcr().end_claim(previous, || CONTROLLER.end_of_interrupt(vector));
@@ -661,7 +661,7 @@ mod target {
         match service_interrupt(&TABLE, &mut Chip, vector) {
             Outcome::Served => {
                 crate::interrupt::dpc::drain();
-                crate::sched::idle::dispatcher().deliver_pending();
+                crate::sched::dispatcher::deliver_pending();
             }
             Outcome::Spurious => {
                 SPURIOUS.fetch_add(1, Ordering::Relaxed);
@@ -806,10 +806,10 @@ mod tests {
             }
         }
 
-        fn end(&mut self, previous: Irql, vector: u8) {
+        fn end(&mut self, previous: OldIrql, vector: u8) {
             self.complete(vector);
             self.irql.lower(previous);
-            self.ends.borrow_mut().push((previous, vector));
+            self.ends.borrow_mut().push((previous.level(), vector));
         }
 
         fn enable(&mut self, vector: u8) -> bool {
@@ -1249,7 +1249,7 @@ mod tests {
             }
         }
 
-        fn end(&mut self, previous: Irql, _vector: u8) {
+        fn end(&mut self, previous: OldIrql, _vector: u8) {
             crate::pcr::pcr().end_claim(previous, || self.in_service = false);
         }
 

@@ -190,18 +190,6 @@ fn pointer<T>(value: Option<&T>) -> *const T {
     value.map_or(core::ptr::null(), |value| value as *const T)
 }
 
-/// A UNICODE_STRING over `units` (its length in bytes; past a UNICODE_STRING's 0xFFFE bytes, none).
-fn counted(units: &[u16]) -> Option<UnicodeString> {
-    let bytes = u16::try_from(2 * units.len())
-        .ok()
-        .filter(|&bytes| bytes < 0xFFFF)?;
-    Some(UnicodeString {
-        length: bytes,
-        maximum_length: bytes,
-        buffer: units.as_ptr() as *mut u16,
-    })
-}
-
 /// An optional place the service writes, as it takes one: a pointer, null for none.
 fn pointer_mut<T>(value: Option<&mut T>) -> *mut T {
     value.map_or(core::ptr::null_mut(), |value| value as *mut T)
@@ -1091,7 +1079,7 @@ pub fn image_file_execution_option(
         Some(&0),
         "the option's name is NUL-terminated"
     );
-    let image = counted(image_path).ok_or(rtl::status::STATUS_NAME_TOO_LONG)?;
+    let image = UnicodeString::from_units(image_path).ok_or(rtl::status::STATUS_NAME_TOO_LONG)?;
     let mut returned = 0;
     // SAFETY: ntdll's export, over the strings and into the buffer of its length.
     checked(unsafe {
@@ -1160,7 +1148,7 @@ impl Drop for ParametersBlock {
 /// is STATUS_NAME_TOO_LONG.
 pub fn create_process_parameters(strings: &ParameterStrings) -> Result<ParametersBlock, NtStatus> {
     const TOO_LONG: NtStatus = rtl::status::STATUS_NAME_TOO_LONG;
-    let required = |units: &[u16]| counted(units).ok_or(TOO_LONG);
+    let required = |units: &[u16]| UnicodeString::from_units(units).ok_or(TOO_LONG);
     let optional = |units: Option<&[u16]>| units.map(required).transpose();
     let image_path_name = required(strings.image_path_name)?;
     let dll_path = required(strings.dll_path)?;
@@ -1308,9 +1296,25 @@ impl Drop for PebLock {
     }
 }
 
-/// The PEB's TlsBitmap and TlsExpansionBitmap (pointers to their RTL_BITMAP headers).
-const PEB_TLS_BITMAP: usize = 0x40;
-const PEB_TLS_EXPANSION_BITMAP: usize = 0x150;
+/// The PEB lock as a lock of kernel32's own data ([`rtl::sync::Locked`], [`rtl::sync::OnceWord`]):
+/// RtlAcquirePebLock and RtlReleasePebLock.
+pub struct FastPebLock;
+
+// SAFETY: the PEB lock is a critical section: RtlAcquirePebLock returns once the calling thread
+// holds it, no other thread holds it until the matching RtlReleasePebLock, and its entry and leave
+// order the holders' accesses.
+unsafe impl rtl::sync::RawLock for FastPebLock {
+    fn lock(&self) {
+        // SAFETY: ntdll's export, without arguments: the PEB's lock, initialized at the process's
+        // creation, live for its life.
+        unsafe { nt::RtlAcquirePebLock() };
+    }
+
+    fn unlock(&self) {
+        // SAFETY: ntdll's export: the calling thread took the lock (`RawLock`'s pairing).
+        unsafe { nt::RtlReleasePebLock() };
+    }
+}
 
 /// One of the PEB's TLS bitmaps: the TEB's 64 slots' (TlsBitmap) or the 1024 expansion slots'
 /// (TlsExpansionBitmap). The loader makes both at the process's start; they change under the PEB
@@ -1324,11 +1328,11 @@ pub enum TlsBitmap {
 impl TlsBitmap {
     /// The bitmap's RTL_BITMAP header, by the PEB's pointer to it.
     fn header(self) -> *mut RtlBitmap {
-        let at = match self {
-            TlsBitmap::Slots => PEB_TLS_BITMAP,
-            TlsBitmap::Expansion => PEB_TLS_EXPANSION_BITMAP,
-        };
-        crate::base::read_pointer(crate::base::peb() + at) as *mut RtlBitmap
+        let (slots, expansion) = crate::base::tls_bitmaps();
+        match self {
+            TlsBitmap::Slots => slots,
+            TlsBitmap::Expansion => expansion,
+        }
     }
 }
 
@@ -1354,9 +1358,6 @@ pub fn clear_bit(_lock: &PebLock, bitmap: TlsBitmap, index: u32) {
     unsafe { nt::RtlClearBits(bitmap.header(), index, 1) };
 }
 
-/// The PEB's LoaderLock (a pointer to the loader's critical section).
-const PEB_LOADER_LOCK: usize = 0xA0;
-
 /// The loader lock held (RtlEnterCriticalSection on the PEB's LoaderLock): the module lists and
 /// the loader's other state stay as they are while it is. Left (RtlLeaveCriticalSection) when
 /// dropped, by the thread that entered it.
@@ -1367,7 +1368,7 @@ pub struct LoaderLock {
 impl LoaderLock {
     /// The loader lock entered (a critical section: the thread holding it may enter it again).
     pub fn enter() -> LoaderLock {
-        let section = crate::base::read_pointer(crate::base::peb() + PEB_LOADER_LOCK) as *mut u8;
+        let section = crate::base::loader_lock();
         // SAFETY: ntdll's export, over the loader's critical section, initialized before any of
         // the process's code runs and live for its life.
         unsafe { nt::RtlEnterCriticalSection(section) };

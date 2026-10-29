@@ -20,8 +20,9 @@
 //! without MZ).
 
 use crate::base::{set_last_error, set_last_nt_error};
-use crate::create::{Owned, OPEN_ACCESS, OPEN_OPTIONS, OPEN_SHARE};
+use crate::create::{OPEN_ACCESS, OPEN_OPTIONS, OPEN_SHARE};
 use crate::files::{self, NtPath, Wide, ERROR_PATH_NOT_FOUND};
+use crate::heap::Owned;
 use crate::ntcall::{self, NtStatus, SectionImageInformation};
 
 /// The binary types (winbase.h's SCS_*).

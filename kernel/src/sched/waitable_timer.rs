@@ -110,10 +110,8 @@ impl Dispatcher {
     }
 
     /// Cancel `timer` (see the module notes). Returns whether it was signaled.
-    pub fn cancel_waitable_timer(&mut self, timer: &mut WaitableTimer) -> bool {
-        // The record names its timer; the cancel works through the name.
-        let timer = timer.timer.id();
-        self.cancel_timer(timer)
+    pub fn cancel_waitable_timer(&mut self, timer: impl Into<TimerId>) -> bool {
+        self.cancel_timer(timer.into())
     }
 }
 
@@ -234,7 +232,7 @@ mod tests {
                 "consumed"
             );
         }
-        assert!(!d.cancel_waitable_timer(&mut a));
+        assert!(!d.cancel_waitable_timer(a));
         assert!(!a.armed());
         expire_at(d, 20);
         assert_eq!(
@@ -260,7 +258,7 @@ mod tests {
         let d = dispatcher();
         let setter = thread(process());
         let mut m = timer(true);
-        crate::user::apc::init(&mut m.apc, setter.as_ptr(), 0x0040_1000, 7);
+        crate::user::apc::init(&mut m.apc, setter.id(), 0x0040_1000, 7);
         d.set_waitable_timer(m, 100, 200, 0, true, SIGNALED_AT);
         assert!(m.apc.inserted);
         assert_eq!(
@@ -278,7 +276,7 @@ mod tests {
         let p = process();
         let setter = thread(p);
         let mut m = timer(false);
-        crate::user::apc::init(&mut m.apc, setter.as_ptr(), 0x0040_1000, 7);
+        crate::user::apc::init(&mut m.apc, setter.id(), 0x0040_1000, 7);
         d.set_waitable_timer(m, 5 * INCREMENT, 0, 0, true, SIGNALED_AT);
 
         // The setter sleeps alertably; the expiry's APC wakes it with the user-APC status.
@@ -303,10 +301,7 @@ mod tests {
             (SIGNALED_AT as u32 as usize, (SIGNALED_AT >> 32) as usize)
         );
 
-        assert!(
-            d.cancel_waitable_timer(&mut m),
-            "signaled: nobody waited on it"
-        );
+        assert!(d.cancel_waitable_timer(m), "signaled: nobody waited on it");
         assert!(!m.apc.inserted, "the cancel took the queued APC back");
         assert!(!m.busy());
     }

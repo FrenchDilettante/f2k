@@ -61,6 +61,8 @@
 //! build their lines in frames of their own.
 
 use core::fmt::Write;
+use core::sync::atomic::Ordering::Relaxed;
+use core::sync::atomic::{AtomicBool, AtomicUsize};
 
 use rtl::heap::HEAP_ZERO_MEMORY;
 use rtl::modules::{
@@ -122,12 +124,12 @@ impl MemoryMut for Mapped {
 
 /// The process's PEB_LDR_DATA (zero until the process's initialization makes it).
 fn ldr() -> u32 {
-    sys::read(sys::peb() + modules::peb::LDR as usize) as u32
+    sys::ldr() as u32
 }
 
 /// `body`, the loader lock held.
 fn locked<T>(body: impl FnOnce() -> T) -> T {
-    sys::loader_lock().with(&Native, body)
+    crate::process::loader_lock().with(&Native, body)
 }
 
 /// UTF-16 units in a block on the process heap, zeroed, given back when dropped: the buffers the
@@ -183,40 +185,39 @@ const DLL_THREAD_DETACH: u32 = 3;
 /// The lpReserved of the calls made as the process ends: any non-NULL value says so.
 const PROCESS_ENDING: u32 = 1;
 
-/// The loader's own state, past the PEB proper on its page (the system DLLs keep no writable
-/// sections; Windows 2000 keeps it in ntdll's data): how many of the process's DLLs are owed calls
-/// (their entry point called with DLL_PROCESS_ATTACH, not yet with DLL_PROCESS_DETACH), and whether
-/// the process's initialization is under way (its failures are reported on the debugger's
-/// channel). Both change under the loader lock.
-const PEB_ATTACHED: usize = 0x920;
-const PEB_INITIALIZING: usize = 0x924;
+/// The loader's own state, in ntdll's data as on Windows 2000: how many of the process's DLLs are
+/// owed calls (their entry point called with DLL_PROCESS_ATTACH, not yet with DLL_PROCESS_DETACH),
+/// and whether the process's initialization is under way (its failures are reported on the
+/// debugger's channel). Both change under the loader lock.
+static ATTACHED: AtomicUsize = AtomicUsize::new(0);
+static INITIALIZING: AtomicBool = AtomicBool::new(false);
 
 /// How many DLLs are owed calls.
 fn attached() -> usize {
-    sys::read(sys::peb() + PEB_ATTACHED)
+    ATTACHED.load(Relaxed)
 }
 
 /// One DLL more (`true`) or fewer owed calls.
 fn count_attached(more: bool) {
     let count = attached();
-    sys::write(
-        sys::peb() + PEB_ATTACHED,
+    ATTACHED.store(
         if more {
             count + 1
         } else {
             count.saturating_sub(1)
         },
+        Relaxed,
     );
 }
 
 /// Whether the process's initialization is under way.
 fn initializing() -> bool {
-    sys::read(sys::peb() + PEB_INITIALIZING) != 0
+    INITIALIZING.load(Relaxed)
 }
 
 /// Mark the process's initialization under way, or over.
 fn set_initializing(under_way: bool) {
-    sys::write(sys::peb() + PEB_INITIALIZING, usize::from(under_way));
+    INITIALIZING.store(under_way, Relaxed);
 }
 
 // The routine that calls a DLL's entry point (src/ldr.s).
@@ -253,7 +254,12 @@ fn shared_data() -> &'static SharedData {
 }
 
 /// The process parameters' ImagePathName.
-const IMAGE_PATH_NAME: usize = 0x38;
+fn image_path_name() -> &'static UnicodeString {
+    // SAFETY: the process parameters are mapped for the process's whole life, and nothing changes
+    // their ImagePathName after the process's creation; a UNICODE_STRING whose buffer is a `usize`
+    // has the typed one's layout.
+    unsafe { &*(&raw const (*sys::process_parameters()).image_path_name).cast::<UnicodeString>() }
+}
 
 /// The environment variable the search's last places come from.
 const PATH: [u16; 4] = [b'P' as u16, b'A' as u16, b'T' as u16, b'H' as u16];
@@ -500,9 +506,8 @@ fn add_entry(base: u32, size: Option<u32>, path: &[u16]) -> Option<u32> {
 
 /// The process parameters' ImagePathName: the program's full path.
 fn image_path() -> &'static [u16] {
-    // SAFETY: the process parameters are mapped for the process's whole life; their ImagePathName's
-    // buffer holds its length.
-    unsafe { (*((sys::process_parameters() + IMAGE_PATH_NAME) as *const UnicodeString)).units() }
+    // SAFETY: the ImagePathName's buffer holds its length, unchanged for the process's life.
+    unsafe { image_path_name().units() }
 }
 
 /// The system root (KUSER_SHARED_DATA's NtSystemRoot), in place, at most MAX_PATH less one units.
@@ -827,7 +832,7 @@ pub(crate) fn initialize_process() -> Result<(), u32> {
         unsafe {
             (lists as usize as *mut u8).copy_from_nonoverlapping(bytes.as_ptr(), bytes.len())
         };
-        sys::write(sys::peb() + modules::peb::LDR as usize, lists as usize);
+        sys::set_ldr(lists as usize);
 
         // The image: its full path the process parameters' own string, its entry processed (it is
         // not initialized as a DLL is), in no initialization order.
@@ -835,9 +840,7 @@ pub(crate) fn initialize_process() -> Result<(), u32> {
         let at = heap
             .alloc(&Native, 0, entry::SIZE as usize)
             .ok_or(STATUS_NO_MEMORY)? as u32;
-        // SAFETY: the process parameters are mapped for the process's whole life.
-        let path =
-            unsafe { &*((sys::process_parameters() + IMAGE_PATH_NAME) as *const UnicodeString) };
+        let path = image_path_name();
         let record = modules::loaded_entry(
             at,
             &modules::loaded(&Mapped, image, None),

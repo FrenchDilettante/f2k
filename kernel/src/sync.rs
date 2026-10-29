@@ -247,13 +247,13 @@ impl<T> ShortLock<T> {
             !crate::sched::idle::on_idle_thread(),
             "the idle thread cannot wait for a held short lock"
         );
+        // SAFETY: the event was named at its address by the first waiter's claim, and is read for
+        // that name only; nothing writes the name again while the lock lives.
+        let event = unsafe { (*self.event.get()).id() };
         let status = crate::sched::wait::wait_current_with(|dispatcher, thread, stamp, _replay| {
-            // SAFETY: the wait runs with interrupts masked and the dispatcher's serialization, the
-            // event's only users; the reference ends with the call.
-            let event = unsafe { &mut *self.event.get() };
-            dispatcher.wait_single(
+            dispatcher.wait_for(
                 thread,
-                event.waitable(),
+                event,
                 crate::sched::wait::WaitReason::Executive,
                 crate::sched::wait::WaitMode::Kernel,
                 false,
@@ -274,13 +274,18 @@ impl<T> ShortLock<T> {
         unreachable!("a short lock contended on the host");
     }
 
-    /// Set the event for the oldest waiter, with interrupts masked (the caller's).
+    /// Set the event for the oldest waiter, from the release (interrupts masked by the caller): at
+    /// the dispatch level, where nothing else runs on the processor until the set is done.
     #[cfg(target_arch = "x86")]
     fn hand_off(&self) {
-        // SAFETY: interrupts are masked (the caller's guard), which serializes the event with the
-        // waits; the reference ends with the set.
-        let event = unsafe { &mut *self.event.get() };
-        event.set(crate::sched::idle::dispatcher(), HANDOFF_INCREMENT);
+        // SAFETY: interrupts are masked (the caller's guard), and the event's name was written by
+        // the first waiter's claim, before any release could hand off; it is read, nothing more.
+        let event = unsafe { (*self.event.get()).id() };
+        crate::level::raised::<crate::level::Dispatch, _>(|dispatch| {
+            crate::sched::DISPATCHER
+                .get(dispatch)
+                .set_event(event, HANDOFF_INCREMENT);
+        });
     }
 
     /// See the host's [`ShortLock::wait_for_handoff`].

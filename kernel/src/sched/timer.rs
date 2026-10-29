@@ -8,10 +8,12 @@
 //! The clock drives everything. At the transition to full tick N its interrupt service checks two
 //! bucket heads — the bucket of tick N-1, then the bucket of tick N — against the just-advanced
 //! interrupt time; a due head enqueues the deferred expiry work with the firing tick's low word as
-//! its argument. The deferred work then scans the buckets from the argument's own through the
-//! current tick's (the whole table if the work was delayed over a full table round), collects the
-//! due timers in due order, and expires each through the wait discipline's own expiry entry — the
-//! same remove-signal-satisfy path a direct expiry takes.
+//! its argument. The interrupt reads the heads without the dispatcher, as Windows 2000's clock
+//! interrupt reads its timer table's unlocked: the table publishes each bucket's earliest due time
+//! whenever the bucket's head changes ([`hand_due`]). The deferred work then scans the buckets from
+//! the argument's own through the current tick's (the whole table if the work was delayed over a
+//! full table round), collects the due timers in due order, and expires each through the wait
+//! discipline's own expiry entry — the same remove-signal-satisfy path a direct expiry takes.
 //!
 //! Due times are clock readings (100 ns units) compared as plain unsigned values; a due time is
 //! "past" when it is less than or equal to the current reading. One membership link per timer
@@ -21,10 +23,13 @@
 //!
 //! One processor, no locking: every entry runs serialized at the dispatch level or above.
 
+use core::sync::atomic::{AtomicU32, Ordering};
+
 use super::dispatcher::Dispatcher;
 use super::list::{self, IndexList, ListKind};
 use super::thread::ThreadId;
 use super::wait::WaitableId;
+use crate::level::{At, Clock};
 
 /// The number of buckets: one per hand value, a power of two.
 pub const TIMER_TABLE_SIZE: usize = 128;
@@ -101,14 +106,107 @@ impl TimerTable {
             TimerList::Expired => &mut self.expired,
         }
     }
+
+    /// Publish every bucket empty: a fresh table's view for the clock's hand check.
+    pub(crate) fn publish_empty() {
+        let dues = published();
+        for bucket in 0..TIMER_TABLE_SIZE {
+            dues.set(bucket, None);
+        }
+    }
+}
+
+/// The bucket heads' due times as the clock interrupt reads them: one 64-bit due per bucket, or the
+/// all-ones value for an empty bucket. This target's atomics stop at 32 bits, so a due is two
+/// words, written with interrupts masked; the one reader, the clock interrupt, runs masked too, so
+/// it never sees half of a write.
+struct PublishedDues {
+    low: [AtomicU32; TIMER_TABLE_SIZE],
+    high: [AtomicU32; TIMER_TABLE_SIZE],
+}
+
+/// An empty bucket's published due: never reached by the clock's interrupt time.
+const NO_DUE: u64 = u64::MAX;
+
+impl PublishedDues {
+    /// Every bucket empty.
+    const fn new() -> Self {
+        PublishedDues {
+            low: [const { AtomicU32::new(NO_DUE as u32) }; TIMER_TABLE_SIZE],
+            high: [const { AtomicU32::new((NO_DUE >> 32) as u32) }; TIMER_TABLE_SIZE],
+        }
+    }
+
+    /// Publish `bucket`'s earliest due time, none for an empty bucket. Masked, so the clock never
+    /// reads half of it.
+    fn set(&self, bucket: usize, due: Option<u64>) {
+        let due = due.unwrap_or(NO_DUE);
+        let _masked = crate::pcr::pcr().mask_guard();
+        self.low[bucket].store(due as u32, Ordering::SeqCst);
+        self.high[bucket].store((due >> 32) as u32, Ordering::SeqCst);
+    }
+
+    /// Whether `bucket`'s earliest due time is due by `now`. The clock token proves interrupts are
+    /// masked, so no publication is half done.
+    fn due(&self, _clock: &At<Clock>, bucket: usize, now: u64) -> bool {
+        let low = self.low[bucket].load(Ordering::SeqCst) as u64;
+        let high = self.high[bucket].load(Ordering::SeqCst) as u64;
+        let due = high << 32 | low;
+        due != NO_DUE && due <= now
+    }
+}
+
+/// The published bucket dues of the kernel's one timer table.
+#[cfg(target_arch = "x86")]
+fn published() -> &'static PublishedDues {
+    static DUES: PublishedDues = PublishedDues::new();
+    &DUES
+}
+
+/// The published bucket dues on the host: every test thread has a dispatcher, and a table, of its
+/// own.
+#[cfg(not(target_arch = "x86"))]
+fn published() -> &'static PublishedDues {
+    extern crate std;
+    std::thread_local! {
+        static DUES: &'static PublishedDues =
+            std::boxed::Box::leak(std::boxed::Box::new(PublishedDues::new()));
+    }
+    DUES.with(|dues| *dues)
+}
+
+/// The clock's expiry check at the transition to tick `tick_low`, from its interrupt: the bucket of
+/// tick N-1 first, then the bucket of tick N, against `now` (the already-advanced interrupt time),
+/// through the dues the table published — no dispatcher borrow, which the interrupt may not take.
+/// The result is the firing bucket's tick, the argument the deferred expiry work carries.
+pub fn hand_due(clock: &At<Clock>, now: u64, tick_low: u32) -> Option<u32> {
+    let dues = published();
+    let previous = tick_low.wrapping_sub(1);
+    if dues.due(clock, (previous as usize) & (TIMER_TABLE_SIZE - 1), now) {
+        return Some(previous);
+    }
+    if dues.due(clock, (tick_low as usize) & (TIMER_TABLE_SIZE - 1), now) {
+        return Some(tick_low);
+    }
+    None
+}
+
+/// Whether `bucket`'s published due is `due` (the audit's check of the clock's view).
+fn published_matches(bucket: usize, due: u64) -> bool {
+    let dues = published();
+    let low = dues.low[bucket].load(Ordering::SeqCst) as u64;
+    let high = dues.high[bucket].load(Ordering::SeqCst) as u64;
+    high << 32 | low == due
 }
 
 impl Dispatcher {
     /// Insert `timer` at `due` (a clock reading, 100 ns units): clear any stale signal, record the
     /// due time, and link it into its bucket in due order. False means the due time is already past
     /// — the timer stays unsignaled and unheld, and the caller reports a timeout at once. The
-    /// past-due verdict is settled at the entry, not after linking: the serialized kernel cannot
-    /// move the clock between the caller's reading and the link, so the entry check is exact.
+    /// past-due verdict is settled at the entry, not after linking: the waits and the timer sets
+    /// read the clock and link with interrupts masked, so no tick moves the clock between the
+    /// reading and the link (the dispatch level alone would not hold the clock off), and the entry
+    /// check is exact.
     pub fn insert_timer(&mut self, timer: TimerId, due: u64, now: u64) -> bool {
         self.timer_mut(timer).waitable.signal_state = 0;
         self.link_timer(timer, due, now)
@@ -144,7 +242,19 @@ impl Dispatcher {
             anchor = self.timer(other).link.prev();
         }
         list::insert_after(self, bucket, anchor, timer);
+        if anchor.is_none() {
+            self.publish_bucket(bucket);
+        }
         true
+    }
+
+    /// Publish `bucket`'s earliest due time for the clock's hand check: its head's, or none.
+    fn publish_bucket(&self, bucket: TimerList) {
+        let TimerList::Bucket(index) = bucket else {
+            return;
+        };
+        let head = list::first(self, bucket).map(|head| self.timer(head).due_time);
+        published().set(index as usize, head);
     }
 
     /// Cancel `timer`: take it off the list it is on (its bucket, or mid-walk the walk's
@@ -154,7 +264,11 @@ impl Dispatcher {
         let record = self.timer_mut(timer);
         if record.inserted {
             record.inserted = false;
+            let list = record.link.list();
             list::unlink::<TimerList, _>(self, timer);
+            if let Some(list) = list {
+                self.publish_bucket(list);
+            }
         }
     }
 
@@ -162,20 +276,6 @@ impl Dispatcher {
     fn head_due(&self, bucket: usize, now: u64) -> bool {
         list::first(self, TimerList::Bucket(bucket as u8))
             .is_some_and(|head| self.timer(head).due_time <= now)
-    }
-
-    /// The clock's expiry check at the transition to tick `tick_low`: the bucket of tick N-1 first,
-    /// then the bucket of tick N, against `now` (the already-advanced interrupt time). The result
-    /// is the firing bucket's tick — the argument the deferred expiry work carries.
-    pub(crate) fn timer_trigger(&self, now: u64, tick_low: u32) -> Option<u32> {
-        let previous = tick_low.wrapping_sub(1);
-        if self.head_due((previous as usize) & (TIMER_TABLE_SIZE - 1), now) {
-            return Some(previous);
-        }
-        if self.head_due((tick_low as usize) & (TIMER_TABLE_SIZE - 1), now) {
-            return Some(tick_low);
-        }
-        None
     }
 
     /// Collect the timers due by `now` onto the collection list, from the buckets `argument`'s own
@@ -195,11 +295,15 @@ impl Dispatcher {
         };
         for step in 0..span {
             let index = (start + step) & (TIMER_TABLE_SIZE - 1);
+            let bucket = TimerList::Bucket(index as u8);
+            if !self.head_due(index, now) {
+                continue;
+            }
             while self.head_due(index, now) {
-                let timer = list::pop_front(self, TimerList::Bucket(index as u8))
-                    .expect("a due head is linked");
+                let timer = list::pop_front(self, bucket).expect("a due head is linked");
                 list::push_back(self, TimerList::Expired, timer);
             }
+            self.publish_bucket(bucket);
         }
     }
 
@@ -221,10 +325,16 @@ impl Dispatcher {
                 if self.timer_table.bucket_of(record.due_time) != index {
                     return Err("a timer is linked in the wrong bucket");
                 }
+                if last_due.is_none() && !published_matches(index, record.due_time) {
+                    return Err("a bucket's published due is not its head's");
+                }
                 if last_due.is_some_and(|due| record.due_time < due) {
                     return Err("a bucket is not due-ordered");
                 }
                 last_due = Some(record.due_time);
+            }
+            if last_due.is_none() && !published_matches(index, NO_DUE) {
+                return Err("an empty bucket publishes a due");
             }
         }
         Ok(())
@@ -324,7 +434,7 @@ mod tests {
         }
 
         fn trigger(&self, now: u64, tick_low: u32) -> Option<u32> {
-            self.timer_trigger(now, tick_low)
+            crate::level::raised::<crate::level::Clock, _>(|clock| hand_due(clock, now, tick_low))
         }
     }
 
@@ -457,11 +567,11 @@ mod tests {
         // Bucket 20 is visited at every tick congruent to 20 mod 128; the head is not due until
         // tick 1300.
         for n in [1020u32, 1148, 1276].iter() {
-            assert_eq!(dispatcher.timer_trigger(tick(*n as u64), *n), None);
+            assert_eq!(dispatcher.trigger(tick(*n as u64), *n), None);
         }
         // At the transition to tick 1300 the second arm fires (the exact-multiple head); the walk
         // expires the head only — the tail is not due yet.
-        assert_eq!(dispatcher.timer_trigger(tick(1300), 1300), Some(1300));
+        assert_eq!(dispatcher.trigger(tick(1300), 1300), Some(1300));
         dispatcher.expire_timers(tick(1300), 1300, 1300, 0);
         assert!(!early.inserted());
         assert_eq!(early.waitable.signal_state(), 1);
@@ -470,9 +580,38 @@ mod tests {
 
         // The tail expires at tick 1301, through the first arm (its bucket is tick 1300's) with
         // argument 1300.
-        assert_eq!(dispatcher.timer_trigger(tick(1301), 1301), Some(1300));
+        assert_eq!(dispatcher.trigger(tick(1301), 1301), Some(1300));
         dispatcher.expire_timers(tick(1301), 1301, 1300, 0);
         assert_eq!(late.waitable.signal_state(), 1);
+        assert_eq!(dispatcher.audit_timers(), Ok(()));
+    }
+
+    /// A4b: the clock's view follows the bucket heads: an insert at a bucket's front publishes its
+    /// due, and a removal of the head publishes the next one's (or none), so the hand fires for
+    /// exactly the buckets whose heads are due, reading no dispatcher state.
+    #[test]
+    fn the_hand_reads_the_published_heads() {
+        let dispatcher = fresh_table();
+        let early = fresh_timer();
+        let late = fresh_timer();
+        assert!(dispatcher.insert(late, tick(1300) + 5_000, tick(1000)));
+        assert_eq!(
+            dispatcher.trigger(tick(1300), 1300),
+            None,
+            "the head is not due"
+        );
+        assert!(dispatcher.insert(early, tick(1300), tick(1000)));
+        assert_eq!(dispatcher.trigger(tick(1300), 1300), Some(1300));
+        assert_eq!(dispatcher.audit_timers(), Ok(()));
+
+        dispatcher.remove(early);
+        assert_eq!(dispatcher.trigger(tick(1300), 1300), None, "the next head");
+        dispatcher.remove(late);
+        assert_eq!(
+            dispatcher.trigger(tick(1400), 1300),
+            None,
+            "an empty bucket"
+        );
         assert_eq!(dispatcher.audit_timers(), Ok(()));
     }
 
@@ -669,7 +808,7 @@ mod tests {
 
         // The transition to tick 1010: the first arm's bucket (1009 — the tick sleeper_b's due
         // falls within) holds its timer; the argument is that tick.
-        assert_eq!(dispatcher.timer_trigger(tick(1010), 1010), Some(1009));
+        assert_eq!(dispatcher.trigger(tick(1010), 1010), Some(1009));
         dispatcher.expire_timers(tick(1010), 1010, 1009, 0);
         assert_eq!(sleeper_b.wait_status(), STATUS_TIMEOUT);
         assert_eq!(
@@ -748,7 +887,7 @@ mod tests {
         assert!(waiter.timer.inserted());
 
         // The signal-side wake: the wait exit cancels the timer.
-        ev.set(dispatcher, EVENT_WAKE_INCREMENT);
+        dispatcher.set_event(ev.id(), EVENT_WAKE_INCREMENT);
         assert_eq!(waiter.wait_status(), STATUS_SUCCESS);
         assert!(!waiter.timer.inserted());
         assert_eq!(dispatcher.audit_timers(), Ok(()));
@@ -830,7 +969,7 @@ mod tests {
             Some(1_000_000),
             stamp(tick(1000), 1000),
         );
-        assert_eq!(dispatcher.timer_trigger(tick(1010), 1010), Some(1009));
+        assert_eq!(dispatcher.trigger(tick(1010), 1010), Some(1009));
         dispatcher.expire_timers(tick(1010), 1010, 1009, 0);
         assert_eq!(waiter.wait_status(), STATUS_TIMEOUT);
         assert_eq!(waiter.state(), ThreadState::Ready);
@@ -856,7 +995,7 @@ mod tests {
         assert!(sleeper.timer.due_time() > now);
         // And it never reads as due for any realistic clock value.
         assert_eq!(
-            dispatcher.timer_trigger(now.wrapping_add(u32::MAX as u64), u32::MAX),
+            dispatcher.trigger(now.wrapping_add(u32::MAX as u64), u32::MAX),
             None
         );
         assert_eq!(dispatcher.audit_timers(), Ok(()));

@@ -17,8 +17,13 @@ use rtl::status::{
 use rtl::string::UnicodeString;
 use rtl::sys::{self, nr, system_service};
 
-/// The process parameters' Environment.
-const ENVIRONMENT: usize = 0x48;
+/// The process parameters' Environment: the place of the process's environment block's address
+/// (read and changed under the PEB lock).
+fn environment_slot() -> *mut *mut u16 {
+    // SAFETY: a place in the process parameters, mapped for the process's whole life (no reference
+    // is made); an address in a `usize` field is the pointer's.
+    unsafe { (&raw mut (*sys::process_parameters()).environment).cast::<*mut u16>() }
+}
 
 /// The current-process pseudo-handle, and the virtual-memory calls' constants.
 const CURRENT_PROCESS: u32 = 0xFFFF_FFFF;
@@ -78,8 +83,9 @@ fn with_environment<R>(environment: *mut u16, body: impl FnOnce(*mut u16) -> R) 
     if !environment.is_null() {
         return body(environment);
     }
-    sys::peb_lock().with(&sys::Native, || {
-        body(sys::read(sys::process_parameters() + ENVIRONMENT) as *mut u16)
+    crate::process::peb_lock().with(&sys::Native, || {
+        // SAFETY: the process parameters' Environment, read in place under the PEB lock.
+        body(unsafe { environment_slot().read_volatile() })
     })
 }
 
@@ -154,10 +160,9 @@ pub unsafe extern "system" fn rtl_set_environment_variable(
     // SAFETY: the caller's strings.
     let (name, value) = unsafe { (units(name), (!value.is_null()).then(|| units(value))) };
     if environment.is_null() {
-        return sys::peb_lock().with(&sys::Native, || {
-            let slot = (sys::process_parameters() + ENVIRONMENT) as *mut *mut u16;
+        return crate::process::peb_lock().with(&sys::Native, || {
             // SAFETY: the process parameters' Environment, under the PEB lock.
-            unsafe { set_in(slot, name, value) }
+            unsafe { set_in(environment_slot(), name, value) }
         });
     }
     // SAFETY: the caller's block pointer.

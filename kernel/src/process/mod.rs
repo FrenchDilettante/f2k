@@ -365,11 +365,7 @@ impl Process {
         match entry.target {
             #[cfg(target_arch = "x86")]
             crate::ob::Target::Object(id) => {
-                crate::ob::directory().handle_closed(
-                    id,
-                    crate::sched::idle::dispatcher(),
-                    |followup| self.finish(followup),
-                );
+                crate::ob::directory().handle_closed(id, |followup| self.finish(followup));
                 if id.kind == crate::ob::ObjectType::Process {
                     threads::forsake_if_abandoned(id);
                 }
@@ -405,8 +401,7 @@ impl Process {
                 access,
                 share,
                 delete_on_close,
-                search,
-            } => crate::fs::io::cleanup(record, access, share, delete_on_close, search),
+            } => crate::fs::io::cleanup(record, access, share, delete_on_close),
             #[cfg(target_arch = "x86")]
             Followup::FileClose { record } => crate::fs::io::close(record),
             #[cfg(not(target_arch = "x86"))]
@@ -487,11 +482,7 @@ impl Process {
     /// object, before its switch away selects the next thread.
     #[cfg(target_arch = "x86")]
     pub fn signal_end(&mut self, end: exit::ProcessEnd) {
-        crate::ob::directory().signal_process_end(
-            self.object,
-            end.exit_status(),
-            crate::sched::idle::dispatcher(),
-        );
+        crate::ob::directory().signal_process_end(self.object, end.exit_status());
     }
 }
 
@@ -557,15 +548,20 @@ impl Process {
         // Its stack is a system region, not a reservation of its own.
         process.hold_main_thread(id, 0);
         let thread = directory.renew_thread(id);
-        thread.gate_slot = slot;
-        thread.gate_frames = frames;
-        thread.initial_stack = paging::gate_slot_top(slot as u32);
-        thread.ordinal = ordinals::MAIN;
-        thread.teb_va = crate::user::thread_teb_va(ordinals::MAIN as u32);
-        thread.thread_id = new_client_id();
-        // SAFETY: the process record is the pool's, at its final address, and outlives its
-        // threads (its teardown follows the last one's end).
-        unsafe { crate::sched::idle::dispatcher().attach(thread.id(), &mut process.sched) };
+        let thread_id = new_client_id();
+        crate::level::raised::<crate::level::Dispatch, _>(|dispatch| {
+            let dispatcher = crate::sched::DISPATCHER.get(dispatch);
+            let record = dispatcher.thread_mut(thread);
+            record.gate_slot = slot;
+            record.gate_frames = frames;
+            record.initial_stack = paging::gate_slot_top(slot as u32);
+            record.ordinal = ordinals::MAIN;
+            record.teb_va = crate::user::thread_teb_va(ordinals::MAIN as u32);
+            record.thread_id = thread_id;
+            // SAFETY: the process record is the pool's, at its final address, and outlives its
+            // threads (its teardown follows the last one's end).
+            unsafe { dispatcher.attach(thread, &mut process.sched) };
+        });
         // The TSS `esp0` is the switch's to install: the first switch into the main thread loads
         // its stack top.
         Ok(process)
@@ -606,7 +602,7 @@ impl Process {
 
     /// The process's main thread's record, while its object lives; none before the process has
     /// one, and once the object is gone (the record may be another thread's by then).
-    pub fn main_thread(&self) -> Option<&'static mut crate::sched::thread::Thread> {
+    pub fn main_thread(&self) -> Option<crate::sched::thread::ThreadId> {
         crate::ob::directory().thread(self.main_thread?)
     }
 
@@ -786,8 +782,14 @@ fn teardown(process: &'static mut Process, quiescent: bool) {
     let object = crate::ob::directory()
         .process(process.object)
         .expect("an ended process's object outlives its teardown");
+    let signaled = crate::level::raised::<crate::level::Dispatch, _>(|dispatch| {
+        let object = crate::sched::DISPATCHER
+            .get(dispatch)
+            .process_object_mut(object);
+        object.waitable.signal_state() > 0 && object.exit_status == end.exit_status()
+    });
     assert!(
-        object.waitable.signal_state() > 0 && object.exit_status == end.exit_status(),
+        signaled,
         "a process's object signals its end before the teardown"
     );
     release_address_space_of(process);
@@ -808,11 +810,10 @@ fn release_address_space_of(process: &mut Process) {
     // The views go first, each dropping its reference on its section or image segment (one nothing
     // else references goes with it, dropping its hold on its frames).
     let directory = crate::ob::directory();
-    let dispatcher = crate::sched::idle::dispatcher();
     let mut gone = [None; crate::mem::vm::VIEWS];
     let mut count = 0;
     process.vm().drop_views(|mapping| {
-        gone[count] = directory.release_mapping(mapping, dispatcher);
+        gone[count] = directory.release_mapping(mapping);
         count += 1;
     });
     for followup in gone[..count].iter().flatten() {
@@ -847,11 +848,11 @@ fn audit_objects(process: &mut Process, quiescent: bool) {
     if !quiescent {
         return;
     }
-    let leaked = directory.sweep(crate::sched::idle::dispatcher(), |followup| {
+    let leaked = directory.sweep(|followup| {
         if let crate::ob::Followup::Section { frames, .. } = followup {
             crate::nt::section::release_frames(frames);
         }
-    }) + crate::fs::file::records().clear();
+    }) + crate::fs::file::with_records(crate::fs::file::FileRecords::clear);
     if leaked != 0 {
         crate::serial_println!(
             "F2K: object audit FAILED: {} objects or file records outlived their process",
@@ -864,7 +865,7 @@ fn audit_objects(process: &mut Process, quiescent: bool) {
 /// gone — now, unless a handle to the process outlives it.
 #[cfg(target_arch = "x86")]
 fn release_record(process: &mut Process) {
-    let _ = crate::ob::directory().dereference(process.object, crate::sched::idle::dispatcher());
+    let _ = crate::ob::directory().dereference(process.object);
 }
 
 /// A file-backed section, or an image segment, is gone: its file is mapped once less, and its
@@ -874,8 +875,8 @@ fn release_record(process: &mut Process) {
 fn unmap_file(file_object: crate::ob::ObjectId) -> Option<crate::ob::Followup> {
     let directory = crate::ob::directory();
     let record = directory.file(file_object)?.record;
-    crate::fs::file::records().get_mut(record).user_mapped -= 1;
-    directory.dereference(file_object, crate::sched::idle::dispatcher())
+    crate::fs::file::with_records(|records| records.get_mut(record).user_mapped -= 1);
+    directory.dereference(file_object)
 }
 
 /// The post-boot free-frame count: the baseline the teardown audits compare against at

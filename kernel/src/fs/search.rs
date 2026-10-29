@@ -5,15 +5,13 @@
 //! The expression arrives as kernel32 makes it (FindFirstFileExW's transformations: `?` becomes
 //! DOS_QM, a `*` before a dot DOS_STAR, a dot before a wildcard or ending the pattern DOS_DOT, and
 //! `*.*` alone `*`), upper-cased here as the file system compares case-insensitively. Entries are
-//! matched by their long name, then their 8.3 name. The searches live in one pool, as the file
-//! records do: a directory's file object names its search while it has one, and gives it back
-//! with its cleanup (no handle is left to ask with).
+//! matched by their long name, then their 8.3 name. A search is its directory's file object's own
+//! ([`super::file::FileObject::search`]), as Windows 2000 keeps it in the file object's context
+//! block: made by the first query, it goes with the object.
+
+use rtl::array_vec::ArrayVec;
 
 use super::fat32::dir::fold_unit;
-
-/// How many directory searches can be open at once (across processes): exhaustion fails the query
-/// (STATUS_INSUFFICIENT_RESOURCES), not the kernel.
-pub const SEARCHES: usize = 32;
 
 /// The longest expression kept, in units.
 pub const MAX_EXPRESSION: usize = 260;
@@ -61,9 +59,7 @@ pub fn matches(expression: &[u16], name: &[u16]) -> bool {
 /// STATUS_NO_SUCH_FILE, one that did STATUS_NO_MORE_FILES).
 #[derive(Clone, Copy)]
 pub struct Search {
-    used: bool,
-    expression: [u16; MAX_EXPRESSION],
-    length: usize,
+    expression: ArrayVec<u16, MAX_EXPRESSION>,
     /// The record index the next match may start at.
     pub next: u32,
     /// Whether a query has returned an entry.
@@ -71,101 +67,33 @@ pub struct Search {
 }
 
 impl Search {
-    const FREE: Search = Search {
-        used: false,
-        expression: [0; MAX_EXPRESSION],
-        length: 0,
-        next: 0,
-        answered: false,
-    };
+    /// A search of `expression` (none: every name), folded, from the directory's start. An
+    /// expression past [`MAX_EXPRESSION`] keeps its first units.
+    pub fn new(expression: Option<&[u16]>) -> Self {
+        let mut kept = ArrayVec::new();
+        match expression {
+            Some(units) => units
+                .iter()
+                .take(MAX_EXPRESSION)
+                .for_each(|&unit| kept.push(fold_unit(unit))),
+            None => kept.push(STAR),
+        }
+        Search {
+            expression: kept,
+            next: 0,
+            answered: false,
+        }
+    }
 
     /// The expression, folded.
     pub fn expression(&self) -> &[u16] {
-        &self.expression[..self.length]
+        &self.expression
     }
 
     /// Back to the directory's start (RestartScan).
     pub fn restart(&mut self) {
         self.next = 0;
         self.answered = false;
-    }
-}
-
-/// The open searches.
-pub struct Searches {
-    slots: [Search; SEARCHES],
-}
-
-impl Searches {
-    /// None open (the tests build the pool by value; the kernel writes it in place).
-    #[cfg(test)]
-    pub const fn empty() -> Self {
-        Searches {
-            slots: [Search::FREE; SEARCHES],
-        }
-    }
-
-    /// Open a search of `expression` (none: every name), folded: its number (from 1); none when the
-    /// pool is full. The expression must fit [`MAX_EXPRESSION`].
-    pub fn open(&mut self, expression: Option<&[u16]>) -> Option<u16> {
-        let index = self.slots.iter().position(|slot| !slot.used)?;
-        let slot = &mut self.slots[index];
-        *slot = Search::FREE;
-        slot.used = true;
-        match expression {
-            Some(units) => {
-                for (out, &unit) in slot.expression.iter_mut().zip(units) {
-                    *out = fold_unit(unit);
-                }
-                slot.length = units.len().min(MAX_EXPRESSION);
-            }
-            None => {
-                slot.expression[0] = STAR;
-                slot.length = 1;
-            }
-        }
-        Some(index as u16 + 1)
-    }
-
-    /// The search numbered `number`.
-    pub fn get(&mut self, number: u16) -> &mut Search {
-        &mut self.slots[number as usize - 1]
-    }
-
-    /// Give the search numbered `number` back (zero: none).
-    pub fn close(&mut self, number: u16) {
-        if number != 0 {
-            self.slots[number as usize - 1].used = false;
-        }
-    }
-
-    /// How many searches are open.
-    #[cfg(test)]
-    pub fn live(&self) -> usize {
-        self.slots.iter().filter(|slot| slot.used).count()
-    }
-}
-
-/// The kernel's searches, built in place at first use.
-#[cfg(target_arch = "x86")]
-static mut SEARCH_POOL: core::mem::MaybeUninit<Searches> = core::mem::MaybeUninit::uninit();
-
-/// Whether [`SEARCH_POOL`] is built.
-#[cfg(target_arch = "x86")]
-static mut SEARCHES_BUILT: bool = false;
-
-/// The kernel's directory searches.
-#[cfg(target_arch = "x86")]
-pub fn searches() -> &'static mut Searches {
-    // SAFETY: single CPU; services run serialized (the gate masks interrupts). Built once, in
-    // place: all zeros is every slot free.
-    unsafe {
-        let pool = (*core::ptr::addr_of_mut!(SEARCH_POOL)).as_mut_ptr();
-        if !SEARCHES_BUILT {
-            pool.write_bytes(0, 1);
-            SEARCHES_BUILT = true;
-        }
-        &mut *pool
     }
 }
 
@@ -260,25 +188,21 @@ mod tests {
         assert!(!matches(&units("A?C"), &units("AC")));
     }
 
-    /// A search keeps its folded expression (every name without one), restarts, and its slot goes
-    /// back to the pool.
+    /// A search keeps its folded expression (every name without one, the first units of one too
+    /// long) and restarts.
     #[test]
-    fn searches_are_pooled() {
-        let mut pool = Searches::empty();
-        let first = pool.open(Some(&units("s*"))).unwrap();
-        assert_eq!(pool.get(first).expression(), units("S*"));
-        let every = pool.open(None).unwrap();
-        assert_eq!(pool.get(every).expression(), units("*"));
-        pool.get(first).next = 5;
-        pool.get(first).answered = true;
-        pool.get(first).restart();
-        assert_eq!((pool.get(first).next, pool.get(first).answered), (0, false));
-        pool.close(first);
-        pool.close(0);
-        assert_eq!(pool.live(), 1);
-        for _ in 1..SEARCHES {
-            pool.open(None).unwrap();
-        }
-        assert!(pool.open(None).is_none(), "the pool is full");
+    fn a_search_keeps_its_expression() {
+        let mut search = Search::new(Some(&units("s*")));
+        assert_eq!(search.expression(), units("S*"));
+        assert_eq!(Search::new(None).expression(), units("*"));
+        search.next = 5;
+        search.answered = true;
+        search.restart();
+        assert_eq!((search.next, search.answered), (0, false));
+        let long = vec![b'a' as u16; MAX_EXPRESSION + 3];
+        assert_eq!(
+            Search::new(Some(&long)).expression(),
+            units(&"A".repeat(MAX_EXPRESSION))
+        );
     }
 }

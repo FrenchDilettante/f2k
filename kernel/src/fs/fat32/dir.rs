@@ -13,7 +13,6 @@
 //! long name, or the 8.3 name with the NT case bits applied; the short name it shows beside a long
 //! one is the 8.3 name as stored — both in code page 1252.
 
-use super::check;
 use super::dirent::{
     checksum,
     decode,
@@ -238,7 +237,9 @@ pub fn walk(
         }
         let first = layout.cluster_lba(cluster);
         for offset in 0..layout.sectors_per_cluster as u64 {
-            check(volume.device().read(first + offset, &mut sector))
+            volume
+                .device()
+                .read(first + offset, &mut sector)
                 .map_err(LookupError::Device)?;
             for bytes in sector.as_chunks::<ENTRY_SIZE>().0 {
                 let record = decode(bytes);

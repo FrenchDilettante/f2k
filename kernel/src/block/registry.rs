@@ -1,9 +1,11 @@
 //! The device registry: the table of block devices, and the boot-time scan that registers a disk
 //! and a partition view per primary MBR entry.
 //!
-//! The table is fixed-size and filled at boot: devices are statics, partitions live in a fixed
-//! pool. A device's index is its stable identity ([`DeviceId`]); names and drive letters come with
-//! the object namespace and will map onto it.
+//! The table is fixed-size, built by the boot's scan, then frozen: devices are statics, and each
+//! partition view lives in its own entry. A device's index is its stable identity ([`DeviceId`]);
+//! names and drive letters come with the object namespace and will map onto it.
+
+use rtl::array_vec::ArrayVec;
 
 use super::partition::{walk_mbr, MbrEntry, MbrError, Partition};
 use super::{BlockDevice, DeviceKind};
@@ -25,47 +27,81 @@ pub enum Role {
     Partition { disk: DeviceId, entry: MbrEntry },
 }
 
+/// Where a registered device lives: a static of its driver's, or the entry itself (a partition
+/// view).
+#[derive(Clone, Copy)]
+enum DeviceRef {
+    Static(&'static dyn BlockDevice),
+    Partition(Partition),
+    /// The filler the table keeps past its length, never read through it.
+    Vacant,
+}
+
 /// One registered device.
 #[derive(Clone, Copy)]
 pub struct Entry {
-    pub device: &'static dyn BlockDevice,
+    device: DeviceRef,
     pub role: Role,
 }
 
+/// The filler the table's array keeps past its length (see [`ArrayVec`]): never read.
+impl Default for Entry {
+    fn default() -> Self {
+        Entry {
+            device: DeviceRef::Vacant,
+            role: Role::Disk,
+        }
+    }
+}
+
+impl Entry {
+    /// The device, for as long as the entry is borrowed (for good, from the kernel's frozen
+    /// table).
+    pub fn device(&self) -> &dyn BlockDevice {
+        match &self.device {
+            DeviceRef::Static(device) => *device,
+            DeviceRef::Partition(partition) => partition,
+            DeviceRef::Vacant => unreachable!("a vacant entry is never read"),
+        }
+    }
+}
+
 /// The device table.
+#[derive(Default)]
 pub struct Registry {
-    entries: [Option<Entry>; CAPACITY],
-    count: usize,
+    entries: ArrayVec<Entry, CAPACITY>,
 }
 
 impl Registry {
-    pub const fn new() -> Self {
-        Registry {
-            entries: [None; CAPACITY],
-            count: 0,
-        }
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Add a device; its id is its position. The table is sized at build time, so running out is
     /// a kernel configuration fault.
-    pub fn register(&mut self, device: &'static dyn BlockDevice, role: Role) -> DeviceId {
-        assert!(self.count < CAPACITY, "the block device table is full");
-        let id = DeviceId(self.count);
-        self.entries[self.count] = Some(Entry { device, role });
-        self.count += 1;
+    fn add(&mut self, device: DeviceRef, role: Role) -> DeviceId {
+        let id = DeviceId(self.entries.len());
+        if self.entries.try_push(Entry { device, role }).is_err() {
+            panic!("the block device table is full");
+        }
         id
     }
 
-    pub fn get(&self, id: DeviceId) -> Option<Entry> {
-        self.entries.get(id.0).copied().flatten()
+    /// Add a device that is a static of its driver's.
+    pub fn register(&mut self, device: &'static dyn BlockDevice, role: Role) -> DeviceId {
+        self.add(DeviceRef::Static(device), role)
+    }
+
+    pub fn get(&self, id: DeviceId) -> Option<&Entry> {
+        self.entries.get(id.0)
     }
 
     /// The registered devices, in registration order.
-    pub fn iter(&self) -> impl Iterator<Item = (DeviceId, Entry)> + '_ {
-        self.entries[..self.count]
+    pub fn iter(&self) -> impl Iterator<Item = (DeviceId, &Entry)> + '_ {
+        self.entries
             .iter()
             .enumerate()
-            .filter_map(|(index, entry)| entry.map(|entry| (DeviceId(index), entry)))
+            .map(|(index, entry)| (DeviceId(index), entry))
     }
 }
 
@@ -82,22 +118,16 @@ pub enum Scan {
     NotPartitioned,
 }
 
-/// Register `disk`, walk its MBR, and register a partition view per primary entry. `place` gives
-/// each view its permanent home. A disk whose table cannot be read or is refused is still
-/// registered, with no partitions.
-pub fn scan(
-    registry: &mut Registry,
-    disk: &'static dyn BlockDevice,
-    mut place: impl FnMut(Partition) -> &'static Partition,
-) -> (DeviceId, Scan) {
+/// Register `disk`, walk its MBR, and register a partition view per primary entry. A disk whose
+/// table cannot be read or is refused is still registered, with no partitions.
+pub fn scan(registry: &mut Registry, disk: &'static dyn BlockDevice) -> (DeviceId, Scan) {
     let id = registry.register(disk, Role::Disk);
     let info = disk.info();
     if info.kind != DeviceKind::Disk || info.sector_size != 512 {
         return (id, Scan::NotPartitioned);
     }
     let mut sector = [0u8; 512];
-    let status = disk.read(0, &mut sector);
-    if !status.is_success() {
+    if let Err(status) = disk.read(0, &mut sector) {
         return (id, Scan::ReadFailed(status));
     }
     let entries = match walk_mbr(&sector, info.sectors) {
@@ -106,8 +136,10 @@ pub fn scan(
     };
     let mut registered = 0;
     for entry in entries.into_iter().flatten() {
-        let partition = place(Partition::new(disk, entry));
-        registry.register(partition, Role::Partition { disk: id, entry });
+        registry.add(
+            DeviceRef::Partition(Partition::new(disk, entry)),
+            Role::Partition { disk: id, entry },
+        );
         registered += 1;
     }
     (id, Scan::Partitions(registered))
@@ -117,51 +149,38 @@ pub fn scan(
 
 #[cfg(target_arch = "x86")]
 mod target {
-    use core::ptr::addr_of_mut;
-
     use super::*;
+    use crate::sync::InitOnce;
 
-    static mut REGISTRY: Registry = Registry::new();
-    /// The partition views' permanent homes.
-    static mut POOL: [Option<Partition>; CAPACITY] = [const { None }; CAPACITY];
-    static mut POOL_USED: usize = 0;
+    /// The kernel's device table, frozen once the boot's scan has built it.
+    static REGISTRY: InitOnce<Registry> = InitOnce::new();
 
-    /// Register a disk and its partitions. Boot context only, before any reader.
-    pub fn scan_disk(disk: &'static dyn BlockDevice) -> (DeviceId, Scan) {
-        // SAFETY: boot context: sole access to the registry and the pool, which nothing reads
-        // until the scans are done.
-        unsafe {
-            scan(&mut *addr_of_mut!(REGISTRY), disk, |partition| {
-                let pool = &mut *addr_of_mut!(POOL);
-                let used = &mut *addr_of_mut!(POOL_USED);
-                assert!(*used < CAPACITY, "the partition pool is full");
-                pool[*used] = Some(partition);
-                *used += 1;
-                pool[*used - 1].as_ref().unwrap()
-            })
+    /// Build the kernel's device table from the disks the boot found, each registered with its
+    /// partitions, and freeze it. Boot context, once, before any reader.
+    pub fn boot_scan(disks: impl IntoIterator<Item = &'static dyn BlockDevice>) {
+        let mut registry = Registry::new();
+        for disk in disks {
+            scan(&mut registry, disk);
         }
+        REGISTRY.set(registry);
     }
 
     /// The kernel's device table.
     pub fn registry() -> &'static Registry {
-        // SAFETY: written only by the boot-time scans, read-only after.
-        unsafe { &*addr_of_mut!(REGISTRY) }
+        REGISTRY.get()
     }
 }
 
 #[cfg(target_arch = "x86")]
 #[allow(unused_imports)]
-pub use target::{registry, scan_disk};
+pub use target::{boot_scan, registry};
 
 #[cfg(test)]
 mod tests {
     use super::super::memory::MemoryDisk;
+    use super::super::partition::mbr;
     use super::*;
-    use crate::status::{STATUS_INVALID_PARAMETER, STATUS_SUCCESS};
-
-    fn leak(partition: Partition) -> &'static Partition {
-        Box::leak(Box::new(partition))
-    }
+    use crate::status::STATUS_INVALID_PARAMETER;
 
     /// A disk image of `sectors` sectors whose sector 0 is `mbr`.
     fn disk_with(mbr: [u8; 512], sectors: usize) -> &'static MemoryDisk {
@@ -175,26 +194,22 @@ mod tests {
         ))))
     }
 
-    fn mbr(entries: &[(usize, u8, u32, u32)]) -> [u8; 512] {
-        let mut sector = [0u8; 512];
-        for &(slot, kind, start, sectors) in entries {
-            let entry = 446 + slot * 16;
-            sector[entry + 4] = kind;
-            sector[entry + 8..entry + 12].copy_from_slice(&start.to_le_bytes());
-            sector[entry + 12..entry + 16].copy_from_slice(&sectors.to_le_bytes());
-        }
-        sector[510] = 0x55;
-        sector[511] = 0xAA;
-        sector
+    /// An MBR with the given entries (slot, type, start, length), none bootable.
+    fn table(entries: &[(usize, u8, u32, u32)]) -> [u8; 512] {
+        let entries: Vec<_> = entries
+            .iter()
+            .map(|&(slot, kind, start, sectors)| (slot, 0, kind, start, sectors))
+            .collect();
+        mbr(&entries)
     }
 
     /// The scan registers the disk, then one view per primary entry in slot order, each tagged
     /// with its disk and entry — and the views read the disk at their offsets.
     #[test]
     fn a_scan_registers_the_disk_then_its_partitions() {
-        let disk = disk_with(mbr(&[(0, 0x0C, 10, 20), (2, 0x07, 40, 8)]), 64);
+        let disk = disk_with(table(&[(0, 0x0C, 10, 20), (2, 0x07, 40, 8)]), 64);
         let mut registry = Registry::new();
-        let (id, scan_result) = scan(&mut registry, disk, leak);
+        let (id, scan_result) = scan(&mut registry, disk);
         assert_eq!((id, scan_result), (DeviceId(0), Scan::Partitions(2)));
 
         let roles: Vec<Role> = registry.iter().map(|(_, entry)| entry.role).collect();
@@ -210,12 +225,12 @@ mod tests {
         ));
 
         // The second partition's sector 0 is the disk's sector 40.
-        let second = registry.get(DeviceId(2)).unwrap().device;
+        let second = registry.get(DeviceId(2)).unwrap().device();
         assert_eq!(second.info().sectors, 8);
         let mut sector = [0u8; 512];
-        assert_eq!(second.read(0, &mut sector), STATUS_SUCCESS);
+        assert_eq!(second.read(0, &mut sector), Ok(()));
         assert!(sector.iter().all(|&byte| byte == 39), "disk sector 40");
-        assert_eq!(second.read(8, &mut sector), STATUS_INVALID_PARAMETER);
+        assert_eq!(second.read(8, &mut sector), Err(STATUS_INVALID_PARAMETER));
     }
 
     /// A refused table or an unreadable sector 0 still registers the disk, with no partitions.
@@ -224,12 +239,12 @@ mod tests {
         let mut registry = Registry::new();
         let unsigned = disk_with([0u8; 512], 64);
         assert_eq!(
-            scan(&mut registry, unsigned, leak),
+            scan(&mut registry, unsigned),
             (DeviceId(0), Scan::Refused(MbrError::NoSignature))
         );
-        let overrunning = disk_with(mbr(&[(1, 0x0C, 10, 100)]), 64);
+        let overrunning = disk_with(table(&[(1, 0x0C, 10, 100)]), 64);
         assert_eq!(
-            scan(&mut registry, overrunning, leak),
+            scan(&mut registry, overrunning),
             (DeviceId(1), Scan::Refused(MbrError::Overruns(1)))
         );
         assert_eq!(registry.iter().count(), 2, "both disks, no partitions");
@@ -243,7 +258,10 @@ mod tests {
         let b: &'static MemoryDisk = Box::leak(Box::new(MemoryDisk::patterned(8)));
         assert_eq!(registry.register(a, Role::Disk), DeviceId(0));
         assert_eq!(registry.register(b, Role::Disk), DeviceId(1));
-        assert_eq!(registry.get(DeviceId(1)).unwrap().device.info().sectors, 8);
+        assert_eq!(
+            registry.get(DeviceId(1)).unwrap().device().info().sectors,
+            8
+        );
         assert!(registry.get(DeviceId(2)).is_none());
         assert!(registry.get(DeviceId(CAPACITY + 5)).is_none());
     }

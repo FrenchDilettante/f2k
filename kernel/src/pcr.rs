@@ -1,23 +1,31 @@
 //! The processor control region: the state that belongs to the processor rather than to a thread
 //! or a subsystem (Windows 2000's KPCR and its KPRCB).
 //!
-//! It holds the interrupt-level ledger and the DPC queue. The ledger is what level tokens are
-//! built on, so it cannot be a level cell itself: it is reached only through the operations here,
-//! each of which masks interrupts before it touches the ledger. The DPC queue is a cell at the
-//! high level, as Windows 2000 keeps its DPC list (interrupt service routines insert into it), with
-//! its depth published for the readers that hold no token. The current, next and idle threads join
-//! them when the dispatcher is split.
+//! It holds the interrupt-level ledger, the DPC queue and the processor's threads. The ledger is
+//! what level tokens are built on, so it cannot be a level cell itself: it is reached only through
+//! the operations here, each of which masks interrupts before it touches the ledger. The DPC queue
+//! is a cell at the high level, as Windows 2000 keeps its DPC list (interrupt service routines
+//! insert into it), with its depth published for the readers that hold no token. The processor's
+//! threads — the current, next and idle threads, the running thread's quantum and the quantum-end
+//! request — are the dispatcher's per-processor slots ([`ThreadSlots`]), which the clock interrupt
+//! reaches without the dispatcher.
+//!
+//! A lower that crosses below the dispatch level runs what waited for it, as Windows 2000's
+//! KeLowerIrql does through the DISPATCH software interrupt: the DPCs queued meanwhile, and a
+//! dispatch decision requested meanwhile.
 //!
 //! The operations are the kernel's only way to change the interrupt flag outside the assembly
 //! entries: raise and lower, the gates' entry and return, masking and unmasking, the idle halt and
-//! the interrupt window, and the context switch's handover of the ledger ([`Pcr::capture`],
-//! [`Pcr::restore`]). [`MaskGuard`] is the one form of "mask, then put the flag back as found".
+//! the interrupt window. A context switch needs none of its own: it runs at the dispatch level, and
+//! what each raise found stays on the stack of the thread that raised ([`OldIrql`]).
+//! [`MaskGuard`] is the one form of "mask, then put the flag back as found".
 
 use core::cell::UnsafeCell;
 use core::marker::PhantomData;
 
 use crate::interrupt::dpc::ProcessorQueue;
-use crate::interrupt::irql::{Irql, IrqlState, LevelSnapshot};
+use crate::interrupt::irql::{Irql, IrqlState, OldIrql, DISPATCH};
+use crate::sched::processor::ThreadSlots;
 
 /// One processor's control region.
 pub struct Pcr {
@@ -26,12 +34,15 @@ pub struct Pcr {
     /// The processor's deferred procedure calls (KPRCB's DpcListHead, DpcQueueDepth and their
     /// counters).
     pub dpc_queue: ProcessorQueue,
+    /// The processor's threads (KPRCB's CurrentThread, NextThread, IdleThread and QuantumEnd), and
+    /// the running thread's quantum.
+    pub threads: ThreadSlots,
 }
 
 // SAFETY: one processor. The ledger is reached only through the operations below, which mask
 // interrupts first and never hold the reference across an instruction that takes one, so no
-// interrupt handler's operation can land inside another's; the DPC queue is `Sync` on its own
-// terms (a level cell and an atomic).
+// interrupt handler's operation can land inside another's; the DPC queue and the thread slots are
+// `Sync` on their own terms (a level cell and atomics).
 unsafe impl Sync for Pcr {}
 
 /// The boot processor's control region.
@@ -57,12 +68,13 @@ pub fn pcr() -> &'static Pcr {
 }
 
 impl Pcr {
-    /// A control region whose ledger starts as `ledger`, with an empty DPC queue. The queue's
-    /// request gate: a low-importance DPC is requested once four are queued.
+    /// A control region whose ledger starts as `ledger`, with an empty DPC queue and no threads.
+    /// The queue's request gate: a low-importance DPC is requested once four are queued.
     const fn new(ledger: IrqlState) -> Self {
         Pcr {
             ledger: UnsafeCell::new(ledger),
             dpc_queue: ProcessorQueue::new(4, 0),
+            threads: ThreadSlots::new(),
         }
     }
 
@@ -117,14 +129,14 @@ impl Pcr {
         self.inspect(IrqlState::audit)
     }
 
-    /// Raise to `level`, returning the previous level (see [`IrqlState::raise`]).
-    pub fn raise(&self, level: Irql) -> Irql {
+    /// Raise to `level`, returning what the raise found (see [`IrqlState::raise`]).
+    pub fn raise(&self, level: Irql) -> OldIrql {
         self.change(|ledger| ledger.raise(level))
     }
 
-    /// Raise to `level` if the processor is below it, returning the previous level; none, and
+    /// Raise to `level` if the processor is below it, returning what the raise found; none, and
     /// nothing changed, if it is already at or above. The test and the raise are one masked step.
-    pub fn raise_from_below(&self, level: Irql) -> Option<Irql> {
+    pub fn raise_from_below(&self, level: Irql) -> Option<OldIrql> {
         let flags = mask_saving();
         // SAFETY: as in `inspect`; the raise, when it happens, sets the flag itself.
         let ledger = unsafe { &mut *self.ledger.get() };
@@ -135,14 +147,30 @@ impl Pcr {
         Some(ledger.raise(level))
     }
 
-    /// Lower back to `level` (see [`IrqlState::lower`]).
-    pub fn lower(&self, level: Irql) {
-        self.change(|ledger| ledger.lower(level));
+    /// Lower back to what a raise found (see [`IrqlState::lower`]). A lower from the dispatch level
+    /// or above to below it then runs the dispatch-level work that waited for it (see
+    /// [`crate::sched::dispatcher::dispatch_on_lower`]): Windows 2000's KeLowerIrql, whose
+    /// DISPATCH software interrupt fires as the level drops.
+    pub fn lower(&self, to: OldIrql) {
+        let crossed = self.change(|ledger| {
+            let from = ledger.current();
+            ledger.lower(to);
+            from >= DISPATCH && to.level() < DISPATCH
+        });
+        if crossed {
+            crate::sched::dispatcher::dispatch_on_lower();
+        }
+    }
+
+    /// Lower back to what a raise found, without the dispatch-level work [`Pcr::lower`] runs: the
+    /// lower of that work's own raise, which has just run it.
+    pub(crate) fn lower_only(&self, to: OldIrql) {
+        self.change(|ledger| ledger.lower(to));
     }
 
     /// End a hardware interrupt's claim (see [`IrqlState::end_claim`]).
-    pub fn end_claim(&self, level: Irql, acknowledge: impl FnOnce()) {
-        self.change(|ledger| ledger.end_claim(level, |_| acknowledge()));
+    pub fn end_claim(&self, to: OldIrql, acknowledge: impl FnOnce()) {
+        self.change(|ledger| ledger.end_claim(to, |_| acknowledge()));
     }
 
     /// Mask interrupts, the ledger recording it.
@@ -212,29 +240,6 @@ impl Pcr {
     /// [`IrqlState::leave_gate`]).
     pub fn leave_gate(&self, enabled: bool) {
         self.update(|ledger| ledger.leave_gate(enabled));
-    }
-
-    /// Capture the running thread's ledger: the switching-out half of a context switch (see
-    /// [`IrqlState::capture`]).
-    pub fn capture(&self) -> LevelSnapshot {
-        self.inspect(IrqlState::capture)
-    }
-
-    /// Restore a resumed thread's ledger (see [`IrqlState::restore`]). The interrupt flag is the
-    /// one the switch put back.
-    pub fn restore(&self, snapshot: LevelSnapshot) {
-        self.update(|ledger| ledger.restore(snapshot));
-    }
-
-    /// Write off a dying thread's outstanding raises (see [`IrqlState::write_off_thread`]).
-    pub fn write_off_thread(&self) {
-        self.update(IrqlState::write_off_thread);
-    }
-
-    /// A fresh thread adopts an empty ledger, interrupts enabled (see
-    /// [`IrqlState::begin_thread`]).
-    pub fn begin_thread(&self) {
-        self.change(IrqlState::begin_thread);
     }
 }
 
@@ -362,19 +367,19 @@ mod tests {
         assert!(pcr.interrupts_enabled());
     }
 
-    /// The switch's handover: a captured ledger restored puts back the level and its pending
-    /// pairs, and a fresh thread starts from an empty one.
+    /// A raise from a masked context is paid back masked: what the raise found travels with the
+    /// caller, and the lower puts it back.
     #[test]
-    fn the_ledger_hands_over_through_capture_and_restore() {
+    fn a_lower_puts_back_what_its_raise_found() {
         let pcr = pcr();
+        pcr.mask_interrupts();
         let previous = pcr.raise(irql::DISPATCH);
-        let snapshot = pcr.capture();
-        pcr.write_off_thread();
-        pcr.begin_thread();
-        assert_eq!(pcr.current(), irql::PASSIVE);
-        pcr.restore(snapshot);
-        assert_eq!(pcr.current(), irql::DISPATCH);
+        assert!(pcr.interrupts_enabled(), "the dispatch level runs enabled");
+        assert_eq!(previous.level(), irql::PASSIVE);
         pcr.lower(previous);
         assert_eq!(pcr.current(), irql::PASSIVE);
+        assert!(!pcr.interrupts_enabled());
+        pcr.unmask_interrupts();
+        assert_eq!(pcr.audit(), Ok(()));
     }
 }

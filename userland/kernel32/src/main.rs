@@ -27,11 +27,26 @@ core::arch::global_asm!(
     include_str!("memory.s"),
 );
 
+use core::sync::atomic::AtomicU32;
+
 use kernel32::{nt, ntcall};
 use rtl::critsec::CriticalSection;
 use rtl::handles::HandleTable;
 use rtl::localmem::{HandleCalls, HeapCalls, Memory, Outcome, ENTRY_SIZE, MAXIMUM_HANDLES};
+use rtl::sync::{Locked, RawLock};
 use rtl::sys;
+
+/// The top-level exception filter SetUnhandledExceptionFilter sets and UnhandledExceptionFilter
+/// calls (src/natives.s exchanges and reads it by its symbol): kernel32's own data, as on Windows
+/// 2000; null for none.
+///
+/// It is kept in `.data` with file bytes (zero-initialized data would go to the section's
+/// uninitialized tail): a data section with none would have no bytes in the file, and the sections
+/// after it would no longer sit at their RVAs in the file, which the kernel reads as kernel32's
+/// mapped image.
+#[unsafe(export_name = "f2k_k32_top_level_filter")]
+#[unsafe(link_section = ".data")]
+static TOP_LEVEL_FILTER: AtomicU32 = AtomicU32::new(0);
 
 /// InitializeCriticalSection: ntdll's RtlInitializeCriticalSection, its failure raised (as Windows
 /// 2000's kernel32 raises it; with no event preallocated it cannot fail). Its body is the
@@ -113,12 +128,41 @@ impl HeapCalls for ProcessHeap {
     }
 }
 
+/// The process heap's lock (RtlLockHeap, RtlUnlockHeap), as the lock of kernel32's handle table:
+/// the table and the heap's blocks change together.
+struct ProcessHeapLock;
+
+// SAFETY: the process heap's lock is a critical section: RtlLockHeap returns once the calling
+// thread holds it (the process heap always names a heap), no other thread holds it until the
+// matching RtlUnlockHeap, and its entry and leave order the holders' accesses.
+unsafe impl RawLock for ProcessHeapLock {
+    fn lock(&self) {
+        // SAFETY: ntdll's export, over the process heap (the PEB's, live for the process's life).
+        unsafe { nt::RtlLockHeap(sys::process_heap_handle()) };
+    }
+
+    fn unlock(&self) {
+        // SAFETY: ntdll's export: the calling thread took the lock (`RawLock`'s pairing).
+        unsafe { nt::RtlUnlockHeap(sys::process_heap_handle()) };
+    }
+}
+
 /// kernel32's handle table, where the movable Local and Global blocks' handles come from:
-/// kernel32's own data on Windows 2000, here on the PEB's page past the PEB proper, where kernel32
-/// keeps its other per-process state (F2K's system DLLs keep no writable data). Zero until the
-/// first Local or Global call initializes it (kernel32 has no DllMain to do it at the process's
-/// start).
-const HANDLE_TABLE: usize = 0x8E0;
+/// kernel32's own data, as on Windows 2000, under the process heap's lock. Empty (its maximum zero)
+/// until the first Local or Global call initializes it (kernel32 has no DllMain to do it at the
+/// process's start).
+static HANDLE_TABLE: Locked<HandleTable, ProcessHeapLock> = Locked::new(
+    ProcessHeapLock,
+    HandleTable {
+        maximum_number_of_handles: 0,
+        size_of_handle_table_entry: 0,
+        reserved: [0; 2],
+        free_handles: 0,
+        committed_handles: 0,
+        uncommitted_handles: 0,
+        max_reserved_handles: 0,
+    },
+);
 
 /// kernel32's handle table, through ntdll's RtlAllocateHandle family (as Windows 2000's kernel32
 /// keeps its movable blocks' handles).
@@ -148,22 +192,19 @@ impl HandleCalls for BaseHandles {
 /// call, under the lock.
 fn with_memory<R>(body: impl FnOnce(&Memory<'_, ProcessHeap, BaseHandles>) -> R) -> R {
     let heap = ProcessHeap(sys::process_heap_handle());
-    let table = (sys::peb() + HANDLE_TABLE) as *mut HandleTable;
-    // SAFETY: ntdll's exports; the table is kernel32's slot on the PEB's page, the process's own,
-    // changed only under the heap's lock.
-    unsafe {
-        nt::RtlLockHeap(heap.0);
-        if (*table).maximum_number_of_handles == 0 {
-            nt::RtlInitializeHandleTable(MAXIMUM_HANDLES, ENTRY_SIZE, table);
+    HANDLE_TABLE.with(|table| {
+        let table: *mut HandleTable = table;
+        // SAFETY: ntdll's export, over kernel32's table (the lent value, the heap's lock held).
+        unsafe {
+            if (*table).maximum_number_of_handles == 0 {
+                nt::RtlInitializeHandleTable(MAXIMUM_HANDLES, ENTRY_SIZE, table);
+            }
         }
-    }
-    let result = body(&Memory {
-        heap: &heap,
-        handles: &BaseHandles(table),
-    });
-    // SAFETY: ntdll's export; the lock taken above.
-    unsafe { nt::RtlUnlockHeap(heap.0) };
-    result
+        body(&Memory {
+            heap: &heap,
+            handles: &BaseHandles(table),
+        })
+    })
 }
 
 /// A Local/Global call's answer: its value, its last error set when it names one.
@@ -232,6 +273,6 @@ extern "C" fn f2k_k32_tls_expansion() -> usize {
         return 0;
     };
     let slots = slots.as_ptr() as usize;
-    sys::write(sys::teb() + sys::TEB_TLS_EXPANSION_SLOTS, slots);
+    sys::set_tls_expansion_slots(slots);
     slots
 }

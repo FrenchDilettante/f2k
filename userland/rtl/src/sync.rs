@@ -7,8 +7,13 @@
 //! lock alone cannot stop a closure from reaching the same value again (a callback, a nested call
 //! through an export) and holding two `&mut` to it. A busy flag, set while a closure runs, makes
 //! that re-entry a panic instead.
+//!
+//! A word a DLL makes at its first need and keeps for the process's life (a handle, a block's
+//! address) is a [`OnceWord`]: read without the lock once made, made under it.
 
 use core::cell::{Cell, UnsafeCell};
+use core::sync::atomic::AtomicUsize;
+use core::sync::atomic::Ordering::{Acquire, Release};
 
 /// A lock as a critical section is one: one thread holds it at a time, and the holder may take it
 /// again (each `lock` matched by an `unlock`).
@@ -93,6 +98,47 @@ struct Free<'a>(&'a Cell<bool>);
 impl Drop for Free<'_> {
     fn drop(&mut self) {
         self.0.set(false);
+    }
+}
+
+/// A word made at its first need, under the DLL's lock, then kept: zero until it is made. Its
+/// readers check it without the lock first (the double-checked pattern, with acquire and release
+/// ordering between the maker and the readers), so only the first uses wait.
+pub struct OnceWord<L: RawLock> {
+    lock: L,
+    value: AtomicUsize,
+}
+
+impl<L: RawLock> OnceWord<L> {
+    /// A word not made yet, made under `lock`.
+    pub const fn new(lock: L) -> Self {
+        Self {
+            lock,
+            value: AtomicUsize::new(0),
+        }
+    }
+
+    /// The word, made by `make` if it is not yet; zero when `make` could not make it (zero), and
+    /// the next use tries again.
+    pub fn get_or_make(&self, make: impl FnOnce() -> usize) -> usize {
+        let made = self.value.load(Acquire);
+        if made != 0 {
+            return made;
+        }
+        self.lock.lock();
+        let _held = Unlock(&self.lock);
+        let made = self.value.load(Acquire);
+        if made != 0 {
+            return made;
+        }
+        let made = make();
+        self.value.store(made, Release);
+        made
+    }
+
+    /// The word as it is: zero when it is not made yet.
+    pub fn get(&self) -> usize {
+        self.value.load(Acquire)
     }
 }
 
@@ -195,6 +241,40 @@ mod tests {
     fn re_entry_panics() {
         let locked = Locked::new(Recursive::default(), 0u32);
         locked.with(|_| locked.with(|value| *value += 1));
+    }
+
+    #[test]
+    fn a_word_is_made_once() {
+        let word = OnceWord::new(Recursive::default());
+        assert_eq!(word.get(), 0);
+        assert_eq!(word.get_or_make(|| 0), 0, "not made: tried again later");
+        assert_eq!(word.get_or_make(|| 7), 7);
+        assert_eq!(word.get_or_make(|| unreachable!("made already")), 7);
+        assert_eq!(word.get(), 7);
+        assert_eq!(
+            word.lock.takings.load(SeqCst),
+            2,
+            "the lock taken until it was made"
+        );
+    }
+
+    #[test]
+    fn threads_make_a_word_once() {
+        let word = OnceWord::new(Recursive::default());
+        let made = AtomicU32::new(0);
+        thread::scope(|scope| {
+            for _ in 0..4 {
+                scope.spawn(|| {
+                    let value = word.get_or_make(|| {
+                        made.fetch_add(1, SeqCst);
+                        9
+                    });
+                    assert_eq!(value, 9);
+                });
+            }
+        });
+        assert_eq!(made.load(SeqCst), 1);
+        assert!(word.lock.is_free());
     }
 
     #[test]

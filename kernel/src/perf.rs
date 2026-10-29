@@ -228,13 +228,20 @@ pub fn sample(frame: &crate::cpu::idt::ExceptionFrame) {
     let mut frames = [0u32; MAX_STACK];
     frames[0] = eip;
     let depth = walk(frame.interrupted_ebp(), cs, &mut frames);
-    let sample = Sample {
-        interrupt_time: crate::interrupt::clock::interrupt_time(),
-        cs,
-        frames,
-        depth,
-    };
-    level::raised::<Clock, _>(|at_clock| TRACE.get(at_clock).record(sample));
+    // Before the interrupt's claim: the raise's lower runs nothing on its way down (the interrupt's
+    // exit does).
+    level::raised_in_entry::<Clock, _>(|at_clock| {
+        let sample = Sample {
+            interrupt_time: crate::interrupt::clock::read_in(
+                at_clock,
+                crate::interrupt::clock::Clock::interrupt_time,
+            ),
+            cs,
+            frames,
+            depth,
+        };
+        TRACE.get(at_clock).record(sample)
+    });
 }
 
 /// Walk the frame-pointer chain from `ebp`, filling `frames[1..]` with the callers' return

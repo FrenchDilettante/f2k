@@ -8,10 +8,14 @@
 //! on any host, or another process's memory), a native pointer type in the DLLs' own code (the same
 //! layout on their target, and host addresses in the host tests). The layout asserts hold for the
 //! `u32` form, which is also [`Pod`].
+//!
+//! The structures the query and set services answer and take are in [`info`].
 
 use core::mem::{offset_of, size_of};
 
 use crate::pod::Pod;
+
+pub mod info;
 
 /// A UNICODE_STRING: its length and room in bytes, and its buffer (an address, or an offset in a
 /// denormalized process parameters block; zero or null for none).
@@ -69,6 +73,50 @@ pub struct IoStatusBlock<P> {
 }
 
 impl UnicodeString<*mut u16> {
+    /// The empty string, with no buffer: what a service that answers a string fills, or the
+    /// probe that asks a value's length.
+    pub const fn empty() -> Self {
+        UnicodeString {
+            length: 0,
+            maximum_length: 0,
+            buffer: core::ptr::null_mut(),
+        }
+    }
+
+    /// A string over `units`, its length and room theirs; none past a counted string's reach
+    /// ([`crate::string::MAX_USTRING`] bytes). The buffer is the slice's: a service reads it
+    /// through the string and never writes it (one that writes gets a [`Self::with_room`]).
+    pub fn from_units(units: &[u16]) -> Option<Self> {
+        let length = Self::bytes(units.len())?;
+        Some(UnicodeString {
+            length,
+            maximum_length: length,
+            buffer: units.as_ptr().cast_mut(),
+        })
+    }
+
+    /// A string over the first `length` units of `buffer`, its room the whole buffer (as much
+    /// of it as a counted string reaches: [`crate::string::MAX_USTRING`] bytes), for a service
+    /// that writes the string; none when the length is past the room.
+    pub fn with_room(buffer: &mut [u16], length: usize) -> Option<Self> {
+        let room = buffer.len().min(crate::string::MAX_USTRING / 2);
+        if length > room {
+            return None;
+        }
+        Some(UnicodeString {
+            length: Self::bytes(length)?,
+            maximum_length: Self::bytes(room)?,
+            buffer: buffer.as_mut_ptr(),
+        })
+    }
+
+    /// `units` UTF-16 units in bytes, as a counted string's length; none past its reach.
+    fn bytes(units: usize) -> Option<u16> {
+        u16::try_from(units.checked_mul(2)?)
+            .ok()
+            .filter(|&bytes| usize::from(bytes) <= crate::string::MAX_USTRING)
+    }
+
     /// The string's units (none for a length under one unit).
     ///
     /// # Safety
@@ -84,6 +132,15 @@ impl UnicodeString<*mut u16> {
 }
 
 impl AnsiString<*mut u8> {
+    /// The empty string, with no buffer: what a conversion that allocates fills.
+    pub const fn empty() -> Self {
+        AnsiString {
+            length: 0,
+            maximum_length: 0,
+            buffer: core::ptr::null_mut(),
+        }
+    }
+
     /// The string's bytes.
     ///
     /// # Safety
@@ -142,6 +199,30 @@ const _: () = {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::string::MAX_USTRING;
+
+    #[test]
+    fn a_string_over_units_counts_them_up_to_its_reach() {
+        let units = [0x41u16; 3];
+        let string = UnicodeString::from_units(&units).unwrap();
+        assert_eq!((string.length, string.maximum_length), (6, 6));
+        assert_eq!(string.buffer.cast_const(), units.as_ptr());
+        let long = [0u16; MAX_USTRING / 2 + 1];
+        assert!(UnicodeString::from_units(&long[..MAX_USTRING / 2]).is_some());
+        assert!(UnicodeString::from_units(&long).is_none());
+    }
+
+    #[test]
+    fn a_string_with_room_has_the_buffer_up_to_its_reach() {
+        let mut buffer = [0u16; 8];
+        let string = UnicodeString::with_room(&mut buffer, 3).unwrap();
+        assert_eq!((string.length, string.maximum_length), (6, 16));
+        assert!(UnicodeString::with_room(&mut buffer, 9).is_none());
+        let mut long = [0u16; MAX_USTRING];
+        let string = UnicodeString::with_room(&mut long, 0).unwrap();
+        assert_eq!(usize::from(string.maximum_length), MAX_USTRING);
+        assert!(UnicodeString::with_room(&mut long, MAX_USTRING / 2 + 1).is_none());
+    }
 
     #[test]
     fn a_string_reads_its_units() {
@@ -153,13 +234,8 @@ mod tests {
         };
         // SAFETY: the buffer holds the length.
         assert_eq!(unsafe { string.units() }, &text[..2]);
-        let empty = UnicodeString {
-            length: 0,
-            maximum_length: 0,
-            buffer: core::ptr::null_mut(),
-        };
         // SAFETY: no units are read.
-        assert!(unsafe { empty.units() }.is_empty());
+        assert!(unsafe { UnicodeString::empty().units() }.is_empty());
     }
 
     #[test]

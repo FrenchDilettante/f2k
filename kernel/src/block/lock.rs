@@ -24,10 +24,10 @@ use core::ops::{Deref, DerefMut};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 #[cfg(target_arch = "x86")]
-use crate::level::{At, Passive};
+use crate::level::{At, Dispatch, Passive};
 use crate::sched::dispatcher::Dispatcher;
 use crate::sched::event::{Event, EventKind};
-use crate::sched::thread::Thread;
+use crate::sched::thread::ThreadId;
 use crate::sched::wait::{ClockStamp, WaitDisposition, WaitMode, WaitReason};
 
 /// The priority increment a release grants the waiter it hands the lock to: none.
@@ -37,8 +37,8 @@ const HANDOFF_INCREMENT: i8 = 0;
 pub struct DeviceLock<T = ()> {
     event: UnsafeCell<Event>,
     initialized: AtomicBool,
-    /// The holding thread (its record's address); 0 when nobody holds the lock, or while a release
-    /// hands it to a waiter that has not run yet.
+    /// The holding thread ([`identity`]); 0 when nobody holds the lock, or while a release hands
+    /// it to a waiter that has not run yet.
     owner: AtomicUsize,
     value: UnsafeCell<T>,
 }
@@ -90,11 +90,12 @@ impl<T> DeviceLock<T> {
     pub fn acquire_for(
         &self,
         dispatcher: &mut Dispatcher,
-        thread: &mut Thread,
+        thread: impl Into<ThreadId>,
         stamp: ClockStamp,
     ) -> WaitDisposition {
+        let thread = thread.into();
         assert!(
-            thread.in_critical_region(),
+            dispatcher.thread(thread).in_critical_region(),
             "a device lock taken outside a critical region"
         );
         let taker = identity(thread);
@@ -123,7 +124,8 @@ impl<T> DeviceLock<T> {
     pub fn release_with(&self, dispatcher: &mut Dispatcher) {
         assert!(!self.is_free(), "releasing a device lock nobody holds");
         self.owner.store(0, Ordering::SeqCst);
-        self.with_event(|event| event.set(dispatcher, HANDOFF_INCREMENT));
+        let event = self.with_event(|event| event.id());
+        dispatcher.set_event(event, HANDOFF_INCREMENT);
     }
 
     /// Run `body` on the value, holding the lock.
@@ -151,7 +153,7 @@ impl<T> DeviceLock<T> {
     /// Take the lock for the running thread, blocking while another holds it.
     #[cfg(target_arch = "x86")]
     fn acquire(&self) {
-        let running = crate::sched::idle::dispatcher().current_thread() as usize;
+        let running = identity(crate::sched::current_thread());
         assert_ne!(
             self.owner.load(Ordering::SeqCst),
             running,
@@ -183,16 +185,34 @@ impl<T> DeviceLock<T> {
         self.owner.store(running, Ordering::SeqCst);
     }
 
-    /// Release the lock held by the running thread.
+    /// Release the lock held by the running thread. With nobody waiting, the lock goes back free
+    /// in place, masked, as the idle thread's take does: the dispatcher is needed only to hand it
+    /// to a waiter (Windows 2000's fast mutex release takes the same shortcut). A masked holder
+    /// stays masked through such a release.
     #[cfg(target_arch = "x86")]
     fn release(&self) {
-        masked(|| self.release_with(crate::sched::idle::dispatcher()));
+        let handed = masked(|| {
+            self.with_event(|event| {
+                if event.waitable.has_waiters() {
+                    return true;
+                }
+                assert!(!event.signaled(), "releasing a device lock nobody holds");
+                self.owner.store(0, Ordering::SeqCst);
+                event.waitable.signal_state = 1;
+                false
+            })
+        });
+        if handed {
+            crate::level::raised::<Dispatch, _>(|dispatch| {
+                self.release_with(crate::sched::DISPATCHER.get(dispatch))
+            });
+        }
     }
 }
 
-/// A thread's identity for the owner check: its record's address.
-fn identity(thread: &Thread) -> usize {
-    thread as *const Thread as usize
+/// A thread's identity for the owner check: its record's index, one up (0 is nobody).
+fn identity(thread: ThreadId) -> usize {
+    thread.index() as usize + 1
 }
 
 /// A held [`DeviceLock`]: derefs to the value, and releases the lock when dropped.
@@ -238,6 +258,7 @@ fn masked<R>(body: impl FnOnce() -> R) -> R {
 mod tests {
     use super::*;
     use crate::sched::process::SchedProcess;
+    use crate::sched::thread::Thread;
     use crate::sched::thread::ThreadState;
     use crate::status::STATUS_SUCCESS;
 
@@ -276,21 +297,18 @@ mod tests {
     fn a_held_lock_parks_the_second_taker() {
         let d = dispatcher();
         let lock = lock();
-        let mut first = thread();
-        let mut second = thread();
+        let first = thread();
+        let second = thread();
         assert!(lock.is_free());
 
         assert_eq!(
-            lock.acquire_for(d, &mut first, NOW),
+            lock.acquire_for(d, first, NOW),
             WaitDisposition::Complete(STATUS_SUCCESS)
         );
         assert!(!lock.is_free());
         assert_eq!(first.state(), ThreadState::Running);
 
-        assert_eq!(
-            lock.acquire_for(d, &mut second, NOW),
-            WaitDisposition::Yield
-        );
+        assert_eq!(lock.acquire_for(d, second, NOW), WaitDisposition::Yield);
         assert_eq!(second.state(), ThreadState::Waiting);
     }
 
@@ -300,16 +318,13 @@ mod tests {
     fn the_release_hands_the_lock_to_the_oldest_waiter() {
         let d = dispatcher();
         let lock = lock();
-        let (mut first, mut second, mut third) = (thread(), thread(), thread());
+        let (first, second, third) = (thread(), thread(), thread());
         assert!(matches!(
-            lock.acquire_for(d, &mut first, NOW),
+            lock.acquire_for(d, first, NOW),
             WaitDisposition::Complete(_)
         ));
-        assert_eq!(
-            lock.acquire_for(d, &mut second, NOW),
-            WaitDisposition::Yield
-        );
-        assert_eq!(lock.acquire_for(d, &mut third, NOW), WaitDisposition::Yield);
+        assert_eq!(lock.acquire_for(d, second, NOW), WaitDisposition::Yield);
+        assert_eq!(lock.acquire_for(d, third, NOW), WaitDisposition::Yield);
 
         lock.release_with(d);
         assert_ne!(
@@ -338,7 +353,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "outside a critical region")]
     fn taking_the_lock_outside_a_critical_region_is_a_contract_violation() {
-        lock().acquire_for(dispatcher(), &mut bare_thread(), NOW);
+        lock().acquire_for(dispatcher(), bare_thread(), NOW);
     }
 
     #[test]
@@ -360,12 +375,12 @@ mod tests {
     fn the_owner_taking_the_lock_again_is_refused() {
         let d = dispatcher();
         let lock = lock();
-        let mut owner = thread();
+        let owner = thread();
         assert!(matches!(
-            lock.acquire_for(d, &mut owner, NOW),
+            lock.acquire_for(d, owner, NOW),
             WaitDisposition::Complete(_)
         ));
-        lock.acquire_for(d, &mut owner, NOW);
+        lock.acquire_for(d, owner, NOW);
     }
 
     /// The release clears the owner: the same thread may take the lock again afterwards.
@@ -373,14 +388,14 @@ mod tests {
     fn the_release_clears_the_owner() {
         let d = dispatcher();
         let lock = lock();
-        let mut owner = thread();
+        let owner = thread();
         assert!(matches!(
-            lock.acquire_for(d, &mut owner, NOW),
+            lock.acquire_for(d, owner, NOW),
             WaitDisposition::Complete(_)
         ));
         lock.release_with(d);
         assert!(matches!(
-            lock.acquire_for(d, &mut owner, NOW),
+            lock.acquire_for(d, owner, NOW),
             WaitDisposition::Complete(_)
         ));
     }

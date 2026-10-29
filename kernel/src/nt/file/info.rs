@@ -1,54 +1,172 @@
-//! The information classes the file services answer and take, as their structures lay them out
-//! (ntifs.h, NT 5.0, x86): the per-file ones (NtQueryInformationFile, NtSetInformationFile,
-//! NtQueryAttributesFile, NtQueryFullAttributesFile), the directory listings'
+//! The information classes the file services answer and take, and their structures (ntifs.h, NT
+//! 5.0, x86; see [`rtl::nt::info`]): the per-file ones (NtQueryInformationFile,
+//! NtSetInformationFile, NtQueryAttributesFile, NtQueryFullAttributesFile), the directory listings'
 //! (NtQueryDirectoryFile) and the volume's (NtQueryVolumeInformationFile).
 //! Times are FILETIMEs (the FAT stamps are local time, UTC here); FAT keeps no change time (zero);
 //! a file's allocation is its size in whole clusters; its index number names its entry (its
 //! directory's first cluster, then its record there), as GetFileInformationByHandle's file index
 //! reads it.
 
+use rtl::nt::info::{
+    FileAccessInformation,
+    FileAlignmentInformation,
+    FileAllInformation,
+    FileAllocationInformation,
+    FileBasicInformation,
+    FileBothDirInformation,
+    FileDirectoryInformation,
+    FileDispositionInformation,
+    FileEaInformation,
+    FileEndOfFileInformation,
+    FileFsAttributeInformation,
+    FileFsDeviceInformation,
+    FileFsFullSizeInformation,
+    FileFsSizeInformation,
+    FileFsVolumeInformation,
+    FileFullDirInformation,
+    FileInternalInformation,
+    FileModeInformation,
+    FileNamesInformation,
+    FileNetworkOpenInformation,
+    FilePositionInformation,
+    FileRenameInformation,
+    FileStandardInformation,
+    VariableSize,
+};
+use rtl::pod::Pod;
+
 use crate::fs::fat32::lookup::File;
+use crate::fs::file::rights;
 use crate::fs::io::{attributes, file_times};
 
-/// The per-file classes (FILE_INFORMATION_CLASS).
-pub const FILE_DIRECTORY_INFORMATION: u32 = 1;
-pub const FILE_FULL_DIRECTORY_INFORMATION: u32 = 2;
-pub const FILE_BOTH_DIRECTORY_INFORMATION: u32 = 3;
-pub const FILE_BASIC_INFORMATION: u32 = 4;
-pub const FILE_STANDARD_INFORMATION: u32 = 5;
-pub const FILE_INTERNAL_INFORMATION: u32 = 6;
-pub const FILE_EA_INFORMATION: u32 = 7;
-pub const FILE_ACCESS_INFORMATION: u32 = 8;
-pub const FILE_RENAME_INFORMATION: u32 = 10;
-pub const FILE_NAMES_INFORMATION: u32 = 12;
-pub const FILE_DISPOSITION_INFORMATION: u32 = 13;
-pub const FILE_POSITION_INFORMATION: u32 = 14;
-pub const FILE_MODE_INFORMATION: u32 = 16;
-pub const FILE_ALIGNMENT_INFORMATION: u32 = 17;
-pub const FILE_ALL_INFORMATION: u32 = 18;
-pub const FILE_ALLOCATION_INFORMATION: u32 = 19;
-pub const FILE_END_OF_FILE_INFORMATION: u32 = 20;
-pub const FILE_NETWORK_OPEN_INFORMATION: u32 = 34;
+info_class! {
+    /// The per-file classes a query answers (FILE_INFORMATION_CLASS).
+    pub enum QueryClass {
+        Basic = 4,
+        Standard = 5,
+        Internal = 6,
+        Ea = 7,
+        Access = 8,
+        Position = 14,
+        Mode = 16,
+        Alignment = 17,
+        All = 18,
+        NetworkOpen = 34,
+    }
+}
 
-/// The volume classes (FS_INFORMATION_CLASS).
-pub const FILE_FS_VOLUME_INFORMATION: u32 = 1;
-pub const FILE_FS_SIZE_INFORMATION: u32 = 3;
-pub const FILE_FS_DEVICE_INFORMATION: u32 = 4;
-pub const FILE_FS_ATTRIBUTE_INFORMATION: u32 = 5;
-pub const FILE_FS_FULL_SIZE_INFORMATION: u32 = 7;
+impl QueryClass {
+    /// The smallest buffer the query takes: the class's structure, as the I/O manager's length
+    /// table has it.
+    pub fn min_size(self) -> usize {
+        match self {
+            QueryClass::Basic => size_of::<FileBasicInformation>(),
+            QueryClass::Standard => size_of::<FileStandardInformation>(),
+            QueryClass::Internal => size_of::<FileInternalInformation>(),
+            QueryClass::Ea => size_of::<FileEaInformation>(),
+            QueryClass::Access => size_of::<FileAccessInformation>(),
+            QueryClass::Position => size_of::<FilePositionInformation>(),
+            QueryClass::Mode => size_of::<FileModeInformation>(),
+            QueryClass::Alignment => size_of::<FileAlignmentInformation>(),
+            QueryClass::All => size_of::<FileAllInformation>(),
+            QueryClass::NetworkOpen => size_of::<FileNetworkOpenInformation>(),
+        }
+    }
 
-/// The structures' sizes (their fixed parts, for the variable ones: what a call must hand over at
-/// least, as the I/O manager's length tables have them).
-pub const BASIC_SIZE: usize = 40;
-pub const STANDARD_SIZE: usize = 24;
-pub const NETWORK_OPEN_SIZE: usize = 56;
-pub const ALL_SIZE: usize = 104;
-pub const RENAME_SIZE: usize = 16;
-pub const FS_VOLUME_SIZE: usize = 24;
-pub const FS_SIZE_SIZE: usize = 24;
-pub const FS_DEVICE_SIZE: usize = 8;
-pub const FS_ATTRIBUTE_SIZE: usize = 16;
-pub const FS_FULL_SIZE_SIZE: usize = 32;
+    /// The rights the query needs: FILE_READ_ATTRIBUTES for the times and the attributes, none for
+    /// the rest.
+    pub fn rights(self) -> u32 {
+        match self {
+            QueryClass::Basic | QueryClass::All | QueryClass::NetworkOpen => {
+                rights::FILE_READ_ATTRIBUTES
+            }
+            _ => 0,
+        }
+    }
+}
+
+info_class! {
+    /// The per-file classes a set takes (FILE_INFORMATION_CLASS).
+    pub enum SetClass {
+        Basic = 4,
+        Rename = 10,
+        Disposition = 13,
+        Position = 14,
+        Allocation = 19,
+        EndOfFile = 20,
+    }
+}
+
+impl SetClass {
+    /// The smallest buffer the set takes: the class's structure.
+    pub fn min_size(self) -> usize {
+        match self {
+            SetClass::Basic => size_of::<FileBasicInformation>(),
+            SetClass::Rename => size_of::<FileRenameInformation>(),
+            SetClass::Disposition => size_of::<FileDispositionInformation>(),
+            SetClass::Position => size_of::<FilePositionInformation>(),
+            SetClass::Allocation => size_of::<FileAllocationInformation>(),
+            SetClass::EndOfFile => size_of::<FileEndOfFileInformation>(),
+        }
+    }
+
+    /// The rights the set needs: FILE_WRITE_ATTRIBUTES for the times and the attributes, DELETE
+    /// for a rename or a delete, FILE_WRITE_DATA for the size, none for the position.
+    pub fn rights(self) -> u32 {
+        match self {
+            SetClass::Basic => rights::FILE_WRITE_ATTRIBUTES,
+            SetClass::Rename | SetClass::Disposition => rights::DELETE,
+            SetClass::Allocation | SetClass::EndOfFile => rights::FILE_WRITE_DATA,
+            SetClass::Position => 0,
+        }
+    }
+}
+
+info_class! {
+    /// The classes a directory listing answers in (FILE_INFORMATION_CLASS).
+    pub enum ListingClass {
+        Directory = 1,
+        FullDirectory = 2,
+        BothDirectory = 3,
+        Names = 12,
+    }
+}
+
+impl ListingClass {
+    /// A record's fixed part (where its name starts): what a listing's buffer must hold at least.
+    pub fn fixed_size(self) -> usize {
+        match self {
+            ListingClass::Directory => FileDirectoryInformation::FIXED_SIZE,
+            ListingClass::FullDirectory => FileFullDirInformation::FIXED_SIZE,
+            ListingClass::BothDirectory => FileBothDirInformation::FIXED_SIZE,
+            ListingClass::Names => FileNamesInformation::FIXED_SIZE,
+        }
+    }
+}
+
+info_class! {
+    /// The volume classes (FS_INFORMATION_CLASS).
+    pub enum VolumeClass {
+        Volume = 1,
+        Size = 3,
+        Device = 4,
+        Attribute = 5,
+        FullSize = 7,
+    }
+}
+
+impl VolumeClass {
+    /// The smallest buffer the query takes: the class's structure.
+    pub fn min_size(self) -> usize {
+        match self {
+            VolumeClass::Volume => size_of::<FileFsVolumeInformation>(),
+            VolumeClass::Size => size_of::<FileFsSizeInformation>(),
+            VolumeClass::Device => size_of::<FileFsDeviceInformation>(),
+            VolumeClass::Attribute => size_of::<FileFsAttributeInformation>(),
+            VolumeClass::FullSize => size_of::<FileFsFullSizeInformation>(),
+        }
+    }
+}
 
 /// FILE_DEVICE_DISK: the volume's device type.
 pub const FILE_DEVICE_DISK: u32 = 7;
@@ -56,13 +174,33 @@ pub const FILE_DEVICE_DISK: u32 = 7;
 pub const FAT32_ATTRIBUTES: u32 = 0x2 | 0x4;
 /// The longest component FAT32 stores.
 pub const FAT32_MAX_COMPONENT: u32 = 255;
+/// The volume's sector size.
+const BYTES_PER_SECTOR: u32 = 512;
 
-fn put32(out: &mut [u8], at: usize, value: u32) {
-    out[at..at + 4].copy_from_slice(&value.to_le_bytes());
+/// A structure's bytes at the start of `out` (which holds them): their length.
+fn put<T: Pod>(out: &mut [u8], value: &T) -> usize {
+    let bytes = value.as_bytes();
+    out[..bytes.len()].copy_from_slice(bytes);
+    bytes.len()
 }
 
-fn put64(out: &mut [u8], at: usize, value: u64) {
-    out[at..at + 8].copy_from_slice(&value.to_le_bytes());
+/// A variable-size structure's fixed part, then its name's units, into `out` (which holds the
+/// fixed part at least; the name's length is the structure's to give): the length written, or Err
+/// with it when the name did not fit (as much of it as fits written).
+fn put_named<T: VariableSize>(out: &mut [u8], value: &T, name: &[u16]) -> Result<usize, usize> {
+    let fixed = value.fixed_part();
+    out[..fixed.len()].copy_from_slice(fixed);
+    let (slots, _) = out[fixed.len()..].as_chunks_mut::<2>();
+    let units = &name[..name.len().min(slots.len())];
+    for (slot, unit) in slots.iter_mut().zip(units) {
+        *slot = unit.to_le_bytes();
+    }
+    let written = fixed.len() + 2 * units.len();
+    if units.len() == name.len() {
+        Ok(written)
+    } else {
+        Err(written)
+    }
 }
 
 /// What the per-file classes report of an open file beyond its entry.
@@ -87,101 +225,94 @@ pub fn allocation(file: &File, cluster: u32) -> u64 {
 }
 
 /// FILE_BASIC_INFORMATION: the times and the attributes.
-pub fn basic(file: &File) -> [u8; BASIC_SIZE] {
-    let mut out = [0u8; BASIC_SIZE];
-    for (index, time) in file_times(file).iter().enumerate() {
-        put64(&mut out, 8 * index, *time);
+pub fn basic(file: &File) -> FileBasicInformation {
+    let [creation_time, last_access_time, last_write_time] = file_times(file);
+    FileBasicInformation {
+        creation_time,
+        last_access_time,
+        last_write_time,
+        file_attributes: attributes(file.attributes),
+        ..Default::default()
     }
-    put32(&mut out, 32, attributes(file.attributes));
-    out
 }
 
 /// FILE_STANDARD_INFORMATION: the allocation, the end of file, one link, the pending delete, and
 /// whether it is a directory.
-pub fn standard(file: &File, open: &Open) -> [u8; STANDARD_SIZE] {
-    let mut out = [0u8; STANDARD_SIZE];
-    put64(&mut out, 0, open.allocation);
-    put64(&mut out, 8, file.size as u64);
-    put32(&mut out, 16, 1);
-    out[20] = u8::from(open.delete_pending);
-    out[21] = u8::from(file.directory);
-    out
+pub fn standard(file: &File, open: &Open) -> FileStandardInformation {
+    FileStandardInformation {
+        allocation_size: open.allocation,
+        end_of_file: file.size as u64,
+        number_of_links: 1,
+        delete_pending: u8::from(open.delete_pending),
+        directory: u8::from(file.directory),
+        ..Default::default()
+    }
 }
 
-/// FILE_INTERNAL_INFORMATION's index number: the entry's directory, then its record.
-pub fn index_number(file: &File) -> u64 {
-    (u64::from(file.parent_cluster) << 32) | u64::from(file.index)
+/// FILE_INTERNAL_INFORMATION: the index number, the entry's directory then its record.
+pub fn internal(file: &File) -> FileInternalInformation {
+    FileInternalInformation {
+        index_number: (u64::from(file.parent_cluster) << 32) | u64::from(file.index),
+    }
 }
 
 /// FILE_NETWORK_OPEN_INFORMATION: the times, the allocation and end of file, the attributes.
-pub fn network_open(file: &File, allocation: u64) -> [u8; NETWORK_OPEN_SIZE] {
-    let mut out = [0u8; NETWORK_OPEN_SIZE];
-    for (index, time) in file_times(file).iter().enumerate() {
-        put64(&mut out, 8 * index, *time);
+pub fn network_open(file: &File, allocation: u64) -> FileNetworkOpenInformation {
+    let [creation_time, last_access_time, last_write_time] = file_times(file);
+    FileNetworkOpenInformation {
+        creation_time,
+        last_access_time,
+        last_write_time,
+        allocation_size: allocation,
+        end_of_file: file.size as u64,
+        file_attributes: attributes(file.attributes),
+        ..Default::default()
     }
-    put64(&mut out, 32, allocation);
-    put64(&mut out, 40, file.size as u64);
-    put32(&mut out, 48, attributes(file.attributes));
-    out
 }
 
 /// FILE_ALL_INFORMATION: basic, standard, internal, EA (none), access, position, mode, alignment
 /// (bytes), and the name (F2K keeps no open's name: an empty one).
-pub fn all(file: &File, open: &Open) -> [u8; ALL_SIZE] {
-    let mut out = [0u8; ALL_SIZE];
-    out[..BASIC_SIZE].copy_from_slice(&basic(file));
-    out[40..64].copy_from_slice(&standard(file, open));
-    put64(&mut out, 64, index_number(file));
-    put32(&mut out, 76, open.granted);
-    put64(&mut out, 80, open.position);
-    put32(&mut out, 88, open.mode);
-    out
+pub fn all(file: &File, open: &Open) -> FileAllInformation {
+    FileAllInformation {
+        basic: basic(file),
+        standard: standard(file, open),
+        internal: internal(file),
+        access: FileAccessInformation {
+            access_flags: open.granted,
+        },
+        position: FilePositionInformation {
+            current_byte_offset: open.position,
+        },
+        mode: FileModeInformation { mode: open.mode },
+        ..Default::default()
+    }
 }
 
-/// A per-file class's answer for a query, into `out` (its length checked by the caller): the bytes
-/// written; none for a class not answered.
-pub fn query(class: u32, file: &File, open: &Open, out: &mut [u8]) -> Option<usize> {
-    let answer: &[u8] = match class {
-        FILE_BASIC_INFORMATION => &basic(file),
-        FILE_STANDARD_INFORMATION => &standard(file, open),
-        FILE_INTERNAL_INFORMATION => &index_number(file).to_le_bytes(),
-        FILE_EA_INFORMATION | FILE_ALIGNMENT_INFORMATION => &[0; 4],
-        FILE_ACCESS_INFORMATION => &open.granted.to_le_bytes(),
-        FILE_POSITION_INFORMATION => &open.position.to_le_bytes(),
-        FILE_MODE_INFORMATION => &open.mode.to_le_bytes(),
-        FILE_ALL_INFORMATION => &all(file, open),
-        FILE_NETWORK_OPEN_INFORMATION => &network_open(file, open.allocation),
-        _ => return None,
-    };
-    out[..answer.len()].copy_from_slice(answer);
-    Some(answer.len())
-}
-
-/// The smallest buffer a query of `class` takes (none: a class not answered).
-pub fn query_size(class: u32) -> Option<usize> {
-    Some(match class {
-        FILE_BASIC_INFORMATION => BASIC_SIZE,
-        FILE_STANDARD_INFORMATION => STANDARD_SIZE,
-        FILE_INTERNAL_INFORMATION | FILE_POSITION_INFORMATION => 8,
-        FILE_EA_INFORMATION
-        | FILE_ACCESS_INFORMATION
-        | FILE_MODE_INFORMATION
-        | FILE_ALIGNMENT_INFORMATION => 4,
-        FILE_ALL_INFORMATION => ALL_SIZE,
-        FILE_NETWORK_OPEN_INFORMATION => NETWORK_OPEN_SIZE,
-        _ => return None,
-    })
-}
-
-/// The smallest buffer a set of `class` takes (none: a class not taken).
-pub fn set_size(class: u32) -> Option<usize> {
-    Some(match class {
-        FILE_BASIC_INFORMATION => BASIC_SIZE,
-        FILE_RENAME_INFORMATION => RENAME_SIZE,
-        FILE_DISPOSITION_INFORMATION => 1,
-        FILE_POSITION_INFORMATION | FILE_ALLOCATION_INFORMATION | FILE_END_OF_FILE_INFORMATION => 8,
-        _ => return None,
-    })
+/// A per-file class's answer for a query, into `out` (at least the class's size): the bytes
+/// written.
+pub fn query(class: QueryClass, file: &File, open: &Open, out: &mut [u8]) -> usize {
+    match class {
+        QueryClass::Basic => put(out, &basic(file)),
+        QueryClass::Standard => put(out, &standard(file, open)),
+        QueryClass::Internal => put(out, &internal(file)),
+        QueryClass::Ea => put(out, &FileEaInformation::default()),
+        QueryClass::Access => put(
+            out,
+            &FileAccessInformation {
+                access_flags: open.granted,
+            },
+        ),
+        QueryClass::Position => put(
+            out,
+            &FilePositionInformation {
+                current_byte_offset: open.position,
+            },
+        ),
+        QueryClass::Mode => put(out, &FileModeInformation { mode: open.mode }),
+        QueryClass::Alignment => put(out, &FileAlignmentInformation::default()),
+        QueryClass::All => put(out, &all(file, open)),
+        QueryClass::NetworkOpen => put(out, &network_open(file, open.allocation)),
+    }
 }
 
 // --- Directory listings --------------------------------------------------------------------------
@@ -197,51 +328,73 @@ pub struct Entry<'a> {
     pub short: &'a [u16],
 }
 
-/// Where a listing class's name starts: its fixed part's size. None for a class not listed.
-pub fn entry_name_offset(class: u32) -> Option<usize> {
-    Some(match class {
-        FILE_DIRECTORY_INFORMATION => 64,
-        FILE_FULL_DIRECTORY_INFORMATION => 68,
-        FILE_BOTH_DIRECTORY_INFORMATION => 94,
-        FILE_NAMES_INFORMATION => 12,
-        _ => return None,
-    })
-}
-
 /// Write `entry` as a listing class's record into `out` (NextEntryOffset left zero): its length,
 /// or, when its name does not fit, Err with the length of the record holding what does (the fixed
 /// part must fit: the caller checks).
-pub fn directory_entry(class: u32, entry: &Entry, out: &mut [u8]) -> Result<usize, usize> {
-    let offset = entry_name_offset(class).expect("a listing class");
-    out[..offset].fill(0);
-    put32(out, 4, entry.index);
-    if class == FILE_NAMES_INFORMATION {
-        put32(out, 8, 2 * entry.name.len() as u32);
-    } else {
-        for (index, time) in file_times(&entry.file).iter().enumerate() {
-            put64(out, 8 + 8 * index, *time);
+pub fn directory_entry(class: ListingClass, entry: &Entry, out: &mut [u8]) -> Result<usize, usize> {
+    let [creation_time, last_access_time, last_write_time] = file_times(&entry.file);
+    let file_index = entry.index;
+    let end_of_file = entry.file.size as u64;
+    let allocation_size = entry.allocation;
+    let file_attributes = attributes(entry.file.attributes);
+    let file_name_length = 2 * entry.name.len() as u32;
+    match class {
+        ListingClass::Directory => {
+            let record = FileDirectoryInformation {
+                file_index,
+                creation_time,
+                last_access_time,
+                last_write_time,
+                end_of_file,
+                allocation_size,
+                file_attributes,
+                file_name_length,
+                ..Default::default()
+            };
+            put_named(out, &record, entry.name)
         }
-        put64(out, 40, entry.file.size as u64);
-        put64(out, 48, entry.allocation);
-        put32(out, 56, attributes(entry.file.attributes));
-        put32(out, 60, 2 * entry.name.len() as u32);
-        if class == FILE_BOTH_DIRECTORY_INFORMATION {
-            out[68] = (2 * entry.short.len()) as u8;
-            for (index, &unit) in entry.short.iter().take(12).enumerate() {
-                out[70 + 2 * index..72 + 2 * index].copy_from_slice(&unit.to_le_bytes());
+        ListingClass::FullDirectory => {
+            let record = FileFullDirInformation {
+                file_index,
+                creation_time,
+                last_access_time,
+                last_write_time,
+                end_of_file,
+                allocation_size,
+                file_attributes,
+                file_name_length,
+                ..Default::default()
+            };
+            put_named(out, &record, entry.name)
+        }
+        ListingClass::BothDirectory => {
+            let mut short_name = [0u16; 12];
+            for (slot, &unit) in short_name.iter_mut().zip(entry.short) {
+                *slot = unit;
             }
+            let record = FileBothDirInformation {
+                file_index,
+                creation_time,
+                last_access_time,
+                last_write_time,
+                end_of_file,
+                allocation_size,
+                file_attributes,
+                file_name_length,
+                short_name_length: (2 * entry.short.len()) as u8,
+                short_name,
+                ..Default::default()
+            };
+            put_named(out, &record, entry.name)
         }
-    }
-    let room = (out.len() - offset) / 2;
-    let fits = entry.name.len() <= room;
-    for (index, &unit) in entry.name.iter().take(room).enumerate() {
-        out[offset + 2 * index..offset + 2 * index + 2].copy_from_slice(&unit.to_le_bytes());
-    }
-    let length = offset + 2 * entry.name.len().min(room);
-    if fits {
-        Ok(length)
-    } else {
-        Err(length)
+        ListingClass::Names => {
+            let record = FileNamesInformation {
+                file_index,
+                file_name_length,
+                ..Default::default()
+            };
+            put_named(out, &record, entry.name)
+        }
     }
 }
 
@@ -272,76 +425,60 @@ impl Volume {
     }
 }
 
-/// The smallest buffer a volume query of `class` takes (none: a class not answered).
-pub fn volume_query_size(class: u32) -> Option<usize> {
-    Some(match class {
-        FILE_FS_VOLUME_INFORMATION => FS_VOLUME_SIZE,
-        FILE_FS_SIZE_INFORMATION => FS_SIZE_SIZE,
-        FILE_FS_DEVICE_INFORMATION => FS_DEVICE_SIZE,
-        FILE_FS_ATTRIBUTE_INFORMATION => FS_ATTRIBUTE_SIZE,
-        FILE_FS_FULL_SIZE_INFORMATION => FS_FULL_SIZE_SIZE,
-        _ => return None,
-    })
-}
-
-/// A name's units into a structure at `at`, its length in bytes at `length_at`: the structure's
-/// length, or Err with it when the name did not fit (as much as fits written).
-fn put_name(
-    out: &mut [u8],
-    at: usize,
-    length_at: usize,
-    name: impl Iterator<Item = u16>,
-    count: usize,
-) -> Result<usize, usize> {
-    put32(out, length_at, 2 * count as u32);
-    let room = (out.len() - at) / 2;
-    for (index, unit) in name.take(room).enumerate() {
-        out[at + 2 * index..at + 2 * index + 2].copy_from_slice(&unit.to_le_bytes());
-    }
-    let written = at + 2 * count.min(room);
-    if count <= room {
-        Ok(written)
-    } else {
-        Err(written)
-    }
-}
-
 /// A volume class's answer into `out` (at least its fixed size): the length written, or Err with
 /// it when a name did not fit (STATUS_BUFFER_OVERFLOW, as much as fits written).
-pub fn volume_query(class: u32, volume: &Volume, out: &mut [u8]) -> Result<usize, usize> {
+pub fn volume_query(class: VolumeClass, volume: &Volume, out: &mut [u8]) -> Result<usize, usize> {
     match class {
-        FILE_FS_VOLUME_INFORMATION => {
-            out[..18].fill(0);
-            put32(out, 8, volume.serial);
-            let label = volume.label();
-            let units = label
-                .iter()
-                .map(|&byte| rtl::cp1252::MB_TO_WC[byte as usize]);
-            put_name(out, 18, 12, units, label.len()).map(|length| length.max(FS_VOLUME_SIZE))
-        }
-        FILE_FS_SIZE_INFORMATION | FILE_FS_FULL_SIZE_INFORMATION => {
-            put64(out, 0, volume.clusters as u64);
-            put64(out, 8, volume.free_clusters as u64);
-            let mut at = 16;
-            if class == FILE_FS_FULL_SIZE_INFORMATION {
-                put64(out, 16, volume.free_clusters as u64);
-                at = 24;
+        VolumeClass::Volume => {
+            let mut units = [0u16; 11];
+            let label = &mut units[..volume.label().len()];
+            for (unit, &byte) in label.iter_mut().zip(volume.label()) {
+                *unit = rtl::cp1252::MB_TO_WC[byte as usize];
             }
-            put32(out, at, volume.sectors_per_cluster);
-            put32(out, at + 4, 512);
-            Ok(at + 8)
+            let info = FileFsVolumeInformation {
+                volume_serial_number: volume.serial,
+                volume_label_length: 2 * label.len() as u32,
+                ..Default::default()
+            };
+            // A label shorter than the structure's tail still answers the whole structure.
+            put_named(out, &info, label).map(|length| length.max(size_of_val(&info)))
         }
-        FILE_FS_DEVICE_INFORMATION => {
-            put32(out, 0, FILE_DEVICE_DISK);
-            put32(out, 4, 0);
-            Ok(FS_DEVICE_SIZE)
+        VolumeClass::Size => Ok(put(
+            out,
+            &FileFsSizeInformation {
+                total_allocation_units: volume.clusters as u64,
+                available_allocation_units: volume.free_clusters as u64,
+                sectors_per_allocation_unit: volume.sectors_per_cluster,
+                bytes_per_sector: BYTES_PER_SECTOR,
+            },
+        )),
+        VolumeClass::FullSize => Ok(put(
+            out,
+            &FileFsFullSizeInformation {
+                total_allocation_units: volume.clusters as u64,
+                caller_available_allocation_units: volume.free_clusters as u64,
+                actual_available_allocation_units: volume.free_clusters as u64,
+                sectors_per_allocation_unit: volume.sectors_per_cluster,
+                bytes_per_sector: BYTES_PER_SECTOR,
+            },
+        )),
+        VolumeClass::Device => Ok(put(
+            out,
+            &FileFsDeviceInformation {
+                device_type: FILE_DEVICE_DISK,
+                characteristics: 0,
+            },
+        )),
+        VolumeClass::Attribute => {
+            let name = b"FAT32".map(u16::from);
+            let info = FileFsAttributeInformation {
+                file_system_attributes: FAT32_ATTRIBUTES,
+                maximum_component_name_length: FAT32_MAX_COMPONENT,
+                file_system_name_length: 2 * name.len() as u32,
+                ..Default::default()
+            };
+            put_named(out, &info, &name)
         }
-        FILE_FS_ATTRIBUTE_INFORMATION => {
-            put32(out, 0, FAT32_ATTRIBUTES);
-            put32(out, 4, FAT32_MAX_COMPONENT);
-            put_name(out, 12, 8, b"FAT32".iter().map(|&byte| u16::from(byte)), 5)
-        }
-        _ => unreachable!("the caller checks the class"),
     }
 }
 
@@ -349,6 +486,7 @@ pub fn volume_query(class: u32, volume: &Volume, out: &mut [u8]) -> Result<usize
 mod tests {
     use super::*;
     use crate::fs::fat32::dirent::Times;
+    use crate::status::STATUS_INVALID_INFO_CLASS;
 
     fn file() -> File {
         let mut file = File::plain(9, 1000, false);
@@ -384,53 +522,50 @@ mod tests {
         };
         assert_eq!(open.allocation, 4096);
         let basic = basic(&file);
-        assert_eq!(u64_at(&basic, 16), file_times(&file)[2], "the last write");
-        assert_eq!(u32_at(&basic, 32), 0x21);
-        let standard = standard(&file, &open);
         assert_eq!(
-            (
-                u64_at(&standard, 0),
-                u64_at(&standard, 8),
-                u32_at(&standard, 16)
-            ),
+            basic.last_write_time,
+            file_times(&file)[2],
+            "the last write"
+        );
+        assert_eq!(u32_at(basic.as_bytes(), 32), 0x21);
+        let standard = standard(&file, &open);
+        let bytes = standard.as_bytes();
+        assert_eq!(
+            (u64_at(bytes, 0), u64_at(bytes, 8), u32_at(bytes, 16)),
             (4096, 1000, 1)
         );
-        assert_eq!((standard[20], standard[21]), (1, 0));
+        assert_eq!((bytes[20], bytes[21]), (1, 0));
         let all = all(&file, &open);
-        assert_eq!(u64_at(&all, 48), 1000, "standard's end of file");
-        assert_eq!(u64_at(&all, 64), (5 << 32) | 7, "the index number");
+        let bytes = all.as_bytes();
+        assert_eq!(u64_at(bytes, 48), 1000, "standard's end of file");
+        assert_eq!(u64_at(bytes, 64), (5 << 32) | 7, "the index number");
         assert_eq!(
-            (u32_at(&all, 76), u64_at(&all, 80), u32_at(&all, 88)),
+            (u32_at(bytes, 76), u64_at(bytes, 80), u32_at(bytes, 88)),
             (0x12_0089, 77, 0x20)
         );
-        assert_eq!(u32_at(&all, 96), 0, "no name");
+        assert_eq!(u32_at(bytes, 96), 0, "no name");
         let network = network_open(&file, open.allocation);
+        let bytes = network.as_bytes();
         assert_eq!(
-            (
-                u64_at(&network, 32),
-                u64_at(&network, 40),
-                u32_at(&network, 48)
-            ),
+            (u64_at(bytes, 32), u64_at(bytes, 40), u32_at(bytes, 48)),
             (4096, 1000, 0x21)
         );
         let mut out = [0u8; 8];
-        assert_eq!(
-            query(FILE_POSITION_INFORMATION, &file, &open, &mut out),
-            Some(8)
-        );
+        assert_eq!(query(QueryClass::Position, &file, &open, &mut out), 8);
         assert_eq!(u64::from_le_bytes(out), 77);
         assert_eq!(
-            query(9, &file, &open, &mut out),
-            None,
+            QueryClass::try_from(9),
+            Err(STATUS_INVALID_INFO_CLASS),
             "the name is not kept"
         );
         assert_eq!(
             (
-                query_size(FILE_ALL_INFORMATION),
-                set_size(FILE_DISPOSITION_INFORMATION)
+                QueryClass::try_from(18).map(QueryClass::min_size),
+                SetClass::try_from(13).map(SetClass::min_size)
             ),
-            (Some(ALL_SIZE), Some(1))
+            (Ok(104), Ok(1))
         );
+        assert_eq!(SetClass::try_from(10).map(SetClass::min_size), Ok(16));
         assert_eq!(allocation(&File::plain(9, 0, true), 4096), 0);
     }
 
@@ -448,25 +583,32 @@ mod tests {
             short: &short,
         };
         let mut out = [0xCCu8; 200];
-        let length = directory_entry(FILE_BOTH_DIRECTORY_INFORMATION, &entry, &mut out).unwrap();
+        let length = directory_entry(ListingClass::BothDirectory, &entry, &mut out).unwrap();
         assert_eq!(length, 94 + 36);
         assert_eq!((u32_at(&out, 0), u32_at(&out, 4)), (0, 3));
         assert_eq!(
             (u64_at(&out, 40), u32_at(&out, 56), u32_at(&out, 60)),
             (1000, 0x21, 36)
         );
-        assert_eq!(out[68], 24);
+        assert_eq!((out[68], out[69]), (24, 0));
         assert_eq!(&out[70..72], &[b'L', 0]);
         assert_eq!(&out[94..96], &[b'L', 0]);
         assert_eq!(
-            directory_entry(FILE_BOTH_DIRECTORY_INFORMATION, &entry, &mut out[..100]),
+            directory_entry(ListingClass::BothDirectory, &entry, &mut out[..100]),
             Err(100)
         );
         assert_eq!(
-            directory_entry(FILE_NAMES_INFORMATION, &entry, &mut out).unwrap(),
+            directory_entry(ListingClass::Names, &entry, &mut out).unwrap(),
             12 + 36
         );
-        assert_eq!(entry_name_offset(FILE_FULL_DIRECTORY_INFORMATION), Some(68));
+        assert_eq!(
+            ListingClass::try_from(2).map(ListingClass::fixed_size),
+            Ok(68)
+        );
+        assert_eq!(
+            ListingClass::try_from(1).map(ListingClass::fixed_size),
+            Ok(64)
+        );
     }
 
     /// The volume classes, the label trimmed and a name that does not fit cut.
@@ -480,15 +622,10 @@ mod tests {
             free_clusters: 600,
         };
         let mut out = [0u8; 64];
-        assert_eq!(
-            volume_query(FILE_FS_VOLUME_INFORMATION, &volume, &mut out),
-            Ok(24)
-        );
+        assert_eq!(volume_query(VolumeClass::Volume, &volume, &mut out), Ok(24));
         assert_eq!((u32_at(&out, 8), u32_at(&out, 12)), (0x1234_5678, 6));
-        assert_eq!(
-            volume_query(FILE_FS_SIZE_INFORMATION, &volume, &mut out),
-            Ok(24)
-        );
+        assert_eq!(&out[18..24], &[b'F', 0, b'2', 0, b'K', 0]);
+        assert_eq!(volume_query(VolumeClass::Size, &volume, &mut out), Ok(24));
         assert_eq!(
             (
                 u64_at(&out, 0),
@@ -499,17 +636,14 @@ mod tests {
             (1000, 600, 8, 512)
         );
         assert_eq!(
-            volume_query(FILE_FS_FULL_SIZE_INFORMATION, &volume, &mut out),
+            volume_query(VolumeClass::FullSize, &volume, &mut out),
             Ok(32)
         );
         assert_eq!((u32_at(&out, 24), u32_at(&out, 28)), (8, 512));
-        assert_eq!(
-            volume_query(FILE_FS_DEVICE_INFORMATION, &volume, &mut out),
-            Ok(8)
-        );
+        assert_eq!(volume_query(VolumeClass::Device, &volume, &mut out), Ok(8));
         assert_eq!(u32_at(&out, 0), FILE_DEVICE_DISK);
         assert_eq!(
-            volume_query(FILE_FS_ATTRIBUTE_INFORMATION, &volume, &mut out),
+            volume_query(VolumeClass::Attribute, &volume, &mut out),
             Ok(22)
         );
         assert_eq!(
@@ -517,13 +651,21 @@ mod tests {
             (6, 255, 10)
         );
         assert_eq!(
-            volume_query(FILE_FS_ATTRIBUTE_INFORMATION, &volume, &mut out[..16]),
+            volume_query(VolumeClass::Attribute, &volume, &mut out[..16]),
             Err(16)
+        );
+        assert_eq!(
+            VolumeClass::try_from(2).map(VolumeClass::min_size),
+            Err(STATUS_INVALID_INFO_CLASS)
         );
         let unnamed = Volume {
             label: *b"NO NAME    ",
             ..volume
         };
         assert_eq!(unnamed.label(), b"");
+        assert_eq!(
+            volume_query(VolumeClass::Volume, &unnamed, &mut out),
+            Ok(24)
+        );
     }
 }

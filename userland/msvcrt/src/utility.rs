@@ -4,6 +4,8 @@
 //! `seed * 214013 + 2531011` and rand answers its bits 16 to 30 (RAND_MAX 32767), the seed 1 until
 //! srand sets it (wide's capture: 41, 18467, 6334… without srand and after srand(1)).
 
+use core::sync::atomic::Ordering::Relaxed;
+
 use crate::thread;
 
 /// The comparison qsort calls (cdecl).
@@ -103,19 +105,21 @@ unsafe fn sort(mut base: *mut u8, mut count: usize, width: usize, compare: Compa
 /// rand: the next pseudo-random number, 0 to 32767.
 #[unsafe(export_name = "f2k_export_rand")]
 pub extern "C" fn rand() -> i32 {
-    let data = thread::data();
-    // SAFETY: the thread's own data.
-    unsafe {
-        (*data).seed = (*data).seed.wrapping_mul(214_013).wrapping_add(2_531_011);
-        ((*data).seed >> 16 & 0x7FFF) as i32
-    }
+    thread::with_data(|data| {
+        let seed = data
+            .seed
+            .load(Relaxed)
+            .wrapping_mul(214_013)
+            .wrapping_add(2_531_011);
+        data.seed.store(seed, Relaxed);
+        (seed >> 16 & 0x7FFF) as i32
+    })
 }
 
 /// srand: rand's seed.
 #[unsafe(export_name = "f2k_export_srand")]
 pub extern "C" fn srand(seed: u32) {
-    // SAFETY: the thread's own data.
-    unsafe { (*thread::data()).seed = seed };
+    thread::with_data(|data| data.seed.store(seed, Relaxed));
 }
 
 /// The FILETIME of 1970-01-01 00:00:00 UTC, in 100-nanosecond intervals since 1601.

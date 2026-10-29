@@ -273,26 +273,6 @@ pub struct Info {
     pub mem_type: u32,
 }
 
-impl Info {
-    /// The structure's 28 bytes.
-    pub fn to_bytes(self) -> [u8; 28] {
-        let words = [
-            self.base,
-            self.allocation_base,
-            self.allocation_protect,
-            self.size,
-            self.state,
-            self.protect,
-            self.mem_type,
-        ];
-        let mut bytes = [0u8; 28];
-        for (i, word) in words.iter().enumerate() {
-            bytes[i * 4..i * 4 + 4].copy_from_slice(&word.to_le_bytes());
-        }
-        bytes
-    }
-}
-
 /// The page tables and the frame database, as the address space reaches them.
 pub trait Pages {
     /// The entry for user page `va`.
@@ -1143,21 +1123,9 @@ mod tests {
         assert_eq!(vm.query(&pages, view).protect, PAGE_READWRITE);
     }
 
-    /// A query's 28 bytes are MEMORY_BASIC_INFORMATION's dwords in order.
+    /// The reserved size counts every reservation.
     #[test]
-    fn an_info_is_the_structures_bytes() {
-        let info = Info {
-            base: 1,
-            allocation_base: 2,
-            allocation_protect: 3,
-            size: 4,
-            state: 5,
-            protect: 6,
-            mem_type: 7,
-        };
-        let bytes = info.to_bytes();
-        assert_eq!(&bytes[..8], &[1, 0, 0, 0, 2, 0, 0, 0]);
-        assert_eq!(&bytes[24..], &[7, 0, 0, 0]);
+    fn the_reserved_size_counts_every_reservation() {
         let mut vm = space();
         vm.reserve(None, 0x3000, PAGE_READWRITE, Kind::Private)
             .unwrap();

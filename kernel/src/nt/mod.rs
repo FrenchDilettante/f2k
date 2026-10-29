@@ -26,6 +26,36 @@ macro_rules! unserved {
     )*};
 }
 
+/// An information class enum: the classes a service answers or takes, each at its number in the
+/// NT enumeration (FILE_INFORMATION_CLASS, PROCESSINFOCLASS...), made from the caller's number
+/// with `TryFrom<u32>`. A number the enum does not hold is STATUS_INVALID_INFO_CLASS, the answer
+/// the services give a class they do not handle (a service with another answer maps it).
+macro_rules! info_class {
+    (
+        $(#[$meta:meta])*
+        $vis:vis enum $name:ident {
+            $($(#[$variant_meta:meta])* $variant:ident = $value:literal,)*
+        }
+    ) => {
+        $(#[$meta])*
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        $vis enum $name {
+            $($(#[$variant_meta])* $variant = $value,)*
+        }
+
+        impl TryFrom<u32> for $name {
+            type Error = $crate::status::NtStatus;
+
+            fn try_from(class: u32) -> Result<Self, Self::Error> {
+                match class {
+                    $($value => Ok(Self::$variant),)*
+                    _ => Err($crate::status::STATUS_INVALID_INFO_CLASS),
+                }
+            }
+        }
+    };
+}
+
 pub mod attributes;
 pub mod call;
 pub mod exception;

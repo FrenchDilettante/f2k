@@ -10,12 +10,17 @@
 //! its low byte, as the platform reads it. A timeout is a LARGE_INTEGER: negative a relative
 //! interval in 100 ns units, positive an absolute system time, none (a null pointer) forever.
 
-use super::attributes::{self, ObjectName, Resolved, MAX_NAME, OBJ_OPENIF};
+use rtl::pod::Pod;
+
+use super::attributes::{self, Name, ObjectName, Resolved, OBJ_OPENIF};
 use super::call::{calling_process, Handle, NtCall, NtResult, UserAddr, UserPtr};
+use crate::level::{At, Dispatch, Passive};
 use crate::nt::object::{is_console_handle, CURRENT_PROCESS, CURRENT_THREAD};
 use crate::ob::{self, ObjectId, ObjectType};
+use crate::sched::dispatcher::Dispatcher;
 use crate::sched::event::{EventKind, EVENT_WAKE_INCREMENT};
-use crate::sched::wait::{self, WaitMode, WaitReason, Waitable, MAXIMUM_WAIT_OBJECTS};
+use crate::sched::wait::{self, WaitMode, WaitReason, WaitableId, MAXIMUM_WAIT_OBJECTS};
+use crate::sched::DISPATCHER;
 use crate::status::*;
 
 /// The priority increment a semaphore release grants the waiters it wakes.
@@ -44,19 +49,18 @@ fn request(attributes: UserAddr) -> Result<Request, NtStatus> {
     if attributes.is_null() {
         return Ok(request);
     }
-    let mut units = [0u16; MAX_NAME];
-    let read = attributes::read(attributes, &mut units)?;
+    let mut name = Name::new();
+    let read = attributes::read(attributes, &mut name)?;
     request.inherit = read.inherit();
     request.open_if = read.attributes & OBJ_OPENIF != 0;
-    let Some(length) = read.length.filter(|&length| length > 0) else {
+    let units = read.units();
+    if units.is_empty() {
         return Ok(request);
-    };
+    }
     let root_is_directory = attributes::root_is_directory(read.root)?;
-    match attributes::resolve(&units[..length], read.root, root_is_directory)? {
+    match attributes::resolve(units, read.root, root_is_directory)? {
         Resolved::Directory => request.directory = true,
-        Resolved::Named { start } => {
-            request.name = Some(attributes::object_name(&units[start..length])?)
-        }
+        Resolved::Named { start } => request.name = Some(attributes::object_name(&units[start..])?),
     }
     Ok(request)
 }
@@ -228,44 +232,53 @@ pub fn open_event(
     open(slot, access, attributes, ObjectType::Event)
 }
 
-/// What the event services share: the event's previous state into `previous` when given (probed
-/// before the event changes).
+/// What the event services share: `change` on the event's body, at the dispatch level, and the
+/// event's previous state into `previous` when given (probed before the event changes).
 fn with_event(
+    passive: &mut At<Passive>,
     event: Handle,
     previous: UserPtr<i32>,
-    change: impl FnOnce(&mut crate::sched::event::Event) -> i32,
+    change: impl FnOnce(&mut Dispatcher, WaitableId) -> i32,
 ) -> NtResult {
     previous.addr().probe(4)?;
     let reference = object_of(event.raw(), ObjectType::Event)?;
-    let was = change(reference.event());
+    let was = change(
+        DISPATCHER.get(&mut passive.raise::<Dispatch>()),
+        reference.event(),
+    );
     previous.write_optional(was)?;
     Ok(STATUS_SUCCESS)
 }
 
 /// NtSetEvent: signal the event, granting its waiters the event wake boost.
-pub fn set_event(_call: &mut NtCall, event: Handle, previous: UserPtr<i32>) -> NtResult {
-    with_event(event, previous, |event| {
-        event.set(crate::sched::idle::dispatcher(), EVENT_WAKE_INCREMENT)
+pub fn set_event(call: &mut NtCall, event: Handle, previous: UserPtr<i32>) -> NtResult {
+    with_event(call.passive(), event, previous, |dispatcher, event| {
+        dispatcher.set_event(event, EVENT_WAKE_INCREMENT)
     })
 }
 
 /// NtResetEvent: clear the event; a waiter parked on it stays parked.
-pub fn reset_event(_call: &mut NtCall, event: Handle, previous: UserPtr<i32>) -> NtResult {
-    with_event(event, previous, |event| event.reset())
+pub fn reset_event(call: &mut NtCall, event: Handle, previous: UserPtr<i32>) -> NtResult {
+    with_event(call.passive(), event, previous, Dispatcher::reset_event)
 }
 
 /// NtClearEvent: clear the event (NtResetEvent without the previous state; kernel32's ResetEvent
 /// calls it).
-pub fn clear_event(_call: &mut NtCall, event: Handle) -> NtResult {
-    with_event(event, UserPtr::at(0), |event| event.reset())
+pub fn clear_event(call: &mut NtCall, event: Handle) -> NtResult {
+    with_event(
+        call.passive(),
+        event,
+        UserPtr::at(0),
+        Dispatcher::reset_event,
+    )
 }
 
 /// NtPulseEvent: signal the event for the waiters present — all of them for a notification event,
 /// one for a synchronization event — and leave it cleared either way.
-pub fn pulse_event(_call: &mut NtCall, event: Handle, previous: UserPtr<i32>) -> NtResult {
-    with_event(event, previous, |event| {
-        let was = event.set(crate::sched::idle::dispatcher(), EVENT_WAKE_INCREMENT);
-        event.reset();
+pub fn pulse_event(call: &mut NtCall, event: Handle, previous: UserPtr<i32>) -> NtResult {
+    with_event(call.passive(), event, previous, |dispatcher, event| {
+        let was = dispatcher.set_event(event, EVENT_WAKE_INCREMENT);
+        dispatcher.reset_event(event);
         was
     })
 }
@@ -275,19 +288,21 @@ pub fn pulse_event(_call: &mut NtCall, event: Handle, previous: UserPtr<i32>) ->
 /// NtCreateMutant: a fresh mutant, owned by the caller when asked, or the named one already bound
 /// (whose ownership the call then leaves alone; see [`create`]).
 pub fn create_mutant(
-    _call: &mut NtCall,
+    call: &mut NtCall,
     slot: UserPtr<u32>,
     access: u32,
     attributes: UserAddr,
     initial_owner: bool,
 ) -> NtResult {
+    let passive = call.passive();
     create(slot, access, attributes, ObjectType::Mutex, || {
         let directory = ob::directory();
         let id = directory.create_mutex()?;
         if initial_owner {
-            // SAFETY: the running thread's record, live while it runs a service.
-            let thread = unsafe { &mut *crate::sched::idle::dispatcher().current_thread() };
-            crate::sched::mutex::acquire(directory.mutex(id).expect("just created"), thread);
+            let mutex = directory.mutex(id).expect("just created");
+            DISPATCHER
+                .get(&mut passive.raise::<Dispatch>())
+                .acquire_mutex(mutex, crate::sched::current_thread());
         }
         Some(id)
     })
@@ -306,11 +321,12 @@ pub fn open_mutant(
 /// NtReleaseMutant: give up one unit of the caller's ownership (the last frees the mutant for its
 /// oldest waiter); the previous count into `previous` when given. STATUS_MUTANT_NOT_OWNED unless
 /// the caller owns it.
-pub fn release_mutant(_call: &mut NtCall, mutant: Handle, previous: UserPtr<i32>) -> NtResult {
+pub fn release_mutant(call: &mut NtCall, mutant: Handle, previous: UserPtr<i32>) -> NtResult {
     previous.addr().probe(4)?;
     let reference = object_of(mutant.raw(), ObjectType::Mutex)?;
-    let dispatcher = crate::sched::idle::dispatcher();
-    let was = dispatcher.release_mutex(reference.mutex(), dispatcher.current_thread())?;
+    let was = DISPATCHER
+        .get(&mut call.passive().raise::<Dispatch>())
+        .release_mutex(reference.mutex(), crate::sched::current_thread())?;
     previous.write_optional(was)?;
     Ok(STATUS_SUCCESS)
 }
@@ -348,7 +364,7 @@ pub fn open_semaphore(
 /// `previous` when given. STATUS_INVALID_PARAMETER for a count that is not positive,
 /// STATUS_SEMAPHORE_LIMIT_EXCEEDED past the maximum (the count unchanged, `previous` unwritten).
 pub fn release_semaphore(
-    _call: &mut NtCall,
+    call: &mut NtCall,
     semaphore: Handle,
     count: i32,
     previous: UserPtr<i32>,
@@ -358,7 +374,8 @@ pub fn release_semaphore(
         return Err(STATUS_INVALID_PARAMETER);
     }
     let reference = object_of(semaphore.raw(), ObjectType::Semaphore)?;
-    let was = crate::sched::idle::dispatcher()
+    let was = DISPATCHER
+        .get(&mut call.passive().raise::<Dispatch>())
         .release_semaphore(reference.semaphore(), count, SEMAPHORE_WAKE_INCREMENT)
         .map_err(|_| STATUS_SEMAPHORE_LIMIT_EXCEEDED)?;
     previous.write_optional(was)?;
@@ -430,32 +447,44 @@ pub fn set_timer(
         return Err(STATUS_INVALID_PARAMETER);
     }
     let timer = reference.timer();
-    let now = crate::interrupt::clock::read_at(
-        call.passive(),
-        crate::interrupt::clock::Clock::interrupt_time,
-    );
-    let signal_time = crate::time::system_filetime();
-    let due = wait::due_time(due, now, signal_time);
-    let dispatcher = crate::sched::idle::dispatcher();
-    // The cancel first: the APC record may still be queued from the previous set.
-    let armed = dispatcher.cancel_waitable_timer(timer);
-    let completion = !routine.is_null();
-    if completion {
-        crate::user::apc::init(
-            &mut timer.apc,
-            dispatcher.current_thread(),
-            routine.raw(),
-            context.raw(),
+    let crate::sched::timer::TimerId::Waitable(index) = timer else {
+        unreachable!("a timer object's body is a waitable timer");
+    };
+    let thread = crate::sched::current_thread();
+    let armed = {
+        let mut dispatch = call.passive().raise::<Dispatch>();
+        // The clock's reading and the set as one step, masked: a tick between them would move the
+        // clock under the set's due-time verdict (see `Dispatcher::insert_timer`).
+        let _masked = crate::pcr::pcr().mask_guard();
+        let (now, system_time) = crate::interrupt::clock::read_at(&mut *dispatch, |clock| {
+            (clock.interrupt_time(), clock.system_time())
+        });
+        let signal_time =
+            crate::time::boot_filetime_at(&mut dispatch.raise::<crate::level::Clock>())
+                + system_time;
+        let due = wait::due_time(due, now, signal_time);
+        let dispatcher = DISPATCHER.get(&mut dispatch);
+        // The cancel first: the APC record may still be queued from the previous set.
+        let armed = dispatcher.cancel_waitable_timer(timer);
+        let completion = !routine.is_null();
+        if completion {
+            crate::user::apc::init(
+                &mut dispatcher.waitable_timer_mut(index).apc,
+                thread,
+                routine.raw(),
+                context.raw(),
+            );
+        }
+        dispatcher.set_waitable_timer(
+            timer,
+            due,
+            now,
+            period as u64 * 10_000,
+            completion,
+            signal_time,
         );
-    }
-    dispatcher.set_waitable_timer(
-        timer,
-        due,
-        now,
-        period as u64 * 10_000,
-        completion,
-        signal_time,
-    );
+        armed
+    };
     write_boolean(previous, armed)?;
     Ok(if resume {
         STATUS_TIMER_RESUME_IGNORED
@@ -466,13 +495,12 @@ pub fn set_timer(
 
 /// NtCancelTimer: disarm the timer, its period and any queued completion APC dropped; the signal
 /// state is left as it was, and goes into `current` when given.
-pub fn cancel_timer(_call: &mut NtCall, timer: Handle, current: UserAddr) -> NtResult {
+pub fn cancel_timer(call: &mut NtCall, timer: Handle, current: UserAddr) -> NtResult {
     current.probe(1)?;
     let reference = object_of(timer.raw(), ObjectType::Timer)?;
-    let timer = reference.timer();
-    crate::sched::idle::dispatcher().cancel_waitable_timer(timer);
-    // SAFETY: the timer's own waitable header, live while the reference is held.
-    let signaled = unsafe { (*timer.waitable()).signal_state() } > 0;
+    let signaled = DISPATCHER
+        .get(&mut call.passive().raise::<Dispatch>())
+        .cancel_waitable_timer(reference.timer());
     write_boolean(current, signaled)?;
     Ok(STATUS_SUCCESS)
 }
@@ -503,7 +531,7 @@ fn interval_of(value: i64) -> i64 {
 /// object's header, or the thread and process pseudo-handles' own objects. STATUS_INVALID_HANDLE
 /// for a handle naming nothing (a console handle included), STATUS_OBJECT_TYPE_MISMATCH for an
 /// object no wait can name (a file, a section, the directory).
-fn waitable_of(handle: u32) -> Result<(Option<ObjectId>, *mut Waitable), NtStatus> {
+fn waitable_of(handle: u32) -> Result<(Option<ObjectId>, WaitableId), NtStatus> {
     let id = match handle {
         CURRENT_THREAD => ob::current_thread().ok_or(STATUS_INVALID_HANDLE)?,
         CURRENT_PROCESS => crate::process::current().object(),
@@ -525,15 +553,20 @@ fn waitable_of(handle: u32) -> Result<(Option<ObjectId>, *mut Waitable), NtStatu
 /// preserved. The wait holds its object throughout, replays included: a handle closed meanwhile
 /// leaves it waiting on a live object.
 fn wait_one(
-    (object, waitable): (Option<ObjectId>, *mut Waitable),
+    (object, waitable): (Option<ObjectId>, WaitableId),
     timeout: Option<i64>,
     alertable: bool,
 ) -> NtStatus {
     let held = object.as_slice();
     ob::waiting(held, || {
         wait::wait_current_with(|dispatcher, thread, stamp, replay| {
-            let timeout = wait::replay_timeout(thread, replay, timeout, stamp.interrupt_time);
-            dispatcher.wait_single(
+            let timeout = wait::replay_timeout(
+                dispatcher.thread(thread),
+                replay,
+                timeout,
+                stamp.interrupt_time,
+            );
+            dispatcher.wait_for(
                 thread,
                 waitable,
                 WaitReason::UserRequest,
@@ -583,17 +616,16 @@ pub fn wait_for_multiple_objects(
         _ => return Err(STATUS_INVALID_PARAMETER_3),
     };
     let timeout = timeout_of(timeout)?;
-    let mut raw = [0u8; MAXIMUM_WAIT_OBJECTS * 4];
-    handles.read(&mut raw[..count * 4])?;
-    let mut objects = [core::ptr::null_mut(); MAXIMUM_WAIT_OBJECTS];
+    let mut raw = [0u32; MAXIMUM_WAIT_OBJECTS];
+    handles.read(&mut raw.as_bytes_mut()[..count * size_of::<u32>()])?;
+    let mut objects = [WaitableId::Event(0); MAXIMUM_WAIT_OBJECTS];
     let mut held = [ObjectId {
         kind: ObjectType::Event,
         index: 0,
         generation: 0,
     }; MAXIMUM_WAIT_OBJECTS];
     let mut holding = 0;
-    for (object, handle) in objects.iter_mut().zip(raw.chunks_exact(4)).take(count) {
-        let handle = u32::from_le_bytes([handle[0], handle[1], handle[2], handle[3]]);
+    for (object, &handle) in objects.iter_mut().zip(&raw[..count]) {
         let (id, waitable) = waitable_of(handle)?;
         *object = waitable;
         if let Some(id) = id {
@@ -608,8 +640,13 @@ pub fn wait_for_multiple_objects(
     // The wait holds every object it names throughout, replays included.
     let status = ob::waiting(&held[..holding], || {
         wait::wait_current_with(|dispatcher, thread, stamp, replay| {
-            let timeout = wait::replay_timeout(thread, replay, timeout, stamp.interrupt_time);
-            dispatcher.wait_multiple(
+            let timeout = wait::replay_timeout(
+                dispatcher.thread(thread),
+                replay,
+                timeout,
+                stamp.interrupt_time,
+            );
+            dispatcher.wait_for_multiple(
                 thread,
                 objects,
                 wait_all,
@@ -630,7 +667,7 @@ pub fn wait_for_multiple_objects(
 /// refusals fail the call before any wait: STATUS_SEMAPHORE_LIMIT_EXCEEDED,
 /// STATUS_MUTANT_NOT_OWNED, or STATUS_OBJECT_TYPE_MISMATCH for an object that cannot be signaled.
 pub fn signal_and_wait_for_single_object(
-    _call: &mut NtCall,
+    call: &mut NtCall,
     signal: Handle,
     wait: Handle,
     alertable: bool,
@@ -639,7 +676,6 @@ pub fn signal_and_wait_for_single_object(
     let timeout = timeout_of(timeout)?;
     let waitable = waitable_of(wait.raw())?;
     let signal = signal.raw();
-    let dispatcher = crate::sched::idle::dispatcher();
     let kind = if is_console_handle(signal) {
         None
     } else {
@@ -649,24 +685,29 @@ pub fn signal_and_wait_for_single_object(
             .and_then(|entry| entry.object_id())
             .map(|id| id.kind)
     };
-    match kind {
-        Some(ObjectType::Event) => {
-            object_of(signal, ObjectType::Event)?
-                .event()
-                .set(dispatcher, EVENT_WAKE_INCREMENT);
-        }
-        Some(ObjectType::Semaphore) => {
-            let semaphore = object_of(signal, ObjectType::Semaphore)?;
-            dispatcher
-                .release_semaphore(semaphore.semaphore(), 1, SEMAPHORE_WAKE_INCREMENT)
-                .map_err(|_| STATUS_SEMAPHORE_LIMIT_EXCEEDED)?;
-        }
-        Some(ObjectType::Mutex) => {
-            let mutex = object_of(signal, ObjectType::Mutex)?;
-            dispatcher.release_mutex(mutex.mutex(), dispatcher.current_thread())?;
+    let reference = match kind {
+        Some(kind @ (ObjectType::Event | ObjectType::Semaphore | ObjectType::Mutex)) => {
+            object_of(signal, kind)?
         }
         Some(_) => return Err(STATUS_OBJECT_TYPE_MISMATCH),
         None => return Err(STATUS_INVALID_HANDLE),
+    };
+    {
+        let mut dispatch = call.passive().raise::<Dispatch>();
+        let dispatcher = DISPATCHER.get(&mut dispatch);
+        match reference.id().kind {
+            ObjectType::Event => {
+                dispatcher.set_event(reference.event(), EVENT_WAKE_INCREMENT);
+            }
+            ObjectType::Semaphore => {
+                dispatcher
+                    .release_semaphore(reference.semaphore(), 1, SEMAPHORE_WAKE_INCREMENT)
+                    .map_err(|_| STATUS_SEMAPHORE_LIMIT_EXCEEDED)?;
+            }
+            _ => {
+                dispatcher.release_mutex(reference.mutex(), crate::sched::current_thread())?;
+            }
+        }
     }
     Ok(wait_one(waitable, timeout, alertable))
 }
@@ -680,7 +721,10 @@ pub fn delay_execution(_call: &mut NtCall, alertable: bool, interval: UserPtr<u6
     let interval = interval_of(interval.read()? as i64);
     let status = wait::wait_current_with(|dispatcher, thread, stamp, replay| {
         let interval = if replay {
-            wait::replay_interval(thread.timer.due_time, stamp.interrupt_time)
+            wait::replay_interval(
+                dispatcher.thread(thread).timer.due_time,
+                stamp.interrupt_time,
+            )
         } else {
             interval
         };
@@ -697,7 +741,7 @@ pub fn delay_execution(_call: &mut NtCall, alertable: bool, interval: UserPtr<u6
 pub fn yield_execution(_call: &mut NtCall) -> NtResult {
     let status = wait::wait_current_with(|dispatcher, thread, _stamp, _replay| {
         if dispatcher.yield_execution(thread) {
-            thread.wait_status = STATUS_SUCCESS;
+            dispatcher.thread_mut(thread).wait_status = STATUS_SUCCESS;
             wait::WaitDisposition::Yield
         } else {
             wait::WaitDisposition::Complete(STATUS_NO_YIELD_PERFORMED)
@@ -851,14 +895,19 @@ pub fn queue_apc_thread(
     } else {
         object_of(thread.raw(), ObjectType::Thread)?
     };
-    let target = reference.thread() as *mut crate::sched::thread::Thread;
-    let apc = call
-        .process()
+    let target = reference.thread();
+    let mut dispatch = call.passive().raise::<Dispatch>();
+    let dispatcher = DISPATCHER.get(&mut dispatch);
+    let apc = calling_process()
         .sync_mut()
-        .free_apc()
+        .free_apc(dispatcher)
         .ok_or(STATUS_NO_MEMORY)?;
-    crate::user::apc::init(apc, target, routine.raw(), argument1.raw());
-    let dispatcher = crate::sched::idle::dispatcher();
+    crate::user::apc::init(
+        dispatcher.apc_mut(apc),
+        target,
+        routine.raw(),
+        argument1.raw(),
+    );
     if dispatcher.queue_apc(apc, argument2.raw() as usize, argument3.raw() as usize, 0) {
         Ok(STATUS_SUCCESS)
     } else {

@@ -62,16 +62,14 @@ pub trait BlockDevice: Sync {
     fn info(&self) -> DeviceInfo;
 
     /// Read `buffer.len() / sector_size` sectors starting at `lba` into `buffer`, blocking until
-    /// the transfer completes. Returns an NT status (see the module's read contract).
-    #[must_use]
-    fn read(&self, lba: u64, buffer: &mut [u8]) -> NtStatus;
+    /// the transfer completes. Fails with an NT status (see the module's read contract).
+    fn read(&self, lba: u64, buffer: &mut [u8]) -> Result<(), NtStatus>;
 
     /// Write `buffer.len() / sector_size` sectors starting at `lba` from `buffer`, blocking until
     /// the transfer completes. A device that takes no writes refuses them (the default).
-    #[must_use]
-    fn write(&self, lba: u64, buffer: &[u8]) -> NtStatus {
+    fn write(&self, lba: u64, buffer: &[u8]) -> Result<(), NtStatus> {
         let _ = (lba, buffer);
-        crate::status::STATUS_MEDIA_WRITE_PROTECTED
+        Err(crate::status::STATUS_MEDIA_WRITE_PROTECTED)
     }
 }
 
@@ -95,14 +93,13 @@ pub fn check_request(info: &DeviceInfo, lba: u64, buffer: &[u8]) -> Result<u64, 
 mod tests {
     use super::memory::MemoryDisk;
     use super::*;
-    use crate::status::STATUS_SUCCESS;
 
     /// A read returns the device's bytes at the run's offset.
     #[test]
     fn a_read_returns_the_run() {
         let disk = MemoryDisk::patterned(64);
         let mut buffer = vec![0u8; 3 * 512];
-        assert_eq!(disk.read(10, &mut buffer), STATUS_SUCCESS);
+        assert_eq!(disk.read(10, &mut buffer), Ok(()));
         assert_eq!(buffer, MemoryDisk::pattern_of(10, 3));
     }
 
@@ -122,7 +119,7 @@ mod tests {
             check_request(&info, u64::MAX, &buffer),
             Err(STATUS_INVALID_PARAMETER)
         );
-        assert_eq!(disk.read(63, &mut buffer), STATUS_INVALID_PARAMETER);
+        assert_eq!(disk.read(63, &mut buffer), Err(STATUS_INVALID_PARAMETER));
         assert!(buffer.iter().all(|&byte| byte == 0xAA), "nothing was read");
     }
 

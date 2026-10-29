@@ -19,9 +19,10 @@
 //! text then goes into the caller's buffer, or into a block it allocates
 //! (FORMAT_MESSAGE_ALLOCATE_BUFFER), an A call's narrowed through the ANSI code page.
 
-use crate::base::{read_pointer, set_last_error, set_last_nt_error, Text};
+use crate::base::{set_last_error, set_last_nt_error, Text};
 use crate::error::{ERROR_INSUFFICIENT_BUFFER, ERROR_NOT_ENOUGH_MEMORY};
-use crate::nt::{self, AnsiString, UnicodeString};
+use crate::heap::{HeapArray, HeapString};
+use crate::nt;
 use crate::ntcall;
 
 /// FORMAT_MESSAGE_ALLOCATE_BUFFER, FORMAT_MESSAGE_IGNORE_INSERTS, FORMAT_MESSAGE_FROM_STRING,
@@ -67,14 +68,15 @@ fn own_handle() -> usize {
 /// The program's own handle, its base (the PEB's ImageBaseAddress): FORMAT_MESSAGE_FROM_HMODULE's
 /// module for NULL.
 fn program_handle() -> usize {
-    read_pointer(crate::base::peb() + 0x08)
+    crate::base::image_base()
 }
 
 /// A message's text, NUL-terminated UTF-16: the caller's or a table's in place, or one kernel32
 /// converted from ANSI (on the process heap, freed with it).
 struct Message {
     text: *const u16,
-    converted: Option<UnicodeString>,
+    /// The converted text's block, which `text` points into: kept for the message's life.
+    _converted: Option<HeapString>,
 }
 
 impl Message {
@@ -82,48 +84,25 @@ impl Message {
     fn borrowed(text: *const u16) -> Message {
         Message {
             text,
-            converted: None,
+            _converted: None,
         }
     }
 
-    /// A NUL-terminated ANSI text converted (ntdll's RtlInitAnsiString and
-    /// RtlAnsiStringToUnicodeString, onto the process heap); the status of a failed conversion.
+    /// A NUL-terminated ANSI text converted ([`HeapString::from_ansi`]: ntdll's RtlInitAnsiString
+    /// and RtlAnsiStringToUnicodeString, onto the process heap); the status of a failed
+    /// conversion.
     ///
     /// # Safety
     ///
     /// `text` is a NUL-terminated string.
     unsafe fn converted(text: *const u8) -> Result<Message, u32> {
-        let mut ansi = AnsiString {
-            length: 0,
-            maximum_length: 0,
-            buffer: core::ptr::null_mut(),
-        };
-        let mut wide = UnicodeString {
-            length: 0,
-            maximum_length: 0,
-            buffer: core::ptr::null_mut(),
-        };
-        // SAFETY: ntdll's exports, over the caller's string and the structures above.
-        let status = unsafe {
-            nt::RtlInitAnsiString(&mut ansi, text);
-            nt::RtlAnsiStringToUnicodeString(&mut wide, &ansi, 1)
-        };
-        if !rtl::status::nt_success(status) {
-            return Err(status);
-        }
+        // SAFETY: the caller's contract.
+        let converted = unsafe { HeapString::from_ansi(text) }?;
         Ok(Message {
-            text: wide.buffer,
-            converted: Some(wide),
+            // The conversion terminates its buffer, which it sized for the terminator too.
+            text: converted.string().buffer,
+            _converted: Some(converted),
         })
-    }
-}
-
-impl Drop for Message {
-    fn drop(&mut self) {
-        if let Some(converted) = self.converted.as_mut() {
-            // SAFETY: ntdll's export, over the string its conversion allocated.
-            unsafe { nt::RtlFreeUnicodeString(converted) };
-        }
     }
 }
 
@@ -195,27 +174,6 @@ unsafe fn message(
     Err(status)
 }
 
-/// A message laid out: its characters, in a block of kernel32's on the process heap (freed with
-/// it).
-struct Laid {
-    block: *mut u16,
-    length: usize,
-}
-
-impl Laid {
-    fn units(&self) -> &[u16] {
-        // SAFETY: the block holds the laid-out characters.
-        unsafe { core::slice::from_raw_parts(self.block, self.length) }
-    }
-}
-
-impl Drop for Laid {
-    fn drop(&mut self) {
-        // SAFETY: kernel32's own block, used no more.
-        unsafe { ntcall::free_heap(self.block.cast()) };
-    }
-}
-
 /// `text` laid out by ntdll's RtlFormatMessage as the flags ask (the width: the flags' low byte,
 /// FORMAT_MESSAGE_MAX_WIDTH_MASK as MAXULONG; the inserts from `arguments` unless ignored), into a
 /// block that grows until it fits: the characters, or the status of the call that failed.
@@ -229,18 +187,16 @@ unsafe fn laid_out(
     flags: u32,
     arguments: *const u8,
     wide: bool,
-) -> Result<Laid, u32> {
+) -> Result<HeapArray<u16>, u32> {
     let width = match flags & MAX_WIDTH_MASK {
         MAX_WIDTH_MASK => rtl::message::NO_LINE_BREAKS,
         width => width,
     };
     let mut room = FIRST_ROOM;
     loop {
-        let Some(block) = ntcall::allocate_heap(2 * room) else {
+        let Ok(mut laid) = HeapArray::<u16>::new(room) else {
             return Err(STATUS_NO_MEMORY);
         };
-        let block = block.as_ptr().cast::<u16>();
-        let mut laid = Laid { block, length: 0 };
         let mut returned = 0u32;
         // SAFETY: ntdll's export, over the caller's text and arguments, into the block.
         let status = unsafe {
@@ -251,7 +207,7 @@ unsafe fn laid_out(
                 u32::from(!wide),
                 u32::from(flags & ARGUMENT_ARRAY != 0),
                 arguments,
-                block,
+                laid.as_mut_ptr(),
                 (2 * room) as u32,
                 &mut returned,
             )
@@ -263,7 +219,7 @@ unsafe fn laid_out(
         if !rtl::status::nt_success(status) {
             return Err(status);
         }
-        laid.length = (returned as usize / 2).saturating_sub(1);
+        laid.truncate((returned as usize / 2).saturating_sub(1));
         return Ok(laid);
     }
 }
@@ -314,7 +270,7 @@ unsafe fn format_message(
         }
     };
     // Code page 1252 is one byte a character: the A form's bytes count the characters.
-    let units = laid.units();
+    let units = &*laid;
     let length = units.len();
     if length == 0 && (allocate || !wide) {
         return 0;

@@ -10,8 +10,6 @@
 //! [`lookup`], the chain read [`read`], the writes (allocation, data, sizes and directory entries)
 //! [`write`], and the host tests' shared volumes, devices, and captured sectors [`fixtures`].
 
-use crate::status::NtStatus;
-
 pub mod boot_sector;
 pub mod dir;
 pub mod dirent;
@@ -25,12 +23,3 @@ pub mod raw;
 pub mod read;
 pub mod volume;
 pub mod write;
-
-/// A device call's status as a result: success, or the failure status itself.
-fn check(status: NtStatus) -> Result<(), NtStatus> {
-    if status.is_success() {
-        Ok(())
-    } else {
-        Err(status)
-    }
-}

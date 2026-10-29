@@ -1,13 +1,22 @@
 //! The context switch: the swap assembly and a new thread's first instructions.
 //!
+//! [`switch_to`] is the one way the processor changes threads (Windows 2000's KiSwapContext): at
+//! the dispatch level, it installs the incoming thread in the processor's current slot and swaps.
+//! No borrow of the dispatcher or of a thread record lives across the swap: other threads run and
+//! change both before the calling thread's timeline resumes, so what the caller needs after it,
+//! it reads afresh. What each raise found stays on the stack of the thread that raised, so the
+//! level ledger needs no handover: the switching thread raised to the dispatch level and lowers
+//! from it when it resumes, and the thread it switches to does the same — or, fresh, lowers at
+//! its start.
+//!
 //! [`swap_context`] moves the processor from one thread to another: it saves the caller's
 //! nonvolatile registers and `esp` into a switch frame on the old thread's kernel stack, saves its
 //! floating-point state (x87, MXCSR and the XMM registers) into its record (restoring the new
 //! thread's), installs the new thread's stack top as the TSS `esp0`, rewrites the TEB descriptor's
 //! base, loads CR3 when the address space changes, and resumes the new thread. [`THREAD_STARTUP`]
 //! is a fresh thread's first instructions, reached as the planted return address of the initial
-//! switch: it zeroes the registers, lowers the level, calls the system routine, and a user thread
-//! then enters ring 3 from its planted trap frame.
+//! switch: it zeroes the registers, lowers the level from the switch's to the passive one, calls
+//! the system routine, and a user thread then enters ring 3 from its planted trap frame.
 //!
 //! The address space a thread runs on is its address-space process's (see [`super::attach`]): its
 //! owner's, or while attached the process it attached to. The switch compares the two threads'
@@ -66,6 +75,69 @@ const TEB_BASE_LO_OFF: u32 = crate::cpu::gdt::TEB_SELECTOR as u32 + 2;
 const TEB_BASE_MID_OFF: u32 = crate::cpu::gdt::TEB_SELECTOR as u32 + 4;
 const TEB_BASE_HI_OFF: u32 = crate::cpu::gdt::TEB_SELECTOR as u32 + 7;
 
+/// Switch the processor from `from`, the running thread, to `to`: install `to` in the current
+/// slot (its quantum handed over), then swap. Returns when a later switch resumes `from`, at the
+/// dispatch level, with every dispatcher borrow the caller held before it gone stale: the caller
+/// reads afresh. The dispatch token is the proof of the level, and borrowing it keeps any
+/// dispatch-level borrow from crossing the swap.
+#[cfg(target_arch = "x86")]
+pub fn switch_to(
+    dispatch: &mut crate::level::At<crate::level::Dispatch>,
+    from: super::thread::ThreadId,
+    to: super::thread::ThreadId,
+) {
+    let (old, new) = install(dispatch, from, to);
+    // SAFETY: both records are the database's, pinned; `to` is the dispatcher's selection (a
+    // woken waiter, a ready thread, or the idle fallback), so its frame is planted (fresh) or
+    // saved (resumed), and `install` adopted it as the running thread; the dispatch level holds
+    // the dispatcher off until the swap is done, and no borrow of it is live.
+    unsafe { swap_context(old, new) };
+    debug_assert_on_own_space(dispatch);
+}
+
+/// The exit's switch: as [`switch_to`], for a `from` that has ended. Its timeline ends at the swap:
+/// the raise its caller made is never lowered, its kernel stack keeps only abandoned frames.
+#[cfg(target_arch = "x86")]
+pub fn exit_to(
+    dispatch: &mut crate::level::At<crate::level::Dispatch>,
+    from: super::thread::ThreadId,
+    to: super::thread::ThreadId,
+) -> ! {
+    let (old, new) = install(dispatch, from, to);
+    // SAFETY: as in `switch_to`; `from` never runs again, which the record's teardown allows (it
+    // is renewed only by a create, which no thread runs before this swap).
+    unsafe { swap_context(old, new) };
+    unreachable!("a terminated thread never resumes")
+}
+
+/// The switch's install, in a borrow of the dispatcher that ends before the swap: `to` takes the
+/// current slot. Returns the two records' addresses, what the swap is handed.
+#[cfg(target_arch = "x86")]
+fn install(
+    dispatch: &mut crate::level::At<crate::level::Dispatch>,
+    from: super::thread::ThreadId,
+    to: super::thread::ThreadId,
+) -> (*mut super::thread::Thread, *mut super::thread::Thread) {
+    debug_assert_ne!(from, to, "a switch to the running thread");
+    // The swap saves the flags and the resumed thread's are put back as it saved them: at the
+    // dispatch level, enabled, as every switch leaves the ledger.
+    debug_assert!(
+        crate::pcr::pcr().interrupts_enabled(),
+        "a switch at the dispatch level runs enabled"
+    );
+    let dispatcher = super::DISPATCHER.get(dispatch);
+    debug_assert_eq!(
+        dispatcher.current(),
+        Some(from),
+        "a switch from the running thread"
+    );
+    dispatcher.enter(to);
+    (
+        dispatcher.thread_address(from),
+        dispatcher.thread_address(to),
+    )
+}
+
 // Only the records' addresses cross the boundary, as opaque pointers: the asm consumes them through
 // the pinned offsets above, which the thread record's `#[repr(C)]` prefix holds to.
 #[cfg(target_arch = "x86")]
@@ -82,29 +154,31 @@ unsafe extern "C" {
 
 /// Switch the processor from `old` to `new`, entered at the dispatch level with interrupts enabled.
 /// Never "returns" in the calling thread's present: the return path executes when a later switch
-/// resumes `old`, which debug builds check runs on its address-space directory.
+/// resumes `old`.
 ///
 /// # Safety
 ///
 /// Both threads are live records; `new`'s switch frame is planted (fresh) or saved (resumed), and
 /// the dispatcher has adopted it as the running thread.
 #[cfg(target_arch = "x86")]
-pub unsafe fn swap_context(old: *mut super::thread::Thread, new: *mut super::thread::Thread) {
+unsafe fn swap_context(old: *mut super::thread::Thread, new: *mut super::thread::Thread) {
     // SAFETY: the caller's contract.
     unsafe { swap_context_asm(old.cast(), new.cast()) };
-    // SAFETY: `old` runs again: its record is live.
-    debug_assert_on_own_space(unsafe { &*old });
 }
 
-/// Debug builds: CR3 holds `thread`'s address-space directory — `thread` being the one that runs.
+/// Debug builds: CR3 holds the running thread's address-space directory, wherever a thread resumes.
 #[cfg(target_arch = "x86")]
-fn debug_assert_on_own_space(thread: &super::thread::Thread) {
+fn debug_assert_on_own_space(dispatch: &mut crate::level::At<crate::level::Dispatch>) {
     if cfg!(debug_assertions) {
         let cr3: u32;
         // SAFETY: reading CR3 has no side effect.
         unsafe { core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack)) };
+        let space = super::DISPATCHER
+            .get(dispatch)
+            .thread(super::current_thread())
+            .space;
         // SAFETY: a running thread's address-space process outlives its scope on it.
-        let dir_phys = unsafe { (*thread.space).dir_phys() };
+        let dir_phys = unsafe { (*space).dir_phys() };
         assert_eq!(
             crate::mem::paging::directory_cr3(cr3),
             dir_phys,
@@ -235,14 +309,15 @@ core::arch::global_asm!(
 
 // --- The startup stub's callees ---------------------------------------------
 
-/// A fresh thread adopts an empty level ledger: passive, no pending pairs, interrupts enabled
-/// (cdecl, called from the startup stub). The previous thread's pairs live on its own stack and
-/// ledger.
+/// A fresh thread's first step (cdecl, called from the startup stub): lower from the dispatch level
+/// the switch into it ran at to the passive level, interrupts enabled. The switching thread's raise
+/// is its own to lower when it resumes.
 #[cfg(target_arch = "x86")]
 unsafe extern "C" fn fresh_thread_level() {
-    crate::pcr::pcr().begin_thread();
-    // SAFETY: the dispatcher adopted this thread before the switch into it: its record is live.
-    debug_assert_on_own_space(unsafe { &*crate::sched::idle::dispatcher().current_thread() });
+    crate::pcr::pcr().lower(crate::interrupt::irql::OldIrql::THREAD_START);
+    if cfg!(debug_assertions) {
+        crate::level::raised(debug_assert_on_own_space);
+    }
 }
 
 /// A kernel thread's system routine returned with no user context to enter: report the bug on the
@@ -437,7 +512,7 @@ mod tests {
         let dispatcher = crate::sched::testkit::installed();
         // The boot install: the idle thread is current.
         dispatcher.install_idle_thread(idle.id());
-        assert_eq!(dispatcher.current_thread(), idle.as_ptr());
+        assert_eq!(dispatcher.current(), Some(idle.id()));
         assert!(dispatcher.processor_idle());
 
         // Nothing schedulable: the loop stays in the idle call.
@@ -450,7 +525,7 @@ mod tests {
         let selected = dispatcher.select_next();
         assert_eq!(selected, Some(worker.id()));
         dispatcher.enter(worker.id());
-        assert_eq!(dispatcher.current_thread(), worker.as_ptr());
+        assert_eq!(dispatcher.current(), Some(worker.id()));
         assert!(dispatcher.next_thread().is_none());
         assert!(!dispatcher.processor_idle());
 

@@ -15,11 +15,17 @@
 //! - fgets reads to a newline (kept), to `n - 1` bytes, or to the end; NULL when the end comes
 //!   first; the end sets `_IOEOF` (feof).
 //! - fclose flushes, frees the stream's own buffer and closes its descriptor.
+//!
+//! Each stream has its own lock, as on Windows 2000 ([`with_stream`]): a call holds its stream's
+//! across the descriptor's reads and writes, so a thread waiting on stdin (reading the console)
+//! keeps no other stream from the rest.
 
-use crate::data::{File, Global, IOB, IOB_ENTRIES, STREAM_BUFFER};
+use rtl::sync::Locked;
+
+use crate::data::{File, IOB, IOB_ENTRIES, STREAM_BUFFER};
 use crate::format::{self, Args, Output, VaList};
 use crate::lowio;
-use crate::thread::{set_errno, Locked, EBADF, EINVAL, EMFILE};
+use crate::thread::{set_errno, Lock, EBADF, EINVAL, EMFILE};
 
 /// The `_flag` bits (stdio.h's, and the C runtime's own: `_IOYOURBUF` a buffer the stream does not
 /// own, `_IOSETVBUF` one setvbuf gave, `TEMPORARY` one lent for a call).
@@ -44,30 +50,53 @@ const IOLBF: i32 = 0x0040;
 /// EOF.
 const EOF: i32 = -1;
 
-/// The buffers lent to stdout and stderr for a call.
-static LENT: Global<[[u8; STREAM_BUFFER]; 2]> = Global::new([[0; STREAM_BUFFER]; 2]);
+/// Each of `_iob`'s streams' lock (Windows 2000's per-stream lock): the C runtime changes the
+/// stream's `FILE` only under it ([`with_stream`]).
+static LOCKS: [Locked<(), Lock>; IOB_ENTRIES] =
+    [const { Locked::new(Lock::new(), ()) }; IOB_ENTRIES];
 
-/// The streams.
-fn streams() -> *mut File {
-    IOB.get().cast()
+/// The lock of a stream that is not one of `_iob`'s (a program's own `FILE`).
+static OTHER: Locked<(), Lock> = Locked::new(Lock::new(), ());
+
+/// The buffers lent to stdout and stderr for a call, each taken under its stream's lock.
+static LENT: [Locked<[u8; STREAM_BUFFER], Lock>; 2] =
+    [const { Locked::new(Lock::new(), [0; STREAM_BUFFER]) }; 2];
+
+/// `_iob`'s stream `index`.
+fn stream_at(index: usize) -> *mut File {
+    IOB.get().cast::<File>().wrapping_add(index)
 }
 
 /// A stream's index in `_iob`, when it is one of them.
 fn index_of(stream: *mut File) -> Option<usize> {
-    let offset = (stream as usize).wrapping_sub(streams() as usize);
+    let offset = (stream as usize).wrapping_sub(stream_at(0) as usize);
     let size = core::mem::size_of::<File>();
     (offset.is_multiple_of(size) && offset / size < IOB_ENTRIES).then_some(offset / size)
 }
 
-/// The stream's buffer given its own `STREAM_BUFFER` bytes, or (out of memory) none at all: its
-/// one-character buffer.
+/// `body` run over `stream` with the stream's lock held, given its index in `_iob` (none for a
+/// stream that is not one of them). It answers what `body` answers.
+///
+/// # Panics
+///
+/// When `body` reaches the same stream again through this function: its `FILE` is already lent.
 ///
 /// # Safety
 ///
-/// `stream` is a stream, under the lock.
-unsafe fn give_buffer(stream: *mut File) {
-    // SAFETY: the caller's stream.
-    let s = unsafe { &mut *stream };
+/// `stream` is a `FILE` that stays valid for the call: one of `_iob`'s, or one of the caller's.
+unsafe fn with_stream<R>(stream: *mut File, body: impl FnOnce(&mut File, Option<usize>) -> R) -> R {
+    let index = index_of(stream);
+    index.map_or(&OTHER, |i| &LOCKS[i]).with(|()| {
+        // SAFETY: the caller's stream, valid and aligned; under its lock, and the lock's busy flag
+        // refuses a second `with`, so this is the C runtime's one reference to it until `body`
+        // returns (a program touching `_iob` itself meanwhile breaks the C runtime's contract).
+        body(unsafe { &mut *stream }, index)
+    })
+}
+
+/// The stream's buffer given its own `STREAM_BUFFER` bytes, or (out of memory) none at all: its
+/// one-character buffer.
+fn give_buffer(s: &mut File) {
     let buffer = crate::heap::allocate(STREAM_BUFFER, false);
     if buffer.is_null() {
         s.flag |= IONBF;
@@ -87,10 +116,8 @@ unsafe fn give_buffer(stream: *mut File) {
 ///
 /// # Safety
 ///
-/// `stream` is a stream, under the lock.
-unsafe fn flush(stream: *mut File) -> i32 {
-    // SAFETY: the caller's stream.
-    let s = unsafe { &mut *stream };
+/// The stream's `_base` and `_ptr` describe its buffer, as the C runtime keeps them.
+unsafe fn flush(s: &mut File) -> i32 {
     let mut result = 0;
     if s.flag & (IOREAD | IOWRT) == IOWRT && s.flag & (IOMYBUF | IOYOURBUF) != 0 {
         let pending = (s.ptr as usize).wrapping_sub(s.base as usize) as i32;
@@ -112,14 +139,12 @@ unsafe fn flush(stream: *mut File) -> i32 {
 }
 
 /// A character written through the stream's buffer when it is full, or has none yet (MSVC's
-/// `_flsbuf`): the character, or EOF (`_IOERR`).
+/// `_flsbuf`): the character, or EOF (`_IOERR`). `index` is the stream's in `_iob`.
 ///
 /// # Safety
 ///
-/// `stream` is a stream, under the lock.
-unsafe fn flush_and_put(c: u8, stream: *mut File) -> i32 {
-    // SAFETY: the caller's stream.
-    let s = unsafe { &mut *stream };
+/// As [`flush`]'s.
+unsafe fn flush_and_put(c: u8, s: &mut File, index: Option<usize>) -> i32 {
     if s.flag & (IOWRT | IORW) == 0 || s.flag & IOSTRG != 0 {
         s.flag |= IOERR;
         return EOF;
@@ -138,10 +163,9 @@ unsafe fn flush_and_put(c: u8, stream: *mut File) -> i32 {
     s.cnt = 0;
     let fd = s.file;
     if s.flag & BUFFERED == 0 {
-        let standard = matches!(index_of(stream), Some(1 | 2));
+        let standard = matches!(index, Some(1 | 2));
         if !(standard && lowio::is_device(fd)) {
-            // SAFETY: the caller's stream.
-            unsafe { give_buffer(stream) };
+            give_buffer(s);
         }
     }
     let ok = if s.flag & (IOMYBUF | IOYOURBUF) != 0 {
@@ -171,10 +195,8 @@ unsafe fn flush_and_put(c: u8, stream: *mut File) -> i32 {
 ///
 /// # Safety
 ///
-/// `stream` is a stream, under the lock.
-unsafe fn put(c: u8, stream: *mut File) -> i32 {
-    // SAFETY: the caller's stream.
-    let s = unsafe { &mut *stream };
+/// As [`flush`]'s, and `_cnt` counts the room left in the buffer.
+unsafe fn put(c: u8, s: &mut File, index: Option<usize>) -> i32 {
     s.cnt -= 1;
     if s.cnt >= 0 {
         // SAFETY: inside the buffer: `_cnt` counted the room.
@@ -185,7 +207,7 @@ unsafe fn put(c: u8, stream: *mut File) -> i32 {
         return c as i32;
     }
     // SAFETY: as above.
-    unsafe { flush_and_put(c, stream) }
+    unsafe { flush_and_put(c, s, index) }
 }
 
 /// The stream's buffer refilled from its descriptor, its first character taken (MSVC's
@@ -193,10 +215,8 @@ unsafe fn put(c: u8, stream: *mut File) -> i32 {
 ///
 /// # Safety
 ///
-/// `stream` is a stream, under the lock.
-unsafe fn fill(stream: *mut File) -> i32 {
-    // SAFETY: the caller's stream.
-    let s = unsafe { &mut *stream };
+/// The stream's `_base` and `_bufsiz` describe its buffer, as the C runtime keeps them.
+unsafe fn fill(s: &mut File) -> i32 {
     // A stream that cannot read, or is writing (a `+` stream switches through fflush).
     if s.flag & (IOREAD | IORW) == 0 || s.flag & (IOWRT | IOSTRG) != 0 {
         s.flag |= IOERR;
@@ -204,8 +224,7 @@ unsafe fn fill(stream: *mut File) -> i32 {
     }
     s.flag |= IOREAD;
     if s.flag & BUFFERED == 0 {
-        // SAFETY: the caller's stream.
-        unsafe { give_buffer(stream) };
+        give_buffer(s);
     } else {
         s.ptr = s.base;
     }
@@ -229,10 +248,8 @@ unsafe fn fill(stream: *mut File) -> i32 {
 ///
 /// # Safety
 ///
-/// `stream` is a stream, under the lock.
-unsafe fn get(stream: *mut File) -> i32 {
-    // SAFETY: the caller's stream.
-    let s = unsafe { &mut *stream };
+/// As [`fill`]'s, and `_ptr` and `_cnt` describe the bytes left in the buffer.
+unsafe fn get(s: &mut File) -> i32 {
     s.cnt -= 1;
     if s.cnt >= 0 {
         // SAFETY: inside the bytes buffered.
@@ -243,68 +260,89 @@ unsafe fn get(stream: *mut File) -> i32 {
         }
     }
     // SAFETY: as above.
-    unsafe { fill(stream) }
+    unsafe { fill(s) }
 }
 
-/// Every stream writing flushed; EOF when one failed.
+/// Every stream writing flushed, each under its own lock in turn; EOF when one failed.
 pub fn flush_all() -> i32 {
-    let _lock = Locked::take();
     let mut result = 0;
     for i in 0..IOB_ENTRIES {
-        // SAFETY: `_iob`'s streams, under the lock.
-        unsafe {
-            let stream = streams().add(i);
-            if (*stream).flag & (IOWRT | IORW) != 0
-                && (*stream).flag & IOREAD == 0
-                && flush(stream) == EOF
-            {
-                result = EOF;
+        let writing = |s: &mut File, _| {
+            if s.flag & (IOWRT | IORW) != 0 && s.flag & IOREAD == 0 {
+                // SAFETY: the stream's buffer as the C runtime keeps it.
+                unsafe { flush(s) }
+            } else {
+                0
             }
+        };
+        // SAFETY: one of `_iob`'s streams.
+        if unsafe { with_stream(stream_at(i), writing) } == EOF {
+            result = EOF;
         }
     }
     result
 }
 
-/// A stream the formatter writes to.
-struct Stream(*mut File);
+/// A stream the formatter writes to, under its lock: its `FILE` and its index in `_iob`.
+struct Stream<'a> {
+    file: &'a mut File,
+    index: Option<usize>,
+}
 
-impl Output for Stream {
+impl Output for Stream<'_> {
     fn put(&mut self, unit: u32) {
-        // SAFETY: the stream, under the lock its writer holds.
-        unsafe { put(unit as u8, self.0) };
+        // SAFETY: the stream's buffer as the C runtime keeps it.
+        unsafe { put(unit as u8, self.file, self.index) };
     }
 }
 
-/// Formatted output to a stream: stdout or stderr on a device lent a buffer for the call and
-/// flushed at its end. The count, or -1 when a write failed.
+/// Formatted output to a stream, under its lock: stdout or stderr on a device lent a buffer for
+/// the call and flushed at its end. The count, or -1 when a write failed.
 ///
 /// # Safety
 ///
 /// `stream` is a stream; `text` and `args` are the formatter's.
 unsafe fn print(stream: *mut File, text: *const u8, args: &mut impl Args) -> i32 {
-    let _lock = Locked::take();
-    // SAFETY: the caller's stream.
-    let s = unsafe { &mut *stream };
-    let lent = match index_of(stream) {
+    let body = |s: &mut File, index| match index {
         Some(i @ (1 | 2)) if s.flag & BUFFERED == 0 && lowio::is_device(s.file) => {
-            // SAFETY: the lent buffer is this stream's alone, under the lock.
-            let buffer = unsafe { (*LENT.get())[i - 1].as_mut_ptr() };
-            s.base = buffer;
-            s.ptr = buffer;
-            s.cnt = STREAM_BUFFER as i32;
-            s.bufsiz = STREAM_BUFFER as i32;
-            s.flag |= IOWRT | IOYOURBUF | TEMPORARY;
-            true
+            LENT[i - 1].with(|buffer| {
+                s.base = buffer.as_mut_ptr();
+                s.ptr = s.base;
+                s.cnt = STREAM_BUFFER as i32;
+                s.bufsiz = STREAM_BUFFER as i32;
+                s.flag |= IOWRT | IOYOURBUF | TEMPORARY;
+                // SAFETY: the caller's format and arguments; the stream's buffer is the lent one,
+                // taken back from the stream before the lent buffer's lock is let go.
+                unsafe { format_to(s, index, text, args, true) }
+            })
         }
-        _ => false,
+        // SAFETY: the caller's format and arguments.
+        _ => unsafe { format_to(s, index, text, args, false) },
     };
+    // SAFETY: the caller's stream.
+    unsafe { with_stream(stream, body) }
+}
+
+/// [`print`]'s formatting into the stream, its `_IOERR` the call's own: a buffer `lent` for the
+/// call flushed and taken back at its end.
+///
+/// # Safety
+///
+/// `text` and `args` are the formatter's; the stream's buffer is as the C runtime keeps it.
+unsafe fn format_to(
+    s: &mut File,
+    index: Option<usize>,
+    text: *const u8,
+    args: &mut impl Args,
+    lent: bool,
+) -> i32 {
     let errors = s.flag & IOERR;
     s.flag &= !IOERR;
     // SAFETY: the caller's format and arguments.
-    let count = unsafe { format::format(text, args, &mut Stream(stream)) };
+    let count = unsafe { format::format(text, args, &mut Stream { file: s, index }) };
     if lent {
-        // SAFETY: the stream, under the lock.
-        unsafe { flush(stream) };
+        // SAFETY: the lent buffer, its pending bytes.
+        unsafe { flush(s) };
         s.base = core::ptr::null_mut();
         s.ptr = core::ptr::null_mut();
         s.cnt = 0;
@@ -327,7 +365,7 @@ unsafe fn print(stream: *mut File, text: *const u8, args: &mut impl Args) -> i32
 /// `text` is NUL-terminated, `args` the caller's arguments for it.
 pub unsafe extern "C" fn printf_va(text: *const u8, args: *const u8) -> i32 {
     // SAFETY: the caller's contract; stdout is `_iob[1]`.
-    unsafe { print(streams().add(1), text, &mut VaList(args)) }
+    unsafe { print(stream_at(1), text, &mut VaList(args)) }
 }
 
 /// fprintf's body.
@@ -530,13 +568,14 @@ pub unsafe extern "C" fn fflush(stream: *mut File) -> i32 {
     if stream.is_null() {
         return flush_all();
     }
-    let _lock = Locked::take();
-    // SAFETY: the caller's stream, under the lock.
-    unsafe { flush(stream) }
+    // SAFETY: the stream's buffer as the C runtime keeps it.
+    let body = |s: &mut File, _| unsafe { flush(s) };
+    // SAFETY: the caller's stream.
+    unsafe { with_stream(stream, body) }
 }
 
 /// fgets: a line (its newline kept), at most `n - 1` bytes, NUL-terminated into `buffer`; NULL at
-/// the end before any byte, or on an error.
+/// the end before any byte, or on an error. The stream's lock is held across its reads.
 ///
 /// # Safety
 ///
@@ -546,37 +585,42 @@ pub unsafe extern "C" fn fgets(buffer: *mut u8, n: i32, stream: *mut File) -> *m
     if n <= 0 || stream.is_null() {
         return core::ptr::null_mut();
     }
-    let _lock = Locked::take();
-    let mut length = 0usize;
-    while length + 1 < n as usize {
-        // SAFETY: the caller's stream, under the lock.
-        let c = unsafe { get(stream) };
-        if c == EOF {
-            if length == 0 {
-                return core::ptr::null_mut();
+    // SAFETY: the caller's buffer of `n` bytes.
+    let out = unsafe { core::slice::from_raw_parts_mut(buffer, n as usize) };
+    let body = |s: &mut File, _| {
+        let mut length = 0usize;
+        while length + 1 < out.len() {
+            // SAFETY: the stream's buffer as the C runtime keeps it.
+            let c = unsafe { get(s) };
+            if c == EOF {
+                if length == 0 {
+                    return false;
+                }
+                break;
             }
-            break;
+            out[length] = c as u8;
+            length += 1;
+            if c == b'\n' as i32 {
+                break;
+            }
         }
-        // SAFETY: inside the caller's buffer.
-        unsafe { buffer.add(length).write(c as u8) };
-        length += 1;
-        if c == b'\n' as i32 {
-            break;
-        }
+        out[length] = 0;
+        true
+    };
+    // SAFETY: the caller's stream.
+    if unsafe { with_stream(stream, body) } {
+        buffer
+    } else {
+        core::ptr::null_mut()
     }
-    // SAFETY: as above.
-    unsafe { buffer.add(length).write(0) };
-    buffer
 }
 
 /// The stream's own buffer freed.
 ///
 /// # Safety
 ///
-/// `stream` is a stream, under the lock.
-unsafe fn free_buffer(stream: *mut File) {
-    // SAFETY: the caller's stream.
-    let s = unsafe { &mut *stream };
+/// The stream's `_base` is its own buffer's when it has `_IOMYBUF`.
+unsafe fn free_buffer(s: &mut File) {
     if s.flag & IOMYBUF != 0 {
         // SAFETY: the stream's own buffer.
         unsafe { crate::heap::release(s.base) };
@@ -594,25 +638,27 @@ unsafe fn free_buffer(stream: *mut File) {
 /// `stream` is a stream.
 #[unsafe(export_name = "f2k_export_fclose")]
 pub unsafe extern "C" fn fclose(stream: *mut File) -> i32 {
-    let _lock = Locked::take();
-    // SAFETY: the caller's stream, under the lock.
-    unsafe {
-        let s = &mut *stream;
+    let body = |s: &mut File, _| {
         if s.flag & IOSTRG != 0 || s.flag & (IOREAD | IOWRT | IORW) == 0 {
             s.flag = 0;
             return EOF;
         }
-        let mut result = flush(stream);
-        free_buffer(stream);
-        if lowio::close(s.file) < 0 {
-            result = EOF;
+        // SAFETY: the stream's buffer and temporary name as the C runtime keeps them.
+        unsafe {
+            let mut result = flush(s);
+            free_buffer(s);
+            if lowio::close(s.file) < 0 {
+                result = EOF;
+            }
+            if !s.tmpfname.is_null() {
+                crate::heap::release(s.tmpfname);
+            }
+            *s = File::UNUSED;
+            result
         }
-        if !s.tmpfname.is_null() {
-            crate::heap::release(s.tmpfname);
-        }
-        *s = File::UNUSED;
-        result
-    }
+    };
+    // SAFETY: the caller's stream.
+    unsafe { with_stream(stream, body) }
 }
 
 /// setvbuf: the stream's buffering: `mode` `_IOFBF` (or `_IOLBF`, the same) with the caller's
@@ -633,12 +679,12 @@ pub unsafe extern "C" fn setvbuf(
     {
         return -1;
     }
-    let _lock = Locked::take();
-    // SAFETY: the caller's stream, under the lock.
-    unsafe {
-        flush(stream);
-        free_buffer(stream);
-        let s = &mut *stream;
+    let body = |s: &mut File, _| {
+        // SAFETY: the stream's buffer as the C runtime keeps it.
+        unsafe {
+            flush(s);
+            free_buffer(s);
+        }
         s.flag &= !(IOMYBUF | IOYOURBUF | IONBF | IOSETVBUF | TEMPORARY);
         let (base, size) = if mode == IONBF {
             s.flag |= IONBF;
@@ -658,13 +704,16 @@ pub unsafe extern "C" fn setvbuf(
         s.ptr = base;
         s.bufsiz = size as i32;
         s.cnt = 0;
-    }
-    0
+        0
+    };
+    // SAFETY: the caller's stream.
+    unsafe { with_stream(stream, body) }
 }
 
 /// _fdopen: a stream over descriptor `fd`, reading (`r`), writing (`w`, `a`) or both (`+`); the
 /// translation stays the descriptor's. NULL for a bad mode (EINVAL), a descriptor not open
-/// (EBADF), or no free stream (EMFILE).
+/// (EBADF), or no free stream (EMFILE). Each stream is looked at, and claimed when free, under its
+/// own lock.
 ///
 /// # Safety
 ///
@@ -688,19 +737,21 @@ pub unsafe extern "C" fn fdopen(fd: i32, mode: *const u8) -> *mut File {
         set_errno(EBADF);
         return core::ptr::null_mut();
     }
-    let _lock = Locked::take();
     for i in 0..IOB_ENTRIES {
-        // SAFETY: `_iob`'s streams, under the lock.
-        unsafe {
-            let stream = streams().add(i);
-            if (*stream).flag & (IOREAD | IOWRT | IORW) == 0 {
-                *stream = File {
+        let claim = |s: &mut File, _| {
+            let free = s.flag & (IOREAD | IOWRT | IORW) == 0;
+            if free {
+                *s = File {
                     flag,
                     file: fd,
                     ..File::UNUSED
                 };
-                return stream;
             }
+            free
+        };
+        // SAFETY: one of `_iob`'s streams.
+        if unsafe { with_stream(stream_at(i), claim) } {
+            return stream_at(i);
         }
     }
     set_errno(EMFILE);

@@ -7,10 +7,6 @@
 use rtl::seh::{self, ExceptionRecord, Frames, Unwound};
 use rtl::sys::{self, nr, system_service};
 
-/// The NT_TIB's StackBase and StackLimit (the chain's head, ExceptionList, is its first word).
-const TEB_STACK_BASE: usize = 0x04;
-const TEB_STACK_LIMIT: usize = 0x08;
-
 unsafe extern "C" {
     /// ExecuteHandler2 (src/except.s).
     fn f2k_execute_handler(
@@ -39,19 +35,15 @@ impl Frames for Thread {
     }
 
     fn head(&self) -> u32 {
-        sys::read(sys::teb()) as u32
+        sys::exception_list()
     }
 
     fn set_head(&self, frame: u32) {
-        sys::write(sys::teb(), frame as usize)
+        sys::set_exception_list(frame)
     }
 
     fn stack_limits(&self) -> (u32, u32) {
-        let teb = sys::teb();
-        (
-            sys::read(teb + TEB_STACK_LIMIT) as u32,
-            sys::read(teb + TEB_STACK_BASE) as u32,
-        )
+        sys::stack_limits()
     }
 
     fn execute_handler(

@@ -22,6 +22,9 @@
 //! pointers are; files themselves stay within FAT32's 32-bit sizes.
 
 use super::fat32::lookup::File;
+use super::search::Search;
+#[cfg(target_arch = "x86")]
+use crate::level::{self, High, LevelCell};
 use crate::sched::event::{Event, EventKind};
 
 /// How many file objects can exist at once (across processes). Exhaustion is a program-visible
@@ -153,7 +156,7 @@ impl OpenFile {
 /// A file object's body: one open of one file.
 pub struct FileObject {
     /// The file's record.
-    pub record: u16,
+    pub record: FileRecordId,
     /// Where the next read or write starts.
     pub position: u64,
     /// The access granted, as the share check reads it.
@@ -168,9 +171,10 @@ pub struct FileObject {
     /// Whether the object keeps a position (opened for synchronous I/O): a read or write without
     /// an offset uses and moves it.
     pub synchronous: bool,
-    /// The directory search the object's queries continue (its number in [`super::search`]; zero
-    /// for none yet).
-    pub search: u16,
+    /// The directory search the object's queries continue (none before the first query): the
+    /// file object's own, as Windows 2000 keeps it in the object's context block, so it goes with
+    /// the object.
+    pub search: Option<Search>,
     /// The synchronous-I/O lock: a call reading or writing through the object holds it, so the
     /// position moves one call at a time (FO_SYNCHRONOUS_IO's serialization). Signaled while free.
     pub lock: Event,
@@ -179,7 +183,7 @@ pub struct FileObject {
 impl FileObject {
     /// A file object of `record`, at its start, synchronous; call [`FileObject::init`] at its final
     /// address.
-    pub const fn new(record: u16, access: u8, granted: u32, share: u8) -> Self {
+    pub const fn new(record: FileRecordId, access: u8, granted: u32, share: u8) -> Self {
         FileObject {
             record,
             position: 0,
@@ -188,14 +192,33 @@ impl FileObject {
             share,
             delete_on_close: false,
             synchronous: true,
-            search: 0,
+            search: None,
             lock: Event::new(EventKind::Synchronization, true),
         }
+    }
+
+    /// A pool's fresh record: overwritten by the object manager's create before any use, so its
+    /// record is never read.
+    pub const fn none() -> Self {
+        FileObject::new(FileRecordId(0), 0, 0, 0)
     }
 
     /// Close the lock's waiters sentinel; call once at the final address.
     pub fn init(&mut self) {
         self.lock.init();
+    }
+}
+
+/// An open file's record, as the file objects of its opens name it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct FileRecordId(u16);
+
+#[cfg(test)]
+impl FileRecordId {
+    /// The record at `index`, for the object manager's tests, which make file objects without
+    /// records.
+    pub(crate) const fn at(index: u16) -> Self {
+        FileRecordId(index)
     }
 }
 
@@ -310,44 +333,34 @@ pub struct FileRecords {
 }
 
 impl FileRecords {
-    /// No file open (the tests build records by value; the kernel writes them in place).
-    #[cfg(test)]
+    /// No file open: a constant, so the kernel's records are built at compile time.
     pub const fn empty() -> Self {
         FileRecords {
             records: [None; FILE_RECORDS],
         }
     }
 
-    /// Write the empty set at `records`, record by record (by value it would pass the caller's
-    /// stack).
-    ///
-    /// # Safety
-    ///
-    /// `records` is valid for writes and aligned; its previous contents are overwritten.
-    pub unsafe fn write_empty(records: *mut FileRecords) {
-        // SAFETY: the caller's contract; every record is written.
-        unsafe {
-            let slots = core::ptr::addr_of_mut!((*records).records) as *mut Option<FileRecord>;
-            for index in 0..FILE_RECORDS {
-                slots.add(index).write(None);
-            }
-        }
-    }
-
     /// The record of the entry `file` names, if it is open.
-    pub fn find(&self, file: &File) -> Option<u16> {
+    pub fn find(&self, file: &File) -> Option<FileRecordId> {
         self.records
             .iter()
             .position(|record| record.is_some_and(|record| same_entry(&record.file, file)))
-            .map(|index| index as u16)
+            .map(|index| FileRecordId(index as u16))
+    }
+
+    /// The entry `file` names as its record holds it, when it is open (the current copy); else
+    /// `file` itself.
+    pub fn current(&self, file: File) -> File {
+        self.find(&file)
+            .map_or(file, |record| self.get(record).file)
     }
 
     /// Open the entry `file` names for `access`, allowing `share`: its record (made when the file
     /// is not open yet), counted for one more open. Refused while a delete is pending, when an open
     /// in place excludes it, or when every record is taken.
-    pub fn open(&mut self, file: File, access: u8, share: u8) -> Result<u16, OpenError> {
+    pub fn open(&mut self, file: File, access: u8, share: u8) -> Result<FileRecordId, OpenError> {
         let index = match self.find(&file) {
-            Some(index) => {
+            Some(FileRecordId(index)) => {
                 let record = self.records[index as usize].as_ref().expect("found");
                 if record.delete_pending {
                     return Err(OpenError::DeletePending);
@@ -379,19 +392,19 @@ impl FileRecords {
         record.share.add(access, share);
         record.cleanups += 1;
         record.references += 1;
-        Ok(index)
+        Ok(FileRecordId(index))
     }
 
-    /// The record at `index` (a live object names it).
-    pub fn get(&self, index: u16) -> &FileRecord {
-        self.records[index as usize]
+    /// The record `record` (a live object names it).
+    pub fn get(&self, record: FileRecordId) -> &FileRecord {
+        self.records[record.0 as usize]
             .as_ref()
             .expect("an open names a live record")
     }
 
-    /// The record at `index`, mutably.
-    pub fn get_mut(&mut self, index: u16) -> &mut FileRecord {
-        self.records[index as usize]
+    /// The record `record`, mutably.
+    pub fn get_mut(&mut self, record: FileRecordId) -> &mut FileRecord {
+        self.records[record.0 as usize]
             .as_mut()
             .expect("an open names a live record")
     }
@@ -399,20 +412,20 @@ impl FileRecords {
     /// The entry `old` named changed into `new` (a change made by path, or a rename): an open
     /// record of it follows.
     pub fn refresh(&mut self, old: &File, new: &File) {
-        if let Some(index) = self.find(old) {
-            self.get_mut(index).file = *new;
+        if let Some(record) = self.find(old) {
+            self.get_mut(record).file = *new;
         }
     }
 
-    /// Set or clear the pending delete of the open file at `index` (FileDispositionInformation):
-    /// it goes with its last open's cleanup.
-    pub fn set_delete_pending(&mut self, index: u16, pending: bool) {
-        self.get_mut(index).delete_pending = pending;
+    /// Set or clear the pending delete of the open file `record` (FileDispositionInformation): it
+    /// goes with its last open's cleanup.
+    pub fn set_delete_pending(&mut self, record: FileRecordId, pending: bool) {
+        self.get_mut(record).delete_pending = pending;
     }
 
-    /// Whether the open file at `index` goes with its last cleanup.
-    pub fn delete_pending(&self, index: u16) -> bool {
-        self.get(index).delete_pending
+    /// Whether the open file `record` goes with its last cleanup.
+    pub fn delete_pending(&self, record: FileRecordId) -> bool {
+        self.get(record).delete_pending
     }
 
     /// An open's last handle closed (its cleanup): its share access goes, its delete-on-close marks
@@ -420,12 +433,12 @@ impl FileRecords {
     /// delete-pending file.
     pub fn cleanup(
         &mut self,
-        index: u16,
+        record: FileRecordId,
         access: u8,
         share: u8,
         delete_on_close: bool,
     ) -> Option<File> {
-        let record = self.get_mut(index);
+        let record = self.get_mut(record);
         record.share.remove(access, share);
         record.cleanups -= 1;
         record.delete_pending |= delete_on_close;
@@ -433,11 +446,11 @@ impl FileRecords {
     }
 
     /// An open's last reference went: the record goes with the last one.
-    pub fn close(&mut self, index: u16) {
-        let record = self.get_mut(index);
-        record.references -= 1;
-        if record.references == 0 {
-            self.records[index as usize] = None;
+    pub fn close(&mut self, record: FileRecordId) {
+        let entry = self.get_mut(record);
+        entry.references -= 1;
+        if entry.references == 0 {
+            self.records[record.0 as usize] = None;
         }
     }
 
@@ -460,31 +473,31 @@ impl FileRecords {
     }
 }
 
-/// The kernel's file records, built in place at first use.
+/// The kernel's file records (Windows 2000's FCB table).
+///
+/// No interrupt and no DPC reaches them: their callers are system services and the idle thread's
+/// reap, which run with interrupts masked. Each step is short: a record copied out, written back or
+/// counted, never across a wait (a disk read, the volume's lock, a file object's lock), a copy of
+/// caller memory or other high-level state. A change that spans a volume I/O is made under the
+/// volume's lock, the record read before the I/O and written back after it, each in a step of its
+/// own. So the records live at the high level, reached through the bridge: each step masks
+/// interrupts for its own length, as its callers have already, which keeps the interrupt exposure
+/// as it was, and a step reaching the records from inside another's borrow is refused.
+// Note: Windows 2000 keeps the FCB table under the volume's lock (the VCB's ERESOURCE), a
+// passive-level lock. That is the faithful protection, to adopt together with the object
+// directory's lock.
 #[cfg(target_arch = "x86")]
-static mut RECORDS: core::mem::MaybeUninit<FileRecords> = core::mem::MaybeUninit::uninit();
+static RECORDS: LevelCell<High, FileRecords> = LevelCell::new(FileRecords::empty());
 
-/// Whether [`RECORDS`] is built.
+/// Run `step` on the kernel's file records (see [`RECORDS`]), through the bridge to the high level.
+///
+/// # Panics
+///
+/// The processor is already at the high level: `step`, or code it calls, reaching the records
+/// again from inside its own borrow, or the caller holding other high-level state.
 #[cfg(target_arch = "x86")]
-static mut RECORDS_BUILT: bool = false;
-
-/// The kernel's file records.
-#[cfg(target_arch = "x86")]
-pub fn records() -> &'static mut FileRecords {
-    // SAFETY: single CPU, and no interrupt path reaches the records. Services hold interrupts
-    // masked between their waits, and every caller uses the reference within one step (a copy
-    // out, a write back) that does not wait, so no other thread forms one meanwhile. A record's
-    // changes that span a volume I/O are made under the volume lock. Built once, in place.
-    // Note: nothing enforces the one-step use: a reference held across a wait (a disk read, the
-    // volume lock, a file object's lock) would alias the one another thread's service takes.
-    unsafe {
-        let records = (*core::ptr::addr_of_mut!(RECORDS)).as_mut_ptr();
-        if !RECORDS_BUILT {
-            FileRecords::write_empty(records);
-            RECORDS_BUILT = true;
-        }
-        &mut *records
-    }
+pub fn with_records<R>(step: impl FnOnce(&mut FileRecords) -> R) -> R {
+    level::raised::<High, _>(|high| step(RECORDS.get(high)))
 }
 
 #[cfg(test)]

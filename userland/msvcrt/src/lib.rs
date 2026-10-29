@@ -9,7 +9,7 @@
 //! handling and setjmp exports are assembly (src/seh.s, linked into the DLL). The DLL
 //! (src/main.rs) links this library; the host tests run its code against [`imports`]' stand-ins.
 //!
-//! The areas: program start-up and exit ([`startup`]), the per-thread data and the lock
+//! The areas: program start-up and exit ([`startup`]), the per-thread data and the locks
 //! ([`thread`]), the allocator ([`heap`]), the descriptors ([`lowio`]), console input ([`conio`]),
 //! the streams ([`stdio`]) and the formatter and scanner they share ([`format`], [`float`],
 //! [`scan`]), the child processes ([`process`]: the _spawn family, _cwait, system), the locale and
@@ -66,7 +66,6 @@ pub fn dll_main(reason: u32, _reserved: usize) -> u32 {
             if !heap::initialize() || !thread::initialize() {
                 return 0;
             }
-            conio::initialize();
             lowio::initialize();
             data::open_standard_streams();
             startup::initialize_environment() as u32

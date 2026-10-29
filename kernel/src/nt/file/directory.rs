@@ -12,12 +12,12 @@ use rtl::nt::UnicodeString;
 
 use super::super::call::{Handle, NtCall, NtResult, UserAddr};
 use super::common::{check_access, cluster_bytes, complete, completion_event, file_object, signal};
-use super::info::{self, Entry};
+use super::info::{self, Entry, ListingClass};
 use crate::fs::fat32::dir::{decode_byte, fold_unit, walk, Listed};
 use crate::fs::fat32::lookup::File;
 use crate::fs::fat32::path::MAX_NAME;
 use crate::fs::file::rights;
-use crate::fs::search::{matches, searches, MAX_EXPRESSION};
+use crate::fs::search::{matches, Search, MAX_EXPRESSION};
 use crate::status::*;
 
 /// The most a query copies out at once (a listing buffer's worth: FindFirstFile's is 4 KiB).
@@ -86,7 +86,8 @@ fn query_directory_file_held(
     file_name: UserAddr,
     restart: bool,
 ) -> NtResult {
-    let offset = info::entry_name_offset(class).ok_or(STATUS_INVALID_INFO_CLASS)?;
+    let class = ListingClass::try_from(class)?;
+    let offset = class.fixed_size();
     if (length as usize) < offset {
         return Err(STATUS_INFO_LENGTH_MISMATCH);
     }
@@ -103,23 +104,26 @@ fn query_directory_file_held(
     }
     let event = completion_event(event.raw())?;
     // The search: made by the first query, of its name (a UNICODE_STRING) or of every name.
-    if object.search == 0 {
-        let mut units = [0u16; MAX_EXPRESSION];
-        let mut expression = None;
-        if !file_name.is_null() {
-            let string = file_name.cast::<UnicodeString<u32>>().read()?;
-            let count = usize::from(string.length) / 2;
-            let name = units.get_mut(..count).ok_or(STATUS_OBJECT_NAME_INVALID)?;
-            UserAddr(string.buffer).read_units(name)?;
-            expression = (count > 0).then_some(&units[..count]);
+    let search = match &mut object.search {
+        Some(search) => {
+            if restart {
+                search.restart();
+            }
+            *search
         }
-        object.search = searches()
-            .open(expression)
-            .ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
-    } else if restart {
-        searches().get(object.search).restart();
-    }
-    let search = *searches().get(object.search);
+        None => {
+            let mut units = [0u16; MAX_EXPRESSION];
+            let mut expression = None;
+            if !file_name.is_null() {
+                let string = file_name.cast::<UnicodeString<u32>>().read()?;
+                let count = usize::from(string.length) / 2;
+                let name = units.get_mut(..count).ok_or(STATUS_OBJECT_NAME_INVALID)?;
+                UserAddr(string.buffer).read_units(name)?;
+                expression = (count > 0).then_some(&units[..count]);
+            }
+            *object.search.insert(Search::new(expression))
+        }
+    };
     let expression = search.expression();
     let room = (length as usize).min(MAX_BUFFER);
     let mut buffer = [0u8; MAX_BUFFER];
@@ -178,9 +182,10 @@ fn query_directory_file_held(
     let result = match walked {
         Some(Ok(())) => {
             let answered = search.answered || last.is_some();
-            let state = searches().get(object.search);
-            state.next = next;
-            state.answered = answered;
+            if let Some(state) = object.search.as_mut() {
+                state.next = next;
+                state.answered = answered;
+            }
             match last {
                 None if search.answered => Err(STATUS_NO_MORE_FILES),
                 None => Err(STATUS_NO_SUCH_FILE),

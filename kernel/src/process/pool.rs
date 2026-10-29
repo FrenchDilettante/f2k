@@ -76,11 +76,11 @@ pub(super) fn create(
     }
 }
 
-/// The process `thread` belongs to: the record whose scheduling record is the thread's owner;
-/// none for the idle thread, which no pooled process owns.
+/// The process a thread belongs to, by the thread's owner pointer: the record whose scheduling
+/// record is `owner`; none for the idle thread's, which no pooled process owns.
 #[cfg(target_arch = "x86")]
-pub fn owner_of(thread: &crate::sched::thread::Thread) -> Option<&'static mut Process> {
-    let index = index_of(thread.process)?;
+pub fn owner_of(owner: *const crate::sched::process::SchedProcess) -> Option<&'static mut Process> {
+    let index = index_of(owner)?;
     // SAFETY: the record of a live thread's owner, at its final address for the thread's life.
     Some(unsafe { &mut *record(index) })
 }
@@ -93,7 +93,7 @@ pub fn owner_of(thread: &crate::sched::thread::Thread) -> Option<&'static mut Pr
 /// No process is current: the running thread is no pooled process's (the idle thread).
 #[cfg(target_arch = "x86")]
 pub fn current_mut() -> &'static mut Process {
-    let index = running(|thread| index_of(thread.process)).expect("no process is current");
+    let index = index_of(crate::pcr::pcr().threads.process()).expect("no process is current");
     // SAFETY: the record of the running thread's owner, at its final address for the thread's
     // life. It is not exclusive: every other thread of the process gets the same `&'static mut`
     // to the same record here (and `owner_of` hands out another), so it is sound only while the
@@ -117,18 +117,10 @@ pub fn current() -> &'static Process {
 /// none).
 #[cfg(target_arch = "x86")]
 pub fn address_space() -> &'static mut Process {
-    let index = running(|thread| index_of(thread.space())).expect("no process's pages are live");
+    let index = index_of(crate::pcr::pcr().threads.space()).expect("no process's pages are live");
     // SAFETY: the record of the running thread's address-space process, which outlives the
     // thread's scope on it.
     unsafe { &mut *record(index) }
-}
-
-/// What `query` answers of the running thread's record; none before the scheduler has a thread.
-#[cfg(target_arch = "x86")]
-fn running<R>(query: impl FnOnce(&crate::sched::thread::Thread) -> Option<R>) -> Option<R> {
-    let thread = crate::sched::idle::dispatcher().current_thread();
-    // SAFETY: single CPU; the running thread's record is live while it runs.
-    unsafe { thread.as_ref() }.and_then(query)
 }
 
 /// The process the idle thread has to reap: one that has ended (its last thread's exit recorded

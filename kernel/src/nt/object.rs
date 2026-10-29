@@ -116,17 +116,30 @@ impl ProcessRef {
 
     /// The process's exit status: STILL_ACTIVE until it ends, its exit code after.
     pub fn exit_status(&self) -> u32 {
-        crate::ob::directory()
+        let body = crate::ob::directory()
             .process(self.id())
-            .expect("a referenced process lives")
-            .exit_status
+            .expect("a referenced process lives");
+        crate::level::raised::<crate::level::Dispatch, _>(|dispatch| {
+            crate::sched::DISPATCHER
+                .get(dispatch)
+                .process_object_mut(body)
+                .exit_status
+        })
     }
 
     /// Whether the process has ended: its object has signalled (at its last thread's exit).
     pub fn ended(&self) -> bool {
         crate::ob::directory()
-            .process(self.id())
-            .is_some_and(|object| object.waitable.signal_state() > 0)
+            .waitable(self.id())
+            .is_some_and(|body| {
+                crate::level::raised::<crate::level::Dispatch, _>(|dispatch| {
+                    crate::sched::DISPATCHER
+                        .get(dispatch)
+                        .waitable(body)
+                        .signal_state()
+                        > 0
+                })
+            })
     }
 
     /// Run `body`, which reaches the process's address space ([`ProcessRef::reach`]): for another

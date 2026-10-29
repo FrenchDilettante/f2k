@@ -187,10 +187,15 @@ mod target {
     use super::*;
     use crate::user::syscall::{read_user, write_user};
 
-    /// The running thread.
-    fn thread() -> &'static crate::sched::thread::Thread {
-        // SAFETY: the running thread's record is live while it runs in the kernel.
-        unsafe { &*crate::sched::idle::dispatcher().current_thread() }
+    /// The running thread's TEB page.
+    fn teb() -> u32 {
+        let thread = crate::sched::current_thread();
+        crate::level::raised::<crate::level::Dispatch, _>(|dispatch| {
+            crate::sched::DISPATCHER
+                .get(dispatch)
+                .thread(thread)
+                .teb_va()
+        })
     }
 
     /// Whether the running thread has a handler to dispatch to: ntdll mapped (its dispatcher) and a
@@ -200,7 +205,7 @@ mod target {
         if crate::mem::vm::CurrentPages.entry(crate::exec::modules::NTDLL_BASE) & 1 == 0 {
             return false;
         }
-        let teb = thread().teb_va();
+        let teb = teb();
         let mut head = [0u8; 4];
         teb != 0 && read_user(teb, &mut head).is_ok() && u32::from_le_bytes(head) != END_OF_CHAIN
     }

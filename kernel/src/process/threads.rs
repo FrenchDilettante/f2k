@@ -34,11 +34,13 @@
 //! the region, releasing what it holds, and ends itself as it leaves — and the process's end passes
 //! to the last such thread.
 
+use crate::level::{raised, Dispatch};
 use crate::mem::paging;
 use crate::process::exit::{self, Fault, ProcessEnd, ThreadEnd};
 use crate::process::Process;
-use crate::sched::dispatcher::{Dispatcher, Termination};
+use crate::sched::dispatcher::Termination;
 use crate::sched::thread::{Thread, ThreadId, ThreadState};
+use crate::sched::DISPATCHER;
 
 /// A fresh thread object for a thread created in `process` over the user stack reserved at
 /// `stack`, with its record and its ordinal in the process, or none (the program-visible create
@@ -61,9 +63,7 @@ fn free_thread(process: &mut Process, stack: u32) -> Option<(crate::ob::ObjectId
         }
         (id, ordinal)
     };
-    let thread = directory.renew_thread(id);
-    thread.ordinal = ordinal;
-    Some((id, thread.id(), ordinal))
+    Some((id, directory.renew_thread(id), ordinal))
 }
 
 /// Release the user pages a terminated thread left mapped at an ordinal of `process` that is about
@@ -96,7 +96,7 @@ pub fn create(
     process: &mut Process,
     user: crate::sched::startup::UserStart,
     stack: crate::sched::startup::InitialStack,
-) -> Option<(crate::ob::ObjectId, *mut Thread, u32)> {
+) -> Option<(crate::ob::ObjectId, ThreadId, u32)> {
     // An exited thread's stack is released before a slot is taken, so its slot is free to reuse
     // (unmapped, not merely marked free).
     crate::mem::kstacks::release_parked();
@@ -108,35 +108,10 @@ pub fn create(
         return None;
     };
 
-    // Attach: the scheduling data and the process-list membership.
-    let dispatcher = crate::sched::idle::dispatcher();
-    // SAFETY: the process record is the pool's, at its final address, and outlives its threads
-    // (its teardown follows the last one's end).
-    unsafe { dispatcher.attach(thread, &mut process.sched) };
-    let record = dispatcher.thread_address(thread);
-    let thread = dispatcher.thread_mut(thread);
-
-    thread.gate_slot = slot;
-    thread.gate_frames = frames;
-    thread.initial_stack = paging::gate_slot_top(slot as u32);
-
     // The TEB page: the per-thread region, one page, carrying the thread's identity and the stack
     // its creator made.
-    thread.teb_va = crate::user::thread_teb_va(ordinal as u32);
-    thread.thread_id = crate::process::new_client_id();
-    // Its TLS is user memory: ntdll's thread initialization makes the implicit-TLS block, and
-    // TlsSetValue the expansion slots on first use (both on the process heap).
-    let init = crate::user::teb::TebInit {
-        teb: thread.teb_va,
-        stack_base: stack.base,
-        stack_limit: stack.limit,
-        deallocation_stack: stack.allocation_base,
-        process_id: process.id(),
-        thread_id: thread.thread_id,
-        peb: crate::user::PEB_PAGE,
-    };
-    crate::user::teb::map_teb(process.vm(), &init);
-
+    let teb_va = crate::user::thread_teb_va(ordinal as u32);
+    let thread_id = crate::process::new_client_id();
     // The startup ladder: the stub calls the system routine (the startup's deliveries), then
     // enters ring 3 in the creator's context.
     let params = crate::sched::startup::StartParams {
@@ -145,11 +120,37 @@ pub fn create(
         start_context: 0,
         user: Some(user),
     };
-    // SAFETY: the thread's `initial_stack` names its freshly mapped, empty kernel-stack slot.
-    unsafe { crate::sched::startup::plant(thread, &params) };
+    raised::<Dispatch, _>(|dispatch| {
+        // Attach: the scheduling data and the process-list membership.
+        let dispatcher = DISPATCHER.get(dispatch);
+        // SAFETY: the process record is the pool's, at its final address, and outlives its
+        // threads (its teardown follows the last one's end).
+        unsafe { dispatcher.attach(thread, &mut process.sched) };
+        let record = dispatcher.thread_mut(thread);
+        record.ordinal = ordinal;
+        record.gate_slot = slot;
+        record.gate_frames = frames;
+        record.initial_stack = paging::gate_slot_top(slot as u32);
+        record.teb_va = teb_va;
+        record.thread_id = thread_id;
+        // SAFETY: the thread's `initial_stack` names its freshly mapped, empty kernel-stack slot.
+        unsafe { crate::sched::startup::plant(record, &params) };
+    });
 
-    let id = thread.thread_id;
-    Some((object, record, id))
+    // Its TLS is user memory: ntdll's thread initialization makes the implicit-TLS block, and
+    // TlsSetValue the expansion slots on first use (both on the process heap).
+    let init = crate::user::teb::TebInit {
+        teb: teb_va,
+        stack_base: stack.base,
+        stack_limit: stack.limit,
+        deallocation_stack: stack.allocation_base,
+        process_id: process.id(),
+        thread_id,
+        peb: crate::user::PEB_PAGE,
+    };
+    crate::user::teb::map_teb(process.vm(), &init);
+
+    Some((object, thread, thread_id))
 }
 
 /// A user thread's system routine: the kernel function the startup stub calls before entering the
@@ -159,11 +160,12 @@ pub fn create(
 /// LdrInitializeThunk first, whose NtContinue delivers the user APCs queued before the thread ran
 /// (a process without the system DLLs delivers them here instead).
 unsafe extern "C" fn user_thread_startup(_start: u32, _parameter: u32) {
-    let dispatcher = crate::sched::idle::dispatcher();
-    dispatcher.deliver_pending_apcs();
+    crate::sched::apc::deliver_pending_apcs();
     // Past its suspends: the thread has reached user mode.
-    // SAFETY: the running thread, live.
-    unsafe { (*dispatcher.current_thread()).user_started = true };
+    let thread = crate::sched::current_thread();
+    raised::<Dispatch, _>(|dispatch| {
+        DISPATCHER.get(dispatch).thread_mut(thread).user_started = true;
+    });
     if !crate::user::apc::deliver_initialization() {
         crate::user::apc::deliver_at_startup();
     }
@@ -194,17 +196,26 @@ pub fn fault_exit(fault: Fault) -> ! {
 /// for it too. The body releases what it holds before the region ends, so a thread whose
 /// termination is pending ends here, as it leaves the outermost region, holding nothing.
 pub fn critical_region<R>(body: impl FnOnce() -> R) -> R {
-    // SAFETY: the running thread, live; the body's waits return on this same thread.
-    unsafe { (*crate::sched::idle::dispatcher().current_thread()).enter_critical_region() };
+    let current = crate::sched::current_thread();
+    raised::<Dispatch, _>(|dispatch| {
+        DISPATCHER
+            .get(dispatch)
+            .thread_mut(current)
+            .enter_critical_region()
+    });
     let result = body();
-    // SAFETY: as above.
-    let thread = unsafe { &mut *crate::sched::idle::dispatcher().current_thread() };
-    if thread.leave_critical_region() && thread.termination_pending() && !thread.exiting {
+    // The body's waits return on this same thread.
+    let ends = raised::<Dispatch, _>(|dispatch| {
+        let thread = DISPATCHER.get(dispatch).thread_mut(current);
+        (thread.leave_critical_region() && thread.termination_pending() && !thread.exiting)
+            .then(|| thread.exit_status())
+    });
+    if let Some(exit_status) = ends {
         // A process's end the termination was deferred for, or one thread's termination
         // (TerminateThread), whose status the record carries.
         match crate::process::current().handed_end() {
             Some(end) => end_thread(ThreadEnd::Terminated(end)),
-            None => end_thread(ThreadEnd::Exit(thread.exit_status() as i32)),
+            None => end_thread(ThreadEnd::Exit(exit_status as i32)),
         }
     }
     result
@@ -216,14 +227,12 @@ pub fn critical_region<R>(body: impl FnOnce() -> R) -> R {
 /// exit's parked stack is released), and for the last thread its process's handles closed; then
 /// the thread object signals and its waiters wake, the thread leaves the process list and is
 /// Terminated; then, for the last thread, the process object signals with the exit code and its
-/// waiters wake; then the next thread is selected among them all; then, for the last thread, the
-/// report and the end recorded for the idle thread's reap (which only frees the address space and
-/// the record). The switch away ends the thread's timeline.
+/// waiters wake; then, for the last thread, the report and the end recorded for the idle thread's
+/// reap (which only frees the address space and the record); then the next thread is selected
+/// among them all, in the window that switches to it. The switch away ends the thread's timeline.
 fn end_thread(end: ThreadEnd) -> ! {
-    let dispatcher = crate::sched::idle::dispatcher();
-    let current = dispatcher.current().expect("an exit runs on a thread");
-    // The ending thread's process, resolved once: past the switch-away bookkeeping below, the
-    // running thread is no longer this one.
+    let current = crate::sched::current_thread();
+    // The ending thread's process, resolved once, for the whole exit.
     let process = crate::process::current_mut();
     let others = process.sched.stack_count() - 1;
     let mut plan = exit::plan(end, others);
@@ -236,13 +245,15 @@ fn end_thread(end: ThreadEnd) -> ! {
     };
     // From here on the thread runs its own exit: the critical regions of its exit's own volume
     // work do not end it again.
-    let record = dispatcher.thread_mut(current);
-    record.exit_status = status;
-    record.exiting = true;
-    assert!(
-        !record.in_critical_region(),
-        "a thread ends outside critical regions"
-    );
+    raised::<Dispatch, _>(|dispatch| {
+        let record = DISPATCHER.get(dispatch).thread_mut(current);
+        record.exit_status = status;
+        record.exiting = true;
+        assert!(
+            !record.in_critical_region(),
+            "a thread ends outside critical regions"
+        );
+    });
 
     // The process's end, step 1 (see `process`'s notes on its order): every other thread is
     // terminated, without running again.
@@ -265,22 +276,18 @@ fn end_thread(end: ThreadEnd) -> ! {
     // The timers whose completion APC targets this thread are cancelled, then the APC queue
     // closes, both before the scheduler teardown.
     run_down_timers(current);
-    dispatcher.close_apc_queue(current);
-
-    // The thread object signals and its waiters wake, and the thread leaves the process list.
-    dispatcher.retire_current();
+    raised::<Dispatch, _>(|dispatch| {
+        let dispatcher = DISPATCHER.get(dispatch);
+        dispatcher.close_apc_queue(current);
+        // The thread object signals and its waiters wake, and the thread leaves the process list.
+        dispatcher.retire_current();
+    });
     // The process's end, step 3: with its threads ended and their objects signalled, the process
     // object signals with the exit code and its waiters wake — now, not at the idle thread's
     // reap, which a busy sibling process would hold off.
     if let Some(end) = plan.process_end {
         process.signal_end(end);
     }
-    // Then the processor's next thread is selected — among the waiters either signal woke — and
-    // takes the current slot before the switch (the swap's caller-side install).
-    let selected = dispatcher
-        .select_next()
-        .expect("selection always yields the idle fallback");
-    dispatcher.enter(selected);
     // The thread has ended: its own reference on its object goes (the record is reused only once
     // nothing holds it, and never before this code is off its stack: a record is renewed by a
     // create, which no thread runs before the switch away).
@@ -300,26 +307,32 @@ fn end_thread(end: ThreadEnd) -> ! {
         process.set_end(end);
     }
 
-    // The gate stack is the one this code runs on, so it cannot be unmapped here: it is parked,
-    // last, released by whoever next runs on another stack. The stack parked before it is released
-    // now (it is not this one). The record is renewed only by a create, which no thread runs
-    // before the switch away.
-    let record = dispatcher.thread(current);
-    crate::mem::kstacks::park((record.gate_slot, record.gate_frames));
-
-    // The switch away, at the dispatch level; the exiting thread's timeline ends at the swap, so
-    // its outstanding raises — this one included — are written off.
-    let pcr = crate::pcr::pcr();
-    let _previous = pcr.raise(crate::interrupt::irql::DISPATCH);
-    pcr.write_off_thread();
-    let (from, to) = (
-        dispatcher.thread_address(current),
-        dispatcher.thread_address(selected),
-    );
-    // SAFETY: both records are the database's, pinned; the selected thread is the selection
-    // discipline's own (a woken waiter, a ready thread, or the idle fallback), its frame planted or
-    // saved.
-    unsafe { crate::sched::switch::swap_context(from, to) };
+    // The switch away, at the dispatch level, from the passive level the exit runs at. The gate
+    // stack is the one this code runs on, so it cannot be unmapped here: it is parked, last,
+    // released by whoever next runs on another stack, and the stack parked before it is released
+    // now (it is not this one); the record is renewed only by a create, which no thread runs
+    // before the switch away. Then the processor's next thread is selected — among the waiters
+    // the signals woke, or the idle thread when a process ends, for its reap — and takes the
+    // current slot at the switch. The exiting thread's timeline ends at the swap, its raise never
+    // lowered.
+    raised::<Dispatch, _>(|dispatch| {
+        let dispatcher = DISPATCHER.get(dispatch);
+        let record = dispatcher.thread(current);
+        crate::mem::kstacks::park((record.gate_slot, record.gate_frames));
+        // A process's last thread hands the processor to the idle thread, whatever else is ready:
+        // the idle thread reaps the process before it switches to the next thread, so the process's
+        // record and address space never wait for the processor to fall idle on its own (with
+        // interrupts open in the system services, a busy parent may never let it).
+        let selected = match plan.process_end {
+            Some(_) => dispatcher
+                .idle_thread()
+                .expect("the idle thread is installed"),
+            None => dispatcher
+                .select_next()
+                .expect("selection always yields the idle fallback"),
+        };
+        crate::sched::switch::exit_to(dispatch, current, selected);
+    });
     unreachable!("a terminated thread never resumes")
 }
 
@@ -335,21 +348,39 @@ fn terminate_others(
     current: Option<ThreadId>,
     status: impl Fn(&Thread) -> u32,
 ) -> u16 {
-    let dispatcher = crate::sched::idle::dispatcher();
     loop {
-        let Some(other) = dispatcher.first_thread_except(&mut process.sched, current) else {
+        let other = raised::<Dispatch, _>(|dispatch| {
+            let dispatcher = DISPATCHER.get(dispatch);
+            let other = dispatcher.first_thread_except(&mut process.sched, current)?;
+            let record = dispatcher.thread_mut(other);
+            record.exit_status = status(record);
+            Some(other)
+        });
+        let Some(other) = other else {
             // Only the threads whose termination is pending are still attached beside this one.
             return process.sched.stack_count() - u16::from(current.is_some());
         };
-        let record = dispatcher.thread_mut(other);
-        record.exit_status = status(record);
         run_down_timers(other);
-        if dispatcher.request_termination(other) == Termination::Done {
-            let record = dispatcher.thread(other);
-            crate::mem::kstacks::release((record.gate_slot, record.gate_frames));
-            // It never returns from whatever it was in: its wait's references and its own go.
-            crate::ob::end_thread_references(other);
-        }
+        terminate(other);
+    }
+}
+
+/// Terminate `thread`, another thread than the running one, its exit status recorded and its
+/// timers run down (see [`crate::sched::dispatcher::Dispatcher::request_termination`]); once it is
+/// terminated (not deferred to a critical region's end), its gate stack — not the one this code
+/// runs on — is released, and its wait's references and its own go.
+fn terminate(thread: ThreadId) {
+    let stack = raised::<Dispatch, _>(|dispatch| {
+        let dispatcher = DISPATCHER.get(dispatch);
+        (dispatcher.request_termination(thread) == Termination::Done).then(|| {
+            let record = dispatcher.thread(thread);
+            (record.gate_slot, record.gate_frames)
+        })
+    });
+    if let Some(stack) = stack {
+        crate::mem::kstacks::release(stack);
+        // It never returns from whatever it was in: its wait's references and its own go.
+        crate::ob::end_thread_references(thread);
     }
 }
 
@@ -358,7 +389,7 @@ fn terminate_others(
 /// inside a critical region finishes it first and ends itself as it leaves), and the calling thread
 /// runs on — its process's own end comes with its next call. `process` is the caller's.
 pub fn terminate_other_threads(process: &mut Process, status: u32) {
-    let current = crate::sched::idle::dispatcher().current();
+    let current = crate::sched::try_current_thread();
     let _ = terminate_others(process, current, |_| status);
 }
 
@@ -455,7 +486,7 @@ pub fn is_last_thread() -> bool {
 /// Cancel the current process's timers whose completion APC targets `thread`, which is ending:
 /// nothing may queue to it any more (the platform's timer rundown at thread exit).
 fn run_down_timers(thread: ThreadId) {
-    crate::ob::directory().run_down_timers(crate::sched::idle::dispatcher(), thread);
+    crate::ob::directory().run_down_timers(thread);
 }
 
 /// Why TerminateThread refuses a target.
@@ -474,26 +505,24 @@ pub enum TerminateError {
 /// A thread of the current process is never its last (the caller is alive). The calling thread
 /// ends through [`exit_thread`] instead. The target's gate stack is released from the shared
 /// tables, whatever address space is current.
-pub fn terminate_thread(target: &mut Thread, status: u32) -> Result<(), TerminateError> {
-    if target.state() == ThreadState::Terminated || target.termination_pending() {
-        return Err(TerminateError::Ended);
-    }
-    let owner = crate::process::pool::owner_of(target).expect("a user thread's process");
+pub fn terminate_thread(target: ThreadId, status: u32) -> Result<(), TerminateError> {
+    let owner = raised::<Dispatch, _>(|dispatch| {
+        let record = DISPATCHER.get(dispatch).thread(target);
+        let ended = record.state() == ThreadState::Terminated || record.termination_pending();
+        (!ended).then_some(record.process)
+    })
+    .ok_or(TerminateError::Ended)?;
+    let owner = crate::process::pool::owner_of(owner).expect("a user thread's process");
     if !core::ptr::eq(owner, crate::process::current()) && owner.sched.stack_count() == 1 {
         terminate_process(owner, status);
         return Ok(());
     }
-    target.exit_status = status;
-    let target = target.id();
+    raised::<Dispatch, _>(|dispatch| {
+        DISPATCHER.get(dispatch).thread_mut(target).exit_status = status;
+    });
     run_down_timers(target);
-    let dispatcher = crate::sched::idle::dispatcher();
-    if dispatcher.request_termination(target) == Termination::Done {
-        // Not the stack this code runs on: release it now.
-        let record = dispatcher.thread(target);
-        crate::mem::kstacks::release((record.gate_slot, record.gate_frames));
-        // It never returns from whatever it was in: its wait's references and its own go.
-        crate::ob::end_thread_references(target);
-    }
+    // Not the stack this code runs on: it is released now.
+    terminate(target);
     Ok(())
 }
 
@@ -513,27 +542,29 @@ pub fn start_main_thread(process: &mut Process, user: crate::sched::startup::Use
         start_context: 0,
         user: Some(user),
     };
-    // SAFETY: the thread's `initial_stack` names its mapped, empty kernel-stack slot (nothing has
-    // entered a gate on it yet), mapped in every directory.
-    unsafe { crate::sched::startup::plant(thread, &params) };
+    raised::<Dispatch, _>(|dispatch| {
+        let record = DISPATCHER.get(dispatch).thread_mut(thread);
+        // SAFETY: the thread's `initial_stack` names its mapped, empty kernel-stack slot (nothing
+        // has entered a gate on it yet), mapped in every directory.
+        unsafe { crate::sched::startup::plant(record, &params) };
+    });
 }
 
 /// Make `process`'s main thread, its ladder planted ([`start_main_thread`]), schedulable: the next
 /// switch away from the idle thread can enter it, whatever address space is live now (the switch
 /// loads the process's own).
 ///
-/// The readying runs with interrupts masked, the flag put back as found: the idle thread may call
-/// this with them enabled (the boot's runner, before the idle loop), and an interrupt's exit can
-/// switch to a thread readied earlier — taking it out of the dispatcher's standby slot in the
-/// middle of this one's readying.
+/// The readying runs at the dispatch level, as every dispatcher change does, and inside a span with
+/// interrupts masked, the flag put back as found: the idle thread may call this with them enabled
+/// (the boot's runner, before the idle loop), and the lower out of an enabled caller's raise would
+/// take the dispatch decision at once — switching to the readied thread before the runner readies
+/// the next leg. Masked, the decision waits for the idle loop, or the next interrupt.
 pub fn ready_main_thread(process: &mut Process) {
+    let thread = process
+        .main_thread()
+        .expect("a started process has its main thread");
     let _masked = crate::pcr::pcr().mask_guard();
-    let dispatcher: &'static mut Dispatcher = crate::sched::idle::dispatcher();
-    dispatcher.make_ready(
-        process
-            .main_thread()
-            .expect("a started process has its main thread"),
-    );
+    raised::<Dispatch, _>(|dispatch| DISPATCHER.get(dispatch).make_ready(thread));
 }
 
 /// The fault-test boots' ring-3 entry: start `process`'s main thread in `user` and ready it, then

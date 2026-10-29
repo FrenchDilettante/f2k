@@ -104,15 +104,20 @@ impl Event {
         previous
     }
 
-    /// Signal the event, granting its waiters a wake boost of `increment`, and return the previous
-    /// signal state (see [`Dispatcher::set_event`]).
-    pub fn set(&mut self, dispatcher: &mut Dispatcher, increment: i8) -> i32 {
-        let id = self.waitable.id();
-        dispatcher.set_event(id, increment)
+    /// The event's name, as the dispatcher's entries take it ([`Dispatcher::set_event`]): a pool
+    /// record's index, or an embedded event's address.
+    pub fn id(&self) -> WaitableId {
+        self.waitable.id()
     }
 }
 
 impl Dispatcher {
+    /// Reset the event `event`, returning its previous signal state. Resetting wakes nobody.
+    pub fn reset_event(&mut self, event: WaitableId) -> i32 {
+        let header = self.waitable_mut(event);
+        core::mem::replace(&mut header.signal_state, 0)
+    }
+
     /// Signal the event `event`, granting its waiters a wake boost of `increment`, and return the
     /// previous signal state.
     ///
@@ -194,7 +199,7 @@ mod tests {
         ev.clear();
         assert_eq!(ev.signal_state(), 0);
         assert_eq!(
-            ev.set(d, EVENT_WAKE_INCREMENT),
+            d.set_event(ev.id(), EVENT_WAKE_INCREMENT),
             0,
             "set returns the previous state"
         );
@@ -216,8 +221,8 @@ mod tests {
         let notification = event(EventKind::Notification, false);
         let synchronization = event(EventKind::Synchronization, false);
 
-        assert_eq!(notification.set(d, EVENT_WAKE_INCREMENT), 0);
-        assert_eq!(synchronization.set(d, EVENT_WAKE_INCREMENT), 0);
+        assert_eq!(d.set_event(notification.id(), EVENT_WAKE_INCREMENT), 0);
+        assert_eq!(d.set_event(synchronization.id(), EVENT_WAKE_INCREMENT), 0);
         assert_eq!(notification.signal_state(), 1);
         assert_eq!(
             synchronization.signal_state(),

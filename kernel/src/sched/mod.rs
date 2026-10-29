@@ -22,13 +22,16 @@
 //! ([`list`]): a thread sits on a ready list by carrying the link itself, as Windows 2000's
 //! KTHREAD does, so queueing allocates nothing.
 //!
-//! One processor, no locking: every method runs serialized at the dispatch level, which the
-//! interrupt core already raises around the dispatcher entries.
+//! One processor, no locking: the dispatcher is a dispatch-level cell ([`DISPATCHER`]), so every
+//! method runs serialized at the dispatch level, with the dispatch token lent.
 
 // Parts of the state machines stay unwired until their consumers land (the forced-resume route has
 // none: a process-ending termination takes a suspended thread off its wait directly); the queues,
 // the delivery, the suspend consumer, and the re-wait are live.
 #![allow(dead_code)]
+
+#[cfg(target_arch = "x86")]
+use crate::level::{Dispatch, LevelCell};
 
 /// Index-linked lists: the dispatcher database's queues.
 pub mod list;
@@ -48,6 +51,9 @@ pub mod thread;
 
 /// The dispatcher: ready queues, selection, the state machines.
 pub mod dispatcher;
+
+/// The processor's threads: the current, next and idle threads, and the running thread's quantum.
+pub mod processor;
 
 /// The process record's scheduling side: base priority, quantum.
 pub mod process;
@@ -91,6 +97,75 @@ pub mod mutex;
 
 /// Waitable timers: the program's timer object, its period and completion APC.
 pub mod waitable_timer;
+
+// --- The running thread and the dispatcher ---------------------------------
+
+/// The running thread (Windows 2000's KeGetCurrentThread): the processor's current slot, read
+/// without the dispatcher. Its record is the dispatcher's
+/// ([`dispatcher::Dispatcher::thread`]).
+///
+/// # Panics
+///
+/// No thread runs yet: the boot installs the idle thread before anything asks.
+pub fn current_thread() -> thread::ThreadId {
+    try_current_thread().expect("a thread runs")
+}
+
+/// The running thread, none before the boot installs the idle thread.
+pub fn try_current_thread() -> Option<thread::ThreadId> {
+    crate::pcr::pcr().threads.current()
+}
+
+/// The dispatcher database (Windows 2000's, which its dispatcher lock guards): dispatch-level
+/// state, reached with the dispatch token. Built in place at its first borrow, the boot's: by value
+/// it would pass through the boot stack, which is smaller than it.
+#[cfg(target_arch = "x86")]
+pub static DISPATCHER: LevelCell<Dispatch, dispatcher::Dispatcher> =
+    // SAFETY: `write_empty` writes a whole dispatcher at the address it is handed, and reaches no
+    // level cell (it empties the processor's thread slots and the published timer dues).
+    unsafe { LevelCell::in_place(dispatcher::Dispatcher::write_empty) };
+
+/// The host builds have no boot: each test thread installs a dispatcher of its own, which
+/// [`DISPATCHER`] reaches there.
+#[cfg(not(target_arch = "x86"))]
+pub static DISPATCHER: host::Installed = host::Installed;
+
+#[cfg(not(target_arch = "x86"))]
+pub(crate) use host::install as install_host;
+
+#[cfg(not(target_arch = "x86"))]
+mod host {
+    extern crate std;
+
+    use core::cell::Cell;
+
+    use super::dispatcher::Dispatcher;
+    use crate::level::{Dispatch, LevelCell};
+
+    std::thread_local! {
+        static INSTALLED: Cell<Option<&'static LevelCell<Dispatch, Dispatcher>>> =
+            const { Cell::new(None) };
+    }
+
+    /// The test thread's installed dispatcher, as the kernel's static names it.
+    pub struct Installed;
+
+    impl core::ops::Deref for Installed {
+        type Target = LevelCell<Dispatch, Dispatcher>;
+
+        /// The installed cell; panics when none is.
+        fn deref(&self) -> &LevelCell<Dispatch, Dispatcher> {
+            INSTALLED
+                .with(Cell::get)
+                .expect("a host dispatcher is installed")
+        }
+    }
+
+    /// Make `dispatcher` this thread's: what [`super::DISPATCHER`] reaches from now on.
+    pub fn install(dispatcher: &'static LevelCell<Dispatch, Dispatcher>) {
+        INSTALLED.with(|installed| installed.set(Some(dispatcher)));
+    }
+}
 
 // --- Constants -----------------------------------------------------------
 

@@ -39,7 +39,8 @@ mod level;
 #[cfg(not(target_arch = "x86"))]
 pub mod level;
 
-// The processor control region: the level ledger and the deferred procedure call queue
+// The processor control region: the level ledger, the deferred procedure call queue and the
+// processor's threads
 mod pcr;
 
 // Memory management: physical frame allocator
@@ -251,10 +252,6 @@ pub extern "C" fn kmain(magic: u32, multiboot_info: u32) -> ! {
     // The kernel stack region's tables, shared by every address space from the first on.
     mem::paging::init_kernel_stack_tables();
 
-    // The scheduler's resting state: the idle thread, armed while interrupts are still disabled
-    // (nothing is schedulable yet; its loop is the kernel's resting state once no thread remains).
-    crate::sched::idle::boot();
-
     // The console's text screen: the fresh console's blank screen buffer over whatever the firmware
     // and loader left on it (silently: the serial line carries the boot's report).
     csr::init();
@@ -263,12 +260,21 @@ pub extern "C" fn kmain(magic: u32, multiboot_info: u32) -> ! {
     // every process connects to at its first win32k service.
     win32k::winsta::init();
 
+    // The registry: its arena, and the keys Windows 2000 has from its boot on.
+    cm::init();
+
     // The interrupt subsystem: the remapped controller behind the claim seam, the interval timer at
     // the captured platform rate, the interval clock connected to its vector — and interrupts fly
     // from here on (the idle path and ring 3 both run with them enabled; the gates mask on entry).
     // SAFETY: boot CPU, ring 0, interrupts disabled, sole access to the controllers; the IDT gates
     // (exception, syscall, hardware vectors) are installed.
     unsafe { interrupt::init() };
+
+    // The scheduler's resting state: the idle thread (nothing is schedulable yet; its loop is the
+    // kernel's resting state once no thread remains). Its install raises to the dispatcher's
+    // level, which enables interrupts, so it waits for the interrupt subsystem: an interrupt taken
+    // before the controllers are remapped would land on an exception's vector.
+    crate::sched::idle::boot();
 
     // The interrupt/timer diagnostic boot: report the hardware state, wait for the live tick and
     // the clock's deferred work, and audit the whole subsystem — then fall through to the normal
@@ -286,9 +292,7 @@ pub extern "C" fn kmain(magic: u32, multiboot_info: u32) -> ! {
     crate::hw::kbd::init();
 
     // The block devices: the disk, if there is one, and a view per primary partition on it.
-    if let Some(disk) = crate::hw::ide::disk::block_device() {
-        crate::block::registry::scan_disk(disk);
-    }
+    crate::block::registry::boot_scan(crate::hw::ide::disk::block_device());
 
     // The boot volume: the first registered partition, mounted as FAT32. Silent — a boot without
     // a volume is normal, and a refused volume is left unmounted.

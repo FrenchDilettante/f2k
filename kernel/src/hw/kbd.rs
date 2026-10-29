@@ -18,7 +18,9 @@
 //! the console's input buffer and asks for the lights a toggle key's make changes. The lights are
 //! the one command the driver sends after bring-up: 0xED, then its argument, each acknowledged; a
 //! request that arrives while an exchange is under way is dropped (the lights converge on the next
-//! toggle).
+//! toggle). The service routine reaches only the ports and the ring; the rest of the driver's state
+//! (the command state, the losses already reported) is its device extension's, which the DPC owns
+//! at the dispatch level, the console's own level too.
 //!
 //! Bring-up ([`Controller::bring_up`], run once at boot, polled, before the interrupt is
 //! connected): the keyboard interface disabled and stale bytes drained, the configuration byte
@@ -370,6 +372,13 @@ impl<IoT: Io> Controller<IoT> {
         sent
     }
 
+    /// Show the toggles `request` asks for, if it asks (see [`Controller::set_lights`]).
+    pub fn show(&mut self, request: LightsRequest) {
+        if let Some(toggles) = request.0 {
+            self.set_lights(toggles);
+        }
+    }
+
     /// Classify a byte from the keyboard: the reply the exchange under way awaits is consumed (and
     /// the exchange moves on); anything else is key data.
     pub fn receive(&mut self, byte: u8) -> Received {
@@ -412,39 +421,52 @@ impl<IoT: Io> Controller<IoT> {
     }
 }
 
-/// The lights, as the producer reaches them through the driver.
-pub struct Lights<'a, IoT: Io>(pub &'a mut Controller<IoT>);
+/// The lights a key byte asks for, as the producer reaches them: kept while the producer runs,
+/// then shown through the driver ([`Controller::show`]) once the console is no longer borrowed (the
+/// console and the driver's command state are both the dispatch level's, reached one at a time).
+/// A byte completes at most one key, so it asks at most once.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LightsRequest(Option<u8>);
 
-impl<IoT: Io> rtl::console::input::Lights for Lights<'_, IoT> {
+impl rtl::console::input::Lights for LightsRequest {
     fn set(&mut self, toggles: u8) {
-        self.0.set_lights(toggles);
+        self.0 = Some(toggles);
     }
 }
 
 #[cfg(target_arch = "x86")]
 mod target {
-    use core::ptr::addr_of_mut;
-
     use super::*;
     use crate::hw::portio::Ports;
     use crate::interrupt::dpc::{self, Dpc};
     use crate::interrupt::InterruptObject;
-    use crate::level::{At, Dispatch, Keyboard as KeyboardLevel};
+    use crate::level::{self, At, Dispatch, Keyboard as KeyboardLevel, LevelCell};
     use crate::serial_println;
 
     /// How long bring-up waits for each of the keyboard's answers: 50 ticks, about half a second
     /// (a real keyboard's self-test takes a few hundred milliseconds).
     const ANSWER_TICKS: u64 = 50;
 
+    /// The bytes the service routine reads, for the DPC: the one thing the two share.
     static RING: ByteRing = ByteRing::new();
-    // Note: the controller's command state and the lost count the DPC last reported belong in the
-    // keyboard's device extension, which the driver does not have yet.
-    static mut CONTROLLER: Controller<Ports> = Controller::new(Ports);
+
+    /// The keyboard's device extension, as Windows 2000's port driver keeps one: the driver's state
+    /// past the service routine, which reaches only the ports and the ring. Once bring-up is over
+    /// only the DPC touches it, so it is the dispatch level's.
+    struct KbdExtension {
+        /// The controller and the lights exchange under way.
+        controller: Controller<Ports>,
+        /// The ring's lost count the DPC last reported.
+        reported_lost: u32,
+    }
+
+    static EXTENSION: LevelCell<Dispatch, KbdExtension> = LevelCell::new(KbdExtension {
+        controller: Controller::new(Ports),
+        reported_lost: 0,
+    });
     /// The keyboard's interrupt: IRQ 1, served at the keyboard's level.
     static OBJECT: InterruptObject = InterruptObject::at_keyboard(service, 0, VECTOR, false, false);
     static DPC: Dpc = Dpc::new(input_routine, 0);
-    /// The ring's lost count the DPC last reported.
-    static mut REPORTED_LOST: u32 = 0;
 
     /// The service routine: runs claimed at the keyboard level. The one byte read ends the
     /// interrupt; everything else is the DPC's.
@@ -458,12 +480,9 @@ mod target {
 
     /// The DPC: the ring's bytes in order, the keyboard's replies to the driver claimed, the rest
     /// fed to the console's producer.
-    fn input_routine(_: &mut At<Dispatch>, _: &Dpc, _context: usize, _: usize, _: usize) {
-        // SAFETY: the drain runs DPCs one at a time at the dispatch level, and bring-up is over
-        // before the interrupt is connected: the controller's command state is this routine's.
-        let controller = unsafe { &mut *addr_of_mut!(CONTROLLER) };
+    fn input_routine(dispatch: &mut At<Dispatch>, _: &Dpc, _context: usize, _: usize, _: usize) {
         while let Some(byte) = RING.pop() {
-            let received = controller.receive(byte);
+            let received = EXTENSION.get(dispatch).controller.receive(byte);
             #[cfg(feature = "kbd-smoke")]
             serial_println!(
                 "F2K: kbd: byte {:#04x}{}",
@@ -475,12 +494,13 @@ mod target {
                 }
             );
             if let Received::Key(byte) = received {
-                crate::csr::key_byte(byte, &mut Lights(controller));
+                let mut lights = LightsRequest::default();
+                crate::csr::key_byte(dispatch, byte, &mut lights);
+                EXTENSION.get(dispatch).controller.show(lights);
             }
         }
         let lost = RING.lost();
-        // SAFETY: as above: this routine's own.
-        let reported = unsafe { &mut *addr_of_mut!(REPORTED_LOST) };
+        let reported = &mut EXTENSION.get(dispatch).reported_lost;
         if lost != *reported {
             serial_println!(
                 "F2K: kbd: {} byte(s) lost to a full ring",
@@ -501,13 +521,16 @@ mod target {
             }
             now >= until
         };
-        // SAFETY: boot context, before the interrupt is connected: sole access to the driver
-        // statics.
-        let controller = unsafe { &mut *addr_of_mut!(CONTROLLER) };
+        // Bring-up polls on a controller of its own, at the boot's level rather than the
+        // extension's: its waits read the tick, and the deferred work the tick queues meanwhile
+        // runs as it always has.
+        let mut controller = Controller::new(Ports);
         let Ok(found) = controller.bring_up(rtl::console::input::BOOT_TOGGLES, &mut expired) else {
             serial_println!("F2K: kbd: no i8042 controller answered");
             return;
         };
+        // The controller, brought up, is the DPC's from here.
+        level::raised::<Dispatch, _>(|dispatch| EXTENSION.get(dispatch).controller = controller);
         assert!(
             crate::interrupt::connect(&OBJECT),
             "connecting the keyboard interrupt failed"
@@ -570,9 +593,9 @@ mod tests {
         let mut records = Vec::new();
         while let Some(byte) = service(controller.io()) {
             if let Received::Key(byte) = controller.receive(byte) {
-                console.key_byte(byte, &mut Lights(controller), &mut |_, record| {
-                    records.push(record)
-                });
+                let mut lights = LightsRequest::default();
+                console.key_byte(byte, &mut lights, &mut |_, record| records.push(record));
+                controller.show(lights);
             }
         }
         records

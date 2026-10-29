@@ -11,6 +11,7 @@
 //! index. The process object's body — the waitable a wait on the process parks on, and the exit
 //! status — is a dispatcher-database record of its own, at the process record's index.
 
+use core::cell::UnsafeCell;
 use core::ptr::NonNull;
 
 use super::list::{IndexList, ListKind};
@@ -158,6 +159,29 @@ impl SchedProcess {
     /// Whether no thread is attached.
     pub fn has_no_threads(&self) -> bool {
         self.threads.is_empty()
+    }
+}
+
+/// A scheduling record pinned in a static for the kernel's life, outside the process pool: the
+/// idle process's. Nothing holds a reference to it: the attach that links the idle thread to it
+/// keeps its address, and the dispatcher and the context switch reach it through that.
+pub struct PinnedProcess(UnsafeCell<SchedProcess>);
+
+// SAFETY: one processor; the record is reached only through its address, by the boot's attach and
+// then by the dispatcher (serialized at the dispatch level) and the switch, never through a shared
+// reference to the wrapper's contents.
+unsafe impl Sync for PinnedProcess {}
+
+impl PinnedProcess {
+    /// A pinned record with the given directory base and base priority (see
+    /// [`SchedProcess::new`]).
+    pub const fn new(dir_phys: u32, base_priority: i8) -> Self {
+        PinnedProcess(UnsafeCell::new(SchedProcess::new(dir_phys, base_priority)))
+    }
+
+    /// The record's address, for its one attach.
+    pub fn as_ptr(&self) -> *mut SchedProcess {
+        self.0.get()
     }
 }
 

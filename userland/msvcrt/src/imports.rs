@@ -83,7 +83,7 @@ unsafe extern "system" {
     pub fn HeapFree(heap: usize, flags: u32, block: *mut u8) -> u32;
     pub fn HeapSize(heap: usize, flags: u32, block: *const u8) -> usize;
 
-    /// The per-thread data's slot, and the C runtime's lock.
+    /// The per-thread data's slot, and the C runtime's locks.
     pub fn TlsAlloc() -> u32;
     pub fn TlsGetValue(index: u32) -> usize;
     pub fn TlsSetValue(index: u32, value: usize) -> u32;
@@ -634,11 +634,51 @@ pub mod host {
         1
     }
 
+    /// The critical sections the host tests' threads hold: each one's address, owner and count.
+    static SECTIONS: std::sync::Mutex<Vec<(usize, std::thread::ThreadId, u32)>> =
+        std::sync::Mutex::new(Vec::new());
+    /// Signalled when a section comes free.
+    static SECTION_FREED: std::sync::Condvar = std::sync::Condvar::new();
+
+    fn sections() -> std::sync::MutexGuard<'static, Vec<(usize, std::thread::ThreadId, u32)>> {
+        SECTIONS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     pub unsafe extern "system" fn InitializeCriticalSection(_: *mut u8) {}
 
-    pub unsafe extern "system" fn EnterCriticalSection(_: *mut u8) {}
+    /// EnterCriticalSection: the section taken by the calling thread, as a critical section is (one
+    /// owner at a time, its entries counted), keyed by its address.
+    pub unsafe extern "system" fn EnterCriticalSection(section: *mut u8) {
+        let me = std::thread::current().id();
+        let mut held = sections();
+        loop {
+            match held.iter_mut().find(|(at, ..)| *at == section as usize) {
+                None => return held.push((section as usize, me, 1)),
+                Some((_, owner, count)) if *owner == me => return *count += 1,
+                Some(_) => {
+                    held = SECTION_FREED
+                        .wait(held)
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                }
+            }
+        }
+    }
 
-    pub unsafe extern "system" fn LeaveCriticalSection(_: *mut u8) {}
+    /// LeaveCriticalSection: one entry let go; the last frees the section.
+    pub unsafe extern "system" fn LeaveCriticalSection(section: *mut u8) {
+        let mut held = sections();
+        let at = held
+            .iter()
+            .position(|(at, ..)| *at == section as usize)
+            .expect("a section left that was not entered");
+        held[at].2 -= 1;
+        if held[at].2 == 0 {
+            held.swap_remove(at);
+            SECTION_FREED.notify_all();
+        }
+    }
 
     pub unsafe extern "system" fn GetCommandLineA() -> *const u8 {
         unreachable("GetCommandLineA")

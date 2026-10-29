@@ -1,57 +1,39 @@
-//! The calling thread's system, for user-mode runtime code (ntdll's own): its TEB and PEB through
-//! FS, and Windows 2000's system services through the gate ([`system_service`], by their Windows
-//! 2000 numbers, `nr`). The critical sections' events and the heaps' pages are the NT services'
-//! ([`Native`]), the PEB lock is the PEB's ([`peb_lock`]), and the process's heaps are its PEB's
-//! list ([`process`], [`process_heap`]). The raises are here too ([`raise_exception`],
+//! The calling thread's system, for user-mode runtime code: its TEB and PEB through FS, and Windows
+//! 2000's system services through the gate ([`system_service`], by their Windows 2000 numbers,
+//! `nr`). The TEB's fields are the calling thread's own, read and written through FS; the PEB's
+//! are read and written in place, one field at a time ([`Peb`]'s layout: the process's image, its
+//! parameters, its heap and heap list, the loader's lists, and the pointers to ntdll's own locks
+//! and bitmap headers its process initialization fills). The critical sections' events and the
+//! heaps' pages are the NT services' ([`Native`]). The raises are here too ([`raise_exception`],
 //! [`raise_status`]: the context captured in user mode, the exception's first chance
 //! NtRaiseException's), so the runtime's own code can raise without naming ntdll's exports.
 
 use core::arch::asm;
+use core::mem::offset_of;
 
 use crate::critsec::{CriticalSection, System};
-use crate::heap::{Heap, Process, Vm};
+use crate::heap::{Heap, HeapList, Vm};
+use crate::params::ProcessParameters;
+use crate::peb::{Peb, Teb};
 
 // The kernel's ABI constants (`SYSCALL_VECTOR`, the internal `SYS_*`) and Windows 2000's service
 // numbers (`nr`), from the kernel's sources and tools/exportgen's table (see build.rs).
 include!(concat!(env!("OUT_DIR"), "/abi.rs"));
 
-/// The TEB's own linear address (NT_TIB.Self).
-const TEB_SELF: u32 = 0x18;
-/// The TEB's ClientId.UniqueThread.
-const TEB_THREAD_ID: u32 = 0x24;
-/// The TEB's ThreadLocalStoragePointer (the implicit-TLS block array) and TlsExpansionSlots.
-pub const TEB_THREAD_LOCAL_STORAGE_POINTER: usize = 0x2C;
-pub const TEB_TLS_EXPANSION_SLOTS: usize = 0xF94;
-/// The TEB's pointer to the process's PEB, and the PEB's NumberOfProcessors.
-const TEB_PEB: u32 = 0x30;
-const PEB_NUMBER_OF_PROCESSORS: u32 = 0x64;
-/// The PEB's ImageBaseAddress, ProcessParameters and ProcessHeap.
-const PEB_IMAGE_BASE_ADDRESS: usize = 0x08;
-const PEB_PROCESS_PARAMETERS: usize = 0x10;
-const PEB_PROCESS_HEAP: usize = 0x18;
-/// The PEB's heap list (NumberOfHeaps, MaximumNumberOfHeaps, ProcessHeaps: the kernel plants the
-/// maximum and the array's place), and the lock over it (F2K's place for ntdll's own, past the PEB
-/// proper on its page; LdrInitializeThunk makes it on the process's first thread).
-const PEB_HEAP_LIST: usize = 0x88;
-const PEB_HEAP_LIST_LOCK: usize = 0x840;
-/// The PEB's FastPebLock, with the routines that take and release it, and where F2K keeps the lock
-/// it points at: past the PEB proper on its page, after the heap list's (Windows 2000 keeps it in
-/// ntdll's data). LdrInitializeThunk makes it on the process's first thread.
-const PEB_FAST_PEB_LOCK: usize = 0x1C;
-const PEB_FAST_PEB_LOCK_ROUTINE: usize = 0x20;
-const PEB_FAST_PEB_UNLOCK_ROUTINE: usize = 0x24;
-const PEB_LOCK_STORAGE: usize = 0x860;
-/// The PEB's LoaderLock, and where F2K keeps the lock it points at: past the PEB proper on its page
-/// (Windows 2000 keeps LdrpLoaderLock in ntdll's data).
-const PEB_LOADER_LOCK: usize = crate::modules::peb::LOADER_LOCK as usize;
-const LOADER_LOCK_STORAGE: usize = 0x900;
+/// The TEB's fields reached through FS, by their offsets in its layout.
+const TEB_EXCEPTION_LIST: u32 = offset_of!(Teb<u32>, exception_list) as u32;
+const TEB_STACK_BASE: u32 = offset_of!(Teb<u32>, stack_base) as u32;
+const TEB_STACK_LIMIT: u32 = offset_of!(Teb<u32>, stack_limit) as u32;
+const TEB_THREAD_ID: u32 = offset_of!(Teb<u32>, unique_thread) as u32;
+const TEB_THREAD_LOCAL_STORAGE_POINTER: u32 =
+    offset_of!(Teb<u32>, thread_local_storage_pointer) as u32;
+const TEB_PEB: u32 = offset_of!(Teb<u32>, process_environment_block) as u32;
+const TEB_LAST_ERROR_VALUE: u32 = offset_of!(Teb<u32>, last_error_value) as u32;
+const TEB_LAST_STATUS_VALUE: u32 = offset_of!(Teb<u32>, last_status_value) as u32;
+const TEB_TLS_EXPANSION_SLOTS: u32 = offset_of!(Teb<u32>, tls_expansion_slots) as u32;
 
 /// The calling thread's system.
 pub struct Native;
-/// The TEB's LastErrorValue.
-const TEB_LAST_ERROR_VALUE: u32 = 0x34;
-/// The TEB's LastStatusValue (NT 5.0, x86).
-const TEB_LAST_STATUS_VALUE: u32 = 0xBF4;
 
 /// The dword at `OFFSET` in the calling thread's TEB.
 fn teb_word<const OFFSET: u32>() -> u32 {
@@ -64,82 +46,95 @@ fn teb_word<const OFFSET: u32>() -> u32 {
     value
 }
 
-/// The calling thread's TEB, by its linear address.
-pub fn teb() -> usize {
-    teb_word::<TEB_SELF>() as usize
+/// Write the dword at `OFFSET` in the calling thread's TEB: one of its own fields, which no other
+/// thread writes.
+fn set_teb_word<const OFFSET: u32>(value: u32) {
+    // SAFETY: FS addresses the calling thread's TEB, mapped for its whole life; the fields written
+    // through here are words of the thread's own.
+    unsafe {
+        asm!("mov dword ptr fs:[{offset}], {value}", value = in(reg) value, offset = const OFFSET,
+             options(nostack, preserves_flags));
+    }
 }
 
-/// The calling thread's PEB.
-pub fn peb() -> usize {
-    teb_word::<TEB_PEB>() as usize
+/// The head of the calling thread's SEH frame chain (NT_TIB.ExceptionList).
+pub fn exception_list() -> u32 {
+    teb_word::<TEB_EXCEPTION_LIST>()
 }
 
-/// The PEB lock (FastPebLock): what serializes the process-wide state's changes (the TLS bitmaps,
-/// kernel32's lazy per-process state).
-pub fn peb_lock() -> &'static CriticalSection {
-    // SAFETY: the lock's storage is on the PEB page, mapped for the process's whole life, and made
-    // a critical section by the process's first thread (`init_peb_lock`) before anything takes it.
-    unsafe { &*((peb() + PEB_LOCK_STORAGE) as *const CriticalSection) }
+/// Make `frame` the head of the calling thread's SEH frame chain.
+pub fn set_exception_list(frame: u32) {
+    set_teb_word::<TEB_EXCEPTION_LIST>(frame)
 }
 
-/// Make the PEB lock (the process's first thread, before anything else runs): the section
-/// initialized and the PEB's FastPebLock pointing at it, with the routines that take and release
-/// it (`enter`, `leave`: ntdll's RtlEnterCriticalSection and RtlLeaveCriticalSection).
-pub fn init_peb_lock(enter: usize, leave: usize) {
-    let peb = peb();
-    let _ = peb_lock().initialize(&Native, 0);
-    write(peb + PEB_FAST_PEB_LOCK, peb + PEB_LOCK_STORAGE);
-    write(peb + PEB_FAST_PEB_LOCK_ROUTINE, enter);
-    write(peb + PEB_FAST_PEB_UNLOCK_ROUTINE, leave);
+/// The calling thread's stack's bounds: its lowest committed address (StackLimit) and one past its
+/// top (StackBase).
+pub fn stack_limits() -> (u32, u32) {
+    (teb_word::<TEB_STACK_LIMIT>(), teb_word::<TEB_STACK_BASE>())
 }
 
-/// The loader lock (the PEB's LoaderLock): what the loader holds while it reads or changes the
-/// module lists.
-pub fn loader_lock() -> &'static CriticalSection {
-    // SAFETY: as the PEB lock's: on the PEB page, made by the process's first thread
-    // (`init_loader_lock`) before anything takes it.
-    unsafe { &*((peb() + LOADER_LOCK_STORAGE) as *const CriticalSection) }
+/// The calling thread's implicit-TLS block array (ThreadLocalStoragePointer; zero for none).
+pub fn thread_local_storage_pointer() -> usize {
+    teb_word::<TEB_THREAD_LOCAL_STORAGE_POINTER>() as usize
 }
 
-/// Make the loader lock (the process's first thread, before anything else runs): the section
-/// initialized and the PEB's LoaderLock pointing at it.
-pub fn init_loader_lock() {
-    let peb = peb();
-    let _ = loader_lock().initialize(&Native, 0);
-    write(peb + PEB_LOADER_LOCK, peb + LOADER_LOCK_STORAGE);
+/// Record the calling thread's implicit-TLS block array (zero for none).
+pub fn set_thread_local_storage_pointer(array: usize) {
+    set_teb_word::<TEB_THREAD_LOCAL_STORAGE_POINTER>(array as u32)
 }
 
-/// A dword of user memory.
-pub fn read(at: usize) -> usize {
-    // SAFETY: the callers read the TEB, the PEB, the process parameters and the thread's own
-    // stack, mapped for the thread's or the process's whole life.
-    unsafe { core::ptr::read_volatile(at as *const usize) }
+/// The calling thread's TLS expansion slots' block (TlsExpansionSlots; zero until made).
+pub fn tls_expansion_slots() -> usize {
+    teb_word::<TEB_TLS_EXPANSION_SLOTS>() as usize
 }
 
-/// Write a dword of user memory.
-pub fn write(at: usize, value: usize) {
-    // SAFETY: the callers write the TEB and the PEB, the thread's and the process's own.
-    unsafe { core::ptr::write_volatile(at as *mut usize, value) }
+/// Record the calling thread's TLS expansion slots' block (zero for none).
+pub fn set_tls_expansion_slots(slots: usize) {
+    set_teb_word::<TEB_TLS_EXPANSION_SLOTS>(slots as u32)
+}
+
+/// The calling process's PEB.
+fn peb() -> *mut Peb<usize> {
+    teb_word::<TEB_PEB>() as usize as *mut Peb<usize>
+}
+
+/// The PEB's field, read in place.
+macro_rules! peb_field {
+    ($field:ident) => {
+        // SAFETY: the PEB is mapped for the process's whole life; its fields are read and written
+        // in place, one at a time, never borrowed whole.
+        unsafe { (&raw const (*peb()).$field).read_volatile() }
+    };
+}
+
+/// Write the PEB's field in place: a field the caller is the one to write (the process's first
+/// thread's initialization, before any other thread runs).
+macro_rules! set_peb_field {
+    ($field:ident, $value:expr) => {{
+        let value = $value;
+        // SAFETY: as `peb_field`'s; the field is the caller's to write.
+        unsafe { (&raw mut (*peb()).$field).write_volatile(value) }
+    }};
 }
 
 /// The process image's base.
 pub fn image_base() -> usize {
-    read(peb() + PEB_IMAGE_BASE_ADDRESS)
+    peb_field!(image_base_address)
 }
 
 /// The process parameters (RTL_USER_PROCESS_PARAMETERS), as the PEB points at them.
-pub fn process_parameters() -> usize {
-    read(peb() + PEB_PROCESS_PARAMETERS)
+pub fn process_parameters() -> *mut ProcessParameters<usize> {
+    peb_field!(process_parameters) as *mut ProcessParameters<usize>
 }
 
 /// The process heap's handle (zero before the process's first thread made it).
 pub fn process_heap_handle() -> usize {
-    read(peb() + PEB_PROCESS_HEAP)
+    peb_field!(process_heap)
 }
 
-/// Record the process heap's handle in the PEB.
+/// Record the process heap's handle in the PEB (the process's first thread, once).
 pub fn set_process_heap(handle: usize) {
-    write(peb() + PEB_PROCESS_HEAP, handle)
+    set_peb_field!(process_heap, handle)
 }
 
 /// The process heap.
@@ -149,32 +144,66 @@ pub fn process_heap() -> Heap {
     unsafe { Heap::from_handle(process_heap_handle()) }
 }
 
-/// The process's heaps: its PEB's list and the lock over it.
-pub fn process() -> Process {
+/// The PEB's heap list (NumberOfHeaps, MaximumNumberOfHeaps, ProcessHeaps: the kernel plants the
+/// maximum and the array's place).
+pub fn heap_list() -> *mut HeapList {
+    // SAFETY: a place in the PEB, mapped for the process's whole life (no reference is made).
+    unsafe { (&raw mut (*peb()).number_of_heaps).cast::<HeapList>() }
+}
+
+/// The loader's PEB_LDR_DATA (zero until the process's initialization makes it).
+pub fn ldr() -> usize {
+    peb_field!(ldr)
+}
+
+/// Record the loader's PEB_LDR_DATA (the process's first thread, once).
+pub fn set_ldr(lists: usize) {
+    set_peb_field!(ldr, lists)
+}
+
+/// Point the PEB's FastPebLock at `lock`, with the routines that take and release it (`enter`,
+/// `leave`: ntdll's RtlEnterCriticalSection and RtlLeaveCriticalSection): the process's first
+/// thread, once.
+pub fn set_fast_peb_lock(lock: &'static CriticalSection, enter: usize, leave: usize) {
+    set_peb_field!(fast_peb_lock, core::ptr::from_ref(lock) as usize);
+    set_peb_field!(fast_peb_lock_routine, enter);
+    set_peb_field!(fast_peb_unlock_routine, leave);
+}
+
+/// Point the PEB's LoaderLock at `lock`: the process's first thread, once.
+pub fn set_loader_lock(lock: &'static CriticalSection) {
+    set_peb_field!(loader_lock, core::ptr::from_ref(lock) as usize)
+}
+
+/// The PEB's TLS bitmaps' bits: TlsBitmapBits (indexes 0..64) and TlsExpansionBitmapBits
+/// (64..1088).
+pub fn tls_bitmap_bits() -> (*mut u32, *mut u32) {
     let peb = peb();
-    Process {
-        list: (peb + PEB_HEAP_LIST) as *mut _,
-        lock: (peb + PEB_HEAP_LIST_LOCK) as *const CriticalSection,
+    // SAFETY: places in the PEB, mapped for the process's whole life (no reference is made).
+    unsafe {
+        (
+            (&raw mut (*peb).tls_bitmap_bits).cast::<u32>(),
+            (&raw mut (*peb).tls_expansion_bitmap_bits).cast::<u32>(),
+        )
     }
+}
+
+/// Point the PEB's TlsBitmap and TlsExpansionBitmap at their RTL_BITMAP headers (`slots`,
+/// `expansion`): the process's first thread, once.
+pub fn set_tls_bitmaps(slots: usize, expansion: usize) {
+    set_peb_field!(tls_bitmap, slots);
+    set_peb_field!(tls_expansion_bitmap, expansion);
 }
 
 /// Record `status` as the calling thread's last status (its TEB's LastStatusValue, which
 /// RtlNtStatusToDosError keeps).
 pub fn set_last_status(status: u32) {
-    // SAFETY: FS addresses the calling thread's TEB, mapped for its whole life.
-    unsafe {
-        asm!("mov dword ptr fs:[{offset}], {status}", status = in(reg) status,
-             offset = const TEB_LAST_STATUS_VALUE, options(nostack, preserves_flags));
-    }
+    set_teb_word::<TEB_LAST_STATUS_VALUE>(status)
 }
 
 /// Set the calling thread's last error (its TEB's LastErrorValue).
 pub fn set_last_error(code: u32) {
-    // SAFETY: FS addresses the calling thread's TEB, mapped for its whole life.
-    unsafe {
-        asm!("mov dword ptr fs:[{offset}], {code}", code = in(reg) code,
-             offset = const TEB_LAST_ERROR_VALUE, options(nostack, preserves_flags));
-    }
+    set_teb_word::<TEB_LAST_ERROR_VALUE>(code)
 }
 
 /// EVENT_ALL_ACCESS, and NtCreateEvent's SynchronizationEvent type.
@@ -372,10 +401,7 @@ impl System for Native {
     }
 
     fn processors(&self) -> u32 {
-        // SAFETY: the PEB is mapped for the process's whole life.
-        unsafe {
-            core::ptr::read_volatile((peb() + PEB_NUMBER_OF_PROCESSORS as usize) as *const u32)
-        }
+        peb_field!(number_of_processors)
     }
 
     /// NtCreateEvent: an unnamed SynchronizationEvent, nonsignaled (Windows 2000's

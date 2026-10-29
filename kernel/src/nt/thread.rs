@@ -10,31 +10,55 @@
 //! ERROR_INVALID_HANDLE to kernel32). The information's length is the class's structure's exactly,
 //! as Windows 2000 checks it (STATUS_INFO_LENGTH_MISMATCH).
 
+use rtl::nt::info::ThreadBasicInformation;
+
 use super::call::{Handle, NtCall, NtResult, UserAddr, UserPtr};
 use super::process::ClientId;
+#[cfg(target_arch = "x86")]
+use crate::level::Dispatch;
+#[cfg(target_arch = "x86")]
+use crate::sched::{thread::ThreadId, DISPATCHER};
 use crate::status::*;
 
-/// THREADINFOCLASS: the classes F2K answers.
-/// ThreadBasicInformation: THREAD_BASIC_INFORMATION (query).
-pub const THREAD_BASIC_INFORMATION: u32 = 0;
-/// ThreadPriority: the current priority, a KPRIORITY 1..31 (set).
-pub const THREAD_PRIORITY: u32 = 2;
-/// ThreadBasePriority: the base priority's increment over the process's, a LONG (set).
-pub const THREAD_BASE_PRIORITY: u32 = 3;
-/// ThreadAffinityMask: the processors the thread may run on, a KAFFINITY (set).
-pub const THREAD_AFFINITY_MASK: u32 = 4;
-/// ThreadZeroTlsCell: a TLS index whose slot every thread of the process loses, a ULONG (set; the
-/// calling thread's handle only).
-pub const THREAD_ZERO_TLS_CELL: u32 = 10;
-/// ThreadAmILastThread: whether the calling thread is its process's only one, a ULONG (query; the
-/// handle is not consulted, as on Windows 2000: the class asks about the caller).
-pub const THREAD_AM_I_LAST_THREAD: u32 = 12;
-/// ThreadPriorityBoost: whether the dynamic boosts are disabled, a ULONG (query and set).
-pub const THREAD_PRIORITY_BOOST: u32 = 14;
+info_class! {
+    /// The classes NtQueryInformationThread answers (THREADINFOCLASS).
+    pub enum QueryClass {
+        /// THREAD_BASIC_INFORMATION.
+        Basic = 0,
+        /// Whether the calling thread is its process's only one, a ULONG (the handle is not
+        /// consulted, as on Windows 2000: the class asks about the caller).
+        AmILastThread = 12,
+        /// Whether the dynamic boosts are disabled, a ULONG.
+        PriorityBoost = 14,
+    }
+}
 
-/// sizeof(THREAD_BASIC_INFORMATION): ExitStatus, TebBaseAddress, ClientId (UniqueProcess,
-/// UniqueThread), AffinityMask, Priority, BasePriority.
-pub const THREAD_BASIC_INFORMATION_SIZE: u32 = 28;
+impl QueryClass {
+    /// The length the class's information must have: its structure's.
+    pub fn size(self) -> u32 {
+        (match self {
+            QueryClass::Basic => size_of::<ThreadBasicInformation>(),
+            QueryClass::AmILastThread | QueryClass::PriorityBoost => size_of::<u32>(),
+        }) as u32
+    }
+}
+
+info_class! {
+    /// The classes NtSetInformationThread takes (THREADINFOCLASS), each a ULONG-sized value.
+    pub enum SetClass {
+        /// The current priority, a KPRIORITY 1..31.
+        Priority = 2,
+        /// The base priority's increment over the process's, a LONG.
+        BasePriority = 3,
+        /// The processors the thread may run on, a KAFFINITY.
+        AffinityMask = 4,
+        /// A TLS index whose slot every thread of the process loses, a ULONG (the calling
+        /// thread's handle only).
+        ZeroTlsCell = 10,
+        /// Whether the dynamic boosts are disabled, a ULONG.
+        PriorityBoost = 14,
+    }
+}
 
 /// The base-priority increments' bounds (THREAD_BASE_PRIORITY_MIN/MAX), and the saturation value
 /// either way: (LOW_REALTIME_PRIORITY + 1) / 2, the pin to the class's edge that kernel32's
@@ -98,22 +122,19 @@ pub struct BasicInformation {
     pub base_priority: i32,
 }
 
-/// THREAD_BASIC_INFORMATION's bytes.
-pub fn basic_information(info: &BasicInformation) -> [u8; THREAD_BASIC_INFORMATION_SIZE as usize] {
-    let mut bytes = [0u8; THREAD_BASIC_INFORMATION_SIZE as usize];
-    let words = [
-        info.exit_status,
-        info.teb,
-        info.process_id,
-        info.thread_id,
-        SYSTEM_AFFINITY,
-        info.priority as u32,
-        info.base_priority as u32,
-    ];
-    for (chunk, word) in bytes.chunks_exact_mut(4).zip(words) {
-        chunk.copy_from_slice(&word.to_le_bytes());
+/// THREAD_BASIC_INFORMATION of a thread: its facts, on the one processor.
+pub fn basic_information(info: &BasicInformation) -> ThreadBasicInformation {
+    ThreadBasicInformation {
+        exit_status: info.exit_status,
+        teb_base_address: info.teb,
+        client_id: ClientId {
+            unique_process: info.process_id,
+            unique_thread: info.thread_id,
+        },
+        affinity_mask: SYSTEM_AFFINITY,
+        priority: info.priority,
+        base_priority: info.base_priority,
     }
-    bytes
 }
 
 /// The length a class's information must have: its structure's (STATUS_INFO_LENGTH_MISMATCH
@@ -126,12 +147,19 @@ fn exactly(length: u32, size: u32) -> Result<(), NtStatus> {
     }
 }
 
+/// A thread a handle names, referenced for the caller's scope: its object held, and its record's
+/// name in the dispatcher database, where the record is reached with the dispatch token.
+#[cfg(target_arch = "x86")]
+pub(super) struct ThreadRef {
+    _reference: crate::ob::ObRef,
+    /// The thread's record.
+    pub id: ThreadId,
+}
+
 /// The thread a handle names (the current-thread pseudo-handle included), referenced for the
 /// caller's scope.
 #[cfg(target_arch = "x86")]
-pub(super) fn thread_of(
-    handle: Handle,
-) -> Result<crate::ob::Referenced<crate::sched::thread::Thread>, NtStatus> {
+pub(super) fn thread_of(handle: Handle) -> Result<ThreadRef, NtStatus> {
     let reference = if handle.raw() == CURRENT_THREAD {
         crate::ob::current_thread()
             .and_then(crate::ob::reference)
@@ -139,8 +167,11 @@ pub(super) fn thread_of(
     } else {
         super::sync::object_of(handle.raw(), crate::ob::ObjectType::Thread)?
     };
-    let record = reference.thread();
-    Ok(crate::ob::Referenced::new(reference, record))
+    let id = reference.thread();
+    Ok(ThreadRef {
+        _reference: reference,
+        id,
+    })
 }
 
 /// INITIAL_TEB's size: OldStackBase, OldStackLimit, StackBase, StackLimit, StackAllocationBase.
@@ -221,7 +252,7 @@ pub fn create_thread(
     let inherit = if attributes.is_null() {
         false
     } else {
-        let mut name = [0u16; super::attributes::MAX_NAME];
+        let mut name = super::attributes::Name::new();
         super::attributes::read(attributes, &mut name)?.inherit()
     };
     let (user, stack) = (initial_context(&context), initial_stack(&teb));
@@ -252,13 +283,13 @@ pub fn create_thread(
             unique_process: target.record().id(),
             unique_thread: id,
         });
-        let dispatcher = crate::sched::idle::dispatcher();
         if create_suspended {
             // The suspend APC queues on the never-run thread; its startup delivers it before the
             // first user instruction, parking it until a resume. A fresh thread is never at the
             // count's maximum nor terminating, so the suspend cannot be refused.
-            // SAFETY: the created thread, live and exclusive here.
-            let suspended = dispatcher.suspend_thread(unsafe { &mut *thread });
+            let suspended = DISPATCHER
+                .get(&mut call.passive().raise::<Dispatch>())
+                .suspend_thread(thread);
             assert_eq!(suspended, Ok(0), "a fresh thread suspends");
         }
         // A clock tick that fell inside the create (the gate masks interrupts, and a create maps
@@ -267,8 +298,9 @@ pub fn create_thread(
         // passes the processor on without the new thread jumping ahead of its creator.
         crate::pcr::pcr().interrupt_window();
         // The handle exists; the thread becomes schedulable now.
-        // SAFETY: the created thread, live and exclusive here.
-        crate::sched::idle::dispatcher().make_ready(unsafe { &mut *thread });
+        DISPATCHER
+            .get(&mut call.passive().raise::<Dispatch>())
+            .make_ready(thread);
         Ok(STATUS_SUCCESS)
     }
     #[cfg(not(target_arch = "x86"))]
@@ -305,12 +337,12 @@ pub fn terminate_thread(_call: &mut NtCall, thread: Handle, status: u32) -> NtRe
             }
             crate::process::threads::exit_thread(status as i32);
         }
-        let mut target = thread_of(thread)?;
-        if core::ptr::eq(&*target, crate::sched::idle::dispatcher().current_thread()) {
+        let target = thread_of(thread)?;
+        if target.id == crate::sched::current_thread() {
             drop(target);
             crate::process::threads::exit_thread(status as i32);
         }
-        match crate::process::threads::terminate_thread(&mut target, status) {
+        match crate::process::threads::terminate_thread(target.id, status) {
             Ok(()) => Ok(STATUS_SUCCESS),
             Err(crate::process::threads::TerminateError::Ended) => Err(STATUS_INVALID_PARAMETER),
         }
@@ -327,21 +359,26 @@ pub fn terminate_thread(_call: &mut NtCall, thread: Handle, status: u32) -> NtRe
 /// the caller returns), the previous count written back when asked. STATUS_SUSPEND_COUNT_EXCEEDED
 /// for the count at its maximum, STATUS_THREAD_IS_TERMINATING for a thread that has ended or whose
 /// termination is pending.
-pub fn suspend_thread(_call: &mut NtCall, thread: Handle, previous: UserPtr<u32>) -> NtResult {
+pub fn suspend_thread(call: &mut NtCall, thread: Handle, previous: UserPtr<u32>) -> NtResult {
     #[cfg(target_arch = "x86")]
     {
         previous.addr().probe(4)?;
-        let mut thread = thread_of(thread)?;
-        if thread.state() == crate::sched::thread::ThreadState::Terminated {
-            return Err(STATUS_THREAD_IS_TERMINATING);
-        }
-        let count = crate::sched::idle::dispatcher().suspend_thread(&mut thread)?;
+        let thread = thread_of(thread)?;
+        let count = {
+            let mut dispatch = call.passive().raise::<Dispatch>();
+            let dispatcher = DISPATCHER.get(&mut dispatch);
+            if dispatcher.thread(thread.id).state() == crate::sched::thread::ThreadState::Terminated
+            {
+                return Err(STATUS_THREAD_IS_TERMINATING);
+            }
+            dispatcher.suspend_thread(thread.id)?
+        };
         previous.write_optional(u32::from(count))?;
         Ok(STATUS_SUCCESS)
     }
     #[cfg(not(target_arch = "x86"))]
     {
-        let _ = (thread, previous);
+        let _ = (call, thread, previous);
         Err(STATUS_INVALID_HANDLE)
     }
 }
@@ -349,22 +386,27 @@ pub fn suspend_thread(_call: &mut NtCall, thread: Handle, previous: UserPtr<u32>
 /// NtResumeThread: release one suspend — at one outstanding the semaphore releases and the parked
 /// thread wakes — the previous count written back when asked (zero for a thread nobody suspended,
 /// and for one that has ended: it has no suspension left).
-pub fn resume_thread(_call: &mut NtCall, thread: Handle, previous: UserPtr<u32>) -> NtResult {
+pub fn resume_thread(call: &mut NtCall, thread: Handle, previous: UserPtr<u32>) -> NtResult {
     #[cfg(target_arch = "x86")]
     {
         previous.addr().probe(4)?;
-        let mut thread = thread_of(thread)?;
-        let count = if thread.state() == crate::sched::thread::ThreadState::Terminated {
-            0
-        } else {
-            crate::sched::idle::dispatcher().resume_thread(&mut thread)
+        let thread = thread_of(thread)?;
+        let count = {
+            let mut dispatch = call.passive().raise::<Dispatch>();
+            let dispatcher = DISPATCHER.get(&mut dispatch);
+            if dispatcher.thread(thread.id).state() == crate::sched::thread::ThreadState::Terminated
+            {
+                0
+            } else {
+                dispatcher.resume_thread(thread.id)
+            }
         };
         previous.write_optional(u32::from(count))?;
         Ok(STATUS_SUCCESS)
     }
     #[cfg(not(target_arch = "x86"))]
     {
-        let _ = (thread, previous);
+        let _ = (call, thread, previous);
         Err(STATUS_INVALID_HANDLE)
     }
 }
@@ -375,49 +417,58 @@ pub fn resume_thread(_call: &mut NtCall, thread: Handle, previous: UserPtr<u32>)
 /// (whether the dynamic boosts are disabled). STATUS_INVALID_INFO_CLASS for the classes F2K does
 /// not answer.
 pub fn query_information_thread(
-    _call: &mut NtCall,
+    call: &mut NtCall,
     thread: Handle,
     class: u32,
     information: UserAddr,
     length: u32,
     return_length: UserPtr<u32>,
 ) -> NtResult {
-    let size = match class {
-        THREAD_BASIC_INFORMATION => THREAD_BASIC_INFORMATION_SIZE,
-        THREAD_AM_I_LAST_THREAD | THREAD_PRIORITY_BOOST => 4,
-        _ => return Err(STATUS_INVALID_INFO_CLASS),
-    };
+    let class = QueryClass::try_from(class)?;
+    let size = class.size();
     exactly(length, size)?;
     #[cfg(target_arch = "x86")]
     {
-        if class == THREAD_AM_I_LAST_THREAD {
-            let last = crate::process::threads::is_last_thread();
-            UserPtr::<u32>::at(information.raw()).write(u32::from(last))?;
-            return_length.write_optional(size)?;
-            return Ok(STATUS_SUCCESS);
-        }
-        let thread = thread_of(thread)?;
-        if class == THREAD_BASIC_INFORMATION {
-            // SAFETY: the process outlives its threads; its scheduling record leads its record.
-            let process = unsafe { &*(thread.process as *const crate::process::Process) };
-            let info = BasicInformation {
-                exit_status: thread.exit_status(),
-                teb: thread.teb_va(),
-                process_id: process.id(),
-                thread_id: thread.thread_id(),
-                priority: i32::from(thread.priority()),
-                base_priority: crate::sched::idle::dispatcher().base_increment(&thread),
-            };
-            information.write(&basic_information(&info))?;
-        } else {
-            UserPtr::<u32>::at(information.raw()).write(u32::from(thread.disable_boost))?;
+        match class {
+            QueryClass::AmILastThread => {
+                let last = crate::process::threads::is_last_thread();
+                information.cast().write(u32::from(last))?;
+            }
+            QueryClass::Basic => {
+                let thread = thread_of(thread)?;
+                let info = {
+                    let mut dispatch = call.passive().raise::<Dispatch>();
+                    let dispatcher = DISPATCHER.get(&mut dispatch);
+                    let record = dispatcher.thread(thread.id);
+                    // SAFETY: the process outlives its threads; its scheduling record leads its
+                    // record.
+                    let process = unsafe { &*(record.process as *const crate::process::Process) };
+                    BasicInformation {
+                        exit_status: record.exit_status(),
+                        teb: record.teb_va(),
+                        process_id: process.id(),
+                        thread_id: record.thread_id(),
+                        priority: i32::from(record.priority()),
+                        base_priority: dispatcher.base_increment(thread.id),
+                    }
+                };
+                information.cast().write(basic_information(&info))?;
+            }
+            QueryClass::PriorityBoost => {
+                let thread = thread_of(thread)?;
+                let disabled = DISPATCHER
+                    .get(&mut call.passive().raise::<Dispatch>())
+                    .thread(thread.id)
+                    .disable_boost;
+                information.cast().write(u32::from(disabled))?;
+            }
         }
         return_length.write_optional(size)?;
         Ok(STATUS_SUCCESS)
     }
     #[cfg(not(target_arch = "x86"))]
     {
-        let _ = (thread, information, return_length);
+        let _ = (call, thread, information, return_length);
         Err(STATUS_INVALID_HANDLE)
     }
 }
@@ -439,33 +490,31 @@ pub fn set_information_thread(
     information: UserAddr,
     length: u32,
 ) -> NtResult {
-    match class {
-        THREAD_PRIORITY
-        | THREAD_BASE_PRIORITY
-        | THREAD_AFFINITY_MASK
-        | THREAD_ZERO_TLS_CELL
-        | THREAD_PRIORITY_BOOST => {}
-        _ => return Err(STATUS_INVALID_INFO_CLASS),
-    }
-    exactly(length, 4)?;
-    let value = UserPtr::<u32>::at(information.raw()).read()?;
+    let class = SetClass::try_from(class)?;
+    exactly(length, size_of::<u32>() as u32)?;
+    let value = information.cast::<u32>().read()?;
     #[cfg(target_arch = "x86")]
     {
-        let dispatcher = crate::sched::idle::dispatcher();
         match class {
-            THREAD_PRIORITY => {
+            SetClass::Priority => {
                 let priority = priority_value(value as i32)?;
-                dispatcher.set_priority(&mut *thread_of(thread)?, priority);
+                let thread = thread_of(thread)?;
+                DISPATCHER
+                    .get(&mut call.passive().raise::<Dispatch>())
+                    .set_priority(thread.id, priority);
             }
-            THREAD_BASE_PRIORITY => {
+            SetClass::BasePriority => {
                 let increment = base_priority_increment(value as i32)?;
-                dispatcher.set_base_priority(&mut *thread_of(thread)?, increment);
+                let thread = thread_of(thread)?;
+                DISPATCHER
+                    .get(&mut call.passive().raise::<Dispatch>())
+                    .set_base_priority(thread.id, increment);
             }
-            THREAD_AFFINITY_MASK => {
+            SetClass::AffinityMask => {
                 affinity_mask(value)?;
                 thread_of(thread)?;
             }
-            THREAD_ZERO_TLS_CELL => {
+            SetClass::ZeroTlsCell => {
                 if thread.raw() != CURRENT_THREAD || value >= crate::user::tls::INDEXES {
                     return Err(STATUS_INVALID_PARAMETER);
                 }
@@ -478,13 +527,19 @@ pub fn set_information_thread(
                     }
                 }
             }
-            _ => thread_of(thread)?.disable_boost = value != 0,
+            SetClass::PriorityBoost => {
+                let thread = thread_of(thread)?;
+                DISPATCHER
+                    .get(&mut call.passive().raise::<Dispatch>())
+                    .thread_mut(thread.id)
+                    .disable_boost = value != 0;
+            }
         }
         Ok(STATUS_SUCCESS)
     }
     #[cfg(not(target_arch = "x86"))]
     {
-        let _ = (call, thread, value);
+        let _ = (call, thread, class, value);
         Err(STATUS_INVALID_HANDLE)
     }
 }
@@ -523,7 +578,7 @@ mod tests {
     /// read it.
     #[test]
     fn the_basic_information_is_the_nt_layout() {
-        let bytes = basic_information(&BasicInformation {
+        let information = basic_information(&BasicInformation {
             exit_status: 259,
             teb: 0x7FFD_E000,
             process_id: 8,
@@ -531,6 +586,7 @@ mod tests {
             priority: 9,
             base_priority: -16,
         });
+        let bytes = rtl::pod::Pod::as_bytes(&information);
         let word = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
         assert_eq!(
             (word(0), word(4), word(8), word(12)),

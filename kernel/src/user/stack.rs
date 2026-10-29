@@ -68,8 +68,13 @@ pub fn grow_on_guard(address: u32) -> Growth {
     use crate::mem::vm::CurrentPages;
     use crate::user::syscall::{read_user, write_user};
     use crate::user::teb::teb_offset;
-    // SAFETY: the running thread's record, live while it runs.
-    let teb = unsafe { (*crate::sched::idle::dispatcher().current_thread()).teb_va() };
+    let thread = crate::sched::current_thread();
+    let teb = crate::level::raised::<crate::level::Dispatch, _>(|dispatch| {
+        crate::sched::DISPATCHER
+            .get(dispatch)
+            .thread(thread)
+            .teb_va()
+    });
     if teb == 0 {
         return Growth::NotStack;
     }

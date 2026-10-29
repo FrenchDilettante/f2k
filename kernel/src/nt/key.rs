@@ -23,6 +23,17 @@
 //! STATUS_BUFFER_OVERFLOW, what fits written; the size the whole takes goes to ResultLength either
 //! way.
 
+use rtl::array_vec::ArrayVec;
+use rtl::nt::info::{
+    KeyBasicInformation,
+    KeyFullInformation,
+    KeyNodeInformation,
+    KeyValueBasicInformation,
+    KeyValueFullInformation,
+    KeyValuePartialInformation,
+    VariableSize,
+};
+
 use crate::cm::unit_bytes;
 use crate::status::*;
 
@@ -48,14 +59,23 @@ const SPECIFIC_AND_STANDARD: u32 = 0x00FF_FFFF;
 pub const REG_CREATED_NEW_KEY: u32 = 1;
 pub const REG_OPENED_EXISTING_KEY: u32 = 2;
 
-/// The key information classes.
-const KEY_BASIC_INFORMATION: u32 = 0;
-const KEY_NODE_INFORMATION: u32 = 1;
-const KEY_FULL_INFORMATION: u32 = 2;
-/// The value information classes.
-const KEY_VALUE_BASIC_INFORMATION: u32 = 0;
-const KEY_VALUE_FULL_INFORMATION: u32 = 1;
-const KEY_VALUE_PARTIAL_INFORMATION: u32 = 2;
+info_class! {
+    /// The key information classes (KEY_INFORMATION_CLASS).
+    pub enum KeyClass {
+        Basic = 0,
+        Node = 1,
+        Full = 2,
+    }
+}
+
+info_class! {
+    /// The value information classes (KEY_VALUE_INFORMATION_CLASS).
+    pub enum ValueClass {
+        Basic = 0,
+        Full = 1,
+        Partial = 2,
+    }
+}
 
 /// The rights an open asking for `desired` is granted: the rights it names, the generic ones
 /// mapped to the key rights, MAXIMUM_ALLOWED as every key right.
@@ -74,18 +94,32 @@ pub fn granted(desired: u32) -> u32 {
     access
 }
 
+/// The largest fixed part a reply has (KEY_FULL_INFORMATION's).
+const MAX_FIXED: usize = KeyFullInformation::FIXED_SIZE;
+
 /// An information class's answer: its structure's fixed part, then the variable parts (names,
 /// class, data) in order, the fixed part's offsets saying where.
 pub struct Reply<'a> {
-    pub fixed: [u8; 44],
-    pub fixed_size: usize,
+    pub fixed: ArrayVec<u8, MAX_FIXED>,
     pub parts: [&'a [u8]; 2],
+}
+
+impl<'a> Reply<'a> {
+    /// The answer of `structure` (its fixed part) and the parts that follow it.
+    fn new<T: VariableSize>(structure: &T, parts: [&'a [u8]; 2]) -> Self {
+        const { assert!(T::FIXED_SIZE <= MAX_FIXED) };
+        let mut fixed = ArrayVec::new();
+        fixed
+            .try_extend_from_slice(structure.fixed_part())
+            .expect("no fixed part is larger than the largest");
+        Reply { fixed, parts }
+    }
 }
 
 impl Reply<'_> {
     /// The bytes the whole answer takes.
     pub fn size(&self) -> usize {
-        self.fixed_size + self.parts.iter().map(|part| part.len()).sum::<usize>()
+        self.fixed.len() + self.parts.iter().map(|part| part.len()).sum::<usize>()
     }
 
     /// Hand what a buffer of `length` bytes takes of the answer to `write` (its offset, its bytes):
@@ -98,11 +132,11 @@ impl Reply<'_> {
         mut write: impl FnMut(usize, &[u8]) -> Result<(), NtStatus>,
     ) -> Result<NtStatus, NtStatus> {
         let length = length as usize;
-        if length < self.fixed_size {
+        if length < self.fixed.len() {
             return Err(STATUS_BUFFER_TOO_SMALL);
         }
         let mut at = 0;
-        for piece in core::iter::once(&self.fixed[..self.fixed_size]).chain(self.parts) {
+        for piece in core::iter::once(self.fixed.as_slice()).chain(self.parts) {
             let room = length.saturating_sub(at).min(piece.len());
             if room > 0 {
                 write(at, &piece[..room])?;
@@ -117,65 +151,49 @@ impl Reply<'_> {
     }
 }
 
-/// A fixed part of dwords (the rest of the 44 bytes zero), `size` bytes of it.
-fn fixed(words: &[u32], size: usize) -> ([u8; 44], usize) {
-    (super::system::layout::<44>(words), size)
-}
-
 /// Key information class `class` of `info`: STATUS_INVALID_PARAMETER for a class Windows 2000
 /// does not define.
 pub fn key_reply<'a>(class: u32, info: &crate::cm::KeyInfo<'a>) -> Result<Reply<'a>, NtStatus> {
+    let class = KeyClass::try_from(class).map_err(|_| STATUS_INVALID_PARAMETER)?;
     let name = unit_bytes(info.name);
     let class_bytes = unit_bytes(info.class);
-    let time = [info.last_write as u32, (info.last_write >> 32) as u32];
-    let ((fixed, fixed_size), parts) = match class {
-        // LastWriteTime, TitleIndex, NameLength; Name.
-        KEY_BASIC_INFORMATION => (
-            fixed(&[time[0], time[1], 0, name.len() as u32], 16),
+    Ok(match class {
+        // The name.
+        KeyClass::Basic => Reply::new(
+            &KeyBasicInformation {
+                last_write_time: info.last_write,
+                name_length: name.len() as u32,
+                ..Default::default()
+            },
             [name, &[][..]],
         ),
-        // LastWriteTime, TitleIndex, ClassOffset, ClassLength, NameLength; Name, then Class.
-        KEY_NODE_INFORMATION => (
-            fixed(
-                &[
-                    time[0],
-                    time[1],
-                    0,
-                    24 + name.len() as u32,
-                    class_bytes.len() as u32,
-                    name.len() as u32,
-                ],
-                24,
-            ),
+        // The name, then the class.
+        KeyClass::Node => Reply::new(
+            &KeyNodeInformation {
+                last_write_time: info.last_write,
+                class_offset: (KeyNodeInformation::FIXED_SIZE + name.len()) as u32,
+                class_length: class_bytes.len() as u32,
+                name_length: name.len() as u32,
+                ..Default::default()
+            },
             [name, class_bytes],
         ),
-        // LastWriteTime, TitleIndex, ClassOffset, ClassLength, SubKeys, MaxNameLen, MaxClassLen,
-        // Values, MaxValueNameLen, MaxValueDataLen; Class.
-        KEY_FULL_INFORMATION => (
-            fixed(
-                &[
-                    time[0],
-                    time[1],
-                    0,
-                    44,
-                    class_bytes.len() as u32,
-                    info.subkeys,
-                    info.max_subkey_name,
-                    info.max_subkey_class,
-                    info.values,
-                    info.max_value_name,
-                    info.max_value_data,
-                ],
-                44,
-            ),
+        // The class.
+        KeyClass::Full => Reply::new(
+            &KeyFullInformation {
+                last_write_time: info.last_write,
+                class_offset: KeyFullInformation::FIXED_SIZE as u32,
+                class_length: class_bytes.len() as u32,
+                sub_keys: info.subkeys,
+                max_name_len: info.max_subkey_name,
+                max_class_len: info.max_subkey_class,
+                values: info.values,
+                max_value_name_len: info.max_value_name,
+                max_value_data_len: info.max_value_data,
+                ..Default::default()
+            },
             [class_bytes, &[][..]],
         ),
-        _ => return Err(STATUS_INVALID_PARAMETER),
-    };
-    Ok(Reply {
-        fixed,
-        fixed_size,
-        parts,
     })
 }
 
@@ -185,39 +203,39 @@ pub fn value_reply<'a>(
     class: u32,
     value: &crate::cm::ValueInfo<'a>,
 ) -> Result<Reply<'a>, NtStatus> {
+    let class = ValueClass::try_from(class).map_err(|_| STATUS_INVALID_PARAMETER)?;
     let name = unit_bytes(value.name);
     let data = value.data;
-    let ((fixed, fixed_size), parts) = match class {
-        // TitleIndex, Type, NameLength; Name.
-        KEY_VALUE_BASIC_INFORMATION => (
-            fixed(&[0, value.kind, name.len() as u32], 12),
+    Ok(match class {
+        // The name.
+        ValueClass::Basic => Reply::new(
+            &KeyValueBasicInformation {
+                kind: value.kind,
+                name_length: name.len() as u32,
+                ..Default::default()
+            },
             [name, &[][..]],
         ),
-        // TitleIndex, Type, DataOffset, DataLength, NameLength; Name, then the data.
-        KEY_VALUE_FULL_INFORMATION => (
-            fixed(
-                &[
-                    0,
-                    value.kind,
-                    20 + name.len() as u32,
-                    data.len() as u32,
-                    name.len() as u32,
-                ],
-                20,
-            ),
+        // The name, then the data.
+        ValueClass::Full => Reply::new(
+            &KeyValueFullInformation {
+                kind: value.kind,
+                data_offset: (KeyValueFullInformation::FIXED_SIZE + name.len()) as u32,
+                data_length: data.len() as u32,
+                name_length: name.len() as u32,
+                ..Default::default()
+            },
             [name, data],
         ),
-        // TitleIndex, Type, DataLength; the data.
-        KEY_VALUE_PARTIAL_INFORMATION => (
-            fixed(&[0, value.kind, data.len() as u32], 12),
+        // The data.
+        ValueClass::Partial => Reply::new(
+            &KeyValuePartialInformation {
+                kind: value.kind,
+                data_length: data.len() as u32,
+                ..Default::default()
+            },
             [data, &[][..]],
         ),
-        _ => return Err(STATUS_INVALID_PARAMETER),
-    };
-    Ok(Reply {
-        fixed,
-        fixed_size,
-        parts,
     })
 }
 
@@ -227,10 +245,10 @@ pub use services::*;
 /// The services themselves, on the calling process's handles and the kernel's registry.
 #[cfg(target_arch = "x86")]
 mod services {
-    use super::super::attributes::{self, MAX_NAME};
+    use super::super::attributes::{self, Name};
     use super::super::call::{calling_process, Handle, NtCall, NtResult, UserAddr, UserPtr};
     use super::*;
-    use crate::cm::{self, Key, KeyBody, MAX_VALUE_NAME, SEPARATOR};
+    use crate::cm::{with_registry, Key, KeyBody, Registry, Scratch, MAX_VALUE_NAME, SEPARATOR};
     use crate::nt::object::is_console_handle;
     use crate::ob::{self, ObjectType};
 
@@ -263,7 +281,7 @@ mod services {
         }
         ob::directory()
             .key(id)
-            .map(|body| body.key)
+            .and_then(|body| body.key)
             .ok_or(STATUS_INVALID_HANDLE)
     }
 
@@ -276,24 +294,31 @@ mod services {
                 .all(|(&unit, byte)| unit < 0x80 && (unit as u8).eq_ignore_ascii_case(&byte))
     }
 
-    /// What an OBJECT_ATTRIBUTES names: the key a path starts from, the path below it (its units'
-    /// range in `units`), and whether the handle is inherited.
-    fn resolve(
-        attributes: UserAddr,
-        units: &mut [u16; MAX_NAME],
-    ) -> Result<(Key, core::ops::Range<usize>, bool), NtStatus> {
+    /// What an OBJECT_ATTRIBUTES names: the key a path starts from, the path below it, and
+    /// whether the handle is inherited.
+    struct KeyPath<'n> {
+        root: Key,
+        path: &'n [u16],
+        inherit: bool,
+    }
+
+    /// Read the OBJECT_ATTRIBUTES at `attributes`, their name into `name` (see [`KeyPath`]).
+    fn resolve(attributes: UserAddr, name: &mut Name) -> Result<KeyPath<'_>, NtStatus> {
         if attributes.is_null() {
             return Err(STATUS_INVALID_PARAMETER);
         }
-        let read = attributes::read(attributes, units)?;
-        let length = read.length.unwrap_or(0);
-        let name = &units[..length];
+        let read = attributes::read(attributes, name)?;
+        let (name, inherit) = (read.units(), read.inherit());
         if read.root != 0 {
             let root = key_of(read.root, 0)?;
             if name.first() == Some(&SEPARATOR) {
                 return Err(STATUS_OBJECT_PATH_SYNTAX_BAD);
             }
-            return Ok((root, 0..length, read.inherit()));
+            return Ok(KeyPath {
+                root,
+                path: name,
+                inherit,
+            });
         }
         if name.is_empty() {
             return Err(STATUS_OBJECT_NAME_INVALID);
@@ -309,7 +334,11 @@ mod services {
             [separator, ..] if *separator == SEPARATOR => REGISTRY.len() + 1,
             _ => return Err(STATUS_OBJECT_NAME_NOT_FOUND),
         };
-        Ok((cm::registry().root(), start..length, read.inherit()))
+        Ok(KeyPath {
+            root: with_registry(|registry| registry.root()),
+            path: &name[start..],
+            inherit,
+        })
     }
 
     /// A counted string at `at` (a UNICODE_STRING): its length in units and its buffer.
@@ -323,29 +352,50 @@ mod services {
         Ok((units, UserAddr(string.buffer)))
     }
 
-    /// Run `then` on the registry with the counted string at `at` read: a value name, or a class.
-    /// None (a null pointer) is the empty name.
-    fn with_counted<R>(
-        at: UserAddr,
-        then: impl FnOnce(&mut cm::Registry, &[u16]) -> Result<R, NtStatus>,
-    ) -> Result<R, NtStatus> {
+    /// `bytes` bytes of the caller's memory at `at`, copied into a scratch block of the registry's
+    /// arena. The copy runs outside the registry: a fault in it may wait, and another thread's
+    /// service reach the registry meanwhile.
+    fn capture(at: UserAddr, bytes: usize) -> Result<Scratch, NtStatus> {
+        let mut scratch = with_registry(|registry| registry.scratch(bytes))?;
+        match at.read(scratch.bytes_mut()) {
+            Ok(()) => Ok(scratch),
+            Err(fault) => {
+                with_registry(|registry| registry.release(scratch));
+                Err(fault.into())
+            }
+        }
+    }
+
+    /// The counted string at `at` captured (see [`capture`]): a value name, or a class. None (a
+    /// null pointer) is the empty name.
+    fn capture_counted(at: UserAddr) -> Result<Scratch, NtStatus> {
         let (units, buffer) = if at.is_null() {
             (0, UserAddr(0))
         } else {
             counted(at)?
         };
-        cm::registry().with_scratch(
-            units,
-            |bytes| buffer.read(bytes).map_err(NtStatus::from),
-            then,
-        )?
+        capture(buffer, 2 * units)
+    }
+
+    /// Run `step` on the registry with the counted string at `at` captured (see
+    /// [`capture_counted`]), its block given back after.
+    fn with_counted<R>(
+        at: UserAddr,
+        step: impl FnOnce(&mut Registry, &[u16]) -> Result<R, NtStatus>,
+    ) -> Result<R, NtStatus> {
+        let name = capture_counted(at)?;
+        with_registry(|registry| {
+            let result = step(registry, name.units());
+            registry.release(name);
+            result
+        })
     }
 
     /// A new key object for `key`, its handle (with `desired`'s rights) into `slot`; a slot that
     /// faults takes the handle back (STATUS_ACCESS_VIOLATION).
     fn publish(slot: UserPtr<u32>, key: Key, desired: u32, inherit: bool) -> Result<u32, NtStatus> {
         let id = ob::directory()
-            .create_key(KeyBody { key })
+            .create_key(KeyBody::of(key))
             .ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
         let process = calling_process();
         let handle = ob::publish(process, id, granted(desired), inherit, None)
@@ -357,12 +407,66 @@ mod services {
         Ok(handle)
     }
 
-    /// The answer into the caller's buffer, its size into ResultLength.
-    fn answer(reply: &Reply, out: UserAddr, length: u32, result: UserPtr<u32>) -> NtResult {
-        result.write(reply.size() as u32)?;
-        reply.deliver(length, |at, bytes| {
-            out.offset(at as u32).write(bytes).map_err(NtStatus::from)
+    /// An answer staged for the caller's buffer: what the buffer takes of it, copied out of the
+    /// registry; the size the whole takes; the status its delivery answers.
+    struct Staged {
+        bytes: Scratch,
+        size: usize,
+        status: NtResult,
+    }
+
+    /// The answer `reply` makes of the registry, staged for a buffer of `length` bytes inside the
+    /// registry's step (see [`Reply::deliver`]); [`answer`] writes it to the caller once the step
+    /// is over. `reply` runs twice, once to size the block and once to fill it, on a registry
+    /// that has not changed between.
+    fn stage(
+        registry: &mut Registry,
+        length: u32,
+        reply: impl Fn(&Registry) -> Result<Reply<'_>, NtStatus>,
+    ) -> Result<Staged, NtStatus> {
+        let (size, fixed_size) = reply(registry).map(|made| (made.size(), made.fixed.len()))?;
+        let room = if (length as usize) < fixed_size {
+            0
+        } else {
+            size.min(length as usize)
+        };
+        let mut bytes = registry.scratch(room)?;
+        let made = match reply(registry) {
+            Ok(made) => made,
+            Err(status) => {
+                registry.release(bytes);
+                return Err(status);
+            }
+        };
+        let status = made.deliver(length, |at, piece| {
+            bytes.bytes_mut()[at..at + piece.len()].copy_from_slice(piece);
+            Ok(())
+        });
+        Ok(Staged {
+            bytes,
+            size,
+            status,
         })
+    }
+
+    /// The staged answer to the caller: its size into ResultLength, then what the buffer takes of
+    /// it into the buffer; its block goes back either way.
+    fn answer(staged: Staged, out: UserAddr, result: UserPtr<u32>) -> NtResult {
+        let Staged {
+            bytes,
+            size,
+            status,
+        } = staged;
+        let written = result.write(size as u32).and_then(|()| {
+            if bytes.bytes().is_empty() {
+                Ok(())
+            } else {
+                out.write(bytes.bytes())
+            }
+        });
+        with_registry(|registry| registry.release(bytes));
+        written?;
+        status
     }
 
     /// NtCreateKey: the key the attributes name, made when missing (with the class), opened
@@ -380,14 +484,18 @@ mod services {
         _options: u32,
         disposition: UserPtr<u32>,
     ) -> NtResult {
-        let mut units = [0u16; MAX_NAME];
-        let (root, path, inherit) = resolve(attributes, &mut units)?;
+        let mut name = Name::new();
+        let KeyPath {
+            root,
+            path,
+            inherit,
+        } = resolve(attributes, &mut name)?;
         if calling_process().handles().is_full() {
             return Err(STATUS_INSUFFICIENT_RESOURCES);
         }
-        let path = &units[path];
+        let now = now();
         let (key, created) = with_counted(class, |registry, class| {
-            registry.create(root, path, class, now())
+            registry.create(root, path, class, now)
         })?;
         let handle = publish(slot, key, desired, inherit)?;
         let outcome = if created {
@@ -409,10 +517,10 @@ mod services {
         desired: u32,
         attributes: UserAddr,
     ) -> NtResult {
-        let mut units = [0u16; MAX_NAME];
-        let (root, path, inherit) = resolve(attributes, &mut units)?;
-        let key = cm::registry().open(root, &units[path])?;
-        publish(slot, key, desired, inherit)?;
+        let mut name = Name::new();
+        let path = resolve(attributes, &mut name)?;
+        let key = with_registry(|registry| registry.open(path.root, path.path))?;
+        publish(slot, key, desired, path.inherit)?;
         Ok(STATUS_SUCCESS)
     }
 
@@ -420,14 +528,15 @@ mod services {
     /// STATUS_KEY_DELETED. STATUS_CANNOT_DELETE for a key with subkeys or a hive's root.
     pub fn delete_key(_: &mut NtCall, handle: Handle) -> NtResult {
         let key = key_of(handle.raw(), DELETE)?;
-        cm::registry().delete(key, now())?;
+        let now = now();
+        with_registry(|registry| registry.delete(key, now))?;
         Ok(STATUS_SUCCESS)
     }
 
     /// NtFlushKey: nothing to write (the registry lives in memory), so a live key is done.
     pub fn flush_key(_: &mut NtCall, handle: Handle) -> NtResult {
         let key = key_of(handle.raw(), 0)?;
-        cm::registry().check(key)?;
+        with_registry(|registry| registry.check(key))?;
         Ok(STATUS_SUCCESS)
     }
 
@@ -441,8 +550,12 @@ mod services {
         result: UserPtr<u32>,
     ) -> NtResult {
         let key = key_of(handle.raw(), KEY_QUERY_VALUE)?;
-        let info = cm::registry().info(key)?;
-        answer(&key_reply(class, &info)?, out, length, result)
+        let staged = with_registry(|registry| {
+            stage(registry, length, |registry| {
+                key_reply(class, &registry.info(key)?)
+            })
+        })?;
+        answer(staged, out, result)
     }
 
     /// NtEnumerateKey: subkey `index`'s information of the class asked for, the subkeys in their
@@ -457,10 +570,13 @@ mod services {
         result: UserPtr<u32>,
     ) -> NtResult {
         let key = key_of(handle.raw(), KEY_ENUMERATE_SUB_KEYS)?;
-        let registry = cm::registry();
-        let subkey = registry.subkey(key, index)?.ok_or(STATUS_NO_MORE_ENTRIES)?;
-        let info = registry.info(subkey)?;
-        answer(&key_reply(class, &info)?, out, length, result)
+        let staged = with_registry(|registry| {
+            let subkey = registry.subkey(key, index)?.ok_or(STATUS_NO_MORE_ENTRIES)?;
+            stage(registry, length, |registry| {
+                key_reply(class, &registry.info(subkey)?)
+            })
+        })?;
+        answer(staged, out, result)
     }
 
     /// NtQueryValueKey: the named value's information of the class asked for (the empty name: the
@@ -478,10 +594,12 @@ mod services {
         if name.is_null() {
             return Err(STATUS_ACCESS_VIOLATION);
         }
-        with_counted(name, |registry, name| {
-            let value = registry.query_value(key, name)?;
-            answer(&value_reply(class, &value)?, out, length, result)
-        })
+        let staged = with_counted(name, |registry, name| {
+            stage(registry, length, |registry| {
+                value_reply(class, &registry.query_value(key, name)?)
+            })
+        })?;
+        answer(staged, out, result)
     }
 
     /// NtEnumerateValueKey: value `index`'s information of the class asked for, the values in the
@@ -496,10 +614,15 @@ mod services {
         result: UserPtr<u32>,
     ) -> NtResult {
         let key = key_of(handle.raw(), KEY_QUERY_VALUE)?;
-        let value = cm::registry()
-            .value_at(key, index)?
-            .ok_or(STATUS_NO_MORE_ENTRIES)?;
-        answer(&value_reply(class, &value)?, out, length, result)
+        let staged = with_registry(|registry| {
+            stage(registry, length, |registry| {
+                let value = registry
+                    .value_at(key, index)?
+                    .ok_or(STATUS_NO_MORE_ENTRIES)?;
+                value_reply(class, &value)
+            })
+        })?;
+        answer(staged, out, result)
     }
 
     /// NtSetValueKey: the named value set to the data, of the type given (the data as given: a
@@ -517,10 +640,15 @@ mod services {
         if name.is_null() {
             return Err(STATUS_ACCESS_VIOLATION);
         }
-        with_counted(name, |registry, name| {
-            registry.set_value(key, name, kind, size as usize, now(), |bytes| {
-                data.read(bytes).map_err(NtStatus::from)
-            })
+        let now = now();
+        let name = capture_counted(name)?;
+        // The key's state answers before the data's copy, as when the copy ran inside the registry.
+        let data = with_registry(|registry| registry.check(key))
+            .and_then(|_| capture(data, size as usize));
+        with_registry(|registry| {
+            let set = data.and_then(|data| registry.set_value(key, name.units(), kind, data, now));
+            registry.release(name);
+            set
         })?;
         Ok(STATUS_SUCCESS)
     }
@@ -532,9 +660,8 @@ mod services {
         if name.is_null() {
             return Err(STATUS_ACCESS_VIOLATION);
         }
-        with_counted(name, |registry, name| {
-            registry.delete_value(key, name, now())
-        })?;
+        let now = now();
+        with_counted(name, |registry, name| registry.delete_value(key, name, now))?;
         Ok(STATUS_SUCCESS)
     }
 }
@@ -600,7 +727,7 @@ mod tests {
             max_value_name: 0,
             max_value_data: 0,
         };
-        let reply = key_reply(KEY_BASIC_INFORMATION, &info).unwrap();
+        let reply = key_reply(KeyClass::Basic as u32, &info).unwrap();
         assert_eq!(reply.size(), 26);
         let (out, status) = delivered(&reply, 26);
         assert_eq!(status, Ok(STATUS_SUCCESS));
@@ -626,7 +753,7 @@ mod tests {
             name: &name,
             data: b"a\0\0\0",
         };
-        let partial = value_reply(KEY_VALUE_PARTIAL_INFORMATION, &value).unwrap();
+        let partial = value_reply(ValueClass::Partial as u32, &value).unwrap();
         let (out, status) = delivered(&partial, 16);
         assert_eq!(status, Ok(STATUS_SUCCESS));
         assert_eq!(out, [0, 0, 0, 0, 1, 0, 0, 0, 4, 0, 0, 0, b'a', 0, 0, 0]);
@@ -637,7 +764,7 @@ mod tests {
             "the fixed part tells the size"
         );
         assert_eq!(&out[8..12], &4u32.to_le_bytes());
-        let full = value_reply(KEY_VALUE_FULL_INFORMATION, &value).unwrap();
+        let full = value_reply(ValueClass::Full as u32, &value).unwrap();
         let (out, _) = delivered(&full, 28);
         assert_eq!(
             &out[8..12],
@@ -646,7 +773,7 @@ mod tests {
         );
         assert_eq!(&out[20..24], unit_bytes(&name));
         assert_eq!(&out[24..28], b"a\0\0\0");
-        let basic = value_reply(KEY_VALUE_BASIC_INFORMATION, &value).unwrap();
+        let basic = value_reply(ValueClass::Basic as u32, &value).unwrap();
         assert_eq!(basic.size(), 16);
     }
 }

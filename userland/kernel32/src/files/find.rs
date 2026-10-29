@@ -99,11 +99,7 @@ impl FindDataW {
         unsafe {
             out.copy_from_nonoverlapping(self.head.as_ptr(), 44);
             let put = |at: usize, units: &[u16], room: usize| {
-                let source = UnicodeString {
-                    length: (2 * units.len()) as u16,
-                    maximum_length: (2 * units.len()) as u16,
-                    buffer: units.as_ptr() as *mut u16,
-                };
+                let source = UnicodeString::from_units(units).expect("a name of MAX_PATH");
                 let mut name = nt::AnsiString {
                     length: 0,
                     maximum_length: room as u16,
@@ -165,7 +161,7 @@ pub fn find_first_w(pattern: &Wide, data: &mut FindDataW) -> u32 {
         return INVALID_HANDLE_VALUE;
     };
     let full = path.units();
-    let base = path.full.buffer as usize;
+    let base = full.as_ptr() as usize;
     let file_start = if path.file_part.is_null() {
         full.len()
     } else {
@@ -189,11 +185,8 @@ pub fn find_first_w(pattern: &Wide, data: &mut FindDataW) -> u32 {
         directory = &directory[..directory.len() - 1];
     }
     let open_directory = |units: &[u16]| {
-        let name = UnicodeString {
-            length: (2 * units.len()) as u16,
-            maximum_length: (2 * units.len()) as u16,
-            buffer: units.as_ptr() as *mut u16,
-        };
+        // Part of the NT path, itself a counted string.
+        let name = UnicodeString::from_units(units).expect("part of a counted string");
         let attributes = ObjectAttributes {
             length: 24,
             root_directory: root,
@@ -238,11 +231,7 @@ pub fn find_first_w(pattern: &Wide, data: &mut FindDataW) -> u32 {
     expression[..count].copy_from_slice(&full[file_start..]);
     let count = transform(&mut expression[..count], ends_in_dot);
     drop(path);
-    let name = UnicodeString {
-        length: (2 * count) as u16,
-        maximum_length: (2 * count) as u16,
-        buffer: expression.as_mut_ptr(),
-    };
+    let name = UnicodeString::from_units(&expression[..count]).expect("a name of MAX_PATH");
     let mut record = [0u8; NAME + 2 * MAX_PATH + 8];
     let mut io_status = IoStatus::default();
     // SAFETY: ntdll's export, into the buffer above.

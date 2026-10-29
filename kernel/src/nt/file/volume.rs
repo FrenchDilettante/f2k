@@ -5,7 +5,7 @@
 
 use super::super::call::{Handle, NtCall, NtResult, UserAddr};
 use super::common::{complete, file_object};
-use super::info::{self, Volume};
+use super::info::{self, Volume, VolumeClass};
 use crate::fs::fat32::fat::FatEntry;
 use crate::status::*;
 
@@ -14,7 +14,7 @@ fn volume_facts() -> Result<Volume, NtStatus> {
     crate::fs::io::with_volume(|volume| {
         let layout = *volume.layout();
         let mut sector = [0u8; 512];
-        if !volume.device().read(0, &mut sector).is_success() {
+        if volume.device().read(0, &mut sector).is_err() {
             return Err(STATUS_IO_DEVICE_ERROR);
         }
         let serial = u32::from_le_bytes([sector[67], sector[68], sector[69], sector[70]]);
@@ -24,7 +24,7 @@ fn volume_facts() -> Result<Volume, NtStatus> {
         let mut free = None;
         if info_sector != 0
             && info_sector != 0xFFFF
-            && volume.device().read(info_sector, &mut sector).is_success()
+            && volume.device().read(info_sector, &mut sector).is_ok()
         {
             let word = |at: usize| {
                 u32::from_le_bytes([sector[at], sector[at + 1], sector[at + 2], sector[at + 3]])
@@ -62,14 +62,14 @@ pub fn query_volume_information_file(
     length: u32,
     class: u32,
 ) -> NtResult {
-    let size = info::volume_query_size(class).ok_or(STATUS_INVALID_INFO_CLASS)?;
-    if (length as usize) < size {
+    let class = VolumeClass::try_from(class)?;
+    if (length as usize) < class.min_size() {
         return Err(STATUS_INFO_LENGTH_MISMATCH);
     }
     io_status.probe(8)?;
     information.probe(length)?;
     file_object(handle.raw())?;
-    let facts = if class == info::FILE_FS_DEVICE_INFORMATION {
+    let facts = if class == VolumeClass::Device {
         Volume {
             serial: 0,
             label: [b' '; 11],

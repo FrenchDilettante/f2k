@@ -35,7 +35,7 @@
 
 use core::fmt;
 
-use crate::exec::pe::{Image, Reject};
+use crate::exec::pe::{Image, Protection, Reject};
 use crate::fs::fat32::lookup::{lookup, LookupError};
 use crate::fs::fat32::read::read;
 use crate::fs::fat32::volume::Volume;
@@ -398,7 +398,7 @@ pub fn system_region_overlapping(base: u32, size: u32) -> Option<&'static str> {
 /// A page's protection, as a query reports it: the combined access of the sections in it (an
 /// image's writable pages are copy-on-write, PAGE_WRITECOPY until written, as Windows 2000 maps
 /// them); uncovered pages (the header page) are read-only.
-pub(crate) fn page_protect(image: &Image, page_rva: u32) -> u32 {
+pub(crate) fn page_protect(image: &Image<'_>, page_rva: u32) -> u32 {
     use crate::mem::vm::{
         PAGE_EXECUTE,
         PAGE_EXECUTE_READ,
@@ -407,17 +407,13 @@ pub(crate) fn page_protect(image: &Image, page_rva: u32) -> u32 {
         PAGE_WRITECOPY,
     };
     let end = page_rva + crate::mem::paging::PAGE_SIZE;
-    let (mut read, mut write, mut execute) = (false, false, false);
-    for i in 0..image.num_sections() {
-        let s = image.section(i);
-        if s.virtual_address < end && page_rva < s.virtual_address + image.section_extent(i) {
-            let (r, w, x) = s.protection();
-            read |= r;
-            write |= w;
-            execute |= x;
+    let mut access = Protection::default();
+    for s in image.sections() {
+        if s.virtual_address < end && page_rva < s.virtual_address + image.extent(&s) {
+            access |= s.protection();
         }
     }
-    match (read, write, execute) {
+    match (access.read, access.write, access.execute) {
         (_, true, true) => PAGE_EXECUTE_WRITECOPY,
         (true, false, true) => PAGE_EXECUTE_READ,
         (false, false, true) => PAGE_EXECUTE,
@@ -487,19 +483,21 @@ pub fn prepare_system_dlls() {
     let dll = &crate::exec::modules::NTDLL;
     let image = dll.image();
     assert!(
-        image.size_of_image as usize <= DLL_STAGING_SIZE,
+        image.size_of_image() as usize <= DLL_STAGING_SIZE,
         "{} exceeds the DLL staging",
         dll.file_name
     );
     with_stagings(|stagings| {
-        let staging = &mut stagings.dll.0[..image.size_of_image as usize];
+        let staging = &mut stagings.dll.0[..image.size_of_image() as usize];
         staging.fill(0);
-        image.map_into(dll.file, staging);
+        image
+            .map_into(dll.file, staging)
+            .unwrap_or_else(|reject| panic!("{} does not map: {reject:?}", dll.file_name));
         // The pages are made with interrupts masked throughout: no interrupt's work allocates a
         // frame between two of ntdll's.
         let _masked = crate::pcr::pcr().mask_guard();
         let mut frames = [0; DLL_PAGES];
-        for page in 0..image.size_of_image.div_ceil(PAGE_SIZE) {
+        for page in 0..image.size_of_image().div_ceil(PAGE_SIZE) {
             let offset = (page * PAGE_SIZE) as usize;
             let end = (offset + PAGE_SIZE as usize).min(staging.len());
             let frame = paging::allocate_frame_phys();
@@ -566,10 +564,10 @@ fn map_ntdll(space: &mut crate::mem::vm::AddressSpace) {
     use crate::mem::vm::CurrentPages;
     let frames = NTDLL_FRAMES.get();
     let image = crate::exec::modules::NTDLL.image();
-    for page in 0..image.size_of_image.div_ceil(PAGE_SIZE) {
+    for page in 0..image.size_of_image().div_ceil(PAGE_SIZE) {
         let frame = frames[page as usize];
         assert_ne!(frame, 0, "ntdll's pages are made at boot");
-        let va = image.image_base + page * PAGE_SIZE;
+        let va = image.image_base() + page * PAGE_SIZE;
         space
             .map_shared(
                 &mut CurrentPages,
@@ -585,14 +583,13 @@ fn map_ntdll(space: &mut crate::mem::vm::AddressSpace) {
 /// protections); uncovered pages (the header page) are read-only. The mapping takes it from
 /// [`page_protect`]; the tests pin the two together.
 #[cfg(test)]
-fn page_writable(image: &Image, page_rva: u32) -> bool {
+fn page_writable(image: &Image<'_>, page_rva: u32) -> bool {
     let start = page_rva;
     let end = page_rva + crate::mem::paging::PAGE_SIZE;
-    (0..image.num_sections()).any(|i| {
-        let s = image.section(i);
+    image.sections().any(|s| {
         s.virtual_address < end
-            && start < s.virtual_address + image.section_extent(i)
-            && s.protection().1
+            && start < s.virtual_address + image.extent(&s)
+            && s.protection().write
     })
 }
 
@@ -627,22 +624,22 @@ fn load_image(
     // Identity questions, before anything is taken: bytes this loader does not accept, an image it
     // cannot stage, and a preferred base it cannot honor are refused, not panicked on.
     let image = Image::parse_program(file).map_err(LoadError::Rejected)?;
-    if image.size_of_image as usize > STAGING_SIZE {
-        return Err(LoadError::TooBig(image.size_of_image));
+    if image.size_of_image() as usize > STAGING_SIZE {
+        return Err(LoadError::TooBig(image.size_of_image()));
     }
-    if let Some(region) = system_region_overlapping(image.image_base, image.size_of_image) {
+    if let Some(region) = system_region_overlapping(image.image_base(), image.size_of_image()) {
         return Err(LoadError::Conflict {
-            base: image.image_base,
-            size: image.size_of_image,
+            base: image.image_base(),
+            size: image.size_of_image(),
             region,
         });
     }
 
     // Zero the staging explicitly: gaps the image does not describe must read as zero, not stale
     // staging bytes.
-    let staging = &mut staging[..image.size_of_image as usize];
+    let staging = &mut staging[..image.size_of_image() as usize];
     staging.fill(0);
-    image.map_into(file, staging);
+    image.map_into(file, staging).map_err(LoadError::Rejected)?;
 
     // The process's own state, all in one place: a fresh address space (kernel half inherited) and
     // the main thread's ring-0 gate stack (mapped supervisor-only with its guard page; the switch
@@ -651,28 +648,31 @@ fn load_image(
     // below (ntdll, image, stack, TEB, params) lands in its directory, the live one.
     let process = crate::process::Process::start(name, leg).map_err(LoadError::Process)?;
     let _attached = process.attach();
-    let (process_id, thread_id) = (
-        process.id(),
-        process
-            .main_thread()
-            .expect("a started process has its main thread")
-            .thread_id(),
-    );
+    let main_thread = process
+        .main_thread()
+        .expect("a started process has its main thread");
+    let thread_id = crate::level::raised::<crate::level::Dispatch, _>(|dispatch| {
+        crate::sched::DISPATCHER
+            .get(dispatch)
+            .thread(main_thread)
+            .thread_id()
+    });
+    let process_id = process.id();
     let space = process.vm();
     // The regions first: every user page the kernel maps lies in one.
-    seed_regions(space, image.image_base, image.size_of_image);
+    seed_regions(space, image.image_base(), image.size_of_image());
     // ntdll and the shared data page, as every process has them.
     map_system_pages(space);
 
     // Map the staged image at its preferred base, one frame per page, each with its sections'
     // protection (writable exactly where a mapped section is writable).
-    let pages = image.size_of_image.div_ceil(PAGE_SIZE);
+    let pages = image.size_of_image().div_ceil(PAGE_SIZE);
     for page in 0..pages {
         let offset = (page * PAGE_SIZE) as usize;
         let end = (offset + PAGE_SIZE as usize).min(staging.len());
         let frame = paging::allocate_frame_phys();
         paging::init_frame(frame, 0, &staging[offset..end]);
-        let va = image.image_base + page * PAGE_SIZE;
+        let va = image.image_base() + page * PAGE_SIZE;
         vm::map_prepared(space, va, frame, page_protect(&image, page * PAGE_SIZE));
     }
 
@@ -706,16 +706,16 @@ fn load_image(
     crate::user::teb::map_peb(
         space,
         &crate::user::teb::PebInit {
-            image_base: image.image_base,
+            image_base: image.image_base(),
             parameters: crate::user::PARAMS_PAGE,
-            subsystem: image.subsystem,
-            subsystem_version: image.subsystem_version,
+            subsystem: image.subsystem(),
+            subsystem_version: image.subsystem_version(),
         },
     );
 
     crate::serial_println!(
         "F2K: image loaded (base {:#010x}, entry {:#010x}, {} pages)",
-        image.image_base,
+        image.image_base(),
         image.entry_va(),
         pages
     );
@@ -802,9 +802,9 @@ mod tests {
         for (name, file) in CORPUS {
             assert!(file.len() <= FILE_STAGING_SIZE, "{name}'s file");
             let image = Image::parse(file).expect("fixture parses");
-            assert_eq!(image.size_of_image % PAGE_SIZE, 0, "{name}");
+            assert_eq!(image.size_of_image() % PAGE_SIZE, 0, "{name}");
             assert!(
-                image.size_of_image as usize <= STAGING_SIZE,
+                image.size_of_image() as usize <= STAGING_SIZE,
                 "{name}'s image"
             );
         }
@@ -814,9 +814,9 @@ mod tests {
     #[test]
     fn exit0_pages_are_all_read_only() {
         let image = Image::parse(EXIT0).expect("exit0 parses");
-        assert_eq!(image.size_of_image, 0x3000);
+        assert_eq!(image.size_of_image(), 0x3000);
         assert_eq!(image.entry_va(), 0x0040_1000);
-        for page in 0..image.size_of_image / PAGE_SIZE {
+        for page in 0..image.size_of_image() / PAGE_SIZE {
             assert!(!page_writable(&image, page * PAGE_SIZE));
         }
     }
@@ -825,8 +825,8 @@ mod tests {
     #[test]
     fn ret0_marks_its_data_pages_writable() {
         let image = Image::parse(RET0).expect("ret0 parses");
-        assert_eq!(image.size_of_image, 0x6000);
-        let writable: Vec<u32> = (0..image.size_of_image / PAGE_SIZE)
+        assert_eq!(image.size_of_image(), 0x6000);
+        let writable: Vec<u32> = (0..image.size_of_image() / PAGE_SIZE)
             .filter(|&page| page_writable(&image, page * PAGE_SIZE))
             .collect();
         assert_eq!(writable, vec![0x5000 / PAGE_SIZE]);
@@ -853,13 +853,13 @@ mod tests {
         for (name, file) in CORPUS {
             let image = Image::parse_program(file).expect("fixture parses as a program");
             let mut space = Box::new(AddressSpace::new());
-            seed_regions(&mut space, image.image_base, image.size_of_image);
+            seed_regions(&mut space, image.image_base(), image.size_of_image());
             let region = space
                 .region_at(image.entry_va())
                 .expect("the image's region");
             assert_eq!(
                 (region.base, region.kind),
-                (image.image_base, Kind::Image),
+                (image.image_base(), Kind::Image),
                 "{name}"
             );
             for &(area, start, end) in system_regions() {
@@ -867,7 +867,7 @@ mod tests {
                 assert_eq!((region.base, region.size), (start, end - start), "{area}");
             }
             let fake = NoPages;
-            assert_eq!(space.query(&fake, image.image_base).mem_type, MEM_IMAGE);
+            assert_eq!(space.query(&fake, image.image_base()).mem_type, MEM_IMAGE);
             assert_eq!(
                 space.query(&fake, crate::user::TEB_PAGE).mem_type,
                 MEM_PRIVATE
@@ -914,7 +914,7 @@ mod tests {
         use crate::mem::vm::{decode, encode};
         for (name, file) in CORPUS {
             let image = Image::parse(file).expect("fixture parses");
-            for page in 0..image.size_of_image.div_ceil(PAGE_SIZE) {
+            for page in 0..image.size_of_image().div_ceil(PAGE_SIZE) {
                 let protect = page_protect(&image, page * PAGE_SIZE);
                 let entry = encode(0x0050_0000, protect);
                 assert_eq!(decode(entry), Some((0x0050_0000, protect)), "{name}");
@@ -1009,9 +1009,9 @@ mod tests {
     fn the_corpus_places_at_its_preferred_bases() {
         for (name, file) in CORPUS {
             let image = Image::parse_program(file).expect("fixture parses as a program");
-            assert_eq!(image.image_base, 0x0040_0000, "{name}");
+            assert_eq!(image.image_base(), 0x0040_0000, "{name}");
             assert_eq!(
-                system_region_overlapping(image.image_base, image.size_of_image),
+                system_region_overlapping(image.image_base(), image.size_of_image()),
                 None,
                 "{name}"
             );
@@ -1336,8 +1336,8 @@ mod tests {
         assert_eq!(read_at(&mut volume, &file, 0, &mut headers), Ok(0x1000));
         let image = Image::parse_headers(&headers, file.size as usize).unwrap();
         assert!(image.is_dll());
-        let mut whole = vec![0u8; image.size_of_image as usize];
-        image.map_into(&dll, &mut whole);
+        let mut whole = vec![0u8; image.size_of_image() as usize];
+        image.map_into(&dll, &mut whole).unwrap();
         let mut page = vec![0u8; PAGE_SIZE as usize];
         for (index, expected) in whole.chunks(PAGE_SIZE as usize).enumerate() {
             let built = image.map_page(index as u32 * PAGE_SIZE, &mut page, |offset, out| {

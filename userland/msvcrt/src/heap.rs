@@ -6,7 +6,8 @@
 //! and answers NULL; realloc(NULL, n) is malloc; a request the heap cannot serve answers NULL with
 //! errno untouched; free(NULL) does nothing.
 
-use crate::data::Global;
+use core::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+
 use crate::imports;
 
 /// HEAP_ZERO_MEMORY.
@@ -16,15 +17,21 @@ const HEAP_ZERO_MEMORY: u32 = 0x08;
 /// rounding the size up would wrap.
 const MAXIMUM_REQUEST: usize = 0xFFFF_FFE0;
 
-/// The C runtime's heap (0 before the DLL's initialization).
-static HEAP: Global<usize> = Global::new(0);
+/// The C runtime's heap (0 before the DLL's initialization), set once by the DLL's process attach,
+/// before any other thread reaches the C runtime.
+static HEAP: AtomicUsize = AtomicUsize::new(0);
 
 /// The DLL's process attach: the heap, growable. False when it cannot be had.
 pub fn initialize() -> bool {
     // SAFETY: kernel32's export.
     let heap = unsafe { imports::HeapCreate(0, 0x1000, 0) };
-    HEAP.write(heap);
+    HEAP.store(heap, Relaxed);
     heap != 0
+}
+
+/// The C runtime's heap.
+fn heap() -> usize {
+    HEAP.load(Relaxed)
 }
 
 /// A block of `size` bytes (one at least), zeroed when asked; null when the heap cannot serve it.
@@ -34,7 +41,7 @@ pub fn allocate(size: usize, zeroed: bool) -> *mut u8 {
     }
     let flags = if zeroed { HEAP_ZERO_MEMORY } else { 0 };
     // SAFETY: kernel32's export, over the C runtime's heap.
-    unsafe { imports::HeapAlloc(HEAP.read(), flags, size.max(1)) }
+    unsafe { imports::HeapAlloc(heap(), flags, size.max(1)) }
 }
 
 /// A block given back (null: nothing).
@@ -45,7 +52,7 @@ pub fn allocate(size: usize, zeroed: bool) -> *mut u8 {
 pub unsafe fn release(block: *mut u8) {
     if !block.is_null() {
         // SAFETY: the caller's block.
-        unsafe { imports::HeapFree(HEAP.read(), 0, block) };
+        unsafe { imports::HeapFree(heap(), 0, block) };
     }
 }
 
@@ -60,7 +67,7 @@ pub unsafe fn resize(block: *mut u8, size: usize) -> *mut u8 {
         return core::ptr::null_mut();
     }
     // SAFETY: kernel32's export, over the caller's block.
-    unsafe { imports::HeapReAlloc(HEAP.read(), 0, block, size.max(1)) }
+    unsafe { imports::HeapReAlloc(heap(), 0, block, size.max(1)) }
 }
 
 /// The size of a block of the C runtime's heap.
@@ -70,7 +77,7 @@ pub unsafe fn resize(block: *mut u8, size: usize) -> *mut u8 {
 /// `block` is a block of the C runtime's heap.
 pub unsafe fn size_of(block: *const u8) -> usize {
     // SAFETY: kernel32's export, over the caller's block.
-    unsafe { imports::HeapSize(HEAP.read(), 0, block) }
+    unsafe { imports::HeapSize(heap(), 0, block) }
 }
 
 /// malloc: a block of `size` bytes.

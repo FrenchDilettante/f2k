@@ -24,42 +24,55 @@ pub const OBJ_OPENIF: u32 = 0x80;
 /// The longest name read, in units.
 pub const MAX_NAME: usize = 1024;
 
-/// An OBJECT_ATTRIBUTES, read: the root directory handle, the name's length in units (the units
-/// themselves in the caller's buffer; none for a null ObjectName) and the attributes.
-pub struct Attributes {
+/// The storage a name an OBJECT_ATTRIBUTES gives is read into: up to [`MAX_NAME`] units.
+///
+/// The caller holds it and [`read`]'s answer borrows it, rather than the answer owning it: a name
+/// is 2 KiB, and the kernel's unoptimized build gives every copy of a returned value a stack slot
+/// of its own (returned by value, a name overflowed NtOpenFile's gate stack).
+pub type Name = ArrayVec<u16, MAX_NAME>;
+
+/// An OBJECT_ATTRIBUTES, read: the root directory handle, the name (none for a null ObjectName)
+/// and the attributes.
+pub struct Attributes<'n> {
     pub root: u32,
-    pub length: Option<usize>,
+    pub name: Option<&'n [u16]>,
     pub attributes: u32,
 }
 
-impl Attributes {
+impl<'n> Attributes<'n> {
     /// Whether a handle the call makes is inheritable.
     pub fn inherit(&self) -> bool {
         self.attributes & OBJ_INHERIT != 0
     }
+
+    /// The name's units: none for a null ObjectName, as for an empty name.
+    pub fn units(&self) -> &'n [u16] {
+        self.name.unwrap_or_default()
+    }
 }
 
-/// Read the OBJECT_ATTRIBUTES at `at` and its name's units into `name`. STATUS_INVALID_PARAMETER
-/// for a structure of another size, STATUS_NAME_TOO_LONG past [`MAX_NAME`] units.
-pub fn read(at: UserAddr, name: &mut [u16; MAX_NAME]) -> Result<Attributes, NtStatus> {
-    let read = at.cast::<ObjectAttributes<u32>>().read()?;
-    if read.length != OBJECT_ATTRIBUTES_SIZE {
+/// Read the OBJECT_ATTRIBUTES at `at`, its name into `name` (whatever it held before dropped).
+/// STATUS_INVALID_PARAMETER for a structure of another size, STATUS_NAME_TOO_LONG past
+/// [`MAX_NAME`] units.
+pub fn read(at: UserAddr, name: &mut Name) -> Result<Attributes<'_>, NtStatus> {
+    let header = at.cast::<ObjectAttributes<u32>>().read()?;
+    if header.length != OBJECT_ATTRIBUTES_SIZE {
         return Err(STATUS_INVALID_PARAMETER);
     }
-    let string = UserAddr(read.object_name);
-    let length = if string.is_null() {
-        None
-    } else {
+    name.clear();
+    let string = UserAddr(header.object_name);
+    let named = !string.is_null();
+    if named {
         let string = string.cast::<UnicodeString<u32>>().read()?;
-        let length = usize::from(string.length) / 2;
-        let units = name.get_mut(..length).ok_or(STATUS_NAME_TOO_LONG)?;
+        let units = name
+            .try_extend_default(usize::from(string.length) / 2)
+            .map_err(|_| STATUS_NAME_TOO_LONG)?;
         UserAddr(string.buffer).read_units(units)?;
-        Some(length)
-    };
+    }
     Ok(Attributes {
-        root: read.root_directory,
-        length,
-        attributes: read.attributes,
+        root: header.root_directory,
+        name: named.then_some(name.as_slice()),
+        attributes: header.attributes,
     })
 }
 
@@ -318,33 +331,34 @@ mod tests {
         let memory = Rc::new(RefCell::new(Page(page)));
         let _installed = install(memory.clone());
 
-        let mut name = [0u16; MAX_NAME];
+        let mut name = Name::new();
         let got = read(UserAddr(BASE), &mut name).unwrap();
-        assert_eq!((got.root, got.length), (0x10, Some(3)));
+        assert_eq!(got.root, 0x10);
         assert!(got.inherit() && got.attributes & OBJ_OPENIF != 0);
-        assert_eq!(&name[..3], &wide("Evt")[..]);
+        assert_eq!(got.name, Some(&wide("Evt")[..]));
+        assert_eq!(got.units(), &wide("Evt")[..]);
 
         // Too long: one unit past the longest.
         let long = (2 * (MAX_NAME + 1)) as u16;
         memory.borrow_mut().0[0x20..0x22].copy_from_slice(&long.to_le_bytes());
         assert_eq!(
-            read(UserAddr(BASE), &mut name).map(|got| got.length),
+            read(UserAddr(BASE), &mut name).map(|got| got.name),
             Err(STATUS_NAME_TOO_LONG)
         );
         // No name.
         memory.borrow_mut().0[8..12].fill(0);
         assert_eq!(
-            read(UserAddr(BASE), &mut name).map(|got| got.length),
+            read(UserAddr(BASE), &mut name).map(|got| got.name),
             Ok(None)
         );
         // Another structure's length.
         memory.borrow_mut().0[0] = 28;
         assert_eq!(
-            read(UserAddr(BASE), &mut name).map(|got| got.length),
+            read(UserAddr(BASE), &mut name).map(|got| got.name),
             Err(STATUS_INVALID_PARAMETER)
         );
         assert_eq!(
-            read(UserAddr(BASE + 0xFF8), &mut name).map(|got| got.length),
+            read(UserAddr(BASE + 0xFF8), &mut name).map(|got| got.name),
             Err(STATUS_ACCESS_VIOLATION)
         );
     }

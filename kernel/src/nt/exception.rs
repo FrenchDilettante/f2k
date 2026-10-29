@@ -42,11 +42,11 @@ mod target {
     /// sets its flags name; see [`seh::restore_context`]), so the service returns into it — EAX
     /// included. TestAlert (a BOOLEAN) arms the delivery of the thread's next queued user APC, on
     /// the way out.
-    pub fn continue_context(call: &mut NtCall, context: UserAddr, test_alert: u32) -> NtResult {
+    pub fn continue_context(call: &mut NtCall, context: UserAddr, test_alert: bool) -> NtResult {
         let image = read_context(context)?;
         let frame = call.frame();
         seh::restore_context(frame, &image);
-        if test_alert & 0xFF != 0 {
+        if test_alert {
             crate::user::apc::test_alert();
         }
         // EAX as the context restored it: the convention writes it back unchanged.
@@ -61,12 +61,12 @@ mod target {
         call: &mut NtCall,
         record: UserAddr,
         context: UserAddr,
-        first_chance: u32,
+        first_chance: bool,
     ) -> NtResult {
         let record = read_record(record)?;
         let context = read_context(context)?;
         let (code, address) = (seh::word(&record, 0), seh::word(&record, 12));
-        if first_chance & 0xFF == 0 {
+        if !first_chance {
             seh::second_chance(code, address);
         }
         let frame = call.frame();
@@ -84,8 +84,8 @@ mod target {
 use super::call::{NtCall, NtResult};
 #[cfg(not(target_arch = "x86"))]
 unserved! {
-    continue_context(UserAddr, u32);
-    raise_exception(UserAddr, UserAddr, u32);
+    continue_context(UserAddr, bool);
+    raise_exception(UserAddr, UserAddr, bool);
 }
 
 #[cfg(test)]

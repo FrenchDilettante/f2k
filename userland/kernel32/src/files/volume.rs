@@ -89,11 +89,8 @@ fn drive_type(path: Option<Wide>) -> u32 {
         return DRIVE_NO_ROOT_DIR;
     }
     let volume = &units[..units.len() - 1];
-    let name = UnicodeString {
-        length: (2 * volume.len()) as u16,
-        maximum_length: (2 * volume.len()) as u16,
-        buffer: volume.as_ptr() as *mut u16,
-    };
+    // Part of the NT path, itself a counted string.
+    let name = UnicodeString::from_units(volume).expect("part of a counted string");
     let attributes = ObjectAttributes {
         length: 24,
         root_directory: 0,

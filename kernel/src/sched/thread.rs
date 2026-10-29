@@ -19,7 +19,7 @@ use super::wait::{
     TIMER_BLOCK,
     WAIT_BLOCKS,
 };
-use crate::interrupt::irql::{self, LevelSnapshot};
+use crate::interrupt::irql;
 use crate::status::{NtStatus, STATUS_SUCCESS, STATUS_TIMEOUT};
 
 /// A thread record's name: its index in the dispatcher database's thread pool. The object
@@ -169,9 +169,6 @@ pub struct Thread {
     pub(crate) ordinal: u16,
     /// The thread's exit status: [`STILL_ACTIVE`] while it lives, then the status it ended with.
     pub(crate) exit_status: u32,
-    /// The thread's level ledger: captured at switch-out, restored at resume. A fresh thread
-    /// adopts an empty one.
-    pub(crate) level: LevelSnapshot,
     /// The thread's gate-stack slot index in the kernel stack region (numbered system-wide), or
     /// the empty slot's value before allocation.
     pub(crate) gate_slot: u16,
@@ -195,8 +192,9 @@ pub struct Thread {
     pub(crate) priority_decrement: i8,
     /// Round trips left on a sticky boost before the thread drops back to its base priority.
     pub(crate) decrement_count: u8,
-    /// Run time left before the scheduler reconsiders the processor.
-    pub(crate) quantum: i8,
+    /// Run time left before the scheduler reconsiders the processor, while the thread is off the
+    /// processor: a running thread's is the processor's (see [`Thread::quantum`]).
+    quantum: i8,
     /// Whether a base-priority change pinned this thread to a class edge: -1 pinned low, +1 pinned
     /// high, 0 free.
     pub(crate) saturation: i8,
@@ -290,7 +288,8 @@ pub struct Thread {
     /// Whether the thread is inside a user-memory copy on its process's behalf (a system service's
     /// argument copy): a kernel fault under it ends the process instead of halting the kernel
     /// (see `user::syscall::copying_user_args`). Per thread, as a copy may be interrupted by
-    /// another thread's run.
+    /// another thread's run. While the thread runs, the processor's slots hold it instead, as they
+    /// hold the quantum (see [`Thread::switch_out`]).
     pub(crate) copying_user_memory: bool,
     /// Whether the thread has reached user mode: set as its startup leaves the kernel for its
     /// first user instruction. A thread terminated before then ends with
@@ -374,7 +373,6 @@ impl Thread {
             thread_id: 0,
             ordinal: 0,
             exit_status: STILL_ACTIVE,
-            level: LevelSnapshot::empty(),
             gate_slot: NO_GATE_SLOT,
             gate_frames: [0; crate::mem::paging::GATE_STACK_PAGES],
             fpu: FpuState::initial(),
@@ -432,7 +430,7 @@ impl Thread {
         self.space = process as *const SchedProcess;
         self.base_priority = process.base_priority;
         self.priority = self.base_priority;
-        self.quantum = process.thread_quantum;
+        self.set_quantum(process.thread_quantum);
         self.disable_boost = process.disable_boost;
         self.state = ThreadState::Initialized;
     }
@@ -486,9 +484,43 @@ impl Thread {
         self.base_priority
     }
 
-    /// The remaining quantum.
+    /// The remaining quantum: the processor's slot while the thread runs, where the clock charges
+    /// it, else the record's.
     pub fn quantum(&self) -> i8 {
-        self.quantum
+        let slots = &crate::pcr::pcr().threads;
+        if slots.current() == Some(self.id) {
+            slots.quantum()
+        } else {
+            self.quantum
+        }
+    }
+
+    /// Set the remaining quantum, wherever it is kept (see [`Thread::quantum`]).
+    pub fn set_quantum(&mut self, quantum: i8) {
+        let slots = &crate::pcr::pcr().threads;
+        if slots.current() == Some(self.id) {
+            slots.set_quantum(quantum);
+        } else {
+            self.quantum = quantum;
+        }
+    }
+
+    /// The switch's handover of what the processor's slots hold for the running thread — its
+    /// quantum and its user-copy attribution — out to its record: called while the thread still
+    /// holds the current slot, just before it gives it up.
+    pub(super) fn switch_out(&mut self) {
+        let slots = &crate::pcr::pcr().threads;
+        self.quantum = slots.quantum();
+        self.copying_user_memory = slots.copying_user_memory();
+    }
+
+    /// The handover's other half: the record's quantum and attribution into the processor's slots,
+    /// with its processes, for the thread that has just taken the current slot.
+    pub(super) fn switch_in(&self) {
+        let slots = &crate::pcr::pcr().threads;
+        slots.set_quantum(self.quantum);
+        slots.set_copying_user_memory(self.copying_user_memory);
+        slots.set_processes(self.process, self.space);
     }
 
     /// The saved kernel stack pointer (what a switch-in loads).

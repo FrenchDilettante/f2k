@@ -13,24 +13,32 @@
 //! routine blocks on the thread's suspend semaphore, which is what suspending a thread is.
 //!
 //! Delivery happens wherever a thread resumes execution or stands at a window: the interrupt exit
-//! and the service boundary (both through [`Dispatcher::deliver_pending`], after the dispatch
-//! decision) and both context-switch tails (the wait exit and the preemption resume). A queued APC
-//! on a Running thread is consumed at the next window; one on a Waiting thread breaks the wait —
-//! the wait replays after delivery; one on a Ready thread waits for dispatch, and the resume tail
-//! delivers it the moment the thread runs.
+//! and the service boundary (both through [`super::dispatcher::deliver_pending`], after the
+//! dispatch decision) and both context-switch tails (the wait exit and the preemption resume). A
+//! queued APC on a Running thread is consumed at the next window; one on a Waiting thread breaks
+//! the wait — the wait replays after delivery; one on a Ready thread waits for dispatch, and the
+//! resume tail delivers it the moment the thread runs. A window opens for kernel APCs only at the
+//! passive level, as Windows 2000's APC interrupt fires only when the level drops below the APC
+//! level: a thread holding a short lock (raised to the APC level) is neither suspended nor handed
+//! a routine until it lowers, and the next window after that delivers.
+//!
+//! The routines run outside the dispatcher, as Windows 2000's KiDeliverApc releases the APC queue
+//! lock before it calls them: the delivery takes the head of the queue in one borrow of the
+//! dispatcher, ends it, and calls; a routine that needs the dispatcher (the suspend APC's waits)
+//! takes it itself.
 //!
 //! The APC records are the dispatcher database's: a thread's builtin suspend APC, a waitable
 //! timer's completion APC, and the user-APC records QueueUserAPC takes (each process its own
 //! share of them). The queues link them by name.
 //!
-//! One processor, no locking: every method runs serialized at the dispatch level, like the rest of
-//! the scheduler.
+//! One processor, no locking: every method runs serialized, like the rest of the scheduler.
 
 use super::dispatcher::Dispatcher;
 use super::list::{self, Link, ListKind};
 use super::thread::{ThreadId, ThreadState};
 use super::wait::{WaitMode, WaitReason, WaitableId};
 use crate::interrupt::irql;
+use crate::level::{raised, Dispatch};
 use crate::status::{
     NtStatus,
     STATUS_KERNEL_APC,
@@ -96,14 +104,14 @@ impl ListKind for ApcQueue {
 }
 
 /// A normal routine: the code an APC's second half runs on the owning thread, at the passive
-/// level. It receives the dispatcher and the thread it runs on, plus the context and arguments
-/// captured at init and insert. It may block — the suspend APC's does.
-pub type NormalRoutine = fn(&mut Dispatcher, ThreadId, usize, usize, usize);
+/// level, with no dispatcher borrow live. It receives the thread it runs on, plus the context and
+/// arguments captured at init and insert. It may block — the suspend APC's does.
+pub type NormalRoutine = fn(ThreadId, usize, usize, usize);
 
-/// A kernel routine: the code an APC's first half runs on the owning thread, above the passive
-/// level. The slots are in-out: the routine may cancel the normal half (by clearing it) or rewrite
-/// what it receives.
-pub type KernelRoutine = fn(&mut Dispatcher, ApcId, &mut ApcArgs);
+/// A kernel routine: the code an APC's first half runs on the owning thread, at the APC level, with
+/// no dispatcher borrow live. The slots are in-out: the routine may cancel the normal half (by
+/// clearing it) or rewrite what it receives.
+pub type KernelRoutine = fn(ApcId, &mut ApcArgs);
 
 /// The in-out slots a delivery hands a kernel routine.
 #[derive(Clone, Copy)]
@@ -228,13 +236,12 @@ impl Apc {
 
 /// A kernel routine that does nothing: the default of an unbound APC and the suspend APC's first
 /// half (its work is all in the normal half).
-pub fn nop_kernel_routine(_dispatcher: &mut Dispatcher, _apc: ApcId, _args: &mut ApcArgs) {}
+pub fn nop_kernel_routine(_apc: ApcId, _args: &mut ApcArgs) {}
 
 /// The suspend APC's normal half: block the thread on its own suspend semaphore — kernel mode,
 /// nonalertable, no timeout. A resume releases the semaphore and this returns into its delivery's
 /// tail; until one does, the thread is suspended.
 pub(crate) fn suspend_apc_normal(
-    dispatcher: &mut Dispatcher,
     thread: ThreadId,
     _context: usize,
     _argument1: usize,
@@ -243,10 +250,7 @@ pub(crate) fn suspend_apc_normal(
     // The real park: the shared blocking entry, whose replay loop re-plants the wait if a kernel
     // APC breaks it.
     #[cfg(target_arch = "x86")]
-    {
-        let _ = dispatcher;
-        super::wait::wait_current_for(WaitableId::Suspend(thread), WaitReason::Suspension, None);
-    }
+    super::wait::wait_current_for(WaitableId::Suspend(thread), WaitReason::Suspension, None);
     // The host model: park through the wait entry; the delivery observes the Waiting state and its
     // driver continues it after the wake.
     #[cfg(not(target_arch = "x86"))]
@@ -255,15 +259,17 @@ pub(crate) fn suspend_apc_normal(
             interrupt_time: 0,
             tick: 0,
         };
-        let _ = dispatcher.wait_for(
-            thread,
-            WaitableId::Suspend(thread),
-            WaitReason::Suspension,
-            WaitMode::Kernel,
-            false,
-            None,
-            stamp,
-        );
+        let _ = crate::level::raised::<Dispatch, _>(|dispatch| {
+            super::DISPATCHER.get(dispatch).wait_for(
+                thread,
+                WaitableId::Suspend(thread),
+                WaitReason::Suspension,
+                WaitMode::Kernel,
+                false,
+                None,
+                stamp,
+            )
+        });
     }
 }
 
@@ -390,68 +396,30 @@ impl Dispatcher {
         list::first(self, ApcQueue { thread, mode })
     }
 
-    /// Deliver the running thread's queued kernel APCs. The pending flag clears on entry — before
-    /// any delivery — so an APC arriving during the delivery re-arms for the next window instead of
-    /// being lost. Specials run first and to completion; normals run kernel-routine-then-normal,
-    /// the normal half at the passive level, one at a time, gated by an in-progress normal and the
-    /// thread's disable count — a gated normal stops the delivery with the queue intact (deferred,
-    /// not dropped). The user queue is not delivered here: a user APC runs in user mode (see
-    /// [`crate::user::apc`]).
-    pub fn deliver_kernel_apcs(&mut self) -> ApcDelivery {
-        let thread = self.current().expect("a delivery runs on a thread");
-        self.thread_mut(thread).kernel_apc_pending = false;
+    /// The delivery's step under the dispatcher (the part of Windows 2000's KiDeliverApc that holds
+    /// the APC queue lock): take the head of `thread`'s kernel queue for its delivery, unless the
+    /// queue is empty or its head is a normal APC the thread's state gates out — an in-progress
+    /// normal or a critical region, the same pair the insert's wake arm consults, so a thread that
+    /// could not be woken for it cannot run it either. A gated normal stays queued (deferred, not
+    /// dropped).
+    fn next_kernel_apc(&mut self, thread: ThreadId) -> Option<KernelApc> {
         let queue = ApcQueue {
             thread,
             mode: ApcMode::Kernel,
         };
-
-        while let Some(head) = list::first(self, queue) {
-            if self.apc(head).normal_routine.is_none() {
-                // A special: unlink, clear, run its kernel routine to completion. Its normal half
-                // is the none it was made with; whatever the routine writes into the slots is
-                // discarded.
-                let mut args = self.take_queued(queue, head);
-                let routine = self.apc(head).kernel_routine;
-                routine(self, head, &mut args);
-                continue;
-            }
-            // A normal: gated by an in-progress normal and the disable count — the same pair the
-            // insert's wake arm consults, so a thread that could not be woken for it cannot run it
-            // either.
-            let record = self.thread(thread);
-            if record.kernel_apc_in_progress || record.kernel_apc_disable != 0 {
-                // Gated out: stop with the queue intact.
-                break;
-            }
-            let mut args = self.take_queued(queue, head);
-            let routine = self.apc(head).kernel_routine;
-            routine(self, head, &mut args);
-
-            if let Some(normal) = args.normal_routine {
-                self.thread_mut(thread).kernel_apc_in_progress = true;
-                // The passivate shape: the normal half runs at the passive level.
-                #[cfg(target_arch = "x86")]
-                crate::pcr::pcr().lower(irql::PASSIVE);
-                normal(
-                    self,
-                    thread,
-                    args.normal_context,
-                    args.system_argument1,
-                    args.system_argument2,
-                );
-                // A normal routine may block — the suspend APC's does. On the target the call
-                // does not return until the thread is woken and running again; in the host model
-                // the park is observable and the delivery's driver continues it (see
-                // [`Dispatcher::resume_kernel_apcs`]).
-                if self.thread(thread).state == ThreadState::Waiting {
-                    return ApcDelivery::Parked;
-                }
-                #[cfg(target_arch = "x86")]
-                crate::pcr::pcr().raise(irql::APC);
-            }
-            self.thread_mut(thread).kernel_apc_in_progress = false;
+        let head = list::first(self, queue)?;
+        let special = self.apc(head).normal_routine.is_none();
+        let record = self.thread(thread);
+        if !special && (record.kernel_apc_in_progress || record.kernel_apc_disable != 0) {
+            return None;
         }
-        ApcDelivery::Delivered
+        let args = self.take_queued(queue, head);
+        Some(KernelApc {
+            apc: head,
+            kernel_routine: self.apc(head).kernel_routine,
+            special,
+            args,
+        })
     }
 
     /// Take the queue's head `apc` off for its delivery, and capture what its routines receive.
@@ -460,37 +428,6 @@ impl Dispatcher {
         let record = self.apc_mut(apc);
         record.inserted = false;
         record.args()
-    }
-
-    /// The parked delivery's continuation, host model only: the thread parked inside a normal
-    /// routine (its wait completed and its driver made it current again); finish the arm — the
-    /// level is back, in-progress clears, and the queue loop resumes. On the target the parked
-    /// delivery resumes by returning from the normal routine; nothing calls this.
-    #[cfg(not(target_arch = "x86"))]
-    pub fn resume_kernel_apcs(&mut self) {
-        let thread = self.current().expect("a delivery runs on a thread");
-        self.thread_mut(thread).kernel_apc_in_progress = false;
-        // The remaining queue: a second normal routine may park again; the driver continues
-        // likewise.
-        let parked = self.deliver_kernel_apcs();
-        let _ = parked;
-    }
-
-    /// Deliver the running thread's pending kernel APCs at a delivery point: the interrupt-exit
-    /// and service-boundary windows (after the dispatch decision) and both context-switch tails
-    /// (before the parked caller reads its wait status). A no-op when nothing is pending.
-    #[cfg(target_arch = "x86")]
-    pub(crate) fn deliver_pending_apcs(&mut self) {
-        let Some(thread) = self.current() else {
-            return;
-        };
-        if !self.thread(thread).kernel_apc_pending {
-            return;
-        }
-        let pcr = crate::pcr::pcr();
-        let previous = pcr.raise(irql::APC);
-        self.deliver_kernel_apcs();
-        pcr.lower(previous);
     }
 
     // --- The suspend consumer ------------------------------------------------
@@ -574,14 +511,140 @@ impl Dispatcher {
     }
 }
 
+/// A kernel APC taken off its queue for delivery: what its routines receive.
+struct KernelApc {
+    apc: ApcId,
+    kernel_routine: KernelRoutine,
+    /// No normal half: it runs to completion, ungated.
+    special: bool,
+    args: ApcArgs,
+}
+
+/// Deliver the running thread's queued kernel APCs (the kernel half of Windows 2000's
+/// KiDeliverApc), entered at the passive level. The pending flag clears on entry — before any
+/// delivery — so an APC arriving during the delivery re-arms for the next window instead of being
+/// lost. The delivery runs at the APC level: specials run first and to completion; normals run
+/// kernel-routine-then-normal, the normal half lowered back to the passive level, one at a time,
+/// gated by an in-progress normal and the thread's critical regions — a gated normal stops the
+/// delivery with the queue intact. Each APC is taken off its queue in a borrow of the dispatcher
+/// that ends before its routines run. The user queue is not delivered here: a user APC runs in
+/// user mode (see [`crate::user::apc`]).
+pub fn deliver_kernel_apcs() -> ApcDelivery {
+    let pcr = crate::pcr::pcr();
+    let thread = super::current_thread();
+    raised::<Dispatch, _>(|dispatch| {
+        super::DISPATCHER
+            .get(dispatch)
+            .thread_mut(thread)
+            .kernel_apc_pending = false
+    });
+    let mut entered = pcr.raise(irql::APC);
+    debug_assert_eq!(
+        entered.level(),
+        irql::PASSIVE,
+        "kernel APCs deliver from passive"
+    );
+
+    while let Some(KernelApc {
+        apc,
+        kernel_routine,
+        special,
+        mut args,
+    }) =
+        raised::<Dispatch, _>(|dispatch| super::DISPATCHER.get(dispatch).next_kernel_apc(thread))
+    {
+        // A special's normal half is the none it was made with; whatever its kernel routine writes
+        // into the slots is discarded.
+        kernel_routine(apc, &mut args);
+        if special {
+            continue;
+        }
+        if let Some(normal) = args.normal_routine {
+            raised::<Dispatch, _>(|dispatch| {
+                super::DISPATCHER
+                    .get(dispatch)
+                    .thread_mut(thread)
+                    .kernel_apc_in_progress = true
+            });
+            // The normal half runs at the passive level the delivery was entered from.
+            pcr.lower(entered);
+            normal(
+                thread,
+                args.normal_context,
+                args.system_argument1,
+                args.system_argument2,
+            );
+            // A normal routine may block — the suspend APC's does. On the target the call does not
+            // return until the thread is woken and running again; in the host model the park is
+            // observable and the delivery's driver continues it, at the passive level (see
+            // [`resume_kernel_apcs`]).
+            if raised::<Dispatch, _>(|dispatch| {
+                super::DISPATCHER.get(dispatch).thread(thread).state == ThreadState::Waiting
+            }) {
+                return ApcDelivery::Parked;
+            }
+            entered = pcr.raise(irql::APC);
+        }
+        raised::<Dispatch, _>(|dispatch| {
+            super::DISPATCHER
+                .get(dispatch)
+                .thread_mut(thread)
+                .kernel_apc_in_progress = false
+        });
+    }
+    pcr.lower(entered);
+    ApcDelivery::Delivered
+}
+
+/// The parked delivery's continuation, host model only: the thread parked inside a normal routine
+/// (its wait completed and its driver made it current again); finish the arm — in-progress clears,
+/// and the queue loop resumes. On the target the parked delivery resumes by returning from the
+/// normal routine; nothing calls this.
+#[cfg(not(target_arch = "x86"))]
+pub fn resume_kernel_apcs() {
+    let thread = super::current_thread();
+    raised::<Dispatch, _>(|dispatch| {
+        super::DISPATCHER
+            .get(dispatch)
+            .thread_mut(thread)
+            .kernel_apc_in_progress = false
+    });
+    // The remaining queue: a second normal routine may park again; the driver continues likewise.
+    let _ = deliver_kernel_apcs();
+}
+
+/// Deliver the running thread's pending kernel APCs at a delivery point: the interrupt-exit and
+/// service-boundary windows (after the dispatch decision), both context-switch tails (before the
+/// parked caller reads its wait status), and a fresh thread's startup. A no-op when nothing is
+/// pending, and above the passive level: a thread at the APC level (a short lock's holder, or a
+/// delivery already running) is not interrupted for its APCs, which wait for the next window at
+/// the passive level.
+pub(crate) fn deliver_pending_apcs() {
+    let Some(thread) = super::try_current_thread() else {
+        return;
+    };
+    if crate::pcr::pcr().current() != irql::PASSIVE {
+        return;
+    }
+    if !raised::<Dispatch, _>(|dispatch| {
+        super::DISPATCHER
+            .get(dispatch)
+            .thread(thread)
+            .kernel_apc_pending
+    }) {
+        return;
+    }
+    let _ = deliver_kernel_apcs();
+}
+
 /// What a delivery did.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ApcDelivery {
     /// The delivery ran to its end: the queue drained or a gated normal stopped it.
     Delivered,
     /// The delivery parked inside a normal routine (host model: the wait entry returned with the
-    /// thread Waiting; its driver continues with [`Dispatcher::resume_kernel_apcs`]). The
-    /// in-progress flag stays set while parked.
+    /// thread Waiting; its driver continues with [`resume_kernel_apcs`]). The in-progress flag
+    /// stays set while parked.
     Parked,
 }
 
@@ -685,7 +748,8 @@ mod tests {
     }
 
     /// A recording kernel routine: logs the call and the pending flag's state at call time.
-    fn recording_kernel(dispatcher: &mut Dispatcher, _apc: ApcId, _args: &mut ApcArgs) {
+    fn recording_kernel(_apc: ApcId, _args: &mut ApcArgs) {
+        let dispatcher = crate::sched::testkit::installed();
         let pending = dispatcher
             .thread(dispatcher.current().unwrap())
             .kernel_apc_pending;
@@ -697,13 +761,7 @@ mod tests {
     }
 
     /// A recording normal routine: logs the call and the first argument it received.
-    fn recording_normal(
-        _dispatcher: &mut Dispatcher,
-        _thread: ThreadId,
-        _context: usize,
-        argument1: usize,
-        _argument2: usize,
-    ) {
+    fn recording_normal(_thread: ThreadId, _context: usize, argument1: usize, _argument2: usize) {
         ARGUMENTS.with(|log| log.borrow_mut().push(argument1));
         record("normal");
     }
@@ -1080,7 +1138,7 @@ mod tests {
         assert!(d.queue_apc(apc, 0, 0, 0));
         assert!(worker.kernel_apc_pending);
         assert_eq!(worker.state(), ThreadState::Ready);
-        assert_eq!(d.current_thread(), main.as_ptr());
+        assert_eq!(d.current(), Some(main.id()));
         assert!(d.next_thread().is_none());
     }
 
@@ -1145,10 +1203,39 @@ mod tests {
         let apc = special(t);
         d.queue_apc(apc, 0, 0, 0);
 
-        assert_eq!(d.deliver_kernel_apcs(), ApcDelivery::Delivered);
+        assert_eq!(deliver_kernel_apcs(), ApcDelivery::Delivered);
         assert_eq!(recorded_calls(), vec!["kernel:pending-clear"]);
         assert!(queued(t).is_empty());
         assert!(!t.kernel_apc_pending);
+    }
+
+    /// D1b: a window opens for kernel APCs only at the passive level: a thread at the APC level (a
+    /// short lock's holder) keeps its APCs queued and armed, and the first window after it lowers
+    /// delivers them.
+    #[test]
+    fn kernel_apcs_wait_for_the_passive_level() {
+        let d = dispatcher();
+        let p = process(8);
+        let t = thread(p);
+        run(d, t);
+        let apc = special(t);
+        d.queue_apc(apc, 0, 0, 0);
+
+        let pcr = crate::pcr::pcr();
+        let entered = pcr.raise(irql::APC);
+        deliver_pending_apcs();
+        assert!(
+            recorded_calls().is_empty(),
+            "nothing runs above the passive level"
+        );
+        assert_eq!(queued(t), vec![apc.id()]);
+        assert!(t.kernel_apc_pending);
+
+        pcr.lower(entered);
+        deliver_pending_apcs();
+        assert_eq!(recorded_calls(), vec!["kernel:pending-clear"]);
+        assert!(queued(t).is_empty());
+        assert_eq!(pcr.current(), irql::PASSIVE);
     }
 
     /// D2: specials deliver first, in queue order, ahead of every normal queued before them.
@@ -1165,7 +1252,7 @@ mod tests {
         d.queue_apc(s1, 0, 0, 0);
         d.queue_apc(s2, 0, 0, 0);
 
-        assert_eq!(d.deliver_kernel_apcs(), ApcDelivery::Delivered);
+        assert_eq!(deliver_kernel_apcs(), ApcDelivery::Delivered);
         assert_eq!(
             recorded_calls(),
             vec![
@@ -1188,7 +1275,7 @@ mod tests {
         let apc = normal(t);
         d.queue_apc(apc, 0x11, 0x22, 0);
 
-        assert_eq!(d.deliver_kernel_apcs(), ApcDelivery::Delivered);
+        assert_eq!(deliver_kernel_apcs(), ApcDelivery::Delivered);
         assert_eq!(recorded_calls(), vec!["kernel:pending-clear", "normal"]);
         assert_eq!(
             recorded_arguments(),
@@ -1202,7 +1289,7 @@ mod tests {
     /// A kernel routine may cancel the normal half through the in-out slots.
     #[test]
     fn a_kernel_routine_may_cancel_the_normal_half() {
-        fn cancel_normal(_dispatcher: &mut Dispatcher, _apc: ApcId, args: &mut ApcArgs) {
+        fn cancel_normal(_apc: ApcId, args: &mut ApcArgs) {
             args.normal_routine = None;
         }
         let d = dispatcher();
@@ -1213,7 +1300,7 @@ mod tests {
         apc.init(t, cancel_normal, Some(recording_normal), ApcMode::Kernel, 0);
         d.queue_apc(apc, 0, 0, 0);
 
-        assert_eq!(d.deliver_kernel_apcs(), ApcDelivery::Delivered);
+        assert_eq!(deliver_kernel_apcs(), ApcDelivery::Delivered);
         assert!(
             recorded_calls().is_empty(),
             "no routine with a recorder ran"
@@ -1232,20 +1319,20 @@ mod tests {
         d.queue_apc(gated, 0, 0, 0);
 
         t.kernel_apc_disable = 1;
-        assert_eq!(d.deliver_kernel_apcs(), ApcDelivery::Delivered);
+        assert_eq!(deliver_kernel_apcs(), ApcDelivery::Delivered);
         assert!(recorded_calls().is_empty(), "nothing ran");
         assert!(gated.inserted(), "the queue is intact");
         assert!(!t.kernel_apc_pending, "the entry flag was still cleared");
 
         t.kernel_apc_disable = 0;
         t.kernel_apc_in_progress = true;
-        assert_eq!(d.deliver_kernel_apcs(), ApcDelivery::Delivered);
+        assert_eq!(deliver_kernel_apcs(), ApcDelivery::Delivered);
         assert!(recorded_calls().is_empty());
 
         // Ungated: the deferred APC delivers.
         t.kernel_apc_in_progress = false;
         t.kernel_apc_pending = true;
-        assert_eq!(d.deliver_kernel_apcs(), ApcDelivery::Delivered);
+        assert_eq!(deliver_kernel_apcs(), ApcDelivery::Delivered);
         assert_eq!(recorded_calls(), vec!["kernel:pending-clear", "normal"]);
     }
 
@@ -1260,7 +1347,7 @@ mod tests {
 
         // The armed flag over an empty queue: a no-op.
         t.kernel_apc_pending = true;
-        assert_eq!(d.deliver_kernel_apcs(), ApcDelivery::Delivered);
+        assert_eq!(deliver_kernel_apcs(), ApcDelivery::Delivered);
         assert!(!t.kernel_apc_pending);
 
         // A special behind a gated normal: the special delivers, the normal stays queued.
@@ -1269,7 +1356,7 @@ mod tests {
         d.queue_apc(gated, 0, 0, 0);
         d.queue_apc(s1, 0, 0, 0);
         t.kernel_apc_disable = 1;
-        assert_eq!(d.deliver_kernel_apcs(), ApcDelivery::Delivered);
+        assert_eq!(deliver_kernel_apcs(), ApcDelivery::Delivered);
         assert_eq!(
             recorded_calls(),
             vec!["kernel:pending-clear"],
@@ -1298,7 +1385,7 @@ mod tests {
         d.queue_apc(apc, 0, 0, 0);
         t.user_apc_pending = true;
 
-        assert_eq!(d.deliver_kernel_apcs(), ApcDelivery::Delivered);
+        assert_eq!(deliver_kernel_apcs(), ApcDelivery::Delivered);
         assert!(recorded_calls().is_empty(), "no user routine ran");
         assert!(apc.inserted(), "the user queue is untouched");
         assert!(t.user_apc_pending, "the armed flag stays");
@@ -1380,7 +1467,7 @@ mod tests {
         run(d, t);
         d.suspend_thread(t).unwrap();
 
-        assert_eq!(d.deliver_kernel_apcs(), ApcDelivery::Parked);
+        assert_eq!(deliver_kernel_apcs(), ApcDelivery::Parked);
         assert_eq!(t.state(), ThreadState::Waiting);
         assert_eq!(t.wait_reason, WaitReason::Suspension);
         assert_eq!(t.wait_mode, WaitMode::Kernel);
@@ -1401,7 +1488,7 @@ mod tests {
 
         // The parked delivery's continuation: the routine returns, the bracket closes, the queue
         // is empty, and the thread is Running and un-suspended.
-        d.resume_kernel_apcs();
+        resume_kernel_apcs();
         assert!(!t.kernel_apc_in_progress);
         assert!(t.kernel_apcs.is_empty());
         assert_eq!(
@@ -1433,7 +1520,7 @@ mod tests {
 
         // The target runs and delivers: it parks, suspended.
         run(d, target);
-        assert_eq!(d.deliver_kernel_apcs(), ApcDelivery::Parked);
+        assert_eq!(deliver_kernel_apcs(), ApcDelivery::Parked);
         assert_eq!(target.state(), ThreadState::Waiting);
     }
 
@@ -1447,7 +1534,7 @@ mod tests {
         let parked = thread(p);
         run(d, parked);
         d.suspend_thread(parked).unwrap();
-        assert_eq!(d.deliver_kernel_apcs(), ApcDelivery::Parked);
+        assert_eq!(deliver_kernel_apcs(), ApcDelivery::Parked);
 
         assert_eq!(d.force_resume_thread(parked), 1);
         assert_eq!(parked.suspend_count, 0);
@@ -1551,14 +1638,14 @@ mod tests {
         let t = thread(p);
         run(d, t);
         d.suspend_thread(t).unwrap();
-        assert_eq!(d.deliver_kernel_apcs(), ApcDelivery::Parked);
+        assert_eq!(deliver_kernel_apcs(), ApcDelivery::Parked);
 
         // The termination's step: the force-resume releases, the wake readies, and the delivery
         // completes — after which the exit's queue check passes.
         d.force_resume_thread(t);
         assert_eq!(t.state(), ThreadState::Ready);
         run(d, t);
-        d.resume_kernel_apcs();
+        resume_kernel_apcs();
         d.close_apc_queue(t.id());
     }
 
@@ -1574,7 +1661,7 @@ mod tests {
         let killer = thread(p);
         run(d, suspended);
         d.suspend_thread(suspended).unwrap();
-        assert_eq!(d.deliver_kernel_apcs(), ApcDelivery::Parked);
+        assert_eq!(deliver_kernel_apcs(), ApcDelivery::Parked);
         run(d, killer);
 
         d.terminate_other(suspended);

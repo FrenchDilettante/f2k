@@ -10,7 +10,6 @@ use core::fmt;
 
 use rtl::pod::Pod;
 
-use super::check;
 use super::raw::Le32;
 use crate::block::BlockDevice;
 use crate::status::NtStatus;
@@ -118,7 +117,7 @@ impl FatCache {
             Some(hit) => hit,
             None => {
                 let mut data = FatSector::zeroed();
-                check(device.read(lba, data.as_bytes_mut()))?;
+                device.read(lba, data.as_bytes_mut())?;
                 // Empty slots have never been used, so they go first.
                 let victim = (0..CACHE_SECTORS)
                     .min_by_key(|&index| (self.slots[index].lba.is_some(), self.slots[index].used))

@@ -34,7 +34,6 @@ use crate::thread::{
     set_dos_error,
     set_doserrno,
     set_errno,
-    Locked,
     E2BIG,
     EACCES,
     ECHILD,
@@ -359,15 +358,12 @@ pub fn spawn(
         }
         None => None,
     };
-    let created = {
-        let _lock = Locked::take();
-        let descriptors = crate::lowio::inheritance_count();
-        let Some(mut runtime_data) = Buffer::new(crate::lowio::inheritance_length(descriptors))
-        else {
-            return -1;
-        };
-        crate::lowio::write_inheritance(runtime_data.bytes_mut());
-        calls::create_process(
+    // The child is created with the descriptor table held still, so the handles its block names
+    // stay open until it has inherited them.
+    let created = crate::lowio::with_inheritance(|inheritance| {
+        let mut runtime_data = Buffer::new(inheritance.length())?;
+        inheritance.write(runtime_data.bytes_mut());
+        Some(calls::create_process(
             &path[..=path_length],
             command_line.bytes_mut(),
             if mode == P_DETACH {
@@ -377,11 +373,12 @@ pub fn spawn(
             },
             block.as_ref().map(Buffer::bytes),
             runtime_data.bytes(),
-        )
-    };
+        ))
+    });
     let process = match created {
-        Ok(process) => process,
-        Err(error) => {
+        None => return -1,
+        Some(Ok(process)) => process,
+        Some(Err(error)) => {
             set_dos_error(error);
             return -1;
         }

@@ -53,17 +53,24 @@ impl Semaphore {
 }
 
 impl Dispatcher {
-    /// Release a semaphore: add `adjustment` to the count and satisfy as many waiters as the
-    /// addition allows, waking each with `increment`. Refused outright when the new count would
-    /// pass the ceiling or wrap — the count is left untouched. Returns the previous count.
+    /// Release the semaphore object `semaphore` (a record of the pool): add `adjustment` to the
+    /// count and satisfy as many waiters as the addition allows, waking each with `increment`.
+    /// Refused outright when the new count would pass the ceiling or wrap — the count is left
+    /// untouched. Returns the previous count.
+    ///
+    /// # Panics
+    ///
+    /// `semaphore` names no semaphore object.
     pub fn release_semaphore(
         &mut self,
-        semaphore: &mut Semaphore,
+        semaphore: WaitableId,
         adjustment: i32,
         increment: i8,
     ) -> Result<i32, crate::status::NtStatus> {
-        // The record is read for its ceiling and its name; the release works through the name.
-        let (limit, semaphore) = (semaphore.limit, semaphore.waitable.id());
+        let WaitableId::Semaphore(index) = semaphore else {
+            panic!("a released semaphore is a semaphore object, not {semaphore:?}");
+        };
+        let limit = self.semaphore_mut(index).limit;
         let header = self.waitable_mut(semaphore);
         let old = header.signal_state;
         let new = old.wrapping_add(adjustment);
@@ -118,19 +125,26 @@ mod tests {
         crate::sched::testkit::thread(p)
     }
 
+    /// A fresh semaphore object of `d`'s pool, at count zero with the ceiling `limit`.
+    fn semaphore(d: &mut Dispatcher, limit: i32) -> WaitableId {
+        d.renew_semaphore(0, 0, limit);
+        WaitableId::Semaphore(0)
+    }
+
+    /// The semaphore object's count.
+    fn count(d: &mut Dispatcher, semaphore: WaitableId) -> i32 {
+        d.waitable(semaphore).signal_state()
+    }
+
     /// Park `t` on `semaphore`, asserting the wait blocked.
-    fn park_on(
-        d: &mut Dispatcher,
-        t: crate::sched::testkit::Rec<Thread>,
-        semaphore: &mut Semaphore,
-    ) {
+    fn park_on(d: &mut Dispatcher, t: crate::sched::testkit::Rec<Thread>, semaphore: WaitableId) {
         let stamp = crate::sched::wait::ClockStamp {
             interrupt_time: 10_000,
             tick: 5,
         };
-        match d.wait_single(
-            t,
-            semaphore.waitable(),
+        match d.wait_for(
+            t.id(),
+            semaphore,
             WaitReason::Executive,
             WaitMode::Kernel,
             false,
@@ -148,15 +162,14 @@ mod tests {
     fn a_release_serves_one_waiter_per_count() {
         let d = dispatcher();
         let p = process(8);
-        let mut semaphore = Semaphore::new(2);
-        semaphore.init();
+        let semaphore = semaphore(d, 2);
         let w1 = thread(p);
         let w2 = thread(p);
-        park_on(d, w1, &mut semaphore);
-        park_on(d, w2, &mut semaphore);
+        park_on(d, w1, semaphore);
+        park_on(d, w2, semaphore);
 
         assert_eq!(
-            d.release_semaphore(&mut semaphore, 1, 0),
+            d.release_semaphore(semaphore, 1, 0),
             Ok(0),
             "the previous count"
         );
@@ -166,7 +179,7 @@ mod tests {
             "the first waiter woke"
         );
         assert_eq!(
-            semaphore.count(),
+            count(d, semaphore),
             0,
             "the satisfied take consumed the count"
         );
@@ -177,16 +190,16 @@ mod tests {
         );
 
         // The second release wakes the second waiter likewise.
-        assert_eq!(d.release_semaphore(&mut semaphore, 1, 0), Ok(0));
+        assert_eq!(d.release_semaphore(semaphore, 1, 0), Ok(0));
         assert_eq!(w2.state(), crate::sched::thread::ThreadState::Ready);
-        assert_eq!(semaphore.count(), 0);
+        assert_eq!(count(d, semaphore), 0);
 
         // The multi-count variant: a release of two serves both waiters, one count each.
         let w3 = thread(p);
         let w4 = thread(p);
-        park_on(d, w3, &mut semaphore);
-        park_on(d, w4, &mut semaphore);
-        assert_eq!(d.release_semaphore(&mut semaphore, 2, 0), Ok(0));
+        park_on(d, w3, semaphore);
+        park_on(d, w4, semaphore);
+        assert_eq!(d.release_semaphore(semaphore, 2, 0), Ok(0));
         assert_eq!(
             w3.state(),
             crate::sched::thread::ThreadState::Ready,
@@ -197,7 +210,7 @@ mod tests {
             crate::sched::thread::ThreadState::Ready,
             "and the second"
         );
-        assert_eq!(semaphore.count(), 0);
+        assert_eq!(count(d, semaphore), 0);
     }
 
     /// F6: the release's bound — past the ceiling or a wrap refuses, the count untouched, nobody
@@ -206,29 +219,28 @@ mod tests {
     fn the_release_bound_refuses_past_the_ceiling() {
         let d = dispatcher();
         let p = process(8);
-        let mut semaphore = Semaphore::new(2);
-        semaphore.init();
+        let semaphore = semaphore(d, 2);
         let t = thread(p);
-        park_on(d, t, &mut semaphore);
+        park_on(d, t, semaphore);
 
-        semaphore.waitable.signal_state = 2;
+        d.waitable_mut(semaphore).signal_state = 2;
         assert_eq!(
-            d.release_semaphore(&mut semaphore, 1, 0),
+            d.release_semaphore(semaphore, 1, 0),
             Err(crate::status::STATUS_SEMAPHORE_LIMIT_EXCEEDED)
         );
-        assert_eq!(semaphore.count(), 2, "unchanged");
+        assert_eq!(count(d, semaphore), 2, "unchanged");
         assert_eq!(
             t.state(),
             crate::sched::thread::ThreadState::Waiting,
             "nobody woken"
         );
 
-        semaphore.waitable.signal_state = 1;
+        d.waitable_mut(semaphore).signal_state = 1;
         assert_eq!(
-            d.release_semaphore(&mut semaphore, 2, 0),
+            d.release_semaphore(semaphore, 2, 0),
             Err(crate::status::STATUS_SEMAPHORE_LIMIT_EXCEEDED),
             "the adjustment would pass the ceiling"
         );
-        assert_eq!(semaphore.count(), 1);
+        assert_eq!(count(d, semaphore), 1);
     }
 }

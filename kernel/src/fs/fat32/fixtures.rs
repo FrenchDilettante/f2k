@@ -92,15 +92,15 @@ impl BlockDevice for Counting {
         self.inner.info()
     }
 
-    fn read(&self, lba: u64, buffer: &mut [u8]) -> NtStatus {
+    fn read(&self, lba: u64, buffer: &mut [u8]) -> Result<(), NtStatus> {
         self.reads.fetch_add(1, Ordering::SeqCst);
         if self.failing.load(Ordering::SeqCst) {
-            return STATUS_IO_DEVICE_ERROR;
+            return Err(STATUS_IO_DEVICE_ERROR);
         }
         self.inner.read(lba, buffer)
     }
 
-    fn write(&self, lba: u64, buffer: &[u8]) -> NtStatus {
+    fn write(&self, lba: u64, buffer: &[u8]) -> Result<(), NtStatus> {
         self.inner.write(lba, buffer)
     }
 }
@@ -151,15 +151,15 @@ impl BlockDevice for Crashing {
         self.inner.info()
     }
 
-    fn read(&self, lba: u64, buffer: &mut [u8]) -> NtStatus {
+    fn read(&self, lba: u64, buffer: &mut [u8]) -> Result<(), NtStatus> {
         self.inner.read(lba, buffer)
     }
 
-    fn write(&self, lba: u64, buffer: &[u8]) -> NtStatus {
+    fn write(&self, lba: u64, buffer: &[u8]) -> Result<(), NtStatus> {
         let left = self.budget.load(Ordering::SeqCst);
         if left == 0 {
             self.dropped.fetch_add(1, Ordering::SeqCst);
-            return crate::status::STATUS_SUCCESS;
+            return Ok(());
         }
         if left != u32::MAX {
             self.budget.store(left - 1, Ordering::SeqCst);

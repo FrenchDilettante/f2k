@@ -16,11 +16,16 @@
 use super::seh::CONTEXT_SIZE;
 use super::TrapFrame;
 use crate::sched::apc::Apc;
+use crate::sched::thread::ThreadId;
+#[cfg(target_arch = "x86")]
+use crate::{
+    level::{raised, Dispatch},
+    sched::DISPATCHER,
+};
 
 /// The normal-routine marker a user APC carries: a user APC's routine is user code, run by
 /// [`deliver`] in user mode, never by the kernel's own delivery — so this does nothing.
 pub fn user_normal_routine(
-    _dispatcher: &mut crate::sched::dispatcher::Dispatcher,
     _thread: crate::sched::thread::ThreadId,
     _context: usize,
     _argument1: usize,
@@ -40,10 +45,7 @@ pub const DELIVERY_BYTES: usize = CALL_WORDS * 4 + CONTEXT_SIZE;
 /// # Panics
 ///
 /// `thread` is no thread record of the dispatcher database.
-pub fn init(apc: &mut Apc, thread: *mut crate::sched::thread::Thread, routine: u32, context: u32) {
-    let thread = crate::sched::idle::dispatcher()
-        .thread_at(thread)
-        .expect("a user APC targets a thread record");
+pub fn init(apc: &mut Apc, thread: ThreadId, routine: u32, context: u32) {
     apc.init(
         thread,
         crate::sched::apc::nop_kernel_routine,
@@ -88,18 +90,22 @@ pub fn delivery_image(frame: &TrapFrame, call: [u32; CALL_WORDS]) -> (u32, [u8; 
 /// exception raised there would. The record a QueueUserAPC took is free again once off the queue.
 #[cfg(target_arch = "x86")]
 pub fn deliver(frame: &mut TrapFrame) {
-    let dispatcher = crate::sched::idle::dispatcher();
-    let current = dispatcher.current().expect("a delivery runs on a thread");
-    let thread = dispatcher.thread_mut(current);
-    if !thread.user_apc_pending {
-        return;
-    }
-    thread.user_apc_pending = false;
-    let Some(apc) = dispatcher.first_apc(current, crate::sched::apc::ApcMode::User) else {
+    let current = crate::sched::current_thread();
+    let call = raised::<Dispatch, _>(|dispatch| {
+        let dispatcher = DISPATCHER.get(dispatch);
+        let thread = dispatcher.thread_mut(current);
+        if !thread.user_apc_pending {
+            return None;
+        }
+        thread.user_apc_pending = false;
+        let apc = dispatcher.first_apc(current, crate::sched::apc::ApcMode::User)?;
+        let call = call_frame(dispatcher.apc(apc));
+        dispatcher.remove_apc(apc);
+        Some(call)
+    });
+    let Some(call) = call else {
         return;
     };
-    let call = call_frame(dispatcher.apc(apc));
-    dispatcher.remove_apc(apc);
 
     let (esp, bytes) = delivery_image(frame, call);
     if super::syscall::write_user(esp, &bytes).is_err() {
@@ -117,11 +123,13 @@ pub fn deliver(frame: &mut TrapFrame) {
 /// on the running thread, the next delivery arms — the service boundary runs it on the way out.
 #[cfg(target_arch = "x86")]
 pub fn test_alert() {
-    // SAFETY: the running thread, live.
-    let thread = unsafe { &mut *crate::sched::idle::dispatcher().current_thread() };
-    if !thread.user_apcs.is_empty() {
-        thread.user_apc_pending = true;
-    }
+    let current = crate::sched::current_thread();
+    raised::<Dispatch, _>(|dispatch| {
+        let thread = DISPATCHER.get(dispatch).thread_mut(current);
+        if !thread.user_apcs.is_empty() {
+            thread.user_apc_pending = true;
+        }
+    });
 }
 
 /// A fresh thread's test alert, before its first user instruction, when no loader initialization
@@ -130,12 +138,17 @@ pub fn test_alert() {
 #[cfg(target_arch = "x86")]
 pub fn deliver_at_startup() {
     let _masked = crate::pcr::pcr().mask_guard();
-    // SAFETY: the running thread, live; its planted trap frame sits at the top of its kernel stack.
-    let thread = unsafe { &mut *crate::sched::idle::dispatcher().current_thread() };
-    if !thread.user_apcs.is_empty() {
+    let current = crate::sched::current_thread();
+    let armed = raised::<Dispatch, _>(|dispatch| {
+        let thread = DISPATCHER.get(dispatch).thread_mut(current);
+        if thread.user_apcs.is_empty() {
+            return None;
+        }
         thread.user_apc_pending = true;
-        let frame =
-            (thread.initial_stack - core::mem::size_of::<TrapFrame>() as u32) as *mut TrapFrame;
+        Some(thread.initial_stack)
+    });
+    if let Some(initial_stack) = armed {
+        let frame = (initial_stack - core::mem::size_of::<TrapFrame>() as u32) as *mut TrapFrame;
         // SAFETY: the planted frame, which the startup stub pops next.
         deliver(unsafe { &mut *frame });
     }
@@ -158,9 +171,11 @@ pub fn deliver_initialization() -> bool {
         return false;
     }
     let _masked = crate::pcr::pcr().mask_guard();
-    // SAFETY: the running thread, live; its planted trap frame sits at the top of its kernel stack.
-    let thread = unsafe { &mut *crate::sched::idle::dispatcher().current_thread() };
-    let frame = (thread.initial_stack - core::mem::size_of::<TrapFrame>() as u32) as *mut TrapFrame;
+    // The running thread's planted trap frame sits at the top of its kernel stack.
+    let current = crate::sched::current_thread();
+    let initial_stack =
+        raised::<Dispatch, _>(|dispatch| DISPATCHER.get(dispatch).thread(current).initial_stack);
+    let frame = (initial_stack - core::mem::size_of::<TrapFrame>() as u32) as *mut TrapFrame;
     // SAFETY: the planted frame, which the startup stub pops next.
     let frame = unsafe { &mut *frame };
     let (esp, bytes) = delivery_image(frame, [0; CALL_WORDS]);
@@ -245,7 +260,7 @@ mod tests {
         let p = Box::leak(Box::new(SchedProcess::new(0x0090_0000, 8)));
         let t = crate::sched::testkit::thread(p);
         let mut apc = crate::sched::testkit::apc();
-        init(&mut apc, t.as_ptr(), 0x0040_5000, 7);
+        init(&mut apc, t.id(), 0x0040_5000, 7);
         assert!(d.queue_apc(apc, 8, 9, 0));
         assert_eq!(call_frame(&apc), [0x0040_5000, 7, 8, 9]);
     }

@@ -53,7 +53,8 @@ use crate::status::{
     STATUS_SUCCESS,
 };
 
-/// The message header's fields, by offset into the message: Windows 2000's layout.
+/// The message header's fields, by offset into the message: Windows 2000's layout ([`CsrApiMsg`]
+/// is the same layout as a structure).
 pub mod header {
     /// The PORT_MESSAGE that leads every LPC message (unused here: no port carries the message).
     pub const PORT_MESSAGE: usize = 0x00;
@@ -73,6 +74,56 @@ pub const DATA_WORDS: usize = 8;
 
 /// A whole message's size: the header and the largest API data.
 pub const MESSAGE_BYTES: usize = header::DATA + 4 * DATA_WORDS;
+
+/// A PORT_MESSAGE, the header that leads every LPC message, in its 32-bit form: the data's and the
+/// whole message's lengths, the message's type and the offset of its data information, the client
+/// that sent it, its id, and the client's view size (or the callback's id). No port carries F2K's
+/// console messages, so the server neither reads nor writes it.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PortMessage {
+    pub data_length: u16,
+    pub total_length: u16,
+    pub kind: u16,
+    pub data_info_offset: u16,
+    pub client_id: crate::nt::ClientId<u32>,
+    pub message_id: u32,
+    pub client_view_size: u32,
+}
+
+/// A CSR_API_MSG as the server reads it from a 32-bit caller: the LPC header, the capture buffer
+/// the call names, the API number, the server's answer (an NTSTATUS), a reserved word, then the
+/// API's data, as many dwords as the call's length names (the server neither reads nor writes the
+/// rest, as Windows 2000's port copies only the message's own length).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CsrApiMsg {
+    pub header: PortMessage,
+    pub capture_buffer: u32,
+    pub api_number: u32,
+    pub return_value: u32,
+    pub reserved: u32,
+    pub data: [u32; DATA_WORDS],
+}
+
+const _: () = {
+    use core::mem::{offset_of, size_of};
+    assert!(size_of::<PortMessage>() == header::CAPTURE_BUFFER);
+    assert!(offset_of!(CsrApiMsg, header) == header::PORT_MESSAGE);
+    assert!(offset_of!(CsrApiMsg, capture_buffer) == header::CAPTURE_BUFFER);
+    assert!(offset_of!(CsrApiMsg, api_number) == header::API_NUMBER);
+    assert!(offset_of!(CsrApiMsg, return_value) == header::RETURN_VALUE);
+    assert!(offset_of!(CsrApiMsg, reserved) == header::RESERVED);
+    assert!(offset_of!(CsrApiMsg, data) == header::DATA);
+    assert!(size_of::<CsrApiMsg>() == MESSAGE_BYTES);
+};
+
+// SAFETY: 16- and 32-bit integers and a CLIENT_ID of two dwords, laid out back to back with no
+// padding (the asserts above pin the size), every bit pattern a value.
+unsafe impl crate::pod::Pod for PortMessage {}
+// SAFETY: the header (plain data, above) and dwords, with no padding (the asserts above pin every
+// field's offset and the size), every bit pattern a value.
+unsafe impl crate::pod::Pod for CsrApiMsg {}
 
 /// STATUS_ILLEGAL_FUNCTION: the answer to an API number no server serves (csrss's).
 pub const STATUS_ILLEGAL_FUNCTION: u32 = 0xC000_00AF;

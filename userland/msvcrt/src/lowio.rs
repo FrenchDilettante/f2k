@@ -24,9 +24,12 @@
 //!   `_O_NOINHERIT`) in STARTUPINFO's C runtime block ([`inheritance_length`]); its start-up takes
 //!   them, then the standard handles for those of 0 to 2 it was not handed.
 
-use crate::data::Global;
+use core::sync::atomic::{AtomicI32, Ordering::Relaxed};
+
+use rtl::sync::Locked;
+
 use crate::imports;
-use crate::thread::{self, set_dos_error, set_errno, Locked, EBADF, EINVAL, EMFILE, ENOSPC};
+use crate::thread::{self, set_dos_error, set_errno, Held, Lock, EBADF, EINVAL, EMFILE, ENOSPC};
 
 /// The descriptors the table holds.
 pub const DESCRIPTORS: usize = 2048;
@@ -93,72 +96,238 @@ struct Descriptor {
     flags: u8,
     /// A pipe's or device's byte read ahead by a CR at a read's end (none: 0x100).
     ahead: u16,
+    /// The ticket of the [`Reservation`] holding the descriptor (none: 0).
+    ticket: u32,
 }
 
 const CLOSED: Descriptor = Descriptor {
     handle: usize::MAX,
     flags: 0,
     ahead: 0x100,
+    ticket: 0,
 };
 
-static TABLE: Global<[Descriptor; DESCRIPTORS]> = Global::new([CLOSED; DESCRIPTORS]);
+impl Descriptor {
+    /// A descriptor open over `handle` with the mode `flags` (FOPEN added), nothing read ahead.
+    const fn open(handle: usize, flags: u8) -> Descriptor {
+        Descriptor {
+            handle,
+            flags: flags | FOPEN,
+            ..CLOSED
+        }
+    }
+
+    fn is_open(&self) -> bool {
+        self.flags & FOPEN != 0
+    }
+
+    /// Neither open nor reserved: an open may take it.
+    fn is_free(&self) -> bool {
+        !self.is_open() && self.ticket == 0
+    }
+}
+
+/// The descriptor table: the descriptors, and the last reservation's ticket.
+struct Table {
+    entries: [Descriptor; DESCRIPTORS],
+    tickets: u32,
+}
+
+impl Table {
+    /// The lowest free descriptor.
+    fn lowest_free(&self) -> Option<usize> {
+        self.entries.iter().position(Descriptor::is_free)
+    }
+
+    /// Descriptor `fd` reserved (closed, held by a new ticket): the ticket.
+    fn reserve(&mut self, fd: usize) -> u32 {
+        self.tickets = self.tickets.wrapping_add(1).max(1);
+        self.entries[fd] = Descriptor {
+            ticket: self.tickets,
+            ..CLOSED
+        };
+        self.tickets
+    }
+
+    /// `descriptor` stored on the lowest free descriptor: which one, or none when every one is
+    /// open or reserved.
+    fn place(&mut self, descriptor: Descriptor) -> Option<usize> {
+        let fd = self.lowest_free()?;
+        self.entries[fd] = descriptor;
+        Some(fd)
+    }
+}
+
+/// The descriptor table, behind its lock (Windows 2000's msvcrt has one for its descriptor
+/// table). The lock is held only to copy or change entries, never across a kernel32 call that can
+/// wait: across those, each descriptor has its own lock ([`IO`]), and a descriptor being opened or
+/// closed is held by a [`Reservation`].
+static TABLE: Locked<Table, Lock> = Locked::new(
+    Lock::new(),
+    Table {
+        entries: [CLOSED; DESCRIPTORS],
+        tickets: 0,
+    },
+);
+
+/// Each descriptor's own lock (Windows 2000's `_lock_fh`): held across its reads, writes and
+/// seeks, its close, and the duplicating of its handle, so that one descriptor's operations come
+/// one at a time; a thread waiting on one (stdin, reading the console) keeps no other descriptor
+/// from the rest. Two are taken in ascending order (`_dup2`); the table's lock is taken inside.
+static IO: [Lock; DESCRIPTORS] = [const { Lock::new() }; DESCRIPTORS];
 
 /// __set_app_type's value: 1 for a console program (whose descriptors 0 to 2 keep the standard
 /// handles in step), 2 for a GUI one, 0 before the program says.
-pub static APP_TYPE: Global<i32> = Global::new(0);
+static APP_TYPE: AtomicI32 = AtomicI32::new(0);
 
-/// `f` run over the descriptor table under the C runtime's lock, which it takes itself (the lock is
-/// recursive, so a caller may already hold it). The reference lives only for `f`: no `&mut` into
-/// the table outlives the call, and `f` must not reach the table again (through this function or
-/// a helper built on it), which would make a second reference to the same array.
-fn with_table<R>(f: impl FnOnce(&mut [Descriptor; DESCRIPTORS]) -> R) -> R {
-    let _lock = Locked::take();
-    // SAFETY: every access to TABLE goes through this function, under the C runtime's lock, so no
-    // other thread holds a reference into it; on this thread no other call is live (`f` does not
-    // re-enter), so the reference is the only one for its life.
-    f(unsafe { &mut *TABLE.get() })
+/// __set_app_type's work: the program's kind.
+pub fn set_app_type(kind: i32) {
+    APP_TYPE.store(kind, Relaxed);
+}
+
+/// `f` run over the descriptor table under its lock. `f` must not reach the table again (through
+/// this function or a helper built on it): the lock refuses that with a panic.
+fn with_table<R>(f: impl FnOnce(&mut Table) -> R) -> R {
+    TABLE.with(f)
+}
+
+/// Descriptor `fd`'s own lock taken, for the guard's life; none for a descriptor out of range.
+fn hold(fd: i32) -> Option<Held<'static>> {
+    let fd = usize::try_from(fd).ok()?;
+    IO.get(fd).map(Lock::hold)
 }
 
 /// Descriptor `fd`'s entry, a copy, open or not; none when `fd` is out of range.
 fn descriptor(fd: i32) -> Option<Descriptor> {
     let fd = usize::try_from(fd).ok()?;
-    with_table(|table| table.get(fd).copied())
+    with_table(|table| table.entries.get(fd).copied())
+}
+
+/// The errno and `_doserrno` of a descriptor that is not open: EBADF.
+fn not_open() {
+    set_errno(EBADF);
+    thread::set_doserrno(0);
+}
+
+/// The errno and `_doserrno` when no descriptor is free: EMFILE.
+fn none_free() {
+    set_errno(EMFILE);
+    thread::set_doserrno(0);
 }
 
 /// The open descriptor `fd`'s entry, a copy, or none (errno EBADF).
 fn open(fd: i32) -> Option<Descriptor> {
-    let entry = descriptor(fd).filter(|entry| entry.flags & FOPEN != 0);
+    let entry = descriptor(fd).filter(Descriptor::is_open);
     if entry.is_none() {
-        set_errno(EBADF);
-        thread::set_doserrno(0);
+        not_open();
     }
     entry
 }
 
 /// Descriptor `fd` (in range) set to `descriptor`.
 fn store(fd: usize, descriptor: Descriptor) {
-    with_table(|table| table[fd] = descriptor);
+    with_table(|table| table.entries[fd] = descriptor);
 }
 
 /// Descriptor `fd`'s entry changed by `change`, if it is still open over `handle`. A caller that
-/// copied the entry and let the lock go (for a kernel32 call that can block, so that one thread
-/// waiting on the console does not stop another's output) writes back what changed only when no
-/// other thread closed or reused the descriptor meanwhile. What `change` answers, or none.
+/// copied the entry and let the table's lock go (for a kernel32 call that can block, so that one
+/// thread waiting on the console does not stop another's output) writes back what changed only
+/// when no other thread closed or reused the descriptor meanwhile. What `change` answers, or none.
 fn update<R>(fd: i32, handle: usize, change: impl FnOnce(&mut Descriptor) -> R) -> Option<R> {
     let fd = usize::try_from(fd).ok()?;
     with_table(|table| {
         table
+            .entries
             .get_mut(fd)
-            .filter(|entry| entry.flags & FOPEN != 0 && entry.handle == handle)
+            .filter(|entry| entry.is_open() && entry.handle == handle)
             .map(change)
     })
+}
+
+/// A descriptor held while an open or a close is under way: kernel32 opens or closes its handle
+/// without the table's lock, and meanwhile the descriptor reads as closed and no other open takes
+/// it. Dropped, the descriptor is free again (unless `_dup2` took it meanwhile).
+struct Reservation {
+    fd: usize,
+    ticket: u32,
+}
+
+impl Reservation {
+    /// The lowest free descriptor, reserved; none (errno EMFILE) when every one is open or
+    /// reserved.
+    fn lowest() -> Option<Reservation> {
+        let reserved = with_table(|table| {
+            let fd = table.lowest_free()?;
+            let ticket = table.reserve(fd);
+            Some(Reservation { fd, ticket })
+        });
+        if reserved.is_none() {
+            none_free();
+        }
+        reserved
+    }
+
+    /// The open descriptor `fd` reserved for its close, and the handle the close is to close: none
+    /// when descriptor 1 and 2 share it and the other stays open (it keeps the handle). None
+    /// (errno EBADF) when `fd` is not open.
+    fn closing(fd: i32) -> Option<(Reservation, Option<usize>)> {
+        let reserved = usize::try_from(fd).ok().and_then(|fd| {
+            with_table(|table| {
+                let entry = *table.entries.get(fd).filter(|entry| entry.is_open())?;
+                let shared = (fd == 1 || fd == 2) && {
+                    let other = table.entries[3 - fd];
+                    other.is_open() && other.handle == entry.handle
+                };
+                let ticket = table.reserve(fd);
+                Some((
+                    Reservation { fd, ticket },
+                    (!shared).then_some(entry.handle),
+                ))
+            })
+        });
+        if reserved.is_none() {
+            not_open();
+        }
+        reserved
+    }
+
+    /// The reserved descriptor made `descriptor`: which one it is. `_dup2` may have taken it
+    /// meanwhile (a reserved descriptor is not open): then the lowest free one serves instead, or
+    /// none when there is none (the caller's errno EMFILE).
+    fn fill(self, descriptor: Descriptor) -> Option<usize> {
+        let (fd, ticket) = (self.fd, self.ticket);
+        core::mem::forget(self);
+        let placed = with_table(|table| {
+            if table.entries[fd].ticket == ticket {
+                table.entries[fd] = descriptor;
+                Some(fd)
+            } else {
+                table.place(descriptor)
+            }
+        });
+        if let Some(fd) = placed {
+            follow_standard(fd, descriptor.handle);
+        }
+        placed
+    }
+}
+
+impl Drop for Reservation {
+    fn drop(&mut self) {
+        with_table(|table| {
+            let entry = &mut table.entries[self.fd];
+            if entry.ticket == self.ticket {
+                *entry = CLOSED;
+            }
+        });
+    }
 }
 
 /// The descriptors up to the last one open: those a child inherits.
 fn inherited_count(table: &[Descriptor]) -> usize {
     table
         .iter()
-        .rposition(|entry| entry.flags & FOPEN != 0)
+        .rposition(Descriptor::is_open)
         .map_or(0, |last| last + 1)
 }
 
@@ -209,24 +378,36 @@ pub fn decode_inheritance(block: &[u8]) -> impl Iterator<Item = (u8, u32)> + '_ 
 
 /// The descriptors a child inherits (see [`inheritance_length`]): up to the last one open, each
 /// open one's flags and handle unless it was opened `_O_NOINHERIT` (then none, as a closed one).
-/// The caller holds the C runtime's lock (so the count stays the one [`write_inheritance`] sees).
-pub fn inheritance_count() -> usize {
-    with_table(|table| inherited_count(table))
-}
+pub struct Inheritance<'a>(&'a [Descriptor]);
 
-/// The block for the descriptors a child inherits into `out`, of the [`inheritance_length`] of
-/// [`inheritance_count`]'s count. The caller holds the C runtime's lock.
-pub fn write_inheritance(out: &mut [u8]) {
-    with_table(|table| {
-        let descriptors = table[..inherited_count(table)].iter().map(|entry| {
-            if entry.flags & FOPEN != 0 && entry.flags & FNOINHERIT == 0 {
+impl Inheritance<'_> {
+    /// The block's length.
+    pub fn length(&self) -> usize {
+        inheritance_length(self.0.len())
+    }
+
+    /// The block into `out`, of [`Inheritance::length`].
+    pub fn write(&self, out: &mut [u8]) {
+        let descriptors = self.0.iter().map(|entry| {
+            if entry.is_open() && entry.flags & FNOINHERIT == 0 {
                 (entry.flags, entry.handle as u32)
             } else {
                 (0, u32::MAX)
             }
         });
         encode_inheritance(descriptors, out);
-    });
+    }
+}
+
+/// `body` run over the descriptors a child inherits, with the descriptor table held still: no
+/// descriptor opens or starts closing until `body` returns, so a child created inside it gets
+/// handles that are still open. `body` must not reach the descriptors itself (the table's lock
+/// refuses that with a panic).
+pub fn with_inheritance<R>(body: impl FnOnce(Inheritance<'_>) -> R) -> R {
+    with_table(|table| {
+        let count = inherited_count(&table.entries);
+        body(Inheritance(&table.entries[..count]))
+    })
 }
 
 /// The descriptors the parent handed on (STARTUPINFO's C runtime block): each open one whose
@@ -251,14 +432,7 @@ fn take_inherited() {
         if unsafe { imports::GetFileType(handle) } == FILE_TYPE_UNKNOWN {
             continue;
         }
-        store(
-            fd,
-            Descriptor {
-                handle,
-                flags,
-                ahead: 0x100,
-            },
-        );
+        store(fd, Descriptor::open(handle, flags));
     }
 }
 
@@ -267,7 +441,7 @@ fn take_inherited() {
 pub fn initialize() {
     take_inherited();
     for (fd, &which) in STANDARD.iter().enumerate() {
-        if descriptor(fd as i32).is_some_and(|entry| entry.flags & FOPEN != 0) {
+        if descriptor(fd as i32).is_some_and(|entry| entry.is_open()) {
             continue;
         }
         // SAFETY: kernel32's exports.
@@ -283,20 +457,12 @@ pub fn initialize() {
                 },
             )
         };
-        store(
-            fd,
-            Descriptor {
-                handle,
-                flags: FOPEN
-                    | FTEXT
-                    | if kind == FILE_TYPE_UNKNOWN {
-                        FDEV
-                    } else {
-                        type_flags(kind)
-                    },
-                ahead: 0x100,
-            },
-        );
+        let kind = if kind == FILE_TYPE_UNKNOWN {
+            FDEV
+        } else {
+            type_flags(kind)
+        };
+        store(fd, Descriptor::open(handle, FTEXT | kind));
     }
 }
 
@@ -305,32 +471,37 @@ pub fn is_device(fd: i32) -> bool {
     descriptor(fd).is_some_and(|entry| entry.flags & (FOPEN | FDEV) == FOPEN | FDEV)
 }
 
-/// The lowest free descriptor, or none (errno EMFILE). The caller holds the C runtime's lock until
-/// it has stored the descriptor, so that no other thread takes the same one.
-fn free_descriptor() -> Option<usize> {
-    let fd = with_table(|table| table.iter().position(|entry| entry.flags & FOPEN == 0));
-    if fd.is_none() {
-        set_errno(EMFILE);
-        thread::set_doserrno(0);
-    }
-    fd
-}
-
-/// Descriptor `fd` given `handle`: a standard one's handle follows in a console program.
-fn set_handle(fd: usize, handle: usize) {
-    with_table(|table| table[fd].handle = handle);
-    if fd < 3 && APP_TYPE.read() == 1 {
+/// A standard descriptor's new handle (0 once it is closed) made the standard handle too, in a
+/// console program.
+fn follow_standard(fd: usize, handle: usize) {
+    if fd < 3 && APP_TYPE.load(Relaxed) == 1 {
         // SAFETY: kernel32's export.
         unsafe { imports::SetStdHandle(STANDARD[fd], handle) };
     }
 }
 
-/// Descriptor `fd` freed: a standard one's handle cleared in a console program.
-fn free(fd: usize) {
-    store(fd, CLOSED);
-    if fd < 3 && APP_TYPE.read() == 1 {
-        // SAFETY: kernel32's export.
-        unsafe { imports::SetStdHandle(STANDARD[fd], 0) };
+/// CloseHandle over a handle the C runtime opened or duplicated: the error, when it fails.
+fn close_handle(handle: usize) -> Result<(), u32> {
+    // SAFETY: kernel32's exports.
+    unsafe {
+        if imports::CloseHandle(handle) == 0 {
+            return Err(imports::GetLastError());
+        }
+    }
+    Ok(())
+}
+
+/// `descriptor` made a new descriptor over a handle the C runtime opened (or duplicated) on the
+/// `reservation`: the descriptor's number, or -1 with EMFILE, the handle closed, when none is
+/// left.
+fn install(reservation: Reservation, descriptor: Descriptor) -> i32 {
+    match reservation.fill(descriptor) {
+        Some(fd) => fd as i32,
+        None => {
+            let _ = close_handle(descriptor.handle);
+            none_free();
+            -1
+        }
     }
 }
 
@@ -347,11 +518,7 @@ pub extern "C" fn open_osfhandle(handle: usize, flags: i32) -> i32 {
         thread::set_doserrno(error);
         return -1;
     }
-    let _lock = Locked::take();
-    let Some(fd) = free_descriptor() else {
-        return -1;
-    };
-    let mut mode = FOPEN | type_flags(kind);
+    let mut mode = type_flags(kind);
     if flags & O_TEXT != 0 {
         mode |= FTEXT;
     }
@@ -361,16 +528,17 @@ pub extern "C" fn open_osfhandle(handle: usize, flags: i32) -> i32 {
     if flags & O_NOINHERIT != 0 {
         mode |= FNOINHERIT;
     }
-    store(
-        fd,
-        Descriptor {
-            handle: usize::MAX,
-            flags: mode,
-            ahead: 0x100,
-        },
-    );
-    set_handle(fd, handle);
-    fd as i32
+    // The handle is the caller's: on no free descriptor, it stays open.
+    match with_table(|table| table.place(Descriptor::open(handle, mode))) {
+        Some(fd) => {
+            follow_standard(fd, handle);
+            fd as i32
+        }
+        None => {
+            none_free();
+            -1
+        }
+    }
 }
 
 /// What `_open` asks CreateFileA for and the descriptor it makes: the access, the disposition, the
@@ -463,8 +631,9 @@ pub unsafe extern "C" fn open_file(name: *const u8, oflag: i32, pmode: i32) -> i
         thread::set_doserrno(0);
         return -1;
     };
-    let _lock = Locked::take();
-    let Some(fd) = free_descriptor() else {
+    // The descriptor is held for the open, without the table's lock: CreateFileA can wait (on a
+    // device, a pipe, a file system).
+    let Some(reservation) = Reservation::lowest() else {
         return -1;
     };
     let security = imports::SecurityAttributes::inheritable(plan.inherit);
@@ -488,22 +657,14 @@ pub unsafe extern "C" fn open_file(name: *const u8, oflag: i32, pmode: i32) -> i
     // SAFETY: kernel32's export, over the handle just opened.
     let kind = unsafe { imports::GetFileType(handle) };
     if kind == FILE_TYPE_UNKNOWN {
-        // SAFETY: kernel32's export, over the handle just opened.
-        unsafe { imports::CloseHandle(handle) };
-        set_errno(EBADF);
-        thread::set_doserrno(0);
+        let _ = close_handle(handle);
+        not_open();
         return -1;
     }
-    store(
-        fd,
-        Descriptor {
-            handle: usize::MAX,
-            flags: plan.mode | type_flags(kind),
-            ahead: 0x100,
-        },
-    );
-    set_handle(fd, handle);
-    fd as i32
+    install(
+        reservation,
+        Descriptor::open(handle, plan.mode | type_flags(kind)),
+    )
 }
 
 /// _get_osfhandle: the descriptor's handle; -1 with EBADF when it is not open.
@@ -515,26 +676,22 @@ pub extern "C" fn get_osfhandle(fd: i32) -> isize {
     }
 }
 
-/// _close: the descriptor and its handle closed; -1 with EBADF when it is not open.
+/// _close: the descriptor and its handle closed; -1 with EBADF when it is not open. Descriptors 1
+/// and 2 on one handle, the other keeps it open. The descriptor's lock is held throughout, the
+/// table's only to look at it and to free it: the descriptor stays reserved across CloseHandle.
 #[unsafe(export_name = "f2k_export__close")]
 pub extern "C" fn close(fd: i32) -> i32 {
-    let _lock = Locked::take();
-    let Some(entry) = open(fd) else {
+    let _io = hold(fd);
+    let Some((reservation, handle)) = Reservation::closing(fd) else {
         return -1;
     };
-    let handle = entry.handle;
-    // Descriptors 1 and 2 on one handle: the other keeps it.
-    let shared = (fd == 1 || fd == 2)
-        && descriptor(3 - fd)
-            .is_some_and(|other| other.flags & FOPEN != 0 && other.handle == handle);
     let mut result = 0;
-    // SAFETY: kernel32's export, over the descriptor's own handle.
-    if !shared && unsafe { imports::CloseHandle(handle) } == 0 {
-        // SAFETY: kernel32's export.
-        set_dos_error(unsafe { imports::GetLastError() });
+    if let Some(Err(error)) = handle.map(close_handle) {
+        set_dos_error(error);
         result = -1;
     }
-    free(fd as usize);
+    drop(reservation);
+    follow_standard(fd as usize, 0);
     result
 }
 
@@ -553,70 +710,69 @@ fn duplicate(handle: usize) -> Option<usize> {
     Some(copy)
 }
 
-/// _dup: a second descriptor for the same file, the lowest free one.
+/// _dup: a second descriptor for the same file, the lowest free one. The descriptor's lock is held,
+/// so it is not closed while its handle is duplicated.
 #[unsafe(export_name = "f2k_export__dup")]
 pub extern "C" fn dup(fd: i32) -> i32 {
-    let _lock = Locked::take();
+    let _io = hold(fd);
     let Some(entry) = open(fd) else {
         return -1;
     };
-    let (handle, flags) = (entry.handle, entry.flags);
-    let Some(new) = free_descriptor() else {
+    let Some(reservation) = Reservation::lowest() else {
         return -1;
     };
-    let Some(copy) = duplicate(handle) else {
+    let Some(copy) = duplicate(entry.handle) else {
         return -1;
     };
-    store(
-        new,
-        Descriptor {
-            handle: usize::MAX,
-            flags: flags & !(FNOINHERIT | FEOF),
-            ahead: 0x100,
-        },
-    );
-    set_handle(new, copy);
-    new as i32
+    install(
+        reservation,
+        Descriptor::open(copy, entry.flags & !(FNOINHERIT | FEOF)),
+    )
 }
 
-/// _dup2: descriptor `to` made a second descriptor for `from`'s file, closing what it held.
+/// _dup2: descriptor `to` made a second descriptor for `from`'s file, closing what it held. Both
+/// descriptors' locks are held (in ascending order), and `to` changes in one step under the table's
+/// lock, so no open takes it between its close and its reuse. One that an open has reserved is
+/// taken over: the open finds another.
 #[unsafe(export_name = "f2k_export__dup2")]
 pub extern "C" fn dup2(from: i32, to: i32) -> i32 {
-    let _lock = Locked::take();
+    let _first = hold(from.min(to));
+    let _second = if from == to { None } else { hold(from.max(to)) };
     let Some(entry) = open(from) else {
         return -1;
     };
-    let (handle, flags) = (entry.handle, entry.flags);
     if !(0..DESCRIPTORS as i32).contains(&to) {
-        set_errno(EBADF);
-        thread::set_doserrno(0);
+        not_open();
         return -1;
     }
     if from == to {
         return 0;
     }
-    let Some(copy) = duplicate(handle) else {
+    let Some(copy) = duplicate(entry.handle) else {
         return -1;
     };
-    if descriptor(to).is_some_and(|entry| entry.flags & FOPEN != 0) {
-        close(to);
+    let to = to as usize;
+    let replaced = with_table(|table| {
+        let old = table.entries[to];
+        // Descriptors 1 and 2 on one handle: the other keeps it.
+        let shared = (to == 1 || to == 2) && {
+            let other = table.entries[3 - to];
+            other.is_open() && other.handle == old.handle
+        };
+        table.entries[to] = Descriptor::open(copy, entry.flags & !(FNOINHERIT | FEOF));
+        (old.is_open() && !shared).then_some(old.handle)
+    });
+    if let Some(Err(error)) = replaced.map(close_handle) {
+        set_dos_error(error);
     }
-    store(
-        to as usize,
-        Descriptor {
-            handle: usize::MAX,
-            flags: flags & !(FNOINHERIT | FEOF),
-            ahead: 0x100,
-        },
-    );
-    set_handle(to as usize, copy);
+    follow_standard(to, copy);
     0
 }
 
 /// _setmode: the descriptor's translation mode set; the previous one.
 #[unsafe(export_name = "f2k_export__setmode")]
 pub extern "C" fn setmode(fd: i32, mode: i32) -> i32 {
-    let _lock = Locked::take();
+    let _io = hold(fd);
     let Some(entry) = open(fd) else {
         return -1;
     };
@@ -644,8 +800,10 @@ pub extern "C" fn setmode(fd: i32, mode: i32) -> i32 {
 }
 
 /// The descriptor's file pointer moved (SetFilePointer's methods), its end-of-file mark cleared;
-/// the new position, or -1. The C runtime's lock is not held across SetFilePointer.
+/// the new position, or -1. The descriptor's lock is held across SetFilePointer, the table's is
+/// not.
 pub fn seek(fd: i32, offset: i32, origin: u32) -> i32 {
+    let _io = hold(fd);
     let Some(entry) = open(fd) else {
         return -1;
     };
@@ -683,14 +841,16 @@ fn write_all(handle: usize, bytes: &[u8]) -> Result<usize, u32> {
 
 /// _write: `count` bytes to the descriptor, each LF as CR LF in text mode, at the file's end when
 /// it appends; the caller's bytes written, or -1 (EBADF for a descriptor not open or not writable,
-/// ENOSPC when nothing could be written). The descriptor is read under the C runtime's lock, which
-/// is not held across WriteFile.
+/// ENOSPC when nothing could be written). The descriptor's lock is held across WriteFile (so two
+/// threads' writes to one descriptor do not interleave); the table's is taken only to read the
+/// descriptor.
 ///
 /// # Safety
 ///
 /// `buffer` holds `count` bytes.
 #[unsafe(export_name = "f2k_export__write")]
 pub unsafe extern "C" fn write(fd: i32, buffer: *const u8, count: u32) -> i32 {
+    let _io = hold(fd);
     let Some(entry) = open(fd) else {
         return -1;
     };
@@ -772,14 +932,15 @@ pub unsafe extern "C" fn write(fd: i32, buffer: *const u8, count: u32) -> i32 {
 }
 
 /// The descriptor's next bytes into `buffer`, CR LF read as LF and Ctrl-Z the end of a file in
-/// text mode: the count, 0 at the end, -1 (errno) on an error. The descriptor is read and written
-/// back (its byte read ahead, its end-of-file mark) under the C runtime's lock, which is not held
-/// across ReadFile: a thread waiting on the console does not stop another's output.
+/// text mode: the count, 0 at the end, -1 (errno) on an error. The descriptor's lock is held across
+/// ReadFile; the table's is taken only to read the descriptor and write back its byte read ahead
+/// and its end-of-file mark: a thread waiting on the console does not stop another's output.
 ///
 /// # Safety
 ///
 /// `buffer` holds `count` bytes.
 pub unsafe fn read(fd: i32, buffer: *mut u8, count: usize) -> i32 {
+    let _io = hold(fd);
     let Some(entry) = open(fd) else {
         return -1;
     };
@@ -791,7 +952,7 @@ pub unsafe fn read(fd: i32, buffer: *mut u8, count: usize) -> i32 {
     let bytes = unsafe { core::slice::from_raw_parts_mut(buffer, count) };
     let mut got = 0;
     if entry.ahead != 0x100 && flags & (FPIPE | FDEV) != 0 {
-        // Taken under the lock, so that no other reader takes the same byte.
+        // Taken under the table's lock, and the entry checked still open over the same handle.
         let ahead = update(fd, handle, |entry| {
             core::mem::replace(&mut entry.ahead, 0x100)
         });
@@ -883,6 +1044,35 @@ pub unsafe fn read(fd: i32, buffer: *mut u8, count: usize) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A reserved descriptor reads as closed but is not free: the next open takes the one after
+    /// it; dropped, it is free again. One that `_dup2` took meanwhile is filled elsewhere, and its
+    /// reservation's drop leaves it alone. (The only host test that reaches the table.)
+    #[test]
+    fn a_reservation_holds_its_descriptor() {
+        let first = Reservation::lowest().expect("a free descriptor");
+        assert!(descriptor(first.fd as i32).is_some_and(|entry| !entry.is_open()));
+        let second = Reservation::lowest().expect("a free descriptor");
+        assert_eq!(second.fd, first.fd + 1);
+        let (first_fd, second_fd) = (first.fd, second.fd);
+        drop(first);
+        let again = Reservation::lowest().expect("a free descriptor");
+        assert_eq!(again.fd, first_fd);
+
+        // `_dup2` takes the reserved descriptor: the open lands on the lowest free one instead.
+        store(again.fd, Descriptor::open(0x44, FTEXT));
+        let placed = again.fill(Descriptor::open(0x48, 0));
+        assert_eq!(placed, Some(second_fd + 1));
+        drop(second);
+        assert_eq!(
+            descriptor(first_fd as i32).map(|entry| entry.handle),
+            Some(0x44)
+        );
+        assert!(descriptor(second_fd as i32).is_some_and(|entry| entry.is_free()));
+        for fd in [first_fd, second_fd + 1] {
+            store(fd, CLOSED);
+        }
+    }
 
     fn plan(oflag: i32, pmode: i32, fmode: i32) -> OpenPlan {
         open_plan(oflag, pmode, fmode).expect("an access mode")

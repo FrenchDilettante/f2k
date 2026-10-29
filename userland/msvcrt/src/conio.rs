@@ -8,22 +8,39 @@
 //! navigation keys, ENHANCED_KEY) or 0 for the others (the function keys, the keypad's), then its
 //! code (fd's capture: Up `0xE0 0x48`, F1 `0x00 0x3B`), which `_kbhit` counts as waiting.
 //!
-//! The console input has a lock of its own, apart from the C runtime's: a `_getch` waiting for a
-//! key keeps other threads from the console's input, not from the rest of the C runtime.
+//! The console input has a lock of its own, apart from the C runtime's others: a `_getch` waiting
+//! for a key keeps other threads from the console's input, not from the rest of the C runtime.
 
-use crate::data::Global;
+use rtl::sync::Locked;
+
 use crate::imports;
+use crate::thread::Lock;
 
-/// The console's input buffer, opened on the first need (none yet: 0; not to be had:
-/// INVALID_HANDLE_VALUE).
-static INPUT: Global<usize> = Global::new(0);
+/// The console input's state, behind its lock: `_getch` holds it while it waits for a key.
+static CONSOLE: Locked<Console, Lock> = Locked::new(
+    Lock::new(),
+    Console {
+        input: Input::Unopened,
+        pending: None,
+    },
+);
 
-/// An extended key's code, answered by the next `_getch` (none: 0x100).
-static PENDING: Global<u16> = Global::new(NONE);
-const NONE: u16 = 0x100;
+/// What `_kbhit` and `_getch` keep between calls.
+struct Console {
+    /// The console's input buffer.
+    input: Input,
+    /// An extended key's code, answered by the next `_getch`.
+    pending: Option<u8>,
+}
 
-/// The console input's lock: a CRITICAL_SECTION (24 bytes), initialized with the DLL.
-static LOCK: Global<[usize; 8]> = Global::new([0; 8]);
+/// The console's input buffer, opened on the first need.
+#[derive(Clone, Copy)]
+enum Input {
+    Unopened,
+    Open(usize),
+    /// `CONIN$` could not be opened: there is no console.
+    Missing,
+}
 
 /// EOF: `_getch`'s answer when there is no console input to read.
 const EOF: i32 = -1;
@@ -107,59 +124,49 @@ pub fn key(record: &[u8; RECORD_SIZE]) -> Option<Key> {
     Some(Key::Extended(prefix, code))
 }
 
-/// The DLL's process attach: the console input's lock.
-pub fn initialize() {
-    // SAFETY: kernel32's export; the lock's storage is the DLL's own.
-    unsafe { imports::InitializeCriticalSection(LOCK.get().cast()) };
-}
-
-/// The console input's lock, held for the guard's life.
-struct Held(());
-
-impl Held {
-    fn take() -> Held {
-        // SAFETY: kernel32's export, over the DLL's own critical section.
-        unsafe { imports::EnterCriticalSection(LOCK.get().cast()) };
-        Held(())
+impl Console {
+    /// The console's input buffer, opened as `CONIN$` on the first call; none when there is no
+    /// console.
+    fn input(&mut self) -> Option<usize> {
+        if let Input::Unopened = self.input {
+            // SAFETY: kernel32's export, over a NUL-terminated name.
+            let handle = unsafe {
+                imports::CreateFileA(
+                    c"CONIN$".as_ptr().cast(),
+                    GENERIC_READ_WRITE,
+                    FILE_SHARE_READ_WRITE,
+                    core::ptr::null(),
+                    OPEN_EXISTING,
+                    0,
+                    0,
+                )
+            };
+            self.input = if handle == INVALID_HANDLE {
+                Input::Missing
+            } else {
+                Input::Open(handle)
+            };
+        }
+        match self.input {
+            Input::Open(handle) => Some(handle),
+            _ => None,
+        }
     }
-}
-
-impl Drop for Held {
-    fn drop(&mut self) {
-        // SAFETY: as above; the guard took it.
-        unsafe { imports::LeaveCriticalSection(LOCK.get().cast()) };
-    }
-}
-
-/// The console's input buffer, opened as `CONIN$` on the first call; none when there is no console.
-fn input() -> Option<usize> {
-    if INPUT.read() == 0 {
-        // SAFETY: kernel32's export, over a NUL-terminated name.
-        let handle = unsafe {
-            imports::CreateFileA(
-                c"CONIN$".as_ptr().cast(),
-                GENERIC_READ_WRITE,
-                FILE_SHARE_READ_WRITE,
-                core::ptr::null(),
-                OPEN_EXISTING,
-                0,
-                0,
-            )
-        };
-        INPUT.write(handle);
-    }
-    Some(INPUT.read()).filter(|&handle| handle != INVALID_HANDLE)
 }
 
 /// _kbhit: nonzero when a key is waiting, a record that counts or an extended key's code; the
 /// waiting records stay as they are, for `_getch` (or ReadConsoleInput) to read.
 #[unsafe(export_name = "f2k_export__kbhit")]
 pub extern "C" fn kbhit() -> i32 {
-    let _lock = Held::take();
-    if PENDING.read() != NONE {
+    CONSOLE.with(key_waiting)
+}
+
+/// _kbhit's work, under the console input's lock.
+fn key_waiting(console: &mut Console) -> i32 {
+    if console.pending.is_some() {
         return 1;
     }
-    let Some(handle) = input() else {
+    let Some(handle) = console.input() else {
         return 0;
     };
     let mut count = 0u32;
@@ -197,13 +204,15 @@ pub extern "C" fn kbhit() -> i32 {
 /// records that do not count are read and dropped. EOF when there is no console input to read.
 #[unsafe(export_name = "f2k_export__getch")]
 pub extern "C" fn getch() -> i32 {
-    let _lock = Held::take();
-    let pending = PENDING.read();
-    if pending != NONE {
-        PENDING.write(NONE);
-        return i32::from(pending);
+    CONSOLE.with(next_key)
+}
+
+/// _getch's work, under the console input's lock (held while it waits for a key).
+fn next_key(console: &mut Console) -> i32 {
+    if let Some(code) = console.pending.take() {
+        return i32::from(code);
     }
-    let Some(handle) = input() else {
+    let Some(handle) = console.input() else {
         return EOF;
     };
     let mut mode = 0u32;
@@ -225,7 +234,7 @@ pub extern "C" fn getch() -> i32 {
         match key(&record) {
             Some(Key::Character(character)) => break i32::from(character),
             Some(Key::Extended(prefix, code)) => {
-                PENDING.write(u16::from(code));
+                console.pending = Some(code);
                 break i32::from(prefix);
             }
             None => {}

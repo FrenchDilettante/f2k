@@ -71,8 +71,8 @@ pub const USER_EFLAGS: u32 = 0x0000_0202;
 /// pages from here).
 pub const PARAMS_PAGE: u32 = 0x0002_0000;
 
-/// The PEB page: the process environment block ([`teb`]), and past the PEB proper the system DLLs'
-/// own per-process slots. The last page below KUSER_SHARED_DATA.
+/// The PEB page: the process environment block ([`teb`]), and past the PEB proper the heap-handle
+/// array and the service pack's name. The last page below KUSER_SHARED_DATA.
 pub const PEB_PAGE: u32 = 0x7FFD_F000;
 
 /// The region later threads' TEB pages come from: one page per child thread, downwards from the

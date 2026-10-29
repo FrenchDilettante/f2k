@@ -5,8 +5,8 @@
 //! that size), and hand theirs back narrowed ([`Text`]). The Windows and system directories, which
 //! never change, are here too.
 
-use crate::base::{ansi_into, set_last_error, set_last_nt_error, wide_units, Text};
-use crate::nt::{self, UnicodeString};
+use crate::base::{ansi_into, set_last_error, set_last_nt_error, unicode_string, wide_units, Text};
+use crate::nt;
 
 /// The ANSI path limit, terminator included.
 const MAX_PATH: usize = 260;
@@ -63,11 +63,7 @@ pub unsafe extern "system" fn get_current_directory_w(size: u32, buffer: *mut u1
 /// SetCurrentDirectoryW's work: make the directory of the first `length` units of `wide` current
 /// (RtlSetCurrentDirectory_U); FALSE with the status's error when it cannot be opened.
 fn set_current_directory(wide: &mut [u16], length: usize) -> u32 {
-    let string = UnicodeString {
-        length: (2 * length) as u16,
-        maximum_length: (2 * wide.len()) as u16,
-        buffer: wide.as_mut_ptr(),
-    };
+    let string = unicode_string(wide, length);
     // SAFETY: ntdll's export, over a string whose buffer holds its length.
     let status = unsafe { nt::RtlSetCurrentDirectory_U(&string) };
     if !rtl::status::nt_success(status) {

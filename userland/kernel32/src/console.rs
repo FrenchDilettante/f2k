@@ -16,36 +16,34 @@
 
 use rtl::console::api;
 use rtl::status::{nt_success, STATUS_INVALID_HANDLE, STATUS_NO_MEMORY, STATUS_PENDING};
+use rtl::sync::{Locked, OnceWord};
 
 use crate::base::{
     is_console_handle,
+    own_data,
     parameters_standard_handle,
-    peb,
-    process_parameters,
-    read,
-    read_pointer,
     set_last_error,
     set_last_nt_error,
     set_parameters_standard_handle,
     standard_handle,
     standard_slot,
-    under_peb_lock,
-    write,
-    write_pointer,
+    update_console_flags,
 };
+use crate::heap::{HeapVec, OutOfMemory};
 #[cfg(test)]
 pub use crate::nt::host::console_writes;
 use crate::nt::{self, ApiMessage};
-use crate::ntcall;
+use crate::ntcall::FastPebLock;
 
 const INVALID_HANDLE_VALUE: u32 = 0xFFFF_FFFF;
-const ERROR_NOT_ENOUGH_MEMORY: u32 = 8;
 const ERROR_INVALID_PARAMETER: u32 = 87;
 const GENERIC_READ: u32 = 0x8000_0000;
 const GENERIC_WRITE: u32 = 0x4000_0000;
 
-/// kernel32's console input-wait handle's slot, on the PEB's page.
-const CONSOLE_INPUT_WAIT: usize = 0x8C0;
+own_data! {
+    /// The console's input-wait handle, once the server gave it.
+    fn input_wait() -> &'static OnceWord<FastPebLock> = OnceWord::new(FastPebLock);
+}
 
 /// Send the API's data to the console server (CsrClientCallServer, no capture buffer: F2K's server
 /// reads the client's memory where it is); the status, `data` as the server answered it.
@@ -262,20 +260,14 @@ pub fn verify_console_io_handle(console: u32) -> bool {
 /// PEB lock, and keeps it for the process's life (zero when the server cannot give one: the wait
 /// then fails on the console handle itself).
 pub fn input_wait_handle() -> u32 {
-    let slot = peb() + CONSOLE_INPUT_WAIT;
-    let handle = read(slot);
-    if handle != 0 {
-        return handle;
-    }
-    under_peb_lock(|| {
-        if read(slot) == 0 {
-            let mut data = [0];
-            if nt_success(call_server(api::GET_INPUT_WAIT_HANDLE, &mut data)) {
-                write(slot, data[0] as u32);
-            }
+    input_wait().get_or_make(|| {
+        let mut data = [0];
+        if nt_success(call_server(api::GET_INPUT_WAIT_HANDLE, &mut data)) {
+            data[0] as u32 as usize
+        } else {
+            0
         }
-        read(slot)
-    })
+    }) as u32
 }
 
 /// The handle a wait waits on, as Windows 2000's waits make it: a standard handle's pseudo-value is
@@ -750,11 +742,8 @@ pub extern "system" fn get_console_title_w(buffer: *mut u16, size: u32) -> u32 {
 /// `title` is a NUL-terminated string.
 #[unsafe(export_name = "f2k_export_SetConsoleTitleA")]
 pub unsafe extern "system" fn set_console_title_a(title: *const u8) -> u32 {
-    let mut length = 0;
     // SAFETY: the caller's string, read to its NUL.
-    while unsafe { title.add(length).read() } != 0 {
-        length += 1;
-    }
+    let length = unsafe { rtl::cstr::bytes_until_nul(title) }.len();
     succeeded(call_server(
         api::SET_TITLE,
         &mut [title as usize, length, 0],
@@ -768,11 +757,8 @@ pub unsafe extern "system" fn set_console_title_a(title: *const u8) -> u32 {
 /// `title` is a NUL-terminated UTF-16 string.
 #[unsafe(export_name = "f2k_export_SetConsoleTitleW")]
 pub unsafe extern "system" fn set_console_title_w(title: *const u16) -> u32 {
-    let mut length = 0;
-    // SAFETY: the caller's string, read to its NUL.
-    while unsafe { title.add(length).read_unaligned() } != 0 {
-        length += 1;
-    }
+    // SAFETY: the caller's string, at any address, read to its NUL.
+    let length = unsafe { rtl::cstr::len_until_nul(title) };
     succeeded(call_server(
         api::SET_TITLE,
         &mut [title as usize, length, 1],
@@ -782,18 +768,49 @@ pub unsafe extern "system" fn set_console_title_w(title: *const u16) -> u32 {
 // --- Control handlers ----------------------------------------------------------------------------
 
 /// The process's control handlers, kept as Windows 2000's kernel32 keeps them, a list in the
-/// order they were added, grown as needed: its block on the process heap, the handlers it holds
-/// and its room, in kernel32's slots on the PEB's page, under the PEB lock.
-const CTRL_HANDLERS: usize = 0x8C4;
-const CTRL_HANDLER_COUNT: usize = 0x8C8;
-const CTRL_HANDLER_ROOM: usize = 0x8CC;
+/// order they were added, grown as needed, its block on the process heap (none before the first
+/// handler).
+type CtrlHandlers = Option<HeapVec<u32>>;
+
+own_data! {
+    /// The control handlers, under the PEB lock.
+    fn ctrl_handlers() -> &'static Locked<CtrlHandlers, FastPebLock> =
+        Locked::new(FastPebLock, None);
+}
 
 /// The room a fresh list has.
-const FIRST_ROOM: u32 = 8;
+const FIRST_ROOM: usize = 8;
 
-/// The process parameters' ConsoleFlags, and its bit that makes the process ignore Ctrl+C (what
+/// `routine` added at the end of the list (made at the first handler, its room doubled when it is
+/// full); none, the list as it was, when the heap has no room.
+fn add_ctrl_handler(handlers: &mut CtrlHandlers, routine: u32) -> Result<(), OutOfMemory> {
+    let list = match handlers.take() {
+        Some(list) => list,
+        None => HeapVec::with_capacity(FIRST_ROOM)?,
+    };
+    let list = handlers.insert(list);
+    if list.try_push(routine).is_err() {
+        list.grow(2 * list.capacity())?;
+        list.push(routine);
+    }
+    Ok(())
+}
+
+/// The list's latest entry for `routine` taken out; whether it held one.
+fn remove_ctrl_handler(handlers: &mut CtrlHandlers, routine: u32) -> bool {
+    let Some(list) = handlers else {
+        return false;
+    };
+    let Some(at) = list.iter().rposition(|&held| held == routine) else {
+        return false;
+    };
+    list.copy_within(at + 1.., at);
+    list.truncate(list.len() - 1);
+    true
+}
+
+/// The process parameters' ConsoleFlags' bit that makes the process ignore Ctrl+C (what
 /// SetConsoleCtrlHandler(NULL, TRUE) sets, and a child inherits).
-const CONSOLE_FLAGS: usize = 0x14;
 const IGNORE_CTRL_C: u32 = 0x1;
 
 /// SetConsoleCtrlHandler: `routine` added to the process's control handlers (a handler added
@@ -804,61 +821,22 @@ const IGNORE_CTRL_C: u32 = 0x1;
 #[unsafe(export_name = "f2k_export_SetConsoleCtrlHandler")]
 pub extern "system" fn set_console_ctrl_handler(routine: u32, add: u32) -> u32 {
     if routine == 0 {
-        let flags = process_parameters() + CONSOLE_FLAGS;
-        under_peb_lock(|| {
-            let value = read(flags);
-            write(
-                flags,
-                if add != 0 {
-                    value | IGNORE_CTRL_C
-                } else {
-                    value & !IGNORE_CTRL_C
-                },
-            );
+        update_console_flags(|flags| {
+            if add != 0 {
+                flags | IGNORE_CTRL_C
+            } else {
+                flags & !IGNORE_CTRL_C
+            }
         });
         return 1;
     }
-    let error = under_peb_lock(|| {
-        let peb = peb();
-        let count = read(peb + CTRL_HANDLER_COUNT) as usize;
-        let mut list = read_pointer(peb + CTRL_HANDLERS) as *mut u32;
+    let error = ctrl_handlers().with(|handlers| {
         if add != 0 {
-            let room = read(peb + CTRL_HANDLER_ROOM);
-            if count == room as usize {
-                let grown = if room == 0 { FIRST_ROOM } else { 2 * room };
-                let Some(block) = ntcall::allocate_heap(4 * grown as usize) else {
-                    return ERROR_NOT_ENOUGH_MEMORY;
-                };
-                let block = block.as_ptr().cast::<u32>();
-                if !list.is_null() {
-                    // SAFETY: the old block holds `count` handlers; the new one has room for
-                    // them. The old block is the list's own, used no more.
-                    unsafe {
-                        core::ptr::copy_nonoverlapping(list, block, count);
-                        ntcall::free_heap(list.cast());
-                    }
-                }
-                list = block;
-                write_pointer(peb + CTRL_HANDLERS, list as usize);
-                write(peb + CTRL_HANDLER_ROOM, grown);
-            }
-            // SAFETY: the list's block has room past its `count` handlers.
-            unsafe { list.add(count).write(routine) };
-            write(peb + CTRL_HANDLER_COUNT, count as u32 + 1);
-            return 0;
-        }
-        if list.is_null() {
-            return ERROR_INVALID_PARAMETER;
-        }
-        // SAFETY: the list's block holds `count` handlers.
-        let handlers = unsafe { core::slice::from_raw_parts_mut(list, count) };
-        match handlers.iter().rposition(|&held| held == routine) {
-            Some(at) => {
-                handlers.copy_within(at + 1.., at);
-                write(peb + CTRL_HANDLER_COUNT, count as u32 - 1);
-                0
-            }
-            None => ERROR_INVALID_PARAMETER,
+            add_ctrl_handler(handlers, routine).map_or_else(OutOfMemory::error, |()| 0)
+        } else if remove_ctrl_handler(handlers, routine) {
+            0
+        } else {
+            ERROR_INVALID_PARAMETER
         }
     });
     if error != 0 {

@@ -7,7 +7,6 @@
 //! [`CLEAN_SHUTDOWN`] bit cleared in every FAT copy, as FastFat marks a volume it is changing.
 
 use super::boot_sector::{validate, Refusal};
-use super::check;
 use super::fat::{decode_entry, entry_position, FatCache, FatEntry, ENTRY_MASK};
 use super::layout::Layout;
 use super::raw::to_block;
@@ -61,7 +60,7 @@ impl Volume {
             return Err(MountError::DeviceSectorSize(sector_size));
         }
         let mut sector = [0u8; 512];
-        check(device.read(0, &mut sector)).map_err(MountError::Read)?;
+        device.read(0, &mut sector).map_err(MountError::Read)?;
         let layout = validate(&sector).map_err(MountError::Refused)?;
         Ok(Volume {
             device,
@@ -164,7 +163,7 @@ impl Volume {
 
     /// Read one sector of the volume.
     pub fn read_sector(&self, lba: u64, data: &mut [u8; 512]) -> Result<(), NtStatus> {
-        check(self.device.read(lba, data))
+        self.device.read(lba, data)
     }
 
     /// Write one sector of the volume (a change: the dirty mark goes first).
@@ -174,7 +173,7 @@ impl Volume {
     }
 
     fn write_raw(&self, lba: u64, data: &[u8; 512]) -> Result<(), NtStatus> {
-        check(self.device.write(lba, data))
+        self.device.write(lba, data)
     }
 
     /// Where the next free-cluster search starts, and its update.
@@ -208,7 +207,7 @@ mod target {
             .iter()
             .find(|(_, entry)| matches!(entry.role, Role::Partition { .. }));
         if let Some((_, entry)) = partition {
-            let mounted = Volume::mount(entry.device);
+            let mounted = Volume::mount(entry.device());
             with_mount(|mount| *mount = Some(mounted));
         }
     }
@@ -319,7 +318,7 @@ mod tests {
                 }
             }
 
-            fn read(&self, lba: u64, buffer: &mut [u8]) -> NtStatus {
+            fn read(&self, lba: u64, buffer: &mut [u8]) -> Result<(), NtStatus> {
                 self.0.read(lba, buffer)
             }
         }

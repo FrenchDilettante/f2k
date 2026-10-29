@@ -118,15 +118,12 @@ pub(crate) fn probe_user_range(pointer: u32, length: u32) -> Result<(), NtStatus
     }
 }
 
-/// The running thread's record, once the scheduler has one: what a user-memory copy's attribution
-/// is kept in.
+/// The running thread's user-copy attribution, in the processor's thread slots while it runs (its
+/// record holds it while it does not): reached at any level, the console server's copies at the
+/// dispatch level included.
 #[cfg(target_arch = "x86")]
-fn running_thread() -> Option<&'static mut crate::sched::thread::Thread> {
-    let thread = crate::sched::idle::dispatcher().current_thread();
-    // SAFETY: the dispatcher's running thread is live while it runs, and this processor is running
-    // it; the attribution's readers and writers (the copies, the exception handler) run masked on
-    // that thread, one borrow at a time.
-    unsafe { thread.as_mut() }
+fn slots() -> &'static crate::sched::processor::ThreadSlots {
+    &crate::pcr::pcr().threads
 }
 
 /// Whether the running thread is inside a user-memory copy on its process's behalf (an argument
@@ -135,7 +132,7 @@ fn running_thread() -> Option<&'static mut crate::sched::thread::Thread> {
 /// (a wait inside it, a switch) must not make that thread's kernel faults its process's.
 #[cfg(target_arch = "x86")]
 pub fn copying_user_args() -> bool {
-    running_thread().is_some_and(|thread| thread.copying_user_memory)
+    slots().copying_user_memory()
 }
 
 /// Clear the running thread's attribution: the exception handler's step when a fault inside a
@@ -143,21 +140,20 @@ pub fn copying_user_args() -> bool {
 /// set would attribute the thread's later kernel faults (its exit path's) to the user copy.
 #[cfg(target_arch = "x86")]
 pub fn end_user_attribution() {
-    if let Some(thread) = running_thread() {
-        thread.copying_user_memory = false;
-    }
+    slots().set_copying_user_memory(false);
 }
 
 /// Run `body` under the running thread's attribution, putting back the state it found.
 #[cfg(target_arch = "x86")]
 fn with_user_attribution<T>(body: impl FnOnce() -> T) -> T {
-    let thread = running_thread().expect("a user-memory copy runs on a thread");
-    let previous = core::mem::replace(&mut thread.copying_user_memory, true);
+    assert!(
+        crate::sched::try_current_thread().is_some(),
+        "a user-memory copy runs on a thread"
+    );
+    let previous = slots().set_copying_user_memory(true);
     let result = body();
-    // Read afresh: the body may have borrowed the record itself.
-    if let Some(thread) = running_thread() {
-        thread.copying_user_memory = previous;
-    }
+    // The body may wait: the slot is this thread's again by the time it returns.
+    slots().set_copying_user_memory(previous);
     result
 }
 
@@ -386,7 +382,7 @@ extern "C" fn syscall_dispatch(frame: &mut TrapFrame) {
     // The service boundary is where a same-processor preemption lands: a thread the service readied
     // at strictly higher priority — or a quantum the tick ended mid-service — is switched to here,
     // before the caller returns to user mode.
-    crate::sched::idle::dispatcher().deliver_pending();
+    crate::sched::dispatcher::deliver_pending();
     // The user-APC window: an alertable wait that completed for a user APC (or NtContinue's test
     // alert, with more queued) redirects the return through KiUserApcDispatcher. Nothing after
     // this writes the frame.

@@ -36,6 +36,8 @@
 //! needs them, each read from the file through the image's section table. Nothing is snapped: the
 //! imports are the mapper's to resolve (ntdll's loader).
 
+use rtl::pod::Pod;
+
 use crate::status::*;
 
 /// The page protections a section and a view take.
@@ -197,10 +199,10 @@ pub const IMAGE_HEADERS: usize = 0x1000;
 pub fn image_layout(headers: &[u8], file_size: u32) -> Result<(u32, u32), NtStatus> {
     let image = crate::exec::pe::Image::parse_headers(headers, file_size as usize)
         .map_err(|_| not_an_image(headers))?;
-    if image.size_of_image as u64 > crate::mem::vm::SECTION_MAX {
+    if image.size_of_image() as u64 > crate::mem::vm::SECTION_MAX {
         return Err(STATUS_SECTION_TOO_BIG);
     }
-    Ok((image.image_base, image.size_of_image))
+    Ok((image.image_base(), image.size_of_image()))
 }
 
 /// The new header signatures an MZ file's e_lfanew may lead to: a PE image's, a 16-bit NE
@@ -361,9 +363,25 @@ pub fn view_arguments(inherit: u32, allocation: u32, protect: u32) -> Result<(),
 // --- NtQuerySection
 // -------------------------------------------------------------------------------
 
-/// SECTION_INFORMATION_CLASS: SectionBasicInformation and SectionImageInformation.
-pub const SECTION_BASIC_INFORMATION: u32 = 0;
-pub const SECTION_IMAGE_INFORMATION: u32 = 1;
+info_class! {
+    /// The classes NtQuerySection answers (SECTION_INFORMATION_CLASS).
+    pub enum SectionClass {
+        /// SECTION_BASIC_INFORMATION.
+        Basic = 0,
+        /// SECTION_IMAGE_INFORMATION.
+        Image = 1,
+    }
+}
+
+impl SectionClass {
+    /// The class's structure's size.
+    pub fn size(self) -> u32 {
+        (match self {
+            SectionClass::Basic => size_of::<SectionBasicInformation>(),
+            SectionClass::Image => size_of::<SectionImageInformation>(),
+        }) as u32
+    }
+}
 
 /// SECTION_BASIC_INFORMATION: a section's base (zero for every section on Windows 2000, an image
 /// section's included: a section has no base of its own, only its views do), its allocation
@@ -376,7 +394,11 @@ pub struct SectionBasicInformation {
     pub maximum_size: u64,
 }
 
-const _: () = assert!(core::mem::size_of::<SectionBasicInformation>() == 16);
+const _: () = assert!(size_of::<SectionBasicInformation>() == 16);
+
+// SAFETY: two u32s and a u64 at offset 8, 16 bytes without padding (asserted above, on every
+// target); any bits make a value.
+unsafe impl Pod for SectionBasicInformation {}
 
 /// What a section is made of, as its basic information names it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -404,15 +426,6 @@ impl SectionBasicInformation {
             allocation_attributes,
             maximum_size: size as u64,
         }
-    }
-
-    /// The structure's bytes, as the caller's buffer receives them.
-    pub fn to_bytes(self) -> [u8; 16] {
-        let mut bytes = [0u8; 16];
-        bytes[0..4].copy_from_slice(&self.base_address.to_le_bytes());
-        bytes[4..8].copy_from_slice(&self.allocation_attributes.to_le_bytes());
-        bytes[8..16].copy_from_slice(&self.maximum_size.to_le_bytes());
-        bytes
     }
 }
 
@@ -447,12 +460,10 @@ pub struct SectionImageInformation {
     pub reserved: [u32; 2],
 }
 
-/// SECTION_IMAGE_INFORMATION's size on Windows 2000.
-pub const SECTION_IMAGE_INFORMATION_SIZE: u32 = 0x30;
-
 const _: () = {
     use core::mem::offset_of;
-    assert!(core::mem::size_of::<SectionImageInformation>() == 0x30);
+    // Windows 2000's size and offsets.
+    assert!(size_of::<SectionImageInformation>() == 0x30);
     assert!(offset_of!(SectionImageInformation, subsystem_minor_version) == 0x14);
     assert!(offset_of!(SectionImageInformation, gp_value) == 0x18);
     assert!(offset_of!(SectionImageInformation, image_characteristics) == 0x1C);
@@ -462,99 +473,58 @@ const _: () = {
     assert!(offset_of!(SectionImageInformation, reserved) == 0x28);
 };
 
-impl SectionImageInformation {
-    /// The structure's bytes, as the caller's buffer receives them.
-    pub fn to_bytes(self) -> [u8; SECTION_IMAGE_INFORMATION_SIZE as usize] {
-        let mut bytes = [0u8; SECTION_IMAGE_INFORMATION_SIZE as usize];
-        let mut put = |at: usize, field: &[u8]| bytes[at..at + field.len()].copy_from_slice(field);
-        put(0x00, &self.transfer_address.to_le_bytes());
-        put(0x04, &self.zero_bits.to_le_bytes());
-        put(0x08, &self.maximum_stack_size.to_le_bytes());
-        put(0x0C, &self.committed_stack_size.to_le_bytes());
-        put(0x10, &self.subsystem_type.to_le_bytes());
-        put(0x14, &self.subsystem_minor_version.to_le_bytes());
-        put(0x16, &self.subsystem_major_version.to_le_bytes());
-        put(0x18, &self.gp_value.to_le_bytes());
-        put(0x1C, &self.image_characteristics.to_le_bytes());
-        put(0x1E, &self.dll_characteristics.to_le_bytes());
-        put(0x20, &self.machine.to_le_bytes());
-        put(0x22, &[self.image_contains_code, self.spare1]);
-        put(0x24, &self.loader_flags.to_le_bytes());
-        put(0x28, &self.reserved[0].to_le_bytes());
-        put(0x2C, &self.reserved[1].to_le_bytes());
-        bytes
-    }
-}
+// SAFETY: integers and an array of them, 0x30 bytes without padding (the size and offsets asserted
+// above are the fields' sums); any bits make a value.
+unsafe impl Pod for SectionImageInformation {}
 
-/// The PE header fields the image information reports beyond the loader's parse, by their
-/// documented offsets: e_lfanew in the DOS header, where the NT headers start; from there, the
-/// machine in the file header (after the 4-byte signature) and the PE32 optional header (after the
-/// 20-byte file header), whose code size, DLL characteristics, stack sizes and loader flags follow
-/// at their own offsets.
-const E_LFANEW: usize = 0x3C;
-const FILE_MACHINE: usize = 4;
-const OPTIONAL_HEADER: usize = 24;
-const OPTIONAL_SIZE_OF_CODE: usize = 4;
-const OPTIONAL_DLL_CHARACTERISTICS: usize = 70;
-const OPTIONAL_STACK_RESERVE: usize = 72;
-const OPTIONAL_STACK_COMMIT: usize = 76;
-const OPTIONAL_LOADER_FLAGS: usize = 88;
+/// Where an MZ file's new header lies: e_lfanew, in the DOS header; and where a PE image's
+/// optional header starts in its NT headers (after the signature and the file header).
+const E_LFANEW: usize = core::mem::offset_of!(rtl::image::ImageDosHeader, e_lfanew);
+const OPTIONAL_HEADER: usize = core::mem::offset_of!(rtl::image::ImageNtHeaders32, optional_header);
 
 /// An image's SECTION_IMAGE_INFORMATION, from its first bytes `headers` (up to [`IMAGE_HEADERS`])
-/// in a file of `file_size` bytes. STATUS_INVALID_IMAGE_FORMAT for a file the loader's parse
-/// refuses (an image section's file never is: its creation parsed it).
+/// in a file of `file_size` bytes: the loader's parse, and the header fields it reports beyond
+/// it (the stack sizes, the DLL characteristics, the machine, whether there is code, the loader
+/// flags). STATUS_INVALID_IMAGE_FORMAT for a file the loader's parse refuses (an image section's
+/// file never is: its creation parsed it).
 pub fn image_information(
     headers: &[u8],
     file_size: u32,
 ) -> Result<SectionImageInformation, NtStatus> {
     let image = crate::exec::pe::Image::parse_headers(headers, file_size as usize)
         .map_err(|_| STATUS_INVALID_IMAGE_FORMAT)?;
-    // The parse checked the headers hold the file header and the whole optional header, whose
-    // fixed part the fields below lie in.
-    let u16_at = |at: usize| u16::from_le_bytes([headers[at], headers[at + 1]]);
-    let u32_at = |at: usize| {
-        u32::from_le_bytes([
-            headers[at],
-            headers[at + 1],
-            headers[at + 2],
-            headers[at + 3],
-        ])
-    };
-    let nt = u32_at(E_LFANEW) as usize;
-    let optional = nt + OPTIONAL_HEADER;
-    let (major, minor) = image.subsystem_version;
+    let nt = image.nt_headers();
+    let optional = &nt.optional_header;
+    let (major, minor) = image.subsystem_version();
     Ok(SectionImageInformation {
-        transfer_address: image.image_base.wrapping_add(image.entry_rva),
+        transfer_address: image.image_base().wrapping_add(image.entry_rva()),
         zero_bits: 0,
-        maximum_stack_size: u32_at(optional + OPTIONAL_STACK_RESERVE),
-        committed_stack_size: u32_at(optional + OPTIONAL_STACK_COMMIT),
-        subsystem_type: image.subsystem as u32,
+        maximum_stack_size: optional.size_of_stack_reserve,
+        committed_stack_size: optional.size_of_stack_commit,
+        subsystem_type: image.subsystem() as u32,
         subsystem_minor_version: minor,
         subsystem_major_version: major,
         gp_value: 0,
-        image_characteristics: image.characteristics,
-        dll_characteristics: u16_at(optional + OPTIONAL_DLL_CHARACTERISTICS),
-        machine: u16_at(nt + FILE_MACHINE),
-        image_contains_code: (u32_at(optional + OPTIONAL_SIZE_OF_CODE) != 0) as u8,
+        image_characteristics: image.characteristics(),
+        dll_characteristics: optional.dll_characteristics,
+        machine: nt.file_header.machine,
+        image_contains_code: (optional.size_of_code != 0) as u8,
         spare1: 0,
-        loader_flags: u32_at(optional + OPTIONAL_LOADER_FLAGS),
+        loader_flags: optional.loader_flags,
         reserved: [0; 2],
     })
 }
 
-/// NtQuerySection's class and length rules: the class's structure's size, which the buffer must
-/// hold at least. STATUS_INVALID_INFO_CLASS for another class, STATUS_INFO_LENGTH_MISMATCH for a
-/// shorter buffer.
-pub fn query_size(class: u32, length: u32) -> Result<u32, NtStatus> {
-    let size = match class {
-        SECTION_BASIC_INFORMATION => core::mem::size_of::<SectionBasicInformation>() as u32,
-        SECTION_IMAGE_INFORMATION => SECTION_IMAGE_INFORMATION_SIZE,
-        _ => return Err(STATUS_INVALID_INFO_CLASS),
-    };
+/// NtQuerySection's class and length rules: the class, and its structure's size, which the buffer
+/// must hold at least. STATUS_INVALID_INFO_CLASS for another class, STATUS_INFO_LENGTH_MISMATCH for
+/// a shorter buffer.
+pub fn query_size(class: u32, length: u32) -> Result<(SectionClass, u32), NtStatus> {
+    let class = SectionClass::try_from(class)?;
+    let size = class.size();
     if length < size {
         return Err(STATUS_INFO_LENGTH_MISMATCH);
     }
-    Ok(size)
+    Ok((class, size))
 }
 
 /// Whether a handle granted `access` may query its section (SECTION_QUERY, its generic rights
@@ -612,7 +582,7 @@ mod target {
             return Err(STATUS_OBJECT_TYPE_MISMATCH);
         }
         let object = ob::directory().file(id).ok_or(STATUS_INVALID_HANDLE)?;
-        let file = crate::fs::file::records().get(object.record).file;
+        let file = crate::fs::io::file_of(object);
         let backing = Backing {
             size: file.size,
             directory: file.directory,
@@ -684,7 +654,7 @@ mod target {
                 let held = directory.reference(file_object);
                 debug_assert!(held, "the handle's file object lives");
                 let record = directory.file(file_object).expect("held").record;
-                crate::fs::file::records().get_mut(record).user_mapped += 1;
+                crate::fs::file::with_records(|records| records.get_mut(record).user_mapped += 1);
             }
             // A failed publication deletes the object, which gives the file back.
             Some(id)
@@ -707,7 +677,7 @@ mod target {
             .expect("the handle's file object lives")
             .record;
         let segment_of = |directory: &mut ob::Directory| {
-            let id = crate::fs::file::records().get(record).image?;
+            let id = crate::fs::file::with_records(|records| records.get(record).image)?;
             directory
                 .segment(id)
                 .map(|segment| (id, segment.image_base, segment.size))
@@ -736,9 +706,11 @@ mod target {
                     })?;
                     let held = directory.reference(file_object);
                     debug_assert!(held, "the handle's file object lives");
-                    let record = crate::fs::file::records().get_mut(record);
-                    record.user_mapped += 1;
-                    record.image = Some(id);
+                    crate::fs::file::with_records(|records| {
+                        let record = records.get_mut(record);
+                        record.user_mapped += 1;
+                        record.image = Some(id);
+                    });
                     id
                 }
             };
@@ -935,7 +907,7 @@ mod target {
                 .file_object
                 .and_then(|file_object| directory.file(file_object).map(|object| object.record))
             {
-                Some(record) => crate::fs::file::records().get(record).file,
+                Some(record) => crate::fs::io::file_at(record),
                 None => section.file,
             }
         };
@@ -1030,22 +1002,26 @@ mod target {
                 .expect("the caller holds the segment")
                 .file_object;
             let record = directory.file(file_object).expect("held").record;
-            crate::fs::file::records().get(record).file
+            crate::fs::io::file_at(record)
         };
         let mut buffer = [0u8; PAGE as usize];
         let headers = (file.size as usize).min(IMAGE_HEADERS);
         if crate::fs::io::read_file_at(&file, 0, &mut buffer[..headers]).is_none() {
             return Err(STATUS_IO_DEVICE_ERROR);
         }
-        let image = crate::exec::pe::Image::parse_headers(&buffer[..headers], file.size as usize)
-            .map_err(|_| STATUS_INVALID_IMAGE_FORMAT)?;
+        // The image is a view of its header page, which stays as read while `buffer` builds the
+        // pages.
+        let header_page = buffer;
+        let image =
+            crate::exec::pe::Image::parse_headers(&header_page[..headers], file.size as usize)
+                .map_err(|_| STATUS_INVALID_IMAGE_FORMAT)?;
         let segment_record = directory
             .segment(segment)
             .expect("the caller holds the segment");
         let base = space
             .reserve(
-                Some(image.image_base),
-                image.size_of_image,
+                Some(image.image_base()),
+                image.size_of_image(),
                 PAGE_EXECUTE_WRITECOPY,
                 Kind::Image,
             )
@@ -1054,7 +1030,7 @@ mod target {
                 | crate::mem::vm::VmError::InvalidParameter => STATUS_CONFLICTING_ADDRESSES,
                 crate::mem::vm::VmError::NoMemory => STATUS_NO_MEMORY,
             })?;
-        for page in 0..image.size_of_image.div_ceil(PAGE) {
+        for page in 0..image.size_of_image().div_ceil(PAGE) {
             let rva = page * PAGE;
             let made = segment_record.frames.made(table, page);
             // A page not yet made is built first: a read that fails maps nothing.
@@ -1087,8 +1063,8 @@ mod target {
         debug_assert!(held, "a segment being mapped lives");
         Ok(ImageView {
             base,
-            subsystem: image.subsystem,
-            subsystem_version: image.subsystem_version,
+            subsystem: image.subsystem(),
+            subsystem_version: image.subsystem_version(),
         })
     }
 
@@ -1143,44 +1119,49 @@ mod target {
         length: u32,
         result_length: UserPtr<u32>,
     ) -> NtResult {
-        let size = query_size(class, length)?;
+        let (class, size) = query_size(class, length)?;
         information.probe(size)?;
         result_length.addr().probe(4)?;
         let (object, access) = section_of(section.raw())?;
         query_access(access)?;
         let record = *object.section();
-        if class == SECTION_BASIC_INFORMATION {
-            let kind = if record.segment.is_some() {
-                SectionKind::Image
-            } else if record.file_object.is_some() {
-                SectionKind::File
-            } else {
-                SectionKind::PagingFile {
-                    reserve: record.reserve,
-                }
-            };
-            information.write(&SectionBasicInformation::of(kind, record.size).to_bytes())?;
-        } else {
-            let segment = record.segment.ok_or(STATUS_SECTION_NOT_IMAGE)?;
-            let directory = ob::directory();
-            let file_object = directory
-                .segment(segment)
-                .expect("an image section holds its segment")
-                .file_object;
-            let file_record = directory
-                .file(file_object)
-                .expect("an image segment holds its file object")
-                .record;
-            let file = crate::fs::file::records().get(file_record).file;
-            let info = crate::process::threads::critical_region(|| {
-                let mut headers = [0u8; IMAGE_HEADERS];
-                let headers = &mut headers[..IMAGE_HEADERS.min(file.size as usize)];
-                if crate::fs::io::read_file_at(&file, 0, headers).is_none() {
-                    return Err(STATUS_IO_DEVICE_ERROR);
-                }
-                image_information(headers, file.size)
-            })?;
-            information.write(&info.to_bytes())?;
+        match class {
+            SectionClass::Basic => {
+                let kind = if record.segment.is_some() {
+                    SectionKind::Image
+                } else if record.file_object.is_some() {
+                    SectionKind::File
+                } else {
+                    SectionKind::PagingFile {
+                        reserve: record.reserve,
+                    }
+                };
+                information
+                    .cast()
+                    .write(SectionBasicInformation::of(kind, record.size))?;
+            }
+            SectionClass::Image => {
+                let segment = record.segment.ok_or(STATUS_SECTION_NOT_IMAGE)?;
+                let directory = ob::directory();
+                let file_object = directory
+                    .segment(segment)
+                    .expect("an image section holds its segment")
+                    .file_object;
+                let file_record = directory
+                    .file(file_object)
+                    .expect("an image segment holds its file object")
+                    .record;
+                let file = crate::fs::io::file_at(file_record);
+                let info = crate::process::threads::critical_region(|| {
+                    let mut headers = [0u8; IMAGE_HEADERS];
+                    let headers = &mut headers[..IMAGE_HEADERS.min(file.size as usize)];
+                    if crate::fs::io::read_file_at(&file, 0, headers).is_none() {
+                        return Err(STATUS_IO_DEVICE_ERROR);
+                    }
+                    image_information(headers, file.size)
+                })?;
+                information.cast().write(info)?;
+            }
         }
         result_length.write_optional(size)?;
         Ok(STATUS_SUCCESS)
@@ -1526,7 +1507,7 @@ mod tests {
         let image = crate::exec::pe::Image::parse(EXIT0).unwrap();
         let header = |at: usize| u32::from_le_bytes(EXIT0[at..at + 4].try_into().unwrap());
         let optional = header(0x3C) as usize + 24;
-        assert_eq!(info.transfer_address, 0x0040_0000 + image.entry_rva);
+        assert_eq!(info.transfer_address, 0x0040_0000 + image.entry_rva());
         assert_eq!(
             (info.maximum_stack_size, info.committed_stack_size),
             (header(optional + 72), header(optional + 76))
@@ -1534,16 +1515,16 @@ mod tests {
         assert_eq!(info.subsystem_type, 3, "a console image");
         assert_eq!(
             (info.subsystem_major_version, info.subsystem_minor_version),
-            image.subsystem_version
+            image.subsystem_version()
         );
         assert_eq!(info.machine, 0x14C);
-        assert_eq!(info.image_characteristics, image.characteristics);
+        assert_eq!(info.image_characteristics, image.characteristics());
         assert_eq!(info.image_contains_code, 1);
         assert_eq!(
             (info.zero_bits, info.gp_value, info.reserved),
             (0, 0, [0, 0])
         );
-        let bytes = info.to_bytes();
+        let bytes = info.as_bytes();
         assert_eq!(bytes.len(), 0x30);
         assert_eq!(&bytes[0..4], &info.transfer_address.to_le_bytes());
         assert_eq!(
@@ -1584,7 +1565,7 @@ mod tests {
         assert_eq!(commit.allocation_attributes, 0x0800_0000);
         let reserve = SectionBasicInformation::of(SectionKind::PagingFile { reserve: true }, 1);
         assert_eq!(reserve.allocation_attributes, 0x0400_0000);
-        let bytes = image.to_bytes();
+        let bytes = image.as_bytes();
         assert_eq!(&bytes[..4], &0u32.to_le_bytes());
         assert_eq!(&bytes[4..8], &(SEC_IMAGE | SEC_FILE).to_le_bytes());
         assert_eq!(&bytes[8..16], &0x3000u64.to_le_bytes());
@@ -1594,13 +1575,10 @@ mod tests {
     /// that maps to it.
     #[test]
     fn the_query_rules() {
-        assert_eq!(query_size(SECTION_BASIC_INFORMATION, 16), Ok(16));
-        assert_eq!(query_size(SECTION_IMAGE_INFORMATION, 0x30), Ok(0x30));
-        assert_eq!(query_size(SECTION_IMAGE_INFORMATION, 0x40), Ok(0x30));
-        assert_eq!(
-            query_size(SECTION_IMAGE_INFORMATION, 0x2C),
-            Err(STATUS_INFO_LENGTH_MISMATCH)
-        );
+        assert_eq!(query_size(0, 16), Ok((SectionClass::Basic, 16)));
+        assert_eq!(query_size(1, 0x30), Ok((SectionClass::Image, 0x30)));
+        assert_eq!(query_size(1, 0x40), Ok((SectionClass::Image, 0x30)));
+        assert_eq!(query_size(1, 0x2C), Err(STATUS_INFO_LENGTH_MISMATCH));
         assert_eq!(query_size(2, 0x100), Err(STATUS_INVALID_INFO_CLASS));
         assert_eq!(query_access(SECTION_QUERY), Ok(()));
         assert_eq!(query_access(GENERIC_READ), Ok(()));

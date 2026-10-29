@@ -8,7 +8,7 @@
 use super::super::call::{Handle, NtCall, NtResult, UserAddr, UserPtr};
 use super::common::{check_access, complete, completion_event, file_object, signal};
 use crate::fs::fat32::write;
-use crate::fs::file::{records, rights, FileObject};
+use crate::fs::file::{rights, FileObject};
 use crate::fs::io;
 use crate::status::*;
 use crate::user::syscall::{read_user, write_user};
@@ -108,7 +108,7 @@ fn read_file_held(
         if length == 0 {
             return Ok(0);
         }
-        let size = records().get(object.record).file.size;
+        let size = io::file_of(object).size;
         let wanted = crate::fs::file::available(start, size, length);
         if wanted == 0 {
             return Err(STATUS_END_OF_FILE);
@@ -189,8 +189,8 @@ fn write_file_held(
         let record = object.record;
         let append = object.granted & rights::FILE_WRITE_DATA == 0;
         let start = match at {
-            Some(FILE_WRITE_TO_END_OF_FILE) => records().get(record).file.size as u64,
-            _ if append => records().get(record).file.size as u64,
+            Some(FILE_WRITE_TO_END_OF_FILE) => io::file_at(record).size as u64,
+            _ if append => io::file_at(record).size as u64,
             Some(at) => at,
             None => object.position,
         };
@@ -211,12 +211,12 @@ fn write_file_held(
             }
             let position = start as u32 + done;
             let written = io::with_volume(|volume| {
-                let mut file = records().get(record).file;
+                let mut file = io::file_at(record);
                 let stamp = io::now();
                 file.times.write_date = stamp.write_date;
                 file.times.write_time = stamp.write_time;
                 write::write_at(volume, &mut file, position, &chunk[..take])?;
-                records().get_mut(record).file = file;
+                io::store_file(record, file);
                 Ok(())
             });
             if let Err(error) = written {

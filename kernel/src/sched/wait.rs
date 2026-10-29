@@ -38,6 +38,7 @@ use super::mutex::MutexId;
 use super::thread::{Thread, ThreadId, ThreadState};
 use super::timer::{TimerId, TimerList};
 use super::{REALTIME_BASE, TIME_CRITICAL_CEILING};
+use crate::level::{At, Dispatch};
 use crate::status::{NtStatus, STATUS_KERNEL_APC, STATUS_SUCCESS, STATUS_TIMEOUT};
 
 /// The low three bits of a waitable kind: the selector that decides whether a satisfied wait
@@ -673,7 +674,8 @@ impl Dispatcher {
             if self.next_thread().is_some() {
                 let record = self.thread_mut(thread);
                 record.preempted = false;
-                record.quantum = record.thread_quantum();
+                let thread_quantum = record.thread_quantum();
+                record.set_quantum(thread_quantum);
                 self.make_ready(thread);
                 return WaitDisposition::Yield;
             }
@@ -885,55 +887,6 @@ impl Dispatcher {
         Ok(())
     }
 
-    /// The block path's switch away, and back. The calling thread has just parked on a wait:
-    /// capture its level ledger, select the next thread, and swap away — the caller's frames stay
-    /// on its own kernel stack, and the switch resumes them when a wake re-selects the thread. The
-    /// resume side restores the (now woken) thread's ledger and pays the raise this site made; the
-    /// wake's completion status is the thread's wait-status field.
-    #[cfg(target_arch = "x86")]
-    pub fn park_and_switch(&mut self) {
-        let pcr = crate::pcr::pcr();
-        let previous = pcr.raise(crate::interrupt::irql::DISPATCH);
-        let old = self.current().expect("a parked thread is the running one");
-        self.thread_mut(old).level = pcr.capture();
-        let selected = self
-            .select_next()
-            .expect("selection always yields the idle fallback");
-        self.enter(selected);
-        let (from, to) = (self.thread_address(old), self.thread_address(selected));
-        // SAFETY: both records are the database's, pinned; the selected thread's frame is planted
-        // (fresh) or saved (resumed) — the selection discipline guarantees it — and the dispatch
-        // level masks the dispatcher context.
-        unsafe { super::switch::swap_context(from, to) };
-        // The parked thread's timeline resumes here. The current thread is re-read from the
-        // dispatcher static, not through `self`: other threads ran and rewrote the dispatcher in
-        // between, so a value held through this `&mut` (which the optimizer may forward from the
-        // `enter` above) would name the thread switched to, not the one resumed.
-        let dispatcher = crate::sched::idle::dispatcher();
-        let current = dispatcher
-            .current()
-            .expect("a resumed thread is the running one");
-        pcr.restore(dispatcher.thread(current).level);
-        pcr.lower(previous);
-        // The wait-exit delivery: a kernel APC queued while this thread was parked — or armed by
-        // the delivery that broke the wait — runs now, before the parked caller reads its wait
-        // status. This is where a thread woken mid-wait runs the APC that woke it. The status the
-        // wake left is the caller's: a delivered routine's own wait (the suspend APC parks) must
-        // not overwrite it.
-        crate::sched::idle::dispatcher().preserving_wait_status(|d| d.deliver_pending_apcs());
-    }
-
-    /// Run `deliver` on the running thread's timeline with its wait status preserved: whatever
-    /// waits the delivery itself performs, the thread's status afterwards is the one its last wake
-    /// left — the completion its parked caller is about to read.
-    pub(crate) fn preserving_wait_status(&mut self, deliver: impl FnOnce(&mut Dispatcher)) {
-        let thread = self.current().expect("a delivery runs on a thread");
-        let status = self.thread(thread).wait_status;
-        deliver(self);
-        // The same thread, by its id: other threads may have run inside the delivery.
-        self.thread_mut(thread).wait_status = status;
-    }
-
     /// The no-wait quantum adjustment: the tail of a wait that was satisfied without blocking. A
     /// variable thread below the time-critical base is charged one unit for the wait; at exhaustion
     /// the quantum resets and the priority decays one step, and when the decay left the priority
@@ -1038,9 +991,14 @@ pub fn wait_current_for(
     timeout: Option<i64>,
 ) -> crate::status::NtStatus {
     wait_current_with(|dispatcher, thread, stamp, replay| {
-        let timeout = replay_timeout(thread, replay, timeout, stamp.interrupt_time);
+        let timeout = replay_timeout(
+            dispatcher.thread(thread),
+            replay,
+            timeout,
+            stamp.interrupt_time,
+        );
         dispatcher.wait_for(
-            thread.id(),
+            thread,
             object,
             reason,
             WaitMode::Kernel,
@@ -1091,32 +1049,44 @@ pub(crate) fn replay_timeout(
 
 /// The blocking core every wait shares: run `start` — it either satisfies the wait at once or parks
 /// the thread — and after a park, read the wake's status, replaying the wait when a kernel APC
-/// broke it. The APC delivery itself has already run by the time the park returns (the resume tail
-/// delivers), so the replay re-enters `start` with the delivery's work done. Returns the wait's
-/// completion status.
+/// broke it. Returns the wait's completion status.
 ///
-/// `start` is handed the running thread's record beside the dispatcher, for the wait entries'
-/// callers outside the scheduler, which name the thread by its record; the entries themselves take
-/// it by its id at once.
+/// Each attempt is one window at the dispatch level, as Windows 2000's waits hold the dispatcher
+/// from the test to the switch: the clock's reading (`stamp_of`) and `start` run with interrupts
+/// masked, so no tick moves the clock under the start's due-time verdict (see
+/// [`Dispatcher::insert_timer`]); then `park` switches away, in the same window, so nothing wakes
+/// the thread between its park and its switch. No borrow lives across the switch: other threads
+/// change the dispatcher before it returns, so the status is read afresh. `resumed` runs once the
+/// window has lowered back to the wait's level, on the resumed thread: the wait-exit APC delivery,
+/// before the replay test, so a replay re-enters `start` with the delivery's work done.
 pub(crate) fn wait_with_replay(
-    dispatcher: &mut Dispatcher,
-    mut stamp_of: impl FnMut() -> ClockStamp,
-    mut start: impl FnMut(&mut Dispatcher, &mut Thread, ClockStamp, bool) -> WaitDisposition,
-    mut park: impl FnMut(&mut Dispatcher),
+    mut stamp_of: impl FnMut(&mut At<Dispatch>) -> ClockStamp,
+    mut start: impl FnMut(&mut Dispatcher, ThreadId, ClockStamp, bool) -> WaitDisposition,
+    mut park: impl FnMut(&mut At<Dispatch>),
+    mut resumed: impl FnMut(),
 ) -> crate::status::NtStatus {
+    let thread = super::current_thread();
     let mut replay = false;
     loop {
-        let current = dispatcher.current_thread();
-        // SAFETY: the running thread's record, a pinned record of the database. The reference is
-        // handed beside the dispatcher that holds it: the entries `start` calls read only its id
-        // and its timer's due time before they work through the dispatcher.
-        match start(dispatcher, unsafe { &mut *current }, stamp_of(), replay) {
+        let disposition = crate::level::raised::<Dispatch, _>(|dispatch| {
+            let disposition = {
+                let _masked = crate::pcr::pcr().mask_guard();
+                let stamp = stamp_of(dispatch);
+                start(super::DISPATCHER.get(dispatch), thread, stamp, replay)
+            };
+            if matches!(disposition, WaitDisposition::Yield) {
+                park(dispatch);
+            }
+            disposition
+        });
+        match disposition {
             WaitDisposition::Complete(status) => return status,
             WaitDisposition::Yield => {
-                park(dispatcher);
-                // Other threads ran inside the park: re-read the (now resumed) current thread.
-                let current = dispatcher.current().expect("a wait resumes on its thread");
-                let status = dispatcher.thread(current).wait_status();
+                resumed();
+                // Other threads ran inside the park: read the (now resumed) thread's status.
+                let status = crate::level::raised::<Dispatch, _>(|dispatch| {
+                    super::DISPATCHER.get(dispatch).thread(thread).wait_status()
+                });
                 if status != STATUS_KERNEL_APC {
                     return status;
                 }
@@ -1130,35 +1100,77 @@ pub(crate) fn wait_with_replay(
 
 /// Block the running thread through `start`, the wait entry (it either satisfies the wait at once
 /// or parks the thread), and return the wait's status — replaying the wait whenever a kernel APC
-/// breaks it, with the deadline preserved. Interrupts are masked from the entry until the thread is
-/// parked — as in the syscall gate — so a signal cannot slip between them; the switch resumes here
-/// on the wake, and the interrupt flag is put back as the call found it. The idle thread cannot
-/// block, so calling this on it is a contract violation.
+/// breaks it, with the deadline preserved. `start` is handed the dispatcher and the running
+/// thread's id. Interrupts are masked from the entry on, as in the syscall gate, and the dispatch
+/// level holds every signal off from the start to the switch (see [`wait_with_replay`]); the switch
+/// resumes here on the wake, and the interrupt flag is put back as the call found it. The idle
+/// thread cannot block, so calling this on it is a contract violation.
 #[cfg(target_arch = "x86")]
 pub fn wait_current_with(
-    mut start: impl FnMut(&mut Dispatcher, &mut Thread, ClockStamp, bool) -> WaitDisposition,
+    mut start: impl FnMut(&mut Dispatcher, ThreadId, ClockStamp, bool) -> WaitDisposition,
 ) -> crate::status::NtStatus {
     assert!(
         !crate::sched::idle::on_idle_thread(),
         "the idle thread cannot block"
     );
-    let dispatcher = crate::sched::idle::dispatcher();
     let pcr = crate::pcr::pcr();
     let masked = pcr.mask_guard();
     // The level the wait is entered at — the APC break's gate. Every F2K wait enters at the
     // passive level; the field keeps the gate armed for any future raised-level wait.
     let wait_level = pcr.current();
     let status = wait_with_replay(
-        dispatcher,
-        crate::interrupt::clock::stamp,
+        |dispatch| {
+            crate::interrupt::clock::read_at(dispatch, crate::interrupt::clock::Clock::stamp)
+        },
         |dispatcher, thread, stamp, replay| {
-            thread.wait_irql = wait_level;
+            dispatcher.thread_mut(thread).wait_irql = wait_level;
             start(dispatcher, thread, stamp, replay)
         },
-        |dispatcher| dispatcher.park_and_switch(),
+        park_and_switch,
+        // The wait-exit delivery: a kernel APC queued while this thread was parked — or armed by
+        // the delivery that broke the wait — runs now, before the parked caller reads its wait
+        // status. This is where a thread woken mid-wait runs the APC that woke it. The status the
+        // wake left is the caller's: a delivered routine's own wait (the suspend APC parks) must
+        // not overwrite it.
+        || preserving_wait_status(super::apc::deliver_pending_apcs),
     );
     drop(masked);
     status
+}
+
+/// The block path's switch away, and back. The calling thread has just parked on a wait, in this
+/// same dispatch-level window: select the next thread and switch to it — the caller's frames stay
+/// on its own kernel stack, and the switch resumes them when a wake re-selects the thread. The
+/// wake's completion status is the thread's wait-status field.
+#[cfg(target_arch = "x86")]
+pub fn park_and_switch(dispatch: &mut At<Dispatch>) {
+    let dispatcher = super::DISPATCHER.get(dispatch);
+    let parked = dispatcher
+        .current()
+        .expect("a parked thread is the running one");
+    let selected = dispatcher
+        .select_next()
+        .expect("selection always yields the idle fallback");
+    super::switch::switch_to(dispatch, parked, selected);
+}
+
+/// Run `deliver` on the running thread's timeline with its wait status preserved: whatever waits
+/// the delivery itself performs, the thread's status afterwards is the one its last wake left — the
+/// completion its parked caller is about to read. `deliver` runs below the dispatch level, with no
+/// dispatcher borrow live.
+pub(crate) fn preserving_wait_status(deliver: impl FnOnce()) {
+    let thread = super::current_thread();
+    let status = crate::level::raised::<Dispatch, _>(|dispatch| {
+        super::DISPATCHER.get(dispatch).thread(thread).wait_status
+    });
+    deliver();
+    // The same thread, by its id: other threads may have run inside the delivery.
+    crate::level::raised::<Dispatch, _>(|dispatch| {
+        super::DISPATCHER
+            .get(dispatch)
+            .thread_mut(thread)
+            .wait_status = status
+    });
 }
 
 // --- The timeout machinery -------------------------------------------------
@@ -1569,7 +1581,7 @@ mod tests {
         let mut t = thread(p);
         run(d, t);
         t.priority = 11;
-        t.quantum = 1;
+        t.set_quantum(1);
         let signaled = event(EventKind::Notification, true);
         assert_eq!(
             d.wait_single(
@@ -1595,7 +1607,7 @@ mod tests {
         let mut t2 = thread(p);
         run(d, t2);
         t2.priority = 11;
-        t2.quantum = 2;
+        t2.set_quantum(2);
         assert_eq!(
             d.wait_single(
                 t2,
@@ -1615,7 +1627,7 @@ mod tests {
         let mut t3 = thread(p);
         run(d, t3);
         t3.priority = 24;
-        t3.quantum = 3;
+        t3.set_quantum(3);
         assert_eq!(
             d.wait_single(
                 t3,
@@ -1636,7 +1648,7 @@ mod tests {
         let d2 = dispatcher();
         let mut t4 = thread(p);
         run(d2, t4);
-        t4.quantum = 1;
+        t4.set_quantum(1);
         let other = thread(p);
         d2.make_ready(other);
         assert_eq!(
@@ -1664,7 +1676,7 @@ mod tests {
         let d3 = dispatcher();
         let mut t5 = thread(p);
         run(d3, t5);
-        t5.quantum = 1;
+        t5.set_quantum(1);
         let mut pending = thread(p);
         pending.priority = 9;
         d3.make_ready(pending);
@@ -1709,7 +1721,7 @@ mod tests {
         block_on(d, t2, ev.waitable(), None);
         block_on(d, t3, ev.waitable(), None);
 
-        assert_eq!(ev.set(d, EVENT_WAKE_INCREMENT), 0);
+        assert_eq!(d.set_event(ev.id(), EVENT_WAKE_INCREMENT), 0);
         assert_eq!(
             ev.signal_state(),
             1,
@@ -1742,21 +1754,21 @@ mod tests {
         block_on(d, t2, ev.waitable(), None);
         block_on(d, t3, ev.waitable(), None);
 
-        ev.set(d, EVENT_WAKE_INCREMENT);
+        d.set_event(ev.id(), EVENT_WAKE_INCREMENT);
         assert_eq!(t1.state(), ThreadState::Ready);
         assert_eq!(t2.state(), ThreadState::Waiting);
         assert_eq!(t3.state(), ThreadState::Waiting);
         assert_eq!(ev.signal_state(), 0);
         assert_eq!(waiters(ev), vec![t2.id(), t3.id()]);
 
-        ev.set(d, EVENT_WAKE_INCREMENT);
+        d.set_event(ev.id(), EVENT_WAKE_INCREMENT);
         assert_eq!(t2.state(), ThreadState::Ready);
-        ev.set(d, EVENT_WAKE_INCREMENT);
+        d.set_event(ev.id(), EVENT_WAKE_INCREMENT);
         assert_eq!(t3.state(), ThreadState::Ready);
         assert!(waiters(ev).is_empty());
 
         // With nobody left, the signal parks again.
-        ev.set(d, EVENT_WAKE_INCREMENT);
+        d.set_event(ev.id(), EVENT_WAKE_INCREMENT);
         assert_eq!(ev.signal_state(), 1);
     }
 
@@ -1771,7 +1783,7 @@ mod tests {
         let ev = event(EventKind::Synchronization, false);
 
         block_on(d, t, ev.waitable(), None);
-        assert_eq!(ev.set(d, EVENT_WAKE_INCREMENT), 0);
+        assert_eq!(d.set_event(ev.id(), EVENT_WAKE_INCREMENT), 0);
         assert_eq!(
             ev.signal_state(),
             0,
@@ -1808,7 +1820,7 @@ mod tests {
         list::push_back(d, Waiters(b.waitable.id()), second);
         assert_eq!(d.audit_waits(), Ok(()));
 
-        a.set(d, EVENT_WAKE_INCREMENT);
+        d.set_event(a.id(), EVENT_WAKE_INCREMENT);
         assert_eq!(
             a.signal_state(),
             1,
@@ -2036,7 +2048,7 @@ mod tests {
         assert_eq!(unsafe { (*p).stack_count() }, 3, "still attached");
 
         // Its wait completes as any other wait does.
-        ev.set(d, EVENT_WAKE_INCREMENT);
+        d.set_event(ev.id(), EVENT_WAKE_INCREMENT);
         assert!(matches!(
             inside.state(),
             ThreadState::Ready | ThreadState::Standby
@@ -2140,7 +2152,7 @@ mod tests {
         let ev = event(EventKind::Notification, false);
 
         block_on(d, t, ev.waitable(), Some(1_000_000));
-        ev.set(d, EVENT_WAKE_INCREMENT);
+        d.set_event(ev.id(), EVENT_WAKE_INCREMENT);
         assert_eq!(t.wait_status(), STATUS_SUCCESS);
         assert!(!t.timer.inserted());
 
@@ -2167,7 +2179,7 @@ mod tests {
         d.expire_timer(t.timer.id());
         assert_eq!(t.wait_status(), STATUS_TIMEOUT);
 
-        assert_eq!(ev.set(d, EVENT_WAKE_INCREMENT), 0);
+        assert_eq!(d.set_event(ev.id(), EVENT_WAKE_INCREMENT), 0);
         assert_eq!(ev.signal_state(), 1, "the late set only writes the signal");
         assert_eq!(t.wait_status(), STATUS_TIMEOUT);
         assert_eq!(t.state(), ThreadState::Ready);
@@ -2234,7 +2246,7 @@ mod tests {
         let mut t2 = thread(p2);
         run(d2, t2);
         t2.priority = 11;
-        t2.quantum = 2;
+        t2.set_quantum(2);
         let other = thread(p2);
         d2.make_ready(other);
 
@@ -2316,7 +2328,7 @@ mod tests {
         block_on(d, t3, ev_b.waitable(), None);
         assert_eq!(d.audit_waits(), Ok(()), "mid-flight");
 
-        ev_a.set(d, EVENT_WAKE_INCREMENT);
+        d.set_event(ev_a.id(), EVENT_WAKE_INCREMENT);
         assert_eq!(d.audit_waits(), Ok(()), "after the wake");
 
         // The negative: a thread on the waiting list that is not waiting is an audit failure.
@@ -2351,7 +2363,7 @@ mod tests {
         let p = process(8);
         let mut rt = thread(p);
         rt.priority = 16;
-        rt.quantum = 2;
+        rt.set_quantum(2);
         block_on(
             d,
             rt,
@@ -2364,7 +2376,7 @@ mod tests {
 
         let mut gated = thread(p);
         gated.disable_boost = true;
-        gated.quantum = 6;
+        gated.set_quantum(6);
         block_on(
             d,
             gated,
@@ -2377,7 +2389,7 @@ mod tests {
 
         let mut indebted = thread(p);
         indebted.priority_decrement = 2;
-        indebted.quantum = 6;
+        indebted.set_quantum(6);
         block_on(
             d,
             indebted,
@@ -2417,14 +2429,14 @@ mod tests {
         let mut step = 0;
         let mut parks = 0;
         let status = wait_with_replay(
-            d,
-            || {
+            |_| {
                 let s = stamps[step];
                 step += 1;
                 s
             },
             |d, t, stamp, replay| {
-                let timeout = replay_timeout(t, replay, Some(1_000), stamp.interrupt_time);
+                let timeout =
+                    replay_timeout(d.thread(t), replay, Some(1_000), stamp.interrupt_time);
                 d.wait_single(
                     t,
                     ev.waitable(),
@@ -2435,23 +2447,23 @@ mod tests {
                     stamp,
                 )
             },
-            |d| {
+            |dispatch| {
+                let d = crate::sched::DISPATCHER.get(dispatch);
                 parks += 1;
                 // The hand-driven wake: the first park breaks for a kernel APC; the second is the
                 // timer's expiry (the model of whatever would wake the thread).
-                let current = d.current_thread();
-                // SAFETY: the parked thread, live.
-                let current = unsafe { &mut *current };
+                let current = d.current().expect("the parked thread");
                 if parks == 1 {
                     d.unwait(current, STATUS_KERNEL_APC, 0);
                 } else {
-                    d.expire_timer(current.timer.id());
+                    d.expire_timer(d.thread(current).timer.id());
                 }
                 // The dispatcher re-runs the woken thread (the host driver of the switch).
                 let selected = d.select_next().expect("a thread is selected");
                 d.enter(selected);
                 d.thread_mut(selected).state = ThreadState::Running;
             },
+            || {},
         );
         assert_eq!(parks, 2, "the wait parked, replayed, and completed");
         assert_eq!(status, STATUS_TIMEOUT);
@@ -2478,11 +2490,11 @@ mod tests {
             run(d, t);
 
             let inner = event(EventKind::Notification, true);
-            d.preserving_wait_status(|d| {
-                // SAFETY: the running thread, live.
-                let t = unsafe { &mut *d.current_thread() };
+            preserving_wait_status(|| {
+                let d = crate::sched::testkit::installed();
+                let t = d.current().expect("the running thread");
                 let nested = d.wait_single(
-                    &mut *t,
+                    t,
                     inner.waitable(),
                     WaitReason::Suspension,
                     WaitMode::Kernel,
@@ -2492,7 +2504,7 @@ mod tests {
                 );
                 assert_eq!(nested, complete(STATUS_SUCCESS));
                 assert_eq!(
-                    t.wait_status(),
+                    d.thread(t).wait_status(),
                     STATUS_SUCCESS,
                     "the nested wait reset the field"
                 );
@@ -2517,14 +2529,14 @@ mod tests {
         let mut step = 0;
         let mut parks = 0;
         let status = wait_with_replay(
-            d,
-            || {
+            |_| {
                 let s = stamps[step];
                 step += 1;
                 s
             },
             |d, t, stamp, replay| {
-                let timeout = replay_timeout(t, replay, Some(1_000), stamp.interrupt_time);
+                let timeout =
+                    replay_timeout(d.thread(t), replay, Some(1_000), stamp.interrupt_time);
                 d.wait_single(
                     t,
                     ev.waitable(),
@@ -2535,22 +2547,24 @@ mod tests {
                     stamp,
                 )
             },
-            |d| {
+            |dispatch| {
+                let d = crate::sched::DISPATCHER.get(dispatch);
                 parks += 1;
-                // SAFETY: the parked thread, live.
-                let current = unsafe { &mut *d.current_thread() };
+                let current = d.current().expect("the parked thread");
                 if parks == 1 {
                     d.unwait(current, STATUS_KERNEL_APC, 0);
                 } else {
-                    d.expire_timer(current.timer.id());
+                    d.expire_timer(d.thread(current).timer.id());
                 }
                 let selected = d.select_next().expect("a thread is selected");
                 d.enter(selected);
                 d.thread_mut(selected).state = ThreadState::Running;
-                // The park's resume tail: the delivered routine waits on its own object.
-                d.preserving_wait_status(|d| {
-                    // SAFETY: the running thread, live.
-                    let t = unsafe { &mut *d.current_thread() };
+            },
+            // The park's resume tail: the delivered routine waits on its own object.
+            || {
+                preserving_wait_status(|| {
+                    let d = crate::sched::testkit::installed();
+                    let t = d.current().expect("the running thread");
                     let _ = d.wait_single(
                         t,
                         inner.waitable(),
@@ -2579,10 +2593,10 @@ mod tests {
         let waitable = ev.waitable();
 
         let status = wait_with_replay(
-            d,
-            || stamp(10_000, 5),
+            |_| stamp(10_000, 5),
             |d, t, stamp, replay| {
-                let timeout = replay_timeout(t, replay, Some(1_000), stamp.interrupt_time);
+                let timeout =
+                    replay_timeout(d.thread(t), replay, Some(1_000), stamp.interrupt_time);
                 d.wait_single(
                     t,
                     waitable,
@@ -2593,19 +2607,19 @@ mod tests {
                     stamp,
                 )
             },
-            |d| {
+            |dispatch| {
+                let d = crate::sched::DISPATCHER.get(dispatch);
                 // The park breaks for a kernel APC, and the event signals before the replay.
-                let current = d.current_thread();
-                // SAFETY: the parked thread, live.
-                let current = unsafe { &mut *current };
+                let current = d.current().expect("the parked thread");
                 d.unwait(current, STATUS_KERNEL_APC, 0);
                 // The signal raced the delivery: set it, so the replay's satisfaction test finds
                 // it and the wait completes at once.
-                ev.set(d, EVENT_WAKE_INCREMENT);
+                d.set_event(ev.id(), EVENT_WAKE_INCREMENT);
                 let selected = d.select_next().expect("a thread is selected");
                 d.enter(selected);
                 d.thread_mut(selected).state = ThreadState::Running;
             },
+            || {},
         );
         assert_eq!(status, STATUS_SUCCESS, "the replay found the signal");
         assert_eq!(ev.waitable.signal_state(), 0, "the take consumed it");
@@ -2626,14 +2640,14 @@ mod tests {
         let mut step = 0;
         let mut parks = 0;
         let status = wait_with_replay(
-            d,
-            || {
+            |_| {
                 let s = stamps[step];
                 step += 1;
                 s
             },
             |d, t, stamp, replay| {
-                let timeout = replay_timeout(t, replay, Some(1_000), stamp.interrupt_time);
+                let timeout =
+                    replay_timeout(d.thread(t), replay, Some(1_000), stamp.interrupt_time);
                 d.wait_single(
                     t,
                     ev.waitable(),
@@ -2644,16 +2658,16 @@ mod tests {
                     stamp,
                 )
             },
-            |d| {
+            |dispatch| {
+                let d = crate::sched::DISPATCHER.get(dispatch);
                 parks += 1;
-                let current = d.current_thread();
-                // SAFETY: the parked thread, live.
-                let current = unsafe { &mut *current };
+                let current = d.current().expect("the parked thread");
                 d.unwait(current, STATUS_KERNEL_APC, 0);
                 let selected = d.select_next().expect("a thread is selected");
                 d.enter(selected);
                 d.thread_mut(selected).state = ThreadState::Running;
             },
+            || {},
         );
         assert_eq!(parks, 1, "the replay never parked");
         assert_eq!(status, STATUS_TIMEOUT);
@@ -2672,34 +2686,33 @@ mod tests {
         let mut step = 0;
         let mut parks = 0;
         let status = wait_with_replay(
-            d,
-            || {
+            |_| {
                 let s = stamps[step];
                 step += 1;
                 s
             },
             |d, t, stamp, replay| {
                 let interval = if replay {
-                    replay_interval(t.timer.due_time, stamp.interrupt_time)
+                    replay_interval(d.thread(t).timer.due_time, stamp.interrupt_time)
                 } else {
                     1_000
                 };
                 d.delay(t, WaitMode::User, false, interval, stamp)
             },
-            |d| {
+            |dispatch| {
+                let d = crate::sched::DISPATCHER.get(dispatch);
                 parks += 1;
-                let current = d.current_thread();
-                // SAFETY: the parked thread, live.
-                let current = unsafe { &mut *current };
+                let current = d.current().expect("the parked thread");
                 if parks == 1 {
                     d.unwait(current, STATUS_KERNEL_APC, 0);
                 } else {
-                    d.expire_timer(current.timer.id());
+                    d.expire_timer(d.thread(current).timer.id());
                 }
                 let selected = d.select_next().expect("a thread is selected");
                 d.enter(selected);
                 d.thread_mut(selected).state = ThreadState::Running;
             },
+            || {},
         );
         assert_eq!(parks, 2);
         assert_eq!(
@@ -2726,14 +2739,14 @@ mod tests {
         let mut step = 0;
         let mut parks = 0;
         let status = wait_with_replay(
-            d,
-            || {
+            |_| {
                 let s = stamps[step];
                 step += 1;
                 s
             },
             |d, t, stamp, replay| {
-                let timeout = replay_timeout(t, replay, Some(1_000), stamp.interrupt_time);
+                let timeout =
+                    replay_timeout(d.thread(t), replay, Some(1_000), stamp.interrupt_time);
                 d.wait_single(
                     t,
                     waitable,
@@ -2744,27 +2757,27 @@ mod tests {
                     stamp,
                 )
             },
-            |d| {
+            |dispatch| {
+                let d = crate::sched::DISPATCHER.get(dispatch);
                 parks += 1;
-                let current = d.current_thread();
-                // SAFETY: the parked thread, live.
-                let current = unsafe { &mut *current };
+                let current = d.current().expect("the parked thread");
                 if parks == 1 {
                     // The replay's park carries the same fields the first one planted.
-                    assert_eq!(current.wait_mode(), WaitMode::User);
-                    assert!(current.wait_alertable());
+                    assert_eq!(d.thread(current).wait_mode(), WaitMode::User);
+                    assert!(d.thread(current).wait_alertable());
                     d.unwait(current, STATUS_KERNEL_APC, 0);
                 } else {
                     // The second park (the replay's) is observed with its fields intact, then
                     // completed by the signal.
-                    assert_eq!(current.wait_mode(), WaitMode::User);
-                    assert!(current.wait_alertable());
-                    ev.set(d, EVENT_WAKE_INCREMENT);
+                    assert_eq!(d.thread(current).wait_mode(), WaitMode::User);
+                    assert!(d.thread(current).wait_alertable());
+                    d.set_event(ev.id(), EVENT_WAKE_INCREMENT);
                 }
                 let selected = d.select_next().expect("a thread is selected");
                 d.enter(selected);
                 d.thread_mut(selected).state = ThreadState::Running;
             },
+            || {},
         );
         assert_eq!(parks, 2, "one break, one replay, one completion");
         assert_eq!(status, STATUS_SUCCESS);

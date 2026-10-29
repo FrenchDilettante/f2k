@@ -55,12 +55,15 @@ pub fn times_at(filetime: u64) -> Times {
 
 #[cfg(target_arch = "x86")]
 mod target {
+    use core::ptr::NonNull;
+
     use super::*;
     use crate::fs::fat32::dir::is_empty;
     use crate::fs::fat32::volume::{with_boot_volume, Volume};
     use crate::fs::fat32::write;
-    use crate::fs::file::{records, FileObject, OpenError};
+    use crate::fs::file::{with_records, FileObject, FileRecordId, OpenError};
     use crate::ob::Referenced;
+    use crate::sched::wait::WaitableId;
     use crate::status::{
         NtStatus,
         STATUS_DELETE_PENDING,
@@ -107,17 +110,39 @@ mod target {
 
     /// The file an object opens, as its record holds it now.
     pub fn file_of(object: &FileObject) -> File {
-        records().get(object.record).file
+        file_at(object.record)
+    }
+
+    /// The open file `record`, as its record holds it now.
+    pub fn file_at(record: FileRecordId) -> File {
+        with_records(|records| records.get(record).file)
+    }
+
+    /// The open file `record` changed into `file` (a write, a resize, a change of its entry).
+    pub fn store_file(record: FileRecordId, file: File) {
+        with_records(|records| records.get_mut(record).file = file);
     }
 
     /// Run `body` holding the object's synchronous-I/O lock: one call at a time moves its position.
-    /// The call is a critical region: a termination requested meanwhile waits for it to finish,
-    /// holding nothing.
-    pub fn serialized<R>(object: &mut FileObject, body: impl FnOnce(&mut FileObject) -> R) -> R {
+    /// The lock is taken before the object is borrowed (another thread may hold the object under
+    /// the lock, blocked inside its own call), and the borrow ends before it is released. The call
+    /// is a critical region: a termination requested meanwhile waits for it to finish, holding
+    /// nothing.
+    pub fn serialized<R>(
+        object: &mut Referenced<FileObject>,
+        body: impl FnOnce(&mut FileObject) -> R,
+    ) -> R {
         crate::process::threads::critical_region(|| {
-            let lock = object.lock.waitable();
+            let record = object.as_ptr();
+            // SAFETY: `record` is the referenced object's pool record, live while `object` holds
+            // its reference. The projection computes the address of its lock's header, inside the
+            // record, and reads nothing: no reference to the object is formed while another thread
+            // may hold it under the lock.
+            let header = unsafe { core::ptr::addr_of_mut!((*record).lock.waitable) };
+            // The object's init named its embedded header by this address.
+            let lock = WaitableId::Embedded(NonNull::new(header).expect("a record is not null"));
             crate::sched::wait::wait_current_with(|dispatcher, thread, stamp, _replay| {
-                dispatcher.wait_single(
+                dispatcher.wait_for(
                     thread,
                     lock,
                     crate::sched::wait::WaitReason::Executive,
@@ -127,8 +152,14 @@ mod target {
                     stamp,
                 )
             });
+            // The lock is this call's: the object is borrowed from here to the release.
+            let object: &mut FileObject = object;
+            debug_assert_eq!(object.lock.waitable.id(), lock);
             let result = body(object);
-            object.lock.set(crate::sched::idle::dispatcher(), 0);
+            // The borrow has ended: the release reaches the lock's header by its name only.
+            crate::level::raised::<crate::level::Dispatch, _>(|dispatch| {
+                crate::sched::DISPATCHER.get(dispatch).set_event(lock, 0);
+            });
             result
         })
     }
@@ -153,13 +184,14 @@ mod target {
             return Err(STATUS_INSUFFICIENT_RESOURCES);
         }
         let access = crate::fs::file::rights::share_access(open.granted);
-        let record = records()
-            .open(file, access, open.share)
-            .map_err(open_status)?;
+        let record =
+            with_records(|records| records.open(file, access, open.share)).map_err(open_status)?;
         let Some(id) = crate::ob::directory().create_file(record, access, open.granted, open.share)
         else {
-            let _ = records().cleanup(record, access, open.share, false);
-            records().close(record);
+            with_records(|records| {
+                let _ = records.cleanup(record, access, open.share, false);
+                records.close(record);
+            });
             return Err(STATUS_TOO_MANY_OPENED_FILES);
         };
         let object = crate::ob::directory().file(id).expect("just made");
@@ -170,19 +202,19 @@ mod target {
             .ok_or(STATUS_INSUFFICIENT_RESOURCES)
     }
 
-    /// Whether the open file at `record` is mapped (a section holds it): it cannot be cut short nor
+    /// Whether the open file `record` is mapped (a section holds it): it cannot be cut short nor
     /// deleted.
-    pub fn mapped(record: u16) -> bool {
-        records().get(record).user_mapped > 0
+    pub fn mapped(record: FileRecordId) -> bool {
+        with_records(|records| records.get(record).user_mapped > 0)
     }
 
-    /// A file object's cleanup (its last handle closed): its directory search goes, its share
-    /// access leaves the record, and the last cleanup of a delete-pending file deletes it — a
-    /// directory only while empty, a file only while no mapping of it exists (the memory manager
-    /// keeps a mapped file).
-    pub fn cleanup(record: u16, access: u8, share: u8, delete_on_close: bool, search: u16) {
-        crate::fs::search::searches().close(search);
-        if let Some(file) = records().cleanup(record, access, share, delete_on_close) {
+    /// A file object's cleanup (its last handle closed): its share access leaves the record, and
+    /// the last cleanup of a delete-pending file deletes it — a directory only while empty, a file
+    /// only while no mapping of it exists (the memory manager keeps a mapped file).
+    pub fn cleanup(record: FileRecordId, access: u8, share: u8, delete_on_close: bool) {
+        let deleted =
+            with_records(|records| records.cleanup(record, access, share, delete_on_close));
+        if let Some(file) = deleted {
             if mapped(record) {
                 return;
             }
@@ -196,16 +228,16 @@ mod target {
     }
 
     /// A file object's close (its last reference went): its record's reference goes.
-    pub fn close(record: u16) {
-        records().close(record);
+    pub fn close(record: FileRecordId) {
+        with_records(|records| records.close(record));
     }
 
-    /// Read `out.len()` bytes of the open file at `record` from `offset`, the file as its record
-    /// holds it inside the volume's locked section (a write racing the read cannot leave it reading
-    /// a stale chain). STATUS_IO_DEVICE_ERROR when the read fails or comes up short.
-    pub fn read_record(record: u16, offset: u32, out: &mut [u8]) -> Result<(), NtStatus> {
+    /// Read `out.len()` bytes of the open file `record` from `offset`, the file as its record holds
+    /// it inside the volume's locked section (a write racing the read cannot leave it reading a
+    /// stale chain). STATUS_IO_DEVICE_ERROR when the read fails or comes up short.
+    pub fn read_record(record: FileRecordId, offset: u32, out: &mut [u8]) -> Result<(), NtStatus> {
         with_volume(|volume| {
-            let file = records().get(record).file;
+            let file = file_at(record);
             match crate::fs::fat32::read::read_at(volume, &file, offset, out) {
                 Ok(got) if got == out.len() => Ok(()),
                 Ok(_) => Err(STATUS_IO_DEVICE_ERROR),

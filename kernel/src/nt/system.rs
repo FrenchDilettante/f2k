@@ -4,34 +4,41 @@
 //! GetTimeZoneInformation and QueryPerformanceCounter/Frequency over the others, SetLocalTime over
 //! the last, as on Windows 2000.
 
+use rtl::nt::info::{
+    RtlTimeZoneInformation,
+    SystemBasicInformation,
+    SystemPerformanceInformation,
+    SystemProcessorInformation,
+};
+use rtl::pod::Pod;
+
 use super::call::{NtCall, NtResult, UserAddr, UserPtr};
 use crate::mem::vm::{GRANULARITY, PAGE, USER_HIGH, USER_LOW};
 use crate::status::*;
 
-/// SystemBasicInformation: the page size, the physical pages, the allocation granularity, the
-/// application range and the processors (SYSTEM_BASIC_INFORMATION, 44 bytes).
-const SYSTEM_BASIC_INFORMATION: u32 = 0;
-const SYSTEM_BASIC_INFORMATION_SIZE: u32 = 44;
-/// SystemProcessorInformation: the processor's architecture, level and revision
-/// (SYSTEM_PROCESSOR_INFORMATION, 12 bytes).
-const SYSTEM_PROCESSOR_INFORMATION: u32 = 1;
-const SYSTEM_PROCESSOR_INFORMATION_SIZE: u32 = 12;
-/// SystemPerformanceInformation: the memory manager's page counts among the system's counters
-/// (SYSTEM_PERFORMANCE_INFORMATION, 0x138 bytes).
-const SYSTEM_PERFORMANCE_INFORMATION: u32 = 2;
-const SYSTEM_PERFORMANCE_INFORMATION_SIZE: u32 = 0x138;
-/// SystemCurrentTimeZoneInformation: the RTL_TIME_ZONE_INFORMATION in effect.
-const SYSTEM_CURRENT_TIME_ZONE_INFORMATION: u32 = 44;
-/// sizeof(RTL_TIME_ZONE_INFORMATION) (TIME_ZONE_INFORMATION's layout).
-const TIME_ZONE_INFORMATION_SIZE: u32 = 172;
+info_class! {
+    /// The classes NtQuerySystemInformation answers (SYSTEM_INFORMATION_CLASS).
+    pub enum SystemClass {
+        /// SYSTEM_BASIC_INFORMATION: the page size, the physical pages, the allocation
+        /// granularity, the application range and the processors.
+        Basic = 0,
+        /// SYSTEM_PROCESSOR_INFORMATION: the processor's architecture, level and revision.
+        Processor = 1,
+        /// SYSTEM_PERFORMANCE_INFORMATION: the memory manager's page counts among the system's
+        /// counters.
+        Performance = 2,
+        /// The RTL_TIME_ZONE_INFORMATION in effect.
+        CurrentTimeZone = 44,
+    }
+}
 
 /// The clock's interval (KeMaximumIncrement), in 100 ns units: the basic information's timer
 /// resolution.
 const TIMER_RESOLUTION: u32 = crate::interrupt::clock::INTERVAL_100NS;
 
 /// The processor: an x86 (PROCESSOR_ARCHITECTURE_INTEL) of level 6, a P6, revision 0.
-const PROCESSOR_ARCHITECTURE_INTEL: u32 = 0;
-const PROCESSOR_LEVEL: u32 = 6;
+const PROCESSOR_ARCHITECTURE_INTEL: u16 = 0;
+const PROCESSOR_LEVEL: u16 = 6;
 
 /// The machine's memory, in pages: all of it and what is free.
 #[cfg(target_arch = "x86")]
@@ -44,99 +51,107 @@ fn memory_pages() -> (u32, u32) {
     (0, 0)
 }
 
-/// Dwords as the bytes of the structure they lay out (the rest zero).
-pub(super) fn layout<const N: usize>(words: &[u32]) -> [u8; N] {
-    let mut bytes = [0u8; N];
-    for (i, word) in words.iter().enumerate() {
-        bytes[i * 4..i * 4 + 4].copy_from_slice(&word.to_le_bytes());
-    }
-    bytes
-}
-
 /// SYSTEM_BASIC_INFORMATION for `pages` pages of memory: one processor, 4 KiB pages on the 64 KiB
 /// granularity, the application range 0x10000..=0x7FFEFFFF, the physical pages numbered from 1.
-pub fn basic_information(pages: u32) -> [u8; SYSTEM_BASIC_INFORMATION_SIZE as usize] {
-    layout(&[
-        0, // Reserved
-        TIMER_RESOLUTION,
-        PAGE,
-        pages,
-        1,                       // LowestPhysicalPageNumber
-        pages.saturating_sub(1), // HighestPhysicalPageNumber
-        GRANULARITY,
-        USER_LOW,
-        USER_HIGH - 1,
-        1, // ActiveProcessorsAffinityMask
-        1, // NumberOfProcessors (a CCHAR, padded)
-    ])
+pub fn basic_information(pages: u32) -> SystemBasicInformation {
+    SystemBasicInformation {
+        timer_resolution: TIMER_RESOLUTION,
+        page_size: PAGE,
+        number_of_physical_pages: pages,
+        lowest_physical_page_number: 1,
+        highest_physical_page_number: pages.saturating_sub(1),
+        allocation_granularity: GRANULARITY,
+        minimum_user_mode_address: USER_LOW,
+        maximum_user_mode_address: USER_HIGH - 1,
+        active_processors_affinity_mask: 1,
+        number_of_processors: 1,
+        ..Default::default()
+    }
 }
 
 /// SYSTEM_PROCESSOR_INFORMATION: the architecture, the level and the revision; no feature bits.
-pub fn processor_information() -> [u8; SYSTEM_PROCESSOR_INFORMATION_SIZE as usize] {
-    layout(&[PROCESSOR_ARCHITECTURE_INTEL | PROCESSOR_LEVEL << 16])
+pub fn processor_information() -> SystemProcessorInformation {
+    SystemProcessorInformation {
+        processor_architecture: PROCESSOR_ARCHITECTURE_INTEL,
+        processor_level: PROCESSOR_LEVEL,
+        ..Default::default()
+    }
 }
 
 /// SYSTEM_PERFORMANCE_INFORMATION for `pages` pages of memory, `available` of them free: the
 /// available, committed and peak pages and the commit limit (no paging file beyond memory itself:
 /// the limit is memory, and what is not available is committed, the peak not kept); the other
 /// counters zero.
-pub fn performance_information(
-    pages: u32,
-    available: u32,
-) -> [u8; SYSTEM_PERFORMANCE_INFORMATION_SIZE as usize] {
-    // AvailablePages at 0x2C, CommittedPages 0x30, CommitLimit 0x34, PeakCommitment 0x38: past the
-    // four LARGE_INTEGER counters and the three operation counts.
+pub fn performance_information(pages: u32, available: u32) -> SystemPerformanceInformation {
     let committed = pages - available;
-    let mut words = [0u32; SYSTEM_PERFORMANCE_INFORMATION_SIZE as usize / 4];
-    words[0x2C / 4..0x3C / 4].copy_from_slice(&[available, committed, pages, committed]);
-    layout(&words)
+    SystemPerformanceInformation {
+        available_pages: available,
+        committed_pages: committed,
+        commit_limit: pages,
+        peak_commitment: committed,
+        ..Pod::zeroed()
+    }
+}
+
+/// A query's answer: the class's structure.
+pub enum Answer {
+    Basic(SystemBasicInformation),
+    Processor(SystemProcessorInformation),
+    Performance(SystemPerformanceInformation),
+    TimeZone(RtlTimeZoneInformation),
+}
+
+impl Answer {
+    /// The structure's bytes, as the caller's buffer receives them.
+    pub fn bytes(&self) -> &[u8] {
+        match self {
+            Answer::Basic(info) => info.as_bytes(),
+            Answer::Processor(info) => info.as_bytes(),
+            Answer::Performance(info) => info.as_bytes(),
+            Answer::TimeZone(info) => info.as_bytes(),
+        }
+    }
 }
 
 /// What a query of `class` into a buffer of `length` bytes answers, for a machine of `pages` pages
-/// of memory, `available` of them free: the structure's bytes into `out`, their length, or the
-/// status that refuses it. The basic and processor information and the time zone (no zone
-/// configured: a zero bias, no names, no daylight-saving dates) take their structure's length
-/// exactly, the performance information at least its structure's, as Windows 2000 checks them.
-/// STATUS_INVALID_INFO_CLASS for the classes F2K does not answer.
+/// of memory, `available` of them free, or the status that refuses it. The basic and processor
+/// information and the time zone (no zone configured: a zero bias, no names, no daylight-saving
+/// dates) take their structure's length exactly, the performance information at least its
+/// structure's, as Windows 2000 checks them. STATUS_INVALID_INFO_CLASS for the classes F2K does not
+/// answer.
 pub fn system_information(
     class: u32,
     length: u32,
     (pages, available): (u32, u32),
-    out: &mut [u8; SYSTEM_PERFORMANCE_INFORMATION_SIZE as usize],
-) -> Result<usize, NtStatus> {
-    let exactly = |size: u32| {
+) -> Result<Answer, NtStatus> {
+    let length = length as usize;
+    let exactly = |size: usize| {
         if length == size {
-            Ok(size as usize)
+            Ok(())
         } else {
             Err(STATUS_INFO_LENGTH_MISMATCH)
         }
     };
-    let size = match class {
-        SYSTEM_BASIC_INFORMATION => {
-            let size = exactly(SYSTEM_BASIC_INFORMATION_SIZE)?;
-            out[..size].copy_from_slice(&basic_information(pages));
-            size
+    Ok(match SystemClass::try_from(class)? {
+        SystemClass::Basic => {
+            exactly(size_of::<SystemBasicInformation>())?;
+            Answer::Basic(basic_information(pages))
         }
-        SYSTEM_PROCESSOR_INFORMATION => {
-            let size = exactly(SYSTEM_PROCESSOR_INFORMATION_SIZE)?;
-            out[..size].copy_from_slice(&processor_information());
-            size
+        SystemClass::Processor => {
+            exactly(size_of::<SystemProcessorInformation>())?;
+            Answer::Processor(processor_information())
         }
-        SYSTEM_PERFORMANCE_INFORMATION => {
-            if length < SYSTEM_PERFORMANCE_INFORMATION_SIZE {
+        SystemClass::Performance => {
+            if length < size_of::<SystemPerformanceInformation>() {
                 return Err(STATUS_INFO_LENGTH_MISMATCH);
             }
-            *out = performance_information(pages, available);
-            out.len()
+            Answer::Performance(performance_information(pages, available))
         }
-        SYSTEM_CURRENT_TIME_ZONE_INFORMATION => {
-            let size = exactly(TIME_ZONE_INFORMATION_SIZE)?;
-            out[..size].fill(0);
-            size
+        SystemClass::CurrentTimeZone => {
+            exactly(size_of::<RtlTimeZoneInformation>())?;
+            Answer::TimeZone(RtlTimeZoneInformation::default())
         }
-        _ => return Err(STATUS_INVALID_INFO_CLASS),
-    };
-    Ok(size)
+    })
 }
 
 /// NtQuerySystemInformation: the basic, processor and performance information, and the current
@@ -148,10 +163,9 @@ pub fn query_system_information(
     length: u32,
     return_length: UserPtr<u32>,
 ) -> NtResult {
-    let mut out = [0u8; SYSTEM_PERFORMANCE_INFORMATION_SIZE as usize];
-    let size = system_information(class, length, memory_pages(), &mut out)?;
-    information.write(&out[..size])?;
-    return_length.write_optional(size as u32)?;
+    let answer = system_information(class, length, memory_pages())?;
+    information.write(answer.bytes())?;
+    return_length.write_optional(answer.bytes().len() as u32)?;
     Ok(STATUS_SUCCESS)
 }
 
@@ -205,9 +219,8 @@ mod tests {
     }
 
     fn query(class: u32, length: u32) -> Result<std::vec::Vec<u8>, NtStatus> {
-        let mut out = [0u8; SYSTEM_PERFORMANCE_INFORMATION_SIZE as usize];
-        let size = system_information(class, length, (0x4000, 0x1000), &mut out)?;
-        Ok(out[..size].to_vec())
+        let answer = system_information(class, length, (0x4000, 0x1000))?;
+        Ok(answer.bytes().to_vec())
     }
 
     /// The time zone: a zero structure of its exact length; another length is a mismatch, another

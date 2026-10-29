@@ -17,10 +17,19 @@
 //!   through LCMapStringW.
 //! - The "C" locale converts a byte to the wide character of the same value (and back, below
 //!   U+0100); another locale converts through its ANSI code page.
+//!
+//! The character functions read LC_CTYPE's tables without a lock, as Windows 2000's do through
+//! `_pctype` (an exported pointer to the classification table, which setlocale points at another):
+//! the tables are published whole through one pointer ([`CTYPE`]), and never changed or freed once
+//! published. setlocale makes a locale's tables once and keeps them, under the locale's lock, which
+//! also guards the categories' names and its answer.
 
-use crate::data::Global;
+use core::sync::atomic::{AtomicPtr, Ordering::Acquire, Ordering::Release};
+
+use rtl::sync::Locked;
+
 use crate::imports;
-use crate::thread::Locked;
+use crate::thread::Lock;
 
 /// setlocale's categories (locale.h).
 pub const LC_ALL: i32 = 0;
@@ -125,15 +134,58 @@ struct Resolved {
     name: Name,
 }
 
-/// The locale's state: each category's name, and LC_CTYPE's locale and tables.
-struct State {
-    names: [Name; LC_MAX + 1],
+/// LC_CTYPE's tables: its locale (its LCID, 0 for "C", and its ANSI code page), and the classes
+/// and case mappings of the 256 narrow characters in it. Once published they never change.
+struct Tables {
     lcid: u32,
     page: u32,
-    table: [u16; 256],
+    class: [u16; 256],
     lower: [u8; 256],
     upper: [u8; 256],
+    /// The tables setlocale made before these (none for the "C" locale's): the ones it may reuse.
+    next: Option<&'static Tables>,
 }
+
+/// The "C" locale's tables.
+static C_TABLES: Tables = Tables {
+    lcid: 0,
+    page: 0,
+    class: C_TABLE,
+    lower: ascii_case(false),
+    upper: ascii_case(true),
+    next: None,
+};
+
+/// LC_CTYPE's tables: the "C" locale's, or tables setlocale made, published here whole (Release,
+/// read with Acquire) and never freed. Only setlocale changes it, under the locale's lock.
+static CTYPE: AtomicPtr<Tables> = AtomicPtr::new(core::ptr::addr_of!(C_TABLES).cast_mut());
+
+/// LC_CTYPE's tables, as setlocale last published them.
+fn tables() -> &'static Tables {
+    // SAFETY: CTYPE holds C_TABLES, or tables `make_tables` made: filled in before setlocale's
+    // Release store published them (this Acquire load sees them whole), and never changed or
+    // freed after, so a shared reference to them is valid for the process's life.
+    unsafe { &*CTYPE.load(Acquire) }
+}
+
+/// The locale's state, behind its lock: each category's name, the tables setlocale made (the
+/// newest first), and setlocale's answer.
+struct Locale {
+    names: [Name; LC_MAX + 1],
+    made: Option<&'static Tables>,
+    /// setlocale's answer: its own storage, overwritten by the next call (as the C runtime's
+    /// contract has it).
+    answer: [u8; 512],
+}
+
+static STATE: Locked<Locale, Lock> = Locked::new(
+    Lock::new(),
+    Locale {
+        names: [Name::C; LC_MAX + 1],
+        made: None,
+        answer: [0; 512],
+    },
+);
 
 const fn ascii_case(upper: bool) -> [u8; 256] {
     let mut table = [0u8; 256];
@@ -149,32 +201,14 @@ const fn ascii_case(upper: bool) -> [u8; 256] {
     table
 }
 
-static STATE: Global<State> = Global::new(State {
-    names: [Name::C; LC_MAX + 1],
-    lcid: 0,
-    page: 0,
-    table: C_TABLE,
-    lower: ascii_case(false),
-    upper: ascii_case(true),
-});
-
-/// setlocale's answer: its own storage, overwritten by the next call.
-static ANSWER: Global<[u8; 512]> = Global::new([0; 512]);
-
-fn state() -> &'static State {
-    // SAFETY: the process's locale; setlocale changes it under the lock, as the C runtime's
-    // contract has it (a program does not change its locale while other threads use it).
-    unsafe { &*STATE.get() }
-}
-
 /// Whether LC_CTYPE is the "C" locale.
 pub fn is_c_locale() -> bool {
-    state().lcid == 0
+    tables().lcid == 0
 }
 
 /// The classes of a narrow character in the LC_CTYPE locale.
 pub fn byte_class(byte: u8) -> u16 {
-    state().table[byte as usize]
+    tables().class[byte as usize]
 }
 
 /// iswctype: whether `c` is in any of the `mask` classes (the classes found, masked).
@@ -196,7 +230,7 @@ fn map_wide(c: u16, upper: bool) -> u16 {
     if c == WEOF {
         return c;
     }
-    let state = state();
+    let state = tables();
     if state.lcid == 0 {
         return match c {
             0x41..=0x5A if !upper => c + 0x20,
@@ -227,17 +261,17 @@ pub fn wide_upper(c: u16) -> u16 {
 
 /// A narrow character lowered, in the LC_CTYPE locale.
 pub fn byte_lower(byte: u8) -> u8 {
-    state().lower[byte as usize]
+    tables().lower[byte as usize]
 }
 
 /// A narrow character raised, in the LC_CTYPE locale.
 pub fn byte_upper(byte: u8) -> u8 {
-    state().upper[byte as usize]
+    tables().upper[byte as usize]
 }
 
 /// A narrow character as a wide one (mbtowc), in the LC_CTYPE locale.
 pub fn byte_to_wide(byte: u8) -> u16 {
-    let state = state();
+    let state = tables();
     if state.lcid == 0 {
         return byte as u16;
     }
@@ -252,7 +286,7 @@ pub fn byte_to_wide(byte: u8) -> u16 {
 /// A wide character as a narrow one (wctomb), in the LC_CTYPE locale; none when the locale's code
 /// page has no character for it.
 pub fn wide_to_byte(c: u16) -> Option<u8> {
-    let state = state();
+    let state = tables();
     if state.lcid == 0 {
         return (c < 0x100).then_some(c as u8);
     }
@@ -399,20 +433,21 @@ fn resolve(text: &[u8]) -> Option<Resolved> {
     Some(Resolved { lcid, page, name })
 }
 
-/// A category set to a locale: its name, and for LC_CTYPE its tables.
-fn select(state: &mut State, category: usize, locale: &Resolved) {
-    state.names[category] = locale.name;
-    if category as i32 != LC_CTYPE {
-        return;
+/// New LC_CTYPE tables for `locale` (not the "C" locale), from the C runtime's heap, `next` after
+/// them; none when the heap has no room. They are never freed: a reader may hold them at any time.
+fn make_tables(locale: &Resolved, next: Option<&'static Tables>) -> Option<&'static Tables> {
+    let block = crate::heap::allocate(core::mem::size_of::<Tables>(), true).cast::<Tables>();
+    if block.is_null() {
+        return None;
     }
-    state.lcid = locale.lcid;
-    state.page = locale.page;
-    if locale.lcid == 0 {
-        state.table = C_TABLE;
-        state.lower = ascii_case(false);
-        state.upper = ascii_case(true);
-        return;
-    }
+    debug_assert!(block.is_aligned());
+    // SAFETY: a fresh, zeroed block of the C runtime's heap of a Tables' size, aligned (the heap's
+    // blocks are 8-aligned), and all zero is a valid Tables (numbers, and `next` none). It is never
+    // freed, and nothing else reaches it until it is published.
+    let tables: &'static mut Tables = unsafe { &mut *block };
+    tables.lcid = locale.lcid;
+    tables.page = locale.page;
+    tables.next = next;
     let mut bytes = [0u8; 256];
     for (i, byte) in bytes.iter_mut().enumerate() {
         *byte = i as u8;
@@ -424,14 +459,14 @@ fn select(state: &mut State, category: usize, locale: &Resolved) {
             CT_CTYPE1,
             bytes.as_ptr(),
             256,
-            state.table.as_mut_ptr(),
+            tables.class.as_mut_ptr(),
         );
         imports::LCMapStringA(
             locale.lcid,
             LCMAP_LOWERCASE,
             bytes.as_ptr(),
             256,
-            state.lower.as_mut_ptr(),
+            tables.lower.as_mut_ptr(),
             256,
         );
         imports::LCMapStringA(
@@ -439,9 +474,90 @@ fn select(state: &mut State, category: usize, locale: &Resolved) {
             LCMAP_UPPERCASE,
             bytes.as_ptr(),
             256,
-            state.upper.as_mut_ptr(),
+            tables.upper.as_mut_ptr(),
             256,
         );
+    }
+    Some(tables)
+}
+
+impl Locale {
+    /// LC_CTYPE's tables for `locale`: the "C" locale's, those made before for its LCID and code
+    /// page, or new ones; none when the heap has no room for them.
+    fn tables_for(&mut self, locale: &Resolved) -> Option<&'static Tables> {
+        if locale.lcid == 0 {
+            return Some(&C_TABLES);
+        }
+        let mut made = self.made;
+        while let Some(tables) = made {
+            if (tables.lcid, tables.page) == (locale.lcid, locale.page) {
+                return Some(tables);
+            }
+            made = tables.next;
+        }
+        let tables = make_tables(locale, self.made)?;
+        self.made = Some(tables);
+        Some(tables)
+    }
+
+    /// The name setlocale answers for `category`, into its answer storage: the storage's address.
+    /// It stays valid for the process's life; the next setlocale overwrites it, as the C runtime's
+    /// contract says.
+    fn answer(&mut self, category: usize) -> *const u8 {
+        let names = &self.names;
+        let storage = &mut self.answer;
+        let mut length = 0;
+        let mut push = |text: &[u8]| {
+            let take = text.len().min(storage.len() - 1 - length);
+            storage[length..length + take].copy_from_slice(&text[..take]);
+            length += take;
+        };
+        if category == 0 && names[1..].iter().any(|name| *name != names[1]) {
+            for c in 1..=LC_MAX {
+                if c > 1 {
+                    push(b";");
+                }
+                push(CATEGORY_NAMES[c]);
+                push(b"=");
+                push(names[c].text());
+            }
+        } else {
+            push(names[category.max(1)].text());
+        }
+        storage[length] = 0;
+        storage.as_ptr()
+    }
+
+    /// setlocale's work, under the locale's lock: `category` set to the locale `text` names, or
+    /// asked (none); the answer's address, or none when `text` names no locale or the heap has no
+    /// room for its tables (nothing changes then).
+    fn set(&mut self, category: usize, text: Option<&[u8]>) -> Option<*const u8> {
+        if let Some(text) = text {
+            let mut chosen = [None; LC_MAX + 1];
+            if category == 0 && text.contains(&b'=') {
+                chosen = resolve_composite(text)?;
+            } else {
+                let resolved = resolve(text)?;
+                if category == 0 {
+                    chosen[1..].fill(Some(resolved));
+                } else {
+                    chosen[category] = Some(resolved);
+                }
+            }
+            let ctype = match &chosen[LC_CTYPE as usize] {
+                Some(locale) => Some(self.tables_for(locale)?),
+                None => None,
+            };
+            for (name, locale) in self.names.iter_mut().zip(&chosen) {
+                if let Some(locale) = locale {
+                    *name = locale.name;
+                }
+            }
+            if let Some(tables) = ctype {
+                CTYPE.store(core::ptr::from_ref(tables).cast_mut(), Release);
+            }
+        }
+        Some(self.answer(category))
     }
 }
 
@@ -457,32 +573,6 @@ fn resolve_composite(text: &[u8]) -> Option<[Option<Resolved>; LC_MAX + 1]> {
     Some(resolved)
 }
 
-/// The name setlocale answers for `category`, into its answer storage.
-fn answer(state: &State, category: usize) -> *const u8 {
-    // SAFETY: setlocale's own storage, written under the lock.
-    let storage = unsafe { &mut *ANSWER.get() };
-    let mut length = 0;
-    let mut push = |text: &[u8]| {
-        let take = text.len().min(storage.len() - 1 - length);
-        storage[length..length + take].copy_from_slice(&text[..take]);
-        length += take;
-    };
-    if category == 0 && state.names[1..].iter().any(|name| *name != state.names[1]) {
-        for c in 1..=LC_MAX {
-            if c > 1 {
-                push(b";");
-            }
-            push(CATEGORY_NAMES[c]);
-            push(b"=");
-            push(state.names[c].text());
-        }
-    } else {
-        push(state.names[category.max(1)].text());
-    }
-    storage[length] = 0;
-    storage.as_ptr()
-}
-
 /// setlocale: `category`'s locale set to the one `locale` names, or asked (NULL); answers its name
 /// (LC_ALL's composite when its categories differ), or NULL when `locale` names none (nothing
 /// changes) or the category is unknown.
@@ -496,36 +586,12 @@ pub unsafe extern "C" fn setlocale(category: i32, locale: *const u8) -> *const u
         return core::ptr::null();
     }
     let category = category as usize;
-    let _lock = Locked::take();
-    // SAFETY: the process's locale, under the lock.
-    let state = unsafe { &mut *STATE.get() };
-    if locale.is_null() {
-        return answer(state, category);
-    }
     // SAFETY: the caller's string.
-    let text = unsafe { core::ffi::CStr::from_ptr(locale.cast()) }.to_bytes();
-    if category == 0 && text.contains(&b'=') {
-        let Some(resolved) = resolve_composite(text) else {
-            return core::ptr::null();
-        };
-        for (c, locale) in resolved.iter().enumerate() {
-            if let Some(locale) = locale {
-                select(state, c, locale);
-            }
-        }
-        return answer(state, category);
-    }
-    let Some(resolved) = resolve(text) else {
-        return core::ptr::null();
-    };
-    if category == 0 {
-        for c in 1..=LC_MAX {
-            select(state, c, &resolved);
-        }
-    } else {
-        select(state, category, &resolved);
-    }
-    answer(state, category)
+    let text =
+        (!locale.is_null()).then(|| unsafe { core::ffi::CStr::from_ptr(locale.cast()) }.to_bytes());
+    STATE
+        .with(|state| state.set(category, text))
+        .unwrap_or(core::ptr::null())
 }
 
 /// iswalpha: a letter (`_ALPHA`'s classes).

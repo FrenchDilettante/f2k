@@ -164,14 +164,13 @@ _f2k_export_TlsSetValue:
     xor eax, eax
     ret 8
 
-# The top-level exception filter lives in the process's PEB page at TOP_LEVEL_FILTER (an offset
-# past the PEB proper). The previous filter is returned.
+# The top-level exception filter is kernel32's own data (src/main.rs's TOP_LEVEL_FILTER, by its
+# symbol). The previous filter is returned.
 .p2align 4
 .globl _f2k_export_SetUnhandledExceptionFilter
 _f2k_export_SetUnhandledExceptionFilter:
     mov eax, dword ptr [esp+4]
-    mov ecx, dword ptr fs:[0x30]
-    xchg dword ptr [ecx+TOP_LEVEL_FILTER], eax
+    xchg dword ptr [_f2k_k32_top_level_filter], eax
     ret 4
 
 # The default unhandled-exception verdict, as Windows 2000 gives it with no debugger and the fault
@@ -180,8 +179,7 @@ _f2k_export_SetUnhandledExceptionFilter:
 .p2align 4
 .globl _f2k_export_UnhandledExceptionFilter
 _f2k_export_UnhandledExceptionFilter:
-    mov ecx, dword ptr fs:[0x30]
-    mov eax, dword ptr [ecx+TOP_LEVEL_FILTER]
+    mov eax, dword ptr [_f2k_k32_top_level_filter]
     test eax, eax
     jz .Lfilter_execute
     push dword ptr [esp+4]

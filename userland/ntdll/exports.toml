@@ -122,7 +122,7 @@ note = "no handle terminates the caller's other threads; a handle naming the cal
 [[export]]
 name = "NtCreateProcess"
 group = "nt"
-args = ["ptr<u32> ProcessHandle", "u32 DesiredAccess", "ptr ObjectAttributes", "handle ParentProcess", "u32 InheritObjectTable", "handle SectionHandle", "handle DebugPort", "handle ExceptionPort"]
+args = ["ptr<u32> ProcessHandle", "u32 DesiredAccess", "ptr ObjectAttributes", "handle ParentProcess", "boolean InheritObjectTable", "handle SectionHandle", "handle DebugPort", "handle ExceptionPort"]
 impl = { syscall = "crate::nt::process::create_process" }
 ordinal = 101
 zw_ordinal = 747
@@ -174,7 +174,7 @@ note = "the process handle checked (PROCESS_VM_WRITE); nothing else to do on one
 [[export]]
 name = "NtContinue"
 group = "nt"
-args = ["ptr Context", "u32 TestAlert"]
+args = ["ptr Context", "boolean TestAlert"]
 impl = { syscall = "crate::nt::exception::continue_context" }
 ordinal = 87
 zw_ordinal = 733
@@ -183,7 +183,7 @@ note = "resumes the CONTEXT's control and integer registers (TF honoured, privil
 [[export]]
 name = "NtRaiseException"
 group = "nt"
-args = ["ptr ExceptionRecord", "ptr Context", "u32 FirstChance"]
+args = ["ptr ExceptionRecord", "ptr Context", "boolean FirstChance"]
 impl = { syscall = "crate::nt::exception::raise_exception" }
 ordinal = 222
 zw_ordinal = 867
@@ -876,7 +876,7 @@ group = "threads"
 args = []
 impl = { native = "RtlAcquirePebLock" }
 ordinal = 315
-note = "the PEB lock (PEB+0x1C, its storage at PEB+0x860), made by LdrInitializeThunk on the process's first thread"
+note = "the PEB lock (PEB+0x1C points at it, in ntdll's own data), made by LdrInitializeThunk on the process's first thread"
 
 [[export]]
 name = "RtlReleasePebLock"

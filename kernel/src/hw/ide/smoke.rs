@@ -74,17 +74,16 @@ impl Bpb {
 /// The diagnostic pass. Every check is an assert: a wrong answer from the disk stops the boot.
 #[cfg(all(target_arch = "x86", feature = "disk-smoke"))]
 pub fn run() {
-    use core::ptr::addr_of_mut;
-
     use crate::block::registry::{registry, Role};
     use crate::block::{BlockDevice, BusType, DeviceInfo, DeviceKind};
     use crate::fs::fat32::fat::FatEntry;
     use crate::fs::fat32::lookup::lookup;
     use crate::fs::fat32::read::read as read_file;
     use crate::fs::fat32::volume::{boot_mount, with_boot_volume};
-    use crate::hw::ide::disk::{self, LATCH};
+    use crate::hw::ide::disk;
     use crate::hw::ide::regs::SECTOR_SIZE;
     use crate::serial_println;
+    use crate::sync::StaticBuf;
 
     /// The disk image the disk build lays down: 64 MiB, one FAT32 partition at 1 MiB.
     const DISK_SECTORS: u64 = 131_072;
@@ -95,18 +94,19 @@ pub fn run() {
     /// The multi-sector run read from the same place.
     const RUN_SECTORS: usize = 8;
 
-    static mut RUN: [u8; RUN_SECTORS * SECTOR_SIZE] = [0; RUN_SECTORS * SECTOR_SIZE];
+    /// The run's buffer, too large for the boot stack.
+    static RUN: StaticBuf<[u8; RUN_SECTORS * SECTOR_SIZE]> =
+        StaticBuf::new([0; RUN_SECTORS * SECTOR_SIZE]);
     /// Room for the whole first file.
-    static mut FILE: [u8; 32 * 1024] = [0; 32 * 1024];
+    static FILE: StaticBuf<[u8; 32 * 1024]> = StaticBuf::new([0; 32 * 1024]);
 
     fn read(device: &dyn BlockDevice, lba: u64, buffer: &mut [u8]) {
-        let status = device.read(lba, buffer);
-        assert!(
-            status.is_success(),
-            "disk-smoke: read at LBA {} failed with status {:#010x}",
-            lba,
-            status.0
-        );
+        if let Err(status) = device.read(lba, buffer) {
+            panic!(
+                "disk-smoke: read at LBA {} failed with status {:#010x}",
+                lba, status.0
+            );
+        }
     }
 
     // 1. The drive: IDENTIFY reported LBA support and the image's size, and the block layer
@@ -122,7 +122,7 @@ pub fn run() {
         .iter()
         .find(|(_, entry)| entry.role == Role::Disk)
         .expect("disk-smoke: the disk is not registered");
-    let disk_device = disk_entry.device;
+    let disk_device = disk_entry.device();
     assert_eq!(
         disk_device.info(),
         DeviceInfo {
@@ -149,7 +149,7 @@ pub fn run() {
     let Role::Partition { entry, .. } = partition_entry.role else {
         unreachable!()
     };
-    let volume = partition_entry.device;
+    let volume = partition_entry.device();
     serial_println!(
         "F2K: disk-smoke: block devices: {} = ATA disk ({} sectors of {} bytes), {} = partition {} of device {} ({} sectors)",
         disk_id.0,
@@ -252,8 +252,7 @@ pub fn run() {
 
     // The first file, found by name in the root directory and read whole through its cluster
     // chain: the bytes the pinned sector checksums came from, now delivered by the file system.
-    // SAFETY: the diagnostic runs once, in the boot context; the buffer is its alone.
-    let file_buffer = unsafe { &mut *addr_of_mut!(FILE) };
+    let file_buffer = FILE.take();
     let (hello, hello_status) = with_boot_volume(|volume| {
         let hello = lookup(volume, b"HELLO.EXE");
         let status = hello.map(|file| read_file(volume, &file, &mut file_buffer[..]));
@@ -292,8 +291,7 @@ pub fn run() {
         file_lba,
         crc32(&sector)
     );
-    // SAFETY: the diagnostic runs once, in the boot context; the buffer is its alone.
-    let run = unsafe { &mut *addr_of_mut!(RUN) };
+    let run = RUN.take();
     read(volume, file_sector, run);
     assert_eq!(
         &run[..SECTOR_SIZE],
@@ -313,8 +311,8 @@ pub fn run() {
     let verdict = crate::interrupt::audit();
     serial_println!(
         "F2K: disk-smoke: IRQ14 serviced {} interrupts ({} unsolicited), interrupt audit: {}",
-        LATCH.serviced(),
-        LATCH.unsolicited(),
+        disk::serviced(),
+        disk::unsolicited(),
         if verdict.is_ok() { "ok" } else { "FAILED" }
     );
 }

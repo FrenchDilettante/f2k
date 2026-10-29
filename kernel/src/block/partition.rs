@@ -5,16 +5,74 @@
 //! table, and the disk gets no partitions (a bad table is valid input, not a kernel fault).
 //! Extended-partition containers are skipped: their logical partitions are not walked yet.
 
+use core::mem::{offset_of, size_of};
+
+use rtl::pod::Pod;
+
 use super::{check_request, BlockDevice, DeviceInfo};
 use crate::status::NtStatus;
 
 /// The boot-sector signature word at offset 510.
 pub const MBR_SIGNATURE: u16 = 0xAA55;
 
-/// The partition table: four 16-byte entries from offset 446.
-const TABLE: usize = 446;
-const ENTRY_SIZE: usize = 16;
+/// The partition table's entries.
 pub const ENTRIES: usize = 4;
+
+/// One partition-table entry as stored: 16 bytes, its two sector fields little-endian.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+// The layout names every field; the walk reads only those it validates.
+#[allow(dead_code)]
+struct PartitionEntry {
+    /// 0x80 for the active (bootable) partition.
+    status: u8,
+    chs_first: [u8; 3],
+    /// The partition type byte; 0 for an empty entry.
+    kind: u8,
+    chs_last: [u8; 3],
+    lba_start: [u8; 4],
+    sectors: [u8; 4],
+}
+
+impl PartitionEntry {
+    /// The first sector, on the disk.
+    fn start(&self) -> u64 {
+        u32::from_le_bytes(self.lba_start) as u64
+    }
+
+    /// The length, in sectors.
+    fn sectors(&self) -> u64 {
+        u32::from_le_bytes(self.sectors) as u64
+    }
+}
+
+/// Sector 0 of a partitioned disk as stored: the boot code, the four-entry partition table from
+/// offset 446, and the signature word.
+#[repr(C)]
+#[derive(Clone, Copy)]
+// The layout names every field; the walk reads only those it validates.
+#[allow(dead_code)]
+struct Mbr {
+    boot_code: [u8; 446],
+    entries: [PartitionEntry; ENTRIES],
+    signature: [u8; 2],
+}
+
+// SAFETY: bytes and byte arrays only, so there is no padding (the sizes are asserted below) and
+// every bit pattern is a value.
+unsafe impl Pod for PartitionEntry {}
+// SAFETY: as for `PartitionEntry`, which the table is an array of.
+unsafe impl Pod for Mbr {}
+
+const _: () = {
+    assert!(size_of::<PartitionEntry>() == 16);
+    assert!(offset_of!(PartitionEntry, kind) == 4);
+    assert!(offset_of!(PartitionEntry, lba_start) == 8);
+    assert!(offset_of!(PartitionEntry, sectors) == 12);
+    assert!(size_of::<Mbr>() == 512);
+    assert!(offset_of!(Mbr, entries) == 446);
+    assert!(offset_of!(Mbr, signature) == 510);
+};
 
 /// One non-empty primary entry.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -53,24 +111,16 @@ pub fn walk_mbr(
     sector: &[u8; 512],
     disk_sectors: u64,
 ) -> Result<[Option<MbrEntry>; ENTRIES], MbrError> {
-    if u16::from_le_bytes([sector[510], sector[511]]) != MBR_SIGNATURE {
+    let mbr = Mbr::from_bytes(sector).expect("a sector holds an MBR");
+    if u16::from_le_bytes(mbr.signature) != MBR_SIGNATURE {
         return Err(MbrError::NoSignature);
     }
-    let le32 = |offset: usize| {
-        u32::from_le_bytes([
-            sector[offset],
-            sector[offset + 1],
-            sector[offset + 2],
-            sector[offset + 3],
-        ])
-    };
 
     let mut entries = [None; ENTRIES];
-    for (index, slot) in entries.iter_mut().enumerate() {
-        let entry = TABLE + index * ENTRY_SIZE;
-        let kind = sector[entry + 4];
-        let start = le32(entry + 8) as u64;
-        let sectors = le32(entry + 12) as u64;
+    for (index, (slot, entry)) in entries.iter_mut().zip(&mbr.entries).enumerate() {
+        let kind = entry.kind;
+        let start = entry.start();
+        let sectors = entry.sectors();
         if kind == 0 || sectors == 0 || is_extended(kind) {
             continue;
         }
@@ -84,7 +134,7 @@ pub fn walk_mbr(
         *slot = Some(MbrEntry {
             index,
             kind,
-            bootable: sector[entry] == 0x80,
+            bootable: entry.status == 0x80,
             start,
             sectors,
         });
@@ -104,6 +154,7 @@ pub fn walk_mbr(
 
 /// A primary partition: an offset and a length over its disk. Reads are checked against the
 /// partition's own length, then land on the disk (whose lock they take).
+#[derive(Clone, Copy)]
 pub struct Partition {
     disk: &'static dyn BlockDevice,
     entry: MbrEntry,
@@ -124,41 +175,41 @@ impl BlockDevice for Partition {
         }
     }
 
-    fn read(&self, lba: u64, buffer: &mut [u8]) -> NtStatus {
-        if let Err(status) = check_request(&self.info(), lba, buffer) {
-            return status;
-        }
+    fn read(&self, lba: u64, buffer: &mut [u8]) -> Result<(), NtStatus> {
+        check_request(&self.info(), lba, buffer)?;
         self.disk.read(self.entry.start + lba, buffer)
     }
 
-    fn write(&self, lba: u64, buffer: &[u8]) -> NtStatus {
-        if let Err(status) = check_request(&self.info(), lba, buffer) {
-            return status;
-        }
+    fn write(&self, lba: u64, buffer: &[u8]) -> Result<(), NtStatus> {
+        check_request(&self.info(), lba, buffer)?;
         self.disk.write(self.entry.start + lba, buffer)
     }
+}
+
+/// An MBR with the given entries (slot, boot flag, type, start, length) and the signature.
+#[cfg(test)]
+pub fn mbr(entries: &[(usize, u8, u8, u32, u32)]) -> [u8; 512] {
+    let mut mbr = Mbr::zeroed();
+    for &(slot, status, kind, start, sectors) in entries {
+        mbr.entries[slot] = PartitionEntry {
+            status,
+            kind,
+            lba_start: start.to_le_bytes(),
+            sectors: sectors.to_le_bytes(),
+            ..Default::default()
+        };
+    }
+    mbr.signature = MBR_SIGNATURE.to_le_bytes();
+    let mut sector = [0u8; 512];
+    sector.copy_from_slice(mbr.as_bytes());
+    sector
 }
 
 #[cfg(test)]
 mod tests {
     use super::super::memory::MemoryDisk;
     use super::*;
-    use crate::status::{STATUS_INVALID_PARAMETER, STATUS_SUCCESS};
-
-    /// An MBR with the given entries (slot, boot flag, type, start, length) and the signature.
-    fn mbr(entries: &[(usize, u8, u8, u32, u32)]) -> [u8; 512] {
-        let mut sector = [0u8; 512];
-        for &(slot, boot, kind, start, sectors) in entries {
-            let entry = TABLE + slot * ENTRY_SIZE;
-            sector[entry] = boot;
-            sector[entry + 4] = kind;
-            sector[entry + 8..entry + 12].copy_from_slice(&start.to_le_bytes());
-            sector[entry + 12..entry + 16].copy_from_slice(&sectors.to_le_bytes());
-        }
-        sector[510] = 0x55;
-        sector[511] = 0xAA;
-        sector
-    }
+    use crate::status::STATUS_INVALID_PARAMETER;
 
     /// The disk image's table: one bootable FAT32 (LBA) partition at 1 MiB, the rest empty.
     #[test]
@@ -256,10 +307,13 @@ mod tests {
         );
 
         let mut buffer = vec![0u8; 2 * 512];
-        assert_eq!(partition.read(5, &mut buffer), STATUS_SUCCESS);
+        assert_eq!(partition.read(5, &mut buffer), Ok(()));
         assert_eq!(buffer, MemoryDisk::pattern_of(105, 2));
 
-        assert_eq!(partition.read(48, &mut buffer), STATUS_SUCCESS);
-        assert_eq!(partition.read(49, &mut buffer), STATUS_INVALID_PARAMETER);
+        assert_eq!(partition.read(48, &mut buffer), Ok(()));
+        assert_eq!(
+            partition.read(49, &mut buffer),
+            Err(STATUS_INVALID_PARAMETER)
+        );
     }
 }

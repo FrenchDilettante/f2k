@@ -50,13 +50,6 @@ pub trait Memory {
     }
 }
 
-/// The PEB's fields the loader keeps: Ldr (the PEB_LDR_DATA) and LoaderLock (the critical section
-/// the loader holds while it reads or changes the lists).
-pub mod peb {
-    pub const LDR: u32 = 0x0C;
-    pub const LOADER_LOCK: u32 = 0xA0;
-}
-
 /// PEB_LDR_DATA (NT 5.0, x86): its Length, Initialized, SsHandle, and the three lists' heads
 /// (LIST_ENTRYs: Flink, Blink).
 pub mod data {

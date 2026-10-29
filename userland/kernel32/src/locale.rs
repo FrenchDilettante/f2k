@@ -22,18 +22,15 @@ fn fail<T>(code: u32, value: T) -> T {
     value
 }
 
-/// The length in units of the NUL-terminated string at `src`, the terminator excluded.
+/// The length in units of the NUL-terminated string at `src` (at any address), the terminator
+/// excluded.
 ///
 /// # Safety
 ///
 /// `src` points at a NUL-terminated string.
 unsafe fn length<U: Copy + Default + PartialEq>(src: *const U) -> usize {
-    let mut at = 0;
     // SAFETY: the caller's contract: the units up to the terminator are readable.
-    while unsafe { src.add(at).read_unaligned() } != U::default() {
-        at += 1;
-    }
-    at
+    unsafe { rtl::cstr::len_until_nul(src) }
 }
 
 /// GetACP: the ANSI code page.
@@ -602,13 +599,11 @@ pub unsafe extern "system" fn lstrcmpi_w(first: *const u16, second: *const u16) 
     lstrcmp_answer(compared, first.is_null(), second.is_null())
 }
 
-/// The TEB's CurrentLocale: the thread's locale (the kernel starts every thread in the default).
-const TEB_CURRENT_LOCALE: usize = 0xC4;
-
-/// GetThreadLocale: the calling thread's locale, from its TEB.
+/// GetThreadLocale: the calling thread's locale, from its TEB's CurrentLocale (the kernel starts
+/// every thread in the default).
 #[unsafe(export_name = "f2k_export_GetThreadLocale")]
 pub extern "system" fn get_thread_locale() -> u32 {
-    crate::base::read(crate::base::teb_address() + TEB_CURRENT_LOCALE)
+    crate::base::current_locale()
 }
 
 /// SetThreadLocale: the calling thread's locale, in its TEB. The neutral locale (0) and the default
@@ -628,7 +623,7 @@ pub extern "system" fn set_thread_locale(locale: u32) -> u32 {
     if locale >> 16 != 0 || primary == 0 || sublanguage == 0 {
         return fail(ERROR_INVALID_PARAMETER, 0);
     }
-    crate::base::write(crate::base::teb_address() + TEB_CURRENT_LOCALE, locale);
+    crate::base::set_current_locale(locale);
     1
 }
 

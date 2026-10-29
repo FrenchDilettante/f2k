@@ -20,12 +20,11 @@
 //! ERROR_NOT_ENOUGH_MEMORY).
 
 use crate::base::{
-    read_pointer,
     set_last_error,
     set_last_nt_error,
-    teb_address,
+    set_tls_slot,
+    tls_expansion_slots,
     win32_bool,
-    write,
     SecurityAttributes,
     CURRENT_PROCESS,
     CURRENT_THREAD,
@@ -52,10 +51,8 @@ const THREAD_PRIORITY_ERROR_RETURN: i32 = 0x7FFF_FFFF;
 /// TlsAlloc's failure.
 const TLS_OUT_OF_INDEXES: u32 = 0xFFFF_FFFF;
 
-/// The TEB's TlsSlots and TlsExpansionSlots (the PEB's bitmaps are [`ntcall::TlsBitmap`]'s).
-const TEB_TLS_SLOTS: usize = 0xE10;
-const TEB_TLS_EXPANSION_SLOTS: usize = 0xF94;
-/// The TEB's own slots: indexes below this are theirs.
+/// The TEB's own slots (TlsSlots; the expansion slots hold the rest): indexes below this are
+/// theirs.
 const TEB_SLOTS: u32 = 64;
 
 /// THREAD_ALL_ACCESS: what CreateThread's handle grants.
@@ -457,15 +454,16 @@ pub extern "system" fn set_thread_priority_boost(thread: u32, disable: u32) -> u
 /// TLS_OUT_OF_INDEXES with ERROR_NOT_ENOUGH_MEMORY when all 1088 are taken.
 #[unsafe(export_name = "f2k_export_TlsAlloc")]
 pub extern "system" fn tls_alloc() -> u32 {
-    let teb = teb_address();
     let lock = PebLock::acquire();
     if let Some(index) = ntcall::find_clear_bit_and_set(&lock, TlsBitmap::Slots) {
-        write(teb + TEB_TLS_SLOTS + 4 * index as usize, 0);
+        set_tls_slot(index as usize, 0);
         index
     } else if let Some(index) = ntcall::find_clear_bit_and_set(&lock, TlsBitmap::Expansion) {
-        let expansion = read_pointer(teb + TEB_TLS_EXPANSION_SLOTS);
-        if expansion != 0 {
-            write(expansion + 4 * index as usize, 0);
+        let expansion = tls_expansion_slots();
+        if !expansion.is_null() {
+            // SAFETY: the calling thread's expansion slots' block, 1024 slots on the process heap
+            // (the bitmap's indexes stay below its size), the thread's own.
+            unsafe { expansion.add(index as usize).write(0) };
         }
         TEB_SLOTS + index
     } else {

@@ -1,4 +1,4 @@
-//! The C runtime's per-thread data and its lock.
+//! The C runtime's per-thread data and its locks.
 //!
 //! Each thread has its own `errno`, `_doserrno` and rand seed, as the multithreaded C runtime keeps
 //! them: a block from the C runtime's heap, found through a TLS slot the DLL allocates when it is
@@ -6,29 +6,45 @@
 //! thread's last error as it was (TlsGetValue clears it), so a C runtime call never disturbs a
 //! program's GetLastError.
 //!
-//! One critical section serializes the process-wide state: the descriptor table, the streams, the
-//! exit-function table and the locale.
+//! The process-wide state is split by lock, as Windows 2000's msvcrt splits it: each stream has a
+//! lock of its own ([`crate::stdio`]), each descriptor one beside the descriptor table's
+//! ([`crate::lowio`]), and the exit functions, the environment ([`crate::startup`]), the locale
+//! ([`crate::ctype`]) and the console input ([`crate::conio`]) one each. A lock is a critical
+//! section entered through kernel32 ([`Lock`]); the state it guards is an `rtl::sync::Locked`
+//! value, reached only inside its `with`. A thread waiting on one stream or descriptor (stdin,
+//! reading the console) holds that one's locks alone, so another thread's output goes on.
+//!
+//! The locks nest in one order, outermost first: a stream's, then the buffer it is lent for a call;
+//! a descriptor's (two at once in ascending order); the descriptor table's. The exit functions',
+//! the environment's, the locale's and the console input's take none of the C runtime's locks
+//! inside them.
 
-use crate::data::Global;
+use core::sync::atomic::Ordering::{Acquire, Relaxed, Release};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32};
+
+use rtl::critsec::CriticalSection;
+use rtl::sync::RawLock;
+
 use crate::imports;
 
-/// A thread's own C runtime state.
+/// A thread's own C runtime state. Its fields are atomics: a thread's block is its own, but the
+/// [`FALLBACK`] is shared by every thread the slot or the heap fails.
 #[repr(C)]
 pub struct ThreadData {
     /// `errno`.
-    pub errno: i32,
+    pub errno: AtomicI32,
     /// `_doserrno`: the Win32 error behind the last `errno` a system call set.
-    pub doserrno: u32,
+    pub doserrno: AtomicU32,
     /// rand's seed (srand's), 1 until the thread seeds it.
-    pub seed: u32,
+    pub seed: AtomicU32,
 }
 
 /// The TLS slot holding each thread's [`ThreadData`] (TLS_OUT_OF_INDEXES before the DLL's
-/// initialization). Host tests never run the DLL's attach and run on many threads at once: they
-/// start with the slot the host TlsAlloc stand-in hands out, so each test thread has its own data,
-/// as each thread does on target (the shared [`FALLBACK`] would let one test's errno leak into
-/// another's).
-static SLOT: Global<u32> = Global::new(if cfg!(test) { HOST_SLOT } else { u32::MAX });
+/// initialization), set once by the DLL's process attach. Host tests never run the DLL's attach
+/// and run on many threads at once: they start with the slot the host TlsAlloc stand-in hands out,
+/// so each test thread has its own data, as each thread does on target (the shared [`FALLBACK`]
+/// would let one test's errno leak into another's).
+static SLOT: AtomicU32 = AtomicU32::new(if cfg!(test) { HOST_SLOT } else { u32::MAX });
 
 /// The slot the host TlsAlloc stand-in answers (`imports`' host stand-ins).
 #[cfg(test)]
@@ -37,56 +53,69 @@ const HOST_SLOT: u32 = 1;
 const HOST_SLOT: u32 = u32::MAX;
 
 /// A thread's data while the slot or the heap fails it: errno and the seed still have a home.
-static FALLBACK: Global<ThreadData> = Global::new(ThreadData {
-    errno: 0,
-    doserrno: 0,
-    seed: 1,
-});
+static FALLBACK: ThreadData = ThreadData {
+    errno: AtomicI32::new(0),
+    doserrno: AtomicU32::new(0),
+    seed: AtomicU32::new(1),
+};
 
-/// The C runtime's lock: a CRITICAL_SECTION (24 bytes), initialized with the DLL.
-static LOCK: Global<[usize; 8]> = Global::new([0; 8]);
+/// The lock of the C runtime's locks: held while one of them is initialized on its first use (a
+/// [`Lock`] is, as Windows 2000's msvcrt initializes its locks on demand). The DLL's process attach
+/// initializes it.
+static ROOT: CriticalSection = unprepared();
 
-/// The DLL's process attach: the TLS slot and the lock. False when the slot cannot be had.
+/// The DLL's process attach: the TLS slot and the lock of the locks. False when the slot cannot be
+/// had.
 pub fn initialize() -> bool {
-    // SAFETY: kernel32's exports; the lock's storage is the DLL's own.
-    unsafe {
-        imports::InitializeCriticalSection(LOCK.get().cast());
-        let slot = imports::TlsAlloc();
-        SLOT.write(slot);
-        slot != u32::MAX
-    }
+    initialize_section(&ROOT);
+    // SAFETY: kernel32's export.
+    let slot = unsafe { imports::TlsAlloc() };
+    SLOT.store(slot, Relaxed);
+    slot != u32::MAX
 }
 
-/// The calling thread's data, made on its first need.
-pub fn data() -> *mut ThreadData {
-    let slot = SLOT.read();
+/// `body` run over the calling thread's data, made on its first need.
+pub fn with_data<R>(body: impl FnOnce(&ThreadData) -> R) -> R {
+    let slot = SLOT.load(Relaxed);
     if slot == u32::MAX {
-        return FALLBACK.get();
+        return body(&FALLBACK);
     }
-    // SAFETY: kernel32's exports; the block, the thread's own, from the C runtime's heap.
-    unsafe {
+    // SAFETY: kernel32's exports.
+    let (error, mut block) = unsafe {
         let error = imports::GetLastError();
-        let mut data = imports::TlsGetValue(slot) as *mut ThreadData;
-        if data.is_null() {
-            data = crate::heap::allocate(core::mem::size_of::<ThreadData>(), true).cast();
-            if data.is_null() || imports::TlsSetValue(slot, data as usize) == 0 {
-                imports::SetLastError(error);
-                return FALLBACK.get();
-            }
-            (*data).seed = 1;
+        (error, imports::TlsGetValue(slot) as *const ThreadData)
+    };
+    let fresh = block.is_null();
+    if fresh {
+        block = crate::heap::allocate(core::mem::size_of::<ThreadData>(), true).cast();
+        // SAFETY: kernel32's export.
+        if block.is_null() || unsafe { imports::TlsSetValue(slot, block as usize) } == 0 {
+            // SAFETY: kernel32's export.
+            unsafe { imports::SetLastError(error) };
+            return body(&FALLBACK);
         }
-        imports::SetLastError(error);
-        data
     }
+    // SAFETY: kernel32's export.
+    unsafe { imports::SetLastError(error) };
+    // SAFETY: the block is the calling thread's (its TLS slot's value): allocated zeroed from the C
+    // runtime's heap, whose blocks are 8-aligned (zero is a valid ThreadData: its fields are
+    // atomics), and freed only at this thread's DLL_THREAD_DETACH. The borrow ends with `body`, on
+    // this thread.
+    let data = unsafe { &*block };
+    if fresh {
+        data.seed.store(1, Relaxed);
+    }
+    body(data)
 }
 
 /// A thread's DLL_THREAD_DETACH: its data given back.
 pub fn detach_thread() {
-    let slot = SLOT.read();
+    let slot = SLOT.load(Relaxed);
     if slot == u32::MAX {
         return;
     }
-    // SAFETY: kernel32's exports; the block was the thread's alone.
+    // SAFETY: kernel32's exports; the block was the thread's alone, and the thread runs no more C
+    // runtime code that reaches it.
     unsafe {
         let data = imports::TlsGetValue(slot) as *mut u8;
         if !data.is_null() {
@@ -113,14 +142,12 @@ pub const ERANGE: i32 = 34;
 
 /// The calling thread's errno set.
 pub fn set_errno(value: i32) {
-    // SAFETY: the thread's own data.
-    unsafe { (*data()).errno = value };
+    with_data(|data| data.errno.store(value, Relaxed));
 }
 
 /// The calling thread's _doserrno set.
 pub fn set_doserrno(value: u32) {
-    // SAFETY: the thread's own data.
-    unsafe { (*data()).doserrno = value };
+    with_data(|data| data.doserrno.store(value, Relaxed));
 }
 
 /// The calling thread's errno and _doserrno set:`doserrno` and the errno a C program sees for it.
@@ -142,45 +169,128 @@ pub fn set_dos_error(doserrno: u32) {
         193 => ENOEXEC,
         _ => EINVAL,
     };
-    // SAFETY: the thread's own data.
-    unsafe {
-        let data = data();
-        (*data).errno = errno;
-        (*data).doserrno = doserrno;
-    }
+    with_data(|data| {
+        data.errno.store(errno, Relaxed);
+        data.doserrno.store(doserrno, Relaxed);
+    });
 }
 
 /// _errno: the address of the calling thread's errno (errno.h's `errno` is `(*_errno())`).
 #[unsafe(export_name = "f2k_export__errno")]
 pub extern "C" fn errno_address() -> *mut i32 {
-    // SAFETY: the thread's own data; errno is its first field.
-    unsafe { core::ptr::addr_of_mut!((*data()).errno) }
+    with_data(|data| data.errno.as_ptr())
 }
 
 /// __doserrno: the address of the calling thread's _doserrno (stdlib.h's `_doserrno` is
 /// `(*__doserrno())`).
 #[unsafe(export_name = "f2k_export___doserrno")]
 pub extern "C" fn doserrno_address() -> *mut u32 {
-    // SAFETY: the thread's own data.
-    unsafe { core::ptr::addr_of_mut!((*data()).doserrno) }
+    with_data(|data| data.doserrno.as_ptr())
 }
 
-/// The C runtime's lock, held for the guard's life (it is recursive: a thread may take it again).
-pub struct Locked(());
+/// A lock of the C runtime's: a critical section, entered through kernel32's EnterCriticalSection
+/// (msvcrt imports kernel32 alone, as Windows 2000's does). It is recursive: its holder may take it
+/// again. kernel32's InitializeCriticalSection prepares it on its first use, under the lock of the
+/// locks ([`ROOT`]).
+pub struct Lock {
+    section: CriticalSection,
+    /// Whether InitializeCriticalSection has run on the section: set once, after it has.
+    ready: AtomicBool,
+}
 
-impl Locked {
-    pub fn take() -> Locked {
-        // SAFETY: kernel32's export, over the DLL's own critical section.
-        unsafe { imports::EnterCriticalSection(LOCK.get().cast()) };
-        Locked(())
+impl Lock {
+    pub const fn new() -> Lock {
+        Lock {
+            section: unprepared(),
+            ready: AtomicBool::new(false),
+        }
+    }
+
+    /// The lock taken, until the guard is dropped: for a lock that guards no value of its own (a
+    /// descriptor's, held across its reads and writes).
+    pub fn hold(&self) -> Held<'_> {
+        self.lock();
+        Held(self)
+    }
+
+    /// The section initialized, once, before its first enter.
+    fn prepare(&self) {
+        if self.ready.load(Acquire) {
+            return;
+        }
+        enter(&ROOT);
+        if !self.ready.load(Relaxed) {
+            initialize_section(&self.section);
+            self.ready.store(true, Release);
+        }
+        leave(&ROOT);
     }
 }
 
-impl Drop for Locked {
+impl Default for Lock {
+    fn default() -> Lock {
+        Lock::new()
+    }
+}
+
+// SAFETY: EnterCriticalSection returns once the calling thread owns the section, which no other
+// thread owns until the owner's last LeaveCriticalSection (each enter matched by a leave), and its
+// interlocked operations order one owner's accesses before the next's. `prepare` initializes the
+// section before the first enter, publishing it (Release, read with Acquire) to every thread.
+unsafe impl RawLock for Lock {
+    fn lock(&self) {
+        self.prepare();
+        enter(&self.section);
+    }
+
+    fn unlock(&self) {
+        leave(&self.section);
+    }
+}
+
+/// A taking of a [`Lock`], let go when dropped.
+pub struct Held<'a>(&'a Lock);
+
+impl Drop for Held<'_> {
     fn drop(&mut self) {
-        // SAFETY: as above; the guard took it.
-        unsafe { imports::LeaveCriticalSection(LOCK.get().cast()) };
+        self.0.unlock();
     }
+}
+
+/// A CRITICAL_SECTION's storage before InitializeCriticalSection: zero.
+const fn unprepared() -> CriticalSection {
+    CriticalSection {
+        debug_info: AtomicU32::new(0),
+        lock_count: AtomicI32::new(0),
+        recursion_count: AtomicI32::new(0),
+        owning_thread: AtomicU32::new(0),
+        lock_semaphore: AtomicU32::new(0),
+        spin_count: AtomicU32::new(0),
+    }
+}
+
+/// The section's address, as kernel32 takes it. Its fields are atomics, so kernel32 writing them
+/// through a pointer from a shared reference is sound.
+fn address(section: &CriticalSection) -> *mut u8 {
+    core::ptr::from_ref(section).cast_mut().cast()
+}
+
+/// InitializeCriticalSection over the section: free, owned by nobody.
+fn initialize_section(section: &CriticalSection) {
+    // SAFETY: kernel32's export, over a CRITICAL_SECTION of the DLL's own, which no thread holds.
+    unsafe { imports::InitializeCriticalSection(address(section)) };
+}
+
+/// EnterCriticalSection over an initialized section.
+fn enter(section: &CriticalSection) {
+    // SAFETY: kernel32's export, over a CRITICAL_SECTION of the DLL's own, initialized.
+    unsafe { imports::EnterCriticalSection(address(section)) };
+}
+
+/// LeaveCriticalSection over a section the calling thread entered.
+fn leave(section: &CriticalSection) {
+    // SAFETY: kernel32's export, over a CRITICAL_SECTION of the DLL's own that the caller entered.
+    unsafe { imports::LeaveCriticalSection(address(section)) };
 }
 
 #[cfg(test)]
@@ -191,19 +301,35 @@ mod tests {
     /// set_dos_error writes it.
     #[test]
     fn doserrno_is_beside_errno() {
-        let data = data();
-        // SAFETY: the thread's own data.
-        unsafe {
-            assert_eq!(errno_address(), core::ptr::addr_of_mut!((*data).errno));
-            assert_eq!(
-                doserrno_address(),
-                core::ptr::addr_of_mut!((*data).doserrno)
-            );
-        }
+        with_data(|data| {
+            assert_eq!(errno_address(), data.errno.as_ptr());
+            assert_eq!(doserrno_address(), data.doserrno.as_ptr());
+        });
         assert_eq!(
             doserrno_address() as usize - errno_address() as usize,
             4,
             "the second dword"
         );
+    }
+
+    /// A lock is recursive, and taken by one thread at a time.
+    #[test]
+    fn a_lock_is_recursive_and_exclusive() {
+        use std::sync::atomic::AtomicU32;
+        static LOCK: Lock = Lock::new();
+        static INSIDE: AtomicU32 = AtomicU32::new(0);
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                scope.spawn(|| {
+                    for _ in 0..200 {
+                        let _outer = LOCK.hold();
+                        let _inner = LOCK.hold();
+                        assert_eq!(INSIDE.fetch_add(1, Relaxed), 0);
+                        std::thread::yield_now();
+                        INSIDE.fetch_sub(1, Relaxed);
+                    }
+                });
+            }
+        });
     }
 }

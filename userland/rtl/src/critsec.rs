@@ -27,6 +27,12 @@ pub struct CriticalSection {
     pub spin_count: AtomicU32,
 }
 
+impl Default for CriticalSection {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// What the critical sections need of the system: the calling thread, the processor count, and
 /// the event the kernel keeps for a contended section.
 pub trait System {
@@ -61,6 +67,19 @@ pub const STATUS_INVALID_HANDLE: u32 = 0xC000_0008;
 pub const PREALLOCATE_EVENT: u32 = 0x8000_0000;
 
 impl CriticalSection {
+    /// A section's storage, all zero, as a DLL's data holds one before its initialization (ntdll's
+    /// own locks, which its process initialization initializes before anything takes them).
+    pub const fn new() -> Self {
+        Self {
+            debug_info: AtomicU32::new(0),
+            lock_count: AtomicI32::new(0),
+            recursion_count: AtomicI32::new(0),
+            owning_thread: AtomicU32::new(0),
+            lock_semaphore: AtomicU32::new(0),
+            spin_count: AtomicU32::new(0),
+        }
+    }
+
     /// RtlInitializeCriticalSectionAndSpinCount: free, owned by nobody, no event unless the spin
     /// count's high bit asks for one now. A uniprocessor ignores the spin count (it stores 0);
     /// otherwise the count is stored without the high bit. No debug information is kept (DebugInfo

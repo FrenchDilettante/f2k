@@ -166,6 +166,9 @@ pub struct TimeFields {
     pub weekday: i16,
 }
 
+// SAFETY: eight i16s, 16 bytes without padding; any bits make a value.
+unsafe impl crate::pod::Pod for TimeFields {}
+
 /// RtlTimeToTimeFields: the civil fields of a time (100 ns units since 1601), its day of the week
 /// with them.
 pub fn time_to_time_fields(time: i64) -> TimeFields {

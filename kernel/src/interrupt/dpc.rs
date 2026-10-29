@@ -28,7 +28,6 @@
 use core::cell::Cell;
 use core::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
-use crate::interrupt::irql;
 use crate::level::{Above, At, Dispatch, High, Level, LevelCell};
 use crate::pcr::pcr;
 
@@ -373,34 +372,24 @@ where
     })
 }
 
-/// Drain the processor's queue at the dispatch level: the shared body of the two retirement entries
-/// — the hardware-interrupt exit and the idle loop.
+/// Drain the processor's queue at the dispatch level: the shared body of the retirement entries —
+/// the hardware-interrupt exit, the idle loop, and a lower below the dispatch level.
 ///
 /// The drain refuses to run at or above the dispatch level, the same guarantee NT draws from its
 /// dispatch software interrupt, which cannot fire until the level drops below it. Raising to the
 /// dispatch level leaves the clock unmasked: a tick there could land inside dispatcher code (a
 /// park's selection, a switch's install) or inside a running routine, and a drain at that point
 /// would run timer expiry on top of the half-done ready-queue work. Refused work stays queued for
-/// the next entry that finds the level lower — the outer retire pass (which loops until the queue
-/// is empty), the next interrupt exit, or the idle loop — at most one tick later.
+/// the next entry that finds the level lower: the outer retire pass (which loops until the queue
+/// is empty), or the lower that leaves the dispatch level.
 ///
 /// An empty queue costs one read of the published depth: no raise, nothing masked.
 pub fn drain() {
-    let pcr = pcr();
-    if !pcr.dpc_queue.has_pending() {
+    let queue = &pcr().dpc_queue;
+    if !queue.has_pending() {
         return;
     }
-    let Some(previous) = pcr.raise_from_below(irql::DISPATCH) else {
-        return;
-    };
-    {
-        // SAFETY: an entry: the ledger was below the dispatch level and the raise just put it
-        // there, so no other dispatch token is live; the token dies with this block, before the
-        // lower.
-        let mut dispatch = unsafe { At::<Dispatch>::enter() };
-        retire(&pcr.dpc_queue, &mut dispatch);
-    }
-    pcr.lower(previous);
+    let _ = crate::level::dispatch_entry(|dispatch| retire(queue, dispatch));
 }
 
 /// Whether the processor's queue has work pending, by its published depth (the idle loop's test).
@@ -413,6 +402,7 @@ mod tests {
     use std::cell::RefCell;
 
     use super::*;
+    use crate::interrupt::irql;
     use crate::level::raised;
 
     /// A queue of the test's own, with the given request-gate thresholds.
@@ -694,30 +684,71 @@ mod tests {
         assert!(calls().is_empty());
     }
 
-    /// The processor's own queue, through the kernel's entries: an enqueue with a token, then the
-    /// drain, which refuses at or above the dispatch level and runs the routine below it.
+    /// The processor's own queue, through the kernel's entries: an enqueue with a token at the
+    /// dispatch level waits there — the drain refuses at or above the dispatch level — and runs
+    /// at the lower that leaves it, as Windows 2000's KeLowerIrql runs the DISPATCH software
+    /// interrupt.
     #[test]
-    fn the_processors_queue_drains_from_below_dispatch_only() {
+    fn the_processors_queue_drains_at_the_lower_below_dispatch() {
         QUEUE.with(|bound| bound.set(Some(&pcr().dpc_queue)));
         assert!(!has_pending());
-        assert!(raised::<Dispatch, _>(|dispatch| enqueue_at(
-            dispatch,
-            recording_dpc(),
-            5,
-            0
-        )));
-        assert!(has_pending());
+        raised::<Dispatch, _>(|dispatch| {
+            assert!(enqueue_at(dispatch, recording_dpc(), 5, 0));
+            assert!(has_pending());
+            drain();
+            assert!(has_pending(), "refused at the dispatch level");
+            assert!(calls().is_empty());
+        });
 
-        raised::<Dispatch, _>(|_| drain());
-        assert!(has_pending(), "refused at the dispatch level");
-        assert!(calls().is_empty());
-
-        drain();
-        assert!(!has_pending());
+        assert!(!has_pending(), "the lower drained it");
         let seen = calls();
         assert_eq!(seen.len(), 1);
         assert_eq!((seen[0].argument1, seen[0].level), (5, irql::DISPATCH));
+        assert!(seen[0].interrupts_enabled);
         assert_eq!(pcr().current(), irql::PASSIVE);
+        assert_eq!(pcr().audit(), Ok(()));
+    }
+
+    /// A lower to a masked level drains what is queued too, its routines run enabled at the
+    /// dispatch level, and leaves the level masked as its raise found it: a masked service stays
+    /// masked across its dispatch-level work.
+    #[test]
+    fn a_masked_lower_drains_and_stays_masked() {
+        QUEUE.with(|bound| bound.set(Some(&pcr().dpc_queue)));
+        pcr().mask_interrupts();
+        raised::<Dispatch, _>(|dispatch| {
+            assert!(
+                pcr().interrupts_enabled(),
+                "the dispatch level runs enabled"
+            );
+            assert!(enqueue_at(dispatch, recording_dpc(), 6, 0));
+        });
+        assert!(!has_pending(), "the lower drained it");
+        assert!(
+            !pcr().interrupts_enabled(),
+            "masked again, as the raise found it"
+        );
+        let seen = calls();
+        assert_eq!((seen.len(), seen[0].argument1), (1, 6));
+        assert!(seen[0].interrupts_enabled);
+        pcr().unmask_interrupts();
+        assert_eq!(pcr().audit(), Ok(()));
+    }
+
+    /// A lower that does not leave the dispatch level runs nothing: a raise from the dispatch level
+    /// to the high one and back keeps the queue for the dispatch level's own lower.
+    #[test]
+    fn a_lower_within_the_dispatch_level_drains_nothing() {
+        QUEUE.with(|bound| bound.set(Some(&pcr().dpc_queue)));
+        raised::<Dispatch, _>(|dispatch| {
+            assert!(enqueue_at(dispatch, recording_dpc(), 7, 0));
+            {
+                let _high = dispatch.raise::<High>();
+            }
+            assert!(has_pending(), "still queued at the dispatch level");
+            assert!(calls().is_empty());
+        });
+        assert_eq!(calls().len(), 1);
     }
 
     /// The published depth follows every borrow: an insert publishes it, a retire pass publishes

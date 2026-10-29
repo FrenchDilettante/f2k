@@ -10,18 +10,27 @@
 //! process attach gives `_iob` its first streams ([`open_standard_streams`]); `_fmode` and
 //! `_adjust_fdiv` stay zero (text mode; no FDIV workaround).
 //!
-//! [`Global`] is the same storage for the C runtime's own process-wide state.
+//! [`Exported`] also holds the storage whose address programs reach another way: stdin's buffer,
+//! through `_iob[0]`'s pointers. The C runtime's own state is elsewhere: behind its locks
+//! ([`crate::thread`]), or in atomics.
 
 use core::cell::UnsafeCell;
 
 /// An exported variable. The cell makes it mutable, so the compiler places it in the DLL's
 /// writable data, never its read-only data: the DLL and the programs importing it both write it,
 /// each process its own copy (an image's writable pages are copy-on-write).
+///
+/// Programs read and write it at any time, under no lock of the C runtime's. So the C runtime's
+/// own accesses are raw and volatile ([`Exported::read`], [`Exported::write`]). A variable that
+/// belongs to state behind a lock (a stream's `_iob` entry, `_environ`) is reached only inside
+/// that lock, where a reference into it lives no longer than the locked section; a lone setting
+/// (`_fmode`) is read once where it is used.
 #[repr(transparent)]
 pub struct Exported<T>(UnsafeCell<T>);
 
 // SAFETY: the C runtime's variables are shared by every thread of the process, as the platform's
-// are; their users synchronize (or not) as the C runtime's contract says.
+// are; their users synchronize (or not) as the C runtime's contract says, and the C runtime itself
+// changes them only under the lock of the state they belong to.
 unsafe impl<T> Sync for Exported<T> {}
 
 impl<T> Exported<T> {
@@ -38,41 +47,16 @@ impl<T> Exported<T> {
 impl<T: Copy> Exported<T> {
     /// The variable's value, as the DLL or a program last wrote it.
     pub fn read(&self) -> T {
-        // SAFETY: a plain read of the process's own variable.
-        unsafe { self.0.get().read() }
-    }
-}
-
-/// A process-wide variable of the C runtime's own: shared by every thread, guarded where it needs
-/// to be by the C runtime's lock ([`crate::thread::Locked`]).
-#[repr(transparent)]
-pub struct Global<T>(UnsafeCell<T>);
-
-// SAFETY: as Exported's; the C runtime's lock serializes the state that needs it.
-unsafe impl<T> Sync for Global<T> {}
-
-impl<T> Global<T> {
-    pub const fn new(value: T) -> Self {
-        Self(UnsafeCell::new(value))
+        // SAFETY: the process's own variable, valid and aligned for the process's life; read once,
+        // volatile, since a program may write it behind the C runtime's back.
+        unsafe { self.0.get().read_volatile() }
     }
 
-    /// The variable's address.
-    pub const fn get(&self) -> *mut T {
-        self.0.get()
-    }
-}
-
-impl<T: Copy> Global<T> {
-    /// The variable's value.
-    pub fn read(&self) -> T {
-        // SAFETY: a plain read of the process's own variable.
-        unsafe { self.0.get().read() }
-    }
-
-    /// The variable set to `value`.
+    /// The variable set to `value`, for the program to read.
     pub fn write(&self, value: T) {
-        // SAFETY: a plain write of the process's own variable.
-        unsafe { self.0.get().write(value) }
+        // SAFETY: the process's own variable, valid and aligned for the process's life; written
+        // once, volatile, since a program may read it at any time.
+        unsafe { self.0.get().write_volatile(value) }
     }
 }
 
@@ -118,8 +102,9 @@ pub const IOB_ENTRIES: usize = 20;
 /// The size of the buffers the C runtime gives streams itself (fd's capture: 4096 bytes).
 pub const STREAM_BUFFER: usize = 4096;
 
-/// stdin's buffer, the DLL's own from the start (its stream says so: `_IOYOURBUF`).
-pub static STDIN_BUFFER: Global<[u8; STREAM_BUFFER]> = Global::new([0; STREAM_BUFFER]);
+/// stdin's buffer, the DLL's own from the start (its stream says so: `_IOYOURBUF`). Its address is
+/// in `_iob[0]`, where programs reach it; the C runtime reads into it under stdin's lock.
+pub static STDIN_BUFFER: Exported<[u8; STREAM_BUFFER]> = Exported::new([0; STREAM_BUFFER]);
 
 /// The `_flag` bits `_iob`'s first streams start with: stdio.h's `_IOREAD` and `_IOWRT`, and
 /// `_IOYOURBUF` (a buffer the stream does not own).
@@ -136,7 +121,9 @@ pub static IOB: Exported<[File; IOB_ENTRIES]> = Exported::new([File::UNUSED; IOB
 /// 2000's msvcrt has them before `main` (fd's capture): stdin reading through a 4096-byte buffer
 /// of the DLL's own, stdout and stderr writing, unbuffered until their first output.
 pub fn open_standard_streams() {
-    // SAFETY: the process's streams, before any thread uses them.
+    // SAFETY: the process's streams, at the DLL's process attach: before the program's code runs,
+    // and before any other thread can reach the C runtime (the loader serializes DLL entry
+    // points), so this is the one reference to them.
     let streams = unsafe { &mut *IOB.get() };
     streams[0] = File {
         ptr: STDIN_BUFFER.get() as *mut u8,

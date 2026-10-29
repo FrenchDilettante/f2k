@@ -23,6 +23,7 @@ pub mod search;
 pub mod volume;
 
 use crate::base::{set_last_error, SecurityAttributes, OBJ_INHERIT};
+use crate::heap::HeapString;
 use crate::nt::{self, IoStatus, ObjectAttributes, RelativeName, UnicodeString};
 use crate::ntcall;
 
@@ -203,7 +204,7 @@ pub unsafe fn narrow_into(units: &[u16], buffer: *mut u8) {
 /// file part.
 pub struct NtPath {
     /// The whole NT path.
-    pub full: UnicodeString,
+    pub full: HeapString,
     /// The name an OBJECT_ATTRIBUTES carries: the relative name, or the whole path.
     pub name: UnicodeString,
     /// The directory the name is relative to (zero: none).
@@ -216,15 +217,10 @@ impl NtPath {
     /// The NT path of a NUL-terminated DOS path (RtlDosPathNameToNtPathName_U); none when ntdll
     /// cannot make it.
     pub fn of(dos: &[u16]) -> Option<NtPath> {
-        let empty = || UnicodeString {
-            length: 0,
-            maximum_length: 0,
-            buffer: core::ptr::null_mut(),
-        };
-        let mut full = empty();
+        let mut full = UnicodeString::empty();
         let mut file_part = core::ptr::null_mut();
         let mut relative = RelativeName {
-            name: empty(),
+            name: UnicodeString::empty(),
             containing_directory: 0,
         };
         // SAFETY: ntdll's export, over a terminated string and the structures above.
@@ -234,17 +230,13 @@ impl NtPath {
         if made as u8 == 0 {
             return None;
         }
+        // SAFETY: the path ntdll made: its buffer a block of the process heap it allocated for
+        // the path, which the relative name and the file part point into, and nothing frees.
+        let full = unsafe { HeapString::adopt(full) };
         let (name, root) = if relative.name.length != 0 {
             (relative.name, relative.containing_directory)
         } else {
-            (
-                UnicodeString {
-                    length: full.length,
-                    maximum_length: full.maximum_length,
-                    buffer: full.buffer,
-                },
-                0,
-            )
+            (*full.string(), 0)
         };
         Some(NtPath {
             full,
@@ -268,15 +260,7 @@ impl NtPath {
 
     /// The whole NT path's units.
     pub fn units(&self) -> &[u16] {
-        // SAFETY: ntdll's buffer holds the path's length.
-        unsafe { core::slice::from_raw_parts(self.full.buffer, self.full.length as usize / 2) }
-    }
-}
-
-impl Drop for NtPath {
-    fn drop(&mut self) {
-        // SAFETY: ntdll's block on the process heap, the path's own, used no more.
-        unsafe { ntcall::free_heap(self.full.buffer.cast()) };
+        self.full.units()
     }
 }
 
