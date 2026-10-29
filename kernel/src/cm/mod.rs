@@ -186,11 +186,13 @@ impl Value {
     };
 }
 
-/// What a key's information classes report about it (sizes in bytes).
+/// What a key's information classes report about it (sizes in bytes). The name and the class are
+/// their UTF-16 units' bytes, little-endian, as the arena holds them and the information
+/// structures carry them.
 pub struct KeyInfo<'a> {
     pub last_write: u64,
-    pub name: &'a [u16],
-    pub class: &'a [u16],
+    pub name: &'a [u8],
+    pub class: &'a [u8],
     pub subkeys: u32,
     pub max_subkey_name: u32,
     pub max_subkey_class: u32,
@@ -199,10 +201,10 @@ pub struct KeyInfo<'a> {
     pub max_value_data: u32,
 }
 
-/// What a value's information classes report about it.
+/// What a value's information classes report about it; the name as [`KeyInfo`]'s.
 pub struct ValueInfo<'a> {
     pub kind: u32,
-    pub name: &'a [u16],
+    pub name: &'a [u8],
     pub data: &'a [u8],
 }
 
@@ -573,8 +575,8 @@ impl Registry {
         let node = &self.nodes[index as usize];
         let mut info = KeyInfo {
             last_write: node.last_write,
-            name: self.units(node.name),
-            class: self.units(node.class),
+            name: self.bytes(node.name),
+            class: self.bytes(node.class),
             subkeys: 0,
             max_subkey_name: 0,
             max_subkey_class: 0,
@@ -612,7 +614,7 @@ impl Registry {
         let value = &self.values[slot];
         ValueInfo {
             kind: value.kind,
-            name: self.units(value.name),
+            name: self.bytes(value.name),
             data: self.bytes(value.data),
         }
     }
@@ -726,13 +728,6 @@ impl Registry {
     }
 }
 
-/// A name's units as their bytes (little-endian, as the information structures carry them).
-pub fn unit_bytes(units: &[u16]) -> &[u8] {
-    // SAFETY: the units' memory (the registry's, or the kernel's own), read as twice as many
-    // bytes; a u16 has no padding, and every target F2K builds for is little-endian.
-    unsafe { core::slice::from_raw_parts(units.as_ptr().cast(), 2 * units.len()) }
-}
-
 /// `units` as their little-endian bytes into `out` (twice their length).
 pub fn put_units(out: &mut [u8], units: &[u16]) {
     for (pair, &unit) in out.chunks_exact_mut(2).zip(units) {
@@ -822,8 +817,13 @@ mod tests {
         text.encode_utf16().collect()
     }
 
-    fn text(units: &[u16]) -> String {
-        String::from_utf16(units).unwrap()
+    /// A reported name's text, from its little-endian bytes.
+    fn text(bytes: &[u8]) -> String {
+        let units: Vec<u16> = bytes
+            .chunks_exact(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .collect();
+        String::from_utf16(&units).unwrap()
     }
 
     #[test]

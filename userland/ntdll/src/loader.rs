@@ -80,7 +80,6 @@ use rtl::modules::{
     MAX_SEARCH_PATH,
     STATIC_LOAD_COUNT,
 };
-use rtl::nt::IoStatusBlock;
 use rtl::path::{nt_path, MAX_PATH};
 use rtl::pod::Pod;
 use rtl::status::{
@@ -94,36 +93,60 @@ use rtl::status::{
 };
 use rtl::string::{AnsiString, UnicodeString};
 use rtl::stub::Line;
-use rtl::sys::{self, nr, system_service, Native};
+use rtl::sys::{self, Native};
 
 use crate::curdir;
 use crate::params::{image_path, image_path_name};
+use crate::service::{self, ObjectAttributes, CURRENT_PROCESS};
 
-/// The process's own memory, read and written in place (a bad pointer faults the caller, as on
-/// Windows 2000).
-pub(crate) struct Mapped;
+/// The process's own memory, read and written in place by address (a bad pointer faults the
+/// caller, as on Windows 2000): the loader's lists and what they reach, and the images the process
+/// has mapped. Only [`Mapped::new`] makes one, whose caller answers for the addresses; the loader's
+/// own code gets it from the loader lock ([`locked`]). A copy vouches for what the original does
+/// (a walk of the lists reads through one while the loader changes them through the other).
+#[derive(Clone, Copy)]
+pub(crate) struct Mapped {
+    _vouched: (),
+}
+
+impl Mapped {
+    /// The handle, for the addresses its caller vouches for.
+    ///
+    /// # Safety
+    ///
+    /// Every address read through the handle is in readable memory of the process's own, and
+    /// every address written through it in writable memory that nothing else reads or writes
+    /// meanwhile: the loader's lists and the entries, images and strings they reach, under the
+    /// loader lock; an image the process has mapped, its headers and the structures they name; or
+    /// a structure the caller vouches for the same way.
+    pub(crate) unsafe fn new() -> Mapped {
+        Mapped { _vouched: () }
+    }
+}
 
 impl Memory for Mapped {
     fn byte(&self, at: u32) -> u8 {
-        // SAFETY: the lists, the images and the strings they name are the process's own.
+        // SAFETY: a readable address of the process's own (`Mapped::new`'s contract).
         unsafe { (at as usize as *const u8).read_volatile() }
     }
 
     fn read<T: Pod>(&self, at: u32) -> T {
-        // SAFETY: as above; any bytes there make a `T` (plain data), read at any alignment.
+        // SAFETY: as above, for the `T`'s bytes; any bytes there make a `T` (plain data), read at
+        // any alignment.
         unsafe { (at as usize as *const T).read_unaligned() }
     }
 }
 
 impl MemoryMut for Mapped {
     fn set_byte(&mut self, at: u32, value: u8) {
-        // SAFETY: the lists' entries, their links and their strings, on the process heap, and the
-        // images' import address tables: the process's own.
+        // SAFETY: a writable address of the process's own that nothing else touches meanwhile
+        // (`Mapped::new`'s contract): the lists' entries, their links and their strings, on the
+        // process heap, and the images' import address tables.
         unsafe { (at as usize as *mut u8).write_volatile(value) }
     }
 
     fn write<T: Pod>(&mut self, at: u32, value: T) {
-        // SAFETY: as above, at any alignment.
+        // SAFETY: as above, for the `T`'s bytes, at any alignment.
         unsafe { (at as usize as *mut T).write_unaligned(value) }
     }
 }
@@ -133,9 +156,18 @@ fn ldr() -> u32 {
     sys::ldr() as u32
 }
 
-/// `body`, the loader lock held.
-fn locked<T>(body: impl FnOnce() -> T) -> T {
-    crate::process::loader_lock().with(&Native, body)
+/// `body`, the loader lock held, over the process's memory: what the lists hold is the loader's
+/// to read and change while it holds the lock.
+fn locked<T>(body: impl FnOnce(&mut Mapped) -> T) -> T {
+    crate::process::loader_lock().with(&Native, || {
+        // SAFETY: under the loader lock, the loader reads and writes through the handle only the
+        // lists, the entries, images and strings they reach (on the process heap, or mapped for
+        // as long as their entries are listed), and the import address tables it makes writable
+        // for a snap; and the images and names its exports' callers pass, as Windows 2000's
+        // loader reads them in place.
+        let mut memory = unsafe { Mapped::new() };
+        body(&mut memory)
+    })
 }
 
 /// UTF-16 units in a block on the process heap, zeroed, given back when dropped: the buffers the
@@ -267,21 +299,21 @@ const PATH_ROOM: usize = 512;
 
 /// The entry of the module `name` names (see `rtl::modules::by_name`; a name with a path made
 /// absolute first, RtlGetFullPathName_U's way). Under the loader lock.
-fn find(name: &[u16]) -> Option<Module> {
+fn find(memory: &Mapped, name: &[u16]) -> Option<Module> {
     // The name with its default extension, terminated (the zeroes past it).
     let mut formed = [0u16; NAME_ROOM];
     let length = modules::module_name(name, &mut formed[..NAME_ROOM - 1])?;
     if !modules::has_path(&formed[..length]) {
-        return modules::by_name(&Mapped, ldr(), &formed[..length]);
+        return modules::by_name(memory, ldr(), &formed[..length]);
     }
-    find_by_path(&formed[..length + 1])
+    find_by_path(memory, &formed[..length + 1])
 }
 
 /// The entry of the module whose formed name `formed` (terminated) has a path: the name made
 /// absolute (RtlGetFullPathName_U) on the process heap (no room there: none found), matched
 /// against the modules' full paths. Never inlined: its frame ends before a load goes on.
 #[inline(never)]
-fn find_by_path(formed: &[u16]) -> Option<Module> {
+fn find_by_path(memory: &Mapped, formed: &[u16]) -> Option<Module> {
     let mut full = HeapUnits::new(MAX_PATH + 1)?;
     // SAFETY: the formed name is terminated; the buffer holds its length in units.
     let bytes = unsafe {
@@ -295,27 +327,29 @@ fn find_by_path(formed: &[u16]) -> Option<Module> {
     if bytes == 0 || bytes >= 2 * full.len() {
         return None; // no full path, or none that fits: no module has it
     }
-    modules::by_name(&Mapped, ldr(), &full[..bytes / 2])
+    modules::by_name(memory, ldr(), &full[..bytes / 2])
 }
 
 /// The module's handle (its base).
-fn base_of(module: Module) -> u32 {
-    module.base(&Mapped)
+fn base_of(memory: &Mapped, module: Module) -> u32 {
+    module.base(memory)
 }
 
 /// A module's load count, raised (or lowered) to `change`'s answer.
-fn change_load_count(module: Module, change: fn(u16) -> u16) {
-    module.set_load_count(&mut Mapped, change(module.load_count(&Mapped)));
+fn change_load_count(memory: &mut Mapped, module: Module, change: fn(u16) -> u16) {
+    let count = module.load_count(memory);
+    module.set_load_count(memory, change(count));
 }
 
 /// A module's LDRP_* flags with `set` set and `clear` cleared.
-fn change_flags(module: Module, set: u32, clear: u32) {
-    module.set_flags(&mut Mapped, (module.flags(&Mapped) & !clear) | set);
+fn change_flags(memory: &mut Mapped, module: Module, set: u32, clear: u32) {
+    let flags = module.flags(memory);
+    module.set_flags(memory, (flags & !clear) | set);
 }
 
 /// Call the entry point of `module` with `reason` and `reserved`: its answer (zero: FALSE).
-fn call_entry(module: Module, reason: u32, reserved: u32) -> u32 {
-    let entry = module.entry(&Mapped);
+fn call_entry(memory: &Mapped, module: Module, reason: u32, reserved: u32) -> u32 {
+    let entry = module.entry(memory);
     // SAFETY: the module's own entry point, as its headers name it: a DllMain.
     unsafe { f2k_call_dll_entry(entry.entry_point, entry.dll_base, reason, reserved) }
 }
@@ -349,11 +383,10 @@ fn report(body: impl FnOnce(&mut Line) -> core::fmt::Result) {
     crate::dbgprint::print(&shown[..shown.len() - 1]);
 }
 
-/// The current-process pseudo-handle, and the open, section and view arguments a load passes, as
-/// Windows 2000's loader passes them: the file opened to read and execute, shared for reading and
-/// deleting, synchronously, never a directory; an image section mapped for reading and executing;
-/// the view shared, PAGE_READWRITE (an image's pages take their sections' protections).
-const CURRENT_PROCESS: u32 = 0xFFFF_FFFF;
+/// The open, section and view arguments a load passes, as Windows 2000's loader passes them: the
+/// file opened to read and execute, shared for reading and deleting, synchronously, never a
+/// directory; an image section mapped for reading and executing; the view shared, PAGE_READWRITE
+/// (an image's pages take their sections' protections).
 const FILE_READ_DATA: u32 = 0x1;
 const FILE_EXECUTE: u32 = 0x20;
 const SYNCHRONIZE: u32 = 0x10_0000;
@@ -369,10 +402,6 @@ const PAGE_READWRITE: u32 = 0x4;
 const PAGE_EXECUTE: u32 = 0x10;
 const SEC_IMAGE: u32 = 0x0100_0000;
 const VIEW_SHARE: u32 = 1;
-
-/// OBJECT_ATTRIBUTES (`rtl::nt`'s): a name for the file services, borrowed for as long as the
-/// attributes are.
-type ObjectAttributes<'a> = rtl::nt::ObjectAttributes<u32, &'a UnicodeString, usize>;
 
 /// Open the file at the full DOS path `full` to map it: its handle, or the open's status. Never
 /// inlined, as [`find_file`].
@@ -393,57 +422,30 @@ fn open_file(full: &[u16]) -> Result<u32, u32> {
         security_descriptor: 0,
         security_quality_of_service: 0,
     };
-    let mut io_status = IoStatusBlock::<u32>::default();
-    let mut handle = 0u32;
-    let args = [
-        &mut handle as *mut u32 as u32,
+    service::open_file(
+        &attributes,
         FILE_READ_DATA | FILE_EXECUTE | SYNCHRONIZE,
-        &attributes as *const ObjectAttributes as u32,
-        &mut io_status as *mut IoStatusBlock<u32> as u32,
         FILE_SHARE_READ | FILE_SHARE_DELETE,
         FILE_SYNCHRONOUS_IO_NONALERT | FILE_NON_DIRECTORY_FILE,
-    ];
-    match system_service(nr::NtOpenFile, &args) {
-        STATUS_SUCCESS => Ok(handle),
-        status => Err(status),
-    }
+    )
 }
 
 /// Close a handle.
 fn close(handle: u32) {
-    system_service(nr::NtClose, &[handle]);
+    service::close(handle);
 }
 
 /// Map the image file `file` names as an image section's view: its base and its size.
 fn map_image(file: u32) -> Result<(u32, u32), u32> {
-    let mut section = 0u32;
-    let args = [
-        &mut section as *mut u32 as u32,
+    let section = service::create_section(
         SECTION_QUERY | SECTION_MAP_READ | SECTION_MAP_EXECUTE,
-        0,
-        0,
         PAGE_EXECUTE,
         SEC_IMAGE,
         file,
-    ];
-    match system_service(nr::NtCreateSection, &args) {
-        STATUS_SUCCESS => {}
-        status => return Err(status),
-    }
+    )?;
     let (mut base, mut size) = (0u32, 0u32);
-    let args = [
-        section,
-        CURRENT_PROCESS,
-        &mut base as *mut u32 as u32,
-        0,
-        0,
-        0,
-        &mut size as *mut u32 as u32,
-        VIEW_SHARE,
-        0,
-        PAGE_READWRITE,
-    ];
-    let status = system_service(nr::NtMapViewOfSection, &args);
+    let status =
+        service::map_view_of_section(section, &mut base, &mut size, VIEW_SHARE, PAGE_READWRITE);
     // The view holds the image (its file's segment), not the section: the section goes now.
     close(section);
     match status {
@@ -452,46 +454,44 @@ fn map_image(file: u32) -> Result<(u32, u32), u32> {
     }
 }
 
-/// Unmap the view at `base`.
+/// Unmap the view of a module's image at `base`, whose entry is out of the lists (or never joined
+/// them): nothing reaches it any more.
 fn unmap(base: u32) {
-    system_service(nr::NtUnmapViewOfSection, &[CURRENT_PROCESS, base]);
+    // SAFETY: the view a load mapped, whose module the lists no longer hold: the loader keeps no
+    // reference into an image (it reads and writes one by address, through `Mapped`), and reaches
+    // a module only through the lists.
+    unsafe { service::unmap_view_of_section(base) };
 }
 
-/// Give the pages `[at, at + size)` the protection `protect`: their old protection.
+/// Give the pages `[at, at + size)` of an image's import address table the protection `protect`:
+/// their old protection.
 fn protect(at: u32, size: u32, protect: u32) -> Result<u32, u32> {
-    let (mut base, mut size, mut old) = (at, size, 0u32);
-    let args = [
-        CURRENT_PROCESS,
-        &mut base as *mut u32 as u32,
-        &mut size as *mut u32 as u32,
-        protect,
-        &mut old as *mut u32 as u32,
-    ];
-    match system_service(nr::NtProtectVirtualMemory, &args) {
-        STATUS_SUCCESS => Ok(old),
-        status => Err(status),
-    }
+    let (mut base, mut size) = (at, size);
+    // SAFETY: an import address table's pages, which the loader writes by address alone (through
+    // `Mapped`, holding no reference into them), and which no code reads while its image's imports
+    // are snapped, the image not yet initialized.
+    unsafe { service::protect_virtual_memory(&mut base, &mut size, protect) }
 }
 
 /// The entry of the module mapped at `base` (`size` bytes; none: its headers' SizeOfImage) from
 /// the full path `path`, made on the process heap (the path's text after it) and joined to the
 /// load and memory orders; none without room.
-fn add_entry(base: u32, size: Option<u32>, path: &[u16]) -> Option<Module> {
+fn add_entry(memory: &mut Mapped, base: u32, size: Option<u32>, path: &[u16]) -> Option<Module> {
     let room = 2 * (path.len() + 1);
     let at = sys::process_heap().alloc(&Native, 0, size_of::<Entry>() + room)? as u32;
     let buffer = at + size_of::<Entry>() as u32;
-    let module = modules::loaded(&Mapped, base, size);
+    let module = modules::loaded(memory, base, size);
     // A fresh block of the entry's size and the path's room: the entry, then the path and its
     // terminator.
-    Mapped.write(
+    memory.write(
         at,
         modules::loaded_entry(at, &module, buffer, path, room as u32),
     );
     for (index, &unit) in path.iter().chain(&[0]).enumerate() {
-        Mapped.write(buffer + 2 * index as u32, unit);
+        memory.write(buffer + 2 * index as u32, unit);
     }
     let module = Module(at);
-    modules::insert(&mut Mapped, ldr(), module);
+    modules::insert(memory, ldr(), module);
     Some(module)
 }
 
@@ -587,29 +587,29 @@ fn report_unmapped(path: &[u16], status: u32) {
 
 /// Load the module `name` (formed: its default extension supplied) from the volume: see
 /// [`load_file`].
-fn load(name: &[u16]) -> Result<Module, u32> {
-    load_file(open_module(name)?)
+fn load(memory: &mut Mapped, name: &[u16]) -> Result<Module, u32> {
+    load_file(memory, open_module(name)?)
 }
 
 /// Load the module whose file `found` opened (see the module doc): its entry, its load count 1, its
 /// imports snapped, in the initialization order (its entry point not called yet). The search's
 /// buffers go back to the heap before its imports load. Under the loader lock.
-fn load_file(found: Found) -> Result<Module, u32> {
+fn load_file(memory: &mut Mapped, found: Found) -> Result<Module, u32> {
     let mapped = map_image(found.file);
     // The section holds the file.
     close(found.file);
     let (base, size) = mapped.inspect_err(|&status| report_unmapped(found.path(), status))?;
-    let added = add_entry(base, Some(size), found.path());
+    let added = add_entry(memory, base, Some(size), found.path());
     drop(found);
     let Some(module) = added else {
         unmap(base);
         return Err(STATUS_NO_MEMORY);
     };
-    if let Err((status, referenced)) = snap(base) {
-        discard(module, referenced);
+    if let Err((status, referenced)) = snap(memory, base) {
+        discard(memory, module, referenced);
         return Err(status);
     }
-    modules::insert_initialized(&mut Mapped, ldr(), module);
+    modules::insert_initialized(memory, ldr(), module);
     Ok(module)
 }
 
@@ -624,11 +624,11 @@ enum Located {
 /// or else its file, found and opened (a module not found reported). STATUS_DLL_NOT_FOUND for a
 /// name that does not fit. Never inlined: the name's buffer stays out of the recursion's frames.
 #[inline(never)]
-fn locate_import(name: u32) -> Result<Located, u32> {
+fn locate_import(memory: &Mapped, name: u32) -> Result<Located, u32> {
     let mut formed = [0u16; NAME_ROOM];
     let length =
-        modules::import_module_name(&Mapped, name, &mut formed).ok_or(STATUS_DLL_NOT_FOUND)?;
-    match find(&formed[..length]) {
+        modules::import_module_name(memory, name, &mut formed).ok_or(STATUS_DLL_NOT_FOUND)?;
+    match find(memory, &formed[..length]) {
         Some(module) => Ok(Located::Listed(module)),
         None => open_module(&formed[..length]).map(Located::Opened),
     }
@@ -637,25 +637,31 @@ fn locate_import(name: u32) -> Result<Located, u32> {
 /// The entry of the module an import descriptor names (its ANSI name at `name`), when the lists
 /// hold it. Never inlined, as [`locate_import`].
 #[inline(never)]
-fn find_import(name: u32) -> Option<Module> {
+fn find_import(memory: &Mapped, name: u32) -> Option<Module> {
     let mut formed = [0u16; NAME_ROOM];
-    let length = modules::import_module_name(&Mapped, name, &mut formed)?;
-    find(&formed[..length])
+    let length = modules::import_module_name(memory, name, &mut formed)?;
+    find(memory, &formed[..length])
 }
 
 /// Snap the imports of the image mapped at `base` against the lists, descriptor by descriptor: each
 /// module it imports referenced once more, or loaded. On a failure, its status and how many
 /// descriptors' modules were referenced.
-fn snap(base: u32) -> Result<(), (u32, usize)> {
-    for (index, descriptor) in modules::import_descriptors(&Mapped, base).enumerate() {
-        let module = match locate_import(descriptor.name).map_err(|status| (status, index))? {
+fn snap(memory: &mut Mapped, base: u32) -> Result<(), (u32, usize)> {
+    // The descriptors are read through a copy of the handle while the loads write through it.
+    let image = *memory;
+    for (index, descriptor) in modules::import_descriptors(&image, base).enumerate() {
+        let located = locate_import(memory, descriptor.name).map_err(|status| (status, index))?;
+        let module = match located {
             Located::Listed(module) => {
-                change_load_count(module, modules::referenced);
-                base_of(module)
+                change_load_count(memory, module, modules::referenced);
+                base_of(memory, module)
             }
-            Located::Opened(found) => base_of(load_file(found).map_err(|status| (status, index))?),
+            Located::Opened(found) => {
+                let module = load_file(memory, found).map_err(|status| (status, index))?;
+                base_of(memory, module)
+            }
         };
-        snap_descriptor(base, &descriptor, module).map_err(|status| (status, index + 1))?;
+        snap_descriptor(memory, base, &descriptor, module).map_err(|status| (status, index + 1))?;
     }
     Ok(())
 }
@@ -664,17 +670,24 @@ fn snap(base: u32) -> Result<(), (u32, usize)> {
 /// module whose handle is `module`, the IAT writable meanwhile. An import the module does not
 /// export is STATUS_ENTRYPOINT_NOT_FOUND by name, STATUS_ORDINAL_NOT_FOUND by ordinal, as Windows
 /// 2000's snap answers.
-fn snap_descriptor(base: u32, descriptor: &Descriptor, module: u32) -> Result<(), u32> {
-    let count = modules::imports(&Mapped, base, descriptor.lookup).count() as u32;
+fn snap_descriptor(
+    memory: &mut Mapped,
+    base: u32,
+    descriptor: &Descriptor,
+    module: u32,
+) -> Result<(), u32> {
+    let count = modules::imports(memory, base, descriptor.lookup).count() as u32;
     if count == 0 {
         return Ok(());
     }
     let old = protect(descriptor.iat, 4 * count, PAGE_READWRITE)?;
     let ldr = ldr();
     let mut snapped = Ok(());
-    for (index, import) in modules::imports(&Mapped, base, descriptor.lookup).enumerate() {
-        match modules::import_address(&Mapped, ldr, module, import) {
-            Ok(address) => Mapped.write(descriptor.iat + 4 * index as u32, address),
+    // The imports are read through a copy of the handle while the slots are written through it.
+    let image = *memory;
+    for (index, import) in modules::imports(&image, base, descriptor.lookup).enumerate() {
+        match modules::import_address(memory, ldr, module, import) {
+            Ok(address) => memory.write(descriptor.iat + 4 * index as u32, address),
             Err(status) => {
                 snapped = Err(match (status, import) {
                     // A forwarder naming a module the process has not loaded.
@@ -682,7 +695,7 @@ fn snap_descriptor(base: u32, descriptor: &Descriptor, module: u32) -> Result<()
                     (_, Import::Ordinal(_)) => STATUS_ORDINAL_NOT_FOUND,
                     (_, Import::Name(_)) => STATUS_ENTRYPOINT_NOT_FOUND,
                 });
-                report_import(import, descriptor.name);
+                report_import(memory, import, descriptor.name);
                 break;
             }
         }
@@ -694,9 +707,9 @@ fn snap_descriptor(base: u32, descriptor: &Descriptor, module: u32) -> Result<()
 /// Report an import that does not resolve, of the module an import descriptor names (its ANSI name
 /// at `module`; see [`report`]).
 #[inline(never)]
-fn report_import(import: Import, module: u32) {
+fn report_import(memory: &Mapped, import: Import, module: u32) {
     let mut formed = [0u16; NAME_ROOM];
-    let length = modules::import_module_name(&Mapped, module, &mut formed).unwrap_or(0);
+    let length = modules::import_module_name(memory, module, &mut formed).unwrap_or(0);
     let mut shown = [0u8; 96];
     let module = narrow(&formed[..length], &mut shown);
     report(|line| match import {
@@ -705,7 +718,7 @@ fn report_import(import: Import, module: u32) {
             let mut text = [0u8; 96];
             let length = (0..text.len())
                 .find(|&index| {
-                    text[index] = Mapped.byte(at + index as u32);
+                    text[index] = memory.byte(at + index as u32);
                     text[index] == 0
                 })
                 .unwrap_or(text.len());
@@ -717,29 +730,31 @@ fn report_import(import: Import, module: u32) {
 
 /// One reference fewer to `module`: a loaded module's last unloads it (a module the process
 /// started with keeps its count).
-fn dereference(module: Module) {
-    let count = module.load_count(&Mapped);
-    module.set_load_count(&mut Mapped, modules::released(count));
+fn dereference(memory: &mut Mapped, module: Module) {
+    let count = module.load_count(memory);
+    module.set_load_count(memory, modules::released(count));
     if count == 1 {
-        discard(module, usize::MAX);
+        discard(memory, module, usize::MAX);
     }
 }
 
 /// Unload the loaded `module`: its entry point called with DLL_PROCESS_DETACH (lpReserved NULL)
 /// when it had its DLL_PROCESS_ATTACH, out of the lists, the modules its first `referenced` import
 /// descriptors name released, its view unmapped, its entry freed.
-fn discard(module: Module, referenced: usize) {
-    let base = base_of(module);
-    module.set_load_count(&mut Mapped, 0);
-    if module.flags(&Mapped) & flags::PROCESS_ATTACH_CALLED != 0 {
-        change_flags(module, 0, flags::PROCESS_ATTACH_CALLED);
+fn discard(memory: &mut Mapped, module: Module, referenced: usize) {
+    let base = base_of(memory, module);
+    module.set_load_count(memory, 0);
+    if module.flags(memory) & flags::PROCESS_ATTACH_CALLED != 0 {
+        change_flags(memory, module, 0, flags::PROCESS_ATTACH_CALLED);
         count_attached(false);
-        call_entry(module, DLL_PROCESS_DETACH, 0);
+        call_entry(memory, module, DLL_PROCESS_DETACH, 0);
     }
-    modules::remove(&mut Mapped, module);
-    for descriptor in modules::import_descriptors(&Mapped, base).take(referenced) {
-        if let Some(found) = find_import(descriptor.name) {
-            dereference(found);
+    modules::remove(memory, module);
+    // The descriptors are read through a copy of the handle while the releases write through it.
+    let image = *memory;
+    for descriptor in modules::import_descriptors(&image, base).take(referenced) {
+        if let Some(found) = find_import(memory, descriptor.name) {
+            dereference(memory, found);
         }
     }
     unmap(base);
@@ -753,18 +768,20 @@ const MAX_CALLS: usize = 64;
 /// has not processed yet, in that order (each processed once, whatever its answer): the first one
 /// answering FALSE. Each pass takes the pending entries first, so a load an entry point makes runs
 /// its own DLLs' calls alone. Under the loader lock.
-fn run_initializers(reserved: u32) -> Result<(), Module> {
+fn run_initializers(memory: &mut Mapped, reserved: u32) -> Result<(), Module> {
     loop {
         let mut pending = [Module(0); MAX_CALLS];
         let mut count = 0;
-        for module in modules::initialization_order(&Mapped, ldr(), false) {
-            if module.flags(&Mapped) & flags::ENTRY_PROCESSED != 0 {
+        // The order is walked through a copy of the handle while the flags are written through it.
+        let lists = *memory;
+        for module in modules::initialization_order(&lists, ldr(), false) {
+            if module.flags(memory) & flags::ENTRY_PROCESSED != 0 {
                 continue;
             }
             if count == MAX_CALLS {
                 break;
             }
-            change_flags(module, flags::ENTRY_PROCESSED, 0);
+            change_flags(memory, module, flags::ENTRY_PROCESSED, 0);
             pending[count] = module;
             count += 1;
         }
@@ -772,12 +789,12 @@ fn run_initializers(reserved: u32) -> Result<(), Module> {
             return Ok(());
         }
         for &module in &pending[..count] {
-            if module.entry_point(&Mapped) == 0 {
+            if module.entry_point(memory) == 0 {
                 continue;
             }
-            change_flags(module, flags::PROCESS_ATTACH_CALLED, 0);
+            change_flags(memory, module, flags::PROCESS_ATTACH_CALLED, 0);
             count_attached(true);
-            if call_entry(module, DLL_PROCESS_ATTACH, reserved) == 0 {
+            if call_entry(memory, module, DLL_PROCESS_ATTACH, reserved) == 0 {
                 return Err(module);
             }
         }
@@ -786,7 +803,7 @@ fn run_initializers(reserved: u32) -> Result<(), Module> {
 
 /// ntdll's entry: its path under the system root (built on the process heap), its base the
 /// linker's symbol; none without room.
-fn add_ntdll() -> Option<Module> {
+fn add_ntdll(memory: &mut Mapped) -> Option<Module> {
     let mut path = HeapUnits::new(MAX_PATH)?;
     let root = system_root();
     let file = b"\\system32\\ntdll.dll";
@@ -796,7 +813,7 @@ fn add_ntdll() -> Option<Module> {
     }
     // The linker's symbol, by address only.
     let base = core::ptr::addr_of!(IMAGE_BASE) as u32;
-    add_entry(base, None, &path[..root.len() + file.len()])
+    add_entry(memory, base, None, &path[..root.len() + file.len()])
 }
 
 /// The process's initialization, on its first thread once the process heap and the locks are made
@@ -804,13 +821,13 @@ fn add_ntdll() -> Option<Module> {
 /// static. The failure's status.
 pub(crate) fn initialize_process() -> Result<(), u32> {
     set_initializing(true);
-    locked(|| {
+    locked(|memory| {
         let heap = sys::process_heap();
         let lists = heap
             .alloc(&Native, 0, size_of::<LdrData>())
             .ok_or(STATUS_NO_MEMORY)? as u32;
         // A fresh block of the PEB_LDR_DATA's size.
-        Mapped.write(lists, modules::empty_lists(lists));
+        memory.write(lists, modules::empty_lists(lists));
         sys::set_ldr(lists as usize);
 
         // The image: its full path the process parameters' own string, its entry processed (it is
@@ -821,31 +838,33 @@ pub(crate) fn initialize_process() -> Result<(), u32> {
             .ok_or(STATUS_NO_MEMORY)? as u32;
         let path = image_path_name();
         // A fresh block of the entry's size.
-        Mapped.write(
+        memory.write(
             at,
             modules::loaded_entry(
                 at,
-                &modules::loaded(&Mapped, base, None),
+                &modules::loaded(memory, base, None),
                 path.buffer as u32,
                 image_path(),
                 u32::from(path.maximum_length),
             ),
         );
         let image = Module(at);
-        image.clear_initialization_links(&mut Mapped);
-        change_flags(image, flags::ENTRY_PROCESSED, 0);
-        modules::insert(&mut Mapped, lists, image);
+        image.clear_initialization_links(memory);
+        change_flags(memory, image, flags::ENTRY_PROCESSED, 0);
+        modules::insert(memory, lists, image);
 
         // ntdll: at the system directory, first in the initialization order, its entry processed
         // (it has no entry point).
-        let ntdll = add_ntdll().ok_or(STATUS_NO_MEMORY)?;
-        change_flags(ntdll, flags::ENTRY_PROCESSED, 0);
-        modules::insert_initialized(&mut Mapped, lists, ntdll);
+        let ntdll = add_ntdll(memory).ok_or(STATUS_NO_MEMORY)?;
+        change_flags(memory, ntdll, flags::ENTRY_PROCESSED, 0);
+        modules::insert_initialized(memory, lists, ntdll);
 
         // The image's imports, then every module the process starts with made static.
-        snap(base).map_err(|(status, _)| status)?;
-        for module in modules::load_order(&Mapped, lists) {
-            module.set_load_count(&mut Mapped, STATIC_LOAD_COUNT);
+        snap(memory, base).map_err(|(status, _)| status)?;
+        // The order is walked through a copy of the handle while the counts are written through it.
+        let walk = *memory;
+        for module in modules::load_order(&walk, lists) {
+            module.set_load_count(memory, STATIC_LOAD_COUNT);
         }
         Ok(())
     })
@@ -855,11 +874,11 @@ pub(crate) fn initialize_process() -> Result<(), u32> {
 /// `context` (the thread's initial context): STATUS_DLL_INIT_FAILED when an entry point answers
 /// FALSE (reported, see [`report`]). The process's initialization is over either way.
 pub(crate) fn attach_process(context: u32) -> Result<(), u32> {
-    let answer = locked(|| {
-        run_initializers(context).map_err(|module| {
+    let answer = locked(|memory| {
+        run_initializers(memory, context).map_err(|module| {
             let mut name = [0u16; 96];
             let length =
-                modules::string_units(&Mapped, &module.entry(&Mapped).base_dll_name, &mut name);
+                modules::string_units(memory, &module.entry(memory).base_dll_name, &mut name);
             let mut shown = [0u8; 96];
             report(|line| {
                 write!(
@@ -878,7 +897,7 @@ pub(crate) fn attach_process(context: u32) -> Result<(), u32> {
 /// End the process whose initialization failed with `status` (Windows 2000's hard-error popup
 /// aside).
 pub(crate) fn fail_process(status: u32) -> ! {
-    system_service(nr::NtTerminateProcess, &[CURRENT_PROCESS, status]);
+    service::terminate_process(CURRENT_PROCESS, status);
     // NtTerminateProcess of the caller does not return.
     loop {
         core::hint::spin_loop();
@@ -895,11 +914,11 @@ fn notify(order: Order, reason: u32, reserved: u32, threads: bool) {
     if attached() == 0 || ldr() == 0 {
         return;
     }
-    locked(|| {
+    locked(|memory| {
         let mut owed = [Module(0); MAX_NOTIFIED];
         let mut count = 0;
         let mut take = |module: Module| {
-            let flags = module.flags(&Mapped);
+            let flags = module.flags(memory);
             if flags & flags::PROCESS_ATTACH_CALLED != 0
                 && !(threads && flags & flags::DONT_CALL_FOR_THREADS != 0)
                 && count < MAX_NOTIFIED
@@ -910,17 +929,17 @@ fn notify(order: Order, reason: u32, reserved: u32, threads: bool) {
         };
         let ldr = ldr();
         match order {
-            Order::Memory => modules::memory_order(&Mapped, ldr).for_each(&mut take),
+            Order::Memory => modules::memory_order(memory, ldr).for_each(&mut take),
             Order::Unwinding => {
-                modules::initialization_order(&Mapped, ldr, true).for_each(&mut take)
+                modules::initialization_order(memory, ldr, true).for_each(&mut take)
             }
         }
         for &module in &owed[..count] {
             if reason == DLL_PROCESS_DETACH {
-                change_flags(module, 0, flags::PROCESS_ATTACH_CALLED);
+                change_flags(memory, module, 0, flags::PROCESS_ATTACH_CALLED);
                 count_attached(false);
             }
-            call_entry(module, reason, reserved);
+            call_entry(memory, module, reason, reserved);
         }
     });
 }
@@ -963,7 +982,7 @@ pub unsafe extern "system" fn ldr_get_dll_handle(
 ) -> u32 {
     // SAFETY: the caller's string.
     let name = unsafe { (*name).units() };
-    let found = locked(|| find(name).map(base_of));
+    let found = locked(|memory| find(memory, name).map(|module| base_of(memory, module)));
     // SAFETY: the caller's handle.
     unsafe { handle.write(found.unwrap_or(0)) };
     found.map_or(STATUS_DLL_NOT_FOUND, |_| STATUS_SUCCESS)
@@ -988,21 +1007,21 @@ pub unsafe extern "system" fn ldr_load_dll(
 ) -> u32 {
     // SAFETY: the caller's string.
     let name = unsafe { (*name).units() };
-    let found = locked(|| {
-        if let Some(module) = find(name) {
-            change_load_count(module, modules::referenced);
-            return Ok(base_of(module));
+    let found = locked(|memory| {
+        if let Some(module) = find(memory, name) {
+            change_load_count(memory, module, modules::referenced);
+            return Ok(base_of(memory, module));
         }
         let mut formed = [0u16; NAME_ROOM];
         let length =
             modules::module_name(name, &mut formed[..NAME_ROOM - 1]).ok_or(STATUS_DLL_NOT_FOUND)?;
-        let module = load(&formed[..length])?;
-        if run_initializers(0).is_err() {
+        let module = load(memory, &formed[..length])?;
+        if run_initializers(memory, 0).is_err() {
             // The DLL asked for goes again, with what it brought in.
-            dereference(module);
+            dereference(memory, module);
             return Err(STATUS_DLL_INIT_FAILED);
         }
-        Ok(base_of(module))
+        Ok(base_of(memory, module))
     });
     // SAFETY: the caller's handle.
     unsafe { handle.write(*found.as_ref().unwrap_or(&0)) };
@@ -1014,10 +1033,10 @@ pub unsafe extern "system" fn ldr_load_dll(
 /// with it. STATUS_DLL_NOT_FOUND for a handle naming no module.
 #[unsafe(export_name = "f2k_export_LdrUnloadDll")]
 pub extern "system" fn ldr_unload_dll(module: u32) -> u32 {
-    locked(|| match modules::by_base(&Mapped, ldr(), module) {
-        Some(module) if module.load_count(&Mapped) == STATIC_LOAD_COUNT => STATUS_SUCCESS,
+    locked(|memory| match modules::by_base(memory, ldr(), module) {
+        Some(module) if module.load_count(memory) == STATIC_LOAD_COUNT => STATUS_SUCCESS,
         Some(module) => {
-            dereference(module);
+            dereference(memory, module);
             STATUS_SUCCESS
         }
         None => STATUS_DLL_NOT_FOUND,
@@ -1030,9 +1049,9 @@ pub extern "system" fn ldr_unload_dll(module: u32) -> u32 {
 /// last error untouched).
 #[unsafe(export_name = "f2k_export_LdrDisableThreadCalloutsForDll")]
 pub extern "system" fn ldr_disable_thread_callouts_for_dll(module: u32) -> u32 {
-    locked(|| match modules::by_base(&Mapped, ldr(), module) {
+    locked(|memory| match modules::by_base(memory, ldr(), module) {
         Some(module) => {
-            change_flags(module, flags::DONT_CALL_FOR_THREADS, 0);
+            change_flags(memory, module, flags::DONT_CALL_FOR_THREADS, 0);
             STATUS_SUCCESS
         }
         None => STATUS_SUCCESS,
@@ -1067,9 +1086,9 @@ pub unsafe extern "system" fn ldr_get_procedure_address(
     if name.is_none() && ordinal == 0 {
         return STATUS_INVALID_PARAMETER;
     }
-    let found = locked(|| match name {
-        Some(name) => modules::procedure_address(&Mapped, ldr(), module, name),
-        None => modules::procedure_by_ordinal(&Mapped, ldr(), module, ordinal),
+    let found = locked(|memory| match name {
+        Some(name) => modules::procedure_address(memory, ldr(), module, name),
+        None => modules::procedure_by_ordinal(memory, ldr(), module, ordinal),
     });
     match found {
         Ok(found) => {

@@ -1,12 +1,12 @@
 //! A PE32 image's structures, as Windows defines them (IMAGE_DOS_HEADER, IMAGE_NT_HEADERS32, the
 //! section table's rows, the export directory, the import descriptors and the TLS directory), all
 //! plain data ([`Pod`]), so that a parse reads each one whole from an image's bytes; a data
-//! directory as RtlImageDirectoryEntryToData finds it ([`data_directory`]). From a mapped image's
-//! first page: its NT headers ([`nt_headers`]), and what the process's start takes from them: the
-//! process heap's first segment ([`process_heap_sizes`]); where RtlImageNtHeader finds them
-//! ([`nt_headers_offset`]). From an image mapped in a process's memory as the loader reads it
-//! ([`Memory`]): its NT headers ([`mapped_headers`], [`mapped_nt_headers`]) and a data directory
-//! ([`mapped_directory`]).
+//! directory as RtlImageDirectoryEntryToData finds it ([`data_directory`]); where RtlImageNtHeader
+//! finds the NT headers ([`nt_headers_offset`]). From an image mapped in a process's memory, read
+//! through [`Memory`] as the loader reads it: its NT headers ([`mapped_headers`],
+//! [`mapped_nt_headers`]; [`nt_headers`] within its first page alone), a data directory
+//! ([`mapped_directory`]), and what the process's start takes from the headers: the process heap's
+//! first segment ([`process_heap_sizes`]).
 
 use core::mem::{offset_of, size_of};
 
@@ -289,23 +289,14 @@ pub fn mapped_directory<M: Memory>(
 /// it alone.
 const HEADER_PAGE: usize = 0x1000;
 
-/// A copy of the `T` at `offset` into the header page at `base`.
-fn header_copy<T: Copy>(base: usize, offset: usize) -> T {
-    debug_assert!(offset + size_of::<T>() <= HEADER_PAGE);
-    // SAFETY: the callers pass a mapped image's base, whose first page is mapped readable for the
-    // image's life, and an offset that keeps the read inside that page; the headers have no
-    // alignment promise, hence the unaligned read of a plain-data type.
-    unsafe { core::ptr::read_unaligned((base + offset) as *const T) }
-}
-
-/// The NT headers of the image mapped at `base` (its first page mapped), copied out: none when its
-/// headers are not a PE32 image's, or do not sit in its first page.
-pub fn nt_headers(base: usize) -> Option<ImageNtHeaders32> {
-    let offset = nt_headers_offset(&header_copy(base, 0))?;
+/// The NT headers of the image mapped at `base` in `memory` (its first page mapped), read inside
+/// that page alone: none when its headers are not a PE32 image's, or do not sit in its first page.
+pub fn nt_headers<M: Memory>(memory: &M, base: u32) -> Option<ImageNtHeaders32> {
+    let offset = nt_headers_offset(&memory.read(base))?;
     if offset.checked_add(size_of::<ImageNtHeaders32>())? > HEADER_PAGE {
         return None;
     }
-    let nt: ImageNtHeaders32 = header_copy(base, offset);
+    let nt: ImageNtHeaders32 = memory.read(base.wrapping_add(offset as u32));
     (nt.signature == NT_SIGNATURE && nt.optional_header.magic == PE32_MAGIC).then_some(nt)
 }
 
@@ -319,11 +310,11 @@ pub fn nt_headers_offset(dos: &ImageDosHeader) -> Option<usize> {
     usize::try_from(dos.e_lfanew).ok()
 }
 
-/// The process heap's first segment, as the process's image asks for it: its header's
-/// SizeOfHeapReserve and SizeOfHeapCommit (reserve, commit). Zeroes, the heaps' defaults, for an
-/// image whose headers are not a PE32 image's.
-pub fn process_heap_sizes(base: usize) -> (usize, usize) {
-    nt_headers(base).map_or((0, 0), |nt| {
+/// The process heap's first segment, as the process's image (mapped at `base` in `memory`) asks
+/// for it: its header's SizeOfHeapReserve and SizeOfHeapCommit (reserve, commit). Zeroes, the
+/// heaps' defaults, for an image whose headers are not a PE32 image's.
+pub fn process_heap_sizes<M: Memory>(memory: &M, base: u32) -> (usize, usize) {
+    nt_headers(memory, base).map_or((0, 0), |nt| {
         let optional = nt.optional_header;
         (
             optional.size_of_heap_reserve as usize,
@@ -335,6 +326,7 @@ pub fn process_heap_sizes(base: usize) -> (usize, usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::modules::model::Space;
 
     /// A header page: MZ, the NT headers at 0xE8, and a PE32 optional header with MSVC 6's heap
     /// sizes (1 MiB reserved, 4 KiB committed).
@@ -354,23 +346,27 @@ mod tests {
     /// the first page, give the defaults.
     #[test]
     fn the_process_heap_sizes_come_from_the_headers() {
-        let bytes = page();
+        const BASE: u32 = 0x40_0000;
+        let mapped = |bytes: Vec<u8>| Space(vec![(BASE, bytes)]);
         assert_eq!(
-            process_heap_sizes(bytes.as_ptr() as usize),
+            process_heap_sizes(&mapped(page()), BASE),
             (0x10_0000, 0x1000)
         );
         let mut broken = page();
         broken[0xE8] = 0;
-        assert_eq!(process_heap_sizes(broken.as_ptr() as usize), (0, 0));
+        assert_eq!(process_heap_sizes(&mapped(broken), BASE), (0, 0));
         let mut pe32_plus = page();
         pe32_plus[0xE8 + 0x19] = 0x02;
-        assert_eq!(process_heap_sizes(pe32_plus.as_ptr() as usize), (0, 0));
+        assert_eq!(process_heap_sizes(&mapped(pe32_plus), BASE), (0, 0));
         let mut far = page();
         far[0x3C..0x40].copy_from_slice(&0xF80u32.to_le_bytes());
-        assert!(nt_headers(far.as_ptr() as usize).is_none(), "past the page");
+        assert!(
+            nt_headers(&mapped(far.clone()), BASE).is_none(),
+            "past the page"
+        );
         far[0x3C..0x40].copy_from_slice(&0xFFFF_FFF0u32.to_le_bytes());
         assert!(
-            nt_headers(far.as_ptr() as usize).is_none(),
+            nt_headers(&mapped(far), BASE).is_none(),
             "a negative offset"
         );
     }

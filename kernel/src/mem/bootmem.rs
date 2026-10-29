@@ -37,8 +37,8 @@ extern "C" {
 /// its last statics would be unmapped.
 fn kernel_frame_bounds() -> (u32, u32) {
     let start = KERNEL_PHYS_BASE / 4096;
-    // SAFETY: taking the address of a linker-provided symbol; a constant fixed at link time.
-    let image_end = unsafe { &_kernel_end as *const u8 as u32 };
+    // The linker-provided symbol's address (fixed at link time); its byte is never read.
+    let image_end = core::ptr::addr_of!(_kernel_end) as u32;
     assert!(
         image_end as u64 <= KERNEL_IMAGE.end(),
         "the kernel image ends at {image_end:#010x}, past its window's end {:#010x}",

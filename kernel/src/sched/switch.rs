@@ -103,7 +103,7 @@ pub fn switch_to(
     // woken waiter, a ready thread, or the idle fallback), so its frame is planted (fresh) or
     // saved (resumed), and `install` adopted it as the running thread; the dispatch level holds
     // the dispatcher off until the swap is done, and no borrow of it is live.
-    unsafe { swap_context(old, new) };
+    unsafe { swap_context(old.cast(), new.cast()) };
     debug_assert_on_own_space(dispatch);
 }
 
@@ -118,7 +118,7 @@ pub fn exit_to(
     let (old, new) = install(dispatch, from, to);
     // SAFETY: as in `switch_to`; `from` never runs again, which the record's teardown allows (it
     // is renewed only by a create, which no thread runs before this swap).
-    unsafe { swap_context(old, new) };
+    unsafe { swap_context(old.cast(), new.cast()) };
     unreachable!("a terminated thread never resumes")
 }
 
@@ -154,28 +154,18 @@ fn install(
 // the pinned offsets above, which the thread record's `#[repr(C)]` prefix holds to.
 #[cfg(target_arch = "x86")]
 unsafe extern "C" {
-    /// The swap itself (see [`swap_context`]).
-    #[link_name = "swap_context"]
-    fn swap_context_asm(old: *mut core::ffi::c_void, new: *mut core::ffi::c_void);
+    /// Switch the processor from the thread record at `old` to the one at `new`, entered at the
+    /// dispatch level with interrupts enabled. Never "returns" in the calling thread's present: the
+    /// return path executes when a later switch resumes `old`.
+    ///
+    /// Both records are live; `new`'s switch frame is planted (fresh) or saved (resumed), and the
+    /// dispatcher has adopted it as the running thread.
+    fn swap_context(old: *mut core::ffi::c_void, new: *mut core::ffi::c_void);
 
     /// The startup stub's address, planted by the frame builder as a fresh thread's switch-frame
     /// return address. Address-only; the stub is never called from Rust.
     #[link_name = "thread_startup"]
     pub static THREAD_STARTUP: u8;
-}
-
-/// Switch the processor from `old` to `new`, entered at the dispatch level with interrupts enabled.
-/// Never "returns" in the calling thread's present: the return path executes when a later switch
-/// resumes `old`.
-///
-/// # Safety
-///
-/// Both threads are live records; `new`'s switch frame is planted (fresh) or saved (resumed), and
-/// the dispatcher has adopted it as the running thread.
-#[cfg(target_arch = "x86")]
-unsafe fn swap_context(old: *mut super::thread::Thread, new: *mut super::thread::Thread) {
-    // SAFETY: the caller's contract.
-    unsafe { swap_context_asm(old.cast(), new.cast()) };
 }
 
 /// Debug builds: CR3 holds the running thread's address-space directory, wherever a thread resumes.

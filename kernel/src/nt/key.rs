@@ -34,7 +34,6 @@ use rtl::nt::info::{
     VariableSize,
 };
 
-use crate::cm::unit_bytes;
 use crate::status::*;
 
 /// The key rights.
@@ -155,8 +154,8 @@ impl Reply<'_> {
 /// does not define.
 pub fn key_reply<'a>(class: u32, info: &crate::cm::KeyInfo<'a>) -> Result<Reply<'a>, NtStatus> {
     let class = KeyClass::try_from(class).map_err(|_| STATUS_INVALID_PARAMETER)?;
-    let name = unit_bytes(info.name);
-    let class_bytes = unit_bytes(info.class);
+    let name = info.name;
+    let class_bytes = info.class;
     Ok(match class {
         // The name.
         KeyClass::Basic => Reply::new(
@@ -204,7 +203,7 @@ pub fn value_reply<'a>(
     value: &crate::cm::ValueInfo<'a>,
 ) -> Result<Reply<'a>, NtStatus> {
     let class = ValueClass::try_from(class).map_err(|_| STATUS_INVALID_PARAMETER)?;
-    let name = unit_bytes(value.name);
+    let name = value.name;
     let data = value.data;
     Ok(match class {
         // The name.
@@ -710,9 +709,14 @@ mod tests {
         (out, status)
     }
 
+    /// A name's UTF-16 units as their little-endian bytes, as the registry reports a name.
+    fn le_bytes(text: &str) -> Vec<u8> {
+        text.encode_utf16().flat_map(u16::to_le_bytes).collect()
+    }
+
     #[test]
     fn a_reply_fits_overflows_or_is_refused() {
-        let name: Vec<u16> = "Alpha".encode_utf16().collect();
+        let name = le_bytes("Alpha");
         let info = crate::cm::KeyInfo {
             last_write: 0x0102_0304_0506_0708,
             name: &name,
@@ -730,10 +734,10 @@ mod tests {
         assert_eq!(status, Ok(STATUS_SUCCESS));
         assert_eq!(&out[..8], &0x0102_0304_0506_0708u64.to_le_bytes());
         assert_eq!(&out[12..16], &10u32.to_le_bytes(), "NameLength in bytes");
-        assert_eq!(&out[16..], unit_bytes(&name));
+        assert_eq!(&out[16..], &name[..]);
         let (out, status) = delivered(&reply, 19);
         assert_eq!(status, Err(STATUS_BUFFER_OVERFLOW));
-        assert_eq!(&out[16..19], &unit_bytes(&name)[..3], "what fits");
+        assert_eq!(&out[16..19], &name[..3], "what fits");
         assert_eq!(delivered(&reply, 15).1, Err(STATUS_BUFFER_TOO_SMALL));
         assert!(
             delivered(&reply, 15).0.iter().all(|&b| b == 0xCC),
@@ -744,7 +748,7 @@ mod tests {
 
     #[test]
     fn the_value_classes_lay_out_as_documented() {
-        let name: Vec<u16> = "sz".encode_utf16().collect();
+        let name = le_bytes("sz");
         let value = crate::cm::ValueInfo {
             kind: 1,
             name: &name,
@@ -768,7 +772,7 @@ mod tests {
             &24u32.to_le_bytes(),
             "DataOffset past the name"
         );
-        assert_eq!(&out[20..24], unit_bytes(&name));
+        assert_eq!(&out[20..24], &name[..]);
         assert_eq!(&out[24..28], b"a\0\0\0");
         let basic = value_reply(ValueClass::Basic as u32, &value).unwrap();
         assert_eq!(basic.size(), 16);

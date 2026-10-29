@@ -43,7 +43,10 @@ pub unsafe extern "system" fn ldr_find_resource_u(
 ) -> u32 {
     // SAFETY: the caller's contract.
     let path = unsafe { path(path_elements, length) };
-    match resource::find_data(&Mapped, module, path, Defaults::F2K) {
+    // SAFETY: the caller's mapped image, its resource directory read in place, and the names its
+    // path points at (the caller's contract).
+    let image = unsafe { Mapped::new() };
+    match resource::find_data(&image, module, path, Defaults::F2K) {
         Ok(found) => {
             // SAFETY: the caller's contract.
             unsafe { entry.write_unaligned(found) };
@@ -68,7 +71,9 @@ pub unsafe extern "system" fn ldr_find_resource_directory_u(
 ) -> u32 {
     // SAFETY: the caller's contract.
     let path = unsafe { path(path_elements, length) };
-    match resource::find_table(&Mapped, module, path, Defaults::F2K) {
+    // SAFETY: as `ldr_find_resource_u`'s.
+    let image = unsafe { Mapped::new() };
+    match resource::find_table(&image, module, path, Defaults::F2K) {
         Ok(found) => {
             // SAFETY: the caller's contract.
             unsafe { directory.write_unaligned(found) };
@@ -93,7 +98,10 @@ pub unsafe extern "system" fn ldr_access_resource(
     address: *mut u32,
     size: *mut u32,
 ) -> u32 {
-    match resource::access(&Mapped, module, entry) {
+    // SAFETY: the caller's mapped image and one of its data entries, read in place (the caller's
+    // contract).
+    let image = unsafe { Mapped::new() };
+    match resource::access(&image, module, entry) {
         Ok((at, bytes)) => {
             // SAFETY: the caller's contract.
             unsafe {
@@ -140,7 +148,10 @@ pub unsafe extern "system" fn rtl_find_message(
     if status != STATUS_SUCCESS {
         return status;
     }
-    match resource::message_entry(&Mapped, at, size, id) {
+    // SAFETY: the message table LdrAccessResource found inside the caller's mapped image, `size`
+    // bytes, read in place.
+    let image = unsafe { Mapped::new() };
+    match resource::message_entry(&image, at, size, id) {
         Ok(found) => {
             // SAFETY: the caller's contract.
             unsafe { entry.write_unaligned(found) };

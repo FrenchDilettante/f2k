@@ -7,7 +7,6 @@
 //! RtlDestroyEnvironment releases.
 
 use rtl::env::{self, EnvError};
-use rtl::nt::info::MemoryBasicInformation;
 use rtl::status::{
     STATUS_BUFFER_TOO_SMALL,
     STATUS_INVALID_PARAMETER,
@@ -16,19 +15,16 @@ use rtl::status::{
     STATUS_VARIABLE_NOT_FOUND,
 };
 use rtl::string::UnicodeString;
-use rtl::sys::{self, nr, system_service};
+use rtl::sys;
 
 use crate::params::with_own_parameters;
+use crate::service;
 
-/// The current-process pseudo-handle, and the virtual-memory calls' constants.
-const CURRENT_PROCESS: u32 = 0xFFFF_FFFF;
+/// The virtual-memory calls' constants.
 const MEM_COMMIT: u32 = 0x1000;
 const MEM_RESERVE: u32 = 0x2000;
 const PAGE_READWRITE: u32 = 0x04;
 const GRANULARITY: usize = 0x1_0000;
-
-/// MemoryBasicInformation, NtQueryVirtualMemory's class.
-const MEMORY_BASIC_INFORMATION: u32 = 0;
 
 /// Run `body` over the block at `block` with the room its allocation leaves after it
 /// (NtQueryVirtualMemory's region from its page on), in units, and the allocation's base.
@@ -38,24 +34,13 @@ const MEMORY_BASIC_INFORMATION: u32 = 0;
 /// `block` is an environment block in committed memory, which nothing else reads or writes while
 /// `body` runs.
 unsafe fn with_block<R>(block: *mut u16, body: impl FnOnce(&mut [u16], usize) -> R) -> R {
-    let mut info = MemoryBasicInformation::default();
-    let args = [
-        CURRENT_PROCESS,
-        block as u32,
-        MEMORY_BASIC_INFORMATION,
-        &mut info as *mut MemoryBasicInformation as u32,
-        core::mem::size_of::<MemoryBasicInformation>() as u32,
-        0,
-    ];
-    let status = system_service(nr::NtQueryVirtualMemory, &args);
-    let (base, allocation, size) = if status == STATUS_SUCCESS {
-        (
+    let (base, allocation, size) = match service::query_virtual_memory(block as usize) {
+        Ok(info) => (
             info.base_address as usize,
             info.allocation_base as usize,
             info.region_size as usize,
-        )
-    } else {
-        (block as usize, block as usize, 0x1000)
+        ),
+        Err(_) => (block as usize, block as usize, 0x1000),
     };
     let room = (base + size - block as usize) / 2;
     // SAFETY: the caller's block, inside its committed region, the body's alone while it runs.

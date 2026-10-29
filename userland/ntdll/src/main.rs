@@ -63,6 +63,7 @@ mod params;
 mod process;
 mod registry;
 mod resource;
+mod service;
 mod status;
 mod strings;
 mod stub;
@@ -88,23 +89,36 @@ use rtl::heap::{HEAP_GENERATE_EXCEPTIONS, HEAP_GROWABLE, HEAP_REALLOC_IN_PLACE_O
 use rtl::ldr;
 use rtl::sys::{self, Native};
 
-// The critical sections' bodies, cdecl, called by src/critsec.s's exports. A section pointer is
-// the caller's: a bad one faults the caller, as on Windows.
+// The critical sections' bodies, cdecl, called by src/critsec.s's exports with their caller's
+// section pointer, which each converts once into a reference (a bad one faults the caller, as on
+// Windows). A section's fields are atomics: the calls of other threads share it.
 
 /// RtlInitializeCriticalSection: free, no event until the first contention. STATUS_SUCCESS.
+///
+/// # Safety
+///
+/// `section` points at a CRITICAL_SECTION's storage, aligned for its dwords and live for the call,
+/// which the process changes meanwhile only through these routines.
 #[unsafe(no_mangle)]
-extern "C" fn f2k_rtl_initialize_critical_section(section: *const CriticalSection) -> u32 {
-    f2k_rtl_initialize_critical_section_and_spin_count(section, 0)
+unsafe extern "C" fn f2k_rtl_initialize_critical_section(section: *const CriticalSection) -> u32 {
+    // SAFETY: the caller's section storage (the function's contract, the same).
+    unsafe { f2k_rtl_initialize_critical_section_and_spin_count(section, 0) }
 }
 
 /// RtlInitializeCriticalSectionAndSpinCount: as RtlInitializeCriticalSection, with a spin count
 /// (its high bit preallocating the event). STATUS_NO_MEMORY when that event cannot be made.
+///
+/// # Safety
+///
+/// `section` points at a CRITICAL_SECTION's storage, aligned for its dwords and live for the call,
+/// which the process changes meanwhile only through these routines.
 #[unsafe(no_mangle)]
-extern "C" fn f2k_rtl_initialize_critical_section_and_spin_count(
+unsafe extern "C" fn f2k_rtl_initialize_critical_section_and_spin_count(
     section: *const CriticalSection,
     spin_count: u32,
 ) -> u32 {
-    // SAFETY: the caller's section, read and written in place.
+    // SAFETY: the caller's section storage, aligned and live for the call (the function's
+    // contract).
     match unsafe { &*section }.initialize(&Native, spin_count) {
         Ok(()) => STATUS_SUCCESS,
         Err(status) => status,
@@ -112,43 +126,69 @@ extern "C" fn f2k_rtl_initialize_critical_section_and_spin_count(
 }
 
 /// RtlEnterCriticalSection. STATUS_SUCCESS (in low memory a contended enter raises instead).
+///
+/// # Safety
+///
+/// `section` points at a critical section RtlInitializeCriticalSection made, aligned for its
+/// dwords and live for the call, which the process changes only through these routines.
 #[unsafe(no_mangle)]
-extern "C" fn f2k_rtl_enter_critical_section(section: *const CriticalSection) -> u32 {
-    // SAFETY: the caller's section.
+unsafe extern "C" fn f2k_rtl_enter_critical_section(section: *const CriticalSection) -> u32 {
+    // SAFETY: the caller's initialized section, aligned and live for the call (the function's
+    // contract).
     unsafe { &*section }.enter(&Native);
     STATUS_SUCCESS
 }
 
 /// RtlTryEnterCriticalSection: TRUE when the caller now holds the section.
+///
+/// # Safety
+///
+/// `section` points at a critical section RtlInitializeCriticalSection made, aligned for its
+/// dwords and live for the call, which the process changes only through these routines.
 #[unsafe(no_mangle)]
-extern "C" fn f2k_rtl_try_enter_critical_section(section: *const CriticalSection) -> u32 {
-    // SAFETY: the caller's section.
+unsafe extern "C" fn f2k_rtl_try_enter_critical_section(section: *const CriticalSection) -> u32 {
+    // SAFETY: as `f2k_rtl_enter_critical_section`'s.
     unsafe { &*section }.try_enter(&Native) as u32
 }
 
 /// RtlLeaveCriticalSection. STATUS_SUCCESS.
+///
+/// # Safety
+///
+/// `section` points at a critical section RtlInitializeCriticalSection made, aligned for its
+/// dwords and live for the call, which the process changes only through these routines.
 #[unsafe(no_mangle)]
-extern "C" fn f2k_rtl_leave_critical_section(section: *const CriticalSection) -> u32 {
-    // SAFETY: the caller's section.
+unsafe extern "C" fn f2k_rtl_leave_critical_section(section: *const CriticalSection) -> u32 {
+    // SAFETY: as `f2k_rtl_enter_critical_section`'s.
     unsafe { &*section }.leave(&Native);
     STATUS_SUCCESS
 }
 
 /// RtlDeleteCriticalSection: its event closed. STATUS_SUCCESS.
+///
+/// # Safety
+///
+/// `section` points at a critical section RtlInitializeCriticalSection made, aligned for its
+/// dwords and live for the call, which the process changes only through these routines.
 #[unsafe(no_mangle)]
-extern "C" fn f2k_rtl_delete_critical_section(section: *const CriticalSection) -> u32 {
-    // SAFETY: the caller's section.
+unsafe extern "C" fn f2k_rtl_delete_critical_section(section: *const CriticalSection) -> u32 {
+    // SAFETY: as `f2k_rtl_enter_critical_section`'s.
     unsafe { &*section }.delete(&Native);
     STATUS_SUCCESS
 }
 
 /// RtlSetCriticalSectionSpinCount: the previous spin count.
+///
+/// # Safety
+///
+/// `section` points at a critical section RtlInitializeCriticalSection made, aligned for its
+/// dwords and live for the call, which the process changes only through these routines.
 #[unsafe(no_mangle)]
-extern "C" fn f2k_rtl_set_critical_section_spin_count(
+unsafe extern "C" fn f2k_rtl_set_critical_section_spin_count(
     section: *const CriticalSection,
     spin_count: u32,
 ) -> u32 {
-    // SAFETY: the caller's section.
+    // SAFETY: as `f2k_rtl_enter_critical_section`'s.
     unsafe { &*section }.set_spin_count(&Native, spin_count)
 }
 
@@ -307,7 +347,10 @@ extern "C" fn f2k_ldr_initialize(context: u32) {
         params::normalize_own_parameters();
         process::initialize_heap_list_lock();
         // The process heap, its first segment as the image's header sizes it.
-        let (reserve, commit) = rtl::image::process_heap_sizes(sys::image_base());
+        // SAFETY: the process's image, mapped for its whole life: its headers are read in place,
+        // within their first page.
+        let image = unsafe { loader::Mapped::new() };
+        let (reserve, commit) = rtl::image::process_heap_sizes(&image, sys::image_base() as u32);
         let heap = process::heaps().create_sized(&Native, HEAP_GROWABLE, reserve, commit);
         if let Some(heap) = heap {
             sys::set_process_heap(heap.handle());
@@ -347,9 +390,10 @@ extern "C" fn f2k_ldr_initialize(context: u32) {
 /// The calling thread's implicit-TLS block, when the image has a TLS directory: its array on the
 /// TEB (ThreadLocalStoragePointer), on the process heap.
 fn thread_tls() {
-    // The image's headers and the directory they name, mapped for the process's whole life (a
-    // malformed image's offsets fault here, in the process's own image).
-    let Some(directory) = ldr::tls_directory(&loader::Mapped, sys::image_base() as u32) else {
+    // SAFETY: the image's headers and the directory they name, mapped for the process's whole
+    // life, read in place (a malformed image's offsets fault here, in the process's own image).
+    let image = unsafe { loader::Mapped::new() };
+    let Some(directory) = ldr::tls_directory(&image, sys::image_base() as u32) else {
         return;
     };
     if sys::process_heap_handle() == 0 || directory.block_size().is_none() {

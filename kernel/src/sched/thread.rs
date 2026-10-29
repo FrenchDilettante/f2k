@@ -96,6 +96,11 @@ pub const FPU_STATE_ALIGN: usize = 16;
 const _: () = assert!(core::mem::size_of::<FxSaveArea>() == 512);
 const _: () = assert!(core::mem::align_of::<FxSaveArea>() == FPU_STATE_ALIGN);
 
+// SAFETY: integer fields and byte arrays only, laid out back to back with no padding (their
+// offsets add up to the 512 bytes asserted above), so every byte is initialized and any bit
+// pattern is an image.
+unsafe impl rtl::pod::Pod for FxSaveArea {}
+
 /// The control word a new thread starts with: every exception masked, 53-bit precision, round to
 /// nearest — the value Windows NT gives a fresh thread (`fninit` alone would leave 64-bit
 /// precision).
@@ -764,10 +769,9 @@ mod tests {
     /// word, the reset MXCSR, every register empty, everything else zero — byte for byte.
     #[test]
     fn a_fresh_thread_starts_with_the_initial_fpu_image() {
+        use rtl::pod::Pod;
         let fpu = Thread::new(ThreadId(0)).fpu;
-        // SAFETY: the image is 512 bytes of integer fields with no padding (pinned by its size
-        // assert), so its bytes are all initialized.
-        let image: [u8; 512] = unsafe { core::mem::transmute(fpu) };
+        let image = fpu.as_bytes();
         let half = |at: usize| u16::from_le_bytes([image[at], image[at + 1]]);
         let word = |at: usize| u32::from_le_bytes(image[at..at + 4].try_into().unwrap());
         assert_eq!(half(0), 0x027F, "control word");

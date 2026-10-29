@@ -16,7 +16,7 @@
 //!
 //! The locks a call holds while it reads or writes its caller's memory (a stream's and the buffer
 //! it is lent, a descriptor's across its reads and writes, the exit functions') are let go when an
-//! exception unwinds out of the call ([`Guarded`], [`Lock::holding`], over [`crate::unwind`]): a
+//! exception unwinds out of the call ([`UnwindLock`], [`Lock::holding`], over [`crate::unwind`]): a
 //! fault in the caller's memory that the program's `__except` takes leaves no lock held, as
 //! Windows 2000's `__finally` blocks leave none.
 //!
@@ -25,7 +25,6 @@
 //! the environment's, the locale's and the console input's take none of the C runtime's locks
 //! inside them.
 
-use core::cell::{Cell, UnsafeCell};
 use core::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32};
 
@@ -269,54 +268,38 @@ impl Drop for Held<'_> {
     }
 }
 
-/// A value behind a lock of the C runtime's, for state a call holds while it reads or writes its
-/// caller's memory: as an `rtl::sync::Locked` (one closure at a time has the value, and the
-/// holder's re-entry is a panic), and an exception that unwinds out of the closure lets the lock
-/// go and the value with it ([`crate::unwind`]).
-pub struct Guarded<T> {
-    lock: Lock,
-    /// Whether a closure has the value: read and written only with the lock held.
-    busy: Cell<bool>,
-    value: UnsafeCell<T>,
+/// A lock of the C runtime's for state a call holds while it reads or writes its caller's memory:
+/// a [`Lock`] whose `rtl::sync::Locked` value is let go, the lock with it, when an exception
+/// unwinds out of the closure ([`crate::unwind`]).
+pub struct UnwindLock(Lock);
+
+impl UnwindLock {
+    pub const fn new() -> UnwindLock {
+        UnwindLock(Lock::new())
+    }
 }
 
-// SAFETY: the value and the busy flag are touched only by the thread holding the lock (`with` takes
-// it first; a critical section admits one thread at a time and orders one holder's accesses before
-// the next's), and only one `&mut T` is out at a time (the busy flag makes the holder's re-entry a
-// panic before a second is made; an unwind clears it only once the closure's frames are abandoned).
-// So sharing a `Guarded` moves the value between threads, which `T: Send` allows.
-unsafe impl<T: Send> Sync for Guarded<T> {}
+impl Default for UnwindLock {
+    fn default() -> UnwindLock {
+        UnwindLock::new()
+    }
+}
 
-impl<T> Guarded<T> {
-    pub const fn new(value: T) -> Guarded<T> {
-        Guarded {
-            lock: Lock::new(),
-            busy: Cell::new(false),
-            value: UnsafeCell::new(value),
-        }
+// SAFETY: `Lock`'s, for taking and letting go. `on_unwind` runs `body` once, and calls `release`
+// only from its registration's handler, while an exception's unwind passes the call: `body`'s
+// frames are then being abandoned, never to resume (the host tests' panic stands in for it, and
+// its drops find the value given back already).
+unsafe impl RawLock for UnwindLock {
+    fn lock(&self) {
+        self.0.lock();
     }
 
-    /// Run `body` over the value with the lock held, and answer what it answers; the lock is let go
-    /// when `body` returns, or when an exception unwinds out of it.
-    ///
-    /// # Panics
-    ///
-    /// When `body` (or something it calls) reaches the same value again.
-    pub fn with<R>(&self, body: impl FnOnce(&mut T) -> R) -> R {
-        self.lock.lock();
-        assert!(!self.busy.replace(true), "Guarded::with re-entered");
-        let release = || {
-            self.busy.set(false);
-            self.lock.unlock();
-        };
-        let answer = unwind::on_unwind(&release, || {
-            // SAFETY: the lock is held and the busy flag was clear, so no other `&mut` to the
-            // value exists (on this thread or another) until `release` clears it: after `body`
-            // returns, or once an unwind has abandoned `body`'s frames.
-            body(unsafe { &mut *self.value.get() })
-        });
-        release();
-        answer
+    fn unlock(&self) {
+        self.0.unlock();
+    }
+
+    fn on_abandon<R>(&self, release: &dyn Fn(), body: impl FnOnce() -> R) -> R {
+        unwind::on_unwind(release, body)
     }
 }
 
@@ -334,6 +317,8 @@ const fn unprepared() -> CriticalSection {
 
 #[cfg(test)]
 mod tests {
+    use rtl::sync::Locked;
+
     use super::*;
 
     /// __doserrno and _errno address the calling thread's data: _doserrno beside errno, where
@@ -351,11 +336,12 @@ mod tests {
         );
     }
 
-    /// An exception unwinding out of a guarded value's closure (a panic, on the host) lets the lock
-    /// go and the value with it: the same thread takes it again at once, and so does another.
+    /// An exception unwinding out of the closure of a value behind an [`UnwindLock`] (a panic, on
+    /// the host) lets the lock go and the value with it: the same thread takes it again at once,
+    /// and so does another.
     #[test]
     fn an_unwind_lets_a_guarded_value_go() {
-        static STATE: Guarded<u32> = Guarded::new(0);
+        static STATE: Locked<u32, UnwindLock> = Locked::new(UnwindLock::new(), 0);
         let unwound = std::panic::catch_unwind(|| {
             STATE.with(|value| {
                 *value = 7;
@@ -370,7 +356,7 @@ mod tests {
         );
         let other = std::thread::spawn(|| STATE.with(|value| *value + 1));
         assert_eq!(other.join().unwrap(), 8, "let go: another thread takes it");
-        assert!(!crate::imports::host::section_held(&STATE.lock.section));
+        assert!(!crate::imports::host::holds_a_section());
     }
 
     /// The same for a lock held across the caller's memory.

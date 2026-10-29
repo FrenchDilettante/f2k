@@ -5,13 +5,11 @@
 //! Win32 last error. An export that cannot fail (`never`) raises STATUS_NOT_IMPLEMENTED.
 
 use rtl::stub::{describe, Entry, Fails, Line, Memory};
-use rtl::sys::{nr, system_service};
+
+use crate::service;
 
 /// STATUS_NOT_IMPLEMENTED: what a stub that cannot fail raises.
 const STATUS_NOT_IMPLEMENTED: u32 = 0xC000_0002;
-
-/// The calling process.
-const CURRENT_PROCESS: u32 = 0xFFFF_FFFF;
 
 /// The calling process's memory, as NtQueryVirtualMemory describes it: a page can be read when it
 /// is committed and accessible. The lowest 64 KiB are never mapped.
@@ -22,17 +20,8 @@ impl Memory for Mapped {
         if address < rtl::stub::LOWEST_MAPPED {
             return false;
         }
-        let mut info = [0u32; 7];
-        let args = [
-            CURRENT_PROCESS,
-            address as u32,
-            0, // MemoryBasicInformation
-            info.as_mut_ptr() as u32,
-            28,
-            0,
-        ];
-        system_service(nr::NtQueryVirtualMemory, &args) == 0
-            && rtl::stub::readable(info[4], info[5])
+        service::query_virtual_memory(address)
+            .is_ok_and(|info| rtl::stub::readable(info.state, info.protect))
     }
 }
 

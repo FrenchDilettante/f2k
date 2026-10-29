@@ -350,11 +350,6 @@ pub fn version() -> Version {
     }
 }
 
-/// The service pack's name (the PEB's CSDVersion).
-pub fn csd_version() -> CountedString<usize> {
-    peb_field!(csd_version)
-}
-
 /// A copy of the process parameters' fixed part (their strings' buffers stay where they are).
 pub fn parameters() -> ProcessParameters<usize> {
     // SAFETY: the process parameters, mapped for the process's whole life, read in place.
@@ -366,32 +361,56 @@ pub fn environment_block() -> *mut u16 {
     teb::environment_block()
 }
 
-/// The UTF-16 units of one of the process's own strings (the process parameters', the PEB's).
-///
-/// # Safety
-///
-/// The string's buffer holds its length, unchanged while the units are borrowed.
-pub unsafe fn string_units<'a>(string: &CountedString<usize>) -> &'a [u16] {
-    if string.length < 2 || string.buffer == 0 {
-        return &[];
+/// One of the process's own counted strings that kernel32 reads in place: the process parameters'
+/// (their buffers inside the parameters' block) and the PEB's CSDVersion (the service pack's
+/// name). Nothing rewrites them while the process runs (the parameters' current directory, which
+/// changes, is not one of them).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OwnString {
+    CommandLine,
+    ImagePathName,
+    WindowTitle,
+    DesktopInfo,
+    ShellInfo,
+    CsdVersion,
+}
+
+impl OwnString {
+    /// The counted string itself: its lengths and its buffer's address (zero for none).
+    pub fn counted(self) -> CountedString<usize> {
+        match self {
+            OwnString::CommandLine => parameters().command_line,
+            OwnString::ImagePathName => parameters().image_path_name,
+            OwnString::WindowTitle => parameters().window_title,
+            OwnString::DesktopInfo => parameters().desktop_info,
+            OwnString::ShellInfo => parameters().shell_info,
+            OwnString::CsdVersion => peb_field!(csd_version),
+        }
     }
-    // SAFETY: the caller's contract.
-    unsafe {
-        core::slice::from_raw_parts(string.buffer as *const u16, usize::from(string.length) / 2)
+
+    /// Its UTF-16 units, in place (none for a string without a unit or a buffer).
+    pub fn units(self) -> &'static [u16] {
+        let string = self.counted();
+        if string.length < 2 || string.buffer == 0 {
+            return &[];
+        }
+        // SAFETY: one of the process's own strings, as the process starts with it: its buffer
+        // (in the process parameters' block, or where the PEB's CSDVersion points) holds its
+        // length, mapped for the process's whole life, and nothing rewrites it.
+        unsafe {
+            core::slice::from_raw_parts(string.buffer as *const u16, usize::from(string.length) / 2)
+        }
     }
 }
 
 /// The process's image path (its parameters' ImagePathName), as the loader's search reads it.
 pub fn image_path_name() -> &'static [u16] {
-    // SAFETY: the process parameters' ImagePathName: its buffer inside the parameters block,
-    // mapped for the process's whole life, holding its length; nothing rewrites it.
-    unsafe { string_units(&parameters().image_path_name) }
+    OwnString::ImagePathName.units()
 }
 
 /// The process's desktop (its parameters' DesktopInfo), as a new process inherits it.
 pub fn desktop_info() -> &'static [u16] {
-    // SAFETY: as `image_path_name`'s, for DesktopInfo: nothing rewrites it either.
-    unsafe { string_units(&parameters().desktop_info) }
+    OwnString::DesktopInfo.units()
 }
 
 /// The TEB's field, read in place: the calling thread's own.

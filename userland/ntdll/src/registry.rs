@@ -4,6 +4,7 @@
 //! Execution Options), read through the key services, NtOpenKey and NtQueryValueKey.
 
 use rtl::execution_options::{self, OPTIONS_KEY};
+use rtl::pod::Pod;
 use rtl::status::{
     STATUS_BUFFER_OVERFLOW,
     STATUS_INVALID_PARAMETER,
@@ -11,7 +12,8 @@ use rtl::status::{
     STATUS_SUCCESS,
 };
 use rtl::string::UnicodeString;
-use rtl::sys::{nr, system_service};
+
+use crate::service::{self, ObjectAttributes};
 
 /// OBJECT_ATTRIBUTES' OBJ_CASE_INSENSITIVE.
 const OBJ_CASE_INSENSITIVE: u32 = 0x40;
@@ -25,10 +27,6 @@ const KEY_VALUE_PARTIAL_INFORMATION: u32 = 2;
 /// The current user's hive: `\Registry\User\<the user>`. Windows names it after the user's SID
 /// (RtlFormatCurrentUserKeyPath); F2K's one user is `jeb`.
 const CURRENT_USER: &[u8] = b"\\Registry\\User\\jeb";
-
-/// OBJECT_ATTRIBUTES (`rtl::nt`'s): a name for the key services, borrowed for as long as the
-/// attributes are.
-type ObjectAttributes<'a> = rtl::nt::ObjectAttributes<u32, &'a UnicodeString, usize>;
 
 /// A UNICODE_STRING over `units` (the services only read it).
 fn counted(units: &[u16]) -> UnicodeString {
@@ -51,16 +49,7 @@ fn open_key(name: &[u16], access: u32) -> Result<u32, u32> {
         security_descriptor: 0,
         security_quality_of_service: 0,
     };
-    let mut handle = 0u32;
-    let args = [
-        &mut handle as *mut u32 as u32,
-        access,
-        &attributes as *const ObjectAttributes as u32,
-    ];
-    match system_service(nr::NtOpenKey, &args) {
-        STATUS_SUCCESS => Ok(handle),
-        status => Err(status),
-    }
+    service::open_key(&attributes, access)
 }
 
 /// The data a value's answer holds here: an option's value is short (a debugger's command line, a
@@ -69,6 +58,7 @@ const VALUE_ROOM: usize = 512;
 
 /// KEY_VALUE_PARTIAL_INFORMATION, with room for the data.
 #[repr(C)]
+#[derive(Clone, Copy)]
 struct PartialValue {
     title_index: u32,
     kind: u32,
@@ -76,20 +66,14 @@ struct PartialValue {
     data: [u8; VALUE_ROOM],
 }
 
+// SAFETY: three u32s and bytes, without padding (the bytes end the structure, and its alignment's
+// four divides their count).
+unsafe impl Pod for PartialValue {}
+
 /// NtQueryValueKey: value `name` of `key` into `value` (KeyValuePartialInformation); the status
 /// (STATUS_BUFFER_OVERFLOW with the data's length when the data does not fit).
 fn query_value(key: u32, name: &[u16], value: &mut PartialValue) -> u32 {
-    let string = counted(name);
-    let mut result = 0u32;
-    let args = [
-        key,
-        &string as *const UnicodeString as u32,
-        KEY_VALUE_PARTIAL_INFORMATION,
-        value as *mut PartialValue as u32,
-        core::mem::size_of::<PartialValue>() as u32,
-        &mut result as *mut u32 as u32,
-    ];
-    system_service(nr::NtQueryValueKey, &args)
+    service::query_value_key(key, &counted(name), KEY_VALUE_PARTIAL_INFORMATION, value)
 }
 
 /// RtlOpenCurrentUser: the current user's hive opened with `desired_access` (NtOpenKey), its
@@ -182,7 +166,7 @@ pub unsafe extern "system" fn ldr_query_image_file_execution_options(
         data: [0; VALUE_ROOM],
     };
     let queried = query_value(key, value_name, &mut value);
-    system_service(nr::NtClose, &[key]);
+    service::close(key);
     let (status, answer_length) = match queried {
         STATUS_SUCCESS => execution_options::convert(
             kind,

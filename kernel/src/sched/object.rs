@@ -42,25 +42,13 @@ impl<E: Copy> HandleTable<E> {
         }
     }
 
-    /// Write an empty table at `table`, element by element: by value the table would pass through
-    /// the caller's stack, and it is larger than a kernel stack has room for.
-    ///
-    /// # Safety
-    ///
-    /// `table` is valid for writes and aligned; its previous contents are overwritten, not dropped.
-    pub unsafe fn write_empty(table: *mut HandleTable<E>) {
-        use core::ptr::addr_of_mut;
-        // SAFETY: the caller's contract; every field is written.
-        unsafe {
-            let slots = addr_of_mut!((*table).slots) as *mut Option<E>;
-            let freed = addr_of_mut!((*table).freed) as *mut u32;
-            for index in 0..HANDLE_SLOTS {
-                slots.add(index).write(None);
-                freed.add(index).write(0);
-            }
-            addr_of_mut!((*table).freed_top).write(0);
-            addr_of_mut!((*table).next_fresh).write(1);
-        }
+    /// Make the table the empty one again, field by field in place: by value the table would pass
+    /// through the caller's stack, and it is larger than a kernel stack has room for.
+    pub fn reset(&mut self) {
+        self.slots.fill(None);
+        self.freed.fill(0);
+        self.freed_top = 0;
+        self.next_fresh = 1;
     }
 
     /// Insert `entry`, returning its handle. Null when every slot is taken.
@@ -123,8 +111,7 @@ impl<E: Copy> HandleTable<E> {
                 release(entry);
             }
         }
-        // SAFETY: a live table, written in place (it is larger than a kernel stack has room for).
-        unsafe { HandleTable::write_empty(self) };
+        self.reset();
     }
 
     /// Fill this table, a fresh one, with the entries of `parent` that `admit` takes, each in the
@@ -246,15 +233,14 @@ mod tests {
         assert_eq!(table.live(), 2);
     }
 
-    /// A table written in place over a used one is the empty table.
+    /// A used table, reset, is the empty table.
     #[test]
-    fn a_table_written_in_place_is_empty() {
+    fn a_reset_table_is_empty() {
         let mut table: Box<HandleTable> = Box::new(HandleTable::empty());
         table.insert(event_entry());
         table.close(4);
         table.insert(event_entry());
-        // SAFETY: the box is a valid, aligned table; it holds nothing that needs dropping.
-        unsafe { HandleTable::write_empty(&mut *table) };
+        table.reset();
         assert_eq!(table.live(), 0);
         assert_eq!(table.insert(event_entry()), 4);
         assert_eq!(table.insert(event_entry()), 8);

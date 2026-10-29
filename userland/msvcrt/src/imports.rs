@@ -652,6 +652,13 @@ pub mod host {
         sections().iter().any(|(held, ..)| *held == at)
     }
 
+    /// Whether the calling thread holds any section (the tests' check that a lock they cannot name
+    /// was let go).
+    pub fn holds_a_section() -> bool {
+        let me = std::thread::current().id();
+        sections().iter().any(|&(_, owner, _)| owner == me)
+    }
+
     pub unsafe extern "system" fn InitializeCriticalSection(_: *mut u8) {}
 
     /// EnterCriticalSection: the section taken by the calling thread, as a critical section is (one

@@ -439,9 +439,12 @@ pub fn query_information_thread(
                     let mut dispatch = call.passive().raise::<Dispatch>();
                     let dispatcher = DISPATCHER.get(&mut dispatch);
                     let record = dispatcher.thread(thread.id);
-                    // SAFETY: the process outlives its threads; its scheduling record leads its
-                    // record.
-                    let process = unsafe { &*(record.process as *const crate::process::Process) };
+                    // A thread object names a program's thread, whose process is a pool record.
+                    let process = record
+                        .process()
+                        .pool_index()
+                        .map(crate::process::pool::record)
+                        .expect("a thread object's process is a pool record");
                     BasicInformation {
                         exit_status: record.exit_status(),
                         teb: record.teb_va(),

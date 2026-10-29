@@ -233,7 +233,9 @@ pub fn allocate_virtual_memory(
         kind,
         protect,
     ];
-    match system_service(nr::NtAllocateVirtualMemory, &args) {
+    // SAFETY: NtAllocateVirtualMemory's arguments: the calling process, then the base and size it
+    // reads and writes, both on this frame; the new region holds nothing of the process's yet.
+    match unsafe { system_service(nr::NtAllocateVirtualMemory, &args) } {
         0 => Ok(base as usize),
         status => Err(status),
     }
@@ -248,7 +250,10 @@ pub fn release_virtual_memory(base: usize) -> u32 {
         &mut size as *mut u32 as u32,
         MEM_RELEASE,
     ];
-    system_service(nr::NtFreeVirtualMemory, &args)
+    // SAFETY: NtFreeVirtualMemory's arguments: the calling process, then the base and size it reads
+    // and writes, both on this frame. The region is the caller's to give back (the heaps release
+    // only the segments they reserved).
+    unsafe { system_service(nr::NtFreeVirtualMemory, &args) }
 }
 
 /// The heaps grow through the virtual-memory system services, as Windows 2000's do; the last error
@@ -271,7 +276,15 @@ impl Vm for Native {
 
 /// Raise system service `number` with its arguments (the stub's protocol: EDX the argument block,
 /// EAX the number): its NTSTATUS.
-pub fn system_service(number: u32, args: &[u32]) -> u32 {
+///
+/// # Safety
+///
+/// `args` holds the service's arguments, as many as it takes: each address among them is valid for
+/// what the service reads or writes there for the call's duration (a buffer for its stated length,
+/// a structure whole), no reference to what it writes in use meanwhile. What the service does to
+/// the process is the caller's to allow: a view unmapped, a protection changed or memory freed
+/// leaves no reference into it; a context resumed (NtContinue) or raised is one the thread may run.
+pub unsafe fn system_service(number: u32, args: &[u32]) -> u32 {
     let status: u32;
     // SAFETY: the system services read their argument block through EDX and answer in EAX; the
     // gate returns with the other registers as they were (ECX declared clobbered all the same).
@@ -415,7 +428,9 @@ impl System for Native {
             SYNCHRONIZATION_EVENT,
             0,
         ];
-        match system_service(nr::NtCreateEvent, &args) {
+        // SAFETY: NtCreateEvent's arguments: the handle it writes, on this frame, and no
+        // attributes.
+        match unsafe { system_service(nr::NtCreateEvent, &args) } {
             0 => handle,
             _ => 0,
         }
@@ -423,17 +438,21 @@ impl System for Native {
 
     /// NtWaitForSingleObject, forever and non-alertably.
     fn wait(&self, event: u32) {
-        system_service(nr::NtWaitForSingleObject, &[event, 0, 0]);
+        // SAFETY: NtWaitForSingleObject's arguments: a handle, not alertable, no timeout (no
+        // address).
+        unsafe { system_service(nr::NtWaitForSingleObject, &[event, 0, 0]) };
     }
 
     /// NtSetEvent, the previous state not asked for.
     fn set(&self, event: u32) {
-        system_service(nr::NtSetEvent, &[event, 0]);
+        // SAFETY: NtSetEvent's arguments: a handle, and no previous state asked for (no address).
+        unsafe { system_service(nr::NtSetEvent, &[event, 0]) };
     }
 
     /// NtClose.
     fn close(&self, handle: u32) {
-        system_service(nr::NtClose, &[handle]);
+        // SAFETY: NtClose's one argument, a handle (no address).
+        unsafe { system_service(nr::NtClose, &[handle]) };
     }
 
     fn raise(&self, status: u32) -> ! {

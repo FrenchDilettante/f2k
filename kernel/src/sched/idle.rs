@@ -13,25 +13,20 @@
 //! it, and it tears the process down (and, on a suite boot, creates the next).
 
 use super::dispatcher::Dispatcher;
-use super::process::SchedProcess;
+use super::process::PinnedProcess;
 use super::thread::{ThreadId, ThreadState};
 
 /// Install `idle` as the processor's idle thread: attach it to the kernel's own process record, set
 /// its stack to `stack_top`, mark it Running (the processor is executing it), and hand it to the
-/// dispatcher. Host-tested; the loop itself is target-only.
-///
-/// # Safety
-///
-/// `process` is at its final address and outlives the idle thread (the boot's static, or a test's
-/// leaked record).
-pub unsafe fn install(
+/// dispatcher. `process` is pinned for the kernel's life: the boot's static, or a test's leaked
+/// record. Host-tested; the loop itself is target-only.
+pub fn install(
     idle: ThreadId,
-    process: &mut SchedProcess,
+    process: &'static PinnedProcess,
     dispatcher: &mut Dispatcher,
     stack_top: u32,
 ) {
-    // SAFETY: the caller's contract.
-    unsafe { dispatcher.attach(idle, process) };
+    process.attach(dispatcher, idle);
 
     let record = dispatcher.thread_mut(idle);
     // The boot stack: the idle thread runs under any address space, so its stack must be one that
@@ -104,17 +99,15 @@ mod target {
     /// once, once the interrupt subsystem is up (the raise enables interrupts) and before anything
     /// is schedulable.
     pub(crate) fn boot() {
-        // SAFETY: the boot, once, before any thread exists: nothing else has reached the idle
-        // process's record, and from here on only the dispatcher and the switch do, through the
-        // address the install links.
-        let process = unsafe { &mut *IDLE_PROCESS.as_ptr() };
-        // The idle process owns the boot directory: a switch to the idle thread across a process
-        // boundary loads it.
-        process.set_dir_phys(crate::mem::paging::boot_directory_phys());
         let stack_top = core::ptr::addr_of!(boot_stack_top) as u32;
         level::raised::<Dispatch, _>(|dispatch| {
-            // SAFETY: the idle process is a static, at its final address for the kernel's life.
-            unsafe { install(IDLE_THREAD, process, DISPATCHER.get(dispatch), stack_top) };
+            let dispatcher = DISPATCHER.get(dispatch);
+            // The idle process owns the boot directory: a switch to the idle thread across a
+            // process boundary loads it.
+            IDLE_PROCESS
+                .get_mut(dispatcher)
+                .set_dir_phys(crate::mem::paging::boot_directory_phys());
+            install(IDLE_THREAD, &IDLE_PROCESS, dispatcher, stack_top);
         });
     }
 
@@ -193,17 +186,11 @@ mod tests {
     use crate::sched::testkit::{record, Rec};
     use crate::sched::thread::{Thread, ThreadState};
 
-    fn setup(
-        stack_top: u32,
-    ) -> (
-        Rec<Thread>,
-        &'static mut SchedProcess,
-        &'static mut Dispatcher,
-    ) {
-        let process = Box::leak(Box::new(SchedProcess::new(0x0090_0000, 0)));
+    fn setup(stack_top: u32) -> (Rec<Thread>, &'static PinnedProcess, &'static mut Dispatcher) {
+        let process: &'static PinnedProcess =
+            Box::leak(Box::new(PinnedProcess::new(0x0090_0000, 0)));
         let dispatcher = crate::sched::testkit::dispatcher();
-        // SAFETY: the process record is leaked at its final address.
-        unsafe { install(IDLE_THREAD, process, dispatcher, stack_top) };
+        install(IDLE_THREAD, process, dispatcher, stack_top);
         (record(IDLE_THREAD), process, dispatcher)
     }
 
@@ -223,7 +210,7 @@ mod tests {
         assert_eq!(idle.initial_stack(), STACK);
         assert_eq!(idle.kernel_stack(), STACK);
         // The kernel's own process: base priority 0.
-        assert_eq!(process.base_priority(), 0);
+        assert_eq!(process.get(dispatcher).base_priority(), 0);
 
         // The dispatcher's install: current, idle flag, and the fallback that selection reaches
         // when nothing is ready.

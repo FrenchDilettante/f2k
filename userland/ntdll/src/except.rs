@@ -5,7 +5,9 @@
 //! entry points are src/except.s.
 
 use rtl::seh::{self, ExceptionRecord, Frames, Unwound};
-use rtl::sys::{self, nr, system_service};
+use rtl::sys;
+
+use crate::service;
 
 unsafe extern "C" {
     /// ExecuteHandler2 (src/except.s).
@@ -144,9 +146,11 @@ unsafe extern "C" fn f2k_user_exception_dispatch(record: u32, context: u32) -> !
     // contract), below the frames of the chain the thread keeps.
     let thread = unsafe { Thread::current() };
     let status = if seh::dispatch(&thread, record, context) {
-        system_service(nr::NtContinue, &[context, 0])
+        // SAFETY: the context the kernel's dispatch captured, as a handler left it to resume.
+        unsafe { service::continue_context(context) }
     } else {
-        system_service(nr::NtRaiseException, &[record, context, 0])
+        // SAFETY: the thread's own record and context (the function's contract).
+        unsafe { service::raise_second_chance(record, context) }
     };
     thread.raise_chained(status, record)
 }
@@ -185,8 +189,11 @@ unsafe extern "C" fn f2k_rtl_unwind(
     // calling thread's (the function's contract); the target is a frame of its chain or none.
     let thread = unsafe { Thread::current() };
     let status = match seh::unwind(&thread, target, record, context) {
-        Unwound::Continue => system_service(nr::NtContinue, &[context, 0]),
-        Unwound::SecondChance => system_service(nr::NtRaiseException, &[record, context, 0]),
+        // SAFETY: the caller's own context, captured at its call: it resumes as from a return,
+        // the frames the unwind passed abandoned.
+        Unwound::Continue => unsafe { service::continue_context(context) },
+        // SAFETY: the thread's own record and context (the function's contract).
+        Unwound::SecondChance => unsafe { service::raise_second_chance(record, context) },
     };
     thread.raise_chained(status, record)
 }

@@ -31,7 +31,7 @@ use rtl::sync::Locked;
 
 use crate::data::{Exported, FMODE};
 use crate::kernel32;
-use crate::thread::{Guarded, Lock};
+use crate::thread::{Lock, UnwindLock};
 
 /// `_commode`: the default commit mode of the streams a program opens (0).
 static COMMODE: Exported<i32> = Exported::new(0);
@@ -64,11 +64,14 @@ unsafe impl Send for ExitTable {}
 /// The exit functions, behind their lock (Windows 2000's msvcrt has one for its exit list). Each
 /// one is taken out under it and called after it is let go, so a function may register another.
 /// `__dllonexit` changes its caller's table under it too, so an exception there lets it go.
-static EXIT: Guarded<ExitTable> = Guarded::new(ExitTable {
-    functions: core::ptr::null_mut(),
-    count: 0,
-    capacity: 0,
-});
+static EXIT: Locked<ExitTable, UnwindLock> = Locked::new(
+    UnwindLock::new(),
+    ExitTable {
+        functions: core::ptr::null_mut(),
+        count: 0,
+        capacity: 0,
+    },
+);
 
 /// Whether exit or _exit has run: the DLL's detach then leaves the process as they did.
 static EXITED: AtomicBool = AtomicBool::new(false);

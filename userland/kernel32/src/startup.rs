@@ -5,19 +5,11 @@
 //! process heap; F2K calls no DllMain, so both are made at their first use, under the PEB lock, on
 //! the process heap, their pointers in kernel32's own data.
 
-use rtl::params::{CountedString, ProcessParameters};
+use rtl::params::ProcessParameters;
 use rtl::pod::Pod;
 use rtl::sync::OnceWord;
 
-use crate::base::{
-    csd_version,
-    own_data,
-    parameters,
-    set_last_error,
-    set_last_nt_error,
-    string_units,
-    version,
-};
+use crate::base::{own_data, parameters, set_last_error, set_last_nt_error, version, OwnString};
 use crate::edge::{In, OutBuf, Text};
 use crate::heap::HeapArray;
 use crate::ntcall::{self, FastPebLock};
@@ -51,10 +43,8 @@ fn narrow_on_heap(units: &[u16]) -> *mut u8 {
 /// (the next call tries again).
 #[unsafe(export_name = "f2k_export_GetCommandLineA")]
 pub extern "system" fn get_command_line_a() -> *const u8 {
-    ansi_command_line().get_or_make(|| {
-        // SAFETY: the process parameters' own string.
-        narrow_on_heap(unsafe { string_units(&parameters().command_line) }) as usize
-    }) as *const u8
+    ansi_command_line().get_or_make(|| narrow_on_heap(OwnString::CommandLine.units()) as usize)
+        as *const u8
 }
 
 /// GetCommandLineW: the process parameters' CommandLine itself.
@@ -74,18 +64,17 @@ const INVALID_HANDLE_VALUE: u32 = 0xFFFF_FFFF;
 /// A UNICODE_STRING of the parameters, narrowed onto the process heap: null for one with no buffer
 /// (F2K's parameters carry no title, desktop or shell information: the capture's null pointers);
 /// none when the heap has no room.
-fn narrow_string(string: &CountedString<usize>) -> Option<u32> {
-    if string.buffer == 0 {
+fn narrow_string(string: OwnString) -> Option<u32> {
+    if string.counted().buffer == 0 {
         return Some(0);
     }
-    // SAFETY: the process parameters' own string.
-    let block = narrow_on_heap(unsafe { string_units(string) });
+    let block = narrow_on_heap(string.units());
     (!block.is_null()).then_some(block as u32)
 }
 
 /// A UNICODE_STRING of the parameters as STARTUPINFOW points at it: its buffer, null for none.
-fn wide_string(string: &CountedString<usize>) -> Option<u32> {
-    Some(string.buffer as u32)
+fn wide_string(string: OwnString) -> Option<u32> {
+    Some(string.counted().buffer as u32)
 }
 
 /// The process parameters' standard handles: StandardInput, StandardOutput, StandardError.
@@ -105,13 +94,13 @@ fn standard_handles(parameters: &ProcessParameters<usize>) -> [u32; 3] {
 /// be made (the heap has no room).
 fn startup_info(
     parameters: &ProcessParameters<usize>,
-    string: impl Fn(&CountedString<usize>) -> Option<u32>,
+    string: impl Fn(OwnString) -> Option<u32>,
 ) -> Option<[u32; STARTUP_INFO_SIZE / 4]> {
     let mut info = [0u32; STARTUP_INFO_SIZE / 4];
     info[0] = STARTUP_INFO_SIZE as u32;
-    info[1] = string(&parameters.shell_info)?;
-    info[2] = string(&parameters.desktop_info)?;
-    info[3] = string(&parameters.window_title)?;
+    info[1] = string(OwnString::ShellInfo)?;
+    info[2] = string(OwnString::DesktopInfo)?;
+    info[3] = string(OwnString::WindowTitle)?;
     info[4..12].copy_from_slice(&[
         parameters.starting_x,
         parameters.starting_y,
@@ -234,10 +223,9 @@ fn version_ex(size: u32, mut info: OutBuf<'_, u8>, wide: bool) -> u32 {
         info.store(4 + 4 * at, field);
     }
     let mut csd = [0u16; CSD_ROOM];
-    // SAFETY: the PEB's own string.
     for (slot, &unit) in csd[..CSD_ROOM - 1]
         .iter_mut()
-        .zip(unsafe { string_units(&csd_version()) })
+        .zip(OwnString::CsdVersion.units())
     {
         *slot = unit;
     }

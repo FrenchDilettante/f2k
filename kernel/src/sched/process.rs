@@ -249,6 +249,16 @@ impl PinnedProcess {
         // exclusive borrow holds, so this is the only reference to the record while it lives.
         unsafe { &mut *self.0.get() }
     }
+
+    /// Attach `thread` (a renewed record) to this process (see
+    /// [`Dispatcher::attach`](super::dispatcher::Dispatcher::attach)).
+    pub fn attach(&'static self, dispatcher: &mut super::dispatcher::Dispatcher, thread: ThreadId) {
+        // SAFETY: the record is pinned for the kernel's life (`'static`), so it is live, at its
+        // final address, and outlives every thread's membership in its list; the dispatcher's
+        // exclusive borrow keeps every other reach into it (the accessors above, the switch inside
+        // the dispatcher's calls) off for the attach.
+        unsafe { dispatcher.attach(thread, self.as_ptr()) };
+    }
 }
 
 /// A process object's body: what a wait on the process, or a handle to it, reaches. The process

@@ -10,7 +10,7 @@
 
 use rtl::peb::LdrDataTableEntry;
 
-use crate::base::{loader_data, set_last_error, string_units, unicode_string};
+use crate::base::{loader_data, set_last_error, unicode_string};
 use crate::edge::{ansi_into, counted, InStr, InWStr, OutBuf, Text};
 use crate::error::{answer, bool_answer, Failure};
 use crate::nt::{AnsiString, UnicodeString};
@@ -224,13 +224,15 @@ fn proc_address(module: u32, export: Export<'_>) -> Result<u32, Failure> {
     Ok(address)
 }
 
-/// The entry of the module whose handle is `module`, walking the PEB's InLoadOrderModuleList (the
-/// caller holds the loader lock).
-fn entry_of(module: u32) -> Option<*const LdrDataTableEntry<usize>> {
+/// The full path (FullDllName) of the module whose handle is `module`, its entry found walking the
+/// PEB's InLoadOrderModuleList, borrowed for as long as the loader lock is held.
+fn module_path(_loader: &LoaderLock, module: u32) -> Option<&[u16]> {
     let data = loader_data();
     // SAFETY: the loader's PEB_LDR_DATA and its entries, on the process heap for the process's
-    // life (an entry leaves the lists only under the loader lock, which the caller holds); each
-    // field is read in place, and an entry's InLoadOrderLinks lead it.
+    // life (an entry leaves the lists only under the loader lock, which `_loader` holds); each
+    // field is read in place, and an entry's InLoadOrderLinks lead it. An entry's FullDllName
+    // buffer holds its length, made with the entry and freed with it: nothing frees or rewrites it
+    // while the lock is held, and the answer's borrow ends with `_loader`'s.
     unsafe {
         let head =
             (&raw const (*data).in_load_order_module_list).cast::<LdrDataTableEntry<usize>>();
@@ -240,7 +242,15 @@ fn entry_of(module: u32) -> Option<*const LdrDataTableEntry<usize>> {
                 return None;
             }
             if (*next).dll_base as u32 == module {
-                return Some(next);
+                let path = (*next).full_dll_name;
+                if path.length < 2 || path.buffer == 0 {
+                    return Some(&[]);
+                }
+                let units = usize::from(path.length) / 2;
+                return Some(core::slice::from_raw_parts(
+                    path.buffer as *const u16,
+                    units,
+                ));
             }
             next = (*next).in_load_order_links.flink as *const LdrDataTableEntry<usize>;
         }
@@ -256,10 +266,8 @@ fn entry_of(module: u32) -> Option<*const LdrDataTableEntry<usize>> {
 fn module_file_name(module: u32, mut buffer: Text<'_>) -> Result<u32, Failure> {
     let module = if module == 0 { image_base() } else { module };
     let size = buffer.len();
-    let _loader = LoaderLock::enter();
-    let entry = entry_of(module).ok_or(Failure::Error(ERROR_MOD_NOT_FOUND))?;
-    // SAFETY: the module's entry and its own path, in the lists (under the loader lock).
-    let path = unsafe { string_units(&(*entry).full_dll_name) };
+    let loader = LoaderLock::enter();
+    let path = module_path(&loader, module).ok_or(Failure::Error(ERROR_MOD_NOT_FOUND))?;
     let copy = path.len().min(size);
     buffer.put(&path[..copy]);
     if copy < size {

@@ -26,12 +26,13 @@
 //! buffer lent for the call is given back first, its bytes written, as the call's end would have.
 
 use rtl::cstr::bytes_until_nul;
+use rtl::sync::Locked;
 
 use crate::data::{File, IOB, IOB_ENTRIES, STREAM_BUFFER};
 use crate::edge::{self, WideUnit};
 use crate::format::{self, Args, Output, Unbounded, VaList};
 use crate::lowio;
-use crate::thread::{set_errno, Guarded, EBADF, EINVAL, EMFILE};
+use crate::thread::{set_errno, UnwindLock, EBADF, EINVAL, EMFILE};
 use crate::unwind;
 
 /// The `_flag` bits (stdio.h's, and the C runtime's own: `_IOYOURBUF` a buffer the stream does not
@@ -59,13 +60,15 @@ const EOF: i32 = -1;
 
 /// Each of `_iob`'s streams' lock (Windows 2000's per-stream lock): the C runtime changes the
 /// stream's `FILE` only under it ([`with_stream`]).
-static LOCKS: [Guarded<()>; IOB_ENTRIES] = [const { Guarded::new(()) }; IOB_ENTRIES];
+static LOCKS: [Locked<(), UnwindLock>; IOB_ENTRIES] =
+    [const { Locked::new(UnwindLock::new(), ()) }; IOB_ENTRIES];
 
 /// The lock of a stream that is not one of `_iob`'s (a program's own `FILE`).
-static OTHER: Guarded<()> = Guarded::new(());
+static OTHER: Locked<(), UnwindLock> = Locked::new(UnwindLock::new(), ());
 
 /// The buffers lent to stdout and stderr for a call, each taken under its stream's lock.
-static LENT: [Guarded<[u8; STREAM_BUFFER]>; 2] = [const { Guarded::new([0; STREAM_BUFFER]) }; 2];
+static LENT: [Locked<[u8; STREAM_BUFFER], UnwindLock>; 2] =
+    [const { Locked::new(UnwindLock::new(), [0; STREAM_BUFFER]) }; 2];
 
 /// `_iob`'s stream `index`.
 fn stream_at(index: usize) -> *mut File {

@@ -8,6 +8,11 @@
 //! through an export) and holding two `&mut` to it. A busy flag, set while a closure runs, makes
 //! that re-entry a panic instead.
 //!
+//! An exception's unwind abandons the frames it passes without running their drops (SEH, not a
+//! Rust panic). A lock held while its closure reads or writes a caller's memory, where such an
+//! unwind can start, arms its release around the closure ([`RawLock::on_abandon`]), so the value
+//! and the lock are let go all the same.
+//!
 //! A word a DLL makes at its first need and keeps for the process's life (a handle, a block's
 //! address) is a [`OnceWord`]: read without the lock once made, made under it.
 
@@ -23,11 +28,23 @@ use core::sync::atomic::Ordering::{Acquire, Release};
 /// `lock` returns only once the calling thread holds the lock, which no other thread then holds
 /// until the caller's matching `unlock`; `lock` acquires and `unlock` releases (what one holder
 /// wrote is seen by the next). [`Locked`] relies on it for the exclusive access it hands out.
+///
+/// `on_abandon` runs `body` once and answers what it answers. It calls `release` at most once, and
+/// only while an unwind is abandoning `body`: its frames, still in place, are never resumed, and no
+/// reference they hold is used after `release`.
 pub unsafe trait RawLock {
     /// Take the lock, waiting while another thread holds it.
     fn lock(&self);
     /// Let one taking of the lock go.
     fn unlock(&self);
+
+    /// Run `body`, with `release` armed to run if an unwind abandons it without running its drops
+    /// (an exception's unwind passing the call): what `body` answers. The default arms nothing,
+    /// for a lock whose closures touch no memory such an unwind can start in.
+    fn on_abandon<R>(&self, release: &dyn Fn(), body: impl FnOnce() -> R) -> R {
+        let _ = release;
+        body()
+    }
 }
 
 /// A value behind a lock: reached only through [`Locked::with`].
@@ -55,8 +72,9 @@ impl<T, L: RawLock> Locked<T, L> {
         }
     }
 
-    /// Run `body` over the value with the lock held, and answer what it answers; the lock is let go
-    /// when `body` returns or unwinds.
+    /// Run `body` over the value with the lock held, and answer what it answers; the value and the
+    /// lock are let go when `body` returns or unwinds, or when the lock's [`RawLock::on_abandon`]
+    /// sees an unwind abandon it.
     ///
     /// # Panics
     ///
@@ -64,12 +82,23 @@ impl<T, L: RawLock> Locked<T, L> {
     /// in, but the value is already lent.
     pub fn with<R>(&self, body: impl FnOnce(&mut T) -> R) -> R {
         self.lock.lock();
-        let _held = Unlock(&self.lock);
-        assert!(!self.busy.replace(true), "Locked::with re-entered");
-        let _busy = Free(&self.busy);
-        // SAFETY: the lock is held, and the busy flag was clear, so no other `&mut` to the value
-        // exists (on this thread or another) until `_busy` clears it after `body`.
-        body(unsafe { &mut *self.value.get() })
+        if self.busy.replace(true) {
+            self.lock.unlock();
+            panic!("Locked::with re-entered");
+        }
+        let lent = Lent {
+            locked: self,
+            out: Cell::new(true),
+        };
+        let answer = self.lock.on_abandon(&|| lent.give_back(), || {
+            // SAFETY: the lock is held, and the busy flag was clear, so no other `&mut` to the
+            // value exists (on this thread or another) until `lent` clears it: after `body`
+            // returns or unwinds, or while an unwind abandons `body`'s frames, which then never
+            // use the borrow again (`RawLock`'s contract for `on_abandon`).
+            body(unsafe { &mut *self.value.get() })
+        });
+        drop(lent);
+        answer
     }
 
     /// The value, through an exclusive borrow of the whole: no lock needed.
@@ -92,12 +121,26 @@ impl<L: RawLock> Drop for Unlock<'_, L> {
     }
 }
 
-/// Clears the busy flag when dropped (before the lock is let go).
-struct Free<'a>(&'a Cell<bool>);
+/// The value of a [`Locked`], lent to a closure: given back once, when dropped or when the lock's
+/// [`RawLock::on_abandon`] releases it first, the busy flag cleared before the lock is let go.
+struct Lent<'a, T, L: RawLock> {
+    locked: &'a Locked<T, L>,
+    /// Whether the value is still out.
+    out: Cell<bool>,
+}
 
-impl Drop for Free<'_> {
+impl<T, L: RawLock> Lent<'_, T, L> {
+    fn give_back(&self) {
+        if self.out.replace(false) {
+            self.locked.busy.set(false);
+            self.locked.lock.unlock();
+        }
+    }
+}
+
+impl<T, L: RawLock> Drop for Lent<'_, T, L> {
     fn drop(&mut self) {
-        self.0.set(false);
+        self.give_back();
     }
 }
 
@@ -275,6 +318,55 @@ mod tests {
         });
         assert_eq!(made.load(SeqCst), 1);
         assert!(word.lock.is_free());
+    }
+
+    /// A recursive lock whose closures an unwind abandons: a panic stands in for the exception,
+    /// caught where the unwind passes the call, the release run there, then the panic resumed (as
+    /// the C runtime's host tests model an SEH unwind).
+    #[derive(Default)]
+    struct Abandoning(Recursive);
+
+    // SAFETY: `Recursive`'s, and `release` runs once the panic has left `body` for good.
+    unsafe impl RawLock for Abandoning {
+        fn lock(&self) {
+            self.0.lock();
+        }
+
+        fn unlock(&self) {
+            self.0.unlock();
+        }
+
+        fn on_abandon<R>(&self, release: &dyn Fn(), body: impl FnOnce() -> R) -> R {
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)) {
+                Ok(answer) => answer,
+                Err(panic) => {
+                    release();
+                    std::panic::resume_unwind(panic)
+                }
+            }
+        }
+    }
+
+    /// The release an abandoned closure's lock runs lets the value and the lock go once: the drops
+    /// the resumed unwind then runs give nothing back again.
+    #[test]
+    fn an_abandoned_closure_lets_the_value_go_once() {
+        let locked = Locked::new(Abandoning::default(), 0u32);
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            locked.with(|value| {
+                *value = 3;
+                panic!("a fault in the caller's memory");
+            })
+        }));
+        assert!(caught.is_err());
+        assert!(locked.lock.0.is_free());
+        assert_eq!(locked.with(|value| *value), 3, "the busy flag clear");
+        assert_eq!(
+            locked.with(|value| *value + 1),
+            4,
+            "and a return still lets it go"
+        );
+        assert!(locked.lock.0.is_free());
     }
 
     #[test]

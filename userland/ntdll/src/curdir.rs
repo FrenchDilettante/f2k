@@ -11,7 +11,6 @@
 
 use rtl::cstr::units_until_nul;
 use rtl::nt::info::FileBasicInformation;
-use rtl::nt::IoStatusBlock;
 use rtl::path::{
     dos_path_to_nt,
     full_path_name,
@@ -24,9 +23,10 @@ use rtl::path::{
 };
 use rtl::status::{STATUS_NAME_TOO_LONG, STATUS_OBJECT_NAME_INVALID, STATUS_SUCCESS};
 use rtl::string::UnicodeString;
-use rtl::sys::{self, nr, system_service};
+use rtl::sys;
 
 use crate::params::{with_own_parameters, OwnParameters};
+use crate::service::{self, ObjectAttributes};
 
 /// NtOpenFile's arguments for a current directory: traverse and synchronize, the share modes
 /// Windows 2000 opens it with (read and write: the directory cannot be deleted while it is
@@ -38,10 +38,6 @@ const FILE_DIRECTORY_FILE: u32 = 0x1;
 const FILE_SYNCHRONOUS_IO_NONALERT: u32 = 0x20;
 const OBJ_INHERIT: u32 = 0x2;
 const OBJ_CASE_INSENSITIVE: u32 = 0x40;
-
-/// OBJECT_ATTRIBUTES (`rtl::nt`'s): a name for the file services, borrowed for as long as the
-/// attributes are.
-type ObjectAttributes<'a> = rtl::nt::ObjectAttributes<u32, &'a UnicodeString, usize>;
 
 /// The OBJECT_ATTRIBUTES naming `name` (the namespace's root its directory), with `attributes`.
 fn attributes(name: &UnicodeString, attributes: u32) -> ObjectAttributes<'_> {
@@ -68,20 +64,12 @@ fn counted(units: &[u16]) -> UnicodeString {
 fn open_directory(name: &[u16]) -> Result<u32, u32> {
     let string = counted(name);
     let attributes = attributes(&string, OBJ_CASE_INSENSITIVE | OBJ_INHERIT);
-    let mut io_status = IoStatusBlock::<u32>::default();
-    let mut handle = 0u32;
-    let args = [
-        &mut handle as *mut u32 as u32,
+    service::open_file(
+        &attributes,
         FILE_TRAVERSE | SYNCHRONIZE,
-        &attributes as *const ObjectAttributes as u32,
-        &mut io_status as *mut IoStatusBlock<u32> as u32,
         FILE_SHARE_READ_WRITE,
         FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT,
-    ];
-    match system_service(nr::NtOpenFile, &args) {
-        STATUS_SUCCESS => Ok(handle),
-        status => Err(status),
-    }
+    )
 }
 
 /// RtlSetCurrentDirectory_U: `path` made absolute against the current directory, its trailing
@@ -137,7 +125,7 @@ fn set_current_directory(own: &mut OwnParameters, path: &[u16]) -> u32 {
             Err(status) => return status,
         };
         if old != 0 {
-            system_service(nr::NtClose, &[old]);
+            service::close(old);
         }
         handle
     };
@@ -337,11 +325,7 @@ pub unsafe extern "system" fn rtl_does_file_exists_u(path: *const u16) -> u32 {
     let string = counted(&name[..made.length]);
     let attributes = attributes(&string, OBJ_CASE_INSENSITIVE);
     let mut basic = FileBasicInformation::default();
-    let args = [
-        &attributes as *const ObjectAttributes as u32,
-        &mut basic as *mut FileBasicInformation as u32,
-    ];
-    u32::from(system_service(nr::NtQueryAttributesFile, &args) == STATUS_SUCCESS)
+    u32::from(service::query_attributes_file(&attributes, &mut basic) == STATUS_SUCCESS)
 }
 
 /// RtlDetermineDosPathNameType_U: what a DOS path is ([`rtl::path::path_type`]), as RTL_PATH_TYPE

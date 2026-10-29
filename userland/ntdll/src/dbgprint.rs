@@ -9,8 +9,8 @@
 
 use rtl::printf::{self, Args, Unsupported};
 use rtl::stub::Line;
-use rtl::sys::{system_service, SYS_DEBUG_PRINT};
 
+use crate::service;
 use crate::stub::{self, Mapped};
 
 /// The caller's variable arguments, in place on its stack, a dword at a time.
@@ -37,7 +37,7 @@ impl Args for Stack {
 
 /// Hand `text` to the debugger's channel.
 pub fn print(text: &[u8]) {
-    system_service(SYS_DEBUG_PRINT, &[text.as_ptr() as u32, text.len() as u32]);
+    service::debug_print(text);
 }
 
 /// DbgPrint's body: STATUS_SUCCESS, or the stub path's answer.

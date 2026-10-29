@@ -16,11 +16,87 @@
 //! exactly against the table's names. The third element, a language, is searched as the
 //! FormatMessage documentation describes ([`languages`]).
 //!
-//! The reads go through [`Memory`], by 32-bit user address: the process's own memory on the target,
-//! a model in the tests.
+//! The structures are plain data ([`Pod`]), each read whole through [`Memory`], by 32-bit user
+//! address: the process's own memory on the target, a model in the tests.
+
+use core::mem::size_of;
 
 use crate::image;
 use crate::modules::Memory;
+use crate::pod::Pod;
+
+/// IMAGE_RESOURCE_DIRECTORY: a table's header, its entries ([`ResourceDirectoryEntry`]) right after
+/// it, the named ones first.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ResourceDirectory {
+    pub characteristics: u32,
+    pub time_date_stamp: u32,
+    pub major_version: u16,
+    pub minor_version: u16,
+    pub number_of_named_entries: u16,
+    pub number_of_id_entries: u16,
+}
+
+/// IMAGE_RESOURCE_DIRECTORY_ENTRY: a name (a string's offset in the directory, its high bit set)
+/// or a numbered identifier, and its target's offset in the directory (the high bit set for a
+/// subtable).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ResourceDirectoryEntry {
+    pub name: u32,
+    pub offset_to_data: u32,
+}
+
+/// IMAGE_RESOURCE_DATA_ENTRY: a resource's data, its RVA (OffsetToData) and size.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ResourceDataEntry {
+    pub offset_to_data: u32,
+    pub size: u32,
+    pub code_page: u32,
+    pub reserved: u32,
+}
+
+/// MESSAGE_RESOURCE_BLOCK: a run of consecutive message identifiers, and its first record's offset
+/// from the table's start. The table (MESSAGE_RESOURCE_DATA) is a count of blocks, then the blocks.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MessageResourceBlock {
+    pub low_id: u32,
+    pub high_id: u32,
+    pub offset_to_entries: u32,
+}
+
+/// MESSAGE_RESOURCE_ENTRY's header: the record's length (the header, the text and its padding) and
+/// its flags; the text follows.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MessageResourceEntry {
+    pub length: u16,
+    pub flags: u16,
+}
+
+const _: () = {
+    // winnt.h's layouts.
+    assert!(size_of::<ResourceDirectory>() == 16);
+    assert!(size_of::<ResourceDirectoryEntry>() == 8);
+    assert!(size_of::<ResourceDataEntry>() == 16);
+    assert!(size_of::<MessageResourceBlock>() == 12);
+    assert!(size_of::<MessageResourceEntry>() == 4);
+};
+
+// SAFETY: u32 and u16 fields, laid out without padding (the u16s come in pairs after the u32s), as
+// the asserts above pin.
+unsafe impl Pod for ResourceDirectory {}
+// SAFETY: two u32s, 8 bytes without padding.
+unsafe impl Pod for ResourceDirectoryEntry {}
+// SAFETY: four u32s, 16 bytes without padding.
+unsafe impl Pod for ResourceDataEntry {}
+// SAFETY: three u32s, 12 bytes without padding.
+unsafe impl Pod for MessageResourceBlock {}
+// SAFETY: two u16s, 4 bytes without padding.
+unsafe impl Pod for MessageResourceEntry {}
 
 /// The resource type of a message table: RT_MESSAGETABLE.
 pub const RT_MESSAGETABLE: u32 = 11;
@@ -125,24 +201,30 @@ fn size_of_image<M: Memory>(memory: &M, base: u32) -> u32 {
 /// bit set for a subtable). Named entries come first, then numbered ones; each run is searched in
 /// full.
 fn entry<M: Memory>(memory: &M, root: u32, table: u32, element: u32) -> Option<u32> {
-    let named = u32::from(memory.half(table + 12));
-    let numbered = u32::from(memory.half(table + 14));
-    let entries = table + 16;
-    if is_numbered(element) {
+    let header: ResourceDirectory = memory.read(table);
+    let named = u32::from(header.number_of_named_entries);
+    let numbered = u32::from(header.number_of_id_entries);
+    let entry_at = |index: u32| -> ResourceDirectoryEntry {
+        memory.read(table + DIRECTORY_SIZE + ENTRY_SIZE * index)
+    };
+    let found = if is_numbered(element) {
         (named..named + numbered)
-            .map(|index| entries + 8 * index)
-            .find(|&at| memory.word(at) == element)
-            .map(|at| memory.word(at + 4))
+            .map(entry_at)
+            .find(|entry| entry.name == element)
     } else {
-        (0..named)
-            .map(|index| entries + 8 * index)
-            .find(|&at| {
-                let name = memory.word(at);
-                name & HIGH_BIT != 0 && same_name(memory, root + (name & !HIGH_BIT), element)
-            })
-            .map(|at| memory.word(at + 4))
-    }
+        (0..named).map(entry_at).find(|entry| {
+            entry.name & HIGH_BIT != 0
+                && same_name(memory, root + (entry.name & !HIGH_BIT), element)
+        })
+    };
+    found.map(|entry| entry.offset_to_data)
 }
+
+/// The structures' sizes, as the tables lay them out back to back.
+const DIRECTORY_SIZE: u32 = size_of::<ResourceDirectory>() as u32;
+const ENTRY_SIZE: u32 = size_of::<ResourceDirectoryEntry>() as u32;
+const BLOCK_SIZE: u32 = size_of::<MessageResourceBlock>() as u32;
+const RECORD_HEADER_SIZE: u32 = size_of::<MessageResourceEntry>() as u32;
 
 /// Whether the IMAGE_RESOURCE_DIR_STRING_U at `string` (a length in units, then the units) is the
 /// NUL-terminated name at `name`, unit for unit.
@@ -154,8 +236,13 @@ fn same_name<M: Memory>(memory: &M, string: u32, name: u32) -> bool {
 
 /// The first entry of the table at `table`, in its order: its OffsetToData word.
 fn first_entry<M: Memory>(memory: &M, table: u32) -> Option<u32> {
-    let count = u32::from(memory.half(table + 12)) + u32::from(memory.half(table + 14));
-    (count != 0).then(|| memory.word(table + 16 + 4))
+    let header: ResourceDirectory = memory.read(table);
+    let count = u32::from(header.number_of_named_entries) + u32::from(header.number_of_id_entries);
+    (count != 0).then(|| {
+        memory
+            .read::<ResourceDirectoryEntry>(table + DIRECTORY_SIZE)
+            .offset_to_data
+    })
 }
 
 /// The status of an element a table does not hold, by its level: a type, a name, a language.
@@ -242,7 +329,8 @@ pub fn find_table<M: Memory>(
 /// LdrAccessResource's work: the data's address and size, of the data entry at `entry` in the
 /// image at `base`. STATUS_RESOURCE_DATA_NOT_FOUND for data that does not lie inside the image.
 pub fn access<M: Memory>(memory: &M, base: u32, entry: u32) -> Result<(u32, u32), u32> {
-    let (rva, size) = (memory.word(entry), memory.word(entry + 4));
+    let data: ResourceDataEntry = memory.read(entry);
+    let (rva, size) = (data.offset_to_data, data.size);
     let inside = rva
         .checked_add(size)
         .is_some_and(|end| end <= size_of_image(memory, base));
@@ -257,22 +345,24 @@ pub fn access<M: Memory>(memory: &M, base: u32, entry: u32) -> Result<(u32, u32)
 /// leave the table).
 pub fn message_entry<M: Memory>(memory: &M, table: u32, size: u32, id: u32) -> Result<u32, u32> {
     let end = table.wrapping_add(size);
-    let blocks = memory.word(table);
-    for block in 0..blocks.min(size / 12) {
-        let at = table + 4 + 12 * block;
-        let (low, high, offset) = (memory.word(at), memory.word(at + 4), memory.word(at + 8));
-        if id < low || id > high {
+    // MESSAGE_RESOURCE_DATA's NumberOfBlocks, then the blocks.
+    let blocks: u32 = memory.read(table);
+    for block in 0..blocks.min(size / BLOCK_SIZE) {
+        let block: MessageResourceBlock = memory.read(table + 4 + BLOCK_SIZE * block);
+        if id < block.low_id || id > block.high_id {
             continue;
         }
-        let mut entry = table.wrapping_add(offset);
-        for _ in low..id {
-            let length = u32::from(memory.half(entry));
-            if length < 4 || entry.wrapping_add(length) > end {
+        let mut entry = table.wrapping_add(block.offset_to_entries);
+        for _ in block.low_id..id {
+            // The record's Length, its header's first field (read alone: the walk checks it before
+            // anything past it).
+            let length = u32::from(memory.read::<u16>(entry));
+            if length < RECORD_HEADER_SIZE || entry.wrapping_add(length) > end {
                 return Err(STATUS_MESSAGE_NOT_FOUND);
             }
             entry += length;
         }
-        if entry.wrapping_add(4) > end {
+        if entry.wrapping_add(RECORD_HEADER_SIZE) > end {
             return Err(STATUS_MESSAGE_NOT_FOUND);
         }
         return Ok(entry);
