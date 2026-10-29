@@ -149,11 +149,33 @@ impl<E: Copy> HandleTable<E> {
         let mut taken = 0;
         for index in 1..HANDLE_SLOTS {
             if let Some(entry) = parent.slots[index].filter(|entry| admit(entry)) {
-                self.slots[index] = Some(entry);
-                self.next_fresh = index as u32 + 1;
+                self.inherit_entry(index, entry);
                 taken += 1;
             }
         }
+        self.end_inheritance();
+        taken
+    }
+
+    /// One step of an inheritance walked by the caller (see [`HandleTable::inherit_from`]): this
+    /// table, a fresh one filled in slot order, takes `entry` in slot `index`, the parent's.
+    ///
+    /// # Panics
+    ///
+    /// The table is not being filled in slot order: a slot was handed out, or one at or past
+    /// `index` was taken already.
+    pub fn inherit_entry(&mut self, index: usize, entry: E) {
+        assert!(
+            self.freed_top == 0 && index as u32 >= self.next_fresh,
+            "a table inherits only while fresh, in slot order"
+        );
+        self.slots[index] = Some(entry);
+        self.next_fresh = index as u32 + 1;
+    }
+
+    /// End an inheritance: the slots left free below the highest one taken go first to the table's
+    /// next inserts, lowest first.
+    pub fn end_inheritance(&mut self) {
         // The gaps below the highest slot taken, highest pushed first: the lowest is on top.
         for index in (1..self.next_fresh as usize).rev() {
             if self.slots[index].is_none() {
@@ -161,7 +183,6 @@ impl<E: Copy> HandleTable<E> {
                 self.freed_top += 1;
             }
         }
-        taken
     }
 
     /// How many slots hold an entry `which` accepts.

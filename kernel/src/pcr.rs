@@ -1,7 +1,8 @@
 //! The processor control region: the state that belongs to the processor rather than to a thread
 //! or a subsystem (Windows 2000's KPCR and its KPRCB).
 //!
-//! It holds the interrupt-level ledger, the DPC queue and the processor's threads. The ledger is
+//! It holds the interrupt-level ledger, the DPC queue, the processor's threads and its own tables
+//! (the GDT, the task state segment and the IDT: [`ProcessorTables`]). The ledger is
 //! what level tokens are built on, so it cannot be a level cell itself: it is reached only through
 //! the operations here, each of which masks interrupts before it touches the ledger. The DPC queue
 //! is a cell at the high level, as Windows 2000 keeps its DPC list (interrupt service routines
@@ -23,6 +24,7 @@
 use core::cell::UnsafeCell;
 use core::marker::PhantomData;
 
+use crate::cpu::ProcessorTables;
 use crate::interrupt::dpc::ProcessorQueue;
 use crate::interrupt::irql::{Irql, IrqlState, OldIrql, DISPATCH};
 use crate::sched::processor::ThreadSlots;
@@ -37,17 +39,21 @@ pub struct Pcr {
     /// The processor's threads (KPRCB's CurrentThread, NextThread, IdleThread and QuantumEnd), and
     /// the running thread's quantum.
     pub threads: ThreadSlots,
+    /// The processor's GDT, task state segment and IDT (KPCR's GDT, TSS and IDT).
+    pub tables: ProcessorTables,
 }
 
 // SAFETY: one processor. The ledger is reached only through the operations below, which mask
 // interrupts first and never hold the reference across an instruction that takes one, so no
-// interrupt handler's operation can land inside another's; the DPC queue and the thread slots are
-// `Sync` on their own terms (a level cell and atomics).
+// interrupt handler's operation can land inside another's; the DPC queue, the thread slots and the
+// processor's tables are `Sync` on their own terms (a level cell, atomics, and the tables' one
+// build).
 unsafe impl Sync for Pcr {}
 
-/// The boot processor's control region.
+/// The boot processor's control region. Named directly only by the context switch's assembly,
+/// which addresses the processor's tables through it; Rust code reaches it through [`pcr`].
 #[cfg(target_arch = "x86")]
-static PCR: Pcr = Pcr::new(IrqlState::at_boot());
+pub(crate) static PCR: Pcr = Pcr::new(IrqlState::at_boot());
 
 /// The processor's control region.
 #[cfg(target_arch = "x86")]
@@ -68,13 +74,15 @@ pub fn pcr() -> &'static Pcr {
 }
 
 impl Pcr {
-    /// A control region whose ledger starts as `ledger`, with an empty DPC queue and no threads.
-    /// The queue's request gate: a low-importance DPC is requested once four are queued.
+    /// A control region whose ledger starts as `ledger`, with an empty DPC queue, no threads, and
+    /// its tables not built yet. The queue's request gate: a low-importance DPC is requested once
+    /// four are queued.
     const fn new(ledger: IrqlState) -> Self {
         Pcr {
             ledger: UnsafeCell::new(ledger),
             dpc_queue: ProcessorQueue::new(4, 0),
             threads: ThreadSlots::new(),
+            tables: ProcessorTables::new(),
         }
     }
 

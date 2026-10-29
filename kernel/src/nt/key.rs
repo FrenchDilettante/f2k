@@ -269,8 +269,7 @@ mod services {
             return Err(STATUS_INVALID_HANDLE);
         }
         let entry = calling_process()
-            .handles()
-            .lookup(handle)
+            .lookup_handle(handle)
             .ok_or(STATUS_INVALID_HANDLE)?;
         let id = entry.object_id().ok_or(STATUS_INVALID_HANDLE)?;
         if id.kind != ObjectType::Key {
@@ -279,9 +278,7 @@ mod services {
         if entry.access & needed != needed {
             return Err(STATUS_ACCESS_DENIED);
         }
-        ob::directory()
-            .key(id)
-            .and_then(|body| body.key)
+        ob::locked(|directory| directory.key(id).and_then(|body| body.key))
             .ok_or(STATUS_INVALID_HANDLE)
     }
 
@@ -394,12 +391,12 @@ mod services {
     /// A new key object for `key`, its handle (with `desired`'s rights) into `slot`; a slot that
     /// faults takes the handle back (STATUS_ACCESS_VIOLATION).
     fn publish(slot: UserPtr<u32>, key: Key, desired: u32, inherit: bool) -> Result<u32, NtStatus> {
-        let id = ob::directory()
-            .create_key(KeyBody::of(key))
+        let id = ob::locked(|directory| directory.create_key(KeyBody::of(key)))
             .ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
         let process = calling_process();
-        let handle = ob::publish(process, id, granted(desired), inherit, None)
-            .ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
+        let handle = ob::publish(process, id, granted(desired), inherit)
+            .ok_or(STATUS_INSUFFICIENT_RESOURCES)?
+            .get();
         if slot.write(handle).is_err() {
             process.close_handle(handle);
             return Err(STATUS_ACCESS_VIOLATION);
@@ -490,7 +487,7 @@ mod services {
             path,
             inherit,
         } = resolve(attributes, &mut name)?;
-        if calling_process().handles().is_full() {
+        if calling_process().handles_full() {
             return Err(STATUS_INSUFFICIENT_RESOURCES);
         }
         let now = now();

@@ -16,6 +16,7 @@
 use core::mem::{offset_of, size_of};
 
 use crate::nt::UnicodeString;
+use crate::pod::Pod;
 
 /// The PEB, NT 5.0's: what every process's threads find through FS (TEB+0x30). The kernel fills
 /// the fields of the process's creation (its image's base, its parameters, the heap list's room,
@@ -205,6 +206,11 @@ const _: () = {
     assert!(offset_of!(Layout, process_heaps) == offset_of!(Layout, number_of_heaps) + 8);
 };
 
+// SAFETY: integers, their arrays and a UNICODE_STRING of u32s, laid out without padding: the four
+// leading bytes fill a dword, the u16 pair after OSBuildNumber fills another, the 64-bit timeout
+// sits at 0x70 (a multiple of 8) and the size, 0x1E8, is one too, as the layout asserts above pin.
+unsafe impl Pod for Peb<u32> {}
+
 /// The TEB's fields F2K reads and writes (NT 5.0's offsets; the fields between them are kept as
 /// reserved dwords). A thread's own fields are reached through FS on the target.
 #[repr(C)]
@@ -295,6 +301,9 @@ const _: () = {
     assert!(offset_of!(Layout, tls_expansion_slots) == 0xF94);
 };
 
+// SAFETY: u32s and arrays of them, so no padding.
+unsafe impl Pod for Teb<u32> {}
+
 /// An RTL_BITMAP: its size in bits and its buffer (the PEB's TLS bitmaps' headers are ntdll's own
 /// data, the bits the PEB's).
 #[repr(C)]
@@ -329,8 +338,8 @@ pub struct PebLdrData<P> {
     pub in_initialization_order_module_list: ListEntry<P>,
 }
 
-/// LDR_DATA_TABLE_ENTRY: a module's entry in the lists (`crate::modules::entry` names its fields'
-/// offsets).
+/// LDR_DATA_TABLE_ENTRY: a module's entry in the lists (`crate::modules::Module` reads and writes
+/// it).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LdrDataTableEntry<P> {
@@ -350,23 +359,37 @@ pub struct LdrDataTableEntry<P> {
 }
 
 const _: () = {
-    use crate::modules::{data, entry};
+    // NT 5.0's layouts, with 32-bit pointers on any host.
+    assert!(size_of::<ListEntry<u32>>() == 8);
+    assert!(offset_of!(ListEntry<u32>, blink) == 4);
     type Data = PebLdrData<u32>;
-    assert!(size_of::<Data>() == data::SIZE as usize);
-    assert!(
-        offset_of!(Data, in_load_order_module_list) == data::IN_LOAD_ORDER_MODULE_LIST as usize
-    );
-    assert!(
-        offset_of!(Data, in_initialization_order_module_list)
-            == data::IN_INITIALIZATION_ORDER_MODULE_LIST as usize
-    );
+    assert!(size_of::<Data>() == 0x24);
+    assert!(offset_of!(Data, initialized) == 0x04);
+    assert!(offset_of!(Data, ss_handle) == 0x08);
+    assert!(offset_of!(Data, in_load_order_module_list) == 0x0C);
+    assert!(offset_of!(Data, in_memory_order_module_list) == 0x14);
+    assert!(offset_of!(Data, in_initialization_order_module_list) == 0x1C);
     type Entry = LdrDataTableEntry<u32>;
-    assert!(size_of::<Entry>() == entry::SIZE as usize);
-    assert!(offset_of!(Entry, dll_base) == entry::DLL_BASE as usize);
-    assert!(offset_of!(Entry, full_dll_name) == entry::FULL_DLL_NAME as usize);
-    assert!(offset_of!(Entry, base_dll_name) == entry::BASE_DLL_NAME as usize);
-    assert!(offset_of!(Entry, flags) == entry::FLAGS as usize);
-    assert!(offset_of!(Entry, load_count) == entry::LOAD_COUNT as usize);
-    assert!(offset_of!(Entry, hash_links) == entry::HASH_LINKS as usize);
-    assert!(offset_of!(Entry, time_date_stamp) == entry::TIME_DATE_STAMP as usize);
+    assert!(size_of::<Entry>() == 0x48);
+    assert!(offset_of!(Entry, in_memory_order_links) == 0x08);
+    assert!(offset_of!(Entry, in_initialization_order_links) == 0x10);
+    assert!(offset_of!(Entry, dll_base) == 0x18);
+    assert!(offset_of!(Entry, entry_point) == 0x1C);
+    assert!(offset_of!(Entry, size_of_image) == 0x20);
+    assert!(offset_of!(Entry, full_dll_name) == 0x24);
+    assert!(offset_of!(Entry, base_dll_name) == 0x2C);
+    assert!(offset_of!(Entry, flags) == 0x34);
+    assert!(offset_of!(Entry, load_count) == 0x38);
+    assert!(offset_of!(Entry, tls_index) == 0x3A);
+    assert!(offset_of!(Entry, hash_links) == 0x3C);
+    assert!(offset_of!(Entry, time_date_stamp) == 0x44);
 };
+
+// SAFETY: two u32s.
+unsafe impl Pod for ListEntry<u32> {}
+// SAFETY: u32s and three LIST_ENTRYs of them, without padding (the size asserted above is the
+// fields' sum).
+unsafe impl Pod for PebLdrData<u32> {}
+// SAFETY: u32s, u16s in pairs that fill whole dwords, LIST_ENTRYs and UNICODE_STRINGs of u32s,
+// without padding (the size asserted above is the fields' sum).
+unsafe impl Pod for LdrDataTableEntry<u32> {}

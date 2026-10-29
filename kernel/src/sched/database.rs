@@ -189,6 +189,7 @@ impl Dispatcher {
     pub fn apc(&self, apc: ApcId) -> &Apc {
         match apc {
             ApcId::Suspend(thread) => &self.thread(thread).suspend_apc,
+            ApcId::Exit(thread) => &self.thread(thread).exit_apc,
             ApcId::Timer(index) => &self.db.timers.get(index).apc,
             ApcId::User(index) => self.db.user_apcs.get(index),
         }
@@ -198,6 +199,7 @@ impl Dispatcher {
     pub fn apc_mut(&mut self, apc: ApcId) -> &mut Apc {
         match apc {
             ApcId::Suspend(thread) => &mut self.thread_mut(thread).suspend_apc,
+            ApcId::Exit(thread) => &mut self.thread_mut(thread).exit_apc,
             ApcId::Timer(index) => &mut self.db.timers.get_mut(index).apc,
             ApcId::User(index) => self.db.user_apcs.get_mut(index),
         }

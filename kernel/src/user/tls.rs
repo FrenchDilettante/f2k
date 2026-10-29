@@ -19,7 +19,8 @@ pub const EXPANSION_SLOTS: u32 = 1024;
 /// Every TLS index a process can allocate.
 pub const INDEXES: u32 = TEB_SLOTS + EXPANSION_SLOTS;
 
-use crate::user::teb::teb_offset::TLS_SLOTS as TEB_TLS_SLOTS;
+/// The TEB's TlsSlots, its first 64 slots.
+const TEB_TLS_SLOTS: u32 = core::mem::offset_of!(rtl::peb::Teb<u32>, tls_slots) as u32;
 
 /// The user address of index `index`'s slot for the thread whose TEB is at `teb` and whose
 /// expansion slots are at `expansion` (zero: none yet); none past the last index, or for an
@@ -38,12 +39,10 @@ pub fn slot_address(teb: u32, expansion: u32, index: u32) -> Option<u32> {
 /// slots read from the TEB (a TEB the program made unreadable has none).
 #[cfg(target_arch = "x86")]
 pub fn thread_slot(teb: u32, index: u32) -> Option<u32> {
-    let mut expansion = [0u8; 4];
-    let at = teb + crate::user::teb::teb_offset::TLS_EXPANSION_SLOTS;
-    let expansion = match crate::user::syscall::read_user(at, &mut expansion) {
-        Ok(()) => u32::from_le_bytes(expansion),
-        Err(_) => 0,
-    };
+    let expansion = crate::user::teb::teb_field!(tls_expansion_slots)
+        .of(teb)
+        .read()
+        .unwrap_or(0);
     slot_address(teb, expansion, index)
 }
 
@@ -66,6 +65,9 @@ mod tests {
         assert_eq!(slot_address(teb, 0, 64), None, "no expansion slots yet");
         assert_eq!(slot_address(teb, 0, 63), Some(teb + 0xE10 + 63 * 4));
         // The TEB's slots end before its expansion pointer.
-        assert!(TEB_TLS_SLOTS + TEB_SLOTS * 4 <= crate::user::teb::teb_offset::TLS_EXPANSION_SLOTS);
+        assert!(
+            TEB_TLS_SLOTS + TEB_SLOTS * 4
+                <= crate::user::teb::teb_field!(tls_expansion_slots).offset()
+        );
     }
 }

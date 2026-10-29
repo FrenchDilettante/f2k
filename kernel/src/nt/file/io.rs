@@ -94,7 +94,7 @@ fn read_file_held(
     offset: UserPtr<u64>,
     _key: UserPtr<u32>,
 ) -> NtResult {
-    let mut transfer = transfer(
+    let transfer = transfer(
         handle,
         event,
         routine,
@@ -103,7 +103,7 @@ fn read_file_held(
         rights::FILE_READ_DATA,
     )?;
     let at = transfer.offset;
-    let result = io::serialized(&mut transfer.object, |object| {
+    let result = io::serialized(&transfer.object, |object| {
         let start = at.unwrap_or(object.position);
         if length == 0 {
             return Ok(0);
@@ -183,9 +183,9 @@ fn write_file_held(
     _key: UserPtr<u32>,
 ) -> NtResult {
     let needs = rights::FILE_WRITE_DATA | rights::FILE_APPEND_DATA;
-    let mut transfer = transfer(handle, event, routine, io_status, offset, needs)?;
+    let transfer = transfer(handle, event, routine, io_status, offset, needs)?;
     let at = transfer.offset;
-    let result = io::serialized(&mut transfer.object, |object| {
+    let result = io::serialized(&transfer.object, |object| {
         let record = object.record;
         let append = object.granted & rights::FILE_WRITE_DATA == 0;
         let start = match at {

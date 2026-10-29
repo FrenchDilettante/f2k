@@ -108,17 +108,15 @@ impl ProcessRef {
         self.current
     }
 
-    /// The process's record, live while the reference holds its object. Borrowed for the caller's
-    /// statement: for the calling process it is the record [`NtCall::process`] lends too.
-    pub fn record(&self) -> &'static mut crate::process::Process {
+    /// The process's record, live while the reference holds its object: for the calling process,
+    /// the record [`NtCall::process`] answers too.
+    pub fn record(&self) -> &'static crate::process::Process {
         crate::process::pool::of_object(self.id()).expect("a referenced process has its record")
     }
 
     /// The process's exit status: STILL_ACTIVE until it ends, its exit code after.
     pub fn exit_status(&self) -> u32 {
-        let body = crate::ob::directory()
-            .process(self.id())
-            .expect("a referenced process lives");
+        let body = self.reference.process();
         crate::level::raised::<crate::level::Dispatch, _>(|dispatch| {
             crate::sched::DISPATCHER
                 .get(dispatch)
@@ -129,17 +127,14 @@ impl ProcessRef {
 
     /// Whether the process has ended: its object has signalled (at its last thread's exit).
     pub fn ended(&self) -> bool {
-        crate::ob::directory()
-            .waitable(self.id())
-            .is_some_and(|body| {
-                crate::level::raised::<crate::level::Dispatch, _>(|dispatch| {
-                    crate::sched::DISPATCHER
-                        .get(dispatch)
-                        .waitable(body)
-                        .signal_state()
-                        > 0
-                })
-            })
+        let body = crate::sched::wait::WaitableId::Process(self.reference.process());
+        crate::level::raised::<crate::level::Dispatch, _>(|dispatch| {
+            crate::sched::DISPATCHER
+                .get(dispatch)
+                .waitable(body)
+                .signal_state()
+                > 0
+        })
     }
 
     /// Run `body`, which reaches the process's address space ([`ProcessRef::reach`]): for another
@@ -173,7 +168,7 @@ impl ProcessRef {
     /// [`ProcessRef::visit`] and [`ProcessRef::reach`]).
     pub fn attached<R>(
         &self,
-        body: impl FnOnce(&mut crate::process::Process) -> Result<R, NtStatus>,
+        body: impl FnOnce(&'static crate::process::Process) -> Result<R, NtStatus>,
     ) -> Result<R, NtStatus> {
         self.visit(|| self.reach(|| body(self.record())))
     }
@@ -187,7 +182,7 @@ pub fn reference_process(handle: u32, needed: u32) -> Result<ProcessRef, NtStatu
     let id = match handle {
         CURRENT_PROCESS => calling.object(),
         _ if is_console_handle(handle) => return Err(STATUS_INVALID_HANDLE),
-        _ => process_of_entry(calling.handles().lookup(handle), needed)?,
+        _ => process_of_entry(calling.lookup_handle(handle), needed)?,
     };
     let reference = crate::ob::reference(id).ok_or(STATUS_INVALID_HANDLE)?;
     Ok(ProcessRef {
@@ -226,8 +221,7 @@ pub fn close(call: &mut NtCall, handle: Handle) -> NtResult {
     {
         let process = call.process();
         let entry = process
-            .handles()
-            .lookup(handle.raw())
+            .lookup_handle(handle.raw())
             .ok_or(STATUS_INVALID_HANDLE)?;
         closable(entry)?;
         if process.close_handle(handle.raw()) {
@@ -377,8 +371,7 @@ fn handle_entry_flags(
     #[cfg(target_arch = "x86")]
     {
         call.process()
-            .handles()
-            .lookup(handle.raw())
+            .lookup_handle(handle.raw())
             .map(ObjectHandleFlagInformation::of)
             .ok_or(STATUS_INVALID_HANDLE)
     }
@@ -429,9 +422,9 @@ pub fn set_information_object(
 /// into, and the source process's, which DUPLICATE_CLOSE_SOURCE closes the source in — behind a
 /// seam so the order of [`duplicate_entry`]'s steps is host-tested.
 pub trait DuplicateTables {
-    /// A new handle for `entry` in the target process's table, zero when none can be made (a full
-    /// table, or an object at its handle count's limit).
-    fn insert(&mut self, entry: Entry) -> u32;
+    /// A new handle for `entry` in the target process's table, none when none can be made (a full
+    /// table, or an object gone meanwhile).
+    fn insert(&mut self, entry: Entry) -> Option<core::num::NonZeroU32>;
     /// Close the duplicate `handle` again, in the target process's table, releasing what it named.
     fn close_duplicate(&mut self, handle: u32);
     /// Free the source `handle`'s slot in the source process's table, what it names still
@@ -500,11 +493,13 @@ pub fn duplicate_entry(
                 inherit,
                 protect_from_close: false,
             }) {
-                0 => Err(STATUS_INSUFFICIENT_RESOURCES),
-                handle => write(handle).map(|()| STATUS_SUCCESS).map_err(|fault| {
-                    tables.close_duplicate(handle);
-                    NtStatus::from(fault)
-                }),
+                None => Err(STATUS_INSUFFICIENT_RESOURCES),
+                Some(handle) => write(handle.get())
+                    .map(|()| STATUS_SUCCESS)
+                    .map_err(|fault| {
+                        tables.close_duplicate(handle.get());
+                        NtStatus::from(fault)
+                    }),
             }
         }
     };
@@ -550,13 +545,13 @@ mod tests {
     }
 
     impl DuplicateTables for Table {
-        fn insert(&mut self, entry: Entry) -> u32 {
+        fn insert(&mut self, entry: Entry) -> Option<core::num::NonZeroU32> {
             self.steps.push(Insert);
             if self.full {
-                return 0;
+                return None;
             }
             self.inserted.push(entry);
-            NEW
+            core::num::NonZeroU32::new(NEW)
         }
 
         fn close_duplicate(&mut self, handle: u32) {

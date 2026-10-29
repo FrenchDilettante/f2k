@@ -1,10 +1,10 @@
 //! The startup frame builder: a fresh thread's first kernel stack contents, as pure layout.
 //!
-//! The ladder the switch and the startup stub consume, computed from the stack top alone: a trap
-//! frame carrying the thread's initial user state (user threads), the four words the stub pops as
-//! its arguments, and the switch frame — EFLAGS lowest, the startup stub's address above — whose
-//! base becomes the thread's saved stack pointer. Pure arithmetic, host-tested; only the planting
-//! touches memory.
+//! What the switch and the startup stub consume, as `#[repr(C)]` records planted at the stack top
+//! ([`InitialFrame`], [`UserInitialFrame`]): a trap frame carrying the thread's initial user state
+//! (user threads), the four words the stub pops as its arguments, and the switch frame — EFLAGS
+//! lowest, the startup stub's address above — whose base becomes the thread's saved stack pointer.
+//! The layouts are host-tested; only the planting touches memory.
 
 #[cfg(target_arch = "x86")]
 use super::thread::Thread;
@@ -80,101 +80,63 @@ pub fn user_trap_frame(user: &UserStart) -> TrapFrame {
     }
 }
 
-/// The planted word ladder: every word's address and value, computed from the stack top. Pure data;
-/// [`plant`] writes it.
-pub struct StartupLadder {
-    /// The trap frame's base address (user threads only; the frame itself is planted there).
-    pub trap_frame_at: Option<u32>,
-    /// The planted trap frame (user threads only).
-    pub trap_frame: Option<TrapFrame>,
-    /// The user-context flag's address and value: 1 when a trap frame follows above, 0 otherwise.
-    pub user_context_flag_at: u32,
-    pub user_context_flag: u32,
-    /// The system-routine word: the stub pops it into the register it calls through.
-    pub system_routine_at: u32,
-    pub system_routine: u32,
-    /// The start-routine word: the system routine's first argument, already in cdecl
-    /// stack-argument position.
-    pub start_routine_at: u32,
-    pub start_routine: u32,
-    /// The context word: the system routine's second argument.
-    pub start_context_at: u32,
-    pub start_context: u32,
-    /// The switch frame's return-address slot: the startup stub's address, one word above the
-    /// EFLAGS.
-    pub ret_at: u32,
-    pub ret: u32,
-    /// The EFLAGS word: the lowest planted word.
-    pub eflags_at: u32,
+/// A fresh thread's first kernel-stack contents, lowest word first: the switch frame the first
+/// switch into the thread consumes (`popfd`, then `ret` into the startup stub), then the words the
+/// stub consumes as its arguments. Planted once, at the top of the thread's kernel stack (a user
+/// thread's under its trap frame: [`UserInitialFrame`]); its base becomes the thread's saved stack
+/// pointer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(C)]
+pub struct InitialFrame {
+    /// The switch frame's EFLAGS word, its base.
     pub eflags: u32,
+    /// The switch frame's return address: the startup stub's.
+    pub ret: u32,
+    /// The system routine, which the stub pops into the register it calls through: the stub's
+    /// entry stack pointer is this word's address.
+    pub system_routine: u32,
+    /// The system routine's first argument, already in cdecl stack-argument position.
+    pub start_routine: u32,
+    /// The system routine's second argument.
+    pub start_context: u32,
+    /// The user-context flag the stub pops after the call: 1 when a trap frame follows above, 0
+    /// otherwise.
+    pub user_context: u32,
 }
 
-impl StartupLadder {
-    /// The switch frame's base: the EFLAGS word, the lowest planted word. This is the thread's
-    /// `kernel_stack` after the build — the value the first switch loads as the new `esp`.
-    pub fn switch_frame_at(&self) -> u32 {
-        self.eflags_at
-    }
-
-    /// The stub's entry stack: the system-routine word, eight bytes above the switch frame's base.
-    pub fn stub_entry_esp(&self) -> u32 {
-        self.system_routine_at
-    }
-
-    /// Every planted address, ascending: the bounds and no-overlap discipline (each word is planted
-    /// exactly once).
-    pub fn planted_addresses(&self) -> [u32; 6] {
-        let mut words = [
-            self.user_context_flag_at,
-            self.start_context_at,
-            self.start_routine_at,
-            self.system_routine_at,
-            self.ret_at,
-            self.eflags_at,
-        ];
-        words.sort_unstable();
-        words
-    }
+/// A user thread's first kernel-stack contents: the initial frame, then the trap frame carrying
+/// its initial user state, which the stub leaves through (`popad`, the vector and error pad
+/// dropped, `iretd`).
+#[repr(C)]
+pub struct UserInitialFrame {
+    pub frame: InitialFrame,
+    pub trap: TrapFrame,
 }
 
-/// Compute the word ladder for a thread whose kernel-stack top is `stack_top`. User and kernel
-/// threads build the same ladder except for the trap-frame rung, which only a user thread has.
-pub fn build_ladder(stack_top: u32, params: &StartParams, startup_addr: u32) -> StartupLadder {
-    let (trap_frame_at, trap_frame, flag_at) = match &params.user {
-        Some(user) => (
-            Some(stack_top - core::mem::size_of::<TrapFrame>() as u32),
-            Some(user_trap_frame(user)),
-            stack_top - (core::mem::size_of::<TrapFrame>() as u32 + 4),
-        ),
-        None => (None, None, stack_top - 4),
-    };
-
-    let start_context_at = flag_at - 4;
-    let start_routine_at = start_context_at - 4;
-    let system_routine_at = start_routine_at - 4;
-    let ret_at = system_routine_at - 4;
-    let eflags_at = ret_at - 4;
-
-    StartupLadder {
-        trap_frame_at,
-        trap_frame,
-        user_context_flag_at: flag_at,
-        user_context_flag: if params.user.is_some() { 1 } else { 0 },
-        system_routine_at,
-        system_routine: params.system_routine,
-        start_routine_at,
-        start_routine: params.start_routine,
-        start_context_at,
-        start_context: params.start_context,
-        ret_at,
-        ret: startup_addr,
-        eflags_at,
+/// A thread's initial frame: the start parameters in the stub's argument words, the startup stub's
+/// address `startup_addr` as the switch frame's return address.
+pub fn initial_frame(params: &StartParams, startup_addr: u32) -> InitialFrame {
+    InitialFrame {
         eflags: PLANTED_EFLAGS,
+        ret: startup_addr,
+        system_routine: params.system_routine,
+        start_routine: params.start_routine,
+        start_context: params.start_context,
+        user_context: params.user.is_some() as u32,
     }
 }
 
-/// Plant the ladder on the thread's kernel stack and set its saved stack pointer. Target only: the
-/// words are written to the stack the switch will load.
+/// The bytes a thread's first kernel-stack contents take below its stack top: the initial frame,
+/// and a user thread's trap frame above it.
+pub fn planted_size(params: &StartParams) -> u32 {
+    match params.user {
+        Some(_) => core::mem::size_of::<UserInitialFrame>() as u32,
+        None => core::mem::size_of::<InitialFrame>() as u32,
+    }
+}
+
+/// Plant the thread's first kernel-stack contents at the top of its stack and set its saved stack
+/// pointer to their base. Target only: the frame is written to the stack the switch will load.
 ///
 /// # Safety
 ///
@@ -182,40 +144,32 @@ pub fn build_ladder(stack_top: u32, params: &StartParams, startup_addr: u32) -> 
 /// current address space, with nothing on it.
 #[cfg(target_arch = "x86")]
 pub unsafe fn plant(thread: &mut Thread, params: &StartParams) {
-    let stack_top = thread.initial_stack;
+    let base = thread.initial_stack - planted_size(params);
     let startup_addr = core::ptr::addr_of!(super::switch::THREAD_STARTUP) as u32;
-    let mut ladder = build_ladder(stack_top, params, startup_addr);
-
-    let word = |addr: u32, value: u32| {
-        // SAFETY: the address is inside the thread's freshly mapped slot, word-aligned, written
-        // exactly once by this builder.
-        unsafe { core::ptr::write_volatile(addr as *mut u32, value) };
-    };
-
-    if let Some(at) = ladder.trap_frame_at {
-        // The ladder owns the frame; planting hands it over.
-        if let Some(frame) = ladder.trap_frame.take() {
-            // SAFETY: the frame base is 4-byte aligned (the stack top is page-aligned) and inside
-            // the slot, written once here.
-            unsafe { core::ptr::write_volatile(at as *mut TrapFrame, frame) };
+    let frame = initial_frame(params, startup_addr);
+    // SAFETY: the caller's contract: `base` lies inside the thread's freshly mapped slot (the
+    // frame is far smaller than it), 4-byte aligned below the page-aligned top, and nothing else
+    // reaches the slot until the thread first runs.
+    unsafe {
+        match &params.user {
+            Some(user) => (base as *mut UserInitialFrame).write(UserInitialFrame {
+                frame,
+                trap: user_trap_frame(user),
+            }),
+            None => (base as *mut InitialFrame).write(frame),
         }
     }
-    word(ladder.user_context_flag_at, ladder.user_context_flag);
-    word(ladder.start_context_at, ladder.start_context);
-    word(ladder.start_routine_at, ladder.start_routine);
-    word(ladder.system_routine_at, ladder.system_routine);
-    word(ladder.ret_at, ladder.ret);
-    word(ladder.eflags_at, ladder.eflags);
-
-    thread.kernel_stack = ladder.switch_frame_at();
+    thread.kernel_stack = base;
 }
 
 #[cfg(test)]
 mod tests {
+    use core::mem::{offset_of, size_of};
+
     use super::*;
     use crate::mem::paging::{gate_slot_base, gate_slot_top, GATE_SLOT_STRIDE, PAGE_SIZE};
 
-    /// A ladder's parameters, with distinct recognizable values.
+    /// A thread's parameters, with distinct recognizable values.
     fn params(user: Option<UserStart>) -> StartParams {
         StartParams {
             system_routine: 0xAAAA_0001,
@@ -225,44 +179,58 @@ mod tests {
         }
     }
 
+    /// A user thread's start, with the entry point and stack its tests use.
+    fn user() -> Option<UserStart> {
+        Some(UserStart {
+            eip: 0x0040_1234,
+            esp: 0x0012_8000,
+            ..Default::default()
+        })
+    }
+
     const STARTUP: u32 = 0x00DE_0001;
 
     // A1: the user-thread word offsets.
 
-    /// A user thread's ladder: the trap frame in the 15 words below the top, the argument words in
-    /// pop order below it, the switch frame below those (EFLAGS lowest), and the stub's entry esp
-    /// eight bytes above the switch frame's base.
+    /// A user thread's first contents: the trap frame in the 15 words below the top, the argument
+    /// words in pop order below it, the switch frame below those (EFLAGS lowest), and the stub's
+    /// entry esp eight bytes above the switch frame's base.
     #[test]
     fn user_thread_frame_word_offsets() {
-        let top = gate_slot_top(3);
-        let ladder = build_ladder(
-            top,
-            &params(Some(UserStart {
-                eip: 0x0040_1234,
-                esp: 0x0012_8000,
-                ..Default::default()
-            })),
-            STARTUP,
+        assert_eq!(size_of::<InitialFrame>(), 6 * 4);
+        assert_eq!(size_of::<UserInitialFrame>(), 21 * 4);
+        assert_eq!(planted_size(&params(user())), 84);
+        // Relative to the stack top, which the frame ends at.
+        let below_top = |offset: usize| 84 - offset;
+        assert_eq!(below_top(offset_of!(UserInitialFrame, trap)), 60);
+        let frame = offset_of!(UserInitialFrame, frame);
+        assert_eq!(
+            below_top(frame + offset_of!(InitialFrame, user_context)),
+            64
         );
+        assert_eq!(
+            below_top(frame + offset_of!(InitialFrame, start_context)),
+            68
+        );
+        assert_eq!(
+            below_top(frame + offset_of!(InitialFrame, start_routine)),
+            72
+        );
+        assert_eq!(
+            below_top(frame + offset_of!(InitialFrame, system_routine)),
+            76
+        );
+        assert_eq!(below_top(frame + offset_of!(InitialFrame, ret)), 80);
+        assert_eq!(below_top(frame + offset_of!(InitialFrame, eflags)), 84);
 
-        assert_eq!(ladder.trap_frame_at, Some(top - 60));
-        assert_eq!(ladder.user_context_flag_at, top - 64);
-        assert_eq!(ladder.start_context_at, top - 68);
-        assert_eq!(ladder.start_routine_at, top - 72);
-        assert_eq!(ladder.system_routine_at, top - 76);
-        assert_eq!(ladder.ret_at, top - 80);
-        assert_eq!(ladder.eflags_at, top - 84);
-        assert_eq!(ladder.switch_frame_at(), top - 84);
-
-        // The stub's entry stack is the system-routine word: the switch's `popfd; ret` consumes the
-        // two switch-frame words and lands exactly there.
-        assert_eq!(ladder.stub_entry_esp(), ladder.system_routine_at);
-        assert_eq!(ladder.switch_frame_at() + 8, ladder.stub_entry_esp());
+        // The stub's entry stack is the system-routine word: the switch's `popfd; ret` consumes
+        // the two switch-frame words and lands exactly there.
+        assert_eq!(offset_of!(InitialFrame, system_routine), 8);
 
         // The cdecl positions: at the stub's call the two argument words sit in argument position
         // above the consumed system word — the routine first, the context second.
-        assert_eq!(ladder.start_routine_at, ladder.system_routine_at + 4);
-        assert_eq!(ladder.start_context_at, ladder.system_routine_at + 8);
+        assert_eq!(offset_of!(InitialFrame, start_routine), 8 + 4);
+        assert_eq!(offset_of!(InitialFrame, start_context), 8 + 8);
     }
 
     // A2: the planted switch frame.
@@ -271,27 +239,19 @@ mod tests {
     /// address in the return slot — what the first switch's uniform tail consumes.
     #[test]
     fn planted_switch_frame() {
-        let top = gate_slot_top(0);
-        let ladder = build_ladder(
-            top,
-            &params(Some(UserStart {
-                eip: 0x0040_1234,
-                esp: 0x0012_8000,
-                ..Default::default()
-            })),
-            STARTUP,
-        );
-        assert_eq!(ladder.eflags, PLANTED_EFLAGS);
+        let frame = initial_frame(&params(user()), STARTUP);
+        assert_eq!(frame.eflags, PLANTED_EFLAGS);
         assert_eq!(PLANTED_EFLAGS, 0x0202);
-        assert_eq!(ladder.eflags & 1 << 1, 1 << 1, "bit 1 must be set");
+        assert_eq!(frame.eflags & 1 << 1, 1 << 1, "bit 1 must be set");
         assert_eq!(
-            ladder.eflags & 1 << 9,
+            frame.eflags & 1 << 9,
             1 << 9,
             "the interrupt flag must be set"
         );
-        assert_eq!(ladder.ret, STARTUP);
+        assert_eq!(frame.ret, STARTUP);
         // The return slot sits directly above the EFLAGS word: the `popfd` then `ret` order.
-        assert_eq!(ladder.ret_at, ladder.eflags_at + 4);
+        assert_eq!(offset_of!(InitialFrame, eflags), 0);
+        assert_eq!(offset_of!(InitialFrame, ret), 4);
     }
 
     // A3: the planted trap frame's contents.
@@ -301,11 +261,7 @@ mod tests {
     /// not leak into user mode) and no vector or error code is set.
     #[test]
     fn planted_trap_frame_contents() {
-        let frame = user_trap_frame(&UserStart {
-            eip: 0x0040_1234,
-            esp: 0x0012_8000,
-            ..Default::default()
-        });
+        let frame = user_trap_frame(&user().unwrap());
         assert_eq!(frame.eip, 0x0040_1234);
         assert_eq!(frame.user_esp, 0x0012_8000);
         assert_eq!(frame.cs, 0x1B);
@@ -320,7 +276,7 @@ mod tests {
         ] {
             assert_eq!(gp, 0);
         }
-        assert_eq!(core::mem::size_of::<TrapFrame>(), 60);
+        assert_eq!(size_of::<TrapFrame>(), 60);
         // A start with registers (a CONTEXT's) carries them into the frame.
         let frame = user_trap_frame(&UserStart {
             eip: 0x7C4E_1000,
@@ -341,49 +297,39 @@ mod tests {
 
     // A4: the user-context flag and the argument words.
 
-    /// The four words below the trap frame: the flag says a user context follows, and the argument
+    /// The words above the stub's entry: the flag says a user context follows, and the argument
     /// words carry the start parameters in the exact order the stub pops them.
     #[test]
     fn user_context_flag_and_argument_words() {
-        let top = gate_slot_top(1);
-        let ladder = build_ladder(
-            top,
-            &params(Some(UserStart {
-                eip: 0x0040_1234,
-                esp: 0x0012_8000,
-                ..Default::default()
-            })),
-            STARTUP,
-        );
-        assert_eq!(ladder.user_context_flag, 1);
-        assert_eq!(ladder.system_routine, 0xAAAA_0001);
-        assert_eq!(ladder.start_routine, 0xBBBB_0002);
-        assert_eq!(ladder.start_context, 0xCCCC_0003);
+        let frame = initial_frame(&params(user()), STARTUP);
+        assert_eq!(frame.user_context, 1);
+        assert_eq!(frame.system_routine, 0xAAAA_0001);
+        assert_eq!(frame.start_routine, 0xBBBB_0002);
+        assert_eq!(frame.start_context, 0xCCCC_0003);
         // One pop (the system routine) plus the cdecl 8-byte argument drop leaves the esp exactly
-        // at the flag word: the stub's documented consumption.
-        assert_eq!(ladder.stub_entry_esp() + 4 + 8, ladder.user_context_flag_at);
+        // at the flag word, and its pop at the trap frame: the stub's documented consumption.
+        assert_eq!(
+            offset_of!(InitialFrame, system_routine) + 4 + 8,
+            offset_of!(InitialFrame, user_context)
+        );
+        assert_eq!(
+            offset_of!(InitialFrame, user_context) + 4,
+            offset_of!(UserInitialFrame, trap)
+        );
     }
 
     // A5: the kernel-thread variant.
 
-    /// A kernel thread's ladder is the identical argument ladder minus the trap-frame rung, with
-    /// the flag saying there is no user context — the stub halts if the system routine returns.
+    /// A kernel thread's contents are the identical initial frame without the trap frame above
+    /// it, with the flag saying there is no user context — the stub halts if the system routine
+    /// returns.
     #[test]
     fn kernel_thread_variant_drops_the_trap_frame() {
-        let top = gate_slot_top(2);
-        let ladder = build_ladder(top, &params(None), STARTUP);
-        assert!(ladder.trap_frame_at.is_none());
-        assert!(ladder.trap_frame.is_none());
-        assert_eq!(ladder.user_context_flag, 0);
-        assert_eq!(ladder.user_context_flag_at, top - 4);
-        assert_eq!(ladder.start_context_at, top - 8);
-        assert_eq!(ladder.start_routine_at, top - 12);
-        assert_eq!(ladder.system_routine_at, top - 16);
-        assert_eq!(ladder.ret_at, top - 20);
-        assert_eq!(ladder.eflags_at, top - 24);
-        assert_eq!(ladder.switch_frame_at(), top - 24);
-        // The same entry invariant as the user variant.
-        assert_eq!(ladder.switch_frame_at() + 8, ladder.stub_entry_esp());
+        let frame = initial_frame(&params(None), STARTUP);
+        assert_eq!(frame.user_context, 0);
+        assert_eq!(planted_size(&params(None)), 24);
+        // The flag is the top word, the switch frame's base six words below the top.
+        assert_eq!(offset_of!(InitialFrame, user_context) + 4, 24);
     }
 
     // A6: the thread's stack pointers (the data the builder sets).
@@ -393,68 +339,26 @@ mod tests {
     /// models the pointer arithmetic the target's `plant` performs.
     #[test]
     fn the_threads_saved_stack_pointer_is_the_switch_frame() {
-        let user = build_ladder(
-            gate_slot_top(0),
-            &params(Some(UserStart {
-                eip: 0x0040_1234,
-                esp: 0x0012_8000,
-                ..Default::default()
-            })),
-            STARTUP,
-        );
-        let kernel = build_ladder(gate_slot_top(0), &params(None), STARTUP);
-        assert_eq!(user.switch_frame_at(), gate_slot_top(0) - 84);
-        assert_eq!(kernel.switch_frame_at(), gate_slot_top(0) - 24);
-        for ladder in [&user, &kernel] {
-            assert!(ladder.switch_frame_at() < gate_slot_top(0));
-            // Nothing is planted below the switch frame: the full remaining stack is free for the
-            // system routine.
-            assert!(ladder.planted_addresses()[0] == ladder.eflags_at);
-        }
+        let top = gate_slot_top(0);
+        assert_eq!(top - planted_size(&params(user())), top - 84);
+        assert_eq!(top - planted_size(&params(None)), top - 24);
     }
 
     // A7: the frame fits the slot.
 
-    /// Every planted word lies inside the thread's slot, above the guard page and below the top,
-    /// and no two planted words share an address: the builder never writes the guard page (a kernel
-    /// stack overrun faults instead of corrupting the slot below).
+    /// The planted frame lies inside the thread's slot, above the guard page and ending at the
+    /// top: the builder never writes the guard page (a kernel stack overrun faults instead of
+    /// corrupting the slot below).
     #[test]
     fn the_frame_fits_the_slot() {
         for index in [0u32, 1, 7, 112] {
             let top = gate_slot_top(index);
             let base = gate_slot_base(index);
-            let ladder = build_ladder(
-                top,
-                &params(Some(UserStart {
-                    eip: 0x0040_1234,
-                    esp: 0x0012_8000,
-                    ..Default::default()
-                })),
-                STARTUP,
-            );
-
-            let mut words = ladder.planted_addresses();
-            assert!(
-                &words[0] >= &(base + PAGE_SIZE),
-                "below the guard page's top"
-            );
-            assert!(words.last().unwrap() < &top, "past the stack top");
-            if let Some(frame_at) = ladder.trap_frame_at {
-                assert!(frame_at >= base + PAGE_SIZE && frame_at < top);
-            }
-            // No overlaps: strictly ascending once sorted, with no repeated address.
-            words.sort_unstable();
-            for pair in words.windows(2) {
-                assert_ne!(pair[0], pair[1], "a planted word overlaps");
-            }
-            assert_eq!(words.len(), 6);
-            // The trap frame's 15 words and the 6 ladder words are disjoint ranges: the highest
-            // ladder word sits below the frame's base.
-            if let Some(frame_at) = ladder.trap_frame_at {
-                assert!(
-                    words.last().unwrap() < &frame_at,
-                    "ladder words inside the frame"
-                );
+            for start in [params(user()), params(None)] {
+                let planted = top - planted_size(&start);
+                assert!(planted >= base + PAGE_SIZE, "below the guard page's top");
+                assert!(planted < top);
+                assert_eq!(planted % 4, 0, "word-aligned");
             }
         }
         // The stride and slot arithmetic the bounds rely on.

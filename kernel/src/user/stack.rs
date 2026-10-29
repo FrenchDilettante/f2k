@@ -66,8 +66,7 @@ pub fn plant_guard(space: &mut crate::mem::vm::AddressSpace, page: u32) {
 #[cfg(target_arch = "x86")]
 pub fn grow_on_guard(address: u32) -> Growth {
     use crate::mem::vm::CurrentPages;
-    use crate::user::syscall::{read_user, write_user};
-    use crate::user::teb::teb_offset;
+    use crate::user::teb::teb_field;
     let thread = crate::sched::current_thread();
     let teb = crate::level::raised::<crate::level::Dispatch, _>(|dispatch| {
         crate::sched::DISPATCHER
@@ -78,32 +77,30 @@ pub fn grow_on_guard(address: u32) -> Growth {
     if teb == 0 {
         return Growth::NotStack;
     }
-    let word = |offset: u32| {
-        let mut bytes = [0u8; 4];
-        read_user(teb + offset, &mut bytes)
-            .ok()
-            .map(|()| u32::from_le_bytes(bytes))
-    };
-    let (Some(deallocation), Some(base)) = (
-        word(teb_offset::DEALLOCATION_STACK),
-        word(teb_offset::STACK_BASE),
+    let (Ok(deallocation), Ok(base)) = (
+        teb_field!(deallocation_stack).of(teb).read(),
+        teb_field!(stack_base).of(teb).read(),
     ) else {
         return Growth::NotStack;
     };
     let GuardFault::Grow { page, next_guard } = on_guard(address, deallocation, base) else {
         return Growth::NotStack;
     };
-    let _ = write_user(teb + teb_offset::STACK_LIMIT, &page.to_le_bytes());
+    let _ = teb_field!(stack_limit).of(teb).write(page);
     let Some(guard) = next_guard else {
         return Growth::Overflow;
     };
     // The address space whose tables are live: the faulting thread's own here (an attached
-    // thread's guard is never its stack's).
-    let space = crate::process::pool::address_space().vm();
+    // thread's guard is never its stack's). Its lock is the one the fault path takes, the TEB read
+    // and written before it.
+    let process = crate::process::pool::address_space();
     // The page below already committed (the program committed it itself) needs no guard: the stack
     // runs into it.
-    if space.frame_at(&CurrentPages, guard).is_some() || space.plant_guard(&mut CurrentPages, guard)
-    {
+    let grown = process.with_space(|space| {
+        space.frame_at(&CurrentPages, guard).is_some()
+            || space.plant_guard(&mut CurrentPages, guard)
+    });
+    if grown {
         Growth::Grown
     } else {
         // No frame to guard with: the stack cannot grow further.

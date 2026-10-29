@@ -6,10 +6,13 @@
 //! F2K (there is no process swapping), so a process's whole scheduling state is the fact of owning
 //! runnable threads or not.
 //!
-//! The scheduling record leads the process record (the process pool's), where the context switch
-//! reads its directory base; its thread list links the thread records of the dispatcher database by
-//! index. The process object's body — the waitable a wait on the process parks on, and the exit
-//! status — is a dispatcher-database record of its own, at the process record's index.
+//! The scheduling record is part of the process record (the process pool's), pinned with it,
+//! where the context switch reads its directory base; its thread list links the thread records of
+//! the dispatcher database by index. It carries its record's index in the pool, which is how the
+//! running thread's processes are named outside the dispatcher (the processor's slots), and how
+//! many threads of other processes run attached to its address space. The process object's body —
+//! the waitable a wait on the process parks on, and the exit status — is a dispatcher-database
+//! record of its own, at the process record's index.
 
 use core::cell::UnsafeCell;
 use core::ptr::NonNull;
@@ -21,6 +24,10 @@ use super::QUANTUM_RESET;
 
 /// The stack-count value meaning "no thread has been created yet".
 pub const NO_THREADS: u16 = 0x7FFF;
+
+/// The pool index of a scheduling record outside the process pool: the idle process's (or a host
+/// test's).
+pub const NOT_POOLED: u16 = u16::MAX;
 
 /// A process's scheduling record, leading with its directory base at a pinned offset: the context
 /// switch reads it through a thread's address-space pointer when a switch changes process.
@@ -47,6 +54,13 @@ pub struct SchedProcess {
     pub(super) thread_seed: u8,
     /// The process's threads, in creation order.
     pub(super) threads: IndexList<ProcessThreads>,
+    /// The index of the process record this record belongs to in the process pool, or
+    /// [`NOT_POOLED`]: what the processor's slots name the running thread's processes by.
+    pub(super) index: u16,
+    /// How many threads of other processes run attached to this address space (see
+    /// [`super::attach`]): the attaches change it, at the dispatch level. The process's teardown
+    /// waits for none to be left.
+    pub(super) attach_count: u16,
 }
 
 /// A process's scheduling record, by its address: the process records are pinned (the process
@@ -98,8 +112,14 @@ impl ListKind for ProcessThreads {
 
 impl SchedProcess {
     /// A scheduling record with the given directory base and base priority, the fixed thread
-    /// quantum, no threads, and both policies off.
+    /// quantum, no threads, nothing attached, and both policies off, outside the process pool.
     pub const fn new(dir_phys: u32, base_priority: i8) -> Self {
+        Self::pooled(dir_phys, base_priority, NOT_POOLED)
+    }
+
+    /// A scheduling record as [`SchedProcess::new`] makes one, of the process record at `index`
+    /// in the process pool.
+    pub const fn pooled(dir_phys: u32, base_priority: i8, index: u16) -> Self {
         SchedProcess {
             dir_phys,
             base_priority,
@@ -109,7 +129,20 @@ impl SchedProcess {
             stack_count: NO_THREADS,
             thread_seed: 0,
             threads: IndexList::new(),
+            index,
+            attach_count: 0,
         }
+    }
+
+    /// The index of the process record this record belongs to in the process pool; none outside
+    /// it (the idle process).
+    pub fn pool_index(&self) -> Option<u16> {
+        (self.index != NOT_POOLED).then_some(self.index)
+    }
+
+    /// How many threads of other processes run attached to this address space.
+    pub fn attach_count(&self) -> u16 {
+        self.attach_count
     }
 
     /// The process's page-directory frame.
@@ -162,14 +195,16 @@ impl SchedProcess {
     }
 }
 
-/// A scheduling record pinned in a static for the kernel's life, outside the process pool: the
-/// idle process's. Nothing holds a reference to it: the attach that links the idle thread to it
-/// keeps its address, and the dispatcher and the context switch reach it through that.
+/// A scheduling record pinned in a static for the kernel's life: the idle process's, and every
+/// process record's in the process pool. The dispatcher owns it: its threads' attaches keep its
+/// address, and the dispatcher and the context switch reach it through that. Anyone else reaches
+/// it only through a borrow of the dispatcher ([`PinnedProcess::get`], [`PinnedProcess::get_mut`]),
+/// at the dispatch level, so the dispatcher's borrow is the record's.
 pub struct PinnedProcess(UnsafeCell<SchedProcess>);
 
-// SAFETY: one processor; the record is reached only through its address, by the boot's attach and
-// then by the dispatcher (serialized at the dispatch level) and the switch, never through a shared
-// reference to the wrapper's contents.
+// SAFETY: one processor; the record is reached through its address by the dispatcher (serialized
+// at the dispatch level) and the switch, which runs inside the dispatcher's own calls, and through
+// the accessors below only while the caller borrows the dispatcher, so never beside them.
 unsafe impl Sync for PinnedProcess {}
 
 impl PinnedProcess {
@@ -179,9 +214,40 @@ impl PinnedProcess {
         PinnedProcess(UnsafeCell::new(SchedProcess::new(dir_phys, base_priority)))
     }
 
-    /// The record's address, for its one attach.
+    /// A pinned record of the process record at `index` in the process pool (see
+    /// [`SchedProcess::pooled`]).
+    pub const fn pooled(dir_phys: u32, base_priority: i8, index: u16) -> Self {
+        PinnedProcess(UnsafeCell::new(SchedProcess::pooled(
+            dir_phys,
+            base_priority,
+            index,
+        )))
+    }
+
+    /// The record's address: what its threads' attaches link, and what a thread's owner pointer
+    /// is compared with.
     pub fn as_ptr(&self) -> *mut SchedProcess {
         self.0.get()
+    }
+
+    /// The record, to read, for as long as the caller borrows the dispatcher.
+    pub fn get<'a>(&'a self, _dispatcher: &'a super::dispatcher::Dispatcher) -> &'a SchedProcess {
+        // SAFETY: every other reach into the record is the dispatcher's own (its calls, and the
+        // switch inside them) or another accessor's, which also borrows the dispatcher: none can
+        // write it while this shared borrow of the dispatcher lives.
+        unsafe { &*self.0.get() }
+    }
+
+    /// The record, to change, for as long as the caller borrows the dispatcher exclusively.
+    // The `&mut` from `&self` is the point: the dispatcher's exclusive borrow is the record's.
+    #[allow(clippy::mut_from_ref)]
+    pub fn get_mut<'a>(
+        &'a self,
+        _dispatcher: &'a mut super::dispatcher::Dispatcher,
+    ) -> &'a mut SchedProcess {
+        // SAFETY: as in `get`: every other reach into the record needs the dispatcher, which this
+        // exclusive borrow holds, so this is the only reference to the record while it lives.
+        unsafe { &mut *self.0.get() }
     }
 }
 

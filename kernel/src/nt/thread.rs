@@ -191,24 +191,22 @@ pub fn initial_stack(teb: &[u8; INITIAL_TEB_SIZE]) -> crate::sched::startup::Ini
 /// when its flags name them, the integer registers when they name those, zero otherwise. The
 /// segments and EFLAGS are every user thread's (a CONTEXT cannot choose them: the platform
 /// sanitizes both).
-pub fn initial_context(
-    context: &[u8; crate::user::seh::CONTEXT_SIZE],
-) -> crate::sched::startup::UserStart {
-    use crate::user::seh::{at, word, CONTEXT_CONTROL, CONTEXT_INTEGER};
-    let flags = word(context, at::FLAGS);
+pub fn initial_context(context: &crate::user::seh::Context) -> crate::sched::startup::UserStart {
+    use crate::user::seh::{CONTEXT_CONTROL, CONTEXT_INTEGER};
+    let flags = context.context_flags;
     let mut user = crate::sched::startup::UserStart::default();
     if flags & CONTEXT_CONTROL == CONTEXT_CONTROL {
-        user.eip = word(context, at::EIP);
-        user.esp = word(context, at::ESP);
-        user.ebp = word(context, at::EBP);
+        user.eip = context.eip;
+        user.esp = context.esp;
+        user.ebp = context.ebp;
     }
     if flags & CONTEXT_INTEGER == CONTEXT_INTEGER {
-        user.eax = word(context, at::EAX);
-        user.ebx = word(context, at::EBX);
-        user.ecx = word(context, at::ECX);
-        user.edx = word(context, at::EDX);
-        user.esi = word(context, at::ESI);
-        user.edi = word(context, at::EDI);
+        user.eax = context.eax;
+        user.ebx = context.ebx;
+        user.ecx = context.ecx;
+        user.edx = context.edx;
+        user.esi = context.esi;
+        user.edi = context.edi;
     }
     user
 }
@@ -262,7 +260,7 @@ pub fn create_thread(
         let target = reference_process(process.raw(), PROCESS_CREATE_THREAD)?;
         // Once a thread record is attached to the process there is no unwinding it: the create
         // must not fail after.
-        if call.process().handles().is_full() {
+        if call.process().handles_full() {
             return Err(STATUS_INSUFFICIENT_RESOURCES);
         }
         // Made attached to the target (its TEB page is mapped there), inside a critical region
@@ -274,8 +272,9 @@ pub fn create_thread(
             crate::process::threads::create(record, user, stack).ok_or(STATUS_NO_MEMORY)
         })?;
         // The handle joins the thread's own reference (which its end releases).
-        let opened = crate::ob::open(call.process(), object, access, inherit);
-        assert_ne!(opened, 0, "the table had a free slot before the create");
+        let opened = crate::ob::open(call.process(), object, access, inherit)
+            .expect("the table had a free slot before the create")
+            .get();
         // Written back as the platform writes them, the thread created whatever happens to the
         // caller's memory (kernel32's own locals, probed above).
         let _ = handle.write(opened);
@@ -319,15 +318,15 @@ pub fn create_thread(
     }
 }
 
-/// NtTerminateThread(ThreadHandle, ExitStatus): end the thread with the status, without it running
-/// again. No handle names the caller, refused (STATUS_CANT_TERMINATE_SELF) when it is its process's
-/// last thread; a handle naming the caller ends it, and its process with it when it is the last.
-/// Another thread ends at once — or, inside a critical region, as it leaves the region (holding
-/// nothing) — its handle signaling and its waiters waking, and its process with it when it is
-/// another process's last thread (see [`crate::process::threads::terminate_thread`]); one that
-/// has already ended (or whose
-/// termination is pending) is STATUS_INVALID_PARAMETER, which kernel32's TerminateThread reports
-/// as the capture shows (ERROR_INVALID_PARAMETER).
+/// NtTerminateThread(ThreadHandle, ExitStatus): end the thread with the status. No handle names the
+/// caller, refused (STATUS_CANT_TERMINATE_SELF) when it is its process's last thread; a handle
+/// naming the caller ends it, and its process with it when it is the last. Another thread takes an
+/// exit APC and ends by its own exit at its next window — inside a critical region, as it leaves
+/// the region (holding nothing) — its handle signaling and its waiters waking then, and its
+/// process with it when it is another process's last thread (see
+/// [`crate::process::threads::terminate_thread`]); one that has already ended (or is terminating)
+/// is STATUS_INVALID_PARAMETER, which kernel32's TerminateThread reports as the capture shows
+/// (ERROR_INVALID_PARAMETER).
 pub fn terminate_thread(_call: &mut NtCall, thread: Handle, status: u32) -> NtResult {
     #[cfg(target_arch = "x86")]
     {
@@ -518,7 +517,7 @@ pub fn set_information_thread(
                 if thread.raw() != CURRENT_THREAD || value >= crate::user::tls::INDEXES {
                     return Err(STATUS_INVALID_PARAMETER);
                 }
-                for (_, teb) in call.process().thread_tebs() {
+                for &teb in call.process().thread_tebs().iter() {
                     if let Some(slot) = crate::user::tls::thread_slot(teb, value) {
                         // Each thread's slot, where it has one (its expansion slots are its own
                         // heap block); a slot the program made unwritable

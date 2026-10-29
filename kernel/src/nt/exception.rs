@@ -5,29 +5,29 @@
 //! stack pointer, KiUserExceptionDispatcher entered), its second chance the process's end with the
 //! code (no debugger, no exception port), as Windows 2000 does then.
 
+use rtl::pod::Pod;
+
 use super::call::UserAddr;
 use crate::status::*;
-use crate::user::seh::{self, CONTEXT_SIZE, EXCEPTION_MAXIMUM_PARAMETERS, RECORD_SIZE};
+use crate::user::seh::{self, Context, ExceptionRecord, EXCEPTION_MAXIMUM_PARAMETERS};
 
 /// The record user code hands NtRaiseException: its fixed part and its parameters (the rest of the
 /// 80 bytes zero). More than fifteen parameters is STATUS_INVALID_PARAMETER, as Windows 2000
 /// checks; memory that cannot be read, STATUS_ACCESS_VIOLATION.
-pub fn read_record(record: UserAddr) -> Result<[u8; RECORD_SIZE], NtStatus> {
-    let mut image = [0u8; RECORD_SIZE];
-    record.read(&mut image[..seh::record_length(0)])?;
-    let count = seh::word(&image, 16);
-    if count as usize > EXCEPTION_MAXIMUM_PARAMETERS {
+pub fn read_record(at: UserAddr) -> Result<ExceptionRecord, NtStatus> {
+    let mut record = ExceptionRecord::default();
+    at.read(&mut record.as_bytes_mut()[..seh::record_length(0)])?;
+    if record.count as usize > EXCEPTION_MAXIMUM_PARAMETERS {
         return Err(STATUS_INVALID_PARAMETER);
     }
-    record.read(&mut image[..seh::record_length(count)])?;
-    Ok(image)
+    let length = seh::record_length(record.count);
+    at.read(&mut record.as_bytes_mut()[..length])?;
+    Ok(record)
 }
 
 /// A CONTEXT in user memory.
-pub fn read_context(context: UserAddr) -> Result<[u8; CONTEXT_SIZE], NtStatus> {
-    let mut image = [0u8; CONTEXT_SIZE];
-    context.read(&mut image)?;
-    Ok(image)
+pub fn read_context(context: UserAddr) -> Result<Context, NtStatus> {
+    Ok(context.cast::<Context>().read()?)
 }
 
 #[cfg(target_arch = "x86")]
@@ -43,9 +43,9 @@ mod target {
     /// included. TestAlert (a BOOLEAN) arms the delivery of the thread's next queued user APC, on
     /// the way out.
     pub fn continue_context(call: &mut NtCall, context: UserAddr, test_alert: bool) -> NtResult {
-        let image = read_context(context)?;
+        let context = read_context(context)?;
         let frame = call.frame();
-        seh::restore_context(frame, &image);
+        seh::restore_context(frame, &context);
         if test_alert {
             crate::user::apc::test_alert();
         }
@@ -65,7 +65,7 @@ mod target {
     ) -> NtResult {
         let record = read_record(record)?;
         let context = read_context(context)?;
-        let (code, address) = (seh::word(&record, 0), seh::word(&record, 12));
+        let (code, address) = (record.code, record.address);
         if !first_chance {
             seh::second_chance(code, address);
         }
@@ -130,11 +130,17 @@ mod tests {
         }
         let memory = Rc::new(RefCell::new(Page(page)));
         let _installed = install(memory.clone());
-        let image = read_record(UserAddr(0x10000)).unwrap();
-        let words: Vec<u32> = (0..8).map(|i| seh::word(&image, i * 4)).collect();
+        let record = read_record(UserAddr(0x10000)).unwrap();
         assert_eq!(
-            words,
-            [0xE000_0001, 1, 0, 0x7C4E_1234, 2, 0xB, 0x16, 0],
+            record,
+            ExceptionRecord {
+                code: 0xE000_0001,
+                flags: 1,
+                record: 0,
+                address: 0x7C4E_1234,
+                count: 2,
+                information: [0xB, 0x16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            },
             "nothing past the parameters"
         );
         memory.borrow_mut().0[16..20].copy_from_slice(&16u32.to_le_bytes());

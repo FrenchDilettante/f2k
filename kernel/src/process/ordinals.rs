@@ -1,5 +1,9 @@
 //! A process's thread ordinals: which of its threads holds which TEB page.
 //!
+//! The ledger is kept with the process's object, in the object directory ([`crate::ob`]): whether
+//! an ordinal is free is whether its holder's thread object still lives, so it is read and taken in
+//! the directory's one hold, with the thread object the new thread takes.
+//!
 //! A thread's ordinal is its place among its own process's threads: it places the thread's TEB
 //! page ([`crate::user::thread_teb_va`], downwards from the main thread's, as Windows places a
 //! process's TEBs), and its slot here names the user-stack reservation its creator made. Each
@@ -53,6 +57,19 @@ impl Ordinals {
     pub const fn empty() -> Self {
         Ordinals {
             slots: [Slot::Free; ORDINALS],
+        }
+    }
+
+    /// Every ordinal free again, in place: a process record taken for a new process.
+    pub fn reset(&mut self) {
+        self.slots.fill(Slot::Free);
+    }
+
+    /// The main thread's object, its thread live or terminated; none before the process has one.
+    pub fn main(&self) -> Option<ObjectId> {
+        match self.slots[MAIN as usize] {
+            Slot::Free => None,
+            Slot::Held { thread, .. } => Some(thread),
         }
     }
 

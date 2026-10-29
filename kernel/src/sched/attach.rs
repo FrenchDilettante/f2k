@@ -16,12 +16,18 @@
 //! [`attach`] returns an [`Attached`] guard whose drop detaches: the thread's own directory is live
 //! again. Each change runs at the dispatch level with interrupts masked, the record, the
 //! processor's copy of it ([`super::processor::ThreadSlots::space`]) and CR3 moved together, so no
-//! interrupt — and no switch one causes — sees one without the others. Attaches do not nest:
-//! attaching while attached to another process panics, as Windows' KeAttachProcess refuses it
-//! (INVALID_PROCESS_ATTACH_ATTEMPT); nothing in the kernel needs the nesting KeStackAttachProcess
-//! allows. Attaching to the address space already in place is a scope that changes nothing. While
-//! attached, a user APC neither breaks the thread's wait nor arms its delivery, and a system
-//! service returns to user mode only detached.
+//! interrupt — and no switch one causes — sees one without the others. The process attached to
+//! counts the threads attached to it ([`super::process::SchedProcess::attach_count`]), as Windows
+//! 2000's KPROCESS counts its stack attaches: its teardown waits for the count to fall to none.
+//! Attaches do not nest: attaching while attached to another process panics, as Windows'
+//! KeAttachProcess refuses it (INVALID_PROCESS_ATTACH_ATTEMPT); nothing in the kernel needs the
+//! nesting KeStackAttachProcess allows. Attaching to the address space already in place is a scope
+//! that changes nothing. While attached, the thread's own APCs wait for the scope to end, as
+//! Windows 2000 keeps them in the thread's saved APC state meanwhile: a kernel APC neither breaks
+//! its wait nor delivers — a suspend, or a termination's exit APC, cannot end the thread inside the
+//! scope, which would leave the count of threads attached to the process stuck — and the detach
+//! arms their delivery again; a user APC neither breaks its wait nor arms its delivery, and a
+//! system service returns to user mode only detached.
 
 use super::process::SchedProcess;
 use super::thread::ThreadId;
@@ -45,16 +51,14 @@ pub struct Attached {
 /// # Panics
 ///
 /// The thread is attached to another process already (attaches do not nest), or no thread runs.
-pub fn attach(process: &SchedProcess) -> Attached {
+pub fn attach(process: *mut SchedProcess) -> Attached {
     let thread = super::try_current_thread().expect("an attach runs on a thread");
     let changed = masked(|dispatcher| {
-        let record = dispatcher.thread_mut(thread);
-        let Some(dir_phys) = record.attach_space(process) else {
+        let Some(dir_phys) = dispatcher.attach_space(thread, process) else {
             return false;
         };
-        crate::pcr::pcr()
-            .threads
-            .set_processes(record.process, record.space());
+        let (process, space) = dispatcher.thread(thread).process_indices();
+        crate::pcr::pcr().threads.set_processes(process, space);
         crate::mem::paging::activate_address_space(dir_phys);
         true
     });
@@ -70,7 +74,7 @@ pub fn attach(process: &SchedProcess) -> Attached {
 /// Whether the running thread runs attached to another process's address space (none runs: not).
 pub fn running_attached() -> bool {
     let slots = &crate::pcr::pcr().threads;
-    !core::ptr::eq(slots.space(), slots.process())
+    slots.space() != slots.process()
 }
 
 impl Drop for Attached {
@@ -86,11 +90,9 @@ impl Drop for Attached {
         );
         masked(|dispatcher| {
             // The attached thread is the running one (checked above in debug builds).
-            let record = dispatcher.thread_mut(self.thread);
-            let dir_phys = record.detach_space();
-            crate::pcr::pcr()
-                .threads
-                .set_processes(record.process, record.space());
+            let dir_phys = dispatcher.detach_space(self.thread);
+            let (process, space) = dispatcher.thread(self.thread).process_indices();
+            crate::pcr::pcr().threads.set_processes(process, space);
             crate::mem::paging::activate_address_space(dir_phys);
         });
     }

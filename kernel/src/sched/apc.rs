@@ -9,8 +9,12 @@
 //! the queued specials, a normal at the tail — so delivery order is specials first, then normals in
 //! the order queued. Delivery runs on the owning thread: every special runs its kernel routine to
 //! completion; every normal runs its kernel routine, then — unless gated — its normal routine at
-//! the passive level, one at a time. The one consumer is the builtin suspend APC: its normal
-//! routine blocks on the thread's suspend semaphore, which is what suspending a thread is.
+//! the passive level, one at a time. The consumers are the thread's two builtin APCs: the suspend
+//! APC, whose normal routine blocks on the thread's suspend semaphore, which is what suspending a
+//! thread is; and the exit APC, whose normal routine runs the thread's own exit, which is what
+//! terminating another thread is (see [`Dispatcher::request_termination`]).
+//!
+//! [`Dispatcher::request_termination`]: super::dispatcher::Dispatcher::request_termination
 //!
 //! Delivery happens wherever a thread resumes execution or stands at a window: the interrupt exit
 //! and the service boundary (both through [`super::dispatcher::deliver_pending`], after the
@@ -19,8 +23,12 @@
 //! the wait — the wait replays after delivery; one on a Ready thread waits for dispatch, and the
 //! resume tail delivers it the moment the thread runs. A window opens for kernel APCs only at the
 //! passive level, as Windows 2000's APC interrupt fires only when the level drops below the APC
-//! level: a thread holding a short lock (raised to the APC level) is neither suspended nor handed
-//! a routine until it lowers, and the next window after that delivers.
+//! level: a thread holding a short lock (raised to the APC level), or waiting for one, is neither
+//! suspended nor terminated nor handed a routine until it lowers, and the next window after that
+//! delivers — a wait it enters at the passive level among them, which delivers before it blocks.
+//! A normal kernel APC also waits for the thread's critical regions to end (the outermost's end
+//! opens a window), and every kernel APC for a scope attached to another process's address space
+//! to end (Windows 2000 queues a thread's own APCs in its saved APC state meanwhile).
 //!
 //! The routines run outside the dispatcher, as Windows 2000's KiDeliverApc releases the APC queue
 //! lock before it calls them: the delivery takes the head of the queue in one borrow of the
@@ -73,6 +81,8 @@ pub enum ApcMode {
 pub enum ApcId {
     /// The thread's builtin suspend APC.
     Suspend(ThreadId),
+    /// The thread's exit APC, its termination's.
+    Exit(ThreadId),
     /// The completion APC of the waitable timer at its pool index.
     Timer(u16),
     /// The user-APC record at its pool index.
@@ -298,9 +308,10 @@ impl Dispatcher {
     /// The insert: position the APC in its queue and arm its thread. Position — normals at the
     /// tail, specials after every queued special; arming — the kernel pending flag, plus a wake
     /// for a thread whose wait an APC may break. A thread parked in a wait an APC cannot break (it
-    /// is not at the passive level, or a normal APC is gated out by an in-progress normal or a
-    /// disabled queue) stays parked: the flag is armed and the delivery happens at the thread's
-    /// next resume. Returns whether the APC was queued (a double insert refuses).
+    /// is not at the passive level, it runs attached to another process's address space, or a
+    /// normal APC is gated out by an in-progress normal or a disabled queue) stays parked: the flag
+    /// is armed and the delivery happens at the thread's next resume. Returns whether the APC was
+    /// queued (a double insert refuses).
     fn insert_apc(&mut self, apc: ApcId, increment: i8) -> bool {
         let record = self.apc(apc);
         if record.inserted {
@@ -332,6 +343,7 @@ impl Dispatcher {
                 // service boundary); a Ready or fresh thread at the resume tail that dispatches it.
                 if thread.state == ThreadState::Waiting
                     && thread.wait_irql == irql::PASSIVE
+                    && !thread.attached()
                     && (special
                         || (thread.kernel_apc_disable == 0 && !thread.kernel_apc_in_progress))
                 {
@@ -379,8 +391,8 @@ impl Dispatcher {
 
     /// Empty `thread`'s APC queue of `mode`, marking every entry not inserted; the pending flags
     /// are untouched (an armed flag over an empty queue is a harmless residue — the delivery's loop
-    /// test never runs). Returns how many were queued. The termination of a thread off the
-    /// processor discards its queues through this; a self-exit asserts its queue empty instead.
+    /// test never runs). Returns how many were queued. A termination's request and the exit's own
+    /// start discard the thread's queues through this.
     pub fn flush_apcs(&mut self, thread: ThreadId, mode: ApcMode) -> usize {
         let queue = ApcQueue { thread, mode };
         let mut flushed = 0;
@@ -398,10 +410,11 @@ impl Dispatcher {
 
     /// The delivery's step under the dispatcher (the part of Windows 2000's KiDeliverApc that holds
     /// the APC queue lock): take the head of `thread`'s kernel queue for its delivery, unless the
-    /// queue is empty or its head is a normal APC the thread's state gates out — an in-progress
-    /// normal or a critical region, the same pair the insert's wake arm consults, so a thread that
-    /// could not be woken for it cannot run it either. A gated normal stays queued (deferred, not
-    /// dropped).
+    /// queue is empty, the thread runs attached to another process's address space, or the head
+    /// is a normal APC the thread's state gates out — an in-progress normal or a critical region —
+    /// the gates the insert's wake arm consults, so a thread that could not be woken for it cannot
+    /// run it either. A gated APC stays queued (deferred, not dropped): the region's end, or the
+    /// detach, arms its delivery again.
     fn next_kernel_apc(&mut self, thread: ThreadId) -> Option<KernelApc> {
         let queue = ApcQueue {
             thread,
@@ -410,7 +423,9 @@ impl Dispatcher {
         let head = list::first(self, queue)?;
         let special = self.apc(head).normal_routine.is_none();
         let record = self.thread(thread);
-        if !special && (record.kernel_apc_in_progress || record.kernel_apc_disable != 0) {
+        if record.attached()
+            || (!special && (record.kernel_apc_in_progress || record.kernel_apc_disable != 0))
+        {
             return None;
         }
         let args = self.take_queued(queue, head);
@@ -494,20 +509,24 @@ impl Dispatcher {
         old
     }
 
-    /// The exit path's APC steps: refuse further queuing on the thread, and require its kernel
-    /// queue empty — the thread was Running, so every delivery window (the service boundary, the
-    /// interrupt exit, the resume tails) had its chance. A queued kernel APC here means a delivery
-    /// was missed somewhere: a loud failure, not a silent drop.
+    /// The exit path's APC steps, as its own exit begins (Windows 2000's PspExitThread disables
+    /// the thread's APC queuing and runs its queues down): refuse further queuing on the thread,
+    /// and discard what is queued — the user APCs it never turned alertable for (their records
+    /// freed), and a kernel APC that had no window before the exit (a suspend, or a
+    /// termination's exit APC, which the exit under way supersedes). Nothing delivers on the
+    /// thread from here on.
     pub fn close_apc_queue(&mut self, thread: ThreadId) {
-        let record = self.thread_mut(thread);
-        record.apc_queueable = false;
-        assert!(
-            record.kernel_apcs.is_empty(),
-            "a self-exiting thread has a queued kernel APC"
-        );
-        // User APCs the thread never turned alertable for are discarded, their records freed.
+        self.thread_mut(thread).apc_queueable = false;
+        self.discard_apcs(thread);
+    }
+
+    /// Discard `thread`'s queued APCs of both modes and their pending flags.
+    pub(super) fn discard_apcs(&mut self, thread: ThreadId) {
+        self.flush_apcs(thread, ApcMode::Kernel);
         self.flush_apcs(thread, ApcMode::User);
-        self.thread_mut(thread).user_apc_pending = false;
+        let record = self.thread_mut(thread);
+        record.kernel_apc_pending = false;
+        record.user_apc_pending = false;
     }
 }
 
@@ -1602,31 +1621,42 @@ mod tests {
 
     // --- Group G: the terminate side ----------------------------------------------
 
-    /// G1: the exit closes the queue — queuing refuses, and the empty check passes with nothing
-    /// queued; a queued kernel APC at the exit is the loud failure.
+    /// A termination's exit APC as the tests bind it: its normal half records the status it ran
+    /// with, standing in for the exit (which never returns on the target).
+    fn recording_exit(_thread: ThreadId, status: usize, _argument1: usize, _argument2: usize) {
+        ARGUMENTS.with(|log| log.borrow_mut().push(status));
+        record("exit");
+    }
+
+    /// G1: the exit closes the queue — queuing refuses, and what was queued goes, both modes, with
+    /// the pending flags: a kernel APC that had no window before the exit (the exit supersedes
+    /// it), and the user APCs the thread never turned alertable for.
     #[test]
     fn the_exit_closes_the_queue() {
         let d = dispatcher();
         let p = process(8);
         let t = thread(p);
+        run(d, t);
+        let kernel = special(t);
+        d.queue_apc(kernel, 0, 0, 0);
+        let mut user = crate::sched::testkit::apc();
+        user.init(
+            t,
+            nop_kernel_routine,
+            Some(recording_normal),
+            ApcMode::User,
+            0,
+        );
+        d.queue_apc(user, 0, 0, 0);
 
-        // The no-APC variant passes.
         d.close_apc_queue(t.id());
         assert!(!t.apc_queueable);
+        assert!(!kernel.inserted() && !user.inserted());
+        assert!(t.kernel_apcs.is_empty() && t.user_apcs.is_empty());
+        assert!(!t.kernel_apc_pending && !t.user_apc_pending);
         assert!(!d.queue_apc(ApcId::Suspend(t.id()), 0, 0, 0));
         assert!(!t.suspend_apc.inserted());
-
-        // The queued variant is the bug condition: the check refuses loudly.
-        let d = dispatcher();
-        let p = process(8);
-        let leaked = thread(p);
-        let apc = special(leaked);
-        run(d, leaked);
-        d.queue_apc(apc, 0, 0, 0);
-        let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            d.close_apc_queue(leaked.id());
-        }));
-        assert!(refused.is_err(), "a queued kernel APC at exit fails loudly");
+        assert!(recorded_calls().is_empty(), "nothing delivered");
     }
 
     /// G2: a suspended thread's exit route — the forced resume wakes the parked delivery so the
@@ -1641,7 +1671,7 @@ mod tests {
         assert_eq!(deliver_kernel_apcs(), ApcDelivery::Parked);
 
         // The termination's step: the force-resume releases, the wake readies, and the delivery
-        // completes — after which the exit's queue check passes.
+        // completes — after which the exit closes the queue.
         d.force_resume_thread(t);
         assert_eq!(t.state(), ThreadState::Ready);
         run(d, t);
@@ -1649,12 +1679,12 @@ mod tests {
         d.close_apc_queue(t.id());
     }
 
-    /// G2b: a suspended thread terminated by another — the process-ending fault's route. It never
-    /// runs its own exit: its parked wait on the suspend semaphore is unwound, a still-queued APC
-    /// is discarded, and the semaphore is left with no waiter.
+    /// G2b: a suspended thread terminated by another runs its own exit. Parked inside the suspend
+    /// APC's normal routine, it is force-resumed, and the exit APC — held off meanwhile by the
+    /// normal in progress — delivers once the suspend's routine returns. Suspended but never
+    /// dispatched, its queued suspend APC is discarded, and its first delivery runs the exit alone.
     #[test]
-    fn a_suspended_thread_terminated_by_another_leaves_nothing_parked() {
-        // Parked inside the suspend APC's normal routine.
+    fn a_suspended_thread_terminated_by_another_runs_its_exit() {
         let d = dispatcher();
         let p = process(8);
         let suspended = thread(p);
@@ -1664,30 +1694,97 @@ mod tests {
         assert_eq!(deliver_kernel_apcs(), ApcDelivery::Parked);
         run(d, killer);
 
-        d.terminate_other(suspended);
-        assert_eq!(suspended.state(), ThreadState::Terminated);
+        assert!(d.request_termination(suspended, recording_exit, 9));
+        assert_eq!(
+            suspended.state(),
+            ThreadState::Ready,
+            "the force-resume woke it"
+        );
+        assert_eq!(suspended.suspend_count, 0);
         assert!(suspended.suspend_semaphore.waitable.waiters.is_empty());
-        assert!(!d.has_schedulable());
+        assert_eq!(queued(suspended), vec![ApcId::Exit(suspended.id())]);
+        assert_eq!(d.select_next(), Some(suspended.id()));
+        run(d, suspended);
+        resume_kernel_apcs();
+        assert_eq!(recorded_calls(), vec!["exit"]);
+        assert_eq!(recorded_arguments(), vec![9]);
         assert_eq!(d.audit(), Ok(()));
 
-        // Suspended but never dispatched: the APC is still queued, and the termination discards
-        // it — queue empty, flags down, the record no longer inserted.
+        // Suspended but never dispatched: the suspend APC is still queued, and the termination
+        // discards it before it queues the exit APC.
         let d = dispatcher();
         let p = process(8);
-        let queued = thread(p);
+        let queued_suspend = thread(p);
         let killer = thread(p);
         run(d, killer);
-        d.make_ready(queued);
-        d.suspend_thread(queued).unwrap();
-        assert!(queued.suspend_apc.inserted());
+        d.make_ready(queued_suspend);
+        d.suspend_thread(queued_suspend).unwrap();
+        assert!(queued_suspend.suspend_apc.inserted());
 
-        d.terminate_other(queued);
-        assert_eq!(queued.state(), ThreadState::Terminated);
-        assert!(queued.kernel_apcs.is_empty());
-        assert!(!queued.kernel_apc_pending);
-        assert!(!queued.suspend_apc.inserted());
-        assert!(!queued.apc_queueable);
+        assert!(d.request_termination(queued_suspend, recording_exit, 4));
+        assert!(!queued_suspend.suspend_apc.inserted());
+        assert_eq!(
+            queued(queued_suspend),
+            vec![ApcId::Exit(queued_suspend.id())]
+        );
+        assert!(!queued_suspend.apc_queueable);
+        assert_eq!(d.select_next(), Some(queued_suspend.id()));
+        run(d, queued_suspend);
+        assert_eq!(deliver_kernel_apcs(), ApcDelivery::Delivered);
+        assert_eq!(recorded_calls(), vec!["exit", "exit"]);
+        assert_eq!(recorded_arguments(), vec![9, 4]);
         assert_eq!(d.audit(), Ok(()));
+    }
+
+    /// G2c: the outermost critical region's end arms the delivery of the normal APCs it held off
+    /// (KeLeaveCriticalRegion), so the next window runs them; an inner region's end, or one with
+    /// nothing queued, arms nothing.
+    #[test]
+    fn leaving_a_region_arms_what_it_held_off() {
+        let d = dispatcher();
+        let p = process(8);
+        let mut t = thread(p);
+        run(d, t);
+        t.enter_critical_region();
+        t.enter_critical_region();
+        let held = normal(t);
+        d.queue_apc(held, 0, 0, 0);
+        assert_eq!(deliver_kernel_apcs(), ApcDelivery::Delivered);
+        assert!(recorded_calls().is_empty(), "held off by the region");
+        assert!(!t.kernel_apc_pending);
+
+        assert!(!t.leave_critical_region(), "the inner region");
+        assert!(!t.kernel_apc_pending);
+        assert!(
+            t.leave_critical_region(),
+            "the outermost, with an APC held off"
+        );
+        assert!(t.kernel_apc_pending);
+        deliver_pending_apcs();
+        assert_eq!(recorded_calls(), vec!["kernel:pending-clear", "normal"]);
+    }
+
+    /// G2d: a scope attached to another process's address space holds the thread's kernel APCs
+    /// off, specials included (Windows 2000 keeps them in the thread's saved APC state); the
+    /// detach arms their delivery again.
+    #[test]
+    fn an_attached_scope_holds_kernel_apcs_off() {
+        let d = dispatcher();
+        let p = process(8);
+        let other = process(8);
+        let t = thread(p);
+        run(d, t);
+        assert!(d.attach_space(t.id(), other).is_some());
+        let apc = special(t);
+        d.queue_apc(apc, 0, 0, 0);
+        assert_eq!(deliver_kernel_apcs(), ApcDelivery::Delivered);
+        assert!(recorded_calls().is_empty(), "held off by the scope");
+        assert!(apc.inserted());
+
+        d.detach_space(t.id());
+        assert!(t.kernel_apc_pending, "the detach arms the delivery");
+        deliver_pending_apcs();
+        assert_eq!(recorded_calls(), vec!["kernel:pending-clear"]);
     }
 
     /// G3: suspend of an exiting or exited thread is refused — the count does not move.

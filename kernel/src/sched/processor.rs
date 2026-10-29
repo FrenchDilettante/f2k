@@ -20,9 +20,9 @@
 //! writes them. A read-modify-write of the quantum by the dispatcher can lose a tick the clock
 //! charged in its middle, as Windows 2000's can.
 
-use core::sync::atomic::{AtomicBool, AtomicI8, AtomicPtr, AtomicU16, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI8, AtomicU16, Ordering};
 
-use super::process::SchedProcess;
+use super::process::NOT_POOLED;
 use super::thread::ThreadId;
 use super::QUANTUM_TICK;
 use crate::level::{At, Clock};
@@ -69,12 +69,13 @@ pub struct ThreadSlots {
     /// runs (its record holds it otherwise): read by the copies and the exception handler at any
     /// level, the dispatch level included (the console server copies there).
     copying_user_memory: AtomicBool,
-    /// The running thread's owner and address-space process (see [`super::attach`]), copied from
-    /// its record as it takes the processor, and the latter changed with the record by an attach:
-    /// what the current process and its live address space are read from at any level, as Windows
-    /// 2000 reads the current thread's ApcState.Process through its processor block.
-    process: AtomicPtr<SchedProcess>,
-    space: AtomicPtr<SchedProcess>,
+    /// The running thread's owner and address-space process (see [`super::attach`]), by their
+    /// process-pool indices ([`NOT_POOLED`]: the idle process, or no thread yet), copied from its
+    /// record as it takes the processor, and the latter changed with the record by an attach: what
+    /// the current process and its live address space are read from at any level, as Windows 2000
+    /// reads the current thread's ApcState.Process through its processor block.
+    process: AtomicU16,
+    space: AtomicU16,
 }
 
 impl ThreadSlots {
@@ -87,8 +88,8 @@ impl ThreadSlots {
             quantum: AtomicI8::new(0),
             quantum_end: AtomicBool::new(false),
             copying_user_memory: AtomicBool::new(false),
-            process: AtomicPtr::new(core::ptr::null_mut()),
-            space: AtomicPtr::new(core::ptr::null_mut()),
+            process: AtomicU16::new(NOT_POOLED),
+            space: AtomicU16::new(NOT_POOLED),
         }
     }
 
@@ -112,15 +113,17 @@ impl ThreadSlots {
         self.quantum.load(Ordering::SeqCst)
     }
 
-    /// The running thread's owner: its process's scheduling record (null before a thread runs).
-    pub fn process(&self) -> *const SchedProcess {
-        self.process.load(Ordering::SeqCst)
+    /// The running thread's owner: its process's index in the process pool (none for the idle
+    /// process, or before a thread runs).
+    pub fn process(&self) -> Option<u16> {
+        pooled(self.process.load(Ordering::SeqCst))
     }
 
     /// The running thread's address-space process: its owner, or while attached the process it
-    /// attached to (null before a thread runs).
-    pub fn space(&self) -> *const SchedProcess {
-        self.space.load(Ordering::SeqCst)
+    /// attached to, by its index in the process pool (none for the idle process, or before a
+    /// thread runs).
+    pub fn space(&self) -> Option<u16> {
+        pooled(self.space.load(Ordering::SeqCst))
     }
 
     /// Whether the running thread is inside a user-memory copy on its process's behalf.
@@ -175,10 +178,11 @@ impl ThreadSlots {
         self.idle.set(thread);
     }
 
-    /// The running thread's owner and address-space process, as its record names them.
-    pub(super) fn set_processes(&self, process: *mut SchedProcess, space: *const SchedProcess) {
+    /// The running thread's owner and address-space process, by the process-pool indices its
+    /// record names them by.
+    pub(super) fn set_processes(&self, process: u16, space: u16) {
         self.process.store(process, Ordering::SeqCst);
-        self.space.store(space.cast_mut(), Ordering::SeqCst);
+        self.space.store(space, Ordering::SeqCst);
     }
 
     pub(super) fn set_quantum(&self, quantum: i8) {
@@ -204,8 +208,13 @@ impl ThreadSlots {
         self.quantum.store(0, Ordering::SeqCst);
         self.quantum_end.store(false, Ordering::SeqCst);
         self.copying_user_memory.store(false, Ordering::SeqCst);
-        self.set_processes(core::ptr::null_mut(), core::ptr::null());
+        self.set_processes(NOT_POOLED, NOT_POOLED);
     }
+}
+
+/// A process slot's value as a pool index: none for [`NOT_POOLED`].
+fn pooled(index: u16) -> Option<u16> {
+    (index != NOT_POOLED).then_some(index)
 }
 
 /// A quantum charged for one tick. Saturating: a thread charged for longer than its quantum without

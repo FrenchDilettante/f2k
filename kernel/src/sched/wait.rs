@@ -743,10 +743,10 @@ impl Dispatcher {
 
     /// The wait exit: complete `thread`'s wait with `status` and a wake boost of `increment`. This
     /// is the single owner of the Waiting state's exit to the ready ladder — every wake site goes
-    /// through it (only termination leaves a wait otherwise, through the unwind alone). It
-    /// unwinds the wait's blocks from their objects, leaves the waiting list, cancels the wait's
-    /// timer if it is still live, applies the boost (the thread's no-boost policy gates it here —
-    /// the boost itself leaves policy to its caller), charges the wait, and readies the thread.
+    /// through it, a termination's exit APC included. It unwinds the wait's blocks from their
+    /// objects, leaves the waiting list, cancels the wait's timer if it is still live, applies the
+    /// boost (the thread's no-boost policy gates it here — the boost itself leaves policy to its
+    /// caller), charges the wait, and readies the thread.
     pub fn unwait(&mut self, thread: impl Into<ThreadId>, status: NtStatus, increment: i8) {
         let thread = thread.into();
         let record = self.thread_mut(thread);
@@ -768,8 +768,7 @@ impl Dispatcher {
 
     /// The wait's unwind: unlink every block of `thread`'s chain from the object it is parked on,
     /// leave the waiting list, and cancel the wait's timer if it is still live. The wait exit's
-    /// first half; the termination of a parked thread uses it alone — that thread never runs again,
-    /// so nothing readies it.
+    /// first half.
     pub(super) fn unwind_wait(&mut self, thread: ThreadId) {
         debug_assert!(self.thread(thread).state == ThreadState::Waiting);
         let head = self
@@ -1049,7 +1048,10 @@ pub(crate) fn replay_timeout(
 
 /// The blocking core every wait shares: run `start` — it either satisfies the wait at once or parks
 /// the thread — and after a park, read the wake's status, replaying the wait when a kernel APC
-/// broke it. Returns the wait's completion status.
+/// broke it. A start that completes with STATUS_KERNEL_APC has not waited at all: a kernel APC is
+/// pending at the wait's entry, and `resumed` delivers it before the wait is tried again (Windows
+/// 2000's waits lower to deliver a pending kernel APC before they block). Returns the wait's
+/// completion status.
 ///
 /// Each attempt is one window at the dispatch level, as Windows 2000's waits hold the dispatcher
 /// from the test to the switch: the clock's reading (`stamp_of`) and `start` run with interrupts
@@ -1080,6 +1082,9 @@ pub(crate) fn wait_with_replay(
             disposition
         });
         match disposition {
+            // Not waited: the delivery first, then the same attempt again (its timeout untouched,
+            // as nothing parked).
+            WaitDisposition::Complete(STATUS_KERNEL_APC) => resumed(),
             WaitDisposition::Complete(status) => return status,
             WaitDisposition::Yield => {
                 resumed();
@@ -1123,7 +1128,14 @@ pub fn wait_current_with(
             crate::interrupt::clock::read_at(dispatch, crate::interrupt::clock::Clock::stamp)
         },
         |dispatcher, thread, stamp, replay| {
-            dispatcher.thread_mut(thread).wait_irql = wait_level;
+            let record = dispatcher.thread_mut(thread);
+            record.wait_irql = wait_level;
+            // A kernel APC queued while the thread could not take it (at the APC level, say, a
+            // short lock's holder lowering since) delivers before the wait blocks: the delivery
+            // clears the flag, so a gated one does not hold the wait off twice.
+            if wait_level == crate::interrupt::irql::PASSIVE && record.kernel_apc_pending {
+                return WaitDisposition::Complete(STATUS_KERNEL_APC);
+            }
             start(dispatcher, thread, stamp, replay)
         },
         park_and_switch,
@@ -1942,11 +1954,16 @@ mod tests {
         assert_eq!(d.audit_waits(), Ok(()));
     }
 
-    /// Terminating a parked thread off the processor unwinds its wait without readying it: the
-    /// block leaves the object, the thread leaves the waiting list, its timeout leaves the timer
-    /// table — and the object's later signal finds nobody.
+    /// A termination's exit APC whose normal half the host model never runs: the exit is the
+    /// target's own.
+    fn exit_normal(_thread: ThreadId, _status: usize, _argument1: usize, _argument2: usize) {}
+
+    /// Terminating a parked thread breaks its wait for the exit APC, as any normal kernel APC
+    /// breaks a wait it may: the block leaves the object, the thread leaves the waiting list, its
+    /// timeout leaves the timer table, and it is readied with the exit increment — the object's
+    /// later signal finds nobody. The thread is not ended here: it runs its own exit.
     #[test]
-    fn terminate_other_unwinds_a_parked_wait() {
+    fn a_termination_breaks_a_parked_wait() {
         let d = dispatcher();
         let p = process(8);
         let running = thread(p);
@@ -1956,13 +1973,19 @@ mod tests {
         block_on(d, parked, ev.waitable(), Some(1_000_000));
         assert!(parked.timer.inserted);
 
-        d.terminate_other(parked);
-        assert_eq!(parked.state(), ThreadState::Terminated);
+        assert!(d.request_termination(parked, exit_normal, 9));
+        assert!(matches!(
+            parked.state(),
+            ThreadState::Ready | ThreadState::Standby
+        ));
+        assert_eq!(parked.wait_status(), STATUS_KERNEL_APC);
+        assert!(parked.priority() > 8, "the exit increment");
         assert!(parked.wait_block_head.is_none());
         assert!(!parked.timer.inserted, "the timeout left the table");
         assert!(waiters(ev).is_empty());
         assert!(d.waiting.is_empty());
-        assert!(!d.has_schedulable());
+        assert!(parked.exit_apc.inserted());
+        assert_eq!(unsafe { (*p).stack_count() }, 2, "attached until its exit");
         assert_eq!(d.audit(), Ok(()));
         assert_eq!(d.audit_timers(), Ok(()));
 
@@ -1970,15 +1993,14 @@ mod tests {
         ev.waitable.signal_state = 1;
         d.satisfy_waiters(ev.waitable.id(), 0);
         assert_eq!(ev.signal_state(), 1);
-        assert_eq!(parked.state(), ThreadState::Terminated);
     }
 
-    /// Two threads off the processor, one parked on the other's thread object: in either order,
-    /// both end Terminated with the wait structures consistent. Terminating the waited-on thread
-    /// first wakes the waiter (its object signals), which the second termination takes back off
-    /// the ready ladder; terminating the waiter first leaves the other's object with no waiters.
+    /// Two threads, one parked on the other's thread object, both terminated in either order: the
+    /// waiter's wait breaks for its exit APC, so nothing waits on the other any more; then each
+    /// runs its own exit as the selection hands it the processor, and both end Terminated with the
+    /// wait structures consistent.
     #[test]
-    fn terminate_other_handles_threads_waiting_on_each_other() {
+    fn threads_waiting_on_each_other_end_in_turn() {
         for waited_on_first in [true, false] {
             let d = dispatcher();
             let p = process(8);
@@ -1989,36 +2011,39 @@ mod tests {
             d.make_ready(target);
             block_on(d, waiter, target.waitable(), None);
 
-            if waited_on_first {
-                d.terminate_other(target);
-                assert!(
-                    waiter.state() == ThreadState::Ready || waiter.state() == ThreadState::Standby,
-                    "the signal woke the waiter"
-                );
-                d.terminate_other(waiter);
+            let order = if waited_on_first {
+                [target, waiter]
             } else {
-                d.terminate_other(waiter);
-                assert!(target.waitable.waiters.is_empty());
-                d.terminate_other(target);
+                [waiter, target]
+            };
+            for t in order {
+                assert!(d.request_termination(t, exit_normal, 1));
+            }
+            assert!(target.waitable.waiters.is_empty());
+            assert_eq!(waiter.wait_status(), STATUS_KERNEL_APC);
+
+            // The running thread leaves the processor, then each terminated thread runs its exit
+            // — here, its retire — in the order the selection gives.
+            let mut next = d.terminate();
+            while let Some(selected) = next.filter(|&t| t == target.id() || t == waiter.id()) {
+                d.enter(selected);
+                d.thread_mut(selected).state = ThreadState::Running;
+                next = d.terminate();
             }
             assert_eq!(waiter.state(), ThreadState::Terminated);
             assert_eq!(target.state(), ThreadState::Terminated);
             assert!(!d.has_schedulable());
-            assert_eq!(
-                unsafe { (*p).stack_count() },
-                1,
-                "only the running thread is left"
-            );
+            assert_eq!(unsafe { (*p).stack_count() }, 0);
             assert_eq!(d.audit(), Ok(()));
         }
     }
 
-    /// A termination requested for a thread inside a critical region is deferred: the thread keeps
-    /// its wait — the object's signal still completes it — accepts no APCs from then on, and its
-    /// queued ones are discarded. Outside a region the request terminates at once.
+    /// A termination requested for a thread inside a critical region waits for the region's end:
+    /// the exit APC is a normal kernel APC, which the region holds off, so the thread keeps its
+    /// wait — the object's signal still completes it. It takes no APC from then on, and its
+    /// queued ones are discarded. Outside a region the request breaks the wait at once.
     #[test]
-    fn request_termination_defers_a_thread_in_a_critical_region() {
-        use crate::sched::dispatcher::Termination;
+    fn a_termination_waits_for_a_critical_region() {
         let d = dispatcher();
         let p = process(8);
         let running = thread(p);
@@ -2036,14 +2061,18 @@ mod tests {
         assert_eq!(inside.state(), ThreadState::Waiting);
         assert!(inside.suspend_apc.inserted());
 
-        assert_eq!(d.request_termination(inside), Termination::Deferred);
+        assert!(d.request_termination(inside, exit_normal, 3));
         assert!(inside.termination_pending());
         assert_eq!(inside.state(), ThreadState::Waiting, "the wait runs on");
         assert!(!inside.suspend_apc.inserted(), "queued APCs are discarded");
-        assert!(inside.kernel_apcs.is_empty());
+        assert!(inside.exit_apc.inserted(), "the exit waits for the region");
         assert_eq!(
             d.suspend_thread(inside),
             Err(crate::status::STATUS_THREAD_IS_TERMINATING)
+        );
+        assert!(
+            !d.request_termination(inside, exit_normal, 4),
+            "requested once"
         );
         assert_eq!(unsafe { (*p).stack_count() }, 3, "still attached");
 
@@ -2053,25 +2082,54 @@ mod tests {
             inside.state(),
             ThreadState::Ready | ThreadState::Standby
         ));
+        assert_eq!(inside.wait_status(), STATUS_SUCCESS);
+        // Leaving the region arms the delivery the region held off.
+        assert!(inside.leave_critical_region());
+        assert!(inside.kernel_apc_pending);
 
-        assert_eq!(d.request_termination(outside), Termination::Done);
-        assert_eq!(outside.state(), ThreadState::Terminated);
+        assert!(d.request_termination(outside, exit_normal, 3));
+        assert!(matches!(
+            outside.state(),
+            ThreadState::Ready | ThreadState::Standby
+        ));
+        assert_eq!(outside.wait_status(), STATUS_KERNEL_APC);
         assert!(waiters(other).is_empty());
-        assert_eq!(unsafe { (*p).stack_count() }, 2);
+        assert_eq!(unsafe { (*p).stack_count() }, 3);
         assert_eq!(d.audit(), Ok(()));
     }
 
+    /// A wait inside a scope attached to another process's address space is not broken by a kernel
+    /// APC, the exit APC included: the thread's own APCs wait for the scope's end, and the detach
+    /// arms their delivery again.
     #[test]
-    #[should_panic(expected = "requested once")]
-    fn a_deferred_termination_is_not_requested_twice() {
+    fn an_attached_wait_holds_the_exit_apc_off() {
         let d = dispatcher();
         let p = process(8);
+        let target = process(8);
         let running = thread(p);
-        let mut inside = thread(p);
+        let attached = thread(p);
+        let ev = event(EventKind::Synchronization, false);
         run(d, running);
-        inside.enter_critical_region();
-        d.request_termination(inside);
-        d.request_termination(inside);
+        assert!(d.attach_space(attached.id(), target).is_some());
+        block_on(d, attached, ev.waitable(), None);
+
+        assert!(d.request_termination(attached, exit_normal, 1));
+        assert_eq!(
+            attached.state(),
+            ThreadState::Waiting,
+            "the scope's wait runs on"
+        );
+        d.set_event(ev.id(), EVENT_WAKE_INCREMENT);
+        assert!(matches!(
+            attached.state(),
+            ThreadState::Ready | ThreadState::Standby
+        ));
+        // A delivery the scope gated has cleared the flag meanwhile.
+        let mut attached = attached;
+        attached.kernel_apc_pending = false;
+        d.detach_space(attached.id());
+        assert!(attached.kernel_apc_pending, "the detach arms the delivery");
+        assert!(attached.exit_apc.inserted());
     }
 
     // --- Group E: the timeout seam -------------------------------------------

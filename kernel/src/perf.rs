@@ -249,8 +249,7 @@ pub fn sample(frame: &crate::cpu::idt::ExceptionFrame) {
 /// ends the walk where it stands.
 ///
 /// Every read is validated to lie in mapped memory first: kernel-window addresses by construction
-/// (the window is mapped in every address space), user addresses by the current process's region
-/// records, which match its page tables.
+/// (the window is mapped in every address space), user addresses by the live page tables.
 #[cfg(target_arch = "x86")]
 fn walk(mut ebp: u32, cs: u32, frames: &mut [u32; MAX_STACK]) -> usize {
     let ring3 = cs & 3 == 3;
@@ -292,13 +291,14 @@ fn walk(mut ebp: u32, cs: u32, frames: &mut [u32; MAX_STACK]) -> usize {
     depth
 }
 
-/// Whether the current process's address space records a region containing `address`.
+/// Whether `address` is a user address whose page is present in the live page tables: what the
+/// walk may read inside the clock interrupt, where the address space's records (behind their
+/// lock) are out of reach.
 #[cfg(target_arch = "x86")]
 fn user_mapped(address: u32) -> bool {
-    crate::process::pool::current()
-        .space()
-        .region_at(address)
-        .is_some()
+    use crate::mem::paging::{KERNEL_BASE, PAGE_PRESENT, PAGE_SIZE};
+    use crate::mem::vm::{CurrentPages, Pages};
+    address < KERNEL_BASE && CurrentPages.entry(address & !(PAGE_SIZE - 1)) & PAGE_PRESENT != 0
 }
 
 /// Stop the trace and dump it on COM1: the header and one line per kept sample. Runs on the idle

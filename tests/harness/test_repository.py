@@ -196,15 +196,12 @@ RAW_ACCESS_ALLOWED = {
     "kernel/src/cm/mod.rs": "the registry's arena, a kernel static: its names, classes and value"
     " data",
     "kernel/src/cpu/gdt.rs": "the kernel's own descriptor table",
-    "kernel/src/cpu/idt.rs": "the kernel's own interrupt table",
     "kernel/src/hw/vga.rs": "the text screen's cells, device memory through the kernel window",
     "kernel/src/mem/bootmem.rs": "the boot memory map and the frame database, before any process",
     "kernel/src/mem/paging.rs": "the page tables and frames, through the kernel's own windows",
     "kernel/src/perf.rs": "(perf-trace builds only) the frame-pointer walk of a sampled stack, each"
-    " frame checked against the kernel window or the process's regions first",
-    "kernel/src/sched/startup.rs": "a new thread's kernel gate stack",
+    " frame checked against the kernel window or the live page tables first",
     "kernel/src/user/syscall.rs": "the copy primitives themselves and the attribution flag",
-    "kernel/src/user/shared.rs": "the shared data page through the kernel's own mapping of its frame",
 }
 RAW_FORMS = ("read_volatile", "write_volatile", "from_raw_parts")
 
@@ -250,9 +247,10 @@ def test_only_the_address_space_writes_user_entries():
 
 # --- The process record ---------------------------------------------------------------------------
 
-# The `current_mut()` call sites in the kernel: each hands out an aliasable `&'static mut Process`
-# (explicit borrows retire them). The count may only go down.
-CURRENT_MUT_SITES = 3
+# The `current_mut()` call sites in the kernel: each handed out an aliasable `&'static mut Process`.
+# The records are shared now, each part behind its own lock, so none is left. The count may only go
+# down.
+CURRENT_MUT_SITES = 0
 
 
 def test_current_mut_call_sites_only_go_down():

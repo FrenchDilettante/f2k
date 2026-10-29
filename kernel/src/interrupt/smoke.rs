@@ -81,8 +81,7 @@ pub fn run() {
     // The deferred timer work runs only when a timer is due (the table's hand check), so arm one:
     // a notification timer of the diagnostic's own, due one tick out. Its expiry, the DPC's walk,
     // signals it — nobody waits on it, and the signal is the observable.
-    let timer = crate::ob::directory()
-        .create_timer(true)
+    let timer = crate::ob::locked(|directory| directory.create_timer(true))
         .expect("the boot's timer pool has room");
     crate::level::raised::<crate::level::Dispatch, _>(|dispatch| {
         // Read and armed masked: no tick moves the clock between the two.
@@ -115,7 +114,7 @@ pub fn run() {
     serial_println!("F2K: irq-smoke: clock DPC fired");
     // The timer goes with its creator's reference: no process holds it, and nothing outlives the
     // diagnostic.
-    let _ = crate::ob::directory().dereference(timer);
+    crate::ob::release(timer);
 
     match super::audit() {
         Ok(()) => {

@@ -310,6 +310,7 @@ pub const RING3_STUB: [u8; 25] = [
 /// Trap frame the gate stubs build on the ring-0 stack, in the shape shared with the exception
 /// stubs (the CPU pushes the ring-3 tail; the stub pushes the rest in the same order).
 #[allow(dead_code)]
+#[derive(Default)]
 #[repr(C)]
 pub struct TrapFrame {
     pub edi: u32,
@@ -460,14 +461,15 @@ pub fn run_fault_stub() -> ! {
     });
     // Built attached to the process: the pages below land in its directory, the live one.
     let attached = process.attach();
-    let space = process.vm();
-    crate::exec::loader::seed_regions(space, USER_CODE_PAGE, paging::PAGE_SIZE);
+    process.with_space(|space| {
+        crate::exec::loader::seed_regions(space, USER_CODE_PAGE, paging::PAGE_SIZE);
 
-    let code_frame = paging::allocate_frame_phys();
-    paging::init_frame(code_frame, 0, &RING3_STUB);
-    vm::map_prepared(space, USER_CODE_PAGE, code_frame, vm::PAGE_EXECUTE_READ);
-    vm::map_zeroed(space, USER_STACK_PAGE, vm::PAGE_READWRITE);
-    vm::map_zeroed(space, USER_STACK_LOW_PAGE, vm::PAGE_READWRITE);
+        let code_frame = paging::allocate_frame_phys();
+        paging::init_frame(code_frame, 0, &RING3_STUB);
+        vm::map_prepared(space, USER_CODE_PAGE, code_frame, vm::PAGE_EXECUTE_READ);
+        vm::map_zeroed(space, USER_STACK_PAGE, vm::PAGE_READWRITE);
+        vm::map_zeroed(space, USER_STACK_LOW_PAGE, vm::PAGE_READWRITE);
+    });
 
     crate::serial_println!(
         "F2K: entering ring 3 (code {:#010x}, stack {:#010x})",

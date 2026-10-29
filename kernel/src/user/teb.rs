@@ -3,106 +3,61 @@
 //! Compilers, the C runtime and kernel32's user-mode exports read these fields directly — fs:[18h]
 //! for the TEB's own linear address, fs:[30h] for the PEB, fs:[34h] for the last error, fs:[0] for
 //! the exception chain, fs:[20h] and fs:[24h] for the client ids — so the offsets are Windows
-//! 2000's, not F2K's choice. A thread's TEB page is built once, when the thread is created; the PEB
-//! page once per process, when its image is loaded. Everything not listed here stays zero.
+//! 2000's, not F2K's choice: the layouts are `rtl::peb`'s, the ones ntdll and kernel32 read them
+//! with. A thread's TEB page is built once, when the thread is created, field by field (the TEB is
+//! nearly a page long); the PEB page once per process, when its image is loaded, from a whole
+//! [`Peb`] value. Everything not written here stays zero.
 
-// The layouts' fields user code reads, whether the kernel writes them or not (kernel32 and ntdll
-// read them by these offsets).
-#![allow(dead_code)]
+use core::marker::PhantomData;
+use core::mem::size_of;
 
-/// TEB field offsets (the NT_TIB head, then the TEB proper).
-pub mod teb_offset {
-    /// NT_TIB.ExceptionList: the head of the thread's SEH frame chain.
-    pub const EXCEPTION_LIST: u32 = 0x00;
-    /// NT_TIB.StackBase: one past the top of the thread's stack.
-    pub const STACK_BASE: u32 = 0x04;
-    /// NT_TIB.StackLimit: the lowest committed address of the stack.
-    pub const STACK_LIMIT: u32 = 0x08;
-    /// NT_TIB.Self: the TEB's own linear address.
-    pub const SELF: u32 = 0x18;
-    /// ClientId.UniqueProcess.
-    pub const PROCESS_ID: u32 = 0x20;
-    /// ClientId.UniqueThread.
-    pub const THREAD_ID: u32 = 0x24;
-    /// ProcessEnvironmentBlock.
-    pub const PEB: u32 = 0x30;
-    /// LastErrorValue: what GetLastError reads and SetLastError writes.
-    pub const LAST_ERROR: u32 = 0x34;
-    /// CurrentLocale: the thread's locale, what GetThreadLocale reads and SetThreadLocale writes.
-    pub const CURRENT_LOCALE: u32 = 0xC4;
-    /// DeallocationStack: the base of the thread's stack reservation, its lowest address.
-    pub const DEALLOCATION_STACK: u32 = 0xE0C;
-    /// TlsSlots: the first 64 TLS slots (see [`crate::user::tls`]).
-    pub const TLS_SLOTS: u32 = 0xE10;
-    /// TlsExpansionSlots: the block holding the other 1024 (zero until TlsSetValue makes it).
-    pub const TLS_EXPANSION_SLOTS: u32 = 0xF94;
+use rtl::nt::UnicodeString;
+use rtl::peb::{Peb, Teb};
+use rtl::pod::Pod;
+
+use crate::user::args::UserPtr;
+
+/// A field of the TEB, typed: its offset in [`Teb`] and its type, as [`teb_field!`] names it.
+#[derive(Clone, Copy, Debug)]
+pub struct TebField<T> {
+    offset: usize,
+    value: PhantomData<fn() -> T>,
 }
 
-/// PEB field offsets.
-pub mod peb_offset {
-    /// ImageBaseAddress: the process image's base, what GetModuleHandle(NULL) returns.
-    pub const IMAGE_BASE_ADDRESS: u32 = 0x08;
-    /// Ldr: the loader's PEB_LDR_DATA, the heads of the module lists (ntdll's process
-    /// initialization makes it, on the process heap).
-    pub const LDR: u32 = 0x0C;
-    /// ProcessParameters: the RTL_USER_PROCESS_PARAMETERS block (see `user::params`).
-    pub const PROCESS_PARAMETERS: u32 = 0x10;
-    /// ProcessHeap: what GetProcessHeap returns (ntdll's LdrInitializeThunk writes it on the
-    /// process's first thread).
-    pub const PROCESS_HEAP: u32 = 0x18;
-    /// FastPebLock: the PEB lock, the critical section RtlAcquirePebLock takes (ntdll's own data;
-    /// its LdrInitializeThunk makes it and points this field at it on the process's first thread).
-    pub const FAST_PEB_LOCK: u32 = 0x1C;
-    /// NumberOfHeaps, MaximumNumberOfHeaps, ProcessHeaps: the process's heaps, the array of their
-    /// handles (ntdll keeps the count and the array; the kernel plants the array's place and size,
-    /// as NT's PEB creation does).
-    pub const NUMBER_OF_HEAPS: u32 = 0x88;
-    pub const MAXIMUM_NUMBER_OF_HEAPS: u32 = 0x8C;
-    pub const PROCESS_HEAPS: u32 = 0x90;
-    /// The heap-handle array: right past Windows 2000's PEB proper (0x1E8 bytes), on its page, as
-    /// NT's PEB creation places it.
-    pub const PROCESS_HEAPS_ARRAY: u32 = 0x1E8;
-    /// How many heaps the array holds (`rtl::heap::HEAPS`).
-    pub const HEAPS: u32 = 16;
-    /// TlsBitmap: the RTL_BITMAP over TlsBitmapBits, the TLS indexes 0..64 (the header is ntdll's
-    /// own data; its LdrInitializeThunk makes it and points this field at it).
-    pub const TLS_BITMAP: u32 = 0x40;
-    /// TlsBitmapBits: two dwords, a bit per index 0..64 (set: allocated).
-    pub const TLS_BITMAP_BITS: u32 = 0x44;
-    /// TlsExpansionBitmap: the RTL_BITMAP over TlsExpansionBitmapBits, the indexes 64..1088
-    /// (ntdll's, as TlsBitmap's).
-    pub const TLS_EXPANSION_BITMAP: u32 = 0x150;
-    /// TlsExpansionBitmapBits: 32 dwords, a bit per index 64..1088.
-    pub const TLS_EXPANSION_BITMAP_BITS: u32 = 0x154;
-    /// The system's version, as the kernel's process creation writes it (GetVersion reads it on
-    /// the platform): OSMajorVersion, OSMinorVersion, OSBuildNumber (a word) with OSCSDVersion (the
-    /// next word: the service pack, its major number in the high byte), OSPlatformId.
-    pub const OS_MAJOR_VERSION: u32 = 0xA4;
-    pub const OS_MINOR_VERSION: u32 = 0xA8;
-    pub const OS_BUILD_NUMBER: u32 = 0xAC;
-    pub const OS_PLATFORM_ID: u32 = 0xB0;
-    /// The image's subsystem and the subsystem version it was linked for (its optional header's).
-    pub const IMAGE_SUBSYSTEM: u32 = 0xB4;
-    pub const IMAGE_SUBSYSTEM_MAJOR_VERSION: u32 = 0xB8;
-    pub const IMAGE_SUBSYSTEM_MINOR_VERSION: u32 = 0xBC;
-    /// CSDVersion: the service pack's name, a UNICODE_STRING (GetVersionExA's szCSDVersion; its
-    /// buffer past the PEB proper on its page, [`CSD_VERSION_BUFFER`]).
-    pub const CSD_VERSION: u32 = 0x1DC;
-    /// The service pack's name CSDVersion points at, UTF-16: past the PEB proper on its page, so
-    /// every process has it from its creation (a process another process created gets its
-    /// parameters from its creator, later).
-    pub const CSD_VERSION_BUFFER: u32 = 0xA00;
-    /// LoaderLock: the loader lock (ntdll's LdrpLoaderLock, its own data; its LdrInitializeThunk
-    /// makes it and points this field at it).
-    pub const LOADER_LOCK: u32 = 0xA0;
-    // Past the PEB proper (0x1E8 bytes), the kernel keeps only the heap-handle array (0x1E8) and
-    // the service pack's name (0xA00). The page starts zeroed. The PEB's lock, loader lock and TLS
-    // bitmap fields point into ntdll's own data, and the system DLLs keep the rest of their
-    // per-process state in their own data sections, as on Windows 2000.
+impl<T: Pod> TebField<T> {
+    /// The field `project` borrows, at `offset`: [`teb_field!`]'s, which takes both from the one
+    /// field name (`offset_of!` and the borrow), so they agree.
+    #[doc(hidden)]
+    pub fn new(offset: usize, _project: fn(&Teb<u32>) -> &T) -> Self {
+        TebField {
+            offset,
+            value: PhantomData,
+        }
+    }
+
+    /// The field's offset in the TEB.
+    pub fn offset(self) -> u32 {
+        self.offset as u32
+    }
+
+    /// The field of the TEB at user address `teb`.
+    pub fn of(self, teb: u32) -> UserPtr<T> {
+        UserPtr::at(teb + self.offset())
+    }
 }
+
+/// The TEB's field `$field` (a [`Teb`] field name), as a [`TebField`] of its type.
+macro_rules! teb_field {
+    ($field:ident) => {
+        $crate::user::teb::TebField::new(core::mem::offset_of!(rtl::peb::Teb<u32>, $field), |teb| {
+            &teb.$field
+        })
+    };
+}
+pub(crate) use teb_field;
 
 /// The empty SEH chain's terminator: the frame link Windows starts every thread with.
-pub const END_OF_CHAIN: u32 = 0xFFFF_FFFF;
+pub const END_OF_CHAIN: u32 = rtl::seh::END_OF_CHAIN;
 
 /// What a new thread's TEB records.
 #[derive(Clone, Copy, Debug)]
@@ -127,20 +82,21 @@ pub struct TebInit {
 /// starts every thread in its default thread locale.
 pub const DEFAULT_LOCALE: u32 = 0x0409;
 
-/// A fresh TEB's nonzero words, as (offset, value). The TLS words stay zero: TlsSetValue makes the
-/// expansion slots on first use.
-pub fn teb_words(init: &TebInit) -> [(u32, u32); 9] {
-    [
-        (teb_offset::EXCEPTION_LIST, END_OF_CHAIN),
-        (teb_offset::STACK_BASE, init.stack_base),
-        (teb_offset::STACK_LIMIT, init.stack_limit),
-        (teb_offset::DEALLOCATION_STACK, init.deallocation_stack),
-        (teb_offset::SELF, init.teb),
-        (teb_offset::PROCESS_ID, init.process_id),
-        (teb_offset::THREAD_ID, init.thread_id),
-        (teb_offset::PEB, init.peb),
-        (teb_offset::CURRENT_LOCALE, DEFAULT_LOCALE),
-    ]
+/// A fresh TEB's fields, each handed to `write` with its offset in the TEB and its bytes (on a
+/// zeroed page): the exception chain terminated, the stack's bounds and reservation, the self
+/// pointer, the client ids, the PEB and the default locale. The last error and the TLS words stay
+/// zero: TlsSetValue makes the expansion slots on first use.
+pub fn write_fresh_teb(init: &TebInit, mut write: impl FnMut(u32, &[u8])) {
+    let mut put = |field: TebField<u32>, value: u32| write(field.offset(), value.as_bytes());
+    put(teb_field!(exception_list), END_OF_CHAIN);
+    put(teb_field!(stack_base), init.stack_base);
+    put(teb_field!(stack_limit), init.stack_limit);
+    put(teb_field!(deallocation_stack), init.deallocation_stack);
+    put(teb_field!(self_), init.teb);
+    put(teb_field!(unique_process), init.process_id);
+    put(teb_field!(unique_thread), init.thread_id);
+    put(teb_field!(process_environment_block), init.peb);
+    put(teb_field!(current_locale), DEFAULT_LOCALE);
 }
 
 /// What a new process's PEB records of its image.
@@ -163,63 +119,65 @@ pub const VERSION: u32 = 0x0893_0005;
 
 /// The system's service pack, as OSCSDVersion holds it: 4.0, the major number in the high byte
 /// (GetVersionExA's "Service Pack 4").
-const OS_CSD_VERSION: u32 = 0x0400;
+const OS_CSD_VERSION: u16 = 0x0400;
 /// The service pack's name, as CSDVersion holds it.
 pub const CSD_VERSION_TEXT: &[u8] = b"Service Pack 4";
 /// VER_PLATFORM_WIN32_NT.
 const PLATFORM_WIN32_NT: u32 = 2;
 
-/// A fresh PEB's nonzero words, as (offset, value), for the PEB at `peb`: the image's base, the
-/// process parameters, the heap list's room (its array, empty, and its size: ntdll's
-/// LdrInitializeThunk makes the process heap, the list's first entry), the system's version
-/// (GetVersion's: 5.0, build 2195, service pack 4, NT), the image's subsystem and its version, and
-/// the service pack's name (its text on the PEB's page, [`map_peb`]'s). The loader's module lists,
-/// the PEB lock, the loader lock and the TLS bitmaps' headers are ntdll's to make (their fields
-/// stay null until its process initialization).
-pub fn peb_words(peb: u32, init: &PebInit) -> [(u32, u32); 13] {
-    use peb_offset::*;
-    [
-        (IMAGE_BASE_ADDRESS, init.image_base),
-        (PROCESS_PARAMETERS, init.parameters),
-        (MAXIMUM_NUMBER_OF_HEAPS, HEAPS),
-        (PROCESS_HEAPS, peb + PROCESS_HEAPS_ARRAY),
-        (OS_MAJOR_VERSION, VERSION & 0xFF),
-        (OS_MINOR_VERSION, (VERSION >> 8) & 0xFF),
-        (
-            OS_BUILD_NUMBER,
-            (VERSION >> 16 & 0x7FFF) | OS_CSD_VERSION << 16,
-        ),
-        (OS_PLATFORM_ID, PLATFORM_WIN32_NT),
-        (IMAGE_SUBSYSTEM, u32::from(init.subsystem)),
-        (
-            IMAGE_SUBSYSTEM_MAJOR_VERSION,
-            u32::from(init.subsystem_version.0),
-        ),
-        (
-            IMAGE_SUBSYSTEM_MINOR_VERSION,
-            u32::from(init.subsystem_version.1),
-        ),
-        (CSD_VERSION, csd_version_lengths()),
-        (CSD_VERSION + 4, peb + CSD_VERSION_BUFFER),
-    ]
-}
+/// The heap-handle array ProcessHeaps points at: right past Windows 2000's PEB proper (0x1E8
+/// bytes), on its page, as NT's PEB creation places it.
+pub const PROCESS_HEAPS_ARRAY: u32 = size_of::<Peb<u32>>() as u32;
+/// How many heaps the array holds: as many as ntdll's heap list keeps.
+pub const HEAPS: u32 = rtl::heap::HEAPS;
+/// The service pack's name CSDVersion points at, UTF-16: past the PEB proper and the heap array on
+/// its page, so every process has it from its creation (a process another process created gets its
+/// parameters from its creator, later).
+pub const CSD_VERSION_BUFFER: u32 = 0xA00;
+// Past the PEB proper, the kernel keeps only the heap-handle array and the service pack's name.
+// The PEB's lock, loader lock and TLS bitmap fields point into ntdll's own data, and the system
+// DLLs keep the rest of their per-process state in their own data sections, as on Windows 2000.
 
-/// CSDVersion's Length and MaximumLength words, as one dword: the name's bytes, and its bytes with
-/// the terminator.
-fn csd_version_lengths() -> u32 {
-    let length = 2 * CSD_VERSION_TEXT.len() as u32;
-    length | (length + 2) << 16
+/// A fresh PEB, for the PEB at `peb`: the image's base, the process parameters, the heap list's
+/// room (its array, empty, and its size: ntdll's LdrInitializeThunk makes the process heap, the
+/// list's first entry), the system's version (GetVersion's: 5.0, build 2195, service pack 4, NT),
+/// the image's subsystem and its version, and the service pack's name (its text on the PEB's page,
+/// [`map_peb`]'s). The loader's module lists, the process heap, the PEB lock, the loader lock and
+/// the TLS bitmaps' headers are ntdll's to make (their fields stay null until its process
+/// initialization), and every TLS index is free.
+pub fn fresh_peb(peb: u32, init: &PebInit) -> Peb<u32> {
+    let length = 2 * CSD_VERSION_TEXT.len() as u16;
+    Peb {
+        image_base_address: init.image_base,
+        process_parameters: init.parameters,
+        maximum_number_of_heaps: HEAPS,
+        process_heaps: peb + PROCESS_HEAPS_ARRAY,
+        os_major_version: VERSION & 0xFF,
+        os_minor_version: (VERSION >> 8) & 0xFF,
+        os_build_number: (VERSION >> 16 & 0x7FFF) as u16,
+        os_csd_version: OS_CSD_VERSION,
+        os_platform_id: PLATFORM_WIN32_NT,
+        image_subsystem: u32::from(init.subsystem),
+        image_subsystem_major_version: u32::from(init.subsystem_version.0),
+        image_subsystem_minor_version: u32::from(init.subsystem_version.1),
+        csd_version: UnicodeString {
+            length,
+            maximum_length: length + 2,
+            buffer: peb + CSD_VERSION_BUFFER,
+        },
+        ..Peb::default()
+    }
 }
 
 /// Map a thread's TEB page at `init.teb` into `space`: one zeroed frame carrying the fresh TEB's
-/// words.
+/// fields.
 #[cfg(target_arch = "x86")]
 pub fn map_teb(space: &mut crate::mem::vm::AddressSpace, init: &TebInit) {
     use crate::mem::{paging, vm};
     let frame = vm::map_zeroed(space, init.teb, vm::PAGE_READWRITE);
-    for (offset, value) in teb_words(init) {
-        paging::write_frame(frame, offset as usize, &value.to_le_bytes());
-    }
+    write_fresh_teb(init, |offset, bytes| {
+        paging::write_frame(frame, offset as usize, bytes)
+    });
 }
 
 /// Map the process's PEB page at [`crate::user::PEB_PAGE`] into `space`, recording `init`, the
@@ -229,151 +187,54 @@ pub fn map_peb(space: &mut crate::mem::vm::AddressSpace, init: &PebInit) {
     use crate::mem::{paging, vm};
     let peb = crate::user::PEB_PAGE;
     let frame = vm::map_zeroed(space, peb, vm::PAGE_READWRITE);
-    for (offset, value) in peb_words(peb, init) {
-        paging::write_frame(frame, offset as usize, &value.to_le_bytes());
-    }
+    paging::write_frame(frame, 0, fresh_peb(peb, init).as_bytes());
     let mut name = [0u8; 2 * CSD_VERSION_TEXT.len()];
     let length = crate::user::params::widen(CSD_VERSION_TEXT, &mut name);
-    paging::write_frame(
-        frame,
-        peb_offset::CSD_VERSION_BUFFER as usize,
-        &name[..length],
-    );
+    paging::write_frame(frame, CSD_VERSION_BUFFER as usize, &name[..length]);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// The offsets user code depends on, as Windows 2000 lays them out.
-    #[test]
-    fn offsets_are_the_nt_layout() {
-        assert_eq!(teb_offset::EXCEPTION_LIST, 0x00);
-        assert_eq!(teb_offset::STACK_BASE, 0x04);
-        assert_eq!(teb_offset::STACK_LIMIT, 0x08);
-        assert_eq!(teb_offset::SELF, 0x18);
-        assert_eq!(teb_offset::PROCESS_ID, 0x20);
-        assert_eq!(teb_offset::THREAD_ID, 0x24);
-        assert_eq!(teb_offset::PEB, 0x30);
-        assert_eq!(teb_offset::LAST_ERROR, 0x34);
-        assert_eq!(teb_offset::CURRENT_LOCALE, 0xC4);
-        assert_eq!(teb_offset::DEALLOCATION_STACK, 0xE0C);
-        assert_eq!(peb_offset::IMAGE_BASE_ADDRESS, 0x08);
-        assert_eq!(peb_offset::PROCESS_PARAMETERS, 0x10);
-        assert_eq!(peb_offset::PROCESS_HEAP, 0x18);
-        assert_eq!(peb_offset::FAST_PEB_LOCK, 0x1C);
-        assert_eq!(peb_offset::NUMBER_OF_HEAPS, 0x88);
-        assert_eq!(peb_offset::MAXIMUM_NUMBER_OF_HEAPS, 0x8C);
-        assert_eq!(peb_offset::PROCESS_HEAPS, 0x90);
-        assert_eq!(peb_offset::HEAPS, rtl::heap::HEAPS);
-        assert_eq!(
-            peb_offset::PROCESS_HEAPS_ARRAY + 4 * peb_offset::HEAPS,
-            0x228
-        );
-        assert_eq!(peb_offset::TLS_BITMAP, 0x40);
-        assert_eq!(peb_offset::TLS_BITMAP_BITS, 0x44);
-        assert_eq!(peb_offset::TLS_EXPANSION_BITMAP, 0x150);
-        assert_eq!(peb_offset::TLS_EXPANSION_BITMAP_BITS, 0x154);
-        assert_eq!(teb_offset::TLS_SLOTS, 0xE10);
-        assert_eq!(teb_offset::TLS_EXPANSION_SLOTS, 0xF94);
+    /// The fresh TEB as user code reads it: the fields written into a zeroed TEB, read back
+    /// through its layout.
+    fn fresh_teb(init: &TebInit) -> Teb<u32> {
+        let mut bytes = vec![0u8; size_of::<Teb<u32>>()];
+        write_fresh_teb(init, |offset, value| {
+            bytes[offset as usize..][..value.len()].copy_from_slice(value)
+        });
+        Teb::from_bytes(&bytes).unwrap()
     }
 
-    /// The offsets agree with the layouts the user-mode side reads them with (`rtl::peb`).
+    /// The fields user code depends on, at Windows 2000's offsets.
     #[test]
-    fn offsets_are_the_user_layouts() {
-        use core::mem::{offset_of, size_of};
-
-        use rtl::peb::{Peb, Teb};
-        let at = |offset: usize| offset as u32;
+    fn fields_are_the_nt_layout() {
+        assert_eq!(teb_field!(exception_list).offset(), 0x00);
+        assert_eq!(teb_field!(stack_base).offset(), 0x04);
+        assert_eq!(teb_field!(stack_limit).offset(), 0x08);
+        assert_eq!(teb_field!(self_).offset(), 0x18);
+        assert_eq!(teb_field!(unique_process).offset(), 0x20);
+        assert_eq!(teb_field!(unique_thread).offset(), 0x24);
+        assert_eq!(teb_field!(process_environment_block).offset(), 0x30);
+        assert_eq!(teb_field!(last_error_value).offset(), 0x34);
+        assert_eq!(teb_field!(current_locale).offset(), 0xC4);
+        assert_eq!(teb_field!(deallocation_stack).offset(), 0xE0C);
+        assert_eq!(teb_field!(tls_slots).offset(), 0xE10);
+        assert_eq!(teb_field!(tls_expansion_slots).offset(), 0xF94);
         assert_eq!(
-            teb_offset::EXCEPTION_LIST,
-            at(offset_of!(Teb<u32>, exception_list))
+            teb_field!(stack_base).of(0x7FFD_E000).addr().raw(),
+            0x7FFD_E004
         );
-        assert_eq!(teb_offset::STACK_BASE, at(offset_of!(Teb<u32>, stack_base)));
-        assert_eq!(
-            teb_offset::STACK_LIMIT,
-            at(offset_of!(Teb<u32>, stack_limit))
-        );
-        assert_eq!(teb_offset::SELF, at(offset_of!(Teb<u32>, self_)));
-        assert_eq!(
-            teb_offset::PROCESS_ID,
-            at(offset_of!(Teb<u32>, unique_process))
-        );
-        assert_eq!(
-            teb_offset::THREAD_ID,
-            at(offset_of!(Teb<u32>, unique_thread))
-        );
-        assert_eq!(
-            teb_offset::PEB,
-            at(offset_of!(Teb<u32>, process_environment_block))
-        );
-        assert_eq!(
-            teb_offset::LAST_ERROR,
-            at(offset_of!(Teb<u32>, last_error_value))
-        );
-        assert_eq!(
-            teb_offset::CURRENT_LOCALE,
-            at(offset_of!(Teb<u32>, current_locale))
-        );
-        assert_eq!(
-            teb_offset::DEALLOCATION_STACK,
-            at(offset_of!(Teb<u32>, deallocation_stack))
-        );
-        assert_eq!(teb_offset::TLS_SLOTS, at(offset_of!(Teb<u32>, tls_slots)));
-        assert_eq!(
-            teb_offset::TLS_EXPANSION_SLOTS,
-            at(offset_of!(Teb<u32>, tls_expansion_slots))
-        );
-        use peb_offset::*;
-        assert_eq!(
-            IMAGE_BASE_ADDRESS,
-            at(offset_of!(Peb<u32>, image_base_address))
-        );
-        assert_eq!(LDR, at(offset_of!(Peb<u32>, ldr)));
-        assert_eq!(
-            PROCESS_PARAMETERS,
-            at(offset_of!(Peb<u32>, process_parameters))
-        );
-        assert_eq!(PROCESS_HEAP, at(offset_of!(Peb<u32>, process_heap)));
-        assert_eq!(FAST_PEB_LOCK, at(offset_of!(Peb<u32>, fast_peb_lock)));
-        assert_eq!(NUMBER_OF_HEAPS, at(offset_of!(Peb<u32>, number_of_heaps)));
-        assert_eq!(
-            MAXIMUM_NUMBER_OF_HEAPS,
-            at(offset_of!(Peb<u32>, maximum_number_of_heaps))
-        );
-        assert_eq!(PROCESS_HEAPS, at(offset_of!(Peb<u32>, process_heaps)));
-        assert_eq!(PROCESS_HEAPS_ARRAY, at(size_of::<Peb<u32>>()));
-        assert_eq!(TLS_BITMAP, at(offset_of!(Peb<u32>, tls_bitmap)));
-        assert_eq!(TLS_BITMAP_BITS, at(offset_of!(Peb<u32>, tls_bitmap_bits)));
-        assert_eq!(
-            TLS_EXPANSION_BITMAP,
-            at(offset_of!(Peb<u32>, tls_expansion_bitmap))
-        );
-        assert_eq!(
-            TLS_EXPANSION_BITMAP_BITS,
-            at(offset_of!(Peb<u32>, tls_expansion_bitmap_bits))
-        );
-        assert_eq!(LOADER_LOCK, at(offset_of!(Peb<u32>, loader_lock)));
-        assert_eq!(OS_MAJOR_VERSION, at(offset_of!(Peb<u32>, os_major_version)));
-        assert_eq!(OS_MINOR_VERSION, at(offset_of!(Peb<u32>, os_minor_version)));
-        assert_eq!(OS_BUILD_NUMBER, at(offset_of!(Peb<u32>, os_build_number)));
-        assert_eq!(OS_PLATFORM_ID, at(offset_of!(Peb<u32>, os_platform_id)));
-        assert_eq!(IMAGE_SUBSYSTEM, at(offset_of!(Peb<u32>, image_subsystem)));
-        assert_eq!(
-            IMAGE_SUBSYSTEM_MAJOR_VERSION,
-            at(offset_of!(Peb<u32>, image_subsystem_major_version))
-        );
-        assert_eq!(
-            IMAGE_SUBSYSTEM_MINOR_VERSION,
-            at(offset_of!(Peb<u32>, image_subsystem_minor_version))
-        );
-        assert_eq!(CSD_VERSION, at(offset_of!(Peb<u32>, csd_version)));
+        assert_eq!(PROCESS_HEAPS_ARRAY, 0x1E8);
+        assert_eq!(HEAPS, 16);
+        assert_eq!(PROCESS_HEAPS_ARRAY + 4 * HEAPS, 0x228);
     }
 
     /// A fresh TEB: the chain terminated, the self pointer and the ids in place, the locale the
-    /// default, the last error left zero (no word written for it).
+    /// default, the last error left zero, and the TLS words zero; nothing past the TEB.
     #[test]
-    fn fresh_teb_words() {
+    fn a_fresh_teb() {
         let init = TebInit {
             teb: 0x7FFD_E000,
             stack_base: 0x0013_0000,
@@ -383,27 +244,40 @@ mod tests {
             thread_id: 12,
             peb: 0x7FFD_F000,
         };
-        let words = teb_words(&init);
-        let value = |offset| words.iter().find(|&&(o, _)| o == offset).map(|&(_, v)| v);
-        assert_eq!(value(teb_offset::EXCEPTION_LIST), Some(END_OF_CHAIN));
-        assert_eq!(value(teb_offset::SELF), Some(0x7FFD_E000));
-        assert_eq!(value(teb_offset::STACK_BASE), Some(0x0013_0000));
-        assert_eq!(value(teb_offset::STACK_LIMIT), Some(0x0012_E000));
-        assert_eq!(value(teb_offset::DEALLOCATION_STACK), Some(0x0003_0000));
-        assert_eq!(value(teb_offset::PROCESS_ID), Some(8));
-        assert_eq!(value(teb_offset::THREAD_ID), Some(12));
-        assert_eq!(value(teb_offset::PEB), Some(0x7FFD_F000));
-        assert_eq!(value(teb_offset::CURRENT_LOCALE), Some(0x0409));
-        assert_eq!(value(teb_offset::LAST_ERROR), None);
-        assert_eq!(
-            value(teb_offset::TLS_EXPANSION_SLOTS),
-            None,
-            "TlsSetValue's to make"
-        );
-        for &(offset, _) in &words {
+        let teb = fresh_teb(&init);
+        assert_eq!(teb.exception_list, END_OF_CHAIN);
+        assert_eq!(teb.self_, 0x7FFD_E000);
+        assert_eq!(teb.stack_base, 0x0013_0000);
+        assert_eq!(teb.stack_limit, 0x0012_E000);
+        assert_eq!(teb.deallocation_stack, 0x0003_0000);
+        assert_eq!(teb.unique_process, 8);
+        assert_eq!(teb.unique_thread, 12);
+        assert_eq!(teb.process_environment_block, 0x7FFD_F000);
+        assert_eq!(teb.current_locale, 0x0409);
+        assert_eq!(teb.last_error_value, 0);
+        assert_eq!(teb.tls_slots, [0; 64]);
+        assert_eq!(teb.tls_expansion_slots, 0, "TlsSetValue's to make");
+        let mut writes = 0;
+        write_fresh_teb(&init, |offset, value| {
             assert_eq!(offset % 4, 0);
-            assert!(offset < 0x1000);
-        }
+            assert!(offset as usize + value.len() <= size_of::<Teb<u32>>());
+            writes += 1;
+        });
+        assert_eq!(writes, 9);
+        // The other fields stay zero.
+        let blank = Teb {
+            exception_list: teb.exception_list,
+            stack_base: teb.stack_base,
+            stack_limit: teb.stack_limit,
+            self_: teb.self_,
+            unique_process: teb.unique_process,
+            unique_thread: teb.unique_thread,
+            process_environment_block: teb.process_environment_block,
+            current_locale: teb.current_locale,
+            deallocation_stack: teb.deallocation_stack,
+            ..Teb::default()
+        };
+        assert_eq!(teb.as_bytes(), blank.as_bytes());
     }
 
     /// A console image linked for subsystem 4.0, as MSVC 6 links one.
@@ -414,40 +288,47 @@ mod tests {
         subsystem_version: (4, 0),
     };
 
+    /// The dword at `offset` of a PEB's bytes.
+    fn word(peb: &Peb<u32>, offset: usize) -> u32 {
+        u32::from_bytes(&peb.as_bytes()[offset..]).unwrap()
+    }
+
     /// A fresh PEB's version fields (SEH-11c): the system's — 5.0, build 2195, service pack 4.0
     /// (OSCSDVersion's major byte high), the NT platform — and the image's subsystem and its
     /// version, from its optional header.
     #[test]
     fn fresh_peb_version_fields() {
-        let words = peb_words(0x7FFD_F000, &CONSOLE_4_0);
-        let value = |offset| words.iter().find(|&&(o, _)| o == offset).map(|&(_, v)| v);
-        assert_eq!(value(0xA4), Some(5), "OSMajorVersion");
-        assert_eq!(value(0xA8), Some(0), "OSMinorVersion");
+        let peb = fresh_peb(0x7FFD_F000, &CONSOLE_4_0);
+        assert_eq!(word(&peb, 0xA4), 5, "OSMajorVersion");
+        assert_eq!(word(&peb, 0xA8), 0, "OSMinorVersion");
         assert_eq!(
-            value(0xAC),
-            Some(2195 | 0x0400 << 16),
+            word(&peb, 0xAC),
+            2195 | 0x0400 << 16,
             "OSBuildNumber, OSCSDVersion"
         );
-        assert_eq!(value(0xB0), Some(2), "OSPlatformId: VER_PLATFORM_WIN32_NT");
-        assert_eq!(value(0xB4), Some(3), "ImageSubsystem: the console");
-        assert_eq!(value(0xB8), Some(4), "ImageSubsystemMajorVersion");
-        assert_eq!(value(0xBC), Some(0), "ImageSubsystemMinorVersion");
+        assert_eq!(word(&peb, 0xB0), 2, "OSPlatformId: VER_PLATFORM_WIN32_NT");
+        assert_eq!(word(&peb, 0xB4), 3, "ImageSubsystem: the console");
+        assert_eq!(word(&peb, 0xB8), 4, "ImageSubsystemMajorVersion");
+        assert_eq!(word(&peb, 0xBC), 0, "ImageSubsystemMinorVersion");
         assert_eq!(
-            value(0x1DC),
-            Some(28 | 30 << 16),
+            word(&peb, 0x1DC),
+            28 | 30 << 16,
             "CSDVersion: \"Service Pack 4\", terminated"
         );
-        assert_eq!(value(0x1E0), Some(0x7FFD_FA00), "past the PEB proper");
+        assert_eq!(word(&peb, 0x1E0), 0x7FFD_FA00, "past the PEB proper");
         // A process another process created: no parameters yet, the name all the same.
-        let bare = peb_words(
+        let bare = fresh_peb(
             0x7FFD_F000,
             &PebInit {
                 parameters: 0,
                 ..CONSOLE_4_0
             },
         );
-        assert!(bare.contains(&(peb_offset::PROCESS_PARAMETERS, 0)));
-        assert!(bare.contains(&(0x1DC, 28 | 30 << 16)) && bare.contains(&(0x1E0, 0x7FFD_FA00)));
+        assert_eq!(bare.process_parameters, 0);
+        assert_eq!(
+            (word(&bare, 0x1DC), word(&bare, 0x1E0)),
+            (28 | 30 << 16, 0x7FFD_FA00)
+        );
     }
 
     /// A fresh PEB: the image and the parameters; no module lists and no process heap yet
@@ -456,36 +337,33 @@ mod tests {
     /// LdrInitializeThunk makes them, in its own data), every TLS index free. Nothing past the PEB
     /// proper but the service pack's name ([`map_peb`]'s).
     #[test]
-    fn fresh_peb_words() {
-        let peb = 0x7FFD_F000;
-        let words = peb_words(peb, &CONSOLE_4_0);
-        let value = |offset| words.iter().find(|&&(o, _)| o == offset).map(|&(_, v)| v);
-        assert_eq!(value(peb_offset::IMAGE_BASE_ADDRESS), Some(0x0040_0000));
-        assert_eq!(value(peb_offset::PROCESS_PARAMETERS), Some(0x0002_0000));
-        assert_eq!(value(peb_offset::LDR), None, "ntdll's to make");
-        assert_eq!(value(peb_offset::PROCESS_HEAP), None);
-        assert_eq!(value(peb_offset::NUMBER_OF_HEAPS), None, "no heap yet");
-        assert_eq!(value(peb_offset::MAXIMUM_NUMBER_OF_HEAPS), Some(16));
-        assert_eq!(value(peb_offset::PROCESS_HEAPS), Some(peb + 0x1E8));
-        assert_eq!(value(peb_offset::TLS_BITMAP), None, "ntdll's to make");
-        assert_eq!(
-            value(peb_offset::TLS_EXPANSION_BITMAP),
-            None,
-            "ntdll's to make"
-        );
-        assert_eq!(value(peb_offset::TLS_BITMAP_BITS), None, "every index free");
-        assert_eq!(value(peb_offset::FAST_PEB_LOCK), None, "ntdll's to make");
-        assert_eq!(value(peb_offset::LOADER_LOCK), None, "ntdll's to make");
-        for &(offset, _) in &words {
-            assert_eq!(offset % 4, 0);
-            assert!(offset < 0x1E8, "{offset:#x}: inside the PEB proper");
-        }
+    fn a_fresh_peb() {
+        let at = 0x7FFD_F000;
+        let peb = fresh_peb(at, &CONSOLE_4_0);
+        assert_eq!(word(&peb, 0x08), 0x0040_0000, "ImageBaseAddress");
+        assert_eq!(word(&peb, 0x10), 0x0002_0000, "ProcessParameters");
+        assert_eq!(peb.ldr, 0, "ntdll's to make");
+        assert_eq!(peb.process_heap, 0);
+        assert_eq!(peb.number_of_heaps, 0, "no heap yet");
+        assert_eq!(word(&peb, 0x8C), 16, "MaximumNumberOfHeaps");
+        assert_eq!(word(&peb, 0x90), at + 0x1E8, "ProcessHeaps");
+        assert_eq!(peb.tls_bitmap, 0, "ntdll's to make");
+        assert_eq!(peb.tls_expansion_bitmap, 0, "ntdll's to make");
+        assert_eq!(peb.tls_bitmap_bits, [0; 2], "every index free");
+        assert_eq!(peb.fast_peb_lock, 0, "ntdll's to make");
+        assert_eq!(peb.loader_lock, 0, "ntdll's to make");
+        // Nothing else: eleven nonzero dwords, the four above, the version's three, the
+        // subsystem's two and the name's two (OSMinorVersion and the subsystem's minor version are
+        // zero).
+        let nonzero = peb
+            .as_bytes()
+            .chunks_exact(4)
+            .filter(|word| word.iter().any(|&byte| byte != 0))
+            .count();
+        assert_eq!(nonzero, 11);
         // The service pack's name sits past the heap-handle array, and fits the page.
-        assert!(
-            peb_offset::CSD_VERSION_BUFFER
-                >= peb_offset::PROCESS_HEAPS_ARRAY + 4 * peb_offset::HEAPS
-        );
-        assert!(peb_offset::CSD_VERSION_BUFFER as usize + 2 * CSD_VERSION_TEXT.len() + 2 <= 0x1000);
+        assert!(CSD_VERSION_BUFFER >= PROCESS_HEAPS_ARRAY + 4 * HEAPS);
+        assert!(CSD_VERSION_BUFFER as usize + 2 * CSD_VERSION_TEXT.len() + 2 <= 0x1000);
     }
 
     /// The version dword splits into the CRT's globals (its own shift/mask recipe, restated

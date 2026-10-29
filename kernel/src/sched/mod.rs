@@ -25,9 +25,8 @@
 //! One processor, no locking: the dispatcher is a dispatch-level cell ([`DISPATCHER`]), so every
 //! method runs serialized at the dispatch level, with the dispatch token lent.
 
-// Parts of the state machines stay unwired until their consumers land (the forced-resume route has
-// none: a process-ending termination takes a suspended thread off its wait directly); the queues,
-// the delivery, the suspend consumer, and the re-wait are live.
+// Parts of the state machines stay unwired until their consumers land; the queues, the delivery,
+// the suspend and exit consumers, the forced-resume route, and the re-wait are live.
 #![allow(dead_code)]
 
 #[cfg(target_arch = "x86")]

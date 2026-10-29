@@ -1,4 +1,4 @@
-//! Boot entry: Multiboot 1 header and the `_start` stub.
+//! Boot entry: Multiboot 1 header and the `_start` stub, and the boot's phases `kmain` runs.
 //!
 //! Any Multiboot 1 loader can start this kernel: QEMU's `-kernel`, Limine (`protocol: multiboot1`)
 //! and GRUB. The loader jumps to `_start` in 32-bit protected mode with paging off, EAX = Multiboot
@@ -10,6 +10,145 @@ pub const MULTIBOOT_BOOTLOADER_MAGIC: u32 = 0x2BAD_B002;
 
 /// The kernel command line and the user command line it carries.
 pub mod cmdline;
+
+/// The diagnostic boots the smoke and fault-test features select, each run at its place in the
+/// boot sequence.
+pub mod diagnostics;
+
+// --- The boot's phases ------------------------------------------------------
+//
+// `kmain` runs these in order, as Windows 2000's initialization runs its Phase 0 (the processor,
+// memory, the executive's tables) and its Phase 1 (interrupts, the scheduler, the drivers) before
+// its first process.
+
+/// The processor: the POST code, the serial line, the CPU tables (so faults print diagnostics on
+/// COM1 instead of triple-faulting) and the floating-point unit.
+#[cfg(target_arch = "x86")]
+pub fn early() {
+    // Signal that we've started by writing to port 0x80 (POST code port)
+    // SAFETY: ring 0; port 0x80 is the POST diagnostic port, which no device claims, so the write
+    // has no effect beyond the code a debug card would display.
+    unsafe {
+        core::arch::asm!("out 0x80, al", in("al") 0xFEu8, options(nomem, nostack, preserves_flags));
+    }
+
+    // Initialize serial port first (for debugging)
+    crate::hw::serial::init();
+
+    // SAFETY: boot CPU, ring 0, interrupts disabled, before any code that might fault.
+    unsafe { crate::cpu::init() };
+    crate::serial_println!("F2K: GDT and IDT initialized");
+    // Every thread's floating-point state is saved with `fxsave`: enabled before the first switch.
+    // SAFETY: boot CPU, ring 0, before any thread exists.
+    unsafe { crate::cpu::fpu::init() };
+}
+
+/// The loader's hand-off and physical memory: the Multiboot magic checked (a kernel some other way
+/// started halts), the boot banner, the kernel command line captured, every usable frame handed to
+/// the frame database, and paging moved onto the kernel's own tables.
+#[cfg(target_arch = "x86")]
+pub fn memory(magic: u32, multiboot_info: u32) {
+    if magic != MULTIBOOT_BOOTLOADER_MAGIC {
+        crate::serial_println!(
+            "F2K: not started by a Multiboot loader (EAX = {:#010x})",
+            magic
+        );
+        crate::halt();
+    }
+
+    crate::serial_println!("F2K Booted Successfully");
+    crate::serial_println!("Fenêtre 2000 - Windows 2000 compatible OS in Rust");
+    crate::serial_println!("Phase 1: Foundation complete");
+    crate::serial_println!("Multiboot info at {:#010x}", multiboot_info);
+    // The command line first: it lives in loader memory the frame allocator reclaims next.
+    cmdline::capture(multiboot_info);
+    if let Some(line) = cmdline::user_command_line(cmdline::kernel_command_line()) {
+        crate::serial_println!(
+            "F2K: command line: {}",
+            core::str::from_utf8(line).unwrap_or("(not ASCII)")
+        );
+    }
+
+    // Hand every usable frame (minus the kernel image) to the frame allocator.
+    crate::mem::bootmem::boot_init(multiboot_info);
+    crate::mem::bootmem::with_frame_db(|db| {
+        crate::serial_println!(
+            "F2K: physical memory: {} free frames ({} MiB)",
+            db.available(),
+            db.available() / 256
+        );
+        crate::serial_println!(
+            "F2K: frame database audit: {}",
+            if db.audit().is_ok() { "ok" } else { "FAILED" }
+        );
+    });
+
+    // The memory map is consumed: remove the low identity window. Nothing below KERNEL_BASE is
+    // mapped from here on.
+    crate::mem::paging::teardown_low_identity();
+    crate::serial_println!(
+        "F2K: paging on: kernel at {:#010x}, low identity removed",
+        0x8010_1000u32
+    );
+    // Install the runtime table access (self-map, scratch table).
+    crate::mem::paging::init_table_access();
+    // The kernel stack region's tables, shared by every address space from the first on.
+    crate::mem::paging::init_kernel_stack_tables();
+}
+
+/// The executive's tables: the console and the registry.
+#[cfg(target_arch = "x86")]
+pub fn executive() {
+    // The console's text screen: the fresh console's blank screen buffer over whatever the firmware
+    // and loader left on it (silently: the serial line carries the boot's report).
+    crate::csr::init();
+
+    // The registry: its arena, and the keys Windows 2000 has from its boot on.
+    crate::cm::init();
+}
+
+/// Interrupts and the scheduler: the interrupt subsystem, the idle thread, then the interactive
+/// window station.
+#[cfg(target_arch = "x86")]
+pub fn interrupts() {
+    // The interrupt subsystem: the remapped controller behind the claim seam, the interval timer at
+    // the captured platform rate, the interval clock connected to its vector — and interrupts fly
+    // from here on (the idle path and ring 3 both run with them enabled; the gates mask on entry).
+    // SAFETY: boot CPU, ring 0, interrupts disabled, sole access to the controllers; the IDT gates
+    // (exception, syscall, hardware vectors) are installed.
+    unsafe { crate::interrupt::init() };
+
+    // The scheduler's resting state: the idle thread (nothing is schedulable yet; its loop is the
+    // kernel's resting state once no thread remains). Its install raises to the dispatcher's
+    // level, which enables interrupts, so it waits for the interrupt subsystem: an interrupt taken
+    // before the controllers are remapped would land on an exception's vector.
+    crate::sched::idle::boot();
+
+    // The interactive window station, WinSta0, and its Default desktop: win32k's objects, which
+    // every process connects to at its first win32k service. Made under the object directory's
+    // lock, whose raise enables interrupts, so it waits for the interrupt subsystem too.
+    crate::win32k::winsta::init();
+}
+
+/// The devices: the IDE disk and the keyboard (both need the interrupt core), the block devices,
+/// and the boot volume.
+#[cfg(target_arch = "x86")]
+pub fn devices() {
+    // The IDE disk: detect the primary master, connect its interrupt, and IDENTIFY it. It needs
+    // the interrupt core (its reads complete through IRQ 14); the first user process comes after.
+    crate::hw::ide::disk::init();
+
+    // The PS/2 keyboard: reset it, connect IRQ 1, and feed its bytes to the console's input
+    // buffer. Its bring-up waits read the tick, so it comes after the interrupt core too.
+    crate::hw::kbd::init();
+
+    // The block devices: the disk, if there is one, and a view per primary partition on it.
+    crate::block::registry::boot_scan(crate::hw::ide::disk::block_device());
+
+    // The boot volume: the first registered partition, mounted as FAT32. Silent — a boot without
+    // a volume is normal, and a refused volume is left unmounted.
+    crate::fs::fat32::volume::mount_boot_volume();
+}
 
 #[cfg(target_arch = "x86")]
 core::arch::global_asm!(

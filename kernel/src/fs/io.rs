@@ -1,7 +1,7 @@
 //! What the file system services share over the open files: the stored attributes and times as the
 //! services report them, a handle's file object, the synchronous-I/O lock, opening a file (its
 //! record counted, an object made, a handle published), the cleanup and close the object manager
-//! leaves to the process, and reads through a file's record — each inside the boot volume's locked
+//! leaves its caller, and reads through a file's record — each inside the boot volume's locked
 //! section, so every open sees the one current copy of the file (see [`super::file`]).
 //!
 //! The volume is taken only once the call's user arguments are copied in: a fault in a user copy
@@ -101,11 +101,8 @@ mod target {
         if crate::nt::object::is_console_handle(handle) {
             return None;
         }
-        let reference = crate::ob::reference_by_handle(handle, Some(crate::ob::ObjectType::File))?;
-        let object = crate::ob::directory()
-            .file(reference.id())
-            .expect("a referenced file object lives");
-        Some(Referenced::new(reference, object))
+        crate::ob::reference_by_handle(handle, Some(crate::ob::ObjectType::File))
+            .map(crate::ob::file_object)
     }
 
     /// The file an object opens, as its record holds it now.
@@ -123,13 +120,13 @@ mod target {
         with_records(|records| records.get_mut(record).file = file);
     }
 
-    /// Run `body` holding the object's synchronous-I/O lock: one call at a time moves its position.
-    /// The lock is taken before the object is borrowed (another thread may hold the object under
-    /// the lock, blocked inside its own call), and the borrow ends before it is released. The call
-    /// is a critical region: a termination requested meanwhile waits for it to finish, holding
-    /// nothing.
+    /// Run `body` holding the object's synchronous-I/O lock: one call at a time moves its position
+    /// or its directory search — the one way to the object mutably (see [`Referenced`]). The lock
+    /// is taken before the object is borrowed (another thread may hold the object under the lock,
+    /// blocked inside its own call), and the borrow ends before it is released. The call is a
+    /// critical region: a termination requested meanwhile waits for it to finish, holding nothing.
     pub fn serialized<R>(
-        object: &mut Referenced<FileObject>,
+        object: &Referenced<FileObject>,
         body: impl FnOnce(&mut FileObject) -> R,
     ) -> R {
         crate::process::threads::critical_region(|| {
@@ -152,8 +149,10 @@ mod target {
                     stamp,
                 )
             });
-            // The lock is this call's: the object is borrowed from here to the release.
-            let object: &mut FileObject = object;
+            // SAFETY: the lock is this call's: the record is live while `object` holds its
+            // reference, and every other way to it mutably waits for the lock, so this is the only
+            // mutable reference until the release below (see `Referenced`'s notes).
+            let object: &mut FileObject = unsafe { &mut *record };
             debug_assert_eq!(object.lock.waitable.id(), lock);
             let result = body(object);
             // The borrow has ended: the release reaches the lock's header by its name only.
@@ -180,25 +179,29 @@ mod target {
     /// when the records or the objects are.
     pub fn open(file: File, open: &Open) -> Result<u32, NtStatus> {
         let process = crate::user::args::calling_process();
-        if process.handles().is_full() {
+        if process.handles_full() {
             return Err(STATUS_INSUFFICIENT_RESOURCES);
         }
         let access = crate::fs::file::rights::share_access(open.granted);
         let record =
             with_records(|records| records.open(file, access, open.share)).map_err(open_status)?;
-        let Some(id) = crate::ob::directory().create_file(record, access, open.granted, open.share)
-        else {
+        let made = crate::ob::locked(|directory| {
+            let id = directory.create_file(record, access, open.granted, open.share)?;
+            let object = directory.file(id).expect("just made");
+            object.synchronous = open.synchronous;
+            object.delete_on_close = open.delete_on_close;
+            Some(id)
+        });
+        let Some(id) = made else {
             with_records(|records| {
                 let _ = records.cleanup(record, access, open.share, false);
                 records.close(record);
             });
             return Err(STATUS_TOO_MANY_OPENED_FILES);
         };
-        let object = crate::ob::directory().file(id).expect("just made");
-        object.synchronous = open.synchronous;
-        object.delete_on_close = open.delete_on_close;
         // The table had room: the publication cannot fail.
-        crate::ob::publish(process, id, open.granted, open.inherit, None)
+        crate::ob::publish(process, id, open.granted, open.inherit)
+            .map(core::num::NonZeroU32::get)
             .ok_or(STATUS_INSUFFICIENT_RESOURCES)
     }
 

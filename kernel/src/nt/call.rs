@@ -44,9 +44,9 @@ impl<'f> NtCall<'f> {
         self.passive
     }
 
-    /// The calling process, borrowed for as long as the handler holds it.
+    /// The calling process.
     #[cfg(target_arch = "x86")]
-    pub fn process(&mut self) -> &mut crate::process::Process {
+    pub fn process(&mut self) -> &'static crate::process::Process {
         calling_process()
     }
 
@@ -69,8 +69,7 @@ mod tests {
 
     #[test]
     fn the_status_is_the_answer() {
-        // SAFETY: a trap frame is plain dwords; all zeros is a valid one.
-        let mut frame: TrapFrame = unsafe { core::mem::zeroed() };
+        let mut frame = TrapFrame::default();
         let mut passive = crate::level::passive_for_test();
         NtCall::new(&mut frame, &mut passive).finish(Ok(STATUS_TIMEOUT));
         assert_eq!(frame.eax, 0x102);

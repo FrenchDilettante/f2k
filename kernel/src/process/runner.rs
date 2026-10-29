@@ -107,8 +107,9 @@ pub fn run() -> ! {
 /// Who `process`'s end reports as, by its own leg: a suite's leg by its index and name, the lone
 /// program of a boot of one (or of a boot the runner does not drive), or a child by its process id
 /// and name.
-pub fn identity(process: &Process) -> Identity<'_> {
-    exit::identity(process.leg(), leg_count(), process.id(), process.name())
+/// `name` is the process's name, as the caller copied it out.
+pub fn identity<'a>(process: &Process, name: &'a super::ProcessName) -> Identity<'a> {
+    exit::identity(process.leg(), leg_count(), process.id(), name.as_str())
 }
 
 /// The reap step's landing point, on the idle thread after a process's teardown: audit the frame
@@ -195,13 +196,13 @@ fn start_leg(index: u32) {
 /// does not load is.
 fn start_every_leg(legs: u32) {
     use crate::process::MAX_PROCESSES;
-    let mut loaded: [Option<&'static mut Process>; MAX_PROCESSES] = [const { None }; MAX_PROCESSES];
+    let mut loaded: [Option<&'static Process>; MAX_PROCESSES] = [None; MAX_PROCESSES];
     for index in 1..=legs {
         let process = load_leg(index);
         // Every loaded leg holds a process record, so the pool's capacity bounds the index.
         loaded[index as usize - 1] = Some(process);
     }
-    for process in loaded.iter_mut().flatten() {
+    for process in loaded.iter().flatten() {
         crate::process::threads::ready_main_thread(process);
     }
 }
@@ -211,7 +212,7 @@ fn start_every_leg(legs: u32) {
 /// thread is not readied: nothing runs until the caller readies it, so another leg could be loaded
 /// first. A leg that does not load — its file unread, its image rejected, its process refused — is
 /// reported on COM1 and halts the boot.
-fn load_leg(index: u32) -> &'static mut crate::process::Process {
+fn load_leg(index: u32) -> &'static crate::process::Process {
     with_suite(|suite| suite.started(index));
     let command_line = programs()
         .nth(index as usize - 1)

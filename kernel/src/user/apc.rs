@@ -13,7 +13,7 @@
 //! APCs before its first instruction, as the platform's thread startup does: after the loader's
 //! initialization ([`deliver_initialization`]), whose NtContinue tests the alert.
 
-use super::seh::CONTEXT_SIZE;
+use super::seh::Context;
 use super::TrapFrame;
 use crate::sched::apc::Apc;
 use crate::sched::thread::ThreadId;
@@ -35,8 +35,23 @@ pub fn user_normal_routine(
 
 /// The call frame below the saved context: the routine, its context, and the two system arguments.
 pub const CALL_WORDS: usize = 4;
-/// The delivery's image: the call frame, then the CONTEXT.
-pub const DELIVERY_BYTES: usize = CALL_WORDS * 4 + CONTEXT_SIZE;
+
+/// What a delivery writes on the user stack: the call frame, then the CONTEXT that resumes the
+/// interrupted code (KiUserApcDispatcher finds it right past the four words).
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct Delivery {
+    pub call: [u32; CALL_WORDS],
+    pub context: Context,
+}
+
+// SAFETY: four u32s and a CONTEXT (plain data, a whole number of dwords), without padding.
+unsafe impl rtl::pod::Pod for Delivery {}
+
+const _: () = {
+    assert!(core::mem::offset_of!(Delivery, context) == 4 * CALL_WORDS);
+    assert!(core::mem::size_of::<Delivery>() == 4 * CALL_WORDS + super::seh::CONTEXT_SIZE);
+};
 
 /// Bind `apc` as a user APC on `thread`: its delivery calls `routine` (a user-mode address) with
 /// `context` and the two system arguments its queuing captures. `thread` is the target's record:
@@ -68,20 +83,15 @@ pub fn call_frame(apc: &Apc) -> [u32; CALL_WORDS] {
 }
 
 /// The delivery's user-stack image for a call frame over the interrupted `frame`: the new user
-/// stack pointer (below the dword-rounded one, as Windows 2000 places it) and
-/// the bytes to write there (the call frame, then the context, which resumes `frame` as it was).
-pub fn delivery_image(frame: &TrapFrame, call: [u32; CALL_WORDS]) -> (u32, [u8; DELIVERY_BYTES]) {
-    let mut image = [0u8; DELIVERY_BYTES];
-    for (i, word) in call.iter().enumerate() {
-        image[i * 4..i * 4 + 4].copy_from_slice(&word.to_le_bytes());
-    }
-    image[CALL_WORDS * 4..].copy_from_slice(&super::seh::context_image(
-        frame,
-        frame.eip,
-        frame.user_esp,
-    ));
-    let esp = (frame.user_esp & !3) - DELIVERY_BYTES as u32;
-    (esp, image)
+/// stack pointer (below the dword-rounded one, as Windows 2000 places it) and what to write there
+/// (the call frame, then the context, which resumes `frame` as it was).
+pub fn delivery_image(frame: &TrapFrame, call: [u32; CALL_WORDS]) -> (u32, Delivery) {
+    let delivery = Delivery {
+        call,
+        context: super::seh::frame_context(frame, frame.eip, frame.user_esp),
+    };
+    let esp = (frame.user_esp & !3) - core::mem::size_of::<Delivery>() as u32;
+    (esp, delivery)
 }
 
 /// Deliver the head of the running thread's user-APC queue into `frame`, if a delivery is armed:
@@ -107,8 +117,8 @@ pub fn deliver(frame: &mut TrapFrame) {
         return;
     };
 
-    let (esp, bytes) = delivery_image(frame, call);
-    if super::syscall::write_user(esp, &bytes).is_err() {
+    let (esp, delivery) = delivery_image(frame, call);
+    if super::args::UserPtr::at(esp).write(delivery).is_err() {
         crate::process::threads::fault_exit(crate::process::exit::Fault {
             vector: 14,
             status: crate::status::STATUS_ACCESS_VIOLATION.0,
@@ -178,8 +188,8 @@ pub fn deliver_initialization() -> bool {
     let frame = (initial_stack - core::mem::size_of::<TrapFrame>() as u32) as *mut TrapFrame;
     // SAFETY: the planted frame, which the startup stub pops next.
     let frame = unsafe { &mut *frame };
-    let (esp, bytes) = delivery_image(frame, [0; CALL_WORDS]);
-    if super::syscall::write_user(esp, &bytes).is_err() {
+    let (esp, delivery) = delivery_image(frame, [0; CALL_WORDS]);
+    if super::args::UserPtr::at(esp).write(delivery).is_err() {
         crate::process::threads::fault_exit(crate::process::exit::Fault {
             vector: 14,
             status: crate::status::STATUS_ACCESS_VIOLATION.0,
@@ -222,18 +232,22 @@ mod tests {
     fn the_delivery_image_round_trips_the_context() {
         let original = frame();
         let (esp, image) = delivery_image(&original, [0x0040_5000, 7, 0x89AB_CDEF, 0x01C0_8D9A]);
-        assert_eq!(esp, 0x0012_FF00 - 16 - CONTEXT_SIZE as u32);
-        let call: Vec<u32> = (0..CALL_WORDS)
-            .map(|i| super::super::seh::word(&image, i * 4))
+        let context_size = super::super::seh::CONTEXT_SIZE;
+        assert_eq!(esp, 0x0012_FF00 - 16 - context_size as u32);
+        let bytes = rtl::pod::Pod::as_bytes(&image);
+        let call: Vec<u32> = bytes[..16]
+            .chunks_exact(4)
+            .map(|word| u32::from_le_bytes(word.try_into().unwrap()))
             .collect();
         assert_eq!(call, [0x0040_5000, 7, 0x89AB_CDEF, 0x01C0_8D9A]);
+        assert_eq!(bytes.len(), 16 + context_size);
+        assert_eq!(&bytes[16..], rtl::pod::Pod::as_bytes(&image.context));
 
         let mut redirected = frame();
         redirected.eip = 0xDEAD;
         redirected.user_esp = esp;
         redirected.eax = 0;
-        let context: &[u8; CONTEXT_SIZE] = image[CALL_WORDS * 4..].try_into().unwrap();
-        super::super::seh::restore_context(&mut redirected, context);
+        super::super::seh::restore_context(&mut redirected, &image.context);
         assert_eq!(redirected.eip, original.eip);
         assert_eq!(redirected.user_esp, original.user_esp);
         assert_eq!(redirected.eax, 0xC0, "the wait's status rides back");

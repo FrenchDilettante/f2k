@@ -177,8 +177,7 @@ mod tests {
     /// NtClose of a handle the host has no table for is STATUS_INVALID_HANDLE.
     #[test]
     fn the_wrapper_answers_with_the_status() {
-        // SAFETY: a trap frame is plain dwords; all zeros is a valid one.
-        let mut frame: crate::user::TrapFrame = unsafe { core::mem::zeroed() };
+        let mut frame = crate::user::TrapFrame::default();
         let (_, service) = lookup(0x18).unwrap();
         service(&mut frame, &[0x44], &mut crate::level::passive_for_test());
         assert_eq!(frame.eax, 0xC000_0008);

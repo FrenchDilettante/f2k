@@ -12,11 +12,12 @@
 //! the end of a quantum does to the queues and the slots. They never switch: selecting the next
 //! thread stops at Standby, and turning Standby into Running is the context switch's business.
 
+use super::apc::ApcId;
 use super::database::Database;
 use super::list::{self, Cursor, IndexList, ListKind};
 use super::process::{ProcessRef, ProcessThreads, SchedProcess};
 use super::processor::{charged_tick, ThreadSlots};
-use super::thread::{ThreadId, ThreadState};
+use super::thread::{Thread, ThreadId, ThreadState};
 use super::timer::TimerTable;
 use super::wait::WaitingList;
 use super::{
@@ -30,14 +31,9 @@ use super::{
 #[cfg(target_arch = "x86")]
 use crate::level::{At, Dispatch};
 
-/// How a requested termination of another thread went (see [`Dispatcher::request_termination`]).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Termination {
-    /// The thread is terminated.
-    Done,
-    /// The thread is inside a critical region: it ends by its own exit as it leaves.
-    Deferred,
-}
+/// The priority increment a termination's exit APC grants the thread whose wait it breaks
+/// (Windows 2000's PspTerminateThreadByPointer queues it with 2): the thread runs its exit soon.
+pub const EXIT_APC_INCREMENT: i8 = 2;
 
 /// How long a thread sits ready without running before the balance-set scan boosts it, in ticks:
 /// the platform's constant (four of its nominal 75-tick seconds), about three seconds at this
@@ -162,8 +158,11 @@ impl Dispatcher {
     ///
     /// # Safety
     ///
-    /// `process` is at its final address and outlives the thread's membership in its list.
-    pub unsafe fn attach(&mut self, thread: ThreadId, process: &mut SchedProcess) {
+    /// `process` is a live record at its final address, reached by nothing else meanwhile, and
+    /// outlives the thread's membership in its list.
+    pub unsafe fn attach(&mut self, thread: ThreadId, process: *mut SchedProcess) {
+        // SAFETY: the caller's contract: the record is live, and this is the only reference to it.
+        let process = unsafe { &mut *process };
         let record = self.thread_mut(thread);
         // Every thread is attached at its final address before it first runs: the place the
         // switch saves its floating-point state to.
@@ -190,18 +189,73 @@ impl Dispatcher {
         unsafe { process.get_mut() }
     }
 
-    /// The first attached thread of `process` other than `except` whose termination is not already
-    /// pending, in creation order, or none. A process-ending termination repeats this query, one
-    /// termination per answer: each either unlinks its thread from the process's list or marks it
-    /// pending (it stays attached until its own exit), so the walk never holds a link across a
-    /// change and never answers the same thread twice.
+    /// Begin running `thread` on `target`'s address space (see [`super::attach`]): the thread's
+    /// bookkeeping, and the target's count of threads attached to it. Returns the directory to
+    /// load, or none when `target` is the thread's address space already (a scope that changes
+    /// nothing).
+    ///
+    /// # Panics
+    ///
+    /// The thread is attached to another process already: attaches do not nest.
+    pub(crate) fn attach_space(
+        &mut self,
+        thread: ThreadId,
+        target: *mut SchedProcess,
+    ) -> Option<u32> {
+        let target = ProcessRef::of(target);
+        // SAFETY: the target outlives the scope (the attach's contract: its caller holds it), and
+        // this exclusive borrow of the dispatcher serializes every use of it; the thread record is
+        // another record than the process's.
+        let target = unsafe { target.get_mut() };
+        let dir_phys = self.thread_mut(thread).attach_space(target)?;
+        target.attach_count += 1;
+        Some(dir_phys)
+    }
+
+    /// Return `thread` to its own address space, from the one it attached to: the thread's
+    /// bookkeeping, and the count of threads attached to that one. Kernel APCs the scope held off
+    /// have their delivery armed again, for the thread's next window (Windows 2000's
+    /// KeUnstackDetachProcess requests the APC interrupt for them). Returns the owner's directory,
+    /// to load.
+    ///
+    /// # Panics
+    ///
+    /// The thread is not attached.
+    pub(crate) fn detach_space(&mut self, thread: ThreadId) -> u32 {
+        let space = ProcessRef::of(self.thread(thread).space.cast_mut());
+        let record = self.thread_mut(thread);
+        let dir_phys = record.detach_space();
+        if !record.kernel_apcs.is_empty() {
+            record.kernel_apc_pending = true;
+        }
+        // SAFETY: the process attached to outlives the scope, which ends here, and this exclusive
+        // borrow of the dispatcher serializes every use of it.
+        let space = unsafe { space.get_mut() };
+        space.attach_count -= 1;
+        dir_phys
+    }
+
+    /// The first attached thread of `process` other than `except` that is not terminating already,
+    /// in creation order, or none. A process-ending termination repeats this query, one termination
+    /// per answer: each marks its thread terminating (it stays attached until its own exit), so the
+    /// walk never holds a link across a change and never answers the same thread twice.
     pub fn first_thread_except(
         &self,
-        process: &mut SchedProcess,
+        process: *mut SchedProcess,
         except: Option<ThreadId>,
     ) -> Option<ThreadId> {
-        list::iter(self, ProcessThreads(ProcessRef::new(process)))
+        list::iter(self, ProcessThreads(ProcessRef::of(process)))
             .find(|&thread| Some(thread) != except && !self.thread(thread).terminate_pending)
+    }
+
+    /// Whether any attached thread of `process` satisfies `test`.
+    pub fn any_thread_of(
+        &self,
+        process: *mut SchedProcess,
+        test: impl Fn(&Thread) -> bool,
+    ) -> bool {
+        list::iter(self, ProcessThreads(ProcessRef::of(process)))
+            .any(|thread| test(self.thread(thread)))
     }
 
     /// Install the idle thread and mark the processor idle. The boot install: the processor is
@@ -760,50 +814,27 @@ impl Dispatcher {
         self.retire(thread);
     }
 
-    /// Terminate `thread`, another thread off the processor: at once
-    /// ([`Dispatcher::terminate_other`]) — or, while it is inside a critical region, where it
-    /// may hold what others need (the volume and its drive mid-command), once it leaves the
-    /// region, by its own exit. A deferred thread keeps its state and its wait runs on to
-    /// completion; from the request on it accepts no APCs and its queued ones are discarded, as
-    /// a terminated thread's are. A thread whose termination is already pending is not
-    /// terminated again.
-    pub fn request_termination(&mut self, thread: impl Into<ThreadId>) -> Termination {
-        let thread = thread.into();
-        let record = self.thread(thread);
-        assert!(
-            !record.terminate_pending,
-            "a thread's termination is requested once"
-        );
-        if !record.in_critical_region() {
-            self.terminate_other(thread);
-            return Termination::Done;
-        }
-        assert!(
-            Some(thread) != self.current(),
-            "the running thread terminates through its own exit"
-        );
-        let record = self.thread_mut(thread);
-        record.terminate_pending = true;
-        record.apc_queueable = false;
-        self.discard_apcs(thread);
-        Termination::Deferred
-    }
-
-    /// Discard `thread`'s queued APCs of both modes and their pending flags: a thread whose
-    /// termination is decided accepts no more.
-    fn discard_apcs(&mut self, thread: ThreadId) {
-        self.flush_apcs(thread, super::apc::ApcMode::Kernel);
-        self.flush_apcs(thread, super::apc::ApcMode::User);
-        let record = self.thread_mut(thread);
-        record.kernel_apc_pending = false;
-        record.user_apc_pending = false;
-    }
-
-    /// Terminate `thread`, which is off the processor, without letting it run again: take it out
-    /// of whatever holds it — its ready queue, the standby slot, or its wait (the blocks, the
-    /// waiting list, the timer) — discard its queued APCs, then retire it exactly as its own exit
-    /// would. Its kernel stack keeps only abandoned frames; releasing it is the caller's.
-    pub fn terminate_other(&mut self, thread: impl Into<ThreadId>) {
+    /// Terminate `thread`, another thread than the running one (Windows 2000's
+    /// PspTerminateThreadByPointer): it runs its own exit, at its next window for a normal kernel
+    /// APC. Its queued APCs are discarded first (a suspend's included), then its exit APC is
+    /// queued — a no-op kernel half, `exit` its normal half, `status` its context — which breaks a
+    /// wait it may break with the exit increment; from then on it takes no APC. Then it is
+    /// force-resumed: a suspended thread runs on to its exit. A thread inside a critical region
+    /// keeps its wait and runs on to the region's end; one at the APC level (a short lock's holder
+    /// or waiter) runs on until it lowers; one that never ran delivers it at its startup, before
+    /// its first user instruction. The exit status is recorded now, for GetExitCodeThread. False,
+    /// with nothing changed, for a thread already terminating — its exit APC queued, or its own
+    /// exit running.
+    ///
+    /// # Panics
+    ///
+    /// `thread` is the running thread (it ends through its own exit), or the idle thread.
+    pub fn request_termination(
+        &mut self,
+        thread: impl Into<ThreadId>,
+        exit: super::apc::NormalRoutine,
+        status: u32,
+    ) -> bool {
         let thread = thread.into();
         assert!(
             Some(thread) != self.current(),
@@ -813,27 +844,29 @@ impl Dispatcher {
             Some(thread) != self.idle_thread(),
             "the idle thread never exits"
         );
-        let record = self.thread(thread);
-        let (state, priority) = (record.state, record.priority);
-        match state {
-            ThreadState::Ready => self.dequeue(thread, priority),
-            ThreadState::Standby => {
-                assert!(
-                    self.next_thread() == Some(thread),
-                    "a Standby thread holds the standby slot"
-                );
-                self.set_next(None);
-            }
-            ThreadState::Waiting => self.unwind_wait(thread),
-            // Attached but never readied: nothing schedules it yet.
-            ThreadState::Initialized => {}
-            ThreadState::Running | ThreadState::Terminated | ThreadState::Transition => {
-                panic!("terminate of a thread in state {state:?}")
-            }
+        let record = self.thread_mut(thread);
+        if record.terminate_pending {
+            return false;
         }
-        self.thread_mut(thread).apc_queueable = false;
+        record.terminate_pending = true;
+        record.exit_status = status;
         self.discard_apcs(thread);
-        self.retire(thread);
+        self.apc_mut(ApcId::Exit(thread)).init(
+            thread,
+            super::apc::nop_kernel_routine,
+            Some(exit),
+            super::apc::ApcMode::Kernel,
+            status as usize,
+        );
+        let queued = self.queue_apc(ApcId::Exit(thread), 0, 0, EXIT_APC_INCREMENT);
+        debug_assert!(queued, "a thread not terminating takes its exit APC");
+        let record = self.thread_mut(thread);
+        record.apc_queueable = false;
+        // KeForceResumeThread: a suspended thread's counts go and its semaphore is released.
+        if record.suspend_count != 0 || record.freeze_count != 0 {
+            self.force_resume_thread(thread);
+        }
+        true
     }
 
     /// The scheduling teardown every termination ends with: the thread object signals once,
@@ -859,14 +892,18 @@ impl Dispatcher {
     /// one in 16..31. Saturated threads move only when the change crosses the class boundary — then
     /// they pin to their new class's edges; within a class they are left entirely alone. Returns
     /// the process's previous base priority.
-    pub fn set_process_priority(&mut self, process: &mut SchedProcess, new_base: i8) -> i8 {
-        let old_base = process.base_priority;
-        process.base_priority = new_base;
+    pub fn set_process_priority(&mut self, process: *mut SchedProcess, new_base: i8) -> i8 {
+        let process = ProcessRef::of(process);
+        // SAFETY: a process record outlives its threads' membership in its list (the attach's
+        // contract), and this exclusive borrow of the dispatcher serializes every use of it; the
+        // reference ends before the walk below.
+        let old_base =
+            core::mem::replace(unsafe { &mut process.get_mut().base_priority }, new_base);
         let adjustment = new_base as i32 - old_base as i32;
 
         // The walk reads each next thread before the priority machinery runs on the current one
         // (which never unlinks a thread from its process).
-        let mut cursor = Cursor::front(self, ProcessThreads(ProcessRef::new(process)));
+        let mut cursor = Cursor::front(self, ProcessThreads(process));
         while let Some(thread) = cursor.next(self) {
             let record = self.thread(thread);
             let mut new_priority = record.base_priority as i32 + adjustment;
@@ -981,6 +1018,12 @@ fn switch_if_requested(dispatch: &mut At<Dispatch>) -> bool {
     // here instead, the switch would leave an ended process waiting for the processor to fall idle
     // again. The standby thread stays where it is for the loop's next pass.
     if running.is_some() && running == dispatcher.idle_thread() {
+        return false;
+    }
+    // A retired thread runs on to its exit's own switch, which selects the next thread itself
+    // (Windows 2000's terminating thread holds the dispatcher from its signal to the swap): its
+    // record may be renewed once it is off the processor, and its process torn down.
+    if running.is_some_and(|thread| dispatcher.thread(thread).state() == ThreadState::Terminated) {
         return false;
     }
     let Some(target) = dispatcher.dispatch_target() else {
@@ -1438,11 +1481,21 @@ mod tests {
         assert!(unsafe { (*p).threads.is_empty() });
     }
 
-    /// Terminating a Ready thread off the processor: it leaves its queue (the summary bit clears
-    /// with the last one at that priority, stays while another remains), signals, leaves the
-    /// process list, and is Terminated — nothing selects it again.
+    /// A termination's exit APC whose normal half does nothing: the host model never runs it (the
+    /// exit itself is the target's).
+    fn exit_normal(_thread: ThreadId, _status: usize, _argument1: usize, _argument2: usize) {}
+
+    /// Whether `t`'s exit APC is queued, its context the exit status `status`.
+    fn exit_queued(d: &Dispatcher, t: Rec<Thread>, status: u32) -> bool {
+        let apc = d.apc(ApcId::Exit(t.id()));
+        apc.inserted() && apc.normal_context == status as usize && apc.mode == ApcMode::Kernel
+    }
+
+    /// Terminating a Ready thread queues its exit APC and nothing else: it stays on its queue (the
+    /// resume tail that dispatches it delivers the APC), attached, its status recorded, and takes
+    /// no other APC from then on.
     #[test]
-    fn terminate_other_takes_a_ready_thread_off_its_queue() {
+    fn a_termination_queues_the_exit_apc_on_a_ready_thread() {
         let d = dispatcher();
         let p = process(8);
         let running = thread(p);
@@ -1451,30 +1504,29 @@ mod tests {
         run(d, running);
         d.make_ready(first);
         d.make_ready(second);
-        assert_eq!(d.ready_summary, 1 << 8);
 
-        d.terminate_other(first);
-        assert_eq!(first.state(), ThreadState::Terminated);
-        assert!(first.signaled());
+        assert!(d.request_termination(first, exit_normal, 7));
+        assert!(exit_queued(d, first, 7));
+        assert!(first.kernel_apc_pending, "armed for the resume tail");
+        assert!(first.termination_pending());
         assert!(!first.apc_queueable);
+        assert_eq!(first.exit_status(), 7);
+        assert_eq!(first.state(), ThreadState::Ready, "it runs its own exit");
+        assert_eq!(d.ready_summary, 1 << 8);
+        assert_eq!(unsafe { (*p).stack_count() }, 3, "attached until its exit");
         assert_eq!(
-            d.ready_summary,
-            1 << 8,
-            "the other ready thread keeps the bit"
+            d.suspend_thread(first),
+            Err(crate::status::STATUS_THREAD_IS_TERMINATING)
         );
-        assert_eq!(unsafe { (*p).stack_count() }, 2);
-
-        d.terminate_other(second);
-        assert_eq!(d.ready_summary, 0);
-        assert!(d.ready[8].is_empty());
-        assert!(!d.has_schedulable());
-        assert_eq!(unsafe { (*p).stack_count() }, 1);
+        // The walk of a process-ending termination passes it.
+        assert_eq!(d.first_thread_except(p, Some(running.id())), id_of(second));
         assert_eq!(d.audit(), Ok(()));
     }
 
-    /// Terminating the Standby thread empties the standby slot: the switch never enters it.
+    /// The Standby thread keeps the standby slot: the switch enters it, and its resume tail
+    /// delivers the exit APC.
     #[test]
-    fn terminate_other_clears_the_standby_slot() {
+    fn a_termination_leaves_the_standby_thread_in_its_slot() {
         let d = dispatcher();
         let p = process(8);
         let running = thread(p);
@@ -1482,50 +1534,63 @@ mod tests {
         run(d, running);
         standby(d, next);
 
-        d.terminate_other(next);
-        assert!(d.next_thread().is_none());
-        assert_eq!(next.state(), ThreadState::Terminated);
-        assert!(!d.has_schedulable());
+        assert!(d.request_termination(next, exit_normal, 1));
+        assert_eq!(d.next_thread(), id_of(next));
+        assert_eq!(next.state(), ThreadState::Standby);
+        assert!(exit_queued(d, next, 1));
     }
 
-    /// An attached thread that was never readied terminates with nothing to unlink but its
-    /// process membership.
+    /// A thread that never ran keeps its exit APC for its startup's delivery, before its first
+    /// user instruction: nothing is unlinked, and the readying schedules it.
     #[test]
-    fn terminate_other_retires_a_never_readied_thread() {
+    fn a_never_readied_thread_keeps_its_exit_apc_for_its_startup() {
         let d = dispatcher();
         let p = process(8);
         let running = thread(p);
         let fresh = thread(p);
         run(d, running);
 
-        d.terminate_other(fresh);
-        assert_eq!(fresh.state(), ThreadState::Terminated);
-        assert_eq!(unsafe { (*p).stack_count() }, 1);
+        assert!(d.request_termination(fresh, exit_normal, 0xC000_004B));
+        assert_eq!(fresh.state(), ThreadState::Initialized);
+        assert!(exit_queued(d, fresh, 0xC000_004B));
+        d.make_ready(fresh);
+        assert!(exit_queued(d, fresh, 0xC000_004B));
+        assert_eq!(unsafe { (*p).stack_count() }, 2);
         assert_eq!(d.audit(), Ok(()));
     }
 
     /// The running thread exits through its own path, never through another's termination.
     #[test]
     #[should_panic(expected = "the running thread terminates through its own exit")]
-    fn terminate_other_refuses_the_running_thread() {
+    fn a_termination_refuses_the_running_thread() {
         let d = dispatcher();
         let p = process(8);
         let running = thread(p);
         run(d, running);
-        d.terminate_other(running);
+        d.request_termination(running, exit_normal, 0);
     }
 
-    /// A thread already terminated cannot terminate twice.
+    /// A thread is terminated once: a second request — or one for a thread running its own exit —
+    /// changes nothing, its first status standing.
     #[test]
-    #[should_panic(expected = "terminate of a thread in state Terminated")]
-    fn terminate_other_refuses_a_terminated_thread() {
+    fn a_termination_is_requested_once() {
         let d = dispatcher();
         let p = process(8);
         let running = thread(p);
         let other = thread(p);
+        let mut exiting = thread(p);
         run(d, running);
-        d.terminate_other(other);
-        d.terminate_other(other);
+        d.make_ready(other);
+        assert!(d.request_termination(other, exit_normal, 5));
+        assert!(!d.request_termination(other, exit_normal, 6));
+        assert_eq!(other.exit_status(), 5);
+        assert!(exit_queued(d, other, 5));
+
+        // A thread whose own exit runs is marked terminating by it, its queue closed.
+        exiting.terminate_pending = true;
+        d.close_apc_queue(exiting.id());
+        assert!(!d.request_termination(exiting, exit_normal, 6));
+        assert!(!exiting.exit_apc.inserted());
     }
 
     // --- Group D: the priority-change state machine -------------------------

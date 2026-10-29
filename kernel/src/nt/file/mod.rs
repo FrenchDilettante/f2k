@@ -63,10 +63,7 @@ mod common {
     /// kind of object.
     pub fn file_object(handle: u32) -> Result<Referenced<FileObject>, NtStatus> {
         let reference = super::super::sync::object_of(handle, ObjectType::File)?;
-        let object = crate::ob::directory()
-            .file(reference.id())
-            .expect("a referenced file object lives");
-        Ok(Referenced::new(reference, object))
+        Ok(crate::ob::file_object(reference))
     }
 
     /// Whether an object was granted any of `rights`; STATUS_ACCESS_DENIED otherwise. None asks
@@ -121,11 +118,8 @@ mod common {
             Root::None => (name::absolute(units)?, None),
             Root::File(id) => {
                 let reference = crate::ob::reference(id).ok_or(STATUS_INVALID_HANDLE)?;
-                let record = crate::ob::directory()
-                    .file(reference.id())
-                    .expect("held")
-                    .record;
-                let directory = crate::fs::io::file_at(record);
+                let object = crate::ob::file_object(reference);
+                let directory = crate::fs::io::file_at(object.record);
                 if !directory.directory {
                     return Err(STATUS_INVALID_PARAMETER);
                 }

@@ -181,13 +181,15 @@ static INTERACTIVE: crate::sync::InitOnce<Interactive> = crate::sync::InitOnce::
 /// creator's references are never dropped: they outlive every process.
 #[cfg(target_arch = "x86")]
 pub fn init() {
-    let directory = crate::ob::directory();
-    let station = directory
-        .create_window_station("WinSta0", WSF_VISIBLE)
-        .expect("the boot makes the one window station");
-    let desktop = directory
-        .create_desktop("Default", 0)
-        .expect("the boot makes the one desktop");
+    let (station, desktop) = crate::ob::locked(|directory| {
+        let station = directory
+            .create_window_station("WinSta0", WSF_VISIBLE)
+            .expect("the boot makes the one window station");
+        let desktop = directory
+            .create_desktop("Default", 0)
+            .expect("the boot makes the one desktop");
+        (station, desktop)
+    });
     INTERACTIVE.set(Interactive { station, desktop });
 }
 
@@ -195,7 +197,7 @@ pub fn init() {
 /// not already: a handle to each, not inheritable, in its handle table (see the module notes for
 /// which ones). STATUS_INSUFFICIENT_RESOURCES when the handle table is full.
 #[cfg(target_arch = "x86")]
-pub fn connect(process: &mut crate::process::Process) -> Result<Connection, NtStatus> {
+pub fn connect(process: &crate::process::Process) -> Result<Connection, NtStatus> {
     if let Some(connection) = process.win32k() {
         return Ok(connection);
     }
@@ -217,14 +219,15 @@ pub fn connect(process: &mut crate::process::Process) -> Result<Connection, NtSt
 }
 
 /// A handle to `id` in `process`'s handle table, not inheritable; STATUS_INSUFFICIENT_RESOURCES
-/// when the table refuses it (its handle 0).
+/// when the table refuses it.
 #[cfg(target_arch = "x86")]
 fn insert(
-    process: &mut crate::process::Process,
+    process: &crate::process::Process,
     id: crate::ob::ObjectId,
     access: u32,
 ) -> Result<u32, NtStatus> {
-    core::num::NonZeroU32::new(process.insert_object(id, access, false))
+    process
+        .insert_object(id, access, false)
         .map(core::num::NonZeroU32::get)
         .ok_or(STATUS_INSUFFICIENT_RESOURCES)
 }
@@ -239,8 +242,8 @@ fn connection(call: &mut NtCall) -> Result<Connection, NtStatus> {
 /// process's thread is not one).
 #[cfg(target_arch = "x86")]
 fn is_thread(call: &mut NtCall, thread_id: u32) -> bool {
-    let owner = &call.process().sched as *const crate::sched::process::SchedProcess;
-    crate::ob::directory()
+    let owner = call.process().sched_ptr().cast_const();
+    crate::ob::lock(call.passive())
         .thread_by_client_id(owner, thread_id)
         .is_some()
 }
@@ -249,9 +252,9 @@ fn is_thread(call: &mut NtCall, thread_id: u32) -> bool {
 #[cfg(target_arch = "x86")]
 fn user_object(call: &mut NtCall, handle: Handle) -> Option<UserObject> {
     use crate::ob::ObjectType;
-    let entry = call.process().handles().lookup(handle.raw())?;
+    let entry = call.process().lookup_handle(handle.raw())?;
     let id = entry.object_id()?;
-    let directory = crate::ob::directory();
+    let mut directory = crate::ob::lock(call.passive());
     match id.kind {
         ObjectType::WindowStation => directory.window_station(id).map(|station| UserObject {
             type_name: "WindowStation",

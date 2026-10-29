@@ -275,8 +275,14 @@ mod tests {
         );
         assert_eq!(wait(d, waiter, m1.waitable()), WaitDisposition::Yield);
 
-        d.terminate_other(owner);
-        assert_eq!(waiter.state(), ThreadState::Ready);
+        // The owner's own exit retires it, on the processor.
+        d.enter(owner.id());
+        d.thread_mut(owner.id()).state = ThreadState::Running;
+        d.retire_current();
+        assert!(matches!(
+            waiter.state(),
+            ThreadState::Ready | ThreadState::Standby
+        ));
         assert_eq!(waiter.wait_status(), STATUS_ABANDONED);
         assert_eq!(m1.owner(), Some(waiter.id()));
         assert!(!m1.abandoned, "the take reported it");

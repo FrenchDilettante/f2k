@@ -1,17 +1,21 @@
 //! KUSER_SHARED_DATA: the page every process maps read-only at 0x7FFE0000, which the kernel keeps
 //! current and user-mode code reads without a kernel transition — the tick count, the interrupt
 //! and system times, the time-zone bias, the version and product facts (Windows 2000's layout,
-//! NT 5.0 x86). kernel32's GetTickCount, GetSystemTimeAsFileTime and GetLocalTime read it, as
-//! Windows 2000's do.
+//! NT 5.0 x86, `rtl::shared_data`). kernel32's GetTickCount, GetSystemTimeAsFileTime and
+//! GetLocalTime read it, as Windows 2000's do.
 //!
 //! One frame, the kernel's: written through its own mapping at 0xFFDF0000 (where Windows 2000's
 //! kernel keeps it), mapped into each process as one more holder of it (`mem::vm::map_shared`), so
 //! a process's teardown drops its hold and leaves the frame to the kernel. The clock interrupt
-//! updates the times ([`update`]); a KSYSTEM_TIME is written High2Time, LowPart, High1Time, so a
-//! reader that sees High1Time equal to High2Time read a consistent value.
+//! updates the times ([`update`]); a KSYSTEM_TIME is written High2Time, LowPart, High1Time
+//! (`KSystemTime::store`), so a reader that sees High1Time equal to High2Time read a consistent
+//! value.
+
+use rtl::pod::Pod;
+pub use rtl::shared_data::KUserSharedData;
 
 /// Where every process sees the page.
-pub const USER_ADDRESS: u32 = 0x7FFE_0000;
+pub const USER_ADDRESS: u32 = rtl::shared_data::USER_ADDRESS;
 
 /// Where the kernel writes it (Windows 2000's own address for it).
 pub const KERNEL_ADDRESS: u32 = 0xFFDF_0000;
@@ -22,22 +26,10 @@ pub const KERNEL_ADDRESS: u32 = 0xFFDF_0000;
 /// `user::params::ENVIRONMENT`).
 pub const NT_SYSTEM_ROOT: &[u8] = b"C:\\WINNT";
 
-/// The fields, at their NT 5.0 offsets.
-pub mod offset {
-    pub const TICK_COUNT_LOW: u32 = 0x000;
-    pub const TICK_COUNT_MULTIPLIER: u32 = 0x004;
-    pub const INTERRUPT_TIME: u32 = 0x008;
-    pub const SYSTEM_TIME: u32 = 0x014;
-    pub const TIME_ZONE_BIAS: u32 = 0x020;
-    pub const IMAGE_NUMBER_LOW: u32 = 0x02C;
-    pub const IMAGE_NUMBER_HIGH: u32 = 0x02E;
-    pub const NT_SYSTEM_ROOT: u32 = 0x030;
-    pub const TIME_ZONE_ID: u32 = 0x240;
-    pub const NT_PRODUCT_TYPE: u32 = 0x264;
-    pub const PRODUCT_TYPE_IS_VALID: u32 = 0x268;
-    pub const NT_MAJOR_VERSION: u32 = 0x26C;
-    pub const NT_MINOR_VERSION: u32 = 0x270;
-}
+/// IMAGE_FILE_MACHINE_I386: the machine of the images the system runs.
+const MACHINE_I386: u16 = 0x014C;
+/// NtProductWinNt: a workstation.
+const PRODUCT_WIN_NT: u32 = 1;
 
 /// TickCountMultiplier: the tick's length in milliseconds, as a 8.24 fixed-point value
 /// (GetTickCount is `TickCountLow * TickCountMultiplier >> 24`).
@@ -52,66 +44,56 @@ pub const fn tick_count_ms(tick_count_low: u32, multiplier: u32) -> u32 {
 
 /// The page's constant fields: the tick's multiplier, the image machine (i386), the system root,
 /// the product (a workstation, NtProductWinNt) and the version (5.0), no time zone (a zero bias,
-/// TIME_ZONE_ID_UNKNOWN).
-pub fn constant_fields(out: &mut [u8; 0x1000]) {
-    let mut put =
-        |at: u32, bytes: &[u8]| out[at as usize..at as usize + bytes.len()].copy_from_slice(bytes);
-    put(
-        offset::TICK_COUNT_MULTIPLIER,
-        &tick_count_multiplier(crate::interrupt::clock::INTERVAL_100NS).to_le_bytes(),
-    );
-    put(offset::IMAGE_NUMBER_LOW, &0x014Cu16.to_le_bytes());
-    put(offset::IMAGE_NUMBER_HIGH, &0x014Cu16.to_le_bytes());
-    for (index, &byte) in NT_SYSTEM_ROOT.iter().enumerate() {
-        put(
-            offset::NT_SYSTEM_ROOT + 2 * index as u32,
-            &u16::from(byte).to_le_bytes(),
-        );
+/// TIME_ZONE_ID_UNKNOWN). Everything else is zero.
+pub fn constant_fields() -> KUserSharedData {
+    let mut page = KUserSharedData::zeroed();
+    page.tick_count_multiplier = tick_count_multiplier(crate::interrupt::clock::INTERVAL_100NS);
+    page.image_number_low = MACHINE_I386;
+    page.image_number_high = MACHINE_I386;
+    for (unit, &byte) in page.nt_system_root.iter_mut().zip(NT_SYSTEM_ROOT) {
+        *unit = u16::from(byte);
     }
-    put(offset::NT_PRODUCT_TYPE, &1u32.to_le_bytes());
-    put(offset::PRODUCT_TYPE_IS_VALID, &[1]);
-    put(offset::NT_MAJOR_VERSION, &5u32.to_le_bytes());
-    put(offset::NT_MINOR_VERSION, &0u32.to_le_bytes());
+    page.nt_product_type = PRODUCT_WIN_NT;
+    page.product_type_is_valid = 1;
+    page.nt_major_version = 5;
+    page.nt_minor_version = 0;
+    page
 }
 
 /// The page's frame, once made at boot.
 #[cfg(target_arch = "x86")]
-static mut FRAME: u32 = 0;
+static FRAME: crate::sync::InitOnce<u32> = crate::sync::InitOnce::new();
+
+/// The page, through the kernel's own mapping, lent to `write`: the one way the kernel reaches it.
+/// Its writers never overlap: [`init`] runs before the clock's first tick, the clock interrupt
+/// writes it ([`update`]), and NtSetSystemTime writes it with interrupts masked
+/// ([`set_system_time`]).
+#[cfg(target_arch = "x86")]
+fn with_page<R>(write: impl FnOnce(&mut KUserSharedData) -> R) -> R {
+    // SAFETY: KERNEL_ADDRESS maps the page's frame for the kernel's whole life (`init` maps it
+    // before any writer runs), page-aligned and larger than the structure; no two writers overlap
+    // (above), so the borrow is exclusive for the call. User mode reads the frame only through its
+    // own read-only mapping, which the volatile stores publish to.
+    write(unsafe { &mut *(KERNEL_ADDRESS as *mut KUserSharedData) })
+}
 
 /// Make the page, before any process and before the clock's first tick: the kernel's frame, mapped
 /// at [`KERNEL_ADDRESS`] (a kernel-half table every process directory inherits), its constant
 /// fields written and its system time the boot's wall-clock reading.
 #[cfg(target_arch = "x86")]
 pub fn init(boot_filetime: u64) {
-    let mut page = [0u8; 0x1000];
-    constant_fields(&mut page);
     let frame = crate::mem::paging::allocate_frame_phys();
-    crate::mem::paging::init_frame(frame, 0, &page);
+    crate::mem::paging::init_frame(frame, 0, constant_fields().as_bytes());
     crate::mem::paging::map_kernel_page(KERNEL_ADDRESS, frame);
-    // SAFETY: boot, before any reader.
-    unsafe { FRAME = frame };
-    write_time(offset::SYSTEM_TIME, boot_filetime);
-}
-
-/// Write a KSYSTEM_TIME: High2Time, LowPart, High1Time (a reader retries while High1Time and
-/// High2Time differ).
-#[cfg(target_arch = "x86")]
-fn write_time(at: u32, value: u64) {
-    let field = (KERNEL_ADDRESS + at) as *mut u32;
-    // SAFETY: the kernel's own mapping of the page (made at boot, never unmapped); after boot the
-    // clock interrupt writes it, and NtSetSystemTime with interrupts masked.
-    unsafe {
-        field.add(2).write_volatile((value >> 32) as u32);
-        field.write_volatile(value as u32);
-        field.add(1).write_volatile((value >> 32) as u32);
-    }
+    FRAME.set(frame);
+    with_page(|page| page.system_time.store(boot_filetime));
 }
 
 /// The system time written now (NtSetSystemTime's, `crate::time::set_system_filetime`), with
 /// interrupts masked: the clock interrupt is the page's other writer.
 #[cfg(target_arch = "x86")]
 pub fn set_system_time(value: u64) {
-    write_time(offset::SYSTEM_TIME, value);
+    with_page(|page| page.system_time.store(value));
 }
 
 /// The clock interrupt's update: the interrupt time on every interrupt; the system time (the boot's
@@ -122,31 +104,25 @@ pub fn update(
     interrupt_time: u64,
     full_tick: Option<(u64, u64)>,
 ) {
-    write_time(offset::INTERRUPT_TIME, interrupt_time);
-    if let Some((system_time, tick_count)) = full_tick {
-        write_time(
-            offset::SYSTEM_TIME,
-            crate::time::boot_filetime_at(at_clock) + system_time,
-        );
-        // SAFETY: as `write_time`.
-        unsafe {
-            ((KERNEL_ADDRESS + offset::TICK_COUNT_LOW) as *mut u32)
-                .write_volatile(tick_count as u32)
-        };
-    }
+    with_page(|page| {
+        page.interrupt_time.store(interrupt_time);
+        if let Some((system_time, tick_count)) = full_tick {
+            page.system_time
+                .store(crate::time::boot_filetime_at(at_clock) + system_time);
+            rtl::shared_data::publish(&mut page.tick_count_low, tick_count as u32);
+        }
+    });
 }
 
 /// Map the page into `space` (the running process's), read-only, inside its region: one more
 /// holder of the kernel's frame.
 #[cfg(target_arch = "x86")]
 pub fn map_into(space: &mut crate::mem::vm::AddressSpace) {
-    // SAFETY: made at boot, read-only afterwards.
-    let frame = unsafe { FRAME };
     space
         .map_shared(
             &mut crate::mem::vm::CurrentPages,
             USER_ADDRESS,
-            frame,
+            *FRAME.get(),
             crate::mem::vm::PAGE_READONLY,
         )
         .expect("the shared data page maps once, inside its region");
@@ -159,18 +135,32 @@ mod tests {
     /// The NT 5.0 layout user code reads, and GetTickCount's arithmetic at the captured rate.
     #[test]
     fn the_page_is_the_nt_layout() {
-        assert_eq!(offset::SYSTEM_TIME, 0x14);
-        assert_eq!(offset::NT_SYSTEM_ROOT, 0x30);
-        assert_eq!(offset::NT_MAJOR_VERSION, 0x26C);
         let multiplier = tick_count_multiplier(100_144);
         assert_eq!(multiplier, 0x0A03_AFB7, "10.0144 ms in 8.24");
         assert_eq!(tick_count_ms(100, multiplier), 1001);
         assert_eq!(tick_count_ms(0, multiplier), 0);
-        let mut page = [0u8; 0x1000];
-        constant_fields(&mut page);
-        assert_eq!(page[0x26C], 5);
-        assert_eq!(&page[0x30..0x34], &[b'C', 0, b':', 0]);
+        let fields = constant_fields();
+        let page = fields.as_bytes();
+        assert_eq!(
+            &page[4..8],
+            &tick_count_multiplier(crate::interrupt::clock::INTERVAL_100NS).to_le_bytes()
+        );
         assert_eq!(&page[0x2C..0x30], &[0x4C, 0x01, 0x4C, 0x01]);
+        assert_eq!(&page[0x30..0x34], &[b'C', 0, b':', 0]);
+        assert_eq!(&page[0x40..0x42], &[0, 0], "C:\\WINNT, terminated");
+        assert_eq!(
+            &page[0x264..0x26C],
+            &[1, 0, 0, 0, 1, 0, 0, 0],
+            "NtProductWinNt, valid"
+        );
+        assert_eq!(&page[0x26C..0x274], &[5, 0, 0, 0, 0, 0, 0, 0], "5.0");
+        // Nothing else: the times, the tick count and the time zone start zero.
+        let set = [4..8, 0x2C..0x40, 0x264..0x265, 0x268..0x269, 0x26C..0x26D];
+        for (at, &byte) in page.iter().enumerate() {
+            if !set.iter().any(|range| range.contains(&at)) {
+                assert_eq!(byte, 0, "{at:#x}");
+            }
+        }
     }
 
     /// GetTickCount's milliseconds at the captured interval, floored once at the read: the ms

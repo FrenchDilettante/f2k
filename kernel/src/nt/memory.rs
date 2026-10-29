@@ -224,9 +224,10 @@ pub fn capture(at: UserPtr<u32>) -> Result<u32, NtStatus> {
     Ok(value)
 }
 
-/// Run `body` over the address space and the live page tables of the process `process` names,
-/// which must grant `access` (see [`super::object::ProcessRef::attached`]): the handle's refusals,
-/// or STATUS_PROCESS_IS_TERMINATING for a process that has ended.
+/// Run `body` over the address space, locked, and the live page tables of the process `process`
+/// names, which must grant `access` (see [`super::object::ProcessRef::attached`]): the handle's
+/// refusals, or STATUS_PROCESS_IS_TERMINATING for a process that has ended. `body` changes the
+/// address space and nothing else: it does not wait, hold the directory or copy user memory.
 #[cfg(target_arch = "x86")]
 pub fn with_space_for<R>(
     call: &mut NtCall,
@@ -236,7 +237,7 @@ pub fn with_space_for<R>(
 ) -> Result<R, NtStatus> {
     let _ = call;
     super::object::reference_process(process.raw(), access)?
-        .attached(|record| body(record.vm(), &mut vm::CurrentPages))
+        .attached(|record| record.with_space(|space| body(space, &mut vm::CurrentPages)))
 }
 
 /// Host builds have no process: the services run on the target only.
@@ -249,6 +250,19 @@ pub fn with_space_for<R>(
 ) -> Result<R, NtStatus> {
     let _ = process;
     Err(STATUS_INVALID_HANDLE)
+}
+
+/// Run `body` over the process `process` names, which must grant PROCESS_VM_OPERATION, its address
+/// space the live one but not locked (see [`with_space_for`]): for a change that takes the address
+/// space's lock a step at a time, between waits (a view's pages read from its file).
+#[cfg(target_arch = "x86")]
+pub fn with_process<R>(
+    call: &mut NtCall,
+    process: Handle,
+    body: impl FnOnce(&'static crate::process::Process) -> Result<R, NtStatus>,
+) -> Result<R, NtStatus> {
+    let _ = call;
+    super::object::reference_process(process.raw(), PROCESS_VM_OPERATION)?.attached(body)
 }
 
 /// [`with_space_for`] a change to the process's memory: PROCESS_VM_OPERATION.
@@ -807,8 +821,7 @@ mod tests {
         const SENTINEL: u32 = 0xF2F2;
         let memory = Rc::new(RefCell::new(Page(vec![0; 0x100])));
         let _installed = install(memory.clone());
-        // SAFETY: a trap frame is plain dwords; all zeros is a valid one.
-        let mut frame: crate::user::TrapFrame = unsafe { core::mem::zeroed() };
+        let mut frame = crate::user::TrapFrame::default();
         let mut passive = crate::level::passive_for_test();
         let mut call = NtCall::new(&mut frame, &mut passive);
         let count = UserPtr::<u32>::at(0x10000);

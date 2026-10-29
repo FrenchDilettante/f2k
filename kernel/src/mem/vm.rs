@@ -327,8 +327,8 @@ pub struct AddressSpace {
 }
 
 impl AddressSpace {
-    /// The empty space (the tests build it by value; the kernel writes it in place).
-    #[cfg(test)]
+    /// The empty space: a process record's from the kernel's build on (the pool's records are
+    /// built at compile time), and the tests'.
     pub const fn new() -> AddressSpace {
         AddressSpace {
             regions: [None; REGIONS],
@@ -361,12 +361,12 @@ impl AddressSpace {
         slot.take().map(|view| view.mapping)
     }
 
-    /// Forget every view (the address space goes, and its pages with it), handing what each view
-    /// mapped to `release` for the reference the view held.
-    pub fn drop_views(&mut self, mut release: impl FnMut(crate::ob::Mapping)) {
+    /// Forget every view, handing each to `release` — its base, for its pages to go, and what it
+    /// mapped, for the reference the view held.
+    pub fn drop_views(&mut self, mut release: impl FnMut(View)) {
         for slot in self.views.iter_mut() {
             if let Some(view) = slot.take() {
-                release(view.mapping);
+                release(view);
             }
         }
     }
@@ -380,21 +380,11 @@ impl AddressSpace {
             .sum()
     }
 
-    /// Write the empty space at `space`, region by region (by value it would pass the caller's
-    /// stack).
-    ///
-    /// # Safety
-    ///
-    /// `space` is valid for writes and aligned; its previous contents are overwritten.
-    pub unsafe fn write_empty(space: *mut AddressSpace) {
-        // SAFETY: the caller's contract; every record is written.
-        unsafe {
-            let regions = core::ptr::addr_of_mut!((*space).regions) as *mut Option<Region>;
-            for index in 0..REGIONS {
-                regions.add(index).write(None);
-            }
-            core::ptr::addr_of_mut!((*space).views).write([None; VIEWS]);
-        }
+    /// Empty the space in place, whatever it held (by value it would pass the caller's stack): a
+    /// process record taken for a new process.
+    pub fn reset(&mut self) {
+        self.regions.fill(None);
+        self.views.fill(None);
     }
 
     /// The region containing `va`.
@@ -965,7 +955,7 @@ mod tests {
             "an image's view maps its segment"
         );
         let mut released = Vec::new();
-        space.drop_views(|mapping| released.push(mapping));
+        space.drop_views(|view| released.push(view.mapping));
         assert_eq!(released.len(), VIEWS);
         assert_eq!(
             released
@@ -1399,14 +1389,19 @@ mod tests {
         );
     }
 
-    /// The kernel writes the empty space in place: every record ends up empty, whatever was there.
+    /// The kernel empties a space in place: every record ends up empty, whatever was there.
     #[test]
     fn the_empty_space_is_written_in_place() {
         let mut vm = space();
         vm.reserve(None, 0x1000, PAGE_READWRITE, Kind::Private)
             .unwrap();
-        // SAFETY: the box is valid, aligned and owned here.
-        unsafe { AddressSpace::write_empty(&mut *vm) };
+        let section = crate::ob::Mapping::Section(crate::ob::ObjectId {
+            kind: crate::ob::ObjectType::Section,
+            index: 1,
+            generation: 0,
+        });
+        assert!(vm.add_view(0x30_0000, section));
+        vm.reset();
         assert_eq!(vm.region_at(USER_LOW), None);
         assert_eq!(
             vm.query(&Fake::default(), USER_LOW).size,

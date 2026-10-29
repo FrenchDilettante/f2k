@@ -16,7 +16,7 @@
 //! mapped in every address space ([`crate::mem::kstacks`]), each slot's frames recorded by their
 //! owning thread. The thread records themselves are the object manager's ([`crate::ob`]), taken
 //! from its whole pool; the process numbers its own threads ([`ordinals`]), which places their TEB
-//! pages. The scheduling record leads the process at a pinned offset, so a thread's address-space
+//! pages. The scheduling record is pinned with the process record, so a thread's address-space
 //! pointer (its owner's record, or the one it attached to) resolves the directory base the context
 //! switch loads.
 //!
@@ -36,9 +36,12 @@
 //!
 //! The end of a process, in the platform's order:
 //!
-//! 1. every other thread is terminated, without running again (the exit service's and a fault's
-//!    end; a thread inside a critical region finishes it first);
-//! 2. every handle closes, as CloseHandle would — the objects go with their last references;
+//! 1. every other thread is terminated (the exit service's and a fault's end): each takes an exit
+//!    APC and runs its own exit at its next window — a thread inside a critical region at the
+//!    region's end — and the last of the process's threads to exit runs the steps that follow;
+//! 2. every handle closes, as CloseHandle would — the objects go with their last references; then
+//!    its views are unmapped, each section or image segment losing the view's reference (Windows
+//!    2000's MmCleanProcessAddressSpace: an image's file is closed once nothing maps it);
 //! 3. the last thread's object signals, then the process object with the exit code: their waiters
 //!    wake, and the switch away from the last thread may select one of them;
 //! 4. the address space goes: every frame;
@@ -48,11 +51,15 @@
 //! for everyone who can observe it, however long the reap waits for the processor. Steps 4 and 5
 //! run on the idle thread's reap, in [`reap`], with the object audit between them and the teardown
 //! audit after 5; their checks over the whole system, and the audit lines, wait for quiescence.
+//! What the reap does can't run on the dying thread: the directory and its page tables are the
+//! ones it runs on, and its gate stack the one it runs on.
 //!
 //! The records live in the process pool ([`pool`]), which also answers which process is current:
 //! kernel state (like CR3 and the TSS), not per-process state. Everything per-process lives inside
-//! the [`Process`] record, or in the object manager's pools every process shares: its objects,
-//! reached through its handles, and its threads' records, through its thread list.
+//! the [`Process`] record — each part behind what guards it (see [`Process`]) — or in the shared
+//! databases, at the process's index: its waitable and exit status in the dispatcher's, its thread
+//! ordinals with its object in the directory, its objects reached through its handles, and its
+//! threads' records through its thread list.
 
 /// The end of a thread and of its process, as decisions: the exit routing, the report lines,
 /// the suite's leg order and tally.
@@ -65,30 +72,57 @@ pub mod runner;
 /// The process pool and the current process.
 pub mod pool;
 
-/// The process's own synchronization records: the user-APC records QueueUserAPC queues.
-pub mod objects;
-
 /// The process's thread ordinals: which thread holds which TEB page.
 pub mod ordinals;
 
 pub use pool::MAX_PROCESSES;
 #[cfg(target_arch = "x86")]
-pub use pool::{current, current_mut, reap_pending};
+pub use pool::{current, reap_pending};
 
 /// The smoke-subset thread surface: child-thread creation, the thread records, the thread-exit
 /// path.
 #[cfg(target_arch = "x86")]
 pub mod threads;
 
+use core::cell::UnsafeCell;
+
 #[cfg(target_arch = "x86")]
 use crate::mem::paging;
+use crate::mem::vm::AddressSpace;
+use crate::sched::object::{HandleTable, HANDLE_SHIFT, HANDLE_SLOTS};
+use crate::sched::process::{PinnedProcess, SchedProcess};
+use crate::sync::ShortLock;
 
-/// A process: one address space and its threads.
-#[repr(C)]
+/// A process: one address space and its threads (Windows 2000's EPROCESS, the process object's
+/// body: the record shares its object's index). Its parts are reached apart, each the way its
+/// users need it, so no part is ever borrowed for another's sake:
+///
+/// - the scheduling record (KPROCESS) is the dispatcher's, at the dispatch level;
+/// - the identity is written when the process is created, before anything can name it, and read
+///   freely after;
+/// - the handle table, the address space and the rest of what changes are each behind a short lock
+///   of their own (Windows 2000's handle-table lock, the address-space locks, the process lock),
+///   held only for the change itself: never across a wait, a hold of the directory or a copy of
+///   user memory. The page-fault path takes the address space's alone.
 pub struct Process {
-    /// The scheduling record, leading the process record: the context switch's assembly reads the
-    /// directory base through a thread's owner pointer at a pinned offset.
-    pub sched: crate::sched::process::SchedProcess,
+    /// The scheduling record: the dispatcher's, which the process's threads link to (their owner
+    /// and address-space pointers), and the switch reads the directory base from.
+    sched: PinnedProcess,
+    /// Who the process is (see [`IdentityCell`]).
+    identity: IdentityCell,
+    /// The handle table: the process's handles-to-objects (its open files' among them: a file
+    /// object each, see `crate::fs::file`).
+    handles: ShortLock<HandleTable>,
+    /// The address space's regions and views: every user page the process holds lies in one, and
+    /// every mapping, commit and release of its pages goes through it.
+    space: ShortLock<AddressSpace>,
+    /// What else changes over the process's life (see [`ProcessState`]).
+    state: ShortLock<ProcessState>,
+}
+
+/// Who a process is: set when its record is taken, never changed after.
+#[derive(Clone, Copy)]
+struct Identity {
     /// The image's name, as its end reports it on COM1.
     name: ProcessName,
     /// The process's client id (what GetCurrentProcessId reports, through the TEB).
@@ -97,50 +131,97 @@ pub struct Process {
     /// InheritedFromUniqueProcessId): zero for a boot's program, which no process created.
     parent_id: u32,
     /// The boot's program the process runs as, its 1-based index in the boot's list (see
-    /// [`runner`]); none for a process another process started. Its end reports by it.
+    /// `runner`); none for a process another process started. Its end reports by it.
     leg: Option<u32>,
     /// The process's object: what a handle to the process names and a wait on it waits for. It
     /// holds the process's own reference until the teardown's end, and its index is the record's
     /// in the pool.
     object: crate::ob::ObjectId,
+    /// The process's page-directory frame.
+    dir_phys: u32,
+}
+
+/// A process record's identity, written by the pool as it takes the record for a new process and
+/// copied out by every read. The write needs no lock: the record is the new process's alone then —
+/// its object was free until the pool took it, so nothing names the process yet — and on the one
+/// processor nothing reads an identity in the middle of the write (no switch comes inside a plain
+/// copy, and no interrupt handler reads a process's identity).
+struct IdentityCell(UnsafeCell<Identity>);
+
+// SAFETY: one processor, and the identity is reached only by the copies below: the write, whose
+// caller vouches that nothing reads the identity meanwhile, and the reads, which keep no reference
+// into the cell.
+unsafe impl Sync for IdentityCell {}
+
+impl IdentityCell {
+    const fn new(identity: Identity) -> Self {
+        IdentityCell(UnsafeCell::new(identity))
+    }
+
+    /// The identity, copied out.
+    fn get(&self) -> Identity {
+        // SAFETY: a copy; the one write is `renew`'s, which nothing reads beside (see there), and
+        // no reference into the cell outlives a read.
+        unsafe { *self.0.get() }
+    }
+
+    /// Write a new process's identity.
+    ///
+    /// # Safety
+    ///
+    /// Nothing reads the identity during the write: the record is taken for a new process whose
+    /// object nothing names yet (see [`IdentityCell`]).
+    #[cfg(target_arch = "x86")]
+    unsafe fn renew(&self, identity: Identity) {
+        // SAFETY: the caller's contract; no reference into the cell is live.
+        unsafe { *self.0.get() = identity };
+    }
+}
+
+/// What changes in a process besides its handles and its address space, behind one short lock:
+/// small values read and written in place, the end state among them.
+struct ProcessState {
     /// The priority class (PROCESS_PRIORITY_CLASS_*, ProcessPriorityClass's value).
     priority_class: u8,
     /// The hard-error mode (DefaultHardErrorProcessing, ProcessDefaultHardErrorMode's value: the
     /// hard-error and fault dialogs it governs never exist here; the value is kept for its round
     /// trip).
     hard_error_mode: u32,
-    /// The main thread's object (on any free thread record when the process started); none before
-    /// the process has one. Its generation tells a later thread of the same record apart.
-    main_thread: Option<crate::ob::ObjectId>,
-    /// The thread ordinals: which thread holds which TEB page, and the pages a terminated thread
-    /// left mapped.
-    ordinals: ordinals::Ordinals,
-    /// The address space's regions: every user page the process holds lies in one, and every
-    /// mapping, commit and release of its pages goes through it.
-    vm: crate::mem::vm::AddressSpace,
-    /// The handle table: the process's handles-to-objects (its open files' among them: a file
-    /// object each, see `crate::fs::file`).
-    handles: crate::sched::object::HandleTable,
     /// The process's console handles: the console server's own, outside the handle table, as
     /// Windows 2000's csrss keeps them (see `crate::csr`).
     console: rtl::console::Handles,
     /// The process's connection to win32k: its window station's and desktop's handles, made at its
     /// first win32k service (see `crate::win32k::winsta`); none until then.
     win32k: Option<crate::win32k::winsta::Connection>,
-    /// The user-APC records (the objects themselves are the object manager's).
-    objects: objects::SyncObjects,
     /// Why the process ended, recorded by its last thread's exit; the idle thread's reap step
     /// tears down a process once this is set.
     end: Option<exit::ProcessEnd>,
-    /// The end an exit or fault decided while some threads were still finishing a critical region:
-    /// the last of them ends the process with it.
+    /// The end NtTerminateProcess or a fault decided for the process, while other threads were
+    /// still to take their exit APCs: the last thread to exit ends the process with it.
     handed_end: Option<exit::ProcessEnd>,
     /// Whether its end is under way with none of its threads running it (a termination from
     /// another process, or the deletion of one that never had a thread; see
-    /// [`threads::end_unattended`]): it takes no new thread, and is not ended twice.
+    /// `threads::end_unattended`): it takes no new thread, and is not ended twice.
     ending: bool,
     /// Whether the teardown has run (the record waits for its object's last reference).
     torn_down: bool,
+}
+
+impl ProcessState {
+    /// A new process's state: the default class and mode, the standard console handles, nothing
+    /// ended.
+    const fn fresh() -> Self {
+        ProcessState {
+            priority_class: NORMAL_PRIORITY_CLASS,
+            hard_error_mode: DEFAULT_HARD_ERROR_MODE,
+            console: rtl::console::Handles::standard(),
+            win32k: None,
+            end: None,
+            handed_end: None,
+            ending: false,
+            torn_down: false,
+        }
+    }
 }
 
 /// A process's name: its image's file name without the extension, as its end report shows it — at
@@ -156,6 +237,12 @@ pub struct ProcessName {
 pub const NAME_ROOM: usize = 15;
 
 impl ProcessName {
+    /// The empty name (a record no process holds).
+    const EMPTY: ProcessName = ProcessName {
+        bytes: [0; NAME_ROOM],
+        length: 0,
+    };
+
     /// The name `name` gives, cut at its room.
     pub fn new(name: &[u8]) -> Self {
         let mut bytes = [0u8; NAME_ROOM];
@@ -188,14 +275,6 @@ impl ProcessName {
     }
 }
 
-/// A process record's parts, borrowed apart (see [`Process::parts_mut`]).
-pub struct ProcessParts<'a> {
-    /// The address space's regions.
-    pub vm: &'a mut crate::mem::vm::AddressSpace,
-    /// The handle table.
-    pub handles: &'a mut crate::sched::object::HandleTable,
-}
-
 /// The default priority class: PROCESS_PRIORITY_CLASS_NORMAL.
 pub const NORMAL_PRIORITY_CLASS: u8 = crate::nt::process::PRIORITY_CLASS_NORMAL;
 /// The default hard-error mode: 1, hard errors reported (a process created without
@@ -208,127 +287,272 @@ pub const DEFAULT_HARD_ERROR_MODE: u32 = 1;
 /// block keeps 64 children alive at once).
 pub const CHILD_THREADS: usize = 64;
 
-// The scheduling record leads the process record: a thread's owner pointer and the process's
-// directory base are one pinned chain.
-const _: () = assert!(core::mem::offset_of!(Process, sched) == 0);
+/// How many handle-table slots one hold of a table reaches where a walk of the whole table
+/// releases the lock between its steps (the exit's closing of every handle, an inheritance): few
+/// enough for a step's copy of them to sit on a kernel stack.
+const HANDLE_STEP: usize = 32;
+
+/// Run `f` on `lock`'s value, locked: the bridge for the process's parts, whose users hold no
+/// passive token, which it makes for the hold (as [`crate::ob::locked`] does for the directory).
+///
+/// # Panics
+///
+/// The processor is above the passive level: inside a process's lock or the directory's already
+/// (`f`, or what it calls, taking one again), or at a raised level, where nothing may wait for it.
+fn locked<T, R>(lock: &ShortLock<T>, f: impl FnOnce(&mut T) -> R) -> R {
+    assert_eq!(
+        crate::pcr::pcr().current(),
+        crate::interrupt::irql::PASSIVE,
+        "a process's lock taken above the passive level"
+    );
+    // SAFETY: a passive entry (see `At::enter`): the ledger reads the passive level, and the token
+    // stays on this thread, dropped with this frame.
+    let mut passive = unsafe { crate::level::At::<crate::level::Passive>::enter() };
+    let mut guard = lock.lock(&mut passive);
+    f(&mut guard)
+}
 
 impl Process {
+    /// A record no process holds: every pool record's at the kernel's build.
+    pub const fn empty() -> Self {
+        Process {
+            sched: PinnedProcess::new(0, crate::sched::NORMAL_BASE),
+            identity: IdentityCell::new(Identity {
+                name: ProcessName::EMPTY,
+                id: 0,
+                parent_id: 0,
+                leg: None,
+                object: crate::ob::ObjectId {
+                    kind: crate::ob::ObjectType::Process,
+                    index: 0,
+                    generation: 0,
+                },
+                dir_phys: 0,
+            }),
+            handles: ShortLock::new(HandleTable::empty()),
+            space: ShortLock::new(AddressSpace::new()),
+            state: ShortLock::new(ProcessState::fresh()),
+        }
+    }
+
+    /// Take this record, whose process object `object` the directory has just made (so nothing
+    /// names it yet), for a new process: named `name`, its client id fresh, created by the process
+    /// whose client id is `parent_id` (zero: none), running as leg `leg` (none for a child), over
+    /// the address space at `dir_phys`. Every part starts over in place: its previous process (if
+    /// any) was torn down before its object went, so the parts hold nothing.
+    #[cfg(target_arch = "x86")]
+    fn renew(
+        &self,
+        object: crate::ob::ObjectId,
+        dir_phys: u32,
+        name: ProcessName,
+        leg: Option<u32>,
+        parent_id: u32,
+    ) {
+        let identity = Identity {
+            name,
+            id: new_client_id(),
+            parent_id,
+            leg,
+            object,
+            dir_phys,
+        };
+        // SAFETY: the record is taken for a new process whose object the directory has just made:
+        // nothing names it yet, so nothing reads its identity during the write.
+        unsafe { self.identity.renew(identity) };
+        crate::level::raised::<crate::level::Dispatch, _>(|dispatch| {
+            let sched = self.sched.get_mut(crate::sched::DISPATCHER.get(dispatch));
+            assert!(
+                sched.has_no_threads() && sched.attach_count() == 0,
+                "a free process record has no thread"
+            );
+            *sched = SchedProcess::pooled(dir_phys, crate::sched::NORMAL_BASE, object.index);
+        });
+        self.with_handles(|table| {
+            table.drain(|_| unreachable!("a free process record holds no handle"))
+        });
+        self.with_space(AddressSpace::reset);
+        locked(&self.state, |state| *state = ProcessState::fresh());
+    }
+
     /// The process's name.
-    pub fn name(&self) -> &str {
-        self.name.as_str()
+    pub fn name(&self) -> ProcessName {
+        self.identity.get().name
     }
 
     /// The process's client id.
     pub fn id(&self) -> u32 {
-        self.id
+        self.identity.get().id
     }
 
     /// The client id of the process that created this one; zero for a boot's program.
     pub fn parent_id(&self) -> u32 {
-        self.parent_id
-    }
-
-    /// Record the client id of the process that created this one (its creator sets it, once the
-    /// record is written).
-    pub fn set_parent_id(&mut self, parent_id: u32) {
-        self.parent_id = parent_id;
+        self.identity.get().parent_id
     }
 
     /// The boot's program the process runs as (its 1-based index); none for a child.
     pub fn leg(&self) -> Option<u32> {
-        self.leg
+        self.identity.get().leg
     }
 
     /// The process's object.
     pub fn object(&self) -> crate::ob::ObjectId {
-        self.object
-    }
-
-    /// The console handles (the console server serves them).
-    pub fn console_mut(&mut self) -> &mut rtl::console::Handles {
-        &mut self.console
-    }
-
-    /// Whether the process is ending: its end is held for threads finishing a critical region, or
-    /// under way with none of its threads running it. It takes no new thread then.
-    pub fn terminating(&self) -> bool {
-        self.ending || self.handed_end.is_some()
-    }
-
-    /// Whether the process has a main thread: a boot's program from its start, a process another
-    /// created (NtCreateProcess) from its first thread's creation on.
-    pub fn has_main_thread(&self) -> bool {
-        self.ordinals.has_main()
-    }
-
-    /// The process's connection to win32k, once its first win32k service made it.
-    pub fn win32k(&self) -> Option<crate::win32k::winsta::Connection> {
-        self.win32k
-    }
-
-    /// Record the process's connection to win32k.
-    pub fn set_win32k(&mut self, connection: crate::win32k::winsta::Connection) {
-        self.win32k = Some(connection);
-    }
-
-    /// The process's priority class (PROCESS_PRIORITY_CLASS_*).
-    pub fn priority_class(&self) -> u8 {
-        self.priority_class
-    }
-
-    /// Record the process's priority class (the scheduling side is the caller's).
-    pub fn set_priority_class(&mut self, class: u8) {
-        self.priority_class = class;
-    }
-
-    /// The process's hard-error mode.
-    pub fn hard_error_mode(&self) -> u32 {
-        self.hard_error_mode
-    }
-
-    /// Set the process's hard-error mode.
-    pub fn set_hard_error_mode(&mut self, mode: u32) {
-        self.hard_error_mode = mode;
+        self.identity.get().object
     }
 
     /// The process's page-directory frame.
     pub fn dir_phys(&self) -> u32 {
-        self.sched.dir_phys()
+        self.identity.get().dir_phys
     }
 
-    /// The record's parts, borrowed apart: what a service needs several of at once (the address
-    /// space and the handle table, say) without re-borrowing the whole record.
-    pub fn parts_mut(&mut self) -> ProcessParts<'_> {
-        ProcessParts {
-            vm: &mut self.vm,
-            handles: &mut self.handles,
-        }
+    /// The scheduling record's address: what the process's threads' owner and address-space
+    /// pointers are, and what the dispatcher's calls on the process take.
+    pub fn sched_ptr(&self) -> *mut SchedProcess {
+        self.sched.as_ptr()
     }
 
-    /// The address space (every user mapping goes through it).
-    pub fn vm(&mut self) -> &mut crate::mem::vm::AddressSpace {
-        &mut self.vm
+    /// The scheduling record, to read, for as long as the caller borrows the dispatcher.
+    pub fn sched<'a>(
+        &'a self,
+        dispatcher: &'a crate::sched::dispatcher::Dispatcher,
+    ) -> &'a SchedProcess {
+        self.sched.get(dispatcher)
     }
 
-    /// The address space, to read (a query that changes nothing).
-    pub fn space(&self) -> &crate::mem::vm::AddressSpace {
-        &self.vm
+    /// The kernel stacks the process's threads hold: one per attached thread (see
+    /// [`SchedProcess::stack_count`]).
+    pub fn stack_count(&self) -> u16 {
+        crate::level::raised::<crate::level::Dispatch, _>(|dispatch| {
+            self.sched(crate::sched::DISPATCHER.get(dispatch))
+                .stack_count()
+        })
     }
 
-    /// The user-APC records.
-    pub fn sync_mut(&mut self) -> &mut objects::SyncObjects {
-        &mut self.objects
+    /// The process's base priority (KPROCESS's BasePriority).
+    pub fn base_priority(&self) -> i8 {
+        crate::level::raised::<crate::level::Dispatch, _>(|dispatch| {
+            self.sched(crate::sched::DISPATCHER.get(dispatch))
+                .base_priority()
+        })
     }
 
-    /// The handle table, for lookups.
-    pub fn handles(&self) -> &crate::sched::object::HandleTable {
-        &self.handles
+    /// How many threads of other processes run attached to the process's address space.
+    pub fn attach_count(&self) -> u16 {
+        crate::level::raised::<crate::level::Dispatch, _>(|dispatch| {
+            self.sched(crate::sched::DISPATCHER.get(dispatch))
+                .attach_count()
+        })
+    }
+
+    /// Run `f` on the handle table, locked.
+    pub fn with_handles<R>(&self, f: impl FnOnce(&mut HandleTable) -> R) -> R {
+        locked(&self.handles, f)
+    }
+
+    /// Run `f` on the address space, locked: never across a wait, a hold of the directory or a
+    /// copy of user memory (the page-fault path takes this lock).
+    pub fn with_space<R>(&self, f: impl FnOnce(&mut AddressSpace) -> R) -> R {
+        locked(&self.space, f)
+    }
+
+    /// The entry a handle names in the table; none when it names nothing.
+    pub fn lookup_handle(&self, handle: u32) -> Option<crate::ob::Entry> {
+        self.with_handles(|table| table.lookup(handle))
+    }
+
+    /// Whether every slot of the handle table is taken: the next insert would find none.
+    pub fn handles_full(&self) -> bool {
+        self.with_handles(|table| table.is_full())
+    }
+
+    /// The console handles (the console server serves them).
+    pub fn console(&self) -> rtl::console::Handles {
+        locked(&self.state, |state| state.console)
+    }
+
+    /// Set the console handles: a new process's, its creator's inheritable ones.
+    pub fn set_console(&self, console: rtl::console::Handles) {
+        locked(&self.state, |state| state.console = console);
+    }
+
+    /// Run `f` on the console handles, locked: the console server's call, which `f` serves at the
+    /// dispatch level (a raise from the lock's level).
+    pub fn with_console<R>(&self, f: impl FnOnce(&mut rtl::console::Handles) -> R) -> R {
+        locked(&self.state, |state| f(&mut state.console))
+    }
+
+    /// Whether the process is ending: its end is decided and held for its last thread, or under
+    /// way with none of its threads running it. It takes no new thread then.
+    pub fn terminating(&self) -> bool {
+        locked(&self.state, |state| {
+            state.ending || state.handed_end.is_some()
+        })
+    }
+
+    /// Why the process ended; none while it runs.
+    pub fn end(&self) -> Option<exit::ProcessEnd> {
+        locked(&self.state, |state| state.end)
+    }
+
+    /// Whether the process has ended and is not torn down yet.
+    pub fn awaits_teardown(&self) -> bool {
+        locked(&self.state, |state| state.end.is_some() && !state.torn_down)
+    }
+
+    /// Whether the teardown has run.
+    pub fn torn_down(&self) -> bool {
+        locked(&self.state, |state| state.torn_down)
+    }
+
+    /// The process's connection to win32k, once its first win32k service made it.
+    pub fn win32k(&self) -> Option<crate::win32k::winsta::Connection> {
+        locked(&self.state, |state| state.win32k)
+    }
+
+    /// Record the process's connection to win32k.
+    pub fn set_win32k(&self, connection: crate::win32k::winsta::Connection) {
+        locked(&self.state, |state| state.win32k = Some(connection));
+    }
+
+    /// The process's priority class (PROCESS_PRIORITY_CLASS_*).
+    pub fn priority_class(&self) -> u8 {
+        locked(&self.state, |state| state.priority_class)
+    }
+
+    /// Record the process's priority class (the scheduling side is the caller's).
+    pub fn set_priority_class(&self, class: u8) {
+        locked(&self.state, |state| state.priority_class = class);
+    }
+
+    /// The process's hard-error mode.
+    pub fn hard_error_mode(&self) -> u32 {
+        locked(&self.state, |state| state.hard_error_mode)
+    }
+
+    /// Set the process's hard-error mode.
+    pub fn set_hard_error_mode(&self, mode: u32) {
+        locked(&self.state, |state| state.hard_error_mode = mode);
+    }
+
+    /// A user-APC record of the process's that is in no queue in `dispatcher`, or none (every
+    /// record is queued). The records are the dispatcher database's (its APC queues link them by
+    /// name): each process has its share of them, [`crate::sched::database::USER_APCS`] from its
+    /// record's index on.
+    pub fn free_apc(
+        &self,
+        dispatcher: &mut crate::sched::dispatcher::Dispatcher,
+    ) -> Option<crate::sched::apc::ApcId> {
+        use crate::sched::database::USER_APCS;
+        let base = self.object().index * USER_APCS as u16;
+        (base..base + USER_APCS as u16)
+            .find(|&index| !dispatcher.user_apc_mut(index).inserted())
+            .map(crate::sched::apc::ApcId::User)
     }
 
     /// Close a handle: the table's claim ends — the object's handle, with its reference (the last
     /// handle cleans a file object up, the last reference deletes the object). False when the
     /// handle names nothing.
-    pub fn close_handle(&mut self, handle: u32) -> bool {
+    pub fn close_handle(&self, handle: u32) -> bool {
         let Some(entry) = self.take_handle(handle) else {
             return false;
         };
@@ -339,33 +563,35 @@ impl Process {
     /// The first half of a handle's close: its slot is free from here on (the next insert takes
     /// it), while what its entry names stays counted until [`Process::release_handle`]. None when
     /// the handle names nothing.
-    pub fn take_handle(&mut self, handle: u32) -> Option<crate::ob::Entry> {
-        self.handles.close(handle)
+    pub fn take_handle(&self, handle: u32) -> Option<crate::ob::Entry> {
+        self.with_handles(|table| table.close(handle))
     }
 
     /// The second half of a handle's close: what the entry [`Process::take_handle`] took out
-    /// names is released (see [`Process::close_handle`]).
-    pub fn release_handle(&mut self, entry: crate::ob::Entry) {
+    /// names is released (see [`Process::close_handle`]), the table's lock released by then.
+    pub fn release_handle(&self, entry: crate::ob::Entry) {
         self.release_entry(entry);
     }
 
     /// Change the entry a handle names in this process's table with `change` (its inheritance, its
     /// protection from close: NtSetInformationObject's); false when the handle names nothing.
     pub fn update_handle(
-        &mut self,
+        &self,
         handle: u32,
         change: impl FnOnce(crate::ob::Entry) -> crate::ob::Entry,
     ) -> bool {
-        self.handles.update(handle, change)
+        self.with_handles(|table| table.update(handle, change))
     }
 
     /// Release what one closed handle named. A process's last handle closing ends the process if
-    /// it never had a thread (see [`threads::forsake_if_abandoned`]).
-    fn release_entry(&mut self, entry: crate::ob::Entry) {
+    /// it never had a thread (see `threads::forsake_if_abandoned`).
+    fn release_entry(&self, entry: crate::ob::Entry) {
         match entry.target {
             #[cfg(target_arch = "x86")]
             crate::ob::Target::Object(id) => {
-                crate::ob::directory().handle_closed(id, |followup| self.finish(followup));
+                // What the close leaves (a file object's cleanup, which may reach the disk) is
+                // finished once the directory is released.
+                crate::ob::locked(|directory| directory.handle_closed(id)).finish();
                 if id.kind == crate::ob::ObjectType::Process {
                     threads::forsake_if_abandoned(id);
                 }
@@ -375,132 +601,143 @@ impl Process {
         }
     }
 
-    /// Finish what the object manager left to the process when one of its objects' last handle or
-    /// last reference went: a section's hold on its frames (and a file's section's on its file
-    /// object), a file object's cleanup and its record's close.
-    pub fn finish(&mut self, followup: crate::ob::Followup) {
-        use crate::ob::Followup;
-        match followup {
-            Followup::Section {
-                frames,
-                file_object,
-            } => {
-                crate::nt::section::release_frames(frames);
-                #[cfg(target_arch = "x86")]
-                if let Some(file_object) = file_object {
-                    if let Some(followup) = unmap_file(file_object) {
-                        self.finish(followup);
-                    }
-                }
-                #[cfg(not(target_arch = "x86"))]
-                let _ = file_object;
-            }
-            #[cfg(target_arch = "x86")]
-            Followup::FileCleanup {
-                record,
-                access,
-                share,
-                delete_on_close,
-            } => crate::fs::io::cleanup(record, access, share, delete_on_close),
-            #[cfg(target_arch = "x86")]
-            Followup::FileClose { record } => crate::fs::io::close(record),
-            #[cfg(not(target_arch = "x86"))]
-            Followup::FileCleanup { .. } | Followup::FileClose { .. } => {}
-        }
-    }
-
-    /// Insert a handle to object `id` with `access` and `inheritance`, the object counting it; null
-    /// when the table is full (the object is left as it was).
+    /// Insert a handle to object `id` with `access` and `inheritance`, the object counting it; none
+    /// when the table is full or the object is gone (the object is left as it was). The object is
+    /// counted in one hold of the directory and the entry inserted in a hold of the table after
+    /// it: the caller writes the handle to user memory once both are released (Windows 2000's
+    /// ObInsertObject shape), and closes it again if that write faults.
     #[cfg(target_arch = "x86")]
-    pub fn insert_object(&mut self, id: crate::ob::ObjectId, access: u32, inherit: bool) -> u32 {
-        if self.handles.is_full() || !crate::ob::directory().handle_opened(id) {
-            return 0;
+    pub fn insert_object(
+        &self,
+        id: crate::ob::ObjectId,
+        access: u32,
+        inherit: bool,
+    ) -> Option<core::num::NonZeroU32> {
+        if self.handles_full() || !crate::ob::locked(|directory| directory.handle_opened(id)) {
+            return None;
         }
-        self.handles
-            .insert(crate::ob::Entry::object(id, access, inherit))
+        let handle =
+            self.with_handles(|table| table.insert(crate::ob::Entry::object(id, access, inherit)));
+        Some(core::num::NonZeroU32::new(handle).expect("a table with room hands out a handle"))
     }
 
     /// Take into this process's table, a fresh one, every inheritable handle of `parent`'s, each at
     /// its own value with its access and inheritance — the documented inheritance of a process
     /// created with InheritObjectTable (CreateProcess's bInheritHandles) — each object counting its
     /// new handle. (The console handles are not the table's: NtCreateProcess hands every child the
-    /// parent's inheritable ones.) Returns how many handles were taken.
+    /// parent's inheritable ones.) Returns how many handles were taken. The tables are walked a
+    /// step of [`HANDLE_STEP`] slots at a time, each lock held for its own part of the step: the
+    /// parent's entries read, the directory counting the ones taken, the child's slots taking them.
     #[cfg(target_arch = "x86")]
-    pub fn inherit_handles(&mut self, parent: &Process) -> usize {
-        let directory = crate::ob::directory();
-        self.handles.inherit_from(&parent.handles, |entry| {
+    pub fn inherit_handles(&self, parent: &Process) -> usize {
+        let mut taken = 0;
+        for first in (1..HANDLE_SLOTS).step_by(HANDLE_STEP) {
+            let slots = first..(first + HANDLE_STEP).min(HANDLE_SLOTS);
+            let mut step = [None; HANDLE_STEP];
+            parent.with_handles(|table| {
+                for (entry, index) in step.iter_mut().zip(slots.clone()) {
+                    *entry = table
+                        .lookup((index as u32) << HANDLE_SHIFT)
+                        .filter(|entry| entry.inherit);
+                }
+            });
             // A handle names a live object (it holds it), so the count always takes.
-            entry.inherit
-                && entry
-                    .object_id()
-                    .is_some_and(|id| directory.handle_opened(id))
-        })
+            crate::ob::locked(|directory| {
+                for entry in step.iter_mut() {
+                    let counted = entry
+                        .and_then(|entry| entry.object_id())
+                        .is_some_and(|id| directory.handle_opened(id));
+                    if !counted {
+                        *entry = None;
+                    }
+                }
+            });
+            self.with_handles(|table| {
+                for (entry, index) in step.iter().zip(slots) {
+                    if let Some(entry) = *entry {
+                        table.inherit_entry(index, entry);
+                        taken += 1;
+                    }
+                }
+            });
+        }
+        self.with_handles(HandleTable::end_inheritance);
+        taken
     }
 
-    /// Every thread of this process that has a TEB, as (ordinal, TEB address): the main thread at
-    /// ordinal 0, then the created threads (terminated ones too: their pages stay mapped until the
-    /// ordinal is reused). Another process's threads are never among them.
-    pub fn thread_tebs(&self) -> impl Iterator<Item = (u32, u32)> + '_ {
-        self.ordinals.tebs()
-    }
-
-    /// Release every handle at once: the process-exit step. Each closes as a CloseHandle would.
-    pub fn release_handles(&mut self) {
-        use crate::sched::object::{HANDLE_SHIFT, HANDLE_SLOTS};
-        for index in 1..HANDLE_SLOTS as u32 {
-            if let Some(entry) = self.handles.close(index << HANDLE_SHIFT) {
+    /// Release every handle at once: the process-exit step. Each closes as a CloseHandle would, in
+    /// slot order: a step of [`HANDLE_STEP`] slots is taken out of the table in one hold, and what
+    /// they named released after it.
+    pub fn release_handles(&self) {
+        for first in (1..HANDLE_SLOTS).step_by(HANDLE_STEP) {
+            let slots = first..(first + HANDLE_STEP).min(HANDLE_SLOTS);
+            let mut step = [None; HANDLE_STEP];
+            self.with_handles(|table| {
+                for (entry, index) in step.iter_mut().zip(slots) {
+                    *entry = table.close((index as u32) << HANDLE_SHIFT);
+                }
+            });
+            for entry in step.into_iter().flatten() {
                 self.release_entry(entry);
             }
         }
-        self.handles.drain(|_| {});
+        self.with_handles(|table| table.drain(|_| {}));
     }
 
-    /// Hold the process's end for the threads still finishing a critical region (see
-    /// [`exit::hand_over`]), once.
-    pub fn hand_end(&mut self, end: exit::ProcessEnd) {
-        assert!(
-            self.handed_end.is_none(),
-            "a process's end is handed on once"
-        );
-        self.handed_end = Some(end);
+    /// Hold the end NtTerminateProcess or a fault decided for the process, for whichever of its
+    /// threads exits last (see [`exit::ThreadEnd::last_thread_end`]). The first decision stands: a
+    /// later one, from a thread that had not taken its exit APC yet, changes nothing.
+    pub fn hand_end(&self, end: exit::ProcessEnd) {
+        locked(&self.state, |state| {
+            state.handed_end.get_or_insert(end);
+        });
     }
 
-    /// The end held for the threads finishing a critical region; none unless an exit or fault
-    /// handed one on.
+    /// The end decided for the process, held for its last thread; none unless NtTerminateProcess
+    /// or a fault decided one.
     pub fn handed_end(&self) -> Option<exit::ProcessEnd> {
-        self.handed_end
+        locked(&self.state, |state| state.handed_end)
     }
 
     /// Record why the process ended: its last thread's exit, once.
-    pub fn set_end(&mut self, end: exit::ProcessEnd) {
-        assert!(self.end.is_none(), "a process ends once");
-        self.end = Some(end);
+    pub fn set_end(&self, end: exit::ProcessEnd) {
+        locked(&self.state, |state| {
+            assert!(state.end.is_none(), "a process ends once");
+            state.end = Some(end);
+        });
+    }
+
+    /// Mark the process's end under way with none of its threads running it (see
+    /// `threads::end_unattended`).
+    pub fn begin_unattended_end(&self) {
+        locked(&self.state, |state| state.ending = true);
     }
 
     /// The process has ended, step 3 of its end (see the module notes): its object signals with
     /// `end`'s exit code, and its waiters wake. The last thread's exit signals it, after its own
     /// object, before its switch away selects the next thread.
     #[cfg(target_arch = "x86")]
-    pub fn signal_end(&mut self, end: exit::ProcessEnd) {
-        crate::ob::directory().signal_process_end(self.object, end.exit_status());
+    pub fn signal_end(&self, end: exit::ProcessEnd) {
+        crate::ob::signal_process_end(self.object(), end.exit_status());
     }
 }
 
 #[cfg(target_arch = "x86")]
 impl Process {
-    /// Create a process with no thread: a fresh address space with the record built at its final
-    /// address in the pool, named `name`, running as leg `leg` (none for a child). The
-    /// address space is not live: the caller attaches to the
-    /// process ([`Process::attach`]) to map its user pages, each inside one of its regions.
+    /// Create a process with no thread: a fresh address space with the record taken from the
+    /// pool, named `name`, created by the process whose client id is `parent_id` (zero: none),
+    /// running as leg `leg` (none for a child). The address space is not live: the caller attaches
+    /// to the process ([`Process::attach`]) to map its user pages, each inside one of its regions.
     ///
     /// STATUS_INSUFFICIENT_RESOURCES when no process record is to be had (Windows 2000's answer to
     /// a full table); the fresh directory is given back then.
     pub fn create(
         name: ProcessName,
         leg: Option<u32>,
-    ) -> Result<&'static mut Process, crate::status::NtStatus> {
+        parent_id: u32,
+    ) -> Result<&'static Process, crate::status::NtStatus> {
         let dir_phys = paging::create_address_space();
-        let process = match pool::create(dir_phys, name, leg) {
+        let process = match pool::create(dir_phys, name, leg, parent_id) {
             Ok(process) => process,
             Err(status) => {
                 free_directory(dir_phys);
@@ -519,14 +756,12 @@ impl Process {
     /// not to be had (Windows 2000's answer to a full table or an exhausted kernel stack). A
     /// refusal leaves nothing behind: what was taken before it — the address space, the process
     /// object and its record, the slot — is given back, in the reverse order.
-    // The record is the pool's, not borrowed from `name`.
-    #[allow(clippy::mut_from_ref)]
     pub fn start(
         name: &str,
         leg: Option<u32>,
-    ) -> Result<&'static mut Process, crate::status::NtStatus> {
+    ) -> Result<&'static Process, crate::status::NtStatus> {
         use crate::status::STATUS_INSUFFICIENT_RESOURCES;
-        let process = Process::create(ProcessName::new(name.as_bytes()), leg)?;
+        let process = Process::create(ProcessName::new(name.as_bytes()), leg, 0)?;
 
         // The main thread's gate stack, taken before its record (as a created thread's is): a
         // release undoes it when the record is not to be had, and nothing is attached before both
@@ -537,17 +772,22 @@ impl Process {
         };
 
         // The main thread: its object holds the thread's own reference while it runs (released at
-        // its end), on any free record of the pool; it holds the process's ordinal 0 (the fixed TEB
-        // page). It attaches to the process and runs on the gate stack just taken.
-        let directory = crate::ob::directory();
-        let Some(id) = directory.create_thread() else {
+        // its end), on any free record of the pool; it holds the process's ordinal 0 (the fixed
+        // TEB page), its stack a system region rather than a reservation of its own. It attaches
+        // to the process and runs on the gate stack just taken.
+        let made = crate::ob::locked(|directory| {
+            let id = directory.create_thread()?;
+            directory
+                .ordinals(process.object())
+                .expect("a process being started has its object")
+                .hold_main(id, 0);
+            Some(directory.renew_thread(id))
+        });
+        let Some(thread) = made else {
             crate::mem::kstacks::release((slot, frames));
             process.abandon();
             return Err(STATUS_INSUFFICIENT_RESOURCES);
         };
-        // Its stack is a system region, not a reservation of its own.
-        process.hold_main_thread(id, 0);
-        let thread = directory.renew_thread(id);
         let thread_id = new_client_id();
         crate::level::raised::<crate::level::Dispatch, _>(|dispatch| {
             let dispatcher = crate::sched::DISPATCHER.get(dispatch);
@@ -558,9 +798,10 @@ impl Process {
             record.ordinal = ordinals::MAIN;
             record.teb_va = crate::user::thread_teb_va(ordinals::MAIN as u32);
             record.thread_id = thread_id;
-            // SAFETY: the process record is the pool's, at its final address, and outlives its
-            // threads (its teardown follows the last one's end).
-            unsafe { dispatcher.attach(thread, &mut process.sched) };
+            // SAFETY: the scheduling record is the pool's, at its final address, reached only
+            // through this borrow of the dispatcher meanwhile, and it outlives its threads (its
+            // teardown follows the last one's end).
+            unsafe { dispatcher.attach(thread, process.sched_ptr()) };
         });
         // The TSS `esp0` is the switch's to install: the first switch into the main thread loads
         // its stack top.
@@ -570,7 +811,7 @@ impl Process {
     /// Undo a start refused before the main thread was attached: the process's own reference on
     /// its object goes (no handle exists yet, so the object and the record go with it), then the
     /// fresh address space's directory, which maps nothing yet.
-    fn abandon(&mut self) {
+    fn abandon(&self) {
         let dir_phys = self.dir_phys();
         release_record(self);
         free_directory(dir_phys);
@@ -580,30 +821,49 @@ impl Process {
     /// thread and no handle to it — at once, as its teardown would: its handles (inherited ones)
     /// close, its views and its address space go, then its own reference on its object, which
     /// takes the object and the record with it. Runs detached from it: the directory goes here.
-    pub fn discard(&mut self) {
+    pub fn discard(&self) {
         assert!(
-            self.sched.stack_count() == 0 && !self.has_main_thread(),
+            self.stack_count() == 0 && !self.has_main_thread(),
             "a discarded process never had a thread"
         );
         self.release_handles();
         release_address_space_of(self);
-        self.torn_down = true;
+        locked(&self.state, |state| state.torn_down = true);
         release_record(self);
     }
 
-    /// Record the process's main thread: `id` its object, holding ordinal 0 over the stack
-    /// reserved at `stack` (zero: a system region, a boot's program's). A boot's program's is made
-    /// with the process; a process another process created has its first thread for it (see
-    /// [`threads::create`]).
-    fn hold_main_thread(&mut self, id: crate::ob::ObjectId, stack: u32) {
-        self.main_thread = Some(id);
-        self.ordinals.hold_main(id, stack);
+    /// Whether the process has a main thread: a boot's program from its start, a process another
+    /// created (NtCreateProcess) from its first thread's creation on.
+    pub fn has_main_thread(&self) -> bool {
+        crate::ob::locked(|directory| {
+            directory
+                .ordinals(self.object())
+                .is_some_and(|ordinals| ordinals.has_main())
+        })
     }
 
     /// The process's main thread's record, while its object lives; none before the process has
     /// one, and once the object is gone (the record may be another thread's by then).
     pub fn main_thread(&self) -> Option<crate::sched::thread::ThreadId> {
-        crate::ob::directory().thread(self.main_thread?)
+        crate::ob::locked(|directory| {
+            let id = directory.ordinals(self.object())?.main()?;
+            directory.thread(id)
+        })
+    }
+
+    /// The TEB of every thread of this process that has one: the main thread's, then the created
+    /// threads' (terminated ones too: their pages stay mapped until the ordinal is reused), in
+    /// ordinal order. Another process's threads are never among them.
+    pub fn thread_tebs(&self) -> rtl::array_vec::ArrayVec<u32, { ordinals::ORDINALS }> {
+        let mut tebs = rtl::array_vec::ArrayVec::new();
+        crate::ob::locked(|directory| {
+            if let Some(ordinals) = directory.ordinals(self.object()) {
+                for (_, teb) in ordinals.tebs() {
+                    tebs.push(teb);
+                }
+            }
+        });
+        tebs
     }
 
     /// Attach the running thread to this process's address space until the guard drops (see
@@ -611,7 +871,31 @@ impl Process {
     /// stays the calling process ([`current`]). The record outlives the scope: the caller holds a
     /// reference on the process, or builds it.
     pub fn attach(&self) -> crate::sched::attach::Attached {
-        crate::sched::attach::attach(&self.sched)
+        crate::sched::attach::attach(self.sched_ptr())
+    }
+
+    /// Unmap every view of the process's address space, the live one: its pages go, and the
+    /// reference each held on its section or image segment is dropped (one nothing else
+    /// references goes with it, an image segment closing its file). Windows 2000's
+    /// MmCleanProcessAddressSpace: the process's end runs it before its object signals, so a waiter
+    /// finds the files its views mapped closed. The rest of the address space goes at the
+    /// teardown.
+    pub fn unmap_views(&self) {
+        use crate::mem::vm::{CurrentPages, VIEWS};
+        let mut gone = [None; VIEWS];
+        self.with_space(|space| {
+            let mut count = 0;
+            space.drop_views(|view| {
+                gone[count] = Some(view);
+                count += 1;
+            });
+            for view in gone[..count].iter().flatten() {
+                let _ = space.release(&mut CurrentPages, view.base);
+            }
+        });
+        for view in gone.iter().flatten() {
+            crate::ob::release_mapping(view.mapping);
+        }
     }
 }
 
@@ -643,50 +927,6 @@ fn free_directory(dir_phys: u32) {
     crate::mem::bootmem::with_frame_db(|db| {
         db.release(dir_phys / paging::PAGE_SIZE, FrameState::Free)
     });
-}
-
-/// Build a fresh process record at `process`: the address space at `dir_phys`, named `name`,
-/// running as leg `leg` (none for a child), standing for process object `object`, field by field
-/// (by value the record would pass the caller's stack).
-///
-/// # Safety
-///
-/// `process` is valid for writes, aligned, and the record's final address; its previous contents
-/// are overwritten, not dropped.
-#[cfg(target_arch = "x86")]
-unsafe fn write_fresh(
-    process: *mut Process,
-    dir_phys: u32,
-    name: ProcessName,
-    leg: Option<u32>,
-    object: crate::ob::ObjectId,
-) {
-    use core::ptr::addr_of_mut;
-    // SAFETY: the caller's contract; every field is written before the record is read.
-    unsafe {
-        addr_of_mut!((*process).sched).write(crate::sched::process::SchedProcess::new(
-            dir_phys,
-            crate::sched::NORMAL_BASE,
-        ));
-        addr_of_mut!((*process).name).write(name);
-        addr_of_mut!((*process).id).write(new_client_id());
-        addr_of_mut!((*process).parent_id).write(0);
-        addr_of_mut!((*process).leg).write(leg);
-        addr_of_mut!((*process).object).write(object);
-        addr_of_mut!((*process).priority_class).write(NORMAL_PRIORITY_CLASS);
-        addr_of_mut!((*process).hard_error_mode).write(DEFAULT_HARD_ERROR_MODE);
-        addr_of_mut!((*process).main_thread).write(None);
-        addr_of_mut!((*process).ordinals).write(ordinals::Ordinals::empty());
-        crate::mem::vm::AddressSpace::write_empty(addr_of_mut!((*process).vm));
-        crate::sched::object::HandleTable::write_empty(addr_of_mut!((*process).handles));
-        addr_of_mut!((*process).console).write(rtl::console::Handles::standard());
-        addr_of_mut!((*process).win32k).write(None);
-        objects::SyncObjects::write_empty(addr_of_mut!((*process).objects), object.index);
-        addr_of_mut!((*process).end).write(None);
-        addr_of_mut!((*process).handed_end).write(None);
-        addr_of_mut!((*process).ending).write(false);
-        addr_of_mut!((*process).torn_down).write(false);
-    }
 }
 
 // --- Teardown -------------------------------------------------------------
@@ -733,12 +973,12 @@ pub fn release_address_space(
 ///
 /// A thread is still attached: teardown follows the last thread's end, never precedes it.
 pub fn release_process(
-    process: &mut Process,
+    process: &Process,
     read_entry: impl Fn(u32, usize) -> u32,
     mut release: impl FnMut(u32),
 ) {
     assert_eq!(
-        process.sched.stack_count(),
+        process.stack_count(),
         0,
         "teardown of a process with attached threads"
     );
@@ -757,8 +997,8 @@ pub fn release_process(
 #[cfg(target_arch = "x86")]
 pub fn reap() {
     let process = pool::ended().expect("reap with no ended process");
-    let end = process.end.expect("an ended process recorded its end");
-    let leg = process.leg;
+    let end = process.end().expect("an ended process recorded its end");
+    let leg = process.leg();
     let quiescent = pool::quiescent_after(process);
     teardown(process, quiescent);
     runner::process_reaped(leg, end, quiescent);
@@ -777,10 +1017,9 @@ pub fn reap() {
 /// through the scratch window, never through a mapping, and nothing else here reaches the process's
 /// user pages (its views' sections give their frames back through the frame database).
 #[cfg(target_arch = "x86")]
-fn teardown(process: &'static mut Process, quiescent: bool) {
-    let end = process.end.expect("a torn-down process has ended");
-    let object = crate::ob::directory()
-        .process(process.object)
+fn teardown(process: &'static Process, quiescent: bool) {
+    let end = process.end().expect("a torn-down process has ended");
+    let object = crate::ob::locked(|directory| directory.process(process.object()))
         .expect("an ended process's object outlives its teardown");
     let signaled = crate::level::raised::<crate::level::Dispatch, _>(|dispatch| {
         let object = crate::sched::DISPATCHER
@@ -794,7 +1033,7 @@ fn teardown(process: &'static mut Process, quiescent: bool) {
     );
     release_address_space_of(process);
     audit_objects(process, quiescent);
-    process.torn_down = true;
+    locked(&process.state, |state| state.torn_down = true);
     release_record(process);
 }
 
@@ -804,20 +1043,23 @@ fn teardown(process: &'static mut Process, quiescent: bool) {
 /// address space (see [`release_process`]). The process is
 /// torn down in place: its record holds absolute addresses into itself.
 #[cfg(target_arch = "x86")]
-fn release_address_space_of(process: &mut Process) {
+fn release_address_space_of(process: &Process) {
     use crate::mem::frame::FrameState;
     use crate::mem::paging::{self, PAGE_SIZE};
-    // The views go first, each dropping its reference on its section or image segment (one nothing
-    // else references goes with it, dropping its hold on its frames).
-    let directory = crate::ob::directory();
+    // The views of an ended process went with its end (see `Process::unmap_views`); a discarded
+    // one's go here, each dropping its reference on its section or image segment (one nothing else
+    // references goes with it, dropping its hold on its frames) once the address space has let go
+    // of them. Their pages are the walk's.
     let mut gone = [None; crate::mem::vm::VIEWS];
-    let mut count = 0;
-    process.vm().drop_views(|mapping| {
-        gone[count] = directory.release_mapping(mapping);
-        count += 1;
+    process.with_space(|space| {
+        let mut count = 0;
+        space.drop_views(|view| {
+            gone[count] = Some(view.mapping);
+            count += 1;
+        });
     });
-    for followup in gone[..count].iter().flatten() {
-        process.finish(*followup);
+    for mapping in gone.iter().flatten() {
+        crate::ob::release_mapping(*mapping);
     }
     crate::mem::kstacks::release_parked();
     release_process(
@@ -842,17 +1084,24 @@ fn release_address_space_of(process: &mut Process) {
 /// One that is would be a reference leak: it is reported, and swept all the same (a leaked
 /// section's frames given back; the file records are forgotten whole).
 #[cfg(target_arch = "x86")]
-fn audit_objects(process: &mut Process, quiescent: bool) {
-    let directory = crate::ob::directory();
-    directory.process_ended(&process.sched);
+fn audit_objects(process: &Process, quiescent: bool) {
+    crate::ob::locked(|directory| directory.process_ended(process.sched_ptr()));
     if !quiescent {
         return;
     }
-    let leaked = directory.sweep(|followup| {
-        if let crate::ob::Followup::Section { frames, .. } = followup {
+    // With no process left, the console has none attached: its input-wait event goes with it.
+    crate::csr::release_input_event();
+    // The sweep, one leak at a time: a leaked section's frames are given back between the steps,
+    // outside the directory's lock (the file records are forgotten whole after).
+    let mut leaked = 0;
+    while let Some(leak) = crate::ob::locked(crate::ob::Directory::sweep_next) {
+        leaked += 1;
+        if let Some(crate::ob::Followup::Section { frames, .. }) = leak.followup {
             crate::nt::section::release_frames(frames);
         }
-    }) + crate::fs::file::with_records(crate::fs::file::FileRecords::clear);
+    }
+    crate::ob::locked(crate::ob::Directory::sweep_end);
+    leaked += crate::fs::file::with_records(crate::fs::file::FileRecords::clear);
     if leaked != 0 {
         crate::serial_println!(
             "F2K: object audit FAILED: {} objects or file records outlived their process",
@@ -864,19 +1113,8 @@ fn audit_objects(process: &mut Process, quiescent: bool) {
 /// Step 5: the process's own reference on its object goes. The record is reused once the object is
 /// gone — now, unless a handle to the process outlives it.
 #[cfg(target_arch = "x86")]
-fn release_record(process: &mut Process) {
-    let _ = crate::ob::directory().dereference(process.object);
-}
-
-/// A file-backed section, or an image segment, is gone: its file is mapped once less, and its
-/// reference on the file object goes (the followup is the object's close, when that was its last
-/// reference).
-#[cfg(target_arch = "x86")]
-fn unmap_file(file_object: crate::ob::ObjectId) -> Option<crate::ob::Followup> {
-    let directory = crate::ob::directory();
-    let record = directory.file(file_object)?.record;
-    crate::fs::file::with_records(|records| records.get_mut(record).user_mapped -= 1);
-    directory.dereference(file_object)
+fn release_record(process: &Process) {
+    crate::ob::release(process.object());
 }
 
 /// The post-boot free-frame count: the baseline the teardown audits compare against at
@@ -923,7 +1161,6 @@ mod tests {
     use crate::mem::layout::KERNEL_STACKS;
     use crate::mem::paging::{KERNEL_HALF_START, PAGE_PRESENT, PT_ENTRIES};
     use crate::mem::vm::{encode, PAGE_GUARD, PAGE_NOACCESS, PAGE_READWRITE};
-    use crate::sched::process::SchedProcess;
     use crate::sched::thread::{Thread, ThreadId, NO_GATE_SLOT};
 
     // --- The process record (the per-thread state split's shape) --------
@@ -931,8 +1168,9 @@ mod tests {
     /// A process record as the tests build it: by value, at `dir`, standing for a made-up process
     /// object.
     fn record_at(dir: u32) -> Process {
-        Process {
-            sched: SchedProcess::new(dir, 8),
+        let mut process = Process::empty();
+        process.sched = PinnedProcess::new(dir, 8);
+        *process.identity.0.get_mut() = Identity {
             name: ProcessName::new(b"fixture"),
             id: FIRST_CLIENT_ID,
             parent_id: 0,
@@ -942,20 +1180,9 @@ mod tests {
                 index: 0,
                 generation: 0,
             },
-            priority_class: NORMAL_PRIORITY_CLASS,
-            hard_error_mode: DEFAULT_HARD_ERROR_MODE,
-            main_thread: None,
-            ordinals: ordinals::Ordinals::empty(),
-            vm: crate::mem::vm::AddressSpace::new(),
-            handles: crate::sched::object::HandleTable::empty(),
-            console: rtl::console::Handles::standard(),
-            win32k: None,
-            objects: objects::SyncObjects::empty(),
-            end: None,
-            handed_end: None,
-            ending: false,
-            torn_down: false,
-        }
+            dir_phys: dir,
+        };
+        process
     }
 
     fn fresh_process() -> Box<Process> {
@@ -978,12 +1205,12 @@ mod tests {
         assert_eq!(ProcessName::new(b"").as_str(), "");
     }
 
-    /// A fresh record: no end under way, no main thread yet.
+    /// A fresh record: no end under way, none recorded.
     #[test]
     fn a_fresh_process_is_not_ending() {
         let process = fresh_process();
         assert!(!process.terminating());
-        assert!(!process.has_main_thread());
+        assert!(process.end().is_none() && !process.awaits_teardown());
     }
 
     /// Client ids are NT's: never 0 or 4 (the System process), stepping by four, one space for
@@ -995,26 +1222,39 @@ mod tests {
         assert_eq!(record_at(0x0090_0000).id(), FIRST_CLIENT_ID);
     }
 
-    /// A fresh process: the scheduling record leads it (the directory base at the pinned offset);
-    /// the process owns no gate stack of its own, its threads do.
+    /// A fresh process: its scheduling record on its directory; the process owns no gate stack of
+    /// its own, its threads do.
     #[test]
     fn fresh_process_state_starts_clean() {
+        crate::sched::testkit::dispatcher();
         let process = fresh_process();
-        assert_eq!(process.name(), "fixture");
+        assert_eq!(process.name().as_str(), "fixture");
         assert_eq!(process.dir_phys(), 0x0090_0000);
-        assert_eq!(process.sched.base_priority(), 8);
+        assert_eq!(process.base_priority(), 8);
+        assert_eq!(process.attach_count(), 0);
         assert_eq!(Thread::new(ThreadId(0)).gate_slot(), NO_GATE_SLOT);
-        assert_eq!(process.handles().live(), 0);
+        assert_eq!(process.with_handles(|table| table.live()), 0);
+        assert_eq!(process.priority_class(), NORMAL_PRIORITY_CLASS);
+        assert_eq!(process.hard_error_mode(), DEFAULT_HARD_ERROR_MODE);
+        assert_eq!(process.console(), rtl::console::Handles::standard());
     }
 
-    /// The parts borrow apart: the address space and the handle table, all at once.
+    /// The parts are locked apart: the handle table and the address space each by its own lock,
+    /// one hold after the other.
     #[test]
-    fn the_parts_borrow_apart() {
-        let mut process = fresh_process();
-        let parts = process.parts_mut();
-        let handle = parts.handles.insert(event_entry());
-        assert!(parts.vm.region_at(0x0040_0000).is_none());
-        assert_eq!(process.handles().lookup(handle), Some(event_entry()));
+    fn the_parts_lock_apart() {
+        let process = fresh_process();
+        let handle = process.with_handles(|table| table.insert(event_entry()));
+        assert!(process.with_space(|space| space.region_at(0x0040_0000).is_none()));
+        assert_eq!(process.lookup_handle(handle), Some(event_entry()));
+    }
+
+    /// A part's lock is never taken inside another's: a hold is the change itself, nothing more.
+    #[test]
+    #[should_panic(expected = "a process's lock taken above the passive level")]
+    fn a_part_is_never_locked_inside_another() {
+        let process = fresh_process();
+        process.with_space(|_| process.lookup_handle(4));
     }
 
     /// A handle-table entry naming an event (the host has no object manager to count it).
@@ -1034,15 +1274,20 @@ mod tests {
     /// is an object like any other, its cleanup the object manager's), and the table starts over.
     #[test]
     fn the_exit_step_releases_every_handle() {
-        let mut process = fresh_process();
-        let handle = process.handles.insert(event_entry());
-        process.handles.insert(event_entry());
+        let process = fresh_process();
+        let handle = process.with_handles(|table| table.insert(event_entry()));
+        process.with_handles(|table| {
+            // Past the first step of the walk, too.
+            for _ in 0..2 * HANDLE_STEP {
+                table.insert(event_entry());
+            }
+        });
         process.release_handles();
-        assert_eq!(process.handles.live(), 0);
-        assert!(process.handles().lookup(handle).is_none());
+        assert_eq!(process.with_handles(|table| table.live()), 0);
+        assert!(process.lookup_handle(handle).is_none());
         assert!(!process.close_handle(handle), "closed already");
         assert_eq!(
-            process.handles.insert(event_entry()),
+            process.with_handles(|table| table.insert(event_entry())),
             4,
             "the table starts over"
         );
@@ -1081,7 +1326,7 @@ mod tests {
         /// Run the teardown's releases over the fake memory, in the target's order: the parked
         /// gate stack first (the system's kernel stacks give its frames back), then the real
         /// collection of the process's own frames.
-        fn tear_down(&mut self, stacks: &mut KernelStacks, process: &mut Process) {
+        fn tear_down(&mut self, stacks: &mut KernelStacks, process: &Process) {
             if let Some((_, frames)) = stacks.take_parked() {
                 self.released.extend_from_slice(&frames);
             }
@@ -1132,7 +1377,7 @@ mod tests {
         dir: u32,
     ) -> (
         FakeMemory,
-        &'static mut Process,
+        &'static Process,
         crate::sched::testkit::Rec<Thread>,
         crate::sched::testkit::Rec<Thread>,
     ) {
@@ -1170,8 +1415,8 @@ mod tests {
         // The thread records are the dispatcher database's: a host dispatcher's here. The
         // system's ledger is the target's; a local one hands out the same slots here.
         crate::sched::testkit::dispatcher();
-        let mut main = crate::sched::testkit::thread(&mut process.sched);
-        let mut child = crate::sched::testkit::thread(&mut process.sched);
+        let mut main = crate::sched::testkit::thread(process.sched_ptr());
+        let mut child = crate::sched::testkit::thread(process.sched_ptr());
         let mut slots = GateSlots::empty();
         main.gate_slot = slots.allocate().unwrap();
         main.gate_frames = MAIN_STACK;
@@ -1208,7 +1453,7 @@ mod tests {
         // for release from its own.
         assert_eq!(exit(&mut stacks, child), None);
         assert_eq!(exit(&mut stacks, main), Some((1, CHILD_STACK)));
-        assert_eq!(process.sched.stack_count(), 0);
+        assert_eq!(process.stack_count(), 0);
 
         mem.tear_down(&mut stacks, process);
 
@@ -1273,7 +1518,7 @@ mod tests {
 
         // A thread of another process (slot 2) exits before the teardown runs.
         let other_process = Box::leak(Box::new(record_at(0x0095_0000)));
-        let mut other = crate::sched::testkit::thread(&mut other_process.sched);
+        let mut other = crate::sched::testkit::thread(other_process.sched_ptr());
         other.gate_slot = 2;
         other.gate_frames = [0x00D0_0000; crate::mem::paging::GATE_STACK_PAGES];
         assert_eq!(exit(&mut stacks, other), Some((0, MAIN_STACK)));

@@ -17,15 +17,17 @@
 //! chain is empty (nothing in user mode could take it; the dispatcher's walk would find nothing and
 //! raise the second chance), and records that cannot be written (the stack is gone).
 
-pub use rtl::seh::{CONTEXT_FULL, CONTEXT_SIZE, EXCEPTION_MAXIMUM_PARAMETERS};
+use core::mem::offset_of;
+
+pub use rtl::seh::{
+    Context,
+    ExceptionRecord,
+    CONTEXT_FULL,
+    CONTEXT_SIZE,
+    EXCEPTION_MAXIMUM_PARAMETERS,
+};
 
 use super::TrapFrame;
-
-/// sizeof(EXCEPTION_RECORD): code, flags, the chained record, the address, the parameter count, and
-/// fifteen parameters.
-pub const RECORD_SIZE: usize = 80;
-/// The record's fixed part, before its parameters.
-const RECORD_HEAD: usize = 20;
 
 /// The CONTEXT's flag sets NtContinue restores: the control registers (EBP, EIP, EFLAGS, ESP) and
 /// the integer ones (EDI, ESI, EBX, EDX, ECX, EAX). The segment registers are the kernel's, and the
@@ -43,94 +45,73 @@ pub const DIRECTION_FLAG: u32 = 0x400;
 /// the kernel's.
 pub const CONTEXT_EFLAGS_MASK: u32 = 0x0CD5 | TRAP_FLAG;
 
-/// The CONTEXT's register offsets.
-pub mod at {
-    pub const FLAGS: usize = 0x00;
-    pub const GS: usize = 0x8C;
-    pub const FS: usize = 0x90;
-    pub const ES: usize = 0x94;
-    pub const DS: usize = 0x98;
-    pub const EDI: usize = 0x9C;
-    pub const ESI: usize = 0xA0;
-    pub const EBX: usize = 0xA4;
-    pub const EDX: usize = 0xA8;
-    pub const ECX: usize = 0xAC;
-    pub const EAX: usize = 0xB0;
-    pub const EBP: usize = 0xB4;
-    pub const EIP: usize = 0xB8;
-    pub const CS: usize = 0xBC;
-    pub const EFLAGS: usize = 0xC0;
-    pub const ESP: usize = 0xC4;
-    pub const SS: usize = 0xC8;
-}
-
-/// The dword at `offset` of a CONTEXT (or record) image.
-pub fn word(image: &[u8], offset: usize) -> u32 {
-    u32::from_le_bytes(image[offset..offset + 4].try_into().unwrap())
-}
-
 /// The CONTEXT of a user frame, its EIP and ESP as given (a fault's own, or an interrupted
-/// context's). The data segments are the ones every user thread runs on.
-pub fn context_image(frame: &TrapFrame, eip: u32, esp: u32) -> [u8; CONTEXT_SIZE] {
+/// context's). The data segments are the ones every user thread runs on; the debug, floating-point
+/// and extended registers are zero.
+pub fn frame_context(frame: &TrapFrame, eip: u32, esp: u32) -> Context {
+    use rtl::pod::Pod;
+
     use crate::cpu::gdt::{TEB_SELECTOR, USER_DATA_SELECTOR};
-    let mut image = [0u8; CONTEXT_SIZE];
     let data = (USER_DATA_SELECTOR | 3) as u32;
-    let words = [
-        (at::FLAGS, CONTEXT_FULL),
-        (at::GS, 0),
-        (at::FS, (TEB_SELECTOR | 3) as u32),
-        (at::ES, data),
-        (at::DS, data),
-        (at::EDI, frame.edi),
-        (at::ESI, frame.esi),
-        (at::EBX, frame.ebx),
-        (at::EDX, frame.edx),
-        (at::ECX, frame.ecx),
-        (at::EAX, frame.eax),
-        (at::EBP, frame.ebp),
-        (at::EIP, eip),
-        (at::CS, frame.cs),
-        (at::EFLAGS, frame.eflags),
-        (at::ESP, esp),
-        (at::SS, frame.user_ss),
-    ];
-    for (offset, value) in words {
-        image[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    Context {
+        context_flags: CONTEXT_FULL,
+        seg_gs: 0,
+        seg_fs: (TEB_SELECTOR | 3) as u32,
+        seg_es: data,
+        seg_ds: data,
+        edi: frame.edi,
+        esi: frame.esi,
+        ebx: frame.ebx,
+        edx: frame.edx,
+        ecx: frame.ecx,
+        eax: frame.eax,
+        ebp: frame.ebp,
+        eip,
+        seg_cs: frame.cs,
+        eflags: frame.eflags,
+        esp,
+        seg_ss: frame.user_ss,
+        ..Context::zeroed()
     }
-    image
 }
 
 /// Put a CONTEXT back into `frame`, as NtContinue does: its control registers when its flags name
 /// them (EFLAGS through [`CONTEXT_EFLAGS_MASK`]: a context cannot raise privileges), its integer
 /// registers when they name those.
-pub fn restore_context(frame: &mut TrapFrame, image: &[u8; CONTEXT_SIZE]) {
-    let flags = word(image, at::FLAGS);
+pub fn restore_context(frame: &mut TrapFrame, context: &Context) {
+    let flags = context.context_flags;
     if flags & CONTEXT_CONTROL == CONTEXT_CONTROL {
-        frame.ebp = word(image, at::EBP);
-        frame.eip = word(image, at::EIP);
-        frame.eflags = (word(image, at::EFLAGS) & CONTEXT_EFLAGS_MASK) | super::USER_EFLAGS;
-        frame.user_esp = word(image, at::ESP);
+        frame.ebp = context.ebp;
+        frame.eip = context.eip;
+        frame.eflags = (context.eflags & CONTEXT_EFLAGS_MASK) | super::USER_EFLAGS;
+        frame.user_esp = context.esp;
     }
     if flags & CONTEXT_INTEGER == CONTEXT_INTEGER {
-        frame.edi = word(image, at::EDI);
-        frame.esi = word(image, at::ESI);
-        frame.ebx = word(image, at::EBX);
-        frame.edx = word(image, at::EDX);
-        frame.ecx = word(image, at::ECX);
-        frame.eax = word(image, at::EAX);
+        frame.edi = context.edi;
+        frame.esi = context.esi;
+        frame.ebx = context.ebx;
+        frame.edx = context.edx;
+        frame.ecx = context.ecx;
+        frame.eax = context.eax;
     }
 }
 
 /// An EXCEPTION_RECORD: `code`, `flags`, no chained record, `address`, and up to fifteen
 /// `parameters`.
-pub fn record_image(code: u32, flags: u32, address: u32, parameters: &[u32]) -> [u8; RECORD_SIZE] {
-    let mut image = [0u8; RECORD_SIZE];
+pub fn exception_record(
+    code: u32,
+    flags: u32,
+    address: u32,
+    parameters: &[u32],
+) -> ExceptionRecord {
     let count = parameters.len().min(EXCEPTION_MAXIMUM_PARAMETERS);
-    let head = [code, flags, 0, address, count as u32];
-    for (i, word) in head.iter().chain(&parameters[..count]).enumerate() {
-        image[i * 4..i * 4 + 4].copy_from_slice(&word.to_le_bytes());
-    }
-    image
+    let mut record = ExceptionRecord {
+        address,
+        count: count as u32,
+        ..ExceptionRecord::status(code, flags, 0)
+    };
+    record.information[..count].copy_from_slice(&parameters[..count]);
+    record
 }
 
 /// What a fault raises: the address the record names, the EIP its context resumes at, and its
@@ -164,7 +145,8 @@ pub fn fault_record(
 /// How many bytes of a record with `count` parameters the dispatch copies: its fixed part and its
 /// parameters (at most fifteen), as Windows 2000's dispatch trims it.
 pub fn record_length(count: u32) -> usize {
-    RECORD_HEAD + 4 * (count as usize).min(EXCEPTION_MAXIMUM_PARAMETERS)
+    offset_of!(ExceptionRecord, information)
+        + 4 * (count as usize).min(EXCEPTION_MAXIMUM_PARAMETERS)
 }
 
 /// Where the dispatch writes an exception's records below the context's stack pointer `esp`: the
@@ -182,10 +164,11 @@ pub fn exception_layout(esp: u32, record_bytes: usize) -> Option<(u32, u32, u32)
 
 #[cfg(target_arch = "x86")]
 mod target {
+    use rtl::pod::Pod;
     use rtl::seh::END_OF_CHAIN;
 
     use super::*;
-    use crate::user::syscall::{read_user, write_user};
+    use crate::user::syscall::write_user;
 
     /// The running thread's TEB page.
     fn teb() -> u32 {
@@ -206,8 +189,11 @@ mod target {
             return false;
         }
         let teb = teb();
-        let mut head = [0u8; 4];
-        teb != 0 && read_user(teb, &mut head).is_ok() && u32::from_le_bytes(head) != END_OF_CHAIN
+        teb != 0
+            && crate::user::teb::teb_field!(exception_list)
+                .of(teb)
+                .read()
+                .is_ok_and(|head| head != END_OF_CHAIN)
     }
 
     /// Dispatch a user fault: true when the frame now returns into ntdll's dispatcher with the
@@ -222,8 +208,8 @@ mod target {
             frame.eflags &= !TRAP_FLAG;
         }
         let (address, resume, parameters, count) = fault_record(frame, vector, code, cr2);
-        let context = context_image(frame, resume, frame.user_esp);
-        let record = record_image(code, 0, address, &parameters[..count]);
+        let context = frame_context(frame, resume, frame.user_esp);
+        let record = exception_record(code, 0, address, &parameters[..count]);
         deliver(frame, &record, &context)
     }
 
@@ -231,23 +217,14 @@ mod target {
     /// context's own stack pointer, the frame returning into KiUserExceptionDispatcher with the two
     /// pointers on top, its trap and direction flags clear. False, the frame untouched, when the
     /// records cannot be written.
-    pub fn deliver(
-        frame: &mut TrapFrame,
-        record: &[u8; RECORD_SIZE],
-        context: &[u8; CONTEXT_SIZE],
-    ) -> bool {
-        let length = record_length(word(record, 16));
-        let Some((context_at, record_at, arguments)) =
-            exception_layout(word(context, at::ESP), length)
-        else {
+    pub fn deliver(frame: &mut TrapFrame, record: &ExceptionRecord, context: &Context) -> bool {
+        let length = record_length(record.count);
+        let Some((context_at, record_at, arguments)) = exception_layout(context.esp, length) else {
             return false;
         };
-        let mut pointers = [0u8; 8];
-        pointers[..4].copy_from_slice(&record_at.to_le_bytes());
-        pointers[4..].copy_from_slice(&context_at.to_le_bytes());
-        if write_user(context_at, context).is_err()
-            || write_user(record_at, &record[..length]).is_err()
-            || write_user(arguments, &pointers).is_err()
+        if write_user(context_at, context.as_bytes()).is_err()
+            || write_user(record_at, &record.as_bytes()[..length]).is_err()
+            || write_user(arguments, [record_at, context_at].as_bytes()).is_err()
         {
             return false;
         }
@@ -277,6 +254,8 @@ pub use target::{deliver, dispatch_fault, second_chance};
 
 #[cfg(test)]
 mod tests {
+    use rtl::pod::Pod;
+
     use super::*;
 
     fn frame() -> TrapFrame {
@@ -304,13 +283,19 @@ mod tests {
     #[test]
     fn the_context_round_trips() {
         let original = frame();
-        let image = context_image(&original, 0x0040_9999, 0x0012_FE00);
-        assert_eq!(word(&image, 0), CONTEXT_FULL);
-        assert_eq!(word(&image, 0xB8), 0x0040_9999, "Eip");
-        assert_eq!(word(&image, 0xC4), 0x0012_FE00, "Esp");
-        assert_eq!(word(&image, 0xB0), 7, "Eax");
-        assert_eq!(word(&image, 0x9C), 1, "Edi");
-        assert_eq!(word(&image, 0xBC), 0x1B, "SegCs");
+        let context = frame_context(&original, 0x0040_9999, 0x0012_FE00);
+        let word = |at: usize| u32::from_bytes(&context.as_bytes()[at..]).unwrap();
+        assert_eq!(word(0), CONTEXT_FULL);
+        assert_eq!(word(0xB8), 0x0040_9999, "Eip");
+        assert_eq!(word(0xC4), 0x0012_FE00, "Esp");
+        assert_eq!(word(0xB0), 7, "Eax");
+        assert_eq!(word(0x9C), 1, "Edi");
+        assert_eq!(word(0xBC), 0x1B, "SegCs");
+        assert_eq!(word(0x90), 0x33, "SegFs: the TEB's selector");
+        assert_eq!((word(0x94), word(0x98)), (0x23, 0x23), "SegEs, SegDs");
+        assert_eq!(word(0xC8), 0x23, "SegSs");
+        assert!(context.as_bytes()[0x04..0x8C].iter().all(|&byte| byte == 0));
+        assert!(context.as_bytes()[0xCC..].iter().all(|&byte| byte == 0));
         let mut restored = TrapFrame {
             eip: 0,
             user_esp: 0,
@@ -318,7 +303,7 @@ mod tests {
             eax: 0,
             ..frame()
         };
-        restore_context(&mut restored, &image);
+        restore_context(&mut restored, &context);
         assert_eq!(
             (restored.eip, restored.user_esp),
             (0x0040_9999, 0x0012_FE00)
@@ -339,38 +324,38 @@ mod tests {
     /// The restore takes only the register sets the context's flags name.
     #[test]
     fn the_restore_follows_the_context_flags() {
-        let mut image = context_image(&frame(), 0x0040_9999, 0x0012_FE00);
-        image[..4].copy_from_slice(&CONTEXT_INTEGER.to_le_bytes());
+        let mut context = frame_context(&frame(), 0x0040_9999, 0x0012_FE00);
+        context.context_flags = CONTEXT_INTEGER;
         let mut restored = TrapFrame {
             eip: 0x1111,
             edi: 0,
             ..frame()
         };
-        restore_context(&mut restored, &image);
+        restore_context(&mut restored, &context);
         assert_eq!(
             (restored.eip, restored.edi),
             (0x1111, 1),
             "the integer registers only"
         );
-        image[..4].copy_from_slice(&CONTEXT_CONTROL.to_le_bytes());
+        context.context_flags = CONTEXT_CONTROL;
         let mut restored = TrapFrame {
             eip: 0x1111,
             edi: 0,
             ..frame()
         };
-        restore_context(&mut restored, &image);
+        restore_context(&mut restored, &context);
         assert_eq!(
             (restored.eip, restored.edi),
             (0x0040_9999, 0),
             "the control registers only"
         );
-        image[..4].copy_from_slice(&0x7u32.to_le_bytes());
+        context.context_flags = 0x7;
         let mut restored = TrapFrame {
             eip: 0x1111,
             edi: 0,
             ..frame()
         };
-        restore_context(&mut restored, &image);
+        restore_context(&mut restored, &context);
         assert_eq!(
             (restored.eip, restored.edi),
             (0x1111, 0),
@@ -382,11 +367,10 @@ mod tests {
     /// the trap flag (a single step) and the arithmetic and direction flags are the context's.
     #[test]
     fn the_restore_sanitizes_eflags() {
-        let mut image = context_image(&frame(), 0x0040_9999, 0x0012_FE00);
-        image[at::EFLAGS..at::EFLAGS + 4]
-            .copy_from_slice(&(0x0000_3000 | TRAP_FLAG | DIRECTION_FLAG | 1).to_le_bytes());
+        let mut context = frame_context(&frame(), 0x0040_9999, 0x0012_FE00);
+        context.eflags = 0x0000_3000 | TRAP_FLAG | DIRECTION_FLAG | 1;
         let mut restored = frame();
-        restore_context(&mut restored, &image);
+        restore_context(&mut restored, &context);
         assert_eq!(
             restored.eflags,
             0x0000_0202 | TRAP_FLAG | DIRECTION_FLAG | 1
@@ -424,9 +408,14 @@ mod tests {
             fault_record(&at(0x401000, 0), 0, status::INTEGER_DIVIDE_BY_ZERO, 0).3,
             0
         );
-        let image = record_image(status::ACCESS_VIOLATION, 0, 0x401000, &[1, 0x1234]);
-        let words: Vec<u32> = (0..7).map(|i| word(&image, i * 4)).collect();
-        assert_eq!(words, [0xC000_0005, 0, 0, 0x401000, 2, 1, 0x1234]);
+        let record = exception_record(status::ACCESS_VIOLATION, 0, 0x401000, &[1, 0x1234]);
+        let words: Vec<u32> = record
+            .as_bytes()
+            .chunks_exact(4)
+            .map(|word| u32::from_le_bytes(word.try_into().unwrap()))
+            .collect();
+        assert_eq!(words[..7], [0xC000_0005, 0, 0, 0x401000, 2, 1, 0x1234]);
+        assert!(words[7..].iter().all(|&word| word == 0));
     }
 
     /// The records sit below the context's stack pointer: the CONTEXT from the dword boundary down,

@@ -8,9 +8,10 @@
 //! embedded in the kernel and mapped into every process at its preferred base (Windows 2000's,
 //! 0x77F80000; images are never relocated). A module's handle is its base.
 //!
-//! The kernel finds the entry points it sends user code to by name: ntdll's LdrInitializeThunk for
-//! every thread's start, KiUserExceptionDispatcher for an exception and KiUserApcDispatcher for a
-//! user APC, read from the embedded file's export directory (the DLL is linked with file offsets
+//! The kernel finds the entry points it sends user code to by name, once at boot
+//! ([`SystemEntryPoints`]): ntdll's LdrInitializeThunk for every thread's start,
+//! KiUserExceptionDispatcher for an exception and KiUserApcDispatcher for a user APC, read from
+//! the embedded file's export directory (the DLL is linked with file offsets
 //! equal to its RVAs, so the file is its mapped image, its zero tail aside, and the kernel reads
 //! kernel-owned bytes a program cannot revoke); and kernel32's BaseProcessStartThunk for a main
 //! thread, as a parent's CreateProcess starts one on Windows 2000, read once at boot from the
@@ -27,7 +28,6 @@
 //! (`target/userland/`): the built DLLs against their export specs and the corpus's imports.
 
 use core::mem::offset_of;
-use core::sync::atomic::{AtomicU32, Ordering};
 
 use rtl::image::{ImageDosHeader, ImageNtHeaders32, ImageOptionalHeader32};
 
@@ -40,6 +40,7 @@ use crate::exec::pe::{
     Image,
     Unresolved,
 };
+use crate::sync::InitOnce;
 
 /// ntdll's base and module handle.
 pub const NTDLL_BASE: u32 = 0x77F8_0000;
@@ -202,21 +203,6 @@ pub fn kernel32_export(name: &str) -> Option<u32> {
     resolve(KERNEL32_NAME, name).ok()
 }
 
-/// An entry point the kernel redirects user code to, resolved once into `slot` (0: not yet).
-/// Resolving one parses a DLL's export directory, which takes most of a clock tick in the
-/// unoptimized kernel; ntdll is embedded and mapped at its fixed base, so an address holds for the
-/// whole boot.
-fn redirect_target(slot: &AtomicU32, resolve: impl FnOnce() -> u32) -> u32 {
-    match slot.load(Ordering::Relaxed) {
-        0 => {
-            let address = resolve();
-            slot.store(address, Ordering::Relaxed);
-            address
-        }
-        address => address,
-    }
-}
-
 /// kernel32.dll's path on the boot volume, root-relative: `<system root>\system32\kernel32.dll`,
 /// the system root's drive (`C:\`) dropped, into `out`: its length.
 pub fn kernel32_volume_path(out: &mut [u8; 64]) -> usize {
@@ -262,13 +248,59 @@ pub fn process_start_in(file: &[u8], staging: &mut [u8]) -> Result<u32, StartThu
 /// kernel32's start thunk for a main thread, by its export name.
 const START_THUNK: &str = "BaseProcessStartThunk";
 
-/// kernel32's BaseProcessStartThunk, once found at boot ([`set_process_start_thunk`]).
-static PROCESS_START: AtomicU32 = AtomicU32::new(0);
+/// The entry points the kernel sends user code to (Windows 2000's PspLookupKernelUserEntryPoints
+/// finds ntdll's at boot): ntdll's LdrInitializeThunk, KiUserApcDispatcher and
+/// KiUserExceptionDispatcher, and kernel32's BaseProcessStartThunk.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SystemEntryPoints {
+    /// kernel32's BaseProcessStartThunk, where every image's main thread starts.
+    pub process_start: u32,
+    /// ntdll's LdrInitializeThunk, a fresh thread's first user-mode work.
+    pub ldr_initialize_thunk: u32,
+    /// ntdll's KiUserApcDispatcher, where a user APC's delivery enters user mode.
+    pub apc_dispatcher: u32,
+    /// ntdll's KiUserExceptionDispatcher, where an exception's dispatch enters user mode.
+    pub exception_dispatcher: u32,
+}
 
-/// Record where kernel32's BaseProcessStartThunk is (the boot's reading of kernel32.dll,
-/// `exec::loader::locate_process_start`).
-pub fn set_process_start_thunk(address: u32) {
-    PROCESS_START.store(address, Ordering::Relaxed);
+impl SystemEntryPoints {
+    /// The entry points, kernel32's start thunk found at `process_start` and ntdll's read from its
+    /// export directory. Each of ntdll's parses the export directory, which takes most of a clock
+    /// tick in the unoptimized kernel; ntdll is embedded and mapped at its fixed base, so the
+    /// addresses hold for the whole boot.
+    pub fn lookup(process_start: u32) -> Self {
+        let ntdll =
+            |name| resolve_in(&NTDLL, name, 0).unwrap_or_else(|_| panic!("ntdll exports {name}"));
+        SystemEntryPoints {
+            process_start,
+            ldr_initialize_thunk: ntdll("LdrInitializeThunk"),
+            apc_dispatcher: ntdll("KiUserApcDispatcher"),
+            exception_dispatcher: ntdll("KiUserExceptionDispatcher"),
+        }
+    }
+}
+
+/// The entry points, once looked up at boot ([`lookup_entry_points`]).
+static ENTRY_POINTS: InitOnce<SystemEntryPoints> = InitOnce::new();
+
+/// Look up the entry points, once, before the first process: kernel32's BaseProcessStartThunk is
+/// `process_start` (the boot's reading of kernel32.dll, `exec::loader::locate_process_start`), and
+/// ntdll's are read from its export directory.
+///
+/// The fault-test boots never call it: their stubs run from a raw code page, with no ntdll mapped
+/// and no kernel32 to start through, so nothing they run reaches an entry point.
+#[cfg_attr(
+    any(
+        feature = "fault-test-badargs",
+        feature = "fault-test-segments",
+        feature = "fault-test-threadexit",
+        feature = "fault-test-exitio",
+        feature = "fault-test-ntclose"
+    ),
+    allow(dead_code)
+)]
+pub fn lookup_entry_points(process_start: u32) {
+    ENTRY_POINTS.set(SystemEntryPoints::lookup(process_start));
 }
 
 /// kernel32's BaseProcessStartThunk (userland/kernel32/src/start.s), where every image's main
@@ -276,37 +308,25 @@ pub fn set_process_start_thunk(address: u32) {
 /// Windows 2000's kernel32 exports none of its start thunks, its CreateProcess finding them in its
 /// own code — F2K's kernel creates the process, and finds it by name, at boot.
 pub fn process_start_thunk() -> u32 {
-    let address = PROCESS_START.load(Ordering::Relaxed);
-    assert_ne!(address, 0, "kernel32's start thunk is found at boot");
-    address
+    ENTRY_POINTS.get().process_start
 }
 
 /// ntdll's LdrInitializeThunk: a fresh thread's first user-mode work, delivered over its initial
 /// context like a user APC (see `user::apc::deliver_initialization`).
 pub fn ldr_initialize_thunk() -> u32 {
-    static RESOLVED: AtomicU32 = AtomicU32::new(0);
-    redirect_target(&RESOLVED, || {
-        resolve_in(&NTDLL, "LdrInitializeThunk", 0).expect("ntdll exports LdrInitializeThunk")
-    })
+    ENTRY_POINTS.get().ldr_initialize_thunk
 }
 
 /// ntdll's KiUserApcDispatcher: a user APC's delivery enters user mode there (see
 /// [`crate::user::apc`]).
 pub fn apc_dispatcher() -> u32 {
-    static RESOLVED: AtomicU32 = AtomicU32::new(0);
-    redirect_target(&RESOLVED, || {
-        resolve_in(&NTDLL, "KiUserApcDispatcher", 0).expect("ntdll exports KiUserApcDispatcher")
-    })
+    ENTRY_POINTS.get().apc_dispatcher
 }
 
 /// ntdll's KiUserExceptionDispatcher: an exception's dispatch enters user mode there (see
 /// [`crate::user::seh`]).
 pub fn exception_dispatcher() -> u32 {
-    static RESOLVED: AtomicU32 = AtomicU32::new(0);
-    redirect_target(&RESOLVED, || {
-        resolve_in(&NTDLL, "KiUserExceptionDispatcher", 0)
-            .expect("ntdll exports KiUserExceptionDispatcher")
-    })
+    ENTRY_POINTS.get().exception_dispatcher
 }
 
 #[cfg(test)]
@@ -427,9 +447,9 @@ mod tests {
             Err(Unresolved::NoEntry)
         );
         assert_eq!(
-            Some(ldr_initialize_thunk()),
+            Some(SystemEntryPoints::lookup(0).ldr_initialize_thunk),
             resolve("ntdll", "LdrInitializeThunk").ok(),
-            "the cache holds the export"
+            "the lookup holds the export"
         );
     }
 
@@ -491,7 +511,8 @@ mod tests {
     /// filter in kernel32's own data.
     #[test]
     fn the_entry_points_keep_their_protocols() {
-        let dispatcher = bytes_at(exception_dispatcher());
+        let entry = SystemEntryPoints::lookup(0);
+        let dispatcher = bytes_at(entry.exception_dispatcher);
         assert_eq!(dispatcher[0], 0xE8, "KiUserExceptionDispatcher: a call");
         assert_eq!(
             &dispatcher[5..7],
@@ -499,13 +520,13 @@ mod tests {
             "KiUserExceptionDispatcher: then ud2"
         );
         assert_eq!(
-            Some(exception_dispatcher()),
+            Some(entry.exception_dispatcher),
             resolve("ntdll.dll", "KiUserExceptionDispatcher").ok()
         );
         // The APC dispatcher keeps the context's address (past the four-word call frame) in EDI,
         // pops and calls the routine, then NtContinue(context, TRUE); a failed one's status
         // is raised.
-        let apc = bytes_at(apc_dispatcher());
+        let apc = bytes_at(entry.apc_dispatcher);
         assert_eq!(
             &apc[..10],
             &[0x8D, 0x7C, 0x24, 0x10, 0x58, 0xFF, 0xD0, 0x6A, 0x01, 0x57],
@@ -516,7 +537,7 @@ mod tests {
         assert_eq!(crate::user::apc::CALL_WORDS * 4, 0x10);
         // LdrInitializeThunk keeps the context's address (past the same call frame) in EDI across
         // its body's call, which takes it, then NtContinue(context, TRUE).
-        let ldr = bytes_at(ldr_initialize_thunk());
+        let ldr = bytes_at(entry.ldr_initialize_thunk);
         assert_eq!(
             &ldr[..5],
             &[0x8D, 0x7C, 0x24, 0x10, 0x57],
@@ -530,7 +551,7 @@ mod tests {
         );
         assert_eq!(ldr[16], 0xE8, "LdrInitializeThunk: NtContinue's call");
         assert_eq!(
-            Some(ldr_initialize_thunk()),
+            Some(entry.ldr_initialize_thunk),
             resolve("ntdll.dll", "LdrInitializeThunk").ok()
         );
         let thunk = bytes_at(kernel32_export("BaseProcessStartThunk").unwrap());

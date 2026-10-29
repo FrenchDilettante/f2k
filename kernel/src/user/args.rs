@@ -15,11 +15,11 @@ use rtl::pod::Pod;
 
 use crate::user::syscall::{probe_user_range, read_user, write_user};
 
-/// The process a service is serving: the caller's, borrowed for as long as the service holds it
-/// (the one place the services take it from).
+/// The process a service is serving: the caller's, shared with its other threads (the one place
+/// the services take it from).
 #[cfg(target_arch = "x86")]
-pub fn calling_process() -> &'static mut crate::process::Process {
-    crate::process::current_mut()
+pub fn calling_process() -> &'static crate::process::Process {
+    crate::process::current()
 }
 
 /// A transfer the caller's memory refused: an unmapped or protected page.

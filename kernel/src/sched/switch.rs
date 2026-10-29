@@ -69,11 +69,23 @@ pub const THREAD_FPU_OFF: u32 = core::mem::offset_of!(super::thread::Thread, fpu
 /// changes.
 pub const PROCESS_DIR_PHYS_OFF: u32 = 0;
 
-/// The TEB descriptor's base-byte offsets inside the GDT, derived from the selector: 15:0 at +2,
-/// 23:16 at +4, 31:24 at +7.
-const TEB_BASE_LO_OFF: u32 = crate::cpu::gdt::TEB_SELECTOR as u32 + 2;
-const TEB_BASE_MID_OFF: u32 = crate::cpu::gdt::TEB_SELECTOR as u32 + 4;
-const TEB_BASE_HI_OFF: u32 = crate::cpu::gdt::TEB_SELECTOR as u32 + 7;
+/// The processor's tables' offset in its control region, which the swap addresses them through.
+const PCR_TABLES_OFF: u32 = core::mem::offset_of!(crate::pcr::Pcr, tables) as u32;
+
+/// The TSS's ring-0 stack pointer's offset in the processor control region.
+const PCR_ESP0_OFF: u32 = PCR_TABLES_OFF + crate::cpu::TSS_ESP0_OFFSET;
+
+/// The TEB descriptor's base-byte offsets in the processor control region: 15:0, 23:16 and 31:24
+/// (the descriptor's own offsets, [`SegmentDescriptor::set_base`]'s model).
+///
+/// [`SegmentDescriptor::set_base`]: crate::cpu::gdt::SegmentDescriptor::set_base
+const PCR_TEB_DESCRIPTOR_OFF: u32 = PCR_TABLES_OFF + crate::cpu::TEB_DESCRIPTOR_OFFSET;
+const TEB_BASE_LO_OFF: u32 =
+    PCR_TEB_DESCRIPTOR_OFF + crate::cpu::gdt::SegmentDescriptor::BASE_LOW_OFFSET;
+const TEB_BASE_MID_OFF: u32 =
+    PCR_TEB_DESCRIPTOR_OFF + crate::cpu::gdt::SegmentDescriptor::BASE_MID_OFFSET;
+const TEB_BASE_HI_OFF: u32 =
+    PCR_TEB_DESCRIPTOR_OFF + crate::cpu::gdt::SegmentDescriptor::BASE_HIGH_OFFSET;
 
 /// Switch the processor from `from`, the running thread, to `to`: install `to` in the current
 /// slot (its quantum handed over), then swap. Returns when a later switch resumes `from`, at the
@@ -220,11 +232,10 @@ core::arch::global_asm!(
     "    fxsave [edi + {fpu_off}]",
     "    fxrstor [esi + {fpu_off}]",
     "    mov [edi + {kstack_off}], esp",
+    "    mov edx, offset {pcr}",
     "    mov eax, [esi + {init_stack_off}]",
-    "    mov edx, offset TSS",
-    "    mov [edx + 4], eax",
+    "    mov [edx + {esp0_off}], eax",
     "    mov eax, [esi + {teb_off}]",
-    "    mov edx, offset GDT",
     "    mov [edx + {teb_lo}], ax",
     "    shr eax, 16",
     "    mov [edx + {teb_mid}], al",
@@ -258,6 +269,8 @@ core::arch::global_asm!(
     fpu_off = const THREAD_FPU_OFF,
     space_off = const THREAD_SPACE_OFF,
     dir_phys_off = const PROCESS_DIR_PHYS_OFF,
+    pcr = sym crate::pcr::PCR,
+    esp0_off = const PCR_ESP0_OFF,
     teb_lo = const TEB_BASE_LO_OFF,
     teb_mid = const TEB_BASE_MID_OFF,
     teb_hi = const TEB_BASE_HI_OFF,
@@ -265,8 +278,8 @@ core::arch::global_asm!(
 );
 
 // The startup stub: a fresh thread's first instructions. Entry esp is the system-routine word of
-// the planted ladder; no caller frame exists, so the registers are zeroed first. After the flag
-// test nothing may touch the stack except the popad/iretd exit (the ladder is consumed).
+// the planted initial frame; no caller frame exists, so the registers are zeroed first. After the
+// flag test nothing may touch the stack except the popad/iretd exit (the frame is consumed).
 #[cfg(target_arch = "x86")]
 core::arch::global_asm!(
     ".section .text.thread_startup, \"ax\"",
@@ -379,20 +392,10 @@ pub fn switch_plan(
     }
 }
 
-/// Rewrite a TEB descriptor entry's base bytes to `teb`: a complete base rewrite touching no other
-/// byte — the host-side model of the assembly's three stores.
-pub fn teb_entry_after_edit(entry: u64, teb: u32) -> u64 {
-    let mut bytes = entry.to_le_bytes();
-    bytes[2..4].copy_from_slice(&(teb as u16).to_le_bytes());
-    bytes[4] = (teb >> 16) as u8;
-    bytes[7] = (teb >> 24) as u8;
-    u64::from_le_bytes(bytes)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cpu::gdt::{make_entry, TEB_SELECTOR};
+    use crate::cpu::gdt::TEB_SELECTOR;
     use crate::sched::process::SchedProcess;
     use crate::sched::testkit::Rec;
     use crate::sched::thread::{Thread, ThreadState};
@@ -534,21 +537,19 @@ mod tests {
         assert!(dispatcher.processor_idle());
     }
 
-    // B6: the TEB descriptor edit's byte offsets.
+    // B6: the TEB descriptor edit's and the esp0 store's offsets.
 
-    /// The three base-byte stores rewrite exactly the base: the edited entry equals a freshly
-    /// packed entry for the same base.
+    /// The swap's stores address the processor control region's tables: `esp0` in its TSS, the
+    /// three base bytes in the GDT's TEB slot, at the descriptor's own base offsets (which
+    /// `SegmentDescriptor::set_base` models).
     #[test]
-    fn the_teb_edit_rewrites_only_the_base_bytes() {
+    fn the_switch_stores_address_the_processor_tables() {
         assert_eq!((TEB_SELECTOR >> 3) as usize, 6);
-        assert_eq!(TEB_BASE_LO_OFF, TEB_SELECTOR as u32 + 2);
-        assert_eq!(TEB_BASE_MID_OFF, TEB_SELECTOR as u32 + 4);
-        assert_eq!(TEB_BASE_HI_OFF, TEB_SELECTOR as u32 + 7);
-
-        for base in [0u32, 0x7FFD_E000, 0x7FFD_D000, 0x7FF9_E000] {
-            let entry = make_entry(crate::user::TEB_PAGE, 0xFFF, 0xF3, 0x4);
-            let edited = teb_entry_after_edit(entry, base);
-            assert_eq!(edited, make_entry(base, 0xFFF, 0xF3, 0x4), "base {base:#x}");
-        }
+        let tables = core::mem::offset_of!(crate::pcr::Pcr, tables) as u32;
+        assert_eq!(PCR_ESP0_OFF, tables + crate::cpu::TSS_ESP0_OFFSET);
+        assert_eq!(PCR_TEB_DESCRIPTOR_OFF, tables + TEB_SELECTOR as u32);
+        assert_eq!(TEB_BASE_LO_OFF, PCR_TEB_DESCRIPTOR_OFF + 2);
+        assert_eq!(TEB_BASE_MID_OFF, PCR_TEB_DESCRIPTOR_OFF + 4);
+        assert_eq!(TEB_BASE_HI_OFF, PCR_TEB_DESCRIPTOR_OFF + 7);
     }
 }

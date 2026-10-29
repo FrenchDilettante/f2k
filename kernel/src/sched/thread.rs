@@ -51,32 +51,50 @@ impl From<&mut Thread> for ThreadId {
 /// The gate-slot index of a thread whose slot is not allocated yet.
 pub const NO_GATE_SLOT: u16 = 0xFFFF;
 
-/// A thread's saved floating-point state, in the `fxsave`/`fxrstor` image: the x87 control,
-/// status and abridged tag words, the last instruction and operand pointers, MXCSR, the eight x87
-/// registers and the eight XMM registers. The system DLLs are compiled for SSE2, so the XMM
-/// registers and MXCSR are live in user code as much as the x87 registers are. The context switch
-/// saves the outgoing thread's and restores the incoming one's on every switch, so a preempted
-/// computation never resumes on another thread's registers. The instructions fault on an image
-/// that is not 16-byte aligned.
+/// A thread's saved floating-point state, the `fxsave`/`fxrstor` image (the 32-bit layout): the
+/// x87 control, status and abridged tag words, the last instruction and operand pointers, MXCSR,
+/// the eight x87 registers and the eight XMM registers. The system DLLs are compiled for SSE2, so
+/// the XMM registers and MXCSR are live in user code as much as the x87 registers are. The context
+/// switch saves the outgoing thread's and restores the incoming one's on every switch, so a
+/// preempted computation never resumes on another thread's registers. The instructions fault on an
+/// image that is not 16-byte aligned.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(C, align(16))]
-pub struct FpuState(pub [u8; FPU_STATE_BYTES]);
+pub struct FxSaveArea {
+    /// The x87 control word.
+    pub fcw: u16,
+    /// The x87 status word.
+    pub fsw: u16,
+    /// The abridged tag byte: a bit per register, set when it holds a value.
+    pub ftw: u8,
+    reserved0: u8,
+    /// The last x87 instruction's opcode.
+    pub fop: u16,
+    /// The last x87 instruction's address: offset and code segment.
+    pub fip: u32,
+    pub fcs: u16,
+    reserved1: u16,
+    /// The last x87 operand's address: offset and data segment.
+    pub fdp: u32,
+    pub fds: u16,
+    reserved2: u16,
+    /// The SIMD control and status register, and the mask of its writable bits.
+    pub mxcsr: u32,
+    pub mxcsr_mask: u32,
+    /// The x87/MMX registers, 16 bytes each (the 80-bit value and 6 reserved bytes).
+    pub st: [[u8; 16]; 8],
+    /// The XMM registers.
+    pub xmm: [[u8; 16]; 8],
+    /// The rest of the image, unused in 32-bit mode.
+    reserved: [u8; 224],
+}
 
-/// The `fxsave` image's size, and the alignment `fxsave` and `fxrstor` need.
-pub const FPU_STATE_BYTES: usize = 512;
+/// The alignment `fxsave` and `fxrstor` need.
 pub const FPU_STATE_ALIGN: usize = 16;
 
-/// The image's fields, by byte offset: the x87 control word, status word, abridged tag byte (a bit
-/// per register, set when it holds a value) and last opcode; MXCSR and the mask of its writable
-/// bits; the x87/MMX registers and the XMM registers, 16 bytes each.
-pub const FPU_FCW: usize = 0;
-pub const FPU_FSW: usize = 2;
-pub const FPU_FTW: usize = 4;
-pub const FPU_FOP: usize = 6;
-pub const FPU_MXCSR: usize = 24;
-pub const FPU_MXCSR_MASK: usize = 28;
-pub const FPU_ST0: usize = 32;
-pub const FPU_XMM0: usize = 160;
+// The image is the 512 bytes `fxsave` writes, with no padding of its own.
+const _: () = assert!(core::mem::size_of::<FxSaveArea>() == 512);
+const _: () = assert!(core::mem::align_of::<FxSaveArea>() == FPU_STATE_ALIGN);
 
 /// The control word a new thread starts with: every exception masked, 53-bit precision, round to
 /// nearest — the value Windows NT gives a fresh thread (`fninit` alone would leave 64-bit
@@ -87,21 +105,28 @@ pub const INITIAL_FPU_CONTROL: u16 = 0x027F;
 /// kept (the processor's reset value).
 pub const INITIAL_MXCSR: u32 = 0x1F80;
 
-impl FpuState {
+impl FxSaveArea {
     /// A fresh thread's image: the initial control word and MXCSR, a clear status word, every
     /// register empty (an abridged tag of zero), everything else zero.
     pub const fn initial() -> Self {
-        let mut bytes = [0u8; FPU_STATE_BYTES];
-        let control = INITIAL_FPU_CONTROL.to_le_bytes();
-        bytes[FPU_FCW] = control[0];
-        bytes[FPU_FCW + 1] = control[1];
-        let mxcsr = INITIAL_MXCSR.to_le_bytes();
-        let mut index = 0;
-        while index < mxcsr.len() {
-            bytes[FPU_MXCSR + index] = mxcsr[index];
-            index += 1;
+        FxSaveArea {
+            fcw: INITIAL_FPU_CONTROL,
+            fsw: 0,
+            ftw: 0,
+            reserved0: 0,
+            fop: 0,
+            fip: 0,
+            fcs: 0,
+            reserved1: 0,
+            fdp: 0,
+            fds: 0,
+            reserved2: 0,
+            mxcsr: INITIAL_MXCSR,
+            mxcsr_mask: 0,
+            st: [[0; 16]; 8],
+            xmm: [[0; 16]; 8],
+            reserved: [0; 224],
         }
-        FpuState(bytes)
     }
 }
 
@@ -177,11 +202,14 @@ pub struct Thread {
     pub(crate) gate_frames: [u32; crate::mem::paging::GATE_STACK_PAGES],
     /// The thread's floating-point state while it is off the processor (saved and restored by the
     /// switch, at the offset the assembly takes from this layout; 16-byte aligned, as the record).
-    pub(crate) fpu: FpuState,
+    pub(crate) fpu: FxSaveArea,
 
     // --- Identity ---
     /// The record's own name in the pool: constant for the record's life.
     pub(crate) id: ThreadId,
+    /// The process-pool index of the address-space process (see `space`), moved with it: what the
+    /// processor's slots name it by while the thread runs.
+    space_index: u16,
 
     // --- Scheduling state ---
     /// The priority the scheduler queues and preempts by.
@@ -251,21 +279,27 @@ pub struct Thread {
     /// Whether a normal kernel APC's normal half is running — the gate that makes a blocking
     /// normal routine safe (the suspend APC parks inside one).
     pub(crate) kernel_apc_in_progress: bool,
-    /// The critical-region count: while nonzero, normal kernel APCs neither break waits nor
-    /// deliver, and a termination waits for the thread to leave. Code that holds a shared resource
-    /// across a blocking wait (the boot volume and its drive) runs inside one.
+    /// The critical-region count (Windows 2000's KernelApcDisable): while nonzero, normal kernel
+    /// APCs neither break waits nor deliver — a suspend and a termination's exit APC among them.
+    /// Code that holds a shared resource across a blocking wait (the boot volume and its drive)
+    /// runs inside one.
     pub(crate) kernel_apc_disable: i8,
-    /// Whether APCs may be queued on this thread. On from attach, off from the exit path on.
+    /// Whether APCs may be queued on this thread. On from attach, off once its termination is
+    /// requested or its own exit begins.
     pub(crate) apc_queueable: bool,
-    /// Whether a termination waits for this thread to leave its critical region: set by the
-    /// request (see [`Dispatcher::request_termination`]), acted on by the thread itself as it
-    /// leaves.
+    /// Whether the thread is terminating (Windows 2000's Terminated flag): its exit APC is queued
+    /// (see [`Dispatcher::request_termination`]), or its own exit runs. A termination is requested
+    /// once.
     ///
     /// [`Dispatcher::request_termination`]: super::dispatcher::Dispatcher::request_termination
     pub(crate) terminate_pending: bool,
     /// The thread's builtin suspend APC: a no-op kernel half, a normal half that parks on the
     /// suspend semaphore.
     pub(crate) suspend_apc: Apc,
+    /// The thread's exit APC, a termination's (Windows 2000's PspTerminateThreadByPointer
+    /// allocates one per request; a thread is terminated once, so one record serves): a no-op
+    /// kernel half, the normal half the request binds, which runs the thread's own exit.
+    pub(crate) exit_apc: Apc,
     /// The thread's builtin suspend semaphore — the suspend APC parks on it, resume releases it.
     pub(crate) suspend_semaphore: Semaphore,
     /// How many suspends are outstanding.
@@ -282,8 +316,8 @@ pub struct Thread {
     /// waiting thread's stack: a wake may unwind them from any thread's context, and the kernel
     /// stacks are mapped per process.
     pub(crate) multi_blocks: [WaitBlock; super::wait::MAXIMUM_WAIT_OBJECTS],
-    /// Whether the thread runs its own exit path: a critical region it leaves there (the exit's
-    /// own volume work) no longer ends it.
+    /// Whether the thread runs its own exit path: from its start on, no APC is queued on it and
+    /// its termination is not requested again.
     pub(crate) exiting: bool,
     /// Whether the thread is inside a user-memory copy on its process's behalf (a system service's
     /// argument copy): a kernel fault under it ends the process instead of halting the kernel
@@ -363,6 +397,8 @@ impl Thread {
         suspend_apc.kernel_routine = nop_kernel_routine;
         suspend_apc.normal_routine = Some(suspend_apc_normal);
         suspend_apc.mode = ApcMode::Kernel;
+        let mut exit_apc = Apc::new(ApcId::Exit(id));
+        exit_apc.thread = Some(id);
         Thread {
             state: ThreadState::Initialized,
             process: core::ptr::null_mut(),
@@ -370,12 +406,13 @@ impl Thread {
             initial_stack: 0,
             teb_va: 0,
             space: core::ptr::null(),
+            space_index: super::process::NOT_POOLED,
             thread_id: 0,
             ordinal: 0,
             exit_status: STILL_ACTIVE,
             gate_slot: NO_GATE_SLOT,
             gate_frames: [0; crate::mem::paging::GATE_STACK_PAGES],
-            fpu: FpuState::initial(),
+            fpu: FxSaveArea::initial(),
             id,
             priority: 0,
             base_priority: 0,
@@ -407,6 +444,7 @@ impl Thread {
             apc_queueable: true,
             terminate_pending: false,
             suspend_apc,
+            exit_apc,
             suspend_semaphore: Semaphore::with_id(
                 super::apc::SUSPEND_SEMAPHORE_LIMIT,
                 WaitableId::Suspend(id),
@@ -428,6 +466,7 @@ impl Thread {
     pub(super) fn take_process_data(&mut self, process: &mut SchedProcess) {
         self.process = process as *mut SchedProcess;
         self.space = process as *const SchedProcess;
+        self.space_index = process.index;
         self.base_priority = process.base_priority;
         self.priority = self.base_priority;
         self.set_quantum(process.thread_quantum);
@@ -445,8 +484,9 @@ impl Thread {
         self.state
     }
 
-    /// Enter a critical region (regions nest): until the thread leaves the outermost, normal kernel
-    /// APCs wait, and so does a termination.
+    /// Enter a critical region (Windows 2000's KeEnterCriticalRegion; regions nest): until the
+    /// thread leaves the outermost, normal kernel APCs wait — a suspend, and a termination's exit
+    /// APC.
     pub fn enter_critical_region(&mut self) {
         self.kernel_apc_disable = self
             .kernel_apc_disable
@@ -454,14 +494,20 @@ impl Thread {
             .expect("critical regions nest too deep");
     }
 
-    /// Leave a critical region; true when it was the outermost.
+    /// Leave a critical region (KeLeaveCriticalRegion). True when it was the outermost and kernel
+    /// APCs are queued — the ones the region held off: their delivery is armed again, and the
+    /// caller opens a window for it.
     pub fn leave_critical_region(&mut self) -> bool {
         assert!(
             self.kernel_apc_disable > 0,
             "leaving a critical region never entered"
         );
         self.kernel_apc_disable -= 1;
-        self.kernel_apc_disable == 0
+        if self.kernel_apc_disable != 0 || self.kernel_apcs.is_empty() {
+            return false;
+        }
+        self.kernel_apc_pending = true;
+        true
     }
 
     /// Whether the thread is inside a critical region.
@@ -469,7 +515,7 @@ impl Thread {
         self.kernel_apc_disable != 0
     }
 
-    /// Whether a termination waits for the thread to leave its critical region.
+    /// Whether the thread is terminating: its exit APC is queued, or its own exit runs.
     pub fn termination_pending(&self) -> bool {
         self.terminate_pending
     }
@@ -520,7 +566,8 @@ impl Thread {
         let slots = &crate::pcr::pcr().threads;
         slots.set_quantum(self.quantum);
         slots.set_copying_user_memory(self.copying_user_memory);
-        slots.set_processes(self.process, self.space);
+        let (process, space) = self.process_indices();
+        slots.set_processes(process, space);
     }
 
     /// The saved kernel stack pointer (what a switch-in loads).
@@ -653,6 +700,7 @@ impl Thread {
             "a thread attaches to another process only from its own"
         );
         self.space = target;
+        self.space_index = target.index;
         Some(target.dir_phys())
     }
 
@@ -665,7 +713,14 @@ impl Thread {
     pub(crate) fn detach_space(&mut self) -> u32 {
         assert!(self.attached(), "a thread detaches once, after it attached");
         self.space = self.process;
+        self.space_index = self.process().index;
         self.process().dir_phys()
+    }
+
+    /// The process-pool indices of the owner and the address-space process, as the processor's
+    /// slots take them (see [`Thread::switch_in`]).
+    pub(crate) fn process_indices(&self) -> (u16, u16) {
+        (self.process().index, self.space_index)
     }
 
     /// The wait block `slot` names: a builtin one, or a multiple-object wait's.
@@ -706,18 +761,19 @@ mod tests {
     use super::*;
 
     /// A fresh thread's image, in the `fxsave` layout the switch restores from: the NT control
-    /// word, the reset MXCSR, every register empty, everything else zero.
+    /// word, the reset MXCSR, every register empty, everything else zero — byte for byte.
     #[test]
     fn a_fresh_thread_starts_with_the_initial_fpu_image() {
-        let image = Thread::new(ThreadId(0)).fpu.0;
-        assert_eq!(image.len(), 512);
+        let fpu = Thread::new(ThreadId(0)).fpu;
+        // SAFETY: the image is 512 bytes of integer fields with no padding (pinned by its size
+        // assert), so its bytes are all initialized.
+        let image: [u8; 512] = unsafe { core::mem::transmute(fpu) };
         let half = |at: usize| u16::from_le_bytes([image[at], image[at + 1]]);
         let word = |at: usize| u32::from_le_bytes(image[at..at + 4].try_into().unwrap());
-        assert_eq!(half(FPU_FCW), 0x027F, "control word");
-        assert_eq!(word(FPU_MXCSR), 0x1F80, "MXCSR");
+        assert_eq!(half(0), 0x027F, "control word");
+        assert_eq!(word(24), 0x1F80, "MXCSR");
         for (at, &byte) in image.iter().enumerate() {
-            let set =
-                (FPU_FCW..FPU_FCW + 2).contains(&at) || (FPU_MXCSR..FPU_MXCSR + 4).contains(&at);
+            let set = (0..2).contains(&at) || (24..28).contains(&at);
             if !set {
                 assert_eq!(byte, 0, "byte {at}: status, tag and registers clear");
             }
@@ -728,18 +784,46 @@ mod tests {
     /// the eight XMM registers, all inside the image.
     #[test]
     fn the_fpu_image_layout() {
-        assert_eq!((FPU_FCW, FPU_FSW, FPU_FTW, FPU_FOP), (0, 2, 4, 6));
-        assert_eq!((FPU_MXCSR, FPU_MXCSR_MASK), (24, 28));
-        assert_eq!(FPU_ST0 + 8 * 16, FPU_XMM0);
-        assert!(FPU_XMM0 + 8 * 16 <= FPU_STATE_BYTES);
-        assert_eq!(core::mem::size_of::<FpuState>(), 512);
+        use core::mem::offset_of;
+        assert_eq!(
+            (
+                offset_of!(FxSaveArea, fcw),
+                offset_of!(FxSaveArea, fsw),
+                offset_of!(FxSaveArea, ftw),
+                offset_of!(FxSaveArea, fop)
+            ),
+            (0, 2, 4, 6)
+        );
+        assert_eq!(
+            (
+                offset_of!(FxSaveArea, fip),
+                offset_of!(FxSaveArea, fcs),
+                offset_of!(FxSaveArea, fdp),
+                offset_of!(FxSaveArea, fds)
+            ),
+            (8, 12, 16, 20)
+        );
+        assert_eq!(
+            (
+                offset_of!(FxSaveArea, mxcsr),
+                offset_of!(FxSaveArea, mxcsr_mask)
+            ),
+            (24, 28)
+        );
+        assert_eq!(offset_of!(FxSaveArea, st), 32);
+        assert_eq!(
+            offset_of!(FxSaveArea, st) + 8 * 16,
+            offset_of!(FxSaveArea, xmm)
+        );
+        assert_eq!(offset_of!(FxSaveArea, xmm) + 8 * 16, 288);
+        assert_eq!(core::mem::size_of::<FxSaveArea>(), 512);
     }
 
     /// The alignment rule: the image type, its place in the record and the record itself are
     /// 16-byte aligned, so every thread record holds an image `fxsave` accepts.
     #[test]
     fn the_fpu_image_is_16_byte_aligned() {
-        assert_eq!(core::mem::align_of::<FpuState>(), 16);
+        assert_eq!(core::mem::align_of::<FxSaveArea>(), 16);
         assert_eq!(core::mem::offset_of!(Thread, fpu) % 16, 0);
         assert!(core::mem::align_of::<Thread>() >= 16);
         assert_eq!(super::super::switch::THREAD_FPU_OFF % 16, 0);
@@ -814,8 +898,8 @@ mod tests {
         assert_eq!(linked, [t1.id(), t2.id()]);
     }
 
-    /// Critical regions nest: only leaving the outermost reports it, and the count is the gate the
-    /// APC machinery reads.
+    /// Critical regions nest, and the count is the gate the APC machinery reads: only leaving the
+    /// outermost may open a window, and only for kernel APCs it held off (see the APC tests).
     #[test]
     fn critical_regions_nest() {
         let mut thread = Thread::new(ThreadId(0));
@@ -826,8 +910,13 @@ mod tests {
         assert_eq!(thread.kernel_apc_disable, 2);
         assert!(!thread.leave_critical_region(), "the inner region");
         assert!(thread.in_critical_region());
-        assert!(thread.leave_critical_region(), "the outermost");
+        // The outermost, with nothing queued: no window to open.
+        assert!(
+            !thread.leave_critical_region(),
+            "the outermost, nothing held off"
+        );
         assert!(!thread.in_critical_region());
+        assert!(!thread.kernel_apc_pending);
         assert!(!thread.termination_pending());
     }
 

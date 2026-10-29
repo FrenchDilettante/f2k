@@ -10,10 +10,10 @@
 //! The dispatcher objects — events, semaphores, mutexes, waitable timers, threads, and the
 //! waitable side of processes — keep only their headers here: their bodies are records of the
 //! dispatcher database ([`crate::sched::database`]), at the same index, as Windows 2000 keeps a
-//! dispatcher object's DISPATCHER_HEADER and type fields apart from its object header. The typed
-//! accessors check the header and hand out the body's name in the dispatcher database, where the
-//! body is reached with the dispatch token; the directory itself holds no token, so what it does
-//! to a body (a create's fresh body, a deletion's cancel) it does raised to the dispatch level.
+//! dispatcher object's DISPATCHER_HEADER and type fields apart from its object header. An id names
+//! its body there by that index ([`ObjectId::waitable`]), where the body is reached with the
+//! dispatch token; the directory itself holds no token, so what it does to a body (a create's
+//! fresh body, a deletion's cancel) it does raised to the dispatch level.
 //!
 //! Each object carries two counts. The pointer count is every
 //! reference: the creator's while it builds the object, each handle's, each wait's (a waiting
@@ -28,16 +28,29 @@
 //! live object, compares exactly (Win32 object names are case-sensitive), and goes with the bound
 //! object's last handle.
 //!
-//! A kind plugs in with its pool in [`Directory`], its arm in the kind matches (`header`, `id`,
-//! `capacity`, `waitable`, the sweep), a `create_*` and a typed accessor, and — when its deletion
-//! needs more than the record going dead (a timer leaving the timer table, an owned mutex its
-//! owner's list) — an arm in `delete`; what the deletion leaves to the process (a section's frames,
-//! a file object's cleanup and close) is a [`Followup`] variant the process finishes.
+//! # The directory's lock
+//!
+//! The kernel's directory is passive-level state behind a short lock (Windows 2000's object
+//! manager guards its namespace and object headers with a fast mutex too): [`lock`] takes it with
+//! the caller's passive token, which the guard keeps borrowed, and [`locked`] is the bridge for
+//! code that holds no token. The lock is held briefly and never across a wait, a user-memory copy
+//! or disk I/O. So a deletion does not finish its object's teardown in place: what lies outside
+//! the directory — a section's frames, a file object's cleanup (which may delete the file, on disk)
+//! and its close — comes back as a [`Followup`], which the caller finishes with [`finish`] once the
+//! lock is released, as Windows 2000 runs an object's delete procedure after the object-manager
+//! lock is dropped. A look-up and what it decides (a name's binding and the create it allows, a
+//! handle's object and the reference that keeps it) happen in one hold, so no other thread comes
+//! between them.
+//!
+//! A kind plugs in with its row in the pools' table ([`Directory`]), a `create_*`, and — when its
+//! deletion needs more than the record going dead (a timer leaving the timer table, an owned mutex
+//! its owner's list) — an arm in `delete`; a kind whose body the directory holds gets its typed
+//! accessor from the bodies' table; what the deletion leaves outside the directory is a
+//! [`Followup`] variant.
 //!
 //! The capacities are fixed (a create past them fails as the platform's out-of-memory would).
 
-#[cfg(target_arch = "x86")]
-use core::mem::MaybeUninit;
+use rtl::array_vec::ArrayVec;
 
 use crate::level::Dispatch;
 use crate::sched::dispatcher::Dispatcher;
@@ -84,6 +97,36 @@ pub struct ObjectId {
     pub kind: ObjectType,
     pub index: u16,
     pub generation: u16,
+}
+
+impl ObjectId {
+    /// The waitable name of a dispatcher object's body (an event, a semaphore, a mutex, a waitable
+    /// timer, a thread, a process), as the wait entries take it: the dispatcher database's record
+    /// at the object's own index. None for a section, a file object (its I/O completes at once:
+    /// nothing waits on it), the directory, a window station, a desktop or a key. The id's
+    /// liveness is the caller's to know (a reference it holds).
+    pub fn waitable(self) -> Option<WaitableId> {
+        let index = self.index;
+        match self.kind {
+            ObjectType::Event => Some(WaitableId::Event(index)),
+            ObjectType::Semaphore => Some(WaitableId::Semaphore(index)),
+            ObjectType::Mutex => Some(WaitableId::Mutex(index)),
+            ObjectType::Timer => Some(WaitableId::Timer(index)),
+            ObjectType::Thread => Some(WaitableId::Thread(ThreadId(index))),
+            ObjectType::Process => Some(WaitableId::Process(index)),
+            ObjectType::Section
+            | ObjectType::File
+            | ObjectType::Directory
+            | ObjectType::WindowStation
+            | ObjectType::Desktop
+            | ObjectType::Key => None,
+        }
+    }
+
+    /// The body index of a dispatcher object of `kind`; none for an id of another kind.
+    fn body_of(self, kind: ObjectType) -> Option<u16> {
+        (self.kind == kind).then_some(self.index)
+    }
 }
 
 /// What a handle-table entry names: an object (a directory search is kernel32's own structure on
@@ -187,6 +230,24 @@ impl Header {
             handles: 0,
         }
     }
+
+    /// Whether the header holds the live object of `generation`.
+    fn names(&self, generation: u16) -> bool {
+        self.live && self.generation == generation
+    }
+}
+
+/// Take a free record among `headers` in `range` for a new object: the lowest one holding no live
+/// object. The object starts with one reference (its creator's) and no handle. None when the range
+/// is exhausted. The record itself is the caller's to renew.
+fn allocate(headers: &mut [Header], range: core::ops::Range<usize>) -> Option<u16> {
+    let end = range.end.min(headers.len());
+    let index = (range.start..end).find(|&index| !headers[index].live)?;
+    let header = &mut headers[index];
+    header.live = true;
+    header.pointers = 1;
+    header.handles = 0;
+    Some(index as u16)
 }
 
 /// A fixed pool of records of one kind, each behind its header. Records stay at their addresses for
@@ -195,8 +256,6 @@ impl Header {
 pub struct Pool<T, const N: usize> {
     headers: [Header; N],
     records: [T; N],
-    /// How many records have ever been handed out (the high-water mark).
-    used: usize,
 }
 
 impl<T, const N: usize> Pool<T, N> {
@@ -206,7 +265,7 @@ impl<T, const N: usize> Pool<T, N> {
     /// # Safety
     ///
     /// `pool` is valid for writes and aligned; its previous contents are overwritten, not dropped.
-    pub unsafe fn write_empty(pool: *mut Self, fresh: impl Fn() -> T) {
+    unsafe fn write_empty(pool: *mut Self, fresh: impl Fn() -> T) {
         use core::ptr::addr_of_mut;
         // SAFETY: the caller's contract; every field is written.
         unsafe {
@@ -216,32 +275,12 @@ impl<T, const N: usize> Pool<T, N> {
                 headers.add(index).write(Header::dead());
                 records.add(index).write(fresh());
             }
-            addr_of_mut!((*pool).used).write(0);
         }
     }
 
-    /// Take a free record in `range` for a new object: the lowest one holding no live object. The
-    /// object starts with one reference (its creator's) and no handle. None when the range is
-    /// exhausted. The record itself is the caller's to renew.
+    /// Take a free record in `range` for a new object (see [`allocate`]).
     fn allocate_in(&mut self, range: core::ops::Range<usize>) -> Option<u16> {
-        let index = (range.start..range.end.min(N)).find(|&index| !self.headers[index].live)?;
-        self.used = self.used.max(index + 1);
-        let header = &mut self.headers[index];
-        header.live = true;
-        header.pointers = 1;
-        header.handles = 0;
-        Some(index as u16)
-    }
-
-    /// The record at `index`, live or not.
-    pub fn record(&mut self, index: u16) -> &mut T {
-        &mut self.records[index as usize]
-    }
-
-    /// The live record a generation names.
-    fn get(&mut self, index: u16, generation: u16) -> Option<&mut T> {
-        let header = self.headers.get(index as usize)?;
-        (header.live && header.generation == generation).then(|| &mut self.records[index as usize])
+        allocate(&mut self.headers, range)
     }
 
     /// Whether the record at `index` holds a live object.
@@ -250,6 +289,7 @@ impl<T, const N: usize> Pool<T, N> {
     }
 
     /// How many records hold a live object.
+    #[cfg(test)]
     fn live(&self) -> usize {
         self.headers.iter().filter(|header| header.live).count()
     }
@@ -382,7 +422,7 @@ impl DesktopObject {
 }
 
 /// What a caller must finish once an object's last handle or last reference went: the work outside
-/// the object manager's reach, which the process finishes ([`crate::process::Process::finish`]).
+/// the object manager's reach, finished once the directory's lock is released ([`finish`]).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Followup {
     /// A section or an image segment was deleted: its frames (taken out of its record) and the
@@ -404,6 +444,48 @@ pub enum Followup {
     FileClose {
         record: crate::fs::file::FileRecordId,
     },
+}
+
+/// The most follow-ups one handle's close leaves: a file object's cleanup, then what the object's
+/// deletion leaves (its close, or a section's frames).
+pub const MOST_FOLLOWUPS: usize = 2;
+
+/// The follow-ups one directory operation leaves its caller, in the order they are finished.
+#[derive(Clone, Copy, Default, PartialEq, Debug)]
+pub struct Followups(ArrayVec<Option<Followup>, MOST_FOLLOWUPS>);
+
+impl Followups {
+    /// No follow-up.
+    pub fn none() -> Self {
+        Followups(ArrayVec::new())
+    }
+
+    /// `followup` added at the end, when there is one.
+    fn push(&mut self, followup: Option<Followup>) {
+        if followup.is_some() {
+            self.0.push(followup);
+        }
+    }
+
+    /// The follow-ups, in order.
+    pub fn iter(&self) -> impl Iterator<Item = Followup> + '_ {
+        self.0.iter().flatten().copied()
+    }
+
+    /// Finish every follow-up, in order (see [`finish`]): the directory's lock is released by now.
+    #[cfg(target_arch = "x86")]
+    pub fn finish(self) {
+        for followup in self.iter() {
+            finish(followup);
+        }
+    }
+}
+
+/// One object or image segment the sweep at quiescence deleted ([`Directory::sweep_next`]), with
+/// what its deletion leaves.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Leak {
+    pub followup: Option<Followup>,
 }
 
 /// A program's object name as the namespace keeps it: without a `Global\` or `Local\` prefix.
@@ -461,105 +543,140 @@ impl WaitReferences {
     }
 }
 
-/// Every object, by kind, with the namespace and the waits' references. The dispatcher objects'
-/// pools are their headers alone: the bodies are the dispatcher database's, at the same index.
-pub struct Directory {
-    events: Pool<(), EVENTS>,
-    semaphores: Pool<(), SEMAPHORES>,
-    mutexes: Pool<(), MUTEXES>,
-    timers: Pool<(), TIMERS>,
-    threads: Pool<(), THREADS>,
-    processes: Pool<(), PROCESSES>,
-    pub sections: Pool<SectionObject, SECTIONS>,
-    pub segments: Pool<ImageSegment, SEGMENTS>,
-    pub files: Pool<crate::fs::file::FileObject, FILES>,
-    pub directories: Pool<(), DIRECTORIES>,
-    pub window_stations: Pool<WindowStationObject, WINDOW_STATIONS>,
-    pub desktops: Pool<DesktopObject, DESKTOPS>,
-    pub keys: Pool<crate::cm::KeyBody, KEY_OBJECTS>,
-    names: [NameEntry; NAMES],
-    waits: [WaitReferences; THREADS],
+/// The kinds' pools, one row each: the kind, its pool's field, its body (`()` for a dispatcher
+/// object: the body is the dispatcher database's, at the same index; a process keeps its thread
+/// ordinals here, since which of them are free is its thread objects' lives), how a fresh record is
+/// made, and the capacity. The table makes the [`Directory`]'s pools, its in-place builder, and the
+/// one match the untyped paths (a header by id, the counts, the sweep) reach a kind's headers
+/// through.
+macro_rules! pools {
+    ($($kind:ident => $pool:ident: $body:ty = $fresh:expr, $capacity:expr;)*) => {
+        /// Every object, by kind, with the image segments, the namespace and the waits'
+        /// references. The dispatcher objects' pools are their headers alone: the bodies are the
+        /// dispatcher database's, at the same index.
+        pub struct Directory {
+            $($pool: Pool<$body, $capacity>,)*
+            segments: Pool<ImageSegment, SEGMENTS>,
+            names: [NameEntry; NAMES],
+            waits: [WaitReferences; THREADS],
+        }
+
+        impl Directory {
+            /// Write an empty directory at `directory`: every pool empty, no names, no waits.
+            ///
+            /// # Safety
+            ///
+            /// `directory` is valid for writes, aligned, and the records' final address; its
+            /// previous contents are overwritten, not dropped.
+            pub unsafe fn write_empty(directory: *mut Directory) {
+                use core::ptr::addr_of_mut;
+                // SAFETY: the caller's contract; every field is written.
+                unsafe {
+                    $(Pool::write_empty(addr_of_mut!((*directory).$pool), $fresh);)*
+                    Pool::write_empty(addr_of_mut!((*directory).segments), ImageSegment::none);
+                    let names = addr_of_mut!((*directory).names) as *mut NameEntry;
+                    for index in 0..NAMES {
+                        names.add(index).write(NameEntry::free());
+                    }
+                    let waits = addr_of_mut!((*directory).waits) as *mut WaitReferences;
+                    for index in 0..THREADS {
+                        waits.add(index).write(WaitReferences::none());
+                    }
+                }
+            }
+
+            /// The headers of `kind`'s pool.
+            fn headers(&mut self, kind: ObjectType) -> &mut [Header] {
+                match kind {
+                    $(ObjectType::$kind => &mut self.$pool.headers,)*
+                }
+            }
+
+            /// How many objects are live, of every kind.
+            #[cfg(test)]
+            pub fn live_objects(&self) -> usize {
+                0 $(+ self.$pool.live())*
+            }
+        }
+    };
+}
+
+pools! {
+    Event => events: () = || (), EVENTS;
+    Semaphore => semaphores: () = || (), SEMAPHORES;
+    Mutex => mutexes: () = || (), MUTEXES;
+    Timer => timers: () = || (), TIMERS;
+    Thread => threads: () = || (), THREADS;
+    Process => processes: crate::process::ordinals::Ordinals =
+        crate::process::ordinals::Ordinals::empty, PROCESSES;
+    Section => sections: SectionObject = SectionObject::none, SECTIONS;
+    File => files: crate::fs::file::FileObject = crate::fs::file::FileObject::none, FILES;
+    Directory => directories: () = || (), DIRECTORIES;
+    WindowStation => window_stations: WindowStationObject = WindowStationObject::none,
+        WINDOW_STATIONS;
+    Desktop => desktops: DesktopObject = DesktopObject::none, DESKTOPS;
+    Key => keys: crate::cm::KeyBody = crate::cm::KeyBody::none, KEY_OBJECTS;
+}
+
+// SAFETY: the directory's raw pointers are the links of the file objects' embedded lock headers,
+// which name waitable headers and threads of the dispatcher database, reached there only with the
+// dispatch token. One processor, and the directory is reached only through its lock, so whichever
+// kernel thread holds it is the only one reaching its records.
+unsafe impl Send for Directory {}
+
+/// A kind whose body the directory holds (no dispatcher object's): its kind, and its pool's headers
+/// and records.
+pub trait Body: Sized {
+    const KIND: ObjectType;
+
+    /// The kind's pool in `directory`, as its headers and its records.
+    fn pool(directory: &mut Directory) -> (&mut [Header], &mut [Self]);
+}
+
+/// The bodies' table: each body type, its kind, its pool, and the name of its typed accessor.
+macro_rules! bodies {
+    ($($body:ty => $kind:ident, $pool:ident, $accessor:ident;)*) => {
+        $(
+            impl Body for $body {
+                const KIND: ObjectType = ObjectType::$kind;
+
+                fn pool(directory: &mut Directory) -> (&mut [Header], &mut [Self]) {
+                    (&mut directory.$pool.headers, &mut directory.$pool.records)
+                }
+            }
+        )*
+
+        impl Directory {
+            $(
+                #[doc = concat!("The live ", stringify!($kind), " object's body `id` names.")]
+                pub fn $accessor(&mut self, id: ObjectId) -> Option<&mut $body> {
+                    self.body(id)
+                }
+            )*
+        }
+    };
+}
+
+bodies! {
+    crate::process::ordinals::Ordinals => Process, processes, ordinals;
+    SectionObject => Section, sections, section;
+    crate::fs::file::FileObject => File, files, file;
+    WindowStationObject => WindowStation, window_stations, window_station;
+    DesktopObject => Desktop, desktops, desktop;
+    crate::cm::KeyBody => Key, keys, key;
 }
 
 impl Directory {
-    /// Write an empty directory at `directory`: every pool empty, no names, no waits.
-    ///
-    /// # Safety
-    ///
-    /// `directory` is valid for writes, aligned, and the records' final address; its previous
-    /// contents are overwritten, not dropped.
-    pub unsafe fn write_empty(directory: *mut Directory) {
-        use core::ptr::addr_of_mut;
-        // SAFETY: the caller's contract; every field is written.
-        unsafe {
-            Pool::write_empty(addr_of_mut!((*directory).events), || ());
-            Pool::write_empty(addr_of_mut!((*directory).semaphores), || ());
-            Pool::write_empty(addr_of_mut!((*directory).mutexes), || ());
-            Pool::write_empty(addr_of_mut!((*directory).timers), || ());
-            Pool::write_empty(addr_of_mut!((*directory).threads), || ());
-            Pool::write_empty(addr_of_mut!((*directory).processes), || ());
-            Pool::write_empty(addr_of_mut!((*directory).sections), SectionObject::none);
-            Pool::write_empty(addr_of_mut!((*directory).segments), ImageSegment::none);
-            Pool::write_empty(
-                addr_of_mut!((*directory).files),
-                crate::fs::file::FileObject::none,
-            );
-            Pool::write_empty(addr_of_mut!((*directory).directories), || ());
-            Pool::write_empty(
-                addr_of_mut!((*directory).window_stations),
-                WindowStationObject::none,
-            );
-            Pool::write_empty(addr_of_mut!((*directory).desktops), DesktopObject::none);
-            Pool::write_empty(addr_of_mut!((*directory).keys), crate::cm::KeyBody::none);
-            let names = addr_of_mut!((*directory).names) as *mut NameEntry;
-            for index in 0..NAMES {
-                names.add(index).write(NameEntry::free());
-            }
-            let waits = addr_of_mut!((*directory).waits) as *mut WaitReferences;
-            for index in 0..THREADS {
-                waits.add(index).write(WaitReferences::none());
-            }
-        }
-    }
-
     fn header(&mut self, id: ObjectId) -> Option<&mut Header> {
-        let headers: &mut [Header] = match id.kind {
-            ObjectType::Event => &mut self.events.headers,
-            ObjectType::Semaphore => &mut self.semaphores.headers,
-            ObjectType::Mutex => &mut self.mutexes.headers,
-            ObjectType::Timer => &mut self.timers.headers,
-            ObjectType::Thread => &mut self.threads.headers,
-            ObjectType::Process => &mut self.processes.headers,
-            ObjectType::Section => &mut self.sections.headers,
-            ObjectType::File => &mut self.files.headers,
-            ObjectType::Directory => &mut self.directories.headers,
-            ObjectType::WindowStation => &mut self.window_stations.headers,
-            ObjectType::Desktop => &mut self.desktops.headers,
-            ObjectType::Key => &mut self.keys.headers,
-        };
-        let header = headers.get_mut(id.index as usize)?;
-        (header.live && header.generation == id.generation).then_some(header)
+        let header = self.headers(id.kind).get_mut(id.index as usize)?;
+        header.names(id.generation).then_some(header)
     }
 
     fn id(&mut self, kind: ObjectType, index: u16) -> ObjectId {
-        let generation = match kind {
-            ObjectType::Event => self.events.headers[index as usize].generation,
-            ObjectType::Semaphore => self.semaphores.headers[index as usize].generation,
-            ObjectType::Mutex => self.mutexes.headers[index as usize].generation,
-            ObjectType::Timer => self.timers.headers[index as usize].generation,
-            ObjectType::Thread => self.threads.headers[index as usize].generation,
-            ObjectType::Process => self.processes.headers[index as usize].generation,
-            ObjectType::Section => self.sections.headers[index as usize].generation,
-            ObjectType::File => self.files.headers[index as usize].generation,
-            ObjectType::Directory => self.directories.headers[index as usize].generation,
-            ObjectType::WindowStation => self.window_stations.headers[index as usize].generation,
-            ObjectType::Desktop => self.desktops.headers[index as usize].generation,
-            ObjectType::Key => self.keys.headers[index as usize].generation,
-        };
         ObjectId {
             kind,
             index,
-            generation,
+            generation: self.headers(kind)[index as usize].generation,
         }
     }
 
@@ -578,6 +695,28 @@ impl Directory {
     pub fn counts(&mut self, id: ObjectId) -> Option<(u32, u32)> {
         self.header(id)
             .map(|header| (header.pointers, header.handles))
+    }
+
+    /// The body of the live object `id` names, when it is of `T`'s kind.
+    pub fn body<T: Body>(&mut self, id: ObjectId) -> Option<&mut T> {
+        if id.kind != T::KIND {
+            return None;
+        }
+        let (headers, records) = T::pool(self);
+        let header = headers.get(id.index as usize)?;
+        header
+            .names(id.generation)
+            .then(|| &mut records[id.index as usize])
+    }
+
+    /// A new object of `T`'s kind holding `body`, with its creator's reference; none when the pool
+    /// is exhausted.
+    fn insert<T: Body>(&mut self, body: T) -> Option<ObjectId> {
+        let (headers, records) = T::pool(self);
+        let all = 0..headers.len();
+        let index = allocate(headers, all)?;
+        records[index as usize] = body;
+        Some(self.id(T::KIND, index))
     }
 
     // --- Creation ----------------------------------------------------------------------------
@@ -653,9 +792,11 @@ impl Directory {
     }
 
     /// A process object for a new process, unsignaled and still active, holding the process's own
-    /// reference; none when every process record is in use. Its index is the process record's.
+    /// reference, with every thread ordinal free; none when every process record is in use. Its
+    /// index is the process record's.
     pub fn create_process(&mut self) -> Option<ObjectId> {
         let index = self.processes.allocate_in(0..PROCESSES)?;
+        self.processes.records[index as usize].reset();
         with_bodies(|bodies| {
             bodies.renew_process_object(index);
         });
@@ -664,16 +805,14 @@ impl Directory {
 
     /// A section object holding `section` (the mapping).
     pub fn create_section(&mut self, section: SectionObject) -> Option<ObjectId> {
-        let index = self.sections.allocate_in(0..SECTIONS)?;
-        *self.sections.record(index) = section;
-        Some(self.id(ObjectType::Section, index))
+        self.insert(section)
     }
 
     /// An image segment holding `segment`, with one reference: its creator's (the image section
     /// made with it). None when the pool is exhausted.
     pub fn create_segment(&mut self, segment: ImageSegment) -> Option<SegmentId> {
         let index = self.segments.allocate_in(0..SEGMENTS)?;
-        *self.segments.record(index) = segment;
+        self.segments.records[index as usize] = segment;
         Some(SegmentId {
             index,
             generation: self.segments.headers[index as usize].generation,
@@ -682,7 +821,10 @@ impl Directory {
 
     /// The live image segment `id` names.
     pub fn segment(&mut self, id: SegmentId) -> Option<&mut ImageSegment> {
-        self.segments.get(id.index, id.generation)
+        let header = self.segments.headers.get(id.index as usize)?;
+        header
+            .names(id.generation)
+            .then(|| &mut self.segments.records[id.index as usize])
     }
 
     /// Take a reference on the image segment `id`; false when it names nothing.
@@ -709,7 +851,10 @@ impl Directory {
 
     /// Delete the image segment at pool `index`: its record is dead and its ids stale.
     fn delete_segment(&mut self, index: u16) -> Followup {
-        let segment = core::mem::replace(self.segments.record(index), ImageSegment::none());
+        let segment = core::mem::replace(
+            &mut self.segments.records[index as usize],
+            ImageSegment::none(),
+        );
         let header = &mut self.segments.headers[index as usize];
         header.live = false;
         header.pointers = 0;
@@ -722,7 +867,7 @@ impl Directory {
 
     fn segment_header(&mut self, id: SegmentId) -> Option<&mut Header> {
         let header = self.segments.headers.get_mut(id.index as usize)?;
-        (header.live && header.generation == id.generation).then_some(header)
+        header.names(id.generation).then_some(header)
     }
 
     /// A view went: drop its reference on what it mapped (the last one deletes it).
@@ -742,53 +887,50 @@ impl Directory {
         granted: u32,
         share: u8,
     ) -> Option<ObjectId> {
-        let index = self.files.allocate_in(0..FILES)?;
-        let file = self.files.record(index);
-        *file = crate::fs::file::FileObject::new(record, access, granted, share);
-        file.init();
-        Some(self.id(ObjectType::File, index))
+        let id = self.insert(crate::fs::file::FileObject::new(
+            record, access, granted, share,
+        ))?;
+        self.file(id).expect("just made").init();
+        Some(id)
     }
 
     /// A window station named `name` with `flags`; none when the pool is exhausted. Its creator's
     /// reference is the caller's: the boot's WinSta0 keeps it, so the window station is permanent.
     pub fn create_window_station(&mut self, name: &'static str, flags: u32) -> Option<ObjectId> {
-        let index = self.window_stations.allocate_in(0..WINDOW_STATIONS)?;
-        *self.window_stations.record(index) = WindowStationObject { name, flags };
-        Some(self.id(ObjectType::WindowStation, index))
+        self.insert(WindowStationObject { name, flags })
     }
 
     /// A desktop named `name` with `flags`; none when the pool is exhausted. Its creator's
     /// reference is the caller's, as a window station's.
     pub fn create_desktop(&mut self, name: &'static str, flags: u32) -> Option<ObjectId> {
-        let index = self.desktops.allocate_in(0..DESKTOPS)?;
-        *self.desktops.record(index) = DesktopObject { name, flags };
-        Some(self.id(ObjectType::Desktop, index))
+        self.insert(DesktopObject { name, flags })
     }
 
     /// A key object naming `body`'s key.
     pub fn create_key(&mut self, body: crate::cm::KeyBody) -> Option<ObjectId> {
-        let index = self.keys.allocate_in(0..KEY_OBJECTS)?;
-        *self.keys.record(index) = body;
-        Some(self.id(ObjectType::Key, index))
+        self.insert(body)
     }
 
     // --- Typed access ------------------------------------------------------------------------
 
-    /// The live header of `id` among a kind's headers, when `id` is of `kind`.
+    /// The body index of the live dispatcher object `id`, when it is of `kind`.
     fn body_index(&mut self, id: ObjectId, kind: ObjectType) -> Option<u16> {
-        (id.kind == kind && self.is_live(id)).then_some(id.index)
+        let index = id.body_of(kind)?;
+        self.is_live(id).then_some(index)
     }
 
     // The dispatcher objects: the body's name in the dispatcher database, for a live object of
     // the kind (the body itself is reached there, with the dispatch token).
 
     /// The event object's body: its waitable name.
+    #[cfg(test)]
     pub fn event(&mut self, id: ObjectId) -> Option<WaitableId> {
         self.body_index(id, ObjectType::Event)
             .map(WaitableId::Event)
     }
 
     /// The semaphore object's body: its waitable name.
+    #[cfg(test)]
     pub fn semaphore(&mut self, id: ObjectId) -> Option<WaitableId> {
         self.body_index(id, ObjectType::Semaphore)
             .map(WaitableId::Semaphore)
@@ -800,6 +942,7 @@ impl Directory {
     }
 
     /// The waitable timer object's body.
+    #[cfg(test)]
     pub fn timer(&mut self, id: ObjectId) -> Option<TimerId> {
         self.body_index(id, ObjectType::Timer)
             .map(TimerId::Waitable)
@@ -815,29 +958,19 @@ impl Directory {
         self.body_index(id, ObjectType::Process)
     }
 
-    pub fn section(&mut self, id: ObjectId) -> Option<&mut SectionObject> {
-        (id.kind == ObjectType::Section).then_some(())?;
-        self.sections.get(id.index, id.generation)
-    }
-
-    pub fn file(&mut self, id: ObjectId) -> Option<&mut crate::fs::file::FileObject> {
-        (id.kind == ObjectType::File).then_some(())?;
-        self.files.get(id.index, id.generation)
-    }
-
-    pub fn window_station(&mut self, id: ObjectId) -> Option<&mut WindowStationObject> {
-        (id.kind == ObjectType::WindowStation).then_some(())?;
-        self.window_stations.get(id.index, id.generation)
-    }
-
-    pub fn desktop(&mut self, id: ObjectId) -> Option<&mut DesktopObject> {
-        (id.kind == ObjectType::Desktop).then_some(())?;
-        self.desktops.get(id.index, id.generation)
-    }
-
-    pub fn key(&mut self, id: ObjectId) -> Option<&mut crate::cm::KeyBody> {
-        (id.kind == ObjectType::Key).then_some(())?;
-        self.keys.get(id.index, id.generation)
+    /// The ordinal the next created thread of the process `process` names takes (see
+    /// [`crate::process::ordinals::Ordinals::free`]): its lowest one never taken, or held by a
+    /// thread whose object is gone. None when every ordinal is held by a thread something still
+    /// references, or `process` names no live process.
+    pub fn free_ordinal(&mut self, process: ObjectId) -> Option<u16> {
+        let index = self.body_index(process, ObjectType::Process)?;
+        let threads = &self.threads.headers;
+        self.processes.records[index as usize].free(|thread| {
+            thread.kind == ObjectType::Thread
+                && threads
+                    .get(thread.index as usize)
+                    .is_some_and(|header| header.names(thread.generation))
+        })
     }
 
     /// The live process object at process pool `index`, if any.
@@ -848,41 +981,21 @@ impl Directory {
 
     /// The process `id` names has ended with `exit_status`: its object signals, once, and its
     /// waiters wake (no boost: the end grants none).
+    #[cfg(test)]
     pub fn signal_process_end(&mut self, id: ObjectId, exit_status: u32) {
-        let Some(index) = self.body_index(id, ObjectType::Process) else {
-            return;
-        };
-        with_bodies(|bodies| {
-            let process = bodies.process_object_mut(index);
-            process.exit_status = exit_status;
-            process.waitable.signal_state = 1;
-            if process.waitable.has_waiters() {
-                let waitable = process.waitable.id();
-                bodies.satisfy_waiters(waitable, 0);
-            }
-        });
+        if let Some(index) = self.body_index(id, ObjectType::Process) {
+            signal_process_body(index, exit_status);
+        }
     }
 
-    /// The waitable name of a waitable object, as the wait entries take it; none for a section, a
-    /// file object (its I/O completes at once: nothing waits on it), the directory, a window
-    /// station, a desktop, a key or a dead id.
+    /// The waitable name of a live waitable object (see [`ObjectId::waitable`]); none for an
+    /// object no wait can name, or a dead id.
+    #[cfg(test)]
     pub fn waitable(&mut self, id: ObjectId) -> Option<WaitableId> {
-        match id.kind {
-            ObjectType::Event => self.event(id),
-            ObjectType::Semaphore => self.semaphore(id),
-            ObjectType::Mutex => self.mutex(id).map(|mutex| WaitableId::Mutex(mutex.0)),
-            ObjectType::Timer => self
-                .body_index(id, ObjectType::Timer)
-                .map(WaitableId::Timer),
-            ObjectType::Thread => self.thread(id).map(WaitableId::Thread),
-            ObjectType::Process => self.process(id).map(WaitableId::Process),
-            ObjectType::Section
-            | ObjectType::File
-            | ObjectType::Directory
-            | ObjectType::WindowStation
-            | ObjectType::Desktop
-            | ObjectType::Key => None,
+        if !self.is_live(id) {
+            return None;
         }
+        id.waitable()
     }
 
     /// The thread object whose record is `thread`; none for the idle thread's record (no object
@@ -911,20 +1024,6 @@ impl Directory {
                     && thread.thread_id() == thread_id
                     && thread.state() != crate::sched::thread::ThreadState::Terminated;
                 found.then_some(id)
-            })
-        })
-    }
-
-    /// Whether a live thread runs attached to the address space of the process whose scheduling
-    /// record is `space` (a thread of another process inside a service that reaches into it).
-    pub fn attached_to(&mut self, space: *const crate::sched::process::SchedProcess) -> bool {
-        with_bodies(|bodies| {
-            (0..THREADS as u16).any(|index| {
-                let id = self.id(ObjectType::Thread, index);
-                self.thread(id).is_some_and(|thread| {
-                    let thread = bodies.thread(thread);
-                    thread.attached() && core::ptr::eq(thread.space(), space)
-                })
             })
         })
     }
@@ -971,28 +1070,27 @@ impl Directory {
 
     /// A handle to `id` was closed: the last handle drops the object's name and cleans up a file
     /// object, and the handle's reference goes with it (the last reference deletes the object).
-    /// What the caller must finish is handed to `finish`, in order.
-    pub fn handle_closed(&mut self, id: ObjectId, mut finish: impl FnMut(Followup)) {
+    /// Returns what the caller must finish, in order.
+    pub fn handle_closed(&mut self, id: ObjectId) -> Followups {
+        let mut followups = Followups::none();
         let Some(header) = self.header(id) else {
-            return;
+            return followups;
         };
         debug_assert!(header.handles > 0, "a handle closes once");
         header.handles -= 1;
         if header.handles == 0 {
             self.forget_name(id);
-            if id.kind == ObjectType::File {
-                let file = self.files.record(id.index);
-                finish(Followup::FileCleanup {
+            if let Some(file) = self.file(id) {
+                followups.push(Some(Followup::FileCleanup {
                     record: file.record,
                     access: file.access,
                     share: file.share,
                     delete_on_close: file.delete_on_close,
-                });
+                }));
             }
         }
-        if let Some(followup) = self.dereference(id) {
-            finish(followup);
-        }
+        followups.push(self.dereference(id));
+        followups
     }
 
     /// Delete the object `id` names: its kind's teardown, then the record is dead and its id stale.
@@ -1015,8 +1113,10 @@ impl Directory {
                 None
             }
             ObjectType::Section => {
-                let section =
-                    core::mem::replace(self.sections.record(id.index), SectionObject::none());
+                let section = core::mem::replace(
+                    self.section(id).expect("deleting a live section"),
+                    SectionObject::none(),
+                );
                 match section.segment {
                     // An image section's frames and file are its segment's.
                     Some(segment) => self.dereference_segment(segment),
@@ -1027,7 +1127,7 @@ impl Directory {
                 }
             }
             ObjectType::File => Some(Followup::FileClose {
-                record: self.files.record(id.index).record,
+                record: self.file(id).expect("deleting a live file object").record,
             }),
             ObjectType::Event
             | ObjectType::Semaphore
@@ -1085,31 +1185,53 @@ impl Directory {
 
     // --- Waits -------------------------------------------------------------------------------
 
-    /// The wait thread record `thread` is about to enter holds `objects` for its whole life: a
-    /// reference on each, released by [`Directory::release_wait`] when the wait returns — or when
-    /// the thread ends without returning.
-    pub fn hold_wait(&mut self, thread: u16, objects: &[ObjectId]) {
+    /// The wait thread record `thread` is about to enter holds `objects`, dispatcher objects all,
+    /// for its whole life: a reference on each, released by [`Directory::release_wait`] when the
+    /// wait returns — or when the thread ends without returning. False, and nothing held, when one
+    /// of them is gone already (a handle another thread closed meanwhile).
+    pub fn hold_wait(&mut self, thread: u16, objects: &[ObjectId]) -> bool {
         debug_assert!(self.waits[thread as usize]
             .objects
             .iter()
             .all(Option::is_none));
+        debug_assert!(
+            objects.iter().all(|id| id.waitable().is_some()),
+            "a wait holds dispatcher objects"
+        );
+        if !objects.iter().all(|&id| self.is_live(id)) {
+            return false;
+        }
         for (slot, &id) in self.waits[thread as usize].objects.iter_mut().zip(objects) {
             *slot = Some(id);
         }
         for &id in objects {
-            let held = self.reference(id);
-            debug_assert!(held, "a wait holds live objects");
+            self.reference(id);
+        }
+        true
+    }
+
+    /// Release the references thread record `thread`'s wait holds. The objects that go with them
+    /// are dispatcher objects, whose deletion leaves nothing to finish.
+    pub fn release_wait(&mut self, thread: u16) {
+        let held = core::mem::replace(&mut self.waits[thread as usize], WaitReferences::none());
+        for id in held.objects.iter().flatten() {
+            let left = self.dereference(*id);
+            assert!(
+                left.is_none(),
+                "a dispatcher object's deletion leaves nothing"
+            );
         }
     }
 
-    /// Release the references thread record `thread`'s wait holds; the followups of objects that
-    /// went with them are handed to `finish`.
-    pub fn release_wait(&mut self, thread: u16, mut finish: impl FnMut(Followup)) {
-        let held = core::mem::replace(&mut self.waits[thread as usize], WaitReferences::none());
-        for id in held.objects.iter().flatten() {
-            if let Some(followup) = self.dereference(*id) {
-                finish(followup);
-            }
+    /// A thread has ended, or is ending on its way out: its wait's references, if it ended inside
+    /// one, and the thread's own reference on its object go. Its record is free once nothing else
+    /// holds it. The exit calls this in the directory hold it retires the thread in: a retired
+    /// thread waits for nothing, a lock included.
+    pub fn end_thread_references(&mut self, thread: ThreadId) {
+        if let Some(id) = self.thread_object(thread) {
+            self.release_wait(id.index);
+            let left = self.dereference(id);
+            debug_assert!(left.is_none(), "a thread object's deletion leaves nothing");
         }
     }
 
@@ -1119,7 +1241,7 @@ impl Directory {
     /// queue to it any more).
     pub fn run_down_timers(&mut self, thread: ThreadId) {
         with_bodies(|bodies| {
-            for index in 0..self.timers.used as u16 {
+            for index in 0..TIMERS as u16 {
                 if self.timers.is_live_at(index)
                     && bodies.waitable_timer_mut(index).apc_thread() == Some(thread)
                 {
@@ -1133,9 +1255,9 @@ impl Directory {
     /// over (their pages went with its address space). Nothing else here is the process's alone:
     /// its handles are closed and its threads have ended by now, so every object only it held went
     /// with its last reference, and one still live is another process's too — or a leak, which
-    /// only the sweep at quiescence can tell ([`Directory::sweep`]). A thread record whose object
-    /// still lives (another process holds a handle to the thread) stays as it ended: its object is
-    /// still waitable and its exit code still readable.
+    /// only the sweep at quiescence can tell ([`Directory::sweep_next`]). A thread record whose
+    /// object still lives (another process holds a handle to the thread) stays as it ended: its
+    /// object is still waitable and its exit code still readable.
     pub fn process_ended(&mut self, owner: *const crate::sched::process::SchedProcess) {
         with_bodies(|bodies| {
             for index in 0..THREADS as u16 {
@@ -1149,20 +1271,15 @@ impl Directory {
         });
     }
 
-    /// The sweep at quiescence, once no process remains that has not been torn down: every
-    /// reference a process held went with its end, so every object (and image segment) still live
-    /// is a leak. Each is deleted, every thread record starts over, and every name is freed.
-    /// Returns how many objects and segments outlived their processes; what a deleted one leaves (a
-    /// leaked section's or segment's hold on its frames) is handed to `finish`. Process objects are
-    /// not swept: the reaped process's own goes with its own reference, at its teardown's end.
-    pub fn sweep(&mut self, mut finish: impl FnMut(Followup)) -> usize {
-        // The processes outlive their own end, and the permanent directory, window station and
-        // desktop every process.
-        let leaked = self.live_objects()
-            - self.processes.live()
-            - self.directories.live()
-            - self.window_stations.live()
-            - self.desktops.live();
+    /// One step of the sweep at quiescence, once no process remains that has not been torn down:
+    /// every reference a process held went with its end, so every object (and image segment) still
+    /// live is a leak. The step deletes the next one, an object first, then a segment no object
+    /// took with it; none once nothing is left. Each step is one leak. Process objects are not
+    /// swept (the reaped process's own goes with its own reference, at its teardown's end), nor the
+    /// permanent directory, window station and desktop, which outlive every process. The caller
+    /// finishes what a step leaves (a leaked section's or segment's hold on its frames) between
+    /// steps, then ends the sweep ([`Directory::sweep_end`]).
+    pub fn sweep_next(&mut self) -> Option<Leak> {
         for kind in [
             ObjectType::Event,
             ObjectType::Semaphore,
@@ -1173,24 +1290,29 @@ impl Directory {
             ObjectType::File,
             ObjectType::Key,
         ] {
-            for index in 0..self.capacity(kind) {
+            let live = self.headers(kind).iter().position(|header| header.live);
+            if let Some(index) = live {
                 let id = self.id(kind, index as u16);
-                if self.is_live(id) {
-                    if let Some(followup) = self.delete(id) {
-                        finish(followup);
-                    }
-                }
+                return Some(Leak {
+                    followup: self.delete(id),
+                });
             }
         }
         // The image sections went above, and every view with its process: a segment left is a
         // leak too.
-        let mut leaked = leaked;
-        for index in 0..SEGMENTS {
-            if self.segments.headers[index].live {
-                finish(self.delete_segment(index as u16));
-                leaked += 1;
-            }
-        }
+        let index = self
+            .segments
+            .headers
+            .iter()
+            .position(|header| header.live)?;
+        Some(Leak {
+            followup: Some(self.delete_segment(index as u16)),
+        })
+    }
+
+    /// The sweep's end: every thread record starts over, and every wait's references and every
+    /// name are freed.
+    pub fn sweep_end(&mut self) {
         with_bodies(|bodies| {
             for (index, waits) in self.waits.iter_mut().enumerate() {
                 bodies.renew_thread(ThreadId(index as u16));
@@ -1200,40 +1322,6 @@ impl Directory {
         for entry in self.names.iter_mut() {
             *entry = NameEntry::free();
         }
-        leaked
-    }
-
-    fn capacity(&self, kind: ObjectType) -> usize {
-        match kind {
-            ObjectType::Event => EVENTS,
-            ObjectType::Semaphore => SEMAPHORES,
-            ObjectType::Mutex => MUTEXES,
-            ObjectType::Timer => TIMERS,
-            ObjectType::Thread => THREADS,
-            ObjectType::Process => PROCESSES,
-            ObjectType::Section => SECTIONS,
-            ObjectType::File => FILES,
-            ObjectType::Directory => DIRECTORIES,
-            ObjectType::WindowStation => WINDOW_STATIONS,
-            ObjectType::Desktop => DESKTOPS,
-            ObjectType::Key => KEY_OBJECTS,
-        }
-    }
-
-    /// How many objects are live, of every kind.
-    pub fn live_objects(&self) -> usize {
-        self.events.live()
-            + self.semaphores.live()
-            + self.mutexes.live()
-            + self.timers.live()
-            + self.threads.live()
-            + self.processes.live()
-            + self.sections.live()
-            + self.files.live()
-            + self.directories.live()
-            + self.window_stations.live()
-            + self.desktops.live()
-            + self.keys.live()
     }
 
     /// `\BaseNamedObjects`, the named objects' directory: made at its first open and permanent
@@ -1246,271 +1334,323 @@ impl Directory {
     }
 }
 
-// --- The kernel's directory -------------------------------------------------------------------
-
-/// The kernel's one directory, built in place at first use (by value it would pass the stack).
-#[cfg(target_arch = "x86")]
-static mut DIRECTORY: MaybeUninit<Directory> = MaybeUninit::uninit();
-
-/// Whether [`DIRECTORY`] is built.
-#[cfg(target_arch = "x86")]
-static mut BUILT: bool = false;
-
-/// The kernel's directory of objects.
-#[cfg(target_arch = "x86")]
-pub fn directory() -> &'static mut Directory {
-    // SAFETY: single CPU. Services and the teardown hold the reference with interrupts masked (the
-    // gate masks them), so no other thread runs while they use it, except across a wait (an
-    // overlap the directory's own lock is to close). The dispatcher objects' bodies, which the
-    // clock's deferred work changes, are the dispatcher database's, not the directory's; the one
-    // DPC that reaches the directory, the keyboard's, reads an event's header, which no directory
-    // operation leaves half-written across the raises where DPCs run. Built once, in place, before
-    // the first use.
-    unsafe {
-        let directory = (*core::ptr::addr_of_mut!(DIRECTORY)).as_mut_ptr();
-        if !BUILT {
-            Directory::write_empty(directory);
-            BUILT = true;
+/// Signal the process object whose body is at `index` with `exit_status`, once, waking its waiters
+/// (no boost: the end grants none).
+fn signal_process_body(index: u16, exit_status: u32) {
+    with_bodies(|bodies| {
+        let process = bodies.process_object_mut(index);
+        process.exit_status = exit_status;
+        process.waitable.signal_state = 1;
+        if process.waitable.has_waiters() {
+            let waitable = process.waitable.id();
+            bodies.satisfy_waiters(waitable, 0);
         }
-        &mut *directory
-    }
-}
-
-// --- The services' side (the current process's handles) ----------------------------------------
-
-/// A reference on an object, held for as long as the value lives:
-/// dropping it releases the reference, and the last one deletes the object.
-#[cfg(target_arch = "x86")]
-pub struct ObRef {
-    id: ObjectId,
+    });
 }
 
 #[cfg(target_arch = "x86")]
-impl ObRef {
-    /// The referenced object's id.
-    pub fn id(&self) -> ObjectId {
-        self.id
-    }
+pub use target::*;
 
-    // The dispatcher objects' bodies, by their names in the dispatcher database (the reference's
-    // kind is the caller's to know): the reference keeps the body the object's.
-
-    /// The referenced event's body.
-    pub fn event(&self) -> WaitableId {
-        directory()
-            .event(self.id)
-            .expect("a referenced event lives")
-    }
-
-    /// The referenced semaphore's body.
-    pub fn semaphore(&self) -> WaitableId {
-        directory()
-            .semaphore(self.id)
-            .expect("a referenced semaphore lives")
-    }
-
-    /// The referenced mutex's body.
-    pub fn mutex(&self) -> MutexId {
-        directory()
-            .mutex(self.id)
-            .expect("a referenced mutex lives")
-    }
-
-    /// The referenced waitable timer's body.
-    pub fn timer(&self) -> TimerId {
-        directory()
-            .timer(self.id)
-            .expect("a referenced timer lives")
-    }
-
-    /// The referenced thread's record.
-    pub fn thread(&self) -> ThreadId {
-        directory()
-            .thread(self.id)
-            .expect("a referenced thread lives")
-    }
-
-    pub fn section(&self) -> &'static mut SectionObject {
-        directory()
-            .section(self.id)
-            .expect("a referenced section lives")
-    }
-}
-
+/// The kernel's directory and the services' side of it: the lock, the references a service holds,
+/// the follow-ups finished after the lock, and the current process's handles.
 #[cfg(target_arch = "x86")]
-impl Drop for ObRef {
-    fn drop(&mut self) {
-        release(self.id);
+mod target {
+    use core::num::NonZeroU32;
+    use core::ptr::NonNull;
+
+    use super::*;
+    use crate::interrupt::irql;
+    use crate::level::{At, Passive};
+    use crate::sync::{ShortGuard, ShortLock};
+
+    /// The kernel's one directory, behind its short lock. Built in place at its first acquisition:
+    /// by value it would pass through the stack, which is smaller than it.
+    static DIRECTORY: ShortLock<Directory> =
+        // SAFETY: `write_empty` writes a whole directory at the address it is handed, and takes no
+        // lock.
+        unsafe { ShortLock::in_place(Directory::write_empty) };
+
+    /// The directory, locked for as long as the guard lives. The guard keeps the passive token
+    /// borrowed, so nothing that takes it — a wait, a switch, a user-memory copy — runs while the
+    /// directory is held.
+    pub fn lock(passive: &mut At<Passive>) -> ShortGuard<'_, Directory> {
+        DIRECTORY.lock(passive)
     }
-}
 
-/// A referenced object's record: the reference lives as long as the value, which reads as the
-/// record itself.
-#[cfg(target_arch = "x86")]
-pub struct Referenced<T: 'static> {
-    _reference: ObRef,
-    record: *mut T,
-}
+    /// Run `f` on the locked directory: the bridge for code that holds no passive token, which it
+    /// makes for the hold (see [`lock`]).
+    ///
+    /// # Panics
+    ///
+    /// The processor is above the passive level: inside the directory's lock already (`f`, or what
+    /// it calls, taking it again), or at a raised level, where nothing may wait for it.
+    pub fn locked<R>(f: impl FnOnce(&mut Directory) -> R) -> R {
+        assert_eq!(
+            crate::pcr::pcr().current(),
+            irql::PASSIVE,
+            "the directory's bridge entered above the passive level"
+        );
+        // SAFETY: a passive entry (see `At::enter`): the ledger reads the passive level, and the
+        // token stays on this thread, dropped with this frame.
+        let mut passive = unsafe { At::<Passive>::enter() };
+        let mut directory = DIRECTORY.lock(&mut passive);
+        f(&mut directory)
+    }
 
-#[cfg(target_arch = "x86")]
-impl<T: 'static> Referenced<T> {
-    /// `record`, held through `reference` (the record is the referenced object's own).
-    pub fn new(reference: ObRef, record: &'static mut T) -> Self {
+    /// Whether no thread holds the directory, as the idle thread, which cannot wait for it, finds
+    /// it.
+    pub fn is_free() -> bool {
+        DIRECTORY.is_free()
+    }
+
+    /// Finish what the directory left its caller when an object's last handle or last reference
+    /// went (see the module notes): a section's hold on its frames (and a file's section's or a
+    /// segment's on its file object), a file object's cleanup — which may delete the file, on disk
+    /// — and its record's close. Runs outside the directory's lock, at the passive level.
+    pub fn finish(followup: Followup) {
+        match followup {
+            Followup::Section {
+                frames,
+                file_object,
+            } => {
+                crate::nt::section::release_frames(frames);
+                if let Some(file_object) = file_object {
+                    unmap_file(file_object);
+                }
+            }
+            Followup::FileCleanup {
+                record,
+                access,
+                share,
+                delete_on_close,
+            } => crate::fs::io::cleanup(record, access, share, delete_on_close),
+            Followup::FileClose { record } => crate::fs::io::close(record),
+        }
+    }
+
+    /// A file-backed section, or an image segment, is gone: its file is mapped once less, and its
+    /// reference on the file object goes (the object's close follows, when that was its last
+    /// reference).
+    fn unmap_file(file_object: ObjectId) {
+        let Some(record) = locked(|directory| directory.file(file_object).map(|file| file.record))
+        else {
+            return;
+        };
+        crate::fs::file::with_records(|records| records.get_mut(record).user_mapped -= 1);
+        release(file_object);
+    }
+
+    /// A reference on an object, held for as long as the value lives:
+    /// dropping it releases the reference, and the last one deletes the object.
+    pub struct ObRef {
+        id: ObjectId,
+    }
+
+    impl ObRef {
+        /// The referenced object's id.
+        pub fn id(&self) -> ObjectId {
+            self.id
+        }
+
+        // The dispatcher objects' bodies, by their names in the dispatcher database (the
+        // reference's kind is the caller's to know): the reference keeps the body the object's.
+
+        /// The referenced event's body.
+        pub fn event(&self) -> WaitableId {
+            WaitableId::Event(self.body(ObjectType::Event))
+        }
+
+        /// The referenced semaphore's body.
+        pub fn semaphore(&self) -> WaitableId {
+            WaitableId::Semaphore(self.body(ObjectType::Semaphore))
+        }
+
+        /// The referenced mutex's body.
+        pub fn mutex(&self) -> MutexId {
+            MutexId(self.body(ObjectType::Mutex))
+        }
+
+        /// The referenced waitable timer's body.
+        pub fn timer(&self) -> TimerId {
+            TimerId::Waitable(self.body(ObjectType::Timer))
+        }
+
+        /// The referenced thread's record.
+        pub fn thread(&self) -> ThreadId {
+            ThreadId(self.body(ObjectType::Thread))
+        }
+
+        /// The referenced process object's body: its index in the dispatcher's process-object
+        /// pool.
+        pub fn process(&self) -> u16 {
+            self.body(ObjectType::Process)
+        }
+
+        /// The referenced section's body, as it is now.
+        pub fn section(&self) -> SectionObject {
+            locked(|directory| {
+                *directory
+                    .section(self.id)
+                    .expect("a referenced section lives")
+            })
+        }
+
+        /// The referenced object's body index, as an object of `kind`.
+        fn body(&self, kind: ObjectType) -> u16 {
+            self.id
+                .body_of(kind)
+                .expect("a reference of the kind asked")
+        }
+    }
+
+    impl Drop for ObRef {
+        fn drop(&mut self) {
+            release(self.id);
+        }
+    }
+
+    /// A referenced file object: the reference lives as long as the value, which reads as the
+    /// object itself.
+    ///
+    /// The object is reached outside the directory's lock, as Windows 2000 reaches a file object
+    /// outside the object manager's: what its open set (its record, its access and rights, its
+    /// sharing, its options) is never written again while it lives, and reads freely; its position
+    /// and its directory search change only under the object's own lock, through
+    /// [`crate::fs::io::serialized`], the one way to the object mutably.
+    pub struct Referenced<T: 'static> {
+        _reference: ObRef,
+        record: NonNull<T>,
+    }
+
+    impl<T: 'static> Referenced<T> {
+        /// The record itself, borrowed by nothing: how a caller reaches a part of it (a lock)
+        /// without borrowing the whole while another thread may hold it.
+        pub fn as_ptr(&self) -> *mut T {
+            self.record.as_ptr()
+        }
+    }
+
+    impl<T: 'static> core::ops::Deref for Referenced<T> {
+        type Target = T;
+
+        fn deref(&self) -> &T {
+            // SAFETY: the record is a pool record of the directory, at its final address for the
+            // kernel's life, and its object is held for the value's life. The fields read through
+            // this are the ones its open set, which nothing writes while the object lives (see
+            // the type's notes).
+            unsafe { self.record.as_ref() }
+        }
+    }
+
+    /// The file object `reference` holds, referenced for as long as the value lives (see
+    /// [`Referenced`]).
+    pub fn file_object(reference: ObRef) -> Referenced<crate::fs::file::FileObject> {
+        let record = locked(|directory| directory.file(reference.id()).map(NonNull::from))
+            .expect("a referenced file object lives");
         Referenced {
             _reference: reference,
             record,
         }
     }
 
-    /// The record itself, borrowed by nothing: how a caller reaches a part of it (a lock) without
-    /// borrowing the whole while another thread may hold it.
-    pub fn as_ptr(&self) -> *mut T {
-        self.record
+    /// Take a reference on `id` for the caller's scope; none when it names nothing.
+    pub fn reference(id: ObjectId) -> Option<ObRef> {
+        locked(|directory| directory.reference(id)).then(|| ObRef { id })
     }
-}
 
-#[cfg(target_arch = "x86")]
-impl<T: 'static> core::ops::Deref for Referenced<T> {
-    type Target = T;
-
-    fn deref(&self) -> &T {
-        // SAFETY: the record is a pool record, static, and its object is held for the value's life.
-        unsafe { &*self.record }
+    /// The object the current process's `handle` names, referenced, when it is of `kind` (any
+    /// kind for none). None for a handle naming nothing, another kind of object, or a record that
+    /// is not an object (Windows reports them alike, an invalid handle).
+    pub fn reference_by_handle(handle: u32, kind: Option<ObjectType>) -> Option<ObRef> {
+        let id = crate::process::current()
+            .lookup_handle(handle)
+            .and_then(|entry| entry.object_id())
+            .filter(|id| kind.is_none_or(|kind| id.kind == kind))?;
+        reference(id)
     }
-}
 
-#[cfg(target_arch = "x86")]
-impl<T: 'static> core::ops::DerefMut for Referenced<T> {
-    fn deref_mut(&mut self) -> &mut T {
-        // SAFETY: as `deref`. The record has no other user while its holder runs with interrupts
-        // masked and does not block, as a service does between its waits: no DPC and no other
-        // thread reaches it meanwhile. A file object's synchronous I/O, which blocks on disk with
-        // the record borrowed, borrows it only once it holds the object's lock, taken by the
-        // lock's address (`fs::io::serialized`), so the threads queued on the lock hold no borrow.
-        // Note: a holder outside that lock still breaks this when another thread blocks inside
-        // it: a query of the position, a change of it, or a directory listing through a duplicate
-        // handle borrows the record while the other thread's call holds its own borrow across the
-        // disk. Windows 2000 takes the object's lock for those too, on a synchronous object.
-        unsafe { &mut *self.record }
+    /// The live object `name` binds, referenced (the look-up and the reference in one hold of the
+    /// directory, so the object cannot go between them); none when it binds none.
+    pub fn reference_by_name(name: &[u8]) -> Option<ObRef> {
+        locked(|directory| {
+            let id = directory.lookup_name(name)?;
+            directory.reference(id).then(|| ObRef { id })
+        })
     }
-}
 
-/// Take a reference on `id` for the caller's scope; none when it names nothing.
-#[cfg(target_arch = "x86")]
-pub fn reference(id: ObjectId) -> Option<ObRef> {
-    directory().reference(id).then_some(ObRef { id })
-}
-
-/// The object the current process's `handle` names, referenced, when it is of `kind` (any kind
-/// for none). None for a handle naming nothing, another kind of object, or a record that is not an
-/// object (Windows reports them alike, an invalid handle).
-#[cfg(target_arch = "x86")]
-pub fn reference_by_handle(handle: u32, kind: Option<ObjectType>) -> Option<ObRef> {
-    let id = crate::process::current()
-        .handles()
-        .lookup(handle)
-        .and_then(|entry| entry.object_id())
-        .filter(|id| kind.is_none_or(|kind| id.kind == kind))?;
-    reference(id)
-}
-
-/// Drop a reference on `id` (the last one deletes the object, the current process finishing what
-/// the deletion leaves it).
-#[cfg(target_arch = "x86")]
-pub fn release(id: ObjectId) {
-    if let Some(followup) = directory().dereference(id) {
-        crate::user::args::calling_process().finish(followup);
+    /// Drop a reference on `id` (the last one deletes the object, the caller finishing what the
+    /// deletion leaves once the directory is released).
+    pub fn release(id: ObjectId) {
+        if let Some(followup) = locked(|directory| directory.dereference(id)) {
+            finish(followup);
+        }
     }
-}
 
-/// A view went: drop its reference on what it mapped (the last one deletes it, the current
-/// process finishing what the deletion leaves it).
-#[cfg(target_arch = "x86")]
-pub fn release_mapping(mapping: Mapping) {
-    if let Some(followup) = directory().release_mapping(mapping) {
-        crate::user::args::calling_process().finish(followup);
+    /// A view went: drop its reference on what it mapped (the last one deletes it, the caller
+    /// finishing what the deletion leaves).
+    pub fn release_mapping(mapping: Mapping) {
+        if let Some(followup) = locked(|directory| directory.release_mapping(mapping)) {
+            finish(followup);
+        }
     }
-}
 
-/// Publish a new object: a handle to it in `process` (the current one) with `access` and
-/// `inheritance`, its name bound, and its creator's reference dropped — the handle holds it from
-/// now on. A failure takes the object back with it (none: the table or the names are full).
-#[cfg(target_arch = "x86")]
-pub fn publish(
-    process: &mut crate::process::Process,
-    id: ObjectId,
-    access: u32,
-    inherit: bool,
-    name: Option<&[u8]>,
-) -> Option<u32> {
-    let handle = process.insert_object(id, access, inherit);
-    if handle == 0 {
+    /// Publish a new object: a handle to it in `process` (the current one) with `access` and
+    /// `inheritance`, and its creator's reference dropped — the handle holds it from now on. A
+    /// failure (the table is full) takes the object back with it.
+    pub fn publish(
+        process: &crate::process::Process,
+        id: ObjectId,
+        access: u32,
+        inherit: bool,
+    ) -> Option<NonZeroU32> {
+        let handle = process.insert_object(id, access, inherit);
         release(id);
-        return None;
+        handle
     }
-    let bound = name.is_none_or(|name| directory().bind_name(name, id).is_ok());
-    release(id);
-    if !bound {
-        process.close_handle(handle);
-        return None;
+
+    /// Open the object `id` names as a new handle in `process`; none when the table is full or
+    /// the object is gone.
+    pub fn open(
+        process: &crate::process::Process,
+        id: ObjectId,
+        access: u32,
+        inherit: bool,
+    ) -> Option<NonZeroU32> {
+        process.insert_object(id, access, inherit)
     }
-    Some(handle)
-}
 
-/// Open the object `id` names as a new handle in `process`; null when the table is full.
-#[cfg(target_arch = "x86")]
-pub fn open(
-    process: &mut crate::process::Process,
-    id: ObjectId,
-    access: u32,
-    inherit: bool,
-) -> u32 {
-    process.insert_object(id, access, inherit)
-}
+    /// The process `id` names has ended with `exit_status`: its object signals, once, and its
+    /// waiters wake. The process's own reference keeps the object, so the directory is not
+    /// reached: the last thread's exit signals it after the thread has retired, when it must not
+    /// be preempted.
+    pub fn signal_process_end(id: ObjectId, exit_status: u32) {
+        let index = id.body_of(ObjectType::Process).expect("a process's object");
+        signal_process_body(index, exit_status);
+    }
 
-/// The thread object of the running thread, if it is a pooled thread (every thread that runs a
-/// service is).
-#[cfg(target_arch = "x86")]
-pub fn current_thread() -> Option<ObjectId> {
-    directory().thread_object(crate::sched::try_current_thread()?)
-}
+    /// The thread object of the running thread, if it is a pooled thread (every thread that runs
+    /// a service is).
+    pub fn current_thread() -> Option<ObjectId> {
+        let thread = crate::sched::try_current_thread()?;
+        locked(|directory| directory.thread_object(thread))
+    }
 
-/// The running thread's record index in the thread pool.
-#[cfg(target_arch = "x86")]
-fn current_thread_index() -> u16 {
-    current_thread()
-        .expect("a service runs on a pooled thread")
-        .index
-}
-
-/// Wait on `objects` for the running thread: each is referenced for the wait's whole life —
-/// replays after an APC included — and released when `wait` returns. A thread that ends inside the
-/// wait releases them on its way out ([`end_thread_references`]).
-#[cfg(target_arch = "x86")]
-pub fn waiting<R>(objects: &[ObjectId], wait: impl FnOnce() -> R) -> R {
-    let index = current_thread_index();
-    directory().hold_wait(index, objects);
-    let result = wait();
-    release_wait(index);
-    result
-}
-
-#[cfg(target_arch = "x86")]
-fn release_wait(index: u16) {
-    directory().release_wait(index, |followup| {
-        crate::user::args::calling_process().finish(followup)
-    });
-}
-
-/// A thread has ended (its record is Terminated): its wait's references, if it ended inside one,
-/// and the thread's own reference on its object go. Its record is free once nothing else holds it.
-#[cfg(target_arch = "x86")]
-pub fn end_thread_references(thread: ThreadId) {
-    let Some(id) = directory().thread_object(thread) else {
-        return;
-    };
-    release_wait(id.index);
-    release(id);
+    /// Wait on `objects`, dispatcher objects all, for the running thread: each is referenced for
+    /// the wait's whole life — replays after an APC included — and released when `wait` returns.
+    /// A thread that ends inside the wait releases them on its way out
+    /// ([`Directory::end_thread_references`]). None, with nothing waited on, when one of the
+    /// objects is gone already (a handle another thread closed meanwhile).
+    pub fn waiting<R>(objects: &[ObjectId], wait: impl FnOnce() -> R) -> Option<R> {
+        let index = current_thread()
+            .expect("a service runs on a pooled thread")
+            .index;
+        if !locked(|directory| directory.hold_wait(index, objects)) {
+            return None;
+        }
+        let result = wait();
+        locked(|directory| directory.release_wait(index));
+        Some(result)
+    }
 }
 
 #[cfg(test)]
@@ -1550,9 +1690,20 @@ mod tests {
 
     /// Close a handle to `id`, collecting what the caller must finish.
     fn closed(directory: &mut Directory, id: ObjectId) -> Vec<Followup> {
-        let mut followups = Vec::new();
-        directory.handle_closed(id, |followup| followups.push(followup));
-        followups
+        directory.handle_closed(id).iter().collect()
+    }
+
+    /// The sweep at quiescence, step by step as the reap runs it: how many leaks it took, and
+    /// what their deletions left.
+    fn sweep(directory: &mut Directory) -> (usize, Vec<Followup>) {
+        let mut leaks = 0;
+        let mut left = Vec::new();
+        while let Some(leak) = directory.sweep_next() {
+            leaks += 1;
+            left.extend(leak.followup);
+        }
+        directory.sweep_end();
+        (leaks, left)
     }
 
     /// A published object, as a create leaves it: one handle, the creator's reference dropped.
@@ -1684,7 +1835,7 @@ mod tests {
             .unwrap();
         published(directory, event);
 
-        directory.hold_wait(waiter.index, &[event]);
+        assert!(directory.hold_wait(waiter.index, &[event]));
         assert_eq!(directory.counts(event), Some((2, 1)));
         assert_eq!(
             closed(directory, event),
@@ -1697,9 +1848,7 @@ mod tests {
             "still waitable for its waiter"
         );
 
-        let mut followups = Vec::new();
-        directory.release_wait(waiter.index, |followup| followups.push(followup));
-        assert!(followups.is_empty());
+        directory.release_wait(waiter.index);
         assert!(
             !directory.is_live(event),
             "the wait's return released the last reference"
@@ -1719,7 +1868,7 @@ mod tests {
         dispatcher.set_waitable_timer(record, 1_000_000, 0, 0, false, 0);
         assert!(dispatcher.timer(record).inserted());
 
-        directory.hold_wait(waiter.index, &[timer]);
+        assert!(directory.hold_wait(waiter.index, &[timer]));
         assert_eq!(directory.counts(timer), Some((2, 1)));
         assert_eq!(
             closed(directory, timer),
@@ -1732,9 +1881,7 @@ mod tests {
             "still armed for its waiter"
         );
 
-        let mut followups = Vec::new();
-        directory.release_wait(waiter.index, |followup| followups.push(followup));
-        assert!(followups.is_empty());
+        directory.release_wait(waiter.index);
         assert!(
             !directory.is_live(timer),
             "the wait's return released the last reference"
@@ -1752,7 +1899,7 @@ mod tests {
         let dispatcher = dispatcher();
         let leaked = directory.create_timer(true).unwrap();
         dispatcher.set_waitable_timer(directory.timer(leaked).unwrap(), 1_000_000, 0, 0, false, 0);
-        assert_eq!(directory.sweep(|_| {}), 1);
+        assert_eq!(sweep(directory).0, 1);
         assert!(
             !dispatcher.waitable_timer_mut(leaked.index).armed(),
             "the leaked timer left the table"
@@ -1767,7 +1914,7 @@ mod tests {
         let waiter = directory.create_thread_in(1..THREADS).unwrap();
         let semaphore = directory.create_semaphore(0, 1).unwrap();
         published(directory, semaphore);
-        directory.hold_wait(waiter.index, &[semaphore]);
+        assert!(directory.hold_wait(waiter.index, &[semaphore]));
         assert_eq!(closed(directory, semaphore), vec![]);
         let fresh = directory.create_semaphore(1, 1).unwrap();
         assert_ne!(
@@ -1778,7 +1925,7 @@ mod tests {
             directory.semaphore(semaphore).is_some(),
             "the waiter's object is still its own"
         );
-        directory.release_wait(waiter.index, |_| {});
+        directory.release_wait(waiter.index);
         assert!(!directory.is_live(semaphore));
     }
 
@@ -1793,16 +1940,75 @@ mod tests {
         let b = directory
             .create_event(EventKind::Notification, false)
             .unwrap();
-        directory.hold_wait(waiter.index, &[a, b, a]);
+        assert!(directory.hold_wait(waiter.index, &[a, b, a]));
         assert_eq!(directory.counts(a), Some((3, 0)));
         assert_eq!(directory.counts(b), Some((2, 0)));
-        directory.release_wait(waiter.index, |_| {});
+        directory.release_wait(waiter.index);
         assert_eq!(
             directory.counts(a),
             Some((1, 0)),
             "back to the creators' references"
         );
         assert_eq!(directory.counts(b), Some((1, 0)));
+    }
+
+    /// A wait refuses an object gone before it could hold it (another thread closed its last
+    /// handle): it holds nothing then, of that object or the others.
+    #[test]
+    fn a_wait_refuses_a_gone_object() {
+        let directory = directory();
+        let waiter = directory.create_thread_in(1..THREADS).unwrap();
+        let live = directory
+            .create_event(EventKind::Notification, false)
+            .unwrap();
+        let gone = directory.create_semaphore(0, 1).unwrap();
+        assert_eq!(directory.dereference(gone), None);
+        assert!(!directory.hold_wait(waiter.index, &[live, gone]));
+        assert_eq!(directory.counts(live), Some((1, 0)), "nothing held");
+        assert!(
+            directory.hold_wait(waiter.index, &[live]),
+            "the slot is free"
+        );
+        directory.release_wait(waiter.index);
+    }
+
+    /// Ids name their dispatcher bodies by their own index, whatever their liveness; the kinds
+    /// whose bodies the directory holds name none.
+    #[test]
+    fn ids_name_their_dispatcher_bodies() {
+        let id = |kind| ObjectId {
+            kind,
+            index: 5,
+            generation: 2,
+        };
+        assert_eq!(id(ObjectType::Event).waitable(), Some(WaitableId::Event(5)));
+        assert_eq!(
+            id(ObjectType::Thread).waitable(),
+            Some(WaitableId::Thread(ThreadId(5)))
+        );
+        assert_eq!(
+            id(ObjectType::Process).waitable(),
+            Some(WaitableId::Process(5))
+        );
+        for kind in [ObjectType::Section, ObjectType::File, ObjectType::Key] {
+            assert_eq!(id(kind).waitable(), None);
+        }
+    }
+
+    /// A handle's close leaves at most a file object's cleanup and its close, in that order; an
+    /// object of another kind its deletion's follow-up alone.
+    #[test]
+    fn a_close_leaves_its_followups_in_order() {
+        let directory = directory();
+        let event = directory
+            .create_event(EventKind::Notification, false)
+            .unwrap();
+        published(directory, event);
+        assert_eq!(directory.handle_closed(event), Followups::none());
+        let data = directory.create_section(SectionObject::none()).unwrap();
+        published(directory, data);
+        let left: Vec<_> = directory.handle_closed(data).iter().collect();
+        assert_eq!(left.len(), 1, "the section's frames");
     }
 
     /// Thread records: created threads never take the main thread's record, the pool exhausts at
@@ -1899,7 +2105,7 @@ mod tests {
         assert!(directory.handle_opened(id));
         assert_eq!(closed(directory, id), vec![]);
         assert_eq!(directory.counts(id), Some((1, 0)));
-        assert_eq!(directory.sweep(|_| {}), 0);
+        assert_eq!(sweep(directory).0, 0);
         assert!(directory.is_live(id), "it outlives every process");
         assert_eq!(directory.named_objects(), Some(id));
     }
@@ -1926,7 +2132,7 @@ mod tests {
             assert_eq!(closed(directory, id), vec![]);
             assert_eq!(directory.counts(id), Some((1, 0)));
         }
-        assert_eq!(directory.sweep(|_| {}), 0);
+        assert_eq!(sweep(directory).0, 0);
         assert!(directory.is_live(station) && directory.is_live(desktop));
     }
 
@@ -1941,7 +2147,7 @@ mod tests {
         directory.bind_name(b"left", leaked).unwrap();
         let main = directory.create_thread_in(0..1).unwrap();
         record(ThreadId(main.index)).teb_va = 0x7FFD_E000;
-        assert_eq!(directory.sweep(|_| {}), 2);
+        assert_eq!(sweep(directory).0, 2);
         assert_eq!(directory.live_objects(), 0);
         assert!(!directory.is_live(leaked));
         assert_eq!(directory.lookup_name(b"left"), None);
@@ -2020,7 +2226,7 @@ mod tests {
         assert_eq!(directory.dereference(b_thread), None);
         directory.process_ended(b);
         assert_eq!(record(ThreadId(b_thread.index)).teb_va(), 0);
-        assert_eq!(directory.sweep(|_| {}), 0);
+        assert_eq!(sweep(directory).0, 0);
         assert_eq!(directory.live_objects(), 0);
     }
 
@@ -2058,7 +2264,7 @@ mod tests {
 
         assert_eq!(directory.dereference(b_thread), None);
         directory.process_ended(b);
-        assert_eq!(directory.sweep(|_| {}), 2, "the event and the thread");
+        assert_eq!(sweep(directory).0, 2, "the event and the thread");
         assert_eq!(directory.live_objects(), 0);
         assert_eq!(record(ThreadId(a_main.index)).teb_va(), 0);
     }
@@ -2112,7 +2318,7 @@ mod tests {
         assert_eq!(dispatcher.waitable(waitable).signal_state(), 0);
         // A handle to it and the process's own reference.
         assert!(directory.handle_opened(id));
-        assert_eq!(directory.sweep(|_| {}), 0, "a process object is no leak");
+        assert_eq!(sweep(directory).0, 0, "a process object is no leak");
         assert!(directory.is_live(id));
         directory.signal_process_end(id, 3);
         assert_eq!(dispatcher.waitable(waitable).signal_state(), 1);
@@ -2201,8 +2407,7 @@ mod tests {
             })
         );
         assert_eq!(
-            directory.sections.record(id.index).size,
-            0,
+            directory.sections.records[id.index as usize].size, 0,
             "the record holds no mapping any more"
         );
     }
@@ -2317,12 +2522,8 @@ mod tests {
         let held = segment(directory, 1);
         image_section(directory, held);
         segment(directory, 2);
-        let mut followups = Vec::new();
-        assert_eq!(
-            directory.sweep(|followup| followups.push(followup)),
-            2,
-            "the section and the lone segment"
-        );
+        let (leaks, followups) = sweep(directory);
+        assert_eq!(leaks, 2, "the section and the lone segment");
         assert_eq!(followups.len(), 2);
         assert_eq!(directory.segments.live(), 0);
     }

@@ -2,13 +2,13 @@
 //! process's end reports on COM1, and what the kernel does once the process is torn down.
 //!
 //! One exit path serves every boot. A thread's return ends the running thread, and the last live
-//! thread's end is the process's end. NtTerminateProcess and a fault end the process outright:
-//! every other thread is terminated first, without running again, then the calling thread. A
-//! thread inside a critical region (holding the volume and its drive) is the exception: it runs on
-//! to the region's end and ends itself there, and the process's end passes to the last such
-//! thread. The process's end is then reported, and the idle thread tears the process down — after
-//! which a suite (a boot of several programs, each one leg) starts its next leg or prints its
-//! summary, and a one-process boot rests.
+//! thread's end is the process's end. NtTerminateProcess and a fault end the process outright: the
+//! process's end is decided, every other thread is terminated — each runs its own exit, at its
+//! next window for a kernel APC (a thread inside a critical region, holding the volume and its
+//! drive, at the region's end) — and the calling thread ends; whichever thread exits last ends the
+//! process with the end decided. The process's end is then reported, and the idle thread tears the
+//! process down — after which a suite (a boot of several programs, each one leg) starts its next
+//! leg or prints its summary, and a one-process boot rests.
 
 use core::fmt;
 
@@ -106,9 +106,39 @@ pub enum ThreadEnd {
     ExitProcess(u32),
     /// A fault raised on the thread's behalf.
     Fault(Fault),
-    /// A termination deferred by a critical region, completing as the thread leaves it. It carries
-    /// the process's end, handed on by the exit or fault that requested the termination.
-    Terminated(ProcessEnd),
+    /// Another thread terminated this one (its exit APC ran), with this exit status.
+    Terminated(u32),
+}
+
+impl ThreadEnd {
+    /// The thread's exit status, for GetExitCodeThread: its own, or the process's end.
+    pub fn status(self) -> u32 {
+        match self {
+            ThreadEnd::Exit(status) => status as u32,
+            ThreadEnd::ExitProcess(code) | ThreadEnd::Terminated(code) => code,
+            ThreadEnd::Fault(fault) => fault.status,
+        }
+    }
+
+    /// The end this thread's end decides for its whole process, whatever lives on:
+    /// NtTerminateProcess's and a fault's — every other thread is terminated, and the last to
+    /// exit ends the process with it. None for an end of the thread alone.
+    pub fn ends_process(self) -> Option<ProcessEnd> {
+        match self {
+            ThreadEnd::ExitProcess(code) => Some(ProcessEnd::Exited(code)),
+            ThreadEnd::Fault(fault) => Some(ProcessEnd::Faulted(fault)),
+            ThreadEnd::Exit(_) | ThreadEnd::Terminated(_) => None,
+        }
+    }
+
+    /// The process's end when this thread is its last: the end decided for the process earlier
+    /// (`decided`: an NtTerminateProcess's or a fault's, which the first to decide holds), else the
+    /// one this end decides, else the thread's exit status as the exit code.
+    pub fn last_thread_end(self, decided: Option<ProcessEnd>) -> ProcessEnd {
+        decided
+            .or(self.ends_process())
+            .unwrap_or(ProcessEnd::Exited(self.status()))
+    }
 }
 
 /// Why a process ended.
@@ -129,56 +159,6 @@ impl ProcessEnd {
             ProcessEnd::Faulted(fault) => fault.status,
         }
     }
-}
-
-/// What a thread's end does.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct ExitPlan {
-    /// Terminate every other thread of the process before this one ends.
-    pub terminate_others: bool,
-    /// The process ends with this thread, for this reason; none while other threads live on.
-    pub process_end: Option<ProcessEnd>,
-}
-
-/// Route a thread's end, given how many other threads of its process are still attached. A
-/// thread's return ends only its thread while others live on, and the process — with that status
-/// as its code — from the last thread; NtTerminateProcess and a fault end the process whatever
-/// lives on, terminating the others first.
-pub fn plan(end: ThreadEnd, others: u16) -> ExitPlan {
-    match end {
-        ThreadEnd::Exit(status) => ExitPlan {
-            terminate_others: false,
-            process_end: (others == 0).then_some(ProcessEnd::Exited(status as u32)),
-        },
-        ThreadEnd::ExitProcess(code) => ExitPlan {
-            terminate_others: others > 0,
-            process_end: Some(ProcessEnd::Exited(code)),
-        },
-        ThreadEnd::Fault(fault) => ExitPlan {
-            terminate_others: others > 0,
-            process_end: Some(ProcessEnd::Faulted(fault)),
-        },
-        ThreadEnd::Terminated(end) => ExitPlan {
-            terminate_others: false,
-            process_end: (others == 0).then_some(end),
-        },
-    }
-}
-
-/// The plan once the other threads' terminations ran, `deferred` of them still finishing a
-/// critical region: the process does not end with this thread then — its end passes to the last
-/// of them (returned, for the process to hold until that thread's exit).
-pub fn hand_over(plan: ExitPlan, deferred: u16) -> (ExitPlan, Option<ProcessEnd>) {
-    if deferred == 0 {
-        return (plan, None);
-    }
-    (
-        ExitPlan {
-            process_end: None,
-            ..plan
-        },
-        plan.process_end,
-    )
 }
 
 /// Who a process's end reports as: the boot's one program, a leg of a suite, or a child — the
@@ -640,68 +620,51 @@ mod tests {
         }
     }
 
-    /// A thread's return ends only its thread while others live on, and the process — with its
-    /// status as the exit code — from the last thread. It never terminates anyone else.
+    /// A thread's return ends only its thread: it decides nothing for the process, and as the last
+    /// thread it ends the process with its status as the exit code. It never terminates anyone
+    /// else.
     #[test]
     fn a_return_ends_the_process_only_from_the_last_thread() {
+        assert_eq!(ThreadEnd::Exit(0).ends_process(), None);
+        assert_eq!(ThreadEnd::Exit(7).status(), 7);
         assert_eq!(
-            plan(ThreadEnd::Exit(0), 2),
-            ExitPlan {
-                terminate_others: false,
-                process_end: None
-            }
-        );
-        assert_eq!(
-            plan(ThreadEnd::Exit(7), 0),
-            ExitPlan {
-                terminate_others: false,
-                process_end: Some(ProcessEnd::Exited(7))
-            }
+            ThreadEnd::Exit(7).last_thread_end(None),
+            ProcessEnd::Exited(7)
         );
         // The status reports as the unsigned code the exit line has always printed.
         assert_eq!(
-            plan(ThreadEnd::Exit(0xC000_001Cu32 as i32), 0).process_end,
-            Some(ProcessEnd::Exited(3_221_225_500))
+            ThreadEnd::Exit(0xC000_001Cu32 as i32).last_thread_end(None),
+            ProcessEnd::Exited(3_221_225_500)
         );
     }
 
-    /// NtTerminateProcess ends the process from any thread, with its own code: the others are
-    /// terminated first when there are any — the code is the caller's, never a survivor's.
+    /// NtTerminateProcess ends the process from any thread, with its own code: the code is the
+    /// caller's, never a survivor's.
     #[test]
     fn the_exit_service_ends_the_process_from_any_thread() {
         assert_eq!(
-            plan(ThreadEnd::ExitProcess(1), 2),
-            ExitPlan {
-                terminate_others: true,
-                process_end: Some(ProcessEnd::Exited(1))
-            }
+            ThreadEnd::ExitProcess(1).ends_process(),
+            Some(ProcessEnd::Exited(1))
         );
+        assert_eq!(ThreadEnd::ExitProcess(1).status(), 1);
         assert_eq!(
-            plan(ThreadEnd::ExitProcess(0), 0),
-            ExitPlan {
-                terminate_others: false,
-                process_end: Some(ProcessEnd::Exited(0))
-            }
+            ThreadEnd::ExitProcess(0).last_thread_end(None),
+            ProcessEnd::Exited(0)
         );
     }
 
-    /// A fault ends the process from any thread: the others are terminated first when there are
-    /// any, and the end is the fault.
+    /// A fault ends the process from any thread, and the end is the fault; the thread's status is
+    /// its exception code.
     #[test]
     fn a_fault_ends_the_process_from_any_thread() {
         assert_eq!(
-            plan(ThreadEnd::Fault(PAGE_FAULT), 2),
-            ExitPlan {
-                terminate_others: true,
-                process_end: Some(ProcessEnd::Faulted(PAGE_FAULT))
-            }
+            ThreadEnd::Fault(PAGE_FAULT).ends_process(),
+            Some(ProcessEnd::Faulted(PAGE_FAULT))
         );
+        assert_eq!(ThreadEnd::Fault(PAGE_FAULT).status(), 0xC000_0005);
         assert_eq!(
-            plan(ThreadEnd::Fault(COPY_FAULT), 0),
-            ExitPlan {
-                terminate_others: false,
-                process_end: Some(ProcessEnd::Faulted(COPY_FAULT))
-            }
+            ThreadEnd::Fault(COPY_FAULT).last_thread_end(None),
+            ProcessEnd::Faulted(COPY_FAULT)
         );
     }
 
@@ -945,40 +908,35 @@ mod tests {
         );
     }
 
-    /// A deferred termination ends its thread with the end it was handed, and the process with it
-    /// only from the last thread; it never terminates others.
+    /// A terminated thread ends with the status its termination gave it, decides nothing for the
+    /// process, and as the last thread ends it with the end decided for it — or, with none decided
+    /// (TerminateThread), with its status as the exit code.
     #[test]
-    fn a_deferred_termination_carries_the_handed_end() {
-        let end = ProcessEnd::Exited(0);
+    fn a_terminated_thread_ends_the_process_with_the_end_decided() {
+        let decided = ProcessEnd::Faulted(PAGE_FAULT);
+        assert_eq!(ThreadEnd::Terminated(5).status(), 5);
+        assert_eq!(ThreadEnd::Terminated(5).ends_process(), None);
         assert_eq!(
-            plan(ThreadEnd::Terminated(end), 1),
-            ExitPlan {
-                terminate_others: false,
-                process_end: None
-            }
+            ThreadEnd::Terminated(5).last_thread_end(Some(decided)),
+            decided
         );
         assert_eq!(
-            plan(ThreadEnd::Terminated(end), 0),
-            ExitPlan {
-                terminate_others: false,
-                process_end: Some(end)
-            }
+            ThreadEnd::Terminated(5).last_thread_end(None),
+            ProcessEnd::Exited(5)
         );
     }
 
-    /// The hand-over: with every other thread terminated the plan stands; with some still finishing
-    /// a critical region, the process's end passes to them and this thread ends alone.
+    /// The end decided first stands: a thread whose own end would decide another, or none, ends the
+    /// process with the earlier decision when it is the last.
     #[test]
-    fn the_process_end_passes_to_deferred_threads() {
-        let fault = PAGE_FAULT;
-        for end in [ThreadEnd::ExitProcess(3), ThreadEnd::Fault(fault)] {
-            let planned = plan(end, 2);
-            assert_eq!(hand_over(planned, 0), (planned, None));
-            let (after, handed) = hand_over(planned, 1);
-            assert_eq!(after.process_end, None);
-            assert!(after.terminate_others);
-            assert_eq!(handed, planned.process_end);
-            assert!(handed.is_some());
+    fn the_first_decided_end_stands() {
+        let decided = ProcessEnd::Exited(3);
+        for end in [
+            ThreadEnd::Exit(9),
+            ThreadEnd::ExitProcess(4),
+            ThreadEnd::Fault(PAGE_FAULT),
+        ] {
+            assert_eq!(end.last_thread_end(Some(decided)), decided);
         }
     }
 

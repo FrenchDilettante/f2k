@@ -22,6 +22,7 @@ use crate::sched::event::{EventKind, EVENT_WAKE_INCREMENT};
 use crate::sched::wait::{self, WaitMode, WaitReason, WaitableId, MAXIMUM_WAIT_OBJECTS};
 use crate::sched::DISPATCHER;
 use crate::status::*;
+use crate::sync::ShortGuard;
 
 /// The priority increment a semaphore release grants the waiters it wakes.
 const SEMAPHORE_WAKE_INCREMENT: i8 = 1;
@@ -75,24 +76,36 @@ fn deliver(slot: UserPtr<u32>, handle: u32, status: NtStatus) -> NtResult {
     Ok(status)
 }
 
+/// What a create's one hold of the directory found: the object its name binds (referenced), or the
+/// object it made (its creator's reference), named already.
+enum Made {
+    Existing(ObjectId),
+    Created(ObjectId),
+    /// The object made, whose name could not be bound: it goes again, outside the hold.
+    Unnamed(ObjectId),
+}
+
 /// The create every named kind shares (NtCreateSection; NtCreateEvent, NtCreateMutant,
 /// NtCreateSemaphore and NtCreateTimer as they come): a name that binds a live object opens it
 /// under OBJ_OPENIF when the kinds agree (STATUS_OBJECT_NAME_EXISTS; the creation's other arguments
 /// ignored) and is STATUS_OBJECT_TYPE_MISMATCH when they do not; without OBJ_OPENIF any bound name
-/// is STATUS_OBJECT_NAME_COLLISION. Otherwise `make` creates the object, which is published: its
-/// handle (with `access`) inserted and the name bound.
+/// is STATUS_OBJECT_NAME_COLLISION. Otherwise `make` creates the object, with the directory held:
+/// the name's look-up, the creation and the name's binding are one step, which no other create of
+/// the name comes between. The object is then published: its handle (with `access`) inserted, and
+/// its creator's reference dropped.
 pub(super) fn create(
+    passive: &mut At<Passive>,
     slot: UserPtr<u32>,
     access: u32,
     attributes: UserAddr,
     kind: ObjectType,
-    make: impl FnOnce() -> Option<ObjectId>,
+    make: impl FnOnce(&mut ShortGuard<'_, ob::Directory>) -> Option<ObjectId>,
 ) -> NtResult {
     let request = request(attributes)?;
     slot.addr().probe(4)?;
     let process = calling_process();
     // A full table refuses before an object is made.
-    if process.handles().is_full() {
+    if process.handles_full() {
         return Err(STATUS_INSUFFICIENT_RESOURCES);
     }
     if request.directory {
@@ -103,22 +116,37 @@ pub(super) fn create(
         });
     }
     let name = request.name.as_deref();
-    if let Some(existing) = name.and_then(|name| ob::directory().lookup_name(name)) {
-        if !request.open_if {
-            return Err(STATUS_OBJECT_NAME_COLLISION);
+    let made = {
+        let mut directory = ob::lock(passive);
+        match name.and_then(|name| directory.lookup_name(name)) {
+            Some(_) if !request.open_if => return Err(STATUS_OBJECT_NAME_COLLISION),
+            Some(existing) if existing.kind != kind => return Err(STATUS_OBJECT_TYPE_MISMATCH),
+            Some(existing) => {
+                directory.reference(existing);
+                Made::Existing(existing)
+            }
+            None => {
+                let id = make(&mut directory).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
+                match name.map(|name| directory.bind_name(name, id)) {
+                    Some(Err(_)) => Made::Unnamed(id),
+                    Some(Ok(())) | None => Made::Created(id),
+                }
+            }
         }
-        if existing.kind != kind {
-            return Err(STATUS_OBJECT_TYPE_MISMATCH);
+    };
+    // The handle holds the object from here on: the look-up's or the creator's reference goes (a
+    // refused handle takes a fresh object back with it).
+    let (id, status) = match made {
+        Made::Existing(id) => (id, STATUS_OBJECT_NAME_EXISTS),
+        Made::Created(id) => (id, STATUS_SUCCESS),
+        Made::Unnamed(id) => {
+            ob::release(id);
+            return Err(STATUS_INSUFFICIENT_RESOURCES);
         }
-        return match ob::open(process, existing, access, request.inherit) {
-            0 => Err(STATUS_INSUFFICIENT_RESOURCES),
-            handle => deliver(slot, handle, STATUS_OBJECT_NAME_EXISTS),
-        };
-    }
-    let id = make().ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
-    let handle = ob::publish(process, id, access, request.inherit, name)
-        .ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
-    deliver(slot, handle, STATUS_SUCCESS)
+    };
+    let handle =
+        ob::publish(process, id, access, request.inherit).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
+    deliver(slot, handle.get(), status)
 }
 
 /// The open every named kind shares (NtOpenSection; NtOpenEvent, NtOpenMutant, NtOpenSemaphore
@@ -140,16 +168,14 @@ pub(super) fn open(
         return Err(STATUS_OBJECT_TYPE_MISMATCH);
     }
     let name = request.name.ok_or(STATUS_OBJECT_NAME_INVALID)?;
-    let existing = ob::directory()
-        .lookup_name(&name)
-        .ok_or(STATUS_OBJECT_NAME_NOT_FOUND)?;
-    if existing.kind != kind {
+    // Referenced as it is found: the object cannot go before its handle holds it.
+    let existing = ob::reference_by_name(&name).ok_or(STATUS_OBJECT_NAME_NOT_FOUND)?;
+    if existing.id().kind != kind {
         return Err(STATUS_OBJECT_TYPE_MISMATCH);
     }
-    match ob::open(calling_process(), existing, access, request.inherit) {
-        0 => Err(STATUS_INSUFFICIENT_RESOURCES),
-        handle => deliver(slot, handle, STATUS_SUCCESS),
-    }
+    let handle = ob::open(calling_process(), existing.id(), access, request.inherit)
+        .ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
+    deliver(slot, handle.get(), STATUS_SUCCESS)
 }
 
 /// The object of `kind` `handle` names in the calling process, referenced for the caller's scope:
@@ -160,8 +186,7 @@ pub(super) fn object_of(handle: u32, kind: ObjectType) -> Result<ob::ObRef, NtSt
         return Err(STATUS_INVALID_HANDLE);
     }
     let id = calling_process()
-        .handles()
-        .lookup(handle)
+        .lookup_handle(handle)
         .and_then(|entry| entry.object_id())
         .ok_or(STATUS_INVALID_HANDLE)?;
     if id.kind != kind {
@@ -174,7 +199,7 @@ pub(super) fn object_of(handle: u32, kind: ObjectType) -> Result<ob::ObRef, NtSt
 /// permanent). Any other name is STATUS_OBJECT_NAME_NOT_FOUND, an object's
 /// STATUS_OBJECT_TYPE_MISMATCH.
 pub fn open_directory_object(
-    _call: &mut NtCall,
+    call: &mut NtCall,
     slot: UserPtr<u32>,
     access: u32,
     attributes: UserAddr,
@@ -186,18 +211,18 @@ pub fn open_directory_object(
     slot.addr().probe(4)?;
     if !request.directory {
         let name = request.name.ok_or(STATUS_OBJECT_NAME_INVALID)?;
-        return Err(match ob::directory().lookup_name(&name) {
+        return Err(match ob::lock(call.passive()).lookup_name(&name) {
             Some(_) => STATUS_OBJECT_TYPE_MISMATCH,
             None => STATUS_OBJECT_NAME_NOT_FOUND,
         });
     }
-    let id = ob::directory()
+    // The directory is permanent: no reference is needed to keep it for the handle's insert.
+    let id = ob::lock(call.passive())
         .named_objects()
         .ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
-    match ob::open(calling_process(), id, access, request.inherit) {
-        0 => Err(STATUS_INSUFFICIENT_RESOURCES),
-        handle => deliver(slot, handle, STATUS_SUCCESS),
-    }
+    let handle = ob::open(calling_process(), id, access, request.inherit)
+        .ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
+    deliver(slot, handle.get(), STATUS_SUCCESS)
 }
 
 // --- Events --------------------------------------------------------------------------------------
@@ -205,7 +230,7 @@ pub fn open_directory_object(
 /// NtCreateEvent: a NotificationEvent (0, manual-reset) or a SynchronizationEvent (1, auto-reset),
 /// signaled when asked; or the named one already bound (see [`create`]).
 pub fn create_event(
-    _call: &mut NtCall,
+    call: &mut NtCall,
     slot: UserPtr<u32>,
     access: u32,
     attributes: UserAddr,
@@ -217,9 +242,14 @@ pub fn create_event(
         1 => EventKind::Synchronization,
         _ => return Err(STATUS_INVALID_PARAMETER),
     };
-    create(slot, access, attributes, ObjectType::Event, || {
-        ob::directory().create_event(kind, initial_state)
-    })
+    create(
+        call.passive(),
+        slot,
+        access,
+        attributes,
+        ObjectType::Event,
+        |directory| directory.create_event(kind, initial_state),
+    )
 }
 
 /// NtOpenEvent (see [`open`]).
@@ -294,18 +324,24 @@ pub fn create_mutant(
     attributes: UserAddr,
     initial_owner: bool,
 ) -> NtResult {
-    let passive = call.passive();
-    create(slot, access, attributes, ObjectType::Mutex, || {
-        let directory = ob::directory();
-        let id = directory.create_mutex()?;
-        if initial_owner {
-            let mutex = directory.mutex(id).expect("just created");
-            DISPATCHER
-                .get(&mut passive.raise::<Dispatch>())
-                .acquire_mutex(mutex, crate::sched::current_thread());
-        }
-        Some(id)
-    })
+    create(
+        call.passive(),
+        slot,
+        access,
+        attributes,
+        ObjectType::Mutex,
+        |directory| {
+            let id = directory.create_mutex()?;
+            if initial_owner {
+                // Owned before the name is bound: no open of the name finds it free.
+                let mutex = directory.mutex(id).expect("just created");
+                DISPATCHER
+                    .get(&mut directory.apc().raise::<Dispatch>())
+                    .acquire_mutex(mutex, crate::sched::current_thread());
+            }
+            Some(id)
+        },
+    )
 }
 
 /// NtOpenMutant (see [`open`]).
@@ -335,7 +371,7 @@ pub fn release_mutant(call: &mut NtCall, mutant: Handle, previous: UserPtr<i32>)
 /// one already bound (see [`create`]). STATUS_INVALID_PARAMETER unless 0 <= initial <= maximum and
 /// the maximum is positive.
 pub fn create_semaphore(
-    _call: &mut NtCall,
+    call: &mut NtCall,
     slot: UserPtr<u32>,
     access: u32,
     attributes: UserAddr,
@@ -345,9 +381,14 @@ pub fn create_semaphore(
     if maximum <= 0 || initial < 0 || initial > maximum {
         return Err(STATUS_INVALID_PARAMETER);
     }
-    create(slot, access, attributes, ObjectType::Semaphore, || {
-        ob::directory().create_semaphore(initial, maximum)
-    })
+    create(
+        call.passive(),
+        slot,
+        access,
+        attributes,
+        ObjectType::Semaphore,
+        |directory| directory.create_semaphore(initial, maximum),
+    )
 }
 
 /// NtOpenSemaphore (see [`open`]).
@@ -387,7 +428,7 @@ pub fn release_semaphore(
 /// NtCreateTimer: a NotificationTimer (0, manual-reset) or a SynchronizationTimer (1, auto-reset),
 /// unarmed, or the named one already bound (see [`create`]).
 pub fn create_timer(
-    _call: &mut NtCall,
+    call: &mut NtCall,
     slot: UserPtr<u32>,
     access: u32,
     attributes: UserAddr,
@@ -398,9 +439,14 @@ pub fn create_timer(
         1 => false,
         _ => return Err(STATUS_INVALID_PARAMETER),
     };
-    create(slot, access, attributes, ObjectType::Timer, || {
-        ob::directory().create_timer(manual_reset)
-    })
+    create(
+        call.passive(),
+        slot,
+        access,
+        attributes,
+        ObjectType::Timer,
+        |directory| directory.create_timer(manual_reset),
+    )
 }
 
 /// NtOpenTimer (see [`open`]).
@@ -527,38 +573,35 @@ fn interval_of(value: i64) -> i64 {
     }
 }
 
-/// The waitable a handle names, with the object it belongs to (the wait holds it): a table
-/// object's header, or the thread and process pseudo-handles' own objects. STATUS_INVALID_HANDLE
-/// for a handle naming nothing (a console handle included), STATUS_OBJECT_TYPE_MISMATCH for an
-/// object no wait can name (a file, a section, the directory).
-fn waitable_of(handle: u32) -> Result<(Option<ObjectId>, WaitableId), NtStatus> {
+/// The waitable a handle names, with the object it belongs to (the wait holds it, which checks it
+/// still lives): a table object's header, or the thread and process pseudo-handles' own objects.
+/// STATUS_INVALID_HANDLE for a handle naming nothing (a console handle included),
+/// STATUS_OBJECT_TYPE_MISMATCH for an object no wait can name (a file, a section, the directory).
+fn waitable_of(handle: u32) -> Result<(ObjectId, WaitableId), NtStatus> {
     let id = match handle {
         CURRENT_THREAD => ob::current_thread().ok_or(STATUS_INVALID_HANDLE)?,
         CURRENT_PROCESS => crate::process::current().object(),
         _ if is_console_handle(handle) => return Err(STATUS_INVALID_HANDLE),
         _ => calling_process()
-            .handles()
-            .lookup(handle)
+            .lookup_handle(handle)
             .and_then(|entry| entry.object_id())
             .ok_or(STATUS_INVALID_HANDLE)?,
     };
-    let waitable = ob::directory()
-        .waitable(id)
-        .ok_or(STATUS_OBJECT_TYPE_MISMATCH)?;
-    Ok((Some(id), waitable))
+    let waitable = id.waitable().ok_or(STATUS_OBJECT_TYPE_MISMATCH)?;
+    Ok((id, waitable))
 }
 
 /// The single-object wait: the status as the wait completes it. A blocking wait parks the calling
 /// thread; a kernel APC breaks it and the shared entry replays it after the delivery, the deadline
 /// preserved. The wait holds its object throughout, replays included: a handle closed meanwhile
-/// leaves it waiting on a live object.
+/// leaves it waiting on a live object. STATUS_INVALID_HANDLE when the object went before the wait
+/// could hold it (another thread closed its last handle).
 fn wait_one(
-    (object, waitable): (Option<ObjectId>, WaitableId),
+    (object, waitable): (ObjectId, WaitableId),
     timeout: Option<i64>,
     alertable: bool,
-) -> NtStatus {
-    let held = object.as_slice();
-    ob::waiting(held, || {
+) -> Result<NtStatus, NtStatus> {
+    ob::waiting(&[object], || {
         wait::wait_current_with(|dispatcher, thread, stamp, replay| {
             let timeout = wait::replay_timeout(
                 dispatcher.thread(thread),
@@ -577,6 +620,7 @@ fn wait_one(
             )
         })
     })
+    .ok_or(STATUS_INVALID_HANDLE)
 }
 
 /// NtWaitForSingleObject: wait on the object the handle names (the thread and process
@@ -590,7 +634,7 @@ pub fn wait_for_single_object(
 ) -> NtResult {
     let timeout = timeout_of(timeout)?;
     let waitable = waitable_of(object.raw())?;
-    Ok(wait_one(waitable, timeout, alertable))
+    wait_one(waitable, timeout, alertable)
 }
 
 /// NtWaitForMultipleObjects: wait on up to 64 objects at once — WaitAny (1: the lowest signaled
@@ -624,21 +668,15 @@ pub fn wait_for_multiple_objects(
         index: 0,
         generation: 0,
     }; MAXIMUM_WAIT_OBJECTS];
-    let mut holding = 0;
-    for (object, &handle) in objects.iter_mut().zip(&raw[..count]) {
-        let (id, waitable) = waitable_of(handle)?;
-        *object = waitable;
-        if let Some(id) = id {
-            held[holding] = id;
-            holding += 1;
-        }
+    for ((object, id), &handle) in objects.iter_mut().zip(&mut held).zip(&raw[..count]) {
+        (*id, *object) = waitable_of(handle)?;
     }
     let objects = &objects[..count];
     if wait_all && (1..count).any(|index| objects[..index].contains(&objects[index])) {
         return Err(STATUS_INVALID_PARAMETER_MIX);
     }
     // The wait holds every object it names throughout, replays included.
-    let status = ob::waiting(&held[..holding], || {
+    let status = ob::waiting(&held[..count], || {
         wait::wait_current_with(|dispatcher, thread, stamp, replay| {
             let timeout = wait::replay_timeout(
                 dispatcher.thread(thread),
@@ -658,7 +696,7 @@ pub fn wait_for_multiple_objects(
             )
         })
     });
-    Ok(status)
+    status.ok_or(STATUS_INVALID_HANDLE)
 }
 
 /// NtSignalAndWaitForSingleObject: signal one object — set an event, release a semaphore by one,
@@ -680,8 +718,7 @@ pub fn signal_and_wait_for_single_object(
         None
     } else {
         calling_process()
-            .handles()
-            .lookup(signal)
+            .lookup_handle(signal)
             .and_then(|entry| entry.object_id())
             .map(|id| id.kind)
     };
@@ -709,7 +746,7 @@ pub fn signal_and_wait_for_single_object(
             }
         }
     }
-    Ok(wait_one(waitable, timeout, alertable))
+    wait_one(waitable, timeout, alertable)
 }
 
 /// NtDelayExecution: park the calling thread for the interval (see [`timeout_of`]) — the delay
@@ -794,17 +831,17 @@ pub fn duplicate_object(
         target: Option<ObjectId>,
     }
     impl Tables {
-        fn target(&self) -> &'static mut crate::process::Process {
+        fn target(&self) -> &'static crate::process::Process {
             of_object(self.target.expect("a duplicate has a target process"))
                 .expect("the call holds its target process")
         }
 
-        fn source(&self) -> &'static mut crate::process::Process {
+        fn source(&self) -> &'static crate::process::Process {
             of_object(self.source).expect("the call holds its source process")
         }
     }
     impl DuplicateTables for Tables {
-        fn insert(&mut self, entry: ob::Entry) -> u32 {
+        fn insert(&mut self, entry: ob::Entry) -> Option<core::num::NonZeroU32> {
             let Target::Object(id) = entry.target;
             self.target().insert_object(id, entry.access, entry.inherit)
         }
@@ -839,8 +876,7 @@ pub fn duplicate_object(
     } else {
         source_process
             .record()
-            .handles()
-            .lookup(source)
+            .lookup_handle(source)
             .ok_or(STATUS_INVALID_HANDLE)?
     };
     let closable = (source != CURRENT_THREAD && source != CURRENT_PROCESS).then_some(source);
@@ -899,7 +935,6 @@ pub fn queue_apc_thread(
     let mut dispatch = call.passive().raise::<Dispatch>();
     let dispatcher = DISPATCHER.get(&mut dispatch);
     let apc = calling_process()
-        .sync_mut()
         .free_apc(dispatcher)
         .ok_or(STATUS_NO_MEMORY)?;
     crate::user::apc::init(

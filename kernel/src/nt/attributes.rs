@@ -192,8 +192,7 @@ pub fn root_of(handle: u32) -> Result<Root, NtStatus> {
         return Err(STATUS_INVALID_HANDLE);
     }
     let entry = super::call::calling_process()
-        .handles()
-        .lookup(handle)
+        .lookup_handle(handle)
         .ok_or(STATUS_INVALID_HANDLE)?;
     Ok(match entry.object_id() {
         Some(id) if id.kind == crate::ob::ObjectType::Directory => Root::NamedObjects,

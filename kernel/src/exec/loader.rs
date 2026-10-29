@@ -307,7 +307,7 @@ pub fn load_path(
     name: &'static str,
     command_line: &[u8],
     leg: Option<u32>,
-) -> Result<(&'static mut crate::process::Process, u32), LoadError> {
+) -> Result<(&'static crate::process::Process, u32), LoadError> {
     with_stagings(|stagings| {
         let read = crate::fs::fat32::volume::with_boot_volume(|volume| {
             read_image_file(volume, path, &mut stagings.file.0[..])
@@ -510,9 +510,10 @@ pub fn prepare_system_dlls() {
 
 /// Find kernel32's BaseProcessStartThunk, once, before the first process: kernel32.dll read off the
 /// boot volume (`<system root>\system32\kernel32.dll`, `exec::modules::kernel32_volume_path`) into
-/// the file staging, its image staged, its export directory read (`exec::modules`). A kernel32
-/// that cannot be read, or exports no start thunk, is reported on COM1 and halts: no program could
-/// start.
+/// the file staging, its image staged, its export directory read (`exec::modules`); then every
+/// entry point the kernel sends user code to is looked up with it
+/// (`exec::modules::lookup_entry_points`). A kernel32 that cannot be read, or exports no start
+/// thunk, is reported on COM1 and halts: no program could start.
 #[cfg(target_arch = "x86")]
 pub fn locate_process_start() {
     let mut path = [0u8; 64];
@@ -537,7 +538,7 @@ pub fn locate_process_start() {
         crate::exec::modules::process_start_in(&file[..length], &mut image[..])
     });
     match found {
-        Ok(address) => crate::exec::modules::set_process_start_thunk(address),
+        Ok(address) => crate::exec::modules::lookup_entry_points(address),
         Err(error) => {
             crate::serial_println!("F2K: {} has no start thunk: {:?}", shown, error);
             crate::halt()
@@ -610,7 +611,7 @@ fn load_image(
     name: &'static str,
     command_line: &[u8],
     leg: Option<u32>,
-) -> Result<(&'static mut crate::process::Process, u32), LoadError> {
+) -> Result<(&'static crate::process::Process, u32), LoadError> {
     use crate::mem::paging::{self, PAGE_SIZE};
     use crate::mem::vm;
     use crate::user::{
@@ -658,60 +659,65 @@ fn load_image(
             .thread_id()
     });
     let process_id = process.id();
-    let space = process.vm();
-    // The regions first: every user page the kernel maps lies in one.
-    seed_regions(space, image.image_base(), image.size_of_image());
-    // ntdll and the shared data page, as every process has them.
-    map_system_pages(space);
-
-    // Map the staged image at its preferred base, one frame per page, each with its sections'
-    // protection (writable exactly where a mapped section is writable).
     let pages = image.size_of_image().div_ceil(PAGE_SIZE);
-    for page in 0..pages {
-        let offset = (page * PAGE_SIZE) as usize;
-        let end = (offset + PAGE_SIZE as usize).min(staging.len());
-        let frame = paging::allocate_frame_phys();
-        paging::init_frame(frame, 0, &staging[offset..end]);
-        let va = image.image_base() + page * PAGE_SIZE;
-        vm::map_prepared(space, va, frame, page_protect(&image, page * PAGE_SIZE));
-    }
+    // The mappings, in one hold of the address space (nothing below waits or copies user memory:
+    // the pages are written through their frames).
+    process.with_space(|space| {
+        // The regions first: every user page the kernel maps lies in one.
+        seed_regions(space, image.image_base(), image.size_of_image());
+        // ntdll and the shared data page, as every process has them.
+        map_system_pages(space);
 
-    // The user stack: two zeroed, writable pages committed at the top of the main thread's
-    // reservation, below the entry ESP (the rest commits on demand).
-    for stack_page in [USER_STACK_PAGE, USER_STACK_LOW_PAGE] {
-        vm::map_zeroed(space, stack_page, vm::PAGE_READWRITE);
-    }
-    // The guard page below them: the stack's first touch past its committed pages grows it.
-    crate::user::stack::plant_guard(space, USER_STACK_LOW_PAGE - PAGE_SIZE);
+        // Map the staged image at its preferred base, one frame per page, each with its sections'
+        // protection (writable exactly where a mapped section is writable).
+        for page in 0..pages {
+            let offset = (page * PAGE_SIZE) as usize;
+            let end = (offset + PAGE_SIZE as usize).min(staging.len());
+            let frame = paging::allocate_frame_phys();
+            paging::init_frame(frame, 0, &staging[offset..end]);
+            let va = image.image_base() + page * PAGE_SIZE;
+            vm::map_prepared(space, va, frame, page_protect(&image, page * PAGE_SIZE));
+        }
 
-    // The main thread's TEB, reached through the TEB segment: its stack, its client id and its
-    // process's, the PEB.
-    crate::user::teb::map_teb(
-        space,
-        &crate::user::teb::TebInit {
-            teb: TEB_PAGE,
-            stack_base: USER_STACK_TOP,
-            stack_limit: USER_STACK_LOW_PAGE,
-            deallocation_stack: USER_STACK_BASE,
-            process_id,
-            thread_id,
-            peb: crate::user::PEB_PAGE,
-        },
-    );
+        // The user stack: two zeroed, writable pages committed at the top of the main thread's
+        // reservation, below the entry ESP (the rest commits on demand).
+        for stack_page in [USER_STACK_PAGE, USER_STACK_LOW_PAGE] {
+            vm::map_zeroed(space, stack_page, vm::PAGE_READWRITE);
+        }
+        // The guard page below them: the stack's first touch past its committed pages grows it.
+        crate::user::stack::plant_guard(space, USER_STACK_LOW_PAGE - PAGE_SIZE);
+
+        // The main thread's TEB, reached through the TEB segment: its stack, its client id and its
+        // process's, the PEB.
+        crate::user::teb::map_teb(
+            space,
+            &crate::user::teb::TebInit {
+                teb: TEB_PAGE,
+                stack_base: USER_STACK_TOP,
+                stack_limit: USER_STACK_LOW_PAGE,
+                deallocation_stack: USER_STACK_BASE,
+                process_id,
+                thread_id,
+                peb: crate::user::PEB_PAGE,
+            },
+        );
+    });
 
     // The process parameters (the command line, the image's path, the standard handles, the empty
     // environment block), and the PEB pointing at them: the system's version and the image's
     // subsystem (its loader data is ntdll's to make).
-    crate::user::params::map(space, command_line, path);
-    crate::user::teb::map_peb(
-        space,
-        &crate::user::teb::PebInit {
-            image_base: image.image_base(),
-            parameters: crate::user::PARAMS_PAGE,
-            subsystem: image.subsystem(),
-            subsystem_version: image.subsystem_version(),
-        },
-    );
+    crate::user::params::map(process, command_line, path);
+    process.with_space(|space| {
+        crate::user::teb::map_peb(
+            space,
+            &crate::user::teb::PebInit {
+                image_base: image.image_base(),
+                parameters: crate::user::PARAMS_PAGE,
+                subsystem: image.subsystem(),
+                subsystem_version: image.subsystem_version(),
+            },
+        )
+    });
 
     crate::serial_println!(
         "F2K: image loaded (base {:#010x}, entry {:#010x}, {} pages)",
@@ -728,22 +734,24 @@ fn load_image(
 }
 
 /// Build a process from the image segment `segment` names (NtCreateProcess's section; see the
-/// module notes): a new process named `name`, of no leg, with no thread, its address space built
-/// attached to it — every process's regions, ntdll and the shared data page, the image's view at
-/// its base, the PEB (no process parameters yet: its creator writes them). Returns the process,
-/// detached. A refusal leaves nothing behind: a process that cannot be created is the creation's
-/// refusal, and an image that cannot be mapped (its base taken by a system region:
-/// STATUS_CONFLICTING_ADDRESSES; its file unreadable: STATUS_IO_DEVICE_ERROR) takes its process
-/// back with it. The caller holds the segment (through its section) for the call.
+/// module notes): a new process named `name`, of no leg, with no thread, created by the process
+/// whose client id is `parent_id`, its address space built attached to it — every process's
+/// regions, ntdll and the shared data page, the image's view at its base, the PEB (no process
+/// parameters yet: its creator writes them). Returns the process, detached. A refusal leaves
+/// nothing behind: a process that cannot be created is the creation's refusal, and an image that
+/// cannot be mapped (its base taken by a system region: STATUS_CONFLICTING_ADDRESSES; its file
+/// unreadable: STATUS_IO_DEVICE_ERROR) takes its process back with it. The caller holds the segment
+/// (through its section) for the call.
 #[cfg(target_arch = "x86")]
 pub fn load_section(
     segment: crate::ob::SegmentId,
     name: crate::process::ProcessName,
-) -> Result<&'static mut crate::process::Process, NtStatus> {
-    let process = crate::process::Process::create(name, None)?;
+    parent_id: u32,
+) -> Result<&'static crate::process::Process, NtStatus> {
+    let process = crate::process::Process::create(name, None, parent_id)?;
     let built = {
         let _attached = process.attach();
-        build_from_section(process.vm(), segment)
+        build_from_section(process, segment)
     };
     match built {
         Ok(()) => Ok(process),
@@ -754,25 +762,30 @@ pub fn load_section(
     }
 }
 
-/// The address space of a process made from the image segment `segment` names, into `space`, the
-/// live one (see [`load_section`]).
+/// The address space of a process made from the image segment `segment` names, into `process`'s,
+/// the live one (see [`load_section`]): the image's view is mapped a step at a time, its file read
+/// between the address space's holds.
 #[cfg(target_arch = "x86")]
 fn build_from_section(
-    space: &mut crate::mem::vm::AddressSpace,
+    process: &crate::process::Process,
     segment: crate::ob::SegmentId,
 ) -> Result<(), NtStatus> {
-    seed_process_regions(space);
-    map_system_pages(space);
-    let image = crate::nt::section::map_image(space, &mut crate::mem::vm::CurrentPages, segment)?;
-    crate::user::teb::map_peb(
-        space,
-        &crate::user::teb::PebInit {
-            image_base: image.base,
-            parameters: 0,
-            subsystem: image.subsystem,
-            subsystem_version: image.subsystem_version,
-        },
-    );
+    process.with_space(|space| {
+        seed_process_regions(space);
+        map_system_pages(space);
+    });
+    let image = crate::nt::section::map_image(process, &mut crate::mem::vm::CurrentPages, segment)?;
+    process.with_space(|space| {
+        crate::user::teb::map_peb(
+            space,
+            &crate::user::teb::PebInit {
+                image_base: image.base,
+                parameters: 0,
+                subsystem: image.subsystem,
+                subsystem_version: image.subsystem_version,
+            },
+        )
+    });
     Ok(())
 }
 

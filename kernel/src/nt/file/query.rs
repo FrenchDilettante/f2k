@@ -61,10 +61,13 @@ fn query_information_file_held(
     let object = file_object(handle.raw())?;
     check_access(&object, class.rights())?;
     let file = io::file_of(&object);
+    // The position as the object's lock has it: a read or write through another handle to the
+    // object moves it under the lock.
+    let position = io::serialized(&object, |object| object.position);
     let open = Open {
         allocation: info::allocation(&file, cluster_bytes()),
         delete_pending: with_records(|records| records.delete_pending(object.record)),
-        position: object.position,
+        position,
         granted: object.granted,
         mode: if object.synchronous {
             FILE_SYNCHRONOUS_IO_NONALERT
@@ -254,7 +257,7 @@ fn set_information_file_held(
     sized(class.min_size(), length)?;
     io_status.probe(8)?;
     let setting = Setting::read(class, information)?;
-    let mut object = file_object(handle.raw())?;
+    let object = file_object(handle.raw())?;
     check_access(&object, class.rights())?;
     let record = object.record;
     match setting {
@@ -311,7 +314,8 @@ fn set_information_file_held(
             if (position as i64) < 0 {
                 return Err(STATUS_INVALID_PARAMETER);
             }
-            object.position = position;
+            // Under the object's lock, as a read or write moves it.
+            io::serialized(&object, |object| object.position = position);
         }
         Setting::Allocation(allocation) => resize(record, allocation.allocation_size, true)?,
         Setting::EndOfFile(end) => resize(record, end.end_of_file, false)?,

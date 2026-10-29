@@ -554,7 +554,7 @@ mod target {
     use super::*;
     use crate::mem::vm::{CurrentPages, Kind, PAGE};
     use crate::nt::call::{calling_process, Handle, NtCall, NtResult, UserAddr, UserPtr};
-    use crate::nt::memory::{capture, with_space};
+    use crate::nt::memory::{capture, with_process, with_space};
     use crate::nt::object::is_console_handle;
     use crate::nt::sync;
     use crate::ob::{self, ObjectId, ObjectType};
@@ -574,20 +574,24 @@ mod target {
             return Err(STATUS_INVALID_HANDLE);
         }
         let id = calling_process()
-            .handles()
-            .lookup(handle)
+            .lookup_handle(handle)
             .and_then(|entry| entry.object_id())
             .ok_or(STATUS_INVALID_HANDLE)?;
         if id.kind != ObjectType::File {
             return Err(STATUS_OBJECT_TYPE_MISMATCH);
         }
-        let object = ob::directory().file(id).ok_or(STATUS_INVALID_HANDLE)?;
-        let file = crate::fs::io::file_of(object);
+        let (record, access) = ob::locked(|directory| {
+            directory
+                .file(id)
+                .map(|object| (object.record, object.access))
+        })
+        .ok_or(STATUS_INVALID_HANDLE)?;
+        let file = crate::fs::io::file_at(record);
         let backing = Backing {
             size: file.size,
             directory: file.directory,
-            read: object.access & crate::fs::file::ACCESS_READ != 0,
-            write: object.access & crate::fs::file::ACCESS_WRITE != 0,
+            read: access & crate::fs::file::ACCESS_READ != 0,
+            write: access & crate::fs::file::ACCESS_WRITE != 0,
         };
         Ok((id, file, backing))
     }
@@ -600,7 +604,7 @@ mod target {
     /// instead (see [`create_image_section`]).
     #[allow(clippy::too_many_arguments)]
     pub fn create_section(
-        _call: &mut NtCall,
+        call: &mut NtCall,
         slot: UserPtr<u32>,
         access: u32,
         attributes: UserAddr,
@@ -633,7 +637,14 @@ mod target {
                 ..ob::SectionObject::none()
             },
             Some((file_object, file, _)) if allocation & SEC_IMAGE != 0 => {
-                return create_image_section(slot, access, attributes, file_object, &file);
+                return create_image_section(
+                    call.passive(),
+                    slot,
+                    access,
+                    attributes,
+                    file_object,
+                    &file,
+                );
             }
             Some((file_object, file, _)) => ob::SectionObject {
                 file,
@@ -647,18 +658,26 @@ mod target {
                 segment: None,
             },
         };
-        sync::create(slot, access, attributes, ObjectType::Section, || {
-            let directory = ob::directory();
-            let id = directory.create_section(section)?;
-            if let Some(file_object) = section.file_object {
-                let held = directory.reference(file_object);
-                debug_assert!(held, "the handle's file object lives");
-                let record = directory.file(file_object).expect("held").record;
-                crate::fs::file::with_records(|records| records.get_mut(record).user_mapped += 1);
-            }
-            // A failed publication deletes the object, which gives the file back.
-            Some(id)
-        })
+        sync::create(
+            call.passive(),
+            slot,
+            access,
+            attributes,
+            ObjectType::Section,
+            |directory| {
+                let id = directory.create_section(section)?;
+                if let Some(file_object) = section.file_object {
+                    let held = directory.reference(file_object);
+                    debug_assert!(held, "the handle's file object lives");
+                    let record = directory.file(file_object).expect("held").record;
+                    crate::fs::file::with_records(|records| {
+                        records.get_mut(record).user_mapped += 1
+                    });
+                }
+                // A failed publication deletes the object, which gives the file back.
+                Some(id)
+            },
+        )
     }
 
     /// NtCreateSection of an image (SEC_IMAGE): a section of the file's image segment — the one
@@ -666,13 +685,14 @@ mod target {
     /// now (see [`image_layout`]). A new segment holds the file object the handle names, and the
     /// file counts it as mapped; the segment's last reference gives both back.
     fn create_image_section(
+        passive: &mut crate::level::At<crate::level::Passive>,
         slot: UserPtr<u32>,
         access: u32,
         attributes: UserAddr,
         file_object: ObjectId,
         file: &crate::fs::fat32::lookup::File,
     ) -> NtResult {
-        let record = ob::directory()
+        let record = ob::lock(passive)
             .file(file_object)
             .expect("the handle's file object lives")
             .record;
@@ -682,57 +702,69 @@ mod target {
                 .segment(id)
                 .map(|segment| (id, segment.image_base, segment.size))
         };
-        // A file's first image section reads and parses its headers; later ones take the layout
-        // the segment holds.
-        let layout = match segment_of(ob::directory()) {
+        // A file's first image section reads and parses its headers, off the disk with the
+        // directory released; later ones take the layout the segment holds.
+        let found = segment_of(&mut ob::lock(passive));
+        let layout = match found {
             Some((_, image_base, size)) => (image_base, size),
             None => crate::process::threads::critical_region(|| read_layout(file))?,
         };
-        sync::create(slot, access, attributes, ObjectType::Section, || {
-            let directory = ob::directory();
-            let segment = match segment_of(directory) {
-                Some((id, _, _)) => {
-                    let held = directory.reference_segment(id);
-                    debug_assert!(held, "the file's segment lives");
-                    id
+        // What a section refused leaves (its new segment's frames and file), finished once the
+        // directory is released.
+        let mut left = None;
+        let result = sync::create(
+            passive,
+            slot,
+            access,
+            attributes,
+            ObjectType::Section,
+            |directory| {
+                let segment = match segment_of(directory) {
+                    Some((id, _, _)) => {
+                        let held = directory.reference_segment(id);
+                        debug_assert!(held, "the file's segment lives");
+                        id
+                    }
+                    None => {
+                        let (image_base, size) = layout;
+                        let id = directory.create_segment(ob::ImageSegment {
+                            frames: crate::mem::vm::SectionFrames::empty(),
+                            file_object,
+                            image_base,
+                            size,
+                        })?;
+                        let held = directory.reference(file_object);
+                        debug_assert!(held, "the handle's file object lives");
+                        crate::fs::file::with_records(|records| {
+                            let record = records.get_mut(record);
+                            record.user_mapped += 1;
+                            record.image = Some(id);
+                        });
+                        id
+                    }
+                };
+                let segment_record = *directory.segment(segment).expect("held");
+                let section = directory.create_section(ob::SectionObject {
+                    file: *file,
+                    paging_file: false,
+                    size: segment_record.size,
+                    image_base: segment_record.image_base,
+                    segment: Some(segment),
+                    ..ob::SectionObject::none()
+                });
+                if section.is_none() {
+                    // No section record: the segment's reference goes back (and a new segment with
+                    // it).
+                    left = directory.dereference_segment(segment);
                 }
-                None => {
-                    let (image_base, size) = layout;
-                    let id = directory.create_segment(ob::ImageSegment {
-                        frames: crate::mem::vm::SectionFrames::empty(),
-                        file_object,
-                        image_base,
-                        size,
-                    })?;
-                    let held = directory.reference(file_object);
-                    debug_assert!(held, "the handle's file object lives");
-                    crate::fs::file::with_records(|records| {
-                        let record = records.get_mut(record);
-                        record.user_mapped += 1;
-                        record.image = Some(id);
-                    });
-                    id
-                }
-            };
-            let segment_record = *directory.segment(segment).expect("held");
-            let section = directory.create_section(ob::SectionObject {
-                file: *file,
-                paging_file: false,
-                size: segment_record.size,
-                image_base: segment_record.image_base,
-                segment: Some(segment),
-                ..ob::SectionObject::none()
-            });
-            if section.is_none() {
-                // No section record: the segment's reference goes back (and a new segment with
-                // it).
-                if let Some(followup) = directory.dereference_segment(segment) {
-                    crate::user::args::calling_process().finish(followup);
-                }
-            }
-            // A failed publication deletes the section, which drops its hold on the segment.
-            section
-        })
+                // A failed publication deletes the section, which drops its hold on the segment.
+                section
+            },
+        );
+        if let Some(followup) = left {
+            ob::finish(followup);
+        }
+        result
     }
 
     /// An image file's layout (see [`image_layout`]), from its first page as the volume holds it.
@@ -761,8 +793,7 @@ mod target {
             return Err(STATUS_INVALID_HANDLE);
         }
         let entry = calling_process()
-            .handles()
-            .lookup(handle)
+            .lookup_handle(handle)
             .ok_or(STATUS_INVALID_HANDLE)?;
         let id = entry.object_id().ok_or(STATUS_INVALID_HANDLE)?;
         if id.kind != ObjectType::Section {
@@ -805,7 +836,7 @@ mod target {
         };
         let length = capture(size)?;
         let (object, access) = section_of(section.raw())?;
-        let record = *object.section();
+        let record = object.section();
         if let Some(segment) = record.segment {
             image_view(
                 access,
@@ -816,8 +847,8 @@ mod target {
                 record.size,
             )?;
             // The section holds its segment while this call references it.
-            let mapped = with_space(call, process, |space, pages| {
-                map_image(space, pages, segment)
+            let mapped = with_process(call, process, |record| {
+                map_image(record, &mut CurrentPages, segment)
             })?;
             base.write(mapped.base)?;
             size.write(record.size)?;
@@ -832,10 +863,10 @@ mod target {
             at,
             length,
         )?;
-        let mapped = with_space(call, process, |space, pages| {
+        let mapped = with_process(call, process, |record| {
             map_view(
-                space,
-                pages,
+                record,
+                &mut CurrentPages,
                 object.id(),
                 requested,
                 at as u32,
@@ -883,9 +914,12 @@ mod target {
     }
 
     /// Map `bytes` of the section `object` names from `offset` as a reservation of its own (at
-    /// `requested`, or the lowest free range), its pages the section's frames.
+    /// `requested`, or the lowest free range) in `process`'s address space, the live one, its pages
+    /// the section's frames. The address space is locked a step at a time: the reservation, each
+    /// page's mapping, the view's record; the section's frames are reached in the directory's
+    /// holds and the file read between them, with neither lock held.
     fn map_view(
-        space: &mut crate::mem::vm::AddressSpace,
+        process: &crate::process::Process,
         table: &mut CurrentPages,
         object: ObjectId,
         requested: u32,
@@ -893,40 +927,39 @@ mod target {
         bytes: u32,
         protect: u32,
     ) -> Result<u32, NtStatus> {
-        if !space.has_view_room() {
+        if !process.with_space(|space| space.has_view_room()) {
             return Err(STATUS_NO_MEMORY);
         }
-        let directory = ob::directory();
         // A file's pages are made from the file as its record holds it now (the section keeps it
         // open).
-        let file = {
+        let (section, record) = ob::locked(|directory| {
             let section = *directory
                 .section(object)
                 .expect("the caller holds the section");
-            match section
+            let record = section
                 .file_object
-                .and_then(|file_object| directory.file(file_object).map(|object| object.record))
-            {
-                Some(record) => crate::fs::io::file_at(record),
-                None => section.file,
-            }
+                .and_then(|file_object| directory.file(file_object).map(|object| object.record));
+            (section, record)
+        });
+        let file = match record {
+            Some(record) => crate::fs::io::file_at(record),
+            None => section.file,
         };
-        let section = directory
-            .section(object)
-            .expect("the caller holds the section");
         let pages = bytes.div_ceil(PAGE);
         let section_protect = if section.writable {
             PAGE_READWRITE
         } else {
             PAGE_READONLY
         };
-        let base = space
-            .reserve(
-                (requested != 0).then_some(requested),
-                pages * PAGE,
-                section_protect,
-                Kind::Mapped,
-            )
+        let base = process
+            .with_space(|space| {
+                space.reserve(
+                    (requested != 0).then_some(requested),
+                    pages * PAGE,
+                    section_protect,
+                    Kind::Mapped,
+                )
+            })
             .map_err(|error| match error {
                 crate::mem::vm::VmError::InvalidAddress => STATUS_CONFLICTING_ADDRESSES,
                 crate::mem::vm::VmError::InvalidParameter => STATUS_INVALID_PARAMETER_2,
@@ -935,7 +968,11 @@ mod target {
         let mut buffer = [0u8; PAGE as usize];
         for page in 0..pages {
             let at = offset + page * PAGE;
-            let made = section.frames.made(table, at / PAGE);
+            // The section's frames are reached inside the directory's hold, a step at a time; the
+            // file's bytes are read with it released. A frame another view made meanwhile is the
+            // one the second step finds (its fill is not run).
+            let made =
+                ob::locked(|directory| section_frames(directory, object).made(table, at / PAGE));
             // A file's page not yet made is read first: a read that fails maps nothing.
             let take = if made.is_none() && !section.paging_file {
                 file.size.saturating_sub(at).min(PAGE) as usize
@@ -943,28 +980,55 @@ mod target {
                 0
             };
             if take != 0 && crate::fs::io::read_file_at(&file, at, &mut buffer[..take]).is_none() {
-                let _ = space.release(table, base);
+                let _ = process.with_space(|space| space.release(table, base));
                 return Err(STATUS_IO_DEVICE_ERROR);
             }
             let frame = match made {
                 Some(frame) => Ok(frame),
-                None => section.frames.frame(table, at / PAGE, |frame| {
-                    crate::mem::paging::write_frame(frame, 0, &buffer[..take]);
+                None => ob::locked(|directory| {
+                    section_frames(directory, object).frame(table, at / PAGE, |frame| {
+                        crate::mem::paging::write_frame(frame, 0, &buffer[..take]);
+                    })
                 }),
             };
-            let mapped =
-                frame.and_then(|frame| space.map_shared(table, base + page * PAGE, frame, protect));
+            let mapped = frame.and_then(|frame| {
+                process
+                    .with_space(|space| space.map_shared(table, base + page * PAGE, frame, protect))
+            });
             if mapped.is_err() {
-                let _ = space.release(table, base);
+                let _ = process.with_space(|space| space.release(table, base));
                 return Err(STATUS_NO_MEMORY);
             }
         }
-        let recorded = space.add_view(base, ob::Mapping::Section(object));
+        let recorded =
+            process.with_space(|space| space.add_view(base, ob::Mapping::Section(object)));
         debug_assert!(recorded, "the view table had room");
         // The view holds its section for as long as it is mapped.
-        let held = directory.reference(object);
+        let held = ob::locked(|directory| directory.reference(object));
         debug_assert!(held, "a section being mapped lives");
         Ok(base)
+    }
+
+    /// The frames of the section `object` names, which the caller holds.
+    fn section_frames(
+        directory: &mut ob::Directory,
+        object: ObjectId,
+    ) -> &mut crate::mem::vm::SectionFrames {
+        &mut directory
+            .section(object)
+            .expect("the caller holds the section")
+            .frames
+    }
+
+    /// The frames of the image segment `segment` names, which the caller holds.
+    fn segment_frames(
+        directory: &mut ob::Directory,
+        segment: ob::SegmentId,
+    ) -> &mut crate::mem::vm::SectionFrames {
+        &mut directory
+            .segment(segment)
+            .expect("the caller holds the segment")
+            .frames
     }
 
     /// The image segment of the image section `handle` names, for a process's image
@@ -983,27 +1047,27 @@ mod target {
     /// whose pages carry their sections' protections, every page the segment's frame. A page not
     /// made yet is built from the file, through the image's section table (its headers parsed
     /// again from the file's first page). The view holds the segment, not the section. Returns
-    /// what a process made from the image records of it (see [`ImageView`]).
+    /// what a process made from the image records of it (see [`ImageView`]). The view is made in
+    /// `process`'s address space, the live one, locked a step at a time as [`map_view`]'s is.
     pub fn map_image(
-        space: &mut crate::mem::vm::AddressSpace,
+        process: &crate::process::Process,
         table: &mut CurrentPages,
         segment: ob::SegmentId,
     ) -> Result<ImageView, NtStatus> {
         use crate::exec::loader::page_protect;
         use crate::mem::vm::PAGE_EXECUTE_WRITECOPY;
-        if !space.has_view_room() {
+        if !process.with_space(|space| space.has_view_room()) {
             return Err(STATUS_NO_MEMORY);
         }
-        let directory = ob::directory();
         // The file as its record holds it now (the segment keeps it open).
-        let file = {
+        let record = ob::locked(|directory| {
             let file_object = directory
                 .segment(segment)
                 .expect("the caller holds the segment")
                 .file_object;
-            let record = directory.file(file_object).expect("held").record;
-            crate::fs::io::file_at(record)
-        };
+            directory.file(file_object).expect("held").record
+        });
+        let file = crate::fs::io::file_at(record);
         let mut buffer = [0u8; PAGE as usize];
         let headers = (file.size as usize).min(IMAGE_HEADERS);
         if crate::fs::io::read_file_at(&file, 0, &mut buffer[..headers]).is_none() {
@@ -1015,16 +1079,15 @@ mod target {
         let image =
             crate::exec::pe::Image::parse_headers(&header_page[..headers], file.size as usize)
                 .map_err(|_| STATUS_INVALID_IMAGE_FORMAT)?;
-        let segment_record = directory
-            .segment(segment)
-            .expect("the caller holds the segment");
-        let base = space
-            .reserve(
-                Some(image.image_base()),
-                image.size_of_image(),
-                PAGE_EXECUTE_WRITECOPY,
-                Kind::Image,
-            )
+        let base = process
+            .with_space(|space| {
+                space.reserve(
+                    Some(image.image_base()),
+                    image.size_of_image(),
+                    PAGE_EXECUTE_WRITECOPY,
+                    Kind::Image,
+                )
+            })
             .map_err(|error| match error {
                 crate::mem::vm::VmError::InvalidAddress
                 | crate::mem::vm::VmError::InvalidParameter => STATUS_CONFLICTING_ADDRESSES,
@@ -1032,34 +1095,41 @@ mod target {
             })?;
         for page in 0..image.size_of_image().div_ceil(PAGE) {
             let rva = page * PAGE;
-            let made = segment_record.frames.made(table, page);
+            // The segment's frames inside the directory's hold, the file read with it released
+            // (see `map_view`).
+            let made = ob::locked(|directory| segment_frames(directory, segment).made(table, page));
             // A page not yet made is built first: a read that fails maps nothing.
             if made.is_none()
                 && !image.map_page(rva, &mut buffer, |offset, out| {
                     crate::fs::io::read_file_at(&file, offset, out).is_some()
                 })
             {
-                let _ = space.release(table, base);
+                let _ = process.with_space(|space| space.release(table, base));
                 return Err(STATUS_IO_DEVICE_ERROR);
             }
             let frame = match made {
                 Some(frame) => Ok(frame),
-                None => segment_record.frames.frame(table, page, |frame| {
-                    crate::mem::paging::write_frame(frame, 0, &buffer);
+                None => ob::locked(|directory| {
+                    segment_frames(directory, segment).frame(table, page, |frame| {
+                        crate::mem::paging::write_frame(frame, 0, &buffer);
+                    })
                 }),
             };
             let mapped = frame.and_then(|frame| {
-                space.map_shared(table, base + rva, frame, page_protect(&image, rva))
+                process.with_space(|space| {
+                    space.map_shared(table, base + rva, frame, page_protect(&image, rva))
+                })
             });
             if mapped.is_err() {
-                let _ = space.release(table, base);
+                let _ = process.with_space(|space| space.release(table, base));
                 return Err(STATUS_NO_MEMORY);
             }
         }
-        let recorded = space.add_view(base, ob::Mapping::Image(segment));
+        let recorded =
+            process.with_space(|space| space.add_view(base, ob::Mapping::Image(segment)));
         debug_assert!(recorded, "the view table had room");
         // The view holds the segment for as long as it is mapped.
-        let held = directory.reference_segment(segment);
+        let held = ob::locked(|directory| directory.reference_segment(segment));
         debug_assert!(held, "a segment being mapped lives");
         Ok(ImageView {
             base,
@@ -1124,7 +1194,7 @@ mod target {
         result_length.addr().probe(4)?;
         let (object, access) = section_of(section.raw())?;
         query_access(access)?;
-        let record = *object.section();
+        let record = object.section();
         match class {
             SectionClass::Basic => {
                 let kind = if record.segment.is_some() {
@@ -1142,15 +1212,16 @@ mod target {
             }
             SectionClass::Image => {
                 let segment = record.segment.ok_or(STATUS_SECTION_NOT_IMAGE)?;
-                let directory = ob::directory();
-                let file_object = directory
-                    .segment(segment)
-                    .expect("an image section holds its segment")
-                    .file_object;
-                let file_record = directory
-                    .file(file_object)
-                    .expect("an image segment holds its file object")
-                    .record;
+                let file_record = ob::locked(|directory| {
+                    let file_object = directory
+                        .segment(segment)
+                        .expect("an image section holds its segment")
+                        .file_object;
+                    directory
+                        .file(file_object)
+                        .expect("an image segment holds its file object")
+                        .record
+                });
                 let file = crate::fs::io::file_at(file_record);
                 let info = crate::process::threads::critical_region(|| {
                     let mut headers = [0u8; IMAGE_HEADERS];

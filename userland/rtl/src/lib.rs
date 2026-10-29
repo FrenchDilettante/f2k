@@ -27,7 +27,8 @@
 //! The building blocks under them: the NT structures every side shares ([`nt`]: UNICODE_STRING,
 //! OBJECT_ATTRIBUTES, CLIENT_ID, IO_STATUS_BLOCK, generic over their pointers' width, and the query
 //! and set services' structures), the process and thread environment blocks ([`peb`]: the PEB,
-//! the TEB, the loader's lists), plain data viewed as bytes ([`pod`]), a vector of fixed capacity
+//! the TEB, the loader's lists), the page the kernel shares with every process ([`shared_data`]:
+//! KUSER_SHARED_DATA), plain data viewed as bytes ([`pod`]), a vector of fixed capacity
 //! for the code without an allocator ([`array_vec`]), NUL-terminated strings read once ([`cstr`])
 //! and a process's state behind a lock ([`sync`]).
 //!
@@ -66,6 +67,7 @@ pub mod printf;
 pub mod probe;
 pub mod resource;
 pub mod seh;
+pub mod shared_data;
 pub mod status;
 mod status_table;
 pub mod string;

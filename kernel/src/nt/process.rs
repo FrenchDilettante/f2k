@@ -164,15 +164,15 @@ pub fn open_process(
             .ok_or(STATUS_INVALID_PARAMETER)?;
         if client_id.unique_thread != 0 {
             let record = crate::process::pool::of_object(id).expect("a live process's record");
-            crate::ob::directory()
-                .thread_by_client_id(&record.sched, client_id.unique_thread)
+            let owner = record.sched_ptr().cast_const();
+            crate::ob::lock(call.passive())
+                .thread_by_client_id(owner, client_id.unique_thread)
                 .ok_or(STATUS_INVALID_CID)?;
         }
         let process = call.process();
-        let handle = crate::ob::open(process, id, access, inherit);
-        if handle == 0 {
-            return Err(STATUS_INSUFFICIENT_RESOURCES);
-        }
+        let handle = crate::ob::open(process, id, access, inherit)
+            .ok_or(STATUS_INSUFFICIENT_RESOURCES)?
+            .get();
         if slot.write(handle).is_err() {
             process.close_handle(handle);
             return Err(STATUS_ACCESS_VIOLATION);
@@ -259,30 +259,29 @@ pub fn create_process(
             let mut name = super::attributes::Name::new();
             super::attributes::read(attributes, &mut name)?.inherit()
         };
-        if call.process().handles().is_full() {
+        if call.process().handles_full() {
             return Err(STATUS_INSUFFICIENT_RESOURCES);
         }
         crate::process::threads::critical_region(|| {
             let name = image_name(segment);
-            let child = crate::exec::loader::load_section(segment, name)?;
             let creator = parent.record();
-            child.set_parent_id(creator.id());
+            let child = crate::exec::loader::load_section(segment, name, creator.id())?;
             child.set_hard_error_mode(creator.hard_error_mode());
-            *child.console_mut() = creator.console_mut().inherited();
+            child.set_console(creator.console().inherited());
             if inherit_object_table {
                 child.inherit_handles(creator);
             }
             let process = call.process();
-            let handle = crate::ob::open(
+            let Some(handle) = crate::ob::open(
                 process,
                 child.object(),
                 super::object::process_access(access),
                 inherit,
-            );
-            if handle == 0 {
+            ) else {
                 child.discard();
                 return Err(STATUS_INSUFFICIENT_RESOURCES);
-            }
+            };
+            let handle = handle.get();
             // Probed above; a slot that went away meanwhile takes the process back: its one handle
             // closes, which ends a process that never had a thread.
             if slot.write(handle).is_err() {
@@ -304,13 +303,12 @@ pub fn create_process(
 /// its directory, without its extension ("?" when the directory cannot be read).
 #[cfg(target_arch = "x86")]
 fn image_name(segment: crate::ob::SegmentId) -> crate::process::ProcessName {
-    let directory = crate::ob::directory();
-    let file_object = directory
-        .segment(segment)
-        .map(|segment| segment.file_object);
-    let file = file_object
-        .and_then(|file_object| directory.file(file_object))
-        .map(|object| crate::fs::io::file_of(object));
+    let record = crate::ob::locked(|directory| {
+        let file_object = directory.segment(segment)?.file_object;
+        directory.file(file_object).map(|object| object.record)
+    });
+    // The entry's name is read off the disk, with the directory released.
+    let file = record.map(crate::fs::io::file_at);
     let mut name = [0u8; crate::fs::fat32::path::MAX_NAME];
     match file.and_then(|file| crate::fs::io::entry_name(&file, &mut name)) {
         Some(length) => crate::process::ProcessName::of_file(&name[..length]),
@@ -390,7 +388,7 @@ pub fn query_information_process(
                 exit_status: target.exit_status(),
                 peb_base_address: crate::user::PEB_PAGE,
                 affinity_mask: super::thread::SYSTEM_AFFINITY,
-                base_priority: record.sched.base_priority() as i32,
+                base_priority: record.base_priority() as i32,
                 unique_process_id: record.id(),
                 inherited_from_unique_process_id: record.parent_id(),
             })?,
@@ -398,7 +396,7 @@ pub fn query_information_process(
                 let reserved = if target.ended() {
                     0
                 } else {
-                    record.space().reserved_size()
+                    record.with_space(|space| space.reserved_size())
                 };
                 information.cast().write(vm_counters(reserved))?
             }
@@ -459,7 +457,7 @@ pub fn set_information_process(
                 let record = target.record();
                 crate::sched::DISPATCHER
                     .get(&mut call.passive().raise::<crate::level::Dispatch>())
-                    .set_process_priority(&mut record.sched, base);
+                    .set_process_priority(record.sched_ptr(), base);
                 record.set_priority_class(class.priority_class);
             }
             #[cfg(not(target_arch = "x86"))]
@@ -574,8 +572,7 @@ mod tests {
         page[0x20] = 24;
         let memory = Rc::new(RefCell::new(Page(page)));
         let _installed = install(memory.clone());
-        // SAFETY: a trap frame is plain dwords; all zeros is a valid one.
-        let mut frame: crate::user::TrapFrame = unsafe { core::mem::zeroed() };
+        let mut frame = crate::user::TrapFrame::default();
         let mut passive = crate::level::passive_for_test();
         let mut call = NtCall::new(&mut frame, &mut passive);
         let slot = UserPtr::at(0x10000);
@@ -619,8 +616,7 @@ mod tests {
         );
         assert_eq!(create_arguments(true, parent, section), Ok(()));
         assert_eq!(rtl::status::dos_error(STATUS_NOT_IMPLEMENTED.0), 1);
-        // SAFETY: a trap frame is plain dwords; all zeros is a valid one.
-        let mut frame: crate::user::TrapFrame = unsafe { core::mem::zeroed() };
+        let mut frame = crate::user::TrapFrame::default();
         let mut passive = crate::level::passive_for_test();
         let mut call = NtCall::new(&mut frame, &mut passive);
         assert_eq!(
@@ -645,8 +641,7 @@ mod tests {
     fn only_the_calling_process_is_reachable() {
         assert_eq!(current(Handle(0xFFFF_FFFF)), Ok(()));
         assert_eq!(current(Handle(0x44)), Err(STATUS_INVALID_HANDLE));
-        // SAFETY: a trap frame is plain dwords; all zeros is a valid one.
-        let mut frame: crate::user::TrapFrame = unsafe { core::mem::zeroed() };
+        let mut frame = crate::user::TrapFrame::default();
         let mut passive = crate::level::passive_for_test();
         let mut call = NtCall::new(&mut frame, &mut passive);
         assert_eq!(
@@ -684,8 +679,7 @@ mod tests {
         }
         let memory = Rc::new(RefCell::new(Word(1u32.to_le_bytes().to_vec())));
         let _installed = install(memory.clone());
-        // SAFETY: a trap frame is plain dwords; all zeros is a valid one.
-        let mut frame: crate::user::TrapFrame = unsafe { core::mem::zeroed() };
+        let mut frame = crate::user::TrapFrame::default();
         let mut passive = crate::level::passive_for_test();
         let mut call = NtCall::new(&mut frame, &mut passive);
         let me = Handle(0xFFFF_FFFF);

@@ -139,175 +139,23 @@ pub(crate) fn halt() -> ! {
 
 /// Kernel entry point
 ///
-/// Called by `_start` (boot/mod.rs) with the values the Multiboot loader left in EAX and EBX.
+/// Called by `_start` (boot/mod.rs) with the values the Multiboot loader left in EAX and EBX. The
+/// boot's phases run in order ([`boot`]), each diagnostic boot at its place in them, then the
+/// boot context becomes the idle thread under the first user process.
 #[cfg(target_arch = "x86")]
 #[no_mangle]
 pub extern "C" fn kmain(magic: u32, multiboot_info: u32) -> ! {
-    // Signal that we've started by writing to port 0x80 (POST code port)
-    // SAFETY: ring 0; port 0x80 is the POST diagnostic port, which no device claims, so the write
-    // has no effect beyond the code a debug card would display.
-    unsafe {
-        asm!("out 0x80, al", in("al") 0xFEu8, options(nomem, nostack, preserves_flags));
-    }
+    // Phase 0: the processor, memory, the executive's tables.
+    boot::early();
+    boot::diagnostics::cpu_faults();
+    boot::memory(magic, multiboot_info);
+    boot::executive();
 
-    // Initialize serial port first (for debugging)
-    crate::hw::serial::init();
-
-    // Take over the CPU tables so faults print diagnostics on COM1 instead of triple-faulting.
-    // SAFETY: boot CPU, ring 0, interrupts disabled, before any code that might fault; sole GDT/IDT
-    // access.
-    unsafe { crate::cpu::gdt::init() };
-    // SAFETY: the GDT is loaded (selector 0x08 valid); same context.
-    unsafe { crate::cpu::idt::init() };
-    serial_println!("F2K: GDT and IDT initialized");
-    // Every thread's floating-point state is saved with `fxsave`: enabled before the first switch.
-    // SAFETY: boot CPU, ring 0, before any thread exists.
-    unsafe { crate::cpu::fpu::init() };
-
-    // Test-only fault injection: raise an exception right after init to exercise the stubs and the
-    // COM1 dump on target. The diagnostics prove the CPU did not write to the GDT and pin the
-    // pre-fault ESP.
-    #[cfg(any(feature = "fault-test-ud", feature = "fault-test-gp"))]
-    {
-        serial_println!(
-            "F2K: GDT after load: {:#018x} {:#018x}",
-            crate::cpu::gdt::debug_descriptor(1),
-            crate::cpu::gdt::debug_descriptor(2)
-        );
-        let esp: u32;
-        // SAFETY: copying ESP into a register reads no memory and changes no state.
-        unsafe { asm!("mov {}, esp", out(reg) esp, options(nomem, nostack)) };
-        serial_println!("F2K: ESP before fault: {:#010x}", esp);
-    }
-    #[cfg(feature = "fault-test-ud")]
-    {
-        serial_println!("F2K: fault test: forcing #UD (no error code)");
-        // SAFETY: a deliberate fault in a test-only build: `ud2` raises #UD, whose handler dumps
-        // the frame and halts, so execution never continues past it.
-        unsafe { asm!("ud2", options(nomem, nostack)) };
-    }
-    #[cfg(feature = "fault-test-gp")]
-    {
-        // Selector 0x38 lies one past the seven-entry GDT limit (0x37): #GP with the CPU-pushed
-        // error code 0x38 — the EXC_STUB_ERR path. Segment registers can only be loaded from a
-        // general-purpose register.
-        serial_println!("F2K: fault test: forcing #GP (error code path)");
-        // SAFETY: a deliberate fault in a test-only build: loading the out-of-limit selector
-        // raises #GP before DS changes, and its handler dumps the frame and halts, so execution
-        // never continues past it.
-        unsafe {
-            asm!(
-                "mov ax, 0x38",
-                "mov ds, ax",
-                out("ax") _,
-                options(nomem, nostack)
-            );
-        };
-    }
-
-    if magic != boot::MULTIBOOT_BOOTLOADER_MAGIC {
-        serial_println!(
-            "F2K: not started by a Multiboot loader (EAX = {:#010x})",
-            magic
-        );
-        halt();
-    }
-
-    serial_println!("F2K Booted Successfully");
-    serial_println!("Fenêtre 2000 - Windows 2000 compatible OS in Rust");
-    serial_println!("Phase 1: Foundation complete");
-    serial_println!("Multiboot info at {:#010x}", multiboot_info);
-    // The command line first: it lives in loader memory the frame allocator reclaims next.
-    boot::cmdline::capture(multiboot_info);
-    if let Some(line) = boot::cmdline::user_command_line(boot::cmdline::kernel_command_line()) {
-        serial_println!(
-            "F2K: command line: {}",
-            core::str::from_utf8(line).unwrap_or("(not ASCII)")
-        );
-    }
-
-    // Hand every usable frame (minus the kernel image) to the frame allocator.
-    mem::bootmem::boot_init(multiboot_info);
-    mem::bootmem::with_frame_db(|db| {
-        serial_println!(
-            "F2K: physical memory: {} free frames ({} MiB)",
-            db.available(),
-            db.available() / 256
-        );
-        serial_println!(
-            "F2K: frame database audit: {}",
-            if db.audit().is_ok() { "ok" } else { "FAILED" }
-        );
-    });
-
-    // The memory map is consumed: remove the low identity window. Nothing below KERNEL_BASE is
-    // mapped from here on.
-    mem::paging::teardown_low_identity();
-    serial_println!(
-        "F2K: paging on: kernel at {:#010x}, low identity removed",
-        0x8010_1000u32
-    );
-    // Install the runtime table access (self-map, scratch table).
-    mem::paging::init_table_access();
-    // The kernel stack region's tables, shared by every address space from the first on.
-    mem::paging::init_kernel_stack_tables();
-
-    // The console's text screen: the fresh console's blank screen buffer over whatever the firmware
-    // and loader left on it (silently: the serial line carries the boot's report).
-    csr::init();
-
-    // The interactive window station, WinSta0, and its Default desktop: win32k's objects, which
-    // every process connects to at its first win32k service.
-    win32k::winsta::init();
-
-    // The registry: its arena, and the keys Windows 2000 has from its boot on.
-    cm::init();
-
-    // The interrupt subsystem: the remapped controller behind the claim seam, the interval timer at
-    // the captured platform rate, the interval clock connected to its vector — and interrupts fly
-    // from here on (the idle path and ring 3 both run with them enabled; the gates mask on entry).
-    // SAFETY: boot CPU, ring 0, interrupts disabled, sole access to the controllers; the IDT gates
-    // (exception, syscall, hardware vectors) are installed.
-    unsafe { interrupt::init() };
-
-    // The scheduler's resting state: the idle thread (nothing is schedulable yet; its loop is the
-    // kernel's resting state once no thread remains). Its install raises to the dispatcher's
-    // level, which enables interrupts, so it waits for the interrupt subsystem: an interrupt taken
-    // before the controllers are remapped would land on an exception's vector.
-    crate::sched::idle::boot();
-
-    // The interrupt/timer diagnostic boot: report the hardware state, wait for the live tick and
-    // the clock's deferred work, and audit the whole subsystem — then fall through to the normal
-    // boot, proving the tick and the process machinery coexist rather than just the diagnostic
-    // running.
-    #[cfg(feature = "irq-smoke")]
-    interrupt::smoke();
-
-    // The IDE disk: detect the primary master, connect its interrupt, and IDENTIFY it. It needs
-    // the interrupt core (its reads complete through IRQ 14); the first user process comes after.
-    crate::hw::ide::disk::init();
-
-    // The PS/2 keyboard: reset it, connect IRQ 1, and feed its bytes to the console's input
-    // buffer. Its bring-up waits read the tick, so it comes after the interrupt core too.
-    crate::hw::kbd::init();
-
-    // The block devices: the disk, if there is one, and a view per primary partition on it.
-    crate::block::registry::boot_scan(crate::hw::ide::disk::block_device());
-
-    // The boot volume: the first registered partition, mounted as FAT32. Silent — a boot without
-    // a volume is normal, and a refused volume is left unmounted.
-    crate::fs::fat32::volume::mount_boot_volume();
-
-    // The disk diagnostic boot: read the drive's identity, the MBR, the volume boot sector, and
-    // the first file's sectors through the interrupt-driven path, then fall through to the normal
-    // boot.
-    #[cfg(feature = "disk-smoke")]
-    crate::hw::ide::smoke::run();
-
-    // The interrupt-nesting diagnostic boot: a disk interrupt held behind the keyboard's, both let
-    // in at once, then the normal boot.
-    #[cfg(feature = "nest-smoke")]
-    interrupt::nest_smoke();
+    // Phase 1: interrupts and the scheduler, then the devices.
+    boot::interrupts();
+    boot::diagnostics::interrupts();
+    boot::devices();
+    boot::diagnostics::devices();
 
     // The user processes (the programs the kernel command line lists, else exit0, through the PE
     // loader, one after another; the fault-test features substitute their own), each entered as

@@ -35,6 +35,10 @@
 //! TEB, the host tests' a fake stack whose handlers are closures that raise and unwind as C code
 //! does.
 
+use core::mem::{offset_of, size_of};
+
+use crate::pod::Pod;
+
 /// The chain's end marker.
 pub const END_OF_CHAIN: u32 = 0xFFFF_FFFF;
 
@@ -67,6 +71,85 @@ pub const EXCEPTION_MAXIMUM_PARAMETERS: usize = 15;
 pub const CONTEXT_SIZE: usize = 0x2CC;
 pub const CONTEXT_FULL: u32 = 0x0001_0007;
 
+/// FLOATING_SAVE_AREA: the x87 state a CONTEXT carries (112 bytes).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FloatingSaveArea {
+    pub control_word: u32,
+    pub status_word: u32,
+    pub tag_word: u32,
+    pub error_offset: u32,
+    pub error_selector: u32,
+    pub data_offset: u32,
+    pub data_selector: u32,
+    pub register_area: [u8; 80],
+    pub cr0_npx_state: u32,
+}
+
+/// A CONTEXT, as x86 NT lays it out: the flags naming which register sets it holds, the debug
+/// registers, the x87 state, the segment, integer and control registers, and the extended
+/// (FXSAVE) area.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Context {
+    pub context_flags: u32,
+    pub dr0: u32,
+    pub dr1: u32,
+    pub dr2: u32,
+    pub dr3: u32,
+    pub dr6: u32,
+    pub dr7: u32,
+    pub float_save: FloatingSaveArea,
+    pub seg_gs: u32,
+    pub seg_fs: u32,
+    pub seg_es: u32,
+    pub seg_ds: u32,
+    pub edi: u32,
+    pub esi: u32,
+    pub ebx: u32,
+    pub edx: u32,
+    pub ecx: u32,
+    pub eax: u32,
+    pub ebp: u32,
+    pub eip: u32,
+    pub seg_cs: u32,
+    pub eflags: u32,
+    pub esp: u32,
+    pub seg_ss: u32,
+    pub extended_registers: [u8; 512],
+}
+
+// SAFETY: u32s and byte arrays, each array a multiple of four bytes long, so no padding anywhere
+// (the layout asserts below pin every offset and the size).
+unsafe impl crate::pod::Pod for FloatingSaveArea {}
+// SAFETY: as above: u32s, a FloatingSaveArea and a byte array, without padding.
+unsafe impl crate::pod::Pod for Context {}
+// SAFETY: u32s and an array of them, without padding.
+unsafe impl crate::pod::Pod for ExceptionRecord {}
+
+const _: () = {
+    use core::mem::{offset_of, size_of};
+    assert!(size_of::<FloatingSaveArea>() == 112);
+    assert!(offset_of!(FloatingSaveArea, cr0_npx_state) == 108);
+    assert!(size_of::<Context>() == CONTEXT_SIZE);
+    assert!(offset_of!(Context, dr7) == 0x18);
+    assert!(offset_of!(Context, float_save) == 0x1C);
+    assert!(offset_of!(Context, seg_gs) == 0x8C);
+    assert!(offset_of!(Context, seg_ds) == 0x98);
+    assert!(offset_of!(Context, edi) == 0x9C);
+    assert!(offset_of!(Context, eax) == 0xB0);
+    assert!(offset_of!(Context, ebp) == 0xB4);
+    assert!(offset_of!(Context, eip) == 0xB8);
+    assert!(offset_of!(Context, seg_cs) == 0xBC);
+    assert!(offset_of!(Context, eflags) == 0xC0);
+    assert!(offset_of!(Context, esp) == 0xC4);
+    assert!(offset_of!(Context, seg_ss) == 0xC8);
+    assert!(offset_of!(Context, extended_registers) == 0xCC);
+    assert!(size_of::<ExceptionRecord>() == 80);
+    assert!(offset_of!(ExceptionRecord, count) == 0x10);
+    assert!(offset_of!(ExceptionRecord, information) == 0x14);
+};
+
 /// An EXCEPTION_RECORD, as the platform lays it out (80 bytes).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -95,14 +178,44 @@ impl ExceptionRecord {
     }
 }
 
-/// The record's field offsets.
-pub mod record {
-    pub const CODE: u32 = 0x00;
-    pub const FLAGS: u32 = 0x04;
-    pub const RECORD: u32 = 0x08;
-    pub const ADDRESS: u32 = 0x0C;
-    pub const COUNT: u32 = 0x10;
+/// Where an EXCEPTION_RECORD's ExceptionFlags sit in it. The walks read and write a record's flags
+/// in place, never the record whole: a dispatched record is trimmed to the parameters it carries
+/// (Windows 2000's dispatch copies no more), so its tail need not be there.
+const RECORD_FLAGS: u32 = offset_of!(ExceptionRecord, flags) as u32;
+
+/// An EXCEPTION_REGISTRATION_RECORD: a frame of the chain, on the thread's stack.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Registration {
+    /// The next frame (the one registered before it), or [`END_OF_CHAIN`].
+    pub next: u32,
+    /// The frame's handler.
+    pub handler: u32,
 }
+
+/// The registration ExecuteHandler2 pushes around a handler's call (see
+/// [`Frames::execute_handler`]): its record, then the frame whose handler it calls.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct OwnRegistration {
+    pub registration: Registration,
+    pub frame: u32,
+}
+
+const _: () = {
+    // The platform's layouts.
+    assert!(size_of::<ExceptionRecord>() == 80);
+    assert!(offset_of!(ExceptionRecord, flags) == 4);
+    assert!(offset_of!(ExceptionRecord, information) == 20);
+    assert!(size_of::<Registration>() == 8);
+    assert!(offset_of!(Registration, handler) == 4);
+    assert!(offset_of!(OwnRegistration, frame) == 8);
+};
+
+// SAFETY: two u32s.
+unsafe impl Pod for Registration {}
+// SAFETY: three u32s.
+unsafe impl Pod for OwnRegistration {}
 
 /// What the walks need of the thread they run on.
 pub trait Frames {
@@ -110,6 +223,33 @@ pub trait Frames {
     fn read(&self, address: u32) -> u32;
     /// Write a dword of the thread's memory.
     fn write(&self, address: u32, value: u32);
+
+    /// The `T` at `address`, read whole from the dwords that hold it (a structure of dwords at a
+    /// dword's alignment, as the chain's records are).
+    fn read_value<T: Pod>(&self, address: u32) -> T {
+        let mut value = T::zeroed();
+        for (index, bytes) in value.as_bytes_mut().chunks_mut(4).enumerate() {
+            let word = self.read(address + 4 * index as u32).to_le_bytes();
+            bytes.copy_from_slice(&word[..bytes.len()]);
+        }
+        value
+    }
+
+    /// The registration record at `frame`.
+    fn registration(&self, frame: u32) -> Registration {
+        self.read_value(frame)
+    }
+
+    /// The flags of the exception record at `record`.
+    fn record_flags(&self, record: u32) -> u32 {
+        self.read(record + RECORD_FLAGS)
+    }
+
+    /// Replace the flags of the exception record at `record`.
+    fn set_record_flags(&self, record: u32, flags: u32) {
+        self.write(record + RECORD_FLAGS, flags)
+    }
+
     /// The chain's head (`fs:[0]`).
     fn head(&self) -> u32;
     /// Make `frame` the chain's head.
@@ -143,11 +283,8 @@ fn frame_valid(frame: u32, low: u32, high: u32) -> bool {
 
 /// Set (or clear) `bits` in the flags of the record at `record`.
 fn mark(thread: &impl Frames, record: u32, bits: u32, set: bool) {
-    let flags = thread.read(record + record::FLAGS);
-    thread.write(
-        record + record::FLAGS,
-        if set { flags | bits } else { flags & !bits },
-    );
+    let flags = thread.record_flags(record);
+    thread.set_record_flags(record, if set { flags | bits } else { flags & !bits });
 }
 
 /// RtlDispatchException: offer the exception (`record`, `context`: user addresses) to the
@@ -162,7 +299,7 @@ pub fn dispatch(thread: &impl Frames, record: u32, context: u32) -> bool {
             mark(thread, record, EXCEPTION_STACK_INVALID, true);
             return false;
         }
-        let handler = thread.read(frame + 4);
+        let handler = thread.registration(frame).handler;
         let mut dispatcher = 0u32;
         let disposition =
             thread.execute_handler(false, record, frame, context, &mut dispatcher, handler);
@@ -173,13 +310,13 @@ pub fn dispatch(thread: &impl Frames, record: u32, context: u32) -> bool {
         }
         match disposition {
             EXCEPTION_CONTINUE_EXECUTION => {
-                if thread.read(record + record::FLAGS) & EXCEPTION_NONCONTINUABLE != 0 {
+                if thread.record_flags(record) & EXCEPTION_NONCONTINUABLE != 0 {
                     thread.raise_chained(STATUS_NONCONTINUABLE_EXCEPTION, record);
                 }
                 return true;
             }
             EXCEPTION_CONTINUE_SEARCH => {
-                if thread.read(record + record::FLAGS) & EXCEPTION_STACK_INVALID != 0 {
+                if thread.record_flags(record) & EXCEPTION_STACK_INVALID != 0 {
                     return false;
                 }
             }
@@ -191,7 +328,7 @@ pub fn dispatch(thread: &impl Frames, record: u32, context: u32) -> bool {
             }
             _ => thread.raise_chained(STATUS_INVALID_DISPOSITION, record),
         }
-        frame = thread.read(frame);
+        frame = thread.registration(frame).next;
     }
     false
 }
@@ -229,7 +366,7 @@ pub fn unwind(thread: &impl Frames, target: u32, record: u32, context: u32) -> U
         if !frame_valid(frame, low, high) {
             thread.raise_chained(STATUS_BAD_STACK, record);
         }
-        let handler = thread.read(frame + 4);
+        let handler = thread.registration(frame).handler;
         let mut dispatcher = 0u32;
         match thread.execute_handler(true, record, frame, context, &mut dispatcher, handler) {
             EXCEPTION_CONTINUE_SEARCH => {}
@@ -237,9 +374,8 @@ pub fn unwind(thread: &impl Frames, target: u32, record: u32, context: u32) -> U
             EXCEPTION_COLLIDED_UNWIND => frame = dispatcher,
             _ => thread.raise_chained(STATUS_INVALID_DISPOSITION, record),
         }
-        let prior = frame;
-        frame = thread.read(prior);
-        thread.set_head(thread.read(prior));
+        frame = thread.registration(frame).next;
+        thread.set_head(frame);
     }
     if target == END_OF_CHAIN {
         Unwound::Continue
@@ -261,13 +397,14 @@ pub fn own_frame_handler(
     own: u32,
     dispatcher: u32,
 ) -> u32 {
-    let unwinding = thread.read(record + record::FLAGS) & EXCEPTION_UNWIND != 0;
+    let unwinding = thread.record_flags(record) & EXCEPTION_UNWIND != 0;
     let disposition = match (unwind_call, unwinding) {
         (false, false) => EXCEPTION_NESTED_EXCEPTION,
         (true, true) => EXCEPTION_COLLIDED_UNWIND,
         _ => return EXCEPTION_CONTINUE_SEARCH,
     };
-    thread.write(dispatcher, thread.read(own + 8));
+    let own: OwnRegistration = thread.read_value(own);
+    thread.write(dispatcher, own.frame);
     disposition
 }
 
@@ -399,7 +536,7 @@ mod tests {
             handler: impl FnOnce(&Fake, u32),
         ) {
             let code = self.handler(move |fake, call| {
-                if fake.read(call.record + record::FLAGS) & EXCEPTION_UNWIND != 0 {
+                if fake.record_flags(call.record) & EXCEPTION_UNWIND != 0 {
                     return EXCEPTION_CONTINUE_SEARCH;
                 }
                 match filter(fake, call.record) {
@@ -450,7 +587,7 @@ mod tests {
             let finally = Rc::new(finally);
             let unwinding = finally.clone();
             let code = self.handler(move |fake, call| {
-                if fake.read(call.record + record::FLAGS) & EXCEPTION_UNWIND != 0 {
+                if fake.record_flags(call.record) & EXCEPTION_UNWIND != 0 {
                     unwinding(fake, true);
                 }
                 EXCEPTION_CONTINUE_SEARCH
@@ -488,7 +625,7 @@ mod tests {
         }
 
         fn flags(&self, record: u32) -> u32 {
-            self.read(record + record::FLAGS)
+            self.record_flags(record)
         }
     }
 
@@ -1035,7 +1172,7 @@ mod tests {
                     );
                 },
                 move |fake, record| {
-                    let chained = fake.read(record + record::RECORD);
+                    let chained = fake.read(record + offset_of!(ExceptionRecord, record) as u32);
                     sees.set((fake.read(record), fake.flags(record), fake.read(chained)));
                     Filter::Execute
                 },
@@ -1089,7 +1226,7 @@ mod tests {
                     fake.registered(handler, |fake, _| fake.raise(0xE000_0060, 0, 0));
                 },
                 move |fake, record| {
-                    let chained = fake.read(record + record::RECORD);
+                    let chained = fake.read(record + offset_of!(ExceptionRecord, record) as u32);
                     sees.set((fake.read(record), fake.flags(record), fake.read(chained)));
                     Filter::Execute
                 },

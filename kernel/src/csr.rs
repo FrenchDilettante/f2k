@@ -37,6 +37,7 @@ use crate::hw::vga::{CellMemory, TextScreen};
 #[cfg(target_arch = "x86")]
 use crate::level::{At, Dispatch, LevelCell, Passive};
 use crate::nt::call::{NtResult, UserAddr};
+#[cfg(target_arch = "x86")]
 use crate::ob::ObjectId;
 #[cfg(target_arch = "x86")]
 use crate::sched::wait::WaitableId;
@@ -51,8 +52,8 @@ pub const SERVICE: (u32, ServiceFn) = (16, service);
 #[cfg(target_arch = "x86")]
 struct ConsoleServer {
     console: Console,
-    /// The console's input-wait event, once a process asked for it: the object, which names
-    /// nothing once its process is gone.
+    /// The console's input-wait event, once a process asked for it: the object, which the server
+    /// holds a reference on until no process is left.
     input_event: Option<ObjectId>,
 }
 
@@ -94,28 +95,30 @@ fn service(frame: &mut crate::user::TrapFrame, args: &[u32], passive: &mut At<Pa
     // where objects are made, and handed to the call that asks for it.
     let mut prepared = (args[2] == rtl::console::api::GET_INPUT_WAIT_HANDLE)
         .then(|| prepare_input_wait_handle(call.passive()));
-    let handles = crate::user::args::calling_process().console_mut();
-    let result = {
-        let mut dispatch = call.passive().raise::<Dispatch>();
-        // Nothing below waits: a fault in a user-memory copy resolves in place (a copy-on-write
-        // page, a stack's growth) or fails the copy.
-        let server = SERVER.get(&mut dispatch);
-        let result = client_call_server(
-            &mut server.console,
-            handles,
-            &mut Dual {
-                input_wait_handle: &mut prepared,
-            },
-            UserAddr(args[0]),
-            UserAddr(args[1]),
-            args[2],
-            args[3],
-        );
-        present(&mut server.console.screen, &mut crate::hw::vga::screen());
-        let input = server.input_state();
-        show_input(&mut dispatch, input);
-        result
-    };
+    // The process's console handles are held for the call (its lock is the process's state
+    // lock), and the call is served at the server's level, raised from the lock's.
+    let result = crate::user::args::calling_process().with_console(|handles| {
+        crate::level::raised::<Dispatch, _>(|dispatch| {
+            // Nothing below waits: a fault in a user-memory copy resolves in place (a
+            // copy-on-write page) or fails the copy.
+            let server = SERVER.get(dispatch);
+            let result = client_call_server(
+                &mut server.console,
+                handles,
+                &mut Dual {
+                    input_wait_handle: &mut prepared,
+                },
+                UserAddr(args[0]),
+                UserAddr(args[1]),
+                args[2],
+                args[3],
+            );
+            present(&mut server.console.screen, &mut crate::hw::vga::screen());
+            let input = server.input_state();
+            show_input(dispatch, input);
+            result
+        })
+    });
     // A call refused before it reached the handle (its message unreadable) leaves it unopened.
     if let Some(Ok(handle)) = prepared {
         call.process().close_handle(handle);
@@ -123,28 +126,66 @@ fn service(frame: &mut crate::user::TrapFrame, args: &[u32], passive: &mut At<Pa
     call.finish(result);
 }
 
-/// The calling process's handle to the console's input-wait event (see [`input_wait_handle`]),
-/// for the call about to ask for it: the server's slot read and written back at its level, the
-/// object made and the handle inserted below it.
+/// The calling process's handle to the console's input-wait event, for the call about to ask for
+/// it: a new handle on the event the server's slot holds, or on a fresh one made for the slot;
+/// STATUS_INSUFFICIENT_RESOURCES when neither can be had. The slot is read and written at the
+/// server's level, the object made and the handle inserted below it. The event is the console's,
+/// as Windows 2000's console keeps its own handle to it: its creator's reference is the server's,
+/// kept until no process is left ([`release_input_event`]).
 #[cfg(target_arch = "x86")]
 fn prepare_input_wait_handle(passive: &mut At<Passive>) -> Result<u32, NtStatus> {
-    let mut slot = SERVER.get(&mut passive.raise::<Dispatch>()).input_event;
-    let handle = input_wait_handle(&mut slot);
-    SERVER.get(&mut passive.raise::<Dispatch>()).input_event = slot;
-    handle
+    use crate::ob::{self, EVENT_ALL_ACCESS};
+    use crate::sched::event::EventKind;
+    let held = SERVER.get(&mut passive.raise::<Dispatch>()).input_event;
+    let id = match held {
+        Some(id) => id,
+        None => {
+            let made = ob::lock(passive)
+                .create_event(EventKind::Notification, false)
+                .ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
+            // Another call may have made one meanwhile (holding the directory opens interrupts):
+            // the first one kept is the console's, and a second goes again.
+            let kept = *SERVER
+                .get(&mut passive.raise::<Dispatch>())
+                .input_event
+                .get_or_insert(made);
+            if kept != made {
+                ob::release(made);
+            }
+            kept
+        }
+    };
+    ob::open(
+        crate::user::args::calling_process(),
+        id,
+        EVENT_ALL_ACCESS,
+        false,
+    )
+    .map(core::num::NonZeroU32::get)
+    .ok_or(STATUS_INSUFFICIENT_RESOURCES)
 }
 
 #[cfg(target_arch = "x86")]
 impl ConsoleServer {
-    /// What the input-wait event must show, when one lives: its body, and whether the console's
-    /// input buffer holds records. The event's header is read in the object directory, from the
-    /// service and from the keyboard DPC alike: a DPC drained at a lower inside a directory
-    /// operation finds no event header half-written, since no operation lowers mid-change.
+    /// What the input-wait event must show, when there is one: its body, and whether the console's
+    /// input buffer holds records. The server holds a reference on the event (see
+    /// [`prepare_input_wait_handle`]), so its body is named without the object directory, which
+    /// neither the service at this level nor the keyboard DPC may take.
     fn input_state(&self) -> Option<(WaitableId, bool)> {
-        let event = self
-            .input_event
-            .and_then(|id| crate::ob::directory().event(id))?;
+        let event = self.input_event?.waitable()?;
         Some((event, self.console.input_waiting()))
+    }
+}
+
+/// The console has no process attached any more (the system is quiescent): the server's
+/// reference on its input-wait event goes, and the event with it (the next process to ask for the
+/// handle gets a fresh one), as Windows 2000's console goes with its last process.
+#[cfg(target_arch = "x86")]
+pub fn release_input_event() {
+    let event =
+        crate::level::raised::<Dispatch, _>(|dispatch| SERVER.get(dispatch).input_event.take());
+    if let Some(id) = event {
+        crate::ob::release(id);
     }
 }
 
@@ -160,35 +201,6 @@ fn show_input(dispatch: &mut At<Dispatch>, state: Option<(WaitableId, bool)>) {
         dispatcher.reset_event(event);
     } else if dispatcher.waitable(event).signal_state() <= 0 {
         dispatcher.set_event(event, crate::sched::event::EVENT_WAKE_INCREMENT);
-    }
-}
-
-/// The calling process's handle to the input-wait event `slot` holds: a new handle on the live
-/// one, or a fresh event published with it (and kept in `slot`); STATUS_INSUFFICIENT_RESOURCES
-/// when neither can be had.
-#[cfg(target_arch = "x86")]
-fn input_wait_handle(slot: &mut Option<ObjectId>) -> Result<u32, NtStatus> {
-    use core::num::NonZeroU32;
-
-    use crate::ob::{self, EVENT_ALL_ACCESS};
-    use crate::sched::event::EventKind;
-    let process = crate::user::args::calling_process();
-    match *slot {
-        // A handle of 0 is the handle table's refusal.
-        Some(id) if ob::directory().is_live(id) => {
-            NonZeroU32::new(ob::open(process, id, EVENT_ALL_ACCESS, false))
-                .map(NonZeroU32::get)
-                .ok_or(STATUS_INSUFFICIENT_RESOURCES)
-        }
-        _ => {
-            let id = ob::directory()
-                .create_event(EventKind::Notification, false)
-                .ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
-            let handle = ob::publish(process, id, EVENT_ALL_ACCESS, false, None)
-                .ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
-            *slot = Some(id);
-            Ok(handle)
-        }
     }
 }
 

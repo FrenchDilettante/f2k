@@ -5,7 +5,7 @@
 //! an unmasked SIMD floating-point exception raise #XM (STATUS_FLOAT_MULTIPLE_TRAPS) rather than
 //! #UD. A processor without FXSR cannot hold a thread's SSE state at all: the kernel refuses to
 //! boot on one rather than switch threads with part of their state lost. The boot context then
-//! starts from a fresh thread's image (`sched::thread::FpuState::initial`).
+//! starts from a fresh thread's image (`sched::thread::FxSaveArea::initial`).
 
 /// CPUID leaf 1's EDX feature bits the setup reads: FXSAVE/FXRSTOR, and SSE.
 pub const CPUID_FXSR: u32 = 1 << 24;
@@ -68,7 +68,7 @@ pub unsafe fn init() {
         crate::halt()
     };
     /// A fresh thread's image, as the boot context's first state.
-    static INITIAL: crate::sched::thread::FpuState = crate::sched::thread::FpuState::initial();
+    static INITIAL: crate::sched::thread::FxSaveArea = crate::sched::thread::FxSaveArea::initial();
     // SAFETY: the caller's contract; the image is 16-byte aligned (its type's alignment).
     unsafe {
         asm!("mov cr0, {}", in(reg) cr0, options(nostack, preserves_flags));

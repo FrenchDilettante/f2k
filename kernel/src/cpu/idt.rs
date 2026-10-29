@@ -16,7 +16,7 @@ const EXCEPTION_VECTORS: usize = 32;
 /// registered at DPL 3. A vector left absent is a not-present gate: raising it faults with the
 /// vector-derived error code — #NP from ring 0, and #GP from ring 3 (the zeroed descriptor's DPL 0
 /// fails the privilege check first).
-const IDT_VECTORS: usize = 256;
+pub const IDT_VECTORS: usize = 256;
 
 /// Registers saved by the common exception stub, in stack order. Constructed by assembly, never by
 /// Rust code. The segment registers are not part of the frame: the stubs save them just below it
@@ -55,15 +55,16 @@ pub(crate) struct SavedSegments {
 }
 
 impl SavedSegments {
-    /// The segments saved below `frame` (the stubs' layout).
+    /// The segments saved below `frame` (the stubs' layout), for as long as the frame is borrowed.
     ///
     /// # Safety
     ///
-    /// `frame` must be the pointer an entry stub passed, so the four words below it are the saved
+    /// `frame` must be the frame an entry stub passed, so the four words below it are the saved
     /// segments.
-    pub(crate) unsafe fn below<T>(frame: *const T) -> &'static SavedSegments {
-        // SAFETY: per the contract, the stub stored the four words directly below the frame.
-        unsafe { &*(frame as *const SavedSegments).sub(1) }
+    pub(crate) unsafe fn below<T>(frame: &T) -> &SavedSegments {
+        // SAFETY: per the contract, the stub stored the four words directly below the frame, on
+        // the same stack, which outlives the frame's borrow.
+        unsafe { &*core::ptr::from_ref(frame).cast::<SavedSegments>().sub(1) }
     }
 }
 
@@ -94,7 +95,7 @@ impl ExceptionFrame {
 /// One 32-bit IDT gate descriptor: interrupt gate, present, ring 0.
 #[derive(Clone, Copy)]
 #[repr(C, packed)]
-struct Gate {
+pub struct Gate {
     offset_low: u16,
     selector: u16,
     reserved: u8,
@@ -103,6 +104,14 @@ struct Gate {
 }
 
 impl Gate {
+    /// A not-present gate: every vector the IDT does not register.
+    pub const ABSENT: Gate = Gate {
+        offset_low: 0,
+        selector: 0,
+        reserved: 0,
+        type_attr: 0,
+        offset_high: 0,
+    };
     /// 0x8E = present, ring 0, 32-bit interrupt gate (clears IF on entry).
     ///
     /// Gates that user code must be able to raise use DPL 3 instead ([`Gate::new_user`]): the
@@ -138,174 +147,56 @@ impl Gate {
 // ring 0 or ring 3.
 const _: () = assert!(Gate::INTERRUPT_ATTR == 0x8E && Gate::USER_INTERRUPT_ATTR == 0xEE);
 
-/// The IDT is built at runtime (stub addresses are link-time constants but their casts are not
-/// const-evaluable), then loaded with `lidt`.
-///
-/// Writes go through raw pointers: taking `&static mut` references is UB territory, and this runs
-/// once on the boot CPU before `sti`.
-static mut IDT: [Gate; IDT_VECTORS] = [Gate {
-    offset_low: 0,
-    selector: 0,
-    reserved: 0,
-    type_attr: 0,
-    offset_high: 0,
-}; IDT_VECTORS];
+/// The Interrupt Descriptor Table, every vector's gate.
+pub type Idt = [Gate; IDT_VECTORS];
 
 /// Address of a generated stub. Casts through a pointer: clippy flags a direct
 /// function-item-to-integer cast as provenance-lossy.
+#[cfg(target_arch = "x86")]
 fn stub_addr(stub: unsafe extern "C" fn()) -> usize {
     stub as *const () as usize
 }
 
-/// IDTR limit for the exception table: the offset of the last valid byte (table size minus one),
-/// which is what `lidt` expects.
-const fn idt_limit() -> u16 {
-    (core::mem::size_of::<[Gate; IDT_VECTORS]>() - 1) as u16
-}
-
-/// Build the IDT and load it.
+/// Build the IDT in the processor's table and load it. The stub addresses are link-time constants,
+/// but their casts are not const-evaluable, so the gates are written here rather than in the
+/// table's initial value.
 ///
 /// # Safety
 ///
 /// Must run on the boot CPU in ring 0 with interrupts disabled, before any code that might raise a
-/// CPU exception.
+/// CPU exception; `idt` is the processor control region's table, which stays in place for the
+/// kernel's life.
 #[cfg(target_arch = "x86")]
-pub unsafe fn init() {
-    let stubs: [usize; EXCEPTION_VECTORS] = [
-        stub_addr(exception_stub_0),
-        stub_addr(exception_stub_1),
-        stub_addr(exception_stub_2),
-        stub_addr(exception_stub_3),
-        stub_addr(exception_stub_4),
-        stub_addr(exception_stub_5),
-        stub_addr(exception_stub_6),
-        stub_addr(exception_stub_7),
-        stub_addr(exception_stub_8),
-        stub_addr(exception_stub_9),
-        stub_addr(exception_stub_10),
-        stub_addr(exception_stub_11),
-        stub_addr(exception_stub_12),
-        stub_addr(exception_stub_13),
-        stub_addr(exception_stub_14),
-        stub_addr(exception_stub_15),
-        stub_addr(exception_stub_16),
-        stub_addr(exception_stub_17),
-        stub_addr(exception_stub_18),
-        stub_addr(exception_stub_19),
-        stub_addr(exception_stub_20),
-        stub_addr(exception_stub_21),
-        stub_addr(exception_stub_22),
-        stub_addr(exception_stub_23),
-        stub_addr(exception_stub_24),
-        stub_addr(exception_stub_25),
-        stub_addr(exception_stub_26),
-        stub_addr(exception_stub_27),
-        stub_addr(exception_stub_28),
-        stub_addr(exception_stub_29),
-        stub_addr(exception_stub_30),
-        stub_addr(exception_stub_31),
-    ];
-
-    // SAFETY: single boot CPU, interrupts disabled; the only access to IDT.
-    unsafe {
-        let base = core::ptr::addr_of_mut!(IDT) as *mut Gate;
-        for (i, stub) in stubs.iter().enumerate() {
-            core::ptr::write_volatile(base.add(i), Gate::new(*stub));
-        }
-
-        // The software exceptions user code raises itself, as on Windows: int3 (the breakpoint)
-        // and into (the overflow check) are ring-3 gates, so they raise their own exceptions
-        // rather than a general protection fault.
-        for vector in [3, 4] {
-            core::ptr::write_volatile(base.add(vector), Gate::new_user(stubs[vector]));
-        }
-
-        // The syscall gate (see `syscall.rs`): ring-3 reachable, entered on the TSS ring-0 stack,
-        // the return path for user code.
-        core::ptr::write_volatile(
-            base.add(crate::user::syscall::SYSCALL_VECTOR),
-            Gate::new_user(stub_addr(crate::user::syscall::syscall_gate_stub)),
-        );
-
-        // The hardware vectors (see `interrupt/`): one interrupt-gate stub per vector in the
-        // remapped band. Nothing can raise them until the interrupt subsystem enables the lines.
-        let irq_stubs: [usize; 16] = [
-            stub_addr(irq_stub_0x30),
-            stub_addr(irq_stub_0x31),
-            stub_addr(irq_stub_0x32),
-            stub_addr(irq_stub_0x33),
-            stub_addr(irq_stub_0x34),
-            stub_addr(irq_stub_0x35),
-            stub_addr(irq_stub_0x36),
-            stub_addr(irq_stub_0x37),
-            stub_addr(irq_stub_0x38),
-            stub_addr(irq_stub_0x39),
-            stub_addr(irq_stub_0x3A),
-            stub_addr(irq_stub_0x3B),
-            stub_addr(irq_stub_0x3C),
-            stub_addr(irq_stub_0x3D),
-            stub_addr(irq_stub_0x3E),
-            stub_addr(irq_stub_0x3F),
-        ];
-        for (i, stub) in irq_stubs.iter().enumerate() {
-            core::ptr::write_volatile(
-                base.add(crate::interrupt::FIRST_VECTOR as usize + i),
-                Gate::new(*stub),
-            );
-        }
-
-        // Build the IDTR on the stack: 6 bytes of limit + base, then lidt.
-        let mut idtr = [0u8; 6];
-        idtr[0..2].copy_from_slice(&idt_limit().to_le_bytes());
-        idtr[2..6].copy_from_slice(&(base as u32).to_le_bytes());
-        global_asm_lidt(&idtr as *const u8);
+pub unsafe fn init(idt: &mut Idt) {
+    for (gate, stub) in idt.iter_mut().zip(EXCEPTION_STUBS) {
+        *gate = Gate::new(stub_addr(stub));
     }
-}
 
-/// Wrapper so the inline `lidt` keeps its side effects and memory operand from being optimized
-/// away.
-#[cfg(target_arch = "x86")]
-#[inline(never)]
-unsafe fn global_asm_lidt(idtr: *const u8) {
-    core::arch::asm!("lidt [eax]", in("eax") idtr, options(nostack));
-}
+    // The software exceptions user code raises itself, as on Windows: int3 (the breakpoint) and
+    // into (the overflow check) are ring-3 gates, so they raise their own exceptions rather than a
+    // general protection fault.
+    for vector in [3, 4] {
+        idt[vector] = Gate::new_user(stub_addr(EXCEPTION_STUBS[vector]));
+    }
 
-#[cfg(target_arch = "x86")]
-unsafe extern "C" {
-    /// Exception stubs generated from the vector table at the bottom of this file: vectors tagged
-    /// `true` there receive a CPU-pushed error code, the rest push a zero placeholder.
-    fn exception_stub_0();
-    fn exception_stub_1();
-    fn exception_stub_2();
-    fn exception_stub_3();
-    fn exception_stub_4();
-    fn exception_stub_5();
-    fn exception_stub_6();
-    fn exception_stub_7();
-    fn exception_stub_8();
-    fn exception_stub_9();
-    fn exception_stub_10();
-    fn exception_stub_11();
-    fn exception_stub_12();
-    fn exception_stub_13();
-    fn exception_stub_14();
-    fn exception_stub_15();
-    fn exception_stub_16();
-    fn exception_stub_17();
-    fn exception_stub_18();
-    fn exception_stub_19();
-    fn exception_stub_20();
-    fn exception_stub_21();
-    fn exception_stub_22();
-    fn exception_stub_23();
-    fn exception_stub_24();
-    fn exception_stub_25();
-    fn exception_stub_26();
-    fn exception_stub_27();
-    fn exception_stub_28();
-    fn exception_stub_29();
-    fn exception_stub_30();
-    fn exception_stub_31();
+    // The syscall gate (see `syscall.rs`): ring-3 reachable, entered on the TSS ring-0 stack, the
+    // return path for user code.
+    idt[crate::user::syscall::SYSCALL_VECTOR] =
+        Gate::new_user(stub_addr(crate::user::syscall::syscall_gate_stub));
+
+    // The hardware vectors (see `interrupt/`): one interrupt-gate stub per vector in the remapped
+    // band. Nothing can raise them until the interrupt subsystem enables the lines.
+    let band = &mut idt[crate::interrupt::FIRST_VECTOR as usize..];
+    for (gate, stub) in band.iter_mut().zip(IRQ_STUBS) {
+        *gate = Gate::new(stub_addr(stub));
+    }
+
+    let idtr = super::DescriptorTablePointer::of(&*idt);
+    // SAFETY: the caller's contract: ring 0, interrupts disabled, and the table stays where the
+    // pointer names it, each vector it registers a stub of this file's or the syscall gate.
+    unsafe {
+        core::arch::asm!("lidt [{}]", in(reg) &idtr, options(readonly, nostack, preserves_flags));
+    }
 }
 
 /// Mnemonics for the 32 CPU exception vectors, for the diagnostic dump.
@@ -475,7 +366,7 @@ fn resolve_or_end(frame: &mut ExceptionFrame) {
     // The faulting context's segments, as the stub saved them (the handler itself runs on the
     // kernel's DS/ES).
     // SAFETY: `frame` is the pointer the common stub passed, above its saved segments.
-    let segments = unsafe { SavedSegments::below(frame) };
+    let segments = unsafe { SavedSegments::below(&*frame) };
     crate::serial_println!(
         "  DS {:#04x}  ES {:#04x}  FS {:#04x}  GS {:#04x}",
         segments.ds & 0xFFFF,
@@ -605,43 +496,54 @@ macro_rules! error_code_vectors {
 }
 
 /// One stub invocation line per vector: EXC_STUB_ERR when the CPU pushes the error code,
-/// EXC_STUB_NOERR otherwise. Only invoked from inside the x86-only `global_asm!` expansion, hence
-/// the allow.
+/// EXC_STUB_NOERR otherwise, labelled with the stub's Rust name. Only invoked from inside the
+/// x86-only `global_asm!` expansion, hence the allow.
 #[allow(unused_macros)]
 macro_rules! stub_line {
-    (true, $vector:literal) => {
-        concat!("EXC_STUB_ERR ", stringify!($vector))
+    (true, $stub:ident, $vector:literal) => {
+        concat!(
+            "EXC_STUB_ERR ",
+            stringify!($stub),
+            ", ",
+            stringify!($vector)
+        )
     };
-    (false, $vector:literal) => {
-        concat!("EXC_STUB_NOERR ", stringify!($vector))
+    (false, $stub:ident, $vector:literal) => {
+        concat!(
+            "EXC_STUB_NOERR ",
+            stringify!($stub),
+            ", ",
+            stringify!($vector)
+        )
     };
 }
 
-/// Emits the 32 exception stubs in assembly (with the common tail) and the matching
-/// ERROR_CODE_VECTORS list, all from one vector table.
+/// Emits the 32 exception stubs in assembly (with the common tail), their declarations and the
+/// table of them by vector (`EXCEPTION_STUBS`, which the IDT's build reads), and the matching
+/// ERROR_CODE_VECTORS list, all from one vector table. Each stub's label is its Rust name.
 macro_rules! define_exception_stubs {
-    ($($vector:literal => $err:tt),* $(,)?) => {
+    ($($stub:ident = $vector:literal => $err:tt),* $(,)?) => {
         #[cfg(target_arch = "x86")]
         core::arch::global_asm!(
             ".section .text.exception_stubs, \"ax\"",
             // Stubs for exceptions the CPU does NOT hand an error code: push a zero placeholder
             // first so every frame has the same layout.
-            ".macro EXC_STUB_NOERR n",
-            ".globl exception_stub_\\n",
-            "exception_stub_\\n:",
+            ".macro EXC_STUB_NOERR name, n",
+            ".globl \\name",
+            "\\name:",
             "    push 0",
             "    push \\n",
             "    jmp exception_common",
             ".endm",
             // Stubs for exceptions the CPU hands an error code.
-            ".macro EXC_STUB_ERR n",
-            ".globl exception_stub_\\n",
-            "exception_stub_\\n:",
+            ".macro EXC_STUB_ERR name, n",
+            ".globl \\name",
+            "\\name:",
             "    push \\n",
             "    jmp exception_common",
             ".endm",
             "",
-            $(stub_line!($err, $vector),)*
+            $(stub_line!($err, $stub, $vector),)*
             "",
             // Common tail: save registers, clear DF (interrupt gates do not, and Rust code requires
             // it), call the handler; when it returns, restore and resume.
@@ -682,6 +584,26 @@ macro_rules! define_exception_stubs {
             handler = sym exception_handler,
         );
 
+        #[cfg(target_arch = "x86")]
+        unsafe extern "C" {
+            $(fn $stub();)*
+        }
+
+        /// The exception stubs, by vector: the IDT's first 32 gates.
+        #[cfg(target_arch = "x86")]
+        const EXCEPTION_STUBS: [unsafe extern "C" fn(); EXCEPTION_VECTORS] = [$($stub),*];
+
+        // The table lists the vectors in order, so a stub's place in it is its vector.
+        const _: () = {
+            let vectors = [$($vector),*];
+            assert!(vectors.len() == EXCEPTION_VECTORS);
+            let mut index = 0;
+            while index < vectors.len() {
+                assert!(vectors[index] == index);
+                index += 1;
+            }
+        };
+
         /// Vectors whose stubs rely on the CPU-pushed error code; every other stub pushes a zero
         /// placeholder so all frames share one layout. Generated from the same table as the stubs.
         #[allow(dead_code)]
@@ -690,38 +612,38 @@ macro_rules! define_exception_stubs {
 }
 
 define_exception_stubs!(
-    0 => false,
-    1 => false,
-    2 => false,
-    3 => false,
-    4 => false,
-    5 => false,
-    6 => false,
-    7 => false,
-    8 => true,
-    9 => false,
-    10 => true,
-    11 => true,
-    12 => true,
-    13 => true,
-    14 => true,
-    15 => false,
-    16 => false,
-    17 => true,
-    18 => false,
-    19 => false,
-    20 => false,
-    21 => true,
-    22 => false,
-    23 => false,
-    24 => false,
-    25 => false,
-    26 => false,
-    27 => false,
-    28 => false,
-    29 => true,
-    30 => true,
-    31 => false,
+    exception_stub_0 = 0 => false,
+    exception_stub_1 = 1 => false,
+    exception_stub_2 = 2 => false,
+    exception_stub_3 = 3 => false,
+    exception_stub_4 = 4 => false,
+    exception_stub_5 = 5 => false,
+    exception_stub_6 = 6 => false,
+    exception_stub_7 = 7 => false,
+    exception_stub_8 = 8 => true,
+    exception_stub_9 = 9 => false,
+    exception_stub_10 = 10 => true,
+    exception_stub_11 = 11 => true,
+    exception_stub_12 = 12 => true,
+    exception_stub_13 = 13 => true,
+    exception_stub_14 = 14 => true,
+    exception_stub_15 = 15 => false,
+    exception_stub_16 = 16 => false,
+    exception_stub_17 = 17 => true,
+    exception_stub_18 = 18 => false,
+    exception_stub_19 = 19 => false,
+    exception_stub_20 = 20 => false,
+    exception_stub_21 = 21 => true,
+    exception_stub_22 = 22 => false,
+    exception_stub_23 = 23 => false,
+    exception_stub_24 = 24 => false,
+    exception_stub_25 = 25 => false,
+    exception_stub_26 = 26 => false,
+    exception_stub_27 = 27 => false,
+    exception_stub_28 = 28 => false,
+    exception_stub_29 = 29 => true,
+    exception_stub_30 = 30 => true,
+    exception_stub_31 = 31 => false,
 );
 
 // --- Hardware interrupt stubs ---------------------------------------------
@@ -730,89 +652,99 @@ define_exception_stubs!(
 // the exception stubs (error pad plus vector around `pushad`), then the common tail calls the
 // interrupt core's dispatch with the frame and `iretd`s back to whoever was interrupted — ring 0 or
 // ring 3, the tail is the same.
-#[cfg(target_arch = "x86")]
-core::arch::global_asm!(
-    ".section .text.irq_stubs, \"ax\"",
-    ".macro IRQ_STUB n",
-    ".globl irq_stub_\\n",
-    "irq_stub_\\n:",
-    "    push 0",
-    "    push \\n",
-    "    jmp irq_common",
-    ".endm",
-    "IRQ_STUB 0x30",
-    "IRQ_STUB 0x31",
-    "IRQ_STUB 0x32",
-    "IRQ_STUB 0x33",
-    "IRQ_STUB 0x34",
-    "IRQ_STUB 0x35",
-    "IRQ_STUB 0x36",
-    "IRQ_STUB 0x37",
-    "IRQ_STUB 0x38",
-    "IRQ_STUB 0x39",
-    "IRQ_STUB 0x3A",
-    "IRQ_STUB 0x3B",
-    "IRQ_STUB 0x3C",
-    "IRQ_STUB 0x3D",
-    "IRQ_STUB 0x3E",
-    "IRQ_STUB 0x3F",
-    "irq_common:",
-    "    pushad",
-    "    cld", // Rust code requires a forward direction flag
-    // The interrupted data segments, below the frame (see `SavedSegments`); the handler runs on the
-    // kernel's.
-    "    mov eax, ds",
-    "    push eax",
-    "    mov eax, es",
-    "    push eax",
-    "    mov eax, fs",
-    "    push eax",
-    "    mov eax, gs",
-    "    push eax",
-    "    mov ax, {kernel_data}",
-    "    mov ds, ax",
-    "    mov es, ax",
-    "    lea eax, [esp + 16]", // frame pointer (interrupt/mod.rs dispatch): the pushad block
-    "    push eax",
-    "    call {dispatch}",
-    "    add esp, 4", // drop the frame pointer
-    // Restoring FS reloads the TEB descriptor's base: a thread resumed here by a switch inside the
-    // dispatch sees its own TEB.
-    "    pop eax",
-    "    mov gs, ax",
-    "    pop eax",
-    "    mov fs, ax",
-    "    pop eax",
-    "    mov es, ax",
-    "    pop eax",
-    "    mov ds, ax",
-    "    popad",
-    "    add esp, 8", // drop vector + error pad
-    "    iretd", // pops EIP, CS, EFLAGS (plus user ESP/SS from ring 3)
-    kernel_data = const crate::cpu::gdt::KERNEL_DATA_SELECTOR,
-    dispatch = sym crate::interrupt::dispatch,
-);
+/// Emits the band's stubs in assembly (with the common tail), their declarations and the table of
+/// them by vector (`IRQ_STUBS`, which the IDT's build reads), all from one vector table. Each
+/// stub's label is its Rust name.
+macro_rules! define_irq_stubs {
+    ($($stub:ident = $vector:literal),* $(,)?) => {
+        #[cfg(target_arch = "x86")]
+        core::arch::global_asm!(
+            ".section .text.irq_stubs, \"ax\"",
+            ".macro IRQ_STUB name, n",
+            ".globl \\name",
+            "\\name:",
+            "    push 0",
+            "    push \\n",
+            "    jmp irq_common",
+            ".endm",
+            $(concat!("IRQ_STUB ", stringify!($stub), ", ", stringify!($vector)),)*
+            "irq_common:",
+            "    pushad",
+            "    cld", // Rust code requires a forward direction flag
+            // The interrupted data segments, below the frame (see `SavedSegments`); the handler
+            // runs on the kernel's.
+            "    mov eax, ds",
+            "    push eax",
+            "    mov eax, es",
+            "    push eax",
+            "    mov eax, fs",
+            "    push eax",
+            "    mov eax, gs",
+            "    push eax",
+            "    mov ax, {kernel_data}",
+            "    mov ds, ax",
+            "    mov es, ax",
+            "    lea eax, [esp + 16]", // frame pointer (interrupt/mod.rs dispatch): the pushad block
+            "    push eax",
+            "    call {dispatch}",
+            "    add esp, 4", // drop the frame pointer
+            // Restoring FS reloads the TEB descriptor's base: a thread resumed here by a switch
+            // inside the dispatch sees its own TEB.
+            "    pop eax",
+            "    mov gs, ax",
+            "    pop eax",
+            "    mov fs, ax",
+            "    pop eax",
+            "    mov es, ax",
+            "    pop eax",
+            "    mov ds, ax",
+            "    popad",
+            "    add esp, 8", // drop vector + error pad
+            "    iretd", // pops EIP, CS, EFLAGS (plus user ESP/SS from ring 3)
+            kernel_data = const crate::cpu::gdt::KERNEL_DATA_SELECTOR,
+            dispatch = sym crate::interrupt::dispatch,
+        );
 
-#[cfg(target_arch = "x86")]
-unsafe extern "C" {
-    /// Hardware-vector stubs generated above, one per band vector.
-    fn irq_stub_0x30();
-    fn irq_stub_0x31();
-    fn irq_stub_0x32();
-    fn irq_stub_0x33();
-    fn irq_stub_0x34();
-    fn irq_stub_0x35();
-    fn irq_stub_0x36();
-    fn irq_stub_0x37();
-    fn irq_stub_0x38();
-    fn irq_stub_0x39();
-    fn irq_stub_0x3A();
-    fn irq_stub_0x3B();
-    fn irq_stub_0x3C();
-    fn irq_stub_0x3D();
-    fn irq_stub_0x3E();
-    fn irq_stub_0x3F();
+        #[cfg(target_arch = "x86")]
+        unsafe extern "C" {
+            $(fn $stub();)*
+        }
+
+        /// The hardware-vector stubs, by vector from the band's first.
+        #[cfg(target_arch = "x86")]
+        const IRQ_STUBS: [unsafe extern "C" fn(); crate::interrupt::VECTOR_COUNT] = [$($stub),*];
+
+        // The table lists the band's vectors in order, so a stub's place in it is its vector's
+        // offset from the band's first.
+        const _: () = {
+            let vectors: [u8; crate::interrupt::VECTOR_COUNT] = [$($vector),*];
+            let mut index = 0;
+            while index < vectors.len() {
+                assert!(vectors[index] as usize == crate::interrupt::FIRST_VECTOR as usize + index);
+                index += 1;
+            }
+        };
+    }
 }
+
+define_irq_stubs!(
+    irq_stub_0x30 = 0x30,
+    irq_stub_0x31 = 0x31,
+    irq_stub_0x32 = 0x32,
+    irq_stub_0x33 = 0x33,
+    irq_stub_0x34 = 0x34,
+    irq_stub_0x35 = 0x35,
+    irq_stub_0x36 = 0x36,
+    irq_stub_0x37 = 0x37,
+    irq_stub_0x38 = 0x38,
+    irq_stub_0x39 = 0x39,
+    irq_stub_0x3A = 0x3A,
+    irq_stub_0x3B = 0x3B,
+    irq_stub_0x3C = 0x3C,
+    irq_stub_0x3D = 0x3D,
+    irq_stub_0x3E = 0x3E,
+    irq_stub_0x3F = 0x3F,
+);
 
 #[cfg(test)]
 mod tests {
@@ -975,9 +907,11 @@ mod tests {
     }
 
     /// The IDTR limit is the offset of the last valid byte: table size minus one. This checks the
-    /// actual function `init` feeds to `lidt`.
+    /// pointer `init` feeds to `lidt`.
     #[test]
     fn idt_limit_is_last_valid_byte_offset() {
-        assert_eq!(idt_limit(), 0x7FF);
+        let idt = [Gate::ABSENT; IDT_VECTORS];
+        let limit = crate::cpu::DescriptorTablePointer::of(&idt).limit();
+        assert_eq!(limit, 0x7FF);
     }
 }

@@ -3,7 +3,8 @@
 //! Taken over from the Multiboot loader early so the memory model is ours: flat 4 GiB kernel and
 //! user segments, the TSS (its esp0/ss0 give gate entries from ring 3 their ring-0 stack), and the
 //! TEB segment — a non-flat user descriptor based at the thread block page, so ring-3 code reaches
-//! its per-thread state fs-relative (the CRT installs its exception frames at fs:[0]).
+//! its per-thread state fs-relative (the CRT installs its exception frames at fs:[0]). The table
+//! and the TSS live in the processor control region ([`super::ProcessorTables`]).
 
 /// Selector offsets into the GDT (in bytes; low 3 bits are RPL/TI and stay 0 for kernel access).
 /// Pinned to the slot order below and fed to `gdt_load`'s assembly via `const` operands, so nothing
@@ -32,57 +33,101 @@ const _: () = assert!(
         && TEB_SELECTOR == 0x30
 );
 
-/// Pack one descriptor (base, limit, access, flags) into 64 bits per
-/// the x86 layout: limit 15:0 | base 15:0 | base 23:16 | access |
+/// One segment descriptor, in the x86 layout: limit 15:0 | base 15:0 | base 23:16 | access |
 /// flags<<4|limit 19:16 | base 31:24.
-///
-/// Crate-visible: the context switch's descriptor-edit tests check their entries against an
-/// independent packing of the same fields.
-#[rustfmt::skip] // keeps the bit-field comments in one column
-pub(crate) const fn make_entry(base: u32, limit: u32, access: u8, flags: u8) -> u64 {
-    // `limit` is the raw 20-bit limit field; the G flag decides whether it counts pages or bytes.
-    // With G=1, 0xFFFFF spans the full 4 GiB.
-    assert!(
-        limit <= 0xFFFFF,
-        "limit must fit the 20-bit descriptor field"
-    );
-    ((base as u64) & 0xFFFF) << 16          // base 15:0
-        | (((base >> 16) as u64) & 0xFF) << 32 // base 23:16
-        | (((base >> 24) as u64) & 0xFF) << 56 // base 31:24
-        | ((limit as u64) & 0xFFFF)            // limit 15:0
-        | (((limit >> 16) as u64) & 0xF) << 48 // limit 19:16
-        | ((access as u64) & 0xFF) << 40       // access byte
-        | ((flags as u64) & 0xF) << 52         // G/D/L and AVL nibble
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(transparent)]
+pub struct SegmentDescriptor(u64);
+
+impl SegmentDescriptor {
+    /// The byte offset of the base's bits 31:24 inside a descriptor. The context switch's assembly
+    /// rewrites the TEB descriptor's base through the three base offsets.
+    pub const BASE_HIGH_OFFSET: u32 = 7;
+    /// The byte offset of the base's bits 15:0, a word.
+    pub const BASE_LOW_OFFSET: u32 = 2;
+    /// The byte offset of the base's bits 23:16.
+    pub const BASE_MID_OFFSET: u32 = 4;
+    /// The null descriptor (slot 0, and the TSS slot until init builds it).
+    pub const NULL: SegmentDescriptor = SegmentDescriptor(0);
+
+    /// Pack one descriptor from its base, limit, access byte and flags nibble.
+    #[rustfmt::skip] // keeps the bit-field comments in one column
+    pub const fn new(base: u32, limit: u32, access: u8, flags: u8) -> Self {
+        // `limit` is the raw 20-bit limit field; the G flag decides whether it counts pages or
+        // bytes. With G=1, 0xFFFFF spans the full 4 GiB.
+        assert!(
+            limit <= 0xFFFFF,
+            "limit must fit the 20-bit descriptor field"
+        );
+        SegmentDescriptor(
+            ((base as u64) & 0xFFFF) << 16          // base 15:0
+            | (((base >> 16) as u64) & 0xFF) << 32 // base 23:16
+            | (((base >> 24) as u64) & 0xFF) << 56 // base 31:24
+            | ((limit as u64) & 0xFFFF)            // limit 15:0
+            | (((limit >> 16) as u64) & 0xF) << 48 // limit 19:16
+            | ((access as u64) & 0xFF) << 40       // access byte
+            | ((flags as u64) & 0xF) << 52,        // G/D/L and AVL nibble
+        )
+    }
+
+    /// The descriptor's 64 bits.
+    // Read by the fault-injection diagnostics and the host tests.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub const fn raw(self) -> u64 {
+        self.0
+    }
+
+    /// Rewrite the base, touching no other byte: the three stores the context switch's assembly
+    /// makes into the TEB descriptor, at the same offsets.
+    // The assembly's host-side model: read by the host tests.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn set_base(&mut self, base: u32) {
+        let mut bytes = self.0.to_le_bytes();
+        let low = Self::BASE_LOW_OFFSET as usize;
+        bytes[low..low + 2].copy_from_slice(&(base as u16).to_le_bytes());
+        bytes[Self::BASE_MID_OFFSET as usize] = (base >> 16) as u8;
+        bytes[Self::BASE_HIGH_OFFSET as usize] = (base >> 24) as u8;
+        self.0 = u64::from_le_bytes(bytes);
+    }
 }
 
-/// Slots 1-4: flat kernel/user code and data (0x9B/0x93/0xFB/0xF3, G=1, D=1). Slot 5 is the TSS
-/// descriptor (built at runtime), slot 6 the TEB segment.
+/// The GDT's slots: null, kernel code and data, user code and data, the TSS, the TEB segment.
+pub const GDT_ENTRIES: usize = 7;
+
+/// The Global Descriptor Table.
+pub type Gdt = [SegmentDescriptor; GDT_ENTRIES];
+
+/// The TSS descriptor's slot.
+const TSS_SLOT: usize = (TSS_SELECTOR >> 3) as usize;
+
+/// The GDT as the processor control region starts with it. Slots 1-4: flat kernel/user code and
+/// data (0x9B/0x93/0xFB/0xF3, G=1, D=1). Slot 5 is the TSS descriptor (built at init), slot 6 the
+/// TEB segment.
 ///
 /// Quirk: the accessed bit is pre-set because the CPU sets it in the GDT on every segment load —
 /// pre-setting keeps the entries stable. The only other architectural write is the busy bit `ltr`
-/// sets in the TSS descriptor, which is why the table's page stays writable. Exported by symbol:
-/// the context switch's assembly rewrites the TEB entry's base bytes at every thread switch.
-#[no_mangle]
-pub static mut GDT: [u64; 7] = [
-    make_entry(0, 0, 0x00, 0x0),
-    make_entry(0, 0xFFFFF, 0x9B, 0xC),
-    make_entry(0, 0xFFFFF, 0x93, 0xC),
-    make_entry(0, 0xFFFFF, 0xFB, 0xC),
-    make_entry(0, 0xFFFFF, 0xF3, 0xC),
-    0,
+/// sets in the TSS descriptor, which is why the table stays writable. The context switch's
+/// assembly rewrites the TEB entry's base bytes at every thread switch.
+pub const INITIAL_GDT: Gdt = [
+    SegmentDescriptor::NULL,
+    SegmentDescriptor::new(0, 0xFFFFF, 0x9B, 0xC),
+    SegmentDescriptor::new(0, 0xFFFFF, 0x93, 0xC),
+    SegmentDescriptor::new(0, 0xFFFFF, 0xFB, 0xC),
+    SegmentDescriptor::new(0, 0xFFFFF, 0xF3, 0xC),
+    SegmentDescriptor::NULL,
     teb_descriptor(),
 ];
 
 /// TSS descriptor: available 32-bit TSS (0x89), byte-granular. The 32-bit-vs-16-bit distinction is
 /// the type nibble, so the flags nibble stays clear. Must be non-busy when `ltr` loads it; `ltr`
-/// then sets the busy bit in the GDT (see the static's comment).
-const fn tss_descriptor(base: u32, limit: u32) -> u64 {
-    make_entry(base, limit, 0x89, 0x0)
+/// then sets the busy bit in the GDT (see [`INITIAL_GDT`]).
+const fn tss_descriptor(base: u32, limit: u32) -> SegmentDescriptor {
+    SegmentDescriptor::new(base, limit, 0x89, 0x0)
 }
 
 /// TEB segment: ring-3 data (0xF3), byte-granular, one page, based at the thread block page.
-const fn teb_descriptor() -> u64 {
-    make_entry(crate::user::TEB_PAGE, 0xFFF, 0xF3, 0x4)
+const fn teb_descriptor() -> SegmentDescriptor {
+    SegmentDescriptor::new(crate::user::TEB_PAGE, 0xFFF, 0xF3, 0x4)
 }
 
 /// The 32-bit task state segment. Only ss0:esp0 is used (the ring-0 stack for gate entries from
@@ -180,16 +225,11 @@ impl TaskStateSegment {
     }
 }
 
-/// The one TSS, loaded into the task register during init. Exported by symbol: the switch's
-/// assembly installs the running thread's stack top as `esp0` at every switch.
-#[no_mangle]
-pub static mut TSS: TaskStateSegment = TaskStateSegment::new();
-
 #[cfg(target_arch = "x86")]
 use core::arch::asm;
 
-/// Load our GDT, initialize the TSS and load the task register (CS is reloaded via a far jump in
-/// the assembly helper).
+/// Build the TSS and its descriptor in the processor's tables, load the GDT (reloading every
+/// segment register, CS through a far return) and load the task register.
 ///
 /// The TSS's `esp0` starts zero: ring 3 is only ever entered from a user thread, and the switch
 /// into that thread installs its gate-stack top first. A gate entry before any install would be a
@@ -197,32 +237,44 @@ use core::arch::asm;
 ///
 /// # Safety
 ///
-/// Boot CPU, ring 0, interrupts disabled.
+/// Boot CPU, ring 0, interrupts disabled; `gdt` and `tss` are the processor control region's
+/// tables, which stay in place for the kernel's life.
 #[cfg(target_arch = "x86")]
-pub unsafe fn init() {
-    let gdt = core::ptr::addr_of_mut!(GDT) as *mut u64;
-    let base = gdt as u32;
-    let limit = (core::mem::size_of::<[u64; 7]>() - 1) as u16;
-    let tss_addr = core::ptr::addr_of_mut!(TSS) as u32;
-    // SAFETY: boot CPU, ring 0, interrupts disabled; the GDT is not loaded yet and these statics
-    // have no other accessor.
+pub unsafe fn init(gdt: &mut Gdt, tss: &mut TaskStateSegment) {
+    let size = core::mem::size_of::<TaskStateSegment>();
+    gdt[TSS_SLOT] = tss_descriptor(core::ptr::from_mut(tss) as u32, (size - 1) as u32);
+    tss.esp0 = 0;
+    tss.ss0 = KERNEL_DATA_SELECTOR;
+    // No I/O bitmap: every ring-3 port access faults (the smoke and the later syscall layer have
+    // no business with ports).
+    tss.iomap_base = size as u16;
+
+    let gdtr = super::DescriptorTablePointer::of(gdt);
+    // SAFETY: the caller's contract: ring 0, interrupts disabled, and the table stays where the
+    // pointer names it. Every selector loaded is a valid flat segment of the new table, and the
+    // far return lands on the next instruction with CS reloaded; the two pushes are the frame the
+    // `retf` pops, so the stack ends as it began.
     unsafe {
-        core::ptr::write_volatile(
-            gdt.add(5),
-            tss_descriptor(
-                tss_addr,
-                (core::mem::size_of::<TaskStateSegment>() - 1) as u32,
-            ),
+        asm!(
+            "lgdt [{gdtr}]",
+            "mov ds, {data:x}",
+            "mov es, {data:x}",
+            "mov fs, {data:x}",
+            "mov gs, {data:x}",
+            "mov ss, {data:x}",
+            // A far return frame: the new CS, then the EIP on top.
+            "push {code}",
+            "lea {scratch}, [2f]",
+            "push {scratch}",
+            "retf",
+            "2:",
+            gdtr = in(reg) &gdtr,
+            data = in(reg) KERNEL_DATA_SELECTOR as u32,
+            code = const KERNEL_CODE_SELECTOR,
+            scratch = out(reg) _,
+            options(preserves_flags),
         );
-        let tss = &mut *core::ptr::addr_of_mut!(TSS);
-        tss.esp0 = 0;
-        tss.ss0 = KERNEL_DATA_SELECTOR;
-        // No I/O bitmap: every ring-3 port access faults (the smoke and the later syscall layer
-        // have no business with ports).
-        tss.iomap_base = core::mem::size_of::<TaskStateSegment>() as u16;
     }
-    // SAFETY: boot CPU, ring 0, interrupts disabled; the GDT is 'static.
-    gdt_load(base, limit);
     // SAFETY: the TSS descriptor is in the loaded table and available (non-busy); ltr loads the
     // task register and marks the descriptor busy in the GDT, and has no other effect.
     unsafe {
@@ -234,44 +286,12 @@ pub unsafe fn init() {
 /// write to the table.
 #[cfg(any(feature = "fault-test-ud", feature = "fault-test-gp"))]
 pub(crate) fn debug_descriptor(index: usize) -> u64 {
-    // SAFETY: reads a static array with a constant index at the call site.
-    unsafe { core::ptr::read_volatile((core::ptr::addr_of!(GDT) as *const u64).add(index)) }
+    let gdt = crate::pcr::pcr().tables.gdt();
+    // SAFETY: the processor control region's table, live for the kernel's life; init's references
+    // to it have ended, and the read is volatile because the processor writes the table itself.
+    let gdt = unsafe { core::ptr::read_volatile(gdt) };
+    gdt[index].raw()
 }
-
-#[cfg(target_arch = "x86")]
-unsafe extern "C" {
-    /// Build a GDTR from `base`/`limit`, load it, reload segments.
-    fn gdt_load(base: u32, limit: u16);
-}
-
-#[cfg(target_arch = "x86")]
-core::arch::global_asm!(
-    ".section .text.gdt_load, \"ax\"",
-    ".global gdt_load",
-    "gdt_load:",
-    "    sub esp, 6",
-    // 2nd arg (limit) is at [esp+14] after the 6-byte GDTR, 1st (base) at [esp+10]
-    "    mov ax, [esp + 14]",
-    "    mov [esp], ax",             // GDTR.limit
-    "    mov eax, [esp + 10]",
-    "    mov [esp + 2], eax",        // GDTR.base
-    "    lgdt [esp]",
-    "    add esp, 6",
-    "    mov ax, {data_selector}",
-    "    mov ds, ax",
-    "    mov es, ax",
-    "    mov fs, ax",
-    "    mov gs, ax",
-    "    mov ss, ax",
-    "    mov eax, offset gdt_cs_reloaded",  // far return frame: EIP first,
-    "    push {code_selector}",             // then new CS,
-    "    push eax",                         // EIP on top for retf
-    "    retf",                             // reload CS via the code selector
-    "gdt_cs_reloaded:",                     // label is local to this block
-    "    ret",
-    data_selector = const KERNEL_DATA_SELECTOR,
-    code_selector = const KERNEL_CODE_SELECTOR,
-);
 
 #[cfg(test)]
 mod tests {
@@ -293,17 +313,21 @@ mod tests {
             | ((limit & 0xFFFF) as u64)
     }
 
-    /// Read one link-time GDT entry (tests never run init).
+    /// One entry of the GDT the processor control region starts with (tests never run init).
     fn entry(index: usize) -> u64 {
-        // SAFETY: read-only access to the static before any boot code.
-        unsafe { core::ptr::read_volatile((core::ptr::addr_of!(GDT) as *const u64).add(index)) }
+        INITIAL_GDT[index].raw()
+    }
+
+    /// A descriptor's bits, packed by the type under test.
+    fn make_entry(base: u32, limit: u32, access: u8, flags: u8) -> u64 {
+        SegmentDescriptor::new(base, limit, access, flags).raw()
     }
 
     /// Slots 1-4 are the flat segments (accessed bit pre-set), slot 5 is zero until init builds the
     /// TSS descriptor, slot 6 is the TEB segment (non-flat, one page, DPL 3).
     #[test]
     fn gdt_entries_are_flat_segments() {
-        assert_eq!(core::mem::size_of::<[u64; 7]>(), 7 * 8);
+        assert_eq!(core::mem::size_of::<Gdt>(), 7 * 8);
         assert_eq!(entry(0), 0); // null descriptor
         assert_eq!(entry(1), 0x00CF_9B00_0000_FFFF); // kernel code, accessed
         assert_eq!(entry(2), 0x00CF_9300_0000_FFFF); // kernel data, accessed
@@ -321,7 +345,7 @@ mod tests {
         assert_eq!((teb >> 40) & 0xFF, 0xF3); // access byte
         assert_eq!((teb >> 52) & 0xF, 0x4); // flags nibble
         assert_eq!(
-            teb_descriptor(),
+            teb_descriptor().raw(),
             packed_entry(crate::user::TEB_PAGE, 0xFFF, 0x13, 3, false)
         );
     }
@@ -340,7 +364,8 @@ mod tests {
         assert_eq!(USER_DATA_SELECTOR | 3, 0x23);
         assert_eq!(TEB_SELECTOR | 3, 0x33);
         // The limit covers exactly the seven entries; the fault-test selector 0x38 is one past it.
-        assert_eq!(core::mem::size_of::<[u64; 7]>() - 1, 55);
+        assert_eq!(core::mem::size_of::<Gdt>() - 1, 55);
+        assert_eq!(TSS_SLOT, 5);
     }
 
     /// The TSS descriptor against an independent packing (access 0x89, non-busy for `ltr`).
@@ -362,12 +387,15 @@ mod tests {
             (0x0012_3456, 0x67),
             (0xFFFF_0000, 0x1_2345),
         ] {
-            assert_eq!(tss_descriptor(base, limit), packed_tss(base, limit));
+            assert_eq!(tss_descriptor(base, limit).raw(), packed_tss(base, limit));
         }
         // Hand-decoded per the byte layout.
-        assert_eq!(tss_descriptor(0x0012_3456, 0x67), 0x0000_8912_3456_0067);
+        assert_eq!(
+            tss_descriptor(0x0012_3456, 0x67).raw(),
+            0x0000_8912_3456_0067
+        );
         // A wide limit lands in byte 6; the flags nibble stays clear.
-        let wide = tss_descriptor(0, 0x1_2345);
+        let wide = tss_descriptor(0, 0x1_2345).raw();
         assert_eq!((wide >> 48) & 0xF, 1);
         assert_eq!((wide >> 52) & 0xF, 0);
     }
@@ -452,5 +480,28 @@ mod tests {
             make_entry(0x1234_5678, 0x0123_45, 0x9B, 0xC),
             0x12C1_9B34_5678_2345
         );
+    }
+
+    /// The base rewrite (the context switch's three stores into the TEB descriptor) rewrites
+    /// exactly the base: the edited entry equals a freshly packed entry for the same base.
+    #[test]
+    fn set_base_rewrites_only_the_base_bytes() {
+        assert_eq!(
+            (
+                SegmentDescriptor::BASE_LOW_OFFSET,
+                SegmentDescriptor::BASE_MID_OFFSET,
+                SegmentDescriptor::BASE_HIGH_OFFSET
+            ),
+            (2, 4, 7)
+        );
+        for base in [0u32, 0x7FFD_E000, 0x7FFD_D000, 0x7FF9_E000, 0x1234_5678] {
+            let mut entry = teb_descriptor();
+            entry.set_base(base);
+            assert_eq!(
+                entry,
+                SegmentDescriptor::new(base, 0xFFF, 0xF3, 0x4),
+                "base {base:#x}"
+            );
+        }
     }
 }

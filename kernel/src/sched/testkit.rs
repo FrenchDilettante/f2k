@@ -166,7 +166,7 @@ fn attached(id: ThreadId, process: *mut SchedProcess) -> Rec<Thread> {
     let dispatcher = installed();
     dispatcher.renew_thread(id);
     // SAFETY: the process record is leaked at its final address.
-    unsafe { dispatcher.attach(id, &mut *process) };
+    unsafe { dispatcher.attach(id, process) };
     record(id)
 }
 

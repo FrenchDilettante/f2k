@@ -16,7 +16,7 @@ use super::info::{self, Entry, ListingClass};
 use crate::fs::fat32::dir::{decode_byte, fold_unit, walk, Listed};
 use crate::fs::fat32::lookup::File;
 use crate::fs::fat32::path::MAX_NAME;
-use crate::fs::file::rights;
+use crate::fs::file::{rights, FileObject};
 use crate::fs::search::{matches, Search, MAX_EXPRESSION};
 use crate::status::*;
 
@@ -93,7 +93,7 @@ fn query_directory_file_held(
     }
     io_status.probe(8)?;
     information.probe(length)?;
-    let mut object = file_object(handle.raw())?;
+    let object = file_object(handle.raw())?;
     check_access(&object, rights::FILE_READ_DATA)?;
     if !routine.is_null() {
         return Err(STATUS_NOT_IMPLEMENTED);
@@ -103,6 +103,49 @@ fn query_directory_file_held(
         return Err(STATUS_INVALID_PARAMETER);
     }
     let event = completion_event(event.raw())?;
+    // The search is the object's: taken and moved under its lock, as a read or a write moves its
+    // position, so a listing through another handle to the object waits for this one. Returns the
+    // answer and the bytes it delivered; a fault in the caller's memory fails the call outright.
+    let (result, used) = crate::fs::io::serialized(&object, |object| {
+        list(
+            object,
+            class,
+            information,
+            (length as usize).min(MAX_BUFFER),
+            single,
+            file_name,
+            restart,
+            &directory,
+        )
+    })?;
+    let (code, information) = match result {
+        Ok(code) => (code, used as u32),
+        Err(code) => (code, 0),
+    };
+    complete(io_status, code, information);
+    signal(event);
+    // A cut entry is a warning: the status fails the call, the record still delivered.
+    if code == STATUS_BUFFER_OVERFLOW {
+        return Err(code);
+    }
+    result
+}
+
+/// One listing step of `object`'s search (see [`query_directory_file_held`]), its entries in
+/// `class` from the search's next record on into the caller's `information`, at most `room` bytes.
+/// Returns the answer and the bytes delivered; a fault in the caller's memory is the error.
+#[allow(clippy::too_many_arguments)]
+fn list(
+    object: &mut FileObject,
+    class: ListingClass,
+    information: UserAddr,
+    room: usize,
+    single: bool,
+    file_name: UserAddr,
+    restart: bool,
+    directory: &File,
+) -> Result<(NtResult, usize), NtStatus> {
+    let offset = class.fixed_size();
     // The search: made by the first query, of its name (a UNICODE_STRING) or of every name.
     let search = match &mut object.search {
         Some(search) => {
@@ -125,7 +168,6 @@ fn query_directory_file_held(
         }
     };
     let expression = search.expression();
-    let room = (length as usize).min(MAX_BUFFER);
     let mut buffer = [0u8; MAX_BUFFER];
     let cluster = cluster_bytes();
     // The entries that fit, from the search's next record on: (bytes used, the last record's
@@ -201,17 +243,7 @@ fn query_directory_file_held(
         }
         Some(Err(_)) | None => Err(STATUS_FILE_CORRUPT_ERROR),
     };
-    let (code, information) = match result {
-        Ok(code) => (code, used as u32),
-        Err(code) => (code, 0),
-    };
-    complete(io_status, code, information);
-    signal(event);
-    // A cut entry is a warning: the status fails the call, the record still delivered.
-    if code == STATUS_BUFFER_OVERFLOW {
-        return Err(code);
-    }
-    result
+    Ok((result, used))
 }
 
 /// NtQueryDirectoryFile (see [`query_directory_file_held`]), as one critical region.

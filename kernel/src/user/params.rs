@@ -20,67 +20,15 @@
 //! with ([`ENVIRONMENT`]), and ntdll's environment functions edit it and move it to a larger
 //! allocation when it outgrows its region.
 
-// The layouts' fields user code reads, whether the kernel writes them or not (kernel32 and ntdll
-// read them by these offsets).
-#![allow(dead_code)]
-
 use rtl::cp1252::MB_TO_WC;
+use rtl::nt::UnicodeString;
+use rtl::params::{CurrentDirectory, ProcessParameters};
 
 use crate::user::shared::NT_SYSTEM_ROOT;
 
-/// The block's layout: RTL_USER_PROCESS_PARAMETERS on NT 5.0, x86, the type ntdll builds a new
+/// The block's size: RTL_USER_PROCESS_PARAMETERS on NT 5.0, x86, the type ntdll builds a new
 /// process's block with (`rtl::params`), its pointers 32-bit.
-pub type Layout = rtl::params::ProcessParameters<u32>;
-
-/// The block's size.
-pub const SIZE: u32 = core::mem::size_of::<Layout>() as u32;
-
-/// The block's field offsets, from its layout.
-pub mod offset {
-    use core::mem::offset_of;
-
-    use super::Layout;
-
-    pub const MAXIMUM_LENGTH: u32 = offset_of!(Layout, maximum_length) as u32;
-    pub const LENGTH: u32 = offset_of!(Layout, length) as u32;
-    pub const FLAGS: u32 = offset_of!(Layout, flags) as u32;
-    pub const STANDARD_INPUT: u32 = offset_of!(Layout, standard_input) as u32;
-    pub const STANDARD_OUTPUT: u32 = offset_of!(Layout, standard_output) as u32;
-    pub const STANDARD_ERROR: u32 = offset_of!(Layout, standard_error) as u32;
-    /// CurrentDirectory: a CURDIR, its DosPath (a UNICODE_STRING) then its Handle.
-    pub const CURRENT_DIRECTORY: u32 = offset_of!(Layout, current_directory) as u32;
-    pub const DLL_PATH: u32 = offset_of!(Layout, dll_path) as u32;
-    pub const IMAGE_PATH_NAME: u32 = offset_of!(Layout, image_path_name) as u32;
-    pub const COMMAND_LINE: u32 = offset_of!(Layout, command_line) as u32;
-    pub const ENVIRONMENT: u32 = offset_of!(Layout, environment) as u32;
-    /// The window's starting place and size, the console's character counts and fill, and the
-    /// STARTF_* flags and SW_* value: what kernel32's GetStartupInfoA reports.
-    pub const STARTING_X: u32 = offset_of!(Layout, starting_x) as u32;
-    pub const STARTING_Y: u32 = offset_of!(Layout, starting_y) as u32;
-    pub const COUNT_X: u32 = offset_of!(Layout, count_x) as u32;
-    pub const COUNT_Y: u32 = offset_of!(Layout, count_y) as u32;
-    pub const COUNT_CHARS_X: u32 = offset_of!(Layout, count_chars_x) as u32;
-    pub const COUNT_CHARS_Y: u32 = offset_of!(Layout, count_chars_y) as u32;
-    pub const FILL_ATTRIBUTE: u32 = offset_of!(Layout, fill_attribute) as u32;
-    pub const WINDOW_FLAGS: u32 = offset_of!(Layout, window_flags) as u32;
-    pub const SHOW_WINDOW_FLAGS: u32 = offset_of!(Layout, show_window_flags) as u32;
-    /// WindowTitle, DesktopInfo, ShellInfo and RuntimeData: UNICODE_STRINGs (RuntimeData the C
-    /// runtime's inherited-handle block, cbReserved2/lpReserved2).
-    pub const WINDOW_TITLE: u32 = offset_of!(Layout, window_title) as u32;
-    pub const DESKTOP_INFO: u32 = offset_of!(Layout, desktop_info) as u32;
-    pub const SHELL_INFO: u32 = offset_of!(Layout, shell_info) as u32;
-    pub const RUNTIME_DATA: u32 = offset_of!(Layout, runtime_data) as u32;
-}
-
-/// The startup values the block carries (the capture's STARTUPINFOA, as GetStartupInfoA copies it
-/// out): the window one line down (StartingY 1), 100 by 100, shown normally (SW_SHOWNORMAL), no
-/// STARTF_* flags; no title, desktop, shell information or runtime data.
-pub const STARTUP: [(u32, u32); 4] = [
-    (offset::STARTING_Y, 1),
-    (offset::COUNT_X, 100),
-    (offset::COUNT_Y, 100),
-    (offset::SHOW_WINDOW_FLAGS, 1),
-];
+pub const SIZE: u32 = core::mem::size_of::<ProcessParameters<u32>>() as u32;
 
 /// RTL_USER_PROC_PARAMS_NORMALIZED: the strings' buffers are addresses, not offsets.
 pub const NORMALIZED: u32 = rtl::params::NORMALIZED;
@@ -153,13 +101,13 @@ const MAX_PATH: usize = 260;
 /// included.
 pub const MODULE_ROOM: usize = MAX_PATH;
 
-/// A UNICODE_STRING: its length and room in bytes, and its buffer.
-pub fn unicode_string(length: u32, maximum: u32, buffer: u32) -> [u8; 8] {
-    let mut bytes = [0u8; 8];
-    bytes[0..2].copy_from_slice(&(length as u16).to_le_bytes());
-    bytes[2..4].copy_from_slice(&(maximum as u16).to_le_bytes());
-    bytes[4..8].copy_from_slice(&buffer.to_le_bytes());
-    bytes
+/// A UNICODE_STRING of `length` bytes in a buffer of `maximum` at `buffer`.
+fn unicode_string(length: u32, maximum: u32, buffer: u32) -> UnicodeString<u32> {
+    UnicodeString {
+        length: length as u16,
+        maximum_length: maximum as u16,
+        buffer,
+    }
 }
 
 /// Code page 1252 text into UTF-16 (little-endian) in `out`: the bytes written.
@@ -186,51 +134,46 @@ pub struct Header {
     pub standard: [u32; 3],
 }
 
-/// The block's bytes.
-pub fn header(fields: &Header) -> [u8; SIZE as usize] {
-    let mut block = [0u8; SIZE as usize];
-    let mut put = |at: u32, bytes: &[u8]| {
-        block[at as usize..at as usize + bytes.len()].copy_from_slice(bytes)
-    };
+/// The block: normalized, its strings' buffers on its pages, the standard handles and the
+/// environment block's address, and the startup values the capture's STARTUPINFOA shows
+/// (GetStartupInfoA copies them out): the window one line down (StartingY 1), 100 by 100, shown
+/// normally (SW_SHOWNORMAL), no STARTF_* flags; no title, desktop, shell information or runtime
+/// data, and no DLL search path (the loader has none to give). The current directory has no
+/// handle: ntdll's process start opens it.
+pub fn header(fields: &Header) -> ProcessParameters<u32> {
     let total = COMMAND_LINE_BUFFER + COMMAND_LINE_ROOM;
-    put(offset::MAXIMUM_LENGTH, &total.to_le_bytes());
-    put(offset::LENGTH, &total.to_le_bytes());
-    put(offset::FLAGS, &NORMALIZED.to_le_bytes());
-    put(offset::STANDARD_INPUT, &fields.standard[0].to_le_bytes());
-    put(offset::STANDARD_OUTPUT, &fields.standard[1].to_le_bytes());
-    put(offset::STANDARD_ERROR, &fields.standard[2].to_le_bytes());
-    // The current directory's DOS path (no handle: ntdll's process start opens it).
-    put(
-        offset::CURRENT_DIRECTORY,
-        &unicode_string(
-            fields.current_directory,
-            PATH_ROOM,
-            fields.base + CURRENT_DIRECTORY_BUFFER,
-        ),
-    );
-    put(
-        offset::IMAGE_PATH_NAME,
-        &unicode_string(
+    ProcessParameters {
+        maximum_length: total,
+        length: total,
+        flags: NORMALIZED,
+        standard_input: fields.standard[0],
+        standard_output: fields.standard[1],
+        standard_error: fields.standard[2],
+        current_directory: CurrentDirectory {
+            dos_path: unicode_string(
+                fields.current_directory,
+                PATH_ROOM,
+                fields.base + CURRENT_DIRECTORY_BUFFER,
+            ),
+            handle: 0,
+        },
+        image_path_name: unicode_string(
             fields.image_path,
             PATH_ROOM,
             fields.base + IMAGE_PATH_BUFFER,
         ),
-    );
-    put(
-        offset::COMMAND_LINE,
-        &unicode_string(
+        command_line: unicode_string(
             fields.command_line,
             COMMAND_LINE_ROOM,
             fields.base + COMMAND_LINE_BUFFER,
         ),
-    );
-    put(offset::ENVIRONMENT, &fields.environment.to_le_bytes());
-    for (at, value) in STARTUP {
-        put(at, &value.to_le_bytes());
+        environment: fields.environment,
+        starting_y: 1,
+        count_x: 100,
+        count_y: 100,
+        show_window_flags: 1,
+        ..ProcessParameters::default()
     }
-    // No DLL search path: the loader has none to give.
-    put(offset::DLL_PATH, &unicode_string(0, 0, 0));
-    block
 }
 
 /// The module file name the image at volume path `module` has (the parameters' ImagePathName,
@@ -257,13 +200,16 @@ pub fn starting_directory(image_path: &[u8], out: &mut [u8; MODULE_ROOM]) -> usi
     length
 }
 
-/// Map the parameters pages at [`crate::user::PARAMS_PAGE`] into `space` (the current address
-/// space) and write the block: the command line, the image's Win32 path (from its volume path
-/// `module`), the current directory (the image's own), the standard handles and the environment
-/// block's address. The environment block's region is mapped too, the starting variables written
-/// at its start.
+/// Map the parameters pages at [`crate::user::PARAMS_PAGE`] into `process`'s address space (the
+/// current one) and write the block: the command line, the image's Win32 path (from its volume
+/// path `module`), the current directory (the image's own), the standard handles and the
+/// environment block's address. The environment block's region is mapped too, the starting
+/// variables written at its start. The pages are mapped in one hold of the address space, and
+/// written once it is released.
 #[cfg(target_arch = "x86")]
-pub fn map(space: &mut crate::mem::vm::AddressSpace, command_line: &[u8], module: &[u8]) {
+pub fn map(process: &crate::process::Process, command_line: &[u8], module: &[u8]) {
+    use rtl::pod::Pod;
+
     use crate::mem::{paging::PAGE_SIZE, vm};
     use crate::user::syscall::write_user;
     assert!(
@@ -271,9 +217,18 @@ pub fn map(space: &mut crate::mem::vm::AddressSpace, command_line: &[u8], module
         "command line too long for the parameters"
     );
     let base = crate::user::PARAMS_PAGE;
-    for page in 0..PAGES {
-        vm::map_zeroed(space, base + page * PAGE_SIZE, vm::PAGE_READWRITE);
-    }
+    process.with_space(|space| {
+        for page in 0..PAGES {
+            vm::map_zeroed(space, base + page * PAGE_SIZE, vm::PAGE_READWRITE);
+        }
+        for page in 0..ENVIRONMENT_BLOCK_PAGES {
+            vm::map_zeroed(
+                space,
+                ENVIRONMENT_BLOCK + page * PAGE_SIZE,
+                vm::PAGE_READWRITE,
+            );
+        }
+    });
     let mut name = [0u8; MODULE_ROOM];
     let name_length = module_file_name(module, &mut name);
     // The pages are fresh, mapped and writable: the writes cannot fail.
@@ -300,14 +255,7 @@ pub fn map(space: &mut crate::mem::vm::AddressSpace, command_line: &[u8], module
         environment: ENVIRONMENT_BLOCK,
         standard: [STD_INPUT, STD_OUTPUT, STD_ERROR],
     });
-    let _ = write_user(base, &block);
-    for page in 0..ENVIRONMENT_BLOCK_PAGES {
-        vm::map_zeroed(
-            space,
-            ENVIRONMENT_BLOCK + page * PAGE_SIZE,
-            vm::PAGE_READWRITE,
-        );
-    }
+    let _ = write_user(base, block.as_bytes());
     let mut environment_block = [0u8; ENVIRONMENT_ROOM];
     let environment_bytes = environment(&mut environment_block);
     let _ = write_user(ENVIRONMENT_BLOCK, &environment_block[..environment_bytes]);
@@ -319,22 +267,15 @@ mod tests {
 
     /// The NT 5.0 layout user code reads.
     #[test]
-    fn offsets_are_the_nt_layout() {
+    fn the_block_is_the_nt_layout() {
         assert_eq!(SIZE, 0x290);
-        assert_eq!(offset::STANDARD_INPUT, 0x18);
-        assert_eq!(offset::CURRENT_DIRECTORY, 0x24);
-        assert_eq!(offset::DLL_PATH, 0x30);
-        assert_eq!(offset::IMAGE_PATH_NAME, 0x38);
-        assert_eq!(offset::COMMAND_LINE, 0x40);
-        assert_eq!(offset::ENVIRONMENT, 0x48);
-        assert_eq!(offset::SHOW_WINDOW_FLAGS, 0x6C);
-        assert_eq!(offset::RUNTIME_DATA, 0x88);
     }
 
     /// The block: normalized, its strings' buffers at their places after it, their lengths in
     /// bytes, the environment's address and the standard handles, the capture's startup values.
     #[test]
     fn the_block_points_at_its_strings() {
+        use rtl::pod::Pod;
         let base = 0x0002_0000;
         let block = header(&Header {
             base,
@@ -344,59 +285,65 @@ mod tests {
             environment: ENVIRONMENT_BLOCK,
             standard: [3, 7, 11],
         });
-        let word =
-            |at: u32| u32::from_le_bytes(block[at as usize..at as usize + 4].try_into().unwrap());
-        let half =
-            |at: u32| u16::from_le_bytes(block[at as usize..at as usize + 2].try_into().unwrap());
-        assert_eq!(word(offset::FLAGS), NORMALIZED);
-        assert_eq!(word(offset::LENGTH), word(offset::MAXIMUM_LENGTH));
+        assert_eq!(block.flags, NORMALIZED);
+        assert_eq!(block.length, block.maximum_length);
         assert_eq!(
-            (half(offset::COMMAND_LINE), word(offset::COMMAND_LINE + 4)),
+            (block.command_line.length, block.command_line.buffer),
             (8, base + COMMAND_LINE_BUFFER)
         );
         assert_eq!(
-            (
-                half(offset::IMAGE_PATH_NAME),
-                word(offset::IMAGE_PATH_NAME + 4)
-            ),
+            (block.image_path_name.length, block.image_path_name.buffer),
             (22, base + IMAGE_PATH_BUFFER)
         );
+        let directory = block.current_directory.dos_path;
         assert_eq!(
-            (
-                half(offset::CURRENT_DIRECTORY),
-                half(offset::CURRENT_DIRECTORY + 2),
-                word(offset::CURRENT_DIRECTORY + 4)
-            ),
+            (directory.length, directory.maximum_length, directory.buffer),
             (6, PATH_ROOM as u16, base + CURRENT_DIRECTORY_BUFFER)
         );
-        assert_eq!(word(offset::ENVIRONMENT), ENVIRONMENT_BLOCK);
+        assert_eq!(block.environment, ENVIRONMENT_BLOCK);
         assert_eq!(
             (
-                word(offset::STANDARD_INPUT),
-                word(offset::STANDARD_OUTPUT),
-                word(offset::STANDARD_ERROR)
+                block.standard_input,
+                block.standard_output,
+                block.standard_error
             ),
             (3, 7, 11)
         );
-        assert_eq!(half(offset::DLL_PATH), 0, "no DLL path");
-        // The startup values GetStartupInfoA copies out: the capture's.
-        let startup: Vec<u32> = (offset::STARTING_X..=offset::SHOW_WINDOW_FLAGS)
-            .step_by(4)
-            .map(word)
+        assert_eq!(block.dll_path, UnicodeString::default(), "no DLL path");
+        // The startup values GetStartupInfoA copies out (StartingX to ShowWindowFlags, at
+        // 0x4C..0x70): the capture's.
+        let startup: Vec<u32> = block.as_bytes()[0x4C..0x70]
+            .chunks_exact(4)
+            .map(|word| u32::from_le_bytes(word.try_into().unwrap()))
             .collect();
         assert_eq!(startup, [0, 1, 100, 100, 0, 0, 0, 0, 1]);
         for string in [
-            offset::WINDOW_TITLE,
-            offset::DESKTOP_INFO,
-            offset::SHELL_INFO,
-            offset::RUNTIME_DATA,
+            block.window_title,
+            block.desktop_info,
+            block.shell_info,
+            block.runtime_data,
         ] {
-            assert_eq!(
-                (word(string), word(string + 4)),
-                (0, 0),
-                "{string:#x}: none"
-            );
+            assert_eq!(string, UnicodeString::default(), "none");
         }
+        // Nothing else: the remaining words are zero, the drive table included.
+        let blank = ProcessParameters {
+            maximum_length: block.maximum_length,
+            length: block.length,
+            flags: block.flags,
+            standard_input: block.standard_input,
+            standard_output: block.standard_output,
+            standard_error: block.standard_error,
+            current_directory: block.current_directory,
+            image_path_name: block.image_path_name,
+            command_line: block.command_line,
+            environment: block.environment,
+            starting_y: 1,
+            count_x: 100,
+            count_y: 100,
+            show_window_flags: 1,
+            ..ProcessParameters::default()
+        };
+        assert_eq!(block.as_bytes(), blank.as_bytes());
     }
 
     /// A process starts in its image's directory, its trailing separator kept (a root's too).
